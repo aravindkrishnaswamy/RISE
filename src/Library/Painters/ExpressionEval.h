@@ -113,17 +113,36 @@
 //              vec3) gets (0, 0) -- it cannot alias, so it never fades.
 //              worley_f1/f2/f2f1/id(v,jitter)->s; cellhash(s)
 //              GEOMETRY SIGNALS (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
-//              Phase 2): occlusion(radius)->s in [0,1], 1 = unoccluded;
-//              thickness(radius)->s in [0,1], 1 = thick.  `radius` is a
-//              FRACTION of the hit geometry's characteristic size (its
-//              bounding-box diagonal), so occlusion(0.05) reads as "5 %
-//              of the object" on any scene scale.  Both are LAZY -- they
-//              cost nothing unless the body calls them -- and they answer
-//              only on geometry that publishes an ISurfaceSignalProvider
-//              (the SDF family today; meshes in Phase 3).  Anywhere else,
-//              and for any radius <= 0, they return their documented
+//              Phase 2; docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md for
+//              occlusion's planar reference and for convexity):
+//              occlusion(radius)->s in [0,1], 1 = unoccluded;
+//              thickness(radius)->s in [0,1], 1 = thick;
+//              convexity(radius)->s in [0,1], 0 = flat or concave.
+//              `radius` is a FRACTION of the hit geometry's characteristic
+//              size (its bounding-box diagonal), so occlusion(0.05) reads
+//              as "5 % of the object" on any scene scale.
+//              occlusion and convexity PARTITION ONE QUESTION -- how open
+//              is the surface at scale `radius`, against what a FLAT
+//              surface would read -- with occlusion reporting how much
+//              LESS open and convexity how much MORE.  Neither is ever a
+//              residual of the other: flat AND every convex edge read
+//              occlusion EXACTLY 1, flat and every cavity read convexity
+//              EXACTLY 0.  Every convexity value has a fixed geometric
+//              meaning at every scale (0.5 IS a 90-degree arris, 0.75 IS
+//              a three-face corner), which is what `curv`, an unbounded
+//              per-object differential quantity, cannot be.  They are
+//              measured differently and it shows in two places: occlusion
+//              traces rays, so it sees NARROW APERTURES (a crack, a slot)
+//              and costs ~3x more; convexity samples the query ball, so
+//              it also registers smooth bulges.
+//              All three are LAZY -- they cost nothing unless the body
+//              calls them -- and they answer only on geometry that
+//              publishes an ISurfaceSignalProvider (the SDF family live,
+//              indexed meshes from a lazy per-vertex bake).  Anywhere
+//              else, and for any radius <= 0, they return their documented
 //              NEUTRAL values (occlusion 1 = unoccluded, thickness 1 =
-//              thick), the same honest-absence convention fw and curv
+//              thick, convexity 0 = flat -- each the do-nothing end of its
+//              own range), the same honest-absence convention fw and curv
 //              use.  A LITERAL radius <= 0 is a COMPILE error.
 //              ->s.  ramp(t, pos0,val0, pos1,val1, ...)->(scalar or
 //              vec3, matching the stop values) -- variadic, >=2 stops,
@@ -152,7 +171,7 @@
 #include "../Utilities/Math3D/Math3D.h"	// Scalar, Vector3
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/ProceduralNoiseCore.h"
-#include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness() dispatch channel
+#include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness()/convexity() dispatch channel
 
 namespace RISE
 {
@@ -196,7 +215,7 @@ namespace RISE
 			Scalar	curv;
 			Scalar	curvR;
 
-			//! The `occlusion()` / `thickness()` dispatch channel for THIS
+			//! The `occlusion()` / `thickness()` / `convexity()` dispatch channel for THIS
 			//! hit (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.1) -- the
 			//! geometry's signal provider plus the object-space point and
 			//! normal to query it at.
@@ -293,7 +312,7 @@ namespace RISE
 				Compiled() : writeSlot(-1), type(kScalar) {}
 			};
 
-			//! One `occlusion(...)` / `thickness(...)` CALL SITE in this
+			//! One `occlusion(...)` / `thickness(...)` / `convexity(...)` CALL SITE in this
 			//! program, recorded at compile time (design doc §7.1's
 			//! constant-radius contract, whose consumer is Phase 3's baked
 			//! mesh path).
@@ -308,7 +327,7 @@ namespace RISE
 			//! substituting the baked radius).
 			struct SignalRadiusCall
 			{
-				int    fn;				//!< kFnOcclusion or kFnThickness
+				int    fn;				//!< kFnOcclusion, kFnThickness or kFnConvexity
 				bool   radiusIsLiteral;
 				Scalar radiusLiteral;	//!< meaningful only when radiusIsLiteral
 			};
@@ -331,6 +350,13 @@ namespace RISE
 			//! continue the scalar-returning id band (cellhash = 50).
 			static const int kFnOcclusion   = 51;
 			static const int kFnThickness   = 52;
+			//! `convexity(radius)` -- the OTHER half of occlusion's
+			//! measurement (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md):
+			//! occlusion is the deficit below the planar half of the query
+			//! ball, this is the excess above it.  0 = flat or concave,
+			//! 0.5 = a 90-degree arris, 0.75 = a three-face corner, 1 = a
+			//! knife edge.
+			static const int kFnConvexity   = 55;
 			//! INTERNAL twins of the two ids above, emitted in their place
 			//! when the compiler could NOT prove the radius argument a bare
 			//! numeric literal.  They are not builtin NAMES -- nothing in
@@ -350,6 +376,7 @@ namespace RISE
 			//! all.
 			static const int kFnOcclusionDynR = 53;
 			static const int kFnThicknessDynR = 54;
+			static const int kFnConvexityDynR = 56;
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
 			//!   u=0, v=1, P=kContextSlotP(2..4), Po=kContextSlotPo(5..7),
 			//!   N=8..10, fw=kContextSlotFw(11), time=kContextSlotTime(12),
@@ -428,7 +455,7 @@ namespace RISE
 				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), 0 );
 				Scalar out[3];
 				// No hit record here, so no signal provider: occlusion() /
-				// thickness() fall back to their neutral values, exactly as
+				// thickness() / convexity() fall back to their neutral values, exactly as
 				// the zero context vars above do.
 				RunAny( m_final, env, out, 0 );
 				return out[0];
@@ -490,7 +517,7 @@ namespace RISE
 				return UsesContextVar( kContextSlotCurv ) || UsesContextVar( kContextSlotCurvR );
 			}
 
-			//! Does this program call `occlusion()` or `thickness()`
+			//! Does this program call `occlusion()`, `thickness()` or `convexity()`
 			//! anywhere -- final expression or any `def` stage?  Resolved at
 			//! COMPILE time, same as UsesContextVar.
 			//!
@@ -502,7 +529,7 @@ namespace RISE
 			//! trigger, which genuinely does need to know up front.
 			bool UsesSurfaceSignals() const { return !m_signalCalls.empty(); }
 
-			//! Every `occlusion()` / `thickness()` call site, in parse order
+			//! Every `occlusion()` / `thickness()` / `convexity()` call site, in parse order
 			//! (def stages first, in registration order, then the final
 			//! expression).  Phase 3's baked mesh path reads this to decide
 			//! WHICH radius to bake and whether it may answer at all.
@@ -734,7 +761,7 @@ namespace RISE
 				//! ExpressionProgram's own -- which is a hard compile error, not a
 				//! silent shadow, but a confusing one.)
 				unsigned int m_ctxUsed;
-				//! Every occlusion()/thickness() call site compiled by THIS
+				//! Every occlusion()/thickness()/convexity() call site compiled by THIS
 				//! builder, in parse order; copied into the program by Finalize
 				//! as m_signalCalls.  (Named differently from the program-side
 				//! field for exactly the reason m_ctxUsed is -- Builder is a
@@ -862,6 +889,7 @@ namespace RISE
 						// UV-only contract must not grow them.
 						{"occlusion",ExpressionProgram::kFnOcclusion,1,{S,S,S,S},S},
 						{"thickness",ExpressionProgram::kFnThickness,1,{S,S,S,S},S},
+						{"convexity",ExpressionProgram::kFnConvexity,1,{S,S,S,S},S},
 						// vec3-returning
 						{"cross",60,2,{V,V,S,S},V}, {"normalize",61,1,{V,S,S,S},V},
 					};
@@ -1788,7 +1816,8 @@ namespace RISE
 					// because the name IS real -- it is the surface that
 					// doesn't have one.
 					const bool isSignalFn = ( sig->id == ExpressionProgram::kFnOcclusion ||
-					                          sig->id == ExpressionProgram::kFnThickness );
+					                          sig->id == ExpressionProgram::kFnThickness ||
+					                          sig->id == ExpressionProgram::kFnConvexity );
 					if( isSignalFn && !m_contextVarsEnabled ) {
 						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
 							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
@@ -1897,9 +1926,9 @@ namespace RISE
 					// Everything else emits its own id unchanged.
 					int emitId = sig->id;
 					if( isSignalFn && !literalRadiusArg ) {
-						emitId = ( sig->id == ExpressionProgram::kFnOcclusion )
-							? ExpressionProgram::kFnOcclusionDynR
-							: ExpressionProgram::kFnThicknessDynR;
+						emitId = ( sig->id == ExpressionProgram::kFnOcclusion ) ? ExpressionProgram::kFnOcclusionDynR
+						       : ( sig->id == ExpressionProgram::kFnThickness ) ? ExpressionProgram::kFnThicknessDynR
+						                                                       : ExpressionProgram::kFnConvexityDynR;
 					}
 					// Only a noise builtin reads `fw`/`fwo`; every other
 					// call site keeps the exact (1.0, 0.0) multipliers
@@ -2071,7 +2100,7 @@ namespace RISE
 			//! bit i set == the var whose first env slot is i.  See
 			//! UsesContextVar().
 			unsigned int m_ctxUsedMask;
-			//! Compile-time record of every occlusion()/thickness() call site
+			//! Compile-time record of every occlusion()/thickness()/convexity() call site
 			//! (design doc 7.1's constant-radius contract).  See
 			//! SurfaceSignalCalls().
 			std::vector<SignalRadiusCall> m_signalCalls;
@@ -2215,7 +2244,7 @@ namespace RISE
 				}
 				case 50: return NoiseCore::CellHash( a[0] );
 				// --- geometry-derived shading signals (design doc Phase 2) ---
-				// Both take ONE argument: a query radius expressed as a
+				// All take ONE argument: a query radius expressed as a
 				// FRACTION of the hit geometry's characteristic size (its
 				// bounding-box diagonal), so `occlusion(0.05)` means "5 % of
 				// the object" and reads identically at any scene scale and on
@@ -2242,6 +2271,10 @@ namespace RISE
 					return pSignals ? pSignals->Thickness( a[0], true ) : SurfaceSignalInfo::NeutralThickness();
 				case kFnThicknessDynR:
 					return pSignals ? pSignals->Thickness( a[0], false ) : SurfaceSignalInfo::NeutralThickness();
+				case kFnConvexity:
+					return pSignals ? pSignals->Convexity( a[0], true ) : SurfaceSignalInfo::NeutralConvexity();
+				case kFnConvexityDynR:
+					return pSignals ? pSignals->Convexity( a[0], false ) : SurfaceSignalInfo::NeutralConvexity();
 				default: return Scalar(0);
 				}
 			}

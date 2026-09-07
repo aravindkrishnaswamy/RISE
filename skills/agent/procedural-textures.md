@@ -153,10 +153,33 @@ select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
 `vec3()`, `.x/.y/.z`, `dot`, `cross`, `length`, `normalize`.
 
 The body also sees `curv`/`curvR` (surface curvature at the hit: positive
-convex, negative concave, 0 flat) for geometry-driven wear and grime
-masks -- `read_skill {name:"materials-and-media-basics"}`'s patina
-section has the sign convention and a full worked, execution-validated
-example.
+convex, negative concave, 0 flat) plus three ARG-TAKING geometry-signal
+builtins -- `occlusion(r)`, `convexity(r)` and `thickness(r)` -- for
+geometry-driven wear and grime masks.  `read_skill
+{name:"materials-and-media-basics"}`'s patina section has the sign
+convention and a full worked, execution-validated example.
+
+`occlusion(r)` and `convexity(r)` **partition one question** -- how open
+is the surface at scale `r`, measured against what a FLAT surface would
+read -- with occlusion reporting how much less open than flat, and
+convexity how much more.  Neither is ever a residual of the other.  So:
+
+- `1 - occlusion(r)` is a **crevice** mask that is 0 on flat surfaces
+  **and on every convex edge**.  It needs no thresholding to keep it off
+  the arrises; write it raw.
+- `convexity(r)` is an **edge-wear** mask whose numbers mean the same
+  thing on every object: **0.5 is a 90-degree arris, 0.75 is a
+  three-face corner**, on a 3 mm nail and a 30 m wall alike.  Threshold
+  it with confidence -- `smoothstep(0.35, 0.65, convexity(0.02))` picks
+  arrises anywhere.
+- `r` is a FRACTION of the object's bounding-box diagonal, not a world
+  length, so `convexity(0.02)` means "the 2 %-of-the-object edges".
+- They are measured differently, which shows up in two places.
+  `occlusion` traces rays, so it sees NARROW APERTURES -- a crack, a slot,
+  a fold -- and it is the more expensive of the two by roughly 3x.
+  `convexity` samples the query ball, so it also registers smooth bulges
+  (a bead reads convex; a purely directional measure would call it flat).
+  On edges, creases and corners they agree exactly.
 
 Three authoring rules, and the first is a contract, not a style note:
 
@@ -994,10 +1017,12 @@ added last and anisotropically.  The rules below are that order.
   for wavelengths coarser than that spacing, where they move neighbouring
   features together instead of scrambling them.
 - **Geometry signals.**  Drive variation from the object's own shape --
-  `occlusion()` for dirt in a crevice, `curv` for hand-worn polish on an
-  edge, a component of `N` for a gravity- or sun-driven effect.  These
-  only answer on the SDF family and indexed meshes: `curv` is 0 and
-  `occlusion()` returns its neutral 1 on every analytic primitive.
+  `occlusion()` for dirt in a crevice, `convexity()` for hand-worn polish
+  on an edge, a component of `N` for a gravity- or sun-driven effect.
+  These only answer on the SDF family and indexed meshes; on every
+  analytic primitive `curv` is 0, `occlusion()` returns its neutral 1 and
+  `convexity()` its neutral 0, so each mask lights nothing rather than
+  everything.
 - **Rare events, hand-placed, not uniform texture.**  One knot, one
   check, a few resin lines -- thresholded off a low-frequency field or
   placed directly, quiet everywhere else.  Uniform busy-ness is the
@@ -1050,7 +1075,23 @@ Traps the toolbox itself sets:
   as corduroy; use an asymmetric one.
 - **`curv` thresholds are per-object** (normalised by bbox diagonal): a
   threshold near 1 on one object can want to be near 25 on another --
-  probe the field's range before thresholding.
+  probe the field's range before thresholding.  **`convexity(r)` exists
+  precisely so you do not have to**: it is a radius-sampled [0,1] whose
+  values have fixed geometric meanings (0.5 = a 90-degree arris, 0.75 =
+  a three-face corner) on every object at every scale, so a threshold
+  written once ports.  Reach for `curv` only when you actually want the
+  signed differential bending -- concave vs convex, at no particular
+  scale -- and for `convexity(r)` whenever you mean "wear the edges about
+  `r` across".
+- **`1 - occlusion(r)` no longer needs a threshold to stay off convex
+  edges.**  Older scenes wrap it in something like
+  `smoothstep(0.62, 0.18, occ)`; that was a workaround for an estimator
+  that reported a residual on merely convex CSG edges (and could not tell
+  a convex arris from a concave valley at all).  Since 2026-09-06
+  occlusion is defined against the planar reference and reads exactly 1
+  on flat surfaces AND on convex edges, so the raw complement is the
+  right thing to write.  Copying the old threshold forward only throws
+  away shallow cavities.
 
 Worked example: the header comment of
 `scenes/FeatureBased/Textures/plank_closeup.RISEscene` carries the full
@@ -1074,7 +1115,9 @@ mechanics see `## Adding relief -- relief_modifier` above.
   colour into the curvature wear composition (edge mask `clamp(curv*k +
   noise, 0, 1)`, crevice mask `clamp(-curv*k + noise, 0, 1)` deepened by
   `occlusion()`), banded around the values already there, and adds the
-  matching roughness field -- one call, one undo step.
+  matching roughness field -- one call, one undo step.  Hand-authoring
+  the same idea, prefer `convexity(r)` over `clamp(curv*k, 0, 1)` for the
+  edge mask: it needs no per-object `k`.
 - Colour-slot vs scalar-slot wiring, material starters, and the glass /
   metal "needs something to reflect" rule live in
   `read_skill {name:"materials-and-media-basics"}` -- read that one for

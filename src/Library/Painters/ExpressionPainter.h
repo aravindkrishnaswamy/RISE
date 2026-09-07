@@ -201,7 +201,7 @@ namespace RISE
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
 			//! SIGNAL DEMAND, diagnostic-only (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 			//! §14 item 11).  Active iff this painter's compiled body calls
-			//! `occlusion()` / `thickness()` anywhere.  Unlike
+			//! `occlusion()` / `convexity()` / `thickness()` anywhere.  Unlike
 			//! m_curvatureDemand above, this does NOT gate any per-hit work --
 			//! see SurfaceSignalDemand's own doc comment (ISurfaceSignalProvider.h)
 			//! for why the provider install stays unconditional.  Its only job is

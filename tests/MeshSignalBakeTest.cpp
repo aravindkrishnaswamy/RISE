@@ -938,6 +938,123 @@ static void TestIncrementalDerivePathRebuilds()
 }
 
 //======================================================================
+// (o) MONEY, convexity: a baked box mesh reads 0 on a face, ~0.5 on an
+//     arris and ~0.75 on a corner -- the same closed forms the SDF family
+//     hits, reached by a completely different mechanism
+//
+// The mesh cannot answer convexity out of the OCCLUSION bake: that one
+// integrates a cosine-weighted OUTWARD hemisphere, which saturates at 1
+// for a plane and for every convex feature alike and so carries no
+// convexity information at all.  eConvexity is therefore its own table,
+// traced over the FULL sphere uniformly -- the mesh's form of the same
+// accessibility `A` the SDF family measures by ball volume.  On a wedge of
+// solid dihedral angle theta both give A = 1 - theta/(2*pi), so the two
+// families agree on exactly the features the signal exists to find:
+//     face   theta = pi   -> A = 1/2  -> convexity 0
+//     arris  theta = pi/2 -> A = 3/4  -> convexity 0.5
+//     corner theta = pi/4 -> A = 7/8  -> convexity 0.75
+//
+// Bands are looser than SurfaceSignalsTest's because a mesh answers at
+// VERTICES and interpolates barycentrically to the hit, and because the
+// bake's rays start `originEpsilon` off the surface (see (p) below).
+//======================================================================
+
+static void TestConvexityDiscriminatesOnMesh()
+{
+	std::cout << "(o) baked box mesh: convexity 0 on a face, ~0.5 on an arris, ~0.75 at a corner" << std::endl;
+
+	// A closed 4 x 4 x 1 slab: its top face is planar, its top edges are
+	// 90-degree arrises and its top corners are three-face corners.
+	TriangleMeshGeometryIndexed* mesh = BuildSlab( 1.0 );
+	Object* o = new Object( mesh );
+	mesh->release();
+	o->FinalizeTransformations();
+
+	// bbox 4 x 4 x 1, diagonal 5.745; 0.15 of it is a query radius of 0.86
+	// -- big enough that the arris is locally a wedge, small enough that
+	// the far side of the slab is not inside the ball.
+	const char* rf = "0.15";
+
+	Scalar cxFace = -1, cxArris = -1, cxCorner = -1;
+	Check( EvalAtHit( o, Point3( 0.0, 0.0, 5 ), Vector3( 0, 0, -1 ),
+		std::string( "convexity(" ) + rf + ")", cxFace ), "(o) face ray hits the top" );
+	// 0.01 inside the edge / corner, so the barycentric read is dominated by
+	// the edge (resp. corner) vertex rather than averaging in its neighbour.
+	Check( EvalAtHit( o, Point3( 1.99, 0.0, 5 ), Vector3( 0, 0, -1 ),
+		std::string( "convexity(" ) + rf + ")", cxArris ), "(o) arris ray hits the top" );
+	Check( EvalAtHit( o, Point3( 1.99, 1.99, 5 ), Vector3( 0, 0, -1 ),
+		std::string( "convexity(" ) + rf + ")", cxCorner ), "(o) corner ray hits the top" );
+
+	CheckClose( cxFace, 0.0, 0.02, "(o) the flat top face reads convexity ~0 (see (p) for the bound)" );
+	CheckClose( cxArris, 0.5, 0.15, "(o) MONEY -- a 90-degree arris reads ~0.5 (closed form)" );
+	CheckClose( cxCorner, 0.75, 0.20, "(o) MONEY -- a three-face corner reads ~0.75 (closed form)" );
+	Check( cxCorner > cxArris + Scalar( 0.1 ),
+		"(o) ORDERING -- a corner is more convex than an arris, by a clear margin" );
+	Check( cxArris > cxFace + Scalar( 0.3 ),
+		"(o) ORDERING -- an arris is far more convex than the flat face" );
+
+	// The pairing the whole design rests on: none of these three is a
+	// cavity, so occlusion must read 1 at all of them.  A convex arris that
+	// darkened occlusion is exactly the bug the SDF family had.
+	Scalar aoFace = -1, aoArris = -1, aoCorner = -1;
+	Check( EvalAtHit( o, Point3( 0.0, 0.0, 5 ), Vector3( 0, 0, -1 ),
+		std::string( "occlusion(" ) + rf + ")", aoFace ), "(o) face occlusion evaluates" );
+	Check( EvalAtHit( o, Point3( 1.99, 0.0, 5 ), Vector3( 0, 0, -1 ),
+		std::string( "occlusion(" ) + rf + ")", aoArris ), "(o) arris occlusion evaluates" );
+	Check( EvalAtHit( o, Point3( 1.99, 1.99, 5 ), Vector3( 0, 0, -1 ),
+		std::string( "occlusion(" ) + rf + ")", aoCorner ), "(o) corner occlusion evaluates" );
+	CheckClose( aoFace, 1.0, 0.02, "(o) flat top face reads occlusion 1" );
+	CheckClose( aoArris, 1.0, 0.02, "(o) convex arris reads occlusion 1" );
+	CheckClose( aoCorner, 1.0, 0.02, "(o) convex corner reads occlusion 1" );
+
+	o->release();
+}
+
+//======================================================================
+// (p) the convexity bake's ONE documented bias, pinned at its bound
+//
+// Bake rays start at `vertex + n * originEpsilon` -- they have to, or the
+// triangles incident on the vertex answer "hit" for free.  On a flat
+// surface a ray aimed just below the horizon then escapes instead of
+// hitting, whenever |cos theta| < originEpsilon / R.  So a flat mesh reads
+// A ~= 1/2 + originEpsilon/R rather than exactly 1/2, i.e. a small
+// POSITIVE convexity where the truth is 0.
+//
+// It is a bias, not noise: one-sided (never negative, so a convexity mask
+// on flat mesh lights nothing), bounded by originEpsilon/R, and it does
+// not average away.  This pins it at that bound rather than leaving it to
+// be rediscovered.  With kOriginEpsilonFraction = 1e-4 of the diagonal and
+// a query radius of 0.05 of the diagonal, the bound is 2e-3.
+//======================================================================
+
+static void TestConvexityFlatBias()
+{
+	std::cout << "(p) convexity's origin-epsilon bias on flat mesh stays inside its bound" << std::endl;
+
+	TriangleMeshGeometryIndexed* mesh = BuildSlab( 1.0 );
+	Object* o = new Object( mesh );
+	mesh->release();
+	o->FinalizeTransformations();
+
+	// Several radii: the bias scales as originEpsilon/R, so a SMALLER
+	// radius is the harder case and must still land under the bound.
+	const char* radii[3] = { "0.05", "0.10", "0.20" };
+	const Scalar bounds[3] = { Scalar( 0.006 ), Scalar( 0.004 ), Scalar( 0.003 ) };
+
+	for( int i = 0; i < 3; ++i ) {
+		Scalar cx = -1;
+		Check( EvalAtHit( o, Point3( 0.05, -0.07, 5 ), Vector3( 0, 0, -1 ),
+			std::string( "convexity(" ) + radii[i] + ")", cx ),
+			std::string( "(p) flat-face convexity evaluates at r=" ) + radii[i] );
+		Check( cx >= Scalar( 0 ), std::string( "(p) the bias is ONE-SIDED (never negative) at r=" ) + radii[i] );
+		Check( cx <= bounds[i],
+			std::string( "(p) flat-face convexity stays under its originEpsilon/R bound at r=" ) + radii[i] );
+	}
+
+	o->release();
+}
+
+//======================================================================
 
 int main()
 {
@@ -956,6 +1073,8 @@ int main()
 	TestInstancesShareOneBake();
 	TestConcurrentDistinctRadii();
 	TestIncrementalDerivePathRebuilds();
+	TestConvexityDiscriminatesOnMesh();
+	TestConvexityFlatBias();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;

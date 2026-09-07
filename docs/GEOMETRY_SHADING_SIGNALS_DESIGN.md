@@ -500,7 +500,7 @@ that arc.
 
 ### 6.1 The mechanism
 
-Two arg-taking builtins: `occlusion(radius)` and `thickness(radius)`. Both need
+Two arg-taking builtins: `occlusion(radius)` and `thickness(radius)` (a third, `convexity(radius)`, joined them 2026-09-06 through the same channel). All need
 per-hit geometry access, which the static `CallFunc` cannot reach today. Two
 pieces:
 
@@ -557,9 +557,17 @@ access, no lock. `SDFGeometry::EvaluateParts` is a public static
 (`SDFGeometry.cpp:971-987`, declared `SDFGeometry.h:161`), so the query is a
 pure function of the parts list and a point.
 
-- **Cavity / occlusion** — the Evans-style estimator: ~5 taps at geometrically
-  increasing distances along the normal, `ao = 1 − k·Σ(1/2ⁱ)·(dᵢ − map(p + n̂·dᵢ))`,
-  normalized. `O(taps × #parts)`, no rays.
+- **Cavity / occlusion** — ~~the Evans-style estimator: ~5 taps at
+  geometrically increasing distances along the normal~~. **SUPERSEDED
+  2026-09-06** by a ball-ACCESSIBILITY estimator, and the `convexity(radius)`
+  builtin was added as its other half — see
+  [OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md](OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md).
+  The normal-line form read a shortfall in `|map|`, which is exact only where
+  `map` is the exact Euclidean distance; RISE's composed field is a
+  conservative lower bound, so at a convex CSG edge (hard `max`) it returned
+  `cos γ` — 0.707 at a plain 90° arris, on surface with no cavity — and
+  returned that *same* 0.707 in a concave 90° valley. `O(80 × #parts)`, no
+  rays.
 - **Thickness** — sample the field along the *inward* normal, or short-march to
   the far zero crossing. The SDF is the one family with first-class "distance
   to the other side" already in hand.
@@ -589,13 +597,17 @@ the arithmetic exact rather than tuned:
   lands on the surface reads **0**. The sphere-trace band residual `map(p)` is
   subtracted off each tap — without it, a small radius on a large object reads
   that residual as occlusion and darkens a perfectly convex surface.
-- **It sees creases, not spherical pits.** Inside a sphere of radius r, a point
-  on the wall moved h toward the centre is at distance `r−h` from it, so the
-  distance to the wall is exactly `h` and the field reports no shortfall: a
-  hemispherical dimple reads unoccluded. Wedges, corners and folds — where the
-  nearest surface is off to the side — are what darken. This is a real property
-  of the estimator and is pinned and explained in the test rather than left to
-  be rediscovered as a bug.
+- **It sees creases, not spherical pits.** Still true after the 2026-09-06
+  rewrite, though for a different reason. The normal-line estimator was blind to
+  a dimple because the field reported no shortfall inside a sphere; the
+  directional estimator is blind to a *shallow* one because a ray at angle φ
+  from the inward normal crosses a chord of `2ρ cos φ`, so nothing is blocked
+  until the query radius approaches the pit's own diameter (closed form:
+  `occlusion = 1 − (R/2ρ)²`). Measured on the `materials-and-media-basics` head
+  fixture, the scar floor still reads **1.0**; the knot seam — a genuine fold —
+  moved from 0.68 to **0.50**, i.e. the old reading squared, which is exactly
+  what §2.1 of the new document predicts. Creases, corners and folds are what
+  darken, and they now darken more.
 
 Thickness marches inward through the intersector's own `March()` (whose
 on-surface step-off is what keeps the entry face from being reported as the
@@ -604,7 +616,10 @@ a saturated **1**, not a refusal — that is a measurement of thickness, not an
 absence.
 
 **Smooth-blended parts soften the Lipschitz-1 exactness locally (minor,
-unlike the heightfield case below).** The exact-1-on-convex/flat property
+unlike the heightfield case below).**  *(Moot since 2026-09-06: the
+accessibility estimator reads only the SIGN of the field, which is exact for
+the surface actually rendered, so field-magnitude softening no longer reaches
+occlusion at all.)* The exact-1-on-convex/flat property
 above assumes `map(p + h·n̂) = h`, which holds for a hard union but is only
 *approximately* true within a `smin`/`smooth-subtract` blend radius (`k > 0`):
 the polynomial blend smooths the field's gradient magnitude near the seam, so
@@ -864,6 +879,7 @@ authors already know**, because that is what an LLM has read.
 | Curvature | signed; **+ = convex, − = concave, 0 = flat** | Arnold `aiCurvature` splits convex→R / concave→G; Substance bakes 0.5-centered (black = concave, white = convex); Blender Pointiness centers at 0.5 | **Signed scalar** — algebraically composable: `clamp(curv,0,1)` = wear, `clamp(-curv,0,1)` = crevice. Signed beats 0.5-centered for expression math; an Arnold-style split mode is a Phase-4 convenience |
 | Occlusion | `[0,1]`, **1 = unoccluded** | Universal — Blender ("white = unoccluded"), Substance AO baker ("white = unoccluded"), V-Ray unoccluded_color | `occlusion(radius) → [0,1]`, 1 = unoccluded. Keep it a pure exposure measure; do **not** replicate V-Ray's dual inside/outside mode — cavity is served by `clamp(-curv,0,1)` |
 | Thickness | `[0,1]` normalized by radius, **1 = thick** | Substance Thickness-from-Mesh ("black = thin, white = thick") | `thickness(radius) → [0,1]`, 1 = thick |
+| Convexity (**added 2026-09-06**) | `[0,1]`, **0 = flat or concave, 1 = knife edge** | The radius-sampled half of the same measurement occlusion reports; Substance/Blender expose only the AO half | `convexity(radius) → [0,1]`. With `A` the fraction of the query ball outside the solid, `occlusion = clamp(2A,0,1)` and `convexity = clamp(2A−1,0,1)` — one estimator, two clamps. Fixed geometric meanings (0.5 = a 90° arris, 0.75 = a three-face corner) at every scale, which `curv` cannot offer. See [OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md](OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md) |
 
 **`radius` is the one mandatory artist knob**, and it is scene-scale-relative.
 No universal fixed default exists across the surveyed tools. **Recommendation:

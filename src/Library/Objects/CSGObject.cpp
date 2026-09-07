@@ -752,6 +752,13 @@ namespace
 			// along with dndu/dndv/curvature above.
 			if( dst.signals.pProvider ) {
 				dst.signals.nObject = -dst.signals.nObject;
+				// And the SENSE of "solid" inverts with it: the empty region
+				// is now the provider's own INTERIOR.  occlusion()/convexity()
+				// read the SIGN of the field, which no normal flip can
+				// reverse, so the inversion travels as its own flag -- see
+				// SurfaceSignalInfo::bComplementedField.  Toggled, not set, so
+				// nested subtractions compose.
+				dst.signals.bComplementedField = !dst.signals.bComplementedField;
 			}
 		}
 		return true;
@@ -1153,6 +1160,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// dndu/dndv and curvature already do.
 					if( ri.geometric.signals.pProvider ) {
 						ri.geometric.signals.nObject = -ri.geometric.signals.nObject;
+						// ... and the SENSE of "solid" with it: see
+						// SurfaceSignalInfo::bComplementedField.  The normal
+						// flip alone repairs the MARCHING signal (thickness);
+						// the sign-reading ones (occlusion, convexity) need
+						// this.  Toggled so nested subtractions compose.
+						ri.geometric.signals.bComplementedField = !ri.geometric.signals.bComplementedField;
 					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
@@ -1191,6 +1204,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// see the sibling branch above for the full rationale.
 					if( ri.geometric.signals.pProvider ) {
 						ri.geometric.signals.nObject = -ri.geometric.signals.nObject;
+						// ... and the SENSE of "solid" with it: see
+						// SurfaceSignalInfo::bComplementedField.  The normal
+						// flip alone repairs the MARCHING signal (thickness);
+						// the sign-reading ones (occlusion, convexity) need
+						// this.  Toggled so nested subtractions compose.
+						ri.geometric.signals.bComplementedField = !ri.geometric.signals.bComplementedField;
 					}
 				} else {
 					ri = riObjA;
@@ -1239,6 +1258,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// rationale.
 					if( ri.geometric.signals.pProvider ) {
 						ri.geometric.signals.nObject = -ri.geometric.signals.nObject;
+						// ... and the SENSE of "solid" with it: see
+						// SurfaceSignalInfo::bComplementedField.  The normal
+						// flip alone repairs the MARCHING signal (thickness);
+						// the sign-reading ones (occlusion, convexity) need
+						// this.  Toggled so nested subtractions compose.
+						ri.geometric.signals.bComplementedField = !ri.geometric.signals.bComplementedField;
 					}
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;

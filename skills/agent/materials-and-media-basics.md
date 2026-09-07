@@ -573,11 +573,21 @@ ggx_material
 # knot's own crease reads negative under curv too (a union between two
 # spheres is a genuine concave wedge, not a hemispherical dimple), but it
 # is ALSO genuinely enclosed in a way a subtract-carved scar is not:
-# occlusion(0.08) reads down to roughly 0.68 right at the seam where the
-# knot meets the skull, comfortably below unoccluded, while the scar
-# itself stays close to 1 (occlusion sees creases and folds, not smooth
-# dimples -- see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md).  That is what
-# cavity_boost is for.
+# occlusion(0.08) reads 0.50 right at the seam where the knot meets the
+# skull, comfortably below unoccluded, while the scar itself stays at 1
+# (occlusion sees creases and folds, not smooth dimples -- a shallow
+# spherical pit only starts to darken once the query radius approaches the
+# pit's own diameter).  That is what cavity_boost is for.
+#
+# NOTE, 2026-09-06: the seam figure USED to be 0.68.  Occlusion is now the
+# fraction of outward directions that actually escape rather than a
+# shortfall in the distance field's magnitude
+# (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md), and on a wedge the new
+# reading is the OLD one squared -- 0.68^2 = 0.46, measured 0.50 -- so
+# every genuine fold reads DARKER than it used to while flat and convex
+# surface reads exactly 1.  The scar's reading did not move.  The two
+# rendered-mask figures quoted below predate the change and were not
+# re-rendered.
 sdf_geometry
 {
 	name	head
@@ -648,8 +658,16 @@ its neutral 1 and multiplies in almost nothing new.  The same comparison
 over the seam where the fused knot meets the skull goes from a mean of
 0.0016 to 0.0041 — a 2.5x deepening — because that seam is a genuine
 fold occlusion sees as enclosed even though its curv reading, on its own,
-was no more dramatic than a lot of other mild creases on the head.  Bind
-`curv` (not `P`) whenever the question is "where does wear collect on
+was no more dramatic than a lot of other mild creases on the head.
+
+> **Those two figures are pre-2026-09-06 and were not re-rendered.**  The
+> scar's `occlusion(0.08)` still reads ~1, so "UNCHANGED at 0.188" still
+> holds.  The seam's moved from 0.68 to 0.50 (the estimator changed, the
+> geometry did not -- see the note in the scene above), so `cavity_boost`
+> deepens it MORE than the 2.5x quoted here, not less.  Both halves of the
+> passage's point therefore stand, one of them more strongly.
+
+Bind `curv` (not `P`) whenever the question is "where does wear collect on
 THIS shape," and reach for `occlusion(radius)` specifically when some of
 those creases are shallow, WIDE folds that a fine-scale, radius-free
 signal underrates relative to how enclosed they really are.  There is no

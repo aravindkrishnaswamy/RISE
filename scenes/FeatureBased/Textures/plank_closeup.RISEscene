@@ -57,10 +57,15 @@ RISE ASCII SCENE 7
 #      spacing and therefore moves neighbouring rings together), and along-grain streak/fibre at 14:1
 #      and 20:1.
 #
-#   3. PROCESS TIES VARIATION TO GEOMETRY.  `occlusion(0.03)` fills the end check with dirt, `curv`
-#      polishes the eased arris a hand would rub, `abs(N.x)` darkens the end grain, `clamp(N.y,0,1)`
-#      sun-bleaches the top face against the sides.  None is a texture; each is the surface answering
-#      a question about its own geometry.
+#   3. PROCESS TIES VARIATION TO GEOMETRY.  `occlusion(0.03)` fills the end check with dirt,
+#      `convexity(0.006)` polishes the eased arris a hand would rub, `abs(N.x)` darkens the end
+#      grain, `clamp(N.y,0,1)` sun-bleaches the top face against the sides.  None is a texture;
+#      each is the surface answering a question about its own geometry.  The first two PARTITION
+#      ONE QUESTION -- how open is the surface at the given radius, against what a FLAT surface
+#      would read -- with occlusion reporting how much LESS open than flat and convexity how much
+#      MORE.  So both are used RAW, with no threshold to keep the dirt out of the arris or the
+#      polish out of the crack.  Their radii differ by 5x because the features do: 18.6 mm to see
+#      a 2.6 mm slot as enclosed, 3.7 mm to keep the polish on a 1.5 mm eased edge.
 #
 #   4. RARE EVENTS, NOT UNIFORM TEXTURE.  One knot, hand-placed, with the rings SWEEPING around it
 #      (`knot_pull` deflects the radial coordinate -- the sweep, not the dark disc, is what sells it);
@@ -90,8 +95,9 @@ RISE ASCII SCENE 7
 #      vise built to this rule).  Its SILHOUETTE says hand-forged nail: a round cone
 #      squared off by an INTERSECTING box into a tapered rectangular shank, plus an off-axis hammered
 #      head.  Its surface is a 3 mm forge undulation, pits at 1 mm thresholded to a few per cent
-#      coverage, forge scale as smoother lighter patches, rust concentrated by `occlusion()` in the
-#      head-to-shank crevice and by `-N.y` underneath, black oxide held on the struck ridges by `curv`.
+#      coverage, forge scale as smoother lighter patches, rust concentrated by `occlusion(0.10)` in
+#      the head-to-shank crevice and by `-N.y` underneath, black oxide held on the struck ridges by
+#      `convexity(0.02)`.
 #
 #   ------------------------------------------------------------------------------------------------
 #   WHAT WAS TRIED AND WAS WRONG.  Most of these are traps the toolbox sets; they cost most of the
@@ -112,7 +118,12 @@ RISE ASCII SCENE 7
 #      `clamp(curv*1.4,0,1)` saturated everywhere and drove the iron field to 0 over the entire
 #      shank.  `curv` is normalised by the object's bbox diagonal, so its useful thresholds are
 #      per-object -- on the nail the plain shank sits near 14 and the struck ridges start near 25
-#      and run toward 70, not near 1.
+#      and run toward 70, not near 1.  BOTH the nail's edge term and the plank's are now written
+#      with `convexity(radius)` instead, whose values are fixed geometric facts (0.5 IS a 90-degree
+#      arris, 0.75 IS a three-face corner) on any object at any scale -- so the threshold is chosen
+#      from the feature you want, not from a probe render of this particular object.  `curv` is
+#      still the right signal when you want the SIGNED differential bending at no particular scale;
+#      it is the wrong one for "wear the edges about r across".
 #
 #   -- `step 0` WAS NOT THE RIGHT DEFAULT AT MILLIMETRE SCALE -- until the 2026-09-06 footprint-
 #      deferral fix (docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum).  `relief_modifier`'s automatic step
@@ -372,11 +383,29 @@ expression_painter
 	# --- DOCTRINE 3: the geometry signals.  `occlusion` is a real cavity
 	# measure and only answers on the SDF family, which is why the plank is
 	# an sdf_geometry and the end check is a subtracted crevice: dirt
-	# collects in the check because the check is really there.  `curv` is
-	# positive on the eased arris, where a hand polishes the wood pale.
+	# collects in the check because the check is really there.
+	#
+	# BOTH TERMS ARE RAW SIGNALS, NOT THRESHOLDED SIGNALS, and that is the
+	# whole point of the pairing.  `occlusion` and `convexity` partition one
+	# question -- how open is the surface at the given radius, against what a
+	# FLAT surface would read -- with occlusion reporting how much LESS open
+	# than flat and convexity how much MORE.  A flat face and a convex arris
+	# both read occlusion EXACTLY 1, so `1 - occ` is already a crevice mask
+	# with nothing on the arrises; a flat face and every cavity read
+	# convexity exactly 0.  See the entries in the WRONG list for what this
+	# replaced.
+	#
+	# RADII.  The check is ~2.6 mm wide, so `occlusion(0.03)` (18.6 mm on
+	# this board) reads it as a genuinely enclosed slot -- 0.17 on the floor,
+	# so `1 - occ` puts 0.83 of `dirt` there -- while the top face 2.5 mm to
+	# either side still reads exactly 1.  The arris wants a much smaller
+	# ball: the eased edge is 1.5 mm, and `convexity(0.006)` (3.7 mm)
+	# measures 0.33 on the arris and 0.001 four millimetres in from it, so
+	# the polish band is as narrow as the edge a hand actually rubs.  At
+	# `0.03` the same term would smear polish 18 mm across the face.
 	def				occ occlusion(0.03)
-	def				crev smoothstep(0.62, 0.18, occ)
-	def				edge clamp(curv*1.6, 0, 1)
+	def				crev clamp(1.0 - occ, 0, 1)
+	def				edge smoothstep(0.05, 0.30, convexity(0.006))
 	def				endg abs(N.x)
 	def				upf clamp(N.y, 0, 1)
 
@@ -601,19 +630,33 @@ expression_painter
 	# geometry signals: the head-to-shank crevice and the underside hold rust;
 	# the struck ridges keep their black oxide.
 	#
-	# THE THRESHOLD ON `curv` IS PER-OBJECT AND MUST BE MEASURED.  `curv` is
-	# normalised by the hit geometry's bbox diagonal, so on this 52 mm nail a
-	# 3 mm-radius shank measures curv ~14 -- and the first draft's
-	# `clamp(curv*1.4,0,1)` therefore saturated at 1 over the ENTIRE shank,
-	# subtracted `oxide_edge` everywhere, and pinned the whole iron field at
-	# the clamp's 0 floor: the nail rendered as featureless blued plastic.  A
-	# probe render of the field showed it black everywhere but the head rim.
-	# smoothstep(25, 70) reads 0 on the shank and 1 only at the head rim and
-	# the squared shank's corners, which is what "struck ridge" means here.
+	# THE CREVICE TERM'S RADIUS IS UNCHANGED, but what it measures is not.
+	# `occlusion(0.10)` -- 8.2 mm on this 82 mm nail -- still bottoms out
+	# around 0.67 (it read 0.64 before), so `rust_crev` deposits about the
+	# same amount of rust.  What changed is WHERE: a 200x60 top-down sweep
+	# used to find 267 of 2895 hits below 0.85 with a minimum of 0.639 on
+	# surface that is CONVEX everywhere it is low -- the squared shank's own
+	# arrises, darkened by an estimator that could not tell a convex CSG edge
+	# from a crease (see the WRONG list).  Those now read exactly 1, and the
+	# rust that used to sit on the forged ridges has moved to the
+	# head-to-shank fold it was written for.
+	#
+	# AND THE EDGE TERM NO LONGER NEEDS A PER-OBJECT PROBE.  It used to be
+	# `smoothstep(25, 70, curv)`, and those two numbers were measured on THIS
+	# nail and transfer to nothing: `curv` is a differential quantity
+	# normalised by the bbox diagonal, so a 3 mm-radius shank measures ~14
+	# and the draft before that (`clamp(curv*1.4,0,1)`) saturated at 1 over
+	# the whole shank, subtracted `oxide_edge` everywhere, and pinned the
+	# iron field at the clamp's 0 floor -- the nail rendered as featureless
+	# blued plastic.  `convexity(0.02)` is a [0,1] whose values are fixed
+	# geometric facts on any object (0.5 is a 90-degree arris, 0.75 a
+	# three-face corner); it peaks at 0.53 on this nail's struck ridges and
+	# the squared shank's corners, so smoothstep(0.25, 0.50) picks them out
+	# with thresholds that would mean the same thing on a different object.
 	def				occ occlusion(0.10)
 	def				crev clamp(1.0 - occ, 0, 1)
 	def				down clamp(-N.y, 0, 1)
-	def				edge smoothstep(25.0, 70.0, curv)
+	def				edge smoothstep(0.25, 0.50, convexity(0.02))
 
 	expr			clamp(rust_base + rust_crev*crev + rust_down*down + 0.55*und + 0.30*pit - oxide_edge*edge - 0.30*sc, 0, 1)
 }
@@ -708,11 +751,29 @@ ggx_material
 #         it hangs past the end face in air) -- which is how a check tapers.
 #         3 deg about Y so it does not run exactly with the grain.
 #
-#         It is also the reason `crev` is a smoothstep(0.62, 0.18, occ) and not
-#         a bare 1-occ: the SDF cavity estimator returns a small residual on a
-#         merely CONVEX edge, so `dirt` applied to the raw complement painted a
-#         dark line down every arris of the board.  Thresholding keeps the term
-#         on real cavities.
+#         `crev` is now a BARE `1 - occ`.  It used to be
+#         `smoothstep(0.62, 0.18, occ)`, on the grounds that the SDF cavity
+#         estimator returned a residual on merely CONVEX edges and the raw
+#         complement therefore painted a dark line down every arris.  That was
+#         a real defect of the estimator -- it read a shortfall in the distance
+#         field's MAGNITUDE, which a CSG `intersect`/`subtract` under-reports
+#         by exactly cos(half-angle) at a convex edge, so a 90-degree arris
+#         returned 0.707 and, worse, so did a concave 90-degree valley.  Since
+#         2026-09-06 occlusion is the fraction of outward directions that
+#         actually escape (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md): a flat
+#         face and every convex edge read exactly 1, only real cavities darken,
+#         and the threshold is not needed.  Dropping it is not cosmetic -- the
+#         smoothstep also discarded every SHALLOW part of the check, and the
+#         render now shows the crack fading out along its inner 90 mm as it
+#         closes, instead of running full black to a hard stop.
+#
+#         (This board never actually exhibited the arris artefact: it is a
+#         single `roundbox` part, whose field IS exact outside, and a
+#         camera-frame sweep of 146112 hits measured its worst arris at
+#         0.999997.  The nail, which squares its shank with a `box intersect`,
+#         did -- 267 of 2895 top-down hits below 0.85, minimum 0.639, all on
+#         convex surface.  The header's old attribution was to the right
+#         mechanism on the wrong object.)
 ##################################################
 
 sdf_geometry

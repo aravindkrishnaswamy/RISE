@@ -1584,3 +1584,9 @@ bool TriangleMeshGeometryIndexed::ComputeThickness( const SurfaceSignalInfo& hit
 {
 	return LookupBakedSignal( MeshSignalBake::eThickness, hit, radiusFraction, bRadiusIsConstant, outValue );
 }
+
+bool TriangleMeshGeometryIndexed::ComputeConvexity( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const
+{
+	return LookupBakedSignal( MeshSignalBake::eConvexity, hit, radiusFraction, bRadiusIsConstant, outValue );
+}

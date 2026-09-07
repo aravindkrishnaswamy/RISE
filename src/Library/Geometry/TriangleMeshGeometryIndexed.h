@@ -236,6 +236,21 @@ namespace RISE
 			bool ComputeThickness( const SurfaceSignalInfo& hit,
 				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
 
+			//! ISurfaceSignalProvider -- the `convexity(radius)` builtin
+			//! (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §4.2).  Same
+			//! bake / interpolate / refuse structure again; the table it
+			//! reads is a FULL-SPHERE accessibility bake, not a re-read of
+			//! the occlusion one, because a cosine hemisphere saturates at 1
+			//! for a plane and for every convex feature alike and so carries
+			//! no convexity information to re-read.
+			//!
+			//! Its REFUSAL substitutes a different neutral from the other
+			//! two -- 0 (flat), not 1 -- so an unbaked or wrong-radius
+			//! `convexity()` mask wears nothing rather than wearing
+			//! everything.
+			bool ComputeConvexity( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
+
 			//! MeshSignalBake::ISelfOccluder -- boolean any-hit against THIS
 			//! mesh's own triangles, through its own BVH.  Used only during a
 			//! bake build; sees nothing but this mesh (design doc §8).

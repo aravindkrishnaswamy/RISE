@@ -2,17 +2,19 @@
 //
 //  ISurfaceSignalProvider.h - THE single dispatch channel from the
 //  expression VM to a geometry's own per-hit shading signals
-//  (occlusion / thickness).
+//  (occlusion / thickness / convexity).
 //
-//  Phase 2 of docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md (§6.1).
+//  Phase 2 of docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md (§6.1); `convexity`
+//  and occlusion's re-basing onto the planar reference are
+//  docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md.
 //
-//  Two things live here because they are the two halves of ONE feature
-//  -- "who can answer an occlusion / thickness query" and "what does a
-//  particular hit hand that answerer":
+//  Two things live here because they are the two halves of ONE feature --
+//  "who can answer an occlusion / thickness / convexity query" and "what
+//  does a particular hit hand that answerer":
 //
 //    RISE::ISurfaceSignalProvider   the geometry-side interface.
 //    RISE::SurfaceSignalInfo        the per-hit record field, plus the
-//                                   two honest-fallback wrappers every
+//                                   three honest-fallback wrappers every
 //                                   consumer should call instead of
 //                                   dereferencing the provider itself.
 //
@@ -35,15 +37,15 @@ namespace RISE
 {
 	struct SurfaceSignalInfo;
 
-	//! A geometry that can answer per-hit AMBIENT-OCCLUSION and THICKNESS
-	//! queries about ITS OWN surface.
+	//! A geometry that can answer per-hit AMBIENT-OCCLUSION, THICKNESS and
+	//! CONVEXITY queries about ITS OWN surface.
 	//!
-	//! WHY AN INTERFACE RATHER THAN AN SDF METHOD.  The two builtins
-	//! `occlusion(radius)` / `thickness(radius)` are meant to mean the same
-	//! thing on every geometry family.  Phase 2 answers them live, from the
-	//! distance field, on the SDF family (`sdf_geometry`,
-	//! `skeleton_geometry`); Phase 3 answers them for triangle meshes out of
-	//! a per-vertex BAKE.  Both arrive through THIS interface, so the VM has
+	//! WHY AN INTERFACE RATHER THAN AN SDF METHOD.  The builtins
+	//! `occlusion(radius)` / `thickness(radius)` / `convexity(radius)` are
+	//! meant to mean the same thing on every geometry family.  Phase 2
+	//! answers them live, from the distance field, on the SDF family
+	//! (`sdf_geometry`, `skeleton_geometry`); Phase 3 answers them for
+	//! triangle meshes out of a per-vertex BAKE.  Both arrive through THIS interface, so the VM has
 	//! exactly one call shape and there is no second mechanism to keep in
 	//! sync (design doc §6.1, §7.1).  That is what makes "the same builtin
 	//! names on meshes and SDFs" a portability claim rather than a naming
@@ -64,7 +66,7 @@ namespace RISE
 	//!   * `radiusFraction` is DIMENSIONLESS (a fraction of the geometry's
 	//!     own characteristic size, see below), so no length ever has to
 	//!     cross the transform boundary;
-	//!   * both outputs are dimensionless [0,1], so the results are
+	//!   * every output is dimensionless [0,1], so the results are
 	//!     invariant under the object's transform for free -- two
 	//!     instances of one geometry at different world scales read the
 	//!     SAME occlusion at corresponding points, with no `scaleHint`
@@ -136,6 +138,31 @@ namespace RISE
 		//! universal convention -- Blender, Substance and V-Ray all call
 		//! white "unoccluded").  Self-occlusion only: the query sees the
 		//! hit geometry's own surface, nothing else in the scene (§8).
+		//!
+		//! THE CONTRACT, restated 2026-09-06
+		//! (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md): this is the
+		//! **fraction of the outward hemisphere from which a ray escapes a
+		//! distance `radiusFraction` without re-entering the solid**,
+		//! cosine-weighted -- classic ambient occlusion.  Two consequences
+		//! an implementation MUST honour, because scenes are written
+		//! against them:
+		//!   * a locally PLANAR surface reads EXACTLY 1, and so does every
+		//!     CONVEX feature (every outward ray escapes).  Occlusion must
+		//!     never report a residual on a convex edge; that side of the
+		//!     range belongs to ComputeConvexity.  Note the reference costs
+		//!     nothing to hit: it is not a normalisation, it is what "every
+		//!     ray escapes" comes out at.
+		//!   * on a wedge of empty opening `alpha`, a point on one of its
+		//!     faces reads `sin^2(alpha/2)`; in a spherical pocket of
+		//!     radius rho, `1 - (R/2rho)^2`.
+		//!
+		//! It is a VISIBILITY measure, not a volume one, and that
+		//! distinction is load-bearing rather than pedantic: the fraction
+		//! of the query BALL lying outside the solid satisfies both closed
+		//! forms above and still reads a narrow slot as OPEN, because the
+		//! ball reaches up out of the slot into air that no ray can
+		//! actually reach.  See the referenced document for the render that
+		//! settled it.
 		//! \return TRUE and writes outValue, or FALSE (outValue untouched)
 		//!         when this provider cannot answer for this radius.
 		virtual bool ComputeOcclusion(
@@ -156,6 +183,46 @@ namespace RISE
 			const Scalar radiusFraction,	///< [in] query radius as a fraction of the geometry's characteristic size
 			const bool bRadiusIsConstant,	///< [in] did the compiler PROVE this radius a compile-time constant?
 			Scalar& outValue				///< [out] thickness in [0,1], 1 = thick
+			) const = 0;
+
+		//! RADIUS-SAMPLED CONVEXITY at `ptObject`, in [0,1], with **0 = flat
+		//! OR concave** and **1 = a knife edge at that radius**
+		//! (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md).
+		//!
+		//! THE OTHER SIDE OF `ComputeOcclusion`'s RANGE, and that is why it
+		//! lives on this interface rather than beside `curv`: occlusion
+		//! reports how much LESS open than a flat surface this one is, and
+		//! this reports how much MORE.  Neither is ever a residual of the
+		//! other -- a flat face and every convex edge read occlusion
+		//! exactly 1, a flat face and every cavity read convexity exactly
+		//! 0 -- so an author composes them without a threshold between.
+		//!
+		//! The contract is `clamp(2A - 1, 0, 1)` for `A` the fraction of
+		//! the query BALL lying outside the solid (exactly 1/2 on a plane).
+		//! Volume, not solid angle, and deliberately unlike occlusion's:
+		//! from a point on a sphere of ANY radius the solid subtends
+		//! exactly a hemisphere, so a directional measure reads 0 on every
+		//! smooth body, where the ball reads `3R/(8*rho)` -- "this bead is
+		//! proud of its surroundings at scale R", which is what an
+		//! edge-wear mask wants.  On WEDGES -- edges, creases, corners --
+		//! the two measures agree exactly, which is where both are mostly
+		//! used.
+		//!
+		//! Every value has a fixed geometric meaning on every object at
+		//! every scene scale, which is exactly what `curv` (an unbounded
+		//! differential quantity whose useful thresholds are per-object)
+		//! cannot offer: **0.5 IS a 90-degree arris, 0.75 IS a three-face
+		//! corner**, on a 3 mm nail and on a 30 m wall alike.
+		//!
+		//! Self-signal only, same as the other two: the query sees this
+		//! geometry's own surface and nothing else in the scene.
+		//! \return TRUE and writes outValue, or FALSE (outValue untouched)
+		//!         when this provider cannot answer for this radius.
+		virtual bool ComputeConvexity(
+			const SurfaceSignalInfo& hit,	///< [in] the hit, in THIS provider's own object space
+			const Scalar radiusFraction,	///< [in] query radius as a fraction of the geometry's characteristic size
+			const bool bRadiusIsConstant,	///< [in] did the compiler PROVE this radius a compile-time constant?
+			Scalar& outValue				///< [out] convexity in [0,1], 0 = flat/concave
 			) const = 0;
 	};
 
@@ -229,9 +296,39 @@ namespace RISE
 		Scalar							baryA;
 		Scalar							baryB;
 
+		//! IS THE COMPOSITE'S SOLID THE COMPLEMENT OF THE PROVIDER'S OWN?
+		//! FALSE (the default, and the case for every non-CSG hit) means
+		//! "solid" means the same thing to the composite and to the
+		//! provider.  TRUE means a CSG_SUBTRACTION has credited this
+		//! surface to the SUBTRAHEND: the wall the viewer is standing in
+		//! front of belongs to operand B, but the empty region is B's
+		//! INTERIOR and the solid is B's exterior -- exactly inverted.
+		//!
+		//! WHY THIS EXISTS SEPARATELY FROM THE `nObject` FLIP beside it.
+		//! Those four CSG sites already negate `nObject`, and that flip is
+		//! still load-bearing -- for `thickness`, which MARCHES along -n
+		//! and would otherwise march into the wrong side.  But occlusion
+		//! and convexity are no longer directional: since 2026-09-06 they
+		//! are two clamps of a ball ACCESSIBILITY that reads only the SIGN
+		//! of the field around the hit, and a sign is not something a
+		//! normal flip can invert.  Under the retired normal-line
+		//! estimator the flip did double duty (it was sign-blind, so
+		//! reversing the tap direction was the same as reversing the
+		//! sense); it cannot any more, so the sense travels explicitly.
+		//!
+		//! It TOGGLES rather than sets, so nested subtractions compose.
+		//!
+		//! HONOURED BY THE SDF FAMILY ONLY.  A baked mesh table is
+		//! computed over the mesh's own solid and cannot be complemented
+		//! after the fact (its occlusion bake is a cosine-hemisphere
+		//! integral, already clamped), so the mesh provider ignores this
+		//! flag -- which is the same behaviour a subtracted mesh operand
+		//! had before the flag existed, not a new gap.
+		bool							bComplementedField;
+
 		SurfaceSignalInfo() :
 		pProvider( 0 ), ptObject( 0, 0, 0 ), nObject( 0, 0, 0 ),
-		primId( -1 ), baryA( 0 ), baryB( 0 )
+		primId( -1 ), baryA( 0 ), baryB( 0 ), bComplementedField( false )
 		{
 		}
 
@@ -250,6 +347,17 @@ namespace RISE
 		//! that puts `fw` at 0 (= "no filter", i.e. do nothing) rather than
 		//! at some plausible-looking width.
 		static Scalar NeutralThickness() { return Scalar( 1 ); }
+
+		//! THE NEUTRAL CONVEXITY: 0 == flat.  Argued from the use case, and
+		//! it lands on the OPPOSITE end of the range from the other two --
+		//! which is the point, not an inconsistency.  All three neutrals
+		//! are "the do-nothing end": a convexity mask exists to WEAR THE
+		//! EDGES (`convexity(r)` drives paint chipping, polish, rust-free
+		//! ridges), so an absent signal must read FLAT, leaving an
+		//! unsupported geometry untouched.  The neutral 1 ("knife edge
+		//! everywhere") would wear every surface in the frame and read as a
+		//! feature rather than as an absence.
+		static Scalar NeutralConvexity() { return Scalar( 0 ); }
 
 		//! Is `radiusFraction` a usable query radius at all?  Must be
 		//! finite and strictly positive; a zero or negative radius has no
@@ -293,6 +401,20 @@ namespace RISE
 				return ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
 			}
 			return NeutralThickness();
+		}
+
+		//! Convexity at this hit, or NeutralConvexity() when there is no
+		//! provider, the radius is unusable, or the provider refuses.
+		//! Always finite, always in [0,1].
+		Scalar Convexity( const Scalar radiusFraction, const bool bRadiusIsConstant ) const
+		{
+			Scalar v = Scalar( 0 );
+			if( pProvider && RadiusUsable( radiusFraction ) &&
+			    pProvider->ComputeConvexity( *this, radiusFraction, bRadiusIsConstant, v ) &&
+			    RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
+				return ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
+			}
+			return NeutralConvexity();
 		}
 	};
 
