@@ -212,7 +212,16 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 	// provider pointers refer to may be a different one entirely, or the
 	// same one with freshly realized geometry.  Drop every thread's
 	// tables (Utilities/ExpressionMemo.h).
+	//
+	// TWICE: once here, because whatever swapped the scene or the geometry
+	// did so BEFORE we were called (so every table is stale on entry, and
+	// the realize pass below evaluates painters); and once on the way out,
+	// on EVERY exit -- hence the scope guard -- because a thread that
+	// adopts this bump's generation mid-function would otherwise re-fill
+	// from geometry the realize pass has not reached yet and stamp that
+	// answer with a generation nothing will ever drop.
 	ExpressionMemo::Invalidate();
+	struct MemoDropOnExit { ~MemoDropOnExit() { ExpressionMemo::Invalidate(); } } memoDropOnExit;
 
 	// ----------------------------------------------------------------
 	// REALIZE PASS (Phase 1, 2026-06-13).  Single-threaded materialize of

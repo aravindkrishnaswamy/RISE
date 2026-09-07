@@ -890,9 +890,13 @@ void ObjectManager::PrepareForRendering() const
 {
 	RISE_PROFILE_PHASE(AccelBuild);
 
-	// EXPRESSION MEMO: objects are being realized and the hierarchy
-	// re-baked, so any geometry a memo entry was keyed against may have
-	// moved or been rebuilt (Utilities/ExpressionMemo.h).
+	// EXPRESSION MEMO (Utilities/ExpressionMemo.h), the FIRST of two bumps
+	// around this function -- the tail one carries the argument for the
+	// pair.  This one is here because whatever moved the objects has
+	// ALREADY moved them: every table still holding answers keyed against
+	// the pre-edit geometry is stale on entry, and the realize pass below
+	// evaluates painters (a displacement painter can be an expression that
+	// reads geometry signals).  Without it that pass could read them.
 	ExpressionMemo::Invalidate();
 
 	// Realize deferred geometry BEFORE building the TLAS from object bounding
@@ -949,6 +953,16 @@ void ObjectManager::PrepareForRendering() const
 	if( !shadowCache ) {
 		shadowCache = new ShadowCacheSlot[kShadowCacheSlots]();
 	}
+
+	// EXPRESSION MEMO, the SECOND bump, and the reason there are two.
+	// Objects have just been realized and the hierarchy re-baked, so any
+	// geometry a memo entry was keyed against may have moved or been
+	// rebuilt.  The bump at the top covers the mutation that happened
+	// BEFORE we were called; this one covers the mutation this function
+	// IS, and closes the window in which another thread adopts the top
+	// bump's generation, misses, reads a geometry mid-realize, and stamps
+	// that answer with a generation nothing will ever drop.
+	ExpressionMemo::Invalidate();
 }
 
 void ObjectManager::InvalidateSpatialStructure() const
