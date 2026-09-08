@@ -714,7 +714,8 @@ namespace RISE
 			//! trigger, which genuinely does need to know up front.
 			bool UsesSurfaceSignals() const { return !m_signalCalls.empty(); }
 
-			//! Every `occlusion()` / `thickness()` / `convexity()` call site, in parse order
+			//! Every `occlusion()` / `thickness()` / `convexity()` /
+			//! `proximity()` call site, in parse order
 			//! (def stages first, in registration order, then the final
 			//! expression).  Phase 3's baked mesh path reads this to decide
 			//! WHICH radius to bake and whether it may answer at all.

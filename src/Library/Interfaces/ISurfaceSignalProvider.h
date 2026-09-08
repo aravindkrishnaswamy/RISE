@@ -1,22 +1,31 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ISurfaceSignalProvider.h - THE single dispatch channel from the
-//  expression VM to a geometry's own per-hit shading signals
-//  (occlusion / thickness / convexity).
+//  expression VM to the per-hit shading signals it calls.
 //
 //  Phase 2 of docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md (§6.1); `convexity`
 //  and occlusion's re-basing onto the planar reference are
 //  docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md.
 //
 //  Two things live here because they are the two halves of ONE feature --
-//  "who can answer an occlusion / thickness / convexity query" and "what
-//  does a particular hit hand that answerer":
+//  "who can answer a query about this hit" and "what does a particular hit
+//  hand that answerer":
 //
 //    RISE::ISurfaceSignalProvider   the geometry-side interface.
 //    RISE::SurfaceSignalInfo        the per-hit record field, plus the
-//                                   three honest-fallback wrappers every
+//                                   four honest-fallback wrappers every
 //                                   consumer should call instead of
 //                                   dereferencing the provider itself.
+//
+//  THREE OF THE FOUR ARE SELF-SIGNALS -- occlusion, thickness and
+//  convexity ask the hit geometry about ITS OWN surface, through
+//  ISurfaceSignalProvider, and never see the rest of the scene.  The
+//  fourth, `proximity`, is CROSS-OBJECT: it asks the object manager how
+//  close the nearest OTHER surface is
+//  (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md).  It rides the same record
+//  field and the same L1 memo, but it has no provider and it is DECLARED
+//  here and DEFINED in SurfaceSignalProximity.h -- see the forward
+//  declarations below for the include cycle that forces the split.
 //
 //  Tabs: 4
 //
@@ -699,9 +708,19 @@ namespace RISE
 	{
 		if( !pLog || !familyName ) return;
 		if( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ) {
+			// NAMES ALL FIVE.  The message used to say
+			// "curv/occlusion/thickness", which had already drifted when
+			// `convexity` shipped and drifted again when `proximity` did --
+			// and a warning that does not name the signal an author is
+			// actually using reads as being about somebody else's problem.
+			// `proximity` is the sharpest of the five here: its neutral
+			// means "no contact anywhere in the scene", so a grime mask
+			// simply stops painting.
 			pLog->PrintEx( eLog_Warning,
-				"%s:: curv/occlusion/thickness evaluate as neutral in parts of BDPT/VCM/MLT "
-				"transport; PT renders them fully -- see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md",
+				"%s:: curv/occlusion/thickness/convexity/proximity evaluate as neutral in parts "
+				"of BDPT/VCM/MLT transport; PT renders them fully -- see "
+				"docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md and, for proximity, "
+				"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md",
 				familyName );
 		}
 	}
