@@ -13,8 +13,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include "../Utilities/ExpressionMemo.h"
 #include "TriangleMeshGeometryIndexed.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"

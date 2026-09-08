@@ -12,8 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include "../Utilities/ExpressionMemo.h"
 #include "ObjectManager.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
