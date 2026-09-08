@@ -703,8 +703,12 @@ void BoxGeometry::RegenerateData( )
 //! length of the positive part; strictly inside all three are negative and
 //! the exact distance to the nearest FACE is the least-negative one
 //! negated.  Both are exact -- the box signed field is one of the few that
-//! is exact on the inside too -- and the absolute value of the combined
-//! form is the unsigned answer this query wants.
+//! is exact on the inside too -- but this query does not REPORT the inside
+//! one: the signal's contract is that a point inside a neighbour is in
+//! CONTACT with it (distance 0), not that it is some distance from the
+//! nearest face.  So the combined form is clamped at zero rather than
+//! taken in absolute value, and the exact inside term earns its keep as
+//! the free inside TEST.
 bool BoxGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
 {
 	(void)maxDistObject;
@@ -723,7 +727,11 @@ bool BoxGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDis
 	const Scalar qmax = std::max( qx, std::max( qy, qz ) );
 	const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
 
-	const Scalar d = std::fabs( outside + inside );
+	// CLAMPED AT ZERO rather than fabs: a point inside the box reads 0
+	// ("interpenetration IS contact", the signal's own convention), and the
+	// exact inside term is what makes that test free.
+	const Scalar signed_ = outside + inside;
+	const Scalar d = ( signed_ > Scalar( 0 ) ) ? signed_ : Scalar( 0 );
 	if( !RISE::IsFiniteDouble( (double)d ) ) {
 		return false;
 	}

@@ -1,0 +1,605 @@
+RISE ASCII SCENE 7
+#
+# proximity_closed_forms -- the fixture scene for `proximity(r)`, the
+# CROSS-OBJECT contact signal (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md; this
+# is scene C of that document's 1 acceptance set).  It drives
+# tests/ProximitySignalTest.
+#
+# IT IS A FIXTURE, NOT A PICTURE.  Every object here exists so a test can
+# stand a known distance from it and compare the reported proximity against
+# a CLOSED FORM computed by hand.  Nothing is arranged to look like
+# anything; the render below is a smoke check that the scene loads and that
+# a material keyed on the signal produces a picture at all.
+#
+# THE LAYOUT.  One receiver plane at y = 0 (the `floor`), and a row of
+# neighbours parked ABOVE it along +x, each at a known height, so a probe
+# on the floor directly under a neighbour reads a distance that is a
+# one-line formula.  A few fixtures sit off the row because what they prove
+# is about placement rather than distance.
+#
+# WHAT EACH FIXTURE PROVES, and the closed form the test uses:
+#
+#   floor              InfinitePlane at y = 0.  THE RECEIVER for most
+#                      probes, and itself an EXACT neighbour: distance from
+#                      any point to it is |y|.  It also proves the signal
+#                      works on a receiver that publishes NO signal
+#                      provider -- an infinite plane answers no occlusion /
+#                      convexity / thickness query at all.
+#
+#   n_sphere           Sphere R = 1 centred at (0, 3, 0).  From a floor
+#                      point at lateral offset s the exact distance is
+#                      sqrt(s^2 + 3^2) - 1.  This is also the closed form
+#                      the design's contact model is derived from.
+#
+#   n_box              Box 2 x 2 x 2 centred at (6, 3, 0), so its underside
+#                      is the plane y = 2.  Directly beneath it the exact
+#                      distance is 2; the box field is exact inside as well
+#                      as outside, which the test checks from a point in
+#                      its interior (reads 0 -- interpenetration IS
+#                      contact).
+#
+#   n_cyl_capped       Capped cylinder R = 1, height 4, axis Y, centred at
+#                      (12, 4, 0): a CLOSED SOLID whose bottom cap disk is
+#                      at y = 2.  Under its axis the distance is 2.
+#
+#   n_cyl_open         The same tube UNCAPPED, at (18, 4, 0).  A different
+#                      SURFACE, not a variant of the same one: with no cap,
+#                      a point under the axis is nearest the RIM, at
+#                      sqrt(1^2 + 2^2) = sqrt(5).  Getting this wrong by
+#                      reusing the capped form would under-report by 0.76,
+#                      which is why the two get separate closed forms.
+#
+#   n_disk             Circular disk R = 1.5, axis Y, at (24, 2, 0) -- a
+#                      flat two-sided sheet with no interior.  Under its
+#                      centre the distance is 2; past its rim it is the
+#                      hypotenuse of the axial drop and the rim overshoot.
+#
+#   n_quad             Coplanar clipped plane, a 2 x 2 square lying flat at
+#                      y = 2.5, centred at (30, 2.5, 0).  EXACT: every
+#                      `rect_light` panel and every hand-authored quad is
+#                      coplanar, which is the case that must work.
+#
+#   n_quad_skew        The SAME four corners with one lifted 0.4 out of the
+#                      plane, at (36, 2.5, 0).  It is then a genuine
+#                      BILINEAR PATCH, whose point-to-surface distance has
+#                      no closed form -- so it must REFUSE rather than
+#                      answer with the flat quad's distance, which could be
+#                      SMALLER than the truth and paint contact that is not
+#                      there.
+#
+#   n_torus            Torus, major 1.5 / minor 0.5 (ring in XZ, tube along
+#                      Y -- the engine's own convention), centred at
+#                      (42, 3, 0).  Under the ring centre line, at lateral
+#                      offset 1.5, the distance is 3 - 0.5 = 2.5.
+#
+#   n_ellipsoid        Ellipsoid with semi-axes (2, 1, 1) at (48, 3, 0).
+#                      NOT exact: there is no closed form, so the query
+#                      maps onto the unit sphere and scales back by the
+#                      LARGEST semi-axis.  Under its centre the true
+#                      distance is 2 and the reported one is an UPPER bound
+#                      no worse than the semi-axis ratio (2x).
+#
+#   n_sdf_sphere       An SDF with ONE `sphere union` part at unit part
+#                      scale, radius 1, at (54, 3, 0).  Its field is EXACT
+#                      outside, so the bracketed procedure's bounds
+#                      coincide and the test asserts the closed form
+#                      tightly.
+#
+#   n_sdf_composed     An SDF whose field is only 1-LIPSCHITZ: two spheres
+#                      joined by a `smin` blend and a `subtract`, at
+#                      (60, 3, 0).  Its reported distance is an UPPER bound
+#                      on the truth, and the test measures the gap against
+#                      a fine GRID SEARCH of the same {Map <= 0} set --
+#                      recording `gap_max` as a NUMBER rather than a claim.
+#                      (The reference is the ZERO SET, not the sphere
+#                      tracer's |Map| <= 2*eps acceptance band.)
+#
+#   n_sdf_heightfield  An SDF in HEIGHTFIELD mode at (66, 3, 0).  Its field
+#                      is divided by a single global Lipschitz bound sized
+#                      to the steepest slope, so its magnitude is
+#                      systematically wrong wherever the slope is gentler
+#                      -- and the bracketed probe steps BY that magnitude.
+#                      It must REFUSE, as it already does for the other
+#                      three signals.
+#
+#   n_scaled_sdf       The `n_sdf_sphere` geometry under a NON-UNIFORM
+#                      `scale 2 1 1`, at (72, 3, 0).  Proves the transform
+#                      layer: the radius goes in divided by the smallest
+#                      singular value (so a neighbour within r cannot be
+#                      missed) and the answer comes out multiplied by the
+#                      largest (so it is an upper bound).
+#
+#   n_rot_sphere       A sphere under a rotation AND a uniform `scale 1.5`,
+#                      at (78, 4.5, 0).  Proves the EXACT-uniform
+#                      detection: M^T M = s^2 I holds, so both sigma bounds
+#                      are exactly 1.5 and the answer is exact to 1e-9.
+#
+#   n_emitter          A hand-authored EMISSIVE box at (84, 3, 0), 2 x 2 x
+#                      2, underside at y = 2.  It must NOT count: a light
+#                      panel parked millimetres off a wall must not paint
+#                      grime on it.  A hand-authored emitter rather than a
+#                      `rect_light` on purpose -- what the test pins is the
+#                      DISCLOSED exclusion of decorative emitters, which is
+#                      the case an author might be surprised by.
+#
+#   n_noshadow         A box with `casts_shadows FALSE` at (90, 3, 0).  It
+#                      MUST still count: this is geometry presence, not
+#                      light visibility -- the same contract
+#                      IntersectOcclusionRay was split out for.
+#
+#   n_csg              A CSG SUBTRACTION composite at (96, 3, 0), built
+#                      from `csg_a` (a box) minus `csg_b` (a sphere).  Two
+#                      rules at once: the composite itself REFUSES in v1
+#                      (its surface is not the min of its operands' under
+#                      subtraction), and its OPERANDS never count
+#                      separately -- they are registered in the manager but
+#                      are not world-visible.
+#
+#   n_inst_src /       Two objects sharing ONE geometry, at (102, 3, 0) and
+#   n_inst_copy        (102, 7, 0).  Instanced copies are SEPARATE OBJECTS
+#                      and do count against each other; only the object the
+#                      hit belongs to is excluded, by identity.
+#
+#   n_below            A box BELOW the floor, at (108, -3, 0).  The signal
+#                      is UNSIGNED: a neighbour underneath reads exactly
+#                      the same as one the same distance above.
+#
+#   n_far              A box at (114, 30, 0), far above any radius the test
+#                      uses.  Proves the cut-off: beyond `r` the answer is
+#                      exactly the neutral 0, not a small positive number.
+#
+#   n_patch            A Bezier patch at (120, 3, 0).  REFUSES -- the patch
+#                      family reports no closed form and honestly
+#                      contributes nothing rather than guessing.
+#
+#   n_rawmesh          A NON-INDEXED (RAW) mesh at (126, 3, 0).  REFUSES
+#                      for a different reason from the patch: it has no
+#                      BVH to run a bounded closest-point traversal over,
+#                      and brute force over every triangle at every hit is
+#                      not a thing to ship.  Indexed meshes are Phase 2 and
+#                      refuse today as well.
+#
+# NOT IN THIS SCENE, stated so nobody infers coverage: INDEXED triangle
+# meshes (Phase 2 -- they refuse today), a degenerate `scale 0` transform (it is
+# built by the test through the API, because a scene that authors one
+# produces log noise from every other consumer of that object), and
+# per-sample motion blur.
+#
+# THE RENDER below is a smoke check only.  `m_probe`'s colour is keyed on
+# `proximity(3.0)` through a ramp, so contact regions come out warm and
+# open floor stays cold; a picture that comes out uniformly cold means the
+# signal is not reaching the painter at all.
+#
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			8
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/proximity_closed_forms
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+film
+{
+	width			640
+	height			240
+}
+
+pinhole_camera
+{
+	location		30 26 46
+	lookat			30 2 0
+	up				0 1 0
+	fov				55.0
+}
+
+directional_light
+{
+	name			key
+	power			2.5
+	color			1.0 1.0 1.0
+	direction		0.3 0.85 0.45
+}
+
+ambient_light
+{
+	name			amb
+	color			0.30 0.32 0.36
+	power			0.5
+}
+
+#
+# The probe material: colour keyed on the signal itself, so the smoke
+# render shows whether it reaches the painter.  `proximity(3.0)` -- 3 world
+# units, which is the scale this fixture row is laid out at.
+#
+expression_painter
+{
+	name			p_probe
+	expr			vec3( 0.10 + 0.85*proximity(3.0), 0.12, 0.55 - 0.45*proximity(3.0) )
+}
+
+lambertian_material
+{
+	name			m_probe
+	reflectance		p_probe
+}
+
+uniformcolor_painter
+{
+	name			p_plain
+	color			0.62 0.62 0.65
+}
+
+lambertian_material
+{
+	name			m_plain
+	reflectance		p_plain
+}
+
+uniformcolor_painter
+{
+	name			p_glow
+	color			1.0 0.92 0.70
+}
+
+lambertian_luminaire_material
+{
+	name			m_emissive
+	exitance		p_glow
+	scale			2.0
+}
+
+#
+# --- geometries ---
+#
+
+infiniteplane_geometry
+{
+	name			g_plane
+	xtile			1.0
+	ytile			1.0
+}
+
+sphere_geometry
+{
+	name			g_sphere
+	radius			1.0
+}
+
+box_geometry
+{
+	name			g_box
+	width			2.0
+	height			2.0
+	depth			2.0
+}
+
+cylinder_geometry
+{
+	name			g_cyl_capped
+	axis			y
+	radius			1.0
+	height			4.0
+	capped			TRUE
+}
+
+cylinder_geometry
+{
+	name			g_cyl_open
+	axis			y
+	radius			1.0
+	height			4.0
+	capped			FALSE
+}
+
+circulardisk_geometry
+{
+	name			g_disk
+	radius			1.5
+	axis			y
+}
+
+clippedplane_geometry
+{
+	name			g_quad
+	pta				-1 0 -1
+	ptb				 1 0 -1
+	ptc				 1 0  1
+	ptd				-1 0  1
+}
+
+clippedplane_geometry
+{
+	name			g_quad_skew
+	pta				-1 0 -1
+	ptb				 1 0 -1
+	ptc				 1 0.4 1
+	ptd				-1 0  1
+}
+
+torus_geometry
+{
+	name			g_torus
+	majorradius		1.5
+	minorratio		0.3333333333333333
+}
+
+ellipsoid_geometry
+{
+	name			g_ellipsoid
+	radii			2.0 1.0 1.0
+}
+
+sdf_geometry
+{
+	name			g_sdf_sphere
+	part			sphere union 0  0 0 0  0 0 0  1 1 1  1.0 0 0  0
+}
+
+sdf_geometry
+{
+	name			g_sdf_composed
+	part			sphere union 0  -0.6 0 0  0 0 0  1 1 1  1.0 0 0  0
+	part			sphere smin 0.4  0.6 0 0  0 0 0  1 1 1  1.0 0 0  0
+	part			sphere subtract 0.15  0 0.9 0  0 0 0  1 1 1  0.5 0 0  0
+}
+
+expression_function2d
+{
+	name			f_ridges
+	expr			0.5 + 0.5*sin(6.2831853*u)*cos(6.2831853*v)
+}
+
+sdf_geometry
+{
+	name			g_sdf_heightfield
+	heightfield_function	f_ridges
+	heightfield_radius		1.5
+	heightfield_scale		0.4
+}
+
+bezierpatch_geometry
+{
+	name			g_patch
+	file			models/bezier/balanza.bezier
+}
+
+rawmesh_geometry
+{
+	name			g_rawmesh
+	file			models/raw/cornellbox_shortblock.rawmesh
+}
+
+#
+# --- objects ---
+#
+
+standard_object
+{
+	name			floor
+	geometry		g_plane
+	material		m_probe
+	orientation		-90 0 0
+	position		0 0 0
+}
+
+standard_object
+{
+	name			n_sphere
+	geometry		g_sphere
+	material		m_plain
+	position		0 3 0
+}
+
+standard_object
+{
+	name			n_box
+	geometry		g_box
+	material		m_plain
+	position		6 3 0
+}
+
+standard_object
+{
+	name			n_cyl_capped
+	geometry		g_cyl_capped
+	material		m_plain
+	position		12 4 0
+}
+
+standard_object
+{
+	name			n_cyl_open
+	geometry		g_cyl_open
+	material		m_plain
+	position		18 4 0
+}
+
+standard_object
+{
+	name			n_disk
+	geometry		g_disk
+	material		m_plain
+	position		24 2 0
+}
+
+standard_object
+{
+	name			n_quad
+	geometry		g_quad
+	material		m_plain
+	position		30 2.5 0
+}
+
+standard_object
+{
+	name			n_quad_skew
+	geometry		g_quad_skew
+	material		m_plain
+	position		36 2.5 0
+}
+
+standard_object
+{
+	name			n_torus
+	geometry		g_torus
+	material		m_plain
+	position		42 3 0
+}
+
+standard_object
+{
+	name			n_ellipsoid
+	geometry		g_ellipsoid
+	material		m_plain
+	position		48 3 0
+}
+
+standard_object
+{
+	name			n_sdf_sphere
+	geometry		g_sdf_sphere
+	material		m_plain
+	position		54 3 0
+}
+
+standard_object
+{
+	name			n_sdf_composed
+	geometry		g_sdf_composed
+	material		m_plain
+	position		60 3 0
+}
+
+standard_object
+{
+	name			n_sdf_heightfield
+	geometry		g_sdf_heightfield
+	material		m_plain
+	position		66 3 0
+}
+
+standard_object
+{
+	name			n_scaled_sdf
+	geometry		g_sdf_sphere
+	material		m_plain
+	position		72 3 0
+	scale			2 1 1
+}
+
+standard_object
+{
+	name			n_rot_sphere
+	geometry		g_sphere
+	material		m_plain
+	position		78 4.5 0
+	orientation		37 21 53
+	scale			1.5 1.5 1.5
+}
+
+standard_object
+{
+	name			n_emitter
+	geometry		g_box
+	material		m_emissive
+	position		84 3 0
+}
+
+standard_object
+{
+	name			n_noshadow
+	geometry		g_box
+	material		m_plain
+	position		90 3 0
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name			csg_a
+	geometry		g_box
+	material		m_plain
+	position		96 3 0
+}
+
+standard_object
+{
+	name			csg_b
+	geometry		g_sphere
+	material		m_plain
+	position		96 4 0
+}
+
+csg_object
+{
+	name			n_csg
+	obja			csg_a
+	objb			csg_b
+	operation		subtraction
+	material		m_plain
+}
+
+standard_object
+{
+	name			n_inst_src
+	geometry		g_box
+	material		m_plain
+	position		102 3 0
+}
+
+standard_object
+{
+	name			n_inst_copy
+	geometry		g_box
+	material		m_plain
+	position		102 7 0
+}
+
+standard_object
+{
+	name			n_below
+	geometry		g_box
+	material		m_plain
+	position		108 -3 0
+}
+
+standard_object
+{
+	name			n_far
+	geometry		g_box
+	material		m_plain
+	position		114 30 0
+}
+
+standard_object
+{
+	name			n_patch
+	geometry		g_patch
+	material		m_plain
+	position		120 3 0
+	scale			0.4 0.4 0.4
+}
+
+standard_object
+{
+	name			n_rawmesh
+	geometry		g_rawmesh
+	material		m_plain
+	position		126 3 0
+	scale			0.01 0.01 0.01
+}

@@ -1028,7 +1028,11 @@ bool CylinderGeometry::DistanceToSurface( const Point3& ptObject, const Scalar m
 		const Scalar outside = std::sqrt( ox*ox + oy*oy );
 		const Scalar qmax = std::max( dRadial, dAxial );
 		const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
-		d = std::fabs( outside + inside );
+		// CLAMPED AT ZERO rather than fabs: a point inside the closed solid
+		// reads 0 ("interpenetration IS contact").  The OPEN tube below
+		// needs no such clause -- it encloses nothing, so it has no inside.
+		const Scalar sgn = outside + inside;
+		d = ( sgn > Scalar( 0 ) ) ? sgn : Scalar( 0 );
 	} else {
 		// Overhang past whichever end the point is beyond; zero when it is
 		// level with the tube.

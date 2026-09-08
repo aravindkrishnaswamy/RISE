@@ -54,7 +54,8 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
-			//! IGeometry::DistanceToSurface -- EXACT: the engine's own Y-axis torus form
+			//! IGeometry::DistanceToSurface -- EXACT outside, using the engine's
+			//! own Y-axis torus form; 0 inside the tube
 			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 

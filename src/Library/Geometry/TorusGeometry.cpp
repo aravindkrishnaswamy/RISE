@@ -462,7 +462,10 @@ bool TorusGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxD
 	(void)maxDistObject;
 	const Scalar rho = std::sqrt( ptObject.x*ptObject.x + ptObject.z*ptObject.z ) - m_dMajorRadius;
 	const Scalar q   = std::sqrt( rho*rho + ptObject.y*ptObject.y );
-	const Scalar d   = std::fabs( q - m_dMinorRadius );
+	// CLAMPED AT ZERO rather than fabs -- a point inside the tube reads 0
+	// ("interpenetration IS contact").
+	const Scalar sgn = q - m_dMinorRadius;
+	const Scalar d   = ( sgn > Scalar( 0 ) ) ? sgn : Scalar( 0 );
 	if( !RISE::IsFiniteDouble( (double)d ) ) {
 		return false;
 	}

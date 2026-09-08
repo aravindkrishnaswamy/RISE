@@ -602,7 +602,12 @@ bool EllipsoidGeometry::DistanceToSurface( const Point3& ptObject, const Scalar 
 
 	const Scalar qx = ptObject.x / a, qy = ptObject.y / b, qz = ptObject.z / c;
 	const Scalar rq = std::sqrt( qx*qx + qy*qy + qz*qz );
-	const Scalar dUnit = std::fabs( rq - Scalar( 1 ) );
+	// CLAMPED AT ZERO rather than fabs: a point inside the ellipsoid reads
+	// 0 ("interpenetration IS contact"), and the pulled-back point is
+	// inside the unit sphere exactly when the original is inside the
+	// ellipsoid, so the map does the inside test for free.
+	const Scalar sgnUnit = rq - Scalar( 1 );
+	const Scalar dUnit = ( sgnUnit > Scalar( 0 ) ) ? sgnUnit : Scalar( 0 );
 
 	const Scalar sigmaMax = std::max( a, std::max( b, c ) );
 	const Scalar d = dUnit * sigmaMax;

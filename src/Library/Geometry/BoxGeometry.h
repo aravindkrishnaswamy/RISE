@@ -62,8 +62,9 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
-			//! IGeometry::DistanceToSurface -- EXACT: the absolute value of the standard box signed field,
-			//! which is exact inside as well as outside
+			//! IGeometry::DistanceToSurface -- EXACT outside, using the standard
+			//! box signed field; 0 INSIDE, because the signal's contract is that
+			//! interpenetration IS contact rather than a negative distance
 			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 

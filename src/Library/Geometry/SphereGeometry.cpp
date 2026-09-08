@@ -352,7 +352,12 @@ bool SphereGeometry::DistanceToSurface( const Point3& ptObject, const Scalar max
 {
 	(void)maxDistObject;
 	const Scalar r = Vector3Ops::Magnitude( Vector3( ptObject.x, ptObject.y, ptObject.z ) );
-	const Scalar d = std::fabs( r - m_dRadius );
+	// CLAMPED AT ZERO, not fabs: a point INSIDE the sphere reads 0, because
+	// the signal's contract is "interpenetration IS contact"
+	// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 2), not "how far inside".  The
+	// signed field's own sign is the inside test, so this costs nothing.
+	const Scalar signed_ = r - m_dRadius;
+	const Scalar d = ( signed_ > Scalar( 0 ) ) ? signed_ : Scalar( 0 );
 	if( !RISE::IsFiniteDouble( (double)d ) ) {
 		return false;
 	}
