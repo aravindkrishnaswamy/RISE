@@ -573,6 +573,52 @@ the emissive-decorative-object exclusion (§10) revisited if a scene needs it.
 
 Each phase runs the implementation-review-loop to zero P1 before merge.
 
+### 8.1 What Phase 1 wave 1 actually built, and where the code contradicted this document
+
+Wave 1 shipped the channel, the memo keys, the builtin, the query, the AABB
+snapshot, the σ bounds, the analytic + SDF families, scene C,
+`ProximitySignalTest` (99 checks) and `ProximityInvalidationTest` (20).
+Scenes A and B, their probe protocols and the cost measurements are wave 2 and
+are NOT done. Five places where building it corrected this document:
+
+- **`r / σ_min` is sound but not separately observable.** §5.2 reasons that
+  converting the radius in by the *smallest* singular value is what keeps a
+  neighbour within `r` from being missed. It is conservative in the safe
+  direction, but it cannot change an outcome: the answer comes back multiplied
+  by `σ_max`, so any candidate whose reported distance lands within `r` had
+  `d_o ≤ r/σ_max ≤ r/σ_min` and the tighter conversion would have found it
+  too; any candidate the tighter conversion would skip reports a distance
+  above `r` and the caller drops it regardless. Keep the conversion (it is
+  free and it is the right shape if the σ_max out-scaling ever changes), but
+  do not claim it prevents a miss anyone can observe. `ProximitySignalTest`
+  (d) asserts the observable behaviour instead — an anisotropic neighbour
+  between its true distance and its bound is legitimately not painted.
+- **Interpenetration needed a code change, not just a test.** §2 and §9 both
+  say a point inside a neighbour reads `d = 0` / proximity 1. The obvious
+  reading of "unsigned distance" gives the distance to the nearest *face* —
+  1.0 at the centre of a 2 × 2 × 2 box. The solid families now clamp their
+  signed field at zero rather than taking its absolute value; the signed
+  field's own sign is the inside test, so it is free.
+- **§5.1's write-site list is one file short.** It names six files that may
+  assign `signals`; `ExpressionEval.h`'s `k.signals = ctx.signals.MemoHitKey()`
+  is a seventh. It assigns an `ExpressionMemo::SignalHitKey`, not a
+  `SurfaceSignalInfo`, and a text scan cannot tell the two apart, so
+  `SourceHygieneTest`'s census lists seven and says why.
+- **`PathVertexEval.h` had no "declined list" to add to.** §5.1 says to add the
+  four fields to one. There was none; the commit creates it, covering
+  `derivatives` and the whole of `signals`.
+- **The design's file-level assumptions about `override` do not hold for two
+  geometries.** `InfinitePlaneGeometry` and `CircularDiskGeometry` mark no
+  member `override`, so the new method does not either — adding the first
+  would make clang's `-Winconsistent-missing-override` fire on every other
+  member of those classes.
+
+Measured, for the record: `gap_max` on scene C's composed 1-Lipschitz SDF is
+**0.0155** (reported 2.0787, grid reference 2.0632, `Map` lower bound 1.9594),
+asserted at 0.05; the exact-field SDF over-reports by **0**; the ellipsoid's
+bound is 4 against a true 2, exactly its semi-axis ratio; TLS per worker is
+**1824 bytes** against the 2048 ceiling, exactly as §5.1 predicted.
+
 ---
 
 ## 9. Test plan
@@ -642,3 +688,17 @@ Each phase runs the implementation-review-loop to zero P1 before merge.
 - The memo-eligibility threshold moves with `kFields` (29 → 35) for
   pure-arithmetic bodies; bit-identical, perf-only, disclosed. `ptWorld` is a
   redundant compare in the L2 key.
+- **A CSG composite refuses, so its OWN surface is invisible to every
+  neighbour's query** — a sharper statement than "its operands do not count
+  separately". `Object::DistanceToSurface` forwards to the geometry and
+  `CSGObject` has none, so nothing in the scene can measure its distance to a
+  CSG result. Phase 3's union-min work is what fixes it; until then a scene
+  whose contact surface is a CSG result needs a non-CSG proxy. (Wave 1,
+  2026-09-08.)
+- **The signal is PT-only more sharply than the first bullet suggests.** The
+  channel is stamped by `ObjectManager::IntersectRay`, so EVERY consumer that
+  builds its own hit record reads the neutral 0 — `PathVertexEval`, the GUI's
+  painter preview, realize-time displacement, `HairGenerator`. That is the same
+  set the other three signals are neutral on, but here the neutral means "no
+  contact anywhere in the scene", which is a more visible absence than
+  "unoccluded".

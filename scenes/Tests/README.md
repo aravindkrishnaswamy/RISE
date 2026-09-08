@@ -122,6 +122,18 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
   PT renders of showcase compositions used for integrator parity
 - `PixelFilters/`: filter comparison scenes
 - `SDF/`: signed-distance-field (sphere-traced implicit) geometry checks — `sdf_shadows` (melded blob + analytic sphere/box, mutual shadows + inter-geometry depth), `sdf_volume` (glass SDF bounding a fog interior_medium, ray-march entry/exit driving the IOR stack), `sdf_caustic` (glass SDF torus refracting a ring caustic via the caustic photon map), `sdf_arealight` (a glowing SDF torus as a true NEE-sampled area light), `sdf_luminaire_fog` / `sdf_luminaire_heterofog` (a blobby SDF luminaire inside homogeneous / heterogeneous scattering fog, with nested interior media — the volumetric-media stress pair). The SDF part lists are authored inline in each scene's `sdf_geometry` chunk (repeatable `part` lines; an external `file` remains available for very large SDFs)
+- `Signals/`: geometry-derived shading-signal fixtures.
+  `proximity_closed_forms` is the CROSS-OBJECT one
+  (`docs/CROSS_OBJECT_PROXIMITY_DESIGN.md` scene C): a receiver plane and a
+  row of NAMED neighbours at known heights, each parked so a probe on the
+  floor beneath it reads a one-line closed form. It is a FIXTURE, not a
+  picture — its header states what every object proves and with which
+  formula, and `tests/ProximitySignalTest.cpp` loads it through the CST
+  path and checks each one. The render is a smoke check that the signal
+  reaches the painter at all: the floor's colour is keyed on
+  `proximity(3.0)`, so answering fixtures wear a warm halo and the
+  emitter, the far box and the refusing families (Bezier patch, RAW mesh,
+  heightfield SDF, non-coplanar quad, CSG composite) deliberately do not.
 - `SMS/`: specular manifold sampling comparisons and visibility checks,
   including smooth, bump-mapped, and displaced Veach-egg controls
 - `Shaders/`: shader-op and rasterizer behavior checks
