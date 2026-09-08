@@ -71,6 +71,7 @@
 #include "../src/Library/Utilities/ExpressionMemo.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Job.h"
+#include "../src/Library/RISE_API.h"
 #include "../src/Library/Cst/Cst.h"
 
 using namespace RISE;
@@ -672,6 +673,81 @@ static void TestTransform( const Fixture& f )
 }
 
 //======================================================================
+// (g) THE SNAPSHOT STAYS FRESH WHEN AN OBJECT IS ADDED
+//======================================================================
+
+//! THE HAZARD THIS CLOSES, and why it is specific to this signal.
+//!
+//! The manager's contract is "InvalidateSpatialStructure, then
+//! PrepareForRendering, after any structural change", and the TLAS relies on
+//! it entirely.  But the TLAS is only BUILT when the object count exceeds
+//! `nMaxObjectsPerNode` (4); below that, `IntersectRay` walks the item map
+//! LIVE, so the contract has never actually been load-bearing for a small
+//! scene -- and `Job::AddObject` does NOT invalidate (confirmed by reading
+//! it: it calls RegisterOrDiag and returns).
+//!
+//! The proximity snapshot IS built for a small scene, because a four-object
+//! scene needs its boxes as much as a four-hundred-object one.  That would
+//! have made a small scene the first place a missed invalidate produces a
+//! WRONG answer rather than a stale one: an object added after Prepare would
+//! RENDER (the linear loop sees it) and be INVISIBLE to every proximity query
+//! (the snapshot would not).  So EnsureBoxSnapshot compares the entry count
+//! as well as the null pointer.
+//!
+//! Built through the API rather than on scene C: what is under test is the
+//! manager's own freshness, and scene C has far more than four objects, so it
+//! could not exercise the regime the hazard lives in.
+static void TestSnapshotFreshnessOnAdd()
+{
+	std::cout << "(g) an object added after PrepareForRendering is visible to the query" << std::endl;
+
+	IObjectManager* mgr = 0;
+	Check( RISE_API_CreateObjectManager( &mgr, true, false, 4, 32 ), "(g) a manager" );
+	if( !mgr ) return;
+
+	// TWO objects -- below the TLAS threshold, which is the regime the
+	// hazard lives in.
+	SphereGeometry* gA = new SphereGeometry( Scalar( 1 ) );
+	Object* a = new Object( gA );
+	gA->release();
+	a->FinalizeTransformations();
+	mgr->AddItem( a, "a" );
+
+	SphereGeometry* gB = new SphereGeometry( Scalar( 1 ) );
+	Object* b = new Object( gB );
+	gB->release();
+	b->SetPosition( Point3( 0, 10, 0 ) );
+	b->FinalizeTransformations();
+	mgr->AddItem( b, "b" );
+
+	mgr->PrepareForRendering();
+
+	Scalar d = Scalar( 0 );
+	Check( !mgr->NearestOtherSurface( Point3( 0, 4, 0 ), a, Scalar( 2 ), d ),
+		"(g) nothing is within 2 of the probe point yet" );
+
+	// ADD A THIRD, without invalidating anything -- exactly what
+	// Job::AddObject does.
+	SphereGeometry* gC = new SphereGeometry( Scalar( 1 ) );
+	Object* c = new Object( gC );
+	gC->release();
+	c->SetPosition( Point3( 0, 5, 0 ) );
+	c->FinalizeTransformations();
+	mgr->AddItem( c, "c" );
+
+	Check( mgr->NearestOtherSurface( Point3( 0, 4, 0 ), a, Scalar( 2 ), d ),
+		"(g) MONEY -- the newly added object IS seen, with no invalidate: a snapshot that "
+		"only checked its null pointer would have missed it while the renderer drew it" );
+	CheckClose( d, Scalar( 0 ), Scalar( 1e-9 ),
+		"(g) ...and the probe point is on its surface, so the distance is 0" );
+
+	c->release();
+	b->release();
+	a->release();
+	safe_release( mgr );
+}
+
+//======================================================================
 // (e) THE SIGNAL'S OWN CONVENTIONS
 //======================================================================
 
@@ -951,6 +1027,7 @@ int main()
 	TestBoundedFamilies( f );
 	TestExclusions( f );
 	TestTransform( f );
+	TestSnapshotFreshnessOnAdd();
 	TestConventions( f );
 	TestBuiltinEndToEnd( f );
 

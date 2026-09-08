@@ -266,6 +266,10 @@ ObjectManager::~ObjectManager( )
 	safe_release( pOctree );
 	delete pBoxes;
 	pBoxes = 0;
+	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
+		delete retiredBoxes[k];
+	}
+	retiredBoxes.clear();
 	delete [] shadowCache;
 }
 
@@ -368,19 +372,46 @@ void ObjectManager::CreateOctree() const
 
 void ObjectManager::EnsureBoxSnapshot() const
 {
-	// Double-checked under the SAME mutex CreateBVH/CreateOctree use, and
-	// for the same reason: several render threads can arrive here at once
-	// on a manager nobody prepared, and exactly one of them must build.
-	if( pBoxes ) {
+	// A COUNT CHECK BESIDE THE NULL CHECK, and it closes a hazard this
+	// snapshot has that `pBVH` does not.
+	//
+	// The manager's contract is "InvalidateSpatialStructure, then
+	// PrepareForRendering, after any structural change", and `pBVH` relies
+	// on it entirely.  But `pBVH` is only BUILT when
+	// `items.size() > nMaxObjectsPerNode`; below that threshold
+	// IntersectRay walks `items` LIVE, so the contract has never actually
+	// been load-bearing for a small scene.  This snapshot IS built there --
+	// it has to be, since a four-object scene needs its boxes as much as a
+	// four-hundred-object one -- which would make a small scene the first
+	// place a missed invalidate produces a wrong answer rather than a
+	// stale one: an object added after Prepare would RENDER (the linear
+	// loop sees it) and be INVISIBLE to every proximity query (the
+	// snapshot would not).
+	//
+	// So the entry count is compared as well.  It catches every add and
+	// every removal, which is the whole realistic set of structural
+	// mutations; it does NOT catch an add and a removal in the same gap
+	// (the count is unchanged), and it does not pretend to -- for that,
+	// and for anything that MOVES an object, the invalidate contract is
+	// still the mechanism.  One `size()` compare on a std::map is O(1) and
+	// sits beside a null check that was already there.
+	if( pBoxes && pBoxes->entries.size() == items.size() ) {
 		return;
 	}
 
 	treeCreationMutex.lock();
-	if( pBoxes ) {
+	if( pBoxes && pBoxes->entries.size() == items.size() ) {
 		treeCreationMutex.unlock();
 		return;
 	}
-
+	// A stale-by-count snapshot is RETIRED, never deleted here.  This
+	// function is reachable from IntersectRay, so another render thread may
+	// be mid-scan of the very object being replaced -- freeing it would be
+	// a use-after-free, and a strictly worse hazard than the staleness the
+	// count check exists to fix.  The retired set is freed in
+	// InvalidateSpatialStructure and the destructor, which already carry
+	// the "never during a pass" contract that makes freeing safe.  See the
+	// field's doc comment in ObjectManager.h.
 	// Realize deferred geometry first, exactly as CreateBVH does: an
 	// unrealized DisplacedGeometry reports a ZERO bounding box, and a
 	// snapshot built from it would exclude that object from every proximity
@@ -406,6 +437,18 @@ void ObjectManager::EnsureBoxSnapshot() const
 	// PUBLISHED WHOLE, behind one pointer, and never touched again -- see
 	// the field's doc comment in ObjectManager.h for why that is the entire
 	// thread-safety argument.
+	//
+	// THE SWAP HAPPENS LAST, after the new snapshot is complete, and the
+	// old one is only RETIRED (not freed) here.  Both halves of that
+	// matter: clearing `pBoxes` before the build would leave a concurrent
+	// reader holding null for the duration and reading its neutral -- a
+	// transient under-paint for no reason -- and freeing the old object
+	// would be a use-after-free for a reader still scanning it.  So the
+	// old snapshot stays published and valid right up to this single
+	// store, and stays alive past it.
+	if( pBoxes ) {
+		retiredBoxes.push_back( pBoxes );
+	}
 	pBoxes = snap;
 
 	treeCreationMutex.unlock();
@@ -1327,6 +1370,15 @@ void ObjectManager::InvalidateSpatialStructure() const
 		delete pBoxes;
 		pBoxes = 0;
 	}
+	// And the retired ones with it.  This is the ONE place, besides the
+	// destructor, where a snapshot is actually freed -- both are covered by
+	// the "never during a pass" contract, which is what makes freeing an
+	// object another thread might have been reading safe here and not in
+	// EnsureBoxSnapshot.
+	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
+		delete retiredBoxes[k];
+	}
+	retiredBoxes.clear();
 	// Shadow cache slots are reset but not freed — the array persists.
 	if( shadowCache ) {
 		memset( shadowCache, 0, sizeof(ShadowCacheSlot) * kShadowCacheSlots );

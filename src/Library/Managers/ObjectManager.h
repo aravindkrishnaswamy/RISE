@@ -200,8 +200,31 @@ namespace RISE
 			};
 			mutable const ObjectBoxSnapshot* pBoxes;
 
-			//! Builds `pBoxes` if it is null.  Mutex-serialized and
-			//! double-checked, exactly like CreateBVH().
+			//! SUPERSEDED snapshots, kept alive until the next real
+			//! invalidate.
+			//!
+			//! `EnsureBoxSnapshot` rebuilds when the object COUNT has moved
+			//! under it (see its own comment for why that case exists at
+			//! all), and it can be reached from `IntersectRay` -- i.e.
+			//! potentially while other render threads are mid-scan of the
+			//! snapshot it is replacing.  DELETING the old one there would
+			//! be a use-after-free, and a strictly worse hazard than the
+			//! staleness it is fixing.  So a replaced snapshot is RETIRED
+			//! rather than freed: the new pointer is published, the old
+			//! object stays valid for anyone still reading it, and the
+			//! whole retired set is freed in `InvalidateSpatialStructure`
+			//! and the destructor -- both of which already carry the "never
+			//! during a pass" contract that makes freeing safe.
+			//!
+			//! Bounded by the number of structural mutations between two
+			//! invalidates, which is small: every Job-level edit that MOVES
+			//! anything invalidates, and object adds -- the case this
+			//! exists for -- come in batches at scene build.
+			mutable std::vector<const ObjectBoxSnapshot*> retiredBoxes;
+
+			//! Builds `pBoxes` if it is null OR its entry count no longer
+			//! matches the manager's.  Mutex-serialized and double-checked,
+			//! exactly like CreateBVH().
 			void EnsureBoxSnapshot() const;
 
 			// Realize all objects' deferred geometry (idempotent) before any bbox/
