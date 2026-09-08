@@ -1552,7 +1552,9 @@
 		F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
 		F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
 		F5C0DEEE0000000000000002 /* SurfaceCurvature.h in Headers */ = {isa = PBXBuildFile; fileRef = F5C0DEEE0000000000000001 /* SurfaceCurvature.h */; };
+		F5C0DEF00000000000000002 /* ExpressionMemo.h in Headers */ = {isa = PBXBuildFile; fileRef = F5C0DEF00000000000000001 /* ExpressionMemo.h */; };
 		F5C0DEEE0000000000000003 /* SurfaceCurvature.h in Sources */ = {isa = PBXBuildFile; fileRef = F5C0DEEE0000000000000001 /* SurfaceCurvature.h */; };
+		F5C0DEF00000000000000003 /* ExpressionMemo.h in Sources */ = {isa = PBXBuildFile; fileRef = F5C0DEF00000000000000001 /* ExpressionMemo.h */; };
 		F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
 		F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000001 /* ProceduralNoiseCore.h */; };
 		F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */ = {isa = PBXBuildFile; fileRef = F2ADD1000000000000000001 /* ExpressionParamSpec.h */; };
@@ -2826,6 +2828,7 @@
 		F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerDefaults.h; sourceTree = "<group>"; };
 		F2ADD0000000000000000001 /* ProceduralNoiseCore.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProceduralNoiseCore.h; sourceTree = "<group>"; };
 		F5C0DEEE0000000000000001 /* SurfaceCurvature.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SurfaceCurvature.h; sourceTree = "<group>"; };
+		F5C0DEF00000000000000001 /* ExpressionMemo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionMemo.h; sourceTree = "<group>"; };
 		F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ProceduralNoiseCore.cpp; sourceTree = "<group>"; };
 		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
@@ -4300,6 +4303,7 @@
 				F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */,
 				F2ADD0000000000000000001 /* ProceduralNoiseCore.h */,
 				F5C0DEEE0000000000000001 /* SurfaceCurvature.h */,
+				F5C0DEF00000000000000001 /* ExpressionMemo.h */,
 				F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */,
 				F27F0A37069C42900069C9E5 /* RandomNumbers.h */,
 				F27F0A38069C42900069C9E5 /* Ray.h */,
@@ -5152,6 +5156,7 @@
 				F27F0C8F069C42910069C9E5 /* ProbabilityDensityFunction.h in Headers */,
 				F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */,
 				F5C0DEEE0000000000000002 /* SurfaceCurvature.h in Headers */,
+				F5C0DEF00000000000000002 /* ExpressionMemo.h in Headers */,
 				F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */,
 				F27F0C91069C42910069C9E5 /* Ray.h in Headers */,
 				F27F0C93069C42910069C9E5 /* Reference.h in Headers */,
@@ -6611,6 +6616,7 @@
 				F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */,
 				F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */,
 				F5C0DEEE0000000000000003 /* SurfaceCurvature.h in Sources */,
+				F5C0DEF00000000000000003 /* ExpressionMemo.h in Sources */,
 				EE990000000000000000001E /* ExpressionPainter.cpp in Sources */,
 				EE990000000000000000001F /* ExpressionPainter.h in Sources */,
 				71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */,

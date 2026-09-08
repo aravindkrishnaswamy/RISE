@@ -254,6 +254,33 @@ eliminating per-sample libmalloc arena contention.
 
 This was the single biggest VCM win in the sprint (−14 % wall).
 
+### [Thread-local expression memo](../src/Library/Utilities/ExpressionMemo.h)
+
+A two-level per-hit memo for the texture-expression VM and the geometry
+shading signals it calls, entirely in `thread_local` fixed-size tables (1440
+bytes per worker since the L2 key gained its `pipe` tag, 1408 before; no
+heap, no locks, no sharing).  L1 keys a signal builtin on
+(query, every field of the hit's `SurfaceSignalInfo`); L2 keys a whole compiled
+program on (process-unique program id, every field of `ExprEvalContext`).  Both
+compare keys exactly, never hash.  A process-wide generation counter, bumped at
+every render-pass entry and at each scene-mutation seam, drops every thread's
+tables between passes; within a pass the scene is immutable, so nothing
+invalidates.
+
+Measured 2026-09-07, interleaved base/memo, one binary: `plank_closeup`
+**54.16 ± 0.17 s → 16.33 ± 0.01 s (3.32×)**, `weathered_workbench` 2.43×,
+`oxidized_copper` 1.53×, a scene with no expressions 1.00×.  Hit rates 96.2 %
+(L1) / 82.7 % (L2).  Full record:
+[OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md](OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md)
+§6.5.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `expression_memo` | `true` | Per-hit expression / signal memo.  Set `false` to A/B a suspect render against the un-memoised path — the memo is only ever allowed to be invisible, so a difference is a bug. |
+
+Same `RISE_OPTIONS_FILE` (`key value`, one per line) as the thread options
+above.
+
 ## Investigated-and-rejected optimisations (keep notes for future agents)
 
 ### ProgressiveFilm `alignas(64)`

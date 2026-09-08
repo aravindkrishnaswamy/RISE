@@ -2,9 +2,14 @@
 
 **Status:** design + implementation record, 2026-09-06; **cost revision
 2026-09-07** (§6) — lockstep marching plus a per-hit rotation of both sample
-sets took `plank_closeup` from 120.0 s to 54.7 s with the closed forms held and
-the image inside the renderer's own noise. §3.1, §3.2, §6, §8 and §10 carry the
-2026-09-07 numbers; everything else is the 2026-09-06 record.
+sets took `plank_closeup` from 120.0 s to 54.7 s, and the **per-hit memo of
+§6.5, also 2026-09-07**, took it from there to **16.33 s**, with the closed
+forms held and the image inside the renderer's own noise throughout. The memo's
+**3.32×** is measured against §6.5's own interleaved base of **54.16 s**
+(54.16 → 16.33), not against the 54.7 s the previous commit reported on a
+separate run; the two bases are the same configuration measured twice.
+§3.1, §3.2, §6, §8 and §10 carry the 2026-09-07 numbers; everything else is the
+2026-09-06 record.
 **Supersedes:** [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
 §6.2's description of the SDF occlusion estimator, and its Phase-2 claim that
 "a plane or convex body has `map(p + h·n̂) = h` at every tap and reads **1**".
@@ -631,9 +636,10 @@ requirement was relaxed. Options measured and rejected on the way:
   step would carry `t` past `R` with the interval `[t+d, R]` unverified — real
   complexity in a numerically delicate estimator for a fifth of what lockstep
   gave for free. It remains the next lever if one is wanted.
-* **A per-hit or per-position memo.** Not attempted — see §10. It is the
-  largest remaining lever by a wide margin (~10× on the redundant calls) and
-  the one with the largest blast radius.
+* **A per-hit or per-position memo.** Not attempted *in this pass*, and named
+  here as the largest remaining lever by a wide margin (~10× on the redundant
+  calls). It was then attempted and **shipped the same day** — §6.5. It did not
+  need the blast radius §10 feared: it is thread-local, not on the hit record.
 
 ### 6.4 The result
 
@@ -652,6 +658,126 @@ Each `Map()` is `O(#parts)`. All of it is paid **only when an expression
 actually calls the builtin** — the lazy-by-construction property from Phase 2 is
 unchanged, and a scene whose materials never mention the builtins pays nothing.
 An author who wants a cheaper profile still has `curv`, unchanged.
+
+### 6.5 The per-hit memo, 2026-09-07
+
+§6.3's last rejected option and §10's last bullet both name the redundant calls
+as the largest remaining lever. It was taken the same day, and it is the larger
+of the two results on this page.
+
+**What shipped.** A **thread-local two-level memo**,
+[`src/Library/Utilities/ExpressionMemo.h`](../src/Library/Utilities/ExpressionMemo.h),
+four ways at each level, keys compared exactly (never hashed), dropped by a
+process-wide generation counter bumped at every seam where scene state can move
+between passes. **L1** keys the signal builtin on the query (`fn`, radius,
+constant-radius proof) plus every field of the hit's `SurfaceSignalInfo`, and
+sits in `SurfaceSignalInfo::SignalQuery` — the one place the three wrappers'
+fallback/clamp policy already lived, so a hit and a miss are indistinguishable
+by construction. It is what catches the relief stencil, which holds `signals`
+fixed while moving `P`/`Po`/(u,v). **L2** keys the whole program on (a
+process-unique compile-time program id, **which painter pipe is asking**, every
+field of `ExprEvalContext`) and sits in the two painters, catching repeated
+consumers at one hit and the spectral pipe's per-wavelength `GetColorNM`. The
+pipe tag was added in review round 1 and is not decoration: on a scalar-typed
+program the colour pipe calls `EvalVec3` and the scalar pipe calls `Eval`,
+those two are free to differ in the last ulp under `-ffast-math`, and one
+compiled program can reach both pipes through the API because a copied program
+keeps its id.
+
+Note what it is **not**: it is not on `RayIntersectionGeometric`, which is what
+§10 assumed a memo would have to be. Nothing is added to the hit record, no
+`mutable` appears anywhere, and the scene stays immutable within a pass.
+
+**Measured**, interleaved base/memo in one warmed session under the same
+protocol as §6.2, one binary toggled by the new `expression_memo` option:
+
+| scene | base | memo | speedup |
+|---|---:|---:|---:|
+| `plank_closeup` 640×480×48 | **54.16 ± 0.17 s** | **16.33 ± 0.01 s** | **3.32×** |
+| `weathered_workbench` | 7.17 ± 0.15 s | 2.95 ± 0.06 s | 2.43× |
+| `oxidized_copper` | 2.62 ± 0.02 s | 1.72 ± 0.02 s | 1.53× |
+| a cheap sub-threshold body | 1.91 ± 0.02 s | 1.94 ± 0.01 s | 0.98× |
+| `shapes.RISEscene` (no expressions) | 0.73 ± 0.01 s | 0.73 ± 0.01 s | 1.00× |
+
+**RE-MEASURED 2026-09-07, review round 1**, on different machine load. Both
+sets are in the record; the spread between them is what a wall-clock number on
+this machine is worth, and the review's numbers are the more conservative end
+where they differ:
+
+| scene | claim above | independent re-measure | note |
+|---|---:|---:|---|
+| `plank_closeup` | 54.16 → 16.33 = **3.32×** | 61.17/61.49/61.02 → 17.24/17.23/17.13 = **3.56×** | the re-run was **under a concurrent link**, which inflates both halves; 3.32× stands as the quiet-machine number |
+| `weathered_workbench` | 7.17 → 2.95 = 2.43× | 5.518 ± 0.047 → 2.305 ± 0.013 = **2.39×** | agrees within the spread |
+| `oxidized_copper` | 2.62 → 1.72 = 1.53× | 1.914 ± 0.027 → 1.328 ± 0.021 = **1.44×** (n = 6, under **both** contended and clean conditions) | **take the range 1.44–1.53×**; the re-measure is the tighter-error one |
+| `shapes.RISEscene` | 0.73 → 0.73 = 1.00× | 0.554 → 0.554 = **1.000×** | confirms the no-expression row is exactly flat |
+
+Hit rates on `plank_closeup` at the shipped four ways, from a temporary counter
+that recomputed on every would-be hit and compared (zero mismatches over 421.5 M
+L1 and 320.3 M L2 probes): **L1 96.2 %, L2 82.7 %**. L1 saturates at two ways
+(the body makes two distinct queries) and L2 at eight (four captures 82.7 of the
+84.9 points available). Storage is **1408 bytes of thread-local per worker**,
+25.3 kB across 18 — **1440 bytes / 25.9 kB since the L2 key gained its `pipe`
+field** (2026-09-07 review round 1; both kB figures are decimal, not KiB);
+`ExpressionMemoTest` (g) prints the live figure and asserts a 2048-byte ceiling
+rather than either number.
+
+**The image check is a NOISE-FLOOR COMPARISON, not a bit comparison, and it
+cannot be anything else: there is no render seed to pin.** The CLI seeds the
+process RNG from the wall clock (`src/RISE/commandconsole.cpp`,
+`srand( GetMilliseconds() )`) and `RandomNumberGenerator`'s default seed is
+`rand()`, so the pixel-filter warp and the temporal samples differ run to run —
+two renders of the same scene by the same binary do not agree bit for bit even
+with no change at all. So the memo's effect is measured against the renderer's
+own run-to-run spread, on the same footing as §6.4: mean |Δ| 0.776–0.778 on 0–255
+against a same-configuration base-vs-base floor of 0.778–0.781, RMS 2.40–2.42
+both ways, p99 11–12 both ways — i.e. the memo moves the image by *less* than
+re-running the base does. The bit-exactness claim is made where it can actually
+be made: in `ExpressionMemoTest`, where the same painter is driven twice at a
+pinned context with the memo off and on.
+
+**The compile-time gate is kept for legibility, not for performance.** A body
+shorter than the key comparison's 29 fields (28 before the `pipe` tag), with no
+signal and no noise call,
+is excluded — that is the 0.98× row above, which returns to ≈1.00× with the gate
+forced on. The gate is what makes "the memo never makes a scene slower" a
+property of the code rather than of a benchmark.
+
+`expression_memo` (`RISE_OPTIONS_FILE`, default on) is the A/B lever the memo
+was accepted on and stays as the debugging aid: if a render ever disagrees with
+itself, one run with `expression_memo false` says whether the memo is why.
+[`tests/ExpressionMemoTest.cpp`](../tests/ExpressionMemoTest.cpp) is the
+correctness gate — differential bit-equality over 10 500 randomized contexts
+with live SDF signals, a live mesh bake, red-proofs for the generation counter,
+the program id and the kill switch, and (since review round 1)
+**one-field-at-a-time separation for every key field at both levels** plus a
+cross-pipe check that one scalar-typed program shared between
+`expression_painter` and `scalar_painter { expression … }` keys apart. That
+last one closed a structural hazard: the two pipes call different VM entry
+points on a scalar-typed program, a copied program keeps its id, and both API
+factories take the program by const reference — so the L2 key now carries a
+pipe tag. **Disclosed precisely:** the *sharing* is certain and readable off the
+key, but the *divergence* is not observed on this toolchain — removing the tag
+leaves the cross-pipe check green, because `Eval` and `EvalVec3` reach one
+`RunAny` and produce the same bits today. The tag guards a `-ffast-math`
+inlining freedom that has already moved an ulp in this exact code once (§6.5's
+"why the memo lives in the painters"), at a cost of one int compare and 32 bytes
+of thread-local. It should not be removed on the strength of that check staying
+green without it.
+
+Note what that says about the randomized sweep: a review counted **zero**
+aliasing draws across its 10 500 for every key field, and the two red-proofs
+confirm the consequence directly — dropping `fwo` from the L2 key, or `baryB`
+from the L1 key, each turns exactly ONE assertion red (the new per-field row for
+that field) and leaves the rest of the suite green, `(a)`'s 10 500-draw
+differential included. Dropping `baryB` does not even redden `(i)`, which
+splices all three mesh fields at once and separates on the surviving two. **A
+differential sweep proves the memo is invisible; it does not prove the key is
+complete.**
+
+Check (j), the shipped-default check, is also the one that touches the machine:
+it writes two options files into a private temp directory, sets and restores
+`RISE_OPTIONS_FILE`, and spawns a child process — and reports SKIP rather than
+FAIL where the environment cannot support that.
 
 ---
 
@@ -821,9 +947,12 @@ bake deterministic, counted once under thread racing, and skipped in draft.
   same hit. **27 % of those calls (57 M) are the relief stencil's, and they
   cannot affect the image at all**: `ReliefModifier` deliberately holds
   `signals` constant across its four taps, so the signal term cancels out of
-  `dT`/`dB` exactly. Nothing in this arc addresses that; the estimator was made
-  ~2.2× cheaper per call instead. A per-hit memo would be worth another ~10×
-  on scenes shaped like this one, and is a separate piece of work with a real
-  blast radius (`SurfaceSignalInfo` is copied by value into every painter's
-  evaluation context, so the memo would have to live in
-  `RayIntersectionGeometric` and survive the CSG sense-flip sites).
+  `dT`/`dB` exactly. **CLOSED 2026-09-07 by the memo of §6.5** — a thread-local
+  two-level memo that keys the signal builtin on the hit and the whole program
+  on (program id, context), 3.32× on `plank_closeup`, and 96.2 % / 82.7 % hit
+  rates. The residual multiplicity is unchanged (the estimators are still
+  *called* 14.3× per camera sample); what changed is that all but ~4 % of those
+  calls now return a stored double. The blast radius this bullet predicted did
+  not materialise: the memo is `thread_local` and does **not** live on
+  `RayIntersectionGeometric`, so nothing is copied into a painter's context and
+  the CSG sense-flip sites are simply a key field (`bComplementedField`).

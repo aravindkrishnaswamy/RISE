@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "TriangleMeshGeometryIndexed.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
@@ -1372,6 +1373,25 @@ void TriangleMeshGeometryIndexed::InvalidateSignalBakes()
 		"TriangleMeshGeometryIndexed::InvalidateSignalBakes() dropped live per-vertex bakes during the "
 		"parallel render — vertex mutation is a between-frames operation" );
 	(void)bDroppedSomething;	// release builds compile the assert out
+
+	// EXPRESSION MEMO: the L1 memo caches this provider's ANSWERS keyed on
+	// (provider, hit, radius).  Dropping the bakes changes those answers
+	// behind an unchanged key, so the memo must go with them
+	// (Utilities/ExpressionMemo.h).
+	//
+	// AFTER the drop, never before, and this site needs no companion bump
+	// on the way in (unlike the three seams in Scene, ObjectManager and
+	// RayCaster, which each do work of their own that evaluates painters).
+	// A bump ahead of the mutation would open a window another thread can
+	// fall into: it adopts the NEW generation, misses (its tables were just
+	// cleared), asks the provider -- which is still holding the OLD bake --
+	// and inserts that stale answer stamped with the new generation, where
+	// nothing will ever invalidate it.  Bumping last means every table
+	// filled from the old bake carries the old generation and is dropped on
+	// its owner's next look.  (The window needs a concurrent reader, which
+	// the assert above says must not exist during a parallel render; the
+	// ordering costs nothing, so it is not left to rest on that.)
+	ExpressionMemo::Invalidate();
 }
 
 void TriangleMeshGeometryIndexed::BuildVertexNormals( std::vector<Vector3>& out ) const

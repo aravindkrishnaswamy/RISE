@@ -1344,6 +1344,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExpressionMemo.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h">
       <Filter>Utilities</Filter>
     </ClInclude>

@@ -15,6 +15,7 @@
 #include "../Animation/KeyframableHelper.h"
 #include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/SurfaceCurvature.h"
+#include "../Utilities/ExpressionMemo.h"
 #include <cstdlib>
 
 using namespace RISE;
@@ -133,10 +134,39 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	return ctx;
 }
 
+//! THE L2 MEMO SITE for the colour pipe (../Utilities/ExpressionMemo.h).
+//!
+//! One shading event routinely runs one program many times at the SAME
+//! context.  On `plank_closeup` a single `expression_painter` feeds a
+//! ramp, two GGX anisotropy slots and a relief modifier, and the
+//! measured repeat rate here is 82.7 % of 320 M evaluations.  The
+//! spectral pipe adds its own: GetColorNM calls this once per wavelength
+//! sample with a byte-identical `ri`.
+//!
+//! The memo is keyed on the program's process-unique id, WHICH PIPE is
+//! asking (ExpressionMemo::ePipeColour here), and every field of the
+//! context, compared exactly, so a hit returns the value the recompute
+//! would have produced bit for bit -- and it wraps a CALL to `EvalVec3`,
+//! whose body is untouched, so the VM's own arithmetic (a contract; see
+//! ExpressionProgram::MakeMemoKey's comment, and ExpressionMemo.h for
+//! exactly how much of it TextureExpressionVMTest actually compares
+//! exactly) cannot move.
 RISEPel ExpressionPainter::EvalRGB( const RayIntersectionGeometric& ri ) const
 {
 	const ExprEvalContext ctx = BuildContext( ri );
+
+	ExpressionMemo::ProgramKey key;
+	const bool memoable = m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
+	if( memoable ) {
+		m_prog.MakeMemoKey( ctx, ExpressionMemo::ePipeColour, key );
+		Vector3 hit;
+		if( ExpressionMemo::L2Find( key, hit ) ) {
+			return RISEPel( SafeComp( hit.x ), SafeComp( hit.y ), SafeComp( hit.z ) );
+		}
+	}
+
 	const Vector3 v = m_prog.EvalVec3( ctx );	// scalar-typed programs broadcast to (s,s,s)
+	if( memoable ) ExpressionMemo::L2Insert( key, v );
 	return RISEPel( SafeComp( v.x ), SafeComp( v.y ), SafeComp( v.z ) );
 }
 
@@ -290,17 +320,81 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	return ctx;
 }
 
+//! THE L2 MEMO SITE for the physical-scalar pipe -- see
+//! ExpressionPainter::EvalRGB above for the argument; this is its twin,
+//! and both must be wired or a scene whose field feeds roughness rather
+//! than colour would get none of it.
+//!
+//! EACH RESULT TYPE KEEPS THE ENTRY POINT IT HAD BEFORE THE MEMO: a
+//! vec3-typed program calls `EvalVec3`, a scalar-typed one calls
+//! `Eval`, and the memo only wraps the call.  That is deliberate and it
+//! is the one contract this file is not allowed to move -- under
+//! `-ffast-math` merely changing WHICH entry point this hot consumer
+//! inlines has already been observed to move an ulp (see
+//! ExpressionProgram::MakeMemoKey's comment).  The scalar branch stores
+//! the broadcast `(s,s,s)` so both branches share ONE entry shape, and
+//! reads `.x` back out of it.
+//!
+//! THE TWO PIPES DO NOT SHARE ENTRIES -- because the key SAYS SO, not
+//! because sharing is unreachable.  An earlier draft of this comment
+//! argued the latter ("each compiles its own program, so they key apart
+//! on the id"), and that argument is WRONG: RISE_API_CreateExpressionPainter
+//! and RISE_API_CreateExpressionScalarPainter both take an
+//! `ExpressionProgram` by const reference, each painter holds a COPY, and
+//! a copy KEEPS its source's id -- so one compiled scalar-typed program
+//! handed to both factories would land on one entry, and this function
+//! would then return the colour pipe's `EvalVec3(...).x` where the
+//! paragraph above requires `Eval`.  ExpressionMemo::ProgramKey therefore
+//! carries an EvalPipe tag (ePipeScalar here), which is what actually
+//! keeps them apart; ExpressionMemoTest's cross-pipe check (m) shares
+//! exactly such a program through the API and pins the contract.
+//!
+//! The SUBSTITUTION is certain; the DIVERGENCE is not observed on this
+//! toolchain (removing the tag leaves (m) green, because the two entry
+//! points reach one `RunAny` and produce the same bits today).  The tag
+//! guards a compiler freedom that has already bitten this code once, at a
+//! cost of one int compare -- see ExpressionMemo::EvalPipe for the full
+//! disclosure, and do not delete it on the strength of (m) staying green.
+//!
+//! (Two painters of the SAME kind do still share entries when built from
+//! one compiled program -- the copied-program case ExpressionMemoTest (c)
+//! pins -- and that is correct: same function, same pipe.)  In
+//! `plank_closeup`, for instance, the roughness slots that read the
+//! plank's own field are `scalar_painter { painter expr_plank }` -- a
+//! PainterToScalarAdapter over the COLOUR painter, so those hits land on
+//! EvalRGB's entry above and never reach this function -- while
+//! `sp_pore` is a genuine `scalar_painter { expression ... }` over its
+//! OWN program, memoised here under its own id.
 ScalarTriple ExpressionScalarPainter::GetValuesAt( const RayIntersectionGeometric& ri ) const
 {
 	const ExprEvalContext ctx = BuildContext( ri );
-	if( m_prog.ResultType() == ExpressionProgram::kVec3 ) {
-		const Vector3 v = m_prog.EvalVec3( ctx );
+	const bool isVec3 = ( m_prog.ResultType() == ExpressionProgram::kVec3 );
+
+	ExpressionMemo::ProgramKey key;
+	const bool memoable = m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
+	if( memoable ) {
+		m_prog.MakeMemoKey( ctx, ExpressionMemo::ePipeScalar, key );
+		Vector3 hit;
+		if( ExpressionMemo::L2Find( key, hit ) ) {
+			if( isVec3 ) return ScalarTriple( SafeComp( hit.x ), SafeComp( hit.y ), SafeComp( hit.z ) );
+			return ScalarTriple( SafeComp( hit.x ) );
+		}
+	}
+
+	Vector3 v;
+	if( isVec3 ) {
+		v = m_prog.EvalVec3( ctx );
+	} else {
+		const Scalar s = m_prog.Eval( ctx );	// the pre-memo entry point, unchanged
+		v = Vector3( s, s, s );
+	}
+	if( memoable ) ExpressionMemo::L2Insert( key, v );
+	if( isVec3 ) {
 		// x->R, y->G, z->B -- the same triple ordering RGBScalarPainter's
 		// constructor (r, g, b) and ScalarTriple's own (r, g, b) doc use.
 		return ScalarTriple( SafeComp( v.x ), SafeComp( v.y ), SafeComp( v.z ) );
 	}
-	const Scalar v = SafeComp( m_prog.Eval( ctx ) );
-	return ScalarTriple( v );
+	return ScalarTriple( SafeComp( v.x ) );
 }
 
 Scalar ExpressionScalarPainter::GetValueAtNM( const RayIntersectionGeometric& ri, Scalar nm ) const

@@ -172,6 +172,7 @@
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/ProceduralNoiseCore.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness()/convexity() dispatch channel
+#include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
 
 namespace RISE
 {
@@ -341,6 +342,86 @@ namespace RISE
 			static const int kMaxOctaves    = NoiseCore::kMaxOctaves;
 			static const int kMaxRampStops  = 64;
 
+			//! Function ids of the NOISE FAMILY.  Named, and named HERE
+			//! rather than left implicit in the FnSig table's row order,
+			//! because FIVE other sites depend on their exact values, not
+			//! just their order: the FnSig table itself (its `perlin` .. `cellhash` rows,
+			//! constructed from these names), the memo's compile-time
+			//! worthiness gate (Builder::ComputeMemoWorthiness, which
+			//! tests "is this instruction a noise call" as a RANGE over
+			//! [kFnNoiseFirst, kFnNoiseLast]), ParseCall's `isNoiseFn`
+			//! (gates the domain-scale Jacobian and NoiseFwScales),
+			//! CallFunc's `case 42:` .. `case 50:` labels (in its switch,
+			//! part of the VM's byte-identical-since-ca3bb2f4 surface and
+			//! therefore bare literals ON PURPOSE, never these names), and
+			//! ExpressionMemoTest (g), which exercises the gate at a live
+			//! noise body.  Before 2026-09-07 the ComputeMemoWorthiness
+			//! site carried the bare literals `42` and `49`, so inserting a
+			//! builtin anywhere in the band -- or appending a noise builtin
+			//! past its top -- would have silently changed or silently
+			//! missed the gate with nothing to catch it.
+			//!
+			//! The band is CONTIGUOUS and the static_asserts below say so
+			//! two ways: relative (the shape of the run) and ABSOLUTE (the
+			//! actual numbers CallFunc's un-renamed case labels use, so a
+			//! whole-band renumber is caught too, not just a shape change).
+			//! `cellhash` sits immediately past its top end and is
+			//! deliberately OUTSIDE it (a single integer hash is not
+			//! expensive enough to earn a memo entry on its own).  A NEW
+			//! noise builtin takes the next free id past `kFnCellHash`'s
+			//! neighbours and extends the band ONLY by also updating
+			//! CallFunc's cases and the asserts below -- there is no
+			//! renumbering trick that avoids touching CallFunc, because its
+			//! case labels are literals by design (see above) and the
+			//! asserts exist precisely to make forgetting that a build
+			//! error instead of a silent gate mismatch.
+			static const int kFnPerlin      = 42;
+			static const int kFnFbm         = 43;
+			static const int kFnTurbulence  = 44;
+			static const int kFnRidged      = 45;
+			static const int kFnWorleyF1    = 46;
+			static const int kFnWorleyF2    = 47;
+			static const int kFnWorleyF2F1  = 48;
+			static const int kFnWorleyId    = 49;
+			//! The band's INCLUSIVE ends, which is the form the gate tests.
+			static const int kFnNoiseFirst  = kFnPerlin;
+			static const int kFnNoiseLast   = kFnWorleyId;
+			//! NOT noise-family for the memo gate -- see above.
+			static const int kFnCellHash    = 50;
+
+			static_assert( kFnFbm        == kFnPerlin + 1
+			            && kFnTurbulence == kFnPerlin + 2
+			            && kFnRidged     == kFnPerlin + 3
+			            && kFnWorleyF1   == kFnPerlin + 4
+			            && kFnWorleyF2   == kFnPerlin + 5
+			            && kFnWorleyF2F1 == kFnPerlin + 6
+			            && kFnWorleyId   == kFnPerlin + 7,
+				"the eight noise builtins must stay ONE contiguous id run -- "
+				"Builder::ComputeMemoWorthiness tests them as a range [kFnNoiseFirst, kFnNoiseLast]" );
+			static_assert( kFnNoiseLast - kFnNoiseFirst == 7,
+				"the noise band is exactly the eight builtins above -- widen it deliberately, "
+				"and only together with ComputeMemoWorthiness's own reasoning" );
+			static_assert( kFnCellHash == kFnNoiseLast + 1,
+				"cellhash must stay immediately past the noise band: it is the first id the "
+				"memo gate deliberately EXCLUDES, and the only thing expressing that exclusion "
+				"is kFnNoiseLast's value" );
+			//! ABSOLUTE pins, one per constant.  CallFunc's `case 42:` ..
+			//! `case 50:` labels (in its switch) are bare literals ON
+			//! PURPOSE -- that function's body is byte-identical-pinned
+			//! against an earlier commit, so it cannot spell these names.
+			//! These asserts are what turn a renumber of ANY single
+			//! constant above into a build error instead of a silent
+			//! mismatch between this table and CallFunc's literals.
+			static_assert( kFnPerlin     == 42, "CallFunc's `case 42:` is perlin" );
+			static_assert( kFnFbm        == 43, "CallFunc's `case 43:` is fbm" );
+			static_assert( kFnTurbulence == 44, "CallFunc's `case 44:` is turbulence" );
+			static_assert( kFnRidged     == 45, "CallFunc's `case 45:` is ridged" );
+			static_assert( kFnWorleyF1   == 46, "CallFunc's `case 46:` is worley_f1" );
+			static_assert( kFnWorleyF2   == 47, "CallFunc's `case 47:` is worley_f2" );
+			static_assert( kFnWorleyF2F1 == 48, "CallFunc's `case 48:` is worley_f2f1" );
+			static_assert( kFnWorleyId   == 49, "CallFunc's `case 49:` is worley_id" );
+			static_assert( kFnCellHash   == 50, "CallFunc's `case 50:` is cellhash" );
+
 			//! Function ids of the two GEOMETRY-DERIVED SIGNAL builtins
 			//! (design doc Phase 2).  Named constants rather than bare
 			//! numbers because three places must agree on them -- the FnSig
@@ -402,6 +483,10 @@ namespace RISE
 			//!   6. ExprEvalContext             (field + both ctors)
 			//!   7. RunAny/CallFunc's static (no `this`) fw read, if the new var
 			//!      is one a builtin reads implicitly
+			//!   8. MakeMemoKey                  -- the L2 memo's key is the
+			//!      WHOLE context, so a var added here and not there would
+			//!      make two genuinely different contexts share one memo
+			//!      entry: a silent wrong render, not a slow one
 			//! Adding one WITHOUT touching all of them is exactly the silent
 			//! desynchronization this comment exists to prevent.
 			//!
@@ -484,6 +569,77 @@ namespace RISE
 				RunAny( m_final, env, out, &ctx.signals );
 				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
 				return Vector3( out[0], out[0], out[0] );
+			}
+
+			//! Process-unique compile-time identity (0 == never compiled).
+			//! See ExpressionMemo::NewProgramId for why this is not `this`.
+			unsigned long long ProgramId() const { return m_id; }
+
+			//! Is this program worth an L2 memo entry?  Decided ONCE, at
+			//! compile time, because the memo's own key comparison is 29
+			//! exact compares (ExpressionMemo::ProgramKey::kFields) and a
+			//! body like `u*v` is cheaper to re-run than to look up.
+			//!
+			//! The predicate is "does this body contain anything whose cost
+			//! dwarfs a key compare" -- a geometry-signal call (hundreds of
+			//! SDF field evaluations), a noise call (a lattice hash per
+			//! octave), or simply a lot of instructions.
+			bool MemoWorthy() const { return m_memoWorthy; }
+
+			//! Compose this program's L2 memo key from a context.  EVERY
+			//! ExprEvalContext field must appear here (see
+			//! ExpressionMemo::ProgramKey's own comment) -- the
+			//! kContextSlot* checklist above names this function.
+			//!
+			//! WHY THE MEMO LIVES IN THE PAINTERS AND NOT IN Eval/EvalVec3.
+			//! It was written there first, and it moved: this is a
+			//! `-ffast-math` build, and wrapping those two bodies in a
+			//! lookup changed which of them the optimiser inlined into
+			//! ExpressionPainter, which changed the FMA contraction inside
+			//! RunAny, which moved the last ulp of a domain-warped fbm --
+			//! red-proved by TextureExpressionVMTest's "a warped argument
+			//! keeps its affine part's scale" check, which compares against
+			//! a reference computed in its own translation unit with `==`.
+			//! That check IS one of the exact-`==` sites -- but note that
+			//! the exact-compared subset of that suite is NARROW (about
+			//! fifteen `==` sites, all in the noise-with-`fw` block, plus
+			//! one exact-compare CheckClose(...,0,...) pin (search the file for
+			//! `viaOld, viaNew, 0`); its
+			//! 254 CheckClose sites are otherwise all a TOLERANCE, 1e-15
+			//! included -- see ExpressionMemo.h's "MEASURED, by counting
+			//! the file" paragraph for the full breakdown).  What is
+			//! guarded and what is not is set out once, in
+			//! ExpressionMemo.h's "HOW MUCH OF THAT CONTRACT IS ACTUALLY
+			//! TESTED"; read it before relying
+			//! on the suite to catch an ulp.  The VM's arithmetic is a
+			//! contract regardless of how much of it a test can see, and a
+			//! cache is not allowed to move it.  So the program exposes
+			//! its identity and its key, and ExpressionPainter /
+			//! ExpressionScalarPainter -- the only hot consumers, and the
+			//! layer where "the same painter is asked twice at one hit"
+			//! actually happens -- do the lookup around a CALL to an
+			//! untouched EvalVec3.
+			//!
+			//! `pipe` IS PART OF THE KEY and must be the caller's own --
+			//! ExpressionMemo::ePipeColour from ExpressionPainter,
+			//! ePipeScalar from ExpressionScalarPainter.  It is a
+			//! parameter rather than something derived here because it is
+			//! a property of the CALL SITE, not of the program: the same
+			//! compiled program can be held by one painter of each kind
+			//! (see ExpressionMemo::EvalPipe for how, and for why sharing
+			//! an entry between them would be wrong).
+			void MakeMemoKey( const ExprEvalContext& ctx, const ExpressionMemo::EvalPipe pipe,
+				ExpressionMemo::ProgramKey& k ) const
+			{
+				k.progId = m_id;
+				k.pipe = (int)pipe;
+				k.u = (double)ctx.u;   k.v = (double)ctx.v;
+				k.Px = (double)ctx.P.x;   k.Py = (double)ctx.P.y;   k.Pz = (double)ctx.P.z;
+				k.Pox = (double)ctx.Po.x; k.Poy = (double)ctx.Po.y; k.Poz = (double)ctx.Po.z;
+				k.Nx = (double)ctx.N.x;   k.Ny = (double)ctx.N.y;   k.Nz = (double)ctx.N.z;
+				k.fw = (double)ctx.fw;    k.fwo = (double)ctx.fwo;  k.time = (double)ctx.time;
+				k.curv = (double)ctx.curv; k.curvR = (double)ctx.curvR;
+				k.signals = ctx.signals.MemoHitKey();
 			}
 
 			VType ResultType() const { return m_final.type; }
@@ -715,8 +871,61 @@ namespace RISE
 					}
 					out.m_defs = m_defs;
 					out.m_final = c;
+					// PROCESS-UNIQUE IDENTITY, handed out exactly here: one
+					// id per successful compile.  Assigned AFTER every
+					// failure return above, so an invalid program keeps id 0
+					// and is never memoised.
+					out.m_id = ExpressionMemo::NewProgramId();
+					out.m_memoWorthy = ComputeMemoWorthiness( out );
 					out.m_valid = true;
 					return true;
+				}
+
+				//! "Is this body expensive enough that a memo lookup is
+				//! cheaper than re-running it?"  Decided once, at compile
+				//! time -- see ExpressionProgram::MemoWorthy.
+				//!
+				//! THREE WAYS TO QUALIFY, any one of which suffices:
+				//!   * it calls a geometry signal (hundreds of SDF field
+				//!     evaluations per call -- the case this whole memo
+				//!     exists for);
+				//!   * it calls a NOISE builtin (perlin / fbm / turbulence /
+				//!     ridged / worley), each of which is a lattice hash per
+				//!     octave and dwarfs a key compare on its own;
+				//!   * it is simply LONG -- more instructions than the key
+				//!     comparison has fields to compare.  That count is
+				//!     ExpressionMemo::ProgramKey::kFields (29: 18 own
+				//!     fields plus the hit channel's 11), taken from the
+				//!     comparison itself rather than restated here so the
+				//!     two cannot drift.  At or above it the lookup cannot
+				//!     be the more expensive half even for a body of pure
+				//!     arithmetic.
+				static bool ComputeMemoWorthiness( const ExpressionProgram& p )
+				{
+					if( !p.m_signalCalls.empty() ) return true;
+
+					std::size_t instrs = p.m_final.code.size();
+					for( std::size_t d = 0; d < p.m_defs.size(); ++d ) instrs += p.m_defs[d].code.size();
+
+					// Noise-call scan, over the final expression and every def.
+					for( std::size_t pass = 0; pass <= p.m_defs.size(); ++pass ) {
+						const Compiled& body = ( pass == 0 ) ? p.m_final : p.m_defs[ pass - 1 ];
+						for( std::size_t i = 0; i < body.code.size(); ++i ) {
+							const Compiled::Instr& in = body.code[i];
+							if( in.op != Compiled::kFunc ) continue;
+							// The noise band: perlin, fbm, turbulence,
+							// ridged and the four worley forms.  Named
+							// constants, not the literals 42/49 this line
+							// used to carry -- their declaration asserts the
+							// band is exactly those eight and that cellhash
+							// (a single integer hash, deliberately NOT
+							// qualifying on its own) sits just past it.
+							if( in.fn >= ExpressionProgram::kFnNoiseFirst
+							 && in.fn <= ExpressionProgram::kFnNoiseLast ) return true;
+						}
+					}
+
+					return instrs >= (std::size_t)ExpressionMemo::ProgramKey::kFields;
 				}
 
 				const std::string& Error() const { return m_error; }
@@ -875,11 +1084,19 @@ namespace RISE
 						{"clamp",30,3,{S,S,S,S},S}, {"smoothstep",31,3,{S,S,S,S},S}, {"select",33,3,{S,S,S,S},S},
 						// vec3-domain, scalar-returning
 						{"dot",40,2,{V,V,S,S},S}, {"length",41,1,{V,S,S,S},S},
-						{"perlin",42,1,{V,S,S,S},S},
-						{"fbm",43,4,{V,S,S,S},S}, {"turbulence",44,4,{V,S,S,S},S}, {"ridged",45,4,{V,S,S,S},S},
-						{"worley_f1",46,2,{V,S,S,S},S}, {"worley_f2",47,2,{V,S,S,S},S},
-						{"worley_f2f1",48,2,{V,S,S,S},S}, {"worley_id",49,2,{V,S,S,S},S},
-						{"cellhash",50,1,{S,S,S,S},S},
+						// The noise family, by NAME rather than by literal id:
+						// ExpressionProgram's kFn* constants are the one
+						// definition, because Builder::ComputeMemoWorthiness
+						// tests these same ids as a range (see their comment).
+						{"perlin",ExpressionProgram::kFnPerlin,1,{V,S,S,S},S},
+						{"fbm",ExpressionProgram::kFnFbm,4,{V,S,S,S},S},
+						{"turbulence",ExpressionProgram::kFnTurbulence,4,{V,S,S,S},S},
+						{"ridged",ExpressionProgram::kFnRidged,4,{V,S,S,S},S},
+						{"worley_f1",ExpressionProgram::kFnWorleyF1,2,{V,S,S,S},S},
+						{"worley_f2",ExpressionProgram::kFnWorleyF2,2,{V,S,S,S},S},
+						{"worley_f2f1",ExpressionProgram::kFnWorleyF2F1,2,{V,S,S,S},S},
+						{"worley_id",ExpressionProgram::kFnWorleyId,2,{V,S,S,S},S},
+						{"cellhash",ExpressionProgram::kFnCellHash,1,{S,S,S,S},S},
 						// geometry-derived shading signals -- one scalar
 						// argument, the query radius as a FRACTION of the hit
 						// geometry's characteristic size (design doc Phase 2).
@@ -1841,7 +2058,9 @@ namespace RISE
 					// domain of argument 0, so remember exactly which
 					// instructions that argument emits and differentiate
 					// them once the call is fully parsed.
-					const bool isNoiseFn = ( sig->id == 43 || sig->id == 44 || sig->id == 45 );
+					const bool isNoiseFn = ( sig->id == ExpressionProgram::kFnFbm ||
+					                         sig->id == ExpressionProgram::kFnTurbulence ||
+					                         sig->id == ExpressionProgram::kFnRidged );
 					size_t posArgStart = 0, posArgEnd = 0;
 
 					int scalarArity = 0;
@@ -2110,15 +2329,22 @@ namespace RISE
 			bool m_valid;
 			std::string m_error;
 			ptrdiff_t m_errorOffset;
+			//! Process-unique compile-time identity, 0 until a Builder
+			//! finalizes this program.  A COPY keeps it -- see
+			//! ExpressionMemo::NewProgramId.
+			unsigned long long m_id;
+			//! Compile-time L2-memo worthiness.  See MemoWorthy().
+			bool m_memoWorthy;
 
 			ExpressionProgram() :
 				m_uSlot(0), m_vSlot(1), m_PSlot(kContextSlotP), m_PoSlot(kContextSlotPo), m_NSlot(8),
 				m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotTime),
 				m_curvSlot(kContextSlotCurv), m_curvRSlot(kContextSlotCurvR), m_fwoSlot(kContextSlotFwo),
 				m_ctxUsedMask(0),
-				m_valid(false), m_errorOffset(-1)
+				m_valid(false), m_errorOffset(-1), m_id(0), m_memoWorthy(false)
 			{}
 			friend class Builder;
+
 
 			//! `stopAfterDef` -1 (default, via the two callers below) runs
 			//! every def; a non-negative value runs only defs [0, stopAfterDef]

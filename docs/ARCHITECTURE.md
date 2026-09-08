@@ -49,6 +49,7 @@ Triangle mesh intersection uses `thread_local` mailbox state (`src/Library/Geome
 | Reference counting | `IReference` / `Reference` | Atomic increment/decrement, thread-safe by design |
 | Per-thread RuntimeContext | `RuntimeContext` | Each thread owns its own instance |
 | Thread-local mailboxes | `TriangleMeshGeometryIndexed` | Per-thread, no sharing |
+| Thread-local expression memo | `ExpressionMemo` (`Utilities/ExpressionMemo.h`) | Per-thread fixed-size tables, no heap and no sharing; caches only pure functions of (program, context) and (provider, hit, query).  Never scene state: the hit record is untouched and no `mutable` is added.  A process-wide generation counter, bumped at every render-pass entry and at each scene-mutation seam (always AFTER the mutation, and before it too wherever the seam itself evaluates painters), drops every thread's tables between passes; within a pass the scene is immutable so nothing invalidates.  Kill switch `expression_memo` in `RISE_OPTIONS_FILE` |
 | Path guiding training stats | `PathGuidingField` | Atomic counters, updated between passes (not during) |
 | BDPT integrator atomics | `BDPTIntegrator` | Atomic counters for cross-pass statistics |
 | Irradiance cache | `IrradianceCache` | Mutex-guarded insert/query; cache is populated during a dedicated irradiance pass before the main render pass |

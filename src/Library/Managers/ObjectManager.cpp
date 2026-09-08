@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "ObjectManager.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
@@ -1009,6 +1010,48 @@ void ObjectManager::PrepareForRendering() const
 {
 	RISE_PROFILE_PHASE(AccelBuild);
 
+	// EXPRESSION MEMO (Utilities/ExpressionMemo.h), the FIRST of two bumps
+	// around this function; the TAIL one is the load-bearing half and
+	// carries the argument for the pair.
+	//
+	// THIS ONE IS DEFENCE IN DEPTH.  It used to be justified by "the
+	// realize pass below evaluates painters, and a displacement painter
+	// can be an expression that reads geometry signals" -- but that
+	// mechanism cannot reach a stale entry.  Realize-time displacement has
+	// exactly two evaluators, and neither can: GeometryUtilities.cpp's
+	// ApplyScalarHeightToObject builds its hit record with `ri.signals`
+	// DEFAULT-constructed (its own comment spells out that the builtins
+	// therefore read their neutral fallback), as does HairGenerator's
+	// MakeRootRi; and ApplyDisplacementMapToObject takes an IFunction2D
+	// and calls `Evaluate(u,v)`, which has no hit record at all.  So none
+	// of them ever keys an L1 entry against a provider; what they can read
+	// is the null-provider NEUTRAL, a constant.  L2 cannot be stale for
+	// them either: `m_time` is in the key, and a painter's `param`s are
+	// compile-time constants folded into a program whose id is minted
+	// fresh by every Finalize.  Kept anyway
+	// -- one atomic increment at a seam that is about to rebuild a TLAS,
+	// and cover for a future realize-time consumer that DOES carry a
+	// provider -- but nothing today depends on it.  (ExpressionMemo.h's
+	// Invalidate() comment is the single account.)
+	ExpressionMemo::Invalidate();
+
+	// EXPRESSION MEMO, the SECOND bump, and the reason there are two.
+	// Objects are about to be realized and the hierarchy re-baked, so any
+	// geometry a memo entry was keyed against may move or be rebuilt by
+	// the work below.  The bump above covers the mutation that happened
+	// BEFORE we were called; this one covers the mutation this function
+	// IS, and closes the window in which another thread adopts the top
+	// bump's generation, misses, reads a geometry mid-realize, and stamps
+	// that answer with a generation nothing will ever drop.
+	//
+	// A SCOPE GUARD rather than a trailing statement, because the work
+	// between here and the end can THROW -- the realize pass runs arbitrary
+	// geometry build code and CreateBVH allocates -- and an exception would
+	// skip a trailing `Invalidate();`, leaving exactly the state the
+	// argument above says must not exist.  RayCaster::AttachScene and
+	// Scene::SetSceneTime use the same guard for the same reason.
+	const ExpressionMemo::DropOnScopeExit memoDropOnExit;
+
 	// Realize deferred geometry BEFORE building the TLAS from object bounding
 	// boxes (an unrealized DisplacedGeometry reports a ZERO bbox, and the BVH
 	// built from it is KEPT by the `!pBVH` guard below -> displaced objects
@@ -1063,6 +1106,10 @@ void ObjectManager::PrepareForRendering() const
 	if( !shadowCache ) {
 		shadowCache = new ShadowCacheSlot[kShadowCacheSlots]();
 	}
+
+	// EXPRESSION MEMO: the trailing bump is taken by `memoDropOnExit`,
+	// declared at the top of this function -- see its comment for why it
+	// is a scope guard and not a statement here.
 }
 
 void ObjectManager::InvalidateSpatialStructure() const
