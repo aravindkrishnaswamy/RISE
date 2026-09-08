@@ -411,6 +411,18 @@ namespace RISE
 		//! feature rather than as an absence.
 		static Scalar NeutralConvexity() { return Scalar( 0 ); }
 
+		//! THE NEUTRAL PROXIMITY: 0 == nothing within the radius.  The
+		//! do-nothing end again, and argued the same way: `proximity(r)`
+		//! exists to COLLECT CONTACT GRIME -- dirt where a nail meets a
+		//! plank, dust where a wall meets a floor -- so an absent signal
+		//! must read "no neighbour here" and paint nothing.  The neutral 1
+		//! ("touching everywhere") would grime the whole frame and read as
+		//! a feature rather than as an absence.  Reached whenever the
+		//! channel carries no scene or no self object (a hit rebuilt by
+		//! BDPT/VCM/MLT, a hand-built record, a preview), the radius or the
+		//! point is unusable, or every candidate refused.
+		static Scalar NeutralProximity() { return Scalar( 0 ); }
+
 		//! Is `radiusFraction` a usable query radius at all?  Must be
 		//! finite and strictly positive; a zero or negative radius has no
 		//! meaning for either signal (a literal one is rejected at PARSE
@@ -425,7 +437,16 @@ namespace RISE
 		//! wrappers below hand to their shared implementation, and part of
 		//! the L1 memo key (the three have DIFFERENT neutrals, so sharing
 		//! an entry between them would be a wrong answer, not a stale one).
-		enum SignalKind { eOcclusion = 0, eThickness = 1, eConvexity = 2 };
+		//! `eProximity` is NOT a fourth branch of `SignalQuery` -- it is the
+		//! discriminator the SECOND policy body, `Proximity`, stamps into
+		//! the SAME L1 table so the two cannot collide there.  It has to be
+		//! a separate body rather than a fourth case because the two have
+		//! DIFFERENT PRECONDITIONS: `SignalQuery` is gated on `pProvider`,
+		//! and a receiver like a `box_geometry` has none at all (it would
+		//! short-circuit to the neutral before the scene was ever asked),
+		//! while `Proximity` is gated on `pScene && pSelf` and does not
+		//! care whether the hit surface publishes signals of its own.
+		enum SignalKind { eOcclusion = 0, eThickness = 1, eConvexity = 2, eProximity = 3 };
 
 		//! THE L1 MEMO KEY for this hit -- every field of this struct, so a
 		//! new field added above and NOT added here is a silent wrong
@@ -474,13 +495,57 @@ namespace RISE
 		//! every field of this record, fn, radius, constant-radius proof),
 		//! which is exactly the key -- plus the provider's own state,
 		//! which the generation counter covers (ExpressionMemo.h).
-		Scalar SignalQuery( const SignalKind fn, const Scalar radiusFraction, const bool bRadiusIsConstant ) const
+		//! THE ONE L1 KEY CONSTRUCTOR, shared by `SignalQuery` and by
+		//! `Proximity` (SurfaceSignalProximity.h) -- and the thing that
+		//! keeps two policy bodies from drifting on memo POLICY while they
+		//! legitimately differ on preconditions.
+		//!
+		//! WHAT SHARING THIS BUYS, exactly, since it is a small function
+		//! and the claim should be no bigger than it is:
+		//!   * A field added to `SurfaceSignalInfo` and to `MemoHitKey`
+		//!     reaches BOTH bodies' keys automatically.  That is the drift
+		//!     that would actually be a wrong render, and it is now
+		//!     impossible to introduce in one body and forget in the other.
+		//!   * The two bodies stamp the SAME `fn` field from the SAME
+		//!     enum, so an entry filled by one can never be served to the
+		//!     other -- `eProximity` is 3 and nothing else is.
+		//! What it does NOT buy, and does not try to: the find/insert
+		//! CALLS still appear once per body.  They must, because what is
+		//! memoised is each body's FINAL, already-clamped, already-fallen-
+		//! back answer -- which is what makes a hit and a miss
+		//! indistinguishable -- and that value only exists inside the body
+		//! that computed it.
+		ExpressionMemo::SignalKey MakeL1Key( const SignalKind fn, const Scalar radius, const bool bRadiusIsConstant ) const
 		{
 			ExpressionMemo::SignalKey key;
 			key.hit = MemoHitKey();
-			key.radius = (double)radiusFraction;
+			key.radius = (double)radius;
 			key.fn = (int)fn;
 			key.bRadiusIsConstant = bRadiusIsConstant;
+			return key;
+		}
+
+		//! CROSS-OBJECT PROXIMITY at this hit -- `clamp(1 - d/r, 0, 1)` for
+		//! `d` the shortest distance to any OTHER world-visible,
+		//! non-emissive object's surface, and `r` a WORLD LENGTH.
+		//! 1 = touching, 0 = nothing within `r`.  Always finite, always in
+		//! [0,1].  docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §2.
+		//!
+		//! Takes no `bRadiusIsConstant`: there is no bake behind this
+		//! signal, so a computed radius costs exactly what a literal one
+		//! does and no proof has to travel.
+		//!
+		//! DECLARED HERE, DEFINED IN SurfaceSignalProximity.h, because the
+		//! body has to call through `IObjectManager` and including that
+		//! header from this one is a cycle (see the forward declarations at
+		//! the top of this file).  A translation unit that CALLS this must
+		//! include SurfaceSignalProximity.h; one that only names the struct
+		//! need not.
+		Scalar Proximity( const Scalar radiusWorld ) const;
+
+		Scalar SignalQuery( const SignalKind fn, const Scalar radiusFraction, const bool bRadiusIsConstant ) const
+		{
+			const ExpressionMemo::SignalKey key = MakeL1Key( fn, radiusFraction, bRadiusIsConstant );
 
 			Scalar memo = Scalar( 0 );
 			if( ExpressionMemo::L1Find( key, memo ) ) return memo;

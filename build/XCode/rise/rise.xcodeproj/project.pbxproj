@@ -1914,6 +1914,7 @@
 		FA00000000000000000004F4 /* ViewportFrameStore.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F3 /* ViewportFrameStore.h */; };
 		FA1ABHD10000000000000002 /* IScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000000 /* IScalarPainter.h */; };
 		F5C0DEEF0000000000000002 /* ISurfaceSignalProvider.h in Headers */ = {isa = PBXBuildFile; fileRef = F5C0DEEF0000000000000001 /* ISurfaceSignalProvider.h */; };
+		F5C0DEFA0000000000000002 /* SurfaceSignalProximity.h in Headers */ = {isa = PBXBuildFile; fileRef = F5C0DEFA0000000000000001 /* SurfaceSignalProximity.h */; };
 		FA1ABHD10000000000000006 /* IScalarPainterManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000004 /* IScalarPainterManager.h */; };
 		FA1ABHD1000000000000000A /* ScalarPainterManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000008 /* ScalarPainterManager.h */; };
 		FA1ABHD1000000000000000E /* UniformScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000000C /* UniformScalarPainter.h */; };
@@ -1930,6 +1931,7 @@
 		FA1ABHD10000000000000036 /* PainterToScalarAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
 		FA1ABSC10000000000000001 /* IScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000000 /* IScalarPainter.h */; };
 		F5C0DEEF0000000000000003 /* ISurfaceSignalProvider.h in Sources */ = {isa = PBXBuildFile; fileRef = F5C0DEEF0000000000000001 /* ISurfaceSignalProvider.h */; };
+		F5C0DEFA0000000000000003 /* SurfaceSignalProximity.h in Sources */ = {isa = PBXBuildFile; fileRef = F5C0DEFA0000000000000001 /* SurfaceSignalProximity.h */; };
 		FA1ABSC10000000000000005 /* IScalarPainterManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000004 /* IScalarPainterManager.h */; };
 		FA1ABSC10000000000000009 /* ScalarPainterManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000008 /* ScalarPainterManager.h */; };
 		FA1ABSC1000000000000000D /* UniformScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000000C /* UniformScalarPainter.h */; };
@@ -3055,6 +3057,7 @@
 		FA00000000000000000004F3 /* ViewportFrameStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewportFrameStore.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000000 /* IScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IScalarPainter.h; sourceTree = "<group>"; };
 		F5C0DEEF0000000000000001 /* ISurfaceSignalProvider.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ISurfaceSignalProvider.h; sourceTree = "<group>"; };
+		F5C0DEFA0000000000000001 /* SurfaceSignalProximity.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SurfaceSignalProximity.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000004 /* IScalarPainterManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IScalarPainterManager.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000008 /* ScalarPainterManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ScalarPainterManager.h; sourceTree = "<group>"; };
 		FA1ABFR1000000000000000C /* UniformScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UniformScalarPainter.h; sourceTree = "<group>"; };
@@ -3501,6 +3504,7 @@
 				FA1ABFR10000000000000004 /* IScalarPainterManager.h */,
 				FA1ABFR10000000000000000 /* IScalarPainter.h */,
 				F5C0DEEF0000000000000001 /* ISurfaceSignalProvider.h */,
+				F5C0DEFA0000000000000001 /* SurfaceSignalProximity.h */,
 				F27F087F069C428F0069C9E5 /* IParametricSurface.h */,
 				F27F0880069C428F0069C9E5 /* IPhotonMap.h */,
 				F27F0881069C428F0069C9E5 /* IPhotonTracer.h */,
@@ -4745,6 +4749,7 @@
 				FA1ABHD10000000000000006 /* IScalarPainterManager.h in Headers */,
 				FA1ABHD10000000000000002 /* IScalarPainter.h in Headers */,
 				F5C0DEEF0000000000000002 /* ISurfaceSignalProvider.h in Headers */,
+				F5C0DEFA0000000000000002 /* SurfaceSignalProximity.h in Headers */,
 				F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */,
 				F27F0AEB069C42910069C9E5 /* IParametricSurface.h in Headers */,
 				F2D9B1382F8FA5C40077A171 /* VCMSpectralRasterizer.h in Headers */,
@@ -5935,6 +5940,7 @@
 				FA1ABSC10000000000000005 /* IScalarPainterManager.h in Sources */,
 				FA1ABSC10000000000000001 /* IScalarPainter.h in Sources */,
 				F5C0DEEF0000000000000003 /* ISurfaceSignalProvider.h in Sources */,
+				F5C0DEFA0000000000000003 /* SurfaceSignalProximity.h in Sources */,
 				F24B72732F52A632008304C4 /* IParametricSurface.h in Sources */,
 				F24B72742F52A632008304C4 /* IPhotonMap.h in Sources */,
 				F24B72752F52A632008304C4 /* IPhotonTracer.h in Sources */,

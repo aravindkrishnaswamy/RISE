@@ -172,6 +172,7 @@
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/ProceduralNoiseCore.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness()/convexity() dispatch channel
+#include "../Interfaces/SurfaceSignalProximity.h"	// proximity()'s body -- CallFunc CALLS it, so the definition must be here
 #include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
 
 namespace RISE
@@ -458,6 +459,34 @@ namespace RISE
 			static const int kFnOcclusionDynR = 53;
 			static const int kFnThicknessDynR = 54;
 			static const int kFnConvexityDynR = 56;
+			//! `proximity(radius)` -- the CROSS-OBJECT signal
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md).  `clamp(1 - d/r,
+			//! 0, 1)` for `d` the shortest distance to any OTHER
+			//! world-visible, non-emissive object's surface: 1 = touching,
+			//! 0 = nothing within `r`.  Its three neighbours above are
+			//! SELF-signals, which is why this one's radius means something
+			//! different -- a WORLD LENGTH, not a fraction of the hit
+			//! object's own size, because a fraction of the receiver cannot
+			//! describe a neighbour.
+			//!
+			//! NO `DynR` TWIN, and that is a decision rather than an
+			//! omission.  The twins exist so a call site's compile-time
+			//! constant-radius PROOF can reach the baked mesh providers,
+			//! which can only answer the one radius they were baked at.
+			//! There is no bake behind this signal -- every query is a live
+			//! scan -- so a computed radius costs exactly what a literal
+			//! one does and there is nothing to forward.  ParseCall's DynR
+			//! remap must therefore GUARD against this id: its final
+			//! ternary arm is an unguarded fall-through to
+			//! kFnConvexityDynR, and without the guard every
+			//! computed-radius `proximity(...)` would have compiled to a
+			//! CONVEXITY call.
+			//!
+			//! 58 and 59 remain free in this band; 60-62 belong to
+			//! CallFuncVec3.
+			static const int kFnProximity   = 57;
+			static_assert( kFnProximity == 57, "CallFunc's `case kFnProximity:` continues the "
+				"scalar-returning band past kFnConvexityDynR (56); 58-59 free, 60+ are CallFuncVec3's" );
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
 			//!   u=0, v=1, P=kContextSlotP(2..4), Po=kContextSlotPo(5..7),
 			//!   N=8..10, fw=kContextSlotFw(11), time=kContextSlotTime(12),
@@ -1113,6 +1142,13 @@ namespace RISE
 						{"occlusion",ExpressionProgram::kFnOcclusion,1,{S,S,S,S},S},
 						{"thickness",ExpressionProgram::kFnThickness,1,{S,S,S,S},S},
 						{"convexity",ExpressionProgram::kFnConvexity,1,{S,S,S,S},S},
+						// The CROSS-OBJECT signal.  Same shape as the three
+						// above -- one scalar argument, one scalar result,
+						// gated on EnableContextVars for the same reason --
+						// but its argument is a WORLD LENGTH, not a
+						// fraction of the hit object's size.  See
+						// ExpressionProgram::kFnProximity.
+						{"proximity",ExpressionProgram::kFnProximity,1,{S,S,S,S},S},
 						// vec3-returning
 						{"cross",60,2,{V,V,S,S},V}, {"normalize",61,1,{V,S,S,S},V},
 					};
@@ -2038,9 +2074,24 @@ namespace RISE
 					// dedicated diagnostic rather than "unknown function",
 					// because the name IS real -- it is the surface that
 					// doesn't have one.
+					//! FOUR CONSUMERS depend on this predicate, and every
+					//! one of them had to be re-read when `proximity`
+					//! joined it (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+					//! §5.1): the expression_function2d refusal just
+					//! below, the literal-radius diagnostic (whose text
+					//! says the OPPOSITE thing for proximity -- a world
+					//! length, not a fraction), the `m_sigCalls`
+					//! registration that drives ComputeMemoWorthiness and
+					//! SurfaceSignalDemand, and the `DynR` remap, whose
+					//! final ternary arm is an UNGUARDED fall-through and
+					//! would otherwise have compiled every
+					//! computed-radius `proximity(...)` as a CONVEXITY
+					//! call.  Widening this test alone is not enough; each
+					//! of the four says what it does with the new id.
 					const bool isSignalFn = ( sig->id == ExpressionProgram::kFnOcclusion ||
 					                          sig->id == ExpressionProgram::kFnThickness ||
-					                          sig->id == ExpressionProgram::kFnConvexity );
+					                          sig->id == ExpressionProgram::kFnConvexity ||
+					                          sig->id == ExpressionProgram::kFnProximity );
 					if( isSignalFn && !m_contextVarsEnabled ) {
 						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
 							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
@@ -2130,8 +2181,24 @@ namespace RISE
 								// still checked at runtime, by
 								// SurfaceSignalInfo::RadiusUsable.
 								if( literalRadiusArg && got == 0 && !( literalRadiusVal > Scalar(0) ) ) {
-									SetError( std::string(name) + "() radius must be > 0 -- it is a FRACTION of the "
-										"object's own size (0.05 = 5% of its bounding-box diagonal), not a world length",
+									// THE UNIT DEPENDS ON WHICH SIGNAL, and
+									// this diagnostic exists to teach it.
+									// The three self-signals take a
+									// fraction of the hit object's own
+									// size; `proximity` takes a WORLD
+									// LENGTH, because a fraction of the
+									// RECEIVER cannot describe how far away
+									// a NEIGHBOUR is.  Telling a proximity
+									// author "it is a fraction" would send
+									// them to fix the one thing that was
+									// right.
+									SetError( std::string(name) + "() radius must be > 0 -- "
+										+ ( sig->id == ExpressionProgram::kFnProximity
+											? std::string( "it is a WORLD LENGTH (proximity(0.002) = 2 mm), the distance "
+												"at which a neighbouring object's surface stops registering as contact -- "
+												"NOT a fraction of anything" )
+											: std::string( "it is a FRACTION of the object's own size (0.05 = 5% of its "
+												"bounding-box diagonal), not a world length" ) ),
 										(ptrdiff_t)argOff );
 									return false;
 								}
@@ -2149,11 +2216,25 @@ namespace RISE
 					// itself carries the (absence of a) proof down to
 					// CallFunc -- see ExpressionProgram::kFnOcclusionDynR.
 					// Everything else emits its own id unchanged.
+					//
+					// THE FINAL ARM IS NOW GUARDED, and it has to be.
+					// Before `proximity` there were exactly three signal
+					// ids and the last ternary arm could fall through to
+					// kFnConvexityDynR as "the remaining one".  Adding a
+					// fourth id to `isSignalFn` without touching this line
+					// would have compiled EVERY computed-radius
+					// `proximity(...)` -- `proximity(0.1*2)`,
+					// `proximity(r)` for a param `r` -- as a CONVEXITY
+					// call: a silently wrong render with nothing in the
+					// scene text to suggest it.  `proximity` has no twin
+					// (there is no bake for a constant-radius proof to
+					// feed), so its own id is what it emits.
 					int emitId = sig->id;
 					if( isSignalFn && !literalRadiusArg ) {
 						emitId = ( sig->id == ExpressionProgram::kFnOcclusion ) ? ExpressionProgram::kFnOcclusionDynR
 						       : ( sig->id == ExpressionProgram::kFnThickness ) ? ExpressionProgram::kFnThicknessDynR
-						                                                       : ExpressionProgram::kFnConvexityDynR;
+						       : ( sig->id == ExpressionProgram::kFnConvexity ) ? ExpressionProgram::kFnConvexityDynR
+						                                                       : sig->id;
 					}
 					// Only a noise builtin reads `fw`/`fwo`; every other
 					// call site keeps the exact (1.0, 0.0) multipliers
@@ -2507,6 +2588,17 @@ namespace RISE
 					return pSignals ? pSignals->Convexity( a[0], true ) : SurfaceSignalInfo::NeutralConvexity();
 				case kFnConvexityDynR:
 					return pSignals ? pSignals->Convexity( a[0], false ) : SurfaceSignalInfo::NeutralConvexity();
+				// --- the CROSS-OBJECT signal
+				// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md) ---
+				// ONE case, no DynR twin: the radius is a WORLD LENGTH and
+				// there is no bake for a constant-radius proof to feed, so
+				// a computed radius costs what a literal one does.  THIS IS
+				// THE ONE DELIBERATE MOVE of CallFunc's byte-identity pin;
+				// this body is now the pinned one (ExpressionMemo.h's
+				// header names the set).  Eval, EvalVec3, RunAny and
+				// CallFuncVec3 are unchanged.
+				case kFnProximity:
+					return pSignals ? pSignals->Proximity( a[0] ) : SurfaceSignalInfo::NeutralProximity();
 				default: return Scalar(0);
 				}
 			}
