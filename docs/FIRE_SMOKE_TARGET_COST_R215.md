@@ -94,6 +94,9 @@ eight executed successor rows for an r78-v2 bridge, whereas step 801 has four.
 Preserve original prefix/overlap, compare exact times and full roots at eight
 or more steps, then join prefix 1–792 with resumed 793 onward exactly once.
 This is a proposal, not an executed migration or widened equality standard.
+It must preserve the original r214 qualified kernel set for the root-equality
+bridge. This cost promotion is not authority to substitute its changed kernel
+identity into the interrupted sealed run.
 
 Interruption record `r215_onset_interruption/status.v1.txt` SHA:
 `554581ed11ec31106fe6926eb8d7e601eaeecb8581078cc75ff0d7785c4ba78a`.
