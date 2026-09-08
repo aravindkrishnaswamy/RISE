@@ -4754,6 +4754,146 @@ int main()
 		       "claiming it wrongly costs)" );
 	}
 
+	// ---- `signals` is written in a CLOSED set of files, and nowhere else ----
+	// docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1.  The cross-object channel
+	// (`pScene` / `pSelf` / `ptWorld`) is stamped ONCE, at the tail of
+	// ObjectManager::IntersectRay, on the winning record -- and the whole
+	// design rests on one invariant: NOTHING assigns `signals` after that
+	// function returns.  A new assignment anywhere else would silently
+	// overwrite the stamp with a default-constructed channel and turn every
+	// `proximity()` in the frame into its neutral 0 -- a mask that quietly
+	// stops painting, which is exactly the expensive kind of failure (it
+	// still renders, it just renders wrong).
+	//
+	// GRANULARITY IS THE FILE, and that is the honest limit of what a text
+	// scan can express: this cannot tell WHICH function inside SDFGeometry.cpp
+	// does the writing, only that no NEW file has joined the set.  That is
+	// still the check that matters, because every hazardous addition would be
+	// in a new file (a new geometry intersector, a new transform layer, a new
+	// painter pipe) rather than smuggled into one of the six below.
+	//
+	// RED-PROVED by adding `ri.geometric.signals.primId = 3;` to a scratch
+	// copy of Rendering/RayCaster.cpp: the census reported RayCaster.cpp and
+	// this check went red.  (Done in a scratch copy, never in a tracked file.)
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path libDir = repoRoot / "src" / "Library";
+
+		// The needle: a whole-word `signals` -- so `pSignals`, `m_signalCalls`
+		// and `SurfaceSignalInfo` cannot match -- followed either by ` = ` (a
+		// whole-struct assignment) or by `.field = ` (a member assignment).
+		// `==` is excluded so a comparison is not read as a write.
+		struct Scan
+		{
+			static bool IsIdentChar( const char c )
+			{
+				return ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' )
+					|| ( c >= '0' && c <= '9' ) || c == '_';
+			}
+			//! Does `flat` contain a write to `signals` at or after `at`?
+			static bool WritesAt( const std::string& flat, const size_t at )
+			{
+				size_t p = at + 7;								// past "signals"
+				if( p < flat.size() && flat[p] == ' ' ) { ++p; }
+				if( p < flat.size() && flat[p] == '.' ) {		// `signals.field ...`
+					++p;
+					const size_t idStart = p;
+					while( p < flat.size() && IsIdentChar( flat[p] ) ) { ++p; }
+					if( p == idStart ) { return false; }
+					if( p < flat.size() && flat[p] == ' ' ) { ++p; }
+				}
+				return p + 1 < flat.size() && flat[p] == '=' && flat[p+1] != '=';
+			}
+		};
+
+		std::vector<std::string> writers;
+		if( fs::exists( libDir ) ) {
+			for( const auto& e : fs::recursive_directory_iterator( libDir ) ) {
+				if( !e.is_regular_file() ) { continue; }
+				const fs::path& f = e.path();
+				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
+				std::ifstream mi( f );
+				const std::string raw( ( std::istreambuf_iterator<char>( mi ) ),
+				                         std::istreambuf_iterator<char>() );
+				// Comments are stripped FIRST: this file's own prose, and the
+				// design's, quote `signals.pScene = ...` verbatim, and a
+				// census that counted prose would name every file that merely
+				// EXPLAINS the invariant.
+				const std::string src = StripCommentsPreservingLayout( raw );
+				std::string flat;
+				flat.reserve( src.size() );
+				bool ws = false;
+				for( char ch : src ) {
+					if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
+					if( ws && !flat.empty() ) { flat += ' '; }
+					ws = false;
+					flat += ch;
+				}
+				size_t at = 0;
+				bool writes = false;
+				while( ( at = flat.find( "signals", at ) ) != std::string::npos ) {
+					const bool wholeWord = ( at == 0 || !Scan::IsIdentChar( flat[at-1] ) );
+					if( wholeWord && Scan::WritesAt( flat, at ) ) { writes = true; break; }
+					at += 1;
+				}
+				if( writes ) { writers.push_back( f.filename().string() ); }
+			}
+		}
+		std::sort( writers.begin(), writers.end() );
+		for( const std::string& w : writers ) {
+			std::cout << "  signals writer: " << w << std::endl;
+		}
+
+		// The SEVEN files allowed to write it, and why each one is:
+		//   CSGObject.cpp                              adoption + the three
+		//                                              nObject / bComplementedField
+		//                                              flips
+		//   ExpressionEval.h                           `k.signals = ctx.signals
+		//                                              .MemoHitKey()` -- an
+		//                                              ExpressionMemo::SignalHitKey,
+		//                                              NOT a SurfaceSignalInfo.  A
+		//                                              text scan cannot tell the two
+		//                                              apart, so it is listed rather
+		//                                              than excluded by a cleverer
+		//                                              needle.  (The design doc's
+		//                                              §5.1 enumeration names six
+		//                                              files and misses this one --
+		//                                              it is harmless, and naming it
+		//                                              here is the correction.)
+		//   ExpressionPainter.cpp                      PopulateSignals' by-value copy
+		//                                              into the context, plus the two
+		//                                              BuildContext `time` stamps
+		//   ObjectManager.cpp                          THE cross-object stamp
+		//   RayIntersectionGeometric.h                 the record's own operator=
+		//   SDFGeometry.cpp                            the SDF intersector's stamp
+		//   TriangleMeshGeometryIndexedSpecializations.h   the mesh intersector's
+		const char* kAllowedSignalWriters[] = {
+			"CSGObject.cpp",
+			"ExpressionEval.h",
+			"ExpressionPainter.cpp",
+			"ObjectManager.cpp",
+			"RayIntersectionGeometric.h",
+			"SDFGeometry.cpp",
+			"TriangleMeshGeometryIndexedSpecializations.h",
+		};
+		const size_t nAllowed = sizeof( kAllowedSignalWriters ) / sizeof( kAllowedSignalWriters[0] );
+		bool setMatches = ( writers.size() == nAllowed );
+		for( size_t i = 0; setMatches && i < nAllowed; ++i ) {
+			setMatches = ( writers[i] == kAllowedSignalWriters[i] );
+		}
+		Check( setMatches,
+		       "cross-object signal channel: `signals` is assigned ONLY in the seven files "
+		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 sanctions -- a new writer would "
+		       "clobber ObjectManager::IntersectRay's pScene/pSelf/ptWorld stamp and silently "
+		       "turn every proximity() in the frame into its neutral 0" );
+		if( !setMatches ) {
+			std::cout << "  expected exactly:" << std::endl;
+			for( size_t i = 0; i < nAllowed; ++i ) {
+				std::cout << "    " << kAllowedSignalWriters[i] << std::endl;
+			}
+		}
+	}
+
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "
 	          << passCount << " passed, " << failCount << " failed." << std::endl;

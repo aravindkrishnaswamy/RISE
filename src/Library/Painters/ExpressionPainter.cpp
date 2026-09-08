@@ -131,6 +131,21 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	ctx.time = m_time;
 	PopulateCurvature( ri, ctx );
 	PopulateSignals( ri, ctx );
+	// THE FOURTH CROSS-OBJECT FIELD (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+	// §5.1 / §5.4).  The other three come stamped on the record by
+	// ObjectManager::IntersectRay; `time` cannot, because the object manager
+	// has no idea which painter is about to evaluate or what its keyframed
+	// `m_time` is.  Written on the CONTEXT'S COPY of the channel, never back
+	// onto `ri` -- the record stays exactly as intersection left it, which is
+	// the invariant SourceHygieneTest's write-site census exists to protect.
+	//
+	// Its job is memo correctness under motion: `proximity` is the one signal
+	// whose answer can move because a NEIGHBOUR moved, leaving the receiver's
+	// own hit -- and therefore every other key field -- bit-identical.  A
+	// keyframed painter's `time` moves with the frame and separates those
+	// entries; a non-keyframed one relies on the per-sample jitter argument
+	// the memo already makes (ExpressionMemo.h).
+	ctx.signals.time = m_time;
 	return ctx;
 }
 
@@ -317,6 +332,15 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	ctx.time = Scalar(0);		// not exposed on this pipe -- see class doc comment
 	PopulateCurvature( ri, ctx );
 	PopulateSignals( ri, ctx );
+	// The cross-object channel's `time`, stamped 0 for the SAME reason
+	// `ctx.time` above is: this pipe has no `m_time` member and deliberately
+	// does not expose `time` to the body.  Written explicitly rather than left
+	// to whatever the record carried, so the two pipes cannot share an L1
+	// entry through a field one of them never sets -- and stated as a residual
+	// in docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §10: under per-sample motion
+	// blur a roughness pipe's proximity entries rely on the sub-pixel jitter
+	// argument alone, with no keyframed `time` to separate them.
+	ctx.signals.time = Scalar(0);
 	return ctx;
 }
 

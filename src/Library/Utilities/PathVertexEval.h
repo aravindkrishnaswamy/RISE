@@ -104,6 +104,36 @@ namespace RISE
 		//      assertion for the new field.
 		// The cross-reference comment in BDPTVertex.h points the next
 		// developer at this contract.
+		//
+		// DECLINED, DELIBERATELY -- fields consumed by painter paths that
+		// this rebuild does NOT carry, so an expression evaluated at a
+		// BDPT / VCM / MLT vertex reads their documented NEUTRAL rather
+		// than a value.  Listed here because a contract with silent
+		// exceptions is worse than one that names them:
+		//
+		//   * `derivatives` (curv / curvR / scaleHint, and the UV
+		//     Jacobian) and `signals`' own-surface half (pProvider,
+		//     ptObject, nObject, primId, baryA, baryB,
+		//     bComplementedField) -- declined by
+		//     docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 11.
+		//   * `signals.pScene`, `signals.pSelf`, `signals.ptWorld` and
+		//     `signals.time` -- the cross-object proximity channel,
+		//     declined by docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 for
+		//     the SAME reason and with the same argument: the gap is
+		//     already disclosed for the three signals that share this
+		//     channel, the fix is one widening for all four (a BDPTVertex
+		//     slot, population in both subpath generators, the copy here
+		//     and a BDPTVertexRIGRebuildTest sentinel), and widening for
+		//     ONE of the four would leave a mixed-truth state -- some
+		//     signals live on those integrators and some neutral, with
+		//     nothing in the record saying which.  `proximity` therefore
+		//     reads its neutral 0 (paints nothing) wherever this rebuild
+		//     is the source of the record, exactly as `occlusion`,
+		//     `thickness` and `convexity` read theirs.  PT is unaffected:
+		//     it evaluates against records the object manager stamped.
+		//
+		// Adding any of them means doing all four at once, and saying so
+		// in the commit.
 		//////////////////////////////////////////////////////////////////////
 		inline void PopulateRIGFromVertex(
 			const BDPTVertex& vertex,

@@ -37,6 +37,16 @@
 namespace RISE
 {
 	struct SurfaceSignalInfo;
+	//! The CROSS-OBJECT half of the channel (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+	//! §5.1).  FORWARD-DECLARED, never included: IObjectManager.h reaches
+	//! IObject.h, which includes RayIntersection.h at its bottom, which
+	//! includes RayIntersectionGeometric.h, which includes THIS file -- so a
+	//! real include here is a cycle that leaves IObjectManager incomplete for
+	//! whichever of the two a translation unit names first.  That is why
+	//! `SurfaceSignalInfo::Proximity` is DECLARED here and DEFINED in
+	//! SurfaceSignalProximity.h, which sits above both and may include them.
+	class IObjectManager;
+	class IObject;
 
 	//! A geometry that can answer per-hit AMBIENT-OCCLUSION, THICKNESS and
 	//! CONVEXITY queries about ITS OWN surface.
@@ -327,9 +337,50 @@ namespace RISE
 		//! had before the flag existed, not a new gap.
 		bool							bComplementedField;
 
+		//! THE CROSS-OBJECT HALF OF THE CHANNEL
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1).  Everything above
+		//! this line describes the hit's OWN surface and is stamped by the
+		//! geometry that owns it, in that geometry's object space.  These
+		//! four describe WHERE IN THE SCENE that hit is, which is what a
+		//! cross-object query needs and what no object-space field can say.
+		//!
+		//! Non-owning, non-refcounted back-pointers, with the same lifetime
+		//! argument `pProvider` already makes: a manager and an object
+		//! outlive every record they stamp (the scene is immutable for the
+		//! duration of a pass, and a record never outlives the pass).
+		//!
+		//! STAMPED IN EXACTLY ONE PLACE for the first three --
+		//! `ObjectManager::IntersectRay( RayIntersection&, ... )`, on the
+		//! WINNING record after traversal, with `pSelf` copied from
+		//! `ri.pObject` so the two identities cannot disagree.  The
+		//! invariant that makes the stamp survive to the painter is that
+		//! nothing assigns `signals` after that function returns;
+		//! SourceHygieneTest pins the write-site set at file granularity.
+		//!
+		//! ZERO IS THE HONEST ABSENCE for all four: a record rebuilt by
+		//! `PathVertexEval::PopulateRIGFromVertex` (BDPT / VCM / MLT), a
+		//! hit found by something other than the object manager, or a
+		//! hand-built test record carries `pScene == 0` and reads the
+		//! neutral 0 from `Proximity` -- the same disclosed gap the other
+		//! three signals already have on those integrator families.
+		const IObjectManager*			pScene;		//!< the manager that found this hit; 0 = none
+		const IObject*					pSelf;		//!< == ri.pObject: the object the hit belongs to
+		Point3							ptWorld;	//!< the hit in WORLD space (== ri.ptIntersection)
+		//! The evaluating painter's own `m_time`, stamped by
+		//! `ExpressionPainter::BuildContext` on its COPY of this struct (the
+		//! object manager does not know a painter's time, and the VM's
+		//! `CallFunc` has no time parameter).  It is here rather than only in
+		//! `ExprEvalContext::time` because the cross-object answer can move
+		//! when a NEIGHBOUR moves while the receiver's own hit is unchanged
+		//! -- the one way this signal's memo-staleness differs from the other
+		//! three (§5.4).  `ExpressionScalarPainter::BuildContext` stamps 0:
+		//! that pipe deliberately does not expose `time` at all.
+		Scalar							time;
+
 		SurfaceSignalInfo() :
 		pProvider( 0 ), ptObject( 0, 0, 0 ), nObject( 0, 0, 0 ),
-		primId( -1 ), baryA( 0 ), baryB( 0 ), bComplementedField( false )
+		primId( -1 ), baryA( 0 ), baryB( 0 ), bComplementedField( false ),
+		pScene( 0 ), pSelf( 0 ), ptWorld( 0, 0, 0 ), time( 0 )
 		{
 		}
 

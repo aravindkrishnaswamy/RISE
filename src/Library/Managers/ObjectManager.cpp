@@ -408,6 +408,30 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		}
 	}
 
+	// THE CROSS-OBJECT SIGNAL STAMP (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+	// §5.1).  ONE site, after traversal, on the WINNING record -- all three
+	// branches above (BVH4, octree, linear) fall through to here, and the
+	// per-candidate `myRI` copy-back happens INSIDE traversal, so nothing
+	// downstream can overwrite what is written here.  `pSelf` is copied from
+	// `ri.pObject` rather than recomputed, so the two identities can never
+	// disagree: `Object::IntersectRay` and `CSGObject::IntersectRay` both set
+	// `pObject` to themselves, so a CSG hit names the COMPOSITE and an operand
+	// -- never reached by the manager -- can never be `pSelf`.
+	//
+	// Written unconditionally, miss included: on a miss `pObject` is null and
+	// `ptIntersection` is whatever the record was constructed with, and a
+	// consumer of a missed record has nothing to read anyway.  Unconditional
+	// keeps this off the branch-predictor and matches the way the record's own
+	// per-hit signal payload is stamped (SurfaceSignalInfo's doc comment: a
+	// pointer plus a few scalars is cheaper to always write than to gate).
+	//
+	// `signals.time` is NOT stamped here -- the manager does not know an
+	// evaluating painter's time.  ExpressionPainter::BuildContext stamps it on
+	// its own copy; see the field's doc comment.
+	ri.geometric.signals.pScene  = this;
+	ri.geometric.signals.pSelf   = ri.pObject;
+	ri.geometric.signals.ptWorld = ri.geometric.ptIntersection;
+
 	if( !ri.geometric.bHit ) {
 		RISE_PROFILE_INC(nMisses);
 	}
