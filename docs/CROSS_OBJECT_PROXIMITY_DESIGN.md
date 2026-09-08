@@ -1,7 +1,9 @@
 # Cross-Object Proximity — a contact signal for grime, dust and wear
 
-**Status:** PROPOSED 2026-09-08, revised the same day after one adversarial
-round (two reviewers, 10 P1s: the SDF exactness claim, the bbox cost, the VM
+**Status:** PROPOSED 2026-09-08, revised the same day after two adversarial
+rounds (round 2: the projected-point SDF bound was NOT a bound — replaced by a
+bracketed sign change; `time` as a fourth stamped field; the AABB cache and the
+σ-extremes are new work; gates re-derived from the contact geometry; round 1: the SDF exactness claim, the bbox cost, the VM
 channel, the Box exemption, the query-memo key, a floating scene-D asset, an
 unpinned test F, lights, unmeasurable gates); driven by the scene set in §1;
 implementation phased in §8. **Predecessor:** cross-object *ambient occlusion*, re-measured and
@@ -29,15 +31,16 @@ must pass.
 |---|---|---|---|
 | A | `scenes/FeatureBased/Textures/plank_closeup.RISEscene` | SDF plank ← SDF nail lying on it | **The motivating case.** Dirt must collect along the nail's contact line and fade over a few millimetres. §8.1 showed no hemisphere AO sampler can draw this seam (0.65 at the silhouette, 0.96 four pixels out); a distance signal must read ~1 under the shank and ~0 at 4 mm. Also the cost reference: 16.33 ± 0.01 s with the memo. |
 | B | `scenes/FeatureBased/Textures/weathered_workbench.RISEscene` | box bench top ← SDF vise flange; infinite-plane floor ← box legs; box tray | The header declares grime under the flange "out of reach — occlusion() is self-occlusion only". The bench top is a `box_geometry` with **no signal provider at all**, so this proves the signal works on receivers outside the SDF/mesh families, and against analytic neighbours. |
-| C | `scenes/Tests/Signals/proximity_closed_forms.RISEscene` (new) | plane ← sphere (closed form `sqrt(s²+ρ²) − ρ`), plane ← box, plane ← cylinder lying flat, SDF ← tessellated mesh, an instanced copy, a `casts_shadows FALSE` neighbour, a CSG-subtraction receiver with its operands, a non-uniformly scaled SDF, a neighbour beyond the radius | Drives `ProximitySignalTest`: every family's distance against a closed form, the self-exclusion rule, the visibility rule (casts_shadows does not exempt), the CSG operand rule, the scale rule, and the radius cut-off. |
+| C | `scenes/Tests/Signals/proximity_closed_forms.RISEscene` (new) | plane ← sphere (closed form `sqrt(s²+ρ²) − ρ`), plane ← box, plane ← capped and open cylinder lying flat, plane ← disk, clipped plane, torus, ellipsoid; SDF ← tessellated mesh; a single-sphere SDF (exact field) and a composed `smin`/`subtract` SDF (bounded field); an instanced copy; a `casts_shadows FALSE` neighbour; a hand-authored emissive box; a CSG-subtraction receiver with its operands; a heightfield-mode SDF; a non-uniformly scaled SDF; a receiver point inside a neighbour; a neighbour below the receiver; a neighbour beyond the radius | Drives `ProximitySignalTest`: every Phase-1 family's distance against a closed form or its stated bound, the self-exclusion rule, the visibility rule (casts_shadows does not exempt; emitters never count), the CSG operand rule, the scale rule, interpenetration, the unsigned rule, the radius cut-off, and every neutral. |
 | D | `scenes/Tests/Signals/proximity_mesh_contact.RISEscene` (new) | plane ← `models/risemesh/bunny.risemesh` placed so its lowest vertex touches the plane; a second mesh (`dragon_small`) resting on the bunny; the plane also under a `casts_shadows FALSE` sphere and a `rect_light` panel 2 mm above it | The mesh-neighbour path (Phase 2) on real assets, at real contact. Showroom was the first choice and is REJECTED: its torus knot floats 0.69 m above its platform (mesh Y-range 0.989–2.005 m under `scale 0.008`, platform top 0.3 m), so no authorable radius reaches it. The light panel proves lights never count (§2). |
 | E | `scenes/FeatureBased/Geometry/sponza_new.RISEscene` (asset at `/Users/aravind/Working/Assets/main_sponza/...`) | 405 mesh objects, mesh ← mesh everywhere | Cost with the query forced at every hit (the §8.1 protocol), candidate-scan scaling at 405 objects, and a beauty check: dust where walls meet floor, the look production renderers get from Unreal's `DistanceToNearestSurface`. |
 | F | `tests/ProximityInvalidationTest` (no scene file) | a neighbour moved through `Cst::DeriveToJobIncremental` between two renders, and a neighbour keyframed across `RasterizeAnimation` frames | END-TO-END: the next render (and the next animation frame) sees the move with no bake to invalidate — the property the AO bake could not have (O(scene)). It does NOT isolate the move from the pass-entry generation bump, and does not claim to: the unit-level pin that no stale entry survives a pass boundary is `ExpressionMemoTest`'s generation red-proof, and the pin that the query memo clears is the new (n) row there. Per-sample motion blur is NOT exercised by any scene in this set and is a stated residual (§10). |
 
 A and B are production showcases and get the signal composed into their
-materials (the plank's dirt term at `proximity(0.004)` — 4 mm, the shank's base
-radius, against the header's 0.40 mm p50 pixel footprint; the bench's
-"deliberately NOT painted on" flange grime at `proximity(0.02)`). C, D and F are
+materials (the plank's dirt term at `proximity(0.002)` — 2 mm, half the shank's
+4 mm base radius, which the §8 model puts at a ~5 mm band against the header's
+0.40 mm p50 pixel footprint; the bench's "deliberately NOT painted on" flange
+grime at `proximity(0.02)`). C, D and F are
 tests; D doubles as the Phase-2 acceptance render. E is the cost ceiling and a
 beauty check. Not in the set, stated so nobody infers coverage: a CSG-composite
 receiver in a showcase (Phase 3 will take `pt_alchemists_sanctum` or
@@ -107,8 +110,9 @@ Conventions, matching the signal family (signals design §9):
   seams). Self-exclusion there is the material author's problem (the field
   includes the pixel's own mesh); ours is by object identity. Our closest
   analogue in intent and unit.
-- **Houdini** `xyzdist` / `ray` SOP: closest point on another geometry, world
-  units; the artist composes `1 − dist/r` masks by hand.
+- **Houdini** `xyzdist()`: closest point on another geometry, world units (the
+  Ray SOP is a directed projection, a different tool); the artist composes
+  `1 − dist/r` masks by hand.
 - **Blender** Geometry Nodes `Geometry Proximity`: closest point on a target
   geometry (not the whole scene), world units.
 - **Substance** has no cross-object proximity; its Thickness baker is self-only
@@ -134,8 +138,8 @@ From §8.1 (2026-09-07), all reproduced by independent reviewers:
 - **The live query's cost was measured uncached at 2.38× on plank_closeup**
   because the painter ran 14.28× per camera sample. The memo now makes any
   per-hit query cost once per hit; on plank that alone would have cut the AO
-  prototype's 2.38× toward ~1.1× (an ESTIMATE from the 14.28× redundancy, not a
-  measurement).
+  prototype's 2.38× toward ~1.1× (an ESTIMATE: `1 + (2.38 − 1)/14.28 = 1.10`,
+  not a measurement).
 - **Invalidation of any bake is O(scene)** (Sponza median 33 neighbours per move,
   worst 93 %, and infinite planes invisible to a bbox census). **A live query has
   nothing to invalidate.** With the memo's generation already bumped at every
@@ -155,28 +159,37 @@ The AO prototype published the object manager as a process global and called it
 a painter needs is stamped on the intersection record** — and the record already
 has the typed, `const`, memoised, fallback-owning channel for signal queries:
 `SurfaceSignalInfo`. The VM does not read `signals` from `ExprEvalContext`; it is
-threaded to `RunAny` / `CallFunc` as a separate `const SurfaceSignalInfo*`, which
-is why a *second* channel would mean a fifth parameter on `CallFunc` and `RunAny`
-and a pass-through in `Eval` / `EvalVec3` — the surface the memo's FP contract
-pins. So `SurfaceSignalInfo` gains three fields:
+threaded to `RunAny` / `CallFunc` as a separate `const SurfaceSignalInfo*`
+(`pSignals == &ctx.signals`), which is why a *second* channel would mean a fifth
+parameter on `CallFunc` and `RunAny` and a pass-through in `Eval` / `EvalVec3` —
+the surface the memo's FP contract pins. So `SurfaceSignalInfo` gains **four**
+fields:
 
 ```cpp
 const IObjectManager* pScene;    // the manager that found this hit; 0 = none
 const IObject*        pSelf;     // == ri.pObject, the object the hit belongs to
 Point3                ptWorld;   // the hit in world space (== ri.ptIntersection)
+Scalar                time;      // the painter's m_time, see §5.4
 ```
 
-all defaulted to null/zero in the constructor, enumerated in the record's
-hand-written copy constructor and `operator=`, **not** in `PropagateCastInputs`
-(inputs only), and explicitly **declined** in `AdoptCsgSurfacePayload` (the stamp
-happens above CSG resolution and names the composite). They are stamped in one
-place, `ObjectManager::IntersectRay( RayIntersection&, … )`, after traversal, on
-the winning record, with `pSelf` copied from `ri.pObject` so the two identities
-can never disagree (`Object::IntersectRay` and `CSGObject::IntersectRay` both set
-`pObject` to themselves; a CSG hit therefore names the composite, and operands —
-never reached by the manager — can never be `pSelf`). The per-candidate `myRI`
-copy-back happens inside traversal and is unaffected. Every path (BVH4, octree,
-linear) converges there.
+The first three are stamped in one place, `ObjectManager::IntersectRay(
+RayIntersection&, … )`, after traversal, on the winning record, with `pSelf`
+copied from `ri.pObject` so the two identities can never disagree
+(`Object::IntersectRay` and `CSGObject::IntersectRay` both set `pObject` to
+themselves; a CSG hit therefore names the composite, and operands — never reached
+by the manager — can never be `pSelf`). All three branches of that function
+(BVH4, octree, linear) fall through to one tail, and the per-candidate `myRI`
+copy-back happens inside traversal, so the stamp is unaffected. The fourth,
+`time`, is stamped by `ExpressionPainter::BuildContext` (the manager does not
+know a painter's time; the VM's `CallFunc` has no time parameter). All four are
+zero-initialised in `SurfaceSignalInfo`'s constructor. The record's hand-written
+copy constructor and `operator=` copy `signals` as a whole struct and
+`AdoptCsgSurfacePayload` assigns it wholesale, so the new fields ride along
+without edits; **the invariant that makes the stamp survive to the painter is
+that nothing assigns `signals` after `ObjectManager::IntersectRay` returns** —
+true today (the only writers are the two geometry intersectors and CSG adoption,
+all below the stamp, and `BuildContext`'s read) and pinned by a grep in
+`SourceHygieneTest`. `PropagateCastInputs` (inputs only) does not carry it.
 
 BDPT/VCM/MLT records rebuilt by `PathVertexEval::PopulateRIGFromVertex` carry the
 defaults and read the neutral 0. **This declines `PathVertexEval.h`'s written
@@ -187,23 +200,42 @@ declined it for the three existing signals: the gap is already disclosed, the
 fix is the same widening for all four, and widening for one would leave a
 mixed-truth state. The new fields are added to that contract's list as declined.
 
-The three fields enter the L2 memo key as part of the `signals` block
-(`SignalHitKey::kFields` 11 → 16: two pointers and three scalars;
-`ProgramKey::kFields` 29 → 34). **That moves memo eligibility** — bodies of 29–33
-instructions stop qualifying under `ComputeMemoWorthiness`'s
-`instrs >= kFields` rule — a perf-only, bit-identical change, disclosed in the
-commit and in §6.5 of the convexity doc, not treated as bookkeeping.
+**Memo keys.** The four fields enter `SignalHitKey` (11 → 17: two pointers, three
+scalars, `time`) and therefore `ProgramKey` (29 → 35) and `SignalKey` (3 + 17 =
+20; `time` is unconditional, not gated on the query kind — a conditional field
+in a POD compared by `Equals` is not expressible and would hide a correctness
+split). `ptWorld` duplicates `P` inside `ProgramKey`; three redundant compares
+on every L2 probe, accepted for one key layout rather than an L1-only tail, and
+disclosed. `Tables` grows 1440 → 1792 bytes per worker, inside
+`ExpressionMemoTest` (g)'s 2048 ceiling, which the test keeps asserting.
+**Memo eligibility moves** with `kFields` (bodies of 29–34 instructions with no
+signal and no noise call stop qualifying — `ComputeMemoWorthiness` returns true
+early for any signal or noise call, so only pure-arithmetic bodies are affected):
+perf-only, bit-identical, disclosed in the commit and in §6.5 of the convexity
+doc.
 
-The builtin is `proximity(r)`, id `kFnProximity` past `kFnConvexityDynR`, with
-**no `DynR` twin** (there is no bake, so a computed radius is fine). `CallFunc`
-gains exactly one `case`, which calls `SurfaceSignalInfo::Proximity(r)`. This is
-the one deliberate move of the byte-identity contract on `CallFunc`; the commit
-says so, `ExpressionMemo.h`'s header is updated to pin the new bodies, and
+**The builtin.** `proximity(r)`, id `kFnProximity = 57` (ids 57–59 are free;
+60–62 belong to `CallFuncVec3`), with **no `DynR` twin** (there is no bake, so a
+computed radius is fine). `ParseCall`'s `isSignalFn` three-way test gates three
+things that must be extended for the new id — the `expression_function2d`
+refusal, the `m_sigCalls` registration (which drives `ComputeMemoWorthiness`'s
+early-out and `SurfaceSignalDemand`), and the literal-radius diagnostic — and
+must NOT extend a fourth, the `DynR` remap. The diagnostic's text hard-codes
+"radius … is a FRACTION of the object's own size … not a world length"; for
+`proximity` it must say the opposite. `CallFunc` gains exactly one named `case`,
+`case kFnProximity:` → `pSignals->Proximity( a[0] )`. This is the one deliberate
+move of the byte-identity contract on `CallFunc`; the commit says so,
+`ExpressionMemo.h`'s header is updated to pin the new bodies, and
 `TextureExpressionVMTest` (846) plus `ExpressionMemoTest`'s bit-equality rows are
-the gate. `SignalKey.fn` gains the value 3 so the existing **L1 memo** covers the
-query with no new level: the plank's colour, roughness and relief stencil calls at
-one hit share one entry, exactly as `occlusion` does today. Its key gains `time`
-(see §5.4).
+the gate. `Eval`, `EvalVec3`, `RunAny`, `CallFuncVec3` stay byte-identical.
+
+`SurfaceSignalInfo::Proximity(r)` is a **second policy body** beside
+`SignalQuery`, not a fourth branch of it: `SignalQuery` is gated on
+`pProvider && RadiusUsable(r)`, and scene B's receiver — a `box_geometry` — has
+no provider (`pProvider == 0`, which short-circuits to the neutral). `Proximity`
+is gated on `pScene && pSelf && RadiusUsable(r) && finite(ptWorld)` instead, and
+shares the L1 find/insert helper (one table, `fn = 3`) so the two bodies cannot
+drift on memo policy while owning different preconditions.
 
 The query itself is one tail-appended `const` method on `IObjectManager`, the
 convention that interface already uses (`IntersectOcclusionRay`, 2026-09-07):
@@ -223,50 +255,70 @@ matrices and joins that race, no wider.
 
 ### 5.2 The query — exact or upper-bounded distances per family, no rays
 
-`NearestOtherSurface` walks the candidate set — objects whose **prepared world
-bbox** expanded by `maxDist` contains the point, skipping `self`, world-invisible
-objects and emitters — asks each for its distance in its own object space,
-converts to world length, and keeps the minimum. Two new virtuals with refusing
-defaults (every concrete geometry derives from `Geometry`; the only direct
-`IObject` implementers outside `Object`/`CSGObject` are two test stubs, which a
-defaulted method leaves compiling):
+`NearestOtherSurface` walks the candidate set — objects whose **cached world
+AABB** expanded by `maxDist` contains the point, skipping `self`, world-invisible
+objects (`IsWorldVisible()`, the filter `IntersectOcclusionRay` uses; this is
+what excludes CSG operands, which ARE registered in the manager's map) and
+emitters (`GetMaterial() && GetMaterial()->GetEmitter()`, the same predicate
+`LuminaryManager` uses to decide what NEE samples) — asks each for its distance
+in its own object space, converts to world length, and keeps the minimum. Two
+new virtuals with refusing defaults (every concrete geometry derives from
+`Geometry`; the only direct `IObject` implementers outside `Object`/`CSGObject`
+are two test stubs, which a defaulted method leaves compiling):
 
 - `IGeometry::DistanceToSurface( ptObject, maxDistObject, outDist ) → bool`
 - `IObject::DistanceToSurface( ptWorld, maxDistWorld, outDist ) → bool`
 
-**The candidate scan reads cached world AABBs.** `Object::getBoundingBox()`
+**The world-AABB cache is new work, not a free byproduct.** `PrepareForRendering`
+computes no bounding boxes itself: world AABBs are computed inside `CreateBVH()`
+/ `CreateOctree()`, which run only when `items.size() > nMaxObjectsPerNode` (4)
+and `!pBVH`, so a ≤4-object scene never builds one, an existing TLAS short-
+circuits, and `ObjectManager::IntersectRay` has a lazy `CreateBVH()` path for
+callers that skipped `PrepareForRendering`. `Object::getBoundingBox()` itself
 transforms eight corners through the world matrix on every call (tens of
-nanoseconds, plus a virtual), so a naive scan of Sponza's 405 objects is
-20–40 µs per query, not the ~1 µs a cached scan costs — at §8.1's ~27 M hits per
-Sponza frame that is the difference between +7 % and 3×. So
-`ObjectManager::PrepareForRendering` (which already computes every world AABB to
-build the TLAS) keeps them in a flat array the scan reads; the TLAS point query
-(walk `nodes4[]` for boxes containing the point) is the Phase-2 upgrade if the
-flat scan measures above budget on E. Infinite-bbox objects (planes: `±RISE_INFINITY`
-corners, some axes overflowing to ±inf after the transform) are **unconditional
-candidates** — §8.1's warning that a bbox census cannot see them is met by
-admitting them always, which is correct since a plane is within `r` of every
-point near it and its closed form answers exactly.
+nanoseconds plus a virtual), so a naive scan of Sponza's 405 objects is 20–40 µs
+per query, not ~1 µs — at §8.1's ~27 M hits per Sponza frame the difference
+between +7 % and 3×. So Phase 1 adds a flat `{world AABB, const IObjectPriv*}`
+array on the manager, **built unconditionally** in `PrepareForRendering` after
+`RealizeAllObjects()` (an unrealized displaced geometry reports a zero bbox) and
+`RebakeHierarchy()` (which can move transforms), cleared in
+`InvalidateSpatialStructure()` alongside `pBVH`/`pOctree`, and built on the lazy
+`IntersectRay` path too. It is a `mutable` member written under the existing
+`treeCreationMutex`, joining the manager's existing prepare-time mutable set;
+the query reads it lock-free. Infinite planes need no rule: their bbox is
+`±RISE_INFINITY` (= `DBL_MAX`, which `IsFiniteDouble` reports finite; under a
+translation-only transform it stays `±DBL_MAX`, under rotation some axes
+overflow to ±inf) and either box contains every point under ordinary
+containment with no NaN, so they are admitted by the same test as everything
+else. An implementer must **not** skip non-finite boxes to dodge NaN, or every
+plane disappears. The TLAS point query (walk `nodes4[]` for boxes containing the
+point) is the Phase-2 upgrade if the flat scan measures above budget on E.
 
-**Transform.** The point goes to object space through `GetFinalInverseTransformMatrix()`,
-the radius through the inverse of the cached `|det|^(1/3)` length scale, the
-answer back through the length scale. Exact for rotations, reflections and
-uniform scale. For a general linear map `M` a point-to-surface distance
-satisfies `σ_min·d_o ≤ d_w ≤ σ_max·d_o` (the map stretches every displacement
-by a factor in `[σ_min, σ_max]`, and the nearest surface point in one space
-bounds the other's), so v1 reports **`σ_max·d_o` — the upper bound** — for
-non-uniform scale or shear (error factor ≤ `σ_max/σ_min`, disclosed once in the
-log), never the geometric mean, which could over-read contact. Boxes get no
-exemption: `BoxGeometry` stores object-space extents like every other family;
-the workbench's boxes are exact because their transforms are translation-only.
+**Transform.** The point goes to object space through `GetFinalInverseTransformMatrix()`.
+For an invertible linear map `M` (translations cancel) a point-to-set distance
+satisfies `σ_min·d_o ≤ d_w ≤ σ_max·d_o`: `d_w = min_q |M(p−q)|` and
+`σ_min|v| ≤ |Mv| ≤ σ_max|v|`, so evaluating at the object-space minimiser gives
+the upper bound and bounding the world minimiser from below gives the lower. The
+engine caches only `|det|^(1/3)` today (`m_worldLinearScale`); Phase 1 adds
+**σ_max and σ_min** to `FinalizeTransformations` (the extreme singular values of
+the upper 3×3 — `sqrt` of the extreme eigenvalues of `MᵀM`, a closed-form 3×3
+symmetric eigenproblem, finalize-time not hot-path). The query converts the
+radius **into** object space by `r / σ_min` (a candidate within world `r` has
+`d_o ≤ r/σ_min`), and converts the answer **back** by `σ_max` — the upper bound,
+the safe direction: over-reading contact means reporting `d` too small, and
+`σ_max·d_o ≥ d_w`. For rotations, reflections and uniform scale `σ_max = σ_min`
+and the answer is exact; otherwise the error factor is ≤ `σ_max/σ_min`, disclosed
+once in the log. Boxes get no exemption: `BoxGeometry` stores object-space
+extents like every other family; the workbench's boxes are exact because their
+transforms are translation-only.
 
 **Per family — and the honest exactness of each:**
 
 | Family | Distance | Exactness | Phase |
 |---|---|---|---|
-| Infinite plane, sphere, box, capped and open cylinder, disk, clipped plane, torus | closed forms in the geometry's own parameterisation | exact | 1 |
+| Infinite plane, sphere, box, capped and open cylinder (`m_bCapped`, axis + `m_dAxisMin/Max`), disk, clipped plane, torus | closed forms in the geometry's own parameterisation | exact | 1 |
 | Ellipsoid | scaled-sphere bound | upper bound, ≤ ratio of semi-axes | 1 |
-| SDF / skeleton | see below | **upper bound**, gap measured in C | 1 |
+| SDF / skeleton | bracketed sign change, below | **upper bound**, gap measured in C | 1 |
 | Indexed triangle mesh (every loader but RAW; tessellated primitives; `displaced_geometry`'s internal mesh) | closest point on the mesh's own BVH: a bounded-radius traversal ordered by AABB distance, pruning past the running best, point–triangle distance at the leaves | exact (identical to brute force under the same point–triangle formula; node boxes are conservative `float`, sound for pruning) | 2 |
 | Non-indexed mesh (RAW) | refuses (no BVH) | — | — |
 | CSG composite | refuses in v1 (its surface is not the min of its operands' under subtraction/intersection); union-min with the exact boundary test is Phase 3 | — | 3 |
@@ -279,82 +331,116 @@ field by the part's conservative `minScale`, and `smin`/`smax` composition
 report **less** than the true distance — the plank is `roundbox union` +
 `box subtract`, the nail `roundcone union` + `box intersect` + `cylinder smin`,
 and the plank header's own measurement is a 6.7× under-read for a part scaled
-`(0.15, 1, 1)` *inside* object space (a per-part scale, nothing to do with the
-object transform). Reporting the field directly would over-read contact by an
-unbounded factor. So an SDF neighbour answers with a **projected-point upper
-bound**: from the query point `p`, iterate `p ← p − Map(p)·∇Map(p)` (central
-differences, the same gradient the intersector uses) until `|Map(p)| < ε` or a
-small step budget is spent; a point on the zero set is a point on the surface,
-so `|p − p_surface|` is ≥ the true distance and is reported. The field's own
-value is the matching **lower bound**, used only to skip a candidate early
-(`Map(p) > maxDist` ⇒ farther than `r`, no projection needed) and to certify the
-answer in tests. On fields that are exact outside (a single `union` part at
-uniform part scale, e.g. one sphere) the two bounds coincide and scene C asserts
-that to 1e-9; on composed fields C reports the gap against a grid-search
-reference and asserts `lower ≤ reported ≤ reference + tolerance`. Heightfield
-mode refuses, as for the other signals.
+`(0.15, 1, 1)` *inside* object space. Reporting the field directly would
+over-read contact by an unbounded factor. **A projected point does not fix it
+either**: stopping a gradient descent at `|Map| < ε` on an under-reading field
+does not place the point within ε of the surface (the shortfall is `ε/shrink`,
+6.7ε on that part, and blend seams flatten the gradient further), so `|p − p_k|`
+can be *smaller* than the true distance — the forbidden direction.
+
+What IS rigorous is the field's **sign**: the surface is by definition the zero
+set the intersector renders, so any point with `Map ≤ 0` is on or inside the
+solid and the segment from `p` (outside, `Map(p) > 0`) to it crosses the
+surface. Hence an SDF neighbour answers with a **bracketed inside point**:
+
+1. early-out on the lower bound — `Map_o(p) > maxDist_o ⇒ true d > maxDist`
+   (under-read means `Map ≤ d`), skip; in world terms the skip converts the
+   radius by `σ_min`, so it can only produce a false *negative* (safe);
+2. descend `p ← p − Map(p)·∇̂Map(p)` (normalised central-difference gradient,
+   the intersector's own `GradientNormal`; a step of `|Map|` along `−∇̂` cannot
+   overshoot a 1-Lipschitz field's zero set, so the iteration is monotone from
+   outside) for at most `N_d` iterations;
+3. probe past the last descent point along `−∇̂` with a doubling step starting
+   at `max(ε, Map(p_k))` until `Map ≤ 0` or the accumulated path exceeds
+   `maxDist`; the first inside point `q` found gives the answer `|p − q|`,
+   which is ≥ the true distance because the surface lies on the segment;
+4. **no crossing within budget or within `maxDist` ⇒ refuse** (this candidate
+   contributes nothing) — never the unconverged point's distance, which would
+   over-read contact.
+
+The over-report is bounded by the last probe step; C's composed-SDF fixture
+measures the gap `reported − reference` against a fine grid search and asserts
+`lower ≤ reported` and `reported ≤ reference + gap_max` with `gap_max` recorded
+as a number, not a claim. On fields exact outside (one `union` sphere at uniform
+part scale) the bounds coincide and C asserts 1e-9. Heightfield mode refuses, as
+for the other signals.
+
+**Cost of the SDF path, stated honestly:** `GradientNormal` is six `Map()` calls
+and the step needs a seventh, so each descent iteration is **7 × O(parts)**
+evaluations; with `N_d = 6` and ~4 probes that is ≤ 46 `Map()` per SDF candidate
+per hit (2 parts on the plank, 3 on the nail). On plank_closeup that is of the
+same order as one `occlusion(0.03)` call today (~182 field evaluations) — paid
+once per hit through L1, not per painter call.
 
 ### 5.3 Cost, and why it is bounded
 
 Per hit, once: the L1 memo makes every painter's `proximity(r)` call at one hit
-share one entry (the plank's colour, roughness and four relief taps), and the L2
-memo makes each painter's whole evaluation once per hit — the same two levels,
-with the measured 96.2 % / 82.7 % hit rates on plank; the L1 rate for the new
-query is a Phase-1 gate, not an assumption, because it is what keeps the
-candidate scan at ~one per hit rather than the ~2.4 that L2's misses alone would
-give. Per query: one cached-AABB scan over N objects (405 on Sponza), one
-closed-form or field evaluation per candidate (SDF: ≤ 8 field evaluations for
-the projection), mesh `O(log n)` expected. Deterministic, no sampling, no noise.
-TLS budget: the L1 `SignalKey` grows by five fields (~40 B × 4 ways) and the L2
-`ProgramKey` by the same; `ExpressionMemoTest` (g)'s 2048-byte ceiling holds
-(1440 → ~1760 B per worker) and the test asserts it.
+share one entry (the plank's colour, roughness and four relief taps — the taps
+hit by construction, because `ReliefModifier` holds `signals` fixed across its
+stencil), and the L2 memo makes each painter's whole evaluation once per hit —
+the same two levels, with the measured 96.2 % / 82.7 % hit rates on plank; the
+L1 rate for the new query is a Phase-1 gate, not an assumption, because it is
+what keeps the candidate scan at ~one per hit rather than the ~2.4 that L2's
+misses alone would give. Per query: one cached-AABB scan over N objects (405 on
+Sponza), then per candidate a closed form `O(1)`, an SDF ≤ 46 × O(parts) field
+evaluations, a mesh `O(log n)` expected. Deterministic, no sampling, no noise.
+
+**A consequence of riding `signals`:** `ReliefModifier` holds `signals` fixed
+across its four taps (so a `curv`- or `occlusion`-driven height has zero
+gradient by documented design), and `proximity` inherits that — **a
+`proximity`-driven height expression produces no relief.** Stated in §10 and
+in the skill; the seam is a colour/roughness signal, not a displacement one.
 
 ### 5.4 Invalidation
 
 **None to build.** The query is live against the scene the pass was prepared
 with. What makes a moved neighbour visible to the next render is the
 **unconditional generation bump at every render-pass entry**
-(`PixelBasedRasterizerHelper`'s three entries: "whatever moved since the last
-one … is covered here even if it travelled through a seam the enumerated
-mutation sites do not name") — not `DeriveToJobIncremental`, which commits the
-document and returns without preparing anything. The agent's `quality:"draft"`
-preview runs `InteractivePelRasterizer` through the same helper and shades
-materials, so it pays the full query; Phase 1 measures it.
+(`PixelBasedRasterizerHelper`'s three entries, each ahead of its camera
+null-check: "whatever moved since the last one … is covered here even if it
+travelled through a seam the enumerated mutation sites do not name") — not
+`DeriveToJobIncremental`, which commits the document and returns without
+preparing anything — and, per animation frame, `ObjectManager::PrepareForRendering`'s
+own unconditional bumps. The agent's `quality:"draft"` preview runs
+`InteractivePelRasterizer` through the same helper and shades materials, so it
+pays the full query; Phase 1 measures it.
 
 **Per-sample motion blur is where this signal's failure mode differs from the
 other three.** For `occlusion`/`convexity`/`thickness` anything that moves the
 answer moves the receiver and hence the key. For `proximity` a *neighbour* can
-move while the receiver's world point is unchanged. The query's L1 key therefore
-carries `time` (the painter's `m_time`, the same field L2 keys on), which covers
-keyframed painters; a non-keyframed painter's `time` is constant, and for it the
-argument is the family's: every temporal sample carries its own sub-pixel jitter,
-so a bit-identical receiver point across two samples essentially does not occur.
-Stated as a residual in §10; no scene in §1 exercises it.
+move while the receiver's world point is unchanged. The `time` field (§5.1)
+covers keyframed painters; a non-keyframed painter's `time` is constant, and for
+it the argument is the family's: every temporal sample carries its own sub-pixel
+jitter, so a bit-identical receiver point across two samples essentially does
+not occur. Stated as a residual in §10; no scene in §1 exercises it.
 
 ### 5.5 What does not change
 
 The existing `occlusion` / `thickness` / `convexity` semantics, radius unit and
 providers are untouched; `proximity` is a new builtin with its own explicit unit,
 never a widening. `Eval`, `EvalVec3`, `RunAny` and `CallFuncVec3` stay
-byte-identical; `CallFunc` gains one `case` and its new body becomes the pinned
-one.
+byte-identical; `CallFunc` gains one named `case` and its new body becomes the
+pinned one.
 
 ---
 
 ## 6. Engine principles, checked
 
-- **Scene immutable after Prepare:** the query is `const`, reads prepared
-  geometry, transforms and cached AABBs, builds nothing lazily. No `mutable`, no
-  locks. The one pre-existing race (per-sample `EvaluateAtTime`) is inherited,
-  not added.
+- **Scene immutable after Prepare:** the query is `const` and lock-free over
+  prepared geometry, transforms and the cached AABBs; the cache itself is a
+  `mutable` member filled under `treeCreationMutex` at prepare time, joining
+  `pBVH`/`pOctree`/`shadowCache` in the manager's existing sanctioned set. The
+  one pre-existing race (per-sample `EvaluateAtTime`) is inherited, not added.
 - **Painters as pure functions of the hit and the scene:** the scene reaches the
   painter through the record's existing signal channel, typed and `const`; the
   query evaluates no painter and casts no ray, so there is no reentrancy and no
   new control-flow shape.
 - **Neutral fallback** 0 everywhere the channel is null, the point or radius is
   unusable, or every neighbour refuses.
-- **Explicit radius unit:** world length, in the descriptor, the skill and every
-  sentence that mentions it.
+- **Never over-read contact:** every family is exact or an upper bound on
+  distance (§5.2), including the transform.
+- **Explicit radius unit:** world length, in the descriptor, the skill, the
+  parse-time diagnostic and every sentence that mentions it.
 - **Named managers / refcounting untouched:** non-owning back-pointers with the
   lifetime argument `SurfaceSignalInfo` already makes (a manager and an object
   outlive every record they stamp).
@@ -369,43 +455,65 @@ one.
 
 `proximity(r)` in the expression descriptor and the `procedural-textures` skill
 beside `occlusion`/`convexity`, with one worked example (the nail's contact line
-at `proximity(0.004)`) and the unit stated in every sentence that mentions the
-radius; scene A and B headers updated to say the term is now real. `add_wear` is
-not extended in v1 (it composes per-object signals; a cross-object term needs
-the author to choose the radius from the scene's feature sizes).
+at `proximity(0.002)`), the unit stated in every sentence that mentions the
+radius, and the two facts an author needs: it drives colour and roughness, not
+relief; emissive objects do not count. Scene A and B headers updated to say the
+term is now real. `add_wear` is not extended in v1 (it composes per-object
+signals; a cross-object term needs the author to choose the radius from the
+scene's feature sizes).
 
 ---
 
 ## 8. Phases and gates
 
-**Phase 1 — the query, the record channel, the builtin, the cached AABBs, SDF +
-analytic families, scenes A/B/C, tests C and F.** Gate, all numeric:
+Gates are derived from the contact geometry, not from a picture. The local
+model for a body of cross-section radius `ρ` resting on a plane is
+`d(s) = sqrt(s² + ρ²) − ρ` at lateral offset `s` from the touchdown line, and
+`proximity(r) = clamp(1 − d/r, 0, 1)`.
+
+**Phase 1 — the query, the record channel, the builtin, the AABB cache, the
+σ-extremes, SDF + analytic families, scenes A/B/C, tests C and F.** Gate:
 
 - warning-free build; `ProximitySignalTest` closed forms within 1e-9 on C's exact
-  fixtures, and `lower ≤ reported ≤ reference + 1e-6·r` on its composed-SDF
-  fixture; `ExpressionMemoTest` extended (five new key fields separate,
-  red-proved; the query memo clears on a bump; TLS ≤ 2048 B);
-  `TextureExpressionVMTest` 846/846; test F green;
-- **plank_closeup, probe protocol from §8.1** (albedo = raw signal ÷ white
-  control, 16 spp, relief modifiers stripped): `proximity(0.004)` on the plank's
-  top face ≥ 0.75 within 1 px (0.4 mm) of the shank silhouette, ≤ 0.10 at ≥ 10 px
-  (4 mm), 0.00 on the open plank; the beauty crop is judged after the numbers,
-  not instead of them; cost ≤ 1.15 × 16.33 s;
-- **weathered_workbench**: `proximity(0.02)` on the bench top ≥ 0.5 within 5 mm of
-  the flange edge and 0 beyond 20 mm; cost ≤ 1.10 × its memo baseline;
+  fixtures (plane, sphere, box, both cylinders, disk, clipped plane, torus), the
+  ellipsoid within its stated ratio, and `lower ≤ reported ≤ reference + gap_max`
+  on its composed-SDF fixture with `gap_max` reported; `ExpressionMemoTest`
+  extended (four new key fields separate in L1 and L2 rows, red-proved; the
+  query entry clears on a bump; TLS ≤ 2048 B); `TextureExpressionVMTest`
+  846/846; test F green;
+- **plank_closeup, `proximity(0.002)`, probe protocol from §8.1** (albedo = raw
+  signal ÷ white control, 16 spp, relief modifiers stripped), at three stations
+  along the shank (near the head, mid, near the tip) where the local `ρ` is
+  4 / 2.5 / 1 mm: at 1 px (0.4 mm) from the silhouette ≥ 0.9 at every station —
+  this is also the **contact check**: a shank floating by `g` reads `1 − g/2 mm`
+  there, and the scene's `-6°` nose-down may not put the shank in tangency
+  (the head is thicker; full-length tangency needs ≈ 2.6°), so Phase 1 measures
+  the gap with the signal and adjusts the nail's pitch until every station
+  passes; at 10 px (4 mm) ≤ 0.2 (model: 0.17 at ρ = 4 mm); at ≥ 20 px (8 mm) 0;
+  0 on the open plank; cost ≤ 1.15 × 16.33 s;
+- **weathered_workbench, `proximity(0.02)`**: the flange is a `roundbox` with
+  18 mm corner rounding on a 21 mm half-height, so the touchdown is a
+  quarter-circle of `ρ = 18 mm` and the model gives 0.966 / 0.555 / 0 at
+  5 / 20 / 33.5 mm from the touchdown line: gate ≥ 0.9 within 5 mm, ≤ 0.6 at
+  20 mm, 0 beyond 35 mm; cost ≤ 1.10 × its memo baseline;
+- the draft preview (`InteractivePelRasterizer`) on A: cost measured and stated;
 - L1 hit rate for `proximity` on plank ≥ 80 % (temporary counter, removed).
 
 **Phase 2 — mesh closest point on the BVH (indexed meshes, displaced); the TLAS
 point query if E's scan measures above budget.** Gate: closest point identical to
 brute force over every triangle on ≥ 10⁵ random points (same point–triangle
-formula) and within 1e-9 of the closed form on a tessellated sphere; scene D's
-plane reads ≥ 0.5 within 5 mm of the bunny's footprint at `proximity(0.02)` and
-0 under the light panel; Sponza with the query forced at every hit ≤ 1.25 × its
-baseline and the floor within 2 cm of a wall ≥ 0.5 at `proximity(0.04)`.
+formula) and within 1e-9 of the closed form on a tessellated sphere; scene D
+placed by the test (it loads the mesh, reads `GenerateBoundingBox()`, positions
+the object so the lowest vertex touches the plane, and prints the value the
+scene file records in its header with that method) reads ≥ 0.9 within 2 mm of
+the bunny's footprint at `proximity(0.02)` and 0 under the light panel; Sponza
+with the query forced at every hit ≤ 1.25 × its baseline and the floor within
+2 cm of a wall ≥ 0.5 at `proximity(0.04)`.
 
 **Phase 3 — observed-need:** CSG union-min with the exact boundary test (and a
 CSG showcase beauty check on `pt_alchemists_sanctum` or `glass_pavilion`);
-anisotropic transforms exactly; a signed variant; the `add_wear` composition.
+anisotropic transforms exactly; a signed variant; the `add_wear` composition;
+the emissive-decorative-object exclusion (§10) revisited if a scene needs it.
 
 Each phase runs the implementation-review-loop to zero P1 before merge.
 
@@ -413,21 +521,29 @@ Each phase runs the implementation-review-loop to zero P1 before merge.
 
 ## 9. Test plan
 
-- `tests/ProximitySignalTest.cpp` on scene C: closed forms per exact family;
-  the composed-SDF bound; self-exclusion; the instanced copy counts (named);
-  `casts_shadows FALSE` counts; an emitter does not; CSG operands never count
-  and the composite refuses (v1); heightfield SDF refuses; the non-uniform-scale
-  upper bound (`σ_max`); radius cut-off exactly at `r`; a neighbour BELOW the
-  receiver reads the same as one above (unsigned); neutral 0 with a null channel
-  and with a non-finite point; the builtin end-to-end through an
-  `ExpressionPainter` at a real hit.
-- `tests/ExpressionMemoTest.cpp`: five new `SignalHitKey` fields separate in
-  both L1 and L2 rows; `time` in the query key; the generation clears the query
-  memo (red-proved); the TLS ceiling.
+- `tests/ProximitySignalTest.cpp` on scene C: closed forms per exact family
+  (plane, sphere, box, capped and open cylinder, disk, clipped plane, torus);
+  the ellipsoid bound; the composed-SDF bound with `gap_max`; the exact single-
+  sphere SDF at 1e-9; self-exclusion; the instanced copy counts (named); a
+  `casts_shadows FALSE` neighbour counts; an emissive neighbour does not (the
+  fixture is a hand-authored emissive box, so the disclosed decorative-object
+  exclusion is what the test pins); CSG operands never count and the composite
+  refuses (v1); heightfield SDF refuses; the non-uniform-scale upper bound
+  (`σ_max`, and the `r/σ_min` candidate conversion cannot miss a neighbour
+  within `r`); radius cut-off exactly at `r`; a neighbour BELOW the receiver
+  reads the same as one above (unsigned); **interpenetration reads 1** (a point
+  inside a neighbour); neutral 0 with a null channel, with a non-finite point,
+  and with a computed radius ≤ 0 or non-finite; the builtin end-to-end through
+  an `ExpressionPainter` at a real hit.
+- `tests/ExpressionMemoTest.cpp`: the four new `SignalHitKey` fields separate in
+  both L1 and L2 rows; the generation clears the query memo (red-proved); the
+  TLS ceiling.
 - `tests/ProximityInvalidationTest.cpp` (F): derive, render a probe pixel, move
   the neighbour through `DeriveToJobIncremental`, render again — the value
   changes; move it beyond `r` — it reads 0; a keyframed neighbour across
   `RasterizeAnimation` frames — each frame's value matches a fresh evaluation.
+- `SourceHygieneTest`: no assignment to `.signals` outside the two intersectors,
+  CSG adoption, and `BuildContext`.
 - Phase 2: `MeshClosestPointTest` differential against brute force; scene D's
   probe values.
 
@@ -438,10 +554,17 @@ Each phase runs the implementation-review-loop to zero P1 before merge.
 - BDPT/VCM/MLT rebuilt records read 0 (the family's disclosed gap; the
   `PathVertexEval` contract is explicitly declined for the same reason as for
   the other three signals).
-- Refusing families (RAW meshes, patches, hair, CSG composites in v1) read far.
-- SDF neighbours are an upper bound on distance (never over-read contact); the
-  gap is measured on C, not bounded analytically.
+- Refusing families (RAW meshes, patches, hair, CSG composites in v1, heightfield
+  SDFs) read far.
+- SDF neighbours are an upper bound on distance (never over-read contact),
+  bounded by the last probe step; the gap is measured on C, not bounded
+  analytically. A candidate whose crossing is not found within budget reads far.
 - Non-uniform scale and ellipsoids are upper-bounded, not exact, in v1.
+- **Emissive objects never count**, including decorative ones (a lava pool, a
+  glowing rune) that should collect contact; the predicate is per object and
+  RISE binds one material per object. Phase 3 if a scene needs it.
+- **`proximity` cannot drive relief**: `ReliefModifier` holds `signals` fixed
+  across its stencil by documented design.
 - Per-sample motion blur: a neighbour moving under a non-keyframed painter can
   serve a stale query-memo entry only at a bit-identical receiver point, which
   sub-pixel jitter makes essentially unreachable; no scene in §1 exercises it.
@@ -449,5 +572,6 @@ Each phase runs the implementation-review-loop to zero P1 before merge.
   is the measured ceiling, the TLAS point query the upgrade.
 - The signal is unsigned: it cannot distinguish "just above the floor" from
   "just below it"; a signed variant needs an inside test per family (Phase 3).
-- The memo-eligibility threshold moves with `kFields` (29 → 34); bit-identical,
-  perf-only, disclosed.
+- The memo-eligibility threshold moves with `kFields` (29 → 35) for
+  pure-arithmetic bodies; bit-identical, perf-only, disclosed. `ptWorld` is a
+  redundant compare in the L2 key.
