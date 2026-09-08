@@ -345,13 +345,13 @@ namespace RISE
 			//! Function ids of the NOISE FAMILY.  Named, and named HERE
 			//! rather than left implicit in the FnSig table's row order,
 			//! because FIVE other sites depend on their exact values, not
-			//! just their order: the FnSig table itself (~:1061-1069,
+			//! just their order: the FnSig table itself (its `perlin` .. `cellhash` rows,
 			//! constructed from these names), the memo's compile-time
 			//! worthiness gate (Builder::ComputeMemoWorthiness, which
 			//! tests "is this instruction a noise call" as a RANGE over
 			//! [kFnNoiseFirst, kFnNoiseLast]), ParseCall's `isNoiseFn`
-			//! (~:2031, gates the domain-scale Jacobian and NoiseFwScales),
-			//! CallFunc's `case 42:` .. `case 50:` labels (~:2406-2439,
+			//! (gates the domain-scale Jacobian and NoiseFwScales),
+			//! CallFunc's `case 42:` .. `case 50:` labels (in its switch,
 			//! part of the VM's byte-identical-since-ca3bb2f4 surface and
 			//! therefore bare literals ON PURPOSE, never these names), and
 			//! ExpressionMemoTest (g), which exercises the gate at a live
@@ -406,7 +406,7 @@ namespace RISE
 				"memo gate deliberately EXCLUDES, and the only thing expressing that exclusion "
 				"is kFnNoiseLast's value" );
 			//! ABSOLUTE pins, one per constant.  CallFunc's `case 42:` ..
-			//! `case 50:` labels (~:2406-2439) are bare literals ON
+			//! `case 50:` labels (in its switch) are bare literals ON
 			//! PURPOSE -- that function's body is byte-identical-pinned
 			//! against an earlier commit, so it cannot spell these names.
 			//! These asserts are what turn a renumber of ANY single
@@ -603,7 +603,8 @@ namespace RISE
 			//! That check IS one of the exact-`==` sites -- but note that
 			//! the exact-compared subset of that suite is NARROW (about
 			//! fifteen `==` sites, all in the noise-with-`fw` block, plus
-			//! one exact-compare CheckClose(...,0,...) pin at ~:366; its
+			//! one exact-compare CheckClose(...,0,...) pin (search the file for
+			//! `viaOld, viaNew, 0`); its
 			//! 254 CheckClose sites are otherwise all a TOLERANCE, 1e-15
 			//! included -- see ExpressionMemo.h's "MEASURED, by counting
 			//! the file" paragraph for the full breakdown).  What is

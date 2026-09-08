@@ -55,20 +55,26 @@
 //  246 of them use one of four fixed tolerances -- 1e-9 (132), 1e-12
 //  (88), 1e-6 (13) and 1e-15 (13; NOT "about nineteen" -- an earlier
 //  draft miscounted).  Of the remaining 8: six pass a variable named
-//  `tol` (the world/object multi-axis-rotate checks, ~:2444-2460), one
-//  passes a literal 0.05 (the NM/RGB JH-uplift-tolerance check,
-//  ~:2925), and ONE passes a literal 0 -- ~:366,
+//  `tol` (the world/object multi-axis-rotate checks), one
+//  passes a literal 0.05 (the NM/RGB JH-uplift-tolerance check), and ONE
+//  passes a literal 0 -- search the file for `viaOld, viaNew, 0` --
 //  `CheckClose( viaOld, viaNew, 0, "Eval(u,v) == Eval(context) with
 //  zeroed extras" )`, inside a 5-iteration loop.  So "every one of them
 //  is a tolerance" is false, and so is "not one is an exact compare":
-//  :366 IS an exact compare of two VM-result doubles, and it is exactly
+//  that pin IS an exact compare of two VM-result doubles, and it is exactly
 //  a cross-entry-point pin (Eval(u,v) vs Eval(context)) -- relevant to
 //  the pipe-tag hazard MakeMemoKey's comment covers.  The `==`
-//  comparisons of a VM RESULT are about FIFTEEN, all in ONE OTHER
-//  block -- tests/TextureExpressionVMTest.cpp ~:3463-4444, i.e.
-//  TestFbmFootprintFadeBitIdentityAtZero, TestExpressionVMFwEndToEnd, the
-//  six TestFbmDomainScale* tests and the four TestPoDomain* twins --
-//  PLUS the one CheckClose(...,0,...) site at ~:366 outside that range.
+//  comparisons of a VM RESULT are FIFTEEN, across thirteen Check sites
+//  in seven tests near the end of tests/TextureExpressionVMTest.cpp
+//  (search it for `== ` against a `prog.Eval` result):
+//  TestExpressionVMFwEndToEnd (2), TestFbmDomainScaleConsistency (1),
+//  TestFbmDomainScaleBitIdentity (1), TestFbmDomainScaleFallbacks (5),
+//  TestFbmDomainScaleSubtractionIsConservative (2),
+//  TestPoDomainConsistencyAcrossTransform (2) and
+//  TestPoDomainCompileTimeSplit (2).  (TestFbmFootprintFadeBitIdentityAtZero
+//  is NOT one of them: its `==` compares two direct NoiseCore calls, and its
+//  VM-vs-golden check is a 1e-15 CheckClose.)  PLUS the one
+//  CheckClose(...,0,...) pin described above, outside that block.
 //  (The file's other `==` uses compare result TYPES, parse-error
 //  OFFSETS, param-spec strings, and the stochastic-tile / scatter
 //  determinism flags -- not arithmetic.)
@@ -79,7 +85,7 @@
 //  perlin, worley, ramp, mix, dot, cross, length or normalize -- or in
 //  the triplanar / voronoi rows -- is NOT: every one of those lands
 //  inside a tolerance and the suite stays green at 846.  (The lone
-//  exact-compare CheckClose at ~:366 does not close this gap either --
+//  exact-compare CheckClose pin does not close this gap either --
 //  it pins Eval(u,v) against Eval(context) at the SAME call, not
 //  against a golden value, so it only catches the two entry points
 //  disagreeing with EACH OTHER, not a one-ulp shift shared by both.)
@@ -357,16 +363,16 @@ namespace RISE
 		//!
 		//! THAT JITTER CLAIM RESTS ON A GATE, named here so a future API
 		//! change is auditable rather than silently widening this window.
-		//! `PixelBasedRasterizerHelper::SubSampleRays` (~:2566-2573)
+		//! `PixelBasedRasterizerHelper::SubSampleRays`
 		//! installs the pixel filter that supplies the jitter only when a
 		//! sampling kernel is also present (`if( pSampling ) pPixelFilter
 		//! = pPixelFilter_;`), and every `RISE_API_Create*Rasterizer`
-		//! factory (RISE_API.cpp, ~:9155 and its seven siblings) only
+		//! factory (RISE_API.cpp, eight of them) only
 		//! calls `SubSampleRays` with a real filter under `if( pSamples &&
 		//! pFilter )` -- so a rasterizer built with samples but no filter,
 		//! or a filter but no samples, leaves `pPixelFilter` null.  The
 		//! per-sample loop's `else` branch for that case
-		//! (PathTracingPelRasterizer.cpp ~:399-400,
+		//! (PathTracingPelRasterizer.cpp's per-sample loop,
 		//! `ptOnScreen = Point2( x, height-y )`) has NO jitter at all --
 		//! every sample in a pixel lands on the SAME point -- and is only
 		//! unreachable in practice because every shipped factory routes
@@ -422,7 +428,7 @@ namespace RISE
 		//! hot path reads a plain `bool` out of the thread-local table.
 		//!
 		//! WHY CALLING GlobalOptions() HERE, FROM A RENDER WORKER, IS SAFE.
-		//! `GlobalOptions()` (Options.cpp ~:136) is an UNGUARDED lazy
+		//! `GlobalOptions()` (Options.cpp) is an UNGUARDED lazy
 		//! singleton -- `static Options* pGlobal; if( !pGlobal ) { ... }`,
 		//! no mutex, no double-checked-locking pattern -- so a first call
 		//! racing between two threads would be a data race.  It is already
