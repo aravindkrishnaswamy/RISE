@@ -257,8 +257,9 @@ This was the single biggest VCM win in the sprint (−14 % wall).
 ### [Thread-local expression memo](../src/Library/Utilities/ExpressionMemo.h)
 
 A two-level per-hit memo for the texture-expression VM and the geometry
-shading signals it calls, entirely in `thread_local` fixed-size tables (1408
-bytes per worker, no heap, no locks, no sharing).  L1 keys a signal builtin on
+shading signals it calls, entirely in `thread_local` fixed-size tables (1440
+bytes per worker since the L2 key gained its `pipe` tag, 1408 before; no
+heap, no locks, no sharing).  L1 keys a signal builtin on
 (query, every field of the hit's `SurfaceSignalInfo`); L2 keys a whole compiled
 program on (process-unique program id, every field of `ExprEvalContext`).  Both
 compare keys exactly, never hash.  A process-wide generation counter, bumped at

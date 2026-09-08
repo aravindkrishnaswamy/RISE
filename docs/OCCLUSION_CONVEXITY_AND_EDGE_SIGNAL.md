@@ -716,9 +716,10 @@ that recomputed on every would-be hit and compared (zero mismatches over 421.5 M
 L1 and 320.3 M L2 probes): **L1 96.2 %, L2 82.7 %**. L1 saturates at two ways
 (the body makes two distinct queries) and L2 at eight (four captures 82.7 of the
 84.9 points available). Storage is **1408 bytes of thread-local per worker**,
-24.7 kB across 18 — **1440 bytes / 25.9 kB since the L2 key gained its `pipe`
-field** (2026-09-07 review round 1); `ExpressionMemoTest` (g) prints the live
-figure and asserts a 2048-byte ceiling rather than either number.
+25.3 kB across 18 — **1440 bytes / 25.9 kB since the L2 key gained its `pipe`
+field** (2026-09-07 review round 1; both kB figures are decimal, not KiB);
+`ExpressionMemoTest` (g) prints the live figure and asserts a 2048-byte ceiling
+rather than either number.
 
 **The image check is a NOISE-FLOOR COMPARISON, not a bit comparison, and it
 cannot be anything else: there is no render seed to pin.** The CLI seeds the
