@@ -51,27 +51,40 @@
 //  TextureExpressionVMTest's "846 checks bit-compare RunAny's results
 //  with `==`".
 //
-//  MEASURED, by counting the file: it has ~254 CheckClose call sites and
-//  EVERY ONE OF THEM IS A TOLERANCE -- 1e-9 and 1e-12 dominate, with a
-//  handful at 1e-6 and about nineteen at 1e-15.  Not one is an exact
-//  compare, 1e-15 included: that band is tight, but a one-ulp shift on an
-//  O(1) value is ~2e-16 and passes straight through it.  The `==`
-//  comparisons of a VM RESULT are about FIFTEEN, all in ONE block --
-//  tests/TextureExpressionVMTest.cpp ~:3463-4444, i.e.
+//  MEASURED, by counting the file: it has 254 CheckClose call sites.
+//  246 of them use one of four fixed tolerances -- 1e-9 (132), 1e-12
+//  (88), 1e-6 (13) and 1e-15 (13; NOT "about nineteen" -- an earlier
+//  draft miscounted).  Of the remaining 8: six pass a variable named
+//  `tol` (the world/object multi-axis-rotate checks, ~:2444-2460), one
+//  passes a literal 0.05 (the NM/RGB JH-uplift-tolerance check,
+//  ~:2925), and ONE passes a literal 0 -- ~:366,
+//  `CheckClose( viaOld, viaNew, 0, "Eval(u,v) == Eval(context) with
+//  zeroed extras" )`, inside a 5-iteration loop.  So "every one of them
+//  is a tolerance" is false, and so is "not one is an exact compare":
+//  :366 IS an exact compare of two VM-result doubles, and it is exactly
+//  a cross-entry-point pin (Eval(u,v) vs Eval(context)) -- relevant to
+//  the pipe-tag hazard MakeMemoKey's comment covers.  The `==`
+//  comparisons of a VM RESULT are about FIFTEEN, all in ONE OTHER
+//  block -- tests/TextureExpressionVMTest.cpp ~:3463-4444, i.e.
 //  TestFbmFootprintFadeBitIdentityAtZero, TestExpressionVMFwEndToEnd, the
-//  six TestFbmDomainScale* tests and the four TestPoDomain* twins.  (The
-//  file's other `==` uses compare result TYPES, parse-error OFFSETS,
-//  param-spec strings, and the stochastic-tile / scatter determinism
-//  flags -- not arithmetic.)
+//  six TestFbmDomainScale* tests and the four TestPoDomain* twins --
+//  PLUS the one CheckClose(...,0,...) site at ~:366 outside that range.
+//  (The file's other `==` uses compare result TYPES, parse-error
+//  OFFSETS, param-spec strings, and the stochastic-tile / scatter
+//  determinism flags -- not arithmetic.)
 //
 //  SO THE HONEST CLAIM IS NARROW.  A one-ulp shift inside fbm /
 //  turbulence / ridged with a live `fw`, or inside the compile-time
 //  domain-scale analysis that feeds them, IS caught.  A one-ulp shift in
 //  perlin, worley, ramp, mix, dot, cross, length or normalize -- or in
 //  the triplanar / voronoi rows -- is NOT: every one of those lands
-//  inside a tolerance and the suite stays green at 846.  No other suite
-//  closes the gap either; SurfaceSignalsTest and friends band their own
-//  checks at 1e-9 / 1e-12.
+//  inside a tolerance and the suite stays green at 846.  (The lone
+//  exact-compare CheckClose at ~:366 does not close this gap either --
+//  it pins Eval(u,v) against Eval(context) at the SAME call, not
+//  against a golden value, so it only catches the two entry points
+//  disagreeing with EACH OTHER, not a one-ulp shift shared by both.)
+//  No other suite closes the gap either; SurfaceSignalsTest and friends
+//  band their own checks at 1e-9 / 1e-12.
 //
 //  AND THERE IS DELIBERATELY NO WHOLE-VM GOLDEN to close it.  A recorded
 //  table of expected bit patterns would be a PLATFORM artefact, not a
@@ -342,6 +355,26 @@ namespace RISE
 		//! impossible; the same window the pre-existing motion-blur race
 		//! already opens for everything else on that path.
 		//!
+		//! THAT JITTER CLAIM RESTS ON A GATE, named here so a future API
+		//! change is auditable rather than silently widening this window.
+		//! `PixelBasedRasterizerHelper::SubSampleRays` (~:2566-2573)
+		//! installs the pixel filter that supplies the jitter only when a
+		//! sampling kernel is also present (`if( pSampling ) pPixelFilter
+		//! = pPixelFilter_;`), and every `RISE_API_Create*Rasterizer`
+		//! factory (RISE_API.cpp, ~:9155 and its seven siblings) only
+		//! calls `SubSampleRays` with a real filter under `if( pSamples &&
+		//! pFilter )` -- so a rasterizer built with samples but no filter,
+		//! or a filter but no samples, leaves `pPixelFilter` null.  The
+		//! per-sample loop's `else` branch for that case
+		//! (PathTracingPelRasterizer.cpp ~:399-400,
+		//! `ptOnScreen = Point2( x, height-y )`) has NO jitter at all --
+		//! every sample in a pixel lands on the SAME point -- and is only
+		//! unreachable in practice because every shipped factory routes
+		//! through that `pSamples && pFilter` gate.  A future API surface
+		//! that can construct a rasterizer with samples but no filter
+		//! would silently open exactly the collision this paragraph
+		//! argues does not occur.
+		//!
 		//! THE BUMP IS A RELEASE.  That is what makes "bump AFTER the
 		//! mutation" mean anything to a concurrent reader: the release
 		//! publishes every write the mutating thread did before it, and
@@ -387,6 +420,24 @@ namespace RISE
 		//! Is the memo enabled?  Consulted ONLY when a thread's table is
 		//! stale (once per generation per thread), never per lookup -- the
 		//! hot path reads a plain `bool` out of the thread-local table.
+		//!
+		//! WHY CALLING GlobalOptions() HERE, FROM A RENDER WORKER, IS SAFE.
+		//! `GlobalOptions()` (Options.cpp ~:136) is an UNGUARDED lazy
+		//! singleton -- `static Options* pGlobal; if( !pGlobal ) { ... }`,
+		//! no mutex, no double-checked-locking pattern -- so a first call
+		//! racing between two threads would be a data race.  It is already
+		//! materialised, single-threaded, before any render worker exists:
+		//! the thread pool's own sizing reads `render_thread_reserve_count`
+		//! through `GlobalOptions()` (`CPUTopology.cpp`'s
+		//! `ResolveReserveE`) to decide HOW MANY workers to spawn, which
+		//! necessarily runs before the spawn.  This function's own
+		//! function-local static below adds a second, independent
+		//! guarantee for its own callers: the first render worker to reach
+		//! a stale table blocks every other one on the same static's
+		//! initialization guard until `fromOptions` is set, so even a
+		//! hypothetical future caller of `EnabledSlow()` that raced ahead
+		//! of the thread-pool read would still see a serialised, one-shot
+		//! read here rather than a racing one.
 		inline bool EnabledSlow()
 		{
 			const int ov = EnableOverrideRef().load( std::memory_order_relaxed );
@@ -442,7 +493,7 @@ namespace RISE
 			bool		bComplementedField;
 
 			//! FIELDS THIS COMPARES: 11.  Counted here, next to the body,
-			//! and summed into kProgramKeyFields below -- which is what
+			//! and summed into ProgramKey::kFields below -- which is what
 			//! ExpressionProgram::Builder::ComputeMemoWorthiness uses as
 			//! its instruction-count threshold, so the two cannot drift.
 			//! ADDING A FIELD ABOVE MEANS ADDING IT TO Equals AND
