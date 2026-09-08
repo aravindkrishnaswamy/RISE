@@ -409,8 +409,45 @@ static void TestBoundedFamilies( const Fixture& f )
 			// roughly [-1.6, 1.6] in x and [-1, 1.4] in y, so a cube of
 			// [-2, 2] at 200 steps (spacing 0.02, diagonal 0.035) covers
 			// the solid with room to spare.
+			const Scalar kLo = Scalar( -2 ), kHi = Scalar( 2 );
+			const int    kSteps = 200;
+
+			// THE CUBE MUST CONTAIN THE SOLID, and that is asserted rather
+			// than assumed.  The grid bounds are hard-coded to this
+			// fixture's parts (two unit spheres at x = +/-0.6, a 0.5
+			// subtractor at y = 0.9); an edit to those that pushed the
+			// solid past [-2, 2] would silently make the reference wrong --
+			// too large, or missing the nearest region entirely -- and the
+			// gap assertion below would then pass or fail for a reason that
+			// has nothing to do with the bracket.  A solid strictly inside
+			// the cube has NO inside point on the cube's boundary, which is
+			// exactly what this scans for.
+			bool solidTouchesBoundary = false;
+			{
+				const Scalar span = ( kHi - kLo ) / Scalar( kSteps );
+				for( int i = 0; i <= kSteps && !solidTouchesBoundary; ++i ) {
+					for( int j = 0; j <= kSteps && !solidTouchesBoundary; ++j ) {
+						const Scalar u = kLo + span * Scalar( i );
+						const Scalar v = kLo + span * Scalar( j );
+						const Point3 faces[6] = {
+							Point3( kLo, u, v ), Point3( kHi, u, v ),
+							Point3( u, kLo, v ), Point3( u, kHi, v ),
+							Point3( u, v, kLo ), Point3( u, v, kHi ) };
+						for( int fI = 0; fI < 6; ++fI ) {
+							if( SDFGeometry::EvaluateParts( sdf->GetParts(), faces[fI] ) <= Scalar( 0 ) ) {
+								solidTouchesBoundary = true;
+								break;
+							}
+						}
+					}
+				}
+			}
+			Check( !solidTouchesBoundary,
+				"(b) the grid cube [-2,2]^3 strictly CONTAINS the composed solid, so the "
+				"reference below is a search over the whole of it" );
+
 			const Scalar reference = GridSearchDistanceToSolid(
-				sdf->GetParts(), pObj, Scalar( -2 ), Scalar( 2 ), 200 );
+				sdf->GetParts(), pObj, kLo, kHi, kSteps );
 
 			// gap_max, DERIVED and then MEASURED.  The two contributions
 			// are the grid's own diagonal (sqrt(3) * 0.02 = 0.0347, since
