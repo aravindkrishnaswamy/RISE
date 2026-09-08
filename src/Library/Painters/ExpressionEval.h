@@ -344,24 +344,37 @@ namespace RISE
 
 			//! Function ids of the NOISE FAMILY.  Named, and named HERE
 			//! rather than left implicit in the FnSig table's row order,
-			//! because a second site depends on them: the memo's
-			//! compile-time worthiness gate
-			//! (Builder::ComputeMemoWorthiness) tests "is this instruction
-			//! a noise call" as a RANGE over these ids.  Before 2026-09-07
-			//! that site carried the bare literals `42` and `49`, so
-			//! inserting a builtin anywhere in the band -- or appending a
-			//! noise builtin past its top -- would have silently changed or
-			//! silently missed the gate with nothing to catch it.
+			//! because FIVE other sites depend on their exact values, not
+			//! just their order: the FnSig table itself (~:1061-1069,
+			//! constructed from these names), the memo's compile-time
+			//! worthiness gate (Builder::ComputeMemoWorthiness, which
+			//! tests "is this instruction a noise call" as a RANGE over
+			//! [kFnNoiseFirst, kFnNoiseLast]), ParseCall's `isNoiseFn`
+			//! (~:2031, gates the domain-scale Jacobian and NoiseFwScales),
+			//! CallFunc's `case 42:` .. `case 50:` labels (~:2406-2439,
+			//! part of the VM's byte-identical-since-ca3bb2f4 surface and
+			//! therefore bare literals ON PURPOSE, never these names), and
+			//! ExpressionMemoTest (g), which exercises the gate at a live
+			//! noise body.  Before 2026-09-07 the ComputeMemoWorthiness
+			//! site carried the bare literals `42` and `49`, so inserting a
+			//! builtin anywhere in the band -- or appending a noise builtin
+			//! past its top -- would have silently changed or silently
+			//! missed the gate with nothing to catch it.
 			//!
-			//! The band is CONTIGUOUS and the static_asserts below say so;
+			//! The band is CONTIGUOUS and the static_asserts below say so
+			//! two ways: relative (the shape of the run) and ABSOLUTE (the
+			//! actual numbers CallFunc's un-renamed case labels use, so a
+			//! whole-band renumber is caught too, not just a shape change).
 			//! `cellhash` sits immediately past its top end and is
 			//! deliberately OUTSIDE it (a single integer hash is not
 			//! expensive enough to earn a memo entry on its own).  A NEW
-			//! noise builtin must therefore extend the band -- take
-			//! `cellhash`'s id and renumber it upward, or (better) give the
-			//! new one an id inside a widened band and re-point
-			//! kFnNoiseLast at it.  Appending one at some far id and
-			//! leaving these alone would leave it un-memoised.
+			//! noise builtin takes the next free id past `kFnCellHash`'s
+			//! neighbours and extends the band ONLY by also updating
+			//! CallFunc's cases and the asserts below -- there is no
+			//! renumbering trick that avoids touching CallFunc, because its
+			//! case labels are literals by design (see above) and the
+			//! asserts exist precisely to make forgetting that a build
+			//! error instead of a silent gate mismatch.
 			static const int kFnPerlin      = 42;
 			static const int kFnFbm         = 43;
 			static const int kFnTurbulence  = 44;
@@ -392,6 +405,22 @@ namespace RISE
 				"cellhash must stay immediately past the noise band: it is the first id the "
 				"memo gate deliberately EXCLUDES, and the only thing expressing that exclusion "
 				"is kFnNoiseLast's value" );
+			//! ABSOLUTE pins, one per constant.  CallFunc's `case 42:` ..
+			//! `case 50:` labels (~:2406-2439) are bare literals ON
+			//! PURPOSE -- that function's body is byte-identical-pinned
+			//! against an earlier commit, so it cannot spell these names.
+			//! These asserts are what turn a renumber of ANY single
+			//! constant above into a build error instead of a silent
+			//! mismatch between this table and CallFunc's literals.
+			static_assert( kFnPerlin     == 42, "CallFunc's `case 42:` is perlin" );
+			static_assert( kFnFbm        == 43, "CallFunc's `case 43:` is fbm" );
+			static_assert( kFnTurbulence == 44, "CallFunc's `case 44:` is turbulence" );
+			static_assert( kFnRidged     == 45, "CallFunc's `case 45:` is ridged" );
+			static_assert( kFnWorleyF1   == 46, "CallFunc's `case 46:` is worley_f1" );
+			static_assert( kFnWorleyF2   == 47, "CallFunc's `case 47:` is worley_f2" );
+			static_assert( kFnWorleyF2F1 == 48, "CallFunc's `case 48:` is worley_f2f1" );
+			static_assert( kFnWorleyId   == 49, "CallFunc's `case 49:` is worley_id" );
+			static_assert( kFnCellHash   == 50, "CallFunc's `case 50:` is cellhash" );
 
 			//! Function ids of the two GEOMETRY-DERIVED SIGNAL builtins
 			//! (design doc Phase 2).  Named constants rather than bare
@@ -547,7 +576,7 @@ namespace RISE
 			unsigned long long ProgramId() const { return m_id; }
 
 			//! Is this program worth an L2 memo entry?  Decided ONCE, at
-			//! compile time, because the memo's own key comparison is 28
+			//! compile time, because the memo's own key comparison is 29
 			//! exact compares (ExpressionMemo::ProgramKey::kFields) and a
 			//! body like `u*v` is cheaper to re-run than to look up.
 			//!
@@ -573,11 +602,14 @@ namespace RISE
 			//! a reference computed in its own translation unit with `==`.
 			//! That check IS one of the exact-`==` sites -- but note that
 			//! the exact-compared subset of that suite is NARROW (about
-			//! fifteen sites, all in the noise-with-`fw` block; its ~254
-			//! CheckClose sites are every one of them a TOLERANCE, 1e-15
-			//! included).  What is guarded and
-			//! what is not is set out once, in ExpressionMemo.h's "HOW MUCH
-			//! OF THAT CONTRACT IS ACTUALLY TESTED"; read it before relying
+			//! fifteen `==` sites, all in the noise-with-`fw` block, plus
+			//! one exact-compare CheckClose(...,0,...) pin at ~:366; its
+			//! 254 CheckClose sites are otherwise all a TOLERANCE, 1e-15
+			//! included -- see ExpressionMemo.h's "MEASURED, by counting
+			//! the file" paragraph for the full breakdown).  What is
+			//! guarded and what is not is set out once, in
+			//! ExpressionMemo.h's "HOW MUCH OF THAT CONTRACT IS ACTUALLY
+			//! TESTED"; read it before relying
 			//! on the suite to catch an ulp.  The VM's arithmetic is a
 			//! contract regardless of how much of it a test can see, and a
 			//! cache is not allowed to move it.  So the program exposes
@@ -2025,7 +2057,9 @@ namespace RISE
 					// domain of argument 0, so remember exactly which
 					// instructions that argument emits and differentiate
 					// them once the call is fully parsed.
-					const bool isNoiseFn = ( sig->id == 43 || sig->id == 44 || sig->id == 45 );
+					const bool isNoiseFn = ( sig->id == ExpressionProgram::kFnFbm ||
+					                         sig->id == ExpressionProgram::kFnTurbulence ||
+					                         sig->id == ExpressionProgram::kFnRidged );
 					size_t posArgStart = 0, posArgEnd = 0;
 
 					int scalarArity = 0;
