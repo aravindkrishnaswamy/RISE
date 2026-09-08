@@ -213,15 +213,31 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 	// same one with freshly realized geometry.  Drop every thread's
 	// tables (Utilities/ExpressionMemo.h).
 	//
-	// TWICE: once here, because whatever swapped the scene or the geometry
-	// did so BEFORE we were called (so every table is stale on entry, and
-	// the realize pass below evaluates painters); and once on the way out,
-	// on EVERY exit -- hence the scope guard -- because a thread that
-	// adopts this bump's generation mid-function would otherwise re-fill
-	// from geometry the realize pass has not reached yet and stamp that
-	// answer with a generation nothing will ever drop.
+	// TWICE, and the two halves carry DIFFERENT weight.
+	//
+	// The TRAILING bump, on EVERY exit -- hence the scope guard, and the
+	// realize pass below can throw -- is the load-bearing one: without it
+	// a thread that adopts a mid-function generation could re-fill from
+	// geometry the realize pass has not reached yet and stamp that answer
+	// with a generation nothing will ever drop.
+	//
+	// The ENTRY bump is DEFENCE IN DEPTH.  It used to be justified by "the
+	// realize pass below evaluates painters, and a displacement painter
+	// can be an expression" -- but that mechanism cannot actually read a
+	// stale entry.  Realize-time displacement goes through
+	// GeometryUtilities.cpp's ApplyScalarHeightToObject, which evaluates
+	// with `ri.signals` DEFAULT-constructed (its own comment says so), or
+	// through ApplyDisplacementMapToObject, which takes an IFunction2D and
+	// has no hit record at all -- so neither keys an L1 entry against a
+	// provider; and L2 cannot be stale for them either,
+	// since `m_time` is in the key and a painter's `param`s are folded
+	// into a program whose id is minted fresh by every Finalize.  The bump
+	// is one atomic increment at a seam that is about to rebuild a TLAS,
+	// so it is kept as cover for a future realize-time consumer that DOES
+	// carry a provider -- but nothing today depends on it.
+	// (ExpressionMemo.h's Invalidate() comment is the single account.)
 	ExpressionMemo::Invalidate();
-	struct MemoDropOnExit { ~MemoDropOnExit() { ExpressionMemo::Invalidate(); } } memoDropOnExit;
+	const ExpressionMemo::DropOnScopeExit memoDropOnExit;
 
 	// ----------------------------------------------------------------
 	// REALIZE PASS (Phase 1, 2026-06-13).  Single-threaded materialize of

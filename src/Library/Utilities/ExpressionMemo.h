@@ -45,14 +45,52 @@
 //  stored `double` bit for bit and does no arithmetic of its own, and
 //  that is a property any change to it must keep.
 //
-//  THE GUARD IS TextureExpressionVMTest -- 846 checks, which bit-compare
-//  RunAny's results with `==` against references computed in that test's
-//  own translation unit.  It is the ONLY suite that would notice a
-//  one-ulp shift: SurfaceSignalsTest and friends band their signal checks
-//  at 1e-12 and would pass straight through one.  So: after ANY change to
-//  L1, to SignalQuery, or to what either of them is inlined into,
-//  TextureExpressionVMTest staying green at its full count is the check
-//  that matters, not the memo suite's own differentials.
+//  HOW MUCH OF THAT CONTRACT IS ACTUALLY TESTED -- stated exactly,
+//  because an earlier draft of this comment overstated it and the
+//  overstatement was repeated in three other files.  It said
+//  TextureExpressionVMTest's "846 checks bit-compare RunAny's results
+//  with `==`".
+//
+//  MEASURED, by counting the file: it has ~254 CheckClose call sites and
+//  EVERY ONE OF THEM IS A TOLERANCE -- 1e-9 and 1e-12 dominate, with a
+//  handful at 1e-6 and about nineteen at 1e-15.  Not one is an exact
+//  compare, 1e-15 included: that band is tight, but a one-ulp shift on an
+//  O(1) value is ~2e-16 and passes straight through it.  The `==`
+//  comparisons of a VM RESULT are about FIFTEEN, all in ONE block --
+//  tests/TextureExpressionVMTest.cpp ~:3463-4444, i.e.
+//  TestFbmFootprintFadeBitIdentityAtZero, TestExpressionVMFwEndToEnd, the
+//  six TestFbmDomainScale* tests and the four TestPoDomain* twins.  (The
+//  file's other `==` uses compare result TYPES, parse-error OFFSETS,
+//  param-spec strings, and the stochastic-tile / scatter determinism
+//  flags -- not arithmetic.)
+//
+//  SO THE HONEST CLAIM IS NARROW.  A one-ulp shift inside fbm /
+//  turbulence / ridged with a live `fw`, or inside the compile-time
+//  domain-scale analysis that feeds them, IS caught.  A one-ulp shift in
+//  perlin, worley, ramp, mix, dot, cross, length or normalize -- or in
+//  the triplanar / voronoi rows -- is NOT: every one of those lands
+//  inside a tolerance and the suite stays green at 846.  No other suite
+//  closes the gap either; SurfaceSignalsTest and friends band their own
+//  checks at 1e-9 / 1e-12.
+//
+//  AND THERE IS DELIBERATELY NO WHOLE-VM GOLDEN to close it.  A recorded
+//  table of expected bit patterns would be a PLATFORM artefact, not a
+//  contract: the production macOS build is `-ffast-math`
+//  (build/make/rise/Config.OSX), so the compiler may contract multiplies
+//  and adds into FMAs, reassociate, and vectorise differently per target,
+//  per compiler version and per inlining decision.  Such a golden would
+//  go red on the next Xcode with nothing wrong, and the only way to keep
+//  it green would be to re-record it -- which is not a test.  The narrow
+//  `==` block above survives precisely because it compares two
+//  evaluations WITHIN one translation unit and one build, where those
+//  freedoms cancel.
+//
+//  SO, AFTER ANY CHANGE to L1, to SignalQuery, or to what either of them
+//  is inlined into: TextureExpressionVMTest green at its full 846 is
+//  NECESSARY BUT NOT SUFFICIENT.  Read the diff for arithmetic that moved
+//  into or out of the memo path, and keep L1 doing exactly what it does
+//  today -- returning a stored `double` bit for bit, with no arithmetic
+//  of its own.
 //
 //  WHAT MAKES IT SOUND.  A compiled ExpressionProgram is a PURE function
 //  of (program, ExprEvalContext): the VM holds no mutable state, every
@@ -144,17 +182,24 @@ namespace RISE
 			return g;
 		}
 
+		//! ACQUIRE, matching Invalidate()'s release.  A thread that sees a
+		//! new generation here must also see every write the bumping thread
+		//! made before bumping -- which is the whole content of "bump AFTER
+		//! the mutation" (see Invalidate()).  Free in practice: on x86-64
+		//! and arm64 an acquire load of a naturally-aligned word is the
+		//! same instruction as a relaxed one, and this is the only atomic
+		//! on the memo's hot path.
 		inline unsigned long long Generation()
 		{
-			return GenerationRef().load( std::memory_order_relaxed );
+			return GenerationRef().load( std::memory_order_acquire );
 		}
 
 		//! DROP EVERY THREAD'S MEMO.  Call at every seam where scene state
 		//! can change between render passes; within a pass the scene is
-		//! immutable so nothing needs to call it.  Cheap (one relaxed
-		//! atomic increment) and safe to over-call -- the cost of a
-		//! spurious bump is one cold table per thread, never a wrong
-		//! answer.
+		//! immutable so nothing needs to call it.  Cheap (one
+		//! release-ordered atomic increment) and safe to over-call -- the
+		//! cost of a spurious bump is one cold table per thread, never a
+		//! wrong answer.
 		//!
 		//! THE ENUMERATED BUMP SITES:
 		//!   * Scene::SetSceneTime            -- every keyframed mutation
@@ -190,33 +235,55 @@ namespace RISE
 		//!
 		//! EVERY ONE OF THOSE FOUR BUMPS AFTER ITS MUTATION, and three of
 		//! them BEFORE it as well; each site says which and why.  The
-		//! ordering is not cosmetic.
+		//! trailing bump is the load-bearing half everywhere; the entry
+		//! bump is load-bearing at exactly ONE of the three.
 		//!
-		//!   * AFTER is the half that cannot be dropped.  A bump that
-		//!     lands only BEFORE the mutation is a hazard: a concurrent
-		//!     reader adopts the new generation, misses (its tables were
-		//!     just dropped), asks a provider still holding the OLD
-		//!     state, and inserts that stale answer stamped NEW -- where
-		//!     nothing will ever drop it.  Bumping last leaves every
-		//!     table filled from old state on the old generation.
-		//!   * BEFORE is needed wherever the seam DOES WORK OF ITS OWN
-		//!     THAT EVALUATES PAINTERS, because the mutation the seam
-		//!     reacts to has usually already happened when it is called:
-		//!     Scene::SetSceneTime regenerates photon maps (the animator
-		//!     moved the keyframes before it was called), and
-		//!     ObjectManager::PrepareForRendering / RayCaster::AttachScene
-		//!     run the realize pass (a displacement painter can be an
-		//!     expression).  Without an entry bump that work could read
-		//!     the PREVIOUS frame's tables.
+		//!   * AFTER is the half that cannot be dropped, at any site.  A
+		//!     bump that lands only BEFORE the mutation is a hazard: a
+		//!     concurrent reader adopts the new generation, misses (its
+		//!     tables were just dropped), asks a provider still holding
+		//!     the OLD state, and inserts that stale answer stamped NEW --
+		//!     where nothing will ever drop it.  Bumping last leaves every
+		//!     table filled from old state on the old generation.  It is
+		//!     taken on EVERY exit, including an exceptional one, via
+		//!     DropOnScopeExit below.
+		//!   * BEFORE is load-bearing at Scene::SetSceneTime ONLY, and for
+		//!     a specific reason: that seam's own work regenerates the
+		//!     photon maps, and `Regenerate()` traces REAL rays through
+		//!     the scene -- shading at real hits, against real providers,
+		//!     with a populated `ri.signals` -- after the animator has
+		//!     already moved the keyframes (SDF part fields included).
+		//!     Without the entry bump that tracing could answer from the
+		//!     PREVIOUS frame's tables.
+		//!   * BEFORE at ObjectManager::PrepareForRendering and
+		//!     RayCaster::AttachScene is DEFENCE IN DEPTH, not a fix for
+		//!     any mechanism known to exist.  An earlier draft justified
+		//!     them by "the realize pass evaluates painters, and a
+		//!     displacement painter can be an expression that reads
+		//!     geometry signals" -- that mechanism CANNOT reach a stale
+		//!     entry.  Realize-time displacement has exactly two
+		//!     evaluators: GeometryUtilities.cpp's
+		//!     ApplyScalarHeightToObject builds its
+		//!     `RayIntersectionGeometric` with `ri.signals`
+		//!     DEFAULT-CONSTRUCTED -- null provider, primId -1, as its own
+		//!     comment spells out -- and so does HairGenerator's
+		//!     MakeRootRi; while ApplyDisplacementMapToObject takes an
+		//!     IFunction2D and calls `Evaluate(u,v)`, which has no hit
+		//!     record at all.  None of them keys an L1 entry against a
+		//!     provider; what they can read is the null-provider NEUTRAL,
+		//!     which is a constant.
+		//!     Nor can they read a stale L2 entry: `m_time` is IN the L2
+		//!     key, and a painter's `param`s are compile-time constants
+		//!     folded into a program whose id is minted fresh by every
+		//!     Finalize.  The two bumps are kept anyway -- they cost one
+		//!     atomic increment at a seam that is rebuilding a TLAS -- but
+		//!     do not delete the trailing bump on the strength of them.
 		//!
 		//! TriangleMeshGeometryIndexed::InvalidateSignalBakes is the one
-		//! that needs only the trailing bump: it evaluates nothing.
-		//! Reaching the window either bump closes needs another thread
-		//! running during the mutation, which is the documented mid-pass
-		//! `EvaluateAtTime` motion-blur path below; a bump is one relaxed
-		//! atomic increment at a seam that is rebuilding photon maps or a
-		//! TLAS, so the pair is free and the argument does not rest on how
-		//! narrow the window is.
+		//! that has only the trailing bump: it evaluates nothing at all.
+		//! Reaching the window the trailing bump closes needs another
+		//! thread running during the mutation, which is the documented
+		//! mid-pass `EvaluateAtTime` motion-blur path below.
 		//!
 		//! THE IN-FLIGHT WINDOW THAT ORDERING CANNOT CLOSE.  A lookup is
 		//! not atomic with its insert: L1Find/L2Find, then the provider or
@@ -257,18 +324,54 @@ namespace RISE
 		//! change the program's output without changing its context --
 		//! and it essentially cannot: `param`s are compile-time constants
 		//! folded into the program (a re-authored one is a NEW compile
-		//! with a NEW id), ExpressionPainter's only keyframable field is
-		//! `time`, which is IN the key, and a moved geometry moves
-		//! `P`/`Po`/`ptObject`, which are in the key too.  What a mid-pass
-		//! keyframe CAN move invisibly is an SDF part's own field behind an
-		//! unchanged `ptObject` -- vanishingly unlikely (the hit position
-		//! moves with the part) but not provably impossible, and it is the
-		//! same window the pre-existing race already opens for everything
-		//! else on that path.
+		//! with a NEW id), and ExpressionPainter's only keyframable field
+		//! is `time`, which is IN the key.
+		//!
+		//! WHAT BOUNDS THE REMAINING CASE -- an SDF part's own field moving
+		//! behind a key that did not.  It is NOT "a moved geometry moves
+		//! `P`/`Po`/`ptObject`": that argument fails for exactly the case
+		//! in question, a hit on part *j* while part *i* moves, because
+		//! both estimators read the whole field within the query radius R,
+		//! so part *i* can change part *j*'s answer without touching
+		//! part *j*'s hit position at all.  The real bound is the SAMPLING
+		//! one: `EvaluateAtTime` is called from INSIDE the per-sample loop
+		//! (PathTracingPelRasterizer.cpp, the `for( sample )` body), and
+		//! every sample carries its own sub-pixel jitter, so two temporal
+		//! samples that produce a BIT-IDENTICAL `ptObject` -- which is what
+		//! a collision needs -- essentially do not occur.  Not provably
+		//! impossible; the same window the pre-existing motion-blur race
+		//! already opens for everything else on that path.
+		//!
+		//! THE BUMP IS A RELEASE.  That is what makes "bump AFTER the
+		//! mutation" mean anything to a concurrent reader: the release
+		//! publishes every write the mutating thread did before it, and
+		//! Refresh()'s ACQUIRE load below is the matching half, so a thread
+		//! that observes the new generation is guaranteed to observe the
+		//! mutation too.  With both sides relaxed the paragraphs above
+		//! would be arguing happens-before with nothing to establish it.
+		//! On x86-64 and arm64 the acquire load compiles to the same plain
+		//! load a relaxed one does, so the hot path pays nothing.
 		inline void Invalidate()
 		{
-			GenerationRef().fetch_add( 1, std::memory_order_relaxed );
+			GenerationRef().fetch_add( 1, std::memory_order_release );
 		}
+
+		//! RAII form of Invalidate(), for the three seams that must bump on
+		//! the way OUT -- Scene::SetSceneTime,
+		//! ObjectManager::PrepareForRendering and RayCaster::AttachScene.
+		//!
+		//! FACTORED HERE because a plain trailing `Invalidate();` statement
+		//! is the wrong shape at all three: every one of them does work
+		//! that can THROW (a realize pass, a `CreateBVH`, a photon-map
+		//! `Regenerate`), and an exception would skip the trailing bump --
+		//! leaving exactly the state the AFTER argument above says must not
+		//! exist, tables filled from mid-mutation state on a generation
+		//! nothing will ever drop.  A destructor takes the bump on every
+		//! exit, normal or exceptional.
+		struct DropOnScopeExit
+		{
+			~DropOnScopeExit() { Invalidate(); }
+		};
 
 		//! TEST/OVERRIDE hook for the kill switch: -1 = "no override, read
 		//! the option", 0 = force off, 1 = force on.  Setting it bumps the
@@ -380,16 +483,63 @@ namespace RISE
 			}
 		};
 
-		//! L2 key: which program, evaluated at exactly which context.
-		//! Every ExprEvalContext field is here -- u, v, P, Po, N, fw, fwo,
-		//! time, curv, curvR and the whole signal channel.  ADDING A
-		//! CONTEXT VARIABLE TO ExprEvalContext AND NOT ADDING IT HERE IS A
-		//! SILENT WRONG RENDER; ExpressionEval.h's kContextSlot* checklist
-		//! names ExpressionProgram::MakeMemoKey, which fills this, among
-		//! the sites that must be touched.
+		//! WHICH PAINTER PIPE filled an L2 entry -- part of the key, so the
+		//! two pipes can never share one.
+		//!
+		//! IT IS NOT DECORATION, and the reason is the FP contract at the
+		//! top of this file.  On a SCALAR-typed program the two pipes call
+		//! DIFFERENT VM entry points: the colour pipe's
+		//! ExpressionPainter::EvalRGB always calls `EvalVec3` (and
+		//! broadcasts), while ExpressionScalarPainter::GetValuesAt calls
+		//! `Eval` -- deliberately, because each pipe must keep the entry
+		//! point it had before the memo existed.  Under `-ffast-math`
+		//! those two are free to differ in the last ulp.
+		//!
+		//! AND ONE PROGRAM REALLY CAN REACH BOTH PIPES.  The API is the
+		//! route: RISE_API_CreateExpressionPainter and
+		//! RISE_API_CreateExpressionScalarPainter each take an
+		//! `ExpressionProgram` by const reference and each painter holds a
+		//! COPY -- and a copy keeps its source's id (NewProgramId's
+		//! comment says why that is correct), so one compiled scalar-typed
+		//! program handed to both factories would, without this field,
+		//! give the scalar pipe the colour pipe's `EvalVec3(...).x`.  That
+		//! is the entry-point substitution the painters' own comments
+		//! forbid.  Keying it apart costs one int compare on a miss (and
+		//! 32 bytes of TLS across the table) and removes it outright.
+		//!
+		//! HOW MUCH OF THAT IS OBSERVED, honestly.  The SUBSTITUTION is
+		//! structural and certain -- without the field the two pipes
+		//! genuinely share one entry, which is verifiable by reading the
+		//! key.  The DIVERGENCE is not: measured 2026-09-07 on this
+		//! toolchain, removing this field leaves ExpressionMemoTest (m)
+		//! GREEN, because `Eval` and `EvalVec3` reach the same `RunAny`
+		//! call over the same `env[]` and produce the same bits here.
+		//! So this field is a guard against a COMPILER FREEDOM, not a fix
+		//! for a divergence anyone has seen between these two entry
+		//! points.  It is kept because that freedom has already bitten
+		//! this exact code once (the FP contract at the top of this file
+		//! records the ulp move that drove the memo out of Eval/EvalVec3
+		//! in the first place), because the cost is a rounding error, and
+		//! because "these two happen to agree on the machine I built on"
+		//! is not a property a cache key should rest on.  Do not remove it
+		//! on the strength of (m) staying green without it.
+		enum EvalPipe
+		{
+			ePipeColour = 0,	//!< ExpressionPainter (IPainter)
+			ePipeScalar = 1		//!< ExpressionScalarPainter (IScalarPainter)
+		};
+
+		//! L2 key: which program, evaluated at exactly which context, by
+		//! which pipe.  Every ExprEvalContext field is here -- u, v, P, Po,
+		//! N, fw, fwo, time, curv, curvR and the whole signal channel.
+		//! ADDING A CONTEXT VARIABLE TO ExprEvalContext AND NOT ADDING IT
+		//! HERE IS A SILENT WRONG RENDER; ExpressionEval.h's kContextSlot*
+		//! checklist names ExpressionProgram::MakeMemoKey, which fills
+		//! this, among the sites that must be touched.
 		struct ProgramKey
 		{
 			unsigned long long	progId;
+			int					pipe;			//!< an EvalPipe -- see above
 			double				u, v;
 			double				Px, Py, Pz;
 			double				Pox, Poy, Poz;
@@ -397,23 +547,26 @@ namespace RISE
 			double				fw, fwo, time, curv, curvR;
 			SignalHitKey		signals;
 
-			//! FIELDS THIS COMPARES: 17 of its own (progId, u, v, P.xyz,
-			//! Po.xyz, N.xyz, fw, fwo, time, curv, curvR) plus the hit
-			//! channel's 11 = 28.  THE NUMBER IS LOAD-BEARING, not
+			//! FIELDS THIS COMPARES: 18 of its own (progId, pipe, u, v,
+			//! P.xyz, Po.xyz, N.xyz, fw, fwo, time, curv, curvR) plus the
+			//! hit channel's 11 = 29.  THE NUMBER IS LOAD-BEARING, not
 			//! decoration: ExpressionProgram::Builder::ComputeMemoWorthiness
 			//! uses it as the instruction count at or above which a body
 			//! cannot be cheaper to re-run than to look up.  Adding a
 			//! context variable means a field here, a compare in the body
-			//! below, and a bump of the 17.
-			static const int kFields = 17 + SignalHitKey::kFields;
+			//! below, and a bump of the 18.
+			static const int kFields = 18 + SignalHitKey::kFields;
 
 			bool Equals( const ProgramKey& o ) const
 			{
 				// Ordered most-discriminating first: two consumers at one
 				// hit differ ONLY in progId, and the relief stencil's taps
 				// differ ONLY in P / Po / (u,v) -- so a miss is usually
-				// decided within the first few compares.
+				// decided within the first few compares.  `pipe` rides
+				// beside progId because the two together are "which
+				// function is this".
 				return progId == o.progId
+					&& pipe == o.pipe
 					&& Px == o.Px && Py == o.Py && Pz == o.Pz
 					&& u == o.u && v == o.v
 					&& Pox == o.Pox && Poy == o.Poy && Poz == o.Poz
@@ -480,7 +633,10 @@ namespace RISE
 		//! Bring this thread's tables up to date with the current
 		//! generation, and report whether the memo is live at all.
 		//! Everything below calls this FIRST; in the common case it is one
-		//! relaxed atomic load and one compare.
+		//! acquire atomic load and one compare -- and on x86-64 / arm64 an
+		//! acquire load of an aligned word is the same instruction a
+		//! relaxed one would be, so the ordering Invalidate() needs costs
+		//! the hot path nothing.
 		inline bool Refresh( Tables& t )
 		{
 			const unsigned long long g = Generation();

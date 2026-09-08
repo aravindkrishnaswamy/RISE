@@ -143,12 +143,14 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 //! spectral pipe adds its own: GetColorNM calls this once per wavelength
 //! sample with a byte-identical `ri`.
 //!
-//! The memo is keyed on the program's process-unique id plus every field
-//! of the context, compared exactly, so a hit returns the value the
-//! recompute would have produced bit for bit -- and it wraps a CALL to
-//! `EvalVec3`, whose body is untouched, so the VM's own arithmetic (a
-//! bit-compared contract, see ExpressionProgram::MakeMemoKey's comment)
-//! cannot move.
+//! The memo is keyed on the program's process-unique id, WHICH PIPE is
+//! asking (ExpressionMemo::ePipeColour here), and every field of the
+//! context, compared exactly, so a hit returns the value the recompute
+//! would have produced bit for bit -- and it wraps a CALL to `EvalVec3`,
+//! whose body is untouched, so the VM's own arithmetic (a contract; see
+//! ExpressionProgram::MakeMemoKey's comment, and ExpressionMemo.h for
+//! exactly how much of it TextureExpressionVMTest actually compares
+//! exactly) cannot move.
 RISEPel ExpressionPainter::EvalRGB( const RayIntersectionGeometric& ri ) const
 {
 	const ExprEvalContext ctx = BuildContext( ri );
@@ -156,7 +158,7 @@ RISEPel ExpressionPainter::EvalRGB( const RayIntersectionGeometric& ri ) const
 	ExpressionMemo::ProgramKey key;
 	const bool memoable = m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
 	if( memoable ) {
-		m_prog.MakeMemoKey( ctx, key );
+		m_prog.MakeMemoKey( ctx, ExpressionMemo::ePipeColour, key );
 		Vector3 hit;
 		if( ExpressionMemo::L2Find( key, hit ) ) {
 			return RISEPel( SafeComp( hit.x ), SafeComp( hit.y ), SafeComp( hit.z ) );
@@ -326,22 +328,37 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 //! EACH RESULT TYPE KEEPS THE ENTRY POINT IT HAD BEFORE THE MEMO: a
 //! vec3-typed program calls `EvalVec3`, a scalar-typed one calls
 //! `Eval`, and the memo only wraps the call.  That is deliberate and it
-//! is the one contract this file is not allowed to move -- the VM's
-//! arithmetic is bit-compared by TextureExpressionVMTest, and under
+//! is the one contract this file is not allowed to move -- under
 //! `-ffast-math` merely changing WHICH entry point this hot consumer
 //! inlines has already been observed to move an ulp (see
 //! ExpressionProgram::MakeMemoKey's comment).  The scalar branch stores
 //! the broadcast `(s,s,s)` so both branches share ONE entry shape, and
 //! reads `.x` back out of it.
 //!
-//! THE TWO PIPES DO NOT SHARE ENTRIES, and nothing here depends on their
-//! doing so: an L2 key carries the program's id, every `Finalize` mints a
-//! fresh one, and `expression_painter` and `scalar_painter { expression
-//! ... }` each compile their own program, so a colour painter and a
-//! scalar painter authored from the same source text still key apart.
-//! (Two painters DO share entries when they are built from ONE compiled
-//! program -- the copied-program case ExpressionMemoTest (c) pins -- but
-//! that is a property of program identity, not of the pipes.)  In
+//! THE TWO PIPES DO NOT SHARE ENTRIES -- because the key SAYS SO, not
+//! because sharing is unreachable.  An earlier draft of this comment
+//! argued the latter ("each compiles its own program, so they key apart
+//! on the id"), and that argument is WRONG: RISE_API_CreateExpressionPainter
+//! and RISE_API_CreateExpressionScalarPainter both take an
+//! `ExpressionProgram` by const reference, each painter holds a COPY, and
+//! a copy KEEPS its source's id -- so one compiled scalar-typed program
+//! handed to both factories would land on one entry, and this function
+//! would then return the colour pipe's `EvalVec3(...).x` where the
+//! paragraph above requires `Eval`.  ExpressionMemo::ProgramKey therefore
+//! carries an EvalPipe tag (ePipeScalar here), which is what actually
+//! keeps them apart; ExpressionMemoTest's cross-pipe check (m) shares
+//! exactly such a program through the API and pins the contract.
+//!
+//! The SUBSTITUTION is certain; the DIVERGENCE is not observed on this
+//! toolchain (removing the tag leaves (m) green, because the two entry
+//! points reach one `RunAny` and produce the same bits today).  The tag
+//! guards a compiler freedom that has already bitten this code once, at a
+//! cost of one int compare -- see ExpressionMemo::EvalPipe for the full
+//! disclosure, and do not delete it on the strength of (m) staying green.
+//!
+//! (Two painters of the SAME kind do still share entries when built from
+//! one compiled program -- the copied-program case ExpressionMemoTest (c)
+//! pins -- and that is correct: same function, same pipe.)  In
 //! `plank_closeup`, for instance, the roughness slots that read the
 //! plank's own field are `scalar_painter { painter expr_plank }` -- a
 //! PainterToScalarAdapter over the COLOUR painter, so those hits land on
@@ -356,7 +373,7 @@ ScalarTriple ExpressionScalarPainter::GetValuesAt( const RayIntersectionGeometri
 	ExpressionMemo::ProgramKey key;
 	const bool memoable = m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
 	if( memoable ) {
-		m_prog.MakeMemoKey( ctx, key );
+		m_prog.MakeMemoKey( ctx, ExpressionMemo::ePipeScalar, key );
 		Vector3 hit;
 		if( ExpressionMemo::L2Find( key, hit ) ) {
 			if( isVec3 ) return ScalarTriple( SafeComp( hit.x ), SafeComp( hit.y ), SafeComp( hit.z ) );

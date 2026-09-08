@@ -577,14 +577,47 @@ void Scene::SetGlobalMedium( const IMedium* pMedium )
 void Scene::SetSceneTime( const Scalar time ) const
 {
 	// EXPRESSION MEMO (Utilities/ExpressionMemo.h), the FIRST of two bumps
-	// around this function; the tail one carries the argument for the pair.
-	// This one exists because the KEYFRAMED STATE HAS ALREADY MOVED by the
-	// time we are called (the animator's EvaluateAtTime runs first), so
-	// every table still holding the previous frame's answers is stale
-	// RIGHT NOW -- and the work below (photon-map regeneration) evaluates
-	// painters against the new state.  Without this, that work could read
-	// last frame's memo.
+	// around this function.
+	//
+	// THIS ENTRY BUMP IS LOAD-BEARING -- the only one of the three seams
+	// where it is.  The KEYFRAMED STATE HAS ALREADY MOVED by the time we
+	// are called (the animator's EvaluateAtTime runs first), so every
+	// table still holding the previous frame's answers is stale RIGHT NOW;
+	// and the work below is not bookkeeping, it is photon-map
+	// `Regenerate()`, which TRACES REAL RAYS through the scene -- shading
+	// at real hits, against real providers, with a populated `ri.signals`
+	// -- against the new state.  Without this bump that tracing could
+	// answer from last frame's memo.  (Contrast
+	// ObjectManager::PrepareForRendering and RayCaster::AttachScene, whose
+	// entry bumps are defence in depth: their realize-pass painter
+	// evaluations carry a DEFAULT-constructed `ri.signals` and so cannot
+	// read a provider-keyed entry at all.  ExpressionMemo.h's Invalidate()
+	// comment is the single account.)
 	ExpressionMemo::Invalidate();
+
+	// EXPRESSION MEMO, the SECOND bump, and the reason there are two.
+	//
+	// A new scene time is the single seam through which every keyframed
+	// mutation reaches the scene -- object transforms, SDF part fields, a
+	// painter's own `time` -- so every thread's tables must be dropped
+	// across it.  ONE bump cannot do that job, because the mutation
+	// straddles this function: some of it happened before we were called
+	// (the animator), and some of it is the work below (photon maps,
+	// caches).  The bump above covers the first half; this one covers the
+	// second, and closes the window in which another thread adopts the top
+	// bump's generation, misses, reads state this function has not
+	// finished moving, and inserts that answer stamped NEW -- where
+	// nothing would ever drop it.  Reaching that window needs a thread
+	// running concurrently with us, which is the documented mid-pass
+	// `EvaluateAtTime` motion-blur path.
+	//
+	// A SCOPE GUARD rather than a trailing statement, because every
+	// `Regenerate()` below can THROW (they allocate photon arrays and
+	// trace) and an exception would skip a trailing `Invalidate();`,
+	// leaving exactly the state the argument above says must not exist.
+	// ObjectManager::PrepareForRendering and RayCaster::AttachScene use
+	// the same guard for the same reason.
+	const ExpressionMemo::DropOnScopeExit memoDropOnExit;
 
 	pObjectManager->ResetRuntimeData();
 
@@ -625,24 +658,9 @@ void Scene::SetSceneTime( const Scalar time ) const
 		pShadowMap->Regenerate( time );
 	}
 
-	// EXPRESSION MEMO, the SECOND bump, and the reason there are two.
-	//
-	// A new scene time is the single seam through which every keyframed
-	// mutation reaches the scene -- object transforms, SDF part fields, a
-	// painter's own `time` -- so every thread's tables must be dropped
-	// across it.  ONE bump cannot do that job, because the mutation
-	// straddles this function: some of it happened before we were called
-	// (the animator), and some of it is the work above (photon maps,
-	// caches).  The bump at the top covers the first half; this one covers
-	// the second, and closes the window in which another thread adopts the
-	// top bump's generation, misses, reads state this function has not
-	// finished moving, and inserts that answer stamped NEW -- where nothing
-	// would ever drop it.  Reaching that window needs a thread running
-	// concurrently with us, which is the documented mid-pass
-	// `EvaluateAtTime` motion-blur path; a bump is one relaxed atomic
-	// increment at a seam that has just rebuilt photon maps, so the pair
-	// is free and does not rest on how narrow the window is.
-	ExpressionMemo::Invalidate();
+	// EXPRESSION MEMO: the trailing bump is taken by `memoDropOnExit`,
+	// declared at the top of this function -- see its comment for why it
+	// is a scope guard and not a statement here.
 }
 
 void Scene::SetSceneTimeForPreview( const Scalar time ) const

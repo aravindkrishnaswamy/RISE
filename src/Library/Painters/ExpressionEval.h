@@ -342,6 +342,57 @@ namespace RISE
 			static const int kMaxOctaves    = NoiseCore::kMaxOctaves;
 			static const int kMaxRampStops  = 64;
 
+			//! Function ids of the NOISE FAMILY.  Named, and named HERE
+			//! rather than left implicit in the FnSig table's row order,
+			//! because a second site depends on them: the memo's
+			//! compile-time worthiness gate
+			//! (Builder::ComputeMemoWorthiness) tests "is this instruction
+			//! a noise call" as a RANGE over these ids.  Before 2026-09-07
+			//! that site carried the bare literals `42` and `49`, so
+			//! inserting a builtin anywhere in the band -- or appending a
+			//! noise builtin past its top -- would have silently changed or
+			//! silently missed the gate with nothing to catch it.
+			//!
+			//! The band is CONTIGUOUS and the static_asserts below say so;
+			//! `cellhash` sits immediately past its top end and is
+			//! deliberately OUTSIDE it (a single integer hash is not
+			//! expensive enough to earn a memo entry on its own).  A NEW
+			//! noise builtin must therefore extend the band -- take
+			//! `cellhash`'s id and renumber it upward, or (better) give the
+			//! new one an id inside a widened band and re-point
+			//! kFnNoiseLast at it.  Appending one at some far id and
+			//! leaving these alone would leave it un-memoised.
+			static const int kFnPerlin      = 42;
+			static const int kFnFbm         = 43;
+			static const int kFnTurbulence  = 44;
+			static const int kFnRidged      = 45;
+			static const int kFnWorleyF1    = 46;
+			static const int kFnWorleyF2    = 47;
+			static const int kFnWorleyF2F1  = 48;
+			static const int kFnWorleyId    = 49;
+			//! The band's INCLUSIVE ends, which is the form the gate tests.
+			static const int kFnNoiseFirst  = kFnPerlin;
+			static const int kFnNoiseLast   = kFnWorleyId;
+			//! NOT noise-family for the memo gate -- see above.
+			static const int kFnCellHash    = 50;
+
+			static_assert( kFnFbm        == kFnPerlin + 1
+			            && kFnTurbulence == kFnPerlin + 2
+			            && kFnRidged     == kFnPerlin + 3
+			            && kFnWorleyF1   == kFnPerlin + 4
+			            && kFnWorleyF2   == kFnPerlin + 5
+			            && kFnWorleyF2F1 == kFnPerlin + 6
+			            && kFnWorleyId   == kFnPerlin + 7,
+				"the eight noise builtins must stay ONE contiguous id run -- "
+				"Builder::ComputeMemoWorthiness tests them as a range [kFnNoiseFirst, kFnNoiseLast]" );
+			static_assert( kFnNoiseLast - kFnNoiseFirst == 7,
+				"the noise band is exactly the eight builtins above -- widen it deliberately, "
+				"and only together with ComputeMemoWorthiness's own reasoning" );
+			static_assert( kFnCellHash == kFnNoiseLast + 1,
+				"cellhash must stay immediately past the noise band: it is the first id the "
+				"memo gate deliberately EXCLUDES, and the only thing expressing that exclusion "
+				"is kFnNoiseLast's value" );
+
 			//! Function ids of the two GEOMETRY-DERIVED SIGNAL builtins
 			//! (design doc Phase 2).  Named constants rather than bare
 			//! numbers because three places must agree on them -- the FnSig
@@ -520,16 +571,35 @@ namespace RISE
 			//! red-proved by TextureExpressionVMTest's "a warped argument
 			//! keeps its affine part's scale" check, which compares against
 			//! a reference computed in its own translation unit with `==`.
-			//! The VM's arithmetic is a published, bit-compared contract;
-			//! a cache is not allowed to move it.  So the program exposes
+			//! That check IS one of the exact-`==` sites -- but note that
+			//! the exact-compared subset of that suite is NARROW (about
+			//! fifteen sites, all in the noise-with-`fw` block; its ~254
+			//! CheckClose sites are every one of them a TOLERANCE, 1e-15
+			//! included).  What is guarded and
+			//! what is not is set out once, in ExpressionMemo.h's "HOW MUCH
+			//! OF THAT CONTRACT IS ACTUALLY TESTED"; read it before relying
+			//! on the suite to catch an ulp.  The VM's arithmetic is a
+			//! contract regardless of how much of it a test can see, and a
+			//! cache is not allowed to move it.  So the program exposes
 			//! its identity and its key, and ExpressionPainter /
 			//! ExpressionScalarPainter -- the only hot consumers, and the
 			//! layer where "the same painter is asked twice at one hit"
 			//! actually happens -- do the lookup around a CALL to an
 			//! untouched EvalVec3.
-			void MakeMemoKey( const ExprEvalContext& ctx, ExpressionMemo::ProgramKey& k ) const
+			//!
+			//! `pipe` IS PART OF THE KEY and must be the caller's own --
+			//! ExpressionMemo::ePipeColour from ExpressionPainter,
+			//! ePipeScalar from ExpressionScalarPainter.  It is a
+			//! parameter rather than something derived here because it is
+			//! a property of the CALL SITE, not of the program: the same
+			//! compiled program can be held by one painter of each kind
+			//! (see ExpressionMemo::EvalPipe for how, and for why sharing
+			//! an entry between them would be wrong).
+			void MakeMemoKey( const ExprEvalContext& ctx, const ExpressionMemo::EvalPipe pipe,
+				ExpressionMemo::ProgramKey& k ) const
 			{
 				k.progId = m_id;
+				k.pipe = (int)pipe;
 				k.u = (double)ctx.u;   k.v = (double)ctx.v;
 				k.Px = (double)ctx.P.x;   k.Py = (double)ctx.P.y;   k.Pz = (double)ctx.P.z;
 				k.Pox = (double)ctx.Po.x; k.Poy = (double)ctx.Po.y; k.Poz = (double)ctx.Po.z;
@@ -791,7 +861,7 @@ namespace RISE
 				//!     octave and dwarfs a key compare on its own;
 				//!   * it is simply LONG -- more instructions than the key
 				//!     comparison has fields to compare.  That count is
-				//!     ExpressionMemo::ProgramKey::kFields (28: 17 context
+				//!     ExpressionMemo::ProgramKey::kFields (29: 18 own
 				//!     fields plus the hit channel's 11), taken from the
 				//!     comparison itself rather than restated here so the
 				//!     two cannot drift.  At or above it the lookup cannot
@@ -810,10 +880,15 @@ namespace RISE
 						for( std::size_t i = 0; i < body.code.size(); ++i ) {
 							const Compiled::Instr& in = body.code[i];
 							if( in.op != Compiled::kFunc ) continue;
-							// 42..49: perlin, fbm, turbulence, ridged, the
-							// four worley forms.  (50 = cellhash is a single
-							// integer hash and does NOT qualify on its own.)
-							if( in.fn >= 42 && in.fn <= 49 ) return true;
+							// The noise band: perlin, fbm, turbulence,
+							// ridged and the four worley forms.  Named
+							// constants, not the literals 42/49 this line
+							// used to carry -- their declaration asserts the
+							// band is exactly those eight and that cellhash
+							// (a single integer hash, deliberately NOT
+							// qualifying on its own) sits just past it.
+							if( in.fn >= ExpressionProgram::kFnNoiseFirst
+							 && in.fn <= ExpressionProgram::kFnNoiseLast ) return true;
 						}
 					}
 
@@ -976,11 +1051,19 @@ namespace RISE
 						{"clamp",30,3,{S,S,S,S},S}, {"smoothstep",31,3,{S,S,S,S},S}, {"select",33,3,{S,S,S,S},S},
 						// vec3-domain, scalar-returning
 						{"dot",40,2,{V,V,S,S},S}, {"length",41,1,{V,S,S,S},S},
-						{"perlin",42,1,{V,S,S,S},S},
-						{"fbm",43,4,{V,S,S,S},S}, {"turbulence",44,4,{V,S,S,S},S}, {"ridged",45,4,{V,S,S,S},S},
-						{"worley_f1",46,2,{V,S,S,S},S}, {"worley_f2",47,2,{V,S,S,S},S},
-						{"worley_f2f1",48,2,{V,S,S,S},S}, {"worley_id",49,2,{V,S,S,S},S},
-						{"cellhash",50,1,{S,S,S,S},S},
+						// The noise family, by NAME rather than by literal id:
+						// ExpressionProgram's kFn* constants are the one
+						// definition, because Builder::ComputeMemoWorthiness
+						// tests these same ids as a range (see their comment).
+						{"perlin",ExpressionProgram::kFnPerlin,1,{V,S,S,S},S},
+						{"fbm",ExpressionProgram::kFnFbm,4,{V,S,S,S},S},
+						{"turbulence",ExpressionProgram::kFnTurbulence,4,{V,S,S,S},S},
+						{"ridged",ExpressionProgram::kFnRidged,4,{V,S,S,S},S},
+						{"worley_f1",ExpressionProgram::kFnWorleyF1,2,{V,S,S,S},S},
+						{"worley_f2",ExpressionProgram::kFnWorleyF2,2,{V,S,S,S},S},
+						{"worley_f2f1",ExpressionProgram::kFnWorleyF2F1,2,{V,S,S,S},S},
+						{"worley_id",ExpressionProgram::kFnWorleyId,2,{V,S,S,S},S},
+						{"cellhash",ExpressionProgram::kFnCellHash,1,{S,S,S,S},S},
 						// geometry-derived shading signals -- one scalar
 						// argument, the query radius as a FRACTION of the hit
 						// geometry's characteristic size (design doc Phase 2).
