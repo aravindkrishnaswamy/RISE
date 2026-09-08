@@ -112,6 +112,27 @@
 //  today -- returning a stored `double` bit for bit, with no arithmetic
 //  of its own.
 //
+//  WHAT IS PINNED BYTE-IDENTICAL, RE-STATED 2026-09-08 (the cross-object
+//  `proximity` builtin, docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.5).  The
+//  VM bodies whose text must not move are `ExpressionProgram::Eval(u,v)`,
+//  `Eval(ctx)`, `EvalVec3`, `RunAny` and `CallFuncVec3`, all in
+//  ExpressionEval.h -- brace-matched, hash-compared against the commit
+//  before this arc, and unchanged by it.  `CallFunc` is the ONE
+//  deliberate exception: it gained exactly one named `case kFnProximity:`
+//  and ITS NEW BODY IS NOW THE PINNED ONE.  A future change that touches
+//  any of the six must say which, and why, in its own commit -- the point
+//  of naming them here is that "byte-identical" cannot be a claim about
+//  an unnamed set.
+//
+//  AND THE MEMO-ELIGIBILITY THRESHOLD MOVED WITH THE KEY.
+//  `ProgramKey::kFields` went 29 -> 35 when SignalHitKey took the four
+//  cross-object fields, and Builder::ComputeMemoWorthiness reads that
+//  number as its instruction-count gate.  So a body of 29..34
+//  instructions with NO signal call and NO noise call stops qualifying.
+//  Perf-only and bit-identical by construction (the memo returns what the
+//  VM would have computed), never a correctness change -- disclosed here,
+//  in the commit, and in §6.5 of docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md.
+//
 //  WHAT MAKES IT SOUND.  A compiled ExpressionProgram is a PURE function
 //  of (program, ExprEvalContext): the VM holds no mutable state, every
 //  builtin is deterministic, and the SDF signal estimators are const
@@ -498,23 +519,49 @@ namespace RISE
 			double		baryA, baryB;
 			int			primId;
 			bool		bComplementedField;
+			//! THE CROSS-OBJECT HALF (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+			//! §5.1).  `proximity(r)` is a function of the SCENE and of
+			//! WHERE IN IT the hit is, not of the hit's own surface, so
+			//! none of the eleven above can separate two of its answers:
+			//! two hits at different world points on the SAME provider
+			//! agree in every field above whenever their object-space
+			//! positions coincide (two instances of one geometry), and a
+			//! hit whose neighbour moved between keyframes agrees in ALL
+			//! of them.  All four are compared unconditionally -- `time`
+			//! included, and NOT gated on the query kind: a conditional
+			//! field in a POD compared by `Equals` is not expressible, and
+			//! faking it with a sentinel would hide a correctness split
+			//! rather than express one.
+			const void*	pScene;
+			const void*	pSelf;
+			double		wx, wy, wz;		//!< ptWorld
+			double		time;
 
-			//! FIELDS THIS COMPARES: 11.  Counted here, next to the body,
-			//! and summed into ProgramKey::kFields below -- which is what
+			//! FIELDS THIS COMPARES: 17 (eleven own-surface, six
+			//! cross-object).  Counted here, next to the body, and summed
+			//! into ProgramKey::kFields below -- which is what
 			//! ExpressionProgram::Builder::ComputeMemoWorthiness uses as
 			//! its instruction-count threshold, so the two cannot drift.
 			//! ADDING A FIELD ABOVE MEANS ADDING IT TO Equals AND
 			//! INCREMENTING THIS.
-			static const int kFields = 11;
+			static const int kFields = 17;
 
 			bool Equals( const SignalHitKey& o ) const
 			{
+				// `pScene` / `pSelf` / `ptWorld` are compared LAST, after
+				// the own-surface fields, on purpose: within one hit the
+				// four cross-object fields are CONSTANT (they describe the
+				// hit, not the query), so they decide a mismatch almost
+				// never and belong past the fields that do.
 				return pProvider == o.pProvider
 					&& ptx == o.ptx && pty == o.pty && ptz == o.ptz
 					&& primId == o.primId
 					&& baryA == o.baryA && baryB == o.baryB
 					&& nx == o.nx && ny == o.ny && nz == o.nz
-					&& bComplementedField == o.bComplementedField;
+					&& bComplementedField == o.bComplementedField
+					&& pScene == o.pScene && pSelf == o.pSelf
+					&& wx == o.wx && wy == o.wy && wz == o.wz
+					&& time == o.time;
 			}
 		};
 
@@ -523,10 +570,10 @@ namespace RISE
 		{
 			SignalHitKey	hit;
 			double			radius;
-			int				fn;				//!< 0 = occlusion, 1 = thickness, 2 = convexity
+			int				fn;				//!< 0 = occlusion, 1 = thickness, 2 = convexity, 3 = proximity
 			bool			bRadiusIsConstant;
 
-			//! FIELDS THIS COMPARES: 3 of its own plus the hit's 11.
+			//! FIELDS THIS COMPARES: 3 of its own plus the hit's 17 = 20.
 			static const int kFields = 3 + SignalHitKey::kFields;
 
 			bool Equals( const SignalKey& o ) const
@@ -607,12 +654,20 @@ namespace RISE
 
 			//! FIELDS THIS COMPARES: 18 of its own (progId, pipe, u, v,
 			//! P.xyz, Po.xyz, N.xyz, fw, fwo, time, curv, curvR) plus the
-			//! hit channel's 11 = 29.  THE NUMBER IS LOAD-BEARING, not
+			//! hit channel's 17 = 35.  THE NUMBER IS LOAD-BEARING, not
 			//! decoration: ExpressionProgram::Builder::ComputeMemoWorthiness
 			//! uses it as the instruction count at or above which a body
 			//! cannot be cheaper to re-run than to look up.  Adding a
 			//! context variable means a field here, a compare in the body
 			//! below, and a bump of the 18.
+			//!
+			//! `ptWorld` (three of the hit channel's six new fields) is a
+			//! REDUNDANT compare against this key's own `P` -- the two are
+			//! the same point, written by the same intersection.  Three
+			//! extra compares on every L2 probe, accepted deliberately so
+			//! there is ONE key layout rather than an L1-only tail on
+			//! SignalHitKey, and disclosed in
+			//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 / §10.
 			static const int kFields = 18 + SignalHitKey::kFields;
 
 			bool Equals( const ProgramKey& o ) const

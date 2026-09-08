@@ -111,6 +111,7 @@
 
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/ExpressionEval.h"
@@ -793,7 +794,9 @@ static void TestMemoWorthinessGate()
 	// put something non-trivial in `Tables` by accident.
 	const std::size_t bytes = ExpressionMemo::BytesPerThread();
 	std::cout << "    bytes of thread-local memo per render worker: " << bytes
-		<< "  (1408 when the memo shipped, 1440 since the `pipe` key field, ceiling 2048)" << std::endl;
+		<< "  (1408 when the memo shipped, 1440 since the `pipe` key field, 1824 since the"
+		   " four cross-object SignalHitKey fields -- six 8-byte slots x eight SignalHitKey"
+		   " instances across the two 4-way tables; ceiling 2048)" << std::endl;
 	Check( bytes <= 2048, "(g) the per-thread memo stays under the 2048-byte ceiling" );
 }
 
@@ -1530,10 +1533,32 @@ private:
 			+ (double)s.primId * 0.01931
 			+ (double)s.baryA * 1.91 + (double)s.baryB * 2.03
 			+ ( s.bComplementedField ? 0.2819 : 0.0 )
+			// The CROSS-OBJECT four (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+			// §5.1).  No shipping provider reads them -- SignalQuery hands
+			// the whole record to occlusion/thickness/convexity, none of
+			// which cares where in the scene the hit is -- so without this
+			// there is no way to give a one-field-at-a-time L1 separation
+			// check TEETH for them.  The two POINTERS enter through a
+			// low-address hash, not their raw value: what the key must
+			// distinguish is "a different scene / a different self object",
+			// and two live objects in one process differ in these bits.
+			+ PtrTerm( s.pScene ) * 2.1713
+			+ PtrTerm( s.pSelf )  * 2.3719
+			+ (double)s.ptWorld.x * 2.5711 + (double)s.ptWorld.y * 2.7717 + (double)s.ptWorld.z * 2.9723
+			+ (double)s.time * 3.1729
 			+ (double)r * 2.1101
 			+ ( constR ? 0.3739 : 0.0 )
 			+ kindW;
 		return (Scalar)( v - std::floor( v ) );		// -> [0,1), so SignalQuery's clamp is a no-op
+	}
+
+	//! A pointer, folded to a small deterministic number.  Deterministic
+	//! WITHIN one run, which is all the checks need -- every reference
+	//! value they compare against is computed in the same run, memo off.
+	static double PtrTerm( const void* p )
+	{
+		const std::uintptr_t bits = ( reinterpret_cast<std::uintptr_t>( p ) >> 3 ) & 0x3FFFFFu;
+		return (double)bits * 1.7e-5;
 	}
 
 	const double m_salt;
@@ -1570,17 +1595,51 @@ static Scalar RunL1( const L1Query& q )
 //! separates the records anyway and never notices the third is gone.
 //! That is precisely the gap one-field-at-a-time closes.
 //!
-//! Fourteen fields: the hit channel's eleven (provider identity, ptObject
-//! xyz, nObject xyz, primId, baryA, baryB, bComplementedField) plus the
-//! query's three (radius, kind, constant-radius proof).  The hit
-//! channel's eleven are the SAME SignalHitKey::Equals that ProgramKey
-//! uses for its `signals` member, so this covers both levels' use of it.
+//! TWENTY fields: the hit channel's SEVENTEEN plus the query's three
+//! (radius, kind, constant-radius proof).  The hit channel's seventeen
+//! are eleven OWN-SURFACE ones (provider identity, ptObject xyz, nObject
+//! xyz, primId, baryA, baryB, bComplementedField) and, since 2026-09-08,
+//! six CROSS-OBJECT ones (pScene, pSelf, ptWorld xyz, time) that
+//! `proximity(r)` reads -- docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1.
+//! All seventeen are the SAME SignalHitKey::Equals that ProgramKey uses
+//! for its `signals` member, so this covers both levels' use of it.
+//!
+//! THE SIX CROSS-OBJECT ROWS NEED A PROVIDER THAT READS THEM, and no
+//! shipping one does: occlusion / thickness / convexity are self-signals
+//! and could not care less where in the scene the hit is.  So
+//! FieldSensitiveProvider above reads all six, which is what gives these
+//! rows teeth at the L1 level -- exactly the same trick that gave the
+//! eleven own-surface rows theirs.  RED-PROVED 2026-09-08: dropping
+//! `pSelf` from SignalHitKey::Equals turns exactly ONE assertion red --
+//! this test's `pSelf` row -- and leaves every other check in the file
+//! green, (a)'s 10 500-draw differential and (k) INCLUDED.  Dropping
+//! `time` likewise reddens only the `signals.time` row.
 static void TestL1KeyFieldSeparation()
 {
 	std::cout << "(l) L1: every key field separates, one field at a time" << std::endl;
 
 	FieldSensitiveProvider providerA( 1.0 );
 	FieldSensitiveProvider providerB( 5.0 );
+
+	// Two real managers and two real objects for the cross-object
+	// back-pointers.  Neither the memo (which stores them as opaque
+	// addresses) nor FieldSensitiveProvider (which hashes them) ever
+	// dereferences them, so a cast-from-`int` stand-in would work -- real
+	// instances are used anyway because a key-layout test should not be the
+	// one place in the tree that puts a non-IObjectManager address in an
+	// `IObjectManager*`.  Empty managers and geometry-less objects: they
+	// are identities here, nothing more.
+	IObjectManager* sceneA = 0;
+	IObjectManager* sceneB = 0;
+	Check( RISE_API_CreateObjectManager( &sceneA, true, false, 4, 32 ), "(l) scene A" );
+	Check( RISE_API_CreateObjectManager( &sceneB, true, false, 4, 32 ), "(l) scene B" );
+	// Real (if trivial) geometry: `new Object( 0 )` logs "Geometry ptr was
+	// passed in but is invalid" on every construction, and a test should
+	// not print an error line to say nothing is wrong.
+	SphereGeometry* dummyGeom = new SphereGeometry( Scalar( 1 ) );
+	Object* selfA = new Object( dummyGeom );
+	Object* selfB = new Object( dummyGeom );
+	dummyGeom->release();
 
 	L1Query base;
 	base.s.pProvider          = &providerA;
@@ -1590,6 +1649,10 @@ static void TestL1KeyFieldSeparation()
 	base.s.baryA              = Scalar( 0.13 );
 	base.s.baryB              = Scalar( 0.29 );
 	base.s.bComplementedField = false;
+	base.s.pScene             = sceneA;
+	base.s.pSelf              = selfA;
+	base.s.ptWorld            = Point3( Scalar( 1.31 ), Scalar( 1.37 ), Scalar( 1.41 ) );
+	base.s.time               = Scalar( 2.17 );
 	base.radius               = Scalar( 0.17 );
 	base.kind                 = 0;
 	base.constR               = true;
@@ -1611,6 +1674,19 @@ static void TestL1KeyFieldSeparation()
 		PERTURB1( "baryA",              q.s.baryA = Scalar( 0.41 ) );
 		PERTURB1( "baryB",              q.s.baryB = Scalar( 0.47 ) );
 		PERTURB1( "bComplementedField", q.s.bComplementedField = true );
+		// The four CROSS-OBJECT fields
+		// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1).  `proximity(r)`
+		// is a function of the SCENE and of WHERE IN IT the hit is, and
+		// none of the eleven own-surface fields above can separate two of
+		// its answers: two instances of one geometry agree in every one
+		// of them at the same object-space point, and a hit whose
+		// NEIGHBOUR moved between keyframes agrees in all of them.
+		PERTURB1( "pScene",             q.s.pScene = sceneB );
+		PERTURB1( "pSelf",              q.s.pSelf = selfB );
+		PERTURB1( "ptWorld.x",          q.s.ptWorld.x = Scalar( 3.11 ) );
+		PERTURB1( "ptWorld.y",          q.s.ptWorld.y = Scalar( 3.19 ) );
+		PERTURB1( "ptWorld.z",          q.s.ptWorld.z = Scalar( 3.23 ) );
+		PERTURB1( "signals.time",       q.s.time = Scalar( 7.13 ) );
 		PERTURB1( "radius",             q.radius = Scalar( 0.53 ) );
 		PERTURB1( "fn (signal kind)",   q.kind = 2 );
 		PERTURB1( "bRadiusIsConstant",  q.constR = false );
@@ -1637,6 +1713,163 @@ static void TestL1KeyFieldSeparation()
 		CheckExact( RunL1( cases[i].q ), refCase[i],
 			tag + ": a query differing ONLY here is not served the base's entry" );
 	}
+
+	selfB->release();
+	selfA->release();
+	safe_release( sceneB );
+	safe_release( sceneA );
+}
+
+//======================================================================
+// (n) L2: the CROSS-OBJECT channel separates too
+//======================================================================
+
+//! (k)'s twin for the four fields `proximity(r)` added
+//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1), and it needs its own
+//! test rather than four more (k) rows for one reason: (k)'s base carries
+//! a LIVE SDF provider, and the SDF family does not read the
+//! cross-object fields at all -- so perturbing `signals.pScene` there
+//! would leave the answer unmoved and the check would have no teeth.
+//! This one stamps a FieldSensitiveProvider (which reads all seventeen)
+//! into the channel instead, and is otherwise (k)'s mechanism exactly:
+//! warm at one context, perturb EXACTLY one field, require the perturbed
+//! context's own memo-off answer back.
+//!
+//! FIVE PERTURBATIONS, not six.  `signals.time` cannot be driven this
+//! way, and that is a property of the design rather than a gap in the
+//! test: `ExpressionPainter::BuildContext` STAMPS `ctx.signals.time` from
+//! its own `m_time`, so whatever a caller puts on the record is
+//! overwritten before the key is made.  The check for it is the sixth
+//! assertion below -- two painters over one program with different
+//! `m_time` land on different entries, which is (h)'s mechanism applied
+//! to the channel's copy of the same number.
+static void TestL2CrossObjectChannelSeparation()
+{
+	std::cout << "(n) L2: the cross-object channel (pScene / pSelf / ptWorld / time) separates" << std::endl;
+
+	FieldSensitiveProvider provider( 3.0 );
+
+	IObjectManager* sceneA = 0;
+	IObjectManager* sceneB = 0;
+	Check( RISE_API_CreateObjectManager( &sceneA, true, false, 4, 32 ), "(n) scene A" );
+	Check( RISE_API_CreateObjectManager( &sceneB, true, false, 4, 32 ), "(n) scene B" );
+	// Real (if trivial) geometry: `new Object( 0 )` logs "Geometry ptr was
+	// passed in but is invalid" on every construction, and a test should
+	// not print an error line to say nothing is wrong.
+	SphereGeometry* dummyGeom = new SphereGeometry( Scalar( 1 ) );
+	Object* selfA = new Object( dummyGeom );
+	Object* selfB = new Object( dummyGeom );
+	dummyGeom->release();
+
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	Check( CompileWithContext(
+		"vec3( occlusion(0.2), thickness(0.3), convexity(0.4) )", prog ), "(n) body compiles" );
+	Check( prog.MemoWorthy(), "(n) the body is memo-worthy (it calls signals)" );
+
+	std::vector<ParamSpec> specs;
+	ExpressionPainter* painter = new ExpressionPainter( prog, specs, Scalar( 0 ) );
+
+	RayIntersection carrier = MkRI( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+
+	SurfaceSignalInfo live;
+	live.pProvider = &provider;
+	live.ptObject  = Point3( Scalar( 0.31 ), Scalar( 0.37 ), Scalar( 0.41 ) );
+	live.nObject   = Vector3( Scalar( 0.59 ), Scalar( 0.61 ), Scalar( 0.67 ) );
+	live.primId    = 5;
+	live.baryA     = Scalar( 0.13 );
+	live.baryB     = Scalar( 0.29 );
+	live.pScene    = sceneA;
+	live.pSelf     = selfA;
+	live.ptWorld   = Point3( Scalar( 1.31 ), Scalar( 1.37 ), Scalar( 1.41 ) );
+
+	Draw base;
+	base.ctx.u = Scalar( 0.11 ); base.ctx.v = Scalar( 0.23 );
+	base.ctx.P  = Vector3( Scalar( 0.31 ), Scalar( 0.37 ), Scalar( 0.41 ) );
+	base.ctx.Po = Vector3( Scalar( 0.43 ), Scalar( 0.47 ), Scalar( 0.53 ) );
+	base.ctx.N  = Vector3( Scalar( 0.59 ), Scalar( 0.61 ), Scalar( 0.67 ) );
+	base.ctx.fw = Scalar( 0.0071 ); base.ctx.fwo = Scalar( 0.0079 );
+	base.ctx.time = Scalar( 0 );
+	base.curvature = Scalar( 0.83 ); base.scaleHint = Scalar( 0 );
+	base.ctx.curvR = base.curvature; base.ctx.curv = Scalar( 0 );
+	base.ctx.signals = live;
+
+	struct Case { const char* name; Draw d; };
+	std::vector<Case> cases;
+	{
+		#define PERTURB2( label, mutation ) \
+			do { Case c; c.name = label; c.d = base; { Draw& d = c.d; (void)d; mutation; } cases.push_back( c ); } while( 0 )
+
+		PERTURB2( "signals.pScene",    d.ctx.signals.pScene = sceneB );
+		PERTURB2( "signals.pSelf",     d.ctx.signals.pSelf  = selfB );
+		PERTURB2( "signals.ptWorld.x", d.ctx.signals.ptWorld.x = Scalar( 4.11 ) );
+		PERTURB2( "signals.ptWorld.y", d.ctx.signals.ptWorld.y = Scalar( 4.19 ) );
+		PERTURB2( "signals.ptWorld.z", d.ctx.signals.ptWorld.z = Scalar( 4.23 ) );
+
+		#undef PERTURB2
+	}
+
+	RISEPel refBase;
+	std::vector<RISEPel> refCase( cases.size() );
+	{
+		MemoSwitch off( 0 );
+		refBase = painter->GetColor( MakeHit( carrier.geometric, base ) );
+		for( size_t i = 0; i < cases.size(); ++i ) {
+			refCase[i] = painter->GetColor( MakeHit( carrier.geometric, cases[i].d ) );
+		}
+	}
+
+	for( size_t i = 0; i < cases.size(); ++i ) {
+		const std::string tag = std::string( "(n) " ) + cases[i].name;
+		const bool moved = refCase[i][0] != refBase[0]
+		                || refCase[i][1] != refBase[1]
+		                || refCase[i][2] != refBase[2];
+		Check( moved, tag + ": the perturbation really moves the answer (the check has teeth)" );
+
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		painter->GetColor( MakeHit( carrier.geometric, base ) );		// warm, base only
+		const RISEPel got = painter->GetColor( MakeHit( carrier.geometric, cases[i].d ) );
+		const bool ok = got[0] == refCase[i][0] && got[1] == refCase[i][1] && got[2] == refCase[i][2];
+		Check( ok, tag + ": a context differing ONLY here is not served the base's entry" );
+	}
+
+	// `signals.time`, driven the only way it can be: two painters over ONE
+	// compiled program, differing only in `m_time`.  BuildContext stamps
+	// BOTH `ctx.time` and `ctx.signals.time` from it, so this asserts that
+	// the pair lands on different entries -- and, with a provider that
+	// reads `signals.time` and a body that does NOT read `time`, that the
+	// CHANNEL's copy is what carries the difference through L1.
+	{
+		ExpressionProgram sigOnly = ExpressionProgram::Invalid();
+		Check( CompileWithContext( "vec3( occlusion(0.2), 0, 0 )", sigOnly ),
+			"(n) signal-only body compiles" );
+		ExpressionPainter* pT0 = new ExpressionPainter( sigOnly, specs, Scalar( 0 ) );
+		ExpressionPainter* pT1 = new ExpressionPainter( sigOnly, specs, Scalar( 11.5 ) );
+
+		RISEPel r0, r1;
+		{
+			MemoSwitch off( 0 );
+			r0 = pT0->GetColor( MakeHit( carrier.geometric, base ) );
+			r1 = pT1->GetColor( MakeHit( carrier.geometric, base ) );
+		}
+		Check( r0[0] != r1[0], "(n) signals.time: the two painters' times really move the answer" );
+
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		pT0->GetColor( MakeHit( carrier.geometric, base ) );		// warm at time 0
+		const RISEPel got = pT1->GetColor( MakeHit( carrier.geometric, base ) );
+		Check( got[0] == r1[0],
+			"(n) signals.time: a painter at a different time is not served the other's entry" );
+
+		pT1->release();
+		pT0->release();
+	}
+
+	painter->release();
+	selfB->release();
+	selfA->release();
+	safe_release( sceneB );
+	safe_release( sceneA );
 }
 
 //======================================================================
@@ -1772,6 +2005,7 @@ int main( int argc, char** argv )
 	TestRealMeshKeyFields();
 	TestL2KeyFieldSeparation();
 	TestL1KeyFieldSeparation();
+	TestL2CrossObjectChannelSeparation();
 	TestCrossPipeL2Separation();
 
 	std::cout << std::endl;

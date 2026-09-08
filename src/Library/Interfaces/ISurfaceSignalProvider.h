@@ -445,6 +445,16 @@ namespace RISE
 			k.baryA = (double)baryA;    k.baryB = (double)baryB;
 			k.primId = primId;
 			k.bComplementedField = bComplementedField;
+			// The cross-object half (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+			// §5.1).  `pScene`/`pSelf` go in as opaque addresses -- the memo
+			// never dereferences them; what it needs is only "is this the
+			// same scene, asked about the same object".  A manager or object
+			// freed and reallocated at the same address between passes is
+			// covered by the generation counter, exactly as `pProvider` is.
+			k.pScene = (const void*)pScene;
+			k.pSelf  = (const void*)pSelf;
+			k.wx = (double)ptWorld.x; k.wy = (double)ptWorld.y; k.wz = (double)ptWorld.z;
+			k.time = (double)time;
 			return k;
 		}
 

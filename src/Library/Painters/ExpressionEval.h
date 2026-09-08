@@ -894,12 +894,18 @@ namespace RISE
 				//!     octave and dwarfs a key compare on its own;
 				//!   * it is simply LONG -- more instructions than the key
 				//!     comparison has fields to compare.  That count is
-				//!     ExpressionMemo::ProgramKey::kFields (29: 18 own
-				//!     fields plus the hit channel's 11), taken from the
-				//!     comparison itself rather than restated here so the
-				//!     two cannot drift.  At or above it the lookup cannot
-				//!     be the more expensive half even for a body of pure
-				//!     arithmetic.
+				//!     ExpressionMemo::ProgramKey::kFields (35 since
+				//!     2026-09-08: 18 own fields plus the hit channel's 17,
+				//!     which grew by the four cross-object fields
+				//!     `proximity` needs), taken from the comparison itself
+				//!     rather than restated here so the two cannot drift.
+				//!     At or above it the lookup cannot be the more
+				//!     expensive half even for a body of pure arithmetic.
+				//!     THE THRESHOLD MOVING IS A PERF CHANGE, NOT A
+				//!     CORRECTNESS ONE -- a body of 29..34 instructions with
+				//!     no signal and no noise call stops qualifying, and
+				//!     re-running it produces the same bits the memo would
+				//!     have returned.
 				static bool ComputeMemoWorthiness( const ExpressionProgram& p )
 				{
 					if( !p.m_signalCalls.empty() ) return true;
