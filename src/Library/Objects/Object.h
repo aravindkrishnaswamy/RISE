@@ -101,6 +101,48 @@ namespace RISE
 			//! docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.4.
 			Scalar											m_worldLinearScale;
 
+			//! EXTREMAL SINGULAR VALUES of the transform's upper 3x3, as
+			//! BOUNDS: `m_sigmaMax` is an upper bound on the largest,
+			//! `m_sigmaMin` a lower bound on the smallest.  Cached by
+			//! FinalizeTransformations(); both 0 for a degenerate
+			//! (non-invertible) transform, which makes `DistanceToSurface`
+			//! refuse.
+			//!
+			//! WHY BOUNDS AND NOT THE VALUES.  A point-to-set distance
+			//! under an invertible linear map `M` satisfies
+			//! `sigmaMin * d_object <= d_world <= sigmaMax * d_object`, and
+			//! `proximity`'s one-sided contract (never over-read contact)
+			//! needs BOTH ends: the radius goes IN divided by the smallest
+			//! and the answer comes OUT multiplied by the largest.  Getting
+			//! the true singular values needs an SVD or an eigen-solve, and
+			//! this engine has neither anywhere -- `m_worldLinearScale`'s
+			//! `|det|^(1/3)` is the only decomposition in the tree and it
+			//! is neither bound.  So:
+			//!
+			//!   * EXACT when `M^T M = s^2 I` within 1e-9 relative -- a
+			//!     rotation, a reflection, a uniform scale, or any
+			//!     composition of them.  That is every object in every
+			//!     scene the proximity design's acceptance set names, and
+			//!     `m_sigmaExact` records that it held.  Both bounds are
+			//!     then `s` and the transform costs the query nothing.
+			//!   * SOUND BUT LOOSE otherwise: `sigmaMax <= ||M||_F` (since
+			//!     `||M||_F^2 = sum of sigma_i^2`) and
+			//!     `sigmaMin >= |det| / sigmaMax^2` (since
+			//!     `|det| = sigmaMin * s2 * s3 <= sigmaMin * sigmaMax^2`),
+			//!     which stays valid when the upper bound is substituted
+			//!     for the true `sigmaMax`.  Never unsafe, only wider: the
+			//!     query searches a larger object-space radius than it must
+			//!     and reports a distance no smaller than the truth.  The
+			//!     ratio is logged once per object so a scene that pays for
+			//!     it can be seen to.
+			Scalar											m_sigmaMax;
+			Scalar											m_sigmaMin;
+			bool											m_sigmaExact;
+			//! One-shot latch for the loose-bound diagnostic, so an
+			//! anisotropically-scaled object says so once rather than once
+			//! per query on every render thread.
+			mutable bool									m_sigmaLooseWarned;
+
 			virtual ~Object( );
 
 			//! Copies this object's mutable snapshot state into `dst` (a
@@ -223,6 +265,19 @@ namespace RISE
 					? pGeometry->SelfHitRootFloor( localOrigin, localDir, localNormal )
 					: IObject::SelfHitRootFloor( localOrigin, localDir, localNormal );
 			}
+			//! IObject::DistanceToSurface -- the transform layer of the
+			//! `proximity(r)` query (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+			//! §5.2).  Maps the world point into the geometry's own space,
+			//! asks the geometry, and maps the answer back through the
+			//! sigma bounds cached by FinalizeTransformations.  Refuses on
+			//! a degenerate transform, on a geometry with no closed form,
+			//! and on a geometry that refuses.
+			virtual bool DistanceToSurface(
+				const Point3& ptWorld,
+				const Scalar maxDistWorld,
+				Scalar& outDist
+				) const override;
+
 			virtual const IRayIntersectionModifier* GetModifier() const override { return pModifier; }
 			virtual const IRadianceMap* GetRadianceMap() const override { return pRadianceMap; }
 

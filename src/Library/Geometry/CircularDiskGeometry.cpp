@@ -473,3 +473,38 @@ void CircularDiskGeometry::RegenerateData( )
 {
 }
 
+
+//! IGeometry::DistanceToSurface -- EXACT.
+//!
+//! The disk is a FLAT TWO-SIDED SHEET of radius `radius`, centred at the
+//! object-space origin and perpendicular to `chAxis` -- it encloses no
+//! volume, so there is no inside case and no sign to worry about.  A point
+//! whose projection lands within the rim is exactly its axial offset away;
+//! one whose projection lands outside is the hypotenuse of the axial offset
+//! and how far past the rim the projection fell, because the nearest
+//! surface point is then on the rim circle.
+bool CircularDiskGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+
+	Scalar axial = 0, r1 = 0, r2 = 0;
+	switch( chAxis )
+	{
+	case 'x': axial = ptObject.x; r1 = ptObject.y; r2 = ptObject.z; break;
+	case 'y': axial = ptObject.y; r1 = ptObject.x; r2 = ptObject.z; break;
+	case 'z': axial = ptObject.z; r1 = ptObject.x; r2 = ptObject.y; break;
+	default:  return false;
+	}
+
+	const Scalar rho = std::sqrt( r1*r1 + r2*r2 );
+	const Scalar over = rho - radius;
+	const Scalar d = ( over <= Scalar( 0 ) )
+		? std::fabs( axial )
+		: std::sqrt( over*over + axial*axial );
+
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

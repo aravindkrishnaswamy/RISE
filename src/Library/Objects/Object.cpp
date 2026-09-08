@@ -38,7 +38,11 @@ Object::Object( ) :
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 ),
-  m_worldLinearScale( 1.0 )
+  m_worldLinearScale( 1.0 ),
+  m_sigmaMax( 1.0 ),
+  m_sigmaMin( 1.0 ),
+  m_sigmaExact( true ),
+  m_sigmaLooseWarned( false )
 {
 }
 
@@ -58,7 +62,11 @@ Object::Object( const IGeometry* pGeometry_ ) :
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 ),
-  m_worldLinearScale( 1.0 )
+  m_worldLinearScale( 1.0 ),
+  m_sigmaMax( 1.0 ),
+  m_sigmaMin( 1.0 ),
+  m_sigmaExact( true ),
+  m_sigmaLooseWarned( false )
 {
 	if( pGeometry ) {
 		pGeometry->addref();
@@ -205,6 +213,13 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.m_tangentFrameSign     = m_tangentFrameSign;
 	dst.m_worldAreaScale       = m_worldAreaScale;
 	dst.m_worldLinearScale     = m_worldLinearScale;
+	// The proximity query's transform bounds ride along with the other two
+	// transform-derived caches.  A clone's FinalizeTransformations would
+	// recompute them anyway; copying keeps a clone that is never finalized
+	// answering the same way its source does rather than at the identity.
+	dst.m_sigmaMax             = m_sigmaMax;
+	dst.m_sigmaMin             = m_sigmaMin;
+	dst.m_sigmaExact           = m_sigmaExact;
 
 	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
 	// Copying these is what makes the clone independent: a later
@@ -1282,6 +1297,72 @@ Scalar Object::GetArea( ) const
 	return objArea * m_worldAreaScale;
 }
 
+bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld, Scalar& outDist ) const
+{
+	if( !pGeometry ) {
+		return false;
+	}
+	// A degenerate transform refuses outright.  Matrix4Ops::Inverse returns
+	// its INPUT unchanged for a singular matrix rather than signalling, so
+	// the object-space point below would be a silently wrong number rather
+	// than an obviously wrong one -- and a wrong point here reads as
+	// contact where there is none, the one direction this signal must never
+	// fail in.
+	if( !( m_sigmaMin > Scalar( 0 ) ) || !( m_sigmaMax > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	// THE RADIUS GOES IN DIVIDED BY THE SMALLEST singular value.  A
+	// candidate within world distance `r` has object-space distance
+	// `d_o <= d_w / sigmaMin <= r / sigmaMin`, so searching that far in
+	// object space cannot MISS a neighbour that is within `r` in world.
+	// Clamped rather than allowed to overflow: a hugely loose radius only
+	// costs time, but an infinity handed to a geometry's own budget
+	// arithmetic is a NaN waiting to happen.
+	Scalar maxDistObject = maxDistWorld / m_sigmaMin;
+	if( !RISE::IsFiniteDouble( static_cast<double>( maxDistObject ) ) || maxDistObject > RISE_INFINITY ) {
+		maxDistObject = RISE_INFINITY;
+	}
+
+	const Point3 ptObject = Point3Ops::Transform( m_mxInvFinalTrans, ptWorld );
+
+	Scalar dObject = Scalar( 0 );
+	if( !pGeometry->DistanceToSurface( ptObject, maxDistObject, dObject ) ) {
+		return false;
+	}
+	// A geometry that answers with a negative or non-finite number has
+	// broken its own contract; treat it as a refusal rather than letting it
+	// reach the clamp in SurfaceSignalInfo::Proximity as a bogus 1.
+	if( !RISE::IsFiniteDouble( static_cast<double>( dObject ) ) || dObject < Scalar( 0 ) ) {
+		return false;
+	}
+
+	// AND THE ANSWER COMES OUT MULTIPLIED BY THE LARGEST, which is the safe
+	// direction: `d_w <= sigmaMax * d_o`, so the reported world distance is
+	// an upper bound on the true one and `proximity` can only under-paint.
+	Scalar dWorld = dObject * m_sigmaMax;
+	if( !RISE::IsFiniteDouble( static_cast<double>( dWorld ) ) ) {
+		return false;
+	}
+
+	if( !m_sigmaExact && !m_sigmaLooseWarned ) {
+		m_sigmaLooseWarned = true;
+		// No name to quote: an Object carries none -- the manager owns the
+		// name-to-object map, and reaching back for it from here would
+		// invert that ownership.  The sigma pair identifies the transform
+		// well enough for an author to find the chunk that authored it.
+		GlobalLog()->PrintEx( eLog_Info,
+			"Object::DistanceToSurface:: an object with an ANISOTROPIC transform reads proximity() "
+			"through the Frobenius/determinant bounds rather than exactly -- distances are "
+			"over-reported by at most %.3gx (sigmaMax %.6g / sigmaMin %.6g).  The signal can only "
+			"UNDER-paint contact as a result; see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
+			(double)( m_sigmaMax / m_sigmaMin ), (double)m_sigmaMax, (double)m_sigmaMin );
+	}
+
+	outDist = dWorld;
+	return true;
+}
+
 void Object::Realize() const
 {
 	if( pGeometry ) {
@@ -1338,4 +1419,77 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	m_worldLinearScale = (absDet > Scalar( 0 ))
 		? pow( absDet, Scalar( 1.0 / 3.0 ) )
 		: Scalar( 0 );
+
+	// EXTREMAL SINGULAR VALUES of the upper 3x3, as bounds -- see the
+	// fields' doc comment in Object.h for why the proximity query needs
+	// both ends and why neither is computed exactly in general.
+	//
+	// The three vectors below are the IMAGES OF THE BASIS VECTORS under
+	// this transform, read straight out of the convention
+	// Vector3Ops::Transform uses (`out.x = m._00*v.x + m._10*v.y +
+	// m._20*v.z`, and so on): so `M * e0` is (_00, _01, _02).  Taking them
+	// this way rather than transposing by hand is what keeps this block
+	// from silently disagreeing with the transform it is describing.
+	const Vector3 c0( m_mxFinalTrans._00, m_mxFinalTrans._01, m_mxFinalTrans._02 );
+	const Vector3 c1( m_mxFinalTrans._10, m_mxFinalTrans._11, m_mxFinalTrans._12 );
+	const Vector3 c2( m_mxFinalTrans._20, m_mxFinalTrans._21, m_mxFinalTrans._22 );
+
+	// det of the LINEAR part, from those columns.  For an affine transform
+	// this equals the 4x4 determinant above; computing it here rather than
+	// reusing `det` keeps the sigma math self-contained and correct even
+	// for a matrix whose bottom row is not (0,0,0,1).
+	const Scalar det3 = Vector3Ops::Dot( c0, Vector3Ops::Cross( c1, c2 ) );
+	const Scalar absDet3 = fabs( det3 );
+
+	const Scalar n0 = Vector3Ops::SquaredModulus( c0 );
+	const Scalar n1 = Vector3Ops::SquaredModulus( c1 );
+	const Scalar n2 = Vector3Ops::SquaredModulus( c2 );
+	const Scalar frob = sqrt( n0 + n1 + n2 );
+
+	if( !( absDet3 > Scalar( 0 ) ) || !RISE::IsFiniteDouble( static_cast<double>( frob ) ) ) {
+		// DEGENERATE (or non-finite): there is no invertible map to bound,
+		// and Matrix4Ops::Inverse silently returns its input for a singular
+		// matrix, so the object-space point would be meaningless too.  Zero
+		// is the "cannot answer" sentinel the other two caches already use,
+		// and DistanceToSurface reads it as a refusal.
+		m_sigmaMax   = Scalar( 0 );
+		m_sigmaMin   = Scalar( 0 );
+		m_sigmaExact = false;
+	} else {
+		// M^T M == s^2 I ?  Its entries are the pairwise dot products of
+		// the three images, so the test is "equal squared lengths, mutually
+		// orthogonal".  RELATIVE to s^2 = the mean squared length, so it
+		// scales with the object and is not a fixed absolute epsilon.
+		const Scalar s2   = ( n0 + n1 + n2 ) / Scalar( 3 );
+		const Scalar tol  = Scalar( 1e-9 ) * s2;
+		const bool uniform =
+			   fabs( n0 - s2 ) <= tol && fabs( n1 - s2 ) <= tol && fabs( n2 - s2 ) <= tol
+			&& fabs( Vector3Ops::Dot( c0, c1 ) ) <= tol
+			&& fabs( Vector3Ops::Dot( c0, c2 ) ) <= tol
+			&& fabs( Vector3Ops::Dot( c1, c2 ) ) <= tol;
+
+		if( uniform ) {
+			// A rotation, a reflection, a uniform scale, or any composition
+			// of them: every singular value is exactly sqrt(s2).
+			m_sigmaMax   = sqrt( s2 );
+			m_sigmaMin   = m_sigmaMax;
+			m_sigmaExact = true;
+		} else {
+			// sigmaMax <= ||M||_F, because ||M||_F^2 is the SUM of the
+			// squared singular values.  sigmaMin >= |det| / sigmaMax^2,
+			// because |det| = sigmaMin * s2 * s3 and both of those are at
+			// most sigmaMax -- and substituting the upper bound for
+			// sigmaMax only makes the lower bound smaller, i.e. still a
+			// lower bound.  Both directions stay SAFE for the query: it
+			// searches a wider object-space radius than it must, and
+			// reports a distance no smaller than the truth.
+			m_sigmaMax   = frob;
+			m_sigmaMin   = absDet3 / ( frob * frob );
+			m_sigmaExact = false;
+		}
+	}
+	// Re-arm the one-shot diagnostic: a re-finalize (an animation frame, a
+	// hierarchy re-bake, an editor edit) may have moved the transform from
+	// exact to loose or back, and the author should hear about the new one.
+	m_sigmaLooseWarned = false;
 }

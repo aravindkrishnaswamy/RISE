@@ -63,6 +63,14 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
+			//! IGeometry::DistanceToSurface -- an UPPER BOUND, not exact: there is no closed form
+			//! for point-to-ellipsoid distance, so this maps the query onto the
+			//! unit sphere and scales the answer back by the LARGEST semi-axis.
+			//! Over-reports by at most the ratio of largest to smallest
+			//! semi-axis, which is the safe direction
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
 			// Smoothing is a no-op on ellipsoids — there's no high-frequency
 			// detail to attenuate.  Same analytical formulas at any s.
 			bool ComputeAnalyticalDerivatives(

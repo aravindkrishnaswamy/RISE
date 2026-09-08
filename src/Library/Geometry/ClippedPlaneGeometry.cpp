@@ -524,4 +524,109 @@ void ClippedPlaneGeometry::RegenerateData( )
 	vNormalA = Vector3Ops::Normalize(Vector3Ops::Cross( vEdgesA[0], vEdgesA[1] ));
 	vNormalB = Vector3Ops::Normalize(Vector3Ops::Cross( vEdgesB[0], vEdgesB[1] ));
 	vNormal = Vector3Ops::Normalize(Vector3Ops::WeightedAverage2(vNormalA, vNormalB, 0.5, 0.5));
+
+	// COPLANARITY, decided once -- see the field's doc comment in the
+	// header for why this geometry is a bilinear patch and why a
+	// non-coplanar one must refuse the proximity query rather than answer
+	// with a flat approximation.
+	//
+	// The test is scale-relative, not an absolute epsilon: a quad whose
+	// corners are metres apart and one whose corners are millimetres apart
+	// must be judged by the same standard.  `scale` below is the largest
+	// edge-from-v0 length, so `tol` is "one part in 1e-9 of the quad's own
+	// size" -- the same relative discipline Object's sigma detection uses.
+	bCornersCoplanar = false;
+	vPlaneNormal = Vector3( 0, 0, 1 );
+	vPlaneU      = Vector3( 1, 0, 0 );
+	vPlaneV      = Vector3( 0, 1, 0 );
+	{
+		const Vector3 e1 = Vector3Ops::mkVector3( vP[1], vP[0] );
+		const Vector3 e3 = Vector3Ops::mkVector3( vP[3], vP[0] );
+		const Vector3 e2 = Vector3Ops::mkVector3( vP[2], vP[0] );
+		const Vector3 n  = Vector3Ops::Cross( e1, e3 );
+		const Scalar nLen = Vector3Ops::Magnitude( n );
+		const Scalar scale = std::max( Vector3Ops::Magnitude( e1 ),
+		                     std::max( Vector3Ops::Magnitude( e2 ), Vector3Ops::Magnitude( e3 ) ) );
+		if( nLen > Scalar( 0 ) && scale > Scalar( 0 ) ) {
+			const Vector3 nHat = n * ( Scalar( 1 ) / nLen );
+			// v2's out-of-plane offset is the whole test: v0, v1 and v3
+			// span the candidate plane by construction, so a quad is planar
+			// exactly when its fourth corner lies in it.
+			const Scalar off = std::fabs( Vector3Ops::Dot( e2, nHat ) );
+			if( off <= Scalar( 1e-9 ) * scale ) {
+				bCornersCoplanar = true;
+				vPlaneNormal = nHat;
+				vPlaneU = Vector3Ops::Normalize( e1 );
+				// Completed by cross product rather than by orthogonalising
+				// e3, so the basis is orthonormal even for a sheared quad.
+				vPlaneV = Vector3Ops::Cross( nHat, vPlaneU );
+			}
+		}
+	}
+}
+
+bool ClippedPlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;	// no early-out worth having: the whole form is O(1)
+
+	if( !bCornersCoplanar ) {
+		return false;
+	}
+
+	// The plane's own frame, origin at vP[0].
+	const Vector3 rel = Vector3Ops::mkVector3( ptObject, vP[0] );
+	const Scalar h = Vector3Ops::Dot( rel, vPlaneNormal );	// signed height above the plane
+
+	// The four corners in the plane's 2D basis, and the query point's
+	// projection.
+	Scalar cx[4], cy[4];
+	for( int i = 0; i < 4; ++i ) {
+		const Vector3 d = Vector3Ops::mkVector3( vP[i], vP[0] );
+		cx[i] = Vector3Ops::Dot( d, vPlaneU );
+		cy[i] = Vector3Ops::Dot( d, vPlaneV );
+	}
+	const Scalar px = Vector3Ops::Dot( rel, vPlaneU );
+	const Scalar py = Vector3Ops::Dot( rel, vPlaneV );
+
+	// POINT IN POLYGON by ray crossing, in the plane.  A crossing test
+	// rather than a convexity test on purpose: a planar quad may be
+	// NON-CONVEX (a dart), and a half-plane test would then report points
+	// outside the quad as inside and return `|h|` -- an UNDER-report, the
+	// forbidden direction.
+	bool inside = false;
+	for( int i = 0, j = 3; i < 4; j = i++ ) {
+		if( ( cy[i] > py ) != ( cy[j] > py ) ) {
+			const Scalar t = ( py - cy[i] ) / ( cy[j] - cy[i] );
+			if( px < cx[i] + t * ( cx[j] - cx[i] ) ) {
+				inside = !inside;
+			}
+		}
+	}
+
+	if( inside ) {
+		// The closest point of the quad-as-a-region IS the projection, so
+		// the perpendicular offset is the exact answer; no edge can be
+		// nearer than the foot of the perpendicular.
+		outDist = std::fabs( h );
+		return true;
+	}
+
+	// Outside: the nearest point lies on the boundary, so take the minimum
+	// over the four edge SEGMENTS in 3D (which already accounts for `h`).
+	Scalar best = RISE_INFINITY;
+	for( int i = 0, j = 3; i < 4; j = i++ ) {
+		const Vector3 ab = Vector3Ops::mkVector3( vP[j], vP[i] );
+		const Vector3 ap = Vector3Ops::mkVector3( ptObject, vP[i] );
+		const Scalar abb = Vector3Ops::SquaredModulus( ab );
+		Scalar t = ( abb > Scalar( 0 ) ) ? ( Vector3Ops::Dot( ap, ab ) / abb ) : Scalar( 0 );
+		t = ( t < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( t > Scalar( 1 ) ) ? Scalar( 1 ) : t );
+		const Vector3 closest = ab * t;
+		const Scalar d = Vector3Ops::Magnitude( ap - closest );
+		if( d < best ) { best = d; }
+	}
+	if( !RISE::IsFiniteDouble( (double)best ) ) {
+		return false;
+	}
+	outDist = best;
+	return true;
 }

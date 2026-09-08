@@ -68,6 +68,13 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
+			//! IGeometry::DistanceToSurface -- EXACT for BOTH forms this class takes -- the
+			//! capped solid (side wall plus two cap disks) and the open tube
+			//! (side wall only), which are different surfaces and get different
+			//! closed forms
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- the gate both
 			//! CylinderGeometry::IntersectCappedSolid and the open-tube
 			//! Ray{X,Y,Z}CylinderIntersection apply,

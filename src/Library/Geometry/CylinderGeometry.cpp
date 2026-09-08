@@ -980,3 +980,72 @@ void CylinderGeometry::RegenerateData( )
 	}
 }
 
+
+//! IGeometry::DistanceToSurface -- EXACT for BOTH of this class's forms.
+//!
+//! `m_bCapped` picks between two genuinely different SURFACES, and they get
+//! two different closed forms rather than one with a fudge:
+//!
+//!   * CAPPED (a closed solid: side wall plus two cap disks).  In the
+//!     (radial, axial) half-plane the solid is a rectangle, so the standard
+//!     exact 2D box field in those coordinates is the exact 3D distance --
+//!     inside as well as outside.
+//!   * OPEN (a tube: the side wall only, no caps).  The surface is an
+//!     annulus-free cylinder of finite length, so a point level with the
+//!     tube is `|rho - R|` away and a point past either end is the
+//!     hypotenuse of that radial offset and the axial overhang.  There is
+//!     no "inside" -- an open tube encloses nothing -- so a point on the
+//!     axis is `R` away, which is right.
+//!
+//! The axis is whichever of x / y / z `m_chAxis` names, and the axial
+//! extent is [m_dAxisMin, m_dAxisMax] -- the same convention
+//! GenerateBoundingBox uses, read from the same two members, so the two
+//! cannot disagree about which cylinder this is.
+bool CylinderGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+
+	Scalar axial = 0, r1 = 0, r2 = 0;
+	switch( m_chAxis )
+	{
+	case 'x': axial = ptObject.x; r1 = ptObject.y; r2 = ptObject.z; break;
+	case 'y': axial = ptObject.y; r1 = ptObject.x; r2 = ptObject.z; break;
+	case 'z': axial = ptObject.z; r1 = ptObject.x; r2 = ptObject.y; break;
+	default:  return false;		// an axis this class does not model: refuse rather than guess
+	}
+
+	const Scalar rho = std::sqrt( r1*r1 + r2*r2 );
+	const Scalar dRadial = rho - m_dRadius;
+
+	Scalar d = Scalar( 0 );
+	if( m_bCapped ) {
+		const Scalar centre = ( m_dAxisMin + m_dAxisMax ) * Scalar( 0.5 );
+		const Scalar half   = ( m_dAxisMax - m_dAxisMin ) * Scalar( 0.5 );
+		const Scalar dAxial = std::fabs( axial - centre ) - half;
+
+		const Scalar ox = ( dRadial > Scalar( 0 ) ) ? dRadial : Scalar( 0 );
+		const Scalar oy = ( dAxial  > Scalar( 0 ) ) ? dAxial  : Scalar( 0 );
+		const Scalar outside = std::sqrt( ox*ox + oy*oy );
+		const Scalar qmax = std::max( dRadial, dAxial );
+		const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+		d = std::fabs( outside + inside );
+	} else {
+		// Overhang past whichever end the point is beyond; zero when it is
+		// level with the tube.
+		Scalar over = Scalar( 0 );
+		if( axial < m_dAxisMin )      over = m_dAxisMin - axial;
+		else if( axial > m_dAxisMax ) over = axial - m_dAxisMax;
+
+		if( over <= Scalar( 0 ) ) {
+			d = std::fabs( dRadial );
+		} else {
+			d = std::sqrt( dRadial*dRadial + over*over );
+		}
+	}
+
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

@@ -35,6 +35,30 @@ namespace RISE
 			Vector3	vEdgesB[2];
 			bool	bDoubleSided;
 
+			//! ARE THE FOUR CORNERS COPLANAR?  Decided once, in
+			//! RegenerateData (which the constructor and every keyframed
+			//! corner edit run), because the answer is a property of the
+			//! authored corners and re-deciding it per proximity query
+			//! would be four cross products on a hot path
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			//!
+			//! IT IS NOT A PEDANTIC CASE.  This geometry stores four
+			//! ARBITRARY corners and traces the BILINEAR surface through
+			//! them, which for non-coplanar corners is genuinely curved and
+			//! has no closed-form point-to-surface distance.  A planar quad
+			//! -- which is what every `rect_light` and every hand-authored
+			//! panel actually is -- does, and gets it.  Anything else
+			//! REFUSES rather than answering with the flat quad's distance,
+			//! which could be SMALLER than the true one and so over-read
+			//! contact: the one direction the signal must never fail in.
+			bool	bCornersCoplanar;
+			//! Unit normal of that plane, and a unit in-plane basis for the
+			//! point-in-polygon test.  Meaningful only when
+			//! `bCornersCoplanar`.
+			Vector3	vPlaneNormal;
+			Vector3	vPlaneU;
+			Vector3	vPlaneV;
+
 		public:
 			ClippedPlaneGeometry( const Point3 (&vP_)[4], const bool bDoubleSided_ );
 
@@ -56,6 +80,14 @@ namespace RISE
 			Scalar GetArea( ) const override;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
+
+			//! IGeometry::DistanceToSurface -- EXACT on a PLANAR quad, REFUSES otherwise -- the
+			//! four corners are arbitrary, so this geometry is a bilinear patch
+			//! whose point-to-surface distance has no closed form unless the
+			//! corners happen to be coplanar (which every rect_light's are).
+			//! Coplanarity is decided ONCE, in RegenerateData
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
 			//! IGeometry::SelfHitRootFloor -- RayBilinearPatchIntersection's
 			//! debt-21 gate, `NEARZERO * (1 + max(|origin|_1, max corner |.|_1))`.

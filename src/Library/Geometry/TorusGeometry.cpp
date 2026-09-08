@@ -445,3 +445,27 @@ void TorusGeometry::RegenerateData( )
 	m_sqrP0 = m_p0 * m_p0;
 	m_sqrP1 = m_p1 * m_p1;
 }
+
+//! IGeometry::DistanceToSurface -- EXACT.
+//!
+//! The torus RISE models has its ring in the XZ plane and its tube offset
+//! along Y -- read off TessellateToMesh's own parameterisation, whose
+//! position is `((R + r cos v) cos u, r sin v, (R + r cos v) sin u)`, so
+//! that is the axis convention this must match and not some other tool's.
+//! The exact field in that convention is
+//! `| length( length(p.xz) - R, p.y ) - r |`: the inner length is the
+//! distance from the point to the ring circle, and subtracting the tube
+//! radius gives the signed distance to the tube surface, which is exact
+//! inside as well as outside.
+bool TorusGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar rho = std::sqrt( ptObject.x*ptObject.x + ptObject.z*ptObject.z ) - m_dMajorRadius;
+	const Scalar q   = std::sqrt( rho*rho + ptObject.y*ptObject.y );
+	const Scalar d   = std::fabs( q - m_dMinorRadius );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

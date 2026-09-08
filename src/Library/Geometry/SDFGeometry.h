@@ -297,6 +297,35 @@ namespace RISE
 			bool PrepareSignalQuery( const SurfaceSignalInfo& hit,
 				const Scalar radiusFraction, Scalar& outR, Scalar& outD0 ) const;
 
+			//! IGeometry::DistanceToSurface -- an UPPER BOUND via a
+			//! BRACKETED SIGN CHANGE, never the field value
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			//!
+			//! `Map` IS ONLY 1-LIPSCHITZ, so reporting it directly would be
+			//! wrong in the forbidden direction.  `partEval` scales each
+			//! primitive's unit field by that part's conservative
+			//! `minScale`, and `smin` / `subtract` / `intersect` compose
+			//! through polynomial blends -- all of which can report LESS
+			//! than the true distance (this header's own measurement is a
+			//! 6.7x under-read for a part scaled (0.15, 1, 1)).  An
+			//! under-read is exactly what `proximity` must never do: it
+			//! would paint contact where there is none.
+			//!
+			//! WHAT IS RIGOROUS IS THE FIELD'S SIGN.  The surface is by
+			//! definition the zero set the intersector renders, so any
+			//! point with `Map <= 0` is on or inside the solid, and the
+			//! segment from an outside `p` to it CROSSES the surface.
+			//! Hence: early-out on the lower bound (`Map(p) > maxDist`
+			//! proves the true distance exceeds it), descend the field,
+			//! then probe with a doubling step until the sign flips, and
+			//! answer `|p - q|` for the first inside point `q` -- which is
+			//! at least the true distance because the surface lies ON that
+			//! segment.  No crossing within budget REFUSES; it never falls
+			//! back on the unconverged point's distance.
+			//!
+			//! Heightfield mode refuses, as the other signals do.
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
 			//! ISurfaceSignalProvider -- the `occlusion(radius)` builtin
 			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2 for the channel,
 			//! docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md for the estimator).

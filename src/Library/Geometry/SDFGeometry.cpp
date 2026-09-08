@@ -1669,6 +1669,179 @@ bool SDFGeometry::PrepareSignalQuery( const SurfaceSignalInfo& hit,
 	return true;
 }
 
+//////////////////////////////////////////////////////////////////////
+// IGeometry::DistanceToSurface -- the cross-object proximity query's
+// SDF family (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+//
+// See the header for why this cannot report `Map` and what it reports
+// instead.  Three budget constants, all local because nothing else in the
+// file has a use for them:
+//
+//   kDescentIters   how many Newton-ish descent steps before giving up on
+//                   getting close and switching to the probe.  SIX: each
+//                   iteration is a GradientNormal (six Map calls) plus one
+//                   more for the step, so 7 x O(parts) apiece, and the
+//                   design's cost budget is "of the same order as one
+//                   occlusion() call" -- which on plank_closeup is 181.7
+//                   field evaluations.
+//   kProbeSteps     how many doublings of the probe step.  The step starts
+//                   at max(m_eps, Map) and doubles, so N steps cover
+//                   (2^N - 1) x start; at m_eps ~ 1e-5 of the diagonal,
+//                   forty doublings is astronomically past any maxDist and
+//                   the real terminator is the maxDist test inside the
+//                   loop.  It is a runaway guard, not a tuning knob.
+//   kBackoff        the descent stops early once |Map| falls below this
+//                   multiple of m_eps -- there is no point polishing a
+//                   point the probe is about to walk past anyway.
+//////////////////////////////////////////////////////////////////////
+
+bool SDFGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	// HEIGHTFIELD MODE REFUSES, for the same reason PrepareSignalQuery
+	// makes the other signals refuse: its field is divided by a single
+	// GLOBAL Lipschitz bound sized to the steepest slope, so its magnitude
+	// is systematically wrong wherever the local slope is gentler -- and
+	// this procedure's probe steps BY that magnitude.
+	if( m_isHeightfield ) {
+		return false;
+	}
+	// An empty part list has no surface at all.  `EvaluateParts` returns
+	// its +1e30 "nothing here" sentinel, which would survive every test
+	// below and produce a meaningless answer.
+	if( m_parts.empty() ) {
+		return false;
+	}
+	if( !( maxDistObject > Scalar( 0 ) ) || !RISE::IsFiniteDouble( (double)maxDistObject ) ) {
+		return false;
+	}
+	if( !( m_eps > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	const Scalar f0 = Map( ptObject );
+	if( !RISE::IsFiniteDouble( (double)f0 ) ) {
+		return false;
+	}
+
+	// ALREADY INSIDE (or on the surface): distance 0.  Unsigned, as the
+	// query's contract requires -- interpenetration is contact.  This is
+	// also exact, not a bound, and it is the ONE branch here that is.
+	if( f0 <= Scalar( 0 ) ) {
+		outDist = Scalar( 0 );
+		return true;
+	}
+
+	// STEP 1 -- THE LOWER-BOUND EARLY-OUT, and the one place `Map`'s
+	// under-reading is an ASSET.  `Map <= true distance` everywhere, so
+	// `Map(p) > maxDist` PROVES the true distance is past the radius and
+	// this candidate cannot contribute.  Skipping here can never lose a
+	// neighbour that was actually within range.
+	if( f0 > maxDistObject ) {
+		return false;
+	}
+
+	const int    kDescentIters = 6;
+	const int    kProbeSteps   = 40;
+	const Scalar kBackoff      = Scalar( 2 );
+
+	// STEP 2 -- DESCEND.  `p <- p - Map(p) * grad_hat(p)`.  A step of
+	// |Map| along the negated unit gradient cannot overshoot the zero set
+	// of a 1-Lipschitz field (the field can fall by at most |step| over
+	// that distance), so the iteration approaches the surface monotonically
+	// from outside and never crosses it -- which is what keeps `q` below an
+	// honest bracket rather than a guess.
+	Point3 p = ptObject;
+	Scalar f = f0;
+	Vector3 g( 0, 1, 0 );
+	bool haveGradient = false;
+	for( int it = 0; it < kDescentIters; ++it ) {
+		if( f <= kBackoff * m_eps ) {
+			break;
+		}
+		g = GradientNormal( p );
+		haveGradient = true;
+		// GradientNormal fabricates (0,1,0) where the gradient collapses
+		// below 1e-12 -- a flat blend seam.  Descent then walks an
+		// arbitrary axis and this candidate will most likely REFUSE below,
+		// which is a feature failure (an unpainted seam), never a wrong
+		// answer.  Documented rather than special-cased: there is no better
+		// direction to invent.
+		const Point3 next( p.x - f * g.x, p.y - f * g.y, p.z - f * g.z );
+		const Scalar fn = Map( next );
+		if( !RISE::IsFiniteDouble( (double)fn ) ) {
+			break;
+		}
+		// A step that did not reduce the field means the local gradient is
+		// lying to us (a blend seam, a scaled part); stop rather than
+		// wander.  The probe below still gets its chance from here.
+		if( fn >= f ) {
+			break;
+		}
+		p = next;
+		f = fn;
+	}
+
+	// STEP 3 -- PROBE for the sign change, along the last descent
+	// direction, with a DOUBLING step.  The first point with `Map <= 0` is
+	// on or inside the solid, so the surface lies on the segment from the
+	// ORIGINAL query point to it -- and therefore `|ptObject - q|` is at
+	// least the true distance.  That is the upper bound this whole
+	// procedure exists to produce.
+	//
+	// THE DESCENT LOOP MAY NEVER HAVE RUN -- a query point already inside
+	// the backoff band exits it on the first test -- and `g` would then
+	// still hold its (0,1,0) INITIALISER, which is an arbitrary axis, not a
+	// direction toward the surface.  Probing along it would wander and the
+	// candidate would refuse for no reason, so take the real gradient here.
+	if( !haveGradient ) {
+		g = GradientNormal( p );
+	}
+	Scalar step = std::max( m_eps, ( f > Scalar( 0 ) ) ? f : m_eps );
+	Scalar walked = Scalar( 0 );
+	Point3 q = p;
+	bool crossed = ( f <= Scalar( 0 ) );
+
+	for( int s = 0; !crossed && s < kProbeSteps; ++s ) {
+		walked += step;
+		// A CHEAP BUDGET TEST, not the authoritative one.  `f0 + walked` is
+		// a proxy for how far `q` has got from the ORIGINAL point; it is
+		// neither reliably above nor reliably below the true separation
+		// (the descent's own path can exceed `f0`), and it does not need to
+		// be.  Overshooting it only ends the walk early -- a refusal, which
+		// under-paints -- and undershooting it only costs a few more Map
+		// calls, because the FINAL `d > maxDistObject` test below is what
+		// actually decides whether the answer is in range.
+		if( f0 + walked > maxDistObject ) {
+			break;
+		}
+		q = Point3( p.x - walked * g.x, p.y - walked * g.y, p.z - walked * g.z );
+		const Scalar fq = Map( q );
+		if( !RISE::IsFiniteDouble( (double)fq ) ) {
+			break;
+		}
+		if( fq <= Scalar( 0 ) ) {
+			crossed = true;
+			break;
+		}
+		step *= Scalar( 2 );
+	}
+
+	// STEP 4 -- NO CROSSING FOUND: REFUSE.  Never the unconverged point's
+	// distance, which would be smaller than the truth and so over-read
+	// contact.  This candidate contributes nothing and the caller treats it
+	// as far.
+	if( !crossed ) {
+		return false;
+	}
+
+	const Scalar d = Vector3Ops::Magnitude( Vector3Ops::mkVector3( q, ptObject ) );
+	if( !RISE::IsFiniteDouble( (double)d ) || d > maxDistObject ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
 bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
 	const Scalar radiusFraction, const bool /*bRadiusIsConstant*/, Scalar& outValue ) const
 {

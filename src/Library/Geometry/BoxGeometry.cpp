@@ -688,3 +688,45 @@ void BoxGeometry::RegenerateData( )
 		GlobalLog()->PrintSourceError( "BoxGeometry:: Depth is 0", __FILE__, __LINE__ );
 	}
 }
+
+//! IGeometry::DistanceToSurface -- EXACT, inside and outside alike.
+//!
+//! The box is axis-aligned and centred at the object-space origin with half
+//! extents (dWidthOV2, dHeightOV2, dDepthOV2), exactly as
+//! GenerateBoundingBox reports.  BOXES GET NO EXEMPTION from the transform
+//! machinery for that reason: the extents are object-space like every other
+//! family's, and a rotated or scaled box is handled by Object's sigma
+//! bounds, not here.
+//!
+//! `q` is the per-axis signed overshoot past the half extent.  Outside the
+//! box at least one component is positive and the exact distance is the
+//! length of the positive part; strictly inside all three are negative and
+//! the exact distance to the nearest FACE is the least-negative one
+//! negated.  Both are exact -- the box signed field is one of the few that
+//! is exact on the inside too -- and the absolute value of the combined
+//! form is the unsigned answer this query wants.
+bool BoxGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar qx = std::fabs( ptObject.x ) - dWidthOV2;
+	const Scalar qy = std::fabs( ptObject.y ) - dHeightOV2;
+	const Scalar qz = std::fabs( ptObject.z ) - dDepthOV2;
+
+	const Scalar ox = ( qx > Scalar( 0 ) ) ? qx : Scalar( 0 );
+	const Scalar oy = ( qy > Scalar( 0 ) ) ? qy : Scalar( 0 );
+	const Scalar oz = ( qz > Scalar( 0 ) ) ? qz : Scalar( 0 );
+	const Scalar outside = std::sqrt( ox*ox + oy*oy + oz*oz );
+
+	// The inside term is zero whenever any q is positive, so the two never
+	// both contribute -- this is the standard exact box field, written the
+	// way it is so the outside branch stays branch-free.
+	const Scalar qmax = std::max( qx, std::max( qy, qz ) );
+	const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+
+	const Scalar d = std::fabs( outside + inside );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

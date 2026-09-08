@@ -330,6 +330,48 @@ namespace RISE
 		//! vtable slot ABI-stable (the mid-vtable insert this replaces would have
 		//! shifted IntersectRay and every later slot for stale implementers).
 		virtual bool CanTessellate() const { return true; }
+
+		//! SHORTEST DISTANCE from `ptObject` to this geometry's own surface,
+		//! in this geometry's own object space -- the per-family half of the
+		//! `proximity(r)` query (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+		//!
+		//! UNSIGNED.  A point INSIDE the solid is at distance 0 from the
+		//! surface for this query's purposes, not at a negative distance:
+		//! interpenetration is contact, and the signal is deliberately
+		//! sign-free in v1 (a signed variant needs an inside test per
+		//! family, and is Phase 3).
+		//!
+		//! THE CONTRACT FOR OVERRIDERS IS ONE-SIDED, and it is the whole
+		//! safety argument of the signal: the value written must be the
+		//! true distance or an UPPER BOUND on it -- NEVER a lower one.  An
+		//! over-report makes `proximity` under-paint a seam, which is a
+		//! feature failure.  An under-report makes it paint contact where
+		//! there is none, which is a wrong render.  A family that cannot
+		//! honour that must REFUSE.
+		//!
+		//! `maxDistObject` is a permission, not a promise: an implementer
+		//! may return false as soon as it can prove the answer exceeds it,
+		//! and one that ignores it is still correct, only slower.  A
+		//! refusal means "this geometry contributes nothing to this query",
+		//! and the caller treats it as far.
+		//!
+		//! DEFAULTED to a refusal (a real body, not `= 0`) so every
+		//! geometry that has no closed form -- non-indexed RAW meshes,
+		//! Bezier patches, hair, and the out-of-tree 3DSMax implementer --
+		//! compiles unchanged and honestly contributes nothing.  Declared
+		//! LAST and defaulted, so it makes no claim on any existing vtable
+		//! slot.
+		//! \return TRUE and writes `outDist` (>= 0), or FALSE with
+		//!         `outDist` untouched.
+		virtual bool DistanceToSurface(
+			const Point3& ptObject,			///< [in] Query point, THIS geometry's object space
+			const Scalar maxDistObject,		///< [in] Search radius in the same space; may refuse beyond it
+			Scalar& outDist					///< [out] Distance to the surface, same space
+			) const
+		{
+			(void)ptObject; (void)maxDistObject; (void)outDist;
+			return false;
+		}
 	};
 }
 

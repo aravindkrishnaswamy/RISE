@@ -243,7 +243,8 @@ ObjectManager::ObjectManager(
   nMaxTreeDepth( nMaxTreeDepth_ ),
   anyComposedAgainstParent( false ),
   rebakeIncompleteWarned( false ),
-  shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() )
+  shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() ),
+  pBoxes( 0 )
 {
 	if( bUseBSPtree && bUseOctree ) {
 		GlobalLog()->PrintEasyWarning( "ObjectManager::ObjectManager:: Can't use both Octrees and BVH at the same time!" );
@@ -263,6 +264,8 @@ ObjectManager::~ObjectManager( )
 {
 	safe_release( pBVH );
 	safe_release( pOctree );
+	delete pBoxes;
+	pBoxes = 0;
 	delete [] shadowCache;
 }
 
@@ -363,6 +366,144 @@ void ObjectManager::CreateOctree() const
 	treeCreationMutex.unlock();
 }
 
+void ObjectManager::EnsureBoxSnapshot() const
+{
+	// Double-checked under the SAME mutex CreateBVH/CreateOctree use, and
+	// for the same reason: several render threads can arrive here at once
+	// on a manager nobody prepared, and exactly one of them must build.
+	if( pBoxes ) {
+		return;
+	}
+
+	treeCreationMutex.lock();
+	if( pBoxes ) {
+		treeCreationMutex.unlock();
+		return;
+	}
+
+	// Realize deferred geometry first, exactly as CreateBVH does: an
+	// unrealized DisplacedGeometry reports a ZERO bounding box, and a
+	// snapshot built from it would exclude that object from every proximity
+	// query for the life of the snapshot.
+	RealizeAllObjects();
+
+	ObjectBoxSnapshot* snap = new ObjectBoxSnapshot();
+	snap->entries.reserve( items.size() );
+
+	// EVERY registered object, world-invisible ones included -- the query
+	// applies the visibility and emitter filters, so nothing about a
+	// filtering decision is baked into a structure that can outlive the
+	// pass that built it.  `getBoundingBox()` is the expensive call this
+	// whole snapshot exists to hoist out of the per-query loop.
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i = items.begin(), e = items.end(); i != e; ++i ) {
+		ObjectBoxSnapshot::Entry entry;
+		entry.pObj = i->second.first;
+		entry.box  = entry.pObj->getBoundingBox();
+		snap->entries.push_back( entry );
+	}
+
+	// PUBLISHED WHOLE, behind one pointer, and never touched again -- see
+	// the field's doc comment in ObjectManager.h for why that is the entire
+	// thread-safety argument.
+	pBoxes = snap;
+
+	treeCreationMutex.unlock();
+}
+
+bool ObjectManager::NearestOtherSurface(
+	const Point3& ptWorld, const IObject* self, const Scalar maxDistWorld, Scalar& outDist ) const
+{
+	// A non-finite point or an unusable radius is a refusal, not a
+	// zero-distance answer: `proximity` reads a refusal as its neutral 0
+	// (paint nothing), which is the honest answer to a nonsense query.
+	if( !RISE::IsFiniteDouble( (double)ptWorld.x )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.y )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.z ) ) {
+		return false;
+	}
+	if( !( maxDistWorld > Scalar( 0 ) ) || !RISE::IsFiniteDouble( (double)maxDistWorld ) ) {
+		return false;
+	}
+
+	EnsureBoxSnapshot();
+	// ONE copy of the pointer, then a lock-free read of an immutable
+	// object.  Re-reading `pBoxes` inside the loop would reintroduce
+	// exactly the race the immutability buys away.
+	const ObjectBoxSnapshot* const snap = pBoxes;
+	if( !snap ) {
+		return false;
+	}
+
+	Scalar best = maxDistWorld;
+	bool found = false;
+
+	for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
+		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+		const IObjectPriv* const obj = entry.pObj;
+
+		// SELF, by identity.  Two INSTANCED COPIES of one geometry are
+		// different objects and do count against each other, which is the
+		// behaviour the design wants and a name- or geometry-keyed test
+		// would get wrong.
+		if( obj == self ) {
+			continue;
+		}
+		// The same filter IntersectOcclusionRay uses -- and what excludes
+		// CSG operands, which ARE registered here; only the composite is
+		// world-visible.  `casts_shadows FALSE` is deliberately NOT
+		// consulted: this is geometry presence, not light visibility.
+		if( !obj->IsWorldVisible() ) {
+			continue;
+		}
+		// EMITTERS never count: a light panel parked millimetres off a wall
+		// must not paint grime on it.  Same predicate LuminaryManager uses
+		// to decide what NEE samples, so "is a light" means one thing in
+		// the engine.
+		const IMaterial* const mat = obj->GetMaterial();
+		if( mat && mat->GetEmitter() ) {
+			continue;
+		}
+
+		// BOX REJECTION, against the RUNNING best rather than the original
+		// radius, so a close neighbour found early prunes the rest.
+		//
+		// ORDINARY CONTAINMENT, and it must stay ordinary: an infinite
+		// plane's box is +/-RISE_INFINITY (= DBL_MAX, which IsFiniteDouble
+		// reports FINITE), and under a rotation some axes overflow to
+		// +/-inf.  Either way the expanded box contains every point and the
+		// plane is admitted by the same test as everything else.  DO NOT
+		// add a "skip non-finite boxes" guard to dodge NaN -- it would make
+		// every infinite plane in the scene invisible to this query.  A NaN
+		// bound (reachable from an inf*0 in a rotated corner transform)
+		// makes both comparisons false and so ADMITS the candidate, which
+		// is the safe direction: the geometry is then asked, and answers
+		// correctly or refuses.
+		const Point3& ll = entry.box.ll;
+		const Point3& ur = entry.box.ur;
+		if( ptWorld.x < ll.x - best || ptWorld.x > ur.x + best ) continue;
+		if( ptWorld.y < ll.y - best || ptWorld.y > ur.y + best ) continue;
+		if( ptWorld.z < ll.z - best || ptWorld.z > ur.z + best ) continue;
+
+		Scalar d = Scalar( 0 );
+		if( obj->DistanceToSurface( ptWorld, best, d ) && d < best ) {
+			best = d;
+			found = true;
+			if( best <= Scalar( 0 ) ) {
+				// Touching or interpenetrating: nothing can beat 0, and the
+				// remaining candidates cannot change the answer.
+				break;
+			}
+		}
+	}
+
+	if( !found ) {
+		return false;
+	}
+	outDist = best;
+	return true;
+}
+
 void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
 	RISE_PROFILE_PHASE(GeomPrimary);
@@ -428,6 +569,20 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 	// `signals.time` is NOT stamped here -- the manager does not know an
 	// evaluating painter's time.  ExpressionPainter::BuildContext stamps it on
 	// its own copy; see the field's doc comment.
+	//
+	// THE SNAPSHOT THE STAMP PROMISES.  Stamping `pScene` publishes this
+	// manager to a painter that may call `proximity()`, so the AABB snapshot
+	// that query scans has to exist by then.  PrepareForRendering builds it
+	// eagerly; this covers the callers that skip PrepareForRendering
+	// entirely -- the same population the lazy `CreateBVH()` above exists
+	// for, plus the <=4-object linear branch, which has no lazy build of its
+	// own and is exactly what a small test scene uses.  One predictable
+	// not-null branch per primary ray after the first, against a traversal
+	// that just walked a BVH.  (NearestOtherSurface calls it again, and that
+	// belt-and-braces is deliberate: an out-of-tree caller could reach the
+	// query through a hit record this function never produced.)
+	EnsureBoxSnapshot();
+
 	ri.geometric.signals.pScene  = this;
 	ri.geometric.signals.pSelf   = ri.pObject;
 	ri.geometric.signals.ptWorld = ri.geometric.ptIntersection;
@@ -1131,6 +1286,22 @@ void ObjectManager::PrepareForRendering() const
 		shadowCache = new ShadowCacheSlot[kShadowCacheSlots]();
 	}
 
+	// THE WORLD-AABB SNAPSHOT for the cross-object proximity query
+	// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2), built LAST and
+	// unconditionally.
+	//
+	// LAST because everything above it can move an object: the re-bake
+	// composes hierarchy transforms and, when it changes anything, calls
+	// InvalidateSpatialStructure -- which drops this snapshot along with
+	// pBVH.  Building before that would publish boxes from the PREVIOUS
+	// frame's poses and then have them thrown away, or worse, kept.
+	//
+	// UNCONDITIONALLY, unlike the TLAS build above it, because its
+	// `items.size() > nMaxObjectsPerNode` gate is a property of the TLAS
+	// and not of this: a four-object scene has no top-level BVH and still
+	// needs its boxes.
+	EnsureBoxSnapshot();
+
 	// EXPRESSION MEMO: the trailing bump is taken by `memoDropOnExit`,
 	// declared at the top of this function -- see its comment for why it
 	// is a scope guard and not a statement here.
@@ -1146,6 +1317,15 @@ void ObjectManager::InvalidateSpatialStructure() const
 	if( pOctree ) {
 		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying octree for rebuild" );
 		safe_release( pOctree );
+	}
+	// The proximity query's world-AABB snapshot dies here beside pBVH,
+	// under the same "never during a pass" contract those already carry --
+	// it is derived from exactly the world transforms this call is
+	// declaring stale.  A plain delete, not safe_release: the snapshot is
+	// an owned POD, not a refcounted engine object.
+	if( pBoxes ) {
+		delete pBoxes;
+		pBoxes = 0;
 	}
 	// Shadow cache slots are reset but not freed — the array persists.
 	if( shadowCache ) {

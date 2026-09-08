@@ -190,6 +190,36 @@ namespace RISE
 		//! non-enumerated children here.  Default no-op; Object realizes its
 		//! geometry.  Declared last + defaulted so the vtable stays ABI-stable.
 		virtual void Realize() const {}
+
+		//! SHORTEST DISTANCE from `ptWorld` to this object's surface, in
+		//! WORLD units -- the transform-layer half of the `proximity(r)`
+		//! query (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).  `Object`
+		//! overrides it to map the point into its geometry's own space, ask
+		//! `IGeometry::DistanceToSurface`, and map the answer back.
+		//!
+		//! SAME ONE-SIDED CONTRACT as the geometry-level method: the value
+		//! written must be the true distance or an UPPER bound on it, never
+		//! a lower one, because over-reading contact is a wrong render
+		//! while under-reading it is only an unpainted seam.  That is what
+		//! forces the transform layer to convert the radius IN by the
+		//! smallest singular value and the answer OUT by the largest, and
+		//! to REFUSE outright on a degenerate (non-invertible) transform.
+		//!
+		//! DEFAULTED to a refusal so an out-of-tree IObject implementer,
+		//! and the two IObject stubs in the test tree, compile unchanged
+		//! and contribute nothing.  Declared last + defaulted: no vtable
+		//! claim on any existing slot.
+		//! \return TRUE and writes `outDist` (>= 0), or FALSE with
+		//!         `outDist` untouched.
+		virtual bool DistanceToSurface(
+			const Point3& ptWorld,			///< [in] Query point, WORLD space
+			const Scalar maxDistWorld,		///< [in] Search radius, world units; may refuse beyond it
+			Scalar& outDist					///< [out] Distance to this object's surface, world units
+			) const
+		{
+			(void)ptWorld; (void)maxDistWorld; (void)outDist;
+			return false;
+		}
 	};
 }
 

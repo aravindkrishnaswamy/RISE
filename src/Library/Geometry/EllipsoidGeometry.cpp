@@ -571,3 +571,44 @@ void EllipsoidGeometry::RegenerateData( )
 	}
 }
 
+
+//! IGeometry::DistanceToSurface -- an UPPER BOUND, and deliberately not
+//! exact.
+//!
+//! There is no closed form for the distance from a point to an ellipsoid --
+//! it is the root of a sextic, and the iterative solvers for it are a
+//! different piece of work from this one.  What IS available for free is
+//! the map `diag(a,b,c)` that carries the unit sphere onto this ellipsoid:
+//! evaluate the exact unit-sphere distance at the pulled-back point, then
+//! push the answer forward by the LARGEST semi-axis.
+//!
+//! WHY THAT IS SOUND.  For a linear map `M`, the image of the unit-sphere
+//! minimiser is A surface point of the ellipsoid, at distance at most
+//! `sigmaMax * d_unit` from the query point -- and the true distance is the
+//! minimum over ALL surface points, so it can only be smaller.  Hence the
+//! answer is an upper bound, which is the direction `proximity` requires:
+//! it may UNDER-paint a seam near a strongly eccentric ellipsoid, and can
+//! never paint one that is not there.  The over-report is bounded by the
+//! ratio of largest to smallest semi-axis (it is 1 -- i.e. exact -- for a
+//! sphere-shaped ellipsoid), and it is worst at the centre.
+bool EllipsoidGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+
+	const Scalar a = m_vRadius.x, b = m_vRadius.y, c = m_vRadius.z;
+	if( !( a > Scalar( 0 ) ) || !( b > Scalar( 0 ) ) || !( c > Scalar( 0 ) ) ) {
+		return false;		// a flattened ellipsoid is not a surface this form describes
+	}
+
+	const Scalar qx = ptObject.x / a, qy = ptObject.y / b, qz = ptObject.z / c;
+	const Scalar rq = std::sqrt( qx*qx + qy*qy + qz*qz );
+	const Scalar dUnit = std::fabs( rq - Scalar( 1 ) );
+
+	const Scalar sigmaMax = std::max( a, std::max( b, c ) );
+	const Scalar d = dUnit * sigmaMax;
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

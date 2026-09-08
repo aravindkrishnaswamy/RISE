@@ -162,6 +162,48 @@ namespace RISE
 			};
 			mutable ShadowCacheSlot* shadowCache;
 
+			//! THE WORLD-AABB SNAPSHOT the cross-object proximity query
+			//! scans (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+			//!
+			//! WHY IT IS NEW WORK RATHER THAN A FREE BYPRODUCT of the TLAS.
+			//! World AABBs are computed INSIDE CreateBVH() / CreateOctree(),
+			//! which run only when `items.size() > nMaxObjectsPerNode`, so a
+			//! four-object scene never builds one -- and `Object::
+			//! getBoundingBox()` transforms eight corners through the world
+			//! matrix on EVERY call (tens of nanoseconds plus a virtual), so
+			//! a naive per-query scan of a 405-object scene is 20-40 us, not
+			//! ~1 us.  At tens of millions of hits per frame that is the
+			//! difference between a few percent and a multiple.
+			//!
+			//! IMMUTABLE ONCE PUBLISHED, which is the whole thread-safety
+			//! argument: it is built whole, published behind ONE pointer
+			//! exactly as `pBVH` is, never grown and never edited in place,
+			//! and released only where `pBVH` is -- so a query copies the
+			//! pointer once and reads lock-free, with no reallocation
+			//! hazard and no race class `pBVH` does not already have.
+			//!
+			//! Holds EVERY registered object, world-invisible ones
+			//! included; the query filters.  Filtering at build time would
+			//! be faster and is deliberately not done: visibility is
+			//! immutable within a pass but this snapshot can outlive one
+			//! (nothing drops it unless the spatial structure is
+			//! invalidated), and a stale visibility filter baked into it
+			//! would be invisible.
+			struct ObjectBoxSnapshot
+			{
+				struct Entry
+				{
+					BoundingBox			box;
+					const IObjectPriv*	pObj;
+				};
+				std::vector<Entry>	entries;
+			};
+			mutable const ObjectBoxSnapshot* pBoxes;
+
+			//! Builds `pBoxes` if it is null.  Mutex-serialized and
+			//! double-checked, exactly like CreateBVH().
+			void EnsureBoxSnapshot() const;
+
 			// Realize all objects' deferred geometry (idempotent) before any bbox/
 			// TLAS query.  Called from PrepareForRendering AND CreateBVH/CreateOctree.
 			void RealizeAllObjects() const;
@@ -200,6 +242,14 @@ namespace RISE
 				const Scalar dHowFar,
 				const bool bHitFrontFaces,
 				const bool bHitBackFaces
+				) const;
+
+			//! See IObjectManager::NearestOtherSurface's contract comment.
+			bool NearestOtherSurface(
+				const Point3& ptWorld,
+				const IObject* self,
+				const Scalar maxDistWorld,
+				Scalar& outDist
 				) const;
 
 			void EnumerateObjects( IEnumCallback<IObject>& pFunc ) const;

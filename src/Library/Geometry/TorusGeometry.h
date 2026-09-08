@@ -54,6 +54,10 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
+			//! IGeometry::DistanceToSurface -- EXACT: the engine's own Y-axis torus form
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- the torus's real gate is NOT the
 			//! quartic solver's `s[i] > NEARZERO` root test (which the generic
 			//! default already over-states).  It is the QUARTIC DEFLATION test in

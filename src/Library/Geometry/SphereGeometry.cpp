@@ -340,3 +340,22 @@ void SphereGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 void SphereGeometry::RegenerateData( )
 {
 }
+
+//! IGeometry::DistanceToSurface -- EXACT, inside and outside alike.
+//!
+//! The sphere is centred at the object-space origin, so the distance from
+//! any point to the SURFACE is `| |p| - R |`.  The absolute value is what
+//! makes the answer unsigned, which is the query's contract: a point inside
+//! another object's volume is in contact with it, and how far inside is not
+//! something `proximity` reports.
+bool SphereGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar r = Vector3Ops::Magnitude( Vector3( ptObject.x, ptObject.y, ptObject.z ) );
+	const Scalar d = std::fabs( r - m_dRadius );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

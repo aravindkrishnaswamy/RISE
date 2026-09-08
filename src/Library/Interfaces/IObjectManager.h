@@ -244,6 +244,66 @@ namespace RISE
 			const bool bHitFrontFaces,					///< [in] Should we process the intersection if the element is front facing?
 			const bool bHitBackFaces					///< [in] Should we process the intersection if the element is back facing?
 			) const = 0;
+
+		//! SHORTEST DISTANCE from `ptWorld` to the surface of any OTHER
+		//! world-visible, non-emissive object -- the query behind the
+		//! `proximity(r)` texture builtin
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+		//!
+		//! CASTS NO RAY AND EVALUATES NO PAINTER.  It walks a cached
+		//! world-AABB snapshot, asks each surviving candidate for its own
+		//! closed-form (or bounded) point-to-surface distance in that
+		//! object's own space, and keeps the minimum.  That is what makes
+		//! it safe from every render thread by the same argument
+		//! `IntersectShadowRay` makes -- read-only against geometry and
+		//! transforms that are immutable for the pass -- and what makes it
+		//! reentrancy-free where a ray-based estimator would not be.
+		//!
+		//! WHY A DISTANCE AND NOT A RAY FAN.  A thin object resting on a
+		//! plane subtends grazing directions only, so every hemisphere
+		//! estimator reads a two-to-ten-pixel band rather than a seam
+		//! (measured: docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §8.1).  The
+		//! seam IS the set of points within a millimetre or two of another
+		//! surface, which only a true distance function reports.
+		//!
+		//! THREE EXCLUSIONS, each deliberate:
+		//!   * `self` never contributes -- its own surface is at distance
+		//!     zero from every point on it.  Identity, not name: two
+		//!     INSTANCED COPIES of one geometry are different objects and
+		//!     do count against each other.
+		//!   * objects failing `IsWorldVisible()`, which is exactly the
+		//!     filter `IntersectOcclusionRay` uses and is what excludes CSG
+		//!     operands (they ARE registered in the manager's map; only the
+		//!     composite is world-visible).  `casts_shadows FALSE` does NOT
+		//!     exempt anything -- this is geometry presence, the same
+		//!     contract `IntersectOcclusionRay` was split out for.
+		//!   * EMITTERS (`GetMaterial() && GetMaterial()->GetEmitter()`,
+		//!     the predicate LuminaryManager uses to decide what NEE
+		//!     samples).  A light panel parked two millimetres off a wall
+		//!     must not paint grime on it.  Unreal's distance-field set and
+		//!     Blender's proximity target contain no lights either.  The
+		//!     cost is that a DECORATIVE emitter -- a lava pool, a glowing
+		//!     rune -- also stops collecting contact dirt; disclosed in the
+		//!     design's §10, not fixed in v1.
+		//!
+		//! DIRECTION OF ERROR, where a family cannot be exact: the answer
+		//! is an UPPER bound on the true distance, never a lower one.  So
+		//! `proximity` may UNDER-paint a seam and can never paint one that
+		//! is not there.  A candidate that cannot answer contributes
+		//! nothing (it is treated as far) and says so once in the log --
+		//! honest absence over a wrong distance.
+		//!
+		//! \return TRUE and writes `outDist` (in (0, maxDistWorld]) when
+		//!         some candidate answered within the radius; FALSE with
+		//!         `outDist` untouched when nothing did -- which is also
+		//!         the answer for a non-finite point, a non-positive or
+		//!         non-finite radius, and an empty scene.
+		virtual bool NearestOtherSurface(
+			const Point3& ptWorld,						///< [in] The world-space point to measure from
+			const IObject* self,						///< [in] The object the point belongs to; never contributes.  May be null
+			const Scalar maxDistWorld,					///< [in] Search radius, a WORLD LENGTH; candidates beyond it are skipped
+			Scalar& outDist								///< [out] Shortest distance found, world units
+			) const = 0;
 	};
 }
 
