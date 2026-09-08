@@ -3174,6 +3174,43 @@ inline EOSDD target_cp_dd(device const float* thermo,uint species,EOSDD temperat
  value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+24u),t4));
  return eos_mul(eos_div(eos_load_dd(thermo,7u*96u),
   eos_load_dd(thermo,96u*species)),value);}
+struct TargetTemperatureBasis {
+ EOSDD inverse,inverse2,logT,t2,t3,t4,t5;
+};
+inline TargetTemperatureBasis target_temperature_basis(EOSDD temperature){
+ TargetTemperatureBasis basis;basis.inverse=eos_div(eos_dd(1.0f),temperature);
+ basis.inverse2=eos_mul(basis.inverse,basis.inverse);basis.logT=eos_log_dd(temperature);
+ basis.t2=eos_mul(temperature,temperature);basis.t3=eos_mul(basis.t2,temperature);
+ basis.t4=eos_mul(basis.t3,temperature);basis.t5=eos_mul(basis.t4,temperature);return basis;}
+inline EOSDD target_enthalpy_basis_dd(device const float* thermo,uint species,EOSDD temperature,
+ TargetTemperatureBasis basis,device atomic_uint* obligations,thread bool& valid){uint offset=0u;
+ if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations,valid)){
+  valid=false;return eos_dd(0.0f);}
+ EOSDD primitive=eos_neg(eos_mul(eos_load_dd(thermo,offset+6u),basis.inverse));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+9u),basis.logT));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+12u),temperature));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+15u),eos_mul(basis.t2,eos_dd(0.5f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+18u),eos_div(basis.t3,eos_dd(3.0f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+21u),eos_mul(basis.t4,eos_dd(0.25f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+24u),eos_mul(basis.t5,eos_dd(0.2f))));
+ EOSDD gasConstant=eos_load_dd(thermo,7u*96u),weight=eos_load_dd(thermo,96u*species);
+ return eos_add(eos_mul(eos_div(gasConstant,weight),primitive),eos_load_dd(thermo,offset+27u));}
+inline EOSDD target_cp_basis_dd(device const float* thermo,uint species,EOSDD temperature,
+ TargetTemperatureBasis basis,device atomic_uint* obligations,thread bool& valid){uint offset=0u;
+ if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations,valid)){
+  valid=false;return eos_dd(0.0f);}
+ EOSDD value=eos_mul(eos_load_dd(thermo,offset+6u),basis.inverse2);
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+9u),basis.inverse));
+ value=eos_add(value,eos_load_dd(thermo,offset+12u));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+15u),temperature));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+18u),basis.t2));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+21u),basis.t3));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+24u),basis.t4));
+ return eos_mul(eos_div(eos_load_dd(thermo,7u*96u),
+  eos_load_dd(thermo,96u*species)),value);}
+inline bool target_dd_words_match(EOSDD a,EOSDD b){
+ return as_type<uint>(a.hi)==as_type<uint>(b.hi)&&as_type<uint>(a.lo)==as_type<uint>(b.lo)&&
+  as_type<uint>(a.tail)==as_type<uint>(b.tail)&&as_type<uint>(a.bound)==as_type<uint>(b.bound);}
 kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)]],
  device const float* temperature [[buffer(1)]],device const float* physicalMass [[buffer(2)]],
  device const float* physicalEnergy [[buffer(3)]],device const float* eosThermo [[buffer(4)]],
@@ -3240,11 +3277,22 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
  for(uint component=0u;component<9u;++component)
   rate[component]=eos_div(divergenceNumerator[component],eos_dd(p.dx));
  bool valid=true;EOSDD gas=eos_dd(0.0f),inverseWeight=eos_dd(0.0f),heatCapacity=eos_dd(0.0f);
- EOSDD enthalpy[7];EOSDD T=eos_dd(temperature[gid]);for(uint species=0u;species<7u;++species){
+ // All species consume one represented temperature. Reuse only its pure
+ // compensated primitives; retain the two segment decisions and the exact
+ // enthalpy/cp polynomial and species-accumulation order. The direct helpers
+ // remain independent, qualification-only four-word witnesses below.
+ EOSDD enthalpy[7];EOSDD T=eos_dd(temperature[gid]);
+ TargetTemperatureBasis temperatureBasis=target_temperature_basis(T);
+ for(uint species=0u;species<7u;++species){
   EOSDD density=eos_dd(max(0.0f,state[(species+1u)*p.cells+gid]));
-  enthalpy[species]=eos_enthalpy_dd(eosThermo,species,T,obligations,valid);
-  heatCapacity=eos_add(heatCapacity,eos_mul(density,
-   target_cp_dd(eosThermo,species,T,obligations,valid)));
+  bool directValid=valid;
+  enthalpy[species]=target_enthalpy_basis_dd(eosThermo,species,T,temperatureBasis,obligations,valid);
+  EOSDD cp=target_cp_basis_dd(eosThermo,species,T,temperatureBasis,obligations,valid);
+  if(resident_full_payload_seals){EOSDD directEnthalpy=eos_enthalpy_dd(eosThermo,species,T,
+    obligations,directValid),directCP=target_cp_dd(eosThermo,species,T,obligations,directValid);
+   if(valid!=directValid||!target_dd_words_match(enthalpy[species],directEnthalpy)||
+    !target_dd_words_match(cp,directCP))valid=false;}
+  heatCapacity=eos_add(heatCapacity,eos_mul(density,cp));
   if(species<6u){gas=eos_add(gas,density);inverseWeight=eos_add(inverseWeight,
     eos_div(density,eos_load_dd(eosThermo,96u*species)));}}
  EOSDD capacityTemperature=eos_mul(heatCapacity,T),meanWeight=eos_div(gas,inverseWeight);

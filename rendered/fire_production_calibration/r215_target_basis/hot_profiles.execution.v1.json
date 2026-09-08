@@ -1,0 +1,67 @@
+{
+  "checkpoint_sha256": "2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2",
+  "executable_sha256": "02b705b284888c92a512e060b8fb04b74c09dd353284ae8abf5326a12fd22d9d",
+  "migration_authority": false,
+  "owner_profile": "1",
+  "producer_kernel_profile": "1",
+  "qualification_sha256": "9fb1555544b2ef2ac5d5050e9d5cbc15c9c0dc459e5e389e95548d39adf8ec9c",
+  "runs": [
+    {
+      "checkpoint_before_after_sha256": "2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2",
+      "command": [
+        "/Users/aravind/Working/RISE/worktrees/r214-target-basis/bin/tests/FireSequenceTest",
+        "--fire-production-owner-eos-refusal",
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r208_single_source/ported_from_zero.v1/checkpoints/step_0000001300.checkpoint",
+        "/Users/aravind/Working/RISE/worktrees/r214-target-basis/rendered/fire_production_calibration/r215_target_basis/hot_profile_2.v1"
+      ],
+      "end_unix_ns": 1788905224257678000,
+      "executable_before_after_sha256": "02b705b284888c92a512e060b8fb04b74c09dd353284ae8abf5326a12fd22d9d",
+      "log": "rendered/fire_production_calibration/r215_target_basis/hot_profile_2.v1.log",
+      "log_sha256": "eb789fb815f7450ddf201e10e3e58fb89fb8da5f8c4f01f11a22d6aeb532c990",
+      "process_exit_code": 93,
+      "solver_accepted": true,
+      "start_unix_ns": 1788905155358275000,
+      "trajectory": "rendered/fire_production_calibration/r215_target_basis/hot_profile_2.v1/budgets/maximum_velocity_trajectory.csv",
+      "trajectory_sha256": "378d878f757668c4daa18d105116495f8b68052ae185de4f265300c5820b9a96"
+    },
+    {
+      "checkpoint_before_after_sha256": "2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2",
+      "command": [
+        "/Users/aravind/Working/RISE/worktrees/r214-target-basis/bin/tests/FireSequenceTest",
+        "--fire-production-owner-eos-refusal",
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r208_single_source/ported_from_zero.v1/checkpoints/step_0000001300.checkpoint",
+        "/Users/aravind/Working/RISE/worktrees/r214-target-basis/rendered/fire_production_calibration/r215_target_basis/hot_profile_3.v1"
+      ],
+      "end_unix_ns": 1788905293565190000,
+      "executable_before_after_sha256": "02b705b284888c92a512e060b8fb04b74c09dd353284ae8abf5326a12fd22d9d",
+      "log": "rendered/fire_production_calibration/r215_target_basis/hot_profile_3.v1.log",
+      "log_sha256": "08355daa142f28770224ead78538a19644d3997699f2ab3b04b7584263353dca",
+      "process_exit_code": 93,
+      "solver_accepted": true,
+      "start_unix_ns": 1788905224320176000,
+      "trajectory": "rendered/fire_production_calibration/r215_target_basis/hot_profile_3.v1/budgets/maximum_velocity_trajectory.csv",
+      "trajectory_sha256": "ae59c3b34b81df88549e6da0886d00916a3fe155ea57e6c7b7659efb4c5baff8"
+    },
+    {
+      "checkpoint_before_after_sha256": "2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2",
+      "command": [
+        "/Users/aravind/Working/RISE/worktrees/r214-target-basis/bin/tests/FireSequenceTest",
+        "--fire-production-owner-eos-refusal",
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r208_single_source/ported_from_zero.v1/checkpoints/step_0000001300.checkpoint",
+        "/Users/aravind/Working/RISE/worktrees/r214-target-basis/rendered/fire_production_calibration/r215_target_basis/hot_profile_4.v1"
+      ],
+      "end_unix_ns": 1788905362653595000,
+      "executable_before_after_sha256": "02b705b284888c92a512e060b8fb04b74c09dd353284ae8abf5326a12fd22d9d",
+      "log": "rendered/fire_production_calibration/r215_target_basis/hot_profile_4.v1.log",
+      "log_sha256": "4f89062a7ed93a92b1db1a9ba340890e410ac5208cd9d545de2f31d4f45884e5",
+      "process_exit_code": 93,
+      "solver_accepted": true,
+      "start_unix_ns": 1788905293628889000,
+      "trajectory": "rendered/fire_production_calibration/r215_target_basis/hot_profile_4.v1/budgets/maximum_velocity_trajectory.csv",
+      "trajectory_sha256": "e8eb4c209e46f301636b18e42c9d9361e2d5660cabf5945a7617c894198ff878"
+    }
+  ],
+  "schema": "rise.fire.r215.executed-hot-profiles.v1",
+  "scope": "Three sequential independent eight-step hot processes. Numerical admission and performance report are separate gates.",
+  "source_commit": "8a608832d6cc3058f9121d58912850422e13ea51"
+}

@@ -1,0 +1,426 @@
+{
+  "after": {
+    "device_ms": {
+      "mean": 5041.421881411225,
+      "p95": 5456.842494662851,
+      "samples": 24,
+      "stdev": 198.5470276973253
+    },
+    "owner_nonprojection_device_ms": {
+      "mean": 4788.42805523891,
+      "p95": 5190.65983267501,
+      "samples": 24,
+      "stdev": 191.83131142516928
+    },
+    "owner_projection_device_ms": {
+      "mean": 252.99382617231458,
+      "p95": 267.01716613024473,
+      "samples": 24,
+      "stdev": 6.933991334791129
+    },
+    "wall_minus_device_ms": {
+      "mean": 1912.7209172971086,
+      "p95": 2028.2393351947449,
+      "samples": 24,
+      "stdev": 59.15206711132787
+    },
+    "wall_ms": {
+      "mean": 6954.142798708333,
+      "p95": 7485.916334,
+      "samples": 24,
+      "stdev": 254.94705292292875
+    }
+  },
+  "baseline": {
+    "device_ms": {
+      "mean": 6420.787531669096,
+      "p95": 6918.187666684389,
+      "samples": 24,
+      "stdev": 245.31055708755412
+    },
+    "owner_nonprojection_device_ms": {
+      "mean": 6162.587786811248,
+      "p95": 6643.980749882758,
+      "samples": 24,
+      "stdev": 238.60150570013894
+    },
+    "owner_projection_device_ms": {
+      "mean": 258.1997448578477,
+      "p95": 273.9092498086393,
+      "samples": 24,
+      "stdev": 7.100510308126045
+    },
+    "wall_minus_device_ms": {
+      "mean": 1897.6825221225702,
+      "p95": 2020.0887083156103,
+      "samples": 24,
+      "stdev": 64.18017053718901
+    },
+    "wall_ms": {
+      "mean": 8318.470053791667,
+      "p95": 8938.276375,
+      "samples": 24,
+      "stdev": 305.44690727082866
+    }
+  },
+  "device_speedup": 1.2736064710917927,
+  "excluded_field": "producerBuildId",
+  "exclusive_phases_mean_ms": {
+    "AlphaResidual": {
+      "device": 0.10679860145833331,
+      "wall": 0.49559741666666673
+    },
+    "BuildStageProducerGroup": {
+      "device": 4776.082638981082,
+      "wall": 6378.718470541662
+    },
+    "OwnerRun": {
+      "device": 0.01764584641666667,
+      "wall": 7.604257291666667
+    },
+    "PicardIteration": {
+      "device": 0.0,
+      "wall": 6.30465916666667
+    },
+    "Prepare": {
+      "device": 3.051616329083334,
+      "wall": 95.22640970833334
+    },
+    "Project": {
+      "device": 1.2570118221666664,
+      "wall": 24.94515458333332
+    },
+    "ProjectionAdapter": {
+      "device": 252.9938261722915,
+      "wall": 333.5551975416669
+    },
+    "ReadOpenClass": {
+      "device": 0.1018363994999998,
+      "wall": 5.218520708333334
+    },
+    "Residual": {
+      "device": 1.6180749903749991,
+      "wall": 5.171517500000001
+    },
+    "SolveStage": {
+      "device": 0.0,
+      "wall": 5.394960125000001
+    },
+    "TerminalPublication": {
+      "device": 6.192432270249999,
+      "wall": 12.891138750000001
+    },
+    "TerminalVerification": {
+      "device": 0.0,
+      "wall": 0.09511966666666664
+    }
+  },
+  "executable_sha256": "02b705b284888c92a512e060b8fb04b74c09dd353284ae8abf5326a12fd22d9d",
+  "full_persistent_numerical_bytes_equal": true,
+  "hot_accepted_steps": 8,
+  "inclusive_kernels": {
+    "build_eos_endpoint_table": {
+      "calls": 468,
+      "ms_per_call": 0.2829574615384615,
+      "ms_per_step": 5.5176705
+    },
+    "compose_resident_flux_pair": {
+      "calls": 468,
+      "ms_per_call": 0.9070525170940168,
+      "ms_per_step": 17.687524083333326
+    },
+    "consume_resident_target": {
+      "calls": 936,
+      "ms_per_call": 0.003843789529914528,
+      "ms_per_step": 0.1499077916666666
+    },
+    "evaluate_resident_advective_pair": {
+      "calls": 468,
+      "ms_per_call": 8.070178690170943,
+      "ms_per_step": 157.36848445833337
+    },
+    "evaluate_resident_eos_candidate": {
+      "calls": 468,
+      "ms_per_call": 184.6431452286325,
+      "ms_per_step": 3600.5413319583336
+    },
+    "evaluate_resident_physical_flux": {
+      "calls": 468,
+      "ms_per_call": 1.3453232542735045,
+      "ms_per_step": 26.233803458333337
+    },
+    "evaluate_resident_target_terms": {
+      "calls": 468,
+      "ms_per_call": 42.41483217094016,
+      "ms_per_step": 827.089227333333
+    },
+    "evaluate_resident_transport": {
+      "calls": 468,
+      "ms_per_call": 0.512772623931624,
+      "ms_per_step": 9.999066166666667
+    },
+    "fct_build_face_alpha": {
+      "calls": 294,
+      "ms_per_call": 0.2910691496598639,
+      "ms_per_step": 3.565597083333333
+    },
+    "fct_build_ratios": {
+      "calls": 294,
+      "ms_per_call": 3.7150131802721087,
+      "ms_per_step": 45.50891145833333
+    },
+    "fct_commit_scalar": {
+      "calls": 294,
+      "ms_per_call": 0.1971458231292517,
+      "ms_per_step": 2.415036333333333
+    },
+    "fct_compatible_stage_rate": {
+      "calls": 600,
+      "ms_per_call": 0.5166879683333334,
+      "ms_per_step": 12.917199208333335
+    },
+    "fct_extract_gas_density": {
+      "calls": 468,
+      "ms_per_call": 0.047729775641025644,
+      "ms_per_step": 0.9307306250000001
+    },
+    "finalize_resident_advective_high": {
+      "calls": 468,
+      "ms_per_call": 0.46262392948717956,
+      "ms_per_step": 9.021166625000001
+    },
+    "finalize_resident_eos_candidate": {
+      "calls": 936,
+      "ms_per_call": 0.0027824070512820465,
+      "ms_per_step": 0.10851387499999982
+    },
+    "finalize_resident_target": {
+      "calls": 936,
+      "ms_per_call": 0.0030021036324786275,
+      "ms_per_step": 0.11708204166666647
+    },
+    "identify_resident_eos": {
+      "calls": 468,
+      "ms_per_call": 0.0028982457264957228,
+      "ms_per_step": 0.05651579166666659
+    },
+    "identify_resident_frozen_source": {
+      "calls": 468,
+      "ms_per_call": 0.003038722222222219,
+      "ms_per_step": 0.05925508333333327
+    },
+    "identify_resident_owner_endpoint_class": {
+      "calls": 468,
+      "ms_per_call": 0.0035441559829059812,
+      "ms_per_step": 0.06911104166666664
+    },
+    "identify_resident_physical_flux": {
+      "calls": 468,
+      "ms_per_call": 0.004507579059829056,
+      "ms_per_step": 0.0878977916666666
+    },
+    "identify_resident_target": {
+      "calls": 468,
+      "ms_per_call": 0.0036377542735042717,
+      "ms_per_step": 0.07093620833333329
+    },
+    "identify_resident_transport": {
+      "calls": 468,
+      "ms_per_call": 0.003594886752136748,
+      "ms_per_step": 0.07010029166666659
+    },
+    "issue_resident_projection_consumer": {
+      "calls": 936,
+      "ms_per_call": 0.0036394391025640995,
+      "ms_per_step": 0.1419381249999999
+    },
+    "owner_average_flux": {
+      "calls": 132,
+      "ms_per_call": 0.8568820075757575,
+      "ms_per_step": 4.712851041666666
+    },
+    "owner_bind_averaged_flux": {
+      "calls": 132,
+      "ms_per_call": 0.0038954393939393942,
+      "ms_per_step": 0.02142491666666667
+    },
+    "owner_bind_candidate": {
+      "calls": 468,
+      "ms_per_call": 0.004298786324786321,
+      "ms_per_step": 0.08382633333333327
+    },
+    "owner_bind_transport": {
+      "calls": 468,
+      "ms_per_call": 0.0035391517094017074,
+      "ms_per_step": 0.06901345833333329
+    },
+    "owner_compose_target": {
+      "calls": 468,
+      "ms_per_call": 0.05686154487179489,
+      "ms_per_step": 1.1088001250000004
+    },
+    "owner_gas_source": {
+      "calls": 468,
+      "ms_per_call": 0.10023905128205127,
+      "ms_per_step": 1.9546614999999996
+    },
+    "owner_heun_momentum": {
+      "calls": 306,
+      "ms_per_call": 0.09267646078431373,
+      "ms_per_step": 1.181624875
+    },
+    "owner_identify_target": {
+      "calls": 468,
+      "ms_per_call": 0.0031851965811965787,
+      "ms_per_step": 0.06211133333333329
+    },
+    "owner_issue_stage_seal": {
+      "calls": 468,
+      "ms_per_call": 0.003244134615384613,
+      "ms_per_step": 0.06326062499999996
+    },
+    "owner_pack_faces": {
+      "calls": 1404,
+      "ms_per_call": 0.0983094002849003,
+      "ms_per_step": 5.751099916666668
+    },
+    "owner_predict_momentum": {
+      "calls": 162,
+      "ms_per_call": 0.049752320987654315,
+      "ms_per_step": 0.33582816666666665
+    },
+    "produce_resident_frozen_source": {
+      "calls": 468,
+      "ms_per_call": 0.031927358974358985,
+      "ms_per_step": 0.6225835000000003
+    },
+    "validate_resident_physical_flux": {
+      "calls": 468,
+      "ms_per_call": 0.9064211837606837,
+      "ms_per_step": 17.675213083333333
+    }
+  },
+  "independent_processes": [
+    {
+      "device_ms": {
+        "mean": 5034.691468637902,
+        "p95": 5449.6542531996965,
+        "samples": 8,
+        "stdev": 208.02683419431963
+      },
+      "owner_nonprojection_device_ms": {
+        "mean": 4780.916374467779,
+        "p95": 5181.899668648839,
+        "samples": 8,
+        "stdev": 200.6482291958422
+      },
+      "owner_projection_device_ms": {
+        "mean": 253.77509417012334,
+        "p95": 267.75458455085754,
+        "samples": 8,
+        "stdev": 7.50782177078962
+      },
+      "wall_ms": {
+        "mean": 6944.634140625,
+        "p95": 7475.737584,
+        "samples": 8,
+        "stdev": 264.31908079577994
+      }
+    },
+    {
+      "device_ms": {
+        "mean": 5054.3044688529335,
+        "p95": 5457.676998805255,
+        "samples": 8,
+        "stdev": 201.42531606447855
+      },
+      "owner_nonprojection_device_ms": {
+        "mean": 4801.68361478718,
+        "p95": 5190.65983267501,
+        "samples": 8,
+        "stdev": 194.29380493672707
+      },
+      "owner_projection_device_ms": {
+        "mean": 252.62085406575352,
+        "p95": 267.01716613024473,
+        "samples": 8,
+        "stdev": 7.446461221926785
+      },
+      "wall_ms": {
+        "mean": 6973.7435158749995,
+        "p95": 7485.916334,
+        "samples": 8,
+        "stdev": 257.88364954646124
+      }
+    },
+    {
+      "device_ms": {
+        "mean": 5035.269706742838,
+        "p95": 5456.842494662851,
+        "samples": 8,
+        "stdev": 213.05837186338363
+      },
+      "owner_nonprojection_device_ms": {
+        "mean": 4782.684176461771,
+        "p95": 5191.663496661931,
+        "samples": 8,
+        "stdev": 206.39532683488966
+      },
+      "owner_projection_device_ms": {
+        "mean": 252.5855302810669,
+        "p95": 265.1789980009198,
+        "samples": 8,
+        "stdev": 6.716670832647582
+      },
+      "wall_ms": {
+        "mean": 6944.050739625,
+        "p95": 7504.535916,
+        "samples": 8,
+        "stdev": 276.6541172766396
+      }
+    }
+  ],
+  "inputs_sha256": {
+    "rendered/fire_production_calibration/r213_composition/cost_observation.v1.json": "2b2a597b46759b6e2ea2ef8722996c6463ba8ca4e1053c97d72ff4863c14d600",
+    "rendered/fire_production_calibration/r213_composition/hot_numerical_qualification.v2.json": "f60563f0a9e9313ecb9f8a78ecc1ea9d915f33c43fc5881a79f0a99e28257931",
+    "rendered/fire_production_calibration/r215_target_basis/hot_byte_comparison.v2": "14a2dbe33ba3d9e80778f20ad16b4bda7150b86e44637251d42f1e7bc9febc2b",
+    "rendered/fire_production_calibration/r215_target_basis/hot_profile_2.v1.log": "eb789fb815f7450ddf201e10e3e58fb89fb8da5f8c4f01f11a22d6aeb532c990",
+    "rendered/fire_production_calibration/r215_target_basis/hot_profile_2.v1/budgets/maximum_velocity_trajectory.csv": "378d878f757668c4daa18d105116495f8b68052ae185de4f265300c5820b9a96",
+    "rendered/fire_production_calibration/r215_target_basis/hot_profile_3.v1.log": "08355daa142f28770224ead78538a19644d3997699f2ab3b04b7584263353dca",
+    "rendered/fire_production_calibration/r215_target_basis/hot_profile_3.v1/budgets/maximum_velocity_trajectory.csv": "ae59c3b34b81df88549e6da0886d00916a3fe155ea57e6c7b7659efb4c5baff8",
+    "rendered/fire_production_calibration/r215_target_basis/hot_profile_4.v1.log": "4f89062a7ed93a92b1db1a9ba340890e410ac5208cd9d545de2f31d4f45884e5",
+    "rendered/fire_production_calibration/r215_target_basis/hot_profile_4.v1/budgets/maximum_velocity_trajectory.csv": "e8eb4c209e46f301636b18e42c9d9361e2d5660cabf5945a7617c894198ff878",
+    "rendered/fire_production_calibration/r215_target_basis/hot_profiles.execution.v1.json": "a87d286f28a4ea8c4cc59985e91694517715e53dfa8cd50898f0bd3701b0033d",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/budgets/maximum_velocity_trajectory.csv": "0525d65c9b0cb9cdc17a88bfe29da9f921b2c4909ff032639b9044c89efa021f",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_01.checkpoint": "7343b29947107a9af2d354f623b9532f1086d16d48d9efd89fe21b544aef9b20",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_02.checkpoint": "ce3beed6e1f7b58da5584f9fa8b3b0b613fa463f3c2f37de55077f5e32aa82f8",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_03.checkpoint": "f15d321e27d18446d3894c2fd0c8b7786b7821b20ef65bfd18a2b835693fd17d",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_04.checkpoint": "1e38f11bd0ea0dcef241aa739bbc31bf09b8fe52172ce0f22edf3782b80a38db",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_05.checkpoint": "b117c2f0e290b179cc14f249c03fbb5e71660794abfbe9b2bbf6171b7ef06f2c",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_06.checkpoint": "491eff39cc7a18ade716baef8162cdb1d1e61fcd202e5eda1ff624d68e4037d3",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_07.checkpoint": "30f94601b1bed38b22b945feef28d90881be1c50bf59b0955f00e67e98a8f1e7",
+    "rendered/fire_production_calibration/r215_target_basis/hot_snapshots.v1/checkpoints/step_08.checkpoint": "0672105d9698e5973e366c150ea14e2f83d96e55d35962cb2550290a95c6dd67",
+    "rendered/fire_production_calibration/r215_target_basis/qualification.contended.v1.json": "9fb1555544b2ef2ac5d5050e9d5cbc15c9c0dc459e5e389e95548d39adf8ec9c",
+    "rendered/fire_production_calibration/r215_target_basis/qualification.contended.v1.json.build.log": "027018d4f4a2696bdd999f236903d1ebd1e5f0c0fe24745541b412e6669604cf",
+    "rendered/fire_production_calibration/r215_target_basis/qualification.contended.v1.json.owner.log": "a176aa937bff9911e6a7254df2402d1e4ed653e161bc265630d4545937130df9",
+    "rendered/fire_production_calibration/r215_target_basis/qualification.contended.v1.json.publication.log": "d290b7e523a1ad54e39d61f9cfcdf6a2ad738dec276712fbb6894eea65d85ad4"
+  },
+  "migration_authority": false,
+  "process_mean_device_ms": {
+    "mean": 5041.421881411225,
+    "p95": 5054.3044688529335,
+    "samples": 3,
+    "stdev": 11.160393551369802
+  },
+  "process_mean_wall_ms": {
+    "mean": 6954.142798708333,
+    "p95": 6973.7435158749995,
+    "samples": 3,
+    "stdev": 16.977225163949434
+  },
+  "schema": "rise.fire.r215.target-basis-cost.v1",
+  "scope": "Tier8 matched hot states only. Contended qualification and snapshot timings excluded. Inclusive kernel intervals overlap; never sum them. Wall minus device remains unattributed. No fixed-k, tier10 timing, long-window, or fidelity claim.",
+  "source_commit": "8a608832d6cc3058f9121d58912850422e13ea51",
+  "timing_samples": 24,
+  "wall_speedup": 1.196189134243367
+}

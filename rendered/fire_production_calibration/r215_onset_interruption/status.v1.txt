@@ -1,0 +1,52 @@
+schema rise.fire.r215.interrupted-onset.v1
+status interrupted_non_verdict
+observation_utc approximate_2026-09-08T22:00Z
+source_commit 3dc96320527f211aff22e6fbea971c10ff2e0145
+frozen_executable_sha256 45370ad3bcc7035fb228a1f839efe5059cbcc791a64486bd2a1f0b1c3025dc2c
+protocol_sha256 983cfb4975a614a7bee2593c6d0f4536679925911afd0b22a5b2e897d6b04dc2
+trajectory_sha256 3ec4f50479a59ca90c7610290ad110279e7356f6e0907c470a6fa753a4545b50
+log_sha256 b6feee08b9634077e834fbd1de009ddbc1b0f06d5e76849217b8aca95a6768d7
+recorded_accepted_steps 805
+last_recorded_time_s 1.310103505034931
+last_recorded_velocity_max_m_per_s 7.9318075180053711
+prefix_peak_velocity_m_per_s 10.114780426025391
+prefix_peak_step 774
+prefix_peak_time_s 1.2633023516973481
+first_15_m_per_s_crossing none_in_recorded_prefix
+old_failure_time_2_13_s reached_false
+pre_registered_horizon_3_5_s reached_false
+terminal_summary absent
+logged_solver_refusal absent
+original_worker_pid_1049 present_false
+matching_worker_process present_false
+original_exec_session_23225 unavailable
+termination_cause unknown_not_inferred_from_missing_process
+step_792_checkpoint_sha256 65bb74aa8186a95acde57de593d54de664303c4d92ebaea374eea75e1f138c19
+step_801_checkpoint_sha256 163d9a68f1ce820daaf3234925b77f33e55eedcf317b3a16e8c62bb2dd51266e
+run_restarted false
+run_resumed false
+survival_verdict false
+focusing_verdict pending
+
+The frozen executable still matches its recorded launch SHA. The process is
+absent and the log/trajectory have no terminal completion or refusal record.
+This is an interrupted run, not a completed onset result, solver rejection,
+or evidence of stability through the old failure time.
+
+Read-only continuation audit: r214 pins none_from_zero_only and its native
+scope rejects continuation. r211's continuation and bridge issuer are pinned
+to tier 8 / step 1300 / checkpoint 2422002e; they do not authorize this run.
+No existing command was relabelled or weakened to bypass that boundary.
+
+Proposed new qualified scope, not executed: retain this entire interrupted
+directory unchanged, use step 792 as the bridge input, compare at least eight
+accepted steps 793--800 against the preserved executed transcript (a ninth
+through 801 can also compare retained carried state), and require exact times,
+dt, kernel identity and full v2 input/publication roots. Only after a reviewed
+r78-v2 historical-transcript adapter and sealed tier-10 continuation admission
+may the lineage continue to 3.5 s or its first crossing. Aggregate prefix 1--792
+and new steps 793 onward exactly once; preserve all old overlap as evidence.
+Required REDs include fewer than eight comparisons; any root/time/dt/kernel
+or binary/checkpoint/case/tier mismatch; altered prefix; missing/duplicated
+join; old-operator checkpoint; preexisting output; false fresh-from-zero claim;
+and a last-step crossing mislabeled as survival. Equality standards do not change.
