@@ -33,6 +33,17 @@ Build behavior comes from [../build/cmake/rise-tests/CMakeLists.txt](../build/cm
 
 Built binaries land in `bin/tests/` (Release) or `dbin/tests/` (Debug).
 
+#### Windows debt
+
+Known `_WIN32` branches in `tests/` that have **not** been compiled by an
+MSVC build yet, so the first Windows run of each should expect to fix them:
+
+* `ExpressionMemoTest.cpp` — check (j)'s temp-directory and child-process
+  plumbing (`_putenv_s`, `GetTempPathA` / `GetTempFileNameA` /
+  `CreateDirectoryA` / `RemoveDirectoryA`, and the `set "X=Y" && ...`
+  command string handed to `std::system`), added 2026-09-07. The POSIX
+  branch is exercised on every macOS/Linux run.
+
 ## Test Map
 
 There are 219 standalone `tests/*.cpp` executables as of 2026-07-24. Do not

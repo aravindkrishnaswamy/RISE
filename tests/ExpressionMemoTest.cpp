@@ -51,6 +51,39 @@
 //        reads the real thing -- ON by default, OFF from an options file
 //        -- across two processes, because both the option read and
 //        EnabledSlow()'s cache are once-per-process.
+//        THE ONLY CHECK HERE THAT TOUCHES THE MACHINE: it writes two
+//        files into a private mkdtemp/GetTempPath directory (never the
+//        CWD), sets and then RESTORES RISE_OPTIONS_FILE, and SPAWNS A
+//        CHILD PROCESS via std::system re-running this same binary.  It
+//        reports SKIP -- not FAIL -- when the environment cannot support
+//        that (no temp dir, unwritable file, no shell).  Its `_WIN32`
+//        branch is UNCOMPILED; see the note at the function and in
+//        tests/README.md.
+//    (k) L2: EVERY KEY FIELD SEPARATES, one at a time.  (a)'s randomized
+//        sweep looks like it covers this and does not.  Warms at a base
+//        context, perturbs exactly one field, and requires the perturbed
+//        context's own memo-off answer.  All sixteen record-reachable
+//        fields plus the signal channel; `progId` is (c)'s and `pipe` is
+//        (m)'s.  RED-PROVED: dropping `fwo` from the L2 key reddens only
+//        this test's `fwo` row and leaves (a) green.
+//    (l) L1: EVERY KEY FIELD SEPARATES, one at a time -- the same
+//        argument, over a synthetic provider whose answer depends on all
+//        fourteen SignalKey fields including `pProvider` identity, which
+//        no shipping provider does.  Its eleven hit-channel fields are
+//        the same SignalHitKey::Equals ProgramKey uses, so this covers
+//        both levels' use of it.  RED-PROVED: dropping `baryB` reddens
+//        only this test's `baryB` row -- (i), which splices all three
+//        mesh fields at once, does not notice.
+//    (m) THE TWO PIPES DO NOT SHARE AN L2 ENTRY.  One scalar-typed
+//        program handed to BOTH RISE_API_CreateExpressionPainter and
+//        RISE_API_CreateExpressionScalarPainter -- reachable, because a
+//        copied program keeps its id -- where the colour pipe calls
+//        `EvalVec3` and the scalar pipe calls `Eval`.  Each must read its
+//        OWN memo-off answer, in both orders.  RED-PROOF ATTEMPTED AND
+//        NEGATIVE: removing the `pipe` key field leaves this GREEN,
+//        because the two entry points produce identical bits on this
+//        toolchain.  The check pins the contract, not an observed
+//        divergence -- see its own header, and EvalPipe's.
 //
 //  Tabs: 4
 //
@@ -68,6 +101,11 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
@@ -75,6 +113,7 @@
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
+#include "../src/Library/RISE_API.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/ExpressionMemo.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -108,11 +147,24 @@ static void CheckExact( const Scalar got, const Scalar want, const std::string& 
 
 //! RAII flip of the memo kill switch, so a failing check cannot leave the
 //! process with the switch stuck for the tests that follow.
+//!
+//! RESTORES THE ENCLOSING VALUE, not the -1 "no override" sentinel.  Two
+//! of these do nest (a per-field sweep inside a test that has already
+//! forced the memo on), and a destructor that unconditionally wrote -1
+//! would drop the OUTER switch on the inner one's way out -- silently
+//! handing the rest of that test whatever the options file says instead
+//! of what it asked for.
 class MemoSwitch
 {
 public:
-	explicit MemoSwitch( const int tri ) { ExpressionMemo::SetEnabledOverride( tri ); }
-	~MemoSwitch() { ExpressionMemo::SetEnabledOverride( -1 ); }
+	explicit MemoSwitch( const int tri )
+		: m_prev( ExpressionMemo::EnableOverrideRef().load( std::memory_order_relaxed ) )
+	{
+		ExpressionMemo::SetEnabledOverride( tri );
+	}
+	~MemoSwitch() { ExpressionMemo::SetEnabledOverride( m_prev ); }
+private:
+	const int m_prev;
 };
 
 static RayIntersection MkRI( const Point3& origin, const Vector3& dir )
@@ -690,6 +742,30 @@ static void TestMemoWorthinessGate()
 	Check( CompileWithContext( "fbm(P, 3, 0.5, 2.0)", noisy ), "(g) noise body compiles" );
 	Check( noisy.MemoWorthy(), "(g) a noise body IS memo-worthy" );
 
+	// THE BAND'S ENDS, not just something in the middle of it.  The gate
+	// tests `fn` as a RANGE [kFnNoiseFirst, kFnNoiseLast], so an off-by-one
+	// at either end would exclude a real noise builtin from the memo and
+	// `fbm` alone (43, comfortably interior) would never notice.  `perlin`
+	// is the bottom end (kFnPerlin) and `worley_id` the top (kFnWorleyId);
+	// both bodies are far shorter than kFields, so they qualify on the
+	// noise scan or not at all.
+	ExpressionProgram bandLo = ExpressionProgram::Invalid();
+	Check( CompileWithContext( "perlin(P)", bandLo ), "(g) perlin body compiles" );
+	Check( bandLo.MemoWorthy(), "(g) the noise band's BOTTOM end (perlin) is memo-worthy" );
+
+	ExpressionProgram bandHi = ExpressionProgram::Invalid();
+	Check( CompileWithContext( "worley_id(P, 0.5)", bandHi ), "(g) worley_id body compiles" );
+	Check( bandHi.MemoWorthy(), "(g) the noise band's TOP end (worley_id) is memo-worthy" );
+
+	// And the id immediately PAST the top end is excluded, which is what
+	// makes the band an interval and not "everything from 42 up".
+	// `cellhash` is a single integer hash; a short body around it must not
+	// qualify.
+	ExpressionProgram pastBand = ExpressionProgram::Invalid();
+	Check( CompileWithContext( "cellhash(u)", pastBand ), "(g) cellhash body compiles" );
+	Check( !pastBand.MemoWorthy(),
+		"(g) the id just past the band (cellhash) does NOT qualify a short body" );
+
 	ExpressionProgram signal = ExpressionProgram::Invalid();
 	Check( CompileWithContext( "occlusion(0.1)", signal ), "(g) signal body compiles" );
 	Check( signal.MemoWorthy(), "(g) a signal body IS memo-worthy" );
@@ -703,15 +779,18 @@ static void TestMemoWorthinessGate()
 
 	// THE MEMORY CLAIM, ASSERTED rather than printed.  The commit that
 	// introduced the memo priced it at 1408 bytes per worker (24.7 kB
-	// across 18), and that number is quoted in ExpressionMemo.h and in
-	// docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md.  A ceiling rather than
-	// an equality: adding a key field or a way is allowed to move it, but
-	// it must stay a rounding error against a render worker's stack, and
-	// a change that blows past this has almost certainly widened a table
-	// or put something non-trivial in `Tables` by accident.
+	// across 18); adding the L2 key's `pipe` field on 2026-09-07 moved it
+	// to 1440 (25.9 kB across 18).  The figure is quoted in
+	// docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md, which records both.
+	//
+	// A CEILING rather than an equality, and that drift is exactly why:
+	// adding a key field or a way is allowed to move the number, but it
+	// must stay a rounding error against a render worker's stack, and a
+	// change that blows past this has almost certainly widened a table or
+	// put something non-trivial in `Tables` by accident.
 	const std::size_t bytes = ExpressionMemo::BytesPerThread();
 	std::cout << "    bytes of thread-local memo per render worker: " << bytes
-		<< "  (1408 when the memo shipped, ceiling 2048)" << std::endl;
+		<< "  (1408 when the memo shipped, 1440 since the `pipe` key field, ceiling 2048)" << std::endl;
 	Check( bytes <= 2048, "(g) the per-thread memo stays under the 2048-byte ceiling" );
 }
 
@@ -921,14 +1000,26 @@ static void TestRealMeshKeyFields()
 //! exit status.
 static const char* kOptionChildFlag = "--expression-memo-option-child";
 
-static const char* kNoKeyOptionsFile = "expr_memo_opts_default.txt";
-static const char* kOffOptionsFile   = "expr_memo_opts_off.txt";
+//! Reported instead of a FAIL when the environment cannot support this
+//! check at all -- see TestOptionDefaultAndKey's own comment for the
+//! three ways that happens.  Counted separately from pass/fail so a
+//! sandbox without a shell does not turn the suite red for a reason that
+//! has nothing to do with the memo.
+static int skipCount = 0;
 
-static void WriteOptionsFile( const char* path, const char* body )
+static void Skip( const std::string& name, const std::string& why )
 {
-	std::ofstream ofs( path );
+	++skipCount;
+	std::cout << "  SKIPPED: " << name << "  (" << why << ")" << std::endl;
+}
+
+static bool WriteOptionsFile( const std::string& path, const char* body )
+{
+	std::ofstream ofs( path.c_str() );
+	if( !ofs ) return false;
 	ofs << body;
 	ofs.close();
+	return !ofs.fail();
 }
 
 static void SetOptionsEnv( const char* path )
@@ -939,6 +1030,102 @@ static void SetOptionsEnv( const char* path )
 	setenv( "RISE_OPTIONS_FILE", path, 1 );
 #endif
 }
+
+static void UnsetOptionsEnv()
+{
+#ifdef _WIN32
+	_putenv_s( "RISE_OPTIONS_FILE", "" );
+#else
+	unsetenv( "RISE_OPTIONS_FILE" );
+#endif
+}
+
+//! SAVE AND RESTORE the caller's RISE_OPTIONS_FILE.  (j) has to point it
+//! at a file of its own, and GlobalOptions() is a read-once singleton --
+//! so without this the variable it set would outlive the check and be
+//! inherited by anything the process does afterwards, including a
+//! debugger session or a future test appended below.  "Unset" is restored
+//! as unset, not as the empty string.
+class OptionsEnvRestore
+{
+public:
+	OptionsEnvRestore()
+	{
+		const char* v = std::getenv( "RISE_OPTIONS_FILE" );
+		m_had = ( v != 0 );
+		if( m_had ) m_prev = v;
+	}
+	~OptionsEnvRestore()
+	{
+		if( m_had ) SetOptionsEnv( m_prev.c_str() );
+		else        UnsetOptionsEnv();
+	}
+private:
+	bool        m_had;
+	std::string m_prev;
+};
+
+//! A PRIVATE TEMP DIRECTORY for (j)'s two options files, removed on every
+//! exit path.  They used to be written to the CWD under fixed names,
+//! which collides with a concurrently-running copy of this test and
+//! leaves litter behind if a check throws or a `Check` aborts the run.
+//!
+//! `Ok()` false means "no directory" -- the caller reports SKIP, not
+//! FAIL.  `Path(name)` is only ever called when Ok().
+class TempDir
+{
+public:
+	TempDir()
+	{
+#ifdef _WIN32
+		char base[ MAX_PATH ] = {0};
+		char dir[ MAX_PATH ]  = {0};
+		if( GetTempPathA( MAX_PATH, base ) == 0 ) return;
+		// GetTempFileNameA makes a unique FILE; replace it with a
+		// directory of the same name, which is the documented idiom.
+		if( GetTempFileNameA( base, "rmemo", 0, dir ) == 0 ) return;
+		DeleteFileA( dir );
+		if( !CreateDirectoryA( dir, NULL ) ) return;
+		m_dir = dir;
+#else
+		std::string tmpl = "/tmp/rise_expr_memo_XXXXXX";
+		std::vector<char> buf( tmpl.begin(), tmpl.end() );
+		buf.push_back( '\0' );
+		if( !mkdtemp( &buf[0] ) ) return;
+		m_dir = &buf[0];
+#endif
+	}
+
+	~TempDir()
+	{
+		if( m_dir.empty() ) return;
+		for( size_t i = 0; i < m_files.size(); ++i ) std::remove( m_files[i].c_str() );
+#ifdef _WIN32
+		RemoveDirectoryA( m_dir.c_str() );
+#else
+		rmdir( m_dir.c_str() );
+#endif
+	}
+
+	bool Ok() const { return !m_dir.empty(); }
+
+	//! Reserve a path inside the directory; it is removed by the
+	//! destructor whether or not it was ever created.
+	std::string Path( const char* leaf )
+	{
+#ifdef _WIN32
+		const std::string p = m_dir + "\\" + leaf;
+#else
+		const std::string p = m_dir + "/" + leaf;
+#endif
+		m_files.push_back( p );
+		return p;
+	}
+
+private:
+	std::string              m_dir;
+	std::vector<std::string> m_files;
+};
 
 //! The child half.  Runs before anything else touches the memo, so the
 //! options read it forces is the one under test.
@@ -966,37 +1153,90 @@ static int RunOptionChild()
 	return 0;
 }
 
+//! WHAT THIS CHECK DOES TO THE MACHINE, disclosed because it is the only
+//! one in this file that leaves the process:
+//!
+//!   * it WRITES TWO FILES, into a private directory made by mkdtemp
+//!     (POSIX) / GetTempPath + CreateDirectory (Windows).  Never the CWD:
+//!     fixed names there collide with a concurrent copy of this test and
+//!     survive an aborted run.  Both files and the directory are removed
+//!     by TempDir's destructor on every exit path;
+//!   * it SETS RISE_OPTIONS_FILE in this process, and restores the
+//!     caller's value -- or unsets it again if there was none -- through
+//!     OptionsEnvRestore;
+//!   * it SPAWNS A CHILD PROCESS with std::system(), re-executing this
+//!     same binary with kOptionChildFlag.  Two processes are unavoidable:
+//!     GlobalOptions() is a read-once singleton and EnabledSlow() caches
+//!     its answer in a function-local static, so one process can only
+//!     ever observe one answer.
+//!
+//! AND IT REPORTS SKIP, NOT FAIL, when the environment cannot support
+//! that: no writable temp directory, an options file that will not open,
+//! or no shell for std::system (which then returns 0 from the
+//! availability probe, or -1 from the run).  A sandbox without a shell is
+//! not a memo bug.
+//!
+//! WINDOWS DEBT: the `_WIN32` branches here -- _putenv_s, GetTempPathA /
+//! GetTempFileNameA / CreateDirectoryA / RemoveDirectoryA, and the `set
+//! X=Y && ...` command form -- have NOT been compiled.  Noted here and in
+//! tests/README.md; first MSVC build of this file should expect to fix
+//! them.
 static void TestOptionDefaultAndKey( const char* argv0 )
 {
 	std::cout << "(j) the shipped default, and the `expression_memo` options key" << std::endl;
+
+	const OptionsEnvRestore envRestore;
+	TempDir tmp;
+	if( !tmp.Ok() ) {
+		Skip( "(j)", "no writable temp directory" );
+		return;
+	}
+
+	const std::string noKeyPath = tmp.Path( "expr_memo_opts_default.txt" );
+	const std::string offPath   = tmp.Path( "expr_memo_opts_off.txt" );
 
 	// --- The DEFAULT.  A real options file with a real key in it, but no
 	//     `expression_memo` line: EnabledSlow() must fall through to its
 	//     `true` default.  This must be the FIRST thing in the run that
 	//     asks -- both GlobalOptions() and EnabledSlow()'s own static read
 	//     once per process.
-	WriteOptionsFile( kNoKeyOptionsFile, "render_thread_reserve_count 1\n" );
-	SetOptionsEnv( kNoKeyOptionsFile );
+	if( !WriteOptionsFile( noKeyPath, "render_thread_reserve_count 1\n" ) ) {
+		Skip( "(j)", "could not write " + noKeyPath );
+		return;
+	}
+	SetOptionsEnv( noKeyPath.c_str() );
 	Check( ExpressionMemo::EnabledSlow(),
 		"(j) with no override and no `expression_memo` key, the memo ships ON" );
 
 	// --- The KEY, in a child process.
-	WriteOptionsFile( kOffOptionsFile, "expression_memo false\n" );
+	if( !WriteOptionsFile( offPath, "expression_memo false\n" ) ) {
+		Skip( "(j) child", "could not write " + offPath );
+		return;
+	}
+
+	// std::system(0) is the standard's own "is there a command processor"
+	// probe: zero means there is none, and the child half simply cannot
+	// run.
+	if( std::system( 0 ) == 0 ) {
+		Skip( "(j) child", "no command processor available to std::system" );
+		return;
+	}
 
 	std::string cmd;
 #ifdef _WIN32
-	cmd = std::string( "set \"RISE_OPTIONS_FILE=" ) + kOffOptionsFile + "\" && \"" + argv0 + "\" " + kOptionChildFlag;
+	cmd = std::string( "set \"RISE_OPTIONS_FILE=" ) + offPath + "\" && \"" + argv0 + "\" " + kOptionChildFlag;
 #else
-	cmd = std::string( "RISE_OPTIONS_FILE='" ) + kOffOptionsFile + "' '" + argv0 + "' " + kOptionChildFlag;
+	cmd = std::string( "RISE_OPTIONS_FILE='" ) + offPath + "' '" + argv0 + "' " + kOptionChildFlag;
 #endif
 	const int rc = std::system( cmd.c_str() );
+	if( rc == -1 ) {
+		Skip( "(j) child", "std::system could not create the child process" );
+		return;
+	}
 	Check( rc == 0, "(j) a child process reading `expression_memo false` has the memo OFF" );
 	if( rc != 0 ) {
 		std::cout << "    (child command was: " << cmd << ", raw status " << rc << ")" << std::endl;
 	}
-
-	std::remove( kNoKeyOptionsFile );
-	std::remove( kOffOptionsFile );
 }
 
 //======================================================================
@@ -1049,6 +1289,415 @@ static void TestKeyedOnPainterTime()
 	early->release();
 }
 
+//======================================================================
+// (k) L2: EVERY key field separates, one at a time
+//======================================================================
+
+//! WHY THE (a) SWEEP IS NOT THIS CHECK.  (a) draws each field from a
+//! four-value grid and compares memo-on against memo-off over 10 500
+//! draws -- which looks like it would catch a dropped key field, and does
+//! not.  Two draws collide only if they agree in EVERY OTHER field, and
+//! that essentially never happens: a review measured zero aliasing draws
+//! across the sweep for every L2 field it varies, and the RED-PROOF below
+//! confirms the consequence directly.  (`ctx.signals` is constant within
+//! (a), and (f)'s stub provider ignores position, so neither covers this
+//! either.)
+//!
+//! RED-PROVED 2026-09-07: dropping `fwo` from ProgramKey::Equals turns
+//! exactly ONE assertion red -- this test's `fwo` row -- and leaves (a)'s
+//! 10 500-draw differential, and every other check in the file, GREEN.
+//! So the field really could have left the key unnoticed, and this is the
+//! check that notices.
+//!
+//! SO THIS ONE SPLICES, the way (i) does for the mesh channel: warm the
+//! memo at ONE base context, perturb EXACTLY ONE key field, and require
+//! the answer to equal that perturbed context's MEMO-OFF answer.  A
+//! dropped field returns the base's value instead, which the check first
+//! proves is a different number.
+//!
+//! ALL SIXTEEN record-reachable fields are covered here.  The other two
+//! of ProgramKey's eighteen have checks of their own: `progId` is (c) and
+//! `pipe` is (m).  `curv` and `curvR` need the base's `scaleHint` at
+//! ZERO, which is what lets them move independently -- BuildContext
+//! computes `curv = curvature * scaleHint` and `curvR = curvature`, so at
+//! scaleHint 0 moving `scaleHint` moves only `curv`, and moving
+//! `curvature` moves only `curvR`.
+//!
+//! The seventeenth check, on the SIGNAL CHANNEL, is weaker on purpose and
+//! says so: perturbing `signals.ptObject` has to be separated by BOTH
+//! levels (the channel is in the L1 key AND, whole, in the L2 key), so a
+//! failure there does not say which level dropped it.  What it does prove
+//! is that ProgramKey::Equals compares `signals` at all.  Field-by-field
+//! separation of the channel's own eleven is (l)'s job, on the same
+//! SignalHitKey::Equals that ProgramKey uses.
+static void TestL2KeyFieldSeparation()
+{
+	std::cout << "(k) L2: every key field separates, one field at a time" << std::endl;
+
+	SDFGeometry* g = BuildSdfCreasedPair( 0.7 );
+	Object* o = new Object( g );
+	g->release();
+	o->FinalizeTransformations();
+
+	RayIntersection crease = MkRI( Point3( 0, 30, 0 ), Vector3( 0, -1, 0 ) );
+	Check( HitObject( o, crease ), "(k) crease hit" );
+	const SurfaceSignalInfo live = crease.geometric.signals;
+	Check( live.pProvider != 0, "(k) the SDF hit publishes a live signal provider" );
+
+	// A body that reads EVERY context variable and calls a signal, so
+	// every key field is load-bearing for the answer.  The weights are
+	// mutually incommensurate so no two perturbations can cancel.
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	Check( CompileWithContext(
+		"vec3( occlusion(0.2)*0.37 + fbm(P*3.0 + Po*5.0, 3, 0.5, 2.0)*0.29 + fw*11.0 + fwo*13.0,"
+		"      u*0.41 + v*0.43 + curv*0.47 + curvR*0.53 + time*0.59,"
+		"      N.x*0.61 + N.y*0.67 + N.z*0.71 )", prog ), "(k) body compiles" );
+	Check( prog.MemoWorthy(), "(k) the body is memo-worthy" );
+
+	std::vector<ParamSpec> specs;
+	ExpressionPainter* painter = new ExpressionPainter( prog, specs, Scalar( 0 ) );
+
+	// THE BASE.  `scaleHint` is 0 for the curv/curvR reason above.
+	Draw base;
+	base.ctx.u  = Scalar( 0.11 );  base.ctx.v = Scalar( 0.23 );
+	base.ctx.P  = Vector3( Scalar( 0.31 ), Scalar( 0.37 ), Scalar( 0.41 ) );
+	base.ctx.Po = Vector3( Scalar( 0.43 ), Scalar( 0.47 ), Scalar( 0.53 ) );
+	base.ctx.N  = Vector3( Scalar( 0.59 ), Scalar( 0.61 ), Scalar( 0.67 ) );
+	base.ctx.fw   = Scalar( 0.0071 );
+	base.ctx.fwo  = Scalar( 0.0079 );
+	base.ctx.time = Scalar( 0 );
+	base.curvature = Scalar( 0.83 );
+	base.scaleHint = Scalar( 0 );
+	base.ctx.curvR = base.curvature;
+	base.ctx.curv  = base.curvature * base.scaleHint;
+	base.ctx.signals = live;
+
+	// The seventeen perturbations, each touching exactly one key field.
+	struct Case { const char* name; Draw d; };
+	std::vector<Case> cases;
+	{
+		#define PERTURB( label, mutation ) \
+			do { Case c; c.name = label; c.d = base; { Draw& d = c.d; (void)d; mutation; } cases.push_back( c ); } while( 0 )
+
+		PERTURB( "u",            d.ctx.u  = Scalar( 0.19 ) );
+		PERTURB( "v",            d.ctx.v  = Scalar( 0.29 ) );
+		PERTURB( "P.x",          d.ctx.P.x  = Scalar( 0.73 ) );
+		PERTURB( "P.y",          d.ctx.P.y  = Scalar( 0.79 ) );
+		PERTURB( "P.z",          d.ctx.P.z  = Scalar( 0.89 ) );
+		PERTURB( "Po.x",         d.ctx.Po.x = Scalar( 0.97 ) );
+		PERTURB( "Po.y",         d.ctx.Po.y = Scalar( 1.03 ) );
+		PERTURB( "Po.z",         d.ctx.Po.z = Scalar( 1.09 ) );
+		PERTURB( "N.x",          d.ctx.N.x  = Scalar( 1.13 ) );
+		PERTURB( "N.y",          d.ctx.N.y  = Scalar( 1.19 ) );
+		PERTURB( "N.z",          d.ctx.N.z  = Scalar( 1.27 ) );
+		PERTURB( "fw",           d.ctx.fw   = Scalar( 0.0131 ) );
+		PERTURB( "fwo",          d.ctx.fwo  = Scalar( 0.0139 ) );
+		// scaleHint moves `curv` alone (curvR = curvature is untouched).
+		PERTURB( "curv",         d.scaleHint = Scalar( 1.9 );
+		                         d.ctx.curv  = d.curvature * d.scaleHint );
+		// curvature moves `curvR` alone (curv = curvature * 0 stays 0).
+		PERTURB( "curvR",        d.curvature = Scalar( 1.29 );
+		                         d.ctx.curvR = d.curvature;
+		                         d.ctx.curv  = d.curvature * d.scaleHint );
+		// The signal channel, whole -- see this test's header for why this
+		// one check cannot localise a failure to L2.
+		PERTURB( "signals",      d.ctx.signals.ptObject =
+		                             Point3( live.ptObject.x + Scalar( 0.31 ),
+		                                     live.ptObject.y,
+		                                     live.ptObject.z ) );
+		#undef PERTURB
+	}
+
+	// Memo-OFF references: the base's answer, and each perturbation's.
+	RISEPel refBase;
+	std::vector<RISEPel> refCase( cases.size() );
+	{
+		MemoSwitch off( 0 );
+		refBase = painter->GetColor( MakeHit( crease.geometric, base ) );
+		for( size_t i = 0; i < cases.size(); ++i ) {
+			refCase[i] = painter->GetColor( MakeHit( crease.geometric, cases[i].d ) );
+		}
+	}
+
+	for( size_t i = 0; i < cases.size(); ++i ) {
+		const std::string tag = std::string( "(k) " ) + cases[i].name;
+
+		// TEETH: the perturbation must actually move the answer, or a
+		// dropped field would return the right number by accident.
+		const bool moved = refCase[i][0] != refBase[0]
+		                || refCase[i][1] != refBase[1]
+		                || refCase[i][2] != refBase[2];
+		Check( moved, tag + ": the perturbation really moves the answer (the check has teeth)" );
+
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		painter->GetColor( MakeHit( crease.geometric, base ) );		// warm, base only
+		const RISEPel got = painter->GetColor( MakeHit( crease.geometric, cases[i].d ) );
+
+		const bool ok = got[0] == refCase[i][0] && got[1] == refCase[i][1] && got[2] == refCase[i][2];
+		Check( ok, tag + ": a context differing ONLY here is not served the base's entry" );
+	}
+
+	painter->release();
+	o->release();
+}
+
+//======================================================================
+// (l) L1: EVERY key field separates, one at a time
+//======================================================================
+
+//! A provider whose answer depends on EVERY field of SurfaceSignalInfo
+//! and on both query fields, which is what makes a one-field-at-a-time
+//! separation check possible at all.  The shipping providers cannot do
+//! this job: the SDF family reads position and normal but not primId or
+//! the barycentrics, and the mesh family reads only (primId, bary) -- so
+//! neither would notice most of the key leaving SignalHitKey::Equals.
+//!
+//! A plain weighted sum with mutually incommensurate weights, folded to
+//! [0,1) by subtracting its floor.  In range on purpose: SignalQuery
+//! clamps to [0,1], and a clamped answer would flatten two different
+//! inputs into one and hide exactly the difference under test.
+//!
+//! `m_salt` is what makes PROVIDER IDENTITY observable -- two instances
+//! with different salts answer differently for the same record, which is
+//! how the `pProvider` field gets a check.
+class FieldSensitiveProvider : public ISurfaceSignalProvider
+{
+public:
+	explicit FieldSensitiveProvider( const double salt ) : m_salt( salt ) {}
+
+	bool ComputeOcclusion( const SurfaceSignalInfo& s, const Scalar r, const bool c, Scalar& out ) const override
+	{ out = Mix( s, r, c, 0.1013 ); return true; }
+	bool ComputeThickness( const SurfaceSignalInfo& s, const Scalar r, const bool c, Scalar& out ) const override
+	{ out = Mix( s, r, c, 0.2111 ); return true; }
+	bool ComputeConvexity( const SurfaceSignalInfo& s, const Scalar r, const bool c, Scalar& out ) const override
+	{ out = Mix( s, r, c, 0.3177 ); return true; }
+
+private:
+	Scalar Mix( const SurfaceSignalInfo& s, const Scalar r, const bool constR, const double kindW ) const
+	{
+		const double v = m_salt * 0.7717
+			+ (double)s.ptObject.x * 1.13 + (double)s.ptObject.y * 1.27 + (double)s.ptObject.z * 1.39
+			+ (double)s.nObject.x  * 1.51 + (double)s.nObject.y  * 1.63 + (double)s.nObject.z  * 1.77
+			+ (double)s.primId * 0.01931
+			+ (double)s.baryA * 1.91 + (double)s.baryB * 2.03
+			+ ( s.bComplementedField ? 0.2819 : 0.0 )
+			+ (double)r * 2.1101
+			+ ( constR ? 0.3739 : 0.0 )
+			+ kindW;
+		return (Scalar)( v - std::floor( v ) );		// -> [0,1), so SignalQuery's clamp is a no-op
+	}
+
+	const double m_salt;
+};
+
+//! One L1 lookup, in the form the three wrappers present it.
+struct L1Query
+{
+	SurfaceSignalInfo	s;
+	Scalar				radius;
+	int					kind;		//!< 0 occlusion, 1 thickness, 2 convexity
+	bool				constR;
+};
+
+static Scalar RunL1( const L1Query& q )
+{
+	return q.kind == 0 ? q.s.Occlusion( q.radius, q.constR )
+	     : q.kind == 1 ? q.s.Thickness( q.radius, q.constR )
+	                   : q.s.Convexity( q.radius, q.constR );
+}
+
+//! The L1 twin of (k), and the same argument for it: (a)'s sweep never
+//! aliases on a single dropped field, (f)'s provider ignores position
+//! entirely, and (i) covers only the mesh family's three -- so eleven of
+//! SignalKey's fourteen had no separation check that would go red if they
+//! left Equals.  This one warms the memo at a base query, perturbs
+//! EXACTLY one field, and requires the perturbed query's own memo-off
+//! answer back.
+//!
+//! RED-PROVED 2026-09-07: dropping `baryB` from SignalHitKey::Equals
+//! turns exactly ONE assertion red -- this test's `baryB` row -- and
+//! leaves everything else green, (i) INCLUDED.  (i) splices primId, baryA
+//! and baryB together, so with two of the three still compared it
+//! separates the records anyway and never notices the third is gone.
+//! That is precisely the gap one-field-at-a-time closes.
+//!
+//! Fourteen fields: the hit channel's eleven (provider identity, ptObject
+//! xyz, nObject xyz, primId, baryA, baryB, bComplementedField) plus the
+//! query's three (radius, kind, constant-radius proof).  The hit
+//! channel's eleven are the SAME SignalHitKey::Equals that ProgramKey
+//! uses for its `signals` member, so this covers both levels' use of it.
+static void TestL1KeyFieldSeparation()
+{
+	std::cout << "(l) L1: every key field separates, one field at a time" << std::endl;
+
+	FieldSensitiveProvider providerA( 1.0 );
+	FieldSensitiveProvider providerB( 5.0 );
+
+	L1Query base;
+	base.s.pProvider          = &providerA;
+	base.s.ptObject           = Point3( Scalar( 0.31 ), Scalar( 0.37 ), Scalar( 0.41 ) );
+	base.s.nObject            = Vector3( Scalar( 0.59 ), Scalar( 0.61 ), Scalar( 0.67 ) );
+	base.s.primId             = 7;
+	base.s.baryA              = Scalar( 0.13 );
+	base.s.baryB              = Scalar( 0.29 );
+	base.s.bComplementedField = false;
+	base.radius               = Scalar( 0.17 );
+	base.kind                 = 0;
+	base.constR               = true;
+
+	struct Case { const char* name; L1Query q; };
+	std::vector<Case> cases;
+	{
+		#define PERTURB1( label, mutation ) \
+			do { Case c; c.name = label; c.q = base; { L1Query& q = c.q; (void)q; mutation; } cases.push_back( c ); } while( 0 )
+
+		PERTURB1( "pProvider",          q.s.pProvider = &providerB );
+		PERTURB1( "ptObject.x",         q.s.ptObject.x = Scalar( 0.73 ) );
+		PERTURB1( "ptObject.y",         q.s.ptObject.y = Scalar( 0.79 ) );
+		PERTURB1( "ptObject.z",         q.s.ptObject.z = Scalar( 0.89 ) );
+		PERTURB1( "nObject.x",          q.s.nObject.x = Scalar( 1.13 ) );
+		PERTURB1( "nObject.y",          q.s.nObject.y = Scalar( 1.19 ) );
+		PERTURB1( "nObject.z",          q.s.nObject.z = Scalar( 1.27 ) );
+		PERTURB1( "primId",             q.s.primId = 23 );
+		PERTURB1( "baryA",              q.s.baryA = Scalar( 0.41 ) );
+		PERTURB1( "baryB",              q.s.baryB = Scalar( 0.47 ) );
+		PERTURB1( "bComplementedField", q.s.bComplementedField = true );
+		PERTURB1( "radius",             q.radius = Scalar( 0.53 ) );
+		PERTURB1( "fn (signal kind)",   q.kind = 2 );
+		PERTURB1( "bRadiusIsConstant",  q.constR = false );
+
+		#undef PERTURB1
+	}
+
+	Scalar refBase = Scalar( 0 );
+	std::vector<Scalar> refCase( cases.size() );
+	{
+		MemoSwitch off( 0 );
+		refBase = RunL1( base );
+		for( size_t i = 0; i < cases.size(); ++i ) refCase[i] = RunL1( cases[i].q );
+	}
+
+	for( size_t i = 0; i < cases.size(); ++i ) {
+		const std::string tag = std::string( "(l) " ) + cases[i].name;
+		Check( refCase[i] != refBase,
+			tag + ": the perturbation really moves the answer (the check has teeth)" );
+
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		RunL1( base );							// warm, base only
+		CheckExact( RunL1( cases[i].q ), refCase[i],
+			tag + ": a query differing ONLY here is not served the base's entry" );
+	}
+}
+
+//======================================================================
+// (m) the two painter pipes never share an L2 entry
+//======================================================================
+
+//! THE HAZARD, and why it is not hypothetical.  On a SCALAR-typed program
+//! the colour pipe calls `EvalVec3` and broadcasts, while the scalar pipe
+//! calls `Eval` -- each keeping the entry point it had before the memo,
+//! deliberately, because under `-ffast-math` the two are free to differ
+//! in the last ulp (ExpressionPainter.cpp's own comments).  And ONE
+//! compiled program really can reach both: RISE_API_CreateExpressionPainter
+//! and RISE_API_CreateExpressionScalarPainter each take an
+//! `ExpressionProgram` by const reference, each painter holds a copy, and
+//! a copy KEEPS its source's id.  Without a pipe tag in the L2 key the
+//! second pipe to ask would be served the first's entry -- the scalar
+//! pipe returning `EvalVec3(...).x`.
+//!
+//! Built through the API on purpose: that IS the reachability claim, and
+//! constructing the two painters directly would prove something weaker.
+//! Run in both orders, so neither pipe is only ever the one that fills.
+//!
+//! WHAT THIS CHECK CANNOT DO, said plainly so nobody reads more into it
+//! than it carries.  RED-PROOF ATTEMPTED 2026-09-07: removing `pipe` from
+//! ProgramKey::Equals leaves every assertion below GREEN.  That is not a
+//! defect in the checks -- it is the honest state of the hazard.  Without
+//! the field the two pipes really do share one entry (structural, and
+//! readable straight off the key), but on this toolchain the values they
+//! would then swap are BIT-IDENTICAL: `Eval` and `EvalVec3` reach the same
+//! `RunAny` over the same `env[]`, and only an inlining / FMA-contraction
+//! difference could separate them, which is not something a test can
+//! summon on demand.
+//!
+//! So what is pinned here is the CONTRACT -- each pipe returns its own
+//! answer, in both fill orders, with both entries coexisting -- and it
+//! will go red the day those two entry points do diverge, which is
+//! precisely when it matters.  ExpressionMemo::EvalPipe's comment carries
+//! the same disclosure and the argument for keeping the field anyway.
+static void TestCrossPipeL2Separation()
+{
+	std::cout << "(m) a scalar-typed program shared across both pipes keys apart" << std::endl;
+
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	Check( CompileWithContext(
+		"occlusion(0.2)*0.37 + fbm(P*3.0, 3, 0.5, 2.0)*0.29 + u*0.41 + v*0.43", prog ),
+		"(m) body compiles" );
+	Check( prog.ResultType() == ExpressionProgram::kScalar,
+		"(m) the body is SCALAR-typed (the case where the two pipes call different entry points)" );
+	Check( prog.MemoWorthy(), "(m) the body is memo-worthy" );
+
+	std::vector<ParamSpec> specs;
+	IPainter*       colour = 0;
+	IScalarPainter* scalar = 0;
+	Check( RISE_API_CreateExpressionPainter( &colour, prog, specs, Scalar( 0 ) ),
+		"(m) the API builds a colour painter over it" );
+	Check( RISE_API_CreateExpressionScalarPainter( &scalar, prog, specs ),
+		"(m) the API builds a scalar painter over the SAME program" );
+	if( !colour || !scalar ) { if( colour ) colour->release(); if( scalar ) scalar->release(); return; }
+
+	SDFGeometry* g = BuildSdfCreasedPair( 0.7 );
+	Object* o = new Object( g );
+	g->release();
+	o->FinalizeTransformations();
+	RayIntersection crease = MkRI( Point3( 0, 30, 0 ), Vector3( 0, -1, 0 ) );
+	Check( HitObject( o, crease ), "(m) crease hit" );
+	RayIntersectionGeometric& ri = crease.geometric;
+	ri.ptCoord = Point2( Scalar( 0.11 ), Scalar( 0.23 ) );
+
+	Scalar refColour = 0, refScalar = 0;
+	{
+		MemoSwitch off( 0 );
+		refColour = colour->GetColor( ri )[0];
+		refScalar = scalar->GetValuesAt( ri ).v[0];
+	}
+
+	// Colour first, then scalar.
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		CheckExact( colour->GetColor( ri )[0], refColour, "(m) colour-then-scalar: the colour pipe reads its own answer" );
+		CheckExact( scalar->GetValuesAt( ri ).v[0], refScalar,
+			"(m) colour-then-scalar: the scalar pipe is NOT served the colour pipe's entry" );
+	}
+
+	// Scalar first, then colour.
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		CheckExact( scalar->GetValuesAt( ri ).v[0], refScalar, "(m) scalar-then-colour: the scalar pipe reads its own answer" );
+		CheckExact( colour->GetColor( ri )[0], refColour,
+			"(m) scalar-then-colour: the colour pipe is NOT served the scalar pipe's entry" );
+	}
+
+	// And both survive being asked again, so one did not simply evict the
+	// other's entry rather than keying apart from it.
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		colour->GetColor( ri );
+		scalar->GetValuesAt( ri );
+		CheckExact( colour->GetColor( ri )[0], refColour, "(m) both entries coexist (colour)" );
+		CheckExact( scalar->GetValuesAt( ri ).v[0], refScalar, "(m) both entries coexist (scalar)" );
+	}
+
+	o->release();
+	scalar->release();
+	colour->release();
+}
+
 int main( int argc, char** argv )
 {
 	// The child half of (j), before anything else can warm a table or
@@ -1073,8 +1722,13 @@ int main( int argc, char** argv )
 	TestMemoWorthinessGate();
 	TestKeyedOnPainterTime();
 	TestRealMeshKeyFields();
+	TestL2KeyFieldSeparation();
+	TestL1KeyFieldSeparation();
+	TestCrossPipeL2Separation();
 
 	std::cout << std::endl;
-	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
+	std::cout << "Passed: " << passCount << "   Failed: " << failCount;
+	if( skipCount ) std::cout << "   Skipped: " << skipCount;
+	std::cout << std::endl;
 	return failCount == 0 ? 0 : 1;
 }
