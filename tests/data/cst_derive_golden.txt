@@ -347,6 +347,7 @@ scenes/Tests/Shaders/different_rmaps.RISEscene  a71bc08e73b5e0beb5fb2d3106784665
 scenes/Tests/Shaders/dt_with_irrcache.RISEscene  e54416f466b4090963ae5c32e8fc1edba2297b22f0e28215710d348fcfc6f143  873  25
 scenes/Tests/Shaders/simple_dispersion.RISEscene  8eeae05fb38fbf6e1ed81f83c7f725c176eb0d05b63cbadc5ce8d6ca9860190b  1635  32
 scenes/Tests/Shaders/transparency_shaderop.RISEscene  775acee67a484d343b8050c0ac0cc27c8e0e7f9e014a49e4f2d7f0239f19869d  1981  36
+scenes/Tests/Signals/proximity_closed_forms.RISEscene  7c12d9b449b41fff2cb587ff45ee45cff28d440eaaa7a79c1c0c4ec6f18df3ff  5924  68
 scenes/Tests/Spectral/aov_through_glass_pt_spectral.RISEscene  12ac3628e52da3cac812726296363fc6604f6e37598a96b4ee181ec1c27a2d8c  1230  30
 scenes/Tests/Spectral/aov_through_glass_pt_spectral_pure.RISEscene  12ac3628e52da3cac812726296363fc6604f6e37598a96b4ee181ec1c27a2d8c  1230  30
 scenes/Tests/Spectral/chromaticity_test_rgb.RISEscene  d190c40555f1a7a72b9bb093017c9c482eff5acbce656c93379177f15c4823e8  1302  29
