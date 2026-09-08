@@ -62,10 +62,11 @@
 //    (k) L2: EVERY KEY FIELD SEPARATES, one at a time.  (a)'s randomized
 //        sweep looks like it covers this and does not.  Warms at a base
 //        context, perturbs exactly one field, and requires the perturbed
-//        context's own memo-off answer.  All sixteen record-reachable
-//        fields plus the signal channel; `progId` is (c)'s and `pipe` is
-//        (m)'s.  RED-PROVED: dropping `fwo` from the L2 key reddens only
-//        this test's `fwo` row and leaves (a) green.
+//        context's own memo-off answer.  All fifteen record-reachable
+//        fields (u, v, P.xyz, Po.xyz, N.xyz, fw, fwo, curv, curvR) plus
+//        the signal channel; `progId` is (c)'s, `pipe` is (m)'s, and
+//        `time` is (h)'s.  RED-PROVED: dropping `fwo` from the L2 key
+//        reddens only this test's `fwo` row and leaves (a) green.
 //    (l) L1: EVERY KEY FIELD SEPARATES, one at a time -- the same
 //        argument, over a synthetic provider whose answer depends on all
 //        fourteen SignalKey fields including `pProvider` identity, which
@@ -105,6 +106,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/wait.h>
 #endif
 
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
@@ -778,10 +780,11 @@ static void TestMemoWorthinessGate()
 	CheckExact( cheap.EvalVec3( ctx ).x, Scalar( 0.125 ), "(g) a gated-out program still evaluates correctly" );
 
 	// THE MEMORY CLAIM, ASSERTED rather than printed.  The commit that
-	// introduced the memo priced it at 1408 bytes per worker (24.7 kB
-	// across 18); adding the L2 key's `pipe` field on 2026-09-07 moved it
-	// to 1440 (25.9 kB across 18).  The figure is quoted in
-	// docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md, which records both.
+	// introduced the memo priced it at 1408 bytes per worker (25.3 kB
+	// decimal across 18); adding the L2 key's `pipe` field on 2026-09-07
+	// moved it to 1440 (25.9 kB decimal across 18).  The figure is quoted
+	// in docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md, which records both
+	// on the same decimal-kB basis.
 	//
 	// A CEILING rather than an equality, and that drift is exactly why:
 	// adding a key field or a way is allowed to move the number, but it
@@ -1172,9 +1175,12 @@ static int RunOptionChild()
 //!
 //! AND IT REPORTS SKIP, NOT FAIL, when the environment cannot support
 //! that: no writable temp directory, an options file that will not open,
-//! or no shell for std::system (which then returns 0 from the
-//! availability probe, or -1 from the run).  A sandbox without a shell is
-//! not a memo bug.
+//! no shell for std::system (which then returns 0 from the availability
+//! probe, or -1 from the run), a temp path or argv0 this test cannot
+//! safely single-quote, a child killed by a signal, or -- on POSIX -- a
+//! shell exit of 126/127 (command not found / not executable), which is
+//! the SHELL failing to run the child at all, not the child reporting a
+//! real verdict.  A sandbox without a shell is not a memo bug.
 //!
 //! WINDOWS DEBT: the `_WIN32` branches here -- _putenv_s, GetTempPathA /
 //! GetTempFileNameA / CreateDirectoryA / RemoveDirectoryA, and the `set
@@ -1222,6 +1228,18 @@ static void TestOptionDefaultAndKey( const char* argv0 )
 		return;
 	}
 
+#ifndef _WIN32
+	// A single-quoted shell argument cannot contain a literal single quote
+	// without the `'"'"'` escape dance this test does not carry -- SKIP
+	// rather than build a command line that silently means something else
+	// (or breaks) on a temp path we do not fully control the naming of.
+	if( offPath.find( '\'' ) != std::string::npos ||
+	    std::string( argv0 ).find( '\'' ) != std::string::npos ) {
+		Skip( "(j) child", "temp path or argv0 contains a single quote; cannot safely quote for the shell" );
+		return;
+	}
+#endif
+
 	std::string cmd;
 #ifdef _WIN32
 	cmd = std::string( "set \"RISE_OPTIONS_FILE=" ) + offPath + "\" && \"" + argv0 + "\" " + kOptionChildFlag;
@@ -1233,9 +1251,34 @@ static void TestOptionDefaultAndKey( const char* argv0 )
 		Skip( "(j) child", "std::system could not create the child process" );
 		return;
 	}
-	Check( rc == 0, "(j) a child process reading `expression_memo false` has the memo OFF" );
-	if( rc != 0 ) {
-		std::cout << "    (child command was: " << cmd << ", raw status " << rc << ")" << std::endl;
+
+#ifdef _WIN32
+	const int childExit = rc;
+#else
+	// On POSIX, std::system() returns the raw wait status, not the exit
+	// code -- WEXITSTATUS() decodes it, and only when WIFEXITED() is true
+	// (the child was not killed by a signal).  A shell that could not run
+	// the command at all reports its OWN exit code this way: 127 is
+	// "command not found" (e.g. argv0 did not resolve the way this test
+	// assumed) and 126 is "found but not executable" -- both are
+	// environmental failures of the harness, not a verdict on the memo,
+	// so they SKIP rather than FAIL.  The existing SKIP paths above (no
+	// command processor, std::system() == -1) are unaffected.
+	if( !WIFEXITED( rc ) ) {
+		Skip( "(j) child", "child process did not exit normally (terminated by a signal)" );
+		return;
+	}
+	const int childExit = WEXITSTATUS( rc );
+	if( childExit == 126 || childExit == 127 ) {
+		Skip( "(j) child", "shell exit " + std::to_string( childExit ) +
+			" (command not found / not executable) -- environmental, not the memo's fault" );
+		return;
+	}
+#endif
+	Check( childExit == 0, "(j) a child process reading `expression_memo false` has the memo OFF" );
+	if( childExit != 0 ) {
+		std::cout << "    (child command was: " << cmd << ", raw status " << rc
+			<< ", exit " << childExit << ")" << std::endl;
 	}
 }
 
@@ -1315,15 +1358,20 @@ static void TestKeyedOnPainterTime()
 //! dropped field returns the base's value instead, which the check first
 //! proves is a different number.
 //!
-//! ALL SIXTEEN record-reachable fields are covered here.  The other two
-//! of ProgramKey's eighteen have checks of their own: `progId` is (c) and
-//! `pipe` is (m).  `curv` and `curvR` need the base's `scaleHint` at
-//! ZERO, which is what lets them move independently -- BuildContext
-//! computes `curv = curvature * scaleHint` and `curvR = curvature`, so at
+//! ALL FIFTEEN record-reachable fields are covered here (u, v, P.xyz,
+//! Po.xyz, N.xyz, fw, fwo, curv, curvR).  The other three of ProgramKey's
+//! eighteen have checks of their own: `progId` is (c), `pipe` is (m),
+//! and `time` is (h) -- `time` is NOT perturbed by this test's mechanism
+//! because it does not come from the compiled body's own inputs the way
+//! the fifteen above do; it is the painter's own `m_time`, which is why
+//! (h) drives it from two painters sharing one program instead.  `curv`
+//! and `curvR` need the base's `scaleHint` at ZERO, which is what lets
+//! them move independently -- BuildContext computes
+//! `curv = curvature * scaleHint` and `curvR = curvature`, so at
 //! scaleHint 0 moving `scaleHint` moves only `curv`, and moving
 //! `curvature` moves only `curvR`.
 //!
-//! The seventeenth check, on the SIGNAL CHANNEL, is weaker on purpose and
+//! The sixteenth check, on the SIGNAL CHANNEL, is weaker on purpose and
 //! says so: perturbing `signals.ptObject` has to be separated by BOTH
 //! levels (the channel is in the L1 key AND, whole, in the L2 key), so a
 //! failure there does not say which level dropped it.  What it does prove
@@ -1372,7 +1420,7 @@ static void TestL2KeyFieldSeparation()
 	base.ctx.curv  = base.curvature * base.scaleHint;
 	base.ctx.signals = live;
 
-	// The seventeen perturbations, each touching exactly one key field.
+	// The sixteen perturbations, each touching exactly one key field.
 	struct Case { const char* name; Draw d; };
 	std::vector<Case> cases;
 	{
