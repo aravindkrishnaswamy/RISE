@@ -64,7 +64,8 @@
 //  that pin IS an exact compare of two VM-result doubles, and it is exactly
 //  a cross-entry-point pin (Eval(u,v) vs Eval(context)) -- relevant to
 //  the pipe-tag hazard MakeMemoKey's comment covers.  The `==`
-//  comparisons of a VM RESULT are FIFTEEN, across thirteen Check sites
+//  comparisons of a VM RESULT are FIFTEEN, across fourteen Check sites
+//  (one Check in TestFbmDomainScaleSubtractionIsConservative holds two)
 //  in seven tests near the end of tests/TextureExpressionVMTest.cpp
 //  (search it for `== ` against a `prog.Eval` result):
 //  TestExpressionVMFwEndToEnd (2), TestFbmDomainScaleConsistency (1),
