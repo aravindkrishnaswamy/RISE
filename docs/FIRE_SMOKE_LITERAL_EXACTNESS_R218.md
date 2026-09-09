@@ -1,7 +1,9 @@
 # r218 — literal-exactness census and preserved run lineage
 
-Status: audit complete; the additional closed-domain count correction is a
-qualification candidate, not promoted production code. The sealed r217
+Status: r217-lineage audit and clean qualification complete; the additional
+closed-domain count correction is not promoted production code. A separate
+main/cost-lineage fifth-primitive sibling must be repaired before integration.
+The sealed r217
 tier-ten onset continues unchanged to 3.5 s or its first 15 m/s crossing.
 No prefix is a survival verdict. The baseline crossed 15 m/s at 2.131 s and
 60 m/s at 2.138 s; the final report must include the accepted bracket around
@@ -27,7 +29,9 @@ inputs and explicitly enclosed constants have different contracts.
 | CPU owner and generated mirrors | Explicit /3 and /5 retained; generated declarations and source manifests checked, not hand-maintained alternate formulas. |
 | Payload digest v2 | Chunk size 4096, fan-in 16, offsets, quotient/remainder and serialization are integer operations. No floating reciprocal/count enters the root. |
 
-The sweep covers callers and one downstream hop: EOS endpoint tables,
+This census describes the r217 run/candidate lineage, not the separate r215
+optimized target-basis implementation on main. The sweep covers callers and
+one downstream hop: EOS endpoint tables,
 direct/shared mixture evaluation, inversion, target cp/tangent/assembly,
 closed-domain normalization and digest-root serialization.
 
@@ -84,9 +88,44 @@ and r190-reference resident owner/target gate also pass, with transcript
 SHAs `dd2c219427bef26edae5f9062d977d0b563a6a3c87e8885abdaf654ebaedeedd`
 and `be70704385d33d6d322fcf2d2770f0359872e16fbf6112a726f49ce58e17eb41`.
 Two fresh independent reviews (numeric derivation and test/provenance)
-report zero P1/P2 on the current patch. Full clean-build/Opto qualification
-and a post-strip source commit remain prerequisites for promotion; these
-candidate receipts do not identify a new accepted production build.
+report zero P1/P2 on the current patch. Subsequent isolated clean qualification
+also passes: make all and FireSequenceTest build without warnings; Deployment
+and shipping Opto clean builds succeed with only the documented missing local
+OIDN path and AppIntents metadata notices. The CPU suite, 252-row Metal count
+gate and r190-reference resident owner/target gate pass. The fresh checkout's
+first CPU run failed because the r136 historical r112 tier-six binary input
+was intentionally absent from git; copying its preserved SHA-pinned bytes
+into ignored rendered output restores the exact fixture. No expectation or
+tolerance changed. That failure transcript remains recorded, as does an
+earlier launch attempted before linking had produced the executable.
+
+All seven candidate source files are byte-identical to the previously reviewed
+candidate. A fresh additional code/test review reports zero P1/P2. These
+candidate receipts do not identify a new accepted main production build.
+The exact tested source is committed as `938ef6d77604` on the new
+`codex/r218-literal-qualification` branch, which passes the pre-push guard;
+main/cost integration qualification remains.
+See `docs/evidence/fire/r218_clean_qualification.v1.json` for per-file and
+transcript SHA-256 identities. No performance claim is made under concurrent
+build/onset load.
+
+### Main/cost integration finding
+
+The separate main r215 optimization has an additional fifth primitive in
+`target_enthalpy_basis_dd` (line 3195 at `784cb922`), using
+`eos_mul(basis.t5,eos_dd(0.2f))`. This is the same zero-radius rounded-1/5
+defect, not the raw-float physical-flux packing case. It is live in
+`evaluate_resident_target_terms`; the loaded thermo-coefficient enclosure
+does not cover this separate literal's representation error. Its optional
+direct-helper comparator cannot prove correctness while both helpers share
+the error. Independent read-only review confirms the call path.
+
+Before main/cost promotion, replace it with certified
+`eos_div(basis.t5,eos_dd(5.0f))` alongside the direct/shared r217 repairs;
+derive its mutation RED and requalify optimized/direct bit parity and local
+enclosures. The isolated r217 candidate lacks this optimized helper, so its
+green checks are not evidence for that cost path. No main numerical source
+or active-run file has been changed by this qualification.
 
 ## CPU formal-contract status, not a substituted verdict
 
@@ -178,5 +217,6 @@ The branch/commit map and verification receipt are in
 `docs/evidence/fire/r218_inactive_reanchor.v2.json`; recovered deleted tips
 are in `docs/evidence/fire/r218_branch_backups.v1.json`. Full scripts and
 recovery journals stay local with their SHA-256 identities in the receipt.
-Literal-candidate promotion still requires clean-build/Opto qualification;
-this metadata cleanup is not a numerical promotion or an onset verdict.
+Literal-candidate clean-build/Opto qualification now passes in the separate
+checkout, but the main/cost integration finding above remains open. This
+metadata cleanup is not a numerical promotion or an onset verdict.
