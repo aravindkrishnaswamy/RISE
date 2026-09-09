@@ -1,0 +1,307 @@
+RISE ASCII SCENE 7
+#
+# proximity_mesh_contact -- the MESH-neighbour fixture for `proximity(r)`,
+# the cross-object contact signal.  This is scene D of
+# docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 1, and the acceptance render for
+# that document's Phase 2 (the closest-point query on an indexed mesh's own
+# BVH).  It drives tests/MeshClosestPointTest section (g).
+#
+# WHY A SECOND FIXTURE SCENE AT ALL.  Scene C
+# (proximity_closed_forms.RISEscene) covers every ANALYTIC family against
+# algebra written by hand.  A mesh has no closed form, so what has to be
+# proved here is different: that the signal reads CONTACT on real assets at
+# real contact, and that the contact is real rather than asserted.  The
+# showroom scene was the first choice for this and is REJECTED -- its torus
+# knot floats 0.69 m above its platform, so no authorable radius reaches it
+# and every check would have passed by reading the platform's own
+# neighbours instead.
+#
+# ============================================================
+# THE PLACEMENT NUMBERS BELOW ARE OWNED BY THE TEST, NOT BY ME
+# ============================================================
+#
+# `MeshClosestPointTest` section (g) loads both meshes through the same
+# deserialize this scene's `risemesh_geometry` chunks use, reads the vertex
+# arrays and `GenerateBoundingBox()`, re-derives each offset below, and
+# ASSERTS it against the number written here at 1e-6.  So if either asset is
+# ever replaced or re-exported, the TEST FAILS -- rather than the bunny
+# quietly floating a millimetre above the plane while every proximity check
+# still passes for the wrong reason (it would then be reading the plane's
+# other neighbours).  Do not hand-edit a position here without re-running
+# that test and updating its constants in the same commit.
+#
+#   bunny    scale 1.  Its bounding box floor is y = +0.0329874, which is
+#            also its lowest VERTEX (the box is computed in double from the
+#            vertex array, so the two agree exactly -- the test checks that
+#            too).  Offsetting by the negative of it puts that vertex ON the
+#            plane y = 0:
+#
+#                position   0  -0.0329874  0
+#
+#            Its lowest vertex is at object (x, z) = (-0.053835, 0.0179508)
+#            -- a FOOT, not the model centre, which is why the gate's probe
+#            stations are computed from the vertex array and not from the
+#            bounding box's midpoint.
+#
+#   dragon   scale 0.35, placed so ITS lowest vertex lands exactly on the
+#            BUNNY's highest vertex in world space.  Deliberately NOT "the
+#            dragon's bbox floor onto the bunny's bbox ceiling": that only
+#            makes the two BOXES touch and leaves the two SURFACES an
+#            unknown distance apart, so the mesh-on-mesh station would be
+#            asserting an ordering instead of a number.  Vertex onto vertex
+#            is one point of genuine contact, where the true distance is
+#            exactly 0 and the signal must read exactly 1.
+#
+#                position   -0.0318315  0.135862595  -0.014760295
+#
+#            It balances on a single point.  That is geometrically honest
+#            and physically silly, and it is the right trade for a fixture:
+#            what is being pinned is a distance, not a pose.
+#
+# WHAT EACH OTHER OBJECT PROVES:
+#
+#   plane        InfinitePlane at y = 0.  THE RECEIVER, and a family that
+#                publishes no signal provider of its own -- `proximity` is
+#                the one signal that works on any receiver.  Its material is
+#                keyed on `proximity(0.02)` (2 cm, a WORLD length) so the
+#                render shows the seam directly.
+#
+#   nocast       A sphere of radius 0.05 centred at (-0.6, 0.053, 0) with
+#                `casts_shadows FALSE`, so its underside is 3 mm above the
+#                plane.  It COUNTS: `casts_shadows` is a light-visibility
+#                flag and this signal is geometry presence.  Directly
+#                beneath it the plane reads the closed form
+#                1 - 0.003/0.02 = 0.85, which the test asserts at 1e-6.
+#
+#   key_panel    A `rect_light` 2 mm above the plane at (0.6, 0.002, 0),
+#                facing down.  EMITTERS NEVER COUNT -- a light panel parked
+#                millimetres off a wall must not paint grime on it.  The
+#                number that makes this check mean something: if emitters
+#                DID count, the plane under it would read
+#                1 - 0.002/0.02 = 0.9.  The test asserts EXACTLY 0.
+#
+# NOT IN THIS SCENE, stated so nobody infers coverage: a displaced-geometry
+# neighbour (Phase 2 ships that forward, and `MeshClosestPointTest` (d)
+# pins it directly on the geometry rather than through a scene), a RAW mesh
+# (scene C already carries the refusal), and per-sample motion blur.
+#
+# THE RENDER is the Phase-2 acceptance picture: grime gathers where the
+# bunny's feet meet the plane, under the shadowless sphere, and NOT under
+# the light panel.  A frame where the panel has a dark halo under it is the
+# emitter rule broken; a frame with no darkening at the feet is the mesh
+# query refusing.
+#
+
+##################################################
+# Painters and materials
+##################################################
+
+#
+# The receiver's grime: a clean pale floor lerped toward a warm brown as
+# the signal rises -- the actual authoring idiom the signal exists for, not
+# a false-colour ramp, so the acceptance render reads as a picture.
+#
+# IT IS TINTED, NOT MERELY DARKENED, and that is a legibility decision made
+# after looking at the frame.  A grime term that only multiplies the albedo
+# down produces a dark band under the bunny that is visually
+# indistinguishable from the directional key's own contact SHADOW -- which
+# is precisely the confusion this whole signal exists to resolve (design
+# 2: an occlusion cannot draw this seam, and a picture where the two look
+# alike proves nothing to a reader).  A hue shift separates them: the
+# shadow stays neutral grey, the grime goes brown.
+#
+expression_painter
+{
+	name			p_floor
+	def				grime	proximity(0.02)
+	expr			vec3( 0.74, 0.72, 0.68 )*( 1.0 - grime ) + vec3( 0.20, 0.13, 0.08 )*grime
+}
+
+lambertian_material
+{
+	name			m_floor
+	reflectance		p_floor
+}
+
+uniformcolor_painter
+{
+	name			p_mesh
+	color			0.62 0.58 0.52
+}
+
+lambertian_material
+{
+	name			m_mesh
+	reflectance		p_mesh
+}
+
+uniformcolor_painter
+{
+	name			p_sphere
+	color			0.30 0.45 0.62
+}
+
+lambertian_material
+{
+	name			m_sphere
+	reflectance		p_sphere
+}
+
+##################################################
+# Geometries
+##################################################
+
+infiniteplane_geometry
+{
+	name			g_plane
+	xtile			1.0
+	ytile			1.0
+}
+
+risemesh_geometry
+{
+	name			g_bunny
+	file			models/risemesh/bunny.risemesh
+}
+
+risemesh_geometry
+{
+	name			g_dragon
+	file			models/risemesh/dragon_small.risemesh
+}
+
+sphere_geometry
+{
+	name			g_sphere
+	radius			0.05
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name			plane
+	geometry		g_plane
+	material		m_floor
+	orientation		-90 0 0
+	position		0 0 0
+}
+
+#
+# Lowest vertex ON the plane.  See the header: the offset is
+# -(bounding box floor) and the test re-derives it from the asset.
+#
+standard_object
+{
+	name			bunny
+	geometry		g_bunny
+	material		m_mesh
+	position		0 -0.0329874 0
+}
+
+#
+# Lowest vertex ON the bunny's highest vertex.  See the header.
+#
+standard_object
+{
+	name			dragon
+	geometry		g_dragon
+	material		m_mesh
+	position		-0.0318315 0.135862595 -0.014760295
+	scale			0.35 0.35 0.35
+}
+
+#
+# Underside 3 mm above the plane; counts despite casts_shadows FALSE.
+#
+standard_object
+{
+	name			nocast
+	geometry		g_sphere
+	material		m_sphere
+	position		-0.6 0.053 0
+	casts_shadows	FALSE
+}
+
+##################################################
+# Lights
+##################################################
+
+#
+# THE FIXTURE LIGHT, and the one whose PLACEMENT is the point: 2 mm above
+# the plane.  Its exitance is low because at 2 mm it is effectively lying on
+# the floor and would otherwise blow out the whole frame; it is here to be
+# a NEIGHBOUR that must not count, and only incidentally to light anything.
+#
+rect_light
+{
+	name			key_panel
+	center			0.6 0.002 0
+	size			0.06 0.06
+	facing			0 -1 0
+	color			1.0 0.95 0.88
+	exitance		4.0
+}
+
+#
+# The actual key.  `direction` is the vector FROM the surface TO the light
+# (docs/SCENE_CONVENTIONS.md 4), so this is a high key over the camera's
+# shoulder.
+#
+directional_light
+{
+	name			key
+	power			1.5
+	color			1.0 0.98 0.94
+	colorspace		Rec709RGB_Linear
+	direction		0.35 0.85 0.40
+}
+
+ambient_light
+{
+	name			amb
+	color			0.32 0.34 0.40
+	colorspace		Rec709RGB_Linear
+	power			0.9
+}
+
+##################################################
+# Camera and output
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/proximity_mesh_contact
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+film
+{
+	width			640
+	height			360
+}
+
+pinhole_camera
+{
+	location		0.250 0.175 0.310
+	lookat			-0.020 0.058 0.0
+	up				0 1 0
+	fov				46.0
+}
