@@ -624,7 +624,7 @@ object directly with an ordinary-mode SDF as its teeth), and
 `ProximityInvalidationTest` 20 → 25 (the demand-gate section (c), and two
 checks with teeth on what the moved pose's rendered value actually IS).
 Scenes A and B, their probe protocols and EVERY cost measurement §8's Phase-1
-gate names are wave 2 and are NOT done. Five places where building it
+gate names are wave 2 and are NOT done. Six places where building it
 corrected this document:
 
 - **`r / σ_min` is sound but not separately observable.** §5.2 reasons that
