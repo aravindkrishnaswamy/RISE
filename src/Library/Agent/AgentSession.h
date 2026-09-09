@@ -514,10 +514,14 @@ namespace RISE
 		//! its outputs -- see AgentRenderParams::quality's doc and
 		//! AgentRenderResult::renderMode's doc for the full honesty
 		//! contract (a draft render is geometry/composition/camera-
-		//! accurate and evaluates each material's diffuse albedo (so an
+		//! accurate and shades each hit with the material's own BSDF --
+		//! colour/roughness response, not just albedo, so an
 		//! expression-driven painter, e.g. one querying `proximity`/
-		//! `occlusion`, DOES run) but IGNORES the scene's authored
-		//! LIGHTING -- a fixed synthetic studio rig stands in for it;
+		//! `occlusion`, DOES run, and relief/bump/normal modifiers still
+		//! apply -- but IGNORES the scene's authored
+		//! LIGHTING -- a fixed synthetic studio rig stands in for it, with
+		//! no shadows/GI, and it does not show emission, transmission/
+		//! refraction, or subsurface scattering;
 		//! never judge true lighting/exposure/colour from a draft).
 		//!
 		//! MaterialLook (2026-08-24, the lit material look) is the THIRD
@@ -1157,11 +1161,14 @@ namespace RISE
 			//! THIS image: "draft" means the pixels came from a fixed
 			//! studio-preview shader that IGNORES the scene's authored
 			//! LIGHTING entirely (a fixed synthetic studio rig stands in
-			//! for it; geometry, composition, and camera framing are
+			//! for it, no shadows/GI; geometry, composition, and camera framing are
 			//! representative, but true lighting, exposure, and colour
-			//! balance are NOT) -- it DOES evaluate each material's diffuse
-			//! albedo, so an expression-driven painter (e.g. one querying
-			//! `proximity`/`occlusion`) still runs -- never judge true
+			//! balance are NOT) -- it DOES shade with the material's own
+			//! BSDF (colour/roughness, not just albedo) under that fixed
+			//! rig, so an expression-driven painter (e.g. one querying
+			//! `proximity`/`occlusion`) still runs, though it does NOT
+			//! show emission, transmission/refraction, or subsurface
+			//! scattering -- never judge true
 			//! lighting/exposure/colour from a
 			//! draft image; render at quality:"production" (the default)
 			//! or use ReadViewport for what the user actually sees.
@@ -1412,10 +1419,11 @@ namespace RISE
 			//! isolate and did NOT carry an element `target`.  The three
 			//! exclusions are not conservatism, they are honesty:
 			//!   * DRAFT ignores the scene's authored LIGHTING entirely (a
-			//!     fixed synthetic studio rig stands in for it), so setting it
+			//!     fixed synthetic studio rig stands in for it, no shadows/GI),
+			//!     so setting it
 			//!     beside a coloured, lit target invites reading a shading
 			//!     difference as a scene difference -- even though draft DOES
-			//!     evaluate each material's diffuse albedo.
+			//!     shade with the material's own BSDF under that fixed rig.
 			//!   * OBJECTMAP / VIEW MODE paint identity or data colours, not
 			//!     appearance -- same objection, more starkly.
 			//!   * ISOLATE deletes the rest of the scene: it is a look at ONE
@@ -1704,8 +1712,9 @@ namespace RISE
 		//! (capped at 4 samples, fixed studio-preview shading), good enough
 		//! to iterate on GEOMETRY/COMPOSITION/CAMERA alignment against the
 		//! reference, but IGNORES the scene's authored LIGHTING entirely
-		//! (a fixed synthetic studio rig stands in for it) -- it DOES
-		//! evaluate each material's diffuse albedo, so an expression-driven
+		//! (a fixed synthetic studio rig stands in for it, no shadows/GI)
+		//! -- it DOES shade with the material's own BSDF (colour/roughness,
+		//! not just albedo) under that fixed rig, so an expression-driven
 		//! painter still runs, but a low draft-mode RMSE says nothing about
 		//! true lighting/exposure/colour match.  Supplying `samples` (>=1)
 		//! switches to AgentRenderQuality::Production at that sample count
@@ -4503,17 +4512,25 @@ namespace RISE
 			//! in the PIECES phase, where lighting is not yet the model's job --
 			//! a production isolate of a not-yet-lit scene is a black frame that
 			//! reads as "your element is missing".  The draft pipeline's
-			//! studio-preview shading is lighting-independent, so the form reads
-			//! whatever the scene is lit like; the message discloses that the
-			//! frame says nothing about materials or lighting.  Dims are set
+			//! studio-preview shading is independent of the SCENE's authored
+			//! lighting (a fixed synthetic rig stands in, with no shadows and
+			//! no GI), so the form reads regardless of how the scene is lit;
+			//! it DOES shade with the element's own material (BSDF colour,
+			//! roughness, and any procedural/expression painter it drives),
+			//! but with no true light response -- no shadows, no
+			//! reflection/refraction rays, no emission -- so the message
+			//! discloses that the frame says nothing about the scene's
+			//! lighting or about full material response (glass, membranes,
+			//! specular highlights, glow).  Dims are set
 			//! explicitly because the agent surface's absent-dims default only
 			//! covers production beauty renders.  The message also carries ONE
 			//! advisory sentence -- reopen_element if authored detail is missing
 			//! or melted -- and, per the Phase 2b law, NO score of any kind.
 			//!
 			//! AND SINCE 2026-08-24 THERE ARE TWO RENDERS, NOT ONE -- because a
-			//! draft frame, being lighting- and material-independent by
-			//! construction, cannot show a material at all.  The same isolate,
+			//! draft frame, shading under a crude fixed rig with no true light
+			//! transport, cannot show a material's full appearance (glass,
+			//! membranes, subsurface, emission all read wrong or flat).  The same isolate,
 			//! the same framing, the same caps, rendered a SECOND time at
 			//! AgentRenderQuality::MaterialLook (see that enum's doc): a fixed
 			//! ephemeral path tracer, real BSDFs, under a CANONICAL STUDIO

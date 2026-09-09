@@ -1016,8 +1016,8 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 
 	// Row 4: "does it actually look right" -- a production render (no
 	// `quality`) reports renderMode "production" and a non-black,
-	// non-washout image (materials/lighting are actually evaluated,
-	// unlike draft).
+	// non-washout image (the scene's OWN authored lighting is actually
+	// evaluated, unlike draft, which substitutes a fixed studio rig).
 	{
 		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
 		Check( session != nullptr, "row4: session loads" );

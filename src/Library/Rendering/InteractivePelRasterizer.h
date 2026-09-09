@@ -339,9 +339,13 @@ namespace RISE
 		//! An EPHEMERAL, FIXED-FIDELITY path-tracing pipeline built for one
 		//! purpose: rendering a single isolated element under a canonical
 		//! studio light rig so its MATERIALS can be read -- specular rolloff,
-		//! roughness, fresnel, transmission -- none of which a draft
-		//! (studio-preview) frame can show, because draft shading is
-		//! lighting- and material-independent by construction.
+		//! roughness, fresnel, transmission -- which a draft
+		//! (studio-preview) frame cannot show FULLY: draft shades with the
+		//! material's own BSDF too, but through a crude single-bounce,
+		//! fixed-light approximation with no true light response (no
+		//! shadows, no reflection/refraction rays, no emission), so
+		//! transmission/fresnel/true specular behaviour reads wrong or flat
+		//! there.
 		//!
 		//! WHY A FIXED PT RATHER THAN THE SCENE'S OWN RASTERIZER.  The look's
 		//! whole value is that two renders of the same element, in different

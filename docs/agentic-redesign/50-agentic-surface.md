@@ -164,9 +164,12 @@
 >   draft renders run on a fresh, per-call interactive-preview pipeline invoked directly against
 >   the live derived scene (never the production rasterizer — structurally isolated, no
 >   framebuffer, own outputs), samples hard-capped at 4, cancel wired to the ephemeral instance
->   (promptness regression-locked). Empirically proven to ignore authored materials (that's the
->   point AND the danger — taught as a hard warning on all three teaching surfaces: geometry/
->   composition/framing representative; materials/lighting/exposure/colour NOT). Works on heads
+>   (promptness regression-locked). Taught as a hard warning on all three teaching surfaces:
+>   geometry/composition/framing representative; TRUE lighting/exposure/colour balance NOT (a
+>   fixed studio rig stands in for the scene's own lights, with no shadows/GI). **Correction
+>   (2026-09-08): the "ignore authored materials" framing above was wrong — draft DOES shade
+>   with each material's own BSDF under that fixed rig; only the scene's own LIGHTING is
+>   ignored** (see `CROSS_OBJECT_PROXIMITY_DESIGN.md` §8.2/§10). Works on heads
 >   with no rasterizer chunk yet (the moment an orientation check matters most). Additive
 >   `renderMode` result field; `integrator` keeps its head-property meaning. The fix round also
 >   corrected a pre-existing falsehood: the chat schema taught samples as "advisory" — it has

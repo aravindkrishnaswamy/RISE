@@ -874,9 +874,21 @@ lighting entirely" — but
 8.2 × 10⁷ — about 0.4 % of the production query count. Not measured as wall
 clock; stated as the bound the code supports. **Fixed in this fix round**:
 every one of those descriptor strings (`AgentMcpAdapter.cpp`,
-`AgentChatCodecs.cpp`, `AgentSession.h`/`.cpp`, `AgentRpc.h`) now says draft
+`AgentChatCodecs.cpp`, `AgentSession.h`/`.cpp`, `AgentRpc.h`) said draft
 ignores LIGHTING only and evaluates each material's diffuse albedo — see
-§10.
+§10. **Refined the same day, same-session follow-up**: "diffuse albedo" was
+itself an understatement — `InteractiveMaterialPreviewShader::PreviewPel`
+also evaluates the material's full `bsdf->value()` (not just `albedo()`)
+against three fixed key/fill/top studio lights, so a material's specular/
+roughness response, not only its base colour, is visible in draft. Every
+descriptor string above now reads "shades with the material's own BSDF
+under a fixed studio rig" rather than "evaluates diffuse albedo", and
+additionally states what draft does NOT show (emission, transmission/
+refraction, subsurface scattering — an emissive/transmissive/volumetric
+material only shrinks the ambient-occlusion weight, it is never actually
+traced) and confirms relief/bump/normal modifiers DO apply to the draft
+shading normal (`RayCaster::CastRay` runs `ri.pModifier->Modify` before
+`Shade`, unconditionally on the pipeline).
 
 **Beauty.** Full frame plus a 3× crop at `x0=280 y0=150 w=200 h=120` (the AO
 evidence framing), judged against a no-proximity control rendered from the same
@@ -1224,3 +1236,16 @@ now in them, and the workbench's says which claim it retracts.
   consequence noted: an albedo evaluation that reaches `occlusion()` on a
   mesh in draft DOES trigger `MeshSignalBakeCache`'s bake on the scene's
   first draft render, not only on its first production render.
+- **Refined same-session, same day: "diffuse albedo" was itself an
+  understatement.** `InteractiveMaterialPreviewShader::PreviewPel` also
+  evaluates the material's full `bsdf->value()` (not just `albedo()`)
+  against three fixed key/fill/top studio lights, so specular/roughness
+  response is visible in draft too, not only base colour; relief/bump/
+  normal modifiers apply (`RayCaster::CastRay` runs them before `Shade`,
+  unconditionally); and draft does NOT show emission (a directly-visible
+  emitter is hidden to background), transmission/refraction, or
+  subsurface scattering — those material kinds only shrink the
+  ambient-occlusion weight, never traced. Every descriptor string listed
+  above now says "shades with the material's own BSDF under a fixed
+  studio rig" and states the emission/transmission/subsurface omission
+  explicitly, rather than "evaluates diffuse albedo".

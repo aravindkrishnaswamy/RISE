@@ -706,17 +706,27 @@
 //                                            GUI's live interactive editor
 //                                            uses) that IGNORES the scene's
 //                                            authored LIGHTING entirely (a
-//                                            fixed synthetic studio rig
-//                                            stands in for it) -- geometry,
+//                                            fixed synthetic studio rig of
+//                                            three hardcoded lights stands
+//                                            in for it, with no shadows and
+//                                            no GI) -- geometry,
 //                                            composition, and camera framing
 //                                            are representative; true
 //                                            lighting, exposure, and colour
-//                                            balance are NOT.  It DOES
-//                                            evaluate each material's diffuse
-//                                            albedo, so an expression-driven
-//                                            painter (e.g. one querying
+//                                            balance are NOT.  It DOES shade
+//                                            each hit with the material's
+//                                            own BSDF (colour/roughness
+//                                            response, not just albedo)
+//                                            under that fixed rig, plus a
+//                                            geometry-only AO term and a
+//                                            fixed rim highlight, so an
+//                                            expression-driven painter
+//                                            (e.g. one querying
 //                                            proximity/occlusion) still
-//                                            runs.  NEVER judge true
+//                                            runs; it does NOT show
+//                                            emission, transmission/
+//                                            refraction, or subsurface
+//                                            scattering.  NEVER judge true
 //                                            lighting/exposure/colour
 //                                            from a draft image -- render at
 //                                            quality:"production" (or read
@@ -1178,11 +1188,14 @@
 //                                            (default), renders quality:"draft" --
 //                                            cheap, but IGNORES the scene's
 //                                            authored LIGHTING (a fixed rig
-//                                            stands in for it) -- it DOES
-//                                            evaluate each material's diffuse
-//                                            albedo
-//                                            (good for composition/geometry
-//                                            iteration only); `samples` (>=1)
+//                                            stands in for it, no shadows/GI) --
+//                                            it DOES shade with the material's
+//                                            own BSDF (colour/roughness) under
+//                                            that rig
+//                                            (good for composition/geometry/
+//                                            coarse-colour iteration only,
+//                                            NOT emission/transmission/
+//                                            subsurface); `samples` (>=1)
 //                                            switches to quality:"production" at
 //                                            that SPP for a real grader-equivalent
 //                                            reading.  `rmse` is

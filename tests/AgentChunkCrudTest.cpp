@@ -11004,9 +11004,10 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 		// (neither is downscaled to make room for the other) and the two
 		// pixels between them are the rule.
 		Check( f.materialLookRendered,
-		       "S1c MONEY ASSERTION: the studio-lit MATERIAL panel rendered too -- a draft frame is "
-		       "lighting- and material-independent by construction, so without this one the result "
-		       "carries no evidence about appearance at all" );
+		       "S1c MONEY ASSERTION: the studio-lit MATERIAL panel rendered too -- a draft frame "
+		       "shades under a crude fixed rig with no true light response (no shadows, "
+		       "reflection/refraction, or emission), so without this one the result carries no "
+		       "evidence about full appearance at all" );
 		Check( f.height == Agent::kAgentSurfaceMaxRenderEdge &&
 		       f.width  == 2u * Agent::kAgentSurfaceMaxRenderEdge + 2u,
 		       "S1c the attached image is the TWO-PANEL composite: two agent-surface squares side by "
@@ -11134,7 +11135,8 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 		       "is, what to look for, and the verb that reopens the element" );
 		Check( f.message.find( "DRAFT" ) != std::string::npos,
 		       "S1c and it discloses that the frame is a draft, so the model does not read the "
-		       "absence of authored materials or lighting as a fault in what it built" );
+		       "absence of the scene's authored lighting (or a material's true light response) "
+		       "as a fault in what it built" );
 		// 2026-08-24: the MATERIALS clause, and it has to name all three of
 		// what the panel is, what a bad material looks like, and what to
 		// reach for -- a model told "check the materials" with no failure

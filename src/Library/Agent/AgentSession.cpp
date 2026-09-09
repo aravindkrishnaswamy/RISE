@@ -21387,9 +21387,11 @@ namespace RISE
 				// TWO RENDERS OF ONE ISOLATE (2026-08-24).  Same object, same
 				// auto-framing, same size, same caps -- the ONLY difference is
 				// the fidelity, and that difference is the whole feature: a
-				// draft frame is lighting- and material-independent by
-				// construction, so it answers "is the form there" and can
-				// answer nothing at all about appearance.  The two are
+				// draft frame shades under a crude, fixed-light, single-bounce
+				// approximation with no true light response (no shadows,
+				// reflection/refraction, or emission), so it answers "is the
+				// form there, and roughly what colour" and can
+				// answer nothing about FULL appearance under real light.  The two are
 				// composited into one image below because the chat transports
 				// carry exactly one image per tool result.
 				//
@@ -21421,10 +21423,12 @@ namespace RISE
 				// is lit like.  The honesty cost is stated in the message
 				// rather than hidden: a draft frame ignores the scene's
 				// authored LIGHTING -- a fixed synthetic studio rig stands
-				// in for it (see AgentRenderQuality's doc); it DOES
-				// evaluate each material's diffuse albedo, so it answers
-				// "is the form I authored there" and nothing about true
-				// appearance under the scene's own lighting.
+				// in for it (see AgentRenderQuality's doc); it DOES shade
+				// with the material's own BSDF (colour/roughness, not just
+				// albedo) under that fixed rig, so it answers
+				// "is the form I authored there, and roughly what colour"
+				// and nothing about true appearance (shadows, reflections/
+				// refraction, emission) under the scene's own lighting.
 				//
 				// EXPLICITLY SIZED because the agent surface's absent-dims
 				// default is gated on isProductionBeauty (see
@@ -21606,8 +21610,10 @@ namespace RISE
 						// -- are all INVISIBLE in a draft frame, and all
 						// obvious under light.
 						renderNote += " Two looks at \"" + entry.element + "\" by itself at close range. "
-							"LEFT is a DRAFT frame (studio-preview shading): it shows form and proportion, "
-							"not appearance -- if details you authored are missing or melted, reopen_element "
+							"LEFT is a DRAFT frame (studio-preview shading): it shades with the element's own "
+							"material under a crude fixed light rig -- form, proportion and coarse colour are "
+							"visible, but there is no true light response (no shadows, no reflection/refraction, "
+							"no emission), so if details you authored are missing or melted, reopen_element "
 							"and adjust before moving on. RIGHT is the same object's MATERIALS, real BSDFs "
 							"under a fixed studio light rig that replaces the scene's own lighting for that "
 							"render only -- if the surface reads as one flat colour, or something you meant "
@@ -21624,9 +21630,11 @@ namespace RISE
 					} else {
 						renderNote += " This is \"" + entry.element + "\" by itself at close range -- if "
 							"details you authored are missing or melted, reopen_element and adjust before "
-							"moving on. It is a DRAFT frame (studio-preview shading), so it shows form and "
-							"proportion, not the scene's authored materials or lighting; the studio-lit "
-							"companion frame that would have shown them ";
+							"moving on. It is a DRAFT frame (studio-preview shading): it shades with the "
+							"element's own material under a crude fixed light rig, not the scene's own "
+							"lighting, and with no true light response (no shadows, reflection/refraction, "
+							"or emission); the studio-lit MATERIALS companion frame that would have shown "
+							"fuller appearance ";
 						// The ONE case where "did not render" would be a lie:
 						// it rendered, and the two frames could not be put in
 						// one image.  Named as its own outcome so nobody goes
@@ -28868,7 +28876,7 @@ namespace RISE
 					( overallDelta >= 0.0 ? "brighter than" : "darker than" ), std::fabs( overallDelta ),
 					res.worstCell.c_str(), worstRmse,
 					( rr.renderMode == "draft"
-						? " [draft mode -- materials/lighting ignored; this RMSE reflects geometry/composition only, not colour/material match -- pass samples>=1 for a production-quality reading]"
+						? " [draft mode -- scene lighting ignored (a fixed studio rig stands in, no shadows/GI); this RMSE reflects geometry/composition and coarse material colour under that rig, not true lighting/exposure match -- pass samples>=1 for a production-quality reading]"
 						: "" ) );
 				res.summary = buf;
 
@@ -29479,7 +29487,9 @@ namespace RISE
 			// ApplySceneTargetComparison_ and
 			// AgentRenderResult::sceneTargetApplied), and for exactly the same
 			// honesty reasons -- with one of them sharper here.  Draft ignores
-			// the scene's authored materials and lighting, objectmap and the
+			// the scene's authored LIGHTING (a fixed studio rig stands in, with
+			// no shadows/GI) though it DOES shade the scene's authored
+			// materials under that rig; objectmap and the
 			// view modes paint identity or data colours, and isolate deletes
 			// the rest of the scene: setting any of those beside a production
 			// beauty anchor would show a DIFFERENCE that is really a render

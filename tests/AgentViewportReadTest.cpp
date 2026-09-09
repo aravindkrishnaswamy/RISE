@@ -773,8 +773,10 @@ static void RunDisplayTransformOrdering()
 //      floor, then recolor the sphere's material and confirm the rmse
 //      rises far beyond that floor with channelDelta signs pointing in
 //      the recolor's direction (production quality is REQUIRED for this
-//      -- draft ignores materials/lighting entirely, so a recolor is
-//      invisible to a draft-mode comparison by design).
+//      -- draft renders under a fixed studio rig, not the scene's own
+//      lighting/exposure, so it would register the recolor too but
+//      would not give the scene-accurate, grader-equivalent reading
+//      this assertion needs).
 //////////////////////////////////////////////////////////////////////
 static void RunCompareToReference()
 {

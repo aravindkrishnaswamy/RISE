@@ -2385,9 +2385,10 @@ static void RunLastRenderCompletionSitesTest()
 // rather than waiting to be asked for.  These tests pin WHERE it attaches
 // and, just as importantly, where it must NOT:
 //   * DRAFT ignores the scene's authored LIGHTING (a fixed synthetic
-//     studio rig stands in for it), so setting it beside a coloured, lit
-//     target invites reading a shading difference as a scene difference
-//     -- even though draft DOES evaluate each material's diffuse albedo.
+//     studio rig stands in for it, no shadows/GI), so setting it beside a
+//     coloured, lit target invites reading a shading difference as a scene
+//     difference -- even though draft DOES shade with the material's own
+//     BSDF under that fixed rig.
 //   * OBJECTMAP paints identity colours, not appearance.
 //   * ISOLATE is a look at ONE PART; the whole-scene target is not what it
 //     is a look at.

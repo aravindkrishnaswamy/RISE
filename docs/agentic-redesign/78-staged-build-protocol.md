@@ -110,9 +110,10 @@ arc tests is about.
   *(2026-08-23 / 2026-08-24, as shipped: that render is a close-range 256px
   isolate, and there are now **two** of them composited side by side — a
   DRAFT panel for form, and a fixed-PT panel under a canonical studio light
-  rig for MATERIALS, because draft shading is lighting- and
-  material-independent by construction and so cannot show specular rolloff,
-  roughness, fresnel or transmission at all.  The rig replaces the scene's
+  rig for MATERIALS, because draft shading is a crude, fixed-light,
+  single-bounce approximation with no true light response (no shadows,
+  reflection/refraction, or emission) and so cannot show specular rolloff,
+  roughness, fresnel or transmission FULLY.  The rig replaces the scene's
   lights and environment for that one render and is restored after it; the
   document is untouched.  See `AgentSession::FinishElement` and
   `AgentRenderQuality::MaterialLook`.)*
