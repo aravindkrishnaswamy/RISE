@@ -369,6 +369,16 @@ bool DisplacedGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Sca
 	return m_pMesh->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
 }
 
+bool DisplacedGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	// See the header for why this one realizes and the ray forwarders do not.
+	Realize();
+	if( !m_pMesh ) {
+		return false;
+	}
+	return m_pMesh->DistanceToSurface( ptObject, maxDistObject, outDist );
+}
+
 void DisplacedGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
 {
 	if( !m_pMesh ) {

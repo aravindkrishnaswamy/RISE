@@ -199,6 +199,29 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
+			//! IGeometry::DistanceToSurface -- DELEGATE to the baked mesh,
+			//! exactly as IntersectRay does, so `proximity(r)` measures the
+			//! DISPLACED surface and not the smooth base
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2, Phase 2).  This
+			//! is the whole point of the row: a heightfield that lifts the
+			//! surface by `disp_scale` moves contact by `disp_scale`, and
+			//! answering from the base would under-report the gap by exactly
+			//! that -- the forbidden direction.
+			//!
+			//! It calls `Realize()` first, which the ray forwarders
+			//! deliberately do NOT: they are the hot path and pay for a bake
+			//! that `RayCaster::AttachScene` has already done, while this
+			//! query is rare, heavy, and reachable from a test or a tool that
+			//! never went through AttachScene.  On an already-realized
+			//! geometry Realize() is one acquire load and returns before its
+			//! own render-freeze assert, so the production path costs that
+			//! load and nothing else.
+			//!
+			//! Refuses (like every other forwarder here) when the bake failed
+			//! and left no mesh.  The mesh's own SHEET semantics apply -- see
+			//! TriangleMeshGeometryIndexed::DistanceToSurface.
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- DELEGATE, exactly as IntersectRay
 			//! does: this geometry's rays are answered by the baked mesh, so
 			//! the mesh owns the gate.  Before the bake (or after a failed one)

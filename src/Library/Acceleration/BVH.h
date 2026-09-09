@@ -1750,6 +1750,139 @@ namespace RISE
 			}
 			return false;
 		}
+
+		//! BOUNDED-RADIUS CLOSEST POINT over the primitives in this tree --
+		//! the acceleration half of `IGeometry::DistanceToSurface` for the
+		//! indexed-mesh family (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+		//!
+		//! `primDist( prims[i], p )` must return the EXACT unsigned distance
+		//! from `p` to that primitive.  This method adds no approximation of
+		//! its own: it only decides WHICH primitives are asked, and the
+		//! answer it returns is `min` over the ones it asked.
+		//!
+		//! WHY IT IS IDENTICAL TO BRUTE FORCE, and not merely close.  A node
+		//! is skipped only when the distance from `p` to that node's AABB is
+		//! `>= best`, and every primitive the node owns lies INSIDE that AABB,
+		//! so each of them is at least that far -- none of them could have
+		//! lowered `best`.  The boxes are `float` and conservatively rounded
+		//! OUTWARD at build (see the class header), which can only make the
+		//! box-to-point distance SMALLER than the true one, i.e. can only
+		//! make the pruning admit a node it could have skipped.  Sound in the
+		//! only direction that matters.  A tie (two primitives at bit-equal
+		//! distance) is the sole freedom: brute force and this traversal may
+		//! attribute the minimum to different primitives, but the VALUE they
+		//! report is the same number.
+		//!
+		//! ORDERING.  Children are visited nearest-AABB-first (the two-child
+		//! sort below), which is what makes `best` fall quickly and the
+		//! pruning bite; a stack entry also carries the box distance it was
+		//! pushed with and is re-tested against the CURRENT `best` on pop,
+		//! since `best` may have improved after it was queued.
+		//!
+		//! THIS USES THE BVH2 `nodes` ARRAY, NOT `nodes4`.  The BVH4 SoA
+		//! exists to test four ray-vs-AABB slabs in one SIMD batch; a point
+		//! query has no ray, no slab test, and no direction to sort by --
+		//! its win is a sorted nearest-first descent, which a binary node
+		//! gives directly (sort 2) and a 4-wide node would need a partial
+		//! sort of 4 to reproduce.  `nodes` is always populated when
+		//! `nodes4` is, since the wide layout is derived from it.
+		//!
+		//! Thread-safe: `const`, reads only immutable post-build state, and
+		//! the scratch stack is `thread_local` exactly as the ray traversals'
+		//! stacks are.
+		//! \return TRUE and writes `outDist` when some primitive is strictly
+		//!         within `maxDist`, FALSE otherwise (`outDist` untouched).
+		template< class PrimDistFn >
+		bool ClosestPointDistance(
+			const Point3& p,
+			const Scalar  maxDist,
+			PrimDistFn&&  primDist,
+			Scalar&       outDist ) const
+		{
+			if( nodes.empty() || prims.empty() ) return false;
+			if( !( maxDist > Scalar( 0 ) ) ) return false;
+
+			const float pf[3] = { (float)p.x, (float)p.y, (float)p.z };
+
+			Scalar best  = maxDist;
+			bool   found = false;
+
+			struct Entry { uint32_t node; Scalar dist; };
+			// Bounded dynamic stack, thread_local for one warm-up grow per
+			// worker -- the same discipline the ray traversals above use.
+			static thread_local std::vector<Entry> stack;
+			stack.clear();
+
+			const Scalar rootDist = PointBoxDistanceF( pf, nodes[0].bboxMin, nodes[0].bboxMax );
+			if( !( rootDist < best ) ) return false;
+			stack.push_back( Entry{ 0u, rootDist } );
+
+			while( !stack.empty() ) {
+				const Entry e = stack.back();
+				stack.pop_back();
+				// `best` may have dropped since this entry was queued.
+				if( !( e.dist < best ) ) continue;
+
+				const Node& node = nodes[ e.node ];
+
+				if( node.primCount > 0 ) {
+					const uint32_t end = node.firstPrimOrLeft + node.primCount;
+					for( uint32_t i = node.firstPrimOrLeft; i < end; ++i ) {
+						const Scalar d = primDist( prims[i], p );
+						if( d < best ) {
+							best  = d;
+							found = true;
+							// Nothing can beat an exact zero (a distance is
+							// never negative), so the rest of the tree
+							// cannot change the answer.
+							if( best <= Scalar( 0 ) ) {
+								outDist = Scalar( 0 );
+								return true;
+							}
+						}
+					}
+				} else {
+					const uint32_t leftIdx  = node.firstPrimOrLeft;
+					const uint32_t rightIdx = leftIdx + 1;
+					const Scalar dL = PointBoxDistanceF( pf, nodes[leftIdx].bboxMin,  nodes[leftIdx].bboxMax );
+					const Scalar dR = PointBoxDistanceF( pf, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax );
+					// FARTHER child pushed first so the NEARER one pops
+					// first and lowers `best` before the far one is even
+					// re-tested.
+					if( dL <= dR ) {
+						if( dR < best ) stack.push_back( Entry{ rightIdx, dR } );
+						if( dL < best ) stack.push_back( Entry{ leftIdx,  dL } );
+					} else {
+						if( dL < best ) stack.push_back( Entry{ leftIdx,  dL } );
+						if( dR < best ) stack.push_back( Entry{ rightIdx, dR } );
+					}
+				}
+			}
+
+			if( !found ) return false;
+			outDist = best;
+			return true;
+		}
+
+	protected:
+		//! Distance from a point to an axis-aligned box, 0 when inside.  The
+		//! bounds are the node's conservative `float` AABB; the arithmetic is
+		//! done in `Scalar` so the comparison against a `Scalar` best is not
+		//! itself a rounding step.  Reading outward-rounded bounds can only
+		//! UNDER-state this distance, which is the safe direction for
+		//! pruning (see ClosestPointDistance's contract).
+		static Scalar PointBoxDistanceF( const float p[3], const float lo[3], const float hi[3] )
+		{
+			Scalar sum = Scalar( 0 );
+			for( int k = 0; k < 3; ++k ) {
+				const Scalar v  = (Scalar)p[k];
+				const Scalar l  = (Scalar)lo[k];
+				const Scalar h  = (Scalar)hi[k];
+				const Scalar dk = ( v < l ) ? ( l - v ) : ( ( v > h ) ? ( v - h ) : Scalar( 0 ) );
+				sum += dk * dk;
+			}
+			return std::sqrt( sum );
+		}
 	};
 }
 

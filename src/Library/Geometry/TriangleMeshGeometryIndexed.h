@@ -198,6 +198,52 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
+			//! EXACT unsigned distance from a point to ONE triangle -- the
+			//! standard closest-point-on-triangle region (Voronoi) method,
+			//! Ericson, *Real-Time Collision Detection* §5.1.5.
+			//!
+			//! PUBLIC AND STATIC ON PURPOSE.  It is the leaf half of
+			//! `DistanceToSurface`, and `MeshClosestPointTest`'s differential
+			//! drives THIS function for its brute-force reference.  The
+			//! design's exactness claim for the mesh family is "identical to
+			//! brute force UNDER THE SAME POINT-TRIANGLE FORMULA"
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2), and a test that
+			//! re-derived its own formula would be comparing two
+			//! approximations instead of pinning the traversal.
+			//!
+			//! DEGENERATE TRIANGLES (zero area -- collinear or coincident
+			//! vertices) are handled explicitly rather than left to the
+			//! barycentric interior branch, whose denominator is the
+			//! (vanishing) doubled area and would produce inf/NaN.  A
+			//! degenerate triangle IS the union of its three edges, so the
+			//! fallback -- the minimum of the three point-to-SEGMENT
+			//! distances -- is the exact answer for it, not a patch.
+			static Scalar PointTriangleDistance(
+				const Point3& p, const Point3& a, const Point3& b, const Point3& c );
+
+			//! IGeometry::DistanceToSurface -- EXACT for this family, via a
+			//! bounded-radius closest-point traversal of this mesh's own BVH
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2, Phase 2).
+			//!
+			//! A MESH IS A SHEET FOR THIS QUERY, and that is a real
+			//! difference from every solid family that shipped in Phase 1.
+			//! `SphereGeometry`, `BoxGeometry`, the capped cylinder and the
+			//! SDFs all clamp a SIGNED field at zero, so a point inside them
+			//! reads 0 -- the signal's "interpenetration IS contact" rule
+			//! (design §2).  A triangle mesh has no inside test at all: it
+			//! may be open, self-intersecting or non-manifold, and nothing
+			//! in this class distinguishes "inside the bunny" from "in the
+			//! air beside it".  So there is NO interpenetration clamp here;
+			//! a point in the middle of a closed mesh reports its honest
+			//! distance to the nearest triangle.  That is the SAFE direction
+			//! for this signal (an over-report under-paints, never
+			//! over-paints), and it is why the design's family table calls
+			//! this row "sheets".
+			//!
+			//! REFUSES when the BVH is absent (a mesh still being fed, or a
+			//! failed deserialize) -- honest absence over a wrong distance.
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- RayTriangleIntersection's gate,
 			//! `NEARZERO * (1 + |origin|_1 + max vertex |.|_1)`, is per
 			//! TRIANGLE and the query names only a point, so bound every

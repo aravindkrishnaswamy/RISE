@@ -631,6 +631,147 @@ BoundingBox TriangleMeshGeometryIndexed::GenerateBoundingBox( ) const
 	return BoundingBox();
 }
 
+//! Exact point-to-SEGMENT distance -- the degenerate-triangle fallback and
+//! nothing else, kept next to its only caller.
+static Scalar PointSegmentDistance( const Point3& p, const Point3& a, const Point3& b )
+{
+	const Vector3 ab = Vector3Ops::mkVector3( b, a );
+	const Vector3 ap = Vector3Ops::mkVector3( p, a );
+	const Scalar  den = Vector3Ops::Dot( ab, ab );
+	Scalar t = ( den > Scalar( 0 ) ) ? ( Vector3Ops::Dot( ap, ab ) / den ) : Scalar( 0 );
+	if( t < Scalar( 0 ) ) t = Scalar( 0 );
+	if( t > Scalar( 1 ) ) t = Scalar( 1 );
+	const Vector3 d = Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( a, ab * t ) );
+	return Vector3Ops::Magnitude( d );
+}
+
+//! See the header for the contract.  This is Ericson's region method
+//! verbatim in structure: seven cheap sign tests carve the plane of the
+//! triangle into three vertex regions, three edge regions and the interior,
+//! and each region has a closed-form nearest point.
+Scalar TriangleMeshGeometryIndexed::PointTriangleDistance(
+	const Point3& p, const Point3& a, const Point3& b, const Point3& c )
+{
+	const Vector3 ab = Vector3Ops::mkVector3( b, a );
+	const Vector3 ac = Vector3Ops::mkVector3( c, a );
+	const Vector3 ap = Vector3Ops::mkVector3( p, a );
+
+	const Scalar d1 = Vector3Ops::Dot( ab, ap );
+	const Scalar d2 = Vector3Ops::Dot( ac, ap );
+	// Vertex region A
+	if( d1 <= Scalar( 0 ) && d2 <= Scalar( 0 ) ) {
+		return Vector3Ops::Magnitude( ap );
+	}
+
+	const Vector3 bp = Vector3Ops::mkVector3( p, b );
+	const Scalar d3 = Vector3Ops::Dot( ab, bp );
+	const Scalar d4 = Vector3Ops::Dot( ac, bp );
+	// Vertex region B
+	if( d3 >= Scalar( 0 ) && d4 <= d3 ) {
+		return Vector3Ops::Magnitude( bp );
+	}
+
+	const Scalar vc = d1 * d4 - d3 * d2;
+	// Edge region AB
+	if( vc <= Scalar( 0 ) && d1 >= Scalar( 0 ) && d3 <= Scalar( 0 ) ) {
+		const Scalar den = d1 - d3;
+		const Scalar v = ( den != Scalar( 0 ) ) ? ( d1 / den ) : Scalar( 0 );
+		return Vector3Ops::Magnitude( Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( a, ab * v ) ) );
+	}
+
+	const Vector3 cp = Vector3Ops::mkVector3( p, c );
+	const Scalar d5 = Vector3Ops::Dot( ab, cp );
+	const Scalar d6 = Vector3Ops::Dot( ac, cp );
+	// Vertex region C
+	if( d6 >= Scalar( 0 ) && d5 <= d6 ) {
+		return Vector3Ops::Magnitude( cp );
+	}
+
+	const Scalar vb = d5 * d2 - d1 * d6;
+	// Edge region AC
+	if( vb <= Scalar( 0 ) && d2 >= Scalar( 0 ) && d6 <= Scalar( 0 ) ) {
+		const Scalar den = d2 - d6;
+		const Scalar w = ( den != Scalar( 0 ) ) ? ( d2 / den ) : Scalar( 0 );
+		return Vector3Ops::Magnitude( Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( a, ac * w ) ) );
+	}
+
+	const Scalar va = d3 * d6 - d5 * d4;
+	// Edge region BC
+	if( va <= Scalar( 0 ) && ( d4 - d3 ) >= Scalar( 0 ) && ( d5 - d6 ) >= Scalar( 0 ) ) {
+		const Scalar den = ( d4 - d3 ) + ( d5 - d6 );
+		const Scalar w = ( den != Scalar( 0 ) ) ? ( ( d4 - d3 ) / den ) : Scalar( 0 );
+		const Vector3 bc = Vector3Ops::mkVector3( c, b );
+		return Vector3Ops::Magnitude( Vector3Ops::mkVector3( p, Point3Ops::mkPoint3( b, bc * w ) ) );
+	}
+
+	// INTERIOR -- but only if there IS an interior.  `va + vb + vc` is the
+	// squared doubled area of the triangle scaled by the region weights; it
+	// vanishes exactly for a degenerate (zero-area) triangle, for which the
+	// surface is the union of the three edges and the minimum over them is
+	// the exact answer.  Reaching the divide with a vanishing denominator
+	// would instead produce inf/NaN, and a NaN distance is the one value
+	// this signal must never hand back (a NaN loses every comparison, so it
+	// would be silently dropped by the traversal's `d < best` -- an
+	// invisible hole in the mesh rather than a loud failure).
+	const Scalar denom = va + vb + vc;
+	if( !( denom > Scalar( 0 ) ) ) {
+		const Scalar e0 = PointSegmentDistance( p, a, b );
+		const Scalar e1 = PointSegmentDistance( p, b, c );
+		const Scalar e2 = PointSegmentDistance( p, c, a );
+		Scalar m = e0;
+		if( e1 < m ) m = e1;
+		if( e2 < m ) m = e2;
+		return m;
+	}
+
+	const Scalar v = vb / denom;
+	const Scalar w = vc / denom;
+	const Point3 q = Point3Ops::mkPoint3( a, ab * v + ac * w );
+	return Vector3Ops::Magnitude( Vector3Ops::mkVector3( p, q ) );
+}
+
+//! See the header for the full contract (sheet semantics, no
+//! interpenetration clamp, refusal when there is no BVH).
+bool TriangleMeshGeometryIndexed::DistanceToSurface(
+	const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	if( !pPtrBVH ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( (double)ptObject.x )
+	 || !RISE::IsFiniteDouble( (double)ptObject.y )
+	 || !RISE::IsFiniteDouble( (double)ptObject.z ) ) {
+		return false;
+	}
+	// An unbounded permission (Object::DistanceToSurface hands RISE_INFINITY
+	// down for the refusal CONFIRM, and an anisotropic transform can inflate
+	// an ordinary radius to it) means "no cut-off", not "search a DBL_MAX
+	// box": the traversal's own pruning is what bounds the work, and the
+	// initial `best` only has to be larger than any real answer.  Nothing
+	// downstream squares it, so DBL_MAX is safe to carry as-is.
+	if( !( maxDistObject > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	Scalar d = Scalar( 0 );
+	const bool ok = pPtrBVH->ClosestPointDistance(
+		ptObject, maxDistObject,
+		[]( const PointerTriangle* tri, const Point3& q ) -> Scalar {
+			return TriangleMeshGeometryIndexed::PointTriangleDistance(
+				q, *tri->pVertices[0], *tri->pVertices[1], *tri->pVertices[2] );
+		},
+		d );
+
+	if( !ok ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( (double)d ) || d < Scalar( 0 ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
 static const char * szSignature = "RISETMGI";
 static const unsigned int cur_version = 5;
 //
