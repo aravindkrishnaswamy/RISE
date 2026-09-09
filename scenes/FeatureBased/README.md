@@ -394,9 +394,10 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   2026-09-08 it is also the flagship for the CROSS-OBJECT signal: `proximity(0.002)` --
   a 2 mm world radius, unlike `occlusion`'s per-object fraction -- puts contact grime
   where the nail actually touches the board. Which is not along the shank: the head disc
-  is thicker than it is, so the nail rests on its head rim and its buried tip and lifts in
-  between, and the header records the five gaps (0.146 mm at the rim, 3.51 / 1.31 / 0.00 mm
-  along the shank, 0.55 mm of burial at the tip) measured with the signal itself. That fade
+  is thicker than it is, so the nail rests on its buried tip; its head rim nearly rests
+  (0.146 mm clear) and the shank lifts from the tip to 3.5 mm at the head. The header
+  records the gaps (0.146 mm clear at the rim, 3.51 / 1.31 / 0.00 mm along the shank,
+  0.55 mm of burial at the tip) measured with the signal itself. That fade
   is what no ambient occlusion could draw, which is why cross-object AO was prototyped
   twice and declined twice before this.
 - `VCM/`: vertex-connection-and-merging showpieces.

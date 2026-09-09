@@ -764,8 +764,9 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// scenes/FeatureBased/Textures/plank_closeup.RISEscene ships, reduced
 	// to a standalone 128x128 scene.  It is the ONE fence in the seed
 	// skills whose point is a SECOND object: the nail's head disc is
-	// thicker than its shank, so the body rests on the head rim and the
-	// tip and LIFTS in between, which is what makes the signal's fade
+	// thicker than its shank, so the body rests on its buried tip -- the
+	// head rim comes close but does not quite touch -- and LIFTS in between,
+	// which is what makes the signal's fade
 	// visible and is exactly what an occlusion cannot draw.  A/B'd at
 	// authoring time (`grime` 0.85 -> 0, same seeds): 760 of 16384 pixels
 	// move, max delta 0.415, so the snippet demonstrates the term rather

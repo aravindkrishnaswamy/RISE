@@ -232,11 +232,13 @@ dust where a wall meets a floor -- and the analogue is Unreal's
 
 Worked example -- the contact seam under a nail lying on a board, which is
 the composition `plank_closeup.RISEscene` ships.  The nail rests on its
-head rim and its tip, not along its length: measured with this signal, the
-head rim clears the board by **0.146 mm**, the shank's underside lifts to
+buried tip, not along its length: measured with this signal, the
+head rim comes close but does not quite touch, clearing the board by only
+**0.146 mm**, the shank's underside lifts to
 **3.51 mm** at the head end and **1.31 mm** mid-way, and the last ~9.5 mm
 is buried up to **0.55 mm**.  `proximity(0.002)` -- a 2 mm world radius --
-is what draws all three at once: saturated under the rim and the buried
+is what draws all three at once: near-saturated under the rim (**0.93**)
+and fully saturated along the buried
 tip, **0.35** at mid-shank, and exactly **0** at the head end where the
 gap is 3.5 mm.  That fade along the lifting shank is the whole point; an
 AO reads the nail's shadow as contact for its entire length.
@@ -403,7 +405,8 @@ standard_object
 }
 
 # The nail: a tapered shank whose head disc is thicker than it is, so the
-# body rests on the head rim and the tip and LIFTS in between -- the
+# body rests on its buried tip -- the head rim comes close but does not
+# quite touch -- and LIFTS in between: the
 # geometry that makes the fade visible.
 sdf_geometry
 {

@@ -573,7 +573,7 @@ scalar_painter
 # legitimately reads as a broadening of the specular lobe rather than as
 # noise.  5:1 anisotropic, because pores run along the grain.  ZERO-MEAN
 # by construction (`- 0.5`): this field is a pure ADDITIVE detail term, not
-# a multiplicative modulator, so it plugs directly into `sp_plank_rough`'s
+# a multiplicative modulator, so it plugs directly into `sp_wood_rough`'s
 # `add` below without dragging the base roughness's own range through it.
 scalar_painter
 {
@@ -585,8 +585,9 @@ scalar_painter
 	expression		pore_depth*(clamp(f1, 0, 1) - 0.5)
 }
 
-# sp_plank_rough = sp_ring_rough + weight_b*sp_pore (scalar_painter's `add`
-# form, multiply's additive sibling).  sp_pore ranges +-pore_depth/2 =
+# sp_wood_rough = sp_ring_rough + weight_b*sp_pore (scalar_painter's `add`
+# form, multiply's additive sibling; sp_plank_rough further down is
+# sp_wood_rough + sp_contact_rough).  sp_pore ranges +-pore_depth/2 =
 # +-0.15 at the default pore_depth; weight_b 0.5 halves that to +-0.075,
 # which is what keeps the COMBINED range close to what the old multiplicative
 # modulation gave (+-15% of a 0.33-0.52 base is +-0.05 to +-0.08 in absolute
@@ -939,7 +940,8 @@ standard_object
 # Part 1  roundcone, 4.0 mm radius at the head tapering to 1.0 mm over 68 mm,
 #         rotated -96 deg about Z (-90 lays it along +X, the extra -6 is a
 #         nose-down set) (the head is thicker than the shank, so a nail lying on a flat
-#         surface rests on its head rim and its tip, not along its length).
+#         surface rests on its buried tip, not along its length -- its head rim comes
+#         close but does not quite touch; see the measurements below).
 #
 #         WHERE IT TOUCHES, MEASURED (2026-09-08).  That sentence was prose until the
 #         cross-object signal gave a way to check it, and the check is worth keeping
@@ -966,7 +968,10 @@ standard_object
 #                      y = 0, so the contact there is a furrow, x 200.8..210.3 mm and
 #                      z -45.2..-40.5 mm, about 2.2 mm wide.  Deepest point bracketed
 #                      between y = -0.50 and -0.60 mm by re-running the same query on
-#                      planes below y = 0.
+#                      planes below y = 0 (min distance over the furrow footprint at
+#                      each plane): y = -0.4mm  0.000 mm (still inside);
+#                      y = -0.5mm  0.000 mm (still inside); y = -0.6mm  0.050 mm
+#                      (just outside); y = -0.7mm  0.149 mm (outside).
 #
 #         So a 2 mm radius reads: saturated under the rim (0.93 at the closest point) and
 #         along the furrow (1.0), 0.35 at mid-shank, and exactly 0 at the head end of the
