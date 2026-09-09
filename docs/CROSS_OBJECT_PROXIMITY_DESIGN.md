@@ -154,7 +154,12 @@ Conventions, matching the signal family (signals design §9):
   landing test admits a point only when the operands' own signs PROVE it
   lies in the closure of the real solid, with no tolerance on either side
   (a tolerance re-admits the phantom touching set — §5.6 walks the station
-  that showed it).
+  that showed it). That proof is over the reals; the operands' closed forms
+  are ROUNDED, so within ~1 ulp of a tangency of two exact operands the
+  computed pair could satisfy an arm the real set does not — a band of
+  ~5 nm on `column2` (down from 1.6 µm under a tolerance), and on the flute
+  itself foreclosed outright because the computed `f_A` is never below the
+  computed `f_B` there (§5.6). Stated, not tolerated.
 - **A non-finite hit point refuses** (reads 0), as `RadiusUsable` refuses a
   non-finite radius.
 
@@ -548,7 +553,9 @@ Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
 2026-09-09 before Phase 3 began; revised the same day after three adversarial
-rounds (round 11, 3 P1s: the boundary arm's τ tolerance re-admitted the
+rounds (round 12, 2 P1s: the flute walk's numbers were wrong and blamed the
+wrong disjunct; the header that hosts the `interior` body was unnamed;
+round 11, 3 P1s: the boundary arm's τ tolerance re-admitted the
 flute phantom from a station 1 µm off its axis, so the tolerance is gone
 and the never-over-read invariant is restored whole; the procedural-textures
 skill and its snippet count were missing from the plumbing; the bare-call
@@ -670,20 +677,33 @@ closure of `A \ B` (interior if inside `A`; on `∂A` a neighbourhood outside
 inside `A` on or outside `∂B` likewise. There is NO TOLERANCE on the exact
 side, deliberately (rounds 5–11): the descent `p ← p − f·ĝ` lands on the
 exact operand's surface only to rounding, and a `+1 ulp` miss fails this
-arm — the probe then steps by ε and the answer is `d + ε` instead of `d`,
-which is the SAFE direction. A tolerance `τ` looked harmless (a landing
-within `τ` of `∂A` is within `τ` of A's surface) and is not: the nearby
-points of `∂A` may all lie INSIDE `B`, so the landing is within `τ` of a
-phantom, not of the real solid. On the flute, a station 1 µm off the slot's
-axis, local `(1e-6, ·, 0.26)`, descends along the radial gradient to
-`q ≈ (9.6e-7, ·, 0.25 + 8e-14)`: `f_A ≈ 1.8e-12` (within any τ of the
-cylinder) and `f_B = 8e-14 > 0` (strictly outside the slab), so a τ-arm
-admits it and reports a 1.00 cm chord where the real solid is 4.21 cm away
-— `proximity(0.02)` = 0.5 against a truth of 0, the forbidden direction by
-3 cm, not by τ. With `≤ 0` that landing has `f_A > 0` and is rejected, the
-probe walks into the slab and refuses. Neither arm admits `f_A = f_B = 0`
-(the strict side rejects it), which is what keeps the exact tangency out
-as well. Which arm applies
+arm — the probe then steps (one ε step on the fixtures; a solid thinner
+than ε at the landing takes the doubling steps or refuses, both safe) and
+the answer is `d` plus that step instead of `d`, which is the SAFE
+direction. A tolerance `τ` on EITHER side looked harmless and is not,
+because the nearby points of an operand's surface may all lie inside the
+other operand, so a landing within `τ` of a surface can be within `τ` of
+the phantom, not of the real solid. On the flute, stations within a few
+micrometres of the slot's axis show it (recomputed in doubles, round 12):
+from local `(1e-6, ·, 0.26)` the radial descent lands at `q ≈ (9.615e-7,
+·, 0.25 − 1.85e-12)` — `f_A(q) = 0.0` exactly (`sqrt(x·x) = x` plus the
+exact step), `f_B(q) = −1.85e-12`, 1.85 pm INSIDE the slab. Across 200 000
+such stations `f_A` rounds to 0 or −1 ulp at ~46 % of them, and `f_B ≥
+−τ` (τ = 5e-12) holds at ~25 %, so the tolerant `f_A < 0 ∧ f_B ≥ −τ`
+disjunct admits a landing that is inside the subtrahend — not in the real
+solid at all — and reports a 1.00 cm chord where the real solid is 4.21 cm
+away: `proximity(0.02)` = 0.5 against a truth of 0, the forbidden
+direction by 3 cm, on a quarter of nearby stations. Under the strict rule
+those landings are rejected by the STRICT side (`f_B < 0` by 1.85e-12,
+four orders above ulp noise), and structurally: `fl(sqrt(fl(x² + z²))) ≥
+fl(sqrt(fl(z²))) = |z|` by monotone rounding, so the computed `f_A` is
+never below the computed `f_B` anywhere in the slot and `{f_A ≤ 0 ∧ f_B >
+0}` is empty NUMERICALLY there, not only over the reals. Neither arm admits
+`f_A = f_B = 0` (the strict side rejects it), which is what keeps the exact
+tangency out as well. The exactness flag is set only for a NON-DEGENERATE
+operand (a zero radius or extent makes `closure(A)` lower-dimensional, the
+composite renders nothing, and the closure argument below needs interior
+points near the landing). Which arm applies
 is decided PER LANDING by the exactness of the operand whose surface was
 reached, not by what the composite contains: `SDF − box` landing on the box
 face takes the boundary arm and is exact. When the reached operand
@@ -707,9 +727,10 @@ follows whichever operand is active, and a descent that exits at its cap
 overshoots by more than ε), so `|p − q| − d` is a MEASURED gap, `gap_max`,
 exactly as §5.2 treats the SDF bracket — never an analytic bound. Hence
 EVERY landing answers within `[d, d + gap_max]` — an exact-operand landing
-with `gap = 0` when the arm fires and `ε` when a `+1 ulp` miss sends it to
-the probe, a bound-operand landing with the probe's ε the first term of the
-gap — and the world-space slack is `σ_max` times it (ε = 2.52e-4 on
+with `gap = 0` when the arm fires and one probe step (ε on the fixtures)
+when a `+1 ulp` miss sends it to the probe, a bound-operand landing with
+the probe's ε the first term of the gap — and the world-space slack is
+`σ_max` times it (ε = 2.52e-4 on
 `column2`'s 5.0498 local diagonal, σ = 1 — stated in §8 and §10; the
 composite's 5e-5 is fixed while an SDF operand's `m_epsFrac` is
 author-settable, so a composite may probe finer than its operand's own
@@ -852,7 +873,17 @@ one item whose absence is a parse failure rather than a stale comment),
 `kFnInterior = 58` (the next free id; the `kFnProximity` assert's "58–59 free"
 text is updated), one more named `case` in `CallFunc` (the pin moves once
 more, disclosed), `SignalKey.fn = 4` / `eInterior = 4`, `SurfaceSignalInfo::Interior(r)`
-beside `Proximity(r)` sharing the L1 helper; `ParseCall`'s `isSignalFn` gains
+beside `Proximity(r)` sharing the L1 helper — IN
+`src/Library/Interfaces/SurfaceSignalProximity.h`, the header that exists
+to host the cross-object body outside the provider's include cycle (a new
+header would trip the five-build-project rule), whose every enumerating
+sentence is rewritten: its title ("the CROSS-OBJECT half" becomes the
+cross-object PAIR), "its three siblings", "THE SECOND POLICY BODY … not a
+fourth branch", and "WHO MUST INCLUDE IT: any translation unit that CALLS
+`Proximity`" (or `Interior`); and `src/Library/Utilities/PathVertexEval.h`'s
+declined-contract comment ("the cross-object proximity channel", "one
+widening for all four") gains `interior`, since §10 commits it to the same
+gap; `ParseCall`'s `isSignalFn` gains
 the id AND its unit diagnostic becomes a three-way (fraction / world length for
 `proximity` / world length for `interior`) instead of a binary ternary —
 and its other two consumers are re-read as the code demands: the
@@ -1152,17 +1183,21 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   `f ≤ 0`, which contains the phantom touching set) with `gap_max` recorded
   and the grid spacing stated, and for a composite of EXACT operands
   `reported == reference` to 1e-12 at the radial station of a
-  cylinder-minus-box (the boundary arm fired: `0.26 − 0.01 = 0.25` exactly
-  by Sterbenz and `sqrt(x·x) = x`, so `f_A` is a true 0 — the station does
-  NOT exercise rounding) and `reference ≤ reported ≤ reference + ε` at an
-  OBLIQUE station (a torus operand, or a cylinder station off its axis)
-  whose landing residual is genuinely nonzero, with the test recording
-  WHICH arm fired there and asserting the answer never falls below the
-  reference (the invariant the τ tolerance would have broken); `reported −
+  cylinder-minus-box (the boundary arm fired: `f_A = 0.26 ⊖ 0.25` is exact
+  by Sterbenz, so `0.26 ⊖ f_A = 0.25` exactly and `sqrt(x·x) = x` makes
+  `f_A` a true 0 at the landing — the station does NOT exercise rounding)
+  and `reference ≤ reported ≤ reference + gap_max` at an OBLIQUE station
+  (a torus operand, or a cylinder station off its axis) whose landing
+  residual is genuinely nonzero, the fixture chosen so the reached operand
+  carries the composite's nearest point (then `gap_max` is one probe step,
+  ε, when the arm misses), with the test recording WHICH arm fired there
+  and asserting the answer never falls below the reference (the invariant
+  a tolerance would have broken); `reported −
   reference ≤ gap_max` with `gap_max` recorded where a bound operand is
-  reached; the τ-phantom station itself — cylinder-minus-tangent-slab
-  queried from local `(1e-6, ·, 0.26)` — REFUSES rather than reporting
-  1.00 cm; a subtracted PLANE
+  reached; the phantom stations themselves — cylinder-minus-tangent-slab
+  queried from local `(x, ·, 0.26)` for a sweep of `x ∈ [1e-7, 3e-6]`, the
+  band where a tolerant arm admitted a quarter of landings — all REFUSE
+  rather than reporting 1.00 cm; a subtracted PLANE
   operand makes the composite refuse (a sheet refuses the signed query
   outright — not merely lacks the flag, which a bound operand also lacks
   without forcing a refusal); a
@@ -1259,7 +1294,8 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   corrected string and the bare-call message's appended clause the two
   pinned exceptions, each asserted by a new check naming its new text;
   `AgentAddWearTest` extended; the MCP and chat tool counts unchanged
-  (43 / 38).
+  (43 / 38); `AgentSkillsTest` at 33 snippets, the new `interior` fence
+  deriving with zero diagnostics and rendering.
 
 Each phase runs the implementation-review-loop to zero P1 before merge.
 
