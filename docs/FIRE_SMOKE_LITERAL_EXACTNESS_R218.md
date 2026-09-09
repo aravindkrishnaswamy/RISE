@@ -1,0 +1,153 @@
+# r218 — literal-exactness census and preserved run lineage
+
+Status: audit complete; the additional closed-domain count correction is a
+qualification candidate, not promoted production code. The sealed r217
+tier-ten onset continues unchanged to 3.5 s or its first 15 m/s crossing.
+No prefix is a survival verdict. The baseline crossed 15 m/s at 2.131 s and
+60 m/s at 2.138 s; the final report must include the accepted bracket around
+2.131 s, peak/final velocity and any crossing bundle.
+
+## Exactness pattern and census
+
+The audited pattern is a rounded literal or conversion entering a zero-radius
+constructor while the derivation assumes a different exact rational/integer.
+This is not a search for all decimal spellings: authoritative represented
+inputs and explicitly enclosed constants have different contracts.
+
+| Surface | Disposition |
+|---|---|
+| Compensated EOS direct/shared fifth primitives | r217 repairs both rounded `0.2f` operands with certified division by exact 5. Third primitives already divide by exact 3; halves/quarters are exact. |
+| EOS logarithm | Odd series denominators and exponent are exact small integers. The ln(2) triple has an explicit 2^-54 mathematical remainder, independently checked by the rational-series oracle. |
+| Thermo tables and affine data | Values originate as authoritative binary64 records, then split into binary32 limbs with tail-spacing bounds. Their ideal decimal spellings are not assumed exact. |
+| Lattice midpoints and policy constants | Adjacent-float midpoints use exact halves. 0.125, 0.0625, 1.0625 and 0.9375 are dyadic. |
+| Target cp, enthalpy, tangent and assembly | Consume bounded thermo coefficients and represented input/source words. The shared corrected enthalpy helper covers downstream targets. |
+| Closed-domain target normalization | **Additional defect:** `float(p.cells)` can round an integer count; both the mean and inherited-radius division used that rounded denominator. |
+| Raw-float physical-flux thermo | Rounded 1/3, 0.2, ln(2) and gas constant belong to the r198 packing/uncancelled arithmetic-enclosure contract, not a zero-bound EOSDD operand. No change warranted by this pattern. |
+| Host interval walkers | Exact integer divisions use outward operations. Canonical binary64 constants denote represented record values. `CertifiedRecord(2.0/3.0)` includes conversion error. |
+| CPU owner and generated mirrors | Explicit /3 and /5 retained; generated declarations and source manifests checked, not hand-maintained alternate formulas. |
+| Payload digest v2 | Chunk size 4096, fan-in 16, offsets, quotient/remainder and serialization are integer operations. No floating reciprocal/count enters the root. |
+
+The sweep covers callers and one downstream hop: EOS endpoint tables,
+direct/shared mixture evaluation, inversion, target cp/tangent/assembly,
+closed-domain normalization and digest-root serialization.
+
+## Count finding: two distinct local obligations
+
+For a constant-one target and `n = 257^3 = 16,974,593`, binary32 conversion
+produces 16,974,592. The nominal mean acquires a 5.8911578e-8 bias before
+subtraction. This conversion error is absent from the old denominator's
+enclosure. Request shape checks permit counts above 2^24; the conversion
+cannot be justified by a general exact-count precondition.
+
+The radius obligation has its own exact witness. With `n = 16,777,219` and
+radius sum 1, the old upward-rounded quotient is
+5.960463411724959e-8, below exact `1/n` (approximately
+5.9604634117251494e-8). The decisive test uses the binary32 significand and
+exponent and an integer product, not a floating-point comparison tolerance.
+This proves a scalar upper-endpoint defect; later outward additions may
+mask it, so this alone is not evidence of a final publication escape.
+
+The correction constructs every uint32 as two exact 16-bit limbs and applies
+`two_sum`; UINT32_MAX becomes `{2^32,-1}` with zero input radius. Mean and
+radius division consume this same exact count. The old outward operation is
+retained when the count is exactly representable, enabling four-word parity
+checks. No empirical allowance, new tolerance or enlarged envelope is used.
+
+The active tier-ten run has 976,272 cells and pressure-open boundaries; its
+count is exact and its target path returns before closed-domain normalization.
+The candidate therefore does not require interrupting that sealed run.
+
+Pre-registered scalar qualification covers exact count reconstruction,
+independent mean and inherited-radius/assembly enclosures, signed and zero
+numerators, zero/nonzero radii, and exact-count four-word parity. Separate
+rounded-mean and rounded-radius mutants must fail. Zero count and unknown
+mutation modes refuse before dispatch. No grid-sized fixture or candidate
+publication authority is fabricated by this scalar test.
+
+Candidate scalar execution passed: 14 counts times six signed/radius
+scenarios, under the production shader and two separate mutants. At the mean
+witness the mutant residual is enclosed between 5.891157796311097e-8 and
+5.8911577963110997e-8, while its claimed mean bound is only
+3.0678566410963912e-25 (all dimensionless). The corrected mean residual is
+zero. At the radius witness, the corrected scalar upper endpoint is
+5.9604644775390625e-8 cell^-1; the isolated old-radius mutant gives
+5.9604634117249589e-8 cell^-1 and fails the exact reciprocal obligation.
+Its final assembled enclosure happens to remain valid after subsequent
+outward addition, matching the distinction above.
+
+The candidate's local source patch SHA is
+`9c3c3fa2da6efc707bf579df4fcbf1c010a4dc7e649a6f94a1f072d993aff023`.
+Its scalar transcript SHA is
+`c813ded3f30e1834bfd3d4bf46a1ea01c3740e9c6dc181832a6e748360dc5d35`.
+The scoped build passes without warnings. The full CPU FireSequence suite
+and r190-reference resident owner/target gate also pass, with transcript
+SHAs `dd2c219427bef26edae5f9062d977d0b563a6a3c87e8885abdaf654ebaedeedd`
+and `be70704385d33d6d322fcf2d2770f0359872e16fbf6112a726f49ce58e17eb41`.
+Two fresh independent reviews (numeric derivation and test/provenance)
+report zero P1/P2 on the current patch. Full clean-build/Opto qualification
+and a post-strip source commit remain prerequisites for promotion; these
+candidate receipts do not identify a new accepted production build.
+
+## CPU formal-contract status, not a substituted verdict
+
+All 19 formal quantities remain unqualified. The required independent terms
+are `Eh,P + E_dt,P + Eh,O + E_dt,O + B32`, on the r112 exact-integral cubic
+B-spline observables at width 0.04894898570785762 m. Historical old-remap
+terms cannot qualify the adopted compatible owner.
+
+The shared native oracle has /8, /16 and /32 outputs at an exact common end
+time. Its energy filtered differences are 0.0019403897741448897 and
+0.0010119867395659468 J/m³; velocity RMS differences are
+1.0416656655103438e-5 and 5.6465786132446363e-6 m/s. These are oracle-only
+dyadic diagnostics, not production–oracle distances or additive tolerances.
+Filtered trace channels 6 and 7 do not contract; their existing narrow
+historical floor certificate cannot simply be reused for these new pairs.
+
+The frozen-child fp64 owner diagnostic still refuses R1 cell 44748: a
+fuel-wide [300,5000] K re-inversion selects 300 K while the case-certified
+[300,2300] K candidate supplies 300.70410484148613 K. Threading the existing
+authenticated case/EOS authority into the target producer is the next CPU
+repair; overriding T or widening its equality check is not. Even after that,
+strict-fp64 same-scheme source issuance and independent spatial/temporal/B32
+qualification remain separate prerequisites.
+
+The full oracle-only difference tables are local at
+`worktrees/r215-native-composition/rendered/fire_production_calibration/r215_shared_native/`:
+`oracle8_vs16.v4.csv`, SHA
+`683729228b786c2ddacf8efd50d803a7cfb9d5ccd002fe572ac9e57d3d7ff148`, and
+`oracle16_vs32.v4.csv`, SHA
+`e6ae28574feb47f0d8ceacbfe160c4037de69dc06df4ecba757572fde2c5c344`.
+The retained R1 authority diagnostic SHA is
+`eec4b5270cdfc203cbf7c80314e918346f865b50668219934350e1b257aeff05`.
+The -184 versus -23.40 face-rate remains a concentration diagnostic outside
+the filtered contract's pointwise scope (r112/r172).
+
+## Existing promoted cost, kept separate from the run
+
+Post-strip main already carries r215 target-basis reuse in `051a53cbcf96`.
+Its matched tier-eight hot mean device/wall cost is
+5.041421881 / 6.954142799 s; p95 is 5.456842495 / 7.485916334 s. This is
+the existing promotion, not a newly measured r218 improvement. The remaining
+1.912721 s mean wall-minus-device difference is unattributed, not a measured
+hashing cost. The cost receipt SHA is
+`b4920eebe7319db38ec32746e092d430319a4f8af36ddabdb4cbafcc9334ad92`.
+Neither the overnight nor design-budget target is met; fixed-k remains
+unqualified. The frozen onset executable has not been replaced with this
+cost branch or the new count candidate.
+
+## Evidence and branch boundary
+
+The owner's 2026-09-08 evidence policy is binding: commit source, tests,
+documentation, small summaries and SHA-256 records. Keep payloads,
+checkpoints, executables, archives (including split archives), large logs
+and frames local under ignored `rendered/`. Rebuild from source commit,
+flags and input SHAs; do not describe binary extraction as replayability.
+Historical payload seals remain unchanged.
+
+Eleven fully merged branch refs were removed after proving ancestry in the
+existing pre-strip backup. Their files were not deleted. Twelve live-branch
+mapped-fork candidates preserve all 45 non-artifact trees and raw commit
+messages; their application is awaiting direct confirmation after the safety
+reviewer rejected the attached authorization. The original live refs and
+running executable remain unchanged. A mapped-fork rebase is deliberately
+not a merge of current main's cost changes into the sealed run lineage.
