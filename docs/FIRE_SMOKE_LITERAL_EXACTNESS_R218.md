@@ -144,10 +144,39 @@ and frames local under ignored `rendered/`. Rebuild from source commit,
 flags and input SHAs; do not describe binary extraction as replayability.
 Historical payload seals remain unchanged.
 
-Eleven fully merged branch refs were removed after proving ancestry in the
-existing pre-strip backup. Their files were not deleted. Twelve live-branch
-mapped-fork candidates preserve all 45 non-artifact trees and raw commit
-messages; their application is awaiting direct confirmation after the safety
-reviewer rejected the attached authorization. The original live refs and
-running executable remain unchanged. A mapped-fork rebase is deliberately
+Eleven fully merged branch refs had already been removed after proving
+ancestry in the existing pre-strip backup. After explicit owner confirmation,
+their recorded tips were recovered into named
+`refs/backup/<full-branch-name>-pre-strip` refs. The same named backups were
+created for eleven inactive live branches before rewriting any of them.
+All local files remain in place; backup refs retain the old objects.
+
+The eleven inactive branches are now re-anchored at their mapped post-strip
+forks. All 42 suffix commits preserve their exact old trees minus forbidden
+artifact paths only, including unchanged modes and object IDs for every
+retained leaf. Each resulting branch passes the pre-push size guard; no push
+was performed. The nine participating worktree indexes changed only by
+forbidden-path removal. Main's Xcode edit and the dirty target-assembly
+source patch retain their pre-operation SHA-256 identities.
+
+The owner explicitly excludes `codex/r217-clause-diagnostic` and
+`worktrees/r203-producers` until the onset completes and its evidence is
+sealed. That branch's tip, index and frozen executable remain unchanged;
+it was excluded even from ref-locking verification transactions. Rebase
+it last, with its own prior named backup. A mapped-fork rebase is deliberately
 not a merge of current main's cost changes into the sealed run lineage.
+
+The independent cleanup review closed three findings: active-ref locking,
+uncertain/interrupted ref-transaction recovery, and index-directory durability
+before terminal journal publication. Four isolated synthetic cases pass:
+success, interruption after the child commits refs, interruption after the
+first index installation, and an index durability failure. Failure cases
+restore original refs and index bytes; no payload, staged/unstaged source,
+or untracked file changes. Fresh final review reports zero P1/P2.
+
+The branch/commit map and verification receipt are in
+`docs/evidence/fire/r218_inactive_reanchor.v2.json`; recovered deleted tips
+are in `docs/evidence/fire/r218_branch_backups.v1.json`. Full scripts and
+recovery journals stay local with their SHA-256 identities in the receipt.
+Literal-candidate promotion still requires clean-build/Opto qualification;
+this metadata cleanup is not a numerical promotion or an onset verdict.

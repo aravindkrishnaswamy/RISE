@@ -1,0 +1,20 @@
+{
+  "schema": "rise.fire.pre-strip-branch-backup.v1",
+  "active_branch_excluded": "codex/r217-clause-diagnostic",
+  "deleted_ref_recovery": "Already deleted before this authorization; tips recovered from preserved worktree HEADs and checkout reflogs, all reachable from refs/backup/fire-smoke-design-pre-strip. Named backup creation does not rewrite or recreate branch heads.",
+  "merged_deleted_tips": {
+    "codex/r183-fct": "196e046373c8b253ded639527051ca97bbe98ace",
+    "codex/r201-repair": "b2ce94e43070396eb89c9249a0c7efc7b43c8e2e",
+    "codex/r202-owner-cost": "8ffc6ec624aae4f0e03a155a7ce168d7fa4f7bae",
+    "codex/r203-producers": "c22e301d8482a8ceaff8ab5386f88c49803dcc7e",
+    "codex/r204-digest": "d6e766579baf6fe502c071fbd2ba35b190899fcf",
+    "codex/r205-owner-cost": "a660cbc583c400f7e04b645ca533b1d76f60577e",
+    "codex/r206-eos": "5d9ae2a52426fa3c89e3b619c7cf6ced71c8638c",
+    "codex/r207-verdict": "17d31a8d6f57199f2488cff5c01734de36c07e4b",
+    "codex/r210-certificate": "04e32fedfb3c508f2cb8473aa2b30451f6485062",
+    "codex/r211-resident-migration": "9f1b80fb64a196b81b1f067833f77f4d7325e4b7",
+    "codex/r213-composition": "6f444137733ac01c3236d83a665aeef961550fe6"
+  },
+  "backup_pattern": "refs/backup/<full-branch-name>-pre-strip",
+  "payload_deletion": false
+}
