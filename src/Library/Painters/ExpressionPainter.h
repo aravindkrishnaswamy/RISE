@@ -201,13 +201,20 @@ namespace RISE
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
 			//! SIGNAL DEMAND, diagnostic-only (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 			//! §14 item 11).  Active iff this painter's compiled body calls
-			//! `occlusion()` / `convexity()` / `thickness()` anywhere.  Unlike
-			//! m_curvatureDemand above, this does NOT gate any per-hit work --
-			//! see SurfaceSignalDemand's own doc comment (ISurfaceSignalProvider.h)
-			//! for why the provider install stays unconditional.  Its only job is
-			//! to let a BDPT/VCM/MLT rasterizer ask "is anyone using a signal
-			//! this integrator family evaluates as neutral in parts of its
-			//! transport" at render start, for the one-time containment warning.
+			//! `occlusion()` / `convexity()` / `thickness()` OR `proximity()`
+			//! anywhere -- it is built from `prog.UsesSurfaceSignals()`, which is
+			//! `!m_signalCalls.empty()`, and `m_signalCalls` carries all four
+			//! (ExpressionEval.h).  Unlike m_curvatureDemand above, this does NOT
+			//! gate any per-hit work -- see SurfaceSignalDemand's own doc comment
+			//! (ISurfaceSignalProvider.h) for why the provider install stays
+			//! unconditional.  Its only job is to let a BDPT/VCM/MLT rasterizer
+			//! ask "is anyone using a signal this integrator family evaluates as
+			//! neutral in parts of its transport" at render start, for the
+			//! one-time containment warning -- counting `proximity()` here is
+			//! what makes that warning's "all five"
+			//! (curv/occlusion/thickness/convexity/proximity,
+			//! WarnIfNonPTRenderHasLiveSignalConsumer) true for a painter that
+			//! calls only `proximity()`.
 			SurfaceSignalDemand::Registration m_signalDemand;
 
 			//! COST gate, not a diagnostic one -- see ProximityDemand's doc
@@ -303,10 +310,16 @@ namespace RISE
 			//! feeding a roughness slot.
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
 			//! See ExpressionPainter::m_signalDemand -- same diagnostic-only
-			//! RAII gate on the physical-scalar pipe.  `scalar_painter {
-			//! expression "occlusion(0.1)" }` feeding a dirt/wear slot is at
+			//! RAII gate on the physical-scalar pipe, active for the same
+			//! four builtins (`occlusion()` / `thickness()` / `convexity()` /
+			//! `proximity()`, via `prog.UsesSurfaceSignals()`).  `scalar_painter
+			//! { expression "occlusion(0.1)" }` feeding a dirt/wear slot is at
 			//! least as likely an authoring shape as the colour pipe's, so
-			//! both must register or the containment diagnostic would miss it.
+			//! both must register or the containment diagnostic would miss it
+			//! -- `proximity()` on this pipe is what a scalar wear/grime slot
+			//! (`scalar_painter { expression "1-proximity(0.002)" }`) uses in
+			//! practice, and is part of what makes the "all five" in
+			//! WarnIfNonPTRenderHasLiveSignalConsumer's warning true.
 			SurfaceSignalDemand::Registration m_signalDemand;
 			//! See ExpressionPainter::m_proximityDemand -- the same COST
 			//! gate on the physical-scalar pipe.  Both pipes must register:
