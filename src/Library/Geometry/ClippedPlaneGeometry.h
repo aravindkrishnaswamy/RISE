@@ -52,6 +52,25 @@ namespace RISE
 			//! which could be SMALLER than the true one and so over-read
 			//! contact: the one direction the signal must never fail in.
 			bool	bCornersCoplanar;
+
+			//! AND ARE THEY CONVEX?  Decided in the same place, and needed
+			//! for the same reason coplanarity is: what this class TRACES
+			//! is the bilinear patch through the four corners, and only for
+			//! a coplanar CONVEX quad is that patch's image the polygon the
+			//! corners outline.  For a coplanar DART (one corner inside the
+			//! triangle of the other three) the image is a proper subset of
+			//! the polygon, so the point-to-polygon form UNDER-reports over
+			//! the reflex lobe -- contact painted where there is none, the
+			//! one direction this signal must never fail in -- and
+			//! over-reports outside.  A dart therefore REFUSES, exactly as
+			//! a non-coplanar quad does.  Meaningful only when
+			//! `bCornersCoplanar` (the test needs the plane basis).
+			//!
+			//! Every `rect_light` and every hand-authored panel is a convex
+			//! planar quad, so nothing in the acceptance set is affected;
+			//! this closes a case a scene CAN author, not a hypothetical.
+			bool	bCornersConvex;
+
 			//! Unit normal of that plane, and a unit in-plane basis for the
 			//! point-in-polygon test.  Meaningful only when
 			//! `bCornersCoplanar`.
@@ -81,12 +100,13 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
-			//! IGeometry::DistanceToSurface -- EXACT on a PLANAR quad, REFUSES otherwise -- the
-			//! four corners are arbitrary, so this geometry is a bilinear patch
-			//! whose point-to-surface distance has no closed form unless the
-			//! corners happen to be coplanar (which every rect_light's are).
-			//! Coplanarity is decided ONCE, in RegenerateData
-			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			//! IGeometry::DistanceToSurface -- EXACT on a PLANAR **CONVEX** quad,
+			//! REFUSES otherwise -- the four corners are arbitrary, so this
+			//! geometry is a bilinear patch whose point-to-surface distance has
+			//! no closed form unless the corners are both coplanar AND convex
+			//! (which every rect_light's are).  Both are decided ONCE, in
+			//! RegenerateData (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2); see
+			//! `bCornersConvex` for why coplanarity alone is not enough.
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
 			//! IGeometry::SelfHitRootFloor -- RayBilinearPatchIntersection's

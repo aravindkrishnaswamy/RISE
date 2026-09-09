@@ -536,6 +536,7 @@ void ClippedPlaneGeometry::RegenerateData( )
 	// edge-from-v0 length, so `tol` is "one part in 1e-9 of the quad's own
 	// size" -- the same relative discipline Object's sigma detection uses.
 	bCornersCoplanar = false;
+	bCornersConvex   = false;
 	vPlaneNormal = Vector3( 0, 0, 1 );
 	vPlaneU      = Vector3( 1, 0, 0 );
 	vPlaneV      = Vector3( 0, 1, 0 );
@@ -560,6 +561,58 @@ void ClippedPlaneGeometry::RegenerateData( )
 				// Completed by cross product rather than by orthogonalising
 				// e3, so the basis is orthonormal even for a sheared quad.
 				vPlaneV = Vector3Ops::Cross( nHat, vPlaneU );
+
+				// AND IS IT CONVEX?  Coplanarity alone is NOT enough for the
+				// point-to-quad closed form to be exact, because the surface
+				// this class traces is the BILINEAR PATCH through the four
+				// corners, not the polygon they outline.  For a coplanar
+				// CONVEX quad the two coincide -- the bilinear map is a
+				// bijection from [0,1]^2 onto the quad -- and the closed form
+				// is exact.  For a coplanar NON-convex one (a dart: one
+				// corner inside the triangle of the other three) they do not:
+				// the bilinear image is a proper subset of the polygon, so a
+				// point over the polygon's reflex lobe is reported at |h|
+				// while the real surface is further away.  That is an
+				// UNDER-report -- the forbidden direction, contact painted
+				// where there is none -- and the outside branch is wrong in
+				// the other direction for the same reason.  So a dart
+				// REFUSES, exactly as a non-coplanar quad does.
+				//
+				// The test is the standard one: the four cross products of
+				// consecutive edges, taken in the plane's own basis, must all
+				// share a sign.  Scale-relative against the largest of them,
+				// so a collinear triple (a degenerate "triangle" quad, whose
+				// bilinear image is again not the polygon) refuses too rather
+				// than passing on a sign read out of rounding noise.
+				Scalar cx[4], cy[4];
+				for( int i = 0; i < 4; ++i ) {
+					const Vector3 dd = Vector3Ops::mkVector3( vP[i], vP[0] );
+					cx[i] = Vector3Ops::Dot( dd, vPlaneU );
+					cy[i] = Vector3Ops::Dot( dd, vPlaneV );
+				}
+				Scalar cr[4];
+				Scalar amax = Scalar( 0 );
+				for( int i = 0; i < 4; ++i ) {
+					const int j = ( i + 1 ) & 3;
+					const int k = ( i + 2 ) & 3;
+					const Scalar ax = cx[j] - cx[i], ay = cy[j] - cy[i];
+					const Scalar bx = cx[k] - cx[j], by = cy[k] - cy[j];
+					cr[i] = ax * by - ay * bx;
+					const Scalar m = std::fabs( cr[i] );
+					if( m > amax ) { amax = m; }
+				}
+				if( amax > Scalar( 0 ) ) {
+					const Scalar crTol = Scalar( 1e-9 ) * amax;
+					bool convex = true;
+					for( int i = 0; i < 4; ++i ) {
+						if( std::fabs( cr[i] ) <= crTol
+						 || ( cr[i] > Scalar( 0 ) ) != ( cr[0] > Scalar( 0 ) ) ) {
+							convex = false;
+							break;
+						}
+					}
+					bCornersConvex = convex;
+				}
 			}
 		}
 	}
@@ -569,7 +622,12 @@ bool ClippedPlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scal
 {
 	(void)maxDistObject;	// no early-out worth having: the whole form is O(1)
 
-	if( !bCornersCoplanar ) {
+	// EXACT ON A COPLANAR **CONVEX** QUAD, REFUSES OTHERWISE.  Both
+	// conditions are decided once in RegenerateData; see the convexity
+	// block there for why coplanarity alone is not enough (the traced
+	// surface is the bilinear patch, and only for a convex planar quad is
+	// its image the polygon below).
+	if( !bCornersCoplanar || !bCornersConvex ) {
 		return false;
 	}
 
@@ -588,11 +646,11 @@ bool ClippedPlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scal
 	const Scalar px = Vector3Ops::Dot( rel, vPlaneU );
 	const Scalar py = Vector3Ops::Dot( rel, vPlaneV );
 
-	// POINT IN POLYGON by ray crossing, in the plane.  A crossing test
-	// rather than a convexity test on purpose: a planar quad may be
-	// NON-CONVEX (a dart), and a half-plane test would then report points
-	// outside the quad as inside and return `|h|` -- an UNDER-report, the
-	// forbidden direction.
+	// POINT IN POLYGON by ray crossing, in the plane.  With non-convex
+	// quads now refused above, a four half-plane test would agree with this
+	// everywhere; the crossing test is kept because it needs no winding
+	// convention and cannot be silently invalidated by a future corner
+	// reordering.
 	bool inside = false;
 	for( int i = 0, j = 3; i < 4; j = i++ ) {
 		if( ( cy[i] > py ) != ( cy[j] > py ) ) {
