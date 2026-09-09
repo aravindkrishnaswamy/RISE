@@ -347,7 +347,11 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   `scalar_painter` bridge to GGX roughness, the same field raw into `relief_modifier`, and
   two more bridges into `ior`/`extinction`, so the field that says "this point is paint"
   also stops it being a conductor; `occlusion()`, `-N.y`, `curv` and an object-space part
-  mask decide where the grime, rust, chips and machined faces go. A tool tray demonstrates
+  mask decide where the grime, rust, chips and machined faces go. Since 2026-09-08 the
+  bench TOP also carries `proximity(0.02)` -- the cross-object signal -- so grime collects
+  where the vise's flange actually rests on it; the header used to say that band was "out
+  of reach ... `occlusion()` is self-occlusion only", and that retraction is written into
+  it. A tool tray demonstrates
   `stochastic_tile_painter` de-tiling a `checker_painter` source -- no tileable photo/scan
   asset exists in-repo, so the scene substitutes a procedural checker source to exercise
   the de-tiling mechanism; `stochastic_tile_painter`'s intended use is a small tiling
@@ -386,7 +390,15 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   tilted off-board pith axis with an asymmetric early/late sawtooth and a per-ring
   `cellhash` season, noise only warps them, a single hand-placed knot deflects them,
   and `relief_modifier` carves the same field the `ramp_painter` colours. The plank is
-  an `sdf_geometry` so `occlusion()` finds real dirt in a subtracted end check.
+  an `sdf_geometry` so `occlusion()` finds real dirt in a subtracted end check. Since
+  2026-09-08 it is also the flagship for the CROSS-OBJECT signal: `proximity(0.002)` --
+  a 2 mm world radius, unlike `occlusion`'s per-object fraction -- puts contact grime
+  where the nail actually touches the board. Which is not along the shank: the head disc
+  is thicker than it is, so the nail rests on its head rim and its buried tip and lifts in
+  between, and the header records the five gaps (0.146 mm at the rim, 3.51 / 1.31 / 0.00 mm
+  along the shank, 0.55 mm of burial at the tip) measured with the signal itself. That fade
+  is what no ambient occlusion could draw, which is why cross-object AO was prototyped
+  twice and declined twice before this.
 - `VCM/`: vertex-connection-and-merging showpieces.
   `vcm_sdf_luminaire_jellyfish.RISEscene` is held as a transport torture test rather
   than a picture: emissive SDF geometry inside a dielectric bell inside a scattering

@@ -1,6 +1,9 @@
 # Cross-Object Proximity — a contact signal for grime, dust and wear
 
-**Status:** ACCEPTED FOR PHASE 1, 2026-09-08, after three adversarial rounds
+**Status:** PHASE 1 SHIPPED — wave 1 (the engine) and wave 2 (the two
+showcases, every Phase-1 gate measured) both landed 2026-09-08; §8.1 and §8.2
+carry what each wave built and where the code and the measurements corrected
+this document.  Accepted after three adversarial rounds
 (round 3: the nail rests on its head rim and tip, not its shank — the flagship
 gate is re-derived from where contact actually is; the DynR remap tail; the AABB
 cache as an immutable snapshot; degenerate transforms refuse; clipped planes are
@@ -595,6 +598,9 @@ model for a body of cross-section radius `ρ` resting on a plane is
 - the draft preview (`InteractivePelRasterizer`) on A: cost measured and stated;
 - L1 hit rate for `proximity` on plank ≥ 80 % (temporary counter, removed).
 
+**Every bullet above was measured in wave 2; the results, and where this gate
+was wrong, are in §8.2.**
+
 **Phase 2 — mesh closest point on the BVH (indexed meshes, displaced); the TLAS
 point query if E's scan measures above budget.** Gate: closest point identical to
 brute force over every triangle on ≥ 10⁵ random points (same point–triangle
@@ -626,7 +632,10 @@ object directly with an ordinary-mode SDF as its teeth), and
 `ProximityInvalidationTest` 20 → 25 (the demand-gate section (c), and two
 checks with teeth on what the moved pose's rendered value actually IS).
 Scenes A and B, their probe protocols and EVERY cost measurement §8's Phase-1
-gate names are wave 2 and are NOT done. Six places where building it
+gate names are wave 2, and are recorded in §8.2 below — where one station
+gate FAILS (the plank's tip, 0.882 against ≥ 0.9) because §8's local model for
+it was optimistic, and two of §8's own claims about the flagship's contact
+geometry turn out to be wrong. Six places where building it
 corrected this document:
 
 - **`r / σ_min` is sound but not separately observable.** §5.2 reasons that
@@ -700,6 +709,341 @@ Measured, for the record: `gap_max` on scene C's composed 1-Lipschitz SDF is
 asserted at 0.05; the exact-field SDF over-reports by **0**; the ellipsoid's
 bound is 4 against a true 2, exactly its semi-axis ratio; TLS per worker is
 **1824 bytes** against the 2048 ceiling, exactly as §5.1 predicted.
+
+### 8.2 Wave 2 — the two showcases, the measured gates, and what the gate got wrong
+
+Wave 2 composed the signal into scenes A and B, measured every Phase-1 gate
+§8 names, and updated the adoption surfaces. **Two instruments** are used
+throughout and both are reported, because on these two cameras they do not
+agree and the reason is not a bug:
+
+- **The query itself** — a throwaway harness linked against `librise.a` that
+  loads the real scene, calls `PrepareForRendering()`, and asks
+  `IObjectManager::NearestOtherSurface( p, receiver, r, d )` from points on the
+  receiver's top plane. Exact, noise-free, no pixel footprint. Deleted after
+  the measurement; the method is recorded in each scene's header so it is
+  reproducible.
+- **The §8.1 probe render** — albedo = the raw signal, divided by a
+  `clamp(N.y,0,1)` white control rendered identically, relief modifiers
+  stripped, EXR in `Rec709RGB_Linear`, every other object a black Lambertian.
+
+**The probe render cannot resolve either gate at the scene's own camera, and
+the numbers say by how much.** On `plank_closeup` the seam that must read
+≥ 0.9 is a patch 1.7 × 1.6 mm against a 0.40 mm pixel, and most of it lies
+inside the nail's own silhouette. On `weathered_workbench` the camera sits
+**11° above the bench top**, so **one shipped pixel spans 31.4 mm along the
+view direction** — wider than the entire 20 mm ramp the gate measures. Both
+were therefore re-rendered at 4× linear resolution (2560 × 1920) to show the
+rendered value converging on the query's as the footprint shrinks; at 4× the
+bench pixel is still 7.9 mm along the view. **The gates below are adjudicated
+on the query**, with the render given as corroboration. Also worth recording:
+the first probe pass ran at the protocol's 16 spp and produced ratios **above
+1** at silhouette pixels — impossible for a `[0,1]` signal. The cause is that
+each render seeds its RNG from the wall clock, so signal and control carry
+independent noise, and the ratio of two noisy small numbers is unstable where
+the control is dark. At 512 spp every ratio lands in range. **A 16-spp
+divide-by-control probe is noise-limited exactly where a contact seam lives.**
+
+#### A. `plank_closeup`, `proximity(0.002)`
+
+First, **where the nail actually touches**, measured with the query (0.5 mm
+grid, refined to 0.1 mm) and now recorded in the scene header. §1's model is
+confirmed and sharpened in two places:
+
+| | measured |
+|---|---|
+| head rim, closest approach | **0.146 mm at (x, z) = (147.4, −16.7) mm — it does NOT touch.** The rim is a 7.5 mm disc tilted ~2° off vertical, so the tangency is shallow and the near-contact patch is broad: `d ≤ 0.20 mm` over 1.7 × 1.6 mm, `d ≤ 0.40 mm` over 4.5 × 4.2 mm |
+| shank underside, head end (x = 152.5 mm) | 3.506 mm |
+| shank underside (x = 167.5 mm) | 2.186 mm |
+| shank underside, mid-way (x = 181.0 mm) | 1.307 mm |
+| shank underside (x = 194.0 mm) | 0.445 mm |
+| shank reaches the board (x = 201.0 mm) | 0.000 mm |
+| tip | **buried, and a FURROW not a spot**: the last ~9.5 mm of shank lies below y = 0 (footprint x 200.8…210.3 mm, z −45.2…−40.5 mm, ~2.2 mm wide), deepest between 0.50 and 0.60 mm |
+
+§1 predicted +3.5 / ≈+1.5 / −0.6 mm and "a ring under the head rim, a spot at
+the tip". The gaps are right. **The two shape claims are not**: the head rim
+floats 0.146 mm rather than touching, and the tip's contact is a 9.5 mm furrow,
+not a spot. The scene was NOT re-pitched.
+
+Stations, `proximity(0.002)`, pixel coordinates in the shipped 640 × 480 frame:
+
+| # | station | world (mm) | px | query | render 640 (16 spp) | render 2560 (256 spp) | gate | verdict |
+|---|---|---|---|---|---|---|---|---|
+| 1 | plank 0.4 mm outside the head-rim touchdown | (147.6, 0, −16.3) | (321, 212) | **0.918** | 0.82 | 0.94 | ≥ 0.9 | **PASS** |
+| 2 | plank under the shank at the head end | (152.5, 0, −20.5) | (334, 212) | **0.000** | 0.000 | 0.000 | 0 | **PASS** |
+| 3 | plank under the shank mid-way | (181.0, 0, −32.0) | (392, 220) | **0.347** | 0.32 | 0.34 | 0.1–0.4 | **PASS** |
+| 4 | plank 0.4 mm beside the tip furrow | (205.0, 0, −41.2) | (442, 228) | **0.882** | 0.75 | 0.84 | ≥ 0.9 | **FAIL** |
+| 5 | 8 mm out from the head touchdown | (147.5, 0, −8.7) | (318, 219) | **0.000** | 0.000 | 0.000 | 0 | **PASS** |
+| 6 | 8 mm beside the tip | (205.0, 0, −33.6) | (434, 234) | **0.000** | 0.000 | 0.000 | 0 | **PASS** |
+| 7 | open plank, mid-board | (100, 0, −30) | (272, 179) | **0.000** | 0.000 | 0.000 | 0 | **PASS** |
+| 8 | open plank, near corner | (90, 0, 20) | (195, 205) | **0.000** | 0.000 | 0.000 | 0 | **PASS** |
+
+**Station 4 FAILS at 0.882 against ≥ 0.9, and the radius was NOT tuned to
+rescue it.** §8's model for the tip assumed `ρ ≈ 1 mm` and predicted 0.96 at
+0.4 mm. The real geometry is a rod of ρ ≈ 1.2 mm sunk 0.55 mm, so where it
+crosses the plank the surface is steep and the distance grows at ≈ 0.59 mm per
+mm of lateral offset: 0.235 mm at 0.4 mm out. At 0.2 mm out the reading is
+0.949. The gate misses by 0.018 because the model's `ρ` was optimistic, not
+because the signal is wrong — and the honest fix, if one is wanted, is a 2.5 mm
+radius or a nail that sits 0.2 mm higher, neither of which is a Phase-1 change.
+
+**Cost**, interleaved, warmed sessions, 640 × 480 × 48, **every run listed
+including the contaminated ones**. Two baselines: a copy of the shipped scene
+with the `proximity` term and its roughness bridge removed ("no-prox"), and the
+untouched pre-wave-2 file ("pristine").
+
+*Batch 1 — quiet machine (`pgrep` clean at batch start), no-prox control:*
+
+| run | 1 | 2 | 3 | 4 | mean |
+|---|---:|---:|---:|---:|---:|
+| no-prox | 18.176 | 17.654 | 17.622 | 18.930 | **18.096 s** |
+| shipped | 20.454 | 19.812 | 20.086 | 21.133 | **20.371 s** |
+
+**Ratio 1.126×.** Per-pair 1.125 / 1.122 / 1.140 / 1.116.
+
+*Batch 2 — under a concurrent agent's link; both halves inflated ~45 %:*
+pristine 25.196 / 25.526 / 27.772 = 26.16 s; shipped 29.373 / 28.953 / 28.884
+= 29.07 s. **Ratio 1.111** — the interleaving protocol doing its job.
+
+*Batch 3 — quiet, all three arms. The first triple is the machine still
+settling and is listed but not averaged:*
+
+| triple | pristine | no-prox | shipped |
+|---|---:|---:|---:|
+| 1 (settling) | 24.581 | 24.924 | 25.528 |
+| 2 | 17.758 | 17.348 | 19.622 |
+| 3 | 16.763 | 17.065 | 19.296 |
+| mean (2, 3) | **17.261 s** | **17.207 s** | **19.459 s** |
+
+**Ratio 1.127× against pristine, 1.131× against no-prox — PASS against the
+≤ 1.15 gate**, and the two baselines agree within 0.3 %, so the no-prox copy's
+extra zero-weighted `add` node costs nothing measurable here. Across all three
+batches the ratio sits in **1.111–1.131**.
+
+**One caveat on the absolute form of the gate.** §8 writes it as "≤ 1.15 ×
+16.33 s", the memo baseline from
+[OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md](OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md)
+§6.5. The same scene's own pre-wave-2 file measures **16.763–17.758 s** on a
+quiet machine today (best run 2.6 % above 16.33 s, mean 5.7 % above), and
+18.096 s in batch 1. Against 16.33 s literally the shipped scene is 1.18–1.25×
+depending on the batch, and the gate FAILS in its absolute form; against a
+control rendered in the same interleaved session it is 1.111–1.131× and passes.
+The same-session ratio is the trustworthy number — it is what §8.1's own cost
+table used, and batch 2 shows why: a 45 % machine-state swing moved the ratio
+by 0.02.
+
+**L1 hit rate**: a temporary `std::atomic` counter inside
+`SurfaceSignalInfo::Proximity`, printed at render end, removed before commit.
+On the shipped plank frame: **82,401,587 probes, 74,446,695 hits, 7,954,892
+misses — 90.35 %.** Gate ≥ 80 % — **PASS**. (The scene makes exactly one
+distinct `(kind, radius)` proximity query per hit, shared across the colour
+program's ramp/relief taps and the roughness program, which is why the rate is
+high; it is one under the four-way L1 capacity §10's cliff bullet describes.)
+
+**Draft preview: measured by reading the code, not by rendering, because it is
+NOT reachable from the CLI.** There is no `interactive_pel_rasterizer` chunk
+and no `RISE_API_Create*` factory; `quality:"draft"` reaches
+`RISE::Implementation::CreateInteractiveMaterialPreviewPipeline` only through
+`AgentSession`. What the code says is worth recording anyway, because it
+contradicts the MCP tool's own description. That description claims draft
+"IGNORES the scene's authored materials and lighting entirely" — but
+`InteractiveMaterialPreviewShader::MaterialAlbedo` calls
+`bsdf->albedo( ri.geometric )`, and `GGXBRDF::albedo` calls
+`pDiffuse->GetColor( ri )`, which runs the expression and therefore the
+`proximity` query. So draft DOES pay it: once per primary hit at 1 spp
+(~3 × 10⁵ queries for a 640 × 480 frame) against the production frame's
+8.2 × 10⁷ — about 0.4 % of the production query count. Not measured as wall
+clock; stated as the bound the code supports.
+
+**Beauty.** Full frame plus a 3× crop at `x0=280 y0=150 w=200 h=120` (the AO
+evidence framing), judged against a no-proximity control rendered from the same
+tree.
+
+*What reads:* at the head, a distinct dark patchy smudge where the rim meets
+the board — it grounds the head, which previously floated on its own contact
+shadow. Measured over the 93 plank pixels whose probe proximity exceeds 0.6,
+mean luma falls **107.7 → 63.8, −40.8 %**; over the 134 pixels at 0.3–0.6,
+−17.3 %; at 0.05–0.3, −2.9 %; and **off-seam, over 117,081 pixels, +0.00 %** —
+the term is exactly as localised as the geometry.
+
+*What does not read:* the tip's furrow. It is the strongest contact in the
+scene (proximity 1.0 over 9.5 mm) and the shank itself hides almost all of it
+from this camera; the visible sliver is a faint darker line under the point.
+And the whole feature is **small**: 896 pixels of 307,200 (0.3 %) carry any
+signal at all, of which 227 exceed 0.3.
+
+*Honestly, against the AO crop's failure mode* (§8.1: 0.65 / 0.96 / 0.97 at
+1 / 4 / 10 px, "a fifth of the field on a few pixels", no seam): the distance
+signal is better in the way that matters and worse in the way that does not.
+It is **correct where AO was wrong** — it reads 0 under the shank's head end
+where the gap is 3.5 mm and AO read the nail's shadow as contact for the
+shank's whole length, and it reaches ~0.93 at the rim where AO saturated at
+0.65. It is **not more visible than AO was**, because the pixels it lights are
+the same pixels the contact shadow already darkened. The gain is that the mark
+is now in the right place and fades over the right distance, not that there is
+more of it.
+
+One unplanned and welcome consequence: the plank's own underside sits 0.1 mm
+above the bench plane, so the bottom 2 mm of its side faces pick up the same
+term — a physically-correct plank-meets-bench seam. It reads at ≤ 0.12 on a
+2–3 px diagonal line and is visually negligible; recorded so nobody later
+mistakes it for a leak.
+
+#### B. `weathered_workbench`, `proximity(0.02)`
+
+The flange's touchdown geometry is exactly as §8 modelled it. Profiles
+outward from the touchdown line at the middle of each of the four sides,
+measured with the query on the bench top (`y = 0.91`, 2 mm grid):
+
+| outward | +X | −X | +Z | −Z | gate |
+|---|---:|---:|---:|---:|---|
+| 0 mm | 0.998 | 0.998 | 0.998 | 0.998 | — |
+| 5 mm | **0.952** | **0.956** | **0.965** | **0.972** | ≥ 0.9 → **PASS** |
+| 20 mm | **0.554** | **0.564** | **0.534** | **0.554** | ≤ 0.6 → **PASS** |
+| 35 mm | **0.000** | **0.000** | **0.000** | **0.000** | 0 → **PASS** |
+| 40 mm | 0.000 | 0.000 | 0.000 | 0.000 | — |
+
+(the underlying distances at 5 / 20 / 35 mm are 0.97 / 8.92 / 21.9 mm on +X and
+0.56 / 8.92 / 20.6 mm on −Z; §8's model predicted 0.966 / 0.555 / 0). Mid-side
+world coordinates and their pixel projections: +X 5 mm is (1.2495, 0.91,
+−0.1753) → px (535, 206); −Z 5 mm is (1.0095, 0.91, −0.1465) → px (495, 207).
+**Those pixels read `nan` in the probe** — the flange is 42 mm tall and the
+camera is 11° above the bench, so the flange hides ~216 mm of bench behind it
+and its own touchdown line is not visible from this camera at all. The
+rendered corroboration is therefore taken over every visible bench-top pixel,
+binned by the query's distance:
+
+| band | render 640 × 480 | render 2560 × 1920 | query at band centre |
+|---|---:|---:|---:|
+| 0–2 mm | (too few px) | 0.820 | 0.950 |
+| 2–4 mm | (too few px) | 0.874 | 0.850 |
+| 4–6 mm | 0.732 | 0.804 | 0.750 |
+| 8–10 mm | 0.740 | 0.618 | 0.550 |
+| 14–16 mm | 0.454 | 0.326 | 0.250 |
+| 20–22 mm | 0.257 | 0.047 | 0.000 |
+| 26–28 mm | 0.097 | 0.000 | 0.000 |
+| ≥ 60 mm | 0.006 ± 0.059 | 0.000 | 0.000 |
+
+At 640 × 480 the profile is smeared across ~40 mm — the 31.4 mm-per-pixel
+footprint quoted above. At 4× it tracks the query within ~0.08 and reaches 0
+by 22–24 mm. Neither render is the gate instrument here and neither can be.
+
+**Cost**, interleaved, 640 × 480 × 12, every run listed, two batches:
+
+*Batch 1 — run while another agent was compiling:*
+
+| run | 1 | 2 | 3 | 4 | mean |
+|---|---:|---:|---:|---:|---:|
+| no-prox copy | 2.989 | 3.018 | 2.976 | 3.008 | **2.998 s** |
+| shipped | 3.259 | 3.291 | 3.247 | 3.300 | **3.274 s** |
+| pristine | 2.935 | 2.949 | 2.967 | 2.961 | **2.953 s** |
+
+1.092× against no-prox, 1.109× against pristine.
+
+*Batch 2 — quiet machine (no compilers running at batch start or end):*
+
+| run | 1 | 2 | 3 | 4 | mean |
+|---|---:|---:|---:|---:|---:|
+| no-prox copy | 2.970 | 2.910 | 2.926 | 2.918 | **2.931 ± 0.023 s** |
+| shipped | 3.153 | 3.143 | 3.174 | 3.128 | **3.149 ± 0.017 s** |
+| pristine | 2.908 | 2.899 | 2.855 | 2.879 | **2.885 ± 0.020 s** |
+
+**1.075× against the no-proximity copy and 1.092× against the untouched
+pre-wave-2 file — PASS against the ≤ 1.10 gate on both baselines.** The 1.6 %
+gap between the two baselines is the no-prox copy's extra (zero-weighted) `add`
+node, which the copy keeps so that only the query differs; both are reported
+because batch 1's pristine ratio (1.109×) sat within 0.001 of the gate and only
+the quiet batch settles it.
+
+**Beauty.** 4× crop at `x0=460 y0=150 w=160 h=90`, against a no-proximity
+control. The grime reads: a soft, patchy dark stain on the bench hugging the
+flange, strongest at the front-left where the bench is most visible, with no
+hard outline. Measured on the bench-top plane: over the 76 pixels above
+proximity 0.6, mean luma **90.0 → 72.4, −19.5 %**; 214 pixels at 0.3–0.6,
+−9.6 %; 77 at 0.05–0.3, −6.0 %; **off-seam, 16,913 pixels, −0.0 %**. This is
+the one §8.1 said an AO could not have ("at the vise foot the ring is invisible
+at every magnitude"), and it is visible here for a reason worth naming: it is
+not confined to the 2–3 px the flange's own contact shadow occupies, because a
+20 mm distance ramp is wider than that shadow.
+
+The **floor at the legs' feet is deliberately not painted**: the floor's
+material is a `uniformcolor_painter`, a flat supporting surface, and making it
+an expression painter to carry one dust band is a larger change than the band
+is worth. The LEG side of the same seam does get the term, since the legs share
+`mat_wood_top`. The **tray** also rests on the bench top and collects the term
+on the bench beneath its edge — physically right, and noted so it is not read
+as a leak.
+
+#### Composition notes that cost time and are worth carrying forward
+
+- **`fbm` in this VM is SIGNED and zero-mean** (`NoiseCore::Fbm3D` sums signed
+  Perlin octaves with no normalisation), so a breakup multiplier written
+  `0.45 + 1.35*fbm(...)` averages **0.45**, not the ~0.9 it reads like. The
+  first draft of the plank's term lost 55 % of its weight that way — probed,
+  `cg` came back at 0.339 where the signal itself was 0.745. Centre the
+  multiplier on the value you want: `0.85 + 1.5*fbm(...)`.
+- **The weight has to reach the ramp's reserved stops, and where the seam
+  pixels START is a measurement.** The plank's seam pixels sit at field p50
+  **0.195** (early-wood plateau in the nail's shadow, `crev` = 0), while the
+  ramp reserves 0.86–1.00 for rare events. At `grime 0.45` the whole term was
+  worth **−6.9 %** luma on 93 pixels and read as nothing; at 0.85 it moves the
+  seam's field p50 to 0.78 (p90 0.97, 9 of 99 pixels clamped) and −40.8 %.
+- **A contact term needs its OWN roughness bridge on both scenes, and for
+  opposite reasons.** The plank's roughness bridge has a negative scale (its
+  field's high end is dense, smooth late wood) and the bench's a positive one
+  (its high end is pale, weathered sapwood); grime must read ROUGHER on both,
+  so on the plank it cannot ride an additive term into a negative bridge and on
+  the bench it cannot ride a subtractive term into a positive one. One bridge
+  cannot give one field two signs. Both scenes now sum a small dedicated
+  `scalar_painter` (the pattern `sp_pore` already established), sharing the
+  colour term's breakup field verbatim so the dull patches and the dark patches
+  coincide.
+- **The nail's own contact rust was tried and REMOVED on measurement.** §8.1's
+  one genuine AO gain was the nail's underside, so the symmetric term
+  (`rust_cont 0.45 * clamp(proximity(0.002)*(0.85+1.5*fbm), 0, 1)`) was
+  composed and rendered. Over the 2539 visible nail pixels whose proximity
+  exceeds 0.3 it moved mean luma from 48.75 to 48.96 — **+0.4 %**, on pixels
+  already at luma 49 because they sit in the contact shadow. The nail's contact
+  surfaces are the head rim's underside, hidden by the head disc, and the buried
+  tip, hidden by the shank. Removed; the measurement is recorded in the scene.
+
+#### Adoption surfaces
+
+`skills/agent/procedural-textures.md` gains "`proximity(r)` — the fourth
+signal, and the only cross-object one", with the world-length unit in every
+sentence that names the radius, the 1-touching/0-nothing/neutral-0 convention,
+the colour-and-roughness-not-relief rule, the emitters-never-count rule, the
+ellipsoid-ratio rule, and one worked example: the nail's contact seam as a
+complete standalone 128 × 128 scene (`AgentSkillsTest` renders every fence, so
+it has to be). A/B'd at authoring time (`grime` 0.85 → 0, same seeds): **760 of
+16,384 pixels move, max delta 0.415**, so the snippet demonstrates the term
+rather than merely parsing with it. The snippet count assertion moves 31 → 32.
+`scenes/FeatureBased/README.md`'s entries for both showcases say the signal is
+now in them, and the workbench's says which claim it retracts.
+
+#### Gate summary
+
+| gate | result |
+|---|---|
+| warning-free `make all` | PASS |
+| plank station 1 (head rim, 0.4 mm) ≥ 0.9 | PASS (0.918) |
+| plank station 2 (shank, head end) = 0 | PASS (0.000) |
+| plank station 3 (mid-shank) 0.1–0.4 | PASS (0.347) |
+| plank station 4 (tip, 0.4 mm) ≥ 0.9 | **FAIL (0.882)** — §8's `ρ ≈ 1 mm` model was optimistic; radius NOT tuned |
+| plank 0 at ≥ 8 mm, 0 on open plank | PASS |
+| plank cost ≤ 1.15× | PASS (1.111–1.131× across three interleaved batches; 1.18–1.25× against the 16.33 s literal, which is a different day's machine state) |
+| plank L1 hit rate ≥ 80 % | PASS (90.35 %) |
+| draft preview cost measured | not CLI-reachable; bounded from the code at ~0.4 % of the production query count |
+| bench ≥ 0.9 within 5 mm | PASS (0.952–0.972, four sides) |
+| bench ≤ 0.6 at 20 mm | PASS (0.534–0.564) |
+| bench 0 beyond 35 mm | PASS (0.000) |
+| bench cost ≤ 1.10× | PASS on a quiet machine (1.075× vs the control, 1.092× vs the pristine file); a contended batch read 1.092× / 1.109× |
+| bench prose corrected | PASS (390 × 42 × 344 mm / 18 mm rounding; the "out of reach" claim retracted) |
+| `CstDeriveGoldenTest` | 446 MATCH, 0 DRIFT (regenerated: exactly the two showcase rows) |
+| `AgentSkillsTest` | 618 passed, 0 failed (32 snippets) |
+| `ProximitySignalTest` | 107 passed, 0 failed |
+| `ExpressionMemoTest` | 196 passed, 0 failed |
+| temporary counter removed | PASS |
 
 ---
 

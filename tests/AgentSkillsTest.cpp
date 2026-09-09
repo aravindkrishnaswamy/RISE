@@ -755,7 +755,22 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// that derives with zero diagnostics and renders, so the fence now
 	// mirrors scenes/Tests/Painters/relief_crackle_glaze.RISEscene whole
 	// (128x128, 16 spp, box filter, no denoise, like its neighbours).
-	Check( totalSnippets == 31, "the seed skills carry the expected 31 ```rise snippets in total (got " +
+	//
+	// The cross-object proximity arc (2026-09-08,
+	// docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 7) took the count
+	// 31 -> 32: procedural-textures gains "`proximity(r)` -- the fourth
+	// signal, and the only cross-object one", whose fence is the contact
+	// seam under a nail lying on a board -- the composition
+	// scenes/FeatureBased/Textures/plank_closeup.RISEscene ships, reduced
+	// to a standalone 128x128 scene.  It is the ONE fence in the seed
+	// skills whose point is a SECOND object: the nail's head disc is
+	// thicker than its shank, so the body rests on the head rim and the
+	// tip and LIFTS in between, which is what makes the signal's fade
+	// visible and is exactly what an occlusion cannot draw.  A/B'd at
+	// authoring time (`grime` 0.85 -> 0, same seeds): 760 of 16384 pixels
+	// move, max delta 0.415, so the snippet demonstrates the term rather
+	// than merely parsing with it.
+	Check( totalSnippets == 32, "the seed skills carry the expected 32 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 

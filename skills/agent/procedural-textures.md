@@ -153,9 +153,12 @@ select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
 `vec3()`, `.x/.y/.z`, `dot`, `cross`, `length`, `normalize`.
 
 The body also sees `curv`/`curvR` (surface curvature at the hit: positive
-convex, negative concave, 0 flat) plus three ARG-TAKING geometry-signal
-builtins -- `occlusion(r)`, `convexity(r)` and `thickness(r)` -- for
-geometry-driven wear and grime masks.  `read_skill
+convex, negative concave, 0 flat) plus FOUR ARG-TAKING geometry-signal
+builtins -- `occlusion(r)`, `convexity(r)`, `thickness(r)` and
+`proximity(r)` -- for geometry-driven wear and grime masks.  The first
+three ask the hit geometry about ITSELF and take a radius that is a
+FRACTION of that object's own size; `proximity(r)` asks about the rest of
+the scene and takes a WORLD LENGTH.  `read_skill
 {name:"materials-and-media-basics"}`'s patina section has the sign
 convention and a full worked, execution-validated example.
 
@@ -180,6 +183,255 @@ convexity how much more.  Neither is ever a residual of the other.  So:
   `convexity` samples the query ball, so it also registers smooth bulges
   (a bead reads convex; a purely directional measure would call it flat).
   On edges, creases and corners they agree exactly.
+
+### `proximity(r)` -- the fourth signal, and the only cross-object one
+
+`occlusion`, `convexity` and `thickness` all ask the hit geometry about
+**itself**, so none of them can see a second object.  `proximity(r)` is
+the one that looks at the rest of the scene: it returns the distance from
+the hit to the nearest surface of any **other** object, remapped to
+**1 = touching, 0 = nothing within `r`**, neutral **0**.  It is the
+quantity contact grime actually is -- dirt where a nail rests on a plank,
+dust where a wall meets a floor -- and the analogue is Unreal's
+`DistanceToNearestSurface`, not an AO baker.
+
+- **Its `r` is a WORLD LENGTH**, unlike the other three, whose `r` is a
+  fraction of the hit object's own size.  `proximity(0.002)` is **two
+  millimetres**, on a nail or on a cathedral.  Set that world length from
+  the gap you actually measured, not from taste: a fraction of the
+  RECEIVER cannot describe how far away a NEIGHBOUR is, which is why the
+  unit differs.  A literal `r <= 0` is a compile error naming the unit.
+- **Reach for it instead of a wider `occlusion(r)`, always.**  A thin
+  object lying on a plane subtends only grazing directions, where a
+  cosine-weighted hemisphere's weight goes to zero, so `1 - occlusion(r)`
+  reads a 2-10 pixel smudge there rather than a seam (measured: 0.65 at
+  1 px beside a nail, 0.96 at 4 px).  A distance has no such blind spot.
+- **It drives colour and roughness, NOT relief.**  `relief_modifier`
+  holds the signal channel fixed across its four taps by design, so a
+  `proximity`-driven height expression has zero gradient and displaces
+  nothing.
+- **Emissive objects never count.**  A `rect_light` panel parked two
+  millimetres off a wall must not paint grime on it -- so any object
+  whose material emits is skipped, and a *decorative* emitter (a lava
+  pool, a glowing rune) will not collect contact dirt either.
+- `casts_shadows FALSE` does **not** exempt a neighbour (this is geometry
+  presence, not light visibility); two instanced copies of one geometry
+  DO count against each other; a point inside another object reads 1
+  (interpenetration is contact).
+- It works on **every receiver**, including ones with no signal provider
+  at all (a `box_geometry`, an infinite plane).  What varies is which
+  NEIGHBOURS can answer: the analytic primitives are exact, `sdf_geometry`
+  and ellipsoids are UPPER bounds on distance (so the signal may
+  under-paint a seam and can never paint one that is not there), and
+  triangle meshes, patches, hair and CSG composites contribute nothing and
+  say so once per refusing object in the log.
+- **An eccentric ellipsoid, or an anisotropically scaled object, needs a
+  bigger radius than you mean** -- the bound is the semi-axis ratio, so
+  against a 4:1 ellipsoid ask for roughly 4x the world length you want.
+  The failure is silent: an unpainted seam, never a wrong one.
+
+Worked example -- the contact seam under a nail lying on a board, which is
+the composition `plank_closeup.RISEscene` ships.  The nail rests on its
+head rim and its tip, not along its length: measured with this signal, the
+head rim clears the board by **0.146 mm**, the shank's underside lifts to
+**3.51 mm** at the head end and **1.31 mm** mid-way, and the last ~9.5 mm
+is buried up to **0.55 mm**.  `proximity(0.002)` -- a 2 mm world radius --
+is what draws all three at once: saturated under the rim and the buried
+tip, **0.35** at mid-shank, and exactly **0** at the head end where the
+gap is 3.5 mm.  That fade along the lifting shank is the whole point; an
+AO reads the nail's shadow as contact for its entire length.
+
+Note the two things the body does with the raw signal, both of which
+matter more than the signal itself.  It **breaks it up** with an
+anisotropic `fbm`, because a seam that follows the geometry exactly at
+full strength is a decal -- and it centres that multiplier on **0.85**,
+not on the 0.45 the arithmetic looks like, because `fbm` here is SIGNED
+and zero-mean (see the remap rule above).  And its weight is **large**
+(0.85 against the board's own 0.62 crevice dirt), because the seam pixels
+start low in the field and the ramp's dark stops are what a rare event has
+to reach; probe where your seam pixels actually START before choosing it.
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.55 0.58 0.62
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					16
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	0.10 0.075 0.11
+	lookat		0.02 -0.004 0
+	up			0 1 0
+	fov			38.0
+}
+
+# THE BOARD's field.  `crev` is the self signal (dirt in its own hollows);
+# `contact` is the cross-object one.  Both are used RAW -- a threshold on
+# either throws away the fade that distinguishes a measured seam from a
+# painted line.
+expression_painter
+{
+	name		expr_board
+	param		dirt 0.55 min 0.0 max 1.0 step 0.05 label "Crevice dirt"
+	param		grime 0.85 min 0.0 max 1.5 step 0.05 label "Contact grime"
+	seed		3.0
+	def			wood fbm(vec3(P.x*22.0, P.y*260.0, P.z*260.0) + vec3(seed, 2.0, 5.0), 4, 0.5, 2.0)
+	def			crev clamp(1.0 - occlusion(0.03), 0, 1)
+
+	# 2 mm, a WORLD length, set from the measured gap under the nail.
+	def			contact proximity(0.002)
+	# Breakup, centred on 0.85: `fbm` is signed and zero-mean, so a
+	# multiplier written `0.45 + 1.35*cgb` would average 0.45, not 0.9.
+	def			cgb fbm(vec3(P.x*300.0, P.y*900.0, P.z*900.0) + vec3(seed*2.7, 13.0, 6.0), 3, 0.5, 2.0)
+	def			cg clamp(contact*(0.85 + 1.5*cgb), 0, 1)
+
+	expr		clamp(0.30 + 0.9*wood + dirt*crev + grime*cg, 0, 1)
+}
+
+ramp_painter
+{
+	name			ramp_board
+	input			expr_board
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.58 0.37 0.19
+	stop			0.55  0.42 0.24 0.10
+	stop			0.86  0.15 0.064 0.022
+	stop			1.00  0.048 0.021 0.009
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2 -- roughness.  The grime needs its OWN additive bridge: the
+# wood bridge below has a negative scale (its dark end is the smooth,
+# dense end), and grime must read ROUGHER, not smoother.  One bridge
+# cannot give one field two signs.
+scalar_painter
+{
+	name		sp_wood_rough
+	painter		expr_board
+	channel		R
+	scale		-0.19
+	bias		0.52
+}
+
+scalar_painter
+{
+	name		sp_contact_rough
+	param		grime_rough 0.14 min 0.0 max 0.4 step 0.01 label "Contact-grime roughening"
+	seed		3.0
+	def			cgb fbm(vec3(P.x*300.0, P.y*900.0, P.z*900.0) + vec3(seed*2.7, 13.0, 6.0), 3, 0.5, 2.0)
+	expression	grime_rough*clamp(proximity(0.002)*(0.85 + 1.5*cgb), 0, 1)
+}
+
+scalar_painter
+{
+	name		sp_board_rough
+	add			sp_wood_rough sp_contact_rough
+	weight_a	1.0
+	weight_b	1.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_spec
+	color	0.30 0.28 0.25
+}
+
+ggx_material
+{
+	name		mat_board
+	rd			ramp_board
+	rs			pnt_spec
+	alphax		sp_board_rough
+	alphay		sp_board_rough
+	ior			1.50
+	extinction	0.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_iron
+	color	0.20 0.12 0.07
+}
+
+lambertian_material
+{
+	name		mat_iron
+	reflectance	pnt_iron
+}
+
+# The board -- an sdf_geometry, not a box, because `occlusion()` returns
+# its neutral 1 on every analytic primitive.  `proximity()` would work on
+# a box; the SELF signal beside it would not.
+sdf_geometry
+{
+	name		geo_board
+	part		roundbox union 0    0 0 0    0 0 0    1 1 1    0.10 0.008 0.05    0.0015
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_board
+	geometry	geo_board
+	material	mat_board
+	position	0 -0.008 0
+}
+
+# The nail: a tapered shank whose head disc is thicker than it is, so the
+# body rests on the head rim and the tip and LIFTS in between -- the
+# geometry that makes the fade visible.
+sdf_geometry
+{
+	name		geo_nail
+	part		roundcone union 0     0 0 0            0 0 -96     1 1 1    0.0040 0.00098 0.0676  0
+	part		cylinder  smin 0.0013 -0.0021 0.00022 0   5 0 -92    1 1 1    0.0075 0.0017 0       0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_nail
+	geometry	geo_nail
+	material	mat_iron
+	position	-0.030 0.00748 -0.012
+	orientation	0 24 0
+}
+
+rect_light
+{
+	name		key
+	center		0.06 0.20 -0.16
+	size		0.10 0.08
+	facing		-0.06 -0.20 0.16
+	color		1.00 0.96 0.90
+	exitance	160
+}
+```
 
 Three authoring rules, and the first is a contract, not a style note:
 

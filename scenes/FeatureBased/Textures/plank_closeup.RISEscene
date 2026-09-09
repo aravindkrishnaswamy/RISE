@@ -67,6 +67,18 @@ RISE ASCII SCENE 7
 #      polish out of the crack.  Their radii differ by 5x because the features do: 18.6 mm to see
 #      a 2.6 mm slot as enclosed, 3.7 mm to keep the polish on a 1.5 mm eased edge.
 #
+#      AND SINCE 2026-09-08 A THIRD SIGNAL, WHICH ASKS ABOUT THE REST OF THE SCENE.  Those two are
+#      SELF questions -- they see only this object's own field -- so neither can put dirt where the
+#      NAIL touches the board, and that seam is the only piece of process in this scene that is not
+#      about the plank alone.  `proximity(0.002)` closes it: shortest distance from the hit to any
+#      OTHER object's surface, 1 at touching and 0 at the radius, and its radius is a WORLD LENGTH
+#      (2 mm here) rather than the per-object fraction the other two take.  It drives colour and
+#      roughness; it CANNOT drive relief (`relief_modifier` holds the signal channel fixed across
+#      its four taps by design, so a proximity-driven height has zero gradient) and it never sees
+#      emissive objects, so the key panel 0.57 m away could not paint grime even if it were close.
+#      The radius is set from measured gaps, not taste -- see the geometry section for the five
+#      numbers and how they were measured.
+#
 #   4. RARE EVENTS, NOT UNIFORM TEXTURE.  One knot, hand-placed, with the rings SWEEPING around it
 #      (`knot_pull` deflects the radial coordinate -- the sweep, not the dark disc, is what sells it);
 #      one end check; a few resin lines thresholded off the top of a low-frequency field.  Quiet
@@ -180,6 +192,22 @@ RISE ASCII SCENE 7
 #      subtracted crevice and not a painted line: a painted crack cannot be found by `occlusion()`, and
 #      a crack that dirt does not collect in reads as a decal.
 #
+#   -- CROSS-OBJECT AMBIENT OCCLUSION for the contact seam under the nail.  This was the obvious
+#      route -- extend `occlusion()` to see the whole scene -- and it was prototyped twice and
+#      DECLINED on measurement, twice (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 8.1, 2026-09-07).
+#      The reason is geometric and no sampler fixes it: a thin object lying on a plane subtends
+#      only GRAZING directions, where a cosine-weighted hemisphere's weight goes to zero.  Probed
+#      on this scene, cosine-weighted cross-object AO read 0.65 in the 1-px silhouette band, 0.96
+#      at 4 px and 0.97 at 10 px -- a two-to-three-pixel smudge, not a seam.  A horizon-biased
+#      sampler (0.5-20 deg above the tangent plane) widened it to ~10 px at 0.61 / 0.81 / 0.90,
+#      cost 1.93x, and took 44 % off the NAIL's own rust gain, because the low rays that see the
+#      nail from the plank are the same low rays that see the plank from the nail.  The seam is
+#      not a visibility quantity: it is the set of points within a millimetre or two of another
+#      surface, which is what `proximity()` reports and what no ray fan can.  A `Prepare`-time
+#      BAKE was priced in the same round and is worse for this scene specifically: the end check
+#      is 2.6 mm across and the nail's pits ~1 mm, so a dense grid needs G >= 175 for the plank
+#      alone (21 MB, more rays than all of Sponza) and G >= 230 for the nail.
+#
 #   -- A pith axis PARALLEL to the plank (parallel stripes, no arches), and a sine ring profile
 #      (symmetric, reads as corduroy).  Wood's asymmetry is most of the read.
 #
@@ -288,6 +316,7 @@ expression_painter
 	param			knot_r 0.0135 min 0.004 max 0.04 step 0.001 label "Knot radius (m)"
 	param			knot_pull 0.0075 min 0.0 max 0.03 step 0.001 label "Ring sweep around knot (m)"
 	param			dirt 0.62 min 0.0 max 1.0 step 0.05 label "Crevice dirt"
+	param			grime 0.85 min 0.0 max 1.5 step 0.05 label "Contact grime (where the nail touches)"
 	param			polish 0.30 min 0.0 max 1.0 step 0.05 label "Arris handling wear"
 	param			endgrain 0.12 min 0.0 max 0.6 step 0.02 label "End-grain darkening"
 	param			bleach 0.07 min 0.0 max 0.5 step 0.02 label "Top-face sun bleaching"
@@ -403,13 +432,72 @@ expression_painter
 	# measures 0.33 on the arris and 0.001 four millimetres in from it, so
 	# the polish band is as narrow as the edge a hand actually rubs.  At
 	# `0.03` the same term would smear polish 18 mm across the face.
+	#
+	# THE THIRD SIGNAL IS CROSS-OBJECT.  `occlusion` and `convexity` are both
+	# SELF questions -- they see only this object's own field -- so neither can
+	# put dirt where the NAIL touches the board, which is the one contact seam
+	# this scene actually has.  `proximity(r)` answers the other question:
+	# how far is the nearest surface belonging to some OTHER object, `1` at
+	# touching and `0` at `r` and beyond.  Its radius is a WORLD LENGTH (unlike
+	# `occlusion`'s per-object fraction), so `proximity(0.002)` means two
+	# millimetres and nothing else, on this board or any other.
+	#
+	# THE RADIUS IS SET FROM THE MEASURED GAPS, not from taste.  See the
+	# geometry section below for the numbers: the head rim clears the board by
+	# 0.15 mm, the shank lifts from 3.5 mm at the head to 1.3 mm mid-way, and
+	# the last ~9.5 mm of the shank is BURIED up to 0.55 mm.  A 2 mm radius is
+	# the one that draws all three at once -- saturating under the rim and the
+	# buried tip, fading through the middle of the shank (0.35 at the
+	# mid-point), and reading exactly 0 at the head end, where the shank is
+	# too high off the board for grime to bridge.  That fade is the whole
+	# reason this is a distance and not an ambient occlusion: an AO reads the
+	# nail's SHADOW as contact all along the shank (measured: 0.65 in the
+	# 1-px silhouette band and 0.96 four pixels out, no seam at all --
+	# docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 8.1), where the distance reads
+	# the gap and stops.
+	#
+	# RAW, AND BROKEN UP.  Like the other two the signal is used raw -- a
+	# threshold here would pin the fade to 0 or 1 and throw away the only
+	# thing that distinguishes it from a painted line.  What it does need is
+	# BREAKUP: a contact seam that follows the geometry exactly, at full
+	# strength along its whole length, is a decal.  `cgb` is the same kind of
+	# anisotropic fbm the streak terms use (3.3 mm along the grain x 1.1 mm
+	# across, 3:1, comfortably above the 0.40 mm footprint).
+	#
+	# NOTE THE CENTRE, 0.85, AND WHY IT IS NOT 0.45.  `fbm` here is SIGNED and
+	# ZERO-MEAN (ProceduralNoiseCore's Fbm3D sums signed Perlin octaves and
+	# does NOT normalise to [0,1]) -- roughly +-0.4 at three octaves.  A
+	# multiplier written `0.45 + 1.35*cgb` therefore averages 0.45, not the
+	# ~0.9 it reads like, and the first draft of this term lost 55 % of its
+	# weight to exactly that: probed, `cg` came back at mean 0.339 where the
+	# proximity signal itself was 0.745.  Centre the multiplier on the value
+	# you want and let the noise swing about it: `0.85 + 1.5*cgb` averages
+	# 0.85 and runs ~0.25 to 1.0 (the outer clamp takes the top), which is
+	# grime that thins out in patches rather than grime at half strength
+	# everywhere.  Probe every multiplier built on `fbm`; the sign convention
+	# is not what the arithmetic looks like.
+	#
+	# AND THE WEIGHT IS LARGE ON PURPOSE.  `grime 0.85` looks out of scale
+	# beside `dirt 0.62` until you probe where the seam pixels START: their
+	# field sits at p50 0.195 (they are early-wood plateau in the nail's
+	# shadow, with `crev` at 0 because the board has no cavity there), while
+	# the check's pixels are already elevated by `dirt*crev` before anything
+	# else lands.  The ramp reserves 0.86-1.00 for the knot, the dirt and the
+	# check -- doctrine 4's rare events, which a contact seam is -- so the
+	# weight has to carry 0.195 to about 0.9.  Anything smaller lands the seam
+	# in the ramp's flat pale PLATEAU (0.00-0.32), where colour barely moves:
+	# at `grime 0.45` the whole term was worth -6.9 % luma on 93 pixels and
+	# read as nothing at all.
 	def				occ occlusion(0.03)
 	def				crev clamp(1.0 - occ, 0, 1)
+	def				contact proximity(0.002)
+	def				cgb fbm(vec3(P.x*300.0, P.y*900.0, P.z*900.0) + vec3(seed*2.7, 13.0, 6.0), 3, 0.5, 2.0)
+	def				cg clamp(contact*(0.85 + 1.5*cgb), 0, 1)
 	def				edge smoothstep(0.05, 0.30, convexity(0.006))
 	def				endg abs(N.x)
 	def				upf clamp(N.y, 0, 1)
 
-	expr			clamp(floor + ring + streak*2.5*sf + fibre*2.5*ff + resin*rl + 0.92*kc + dirt*crev + endgrain*endg - bleach*upf - polish*edge, 0, 1)
+	expr			clamp(floor + ring + streak*2.5*sf + fibre*2.5*ff + resin*rl + 0.92*kc + dirt*crev + grime*cg + endgrain*endg - bleach*upf - polish*edge, 0, 1)
 }
 
 # CONSUMER 1 -- colour.  Every colour decision in the wood is in these six
@@ -510,10 +598,48 @@ scalar_painter
 # one.
 scalar_painter
 {
-	name			sp_plank_rough
+	name			sp_wood_rough
 	add				sp_ring_rough sp_pore
 	weight_a		1.0
 	weight_b		0.5
+}
+
+# CONSUMER 2c -- the contact seam's roughness, and THE ONE PLACE DOCTRINE 5
+# NEEDS AN EXPLICIT EXCEPTION, stated rather than quietly broken.
+#
+# Doctrine 5 says one field drives colour, roughness and relief, and the
+# roughness bridge above carries a NEGATIVE scale because the wood field's
+# high end is the dense late wood, which is the SMOOTH end.  Contact grime is
+# the opposite kind of high end: it is loose powder in a seam, and it must
+# read ROUGHER, not smoother.  A single bridge cannot give one field two
+# signs, so the contact term gets its own additive scalar exactly the way
+# `sp_pore` does -- the composition boundary is untouched (colour still lives
+# in the ramp, roughness still lives in the bridges), and `contact` is still
+# ONE definition; it is the SIGN of the bridge that forks, not the field.
+#
+# The magnitude is +0.14 at a saturated seam against the 0.26-0.60 wood band,
+# so the grime reads as a distinctly duller patch without leaving the GGX
+# range the rest of the board occupies.  The breakup field is deliberately
+# the SAME `cgb` construction as the colour term's (same frequencies, same
+# seed offsets), so the dull patches and the dark patches coincide -- which
+# is what a single deposit of dirt does, and what two independent noises
+# would destroy.
+scalar_painter
+{
+	name			sp_contact_rough
+	param			grime_rough 0.14 min 0.0 max 0.4 step 0.01 label "Contact-grime roughening"
+	seed			3.0
+	def				contact proximity(0.002)
+	def				cgb fbm(vec3(P.x*300.0, P.y*900.0, P.z*900.0) + vec3(seed*2.7, 13.0, 6.0), 3, 0.5, 2.0)
+	expression		grime_rough*clamp(contact*(0.85 + 1.5*cgb), 0, 1)
+}
+
+scalar_painter
+{
+	name			sp_plank_rough
+	add				sp_wood_rough sp_contact_rough
+	weight_a		1.0
+	weight_b		1.0
 }
 
 # CONSUMER 3 -- relief, the same field bridged RAW (the amplitude lives in
@@ -653,6 +779,19 @@ expression_painter
 	# three-face corner); it peaks at 0.53 on this nail's struck ridges and
 	# the squared shank's corners, so smoothstep(0.25, 0.50) picks them out
 	# with thresholds that would mean the same thing on a different object.
+	# THE NAIL DOES NOT GET A `proximity` TERM, AND THAT IS A MEASUREMENT.
+	# The obvious symmetry is to rust the nail's underside where it meets the
+	# board -- and the cross-object AO prototype's ONE genuine gain was
+	# exactly that (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 8.1).  It was
+	# tried here, as `rust_cont 0.45 * clamp(proximity(0.002)*(0.85+1.5*fbm),
+	# 0, 1)`, and it does not read: the nail's contact surfaces are its head
+	# rim's UNDERSIDE, which the head disc itself hides from this camera, and
+	# the buried tip, which the shank hides.  Over the 2539 visible nail
+	# pixels whose proximity exceeds 0.3 the term moved mean luma from 48.75
+	# to 48.96, +0.4 % -- on pixels that are already at luma 49 because they
+	# sit in the contact shadow.  `rust_down` and `occlusion(0.10)` already
+	# carry the underside and the head-to-shank fold.  Removed rather than
+	# kept at a magnitude that would have to be dishonest to show.
 	def				occ occlusion(0.10)
 	def				crev clamp(1.0 - occ, 0, 1)
 	def				down clamp(-N.y, 0, 1)
@@ -801,6 +940,41 @@ standard_object
 #         rotated -96 deg about Z (-90 lays it along +X, the extra -6 is a
 #         nose-down set) (the head is thicker than the shank, so a nail lying on a flat
 #         surface rests on its head rim and its tip, not along its length).
+#
+#         WHERE IT TOUCHES, MEASURED (2026-09-08).  That sentence was prose until the
+#         cross-object signal gave a way to check it, and the check is worth keeping
+#         because `proximity`'s radius is chosen from these numbers.  METHOD: a harness
+#         linked against the library loads this scene, calls `PrepareForRendering()`, and
+#         asks `IObjectManager::NearestOtherSurface( p, obj_plank, 0.05, d )` from points
+#         on the plank's top plane (world y = 0, the relief modifier stripped so the plane
+#         is the SDF's own surface) -- a 0.5 mm grid over x 90..220 mm, z -55..30 mm,
+#         refined to 0.1 mm around the two contacts.  `d` is then the shortest distance
+#         from that board point to the nail, which is exactly what the signal sees.
+#
+#           head rim   closest approach 0.146 mm, at (x, z) = (147.4, -16.7) mm.  IT DOES
+#                      NOT QUITE TOUCH.  The rim is a 7.5 mm disc tilted ~2 deg off
+#                      vertical, so its tangency with the board is very shallow and the
+#                      near-contact patch is broad rather than a point: d <= 0.20 mm over
+#                      1.7 x 1.6 mm, d <= 0.40 mm over 4.5 x 4.2 mm.
+#           shank      underside gap along the board, from the head end to the tip:
+#                        x = 152.5 mm   3.506 mm      (the shank clears the head)
+#                        x = 167.5 mm   2.186 mm
+#                        x = 181.0 mm   1.307 mm      (mid-shank)
+#                        x = 194.0 mm   0.445 mm
+#                        x = 201.0 mm   0.000 mm      (the shank reaches the board)
+#           tip        BURIED, and not as a spot: the last ~9.5 mm of the shank is below
+#                      y = 0, so the contact there is a furrow, x 200.8..210.3 mm and
+#                      z -45.2..-40.5 mm, about 2.2 mm wide.  Deepest point bracketed
+#                      between y = -0.50 and -0.60 mm by re-running the same query on
+#                      planes below y = 0.
+#
+#         So a 2 mm radius reads: saturated under the rim (0.93 at the closest point) and
+#         along the furrow (1.0), 0.35 at mid-shank, and exactly 0 at the head end of the
+#         shank where the gap is 3.5 mm.  That FADE along the shank is the point -- an
+#         ambient occlusion reads the nail's shadow as contact for the shank's whole
+#         length; a distance reads the gap and stops.  The scene is NOT re-pitched to make
+#         the seam prettier: the geometry is what a nail lying on a board does, and the
+#         signal's job is to report it.
 # Part 2  an intersecting box that squares the round shank off into a
 #         tapered rectangular section -- the cut-nail cross-section.  It has
 #         to come before the head, since `intersect` applies to everything
