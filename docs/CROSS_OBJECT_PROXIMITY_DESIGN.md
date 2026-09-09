@@ -152,8 +152,11 @@ Conventions, matching the signal family (signals design §9):
   §5.2 says which families are exact and which are bounded, and by how much.
   ONE exception, added by Phase 3 (§5.6): an intersection/subtraction
   composite landing on an exact operand may under-read the distance by at
-  most `max(τ, sqrt(2Rτ)) ≤ ε` — a sub-millimetre over-paint of contact on
-  metre-scale composites, bounded and disclosed there and in §10.
+  most `max(τ, sqrt(2Rτ))`, which stays `≤ ε` while the tangency's
+  curvature radius `R < 1250 ×` the composite's local diagonal (§5.6 states
+  the rule and the unit-box-minus-large-sphere case that approaches it) —
+  a sub-millimetre over-paint of contact on metre-scale composites, bounded
+  and disclosed there and in §10.
 - **A non-finite hit point refuses** (reads 0), as `RadiusUsable` refuses a
   non-finite radius.
 
@@ -547,7 +550,9 @@ Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
 2026-09-09 before Phase 3 began; revised the same day after three adversarial
-rounds (round 9, 2 P1s: the byte-identity claim collided with the clause
+rounds (round 10, 2 P1s: §2's exception lacked its `R` hypothesis; the
+`interior` plumbing list missed the builtin name table and the chunk
+descriptors; round 9, 2 P1s: the byte-identity claim collided with the clause
 (d) string fix; §2's never-over-read invariant lacked the composite
 exception; round 8, 4 P1s: the grazing ceiling was mis-solved by the dropped
 factor 2; the exact-landing interval omitted the grazing term; the flute
@@ -598,7 +603,8 @@ unsigned upper bound, a **signed lower bound** with an exact sign:
   keeps `× max`); SDF — `Map(p)` itself (exact sign, 1-Lipschitz under-read),
   heightfield mode refuses as the unsigned query does; planes, disks, clipped
   planes, open cylinders, meshes, patches, hair — sheets, no inside: they
-  answer the unsigned query as before and REFUSE this one.
+  keep whatever unsigned answer they give today (the partition above) and
+  REFUSE this one.
 
 **Why `min(operands)` is the wrong CSG answer, and what the right one is.**
 For a point `p` outside both operands of a **union**, the true distance to the
@@ -632,7 +638,11 @@ magnitude is a lower bound (any composite-boundary point lies in
 `closure(A) ∩ complement(int B)` for a subtraction, so its distance is at
 least both `f_A` and `|f_B|`; likewise for an intersection), and run Phase 1's
 bracket on it: descend along the numerical gradient of `f` (six evaluations
-per gradient, each recursing into both operands), probe until the landing
+per gradient, each recursing into both operands; the composed field is
+still 1-Lipschitz — an operand's transformed lower bound `σ_min·d_o(M⁻¹x)`
+has gradient ≤ `σ_min/σ_min`, the ellipsoid's `dUnit × min(a,b,c)` likewise,
+and `max`/`min` preserve it — so §5.2's non-overshoot argument for a step
+of `|f|` along `−∇̂f` carries over), probe until the landing
 point `q` is PROVEN to lie in the closure of the composite's REAL solid by
 the operands' own signs, and report the chord `|p − q|`. Two arms prove it.
 The STRICT arm — intersection `f_A < 0 ∧ f_B < 0`, subtraction `f_A < 0 ∧
@@ -833,6 +843,9 @@ neighbour**, **1 = at least `r` deep**; neutral 0; world-length radius; `r`
 mandatory, no `DynR` twin. Together `proximity` and `interior` cover the
 signed distance without a sign convention an author has to remember. Plumbing,
 each named because the round-1 review found every one of them missing:
+the builtin's row in `ParseCall`'s name→signature `Lookup` table
+(`{"interior", kFnInterior, 1, {S,S,S,S}, S}` beside `proximity`'s — the
+one item whose absence is a parse failure rather than a stale comment),
 `kFnInterior = 58` (the next free id; the `kFnProximity` assert's "58–59 free"
 text is updated), one more named `case` in `CallFunc` (the pin moves once
 more, disclosed), `SignalKey.fn = 4` / `eInterior = 4`, `SurfaceSignalInfo::Interior(r)`
@@ -854,8 +867,18 @@ nothing else" are rewritten for `eInterior = 4` (also a separate body, not
 a `SignalQuery` branch); `kFnInterior = 58` leaves only 59 free before
 `CallFuncVec3`'s 60+ band (stated on the assert); the
 `ISurfaceSignalProvider.h` warning text that enumerates
-`curv/occlusion/thickness/convexity/proximity` gains `interior`; and, as for
-`proximity`, an `interior` call lands in `m_sigCalls`, so
+`curv/occlusion/thickness/convexity/proximity` gains `interior`, as do the three `ChunkParserRegistry.cpp` descriptor
+strings that enumerate the builtins (the scalar pipe's `expression` param,
+the `expression_painter` chunk description with its CROSS-OBJECT PROXIMITY
+paragraph, and its `def` param) — the only author- and agent-facing place
+a builtin is discoverable — plus `ExpressionPainter.h`'s "all five"
+comment, `ExpressionMemo.h`'s `fn` field comment and its `kL1Ways` block
+("exactly four signals wide", "1824 bytes", "eight ways would blow the
+2048-byte ceiling" — all false after Phase 3); `CSGObject`'s new
+`DistanceToSurface`/`SignedDistanceLower`/`DescribeKind` bodies carry NO
+`override` keyword, matching that class's documented rule (one `override`
+wakes `-Winconsistent-missing-override` on its seven sibling virtuals);
+and, as for `proximity`, an `interior` call lands in `m_sigCalls`, so
 `UsesSurfaceSignals()` and `SurfaceSignalDemand` go true for an
 `interior`-only program (diagnostic-only, harmless, disclosed);
 the query is `IObjectManager::DeepestOtherContainment( ptWorld, self,
@@ -942,7 +965,10 @@ which names only `curv`/`occlusion`/`thickness` while the predicate matches
 five signals, gains `proximity`/`convexity`/`interior` — a second `add_wear`
 on a contact body is the common case that hits it. That string lives in
 the conditions scan and changes for EVERY input, so it is the ONE deliberate
-exception to the byte-identity claim below; the test pins its new text. The edge half (`edge_wear`,
+exception to the byte-identity claim below; the test pins its new text with
+a NEW assertion that names `interior` (today's `already-worn` check matches
+the opening substring, which an appended clause leaves intact, so it cannot
+detect the correction). The edge half (`edge_wear`,
 `crevice_grime`, `breakup_scale`, `grime_scale`, `cavity_gain`,
 `edge_desat`, `edge_lift`, `edge_tint`, `rough_polished`, `wear_mask`,
 `crevice_raw`, `cavity_boost`) is not emitted, so no chunk declares a
@@ -1130,7 +1156,11 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   composes; a TRANSFORMED composite (`position`/`orientation` on the
   `csg_object`, untransformed operands — the `glass_pavilion` column shape)
   answers within 1e-9 of the same composite built with the transform folded
-  into the operands; an intersection or subtraction with a sheet operand
+  into the operands — with operand A AXISYMMETRIC about the rotation axis
+  (the column's Y cylinder), because folding a rotation into a box operand
+  grows its parent-frame AABB, moves ε and shifts a probe-stepped answer by
+  ~ε, five orders above 1e-9; a box-minus-box fixture is compared at ~ε
+  instead; an intersection or subtraction with a sheet operand
   refuses; the operands never count separately (unchanged);
 - showcase: `glass_pavilion`'s fluted `subtraction` column `column2` stands
   UPRIGHT on its cap `cap2` (a 0.7 × 0.15 × 0.7 box whose top is y = 0.175;
@@ -1172,7 +1202,8 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   state is reached by a unit test that calls the σ routine — hoisted out of
   `FinalizeTransformations`' inline cache fill into a free
   `ComputeSigmaExtremes( M, maxSweeps, … )` the object calls — with a
-  zero-sweep budget and checks the printed state name;
+  zero-sweep budget and checks the state the routine RETURNS (the log line
+  that prints it is reachable only through `Object::DistanceToSurface`);
 - `interior(r)`: 0 on every scene-C probe that lies OUTSIDE its neighbours;
   on the six existing interpenetration probes (box, sphere, capped cylinder,
   torus on its tube's centre circle, ellipsoid and SDF centres — depths
@@ -2114,7 +2145,7 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
   explicitly declined for the same reason as for the other three signals).
 - Refusing families (RAW meshes, patches, hair, heightfield SDFs; CSG
   composites until Phase 3 — after it, an intersection/subtraction with a
-  sheet operand, a union of two refusing operands, a bracket with no admitted
+  sheet or heightfield-SDF operand, a union of two refusing operands, a bracket with no admitted
   landing in budget, and a seam gradient below 1e-12) read far. An
   intersection/subtraction answers within `[d − max(τ, sqrt(2Rτ)), d +
   gap_max]` (the lower term ≤ ε while the tangency radius `R < 1250 ×` the
