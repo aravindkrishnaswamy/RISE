@@ -3674,13 +3674,22 @@ namespace RISE
 			}
 
 			//! Clause (d)'s test, run over ONE referenced chunk's body text: does
-			//! it read any of the three geometry signals?  A whole-word-ish match
-			//! on `curv` (which also covers `curvR`) plus the two arg-taking
+			//! it read any of the shading signals?  A whole-word-ish match
+			//! on `curv` (which also covers `curvR`) plus the arg-taking
 			//! builtins.  Over-matching here can only make this verb DECLINE a
 			//! material a human already textured, which is the safe direction.
+			//!
+			//! ALL FIVE are listed, not the original three: `convexity` and
+			//! `proximity` shipped after this list was written and drifted
+			//! out of it.  `proximity` is the one that matters most here --
+			//! it is the CONTACT-GRIME signal, so a body that already reads
+			//! it is by definition already painting the wear this verb would
+			//! add, and `add_wear` must stand down rather than double it.
 			bool WearBodyReadsGeometrySignals_( const std::string& body )
 			{
-				static const char* const kSignals[] = { "curv", "occlusion", "thickness" };
+				static const char* const kSignals[] = {
+					"curv", "occlusion", "thickness", "convexity", "proximity"
+				};
 				for( const char* sigName : kSignals ) {
 					const std::string sig( sigName );
 					const std::size_t n = sig.size();

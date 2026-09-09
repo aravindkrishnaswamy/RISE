@@ -211,6 +211,35 @@ namespace RISE
 		//! points would be paid for by four extra key comparisons on every
 		//! MISS -- and a miss is the case that must stay cheap, since it
 		//! is what a scene the memo does not suit pays.
+		//!
+		//! THE CLIFF IS NOW EXACTLY FOUR SIGNALS WIDE, and that number is
+		//! no longer comfortably above the family.  When this table was
+		//! sized, "a three- or four-signal body" was the hypothetical head-
+		//! room above a two-signal working set.  With `proximity` shipped
+		//! there are FOUR signal KINDS (`occlusion`, `thickness`,
+		//! `convexity`, `proximity`), so `kL1Ways == 4` is no longer
+		//! headroom -- it is the exact capacity.  Stated precisely, because
+		//! the failure is a cliff and not a slope:
+		//!
+		//!   * The L1 key separates on (kind, radius, hit), NOT on kind
+		//!     alone -- so what fills a set is DISTINCT (kind, radius)
+		//!     PAIRS, and `occlusion(0.02)` and `occlusion(0.05)` are two
+		//!     of them.  A body making four distinct queries per hit sits
+		//!     exactly at capacity; the FIFTH evicts the first, and because
+		//!     the replacement is round-robin over a cyclic working set the
+		//!     hit rate does not degrade gracefully -- it goes to ~0 %.
+		//!   * Four distinct queries per hit is therefore fine, five is a
+		//!     collapse, and nothing in between exists.
+		//!
+		//! THE WAY COUNT IS NOT THE FIX.  Eight ways would double the
+		//! per-thread table and blow the 2048-byte TLS ceiling
+		//! `ExpressionMemoTest` (g) asserts -- already at 1824 bytes after
+		//! this signal's key growth.  The honest position is: four is what
+		//! the ceiling affords, the cliff is documented, and Phase 1 wave 2
+		//! MEASURES the L1 hit rate on `plank_closeup` (which makes three
+		//! distinct queries per hit, one under capacity) rather than
+		//! assuming it.  A body that needs five should be split across two
+		//! painters, which gives each its own hits.
 		const int kL1Ways = 4;
 		const int kL2Ways = 4;
 
