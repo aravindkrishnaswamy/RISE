@@ -1790,6 +1790,18 @@ namespace RISE
 		//! Thread-safe: `const`, reads only immutable post-build state, and
 		//! the scratch stack is `thread_local` exactly as the ray traversals'
 		//! stacks are.
+		//!
+		//! NOT RE-ENTRANT WITHIN ONE INSTANTIATION, and that is worth knowing
+		//! before writing a `primDist` that calls back into this method.  The
+		//! stack is one `thread_local` per instantiation and is `clear()`ed on
+		//! entry, so a nested call on the SAME `(Element, PrimDistFn)` pair
+		//! would wipe the outer traversal's stack.  The two shipped consumers
+		//! nest -- `ObjectManager::NearestOtherSurface` walks the TLAS and its
+		//! `primDist` reaches `TriangleMeshGeometryIndexed::DistanceToSurface`,
+		//! which walks a mesh tree -- and are safe because those are different
+		//! `Element` types AND different lambda types, hence different
+		//! instantiations with different stacks.  A future consumer that made
+		//! them the same would need a local stack instead.
 		//! \return TRUE and writes `outDist` when some primitive is strictly
 		//!         within `maxDist`, FALSE otherwise (`outDist` untouched).
 		template< class PrimDistFn >

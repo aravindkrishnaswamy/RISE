@@ -134,6 +134,18 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
   `proximity(3.0)`, so answering fixtures wear a warm halo and the
   emitter, the far box and the refusing families (Bezier patch, RAW mesh,
   heightfield SDF, non-coplanar quad, CSG composite) deliberately do not.
+  `proximity_mesh_contact` is the MESH-neighbour twin (scene D of the same
+  document, the Phase-2 acceptance render): `bunny.risemesh` placed so its
+  lowest vertex touches a plane, `dragon_small.risemesh` placed so ITS
+  lowest vertex touches the bunny's highest, a `casts_shadows FALSE` sphere
+  3 mm off the plane and a `rect_light` panel 2 mm off it. Its placement
+  numbers are OWNED BY `tests/MeshClosestPointTest.cpp`, which re-derives
+  each one from the assets and asserts it at 1e-6 against the scene header
+  — so a replaced or re-exported mesh fails the test rather than quietly
+  floating the bunny while every proximity check still passes. The floor's
+  grime is TINTED rather than merely darkened, because a darkening-only
+  term is indistinguishable from the key light's own contact shadow, which
+  is the confusion the signal exists to resolve.
 - `SMS/`: specular manifold sampling comparisons and visibility checks,
   including smooth, bump-mapped, and displaced Veach-egg controls
 - `Shaders/`: shader-op and rasterizer behavior checks

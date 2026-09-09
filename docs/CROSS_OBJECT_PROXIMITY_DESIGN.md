@@ -1,6 +1,15 @@
 # Cross-Object Proximity — a contact signal for grime, dust and wear
 
-**Status:** PHASE 1 SHIPPED — wave 1 (the engine) and wave 2 (the two
+**Status:** PHASE 2 SHIPPED 2026-09-09 — the MESH family answers, on a bounded
+closest-point traversal of its own BVH (exact: bit-identical to brute force
+on all 63,096 answered points of 110,000), `displaced_geometry` forwards to
+its baked mesh, scene D is placed by its own test, and the candidate scan
+became a **TLAS point query** because the flat scan FAILED Sponza's cost
+gate at 1.273× (it now passes at 1.067×).  §8.3 carries every measured
+number, each gate PASS/FAIL, and the four places building it corrected this
+document — including one the table got wrong: **a mesh is a SHEET for this
+query, with no interpenetration clamp**, unlike every solid family.
+PHASE 1 SHIPPED — wave 1 (the engine) and wave 2 (the two
 showcases, every Phase-1 gate measured) both landed 2026-09-08; §8.1 and §8.2
 carry what each wave built and where the code and the measurements corrected
 this document.  **One gate FAILED and is reported, not tuned to pass**: the
@@ -353,8 +362,15 @@ translation-only transform it stays `±DBL_MAX`, under rotation some axes
 overflow to ±inf) and either box contains every point under ordinary
 containment with no NaN, so they are admitted by the same test as everything
 else. An implementer must **not** skip non-finite boxes to dodge NaN, or every
-plane disappears. The TLAS point query (walk `nodes4[]` for boxes containing the
-point) is the Phase-2 upgrade if the flat scan measures above budget on E.
+plane disappears. The TLAS point query was the Phase-2 upgrade if the flat scan measured above
+budget on E. **It did (1.273× against a ≤ 1.25× gate) and the upgrade SHIPPED**
+— but not as "walk `nodes4[]` for boxes containing the point". It reuses
+`BVH::ClosestPointDistance`, the same bounded closest-point traversal the mesh
+family uses on its own triangles, one level up, over the BVH2 `nodes` array;
+that prunes by the running best and orders nearest-first, which a containment
+walk does not. §8.3 has the measurement that forced it, the one that kept it,
+and the contract shift it carries. The flat scan REMAINS for scenes with no
+TLAS (≤ 4 objects, or `bUseBSPtree` off).
 
 **Transform.** The point goes to object space through `GetFinalInverseTransformMatrix()`.
 For an invertible linear map `M` (translations cancel) a point-to-set distance
@@ -403,8 +419,8 @@ transforms are translation-only.
 | Clipped plane | `ClippedPlaneGeometry` stores four ARBITRARY corners — it is a bilinear patch; answers the point-to-quad closed form only when the corners are **coplanar AND convex** (both checked once at construction), else refuses | exact on **CONVEX** planar quads (every `rect_light`), **refuses otherwise** | 1 |
 | Ellipsoid | scaled-sphere bound | upper bound, ≤ ratio of semi-axes (a 4:1 ellipsoid at true 2.75 reports 11.0) | 1 |
 | SDF / skeleton | bracketed sign change, below | **upper bound**, gap measured in C | 1 |
-| Indexed triangle mesh (every loader but RAW; tessellated primitives; `displaced_geometry`'s internal mesh) | closest point on the mesh's own BVH: a bounded-radius traversal ordered by AABB distance, pruning past the running best, point–triangle distance at the leaves | exact (identical to brute force under the same point–triangle formula; node boxes are conservative `float`, sound for pruning) | 2 |
-| Non-indexed mesh (RAW) | refuses (no BVH) | — | — |
+| Indexed triangle mesh (every loader but RAW; tessellated primitives; `displaced_geometry`'s internal mesh) | **SHIPPED (§8.3).** Closest point on the mesh's own BVH2: a bounded-radius traversal visiting the two children of each node nearest-AABB-first, pruning any node whose point-to-AABB distance is ≥ the running best, `PointTriangleDistance` (Ericson's region method) at the leaves. **SHEETS, with NO interpenetration clamp** — unlike every solid family, which clamps a signed field at zero so a point inside reads 0; a triangle soup carries no inside test (it may be open, non-manifold or self-intersecting), so a point inside a closed mesh reports its honest distance to the nearest triangle. That is the safe direction: an over-report under-paints, never over-paints. | exact — identical to brute force under the same point–triangle formula, **measured bit-for-bit on 63,096 answered points of 110,000** (§8.3); node boxes are conservative `float`, rounded OUTWARD at build, so reading them can only ADMIT a node the pruning could have skipped | 2 |
+| Non-indexed mesh (RAW) | refuses (no BVH). Still true after Phase 2, and pinned by `MeshClosestPointTest` (e), which asks the RAW family and its INDEXED twin the same question about the same triangle: the twin answers 1.0, the RAW one refuses | — | — |
 | CSG composite | refuses in v1 (its surface is not the min of its operands' under subtraction/intersection); union-min with the exact boundary test is Phase 3 | — | 3 |
 | Patches, hair | refuse | — | — |
 
@@ -1080,6 +1096,291 @@ now in them, and the workbench's says which claim it retracts.
 | `ExpressionMemoTest` | 196 passed, 0 failed |
 | temporary counter removed | PASS |
 
+### 8.3 Phase 2 — the mesh family, the TLAS point query, scene D and Sponza
+
+Phase 2 shipped the mesh row of §5.2's table, the scene-D fixture and its
+test, and — because the Sponza cost gate FAILED on the flat candidate scan —
+the TLAS point query that §5.2 had held in reserve. `ExpressionEval.h` is
+**byte-identical to the branch point** (`d722d4d6`): Phase 2 touches no VM.
+
+**What was built.** `BVH<Element>::ClosestPointDistance`
+([BVH.h](../src/Library/Acceleration/BVH.h)) is a bounded-radius closest-point
+traversal: it visits the two children of each node nearest-AABB-first, prunes
+any node whose point-to-AABB distance is ≥ the running best, and evaluates a
+caller-supplied exact primitive distance at the leaves. It uses the BVH2
+`nodes` array, **not** the BVH4 SoA — the wide layout exists to batch four
+ray-vs-AABB *slab* tests in one SIMD op, and a point query has no ray, no slab
+test and no direction to sort by; its win is a sorted nearest-first descent,
+which a binary node gives by sorting two and a 4-wide node would need a partial
+sort of four to reproduce. `nodes` is always populated when `nodes4` is, since
+the wide layout is derived from it.
+
+*Why it is identical to brute force and not merely close:* a node is skipped
+only when the point is at least `best` from that node's AABB, and every
+primitive the node owns lies inside that AABB, so none of them could have
+lowered `best`. The boxes are `float` and rounded OUTWARD at build, which can
+only make the box distance SMALLER than the true one — i.e. can only ADMIT a
+node the pruning could have skipped. Sound in the only direction that matters.
+A tie (two primitives at bit-equal distance) is the sole freedom, and it does
+not move the reported value.
+
+`TriangleMeshGeometryIndexed::PointTriangleDistance` is public and static so
+the test drives the same formula for its reference. Degenerate (zero-area)
+triangles take an explicit three-edge fallback instead of the barycentric
+interior branch, whose denominator is the vanishing doubled area: a NaN there
+would lose every comparison in the traversal and vanish as an **invisible hole
+in the mesh** rather than fail loudly.
+
+`DisplacedGeometry::DistanceToSurface` forwards to the baked mesh after
+`Realize()` — which the ray forwarders deliberately do not call, because they
+are the hot path and pay for a bake `RayCaster::AttachScene` already did, while
+this query is rare, heavy, and reachable from a test or tool that never went
+through AttachScene. On an already-realized geometry `Realize()` is one acquire
+load and returns before its own render-freeze assert.
+
+**Where this document was wrong, or under-specified.**
+
+1. **The mesh row is SHEETS, and §5.2's table did not say so.** Every solid
+   family Phase 1 shipped clamps a signed field at zero, so a point inside
+   reads 0 and interpenetration is contact (§2). A triangle mesh has no inside
+   test *at all* — it may be open, non-manifold or self-intersecting, and
+   nothing in the class distinguishes "inside the bunny" from "in the air
+   beside it". So there is **no interpenetration clamp** on this row, and a
+   point inside a closed mesh reports its honest distance to the nearest
+   triangle. That is the safe direction (over-report → under-paint), and the
+   table now says it.
+2. **The TLAS upgrade is not the walk §5.2 described.** §5.2 said "walk
+   `nodes4[]` for boxes containing the point expanded by r". A containment walk
+   collects candidates but neither prunes by the running best nor visits them
+   in a useful order; the implementation reuses `ClosestPointDistance` over the
+   BVH2 nodes instead, which does both.
+3. **The TLAS carries a contract shift, not only a speed-up.** The AABB
+   snapshot's count check (§8.1) rebuilds it when an object was ADDED without
+   an invalidate; the TLAS has no such check. On a TLAS-backed scene a
+   proximity query is now exactly as stale as the RENDER — `IntersectRay` walks
+   that same tree, so an object invisible to this query is equally invisible to
+   the picture. That is *closer* to "the signal measures the scene you are
+   looking at" than the previous state, where proximity could see a neighbour
+   the frame did not. The case §8.1's check was actually written for — an add
+   on a scene of four or fewer objects, where the linear `IntersectRay` loop
+   WOULD draw the new object — keeps the flat scan and keeps the check, and
+   `ProximitySignalTest` (g) still pins it.
+4. **A scene-language trap found while authoring scene D, and NOT fixed here.**
+   `standard_object`'s `scale` is a `DoubleVec3`. Writing it with ONE number
+   (`scale 0.35`) derives to a **degenerate transform with no diagnostic** —
+   the object silently disappears from the render and refuses every proximity
+   query (`Object::DistanceToSurface` rejects `σ_min ≤ 0`). Verified by
+   re-introducing the edit: `MeshClosestPointTest`'s mesh-on-mesh station goes
+   1.0 → 0. This is a parser gap outside Phase 2's scope; recorded in §10.
+
+**(a) The differential — `MeshClosestPointTest` (a), 56 checks total in the
+suite.** Traversal vs brute force over EVERY triangle, under the SAME
+point-triangle formula, at three radii per point (unbounded, the mesh's box
+diagonal, and 2 % of it, so refusals are compared as well as answers):
+
+| mesh | tris | points | answered | refused-both | bit-identical | value mismatch | yes/no mismatch | max abs diff |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| tessellated sphere (engine `TessellateToMesh`, detail 48) | 4,608 | 40,000 | 27,244 | 12,756 | 27,244 | 0 | 0 | **0** |
+| `bunny.risemesh` | 69,451 | 40,000 | 15,643 | 24,357 | 15,643 | 0 | 0 | **0** |
+| two-triangle sliver | 2 | 15,000 | 10,194 | 4,806 | 10,194 | 0 | 0 | **0** |
+| degenerate (collinear / coincident) | 4 | 15,000 | 10,015 | 4,985 | 10,015 | 0 | 0 | **0** |
+| **total** | | **110,000** | **63,096** | **46,904** | **63,096** | **0** | **0** | **0** |
+
+**(b) The closed form.** A tessellated sphere is an INSCRIBED polyhedron, so
+for a point at radius `t > R` the exact mesh distance is bracketed with no
+appeal to a chord-error formula: `t − R ≤ d ≤ t − ρ`, where `ρ` is the
+polyhedron's inradius (the ray from the origin through `p` meets the mesh at
+some `q` with `|q| ≥ ρ`). `ρ` is **measured from the fixture** with the same
+point-triangle formula — it is exactly the distance from the origin to the mesh
+— so the bound is a property of the mesh that was built, not one assumed.
+
+| quantity | value |
+|---|---:|
+| R | 1 |
+| measured inradius ρ (detail 48) | 0.997327 |
+| **tessellation bound `R − ρ`** | **0.00267306** |
+| worst over-report vs `\|p\| − R` across 18 probes | **0.000505703** |
+
+Every probe lands in `[t − R, t − R + (R − ρ)]`; the worst is inside the bound
+and is NOT zero, so the bound is doing work rather than being vacuous.
+
+**(c) The radius cut-off** is driven at the exact boundary from both sides.
+`maxDist` exactly equal to the distance REFUSES; one ulp above answers with the
+same value the unbounded call gave; one ulp below refuses — the half-open
+`[0, maxDist)` range §10 states. Zero and negative radii refuse.
+
+**(d) The displaced forward.** A `DisplacedGeometry` over a sphere of R = 1
+with a constant height and `disp_scale = 0.25`, probed at radius 5, answers
+**3.75** (the displaced surface at R + h = 1.25) and not 4 (the smooth base).
+The 0.25 separation is the whole error an author would eat if this forwarded to
+the base.
+
+**(e) RAW still refuses**, and the check has teeth: the identical triangle in
+the INDEXED family answers exactly 1.0 from the same probe point.
+
+**(f) Concurrency.** 8 threads × 4,000 queries against one bunny mesh: **0
+mismatches** against the serial reference, bit for bit.
+
+**(h) The two candidate sources agree.** Two managers over ONE SHARED object
+set (10 spheres + a tessellated-sphere mesh), differing only in `bUseBSPtree`,
+so one walks the TLAS and the other cannot build one; 6,000 probes at three
+radii with `self` rotating through the set: **2,484 agreed-answered, 3,516
+agreed-far, 0 mismatches**. Sharing the objects rather than rebuilding them is
+what makes the comparison exact — there is no second construction for a float
+to differ in.
+
+**Scene D — `scenes/Tests/Signals/proximity_mesh_contact.RISEscene`.**
+Placement is OWNED by the test, which loads both meshes through the same
+deserialize the scene's `risemesh_geometry` chunks use and re-derives every
+number at 1e-6:
+
+| quantity | value | method |
+|---|---:|---|
+| bunny bbox floor / lowest vertex y | 0.0329874 | equal to 1e-15 — the box is computed in double from the vertex array, and the test checks that too |
+| bunny `position.y` | **−0.0329874** | `−(bbox floor)`, putting the lowest vertex exactly on the plane (residual 0.0) |
+| bunny contact footprint (world x, z) | (−0.053835, 0.0179508) | the lowest VERTEX, a foot — not the bbox midpoint |
+| dragon scale | 0.35 | |
+| dragon `position` | **(−0.0318315, 0.135862595, −0.014760295)** | its lowest vertex onto the bunny's highest vertex — vertex-onto-vertex, **not** bbox-onto-bbox, because the latter only makes the two BOXES touch and leaves the SURFACES an unknown distance apart |
+
+Gate, at `proximity(0.02)`:
+
+| station | measured | gate | verdict |
+|---|---:|---|---|
+| plane 1 mm outside the footprint, +X / −X / +Z / −Z | 0.9519 / 0.9740 / 0.9865 / 0.9913 | ≥ 0.9 | **PASS** |
+| plane 2 mm outside the footprint (worst of four) | **0.9037** | ≥ 0.9 | **PASS** (narrowly, and reported as such) |
+| plane under the `rect_light` panel at (0.6, 0, 0) | **0** | exactly 0 | **PASS** — would read 0.9 if emitters counted |
+| plane under the `casts_shadows FALSE` sphere at (−0.6, 0, 0) | **0.85** | closed form 1 − 0.003/0.02 = 0.85 at 1e-6 | **PASS** |
+| open plane at (1.8, 0, 1.8) | 0 | 0 | **PASS** |
+| mesh-on-mesh at the shared contact vertex, `self` = bunny | **1.0** | ≥ 0.999 | **PASS** |
+| …5 mm below it, `self` = bunny | **0.75** | closed form 1 − 0.005/0.02 at 1e-6 | **PASS** |
+
+*The mesh-on-mesh station asks with the BUNNY as `self`, and that is not
+cosmetic.* The shared contact point lies on BOTH surfaces, so asking with the
+dragon as `self` reads 1 even when the dragon is absent — and it did: the first
+draft wrote `scale 0.35` into the per-axis slot (trap 4 above), which made the
+dragon degenerate and invisible, and that station still read 1.0. With the
+bunny excluded, a missing dragon reads the plane 0.135 m below and the station
+goes to 0.
+
+*The render* (`$OUT/sceneD_proximity_mesh_contact.png`) is the acceptance
+picture. The floor's grime is **tinted toward brown rather than merely
+darkened**, and that is a legibility decision made after looking at the frame:
+a multiply-down term produces a band under the bunny that is visually
+indistinguishable from the key light's own contact shadow — precisely the
+confusion this signal exists to resolve (§2), and a picture where the two look
+alike proves nothing to a reader. Honest read of the frame: under the
+`casts_shadows FALSE` sphere, where no shadow exists at all, the grime is an
+unambiguous soft warm ellipse; at the bunny's feet it is a thin warm band
+hugging the footprint, legible but adjacent to (and partly overlapped by) the
+neutral cast shadow.
+
+**Scene E — Sponza, the cost gate.** `640×360×32`, the §8.1 protocol, the query
+forced at EVERY hit through a temporary env-gated hook in the PT integrator's
+surface-hit path (`RISE_PROX_FORCE`, a `volatile` sink so nothing is
+dead-code-eliminated; removed before the final commit, and
+`grep -rn "RISE_PROX_FORCE" src` is empty). The asset lives outside the repo,
+so the tracked scene was copied with its Windows `file` path rewritten.
+
+*Queries per frame and per sample:* **27,000,000** forced queries per frame —
+matching §8.1's "~27 M hits per Sponza frame" estimate — which over
+`640×360×32 = 7,372,800` camera samples is **3.66 queries per camera sample**.
+
+*The flat scan, and why it failed.* Per-query counters at the 25 M mark:
+**405.0 entries walked, 4.6426 candidates past the box test, 8,235,325 of 25 M
+queries answered (32.9 %)** — 87 box tests for every distance call. Interleaved
+runs, two warm-ups first (18.389 s base, 24.948 s / 24.571 s forced), machine
+confirmed idle with `pgrep -fl "make|clang|bin/rise"`:
+
+| pair | base | forced | ratio | scan-only |
+|---|---:|---:|---:|---:|
+| p1 | 19.092 s | 24.817 s | 1.300× | 24.534 s |
+| p2 | 19.859 s | 24.501 s | 1.234× | 23.971 s |
+| p3 | 19.045 s | 24.511 s | 1.287× | 23.545 s |
+| **mean** | **19.332 s** | **24.610 s** | **1.273×** | **24.017 s** |
+
+**1.273× against a ≤ 1.25× gate: FAIL.** The scan-only column is a third
+variant that walks the snapshot and runs the box test but never asks a
+geometry, so the split is measured rather than argued:
+`(24.017 − 19.332) / (24.610 − 19.332)` = **88.8 % of the added cost is the
+flat scan**, 11.2 % the per-family distance work.
+
+*The TLAS point query, and why it was kept.* Same protocol, two fresh
+warm-ups (18.610 s base, 21.577 s forced):
+
+| pair | base | forced | ratio |
+|---|---:|---:|---:|
+| q1 | 18.946 s | 20.764 s | 1.096× |
+| q2 | 18.823 s | 19.955 s | 1.060× |
+| q3 | 19.957 s | 20.446 s | 1.025× |
+| q4 | 19.261 s | 20.950 s | 1.088× |
+| **mean** | **19.247 s** | **20.529 s** | **1.067×** |
+
+**1.067× against ≤ 1.25×: PASS.** Kept on that measurement; had it not measured
+faster it would have been reverted, and this section would have said so. The
+counters after the change: **0 entries flat-scanned, 11.0785 candidates
+evaluated per query** — *more* geometry calls than the flat scan's 4.64,
+because a BVH leaf holds up to four objects and the traversal evaluates all of
+a leaf's occupants once the leaf's own box is within the running best, with no
+per-object box test in between. That trade is strongly positive here (405 box
+tests traded for ~6 extra distance calls, most of which refuse immediately),
+and it is the obvious place to look first if a future scene regresses.
+
+*The seam gate.* Measured with a throwaway probe tool (deleted with the hooks)
+that finds the floor and the nearest wall by ray casting, so the coordinates
+are the asset's rather than guessed. The floor point is (−6, ≈0, 0); the
+nearest wall is the −X one at 5.130 m. **The wall must be probed at floor
+level, not at a convenient height** — a first pass cast the wall ray at 5 cm and
+put its "2 cm" station at a true 2.16 cm, reading 0.4600 and appearing to fail;
+the signal was exactly right (0.4600 = 1 − 0.0216/0.04) and the probe was not.
+
+| step back from the wall | true distance | `proximity(0.04)` | gate |
+|---:|---:|---:|---|
+| 1 cm | 0.0100 | **0.75** | — |
+| 2 cm | 0.0200 | **0.50** | ≥ 0.5 → **PASS**, exactly at it |
+| 4 cm | ≥ 0.04 (refused) | **0** | — the half-open cut-off (§10) |
+| 8 cm | refused | 0 | — |
+
+*The beauty check.* A second temporary hook (`RISE_PROX_DUST`, removed with the
+rest) multiplied throughput by `1 − 0.6·proximity(0.04)` at every hit, against
+an unmodified control. Honest read: at 4 cm on a scene measured in metres the
+signal fires along the paving-slab joints, the column plinth/floor junctions
+and the arch springings, and in a side-by-side 4× crop of a column base the
+dust frame is visibly darker at exactly those lines. But the frame is also
+darker **overall**, and that is the hook rather than the signal — multiplying
+*throughput* at every vertex darkens indirect light from any path that touched
+a near-contact point anywhere, so the effect spreads through GI instead of
+staying on the seam an albedo term would draw. A difference image is
+**not** usable evidence here and is reported as such: the two renders draw
+independent random sequences (path guiding is on in this scene, and renders
+seed from the wall clock), so the difference is dominated by sampling noise,
+not by dust. Frames and crops are in `$OUT/sponzaE_*.png`.
+
+**Gate summary.**
+
+| Phase-2 gate | verdict |
+|---|---|
+| warning-free clean `make -C build/make/rise -j8 all` | PASS |
+| closest point identical to brute force, ≥ 10⁵ random points | PASS (110,000 points, 63,096 answered, 0 mismatches, max abs diff exactly 0) |
+| within the closed form on a tessellated sphere | PASS — bracketed by the mesh's own measured inradius; worst over-report 5.06e-4 against a 2.67e-3 bound. **NOT** the literal "within 1e-9": an inscribed polyhedron is not the sphere, and quoting 1e-9 would have meant testing the tessellation, not the query |
+| scene D placed by the test, asserted at 1e-6 | PASS (4 placement checks; residual 0.0 on the bunny's contact vertex) |
+| scene D ≥ 0.9 within 2 mm of the bunny's footprint | PASS (0.9037 worst of four, narrowly) |
+| scene D reads 0 under the light panel | PASS (exactly 0) |
+| Sponza ≤ 1.25× baseline with the query forced at every hit | **PASS at 1.067× — after the TLAS point query. FAILED at 1.273× on the flat scan, which is why the upgrade shipped** |
+| Sponza floor ≥ 0.5 within 2 cm of a wall at `proximity(0.04)` | PASS (0.50, exactly at the gate) |
+| `MeshClosestPointTest` | 56 passed, 0 failed |
+| `ProximitySignalTest` | 107 passed, 0 failed |
+| `ProximityInvalidationTest` | 25 passed, 0 failed |
+| `ExpressionMemoTest` | 196 passed, 0 failed |
+| `TextureExpressionVMTest` | 846 passed, 0 failed (unmoved) |
+| `MeshSignalBakeTest` | 110 passed, 0 failed |
+| `DisplacedGeometryTest` / `GeometryUVRoundtripTest` | PASS |
+| `CstDeriveGoldenTest` | PASS; regenerated golden differs by exactly ONE added row (scene D) |
+| `SourceHygieneTest` | 165 passed, 0 failed |
+| every suite naming `TriangleMeshGeometryIndexed` / `DisplacedGeometry` / `BVH` | 46 suites, all green, run one at a time |
+| `ExpressionEval.h` byte-identical to `d722d4d6` | PASS (`git diff` empty) |
+| temporary hooks removed | PASS (`grep -rn "RISE_PROX_FORCE" src` empty; probe tool deleted) |
+
+
 ---
 
 ## 9. Test plan
@@ -1126,8 +1427,15 @@ now in them, and the workbench's says which claim it retracts.
   be a flake and an accessor is the only honest observation.
 - `SourceHygieneTest`: no assignment to `.signals` outside the two intersectors,
   CSG adoption, and `BuildContext`.
-- Phase 2: `MeshClosestPointTest` differential against brute force; scene D's
-  probe values.
+- Phase 2 (SHIPPED, §8.3): `tests/MeshClosestPointTest.cpp`, 56 checks --
+  the differential against brute force over every triangle (110,000 points,
+  0 mismatches); the tessellated sphere against `|p| - R` inside a bound
+  measured from the mesh; the `maxDist` cut-off at the exact boundary from
+  both sides; the `displaced_geometry` forward; the RAW family still
+  refusing where its indexed twin answers; 8 threads agreeing with serial;
+  the TLAS point query and the flat scan agreeing over one SHARED object
+  set; and scene D's placement RE-DERIVED FROM THE ASSETS and asserted at
+  1e-6 against the scene header, plus its probe values.
 
 ---
 
@@ -1188,8 +1496,36 @@ now in them, and the workbench's says which claim it retracts.
 - Per-sample motion blur: a neighbour moving under a non-keyframed painter can
   serve a stale query-memo entry only at a bit-identical receiver point, which
   sub-pixel jitter makes essentially unreachable; no scene in §1 exercises it.
-- The candidate scan is linear in object count over cached AABBs; Sponza (405)
-  is the measured ceiling, the TLAS point query the upgrade.
+- **The candidate scan is no longer linear in object count where a TLAS
+  exists** (§8.3): `NearestOtherSurface` walks the top-level BVH as a point
+  query there, and the linear scan over cached AABBs remains only for
+  scenes with no TLAS (four objects or fewer, or `bUseBSPtree` off).  Two
+  residuals come with that.  (i) A **contract shift**: on a TLAS-backed
+  scene the query is exactly as stale as the render is, because
+  `IntersectRay` walks the same tree -- the snapshot's add-detecting count
+  check (§8.1) governs only the small-scene fallback now.  (ii) A BVH leaf
+  holds up to four objects and the traversal evaluates all of a leaf's
+  occupants once the leaf's box is within the running best, with no
+  per-object box test in between: 11.08 distance calls per query on Sponza
+  against the flat scan's 4.64.  Strongly positive there (405 box tests
+  traded for ~6 mostly-refusing distance calls) and the first place to look
+  if a scene with expensive-to-answer neighbours regresses.
+- **A mesh neighbour is a SHEET, and no other shipped family is.**  Every
+  solid family clamps a signed field at zero, so a point inside reads 1;
+  a point inside a closed MESH reads its honest distance to the nearest
+  triangle instead, because a triangle soup carries no inside test.  The
+  direction is safe (an over-report under-paints) but the inconsistency is
+  real: a receiver buried inside a mesh neighbour will not read contact.
+  A signed/inside variant for meshes needs a robustly closed-mesh test and
+  belongs with the Phase-3 signed variant.
+- **`standard_object`'s `scale` written with ONE number derives to a
+  DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
+  produces no diagnostic, makes the object vanish from the render, and
+  makes it refuse every proximity query (`Object::DistanceToSurface`
+  rejects `sigma_min <= 0`).  Found while authoring scene D and verified by
+  re-introducing it (§8.3, trap 4).  A parser gap, outside this design's
+  scope, recorded here because it is a live trap for anyone placing an
+  object for a contact scene.
 - The signal is unsigned: it cannot distinguish "just above the floor" from
   "just below it"; a signed variant needs an inside test per family (Phase 3).
 - The query reads other objects' transforms and so joins the pre-existing

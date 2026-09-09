@@ -143,7 +143,11 @@
 //  rotation is a HASH OF THE HIT POSITION, SDFGeometry::
 //  SignalRotationIndex, not a draw from an RNG -- so it is part of the
 //  key, not a hidden input).  The mesh family answers from a table that
-//  is built once and immutable thereafter.  The one thing the key cannot
+//  is built once and immutable thereafter -- and, since Phase 2 of the
+//  proximity signal, ALSO from a bounded closest-point traversal of its
+//  own BVH, which is likewise a `const` function of immutable post-build
+//  state (its scratch stack is `thread_local`, so it is not shared state
+//  the key would have to see either).  The one thing the key cannot
 //  see is a PROVIDER'S OWN STATE changing behind a stable pointer, which
 //  is what the generation counter below is for.
 //
