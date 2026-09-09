@@ -577,9 +577,11 @@ Each phase runs the implementation-review-loop to zero P1 before merge.
 
 Wave 1 shipped the channel, the memo keys, the builtin, the query, the AABB
 snapshot, the σ bounds, the analytic + SDF families, scene C,
-`ProximitySignalTest` (99 checks) and `ProximityInvalidationTest` (20).
-Scenes A and B, their probe protocols and the cost measurements are wave 2 and
-are NOT done. Five places where building it corrected this document:
+`ProximitySignalTest` (104 checks), `ProximityInvalidationTest` (20) and four
+new `ExpressionMemoTest` rows (161 → 196).
+Scenes A and B, their probe protocols and EVERY cost measurement §8's Phase-1
+gate names are wave 2 and are NOT done. Five places where building it
+corrected this document:
 
 - **`r / σ_min` is sound but not separately observable.** §5.2 reasons that
   converting the radius in by the *smallest* singular value is what keeps a
