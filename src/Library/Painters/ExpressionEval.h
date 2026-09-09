@@ -329,7 +329,7 @@ namespace RISE
 			//! substituting the baked radius).
 			struct SignalRadiusCall
 			{
-				int    fn;				//!< kFnOcclusion, kFnThickness or kFnConvexity
+				int    fn;				//!< kFnOcclusion, kFnThickness, kFnConvexity or kFnProximity
 				bool   radiusIsLiteral;
 				Scalar radiusLiteral;	//!< meaningful only when radiusIsLiteral
 			};
@@ -713,6 +713,26 @@ namespace RISE
 			//! argument).  It exists for introspection and for Phase 3's bake
 			//! trigger, which genuinely does need to know up front.
 			bool UsesSurfaceSignals() const { return !m_signalCalls.empty(); }
+
+			//! Does this program call `proximity()` specifically?  Resolved
+			//! at COMPILE time from the same `m_signalCalls` list.
+			//!
+			//! SEPARATE from UsesSurfaceSignals, and wired to a REAL cost
+			//! gate rather than a diagnostic: `proximity` is the one signal
+			//! in the family with a scene-level prerequisite (the object
+			//! manager's world-AABB snapshot), so a scene that never calls
+			//! it must not pay for one.  See ProximityDemand's own doc
+			//! comment in ISurfaceSignalProvider.h.
+			//!
+			//! Linear over the call list, which is a handful of entries and
+			//! is walked once per painter construction -- never per hit.
+			bool UsesProximity() const
+			{
+				for( std::size_t i = 0; i < m_signalCalls.size(); ++i ) {
+					if( m_signalCalls[i].fn == kFnProximity ) return true;
+				}
+				return false;
+			}
 
 			//! Every `occlusion()` / `thickness()` / `convexity()` /
 			//! `proximity()` call site, in parse order

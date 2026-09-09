@@ -210,6 +210,14 @@ namespace RISE
 			//! transport" at render start, for the one-time containment warning.
 			SurfaceSignalDemand::Registration m_signalDemand;
 
+			//! COST gate, not a diagnostic one -- see ProximityDemand's doc
+			//! comment (ISurfaceSignalProvider.h).  Active iff this
+			//! painter's compiled body calls `proximity()`, and what it
+			//! buys is that ObjectManager builds no world-AABB snapshot and
+			//! ObjectManager::IntersectRay checks for none when nothing in
+			//! the process asks for the signal.
+			ProximityDemand::Registration m_proximityDemand;
+
 			virtual ~ExpressionPainter() {}
 
 			ExprEvalContext BuildContext( const RayIntersectionGeometric& ri ) const;
@@ -229,7 +237,8 @@ namespace RISE
 				const Scalar time, const SpectrumKind kind = eSpectrumKind_Albedo ) :
 				m_prog( prog ), m_paramSpecs( paramSpecs ), m_time( time ), m_kind( kind ),
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
-				m_signalDemand( prog.UsesSurfaceSignals() )
+				m_signalDemand( prog.UsesSurfaceSignals() ),
+				m_proximityDemand( prog.UsesProximity() )
 			{}
 
 			//! S4 introspection: full param metadata (min/max/step/label),
@@ -299,6 +308,14 @@ namespace RISE
 			//! least as likely an authoring shape as the colour pipe's, so
 			//! both must register or the containment diagnostic would miss it.
 			SurfaceSignalDemand::Registration m_signalDemand;
+			//! See ExpressionPainter::m_proximityDemand -- the same COST
+			//! gate on the physical-scalar pipe.  Both pipes must register:
+			//! `scalar_painter { expression "1-proximity(0.002)" }` feeding
+			//! a roughness slot is exactly as likely an authoring shape as
+			//! the colour pipe's, and a gate that missed it would skip the
+			//! snapshot build for a scene that genuinely needs one (which
+			//! the lazy path would then pay for under the lock).
+			ProximityDemand::Registration m_proximityDemand;
 			virtual ~ExpressionScalarPainter() {}
 
 			static Scalar SafeComp( const Scalar v ) { return ExpressionProgram::IsFinite( v ) ? v : Scalar(0); }
@@ -309,7 +326,8 @@ namespace RISE
 			ExpressionScalarPainter( const ExpressionProgram& prog, const std::vector<ParamSpec>& paramSpecs ) :
 				m_prog( prog ), m_paramSpecs( paramSpecs ),
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
-				m_signalDemand( prog.UsesSurfaceSignals() )
+				m_signalDemand( prog.UsesSurfaceSignals() ),
+				m_proximityDemand( prog.UsesProximity() )
 			{}
 
 			//! S4 introspection: full param metadata, in `param` line order.

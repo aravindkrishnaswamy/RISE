@@ -680,6 +680,91 @@ namespace RISE
 		};
 	}
 
+	//! CONSUMPTION GATE for `proximity()` -- and unlike SurfaceSignalDemand
+	//! above, this one is NOT diagnostic-only: it gates real per-pass and
+	//! per-ray work.
+	//!
+	//! WHY PROXIMITY NEEDS ITS OWN COUNTER when the other four share one.
+	//! The three self-signals cost nothing until called: their provider is
+	//! a pointer already on the record and their estimators are lazy.
+	//! `proximity` is the first signal with a SCENE-LEVEL prerequisite --
+	//! `ObjectManager`'s world-AABB snapshot, which is an allocation plus a
+	//! `getBoundingBox()` per object (eight corners through a matrix, each)
+	//! and which `ObjectManager::IntersectRay` was checking on EVERY ray to
+	//! keep alive.  That is a load, a compare and a heap indirection on the
+	//! hottest path in the renderer, paid by every scene in the tree
+	//! including the overwhelming majority that never mention the builtin.
+	//!
+	//! So the eager build in `PrepareForRendering` and the per-ray
+	//! `EnsureBoxSnapshot()` are both gated on `Any()`, which is one
+	//! relaxed atomic load. `NearestOtherSurface` still builds LAZILY under
+	//! the tree mutex when asked with no snapshot, so correctness never
+	//! depends on the counter -- only cost does.
+	//!
+	//! THE TRADE, stated: a consumer that reaches `NearestOtherSurface`
+	//! WITHOUT registering -- a hypothetical direct caller, or a test --
+	//! pays the whole snapshot build under the lock on its first call
+	//! rather than having it ready. That is a one-time cost on a path that
+	//! by construction has no registered painter driving it, and it is the
+	//! right direction: the alternative is charging every scene in the tree
+	//! for a query nobody made.
+	//!
+	//! Same mechanism and same thread-safety argument as SurfaceCurvature's
+	//! and SurfaceSignalDemand's: an atomic mutated only at painter
+	//! construction/destruction (scene build/teardown), loaded relaxed from
+	//! render threads. A false positive (a painter from another job in the
+	//! same process still alive) costs one snapshot build, never a wrong
+	//! render.
+	namespace ProximityDemand
+	{
+		//! The single counter.  A function-local static inside an inline
+		//! function has exactly one instance across all translation units.
+		inline std::atomic<int>& Counter()
+		{
+			static std::atomic<int> counter( 0 );
+			return counter;
+		}
+
+		//! Does any live compiled program call `proximity()`?  One relaxed
+		//! atomic load.
+		inline bool Any()
+		{
+			return Counter().load( std::memory_order_relaxed ) > 0;
+		}
+
+		//! RAII demand reference -- same shape as
+		//! SurfaceSignalDemand::Registration.
+		class Registration
+		{
+		public:
+			explicit Registration( bool active = false ) : m_active( active )
+			{
+				if( m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+			}
+			Registration( const Registration& other ) : m_active( other.m_active )
+			{
+				if( m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+			}
+			Registration& operator=( const Registration& other )
+			{
+				if( this != &other ) {
+					if( other.m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+					if( m_active ) Counter().fetch_sub( 1, std::memory_order_relaxed );
+					m_active = other.m_active;
+				}
+				return *this;
+			}
+			~Registration()
+			{
+				if( m_active ) Counter().fetch_sub( 1, std::memory_order_relaxed );
+			}
+			bool IsActive() const { return m_active; }
+
+		private:
+			bool m_active;
+		};
+	}
+
 	//! Containment diagnostic for the geometry-derived shading signals'
 	//! disclosed BDPT/VCM/MLT gap (design doc §13 Phase-2 "Known residual",
 	//! §14 item 11): `PathVertexEval.h`'s `PopulateRIGFromVertex` -- and
