@@ -542,8 +542,10 @@ pinned one.
 Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
-2026-09-09 before Phase 3 began; revised the same day after two adversarial
-rounds (round 2, 3 P1s: a union had no signed rule; the glass_pavilion probe
+2026-09-09 before Phase 3 began; revised the same day after three adversarial
+rounds (round 3, 1 P1: the bracket's `f ≤ 0` landing admits the phantom
+touching set where operand boundaries are tangent — `glass_pavilion`'s flute
+slot is exactly that case; round 2, 3 P1s: a union had no signed rule; the glass_pavilion probe
 stations sat inside the column's cap; `add_wear`'s flat-receiver gate lives in
 the conditions scan, not the verb; round 1, 7 P1s: the union fast path composed under-reading magnitudes; CSG
 operands live in the COMPOSITE's frame, not world space; the inside depth was
@@ -581,7 +583,9 @@ point no farther than `d_A` — so `d ≤ min`; tangential contact falls in the
 first case). But the composite can only use what the operands report, and
 `min(exact, under-read)` under-reads. So the union's UNSIGNED answer is
 `min(u_A, u_B)` over the operands' unsigned upper bounds, itself an upper bound
-(`d = min(d_A, d_B) ≤ min(u_A, u_B)`), exact when both operands are exact; and
+(`d = min(d_A, d_B) ≤ min(u_A, u_B)`), exact when both operands are exact —
+taken over the operands that ANSWER (`d ≤ d_A ≤ u_A` holds whatever B does),
+so a union refuses only when both operands refuse; and
 the union's SIGNED LOWER BOUND — which a parent composite ("a union inside a
 subtraction") and `interior` both need — is `min(f_A, f_B)` over the operands'
 signed lower bounds (sign exact: inside the union iff inside either; outside,
@@ -600,9 +604,25 @@ magnitude is a lower bound (any composite-boundary point lies in
 `closure(A) ∩ complement(int B)` for a subtraction, so its distance is at
 least both `f_A` and `|f_B|`; likewise for an intersection), and run Phase 1's
 bracket on it: descend along the numerical gradient of `f` (six evaluations
-per gradient, each recursing into both operands), probe until `f ≤ 0`, report
-the chord `|p − q|` (an upper bound by the sign argument alone), refuse when no
-crossing lands within budget. At a max/min seam two nearly opposed operand
+per gradient, each recursing into both operands), probe until the landing
+point is STRICTLY inside the composite BY THE OPERANDS' OWN SIGNS — an
+intersection needs `f_A < 0 ∧ f_B < 0`, a subtraction `f_A < 0 ∧ f_B > 0`
+(a negative lower bound proves a point strictly inside its operand, a
+positive one strictly outside) — and report the chord `|p − q|`, an upper
+bound because the segment from an outside point to a strictly interior one
+crosses the composite's boundary; refuse when no such landing arrives within
+budget. `f ≤ 0` is NOT the landing test (the round-3 P1): `{max(f_A, −f_B)
+≤ 0}` is `closure(A) ∩ complement(int B)`, which contains every point where
+`∂A` merely TOUCHES `∂B` — a phantom set no ray can hit. `glass_pavilion`'s
+flute slot is that case exactly: `flutegeom` is 0.5 deep, the column's
+diameter, so its ±z faces are tangent to the cylinder at local `z = ±0.25`;
+from a station 1 cm outside that face the descent lands on the tangency
+with `f_A = f_B = 0`, and an `f ≤ 0` test would report 1.00 cm where the
+nearest real surface is the slot-wall/cylinder corner at 4.21 cm
+(`sqrt(0.04² + (0.26 − sqrt(0.25² − 0.04²))²)`) — an OVER-read of contact,
+the forbidden direction. Under the strict test that station keeps probing
+into the slot (inside B, so `f_B < 0`), never lands, and refuses: an
+under-paint, disclosed, and the correct `proximity(0.02)` there is 0 anyway. At a max/min seam two nearly opposed operand
 gradients can cancel the composite's, and a gradient below 1e-12 makes the
 candidate REFUSE (an under-paint, never a wrong answer — the SDF's fabricated
 `(0,1,0)` fallback is not reused). `SignedDistanceLower` NEVER refuses for
@@ -632,13 +652,19 @@ intersection it does not share with B is OUTSIDE the composite and reads a
 positive distance — correct, not a violation, and stated here so nobody "fixes"
 it. `bComplementedField` never enters: the composite composes signs itself.
 The per-object refusal log covers composites as it does any object, naming
-the kind as "csg <op>" rather than the current "(no geometry)" fallback, and
-§2's cost note for the unbounded-radius confirm gains a third non-`O(1)` case
-(an intersection/subtraction re-running its bracket, once per object).
+the kind as "csg <op>" rather than the current "(no geometry)" fallback; §2's
+unbounded-radius confirm gains a second non-`O(1)` case beside the SDF (an
+intersection/subtraction re-running its bracket, once per object), and §2's
+TRUTHFULNESS caveat extends to it verbatim — the confirm cannot tell "this
+composite never answers" from a per-point failure (a bracket that finds no
+strict landing, a seam gradient), the sentence is best-effort, and the
+one-shot latch is spent by the first such point (the flute station above is
+a healthy point that spends `column2`'s latch).
 
 **Exact σ.** Phase 1's loose bounds (`‖M‖_F`, `|det|/σ_max²`) inflate the
-search radius by `r/σ_min` and the reported distance by `σ_max` — 8.47× and
-26.99 on a `scale (3, 1, 0.4)` object. Phase 3 computes the extreme singular
+search radius by `r/σ_min` and the reported distance by `σ_max` — `1/σ_min` =
+8.47 and a reported-over-true ratio `σ_max/σ_min` = 26.99 (`‖M‖_F` = 3.19
+over a true `σ_min` of 0.4) on a `scale (3, 1, 0.4)` object. Phase 3 computes the extreme singular
 values of the upper 3×3 by a **one-sided Jacobi SVD on `M`** (rotations
 applied to columns of `M` until they are mutually orthogonal; singular values
 are the column norms; high relative accuracy for every singular value, which
@@ -646,8 +672,11 @@ the eigenvalues of `MᵀM` do not give — forming `MᵀM` squares the condition
 number, and a 1e-3..1e3 scale range would leave σ_min with ~1e-4 relative
 error), ≤ 30 sweeps with the existing Frobenius/determinant pair as the
 fallback if it does not converge, keeping the exact-uniform fast path (which
-stays exact and un-nudged, so `m_sigmaExact` keeps its meaning) and the
-degenerate refusal (which runs BEFORE Jacobi on `|det|`, so `σ_min > 0` holds
+stays exact and un-nudged, so `m_sigmaExact` keeps its meaning — and the
+loose-σ diagnostic that `Object.cpp` prints from `m_sigmaExact == false`
+("through the Frobenius/determinant bounds … over-read by at most Nx") is
+reworded for the Jacobi path, whose ratio is the true `σ_max/σ_min`, 7.5 on
+that transform, not 26.99) and the degenerate refusal (which runs BEFORE Jacobi on `|det|`, so `σ_min > 0` holds
 after the nudge). Because the chain of inequalities the design rests on must
 survive rounding, on the Jacobi path the stored `σ_max` is nudged UP and
 `σ_min` DOWN by four ulps.
@@ -679,7 +708,12 @@ call sites (`ExpressionPainter.h`'s `m_proximityDemand` initialisers), and
 `ProximityDemand` keeps its name but is documented as "registered when the
 program calls `proximity()` or `interior()`" so the eager snapshot covers an
 `interior`-only scene; `kFnInterior = 58` leaves only 59 free before
-`CallFuncVec3`'s 60+ band (stated on the assert);
+`CallFuncVec3`'s 60+ band (stated on the assert); the
+`ISurfaceSignalProvider.h` warning text that enumerates
+`curv/occlusion/thickness/convexity/proximity` gains `interior`; and, as for
+`proximity`, an `interior` call lands in `m_sigCalls`, so
+`UsesSurfaceSignals()` and `SurfaceSignalDemand` go true for an
+`interior`-only program (diagnostic-only, harmless, disclosed);
 the query is `IObjectManager::DeepestOtherContainment( ptWorld, self,
 maxDepthWorld, outDepth ) → bool` over the same candidate snapshot — a
 candidate whose box does not contain the point cannot contain it; the loop
@@ -717,10 +751,20 @@ patina/roughness endpoint the crevice mask drives
 `crevice_mask`), never relief (automatic — §5.3). The flat-receiver gate is
 relaxed WITHOUT touching the scan's existing outputs: the scan keeps
 barren-only materials in a SEPARATE list (`wearBarrenCandidates`, with its
-own decline reason left as is), `AddWear` may select from that list only when
-`contact_radius > 0`, and a barren pick's `curvGeometryKind` names the
-receiver's geometry kind with the success message saying it touches a
-neighbour rather than that it curves. The descriptor text states the unit and
+own decline reason left as is), and when `contact_radius > 0` BOTH of
+`AddWear`'s lookups consult that list — the named-material path checks it
+BEFORE the `wearDeclineReasons` refusal (today that refusal fires first and
+would turn `add_wear {material: "bench_top", contact_radius: 0.002}` away),
+and the bare-call path selects over the union of the two lists, with the
+"no material qualifies" message gaining a clause that a flat receiver
+qualifies once `contact_radius` is set. A barren pick's `curvGeometryKind`
+names the receiver's geometry kind and the success message says it touches a
+neighbour rather than that it curves. On a barren receiver `curv ≡ 0`, so
+the prelude's `wear_mask` and `crevice_raw` would collapse to
+`clamp(breakup_amp·fbm)` — a pure-noise edge-wear and patina wash over the
+whole flat face; the barren path therefore emits `def wear_mask 0` and
+`def crevice_raw 0` (the contact term is the ONLY mask that paints there),
+and the success message says so. The descriptor text states the unit and
 that the author chooses the radius from the scene's feature sizes.
 `contact_radius 0` is byte-identical to today's output: the scan's existing
 lists, counts and messages are unchanged, and the prelude is a built string
@@ -862,8 +906,12 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   exact); a union with a mesh operand answers the sphere's or the mesh's
   unsigned distance (no refusal); an intersection and a subtraction answer
   `lower ≤ reported ≤ reference + gap_max` against a grid search of the
-  composite's `{f ≤ 0}` (the composite's own composed sign) with `gap_max`
-  recorded and the grid spacing stated; a point inside operand A of an
+  composite's SOLID by strict operand membership on the operands' EXACT
+  signed distances (`d_A < 0 ∧ d_B < 0` / `d_A < 0 ∧ d_B > 0` — never
+  `f ≤ 0`, which contains the phantom touching set) with `gap_max` recorded
+  and the grid spacing stated; a TANGENT pair (a box whose face is tangent
+  to a cylinder, the flute case) from a station outside the tangent face
+  either refuses or reports ≥ the true corner distance, never the tangency; a point inside operand A of an
   intersection but outside B reads a positive distance; a point inside the
   composite reads 0; a nested composite (a union inside a subtraction)
   composes; a TRANSFORMED composite (`position`/`orientation` on the
@@ -877,13 +925,18 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   the cap out to ~10 cm, so the receiver is the CAP'S TOP FACE. An upright wall
   gives `d(s) = s`, so `proximity(0.02)` on the cap top at 1 / 2 / 4 cm from
   the column's nominal wall predicts 0.5 / 0 / 0, each measured within 0.05;
-  and one station 1 cm in front of a FLUTE, where the composite's recessed
-  wall is farther than the nominal cylinder — the measured distance must
-  exceed 1 cm and is recorded, not predicted (this is the station that
-  exercises the subtraction bracket). Harness-only: the cap and floor bind
+  and one station on the cap top 1 cm outside a FLUTE's tangent face (local
+  `(0, ·, 0.26)`), where the nearest real surface is the slot-wall/cylinder
+  corner at 4.21 cm: `proximity(0.02)` there must read 0 (a phantom landing
+  would read 0.5), and a direct `NearestOtherSurface` call at radius 0.1
+  either refuses (disclosed, the latch note above) or reports ≥ 0.0421 − 1e-6,
+  the value recorded (a `proximity(0.02)` render cannot record it — the
+  cut-off is exclusive at 2 cm). Harness-only: the cap and floor bind
   checker/uniform painters, not expression painters, so the beauty crop is a
-  probe-albedo render of a scene COPY (raw `proximity(0.02)` on the cap top),
-  judged honestly, and the tracked scene is not edited;
+  probe-albedo render of a scene COPY (raw `proximity(0.02)` on the cap top —
+  `marble_col` is bound to all four caps and every column operand, so the
+  copy paints all of them), judged honestly, and the tracked scene is not
+  edited;
 - exact σ: `SigmaMin()/SigmaMax()` within 1e-12 of the written reference on
   the rotation, reflection and uniform scale (fast path) and within 1e-9 on
   `(3, 1, 0.4)` and the shear (Jacobi); the `(3, 1, 0.4)` object's search-
@@ -910,8 +963,6 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   INCLUDING the conditions scan's counts, kinds and decline messages;
   `AgentAddWearTest` extended; the MCP and chat tool counts unchanged
   (43 / 38).
-
-Each phase runs the implementation-review-loop to zero P1 before merge.
 
 Each phase runs the implementation-review-loop to zero P1 before merge.
 
@@ -1817,12 +1868,13 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
 
 ## 10. Residuals, stated up front
 
-- BDPT/VCM/MLT rebuilt records read 0 (the family's disclosed gap; the
-  `PathVertexEval` contract is explicitly declined for the same reason as for
-  the other three signals).
+- BDPT/VCM/MLT rebuilt records read 0 for `proximity` and, after Phase 3,
+  `interior` (the family's disclosed gap; the `PathVertexEval` contract is
+  explicitly declined for the same reason as for the other three signals).
 - Refusing families (RAW meshes, patches, hair, heightfield SDFs; CSG
-  composites until Phase 3 — after it, only an intersection/subtraction with a
-  sheet operand) read far.
+  composites until Phase 3 — after it, an intersection/subtraction with a
+  sheet operand, a union of two refusing operands, a bracket with no strict
+  landing in budget, and a seam gradient below 1e-12) read far.
 - SDF neighbours are an upper bound on distance (never over-read contact),
   bounded by the last probe step; the gap is measured on C, not bounded
   analytically. A candidate whose crossing is not found within budget reads far.
