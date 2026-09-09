@@ -712,9 +712,17 @@ namespace RISE
 	//! Same mechanism and same thread-safety argument as SurfaceCurvature's
 	//! and SurfaceSignalDemand's: an atomic mutated only at painter
 	//! construction/destruction (scene build/teardown), loaded relaxed from
-	//! render threads. A false positive (a painter from another job in the
-	//! same process still alive) costs one snapshot build, never a wrong
-	//! render.
+	//! render threads. THE COUNTER IS PROCESS-WIDE, though, not per-scene --
+	//! same conservatism as SurfaceCurvature/SurfaceSignalDemand, but here it
+	//! is not merely diagnostic.  A false positive (a painter from another
+	//! job in the same process still alive) does not cost "one snapshot
+	//! build" and stop there: it costs that build PLUS a live, unconditional
+	//! `EnsureBoxSnapshot()` count-check on every ray for every
+	//! `ObjectManager` in the process for the rest of the render -- the very
+	//! per-ray cost this whole mechanism exists to avoid, paid by a scene
+	//! that never mentions `proximity()` because some unrelated job's
+	//! painter happens to still be alive. Never a wrong render, only a
+	//! process-wide, render-duration cost regression.
 	namespace ProximityDemand
 	{
 		//! The single counter.  A function-local static inside an inline
