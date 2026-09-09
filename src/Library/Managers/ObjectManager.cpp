@@ -264,6 +264,17 @@ ObjectManager::ObjectManager(
 
 ObjectManager::~ObjectManager( )
 {
+	// NO MUTEX HERE, unlike InvalidateSpatialStructure's identical cleanup of
+	// `retiredBoxes` -- and that is not an oversight, it is the destructor
+	// contract: by the time this body runs the object is being torn down,
+	// which requires every other party (every render thread, every caller
+	// that might reach EnsureBoxSnapshot) to already be done with it. A
+	// concurrent `EnsureBoxSnapshot().push_back()` racing a destructor is a
+	// use-after-free of the ObjectManager ITSELF, independent of whether
+	// this loop takes `treeCreationMutex` -- locking here would silence
+	// nothing, and would risk locking a mutex mid-destruction that a
+	// stalled other thread still holds. `pBVH`/`pOctree`/`pBoxes` right
+	// above follow the same convention for the same reason.
 	safe_release( pBVH );
 	safe_release( pOctree );
 	delete pBoxes.load( std::memory_order_relaxed );
@@ -515,10 +526,12 @@ void ObjectManager::LogDistanceRefusal( const IObjectPriv* obj ) const
 	const char* kind = geom ? typeid( *geom ).name() : "(no geometry)";
 
 	GlobalLog()->PrintEx( eLog_Info,
-		"ObjectManager::NearestOtherSurface:: object `%s` (geometry %s) cannot answer a distance "
-		"query AT ANY RADIUS and so contributes nothing to proximity() -- it is treated as FAR, "
-		"which under-paints contact rather than inventing it.  Reported once per object.  Refusing "
-		"families and the reasons are listed in docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2 and 10.",
+		"ObjectManager::NearestOtherSurface:: object `%s` (geometry %s) could not answer a "
+		"distance query at one queried point even with the search radius removed, so it "
+		"contributed nothing to proximity() there and is treated as FAR (under-paints contact, "
+		"never invents it).  Reported once per object.  This may be a per-point solver failure "
+		"(an SDF bracket that did not close) rather than a family that never answers -- the "
+		"families that never answer are listed in docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
 		name, kind );
 }
 
@@ -605,7 +618,15 @@ bool ObjectManager::NearestOtherSurface(
 			// that did not exist.  The latch lives on the object (so this
 			// is one relaxed load per candidate per hit after the first
 			// refusal) and the printing lives here (so it can name the
-			// chunk, which an Object cannot).
+			// chunk, which an Object cannot).  That promise is honest for
+			// the families that never answer (§5.2); for an SDF it is
+			// BEST-EFFORT ONLY -- see the confirm below, which removes the
+			// radius-dependent false positives but cannot tell a genuine
+			// "this family never answers" refusal apart from a one-off
+			// per-point solver failure (an unclosed bracket, a stalled
+			// descent, a fabricated (0,1,0) gradient at a flat blend seam).
+			// An SDF's one-shot latch is very often spent on exactly that
+			// kind of per-point failure, not on family membership.
 			//
 			// AND IT IS CONFIRMED BEFORE IT IS PRINTED, because `false`
 			// here does NOT only mean "I cannot answer".  `SDFGeometry`'s
@@ -621,7 +642,15 @@ bool ObjectManager::NearestOtherSurface(
 			// object), then ask the SAME object again with an UNBOUNDED
 			// radius.  A family with no closed form -- a patch, a RAW mesh,
 			// a CSG composite, a heightfield SDF, a degenerate transform --
-			// refuses that too, immediately and in O(1).  An SDF that was
+			// refuses that too, immediately and in O(1).  A non-heightfield
+			// SDF is NOT O(1) here: the confirm re-runs the full bracket
+			// search (descent + doubling probe, ~80 `Map()` evaluations ×
+			// O(parts), §5.2) at unbounded radius, once per object, and can
+			// still return false for a healthy field that merely hit its
+			// solver budget or landed on a degenerate gradient -- which is
+			// exactly the per-point-failure case the message above now
+			// states explicitly rather than branding the object as a
+			// member of a family that never answers.  An SDF that was
 			// merely out of range answers it, and says nothing.
 			//
 			// WHAT THIS DELIBERATELY GIVES UP: if an object's FIRST refusal
@@ -1041,6 +1070,24 @@ void ObjectManager::Shutdown()
 	// The latch used to live INSIDE danglingParentWarned and was cleared for
 	// free; moving it out of that keyspace lost the reset, so restore it here.
 	rebakeIncompleteWarned = false;
+	// `pBoxes` / `retiredBoxes` name the very objects `GenericManager::Shutdown`
+	// (below) is about to release -- raw `const IObjectPriv*` entries, un-
+	// addrefed, exactly as the snapshot's own doc comment already says for
+	// the object-removal case.  Left uncleared here they hold dangling
+	// pointers into freed objects, the same lifecycle gap this function
+	// exists to close for `parentByName` above; a future "clear the scene in
+	// place" caller (this function's own doc comment) would resurrect stale
+	// boxes the moment a name were re-added, exactly as it would resurrect
+	// stale parenting without the clears above.  Guarded by the same mutex
+	// EnsureBoxSnapshot/InvalidateSpatialStructure use for this state.
+	treeCreationMutex.lock();
+	delete pBoxes.load( std::memory_order_relaxed );
+	pBoxes.store( 0, std::memory_order_relaxed );
+	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
+		delete retiredBoxes[k];
+	}
+	retiredBoxes.clear();
+	treeCreationMutex.unlock();
 	GenericManager<IObjectPriv>::Shutdown();
 }
 
@@ -1452,8 +1499,9 @@ void ObjectManager::PrepareForRendering() const
 	}
 
 	// THE WORLD-AABB SNAPSHOT for the cross-object proximity query
-	// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2), built LAST and
-	// unconditionally.
+	// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2), built LAST and GATED ON
+	// DEMAND -- see below for why it is neither unconditional nor keyed to
+	// the TLAS's own `items.size()` gate.
 	//
 	// LAST because everything above it can move an object: the re-bake
 	// composes hierarchy transforms and, when it changes anything, calls
@@ -1508,10 +1556,22 @@ void ObjectManager::InvalidateSpatialStructure() const
 	// the "never during a pass" contract, which is what makes freeing an
 	// object another thread might have been reading safe here and not in
 	// EnsureBoxSnapshot.
+	//
+	// UNDER treeCreationMutex, because `retiredBoxes` is a plain
+	// `std::vector`, not an atomic -- EnsureBoxSnapshot's `push_back` onto
+	// it (above, and the sole writer) already holds this same mutex, and a
+	// plain vector has no thread-safety story of its own if a second party
+	// touches it without the lock its one writer uses.  "Never during a
+	// pass" bounds WHEN this runs, not what serializes it against a
+	// same-instant `EnsureBoxSnapshot` on another thread at a pass
+	// boundary; the mutex is what actually rules that out, so this call
+	// takes it rather than relying on the timing contract alone.
+	treeCreationMutex.lock();
 	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
 		delete retiredBoxes[k];
 	}
 	retiredBoxes.clear();
+	treeCreationMutex.unlock();
 	// Shadow cache slots are reset but not freed — the array persists.
 	if( shadowCache ) {
 		memset( shadowCache, 0, sizeof(ShadowCacheSlot) * kShadowCacheSlots );

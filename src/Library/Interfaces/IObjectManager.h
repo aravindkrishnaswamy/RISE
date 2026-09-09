@@ -297,7 +297,15 @@ namespace RISE
 		//! name; and the refusal is re-confirmed at an UNBOUNDED radius
 		//! before printing, because an SDF's lower-bound early-out also
 		//! returns false for a neighbour that is merely out of range and
-		//! must not be reported as unable to answer.
+		//! must not be reported as unable to answer.  THAT CONFIRM REMOVES
+		//! ONLY THE RADIUS-DEPENDENT false positives; it cannot tell a family
+		//! that never answers apart from a one-off per-point solver failure
+		//! (an SDF bracket that did not close), so the printed line claims
+		//! only "could not answer this one query, even unbounded" -- see
+		//! `ObjectManager::LogDistanceRefusal` and
+		//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2 for which families
+		//! never answer versus which (SDFs) this diagnostic is best-effort
+		//! for.
 		//!
 		//! \return TRUE and writes `outDist` (in **[0, maxDistWorld)**) when
 		//!         some candidate answered within the radius; FALSE with
