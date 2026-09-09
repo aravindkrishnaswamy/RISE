@@ -3858,6 +3858,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		FireProductionRemapResult& result, std::string* structuredError )
 	{
 		result=FireProductionRemapResult();
+		@autoreleasepool {
 		try {
 		FireProductionRemapResult computed;
 		if( !ValidateFireProductionRemapRequest(request,structuredError) ) return false;
@@ -4027,6 +4028,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionCellPalindromeMetal(
@@ -4034,6 +4036,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		FireProductionCellPalindromeResult& result, std::string* structuredError )
 	{
 		result=FireProductionCellPalindromeResult();
+		@autoreleasepool {
 		try {
 		if( !ValidateFireProductionCellPalindromeRequest(request,structuredError) ) return false;
 		MetalRemapContext& context=Context();
@@ -4324,6 +4327,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	static bool RemapFireProductionCellPalindromeMetalResidentImpl(
@@ -4334,6 +4338,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		std::string* structuredError )
 	{
 		result=FireProductionMetalCellPalindromeResidentResult();
+		@autoreleasepool {
 		try {
 			if( !ValidateFireProductionCellPalindromeRequest(request,structuredError) ) return false;
 			MetalRemapContext& context=Context();
@@ -4572,6 +4577,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionCellPalindromeMetalResident(
@@ -4589,6 +4595,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		FireProductionCellPalindromeResult& result, std::string* structuredError )
 	{
 		result=FireProductionCellPalindromeResult();
+		@autoreleasepool {
 		try {
 			if( !ValidateFireProductionCellPalindromeRequest(request,structuredError) ) return false;
 			MetalRemapContext& context=Context();
@@ -4674,6 +4681,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionPeriodicDualMomentumMetalResident(
@@ -4683,6 +4691,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		std::string* structuredError )
 	{
 		result=FireProductionMetalPeriodicDualMomentumResidentResult();
+		@autoreleasepool {
 		try {
 			std::uint64_t certifiedBytes=0u;
 			if( !FireProductionPeriodicDualMomentumResidentWorkingSetBytes(request.shape,
@@ -4843,6 +4852,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionPeriodicDualMomentumMetal(
@@ -4850,6 +4860,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		FireProductionPeriodicDualMomentumResult& result, std::string* structuredError )
 	{
 		result=FireProductionPeriodicDualMomentumResult();
+		@autoreleasepool {
 		try {
 			std::uint64_t certifiedBytes=0u;
 			if( !FireProductionPeriodicDualMomentumResidentWorkingSetBytes(request.shape,
@@ -4945,6 +4956,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool PrepareFireProductionDualMomentumMetalStaticState(
@@ -4953,6 +4965,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		std::string* structuredError )
 	{
 		state=FireProductionMetalDualMomentumStaticState();
+		@autoreleasepool {
 		try {
 			std::uint64_t certifiedBytes=0u;
 			if( !FireProductionDualMomentumResidentWorkingSetBytes(request.shape,
@@ -5075,6 +5088,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				"production dual static-state allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionDualMomentumMetalResident(
@@ -5085,6 +5099,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		std::string* structuredError )
 	{
 		result=FireProductionMetalDualMomentumResidentResult();
+		@autoreleasepool {
 		try {
 			std::uint64_t certifiedBytes=0u;
 			if( !FireProductionDualMomentumResidentWorkingSetBytes(request.shape,
@@ -5284,6 +5299,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				"production resident dual allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionCompatibleDualMomentumMetalResident(
@@ -5293,6 +5309,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		std::string* structuredError )
 	{
 		result=FireProductionMetalDualMomentumResidentResult();
+		@autoreleasepool {
 		try {
 			if( !ValidateFireProductionCompatibleDualMomentumRequest(request,structuredError) ) return false;
 			std::uint64_t certifiedBytes=0u;
@@ -5409,6 +5426,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionDualMomentumMetalResidentComparator(
@@ -5417,6 +5435,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		std::string* structuredError )
 	{
 		result=FireProductionDualMomentumResult();
+		@autoreleasepool {
 		try {
 			FireProductionMetalDualMomentumStaticState staticState;
 			if( !PrepareFireProductionDualMomentumMetalStaticState(request,staticState,
@@ -5485,6 +5504,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				"production resident dual comparator allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
 		}
+		}
 	}
 
 	bool RemapFireProductionCompatibleDualMomentumMetalComparator(
@@ -5494,6 +5514,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		std::string* structuredError )
 	{
 		result=FireProductionDualMomentumResult();
+		@autoreleasepool {
 		try {
 			if( !ValidateFireProductionCompatibleDualMomentumRequest(request,structuredError) )
 				return false;
@@ -5603,6 +5624,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			} catch( const std::bad_alloc& ) { structuredError->clear(); }
 			return false;
 		}
+		}
 	}
 
 	bool AttemptFireProductionResidentStepMetal(
@@ -5612,6 +5634,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 	{
 		result=FireProductionResidentStepResult();
 		bool plateauRefused=false;
+		@autoreleasepool {
 		try {
 			if( request.cellTransport.retainAcceptedGasMassDose&&
 				!CompatibleMomentumDiagnosticActive ) {
@@ -6772,6 +6795,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			if( structuredError ) try { *structuredError=
 				"production resident step allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
+		}
 		}
 	}
 
@@ -10883,19 +10907,55 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		bytes+=rounded;return true;
 	}
 
+	// A recovered C++ exception must not cross the pool boundary: ARC does not
+	// drain an autorelease pool on an exceptional exit. Both owner entries use
+	// this same lifetime boundary; the RED exercises its real recovery path.
+	template<class Work,class Recovery>
+	bool RunProjectedHeunOwnerInAutoreleasePool(Work&& work,Recovery&& recover)
+	{
+		@autoreleasepool {
+			try {return work();}
+			catch(const std::bad_alloc&){
+				try {return recover();}catch(const std::bad_alloc&){return false;}
+			}
+		}
+	}
+
+	bool FireProductionProjectedHeunPoolAllocationFailureRED()
+	{
+		__weak id marker=nil;bool alive=false,recovered=false;
+		const bool accepted=RunProjectedHeunOwnerInAutoreleasePool([&]()->bool{
+			id __autoreleasing pending=[[NSMutableArray alloc] initWithCapacity:8u];
+			marker=pending;alive=marker!=nil;throw std::bad_alloc();
+		},[&](){recovered=true;return false;});
+		const bool drained=marker==nil;
+		__weak id mutantMarker=nil;bool mutantAlive=false,mutantRetained=false;
+		// This outer fixture pool cleans up the intentionally undrained mutant.
+		@autoreleasepool {
+			try { @autoreleasepool {
+				id __autoreleasing pending=[[NSMutableArray alloc] initWithCapacity:8u];
+				mutantMarker=pending;mutantAlive=mutantMarker!=nil;throw std::bad_alloc();
+			} }catch(const std::bad_alloc&){mutantRetained=mutantMarker!=nil;}
+		}
+		const bool passed=!accepted&&alive&&recovered&&drained&&mutantAlive&&mutantRetained&&mutantMarker==nil;
+		std::fprintf(stderr,"OWNER_POOL_BAD_ALLOC_RED recovered=%d drained_before_return=%d old_order_mutant_retained=%d passed=%d\n",
+			recovered?1:0,drained?1:0,mutantRetained?1:0,passed?1:0);
+		return passed;
+	}
+
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest& request,
 		FireProductionProjectedHeunMetalOwnerResult& result,std::string* error )
 	{
-		try {
+		return RunProjectedHeunOwnerInAutoreleasePool([&](){
 			ResidentProjectedHeunMetalOwner owner(request,request.qualificationProductionStageTokens);
 			return owner.Run(result,error);
-		} catch(const std::bad_alloc&) {
+		},[&](){
 			result=FireProductionProjectedHeunMetalOwnerResult();
 			if(error)try{*error="projected-Heun resident owner allocation failed";}
 				catch(const std::bad_alloc&){}
 			return false;
-		}
+		});
 	}
 
 	bool AttemptFireProductionProjectedHeunResidentStepMetal(
@@ -10929,9 +10989,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			return false;
 		}
 		FireProductionProjectedHeunMetalOwnerResult owner;
-		try {ResidentProjectedHeunMetalOwner residentOwner(request,true);
-			if(!residentOwner.Run(owner,error))return false;
-		}catch(const std::bad_alloc&){if(error)*error="production owner allocation failed";return false;}
+		// Retire autoreleased command buffers (and their retained Metal resources)
+		// after this owner publishes. ARC destroys the owner before the pool drains;
+		// every device command has completed and the returned result is CPU-owned.
+		if(!RunProjectedHeunOwnerInAutoreleasePool([&](){
+			ResidentProjectedHeunMetalOwner residentOwner(request,true);
+			return residentOwner.Run(owner,error);
+		},[&](){if(error)*error="production owner allocation failed";return false;}))return false;
 		const FireProductionProjectionShape& shape=request.lineage.eos.physicalFlux.transport.shape;
 		const std::size_t cells=shape.CellCount();
 		if(!owner.accepted||owner.ownerPublicationIdentity==0u||
@@ -11237,6 +11301,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		FireProductionResidentTransportComparatorResult& result,std::string* error )
 	{
 		result=FireProductionResidentTransportComparatorResult();
+		@autoreleasepool {
 		try {
 			MetalResidentTransportParameters parameters={};
 			std::array<std::size_t,3> faceOffset={{}};std::size_t allFaces=0u;
@@ -11425,6 +11490,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				catch(const std::bad_alloc&){}
 			return false;
 		}
+		}
 	}
 
 	bool EvaluateFireProductionResidentPhysicalFluxMetalComparator(
@@ -11432,6 +11498,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		FireProductionResidentPhysicalFluxComparatorResult& result,std::string* error )
 	{
 		result=FireProductionResidentPhysicalFluxComparatorResult();
+		@autoreleasepool {
 		try {
 			MetalResidentTransportParameters transportParameters={};
 			MetalResidentPhysicalFluxParameters physicalParameters={};
@@ -11679,6 +11746,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				catch(const std::bad_alloc&){}
 			return false;
 		}
+		}
 	}
 
 	bool EvaluateFireProductionResidentEOSCandidateMetalComparator(
@@ -11686,6 +11754,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		FireProductionResidentEOSCandidateComparatorResult& result,std::string* error )
 	{
 		result=FireProductionResidentEOSCandidateComparatorResult();
+		@autoreleasepool {
 		try {
 			MetalResidentTransportParameters transportParameters={};
 			MetalResidentPhysicalFluxParameters physicalParameters={};
@@ -12020,6 +12089,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			catch(const std::bad_alloc&){}
 			return false;
 		}
+		}
 	}
 
 	bool EvaluateFireProductionResidentTargetLineageMetalComparator(
@@ -12027,6 +12097,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		FireProductionResidentTargetLineageComparatorResult& result,std::string* error )
 	{
 		result=FireProductionResidentTargetLineageComparatorResult();
+		@autoreleasepool {
 		try {
 			MetalResidentTransportParameters transportParameters={};
 			MetalResidentPhysicalFluxParameters physicalParameters={};
@@ -12442,6 +12513,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		} catch(const std::bad_alloc&){result=FireProductionResidentTargetLineageComparatorResult();
 			if(error)try{*error="production resident target allocation failed";}catch(const std::bad_alloc&){}
 			return false;}
+		}
 	}
 
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(
@@ -12723,6 +12795,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		FireProductionScalarFCTMetalStageDiagnosticResult& result,std::string* error )
 	{
 		result=FireProductionScalarFCTMetalStageDiagnosticResult();
+		@autoreleasepool {
 		try {
 			FireProductionScalarFCTFluxPair firstCPU,secondCPU,averagedCPU;
 			if(!BuildFireProductionScalarFCTFluxPairCPU(firstStage,firstCPU,error)||
@@ -12857,7 +12930,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				if(error)error->clear();return true;
 			}
 		} catch(const std::bad_alloc&){result=FireProductionScalarFCTMetalStageDiagnosticResult();
-			if(error)*error="production scalar FCT Metal diagnostic allocation failed";return false;}
+			if(error)try{*error="production scalar FCT Metal diagnostic allocation failed";}catch(const std::bad_alloc&){}
+			return false;}
+		}
 	}
 
 	bool EvaluateFireProductionScalarFCTCommitAdmissibilityMetalDiagnostic(
@@ -12865,6 +12940,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		std::uint32_t& failureBitmap,std::string* error )
 	{
 		failureBitmap=0u;
+		@autoreleasepool {
 		try {
 			MetalSingleStageFCTParameters parameters;std::vector<unsigned char> inflow;
 			std::array<std::size_t,3> faceOffset;std::size_t allFaces=0u;
@@ -12912,7 +12988,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				if(error)error->clear();return true;
 			}
 		} catch(const std::bad_alloc&){failureBitmap=0u;
-			if(error)*error="production scalar FCT commit diagnostic allocation failed";return false;}
+			if(error)try{*error="production scalar FCT commit diagnostic allocation failed";}catch(const std::bad_alloc&){}
+			return false;}
+		}
 	}
 
 	bool EvaluateFireProductionEOSEnergyEnclosureMetalDiagnostic(
@@ -12987,6 +13065,7 @@ kernel void r217_energy_enclosure(device const float* state [[buffer(0)]],
 		std::string* error )
 	{
 		expansionAndBound.clear();identity=FireProductionEOSLogMetalQualificationIdentity();
+		@autoreleasepool {
 		try {
 			if(input.empty()){
 				if(error)*error="production EOS log diagnostic input is invalid";return false;}
@@ -13025,7 +13104,9 @@ kernel void r217_energy_enclosure(device const float* state [[buffer(0)]],
 				if(error)error->clear();return true;
 			}
 		} catch(const std::bad_alloc&){expansionAndBound.clear();
-			if(error)*error="production EOS log diagnostic allocation failed";return false;}
+			if(error)try{*error="production EOS log diagnostic allocation failed";}catch(const std::bad_alloc&){}
+			return false;}
+		}
 	}
 
 	bool SealFireProductionSingleStageFCTBoundaryState(
@@ -13083,6 +13164,7 @@ kernel void r217_energy_enclosure(device const float* state [[buffer(0)]],
 		std::string* structuredError )
 	{
 		result=FireProductionSingleStageFCTDiagnosticResult();
+		@autoreleasepool {
 		try {
 		result.phase=FireProductionSingleStageFCTDiagnosticPhase::Preflight;
 		result.operatorVersion=1u;
@@ -13610,8 +13692,9 @@ kernel void r217_energy_enclosure(device const float* state [[buffer(0)]],
 		}
 		} catch(const std::bad_alloc&){
 			result=FireProductionSingleStageFCTDiagnosticResult();
-			if(structuredError)*structuredError="production single-stage FCT allocation failed";
+			if(structuredError)try{*structuredError="production single-stage FCT allocation failed";}catch(const std::bad_alloc&){}
 			return false;
+		}
 		}
 	}
 

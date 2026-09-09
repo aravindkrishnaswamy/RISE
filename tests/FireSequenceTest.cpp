@@ -26,6 +26,7 @@
 #include "FireProductionOwnerConvergenceProbe.h"
 #include "FireProductionStaggeredColumnBudget.h"
 #include "FireProductionOnsetEvidence.h"
+#include "FireRunHostMemory.h"
 #include "fire_production_fp64/FireProductionTransport.h"
 #include "fire_production_trace/SourceManifest.h"
 
@@ -72,6 +73,7 @@ extern "C" bool RISEProjectedHeunOwnerTestFailureProbe(const char*)
 
 namespace RISE
 {
+	bool FireProductionProjectedHeunPoolAllocationFailureRED();
 	//! Test-only terminal staging around the private compatible-momentum owner.
 	//! The production resident API remains private-buffer-only.
 	bool RemapFireProductionCompatibleDualMomentumMetalComparator(
@@ -1117,6 +1119,10 @@ namespace
 		// Versioned r216 scope: original tier-ten kernel and retained step 792.
 		bool tier10RetainedContinuation=false;
 		bool r217RefusalDiagnostic=false;
+		bool r220ResumeProbe=false;
+		bool hostMemoryResumeStopRED=false;
+		// Synthetic retention is admitted only by the isolated 24-step RSS RED.
+		bool hostMemoryRetentionRED=false;
 		bool UsesProjectedHeunOwner() const
 		{
 			return portedProductionTransport||sealedProjectedHeunReplay||sealedProjectedHeunContinuation||
@@ -3306,6 +3312,9 @@ namespace
 	constexpr const char* R214ProducerBuild="0d7537194b877cdffd248de25eccf52262f824b4f1d4cde5fe035ad1eee52175";
 	constexpr const char* R217CheckpointSHA="7eefb57bfd01f27817d0e245da8293c5ec85c770f0bf157556f20f906865e966";
 	constexpr const char* R216ProducerBuild="81cf8340374423e2c5ae209062c35ed2e7d8a915535051324060c48a1d7cb5a9";
+	constexpr const char* R220CheckpointSHA="4b5bfcbd02ec7c5f472352f739b1b39ee7157b871896efb8b2dc35e708bd8d64";
+	constexpr const char* R220OldBuild="f2ee8ec4cdf43ed7c527dce95718439888561cb70861f99c22f3f5fd4a311609";
+	constexpr const char* R220KernelSHA="e938373ec6cd9e0217c04242ad96cd4d46055236e422bd7ad0ea34e164d0a8b2";
 	bool R216KernelAccepted(const std::string& kernel)
 	{
 		return kernel=="d580d078ea083ee18032abfb027271ada9d4d1dabab50b35cb6eb7a503258a0e";
@@ -3328,6 +3337,21 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.r220ResumeProbe&&(!persistence.projectedHeunEOSDiagnostic||
+			!persistence.projectedHeunCertificateDiagnostic||!persistence.isolatedEquivalenceProbe||
+			persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic||
+			DigestFile(persistence.checkpointPath)!=R220CheckpointSHA||
+			persistence.isolatedExpectedCheckpointBuildId!=R220OldBuild)){
+			values.structuredError="r220_resume_probe_scope_refused";return values;}
+		if(persistence.hostMemoryResumeStopRED&&!persistence.r220ResumeProbe){
+			values.structuredError="host_memory_resume_stop_red_scope_refused";return values;}
+		if(persistence.hostMemoryRetentionRED&&(!persistence.portedProductionTransport||
+			!persistence.productionMetal||persistence.resume||persistence.sealedProjectedHeunReplay||
+			persistence.sealedLegacyMomentumReplay||persistence.productionOnsetDiagnosticDirectory.empty()||
+			persistence.finalCheckpointPath.empty()||resolutionTier!=8.0||caseDurationS!=3.0||
+			caseFramesPerS!=1.0||minimumStepCount!=1u||targetTimeS!=
+			24.0*static_cast<double>(static_cast<float>(0.0016462659696117043)))){
+			values.structuredError="host_memory_retention_red_scope_refused";return values;}
 		const char* refusalOption=std::getenv("RISE_FIRE_REFUSAL_CLAUSES");
 		if((refusalOption&&!persistence.r217RefusalDiagnostic)||
 			(persistence.r217RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
@@ -3405,7 +3429,7 @@ namespace
 			persistence.sealedProjectedHeunReplay||persistence.sealedLegacyMomentumReplay||
 			persistence.projectedHeunCostDiagnostic||persistence.singleStageFCTDiagnostic||
 			persistence.compatibleMomentumDiagnostic||persistence.forceZeroSourceForTest||
-			resolutionTier!=((persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic)?10.0:8.0)||caseDurationS!=3.0||caseFramesPerS!=1.0)){
+			resolutionTier!=((persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic||persistence.r220ResumeProbe)?10.0:8.0)||caseDurationS!=3.0||caseFramesPerS!=1.0)){
 			values.structuredError="owner_eos_diagnostic_scope_conflict";return values;
 		}
 		if(persistence.projectedHeunCostDiagnostic&&(!persistence.productionMetal||
@@ -3880,6 +3904,50 @@ namespace
 			++temporalSnapshotIndex;++values.streamedFrameCount;return true;
 		};
 		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
+		const bool hostMemoryMonitored=persistence.UsesProjectedHeunOwner();
+		FireRunHostMemory::Policy hostMemoryPolicy;
+		std::vector<std::vector<unsigned char> > syntheticRetainedPayloads;
+		std::filesystem::path hostMemoryPath;
+		if(hostMemoryMonitored){
+			FireProductionProjectionShape memoryShape;memoryShape.nx=shape.nx;
+			memoryShape.ny=shape.ny;memoryShape.nz=shape.nz;
+			memoryShape.cellWidthM=static_cast<float>(shape.cellWidthM);
+			std::uint64_t ownerBytes=0u;
+			if(!FireProductionProjectedHeunMetalObserverWorkingSetBytes(memoryShape,ownerBytes)){
+				values.structuredError="host_memory_certificate_unavailable";return values;}
+			hostMemoryPolicy=FireRunHostMemory::ProductionPolicy(ownerBytes);
+			const auto memory=FireRunHostMemory::Read();
+			if(hostMemoryPolicy.Stop(memory)){
+				values.structuredError="host_memory_preflight_refused";return values;}
+			if(!persistence.productionOnsetDiagnosticDirectory.empty()){
+				hostMemoryPath=persistence.productionOnsetDiagnosticDirectory/"host_memory_trajectory.csv";
+				std::ofstream output(hostMemoryPath);
+				output<<"accepted_step,time_s,process_rss_bytes,physical_footprint_bytes,compressed_bytes,host_ceiling_bytes,next_step_reserve_bytes,stop\n";
+				output<<std::setprecision(17)<<acceptedSteps<<','<<simulationTimeS<<','<<memory.rss<<','
+					<<memory.footprint<<','<<memory.compressed<<','<<hostMemoryPolicy.ceiling<<','
+					<<hostMemoryPolicy.reserve<<",0\n";
+				if(!ClosePublishedStream(output)){values.structuredError="host_memory_evidence_failure";return values;}
+				const auto admissionPath=persistence.productionOnsetDiagnosticDirectory.parent_path()/"host_memory_admission.v1";
+				if(std::filesystem::exists(admissionPath)||std::filesystem::is_symlink(admissionPath)){
+					values.structuredError="host_memory_admission_destination_occupied";return values;}
+				std::ofstream admission(admissionPath);
+				admission<<std::setprecision(17)<<"schema rise.fire.host-memory-admission.v1\n"
+					<<"case_record_id "<<caseRecord.caseRecordId<<"\nproducer_build_id "<<currentBuildId<<'\n'
+					<<"producer_executable_sha256 "<<currentExecutableDigest<<'\n'
+					<<"beginning_step "<<acceptedSteps<<"\nbeginning_time_s "<<simulationTimeS<<'\n'
+					<<"rss_ceiling_bytes "<<hostMemoryPolicy.ceiling<<"\nfootprint_ceiling_bytes "<<hostMemoryPolicy.ceiling<<'\n'
+					<<"next_step_reserve_bytes "<<hostMemoryPolicy.reserve<<'\n'
+					<<"stop_rule max_rss_footprint_ge_ceiling_minus_reserve\n"
+					<<"stop_exit_code "<<FireRunHostMemory::GracefulStopExitCode<<'\n'
+					<<"exclusive_host_rule no_full_builds_no_opto_lto_no_exhaustive_qualification_no_oracle_regeneration\n"
+					<<"enforcement accepted_boundary_monitor_and_operator_launch_serialization\n"
+					<<"synthetic_retention_fixture "<<(persistence.hostMemoryRetentionRED?"true":"false")<<'\n'
+					<<"forced_stop_fixture "<<(persistence.hostMemoryResumeStopRED?"true":"false")<<'\n';
+				if(!ClosePublishedStream(admission)||
+					!PublishPayloadMerkleSidecar(admissionPath,caseRecord.caseRecordId,error)){
+					values.structuredError="host_memory_admission_publication_failed";return values;}
+			}
+		}
 		const char* solverPhase="initialization";
 		while(advancedOK&&!productionOnsetStopReached&&
 			(!persistence.projectedHeunCostDiagnostic||acceptedSteps<3u)&&
@@ -4396,6 +4464,9 @@ namespace
 							++values.productionPhysicalProjectionRetryCount;
 							production=RISE::FireProductionResidentStepResult();error.clear();
 						}
+						if(persistence.r220ResumeProbe&&attemptComputed&&
+							projectedHeunDiagnostics.qualifiedKernelSetSHA256!=R220KernelSHA){
+							error=lastAdvanceError="r220 original kernel set changed";break;}
 						if(!R216AttemptPublicationAccepted(persistence.tier10RetainedContinuation,attemptComputed,
 							projectedHeunDiagnostics.qualifiedKernelSetSHA256)){
 							mandatoryEvidenceFailure=true;advancedOK=false;
@@ -5503,6 +5574,35 @@ namespace
 				simulationTimeS+=reaction.deltaTimeS;previousStepS=reaction.deltaTimeS;++acceptedSteps;
 				values.acceptedTimeStepS=reaction.deltaTimeS;
 				values.simulatedTimeS=simulationTimeS;
+				bool hostMemoryStop=false;
+				if(hostMemoryMonitored){
+					auto memory=FireRunHostMemory::Read();
+					if(persistence.hostMemoryRetentionRED&&acceptedSteps>=4u){
+						if(acceptedSteps==4u){hostMemoryPolicy.ceiling=
+							std::max(memory.rss,memory.footprint)+(UINT64_C(96)<<20u);
+							hostMemoryPolicy.reserve=UINT64_C(32)<<20u;}
+						syntheticRetainedPayloads.emplace_back(std::size_t(16u)<<20u,
+							static_cast<unsigned char>(acceptedSteps));
+						const auto& retained=syntheticRetainedPayloads.back();
+						const std::string retainedSHA=RISECBOR64::SHA256Hex(retained);
+						std::fprintf(stderr,"HOST_MEMORY_SYNTHETIC_RETENTION step=%u blocks=%zu block_bytes=%zu block_sha256=%s\n",
+							acceptedSteps,syntheticRetainedPayloads.size(),retained.size(),retainedSHA.c_str());
+						memory=FireRunHostMemory::Read();
+					}
+					hostMemoryStop=hostMemoryPolicy.Stop(memory)||persistence.hostMemoryResumeStopRED;
+					if(!hostMemoryPath.empty()){
+						std::ofstream output(hostMemoryPath,std::ios::app);
+						output<<std::setprecision(17)<<acceptedSteps<<','<<simulationTimeS<<','<<memory.rss<<','
+							<<memory.footprint<<','<<memory.compressed<<','<<hostMemoryPolicy.ceiling<<','
+							<<hostMemoryPolicy.reserve<<','<<(hostMemoryStop?1:0)<<'\n';
+						if(!ClosePublishedStream(output)){advancedOK=false;error="host_memory_evidence_failure";break;}
+					}
+					std::fprintf(stderr,"HOST_MEMORY step=%u time=%.17g rss_bytes=%llu footprint_bytes=%llu compressed_bytes=%llu ceiling_bytes=%llu reserve_bytes=%llu stop=%d\n",
+						acceptedSteps,simulationTimeS,static_cast<unsigned long long>(memory.rss),
+						static_cast<unsigned long long>(memory.footprint),static_cast<unsigned long long>(memory.compressed),
+						static_cast<unsigned long long>(hostMemoryPolicy.ceiling),
+						static_cast<unsigned long long>(hostMemoryPolicy.reserve),hostMemoryStop?1:0);
+				}
 				const bool moreWork=!productionOnsetStopReached&&
 					(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS);
 				const double checkpointElapsedS=std::chrono::duration<double>(
@@ -5513,7 +5613,7 @@ namespace
 					!persistence.temporalSnapshotDirectory.empty()&&
 					persistence.temporalSnapshotCadenceS>0.0&&
 					simulationTimeS>=nextTemporalSnapshotS;
-				const bool finalCheckpointDue=!moreWork&&!persistence.finalCheckpointPath.empty();
+				const bool finalCheckpointDue=(!moreWork||hostMemoryStop)&&!persistence.finalCheckpointPath.empty();
 				if(temporalSnapshotDue){
 					solverPhase="temporal-frame publication";
 					if(!writeTemporalFrame()){advancedOK=false;break;}
@@ -5521,8 +5621,11 @@ namespace
 						static_cast<double>(temporalSnapshotIndex)*
 						persistence.temporalSnapshotCadenceS;
 				}
-				const bool checkpointDue=equivalenceSnapshotDue||finalCheckpointDue||
-					(moreWork&&!persistence.checkpointPath.empty()&&
+				const bool isolatedResourceCheckpoint=hostMemoryStop&&persistence.isolatedEquivalenceProbe&&
+					!persistence.productionOnsetDiagnosticDirectory.empty();
+				const bool checkpointDue=equivalenceSnapshotDue||finalCheckpointDue||isolatedResourceCheckpoint||
+					(hostMemoryStop&&!persistence.isolatedEquivalenceProbe&&!persistence.checkpointPath.empty())||
+					(moreWork&&!persistence.isolatedEquivalenceProbe&&!persistence.checkpointPath.empty()&&
 						(persistence.checkpointCadenceWallS<=0.0||
 							checkpointElapsedS>=persistence.checkpointCadenceWallS));
 				if(checkpointDue){
@@ -5552,6 +5655,8 @@ namespace
 							std::setfill('0')<<(acceptedSteps-values.resumedFromStep)<<".checkpoint";
 						checkpointOutput=persistence.equivalenceSnapshotDirectory/snapshotName.str();
 					}
+					if(isolatedResourceCheckpoint)checkpointOutput=
+						persistence.productionOnsetDiagnosticDirectory.parent_path()/"host_memory_stop.checkpoint";
 					FireStateProducerPrecision checkpointOutputPrecision=
 						FireStateProducerPrecision::Unknown;
 					const bool checkpointAuthorized=
@@ -5559,8 +5664,10 @@ namespace
 						(checkpointOutputPrecision!=FireStateProducerPrecision::Binary64||
 							IssueBinary64CheckpointAuthority(checkpoint));
 					const bool checkpointSaved=checkpointAuthorized&&
+						(!persistence.isolatedEquivalenceProbe||checkpointOutput!=persistence.checkpointPath)&&
 						(persistence.UsesProjectedHeunOwner()?SavePublishedCheckpoint(checkpointOutput,
-							checkpoint,CheckpointPublicationPolicy(checkpointOutput,persistence.checkpointPath,
+							checkpoint,isolatedResourceCheckpoint?PayloadPublicationPolicy::Immutable:
+							CheckpointPublicationPolicy(checkpointOutput,persistence.checkpointPath,
 								finalCheckpointDue,equivalenceSnapshotDue),error):
 							SaveMethaneRunCheckpoint(checkpointOutput,checkpoint,error));
 					bool retainedCheckpointSaved=true;
@@ -5619,6 +5726,9 @@ namespace
 						simulationTimeS,retainedCheckpointOutput.string().c_str());
 					if(persistence.killAfterFirstCheckpoint)HardKillCurrentProcess();
 				}
+				if(hostMemoryStop){advancedOK=false;
+					error=checkpointDue?"host_memory_ceiling_checkpoint_sealed":"host_memory_ceiling_no_checkpoint_destination";
+					break;}
 				if(reportCapstoneProgress && (acceptedSteps<=4u || acceptedSteps%10u==0u ||
 					simulationTimeS>=targetTimeS)) {
 					double maximumTemperatureK=0.0,maximumReactionWPerM3=0.0;
@@ -7672,21 +7782,28 @@ namespace
 
 	int RunProductionOwnerEOSRefusalChild(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& outputDirectory,const bool certificateDiagnostic=false,
-		const bool tier10Retained=false,const bool r217Diagnostic=false)
+		const bool tier10Retained=false,const bool r217Diagnostic=false,const bool r220Probe=false,
+		const bool resourceStopRED=false)
 	{
+		if(resourceStopRED&&!r220Probe)return 91;
 		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 91;
 		const char* snapshotOption=std::getenv("RISE_FIRE_EOS_DIAGNOSTIC_SNAPSHOTS");
 		if(snapshotOption&&(std::strcmp(snapshotOption,"1")!=0||certificateDiagnostic))return 91;
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
-			checkpoint.dimensions!=((tier10Retained||r217Diagnostic)?std::array<std::size_t,3>{{86u,86u,132u}}:
+			checkpoint.dimensions!=((tier10Retained||r217Diagnostic||r220Probe)?std::array<std::size_t,3>{{86u,86u,132u}}:
 			std::array<std::size_t,3>{{69u,69u,106u}}))return 92;
 		const std::string digest=DigestFile(checkpointPath);if(digest.size()!=64u)return 92;
+		const auto inputSidecar=std::filesystem::path(checkpointPath.string()+".payload-v2.json");
+		const std::string sidecarDigest=DigestFile(inputSidecar);
+		if(resourceStopRED&&(!std::filesystem::is_regular_file(inputSidecar)||sidecarDigest.size()!=64u))return 92;
+		if(r220Probe&&(!certificateDiagnostic||tier10Retained||r217Diagnostic||
+			digest!=R220CheckpointSHA||checkpoint.acceptedSteps!=835u||checkpoint.producerBuildId!=R220OldBuild))return 92;
 		if(tier10Retained&&(!certificateDiagnostic||digest!=R216CheckpointSHA||
 			checkpoint.acceptedSteps!=792u||checkpoint.producerBuildId!=R214ProducerBuild))return 92;
 		if(r217Diagnostic&&(!certificateDiagnostic||tier10Retained||digest!=R217CheckpointSHA||
 			checkpoint.acceptedSteps!=1165u||checkpoint.producerBuildId!=R216ProducerBuild))return 92;
-		if(certificateDiagnostic&&!tier10Retained&&!r217Diagnostic&&(digest!=
+		if(certificateDiagnostic&&!tier10Retained&&!r217Diagnostic&&!r220Probe&&(digest!=
 			"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"||
 			checkpoint.acceptedSteps!=1300u))return 92;
 		if(certificateDiagnostic){
@@ -7707,6 +7824,8 @@ namespace
 		persistence.projectedHeunCertificateDiagnostic=certificateDiagnostic;
 		persistence.tier10RetainedContinuation=tier10Retained;
 		persistence.r217RefusalDiagnostic=r217Diagnostic;
+		persistence.r220ResumeProbe=r220Probe;
+		persistence.hostMemoryResumeStopRED=resourceStopRED;
 		if(certificateDiagnostic){
 			persistence.productionMomentumObservationTimeS=2.1079791976176079;
 			persistence.productionMomentumObservationColumnX=38u;
@@ -7746,16 +7865,30 @@ namespace
 		if(!certificateDiagnostic&&setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0)return 92;
 		if(r217Diagnostic&&(setenv("RISE_FIRE_REFUSAL_CLAUSES","1",1)!=0||
 			setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0))return 92;
-		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,(tier10Retained||r217Diagnostic)?10.0:8.0,
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,(tier10Retained||r217Diagnostic||r220Probe)?10.0:8.0,
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		if(!certificateDiagnostic)unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
 		if(r217Diagnostic){unsetenv("RISE_FIRE_REFUSAL_CLAUSES");unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");}
-		const bool unchanged=DigestFile(checkpointPath)==digest;
+		const bool unchanged=DigestFile(checkpointPath)==digest&&DigestFile(inputSidecar)==sidecarDigest;
 		std::fprintf(stderr,"%s_END solver_accepted=%d checkpoint_unchanged=%d "
 			"migration_authority=false error=%s\n",diagnosticName,result.succeeded?1:0,unchanged?1:0,
 			result.structuredError.c_str());
 		if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error)){
 			std::fprintf(stderr,"%s_SEAL_REFUSED error=%s\n",diagnosticName,error.c_str());return 94;
+		}
+		if(resourceStopRED){
+			const auto stoppedPath=outputDirectory/"host_memory_stop.checkpoint";
+			MethaneRunCheckpoint stopped;std::string expectedSeal;
+			const auto actualSealBytes=ReadFileBytes(stoppedPath.string()+".payload-v2.json");
+			const bool pass=unchanged&&!result.succeeded&&result.structuredError==
+				"solver_failure:host_memory_ceiling_checkpoint_sealed"&&
+				LoadMethaneRunCheckpoint(stoppedPath,stopped,error)&&
+				stopped.acceptedSteps==checkpoint.acceptedSteps+1u&&
+				BuildPayloadMerkleCertificate(stoppedPath,result.caseRecordId,expectedSeal,error)&&
+				std::string(actualSealBytes.begin(),actualSealBytes.end())==expectedSeal;
+			std::fprintf(stderr,"HOST_MEMORY_RESUME_STOP_RED input_and_sidecar_unchanged=%d immutable_stop_checkpoint=%d passed=%d\n",
+				unchanged?1:0,pass?1:0,pass?1:0);
+			return pass?FireRunHostMemory::GracefulStopExitCode:93;
 		}
 		if(r217Diagnostic)return unchanged&&!result.succeeded&&result.structuredError.find(
 			"stage=0 bitmap=33564800 phase_witness=verified full_witness=verified")!=std::string::npos?0:93;
@@ -7763,6 +7896,56 @@ namespace
 			result.acceptedTimeStepHistoryS.size()==checkpoint.acceptedSteps+8u?0:93;
 		return unchanged&&!result.succeeded&&result.structuredError.find("eos_failure_cell=")!=
 			std::string::npos?0:93;
+	}
+
+	bool HostMemoryPolicyREDs()
+	{
+		const FireRunHostMemory::Policy policy{1024u,256u};
+		const FireRunHostMemory::Sample healthy{767u,767u,0u,true};
+		auto rss=healthy;rss.rss=768u;auto footprint=healthy;footprint.footprint=768u;
+		auto unavailable=healthy;unavailable.valid=false;
+		const bool pass=!policy.Stop(healthy)&&policy.Stop(rss)&&policy.Stop(footprint)&&
+			policy.Stop(unavailable)&&FireRunHostMemory::Policy{256u,256u}.Stop(healthy)&&
+			!FireRunHostMemory::ProductionPolicy(UINT64_MAX).Valid();
+		std::fprintf(stderr,"HOST_MEMORY_POLICY_RED exact_rss_boundary=%d compressed_footprint_boundary=%d unavailable_refused=%d invalid_budget_refused=%d passed=%d\n",
+			policy.Stop(rss)?1:0,policy.Stop(footprint)?1:0,policy.Stop(unavailable)?1:0,
+			FireRunHostMemory::Policy{256u,256u}.Stop(healthy)?1:0,pass?1:0);
+		return pass;
+	}
+
+	int RunProductionHostMemoryPrefixChild(const std::filesystem::path& outputDirectory,
+		const bool retentionRED=false)
+	{
+		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory)||
+			!HostMemoryPolicyREDs())return 91;
+		std::filesystem::create_directories(outputDirectory/"budgets");
+		RunPersistenceOptions persistence;persistence.productionMetal=true;
+		persistence.portedProductionTransport=true;
+		persistence.hostMemoryRetentionRED=retentionRED;
+		persistence.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
+		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
+		persistence.finalCheckpointPath=outputDirectory/"final.checkpoint";
+		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		const auto result=RunMethaneFrameProbe(8u,1u,24.0*persistence.maximumProductionSourceStepS,
+			3.0,1.0,8.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		std::string error;
+		const bool sealed=SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error);
+		if(retentionRED){
+			MethaneRunCheckpoint checkpoint;
+			const bool graceful=sealed&&!result.succeeded&&result.structuredError==
+				"solver_failure:host_memory_ceiling_checkpoint_sealed"&&
+				LoadMethaneRunCheckpoint(persistence.finalCheckpointPath,checkpoint,error)&&
+				ExistingPayloadCertificateValid(persistence.finalCheckpointPath,result.caseRecordId,error)&&
+				checkpoint.acceptedSteps>=4u&&checkpoint.acceptedSteps<=12u&&
+				checkpoint.simulationTimeS==result.simulatedTimeS;
+			std::fprintf(stderr,"HOST_MEMORY_RETENTION_RED synthetic=1 graceful_checkpoint_sealed=%d steps=%llu exit_code=%d\n",
+				graceful?1:0,static_cast<unsigned long long>(checkpoint.acceptedSteps),
+				graceful?FireRunHostMemory::GracefulStopExitCode:93);
+			return graceful?FireRunHostMemory::GracefulStopExitCode:93;
+		}
+		std::fprintf(stderr,"HOST_MEMORY_PREFIX diagnostic_only=1 accepted_steps=%zu time=%.17g sealed=%d error=%s\n",
+			result.acceptedTimeStepHistoryS.size(),result.simulatedTimeS,sealed?1:0,result.structuredError.c_str());
+		return result.succeeded&&sealed&&result.acceptedTimeStepHistoryS.size()==24u?0:93;
 	}
 
 	int RunProductionOwnerCostPrefixChild(const std::filesystem::path& outputDirectory)
@@ -8059,7 +8242,23 @@ namespace
 		const double wallS=std::chrono::duration<double>(
 			std::chrono::steady_clock::now()-wallStart).count();
 		if(!result.succeeded){std::fprintf(stderr,"production onset campaign failed: %s\n",
-			result.structuredError.c_str());return 93;}
+			result.structuredError.c_str());
+			if(result.structuredError=="solver_failure:host_memory_ceiling_checkpoint_sealed"){
+				std::string sealError;
+				std::ofstream stop(outputDirectory/"host_memory_stop.v1");
+				stop<<std::setprecision(17)<<"schema rise.fire.host-memory-stop.v1\n"
+					<<"reason host_memory_ceiling\nexit_code "<<FireRunHostMemory::GracefulStopExitCode<<'\n'
+					<<"producer_build_id "<<producerBuildId<<"\nproducer_executable_sha256 "<<producerExecutableDigest<<'\n'
+					<<"accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\naccepted_time_s "<<result.simulatedTimeS<<'\n'
+					<<"final_checkpoint_sha256 "<<DigestFile(outputDirectory/"final.checkpoint")<<'\n'
+					<<"host_memory_trajectory_sha256 "<<DigestFile(outputDirectory/"budgets/host_memory_trajectory.csv")<<'\n'
+					<<"velocity_trajectory_sha256 "<<DigestFile(outputDirectory/"budgets/maximum_velocity_trajectory.csv")<<'\n'
+					<<"verdict incomplete_resource_stop\n";
+				if(!ClosePublishedStream(stop))return 94;
+				if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,sealError))return 94;
+				return FireRunHostMemory::GracefulStopExitCode;
+			}
+			return 93;}
 		const std::filesystem::path trajectory=outputDirectory/"budgets"/
 			"maximum_velocity_trajectory.csv";
 		const std::filesystem::path retryTrajectory=outputDirectory/"budgets"/
@@ -16783,6 +16982,16 @@ int main(int argc,char** argv)
 		return 91;
 #endif
 	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-r220-memory-prefix")==0)
+		return RunProductionHostMemoryPrefixChild(argv[2]);
+	if(argc==2&&std::strcmp(argv[1],"--fire-r220-host-memory-policy-red")==0)
+		return HostMemoryPolicyREDs()?0:93;
+#if defined(__APPLE__)
+	if(argc==2&&std::strcmp(argv[1],"--fire-r220-pool-exception-red")==0)
+		return FireProductionProjectedHeunPoolAllocationFailureRED()?0:93;
+#endif
+	if(argc==3&&std::strcmp(argv[1],"--fire-r220-memory-retention-red")==0)
+		return RunProductionHostMemoryPrefixChild(argv[2],true);
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-owner-cost-prefix")==0)
 		return RunProductionOwnerCostPrefixChild(argv[2]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-owner-eos-refusal")==0)
@@ -16793,6 +17002,10 @@ int main(int argc,char** argv)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-r217-refusal-diagnostic")==0)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r220-resume-probe")==0)
+		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r220-resume-stop-red")==0)
+		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,true,true);
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0){
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionPuffingSpectrumChild(tier,argv[3],argv[4],argv[5],argv[6]);
