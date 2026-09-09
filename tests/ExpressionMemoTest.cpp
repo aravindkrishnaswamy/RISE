@@ -110,6 +110,7 @@
 #endif
 
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
+#include "../src/Library/Interfaces/SurfaceSignalProximity.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
@@ -1873,6 +1874,84 @@ static void TestL2CrossObjectChannelSeparation()
 }
 
 //======================================================================
+// (o) the PROXIMITY entry clears on a generation bump
+//======================================================================
+
+//! (b) red-proves the generation counter for the SELF-signals, using a
+//! provider whose answer is a member the test can move.  `proximity` needs
+//! its own version of that check for a structural reason: it has NO
+//! provider.  Its answer is a function of the SCENE -- of where other
+//! objects are -- and a scene is exactly the kind of state that CAN change
+//! behind an unchanged key, because a NEIGHBOUR can move while the
+//! receiver's own hit point, and therefore every other field of the key,
+//! stays bit-identical.  That is the one way this signal's staleness
+//! differs from the other three (design 5.4), so it is the one that has to
+//! be checked directly rather than inherited from (b).
+//!
+//! THE FIXTURE MOVES THE NEIGHBOUR FARTHER, not nearer, and that is
+//! deliberate: `PrepareForRendering` itself bumps the generation (twice),
+//! so a check that had to call it could never observe a stale entry at
+//! all.  Moving the box from y = 3 to y = 5 changes the answer (2 -> 4)
+//! without needing the world-AABB snapshot rebuilt -- the stale box,
+//! expanded by the query radius, still admits the probe point, and
+//! `DistanceToSurface` reads the LIVE transform.  So the ONLY thing
+//! standing between the two answers is the memo bump.
+//!
+//! Both halves are asserted, which makes this its own red-proof: WITHOUT
+//! the bump the stale answer comes back (proving an entry really was
+//! held), and WITH it the fresh one does.
+static void TestProximityEntryClearsOnBump()
+{
+	std::cout << "(o) a proximity entry (fn = 3) is cleared by a generation bump" << std::endl;
+
+	IObjectManager* mgr = 0;
+	Check( RISE_API_CreateObjectManager( &mgr, true, false, 4, 32 ), "(o) a manager" );
+	if( !mgr ) return;
+
+	SphereGeometry* gFloor = new SphereGeometry( Scalar( 1 ) );
+	Object* receiver = new Object( gFloor );
+	gFloor->release();
+	receiver->FinalizeTransformations();
+	mgr->AddItem( receiver, "receiver" );
+
+	SphereGeometry* gBox = new SphereGeometry( Scalar( 1 ) );
+	Object* mover = new Object( gBox );
+	gBox->release();
+	mover->SetPosition( Point3( 0, 3, 0 ) );
+	mover->FinalizeTransformations();
+	mgr->AddItem( mover, "mover" );
+
+	mgr->PrepareForRendering();
+
+	SurfaceSignalInfo s;
+	s.pScene  = mgr;
+	s.pSelf   = receiver;
+	s.ptWorld = Point3( 0, 0, 0 );
+
+	MemoSwitch on( 1 );
+	ExpressionMemo::Invalidate();
+	const Scalar warm = s.Proximity( Scalar( 8 ) );		// 1 - 2/8
+	CheckExact( warm, Scalar( 0.75 ), "(o) the neighbour 2 away reads 1 - 2/8" );
+
+	// MOVE IT, and do NOT bump.
+	mover->SetPosition( Point3( 0, 5, 0 ) );
+	mover->FinalizeTransformations();
+
+	const Scalar stale = s.Proximity( Scalar( 8 ) );
+	CheckExact( stale, warm,
+		"(o) RED-PROOF -- without a bump the STALE entry is served, so there really was one" );
+
+	ExpressionMemo::Invalidate();
+	const Scalar fresh = s.Proximity( Scalar( 8 ) );		// 1 - 4/8
+	CheckExact( fresh, Scalar( 0.5 ),
+		"(o) MONEY -- the bump clears the proximity entry and the moved neighbour is seen" );
+
+	mover->release();
+	receiver->release();
+	safe_release( mgr );
+}
+
+//======================================================================
 // (m) the two painter pipes never share an L2 entry
 //======================================================================
 
@@ -2006,6 +2085,7 @@ int main( int argc, char** argv )
 	TestL2KeyFieldSeparation();
 	TestL1KeyFieldSeparation();
 	TestL2CrossObjectChannelSeparation();
+	TestProximityEntryClearsOnBump();
 	TestCrossPipeL2Separation();
 
 	std::cout << std::endl;
