@@ -1544,6 +1544,25 @@ void ObjectManager::InvalidateSpatialStructure() const
 	// it is derived from exactly the world transforms this call is
 	// declaring stale.  A plain delete, not safe_release: the snapshot is
 	// an owned POD, not a refcounted engine object.
+	//
+	// BOTH the live pointer and the retired set are handled UNDER
+	// treeCreationMutex, and the scope has to cover both: EnsureBoxSnapshot
+	// (the sole other writer) loads the live pointer, pushes it onto
+	// `retiredBoxes` and publishes its replacement inside ONE critical
+	// section, so an unlocked delete-and-clear here could interleave with
+	// that -- free the pointer EnsureBoxSnapshot has just loaded, watch it
+	// push the dangling value onto the retired set and re-publish a fresh
+	// snapshot over the null this call wrote (resurrecting a snapshot after
+	// an invalidate), and then free the same pointer a second time from the
+	// retired set below.  "Never during a pass" bounds WHEN this runs, not
+	// what serializes it against a same-instant EnsureBoxSnapshot at a pass
+	// boundary; the mutex is what rules that out.  `retiredBoxes` is a plain
+	// `std::vector` with no thread-safety story of its own, which is the
+	// second reason the lock is needed.  This is the ONE place, besides the
+	// destructor (which runs after every thread is gone and so takes no
+	// lock -- see ~ObjectManager) and Shutdown(), where a snapshot is
+	// actually freed.
+	treeCreationMutex.lock();
 	{
 		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_relaxed );
 		if( cur ) {
@@ -1551,22 +1570,6 @@ void ObjectManager::InvalidateSpatialStructure() const
 			pBoxes.store( 0, std::memory_order_relaxed );
 		}
 	}
-	// And the retired ones with it.  This is the ONE place, besides the
-	// destructor, where a snapshot is actually freed -- both are covered by
-	// the "never during a pass" contract, which is what makes freeing an
-	// object another thread might have been reading safe here and not in
-	// EnsureBoxSnapshot.
-	//
-	// UNDER treeCreationMutex, because `retiredBoxes` is a plain
-	// `std::vector`, not an atomic -- EnsureBoxSnapshot's `push_back` onto
-	// it (above, and the sole writer) already holds this same mutex, and a
-	// plain vector has no thread-safety story of its own if a second party
-	// touches it without the lock its one writer uses.  "Never during a
-	// pass" bounds WHEN this runs, not what serializes it against a
-	// same-instant `EnsureBoxSnapshot` on another thread at a pass
-	// boundary; the mutex is what actually rules that out, so this call
-	// takes it rather than relying on the timing contract alone.
-	treeCreationMutex.lock();
 	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
 		delete retiredBoxes[k];
 	}
