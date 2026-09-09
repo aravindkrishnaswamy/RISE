@@ -1,0 +1,56 @@
+{
+  "schema": "rise.fire.r216.qualified-continuation-launch.v1",
+  "recorded_utc": "2026-09-08 23:27:02 UTC",
+  "status": "running_non_verdict",
+  "qualification_commit": "eaf8b2fb",
+  "worktree": "/Users/aravind/Working/RISE/worktrees/r203-producers",
+  "branch": "codex/r216-tier10-continuation",
+  "executable_sha256": "f6ef651868bbe9e7635c7a948cb38c0d9aa50de32ec3b5d6783eef6cc0b9af6d",
+  "producer_build_id": "81cf8340374423e2c5ae209062c35ed2e7d8a915535051324060c48a1d7cb5a9",
+  "protocol_sha256": "30196fdcfa1a17911e1200cf9a3eff1b805dff236c6529301054479f2ce2a28e",
+  "certificate_sha256": "e393ae3456b218c1e1f909040e42e7c2f8db3456fb1d12092d10c4c24760b082",
+  "initial_checkpoint_sha256": "65bb74aa8186a95acde57de593d54de664303c4d92ebaea374eea75e1f138c19",
+  "resumed_from_step": 792,
+  "original_kernel_set_sha256": "d580d078ea083ee18032abfb027271ada9d4d1dabab50b35cb6eb7a503258a0e",
+  "first_detached_attempt": {
+    "launcher_pid": 65135,
+    "remained_alive": false,
+    "created_run_directory": false,
+    "log": "continuation.v1.log",
+    "log_bytes": 0,
+    "exit_cause": "unknown_no_solver_or_terminal_record",
+    "accepted_steps_claimed": 0
+  },
+  "retained_session_launch": {
+    "launch_local": "2026-09-08 16:22:46 -0700",
+    "session_id": 70208,
+    "worker_pid": 65166,
+    "caffeinate_pid": 65168,
+    "command": ["/usr/bin/caffeinate", "-i", "./bin/tests/FireSequenceTest_r216_58e338c9", "--fire-r216-continue", "rendered/fire_production_calibration/r214_filtered_onset/tier10_from_zero.v1/checkpoints/step_0000000792.checkpoint", "rendered/fire_production_calibration/r216_tier10_continuation/migration.v1/resume_equivalence.v2.cbor", "rendered/fire_production_calibration/r216_tier10_continuation/continuation.v2", "docs/fire_r216_tier10_continuation.v1", "30196fdcfa1a17911e1200cf9a3eff1b805dff236c6529301054479f2ce2a28e"],
+    "horizon_s": 3.5,
+    "stop_velocity_m_per_s": 15,
+    "crossing_bundle": "armed_15_30_60_with_convergence_exporter"
+  },
+  "first_retained_checkpoint": {
+    "accepted_step": 801,
+    "time_s": 1.3037901093484834,
+    "sha256": "b9a3685254770e0081b1078de3f2361b3c9997ec9561987c853f12d29312e19b",
+    "payload_v2_root": "0aca9d64d077751ab58e26e3efc7b7fc6a099874520239c5d48beec5524e9fdc",
+    "native_load_and_independent_payload_verification": true,
+    "archive": "first_retained_checkpoint.v1.tar.gz"
+  },
+  "joined_observed_prefix": {
+    "accepted_steps": 804,
+    "end_time_s": 1.3084762623766437,
+    "original_rows": [1,792],
+    "continuation_rows": [793,804],
+    "first_eight_match_certificate": true,
+    "evidence_sha256": "a1a3b8431149d8cc618838ca8104a2fde4238b39f86ac21272d9b8eceae7e8ef",
+    "authority": "migration_validated_prefix_unverified",
+    "onset_survival_passed": false
+  },
+  "remaining_gates": ["3.5 s or first crossing", "native final checkpoint/history and exact-once join", "formal filtered equal-time contract"],
+  "future_resume_authority": "not_granted_by_this_receipt; use retained execution session while alive",
+  "golden_checkpoint_unchanged": true,
+  "main_dirty_xcode_project_unchanged": true
+}

@@ -1606,6 +1606,22 @@ namespace RISEFireProductionTrace
 		std::vector<std::array<FireProductionRoundoffTrace::TraceFloat,4> >& expansionAndBound,
 		FireProductionEOSLogMetalQualificationIdentity& identity,
 		std::string* error=0 );
+	//! Qualification only: seven species enthalpies (J/kg), then signed-mixture
+	//! energy (J/m3), all {hi,lo,tail,bound}. No candidate or authority is issued.
+	bool EvaluateFireProductionEOSEnergyEnclosureMetalDiagnostic(
+		const std::array<FireProductionRoundoffTrace::TraceFloat,9>& state,const std::array<FireProductionRoundoffTrace::TraceFloat,2>& temperature,
+		bool reciprocalMutant,std::array<std::array<FireProductionRoundoffTrace::TraceFloat,4>,8>& output,
+		std::string& shaderSHA256,std::string* error=0 );
+	//! Pinned r217 reproduction witness, not a production acceptance predicate.
+	inline bool FireProductionR217RefusalPhasesValid(const std::array<std::uint32_t,4>& phases,
+		const std::uint32_t finalBitmap)
+	{
+		return phases==std::array<std::uint32_t,4>{{0u,0u,128u,10368u}}&&finalBitmap==33564800u;
+	}
+	inline bool FireProductionR217RefusalWitnessComplete(bool phases,bool predicateAndInputs,bool seals)
+	{
+		return phases&&predicateAndInputs&&seals;
+	}
 #endif
 
 	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The

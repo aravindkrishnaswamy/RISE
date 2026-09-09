@@ -1,0 +1,6 @@
+R214_ONSET_EVIDENCE synthetic=1 horizon_crossing_red=1 missing_rows_red=1 wrong_time_red=1 duplicate_red=1 close_failure_red=1 healthy=1
+capstone probe workers=8 target=3.5 grid=86x86x132 dx=0.0244744929 t_ft=2.08530913
+capstone resumed checkpoint step=792 time=1.2894936816301197 path=rendered/fire_production_calibration/r216_tier10_continuation/continuation.v2/latest.checkpoint
+capstone accepted step=800 time=1.30214384 dt=0.00164626597 Tmax=1950.6893 qmax=18572971.9 eos_max=0.0114541382 approach_eos_max=0.00637648029 limiter_class=continuous limiter_discrepancy=0 active_set_class=continuous active_set_discrepancy=0 active_set_cycle=0 active_set_faces=0
+capstone durable checkpoint count=77 step=801 time=1.3037901093484834 path=rendered/fire_production_calibration/r216_tier10_continuation/continuation.v2/latest.checkpoint
+capstone retained checkpoint step=801 time=1.3037901093484834 path=rendered/fire_production_calibration/r216_tier10_continuation/continuation.v2/checkpoints/step_0000000801.checkpoint
