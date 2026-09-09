@@ -24,6 +24,8 @@
 #include "../Utilities/RString.h"
 #include "../Utilities/Reference.h"
 
+#include <atomic>	// the two one-shot proximity diagnostic latches below
+
 namespace RISE
 {
 	namespace Implementation
@@ -141,7 +143,34 @@ namespace RISE
 			//! One-shot latch for the loose-bound diagnostic, so an
 			//! anisotropically-scaled object says so once rather than once
 			//! per query on every render thread.
-			mutable bool									m_sigmaLooseWarned;
+			//!
+			//! ATOMIC, and that is not decoration.  `DistanceToSurface` is
+			//! called from every render thread at once, so a plain
+			//! `mutable bool` here is an unsynchronised write to shared
+			//! state -- a data race by the language's own definition, which
+			//! a sanitiser reports and which lets two threads both read
+			//! false and both print.  `exchange` makes "was I the first"
+			//! one indivisible question, and the fast path stays a single
+			//! relaxed load.
+			mutable std::atomic<bool>						m_sigmaLooseWarned;
+
+			//! The SAME one-shot latch for the REFUSAL diagnostic: an
+			//! object whose geometry family has no closed-form distance
+			//! (a CSG composite, a Bezier patch, a RAW mesh, a heightfield
+			//! SDF, an SDF whose bracket did not close within budget)
+			//! contributes nothing to `proximity` and says so ONCE, which
+			//! is what the design's §2 promises and what
+			//! IObjectManager::NearestOtherSurface's contract comment
+			//! repeats.  Per OBJECT rather than per family, because the
+			//! author's question is "which chunk in my scene went quiet",
+			//! and per object is the granularity that answers it.
+			//!
+			//! Latched here but PRINTED by the manager
+			//! (`NoteDistanceRefusal` only reports whether this call won
+			//! the latch): an Object carries no name -- the manager owns
+			//! the name-to-object map -- and a diagnostic that cannot name
+			//! the chunk is one an author cannot act on.
+			mutable std::atomic<bool>						m_distanceRefusalWarned;
 
 			virtual ~Object( );
 
@@ -277,6 +306,20 @@ namespace RISE
 				const Scalar maxDistWorld,
 				Scalar& outDist
 				) const override;
+
+			//! IObject::NoteDistanceRefusal -- wins the one-shot latch
+			//! exactly once per object.  See `m_distanceRefusalWarned`.
+			virtual bool NoteDistanceRefusal() const override
+			{
+				// Fast path FIRST, and relaxed: after the single winning
+				// call this is one load on a line nobody writes again, which
+				// is what keeps a scene full of refusing neighbours from
+				// paying a read-modify-write per candidate per hit.
+				if( m_distanceRefusalWarned.load( std::memory_order_relaxed ) ) {
+					return false;
+				}
+				return !m_distanceRefusalWarned.exchange( true, std::memory_order_relaxed );
+			}
 
 			virtual const IRayIntersectionModifier* GetModifier() const override { return pModifier; }
 			virtual const IRadianceMap* GetRadianceMap() const override { return pRadianceMap; }

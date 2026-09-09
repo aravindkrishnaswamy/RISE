@@ -290,14 +290,30 @@ namespace RISE
 		//! is an UPPER bound on the true distance, never a lower one.  So
 		//! `proximity` may UNDER-paint a seam and can never paint one that
 		//! is not there.  A candidate that cannot answer contributes
-		//! nothing (it is treated as far) and says so once in the log --
-		//! honest absence over a wrong distance.
+		//! nothing (it is treated as far) and says so ONCE PER REFUSING
+		//! OBJECT in the log -- honest absence over a wrong distance.  The
+		//! latch is `IObject::NoteDistanceRefusal`; the line is printed by
+		//! the manager, which is the only party that knows the chunk's
+		//! name; and the refusal is re-confirmed at an UNBOUNDED radius
+		//! before printing, because an SDF's lower-bound early-out also
+		//! returns false for a neighbour that is merely out of range and
+		//! must not be reported as unable to answer.
 		//!
-		//! \return TRUE and writes `outDist` (in (0, maxDistWorld]) when
+		//! \return TRUE and writes `outDist` (in **[0, maxDistWorld)**) when
 		//!         some candidate answered within the radius; FALSE with
 		//!         `outDist` untouched when nothing did -- which is also
 		//!         the answer for a non-finite point, a non-positive or
 		//!         non-finite radius, and an empty scene.
+		//!
+		//! BOTH ENDS OF THAT INTERVAL ARE THE CODE'S, not a convention:
+		//! zero is ATTAINED, because interpenetration is contact and the
+		//! solid families clamp their signed field at zero rather than
+		//! taking its absolute value; and `maxDistWorld` is EXCLUDED,
+		//! because a candidate is only accepted on `d < best` with `best`
+		//! starting at the radius.  A neighbour exactly `maxDistWorld` away
+		//! is therefore not found, and `proximity` reads its neutral 0
+		//! there -- which is the same number `1 - d/r` would have given, so
+		//! the signal is continuous across the cut-off either way.
 		virtual bool NearestOtherSurface(
 			const Point3& ptWorld,						///< [in] The world-space point to measure from
 			const IObject* self,						///< [in] The object the point belongs to; never contributes.  May be null

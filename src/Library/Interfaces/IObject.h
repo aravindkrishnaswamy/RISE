@@ -220,6 +220,24 @@ namespace RISE
 			(void)ptWorld; (void)maxDistWorld; (void)outDist;
 			return false;
 		}
+
+		//! ONE-SHOT LATCH for the refusal diagnostic behind
+		//! `DistanceToSurface`.  The design's §2 promises that a neighbour
+		//! which cannot answer "says so once in the log"; this is the half
+		//! that makes "once" true without a per-candidate lock.
+		//!
+		//! Split from the printing on purpose.  An object holds the latch
+		//! (it is per object, which is the granularity an author can act
+		//! on) but carries no NAME -- the object manager owns the
+		//! name-to-object map -- so the manager asks this question and does
+		//! the printing, naming the chunk and its geometry kind.
+		//!
+		//! DEFAULTED to `false` -- "I did not win the latch" -- so an
+		//! out-of-tree implementer and the test tree's IObject stubs stay
+		//! silent rather than printing per candidate per hit.  Declared
+		//! last + defaulted: no vtable claim on any existing slot.
+		//! \return TRUE exactly once per object, on the first call.
+		virtual bool NoteDistanceRefusal() const { return false; }
 	};
 }
 

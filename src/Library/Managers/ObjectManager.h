@@ -27,6 +27,7 @@
 
 #include <map>
 #include <set>
+#include <atomic>	// the proximity AABB snapshot's publish/read edge
 
 namespace RISE
 {
@@ -180,7 +181,31 @@ namespace RISE
 			//! exactly as `pBVH` is, never grown and never edited in place,
 			//! and released only where `pBVH` is -- so a query copies the
 			//! pointer once and reads lock-free, with no reallocation
-			//! hazard and no race class `pBVH` does not already have.
+			//! hazard.
+			//!
+			//! WHAT IT DOES ADD, said plainly rather than waved away as "no
+			//! race class `pBVH` does not already have" -- which is FALSE
+			//! for a small scene.  `pBVH` is built only when
+			//! `items.size() > nMaxObjectsPerNode` (4); at or below that
+			//! threshold there is no TLAS at all, so the manager's "never
+			//! invalidate during a pass" contract has never had anything to
+			//! protect there.  THIS snapshot IS built for a four-object
+			//! scene, and `InvalidateSpatialStructure` deletes it outside
+			//! `treeCreationMutex` exactly as it deletes `pBVH`.  So the
+			//! honest statement is: the snapshot EXTENDS the existing
+			//! "never during a pass" contract to scenes small enough that
+			//! it used to be vacuous.  It is the same contract, newly
+			//! load-bearing on a population that had been exempt.
+			//!
+			//! The pointer is `std::atomic` for the publish/read edge that
+			//! IS in scope: `EnsureBoxSnapshot` fills a fresh snapshot and
+			//! then stores it, and a query on another thread loads it and
+			//! dereferences immediately.  A plain pointer makes that a data
+			//! race by the language's definition and leaves the store free
+			//! to be seen before the writes that filled the vector; the
+			//! release store / acquire load pair is what makes "published
+			//! whole" true at the memory model rather than only in prose.
+			//! Relaxed would not do: it orders nothing.
 			//!
 			//! Holds EVERY registered object, world-invisible ones
 			//! included; the query filters.  Filtering at build time would
@@ -198,7 +223,7 @@ namespace RISE
 				};
 				std::vector<Entry>	entries;
 			};
-			mutable const ObjectBoxSnapshot* pBoxes;
+			mutable std::atomic<const ObjectBoxSnapshot*> pBoxes;
 
 			//! SUPERSEDED snapshots, kept alive until the next real
 			//! invalidate.
@@ -226,6 +251,14 @@ namespace RISE
 			//! matches the manager's.  Mutex-serialized and double-checked,
 			//! exactly like CreateBVH().
 			void EnsureBoxSnapshot() const;
+
+			//! Print the design's promised once-per-refusing-object line for
+			//! `obj`, naming the scene chunk and its geometry kind.  Called
+			//! only after `IObject::NoteDistanceRefusal()` has said this
+			//! call won the object's latch, so the O(n) reverse name lookup
+			//! it does runs at most once per object for the life of that
+			//! object -- never on the hot path.
+			void LogDistanceRefusal( const IObjectPriv* obj ) const;
 
 			// Realize all objects' deferred geometry (idempotent) before any bbox/
 			// TLAS query.  Called from PrepareForRendering AND CreateBVH/CreateOctree.
@@ -274,6 +307,18 @@ namespace RISE
 				const Scalar maxDistWorld,
 				Scalar& outDist
 				) const;
+
+			//! TEST-ONLY: has the proximity AABB snapshot been built?
+			//!
+			//! Exists for the demand-gate test, which has no other way to
+			//! observe that a scene with no live `proximity()` consumer
+			//! never pays for the snapshot -- the gate is a NEGATIVE
+			//! (work not done), and a timing assertion would be a flake.
+			//! Reads the published pointer, nothing else.
+			bool ForTest_HasBoxSnapshot() const
+			{
+				return pBoxes.load( std::memory_order_acquire ) != 0;
+			}
 
 			void EnumerateObjects( IEnumCallback<IObject>& pFunc ) const;
 			void EnumerateObjects( IEnumCallback<IObjectPriv>& pFunc ) const;

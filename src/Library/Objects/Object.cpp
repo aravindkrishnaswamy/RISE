@@ -42,7 +42,8 @@ Object::Object( ) :
   m_sigmaMax( 1.0 ),
   m_sigmaMin( 1.0 ),
   m_sigmaExact( true ),
-  m_sigmaLooseWarned( false )
+  m_sigmaLooseWarned( false ),
+  m_distanceRefusalWarned( false )
 {
 }
 
@@ -66,7 +67,8 @@ Object::Object( const IGeometry* pGeometry_ ) :
   m_sigmaMax( 1.0 ),
   m_sigmaMin( 1.0 ),
   m_sigmaExact( true ),
-  m_sigmaLooseWarned( false )
+  m_sigmaLooseWarned( false ),
+  m_distanceRefusalWarned( false )
 {
 	if( pGeometry ) {
 		pGeometry->addref();
@@ -1345,18 +1347,38 @@ bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld
 		return false;
 	}
 
-	if( !m_sigmaExact && !m_sigmaLooseWarned ) {
-		m_sigmaLooseWarned = true;
+	// ONE-SHOT, and won by exactly one thread: `exchange` is what makes
+	// "once" true when every render thread is inside this function at the
+	// same time.  The fast path is the relaxed load in front of it, so an
+	// anisotropic object costs one load per candidate per hit after the
+	// first, not a read-modify-write.
+	if( !m_sigmaExact
+	 && !m_sigmaLooseWarned.load( std::memory_order_relaxed )
+	 && !m_sigmaLooseWarned.exchange( true, std::memory_order_relaxed ) ) {
 		// No name to quote: an Object carries none -- the manager owns the
 		// name-to-object map, and reaching back for it from here would
 		// invert that ownership.  The sigma pair identifies the transform
 		// well enough for an author to find the chunk that authored it.
+		//
+		// WHAT THE NUMBERS ARE, said precisely, because the headline factor
+		// reads alarmingly and is not the over-report an author will
+		// measure.  `sigmaMax/sigmaMin` is a bound computed from the LOOSE
+		// Frobenius/determinant pair, so it bounds a bound: on `scale
+		// (3, 1, 0.4)` it prints 26.99 while the transform's true singular
+		// ratio is 7.5 and the worst over-report actually measured is
+		// 7.96x.  The search-radius inflation `1/sigmaMin` (8.47x on that
+		// same transform) is the part that costs TIME rather than contact,
+		// so it is printed as its own number instead of being inferred.
 		GlobalLog()->PrintEx( eLog_Info,
 			"Object::DistanceToSurface:: an object with an ANISOTROPIC transform reads proximity() "
-			"through the Frobenius/determinant bounds rather than exactly -- distances are "
-			"over-reported by at most %.3gx (sigmaMax %.6g / sigmaMin %.6g).  The signal can only "
-			"UNDER-paint contact as a result; see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
-			(double)( m_sigmaMax / m_sigmaMin ), (double)m_sigmaMax, (double)m_sigmaMin );
+			"through the Frobenius/determinant bounds rather than exactly.  Reported distances are "
+			"an UPPER bound, over-read by at most %.3gx -- itself a bound computed from the loose "
+			"sigma pair (sigmaMax %.6g / sigmaMin %.6g), so the over-report an author measures is "
+			"typically far smaller; and the object-space search radius is inflated %.3gx, which is "
+			"the cost side.  The signal can only UNDER-paint contact as a result; see "
+			"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
+			(double)( m_sigmaMax / m_sigmaMin ), (double)m_sigmaMax, (double)m_sigmaMin,
+			(double)( Scalar( 1 ) / m_sigmaMin ) );
 	}
 
 	outDist = dWorld;
@@ -1491,5 +1513,13 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 	// Re-arm the one-shot diagnostic: a re-finalize (an animation frame, a
 	// hierarchy re-bake, an editor edit) may have moved the transform from
 	// exact to loose or back, and the author should hear about the new one.
-	m_sigmaLooseWarned = false;
+	m_sigmaLooseWarned.store( false, std::memory_order_relaxed );
+	// The REFUSAL latch is deliberately NOT re-armed here.  The promise is
+	// "once per refusing object", not "once per pose": the dominant refusal
+	// is a property of the geometry FAMILY (a patch, a RAW mesh, a
+	// heightfield SDF, a CSG composite) that no transform change can turn
+	// into an answering one, and re-arming would reprint the same line on
+	// every animation frame.  A transform that becomes degenerate mid-
+	// animation is therefore reported only if it had not already refused --
+	// the quieter direction, chosen deliberately.
 }

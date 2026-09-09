@@ -18,7 +18,9 @@
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
 #include "../Objects/CSGObject.h"   // telling a CSG operand from a container node (both are hidden)
+#include "../Interfaces/ISurfaceSignalProvider.h"	// ProximityDemand: the snapshot's cost gate
 #include <atomic>
+#include <typeinfo>	// LogDistanceRefusal names the refusing geometry's kind
 #include <cstdint>
 #include <vector>
 #include <algorithm>
@@ -264,8 +266,8 @@ ObjectManager::~ObjectManager( )
 {
 	safe_release( pBVH );
 	safe_release( pOctree );
-	delete pBoxes;
-	pBoxes = 0;
+	delete pBoxes.load( std::memory_order_relaxed );
+	pBoxes.store( 0, std::memory_order_relaxed );
 	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
 		delete retiredBoxes[k];
 	}
@@ -388,21 +390,32 @@ void ObjectManager::EnsureBoxSnapshot() const
 	// loop sees it) and be INVISIBLE to every proximity query (the
 	// snapshot would not).
 	//
-	// So the entry count is compared as well.  It catches every add and
-	// every removal, which is the whole realistic set of structural
-	// mutations; it does NOT catch an add and a removal in the same gap
-	// (the count is unchanged), and it does not pretend to -- for that,
+	// So the entry count is compared as well.  IT EXISTS FOR ADDS, and
+	// that is the honest scope: `Job::AddObject` on a scene of four or
+	// fewer objects neither builds a TLAS nor invalidates anything, so
+	// without this check the added object would render and be invisible to
+	// every proximity query.  A REMOVAL is caught only incidentally -- in
+	// this tree every removal path calls `InvalidateSpatialStructure`,
+	// which drops the snapshot outright and makes the count check
+	// redundant there.  It does NOT catch an add and a removal in the same
+	// gap (the count is unchanged), and it does not pretend to; for that,
 	// and for anything that MOVES an object, the invalidate contract is
 	// still the mechanism.  One `size()` compare on a std::map is O(1) and
 	// sits beside a null check that was already there.
-	if( pBoxes && pBoxes->entries.size() == items.size() ) {
-		return;
+	{
+		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_acquire );
+		if( cur && cur->entries.size() == items.size() ) {
+			return;
+		}
 	}
 
 	treeCreationMutex.lock();
-	if( pBoxes && pBoxes->entries.size() == items.size() ) {
-		treeCreationMutex.unlock();
-		return;
+	{
+		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_acquire );
+		if( cur && cur->entries.size() == items.size() ) {
+			treeCreationMutex.unlock();
+			return;
+		}
 	}
 	// A stale-by-count snapshot is RETIRED, never deleted here.  This
 	// function is reachable from IntersectRay, so another render thread may
@@ -412,6 +425,15 @@ void ObjectManager::EnsureBoxSnapshot() const
 	// InvalidateSpatialStructure and the destructor, which already carry
 	// the "never during a pass" contract that makes freeing safe.  See the
 	// field's doc comment in ObjectManager.h.
+	//
+	// WHAT RETIRING DOES *NOT* PROTECT, stated so nobody reads more into it
+	// than it carries: it keeps the ARRAY alive, not the objects the array
+	// points at.  The entries hold raw `const IObjectPriv*`, un-addrefed, so
+	// a snapshot that outlives a removed object still names it.  In this
+	// tree that gap is closed by the removal paths themselves, every one of
+	// which calls InvalidateSpatialStructure -- which frees the retired set
+	// too, under the same "never during a pass" contract.  Retiring buys
+	// safety for the ADD case above, where nothing invalidates.
 	// Realize deferred geometry first, exactly as CreateBVH does: an
 	// unrealized DisplacedGeometry reports a ZERO bounding box, and a
 	// snapshot built from it would exclude that object from every proximity
@@ -446,12 +468,58 @@ void ObjectManager::EnsureBoxSnapshot() const
 	// would be a use-after-free for a reader still scanning it.  So the
 	// old snapshot stays published and valid right up to this single
 	// store, and stays alive past it.
-	if( pBoxes ) {
-		retiredBoxes.push_back( pBoxes );
+	//
+	// The store is a RELEASE and every read is an ACQUIRE, which is what
+	// makes "published whole" true at the memory model and not merely in
+	// this comment: without the pair, a reader is free to observe the
+	// pointer before the vector writes that filled it.
+	{
+		const ObjectBoxSnapshot* const old = pBoxes.load( std::memory_order_relaxed );
+		if( old ) {
+			retiredBoxes.push_back( old );
+		}
 	}
-	pBoxes = snap;
+	pBoxes.store( snap, std::memory_order_release );
 
 	treeCreationMutex.unlock();
+}
+
+void ObjectManager::LogDistanceRefusal( const IObjectPriv* obj ) const
+{
+	if( !obj ) {
+		return;
+	}
+
+	// THE REVERSE NAME LOOKUP.  O(n) over the item map, and affordable
+	// exactly because the caller has already won the object's one-shot
+	// latch: this runs at most once per object, ever, and never again on
+	// the per-candidate path.  The manager owns this map, which is why the
+	// printing lives here and the latch lives on the object.
+	const char* name = "(unnamed)";
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i = items.begin(), e = items.end(); i != e; ++i ) {
+		if( i->second.first == obj ) {
+			name = i->first.c_str();
+			break;
+		}
+	}
+
+	// AND THE GEOMETRY KIND, because "which chunk" and "why" are different
+	// questions and an author needs both.  `typeid(...).name()` is a
+	// mangled string on this toolchain (the same form
+	// PixelBasedRasterizerHelper's ForTest_SamplingKernelName already
+	// prints), but the class name is legible inside it -- "SDFGeometry",
+	// "BezierPatchGeometry" -- which is all a diagnostic needs.  A null
+	// geometry is itself a refusal reason and is named as one.
+	const IGeometry* const geom = obj->GetGeometry();
+	const char* kind = geom ? typeid( *geom ).name() : "(no geometry)";
+
+	GlobalLog()->PrintEx( eLog_Info,
+		"ObjectManager::NearestOtherSurface:: object `%s` (geometry %s) cannot answer a distance "
+		"query AT ANY RADIUS and so contributes nothing to proximity() -- it is treated as FAR, "
+		"which under-paints contact rather than inventing it.  Reported once per object.  Refusing "
+		"families and the reasons are listed in docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2 and 10.",
+		name, kind );
 }
 
 bool ObjectManager::NearestOtherSurface(
@@ -473,7 +541,7 @@ bool ObjectManager::NearestOtherSurface(
 	// ONE copy of the pointer, then a lock-free read of an immutable
 	// object.  Re-reading `pBoxes` inside the loop would reintroduce
 	// exactly the race the immutability buys away.
-	const ObjectBoxSnapshot* const snap = pBoxes;
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
 	if( !snap ) {
 		return false;
 	}
@@ -529,7 +597,48 @@ bool ObjectManager::NearestOtherSurface(
 		if( ptWorld.z < ll.z - best || ptWorld.z > ur.z + best ) continue;
 
 		Scalar d = Scalar( 0 );
-		if( obj->DistanceToSurface( ptWorld, best, d ) && d < best ) {
+		const bool answered = obj->DistanceToSurface( ptWorld, best, d );
+		if( !answered ) {
+			// THE PROMISED LINE.  The design's §2 says a neighbour that
+			// cannot answer "says so once in the log", and until now
+			// nothing printed it -- three surfaces claimed a diagnostic
+			// that did not exist.  The latch lives on the object (so this
+			// is one relaxed load per candidate per hit after the first
+			// refusal) and the printing lives here (so it can name the
+			// chunk, which an Object cannot).
+			//
+			// AND IT IS CONFIRMED BEFORE IT IS PRINTED, because `false`
+			// here does NOT only mean "I cannot answer".  `SDFGeometry`'s
+			// step-1 lower-bound early-out (`Map(p) > maxDist` proves the
+			// true distance is past the radius) also returns false, and
+			// that is a perfectly healthy outcome that happens at the far
+			// corners of every SDF's expanded box.  Printing "this object
+			// cannot answer" there would be a false statement about a
+			// geometry that answers fine.
+			//
+			// So: take the one-shot latch first (cheap, and it bounds
+			// everything below to once per object for the life of the
+			// object), then ask the SAME object again with an UNBOUNDED
+			// radius.  A family with no closed form -- a patch, a RAW mesh,
+			// a CSG composite, a heightfield SDF, a degenerate transform --
+			// refuses that too, immediately and in O(1).  An SDF that was
+			// merely out of range answers it, and says nothing.
+			//
+			// WHAT THIS DELIBERATELY GIVES UP: if an object's FIRST refusal
+			// is the benign far one, the latch is spent and a later
+			// bracket-budget failure on the same object stays silent. That
+			// is the right trade -- the design's promise is about
+			// neighbours that CANNOT answer, and this one can; the
+			// budget failure is separately disclosed as a residual (§10).
+			if( obj->NoteDistanceRefusal() ) {
+				Scalar confirm = Scalar( 0 );
+				if( !obj->DistanceToSurface( ptWorld, RISE_INFINITY, confirm ) ) {
+					LogDistanceRefusal( obj );
+				}
+			}
+			continue;
+		}
+		if( d < best ) {
 			best = d;
 			found = true;
 			if( best <= Scalar( 0 ) ) {
@@ -624,7 +733,20 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 	// that just walked a BVH.  (NearestOtherSurface calls it again, and that
 	// belt-and-braces is deliberate: an out-of-tree caller could reach the
 	// query through a hit record this function never produced.)
-	EnsureBoxSnapshot();
+	//
+	// GATED ON DEMAND, and that gate is the point of the call being here at
+	// all being affordable.  Unconditionally this was a load, a compare and
+	// a heap indirection on EVERY primary and secondary ray, charged to
+	// every scene in the tree including the overwhelming majority that
+	// never mention `proximity()`.  `ProximityDemand::Any()` is one relaxed
+	// atomic load and answers "does any live compiled painter call the
+	// builtin"; when it does not, no snapshot is needed and none is kept
+	// alive.  Correctness does not rest on the counter -- with the eager
+	// and the per-ray build both skipped, `NearestOtherSurface` still
+	// builds lazily under the tree mutex on its first call.
+	if( ProximityDemand::Any() ) {
+		EnsureBoxSnapshot();
+	}
 
 	ri.geometric.signals.pScene  = this;
 	ri.geometric.signals.pSelf   = ri.pObject;
@@ -1343,7 +1465,15 @@ void ObjectManager::PrepareForRendering() const
 	// `items.size() > nMaxObjectsPerNode` gate is a property of the TLAS
 	// and not of this: a four-object scene has no top-level BVH and still
 	// needs its boxes.
-	EnsureBoxSnapshot();
+	//
+	// GATED ON DEMAND, though -- see the call in IntersectRay for the full
+	// argument.  A scene with no live `proximity()` consumer builds no
+	// snapshot at all, which is observable (and observed:
+	// `ForTest_HasBoxSnapshot` stays false after a render), and costs it
+	// nothing but one relaxed atomic load per pass.
+	if( ProximityDemand::Any() ) {
+		EnsureBoxSnapshot();
+	}
 
 	// EXPRESSION MEMO: the trailing bump is taken by `memoDropOnExit`,
 	// declared at the top of this function -- see its comment for why it
@@ -1366,9 +1496,12 @@ void ObjectManager::InvalidateSpatialStructure() const
 	// it is derived from exactly the world transforms this call is
 	// declaring stale.  A plain delete, not safe_release: the snapshot is
 	// an owned POD, not a refcounted engine object.
-	if( pBoxes ) {
-		delete pBoxes;
-		pBoxes = 0;
+	{
+		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_relaxed );
+		if( cur ) {
+			delete cur;
+			pBoxes.store( 0, std::memory_order_relaxed );
+		}
 	}
 	// And the retired ones with it.  This is the ONE place, besides the
 	// destructor, where a snapshot is actually freed -- both are covered by
