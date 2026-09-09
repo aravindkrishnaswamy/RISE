@@ -705,12 +705,19 @@
 //                                            fixed studio-preview shader the
 //                                            GUI's live interactive editor
 //                                            uses) that IGNORES the scene's
-//                                            authored materials and
-//                                            lighting entirely -- geometry,
+//                                            authored LIGHTING entirely (a
+//                                            fixed synthetic studio rig
+//                                            stands in for it) -- geometry,
 //                                            composition, and camera framing
-//                                            are representative; materials,
+//                                            are representative; true
 //                                            lighting, exposure, and colour
-//                                            are NOT.  NEVER judge those
+//                                            balance are NOT.  It DOES
+//                                            evaluate each material's diffuse
+//                                            albedo, so an expression-driven
+//                                            painter (e.g. one querying
+//                                            proximity/occlusion) still
+//                                            runs.  NEVER judge true
+//                                            lighting/exposure/colour
 //                                            from a draft image -- render at
 //                                            quality:"production" (or read
 //                                            the LIVE viewport via
@@ -1169,7 +1176,11 @@
 //                                            override (ephemeral, captured+restored).
 //                                            QUALITY TRADEOFF: absent `samples`
 //                                            (default), renders quality:"draft" --
-//                                            cheap, but IGNORES materials/lighting
+//                                            cheap, but IGNORES the scene's
+//                                            authored LIGHTING (a fixed rig
+//                                            stands in for it) -- it DOES
+//                                            evaluate each material's diffuse
+//                                            albedo
 //                                            (good for composition/geometry
 //                                            iteration only); `samples` (>=1)
 //                                            switches to quality:"production" at

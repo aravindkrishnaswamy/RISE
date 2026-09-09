@@ -514,8 +514,11 @@ namespace RISE
 		//! its outputs -- see AgentRenderParams::quality's doc and
 		//! AgentRenderResult::renderMode's doc for the full honesty
 		//! contract (a draft render is geometry/composition/camera-
-		//! accurate but IGNORES the scene's authored materials and
-		//! lighting; never judge those from a draft).
+		//! accurate and evaluates each material's diffuse albedo (so an
+		//! expression-driven painter, e.g. one querying `proximity`/
+		//! `occlusion`, DOES run) but IGNORES the scene's authored
+		//! LIGHTING -- a fixed synthetic studio rig stands in for it;
+		//! never judge true lighting/exposure/colour from a draft).
 		//!
 		//! MaterialLook (2026-08-24, the lit material look) is the THIRD
 		//! fidelity, and the only one whose subject is APPEARANCE.  It renders
@@ -1153,9 +1156,13 @@ namespace RISE
 			//! Use `renderMode` to tell which shading actually produced
 			//! THIS image: "draft" means the pixels came from a fixed
 			//! studio-preview shader that IGNORES the scene's authored
-			//! materials and lighting entirely (geometry, composition, and
-			//! camera framing are representative; materials, lighting,
-			//! exposure, and colour are NOT) -- never judge those from a
+			//! LIGHTING entirely (a fixed synthetic studio rig stands in
+			//! for it; geometry, composition, and camera framing are
+			//! representative, but true lighting, exposure, and colour
+			//! balance are NOT) -- it DOES evaluate each material's diffuse
+			//! albedo, so an expression-driven painter (e.g. one querying
+			//! `proximity`/`occlusion`) still runs -- never judge true
+			//! lighting/exposure/colour from a
 			//! draft image; render at quality:"production" (the default)
 			//! or use ReadViewport for what the user actually sees.
 			//! Toolkit slice 3a adds a THIRD value "objectmap" (set when
@@ -1404,9 +1411,11 @@ namespace RISE
 			//! SUCCEEDED, FULL-FRAME, PRODUCTION BEAUTY render that did NOT
 			//! isolate and did NOT carry an element `target`.  The three
 			//! exclusions are not conservatism, they are honesty:
-			//!   * DRAFT ignores the scene's authored materials and lighting
-			//!     entirely, so setting it beside a coloured, lit target
-			//!     invites reading a shading difference as a scene difference.
+			//!   * DRAFT ignores the scene's authored LIGHTING entirely (a
+			//!     fixed synthetic studio rig stands in for it), so setting it
+			//!     beside a coloured, lit target invites reading a shading
+			//!     difference as a scene difference -- even though draft DOES
+			//!     evaluate each material's diffuse albedo.
 			//!   * OBJECTMAP / VIEW MODE paint identity or data colours, not
 			//!     appearance -- same objection, more starkly.
 			//!   * ISOLATE deletes the rest of the scene: it is a look at ONE
@@ -1694,9 +1703,11 @@ namespace RISE
 		//! the comparison renders at AgentRenderQuality::Draft -- cheap
 		//! (capped at 4 samples, fixed studio-preview shading), good enough
 		//! to iterate on GEOMETRY/COMPOSITION/CAMERA alignment against the
-		//! reference, but IGNORES the scene's authored materials and
-		//! lighting entirely -- a low draft-mode RMSE says nothing about
-		//! material/colour/lighting match.  Supplying `samples` (>=1)
+		//! reference, but IGNORES the scene's authored LIGHTING entirely
+		//! (a fixed synthetic studio rig stands in for it) -- it DOES
+		//! evaluate each material's diffuse albedo, so an expression-driven
+		//! painter still runs, but a low draft-mode RMSE says nothing about
+		//! true lighting/exposure/colour match.  Supplying `samples` (>=1)
 		//! switches to AgentRenderQuality::Production at that sample count
 		//! -- the real grader-equivalent measurement, and materially more
 		//! expensive.  The intended loop: iterate cheaply under the Draft

@@ -21420,9 +21420,11 @@ namespace RISE
 				// construction, so the element's SHAPE reads whatever the scene
 				// is lit like.  The honesty cost is stated in the message
 				// rather than hidden: a draft frame ignores the scene's
-				// authored materials and lighting (see AgentRenderQuality's
-				// doc), so it answers "is the form I authored there" and
-				// nothing about appearance.
+				// authored LIGHTING -- a fixed synthetic studio rig stands
+				// in for it (see AgentRenderQuality's doc); it DOES
+				// evaluate each material's diffuse albedo, so it answers
+				// "is the form I authored there" and nothing about true
+				// appearance under the scene's own lighting.
 				//
 				// EXPLICITLY SIZED because the agent surface's absent-dims
 				// default is gated on isProductionBeauty (see
