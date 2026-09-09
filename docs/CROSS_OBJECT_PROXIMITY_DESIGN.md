@@ -543,7 +543,9 @@ Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
 2026-09-09 before Phase 3 began; revised the same day after three adversarial
-rounds (round 4, 1 P1: strict membership alone discards the exact landing on
+rounds (round 5, 3 P1s: the exact-operand list named sheets, a nested
+composite's exactness was unspecified, the barren `add_wear` body's dead-param
+list was wrong with its fbm argument unpinned; round 4, 1 P1: strict membership alone discards the exact landing on
 an operand's boundary, so composites of exact primitives would read `d + ε`
 with ε undefined; round 3, 1 P1: the bracket's `f ≤ 0` landing admits the phantom
 touching set where operand boundaries are tangent — `glass_pavilion`'s flute
@@ -614,27 +616,45 @@ f_B > 0` (a negative lower bound proves strictly inside its operand, a
 positive one strictly outside) — puts `q` in the solid's interior, so the
 segment from `p` crosses the boundary. The BOUNDARY arm admits a landing
 exactly ON one operand's surface when THAT operand's signed distance is
-EXACT (sphere, box, cylinder, torus, plane, disk — `SignedDistanceLower`
-returns an exactness flag; ellipsoid and SDF never set it): intersection
-`(f_A ≤ 0 ∧ f_B < 0) ∨ (f_A < 0 ∧ f_B ≤ 0)`, subtraction `(f_A ≤ 0 ∧ f_B >
-0) ∨ (f_A < 0 ∧ f_B ≥ 0)`, where the `≤ 0` / `≥ 0` side must be the exact
-operand — a point on `∂A` strictly outside `B` (or on `∂B` strictly inside
-`A`) is on the real solid's boundary, because a neighbourhood of it holds
-interior points of the solid. Neither arm admits `f_A = f_B = 0`. The
-boundary arm is what keeps a composite of exact primitives EXACT: the
-descent `p ← p − f·ĝ` lands on the active operand's surface, and without
-that arm the probe would have to step past it and every answer would carry
-`+ε` (the round-4 P1). With a BOUND operand active (SDF, ellipsoid) the
-strict arm is the only proof, the probe steps by the composite's own `ε` —
-`max(1e-6, 5e-5 × the composite's local bounding-box diagonal)`, the SDF
-family's rule applied to `CSGObject::GenerateBoundingBox` — and the answer
-lies in `[d, d + ε]`; and because the descent endpoint's `f` may round to
-`+1 ulp` even on an exact operand, an exact composite's answer also lies in
-`[d, d + ε]` rather than being exactly `d` (ε = 2.5e-4 on `column2`'s ~5.05
-local diagonal — stated in §8 and §10). A query point lying exactly ON the
-composite's surface reads at most `ε`, not 0 — the unsigned clamp is on a
-NEGATIVE composed sign, since `f = 0` is also the phantom set. Refuse when
-no admitted landing arrives within budget. `f ≤ 0` is NOT the landing test (the round-3 P1): `{max(f_A, −f_B)
+EXACT — `SignedDistanceLower` returns an exactness flag, set ONLY by the four
+SOLID closed forms (sphere, box, capped cylinder, torus); ellipsoid and SDF
+never set it, and sheets (plane, disk, clipped plane, open cylinder, mesh)
+refuse the signed query altogether, so they can never carry it — a
+subtracted plane admitted to this arm would report the chord to a face the
+subtraction removes nothing at, the round-3 phantom in a new form. The arm:
+intersection `(f_A ≤ τ ∧ f_B < 0) ∨ (f_A < 0 ∧ f_B ≤ τ)`, subtraction `(f_A
+≤ τ ∧ f_B > 0) ∨ (f_A < 0 ∧ f_B ≥ −τ)`, where the `τ` side is the exact
+operand and the other side is STRICT — a point on `∂A` strictly outside `B`
+(or on `∂B` strictly inside `A`) is on the real solid's boundary, because a
+neighbourhood of it holds interior points of the solid. The exact side is
+tested to a tolerance `τ = 1e-12 × the composite's local diagonal` (not
+`≤ 0`), because the descent `p ← p − f·ĝ` lands on the exact operand's
+surface only to rounding, and a `+1 ulp` miss must not throw the exact
+landing away; a landing up to `τ` OUTSIDE the exact operand is within `τ`
+of its real surface, so the chord under-reads distance by at most `τ` —
+stated, and negligible. Neither arm admits `f_A = f_B = 0` (the strict side
+rejects it), which is what keeps the flute tangency out. Which arm applies
+is decided PER LANDING by the exactness of the operand whose surface was
+reached, not by what the composite contains: `SDF − box` landing on the box
+face takes the boundary arm and is exact to `τ`. When the reached operand
+is a BOUND one (SDF, ellipsoid) only the strict arm can prove the landing,
+so the probe steps by the composite's own `ε = max(1e-6, 5e-5 × local
+bounding-box diagonal)` — the SDF family's rule; `CSGObject` has no
+`IGeometry` and its only box accessor (`getBoundingBox()`) is WORLD-space,
+so the local diagonal is computed from the operands' composed local box
+(a subtraction takes A's) and cached at finalize as `m_localDiagonal` —
+and the answer lies in `[d, d + ε]` locally. Hence an exact-operand landing
+answers within `[d − τ, d]`, a bound-operand landing within `[d, d + ε]`,
+and the world-space slack is `σ_max` times either (ε = 2.52e-4 on
+`column2`'s 5.0498 local diagonal, σ = 1 — stated in §8 and §10; the
+composite's 5e-5 is fixed while an SDF operand's `m_epsFrac` is
+author-settable, so a composite may probe finer than its operand's own
+surface band, harmlessly). A query point lying exactly ON the composite's
+surface has `q = p` as its zero-length descent endpoint: admitted by the
+boundary arm when the reached operand is exact (reads 0), otherwise the
+probe steps and it reads at most `ε` — the unsigned clamp is on a NEGATIVE
+composed sign, since `f = 0` is also the phantom set. Refuse when no
+admitted landing arrives within budget. `f ≤ 0` is NOT the landing test (the round-3 P1): `{max(f_A, −f_B)
 ≤ 0}` is `closure(A) ∩ complement(int B)`, which contains every point where
 `∂A` merely TOUCHES `∂B` — a phantom set no ray can hit. `glass_pavilion`'s
 flute slot is that case exactly: `flutegeom` is 0.5 deep, the column's
@@ -652,7 +672,13 @@ central difference AT the tangency (a V-valley of value 0) is never taken;
 an implementation that recomputes it there gets the same refusal through
 the 1e-12 seam rule instead. The composed field an intersection/subtraction
 descends is ALSO what it exports as its own `SignedDistanceLower` to a
-parent composite and to `interior`, with the composite's `×σ_min` applied. At a max/min seam two nearly opposed operand
+parent composite and to `interior`, with the composite's `×σ_min` applied —
+and it NEVER sets the exactness flag: `max(a, b)` under-reads near a seam
+even over exact operands, and its zero set is the phantom touching set, so a
+parent's boundary arm must not land on it (the round-3 bug one level up).
+A union exports `min(f_A, f_B)` and sets the flag only when both operands
+set it AND its own σ is exact (a uniform transform), since `×σ_min` under a
+non-uniform one is a bound. At a max/min seam two nearly opposed operand
 gradients can cancel the composite's, and a gradient below 1e-12 makes the
 candidate REFUSE (an under-paint, never a wrong answer — the SDF's fabricated
 `(0,1,0)` fallback is not reused). `SignedDistanceLower` NEVER refuses for
@@ -697,7 +723,8 @@ a healthy point that spends `column2`'s latch).
 search radius by `r/σ_min` and the reported distance by `σ_max` — on a
 `scale (3, 1, 0.4)` object the bounds are `σ_max = ‖M‖_F = 3.19` and `σ_min
 = |det|/‖M‖_F² = 0.118`, so the search radius inflates 8.47× (true: 2.5×)
-and the worst over-read is `3.19/0.4 = 7.97×` (true `σ_max/σ_min` = 7.5;
+and the worst over-read is bounded by `‖M‖_F/0.4 = 7.97×` (§5.2's 7.96× is
+the measured value under that bound; true `σ_max/σ_min` = 7.5;
 the 26.99 the log prints is the ratio of the two bounds, a bound on a bound,
 not a reported-over-true ratio). Phase 3's honest deltas are therefore
 search radius 8.47× → 2.5× and worst over-read 7.97× → 7.5×. Phase 3 computes the extreme singular
@@ -804,15 +831,28 @@ together with the curved one under `SelectMaterialToWear_`, while
 `qualifyingMaterials` keeps reporting the curved count (unchanged field
 meaning), and the new clause on the "no material qualifies" message is
 APPENDED, because `AgentAddWearTest` matches that message by its opening
-substring. On a barren receiver `curv ≡ 0`, so the prelude's `wear_mask`
-and `crevice_raw` would collapse to `clamp(breakup_amp·fbm)` — a pure-noise
+substring. The contact mask's breakup is `fbm(P*contact_scale + jitter, …)` with its
+OWN `param contact_scale` (the prelude's other two fbm calls are scaled by
+`breakup_scale` and `grime_scale` respectively, each consumed by exactly one
+mask). On a barren receiver `curv ≡ 0`, so the prelude's `wear_mask` and
+`crevice_raw` would collapse to `clamp(breakup_amp·fbm)` — a pure-noise
 edge-wear and patina wash over the whole flat face; the barren path
-therefore emits `def wear_mask 0` and `def crevice_mask 0` and OMITS the
-`crevice_raw` / `cavity_boost` lines (so the dead `occlusion(0.08)` is not
-paid per shade) and the `param`s only those masks consume (`edge_wear`,
-`crevice_grime`, `cavity_gain`, `breakup_scale` — a dead `param` would
-surface as a live-but-inert slider); the contact term is the ONLY mask that
-paints there, and the success message says so. The descriptor text states the unit and
+therefore does NOT emit the wear body with its masks zeroed (that leaves
+`edge_wear`, `breakup_scale`, `crevice_grime`, `grime_scale`, `cavity_gain`
+in the prelude and `edge_desat`, `edge_lift`, `edge_tint`, `rough_polished`
+in the consuming lines as live-but-inert sliders, and pays the dead
+`occlusion(0.08)` per shade) but a CONTACT body: prelude = `contact_r`,
+`contact_scale`, `breakup_amp`, the seed/jitter lines, the patina colour
+and `rough_grimy` params, and `contact_mask`; consuming lines = `mix(base,
+patina, contact_grime*contact_mask)` and `mix(rough, rough_grimy,
+contact_grime*contact_mask)`. Every `param` in a contact body is read by
+an expression that reaches a consuming line; the contact term is the ONLY
+mask that paints there, and the success message says so. The design-note
+path keeps advertising from the curved list only (`c.addWearName` comes
+from `SelectMaterialToWear_(wearCandidateMaterials)`), so with
+`contact_radius > 0` the verb's bare pick MAY differ from the note's — the
+note advertises a bare call — and the "must be one function" comment at
+the verb is updated to say so. The descriptor text states the unit and
 that the author chooses the radius from the scene's feature sizes.
 `contact_radius 0` is byte-identical to today's output: the scan's existing
 lists, counts and messages are unchanged, and the prelude is a built string
@@ -958,7 +998,12 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   signed distances (`d_A < 0 ∧ d_B < 0` / `d_A < 0 ∧ d_B > 0` — never
   `f ≤ 0`, which contains the phantom touching set) with `gap_max` recorded
   and the grid spacing stated, and for a composite of EXACT operands
-  `reported − reference ≤ ε` with the composite's ε printed; a TANGENT pair
+  `|reported − reference| ≤ τ` (the boundary arm fired; `τ = 1e-12 ×` the
+  local diagonal) at the radial station of a cylinder-minus-box where
+  `sqrt(0.0625) = 0.25` makes `f_A` a true 0, and `reported − reference ≤ ε`
+  with ε printed where a bound operand is reached; a subtracted PLANE
+  operand makes the composite refuse (no exactness flag on a sheet); a
+  nested intersection reports `exact = false` to its parent; a TANGENT pair
   (a box whose face is tangent to a cylinder, the flute case) from a station
   outside the tangent face either refuses or reports ≥ the true corner
   distance, never the tangency; a nested intersection inside a subtraction
@@ -976,11 +1021,12 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   the cap out to ~10 cm, so the receiver is the CAP'S TOP FACE. An upright wall
   gives `d(s) = s`, so `proximity(0.02)` on the cap top at 1 / 2 / 4 cm from
   the column's nominal wall predicts 0.5 / 0 / 0, each measured within 0.05;
-  the three stations sit at the composite's local ±x azimuth, 90° from the
+  the three stations sit along the composite's local +x axis, 90° from the
   slot wedge (half-angle `asin(0.04/0.25)` = 9.21°, inside which the radial
-  descent lands in the slot and the query refuses, reading 0), and the 1 cm
-  prediction is `0.5 − ε/r` = 0.4875 at the composite's ε = 2.5e-4, so
-  "within 0.05" holds with 1 mm of distance slack; and one station on the
+  descent lands in the slot and the query refuses, reading 0); the un-cut
+  wall is the exact cylinder, so the boundary arm fires and the 1 cm
+  prediction is 0.5 within τ, with `0.5 − ε/r` = 0.4874 (ε = 2.52e-4) the
+  floor if the probe steps instead — either way inside 0.05; and one station on the
   cap top 1 cm outside a FLUTE's tangent face (local `(0, ·, 0.26)`), where
   the nearest real surface is the slot-wall/cylinder corner at 4.21 cm:
   `proximity(0.02)` there must read 0 (a phantom landing would read 0.5),
@@ -990,7 +1036,7 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   checker/uniform painters, not expression painters, so the beauty crop is a
   probe-albedo render of a scene COPY (raw `proximity(0.02)` on the cap top —
   `marble_col` is bound to the ceiling, the pedestal, all eight capitals and
-  every column operand — 17 objects — so the copy paints all of them),
+  every column operand — 18 objects — so the copy paints all of them),
   judged honestly, and the tracked scene is not
   edited;
 - exact σ: `SigmaMin()/SigmaMax()` within 1e-12 of the written reference on
@@ -1017,8 +1063,10 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   `proximity`/`interior`; with a radius, the written body calls
   `proximity(contact_r)` exactly once as an additive mask on the crevice
   endpoint, a flat box receiver is accepted from the barren list, and the
-  scene derives; a barren pick's emitted body contains no `curv` and no
-  `occlusion` term and its `wear_mask` / `crevice_mask` are the literal 0;
+  scene derives; a barren pick's emitted body is the CONTACT body: it
+  contains no `curv` and no `occlusion` term, and every `param` it declares
+  is referenced at least once outside its own declaration (no inert
+  slider), asserted by name over the emitted text;
   `contact_radius 0` is byte-identical to today's output INCLUDING the
   conditions scan's counts, kinds and decline messages;
   `AgentAddWearTest` extended; the MCP and chat tool counts unchanged
@@ -1935,9 +1983,12 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
   composites until Phase 3 — after it, an intersection/subtraction with a
   sheet operand, a union of two refusing operands, a bracket with no admitted
   landing in budget, and a seam gradient below 1e-12) read far. An
-  intersection/subtraction answers within `[d, d + ε]` (ε = 5e-5 of its local
-  diagonal, floored at 1e-6) even over exact operands, and a point exactly on
-  its surface reads up to ε rather than 0.
+  intersection/subtraction answers within `[d − τ, d]` when the landing
+  reaches an exact operand (τ = 1e-12 of its local diagonal) and within
+  `[d, d + ε]` when it reaches a bound one (ε = 5e-5 of the local diagonal,
+  floored at 1e-6), both scaled by the composite's σ_max in world space; a
+  point exactly on its surface reads 0 in the first case and up to ε in the
+  second; an intersection/subtraction is never an exact operand to a parent.
 - SDF neighbours are an upper bound on distance (never over-read contact),
   bounded by the last probe step; the gap is measured on C, not bounded
   analytically. A candidate whose crossing is not found within budget reads far.
