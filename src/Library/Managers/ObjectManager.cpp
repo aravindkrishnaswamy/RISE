@@ -706,7 +706,13 @@ bool ObjectManager::NearestOtherSurface(
 				if( dist < budget ) budget = dist;
 				return dist;
 			},
-			d );
+			d,
+			// useElementBoxTest = TRUE: a TLAS leaf's `primDist` is the WHOLE
+			// per-object query above, which for a mesh object recurses into
+			// that mesh's own inner BVH -- worth one object-box test to skip
+			// (see BVH.h ClosestPointDistance's doc comment; measured on
+			// Sponza, docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3).
+			true );
 		if( ok ) {
 			best  = d;
 			found = true;

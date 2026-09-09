@@ -1802,6 +1802,32 @@ namespace RISE
 		//! `Element` types AND different lambda types, hence different
 		//! instantiations with different stacks.  A future consumer that made
 		//! them the same would need a local stack instead.
+		//!
+		//! `useElementBoxTest` (default FALSE) adds a per-element point-to-box
+		//! lower-bound test at the leaf, ahead of `primDist`, skipping any
+		//! element whose box is already `>= best`.  It costs one
+		//! `ep.GetElementBoundingBox(prims[i])` call per leaf element visited --
+		//! for `TriangleMeshGeometryIndexed`'s `PointerTriangle` elements that
+		//! is three vertex reads and an `Include`; for `ObjectManager`'s
+		//! `IObjectPriv*` elements it is `Object::getBoundingBox()`, which
+		//! RE-TRANSFORMS all 8 local-box corners through the object's full
+		//! world matrix on every call (Object.cpp) -- not cached.  Whether
+		//! that pays depends on what `primDist` itself costs: cheap for a
+		//! single triangle (the mesh's own leaves), so the extra box test is
+		//! pure overhead there and this parameter defaults to FALSE and the
+		//! mesh's own traversal (`TriangleMeshGeometryIndexed::DistanceToSurface`)
+		//! never passes TRUE.  Expensive for a TLAS leaf, where `primDist` may
+		//! recurse into a whole mesh's own inner BVH walk -- skipping that
+		//! walk for an out-of-range object is worth one box-corner transform,
+		//! which is what `ObjectManager::NearestOtherSurface` measured on
+		//! Sponza (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3) and why it
+		//! passes TRUE.  The box test is done ENTIRELY in `Scalar` against the
+		//! element's own (un-rounded, un-compacted-to-float) box -- see
+		//! `PointBoxDistance` below -- so it introduces no cross-precision
+		//! rounding hazard of its own (contrast `PointBoxDistanceF`'s node-box
+		//! test, whose float compaction is exactly what makes it conservative
+		//! at the node level; an element's box here is asked fresh every call
+		//! and is never stored, so there is nothing to round outward for).
 		//! \return TRUE and writes `outDist` when some primitive is strictly
 		//!         within `maxDist`, FALSE otherwise (`outDist` untouched).
 		template< class PrimDistFn >
@@ -1809,7 +1835,8 @@ namespace RISE
 			const Point3& p,
 			const Scalar  maxDist,
 			PrimDistFn&&  primDist,
-			Scalar&       outDist ) const
+			Scalar&       outDist,
+			const bool    useElementBoxTest = false ) const
 		{
 			if( nodes.empty() || prims.empty() ) return false;
 			if( !( maxDist > Scalar( 0 ) ) ) return false;
@@ -1840,6 +1867,11 @@ namespace RISE
 				if( node.primCount > 0 ) {
 					const uint32_t end = node.firstPrimOrLeft + node.primCount;
 					for( uint32_t i = node.firstPrimOrLeft; i < end; ++i ) {
+						if( useElementBoxTest ) {
+							const BoundingBox eb = ep.GetElementBoundingBox( prims[i] );
+							const Scalar ebDist = PointBoxDistance( p, eb.ll, eb.ur );
+							if( !( ebDist < best ) ) continue;
+						}
 						const Scalar d = primDist( prims[i], p );
 						if( d < best ) {
 							best  = d;
@@ -1894,6 +1926,26 @@ namespace RISE
 				sum += dk * dk;
 			}
 			return std::sqrt( sum );
+		}
+
+		//! Distance from a point to an axis-aligned box, 0 when inside --
+		//! the ELEMENT-level counterpart of `PointBoxDistanceF` above, used
+		//! by `ClosestPointDistance`'s `useElementBoxTest` pre-test.  Unlike
+		//! the node box (a `float` array compacted once at build time and
+		//! rounded outward by 1 ulp to stay conservative under that
+		//! compaction), an element's box here comes fresh from
+		//! `ep.GetElementBoundingBox()` on every call and is never stored,
+		//! so there is no compaction step to compensate for: doing the
+		//! whole computation in `Scalar`, on the `Scalar` box the processor
+		//! handed back and the `Scalar` point `ClosestPointDistance` was
+		//! itself given, needs no cast of either operand and so has no
+		//! rounding hazard of its own to analyse.
+		static Scalar PointBoxDistance( const Point3& p, const Point3& lo, const Point3& hi )
+		{
+			const Scalar dx = ( p.x < lo.x ) ? ( lo.x - p.x ) : ( ( p.x > hi.x ) ? ( p.x - hi.x ) : Scalar( 0 ) );
+			const Scalar dy = ( p.y < lo.y ) ? ( lo.y - p.y ) : ( ( p.y > hi.y ) ? ( p.y - hi.y ) : Scalar( 0 ) );
+			const Scalar dz = ( p.z < lo.z ) ? ( lo.z - p.z ) : ( ( p.z > hi.z ) ? ( p.z - hi.z ) : Scalar( 0 ) );
+			return std::sqrt( dx*dx + dy*dy + dz*dz );
 		}
 	};
 }
