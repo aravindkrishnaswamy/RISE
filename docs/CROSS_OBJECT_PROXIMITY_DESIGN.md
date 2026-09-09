@@ -537,6 +537,97 @@ pinned one.
 
 ---
 
+### 5.6 Phase 3 design — signed distances, CSG composites, exact σ, `interior(r)`, `add_wear`
+
+Phase 3 is not four independent conveniences; three of its items rest on one
+new capability, a **signed** per-family distance, and the fourth (exact σ)
+tightens a bound Phase 1 left loose. Written 2026-09-09 before Phase 3 began,
+reviewed like the rest.
+
+**Why `min(operands)` is the wrong CSG answer, and what the right one is.** For
+a point `p` outside both operands of a **union**, the distance to the union's
+surface IS `min(d_A, d_B)`: every union-boundary point lies on ∂A or ∂B (so
+`d ≥ min`), and if the nearest point of ∂A lies inside B, the segment from `p`
+to it enters B first at a point that is on ∂B and outside A — a union-boundary
+point closer than the min (so `d ≤ min`). Exact, no bracket needed. For
+**intersection** and **subtraction** the min is only a LOWER bound (the nearest
+operand-surface point may not be on the composite's surface at all), i.e. the
+forbidden direction. So the composite gets the same treatment as an SDF: a
+composed field `f` with an **exact sign** and a magnitude that is a lower bound,
+and Phase 1's bracketed sign change on top of it.
+
+**Signed distance per family (object space; magnitude = the Phase-1 distance,
+sign from an exact inside test):** sphere, box, capped cylinder, torus — closed
+forms with exact sign; ellipsoid — exact sign from `Σ (p_i/a_i)² ≤ 1`, magnitude
+the Phase-1 bound; SDF — `Map(p)` (exact sign, magnitude a lower bound, the
+Phase-1 bracket for the outside magnitude); planes, disks, clipped planes, open
+cylinders, meshes, patches, hair — **sheets, no inside**: they answer the
+unsigned query as before and REFUSE the signed one. Two new virtuals with
+refusing defaults: `IGeometry::SignedDistanceToSurface(ptObject, maxDistObject,
+outSigned) → bool` and `IObject::SignedDistanceToSurface(ptWorld, …)`, the
+latter doing the transform (sign is transform-invariant; magnitude scaled as in
+§5.2). `Object::DistanceToSurface` is unchanged; a family may implement only
+the unsigned one.
+
+**CSG composite** (`CSGObject::SignedDistanceToSurface` and, through it,
+`DistanceToSurface`): each operand answers its signed distance in WORLD length
+(operands are world-invisible objects with their own transforms and may
+themselves be composites — recursion through `IObject`); compose
+`union → min(a, b)`, `intersection → max(a, b)`, `subtraction → max(a, −b)`;
+an operand that refuses the signed query makes the composite refuse (a sheet
+cannot bound a solid). Outside (`f > 0`): union returns `f` exactly; intersection
+and subtraction run Phase 1's bracket on `f` — descend along the numerical
+gradient of `f` (six operand evaluations per gradient, times two operands),
+probe until `f ≤ 0`, report the chord, refuse when no crossing lands within the
+budget. Inside (`f < 0`): the depth is `|f|`, a lower bound on the true depth
+(under-reads — the safe direction for an interior mask, see below).
+`bComplementedField` never enters: the composite composes signs itself. The
+per-object refusal log covers composites as it does any object.
+
+**Exact σ.** Phase 1's loose bounds (`‖M‖_F`, `|det|/σ_max²`) inflate the
+search radius by `r/σ_min` and the reported distance by `σ_max` — 8.47× and
+26.99 on a `scale (3, 1, 0.4)` object. Phase 3 replaces them with the exact
+extreme singular values from a cyclic Jacobi eigen-solve of the symmetric 3×3
+`MᵀM` (≤ 10 sweeps, converges to machine precision for any positive
+semi-definite input, ~60 lines, finalize-time only), keeping the exact-uniform
+fast path and the degenerate refusal. The loose-σ log disappears; `Object`
+exposes `SigmaMin()/SigmaMax()` for tests, which compare against `numpy`-style
+reference values written into the test for a rotation, a reflection, a
+uniform scale, `(3, 1, 0.4)`, and a shear.
+
+**`interior(r)`** — the signed variant, as a second builtin rather than a sign
+on `proximity`: `clamp(depth / r, 0, 1)` where `depth` is the largest, over
+every OTHER world-visible non-emitter object that CONTAINS the hit point, of
+that object's inside depth (under-read as above; if the point is inside two
+overlapping solids, leaving their union needs at least the larger of the two
+depths, so the max is still a lower bound); **0 = inside no neighbour**,
+**1 = at least `r` deep**; neutral 0; world-length radius; `r` mandatory, no
+`DynR` twin. Together `proximity` and `interior` cover the signed distance
+without a sign convention an author has to remember. Id `kFnInterior = 58`
+(the next free id); one more named `case` in `CallFunc` (the pin moves once
+more, disclosed); `SignalKey.fn = 4`; the parse-time gates extended as for
+`proximity`; `SurfaceSignalInfo::Interior(r)` beside `Proximity(r)` sharing the
+L1 helper; the query is `IObjectManager::DeepestOtherContainment(ptWorld,
+self, maxDepthWorld, outDepth) → bool` over the same candidate snapshot
+(a candidate whose bbox does not contain the point cannot contain it).
+Residual, stated: meshes and every sheet family contribute nothing to
+`interior` (no inside test); a hit point inside a MESH neighbour reads
+`proximity = 1` and `interior = 0`.
+
+**`add_wear` composition.** The verb gains one parameter, `contact_radius`
+(world length, default 0 = off). When set, the banded composition it writes
+gains a contact term `proximity(contact_radius)` folded into its cavity
+deepening (colour and roughness, never relief), with the same fbm breakup and
+the descriptor text stating the unit and that the author chooses the radius
+from the scene's feature sizes (the verb cannot). The `WearBodyReadsGeometrySignals_`
+predicate already lists `proximity`/`interior` so the verb self-disarms on a
+body that reads either.
+
+**Not in Phase 3, still gated on a scene that needs it:** the
+emissive-decorative-object exclusion (§10) and a per-object opt-out.
+
+---
+
 ## 6. Engine principles, checked
 
 - **Scene immutable after Prepare:** the query is `const` and lock-free over
@@ -643,10 +734,40 @@ the bunny's footprint at `proximity(0.02)` and 0 under the light panel; Sponza
 with the query forced at every hit ≤ 1.25 × its baseline and the floor within
 2 cm of a wall ≥ 0.5 at `proximity(0.04)`.
 
-**Phase 3 — observed-need:** CSG union-min with the exact boundary test (and a
-CSG showcase beauty check on `pt_alchemists_sanctum` or `glass_pavilion`);
-anisotropic transforms exactly; a signed variant; the `add_wear` composition;
-the emissive-decorative-object exclusion (§10) revisited if a scene needs it.
+**Phase 3 — signed distances, CSG composites, exact σ, `interior(r)`,
+`add_wear` (design in §5.6).** Gate:
+
+- signed closed forms: for sphere/box/capped cylinder/torus, `SignedDistance`
+  equals the unsigned answer outside and `−depth` inside within 1e-9 on scene C
+  fixtures extended with interior probe points; the ellipsoid's sign exact and
+  its magnitude the Phase-1 bound; SDF sign exact with `|Map|` inside; every
+  sheet family refuses the signed query and still answers the unsigned one;
+- CSG: a union of two spheres answers `min` exactly (1e-9) outside; an
+  intersection and a subtraction answer `lower ≤ reported ≤ reference +
+  gap_max` against a grid search of the composite's `{f ≤ 0}` (the composite's
+  own inside test), with `gap_max` recorded; a nested composite (a union inside
+  a subtraction) composes; an operand that is a sheet makes the composite
+  refuse; the world-invisible operands never count separately (unchanged); the
+  showcase beauty check: a receiver beside a CSG object in
+  `pt_alchemists_sanctum` or `glass_pavilion`, harness values at 1/2/4 cm and a
+  crop, judged honestly;
+- exact σ: the Jacobi solver within 1e-12 of reference singular values on the
+  five transforms named in §5.6; the `(3, 1, 0.4)` object's search-radius
+  inflation falls from 8.47× to the true `1/σ_min = 2.5×` and its reported
+  distance is within 1e-9 of the exact world distance for a sphere geometry
+  (an anisotropically scaled sphere IS an ellipsoid; compare against the
+  ellipsoid closed form's own bound — say what is exact and what is bounded);
+- `interior(r)`: 0 everywhere on scene C's existing probes (all outside); on
+  new probe points inside the box/sphere/torus fixtures `depth/r` within 1e-9;
+  inside two overlapping spheres the larger depth; a computed radius is
+  accepted; the parse diagnostic names a world length; the memo keys/L1 rows
+  extended (`fn = 4`), red-proved; `TextureExpressionVMTest` 846/846;
+- `add_wear` with `contact_radius`: refuses on a body that already reads
+  `proximity`/`interior`; with a radius, the written body calls
+  `proximity(<radius>)` exactly once and the scene derives; `AgentAddWearTest`
+  extended; `contact_radius 0` is byte-identical to today's output.
+
+Each phase runs the implementation-review-loop to zero P1 before merge.
 
 Each phase runs the implementation-review-loop to zero P1 before merge.
 
