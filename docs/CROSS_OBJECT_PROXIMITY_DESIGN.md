@@ -150,6 +150,10 @@ Conventions, matching the signal family (signals design §9):
   contact.** A reported distance is an UPPER bound on the true one (or exact),
   so `proximity` may under-paint a seam but never paints one that is not there.
   §5.2 says which families are exact and which are bounded, and by how much.
+  ONE exception, added by Phase 3 (§5.6): an intersection/subtraction
+  composite landing on an exact operand may under-read the distance by at
+  most `max(τ, sqrt(2Rτ)) ≤ ε` — a sub-millimetre over-paint of contact on
+  metre-scale composites, bounded and disclosed there and in §10.
 - **A non-finite hit point refuses** (reads 0), as `RadiusUsable` refuses a
   non-finite radius.
 
@@ -543,7 +547,9 @@ Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
 2026-09-09 before Phase 3 began; revised the same day after three adversarial
-rounds (round 8, 4 P1s: the grazing ceiling was mis-solved by the dropped
+rounds (round 9, 2 P1s: the byte-identity claim collided with the clause
+(d) string fix; §2's never-over-read invariant lacked the composite
+exception; round 8, 4 P1s: the grazing ceiling was mis-solved by the dropped
 factor 2; the exact-landing interval omitted the grazing term; the flute
 gate's direct query must be per-object since the floor answers at 7.5 cm;
 not every sheet answers the unsigned query; round 7, 2 P1s: one analytic interval survived round 6; caching
@@ -576,12 +582,18 @@ unsigned upper bound, a **signed lower bound** with an exact sign:
 - `IGeometry::SignedDistanceLower( ptObject, maxDistObject, outSigned,
   outExact ) → bool` (the exactness flag §5.6's boundary arm consumes is an
   out-parameter, cleared by the refusing default)
-  (refusing default) and `IObject::SignedDistanceLower( ptWorld, … )`, which
+  (refusing default; the sheets — plane, disk, clipped plane, open cylinder,
+  mesh, patch, hair — and heightfield SDFs keep it) and
+  `IObject::SignedDistanceLower( ptWorld, … )`, which
   does the transform: the point through the inverse, the radius by `/σ_min`,
   and the magnitude **back by `σ_min`** — the lower bound's safe direction
   (`d_w ≥ σ_min·d_o`), the opposite of the unsigned query's `σ_max`.
-- Per family: sphere, box, capped cylinder, torus — exact closed forms, so
-  the lower bound IS the distance, inside and out; ellipsoid — sign exact
+- Per family (the unsigned answers are unchanged: plane, disk,
+  convex-coplanar clipped plane, open cylinder and — after Phase 2 — the
+  indexed mesh answer it; patches, RAW meshes, hair, non-convex or
+  non-coplanar clipped planes and heightfield SDFs refuse both queries, as
+  scene C asserts): sphere, box, capped cylinder, torus — exact closed forms,
+  so the lower bound IS the distance, inside and out; ellipsoid — sign exact
   from `Σ (p_i/a_i)² ≤ 1`, magnitude `dUnit × min(a,b,c)` (the unsigned query
   keeps `× max`); SDF — `Map(p)` itself (exact sign, 1-Lipschitz under-read),
   heightfield mode refuses as the unsigned query does; planes, disks, clipped
@@ -710,9 +722,14 @@ correct `proximity(0.02)` there is 0 anyway. Phase 1's bracket recomputes
 the descent gradient on every descent iteration but exits the descent on
 the backoff break (`f ≤ kBackoff·ε`) before the next iteration, and the
 probe reuses the last gradient — so the degenerate central difference AT
-the tangency (a V-valley of value 0) is never taken; an implementation
-that evaluates it there gets the same refusal through the 1e-12 seam rule
-instead. The composed field an intersection/subtraction
+the tangency (a V-valley of value 0) is never taken from a descended
+landing. The one exception is the probe's `!haveGradient` branch: a query
+point that STARTS inside the backoff band exits the descent on its first
+test and the probe takes a fresh central difference there, straddling the
+valley; the landing test still demands operand-sign proof, so that case
+refuses rather than reporting a chord. An implementation that evaluates the
+gradient at a descended tangency gets the same refusal through the 1e-12
+seam rule instead. The composed field an intersection/subtraction
 descends is ALSO what it exports as its own `SignedDistanceLower` to a
 parent composite and to `interior`, with the composite's `×σ_min` applied —
 and it NEVER sets the exactness flag: `max(a, b)` under-reads near a seam
@@ -748,13 +765,19 @@ the radius by the composite's `/σ_min`, recurse into the operands with the
 LOCAL point (each operand applies its own transform; a nested composite repeats
 the same two conversions), and convert the answer back — `×σ_max` for the
 unsigned upper bound, `×σ_min` for the signed lower bound. The composite's
-unsigned query clamps at zero when its composed sign is negative (a point
-inside the composite's solid is contact, §2); a point inside operand A of an
+unsigned query — for an intersection or subtraction — clamps at zero when
+its composed sign is negative (a point inside the composite's solid is
+contact, §2; a union needs no composed sign, its operands' own clamps
+already return 0); a point inside operand A of an
 intersection it does not share with B is OUTSIDE the composite and reads a
 positive distance — correct, not a violation, and stated here so nobody "fixes"
 it. `bComplementedField` never enters: the composite composes signs itself.
 The per-object refusal log covers composites as it does any object, naming
-the kind as "csg <op>" rather than the current "(no geometry)" fallback and
+the kind as "csg <op>" rather than the current "(no geometry)" fallback —
+through a new `IObject::DescribeKind()` accessor the log calls in place of
+`typeid(*GetGeometry())`, since a composite reaches the log only as an
+`IObjectPriv*` with no geometry (`Object` answers the geometry's type name,
+`CSGObject` its operation) — and
 widening the sentence's parenthetical ("an SDF bracket that did not close")
 to "an SDF or composite bracket that did not close"; §2's
 unbounded-radius confirm gains a second non-`O(1)` case beside the SDF (an
@@ -825,7 +848,10 @@ miscompile came from silence here);
 call sites (`ExpressionPainter.h`'s `m_proximityDemand` initialisers), and
 `ProximityDemand` keeps its name but is documented as "registered when the
 program calls `proximity()` or `interior()`" so the eager snapshot covers an
-`interior`-only scene; `kFnInterior = 58` leaves only 59 free before
+`interior`-only scene; the two `ISurfaceSignalProvider.h` comments that
+pin `eProximity` as "NOT a fourth branch of `SignalQuery`" and "3 and
+nothing else" are rewritten for `eInterior = 4` (also a separate body, not
+a `SignalQuery` branch); `kFnInterior = 58` leaves only 59 free before
 `CallFuncVec3`'s 60+ band (stated on the assert); the
 `ISurfaceSignalProvider.h` warning text that enumerates
 `curv/occlusion/thickness/convexity/proximity` gains `interior`; and, as for
@@ -846,7 +872,7 @@ is the fifth, so a body that queries all five would evict round-robin at 0 %
 hit rate; `kL1Ways` goes to 8, which puts `Tables` at ~2400 bytes, over the
 2048-byte ceiling `ExpressionMemoTest` (g) asserts — the ceiling was a
 regression guard, not a budget, and is raised to 4096 with the reason recorded
-in the test and in §6.5 of the convexity doc (a 43.8 kB total across 18
+in the test and in §6.5 of the convexity doc (43.8 kB across this machine's 18
 workers). Residual, stated: meshes and every sheet family contribute nothing
 to `interior`; a hit point inside a MESH neighbour reads `proximity = 1 −
 d_shell/r` (1 only within the shell's `r`, 0 deep inside a large mesh) and
@@ -859,8 +885,10 @@ min 0 max 1` — SLIDER METADATA ONLY: the VM ignores `min`/`max` at
 evaluation and `mix` does not clamp `t`, so the bound that actually holds
 is the outer `clamp(…, 0, 1)` on the `crevice_mask` line, present on both
 recipes). Its candidate gate — clause (c) of the
-CONDITIONS scan, not the verb — rejects flat receivers ("a plane, disk, box
-or patch, where `curv` is 0 everywhere") before any call, so the two flagship
+CONDITIONS scan, not the verb — rejects flat receivers (its own decline
+reason: "every object bound to it sits on planar or patch geometry, where
+`curv` is 0 everywhere a ray can land"; the bare-call refusal says "a
+plane, disk, box or patch") before any call, so the two flagship
 contacts (a plank on a plane, a flange on a box) are outside the verb's
 candidate set today. The body today is ONE shared mask recipe
 (`BuildWearMaskPreludeText`: six mask `param`s, `seed`, `jitter`,
@@ -912,7 +940,9 @@ the `asColourPipe` `expr`/`expression` split as today) and consumes
 pick gets the colour chunk alone, as today. Clause (d)'s decline string,
 which names only `curv`/`occlusion`/`thickness` while the predicate matches
 five signals, gains `proximity`/`convexity`/`interior` — a second `add_wear`
-on a contact body is the common case that hits it. The edge half (`edge_wear`,
+on a contact body is the common case that hits it. That string lives in
+the conditions scan and changes for EVERY input, so it is the ONE deliberate
+exception to the byte-identity claim below; the test pins its new text. The edge half (`edge_wear`,
 `crevice_grime`, `breakup_scale`, `grime_scale`, `cavity_gain`,
 `edge_desat`, `edge_lift`, `edge_tint`, `rough_polished`, `wear_mask`,
 `crevice_raw`, `cavity_boost`) is not emitted, so no chunk declares a
@@ -927,8 +957,9 @@ advertising from the curved list only (`c.addWearName` comes from
 bare call — and the "must be one function" comment at the verb is updated
 to say so. The descriptor text states the unit and that the author chooses
 the radius from the scene's feature sizes. `contact_radius 0` is
-byte-identical to today's output: the scan's existing lists, counts and
-messages are unchanged, and both recipes are built strings: above 0 the
+byte-identical to today's output: the scan's existing lists, counts, kinds
+and messages are unchanged except clause (d)'s corrected string, and both
+recipes are built strings: above 0 the
 prelude adds the three params and `contact_mask` and REPLACES the
 `crevice_mask` line; at 0 it emits today's `crevice_mask` line verbatim. `WearBodyReadsGeometrySignals_` gains `"interior"`
 (it lists `proximity` today; `interior` is NOT yet there). Surfaces: the
@@ -1077,7 +1108,9 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   and the grid spacing stated, and for a composite of EXACT operands
   `|reported − reference| ≤ τ` (the boundary arm fired; `τ = 1e-12 ×` the
   local diagonal) at TWO stations: the radial station of a cylinder-minus-box
-  (exact by Sterbenz and `sqrt(x·x) = x`, so `f_A` is a true 0 — the same
+  (at a DYADIC station — exact by Sterbenz and `sqrt(x·x) = x`, so `f_A` is
+  a true 0; at `glass_pavilion`'s own 0.26 − 0.01 the residual is ~1e-17,
+  which still clears τ — the same
   answer under a `≤ 0` test) and an OBLIQUE station (a torus operand, or a
   cylinder station off its axis) whose landing residual is genuinely
   nonzero, which is the one that exercises τ; `reported − reference ≤
@@ -1126,8 +1159,9 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   probe-albedo render of a scene COPY (raw `proximity(0.02)` on the cap top —
   `marble_col` is bound to the ceiling, the pedestal, all eight capitals and
   every column operand — 18 objects — so the copy paints all of them),
-  judged honestly, and the tracked scene is not
-  edited;
+  judged honestly, and the tracked scene is not edited beyond one pin: a
+  `capped TRUE` line written into `colcylgeom`, so a later edit cannot turn
+  the column into a sheet and void this gate silently;
 - exact σ: `SigmaMin()/SigmaMax()` within 1e-12 of the written reference on
   the rotation, reflection and uniform scale (fast path) and within 1e-9 on
   `(3, 1, 0.4)` and the shear (Jacobi); the `(3, 1, 0.4)` object's search-
@@ -1135,8 +1169,10 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   is ≥ and its lower bound ≤ a brute-force distance to the scaled sphere, with
   the over-report factor recorded (exactness is NOT claimed: `×σ_max` remains
   an upper bound attained only along the top singular vector); the `Loose`
-  state is reached by a unit test that calls the σ routine with a zero-sweep
-  budget and checks the printed state name;
+  state is reached by a unit test that calls the σ routine — hoisted out of
+  `FinalizeTransformations`' inline cache fill into a free
+  `ComputeSigmaExtremes( M, maxSweeps, … )` the object calls — with a
+  zero-sweep budget and checks the printed state name;
 - `interior(r)`: 0 on every scene-C probe that lies OUTSIDE its neighbours;
   on the six existing interpenetration probes (box, sphere, capped cylinder,
   torus on its tube's centre circle, ellipsoid and SDF centres — depths
@@ -1164,7 +1200,8 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   the `crevice_mask` line is wrapped in `clamp(…, 0, 1)` on both recipes
   (the only bound that holds — `max 1` is slider metadata);
   `contact_radius 0` is byte-identical to today's output INCLUDING the
-  conditions scan's counts, kinds and decline messages;
+  conditions scan's counts, kinds and decline messages, with clause (d)'s
+  corrected string the one pinned exception;
   `AgentAddWearTest` extended; the MCP and chat tool counts unchanged
   (43 / 38).
 
