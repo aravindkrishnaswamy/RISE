@@ -98,9 +98,12 @@ namespace RISE
 			{
 				// `1 - d/r`: 1 at contact, falling linearly to 0 at the
 				// radius.  The clamp is belt-and-braces -- the manager
-				// already bounds `d` to (0, r] -- and costs nothing, but it
-				// is what lets every caller treat the result as [0,1]
-				// without knowing that.
+				// already bounds `d` to **[0, r)**, zero INCLUDED
+				// (interpenetration is contact: the solid families clamp
+				// their signed field at zero) and `r` EXCLUDED (a candidate
+				// is accepted only on `d < best`, and `best` starts at the
+				// radius) -- and costs nothing, but it is what lets every
+				// caller treat the result as [0,1] without knowing that.
 				const Scalar v = Scalar( 1 ) - d / radiusWorld;
 				out = ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
 			}

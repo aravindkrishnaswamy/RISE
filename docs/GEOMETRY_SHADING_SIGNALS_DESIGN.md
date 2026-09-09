@@ -1101,9 +1101,16 @@ cross-object *proximity* signal — the distance to the nearest *other* surface
 within `r`, the shape of the thickness estimator pointed outward — which
 measures the right quantity, is a field evaluation rather than a ray fan
 against an SDF neighbour, and carries the same scene-access, radius-unit and
-invalidation questions this section has now priced. It stays observed-need
-gated like the rest of Phase 4; a scene that needs it should cite this
-section's numbers rather than re-measure AO.
+invalidation questions this section has now priced. **It is no longer
+observed-need gated: it was designed, reviewed over three adversarial rounds and
+ACCEPTED FOR PHASE 1 on 2026-09-08 —
+[CROSS_OBJECT_PROXIMITY_DESIGN.md](CROSS_OBJECT_PROXIMITY_DESIGN.md), whose §1
+takes this section's two contact-grime cases as its driving scenes and whose §4
+rests on the measurements above. Phase 1 is in progress (wave 1 shipped the
+query, the channel, the builtin and the tests; see its §8.1).** A scene that
+needs the signal should read that document; this section's numbers are the
+evidence for why it is a distance and not an occlusion, and remain the right
+citation for anyone tempted to re-measure AO.
 
 ---
 
@@ -1798,8 +1805,10 @@ real scene or user need appears.
   output mode.
 - **Bent normals** — the natural companion output of an AO bake.
 - **Scene-wide (cross-object) AO** — §8; **re-measured and declined again
-  2026-09-07, §8.1** (numbers there; the honest successor is a cross-object
-  *proximity* signal, also observed-need gated).
+  2026-09-07, §8.1** (numbers there). Its honest successor, the cross-object
+  *proximity* signal, is **no longer gated**: designed and ACCEPTED FOR PHASE 1
+  on 2026-09-08 ([CROSS_OBJECT_PROXIMITY_DESIGN.md](CROSS_OBJECT_PROXIMITY_DESIGN.md)),
+  Phase 1 in progress.
 - **An `add_wear`-class verb** — the C-VERB escalation if the Phase-1/2 census
   misses. **BUILT 2026-08-30**, census-driven: the §11 CENSUS RUN block is the
   evidence that earned it (delivery 6/6, adoption 1/6, position proxies shipped

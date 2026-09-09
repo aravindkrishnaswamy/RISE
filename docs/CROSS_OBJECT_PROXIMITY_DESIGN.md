@@ -102,7 +102,16 @@ Conventions, matching the signal family (signals design §9):
   and only the composite is world-visible; the scan filters exactly as
   `IntersectOcclusionRay` does.
 - **A neighbour that cannot answer contributes nothing** (it is treated as far),
-  and says so once in the log. Honest absence over a wrong distance.
+  and says so **once per refusing object** in the log, naming the chunk and its
+  geometry kind. Honest absence over a wrong distance. (The latch is
+  `IObject::NoteDistanceRefusal`, an `std::atomic<bool>` on `Object` so the hot
+  path is one relaxed load; the line is printed by `ObjectManager`, the only
+  party that knows the chunk's name.) **The refusal is confirmed at an
+  unbounded radius before it is printed**, because a `false` return is not
+  only "I cannot answer": an SDF's step-1 lower-bound early-out returns false
+  for a neighbour that is merely out of range, which happens at the far corners
+  of every SDF's expanded box and is a healthy outcome. The confirm costs one
+  extra call per object, ever, and it is what makes the printed sentence true.
 - **Direction of error, where a family cannot be exact: never over-read
   contact.** A reported distance is an UPPER bound on the true one (or exact),
   so `proximity` may under-paint a seam but never paints one that is not there.
@@ -333,8 +342,26 @@ eigenvalue or SVD code anywhere; Phase 1 adds **σ_max and σ_min bounds** to
 satisfies `MᵀM = s²·I` within 1e-9 relative (a rotation, reflection or uniform
 scale — every object in scenes A–E) then `σ_max = σ_min = s` **exactly**;
 otherwise the sound one-liners `σ_max ≤ ‖M‖_F` and `σ_min ≥ |det| / σ_max²`
-(loose, never unsafe; the error factor `σ_max/σ_min` is disclosed once in the
-log). A degenerate transform (`det == 0`, for which `Matrix4Ops::Inverse`
+(loose, never unsafe; the error factor `σ_max/σ_min` is disclosed once per
+object in the log).
+
+**How loose, measured, because the printed factor is a bound on a bound and
+reads alarmingly.** On `scale (3, 1, 0.4)` — the worst anisotropy in the
+acceptance set — the three numbers are:
+
+| quantity | value |
+|---|---:|
+| printed factor `σ_max/σ_min` (Frobenius/det pair) | **26.99** |
+| the transform's TRUE singular ratio (3 / 0.4) | **7.5** |
+| worst over-report actually measured on that object | **7.96×** |
+| object-space search-radius inflation `r/σ_min` | **8.47×** |
+
+So the log line bounds an over-report of 7.96× at 26.99×: sound, and roughly
+3.4× pessimistic, because `‖M‖_F` counts all three singular values into `σ_max`
+and the `|det|/σ_max²` lower bound then inherits that slack twice. The log
+therefore names the printed number as a bound on a bound and prints `1/σ_min`
+separately, since that one is the **cost** (a wider object-space search), not
+the contact error. A degenerate transform (`det == 0`, for which `Matrix4Ops::Inverse`
 silently returns its input) makes the object **refuse** as a candidate. The
 query converts the radius **into** object space by `r / σ_min` (a candidate
 within world `r` has `d_o ≤ d_w/σ_min ≤ r/σ_min`, so this cannot miss one), and
@@ -348,8 +375,8 @@ transforms are translation-only.
 | Family | Distance | Exactness | Phase |
 |---|---|---|---|
 | Infinite plane, sphere, box, capped and open cylinder (`m_bCapped`, axis + `m_dAxisMin/Max`), disk, torus (`sdTorusY`, the engine's own form) | closed forms in the geometry's own parameterisation | exact | 1 |
-| Clipped plane | `ClippedPlaneGeometry` stores four ARBITRARY corners — it is a bilinear patch; answers the point-to-quad closed form only when the corners are coplanar (checked once at construction), else refuses | exact on planar quads (every `rect_light`), refuses otherwise | 1 |
-| Ellipsoid | scaled-sphere bound | upper bound, ≤ ratio of semi-axes | 1 |
+| Clipped plane | `ClippedPlaneGeometry` stores four ARBITRARY corners — it is a bilinear patch; answers the point-to-quad closed form only when the corners are **coplanar AND convex** (both checked once at construction), else refuses | exact on **CONVEX** planar quads (every `rect_light`), **refuses otherwise** | 1 |
+| Ellipsoid | scaled-sphere bound | upper bound, ≤ ratio of semi-axes (a 4:1 ellipsoid at true 2.75 reports 11.0) | 1 |
 | SDF / skeleton | bracketed sign change, below | **upper bound**, gap measured in C | 1 |
 | Indexed triangle mesh (every loader but RAW; tessellated primitives; `displaced_geometry`'s internal mesh) | closest point on the mesh's own BVH: a bounded-radius traversal ordered by AABB distance, pruning past the running best, point–triangle distance at the leaves | exact (identical to brute force under the same point–triangle formula; node boxes are conservative `float`, sound for pruning) | 2 |
 | Non-indexed mesh (RAW) | refuses (no BVH) | — | — |
@@ -577,8 +604,13 @@ Each phase runs the implementation-review-loop to zero P1 before merge.
 
 Wave 1 shipped the channel, the memo keys, the builtin, the query, the AABB
 snapshot, the σ bounds, the analytic + SDF families, scene C,
-`ProximitySignalTest` (104 checks), `ProximityInvalidationTest` (20) and four
-new `ExpressionMemoTest` rows (161 → 196).
+`ProximitySignalTest` (107 checks), `ProximityInvalidationTest` (25) and four
+new `ExpressionMemoTest` rows (161 → 196).  Both proximity counts moved in the
+2026-09-08 fix round: `ProximitySignalTest` 104 → 107 (the coplanar-DART
+refusal and its convex twin's teeth, plus the heightfield refusal asked of the
+object directly with an ordinary-mode SDF as its teeth), and
+`ProximityInvalidationTest` 20 → 25 (the demand-gate section (c), and two
+checks with teeth on what the moved pose's rendered value actually IS).
 Scenes A and B, their probe protocols and EVERY cost measurement §8's Phase-1
 gate names are wave 2 and are NOT done. Five places where building it
 corrected this document:
@@ -614,6 +646,40 @@ corrected this document:
   member `override`, so the new method does not either — adding the first
   would make clang's `-Winconsistent-missing-override` fire on every other
   member of those classes.
+- **The AABB snapshot has a lifecycle §5.2 does not describe, and it is not an
+  implementation detail.** §5.2 says the snapshot is built at the end of
+  `PrepareForRendering`, released in `InvalidateSpatialStructure`, and
+  otherwise immutable behind one pointer. Two things were added in `ccec5ff1`
+  because that is not sufficient:
+  1. **`EnsureBoxSnapshot` rebuilds when the OBJECT COUNT has moved under it**,
+     not only when the pointer is null. The reason is specific and small:
+     `Job::AddObject` calls `RegisterOrDiag` and returns — it does **not**
+     invalidate — and on a scene of ≤ 4 objects there is no TLAS either, so
+     nothing else notices. The linear `IntersectRay` loop would RENDER the
+     added object while the stale snapshot left it invisible to every
+     proximity query: a wrong answer, not a stale one. The count check is what
+     makes the added object visible. It exists for **adds**; a removal is
+     caught only incidentally, because every removal path in this tree calls
+     `InvalidateSpatialStructure`, which drops the snapshot outright. It does
+     not catch an add and a removal in the same gap, and does not claim to.
+  2. **A superseded snapshot is RETIRED, not freed** (`retiredBoxes`), and the
+     whole retired set is freed at the next `InvalidateSpatialStructure` (and
+     in the destructor). `EnsureBoxSnapshot` is reachable from `IntersectRay`,
+     so a rebuild can happen while other render threads are mid-scan of the
+     snapshot being replaced; `delete`ing it there would be a use-after-free,
+     strictly worse than the staleness the count check is fixing. Both freeing
+     sites already carry the "never during a pass" contract that makes freeing
+     safe. **What retiring protects is the ARRAY, not the objects it points
+     at** — the entries hold raw, un-addrefed `const IObjectPriv*` — and that
+     gap is closed by the removal paths' own invalidate, not by retiring.
+
+  Two consequences worth stating with them. The snapshot **extends the "never
+  invalidate during a pass" contract to scenes of four objects or fewer**,
+  where it had been vacuous (no TLAS is built there, so nothing depended on
+  it); that is a real widening, not "no race class `pBVH` does not already
+  have". And the pointer is a `std::atomic` with a release store and acquire
+  loads, because "published whole" has to be true at the memory model and not
+  only in prose.
 
 Measured, for the record: `gap_max` on scene C's composed 1-Lipschitz SDF is
 **0.0155** (reported 2.0787, grid reference 2.0632, `Map` lower bound 1.9594),
@@ -632,9 +698,12 @@ bound is 4 against a true 2, exactly its semi-axis ratio; TLS per worker is
   `casts_shadows FALSE` neighbour counts; an emissive neighbour does not (the
   fixture is a hand-authored emissive box, so the disclosed decorative-object
   exclusion is what the test pins); CSG operands never count and the composite
-  refuses (v1); heightfield SDF refuses; a RAW (non-indexed) mesh and a Bezier
-  patch refuse; a coplanar clipped plane is exact and a non-coplanar one
-  refuses; a degenerate (`det == 0`) transform refuses; the non-uniform-scale
+  refuses (v1); a heightfield SDF refuses **asked directly**, so the check
+  isolates that family rather than resting on a neighbour's probe budget; a RAW
+  (non-indexed) mesh and a Bezier
+  patch refuse; a coplanar CONVEX clipped plane is exact while a non-coplanar
+  one and a coplanar DART both refuse; a degenerate (`det == 0`) transform
+  refuses; the non-uniform-scale
   upper bound (`σ_max`, and the `r/σ_min` candidate conversion cannot miss a
   neighbour within `r`); the uniform-scale detection is exact (a rotated,
   uniformly scaled sphere within 1e-9); the parse-time diagnostic for a
@@ -650,6 +719,18 @@ bound is 4 against a true 2, exactly its semi-axis ratio; TLS per worker is
   the neighbour through `DeriveToJobIncremental`, render again — the value
   changes; move it beyond `r` — it reads 0; a keyframed neighbour across
   `RasterizeAnimation` frames — each frame's value matches a fresh evaluation.
+  **The moved pose keeps the neighbour OFF TO THE SIDE.** Moving it to `x = 0`
+  parks it between the camera and the probe, so the frame then shows the box's
+  own flat albedo and every check reads a constant while appearing to measure
+  the signal — the exact failure the file's header warns about, which the first
+  version of the test committed anyway. The moved-pose check therefore has
+  teeth: the rendered mean must match the closed-form `proximity` for that pose
+  divided by π, within a tolerance derived from the 8×8 patch's footprint, and
+  must NOT equal the box albedo `0.5/π`.
+- The **demand gate**: after a render of a scene with no live `proximity()`
+  consumer, `ObjectManager::ForTest_HasBoxSnapshot()` is false; with one live it
+  is true. The gate is a NEGATIVE (work not done), so a timing assertion would
+  be a flake and an accessor is the only honest observation.
 - `SourceHygieneTest`: no assignment to `.signals` outside the two intersectors,
   CSG adoption, and `BuildContext`.
 - Phase 2: `MeshClosestPointTest` differential against brute force; scene D's
@@ -668,6 +749,44 @@ bound is 4 against a true 2, exactly its semi-axis ratio; TLS per worker is
   bounded by the last probe step; the gap is measured on C, not bounded
   analytically. A candidate whose crossing is not found within budget reads far.
 - Non-uniform scale and ellipsoids are upper-bounded, not exact, in v1.
+- **An eccentric ellipsoid neighbour needs an author to inflate the radius.**
+  The bound is the semi-axis ratio, and at 4:1 that is not academic: a point at
+  a true distance of **2.75** from such an ellipsoid is reported at **11.0**, so
+  `proximity(3)` paints nothing there. The rule an author needs is
+  **≈ ratio × the radius you actually mean** against an eccentric ellipsoid (and
+  against an anisotropically scaled object of any family, which the log line
+  quantifies per object). Said in the descriptor text as well as here, because
+  the failure is silent — an unpainted seam, never a wrong one.
+- **A NON-CONVEX coplanar clipped plane refuses**, along with the non-coplanar
+  one. Coplanarity alone is not enough: what the class traces is the bilinear
+  patch, whose image is the polygon only when the quad is convex. Over a dart's
+  reflex lobe the polygon form would report `|h|` where the surface is further
+  away — an under-report, the forbidden direction. Every `rect_light` and every
+  hand-authored panel is convex, so nothing in the acceptance set moves.
+- **The reported range is `[0, maxDist)`, not `(0, maxDist]`**: zero is attained
+  (interpenetration is contact — the solid families clamp their signed field at
+  zero rather than taking its absolute value) and the radius itself is excluded
+  (a candidate is accepted only on `d < best`, with `best` starting at the
+  radius). The signal is continuous across the cut-off either way, since
+  `1 − r/r = 0` is the neutral.
+- **The eager snapshot build and the per-ray `EnsureBoxSnapshot()` are gated on
+  `ProximityDemand`** — a counter in the mould of `SurfaceSignalDemand`,
+  registered by `ExpressionPainter` / `ExpressionScalarPainter` when the
+  compiled program calls `kFnProximity`. Ungated, the per-ray call was a load, a
+  compare and a heap indirection on the hottest path in the renderer, charged to
+  every scene in the tree. Correctness does not rest on the counter:
+  `NearestOtherSurface` still builds lazily under `treeCreationMutex` when asked
+  with no snapshot. **The trade:** an unregistered consumer — a hypothetical
+  direct caller of `NearestOtherSurface` — pays the whole build under the lock on
+  its first call instead of finding it ready.
+- **`kL1Ways == 4` now exactly equals the number of signal KINDS.** When the
+  memo shipped, four ways was headroom above a two-signal working set; with
+  `proximity` there are four kinds, and the L1 key separates on
+  (kind, radius, hit), so a body making four distinct (kind, radius) queries per
+  hit sits exactly at capacity and a fifth collapses the round-robin set to ~0 %
+  — a cliff, not a slope. Eight ways would blow the 2048-byte TLS ceiling
+  (already 1824 B). Wave 2's L1 hit-rate gate measures this on `plank_closeup`,
+  which makes three distinct queries per hit — one under capacity.
 - **Emissive objects never count**, including decorative ones (a lava pool, a
   glowing rune) that should collect contact; the predicate is per object and
   RISE binds one material per object. Phase 3 if a scene needs it.
@@ -687,6 +806,12 @@ bound is 4 against a true 2, exactly its semi-axis ratio; TLS per worker is
   rely on the jitter argument alone under motion blur.
 - Non-uniform transforms use the Frobenius/determinant σ bounds, which are
   loose (never unsafe); exact σ needs eigen-numerics the engine does not have.
+  **Measured on `scale (3, 1, 0.4)`** (the §5.2 table): the log's printed factor
+  is **26.99**, the transform's true singular ratio is **7.5**, and the worst
+  over-report actually observed is **7.96×** — so the bound is roughly 3.4×
+  pessimistic. The object-space search radius is inflated **8.47×** (`1/σ_min`),
+  which is the cost side rather than the contact error, and is printed as its
+  own number for that reason.
 - The memo-eligibility threshold moves with `kFields` (29 → 35) for
   pure-arithmetic bodies; bit-identical, perf-only, disclosed. `ptWorld` is a
   redundant compare in the L2 key.

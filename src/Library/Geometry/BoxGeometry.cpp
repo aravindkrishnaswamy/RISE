@@ -689,7 +689,11 @@ void BoxGeometry::RegenerateData( )
 	}
 }
 
-//! IGeometry::DistanceToSurface -- EXACT, inside and outside alike.
+//! IGeometry::DistanceToSurface -- EXACT outside, and 0 everywhere inside.
+//!
+//! The signed FIELD below is exact on both sides; what this method REPORTS
+//! is that field CLAMPED AT ZERO, so interpenetration reads 0 rather than a
+//! depth (design §2, and see the note on the clamp further down).
 //!
 //! The box is axis-aligned and centred at the object-space origin with half
 //! extents (dWidthOV2, dHeightOV2, dDepthOV2), exactly as

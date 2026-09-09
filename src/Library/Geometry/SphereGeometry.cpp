@@ -341,13 +341,17 @@ void SphereGeometry::RegenerateData( )
 {
 }
 
-//! IGeometry::DistanceToSurface -- EXACT, inside and outside alike.
+//! IGeometry::DistanceToSurface -- EXACT outside, and 0 everywhere inside.
 //!
-//! The sphere is centred at the object-space origin, so the distance from
-//! any point to the SURFACE is `| |p| - R |`.  The absolute value is what
-//! makes the answer unsigned, which is the query's contract: a point inside
-//! another object's volume is in contact with it, and how far inside is not
-//! something `proximity` reports.
+//! The sphere is centred at the object-space origin, so the signed field is
+//! `|p| - R` and the exact distance to the SURFACE from OUTSIDE is that
+//! value.  It is CLAMPED AT ZERO rather than passed through `fabs`, and the
+//! difference is the signal's contract, not a detail: `proximity` reads
+//! INTERPENETRATION AS CONTACT (design §2), so every point inside the solid
+//! answers 0 -- `fabs` would instead report the depth, which for a point
+//! near the centre of a large neighbour is a large number and would read as
+//! "nothing nearby" at the very place contact is deepest.  The clamp costs
+//! nothing: the signed field's own sign is the inside test.
 bool SphereGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
 {
 	(void)maxDistObject;

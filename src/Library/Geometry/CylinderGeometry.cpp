@@ -988,8 +988,10 @@ void CylinderGeometry::RegenerateData( )
 //!
 //!   * CAPPED (a closed solid: side wall plus two cap disks).  In the
 //!     (radial, axial) half-plane the solid is a rectangle, so the standard
-//!     exact 2D box field in those coordinates is the exact 3D distance --
-//!     inside as well as outside.
+//!     exact 2D box field in those coordinates is the exact 3D signed
+//!     distance, inside as well as outside -- but what is REPORTED is that
+//!     field CLAMPED AT ZERO, so a point inside the solid answers 0
+//!     (interpenetration is contact, design §2) rather than its depth.
 //!   * OPEN (a tube: the side wall only, no caps).  The surface is an
 //!     annulus-free cylinder of finite length, so a point level with the
 //!     tube is `|rho - R|` away and a point past either end is the

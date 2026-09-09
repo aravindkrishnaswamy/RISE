@@ -716,10 +716,14 @@ that recomputed on every would-be hit and compared (zero mismatches over 421.5 M
 L1 and 320.3 M L2 probes): **L1 96.2 %, L2 82.7 %**. L1 saturates at two ways
 (the body makes two distinct queries) and L2 at eight (four captures 82.7 of the
 84.9 points available). Storage is **1408 bytes of thread-local per worker**,
-25.3 kB across 18 — **1440 bytes / 25.9 kB since the L2 key gained its `pipe`
-field** (2026-09-07 review round 1; both kB figures are decimal, not KiB);
-`ExpressionMemoTest` (g) prints the live figure and asserts a 2048-byte ceiling
-rather than either number.
+25.3 kB across 18 — then **1440 bytes / 25.9 kB since the L2 key gained its
+`pipe` field** (2026-09-07 review round 1), and **1824 bytes / 32.8 kB since
+2026-09-08**, when the cross-object `proximity` channel added four fields to
+`SignalHitKey` (`pScene`, `pSelf`, `ptWorld`, `time`), which appears eight times
+across the two 4-way tables
+([CROSS_OBJECT_PROXIMITY_DESIGN.md](CROSS_OBJECT_PROXIMITY_DESIGN.md) §5.1).
+All kB figures are decimal, not KiB; `ExpressionMemoTest` (g) prints the live
+figure and asserts a 2048-byte ceiling rather than any of them.
 
 **The image check is a NOISE-FLOOR COMPARISON, not a bit comparison, and it
 cannot be anything else: there is no render seed to pin.** The CLI seeds the
@@ -736,11 +740,19 @@ be made: in `ExpressionMemoTest`, where the same painter is driven twice at a
 pinned context with the memo off and on.
 
 **The compile-time gate is kept for legibility, not for performance.** A body
-shorter than the key comparison's 29 fields (28 before the `pipe` tag), with no
-signal and no noise call,
+shorter than the key comparison's field count, with no signal and no noise call,
 is excluded — that is the 0.98× row above, which returns to ≈1.00× with the gate
 forced on. The gate is what makes "the memo never makes a scene slower" a
 property of the code rather than of a benchmark.
+
+**That field count — and therefore memo ELIGIBILITY — moved on 2026-09-08.** It
+was 28, then 29 with the `pipe` tag, and is **35** since `proximity` widened
+`SignalHitKey`. So bodies of **29–34 instructions** that were eligible before no
+longer qualify. The shift is narrow by construction —
+`ComputeMemoWorthiness` returns true early for any signal or noise call, so only
+PURE-ARITHMETIC bodies in that band are affected — and it is perf-only and
+bit-identical: an excluded body is evaluated exactly as it always was, just
+without a memo that was never going to pay for itself at that length.
 
 `expression_memo` (`RISE_OPTIONS_FILE`, default on) is the A/B lever the memo
 was accepted on and stays as the debugging aid: if a render ever disagrees with
