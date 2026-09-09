@@ -141,8 +141,15 @@ namespace RISE
 			Scalar											m_sigmaMin;
 			bool											m_sigmaExact;
 			//! One-shot latch for the loose-bound diagnostic, so an
-			//! anisotropically-scaled object says so once rather than once
-			//! per query on every render thread.
+			//! anisotropically-scaled object says so once -- for the life of
+			//! the object, not once per query on every render thread AND not
+			//! once per FinalizeTransformations() call.  NOT re-armed on a
+			//! re-finalize (an animation frame, a hierarchy re-bake, an editor
+			//! edit): it used to be, which made a parented or keyframed
+			//! anisotropic object log the warning once per frame instead of
+			//! once per object, contradicting this comment and the design's
+			//! promise (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2) -- see
+			//! Object::FinalizeTransformations for the fix.
 			//!
 			//! ATOMIC, and that is not decoration.  `DistanceToSurface` is
 			//! called from every render thread at once, so a plain

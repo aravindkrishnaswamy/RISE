@@ -1510,10 +1510,20 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 			m_sigmaExact = false;
 		}
 	}
-	// Re-arm the one-shot diagnostic: a re-finalize (an animation frame, a
-	// hierarchy re-bake, an editor edit) may have moved the transform from
-	// exact to loose or back, and the author should hear about the new one.
-	m_sigmaLooseWarned.store( false, std::memory_order_relaxed );
+	// The loose-bound diagnostic latch is deliberately NOT re-armed here,
+	// matching the REFUSAL latch just below it.  This used to re-arm on
+	// every FinalizeTransformations -- which fires once per animation frame
+	// and once per hierarchy re-bake for a parented or keyframed object, so
+	// an anisotropically-scaled object under a live parent/keyframe pass
+	// logged the warning every frame, not "once per object" as documented
+	// (Object.h's own comment on `m_sigmaLooseWarned`) and promised by the
+	// design (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).  A transform that
+	// toggles between exact and loose across the object's lifetime (e.g. an
+	// animated non-uniform scale that passes through a uniform pose) is
+	// reported at most once, on its first loose pose, for the life of the
+	// object -- the same one-shot lifetime the refusal latch already uses,
+	// and the quieter direction: an author who has seen the warning once
+	// does not need it repeated every frame.
 	// The REFUSAL latch is deliberately NOT re-armed here.  The promise is
 	// "once per refusing object", not "once per pose": the dominant refusal
 	// is a property of the geometry FAMILY (a patch, a RAW mesh, a
