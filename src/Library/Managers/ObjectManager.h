@@ -263,6 +263,28 @@ namespace RISE
 			//! object -- never on the hot path.
 			void LogDistanceRefusal( const IObjectPriv* obj ) const;
 
+			//! ONE CANDIDATE's half of `NearestOtherSurface`: the exclusion
+			//! rules (self by identity, world-invisible, emitters), the call
+			//! into the object's own distance, and the once-per-object
+			//! refusal diagnostic with its unbounded-radius confirm.
+			//!
+			//! It exists so the FLAT SCAN and the TLAS POINT QUERY cannot
+			//! drift: those two differ only in WHICH objects they hand to
+			//! this function, and every rule the design states about which
+			//! neighbours count lives here, once.
+			//!
+			//! `budget` is the caller's running best, passed straight through
+			//! as the geometry's search radius so a close neighbour found
+			//! early still prunes the expensive families.
+			//! \return the candidate's world distance, or `RISE_INFINITY`
+			//!         when it does not count or could not answer -- a value
+			//!         that can never beat any admissible `budget`.
+			Scalar ProximityCandidateDistance(
+				const IObjectPriv* obj,
+				const IObject* self,
+				const Point3& ptWorld,
+				const Scalar budget ) const;
+
 			// Realize all objects' deferred geometry (idempotent) before any bbox/
 			// TLAS query.  Called from PrepareForRendering AND CreateBVH/CreateOctree.
 			void RealizeAllObjects() const;

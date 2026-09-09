@@ -535,6 +535,103 @@ void ObjectManager::LogDistanceRefusal( const IObjectPriv* obj ) const
 		name, kind );
 }
 
+//! See the header for the contract.  This is every rule the design states
+//! about WHICH neighbours count, in one place, so the flat scan and the
+//! TLAS point query cannot drift apart on any of them.
+Scalar ObjectManager::ProximityCandidateDistance(
+	const IObjectPriv* obj, const IObject* self,
+	const Point3& ptWorld, const Scalar budget ) const
+{
+	// SELF, by identity.  Two INSTANCED COPIES of one geometry are
+	// different objects and do count against each other, which is the
+	// behaviour the design wants and a name- or geometry-keyed test
+	// would get wrong.
+	if( obj == self ) {
+		return RISE_INFINITY;
+	}
+	// The same filter IntersectOcclusionRay uses -- and what excludes
+	// CSG operands, which ARE registered here; only the composite is
+	// world-visible.  `casts_shadows FALSE` is deliberately NOT
+	// consulted: this is geometry presence, not light visibility.
+	//
+	// It is asked LIVE rather than trusted from the TLAS's build-time
+	// membership, so an object that became invisible after the tree was
+	// built stops counting immediately.  (The reverse -- one that became
+	// visible -- is not in the tree at all, and is the staleness the
+	// caller's comment discloses.)
+	if( !obj->IsWorldVisible() ) {
+		return RISE_INFINITY;
+	}
+	// EMITTERS never count: a light panel parked millimetres off a wall
+	// must not paint grime on it.  Same predicate LuminaryManager uses
+	// to decide what NEE samples, so "is a light" means one thing in
+	// the engine.
+	const IMaterial* const mat = obj->GetMaterial();
+	if( mat && mat->GetEmitter() ) {
+		return RISE_INFINITY;
+	}
+
+	Scalar d = Scalar( 0 );
+	if( obj->DistanceToSurface( ptWorld, budget, d ) ) {
+		return d;
+	}
+
+	// THE PROMISED LINE.  The design's 2 says a neighbour that cannot
+	// answer "says so once in the log", and until Phase 1 nothing printed
+	// it -- three surfaces claimed a diagnostic that did not exist.  The
+	// latch lives on the object (so this is one relaxed load per candidate
+	// per hit after the first refusal) and the printing lives in the
+	// manager (so it can name the chunk, which an Object cannot).  That
+	// promise is honest for the families that never answer (5.2); for an
+	// SDF it is BEST-EFFORT ONLY -- see the confirm below, which removes
+	// the radius-dependent false positives but cannot tell a genuine "this
+	// family never answers" refusal apart from a one-off per-point solver
+	// failure (an unclosed bracket, a stalled descent, a fabricated
+	// (0,1,0) gradient at a flat blend seam).  An SDF's one-shot latch is
+	// very often spent on exactly that kind of per-point failure, not on
+	// family membership.
+	//
+	// AND IT IS CONFIRMED BEFORE IT IS PRINTED, because `false` above does
+	// NOT only mean "I cannot answer".  `SDFGeometry`'s step-1 lower-bound
+	// early-out (`Map(p) > maxDist` proves the true distance is past the
+	// radius) also returns false, and that is a perfectly healthy outcome
+	// that happens at the far corners of every SDF's expanded box.
+	// Printing "this object cannot answer" there would be a false
+	// statement about a geometry that answers fine.  The MESH family added
+	// in Phase 2 refuses the same benign way -- nothing within the radius
+	// -- so this confirm is what keeps every mesh in Sponza out of the log.
+	//
+	// So: take the one-shot latch first (cheap, and it bounds everything
+	// below to once per object for the life of the object), then ask the
+	// SAME object again with an UNBOUNDED radius.  A family with no closed
+	// form -- a patch, a RAW mesh, a CSG composite, a heightfield SDF, a
+	// degenerate transform -- refuses that too, immediately and in O(1).  A
+	// non-heightfield SDF is NOT O(1) here: the confirm re-runs the full
+	// bracket search (descent + doubling probe, ~80 `Map()` evaluations x
+	// O(parts), 5.2) at unbounded radius, once per object, and can still
+	// return false for a healthy field that merely hit its solver budget or
+	// landed on a degenerate gradient -- which is exactly the
+	// per-point-failure case the message states explicitly rather than
+	// branding the object as a member of a family that never answers.  An
+	// SDF that was merely out of range answers it, and says nothing.  An
+	// indexed MESH is not O(1) either: the confirm re-runs its
+	// closest-point traversal unbounded, which visits the whole tree --
+	// once per mesh, ever.
+	//
+	// WHAT THIS DELIBERATELY GIVES UP: if an object's FIRST refusal is the
+	// benign far one, the latch is spent and a later bracket-budget failure
+	// on the same object stays silent.  That is the right trade -- the
+	// design's promise is about neighbours that CANNOT answer, and this one
+	// can; the budget failure is separately disclosed as a residual (10).
+	if( obj->NoteDistanceRefusal() ) {
+		Scalar confirm = Scalar( 0 );
+		if( !obj->DistanceToSurface( ptWorld, RISE_INFINITY, confirm ) ) {
+			LogDistanceRefusal( obj );
+		}
+	}
+	return RISE_INFINITY;
+}
+
 bool ObjectManager::NearestOtherSurface(
 	const Point3& ptWorld, const IObject* self, const Scalar maxDistWorld, Scalar& outDist ) const
 {
@@ -562,118 +659,94 @@ bool ObjectManager::NearestOtherSurface(
 	Scalar best = maxDistWorld;
 	bool found = false;
 
-	for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
-		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
-		const IObjectPriv* const obj = entry.pObj;
+	// THE CANDIDATE SOURCE, and the ONE decision this function makes.
+	//
+	// The TOP-LEVEL BVH, when the manager has one, is walked as a POINT
+	// query: the same bounded closest-point traversal the mesh family uses
+	// on its own triangles, one level up, with "the primitive's distance"
+	// being the whole per-object query below.  It visits the two children
+	// of each node nearest-box-first and prunes any subtree whose box is
+	// already further than the running best, so a query at 4 cm touches a
+	// handful of nodes instead of every object in the scene.
+	//
+	// The FLAT SCAN over the AABB snapshot is the fallback, and it is not
+	// vestigial: the manager builds no TLAS at all for a scene of
+	// `nMaxObjectsPerNode` (4) objects or fewer, nor when `bUseBSPtree` is
+	// off, and those scenes -- every fixture in `ProximitySignalTest`
+	// included -- still have to answer.
+	//
+	// WHAT CHANGES WITH THE TLAS, said plainly because it is a contract
+	// shift and not only a speed-up.  The snapshot carries a COUNT CHECK
+	// (see EnsureBoxSnapshot) that rebuilds it when an object was ADDED
+	// without an invalidate; the TLAS has no such check, so on a
+	// TLAS-backed scene a proximity query is now exactly as stale as the
+	// RENDER is -- `ObjectManager::IntersectRay` walks that same tree, so
+	// an object invisible to this query is equally invisible to the
+	// picture.  Consistent, and strictly closer to "the signal measures the
+	// scene you are looking at" than the previous state, where proximity
+	// could see a neighbour the frame did not.  The case §8.1's count check
+	// was actually written for -- an add on a scene of four or fewer
+	// objects, where the linear IntersectRay loop WOULD render the new
+	// object -- keeps the flat scan and keeps the check.
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode ) ? pBVH : 0;
 
-		// SELF, by identity.  Two INSTANCED COPIES of one geometry are
-		// different objects and do count against each other, which is the
-		// behaviour the design wants and a name- or geometry-keyed test
-		// would get wrong.
-		if( obj == self ) {
-			continue;
-		}
-		// The same filter IntersectOcclusionRay uses -- and what excludes
-		// CSG operands, which ARE registered here; only the composite is
-		// world-visible.  `casts_shadows FALSE` is deliberately NOT
-		// consulted: this is geometry presence, not light visibility.
-		if( !obj->IsWorldVisible() ) {
-			continue;
-		}
-		// EMITTERS never count: a light panel parked millimetres off a wall
-		// must not paint grime on it.  Same predicate LuminaryManager uses
-		// to decide what NEE samples, so "is a light" means one thing in
-		// the engine.
-		const IMaterial* const mat = obj->GetMaterial();
-		if( mat && mat->GetEmitter() ) {
-			continue;
-		}
-
-		// BOX REJECTION, against the RUNNING best rather than the original
-		// radius, so a close neighbour found early prunes the rest.
-		//
-		// ORDINARY CONTAINMENT, and it must stay ordinary: an infinite
-		// plane's box is +/-RISE_INFINITY (= DBL_MAX, which IsFiniteDouble
-		// reports FINITE), and under a rotation some axes overflow to
-		// +/-inf.  Either way the expanded box contains every point and the
-		// plane is admitted by the same test as everything else.  DO NOT
-		// add a "skip non-finite boxes" guard to dodge NaN -- it would make
-		// every infinite plane in the scene invisible to this query.  A NaN
-		// bound (reachable from an inf*0 in a rotated corner transform)
-		// makes both comparisons false and so ADMITS the candidate, which
-		// is the safe direction: the geometry is then asked, and answers
-		// correctly or refuses.
-		const Point3& ll = entry.box.ll;
-		const Point3& ur = entry.box.ur;
-		if( ptWorld.x < ll.x - best || ptWorld.x > ur.x + best ) continue;
-		if( ptWorld.y < ll.y - best || ptWorld.y > ur.y + best ) continue;
-		if( ptWorld.z < ll.z - best || ptWorld.z > ur.z + best ) continue;
-
+	if( tlas && tlas->numPrims() > 0 ) {
+		// The traversal owns `best`; this mirror exists only to hand the
+		// running budget down as each geometry's search radius, which is
+		// what lets a close neighbour found early prune the expensive
+		// families.  It sees every leaf evaluation in the same order, so it
+		// tracks the traversal's own value exactly.
+		Scalar budget = maxDistWorld;
 		Scalar d = Scalar( 0 );
-		const bool answered = obj->DistanceToSurface( ptWorld, best, d );
-		if( !answered ) {
-			// THE PROMISED LINE.  The design's §2 says a neighbour that
-			// cannot answer "says so once in the log", and until now
-			// nothing printed it -- three surfaces claimed a diagnostic
-			// that did not exist.  The latch lives on the object (so this
-			// is one relaxed load per candidate per hit after the first
-			// refusal) and the printing lives here (so it can name the
-			// chunk, which an Object cannot).  That promise is honest for
-			// the families that never answer (§5.2); for an SDF it is
-			// BEST-EFFORT ONLY -- see the confirm below, which removes the
-			// radius-dependent false positives but cannot tell a genuine
-			// "this family never answers" refusal apart from a one-off
-			// per-point solver failure (an unclosed bracket, a stalled
-			// descent, a fabricated (0,1,0) gradient at a flat blend seam).
-			// An SDF's one-shot latch is very often spent on exactly that
-			// kind of per-point failure, not on family membership.
-			//
-			// AND IT IS CONFIRMED BEFORE IT IS PRINTED, because `false`
-			// here does NOT only mean "I cannot answer".  `SDFGeometry`'s
-			// step-1 lower-bound early-out (`Map(p) > maxDist` proves the
-			// true distance is past the radius) also returns false, and
-			// that is a perfectly healthy outcome that happens at the far
-			// corners of every SDF's expanded box.  Printing "this object
-			// cannot answer" there would be a false statement about a
-			// geometry that answers fine.
-			//
-			// So: take the one-shot latch first (cheap, and it bounds
-			// everything below to once per object for the life of the
-			// object), then ask the SAME object again with an UNBOUNDED
-			// radius.  A family with no closed form -- a patch, a RAW mesh,
-			// a CSG composite, a heightfield SDF, a degenerate transform --
-			// refuses that too, immediately and in O(1).  A non-heightfield
-			// SDF is NOT O(1) here: the confirm re-runs the full bracket
-			// search (descent + doubling probe, ~80 `Map()` evaluations ×
-			// O(parts), §5.2) at unbounded radius, once per object, and can
-			// still return false for a healthy field that merely hit its
-			// solver budget or landed on a degenerate gradient -- which is
-			// exactly the per-point-failure case the message above now
-			// states explicitly rather than branding the object as a
-			// member of a family that never answers.  An SDF that was
-			// merely out of range answers it, and says nothing.
-			//
-			// WHAT THIS DELIBERATELY GIVES UP: if an object's FIRST refusal
-			// is the benign far one, the latch is spent and a later
-			// bracket-budget failure on the same object stays silent. That
-			// is the right trade -- the design's promise is about
-			// neighbours that CANNOT answer, and this one can; the
-			// budget failure is separately disclosed as a residual (§10).
-			if( obj->NoteDistanceRefusal() ) {
-				Scalar confirm = Scalar( 0 );
-				if( !obj->DistanceToSurface( ptWorld, RISE_INFINITY, confirm ) ) {
-					LogDistanceRefusal( obj );
-				}
-			}
-			continue;
-		}
-		if( d < best ) {
-			best = d;
+		const bool ok = tlas->ClosestPointDistance(
+			ptWorld, maxDistWorld,
+			[&]( const IObjectPriv* obj, const Point3& p ) -> Scalar {
+				const Scalar dist = ProximityCandidateDistance( obj, self, p, budget );
+				if( dist < budget ) budget = dist;
+				return dist;
+			},
+			d );
+		if( ok ) {
+			best  = d;
 			found = true;
-			if( best <= Scalar( 0 ) ) {
-				// Touching or interpenetrating: nothing can beat 0, and the
-				// remaining candidates cannot change the answer.
-				break;
+		}
+	} else {
+		for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
+			const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+			const IObjectPriv* const obj = entry.pObj;
+
+			// BOX REJECTION, against the RUNNING best rather than the
+			// original radius, so a close neighbour found early prunes the
+			// rest.
+			//
+			// ORDINARY CONTAINMENT, and it must stay ordinary: an infinite
+			// plane's box is +/-RISE_INFINITY (= DBL_MAX, which
+			// IsFiniteDouble reports FINITE), and under a rotation some
+			// axes overflow to +/-inf.  Either way the expanded box
+			// contains every point and the plane is admitted by the same
+			// test as everything else.  DO NOT add a "skip non-finite
+			// boxes" guard to dodge NaN -- it would make every infinite
+			// plane in the scene invisible to this query.  A NaN bound
+			// (reachable from an inf*0 in a rotated corner transform) makes
+			// both comparisons false and so ADMITS the candidate, which is
+			// the safe direction: the geometry is then asked, and answers
+			// correctly or refuses.
+			const Point3& ll = entry.box.ll;
+			const Point3& ur = entry.box.ur;
+			if( ptWorld.x < ll.x - best || ptWorld.x > ur.x + best ) continue;
+			if( ptWorld.y < ll.y - best || ptWorld.y > ur.y + best ) continue;
+			if( ptWorld.z < ll.z - best || ptWorld.z > ur.z + best ) continue;
+
+			const Scalar d = ProximityCandidateDistance( obj, self, ptWorld, best );
+			if( d < best ) {
+				best = d;
+				found = true;
+				if( best <= Scalar( 0 ) ) {
+					// Touching or interpenetrating: nothing can beat 0, and
+					// the remaining candidates cannot change the answer.
+					break;
+				}
 			}
 		}
 	}

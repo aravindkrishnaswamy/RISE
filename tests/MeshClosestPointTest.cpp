@@ -44,6 +44,10 @@
 //    (f) EIGHT THREADS querying one mesh concurrently agree with serial,
 //        bit for bit.  The traversal is `const` over immutable post-build
 //        state with a thread_local scratch stack, and this is what says so.
+//    (h) THE TWO CANDIDATE SOURCES AGREE: `NearestOtherSurface` walks the
+//        top-level BVH as a point query when the manager has one and scans
+//        the flat AABB snapshot when it does not; both are driven over one
+//        SHARED object set and compared bit for bit.
 //    (g) SCENE D's placement, COMPUTED HERE.  The scene file records the
 //        y offsets that put the bunny's lowest vertex on the plane and the
 //        dragon's on the bunny; this section re-derives them from the
@@ -79,6 +83,7 @@
 #include "../src/Library/Utilities/ExpressionMemo.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
+#include <cstdio>
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Cst/Cst.h"
@@ -635,6 +640,101 @@ static void TestConcurrency( const TriangleMeshGeometryIndexed* mesh )
 }
 
 //======================================================================
+// (h) THE TWO CANDIDATE SOURCES AGREE
+//======================================================================
+
+//! `ObjectManager::NearestOtherSurface` has TWO ways to find the objects
+//! near a point: a TLAS POINT QUERY when the manager built a top-level BVH,
+//! and a FLAT SCAN over the AABB snapshot otherwise.  Everything downstream
+//! of the choice is shared (`ProximityCandidateDistance`), but the choice
+//! itself decides WHICH objects are asked, and a traversal that pruned one
+//! subtree too eagerly would return a larger distance -- an UNDER-painted
+//! seam, silent by construction.
+//!
+//! So this drives BOTH, on the SAME objects, and compares bit for bit.
+//! Two managers are built over one shared object set, differing only in
+//! `bUseBSPtree`: the tree-backed one walks the TLAS, the other cannot
+//! build one and takes the flat scan.  Sharing the objects (rather than
+//! rebuilding them) is what makes the comparison exact -- there is no
+//! second construction for a float to differ in.
+static void TestCandidateSourcesAgree()
+{
+	std::cout << "(h) the TLAS point query and the flat scan agree, object for object" << std::endl;
+
+	IObjectManager* mgrTree = 0;
+	IObjectManager* mgrFlat = 0;
+	// nMaxObjectsPerNode 4 with well over 4 objects => the first builds a
+	// TLAS.  bUseBSPtree FALSE on the second => it never can.
+	Check( RISE_API_CreateObjectManager( &mgrTree, true,  false, 4, 32 ), "(h) a TLAS-backed manager" );
+	Check( RISE_API_CreateObjectManager( &mgrFlat, false, false, 4, 32 ), "(h) a scan-only manager" );
+	if( !mgrTree || !mgrFlat ) return;
+
+	std::vector<Object*> objs;
+
+	// A spread of families, so the comparison covers a refusing candidate
+	// (the mesh past its radius), an exact one, and a solid one.
+	for( int i = 0; i < 10; ++i ) {
+		SphereGeometry* g = new SphereGeometry( Scalar( 0.4 + 0.05 * i ) );
+		Object* o = new Object( g );
+		g->release();
+		o->SetPosition( Point3( Scalar( i ) * Scalar( 1.3 ) - Scalar( 6 ),
+		                        Scalar( ( i % 3 ) ) * Scalar( 0.7 ),
+		                        Scalar( ( i % 4 ) ) * Scalar( -0.9 ) ) );
+		o->FinalizeTransformations();
+		objs.push_back( o );
+	}
+	TriangleMeshGeometryIndexed* sphereMesh = BuildTessellatedSphere( Scalar( 0.8 ), 24u );
+	if( sphereMesh ) {
+		Object* o = new Object( sphereMesh );
+		o->SetPosition( Point3( 2.5, 1.1, 1.4 ) );
+		o->FinalizeTransformations();
+		objs.push_back( o );
+	}
+
+	for( std::size_t i = 0; i < objs.size(); ++i ) {
+		char name[32];
+		snprintf( name, sizeof( name ), "o%u", (unsigned)i );
+		mgrTree->AddItem( objs[i], name );
+		mgrFlat->AddItem( objs[i], name );
+	}
+	mgrTree->PrepareForRendering();
+	mgrFlat->PrepareForRendering();
+
+	const unsigned int N = 6000;
+	RandomNumberGenerator rng( 5150u );
+	unsigned int mismatch = 0, agreedAnswered = 0, agreedFar = 0;
+	const Scalar radii[3] = { Scalar( 0.25 ), Scalar( 1.0 ), Scalar( 4.0 ) };
+	for( unsigned int i = 0; i < N; ++i ) {
+		const Point3 p(
+			-8.0 + 14.0 * rng.CanonicalRandom(),
+			-2.0 +  6.0 * rng.CanonicalRandom(),
+			-4.0 +  8.0 * rng.CanonicalRandom() );
+		// Rotate `self` through the set too, so the self-exclusion rule is
+		// exercised on both paths and not only the geometry lookup.
+		const IObject* self = objs[ i % objs.size() ];
+		const Scalar r = radii[ i % 3 ];
+
+		Scalar dT = Scalar( 0 ), dF = Scalar( 0 );
+		const bool okT = mgrTree->NearestOtherSurface( p, self, r, dT );
+		const bool okF = mgrFlat->NearestOtherSurface( p, self, r, dF );
+		if( okT != okF ) { ++mismatch; continue; }
+		if( !okT ) { ++agreedFar; continue; }
+		if( dT != dF ) ++mismatch; else ++agreedAnswered;
+	}
+	std::cout << "      " << N << " probes: " << agreedAnswered << " agreed-answered, "
+		<< agreedFar << " agreed-far, " << mismatch << " mismatches" << std::endl;
+	Check( mismatch == 0,
+		"(h) MONEY: every probe reads the SAME distance through the TLAS point query and "
+		"the flat scan -- the traversal prunes nothing a linear scan would have found" );
+	Check( agreedAnswered > 500 && agreedFar > 500,
+		"(h) ...and both outcomes are well represented, so the agreement is not vacuous" );
+
+	mgrFlat->release();
+	mgrTree->release();
+	if( sphereMesh ) sphereMesh->release();
+}
+
+//======================================================================
 // (g) SCENE D
 //======================================================================
 
@@ -956,6 +1056,7 @@ int main( int, char** )
 	TestDisplacedForward();
 	TestRawRefuses();
 	TestConcurrency( bunny ? bunny : sphere );
+	TestCandidateSourcesAgree();
 	TestSceneD( root );
 
 	if( bunny ) bunny->release();
