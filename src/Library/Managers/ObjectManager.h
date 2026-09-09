@@ -179,7 +179,8 @@ namespace RISE
 			//! IMMUTABLE ONCE PUBLISHED, which is the whole thread-safety
 			//! argument: it is built whole, published behind ONE pointer
 			//! exactly as `pBVH` is, never grown and never edited in place,
-			//! and released only where `pBVH` is -- so a query copies the
+			//! and released at the same call sites as `pBVH` (there under
+			//! `treeCreationMutex`, which `pBVH` does not need) -- so a query copies the
 			//! pointer once and reads lock-free, with no reallocation
 			//! hazard.
 			//!
@@ -190,8 +191,10 @@ namespace RISE
 			//! threshold there is no TLAS at all, so the manager's "never
 			//! invalidate during a pass" contract has never had anything to
 			//! protect there.  THIS snapshot IS built for a four-object
-			//! scene, and `InvalidateSpatialStructure` deletes it outside
-			//! `treeCreationMutex` exactly as it deletes `pBVH`.  So the
+			//! scene, and `InvalidateSpatialStructure` deletes it at the
+			//! same call site where it releases `pBVH` (under
+			//! `treeCreationMutex`, unlike `pBVH`, because EnsureBoxSnapshot
+			//! retires and republishes inside that lock).  So the
 			//! honest statement is: the snapshot EXTENDS the existing
 			//! "never during a pass" contract to scenes small enough that
 			//! it used to be vacuous.  It is the same contract, newly

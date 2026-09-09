@@ -513,7 +513,9 @@ pinned one.
 - **Scene immutable after Prepare:** the query is `const` and lock-free over
   prepared geometry, transforms and the AABB snapshot; the snapshot is an
   immutable object published behind one pointer under `treeCreationMutex` at
-  prepare time (or lazily on first use), released only where `pBVH` is, so it
+  prepare time (or lazily on first use), released at the same call sites as
+  `pBVH` (there under `treeCreationMutex`, since the builder retires and
+  republishes inside that lock), so it
   joins the manager's existing sanctioned set with no new race class. The one
   pre-existing race (per-sample `EvaluateAtTime`) is inherited, not added.
 - **Painters as pure functions of the hit and the scene:** the scene reaches the
