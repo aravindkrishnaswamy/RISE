@@ -3,8 +3,17 @@
 **Status:** PHASE 1 SHIPPED — wave 1 (the engine) and wave 2 (the two
 showcases, every Phase-1 gate measured) both landed 2026-09-08; §8.1 and §8.2
 carry what each wave built and where the code and the measurements corrected
-this document.  Accepted after three adversarial rounds
-(round 3: the nail rests on its head rim and tip, not its shank — the flagship
+this document.  **One gate FAILED and is reported, not tuned to pass**: the
+plank's tip station reads 0.882 against a ≥ 0.9 gate, because §8's local
+`ρ ≈ 1 mm` model for the tip was optimistic (the tip is a furrow, not a
+touchdown point — see §8.2).  **The plank cost gate passes in relative
+terms** (1.11–1.13× against an interleaved control) **but fails the literal
+"≤ 1.15 × 16.33 s"**, because that 16.33 s reference was measured on a
+different day's machine; the pristine pre-wave-2 file and its cost-equivalent
+no-prox baseline (§8.2) both measure 16.76–18.10 s today, above 16.33 s on
+their own.  Accepted after three adversarial rounds
+(round 3: the nail rests on its buried tip, not its shank, with its head rim
+nearly touching (0.146 mm clear) — the flagship
 gate is re-derived from where contact actually is; the DynR remap tail; the AABB
 cache as an immutable snapshot; degenerate transforms refuse; clipped planes are
 bilinear patches; round 2: the projected-point SDF bound was NOT a bound — replaced by a
@@ -36,7 +45,7 @@ must pass.
 | # | Scene | Receiver → neighbour | What it proves |
 |---|---|---|---|
 | A | `scenes/FeatureBased/Textures/plank_closeup.RISEscene` | SDF plank ← SDF nail lying on it | **The motivating case.** Dirt must collect along the nail's contact line and fade over a few millimetres. §8.1 showed no hemisphere AO sampler can draw this seam (0.65 at the silhouette, 0.96 four pixels out); a distance signal must read ~1 under the shank and ~0 at 4 mm. Also the cost reference: 16.33 ± 0.01 s with the memo. |
-| B | `scenes/FeatureBased/Textures/weathered_workbench.RISEscene` | box bench top ← SDF vise flange; infinite-plane floor ← box legs; box tray | The header declares grime under the flange "out of reach — occlusion() is self-occlusion only". The bench top is a `box_geometry` with **no signal provider at all**, so this proves the signal works on receivers outside the SDF/mesh families, and against analytic neighbours. |
+| B | `scenes/FeatureBased/Textures/weathered_workbench.RISEscene` | box bench top ← SDF vise flange; infinite-plane floor ← box legs; box tray | The header declared grime under the flange "out of reach — occlusion() is self-occlusion only" until wave 2 retracted it. The bench top is a `box_geometry` with **no signal provider at all**, so this proves the signal works on receivers outside the SDF/mesh families, and against analytic neighbours. |
 | C | `scenes/Tests/Signals/proximity_closed_forms.RISEscene` (new) | plane ← sphere (closed form `sqrt(s²+ρ²) − ρ`), plane ← box, plane ← capped and open cylinder lying flat, plane ← disk, clipped plane, torus, ellipsoid; SDF ← tessellated mesh; a single-sphere SDF (exact field) and a composed `smin`/`subtract` SDF (bounded field); an instanced copy; a `casts_shadows FALSE` neighbour; a hand-authored emissive box; a CSG-subtraction receiver with its operands; a heightfield-mode SDF; a non-uniformly scaled SDF; a receiver point inside a neighbour; a neighbour below the receiver; a neighbour beyond the radius | Drives `ProximitySignalTest`: every Phase-1 family's distance against a closed form or its stated bound, the self-exclusion rule, the visibility rule (casts_shadows does not exempt; emitters never count), the CSG operand rule, the scale rule, interpenetration, the unsigned rule, the radius cut-off, and every neutral. |
 | D | `scenes/Tests/Signals/proximity_mesh_contact.RISEscene` (new) | plane ← `models/risemesh/bunny.risemesh` placed so its lowest vertex touches the plane; a second mesh (`dragon_small`) resting on the bunny; the plane also under a `casts_shadows FALSE` sphere and a `rect_light` panel 2 mm above it | The mesh-neighbour path (Phase 2) on real assets, at real contact. Showroom was the first choice and is REJECTED: its torus knot floats 0.69 m above its platform (mesh Y-range 0.989–2.005 m under `scale 0.008`, platform top 0.3 m), so no authorable radius reaches it. The light panel proves lights never count (§2). |
 | E | `scenes/FeatureBased/Geometry/sponza_new.RISEscene` (asset at `/Users/aravind/Working/Assets/main_sponza/...`) | 405 mesh objects, mesh ← mesh everywhere | Cost with the query forced at every hit (the §8.1 protocol), candidate-scan scaling at 405 objects, and a beauty check: dust where walls meet floor, the look production renderers get from Unreal's `DistanceToNearestSurface`. |
@@ -47,12 +56,13 @@ materials (the plank's dirt term at `proximity(0.002)` — 2 mm against the
 header's 0.40 mm p50 pixel footprint; the bench's "deliberately NOT painted on"
 flange grime at `proximity(0.02)`). **Where the nail actually touches the plank
 is the point of scene A**, and it is not along the shank: the head disc
-(radius 7.5 mm) is thicker than the shank's 4 mm base, so the nail rests on its
-head rim and its tip — the scene header says exactly this — and with its 6°
-nose-down the shank's underside sits +3.5 mm above the plank at the head end,
-≈ +1.5 mm mid-way, and −0.6 mm (buried) at the tip. No pitch fixes that without
-burying the head. So the seam a distance signal must draw is a ring under the
-head rim, a spot at the tip, and a band that FADES along the lifting shank —
+(radius 7.5 mm) is thicker than the shank's 4 mm base, so the nail rests on
+its buried tip; its head rim nearly rests (0.146 mm clear — see §8.2) and,
+with its 6° nose-down, the shank's underside lifts from the tip up to
++3.5 mm above the plank at the head end, ≈ +1.5 mm mid-way, buried ≈ 0.55 mm
+at the tip itself. No pitch fixes that without burying the head. So the seam
+a distance signal must draw is a broad near-touch patch under the head rim,
+a ~9.5 mm furrow at the tip, and a band that FADES along the lifting shank —
 precisely the picture an AO cannot draw and the gate in §8 is derived from. C, D and F are
 tests; D doubles as the Phase-2 acceptance render. E is the cost ceiling and a
 beauty check. Not in the set, stated so nobody infers coverage: a CSG-composite
@@ -573,18 +583,22 @@ model for a body of cross-section radius `ρ` resting on a plane is
   846/846; test F green;
 - **plank_closeup, `proximity(0.002)`, probe protocol from §8.1** (albedo = raw
   signal ÷ white control, 16 spp, relief modifiers stripped). The nail rests on
-  its head rim and its tip (§1), so the stations are: (1) the plank beside the
-  **head rim's** touchdown — the head is a 7.5 mm-radius disc, its rim a
+  its buried tip; its head rim nearly rests (§1) — so the stations are: (1) the plank beside the
+  **head rim's** near-touch — the head is a 7.5 mm-radius disc, its rim a
   circle; at 1 px (0.4 mm) outside the rim ≥ 0.9, 0 at ≥ 8 mm; (2) the plank
   under the **shank mid-way**, where the underside floats ≈ 1.5 mm: the model
   gives `1 − 1.5/2 = 0.25`, gate 0.1–0.4 — this is the discriminating check,
   because an AO would read the shank's shadow as contact and the distance
   reads the gap; (3) the plank at the **head end of the shank**, floating
-  ≈ 3.5 mm: 0; (4) the plank beside the **tip**, buried 0.6 mm: at 1 px ≥ 0.9
-  and 0 at ≥ 8 mm (model with `ρ ≈ 1 mm`: 0.96 at 0.4 mm, 0 at 4 mm); 0 on the
+  ≈ 3.5 mm: 0; (4) the plank beside the **tip**, buried in a furrow: at 1 px
+  ≥ 0.9 and 0 at ≥ 8 mm (model with `ρ ≈ 1 mm`: 0.96 at 0.4 mm, 0 at 4 mm —
+  §8.2 measures the tip as a furrow of `ρ ≈ 1.2 mm` sunk 0.55 mm, where the
+  distance instead grows ≈ 0.59 mm per mm of lateral offset, which is why
+  station 4 reads 0.882 and FAILS this gate); 0 on the
   open plank. Phase 1 first measures the three underside gaps with the signal
-  itself and records them in the scene header (the header's current prose
-  already says rim-and-tip); the scene is NOT re-pitched. Cost ≤ 1.15 × 16.33 s;
+  itself and records them in the scene header (wave 2 corrects the header's
+  prose to the tip-buried / rim-nearly-touching picture); the scene is NOT
+  re-pitched. Cost ≤ 1.15 × 16.33 s;
 - **weathered_workbench, `proximity(0.02)`**: the flange is a `roundbox` with
   half-extents (0.195, 0.021, 0.172) m and 18 mm corner rounding on a 21 mm
   half-height, so its bottom edge is a quarter-circle of `ρ = 18 mm` whose
@@ -823,10 +837,14 @@ batches the ratio sits in **1.111–1.131**.
 **One caveat on the absolute form of the gate.** §8 writes it as "≤ 1.15 ×
 16.33 s", the memo baseline from
 [OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md](OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md)
-§6.5. The same scene's own pre-wave-2 file measures **16.763–17.758 s** on a
-quiet machine today (best run 2.6 % above 16.33 s, mean 5.7 % above), and
-18.096 s in batch 1. Against 16.33 s literally the shipped scene is 1.18–1.25×
-depending on the batch, and the gate FAILS in its absolute form; against a
+§6.5. Batch 3, the only batch that ran the untouched pre-wave-2 file itself,
+measures it at **16.763–17.758 s** on a quiet machine today (best run 2.6 %
+above 16.33 s, mean 5.7 % above). Batch 1 did not run the pristine file at
+all — its baseline was the no-prox copy, at 18.096 s — but batch 3 shows the
+two baselines agree within 0.3 % (line below), so 18.096 s stands as an
+equivalent reading of the same unmodified-scene cost. Against 16.33 s
+literally the shipped scene is 1.18–1.25× depending on the batch, and the
+gate FAILS in its absolute form; against a
 control rendered in the same interleaved session it is 1.111–1.131× and passes.
 The same-session ratio is the trustworthy number — it is what §8.1's own cost
 table used, and batch 2 shows why: a 45 % machine-state swing moved the ratio
@@ -844,16 +862,21 @@ high; it is one under the four-way L1 capacity §10's cliff bullet describes.)
 NOT reachable from the CLI.** There is no `interactive_pel_rasterizer` chunk
 and no `RISE_API_Create*` factory; `quality:"draft"` reaches
 `RISE::Implementation::CreateInteractiveMaterialPreviewPipeline` only through
-`AgentSession`. What the code says is worth recording anyway, because it
-contradicts the MCP tool's own description. That description claims draft
-"IGNORES the scene's authored materials and lighting entirely" — but
+`AgentSession`. What the code says is worth recording anyway, because at the
+time this was checked it contradicted the MCP tool's own description. That
+description USED TO claim draft "IGNORES the scene's authored materials and
+lighting entirely" — but
 `InteractiveMaterialPreviewShader::MaterialAlbedo` calls
 `bsdf->albedo( ri.geometric )`, and `GGXBRDF::albedo` calls
 `pDiffuse->GetColor( ri )`, which runs the expression and therefore the
 `proximity` query. So draft DOES pay it: once per primary hit at 1 spp
 (~3 × 10⁵ queries for a 640 × 480 frame) against the production frame's
 8.2 × 10⁷ — about 0.4 % of the production query count. Not measured as wall
-clock; stated as the bound the code supports.
+clock; stated as the bound the code supports. **Fixed in this fix round**:
+every one of those descriptor strings (`AgentMcpAdapter.cpp`,
+`AgentChatCodecs.cpp`, `AgentSession.h`/`.cpp`, `AgentRpc.h`) now says draft
+ignores LIGHTING only and evaluates each material's diffuse albedo — see
+§10.
 
 **Beauty.** Full frame plus a 3× crop at `x0=280 y0=150 w=200 h=120` (the AO
 evidence framing), judged against a no-proximity control rendered from the same
@@ -1187,3 +1210,17 @@ now in them, and the workbench's says which claim it retracts.
   set the other three signals are neutral on, but here the neutral means "no
   contact anywhere in the scene", which is a more visible absence than
   "unoccluded".
+- **Fixed in this fix round (wave-2 integration, 2026-09-08): the agent-facing
+  draft-preview descriptor strings were wrong.** They claimed quality:"draft"
+  "IGNORES the scene's authored materials and lighting entirely"; in fact
+  `InteractiveMaterialPreviewShader::MaterialAlbedo` calls `bsdf->albedo()`
+  (→ `GGXBRDF::albedo` → `pDiffuse->GetColor(ri)` for a diffuse lobe), which
+  runs an expression painter and therefore any `proximity`/`occlusion` query
+  it makes — draft ignores LIGHTING only (a fixed synthetic studio rig stands
+  in). Corrected in `AgentMcpAdapter.cpp`, `AgentChatCodecs.cpp`,
+  `AgentSession.h`/`.cpp`, and `AgentRpc.h`; see §8.2's Draft-preview
+  paragraph. `GEOMETRY_SHADING_SIGNALS_DESIGN.md` §7.3 carried the same
+  error in its mesh-bake laziness rationale — corrected there too, with the
+  consequence noted: an albedo evaluation that reaches `occlusion()` on a
+  mesh in draft DOES trigger `MeshSignalBakeCache`'s bake on the scene's
+  first draft render, not only on its first production render.
