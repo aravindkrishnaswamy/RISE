@@ -110,8 +110,20 @@ Conventions, matching the signal family (signals design §9):
   unbounded radius before it is printed**, because a `false` return is not
   only "I cannot answer": an SDF's step-1 lower-bound early-out returns false
   for a neighbour that is merely out of range, which happens at the far corners
-  of every SDF's expanded box and is a healthy outcome. The confirm costs one
-  extra call per object, ever, and it is what makes the printed sentence true.
+  of every SDF's expanded box and is a healthy outcome. For a closed-form or
+  never-answering family (§5.2) the confirm costs one extra `O(1)` call per
+  object, ever, and the printed sentence is fully true: that family never
+  answers. For a non-heightfield **SDF** the confirm is not `O(1)` — it re-runs
+  the whole bracket search (descent + doubling probe, ~80 `Map()` calls ×
+  `O(parts)`, §5.2) — and it only rules out the radius-dependent false
+  positive; it cannot distinguish "this SDF never answers" from "this SDF hit
+  a one-off per-point solver failure" (an unclosed bracket, a stalled descent,
+  a fabricated `(0,1,0)` gradient at a flat blend seam). The printed sentence
+  is therefore **best-effort for SDFs**: it says the query could not be
+  answered at that one point even unbounded, not that the object belongs to a
+  family that never answers — and because the latch is one-shot, an SDF's
+  first refusal (very often exactly this kind of per-point failure) spends it,
+  so a later genuine family-level refusal on the same object stays silent.
 - **Direction of error, where a family cannot be exact: never over-read
   contact.** A reported distance is an UPPER bound on the true one (or exact),
   so `proximity` may under-paint a seam but never paints one that is not there.
