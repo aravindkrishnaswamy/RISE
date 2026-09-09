@@ -542,8 +542,10 @@ pinned one.
 Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
-2026-09-09 before Phase 3 began; revised the same day after one adversarial
-round (7 P1s: the union fast path composed under-reading magnitudes; CSG
+2026-09-09 before Phase 3 began; revised the same day after two adversarial
+rounds (round 2, 3 P1s: a union had no signed rule; the glass_pavilion probe
+stations sat inside the column's cap; `add_wear`'s flat-receiver gate lives in
+the conditions scan, not the verb; round 1, 7 P1s: the union fast path composed under-reading magnitudes; CSG
 operands live in the COMPOSITE's frame, not world space; the inside depth was
 scaled by σ_max instead of σ_min; the σ gate's reference was a tautology; the
 `interior` gate contradicted the fixture; `add_wear`'s predicate and mask
@@ -577,11 +579,17 @@ union's surface is exactly `min(d_A, d_B)` (every union-boundary point lies on
 segment to it enters B first at a point on ∂B that is outside A — a boundary
 point no farther than `d_A` — so `d ≤ min`; tangential contact falls in the
 first case). But the composite can only use what the operands report, and
-`min(exact, under-read)` under-reads. So the union's reported magnitude is
-`min(u_A, u_B)` over the operands' **unsigned upper bounds**, which is itself an
-upper bound (`d = min(d_A, d_B) ≤ min(u_A, u_B)`), exact when both operands are
-exact. A union accepts a SHEET operand (its unsigned answer is all the proof
-needs); it cannot say whether `p` is inside that operand, so a point inside a
+`min(exact, under-read)` under-reads. So the union's UNSIGNED answer is
+`min(u_A, u_B)` over the operands' unsigned upper bounds, itself an upper bound
+(`d = min(d_A, d_B) ≤ min(u_A, u_B)`), exact when both operands are exact; and
+the union's SIGNED LOWER BOUND — which a parent composite ("a union inside a
+subtraction") and `interior` both need — is `min(f_A, f_B)` over the operands'
+signed lower bounds (sign exact: inside the union iff inside either; outside,
+`min(f_A, f_B) ≤ min(d_A, d_B) = d`; inside, the depth to leave `A ∪ B` is at
+least `max(depth_A, depth_B) = |min(f_A, f_B)|`), answered only when BOTH
+operands answer it. A union accepts a SHEET operand for the unsigned query
+(its unsigned answer is all the proof needs) and refuses the signed one with
+it; it cannot say whether `p` is inside a sheet operand, so a point inside a
 mesh operand reads a positive distance rather than contact — the under-paint
 direction, disclosed. For **intersection** and **subtraction** the min is only
 a lower bound (the nearest operand-surface point may not be on the composite's
@@ -594,7 +602,15 @@ least both `f_A` and `|f_B|`; likewise for an intersection), and run Phase 1's
 bracket on it: descend along the numerical gradient of `f` (six evaluations
 per gradient, each recursing into both operands), probe until `f ≤ 0`, report
 the chord `|p − q|` (an upper bound by the sign argument alone), refuse when no
-crossing lands within budget. An operand that refuses the signed lower bound
+crossing lands within budget. At a max/min seam two nearly opposed operand
+gradients can cancel the composite's, and a gradient below 1e-12 makes the
+candidate REFUSE (an under-paint, never a wrong answer — the SDF's fabricated
+`(0,1,0)` fallback is not reused). `SignedDistanceLower` NEVER refuses for
+range: its `maxDist` argument bounds effort, and the descent evaluates
+operands at points outside any radius — an operand copying
+`DistanceToSurface`'s lower-bound early-out into the signed query would make
+every intersection with a small subtrahend refuse; only a family or
+degeneracy refusal propagates. An operand that refuses the signed lower bound
 (any sheet, a heightfield SDF) makes an intersection or subtraction REFUSE.
 
 **The composite's own frame — the round-1 blocker.** Operands are NOT in world
@@ -615,7 +631,10 @@ inside the composite's solid is contact, §2); a point inside operand A of an
 intersection it does not share with B is OUTSIDE the composite and reads a
 positive distance — correct, not a violation, and stated here so nobody "fixes"
 it. `bComplementedField` never enters: the composite composes signs itself.
-The per-object refusal log covers composites as it does any object.
+The per-object refusal log covers composites as it does any object, naming
+the kind as "csg <op>" rather than the current "(no geometry)" fallback, and
+§2's cost note for the unbounded-radius confirm gains a third non-`O(1)` case
+(an intersection/subtraction re-running its bracket, once per object).
 
 **Exact σ.** Phase 1's loose bounds (`‖M‖_F`, `|det|/σ_max²`) inflate the
 search radius by `r/σ_min` and the reported distance by `σ_max` — 8.47× and
@@ -626,9 +645,12 @@ are the column norms; high relative accuracy for every singular value, which
 the eigenvalues of `MᵀM` do not give — forming `MᵀM` squares the condition
 number, and a 1e-3..1e3 scale range would leave σ_min with ~1e-4 relative
 error), ≤ 30 sweeps with the existing Frobenius/determinant pair as the
-fallback if it does not converge, keeping the exact-uniform fast path and the
-degenerate refusal. Because the chain of inequalities the design rests on must
-survive rounding, the stored `σ_max` is nudged UP and `σ_min` DOWN by four ulps.
+fallback if it does not converge, keeping the exact-uniform fast path (which
+stays exact and un-nudged, so `m_sigmaExact` keeps its meaning) and the
+degenerate refusal (which runs BEFORE Jacobi on `|det|`, so `σ_min > 0` holds
+after the nudge). Because the chain of inequalities the design rests on must
+survive rounding, on the Jacobi path the stored `σ_max` is nudged UP and
+`σ_min` DOWN by four ulps.
 Reflections need nothing (singular values are those of `|M|`). `Object` exposes
 `SigmaMin()/SigmaMax()` for tests, which compare against reference values
 written into the test for a rotation, a reflection, a uniform scale,
@@ -652,8 +674,12 @@ more, disclosed), `SignalKey.fn = 4` / `eInterior = 4`, `SurfaceSignalInfo::Inte
 beside `Proximity(r)` sharing the L1 helper; `ParseCall`'s `isSignalFn` gains
 the id AND its unit diagnostic becomes a three-way (fraction / world length for
 `proximity` / world length for `interior`) instead of a binary ternary;
-`ExpressionProgram::UsesProximity()` becomes `UsesCrossObject()` so
-`ProximityDemand` (and the eager snapshot) covers an `interior`-only scene;
+`ExpressionProgram::UsesProximity()` becomes `UsesCrossObject()` at its two
+call sites (`ExpressionPainter.h`'s `m_proximityDemand` initialisers), and
+`ProximityDemand` keeps its name but is documented as "registered when the
+program calls `proximity()` or `interior()`" so the eager snapshot covers an
+`interior`-only scene; `kFnInterior = 58` leaves only 59 free before
+`CallFuncVec3`'s 60+ band (stated on the assert);
 the query is `IObjectManager::DeepestOtherContainment( ptWorld, self,
 maxDepthWorld, outDepth ) → bool` over the same candidate snapshot — a
 candidate whose box does not contain the point cannot contain it; the loop
@@ -675,19 +701,30 @@ to `interior`; a hit point inside a MESH neighbour reads `proximity = 1` and
 
 **`add_wear` composition.** The verb gains two parameters, `contact_radius`
 (world length, default 0 = off) and `contact_grime` (mask weight, default
-0.5). Its cavity deepening multiplies `crevice_raw`, which is ≈ 0 wherever
-`curv ≥ 0`, and its candidate gate rejects flat receivers ("a plane, disk, box
-or patch, where `curv` is 0 everywhere") — so a contact term folded INTO the
-cavity mask would never reach the two flagship contacts (a plank on a plane, a
-flange on a box). When `contact_radius > 0` the term therefore enters as an
-**additive third mask**, `contact_mask = clamp(proximity(<r>) + breakup, 0, 1)`
-weighted by `contact_grime` into the same colour and roughness slots (never
-relief, automatically — §5.3), with the same fbm breakup, and the flat-receiver
-gate is RELAXED for that case (a box or plane with `contact_radius` set is a
-valid candidate; the curv-based bands are simply empty there). The descriptor
-text states the unit and that the author chooses the radius from the scene's
-feature sizes. `contact_radius 0` is byte-identical to today's output (the
-prelude is a built string). `WearBodyReadsGeometrySignals_` gains `"interior"`
+0.5). Its candidate gate — clause (c) of the CONDITIONS scan, not the verb —
+rejects flat receivers ("a plane, disk, box or patch, where `curv` is 0
+everywhere") before any call, so the two flagship contacts (a plank on a plane,
+a flange on a box) are outside the verb's candidate set today, and on a
+curving receiver the cavity mask's `crevice_raw` (`clamp(−curv·grime +
+breakup·fbm, 0, 1)`) is dominated by breakup where `curv ≥ 0`. When
+`contact_radius > 0` the term therefore enters as an **additive third mask**:
+the prelude gains `def contact_r <param>` (emitted as a retunable `param`,
+which is safe because `proximity` has no `DynR` twin) and
+`def contact_mask clamp(proximity(contact_r) + breakup_amp*fbm(…), 0, 1)`, and
+the two consuming `expr` lines fold `contact_grime*contact_mask` into the SAME
+patina/roughness endpoint the crevice mask drives
+(`clamp(crevice_mask + contact_grime*contact_mask, 0, 1)` in place of
+`crevice_mask`), never relief (automatic — §5.3). The flat-receiver gate is
+relaxed WITHOUT touching the scan's existing outputs: the scan keeps
+barren-only materials in a SEPARATE list (`wearBarrenCandidates`, with its
+own decline reason left as is), `AddWear` may select from that list only when
+`contact_radius > 0`, and a barren pick's `curvGeometryKind` names the
+receiver's geometry kind with the success message saying it touches a
+neighbour rather than that it curves. The descriptor text states the unit and
+that the author chooses the radius from the scene's feature sizes.
+`contact_radius 0` is byte-identical to today's output: the scan's existing
+lists, counts and messages are unchanged, and the prelude is a built string
+that omits the contact lines at 0. `WearBodyReadsGeometrySignals_` gains `"interior"`
 (it lists `proximity` today; `interior` is NOT yet there). Surfaces: the
 `props.set` block and `desc` in `AgentMcpAdapter.cpp`, `kToolDefs`' `add_wear`
 entry in `AgentChatCodecs.cpp` (the two texts must stay semantically
@@ -834,12 +871,19 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   answers within 1e-9 of the same composite built with the transform folded
   into the operands; an intersection or subtraction with a sheet operand
   refuses; the operands never count separately (unchanged);
-- showcase: `glass_pavilion`'s floor beside a fluted `subtraction` column
-  (`column2`): harness values at 1 / 2 / 4 cm from the column's footprint with
-  `proximity(0.02)`, modelled as a cylinder of the column's radius `ρ` on a
-  plane (`d(s) = sqrt(s² + ρ²) − ρ`), the three predicted values stated with
-  `ρ` read from the scene and each measured value within 0.05 of its
-  prediction; plus a crop, judged honestly;
+- showcase: `glass_pavilion`'s fluted `subtraction` column `column2` stands
+  UPRIGHT on its cap `cap2` (a 0.7 × 0.15 × 0.7 box whose top is y = 0.175;
+  the column, radius 0.25, spans y ∈ [0, 5]) — the floor beneath is hidden by
+  the cap out to ~10 cm, so the receiver is the CAP'S TOP FACE. An upright wall
+  gives `d(s) = s`, so `proximity(0.02)` on the cap top at 1 / 2 / 4 cm from
+  the column's nominal wall predicts 0.5 / 0 / 0, each measured within 0.05;
+  and one station 1 cm in front of a FLUTE, where the composite's recessed
+  wall is farther than the nominal cylinder — the measured distance must
+  exceed 1 cm and is recorded, not predicted (this is the station that
+  exercises the subtraction bracket). Harness-only: the cap and floor bind
+  checker/uniform painters, not expression painters, so the beauty crop is a
+  probe-albedo render of a scene COPY (raw `proximity(0.02)` on the cap top),
+  judged honestly, and the tracked scene is not edited;
 - exact σ: `SigmaMin()/SigmaMax()` within 1e-12 of the written reference on
   the rotation, reflection and uniform scale (fast path) and within 1e-9 on
   `(3, 1, 0.4)` and the shear (Jacobi); the `(3, 1, 0.4)` object's search-
@@ -849,8 +893,10 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   an upper bound attained only along the top singular vector);
 - `interior(r)`: 0 on every scene-C probe that lies OUTSIDE its neighbours;
   on the six existing interpenetration probes (box, sphere, capped cylinder,
-  torus, ellipsoid, SDF centres) `min(depth/r, 1)` within 1e-9 of the closed
-  form, and exactly 1 where `r ≤` the depth; inside two overlapping spheres the
+  torus, ellipsoid, SDF centres — depths 1, 1, 1, 0.5, 1, 1) `min(depth/r, 1)`
+  within 1e-9 of the closed form, and exactly 1 where `r ≤` the depth — the
+  ellipsoid row is a lower bound that is tight only at the centre, so its
+  probe stays at the centre and the test says so; inside two overlapping spheres the
   larger depth; a mesh neighbour contributes 0; a computed radius is accepted;
   the parse diagnostic names a world length for `interior`; an `interior`-only
   scene builds the eager snapshot (demand covers it); the memo keys/L1 rows
@@ -858,10 +904,12 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   asserted and the bytes printed; `TextureExpressionVMTest` 846/846;
 - `add_wear` with `contact_radius`: refuses on a body that already reads
   `proximity`/`interior`; with a radius, the written body calls
-  `proximity(<radius>)` exactly once as an additive mask, a flat box receiver
-  is accepted as a candidate, and the scene derives; `contact_radius 0` is
-  byte-identical to today's output; `AgentAddWearTest` extended; the MCP and
-  chat tool counts unchanged (43 / 38).
+  `proximity(contact_r)` exactly once as an additive mask on the crevice
+  endpoint, a flat box receiver is accepted from the barren list, and the
+  scene derives; `contact_radius 0` is byte-identical to today's output
+  INCLUDING the conditions scan's counts, kinds and decline messages;
+  `AgentAddWearTest` extended; the MCP and chat tool counts unchanged
+  (43 / 38).
 
 Each phase runs the implementation-review-loop to zero P1 before merge.
 
@@ -1818,7 +1866,10 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
   hit sits exactly at capacity and a fifth collapses the round-robin set to ~0 %
   — a cliff, not a slope. Eight ways would blow the 2048-byte TLS ceiling
   (already 1824 B). Wave 2's L1 hit-rate gate measures this on `plank_closeup`,
-  which makes three distinct queries per hit — one under capacity.
+  which makes three distinct queries per hit — one under capacity. Phase 3
+  (§5.6) raises `kL1Ways` to 8 with `interior` as a fifth kind and lifts the
+  asserted ceiling to 4096 B (~2432 B used); the cliff moves to a ninth
+  distinct query, it does not disappear.
 - **Emissive objects never count**, including decorative ones (a lava pool, a
   glowing rune) that should collect contact; the predicate is per object and
   RISE binds one material per object. Phase 3 if a scene needs it.
@@ -1880,9 +1931,10 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
   neighbour's query** — a sharper statement than "its operands do not count
   separately". `Object::DistanceToSurface` forwards to the geometry and
   `CSGObject` has none, so nothing in the scene can measure its distance to a
-  CSG result. Phase 3's union-min work is what fixes it; until then a scene
-  whose contact surface is a CSG result needs a non-CSG proxy. (Wave 1,
-  2026-09-08.)
+  CSG result. Phase 3's composite queries (§5.6: union-min, and the bracket
+  over `max(f_A, f_B)` / `max(f_A, −f_B)` for intersection and subtraction)
+  are what fix it; until then a scene whose contact surface is a CSG result
+  needs a non-CSG proxy. (Wave 1, 2026-09-08.)
 - **The signal is PT-only more sharply than the first bullet suggests.** The
   channel is stamped by `ObjectManager::IntersectRay`, so EVERY consumer that
   builds its own hit record reads the neutral 0 — `PathVertexEval`, the GUI's
