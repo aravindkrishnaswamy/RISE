@@ -5,15 +5,15 @@ RISE ASCII SCENE 7
 #   File:           weathered_workbench.RISEscene                                                          #
 #   Description:    Textures showcase 1/4 (doc 88 Phase 1+2 arc) -- a wooden workbench with a bolted-on   #
 #                   cast-iron bench vise and a de-tiled diamond-plate tool tray.  The wood top's colour     #
-#                   AND roughness are driven from the SAME expression_painter grain field (ramp_painter     #
-#                   for colour, scalar_painter{painter} bridge for roughness -- gloss follows grain), and   #
-#                   relief_modifier relief_wood (scale 0.25, max_slope 0.30) binds the same field raw to    #
-#                   the top and all four legs, so the grain reads as carved surface, not paint.             #
-#                   scatter_painter scatters oil stains that blend_painter{mode multiply} darkens onto      #
-#                   the wood.  The tool tray is a checker_painter hex-tiled via stochastic_tile_painter to  #
-#                   break its grid repeat -- no tileable photo/scan asset exists in-repo, so this demo      #
-#                   substitutes a procedural checker source to exercise the de-tiling MECHANISM; the        #
-#                   intended use of stochastic_tile_painter is a small tiling photo/scan, per the skill.    #
+#                AND roughness are driven from the SAME expression_painter grain field (ramp_painter        #
+#                for colour, scalar_painter{painter} bridge for roughness -- gloss follows grain), and      #
+#                relief_modifier relief_wood (scale 0.25, max_slope 0.30) binds the same field raw to       #
+#                the top and all four legs, so the grain reads as carved surface, not paint.                #
+#                scatter_painter scatters oil stains that blend_painter{mode multiply} darkens onto         #
+#                the wood.  The tool tray is a checker_painter hex-tiled via stochastic_tile_painter to     #
+#                break its grid repeat -- no tileable photo/scan asset exists in-repo, so this demo         #
+#                substitutes a procedural checker source to exercise the de-tiling MECHANISM; the           #
+#                intended use of stochastic_tile_painter is a small tiling photo/scan, per the skill.       #
 #                                                                                                           #
 #   THE VISE.  Until 2026-09-06 the "iron vise" here was two box_geometry under an isotropic worley3d       #
 #   field reprojected by mapping_painter{projection world} -- and the standing criticism of it was exactly   #
@@ -98,9 +98,21 @@ RISE ASCII SCENE 7
 #                                                                                                           #
 #   -- A RUST STAIN RUNNING OVER INTACT PAINT IS NOT REACHABLE FROM A SINGLE 1-D RAMP, and was dropped      #
 #      rather than faked: a point cannot be both "paint" and "rust" on one axis.  Rust here only grows      #
-#      where the paint is already gone, which is what the physics says anyway.  Grime under the flange      #
-#      ON THE BENCH is out of reach for the opposite reason -- occlusion() is self-occlusion only -- and    #
-#      is deliberately NOT painted on as a decal.                                                           #
+#      where the paint is already gone, which is what the physics says anyway.                              #
+#                                                                                                           #
+#   -- GRIME UNDER THE FLANGE ON THE BENCH WAS "OUT OF REACH -- occlusion() IS SELF-OCCLUSION               #
+#      ONLY", AND THAT IS NO LONGER TRUE.  It was the right refusal at the time: every signal               #
+#      this scene had asked the hit geometry about ITSELF, so the bench top could not see the               #
+#      vise standing on it, and the only alternative was a painted decal.  Since 2026-09-08                 #
+#      `proximity(r)` measures the distance to the nearest surface of any OTHER object, and                 #
+#      the term is real -- see `expr_grain`, which carries it, and note that its radius is a                #
+#      WORLD LENGTH (20 mm) where occlusion's is a fraction of the object.  The measured                    #
+#      profile outward from the flange's touchdown line is in that chunk's own comment.                     #
+#      What is still NOT painted is grime on the FLOOR at the legs' feet: the floor is a                    #
+#      deliberately flat `uniformcolor_painter` (a supporting surface, out of the depth of                  #
+#      interest), and making it an expression painter to carry one dust band is a bigger                    #
+#      change than the band is worth.  The LEG side of that same seam does get the term for                 #
+#      free, since the legs carry `mat_wood_top`.                                                           #
 #                                                                                                           #
 #   Author:         RISE contributors                                                                       #
 #   Birthdate:      2026-08-20                                                                              #
@@ -178,10 +190,46 @@ expression_painter
 	param			grain_across 14.0 min 2 max 40 step 1 label "Grain frequency (across plank)"
 	param			ring_warp 0.35 min 0.0 max 1.5 step 0.05 label "Ring warp strength"
 	param			contrast 2.2 min 1.0 max 5.0 step 0.1 label "Grain contrast"
+	param			flange_grime 0.32 min 0.0 max 1.0 step 0.02 label "Grime where something rests on the bench"
 	seed			4.0
 	def				warp_p vec3(P.x*grain_across + seed, P.y*grain_along + seed*1.7, P.z*grain_along + seed*2.3) + ring_warp*vec3(fbm(P*grain_along+vec3(0,0,0),3,0.5,2.0), fbm(P*grain_along+vec3(5.2,1.3,7.7),3,0.5,2.0), fbm(P*grain_along+vec3(9.1,2.6,4.4),3,0.5,2.0))
 	def				grain fbm(warp_p, 5, 0.55, 2.1)
-	expr			clamp(grain*contrast+0.5, 0, 1)
+
+	# --- THE FLANGE GRIME, and the retraction of this file's own claim that
+	# it could not be had.  The header used to say grime under the vise's
+	# flange "is out of reach ... occlusion() is self-occlusion only".  That
+	# was true of every signal this scene had; it is not true any more.
+	# `proximity(r)` measures the distance from this hit to the nearest
+	# surface of any OTHER object -- 1 at touching, 0 at `r` -- so the bench
+	# top can finally see the vise sitting on it.
+	#
+	# ITS RADIUS IS A WORLD LENGTH, unlike `occlusion`'s per-object fraction:
+	# `proximity(0.02)` is 20 mm, on this bench or any other.  20 mm is set
+	# from the flange's own geometry.  The flange is a `roundbox` with
+	# half-extents (0.195, 0.021, 0.172) m and an 18 mm rounding, so its flat
+	# underside stops 18 mm inside the nominal edge and the last 18 mm is a
+	# quarter-round lifting away from the bench.  Measured on the bench top
+	# with the query itself, outward from that touchdown line at the middle
+	# of each of the four sides: 0.042 mm of separation at the line, 0.56-0.97
+	# mm at 5 mm out, 8.7-9.3 mm at 20 mm and 20.6-21.9 mm at 35 mm -- so a
+	# 20 mm radius saturates under the lip, is a little past half way out at
+	# 20 mm, and has died before the grime could reach clean bench.
+	#
+	# IT IS SUBTRACTIVE HERE, unlike plank_closeup's, because this ramp runs
+	# DARK heartwood -> PALE sapwood: grime darkens, so it takes the field
+	# down.  The magnitude follows the vise's own grime (`grime_crev 0.16`,
+	# also a subtractive offset) rather than being invented, at twice it,
+	# because the vise's term rides an already-dark crevice and this one has
+	# to work on open bench.  `fgb` breaks it up at ~25 mm so the ring hugging
+	# the flange is patchy rather than a drawn outline -- the failure the
+	# chips section below records for `curv`.  NOTE the 0.85 centre on that
+	# multiplier: `fbm` is SIGNED and zero-mean here, so a multiplier written
+	# `0.45 + 1.35*fgb` would average 0.45, not 0.9.
+	def				contact proximity(0.02)
+	def				fgb fbm(vec3(P.x*40.0, P.y*40.0, P.z*40.0) + vec3(seed*1.9, 8.0, 2.0), 3, 0.5, 2.0)
+	def				flange clamp(contact*(0.85 + 1.5*fgb), 0, 1)
+
+	expr			clamp(grain*contrast+0.5 - flange_grime*flange, 0, 1)
 }
 
 # CONSUMER 1 -- colour: dark heartwood -> pale sapwood.
@@ -202,11 +250,44 @@ ramp_painter
 # 0.05 (dark grain/polished) .. 0.47 (pale sapwood/weathered) -- gloss follows grain.
 scalar_painter
 {
-	name			sp_wood_rough
+	name			sp_grain_rough
 	painter			expr_grain
 	channel			R
 	scale			0.42
 	bias			0.05
+}
+
+# CONSUMER 2b -- the flange grime's roughness, which needs its own bridge
+# for a reason worth writing down.  The bridge above has a POSITIVE scale:
+# the field's high end is pale weathered sapwood, which is the ROUGH end,
+# and its low end is dark polished grain.  The grime term SUBTRACTS from
+# the field (it darkens), so through that bridge it would come out
+# SMOOTHER -- a polished ring around the vise, the opposite of dirt.  One
+# bridge cannot give one field two signs, so the contact term gets its own
+# additive scalar and the sum is what the material binds.  `contact` is
+# still one definition; it is the SIGN of the bridge that forks.
+#
+# +0.13 at a saturated seam, against the 0.05-0.47 the grain occupies, so
+# the grime reads as a distinctly duller ring without leaving the band.
+# The breakup is the SAME `fgb` construction as the colour term's, so the
+# dull patches and the dark patches coincide -- one deposit of dirt, not
+# two independent noises.
+scalar_painter
+{
+	name			sp_flange_rough
+	param			flange_rough 0.13 min 0.0 max 0.4 step 0.01 label "Flange-grime roughening"
+	seed			4.0
+	def				contact proximity(0.02)
+	def				fgb fbm(vec3(P.x*40.0, P.y*40.0, P.z*40.0) + vec3(seed*1.9, 8.0, 2.0), 3, 0.5, 2.0)
+	expression		flange_rough*clamp(contact*(0.85 + 1.5*fgb), 0, 1)
+}
+
+scalar_painter
+{
+	name			sp_wood_rough
+	add				sp_grain_rough sp_flange_rough
+	weight_a		1.0
+	weight_b		1.0
 }
 
 # CONSUMER 3 -- RELIEF (docs/RELIEF_MODIFIER_DESIGN.md Phase 5): the SAME
@@ -745,10 +826,17 @@ standard_object
 # +Y up, +Z out along the screw axis, origin on the flange's underside, so
 # the object below simply drops local y = 0 onto the bench top at y = 0.91.
 #
-#  1  base flange              roundbox, 390 x 28 x 344 mm, 12 mm arris
+#  1  base flange              roundbox, 390 x 42 x 344 mm, 18 mm rounding -- half-extents
+#                              (0.195, 0.021, 0.172) m, and RISE's `roundbox` INSETS the
+#                           rounding, so those ARE the outer half-extents.  The header                      #
+#                           said "28 x ... 12 mm arris" until 2026-09-08; both numbers                      #
+#                           were wrong against this line.  The 18 mm quarter-round on a                     #
+#                           21 mm half-height is what puts the flange's touchdown line                      #
+#                           18 mm INSIDE the nominal edge, which is where the grime                         #
+#                           profile in `expr_grain` is measured from.                                       #
 #  2  cast body                roundbox, smin k 30 mm to the flange -- the
 #                              fillet a casting is drawn with, and the flat
-#                              top behind the jaw is the anvil pad
+#                           top behind the jaw is the anvil pad                                             #
 #  3  fixed rear jaw           roundbox, smin k 24 mm, rising out of 2
 #  4  slide bar                box, HARD union: a machined member meets a
 #                              casting at an edge, never at a fillet
