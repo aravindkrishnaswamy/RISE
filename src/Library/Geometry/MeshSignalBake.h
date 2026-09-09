@@ -19,13 +19,19 @@
 //                             §Known Exceptions).
 //
 //  WHY LAZY, restated where the code is: these signals are read ONLY
-//  from material shading, and the agent's `quality:"draft"` preview
-//  executes no material shading at all.  A bake at the Realize seam
-//  would therefore be paid by whichever render came first -- very often
-//  a draft preview that can never display it.  Building on first
-//  production READ makes draft bake-free BY CONSTRUCTION rather than by
-//  assertion.  MeshSignalBake::BuildCounter() exists so a test can
-//  prove that claim instead of restating it.
+//  from material shading, so a bake at the Realize seam would be paid by
+//  whichever render came first, whether or not that render's materials
+//  ever query a signal.  Building on first READ makes the bake fire
+//  exactly once, and only when some shading actually asks.  CORRECTED
+//  2026-09-08: an earlier draft of this comment claimed the agent's
+//  `quality:"draft"` preview "executes no material shading at all" and
+//  was therefore bake-free by construction; that is false -- draft
+//  shades every hit with the material's own BSDF under a fixed studio
+//  rig (InteractivePelRasterizer's PreviewPel), so a draft render of a
+//  signal-consuming mesh material DOES reach this bake, once.  What
+//  laziness buys is "once, on demand", not "never in draft".
+//  MeshSignalBake::BuildCounter() exists so a test can prove the
+//  once-on-demand claim instead of restating it.
 //
 //  Tabs: 4
 //

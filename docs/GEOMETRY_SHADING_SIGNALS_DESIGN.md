@@ -801,10 +801,11 @@ in the agent edit loop that first render is very often a `quality:"draft"`
 preview. Draft would then pay for a bake whose output it can never display,
 because the draft pipeline ignores all authored **lighting** — a fixed
 synthetic studio rig stands in for it, not the scene's own lights
-(`AgentMcpAdapter.cpp`, `AgentSession.h`). **Draft still evaluates each
-material's diffuse albedo** (`InteractiveMaterialPreviewShader::MaterialAlbedo`
-→ `GGXBRDF::albedo` → `pDiffuse->GetColor(ri)`), so a signal-consuming
-expression painter DOES run under draft, at 1 spp — this section's original
+(`AgentMcpAdapter.cpp`, `AgentSession.h`). **Draft still shades each hit
+with the material's own BSDF** — `InteractiveMaterialPreviewShader::PreviewPel`
+evaluates `bsdf->value()` under a fixed studio rig, and `MaterialAlbedo` →
+`GGXBRDF::albedo` → `pDiffuse->GetColor(ri)` — so a signal-consuming
+expression painter DOES run under draft, at low sample count — this section's original
 "draft never executes material shading" premise below was wrong (see
 [CROSS_OBJECT_PROXIMITY_DESIGN.md](CROSS_OBJECT_PROXIMITY_DESIGN.md) §8.2,
 found and the descriptor strings corrected 2026-09-08).
@@ -818,7 +819,7 @@ for the same structural reason it is correct for SSS: **the signal is only ever
 read from material shading, and the bake builds only if and when that shading
 actually queries it.** It is honest to note that lazy alone does NOT make
 draft bake-free *by construction* the way this section originally claimed:
-because draft evaluates diffuse albedo, a scene whose first render is a
+because draft shades materials, a scene whose first render is a
 `quality:"draft"` preview of a signal-consuming mesh material still triggers
 `MeshSignalBakeCache::FindOrBuild` on that draft render — the gate is "first
 render that shades the material", not "first *production* render", and draft
@@ -1402,11 +1403,11 @@ the sharpest argument for consumption-gating M3 and for putting the SDF
 
 **Which render pays.** Two mechanisms, both needed: consumption gating decides
 *whether* a bake ever happens, and the §7.3 lazy build decides *which render*
-pays. With both, a mesh bake fires **once per geometry, at first production
-shading access** — never during a `quality:"draft"` preview, which executes no
-material shading at all. The gate alone would not have sufficed: it would still
-have let the first render after authoring a signal-consuming material (very
-often a draft preview) pay for a bake it could not display. If the eager
+pays. With both, a mesh bake fires **once per geometry, at first shading
+access that queries it** — which, corrected 2026-09-08, INCLUDES a
+`quality:"draft"` preview (draft shades materials under a fixed studio rig;
+see §7.3). The gate alone would not have sufficed: it would still have let a
+render whose materials never query a signal pay for a bake. If the eager
 `Realize`-seam alternative is taken instead, that draft cost is real and must
 be accepted knowingly.
 

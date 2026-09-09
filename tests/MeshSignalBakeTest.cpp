@@ -10,11 +10,11 @@
 //  What this pins, and why each one is here:
 //
 //    (a) LAZINESS, proved by counter rather than asserted.  Building a
-//        mesh and firing thousands of rays at it builds NOTHING.  This
-//        is the mechanical half of the draft-mode guarantee: draft
-//        renders execute no material shading, so they reach no
-//        expression, so they reach no provider -- and a bake that only
-//        exists on provider READ therefore cannot fire.
+//        mesh and firing thousands of rays at it builds NOTHING: a bake
+//        exists only on provider READ, so intersection alone -- however
+//        many hits -- cannot fire it.  (An earlier version of this
+//        comment called this "the draft-mode guarantee"; that was wrong,
+//        draft DOES shade materials, see MeshSignalBake.h's header.)
 //    (b) The first painter-driven query builds EXACTLY ONE table, and
 //        every later query on the same (geometry, radius) builds none.
 //    (c) Eight threads racing the first query still build exactly one:
@@ -255,11 +255,11 @@ static void TestIntersectionBuildsNothing()
 	mesh->release();
 	o->FinalizeTransformations();
 
-	// Thousands of hits, exactly as a render would produce them -- and
-	// exactly as a `quality:"draft"` preview produces them, because draft
-	// differs from a production render only in what it does AFTER the hit
-	// (it ignores authored materials entirely, so it never evaluates an
-	// expression, so it never reaches a provider).
+	// Thousands of hits, exactly as a render would produce them BEFORE
+	// any shading: intersection alone never reaches a provider, so no
+	// bake can fire here.  (This is NOT a draft-mode guarantee -- a
+	// `quality:"draft"` preview shades materials with their BSDF under a
+	// fixed studio rig and can reach a provider; see MeshSignalBake.h.)
 	int hits = 0;
 	for( int i = 0; i < 40; ++i ) {
 		for( int j = 0; j < 40; ++j ) {
