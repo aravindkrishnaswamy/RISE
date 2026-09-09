@@ -126,7 +126,10 @@
 //
 //  AND THE MEMO-ELIGIBILITY THRESHOLD MOVED WITH THE KEY.
 //  `ProgramKey::kFields` went 29 -> 35 when SignalHitKey took the four
-//  cross-object fields, and Builder::ComputeMemoWorthiness reads that
+//  cross-object MEMBERS (`pScene`, `pSelf`, `ptWorld`, `time` -- six
+//  COMPARED fields once `ptWorld` is counted as its three doubles: see
+//  SignalHitKey::kFields below, which is the number that actually sums into
+//  this one), and Builder::ComputeMemoWorthiness reads that
 //  number as its instruction-count gate.  So a body of 29..34
 //  instructions with NO signal call and NO noise call stops qualifying.
 //  Perf-only and bit-identical by construction (the memo returns what the
@@ -578,10 +581,12 @@ namespace RISE
 			bool Equals( const SignalHitKey& o ) const
 			{
 				// `pScene` / `pSelf` / `ptWorld` are compared LAST, after
-				// the own-surface fields, on purpose: within one hit the
-				// four cross-object fields are CONSTANT (they describe the
-				// hit, not the query), so they decide a mismatch almost
-				// never and belong past the fields that do.
+				// the own-surface fields, on purpose: within one hit the four
+				// cross-object MEMBERS (pScene, pSelf, ptWorld, time -- six
+				// COMPARED fields once ptWorld's wx/wy/wz are counted
+				// separately, matching kFields above) are CONSTANT (they
+				// describe the hit, not the query), so they decide a mismatch
+				// almost never and belong past the fields that do.
 				return pProvider == o.pProvider
 					&& ptx == o.ptx && pty == o.pty && ptz == o.ptz
 					&& primId == o.primId
