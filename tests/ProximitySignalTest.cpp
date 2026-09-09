@@ -480,9 +480,28 @@ static void TestBoundedFamilies( const Fixture& f )
 	// --- HEIGHTFIELD-MODE SDF REFUSES.  Its field is divided by a single
 	// global Lipschitz bound, so the probe would step by a systematically
 	// wrong length; refusing is the honest answer.
+	//
+	// ASKED OF THE OBJECT DIRECTLY, not through the manager -- the same
+	// reason the non-coplanar clipped-plane check in (c) does.  A manager
+	// probe at (66, 0, 0) with r = 5 also has `n_sdf_composed` in range
+	// (4.83 away, and it is the object whose own probe budget the manager
+	// answer would then be reporting on), so a green manager probe could
+	// mean "the heightfield refused" OR "the composed SDF ran out of
+	// budget" -- different facts, and only one of them is under test here.
 	{
-		const Scalar d = Probe( f, Point3( 66, 0, 0 ), f.floorObj, Scalar( 5 ) );
-		Check( d < Scalar( 0 ), "(b) a heightfield-mode SDF REFUSES (reads far)" );
+		IObjectPriv* hf = f.Obj( "n_sdf_heightfield" );
+		Check( hf != 0, "(b) the heightfield fixture exists" );
+
+		Scalar d = Scalar( 0 );
+		Check( hf && !hf->DistanceToSurface( Point3( 66, 0, 0 ), Scalar( 5 ), d ),
+			"(b) MONEY -- a heightfield-mode SDF REFUSES when asked directly" );
+
+		// TEETH: an ordinary-mode SDF at the same radius ANSWERS, so the
+		// refusal is heightfield mode and not the SDF family as a whole.
+		// `n_sdf_sphere` is the exact-field fixture checked above.
+		IObjectPriv* ok = f.Obj( "n_sdf_sphere" );
+		Check( ok && ok->DistanceToSurface( Point3( 54, 0, 0 ), Scalar( 5 ), d ),
+			"(b) ...teeth: an ordinary-mode SDF at the same radius answers" );
 	}
 }
 
@@ -567,10 +586,15 @@ static void TestExclusions( const Fixture& f )
 		Check( dRaw < Scalar( 0 ), "(c) a non-indexed RAW mesh REFUSES" );
 	}
 
-	// --- A NON-COPLANAR CLIPPED PLANE REFUSES, while its coplanar twin is
-	// exact (checked in (a)).  The skew quad is a genuine bilinear patch;
-	// answering with the flat quad's distance could be SMALLER than the
-	// truth, which is the forbidden direction.
+	// --- A NON-COPLANAR CLIPPED PLANE REFUSES, and so does a COPLANAR
+	// NON-CONVEX one, while the coplanar convex twin is exact (checked in
+	// (a)).  Both refusals are the same fact: this class traces the
+	// BILINEAR PATCH through its four corners, and answering with the flat
+	// POLYGON's distance is only right when the patch's image IS that
+	// polygon -- which needs coplanarity AND convexity.  A skew quad is
+	// genuinely curved; a coplanar DART folds, so over its reflex lobe the
+	// polygon form reports |h| while the surface is further away.  Both
+	// would be SMALLER than the truth, the forbidden direction.
 	{
 		// Asked of the OBJECT directly, not through the manager: what is
 		// under test is the FAMILY's refusal, and a manager probe would
@@ -579,17 +603,29 @@ static void TestExclusions( const Fixture& f )
 		// near", which are different facts.
 		IObjectPriv* skew = f.Obj( "n_quad_skew" );
 		IObjectPriv* flat = f.Obj( "n_quad" );
-		Check( skew && flat, "(c) both clipped-plane fixtures exist" );
+		IObjectPriv* dart = f.Obj( "n_quad_dart" );
+		Check( skew && flat && dart, "(c) all three clipped-plane fixtures exist" );
 
 		Scalar d = Scalar( 0 );
 		Check( skew && !skew->DistanceToSurface( Point3( 36, 0, 0 ), Scalar( 5 ), d ),
 			"(c) MONEY -- a NON-coplanar clipped plane refuses (it is a bilinear patch)" );
 
-		// TEETH: its coplanar twin, four corners of the same size and at
-		// the same height, answers -- so the refusal is the coplanarity
-		// test and not the clipped-plane family as a whole.
+		// AND THE DART.  Its corners are all at y = 2.5, so it passes the
+		// coplanarity test outright; what disqualifies it is that the
+		// bilinear image of a NON-CONVEX planar quad is a proper subset of
+		// the polygon, so the polygon form under-reports over the reflex
+		// lobe.  The probe sits below the fixture, where the polygon form
+		// would have answered 2.5 -- exactly the wrong number to accept.
+		Check( dart && !dart->DistanceToSurface( Point3( 132, 0, 0 ), Scalar( 5 ), d ),
+			"(c) MONEY -- a COPLANAR but NON-CONVEX clipped plane (a dart) refuses too: "
+			"coplanarity alone does not make the polygon form exact" );
+
+		// TEETH: the coplanar CONVEX twin, four corners of the same size
+		// and at the same height, answers -- so the two refusals above are
+		// the coplanarity and convexity tests, not the clipped-plane family
+		// as a whole going quiet.
 		Check( flat && flat->DistanceToSurface( Point3( 30, 0, 0 ), Scalar( 5 ), d ),
-			"(c) ...teeth: the COPLANAR twin answers" );
+			"(c) ...teeth: the COPLANAR CONVEX twin answers" );
 		CheckClose( d, Scalar( 2.5 ), Scalar( 1e-9 ), "(c) ...with its closed form, 2.5" );
 	}
 
@@ -697,7 +733,13 @@ static void TestTransform( const Fixture& f )
 
 		// TEETH: the same object at a NON-degenerate scale does answer, so
 		// the refusal above is the degeneracy and not the geometry.
-		Object* fine = new Object( new SphereGeometry( Scalar( 1 ) ) );
+		//
+		// The geometry is released exactly as `flat`'s is above: `Object`'s
+		// constructor addrefs it, so the constructing reference is ours to
+		// drop and `new Object( new SphereGeometry(1) )` leaks it.
+		SphereGeometry* g2 = new SphereGeometry( Scalar( 1 ) );
+		Object* fine = new Object( g2 );
+		g2->release();
 		fine->SetStretch( Vector3( Scalar( 1 ), Scalar( 1 ), Scalar( 1 ) ) );
 		fine->FinalizeTransformations();
 		Check( fine->DistanceToSurface( Point3( 0, 5, 0 ), Scalar( 10 ), d ),
@@ -734,6 +776,15 @@ static void TestTransform( const Fixture& f )
 //! Built through the API rather than on scene C: what is under test is the
 //! manager's own freshness, and scene C has far more than four objects, so it
 //! could not exercise the regime the hazard lives in.
+//!
+//! NOTE ON WHAT `PrepareForRendering` DOES HERE.  Since the demand gate
+//! shipped, the EAGER snapshot build is skipped when no live painter calls
+//! `proximity()` -- which is the case in this API-built fixture -- so the
+//! first `NearestOtherSurface` below takes the LAZY build under the tree
+//! mutex instead.  That is deliberate coverage, not an accident: it means
+//! this section exercises the lazy path and the count-check path in one
+//! sequence, and the property under test (an added object is seen with no
+//! invalidate) is independent of which of the two built the snapshot.
 static void TestSnapshotFreshnessOnAdd()
 {
 	std::cout << "(g) an object added after PrepareForRendering is visible to the query" << std::endl;

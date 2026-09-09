@@ -54,10 +54,11 @@ RISE ASCII SCENE 7
 #                      centre the distance is 2; past its rim it is the
 #                      hypotenuse of the axial drop and the rim overshoot.
 #
-#   n_quad             Coplanar clipped plane, a 2 x 2 square lying flat at
-#                      y = 2.5, centred at (30, 2.5, 0).  EXACT: every
-#                      `rect_light` panel and every hand-authored quad is
-#                      coplanar, which is the case that must work.
+#   n_quad             Coplanar CONVEX clipped plane, a 2 x 2 square lying
+#                      flat at y = 2.5, centred at (30, 2.5, 0).  EXACT:
+#                      every `rect_light` panel and every hand-authored
+#                      quad is a coplanar convex quad, which is the case
+#                      that must work.
 #
 #   n_quad_skew        The SAME four corners with one lifted 0.4 out of the
 #                      plane, at (36, 2.5, 0).  It is then a genuine
@@ -66,6 +67,19 @@ RISE ASCII SCENE 7
 #                      answer with the flat quad's distance, which could be
 #                      SMALLER than the truth and paint contact that is not
 #                      there.
+#
+#   n_quad_dart        A COPLANAR but NON-CONVEX quad (corners
+#                      (-1,-1), (1,-1), (0,-0.2), (-1,1) in the plane; the
+#                      third is reflex), at (132, 2.5, 0).  Coplanarity is
+#                      NOT sufficient: this class traces the BILINEAR PATCH
+#                      through its corners, and only for a CONVEX planar
+#                      quad is that patch's image the polygon the corners
+#                      outline.  Over a dart's reflex lobe the polygon form
+#                      would report |h| where the real surface is further
+#                      away -- an UNDER-report, contact painted where there
+#                      is none.  So it must REFUSE too, and the test's
+#                      teeth are that its convex twin at (30, 2.5, 0) still
+#                      answers exactly.
 #
 #   n_torus            Torus, major 1.5 / minor 0.5 (ring in XZ, tube along
 #                      Y -- the engine's own convention), centred at
@@ -602,4 +616,21 @@ standard_object
 	material		m_plain
 	position		126 3 0
 	scale			0.01 0.01 0.01
+}
+
+clippedplane_geometry
+{
+	name			g_quad_dart
+	pta				-1 0 -1
+	ptb				 1 0 -1
+	ptc				 0 0 -0.2
+	ptd				-1 0  1
+}
+
+standard_object
+{
+	name			n_quad_dart
+	geometry		g_quad_dart
+	material		m_plain
+	position		132 2.5 0
 }
