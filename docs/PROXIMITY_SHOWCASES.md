@@ -1,7 +1,12 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised sixteen times the same day after
-adversarial rounds (round 16, 3 P1s, the same family: no light named a
+Status: SPEC, 2026-09-10, revised seventeen times the same day after
+adversarial rounds (round 17, 2 P1s: no camera was named, so the
+overhead-probe setters would have no-op'd and every tidal station read
+through the water at 53°; the fills were `ambient_light` chunks, which
+`SCENE_CONVENTIONS.md` §3.5 forbids authoring and the agent surface
+refuses — dropped, the key is each path-traced scene's only light.
+Round 16, 3 P1s, the same family: no light named a
 `color` (default black); no scene named a `file_rasterizeroutput` and
 showcase 1's carried one would overwrite the pavilion's render; the
 probe's light-erase was unscoped and would have blinded showcase 1's
@@ -159,7 +164,15 @@ rasterizers). The painter stations below prove it anyway.
   `LoadSceneD` does. The rasterizer and `film` chunks are UNNAMED, so
   `DocFindByName` cannot address them: the test enumerates
   `DocItemCount` / `DocNodeIdAt` / `DocResolveNodeId` and matches the
-  item's role (ending in `_rasterizer`; equal to `film`). The setter list
+  item's role (ending in `_rasterizer`; equal to `film`). Every camera
+  chunk carries `name beauty_cam` (a camera's `name` defaults to
+  `default`, allocated at Finalize and never present in the CST text, so
+  an unnamed camera is unaddressable and the overhead-probe re-pointing
+  would silently no-op), resolved by
+  `DocFindByName("thinlens_camera/beauty_cam")`. EVERY `DocFindByName` /
+  `DocIndexOfNodeId` result is asserted non-zero before the setter that
+  uses it — `DocSetOrAddParamValue` on an absent chunk returns the
+  document unchanged, not an error. The setter list
   for the rasterizer chunk is `oidn_denoise FALSE` AND `samples 512` (the
   shipped scenes render at fewer). The black-out is scoped per showcase: showcase 1
   renders under the direct-only `pixelpel_rasterizer`, where the ratio is
@@ -178,28 +191,21 @@ rasterizers). The painter stations below prove it anyway.
   painter reference (an inline `0 0 0` fails to resolve and the derive
   diagnostic fires), and its default `none` is the painter
   `InitializeContainers` registers as uniform (0, 0, 0). Relief modifiers
-  stripped, AND — in showcases 2 and 3 ONLY — erase the `ambient_light`
-  fill with `Cst::DocEraseChunkTidy`, leaving the `omni_light` key as the
-  sole light; each erase resolves `DocFindByName("ambient_light/<name>")`
-  (the fills carry a `name`; an unnamed chunk is unaddressable) →
-  `DocIndexOfNodeId` on the CURRENT document (an erase drops one or two
-  items and shifts every later index, like an insert), and the erases run
-  before the inserts. Showcase 1's probe keeps BOTH pavilion omni lights
-  (S1's control depends on `fill_light`, S6's on both) and erases
-  nothing. The fills are `ambient_light` CHUNKS, not a `radiance_map`
-  line on the rasterizer;
-  none of the three scenes carries a `radiance_map` or a relief modifier,
-  and a worker who adds one strips it in the probe with `DocRemoveParam` /
-  `DocEraseChunkTidy` and says so. Why erase: an `ambient_light` is an
-  unshadowed shading-time constant, linear in the receiver's albedo, so
-  by itself it would cancel in the ratio — what it adds is more energy
-  into the receiver → water-underside → receiver return that §2 bounds at
-  the mid-ramp station, and in the beauty it lights the pool bed and the
-  submerged flanks at full strength, un-attenuated by the water (stated
-  in the header). A `radiance_map` would be worse: the water's specular
-  arm would reflect it at R = 0.02 into every submerged pixel of both
-  copies, pulling the ratio toward 1 exactly as the coat would; an omni
-  is a delta light, so the water's specular arm reflects nothing. The
+  stripped. The probe copies keep every light the scene ships — NO light
+  is erased in any showcase: showcase 1's two pavilion omnis (S1's
+  control depends on `fill_light`, S6's on both) and the single pinned
+  `omni_light` key that is each path-traced showcase's ONLY light. No
+  scene carries an `ambient_light` (`docs/SCENE_CONVENTIONS.md` §3.5:
+  never author one — a flat unshadowed constant that path tracing makes
+  redundant — and the agent surface REFUSES the chunk on every route), a
+  `radiance_map` or a relief modifier; a worker who adds a `radiance_map`
+  or a modifier for the beauty strips it in the probe copies with
+  `DocRemoveParam` / `DocEraseChunkTidy` and says so, because an
+  environment seen by the water's specular arm would reflect at R = 0.02
+  into every submerged pixel of both copies, pulling the ratio toward 1
+  exactly as the coat would; an omni is a delta light, so the water's
+  specular arm reflects nothing. With the probe and the beauty lit
+  identically, the ratio argument needs no lighting caveat. The
   probe `expr` is `vec3(x, x, x)` with x the signal def's
   name — `dust` in showcases 1 and 3, `buried` in showcase 2. `SourceHygieneTest` hard-fails
   any test that defines an `IRasterizerOutput` unless the FILE contains
@@ -326,9 +332,11 @@ rasterizers). The painter stations below prove it anyway.
   `color` to `0 0 0`, a light that emits nothing whatever its `power`.
   Every scene ships a `file_rasterizeroutput` (`pattern
   rendered/<scene name>`, `type PNG`, `bpp 8`, `color_space sRGB`, the
-  `plank_closeup` shape) — nothing supplies one by default, §0's probe
-  calls `Job::RemoveRasterizerOutputs()` on it, and the beauty deliverable
-  is written through it; showcase 1 RE-POINTS the carried pavilion
+  `plank_closeup` shape), placed AFTER the rasterizer chunk (it attaches
+  to the active rasterizer; before it, `Job::AddFileRasterizerOutput`
+  hard-fails and the derive diagnostic fires) — nothing supplies one by
+  default, §0's probe calls `Job::RemoveRasterizerOutputs()` on it, and
+  the beauty deliverable is written through it; showcase 1 RE-POINTS the carried pavilion
   output's `pattern` to `rendered/pavilion_colonnade` so it does not
   overwrite the tracked pavilion's render. The shipped `samples` is
   stated per scene (64 in showcase 1; 32, the descriptor default, in
@@ -378,6 +386,7 @@ this is a foot study of marble, floor checker and the columns behind. Camera, ve
 framing rule:
 ```
 thinlens_camera
+  name            beauty_cam
   location        -2.5    0.9452  3.8407
   lookat          -2.4111 0.175   2.7443      # the S1 station
   up              0 1 0
@@ -569,7 +578,9 @@ is unchanged by the 1 mm drop — 36.8° above horizontal, and the
 sightline crosses the water at 53.2° to the WATER's normal — far outside
 §0's 10° rule, hence the overhead probe). Lighting: the key is an
 `omni_light` PINNED at (−0.35, 0.80, 0.45), camera-left and above; a dim
-sky fills (both lights' `color` and `power` under **Lights** below). `pathtracing_pel_rasterizer` (with the `global` `standard_shader`
+it is the scene's ONLY light (`color` and `power` under **Lights** below;
+no fill — indirect off the sand, bed and stones does that job, and
+`ambient_light` is never authored). `pathtracing_pel_rasterizer` (with the `global` `standard_shader`
 chunk, `shaderop DefaultPathTracing`, per §0) with `transparent_shadows
 TRUE` — MANDATORY and recorded in the header: the default is FALSE and
 `RayCaster::CastShadowRayAuto` then runs the binary occlusion test, so
@@ -586,9 +597,8 @@ out. Whether a station is LIT is a separate question of its own normal:
 B4 and stone_b's bottom face away from the key (n·L < 0) and are
 query-only anyway; the stations that carry painter readings do face it —
 B1 (n = +y) at n·L = 0.79 and the four B9 points (n = (sin 25°, cos 25°,
-0)) at n·L = 0.54–0.57 — so their probe controls are not dark. The sky
-fill is the `ambient_light` `sky_fill` (erased in the probe copies). An `omni_light`
-has no geometry and occludes nothing.
+0)) at n·L = 0.54–0.57 — so their probe controls are not dark. An
+`omni_light` has no geometry and occludes nothing.
 
 **Why `interior` and not `proximity`.** A point on a stone below the
 waterline is 1–5 cm from the water's TOP face; `proximity(r)` would paint
@@ -596,12 +606,12 @@ everything under water uniformly (or nothing, past r). `interior(0.02)` =
 clamp(depth/2 cm): 0 above the waterline, a ramp over the first 2 cm, 1
 below — a crisp line AT the waterline and a sheen that saturates 2 cm down.
 
-**Lights.** The key `omni_light` at (−0.35, 0.80, 0.45): `color 1.0
-0.96 0.90` (linear Rec.709, a warm white), `power` chosen by the worker
-for exposure and recorded. The fill `ambient_light` named `sky_fill`:
-`color 0.55 0.65 0.80` (a cool sky), `power` dim (about a tenth of the
-key's contribution at B1, recorded). `samples 32`, the descriptor
-default, stated in the chunk.
+**Lights.** One light: the key `omni_light` named `key` at (−0.35, 0.80,
+0.45), `color 1.0 0.96 0.90` (linear Rec.709, a warm white — the light
+`colorspace` default is linear, no gamma decode), `power` chosen by the
+worker for exposure and recorded. `samples 32`, the descriptor default,
+stated in the chunk. The camera chunk is `thinlens_camera` named
+`beauty_cam`.
 
 **Receivers' recipe.** The five stones share ONE material triple — one
 `coated_material` whose `base` is one `ggx_material` (`fresnel_mode
@@ -745,11 +755,13 @@ fall soft; the bunny's near flank at 0.40 m and the shelf's near edge fall
 soft, stated in the header); the shelf top at the contact vertex is seen
 at 27.2° elevation from 0.547 m, the 2 cm ring at 20 px radial (44.7 px
 tangential × sin 27.2° at 800 px). Lighting: the key is an `omni_light`
-PINNED at (−0.35, 0.45, 0.25), camera-left and above, `color 1.0 0.96
-0.90` (linear Rec.709), its `power` chosen by the worker for exposure and
-recorded; a dim `ambient_light` named `room_fill`, `color 0.60 0.62
-0.66`, fills (erased in the probe copies). `samples 32`, the descriptor
-default, stated in the chunk. From the key, n·L at the shelf's painter
+PINNED at (−0.35, 0.45, 0.25), camera-left and above, named `key`,
+`color 1.0 0.96 0.90` (linear Rec.709, no gamma decode), its `power`
+chosen by the worker for exposure and recorded — the scene's ONLY light
+(no fill: indirect off the wall and shelf does that job, and
+`ambient_light` is never authored). `samples 32`, the descriptor
+default, stated in the chunk; the camera is `thinlens_camera` named
+`beauty_cam`. From the key, n·L at the shelf's painter
 stations is 0.79 (M1p), 0.78 (M1q), 0.80 (M3) — the shadow rays leave
 toward −x, away from the bunny, and the test casts each one against the
 loaded scene and asserts it clear (the bunny, though blacked, still
