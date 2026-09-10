@@ -887,8 +887,9 @@ beside `m_sigmaExact`) — `Exact` (fast path), `Jacobi`
 (converged, ratio = true `σ_max/σ_min`, 7.5 there) and `Loose` (the sweep
 cap hit, Frobenius/det pair, ratio 26.99) — and the print site names the
 state, since a converged and a fallen-back object are otherwise
-indistinguishable at `!m_sigmaExact`) and the degenerate refusal (which runs BEFORE Jacobi on `|det|`, so `σ_min > 0` holds
-after the nudge). Because the chain of inequalities the design rests on must
+indistinguishable at `!m_sigmaExact`) and the degenerate refusal (which runs BEFORE Jacobi on `|det|`; the
+multiplicative widening can still underflow a subnormal `σ_min` to 0, so
+`Object.cpp` re-checks `σ_min > 0` after it rather than assuming). Because the chain of inequalities the design rests on must
 survive rounding, on the Jacobi path the stored `σ_max` is widened UP and
 `σ_min` DOWN. **CORRECTED AT IMPLEMENTATION (§8.4 S2): the widening is
 RELATIVE and condition-scaled (`16 · eps · σ_max/σ_min`, capped at 0.5 — the
@@ -2428,7 +2429,7 @@ Rasterization Time` from the RISE log:
 Both deltas are far under the 2% action threshold, and both run in the
 "way8 nominally faster" direction, which is itself the tell that neither
 difference is a real effect — it is measurement noise on renders whose
-stddev (0.4–2.8%) already exceeds the measured delta (0.1–0.2%). **No
+stddev (0.4–2.8%) already exceeds the measured delta (0.12–0.23%). **No
 per-program `kL1Ways` split was implemented**: the cost the design worried
 about (a linear L1 scan doubling in width on every hit, on every scene)
 does not show up at the wall-clock level even on a scene that never
@@ -2886,7 +2887,10 @@ ones renumbered.
 - Refusing families (RAW meshes, patches, hair, heightfield SDFs; CSG
   composites until Phase 3 — **after it (SHIPPED 2026-09-09)**, an
   intersection/subtraction with a
-  sheet or heightfield-SDF operand, a union of two refusing operands, a bracket with no admitted
+  sheet or heightfield-SDF operand, a union of two refusing operands, an
+  intersection/subtraction farther than the query radius (its bracket still
+  range-refuses and spends the one-shot latch, §8.4's scope note; the
+  unbounded confirm then answers and prints nothing), a bracket with no admitted
   landing in budget, and a seam gradient below 1e-12) read far. An
   intersection/subtraction answers within `[d, d + gap_max]` — never below
   `d` — with `gap = 0` when an exact-operand landing's arm fires, one probe

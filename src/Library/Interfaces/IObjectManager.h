@@ -250,8 +250,9 @@ namespace RISE
 		//! `proximity(r)` texture builtin
 		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
 		//!
-		//! CASTS NO RAY AND EVALUATES NO PAINTER.  It walks a cached
-		//! world-AABB snapshot, asks each surviving candidate for its own
+		//! CASTS NO RAY AND EVALUATES NO PAINTER.  It walks the top-level
+		//! BVH as a point query where one exists (a cached world-AABB
+		//! snapshot on the small-scene fallback), asks each surviving candidate for its own
 		//! closed-form (or bounded) point-to-surface distance in that
 		//! object's own space, and keeps the minimum.  That is what makes
 		//! it safe from every render thread by the same argument
@@ -348,16 +349,17 @@ namespace RISE
 		//!     a box that does not contain the point cannot contain it,
 		//!     and unlike the proximity scan the test is ORDINARY
 		//!     containment with no radius expansion.
-		//!   * IT READS THE AABB SNAPSHOT, NEVER THE TLAS, so on a
-		//!     TLAS-backed scene it is stale in a DIFFERENT way from
-		//!     `NearestOtherSurface`: `EnsureBoxSnapshot` carries an
-		//!     add-detecting entry-count check and the top-level tree does
-		//!     not, so an object added without an invalidate is invisible
-		//!     to the RENDER and to `proximity` but VISIBLE here.  That is
-		//!     the over-paint direction and it is disclosed in the design's
-		//!     §10 rather than fixed -- the tree prunes on "further than
-		//!     the running best", which a MAXIMUM has no use for, so
-		//!     walking it would visit every leaf anyway.
+		//!   * IT READS THE SAME CANDIDATE SOURCE AS `NearestOtherSurface`:
+		//!     the top-level BVH where one exists (`BVH::ForEachContainingPoint`
+		//!     descends only the nodes whose box contains the point -- a
+		//!     containment walk needs no distance prune, so a maximum is as
+		//!     cheap to collect as a minimum) and the AABB snapshot only on
+		//!     the small-scene fallback.  So it is stale EXACTLY as the render
+		//!     and `proximity` are: an object added without an invalidate is
+		//!     invisible to all three until the structure is rebuilt
+		//!     (ProximitySignalTest (g2) pins all three together).  Phase 3's
+		//!     first cut read the count-checked snapshot instead and was
+		//!     visible to the add alone; review round 1 closed that.
 		//!   * IT DOES NOT LOG REFUSALS.  Every SHEET family refuses
 		//!     containment at every point BY DESIGN -- a plane, a disk, an
 		//!     open cylinder, a mesh, a patch and hair have no inside to

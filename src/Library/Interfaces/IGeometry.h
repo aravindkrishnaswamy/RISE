@@ -416,7 +416,7 @@ namespace RISE
 		virtual bool SignedDistanceLower(
 			const Point3& ptObject,			///< [in] Query point, THIS geometry's object space
 			const Scalar maxDistObject,		///< [in] Effort budget in the same space; NOT a range refusal
-			Scalar& outSigned,				///< [out] Signed lower bound, same space: `<0` strictly inside, `>0` strictly outside, `0` no information
+			Scalar& outSigned,				///< [out] Signed lower bound, same space: `<0` strictly inside, `>0` strictly outside, `0` ON the surface (a single primitive promises the two-state form; the tri-state `0 = no information` is IObject's, for a composite's interior seam)
 			bool& outExact					///< [out] TRUE when the magnitude is the exact distance
 			) const
 		{
