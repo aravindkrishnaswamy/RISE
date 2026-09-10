@@ -732,12 +732,28 @@ Scalar TriangleMeshGeometryIndexed::PointTriangleDistance(
 	// carry that same cancellation).  `v` and `w` can then carry a large
 	// RELATIVE error.  What that error is NOT is unbounded or NaN: `denom`
 	// is checked strictly `> 0` above (the only path to a 0/0 divide is the
-	// branch already taken for it), and `q = a + ab*v + ac*w` is a point
-	// built from THIS triangle's own edge vectors -- however wrong `v`/`w`
-	// are, `q`'s displacement from `a` is a linear combination of `ab` and
-	// `ac`, so the worst-case positional error this branch can produce is
-	// bounded by a small multiple of the triangle's OWN size (`|ab|`,
-	// `|ac|`), never an error unrelated to the geometry being queried.
+	// branch already taken for it), so `v = vb/denom` and `w = vc/denom`
+	// are finite.
+	//
+	// "Finite" is not by itself "small", though -- `q = a + ab*v + ac*w`
+	// being a linear combination of THIS triangle's own edge vectors does
+	// NOT, on its own, bound `q`'s displacement from `a` to "a small
+	// multiple of the triangle's own size": `v`/`w` are unclamped ratios,
+	// and if `denom` alone were driven toward 0 by cancellation while
+	// `vb`/`vc` were not, the ratio could grow arbitrarily large. What
+	// actually keeps it bounded is that `va`, `vb`, `vc`, and `denom` are
+	// NOT independent quantities -- they are built from the SAME `d1..d6`
+	// products via a Cramer's-rule identity (`va + vb + vc` is `4 *
+	// Area^2`, i.e. `denom` itself is proportional to the triangle's own
+	// squared area), so a cancellation that shrinks `denom` shrinks
+	// `va`/`vb`/`vc` by the same mechanism -- numerator and denominator
+	// error correlate rather than varying independently, which is why the
+	// ratio stays controlled even when the individual `d1..d6` products do
+	// not. This is EMPIRICALLY SUPPORTED, not algebraically proven here:
+	// no NaN and no blow-up has been observed across 24 orders of
+	// magnitude of triangle degeneracy in the fixture that exercises this
+	// branch, and that empirical boundedness -- not a closed-form error
+	// bound on `v`/`w` -- is what this comment is actually claiming.
 	const Scalar v = vb / denom;
 	const Scalar w = vc / denom;
 	const Point3 q = Point3Ops::mkPoint3( a, ab * v + ac * w );

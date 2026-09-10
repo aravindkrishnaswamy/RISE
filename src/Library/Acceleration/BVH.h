@@ -1091,6 +1091,27 @@ namespace RISE
 		// component.  Guarantees the float box contains the true
 		// double box, so the float traversal can never reject a hit
 		// the double intersection would otherwise have caught.
+		//
+		// THIS IS TRUE FOR A FINITE, IN-RANGE double.  The cast to `float`
+		// happens FIRST, `nextafter` second -- for a `double` whose
+		// magnitude exceeds `FLT_MAX` (~3.4e38), the cast alone overflows to
+		// +-infinity (IEEE round-to-nearest sends anything past the largest
+		// finite `float` there), and `nextafter( -infinity, -FLT_MAX )` (or
+		// the `+infinity`/`FLT_MAX` mirror) does not step 1 ULP OUTWARD from
+		// that -- it steps from an unbounded sentinel to the single nearest
+		// finite `float` in that direction, i.e. exactly `-FLT_MAX` (or
+		// `FLT_MAX`).  For `BoundingBox`'s default (unbounded) construction,
+		// whose `ll`/`ur` are +-`RISE_INFINITY` (== +-`DBL_MAX`, ~1.8e308 --
+		// see `InfinitePlaneGeometry::GenerateBoundingBox`), that is a huge
+		// INWARD snap in absolute terms (~1.8e308 collapsing to ~3.4e38),
+		// the opposite of "outward by 1 ULP".  It stays sound in practice
+		// only because no coordinate this renderer actually queries against
+		// a node box (`PointBoxDistanceF` / the ray slab test) ever
+		// approaches `FLT_MAX` in magnitude -- a box clamped to +-`FLT_MAX`
+		// still behaves as "unbounded enough" for every real scene
+		// coordinate, so the pruning guarantee below holds for the
+		// coordinates this engine handles, not as a fully general claim
+		// about arbitrary `double` inputs.
 		static inline void SetNodeBox( Node& n, const BoundingBox& b )
 		{
 			n.bboxMin[0] = std::nextafter( (float)b.ll.x, -FLT_MAX );
@@ -1766,11 +1787,16 @@ namespace RISE
 		//! so each of them is at least that far -- none of them could have
 		//! lowered `best`.  TWO roundings feed that box-to-point distance,
 		//! and only one of them is a hazard.  The box itself is `float`,
-		//! conservatively rounded OUTWARD by 1 ulp at build (see the class
-		//! header), which can only make the box-to-point distance SMALLER
-		//! than the true one -- can only make the pruning admit a node it
-		//! could have skipped.  Sound in that direction, and it is the only
-		//! one this box ever moves in.  The QUERY POINT `p`, separately,
+		//! conservatively rounded OUTWARD by 1 ulp at build for a finite,
+		//! in-range `double` bound (`SetNodeBox`; see its own comment for
+		//! the one case -- an unbounded/overflowing bound, e.g. an infinite
+		//! plane's default `BoundingBox` -- where the cast overflows to
+		//! infinity first and the "outward by 1 ulp" framing does not
+		//! literally hold, though it stays sound for every coordinate this
+		//! engine actually queries), which can only make the box-to-point
+		//! distance SMALLER than the true one -- can only make the pruning
+		//! admit a node it could have skipped.  Sound in that direction, and
+		//! it is the only one this box ever moves in.  The QUERY POINT `p`, separately,
 		//! stays in full `Scalar` precision end to end (`PointBoxDistanceF`'s
 		//! own doc comment has the fixed history: it used to be cast down to
 		//! `float` first, which rounds to NEAREST and can move the reported
@@ -1949,8 +1975,10 @@ namespace RISE
 	protected:
 		//! Distance from a point to an axis-aligned box, 0 when inside.  The
 		//! bounds are the node's conservative `float` AABB, rounded OUTWARD
-		//! by 1 ulp at build time (`std::nextafter`, see the class header);
-		//! `p` is the query point kept in full `Scalar` precision -- NOT cast
+		//! by 1 ulp at build time for a finite, in-range `double` bound
+		//! (`std::nextafter` in `SetNodeBox`; see its own comment for the
+		//! unbounded/overflowing-bound exception and why it stays sound
+		//! anyway); `p` is the query point kept in full `Scalar` precision -- NOT cast
 		//! down to `float` -- and `lo`/`hi` are WIDENED from `float` to
 		//! `Scalar`, which is always exact (every `float` value is exactly
 		//! representable in `Scalar`/`double`).  So of the two roundings a
@@ -1992,7 +2020,9 @@ namespace RISE
 		//! by `ClosestPointDistance`'s `useElementBoxTest` pre-test.  Unlike
 		//! the node box (a `float` array compacted once at build time and
 		//! rounded outward by 1 ulp to stay conservative under that
-		//! compaction), an element's box here comes fresh from
+		//! compaction -- for a finite, in-range bound; see `SetNodeBox`'s
+		//! own comment for the unbounded/overflowing-bound exception),
+		//! an element's box here comes fresh from
 		//! `ep.GetElementBoundingBox()` on every call and is never stored,
 		//! so there is no compaction step to compensate for: doing the
 		//! whole computation in `Scalar`, on the `Scalar` box the processor
