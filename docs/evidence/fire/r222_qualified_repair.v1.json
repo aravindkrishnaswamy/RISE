@@ -1,0 +1,64 @@
+{
+  "schema": "rise.fire.r222.qualified-eos-repair.v1",
+  "source_commit": "56146e14",
+  "build_id": "7c2570d4bf27f43731346d5f5d34523bdd373e86148247e684762d305e87867f",
+  "kernel_set_sha256": "e246730c19b96cbb3e1db7abe072fa271541efe1594a990f4189e71bc6d0e8ea",
+  "old_kernel_set_sha256": "e938373ec6cd9e0217c04242ad96cd4d46055236e422bd7ad0ea34e164d0a8b2",
+  "scope": "EOS formulation and CPU/Metal owner qualification; no migration or window verdict",
+  "exit_codes": {
+    "temperature_mutants": 0,
+    "termwise_energy": 0,
+    "full_kernel_sweep_and_r190_owner": 0,
+    "full_FireSequenceTest_cpu": 0
+  },
+  "reviews": [
+    {
+      "reviewer": "r222_numerical_review",
+      "scope": "numerical formulation; read-only on 56146e14",
+      "P1": 0,
+      "P2": 0
+    },
+    {
+      "reviewer": "r222_gate_review",
+      "scope": "test integrity and provenance; read-only on 56146e14",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "residual_qualification": [
+    "clean whole-project shipping-build verification remains pending; current strict calibration target is warning-free",
+    "migration must be separately measured and sealed"
+  ],
+  "files": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/executables/FireSequenceTest_56146e14",
+      "sha256": "cfae54c77b448778859aef6de554a1d82b4e7752381cd095e9daa2913c623d90",
+      "bytes": 23343664
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/r222-qualified-build.log",
+      "sha256": "bc3807d522658cfa2e3b5328e156aa92dc14925dd3777b2d7ee28e93a2bc7aca",
+      "bytes": 84
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/temperature.qualified.v1.log",
+      "sha256": "1807ba62eb90e1e6b8ef2986a451481c0fe5899763c4454b802f1e8052ecb4f4",
+      "bytes": 2058
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/energy.qualified.v1.log",
+      "sha256": "88559de73dfe65eebeba0625273f5337c90c7b90c4e2091f408f372a29b44081",
+      "bytes": 23949
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/kernel_sweep.v1.log",
+      "sha256": "1f54dc6cf74f09889c86ee5cab80bc655be68b6ccf4820dbecd2a0a83c4d92aa",
+      "bytes": 960850
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r222_stage_one/cpu_suite.v1.log",
+      "sha256": "1398a12e648736d8a74cc9c2978ff2cb6e1df1a34d594dfa0ea712aad01419b4",
+      "bytes": 33058
+    }
+  ]
+}

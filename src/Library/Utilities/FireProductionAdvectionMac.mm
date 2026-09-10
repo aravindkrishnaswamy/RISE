@@ -3011,6 +3011,18 @@ inline bool eos_state_admissible(device const float* state,device const float* t
    residual=eos_add(residual,term);scale=eos_add(scale,eos_abs(term));}
   if(!eos_within_positive_envelope(eos_abs(residual),scale,p.feasibility))return false;}
  return true;}
+// A lattice-point order is not needed when both rounding-boundary orders are
+// proved. Unresolved boundaries still refuse; no enclosure is enlarged.
+inline bool eos_certify_temperature_bin(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,float T,device atomic_uint* obligations){
+ if(!(T>p.Tmin&&T<p.Tmax))return false;bool valid=true;
+ EOSDD lower=eos_add(eos_dd(T),eos_dd((nextafter(T,-INFINITY)-T)*0.5f)),
+  upper=eos_add(eos_dd(T),eos_dd((nextafter(T,INFINITY)-T)*0.5f)),
+  sensible=eos_dd(state[8u*p.cells+cell]);
+ EOSDD lowerEnergy=eos_energy_dd(state,thermo,p,cell,lower,obligations,valid),
+  upperEnergy=eos_energy_dd(state,thermo,p,cell,upper,obligations,valid);
+ return valid&&eos_order(lowerEnergy,sensible)==-1&&eos_order(upperEnergy,sensible)==1;
+}
 inline bool eos_temperature(device const float* state,device const float* thermo,
  constant EOSParams& p,uint cell,device atomic_uint* obligations,thread float& temperature,
  device const EOSDD* endpoints=nullptr){
@@ -3033,7 +3045,10 @@ inline bool eos_temperature(device const float* state,device const float* thermo
  uint lowerBits=as_type<uint>(p.Tmin),upperBits=as_type<uint>(p.Tmax);
  while(upperBits-lowerBits>1u){uint midpointBits=lowerBits+(upperBits-lowerBits)/2u;
   EOSDD energy=eos_energy_dd(state,thermo,p,cell,eos_dd(as_type<float>(midpointBits)),obligations,valid);
-  if(!valid)return false;int order=eos_order(energy,sensible);if(order==2)return false;
+  if(!valid)return false;int order=eos_order(energy,sensible);if(order==2){
+   float T=as_type<float>(midpointBits);
+   if(!eos_certify_temperature_bin(state,thermo,p,cell,T,obligations))return false;
+   temperature=T;return true;}
   if(order<0)lowerBits=midpointBits;else upperBits=midpointBits;}
  float lower=as_type<float>(lowerBits),upper=as_type<float>(upperBits);
  EOSDD midpoint=eos_add(eos_dd(lower),eos_dd((upper-lower)*0.5f));
@@ -13056,6 +13071,70 @@ kernel void r217_energy_enclosure(device const float* state [[buffer(0)]],
 		const auto* failure=static_cast<const std::uint32_t*>(ReadTrackedMetalBuffer(buffers[6]));
 		const void* values=ReadTrackedMetalBuffer(buffers[4]);if(!failure||*failure||!values)return false;
 		std::memcpy(output.data(),values,sizeof(output));return true;
+	}
+
+	bool EvaluateFireProductionEOSTemperatureMetalDiagnostic(
+		const std::array<float,9>& state,const unsigned int mutant,
+		float& temperature,bool& accepted,std::string& shaderSHA256,std::string* error)
+	{
+		temperature=0.0f;accepted=false;shaderSHA256.clear();
+		if(mutant>3u||!std::all_of(state.begin(),state.end(),[](float x){return std::isfinite(x);}))return false;
+		@autoreleasepool {
+		ResidentTransportMetalContext& context=ResidentTransportContext();
+		if(!context.Valid()){if(error)*error=context.error;return false;}
+		std::array<float,MetalEOSThermochemistryValues> thermo;
+		if(!PackMetalEOSDoubleDoubleThermochemistry(thermo,error))return false;
+		std::string source=std::string("#define RISE_STAGE_TOKENS 1\n")+ResidentTransportMetalContext::Source();
+		if(mutant){const std::string from=mutant==1u?
+			"eos_certify_temperature_bin(state,thermo,p,cell,T,obligations)":
+			(mutant==2u?"eos_order(lowerEnergy,sensible)==-1":"eos_order(upperEnergy,sensible)==1");
+			const std::string to=mutant==1u?"false":
+				(mutant==2u?"eos_order(eos_energy_dd(state,thermo,p,cell,eos_dd(T),obligations,valid),sensible)==-1":
+				"eos_order(eos_energy_dd(state,thermo,p,cell,eos_dd(T),obligations,valid),sensible)==1");
+			const auto pos=source.find(from);
+			if(pos==std::string::npos||source.find(from,pos+from.size())!=std::string::npos){
+				if(error)*error="EOS rounding-bin mutant scope mismatch";return false;}
+			source.replace(pos,from.size(),to);
+		}
+		source+=R"METAL(
+kernel void r222_temperature(device const float* state [[buffer(0)]],
+ device const float* thermo [[buffer(1)]],constant EOSParams& p [[buffer(2)]],
+ device float* output [[buffer(3)]],device atomic_uint* obligations [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;float T=0.0f;
+ bool accepted=eos_temperature(state,thermo,p,0u,obligations,T);
+ output[0]=T;output[1]=accepted?1.0f:0.0f;
+}
+)METAL";
+		shaderSHA256=RISECBOR64::SHA256Hex(RISECBOR64::Bytes(source.begin(),source.end()));
+		MTLCompileOptions* options=[MTLCompileOptions new];
+		if(@available(macOS 15.0,*)){
+			options.mathMode=MTLMathModeSafe;options.languageVersion=MTLLanguageVersion3_2;
+		}else return false;
+		NSError* issue=nil;id<MTLLibrary> library=[context.device newLibraryWithSource:
+			[NSString stringWithUTF8String:source.c_str()] options:options error:&issue];
+		id<MTLFunction> function=[library newFunctionWithName:@"r222_temperature"];
+		id<MTLComputePipelineState> pipeline=function?[context.device
+			newComputePipelineStateWithFunction:function error:&issue]:nil;
+		if(!pipeline){if(error)*error=MetalError("EOS temperature diagnostic compile failed",issue);return false;}
+		MetalResidentEOSParameters p={};p.cells=1u;p.temperatureMinK=300.0f;p.temperatureMaxK=2300.0f;
+		p.feasibilityFactor=static_cast<float>(FireSimulationMethaneRecord::PhysicalV1().AcceptedStateFeasibilityEnvelope().
+			kappaEpsilon32*static_cast<double>(std::numeric_limits<float>::epsilon()));
+		auto upload=[&](const void* data,std::size_t bytes){return [context.device newBufferWithBytes:data
+			length:bytes options:MTLResourceStorageModeShared];};
+		std::uint32_t zero=0u;const id<MTLBuffer> buffers[]={upload(state.data(),sizeof(state)),
+			upload(thermo.data(),sizeof(thermo)),upload(&p,sizeof(p)),
+			[context.device newBufferWithLength:2u*sizeof(float) options:MTLResourceStorageModeShared],upload(&zero,sizeof(zero))};
+		for(id<MTLBuffer> buffer:buffers)if(!buffer)return false;
+		id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+		id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];if(!encoder)return false;
+		[encoder setComputePipelineState:pipeline];
+		for(std::size_t index=0u;index<5u;++index)[encoder setBuffer:buffers[index] offset:0 atIndex:index];
+		Dispatch(encoder,pipeline,1u);[encoder endEncoding];CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+		if([command status]!=MTLCommandBufferStatusCompleted)return false;
+		const float* result=static_cast<const float*>(ReadTrackedMetalBuffer(buffers[3]));
+		if(!result||!std::isfinite(result[0])||(result[1]!=0.0f&&result[1]!=1.0f))return false;
+		temperature=result[0];accepted=result[1]==1.0f;return true;
+		}
 	}
 
 	bool EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(

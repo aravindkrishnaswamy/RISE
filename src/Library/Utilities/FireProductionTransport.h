@@ -1609,6 +1609,13 @@ namespace RISE
 		const std::array<float,9>& state,const std::array<float,2>& temperature,
 		bool reciprocalMutant,std::array<std::array<float,4>,8>& output,
 		std::string& shaderSHA256,std::string* error=0 );
+	//! Qualification-only cold inversion and rounding-bin witness. No candidate
+	//! authority. Mutant 1 restores old lattice refusal; 2/3 corrupt one bin
+	//! boundary to the ambiguous lattice point (each must fail closed).
+	bool EvaluateFireProductionEOSTemperatureMetalDiagnostic(
+		const std::array<float,9>& state,unsigned int mutant,
+		float& temperature,bool& accepted,std::string& shaderSHA256,
+		std::string* error=0 );
 	//! Pinned r217 reproduction witness, not a production acceptance predicate.
 	inline bool FireProductionR217RefusalPhasesValid(const std::array<std::uint32_t,4>& phases,
 		const std::uint32_t finalBitmap)

@@ -860,6 +860,9 @@ namespace
 		std::vector<std::uint64_t> timeStepBits,maximumTemperatureBits,
 			maximumEOSResidualBits;
 		std::vector<std::string> frameDigests;
+		// v2 historical row expectations. Parsing alone is not native execution.
+		std::vector<std::uint64_t> residentAcceptedTimeBits;
+		std::vector<std::string> residentInputRoots,residentPublicationRoots,residentKernels;
 	};
 	struct ResumeEquivalenceTrace
 	{
@@ -1119,7 +1122,9 @@ namespace
 		// Versioned r216 scope: original tier-ten kernel and retained step 792.
 		bool tier10RetainedContinuation=false;
 		bool r217RefusalDiagnostic=false;
+		bool r222RefusalDiagnostic=false;
 		bool r220ResumeProbe=false;
+		bool r221Retained=false;
 		bool hostMemoryResumeStopRED=false;
 		// Synthetic retention is admitted only by the isolated 24-step RSS RED.
 		bool hostMemoryRetentionRED=false;
@@ -3312,9 +3317,13 @@ namespace
 	constexpr const char* R214ProducerBuild="0d7537194b877cdffd248de25eccf52262f824b4f1d4cde5fe035ad1eee52175";
 	constexpr const char* R217CheckpointSHA="7eefb57bfd01f27817d0e245da8293c5ec85c770f0bf157556f20f906865e966";
 	constexpr const char* R216ProducerBuild="81cf8340374423e2c5ae209062c35ed2e7d8a915535051324060c48a1d7cb5a9";
+	constexpr const char* R222CheckpointSHA="e43cd54d2641190d7075738b2b74171da1ed718a1a892dd8c23530d1f702854c";
+	constexpr const char* R221ProducerBuild="bcd03e089a49d1117b693fcc165869e7cfbac32baf66d80a461a5b491028d4c6";
 	constexpr const char* R220CheckpointSHA="4b5bfcbd02ec7c5f472352f739b1b39ee7157b871896efb8b2dc35e708bd8d64";
 	constexpr const char* R220OldBuild="f2ee8ec4cdf43ed7c527dce95718439888561cb70861f99c22f3f5fd4a311609";
 	constexpr const char* R220KernelSHA="e938373ec6cd9e0217c04242ad96cd4d46055236e422bd7ad0ea34e164d0a8b2";
+	constexpr const char* R221CheckpointSHA="f18cac44b71b1fdac106d30d86bcc1efb955ed39ed4edc0a66be912a4130c337";
+	constexpr const char* R221ProtocolSHA="983cfb4975a614a7bee2593c6d0f4536679925911afd0b22a5b2e897d6b04dc2";
 	bool R216KernelAccepted(const std::string& kernel)
 	{
 		return kernel=="d580d078ea083ee18032abfb027271ada9d4d1dabab50b35cb6eb7a503258a0e";
@@ -3337,6 +3346,13 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.r221Retained&&(!persistence.productionMetal||!persistence.resume||
+			resolutionTier!=10.0||DigestFile(persistence.checkpointPath)!=R221CheckpointSHA||
+			persistence.r220ResumeProbe||persistence.r217RefusalDiagnostic||persistence.tier10RetainedContinuation||
+			(persistence.projectedHeunCertificateDiagnostic?
+				(!persistence.isolatedEquivalenceProbe||persistence.isolatedExpectedCheckpointBuildId!=R220OldBuild):
+				(!persistence.sealedProjectedHeunContinuation||persistence.replayProtocolDigest!=R221ProtocolSHA)))){
+			values.structuredError="r221_retained_scope_refused";return values;}
 		if(persistence.r220ResumeProbe&&(!persistence.projectedHeunEOSDiagnostic||
 			!persistence.projectedHeunCertificateDiagnostic||!persistence.isolatedEquivalenceProbe||
 			persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic||
@@ -3353,13 +3369,21 @@ namespace
 			24.0*static_cast<double>(static_cast<float>(0.0016462659696117043)))){
 			values.structuredError="host_memory_retention_red_scope_refused";return values;}
 		const char* refusalOption=std::getenv("RISE_FIRE_REFUSAL_CLAUSES");
-		if((refusalOption&&!persistence.r217RefusalDiagnostic)||
+		if((refusalOption&&!persistence.r217RefusalDiagnostic&&!persistence.r222RefusalDiagnostic)||
 			(persistence.r217RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
 			!persistence.projectedHeunCertificateDiagnostic||!persistence.projectedHeunEOSDiagnostic||
 			persistence.tier10RetainedContinuation||persistence.sealedProjectedHeunContinuation||
 			resolutionTier!=10.0||DigestFile(persistence.checkpointPath)!=R217CheckpointSHA||
 			persistence.isolatedExpectedCheckpointBuildId!=R216ProducerBuild))){
 			values.structuredError="r217_refusal_diagnostic_scope_conflict";return values;
+		}
+		if(persistence.r222RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
+			!persistence.projectedHeunCertificateDiagnostic||!persistence.projectedHeunEOSDiagnostic||
+			persistence.r217RefusalDiagnostic||persistence.r220ResumeProbe||persistence.r221Retained||
+			persistence.tier10RetainedContinuation||persistence.sealedProjectedHeunContinuation||
+			resolutionTier!=10.0||DigestFile(persistence.checkpointPath)!=R222CheckpointSHA||
+			persistence.isolatedExpectedCheckpointBuildId!=R221ProducerBuild)){
+			values.structuredError="r222_refusal_diagnostic_scope_conflict";return values;
 		}
 		const bool oracleComposition=!persistence.oracleCompositionDirectory.empty();
 		if(oracleComposition&&(persistence.productionMetal||persistence.UsesProjectedHeunOwner()||
@@ -3409,7 +3433,7 @@ namespace
 			persistence.projectedHeunCostDiagnostic||persistence.compatibleMomentumDiagnostic||
 			persistence.singleStageFCTDiagnostic||persistence.stopAfterAdditionalAcceptedSteps!=0u||
 			targetTimeS!=3.5||caseDurationS!=3.0||
-			resolutionTier!=(persistence.tier10RetainedContinuation?10.0:8.0)||
+			resolutionTier!=((persistence.tier10RetainedContinuation||persistence.r221Retained)?10.0:8.0)||
 			(persistence.tier10RetainedContinuation&&persistence.replayProtocolDigest!=R216ProtocolSHA)||
 			persistence.productionOnsetStopVelocityMPerS!=15.0)){
 			values.structuredError="resident_r78_continuation_scope_conflict";return values;
@@ -3421,7 +3445,7 @@ namespace
 			!persistence.resume||!persistence.isolatedEquivalenceProbe||
 			persistence.isolatedExpectedCheckpointBuildId.size()!=64u||
 			persistence.isolatedExpectedCheckpointDigest.size()!=64u||
-			persistence.stopAfterAdditionalAcceptedSteps!=8u||persistence.checkpointPath.empty()||
+			persistence.stopAfterAdditionalAcceptedSteps!=(persistence.r221Retained?9u:8u)||persistence.checkpointPath.empty()||
 			persistence.checkpointCadenceWallS!=std::numeric_limits<double>::max()||
 			persistence.killAfterFirstCheckpoint||
 			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
@@ -3429,7 +3453,7 @@ namespace
 			persistence.sealedProjectedHeunReplay||persistence.sealedLegacyMomentumReplay||
 			persistence.projectedHeunCostDiagnostic||persistence.singleStageFCTDiagnostic||
 			persistence.compatibleMomentumDiagnostic||persistence.forceZeroSourceForTest||
-			resolutionTier!=((persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic||persistence.r220ResumeProbe)?10.0:8.0)||caseDurationS!=3.0||caseFramesPerS!=1.0)){
+			resolutionTier!=((persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic||persistence.r222RefusalDiagnostic||persistence.r220ResumeProbe||persistence.r221Retained)?10.0:8.0)||caseDurationS!=3.0||caseFramesPerS!=1.0)){
 			values.structuredError="owner_eos_diagnostic_scope_conflict";return values;
 		}
 		if(persistence.projectedHeunCostDiagnostic&&(!persistence.productionMetal||
@@ -3678,7 +3702,8 @@ namespace
 			identity<<std::setprecision(17)
 				<<"schema "<<(persistence.sealedProjectedHeunContinuation?
 					(persistence.tier10RetainedContinuation?"rise.fire.production.r216_continuation_identity.v2":
-					"rise.fire.production.r211_continuation_identity.v2"):"rise.fire.production.r193_from_zero_identity.v1")<<"\n"
+					(persistence.r221Retained?"rise.fire.production.r221_continuation_identity.v2":
+					"rise.fire.production.r211_continuation_identity.v2")):"rise.fire.production.r193_from_zero_identity.v1")<<"\n"
 				<<"operator "<<(persistence.sealedProjectedHeunReplay?
 					"section_3_7_projected_heun_resident_owner":
 					"ordinary_independent_dual_momentum_resident_step")<<"\n"
@@ -4464,7 +4489,7 @@ namespace
 							++values.productionPhysicalProjectionRetryCount;
 							production=RISE::FireProductionResidentStepResult();error.clear();
 						}
-						if(persistence.r220ResumeProbe&&attemptComputed&&
+						if((persistence.r220ResumeProbe||persistence.r221Retained)&&attemptComputed&&
 							projectedHeunDiagnostics.qualifiedKernelSetSHA256!=R220KernelSHA){
 							error=lastAdvanceError="r220 original kernel set changed";break;}
 						if(!R216AttemptPublicationAccepted(persistence.tier10RetainedContinuation,attemptComputed,
@@ -7783,7 +7808,7 @@ namespace
 	int RunProductionOwnerEOSRefusalChild(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& outputDirectory,const bool certificateDiagnostic=false,
 		const bool tier10Retained=false,const bool r217Diagnostic=false,const bool r220Probe=false,
-		const bool resourceStopRED=false)
+		const bool resourceStopRED=false,const bool r221Probe=false,const bool r222Diagnostic=false)
 	{
 		if(resourceStopRED&&!r220Probe)return 91;
 		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 91;
@@ -7791,19 +7816,23 @@ namespace
 		if(snapshotOption&&(std::strcmp(snapshotOption,"1")!=0||certificateDiagnostic))return 91;
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
-			checkpoint.dimensions!=((tier10Retained||r217Diagnostic||r220Probe)?std::array<std::size_t,3>{{86u,86u,132u}}:
+			checkpoint.dimensions!=((tier10Retained||r217Diagnostic||r220Probe||r221Probe||r222Diagnostic)?std::array<std::size_t,3>{{86u,86u,132u}}:
 			std::array<std::size_t,3>{{69u,69u,106u}}))return 92;
 		const std::string digest=DigestFile(checkpointPath);if(digest.size()!=64u)return 92;
 		const auto inputSidecar=std::filesystem::path(checkpointPath.string()+".payload-v2.json");
 		const std::string sidecarDigest=DigestFile(inputSidecar);
 		if(resourceStopRED&&(!std::filesystem::is_regular_file(inputSidecar)||sidecarDigest.size()!=64u))return 92;
+		if(r221Probe&&(!certificateDiagnostic||tier10Retained||r217Diagnostic||r220Probe||resourceStopRED||
+			digest!=R221CheckpointSHA||checkpoint.acceptedSteps!=826u||checkpoint.producerBuildId!=R220OldBuild))return 92;
 		if(r220Probe&&(!certificateDiagnostic||tier10Retained||r217Diagnostic||
 			digest!=R220CheckpointSHA||checkpoint.acceptedSteps!=835u||checkpoint.producerBuildId!=R220OldBuild))return 92;
 		if(tier10Retained&&(!certificateDiagnostic||digest!=R216CheckpointSHA||
 			checkpoint.acceptedSteps!=792u||checkpoint.producerBuildId!=R214ProducerBuild))return 92;
 		if(r217Diagnostic&&(!certificateDiagnostic||tier10Retained||digest!=R217CheckpointSHA||
 			checkpoint.acceptedSteps!=1165u||checkpoint.producerBuildId!=R216ProducerBuild))return 92;
-		if(certificateDiagnostic&&!tier10Retained&&!r217Diagnostic&&!r220Probe&&(digest!=
+		if(r222Diagnostic&&(!certificateDiagnostic||tier10Retained||r217Diagnostic||r220Probe||r221Probe||resourceStopRED||
+			digest!=R222CheckpointSHA||checkpoint.acceptedSteps!=1952u||checkpoint.producerBuildId!=R221ProducerBuild))return 92;
+		if(certificateDiagnostic&&!tier10Retained&&!r217Diagnostic&&!r220Probe&&!r221Probe&&!r222Diagnostic&&(digest!=
 			"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"||
 			checkpoint.acceptedSteps!=1300u))return 92;
 		if(certificateDiagnostic){
@@ -7824,7 +7853,9 @@ namespace
 		persistence.projectedHeunCertificateDiagnostic=certificateDiagnostic;
 		persistence.tier10RetainedContinuation=tier10Retained;
 		persistence.r217RefusalDiagnostic=r217Diagnostic;
+		persistence.r222RefusalDiagnostic=r222Diagnostic;
 		persistence.r220ResumeProbe=r220Probe;
+		persistence.r221Retained=r221Probe;
 		persistence.hostMemoryResumeStopRED=resourceStopRED;
 		if(certificateDiagnostic){
 			persistence.productionMomentumObservationTimeS=2.1079791976176079;
@@ -7834,7 +7865,7 @@ namespace
 		}
 		persistence.isolatedEquivalenceProbe=true;persistence.checkpointPath=checkpointPath;
 		persistence.isolatedExpectedCheckpointBuildId=checkpoint.producerBuildId;
-		persistence.isolatedExpectedCheckpointDigest=digest;persistence.stopAfterAdditionalAcceptedSteps=8u;
+		persistence.isolatedExpectedCheckpointDigest=digest;persistence.stopAfterAdditionalAcceptedSteps=r221Probe?9u:8u;
 		persistence.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
@@ -7863,12 +7894,12 @@ namespace
 				build.c_str(),executable.c_str(),digest.c_str());
 		}
 		if(!certificateDiagnostic&&setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0)return 92;
-		if(r217Diagnostic&&(setenv("RISE_FIRE_REFUSAL_CLAUSES","1",1)!=0||
+		if((r217Diagnostic||r222Diagnostic)&&(setenv("RISE_FIRE_REFUSAL_CLAUSES","1",1)!=0||
 			setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0))return 92;
-		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,(tier10Retained||r217Diagnostic||r220Probe)?10.0:8.0,
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,(tier10Retained||r217Diagnostic||r220Probe||r221Probe||r222Diagnostic)?10.0:8.0,
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		if(!certificateDiagnostic)unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
-		if(r217Diagnostic){unsetenv("RISE_FIRE_REFUSAL_CLAUSES");unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");}
+		if(r217Diagnostic||r222Diagnostic){unsetenv("RISE_FIRE_REFUSAL_CLAUSES");unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");}
 		const bool unchanged=DigestFile(checkpointPath)==digest&&DigestFile(inputSidecar)==sidecarDigest;
 		std::fprintf(stderr,"%s_END solver_accepted=%d checkpoint_unchanged=%d "
 			"migration_authority=false error=%s\n",diagnosticName,result.succeeded?1:0,unchanged?1:0,
@@ -7892,8 +7923,11 @@ namespace
 		}
 		if(r217Diagnostic)return unchanged&&!result.succeeded&&result.structuredError.find(
 			"stage=0 bitmap=33564800 phase_witness=verified full_witness=verified")!=std::string::npos?0:93;
+		if(r222Diagnostic)return unchanged&&!result.succeeded&&
+			result.acceptedTimeStepHistoryS.size()==1955u&&result.structuredError.find(
+			"stage=1 bitmap=33564800 phase_witness=verified full_witness=verified")!=std::string::npos?0:93;
 		if(certificateDiagnostic)return unchanged&&result.succeeded&&
-			result.acceptedTimeStepHistoryS.size()==checkpoint.acceptedSteps+8u?0:93;
+			result.acceptedTimeStepHistoryS.size()==checkpoint.acceptedSteps+(r221Probe?9u:8u)?0:93;
 		return unchanged&&!result.succeeded&&result.structuredError.find("eos_failure_cell=")!=
 			std::string::npos?0:93;
 	}
@@ -8021,6 +8055,82 @@ namespace
 			DigestFile(outputDirectory/"diagnostic_prefix_outcome.v1").c_str(),result.structuredError.c_str());
 		return complete?0:93;
 	}
+
+	bool RunR221NativeOverlap(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& outputDirectory,const ResumeEquivalenceCertificate& certificate,
+		const std::filesystem::path& certificatePath,std::string& error)
+	{
+		// A caller-provided preauthored transcript cannot occupy this destination.
+		// This direct owner call is mandatory on every launch, never a cached flag.
+		if(std::filesystem::exists(outputDirectory)||
+			RunProductionOwnerEOSRefusalChild(checkpointPath,outputDirectory,
+				true,false,false,false,false,true)!=0){error="native overlap execution refused";return false;}
+		const auto csvPath=outputDirectory/"budgets/maximum_velocity_trajectory.csv";
+		std::ifstream csv(csvPath);
+		if(!ResidentExecutedOverlapRowsMatch(csv,certificate,error))return false;
+		RISECBOR64::Bytes buildRecord;std::string build,executable;
+		if(!CurrentRendererBuildIdentity(buildRecord,build)||
+			!CurrentExecutableDigest(buildRecord,executable,error)||build!=certificate.newBuildId||
+			executable!=certificate.newExecutableDigest||DigestFile(checkpointPath)!=certificate.checkpointDigest){
+			error="native overlap producer/checkpoint identity mismatch";return false;}
+		const auto receiptPath=outputDirectory.parent_path()/"native_overlap_verified.v2";
+		if(std::filesystem::exists(receiptPath)||std::filesystem::is_symlink(receiptPath)){
+			error="native overlap receipt destination occupied";return false;}
+		std::ofstream receipt(receiptPath);
+		receipt<<"schema rise.fire.native-overlap-verified.v2\n"
+			<<"authority direct_native_owner_execution_not_caller_authored_log\n"
+			<<"checkpoint_sha256 "<<certificate.checkpointDigest<<"\ncertificate_sha256 "<<DigestFile(certificatePath)<<'\n'
+			<<"producer_build_id "<<build<<"\nproducer_executable_sha256 "<<executable<<'\n'
+			<<"accepted_steps "<<certificate.acceptedStepCount<<"\nresumed_from_step "<<certificate.resumedFromStep<<'\n'
+			<<"actual_trajectory_sha256 "<<DigestFile(csvPath)<<"\nall_exact_times_and_roots_match true\n";
+		if(!ClosePublishedStream(receipt)||!PublishPayloadMerkleSidecar(receiptPath,
+			"c0ace3766badb67e6a775d9fe26e9bbe063e72af539944f6f1ba0698d3173651",error)){
+			error="native overlap receipt publication failed";return false;}
+		std::fprintf(stderr,"R221_NATIVE_OVERLAP verified=1 actual_steps=%llu onward_production_authorized=1\n",
+			static_cast<unsigned long long>(certificate.acceptedStepCount));
+		return true;
+	}
+
+	bool R221NativeOverlapREDs(const std::filesystem::path& certificatePath,
+		const std::filesystem::path& csvPath)
+	{
+		ResumeEquivalenceCertificate expected;std::string error;
+		if(!LoadResumeEquivalenceCertificate(certificatePath,expected,error))return false;
+		std::ifstream actual(csvPath);
+		if(!ResidentExecutedOverlapRowsMatch(actual,expected,error))return false;
+		const auto raw=ReadFileBytes(csvPath);const std::string text(raw.begin(),raw.end());
+		std::size_t refused=0u;
+		for(std::size_t row=0u;row<expected.acceptedStepCount;++row){
+			for(unsigned int field=0u;field<5u;++field){
+				auto mutant=expected;
+				if(field==0u)mutant.residentAcceptedTimeBits[row]^=1u;
+				if(field==1u)mutant.timeStepBits[row]^=1u;
+				if(field==2u)mutant.residentInputRoots[row][0]^=1;
+				if(field==3u)mutant.residentPublicationRoots[row][0]^=1;
+				if(field==4u)mutant.residentKernels[row][0]^=1;
+				std::istringstream candidate(text);
+				if(ResidentExecutedOverlapRowsMatch(candidate,mutant,error))return false;
+				++refused;
+			}
+		}
+		auto shortExpected=expected;shortExpected.acceptedStepCount=7u;
+		std::istringstream shortCSV(text);
+		if(ResidentExecutedOverlapRowsMatch(shortCSV,shortExpected,error))return false;
+		const auto fixture=std::filesystem::temp_directory_path()/
+			("rise-r221-native-overlap-red-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		std::filesystem::create_directories(fixture/"native_overlap");
+		std::ofstream forged(fixture/"native_overlap/forged-execution.txt");
+		forged<<text;if(!ClosePublishedStream(forged))return false;
+		const std::string before=DigestFile(fixture/"native_overlap/forged-execution.txt");
+		const bool occupiedRefused=!RunR221NativeOverlap("unexecuted-checkpoint",fixture/"native_overlap",
+			expected,certificatePath,error)&&error=="native overlap execution refused"&&
+			!std::filesystem::exists(fixture/"native_overlap_verified.v2")&&
+			DigestFile(fixture/"native_overlap/forged-execution.txt")==before;
+		std::fprintf(stderr,"R221_NATIVE_OVERLAP_RED actual_rows_green=1 per_step_field_mutants=%zu "
+			"fewer_than_eight_refused=1 preauthored_execution_cannot_skip_native_owner=%d passed=%d\n",
+			refused,occupiedRefused?1:0,occupiedRefused?1:0);
+		return occupiedRefused;
+	}
 #endif
 
 	bool Tier10OnsetScopeAccepted(const double tier,const bool legacy,const bool projected,
@@ -8106,30 +8216,41 @@ namespace
 		const bool sealedProjectedReplay=false,
 		const std::filesystem::path& continuationCheckpoint=std::filesystem::path(),
 		const std::filesystem::path& continuationCertificate=std::filesystem::path(),
-		const bool tier10Onset=false,const bool tier10Retained=false)
+		const bool tier10Onset=false,const bool tier10Retained=false,const bool r221Retained=false)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)outputDirectory;return 90;
 #else
 		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return 91;
 		const bool continuation=!continuationCheckpoint.empty();
+		if(continuation&&!r221Retained){
+			std::fprintf(stderr,"RESIDENT_CONTINUATION_REFUSED historical_live_alias_retired read_only_verifiers_retained=1\n");
+			return 91;
+		}
+		ResumeEquivalenceCertificate nativeOverlapCertificate;
+		if(r221Retained&&(!tier10Onset||tier10Retained||!continuation||resolutionTier!=10.0||
+			!sealedProjectedReplay||sealedLegacyReplay||replayProtocolDigest!=R221ProtocolSHA||
+			!OwnerCostPrefixEnvironmentAccepted()||std::getenv("RISE_FIRE_EOS_DIAGNOSTIC_SNAPSHOTS")))return 91;
 		if(tier10Retained&&(!tier10Onset||!continuation||resolutionTier!=10.0||
 			!sealedProjectedReplay||sealedLegacyReplay||replayProtocolDigest!=R216ProtocolSHA||
 			!OwnerCostPrefixEnvironmentAccepted()||std::getenv("RISE_FIRE_EOS_DIAGNOSTIC_SNAPSHOTS")))return 91;
-		if(tier10Onset&&!tier10Retained&&(!Tier10OnsetScopeAccepted(resolutionTier,sealedLegacyReplay,
+		if(tier10Onset&&!tier10Retained&&!r221Retained&&(!Tier10OnsetScopeAccepted(resolutionTier,sealedLegacyReplay,
 			sealedProjectedReplay,continuation,replayProtocolDigest)||
 			!continuationCertificate.empty()||!OwnerCostPrefixEnvironmentAccepted()||
 			std::getenv("RISE_FIRE_EOS_DIAGNOSTIC_SNAPSHOTS")))return 91;
 		if(continuation){
 			ResumeEquivalenceCertificate certificate;std::string certificateError;
 			if(!sealedProjectedReplay||sealedLegacyReplay||
-				DigestFile(continuationCheckpoint)!=(tier10Retained?R216CheckpointSHA:
-				"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2")||
+				DigestFile(continuationCheckpoint)!=(r221Retained?R221CheckpointSHA:(tier10Retained?R216CheckpointSHA:
+				"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"))||
 				!LoadResumeEquivalenceCertificate(continuationCertificate,certificate,certificateError)||
-				certificate.schemaVersion!=2u||certificate.resumedFromStep!=(tier10Retained?792u:1300u)||
+				certificate.schemaVersion!=2u||certificate.resumedFromStep!=(r221Retained?826u:(tier10Retained?792u:1300u))||
+				(r221Retained&&(certificate.oldBuildId!=R220OldBuild||certificate.acceptedStepCount!=9u||
+					certificate.oldExecutableDigest!="91978041bb53124e45324838a082d6fb64bb0f2a6da28c68ddc7e8c186faaefa"))||
 				(tier10Retained&&certificate.oldBuildId!=R214ProducerBuild)||
 				certificate.checkpointDigest!=DigestFile(continuationCheckpoint)){
 				std::fprintf(stderr,"RESIDENT_CONTINUATION_REFUSED %s\n",certificateError.c_str());return 91;}
+			if(r221Retained)nativeOverlapCertificate=std::move(certificate);
 		}
 		if((sealedLegacyReplay||sealedProjectedReplay)&&((resolutionTier!=8.0&&!tier10Onset)||
 			sealedLegacyReplay==sealedProjectedReplay||std::filesystem::exists(outputDirectory)||
@@ -8161,6 +8282,14 @@ namespace
 			std::getenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES")||
 			std::getenv("RISE_FIRE_HOST_RESIDUAL_PROBE")||
 			std::getenv("RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE")))return 91;
+		if(r221Retained){
+			std::string overlapError;
+			if(!RunR221NativeOverlap(continuationCheckpoint,outputDirectory/"native_overlap",
+				nativeOverlapCertificate,continuationCertificate,overlapError)){
+				std::fprintf(stderr,"R221_NATIVE_OVERLAP refused=1 onward_production_authorized=0 error=%s\n",overlapError.c_str());
+				return 91;
+			}
+		}
 		std::error_code directoryError;
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
@@ -8176,6 +8305,7 @@ namespace
 		persistence.sealedProjectedHeunReplay=sealedProjectedReplay;
 		persistence.sealedProjectedHeunContinuation=continuation;
 		persistence.tier10RetainedContinuation=tier10Retained;
+		persistence.r221Retained=r221Retained;
 		persistence.replayProtocolPath=replayProtocolPath;
 		persistence.replayProtocolDigest=replayProtocolDigest;
 		persistence.singleStageFCTDiagnostic=!sealedLegacyReplay&&!sealedProjectedReplay&&
@@ -8269,7 +8399,7 @@ namespace
 			result.acceptedTimeStepHistoryS,result.resumedFromStep+1u,
 			persistence.productionOnsetStopVelocityMPerS,crossedStopThreshold))return 94;
 		const bool survived=FireProductionOnsetEvidence::Survived(reachedTarget,crossedStopThreshold);
-		if(tier10Retained){
+		if(tier10Retained||r221Retained){
 			MethaneRunCheckpoint final;std::string finalError;
 			if(!LoadMethaneRunCheckpoint(outputDirectory/"final.checkpoint",final,finalError)||
 				final.values.acceptedTimeStepHistoryS!=result.acceptedTimeStepHistoryS||
@@ -8286,7 +8416,7 @@ namespace
 		const std::filesystem::path pendingSummaryPath=
 			outputDirectory/"onset_campaign_summary.pending.v2";
 		std::ofstream summary(pendingSummaryPath,std::ios::trunc);
-		if(tier10Retained)summary<<"accepted_timestep_history_sha256 "<<
+		if(tier10Retained||r221Retained)summary<<"accepted_timestep_history_sha256 "<<
 			DigestFile(outputDirectory/"accepted_timestep_history.csv")<<"\n"
 			<<"accepted_timestep_history_matches_final_checkpoint true\n";
 		summary<<std::setprecision(17)<<"schema rise.fire.production.onset_campaign.summary.v2\n"
@@ -16857,8 +16987,51 @@ int main(int argc,char** argv)
 		return passed?0:98;
 	}
 #if defined(RISE_ENABLE_OPENVDB)
-	if(argc==2&&std::strcmp(argv[1],"--fire-r217-eos-energy-gate")==0){
+	if(argc==2&&std::strcmp(argv[1],"--fire-r222-temperature-gate")==0){
 #if defined(__APPLE__)
+		const std::array<std::uint32_t,9> bits={{990313513u,974400108u,1046151195u,1060722372u,
+			998660172u,995883514u,824495545u,2948151838u,1199937699u}};
+		std::array<float,9> state;for(std::size_t i=0;i<9u;++i)std::memcpy(&state[i],&bits[i],sizeof(float));
+		const auto& fuel=FireSimulationMethaneRecord::PhysicalV1();bool passed=true;
+		for(unsigned int mutant=0u;mutant<=3u;++mutant){float T=0.0f;bool accepted=false;std::string shader,error;
+			if(!EvaluateFireProductionEOSTemperatureMetalDiagnostic(state,mutant,T,accepted,shader,&error)){
+				std::fprintf(stderr,"R222_TEMPERATURE_ERROR %s\n",error.c_str());return 92;}
+			const bool match=mutant==0u?(accepted&&T==371.0643310546875f):!accepted;
+			passed=passed&&match;
+			std::fprintf(stderr,"R222_TEMPERATURE_MUTANT variant=%u accepted=%d T_K=%.17g expected_acceptance=%d passed=%d shader_sha256=%s\n",
+				mutant,accepted?1:0,double(T),mutant==0u?1:0,match?1:0,shader.c_str());
+		}
+		for(unsigned int sample=0u;sample<9u;++sample){auto q=state;
+			if(sample==1u||sample==2u)q[8]=std::nextafter(q[8],sample==1u?
+				-std::numeric_limits<float>::infinity():std::numeric_limits<float>::infinity());
+			if(sample>=3u){const std::array<double,6> temperatures={{300.0,300.000030517578125,
+				999.99993896484375,1000.0,2299.999755859375,2300.0}};
+				std::array<double,7> h;std::string error;
+				if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(temperatures[sample-3u],h.data(),h.size(),&error))return 92;
+				double e=0.0;for(std::size_t i=0u;i<7u;++i)e+=double(q[i+1u])*h[i];q[8]=static_cast<float>(e);}
+			std::array<double,9> canonical;for(std::size_t i=0u;i<9u;++i)canonical[i]=q[i];
+			double referenceT=0.0,ratio=0.0;std::string error,shader;
+			const bool reference=fuel.InvertAcceptedConservativeStateByComponentOrder(canonical.data(),canonical.size(),
+				300.0,2300.0,FireStateProducerPrecision::Binary32,referenceT,ratio,&error);
+			float T=0.0f;bool accepted=false;
+			if(!EvaluateFireProductionEOSTemperatureMetalDiagnostic(q,0u,T,accepted,shader,&error))return 92;
+			const float projected=static_cast<float>(referenceT);
+			// The raw fp64 inversion may clamp at Tmax; the production EOS has
+			// always required T < Tmax (the capstone's strict physical gate).
+			const bool inProductionDomain=reference&&projected>=300.0f&&projected<2300.0f;
+			const bool match=inProductionDomain==accepted&&(!accepted||std::memcmp(&T,&projected,sizeof(T))==0);
+			passed=passed&&match;std::fprintf(stderr,"R222_TEMPERATURE_REFERENCE sample=%u reference_accepted=%d production_domain=%d device_accepted=%d reference_K=%.17g device_K=%.17g bit_match=%d\n",
+				sample,reference?1:0,inProductionDomain?1:0,accepted?1:0,referenceT,double(T),match?1:0);
+		}
+		std::fprintf(stderr,"R222_TEMPERATURE_GATE passed=%d no_authority=1\n",passed?1:0);return passed?0:93;
+#else
+		return 91;
+#endif
+	}
+	if(argc==2&&(std::strcmp(argv[1],"--fire-r217-eos-energy-gate")==0||
+		std::strcmp(argv[1],"--fire-r222-eos-energy-gate")==0)){
+#if defined(__APPLE__)
+		const bool r222=std::strcmp(argv[1],"--fire-r222-eos-energy-gate")==0;
 		const std::array<std::uint32_t,4> phases={{0u,0u,128u,10368u}};
 		if(!FireProductionR217RefusalPhasesValid(phases,33564800u))return 95;
 		for(std::size_t phase=0u;phase<phases.size();++phase){auto missing=phases;
@@ -16873,7 +17046,11 @@ int main(int argc,char** argv)
 			FireProductionR217RefusalWitnessComplete(true,false,true)||
 			FireProductionR217RefusalWitnessComplete(true,true,false))return 95;
 		std::fprintf(stderr,"r217_missing_predicate_or_seal_witness_refused passed=1\n");
-		const std::array<float,9> state={{0.0013599047670140862f,0.00056044658413156867f,
+		const std::array<float,9> state=r222?std::array<float,9>{{
+			0.0020597076509147882f,0.00056520733051002026f,0.21386758983135223f,
+			0.72398018836975098f,0.0040998812764883041f,0.0033565745688974857f,
+			2.3982080765705405e-09f,-3.3692598710999278e-10f,68401.2734375f}}:
+			std::array<float,9>{{0.0013599047670140862f,0.00056044658413156867f,
 			0.23823611438274384f,0.79510211944580078f,0.0021931671071797609f,
 			0.0017955414950847626f,-4.3738035415685772e-9f,9.0837237731733467e-10f,40438.5f}};
 		// Independent outward interval walker of the canonical fp64 expression.
@@ -16914,7 +17091,8 @@ int main(int argc,char** argv)
 		std::fprintf(stderr,"r217_invalid_mutant_payload_not_counted_as_reciprocal_red passed=1\n");
 		const auto& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		bool green=true,redSpecies=false,redEnergy=false,hostProjectionWitness=false;
-		for(const float T:{300.0f,338.39862060546875f,1000.0f,2300.0f}){
+		std::fprintf(stderr,"EOS_ENERGY_GATE fixture=%s cell=%u\n",r222?"r222":"r217",r222?432448u:367001u);
+		for(const float T:{300.0f,r222?371.0643310546875f:338.39862060546875f,1000.0f,2300.0f}){
 			std::array<double,7> enthalpy;std::string error;
 			if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(T,enthalpy.data(),enthalpy.size(),&error))return 92;
 			std::array<double,8> reference={};double energy=0.0;
@@ -17002,10 +17180,27 @@ int main(int argc,char** argv)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-r217-refusal-diagnostic")==0)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r222-refusal-diagnostic")==0)
+		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,false,false,false,true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-r220-resume-probe")==0)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-r220-resume-stop-red")==0)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,true,true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r221-resume-probe")==0)
+		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,false,false,true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r221-native-overlap-red")==0)
+		return R221NativeOverlapREDs(argv[2],argv[3])?0:96;
+	if(argc==2&&std::strcmp(argv[1],"--fire-r221-scope-red")==0){
+		bool passed=true;
+		for(const double tier:{6.0,8.0,10.0}){
+			RunPersistenceOptions forbidden;forbidden.r221Retained=true;
+			passed=passed&&RunMethaneFrameProbe(1u,0u,0.0,3.0,1.0,tier,
+				CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,forbidden).
+				structuredError=="r221_retained_scope_refused";
+		}
+		std::fprintf(stdout,"R221_SCOPE_RED unbound_probe_and_continuation_refused=1 passed=%d\n",passed?1:0);
+		return passed?0:95;
+	}
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0){
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionPuffingSpectrumChild(tier,argv[3],argv[4],argv[5],argv[6]);
@@ -17057,6 +17252,8 @@ int main(int argc,char** argv)
 		return RunProductionOnsetCampaignChild(8.0,argv[4],false,argv[5],argv[6],true,argv[2],argv[3]);
 	if(argc==7&&std::strcmp(argv[1],"--fire-r216-continue")==0)
 		return RunProductionOnsetCampaignChild(10.0,argv[4],false,argv[5],argv[6],true,argv[2],argv[3],true,true);
+	if(argc==7&&std::strcmp(argv[1],"--fire-r221-continue")==0)
+		return RunProductionOnsetCampaignChild(10.0,argv[4],false,argv[5],argv[6],true,argv[2],argv[3],true,false,true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-r216-scope-red")==0){
 		bool passed=R216KernelAccepted("d580d078ea083ee18032abfb027271ada9d4d1dabab50b35cb6eb7a503258a0e")&&
 			!R216KernelAccepted("f68ef76b6cb83d2752d5bb38a2228f494f14bb0a25d59559c464b1c204faec02")&&

@@ -1,0 +1,58 @@
+{
+  "schema": "rise.fire.r221.launch-receipt.v1",
+  "status": "launched_native_overlap_in_progress",
+  "observed_utc": "2026-09-09T16:29:39Z",
+  "pid_hint": 67302,
+  "session_hint": 14076,
+  "source_commit": "94958e6f",
+  "reviewed_head": "6de190884fbf2298c5b877d01770ec715e24a4ee",
+  "reviews": {
+    "authority": "zero P1/P2",
+    "evidence": "zero P1/P2"
+  },
+  "command": [
+    "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/executables/FireSequenceTest_94958e6f",
+    "--fire-r221-continue",
+    "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r217_clause_diagnostic/tier10_from_zero.v1/checkpoints/step_0000000826.checkpoint",
+    "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4/resume_equivalence.v2.cbor",
+    "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1",
+    "/Users/aravind/Working/RISE/worktrees/r220-host-memory/docs/fire_r214_tier10_onset.v1",
+    "983cfb4975a614a7bee2593c6d0f4536679925911afd0b22a5b2e897d6b04dc2"
+  ],
+  "working_directory": "/Users/aravind/Working/RISE/worktrees/r220-host-memory",
+  "output": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1",
+  "log": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1.log",
+  "executable_sha256": "f2726009d598b5375b60b5a8f811c0940ec5b70d9aa1cc407ee6660d00744d61",
+  "build_id": "bcd03e089a49d1117b693fcc165869e7cfbac32baf66d80a461a5b491028d4c6",
+  "certificate_sha256": "f2a076a0271f6b8b084ce32bef9d0f0f2049984fbf9d6050bfce2285d998b617",
+  "anchor_step": 826,
+  "anchor_sha256": "f18cac44b71b1fdac106d30d86bcc1efb955ed39ed4edc0a66be912a4130c337",
+  "overlap_steps": [
+    827,
+    828,
+    829,
+    830,
+    831,
+    832,
+    833,
+    834,
+    835
+  ],
+  "horizon_s": 3.5,
+  "first_crossing_m_per_s": 15,
+  "host_ceiling_bytes": 34359738368,
+  "next_step_reserve_bytes": 13449641984,
+  "host_serialization": "No concurrent full builds, Opto/LTO links, exhaustive qualification, oracle regeneration, competing simulations or renders. Light CPU analysis allowed.",
+  "graceful_host_stop_exit": 97,
+  "memory_observables": [
+    "RSS",
+    "physical footprint",
+    "compressed bytes"
+  ],
+  "initial_disk_available_GiB_approx": 69,
+  "prepush_guard_exit": 0,
+  "golden_sha256": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "historical_worktrees": "preserved; no rebase during run",
+  "monitor": "rise-sealed-tier-8-replay active, quiet unchanged progress",
+  "onset_verdict": "pending; native overlap completion is not onset completion"
+}
