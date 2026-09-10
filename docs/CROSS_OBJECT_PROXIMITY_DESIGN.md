@@ -2407,13 +2407,52 @@ both are the doc-fidelity lens rather than new behaviour:
   ("triangle meshes, patches, hair and CSG composites contribute nothing"),
   corrected there too.
 
-One design detail decided at implementation time and recorded here:
-`DeepestOtherContainment` uses the **flat AABB scan even where a TLAS
-exists**, unlike `NearestOtherSurface`. The top-level tree prunes on "this
-subtree is further than the running best", which a running MAXIMUM has no
-use for, so walking it would visit every leaf anyway with the traversal's
-overhead added. `interior` is therefore linear in object count on every
-scene — added to §10.
+One design detail decided at implementation time, recorded here, and
+**SUPERSEDED below**: `DeepestOtherContainment` originally used the flat
+AABB scan even where a TLAS exists, unlike `NearestOtherSurface`, on the
+reasoning that the top-level tree prunes on "this subtree is further than
+the running best", which a running MAXIMUM has no use for, so walking it
+would visit every leaf anyway with the traversal's overhead added.
+`interior` was therefore linear in object count on every scene.
+
+**Superseded (candidate-set asymmetry, found in review): `proximity` and
+`interior` must share one candidate source, not just one predicate.** The
+paragraph above reasoned about COST and missed a CORRECTNESS consequence:
+`NearestOtherSurface` walks the TLAS on a TLAS-backed scene while
+`DeepestOtherContainment` scanned the count-checked AABB snapshot, so the
+two queries did not merely differ in asymptotic cost — they disagreed
+about which objects exist. On a TLAS-backed scene, a 7th object added via
+`Job::AddObject` **without** an invalidate is invisible to
+`NearestOtherSurface` (the TLAS is exactly as stale as `IntersectRay`,
+§10's "contract shift") but the snapshot's own entry-COUNT check rebuilds
+it on that same call, so the identical object was visible to
+`DeepestOtherContainment` at the very same instant — `proximity()` painted
+nothing while `interior()` answered, on a scene neither had been told to
+re-derive. Fixed by giving `DeepestOtherContainment` the TLAS as its
+candidate source on the identical gate `NearestOtherSurface` uses
+(`bUseBSPtree && items.size() > nMaxObjectsPerNode`, with the snapshot
+scan kept only as the ≤4-object fallback the TLAS is never built for), via
+a new `BVH<Element>::ForEachContainingPoint( p, visit, useElementBoxTest )`
+(`src/Library/Acceleration/BVH.h`): it descends only into nodes whose box
+contains `p` — a node box that does NOT contain the point cannot contain a
+primitive that does either, since a primitive's true extent always sits
+inside its own node's box — and calls `visit` at every admitted leaf
+element with no distance-based prune, matching the flat scan's own "keep a
+running maximum, never shrink the search" shape. The original cost
+reasoning stands and is now stated precisely rather than approximately: a
+running maximum still cannot prune a subtree by "already worse than best"
+the way `ClosestPointDistance` does, so `ForEachContainingPoint` visits
+every node whose box straddles `ptWorld` — on a well-balanced tree that is
+a handful of nodes along the point's containing spine, not every leaf in
+the scene, but it is not `O(log n)` either; §10 states the true shape
+rather than "linear" now that the source has changed. `proximity` and
+`interior` now share exactly one candidate source (the TLAS when one
+exists, the flat snapshot scan otherwise) and exactly one staleness
+contract — `ObjectManager.cpp`'s comment at `DeepestOtherContainment`
+says so beside the code. `ProximitySignalTest` (g2) is extended so the 7th
+object is asserted invisible to `interior()` on the same footing as
+`proximity()` and `IntersectRay`, and visible to all three after
+`InvalidateSpatialStructure` + a rebuild — never one before the other.
 
 #### S5 — `add_wear`'s contact term
 
@@ -2619,6 +2658,42 @@ worktree root with `RISE_MEDIA_PATH="$PWD/"`):
 | `TextureExpressionVMTest` | 846 passed, 0 failed (unmoved, as the memo FP contract requires) |
 | `AgentSkillsTest` | 628 passed, 0 failed |
 
+#### Review round 3 — one P2, a candidate-set asymmetry between the two cross-object queries
+
+`DeepestOtherContainment` (`interior`) and `NearestOtherSurface`
+(`proximity`) shared a predicate (`ProximityCandidateCounts`) but not a
+candidate SOURCE: on a TLAS-backed scene the unsigned query walked the
+top-level tree while the signed one still scanned the count-checked AABB
+snapshot (§8.4 S4's "one design detail decided at implementation time"
+above). The snapshot's entry-count check rebuilds on an unannounced
+`Job::AddObject`, so a 7th object added without an invalidate was
+invisible to `proximity` and to the render (both read the same stale
+TLAS) but VISIBLE to `interior` at the identical instant — the two halves
+of one signal disagreeing about the scene's own object count. Closed by
+giving `DeepestOtherContainment` the TLAS as its candidate source on the
+same gate `NearestOtherSurface` uses, through a new
+`BVH<Element>::ForEachContainingPoint( p, visit, useElementBoxTest )`
+(`src/Library/Acceleration/BVH.h`): a point-containment descent that
+visits only nodes whose box contains `p` (a node box that excludes the
+point cannot contain a primitive that includes it, since a primitive's
+true extent always sits inside its own node's box) and calls `visit` at
+every admitted leaf element with no distance-based prune — a running
+MAXIMUM has none to offer, exactly as the flat scan it replaces had none.
+The flat AABB scan remains the fallback for a scene with no TLAS at all
+(`nMaxObjectsPerNode` (4) objects or fewer, or `bUseBSPtree` off).
+`ProximitySignalTest`'s (g2) is extended with a `containProbe` at the
+future 7th object's own centre, asserting `DeepestOtherContainment`
+answers `false` alongside `NearestOtherSurface` and `IntersectRay` before
+the rebuild, and reads the closed-form depth (1.0, the seed sphere's own
+radius) alongside both after it — four new checks, none of the existing
+ones renumbered.
+
+| suite | count |
+|---|---|
+| `ProximitySignalTest` | **436 passed, 0 failed** (432 after review round 2; +4 for (g2)'s `interior` extension) |
+| `ProximityInvalidationTest` | 26 passed, 0 failed (unmoved) |
+| `MeshClosestPointTest` | 65 passed, 0 failed (unmoved) |
+| `ExpressionMemoTest` | 205 passed, 0 failed (unmoved) |
 
 ---
 
@@ -2824,26 +2899,42 @@ worktree root with `RISE_MEDIA_PATH="$PWD/"`):
   inside half for the solid families only (meshes and every sheet family
   contribute 0 to it, silently — a shared refusal latch would print the
   proximity message for every mesh and plane in the scene).
-- **`interior` sees a TLAS-backed scene's object set through the AABB
+- ~~**`interior` sees a TLAS-backed scene's object set through the AABB
   SNAPSHOT, not through the tree — so it is stale in a DIFFERENT way from
-  `proximity`.** `DeepestOtherContainment` calls `EnsureBoxSnapshot()`,
-  which carries the add-detecting entry-count check; `NearestOtherSurface`
-  on a TLAS-backed scene walks `pBVH`, which has none. After a
-  `Job::AddObject` with no `InvalidateSpatialStructure` on a scene of more
-  than four objects, the new object is invisible to `IntersectRay` and to
-  `proximity` (§8.3's "the signal is exactly as stale as the render") and
-  VISIBLE to `interior`. That is the OVER-paint direction — burial read
-  from geometry that is not in the frame — and it is the one place this
-  design has it. Not fixed: the fix is either a count check on the TLAS
-  (which §8.3 deliberately declined) or a tree walk for a MAXIMUM query
-  (which has no pruning to offer). Stated, not tolerated.
-- **`interior` is LINEAR in object count on every scene, including a
-  TLAS-backed one** (added Phase 3 S4). `DeepestOtherContainment` walks the
-  flat AABB snapshot with an ordinary containment test rather than the
-  top-level tree, because the tree prunes on "this subtree is further than the
-  running best" and a running MAXIMUM has no use for that — walking it would
-  visit every leaf anyway with the traversal's overhead added. `proximity` on
-  a TLAS-backed scene is not linear; `interior` is.
+  `proximity`.**~~ **CLOSED** (§5.6 item 1, found in review): the two
+  queries used different candidate sources — `DeepestOtherContainment`
+  called `EnsureBoxSnapshot()`, whose add-detecting entry-count check
+  rebuilds the snapshot on an unannounced `Job::AddObject`, while
+  `NearestOtherSurface` on a TLAS-backed scene walked `pBVH`, which has no
+  such check. The asymmetry ran in the OVER-paint direction: a 7th object
+  added without `InvalidateSpatialStructure` was invisible to
+  `IntersectRay` and `proximity` (§8.3's "the signal is exactly as stale
+  as the render") but VISIBLE to `interior` at the same instant. Fixed by
+  giving `DeepestOtherContainment` the TLAS as its candidate source on the
+  same gate `NearestOtherSurface` uses, via
+  `BVH<Element>::ForEachContainingPoint` (a point-containment descent: a
+  node box that does not contain the point cannot contain a primitive that
+  does either); the flat snapshot scan remains only the ≤4-object fallback
+  neither query builds a TLAS for. `proximity` and `interior` now share
+  one candidate source and one staleness contract, pinned by
+  `ProximitySignalTest` (g2) asserting all three queries — `IntersectRay`,
+  `NearestOtherSurface`, `DeepestOtherContainment` — agree about the 7th
+  object at every point in the sequence.
+- **`interior`'s candidate walk is no longer separately LINEAR where a TLAS
+  exists — it now shares `proximity`'s shape, not a worse one.** Before the
+  fix above, `DeepestOtherContainment` walked the flat AABB snapshot with
+  an ordinary containment test on every scene, TLAS or not. It now uses
+  `ForEachContainingPoint` on a TLAS-backed scene, matching
+  `NearestOtherSurface`'s source. The cost shape is still NOT
+  `NearestOtherSurface`'s: a running MAXIMUM offers no "subtree already
+  worse than best" prune, so `ForEachContainingPoint` visits every node
+  whose box contains the query point rather than shrinking a search
+  radius as candidates are found — on a well-balanced tree that is the
+  handful of nodes along the point's containing spine (bounded by tree
+  depth, not object count), not a full-scene scan, but it is a different
+  and NOT YET MEASURED shape rather than the flat scan's honest `O(n)`.
+  The flat-scan fallback for a ≤4-object scene (or `bUseBSPtree` off) is
+  unchanged and linear, as it always was.
 - **`interior` UNDER-READS inside a UNION composite's overlap.** A union
   exports `min(f_A, f_B)` as its signed lower bound. **It is a LOWER BOUND
   EVERYWHERE, exact nowhere that this arc relies on** — review round 1

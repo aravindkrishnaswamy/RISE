@@ -893,8 +893,12 @@ static void TestSnapshotFreshnessOnAdd()
 //! TLAS-backed scene (more than `nMaxObjectsPerNode` objects) there is NO
 //! count check, so a proximity query is now "exactly as stale as the
 //! RENDER" -- an object added without an invalidate must be invisible to
-//! BOTH `NearestOtherSurface` AND `IntersectRay`, not silently visible to
-//! one and not the other.
+//! `NearestOtherSurface`, `DeepestOtherContainment` AND `IntersectRay`
+//! alike, not silently visible to one and not the others. Before the
+//! §5.6 item 1 fix, `DeepestOtherContainment` scanned the count-checked
+//! AABB snapshot even on a TLAS-backed scene, so it would have REBUILT on
+//! this same call and seen the 7th object a beat before `proximity` and
+//! the render did -- the asymmetry this extension exists to catch.
 //!
 //! Driven through `Job::AddObject` (src/Library/Job.cpp ~7416), the actual
 //! entry point the parser's `standard_object` chunk calls and the one the
@@ -938,6 +942,9 @@ static void TestTLASStalenessViaJobAddObject()
 	// THE PROBE POINT AND RAY, both aimed at where the 7th object will be
 	// (x = 100), far from every seed object above (nearest is at x = 50).
 	const Point3 proxProbe( 100, 0, 3 );		// 2 units off a radius-1 sphere at (100,0,0)
+	const Point3 containProbe( 100, 0, 0 );	// the FUTURE sphere's own centre --
+												// inside it once it exists, outside
+												// every seed sphere before and after
 	const Point3 rayOrigin( 100, 0, -50 );
 	const Vector3 rayDir( 0, 0, 1 );			// travels through (100,0,0) toward +z
 
@@ -950,6 +957,9 @@ static void TestTLASStalenessViaJobAddObject()
 		Check( !ri.geometric.bHit,
 			"(g2) ...and IntersectRay agrees: nothing along that ray either" );
 	}
+	Scalar depthPre = 0;
+	Check( !mgr->DeepestOtherContainment( containProbe, mgr->GetItem( "s0" ), Scalar( 5 ), depthPre ),
+		"(g2) ...and interior agrees too: nothing contains the future centre yet" );
 
 	// ADD THE 7TH, through Job::AddObject -- exactly the call a
 	// `standard_object` chunk (initial OR incremental) resolves to, and
@@ -966,6 +976,9 @@ static void TestTLASStalenessViaJobAddObject()
 		mgr->IntersectRay( ri, true, true, false );
 		rayStillBlind = !ri.geometric.bHit;
 	}
+	Scalar depthStale = 0;
+	const bool containStillBlind =
+		!mgr->DeepestOtherContainment( containProbe, mgr->GetItem( "s0" ), Scalar( 5 ), depthStale );
 	Check( proxStillBlind,
 		"(g2) MONEY -- Job::AddObject does NOT invalidate: proximity is STILL blind to the 7th "
 		"object on this TLAS-backed scene, exactly as ObjectManager.cpp's own contract-shift "
@@ -973,16 +986,21 @@ static void TestTLASStalenessViaJobAddObject()
 	Check( rayStillBlind,
 		"(g2) ...and IntersectRay is EQUALLY blind -- the picture and the signal are stale "
 		"together, not one before the other" );
-	// NOTE: `proxStillBlind == rayStillBlind` is NOT checked as a separate
-	// assertion here -- with both operands individually pinned to `true` by
-	// the two Checks immediately above, that equality is a tautology (true
-	// == true) and would read as an independent guard while proving
-	// nothing beyond what they already established. The identity the
-	// design promises -- proximity is exactly as stale as the render,
-	// never staler and never fresher -- is exactly what those two Checks,
+	Check( containStillBlind,
+		"(g2) MONEY -- ...and interior is EQUALLY blind: before the §5.6 item 1 fix, "
+		"DeepestOtherContainment's own EnsureBoxSnapshot() count check would have rebuilt "
+		"the snapshot on THIS call and found the 7th object a beat before proximity and the "
+		"render did -- the candidate-set asymmetry this extension exists to catch" );
+	// NOTE: the three booleans are NOT checked pairwise for equality here --
+	// with all three individually pinned to `true` by the Checks immediately
+	// above, any such equality is a tautology (true == true) and would read
+	// as an independent guard while proving nothing beyond what they already
+	// established. The identity the design promises -- proximity and
+	// interior are exactly as stale as the render, never staler and never
+	// fresher than IT OR EACH OTHER -- is exactly what those three Checks,
 	// taken together, already state.
 
-	// REBUILD -- the documented recovery -- and both must now see it.
+	// REBUILD -- the documented recovery -- and all three must now see it.
 	mgr->InvalidateSpatialStructure();
 	mgr->PrepareForRendering();
 
@@ -996,6 +1014,9 @@ static void TestTLASStalenessViaJobAddObject()
 		raySeesIt = ri.geometric.bHit;
 		if( raySeesIt ) rayHitZ = ri.geometric.ptIntersection.z;
 	}
+	Scalar depthFresh = 0;
+	const bool containSeesIt =
+		mgr->DeepestOtherContainment( containProbe, mgr->GetItem( "s0" ), Scalar( 5 ), depthFresh );
 	Check( proxSeesIt && raySeesIt,
 		"(g2) MONEY -- after InvalidateSpatialStructure + PrepareForRendering, BOTH proximity "
 		"and IntersectRay see the 7th object" );
@@ -1003,6 +1024,12 @@ static void TestTLASStalenessViaJobAddObject()
 		"(g2) ...proximity reads the closed form (3 - 1 radius = 2)" );
 	Check( raySeesIt && rayHitZ < Scalar( 0 ),
 		"(g2) ...and the ray now hits the sphere's near face (z = -1), not a miss" );
+	Check( containSeesIt,
+		"(g2) MONEY -- ...and interior sees it too, on the SAME rebuild, through the SAME "
+		"TLAS -- proximity and interior now share one candidate source" );
+	CheckClose( depthFresh, Scalar( 1 ), Scalar( 1e-9 ),
+		"(g2) ...interior reads the closed form at the sphere's own centre (radius 1, "
+		"full depth)" );
 
 	job->release();
 }

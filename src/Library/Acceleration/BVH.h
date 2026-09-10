@@ -1975,6 +1975,91 @@ namespace RISE
 			return true;
 		}
 
+		//! Visits every primitive whose LEAF node's box contains `p`, for a
+		//! CONTAINMENT query rather than a nearest-point one --
+		//! `ObjectManager::DeepestOtherContainment`'s TLAS-backed counterpart
+		//! to `ClosestPointDistance` above (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+		//! §5.6 item 1).  A running MAXIMUM (the deepest containment) has no
+		//! "subtree already worse than best" prune to offer -- unlike a
+		//! nearest-point search, EVERY node whose box contains `p` might hold
+		//! the deepest one -- so this descends the whole containing spine,
+		//! trading `ClosestPointDistance`'s early pruning for the plain
+		//! guarantee that a node box NOT containing `p` cannot contain a
+		//! primitive that contains `p` either (a primitive's true extent is
+		//! always inside its node's box).  Node boxes are the same
+		//! outward-padded `float` AABBs `ClosestPointDistance` tests, so the
+		//! prune is exactly as safe: it can only ADMIT a node it need not
+		//! have (the padding), never wrongly reject one.
+		//!
+		//! `visit(prims[i], p)` is called for every leaf element whose
+		//! containing node (and, if `useElementBoxTest`, whose own box) holds
+		//! `p` -- it is the caller's job to test the ELEMENT itself (this is
+		//! a box-level admission, not a proof of containment) and to
+		//! accumulate whatever running value it wants; there is no return
+		//! value and no early-out, matching `DeepestOtherContainment`'s "keep
+		//! going, there is no prune" shape.
+		//!
+		//! `useElementBoxTest` (default FALSE) mirrors `ClosestPointDistance`'s
+		//! knob: an element whose own (tighter) box does not contain `p` is
+		//! skipped before `visit` is called, at the cost of one
+		//! `ep.GetElementBoundingBox()` per leaf element visited.
+		//! `ObjectManager::DeepestOtherContainment` passes TRUE for the same
+		//! reason `NearestOtherSurface` passes it to `ClosestPointDistance`:
+		//! a leaf holds up to 4 objects behind one shared node box, and an
+		//! object's own box is usually far tighter.
+		//!
+		//! NaN-safe the same way the flat AABB scan in `ObjectManager` is
+		//! (see its own comment): a NaN bound makes both the "before lo" and
+		//! "after hi" tests false on that axis, so the axis reads as
+		//! "contained" rather than "excluded" -- the safe direction, since it
+		//! can only ADMIT a candidate that then answers or refuses on its own
+		//! merits, never silently drop one.
+		template< class VisitFn >
+		void ForEachContainingPoint(
+			const Point3& p,
+			VisitFn&&     visit,
+			const bool    useElementBoxTest = false ) const
+		{
+			if( nodes.empty() || prims.empty() ) return;
+
+			// Bounded dynamic stack, thread_local for one warm-up grow per
+			// worker -- same discipline as `ClosestPointDistance`'s stack.
+			// A DIFFERENT instantiation (this method's own), so it cannot
+			// alias that one's `Entry`-typed stack even for the same
+			// `Element`.
+			static thread_local std::vector<uint32_t> stack;
+			stack.clear();
+
+			if( !PointInBoxF( p, nodes[0].bboxMin, nodes[0].bboxMax ) ) return;
+			stack.push_back( 0u );
+
+			while( !stack.empty() ) {
+				const uint32_t ni = stack.back();
+				stack.pop_back();
+				const Node& node = nodes[ni];
+
+				if( node.primCount > 0 ) {
+					const uint32_t end = node.firstPrimOrLeft + node.primCount;
+					for( uint32_t i = node.firstPrimOrLeft; i < end; ++i ) {
+						if( useElementBoxTest ) {
+							const BoundingBox eb = ep.GetElementBoundingBox( prims[i] );
+							if( !PointInBox( p, eb.ll, eb.ur ) ) continue;
+						}
+						visit( prims[i], p );
+					}
+				} else {
+					const uint32_t leftIdx  = node.firstPrimOrLeft;
+					const uint32_t rightIdx = leftIdx + 1;
+					if( PointInBoxF( p, nodes[leftIdx].bboxMin, nodes[leftIdx].bboxMax ) ) {
+						stack.push_back( leftIdx );
+					}
+					if( PointInBoxF( p, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax ) ) {
+						stack.push_back( rightIdx );
+					}
+				}
+			}
+		}
+
 	protected:
 		//! Distance from a point to an axis-aligned box, 0 when inside.  The
 		//! bounds are the node's conservative `float` AABB, rounded OUTWARD
@@ -2038,6 +2123,36 @@ namespace RISE
 			const Scalar dy = ( p.y < lo.y ) ? ( lo.y - p.y ) : ( ( p.y > hi.y ) ? ( p.y - hi.y ) : Scalar( 0 ) );
 			const Scalar dz = ( p.z < lo.z ) ? ( lo.z - p.z ) : ( ( p.z > hi.z ) ? ( p.z - hi.z ) : Scalar( 0 ) );
 			return std::sqrt( dx*dx + dy*dy + dz*dz );
+		}
+
+		//! Point-in-box test against the node's conservative, outward-padded
+		//! float AABB -- ForEachContainingPoint's node-level admission test.
+		//! Equivalent to PointBoxDistanceF(p, lo, hi) == 0 but without the
+		//! sqrt, and NaN-safe the same way: a NaN bound makes both per-axis
+		//! comparisons false, so that axis reads as "inside" rather than
+		//! "outside" -- the safe over-admission direction (see
+		//! ForEachContainingPoint's own comment).
+		static bool PointInBoxF( const Point3& p, const float lo[3], const float hi[3] )
+		{
+			const Scalar pc[3] = { p.x, p.y, p.z };
+			for( int k = 0; k < 3; ++k ) {
+				const Scalar l = (Scalar)lo[k];
+				const Scalar h = (Scalar)hi[k];
+				if( pc[k] < l || pc[k] > h ) return false;
+			}
+			return true;
+		}
+
+		//! Point-in-box test against an ELEMENT's own (un-padded, un-cached)
+		//! Scalar box -- ForEachContainingPoint's useElementBoxTest pre-test,
+		//! the containment counterpart of PointBoxDistance above.  Same
+		//! NaN-safety note applies.
+		static bool PointInBox( const Point3& p, const Point3& lo, const Point3& hi )
+		{
+			if( p.x < lo.x || p.x > hi.x ) return false;
+			if( p.y < lo.y || p.y > hi.y ) return false;
+			if( p.z < lo.z || p.z > hi.z ) return false;
+			return true;
 		}
 	};
 }

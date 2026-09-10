@@ -879,71 +879,142 @@ bool ObjectManager::DeepestOtherContainment(
 		return false;
 	}
 
-	// THE FLAT SCAN, deliberately, even where a TLAS exists.  The
-	// top-level tree answers a NEAREST-point query -- it prunes on
-	// "this subtree's box is further than the running best" -- and a
-	// running MAXIMUM has no such prune to offer it, so walking it would
-	// visit every leaf anyway with the traversal's overhead added.  The
-	// AABB snapshot with an ordinary containment test is the right
-	// structure for this question, and the cost is linear in object count
-	// for a scene that calls `interior()`.  DISCLOSED in the design's §10
-	// rather than hidden: `proximity` on a TLAS-backed scene is not
-	// linear, and `interior` is.
 	Scalar best = Scalar( 0 );
 	bool found = false;
 
-	for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
-		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
-		const IObjectPriv* const obj = entry.pObj;
+	// THE CANDIDATE SOURCE, now shared with `NearestOtherSurface` (§5.6
+	// item 1 of the review-round-3 follow-up): before this fix,
+	// `interior()` always scanned the count-checked AABB SNAPSHOT while
+	// `proximity()` walked the TLAS on a TLAS-backed scene, so a 7th
+	// object added via `Job::AddObject` WITHOUT an invalidate was
+	// invisible to `proximity()` (the snapshot's count check rebuilds it)
+	// but VISIBLE to `interior()` at the very same instant -- two signals
+	// on the same channel, two different staleness contracts. Now both
+	// consult the TLAS on the identical gate `NearestOtherSurface` uses,
+	// and only fall back to the flat snapshot scan on a scene too small to
+	// have one (`nMaxObjectsPerNode` (4) objects or fewer, or
+	// `bUseBSPtree` off) -- see `ProximitySignalTest`'s (g2) extension,
+	// which now asserts the 7th object is invisible to ALL THREE queries
+	// (`IntersectRay`, `NearestOtherSurface`, `DeepestOtherContainment`)
+	// until `InvalidateSpatialStructure` + a rebuild, and visible to all
+	// three afterward.
+	//
+	// A running MAXIMUM still has no "subtree already worse than best"
+	// prune to offer a NEAREST-point traversal's stack discipline -- that
+	// residual, stated in §10, is unchanged: `ForEachContainingPoint`
+	// descends every node whose box contains `ptWorld`, which on a
+	// TLAS-backed scene is still linear in the number of objects whose
+	// box happens to straddle this point (usually a handful, never
+	// pruned smaller by depth). What changes is only the STALENESS
+	// contract, not the asymptotic cost class named in §10.
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
 
-		if( !ProximityCandidateCounts( obj, self ) ) {
-			continue;
-		}
+	if( tlas && tlas->numPrims() > 0 ) {
+		tlas->ForEachContainingPoint(
+			ptWorld,
+			[&]( const IObjectPriv* obj, const Point3& pt ) {
+				if( !ProximityCandidateCounts( obj, self ) ) {
+					return;
+				}
+				// NO REFUSAL DIAGNOSTIC HERE, as the flat-scan fallback
+				// below: every sheet family refuses containment at every
+				// point by design, so a shared latch would print the
+				// proximity message for every mesh and every plane in the
+				// scene. Silent, and disclosed in the design's §10.
+				Scalar f = Scalar( 0 );
+				bool exact = false;
+				if( !obj->SignedDistanceLower( pt, maxDepthWorld, f, exact ) ) {
+					return;
+				}
+				// ONLY A NEGATIVE ANSWER COUNTS. A positive one says the
+				// point is outside that candidate, which is the ordinary
+				// case and not an error.
+				if( !( f < Scalar( 0 ) ) ) {
+					return;
+				}
+				const Scalar depth = -f;
+				if( !RISE::IsFiniteDouble( (double)depth ) ) {
+					return;
+				}
+				// A RUNNING MAXIMUM, and no distance prune: leaving the
+				// UNION of every solid the point is inside needs at least
+				// the largest of the individual depths, so the max is
+				// still a lower bound -- the under-paint direction.
+				if( !found || depth > best ) {
+					best = depth;
+					found = true;
+				}
+			},
+			// useElementBoxTest = TRUE, matching `NearestOtherSurface`'s
+			// TLAS walk: a leaf holds up to 4 objects behind one shared
+			// node box, and an object's own (tighter) box is worth one
+			// `getBoundingBox()` call to skip `ProximityCandidateCounts` +
+			// `SignedDistanceLower` on an object `ptWorld` cannot possibly
+			// be inside.
+			true );
+	} else {
+		// THE FLAT SCAN, the fallback for a scene too small to have a
+		// TLAS at all (`nMaxObjectsPerNode` (4) objects or fewer, or
+		// `bUseBSPtree` off) -- every fixture in `ProximitySignalTest`'s
+		// small scenes included. The AABB snapshot with an ordinary
+		// containment test is the right structure for this question on
+		// such a scene, and the cost is linear in object count exactly as
+		// it is for `NearestOtherSurface`'s own flat-scan fallback.
+		for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
+			const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+			const IObjectPriv* const obj = entry.pObj;
 
-		// ORDINARY CONTAINMENT, with NO radius expansion -- unlike the
-		// proximity scan, which widens each box by the running best
-		// because a neighbour OUTSIDE its box can still be within the
-		// radius.  A candidate whose box does not contain the point
-		// cannot CONTAIN the point, so this test loses nothing.
-		//
-		// The same NaN note the proximity scan carries applies: an
-		// infinite plane's box is +-RISE_INFINITY and a rotated corner
-		// can overflow to a NaN bound, which makes both comparisons
-		// false and ADMITS the candidate -- the safe direction, since the
-		// geometry is then asked and a plane refuses the signed query
-		// anyway.
-		const Point3& ll = entry.box.ll;
-		const Point3& ur = entry.box.ur;
-		if( ptWorld.x < ll.x || ptWorld.x > ur.x ) continue;
-		if( ptWorld.y < ll.y || ptWorld.y > ur.y ) continue;
-		if( ptWorld.z < ll.z || ptWorld.z > ur.z ) continue;
+			if( !ProximityCandidateCounts( obj, self ) ) {
+				continue;
+			}
 
-		// NO REFUSAL DIAGNOSTIC HERE.  Every sheet family refuses
-		// containment at every point by design, so a shared latch would
-		// print the proximity message for every mesh and every plane in
-		// the scene.  Silent, and disclosed in the design's §10.
-		Scalar f = Scalar( 0 );
-		bool exact = false;
-		if( !obj->SignedDistanceLower( ptWorld, maxDepthWorld, f, exact ) ) {
-			continue;
-		}
-		// ONLY A NEGATIVE ANSWER COUNTS.  A positive one says the point
-		// is outside that candidate, which is the ordinary case and not
-		// an error.
-		if( !( f < Scalar( 0 ) ) ) {
-			continue;
-		}
-		const Scalar depth = -f;
-		if( !RISE::IsFiniteDouble( (double)depth ) ) {
-			continue;
-		}
-		// A RUNNING MAXIMUM, and no distance prune: leaving the UNION of
-		// every solid the point is inside needs at least the largest of
-		// the individual depths, so the max is still a lower bound -- the
-		// under-paint direction.
-		if( !found || depth > best ) {
-			best = depth;
-			found = true;
+			// ORDINARY CONTAINMENT, with NO radius expansion -- unlike the
+			// proximity scan, which widens each box by the running best
+			// because a neighbour OUTSIDE its box can still be within the
+			// radius.  A candidate whose box does not contain the point
+			// cannot CONTAIN the point, so this test loses nothing.
+			//
+			// The same NaN note the proximity scan carries applies: an
+			// infinite plane's box is +-RISE_INFINITY and a rotated corner
+			// can overflow to a NaN bound, which makes both comparisons
+			// false and ADMITS the candidate -- the safe direction, since the
+			// geometry is then asked and a plane refuses the signed query
+			// anyway.
+			const Point3& ll = entry.box.ll;
+			const Point3& ur = entry.box.ur;
+			if( ptWorld.x < ll.x || ptWorld.x > ur.x ) continue;
+			if( ptWorld.y < ll.y || ptWorld.y > ur.y ) continue;
+			if( ptWorld.z < ll.z || ptWorld.z > ur.z ) continue;
+
+			// NO REFUSAL DIAGNOSTIC HERE.  Every sheet family refuses
+			// containment at every point by design, so a shared latch would
+			// print the proximity message for every mesh and every plane in
+			// the scene.  Silent, and disclosed in the design's §10.
+			Scalar f = Scalar( 0 );
+			bool exact = false;
+			if( !obj->SignedDistanceLower( ptWorld, maxDepthWorld, f, exact ) ) {
+				continue;
+			}
+			// ONLY A NEGATIVE ANSWER COUNTS.  A positive one says the point
+			// is outside that candidate, which is the ordinary case and not
+			// an error.
+			if( !( f < Scalar( 0 ) ) ) {
+				continue;
+			}
+			const Scalar depth = -f;
+			if( !RISE::IsFiniteDouble( (double)depth ) ) {
+				continue;
+			}
+			// A RUNNING MAXIMUM, and no distance prune: leaving the UNION of
+			// every solid the point is inside needs at least the largest of
+			// the individual depths, so the max is still a lower bound -- the
+			// under-paint direction.
+			if( !found || depth > best ) {
+				best = depth;
+				found = true;
+			}
 		}
 	}
 
