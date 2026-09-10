@@ -2445,7 +2445,7 @@ test and barren records go to a new `wearBarrenCandidates` list that only a
 | exception 1 — clause (d)'s corrected string, pinned by a NEW check naming its new text | PASS — the message now names `curv` / `occlusion` / `thickness` / `convexity` / `proximity` / `interior`; the existing check matches only the opening substring, which is why this needed its own |
 | exception 2 — the bare-call message's appended clause, pinned by a NEW check | PASS — the opening words are unchanged (asserted) and the appended clause names `contact_radius` |
 | the MCP and chat tool COUNTS do not move (43 / 38) | PASS — `AgentMcpStdioSmokeTest` 21/21 pins 43, `AgentChatLoopTest` 1745/1745 pins 38 |
-| `AgentAddWearTest` | 351 passed, 0 failed (287 before) |
+| `AgentAddWearTest` | 362 passed, 0 failed (287 before S5; 351 before review round 2's two pinned-exception assertions) |
 | `AgentAddWetnessTest` / `AgentSkillsTest` / `AgentReadValidateTest` / `AgentAutonomyPolicyTest` | 210 / 628 / 341 / 404, 0 failed |
 
 One bug the gates caught in this slice's own code, recorded because the
@@ -2477,7 +2477,7 @@ engine about what `orientation 0 45 0` means.
 | a direct PER-OBJECT `column2->DistanceToSurface` at radius 0.1 REFUSES | PASS — and the SCENE-WIDE query at the same radius ANSWERS **0.075** (the floor top at y = 0.1 under the cap top at 0.175), which is exactly why the refusal has to be asked per object |
 | the true corner distance the refusal under-paints | **0.0421282 m** (4.21 cm), recomputed in the test rather than quoted — four times the 1 cm a phantom would report |
 | `CstDeriveGoldenTest` — the digest does not move | PASS — **447 MATCH, 0 DRIFT** (of 447 golden scenes; 454 corpus, 0 UNCOVERED, 0 STALE) |
-| `ProximitySignalTest` | 401 passed, 0 failed (386 after S4) |
+| `ProximitySignalTest` | 432 passed, 0 failed (386 after S4; 401 after S6; 432 after review rounds 1 and 2) |
 
 **The probe-albedo crop, judged honestly.** Harness-only, on a COPY: the
 tracked `marble_col` (a lambertian, bound to a uniform white) has its
