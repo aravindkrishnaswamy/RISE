@@ -2571,11 +2571,26 @@ bool CSGObject::BracketDistanceLocal( const Point3& ptLocal, const Scalar maxDis
 		const Point3 next( p.x - f * g.x, p.y - f * g.y, p.z - f * g.z );
 		Scalar fn = 0, nA = 0, nB = 0;
 		bool nex = false, neA = false, neB = false;
+		// NO SEPARATE `!IsFiniteDouble(fn)` CHECK HERE, UNLIKE
+		// `SDFGeometry::DistanceToSurface`'s twin (its `Map(next)` is a raw,
+		// possibly-non-finite call that BREAKS out of the descent and still
+		// lets the probe below try from the last good `p`/`f` -- a
+		// break-and-probe). `ComposedSignedLocal` already screens `outF` for
+		// finiteness at its own return (`return
+		// RISE::IsFiniteDouble( (double)outF );`, CSGObject.cpp ~2425) and
+		// returns FALSE on a non-finite composed field, which the line
+		// immediately above turns into an outright REFUSAL of this whole
+		// query -- never a break that still reaches the probe. The two
+		// behave differently on purpose, not by parity: an `SDFGeometry`
+		// leaf can recover from one non-finite `Map` sample because the
+		// probe re-evaluates the SAME cheap function from a nearby point,
+		// while a composite's `fn` already reflects two operand recursions
+		// (each of which may itself walk an operand's own bracket), so a
+		// non-finite composed field is treated as a harder signal here and
+		// refused rather than salvaged -- the safe direction, and the one
+		// this landing test's callers already expect from any refusal.
 		if( !ComposedSignedLocal( next, maxDistLocal, fn, nex, nA, neA, nB, neB ) ) {
 			return false;
-		}
-		if( !RISE::IsFiniteDouble( (double)fn ) ) {
-			break;
 		}
 		// A step that did not reduce the field means the local gradient is
 		// lying to us (a seam, a scaled operand); stop rather than wander.
@@ -2716,8 +2731,24 @@ bool CSGObject::DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar ma
 
 	// AND THE ANSWER COMES OUT MULTIPLIED BY sigmaMax, the safe direction
 	// for an upper bound, exactly as `Object::DistanceToSurface` does.
+	//
+	// NO RANGE REFUSAL HERE (found in review): `Object::DistanceToSurface`
+	// deliberately has none -- its own `dWorld` finiteness check is the
+	// whole gate, and a merely-far answer is left to the CALLER's `d < best`
+	// comparison (`ObjectManager::NearestOtherSurface`/`ProximityCandidateDistance`)
+	// to discard. A `dWorld > maxDistWorld` refusal here used to spend this
+	// composite's ONE-SHOT refusal latch (`NoteDistanceRefusal` /
+	// `LogDistanceRefusal`, see the design's own "the one-shot latch is
+	// spent by the first such point" rule) on a composite that is simply
+	// too far away to matter for THIS query -- not on a composite that
+	// genuinely cannot answer -- so a later query point where the same
+	// composite's bracket truly fails to close found the latch already
+	// spent and printed nothing. Matching `Object::DistanceToSurface`'s
+	// shape returns the honest (if merely far) distance instead and leaves
+	// range-pruning to the manager, exactly as every other family's
+	// `DistanceToSurface` already does.
 	const Scalar dWorld = dLocal * m_sigmaMax;
-	if( !RISE::IsFiniteDouble( (double)dWorld ) || dWorld > maxDistWorld ) {
+	if( !RISE::IsFiniteDouble( (double)dWorld ) ) {
 		return false;
 	}
 	outDist = dWorld;

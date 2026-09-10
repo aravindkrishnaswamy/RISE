@@ -1958,6 +1958,45 @@ static void TestCsgComposites()
 		u->release();
 	}
 
+	// --- A FAR UNION DOES NOT REFUSE, AND DOES NOT SPEND ITS ONE-SHOT
+	// REFUSAL LATCH (found in review, review round 3).  `DistanceToSurfaceWithArm`
+	// used to end with `dWorld > maxDistWorld -> return false`, a RANGE
+	// refusal `Object::DistanceToSurface` deliberately does not have -- the
+	// manager's own `d < best` comparison is what discards an
+	// out-of-budget answer, not a refusal from the object (§10, "the
+	// manager prunes").  Refusing here instead spent the composite's
+	// ONE-SHOT `NoteDistanceRefusal` latch (via
+	// `ObjectManager::ProximityCandidateDistance`) on a composite that
+	// could, in fact, answer -- silencing a LATER genuine bracket failure
+	// on the same composite, which is exactly the failure mode the
+	// design's own "one-shot latch" promise exists to avoid.
+	{
+		Object* a = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 3, 0, 0 ) );
+		CSGObject* u = MakeCsg( CSG_UNION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		// True distance from (0,5,0) is 4 (the block above proves it); a
+		// budget of 1 is well short of it, and used to trigger the removed
+		// `dWorld > maxDistWorld` refusal.
+		Scalar d = 0;
+		Check( u->DistanceToSurface( Point3( 0, 5, 0 ), Scalar( 1 ), d ),
+			"(j) MONEY -- a far union ANSWERS rather than refusing on a tight budget" );
+		CheckClose( d, Scalar( 4 ), Scalar( 1e-9 ),
+			"(j) ...with the TRUE distance, not a value clamped to the budget" );
+
+		// AND THE LATCH IS UNTOUCHED: `NoteDistanceRefusal` wins exactly
+		// once, ever, per object.  Had the query above refused, the
+		// manager's `ProximityCandidateDistance` would have called it and
+		// claimed the win; calling it directly here still returns TRUE,
+		// proving nobody has claimed it -- this composite never told
+		// `DistanceToSurface` "no" at all, so no refusal was ever logged.
+		Check( u->NoteDistanceRefusal(),
+			"(j) MONEY -- the far query never told DistanceToSurface `no`, so the "
+			"composite's one-shot refusal latch is STILL UNCLAIMED (no refusal was logged)" );
+
+		u->release();
+	}
+
 	// --- A UNION WITH A MESH OPERAND ANSWERS.  A mesh is a SHEET: it has
 	// an unsigned distance and no inside, so it can never say whether a
 	// point is within it.  A union takes it anyway -- `d <= d_A <= u_A`

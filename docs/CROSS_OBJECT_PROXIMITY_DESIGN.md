@@ -2725,6 +2725,81 @@ ones renumbered.
 | `MeshClosestPointTest` | 65 passed, 0 failed (unmoved) |
 | `ExpressionMemoTest` | 205 passed, 0 failed (unmoved) |
 
+#### Review round 3, continued — three P3s from the same pass
+
+- **`CSGObject.cpp`'s dead `!IsFiniteDouble(fn)` branch in the composite's
+  descent (`BracketDistanceLocal`, ~line 2577) is UNREACHABLE, and the
+  comment beside it half-quoted `SDFGeometry::DistanceToSurface`'s own
+  break-and-probe comment as if the two behaved the same way.** They do
+  not, on purpose: `ComposedSignedLocal` already screens its own `outF` for
+  finiteness at its return (`return RISE::IsFiniteDouble( (double)outF )`)
+  and returns FALSE on a non-finite composed field, which the CALLER turns
+  into an outright refusal of the whole query one line above the dead
+  branch — never a break that still reaches the probe. `SDFGeometry`'s
+  `Map(next)` is a raw, possibly-non-finite call with no such screen, so
+  ITS break-and-probe genuinely runs: the descent stops but the probe still
+  tries from the last good point. The dead branch is deleted and the
+  comment now states the divergence rather than implying parity: a
+  composite treats a non-finite composed field as a harder signal (two
+  operand recursions already folded into it, one of which may itself be a
+  bracket) and refuses rather than salvages it, which is the safe
+  direction — never a false claim that the two families behave alike.
+- **`ComputeSigmaExtremes` (`Object.cpp`) never set `converged` when the
+  Jacobi rotations finished exactly on the LAST permitted sweep**, an
+  off-by-one a reviewer found by construction: `maxSweeps == 1` on a matrix
+  needing exactly one rotation to orthogonalize converges in every
+  practical sense but reported `Loose`, because the loop's only
+  convergence test is "a WHOLE sweep completed and rotated nothing", and
+  there was no sweep left in the budget to observe that. Fixed with one
+  more READ-ONLY pass over the three column pairs after the loop — the
+  same `pairNeedsRotation` criterion the loop itself now shares through a
+  small local lambda (so the criterion cannot drift between the two call
+  sites, the same worry `LocalBoxDiagonal`'s own hoisting comment states)
+  — that declares convergence if a further sweep would rotate nothing,
+  without spending a sweep of the budget to find out. Deliberately gated
+  on `ranAnySweep` (true only once the loop body has executed at least
+  once): an UNGATED version would flip `ProximitySignalTest` (i)'s
+  documented `maxSweeps == 0` call on the axis-aligned `(3, 1, 0.4)`
+  diagonal (columns already exactly orthogonal, zero cross dot products,
+  before any Jacobi work runs) from the intentionally-reached `Loose` state
+  to `Jacobi` — a true fact about that particular matrix, but not what a
+  zero-sweep BUDGET call is asking, and not what that gate (§8.4 S2) pins.
+  `ProximitySignalTest`'s existing checks above are unaffected — no shipped
+  fixture exercises the boundary this closes.
+- **`CSGObject::DistanceToSurfaceWithArm` no longer refuses for RANGE.**
+  It used to end `if( ... || dWorld > maxDistWorld ) return false;` —
+  `Object::DistanceToSurface` deliberately carries no such check (its own
+  contract is "answer with the true distance or refuse for a REAL reason;
+  let the caller's `d < best` comparison discard an out-of-budget answer"),
+  and the composite's extra check spent the ONE-SHOT `NoteDistanceRefusal`
+  latch (`ObjectManager::ProximityCandidateDistance`) on a composite that
+  could, in fact, answer — exactly the failure mode the design's own
+  `ProximityCandidateDistance` comment names as the trade it deliberately
+  accepts for families whose OWN geometry-level early-out legitimately
+  returns false for range (an SDF's `Map(p) > maxDist` short-circuit, a
+  mesh's BVH-pruned search) — except a composite's outer multiply-by-σ_max
+  check earns none of that performance benefit; it is pure surplus. Removed
+  (finiteness is now the only refusal at that site), and a new
+  `ProximitySignalTest` (j) fixture proves both halves: a far `CSG_UNION`
+  answers its TRUE distance on a budget far short of it, and a direct call
+  to `NoteDistanceRefusal()` afterward still wins the latch — proving
+  nobody claimed it. **Scope note**: this fix reaches `CSG_UNION` only.
+  `CSG_INTERSECTION`/`CSG_SUBTRACTION` route through `BracketDistanceLocal`,
+  which carries its OWN separate, differently-motivated final range check
+  (its comment: "the final `d > maxDistLocal` test below is what actually
+  decides whether the answer is in range" — the probe's own doubling walk
+  is budget-capped for EFFORT reasons throughout, unlike the outer check's
+  single post-hoc multiply) and was not touched by this item; a far
+  intersection or subtraction still refuses today, a residual left for a
+  future pass rather than folded into this grouped P3 fix.
+
+| suite | count |
+|---|---|
+| `ProximitySignalTest` | **439 passed, 0 failed** (436 above; +3 for (j)'s far-union no-refusal fixture) |
+| `CSGObjectIdentityTest` / `CsgSurfacePayloadTest` / `CsgFloorOwnershipTest` / `CsgOperandTransformTest` / `CsgProbeFloorTest` | 18 / 348 / 72 / 36 / 49, 0 failed (unmoved) |
+| `GeometryUVRoundtripTest` / `SceneSnapshotTest` / `ObjectMirrorTest` / `BoxGeometryTest` / `DeferredRealizeTest` / `CSGNullGeometryLuminaireCrashTest` | PASS, 0 failed (unmoved) |
+| `MeshClosestPointTest` / `ProximityInvalidationTest` / `ExpressionMemoTest` | 65 / 26 / 205, 0 failed (unmoved) |
+
 ---
 
 ## 9. Test plan

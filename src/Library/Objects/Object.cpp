@@ -165,33 +165,47 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 	// that rotates NOTHING is the convergence test.  `maxSweeps == 0`
 	// therefore falls straight through to the loose fallback, which is how
 	// a test reaches the `Loose` state without a pathological matrix.
+	//
+	// RELATIVE threshold, at a few ulps of the product of the two column
+	// norms: an absolute one would either never converge on a large object
+	// or stop early on a small one.  A single helper carries this criterion
+	// so the sweep loop's live check and the off-by-one confirmation below
+	// (added after review; see its own comment) cannot drift apart the way
+	// `CSGObject::LocalBoxDiagonal`'s note warns a duplicated screen will.
+	//
+	// TWO SEPARATE SQUARE ROOTS, not `sqrt(alpha*beta)`, and that is not a
+	// style choice: column norms above ~1.2e77 overflow the PRODUCT to +inf
+	// while each factor is finite, the threshold becomes inf, no pair is
+	// ever judged to need rotation, and the sweep loop then declares
+	// CONVERGENCE on the raw column norms -- reporting `Jacobi` for a pair
+	// that under-states sigma_max and over-states sigma_min by an unbounded
+	// factor.  `sqrt(alpha) * sqrt(beta)` is the same number for every
+	// input that does not overflow and is finite for every input that does.
+	auto pairNeedsRotation = []( const Vector3& u, const Vector3& v ) -> bool {
+		const Scalar alpha = Vector3Ops::SquaredModulus( u );
+		const Scalar beta  = Vector3Ops::SquaredModulus( v );
+		const Scalar gamma = Vector3Ops::Dot( u, v );
+		return fabs( gamma ) > Scalar( 1e-15 ) * sqrt( alpha ) * sqrt( beta );
+	};
+
 	Vector3 a[3] = { c0, c1, c2 };
 	bool converged = false;
+	// Whether the loop body ran at least once -- guards the off-by-one
+	// confirmation below so a `maxSweeps == 0` call (which never attempted
+	// a rotation at all) is untouched by it; see that comment.
+	bool ranAnySweep = false;
 	for( int sweep = 0; sweep < maxSweeps && !converged; ++sweep ) {
+		ranAnySweep = true;
 		bool rotated = false;
 		for( int p = 0; p < 2; ++p ) {
 			for( int q = p + 1; q < 3; ++q ) {
-				const Scalar alpha = Vector3Ops::SquaredModulus( a[p] );
-				const Scalar beta  = Vector3Ops::SquaredModulus( a[q] );
-				const Scalar gamma = Vector3Ops::Dot( a[p], a[q] );
-				// RELATIVE threshold, at a few ulps of the product of the
-				// two column norms: an absolute one would either never
-				// converge on a large object or stop early on a small one.
-				//
-				// TWO SEPARATE SQUARE ROOTS, not `sqrt(alpha*beta)`, and
-				// that is not a style choice: column norms above ~1.2e77
-				// overflow the PRODUCT to +inf while each factor is finite,
-				// the threshold becomes inf, no pair is ever rotated, and
-				// the sweep loop then declares CONVERGENCE on the raw
-				// column norms -- reporting `Jacobi` for a pair that
-				// under-states sigma_max and over-states sigma_min by an
-				// unbounded factor.  `sqrt(alpha) * sqrt(beta)` is the same
-				// number for every input that does not overflow and is
-				// finite for every input that does.
-				if( !( fabs( gamma ) > Scalar( 1e-15 ) * sqrt( alpha ) * sqrt( beta ) ) ) {
+				if( !pairNeedsRotation( a[p], a[q] ) ) {
 					continue;
 				}
 				rotated = true;
+				const Scalar alpha = Vector3Ops::SquaredModulus( a[p] );
+				const Scalar beta  = Vector3Ops::SquaredModulus( a[q] );
+				const Scalar gamma = Vector3Ops::Dot( a[p], a[q] );
 				// The standard stable form: solve for the rotation that
 				// zeroes `gamma`, taking the SMALLER root so the rotation
 				// angle stays under 45 degrees and the iteration cannot
@@ -209,6 +223,42 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 		if( !rotated ) {
 			converged = true;
 		}
+	}
+
+	// OFF-BY-ONE CONFIRMATION (added after review).  The loop above only
+	// ever declares convergence when a WHOLE sweep completes and rotates
+	// NOTHING -- so if the sweep that actually lands the matrix at mutual
+	// orthogonality is itself the LAST one `maxSweeps` permits, there is no
+	// further sweep left to observe "nothing rotated", and a matrix that is,
+	// in fact, converged is mislabelled `Loose` on a technicality of the
+	// iteration count rather than on the matrix's own conditioning.  A
+	// reviewer found this by construction: `maxSweeps == 1` on a matrix
+	// needing exactly one rotation to orthogonalize converges in every
+	// sense but reports `Loose`.
+	//
+	// Confirmed with one more READ-ONLY pass over the three pairs -- the
+	// same criterion the loop above uses, through the same
+	// `pairNeedsRotation` helper, WITHOUT applying a rotation -- rather than
+	// spending another entry from the `maxSweeps` budget on a sweep whose
+	// outcome (no rotation) is already knowable from the current `a[]`.
+	// Gated on `ranAnySweep` so a `maxSweeps == 0` call -- which never
+	// attempted a rotation in the first place -- is untouched: it is not
+	// "one sweep short of noticing convergence", it did no work at all, and
+	// `ProximitySignalTest` (i) relies on exactly that call reaching
+	// `Loose` on an ALREADY-ORTHOGONAL `(3, 1, 0.4)` axis-aligned diagonal
+	// (whose columns have zero cross dot products before any Jacobi work
+	// happens at all) -- this confirmation, ungated, would otherwise
+	// declare that matrix converged with zero sweeps spent, which is a true
+	// fact about the matrix but not what a `maxSweeps == 0` BUDGET call is
+	// asking.
+	if( !converged && ranAnySweep ) {
+		bool wouldRotate = false;
+		for( int p = 0; p < 2 && !wouldRotate; ++p ) {
+			for( int q = p + 1; q < 3 && !wouldRotate; ++q ) {
+				wouldRotate = pairNeedsRotation( a[p], a[q] );
+			}
+		}
+		converged = !wouldRotate;
 	}
 
 	if( converged ) {
