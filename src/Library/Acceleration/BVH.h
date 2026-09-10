@@ -1096,7 +1096,8 @@ namespace RISE
 		// happens FIRST, `nextafter` second -- for a `double` whose
 		// magnitude exceeds `FLT_MAX` (~3.4e38) by more than half a `float`
 		// ULP, the cast alone overflows to +-infinity (IEEE round-to-nearest;
-		// a `double` inside `(FLT_MAX, FLT_MAX*(1+2^-24))` instead rounds TO
+		// a `double` inside `(FLT_MAX, FLT_MAX*(1+2^-25))` -- within half a
+		// `float` ULP above the largest finite `float` -- instead rounds TO
 		// `FLT_MAX`, where `nextafter( FLT_MAX, FLT_MAX )` returns `FLT_MAX`
 		// itself -- the same clamped end state by a different route), and `nextafter( -infinity, -FLT_MAX )` (or
 		// the `+infinity`/`FLT_MAX` mirror) does not step 1 ULP OUTWARD from

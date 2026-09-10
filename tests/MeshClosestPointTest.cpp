@@ -865,7 +865,7 @@ static void TestCandidateSourcesAgree()
 		// non-refusing answer at 0.05 -- and BOTH sources must find it: a
 		// TLAS build that mishandled its +/-inf box would prune it out of
 		// some node and answer with something else (or refuse).  The 6000-probe
-		// differential below covers that too (thousands of its probes are
+		// differential ABOVE covers that too (thousands of its probes are
 		// within radius of the z = 0 plane), so this station is the SPELLED-OUT
 		// case, not the only guard; what it uniquely adds is a closed-form
 		// answer (0.05) rather than mere agreement between the two sources.

@@ -1729,7 +1729,9 @@ void ObjectManager::InvalidateSpatialStructure() const
 	// array no builder touches).  `mSpatialGen` is a plain non-atomic
 	// counter read cross-thread by `GetSpatialStructureGeneration()`, so
 	// bumping it inside the lock, as `Shutdown()` does, keeps the two sites
-	// consistent.  Without that, an
+	// consistent (both inside the same critical section; `Shutdown()` bumps
+	// after its tree teardown, this function before -- either order is
+	// serialized, and the unlocked reader compares for equality only).  Without that, an
 	// invalidate can be LOST against a concurrent lazy self-heal: a render
 	// thread's unlocked `pBVH` read comes back null (no prior
 	// `PrepareForRendering`) and calls `CreateBVH()`, which takes the mutex
