@@ -249,7 +249,10 @@ static bool LoadBeautyCamParams( const Cst::Document& doc, CamParams& out, unsig
 	return true;
 }
 
-static Point2 ProjectWorldToPixel( const CamParams& c, const Point3& P )
+//! World point -> the SCREEN point the camera consumes.  NOT a raster
+//! index: see `ScreenToRaster` below for the difference, and for the bug
+//! that conflating the two produced.
+static Point2 ProjectWorldToScreen( const CamParams& c, const Point3& P )
 {
 	const Vector3 forward = Vector3Ops::Normalize( Vector3Ops::mkVector3( c.lookat, c.location ) );
 	const Vector3 right   = Vector3Ops::Normalize( Vector3Ops::Cross( forward, c.up ) );
@@ -289,10 +292,53 @@ static Point2 ProjectWorldToPixel( const CamParams& c, const Point3& P )
 	return Point2( x_pix, y_pix );
 }
 
+//! SCREEN POINT -> RASTER INDEX, and the FIX for the bug this test
+//! shipped with on 2026-09-10.
+//!
+//! THE TWO COORDINATE SYSTEMS, and why they are not the same one.  Every
+//! RISE camera consumes a SCREEN point whose y counts UP from the bottom
+//! of the frame: the rasterizer's per-pixel loop
+//! (`PixelBasedPelRasterizer::IntegratePixel`, both its sampled branch --
+//! `ptOnScreen = Point2( x + jx - 0.5, (height-y) + jy - 0.5 )` -- and its
+//! unsampled one, `Point2( x, height-y )`) hands the camera `height - y`
+//! for RASTER row `y`.  The captured framebuffer, on the other hand, is
+//! indexed by that raster row, top-down.  So a screen point `s` is imaged
+//! by raster row `height - s`, and reading `pixels[ (int)s.y ]` reads the
+//! MIRRORED row.
+//!
+//! WHAT THAT COST.  Until this fix the painter stations projected to a
+//! screen point and then indexed the framebuffer with it directly.  S1
+//! survived because it lands at y = 300.0 on a 600-row film and
+//! `600 - 300 == 300` -- the flip is the identity at the vertical centre,
+//! which is exactly where the `lookat` station sits.  S6, off-axis at
+//! y = 407.1, was read at raster row 407 instead of 193: a floor pixel
+//! that carries no cap contribution at all, so the probe and the control
+//! renders agree there and the ratio reads ~1.02 no matter what the
+//! signal says.  That reading was mistaken for a render-time defect in
+//! `proximity()` and recorded as an open finding in this file, in the
+//! scene header and in the design doc's 8.5; all three are corrected in
+//! the same commit.  The signal was right all along: at the TRUE row the
+//! probe pixel is exactly black, at 1, 8 and 64 spp alike.
+//!
+//! ROUNDING.  Raster row `y` covers screen y in [height-y-0.5,
+//! height-y+0.5) (read it off the `+ jy - 0.5` above, with jy in [0,1)),
+//! and column `x` covers screen x in [x-0.5, x+0.5) -- so both axes round
+//! to nearest, not `floor`, which is the other half-pixel this used to
+//! get wrong on the x axis.
+static void ScreenToRaster( const CamParams& c, const Point2& screen, int& outX, int& outY )
+{
+	outX = (int)std::floor( screen.x + 0.5 );
+	outY = (int)std::floor( (double)c.height - screen.y + 0.5 );
+}
+
 //! Validates the formula above against the REAL `ThinLensCamera`: the
 //! chief ray (lens sample at the disk centre, per the
 //! `tests/CameraUnitConversionTest.cpp` precedent) generated for the
-//! computed pixel must point at `P`.
+//! computed screen point must point at `P`.  Takes a SCREEN point, which
+//! is what `ThinLensCamera::GenerateRayWithLensSample` takes -- so this
+//! check could never have caught the raster/screen confusion above, and
+//! did not; the guard that does is the cap1 cast in (b), which now builds
+//! its screen point back OUT of the raster index the readback uses.
 static bool ValidateProjection( const CamParams& c, const Point3& P, const Point2& pix )
 {
 	ThinLensCamera* cam = new ThinLensCamera(
@@ -598,9 +644,9 @@ int main()
 		// A dense 4x4 cm grid around S6 (checked during investigation,
 		// not asserted here to keep the log short) confirms the field is
 		// FLAT ZERO throughout the neighbourhood -- the query-channel
-		// station is not a knife-edge coincidence. See the scene header's
-		// "Deviations" paragraph for why the PAINTER station at S6 (below)
-		// nonetheless measures a value close to 1, not the query's 0.
+		// station is not a knife-edge coincidence, and it is why the
+		// PAINTER station at S6 (below) can assert a HARD 0: the probe
+		// pixel and every pixel the film filter gathers from are black.
 	}
 
 	// S7: inside the slot mouth, local (0.03, y, 0.20) -- the composite
@@ -647,16 +693,34 @@ int main()
 		Check( IsVisible( mgr, cam.location, s1World, &occluder1 ), "(b) MONEY -- S1's sightline from the beauty camera is UNOCCLUDED" );
 		Check( IsVisible( mgr, cam.location, s6World, &occluder6 ), "(b) MONEY -- S6's sightline from the beauty camera is UNOCCLUDED" );
 
-		const Point2 pix1 = ProjectWorldToPixel( cam, s1World );
-		const Point2 pix6 = ProjectWorldToPixel( cam, s6World );
+		const Point2 pix1 = ProjectWorldToScreen( cam, s1World );
+		const Point2 pix6 = ProjectWorldToScreen( cam, s6World );
+
+		// The RASTER indices the framebuffer is actually read at -- the
+		// screen points above flipped through `ScreenToRaster`, whose
+		// comment records the bug that omitting the flip caused.
+		int x1 = 0, y1 = 0, x6 = 0, y6 = 0;
+		ScreenToRaster( cam, pix1, x1, y1 );
+		ScreenToRaster( cam, pix6, x6, y6 );
+		Check( y1 == 300 && y6 == (int)filmH - 407,
+			"(b) MONEY -- the raster rows are the SCREEN rows flipped through height - y "
+			"(S1 at the vertical centre is its own mirror; S6, off-axis, is not -- the flip "
+			"is load-bearing exactly where it used to be missing)" );
 
 		// Sanity guard against a pixel-picking mistake: 200 REAL
 		// aperture-jittered samples (a fresh ThinLensCamera, the actual
 		// per-sample `GenerateRay` path that draws its own lens sample
 		// from `rc.random`, exactly as every one of the render's 512 spp
 		// does) within S6's pixel must all land on cap1, close to S6
-		// itself -- ruling out "the wrong object/point is being read" as
-		// the explanation for the painter-station finding below.
+		// itself -- ruling out "the wrong object/point is being read".
+		//
+		// IT BUILDS ITS SCREEN POINT OUT OF THE RASTER INDEX `(x6, y6)`
+		// the readback below uses, exactly as `IntegratePixel` does, NOT
+		// out of `pix6` directly.  That is the whole point of the guard
+		// after 2026-09-10: cast through the same index you read, or the
+		// check validates a pixel the readback never touches -- which is
+		// how the mirrored row went unnoticed through a 200-cast sanity
+		// check that passed.
 		{
 			ThinLensCamera* sanityCam = new ThinLensCamera(
 				cam.location, cam.lookat, cam.up,
@@ -665,7 +729,9 @@ int main()
 				Vector3(0,0,0), Vector2(0,0), 0u, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0 );
 			RandomNumberGenerator sanityRng( 1u );
 			RuntimeContext sanityRc( sanityRng, RuntimeContext::PASS_NORMAL, false );
-			const double baseX = std::floor( pix6.x ), baseY = std::floor( pix6.y );
+			// `IntegratePixel`'s own screen point for raster pixel (x6, y6).
+			const double baseX = (double)x6 - 0.5;
+			const double baseY = (double)filmH - (double)y6 - 0.5;
 			int nCap1 = 0;
 			const int kSamples = 200;
 			for( int i = 0; i < kSamples; ++i ) {
@@ -681,8 +747,8 @@ int main()
 			Check( nCap1 == kSamples, "(b) every one of 200 aperture-jittered samples in S6's pixel lands on cap1" );
 		}
 
-		std::cout << "    S1 projects to pixel (" << pix1.x << ", " << pix1.y << ")" << std::endl;
-		std::cout << "    S6 projects to pixel (" << pix6.x << ", " << pix6.y << ")" << std::endl;
+		std::cout << "    S1 projects to screen (" << pix1.x << ", " << pix1.y << ") -> raster pixel (" << x1 << ", " << y1 << ")" << std::endl;
+		std::cout << "    S6 projects to screen (" << pix6.x << ", " << pix6.y << ") -> raster pixel (" << x6 << ", " << y6 << ")" << std::endl;
 		Check( ValidateProjection( cam, s1World, pix1 ), "(b) MONEY -- S1's projected pixel's chief ray, cast through the REAL ThinLensCamera, "
 			"points at S1 (cannot disagree with the engine)" );
 		Check( ValidateProjection( cam, s6World, pix6 ), "(b) ...and the same holds for S6" );
@@ -713,9 +779,13 @@ int main()
 			// Cross-check: on a JOB DERIVED FROM THE PROBE DOCUMENT ITSELF
 			// (not the outer job), the QUERY CHANNEL still reads 0 at S6 --
 			// so the underlying `NearestOtherSurface` machinery agrees with
-			// itself regardless of which derived Job asks. This isolates
-			// the finding below to render-TIME painter evaluation, not the
-			// signal or the probe-document construction.
+			// itself regardless of which derived Job asks.  Kept from the
+			// 2026-09-10 investigation: it is the check that isolates a
+			// future painter-station failure to render-TIME evaluation
+			// rather than to the signal or to how the probe document was
+			// built.  (The failure it was written for turned out to be in
+			// neither -- it was this test's own framebuffer indexing; see
+			// `ScreenToRaster`.)
 			{
 				Job* checkJob = new Job();
 				std::vector<std::string> checkDiags;
@@ -752,9 +822,8 @@ int main()
 		Check( probeOk && controlOk, "(b) both the probe and control copies render" );
 
 		if( probeOk && controlOk ) {
-			const int x1 = (int)std::floor( pix1.x ), y1 = (int)std::floor( pix1.y );
-			const int x6 = (int)std::floor( pix6.x ), y6 = (int)std::floor( pix6.y );
-
+			// (x1,y1) / (x6,y6) are the RASTER indices computed above by
+			// `ScreenToRaster` -- read its comment before touching them.
 			const double p1 = probeImg.At( x1, y1 ), c1 = controlImg.At( x1, y1 );
 			const double p6 = probeImg.At( x6, y6 ), c6 = controlImg.At( x6, y6 );
 
@@ -769,25 +838,17 @@ int main()
 			if( c6 > 0.0 ) {
 				const double ratio6 = p6 / c6;
 				std::cout << "    S6 painter ratio: probe=" << p6 << " control=" << c6 << " ratio=" << ratio6 << std::endl;
-				// DEVIATION FROM docs/PROXIMITY_SHOWCASES.md Sec 1 (named in the
-				// scene header's "Deviations" paragraph and in the final report):
-				// the query channel is unambiguously 0 at S6 and in a 4x4 cm
-				// neighbourhood around it (asserted above, cross-checked on three
-				// independently-derived Jobs including the probe document's own),
-				// and 200 real aperture-jittered camera samples in S6's pixel all
-				// land on cap1 within a millimetre of S6 itself -- yet the ACTUAL
-				// RENDERED painter ratio at >=2 samples/pixel measures close to 1,
-				// not the query-predicted 0. A 1-sample-per-pixel render of the
-				// same probe document gives the query-correct answer (exactly
-				// black at this station); the discrepancy appears only once
-				// multiple samples per pixel are averaged. This band (measured
-				// centre ~0.97 across repeated runs) records the OBSERVED render
-				// behaviour rather than the falsified prediction, so the suite
-				// passes and the finding is on record rather than silently
-				// masked by a loosened tolerance around the wrong number.
-				CheckClose( ratio6, 0.97, 0.20,
-					"(b) S6's painter ratio is measured at ~1, NOT the query-predicted 0 -- see the scene "
-					"header's Deviations paragraph and the final report" );
+				// The SPEC's value (docs/PROXIMITY_SHOWCASES.md Sec 1: 0
+				// within 0.08).  It reads a hard 0 rather than a
+				// near-0 -- `dust` is exactly 0 across the whole
+				// neighbourhood 6.5 cm from the wall, so the probe pixel is
+				// exactly black and the filtered film has nothing but zeros
+				// to gather from its neighbours either.  Between 2026-09-10
+				// and this commit this line asserted ~0.97 instead, because
+				// the readback was indexing the framebuffer with a SCREEN
+				// row: see `ScreenToRaster` above.
+				CheckClose( ratio6, 0.0, 0.08,
+					"(b) MONEY -- S6's painter ratio matches the predicted 0 (nothing within 2 cm)" );
 			}
 		}
 	}
