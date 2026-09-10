@@ -45,7 +45,41 @@ namespace RISE
 			// test) over scene objects.  bUseBSPtree is the constructor
 			// gate name kept for back-compat; semantically it now means
 			// "build a top-level BVH".
-			mutable BVH<const IObjectPriv*>*    pBVH;
+			//
+			// ATOMIC, not a plain pointer, because of a REAL double-checked-
+			// locking race and not only a theoretical one: `IntersectRay` /
+			// `IntersectShadowRay` / `IntersectOcclusionRay` each read this
+			// with no lock and lazily call `CreateBVH()` on a null read (the
+			// "PrepareForRendering was skipped" self-heal) -- and several
+			// render worker threads reach that read at once the FIRST time a
+			// scene renders without a prior `PrepareForRendering`.  Under a
+			// plain `T*` that is a textbook DCLP bug: `CreateBVH`'s
+			// `pBVH = newpBVH` (an ordinary store, under `treeCreationMutex`)
+			// gives the mutex no say over what an UNLOCKED reader on another
+			// thread observes -- the compiler/CPU are free to make that
+			// store visible before the `BVH` object's own constructor writes
+			// are, so a second thread's unlocked read of a non-null `pBVH`
+			// is not a guarantee that the object behind it is fully built.
+			// `std::atomic<T*>` with a `memory_order_release` store here and
+			// `memory_order_acquire` loads at every reader closes that:
+			// once a reader observes the new pointer, it is guaranteed to
+			// observe everything the builder wrote before publishing it.
+			//
+			// WHAT THIS DOES **NOT** FIX: `InvalidateSpatialStructure`
+			// releases the OLD `pBVH` with no lock at all (by design -- see
+			// its own comment), so a thread that already loaded the old
+			// pointer and is mid-traversal when an invalidate on another
+			// thread drops the last reference is a genuine use-after-free
+			// REGARDLESS of atomicity -- atomics make the pointer itself
+			// race-free, they do not extend the pointee's lifetime across a
+			// concurrent release.  That hazard is bounded today by the
+			// engine's documented contract that a render pass owns a frozen
+			// scene (docs/ARCHITECTURE.md) -- `InvalidateSpatialStructure`
+			// is a between-passes / scene-edit operation, never one a render
+			// worker calls or races against.  A reader-holds-a-reference
+			// (hazard-pointer / epoch-reclamation) scheme would be needed to
+			// close that hazard structurally; out of scope here.
+			mutable std::atomic<BVH<const IObjectPriv*>*> pBVH;
 			mutable Octree<const IObjectPriv*>* pOctree;
 			mutable unsigned long long          mSpatialGen;   //!< advanced on every InvalidateSpatialStructure (see IObjectManager)
 

@@ -275,7 +275,15 @@ ObjectManager::~ObjectManager( )
 	// nothing, and would risk locking a mutex mid-destruction that a
 	// stalled other thread still holds. `pBVH`/`pOctree`/`pBoxes` right
 	// above follow the same convention for the same reason.
-	safe_release( pBVH );
+	{
+		// `pBVH` is now `std::atomic<T*>`, which `safe_release`'s `T*&`
+		// parameter cannot bind to directly -- relaxed load/store here
+		// matches the "no mutex, nothing else can be racing" contract this
+		// destructor already states for `pOctree` / `pBoxes` beside it.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_relaxed );
+		safe_release( localBVH );
+		pBVH.store( localBVH, std::memory_order_relaxed );
+	}
 	safe_release( pOctree );
 	delete pBoxes.load( std::memory_order_relaxed );
 	pBoxes.store( 0, std::memory_order_relaxed );
@@ -304,8 +312,13 @@ void ObjectManager::CreateBVH() const
 {
 	treeCreationMutex.lock();
 
-	// Check again if we need to create it
-	if( pBVH ) {
+	// Check again if we need to create it.  Relaxed: `treeCreationMutex`
+	// already serializes every WRITER against every other writer (this
+	// function is the only one that stores a non-null `pBVH`), so this
+	// re-check only needs to see this thread's own prior work, never a
+	// concurrent one's -- the ordering that matters for UNLOCKED readers is
+	// the release store below, not this guard.
+	if( pBVH.load( std::memory_order_relaxed ) ) {
 		treeCreationMutex.unlock();
 		return;
 	}
@@ -344,7 +357,12 @@ void ObjectManager::CreateBVH() const
 
 	BVH<MYOBJ>* newpBVH = new BVH<MYOBJ>( *this, elements, bbox, cfg );
 	GlobalLog()->PrintNew( newpBVH, __FILE__, __LINE__, "top-level bvh" );
-	pBVH = newpBVH;
+	// RELEASE: publishes the fully-built `BVH` -- every write the
+	// constructor above made -- before the pointer becomes visible to an
+	// unlocked reader's `memory_order_acquire` load.  This is the half of
+	// the double-checked-locking fix that actually matters; the relaxed
+	// re-check above only protects this function against itself.
+	pBVH.store( newpBVH, std::memory_order_release );
 
 	treeCreationMutex.unlock();
 }
@@ -693,8 +711,14 @@ bool ObjectManager::NearestOtherSurface(
 	// scene is invisible to BOTH `NearestOtherSurface` and `IntersectRay`
 	// until `InvalidateSpatialStructure` + a rebuild, never one before the
 	// other.
+	// ACQUIRE: pairs with CreateBVH's / InvalidateSpatialStructure's release
+	// stores -- this is the read half of the fix, and unlike IntersectRay's
+	// reader below, this one has NO self-heal (a null read here is a
+	// legitimate "no TLAS at this object count" case, not a "build one
+	// lazily" case).
 	const BVH<const IObjectPriv*>* const tlas =
-		( bUseBSPtree && items.size() > nMaxObjectsPerNode ) ? pBVH : 0;
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
 
 	if( tlas && tlas->numPrims() > 0 ) {
 		// The traversal owns `best`; this mirror exists only to hand the
@@ -775,9 +799,18 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 	RISE_PROFILE_INC(nPrimaryRays);
 
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
-		if( !pBVH ) {
+		// ACQUIRE, re-loaded after a self-heal build: this is the DCLP
+		// reader half -- see pBVH's declaration comment in ObjectManager.h.
+		// The local copy (not a second bare `pBVH->...` after the guard) is
+		// what keeps this call correct if a concurrent thread's
+		// InvalidateSpatialStructure runs between the guard and the use;
+		// it does not, on its own, extend that BVH's lifetime past a
+		// concurrent release (same residual the header comment states).
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
 			GlobalLog()->PrintEasyWarning( "ObjectManager: BVH built lazily during IntersectRay; call PrepareForRendering() before rendering" );
 			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
 		}
 
 		ri.geometric.bHit = false;
@@ -786,7 +819,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		// BVH<>::IntersectRay auto-routes to BVH4 SIMD traversal when
 		// the post-build collapse populated the wide nodes (the common
 		// case for any non-degenerate scene).
-		pBVH->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+		localBVH->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
 			GlobalLog()->PrintEasyWarning( "ObjectManager: Octree built lazily during IntersectRay; call PrepareForRendering() before rendering" );
@@ -876,10 +909,14 @@ bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, co
 	RISE_PROFILE_INC(nShadowRays);
 
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
-		if( !pBVH ) {
+		// Same DCLP-correct acquire/self-heal/re-load pattern as
+		// IntersectRay above; see pBVH's declaration comment.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
 			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
 		}
-		return pBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+		return localBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
 			CreateOctree();
@@ -942,11 +979,15 @@ bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, co
 bool ObjectManager::IntersectOcclusionRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
-		if( !pBVH ) {
+		// Same DCLP-correct acquire/self-heal/re-load pattern as
+		// IntersectRay above; see pBVH's declaration comment.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
 			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
 		}
 		const OcclusionElementProcessor occlusionEp( *this );
-		return pBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &occlusionEp );
+		return localBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &occlusionEp );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
 			CreateOctree();
@@ -1572,7 +1613,7 @@ void ObjectManager::PrepareForRendering() const
 		InvalidateSpatialStructure();
 	}
 
-	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH ) {
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH.load( std::memory_order_acquire ) ) {
 		CreateBVH();
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) && !pOctree ) {
 		CreateOctree();
@@ -1615,9 +1656,19 @@ void ObjectManager::PrepareForRendering() const
 void ObjectManager::InvalidateSpatialStructure() const
 {
 	mSpatialGen = NextSpatialGeneration();   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
-	if( pBVH ) {
-		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
-		safe_release( pBVH );
+	{
+		// RELEASE store: a concurrent unlocked reader's acquire load must
+		// see either the fully-live old `BVH` or the null that means
+		// "self-heal via CreateBVH", never a torn or reordered half-state.
+		// This still does NOT make the release itself safe against a
+		// reader mid-traversal of the OLD tree -- see pBVH's declaration
+		// comment in ObjectManager.h for that residual.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_relaxed );
+		if( localBVH ) {
+			GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
+			safe_release( localBVH );
+			pBVH.store( localBVH, std::memory_order_release );
+		}
 	}
 	if( pOctree ) {
 		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying octree for rebuild" );
