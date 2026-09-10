@@ -2803,6 +2803,45 @@ ones renumbered.
 
 ---
 
+### 8.5 Showcases
+
+Phase 1 shipped two showcases (`plank_closeup`, `weathered_workbench`); Phases 2
+and 3 shipped fully tested machinery with no beauty scene an author could open.
+`docs/PROXIMITY_SHOWCASES.md` specifies three scenes that fill that gap, each
+with stations predicted from the geometry before the scene was composed and
+measured by a harness test against the tracked scene.
+
+- **`pavilion_colonnade`** (Phase 3, CSG neighbour) — contact dust at the foot
+  of a fluted column, built from `glass_pavilion`'s own chunks (that scene's
+  camera frames none of its four cap-column junctions).
+  `tests/PavilionColonnadeShowcaseTest.cpp` drives eleven query stations plus
+  the per-object refusal / scene-wide cross-check pair against the tracked
+  file: every one matches its predicted value (54/54 checks), including the
+  tight CSG boundary-arm band at the 1 cm station (0.487376, inside
+  [0.4874, 0.5]) and the phantom-refusal station at the flute mouth (reads
+  exactly 0, where a tolerant landing test would report 0.5).
+  `CstDeriveGoldenTest` gains one row (448 MATCH, 0 DRIFT, 0 UNCOVERED). Cost:
+  live-vs-`def dust 0` at 64 spp under `pixelpel_rasterizer` measured
+  1.03×–1.17× across four runs in one session (noisy at this render size;
+  target ≤ 1.15×). **Open finding, not fixed here**: the S6 painter station —
+  and the shipped beauty render generally — measures a value close to a
+  reflectance of 1 rather than the query-confirmed 0, once more than one
+  sample per pixel is rendered; a 1-spp render of the identical document (via
+  both the in-process capture and an independent `bin/rise` CLI render) gives
+  the query-correct answer. The query channel itself is unambiguous (checked
+  on three independently-derived Jobs and a dense 4×4 cm grid around the
+  station, plus 200 real aperture-jittered camera samples confirming the
+  right object and point are being shaded), so the discrepancy is specific to
+  render-time multi-sample evaluation of the signal, not to this scene's
+  authoring or to `NearestOtherSurface` itself. See the scene's own header for
+  the full investigation record; flagged for a dedicated follow-up rather than
+  worked around in this showcase.
+- **`tidal_stones`** and **`shelf_bunny`** — specified in
+  `docs/PROXIMITY_SHOWCASES.md` §2 (`interior(r)`, signed half) and §3
+  (mesh-to-mesh and mesh-to-plank contact); not yet built as of this entry.
+
+---
+
 ## 9. Test plan
 
 - `tests/ProximitySignalTest.cpp` on scene C: closed forms per exact family

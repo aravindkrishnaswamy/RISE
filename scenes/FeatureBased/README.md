@@ -21,6 +21,27 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `BDPT/`: large BDPT showpieces and transport stress scenes
 - `Caustics/`: visually rich caustic showcases
 - `Combined/`: scenes that intentionally exercise several subsystems together
+
+  `pavilion_colonnade.RISEscene` is the Phase 3 CSG-neighbour showcase for cross-object
+  `proximity(r)` (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md Sec 8, docs/PROXIMITY_SHOWCASES.md Sec 1) --
+  a foot study of the fluted column that `glass_pavilion`'s own camera never frames (none of its
+  four cap-column junctions land in shot at 85 mm f/1.4 focused at 7 m). Built from
+  `glass_pavilion`'s own chunks (the same fluted-cylinder CSG columns, floor, ceiling, back wall and
+  two omni lights; `glass_pavilion` itself is not edited) with a new camera reframed on cap1's foot
+  and a new receiver material, `marble_cap`, whose reflectance is an `expression_painter` mixing the
+  pavilion's own white marble toward a dust tint on `proximity(0.02)`. Rendered under
+  `pixelpel_rasterizer` with `DefaultDirectLighting` (direct-only, so a cap pixel's probe/control
+  ratio is exactly its albedo -- no black-out needed, unlike the path-traced showcases). Eleven
+  query stations plus two per-object/cross-check assertions confirm the signal walks the composite's
+  real cross-section: an outer ring hugging the column wall, broken at each flute mouth where the
+  slot cuts clean through, with a per-object refusal at the mouth's tangent face that the scene-wide
+  query correctly falls back past (0.075, the floor beneath). `tests/PavilionColonnadeShowcaseTest.cpp`
+  drives all of it against the tracked file; 54/54 checks pass. The header records an open finding:
+  the S6 painter station and the shipped beauty render do not show the query-predicted result once
+  more than one sample per pixel is taken -- a reproducible render-time discrepancy from the signal
+  machinery, not a scene-authoring error, confirmed independently through the CLI and flagged for a
+  dedicated follow-up rather than worked around here.
+
 - `EnamelWatch/`: the complete vitreous-enamel watch hero
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
 - `GeometrySignals/`: the canonical showcase for the geometry-derived shading signals

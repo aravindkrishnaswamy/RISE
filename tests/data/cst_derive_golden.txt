@@ -17,6 +17,7 @@ scenes/FeatureBased/Combined/crystal_lens.RISEscene  a8aeeab079deb36e74324c47fec
 scenes/FeatureBased/Combined/diamond_teapot_pour.RISEscene  b110211201f4fec68794a1e669891321b2e787c7316ffa50eefe75203ecb2c74  8066  72
 scenes/FeatureBased/Combined/gi_spheres.RISEscene  490600c4c67ac166166b74d1ffed42514b26054178183aa1b0758b0b50f1e142  3658  54
 scenes/FeatureBased/Combined/glass_pavilion.RISEscene  1eb6c2f4d0647980af9de5fcd43848a3143dc7845e096a39d4d2dcab6a30832c  6376  67
+scenes/FeatureBased/Combined/pavilion_colonnade.RISEscene  4c184052a33fa7243b5d16a2ec1413d1586a4fd5e77c89606f17ccae5f2a4900  4955  55
 scenes/FeatureBased/Combined/planetary_survey.RISEscene  314e8e8e232e6d90c40c320696cf4a2e198be6ebdcc55dee09debd635249039f  6234  74
 scenes/FeatureBased/Combined/sculptors_studio.RISEscene  081726c690923b7018958569f4f92c2b46776f9b1563649845535492ee59ceb2  5946  63
 scenes/FeatureBased/Combined/showroom.RISEscene  87b28e9d175a005be15c1725037a332fcf4146c119ef7cbe1a5247761016c939  3907  54
