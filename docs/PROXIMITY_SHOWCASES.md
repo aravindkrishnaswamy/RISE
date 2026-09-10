@@ -1,7 +1,11 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised twice the same day after adversarial rounds
-(round 1, 8 P1s: the pavilion's shipped camera frames none of its caps; a
+Status: SPEC, 2026-09-10, revised three times the same day after adversarial
+rounds (round 3, 8 P1s: an unscaled teapot as the mid-ground prop would have
+engulfed the camera; the flagstone's centre, rise direction and low corner;
+its painter stations crossed the water at 51°; the probe-copy setter named
+no-ops on an absent parameter; the probe must swap the `expr`, not the `def`;
+the shelf camera sat at 22°. Round 1, 8 P1s: the pavilion's shipped camera frames none of its caps; a
 station inside the column; the pool's floor logic inverted; bound claims on
 receivers whose containers are exact boxes; a "dry" stone inside the pool; a
 `clamp(N.y)` control that is 0 on a sphere's flank; a shelf station with no
@@ -52,19 +56,26 @@ rasterizers). The painter stations below prove it anyway.
 - **Painter stations**: the same test renders a PROBE copy of the scene and
   a CONTROL copy in-process and reads the pixel ratio under each station.
   Mechanism (all existing API): `Cst::ParseToCst` the tracked file →
-  `Cst::DocSetParamValue(doc, chunkId, "def", occurrence, …)` to replace the
-  receiver's signal `def` (probe: the raw signal; control: the constant 1)
-  and to set `oidn_denoise FALSE` on the rasterizer chunk (MANDATORY: the
-  default is TRUE and a denoised probe smears the band; `SourceHygieneTest`
-  hard-fails any test defining an `IRasterizerOutput` without the literal
+  `Cst::DocSetOrAddParamValue(doc, chunkId, …)` (NOT `DocSetParamValue`,
+  which silently no-ops when the parameter is absent from the chunk) to
+  replace the receiver painter's `expr` (probe: `vec3(dust)` — the RAW
+  signal, exactly as design §8.2's albedo protocol; control: `vec3(1)`;
+  swapping only the `def` would leave the beauty `mix`/`clamp`/`fbm` in
+  both copies and the ratio would not be the signal) and to set
+  `oidn_denoise FALSE` on the rasterizer chunk (MANDATORY: the default is
+  TRUE and a denoised probe smears the band; `SourceHygieneTest` hard-fails
+  any test defining an `IRasterizerOutput` without the literal
   `oidn_denoise false`) → `Cst::DeriveToJob` → `Job::RemoveRasterizerOutputs()`
   + `GetRasterizer()->AddRasterizerOutput(capturing output)` + `Job::Rasterize()`
   (the `EnvLightBalanceTest` pattern; values are linear doubles, no sRGB).
   Relief modifiers stripped; every material a black Lambertian except the
-  receiver and, in showcase 2, the water (which must stay a dielectric —
-  see §2). 64 spp on both copies (the two renders seed independently from
-  the wall clock, so their per-pixel ratio does not cancel AA jitter; the
-  ±0.08 band and 64 spp absorb it). The pixel footprint (mm) is stated; where
+  painter receivers (showcase 2 has two, and its water stays a dielectric —
+  see §2). A probe copy MAY replace the camera chunk (showcase 2 reads its
+  wet ramp from an overhead probe camera). 512 spp on both copies: §8.2
+  measured that a 16-spp divide-by-control probe produced ratios above 1
+  because the two renders seed independently from the wall clock, and 512
+  was needed for every ratio to land in range, worst where the control is
+  dark; the ±0.08 band is stated on top of that. The pixel footprint (mm) is stated; where
   the footprint is coarser than the station spacing the query station
   adjudicates and the pixel is a sanity check with a stated wide band. A
   painter station is read ONLY where the sightline from the probe camera to
@@ -72,9 +83,11 @@ rasterizers). The painter stations below prove it anyway.
   within 10° of that interface's normal (so the refractive displacement is
   under a pixel — the header shows the angle).
 - **Framing rule**: a receiver's 2 cm ring must image at ≥ 8 px across in
-  the RADIAL direction (tangential size × sin(elevation)), its face seen at
-  ≥ 25° elevation, and the receiver inside the depth of field at a
-  1-pixel circle of confusion; the header shows the arithmetic (distance,
+  the RADIAL direction (tangential size × sin(elevation); thin-lens
+  magnification f/(d − f)), its face seen at ≥ 25° elevation, and every
+  STATION inside the depth of field at a 1-pixel circle of confusion (a
+  receiver's far parts may fall soft and the header says which); the
+  header shows the arithmetic (distance,
   focal length, sensor — `sensor_size` is the HORIZONTAL extent — f-stop,
   focus distance, DoF limits). The camera must not lie inside any solid.
 - **Beauty**: the scene renders at its shipped settings; a crop around the
@@ -94,7 +107,8 @@ rasterizers). The painter stations below prove it anyway.
   scene is edited by this spec, so no existing row drifts); the
   `scenes/FeatureBased/README.md` entry follows the plank entry's shape; the
   scene header records every measured number and every deviation from this
-  spec; §8.5 of the design doc gets one paragraph per showcase pointing here.
+  spec; a NEW §8.5 "Showcases" in the design doc (it ends at §8.4 today)
+  gets one paragraph per showcase pointing here.
 
 ## 1. `pavilion_colonnade` — contact dust at the foot of a fluted column (Phase 3, CSG neighbour)
 
@@ -107,12 +121,14 @@ foot study of its own.
 
 **New scene** `scenes/FeatureBased/Combined/pavilion_colonnade.RISEscene`,
 built from the pavilion's chunks (the same `colcylgeom`, `flutegeom`,
-`capgeom`, `column1` at (−2.5, 2.5, 2.5) un-rotated, the floor, the ceiling
-and back wall for bounce, the two omni lights), framed on cap1's foot with
-the vase brought into the mid-ground so the frame is not only marble:
-`vase` relocated to (−1.75, 0.15, 2.05) (the worker may move it within the
-frame but never onto a station's sightline). Camera, verified in review
-against the framing rule:
+`capgeom`, all four columns and caps at (±2.5, ·, ±2.5) with the pavilion's
+orientations, the floor, the ceiling and back wall for bounce, the two omni
+lights), framed on cap1's foot. NO prop is relocated into the frame: the
+pavilion's `vasegeom` is an unscaled Bezier teapot 6.5 world units wide
+(`AddBezierPatchGeometry` recentres, never normalises), and the glass
+sphere's pedestal is out of frame — this is a foot study of marble, floor
+checker and the columns behind. Camera, verified in review against the
+framing rule:
 ```
 thinlens_camera
   location        -2.5    0.9452  3.8407
@@ -124,17 +140,16 @@ thinlens_camera
   focus_distance  1.343
 ```
 Arithmetic: camera→S1 horizontal 1.100 m, Δy 0.770 → elevation 35.0°;
-distance 1.343 m → a 2 cm ring images at 16.6 px tangential, 9.5 px radial
-(22.22 px/mm on the 36 mm/800 px sensor); at f/16 with a 1-px (0.045 mm)
+distance 1.343 m → a 2 cm ring images at 17.2 px tangential, 9.9 px radial
+(thin-lens f/(d − f); 22.22 px/mm on the 36 mm/800 px sensor); at f/16 with a 1-px (0.045 mm)
 circle of confusion the DoF is [0.98, 2.12] m, holding S1 (1.343), S7
 (1.377), S6 (1.578) and the cap's far corner (1.891). The camera is 1.341 m
 from column1's axis, above the floor, outside cap1's footprint. `pixelpel_rasterizer`
 as the pavilion, 64 spp, `oidn_denoise` at the pavilion's setting for the
 beauty render (the probe copies force it off).
 
-**Receiver.** One new material `marble_cap` on `cap1` (the only cap in the
-new scene; the scene may also carry `cap2..cap4` and their columns for the
-bounce light, bound to the same material, but the frame holds cap1): a
+**Receiver.** One new material `marble_cap` on all four caps (the frame
+holds cap1; the others carry it harmlessly): a
 `lambertian_material` whose reflectance is an `expression_painter` —
 `def dust proximity(0.02)`; `expr mix(vec3(marble white), vec3(0.42, 0.36,
 0.30), clamp(dust*0.85 + 0.08*fbm(P*180.0, 3, 0.5, 2.0), 0, 1))` with the
@@ -145,10 +160,12 @@ prelude's way if breakup jitter is wanted). No relief, no roughness. A
 
 **What the picture shows.** The band follows the COMPOSITE's cross-section
 (the design's §8.4 crop): an outer ring hugging the round wall, BROKEN in a
-wedge ~8 cm wide at the slot mouth (from a point 1 cm outside the mouth the
-nearest real surface is the slot-wall/cylinder corner, 4.21 cm away), and
-two thin bands INSIDE the mouth hugging the slot walls (at |x| = 0.03 the
-wall is 1 cm away → 0.5). A cylinder neighbour would draw an unbroken ring;
+wedge ~8 cm wide at EACH of the two slot mouths (`flutegeom` is 0.5 deep,
+the column's diameter, so the slot cuts clean through: mouths at local ±z;
+from a point 1 cm outside a mouth the nearest real surface is the
+slot-wall/cylinder corner, 4.21 cm away), and two thin bands INSIDE each
+mouth hugging the slot walls (at |x| = 0.03 the wall is 1 cm away → 0.5).
+The camera at +z sees the near mouth; the far one is hidden by the column. A cylinder neighbour would draw an unbroken ring;
 the break-plus-inner-bands is the tell that the query walked the composite.
 The scene inherits the pavilion's pre-existing interpenetrations (the cap
 sits 7.5 cm into the floor box, the column base inside both); at r = 0.02
@@ -163,12 +180,13 @@ the 90°-azimuth wall stations, the flute refusal and the corner on the
 tracked pavilion; this test re-asserts the equivalent stations on the new
 scene and ADDS S6, S7, the painter stations and the cost.
 - S1 the wall at 20° azimuth from the mouth (NOT 90°: from this camera the
-  90° station's sightline grazes the cylinder with 3.9 mm clearance, a
-  contaminated pixel): local (0.088924, y, 0.244275), 1 cm outside the round
-  wall (|x| = 0.0855 > 0.04, so the nearest surface is the wall, corner
-  4.9 cm away) → world (−2.411075, 0.175, 2.744320) → 0.5 within the
-  composite band; the sightline's closest approach to the column IS the
-  station (unoccluded).
+  90° station's sightline passes the cylinder with 5.2 mm clearance, a
+  contaminated pixel): local (0.26 sin 20°, y, 0.26 cos 20°) = (0.088925, y,
+  0.244320), 1 cm outside the round wall (the station's |x| = 0.0889 and
+  the wall point's 0.0855 are both > 0.04, so the nearest surface is the
+  wall; corner 4.9 cm away) → world (−2.411075, 0.175, 2.744320) → 0.5
+  within the composite band; the sightline never comes nearer the axis
+  than the station itself (unoccluded).
 - S2 2 cm out on the same azimuth (radius 0.27) → 0; S3 4 cm out (0.29) → 0.
 - S4 flute mouth local +z, 1 cm out: (−2.5, 0.175, 2.76) → 0 on the scene
   query at r = 0.02; the per-object `column1->DistanceToSurface` at r = 0.1
@@ -212,16 +230,20 @@ width × height × depth = x × y × z; centres given):
   [−0.55, −0.02], inside the water; the stones rest on its top (y = −0.02),
   visible through the water as the pool floor. Its top computes to
   −0.019999999999999962 in double while a stone bottom at 0.02 − 0.04 is
-  −0.02 exactly, so a resting point is inside the bed by 5.6e-17 and
-  `DeepestOtherContainment` DOES count it — at depth 5.6e-17, dominated by
+  −0.02 exactly, so a resting point is inside the bed by 3.8e-17 and
+  `DeepestOtherContainment` DOES count it — at depth 3.8e-17, dominated by
   the water's depth under the running MAXIMUM. The header says this; the
   test asserts the water's value.
-- `sand`: four opaque strips, top at y = 0.03, inner faces 1 mm outside the
-  water (no coincident faces): `sand_px` 0.219 × 0.10 × 0.80 at (0.2905,
-  −0.02, 0) → x ∈ [0.181, 0.40]; `sand_nx` mirrored at x = −0.2905; `sand_pz`
-  0.362 × 0.10 × 0.219 at (0, −0.02, 0.2905) → x ∈ [−0.181, 0.181], z ∈
-  [0.181, 0.40]; `sand_nz` mirrored. No two strips overlap, none enters the
-  pool footprint.
+- `sand`: four opaque strips, top at y = 0.03, inner faces 0.5 mm outside
+  the water (no coincident face with the dielectric; the 0.5 mm seam images
+  under a pixel and reads as the pool's rim): `sand_px` 0.2195 × 0.10 × 0.80
+  at (0.29025, −0.02, 0) → x ∈ [0.1805, 0.40], z ∈ [−0.40, 0.40];
+  `sand_nx` mirrored at x = −0.29025; `sand_pz` 0.361 × 0.10 × 0.2195 at
+  (0, −0.02, 0.29025) → x ∈ [−0.1805, 0.1805], z ∈ [0.1805, 0.40]; `sand_nz`
+  mirrored. The z strips' end faces at x = ±0.1805 are coplanar with the x
+  strips' inner faces: two opaque boxes of one material sharing a plane
+  along a 0.22 m seam, stated here; it is not a receiver and no station is
+  near it. None enters the pool footprint.
 - `stone_a`: `sphere_geometry` r = 0.04 at (0, 0.02, 0): bottom −0.02 on the
   bed, top 0.06 (3 cm in air).
 - `stone_b`: `ellipsoid_geometry` radii (0.05, 0.03, 0.035) at (0.09, 0.01,
@@ -229,28 +251,34 @@ width × height × depth = x × y × z; centres given):
   at 0.01 − 0.03 = −0.02 on the bed; its footprint x ∈ [0.04, 0.14] stays
   inside the bed). Visual variety; its container is the water box (exact).
 - `stone_c`: `sdf_geometry` pebble — `sphere` r 0.03 at part origin and
-  `sphere` r 0.022 offset (0.02, 0, 0), joined by `smin` k 0.01 — at
-  (−0.08, 0.01, 0.04) so its lowest point (0.01 − 0.03 = −0.02) rests on the
-  bed. Container: the water box (exact).
+  `sphere` r 0.022 offset (0.02, 0, 0), joined by `smin` k 0.007 (≈ a third
+  of the small radius, the descriptor's guidance) — at (−0.08, 0.01, 0.04)
+  so its lowest point (0.01 − 0.03 = −0.02) rests on the bed. Container: the
+  water box (exact).
 - `stone_e`: a tilted FLAGSTONE — `box_geometry` 0.10 × 0.02 × 0.06 at
-  (−0.02, 0.005, −0.10), `orientation 0 0 −30` (rotated about z by −30°, so
-  its top face rises toward +x), placed so the top face's centre is at
-  y = 0.015 and the face crosses the waterline along a line. This is the
-  receiver whose wet ramp is READABLE: the top face's normal is (sin 30°,
-  cos 30°, 0), 30° from vertical, so a camera above sees the ramp across a
-  face at ≥ 60° elevation and the sightline crosses the water surface within
-  10° of its normal — no refractive displacement worth a pixel. Stations on
-  its top face: depth = 0.03 − y, with y = 0.015 + s·sin 30° for a point at
-  signed distance s along the face's rise from its centre.
+  (−0.02, 0.0111940, −0.10), `orientation 0 0 −25` (the scene language's
+  Euler triple is applied about the box's own centre; a −25° rotation about
+  z tilts the top normal to n = (sin 25°, cos 25°, 0) and the top face
+  RISES toward −x along t = (−cos 25°, sin 25°, 0)). The top face's centre
+  is the box centre + 0.01·n = (−0.015774, 0.0202571, −0.10); the rotated
+  corners lie at y = −0.019 (1 mm above the bed, no interpenetration),
+  −0.0009, 0.0233 and 0.0414, so the face crosses the waterline. A station
+  at signed distance s along t from the face centre has y = 0.0202571 +
+  s·sin 25°; the test SOLVES s for each target y (below) and asserts
+  |s| ≤ 0.05. This is the receiver whose wet ramp is readable — from the
+  OVERHEAD probe camera (§2 painter stations), not from the beauty camera,
+  whose sightlines cross the water at ~51° to its normal.
 - `stone_d`: `sphere_geometry` r = 0.03 at (0.26, 0.035, 0.09), on `sand_px`
-  (x ∈ [0.23, 0.29] inside the strip's [0.181, 0.40]): equator ring 5 mm
+  (x ∈ [0.23, 0.29] inside the strip's [0.1805, 0.40]): equator ring 5 mm
   above the sand, bottom 2.5 cm under. Its burial line is visible AT the
   sand surface; the buried ramp is not visible (opaque sand), so it carries
   no painter station.
-Camera: `thinlens_camera` at (0.10, 0.36, 0.34) looking at (0, 0.0, −0.02),
-50 mm, f/8, focus on stone_e's top face (the worker verifies the framing
-arithmetic in the header: the 2 cm ramp on stone_e ≥ 8 px radial, elevation
-≥ 45°). A key light rakes across the water from behind camera-left; a dim
+Camera (beauty): `thinlens_camera` at (0.10, 0.36, 0.34) looking at
+(0, 0.0, −0.02), 50 mm, f/22, focus 0.50 m (DoF [0.42, 0.62] m at a 1-px
+circle of confusion, which holds stone_d at 0.44 m and stone_a's top at
+0.46 m as well as the flagstone at 0.57 m); the view axis is at 43.9°, the
+flagstone is seen at 36.8° elevation and its 2 cm ramp images at ≥ 8 px
+radial (the header shows the arithmetic). A key light rakes across the water from behind camera-left; a dim
 sky fills. `pathtracing_pel_rasterizer`.
 
 **Why `interior` and not `proximity`.** A point on a stone below the
@@ -259,18 +287,18 @@ everything under water uniformly (or nothing, past r). `interior(0.02)` =
 clamp(depth/2 cm): 0 above the waterline, a ramp over the first 2 cm, 1
 below — a crisp line AT the waterline and a sheen that saturates 2 cm down.
 
-**Receivers' recipe.** Each stone: colour from an `expression_painter`
-(`def buried interior(0.02)`; `expr mix(dry, wet, buried)`; a fine `fbm`
-grain scaled by `(1 − buried)` so grain shows only on the dry part), and
-roughness from a `scalar_painter` (`expression mix(0.55, 0.12, buried)`
-with its OWN `def buried interior(0.02)` — a `def` does not cross chunks;
-the second call is an L1 memo hit) bound to whichever shipped material
-kind offers BOTH an `IPainter` reflectance slot and a scalar roughness slot
-taking a `scalar_painter` and is NOT a conductor (`cooktorrance_material`'s
-descriptor supports only `fresnel_mode conductor`, a metal; `coated_material`
-is the repo's wet-look material and the `add_wetness` verb's target — the
-worker reads its descriptor, names the slot, and if no such kind exists the
-stones are Lambertian colour-only and the header says so as a deviation).
+**Receivers' recipe.** Each stone is a `coated_material` whose `base` is a
+`ggx_material` (`fresnel_mode schlick_f0`, a dielectric) with `rd` bound to
+an `expression_painter` (`def buried interior(0.02)`; `expr mix(dry, wet,
+buried)`; a fine `fbm` grain scaled by `(1 − buried)` so grain shows only
+on the dry part) and `alphax`/`alphay` bound to a `scalar_painter`
+(`expression mix(0.55, 0.12, buried)` with its OWN `def buried
+interior(0.02)` — a `def` does not cross chunks; the second call is an L1
+memo hit), and whose `coat_weight` is a third `scalar_painter` reading
+`buried` — coverage is the physically right wetness slot and the one the
+`add_wetness` verb drives. (`cooktorrance_material` is conductor-only;
+`coated_material` has no reflectance slot of its own, hence the `base`.)
+One field drives colour, roughness and coat; three chunks declare it.
 
 **Stations** (the container at every station is the water box or the sand
 strip — exact families; tolerance 1e-9; every station point is ON the
@@ -283,12 +311,12 @@ receiver's surface, derived from the chunk's centre, radii and orientation):
 - B3 stone_a 1 cm under: (0.04, 0.02, 0) → depth 0.01 → 0.5.
 - B4 stone_a 2 cm under: (0.0387298, 0.01, 0) → depth 0.02 → 1.0.
 - B5 stone_a bottom (0, −0.02, 0): water top 0.05 away, floor 0.55 away,
-  bed counted at 5.6e-17 → running maximum 0.05 → 1.0.
+  bed counted at 3.8e-17 → running maximum 0.05 → 1.0.
 - B6 stone_d in sand_px (sand top 0.03, centre (0.26, 0.035, 0.09), r 0.03):
   equator point (0.29, 0.035, 0.09) → 5 mm above the sand → 0; the point at
   y = 0.02 at horizontal radius sqrt(0.03² − 0.015²) = 0.0259808 toward +x,
   (0.2859808, 0.02, 0.09) → depth 0.01 → 0.5 (the strip's top is nearest:
-  its inner face is 0.105 away, its outer 0.114); the bottom (0.26, 0.005,
+  its inner face is 0.1055 away, its outer 0.114); the bottom (0.26, 0.005,
   0.09) → depth 0.025 → 1.0.
 - B7 stone_b: the bottom point (0.09, −0.02, −0.05) → depth 0.05 → 1.0; a
   waterline point on the ellipsoid: solve the ellipsoid at y = 0.03 in its
@@ -301,17 +329,20 @@ receiver's surface, derived from the chunk's centre, radii and orientation):
   reached by `dynamic_cast<const SDFGeometry*>(obj->GetGeometry())` as
   `ProximitySignalTest` does; bisection tolerance 1e-10 stated) → the side
   point at y = 0.02 → depth 0.01 → 0.5 exact (container is the box).
-- B9 stone_e (the flagstone): three points on its top face at rise s = −0.03,
-  −0.01, +0.01 from the face centre (y = 0.015 + s/2 = 0.0, 0.01, 0.02 →
-  depths 0.03, 0.02, 0.01 → 1.0, 1.0, 0.5) and one at s = +0.04 (y = 0.035,
-  above the waterline → 0). The test builds the points from the chunk's
-  centre, dimensions and orientation.
-- Painter stations, probe camera = the shipped camera: B1 on stone_a (dry
-  top, 0) and the four B9 points on the flagstone's top face read through the
-  water at near-normal incidence (0 / 1.0 / 0.5 / 1.0 within 0.08; the
-  sightline angle to the water's normal stated). B3/B4 (a sphere's flank
-  under water) are QUERY-only: their normals are near-horizontal and any
-  sightline to them refracts obliquely.
+- B9 stone_e (the flagstone): four points on its top face at the TARGET
+  heights y = 0.0, 0.01, 0.02, 0.035 (s = −0.04793, −0.02427, −0.00061,
+  +0.03488 along t, all within the 0.05 half-length) → depths 0.03, 0.02,
+  0.01, −0.005 → 1.0, 1.0, 0.5, 0. The test builds the points from the
+  chunk's centre, dimensions and orientation and asserts they lie on the
+  face.
+- Painter stations from an OVERHEAD PROBE CAMERA (the probe and control
+  copies replace the camera chunk with a `pinhole_camera` at
+  (−0.016, 0.60, −0.10) looking straight down the −y axis, 50 mm): the
+  sightlines cross the water's top face at 0–3° to its normal (no
+  refractive displacement worth a pixel; the angle is stated) and see the
+  flagstone's top face at 65° elevation. Stations: B1 on stone_a's dry top
+  (0) and the four B9 points (1.0 / 1.0 / 0.5 / 0) within 0.08. B3/B4 (a
+  sphere's flank under water) are QUERY-only.
 - Beauty: a crisp waterline on every wet stone, a sheen saturating 2 cm
   down on the flagstone and the sphere, dry grain above, the ellipsoid and
   pebble carrying the same line, stone_d's burial line in dry sand. Judged
@@ -345,17 +376,24 @@ close-up. Layout:
   components — a single number derives to a DEGENERATE (0.35, 0, 0)
   transform silently), its lowest vertex on the bunny's highest, re-derived
   and asserted at 1e-6.
-Camera: `thinlens_camera` at (0.22, 0.20, 0.42) looking at (0, 0.06, 0),
-50 mm, f/11, focused on the bunny's foot; the worker verifies the framing
-arithmetic (the 2 cm ring on the shelf ≥ 8 px radial, the shelf top seen at
-≥ 25°). A raking key from the left; `pathtracing_pel_rasterizer`.
+Camera: `thinlens_camera` at (0.22, 0.25, 0.42) looking at (0, 0.06, 0),
+50 mm, f/16, focus 0.50 m (DoF [0.44, 0.58] m at a 1-px circle of confusion:
+M1–M3 at 0.49–0.57 m are inside; the bunny's near flank at 0.40 m and the
+shelf's near edge fall soft, stated in the header); the shelf top at the
+contact vertex is seen at 27.2° elevation from 0.547 m, the 2 cm ring at
+≥ 17 px radial. A raking key from the left; `pathtracing_pel_rasterizer`.
 
 **What it shows.** Mesh neighbours as SHEETS: the shelf reads
 `proximity(0.02)` and draws a dust ring around the bunny's single contact
 vertex (the bunny touches at ONE vertex; scene D's "four" were four probe
 directions from it); the BUNNY reads `proximity(0.02)` from the dragon's
 feet (mesh ↔ mesh, the case scene D pins at 1.0 with the bunny as self) and
-darkens there; the dragon reads nothing.
+darkens there; the dragon reads nothing. The shelf ALSO reads the wall: its
+back edge is flush with the wall's front face, so a 2 cm dust band runs the
+full length of the shelf along the wall, reading 1.0 at the joint and 0 by
+2 cm out — the box neighbour's exact closed form, predicted here and
+pinned by M5, and the reason the bunny must sit > 2 cm clear of it
+(asserted by the test from the bunny's bounding box).
 
 **Stations** (r = 0.02; a `NearestOtherSurface` point query does not depend
 on the receiver's family, so scene D's measured values transfer to the plank
@@ -373,6 +411,9 @@ at the same relative offsets).
   clearance found are printed and recorded in the header.
 - M4 the bunny's highest vertex with the bunny as `self` → 1.0; 5 mm below
   it (inside the bunny — a query-only station) → 0.75 closed form.
+- M5 shelf top at z = −0.11 (1 cm from the wall's front face at z = −0.12),
+  x = 0.20 (away from the bunny) → 0.5 exact (box neighbour, 1e-9); at
+  z = −0.09 → 0.
 - Painter stations at M1 (the derived clear direction) and M3 (constant-1
   control, `oidn_denoise FALSE`): ≥ 0.85 and 0 within 0.08. No painter
   station on the bunny at M4: the pixel there shows the dragon's foot, not
