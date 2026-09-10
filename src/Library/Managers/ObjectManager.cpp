@@ -687,7 +687,12 @@ bool ObjectManager::NearestOtherSurface(
 	// could see a neighbour the frame did not.  The case §8.1's count check
 	// was actually written for -- an add on a scene of four or fewer
 	// objects, where the linear IntersectRay loop WOULD render the new
-	// object -- keeps the flat scan and keeps the check.
+	// object -- keeps the flat scan and keeps the check.  Pinned by
+	// `ProximitySignalTest`'s `TestTLASStalenessViaJobAddObject` (g2):
+	// a 7th object added via `Job::AddObject` on a 6-object (TLAS-backed)
+	// scene is invisible to BOTH `NearestOtherSurface` and `IntersectRay`
+	// until `InvalidateSpatialStructure` + a rebuild, never one before the
+	// other.
 	const BVH<const IObjectPriv*>* const tlas =
 		( bUseBSPtree && items.size() > nMaxObjectsPerNode ) ? pBVH : 0;
 

@@ -836,6 +836,126 @@ static void TestSnapshotFreshnessOnAdd()
 }
 
 //======================================================================
+// (g2) THE SAME STALENESS CONTRACT, ON A TLAS-BACKED SCENE, THROUGH
+// Job::AddObject -- NOT the raw ObjectManager::AddItem (g) above uses.
+//======================================================================
+
+//! (g) above proves the count-check keeps a <=4-object (flat-scan) scene
+//! honest. This section asks the opposite-regime question the design's own
+//! comment at ObjectManager.cpp ~682 states as a CONTRACT SHIFT: on a
+//! TLAS-backed scene (more than `nMaxObjectsPerNode` objects) there is NO
+//! count check, so a proximity query is now "exactly as stale as the
+//! RENDER" -- an object added without an invalidate must be invisible to
+//! BOTH `NearestOtherSurface` AND `IntersectRay`, not silently visible to
+//! one and not the other.
+//!
+//! Driven through `Job::AddObject` (src/Library/Job.cpp ~7416), the actual
+//! entry point the parser's `standard_object` chunk calls and the one the
+//! agent's incremental derive reaches for a live edit -- not
+//! `ObjectManager::AddItem` directly (g) uses -- because what is under
+//! test here is that THIS call, read end to end, never invalidates: it
+//! resolves references, creates-or-repoints the object, assigns bindings,
+//! transforms it, and (for a fresh create) calls `RegisterOrDiag` ->
+//! `IManager::AddItem` -- and nothing in that path touches
+//! `InvalidateSpatialStructure` or `PrepareForRendering`.
+static void TestTLASStalenessViaJobAddObject()
+{
+	std::cout << "(g2) TLAS-backed staleness through Job::AddObject: proximity sees the "
+		"7th object exactly when IntersectRay does" << std::endl;
+
+	Job* job = new Job();
+	Check( job->AddSphereGeometry( "sph", 1.0 ), "(g2) sphere geometry registered" );
+
+	// SIX objects, well clear of `nMaxObjectsPerNode` (4, Job's own
+	// ObjectManager default -- Job.cpp's InitializeContainers), so
+	// PrepareForRendering below builds a TLAS rather than leaving the
+	// small-scene flat-scan path (g)'s regime already covers. Spread along
+	// x so none of them is anywhere near the 7th object added later at
+	// x = 100.
+	const double orient[3] = { 0, 0, 0 };
+	const double scale[3]  = { 1, 1, 1 };
+	RadianceMapConfig radCfg;
+	for( int i = 0; i < 6; ++i ) {
+		char name[16];
+		snprintf( name, sizeof( name ), "s%d", i );
+		const double pos[3] = { (double)i * 10.0, 0, 0 };
+		Check( job->AddObject( name, "sph", 0, 0, 0, radCfg, pos, orient, scale, true, true ),
+			"(g2) seed object added" );
+	}
+
+	IObjectManager* mgr = job->GetObjects();
+	Check( mgr != 0, "(g2) the job has an object manager" );
+	if( !mgr ) { job->release(); return; }
+	mgr->PrepareForRendering();
+
+	// THE PROBE POINT AND RAY, both aimed at where the 7th object will be
+	// (x = 100), far from every seed object above (nearest is at x = 50).
+	const Point3 proxProbe( 100, 0, 3 );		// 2 units off a radius-1 sphere at (100,0,0)
+	const Point3 rayOrigin( 100, 0, -50 );
+	const Vector3 rayDir( 0, 0, 1 );			// travels through (100,0,0) toward +z
+
+	Scalar dPre = 0;
+	Check( !mgr->NearestOtherSurface( proxProbe, mgr->GetItem( "s0" ), Scalar( 5 ), dPre ),
+		"(g2) before the 7th object exists, proximity finds nothing near x=100" );
+	{
+		RayIntersection ri( Ray( rayOrigin, rayDir ), RasterizerState() );
+		mgr->IntersectRay( ri, true, true, false );
+		Check( !ri.geometric.bHit,
+			"(g2) ...and IntersectRay agrees: nothing along that ray either" );
+	}
+
+	// ADD THE 7TH, through Job::AddObject -- exactly the call a
+	// `standard_object` chunk (initial OR incremental) resolves to, and
+	// deliberately NOT followed by an invalidate.
+	const double pos7[3] = { 100, 0, 0 };
+	Check( job->AddObject( "s6", "sph", 0, 0, 0, radCfg, pos7, orient, scale, true, true ),
+		"(g2) the 7th object is added via Job::AddObject, with no invalidate" );
+
+	Scalar dStale = 0;
+	const bool proxStillBlind = !mgr->NearestOtherSurface( proxProbe, mgr->GetItem( "s0" ), Scalar( 5 ), dStale );
+	bool rayStillBlind = false;
+	{
+		RayIntersection ri( Ray( rayOrigin, rayDir ), RasterizerState() );
+		mgr->IntersectRay( ri, true, true, false );
+		rayStillBlind = !ri.geometric.bHit;
+	}
+	Check( proxStillBlind,
+		"(g2) MONEY -- Job::AddObject does NOT invalidate: proximity is STILL blind to the 7th "
+		"object on this TLAS-backed scene, exactly as ObjectManager.cpp's own contract-shift "
+		"comment states" );
+	Check( rayStillBlind,
+		"(g2) ...and IntersectRay is EQUALLY blind -- the picture and the signal are stale "
+		"together, not one before the other" );
+	Check( proxStillBlind == rayStillBlind,
+		"(g2) ...stated as the identity the design promises: proximity is exactly as stale "
+		"as the render, never staler and never fresher" );
+
+	// REBUILD -- the documented recovery -- and both must now see it.
+	mgr->InvalidateSpatialStructure();
+	mgr->PrepareForRendering();
+
+	Scalar dFresh = 0;
+	const bool proxSeesIt = mgr->NearestOtherSurface( proxProbe, mgr->GetItem( "s0" ), Scalar( 5 ), dFresh );
+	bool raySeesIt = false;
+	Scalar rayHitZ = 0;
+	{
+		RayIntersection ri( Ray( rayOrigin, rayDir ), RasterizerState() );
+		mgr->IntersectRay( ri, true, true, false );
+		raySeesIt = ri.geometric.bHit;
+		if( raySeesIt ) rayHitZ = ri.geometric.ptIntersection.z;
+	}
+	Check( proxSeesIt && raySeesIt,
+		"(g2) MONEY -- after InvalidateSpatialStructure + PrepareForRendering, BOTH proximity "
+		"and IntersectRay see the 7th object" );
+	CheckClose( dFresh, Scalar( 2 ), Scalar( 1e-9 ),
+		"(g2) ...proximity reads the closed form (3 - 1 radius = 2)" );
+	Check( raySeesIt && rayHitZ < Scalar( 0 ),
+		"(g2) ...and the ray now hits the sphere's near face (z = -1), not a miss" );
+
+	job->release();
+}
+
+//======================================================================
 // (e) THE SIGNAL'S OWN CONVENTIONS
 //======================================================================
 
@@ -1116,6 +1236,7 @@ int main()
 	TestExclusions( f );
 	TestTransform( f );
 	TestSnapshotFreshnessOnAdd();
+	TestTLASStalenessViaJobAddObject();
 	TestConventions( f );
 	TestBuiltinEndToEnd( f );
 

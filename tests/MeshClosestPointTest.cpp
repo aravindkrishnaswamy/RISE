@@ -76,8 +76,10 @@
 #include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/DisplacedGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/InfinitePlaneGeometry.h"
 #include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/SurfaceSignalProximity.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Utilities/ExpressionMemo.h"
@@ -691,6 +693,101 @@ static void TestCandidateSourcesAgree()
 		objs.push_back( o );
 	}
 
+	// --- FOUR MORE FAMILIES, added so this shared-object differential also
+	// covers the neighbour KINDS the design calls out by name rather than
+	// only spheres and a mesh (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2,
+	// and ObjectManager::ProximityCandidateDistance's exclusion rules).
+	// Agreement between the TLAS point query and the flat scan is close to
+	// STRUCTURAL for any single object -- both call the exact same
+	// `ProximityCandidateDistance` on the exact same `Object*` -- so what
+	// each of these actually exercises is a DIFFERENT hazard:
+	Object* infPlaneObj = 0;
+	Object* emitterObj  = 0;
+	Object* invisObj    = 0;
+	Object* anisoObj    = 0;
+	// Positions are tracked here rather than read back from the objects
+	// (Object has no GetPosition accessor) -- and chosen at z = -10, well
+	// clear of the infinite plane's world z = 0 and of the dense sphere
+	// cluster's z in {0, -0.9, -1.8, -2.7}, so the targeted probes below
+	// exercise exactly one hazard each without the plane or a stray sphere
+	// competing as an unintended nearer candidate.
+	const Point3 kEmitterPos( -6, 0, -10 );
+	const Point3 kInvisPos( -4.7, 0, -10 );
+	const Point3 kAnisoPos( 4, -1, -10 );
+	{
+		// An INFINITE box (+/-RISE_INFINITY, see InfinitePlaneGeometry::
+		// GenerateBoundingBox / BoundingBox's default ctor) is the case the
+		// TLAS's SAH build could mishandle -- a node straddling +/-inf on
+		// every axis is never smaller than any query's running best, so
+		// this object must never be skippable by ClosestPointDistance's
+		// prune test on ANY node it lands in.  Positioned at world z = 0,
+		// inside the probe volume's z range (-4..4), so a meaningful
+		// fraction of probes have it as the genuine nearest candidate
+		// (distance |z|) rather than a permanent refusal that a broken
+		// prune could never be caught missing.
+		InfinitePlaneGeometry* g = new InfinitePlaneGeometry( Scalar( 1 ), Scalar( 1 ) );
+		infPlaneObj = new Object( g );
+		g->release();
+		infPlaneObj->FinalizeTransformations();
+		objs.push_back( infPlaneObj );
+
+		// An EMITTER, which `ProximityCandidateDistance` must exclude on
+		// BOTH sources (docs 5.2's "emitters never count").  Placed to
+		// overlap the dense sphere cluster above so it is often the
+		// CLOSEST geometry in world space -- if either source's exclusion
+		// slipped, that source alone would answer with the emitter's
+		// distance and the cross-check below would catch it directly
+		// rather than by chance in the N-probe loop.
+		SphereGeometry* eg = new SphereGeometry( Scalar( 0.3 ) );
+		IMaterial* pBase = 0;
+		IPainter* pRad = 0;
+		RISE_API_CreateUniformColorPainter( &pRad, RISEPel( 1, 1, 1 ) );
+		RISE_API_CreateLambertianMaterial( &pBase, *pRad );
+		IMaterial* pLum = 0;
+		if( pBase ) {
+			RISE_API_CreateLambertianLuminaireMaterial( &pLum, *pRad, *pBase, Scalar( 1 ) );
+		}
+		emitterObj = new Object( eg );
+		eg->release();
+		emitterObj->SetPosition( kEmitterPos );
+		emitterObj->FinalizeTransformations();
+		if( pLum ) emitterObj->AssignMaterial( *pLum );
+		safe_release( pLum );
+		safe_release( pBase );
+		safe_release( pRad );
+		objs.push_back( emitterObj );
+
+		// An object hidden via `SetWorldVisible( false )` -- the same
+		// exclusion rule the CSG-operand case in ProximitySignalTest (c)
+		// exercises, but asked here through BOTH candidate sources over
+		// ONE shared object rather than only the flat-scan-only fixture
+		// scenes use.
+		SphereGeometry* vg = new SphereGeometry( Scalar( 0.3 ) );
+		invisObj = new Object( vg );
+		vg->release();
+		invisObj->SetPosition( kInvisPos );
+		invisObj->FinalizeTransformations();
+		invisObj->SetWorldVisible( false );
+		objs.push_back( invisObj );
+
+		// An ANISOTROPICALLY SCALED sphere: `Object::DistanceToSurface`
+		// answers it through the Frobenius/determinant sigma-pair upper
+		// bound (see that function's comment) rather than exactly, and
+		// that bound is a property of the OBJECT, not of which manager
+		// asks -- this is the sphere ProximitySignalTest (d) already
+		// checks against the closed form (scale 2 1 1 -> true 2, reported
+		// ~4.899), added here so the shared-object cross-check covers the
+		// same non-exact family the differential in (a) never touches
+		// (that section is mesh-only).
+		SphereGeometry* ag = new SphereGeometry( Scalar( 1 ) );
+		anisoObj = new Object( ag );
+		ag->release();
+		anisoObj->SetPosition( kAnisoPos );
+		anisoObj->SetStretch( Vector3( 2, 1, 1 ) );
+		anisoObj->FinalizeTransformations();
+		objs.push_back( anisoObj );
+	}
+
 	for( std::size_t i = 0; i < objs.size(); ++i ) {
 		char name[32];
 		snprintf( name, sizeof( name ), "o%u", (unsigned)i );
@@ -728,6 +825,68 @@ static void TestCandidateSourcesAgree()
 		"the flat scan -- the traversal prunes nothing a linear scan would have found" );
 	Check( agreedAnswered > 500 && agreedFar > 500,
 		"(h) ...and both outcomes are well represented, so the agreement is not vacuous" );
+
+	// --- FOUR TARGETED PROBES, one per family added above, so each one's
+	// specific hazard is checked directly rather than trusted to show up by
+	// chance in the N-probe loop.
+	{
+		// The infinite plane is z = 0 in world space (identity transform;
+		// see InfinitePlaneGeometry::DistanceToSurface's own comment: "the
+		// plane is z = 0, so the answer is |z|").  (0, 0, 0.05) is a
+		// genuine, non-refusing answer at 0.05 -- and BOTH sources must
+		// find it: a TLAS build that mishandled its +/-inf box would prune
+		// it out of some node and answer with something else (or refuse).
+		const Point3 pNearPlane( 0, 0, 0.05 );
+		Scalar dT = 0, dF = 0;
+		const bool okT = mgrTree->NearestOtherSurface( pNearPlane, objs[0], Scalar( 0.2 ), dT );
+		const bool okF = mgrFlat->NearestOtherSurface( pNearPlane, objs[0], Scalar( 0.2 ), dF );
+		Check( okT && okF, "(h) the infinite plane answers on BOTH sources (never pruned)" );
+		Check( okT && okF && std::fabs( (double)( dT - Scalar( 0.05 ) ) ) < 1e-9,
+			"(h) ...at its closed form (|z|), not merely SOME answer" );
+		Check( okT && okF && dT == dF,
+			"(h) ...and the TLAS and flat-scan answers are bit-identical" );
+	}
+	{
+		// The emitter sits at kEmitterPos, off in its own corner of the
+		// probe volume (z = -10) so nothing else is a candidate there; if
+		// either source's emitter exclusion were missing, THAT source alone
+		// would answer this probe with the emitter's own distance (0, the
+		// probe point is its centre) instead of refusing outright.
+		Scalar dT = 0, dF = 0;
+		const bool okT = mgrTree->NearestOtherSurface( kEmitterPos, objs[0], Scalar( 0.31 ), dT );
+		const bool okF = mgrFlat->NearestOtherSurface( kEmitterPos, objs[0], Scalar( 0.31 ), dF );
+		Check( !okT && !okF,
+			"(h) MONEY: an emitter excludes on BOTH sources -- neither answers from ON TOP of it "
+			"at a radius only the emitter itself could satisfy" );
+	}
+	{
+		// Same shape as the emitter check, for `SetWorldVisible( false )`.
+		Scalar dT = 0, dF = 0;
+		const bool okT = mgrTree->NearestOtherSurface( kInvisPos, objs[0], Scalar( 0.31 ), dT );
+		const bool okF = mgrFlat->NearestOtherSurface( kInvisPos, objs[0], Scalar( 0.31 ), dF );
+		Check( !okT && !okF,
+			"(h) MONEY: a SetWorldVisible(false) object excludes on BOTH sources" );
+	}
+	{
+		// The anisotropic sphere (radius 1, stretch (2,1,1)) probed 3 units
+		// out along its LONG axis: the world-space ellipsoid extends 2 units
+		// that way (radius 1 x stretch 2), so the TRUE gap is exactly 1, and
+		// `Object::DistanceToSurface`'s sigma-pair bound over-reports it --
+		// the exact factor does not matter here (ProximitySignalTest (d)
+		// pins that number against the closed form for a different sphere);
+		// what matters is that BOTH sources read the SAME over-reported
+		// bound, because it is a property of the Object, not of which
+		// manager asked.  Radius 5 stays well clear of the plane (10 away
+		// at kAnisoPos's z) and of every other object in the set.
+		const Point3 pAniso( kAnisoPos.x + 3, kAnisoPos.y, kAnisoPos.z );
+		Scalar dT = 0, dF = 0;
+		const bool okT = mgrTree->NearestOtherSurface( pAniso, objs[0], Scalar( 5 ), dT );
+		const bool okF = mgrFlat->NearestOtherSurface( pAniso, objs[0], Scalar( 5 ), dF );
+		Check( okT && okF && dT == dF,
+			"(h) the anisotropic sphere's sigma-pair upper bound is bit-identical on both sources" );
+		Check( okT && dT > Scalar( 0.99 ),
+			"(h) ...and it is a real over-report (>= the true 1.0 gap), not an accidental exact hit" );
+	}
 
 	mgrFlat->release();
 	mgrTree->release();
