@@ -2803,6 +2803,37 @@ ones renumbered.
 
 ---
 
+### 8.5 Showcases
+
+Full spec: `docs/PROXIMITY_SHOWCASES.md`.  Three composed beauty scenes, each with
+stations predicted from the geometry before the scene existed, measured against
+the tracked file by a dedicated harness test, and recorded in the scene's own
+header.
+
+- **`tidal_stones`** (`scenes/FeatureBased/Textures/tidal_stones.RISEscene`,
+  `tests/TidalStonesShowcaseTest.cpp`) is the `interior(r)` showcase — the SIGNED
+  half of the channel `proximity(r)` shares.  Five stones sit in a water box whose
+  top face is flush with the surrounding sand; `buried = interior(0.02)` is
+  declared in three separate chunks (a `def` does not cross chunks) and drives a
+  shared `coated_material`/`ggx_material` recipe's colour, roughness and
+  `coat_weight` all from one field.  All 9 hand-derived query stations
+  (`NearestOtherSurface`/`DeepestOtherContainment`/`SurfaceSignalInfo::Interior`
+  against the TRACKED scene, including an SDF pebble surface point found by an
+  object-space bisection of `SDFGeometry::EvaluateParts` and a tilted-flagstone
+  face point solved from `Transformable::SetOrientation`'s own row-vector
+  composition) matched their predicted values exactly, needing no correction to
+  the spec's stated numbers.  The painter-probe harness (probe `vec3(buried,buried,buried)`
+  vs control `vec3(1,1,1)`, 512 spp, `oidn_denoise FALSE`, built entirely through
+  `Cst::DocSetOrAddParamValue` + the three-leaf chunk insert) confirmed the wet
+  ramp on both receivers (the plain sphere and the tilted flagstone, the latter
+  read from a purpose-built overhead probe camera because its own top face
+  crosses the waterline at an angle far outside the family's 10° refraction
+  rule) from a real, lit, path-traced render — full measured numbers, the cost
+  gate, and any deviation are in the scene's own header.  110/110 test
+  assertions pass.
+
+---
+
 ## 9. Test plan
 
 - `tests/ProximitySignalTest.cpp` on scene C: closed forms per exact family

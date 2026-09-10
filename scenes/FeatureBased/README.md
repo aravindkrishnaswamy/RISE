@@ -400,6 +400,27 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   0.55 mm of burial at the tip) measured with the signal itself. That fade
   is what no ambient occlusion could draw, which is why cross-object AO was prototyped
   twice and declined twice before this.
+
+  `tidal_stones.RISEscene` is the showcase for `interior(r)`, the SIGNED half of the
+  cross-object channel `proximity(r)` shares: five stones (a sphere, a yawed ellipsoid,
+  an `sdf_geometry` pebble, a sphere buried in dry sand, and a tilted flagstone) sit in
+  a 0.36 m water box whose top face is FLUSH with the surrounding sand -- by design, so
+  the only visible tell is the wet stones themselves, not a dramatic pool edge.
+  `buried = interior(0.02)` is declared three times (a `def` does not cross chunks) and
+  drives all THREE of a shared `coated_material`/`ggx_material` recipe's wetness-linked
+  slots at once: `rd` mixes a dry stone colour toward a dark wet one, `alphax`/`alphay`
+  fall as the surface gets wetter (a real GGX glint under the key light, not a fixed
+  specular term), and `coat_weight` is the wetness fraction itself. Two of the five
+  stones (the plain sphere and the flagstone) are RECEIVERS whose wet ramp is read by a
+  purpose-built harness: the flagstone's own top face crosses the waterline at a shallow
+  angle from the beauty camera, well outside the signal family's 10 deg
+  refraction-displacement rule, so its ramp is read from a dedicated OVERHEAD probe
+  camera instead of the beauty one. `transparent_shadows TRUE` is mandatory (recorded in
+  the header) so every submerged station's NEE shadow ray can refract out through the
+  water rather than being blocked outright by the default binary occlusion test.
+  `tests/TidalStonesShowcaseTest.cpp` re-derives every station from the scene's own
+  chunk geometry (never a number copied from a render) and proves the painter ramp
+  against an in-process probe/control pair built entirely through `Cst::DocSetOrAddParamValue`.
 - `VCM/`: vertex-connection-and-merging showpieces.
   `vcm_sdf_luminaire_jellyfish.RISEscene` is held as a transport torture test rather
   than a picture: emissive SDF geometry inside a dielectric bell inside a scattering
