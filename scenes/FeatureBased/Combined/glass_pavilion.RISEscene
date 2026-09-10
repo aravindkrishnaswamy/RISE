@@ -333,13 +333,23 @@ clippedplane_geometry
 	ptd					5.0 0.0 -5.0
 }
 
-# Column cylinder
+# Column cylinder.
+#
+# `capped TRUE` is the parser DEFAULT and is spelled out here as a PIN
+# (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 8, Phase 3): the fluted columns are
+# CSG subtractions, and a composite's cross-object distance query composes its
+# operands' SIGNED fields -- which an OPEN cylinder cannot supply, because a
+# tube encloses nothing and has no inside for a sign to be exact about.  Flip
+# this to FALSE and `column2` silently stops answering `proximity()` for every
+# neighbour in the scene.  The digest does not move (it is the default); the
+# line exists so the flip is a visible edit rather than a silent one.
 cylinder_geometry
 {
 	name				colcylgeom
 	axis				y
 	radius				0.25
 	height				5.0
+	capped				TRUE
 }
 
 # Fluting cutout (thin boxes to subtract from cylinder)

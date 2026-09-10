@@ -2822,6 +2822,162 @@ static void TestInterior( const Fixture& f )
 	}
 }
 
+
+//======================================================================
+// (l) THE SHOWCASE: glass_pavilion's fluted column
+//======================================================================
+
+//! THE PHASE-3 SHOWCASE GATE (design §8), driven against the TRACKED
+//! scene rather than a fixture, because what it proves is that a real
+//! composite in a real scene is now a NEIGHBOUR.
+//!
+//! `column2` is a `subtraction` -- a capped cylinder of radius 0.25
+//! spanning world y ∈ [0, 5] minus four thin flute slabs -- carrying its
+//! OWN `position 2.5 2.5 2.5` / `orientation 0 45 0`, with UNTRANSFORMED
+//! operands.  That is exactly the frame problem §5.6 calls the round-1
+//! blocker: the operands live in the COMPOSITE's local frame, not in
+//! world space.  It stands on `cap2`, a 0.7 × 0.15 × 0.7 box whose top is
+//! y = 0.175, and the floor beneath is a 10 × 0.2 × 10 slab whose top is
+//! y = 0.1 -- so the receiver is the CAP'S TOP FACE and the floor is
+//! 0.075 below it, out of a 2 cm radius.
+//!
+//! Every station is expressed in the COMPOSITE'S LOCAL FRAME and pushed
+//! through `column2`'s own final matrix, so the test cannot disagree with
+//! the engine about what `orientation 0 45 0` means.
+//! `ProximityAt`'s twin for a manager the Fixture struct does not hold --
+//! same cold-memo discipline, same hand-built channel.
+static Scalar ProximityAtMgr( IObjectManager* mgr, const Point3& p,
+	const IObjectPriv* self, const Scalar r )
+{
+	SurfaceSignalInfo s;
+	s.pScene  = mgr;
+	s.pSelf   = self;
+	s.ptWorld = p;
+	ExpressionMemo::Invalidate();
+	return s.Proximity( r );
+}
+
+static void TestGlassPavilionShowcase()
+{
+	std::cout << "(l) the showcase -- glass_pavilion's fluted column as a NEIGHBOUR" << std::endl;
+
+	const fs::path root = FindRepoRoot();
+	const fs::path scenePath = root / "scenes" / "FeatureBased" / "Combined" / "glass_pavilion.RISEscene";
+	std::ifstream in( scenePath );
+	Check( in.good(), "(l) the tracked glass_pavilion scene is readable" );
+	if( !in ) return;
+	std::stringstream ss;
+	ss << in.rdbuf();
+
+	Cst::Document doc = Cst::ParseToCst( ss.str() );
+	Job* job = new Job();
+	std::vector<std::string> diags;
+	Cst::DeriveToJob( doc, *job, &diags );
+	IObjectManager* mgr = job->GetObjects();
+	Check( mgr != 0, "(l) it derives with an object manager" );
+	if( !mgr ) { job->release(); return; }
+	mgr->PrepareForRendering();
+
+	IObjectPriv* col2   = mgr->GetItem( "column2" );
+	IObjectPriv* cap2   = mgr->GetItem( "cap2" );
+	IObjectPriv* colCyl = mgr->GetItem( "col2_cyl" );
+	Check( col2 && cap2 && colCyl, "(l) column2, cap2 and the column's cylinder operand are present" );
+	if( !col2 || !cap2 || !colCyl ) { job->release(); return; }
+
+	// --- THE `capped TRUE` PIN, with teeth.  An OPEN cylinder is a SHEET:
+	// it refuses the signed query, which would make this subtraction refuse
+	// outright and void every station below.  The scene spells the default
+	// out so a flip is a visible edit; this is what notices if it happens.
+	{
+		Scalar f = 0; bool ex = false;
+		Check( colCyl->SignedDistanceLower( Point3( 0, 3, 0 ), Scalar( 10 ), f, ex ),
+			"(l) MONEY -- `colcylgeom` answers the SIGNED query, i.e. it is CAPPED. An open tube "
+			"is a sheet, refuses it, and would make every fluted column stop answering proximity()" );
+		Check( ex, "(l) ...exactly, so a boundary landing on the column wall is admissible" );
+	}
+
+	const Matrix4 toWorld = col2->GetFinalTransformMatrix();
+	// World y = 0.175 (the cap's top face) is local y = 0.175 - 2.5; the
+	// rotation is about Y, so the y component passes through untouched.
+	const Scalar capTopLocalY = Scalar( 0.175 ) - Scalar( 2.5 );
+
+	// --- THE THREE CAP-TOP STATIONS, along the composite's local +x, 90°
+	// from every flute wedge.  An upright wall gives `d(s) = s`, so
+	// `proximity(0.02)` predicts 0.5 / 0 / 0 at 1 / 2 / 4 cm out from the
+	// nominal wall at radius 0.25.
+	{
+		const Scalar offsets[3] = { Scalar( 0.01 ), Scalar( 0.02 ), Scalar( 0.04 ) };
+		const Scalar want[3]    = { Scalar( 0.5 ),  Scalar( 0 ),    Scalar( 0 )    };
+		for( int i = 0; i < 3; ++i ) {
+			const Point3 local( Scalar( 0.25 ) + offsets[i], capTopLocalY, Scalar( 0 ) );
+			const Point3 world = Point3Ops::Transform( toWorld, local );
+			const Scalar v = ProximityAtMgr( mgr, world, cap2, Scalar( 0.02 ) );
+			CheckClose( v, want[i], Scalar( 0.05 ),
+				"(l) MONEY -- cap top at " + std::to_string( (double)offsets[i] ) +
+				" from the column wall reads " + std::to_string( (double)want[i] ) );
+			std::cout << "    cap-top station at " << (double)offsets[i]
+				<< " m from the wall: proximity(0.02) = " << (double)v << std::endl;
+		}
+		// AND THE 1 cm STATION IS TIGHT, not merely inside 0.05.  The radial
+		// landing IS the nearest point by symmetry and the cylinder operand
+		// is exact, so the BOUNDARY arm fires and the answer is 0.5 to
+		// rounding; `0.5 - eps/r` = 0.4874 is the floor if a `+1 ulp` miss
+		// sends it to the probe instead.
+		const Point3 local( Scalar( 0.26 ), capTopLocalY, Scalar( 0 ) );
+		const Point3 world = Point3Ops::Transform( toWorld, local );
+		const Scalar v = ProximityAtMgr( mgr, world, cap2, Scalar( 0.02 ) );
+		Check( v <= Scalar( 0.5 ) + Scalar( 1e-9 ),
+			"(l) MONEY -- and it never reads ABOVE 0.5: an over-read here would be contact "
+			"painted where there is none" );
+		Check( v >= Scalar( 0.4874 ) - Scalar( 1e-4 ),
+			"(l) ...and never below the one-probe-step floor 0.5 - eps/r = 0.4874" );
+	}
+
+	// --- THE FLUTE STATION, and the phantom it refuses.  Local
+	// (0, ·, 0.26) is 1 cm outside a slot's TANGENT face -- the slot is
+	// 0.5 deep, the column's diameter, so its ±z faces graze the cylinder
+	// at z = ±0.25.  An `f <= 0` landing test would report a 1.00 cm chord
+	// here; the nearest REAL surface is the slot-wall/cylinder corner at
+	// 4.21 cm.
+	{
+		const Point3 local( Scalar( 0 ), capTopLocalY, Scalar( 0.26 ) );
+		const Point3 world = Point3Ops::Transform( toWorld, local );
+
+		const Scalar v = ProximityAtMgr( mgr, world, cap2, Scalar( 0.02 ) );
+		CheckClose( v, Scalar( 0 ), Scalar( 1e-12 ),
+			"(l) MONEY -- the flute station reads proximity(0.02) = 0. A phantom landing on the "
+			"tangency would have read 0.5" );
+
+		// THE PER-OBJECT CALL, which is what actually pins the refusal: the
+		// SCENE-WIDE query at radius 0.1 would ANSWER from the floor top at
+		// y = 0.1, 0.075 below the cap top, and a passing scene-wide check
+		// would prove nothing about the composite.
+		Scalar dObj = Scalar( 0 );
+		Check( !col2->DistanceToSurface( world, Scalar( 0.1 ), dObj ),
+			"(l) MONEY -- `column2->DistanceToSurface` at radius 0.1 REFUSES at this station -- "
+			"the bracket keeps probing into the slot and never finds an admitted landing" );
+
+		Scalar dScene = Scalar( 0 );
+		Check( mgr->NearestOtherSurface( world, cap2, Scalar( 0.1 ), dScene ),
+			"(l) ...while the SCENE-WIDE query at the same radius ANSWERS" );
+		CheckClose( dScene, Scalar( 0.075 ), Scalar( 1e-9 ),
+			"(l) ...with 0.075, the floor top at y = 0.1 under the cap top at 0.175 -- which is "
+			"exactly why the refusal above has to be asked PER OBJECT" );
+
+		// The true distance the refusal under-paints, recomputed here rather
+		// than quoted: the slot-wall/cylinder corner.
+		const double corner = std::sqrt( 0.04*0.04 +
+			( 0.26 - std::sqrt( 0.25*0.25 - 0.04*0.04 ) ) * ( 0.26 - std::sqrt( 0.25*0.25 - 0.04*0.04 ) ) );
+		std::cout << "    flute station: proximity(0.02) = " << (double)v
+			<< "; column2 refuses at r = 0.1; the true corner distance the refusal under-paints is "
+			<< corner << " m (4.21 cm)" << std::endl;
+		Check( corner > 0.04 && corner < 0.043,
+			"(l) ...and that corner really is 4.21 cm, four times the 1 cm a phantom would report" );
+	}
+
+	job->release();
+}
+
 //======================================================================
 
 int main()
@@ -2848,6 +3004,7 @@ int main()
 	TestExactSigma();
 	TestCsgComposites();
 	TestInterior( f );
+	TestGlassPavilionShowcase();
 
 	f.job->release();
 

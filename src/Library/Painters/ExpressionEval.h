@@ -724,11 +724,11 @@ namespace RISE
 				return UsesContextVar( kContextSlotCurv ) || UsesContextVar( kContextSlotCurvR );
 			}
 
-			//! Does this program call `occlusion()`, `thickness()`, `convexity()`
-			//! or `proximity()` anywhere -- final expression or any `def`
-			//! stage?  Resolved at COMPILE time, same as UsesContextVar.
-			//! `m_signalCalls` (populated below) carries all four; this is
-			//! simply "is that list non-empty".
+			//! Does this program call `occlusion()`, `thickness()`,
+			//! `convexity()`, `proximity()` or `interior()` anywhere -- final
+			//! expression or any `def` stage?  Resolved at COMPILE time, same
+			//! as UsesContextVar.  `m_signalCalls` (populated below) carries
+			//! all five; this is simply "is that list non-empty".
 			//!
 			//! Unlike UsesSurfaceCurvature this is NOT wired to a cost gate:
 			//! the per-hit provider install is a pointer plus six scalars and

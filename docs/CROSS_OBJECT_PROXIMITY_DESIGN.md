@@ -2412,6 +2412,53 @@ chunk last (so it lands first), so a plain `find("name X_wear")` returned the
 ROUGHNESS chunk when asked for the colour one — the helper now requires a word
 boundary and a `name` line.
 
+#### S6 — the showcase, and the pins
+
+`glass_pavilion`'s `colcylgeom` gains one line, `capped TRUE` — the parser
+default, spelled out as a PIN with the reason at the chunk: an OPEN cylinder is
+a SHEET, refuses the signed query, and would make every fluted column stop
+answering `proximity()` for every neighbour in the scene. The tracked scene is
+not otherwise edited. `ProximitySignalTest` (l) drives the gate against that
+scene, expressing every station in the COMPOSITE'S LOCAL FRAME and pushing it
+through `column2`'s own final matrix, so the test cannot disagree with the
+engine about what `orientation 0 45 0` means.
+
+| Phase-3 S6 gate | verdict |
+|---|---|
+| the `capped TRUE` pin has teeth | PASS — `colcylgeom` answers the signed query AND carries the exactness flag, which is what admits a boundary landing on the column wall |
+| cap-top stations at 1 / 2 / 4 cm from the nominal wall, each within 0.05 | PASS — **0.5 / 0 / 0**, and the 1 cm station is **exactly 0.5** (the boundary arm fires: the radial landing IS the nearest point by symmetry and the cylinder operand is exact). Also asserted never above 0.5, and never below the one-probe-step floor 0.4874 |
+| the flute station at local `(0, ·, 0.26)` reads `proximity(0.02)` = 0 | PASS — **exactly 0** to 1e-12. A phantom landing on the tangency would have read 0.5 |
+| a direct PER-OBJECT `column2->DistanceToSurface` at radius 0.1 REFUSES | PASS — and the SCENE-WIDE query at the same radius ANSWERS **0.075** (the floor top at y = 0.1 under the cap top at 0.175), which is exactly why the refusal has to be asked per object |
+| the true corner distance the refusal under-paints | **0.0421282 m** (4.21 cm), recomputed in the test rather than quoted — four times the 1 cm a phantom would report |
+| `CstDeriveGoldenTest` — the digest does not move | PASS — **447 MATCH, 0 DRIFT** (of 447 golden scenes; 454 corpus, 0 UNCOVERED, 0 STALE) |
+| `ProximitySignalTest` | 401 passed, 0 failed (386 after S4) |
+
+**The probe-albedo crop, judged honestly.** Harness-only, on a COPY: the
+tracked `marble_col` (a lambertian, bound to a uniform white) has its
+reflectance swapped to `expression_painter { expr vec3(proximity(0.02),
+proximity(0.02), proximity(0.02)) }`, a bright `ambient_light` is added so the
+irradiance over the crop is near-uniform and the image reads as the albedo up
+to one global constant, and the camera is dropped to 3.45 / 0.62 / 3.45 looking
+at the `cap2` / `column2` junction. 420 × 320, 24 spp, `pixelpel`. What the
+crop actually shows:
+
+- **The contact ring is drawn, and it is the money.** The cap's top face is
+  black everywhere except a clean white band ~2 cm wide following the column's
+  cross-section exactly — including around the flute slot's mouth, where the
+  slot WALLS are real surfaces of the composite and legitimately within 2 cm.
+  Before Phase 3 the whole face was black, because `column2` refused.
+- **Everything else on `marble_col` is black**, which is correct rather than
+  disappointing: nothing else in frame is within 2 cm of another surface.
+- **The phantom band is absent.** A tolerant landing test would have painted a
+  band on the cap top 1 cm outside the slot's tangent FACE — which is where
+  the test's flute station sits, and it reads 0.
+- **Two honest caveats.** The bright floor in the crop is NOT the signal: the
+  floor binds `polished_floor`, a different material the copy does not touch.
+  And the column reads as two separate bars because the scene's single flute
+  slab is 0.5 deep — the column's whole diameter — so it cuts right through;
+  that is the tracked scene as authored, and it is the same fact that makes
+  the slot's ±z faces tangent to the cylinder and the phantom possible at all.
+
 
 ---
 
@@ -2423,8 +2470,8 @@ boundary and a `name` line.
   sphere SDF at 1e-9; self-exclusion; the instanced copy counts (named); a
   `casts_shadows FALSE` neighbour counts; an emissive neighbour does not (the
   fixture is a hand-authored emissive box, so the disclosed decorative-object
-  exclusion is what the test pins); CSG operands never count and the composite
-  refuses (v1); a heightfield SDF refuses **asked directly**, so the check
+  exclusion is what the test pins); CSG operands never count, and the composite
+  ANSWERS since Phase 3 (this check asserted a refusal until 2026-09-09); a heightfield SDF refuses **asked directly**, so the check
   isolates that family rather than resting on a neighbour's probe budget; a RAW
   (non-indexed) mesh and a Bezier
   patch refuse; a coplanar CONVEX clipped plane is exact while a non-coplanar
@@ -2438,9 +2485,29 @@ boundary and a `name` line.
   inside a neighbour); neutral 0 with a null channel, with a non-finite point,
   and with a computed radius ≤ 0 or non-finite; the builtin end-to-end through
   an `ExpressionPainter` at a real hit.
+- **Phase 3 adds five sections to the same file** (§8.4): **(h)** the SIGNED
+  lower bound per family -- exact sign, lower-bound magnitude, the exactness
+  flag, every sheet refusing it while still answering the unsigned one, and the
+  `(3, 1, 0.4)` solid bracketing a brute-force distance from opposite sides;
+  **(i)** the three σ branches against references written into the test, and
+  the `Loose` state reached by a zero-sweep call; **(j)** CSG composites --
+  union `min`, the bracket's two landing arms recorded per station, grid
+  searches of the SOLID by STRICT operand membership, the phantom sweep that a
+  tolerance would have admitted, the composite's own transform layer, and the
+  nesting rules; **(k)** `interior(r)`; **(l)** the `glass_pavilion` showcase,
+  driven against the TRACKED scene with every station expressed in the
+  composite's LOCAL frame and pushed through its own final matrix.
 - `tests/ExpressionMemoTest.cpp`: the four new `SignalHitKey` fields separate in
   both L1 and L2 rows; the generation clears the query memo (red-proved); the
-  TLS ceiling.
+  TLS ceiling. **Phase 3 adds (p)**: `interior` (fn = 4) keys apart from
+  `proximity` (fn = 3) at the SAME hit and radius, in BOTH orders, and its
+  entry clears on a generation bump with the stale answer red-proved first.
+- `tests/AgentAddWearTest.cpp`: **Phase 3 adds (P)** -- `contact_radius` 0
+  emitting today's body to the line, the contact term entering the SHARED
+  prelude with both consuming lines byte-identical, a flat BOX receiver
+  accepted from the barren list with a body carrying no `curv` and no
+  `occlusion`, every declared `param` asserted BY NAME to be read, and the two
+  pinned exceptions to the byte-identity claim.
 - `tests/ProximityInvalidationTest.cpp` (F): derive, render a probe pixel, move
   the neighbour through `DeriveToJobIncremental`, render again — the value
   changes; move it beyond `r` — it reads 0; a keyframed neighbour across
@@ -2477,7 +2544,8 @@ boundary and a `name` line.
   `interior` (the family's disclosed gap; the `PathVertexEval` contract is
   explicitly declined for the same reason as for the other three signals).
 - Refusing families (RAW meshes, patches, hair, heightfield SDFs; CSG
-  composites until Phase 3 — after it, an intersection/subtraction with a
+  composites until Phase 3 — **after it (SHIPPED 2026-09-09)**, an
+  intersection/subtraction with a
   sheet or heightfield-SDF operand, a union of two refusing operands, a bracket with no admitted
   landing in budget, and a seam gradient below 1e-12) read far. An
   intersection/subtraction answers within `[d, d + gap_max]` — never below
@@ -2529,7 +2597,14 @@ boundary and a `name` line.
   with no snapshot. **The trade:** an unregistered consumer — a hypothetical
   direct caller of `NearestOtherSurface` — pays the whole build under the lock on
   its first call instead of finding it ready.
-- **`kL1Ways == 4` now exactly equals the number of signal KINDS.** When the
+- ~~**`kL1Ways == 4` now exactly equals the number of signal KINDS.**~~
+  **SUPERSEDED by Phase 3 S4 (2026-09-09): `kL1Ways` is 8, `Tables` is 2432
+  bytes, the asserted ceiling is 4096, and the cliff moved from a FIFTH
+  distinct (kind, radius) query per hit to a NINTH — it did not disappear.
+  Measured, not argued: the L1 hit rate on `plank_closeup` is 0.8967 at four
+  ways and 0.8968 at eight (§8.4 S4), which is worth measuring because
+  round-robin replacement is FIFO and FIFO is not a stack algorithm.** The
+  original reasoning, kept because the cliff itself is unchanged in shape: When the
   memo shipped, four ways was headroom above a two-signal working set; with
   `proximity` there are four kinds, and the L1 key separates on
   (kind, radius, hit), so a body making four distinct (kind, radius) queries per
@@ -2571,8 +2646,12 @@ boundary and a `name` line.
   triangle instead, because a triangle soup carries no inside test.  The
   direction is safe (an over-report under-paints) but the inconsistency is
   real: a receiver buried inside a mesh neighbour will not read contact.
-  A signed/inside variant for meshes needs a robustly closed-mesh test and
-  belongs with the Phase-3 signed variant.
+  A signed/inside variant for meshes needs a robustly closed-mesh test.
+  **Phase 3's `interior(r)` did NOT close this**: it is the signed variant for
+  every SOLID family, and a mesh -- being a sheet -- contributes 0 to it, so a
+  receiver buried inside a closed mesh reads `interior` 0 as well as
+  `proximity` its honest distance. The closed-mesh test is still the missing
+  piece.
 - **`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
   produces no diagnostic, makes the object vanish from the render, and
@@ -2581,33 +2660,50 @@ boundary and a `name` line.
   re-introducing it (§8.3, trap 4).  A parser gap, outside this design's
   scope, recorded here because it is a live trap for anyone placing an
   object for a contact scene.
-- `proximity` is unsigned; Phase 3's `interior(r)` supplies the inside half for
-  the solid families only (meshes and every sheet family contribute 0 to it).
+- `proximity` is unsigned; Phase 3's `interior(r)` **ships** and supplies the
+  inside half for the solid families only (meshes and every sheet family
+  contribute 0 to it, silently — a shared refusal latch would print the
+  proximity message for every mesh and plane in the scene).
+- **`interior` is LINEAR in object count on every scene, including a
+  TLAS-backed one** (added Phase 3 S4). `DeepestOtherContainment` walks the
+  flat AABB snapshot with an ordinary containment test rather than the
+  top-level tree, because the tree prunes on "this subtree is further than the
+  running best" and a running MAXIMUM has no use for that — walking it would
+  visit every leaf anyway with the traversal's overhead added. `proximity` on
+  a TLAS-backed scene is not linear; `interior` is.
+- **`interior` UNDER-READS inside a UNION composite's overlap.** A union
+  exports `min(f_A, f_B)` as its signed lower bound, which is exact ON and
+  OUTSIDE the zero set and only a lower bound INSIDE: at a point deeper in the
+  union than either operand alone, the min is the SHALLOWER of the two depths.
+  Measured (§8.4 S4): 1.25 exported against a true union depth of 1.85405.
+  The under-paint direction, and asserted as a strict inequality rather than
+  claimed.
 - The query reads other objects' transforms and so joins the pre-existing
   per-sample `EvaluateAtTime` race (ARCHITECTURE.md), no wider than
   `Object::IntersectRay` already does.
 - The scalar pipe stamps `time = 0` (no `m_time` there), so its memo entries
   rely on the jitter argument alone under motion blur.
-- Until Phase 3, non-uniform transforms use the Frobenius/determinant σ
-  bounds, which are loose (never unsafe); Phase 3's one-sided Jacobi makes them
-  exact to rounding, with the same pair as the non-convergence fallback.
-  **Measured on `scale (3, 1, 0.4)`** (the §5.2 table): the log's printed factor
-  is **26.99**, the transform's true singular ratio is **7.5**, and the worst
-  over-report actually observed is **7.96×** — so the bound is roughly 3.4×
-  pessimistic. The object-space search radius is inflated **8.47×** (`1/σ_min`),
-  which is the cost side rather than the contact error, and is printed as its
-  own number for that reason.
+- ~~Until Phase 3, non-uniform transforms use the Frobenius/determinant σ
+  bounds, which are loose.~~ **DONE in Phase 3 S2 (2026-09-09):** the one-sided
+  Jacobi ships, with the same Frobenius/determinant pair as the
+  non-convergence fallback. **Measured on `scale (3, 1, 0.4)`:** the search
+  radius inflation fell **8.46667× → 2.5×** and the σ ratio **26.9873 → 7.5**,
+  both derived in the test from the same matrix by the same routine (§8.4 S2).
+  What did NOT go away: `×σ_max` is attained only along the top singular
+  vector, so the unsigned answer at `(0, 5, 0)` on that solid is still **12**
+  against a true **4** — an over-report of **3.0×**, down from 3.19×. Phase 3
+  removed the PAIR's slack, not the anisotropy.
 - The memo-eligibility threshold moves with `kFields` (29 → 35) for
   pure-arithmetic bodies; bit-identical, perf-only, disclosed. `ptWorld` is a
   redundant compare in the L2 key.
-- **A CSG composite refuses, so its OWN surface is invisible to every
-  neighbour's query** — a sharper statement than "its operands do not count
-  separately". `Object::DistanceToSurface` forwards to the geometry and
-  `CSGObject` has none, so nothing in the scene can measure its distance to a
-  CSG result. Phase 3's composite queries (§5.6: union-min, and the bracket
-  over `max(f_A, f_B)` / `max(f_A, −f_B)` for intersection and subtraction)
-  are what fix it; until then a scene whose contact surface is a CSG result
-  needs a non-CSG proxy. (Wave 1, 2026-09-08.)
+- ~~**A CSG composite refuses, so its OWN surface is invisible to every
+  neighbour's query.**~~ **RETIRED by Phase 3 S3 (2026-09-09.)** A union now
+  answers `min` over the operands that answer; an intersection or a
+  subtraction brackets the composed signed field. What REMAINS of it is
+  narrower and is stated in the refusing-families bullet above: an
+  intersection or subtraction with a SHEET or heightfield-SDF operand, a union
+  of two refusing operands, a bracket that finds no admitted landing in
+  budget, and a seam gradient below 1e-12.
 - **The signal is PT-only more sharply than the first bullet suggests.** The
   channel is stamped by `ObjectManager::IntersectRay`, so EVERY consumer that
   builds its own hit record reads the neutral 0 — `PathVertexEval`, the GUI's
