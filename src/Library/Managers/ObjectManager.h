@@ -27,7 +27,7 @@
 
 #include <map>
 #include <set>
-#include <atomic>	// the proximity AABB snapshot's publish/read edge
+#include <atomic>	// two consumers: the proximity AABB snapshot's publish/read edge, and pBVH's DCLP fix (see its own comment below)
 
 namespace RISE
 {
@@ -65,20 +65,32 @@ namespace RISE
 			// once a reader observes the new pointer, it is guaranteed to
 			// observe everything the builder wrote before publishing it.
 			//
-			// WHAT THIS DOES **NOT** FIX: `InvalidateSpatialStructure`
-			// releases the OLD `pBVH` with no lock at all (by design -- see
-			// its own comment), so a thread that already loaded the old
-			// pointer and is mid-traversal when an invalidate on another
-			// thread drops the last reference is a genuine use-after-free
-			// REGARDLESS of atomicity -- atomics make the pointer itself
-			// race-free, they do not extend the pointee's lifetime across a
-			// concurrent release.  That hazard is bounded today by the
-			// engine's documented contract that a render pass owns a frozen
-			// scene (docs/ARCHITECTURE.md) -- `InvalidateSpatialStructure`
-			// is a between-passes / scene-edit operation, never one a render
-			// worker calls or races against.  A reader-holds-a-reference
-			// (hazard-pointer / epoch-reclamation) scheme would be needed to
-			// close that hazard structurally; out of scope here.
+			// `InvalidateSpatialStructure` now runs its ENTIRE body under
+			// `treeCreationMutex` (the same mutex `CreateBVH` holds for its
+			// whole body), specifically so an invalidate cannot be LOST
+			// against a concurrent lazy `CreateBVH()` self-heal: without the
+			// lock, a self-heal could pass its "is `pBVH` already built"
+			// re-check just before the invalidate's exchange-to-null landed,
+			// and go on to publish a tree built over an object set an
+			// in-flight edit was in the middle of changing.  See
+			// `InvalidateSpatialStructure`'s own comment for the concrete
+			// interleaving this closes.
+			//
+			// WHAT THIS DOES **NOT** FIX: the mutex serializes
+			// `InvalidateSpatialStructure` against `CreateBVH`, not against
+			// an UNLOCKED reader that has already loaded the old pointer and
+			// is mid-traversal when an invalidate on another thread releases
+			// the last reference -- that is a genuine use-after-free
+			// REGARDLESS of atomicity or locking on the writer side, because
+			// nothing extends the pointee's lifetime past a concurrent
+			// release for a reader that took no lock at all. That hazard is
+			// bounded today by the engine's documented contract that a
+			// render pass owns a frozen scene (docs/ARCHITECTURE.md) --
+			// `InvalidateSpatialStructure` is a between-passes / scene-edit
+			// operation, never one a render worker calls or races against.
+			// A reader-holds-a-reference (hazard-pointer / epoch-reclamation)
+			// scheme would be needed to close that hazard structurally; out
+			// of scope here.
 			mutable std::atomic<BVH<const IObjectPriv*>*> pBVH;
 			mutable Octree<const IObjectPriv*>* pOctree;
 			mutable unsigned long long          mSpatialGen;   //!< advanced on every InvalidateSpatialStructure (see IObjectManager)

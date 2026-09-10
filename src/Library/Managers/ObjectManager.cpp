@@ -685,14 +685,23 @@ bool ObjectManager::NearestOtherSurface(
 	// branch further down and never by the TLAS branch (review round 1,
 	// item 6d) -- on a TLAS-backed scene this call's `snap` result is
 	// simply discarded a few lines later.  Kept anyway because
-	// `EnsureBoxSnapshot` carries `RealizeAllObjects()` (see its own
-	// comment), which this function needs on EITHER path: a query reached
-	// through the lazy `IntersectRay` self-heal (no prior
-	// `PrepareForRendering`) must not ask a still-unrealized
-	// `DisplacedGeometry` for its distance, exactly the hazard `CreateBVH`
-	// guards against for its own path.  `Realize()` is idempotent and
-	// one-shot per geometry, so calling it here when the TLAS build already
-	// did is a cheap no-op, not double work.
+	// `EnsureBoxSnapshot` is the SOLE writer of `pBoxes`, and every one of
+	// its writes realizes deferred geometry first (`RealizeAllObjects()`,
+	// see its own comment) before building -- so a non-null `pBoxes` is
+	// itself the proof that a realize pass has already run over the object
+	// set that snapshot was built from.  NOT true of the fast early-return
+	// above `EnsureBoxSnapshot`'s own body: a call whose count check already
+	// matches returns before touching `RealizeAllObjects()` at all, and
+	// still needs to have been called at least once to have gotten a
+	// `pBoxes` in the first place.  That is what this call, here, on EITHER
+	// path (TLAS or flat-scan) is actually buying: a query reached through
+	// the lazy `IntersectRay` self-heal (no prior `PrepareForRendering`)
+	// must not ask a still-unrealized `DisplacedGeometry` for its distance,
+	// exactly the hazard `CreateBVH` guards against for its own path, and
+	// this is the call that establishes the "already realized" invariant
+	// the very first time through.  `Realize()` is idempotent and one-shot
+	// per geometry, so calling it here when the TLAS build already did is a
+	// cheap no-op, not double work.
 	EnsureBoxSnapshot();
 	// ONE copy of the pointer, then a lock-free read of an immutable
 	// object.  Re-reading `pBoxes` inside the loop would reintroduce
@@ -1233,7 +1242,26 @@ void ObjectManager::Shutdown()
 	// boxes the moment a name were re-added, exactly as it would resurrect
 	// stale parenting without the clears above.  Guarded by the same mutex
 	// EnsureBoxSnapshot/InvalidateSpatialStructure use for this state.
+	//
+	// `pBVH` is dropped here too, for the identical reason: `Shutdown` is
+	// about to hand every registered object back to `GenericManager` for
+	// release, and a `pBVH` left pointing at a tree built over those same
+	// objects becomes a live dangling reference the instant that happens.
+	// The risk is NOT the lazy `CreateBVH()` self-heal -- a stale non-null
+	// `pBVH` means the self-heal never even fires, since it only builds on a
+	// null read -- the risk is any unlocked reader (`IntersectRay` et al.)
+	// that dereferences the stale pointer directly after `Shutdown` has
+	// freed what it points into.  `mSpatialGen` is bumped alongside,
+	// matching `InvalidateSpatialStructure`'s contract that every spatial
+	// teardown advances the generation counter.
 	treeCreationMutex.lock();
+	{
+		BVH<const IObjectPriv*>* localBVH = pBVH.exchange( nullptr, std::memory_order_release );
+		if( localBVH ) {
+			safe_release( localBVH );
+		}
+	}
+	mSpatialGen = NextSpatialGeneration();
 	delete pBoxes.load( std::memory_order_relaxed );
 	pBoxes.store( 0, std::memory_order_relaxed );
 	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
@@ -1684,23 +1712,51 @@ void ObjectManager::PrepareForRendering() const
 void ObjectManager::InvalidateSpatialStructure() const
 {
 	mSpatialGen = NextSpatialGeneration();   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
+
+	// THE WHOLE BODY runs under `treeCreationMutex` now, not only the
+	// `pBoxes`/`retiredBoxes` cleanup that always did.  Without that, an
+	// invalidate can be LOST against a concurrent lazy self-heal: a render
+	// thread's unlocked `pBVH` read comes back null (no prior
+	// `PrepareForRendering`) and calls `CreateBVH()`, which takes the mutex
+	// and starts building from the CURRENT (pre-edit) object set; if this
+	// call's exchange-to-null lands after `CreateBVH`'s re-check but before
+	// its publish, nothing here observes a live tree to tear down, and
+	// `CreateBVH` goes on to publish a tree holding a raw pointer into an
+	// object another thread is mid-`Job::RemoveObject` on.  Taking the same
+	// mutex `CreateBVH` holds for its whole body serializes the two: this
+	// call's exchange now happens strictly before `CreateBVH`'s re-check
+	// (which then rebuilds fresh) or strictly after its publish (which this
+	// call then tears down) -- never in the gap that dropped the invalidate.
+	treeCreationMutex.lock();
 	{
-		// RELEASE store: a concurrent unlocked reader's acquire load must
-		// see either the fully-live old `BVH` or the null that means
-		// "self-heal via CreateBVH", never a torn or reordered half-state.
-		// This still does NOT make the release itself safe against a
-		// reader mid-traversal of the OLD tree -- see pBVH's declaration
-		// comment in ObjectManager.h for that residual.
-		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_relaxed );
+		// EXCHANGE TO NULL FIRST, `safe_release` the OLD pointer SECOND.
+		// A concurrent unlocked reader (`IntersectRay` et al., outside this
+		// mutex by design -- see pBVH's declaration comment) must never be
+		// able to observe a pointer that is mid-free through `pBVH`;
+		// publishing null before the release means the worst such a reader
+		// sees is null, the documented self-heal trigger, never a pointer
+		// into an object currently being destroyed.  The prior ordering
+		// released the old tree FIRST and only stored null into `pBVH`
+		// afterwards (as a side effect of `safe_release` nulling its local
+		// out-parameter), which left the about-to-be-freed pointer published
+		// through the atomic for the full duration of the free.
+		BVH<const IObjectPriv*>* localBVH = pBVH.exchange( nullptr, std::memory_order_release );
 		if( localBVH ) {
-			GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
 			safe_release( localBVH );
-			pBVH.store( localBVH, std::memory_order_release );
+			GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
 		}
 	}
 	if( pOctree ) {
+		// NULL FIRST, free SECOND -- same ordering discipline as `pBVH`
+		// above, kept even though `pOctree` stays a plain pointer (out of
+		// scope to make atomic here): its unlocked readers in `IntersectRay`
+		// et al. already carry the same "never during a pass" contract the
+		// rest of this function documents, so this at least avoids widening
+		// the window during which a stale pointer is visible.
+		Octree<const IObjectPriv*>* localOctree = pOctree;
+		pOctree = 0;
+		safe_release( localOctree );
 		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying octree for rebuild" );
-		safe_release( pOctree );
 	}
 	// The proximity query's world-AABB snapshot dies here beside pBVH,
 	// under the same "never during a pass" contract those already carry --
@@ -1709,23 +1765,22 @@ void ObjectManager::InvalidateSpatialStructure() const
 	// an owned POD, not a refcounted engine object.
 	//
 	// BOTH the live pointer and the retired set are handled UNDER
-	// treeCreationMutex, and the scope has to cover both: EnsureBoxSnapshot
-	// (the sole other writer) loads the live pointer, pushes it onto
-	// `retiredBoxes` and publishes its replacement inside ONE critical
-	// section, so an unlocked delete-and-clear here could interleave with
-	// that -- free the pointer EnsureBoxSnapshot has just loaded, watch it
-	// push the dangling value onto the retired set and re-publish a fresh
-	// snapshot over the null this call wrote (resurrecting a snapshot after
-	// an invalidate), and then free the same pointer a second time from the
-	// retired set below.  "Never during a pass" bounds WHEN this runs, not
-	// what serializes it against a same-instant EnsureBoxSnapshot at a pass
-	// boundary; the mutex is what rules that out.  `retiredBoxes` is a plain
-	// `std::vector` with no thread-safety story of its own, which is the
-	// second reason the lock is needed.  This is the ONE place, besides the
-	// destructor (which runs after every thread is gone and so takes no
-	// lock -- see ~ObjectManager) and Shutdown(), where a snapshot is
-	// actually freed.
-	treeCreationMutex.lock();
+	// treeCreationMutex, which now covers the whole function (see above),
+	// and the scope has to cover both: EnsureBoxSnapshot (the sole other
+	// writer) loads the live pointer, pushes it onto `retiredBoxes` and
+	// publishes its replacement inside ONE critical section, so an unlocked
+	// delete-and-clear here could interleave with that -- free the pointer
+	// EnsureBoxSnapshot has just loaded, watch it push the dangling value
+	// onto the retired set and re-publish a fresh snapshot over the null
+	// this call wrote (resurrecting a snapshot after an invalidate), and
+	// then free the same pointer a second time from the retired set below.
+	// "Never during a pass" bounds WHEN this runs, not what serializes it
+	// against a same-instant EnsureBoxSnapshot at a pass boundary; the mutex
+	// is what rules that out.  `retiredBoxes` is a plain `std::vector` with
+	// no thread-safety story of its own, which is the second reason the
+	// lock is needed.  This is the ONE place, besides the destructor (which
+	// runs after every thread is gone and so takes no lock -- see
+	// ~ObjectManager) and Shutdown(), where a snapshot is actually freed.
 	{
 		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_relaxed );
 		if( cur ) {
