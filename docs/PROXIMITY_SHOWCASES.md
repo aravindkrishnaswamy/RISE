@@ -1,7 +1,7 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised nineteen times the same day after
-adversarial rounds (round 19, 1 P1: stripping a relief modifier by
+Status: SPEC, 2026-09-10, CONVERGED at round 20 (zero P1) after twenty
+adversarial rounds and 53 P1s (round 19, 1 P1: stripping a relief modifier by
 erasing its chunk leaves the object's `modifier` name dangling and
 `Job::AddObject` fails the object. Round 18, 2 P1s: `DocIndexOfNodeId`'s absent value is
 −1 and 0 is a legal index, so the "non-zero" assertion guarded nothing;
@@ -223,11 +223,13 @@ rasterizers). The painter stations below prove it anyway.
   agent surface REFUSES the chunk on every route), a `radiance_map` (on
   the rasterizer or per-object on a `standard_object` — both forbidden,
   same reason), a skylight (its chunk carries no `name` and would have to
-  be found by role enumeration like the rasterizer — do not add one) or a
-  relief modifier. A worker who adds a modifier for the BEAUTY strips it
-  from both probe copies with `DocRemoveParam` on each OBJECT chunk that
-  names it through its `modifier` param — NOT by erasing the modifier
-  chunk, which leaves the name dangling so `Job::AddObject` fails the
+  be found by role enumeration like the rasterizer — do not add one). No
+  scene as specified carries a relief modifier either, but unlike the
+  three above a modifier is PERMITTED for the beauty: a worker who adds
+  one strips it from both probe copies with `DocRemoveParam` on each
+  OBJECT chunk that names it through its `modifier` param — NOT by
+  erasing the modifier chunk, which leaves the name dangling so
+  `Job::AddObject` (or `Job::AddCSGObject` for a `csg_object`) fails the
   object outright ("Modifier not found") and the receiver is missing; the
   unreferenced chunk may then be left in place — and says so. With
   the probe and the CONTROL copies lit identically — the same lights, the
@@ -413,6 +415,7 @@ this is a foot study of marble, floor checker and the columns behind. Camera, ve
 framing rule:
 ```
 thinlens_camera
+{
   name            beauty_cam
   location        -2.5    0.9452  3.8407
   lookat          -2.4111 0.175   2.7443      # the S1 station
@@ -421,6 +424,7 @@ thinlens_camera
   focal_length    50
   fstop           16                          # DoF [0.979, 2.140] m holds the whole cap
   focus_distance  1.343
+}
 ```
 Arithmetic: camera→S1 horizontal 1.100 m, Δy 0.770 → elevation 35.0°;
 distance 1.343 m → a 2 cm ring images at 17.2 px tangential, 9.9 px radial
