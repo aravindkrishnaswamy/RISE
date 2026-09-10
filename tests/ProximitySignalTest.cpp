@@ -48,6 +48,11 @@
 //        (a)-(d): an exact SIGN with a LOWER-bound magnitude, per family,
 //        plus the exactness flag a CSG composite's boundary arm consumes.
 //        Every sheet refuses it while still answering the unsigned one.
+//    (i) EXACT SIGMA (Phase 3).  The three branches of the transform's
+//        singular-value pair -- the similarity fast path, the one-sided
+//        Jacobi SVD, and the loose Frobenius/determinant fallback -- each
+//        against a reference written into the test rather than recorded
+//        from a run.
 //
 //  Tabs: 4
 //
@@ -1542,6 +1547,195 @@ static void TestSignedLowerBound( const Fixture& f )
 	}
 }
 
+
+//======================================================================
+// (i) EXACT SIGMA
+//======================================================================
+
+//! THE SIGMA PAIR, and the three branches that can fill it (design 5.6,
+//! "Exact sigma").  Phase 1 shipped only two -- an exact fast path for
+//! similarities and the loose Frobenius/determinant pair for everything
+//! else -- and the loose pair inflated the object-space search radius
+//! 8.47x on `scale (3, 1, 0.4)` against a true 2.5x.  Phase 3 puts a
+//! one-sided Jacobi SVD between them.
+//!
+//! WHY THE ROUTINE IS CALLED DIRECTLY HERE.  `Loose` is now unreachable
+//! from any real transform (a 3x3 Jacobi converges in a handful of sweeps
+//! and the cap is thirty), so the only way to cover that branch is to hand
+//! the routine a ZERO-sweep budget and read the state it RETURNS -- the
+//! log line that names the state sits behind `Object::DistanceToSurface`
+//! and cannot be reached without an object that also has a geometry.  That
+//! same call doubles as the reference for "8.47x before": it computes the
+//! very pair Phase 1 would have cached.
+static void TestExactSigma()
+{
+	std::cout << "(i) exact sigma -- the fast path, Jacobi, and the loose fallback" << std::endl;
+
+	// --- THE FAST PATH, three ways, each against a written reference.
+	// A rotation, a reflection and a uniform scale all satisfy
+	// `M^T M = s^2 I` exactly, so both bounds are `s` and the routine
+	// never reaches Jacobi at all.
+	{
+		SphereGeometry* g = new SphereGeometry( Scalar( 1 ) );
+		Object* rot = new Object( g );
+		g->release();
+		rot->SetOrientation( Vector3( Scalar( 37 ), Scalar( 21 ), Scalar( 53 ) ) );
+		rot->FinalizeTransformations();
+		CheckClose( rot->SigmaMax(), Scalar( 1 ), Scalar( 1e-12 ), "(i) rotation: sigmaMax == 1" );
+		CheckClose( rot->SigmaMin(), Scalar( 1 ), Scalar( 1e-12 ), "(i) rotation: sigmaMin == 1" );
+		rot->release();
+
+		SphereGeometry* g2 = new SphereGeometry( Scalar( 1 ) );
+		Object* refl = new Object( g2 );
+		g2->release();
+		refl->SetStretch( Vector3( Scalar( -1 ), Scalar( 1 ), Scalar( 1 ) ) );
+		refl->FinalizeTransformations();
+		CheckClose( refl->SigmaMax(), Scalar( 1 ), Scalar( 1e-12 ),
+			"(i) MONEY -- a REFLECTION needs nothing special: the singular values of M are "
+			"those of |M|, so sigmaMax == 1" );
+		CheckClose( refl->SigmaMin(), Scalar( 1 ), Scalar( 1e-12 ), "(i) reflection: sigmaMin == 1" );
+		refl->release();
+
+		SphereGeometry* g3 = new SphereGeometry( Scalar( 1 ) );
+		Object* uni = new Object( g3 );
+		g3->release();
+		uni->SetStretch( Vector3( Scalar( 1.5 ), Scalar( 1.5 ), Scalar( 1.5 ) ) );
+		uni->FinalizeTransformations();
+		CheckClose( uni->SigmaMax(), Scalar( 1.5 ), Scalar( 1e-12 ), "(i) uniform scale: sigmaMax == 1.5" );
+		CheckClose( uni->SigmaMin(), Scalar( 1.5 ), Scalar( 1e-12 ), "(i) uniform scale: sigmaMin == 1.5" );
+		uni->release();
+	}
+
+	// --- JACOBI, on `scale (3, 1, 0.4)`.  The columns are already
+	// orthogonal, so the first sweep rotates nothing and converges
+	// immediately on the column norms themselves -- the true singular
+	// values, 3 and 0.4.  Phase 1's pair on this same transform was
+	// `||M||_F` = 3.187 and `|det|/||M||_F^2` = 0.1181.
+	{
+		SphereGeometry* g = new SphereGeometry( Scalar( 1 ) );
+		Object* aniso = new Object( g );
+		g->release();
+		aniso->SetStretch( Vector3( Scalar( 3 ), Scalar( 1 ), Scalar( 0.4 ) ) );
+		aniso->FinalizeTransformations();
+
+		CheckClose( aniso->SigmaMax(), Scalar( 3 ), Scalar( 1e-9 ),
+			"(i) MONEY -- scale (3,1,0.4): sigmaMax is the TRUE 3, not ||M||_F = 3.187" );
+		CheckClose( aniso->SigmaMin(), Scalar( 0.4 ), Scalar( 1e-9 ),
+			"(i) MONEY -- ...and sigmaMin is the TRUE 0.4, not |det|/||M||_F^2 = 0.1181" );
+		Check( aniso->SigmaMax() >= Scalar( 3 ),
+			"(i) ...with the four-ulp widening upward on sigmaMax, so `d_w <= sigmaMax * d_o` "
+			"survives rounding" );
+		Check( aniso->SigmaMin() <= Scalar( 0.4 ),
+			"(i) ...and downward on sigmaMin, so `d_w >= sigmaMin * d_o` does too" );
+
+		// THE SEARCH-RADIUS INFLATION, which is the cost side and the
+		// number 8's gate names.  The `Loose` reference beside it is
+		// computed from the SAME matrix by the SAME routine with the sweep
+		// cap at zero -- so "8.47x before" is derived here, not quoted.
+		const Scalar inflationNow = Scalar( 1 ) / aniso->SigmaMin();
+
+		Scalar looseMin = 0, looseMax = 0;
+		SigmaSource looseSrc = SigmaSource::Exact;
+		Matrix4 mAniso;
+		mAniso._00 = Scalar( 3 ); mAniso._11 = Scalar( 1 ); mAniso._22 = Scalar( 0.4 );
+		Check( ComputeSigmaExtremes( mAniso, 0, looseMin, looseMax, looseSrc ),
+			"(i) the routine answers with a ZERO-sweep budget" );
+		Check( looseSrc == SigmaSource::Loose,
+			"(i) MONEY -- ...and RETURNS the Loose state, which is the only way to reach that "
+			"branch: no real transform hits the thirty-sweep cap" );
+		const Scalar inflationBefore = Scalar( 1 ) / looseMin;
+
+		CheckClose( inflationNow, Scalar( 2.5 ), Scalar( 1e-9 ),
+			"(i) MONEY -- the object-space search radius is inflated 1/sigmaMin = 2.5x" );
+		CheckClose( inflationBefore, Scalar( 8.4666666666 ), Scalar( 1e-6 ),
+			"(i) ...where the loose pair inflated it 8.47x, the number 5.6 quotes" );
+		std::cout << "    scale (3,1,0.4): search-radius inflation " << (double)inflationBefore
+			<< "x (loose) -> " << (double)inflationNow << "x (Jacobi);  sigma ratio "
+			<< (double)( looseMax / looseMin ) << " -> "
+			<< (double)( aniso->SigmaMax() / aniso->SigmaMin() ) << std::endl;
+
+		// AND EXACTNESS IS STILL NOT CLAIMED.  `x sigmaMax` is attained
+		// only along the top singular vector, so the unsigned answer at a
+		// station off that vector is STILL above the truth -- Phase 3
+		// removed the pair's slack, not the anisotropy.
+		const Point3 station( 0, 5, 0 );
+		const Scalar trueDist = Scalar( 4 );			// closed form, see section (h)
+		Scalar d = 0;
+		Check( aniso->DistanceToSurface( station, Scalar( 100 ), d ),
+			"(i) the anisotropic object answers the unsigned query" );
+		Check( d >= trueDist - Scalar( 1e-9 ),
+			"(i) MONEY -- the unsigned answer is STILL an upper bound after the tightening" );
+		Scalar fv = 0; bool ex = false;
+		Check( aniso->SignedDistanceLower( station, Scalar( 100 ), fv, ex ),
+			"(i) ...and the signed query answers" );
+		Check( fv <= trueDist + Scalar( 1e-9 ),
+			"(i) ...still a lower bound" );
+		Check( !ex, "(i) ...and still not exact: Jacobi is not a similarity" );
+		std::cout << "    scale (3,1,0.4) at (0,5,0): true 4, unsigned " << (double)d
+			<< " (over-report " << (double)( d / trueDist ) << "x), signed lower bound "
+			<< (double)fv << std::endl;
+
+		aniso->release();
+	}
+
+	// --- JACOBI, on a SHEAR, which is where the columns are genuinely
+	// non-orthogonal and the sweeps do real work.  `M` maps
+	// e0 -> (1,0,0), e1 -> (1,1,0), e2 -> (0,0,1); `M^T M`'s upper 2x2 is
+	// [[1,1],[1,2]] with eigenvalues (3 +- sqrt 5)/2, so the singular
+	// values are the golden ratio and its reciprocal -- a written
+	// reference, computed by hand rather than recorded from a run.
+	{
+		const Scalar phi    = (Scalar)( ( 1.0 + std::sqrt( 5.0 ) ) / 2.0 );
+		const Scalar invPhi = (Scalar)( ( std::sqrt( 5.0 ) - 1.0 ) / 2.0 );
+
+		const Matrix4 shear(
+			Scalar(1), Scalar(0), Scalar(0), Scalar(0),
+			Scalar(1), Scalar(1), Scalar(0), Scalar(0),
+			Scalar(0), Scalar(0), Scalar(1), Scalar(0),
+			Scalar(0), Scalar(0), Scalar(0), Scalar(1) );
+
+		SphereGeometry* g = new SphereGeometry( Scalar( 1 ) );
+		Object* sh = new Object( g );
+		g->release();
+		sh->PushTopTransStack( shear );
+		sh->FinalizeTransformations();
+
+		CheckClose( sh->SigmaMax(), phi, Scalar( 1e-9 ),
+			"(i) MONEY -- a SHEAR converges to the golden ratio 1.6180339887" );
+		CheckClose( sh->SigmaMin(), invPhi, Scalar( 1e-9 ),
+			"(i) MONEY -- ...and to its reciprocal 0.6180339887" );
+		Check( sh->SigmaMax() >= phi && sh->SigmaMin() <= invPhi,
+			"(i) ...widened outward by the four-ulp nudge, never inward" );
+
+		// TEETH: the loose pair on the SAME shear is visibly worse, so the
+		// two checks above are measuring Jacobi and not an accident of the
+		// fallback landing on the right answer.
+		Scalar lmin = 0, lmax = 0;
+		SigmaSource src = SigmaSource::Exact;
+		Check( ComputeSigmaExtremes( shear, 0, lmin, lmax, src ) && src == SigmaSource::Loose,
+			"(i) the same shear at zero sweeps falls back" );
+		Check( lmax > phi + Scalar( 0.1 ) && lmin < invPhi - Scalar( 0.1 ),
+			"(i) ...to a pair that is visibly wider on both ends" );
+		std::cout << "    shear: Jacobi " << (double)sh->SigmaMin() << " / " << (double)sh->SigmaMax()
+			<< "  vs loose " << (double)lmin << " / " << (double)lmax << std::endl;
+
+		sh->release();
+	}
+
+	// --- THE DEGENERATE REFUSAL RUNS BEFORE JACOBI, which is what makes
+	// `sigmaMin > 0` true after the downward nudge.
+	{
+		Matrix4 flat;
+		flat._11 = Scalar( 0 );			// det == 0
+		Scalar mn = Scalar( 1 ), mx = Scalar( 1 );
+		SigmaSource src = SigmaSource::Exact;
+		Check( !ComputeSigmaExtremes( flat, 30, mn, mx, src ),
+			"(i) MONEY -- a DEGENERATE linear part is refused, and before Jacobi runs" );
+		CheckClose( mn, Scalar( 0 ), Scalar( 0 ), "(i) ...with the pair zeroed (min)" );
+		CheckClose( mx, Scalar( 0 ), Scalar( 0 ), "(i) ...with the pair zeroed (max)" );
+	}
+}
+
 //======================================================================
 
 int main()
@@ -1565,6 +1759,7 @@ int main()
 	TestConventions( f );
 	TestBuiltinEndToEnd( f );
 	TestSignedLowerBound( f );
+	TestExactSigma();
 
 	f.job->release();
 

@@ -2213,6 +2213,45 @@ Deviations from §5.6, all in the refusing direction:
   delegating to its baked mesh, since the mesh family is a sheet and refuses
   anyway; that is one fewer forwarding body to keep honest.
 
+#### S2 — exact σ
+
+The σ computation is hoisted out of `Object::FinalizeTransformations`' inline
+cache fill into a free `ComputeSigmaExtremes( m, maxSweeps, outSigmaMin,
+outSigmaMax, outSource )` (declared in `Object.h`, defined in `Object.cpp`;
+no new file, so the five-build-project rule does not fire). Three branches —
+the unchanged similarity fast path, a one-sided Jacobi SVD on `M` (≤ 30
+sweeps, columns rotated until mutually orthogonal, singular values read off
+as the column norms, results widened four ulps apart), and the Phase-1
+Frobenius/determinant pair as the non-convergence fallback. The degenerate
+refusal runs on `|det|` **before** Jacobi, which is what makes `σ_min > 0`
+true after the downward nudge. `m_sigmaSource` (three-state) carries the
+provenance; `m_sigmaExact` survives as a derived bool assigned at the one
+site that assigns the source, and both are copied in `CloneStateTo`.
+
+| Phase-3 S2 gate | verdict |
+|---|---|
+| warning-free `make -C build/make/rise -j8 all` | PASS |
+| fast path within 1e-12 of the written reference on a rotation, a reflection, a uniform scale | PASS — 1, 1, 1.5 on both ends of each |
+| Jacobi within 1e-9 on `(3, 1, 0.4)` | PASS — σ_max 3, σ_min 0.4 (the loose pair was 3.187 / 0.1181) |
+| Jacobi within 1e-9 on a SHEAR | PASS — 1.6180339887 / 0.6180339887, the golden ratio and its reciprocal, derived by hand from `M^T M`'s eigenvalues `(3 ± √5)/2`; the same shear at zero sweeps falls back to 2.0 / 0.25 |
+| the four-ulp widening goes OUTWARD | PASS — `σ_max ≥` and `σ_min ≤` the written reference asserted on both Jacobi fixtures |
+| `(3, 1, 0.4)` search-radius inflation 8.47× → 2.5× | PASS — **8.46667× → 2.5×**, both computed in the test from the same matrix by the same routine (the "before" number comes from a zero-sweep call, not from a quotation). σ ratio 26.9873 → 7.5, matching §5.6's two figures |
+| exactness is NOT claimed: unsigned ≥ and lower bound ≤ the truth | PASS — at `(0,5,0)` on the `(3,1,0.4)` solid: true 4, unsigned 12 (over-report **3.0×**, down from 12.7499 / **3.19×**), signed lower bound 1.6 (up from 0.472441); `exact = false` still, since Jacobi is not a similarity |
+| the `Loose` state is reached by a zero-sweep unit call checking the RETURNED state | PASS |
+| the degenerate refusal runs BEFORE Jacobi, pair zeroed | PASS |
+| `ProximitySignalTest` | 238 passed, 0 failed (211 after S1) |
+| `ProximityInvalidationTest` | 25 passed, 0 failed |
+| `MeshClosestPointTest` | 65 passed, 0 failed |
+| `SurfaceSignalsTest` | 318 passed, 0 failed |
+| `SourceHygieneTest` | 165 passed, 0 failed |
+| `GeometryUVRoundtripTest` / `CSGObjectIdentityTest` / `CsgOperandTransformTest` | PASS (18 and 36 checks respectively) |
+
+One measured side effect worth recording: scene C's `n_scaled_sdf`
+(`scale 2 1 1`) now reports **4.0** where it reported **4.899** — its
+σ_max falls from `‖M‖_F` = 2.449 to the true 2. Still an upper bound on the
+true 2, and the existing bound assertions were written against the truth
+rather than against the reported number, so they did not move.
+
 
 ---
 

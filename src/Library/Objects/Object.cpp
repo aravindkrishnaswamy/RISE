@@ -19,9 +19,180 @@
 #include "../Intersection/TextureFootprintCompute.h"
 #include "../Utilities/GeometricUtilities.h"
 #include <atomic>		// P2a: log-once idiom for UniformRandomPoint's null-geometry fallback warning
+#include <cmath>		// std::nextafter -- the Jacobi pair's four-ulp widening
+#include <algorithm>	// std::min / std::max over the three singular values
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+//////////////////////////////////////////////////////////////////////
+// ComputeSigmaExtremes -- the extremal singular values of a transform's
+// upper 3x3 (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6, "Exact sigma").
+//
+// WHY ONE-SIDED JACOBI ON `M` AND NOT AN EIGEN-SOLVE ON `M^T M`.  Forming
+// the Gram matrix squares the condition number: a transform spanning
+// 1e-3..1e3 would leave the SMALL singular value with roughly 1e-4
+// relative error, and the small one is the value the query divides its
+// search radius by and (since Phase 3's signed query) multiplies its
+// answer by.  Rotating the COLUMNS of `M` until they are mutually
+// orthogonal never forms `M^T M` at all and delivers high RELATIVE
+// accuracy for every singular value, small ones included.
+//
+// The rotations are applied on the right, so the column NORMS after
+// convergence are the singular values.  Nothing needs the singular
+// VECTORS, so the accumulating rotation matrix is simply not formed.
+//
+// REFLECTIONS NEED NOTHING SPECIAL: the singular values of `M` are those
+// of `|M|`, and a negative determinant never enters below except through
+// its absolute value in the fallback.
+//////////////////////////////////////////////////////////////////////
+
+bool RISE::Implementation::ComputeSigmaExtremes(
+	const Matrix4& m, const int maxSweeps,
+	Scalar& outSigmaMin, Scalar& outSigmaMax, SigmaSource& outSource )
+{
+	outSigmaMin = Scalar( 0 );
+	outSigmaMax = Scalar( 0 );
+	// The refusal below leaves this at `Loose`.  That is not a claim about
+	// a degenerate transform -- there is no fourth state and none is
+	// needed, because the only consumer of the state is a log line that
+	// sits behind `DistanceToSurface`'s `sigmaMin > 0` gate and is
+	// therefore unreachable for a refused transform.
+	outSource = SigmaSource::Loose;
+
+	// The three vectors below are the IMAGES OF THE BASIS VECTORS under
+	// this transform, read straight out of the convention
+	// Vector3Ops::Transform uses (`out.x = m._00*v.x + m._10*v.y +
+	// m._20*v.z`, and so on): so `M * e0` is (_00, _01, _02) -- the first
+	// COLUMN of the linear map, which is what a one-sided Jacobi rotates.
+	// Taking them this way rather than transposing by hand is what keeps
+	// this routine from silently disagreeing with the transform it is
+	// describing.
+	const Vector3 c0( m._00, m._01, m._02 );
+	const Vector3 c1( m._10, m._11, m._12 );
+	const Vector3 c2( m._20, m._21, m._22 );
+
+	// det of the LINEAR part, from those columns.  For an affine transform
+	// this equals the 4x4 determinant; computing it here keeps the sigma
+	// math self-contained and correct even for a matrix whose bottom row
+	// is not (0,0,0,1).
+	const Scalar det3 = Vector3Ops::Dot( c0, Vector3Ops::Cross( c1, c2 ) );
+	const Scalar absDet3 = fabs( det3 );
+
+	const Scalar n0 = Vector3Ops::SquaredModulus( c0 );
+	const Scalar n1 = Vector3Ops::SquaredModulus( c1 );
+	const Scalar n2 = Vector3Ops::SquaredModulus( c2 );
+	const Scalar frob = sqrt( n0 + n1 + n2 );
+
+	// THE DEGENERATE REFUSAL RUNS FIRST, BEFORE JACOBI, and the order is
+	// load-bearing: it is what makes `sigmaMin > 0` true after the
+	// four-ulp downward nudge below, since a genuinely invertible map's
+	// smallest singular value is many ulps clear of zero.
+	if( !( absDet3 > Scalar( 0 ) ) || !RISE::IsFiniteDouble( static_cast<double>( frob ) ) ) {
+		return false;
+	}
+
+	// THE EXACT FAST PATH, unchanged and un-nudged.  `M^T M == s^2 I` ?
+	// Its entries are the pairwise dot products of the three images, so
+	// the test is "equal squared lengths, mutually orthogonal".  RELATIVE
+	// to `s^2` = the mean squared length, so it scales with the object and
+	// is not a fixed absolute epsilon.  A rotation, a reflection, a
+	// uniform scale, or any composition of them lands here, every
+	// singular value is exactly `sqrt(s2)`, and the query pays nothing.
+	{
+		const Scalar s2  = ( n0 + n1 + n2 ) / Scalar( 3 );
+		const Scalar tol = Scalar( 1e-9 ) * s2;
+		const bool uniform =
+			   fabs( n0 - s2 ) <= tol && fabs( n1 - s2 ) <= tol && fabs( n2 - s2 ) <= tol
+			&& fabs( Vector3Ops::Dot( c0, c1 ) ) <= tol
+			&& fabs( Vector3Ops::Dot( c0, c2 ) ) <= tol
+			&& fabs( Vector3Ops::Dot( c1, c2 ) ) <= tol;
+		if( uniform ) {
+			outSigmaMax = sqrt( s2 );
+			outSigmaMin = outSigmaMax;
+			outSource   = SigmaSource::Exact;
+			return true;
+		}
+	}
+
+	// ONE-SIDED JACOBI.  Each sweep visits the three column pairs and
+	// applies the plane rotation that makes that pair orthogonal; a sweep
+	// that rotates NOTHING is the convergence test.  `maxSweeps == 0`
+	// therefore falls straight through to the loose fallback, which is how
+	// a test reaches the `Loose` state without a pathological matrix.
+	Vector3 a[3] = { c0, c1, c2 };
+	bool converged = false;
+	for( int sweep = 0; sweep < maxSweeps && !converged; ++sweep ) {
+		bool rotated = false;
+		for( int p = 0; p < 2; ++p ) {
+			for( int q = p + 1; q < 3; ++q ) {
+				const Scalar alpha = Vector3Ops::SquaredModulus( a[p] );
+				const Scalar beta  = Vector3Ops::SquaredModulus( a[q] );
+				const Scalar gamma = Vector3Ops::Dot( a[p], a[q] );
+				// RELATIVE threshold, at a few ulps of the product of the
+				// two column norms: an absolute one would either never
+				// converge on a large object or stop early on a small one.
+				if( !( fabs( gamma ) > Scalar( 1e-15 ) * sqrt( alpha * beta ) ) ) {
+					continue;
+				}
+				rotated = true;
+				// The standard stable form: solve for the rotation that
+				// zeroes `gamma`, taking the SMALLER root so the rotation
+				// angle stays under 45 degrees and the iteration cannot
+				// swap columns back and forth.
+				const Scalar zeta = ( beta - alpha ) / ( Scalar( 2 ) * gamma );
+				const Scalar sgnZ = ( zeta >= Scalar( 0 ) ) ? Scalar( 1 ) : Scalar( -1 );
+				const Scalar t    = sgnZ / ( fabs( zeta ) + sqrt( Scalar( 1 ) + zeta * zeta ) );
+				const Scalar cs   = Scalar( 1 ) / sqrt( Scalar( 1 ) + t * t );
+				const Scalar sn   = cs * t;
+				const Vector3 ap = a[p], aq = a[q];
+				a[p] = Vector3( cs*ap.x - sn*aq.x, cs*ap.y - sn*aq.y, cs*ap.z - sn*aq.z );
+				a[q] = Vector3( sn*ap.x + cs*aq.x, sn*ap.y + cs*aq.y, sn*ap.z + cs*aq.z );
+			}
+		}
+		if( !rotated ) {
+			converged = true;
+		}
+	}
+
+	if( converged ) {
+		const Scalar s0 = Vector3Ops::Magnitude( a[0] );
+		const Scalar s1 = Vector3Ops::Magnitude( a[1] );
+		const Scalar s2 = Vector3Ops::Magnitude( a[2] );
+		Scalar smax = std::max( s0, std::max( s1, s2 ) );
+		Scalar smin = std::min( s0, std::min( s1, s2 ) );
+		if( RISE::IsFiniteDouble( (double)smax ) && smin > Scalar( 0 ) ) {
+			// FOUR ULPS APART, because the whole design rests on a chain of
+			// inequalities -- `d_w <= sigmaMax * d_o` for the unsigned
+			// answer, `d_w >= sigmaMin * d_o` for the signed one -- and
+			// Jacobi returns the singular values to rounding, not below
+			// and above them.  Widening the pair by a few ulps costs
+			// nothing measurable and keeps every one of those inequalities
+			// true of the STORED numbers rather than of the exact ones.
+			for( int i = 0; i < 4; ++i ) {
+				smax = (Scalar)std::nextafter( (double)smax, HUGE_VAL );
+				smin = (Scalar)std::nextafter( (double)smin, 0.0 );
+			}
+			outSigmaMax = smax;
+			outSigmaMin = smin;
+			outSource   = SigmaSource::Jacobi;
+			return true;
+		}
+	}
+
+	// THE FALLBACK PAIR, unchanged from Phase 1 and still sound:
+	// `sigmaMax <= ||M||_F` (since `||M||_F^2` is the SUM of the squared
+	// singular values) and `sigmaMin >= |det| / sigmaMax^2` (since
+	// `|det| = sigmaMin * s2 * s3 <= sigmaMin * sigmaMax^2`), which stays
+	// valid when the upper bound is substituted for the true `sigmaMax`.
+	// Both directions stay SAFE for the query: it searches a wider
+	// object-space radius than it must, and reports an unsigned distance
+	// no smaller than the truth.
+	outSigmaMax = frob;
+	outSigmaMin = absDet3 / ( frob * frob );
+	outSource   = SigmaSource::Loose;
+	return true;
+}
 
 Object::Object( ) :
   pGeometry( 0 ),
@@ -41,6 +212,7 @@ Object::Object( ) :
   m_worldLinearScale( 1.0 ),
   m_sigmaMax( 1.0 ),
   m_sigmaMin( 1.0 ),
+  m_sigmaSource( SigmaSource::Exact ),
   m_sigmaExact( true ),
   m_sigmaLooseWarned( false ),
   m_distanceRefusalWarned( false )
@@ -66,6 +238,7 @@ Object::Object( const IGeometry* pGeometry_ ) :
   m_worldLinearScale( 1.0 ),
   m_sigmaMax( 1.0 ),
   m_sigmaMin( 1.0 ),
+  m_sigmaSource( SigmaSource::Exact ),
   m_sigmaExact( true ),
   m_sigmaLooseWarned( false ),
   m_distanceRefusalWarned( false )
@@ -221,6 +394,7 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	// answering the same way its source does rather than at the identity.
 	dst.m_sigmaMax             = m_sigmaMax;
 	dst.m_sigmaMin             = m_sigmaMin;
+	dst.m_sigmaSource          = m_sigmaSource;
 	dst.m_sigmaExact           = m_sigmaExact;
 
 	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
@@ -1360,23 +1534,31 @@ bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld
 		// invert that ownership.  The sigma pair identifies the transform
 		// well enough for an author to find the chunk that authored it.
 		//
-		// WHAT THE NUMBERS ARE, said precisely, because the headline factor
-		// reads alarmingly and is not the over-report an author will
-		// measure.  `sigmaMax/sigmaMin` is a bound computed from the LOOSE
-		// Frobenius/determinant pair, so it bounds a bound: on `scale
-		// (3, 1, 0.4)` it prints 26.99 while the transform's true singular
-		// ratio is 7.5 and the worst over-report actually measured is
-		// 7.96x.  The search-radius inflation `1/sigmaMin` (8.47x on that
-		// same transform) is the part that costs TIME rather than contact,
-		// so it is printed as its own number instead of being inferred.
+		// AND IT NAMES THE STATE, which is the whole reason `m_sigmaSource`
+		// replaced a bool (design 5.6).  `Jacobi` and `Loose` are both
+		// "not exact" and they are not the same news: a converged object's
+		// printed ratio IS the transform's true singular ratio (7.5 on
+		// `scale (3, 1, 0.4)`), while a fallen-back one's is a bound on a
+		// bound (26.99 on the same transform) and reads alarmingly for no
+		// reason an author can act on.  A single `!m_sigmaExact` message
+		// could not tell them apart, so it described every object as if it
+		// were the second.
+		//
+		// The search-radius inflation `1/sigmaMin` is printed as its own
+		// number because it is the part that costs TIME rather than
+		// contact -- 2.5x on that transform since Phase 3, 8.47x before.
+		const char* const sourceWord =
+			( m_sigmaSource == SigmaSource::Jacobi )
+				? "EXACT singular values (one-sided Jacobi, widened four ulps)"
+				: "the LOOSE Frobenius/determinant pair (the Jacobi sweep cap was hit)";
 		GlobalLog()->PrintEx( eLog_Info,
 			"Object::DistanceToSurface:: an object with an ANISOTROPIC transform reads proximity() "
-			"through the Frobenius/determinant bounds rather than exactly.  Reported distances are "
-			"an UPPER bound, over-read by at most %.3gx -- itself a bound computed from the loose "
-			"sigma pair (sigmaMax %.6g / sigmaMin %.6g), so the over-report an author measures is "
-			"typically far smaller; and the object-space search radius is inflated %.3gx, which is "
-			"the cost side.  The signal can only UNDER-paint contact as a result; see "
-			"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
+			"through %s.  Reported distances are an UPPER bound, over-read by at most %.3gx "
+			"(sigmaMax %.6g / sigmaMin %.6g) -- attained only along the top singular vector, so the "
+			"over-report an author measures is typically smaller; and the object-space search "
+			"radius is inflated %.3gx, which is the cost side.  The signal can only UNDER-paint "
+			"contact as a result; see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2 and 5.6.",
+			sourceWord,
 			(double)( m_sigmaMax / m_sigmaMin ), (double)m_sigmaMax, (double)m_sigmaMin,
 			(double)( Scalar( 1 ) / m_sigmaMin ) );
 	}
@@ -1507,74 +1689,31 @@ void Object::FinalizeTransformations( const Matrix4& parentWorld )
 		? pow( absDet, Scalar( 1.0 / 3.0 ) )
 		: Scalar( 0 );
 
-	// EXTREMAL SINGULAR VALUES of the upper 3x3, as bounds -- see the
-	// fields' doc comment in Object.h for why the proximity query needs
-	// both ends and why neither is computed exactly in general.
+	// EXTREMAL SINGULAR VALUES of the upper 3x3 -- see the fields' doc
+	// comment in Object.h for what the proximity query does with both ends,
+	// and `ComputeSigmaExtremes` for the three branches that can produce
+	// them.  HOISTED into that free routine (Phase 3) rather than inlined
+	// here, because the `Loose` fallback is unreachable from any real
+	// transform and a test that cannot call the routine directly cannot
+	// cover it at all.
 	//
-	// The three vectors below are the IMAGES OF THE BASIS VECTORS under
-	// this transform, read straight out of the convention
-	// Vector3Ops::Transform uses (`out.x = m._00*v.x + m._10*v.y +
-	// m._20*v.z`, and so on): so `M * e0` is (_00, _01, _02).  Taking them
-	// this way rather than transposing by hand is what keeps this block
-	// from silently disagreeing with the transform it is describing.
-	const Vector3 c0( m_mxFinalTrans._00, m_mxFinalTrans._01, m_mxFinalTrans._02 );
-	const Vector3 c1( m_mxFinalTrans._10, m_mxFinalTrans._11, m_mxFinalTrans._12 );
-	const Vector3 c2( m_mxFinalTrans._20, m_mxFinalTrans._21, m_mxFinalTrans._22 );
-
-	// det of the LINEAR part, from those columns.  For an affine transform
-	// this equals the 4x4 determinant above; computing it here rather than
-	// reusing `det` keeps the sigma math self-contained and correct even
-	// for a matrix whose bottom row is not (0,0,0,1).
-	const Scalar det3 = Vector3Ops::Dot( c0, Vector3Ops::Cross( c1, c2 ) );
-	const Scalar absDet3 = fabs( det3 );
-
-	const Scalar n0 = Vector3Ops::SquaredModulus( c0 );
-	const Scalar n1 = Vector3Ops::SquaredModulus( c1 );
-	const Scalar n2 = Vector3Ops::SquaredModulus( c2 );
-	const Scalar frob = sqrt( n0 + n1 + n2 );
-
-	if( !( absDet3 > Scalar( 0 ) ) || !RISE::IsFiniteDouble( static_cast<double>( frob ) ) ) {
-		// DEGENERATE (or non-finite): there is no invertible map to bound,
-		// and Matrix4Ops::Inverse silently returns its input for a singular
-		// matrix, so the object-space point would be meaningless too.  Zero
-		// is the "cannot answer" sentinel the other two caches already use,
-		// and DistanceToSurface reads it as a refusal.
+	// THIRTY SWEEPS is the production cap.  One-sided Jacobi on a 3x3
+	// converges quadratically and finishes in a handful; thirty is a
+	// runaway guard, not a tuning knob, and hitting it is what the `Loose`
+	// state exists to report.
+	if( !ComputeSigmaExtremes( m_mxFinalTrans, 30, m_sigmaMin, m_sigmaMax, m_sigmaSource ) ) {
+		// DEGENERATE (or non-finite): there is no invertible map to
+		// measure, and Matrix4Ops::Inverse silently returns its input for a
+		// singular matrix, so the object-space point would be meaningless
+		// too.  Zero is the "cannot answer" sentinel the other two caches
+		// already use, and both distance queries read it as a refusal.
 		m_sigmaMax   = Scalar( 0 );
 		m_sigmaMin   = Scalar( 0 );
-		m_sigmaExact = false;
-	} else {
-		// M^T M == s^2 I ?  Its entries are the pairwise dot products of
-		// the three images, so the test is "equal squared lengths, mutually
-		// orthogonal".  RELATIVE to s^2 = the mean squared length, so it
-		// scales with the object and is not a fixed absolute epsilon.
-		const Scalar s2   = ( n0 + n1 + n2 ) / Scalar( 3 );
-		const Scalar tol  = Scalar( 1e-9 ) * s2;
-		const bool uniform =
-			   fabs( n0 - s2 ) <= tol && fabs( n1 - s2 ) <= tol && fabs( n2 - s2 ) <= tol
-			&& fabs( Vector3Ops::Dot( c0, c1 ) ) <= tol
-			&& fabs( Vector3Ops::Dot( c0, c2 ) ) <= tol
-			&& fabs( Vector3Ops::Dot( c1, c2 ) ) <= tol;
-
-		if( uniform ) {
-			// A rotation, a reflection, a uniform scale, or any composition
-			// of them: every singular value is exactly sqrt(s2).
-			m_sigmaMax   = sqrt( s2 );
-			m_sigmaMin   = m_sigmaMax;
-			m_sigmaExact = true;
-		} else {
-			// sigmaMax <= ||M||_F, because ||M||_F^2 is the SUM of the
-			// squared singular values.  sigmaMin >= |det| / sigmaMax^2,
-			// because |det| = sigmaMin * s2 * s3 and both of those are at
-			// most sigmaMax -- and substituting the upper bound for
-			// sigmaMax only makes the lower bound smaller, i.e. still a
-			// lower bound.  Both directions stay SAFE for the query: it
-			// searches a wider object-space radius than it must, and
-			// reports a distance no smaller than the truth.
-			m_sigmaMax   = frob;
-			m_sigmaMin   = absDet3 / ( frob * frob );
-			m_sigmaExact = false;
-		}
+		m_sigmaSource = SigmaSource::Loose;
 	}
+	// DERIVED, at the one site that assigns the source -- never written
+	// anywhere else, so the two cannot drift.
+	m_sigmaExact = ( m_sigmaSource == SigmaSource::Exact );
 	// The loose-bound diagnostic latch is deliberately NOT re-armed here,
 	// matching the REFUSAL latch just below it.  This used to re-arm on
 	// every FinalizeTransformations -- which fires once per animation frame

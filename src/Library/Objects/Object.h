@@ -31,6 +31,55 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		//! WHERE THE CACHED SIGMA PAIR CAME FROM.  Three states, and a
+		//! diagnostic that could not tell the last two apart is why the
+		//! `bool m_sigmaExact` it replaces was not enough
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6):
+		//!
+		//!   * `Exact`  -- the fast path, `M^T M = s^2 I` within 1e-9
+		//!                 relative (a rotation, a reflection, a uniform
+		//!                 scale, or any composition).  Both bounds are
+		//!                 exactly `s`, un-nudged.
+		//!   * `Jacobi` -- the one-sided Jacobi SVD converged.  The pair is
+		//!                 the TRUE extremal singular values to rounding,
+		//!                 nudged apart by four ulps so the inequality
+		//!                 chain the query rests on survives it.
+		//!   * `Loose`  -- the sweep cap was hit and the Frobenius /
+		//!                 determinant pair stands in.  Sound, and wide:
+		//!                 on `scale (3, 1, 0.4)` it is 3.19 / 0.118
+		//!                 against a true 3 / 0.4.
+		//!
+		//! A degenerate transform is not a fourth state: `ComputeSigmaExtremes`
+		//! REFUSES it (returns false) before it reaches Jacobi, and the caller
+		//! zeroes the pair -- which `DistanceToSurface` and
+		//! `SignedDistanceLower` read as a refusal.
+		enum class SigmaSource { Exact, Jacobi, Loose };
+
+		//! THE EXTREMAL SINGULAR VALUES of `m`'s upper 3x3, hoisted out of
+		//! `Object::FinalizeTransformations`' inline cache fill so a test
+		//! can drive it directly -- which is the only way to reach the
+		//! `Loose` state deliberately (the sweep cap is never hit by a real
+		//! transform, and the log line that names the state is reachable
+		//! only through `Object::DistanceToSurface`).
+		//!
+		//! ONE-SIDED JACOBI, on `M` itself rather than on `M^T M`.  Forming
+		//! the Gram matrix squares the condition number, so a 1e-3..1e3
+		//! scale range would leave the SMALL singular value with ~1e-4
+		//! relative error -- and the small one is exactly the one the query
+		//! divides its search radius by.  Rotating the columns of `M` until
+		//! they are mutually orthogonal gives every singular value to high
+		//! RELATIVE accuracy, which is the property this needs.
+		//!
+		//! \return FALSE for a degenerate or non-finite linear part, with
+		//!         the pair zeroed; TRUE otherwise.
+		bool ComputeSigmaExtremes(
+			const Matrix4& m,				///< [in] The transform whose upper 3x3 is measured
+			const int maxSweeps,			///< [in] Jacobi sweep cap (30 in production; 0 forces `Loose`)
+			Scalar& outSigmaMin,			///< [out] Lower bound on the smallest singular value
+			Scalar& outSigmaMax,			///< [out] Upper bound on the largest
+			SigmaSource& outSource			///< [out] Which of the three branches produced them
+			);
+
 		class Object : public virtual IObjectPriv, public virtual Transformable, public virtual Reference
 		{
 		protected:
@@ -115,31 +164,48 @@ namespace RISE
 			//! under an invertible linear map `M` satisfies
 			//! `sigmaMin * d_object <= d_world <= sigmaMax * d_object`, and
 			//! `proximity`'s one-sided contract (never over-read contact)
-			//! needs BOTH ends: the radius goes IN divided by the smallest
-			//! and the answer comes OUT multiplied by the largest.  Getting
-			//! the true singular values needs an SVD or an eigen-solve, and
-			//! this engine has neither anywhere -- `m_worldLinearScale`'s
-			//! `|det|^(1/3)` is the only decomposition in the tree and it
-			//! is neither bound.  So:
+			//! needs BOTH ends: the unsigned radius goes IN divided by the
+			//! smallest and the answer comes OUT multiplied by the largest
+			//! (the SIGNED query reverses the second half -- see
+			//! `SignedDistanceLower`).  Three branches produce the pair,
+			//! recorded in `m_sigmaSource`:
 			//!
 			//!   * EXACT when `M^T M = s^2 I` within 1e-9 relative -- a
 			//!     rotation, a reflection, a uniform scale, or any
-			//!     composition of them.  That is every object in every
-			//!     scene the proximity design's acceptance set names, and
-			//!     `m_sigmaExact` records that it held.  Both bounds are
-			//!     then `s` and the transform costs the query nothing.
-			//!   * SOUND BUT LOOSE otherwise: `sigmaMax <= ||M||_F` (since
-			//!     `||M||_F^2 = sum of sigma_i^2`) and
-			//!     `sigmaMin >= |det| / sigmaMax^2` (since
+			//!     composition of them.  Both bounds are then `s`,
+			//!     un-nudged, and the transform costs the query nothing.
+			//!   * JACOBI otherwise, since Phase 3: a one-sided Jacobi SVD
+			//!     on `M` gives the TRUE extremal singular values to
+			//!     rounding, and the stored pair is nudged apart by four
+			//!     ulps so the inequality chain survives that rounding.
+			//!     These are still called BOUNDS and the word is earned:
+			//!     `x sigmaMax` bounds the world distance and is ATTAINED
+			//!     only along the top singular vector, so an anisotropic
+			//!     object still over-reports off that direction -- what
+			//!     Phase 3 removed is the extra slack of the pair below,
+			//!     not the anisotropy itself.
+			//!   * LOOSE if the Jacobi sweep cap is hit (no real transform
+			//!     does; a test forces it with a zero-sweep budget):
+			//!     `sigmaMax <= ||M||_F` (since `||M||_F^2 = sum of
+			//!     sigma_i^2`) and `sigmaMin >= |det| / sigmaMax^2` (since
 			//!     `|det| = sigmaMin * s2 * s3 <= sigmaMin * sigmaMax^2`),
 			//!     which stays valid when the upper bound is substituted
-			//!     for the true `sigmaMax`.  Never unsafe, only wider: the
-			//!     query searches a larger object-space radius than it must
-			//!     and reports a distance no smaller than the truth.  The
-			//!     ratio is logged once per object so a scene that pays for
-			//!     it can be seen to.
+			//!     for the true `sigmaMax`.  Never unsafe, only wider.
+			//!
+			//! Both 0 for a degenerate (non-invertible) transform, which
+			//! makes both distance queries refuse.  The state is logged
+			//! once per object so a scene that pays for anisotropy can be
+			//! seen to.
 			Scalar											m_sigmaMax;
 			Scalar											m_sigmaMin;
+			//! Which of the three branches above filled the pair.
+			SigmaSource										m_sigmaSource;
+			//! `m_sigmaSource == SigmaSource::Exact`, DERIVED at the single
+			//! site that assigns the source and never written anywhere else.
+			//! Kept as its own field because the exactness question --
+			//! "may `SignedDistanceLower` forward its geometry's exactness
+			//! flag?" -- is a two-state one, and spelling it out here keeps
+			//! that read from having to know the enum's shape.
 			bool											m_sigmaExact;
 			//! One-shot latch for the loose-bound diagnostic, so an
 			//! anisotropically-scaled object says so once -- for the life of
@@ -328,6 +394,14 @@ namespace RISE
 				Scalar& outSigned,
 				bool& outExact
 				) const override;
+
+			//! THE CACHED SIGMA PAIR, exposed for tests only.  Nothing in
+			//! the engine reads these -- the two distance queries use the
+			//! members directly -- but a gate that asserts "the search
+			//! radius inflation fell from 8.47x to 2.5x" has to be able to
+			//! see the number it is asserting about.
+			Scalar SigmaMin() const { return m_sigmaMin; }
+			Scalar SigmaMax() const { return m_sigmaMax; }
 
 			//! IObject::DescribeKind -- the geometry's own type name, which
 			//! is what the proximity refusal diagnostic used to obtain by
