@@ -117,22 +117,24 @@ namespace RISE
 		//     bComplementedField) -- declined by
 		//     docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 11.
 		//   * `signals.pScene`, `signals.pSelf`, `signals.ptWorld` and
-		//     `signals.time` -- the cross-object proximity channel,
-		//     declined by docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 for
+		//     `signals.time` -- the cross-object channel, which since
+		//     Phase 3 carries BOTH `proximity` and `interior`, declined by
+		//     docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 and §5.6 for
 		//     the SAME reason and with the same argument: the gap is
-		//     already disclosed for the three signals that share this
-		//     channel, the fix is one widening for all four (a BDPTVertex
+		//     already disclosed for the three self-signals that share this
+		//     channel, the fix is one widening for all five (a BDPTVertex
 		//     slot, population in both subpath generators, the copy here
 		//     and a BDPTVertexRIGRebuildTest sentinel), and widening for
-		//     ONE of the four would leave a mixed-truth state -- some
+		//     ONE of the five would leave a mixed-truth state -- some
 		//     signals live on those integrators and some neutral, with
-		//     nothing in the record saying which.  `proximity` therefore
-		//     reads its neutral 0 (paints nothing) wherever this rebuild
-		//     is the source of the record, exactly as `occlusion`,
-		//     `thickness` and `convexity` read theirs.  PT is unaffected:
-		//     it evaluates against records the object manager stamped.
+		//     nothing in the record saying which.  `proximity` and
+		//     `interior` therefore read their neutral 0 (paint nothing)
+		//     wherever this rebuild is the source of the record, exactly as
+		//     `occlusion`, `thickness` and `convexity` read theirs.  PT is
+		//     unaffected: it evaluates against records the object manager
+		//     stamped.
 		//
-		// Adding any of them means doing all four at once, and saying so
+		// Adding any of them means doing all five at once, and saying so
 		// in the commit.
 		//////////////////////////////////////////////////////////////////////
 		inline void PopulateRIGFromVertex(

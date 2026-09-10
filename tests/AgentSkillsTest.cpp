@@ -771,7 +771,19 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// authoring time (`grime` 0.85 -> 0, same seeds): 760 of 16384 pixels
 	// move, max delta 0.415, so the snippet demonstrates the term rather
 	// than merely parsing with it.
-	Check( totalSnippets == 32, "the seed skills carry the expected 32 ```rise snippets in total (got " +
+	//
+	// Phase 3 of the same arc (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+	// section 5.6) took the count 32 -> 33: procedural-textures gains
+	// "`interior(r)` -- the signed half", whose fence is a stone sphere
+	// resting in a shallow DIELECTRIC pool.  The neighbour has to
+	// TRANSMIT for the point to be made at all -- a surface inside an
+	// OPAQUE neighbour is behind that neighbour and the camera never sees
+	// it -- and the fixture is sized so the numbers in the prose are
+	// closed forms rather than impressions: the stone's lowest point sits
+	// exactly 1 cm inside a pool 2 cm is the saturation depth of, so
+	// `interior(0.02)` is exactly 0.5 there and exactly 0 at the
+	// waterline.
+	Check( totalSnippets == 33, "the seed skills carry the expected 33 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 

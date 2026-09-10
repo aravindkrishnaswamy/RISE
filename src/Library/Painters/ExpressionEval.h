@@ -329,7 +329,7 @@ namespace RISE
 			//! substituting the baked radius).
 			struct SignalRadiusCall
 			{
-				int    fn;				//!< kFnOcclusion, kFnThickness, kFnConvexity or kFnProximity
+				int    fn;				//!< kFnOcclusion, kFnThickness, kFnConvexity, kFnProximity or kFnInterior
 				bool   radiusIsLiteral;
 				Scalar radiusLiteral;	//!< meaningful only when radiusIsLiteral
 			};
@@ -482,11 +482,33 @@ namespace RISE
 			//! computed-radius `proximity(...)` would have compiled to a
 			//! CONVEXITY call.
 			//!
-			//! 58 and 59 remain free in this band; 60-62 belong to
-			//! CallFuncVec3.
+			//! 59 remains free in this band (58 is `interior`, below);
+			//! 60-62 belong to CallFuncVec3.
 			static const int kFnProximity   = 57;
 			static_assert( kFnProximity == 57, "CallFunc's `case kFnProximity:` continues the "
-				"scalar-returning band past kFnConvexityDynR (56); 58-59 free, 60+ are CallFuncVec3's" );
+				"scalar-returning band past kFnConvexityDynR (56); 58 is interior, 59 free, "
+				"60+ are CallFuncVec3's" );
+			//! `interior(radius)` -- the SIGNED sibling of `proximity`
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+			//! `clamp(depth / r, 0, 1)` for `depth` the largest inside-depth
+			//! lower bound over every OTHER world-visible, non-emissive
+			//! object that CONTAINS the hit point: 0 = inside no neighbour,
+			//! 1 = at least `r` deep.  Together the two cover the signed
+			//! distance without a sign convention an author has to
+			//! remember.
+			//!
+			//! A WORLD LENGTH again, and MANDATORY, and with NO `DynR` twin
+			//! -- for exactly `proximity`'s reasons: there is no bake behind
+			//! either, so a computed radius costs what a literal one does
+			//! and there is no constant-radius proof to forward.  ParseCall's
+			//! DynR remap guard therefore covers this id too; without it a
+			//! computed-radius `interior(...)` would compile as CONVEXITY,
+			//! the same silently-wrong render `proximity` nearly shipped.
+			//!
+			//! 59 is the last free id before CallFuncVec3's 60+ band.
+			static const int kFnInterior    = 58;
+			static_assert( kFnInterior == 58, "CallFunc's `case kFnInterior:` is the last named "
+				"case in the scalar-returning band; only 59 remains free before CallFuncVec3's 60+" );
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
 			//!   u=0, v=1, P=kContextSlotP(2..4), Po=kContextSlotPo(5..7),
 			//!   N=8..10, fw=kContextSlotFw(11), time=kContextSlotTime(12),
@@ -728,16 +750,17 @@ namespace RISE
 			//!
 			//! Linear over the call list, which is a handful of entries and
 			//! is walked once per painter construction -- never per hit.
-			bool UsesProximity() const
+			bool UsesCrossObject() const
 			{
 				for( std::size_t i = 0; i < m_signalCalls.size(); ++i ) {
 					if( m_signalCalls[i].fn == kFnProximity ) return true;
+					if( m_signalCalls[i].fn == kFnInterior )  return true;
 				}
 				return false;
 			}
 
 			//! Every `occlusion()` / `thickness()` / `convexity()` /
-			//! `proximity()` call site, in parse order
+			//! `proximity()` / `interior()` call site, in parse order
 			//! (def stages first, in registration order, then the final
 			//! expression).  Phase 3's baked mesh path reads this to decide
 			//! WHICH radius to bake and whether it may answer at all.
@@ -1172,6 +1195,7 @@ namespace RISE
 						// fraction of the hit object's size.  See
 						// ExpressionProgram::kFnProximity.
 						{"proximity",ExpressionProgram::kFnProximity,1,{S,S,S,S},S},
+						{"interior",ExpressionProgram::kFnInterior,1,{S,S,S,S},S},
 						// vec3-returning
 						{"cross",60,2,{V,V,S,S},V}, {"normalize",61,1,{V,S,S,S},V},
 					};
@@ -2100,21 +2124,27 @@ namespace RISE
 					//! FOUR CONSUMERS depend on this predicate, and every
 					//! one of them had to be re-read when `proximity`
 					//! joined it (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
-					//! §5.1): the expression_function2d refusal just
-					//! below, the literal-radius diagnostic (whose text
-					//! says the OPPOSITE thing for proximity -- a world
-					//! length, not a fraction), the `m_sigCalls`
+					//! §5.1) and again when `interior` did (§5.6): the
+					//! expression_function2d refusal just below (which
+					//! extends to `interior` unchanged), the literal-radius
+					//! diagnostic (whose text says the OPPOSITE thing for
+					//! the two CROSS-OBJECT signals -- a world length, not
+					//! a fraction -- and which is a THREE-way choice since
+					//! `interior`, because the two world-length signals
+					//! measure different things), the `m_sigCalls`
 					//! registration that drives ComputeMemoWorthiness and
 					//! SurfaceSignalDemand, and the `DynR` remap, whose
-					//! final ternary arm is an UNGUARDED fall-through and
+					//! final ternary arm was an UNGUARDED fall-through and
 					//! would otherwise have compiled every
-					//! computed-radius `proximity(...)` as a CONVEXITY
-					//! call.  Widening this test alone is not enough; each
-					//! of the four says what it does with the new id.
+					//! computed-radius `proximity(...)` -- and now
+					//! `interior(...)` -- as a CONVEXITY call.  Widening
+					//! this test alone is not enough; each of the four says
+					//! what it does with the new id.
 					const bool isSignalFn = ( sig->id == ExpressionProgram::kFnOcclusion ||
 					                          sig->id == ExpressionProgram::kFnThickness ||
 					                          sig->id == ExpressionProgram::kFnConvexity ||
-					                          sig->id == ExpressionProgram::kFnProximity );
+					                          sig->id == ExpressionProgram::kFnProximity ||
+					                          sig->id == ExpressionProgram::kFnInterior );
 					if( isSignalFn && !m_contextVarsEnabled ) {
 						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
 							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
@@ -2208,17 +2238,29 @@ namespace RISE
 									// this diagnostic exists to teach it.
 									// The three self-signals take a
 									// fraction of the hit object's own
-									// size; `proximity` takes a WORLD
-									// LENGTH, because a fraction of the
-									// RECEIVER cannot describe how far away
-									// a NEIGHBOUR is.  Telling a proximity
-									// author "it is a fraction" would send
-									// them to fix the one thing that was
-									// right.
+									// size; the two CROSS-OBJECT ones take
+									// a WORLD LENGTH, because a fraction of
+									// the RECEIVER cannot describe how far
+									// away a NEIGHBOUR is or how deep
+									// inside one this point lies.  Telling
+									// such an author "it is a fraction"
+									// would send them to fix the one thing
+									// that was right.  THREE-WAY since
+									// `interior` joined: the two world-length
+									// signals say DIFFERENT things about
+									// what the length measures, and a
+									// binary ternary would have handed an
+									// `interior` author proximity's
+									// sentence about surfaces stopping to
+									// register as contact.
 									SetError( std::string(name) + "() radius must be > 0 -- "
 										+ ( sig->id == ExpressionProgram::kFnProximity
 											? std::string( "it is a WORLD LENGTH (proximity(0.002) = 2 mm), the distance "
 												"at which a neighbouring object's surface stops registering as contact -- "
+												"NOT a fraction of anything" )
+										: sig->id == ExpressionProgram::kFnInterior
+											? std::string( "it is a WORLD LENGTH (interior(0.002) = 2 mm), the depth of "
+												"burial inside a neighbouring object at which the signal saturates -- "
 												"NOT a fraction of anything" )
 											: std::string( "it is a FRACTION of the object's own size (0.05 = 5% of its "
 												"bounding-box diagonal), not a world length" ) ),
@@ -2240,7 +2282,7 @@ namespace RISE
 					// CallFunc -- see ExpressionProgram::kFnOcclusionDynR.
 					// Everything else emits its own id unchanged.
 					//
-					// THE FINAL ARM IS NOW GUARDED, and it has to be.
+					// THE FINAL ARM IS GUARDED, and it has to be.
 					// Before `proximity` there were exactly three signal
 					// ids and the last ternary arm could fall through to
 					// kFnConvexityDynR as "the remaining one".  Adding a
@@ -2249,9 +2291,11 @@ namespace RISE
 					// `proximity(...)` -- `proximity(0.1*2)`,
 					// `proximity(r)` for a param `r` -- as a CONVEXITY
 					// call: a silently wrong render with nothing in the
-					// scene text to suggest it.  `proximity` has no twin
-					// (there is no bake for a constant-radius proof to
-					// feed), so its own id is what it emits.
+					// scene text to suggest it.  `interior` is the FIFTH id
+					// and rides the same guard for the same reason.
+					// Neither cross-object signal has a twin (there is no
+					// bake for a constant-radius proof to feed), so each
+					// emits its own id.
 					int emitId = sig->id;
 					if( isSignalFn && !literalRadiusArg ) {
 						emitId = ( sig->id == ExpressionProgram::kFnOcclusion ) ? ExpressionProgram::kFnOcclusionDynR
@@ -2622,6 +2666,12 @@ namespace RISE
 				// CallFuncVec3 are unchanged.
 				case kFnProximity:
 					return pSignals ? pSignals->Proximity( a[0] ) : SurfaceSignalInfo::NeutralProximity();
+				// ONE more case, and the pin MOVES ONCE MORE -- disclosed
+				// exactly as `proximity`'s did.  `interior` is the SIGNED
+				// sibling: same world-length radius, same absence of a DynR
+				// twin, same live-scan cost model.
+				case kFnInterior:
+					return pSignals ? pSignals->Interior( a[0] ) : SurfaceSignalInfo::NeutralInterior();
 				default: return Scalar(0);
 				}
 			}

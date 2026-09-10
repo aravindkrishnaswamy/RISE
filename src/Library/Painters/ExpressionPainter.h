@@ -201,28 +201,32 @@ namespace RISE
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
 			//! SIGNAL DEMAND, diagnostic-only (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 			//! §14 item 11).  Active iff this painter's compiled body calls
-			//! `occlusion()` / `convexity()` / `thickness()` OR `proximity()`
+			//! `occlusion()` / `convexity()` / `thickness()` OR either
+			//! cross-object signal (`proximity()` / `interior()`)
 			//! anywhere -- it is built from `prog.UsesSurfaceSignals()`, which is
-			//! `!m_signalCalls.empty()`, and `m_signalCalls` carries all four
+			//! `!m_signalCalls.empty()`, and `m_signalCalls` carries all five
 			//! (ExpressionEval.h).  Unlike m_curvatureDemand above, this does NOT
 			//! gate any per-hit work -- see SurfaceSignalDemand's own doc comment
 			//! (ISurfaceSignalProvider.h) for why the provider install stays
 			//! unconditional.  Its only job is to let a BDPT/VCM/MLT rasterizer
 			//! ask "is anyone using a signal this integrator family evaluates as
 			//! neutral in parts of its transport" at render start, for the
-			//! one-time containment warning -- counting `proximity()` here is
-			//! what makes that warning's "all five"
-			//! (curv/occlusion/thickness/convexity/proximity,
+			//! one-time containment warning -- counting the cross-object pair
+			//! here is what makes that warning's "all six"
+			//! (curv/occlusion/thickness/convexity/proximity/interior,
 			//! WarnIfNonPTRenderHasLiveSignalConsumer) true for a painter that
-			//! calls only `proximity()`.
+			//! calls only `proximity()` or only `interior()`.
 			SurfaceSignalDemand::Registration m_signalDemand;
 
 			//! COST gate, not a diagnostic one -- see ProximityDemand's doc
 			//! comment (ISurfaceSignalProvider.h).  Active iff this
-			//! painter's compiled body calls `proximity()`, and what it
-			//! buys is that ObjectManager builds no world-AABB snapshot and
+			//! painter's compiled body calls EITHER cross-object signal,
+			//! `proximity()` or `interior()` (`prog.UsesCrossObject()`);
+			//! both read the same world-AABB snapshot, so an
+			//! `interior`-only scene must register too.  What it buys is
+			//! that ObjectManager builds no snapshot and
 			//! ObjectManager::IntersectRay checks for none when nothing in
-			//! the process asks for the signal.
+			//! the process asks for either.
 			ProximityDemand::Registration m_proximityDemand;
 
 			virtual ~ExpressionPainter() {}
@@ -245,7 +249,7 @@ namespace RISE
 				m_prog( prog ), m_paramSpecs( paramSpecs ), m_time( time ), m_kind( kind ),
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
 				m_signalDemand( prog.UsesSurfaceSignals() ),
-				m_proximityDemand( prog.UsesProximity() )
+				m_proximityDemand( prog.UsesCrossObject() )
 			{}
 
 			//! S4 introspection: full param metadata (min/max/step/label),
@@ -311,18 +315,20 @@ namespace RISE
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
 			//! See ExpressionPainter::m_signalDemand -- same diagnostic-only
 			//! RAII gate on the physical-scalar pipe, active for the same
-			//! four builtins (`occlusion()` / `thickness()` / `convexity()` /
-			//! `proximity()`, via `prog.UsesSurfaceSignals()`).  `scalar_painter
+			//! five builtins (`occlusion()` / `thickness()` / `convexity()` /
+			//! `proximity()` / `interior()`, via `prog.UsesSurfaceSignals()`).  `scalar_painter
 			//! { expression "occlusion(0.1)" }` feeding a dirt/wear slot is at
 			//! least as likely an authoring shape as the colour pipe's, so
 			//! both must register or the containment diagnostic would miss it
 			//! -- `proximity()` on this pipe is what a scalar wear/grime slot
 			//! (`scalar_painter { expression "1-proximity(0.002)" }`) uses in
-			//! practice, and is part of what makes the "all five" in
+			//! practice, and is part of what makes the "all six" in
 			//! WarnIfNonPTRenderHasLiveSignalConsumer's warning true.
 			SurfaceSignalDemand::Registration m_signalDemand;
 			//! See ExpressionPainter::m_proximityDemand -- the same COST
-			//! gate on the physical-scalar pipe.  Both pipes must register:
+			//! gate on the physical-scalar pipe, and it covers `interior()`
+			//! as well through the same `UsesCrossObject()`.  Both pipes
+			//! must register:
 			//! `scalar_painter { expression "1-proximity(0.002)" }` feeding
 			//! a roughness slot is exactly as likely an authoring shape as
 			//! the colour pipe's, and a gate that missed it would skip the
@@ -340,7 +346,7 @@ namespace RISE
 				m_prog( prog ), m_paramSpecs( paramSpecs ),
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
 				m_signalDemand( prog.UsesSurfaceSignals() ),
-				m_proximityDemand( prog.UsesProximity() )
+				m_proximityDemand( prog.UsesCrossObject() )
 			{}
 
 			//! S4 introspection: full param metadata, in `param` line order.

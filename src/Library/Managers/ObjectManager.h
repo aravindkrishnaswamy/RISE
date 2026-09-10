@@ -332,6 +332,16 @@ namespace RISE
 				const Point3& ptWorld,
 				const Scalar budget ) const;
 
+			//! THE THREE EXCLUSIONS ON THEIR OWN -- self by identity,
+			//! `IsWorldVisible()` (which is what keeps CSG operands out),
+			//! and emitters.  Factored out of the function above when
+			//! `DeepestOtherContainment` arrived, because the two queries
+			//! answer DIFFERENT questions about the SAME candidate set and
+			//! a rule that drifted between them would be a wrong render in
+			//! one of the two signals only.
+			//! \return TRUE when this candidate counts at all.
+			static bool ProximityCandidateCounts( const IObjectPriv* obj, const IObject* self );
+
 			// Realize all objects' deferred geometry (idempotent) before any bbox/
 			// TLAS query.  Called from PrepareForRendering AND CreateBVH/CreateOctree.
 			void RealizeAllObjects() const;
@@ -378,6 +388,14 @@ namespace RISE
 				const IObject* self,
 				const Scalar maxDistWorld,
 				Scalar& outDist
+				) const;
+
+			//! See IObjectManager::DeepestOtherContainment's contract comment.
+			bool DeepestOtherContainment(
+				const Point3& ptWorld,
+				const IObject* self,
+				const Scalar maxDepthWorld,
+				Scalar& outDepth
 				) const;
 
 			//! TEST-ONLY: has the proximity AABB snapshot been built?

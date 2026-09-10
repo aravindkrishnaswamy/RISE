@@ -13,19 +13,21 @@
 //
 //    RISE::ISurfaceSignalProvider   the geometry-side interface.
 //    RISE::SurfaceSignalInfo        the per-hit record field, plus the
-//                                   four honest-fallback wrappers every
+//                                   five honest-fallback wrappers every
 //                                   consumer should call instead of
 //                                   dereferencing the provider itself.
 //
-//  THREE OF THE FOUR ARE SELF-SIGNALS -- occlusion, thickness and
+//  THREE OF THE FIVE ARE SELF-SIGNALS -- occlusion, thickness and
 //  convexity ask the hit geometry about ITS OWN surface, through
 //  ISurfaceSignalProvider, and never see the rest of the scene.  The
-//  fourth, `proximity`, is CROSS-OBJECT: it asks the object manager how
-//  close the nearest OTHER surface is
-//  (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md).  It rides the same record
-//  field and the same L1 memo, but it has no provider and it is DECLARED
-//  here and DEFINED in SurfaceSignalProximity.h -- see the forward
-//  declarations below for the include cycle that forces the split.
+//  other two, `proximity` and `interior`, are CROSS-OBJECT: they ask the
+//  object manager how close the nearest OTHER surface is, and how deep
+//  inside another object this point lies
+//  (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md).  They ride the same record
+//  field and the same L1 memo, but they have no provider and they are
+//  DECLARED here and DEFINED in SurfaceSignalProximity.h -- see the
+//  forward declarations below for the include cycle that forces the
+//  split.
 //
 //  Tabs: 4
 //
@@ -347,7 +349,7 @@ namespace RISE
 		bool							bComplementedField;
 
 		//! THE CROSS-OBJECT HALF OF THE CHANNEL
-		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1).  Everything above
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 and §5.6).  Everything above
 		//! this line describes the hit's OWN surface and is stamped by the
 		//! geometry that owns it, in that geometry's object space.  These
 		//! four describe WHERE IN THE SCENE that hit is, which is what a
@@ -366,12 +368,13 @@ namespace RISE
 		//! nothing assigns `signals` after that function returns;
 		//! SourceHygieneTest pins the write-site set at file granularity.
 		//!
-		//! ZERO IS THE HONEST ABSENCE for all four: a record rebuilt by
+		//! ZERO IS THE HONEST ABSENCE for all five: a record rebuilt by
 		//! `PathVertexEval::PopulateRIGFromVertex` (BDPT / VCM / MLT), a
 		//! hit found by something other than the object manager, or a
 		//! hand-built test record carries `pScene == 0` and reads the
-		//! neutral 0 from `Proximity` -- the same disclosed gap the other
-		//! three signals already have on those integrator families.
+		//! neutral 0 from `Proximity` and from `Interior` -- the same
+		//! disclosed gap the other three signals already have on those
+		//! integrator families.
 		const IObjectManager*			pScene;		//!< the manager that found this hit; 0 = none
 		const IObject*					pSelf;		//!< == ri.pObject: the object the hit belongs to
 		Point3							ptWorld;	//!< the hit in WORLD space (== ri.ptIntersection)
@@ -432,6 +435,16 @@ namespace RISE
 		//! point is unusable, or every candidate refused.
 		static Scalar NeutralProximity() { return Scalar( 0 ); }
 
+		//! THE NEUTRAL INTERIOR: 0 == inside no neighbour.  The same
+		//! argument as `proximity`'s, one step further in: `interior(r)`
+		//! exists to paint what BURIAL does -- the sunk part of a nail, the
+		//! embedded flank of a stone in mortar -- so an absent signal must
+		//! read "buried in nothing" and paint nothing.  Reached whenever
+		//! the channel carries no scene or no self, the radius or the point
+		//! is unusable, or no candidate contained the point (which every
+		//! SHEET family answers by refusing, at every point, by design).
+		static Scalar NeutralInterior() { return Scalar( 0 ); }
+
 		//! Is `radiusFraction` a usable query radius at all?  Must be
 		//! finite and strictly positive; a zero or negative radius has no
 		//! meaning for either signal (a literal one is rejected at PARSE
@@ -443,19 +456,22 @@ namespace RISE
 		}
 
 		//! WHICH signal is being asked for -- the discriminator the three
-		//! wrappers below hand to their shared implementation, and part of
-		//! the L1 memo key (the three have DIFFERENT neutrals, so sharing
-		//! an entry between them would be a wrong answer, not a stale one).
-		//! `eProximity` is NOT a fourth branch of `SignalQuery` -- it is the
-		//! discriminator the SECOND policy body, `Proximity`, stamps into
-		//! the SAME L1 table so the two cannot collide there.  It has to be
-		//! a separate body rather than a fourth case because the two have
+		//! self-signal wrappers below hand to their shared implementation,
+		//! and part of the L1 memo key (they have DIFFERENT neutrals, so
+		//! sharing an entry between them would be a wrong answer, not a
+		//! stale one).
+		//! `eProximity` and `eInterior` are NOT further branches of
+		//! `SignalQuery` -- they are the discriminators the TWO CROSS-OBJECT
+		//! policy bodies, `Proximity` and `Interior`, stamp into the SAME L1
+		//! table so none of them can collide there.  They have to be
+		//! separate bodies rather than further cases because they have
 		//! DIFFERENT PRECONDITIONS: `SignalQuery` is gated on `pProvider`,
 		//! and a receiver like a `box_geometry` has none at all (it would
 		//! short-circuit to the neutral before the scene was ever asked),
-		//! while `Proximity` is gated on `pScene && pSelf` and does not
-		//! care whether the hit surface publishes signals of its own.
-		enum SignalKind { eOcclusion = 0, eThickness = 1, eConvexity = 2, eProximity = 3 };
+		//! while the cross-object pair is gated on `pScene && pSelf` and
+		//! does not care whether the hit surface publishes signals of its
+		//! own.
+		enum SignalKind { eOcclusion = 0, eThickness = 1, eConvexity = 2, eProximity = 3, eInterior = 4 };
 
 		//! THE L1 MEMO KEY for this hit -- every field of this struct, so a
 		//! new field added above and NOT added here is a silent wrong
@@ -505,9 +521,9 @@ namespace RISE
 		//! which is exactly the key -- plus the provider's own state,
 		//! which the generation counter covers (ExpressionMemo.h).
 		//! THE ONE L1 KEY CONSTRUCTOR, shared by `SignalQuery` and by
-		//! `Proximity` (SurfaceSignalProximity.h) -- and the thing that
-		//! keeps two policy bodies from drifting on memo POLICY while they
-		//! legitimately differ on preconditions.
+		//! `Proximity` / `Interior` (SurfaceSignalProximity.h) -- and the
+		//! thing that keeps three policy bodies from drifting on memo
+		//! POLICY while they legitimately differ on preconditions.
 		//!
 		//! WHAT SHARING THIS BUYS, exactly, since it is a small function
 		//! and the claim should be no bigger than it is:
@@ -515,9 +531,10 @@ namespace RISE
 		//!     reaches BOTH bodies' keys automatically.  That is the drift
 		//!     that would actually be a wrong render, and it is now
 		//!     impossible to introduce in one body and forget in the other.
-		//!   * The two bodies stamp the SAME `fn` field from the SAME
-		//!     enum, so an entry filled by one can never be served to the
-		//!     other -- `eProximity` is 3 and nothing else is.
+		//!   * The three bodies stamp the SAME `fn` field from the SAME
+		//!     enum, so an entry filled by one can never be served to
+		//!     another -- `eProximity` is 3, `eInterior` is 4, and nothing
+		//!     else is either.
 		//! What it does NOT buy, and does not try to: the find/insert
 		//! CALLS still appear once per body.  They must, because what is
 		//! memoised is each body's FINAL, already-clamped, already-fallen-
@@ -551,6 +568,24 @@ namespace RISE
 		//! include SurfaceSignalProximity.h; one that only names the struct
 		//! need not.
 		Scalar Proximity( const Scalar radiusWorld ) const;
+
+		//! CROSS-OBJECT INTERIOR at this hit -- `clamp(depth / r, 0, 1)`
+		//! for `depth` the largest inside-depth LOWER bound over every
+		//! OTHER world-visible, non-emissive object that CONTAINS this
+		//! point, and `r` a WORLD LENGTH.  0 = inside no neighbour,
+		//! 1 = at least `r` deep.  Always finite, always in [0,1].
+		//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6.
+		//!
+		//! THE SIGNED SIBLING of `Proximity`, as a second builtin rather
+		//! than a sign on the first: together the two cover the signed
+		//! distance without a sign convention an author has to remember.
+		//!
+		//! Takes no `bRadiusIsConstant`, for the same reason `Proximity`
+		//! does not: there is no bake behind either.
+		//!
+		//! DECLARED HERE, DEFINED IN SurfaceSignalProximity.h, for the same
+		//! include cycle.
+		Scalar Interior( const Scalar radiusWorld ) const;
 
 		Scalar SignalQuery( const SignalKind fn, const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
@@ -680,11 +715,17 @@ namespace RISE
 		};
 	}
 
-	//! CONSUMPTION GATE for `proximity()` -- and unlike SurfaceSignalDemand
-	//! above, this one is NOT diagnostic-only: it gates real per-pass and
-	//! per-ray work.
+	//! CONSUMPTION GATE for the CROSS-OBJECT PAIR -- registered when the
+	//! compiled program calls `proximity()` OR `interior()`
+	//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6's `UsesCrossObject()`),
+	//! so an `interior`-only scene still gets the eager snapshot.  THE NAME
+	//! IS KEPT because it is a public-ish symbol with call sites in two
+	//! painters and a test; what it gates is stated here rather than
+	//! inferred from the name.  Unlike SurfaceSignalDemand above, this one
+	//! is NOT diagnostic-only: it gates real per-pass and per-ray work.
 	//!
-	//! WHY PROXIMITY NEEDS ITS OWN COUNTER when the other four share one.
+	//! WHY THE CROSS-OBJECT PAIR NEEDS ITS OWN COUNTER when the other
+	//! signals share one.
 	//! The three self-signals cost nothing until called: their provider is
 	//! a pointer already on the record and their estimators are lazy.
 	//! `proximity` is the first signal with a SCENE-LEVEL prerequisite --
@@ -801,18 +842,19 @@ namespace RISE
 	{
 		if( !pLog || !familyName ) return;
 		if( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ) {
-			// NAMES ALL FIVE.  The message used to say
+			// NAMES ALL SIX.  The message used to say
 			// "curv/occlusion/thickness", which had already drifted when
-			// `convexity` shipped and drifted again when `proximity` did --
-			// and a warning that does not name the signal an author is
-			// actually using reads as being about somebody else's problem.
-			// `proximity` is the sharpest of the five here: its neutral
-			// means "no contact anywhere in the scene", so a grime mask
-			// simply stops painting.
+			// `convexity` shipped, drifted again when `proximity` did, and
+			// again when `interior` joined it -- and a warning that does
+			// not name the signal an author is actually using reads as
+			// being about somebody else's problem.  The two CROSS-OBJECT
+			// ones are the sharpest here: their neutrals mean "no contact
+			// anywhere in the scene" and "buried in nothing", so a grime
+			// mask simply stops painting.
 			pLog->PrintEx( eLog_Warning,
-				"%s:: curv/occlusion/thickness/convexity/proximity evaluate as neutral in parts "
-				"of BDPT/VCM/MLT transport; PT renders them fully -- see "
-				"docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md and, for proximity, "
+				"%s:: curv/occlusion/thickness/convexity/proximity/interior evaluate as neutral "
+				"in parts of BDPT/VCM/MLT transport; PT renders them fully -- see "
+				"docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md and, for proximity and interior, "
 				"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md",
 				familyName );
 		}

@@ -528,8 +528,23 @@ static void TestDemandGate()
 		"(c) MONEY -- teeth: the SAME scene with proximity() in the body DOES build one, "
 		"so the gate is a demand test and not a broken build path" );
 
-	std::cout << "    snapshot after render: without proximity() = " << without
-		<< ", with = " << with << "  (-1 would mean the probe itself failed)" << std::endl;
+	// AND AN `interior`-ONLY SCENE BUILDS IT TOO.  The gate is
+	// `ExpressionProgram::UsesCrossObject()`, not `UsesProximity()`, and
+	// the rename is the whole point: both cross-object signals read the
+	// SAME world-AABB snapshot, so a scene that calls only `interior()`
+	// must register or it would pay for the build lazily under the tree
+	// mutex on its first query (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+	// §5.6).  Without this check the rename could have been a no-op that
+	// still compiled.
+	const int withInterior = Local::RenderAndProbeSnapshot(
+		Local::Scene( "vec3( interior(8.0), interior(8.0), interior(8.0) )" ) );
+	Check( withInterior == 1,
+		"(c) MONEY -- an INTERIOR-ONLY scene builds the snapshot too: the demand gate is "
+		"UsesCrossObject(), which covers both cross-object signals" );
+
+	std::cout << "    snapshot after render: without either = " << without
+		<< ", with proximity() = " << with << ", with interior() only = " << withInterior
+		<< "  (-1 would mean the probe itself failed)" << std::endl;
 }
 
 //======================================================================

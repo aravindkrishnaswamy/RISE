@@ -53,6 +53,10 @@
 //        the two landing arms, the phantom sweep that a tolerance would
 //        have admitted, the composite's own transform layer, and the
 //        nesting rules.
+//    (k) interior(r) (Phase 3).  The SIGNED cross-object builtin -- the
+//        depth mapping, the running maximum over overlapping solids, the
+//        union composite's documented under-read, the sheet families'
+//        silent zero, and the builtin's own parse diagnostic.
 //    (i) EXACT SIGMA (Phase 3).  The three branches of the transform's
 //        singular-value pair -- the similarity fast path, the one-sided
 //        Jacobi SVD, and the loose Frobenius/determinant fallback -- each
@@ -2485,6 +2489,339 @@ static void TestCsgComposites()
 	}
 }
 
+
+//======================================================================
+// (k) interior(r) -- THE SIGNED BUILTIN
+//======================================================================
+
+//! The signal itself, built from the channel by hand exactly as
+//! `ProximityAt` is, with a cold memo per call for the same reason.
+static Scalar InteriorAt( const Fixture& f, const Point3& p, const IObjectPriv* self, const Scalar r )
+{
+	SurfaceSignalInfo s;
+	s.pScene  = f.mgr;
+	s.pSelf   = self;
+	s.ptWorld = p;
+	ExpressionMemo::Invalidate();
+	return s.Interior( r );
+}
+
+//! `interior(r)` (design 5.6) -- `clamp(depth / r, 0, 1)` for `depth` the
+//! LARGEST inside-depth lower bound over every other world-visible
+//! non-emissive object that CONTAINS the hit point.  0 = inside no
+//! neighbour, 1 = at least `r` deep; neutral 0; radius a WORLD LENGTH and
+//! mandatory.
+//!
+//! WHY A SECOND BUILTIN AND NOT A SIGN ON THE FIRST: together the two
+//! cover the signed distance without a sign convention an author has to
+//! remember, and `proximity`'s "interpenetration IS contact" clamp (which
+//! reads 1 anywhere inside a neighbour, at any depth) is a convention
+//! worth keeping rather than one to negotiate with.
+static void TestInterior( const Fixture& f )
+{
+	std::cout << "(k) interior(r) -- the signed builtin" << std::endl;
+
+	// --- 0 OUTSIDE.  Every scene-C probe that sits outside its neighbours
+	// reads exactly the neutral, not a small positive.
+	{
+		const Point3 outside[5] = {
+			Point3( 0, 0, 0 ), Point3( 6, 0, 0 ), Point3( 12, 0, 0 ),
+			Point3( 42, 0, 1.5 ), Point3( 54, 0, 0 ) };
+		for( int i = 0; i < 5; ++i ) {
+			CheckClose( InteriorAt( f, outside[i], f.floorObj, Scalar( 3 ) ), Scalar( 0 ), Scalar( 0 ),
+				"(k) MONEY -- a floor point OUTSIDE its neighbour reads exactly the neutral 0" );
+		}
+	}
+
+	// --- THE SIX INTERPENETRATION PROBES, against `min(depth/r, 1)`.
+	// These are the same six points section (e) checks read `proximity`
+	// 1 at; here the DEPTH the unsigned signal throws away is the answer.
+	//
+	// The ELLIPSOID row is a LOWER BOUND that is tight only where the
+	// unit-sphere pull-back's nearest direction is the smallest semi-axis
+	// -- true along the whole minor axis, and the CENTRE is the point the
+	// fixture has, so the probe stays there and the test says so.
+	{
+		struct Row { const char* name; Point3 p; Scalar depth; };
+		const Row rows[6] = {
+			{ "box",             Point3( 6, 3, 0 ),    Scalar( 1 )   },
+			{ "sphere",          Point3( 0, 3, 0 ),    Scalar( 1 )   },
+			{ "capped cylinder", Point3( 12, 4, 0 ),   Scalar( 1 )   },
+			{ "torus tube",      Point3( 42, 3, 1.5 ), Scalar( 0.5 ) },
+			{ "ellipsoid",       Point3( 48, 3, 0 ),   Scalar( 1 )   },
+			{ "SDF",             Point3( 54, 3, 0 ),   Scalar( 1 )   } };
+
+		for( int i = 0; i < 6; ++i ) {
+			// A radius ABOVE the depth: the signal reads depth/r.
+			const Scalar rBig = Scalar( 4 );
+			const Scalar want = rows[i].depth / rBig;
+			CheckClose( InteriorAt( f, rows[i].p, f.floorObj, rBig ), want, Scalar( 1e-9 ),
+				std::string( "(k) MONEY -- " ) + rows[i].name + ": interior = depth/r" );
+
+			// A radius AT OR BELOW the depth: exactly 1.
+			const Scalar rSmall = rows[i].depth;
+			CheckClose( InteriorAt( f, rows[i].p, f.floorObj, rSmall ), Scalar( 1 ), Scalar( 1e-9 ),
+				std::string( "(k) ...and exactly 1 where r <= the depth (" ) + rows[i].name + ")" );
+		}
+	}
+
+	// --- INSIDE TWO OVERLAPPING SOLIDS the answer is the LARGER depth.
+	// Leaving their UNION needs at least the larger of the two, so a max
+	// is still a lower bound -- the under-paint direction.
+	{
+		Object* big   = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* small = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 1.5, 0, 0 ) );
+
+		// A point inside BOTH: 0.5 from the small sphere's centre (depth
+		// 0.5) and 1.0 from the big one's (depth 1.0).
+		const Point3 p( 1.0, 0, 0 );
+		Scalar fBig = 0, fSmall = 0; bool ex = false;
+		Check( big->SignedDistanceLower( p, Scalar( 10 ), fBig, ex ) && fBig < Scalar( 0 ),
+			"(k) the big sphere contains the probe" );
+		Check( small->SignedDistanceLower( p, Scalar( 10 ), fSmall, ex ) && fSmall < Scalar( 0 ),
+			"(k) ...and so does the small one" );
+		CheckClose( -fBig,   Scalar( 1.0 ), Scalar( 1e-9 ), "(k) ...at depths 1.0" );
+		CheckClose( -fSmall, Scalar( 0.5 ), Scalar( 1e-9 ), "(k) ...and 0.5" );
+
+		SphereGeometry* g = new SphereGeometry( Scalar( 0.1 ) );
+		Object* receiver = new Object( g );
+		g->release();
+		receiver->SetPosition( Point3( 20, 0, 0 ) );
+		receiver->FinalizeTransformations();
+
+		IObjectManager* mgr = 0;
+		Check( RISE_API_CreateObjectManager( &mgr, true, false, 4, 32 ), "(k) a manager" );
+		if( !mgr ) return;
+		mgr->AddItem( big,      "big" );
+		mgr->AddItem( small,    "small" );
+		mgr->AddItem( receiver, "receiver" );
+		mgr->PrepareForRendering();
+
+		Scalar depth = 0;
+		Check( mgr->DeepestOtherContainment( p, receiver, Scalar( 10 ), depth ),
+			"(k) the manager finds a containment" );
+		CheckClose( depth, Scalar( 1.0 ), Scalar( 1e-9 ),
+			"(k) MONEY -- inside TWO overlapping spheres the answer is the LARGER depth (1.0), "
+			"not the smaller and not their sum" );
+
+		// A point inside only the SMALL one: no max to take.
+		Scalar d2 = 0;
+		Check( mgr->DeepestOtherContainment( Point3( 2.4, 0, 0 ), receiver, Scalar( 10 ), d2 ),
+			"(k) ...and a point inside only the small sphere answers" );
+		CheckClose( d2, Scalar( 0.1 ), Scalar( 1e-9 ), "(k) ...with the small one's own depth" );
+
+		// OUTSIDE both: a refusal, which `interior` reads as its neutral.
+		Scalar d3 = 0;
+		Check( !mgr->DeepestOtherContainment( Point3( 9, 0, 0 ), receiver, Scalar( 10 ), d3 ),
+			"(k) MONEY -- a point inside NOTHING refuses, which is the neutral 0" );
+
+		mgr->release();
+		receiver->release();
+		small->release();
+		big->release();
+	}
+
+	// --- INSIDE A UNION COMPOSITE'S OVERLAP the exported `min` UNDER-READS.
+	// A union exports `min(f_A, f_B)` as its signed lower bound, which is
+	// exact ON and OUTSIDE the zero set but only a LOWER bound INSIDE: at a
+	// point deeper in the union than either operand alone, the min is the
+	// SHALLOWER of the two depths.  §10 records this as a residual; here it
+	// is asserted, both as an inequality and as a STRICT one at a point
+	// where the two differ.
+	{
+		Object* a = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 1.5, 0, 0 ) );
+		Object* aRef = a; Object* bRef = b;
+		aRef->addref(); bRef->addref();
+		CSGObject* u = MakeCsg( CSG_UNION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		// The probe sits between the two centres, deep in the overlap.
+		const Point3 p( 0.75, 0, 0 );
+		Scalar fA = 0, fB = 0, fU = 0; bool eA = false, eB = false, eU = false;
+		Check( aRef->SignedDistanceLower( p, Scalar( 10 ), fA, eA )
+		    && bRef->SignedDistanceLower( p, Scalar( 10 ), fB, eB )
+		    && u->SignedDistanceLower( p, Scalar( 10 ), fU, eU ),
+			"(k) both operands and the union answer at the overlap probe" );
+
+		// The TRUE depth of the union there: the union's boundary is the
+		// two spheres' outer envelope, and by symmetry the nearest exit
+		// from (0.75, 0, 0) is perpendicular to the centre line -- through
+		// EITHER sphere's wall at radius 2 -- so the true depth is
+		// 2 - sqrt(0.75^2) measured from whichever centre is nearer... in
+		// fact the nearest boundary point is straight out along +y from
+		// the deeper sphere, at distance sqrt(2^2 - 0.75^2) = 1.8540 from
+		// the probe.  Both operands' own depths are smaller than that.
+		const Scalar trueDepth = (Scalar)std::sqrt( 4.0 - 0.75*0.75 );
+		CheckClose( -fU, std::min( -fA, -fB ), Scalar( 1e-12 ),
+			"(k) the union exports min(f_A, f_B), i.e. the SHALLOWER depth" );
+		Check( -fU <= trueDepth + Scalar( 1e-9 ),
+			"(k) MONEY -- the exported depth is a LOWER bound on the union's true depth" );
+		Check( -fU < trueDepth - Scalar( 1e-6 ),
+			"(k) MONEY -- and STRICTLY under-reads at a point deeper in the union than either "
+			"operand alone: the residual §10 records, asserted rather than claimed" );
+		std::cout << "    union overlap at (0.75,0,0): operand depths " << (double)(-fA)
+			<< " / " << (double)(-fB) << ", exported " << (double)(-fU)
+			<< ", true union depth " << (double)trueDepth << std::endl;
+
+		aRef->release(); bRef->release();
+		u->release();
+	}
+
+	// --- A MESH NEIGHBOUR CONTRIBUTES 0.  A triangle soup carries no
+	// inside test, so it refuses the signed query at every point -- and
+	// SILENTLY, because a shared refusal latch would print the proximity
+	// message for every mesh and every plane in the scene.
+	{
+		TriangleMeshGeometryIndexed* mg = BuildTinyMesh();
+		Object* mesh = new Object( mg );
+		mg->release();
+		mesh->FinalizeTransformations();
+
+		SphereGeometry* g = new SphereGeometry( Scalar( 0.1 ) );
+		Object* receiver = new Object( g );
+		g->release();
+		receiver->SetPosition( Point3( 20, 0, 0 ) );
+		receiver->FinalizeTransformations();
+
+		IObjectManager* mgr = 0;
+		Check( RISE_API_CreateObjectManager( &mgr, true, false, 4, 32 ), "(k) a second manager" );
+		if( !mgr ) return;
+		mgr->AddItem( mesh,     "mesh" );
+		mgr->AddItem( receiver, "receiver" );
+		mgr->PrepareForRendering();
+
+		Scalar depth = 0;
+		Check( !mgr->DeepestOtherContainment( Point3( 0, 0, 0 ), receiver, Scalar( 10 ), depth ),
+			"(k) MONEY -- a MESH neighbour contributes NOTHING to interior, even at a point "
+			"on it: a sheet has no inside" );
+
+		// TEETH: the same manager's UNSIGNED query does answer there, so
+		// the refusal above is the signed query's sheet rule and not an
+		// empty scene.
+		Scalar d = 0;
+		Check( mgr->NearestOtherSurface( Point3( 0, 0.5, 0 ), receiver, Scalar( 10 ), d ),
+			"(k) ...teeth: the same mesh answers the UNSIGNED query" );
+		CheckClose( d, Scalar( 0.5 ), Scalar( 1e-9 ), "(k) ...with 0.5" );
+
+		mgr->release();
+		receiver->release();
+		mesh->release();
+	}
+
+	// --- THE NEUTRALS, the same five `proximity` has.
+	{
+		SurfaceSignalInfo blank;
+		CheckClose( blank.Interior( Scalar( 1 ) ), Scalar( 0 ), Scalar( 0 ),
+			"(k) a default-constructed channel (no scene) reads the neutral 0" );
+
+		SurfaceSignalInfo noSelf;
+		noSelf.pScene  = f.mgr;
+		noSelf.ptWorld = Point3( 6, 3, 0 );
+		ExpressionMemo::Invalidate();
+		CheckClose( noSelf.Interior( Scalar( 4 ) ), Scalar( 0 ), Scalar( 0 ),
+			"(k) a channel with a scene but NO self reads the neutral 0" );
+
+		SurfaceSignalInfo bad;
+		bad.pScene  = f.mgr;
+		bad.pSelf   = f.floorObj;
+		bad.ptWorld = Point3( 0, std::numeric_limits<double>::quiet_NaN(), 0 );	// HYGIENE-OK: an input, not a sentinel
+		ExpressionMemo::Invalidate();
+		CheckClose( bad.Interior( Scalar( 5 ) ), Scalar( 0 ), Scalar( 0 ),
+			"(k) a NON-FINITE hit point reads the neutral 0" );
+
+		CheckClose( InteriorAt( f, Point3( 6, 3, 0 ), f.floorObj, Scalar( -1 ) ), Scalar( 0 ), Scalar( 0 ),
+			"(k) a computed radius <= 0 reads the neutral 0" );
+		CheckClose( InteriorAt( f, Point3( 6, 3, 0 ), f.floorObj,
+			(Scalar)std::numeric_limits<double>::quiet_NaN() ), Scalar( 0 ), Scalar( 0 ),	// HYGIENE-OK: an input, not a sentinel
+			"(k) a NON-FINITE computed radius reads the neutral 0" );
+	}
+
+	// --- THE BUILTIN, THROUGH THE COMPILER.
+	{
+		ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( CompileWithContext( "interior(0.002)", p ), "(k) an interior body compiles" );
+		Check( p.SurfaceSignalCalls().size() == 1, "(k) one signal call site recorded" );
+		if( p.SurfaceSignalCalls().size() == 1 ) {
+			Check( p.SurfaceSignalCalls()[0].fn == ExpressionProgram::kFnInterior,
+				"(k) MONEY -- recorded as kFnInterior, not as proximity or one of the self-signals" );
+			Check( p.SurfaceSignalCalls()[0].radiusIsLiteral,
+				"(k) ...with its literal radius proved" );
+		}
+		Check( p.MemoWorthy(), "(k) a body calling interior() is memo-worthy" );
+		Check( p.UsesSurfaceSignals(), "(k) ...and registers as a surface-signal consumer" );
+		Check( p.UsesCrossObject(),
+			"(k) MONEY -- and UsesCrossObject() is TRUE for an interior-only program, which is "
+			"what gates the eager AABB snapshot" );
+
+		// TEETH on the rename: a proximity-only program still says yes,
+		// and a signal-free one still says no.
+		ExpressionProgram pp = ExpressionProgram::Invalid();
+		Check( CompileWithContext( "proximity(0.002)", pp ) && pp.UsesCrossObject(),
+			"(k) ...teeth: a proximity-only program still registers" );
+		ExpressionProgram po = ExpressionProgram::Invalid();
+		Check( CompileWithContext( "occlusion(0.1)", po ) && !po.UsesCrossObject(),
+			"(k) ...and an occlusion-only one does NOT" );
+	}
+
+	// --- THE PARSE DIAGNOSTIC NAMES A WORLD LENGTH, and its OWN sentence.
+	// The ternary is three-way since `interior` joined: handing an
+	// `interior` author proximity's wording about surfaces that stop
+	// registering as contact would describe the wrong quantity.
+	{
+		ExpressionProgram bad = ExpressionProgram::Invalid();
+		Check( !CompileWithContext( "interior(-1.0)", bad ),
+			"(k) a non-positive literal interior radius is a COMPILE error" );
+		const std::string err = bad.Error();
+		Check( err.find( "WORLD LENGTH" ) != std::string::npos,
+			"(k) MONEY -- and the message says WORLD LENGTH: " + err );
+		Check( err.find( "FRACTION" ) == std::string::npos,
+			"(k) ...and does NOT repeat the self-signals' fraction wording" );
+		Check( err.find( "depth of burial" ) != std::string::npos,
+			"(k) MONEY -- and it is interior's OWN sentence, not proximity's: " + err );
+
+		ExpressionProgram badProx = ExpressionProgram::Invalid();
+		Check( !CompileWithContext( "proximity(-1.0)", badProx ), "(k) teeth: proximity still errors" );
+		Check( badProx.Error().find( "depth of burial" ) == std::string::npos,
+			"(k) ...with its own wording, unchanged" );
+	}
+
+	// --- THE UV-ONLY SURFACE REFUSES IT, as it refuses the other four.
+	{
+		ExpressionProgram p = ExpressionProgram::Invalid();
+		ExpressionProgram::Builder b;			// context vars OFF (the default)
+		Check( !b.Finalize( "interior(0.5)", p ),
+			"(k) interior() is refused on the UV-only expression_function2d surface" );
+		Check( p.Error().find( "3D surface context" ) != std::string::npos,
+			"(k) ...with the dedicated diagnostic, not `unknown function`" );
+	}
+
+	// --- A COMPUTED RADIUS IS ACCEPTED, and reaches the same answer as a
+	// literal one.  `interior` has no `DynR` twin, so ParseCall's remap
+	// must fall through to its own id -- the guard `proximity` needed, one
+	// signal later.  PROVED BEHAVIOURALLY: a convexity call on this
+	// receiver would read its neutral 0, which the literal answer is not.
+	{
+		Scalar vLit = Scalar( -1 ), vComp = Scalar( -1 );
+		Check( EvalAtManagerHit( f, Point3( 8.5, 5, 0 ), Vector3( 0, -1, 0 ), "interior(4.0)", vLit ),
+			"(k) literal-radius interior compiles and evaluates at a real hit" );
+		Check( EvalAtManagerHit( f, Point3( 8.5, 5, 0 ), Vector3( 0, -1, 0 ), "interior(2.0*2.0)", vComp ),
+			"(k) COMPUTED-radius interior compiles and evaluates" );
+		CheckClose( vComp, vLit, Scalar( 1e-12 ),
+			"(k) MONEY -- a COMPUTED radius gives the same answer as the literal one: the DynR "
+			"remap's fall-through is not turning interior() into convexity()" );
+
+		// ...and at a hit INSIDE a neighbour the builtin is non-zero, so
+		// the equality above is not two neutrals agreeing.  The ray is
+		// fired at the floor under `n_below` (a box 2 units under the
+		// floor, top at y = -2): the floor point is not inside it, so
+		// instead drive the channel directly at a point that IS.
+		const Scalar vInside = InteriorAt( f, Point3( 6, 3, 0 ), f.floorObj, Scalar( 4 ) );
+		Check( vInside > Scalar( 0.2 ),
+			"(k) ...teeth: the builtin reads a real non-zero value inside a neighbour (0.25), so "
+			"the agreement above is not two neutrals matching" );
+	}
+}
+
 //======================================================================
 
 int main()
@@ -2510,6 +2847,7 @@ int main()
 	TestSignedLowerBound( f );
 	TestExactSigma();
 	TestCsgComposites();
+	TestInterior( f );
 
 	f.job->release();
 

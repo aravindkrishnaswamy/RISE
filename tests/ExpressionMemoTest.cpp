@@ -113,6 +113,7 @@
 #include "../src/Library/Interfaces/SurfaceSignalProximity.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/ExpressionEval.h"
@@ -793,12 +794,26 @@ static void TestMemoWorthinessGate()
 	// must stay a rounding error against a render worker's stack, and a
 	// change that blows past this has almost certainly widened a table or
 	// put something non-trivial in `Tables` by accident.
+	//
+	// THE CEILING WAS RAISED 2048 -> 4096 BY PHASE 3 of the cross-object
+	// arc (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6), and the reason is
+	// recorded here rather than left to a diff.  `interior` is the FIFTH
+	// signal KIND, and `kL1Ways` was 4 -- exactly the number of kinds
+	// before it -- so a body querying all five would have evicted
+	// round-robin at a ~0 % hit rate.  `kL1Ways` went to 8, which puts
+	// `Tables` at 2432 bytes.  The 2048 figure was a REGRESSION GUARD, not
+	// a budget: it exists to catch an unnoticed growth, and this growth is
+	// noticed, deliberate and priced (43.8 kB decimal across 18 workers).
+	// The cliff moved from a fifth distinct (kind, radius) query per hit
+	// to a ninth; it did not disappear.
 	const std::size_t bytes = ExpressionMemo::BytesPerThread();
 	std::cout << "    bytes of thread-local memo per render worker: " << bytes
 		<< "  (1408 when the memo shipped, 1440 since the `pipe` key field, 1824 since the"
-		   " four cross-object SignalHitKey fields -- six 8-byte slots x eight SignalHitKey"
-		   " instances across the two 4-way tables; ceiling 2048)" << std::endl;
-	Check( bytes <= 2048, "(g) the per-thread memo stays under the 2048-byte ceiling" );
+		   " four cross-object SignalHitKey fields, 2432 since kL1Ways went 4 -> 8 for"
+		   " `interior`; ceiling 4096)" << std::endl;
+	Check( bytes <= 4096, "(g) the per-thread memo stays under the 4096-byte ceiling" );
+	Check( bytes == 2432, "(g) MONEY -- and it is EXACTLY 2432 bytes at kL1Ways = 8, the number "
+		"§5.6 and ExpressionMemo.h both quote (got " + std::to_string( bytes ) + ")" );
 }
 
 //======================================================================
@@ -1952,6 +1967,109 @@ static void TestProximityEntryClearsOnBump()
 }
 
 //======================================================================
+// (p) the SECOND cross-object signal keys apart from the first
+//======================================================================
+
+//! `interior` (fn = 4) joined `proximity` (fn = 3) in the SAME L1 table,
+//! through the same `MakeL1Key` and with the same hit fields
+//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).  Everything except `fn`
+//! is IDENTICAL between the two at one hit and one radius -- the hit key,
+//! the radius, and `bRadiusIsConstant` (both stamp a constant FALSE).  So
+//! `fn` is the ONLY thing standing between them, and a table that dropped
+//! it would serve one signal the other's answer: a wrong render, not a
+//! stale one.
+//!
+//! THE FIXTURE MAKES THE TWO ANSWERS DIFFERENT ON PURPOSE, at the same
+//! point and the same radius.  A probe at the CENTRE of a 2x2x2 box
+//! neighbour reads `proximity` 1 (interpenetration IS contact -- the
+//! unsigned query clamps its signed field at zero) and `interior` 0.125
+//! (depth 1 over a radius of 8).  If `fn` left the key, whichever ran
+//! first would answer for both.
+//!
+//! ...and the same generation-bump clearing (o) proves for `proximity`,
+//! because the two bodies insert into the same table and a clearing rule
+//! that covered one and not the other would be invisible otherwise.
+static void TestInteriorEntryKeysApartAndClears()
+{
+	std::cout << "(p) an interior entry (fn = 4) keys apart from proximity and clears on a bump"
+		<< std::endl;
+
+	IObjectManager* mgr = 0;
+	Check( RISE_API_CreateObjectManager( &mgr, true, false, 4, 32 ), "(p) a manager" );
+	if( !mgr ) return;
+
+	SphereGeometry* gRecv = new SphereGeometry( Scalar( 1 ) );
+	Object* receiver = new Object( gRecv );
+	gRecv->release();
+	receiver->SetPosition( Point3( 40, 0, 0 ) );	// far away: only an identity here
+	receiver->FinalizeTransformations();
+	mgr->AddItem( receiver, "receiver" );
+
+	BoxGeometry* gBox = new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 2 ) );
+	Object* mover = new Object( gBox );
+	gBox->release();
+	mover->FinalizeTransformations();
+	mgr->AddItem( mover, "mover" );
+
+	mgr->PrepareForRendering();
+
+	SurfaceSignalInfo s;
+	s.pScene  = mgr;
+	s.pSelf   = receiver;
+	s.ptWorld = Point3( 0, 0, 0 );			// the box's centre
+
+	// PROXIMITY FIRST, so the interior query below is the one that could
+	// be served a stale foreign entry.
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		CheckExact( s.Proximity( Scalar( 8 ) ), Scalar( 1 ),
+			"(p) proximity at the box's centre is 1 (interpenetration IS contact)" );
+		CheckExact( s.Interior( Scalar( 8 ) ), Scalar( 0.125 ),
+			"(p) MONEY -- interior at the SAME point and radius is depth/r = 1/8, NOT proximity's "
+			"1: `fn` separates the two in the shared L1 table" );
+	}
+
+	// AND THE OTHER ORDER, so neither signal is only ever the one that
+	// fills the entry.
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		CheckExact( s.Interior( Scalar( 8 ) ), Scalar( 0.125 ), "(p) interior first: 0.125" );
+		CheckExact( s.Proximity( Scalar( 8 ) ), Scalar( 1 ),
+			"(p) MONEY -- ...and proximity is still 1, not interior's 0.125" );
+	}
+
+	// THE GENERATION BUMP, red-proved the same way (o) does it: move the
+	// neighbour WITHOUT bumping and the stale answer must come back
+	// (proving an entry was held), then bump and the fresh one must.
+	// Moving the box up by 0.5 puts the probe 0.5 from its bottom face
+	// instead of 1 from every face.
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		const Scalar warm = s.Interior( Scalar( 8 ) );
+		CheckExact( warm, Scalar( 0.125 ), "(p) warm interior entry: 1/8" );
+
+		mover->SetPosition( Point3( 0, 0.5, 0 ) );
+		mover->FinalizeTransformations();
+
+		CheckExact( s.Interior( Scalar( 8 ) ), warm,
+			"(p) RED-PROOF -- without a bump the STALE interior entry is served, so there "
+			"really was one" );
+
+		ExpressionMemo::Invalidate();
+		CheckExact( s.Interior( Scalar( 8 ) ), Scalar( 0.0625 ),
+			"(p) MONEY -- the bump clears the interior entry and the moved neighbour is seen "
+			"(depth 0.5 over 8)" );
+	}
+
+	mover->release();
+	receiver->release();
+	safe_release( mgr );
+}
+
+//======================================================================
 // (m) the two painter pipes never share an L2 entry
 //======================================================================
 
@@ -2086,6 +2204,7 @@ int main( int argc, char** argv )
 	TestL1KeyFieldSeparation();
 	TestL2CrossObjectChannelSeparation();
 	TestProximityEntryClearsOnBump();
+	TestInteriorEntryKeysApartAndClears();
 	TestCrossPipeL2Separation();
 
 	std::cout << std::endl;

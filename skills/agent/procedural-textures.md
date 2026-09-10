@@ -153,12 +153,12 @@ select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
 `vec3()`, `.x/.y/.z`, `dot`, `cross`, `length`, `normalize`.
 
 The body also sees `curv`/`curvR` (surface curvature at the hit: positive
-convex, negative concave, 0 flat) plus FOUR ARG-TAKING geometry-signal
-builtins -- `occlusion(r)`, `convexity(r)`, `thickness(r)` and
-`proximity(r)` -- for geometry-driven wear and grime masks.  The first
+convex, negative concave, 0 flat) plus FIVE ARG-TAKING geometry-signal
+builtins -- `occlusion(r)`, `convexity(r)`, `thickness(r)`, `proximity(r)`
+and `interior(r)` -- for geometry-driven wear and grime masks.  The first
 three ask the hit geometry about ITSELF and take a radius that is a
-FRACTION of that object's own size; `proximity(r)` asks about the rest of
-the scene and takes a WORLD LENGTH.  `read_skill
+FRACTION of that object's own size; the last two ask about the rest of the
+scene and take a WORLD LENGTH.  `read_skill
 {name:"materials-and-media-basics"}`'s patina section has the sign
 convention and a full worked, execution-validated example.
 
@@ -184,11 +184,14 @@ convexity how much more.  Neither is ever a residual of the other.  So:
   (a bead reads convex; a purely directional measure would call it flat).
   On edges, creases and corners they agree exactly.
 
-### `proximity(r)` -- the fourth signal, and the only cross-object one
+### `proximity(r)` and `interior(r)` -- the two cross-object signals
 
 `occlusion`, `convexity` and `thickness` all ask the hit geometry about
-**itself**, so none of them can see a second object.  `proximity(r)` is
-the one that looks at the rest of the scene: it returns the distance from
+**itself**, so none of them can see a second object.  These two look at
+the rest of the scene: `proximity(r)` measures how CLOSE the nearest other
+surface is, `interior(r)` how DEEP inside another object this point lies.
+Together they cover the signed distance without a sign convention to
+remember.  `proximity(r)` returns the distance from
 the hit to the nearest surface of any **other** object, remapped to
 **1 = touching, 0 = nothing within `r`**, neutral **0**.  It is the
 quantity contact grime actually is -- dirt where a nail rests on a plank,
@@ -220,11 +223,14 @@ dust where a wall meets a floor -- and the analogue is Unreal's
   (interpenetration is contact).
 - It works on **every receiver**, including ones with no signal provider
   at all (a `box_geometry`, an infinite plane).  What varies is which
-  NEIGHBOURS can answer: the analytic primitives are exact, `sdf_geometry`
-  and ellipsoids are UPPER bounds on distance (so the signal may
-  under-paint a seam and can never paint one that is not there), and
-  triangle meshes, patches, hair and CSG composites contribute nothing and
-  say so once per refusing object in the log.
+  NEIGHBOURS can answer: the analytic primitives and INDEXED TRIANGLE
+  MESHES are exact, `sdf_geometry` and ellipsoids are UPPER bounds on
+  distance (so the signal may under-paint a seam and can never paint one
+  that is not there), CSG composites answer too (a `union` reports the
+  nearer operand; an `intersection` or `subtraction` brackets the composed
+  field), and RAW (non-indexed) meshes, patches, hair, heightfield-mode
+  SDFs and an intersection or subtraction with a SHEET operand contribute
+  nothing and say so once per refusing object in the log.
 - **An eccentric ellipsoid, or an anisotropically scaled object, needs a
   bigger radius than you mean** -- the bound is the semi-axis ratio, so
   against a 4:1 ellipsoid ask for roughly 4x the world length you want.
@@ -433,6 +439,197 @@ rect_light
 	facing		-0.06 -0.20 0.16
 	color		1.00 0.96 0.90
 	exitance	160
+}
+```
+
+#### `interior(r)` -- the signed half
+
+`proximity(r)` is unsigned: a point INSIDE another object reads 1, the
+same as a point touching it from outside, and it cannot tell you HOW FAR
+in.  `interior(r)` is the other half -- **0 = inside no neighbour, 1 = at
+least `r` deep inside one**, neutral **0**, `r` a WORLD LENGTH and
+mandatory.  Reach for it when what you want to paint is BURIAL rather than
+contact: the wet flank of a stone below a waterline, the sunk part of a
+post in soil, the darkened band of a bead pressed into resin.
+
+Two things decide whether it is the right tool:
+
+- **Only the SOLID families contribute to it.**  A sphere, box, capped
+  cylinder, torus, ellipsoid, `sdf_geometry` or a CSG composite of those
+  can say whether a point is inside; every SHEET -- a plane, a disk, an
+  OPEN cylinder, a TRIANGLE MESH, a patch, hair -- cannot, and contributes
+  0 silently.  So a receiver buried inside a MESH neighbour reads
+  `interior` 0 while `proximity` still reads its honest distance to the
+  nearest triangle.  If your neighbour is an imported mesh, this signal
+  has nothing to say about it.
+- **The buried surface has to be VISIBLE for the paint to matter.**  A
+  point inside an opaque neighbour is behind that neighbour's surface, so
+  the camera cannot see it.  The signal earns its keep where the neighbour
+  TRANSMITS -- water, resin, glass -- or where the composition will later
+  move one of the two apart.  The fence below is the first case.
+
+The fixture: a stone sphere of radius 4 cm resting in a 6 cm-deep pool
+whose surface is at y = 0.03, with the stone's centre at y = 0.02, so its
+lowest point sits 1 cm above the pool floor and 1 cm below the surface.
+`interior(0.02)` therefore reads exactly **0.5** at that lowest point,
+falls continuously to exactly **0** at the waterline, and is 0 on the cap
+in air -- which is what draws the wet line, at the depth you asked for
+rather than at a hand-placed height.
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.55 0.58 0.62
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					16
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	0.16 0.09 0.20
+	lookat		0 0.005 0
+	up			0 1 0
+	fov			40.0
+}
+
+# THE STONE's field.  `buried` is interior(): 0 on the cap in air, 0.5 at
+# the lowest point 1 cm under the surface.  Used RAW apart from a noise
+# breakup -- a threshold would replace the measured depth with a painted
+# line, which is the one thing this signal exists to avoid.
+expression_painter
+{
+	name		expr_stone
+	param		damp 0.85 min 0.0 max 1.0 step 0.05 label "Wet darkening"
+	seed		5.0
+	def			grain fbm(vec3(P.x*140.0, P.y*140.0, P.z*140.0) + vec3(seed, 4.0, 9.0), 4, 0.5, 2.0)
+
+	# 2 cm, a WORLD length: the depth at which the darkening saturates.
+	def			buried interior(0.02)
+	# Breakup, centred on 0.85 -- `fbm` is signed and zero-mean, so a
+	# multiplier written `0.45 + 1.5*wb` would average 0.45, not 0.9.
+	def			wb fbm(vec3(P.x*520.0, P.y*520.0, P.z*520.0) + vec3(seed*3.1, 17.0, 2.0), 3, 0.5, 2.0)
+	def			wet clamp(buried*(0.85 + 1.5*wb), 0, 1)
+
+	expr		clamp(0.70 + 0.55*grain - damp*wet, 0, 1)
+}
+
+ramp_painter
+{
+	name			ramp_stone
+	input			expr_stone
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.055 0.050 0.046
+	stop			0.45  0.26  0.245 0.225
+	stop			1.00  0.70  0.67  0.62
+	color_space		Rec709RGB_Linear
+}
+
+lambertian_material
+{
+	name		mat_stone
+	reflectance	ramp_stone
+}
+
+sphere_geometry
+{
+	name	geo_stone
+	radius	0.04
+}
+
+standard_object
+{
+	name		obj_stone
+	geometry	geo_stone
+	material	mat_stone
+	position	0 0.02 0
+}
+
+# THE POOL -- a dielectric box, so the buried flank is actually visible.
+# It is an ordinary world-visible, non-emissive object, which is all the
+# query asks of a neighbour.
+dielectric_material
+{
+	name		mat_water
+	tau			0.97
+	ior			1.33
+	scattering	1000000
+}
+
+box_geometry
+{
+	name	geo_water
+	width	0.30
+	height	0.06
+	depth	0.30
+}
+
+standard_object
+{
+	name		obj_water
+	geometry	geo_water
+	material	mat_water
+	position	0 0 0
+}
+
+uniformcolor_painter
+{
+	name	pnt_bed
+	color	0.34 0.30 0.25
+}
+
+lambertian_material
+{
+	name		mat_bed
+	reflectance	pnt_bed
+}
+
+box_geometry
+{
+	name	geo_bed
+	width	0.40
+	height	0.04
+	depth	0.40
+}
+
+standard_object
+{
+	name		obj_bed
+	geometry	geo_bed
+	material	mat_bed
+	position	0 -0.05 0
+}
+
+rect_light
+{
+	name		key
+	center		0.10 0.26 -0.14
+	size		0.12 0.10
+	facing		-0.10 -0.26 0.14
+	color		1.00 0.96 0.90
+	exitance	220
 }
 ```
 

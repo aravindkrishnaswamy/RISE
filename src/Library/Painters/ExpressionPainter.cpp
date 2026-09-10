@@ -139,9 +139,10 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	// onto `ri` -- the record stays exactly as intersection left it, which is
 	// the invariant SourceHygieneTest's write-site census exists to protect.
 	//
-	// Its job is memo correctness under motion: `proximity` is the one signal
-	// whose answer can move because a NEIGHBOUR moved, leaving the receiver's
-	// own hit -- and therefore every other key field -- bit-identical.  A
+	// Its job is memo correctness under motion: the CROSS-OBJECT pair
+	// (`proximity` and `interior`) are the signals whose answer can move
+	// because a NEIGHBOUR moved, leaving the receiver's own hit -- and
+	// therefore every other key field -- bit-identical.  A
 	// keyframed painter's `time` moves with the frame and separates those
 	// entries; a non-keyframed one relies on the per-sample jitter argument
 	// the memo already makes (ExpressionMemo.h).
@@ -338,8 +339,9 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	// to whatever the record carried, so the two pipes cannot share an L1
 	// entry through a field one of them never sets -- and stated as a residual
 	// in docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §10: under per-sample motion
-	// blur a roughness pipe's proximity entries rely on the sub-pixel jitter
-	// argument alone, with no keyframed `time` to separate them.
+	// blur a roughness pipe's proximity and interior entries rely on the
+	// sub-pixel jitter argument alone, with no keyframed `time` to separate
+	// them.
 	ctx.signals.time = Scalar(0);
 	return ctx;
 }

@@ -2315,6 +2315,60 @@ Two deviations from §8's Phase-3 text, both found by the gates themselves:
   the pair agree within one probe step. The box-minus-box twin, compared at
   ~ε as §8 prescribes, happens to agree exactly.
 
+#### S4 — `interior(r)`
+
+`kFnInterior = 58` (only 59 now free before `CallFuncVec3`'s 60+ band), one
+`Lookup` row, one named `case kFnInterior:` in `CallFunc` — the pin moves once
+more, disclosed. `SignalKind::eInterior = 4`, `NeutralInterior()`,
+`SurfaceSignalInfo::Interior(r)` beside `Proximity(r)` in
+`SurfaceSignalProximity.h` sharing `MakeL1Key`, and
+`IObjectManager::DeepestOtherContainment` over the same candidate set (the
+three exclusions factored into `ObjectManager::ProximityCandidateCounts` so the
+two queries cannot drift on them). `ExpressionProgram::UsesProximity()` becomes
+`UsesCrossObject()`; `kL1Ways` goes 4 → 8.
+
+| Phase-3 S4 gate | verdict |
+|---|---|
+| warning-free `make -C build/make/rise -j8 all` | PASS |
+| `interior` is 0 outside every neighbour | PASS — exactly 0 (tolerance 0, not 1e-9) at five scene-C probes |
+| the six interpenetration probes read `min(depth/r, 1)` within 1e-9 | PASS — box / sphere / capped cylinder / torus tube / ellipsoid / SDF at depths 1, 1, 1, 0.5, 1, 1; each checked at `r = 4` (reading depth/4) **and** at `r = depth` (reading exactly 1). The ellipsoid probe stays at the CENTRE, where its lower bound is tight, and the test says so |
+| inside two overlapping spheres, the LARGER depth | PASS — 1.0 where the operands' own depths are 1.0 and 0.5; a point inside only the smaller reads its 0.1; a point inside neither REFUSES (which `interior` reads as 0) |
+| inside a UNION composite's overlap the exported `min` under-reads | PASS — at `(0.75, 0, 0)` between two R = 2 spheres 1.5 apart: operand depths 1.25 / 1.25, exported **1.25**, true union depth **1.85405**. Asserted ≤ the truth *and* STRICTLY < it |
+| a mesh neighbour contributes 0 | PASS, with teeth (the same mesh answers the UNSIGNED query at 0.5) |
+| a computed radius is accepted | PASS — `interior(2.0*2.0)` equals `interior(4.0)` to 1e-12 at a real manager hit, with a non-zero reading (0.25) proving the agreement is not two neutrals matching |
+| the parse diagnostic names a WORLD LENGTH, in `interior`'s own words | PASS — the ternary is three-way; `interior`'s message says "depth of burial", proximity's does not, and neither says FRACTION |
+| an `interior`-only scene builds the eager snapshot | PASS — `ProximityInvalidationTest` (c) now probes three bodies: none (no snapshot), `proximity()` (snapshot), `interior()` only (**snapshot**) |
+| the memo keys extend, red-proved | PASS — a new `ExpressionMemoTest` (p): at the centre of a box neighbour `proximity` reads 1 and `interior` reads 0.125 at the SAME hit and radius, **in both orders**, so `fn` is doing the separating; and the generation bump clears an `interior` entry with the stale answer red-proved first |
+| `kL1Ways = 8`, the raised ceiling asserted and the bytes printed | PASS — **2432 bytes** exactly (asserted as an equality, not only under the 4096 ceiling), 43.8 kB across 18 workers |
+| **L1 hit rate on `plank_closeup` unchanged** | PASS — **0.8967 → 0.8968**. Measured, not argued: a temporary hit/miss counter in `L1Find`, `plank_closeup` at 160 × 120 / 2 spp, `kL1Ways = 4` gives 544 479 hits / 62 698 misses and `kL1Ways = 8` gives 543 931 / 62 607. The counter and the probe scene were removed in the same slice (`grep L1PROBE src` empty). Worth measuring rather than reasoning: round-robin replacement is FIFO, and FIFO is not a stack algorithm, so more ways *can* in principle lower a hit rate (Belady) |
+| `TextureExpressionVMTest` 846/846 | PASS (unmoved) |
+| `AgentSkillsTest` at 33 snippets, the new `interior` fence deriving with zero diagnostics and rendering | PASS — 628 passed, 0 failed; the fence renders 128 × 128 at mean RGB (0.2565, 0.2633, 0.2761) |
+| `ProximitySignalTest` | 386 passed, 0 failed (325 after S3) |
+| `ExpressionMemoTest` | 205 passed, 0 failed (196 before) |
+| `ProximityInvalidationTest` | 26 passed, 0 failed (25 before) |
+
+Beyond §5.6's list, two stale claims the plumbing pass found and corrected —
+both are the doc-fidelity lens rather than new behaviour:
+
+- The two `expression_painter` / scalar-pipe descriptor strings still said
+  **"CSG composites … contribute nothing"** and **"triangle meshes … contribute
+  nothing"** to `proximity`. The mesh half went stale in Phase 2 and the
+  composite half in S3 above; both are rewritten, and the composite sentence now
+  states the refusal that DOES remain (an intersection or subtraction with a
+  sheet operand). The same two strings' "ALL FOUR SIGNALS (curv, occlusion,
+  convexity, thickness)" is now "ALL SIX".
+- `skills/agent/procedural-textures.md` carried the same stale sentence
+  ("triangle meshes, patches, hair and CSG composites contribute nothing"),
+  corrected there too.
+
+One design detail decided at implementation time and recorded here:
+`DeepestOtherContainment` uses the **flat AABB scan even where a TLAS
+exists**, unlike `NearestOtherSurface`. The top-level tree prunes on "this
+subtree is further than the running best", which a running MAXIMUM has no
+use for, so walking it would visit every leaf anyway with the traversal's
+overhead added. `interior` is therefore linear in object count on every
+scene — added to §10.
+
 
 ---
 

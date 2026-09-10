@@ -328,6 +328,48 @@ namespace RISE
 			const Scalar maxDistWorld,					///< [in] Search radius, a WORLD LENGTH; candidates beyond it are skipped
 			Scalar& outDist								///< [out] Shortest distance found, world units
 			) const = 0;
+
+		//! HOW DEEP INSIDE ANOTHER OBJECT is `ptWorld`?  The signed half of
+		//! the query above, and what `interior(r)` reads
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+		//!
+		//! THE SAME CANDIDATE SET, by the same three exclusions -- self by
+		//! identity, `IsWorldVisible()` (which is what keeps CSG operands
+		//! out), and emitters.  Three things differ, each for a reason:
+		//!
+		//!   * THE RUNNING QUANTITY IS A MAXIMUM, not a minimum.  If a
+		//!     point is inside two overlapping solids, LEAVING their union
+		//!     needs at least the larger of the two depths, so the max is
+		//!     still a lower bound on the true depth -- the under-paint
+		//!     direction, as for `proximity`.
+		//!   * THERE IS NO DISTANCE-BASED PRUNE.  `NearestOtherSurface`
+		//!     shrinks its budget as it finds closer neighbours; a maximum
+		//!     cannot.  The only prune is the candidate's cached world box:
+		//!     a box that does not contain the point cannot contain it,
+		//!     and unlike the proximity scan the test is ORDINARY
+		//!     containment with no radius expansion.
+		//!   * IT DOES NOT LOG REFUSALS.  Every SHEET family refuses
+		//!     containment at every point BY DESIGN -- a plane, a disk, an
+		//!     open cylinder, a mesh, a patch and hair have no inside to
+		//!     be in -- so a shared latch would print the proximity
+		//!     message for every mesh and every plane in the scene.
+		//!     Refusal here is silent, and disclosed in §10.
+		//!
+		//! The per-object call is `IObject::SignedDistanceLower`, and only
+		//! a NEGATIVE answer counts: a positive one says the point is
+		//! outside that candidate, which is the ordinary case.
+		//!
+		//! \return TRUE and writes `outDepth` (> 0) when some candidate
+		//!         contained the point; FALSE with `outDepth` untouched
+		//!         otherwise -- including for a non-finite point, a
+		//!         non-positive or non-finite `maxDepthWorld`, and an
+		//!         empty scene.  `interior` reads FALSE as its neutral 0.
+		virtual bool DeepestOtherContainment(
+			const Point3& ptWorld,						///< [in] The world-space point to test
+			const IObject* self,						///< [in] The object the point belongs to; never contributes.  May be null
+			const Scalar maxDepthWorld,					///< [in] Effort budget, a WORLD LENGTH (the caller's radius)
+			Scalar& outDepth							///< [out] Deepest containment found, world units
+			) const = 0;
 	};
 }
 

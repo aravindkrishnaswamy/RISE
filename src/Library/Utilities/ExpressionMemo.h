@@ -219,35 +219,42 @@ namespace RISE
 		//! MISS -- and a miss is the case that must stay cheap, since it
 		//! is what a scene the memo does not suit pays.
 		//!
-		//! THE CLIFF IS NOW EXACTLY FOUR SIGNALS WIDE, and that number is
-		//! no longer comfortably above the family.  When this table was
-		//! sized, "a three- or four-signal body" was the hypothetical head-
-		//! room above a two-signal working set.  With `proximity` shipped
-		//! there are FOUR signal KINDS (`occlusion`, `thickness`,
-		//! `convexity`, `proximity`), so `kL1Ways == 4` is no longer
-		//! headroom -- it is the exact capacity.  Stated precisely, because
-		//! the failure is a cliff and not a slope:
+		//! THE CLIFF IS EIGHT SIGNALS WIDE SINCE PHASE 3, and this block
+		//! records why it moved rather than pretending it was always
+		//! there.  When this table was sized, "a three- or four-signal
+		//! body" was the hypothetical headroom above a two-signal working
+		//! set.  `proximity` made FOUR signal KINDS, so `kL1Ways == 4`
+		//! became the exact capacity rather than headroom; `interior`
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6) is the FIFTH, and a
+		//! body that queried all five would have evicted round-robin at
+		//! ~0 %.  Stated precisely, because the failure is a cliff and not
+		//! a slope:
 		//!
 		//!   * The L1 key separates on (kind, radius, hit), NOT on kind
 		//!     alone -- so what fills a set is DISTINCT (kind, radius)
 		//!     PAIRS, and `occlusion(0.02)` and `occlusion(0.05)` are two
-		//!     of them.  A body making four distinct queries per hit sits
-		//!     exactly at capacity; the FIFTH evicts the first, and because
-		//!     the replacement is round-robin over a cyclic working set the
-		//!     hit rate does not degrade gracefully -- it goes to ~0 %.
-		//!   * Four distinct queries per hit is therefore fine, five is a
-		//!     collapse, and nothing in between exists.
+		//!     of them.  A body making `kL1Ways` distinct queries per hit
+		//!     sits exactly at capacity; the NEXT one evicts the first, and
+		//!     because the replacement is round-robin over a cyclic working
+		//!     set the hit rate does not degrade gracefully -- it goes to
+		//!     ~0 %.
+		//!   * Eight distinct queries per hit is therefore fine, nine is a
+		//!     collapse, and nothing in between exists.  THE CLIFF MOVED;
+		//!     IT DID NOT DISAPPEAR.
 		//!
-		//! THE WAY COUNT IS NOT THE FIX.  Eight ways would double the
-		//! per-thread table and blow the 2048-byte TLS ceiling
-		//! `ExpressionMemoTest` (g) asserts -- already at 1824 bytes after
-		//! this signal's key growth.  The honest position is: four is what
-		//! the ceiling affords, the cliff is documented, and Phase 1 wave 2
-		//! MEASURES the L1 hit rate on `plank_closeup` (which makes three
-		//! distinct queries per hit, one under capacity) rather than
-		//! assuming it.  A body that needs five should be split across two
-		//! painters, which gives each its own hits.
-		const int kL1Ways = 4;
+		//! THE CEILING WAS A REGRESSION GUARD, NOT A BUDGET, which is what
+		//! makes raising it the right move here rather than a concession.
+		//! Eight ways puts `Tables` at 2432 bytes, over the 2048-byte TLS
+		//! ceiling `ExpressionMemoTest` (g) asserted (1824 bytes at four
+		//! ways after `proximity`'s key growth); that ceiling exists to
+		//! catch an unnoticed growth, not to cap the structure, so it is
+		//! raised to 4096 with the reason recorded in the test.  The whole
+		//! table is 43.8 kB across this machine's 18 workers.  Phase 1
+		//! wave 2 MEASURES the L1 hit rate on `plank_closeup` (three
+		//! distinct queries per hit) rather than assuming it, and Phase 3
+		//! re-measures it unchanged.  A body that needs nine should be
+		//! split across two painters, which gives each its own hits.
+		const int kL1Ways = 8;
 		const int kL2Ways = 4;
 
 		//! THE PROCESS-WIDE GENERATION.  Starts at 1 so a zero-initialised
@@ -608,7 +615,7 @@ namespace RISE
 		{
 			SignalHitKey	hit;
 			double			radius;
-			int				fn;				//!< 0 = occlusion, 1 = thickness, 2 = convexity, 3 = proximity
+			int				fn;				//!< 0 = occlusion, 1 = thickness, 2 = convexity, 3 = proximity, 4 = interior
 			bool			bRadiusIsConstant;
 
 			//! FIELDS THIS COMPARES: 3 of its own plus the hit's 17 = 20.

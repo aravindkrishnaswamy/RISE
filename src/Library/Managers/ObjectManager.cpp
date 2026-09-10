@@ -559,19 +559,16 @@ void ObjectManager::LogDistanceRefusal( const IObjectPriv* obj ) const
 		name, kind );
 }
 
-//! See the header for the contract.  This is every rule the design states
-//! about WHICH neighbours count, in one place, so the flat scan and the
-//! TLAS point query cannot drift apart on any of them.
-Scalar ObjectManager::ProximityCandidateDistance(
-	const IObjectPriv* obj, const IObject* self,
-	const Point3& ptWorld, const Scalar budget ) const
+//! See the header.  ONE place for the three exclusion rules, shared by
+//! both cross-object queries so a rule cannot drift between them.
+bool ObjectManager::ProximityCandidateCounts( const IObjectPriv* obj, const IObject* self )
 {
 	// SELF, by identity.  Two INSTANCED COPIES of one geometry are
 	// different objects and do count against each other, which is the
 	// behaviour the design wants and a name- or geometry-keyed test
 	// would get wrong.
 	if( obj == self ) {
-		return RISE_INFINITY;
+		return false;
 	}
 	// The same filter IntersectOcclusionRay uses -- and what excludes
 	// CSG operands, which ARE registered here; only the composite is
@@ -584,7 +581,7 @@ Scalar ObjectManager::ProximityCandidateDistance(
 	// visible -- is not in the tree at all, and is the staleness the
 	// caller's comment discloses.)
 	if( !obj->IsWorldVisible() ) {
-		return RISE_INFINITY;
+		return false;
 	}
 	// EMITTERS never count: a light panel parked millimetres off a wall
 	// must not paint grime on it.  Same predicate LuminaryManager uses
@@ -592,6 +589,19 @@ Scalar ObjectManager::ProximityCandidateDistance(
 	// the engine.
 	const IMaterial* const mat = obj->GetMaterial();
 	if( mat && mat->GetEmitter() ) {
+		return false;
+	}
+	return true;
+}
+
+//! See the header for the contract.  This is every rule the design states
+//! about WHICH neighbours count, in one place, so the flat scan and the
+//! TLAS point query cannot drift apart on any of them.
+Scalar ObjectManager::ProximityCandidateDistance(
+	const IObjectPriv* obj, const IObject* self,
+	const Point3& ptWorld, const Scalar budget ) const
+{
+	if( !ProximityCandidateCounts( obj, self ) ) {
 		return RISE_INFINITY;
 	}
 
@@ -845,6 +855,102 @@ bool ObjectManager::NearestOtherSurface(
 		return false;
 	}
 	outDist = best;
+	return true;
+}
+
+bool ObjectManager::DeepestOtherContainment(
+	const Point3& ptWorld, const IObject* self, const Scalar maxDepthWorld, Scalar& outDepth ) const
+{
+	// Same refusals as the unsigned query, and for the same reason:
+	// `interior` reads a refusal as its neutral 0, which is the honest
+	// answer to a nonsense query.
+	if( !RISE::IsFiniteDouble( (double)ptWorld.x )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.y )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.z ) ) {
+		return false;
+	}
+	if( !( maxDepthWorld > Scalar( 0 ) ) || !RISE::IsFiniteDouble( (double)maxDepthWorld ) ) {
+		return false;
+	}
+
+	EnsureBoxSnapshot();
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
+	if( !snap ) {
+		return false;
+	}
+
+	// THE FLAT SCAN, deliberately, even where a TLAS exists.  The
+	// top-level tree answers a NEAREST-point query -- it prunes on
+	// "this subtree's box is further than the running best" -- and a
+	// running MAXIMUM has no such prune to offer it, so walking it would
+	// visit every leaf anyway with the traversal's overhead added.  The
+	// AABB snapshot with an ordinary containment test is the right
+	// structure for this question, and the cost is linear in object count
+	// for a scene that calls `interior()`.  DISCLOSED in the design's §10
+	// rather than hidden: `proximity` on a TLAS-backed scene is not
+	// linear, and `interior` is.
+	Scalar best = Scalar( 0 );
+	bool found = false;
+
+	for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
+		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+		const IObjectPriv* const obj = entry.pObj;
+
+		if( !ProximityCandidateCounts( obj, self ) ) {
+			continue;
+		}
+
+		// ORDINARY CONTAINMENT, with NO radius expansion -- unlike the
+		// proximity scan, which widens each box by the running best
+		// because a neighbour OUTSIDE its box can still be within the
+		// radius.  A candidate whose box does not contain the point
+		// cannot CONTAIN the point, so this test loses nothing.
+		//
+		// The same NaN note the proximity scan carries applies: an
+		// infinite plane's box is +-RISE_INFINITY and a rotated corner
+		// can overflow to a NaN bound, which makes both comparisons
+		// false and ADMITS the candidate -- the safe direction, since the
+		// geometry is then asked and a plane refuses the signed query
+		// anyway.
+		const Point3& ll = entry.box.ll;
+		const Point3& ur = entry.box.ur;
+		if( ptWorld.x < ll.x || ptWorld.x > ur.x ) continue;
+		if( ptWorld.y < ll.y || ptWorld.y > ur.y ) continue;
+		if( ptWorld.z < ll.z || ptWorld.z > ur.z ) continue;
+
+		// NO REFUSAL DIAGNOSTIC HERE.  Every sheet family refuses
+		// containment at every point by design, so a shared latch would
+		// print the proximity message for every mesh and every plane in
+		// the scene.  Silent, and disclosed in the design's §10.
+		Scalar f = Scalar( 0 );
+		bool exact = false;
+		if( !obj->SignedDistanceLower( ptWorld, maxDepthWorld, f, exact ) ) {
+			continue;
+		}
+		// ONLY A NEGATIVE ANSWER COUNTS.  A positive one says the point
+		// is outside that candidate, which is the ordinary case and not
+		// an error.
+		if( !( f < Scalar( 0 ) ) ) {
+			continue;
+		}
+		const Scalar depth = -f;
+		if( !RISE::IsFiniteDouble( (double)depth ) ) {
+			continue;
+		}
+		// A RUNNING MAXIMUM, and no distance prune: leaving the UNION of
+		// every solid the point is inside needs at least the largest of
+		// the individual depths, so the max is still a lower bound -- the
+		// under-paint direction.
+		if( !found || depth > best ) {
+			best = depth;
+			found = true;
+		}
+	}
+
+	if( !found ) {
+		return false;
+	}
+	outDepth = best;
 	return true;
 }
 

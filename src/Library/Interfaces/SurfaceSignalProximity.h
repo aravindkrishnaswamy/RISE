@@ -1,18 +1,25 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SurfaceSignalProximity.h - The body of SurfaceSignalInfo::Proximity,
-//  the CROSS-OBJECT half of the shading-signal family.
+//  SurfaceSignalProximity.h - The bodies of SurfaceSignalInfo::Proximity
+//  and SurfaceSignalInfo::Interior, the CROSS-OBJECT PAIR of the
+//  shading-signal family.
 //
 //  docs/CROSS_OBJECT_PROXIMITY_DESIGN.md.  `proximity(r)` answers "how
 //  close is the nearest OTHER surface", which is the quantity contact
 //  grime actually is -- dirt collecting where a nail rests on a plank,
-//  dust where a wall meets a floor.  Its three siblings
+//  dust where a wall meets a floor.  `interior(r)` (§5.6) is its SIGNED
+//  sibling: "how deep inside another object is this point", which is what
+//  burial looks like -- the sunk part of a nail, the embedded flank of a
+//  stone in mortar.  A second builtin rather than a sign on the first, so
+//  that together they cover the signed distance without a sign convention
+//  an author has to remember.  Their three siblings
 //  (occlusion / thickness / convexity) are SELF-signals: they ask the hit
 //  geometry about its own shape and never see the rest of the scene.
 //
-//  WHY THIS IS A FILE OF ITS OWN, and not four more lines in
-//  ISurfaceSignalProvider.h next to the struct it belongs to.  The body
-//  calls `IObjectManager::NearestOtherSurface`, so it needs
+//  WHY THIS IS A FILE OF ITS OWN, and not a handful more lines in
+//  ISurfaceSignalProvider.h next to the struct it belongs to.  The bodies
+//  call `IObjectManager::NearestOtherSurface` and
+//  `IObjectManager::DeepestOtherContainment`, so they need
 //  IObjectManager.h -- and IObjectManager.h reaches IObject.h, which
 //  includes RayIntersection.h at its bottom, which includes
 //  RayIntersectionGeometric.h, which includes ISurfaceSignalProvider.h.
@@ -22,9 +29,9 @@
 //  header sits ABOVE both and may include them, which resolves it with
 //  no forward-declaration tricks and no pointer laundering.
 //
-//  WHO MUST INCLUDE IT: any translation unit that CALLS Proximity.  In
-//  the shipped tree that is exactly one -- the expression VM's
-//  `CallFunc` in Painters/ExpressionEval.h -- plus the tests.  A unit
+//  WHO MUST INCLUDE IT: any translation unit that CALLS Proximity or
+//  Interior.  In the shipped tree that is exactly one -- the expression
+//  VM's `CallFunc` in Painters/ExpressionEval.h -- plus the tests.  A unit
 //  that merely names `SurfaceSignalInfo` needs nothing; omitting this
 //  where it is needed is a link error, which is the loud kind.
 //
@@ -42,15 +49,16 @@
 
 namespace RISE
 {
-	//! THE SECOND POLICY BODY beside `SignalQuery`, not a fourth branch of
-	//! it -- see `SurfaceSignalInfo::SignalKind`'s comment for why the two
-	//! cannot be merged (they have different preconditions: `SignalQuery`
-	//! short-circuits on a null `pProvider`, and a `box_geometry` receiver
-	//! has none, which is precisely the case this signal must answer for).
+	//! THE SECOND AND THIRD POLICY BODIES beside `SignalQuery`, not further
+	//! branches of it -- see `SurfaceSignalInfo::SignalKind`'s comment for
+	//! why they cannot be merged (they have different preconditions:
+	//! `SignalQuery` short-circuits on a null `pProvider`, and a
+	//! `box_geometry` receiver has none, which is precisely the case these
+	//! signals must answer for).
 	//!
-	//! They DO share the L1 memo, through `MakeL1Key` and the same
-	//! find-compute-insert shape, so a new key field reaches both and
-	//! neither can be served the other's entry (`fn` separates them).
+	//! All three DO share the L1 memo, through `MakeL1Key` and the same
+	//! find-compute-insert shape, so a new key field reaches every one of
+	//! them and none can be served another's entry (`fn` separates them).
 	//!
 	//! WHAT IS MEMOISED is the FINAL answer -- clamped, fallen back,
 	//! guarded -- so a memo hit and a memo miss are indistinguishable by
@@ -105,6 +113,57 @@ namespace RISE
 				// radius) -- and costs nothing, but it is what lets every
 				// caller treat the result as [0,1] without knowing that.
 				const Scalar v = Scalar( 1 ) - d / radiusWorld;
+				out = ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
+			}
+		}
+
+		ExpressionMemo::L1Insert( key, out );
+		return out;
+	}
+
+	//! THE SIGNED SIBLING.  Same shape, same memo, same preconditions --
+	//! and the same reason for every one of them, so read `Proximity`'s
+	//! comments above for the argument; only the differences are noted
+	//! here.
+	//!
+	//!   * The query is `DeepestOtherContainment`, whose running quantity
+	//!     is a MAXIMUM over the objects that CONTAIN the point rather
+	//!     than a minimum over the ones near it, and which has no
+	//!     refusal diagnostic (every sheet family refuses containment
+	//!     everywhere by design -- see its contract comment).
+	//!   * The mapping is `depth / r`, not `1 - d/r`: 0 means "inside no
+	//!     neighbour" and 1 means "at least `r` deep".  Both ends are the
+	//!     do-nothing / fully-buried ends an author expects, and the
+	//!     manager already bounds `depth` below by 0, so only the upper
+	//!     clamp can bite -- it is written both ways anyway, for the same
+	//!     belt-and-braces reason.
+	//!   * `r` is MANDATORY and a WORLD LENGTH, with no `DynR` twin, for
+	//!     the same reason `proximity` has none: there is no bake behind
+	//!     this signal for a constant-radius proof to feed.
+	//!
+	//! WHAT IS MEMOISED is again the FINAL answer, so a hit and a miss are
+	//! indistinguishable, and the body does no arithmetic around the
+	//! lookup -- the FP contract ExpressionMemo.h requires of anything
+	//! inside the VM's arithmetic path.
+	inline Scalar SurfaceSignalInfo::Interior( const Scalar radiusWorld ) const
+	{
+		const ExpressionMemo::SignalKey key = MakeL1Key( eInterior, radiusWorld, false );
+
+		Scalar memo = Scalar( 0 );
+		if( ExpressionMemo::L1Find( key, memo ) ) return memo;
+
+		Scalar out = NeutralInterior();
+
+		if( pScene && pSelf && RadiusUsable( radiusWorld )
+		 && RISE::IsFiniteDouble( static_cast<double>( ptWorld.x ) )
+		 && RISE::IsFiniteDouble( static_cast<double>( ptWorld.y ) )
+		 && RISE::IsFiniteDouble( static_cast<double>( ptWorld.z ) ) )
+		{
+			Scalar depth = Scalar( 0 );
+			if( pScene->DeepestOtherContainment( ptWorld, pSelf, radiusWorld, depth )
+			 && RISE::IsFiniteDouble( static_cast<double>( depth ) ) )
+			{
+				const Scalar v = depth / radiusWorld;
 				out = ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
 			}
 		}
