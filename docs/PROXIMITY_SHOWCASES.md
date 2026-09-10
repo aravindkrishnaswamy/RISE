@@ -1,7 +1,11 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised seventeen times the same day after
-adversarial rounds (round 17, 2 P1s: no camera was named, so the
+Status: SPEC, 2026-09-10, revised eighteen times the same day after
+adversarial rounds (round 18, 2 P1s: `DocIndexOfNodeId`'s absent value is
+−1 and 0 is a legal index, so the "non-zero" assertion guarded nothing;
+the conventions doc's own remedies for a dark scene — an area light or a
+sky — would extinguish the probe or survive into it unaddressed, so
+zero-area keys are now a stated REQUIREMENT. Round 17, 2 P1s: no camera was named, so the
 overhead-probe setters would have no-op'd and every tidal station read
 through the water at 53°; the fills were `ambient_light` chunks, which
 `SCENE_CONVENTIONS.md` §3.5 forbids authoring and the agent surface
@@ -169,10 +173,13 @@ rasterizers). The painter stations below prove it anyway.
   `default`, allocated at Finalize and never present in the CST text, so
   an unnamed camera is unaddressable and the overhead-probe re-pointing
   would silently no-op), resolved by
-  `DocFindByName("thinlens_camera/beauty_cam")`. EVERY `DocFindByName` /
-  `DocIndexOfNodeId` result is asserted non-zero before the setter that
-  uses it — `DocSetOrAddParamValue` on an absent chunk returns the
-  document unchanged, not an error. The setter list
+  `DocFindByName("thinlens_camera/beauty_cam")`. EVERY lookup is asserted
+  before the call that uses it, with the RIGHT sentinel: `DocFindByName`
+  returns 0 when absent OR ambiguous → assert > 0; `DocIndexOfNodeId`
+  returns −1 when absent and 0 is a legal index → assert ≥ 0 (a −1 fed
+  to the three-leaf insert or to `DocEraseChunkTidy` mis-splices or
+  no-ops silently) — and `DocSetOrAddParamValue` on an absent chunk
+  returns the document unchanged, not an error. The setter list
   for the rasterizer chunk is `oidn_denoise FALSE` AND `samples 512` (the
   shipped scenes render at fewer). The black-out is scoped per showcase: showcase 1
   renders under the direct-only `pixelpel_rasterizer`, where the ratio is
@@ -190,22 +197,35 @@ rasterizers). The painter stations below prove it anyway.
   NO `reflectance` line: the slot is a pure
   painter reference (an inline `0 0 0` fails to resolve and the derive
   diagnostic fires), and its default `none` is the painter
-  `InitializeContainers` registers as uniform (0, 0, 0). Relief modifiers
-  stripped. The probe copies keep every light the scene ships — NO light
-  is erased in any showcase: showcase 1's two pavilion omnis (S1's
-  control depends on `fill_light`, S6's on both) and the single pinned
-  `omni_light` key that is each path-traced showcase's ONLY light. No
-  scene carries an `ambient_light` (`docs/SCENE_CONVENTIONS.md` §3.5:
-  never author one — a flat unshadowed constant that path tracing makes
-  redundant — and the agent surface REFUSES the chunk on every route), a
-  `radiance_map` or a relief modifier; a worker who adds a `radiance_map`
-  or a modifier for the beauty strips it in the probe copies with
-  `DocRemoveParam` / `DocEraseChunkTidy` and says so, because an
-  environment seen by the water's specular arm would reflect at R = 0.02
-  into every submerged pixel of both copies, pulling the ratio toward 1
-  exactly as the coat would; an omni is a delta light, so the water's
-  specular arm reflects nothing. With the probe and the beauty lit
-  identically, the ratio argument needs no lighting caveat. The
+  `InitializeContainers` registers as uniform (0, 0, 0). The probe
+  copies keep every light the scene ships — NO light is erased in any
+  showcase: showcase 1's two pavilion omnis (S1's control depends on
+  `fill_light`, S6's on both) and the single pinned `omni_light` key that
+  is each path-traced showcase's ONLY light. ZERO-AREA KEYS ARE A
+  REQUIREMENT of the probe, not a style: an area light (`rect_light`,
+  `shape_light`, an emissive object) IS an object, so the black-out would
+  either extinguish it (every ratio 0/0) or, applied to the `rect_light`
+  chunk itself, insert an undeclared `material` param that the
+  descriptor-driven parser rejects; and `docs/SCENE_CONVENTIONS.md`
+  §3.5's other remedy for a dark scene, "add a sky"
+  (`hosek_wilkie_skylight`, or any global radiance map), is FORBIDDEN in
+  all three scenes because an environment seen by the water's specular
+  arm would reflect at R = 0.02 into every submerged pixel of both
+  copies, pulling the ratio toward 1 exactly as the coat would — an omni
+  is a delta light, so the water's specular arm reflects nothing (on the
+  agent surface §3.5 refuses an `omni_light` once per request and
+  re-issuing lands it; that refusal is not a reason to substitute an area
+  light). No scene carries an `ambient_light` (§3.5: never author one —
+  a flat unshadowed constant that path tracing makes redundant — and the
+  agent surface REFUSES the chunk on every route), a `radiance_map`, a
+  skylight or a relief modifier. A worker who adds a `radiance_map`
+  (`DocRemoveParam` on the rasterizer chunk) or a modifier
+  (`DocEraseChunkTidy`) for the BEAUTY strips it from both probe copies
+  and says so; a skylight chunk carries no `name` and would have to be
+  found by role enumeration like the rasterizer — do not add one. With
+  the probe and the CONTROL copies lit identically — the same lights, the
+  same black-out — the ratio argument needs no lighting caveat (the
+  beauty is lit the same but not blacked; it is judged, not divided). The
   probe `expr` is `vec3(x, x, x)` with x the signal def's
   name — `dust` in showcases 1 and 3, `buried` in showcase 2. `SourceHygieneTest` hard-fails
   any test that defines an `IRasterizerOutput` unless the FILE contains
@@ -577,10 +597,10 @@ seen at 39.0° above its own tilted face — the rounded 36.8°/39.0° pair
 is unchanged by the 1 mm drop — 36.8° above horizontal, and the
 sightline crosses the water at 53.2° to the WATER's normal — far outside
 §0's 10° rule, hence the overhead probe). Lighting: the key is an
-`omni_light` PINNED at (−0.35, 0.80, 0.45), camera-left and above; a dim
-it is the scene's ONLY light (`color` and `power` under **Lights** below;
-no fill — indirect off the sand, bed and stones does that job, and
-`ambient_light` is never authored). `pathtracing_pel_rasterizer` (with the `global` `standard_shader`
+`omni_light` PINNED at (−0.35, 0.80, 0.45), camera-left and above; it is the scene's
+ONLY light (`color` and `power` under **Lights** below; no fill —
+indirect off the sand, bed and stones does that job; no `ambient_light`,
+no area light, no sky: §0's zero-area requirement). `pathtracing_pel_rasterizer` (with the `global` `standard_shader`
 chunk, `shaderop DefaultPathTracing`, per §0) with `transparent_shadows
 TRUE` — MANDATORY and recorded in the header: the default is FALSE and
 `RayCaster::CastShadowRayAuto` then runs the binary occlusion test, so
@@ -758,8 +778,10 @@ tangential × sin 27.2° at 800 px). Lighting: the key is an `omni_light`
 PINNED at (−0.35, 0.45, 0.25), camera-left and above, named `key`,
 `color 1.0 0.96 0.90` (linear Rec.709, no gamma decode), its `power`
 chosen by the worker for exposure and recorded — the scene's ONLY light
-(no fill: indirect off the wall and shelf does that job, and
-`ambient_light` is never authored). `samples 32`, the descriptor
+(no fill: indirect off the wall and shelf does that job; no
+`ambient_light`, no area light, no sky: §0's zero-area requirement; the
+bunny's upper shadowed flank will read near-black against the black
+background, predicted and judged honestly). `samples 32`, the descriptor
 default, stated in the chunk; the camera is `thinlens_camera` named
 `beauty_cam`. From the key, n·L at the shelf's painter
 stations is 0.79 (M1p), 0.78 (M1q), 0.80 (M3) — the shadow rays leave
