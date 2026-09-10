@@ -2387,6 +2387,7 @@ two queries cannot drift on them). `ExpressionProgram::UsesProximity()` becomes
 | the memo keys extend, red-proved | PASS — a new `ExpressionMemoTest` (p): at the centre of a box neighbour `proximity` reads 1 and `interior` reads 0.125 at the SAME hit and radius, **in both orders**, so `fn` is doing the separating; and the generation bump clears an `interior` entry with the stale answer red-proved first |
 | `kL1Ways = 8`, the raised ceiling asserted and the bytes printed | PASS — **2432 bytes** exactly (asserted as an equality, not only under the 4096 ceiling), 43.8 kB across 18 workers |
 | **L1 hit rate on `plank_closeup` unchanged** | PASS — **0.8967 → 0.8968**. Measured, not argued: a temporary hit/miss counter in `L1Find`, `plank_closeup` at 160 × 120 / 2 spp, `kL1Ways = 4` gives 544 479 hits / 62 698 misses and `kL1Ways = 8` gives 543 931 / 62 607. The counter and the probe scene were removed in the same slice (`grep L1PROBE src` empty). Worth measuring rather than reasoning: round-robin replacement is FIFO, and FIFO is not a stack algorithm, so more ways *can* in principle lower a hit rate (Belady) |
+| **the scan cost `kL1Ways = 8` adds to EVERY signal-using scene, including ones with no `proximity`/`interior`** (found in review, since the hit-rate row above measures only a proximity-using scene) | PASS, negative result — see the wall-clock table below: no measurable cost on either scene, well under the 2% threshold |
 | `TextureExpressionVMTest` 846/846 | PASS (unmoved) |
 | `AgentSkillsTest` at 33 snippets, the new `interior` fence deriving with zero diagnostics and rendering | PASS — 628 passed, 0 failed; the fence renders 128 × 128 at mean RGB (0.2564, 0.2632, 0.2760), luma **0.2627**, inside the required (0.02, 0.98) band. (Re-measured in review round 2 — the figures moved in the fourth decimal, which is the render's own seed noise, not a behaviour change) |
 | `ProximitySignalTest` | 386 passed, 0 failed (325 after S3) |
@@ -2406,6 +2407,35 @@ both are the doc-fidelity lens rather than new behaviour:
 - `skills/agent/procedural-textures.md` carried the same stale sentence
   ("triangle meshes, patches, hair and CSG composites contribute nothing"),
   corrected there too.
+
+**The wall-clock cost of `kL1Ways = 8`, measured rather than reasoned (found
+in review).** The hit-rate row above measures a scene that CALLS
+`proximity` — it says nothing about the cost `kL1Ways = 8` charges to a
+scene that calls neither `proximity` nor `interior`, where the extra four
+ways are pure linear-scan overhead on every `L1Find`/`L1Insert`. Measured
+per docs/skills/performance-work-with-baselines.md: two binaries built
+from the identical tree, differing only in `kL1Ways` (4 vs 8, the one
+variable), `render_thread_reserve_count 0`, nothing else running on the
+machine, 2 warm-ups then 3 interleaved pairs per scene (order alternated
+pair to pair so neither binary always goes first), reading `Total
+Rasterization Time` from the RISE log:
+
+| scene | signals present | `kL1Ways=4` runs (ms) | mean / stddev | `kL1Ways=8` runs (ms) | mean / stddev | Δ (8 vs 4) |
+|---|---|---|---|---|---|---|
+| `scenes/Tests/Materials/wetness_prelude_validation.RISEscene` (240×240, 96 spp) — chosen because neither `scenes/FeatureBased/Textures` nor `scenes/Tests/Signals` contains an occlusion/convexity-only scene with no `proximity`/`interior` call (every scene in both directories that touches `occlusion`/`convexity` also calls `proximity`); this is the smallest occlusion-only scene found by a repo-wide grep | `occlusion(0.08)` only, no `proximity`/`interior` | 2558, 2494, 2431 | 2494.3 / 63.5 (2.5%) | 2567, 2460, 2439 | 2488.7 / 68.6 (2.8%) | **−0.23%** (way8 nominally faster; well inside 1σ of either mean — noise) |
+| `scenes/FeatureBased/Textures/plank_closeup.RISEscene` (640×480, 48 spp) | `proximity` (7 calls), `convexity`, `occlusion` | 20060, 20223, 20193 | 20158.7 / 86.8 (0.4%) | 20039, 20223, 20142 | 20134.7 / 92.2 (0.5%) | **−0.12%** (way8 nominally faster; well inside 1σ — noise) |
+
+Both deltas are far under the 2% action threshold, and both run in the
+"way8 nominally faster" direction, which is itself the tell that neither
+difference is a real effect — it is measurement noise on renders whose
+stddev (0.4–2.8%) already exceeds the measured delta (0.1–0.2%). **No
+per-program `kL1Ways` split was implemented**: the cost the design worried
+about (a linear L1 scan doubling in width on every hit, on every scene)
+does not show up at the wall-clock level even on a scene that never
+touches the cross-object channel at all, so `kL1Ways = 8` stays global for
+every program, as shipped in S4. `sizeof(Tables)` is therefore also
+unchanged (2432 bytes, under the 4096-byte ceiling, as S4 already
+measured).
 
 One design detail decided at implementation time, recorded here, and
 **SUPERSEDED below**: `DeepestOtherContainment` originally used the flat
