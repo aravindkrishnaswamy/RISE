@@ -59,6 +59,12 @@ namespace RISE
 			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
+			//! IGeometry::SignedDistanceLower -- EXACT on BOTH sides: the
+			//! torus field `length(length(p.xz) - R, p.y) - r` is the true
+			//! signed distance to the tube everywhere.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- the torus's real gate is NOT the
 			//! quartic solver's `s[i] > NEARZERO` root test (which the generic
 			//! default already over-states).  It is the QUARTIC DEFLATION test in

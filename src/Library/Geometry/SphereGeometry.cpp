@@ -368,3 +368,33 @@ bool SphereGeometry::DistanceToSurface( const Point3& ptObject, const Scalar max
 	outDist = d;
 	return true;
 }
+
+//! IGeometry::SignedDistanceLower -- the SAME field, UNCLAMPED.
+//!
+//! `|p| - R` is the exact signed distance to the sphere on both sides, so
+//! this is the one place where "lower bound" and "the distance" coincide,
+//! and the exactness flag says so -- which is what lets a CSG composite's
+//! BOUNDARY ARM admit a landing exactly on a sphere operand's surface
+//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+//!
+//! A ZERO OR NEGATIVE RADIUS REFUSES rather than answering `|p|` with the
+//! flag set: a degenerate operand's closure is lower-dimensional, the
+//! composite renders nothing there, and the boundary arm's closure
+//! argument needs interior points near the landing.
+bool SphereGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !( m_dRadius > Scalar( 0 ) ) ) {
+		return false;
+	}
+	const Scalar r = Vector3Ops::Magnitude( Vector3( ptObject.x, ptObject.y, ptObject.z ) );
+	const Scalar sgn = r - m_dRadius;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
+}

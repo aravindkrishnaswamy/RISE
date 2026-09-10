@@ -75,6 +75,15 @@ namespace RISE
 			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
+			//! IGeometry::SignedDistanceLower -- the CAPPED form only.  A
+			//! capped cylinder is a closed solid whose (radial, axial)
+			//! 2D box field is the exact signed distance on both sides.
+			//! The OPEN form is a SHEET -- a tube encloses nothing, so
+			//! there is no inside to sign -- and REFUSES, as every other
+			//! sheet family does.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- the gate both
 			//! CylinderGeometry::IntersectCappedSolid and the open-tube
 			//! Ray{X,Y,Z}CylinderIntersection apply,

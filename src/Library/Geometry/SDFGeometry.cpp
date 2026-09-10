@@ -1842,6 +1842,44 @@ bool SDFGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDis
 	return true;
 }
 
+//////////////////////////////////////////////////////////////////////
+// IGeometry::SignedDistanceLower -- `Map` itself.
+//
+// The unsigned query above cannot report `Map` (it is a LOWER bound and
+// that query owes an UPPER one, so it brackets a sign change instead).
+// This query owes a lower bound with an exact sign, which is precisely
+// what a 1-Lipschitz field with a correct zero set already is -- so the
+// whole bracket disappears and the answer is one `Map` call.
+//
+// AND IT MUST NOT COPY THE UNSIGNED QUERY'S RANGE EARLY-OUT.  `maxDist`
+// here bounds EFFORT, not range: a CSG descent evaluates its operands at
+// points far outside any query radius, and an operand that refused for
+// range would make every intersection with a small subtrahend refuse.
+// Only the family refusals (heightfield mode, an empty part list) and a
+// non-finite field value are legitimate here.
+//////////////////////////////////////////////////////////////////////
+
+bool SDFGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;			// NEVER exact: Map under-reads by construction
+
+	if( m_isHeightfield ) {
+		return false;
+	}
+	if( m_parts.empty() ) {
+		return false;
+	}
+
+	const Scalar f = Map( ptObject );
+	if( !RISE::IsFiniteDouble( (double)f ) ) {
+		return false;
+	}
+	outSigned = f;
+	return true;
+}
+
 bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
 	const Scalar radiusFraction, const bool /*bRadiusIsConstant*/, Scalar& outValue ) const
 {

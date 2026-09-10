@@ -44,6 +44,10 @@
 //        hit -- including the DynR remap guard, whose absence would
 //        silently compile a computed-radius proximity() as a convexity
 //        call, and the parse-time diagnostic's unit.
+//    (h) THE SIGNED LOWER BOUND (Phase 3).  The other direction from
+//        (a)-(d): an exact SIGN with a LOWER-bound magnitude, per family,
+//        plus the exactness flag a CSG composite's boundary arm consumes.
+//        Every sheet refuses it while still answering the unsigned one.
 //
 //  Tabs: 4
 //
@@ -1222,6 +1226,322 @@ static void TestBuiltinEndToEnd( const Fixture& f )
 	}
 }
 
+
+//======================================================================
+// (h) THE SIGNED LOWER BOUND
+//======================================================================
+
+//! One signed probe against ONE object, bypassing the manager: what
+//! `interior` and a CSG composite's composed field both read.  Returns
+//! true and fills both outputs, or false on a refusal.
+static bool SignedAt( const IObjectPriv* obj, const Point3& p, const Scalar r,
+	Scalar& outSigned, bool& outExact )
+{
+	outSigned = Scalar( 0 );
+	outExact  = false;
+	return obj && obj->SignedDistanceLower( p, r, outSigned, outExact );
+}
+
+//! BRUTE FORCE: the shortest distance from `p` to the surface of the
+//! ellipsoid with semi-axes (a,b,c) centred at the origin, by a dense
+//! parametric grid.  A minimum over a SUBSET of the surface is an UPPER
+//! reference on the true distance, which is why the check that consumes it
+//! compares it against a closed form rather than standing on it alone.
+static Scalar BruteForceDistanceToEllipsoidSurface(
+	const Point3& p, const Scalar a, const Scalar b, const Scalar c,
+	const int nTheta, const int nPhi )
+{
+	Scalar best = RISE_INFINITY;
+	for( int i = 0; i <= nTheta; ++i ) {
+		const double th = PI * (double)i / (double)nTheta;
+		const double st = std::sin( th ), ct = std::cos( th );
+		for( int j = 0; j < nPhi; ++j ) {
+			const double ph = 2.0 * PI * (double)j / (double)nPhi;
+			const double x = (double)a * st * std::cos( ph );
+			const double y = (double)b * ct;
+			const double z = (double)c * st * std::sin( ph );
+			const double dx = x - (double)p.x, dy = y - (double)p.y, dz = z - (double)p.z;
+			const Scalar d = (Scalar)std::sqrt( dx*dx + dy*dy + dz*dz );
+			if( d < best ) best = d;
+		}
+	}
+	return best;
+}
+
+//! THE SIGNED LOWER BOUND, per family (design 5.6).  Three properties,
+//! and they are not the unsigned query's:
+//!   * the SIGN is exact -- negative strictly inside, positive strictly
+//!     outside -- or the family REFUSES.  Every SHEET refuses: it cannot
+//!     say what "inside" means.
+//!   * the MAGNITUDE is a LOWER bound, the opposite direction from
+//!     `DistanceToSurface`'s upper one.
+//!   * the EXACTNESS FLAG is set only by the four closed-form SOLIDS, and
+//!     only under a similarity transform.  A composite's boundary arm
+//!     consumes it, so a family that sets it wrongly re-admits the phantom
+//!     touching set.
+static void TestSignedLowerBound( const Fixture& f )
+{
+	std::cout << "(h) the SIGNED lower bound -- exact sign, lower magnitude, the exactness flag" << std::endl;
+
+	// --- THE FOUR CLOSED-FORM SOLIDS, INSIDE.  These are the SAME six
+	// interpenetration probes section (e) checks read 0 through the
+	// unsigned query; here the depth the unsigned query throws away at its
+	// clamp is the answer, and it is exact for these four.
+	{
+		Scalar fv = 0; bool ex = false;
+
+		Check( SignedAt( f.Obj( "n_sphere" ), Point3( 0, 3, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) sphere answers the signed query at its centre" );
+		CheckClose( fv, Scalar( -1 ), Scalar( 1e-9 ),
+			"(h) MONEY -- sphere R=1: its centre is -1, the DEPTH the unsigned query clamps to 0" );
+		Check( ex, "(h) ...and the sphere's magnitude is EXACT" );
+
+		Check( SignedAt( f.Obj( "n_box" ), Point3( 6, 3, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) box answers the signed query at its centre" );
+		CheckClose( fv, Scalar( -1 ), Scalar( 1e-9 ),
+			"(h) MONEY -- box 2x2x2: its centre is -1 from the nearest face" );
+		Check( ex, "(h) ...and the box's magnitude is EXACT" );
+
+		Check( SignedAt( f.Obj( "n_cyl_capped" ), Point3( 12, 4, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) capped cylinder answers the signed query on its axis" );
+		CheckClose( fv, Scalar( -1 ), Scalar( 1e-9 ),
+			"(h) MONEY -- capped cylinder R=1 h=4: its centre is -1 (the RADIAL wall, not the "
+			"2.0 cap distance)" );
+		Check( ex, "(h) ...and the capped cylinder's magnitude is EXACT" );
+
+		// The torus probe sits on the TUBE'S CENTRE CIRCLE, at lateral
+		// offset 1.5 from the ring centre -- the deepest point of the
+		// tube, and the only one whose depth is the minor radius exactly.
+		Check( SignedAt( f.Obj( "n_torus" ), Point3( 42, 3, 1.5 ), Scalar( 10 ), fv, ex ),
+			"(h) torus answers the signed query on its tube's centre circle" );
+		CheckClose( fv, Scalar( -0.5 ), Scalar( 1e-9 ),
+			"(h) MONEY -- torus minor 0.5: the tube's centre circle is -0.5" );
+		Check( ex, "(h) ...and the torus's magnitude is EXACT" );
+	}
+
+	// --- THE SAME FOUR, OUTSIDE: the signed answer is the PLUS distance,
+	// and it agrees with the unsigned query exactly where the unsigned one
+	// is exact.  Teeth against a sign-flip or a clamp leaking in.
+	{
+		Scalar fv = 0; bool ex = false;
+		Check( SignedAt( f.Obj( "n_box" ), Point3( 6, 0, 0 ), Scalar( 10 ), fv, ex ) && ex,
+			"(h) box answers exactly from a floor point below it" );
+		CheckClose( fv, Scalar( 2 ), Scalar( 1e-9 ),
+			"(h) MONEY -- OUTSIDE the signed answer is +2, the same number the unsigned query gives" );
+
+		Check( SignedAt( f.Obj( "n_sphere" ), Point3( 0, 0, 0 ), Scalar( 10 ), fv, ex ) && ex,
+			"(h) sphere answers exactly from the floor below it" );
+		CheckClose( fv, Scalar( 2 ), Scalar( 1e-9 ), "(h) ...sphere: 3 - 1 = +2" );
+
+		Check( SignedAt( f.Obj( "n_cyl_capped" ), Point3( 12, 0, 0 ), Scalar( 10 ), fv, ex ) && ex,
+			"(h) capped cylinder answers exactly from the floor below it" );
+		CheckClose( fv, Scalar( 2 ), Scalar( 1e-9 ), "(h) ...capped cylinder: bottom cap at y=2, so +2" );
+
+		Check( SignedAt( f.Obj( "n_torus" ), Point3( 42, 0, 1.5 ), Scalar( 10 ), fv, ex ) && ex,
+			"(h) torus answers exactly from the floor under its tube" );
+		CheckClose( fv, Scalar( 2.5 ), Scalar( 1e-9 ), "(h) ...torus: 3 - 0.5 = +2.5" );
+	}
+
+	// --- THE ELLIPSOID: the SIGN is exact, the MAGNITUDE is
+	// `dUnit x min(a,b,c)` and therefore a LOWER bound, and the flag is
+	// NEVER set.  The centre probe is where the bound is TIGHT (the depth
+	// to the nearest surface point IS the smallest semi-axis), which is
+	// why the design keeps the interpenetration probe there and says so.
+	{
+		Scalar fv = 0; bool ex = false;
+		Check( SignedAt( f.Obj( "n_ellipsoid" ), Point3( 48, 3, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) ellipsoid answers the signed query at its centre" );
+		CheckClose( fv, Scalar( -1 ), Scalar( 1e-9 ),
+			"(h) MONEY -- ellipsoid (2,1,1) at its centre: -1 = dUnit x min(a,b,c), and the "
+			"bound is TIGHT there (the true depth is the smallest semi-axis)" );
+		Check( !ex, "(h) MONEY -- ...but the ellipsoid NEVER carries the exactness flag" );
+
+		// OUTSIDE and OFF the minor axis, where the bound is genuinely
+		// loose: 4 units along +x from the centre, the true distance is
+		// 4 - 2 = 2 and the reported lower bound is dUnit(=1) x min(=1).
+		Check( SignedAt( f.Obj( "n_ellipsoid" ), Point3( 52, 3, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) ellipsoid answers 4 units out along its MAJOR axis" );
+		Check( !ex, "(h) ...still without the flag" );
+		Check( fv > Scalar( 0 ), "(h) ...with an exact POSITIVE sign outside" );
+		Check( fv <= Scalar( 2 ) + Scalar( 1e-9 ),
+			"(h) MONEY -- and the magnitude is a LOWER bound on the true distance 2" );
+		std::cout << "    ellipsoid (2,1,1), station 4 along +x: true 2, signed lower bound "
+			<< (double)fv << std::endl;
+	}
+
+	// --- THE SDF: `Map` itself.  Sign exact, magnitude a lower bound,
+	// flag never set -- and, unlike the unsigned query, NO RANGE REFUSAL:
+	// a tiny budget still gets an answer, because a CSG descent asks its
+	// operands about points far outside any radius.
+	{
+		Scalar fv = 0; bool ex = false;
+		Check( SignedAt( f.Obj( "n_sdf_sphere" ), Point3( 54, 3, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) the exact-field SDF answers the signed query at its centre" );
+		CheckClose( fv, Scalar( -1 ), Scalar( 1e-9 ),
+			"(h) MONEY -- SDF sphere R=1: Map at the centre is -1, the exact depth" );
+		Check( !ex, "(h) MONEY -- ...and an SDF NEVER carries the exactness flag" );
+
+		Check( SignedAt( f.Obj( "n_sdf_sphere" ), Point3( 54, 0, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) ...and answers from outside" );
+		CheckClose( fv, Scalar( 2 ), Scalar( 1e-9 ), "(h) ...+2 outside, this field being exact" );
+
+		// NO RANGE REFUSAL.  The unsigned query's step-1 early-out would
+		// return false here (Map = 2 > 0.001); the signed one must not.
+		Scalar fTiny = 0; bool exTiny = false;
+		Check( SignedAt( f.Obj( "n_sdf_sphere" ), Point3( 54, 0, 0 ), Scalar( 0.001 ), fTiny, exTiny ),
+			"(h) MONEY -- the signed query does NOT refuse for RANGE: a 1 mm budget still "
+			"answers, because a composite's descent evaluates operands well outside any radius" );
+		CheckClose( fTiny, Scalar( 2 ), Scalar( 1e-9 ), "(h) ...with the same number" );
+		Scalar dUnsigned = Scalar( 0 );
+		Check( !f.Obj( "n_sdf_sphere" )->DistanceToSurface( Point3( 54, 0, 0 ), Scalar( 0.001 ), dUnsigned ),
+			"(h) ...teeth: the UNSIGNED query at the same budget refuses, as it should" );
+
+		// The COMPOSED (1-Lipschitz, not exact) SDF: sign still exact.
+		Check( SignedAt( f.Obj( "n_sdf_composed" ), Point3( 59.4, 3, 0 ), Scalar( 10 ), fv, ex ),
+			"(h) the composed SDF answers the signed query" );
+		Check( fv < Scalar( 0 ),
+			"(h) MONEY -- ...and its sign is exact inside the smin-blended solid" );
+		Check( !ex, "(h) ...without the flag" );
+	}
+
+	// --- EVERY SHEET REFUSES THE SIGNED QUERY, and the ones that answer
+	// the UNSIGNED one still do.  This pairing is the whole point: a sheet
+	// is a perfectly good NEIGHBOUR (it has a distance) and a hopeless
+	// OPERAND (it has no inside), so the two queries must disagree about
+	// it -- which is what makes a subtracted plane force a composite to
+	// refuse rather than report a chord to a face that removes nothing.
+	{
+		struct Row { const char* name; bool answersUnsigned; const char* why; };
+		const Row rows[] = {
+			{ "floor",        true,  "infinite plane" },
+			{ "n_disk",       true,  "disk" },
+			{ "n_quad",       true,  "coplanar CONVEX clipped plane" },
+			{ "n_cyl_open",   true,  "OPEN cylinder (a tube encloses nothing)" },
+			{ "n_quad_skew",  false, "non-coplanar clipped plane" },
+			{ "n_quad_dart",  false, "coplanar NON-CONVEX clipped plane" },
+			{ "n_patch",      false, "Bezier patch" },
+			{ "n_rawmesh",    false, "RAW mesh" },
+			{ "n_sdf_heightfield", false, "heightfield SDF" },
+		};
+		for( std::size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
+			const IObjectPriv* const o = f.Obj( rows[i].name );
+			Check( o != 0, std::string( "(h) fixture present: " ) + rows[i].name );
+			if( !o ) continue;
+
+			Scalar fv = Scalar( 12345 ); bool ex = true;
+			Check( !SignedAt( o, Point3( 0, 0, 0 ), Scalar( 1000 ), fv, ex ),
+				std::string( "(h) MONEY -- " ) + rows[i].why + " REFUSES the signed query" );
+			Check( !ex, std::string( "(h) ...and the refusal CLEARS the exactness flag (" )
+				+ rows[i].name + ")" );
+
+			// The point is taken directly under each fixture so the
+			// unsigned answer is a real, in-range one.
+			Scalar d = Scalar( 0 );
+			const bool ans = o->DistanceToSurface( Point3( 0, 0, 0 ), RISE_INFINITY, d );
+			Check( ans == rows[i].answersUnsigned,
+				std::string( "(h) ...and its UNSIGNED answer is unchanged (" ) + rows[i].name + ")" );
+		}
+	}
+
+	// --- THE ANISOTROPIC TRANSFORM, both directions at once.  A unit
+	// sphere under `scale (3, 1, 0.4)` is an ellipsoid with those
+	// semi-axes; the design names this exact transform because it is where
+	// the two conversions visibly diverge -- the unsigned answer goes out
+	// x sigmaMax and must land ABOVE the truth, the signed one goes out
+	// x sigmaMin and must land BELOW it.
+	{
+		SphereGeometry* g = new SphereGeometry( Scalar( 1 ) );
+		Object* aniso = new Object( g );
+		g->release();
+		aniso->SetStretch( Vector3( Scalar( 3 ), Scalar( 1 ), Scalar( 0.4 ) ) );
+		aniso->FinalizeTransformations();
+
+		// The station is on the y axis, where the distance to the
+		// ellipsoid has a CLOSED FORM: minimising 9u^2 + (v-h)^2 +
+		// 0.16w^2 on u^2+v^2+w^2 = 1 puts the minimiser at (0,1,0) for
+		// every h > 1, so the distance is h - 1 = 4 at h = 5.
+		const Point3 station( 0, 5, 0 );
+		const Scalar closedForm = Scalar( 4 );
+
+		// ...and the brute force AGREES with it, which is what makes the
+		// closed form a fact rather than an assertion.  A grid minimum is
+		// an UPPER reference (it minimises over a subset of the surface),
+		// so it may sit a hair above; 1201 x 2400 samples put it within
+		// 1e-6 here.
+		const Scalar brute = BruteForceDistanceToEllipsoidSurface(
+			station, Scalar( 3 ), Scalar( 1 ), Scalar( 0.4 ), 1200, 2400 );
+		CheckClose( brute, closedForm, Scalar( 1e-5 ),
+			"(h) the brute-force distance to the (3,1,0.4) solid matches its closed form" );
+
+		Scalar fv = 0; bool ex = false;
+		Check( SignedAt( aniso, station, Scalar( 100 ), fv, ex ),
+			"(h) the (3,1,0.4) sphere answers the signed query" );
+		Check( fv > Scalar( 0 ), "(h) ...with an exact positive sign outside" );
+		Check( fv <= brute + Scalar( 1e-9 ),
+			"(h) MONEY -- the SIGNED lower bound lands BELOW the brute-force distance" );
+		Check( !ex,
+			"(h) MONEY -- and an ANISOTROPICALLY scaled SOLID reports exact = FALSE, so a "
+			"composite reaching it can only take the strict arm" );
+
+		Scalar d = Scalar( 0 );
+		Check( aniso->DistanceToSurface( station, Scalar( 100 ), d ),
+			"(h) ...the unsigned query answers too" );
+		Check( d >= brute - Scalar( 1e-9 ),
+			"(h) MONEY -- ...and the UNSIGNED answer lands ABOVE it: the two bounds bracket "
+			"the truth from opposite sides" );
+		std::cout << "    scale (3,1,0.4) at (0,5,0): brute force " << (double)brute
+			<< ", signed lower bound " << (double)fv
+			<< ", unsigned upper bound " << (double)d << std::endl;
+
+		// TEETH on the exactness flag: the SAME geometry under a
+		// SIMILARITY does carry it, so `false` above is the anisotropy and
+		// not the family.
+		SphereGeometry* g2 = new SphereGeometry( Scalar( 1 ) );
+		Object* simil = new Object( g2 );
+		g2->release();
+		simil->SetStretch( Vector3( Scalar( 1.5 ), Scalar( 1.5 ), Scalar( 1.5 ) ) );
+		simil->FinalizeTransformations();
+		Scalar fs = 0; bool exs = false;
+		Check( SignedAt( simil, Point3( 0, 5, 0 ), Scalar( 100 ), fs, exs ),
+			"(h) the uniformly scaled sphere answers" );
+		CheckClose( fs, Scalar( 3.5 ), Scalar( 1e-9 ), "(h) ...5 - 1.5 = 3.5, exactly" );
+		Check( exs, "(h) MONEY -- teeth: under a SIMILARITY the same family DOES carry the flag" );
+
+		// A DEGENERATE transform refuses the signed query too.
+		SphereGeometry* g3 = new SphereGeometry( Scalar( 1 ) );
+		Object* flat = new Object( g3 );
+		g3->release();
+		flat->SetStretch( Vector3( Scalar( 1 ), Scalar( 0 ), Scalar( 1 ) ) );
+		flat->FinalizeTransformations();
+		Scalar fd = 0; bool exd = true;
+		Check( !SignedAt( flat, Point3( 0, 5, 0 ), Scalar( 100 ), fd, exd ),
+			"(h) a DEGENERATE transform refuses the signed query as it refuses the unsigned one" );
+		Check( !exd, "(h) ...clearing the flag" );
+
+		flat->release();
+		simil->release();
+		aniso->release();
+	}
+
+	// --- A DEGENERATE OPERAND REFUSES.  A zero-radius sphere's closure is
+	// a point: the composite renders nothing there, and admitting it to a
+	// boundary arm would land on a set with no interior nearby.  The
+	// unsigned query is deliberately NOT changed by this (it answers |p|,
+	// which is still an upper bound), so the two queries disagree here as
+	// they do about sheets.
+	{
+		SphereGeometry* g = new SphereGeometry( Scalar( 0 ) );
+		Object* pointish = new Object( g );
+		g->release();
+		pointish->FinalizeTransformations();
+		Scalar fv = 0; bool ex = true;
+		Check( !SignedAt( pointish, Point3( 0, 5, 0 ), Scalar( 100 ), fv, ex ),
+			"(h) MONEY -- a DEGENERATE (zero-radius) operand refuses the signed query" );
+		Check( !ex, "(h) ...clearing the flag" );
+		pointish->release();
+	}
+}
+
 //======================================================================
 
 int main()
@@ -1244,6 +1564,7 @@ int main()
 	TestTLASStalenessViaJobAddObject();
 	TestConventions( f );
 	TestBuiltinEndToEnd( f );
+	TestSignedLowerBound( f );
 
 	f.job->release();
 

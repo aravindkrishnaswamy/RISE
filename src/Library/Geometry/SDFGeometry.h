@@ -326,6 +326,20 @@ namespace RISE
 			//! Heightfield mode refuses, as the other signals do.
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
+			//! IGeometry::SignedDistanceLower -- `Map` ITSELF, and this is
+			//! the one query where the field's 1-Lipschitz under-reading is
+			//! exactly the contract rather than a hazard
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6).  The sign is
+			//! exact (`Map <= 0` iff inside), the magnitude is a lower
+			//! bound, and the exactness flag is NEVER set -- so a CSG
+			//! composite reaching an SDF operand can only take the strict
+			//! arm.  HEIGHTFIELD MODE REFUSES, as it does for every other
+			//! signal: its field is divided by a global Lipschitz bound, so
+			//! neither its magnitude nor its zero crossing is trustworthy.
+			//! No range refusal: `maxDistObject` bounds effort only.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
 			//! ISurfaceSignalProvider -- the `occlusion(radius)` builtin
 			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2 for the channel,
 			//! docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md for the estimator).

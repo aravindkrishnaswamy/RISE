@@ -2164,6 +2164,56 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
 | temporary hooks removed | PASS (`grep -rn "RISE_PROX_FORCE" src` empty; probe tool deleted) |
 
 
+### 8.4 What Phase 3 actually built
+
+Written slice by slice as each landed, with the measured number beside every
+gate §8's Phase-3 block asserts, and every deviation from §5.6 named.
+
+#### S1 — the signed lower bound per family
+
+`IGeometry::SignedDistanceLower( ptObject, maxDistObject, outSigned,
+outExact )` (refusing default, declared last, clears `outExact`) and
+`IObject::SignedDistanceLower` beside it; `IObject::DescribeKind()` added in
+the same header pass for the S3 refusal log.
+
+| Phase-3 S1 gate | verdict |
+|---|---|
+| warning-free `make -C build/make/rise -j8 all` | PASS |
+| sphere / box / capped cylinder / torus: `−depth` inside, within 1e-9 | PASS — −1, −1, −1, −0.5 at the six fixture probes (capped cylinder's centre is the RADIAL wall at 1, not the 2.0 cap) |
+| the same four: `+distance` outside, within 1e-9 | PASS — +2, +2, +2, +2.5 from the floor stations |
+| the four carry the exactness flag | PASS |
+| ellipsoid: sign exact, magnitude `dUnit × min(a,b,c)`, flag never set | PASS — −1 at the centre (tight there); 1.0 against a true 2 at the station 4 along +x, i.e. a genuine lower bound |
+| SDF: sign exact, `Map` inside, flag never set | PASS — −1 at the exact-field sphere's centre, +2 outside; the composed `smin` SDF's sign is exact inside |
+| the signed query never refuses for RANGE | PASS — a 1 mm budget still answers +2 where the UNSIGNED query at the same budget refuses (both asserted) |
+| every sheet refuses the signed query, and the sheets that answer the unsigned one still do | PASS — 9 fixtures: plane, disk, convex-coplanar clipped plane, open cylinder answer unsigned and refuse signed; skew quad, dart quad, patch, RAW mesh, heightfield SDF refuse both |
+| a refusal CLEARS `outExact` | PASS on all 9 |
+| `scale (3, 1, 0.4)` solid: lower ≤ and unsigned ≥ a brute-force distance | PASS — brute force 4.000000 (1201 × 2400 surface samples, matching the closed form `h − 1` to 1e-5), signed lower bound 0.472441, unsigned upper bound 12.7499 (both with the Phase-1 loose σ; S2 tightens them to 1.6 and 12.0) |
+| `scale (3, 1, 0.4)` solid reports `exact = false` | PASS, with teeth: the same sphere under `scale 1.5` DOES carry the flag and reads 3.5 exactly |
+| a degenerate transform, and a degenerate (zero-radius) OPERAND, refuse | PASS |
+| `ProximitySignalTest` | 211 passed, 0 failed (123 before S1's section (h)) |
+| `ProximityInvalidationTest` | 25 passed, 0 failed |
+| `MeshClosestPointTest` | 65 passed, 0 failed |
+| `SDFGeometryTest` | 685 passed, 0 failed |
+| `SurfaceSignalsTest` | 318 passed, 0 failed |
+| `SourceHygieneTest` | 165 passed, 0 failed |
+| `TextureExpressionVMTest` | 846 passed, 0 failed (unmoved) |
+| `ExpressionMemoTest` | 196 passed, 0 failed |
+
+Deviations from §5.6, all in the refusing direction:
+
+- **A DEGENERATE instance refuses the signed query outright** rather than
+  answering without the flag. §5.6 says the flag "is set only for a
+  NON-DEGENERATE operand"; the code goes one step further and refuses,
+  because a zero-radius sphere's or zero-extent box's field is not a
+  distance to any surface a ray can hit. The UNSIGNED query is deliberately
+  unchanged (it still answers, and its answer is still an upper bound), so
+  the two queries disagree about a degenerate instance exactly as they
+  disagree about a sheet.
+- **`DisplacedGeometry` inherits the refusing default** rather than
+  delegating to its baked mesh, since the mesh family is a sheet and refuses
+  anyway; that is one fewer forwarding body to keep honest.
+
+
 ---
 
 ## 9. Test plan

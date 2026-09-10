@@ -617,3 +617,36 @@ bool EllipsoidGeometry::DistanceToSurface( const Point3& ptObject, const Scalar 
 	outDist = d;
 	return true;
 }
+
+//! IGeometry::SignedDistanceLower -- the SIGN exactly, the MAGNITUDE as a
+//! lower bound, and the flag NEVER set.
+//!
+//! The pulled-back point is inside the unit sphere exactly when the
+//! original is inside the ellipsoid, so `|q| - 1` carries the exact sign.
+//! Its magnitude scales into ellipsoid space by a factor between the
+//! smallest and the largest semi-axis, so `x min(a,b,c)` is a LOWER bound
+//! on both sides -- the mirror of the unsigned query's `x max`, and the
+//! reason a composite reaching an ellipsoid can only take the STRICT arm.
+bool EllipsoidGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+
+	const Scalar a = m_vRadius.x, b = m_vRadius.y, c = m_vRadius.z;
+	if( !( a > Scalar( 0 ) ) || !( b > Scalar( 0 ) ) || !( c > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	const Scalar qx = ptObject.x / a, qy = ptObject.y / b, qz = ptObject.z / c;
+	const Scalar rq = std::sqrt( qx*qx + qy*qy + qz*qz );
+	const Scalar sgnUnit = rq - Scalar( 1 );
+
+	const Scalar sigmaMin = std::min( a, std::min( b, c ) );
+	const Scalar sgn = sgnUnit * sigmaMin;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	return true;
+}

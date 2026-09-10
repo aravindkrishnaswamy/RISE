@@ -25,6 +25,7 @@
 #include "../Utilities/Reference.h"
 
 #include <atomic>	// the two one-shot proximity diagnostic latches below
+#include <typeinfo>	// DescribeKind names the geometry's own type
 
 namespace RISE
 {
@@ -313,6 +314,28 @@ namespace RISE
 				const Scalar maxDistWorld,
 				Scalar& outDist
 				) const override;
+
+			//! IObject::SignedDistanceLower -- the transform layer of the
+			//! SIGNED query (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+			//! Same point mapping and same `/sigmaMin` radius conversion as
+			//! the unsigned query, but the magnitude comes back multiplied
+			//! by `sigmaMin` rather than `sigmaMax` -- the lower bound's
+			//! safe direction.  The geometry's exactness flag survives ONLY
+			//! under a similarity transform.
+			virtual bool SignedDistanceLower(
+				const Point3& ptWorld,
+				const Scalar maxDistWorld,
+				Scalar& outSigned,
+				bool& outExact
+				) const override;
+
+			//! IObject::DescribeKind -- the geometry's own type name, which
+			//! is what the proximity refusal diagnostic used to obtain by
+			//! calling `typeid` on it directly.
+			virtual const char* DescribeKind() const override
+			{
+				return pGeometry ? typeid( *pGeometry ).name() : "(no geometry)";
+			}
 
 			//! IObject::NoteDistanceRefusal -- wins the one-shot latch
 			//! exactly once per object.  See `m_distanceRefusalWarned`.

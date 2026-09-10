@@ -742,3 +742,40 @@ bool BoxGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDis
 	outDist = d;
 	return true;
 }
+
+//! IGeometry::SignedDistanceLower -- the SAME field as above, UNCLAMPED.
+//!
+//! The box's signed field is exact on both sides (the comment on
+//! `DistanceToSurface` says so and then throws the inside term away at its
+//! clamp); here the inside term is the whole point, so the flag is set.
+//! A degenerate extent refuses -- see SphereGeometry's twin for why the
+//! boundary arm cannot accept a lower-dimensional operand.
+bool BoxGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !( dWidthOV2 > Scalar( 0 ) ) || !( dHeightOV2 > Scalar( 0 ) ) || !( dDepthOV2 > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	const Scalar qx = std::fabs( ptObject.x ) - dWidthOV2;
+	const Scalar qy = std::fabs( ptObject.y ) - dHeightOV2;
+	const Scalar qz = std::fabs( ptObject.z ) - dDepthOV2;
+
+	const Scalar ox = ( qx > Scalar( 0 ) ) ? qx : Scalar( 0 );
+	const Scalar oy = ( qy > Scalar( 0 ) ) ? qy : Scalar( 0 );
+	const Scalar oz = ( qz > Scalar( 0 ) ) ? qz : Scalar( 0 );
+	const Scalar outside = std::sqrt( ox*ox + oy*oy + oz*oz );
+
+	const Scalar qmax = std::max( qx, std::max( qy, qz ) );
+	const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+
+	const Scalar sgn = outside + inside;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
+}

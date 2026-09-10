@@ -1055,3 +1055,56 @@ bool CylinderGeometry::DistanceToSurface( const Point3& ptObject, const Scalar m
 	outDist = d;
 	return true;
 }
+
+//! IGeometry::SignedDistanceLower -- the CAPPED form's field, UNCLAMPED;
+//! the OPEN form REFUSES.
+//!
+//! That split is not a convenience, it is the sheet rule
+//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).  A capped cylinder is a
+//! closed solid and the (radial, axial) 2D box field is its exact signed
+//! distance on both sides, so the flag is set.  An OPEN tube encloses
+//! nothing: there is no "inside" for a sign to be exact about, and a
+//! family that cannot decide inside from outside must refuse -- the same
+//! refusal a plane, a disk and a mesh give.
+bool CylinderGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !m_bCapped ) {
+		return false;			// a SHEET: no inside to sign
+	}
+	if( !( m_dRadius > Scalar( 0 ) ) || !( m_dAxisMax > m_dAxisMin ) ) {
+		return false;			// degenerate: no interior points near a landing
+	}
+
+	Scalar axial = 0, r1 = 0, r2 = 0;
+	switch( m_chAxis )
+	{
+	case 'x': axial = ptObject.x; r1 = ptObject.y; r2 = ptObject.z; break;
+	case 'y': axial = ptObject.y; r1 = ptObject.x; r2 = ptObject.z; break;
+	case 'z': axial = ptObject.z; r1 = ptObject.x; r2 = ptObject.y; break;
+	default:  return false;		// an axis this class does not model: refuse rather than guess
+	}
+
+	const Scalar rho = std::sqrt( r1*r1 + r2*r2 );
+	const Scalar dRadial = rho - m_dRadius;
+
+	const Scalar centre = ( m_dAxisMin + m_dAxisMax ) * Scalar( 0.5 );
+	const Scalar half   = ( m_dAxisMax - m_dAxisMin ) * Scalar( 0.5 );
+	const Scalar dAxial = std::fabs( axial - centre ) - half;
+
+	const Scalar ox = ( dRadial > Scalar( 0 ) ) ? dRadial : Scalar( 0 );
+	const Scalar oy = ( dAxial  > Scalar( 0 ) ) ? dAxial  : Scalar( 0 );
+	const Scalar outside = std::sqrt( ox*ox + oy*oy );
+	const Scalar qmax = std::max( dRadial, dAxial );
+	const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+
+	const Scalar sgn = outside + inside;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
+}

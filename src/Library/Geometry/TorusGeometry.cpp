@@ -472,3 +472,24 @@ bool TorusGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxD
 	outDist = d;
 	return true;
 }
+
+//! IGeometry::SignedDistanceLower -- the SAME field as above, UNCLAMPED.
+//! Exact on both sides; a degenerate major or minor radius refuses.
+bool TorusGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !( m_dMinorRadius > Scalar( 0 ) ) || !( m_dMajorRadius > Scalar( 0 ) ) ) {
+		return false;
+	}
+	const Scalar rho = std::sqrt( ptObject.x*ptObject.x + ptObject.z*ptObject.z ) - m_dMajorRadius;
+	const Scalar q   = std::sqrt( rho*rho + ptObject.y*ptObject.y );
+	const Scalar sgn = q - m_dMinorRadius;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
+}

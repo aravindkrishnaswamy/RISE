@@ -1385,6 +1385,71 @@ bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld
 	return true;
 }
 
+//! IObject::SignedDistanceLower -- the same transform layer, with the ONE
+//! conversion reversed (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+//!
+//! Point IN through the inverse, radius IN divided by sigmaMin -- both
+//! identical to the unsigned query.  The MAGNITUDE comes back multiplied
+//! by sigmaMin rather than sigmaMax, because this query owes a LOWER
+//! bound: `d_w >= sigmaMin * d_o` is the inequality that direction needs,
+//! and `sigmaMax` here would over-read a depth (an `interior` that paints
+//! where nothing is buried) and would let a CSG descent step overshoot the
+//! zero set.  The SIGN is untouched by a positive scaling, so it survives
+//! the conversion exactly.
+//!
+//! NO RANGE REFUSAL.  Unlike the unsigned query, `maxDistWorld` is an
+//! effort budget that is passed down and never used to reject an answer --
+//! a composite's descent asks its operands about points well outside any
+//! radius, and a range refusal there would break every intersection with a
+//! small subtrahend.
+//!
+//! THE EXACTNESS FLAG SURVIVES ONLY UNDER A SIMILARITY.  `m_sigmaExact`
+//! marks the fast path where `M^T M = s^2 I`, i.e. sigmaMin == sigmaMax ==
+//! s; there `x sigmaMin` IS the isometric-up-to-scale image of the
+//! object-space distance and the magnitude stays exact.  Under anything
+//! anisotropic `x sigmaMin` is a strict under-read attained only along the
+//! bottom singular vector, so the flag is dropped -- which is what makes a
+//! composite reaching a `scale (3, 1, 0.4)` box take the STRICT arm.
+bool Object::SignedDistanceLower( const Point3& ptWorld, const Scalar maxDistWorld,
+	Scalar& outSigned, bool& outExact ) const
+{
+	outExact = false;
+	if( !pGeometry ) {
+		return false;
+	}
+	// A degenerate transform refuses outright -- Matrix4Ops::Inverse
+	// returns its INPUT unchanged for a singular matrix, so the
+	// object-space point would be a silently wrong number.
+	if( !( m_sigmaMin > Scalar( 0 ) ) || !( m_sigmaMax > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	Scalar maxDistObject = maxDistWorld / m_sigmaMin;
+	if( !RISE::IsFiniteDouble( static_cast<double>( maxDistObject ) ) || maxDistObject > RISE_INFINITY ) {
+		maxDistObject = RISE_INFINITY;
+	}
+
+	const Point3 ptObject = Point3Ops::Transform( m_mxInvFinalTrans, ptWorld );
+
+	Scalar fObject = Scalar( 0 );
+	bool   geomExact = false;
+	if( !pGeometry->SignedDistanceLower( ptObject, maxDistObject, fObject, geomExact ) ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( static_cast<double>( fObject ) ) ) {
+		return false;
+	}
+
+	const Scalar fWorld = fObject * m_sigmaMin;
+	if( !RISE::IsFiniteDouble( static_cast<double>( fWorld ) ) ) {
+		return false;
+	}
+
+	outSigned = fWorld;
+	outExact  = geomExact && m_sigmaExact;
+	return true;
+}
+
 void Object::Realize() const
 {
 	if( pGeometry ) {

@@ -55,6 +55,13 @@ namespace RISE
 			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
+			//! IGeometry::SignedDistanceLower -- EXACT on BOTH sides: the
+			//! sphere's signed field `|p| - R` is the true signed distance
+			//! everywhere, so the lower bound IS the distance and the
+			//! exactness flag is set (for a non-degenerate radius).
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- RaySphereIntersection's own gate,
 			//! `NEARZERO * (1 + |origin|_1 + radius)`.  Direction-independent (it
 			//! is a floor on the quadratic's roots, not a plane distance), so

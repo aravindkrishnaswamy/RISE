@@ -238,6 +238,56 @@ namespace RISE
 		//! last + defaulted: no vtable claim on any existing slot.
 		//! \return TRUE exactly once per object, on the first call.
 		virtual bool NoteDistanceRefusal() const { return false; }
+
+		//! SIGNED distance LOWER BOUND from `ptWorld` to this object's
+		//! surface, in WORLD units -- the transform-layer half of
+		//! `IGeometry::SignedDistanceLower`
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).  Read by
+		//! `interior(r)` (which consumes only the negative side) and by a
+		//! CSG composite's composed field.
+		//!
+		//! THE TRANSFORM CONVERSION IS THE MIRROR of the unsigned query's
+		//! and it is not interchangeable with it: the point goes through
+		//! the inverse, the radius in by `/σ_min` as before, but the
+		//! magnitude comes back multiplied by `σ_min` rather than
+		//! `σ_max` -- `d_w >= σ_min · d_o` is the LOWER bound's safe
+		//! direction.  A degenerate transform refuses outright, exactly as
+		//! `DistanceToSurface` does.
+		//!
+		//! `outExact` is forwarded from the geometry ONLY under a
+		//! SIMILARITY (`σ_min == σ_max`, the exact fast path): under an
+		//! anisotropic transform `×σ_min` is a bound, not the distance, so
+		//! the flag must be dropped even for a closed-form family.
+		//!
+		//! DEFAULTED to a refusal, declared LAST + defaulted: no vtable
+		//! claim on any existing slot.
+		//! \return TRUE and writes both outputs, or FALSE with
+		//!         `outSigned` untouched and `outExact` cleared.
+		virtual bool SignedDistanceLower(
+			const Point3& ptWorld,			///< [in] Query point, WORLD space
+			const Scalar maxDistWorld,		///< [in] Effort budget, world units; NOT a range refusal
+			Scalar& outSigned,				///< [out] Signed lower bound (negative inside), world units
+			bool& outExact					///< [out] TRUE when the magnitude is the exact distance
+			) const
+		{
+			(void)ptWorld; (void)maxDistWorld; (void)outSigned;
+			outExact = false;
+			return false;
+		}
+
+		//! A SHORT HUMAN NAME for what kind of object this is, for the
+		//! proximity refusal diagnostic.  `ObjectManager::LogDistanceRefusal`
+		//! used to reach for `typeid(*GetGeometry())`, which answers
+		//! "(no geometry)" for a CSG composite -- the one kind whose
+		//! refusals an author most needs named.  A composite answers its
+		//! OPERATION ("csg subtraction"); an `Object` answers its
+		//! geometry's type name.
+		//!
+		//! Returns a pointer to storage that outlives the call (a literal,
+		//! or `typeid::name()`'s static string).  Defaulted so the test
+		//! tree's IObject stubs and any out-of-tree implementer compile
+		//! unchanged.  Declared last + defaulted: no vtable claim.
+		virtual const char* DescribeKind() const { return "(unknown)"; }
 	};
 }
 

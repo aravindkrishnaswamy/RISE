@@ -68,6 +68,13 @@ namespace RISE
 			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
+			//! IGeometry::SignedDistanceLower -- EXACT on BOTH sides.  The
+			//! box field `|max(q,0)| + min(max(q),0)` is the true signed
+			//! distance inside as well as outside, which is exactly the
+			//! inside term `DistanceToSurface` throws away at its clamp.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- unlike every other primitive the
 			//! box's self-hit gate (DropSelfHitRoot's `onFace`) is a PLANE
 			//! DISTANCE band on the face's own axis,

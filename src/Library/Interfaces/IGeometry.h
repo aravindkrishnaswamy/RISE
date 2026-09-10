@@ -372,6 +372,58 @@ namespace RISE
 			(void)ptObject; (void)maxDistObject; (void)outDist;
 			return false;
 		}
+
+		//! SIGNED distance LOWER BOUND from `ptObject` to this geometry's
+		//! surface, with an EXACT SIGN -- the other direction from
+		//! `DistanceToSurface`, and the capability Phase 3 of the
+		//! cross-object proximity design rests on
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+		//!
+		//! THE CONTRACT, and it is the mirror image of the unsigned one:
+		//!   * SIGN IS EXACT.  `outSigned < 0` iff `ptObject` is strictly
+		//!     inside this geometry's solid, `> 0` iff strictly outside,
+		//!     `0` on the surface.  A family that cannot decide inside
+		//!     from outside -- every SHEET (plane, disk, clipped plane,
+		//!     open cylinder, mesh, patch, hair) -- must REFUSE.
+		//!   * MAGNITUDE IS A LOWER BOUND: `|outSigned| <= ` the true
+		//!     distance to the surface.  That is what makes the CSG
+		//!     descent step `|f|` unable to overshoot the zero set and
+		//!     what makes an `interior` depth an under-read rather than an
+		//!     over-read.  It is the OPPOSITE direction from
+		//!     `DistanceToSurface`'s upper bound, so the two cannot share
+		//!     an implementation and the transform layer converts them by
+		//!     different singular values (`×σ_min` here, `×σ_max` there).
+		//!
+		//! `outExact` says the magnitude IS the distance (not merely a
+		//! bound), which is what a CSG composite's BOUNDARY ARM consumes
+		//! to admit a landing exactly on this operand's surface.  Set it
+		//! ONLY for a closed-form family on a NON-DEGENERATE instance; a
+		//! bounded family (ellipsoid, SDF) must leave it false.  Cleared
+		//! by the refusing default below, so an implementer that forgets
+		//! it cannot leak a stale `true` from the caller's stack.
+		//!
+		//! IT NEVER REFUSES FOR RANGE.  `maxDistObject` bounds EFFORT only
+		//! -- the CSG descent evaluates operands at points well outside
+		//! any query radius, so an implementer that copied
+		//! `DistanceToSurface`'s lower-bound early-out into this method
+		//! would make every intersection with a small subtrahend refuse.
+		//! Only a FAMILY or a DEGENERACY refusal is legitimate here.
+		//!
+		//! DEFAULTED to a refusal, declared LAST: no claim on any existing
+		//! vtable slot, and every sheet family compiles unchanged.
+		//! \return TRUE and writes both outputs, or FALSE with
+		//!         `outSigned` untouched and `outExact` cleared.
+		virtual bool SignedDistanceLower(
+			const Point3& ptObject,			///< [in] Query point, THIS geometry's object space
+			const Scalar maxDistObject,		///< [in] Effort budget in the same space; NOT a range refusal
+			Scalar& outSigned,				///< [out] Signed lower bound (negative inside), same space
+			bool& outExact					///< [out] TRUE when the magnitude is the exact distance
+			) const
+		{
+			(void)ptObject; (void)maxDistObject; (void)outSigned;
+			outExact = false;
+			return false;
+		}
 	};
 }
 

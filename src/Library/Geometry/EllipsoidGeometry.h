@@ -71,6 +71,15 @@ namespace RISE
 			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
+			//! IGeometry::SignedDistanceLower -- the SIGN is exact
+			//! (`sum (p_i/a_i)^2 <= 1` is the exact inside test), the
+			//! MAGNITUDE is a lower bound: the unit-sphere signed distance
+			//! scaled by the SMALLEST semi-axis, the mirror of the
+			//! unsigned query's `x max`.  NEVER exact, so a CSG composite
+			//! reaching an ellipsoid always takes the strict arm.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
 			// Smoothing is a no-op on ellipsoids — there's no high-frequency
 			// detail to attenuate.  Same analytical formulas at any s.
 			bool ComputeAnalyticalDerivatives(
