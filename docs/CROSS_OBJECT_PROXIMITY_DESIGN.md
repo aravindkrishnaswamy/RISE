@@ -2816,18 +2816,30 @@ measured by a harness test against the tracked scene.
   camera frames none of its four cap-column junctions).
   `tests/PavilionColonnadeShowcaseTest.cpp` drives eleven query stations plus
   the per-object refusal / scene-wide cross-check pair against the tracked
-  file: every one matches its predicted value (55/55 checks), including the
+  file: every one matches its predicted value (57/57 checks), including the
   tight CSG boundary-arm band at the 1 cm station (0.487376, inside
   [0.4874, 0.5]) and the phantom-refusal station at the flute mouth (reads
-  exactly 0, where a tolerant landing test would report 0.5).  Both painter
-  stations match the spec as well: S1 reads 0.48 against a predicted 0.5
-  (±0.15, the coarse-footprint band — it sits on the 2 cm ramp, where the
-  probe/control pair's independently-seeded sub-pixel jitter is worth ~0.05 of
-  ratio) and S6 reads a hard 0 against a predicted 0 (±0.08).
+  exactly 0, where a tolerant landing test would report 0.5) — the far
+  stations (S2, S3, S5b, S6) read exactly 0 to 1e-9 and the per-object
+  refusal station S4 to 1e-12, matching `ProximitySignalTest` (l)'s
+  flute-mouth pin. Both painter stations match the spec as well: S1 reads
+  0.48 against a predicted 0.5 (±0.15, the coarse-footprint band — it sits on
+  the 2 cm ramp, where the probe/control pair's independently-seeded
+  sub-pixel jitter is worth ~0.05 of ratio) and S6 reads a hard 0 against a
+  predicted 0 (±0.08); both are now also covered by a raster-index identity
+  guard (200 aperture-jittered samples built out of the raster pixel the
+  readback actually reads, required to all land on the receiver cap) rather
+  than S6 alone.
   `CstDeriveGoldenTest` gains one row (448 MATCH, 0 DRIFT, 0 UNCOVERED). Cost:
-  live-vs-`def dust 0` at 64 spp under `pixelpel_rasterizer` measured
-  1.03×–1.17× across four runs in one session (noisy at this render size;
-  target ≤ 1.15×).
+  live-vs-`def dust 0` at 64 spp under `pixelpel_rasterizer` re-measured
+  2026-09-10 at 1.035×–1.063× mean ratio across seven runs in one session
+  (two of the seven ran alongside a concurrent unrelated render job; their
+  ratios, 1.042× and 1.038×, matched the other five within noise since the
+  gate reads a ratio of two interleaved renders), no individual pair among
+  the twenty-one measured above 1.093×; target ≤ 1.15×. The previously
+  reported 1.03×–1.17× did not reproduce and is superseded by this range.
+  (The showcase's own assertion used to read `ratio <= 1.30` against a
+  `<= 1.15×` message — fixed to enforce the target it states.)
 
   **The "open finding" this entry carried between 2026-09-10 and the same
   day's follow-up was a measurement bug in the showcase's own harness, not an

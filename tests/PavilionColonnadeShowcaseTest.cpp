@@ -164,6 +164,27 @@ static bool IsVisible( IObjectManager* mgr, const Point3& origin, const Point3& 
 	return false;
 }
 
+//! Reverse name lookup for a failure message only -- `IObjectManager` has
+//! no pointer->name accessor, so this enumerates the manager's own named
+//! items (`EnumerateItemNames`) and matches each back through `GetItem`.
+//! O(number of named objects) per call; only ever invoked when an
+//! occlusion Check has already failed, never on the hot/passing path.
+static std::string NameOfObject( IObjectManager* mgr, const IObject* obj )
+{
+	if( !obj ) return "<none>";
+	if( !mgr ) return "<unknown, no manager>";
+	struct NC : public IEnumCallback<const char*>
+	{
+		std::vector<std::string> names;
+		bool operator()( const char* const& s ) override { if( s ) names.push_back( std::string( s ) ); return true; }
+	} nc;
+	mgr->EnumerateItemNames( nc );
+	for( const std::string& n : nc.names ) {
+		if( mgr->GetItem( n.c_str() ) == obj ) return n;
+	}
+	return "<unnamed>";
+}
+
 //======================================================================
 // CST helpers -- the descriptor-driven document surgery
 // docs/PROXIMITY_SHOWCASES.md Sec 0 specifies: the rasterizer chunk is
@@ -579,7 +600,12 @@ int main()
 				Check( v <= 0.5 + 1e-9, "(a) MONEY -- S1 never reads ABOVE 0.5 (over-read would be contact painted where there is none)" );
 				Check( v >= 0.4874 - 1e-4, "(a) ...and never below the one-probe-step floor 0.5 - eps/r = 0.4874" );
 			} else {
-				CheckClose( v, want[i], 0.05, std::string("(a) MONEY -- ") + names[i] + " reads its predicted value" );
+				// S2/S3 are exact 0: a CSG neighbour's FAR stations are
+				// the exclusive `d < r` cutoff, not a boundary landing --
+				// same exactness class as a box/sphere neighbour
+				// (docs/PROXIMITY_SHOWCASES.md Sec 0's "box or sphere
+				// neighbour is exact -> 1e-9").
+				CheckClose( v, want[i], 1e-9, std::string("(a) MONEY -- ") + names[i] + " reads its predicted value" );
 			}
 		}
 	}
@@ -589,7 +615,11 @@ int main()
 		const double r = radius + 0.01;
 		const Point3 world = CapTopWorldPoint( column1, Scalar( 0.0 ), Scalar( r ) );
 		const double v = (double)ProximityAtMgr( mgr, world, cap1, Scalar( 0.02 ) );
-		CheckClose( v, 0.0, 0.05, "(a) MONEY -- S4 (flute mouth, 1 cm outside the tangent face) reads 0 at the scene query, "
+		// S4 is the refusal station: `SurfaceSignalInfo::Proximity`'s
+		// refusal branch returns a bit-exact 0 (NeutralProximity(),
+		// no arithmetic), and `ProximitySignalTest` (l) pins the
+		// equivalent flute-mouth refusal at 1e-12.
+		CheckClose( v, 0.0, 1e-12, "(a) MONEY -- S4 (flute mouth, 1 cm outside the tangent face) reads 0 at the scene query, "
 			"not the phantom 1.00 a tolerant landing test would report" );
 
 		Scalar dObj = Scalar( 0 );
@@ -630,7 +660,9 @@ int main()
 		const double v5b = (double)ProximityAtMgr( mgr, s5b, cap2, Scalar( 0.02 ) );
 		std::cout << "    S5b (column2, flute mouth): proximity(0.02) = " << v5b
 			<< "  world (" << (double)s5b.x << ", " << (double)s5b.y << ", " << (double)s5b.z << ")" << std::endl;
-		CheckClose( v5b, 0.0, 0.05, "(a) MONEY -- S5b reads 0 (the phantom refusal, reproduced on the rotated column)" );
+		// A plain far station like S2/S3/S6: exact 0 by the exclusive
+		// `d < r` cutoff, so 1e-9 rather than the general 0.05 window.
+		CheckClose( v5b, 0.0, 1e-9, "(a) MONEY -- S5b reads 0 (the phantom refusal, reproduced on the rotated column)" );
 		CheckClose( (double)s5b.y, 0.175, 1e-9, "(a) ...and also lands on cap2's top face" );
 	}
 
@@ -638,7 +670,7 @@ int main()
 	{
 		const Point3 world = CapTopWorldPoint( column1, Scalar( 0.315 ), Scalar( 0.0 ) );
 		const double v = (double)ProximityAtMgr( mgr, world, cap1, Scalar( 0.02 ) );
-		CheckClose( v, 0.0, 0.05, "(a) MONEY -- S6 (6.5 cm from the wall) reads 0 -- nothing within 2 cm" );
+		CheckClose( v, 0.0, 1e-9, "(a) MONEY -- S6 (6.5 cm from the wall) reads 0 -- nothing within 2 cm" );
 		std::cout << "    S6: proximity(0.02) = " << v << std::endl;
 
 		// A dense 4x4 cm grid around S6 (checked during investigation,
@@ -690,8 +722,12 @@ int main()
 		// (true, true, false) for a showcase with no refractive object.
 		const IObject* occluder1 = nullptr;
 		const IObject* occluder6 = nullptr;
-		Check( IsVisible( mgr, cam.location, s1World, &occluder1 ), "(b) MONEY -- S1's sightline from the beauty camera is UNOCCLUDED" );
-		Check( IsVisible( mgr, cam.location, s6World, &occluder6 ), "(b) MONEY -- S6's sightline from the beauty camera is UNOCCLUDED" );
+		const bool s1Visible = IsVisible( mgr, cam.location, s1World, &occluder1 );
+		const bool s6Visible = IsVisible( mgr, cam.location, s6World, &occluder6 );
+		Check( s1Visible, "(b) MONEY -- S1's sightline from the beauty camera is UNOCCLUDED" +
+			( s1Visible ? std::string() : ( " -- occluded by \"" + NameOfObject( mgr, occluder1 ) + "\"" ) ) );
+		Check( s6Visible, "(b) MONEY -- S6's sightline from the beauty camera is UNOCCLUDED" +
+			( s6Visible ? std::string() : ( " -- occluded by \"" + NameOfObject( mgr, occluder6 ) + "\"" ) ) );
 
 		const Point2 pix1 = ProjectWorldToScreen( cam, s1World );
 		const Point2 pix6 = ProjectWorldToScreen( cam, s6World );
@@ -706,6 +742,42 @@ int main()
 			"(b) MONEY -- the raster rows are the SCREEN rows flipped through height - y "
 			"(S1 at the vertical centre is its own mirror; S6, off-axis, is not -- the flip "
 			"is load-bearing exactly where it used to be missing)" );
+		Check( x1 == 400,
+			"(b) MONEY -- S1's raster column is exactly 400 (the horizontal centre of an 800-wide "
+			"frame), asserted numerically rather than folded into the row-only check above" );
+
+		// The SAME raster-index identity guard as S6 below, but for S1.
+		// S1 sits at the vertical centre (y1 == 300, its own mirror under
+		// `height - y`), so the flip bug that hid at S1 could not have been
+		// caught by a guard that only cross-checks y -- this one builds its
+		// screen point back OUT OF THE RASTER INDEX `(x1, y1)`, exactly as
+		// `IntegratePixel` does, and requires every one of 200
+		// aperture-jittered samples in that pixel to land on cap1.
+		{
+			ThinLensCamera* sanityCam1 = new ThinLensCamera(
+				cam.location, cam.lookat, cam.up,
+				cam.sensorSize_mm, cam.focalLength_mm, cam.fstop, cam.focusDistance, 1.0,
+				cam.width, cam.height, 1.0, 0.0, 0.0, 0.0,
+				Vector3(0,0,0), Vector2(0,0), 0u, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0 );
+			RandomNumberGenerator sanityRng1( 1u );
+			RuntimeContext sanityRc1( sanityRng1, RuntimeContext::PASS_NORMAL, false );
+			// `IntegratePixel`'s own screen point for raster pixel (x1, y1).
+			const double baseX1 = (double)x1 - 0.5;
+			const double baseY1 = (double)filmH - (double)y1 - 0.5;
+			int nCap1AtS1 = 0;
+			const int kSamplesS1 = 200;
+			for( int i = 0; i < kSamplesS1; ++i ) {
+				const double jx = sanityRng1.CanonicalRandom(), jy = sanityRng1.CanonicalRandom();
+				Ray ray1;
+				sanityCam1->GenerateRay( sanityRc1, ray1, Point2( baseX1 + jx, baseY1 + jy ) );
+				RasterizerState rs0;
+				RayIntersection dbg1( ray1, rs0 );
+				mgr->IntersectRay( dbg1, true, true, false );
+				if( dbg1.pObject == cap1 ) ++nCap1AtS1;
+			}
+			sanityCam1->release();
+			Check( nCap1AtS1 == kSamplesS1, "(b) every one of 200 aperture-jittered samples in S1's pixel lands on cap1" );
+		}
 
 		// Sanity guard against a pixel-picking mistake: 200 REAL
 		// aperture-jittered samples (a fresh ThinLensCamera, the actual
@@ -901,7 +973,7 @@ int main()
 			const double ratio = zeroMean > 0 ? liveMean / zeroMean : -1.0;
 			std::cout << "    COST: live mean=" << liveMean << "s  def-0 mean=" << zeroMean
 				<< "s  ratio=" << ratio << "x (target <= 1.15x)" << std::endl;
-			Check( ratio > 0 && ratio <= 1.30, "(c) live/def-0 ratio is bounded (recorded in the scene header; target <= 1.15x)" );
+			Check( ratio > 0 && ratio <= 1.15, "(c) live/def-0 ratio is bounded (recorded in the scene header; target <= 1.15x)" );
 		}
 	}
 

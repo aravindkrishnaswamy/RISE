@@ -70,7 +70,7 @@ RISE ASCII SCENE 7
 #     S7-refuse column1->DistanceToSurface at r=0.1 (per-object)  --        n/a (S7 has no refusal check; S4 does -- see above)
 #
 #   All eleven query stations plus the two per-object/cross-check assertions are MEASURED and PASS in
-#   tests/PavilionColonnadeShowcaseTest.cpp (55/55 checks, 0 failed), driven against this tracked file.
+#   tests/PavilionColonnadeShowcaseTest.cpp (57/57 checks, 0 failed), driven against this tracked file.
 #
 #   PAINTER STATIONS (probe expr vec3(dust,dust,dust) / control vec3(1,1,1), 512 spp both copies,
 #   oidn_denoise FALSE, shipped camera, cap1 is already a lambertian_material so no rebind is needed).
@@ -81,7 +81,10 @@ RISE ASCII SCENE 7
 #   the framebuffer is indexed top-down.  Both stations are validated against the REAL ThinLensCamera
 #   (chief ray through the computed SCREEN point points at the station to > 0.999 cosine), both are
 #   confirmed unoccluded by a fresh cast per docs/PROXIMITY_SHOWCASES.md Sec 0's single-cast rule, and
-#   200 aperture-jittered camera samples built out of S6's RASTER index all land on cap1:
+#   200 aperture-jittered camera samples built out of EACH station's own RASTER index (S1's guard as
+#   well as S6's, since 2026-09-10 -- S1 sits at the frame's vertical centre, its own mirror under
+#   `height - y`, so a guard that only cross-checked y could not have caught the flip bug below) all
+#   land on cap1:
 #
 #     S1  predicted 0.5 within +-0.15 (coarse footprint, 2.03 mm/px radial)   measured 0.48 (probe=0.0392, control=0.0818)
 #     S6  predicted 0   within +-0.08                                        measured 0.00 (probe=0, control=0.2044)
@@ -101,17 +104,25 @@ RISE ASCII SCENE 7
 #   pairs, every core busy (RISE_OPTIONS_FILE / render_thread_reserve_count 0, the same route ./bench.sh
 #   uses), measured by tests/PavilionColonnadeShowcaseTest.cpp on the gate machine:
 #
-#     pair 0   live 6.538 s   def-0 6.181 s
-#     pair 1   live 3.675 s   def-0 3.362 s
-#     pair 2   live 3.471 s   def-0 3.335 s
-#     live mean       4.561 s
-#     def-0 mean      4.293 s
-#     ratio           1.063x   (target <= 1.15x; the plank's 1.11-1.13x is the reference)
+#     pair 0   live 3.434 s   def-0 3.273 s
+#     pair 1   live 3.388 s   def-0 3.253 s
+#     pair 2   live 3.417 s   def-0 3.290 s
+#     live mean       3.413 s
+#     def-0 mean      3.272 s
+#     ratio           1.043x   (target <= 1.15x; the plank's 1.11-1.13x is the reference)
 #
-#   The ratio is noisy across repeated full-suite runs in this session (0.99x-1.17x observed over four
-#   separate runs) because a bare 64 spp direct-lighting render at this resolution takes only a few
-#   seconds, so OS/thermal scheduling noise is a meaningful fraction of the signal; every run stayed
-#   within shouting distance of the <= 1.15x target and none suggested a real per-sample cost blow-up.
+#   Re-measured 2026-09-10 (the assertion now enforces the target directly, `ratio <= 1.15`, where it
+#   previously read `<= 1.30` against a `<= 1.15x` message -- fixed to match). Seven full-suite runs
+#   in this session, five with nothing else rendering and two with a concurrent unrelated render job
+#   on the same machine (one of those two on this very machine, contending with THIS test's own
+#   renders): mean ratio 1.035x-1.063x, and no single pair among the twenty-one measured exceeded
+#   1.093x. The contended runs' absolute wall-clock times ran up to ~1.75x the uncontended runs' (both
+#   the live and the def-0 render equally slowed by the competing process) but their ratios, 1.042x
+#   and 1.038x, were indistinguishable from the uncontended runs -- expected, since the gate reads a
+#   ratio of two INTERLEAVED renders, which cancels a shared multiplicative slowdown. All seven runs
+#   clear the <= 1.15x target with room to spare. The previous session's reported 0.99x-1.17x range
+#   (and design doc Sec 8.5's 1.03x-1.17x) did not reproduce here and are superseded by this
+#   re-measured range.
 #
 #   WHAT THE PICTURE SHOWS, judged honestly.  The DESIGN INTENT is a band that follows the COMPOSITE's
 #   cross-section, not a plain cylinder: an outer ring hugging the round wall, broken in a wedge ~8 cm

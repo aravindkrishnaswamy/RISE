@@ -36,11 +36,15 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   real cross-section: an outer ring hugging the column wall, broken at each flute mouth where the
   slot cuts clean through, with a per-object refusal at the mouth's tangent face that the scene-wide
   query correctly falls back past (0.075, the floor beneath). `tests/PavilionColonnadeShowcaseTest.cpp`
-  drives all of it against the tracked file; 54/54 checks pass. The header records an open finding:
-  the S6 painter station and the shipped beauty render do not show the query-predicted result once
-  more than one sample per pixel is taken -- a reproducible render-time discrepancy from the signal
-  machinery, not a scene-authoring error, confirmed independently through the CLI and flagged for a
-  dedicated follow-up rather than worked around here.
+  drives all of it against the tracked file; 57/57 checks pass. An earlier revision of the header
+  reported the S6 painter station rendering ~1.03 instead of the predicted 0 and blamed multi-sample
+  evaluation of the signal machinery; that was a harness bug, not an engine defect -- the test
+  projected each station to the SCREEN point the camera consumes (y counting up from the bottom of
+  the frame) and then indexed the top-down framebuffer with it directly, so S6's off-axis pixel was
+  read from the wrong row. The engine was untouched; S6 measures the predicted hard 0 once the
+  harness reads the pixel it actually projects to, and that retraction, plus the fix, is written
+  into the scene's own header; the fuller account is in
+  docs/CROSS_OBJECT_PROXIMITY_DESIGN.md Sec 8.5.
 
 - `EnamelWatch/`: the complete vitreous-enamel watch hero
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
