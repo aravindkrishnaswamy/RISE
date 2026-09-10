@@ -2865,9 +2865,40 @@ measured by a harness test against the tracked scene.
   changed. Recorded rather than deleted because the shape recurs: **a
   projection check that consumes the same coordinate system as the projection
   cannot audit the readback — cast through the index you actually read.**
-- **`tidal_stones`** and **`shelf_bunny`** — specified in
-  `docs/PROXIMITY_SHOWCASES.md` §2 (`interior(r)`, signed half) and §3
-  (mesh-to-mesh and mesh-to-plank contact); not yet built as of this entry.
+- **`shelf_bunny`** (§3 of that doc; `scenes/FeatureBased/Textures/shelf_bunny.RISEscene`,
+  `tests/ShelfBunnyShowcaseTest.cpp`, 63/63 assertions) is the MESH family's
+  showcase: a bunny statue on a shelf against a wall, a small dragon on the
+  bunny's head. The shelf and the bunny each carry their OWN
+  `expression_painter` reading `proximity(0.02)` — the shelf sees the
+  bunny's single contact vertex (measured bit-identical to
+  `proximity_mesh_contact.RISEscene` / `MeshClosestPointTest` (g) at the
+  same 1 mm / 2 mm offsets on the same bunny asset: 0.9519 / 0.9740 / 0.9865
+  / 0.9913 and 0.9037) and the wall's flush back edge (a box neighbour's
+  exact closed form, 0.5 at 1 cm from the joint, measured to 1e-9); the
+  bunny sees the dragon's feet (mesh-on-mesh, the dragon's lowest vertex on
+  the bunny's highest, measured 0.75 exactly 5 mm below the shared vertex,
+  1e-4) and the shelf top under its own base. The one direction-derivation
+  station (M3, 5 cm out) is picked by the test from a four-way sweep of
+  vertex-distance clearance AND camera-sightline occlusion — the naive
+  "furthest candidate" guess is wrong twice over (two of the four
+  candidates, +x and −z, are both within the radius AND camera-occluded
+  by the bunny's own silhouette; +z clears the radius but not the 25 mm
+  margin guard). The two painter stations (M1p, M1q) read
+  0.3195 / 0.8327 against a query of 0.3136 / 0.8385 (both within the
+  ±0.15 noise band the §0 protocol expects at 512 spp), and the third (M3)
+  reads exactly 0 against a query of exactly 0. Cost: 1.04x live vs
+  `def dust 0` in both painter chunks, well under the plank's 1.11–1.13x
+  reference, in the path-traced call-rate regime. One measurement
+  footnote worth recording for the next showcase author: the mesh
+  vertex-to-pixel projection needed to read a painter station's rendered
+  ratio is done by numerically inverting `ThinLensCamera::GenerateRayWithLensSample`
+  (Newton on the 3D direction residual) rather than hand-deriving
+  `filmDistance`/`sx`/`sy` — and the resulting film-space pixel coordinate
+  is VERTICALLY FLIPPED relative to `IRasterImage::GetPEL`'s row-0-at-the-
+  top array order (empirically verified: a higher world point converges to
+  a LARGER film-space `py`, the opposite of the image array's row
+  convention), so a projector must apply `arrayRow = height - filmPy`
+  before indexing a captured buffer.
 
 ---
 

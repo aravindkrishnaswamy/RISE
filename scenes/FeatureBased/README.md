@@ -358,7 +358,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes
 - `Shaders/`: integrated shader, volume, and SSS showcase scenes
-- `Textures/`: the doc-88 procedural-texture arc (Phases 1+2) showcase suite -- four scenes,
+- `Textures/`: the doc-88 procedural-texture arc (Phases 1+2) showcase suite -- five scenes,
   each earning its keep on different mechanisms.
 
   `weathered_workbench.RISEscene` is the composition hero: a wooden workbench whose top
@@ -425,6 +425,26 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   0.55 mm of burial at the tip) measured with the signal itself. That fade
   is what no ambient occlusion could draw, which is why cross-object AO was prototyped
   twice and declined twice before this.
+
+  `shelf_bunny.RISEscene` is the CROSS-OBJECT signal's mesh-to-mesh showcase
+  (docs/PROXIMITY_SHOWCASES.md 3): a bunny statue resting on a shelf against a wall, a
+  small dragon perched on its head. Two `risemesh_geometry` receivers each read their OWN
+  `proximity(0.02)` -- the shelf sees the bunny's single contact vertex (not a ring: the
+  bunny touches at ONE point) and the wall's flush back edge (a box neighbour's exact
+  closed-form 2 cm band, pinned at 0.5 exactly 1 cm from the joint); the bunny sees the
+  dragon's feet (mesh-on-mesh, pinned at the closed-form 0.75 five millimetres below the
+  shared vertex) and the shelf top under its own base. The dragon and the wall carry plain
+  Lambertians and read no signal. Every query station is re-derived from the `.risemesh`
+  vertex arrays rather than the scene file's own literals (`tests/ShelfBunnyShowcaseTest.cpp`,
+  63/63 assertions), including the ONE painter-station direction (`M3`, 5 cm out) that a
+  four-way sweep of camera sightline + vertex-distance clearance picks as the sole
+  unoccluded, un-buried candidate. The beauty crop shows a warm (not merely dark) vignette
+  on the one visible arc around the bunny's foot -- the rest of the 2 cm radius is hidden
+  behind the foot's own silhouette from both the camera and the key, which the header
+  states as a real limitation of this camera angle rather than a failure of the signal.
+  Cost: 1.04x live-vs-`def dust 0`, well under the plank's 1.11-1.13x reference (a
+  path-traced scene's per-sample call rate is not comparable to the `pixelpel_rasterizer`
+  showcases above).
 - `VCM/`: vertex-connection-and-merging showpieces.
   `vcm_sdf_luminaire_jellyfish.RISEscene` is held as a transport torture test rather
   than a picture: emissive SDF geometry inside a dielectric bell inside a scattering
