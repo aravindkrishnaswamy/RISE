@@ -21,6 +21,31 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `BDPT/`: large BDPT showpieces and transport stress scenes
 - `Caustics/`: visually rich caustic showcases
 - `Combined/`: scenes that intentionally exercise several subsystems together
+
+  `pavilion_colonnade.RISEscene` is the Phase 3 CSG-neighbour showcase for cross-object
+  `proximity(r)` (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md Sec 8, docs/PROXIMITY_SHOWCASES.md Sec 1) --
+  a foot study of the fluted column that `glass_pavilion`'s own camera never frames (none of its
+  four cap-column junctions land in shot at 85 mm f/1.4 focused at 7 m). Built from
+  `glass_pavilion`'s own chunks (the same fluted-cylinder CSG columns, floor, ceiling, back wall and
+  two omni lights; `glass_pavilion` itself is not edited) with a new camera reframed on cap1's foot
+  and a new receiver material, `marble_cap`, whose reflectance is an `expression_painter` mixing the
+  pavilion's own white marble toward a dust tint on `proximity(0.02)`. Rendered under
+  `pixelpel_rasterizer` with `DefaultDirectLighting` (direct-only, so a cap pixel's probe/control
+  ratio is exactly its albedo -- no black-out needed, unlike the path-traced showcases). Eleven
+  query stations plus two per-object/cross-check assertions confirm the signal walks the composite's
+  real cross-section: an outer ring hugging the column wall, broken at each flute mouth where the
+  slot cuts clean through, with a per-object refusal at the mouth's tangent face that the scene-wide
+  query correctly falls back past (0.075, the floor beneath). `tests/PavilionColonnadeShowcaseTest.cpp`
+  drives all of it against the tracked file; 57/57 checks pass. An earlier revision of the header
+  reported the S6 painter station rendering ~1.03 instead of the predicted 0 and blamed multi-sample
+  evaluation of the signal machinery; that was a harness bug, not an engine defect -- the test
+  projected each station to the SCREEN point the camera consumes (y counting up from the bottom of
+  the frame) and then indexed the top-down framebuffer with it directly, so S6's off-axis pixel was
+  read from the wrong row. The engine was untouched; S6 measures the predicted hard 0 once the
+  harness reads the pixel it actually projects to, and that retraction, plus the fix, is written
+  into the scene's own header; the fuller account is in
+  docs/CROSS_OBJECT_PROXIMITY_DESIGN.md Sec 8.5.
+
 - `EnamelWatch/`: the complete vitreous-enamel watch hero
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
 - `GeometrySignals/`: the canonical showcase for the geometry-derived shading signals
@@ -333,7 +358,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes
 - `Shaders/`: integrated shader, volume, and SSS showcase scenes
-- `Textures/`: the doc-88 procedural-texture arc (Phases 1+2) showcase suite -- four scenes,
+- `Textures/`: the doc-88 procedural-texture arc (Phases 1+2) showcase suite -- six scenes,
   each earning its keep on different mechanisms.
 
   `weathered_workbench.RISEscene` is the composition hero: a wooden workbench whose top
@@ -400,6 +425,26 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   0.55 mm of burial at the tip) measured with the signal itself. That fade
   is what no ambient occlusion could draw, which is why cross-object AO was prototyped
   twice and declined twice before this.
+
+  `shelf_bunny.RISEscene` is the CROSS-OBJECT signal's mesh-to-mesh showcase
+  (docs/PROXIMITY_SHOWCASES.md 3): a bunny statue resting on a shelf against a wall, a
+  small dragon perched on its head. Two `risemesh_geometry` receivers each read their OWN
+  `proximity(0.02)` -- the shelf sees the bunny's single contact vertex (not a ring: the
+  bunny touches at ONE point) and the wall's flush back edge (a box neighbour's exact
+  closed-form 2 cm band, pinned at 0.5 exactly 1 cm from the joint); the bunny sees the
+  dragon's feet (mesh-on-mesh, pinned at the closed-form 0.75 five millimetres below the
+  shared vertex) and the shelf top under its own base. The dragon and the wall carry plain
+  Lambertians and read no signal. Every query station is re-derived from the `.risemesh`
+  vertex arrays rather than the scene file's own literals (`tests/ShelfBunnyShowcaseTest.cpp`,
+  63/63 assertions), including the ONE painter-station direction (`M3`, 5 cm out) that a
+  four-way sweep of camera sightline + vertex-distance clearance picks as the sole
+  unoccluded, un-buried candidate. The beauty crop shows a warm (not merely dark) vignette
+  on the one visible arc around the bunny's foot -- the rest of the 2 cm radius is hidden
+  behind the foot's own silhouette from both the camera and the key, which the header
+  states as a real limitation of this camera angle rather than a failure of the signal.
+  Cost: 1.04x live-vs-`def dust 0`, well under the plank's 1.11-1.13x reference (a
+  path-traced scene's per-sample call rate is not comparable to the `pixelpel_rasterizer`
+  showcases above).
 
   `tidal_stones.RISEscene` is the showcase for `interior(r)`, the SIGNED half of the
   cross-object channel `proximity(r)` shares: five stones (a sphere, a yawed ellipsoid,

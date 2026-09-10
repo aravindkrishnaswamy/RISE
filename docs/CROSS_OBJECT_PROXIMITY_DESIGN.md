@@ -2805,11 +2805,100 @@ ones renumbered.
 
 ### 8.5 Showcases
 
-Full spec: `docs/PROXIMITY_SHOWCASES.md`.  Three composed beauty scenes, each with
-stations predicted from the geometry before the scene existed, measured against
-the tracked file by a dedicated harness test, and recorded in the scene's own
-header.
+Phase 1 shipped two showcases (`plank_closeup`, `weathered_workbench`); Phases 2
+and 3 shipped fully tested machinery with no beauty scene an author could open.
+`docs/PROXIMITY_SHOWCASES.md` specifies three scenes that fill that gap, each
+with stations predicted from the geometry before the scene was composed and
+measured by a harness test against the tracked scene.
 
+- **`pavilion_colonnade`** (Phase 3, CSG neighbour) — contact dust at the foot
+  of a fluted column, built from `glass_pavilion`'s own chunks (that scene's
+  camera frames none of its four cap-column junctions).
+  `tests/PavilionColonnadeShowcaseTest.cpp` drives eleven query stations plus
+  the per-object refusal / scene-wide cross-check pair against the tracked
+  file: every one matches its predicted value (57/57 checks), including the
+  tight CSG boundary-arm band at the 1 cm station (0.487376, inside
+  [0.4874, 0.5]) and the phantom-refusal station at the flute mouth (reads
+  exactly 0, where a tolerant landing test would report 0.5) — the far
+  stations (S2, S3, S5b, S6) read exactly 0 to 1e-9 and the per-object
+  refusal station S4 to 1e-12, matching `ProximitySignalTest` (l)'s
+  flute-mouth pin. Both painter stations match the spec as well: S1 reads
+  0.48 against a predicted 0.5 (±0.15, the coarse-footprint band — it sits on
+  the 2 cm ramp, where the probe/control pair's independently-seeded
+  sub-pixel jitter is worth ~0.05 of ratio) and S6 reads a hard 0 against a
+  predicted 0 (±0.08); both are now also covered by a raster-index identity
+  guard (200 aperture-jittered samples built out of the raster pixel the
+  readback actually reads, required to all land on the receiver cap) rather
+  than S6 alone.
+  `CstDeriveGoldenTest` gains one row (448 MATCH, 0 DRIFT, 0 UNCOVERED). Cost:
+  live-vs-`def dust 0` at 64 spp under `pixelpel_rasterizer` re-measured
+  2026-09-10 at 1.035×–1.063× mean ratio across seven runs in one session
+  (two of the seven ran alongside a concurrent unrelated render job; their
+  ratios, 1.042× and 1.038×, matched the other five within noise since the
+  gate reads a ratio of two interleaved renders), no individual pair among
+  the twenty-one measured above 1.093×; target ≤ 1.15×. The previously
+  reported 1.03×–1.17× did not reproduce and is superseded by this range.
+  (The showcase's own assertion used to read `ratio <= 1.30` against a
+  `<= 1.15×` message — fixed to enforce the target it states.)
+
+  **The "open finding" this entry carried between 2026-09-10 and the same
+  day's follow-up was a measurement bug in the showcase's own harness, not an
+  engine defect.** It claimed S6 rendered at ~1.03 instead of 0, that the
+  beauty render showed no ring, and that both were a defect in multi-sample
+  evaluation of the signal. All three were false. The test projected each
+  station to the SCREEN point the camera consumes — whose y counts up from the
+  bottom of the frame, because `PixelBasedPelRasterizer::IntegratePixel` hands
+  the camera `height - y` for raster row `y` — and then indexed the top-down
+  framebuffer with it. S1 hid it (y = 300.0 on a 600-row film is its own
+  mirror; that is where the `lookat` station sits by construction); S6, at
+  y = 407.1, was read at row 407 instead of 193, a floor pixel that carries no
+  cap contribution, so probe and control agree there whatever the signal says.
+  The 200-cast sanity guard missed it because it built its rays from the same
+  screen point, validating a pixel the readback never touched. On
+  re-investigation the sweep did not reproduce: the mirrored pixel reads a flat
+  ~1.02 at 1, 2, 8 and 64 spp alike and the true pixel reads exactly 0 at every
+  one of them, and an engine-side trace of every `proximity()` call on the cap
+  top during a 2-spp render found the field correct throughout (1 at the wall,
+  hard 0 beyond 2 cm, one consistent `pSelf`, no memo hit in the band). The fix
+  is `ScreenToRaster` in the test plus a sanity cast that builds its screen
+  point back out of the raster index the readback uses; no engine source
+  changed. Recorded rather than deleted because the shape recurs: **a
+  projection check that consumes the same coordinate system as the projection
+  cannot audit the readback — cast through the index you actually read.**
+- **`shelf_bunny`** (§3 of that doc; `scenes/FeatureBased/Textures/shelf_bunny.RISEscene`,
+  `tests/ShelfBunnyShowcaseTest.cpp`, 63/63 assertions) is the MESH family's
+  showcase: a bunny statue on a shelf against a wall, a small dragon on the
+  bunny's head. The shelf and the bunny each carry their OWN
+  `expression_painter` reading `proximity(0.02)` — the shelf sees the
+  bunny's single contact vertex (measured bit-identical to
+  `proximity_mesh_contact.RISEscene` / `MeshClosestPointTest` (g) at the
+  same 1 mm / 2 mm offsets on the same bunny asset: 0.9519 / 0.9740 / 0.9865
+  / 0.9913 and 0.9037) and the wall's flush back edge (a box neighbour's
+  exact closed form, 0.5 at 1 cm from the joint, measured to 1e-9); the
+  bunny sees the dragon's feet (mesh-on-mesh, the dragon's lowest vertex on
+  the bunny's highest, measured 0.75 exactly 5 mm below the shared vertex,
+  1e-4) and the shelf top under its own base. The one direction-derivation
+  station (M3, 5 cm out) is picked by the test from a four-way sweep of
+  vertex-distance clearance AND camera-sightline occlusion — the naive
+  "furthest candidate" guess is wrong twice over (two of the four
+  candidates, +x and −z, are both within the radius AND camera-occluded
+  by the bunny's own silhouette; +z clears the radius but not the 25 mm
+  margin guard). The two painter stations (M1p, M1q) read
+  0.3195 / 0.8327 against a query of 0.3136 / 0.8385 (both within the
+  ±0.15 noise band the §0 protocol expects at 512 spp), and the third (M3)
+  reads exactly 0 against a query of exactly 0. Cost: 1.04x live vs
+  `def dust 0` in both painter chunks, well under the plank's 1.11–1.13x
+  reference, in the path-traced call-rate regime. One measurement
+  footnote worth recording for the next showcase author: the mesh
+  vertex-to-pixel projection needed to read a painter station's rendered
+  ratio is done by numerically inverting `ThinLensCamera::GenerateRayWithLensSample`
+  (Newton on the 3D direction residual) rather than hand-deriving
+  `filmDistance`/`sx`/`sy` — and the resulting film-space pixel coordinate
+  is VERTICALLY FLIPPED relative to `IRasterImage::GetPEL`'s row-0-at-the-
+  top array order (empirically verified: a higher world point converges to
+  a LARGER film-space `py`, the opposite of the image array's row
+  convention), so a projector must apply `arrayRow = height - filmPy`
+  before indexing a captured buffer.
 - **`tidal_stones`** (`scenes/FeatureBased/Textures/tidal_stones.RISEscene`,
   `tests/TidalStonesShowcaseTest.cpp`) is the `interior(r)` showcase — the SIGNED
   half of the channel `proximity(r)` shares.  Five stones sit in a water box whose

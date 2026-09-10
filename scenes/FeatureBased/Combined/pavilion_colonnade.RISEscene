@@ -1,0 +1,562 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pavilion_colonnade.RISEscene                                                            #
+#   Description:    Phase 3 CSG-neighbour showcase for `proximity(r)` (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md#
+#                   Sec 8, docs/PROXIMITY_SHOWCASES.md Sec 1): a foot study of the fluted column that       #
+#                   glass_pavilion's own camera never frames.  Built from glass_pavilion's chunks;          #
+#                   glass_pavilion itself is not edited.                                                    #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-09-10                                                                               #
+#                                                                                                           #
+#############################################################################################################
+#
+#   WHY A NEW SCENE.  glass_pavilion's shipped camera (85 mm at (-3.5, 2, 6), f/1.4 focused at 7 m) frames
+#   NONE of the four cap-column junctions -- cap1/2/3 fall outside even its 14.8 deg half-diagonal and cap4
+#   at 10.6 m is defocused to 5.6 px while its 2 cm contact ring images at 3.6 px, under a pixel at 10 deg
+#   grazing.  The pavilion keeps its subject (the central vase + glass sphere) and its `capped TRUE` pin
+#   (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md Sec 8, S6: an open cylinder is a SHEET, refuses the signed query,
+#   and would make every fluted column stop answering proximity() for every neighbour in the scene); this
+#   scene gets the signal a foot study of its own.
+#
+#   WHAT IS CARRIED OVER, verbatim.  The same colcylgeom / flutegeom / capgeom, all four fluted columns at
+#   (+-2.5, ., +-2.5) with the pavilion's own orientations, the floor, the ceiling, the back wall (framing
+#   and silhouette only) and the two omni lights.  Every carried object keeps the pavilion's material
+#   verbatim, painters included: `marble_col` over `pnt_marble_white` on the columns and ceiling,
+#   `marble_dark` over `pnt_marble_dark` on the back wall, `polished_floor` over the `pnt_floor_checker`
+#   pair on the floor.  Only the four caps are re-pointed, to the new `marble_cap`.
+#
+#   WHAT IS DROPPED.  The pavilion's `floor_shader` line on the `floor` object (DefaultPathTracing) --
+#   dropped so every surface in this scene shades under the scene-wide default `global` standard_shader
+#   (DefaultDirectLighting), and with it the now-unreferenced `floor_shader` / `glass_shader` standard_shader
+#   chunks.  `global` STAYS: nothing in this file names it by chunk reference, but `pixelpel_rasterizer`'s
+#   `defaultshader` resolves that name (RasterizerDefaults.h: defaultShader = "global"), and that is what
+#   makes "direct-only, scene-wide" a true claim -- every cap pixel takes no indirect light at all, so its
+#   ratio under the probe/control divide is EXACTLY the albedo, which is why Sec 0 of the spec exempts this
+#   showcase from the black-out every path-traced showcase needs.  NO PROP IS RELOCATED INTO THE FRAME: the
+#   pavilion's vase (`vasegeom`, an unscaled Bezier teapot 6.5 world units wide -- `AddBezierPatchGeometry`
+#   recentres, never normalises), its pedestal, the glass sphere and the four `cap_top*` capitals at y = 4.9
+#   are all NOT carried over.  This is a foot study of marble, floor checker and the columns behind; nothing
+#   else is in frame.
+#
+#   CAMERA, reviewed against the spec's framing rule (docs/PROXIMITY_SHOWCASES.md Sec 0):
+#     camera -> S1 horizontal 1.100 m, dy 0.770 m -> elevation 35.0 deg
+#     distance to S1 (the lookat)          1.343 m
+#     2 cm ring image size (thin-lens f/(d-f), 22.22 px/mm on the 36mm/800px sensor):
+#         tangential 17.2 px, radial 9.9 px (radial = tangential * sin(elevation))
+#     DoF at f/16, 1-px (0.045 mm) circle of confusion:  [0.979, 2.140] m
+#         -- holds S1 (1.343 m), S7 (1.377 m), S6 (1.578 m) and the cap's far corner (1.891 m)
+#     pixel footprint at S1: 1.16 mm tangential, 2.03 mm radial (= tangential / sin(35 deg))
+#         -- about 0.10 of the 2 cm ramp's signal per pixel: the query station adjudicates S1's exact
+#            value, and the painter station is read against the coarse-footprint wide band (+-0.15)
+#     camera is 1.341 m from column1's axis, above the floor, outside cap1's footprint (no self-intersect)
+#
+#   STATIONS, PREDICTED (docs/PROXIMITY_SHOWCASES.md Sec 1) vs MEASURED (tests/PavilionColonnadeShowcaseTest.cpp,
+#   driven against THIS tracked file through the normal CST path -- see that test for the exact derivation
+#   of every world point from this file's own chunks):
+#
+#     station   description                                    predicted   measured
+#     S1        cap1 top, 20 deg azimuth, 1 cm outside wall     0.5         0.487376 (tight CSG band, <= 0.5, >= 0.4874)
+#     S2        cap1 top, 20 deg azimuth, 2 cm outside wall     0           0
+#     S3        cap1 top, 20 deg azimuth, 4 cm outside wall     0           0
+#     S4        cap1 top, flute mouth +z, 1 cm out (scene r=.02) 0          0
+#     S4-obj    column1->DistanceToSurface at r=0.1              REFUSES    REFUSES (confirmed)
+#     S4-cross  scene-wide NearestOtherSurface at r=0.1 (floor)  0.075      0.075 (to 1e-9)
+#     S5a       column2 local (0.088925,-2.325,0.244320)->cap2   0.5        0.487376, world (2.735640, 0.175, 2.609881)
+#     S5b       column2 local (0,-2.325,0.26)->cap2               0         0, world (2.683848, 0.175, 2.683848)
+#     S6        cap1 top, 6.5 cm from wall along local +x        0          0 (and flat 0 over a dense 4x4 cm grid)
+#     S7        cap1 top inside the slot mouth, local(0.03,y,0.2) 0.5       0.5 (tight CSG band, boundary arm on the box face)
+#     S7-refuse column1->DistanceToSurface at r=0.1 (per-object)  --        n/a (S7 has no refusal check; S4 does -- see above)
+#
+#   All eleven query stations plus the two per-object/cross-check assertions are MEASURED and PASS in
+#   tests/PavilionColonnadeShowcaseTest.cpp (57/57 checks, 0 failed), driven against this tracked file.
+#
+#   PAINTER STATIONS (probe expr vec3(dust,dust,dust) / control vec3(1,1,1), 512 spp both copies,
+#   oidn_denoise FALSE, shipped camera, cap1 is already a lambertian_material so no rebind is needed).
+#   S1 projects to SCREEN point (400.0, 300.0) -> RASTER pixel (400, 300); S6 to screen (546.7, 407.1)
+#   -> raster pixel (547, 193).  The two coordinate systems are NOT the same one and the flip between
+#   them is `height - y`: every RISE camera consumes a screen y counted from the BOTTOM of the frame
+#   (PixelBasedPelRasterizer::IntegratePixel hands the camera `height - y` for raster row `y`), while
+#   the framebuffer is indexed top-down.  Both stations are validated against the REAL ThinLensCamera
+#   (chief ray through the computed SCREEN point points at the station to > 0.999 cosine), both are
+#   confirmed unoccluded by a fresh cast per docs/PROXIMITY_SHOWCASES.md Sec 0's single-cast rule, and
+#   200 aperture-jittered camera samples built out of EACH station's own RASTER index (S1's guard as
+#   well as S6's, since 2026-09-10 -- S1 sits at the frame's vertical centre, its own mirror under
+#   `height - y`, so a guard that only cross-checked y could not have caught the flip bug below) all
+#   land on cap1:
+#
+#     S1  predicted 0.5 within +-0.15 (coarse footprint, 2.03 mm/px radial)   measured 0.48 (probe=0.0392, control=0.0818)
+#     S6  predicted 0   within +-0.08                                        measured 0.00 (probe=0, control=0.2044)
+#     S7  QUERY-ONLY: both pavilion lights (ceiling_light at (0,4.5,0), fill_light at (3,3,4)) are behind
+#         the flute wall from a point inside the mouth, so the control pixel is exactly black -- no ratio
+#         is taken there.
+#
+#   S1's ratio is the one number here that moves run to run (0.48-0.55 observed).  It sits on the 2 cm
+#   ramp, where `dust` changes about 0.10 per pixel, and the probe and the control are SEPARATE renders
+#   whose sub-pixel jitter is drawn from a wall-clock-seeded RNG -- so half a pixel of disagreement
+#   between the pair is worth ~0.05 of ratio.  That is what the wide +-0.15 band is for.  S6 does not
+#   move at all: `dust` is flat 0 over its whole neighbourhood, so the probe pixel is exactly black.
+#
+#   COST.  Live vs `def dust 0` at 64 spp under `pixelpel_rasterizer` (about one painter evaluation per
+#   camera sample -- NOT comparable to the path-traced showcases' regime, whose per-hit call rate is many
+#   times higher; docs/PROXIMITY_SHOWCASES.md Sec 0 and Sec 8.5 say so).  2 warm-ups then 3 interleaved
+#   pairs, every core busy (RISE_OPTIONS_FILE / render_thread_reserve_count 0, the same route ./bench.sh
+#   uses), measured by tests/PavilionColonnadeShowcaseTest.cpp on the gate machine:
+#
+#     pair 0   live 3.434 s   def-0 3.273 s
+#     pair 1   live 3.388 s   def-0 3.253 s
+#     pair 2   live 3.417 s   def-0 3.290 s
+#     live mean       3.413 s
+#     def-0 mean      3.272 s
+#     ratio           1.043x   (target <= 1.15x; the plank's 1.11-1.13x is the reference)
+#
+#   Re-measured 2026-09-10 (the assertion now enforces the target directly, `ratio <= 1.15`, where it
+#   previously read `<= 1.30` against a `<= 1.15x` message -- fixed to match). Seven full-suite runs
+#   in this session, five with nothing else rendering and two with a concurrent unrelated render job
+#   on the same machine (one of those two on this very machine, contending with THIS test's own
+#   renders): mean ratio 1.035x-1.063x, and no single pair among the twenty-one measured exceeded
+#   1.093x. The contended runs' absolute wall-clock times ran up to ~1.75x the uncontended runs' (both
+#   the live and the def-0 render equally slowed by the competing process) but their ratios, 1.042x
+#   and 1.038x, were indistinguishable from the uncontended runs -- expected, since the gate reads a
+#   ratio of two INTERLEAVED renders, which cancels a shared multiplicative slowdown. All seven runs
+#   clear the <= 1.15x target with room to spare. The previous session's reported 0.99x-1.17x range
+#   (and design doc Sec 8.5's 1.03x-1.17x) did not reproduce here and are superseded by this
+#   re-measured range.
+#
+#   WHAT THE PICTURE SHOWS, judged honestly.  The DESIGN INTENT is a band that follows the COMPOSITE's
+#   cross-section, not a plain cylinder: an outer ring hugging the round wall, broken in a wedge ~8 cm
+#   wide at each of the two flute mouths (`flutegeom` is 0.5 deep -- the column's own diameter -- so the
+#   slot cuts clean through; from a point 1 cm outside a mouth the nearest REAL surface is the
+#   slot-wall/cylinder corner, 4.21 cm away, not the phantom 1 cm a tangent-face landing would report),
+#   and two thin bands INSIDE each mouth hugging the slot walls.  The QUERY STATIONS above confirm this
+#   field is exactly what the design predicts, everywhere it was sampled, including a dense grid with no
+#   gradient 6.5 cm from the wall.  THE SHIPPED 64 spp RENDER SHOWS EXACTLY THAT BAND: a soft crescent
+#   of grime hugging the column wall on the cap top, following the composite's curve and interrupted at
+#   the flute mouth, with the rest of the cap face clean marble.  It is a subtle read at this exposure --
+#   the contact shadow of the two omni lights falls in the same place -- so the honest way to see the
+#   signal alone is the A/B the cost gate already renders: `def dust 0` on the receiver's
+#   expression_painter removes the crescent completely and leaves the shadow, and swapping the receiver's
+#   `expr` to `vec3(dust,dust,dust)` shows the band on its own.  (An earlier revision of this header
+#   claimed the render showed no ring; that claim came from the same measurement mistake as the S6
+#   deviation below -- see (1).)  The scene inherits the pavilion's pre-existing interpenetrations (the
+#   cap sits 7.5 cm into the floor box, the column base inside both); at r = 0.02 none of that reaches a
+#   station, and `interior` is not exercised by this showcase.
+#
+#   DEVIATIONS FROM docs/PROXIMITY_SHOWCASES.md Sec 1.
+#
+#   (1) NONE ANY MORE -- and the record of the one that was claimed here, because it was wrong in an
+#   instructive way.  The first revision of this scene (2026-09-10) reported that the S6 painter station
+#   measured a ratio of ~1.03 instead of the spec's 0, that the beauty render showed no ring, and that
+#   both were a defect in the newly-landed per-hit `proximity()` machinery once a pixel took more than
+#   one sample.  ALL THREE CLAIMS WERE FALSE.  The bug was in this showcase's own test harness,
+#   tests/PavilionColonnadeShowcaseTest.cpp: `ProjectWorldToPixel` (now `ProjectWorldToScreen`) returns
+#   the SCREEN point the camera consumes, whose y counts up from the BOTTOM of the frame -- the
+#   rasterizer hands the camera `height - y` for raster row `y`
+#   (PixelBasedPelRasterizer::IntegratePixel) -- and the readback then indexed the top-down framebuffer
+#   with it directly.  S1 hid the mistake because it lands at y = 300.0 on a 600-row film and
+#   600 - 300 == 300: the flip is the identity at the vertical centre, which is exactly where the
+#   `lookat` station sits.  S6, off-axis at y = 407.1, was read at row 407 instead of 193 -- a floor
+#   pixel carrying no cap contribution at all, so the probe and control renders agree there and the
+#   ratio reads ~1 whatever the signal says.  The 200-cast sanity check did not catch it because it
+#   built its rays from the SCREEN point too, so it validated a pixel the readback never touched.
+#   The "1 spp is correct, >= 2 spp is wrong" sweep did not reproduce on re-investigation: at the
+#   MIRRORED pixel the ratio is a flat ~1.02 at 1, 2, 8 and 64 spp alike, and at the TRUE pixel it is
+#   exactly 0 at every one of them.  An engine-side trace of every `proximity()` evaluation on the cap
+#   top during a 2 spp render found the field correct throughout -- 1 at the wall, falling to a hard 0
+#   beyond 2 cm, with one consistent `pSelf` -- and no memo hit anywhere in the band.  No engine source
+#   was changed; the fix is `ScreenToRaster` in the test (which also rounds to nearest on BOTH axes
+#   rather than flooring, the other half-pixel this used to get wrong), the sanity cast now builds its
+#   screen point back OUT of the raster index the readback uses, and S6 asserts the spec's 0 within
+#   0.08.  The lesson worth keeping: a projection check that consumes the same coordinate system as the
+#   projection cannot audit the readback -- cast through the index you actually read.
+#
+#   (2) No other deviation: the camera, receiver material, dropped chunks, and every other station match
+#   the spec exactly as specified.
+#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		5
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pavilion_colonnade
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera -- reframed on cap1's foot (see header arithmetic).
+##################################################
+
+film
+{
+	width			800
+	height			600
+}
+
+thinlens_camera
+{
+	name			beauty_cam
+	location		-2.5    0.9452  3.8407
+	lookat			-2.4111 0.175   2.7443      # the S1 station
+	up				0 1 0
+	sensor_size		36
+	focal_length	50
+	fstop			16                          # DoF [0.979, 2.140] m holds the whole cap
+	focus_distance	1.343
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_marble_white
+	color				0.92 0.9 0.88
+}
+
+uniformcolor_painter
+{
+	name				pnt_marble_dark
+	color				0.3 0.28 0.26
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_light
+	color				0.88 0.86 0.82
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_dark
+	color				0.25 0.23 0.22
+}
+
+checker_painter
+{
+	name				pnt_floor_checker
+	colora				pnt_floor_light
+	colorb				pnt_floor_dark
+	size				0.8
+}
+
+# The new receiver's signal painter (docs/PROXIMITY_SHOWCASES.md Sec 1).  `dust` is the raw
+# proximity(0.02) signal; `white` is the pavilion marble's own reflectance triple, copied verbatim
+# so the un-dusted marble reads identically to the columns and ceiling it sits beside.
+expression_painter
+{
+	name				pnt_cap_dust
+	def					dust proximity(0.02)
+	def					white vec3(0.92, 0.9, 0.88)
+	expr				mix(white, vec3(0.42, 0.36, 0.30), clamp(dust*0.85 + 0.08*fbm(P*180.0, 3, 0.5, 2.0), 0, 1))
+}
+
+##################################################
+# Materials
+##################################################
+
+# Polished marble floor
+polished_material
+{
+	name				polished_floor
+	reflectance			pnt_floor_checker
+	tau					1.0
+	ior					1.5
+	scattering			600.0
+}
+
+# Column marble
+lambertian_material
+{
+	name				marble_col
+	reflectance			pnt_marble_white
+}
+
+# Darker marble for walls
+lambertian_material
+{
+	name				marble_dark
+	reflectance			pnt_marble_dark
+}
+
+# NEW receiver material: the column capitals, carrying the contact-dust signal.
+lambertian_material
+{
+	name				marble_cap
+	reflectance			pnt_cap_dust
+}
+
+##################################################
+# Geometries
+##################################################
+
+# Floor
+box_geometry
+{
+	name				floorgeom
+	width				10.0
+	height				0.2
+	depth				10.0
+}
+
+# Ceiling
+clippedplane_geometry
+{
+	name				ceilgeom
+	pta					-5.0 0.0 -5.0
+	ptb					-5.0 0.0 5.0
+	ptc					5.0 0.0 5.0
+	ptd					5.0 0.0 -5.0
+}
+
+# Column cylinder.
+#
+# `capped TRUE` is the parser DEFAULT and is spelled out here as a PIN
+# (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md Sec 8, Phase 3): the fluted columns are
+# CSG subtractions, and a composite's cross-object distance query composes its
+# operands' SIGNED fields -- which an OPEN cylinder cannot supply, because a
+# tube encloses nothing and has no inside for a sign to be exact about.  Flip
+# this to FALSE and every column silently stops answering `proximity()` for
+# every neighbour in the scene.
+cylinder_geometry
+{
+	name				colcylgeom
+	axis				y
+	radius				0.25
+	height				5.0
+	capped				TRUE
+}
+
+# Fluting cutout (thin boxes to subtract from cylinder)
+box_geometry
+{
+	name				flutegeom
+	width				0.08
+	height				5.2
+	depth				0.5
+}
+
+# Column base/capital
+box_geometry
+{
+	name				capgeom
+	width				0.7
+	height				0.15
+	depth				0.7
+}
+
+# Back wall
+clippedplane_geometry
+{
+	name				wallgeom
+	pta					-5.0 5.0 0.0
+	ptb					-5.0 0.0 0.0
+	ptc					5.0 0.0 0.0
+	ptd					5.0 5.0 0.0
+}
+
+##################################################
+# Objects
+##################################################
+
+# Floor with polished material.  No `shader` line -- shades under the
+# scene-wide `global` DefaultDirectLighting (the pavilion's own
+# `floor_shader` = DefaultPathTracing line is dropped here).
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0.0 0.0 0.0
+	material			polished_floor
+}
+
+# Ceiling
+standard_object
+{
+	name				ceiling
+	geometry			ceilgeom
+	position			0 5.0 0
+	material			marble_col
+}
+
+# Back wall
+standard_object
+{
+	name				backwall
+	geometry			wallgeom
+	position			0 0 -5.0
+	material			marble_dark
+}
+
+# Column 1: front-left -- the FRAMED column; cap1 is the receiver.
+standard_object
+{
+	name				col1_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col1_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column1
+	obja				col1_cyl
+	objb				col1_flute
+	operation			subtraction
+	position			-2.5 2.5 2.5
+}
+
+# Column 2: front-right
+standard_object
+{
+	name				col2_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col2_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column2
+	obja				col2_cyl
+	objb				col2_flute
+	operation			subtraction
+	position			2.5 2.5 2.5
+	orientation			0 45 0
+}
+
+# Column 3: back-left
+standard_object
+{
+	name				col3_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col3_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column3
+	obja				col3_cyl
+	objb				col3_flute
+	operation			subtraction
+	position			-2.5 2.5 -2.5
+	orientation			0 30 0
+}
+
+# Column 4: back-right
+standard_object
+{
+	name				col4_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col4_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column4
+	obja				col4_cyl
+	objb				col4_flute
+	operation			subtraction
+	position			2.5 2.5 -2.5
+	orientation			0 60 0
+}
+
+# Column base capitals at each corner -- re-pointed to the NEW receiver material.
+standard_object
+{
+	name				cap1
+	geometry			capgeom
+	position			-2.5 0.1 2.5
+	material			marble_cap
+}
+
+standard_object
+{
+	name				cap2
+	geometry			capgeom
+	position			2.5 0.1 2.5
+	material			marble_cap
+}
+
+standard_object
+{
+	name				cap3
+	geometry			capgeom
+	position			-2.5 0.1 -2.5
+	material			marble_cap
+}
+
+standard_object
+{
+	name				cap4
+	geometry			capgeom
+	position			2.5 0.1 -2.5
+	material			marble_cap
+}
+
+##################################################
+# Lights -- carried verbatim from glass_pavilion; NO light is erased.
+##################################################
+
+omni_light
+{
+	name				ceiling_light
+	power				15.0
+	color				1.0 0.98 0.92
+	colorspace			sRGB
+	position			0 4.5 0
+}
+
+omni_light
+{
+	name				fill_light
+	power				25
+	color				0.9 0.92 1.0
+	colorspace			sRGB
+	position			3 3 4
+}
