@@ -2252,6 +2252,69 @@ One measured side effect worth recording: scene C's `n_scaled_sdf`
 true 2, and the existing bound assertions were written against the truth
 rather than against the reported number, so they did not move.
 
+#### S3 — CSG composites
+
+`CSGObject` gains `DistanceToSurface`, `SignedDistanceLower` and
+`DescribeKind` (none carrying `override`, matching that class's documented
+rule), plus four protected helpers: `LocalBoxDiagonal` (the box-diagonal
+computation hoisted out of `SelfHitRootFloor`, computed lazily per query and
+never cached), `ComposedSignedLocal`, `LandingAdmits` and
+`BracketDistanceLocal`. `DistanceToSurfaceWithArm` is the same query with the
+landing arm reported — `DistanceToSurface` is a one-line forward to it, so
+there is one code path; it exists because two §8 gates ask which arm fired
+and that is not observable from the number.
+`ObjectManager::LogDistanceRefusal` now asks `IObject::DescribeKind()` instead
+of `typeid(*GetGeometry())` and its parenthetical is widened to "an SDF or
+composite bracket that did not close"; the unbounded-confirm comment gains
+composites as its third non-`O(1)` case, with §2's truthfulness caveat
+extended verbatim.
+
+| Phase-3 S3 gate | verdict |
+|---|---|
+| warning-free `make -C build/make/rise -j8 all` | PASS |
+| a union of two spheres answers `min` within 1e-9 outside | PASS — 4 from above A (against B's 4.831) and 4 from above B |
+| a union with a MESH operand answers, no refusal | PASS — the sphere's 2 where the sphere is nearer, the mesh's 0.5 where the mesh is; and its SIGNED query refuses, so the same union cannot be an intersection's operand |
+| intersection vs a grid search of the SOLID by strict operand membership | PASS — 4 stations, grid spacing **0.02** (121³ samples over a 1.6 × 2.4 × 2.4 box); `lower ≤ reported` at every one; **gap_max = −0.00799** (reported sits *below* the grid's upper reference at every station, which is what `true ≤ reported ≤ reference` predicts) |
+| subtraction vs the same grid search | PASS — 4 stations, grid spacing **0.02** (111³ samples); **gap_max = −0.02**, and every station's `reported` is its closed form exactly (0.5 / 0.3 / 0.7 / 0.2) on the BOUNDARY arm |
+| exact-operand radial station of cylinder-minus-box `== closed form` to 1e-12 | PASS — **0.01 exactly**, BOUNDARY arm, gap 0 (`0.26 ⊖ 0.25` is exact by Sterbenz, so the landing's `f_A` is a true zero) |
+| oblique station: `d ≤ reported ≤ d + gap_max`, arm recorded, `reported ≥ d` | PASS on two fixtures — cylinder off-axis (0.20, 1, 0.20): closed form 0.0328427, reported 0.0328427, gap **−1.4e-17**, STRICT; torus-minus-box at (−1.0, 0.8, −1.0): closed form 0.304586, reported 0.304933, gap **3.46e-4 = 1.21 ε**, STRICT |
+| the phantom sweep — cylinder r 0.25 minus a 0.08 × 5.2 × 0.5 tangent slab, stations local `(x, 1, 0.26)` for `x ∈ [1e-7, 3e-6]` — ALL refuse | PASS — **60 of 60 refuse**; none reports the 1.00 cm tangency chord, and the true corner distance the refusal under-paints is **0.0421282** (4.21 cm), matching §5.6's recomputation |
+| a subtracted PLANE operand makes the composite refuse | PASS, with teeth (the same box minus a SOLID answers 4) — and an INTERSECTION with the mesh operand refuses where the UNION answered |
+| a nested intersection reports `exact = false` to its parent | PASS |
+| a `scale (3, 1, 0.4)` SOLID operand takes the STRICT arm | PASS — arm STRICT, reported **4.03732** against a true 4 |
+| a transformed composite matches the folded one | PASS **at one probe step, not at 1e-9** — see the deviation below. Transformed 0.01 (BOUNDARY, the closed form exactly), folded 0.0102547 (STRICT), difference **1.009 ε**. The box-minus-box twin agrees **exactly** (0.3 / 0.3) |
+| inside operand A of an intersection but outside B reads a POSITIVE distance | PASS — 1.0, the closed form to the lens's near tip |
+| a point inside the composite reads 0 | PASS — exactly 0, on both the lens and the fluted column |
+| union-in-subtraction and intersection-in-subtraction compose | PASS — 2 and 3, their minuends' closed forms |
+| `DescribeKind` names the operation, and follows a re-point | PASS — "csg subtraction" → "csg union"; an ordinary `Object` still names its geometry |
+| scene C's `n_csg` is now a NEIGHBOUR through the manager | PASS — 2 at 1e-9 from the floor beneath it (this check previously asserted a refusal) |
+| `ProximitySignalTest` | 325 passed, 0 failed (238 after S2) |
+| `CSGObjectIdentityTest` / `CsgSurfacePayloadTest` / `CsgFloorOwnershipTest` / `CsgOperandTransformTest` / `CsgProbeFloorTest` / `CSGNullGeometryLuminaireCrashTest` | 18 / 348 / 72 / 36 / 49 / PASS, 0 failed |
+| `ProximityInvalidationTest` / `MeshClosestPointTest` / `SurfaceSignalsTest` / `SourceHygieneTest` / `SceneSnapshotTest` / `ObjectMirrorTest` / `BoxGeometryTest` / `DeferredRealizeTest` | 25 / 65 / 318 / 165 / 107 / PASS / PASS / PASS, 0 failed |
+
+Two deviations from §8's Phase-3 text, both found by the gates themselves:
+
+- **"`gap_max` is one probe step, ε" is the step SIZE at the floor, not the
+  bound.** The probe's first step is `max(ε, f)` and the descent exits its
+  loop as soon as `f ≤ kBackoff·ε` with `kBackoff = 2` — so the residual
+  handed to the probe can be up to `2ε` and the first step with it. Measured
+  on the torus oblique station at **1.21 ε**. The tests assert `2ε`.
+- **The transformed-vs-folded gate does not hold at 1e-9, and the reason is
+  not the one §8 gives.** §8 asks for 1e-9 with an AXISYMMETRIC operand A,
+  reasoning that folding a rotation into a BOX operand would grow its
+  parent-frame AABB and move ε. That reasoning is right about ε — measured
+  identical for the cylinder — and incomplete about the LANDING. In the
+  unrotated frame the descent's arithmetic is exact by Sterbenz, `f_A` at the
+  landing is a true zero, and the BOUNDARY arm fires with gap 0. Push the same
+  point through a 45° rotation and that exactness is gone: `f_A` misses zero
+  by ulps, the boundary arm declines, and the probe takes exactly one ε step.
+  That is the `+1 ulp` miss §5.6 already describes ("the answer is `d` plus
+  that step instead of `d`, which is the SAFE direction") — so the two agree
+  to one probe step and their ARMS differ. The test asserts both are at or
+  above the closed form, that the transformed one hits it to 1e-12, and that
+  the pair agree within one probe step. The box-minus-box twin, compared at
+  ~ε as §8 prescribes, happens to agree exactly.
+
 
 ---
 

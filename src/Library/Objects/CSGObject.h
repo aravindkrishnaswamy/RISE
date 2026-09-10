@@ -28,6 +28,20 @@ namespace RISE
 			CSG_SUBTRACTION		= 2
 		};
 
+		//! WHICH ARM of the landing test admitted a bracket's endpoint
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6).  An
+		//! intersection's or a subtraction's composed field has no
+		//! usable zero test -- `{f <= 0}` contains the PHANTOM touching
+		//! set where the operands' boundaries merely graze, which no ray
+		//! can hit -- so a landing is admitted only when the OPERANDS'
+		//! OWN SIGNS prove it lies in the closure of the real solid.
+		//! `Strict` proves it interior; `Boundary` admits a landing
+		//! exactly ON an operand's surface, and only when THAT operand's
+		//! signed distance is EXACT.  Reported through
+		//! `DistanceToSurfaceWithArm` so a test can say which one fired
+		//! rather than inferring it.
+		enum class CsgLandingArm { None = 0, Strict = 1, Boundary = 2 };
+
 		//! Map the wire CSG-op code (0 Union / 1 Intersection / 2 Subtraction; any other -> Union,
 		//! matching RISE_API_CreateCSGObject) to the typed enum.  Shared by the create path and the
 		//! CST incremental re-point (Job::AddCSGObject -> SetOperation) so the two cannot drift.
@@ -104,6 +118,102 @@ namespace RISE
 			// so they are never reached directly.  Cascade into them here so a
 			// deferred geometry (e.g. displaced) used as a CSG operand is baked.
 			void Realize() const;
+
+			//! IObject::DistanceToSurface -- the cross-object proximity
+			//! query for a COMPOSITE (design 5.6).  Until Phase 3 a
+			//! composite refused: `Object::DistanceToSurface` forwards to
+			//! the geometry and a `CSGObject` has none, so nothing in the
+			//! scene could measure its distance to a CSG result.
+			//!
+			//! A UNION answers `min` over the operands that ANSWER, which
+			//! is exact when both are (every union-boundary point lies on
+			//! one operand's boundary).  An INTERSECTION or a SUBTRACTION
+			//! cannot: the nearest operand-surface point may not be on the
+			//! composite's surface at all, so `min` there is a LOWER bound
+			//! -- the forbidden direction.  Those two compose the operands'
+			//! SIGNED LOWER BOUNDS into a field and run Phase 1's bracket
+			//! on it, admitting a landing only under the two arms above.
+			//!
+			//! (No `override` -- see the CloneSnapshot note above: this
+			//! class deliberately omits the keyword throughout.)
+			bool DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld, Scalar& outDist ) const;
+
+			//! IObject::SignedDistanceLower for a COMPOSITE -- what a PARENT
+			//! composite and `interior(r)` both read.  A union exports
+			//! `min(f_A, f_B)`; an intersection `max(f_A, f_B)`; a
+			//! subtraction `max(f_A, -f_B)`.  Only the UNION can carry the
+			//! exactness flag, and only when both operands do AND this
+			//! composite's own sigma is exact: `max(a, b)` under-reads near
+			//! a seam even over exact operands, and its zero set IS the
+			//! phantom touching set, so a parent's boundary arm must never
+			//! land on it.
+			bool SignedDistanceLower( const Point3& ptWorld, const Scalar maxDistWorld,
+				Scalar& outSigned, bool& outExact ) const;
+
+			//! IObject::DescribeKind -- "csg union" / "csg intersection" /
+			//! "csg subtraction".  A composite reaches the proximity
+			//! refusal log as an `IObjectPriv*` with NO geometry, so the
+			//! log's old `typeid(*GetGeometry())` named it "(no geometry)"
+			//! -- the one kind whose refusals an author most needs named.
+			const char* DescribeKind() const;
+
+			//! THE SAME QUERY with the landing arm reported.  Exists
+			//! because 8's oblique-station gate asks the test to record
+			//! WHICH arm fired rather than infer it from the number, and
+			//! because "the (3,1,0.4) operand forces the strict arm" is
+			//! not observable any other way.  `DistanceToSurface` is a
+			//! one-line forward to it, so there is one code path.
+			bool DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar maxDistWorld,
+				Scalar& outDist, CsgLandingArm& outArm ) const;
+
+		protected:
+			//! THE DIAGONAL OF THIS COMPOSITE'S OWN LOCAL BOX -- A's box
+			//! alone for a subtraction (which can never extend past its
+			//! minuend), A united with B otherwise -- with the same
+			//! "is this a real, built, finite box" screen
+			//! `Geometry::BoundingBoxRootFloor` applies, since an unbuilt
+			//! mesh and an infinite plane both report +-RISE_INFINITY.
+			//! Answers in THIS composite's LOCAL frame, so
+			//! `m_mxFinalTrans` is NOT applied -- unlike `getBoundingBox`,
+			//! which answers in the PARENT's.
+			//!
+			//! COMPUTED LAZILY PER CALL, NEVER CACHED, and that is
+			//! deliberate: the operands' boxes move under
+			//! `FinalizeTransformations` (every animation frame and
+			//! hierarchy re-bake) and under an operand's own incremental
+			//! re-point, and the CST re-point path calls `AssignObjects`
+			//! BEFORE `SetOperation`, so any cache filled at assignment is
+			//! stale in the OVER-READ direction (a stale-large diagonal
+			//! inflates the probe step).  `SelfHitRootFloor` pays the same
+			//! `getBoundingBox` per call for the same reason.
+			//! \return FALSE when no usable box exists.
+			bool LocalBoxDiagonal( Scalar& outDiag ) const;
+
+			//! The composed SIGNED field at a point in THIS composite's
+			//! LOCAL frame, plus the per-operand values the landing test
+			//! needs.  Refuses when either operand refuses the signed
+			//! query -- which is what makes an intersection or subtraction
+			//! with a SHEET operand (a plane, a disk, an open cylinder, a
+			//! mesh) refuse rather than report a chord to a face the
+			//! composite removes nothing at.
+			bool ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDistLocal,
+				Scalar& outF, bool& outExact,
+				Scalar& outFA, bool& outExactA, Scalar& outFB, bool& outExactB ) const;
+
+			//! Does `qLocal` lie in the CLOSURE OF THE REAL SOLID, proved
+			//! by the operands' own signs?  See `CsgLandingArm`.  Sets
+			//! `outOperandRefused` when an operand could not answer, which
+			//! aborts the whole query rather than merely rejecting this
+			//! landing.
+			bool LandingAdmits( const Point3& qLocal, const Scalar maxDistLocal,
+				CsgLandingArm& outArm, bool& outOperandRefused ) const;
+
+			//! The bracket itself, entirely in this composite's LOCAL
+			//! frame: descend along the composed field's central-difference
+			//! gradient, then probe with a doubling step until a landing
+			//! the two arms admit, and report the chord from `ptLocal`.
+			bool BracketDistanceLocal( const Point3& ptLocal, const Scalar maxDistLocal,
+				Scalar& outDist, CsgLandingArm& outArm ) const;
 		};
 	}
 }

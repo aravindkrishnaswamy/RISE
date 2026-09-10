@@ -533,23 +533,29 @@ void ObjectManager::LogDistanceRefusal( const IObjectPriv* obj ) const
 		}
 	}
 
-	// AND THE GEOMETRY KIND, because "which chunk" and "why" are different
-	// questions and an author needs both.  `typeid(...).name()` is a
-	// mangled string on this toolchain (the same form
-	// PixelBasedRasterizerHelper's ForTest_SamplingKernelName already
-	// prints), but the class name is legible inside it -- "SDFGeometry",
-	// "BezierPatchGeometry" -- which is all a diagnostic needs.  A null
-	// geometry is itself a refusal reason and is named as one.
-	const IGeometry* const geom = obj->GetGeometry();
-	const char* kind = geom ? typeid( *geom ).name() : "(no geometry)";
+	// AND THE KIND, because "which chunk" and "why" are different
+	// questions and an author needs both.  ASKED OF THE OBJECT
+	// (`IObject::DescribeKind`) rather than taken from
+	// `typeid(*obj->GetGeometry())` as it used to be: a CSG COMPOSITE
+	// reaches this log as an `IObjectPriv*` with NO geometry, so the old
+	// form named it "(no geometry)" -- and since Phase 3 gave composites
+	// their own queries (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6) a
+	// composite is one of the kinds most likely to appear here, and the
+	// one whose OPERATION is the thing an author has to act on.  An
+	// `Object` still answers its geometry's `typeid` name, which is a
+	// mangled string on this toolchain but has the class name legible
+	// inside it -- "SDFGeometry", "BezierPatchGeometry" -- and that is all
+	// a diagnostic needs.
+	const char* kind = obj->DescribeKind();
 
 	GlobalLog()->PrintEx( eLog_Info,
-		"ObjectManager::NearestOtherSurface:: object `%s` (geometry %s) could not answer a "
+		"ObjectManager::NearestOtherSurface:: object `%s` (kind %s) could not answer a "
 		"distance query at one queried point even with the search radius removed, so it "
 		"contributed nothing to proximity() there and is treated as FAR (under-paints contact, "
 		"never invents it).  Reported once per object.  This may be a per-point solver failure "
-		"(an SDF bracket that did not close) rather than a family that never answers -- the "
-		"families that never answer are listed in docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
+		"(an SDF or composite bracket that did not close) rather than a family that never "
+		"answers -- the families that never answer are listed in "
+		"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
 		name, kind );
 }
 
@@ -622,8 +628,8 @@ Scalar ObjectManager::ProximityCandidateDistance(
 	// So: take the one-shot latch first (cheap, and it bounds everything
 	// below to once per object for the life of the object), then ask the
 	// SAME object again with an UNBOUNDED radius.  A family with no closed
-	// form -- a patch, a RAW mesh, a CSG composite, a heightfield SDF, a
-	// degenerate transform -- refuses that too, immediately and in O(1).  A
+	// form -- a patch, a RAW mesh, a heightfield SDF, a degenerate
+	// transform -- refuses that too, immediately and in O(1).  A
 	// non-heightfield SDF is NOT O(1) here: the confirm re-runs the full
 	// bracket search (descent + doubling probe, ~80 `Map()` evaluations x
 	// O(parts), 5.2) at unbounded radius, once per object, and can still
@@ -651,6 +657,18 @@ Scalar ObjectManager::ProximityCandidateDistance(
 	// enough that the nearest-first ordering fails to reach a good
 	// candidate quickly, which is a BVH-quality question, not a property of
 	// this being an unbounded call.
+	//
+	// AND SINCE PHASE 3, A CSG COMPOSITE IS A THIRD NON-O(1) CASE.  An
+	// INTERSECTION or a SUBTRACTION re-runs its whole bracket here
+	// (descent + doubling probe over the composed field, each evaluation
+	// recursing into both operands), once per composite, ever.  The
+	// truthfulness caveat above extends to it VERBATIM: the confirm
+	// cannot tell "this composite never answers" (a sheet operand, a
+	// heightfield-SDF operand) from a per-POINT failure (a bracket that
+	// found no admitted landing in budget, a seam gradient below 1e-12),
+	// so the printed sentence is best-effort for composites too -- and
+	// the one-shot latch is spent by the first such point.  A UNION is
+	// O(1)-ish here in the same sense its operands are.
 	//
 	// WHAT THIS DELIBERATELY GIVES UP: if an object's FIRST refusal is the
 	// benign far one, the latch is spent and a later bracket-budget failure

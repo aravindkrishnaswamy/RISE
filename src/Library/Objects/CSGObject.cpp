@@ -2242,3 +2242,506 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 
 	return anyOwner ? worst : worstAny;
 }
+
+//////////////////////////////////////////////////////////////////////
+//
+//  THE CROSS-OBJECT PROXIMITY QUERIES FOR A COMPOSITE
+//  (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6, Phase 3).
+//
+//  Until Phase 3 a composite REFUSED both queries -- `Object::
+//  DistanceToSurface` forwards to the geometry and a `CSGObject` has none
+//  -- so its own surface was invisible to every neighbour's query and a
+//  scene whose contact surface was a CSG result needed a non-CSG proxy.
+//
+//  THE OPERANDS ARE NOT IN WORLD SPACE.  `IntersectRay` maps the ray by
+//  this composite's own inverse and THEN calls each operand, whose
+//  `Object::IntersectRay` applies its own inverse on top -- the rule
+//  `SelfHitRootFloor` states as "the arguments are in THIS composite's
+//  local frame".  So both queries below implement their own transform
+//  layer exactly as `Object` does: map the world point through the
+//  composite's inverse, convert the radius by `/sigmaMin`, recurse into
+//  the operands with the LOCAL point (each applies its own transform; a
+//  nested composite repeats the same two conversions), and convert the
+//  answer back -- `x sigmaMax` for the unsigned upper bound, `x sigmaMin`
+//  for the signed lower one.
+//
+//  WHY `min(operands)` IS THE WRONG ANSWER FOR TWO OF THE THREE OPS.  For
+//  a point outside both operands of a UNION the true distance to the
+//  union's surface IS `min(d_A, d_B)`: every union-boundary point lies on
+//  one operand's boundary, so `d >= min`; and if the nearest point of
+//  `dA` lies inside B, the segment to it enters B first at a point on
+//  `dB` outside A -- a boundary point no farther than `d_A` -- so
+//  `d <= min`.  For an INTERSECTION or a SUBTRACTION the nearest
+//  operand-surface point may not be on the composite's surface at all, so
+//  `min` is only a LOWER bound: the forbidden direction, contact painted
+//  where there is none.  Those two compose the operands' SIGNED LOWER
+//  BOUNDS into a field whose sign is exact and whose magnitude is a lower
+//  bound, and run Phase 1's bracket on it.
+//
+//  AND `f <= 0` IS NOT THE LANDING TEST.  `{max(f_A, -f_B) <= 0}` is
+//  `closure(A) intersect complement(interior B)`, which contains every
+//  point where the two boundaries merely TOUCH -- a phantom set no ray
+//  can hit.  `glass_pavilion`'s flute slot is exactly that case: the slot
+//  is as deep as the column's diameter, so its faces are TANGENT to the
+//  cylinder, and an `f <= 0` test would report a 1 cm chord where the
+//  nearest real surface is 4.21 cm away.  So a landing is admitted only
+//  when the OPERANDS' OWN SIGNS prove it, with NO TOLERANCE on either
+//  side -- a tolerance re-admits the phantom, because the nearby points
+//  of one operand's surface may all lie inside the other.
+//
+//  Three budget constants, sized exactly as `SDFGeometry`'s are and for
+//  the same reasons; see that file's header comment.
+//
+//////////////////////////////////////////////////////////////////////
+
+namespace
+{
+	const int    kCsgDescentIters = 6;
+	const int    kCsgProbeSteps   = 40;
+	const Scalar kCsgBackoff      = Scalar( 2 );
+
+	//! The composite's probe step, as a fraction of its own local
+	//! bounding-box diagonal, floored so a collapsed box still steps.
+	//! The SDF family's rule, with the SDF's author-settable `m_epsFrac`
+	//! replaced by a fixed 5e-5 -- so a composite may probe FINER than an
+	//! operand SDF's own surface band, which is harmless.
+	const Scalar kCsgEpsFrac  = Scalar( 5e-5 );
+	const Scalar kCsgEpsFloor = Scalar( 1e-6 );
+
+	//! At a `max`/`min` SEAM two nearly opposed operand gradients can
+	//! cancel the composite's.  Below this the candidate REFUSES -- an
+	//! under-paint, never a wrong answer.  The SDF's fabricated `(0,1,0)`
+	//! fallback is deliberately NOT reused: there is no better direction
+	//! to invent, and inventing one here would walk a landing into the
+	//! phantom set.
+	const Scalar kCsgSeamGradient = Scalar( 1e-12 );
+
+	//! RISE's own unbounded-coordinate sentinel, the same screen
+	//! `Geometry::BoundingBoxRootFloor` and `SelfHitRootFloor` apply.
+	const Scalar kCsgMaxSaneExtent = Scalar( 1e30 );
+}
+
+bool CSGObject::LocalBoxDiagonal( Scalar& outDiag ) const
+{
+	outDiag = Scalar( 0 );
+	if( !pObjectA ) {
+		return false;
+	}
+	// For a SUBTRACTION the box is A's alone, matching the visible extent
+	// `getBoundingBox` reports: a subtraction can never extend past its
+	// minuend.  A nested operand's box recurses through its own
+	// `getBoundingBox`, which answers in ITS parent's frame -- this
+	// composite's local frame, since CSG operands cannot be parented.
+	BoundingBox bbLocal = pObjectA->getBoundingBox();
+	if( op != CSG_SUBTRACTION && pObjectB ) {
+		bbLocal.Include( pObjectB->getBoundingBox() );
+	}
+	const Scalar ex = bbLocal.ur.x - bbLocal.ll.x;
+	const Scalar ey = bbLocal.ur.y - bbLocal.ll.y;
+	const Scalar ez = bbLocal.ur.z - bbLocal.ll.z;
+	if( !( ex >= Scalar( 0 ) && ey >= Scalar( 0 ) && ez >= Scalar( 0 ) ) ||
+	    !std::isfinite( ex ) || !std::isfinite( ey ) || !std::isfinite( ez ) ||
+	    ex >= kCsgMaxSaneExtent || ey >= kCsgMaxSaneExtent || ez >= kCsgMaxSaneExtent ) {
+		return false;
+	}
+	const Scalar diag = std::sqrt( ex*ex + ey*ey + ez*ez );
+	if( !std::isfinite( diag ) || !( diag > Scalar( 0 ) ) ) {
+		return false;
+	}
+	outDiag = diag;
+	return true;
+}
+
+bool CSGObject::ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDistLocal,
+	Scalar& outF, bool& outExact,
+	Scalar& outFA, bool& outExactA, Scalar& outFB, bool& outExactB ) const
+{
+	outF = Scalar( 0 );
+	outExact = outExactA = outExactB = false;
+	outFA = outFB = Scalar( 0 );
+
+	if( !pObjectA || !pObjectB ) {
+		return false;
+	}
+	// EITHER operand refusing refuses the composite.  A sheet (any plane,
+	// disk, open cylinder, mesh, patch or hair) refuses the signed query
+	// outright -- not merely "lacks the exactness flag", which a BOUND
+	// operand also does without forcing a refusal.
+	if( !pObjectA->SignedDistanceLower( ptLocal, maxDistLocal, outFA, outExactA ) ) {
+		return false;
+	}
+	if( !pObjectB->SignedDistanceLower( ptLocal, maxDistLocal, outFB, outExactB ) ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( (double)outFA ) || !RISE::IsFiniteDouble( (double)outFB ) ) {
+		return false;
+	}
+
+	switch( op )
+	{
+	case CSG_UNION:
+		// Sign exact (inside the union iff inside either); outside,
+		// `min(f_A, f_B) <= min(d_A, d_B) = d`; inside, the depth to
+		// leave `A union B` is at least `max(depth_A, depth_B)`, which is
+		// `|min(f_A, f_B)|`.  The ONE op that can export exactness.
+		outF = std::min( outFA, outFB );
+		outExact = outExactA && outExactB;
+		break;
+	case CSG_INTERSECTION:
+		outF = std::max( outFA, outFB );
+		break;
+	case CSG_SUBTRACTION:
+		outF = std::max( outFA, -outFB );
+		break;
+	default:
+		return false;
+	}
+	// `max(a, b)` UNDER-READS near a seam even over exact operands, and
+	// its zero set is the phantom touching set -- so a parent's boundary
+	// arm must not be allowed to land on it (the same bug one level up).
+	// `outExact` is left false for both of those, set above only for the
+	// union.
+	return RISE::IsFiniteDouble( (double)outF );
+}
+
+bool CSGObject::LandingAdmits( const Point3& qLocal, const Scalar maxDistLocal,
+	CsgLandingArm& outArm, bool& outOperandRefused ) const
+{
+	outArm = CsgLandingArm::None;
+	outOperandRefused = false;
+
+	Scalar f = 0, fA = 0, fB = 0;
+	bool ex = false, exA = false, exB = false;
+	if( !ComposedSignedLocal( qLocal, maxDistLocal, f, ex, fA, exA, fB, exB ) ) {
+		outOperandRefused = true;
+		return false;
+	}
+
+	// THE STRICT ARM.  A NEGATIVE lower bound proves the point is strictly
+	// inside its operand; a POSITIVE one proves it strictly outside.  Both
+	// together put `q` in the solid's INTERIOR, so the segment from the
+	// query point to it crosses the boundary and the chord is at least the
+	// true distance.
+	const bool strict = ( op == CSG_INTERSECTION )
+		? ( fA < Scalar( 0 ) && fB < Scalar( 0 ) )
+		: ( fA < Scalar( 0 ) && fB > Scalar( 0 ) );
+	if( strict ) {
+		outArm = CsgLandingArm::Strict;
+		return true;
+	}
+
+	// THE BOUNDARY ARM admits a landing exactly ON one operand's surface,
+	// and only when THAT operand's signed distance is EXACT -- the `<= 0`
+	// / `>= 0` side must be the exact one, and the other side stays
+	// STRICT.  A point in `closure(A)` strictly outside `B` is in the
+	// closure of `A \ B` (interior if inside A; on `dA` a neighbourhood
+	// outside B holds interior points of A, all in the solid), and a
+	// point strictly inside `A` on or outside `dB` likewise.
+	//
+	// NO TOLERANCE, on either side, deliberately.  The descent lands on
+	// the exact operand's surface only to ROUNDING, and a `+1 ulp` miss
+	// fails this arm -- the probe then steps and the answer is `d` plus
+	// that step instead of `d`, which is the SAFE direction.  A tolerance
+	// looked harmless and is not: the nearby points of an operand's
+	// surface may all lie INSIDE the other operand, so a landing within
+	// `tau` of a surface can be within `tau` of the PHANTOM, not of the
+	// real solid.  On `glass_pavilion`'s flute a tolerance of 5e-12
+	// admitted a quarter of the stations within a few micrometres of the
+	// slot's axis, each reporting a 1.00 cm chord where the real solid is
+	// 4.21 cm away.
+	//
+	// NEITHER ARM ADMITS `f_A == f_B == 0` -- the strict side rejects it
+	// in every disjunct -- which is what keeps the EXACT tangency out.
+	bool boundary = false;
+	if( op == CSG_INTERSECTION ) {
+		boundary = ( exA && fA <= Scalar( 0 ) && fB <  Scalar( 0 ) )
+		        || ( exB && fA <  Scalar( 0 ) && fB <= Scalar( 0 ) );
+	} else {
+		boundary = ( exA && fA <= Scalar( 0 ) && fB >  Scalar( 0 ) )
+		        || ( exB && fA <  Scalar( 0 ) && fB >= Scalar( 0 ) );
+	}
+	if( boundary ) {
+		outArm = CsgLandingArm::Boundary;
+		return true;
+	}
+	return false;
+}
+
+bool CSGObject::BracketDistanceLocal( const Point3& ptLocal, const Scalar maxDistLocal,
+	Scalar& outDist, CsgLandingArm& outArm ) const
+{
+	outArm = CsgLandingArm::None;
+
+	Scalar f0 = 0, fA0 = 0, fB0 = 0;
+	bool ex0 = false, exA0 = false, exB0 = false;
+	if( !ComposedSignedLocal( ptLocal, maxDistLocal, f0, ex0, fA0, exA0, fB0, exB0 ) ) {
+		return false;
+	}
+
+	// INSIDE THE COMPOSITE IS CONTACT (design 2), and the clamp is on a
+	// STRICTLY NEGATIVE composed sign: `f == 0` is also the phantom set,
+	// so it goes through the landing test below like any other candidate
+	// and reads 0 only when an arm actually admits it.
+	if( f0 < Scalar( 0 ) ) {
+		outDist = Scalar( 0 );
+		outArm = CsgLandingArm::None;
+		return true;
+	}
+
+	Scalar diag = Scalar( 0 );
+	const Scalar eps = LocalBoxDiagonal( diag )
+		? std::max( kCsgEpsFloor, kCsgEpsFrac * diag )
+		: kCsgEpsFloor;
+
+	// DESCEND.  `p <- p - f * grad_hat(p)`.  The composed field is still
+	// 1-Lipschitz -- an operand's transformed lower bound
+	// `sigmaMin * d_o(M^-1 x)` has gradient at most `sigmaMin/sigmaMin`,
+	// the ellipsoid's `dUnit x min(a,b,c)` likewise, and `max`/`min`
+	// preserve it -- so a step of `|f|` along `-grad_hat` cannot overshoot
+	// the zero set, which is what keeps the landing an honest bracket
+	// rather than a guess.
+	Point3 p = ptLocal;
+	Scalar f = f0;
+	Vector3 g( 0, 1, 0 );
+	bool haveGradient = false;
+	for( int it = 0; it < kCsgDescentIters; ++it ) {
+		if( f <= kCsgBackoff * eps ) {
+			break;
+		}
+		// SIX composite evaluations, each recursing into both operands.
+		Scalar d[3] = { 0, 0, 0 };
+		bool gradOk = true;
+		for( int axis = 0; axis < 3 && gradOk; ++axis ) {
+			Point3 lo = p, hi = p;
+			if( axis == 0 )      { lo.x -= eps; hi.x += eps; }
+			else if( axis == 1 ) { lo.y -= eps; hi.y += eps; }
+			else                 { lo.z -= eps; hi.z += eps; }
+			Scalar fl = 0, fh = 0, tA = 0, tB = 0;
+			bool tex = false, teA = false, teB = false;
+			if( !ComposedSignedLocal( lo, maxDistLocal, fl, tex, tA, teA, tB, teB )
+			 || !ComposedSignedLocal( hi, maxDistLocal, fh, tex, tA, teA, tB, teB ) ) {
+				gradOk = false;
+				break;
+			}
+			d[axis] = ( fh - fl ) / ( Scalar( 2 ) * eps );
+		}
+		if( !gradOk ) {
+			return false;
+		}
+		const Scalar gm = std::sqrt( d[0]*d[0] + d[1]*d[1] + d[2]*d[2] );
+		// A SEAM: two nearly opposed operand gradients cancelling the
+		// composite's.  Refuse rather than walk an invented direction.
+		if( !std::isfinite( gm ) || !( gm > kCsgSeamGradient ) ) {
+			return false;
+		}
+		g = Vector3( d[0]/gm, d[1]/gm, d[2]/gm );
+		haveGradient = true;
+
+		const Point3 next( p.x - f * g.x, p.y - f * g.y, p.z - f * g.z );
+		Scalar fn = 0, nA = 0, nB = 0;
+		bool nex = false, neA = false, neB = false;
+		if( !ComposedSignedLocal( next, maxDistLocal, fn, nex, nA, neA, nB, neB ) ) {
+			return false;
+		}
+		if( !RISE::IsFiniteDouble( (double)fn ) ) {
+			break;
+		}
+		// A step that did not reduce the field means the local gradient is
+		// lying to us (a seam, a scaled operand); stop rather than wander.
+		// The probe below still gets its chance from here.  Exiting HERE
+		// -- and on the backoff test above -- is also what keeps the
+		// degenerate central difference AT a tangency (a V-valley of value
+		// 0) from ever being taken from a descended landing.
+		if( fn >= f ) {
+			break;
+		}
+		p = next;
+		f = fn;
+	}
+
+	// THE PROBE'S `!haveGradient` BRANCH: a query point that STARTS inside
+	// the backoff band exits the descent on its first test, and `g` would
+	// still hold its arbitrary `(0,1,0)` initialiser.  Take a real
+	// gradient here.  At a tangency this central difference straddles the
+	// valley -- and that is precisely the case the landing test refuses
+	// rather than answers, since it demands operand-sign proof.
+	if( !haveGradient ) {
+		Scalar d[3] = { 0, 0, 0 };
+		for( int axis = 0; axis < 3; ++axis ) {
+			Point3 lo = p, hi = p;
+			if( axis == 0 )      { lo.x -= eps; hi.x += eps; }
+			else if( axis == 1 ) { lo.y -= eps; hi.y += eps; }
+			else                 { lo.z -= eps; hi.z += eps; }
+			Scalar fl = 0, fh = 0, tA = 0, tB = 0;
+			bool tex = false, teA = false, teB = false;
+			if( !ComposedSignedLocal( lo, maxDistLocal, fl, tex, tA, teA, tB, teB )
+			 || !ComposedSignedLocal( hi, maxDistLocal, fh, tex, tA, teA, tB, teB ) ) {
+				return false;
+			}
+			d[axis] = ( fh - fl ) / ( Scalar( 2 ) * eps );
+		}
+		const Scalar gm = std::sqrt( d[0]*d[0] + d[1]*d[1] + d[2]*d[2] );
+		if( !std::isfinite( gm ) || !( gm > kCsgSeamGradient ) ) {
+			return false;
+		}
+		g = Vector3( d[0]/gm, d[1]/gm, d[2]/gm );
+	}
+
+	// PROBE.  The descended point is tested FIRST -- a landing that the
+	// boundary arm admits has `gap = 0`, which is the whole reason that
+	// arm exists -- and only then does the doubling walk start.
+	bool refused = false;
+	Point3 q = p;
+	bool admitted = LandingAdmits( p, maxDistLocal, outArm, refused );
+	if( refused ) {
+		return false;
+	}
+	Scalar step = std::max( eps, ( f > Scalar( 0 ) ) ? f : eps );
+	Scalar walked = Scalar( 0 );
+	for( int s = 0; !admitted && s < kCsgProbeSteps; ++s ) {
+		walked += step;
+		// A CHEAP budget test, not the authoritative one: overshooting it
+		// only ends the walk early (a refusal, which under-paints), and
+		// the final `d > maxDistLocal` test below is what actually decides
+		// whether the answer is in range.
+		if( f0 + walked > maxDistLocal ) {
+			break;
+		}
+		q = Point3( p.x - walked * g.x, p.y - walked * g.y, p.z - walked * g.z );
+		admitted = LandingAdmits( q, maxDistLocal, outArm, refused );
+		if( refused ) {
+			return false;
+		}
+		step *= Scalar( 2 );
+	}
+
+	// NO ADMITTED LANDING WITHIN BUDGET: REFUSE.  Never the unproven
+	// point's distance, which could be smaller than the truth and so
+	// over-read contact.
+	if( !admitted ) {
+		outArm = CsgLandingArm::None;
+		return false;
+	}
+
+	const Scalar d = Vector3Ops::Magnitude( Vector3Ops::mkVector3( q, ptLocal ) );
+	if( !RISE::IsFiniteDouble( (double)d ) || d > maxDistLocal ) {
+		outArm = CsgLandingArm::None;
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
+bool CSGObject::DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar maxDistWorld,
+	Scalar& outDist, CsgLandingArm& outArm ) const
+{
+	outArm = CsgLandingArm::None;
+	if( !pObjectA || !pObjectB ) {
+		return false;
+	}
+	if( !( m_sigmaMin > Scalar( 0 ) ) || !( m_sigmaMax > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	Scalar maxDistLocal = maxDistWorld / m_sigmaMin;
+	if( !RISE::IsFiniteDouble( (double)maxDistLocal ) || maxDistLocal > RISE_INFINITY ) {
+		maxDistLocal = RISE_INFINITY;
+	}
+	const Point3 ptLocal = Point3Ops::Transform( m_mxInvFinalTrans, ptWorld );
+
+	Scalar dLocal = Scalar( 0 );
+	if( op == CSG_UNION ) {
+		// THE UNION'S UNSIGNED ANSWER is `min` over the operands that
+		// ANSWER -- `d <= d_A <= u_A` holds whatever B does -- so a union
+		// refuses only when BOTH operands refuse.  That is what lets a
+		// union accept a SHEET operand (a mesh, a plane): its unsigned
+		// answer is all the proof this needs.  It cannot say whether the
+		// point is INSIDE a sheet operand, which is why the SIGNED query
+		// below still demands both, and why a point inside a mesh operand
+		// of a union reads a positive distance -- the under-paint
+		// direction, disclosed.
+		//
+		// No composed sign is needed: the operands' own clamps already
+		// return 0 for a point inside either of them.
+		bool any = false;
+		Scalar best = Scalar( 0 );
+		for( int i = 0; i < 2; ++i ) {
+			const IObjectPriv* const child = ( i == 0 ) ? pObjectA : pObjectB;
+			Scalar u = Scalar( 0 );
+			if( child->DistanceToSurface( ptLocal, maxDistLocal, u )
+			 && RISE::IsFiniteDouble( (double)u ) && u >= Scalar( 0 ) ) {
+				if( !any || u < best ) { best = u; any = true; }
+			}
+		}
+		if( !any ) {
+			return false;
+		}
+		dLocal = best;
+	} else {
+		if( !BracketDistanceLocal( ptLocal, maxDistLocal, dLocal, outArm ) ) {
+			return false;
+		}
+	}
+
+	// AND THE ANSWER COMES OUT MULTIPLIED BY sigmaMax, the safe direction
+	// for an upper bound, exactly as `Object::DistanceToSurface` does.
+	const Scalar dWorld = dLocal * m_sigmaMax;
+	if( !RISE::IsFiniteDouble( (double)dWorld ) || dWorld > maxDistWorld ) {
+		return false;
+	}
+	outDist = dWorld;
+	return true;
+}
+
+bool CSGObject::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld, Scalar& outDist ) const
+{
+	CsgLandingArm arm = CsgLandingArm::None;
+	return DistanceToSurfaceWithArm( ptWorld, maxDistWorld, outDist, arm );
+}
+
+bool CSGObject::SignedDistanceLower( const Point3& ptWorld, const Scalar maxDistWorld,
+	Scalar& outSigned, bool& outExact ) const
+{
+	outExact = false;
+	if( !pObjectA || !pObjectB ) {
+		return false;
+	}
+	if( !( m_sigmaMin > Scalar( 0 ) ) || !( m_sigmaMax > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	Scalar maxDistLocal = maxDistWorld / m_sigmaMin;
+	if( !RISE::IsFiniteDouble( (double)maxDistLocal ) || maxDistLocal > RISE_INFINITY ) {
+		maxDistLocal = RISE_INFINITY;
+	}
+	const Point3 ptLocal = Point3Ops::Transform( m_mxInvFinalTrans, ptWorld );
+
+	Scalar f = 0, fA = 0, fB = 0;
+	bool ex = false, exA = false, exB = false;
+	if( !ComposedSignedLocal( ptLocal, maxDistLocal, f, ex, fA, exA, fB, exB ) ) {
+		return false;
+	}
+
+	// `x sigmaMin`, the LOWER bound's safe direction, and the exactness
+	// flag survives only under a SIMILARITY -- under a non-uniform
+	// transform `x sigmaMin` is a bound, not the distance, the same
+	// condition `Object::SignedDistanceLower` carries.
+	const Scalar fWorld = f * m_sigmaMin;
+	if( !RISE::IsFiniteDouble( (double)fWorld ) ) {
+		return false;
+	}
+	outSigned = fWorld;
+	outExact  = ex && m_sigmaExact;
+	return true;
+}
+
+const char* CSGObject::DescribeKind() const
+{
+	switch( op )
+	{
+	case CSG_UNION:			return "csg union";
+	case CSG_INTERSECTION:	return "csg intersection";
+	case CSG_SUBTRACTION:	return "csg subtraction";
+	default:				return "csg (unknown operation)";
+	}
+}

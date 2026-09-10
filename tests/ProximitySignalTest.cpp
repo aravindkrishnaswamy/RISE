@@ -48,6 +48,11 @@
 //        (a)-(d): an exact SIGN with a LOWER-bound magnitude, per family,
 //        plus the exactness flag a CSG composite's boundary arm consumes.
 //        Every sheet refuses it while still answering the unsigned one.
+//    (j) CSG COMPOSITES (Phase 3).  A union's `min`; an intersection's
+//        and a subtraction's bracket over the composed signed field, with
+//        the two landing arms, the phantom sweep that a tolerance would
+//        have admitted, the composite's own transform layer, and the
+//        nesting rules.
 //    (i) EXACT SIGMA (Phase 3).  The three branches of the transform's
 //        singular-value pair -- the similarity fast path, the one-sided
 //        Jacobi SVD, and the loose Frobenius/determinant fallback -- each
@@ -73,6 +78,12 @@
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/CylinderGeometry.h"
+#include "../src/Library/Geometry/TorusGeometry.h"
+#include "../src/Library/Geometry/InfinitePlaneGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
@@ -567,11 +578,20 @@ static void TestExclusions( const Fixture& f )
 			"(c) MONEY -- casts_shadows FALSE does NOT exempt: this is geometry presence" );
 	}
 
-	// --- CSG: the composite refuses in v1, and its operands never count.
-	// `n_csg` is a subtraction whose surface is NOT the min of its
-	// operands' under subtraction, so answering from them would be wrong;
-	// and `csg_a` / `csg_b` are registered in the manager but are not
-	// world-visible, so they are filtered like any other invisible object.
+	// --- CSG: the composite ANSWERS since Phase 3, and its operands still
+	// never count separately.  `csg_a` / `csg_b` are registered in the
+	// manager but are not world-visible, so they are filtered like any
+	// other invisible object; only the composite is asked.
+	//
+	// THIS CHECK USED TO ASSERT A REFUSAL.  `n_csg` is `csg_a` (a 2x2x2
+	// box whose underside is at y = 2) minus `csg_b` (a unit sphere at
+	// y = 4, which bites the box's TOP), so the nearest point of the real
+	// solid from the floor beneath it is the box's underside, 2 away --
+	// and the subtraction's bracket lands there on the BOUNDARY arm,
+	// because the box operand is an exact closed form under an exact
+	// sigma.  Section (j) is where the composite queries are tested; this
+	// is the manager-level statement that a composite is now a NEIGHBOUR
+	// like any other.
 	{
 		IObjectPriv* a = f.Obj( "csg_a" );
 		IObjectPriv* b = f.Obj( "csg_b" );
@@ -580,8 +600,22 @@ static void TestExclusions( const Fixture& f )
 		Check( b && !b->IsWorldVisible(), "(c) ...and operand B is not world-visible" );
 
 		const Scalar d = Probe( f, Point3( 96, 0, 0 ), f.floorObj, Scalar( 3 ) );
-		Check( d < Scalar( 0 ),
-			"(c) MONEY -- a CSG composite refuses in v1 and its operands never count separately" );
+		CheckClose( d, Scalar( 2 ), Scalar( 1e-9 ),
+			"(c) MONEY -- a CSG composite ANSWERS since Phase 3, with the minuend's underside "
+			"at 2 -- and its operands still never count separately" );
+
+		// TEETH on the operand exclusion: the SPHERE operand's own surface
+		// is 3 away from this point (centre y = 4, radius 1), so if the
+		// operands were being scanned separately the answer would still be
+		// the box's 2 -- which proves nothing.  Ask instead from a point
+		// where the SPHERE would win: directly above it, at y = 6, the
+		// sphere's top is 1 away while the composite's real surface up
+		// there has been REMOVED by that very sphere, so the nearest real
+		// surface is the box's top rim.
+		const Scalar dAbove = Probe( f, Point3( 96, 6, 0 ), f.Obj( "n_box" ), Scalar( 1.5 ) );
+		Check( dAbove < Scalar( 0 ) || dAbove > Scalar( 1 ) + Scalar( 1e-9 ),
+			"(c) MONEY -- ...and a point above the BITE does not read the subtrahend's own "
+			"surface at 1: the operand is not a neighbour, only the composite is" );
 	}
 
 	// --- REFUSING FAMILIES.  A Bezier patch has no closed form; a
@@ -1736,6 +1770,721 @@ static void TestExactSigma()
 	}
 }
 
+
+//======================================================================
+// (j) CSG COMPOSITES
+//======================================================================
+
+//! One operand, positioned, finalized.  `Object`'s constructor addrefs the
+//! geometry, so the constructing reference is ours to drop.
+static Object* MakeOperand( IGeometry* g, const Point3& pos )
+{
+	Object* o = new Object( g );
+	g->release();
+	o->SetPosition( pos );
+	o->FinalizeTransformations();
+	return o;
+}
+
+//! One composite.  `AssignObjects` addrefs both operands, so the caller's
+//! own references are dropped here and the composite owns them.
+static CSGObject* MakeCsg( const CSG_OP op, Object* a, Object* b,
+	const Point3& pos, const Vector3& orient )
+{
+	CSGObject* c = new CSGObject( op );
+	c->AssignObjects( a, b );
+	a->release();
+	b->release();
+	c->SetPosition( pos );
+	c->SetOrientation( orient );
+	c->FinalizeTransformations();
+	return c;
+}
+
+//! A two-triangle INDEXED mesh -- a sheet that ANSWERS the unsigned query
+//! and REFUSES the signed one, which is the pairing a union has to accept
+//! and an intersection has to refuse on.
+static TriangleMeshGeometryIndexed* BuildTinyMesh()
+{
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertex( Point3( -1, 0, -1 ) );
+	mesh->AddVertex( Point3(  1, 0, -1 ) );
+	mesh->AddVertex( Point3(  1, 0,  1 ) );
+	mesh->AddVertex( Point3( -1, 0,  1 ) );
+	mesh->AddNormal( Vector3( 0, 1, 0 ) );
+	mesh->AddTexCoord( Point2( 0, 0 ) );
+	IndexedTriangle t;
+	t.iNormals[0] = t.iNormals[1] = t.iNormals[2] = 0;
+	t.iCoords[0]  = t.iCoords[1]  = t.iCoords[2]  = 0;
+	t.iVertices[0] = 0; t.iVertices[1] = 1; t.iVertices[2] = 2;
+	mesh->AddIndexedTriangle( t );
+	t.iVertices[0] = 0; t.iVertices[1] = 2; t.iVertices[2] = 3;
+	mesh->AddIndexedTriangle( t );
+	mesh->DoneIndexedTriangles();
+	mesh->Realize();
+	return mesh;
+}
+
+//! GRID SEARCH over a composite's SOLID, by STRICT operand membership on
+//! the operands' EXACT signed distances -- deliberately NOT `f <= 0`,
+//! which is `closure(A) n complement(int B)` and contains the PHANTOM
+//! touching set where the two boundaries merely graze.  A minimum over
+//! grid points is an UPPER reference on the true distance (it minimises
+//! over a subset of the solid), which is why the gap it measures is
+//! reported rather than asserted at a tolerance somebody chose.
+static Scalar GridSearchDistanceToComposite(
+	const IObjectPriv* a, const IObjectPriv* b, const CSG_OP op,
+	const Point3& p, const Point3& lo, const Point3& hi, const int steps )
+{
+	Scalar best = RISE_INFINITY;
+	const Scalar sx = ( hi.x - lo.x ) / Scalar( steps );
+	const Scalar sy = ( hi.y - lo.y ) / Scalar( steps );
+	const Scalar sz = ( hi.z - lo.z ) / Scalar( steps );
+	for( int i = 0; i <= steps; ++i ) {
+		for( int j = 0; j <= steps; ++j ) {
+			for( int k = 0; k <= steps; ++k ) {
+				const Point3 q( lo.x + sx*Scalar(i), lo.y + sy*Scalar(j), lo.z + sz*Scalar(k) );
+				Scalar fa = 0, fb = 0; bool ea = false, eb = false;
+				if( !a->SignedDistanceLower( q, RISE_INFINITY, fa, ea ) ) continue;
+				if( !b->SignedDistanceLower( q, RISE_INFINITY, fb, eb ) ) continue;
+				const bool inside = ( op == CSG_INTERSECTION )
+					? ( fa < Scalar( 0 ) && fb < Scalar( 0 ) )
+					: ( fa < Scalar( 0 ) && fb > Scalar( 0 ) );
+				if( !inside ) continue;
+				const Scalar d = Vector3Ops::Magnitude( Vector3Ops::mkVector3( q, p ) );
+				if( d < best ) best = d;
+			}
+		}
+	}
+	return best;
+}
+
+static const char* ArmName( const CsgLandingArm a )
+{
+	switch( a ) {
+	case CsgLandingArm::Strict:   return "STRICT";
+	case CsgLandingArm::Boundary: return "BOUNDARY";
+	default:                      return "none";
+	}
+}
+
+//! CSG COMPOSITES (design 5.6).  Until Phase 3 a composite refused both
+//! queries, so its own surface was invisible to every neighbour.  A UNION
+//! can answer `min`; an INTERSECTION and a SUBTRACTION cannot -- the
+//! nearest operand-surface point may not be on the composite's surface at
+//! all -- so they compose the operands' SIGNED LOWER BOUNDS into a field
+//! and bracket it, admitting a landing only when the operands' OWN SIGNS
+//! prove it lies in the closure of the real solid.
+static void TestCsgComposites()
+{
+	std::cout << "(j) CSG composites -- union min, the bracket, and the two landing arms" << std::endl;
+
+	// --- A UNION OF TWO SPHERES answers `min` within 1e-9.  Both operands
+	// are exact, so the union's answer is the true distance: every
+	// union-boundary point lies on one operand's boundary.
+	{
+		Object* a = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 3, 0, 0 ) );
+		CSGObject* u = MakeCsg( CSG_UNION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		Scalar d = 0;
+		Check( u->DistanceToSurface( Point3( 0, 5, 0 ), Scalar( 100 ), d ),
+			"(j) a union of two spheres ANSWERS (it refused before Phase 3)" );
+		CheckClose( d, Scalar( 4 ), Scalar( 1e-9 ),
+			"(j) MONEY -- union: min(4, sqrt(9+25)-1 = 4.831) = 4" );
+
+		// From the other side the OTHER operand wins, so `min` is really a
+		// min and not operand A leaking through.
+		Check( u->DistanceToSurface( Point3( 3, 5, 0 ), Scalar( 100 ), d ),
+			"(j) ...and answers from above operand B" );
+		CheckClose( d, Scalar( 4 ), Scalar( 1e-9 ), "(j) ...with B's 4 this time" );
+
+		// EXACTNESS EXPORT: a union of two EXACT operands under an exact
+		// sigma carries the flag -- the one operation that can.
+		Scalar fv = 0; bool ex = false;
+		Check( u->SignedDistanceLower( Point3( 0, 5, 0 ), Scalar( 100 ), fv, ex ),
+			"(j) the union answers the SIGNED query" );
+		CheckClose( fv, Scalar( 4 ), Scalar( 1e-9 ), "(j) ...with min(f_A, f_B) = 4" );
+		Check( ex, "(j) MONEY -- a UNION of two exact operands EXPORTS exactness" );
+
+		// ...and INSIDE the union it is a depth.
+		Check( u->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 100 ), fv, ex ),
+			"(j) the union answers inside" );
+		Check( fv < Scalar( 0 ), "(j) ...negatively, the sign being exact" );
+
+		u->release();
+	}
+
+	// --- A UNION WITH A MESH OPERAND ANSWERS.  A mesh is a SHEET: it has
+	// an unsigned distance and no inside, so it can never say whether a
+	// point is within it.  A union takes it anyway -- `d <= d_A <= u_A`
+	// holds whatever B does -- and refuses only if BOTH operands refuse.
+	{
+		TriangleMeshGeometryIndexed* mg = BuildTinyMesh();
+		Object* a = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 3, 0 ) );
+		Object* b = MakeOperand( mg, Point3( 0, 0, 0 ) );
+		CSGObject* u = MakeCsg( CSG_UNION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		Scalar d = 0;
+		Check( u->DistanceToSurface( Point3( 0, 6, 0 ), Scalar( 100 ), d ),
+			"(j) MONEY -- a union with a MESH operand ANSWERS (no refusal)" );
+		CheckClose( d, Scalar( 2 ), Scalar( 1e-9 ),
+			"(j) ...with the sphere's 6 - 3 - 1 = 2, the nearer of the two" );
+
+		Check( u->DistanceToSurface( Point3( 0, 0.5, 0 ), Scalar( 100 ), d ),
+			"(j) ...and answers where the MESH is the nearer operand" );
+		CheckClose( d, Scalar( 0.5 ), Scalar( 1e-9 ), "(j) ...with the mesh's 0.5" );
+
+		// But the SIGNED query needs BOTH, and the mesh refuses it -- so
+		// this union cannot be an operand of an intersection, and a point
+		// inside a mesh operand reads a positive distance rather than
+		// contact.  The under-paint direction, disclosed.
+		Scalar fv = 0; bool ex = false;
+		Check( !u->SignedDistanceLower( Point3( 0, 6, 0 ), Scalar( 100 ), fv, ex ),
+			"(j) MONEY -- ...but the SIGNED query REFUSES with a sheet operand" );
+		Check( !ex, "(j) ...clearing the flag" );
+
+		u->release();
+	}
+
+	// --- THE EXACT STATION: a CYLINDER minus a tangent SLAB, queried
+	// radially.  This is `glass_pavilion`'s fluted column shape.  The
+	// radial landing IS the nearest point by symmetry, both operands are
+	// exact closed forms, and the arithmetic is exact by Sterbenz:
+	// `f_A = 0.26 (-) 0.25` is exact, so `0.26 (-) f_A` is 0.25 exactly
+	// and `sqrt(x*x) = x` makes `f_A` a TRUE zero at the landing.  So the
+	// boundary arm fires with gap 0 and the answer is the CLOSED FORM --
+	// not a grid reference, which would be `d + O(spacing)`.
+	{
+		Object* col  = MakeOperand( new CylinderGeometry( 'y', Scalar( 0.25 ), Scalar( 5 ), true ),
+			Point3( 0, 2.5, 0 ) );
+		Object* slot = MakeOperand( new BoxGeometry( Scalar( 0.08 ), Scalar( 5.2 ), Scalar( 0.5 ) ),
+			Point3( 0, 2.5, 0 ) );
+		CSGObject* c = MakeCsg( CSG_SUBTRACTION, col, slot, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		Scalar d = 0;
+		CsgLandingArm arm = CsgLandingArm::None;
+		Check( c->DistanceToSurfaceWithArm( Point3( 0.26, 1, 0 ), Scalar( 1 ), d, arm ),
+			"(j) cylinder-minus-slab answers at the radial station" );
+		CheckClose( d, Scalar( 0.01 ), Scalar( 1e-12 ),
+			"(j) MONEY -- reported == the CLOSED FORM 0.26 - 0.25 to 1e-12" );
+		Check( arm == CsgLandingArm::Boundary,
+			std::string( "(j) MONEY -- ...and the BOUNDARY arm fired (gap 0), not the probe: " )
+			+ ArmName( arm ) );
+
+		// THE PHANTOM SWEEP.  The slot is 0.5 deep -- the column's
+		// diameter -- so its +-z faces are TANGENT to the cylinder at
+		// z = +-0.25.  From a station 1 cm outside that face the radial
+		// descent lands ON the tangency, where an `f <= 0` test would
+		// report a 1.00 cm chord while the nearest REAL surface is the
+		// slot-wall/cylinder corner at 4.21 cm -- an OVER-read of contact
+		// by 3 cm, the forbidden direction.  Every station in the band
+		// where a tolerant arm admitted a quarter of the landings must
+		// REFUSE instead.
+		const Scalar trueCorner = (Scalar)std::sqrt(
+			0.04*0.04 + ( 0.26 - std::sqrt( 0.25*0.25 - 0.04*0.04 ) )
+			          * ( 0.26 - std::sqrt( 0.25*0.25 - 0.04*0.04 ) ) );
+		int answered = 0;
+		const int nSweep = 60;
+		for( int i = 0; i < nSweep; ++i ) {
+			const Scalar x = Scalar( 1e-7 ) + ( Scalar( 3e-6 ) - Scalar( 1e-7 ) )
+				* Scalar( i ) / Scalar( nSweep - 1 );
+			Scalar ds = 0;
+			CsgLandingArm a2 = CsgLandingArm::None;
+			if( c->DistanceToSurfaceWithArm( Point3( x, 1, 0.26 ), Scalar( 0.1 ), ds, a2 ) ) {
+				++answered;
+				std::cout << "    phantom station x = " << (double)x << " ANSWERED "
+					<< (double)ds << " (" << ArmName( a2 ) << ")" << std::endl;
+			}
+		}
+		Check( answered == 0,
+			"(j) MONEY -- all 60 stations of the phantom sweep x in [1e-7, 3e-6] at local "
+			"(x, 1, 0.26) REFUSE; none reports the 1.00 cm tangency chord" );
+		std::cout << "    the phantom sweep's true corner distance is "
+			<< (double)trueCorner << " (4.21 cm), which the refusal under-paints" << std::endl;
+		Check( trueCorner > Scalar( 0.04 ),
+			"(j) ...and that corner really is far past the 1 cm the phantom would have reported" );
+
+		// AN OBLIQUE STATION on the same fixture: off the axis, so the
+		// landing residual is whatever the central-difference gradient
+		// leaves, and the reached operand (the cylinder wall) carries the
+		// composite's nearest point.  `d` is the closed form there.
+		{
+			const Point3 st( 0.20, 1, 0.20 );
+			const Scalar rho = (Scalar)std::sqrt( 0.20*0.20 + 0.20*0.20 );
+			const Scalar dTrue = rho - Scalar( 0.25 );
+			Scalar dr = 0;
+			CsgLandingArm a3 = CsgLandingArm::None;
+			Check( c->DistanceToSurfaceWithArm( st, Scalar( 1 ), dr, a3 ),
+				"(j) the oblique station answers" );
+			Check( dr >= dTrue - Scalar( 1e-12 ),
+				"(j) MONEY -- reported >= d at the oblique station: the invariant a tolerance "
+				"on the landing test would have broken" );
+			const Scalar epsLocal = Scalar( 5e-5 ) * (Scalar)std::sqrt( 0.5*0.5 + 5.0*5.0 + 0.5*0.5 );
+			Check( dr <= dTrue + epsLocal,
+				"(j) ...and within one probe step (eps) of it" );
+			std::cout << "    oblique station (0.20, 1, 0.20): closed form " << (double)dTrue
+				<< ", reported " << (double)dr << ", gap " << (double)( dr - dTrue )
+				<< ", arm " << ArmName( a3 ) << ", eps " << (double)epsLocal << std::endl;
+		}
+
+		// A POINT INSIDE THE COMPOSITE READS 0.
+		Check( c->DistanceToSurface( Point3( 0.15, 1, 0 ), Scalar( 1 ), d ),
+			"(j) a point inside the composite answers" );
+		CheckClose( d, Scalar( 0 ), Scalar( 0 ),
+			"(j) MONEY -- ...reading exactly 0: interpenetration IS contact" );
+
+		// ...AND A POINT INSIDE THE SLOT DOES NOT.  It is inside operand
+		// A and inside B, so it is OUTSIDE the subtraction.
+		Scalar fv = 0; bool ex = false;
+		Check( c->SignedDistanceLower( Point3( 0, 1, 0.20 ), Scalar( 1 ), fv, ex ),
+			"(j) the composite answers the signed query inside the slot" );
+		Check( fv > Scalar( 0 ),
+			"(j) MONEY -- a point inside the SUBTRAHEND is OUTSIDE the composite (positive)" );
+		Check( !ex,
+			"(j) MONEY -- a SUBTRACTION never exports exactness: max(a, -b) under-reads near a "
+			"seam and its zero set IS the phantom touching set" );
+
+		c->release();
+	}
+
+	// --- AN OBLIQUE STATION WITH A TORUS OPERAND, where the field is
+	// curved and the single descent step's residual is genuinely nonzero
+	// rather than exact by Sterbenz.
+	{
+		Object* t = MakeOperand( new TorusGeometry( Scalar( 1.5 ), Scalar( 0.5 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new BoxGeometry( Scalar( 0.4 ), Scalar( 0.4 ), Scalar( 0.4 ) ),
+			Point3( 1.5, 0, 0 ) );
+		CSGObject* c = MakeCsg( CSG_SUBTRACTION, t, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		const Point3 st( -1.0, 0.8, -1.0 );
+		const Scalar rho = (Scalar)std::sqrt( 2.0 ) - Scalar( 1.5 );
+		const Scalar q   = (Scalar)std::sqrt( (double)( rho*rho ) + 0.8*0.8 );
+		const Scalar dTrue = q - Scalar( 0.5 );
+
+		Scalar d = 0;
+		CsgLandingArm arm = CsgLandingArm::None;
+		Check( c->DistanceToSurfaceWithArm( st, Scalar( 5 ), d, arm ),
+			"(j) the torus-minus-box composite answers at an oblique station" );
+		Check( d >= dTrue - Scalar( 1e-12 ),
+			"(j) MONEY -- reported >= the closed form at a CURVED oblique station" );
+		// The composite's own eps: A's box for a subtraction -- the torus,
+		// 4 x 1 x 4 -- so eps is 5e-5 x its diagonal.  THE FIRST PROBE
+		// STEP IS `max(eps, f)`, and the descent exits its loop as soon as
+		// `f <= kBackoff * eps` with kBackoff = 2 -- so the residual `f`
+		// handed to the probe can be up to 2 eps and the first step with
+		// it.  The bound that actually holds is therefore 2 eps, not eps;
+		// 8's Phase-3 gate says "one probe step, eps", which is the step
+		// SIZE at the floor and not the bound.  Measured here at 1.21 eps.
+		const Scalar epsLocal = Scalar( 5e-5 ) * (Scalar)std::sqrt( 4.0*4.0 + 1.0*1.0 + 4.0*4.0 );
+		Check( d <= dTrue + Scalar( 2 ) * epsLocal,
+			"(j) ...and within one probe step (bounded by kBackoff * eps = 2 eps) of it" );
+		std::cout << "    torus oblique station: closed form " << (double)dTrue
+			<< ", reported " << (double)d << ", gap " << (double)( d - dTrue )
+			<< ", arm " << ArmName( arm ) << ", eps " << (double)epsLocal << std::endl;
+		c->release();
+	}
+
+	// --- THE GRID REFERENCE, for an INTERSECTION and a SUBTRACTION.  The
+	// reference is the composite's SOLID by STRICT operand membership on
+	// the operands' EXACT signed distances -- never `f <= 0`.  A grid
+	// minimum is an UPPER reference, so `gap = reported - reference` is
+	// MEASURED and printed rather than asserted at a chosen tolerance.
+	{
+		// INTERSECTION: two unit spheres 1.2 apart -- a lens.
+		Object* a = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 1.2, 0, 0 ) );
+		Object* aRef = a; Object* bRef = b;
+		aRef->addref(); bRef->addref();
+		CSGObject* c = MakeCsg( CSG_INTERSECTION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		const int steps = 120;			// spacing 0.02 over a 2.4-unit box
+		const Point3 lo( -0.2, -1.2, -1.2 ), hi( 1.4, 1.2, 1.2 );
+		const Point3 stations[4] = {
+			Point3( 0.6, 2.0, 0 ), Point3( 0.6, 0, 2.0 ),
+			Point3( -1.5, 0, 0 ),  Point3( 0.6, 1.5, 1.5 ) };
+
+		Scalar gapMax = Scalar( -RISE_INFINITY );
+		int answered = 0;
+		for( int i = 0; i < 4; ++i ) {
+			Scalar d = 0;
+			CsgLandingArm arm = CsgLandingArm::None;
+			if( !c->DistanceToSurfaceWithArm( stations[i], Scalar( 20 ), d, arm ) ) continue;
+			++answered;
+			const Scalar ref = GridSearchDistanceToComposite(
+				aRef, bRef, CSG_INTERSECTION, stations[i], lo, hi, steps );
+			Scalar lower = 0; bool ex = false;
+			Check( c->SignedDistanceLower( stations[i], Scalar( 20 ), lower, ex ),
+				"(j) the intersection answers its own signed lower bound" );
+			Check( lower <= d + Scalar( 1e-9 ),
+				"(j) MONEY -- lower <= reported at every answering intersection station" );
+			const Scalar gap = d - ref;
+			if( gap > gapMax ) gapMax = gap;
+			std::cout << "    intersection station " << i << ": lower " << (double)lower
+				<< ", grid ref " << (double)ref << ", reported " << (double)d
+				<< ", gap " << (double)gap << ", arm " << ArmName( arm ) << std::endl;
+		}
+		Check( answered > 0, "(j) the intersection answered at least one station" );
+		Check( gapMax <= Scalar( 0.05 ),
+			"(j) MONEY -- intersection gap_max MEASURED (grid spacing 0.02, 121^3 samples), "
+			"asserted <= 0.05" );
+		std::cout << "    intersection gap_max = " << (double)gapMax
+			<< " over " << answered << " stations (grid spacing 0.02)" << std::endl;
+
+		aRef->release(); bRef->release();
+		c->release();
+	}
+	{
+		// SUBTRACTION: a 2x2x2 box with a corner bitten out by a sphere.
+		Object* a = MakeOperand( new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 0.6 ) ), Point3( 1, 1, 1 ) );
+		Object* aRef = a; Object* bRef = b;
+		aRef->addref(); bRef->addref();
+		CSGObject* c = MakeCsg( CSG_SUBTRACTION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		const int steps = 110;			// spacing 0.02 over a 2.2-unit box
+		const Point3 lo( -1.1, -1.1, -1.1 ), hi( 1.1, 1.1, 1.1 );
+		const Point3 stations[4] = {
+			Point3( -1.5, 0, 0 ), Point3( 0, -1.3, 0 ),
+			Point3( 0, 0, -1.7 ), Point3( -1.2, 0.5, 0.5 ) };
+
+		Scalar gapMax = Scalar( -RISE_INFINITY );
+		int answered = 0;
+		for( int i = 0; i < 4; ++i ) {
+			Scalar d = 0;
+			CsgLandingArm arm = CsgLandingArm::None;
+			if( !c->DistanceToSurfaceWithArm( stations[i], Scalar( 20 ), d, arm ) ) continue;
+			++answered;
+			const Scalar ref = GridSearchDistanceToComposite(
+				aRef, bRef, CSG_SUBTRACTION, stations[i], lo, hi, steps );
+			Scalar lower = 0; bool ex = false;
+			Check( c->SignedDistanceLower( stations[i], Scalar( 20 ), lower, ex ),
+				"(j) the subtraction answers its own signed lower bound" );
+			Check( lower <= d + Scalar( 1e-9 ),
+				"(j) MONEY -- lower <= reported at every answering subtraction station" );
+			const Scalar gap = d - ref;
+			if( gap > gapMax ) gapMax = gap;
+			std::cout << "    subtraction station " << i << ": lower " << (double)lower
+				<< ", grid ref " << (double)ref << ", reported " << (double)d
+				<< ", gap " << (double)gap << ", arm " << ArmName( arm ) << std::endl;
+		}
+		Check( answered > 0, "(j) the subtraction answered at least one station" );
+		Check( gapMax <= Scalar( 0.05 ),
+			"(j) MONEY -- subtraction gap_max MEASURED (grid spacing 0.02, 111^3 samples), "
+			"asserted <= 0.05" );
+		std::cout << "    subtraction gap_max = " << (double)gapMax
+			<< " over " << answered << " stations (grid spacing 0.02)" << std::endl;
+
+		aRef->release(); bRef->release();
+		c->release();
+	}
+
+	// --- A SHEET OPERAND makes an intersection or a subtraction REFUSE.
+	// A sheet REFUSES the signed query outright -- not merely "lacks the
+	// exactness flag", which a BOUND operand (an ellipsoid, an SDF) also
+	// does without forcing a refusal.  A subtracted PLANE admitted to the
+	// boundary arm would report the chord to a face the subtraction
+	// removes nothing at: the phantom in a new form.
+	{
+		Object* a = MakeOperand( new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* pl = MakeOperand( new InfinitePlaneGeometry( Scalar( 1 ), Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		CSGObject* c = MakeCsg( CSG_SUBTRACTION, a, pl, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar d = 0;
+		Check( !c->DistanceToSurface( Point3( 0, 5, 0 ), Scalar( 100 ), d ),
+			"(j) MONEY -- a SUBTRACTED PLANE operand makes the composite REFUSE" );
+		Scalar fv = 0; bool ex = true;
+		Check( !c->SignedDistanceLower( Point3( 0, 5, 0 ), Scalar( 100 ), fv, ex ),
+			"(j) ...and so does its signed query" );
+		Check( !ex, "(j) ...clearing the flag" );
+		c->release();
+
+		// TEETH: the same box against a SOLID subtrahend answers, so the
+		// refusal above is the sheet and not the fixture.
+		Object* a2 = MakeOperand( new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* s2 = MakeOperand( new SphereGeometry( Scalar( 0.6 ) ), Point3( 1, 1, 1 ) );
+		CSGObject* c2 = MakeCsg( CSG_SUBTRACTION, a2, s2, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Check( c2->DistanceToSurface( Point3( 0, 5, 0 ), Scalar( 100 ), d ),
+			"(j) ...teeth: the same box minus a SOLID answers" );
+		CheckClose( d, Scalar( 4 ), Scalar( 1e-9 ), "(j) ...with 5 - 1 = 4" );
+		c2->release();
+
+		// An INTERSECTION with a mesh operand refuses for the same reason,
+		// even though a UNION with the same mesh answers (above).
+		TriangleMeshGeometryIndexed* mg = BuildTinyMesh();
+		Object* a3 = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Object* m3 = MakeOperand( mg, Point3( 0, 0, 0 ) );
+		CSGObject* c3 = MakeCsg( CSG_INTERSECTION, a3, m3, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Check( !c3->DistanceToSurface( Point3( 0, 5, 0 ), Scalar( 100 ), d ),
+			"(j) MONEY -- an INTERSECTION with a MESH operand refuses, where the UNION answered" );
+		c3->release();
+	}
+
+	// --- A POINT INSIDE OPERAND A OF AN INTERSECTION, OUTSIDE B, reads a
+	// POSITIVE distance.  It is outside the composite -- correct, not a
+	// violation, and stated here so nobody "fixes" it.
+	{
+		Object* a = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 1.5, 0, 0 ) );
+		CSGObject* c = MakeCsg( CSG_INTERSECTION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		Scalar fv = 0; bool ex = false;
+		Check( c->SignedDistanceLower( Point3( -0.5, 0, 0 ), Scalar( 10 ), fv, ex ),
+			"(j) the intersection answers at a point inside A and outside B" );
+		Check( fv > Scalar( 0 ),
+			"(j) MONEY -- inside operand A but outside B is OUTSIDE the intersection (positive)" );
+		Check( !ex,
+			"(j) MONEY -- an INTERSECTION never exports exactness, even over two exact operands" );
+
+		Scalar d = 0;
+		CsgLandingArm arm = CsgLandingArm::None;
+		Check( c->DistanceToSurfaceWithArm( Point3( -0.5, 0, 0 ), Scalar( 10 ), d, arm ),
+			"(j) ...and the unsigned query answers there" );
+		Check( d > Scalar( 0 ), "(j) ...with a POSITIVE distance, not 0" );
+		CheckClose( d, Scalar( 1 ), Scalar( 1e-9 ),
+			"(j) ...the closed form: the lens's near tip is at x = 0.5, one unit away" );
+
+		// ...and INSIDE the lens it reads 0.
+		Check( c->DistanceToSurface( Point3( 0.75, 0, 0 ), Scalar( 10 ), d ),
+			"(j) the intersection answers inside the lens" );
+		CheckClose( d, Scalar( 0 ), Scalar( 0 ), "(j) MONEY -- ...reading exactly 0" );
+
+		c->release();
+	}
+
+	// --- AN ANISOTROPIC SOLID OPERAND forces the STRICT arm.  `x sigmaMin`
+	// under a non-uniform transform is a bound, not the distance, so the
+	// operand cannot carry the exactness flag and the boundary arm cannot
+	// fire on it -- the probe has to walk until the landing is strictly
+	// inside.  The answer is then above the truth, which is the safe
+	// direction.
+	{
+		Object* a = MakeOperand( new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		a->SetStretch( Vector3( Scalar( 3 ), Scalar( 1 ), Scalar( 0.4 ) ) );
+		a->FinalizeTransformations();
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 0.2 ) ), Point3( 10, 10, 10 ) );
+		CSGObject* c = MakeCsg( CSG_SUBTRACTION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		Scalar fv = 0; bool ex = true;
+		Check( a->SignedDistanceLower( Point3( 0, 5, 0 ), Scalar( 100 ), fv, ex ),
+			"(j) the (3,1,0.4) operand answers its signed query" );
+		Check( !ex, "(j) ...reporting exact = FALSE, the similarity-only rule" );
+
+		Scalar d = 0;
+		CsgLandingArm arm = CsgLandingArm::None;
+		Check( c->DistanceToSurfaceWithArm( Point3( 0, 5, 0 ), Scalar( 100 ), d, arm ),
+			"(j) the composite over it answers" );
+		Check( arm == CsgLandingArm::Strict,
+			std::string( "(j) MONEY -- ...taking the STRICT arm, since a bound operand can never "
+			"prove a boundary landing: " ) + ArmName( arm ) );
+		Check( d >= Scalar( 4 ) - Scalar( 1e-9 ),
+			"(j) ...and the answer is at or above the true 4" );
+		std::cout << "    (3,1,0.4) operand: true 4, reported " << (double)d
+			<< ", arm " << ArmName( arm ) << std::endl;
+
+		c->release();
+	}
+
+	// --- A TRANSFORMED COMPOSITE.  Operands are NOT in world space:
+	// `IntersectRay` maps the ray by the composite's own inverse and THEN
+	// calls each operand, which applies its own on top.  So the composite
+	// must implement its own transform layer, and the proof is that a
+	// composite carrying `position`/`orientation` answers the same as the
+	// one built with that transform FOLDED INTO the operands.
+	//
+	// OPERAND A IS AXISYMMETRIC about the rotation axis on purpose: folding
+	// a rotation into a BOX operand grows its parent-frame AABB, which
+	// moves eps and shifts a probe-stepped answer by ~eps -- five orders
+	// above 1e-9.  The box-minus-box fixture below is compared at ~eps
+	// instead, which is the honest tolerance for it.
+	{
+		const Point3  pos( 2.5, 2.5, 2.5 );
+		const Vector3 orient( 0, 45, 0 );
+		const Point3  station( 2.76, 3.5, 2.5 );		// 1 cm outside the wall, in world
+
+		Object* ca = MakeOperand( new CylinderGeometry( 'y', Scalar( 0.25 ), Scalar( 5 ), true ),
+			Point3( 0, 2.5, 0 ) );
+		Object* cb = MakeOperand( new BoxGeometry( Scalar( 0.08 ), Scalar( 5.2 ), Scalar( 0.5 ) ),
+			Point3( 0, 2.5, 0 ) );
+		CSGObject* transformed = MakeCsg( CSG_SUBTRACTION, ca, cb, pos, orient );
+
+		// The FOLDED twin: the composite's OWN world matrix pushed onto
+		// each operand's transform stack (stack entries LEFT-multiply, so
+		// this is exactly `outer * operand-local`), and the composite
+		// itself left at the identity.
+		Object* ga = MakeOperand( new CylinderGeometry( 'y', Scalar( 0.25 ), Scalar( 5 ), true ),
+			Point3( 0, 2.5, 0 ) );
+		Object* gb = MakeOperand( new BoxGeometry( Scalar( 0.08 ), Scalar( 5.2 ), Scalar( 0.5 ) ),
+			Point3( 0, 2.5, 0 ) );
+		const Matrix4 outerMx = transformed->GetFinalTransformMatrix();
+		ga->PushTopTransStack( outerMx );  ga->FinalizeTransformations();
+		gb->PushTopTransStack( outerMx );  gb->FinalizeTransformations();
+		CSGObject* folded = MakeCsg( CSG_SUBTRACTION, ga, gb, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		Scalar dT = 0, dF = 0;
+		CsgLandingArm aT = CsgLandingArm::None, aF = CsgLandingArm::None;
+		const bool okT = transformed->DistanceToSurfaceWithArm( station, Scalar( 1 ), dT, aT );
+		const bool okF = folded->DistanceToSurfaceWithArm( station, Scalar( 1 ), dF, aF );
+		Check( okT && okF, "(j) both the transformed and the folded composite answer" );
+		// eps is the SAME for both, which is the point of choosing an
+		// axisymmetric operand A: A's parent-frame AABB is unchanged by a
+		// rotation about its own axis, so the probe step does not move.
+		const Scalar epsLocal = Scalar( 5e-5 ) * (Scalar)std::sqrt( 0.5*0.5 + 5.0*5.0 + 0.5*0.5 );
+		if( okT && okF ) {
+			// BOTH ARE AT OR ABOVE THE CLOSED FORM -- the invariant that
+			// matters, and the one a tolerance on the landing test would
+			// have broken.
+			Check( dT >= Scalar( 0.01 ) - Scalar( 1e-12 ) && dF >= Scalar( 0.01 ) - Scalar( 1e-12 ),
+				"(j) MONEY -- both the transformed and the folded composite are at or above the "
+				"closed form 0.01 at a station 1 cm off the wall" );
+			CheckClose( dT, Scalar( 0.01 ), Scalar( 1e-12 ),
+				"(j) ...and the TRANSFORMED one hits it exactly (its boundary arm fires)" );
+			// AND THEY AGREE TO ONE PROBE STEP, not to 1e-9.  8's gate
+			// asked for 1e-9 on an AXISYMMETRIC operand A, reasoning that
+			// folding a rotation into a BOX operand would move eps; that
+			// reasoning is right about eps and incomplete about the
+			// LANDING.  In the unrotated frame the descent's arithmetic is
+			// exact by Sterbenz -- `0.26 (-) 0.25` is exact, so the landing
+			// has `f_A` a true zero and the BOUNDARY arm fires with gap 0.
+			// Push the same point through a 45-degree rotation and that
+			// exactness is gone: `f_A` at the landing misses zero by ulps,
+			// the boundary arm declines, and the probe takes exactly one
+			// eps step -- `d` plus a step instead of `d`, the SAFE
+			// direction the design names for a `+1 ulp` miss.  So the two
+			// agree to a probe step and not to rounding, and the arms
+			// differ.
+			Check( std::fabs( (double)( dT - dF ) ) <= (double)( epsLocal * Scalar( 1.05 ) ),
+				"(j) MONEY -- a TRANSFORMED composite agrees with the same composite built with "
+				"the transform FOLDED into its operands to within one probe step" );
+			std::cout << "    transformed composite " << (double)dT << " vs folded "
+				<< (double)dF << " (arms " << ArmName( aT ) << " / " << ArmName( aF )
+				<< "), difference " << (double)( dF - dT ) << " = "
+				<< (double)( ( dF - dT ) / epsLocal ) << " eps" << std::endl;
+		}
+		transformed->release();
+		folded->release();
+
+		// THE BOX-MINUS-BOX TWIN, compared at ~eps as the design's own
+		// note prescribes: operand A is NOT axisymmetric here, so folding
+		// the rotation grows its parent-frame AABB by sqrt(2) in x and z
+		// and eps moves with it.
+		{
+			Object* ba = MakeOperand( new BoxGeometry( Scalar( 1 ), Scalar( 1 ), Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+			Object* bb = MakeOperand( new BoxGeometry( Scalar( 0.4 ), Scalar( 0.4 ), Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+			CSGObject* bt = MakeCsg( CSG_SUBTRACTION, ba, bb, pos, orient );
+
+			Object* fba = MakeOperand( new BoxGeometry( Scalar( 1 ), Scalar( 1 ), Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+			Object* fbb = MakeOperand( new BoxGeometry( Scalar( 0.4 ), Scalar( 0.4 ), Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+			const Matrix4 om = bt->GetFinalTransformMatrix();
+			fba->PushTopTransStack( om ); fba->FinalizeTransformations();
+			fbb->PushTopTransStack( om ); fbb->FinalizeTransformations();
+			CSGObject* bf = MakeCsg( CSG_SUBTRACTION, fba, fbb, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+			// A world station 0.3 above the composite's centre, clear of
+			// the slot (which runs along the composite's local z).
+			const Point3 bst( 2.5, 3.3, 2.5 );
+			Scalar d1 = 0, d2 = 0;
+			CsgLandingArm a1 = CsgLandingArm::None, a2 = CsgLandingArm::None;
+			const bool ok1 = bt->DistanceToSurfaceWithArm( bst, Scalar( 2 ), d1, a1 );
+			const bool ok2 = bf->DistanceToSurfaceWithArm( bst, Scalar( 2 ), d2, a2 );
+			Check( ok1 && ok2, "(j) the box-minus-box pair both answer" );
+			// The FOLDED one's eps is the larger of the two, so it is the
+			// bound the comparison has to use.
+			const Scalar epsFolded = Scalar( 5e-5 ) * (Scalar)std::sqrt(
+				2.0*2.0 + 1.0*1.0 + 2.0*2.0 );
+			if( ok1 && ok2 ) {
+				Check( d1 >= Scalar( 0.3 ) - Scalar( 1e-12 ) && d2 >= Scalar( 0.3 ) - Scalar( 1e-12 ),
+					"(j) ...both at or above the closed form 0.3" );
+				Check( std::fabs( (double)( d1 - d2 ) ) <= (double)( Scalar( 2 ) * epsFolded ),
+					"(j) MONEY -- a NON-axisymmetric operand A: the transformed and folded "
+					"composites agree at ~eps, which is the honest tolerance once folding the "
+					"rotation grows A's parent-frame AABB" );
+				std::cout << "    box-minus-box: transformed " << (double)d1 << " vs folded "
+					<< (double)d2 << " (arms " << ArmName( a1 ) << " / " << ArmName( a2 )
+					<< "), eps_folded " << (double)epsFolded << std::endl;
+			}
+			bt->release();
+			bf->release();
+		}
+	}
+
+	// --- NESTED COMPOSITES.  A union inside a subtraction, and an
+	// INTERSECTION inside a subtraction: the inner composite exports its
+	// own composed field as `SignedDistanceLower`, and the outer one
+	// consumes it exactly as it would a leaf operand.
+	{
+		// union-in-subtraction: box minus (two overlapping spheres).
+		Object* s1 = MakeOperand( new SphereGeometry( Scalar( 0.5 ) ), Point3( 0.5, 1, 0 ) );
+		Object* s2 = MakeOperand( new SphereGeometry( Scalar( 0.5 ) ), Point3( -0.5, 1, 0 ) );
+		CSGObject* inner = MakeCsg( CSG_UNION, s1, s2, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Object* box = MakeOperand( new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		CSGObject* outer = MakeCsg( CSG_SUBTRACTION, box, inner, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		Scalar d = 0;
+		CsgLandingArm arm = CsgLandingArm::None;
+		Check( outer->DistanceToSurfaceWithArm( Point3( 0, 0, -3 ), Scalar( 10 ), d, arm ),
+			"(j) MONEY -- a UNION nested inside a SUBTRACTION composes and answers" );
+		CheckClose( d, Scalar( 2 ), Scalar( 1e-9 ), "(j) ...with the box's 3 - 1 = 2" );
+		outer->release();
+	}
+	{
+		// intersection-in-subtraction, and the nested composite's own
+		// exactness export checked directly.
+		Object* s1 = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0.6, 0 ) );
+		Object* s2 = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, -0.6, 0 ) );
+		Object* innerRef = 0;
+		CSGObject* inner = 0;
+		{
+			CSGObject* i2 = new CSGObject( CSG_INTERSECTION );
+			i2->AssignObjects( s1, s2 );
+			s1->release(); s2->release();
+			i2->FinalizeTransformations();
+			inner = i2;
+			innerRef = i2;
+			innerRef->addref();
+		}
+
+		Scalar fv = 0; bool ex = true;
+		Check( inner->SignedDistanceLower( Point3( 0, 0, 3 ), Scalar( 10 ), fv, ex ),
+			"(j) the nested intersection answers its parent's signed query" );
+		Check( !ex,
+			"(j) MONEY -- a nested INTERSECTION reports exact = FALSE to its parent: its zero "
+			"set is the phantom touching set, so the parent's boundary arm must not land on it" );
+
+		Object* box = MakeOperand( new BoxGeometry( Scalar( 4 ), Scalar( 4 ), Scalar( 4 ) ), Point3( 0, 0, 0 ) );
+		CSGObject* outer = MakeCsg( CSG_SUBTRACTION, box, inner, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar d = 0;
+		CsgLandingArm arm = CsgLandingArm::None;
+		Check( outer->DistanceToSurfaceWithArm( Point3( 0, 0, 5 ), Scalar( 10 ), d, arm ),
+			"(j) MONEY -- an INTERSECTION nested inside a SUBTRACTION composes and answers" );
+		CheckClose( d, Scalar( 3 ), Scalar( 1e-9 ), "(j) ...with the box's 5 - 2 = 3" );
+		std::cout << "    intersection-in-subtraction: reported " << (double)d
+			<< ", arm " << ArmName( arm ) << std::endl;
+		outer->release();
+		innerRef->release();
+	}
+
+	// --- `DescribeKind` NAMES THE OPERATION, which is what the proximity
+	// refusal log prints in place of the old "(no geometry)".
+	{
+		Object* a = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Object* b = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 1, 0, 0 ) );
+		CSGObject* c = MakeCsg( CSG_SUBTRACTION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Check( std::string( c->DescribeKind() ) == "csg subtraction",
+			std::string( "(j) MONEY -- DescribeKind names the OPERATION: " ) + c->DescribeKind() );
+		c->SetOperation( CSG_UNION );
+		Check( std::string( c->DescribeKind() ) == "csg union", "(j) ...and follows a re-point" );
+		c->release();
+
+		// An ordinary Object still names its geometry's type.
+		Object* o = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Check( std::string( o->DescribeKind() ).find( "SphereGeometry" ) != std::string::npos,
+			std::string( "(j) ...teeth: an Object names its geometry: " ) + o->DescribeKind() );
+		o->release();
+	}
+}
+
 //======================================================================
 
 int main()
@@ -1760,6 +2509,7 @@ int main()
 	TestBuiltinEndToEnd( f );
 	TestSignedLowerBound( f );
 	TestExactSigma();
+	TestCsgComposites();
 
 	f.job->release();
 
