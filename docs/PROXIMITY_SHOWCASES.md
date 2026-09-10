@@ -594,15 +594,25 @@ width × height × depth = x × y × z; centres given):
   |s| ≤ 0.05. This is the receiver whose wet ramp is readable — from the
   OVERHEAD probe camera (§2 painter stations), not from the beauty camera,
   whose sightlines cross the water at 53.2° to its normal.
-- `stone_d`: `sphere_geometry` r = 0.03 at (0.26, 0.035, 0.09), on `sand_px`
-  (x ∈ [0.23, 0.29] inside the strip's [0.1805, 0.40]): equator ring 5 mm
-  above the sand, bottom 2.5 cm under. Its burial line is visible AT the
-  sand surface; the buried ramp is not visible (opaque sand), so it carries
-  no painter station.
+- `stone_d`: `sphere_geometry` r = 0.03 at (0.05, 0.035, −0.22), on `sand_nz`
+  (x ∈ [0.02, 0.08] inside the strip's [−0.1805, 0.1805]; z ∈ [−0.25, −0.19]
+  inside the strip's [−0.40, −0.1805]): equator ring 5 mm above the sand,
+  bottom 2.5 cm under. Its burial line is visible AT the sand surface; the
+  buried ramp is not visible (opaque sand), so it carries no painter
+  station. **Corrected 2026-09-10 by the implementation**: the position
+  originally specified here, (0.26, 0.035, 0.09) on `sand_px`, projects
+  ~31.0° off the beauty camera's view axis against the lens/sensor's 19.8°
+  horizontal half-FOV — out of frame. Moved to the far strip `sand_nz`,
+  which brings it to 9.3° horizontal / 13.5° vertical off-axis (inside the
+  19.8°/15.1° half-FOVs) at a 0.624 m axial depth — 1.6 cm beyond the
+  0.608 m DoF far limit, so it falls just soft rather than sharply out of
+  focus. The B6 stations below are re-derived at the new position (same
+  formula, translated).
 Camera (beauty): `thinlens_camera` at (0.10, 0.36, 0.34) looking at
 (0, 0.0, −0.02), 50 mm, f/22, focus 0.50 m (DoF [0.424, 0.608] m at a 1-px
-circle of confusion, which holds stone_d at 0.44 m and stone_a's top at
-0.46 m as well as the flagstone at 0.57 m); the view axis is at 43.9°, the
+circle of confusion, which holds stone_a's top at 0.46 m and the flagstone
+at 0.57 m; `stone_d`, at its corrected position, falls just soft at 0.624 m
+— see above); the view axis is at 43.9°, the
 flagstone is seen at 36.8° elevation and its 2 cm ramp images at ≥ 8 px
 radial (the header shows the arithmetic; the flagstone's top face is
 seen at 39.0° above its own tilted face — the rounded 36.8°/39.0° pair
@@ -681,12 +691,15 @@ and orientation):
 - B4 stone_a 2 cm under: (0.0387298, 0.01, 0) → depth 0.02 → 1.0.
 - B5 stone_a bottom (0, −0.02, 0): water top 0.05 away, floor 0.55 away,
   bed counted at 3.8e-17 → running maximum 0.05 → 1.0.
-- B6 stone_d in sand_px (sand top 0.03, centre (0.26, 0.035, 0.09), r 0.03):
-  equator point (0.29, 0.035, 0.09) → 5 mm above the sand → 0; the point at
-  y = 0.02 at horizontal radius sqrt(0.03² − 0.015²) = 0.0259808 toward +x,
-  (0.2859808, 0.02, 0.09) → depth 0.01 → 0.5 (the strip's top is nearest:
-  its inner face is 0.1055 away, its outer 0.114); the bottom (0.26, 0.005,
-  0.09) → depth 0.025 → 1.0.
+- B6 stone_d in sand_nz (sand top 0.03, centre (0.05, 0.035, −0.22), r 0.03 —
+  moved 2026-09-10 from the originally specified centre (0.26, 0.035, 0.09)
+  on `sand_px`, which projected ~31° off the beauty camera's view axis and
+  was out of frame; see the stone_d bullet above): equator point
+  (0.08, 0.035, −0.22) → 5 mm above the sand → 0; the point at y = 0.02 at
+  horizontal radius sqrt(0.03² − 0.015²) = 0.0259808 toward +x,
+  (0.0759808, 0.02, −0.22) → depth 0.01 → 0.5 (the strip's top is nearest:
+  its inner face z = −0.1805 is 0.0395 away, its outer face z = −0.40 is
+  0.18 away); the bottom (0.05, 0.005, −0.22) → depth 0.025 → 1.0.
 - B7 stone_b: the bottom point (0.09, −0.02, −0.05) → depth 0.05 → 1.0; a
   waterline point on the ellipsoid: solve the ellipsoid at y = 0.03 in its
   local frame (y_local = 0.02 = 2/3 of the 0.03 semi-axis, so the local xz

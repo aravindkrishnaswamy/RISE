@@ -48,9 +48,9 @@ RISE ASCII SCENE 7
 #     | B3| stone_a 1 cm under                          | (0.04, 0.02, 0)               | 0.5       | 0.5      |
 #     | B4| stone_a 2 cm under                          | (0.0387298, 0.01, 0)          | 1.0       | 1.0      |
 #     | B5| stone_a bottom (on the bed)                 | (0, -0.02, 0)                 | 1.0       | 1.0 (running max 0.05 from the water, bed's 3.8e-17 dominated but present) |
-#     | B6a| stone_d equator (5 mm above the sand)      | (0.29, 0.035, 0.09)           | 0         | 0        |
-#     | B6b| stone_d mid-depth in the sand               | (0.2859808, 0.02, 0.09)       | 0.5       | 0.5      |
-#     | B6c| stone_d bottom (2.5 cm under the sand)      | (0.26, 0.005, 0.09)           | 1.0       | 1.0      |
+#     | B6a| stone_d equator (5 mm above the sand)      | (0.08, 0.035, -0.22)          | 0         | 0        |
+#     | B6b| stone_d mid-depth in the sand               | (0.0759808, 0.02, -0.22)      | 0.5       | 0.5      |
+#     | B6c| stone_d bottom (2.5 cm under the sand)      | (0.05, 0.005, -0.22)          | 1.0       | 1.0      |
 #     | B7a| stone_b bottom                              | (0.09, -0.02, -0.05)          | 1.0       | 1.0      |
 #     | B7b| stone_b at the waterline (local +x, yawed)  | (0.12502, 0.03, -0.062746)    | 0         | 0        |
 #     | B8 | stone_c pebble, -x side, object-space bisect| (-0.108284, 0.02, 0.04)       | 0.5       | 0.5      |
@@ -77,20 +77,21 @@ RISE ASCII SCENE 7
 #     back-reflection term predicts.  Two independent 512 spp probe/control pairs were rendered (one
 #     stand-alone, one as part of the full suite run); the ratios agree to <=0.02 between them.
 #
-#   COST.  Live vs `def buried 0` in ALL THREE chunks that declare it (expr_stones, sp_stone_rough,
-#   sp_stone_coat), at the shipped 32 spp, every core busy (`render_thread_reserve_count 0`, this worker's
-#   worktree build), 2 warm-ups then 3 interleaved pairs (`ps aux | grep -E "bin/rise|make"` showed a
-#   concurrent sibling worktree's own build/test activity throughout this session -- noted, not
-#   eliminable from this machine).  Every run listed:
-#     pair 0: live 17.528s / no-signal 17.383s -> 1.008x
-#     pair 1: live 17.568s / no-signal 17.030s -> 1.032x
-#     pair 2: live 18.338s / no-signal 20.771s -> 0.883x
-#   MEASURED: live mean 17.811s, no-signal mean 18.395s, ratio 0.968x (target <= 1.15x, PASSES with
+#   COST.  RE-MEASURED 2026-09-10 (P1-1 review round: the gate now asserts <= 1.15x, matching the spec, not
+#   the earlier <= 1.30x placeholder). Live vs `def buried 0` in ALL THREE chunks that declare it
+#   (expr_stones, sp_stone_rough, sp_stone_coat), at the shipped 32 spp, every core busy
+#   (`RISE_OPTIONS_FILE` pointed at a temp options file with `render_thread_reserve_count 0`, matching
+#   `bench.sh`'s own protocol), 2 warm-ups then 3 interleaved pairs (`ps aux | grep -E "bin/rise|bin/tests"`
+#   showed no other heavy render/build activity during this measurement window). Every run listed:
+#     pair 0: live 5.616s / no-signal 5.529s -> 1.016x
+#     pair 1: live 5.545s / no-signal 5.632s -> 0.984x
+#     pair 2: live 5.917s / no-signal 5.895s -> 1.004x
+#   MEASURED: live mean 5.692s, no-signal mean 5.685s, ratio 1.001x (target <= 1.15x, PASSES with large
 #   margin -- at this scene's box-only container family and modest object count, `interior`'s per-hit
-#   cost is within measurement noise of zero; the ratio landing UNDER 1.0 reflects that noise, not a
-#   negative cost).  Call-rate regime: a path-traced scene (`pathtracing_pel_rasterizer`) evaluates the
-#   painter many times per pixel (every bounce that hits a stone), not once per camera sample like the
-#   pavilion's `pixelpel_rasterizer`, and its figure is not comparable to that showcase's.
+#   cost is within measurement noise of zero). Call-rate regime: a path-traced scene
+#   (`pathtracing_pel_rasterizer`) evaluates the painter many times per pixel (every bounce that hits a
+#   stone), not once per camera sample like the pavilion's `pixelpel_rasterizer`, and its figure is not
+#   comparable to that showcase's.
 #
 #   TIR / LIGHTING.  `transparent_shadows TRUE` is MANDATORY (recorded here): the default is FALSE, and
 #   `RayCaster::CastShadowRayAuto` then runs the binary occlusion test, blocking every NEE shadow ray from
@@ -116,22 +117,26 @@ RISE ASCII SCENE 7
 #      later worker should not rediscover the hard way.
 #   3. `omni_light` `power 1.5` was tuned empirically (spec leaves this to the worker): the first
 #      value tried (6.0, the naive inverse-square scale from the pavilion/showroom/sculptors_studio
-#      precedents' 300-500 @ 7-8 m down to this scene's ~1 m) overexposed nearly the entire visible stone
-#      silhouette to white, washing out the dry/wet colour difference the whole scene exists to show (a
-#      red-vs-white debug swap of the `wet` colour confirmed the RAMP itself was rendering correctly --
-#      the problem was pure exposure). 1.5 keeps the highlight off full white and leaves the wet band
-#      visible in the beauty render; see the crop under `rendered/`.
-#   4. FINDING, not corrected: `stone_d` (0.26, 0.035, 0.09) projects OUTSIDE the shipped beauty frame.
-#      Re-deriving the beauty camera's basis (forward/right/up from `location`/`lookat`/`up`, verified
-#      against the SAME formula that reproduced the overhead probe camera's own stated angles to
-#      hundredths of a degree) puts stone_d at ~31 deg off the view axis against a 50 mm/36 mm-sensor
-#      half-FOV of 19.8 deg -- outside the frame horizontally, regardless of it being correctly inside the
-#      stated depth-of-field RANGE (0.368-0.37 m measured here vs the header's 0.44 m; DoF is a distance
-#      statement, not a framing one). `stone_d`'s own B6a/B6b/B6c stations are QUERY-only (spec says so
-#      explicitly -- its burial line is at the opaque sand surface and "carries no painter station"), so
-#      no MONEY measurement depends on it being on-screen, and the camera was NOT altered to force it in
-#      (doing so risks breaking the flagstone elevation/DoF figures that DO check out against the spec).
-#      Recorded here rather than silently accepted.
+#      precedents' 300-500 @ 7-8 m down to this scene's ~1 m) washed out the wet/dry contrast (peak
+#      241/255 in the 8-bit sRGB output, MEASURED here -- not literally overexposed to pure white, but
+#      close enough to flatten the colour difference the whole scene exists to show; a red-vs-white debug
+#      swap of the `wet` colour confirmed the RAMP itself was rendering correctly -- the problem was pure
+#      exposure). 1.5 keeps the highlight well off that ceiling and leaves the wet band visible in the
+#      beauty render; see the crop under `rendered/`.
+#   4. CORRECTED 2026-09-10 (was recorded as an open finding on first authoring; fixed by moving the
+#      stone, not by re-deriving anything). `stone_d`'s ORIGINAL position (0.26, 0.035, 0.09) on `sand_px`
+#      projected ~31.0 deg off the beauty camera's view axis against the 50 mm/36 mm-sensor half-FOV of
+#      19.8 deg -- OUTSIDE the frame horizontally. The prior text here also claimed the original position
+#      was "correctly inside the stated depth-of-field RANGE" -- that claim was ITSELF WRONG: its axial
+#      depth was 0.368 m, which is BELOW the near DoF limit 0.4244 m, i.e. also outside the DoF, on the
+#      near side; re-recorded honestly here rather than repeated.
+#      FIX: moved `stone_d` to (0.05, 0.035, -0.22) on the FAR strip `sand_nz` (re-derived against the same
+#      camera-basis formula that reproduces the overhead probe camera's own stated angles): now 9.3 deg
+#      horizontal / 13.5 deg vertical off the view axis, inside the 19.8 deg / 15.1 deg half-FOVs -- IN
+#      FRAME. Its new axial depth is 0.624 m, 1.6 cm BEYOND the f/22 DoF far limit of 0.6084 m (circle of
+#      confusion ~1.1 px at that depth) -- it falls just soft, not inside the stated DoF range; the beauty
+#      paragraph below says what this looks like. `stone_d`'s B6a/B6b/B6c stations (unchanged formula,
+#      translated to the new centre) still match 0/0.5/1.0 exactly -- see the station table above.
 #   No other deviation from the spec was needed: every query station, both painter-probe receivers, the
 #   TIR cone check, and the cost gate all landed inside their predicted bands on the first working scene
 #   revision (after the fixes above).
@@ -144,9 +149,14 @@ RISE ASCII SCENE 7
 #   wet band a faint sheen rather than a flat colour change, which is the intended "real stone" cue over
 #   a cartoon waterline. What it does NOT draw: the effect is SUBTLE at normal viewing size -- it reads
 #   first as a soft contact shadow and only on close inspection (or the header's own contrast-boosted
-#   crops, not shipped) as a colour/gloss change; a viewer not told to look for it could miss it. It also
-#   does not draw stone_d's sand-burial line at all (finding 4 above) and does not show the pool's water
-#   as a distinct visual element -- BY DESIGN (SS2's flush waterline means the only tell is the stones
+#   crops, not shipped) as a colour/gloss change; a viewer not told to look for it could miss it. RE-JUDGED
+#   2026-09-10 after `stone_d`'s correction (Deviations item 4): `stone_d` is now VISIBLE, in the upper
+#   right of the frame on the far `sand_nz` strip, falling just soft (its 0.624 m axial depth is 1.6 cm
+#   past the DoF far limit) next to the three sharp foreground stones -- a mild, honest depth cue rather
+#   than a defect. It still does not draw a coloured burial ramp on `stone_d` itself: every point of its
+#   visible surface is above the sand (buried = 0 there), and the actual wet-to-1.0 ramp is inside the
+#   opaque sand, unseen, exactly as the spec calls for. The scene does not show the pool's water as a
+#   distinct visual element -- BY DESIGN (SS2's flush waterline means the only tell is the stones
 #   themselves, not a dramatic pool edge), but worth naming as a beauty-render observation rather than
 #   only a measurement one.
 #
@@ -190,10 +200,34 @@ file_rasterizeroutput
 # (-0.10,-0.36,-0.36), horizontal distance 0.3736 m, elevation
 # atan(0.36/0.3736) = 43.94 deg (header: 43.9 deg).  Distances re-derived from
 # the shipped `location`/`position` chunks: stone_a's top 0.463 m, the
-# flagstone's centre 0.571 m -- both inside the DoF range above; stone_d
-# (0.26, 0.035, 0.09) is at 0.368 m (also inside DoF depth-wise) but at ~31 deg
-# off the view axis against this lens/sensor's 19.8 deg half-FOV -- OUTSIDE
-# the frame horizontally (header "Deviations" item 4; not a MONEY station).
+# flagstone's centre 0.571 m -- both inside the DoF range above.
+#
+# FRAMING ARITHMETIC (spec Sec.0's >= 8 px radial rule; thin-lens magnification
+# f/(d-f), 22.22 px/mm over the 36 mm sensor at 800 px, x sin(elevation) for the
+# radial foreshortening), for the two painter RECEIVERS' 2 cm ring:
+#   stone_a: waterline point (0.0387298, 0.03, 0) is at d=0.4767 m, elevation
+#   43.7 deg -> magnification f/(d-f)=0.1172 -> tangential 2.344 mm (of the
+#   20 mm/2 cm span) -> radial 2.344*sin(43.7)=1.619 mm -> 35.97 px (all of
+#   B2/B3/B4 land within 36.0 +/- 0.1 px of each other -- comfortably over the
+#   8 px floor).
+#   stone_e (flagstone): face centre (-0.015774, 0.0192571, -0.10) is at
+#   d=0.564 m (the header's stated "centre 0.571 m" is the BOX centre, 0.008 m
+#   farther); using the box-centre depth with the face-centre elevation
+#   (36.8 deg, matching the spec's stated value exactly): magnification
+#   f/(0.571-0.050)=0.0960 -> tangential 1.919 mm -> radial
+#   1.919*sin(36.8)=1.146 mm -> 25.5 px (also over the floor; the flagstone's
+#   own painter station is read on the OVERHEAD probe, not this camera, so this
+#   is a framing/visibility check, not a MONEY measurement).
+#
+# `stone_d` (0.26, 0.035, 0.09) ORIGINALLY projected ~31 deg off the view axis
+# against this lens/sensor's 19.8 deg half-FOV -- OUTSIDE the frame
+# horizontally -- and was CORRECTED 2026-09-10 (header "Deviations" item 4) to
+# (0.05, 0.035, -0.22) on `sand_nz`: now at d=0.624 m axial depth (1.6 cm
+# BEYOND the 0.6084 m DoF far limit -- circle of confusion ~1.1 px, it falls
+# just soft, NOT inside the stated DoF range), 9.3 deg horizontal / 13.5 deg
+# vertical off the view axis against the 19.8 deg / 15.1 deg half-FOVs -- IN
+# FRAME (still not a MONEY station; B6a/b/c are query-only regardless).
+#
 # The flagstone's top face crosses the waterline at a shallow elevation from
 # this camera, and the SIGHTLINE to it crosses the water at ~53 deg to the
 # water's normal -- far outside the family's 10 deg refraction-displacement
@@ -473,7 +507,7 @@ standard_object
 	name		stone_d
 	geometry	geo_stone_d
 	material	mat_stone
-	position	0.26 0.035 0.09
+	position	0.05 0.035 -0.22
 }
 
 # The flagstone -- a tilted box, orientation applied about its own centre

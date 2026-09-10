@@ -2816,7 +2816,8 @@ header.
   top face is flush with the surrounding sand; `buried = interior(0.02)` is
   declared in three separate chunks (a `def` does not cross chunks) and drives a
   shared `coated_material`/`ggx_material` recipe's colour, roughness and
-  `coat_weight` all from one field.  All 9 hand-derived query stations
+  `coat_weight` all from one field.  All 15 hand-derived query stations (B1–B5,
+  B6a–c, B7a–b, B8, B9a–d)
   (`NearestOtherSurface`/`DeepestOtherContainment`/`SurfaceSignalInfo::Interior`
   against the TRACKED scene, including an SDF pebble surface point found by an
   object-space bisection of `SDFGeometry::EvaluateParts` and a tilted-flagstone
@@ -2829,8 +2830,14 @@ header.
   read from a purpose-built overhead probe camera because its own top face
   crosses the waterline at an angle far outside the family's 10° refraction
   rule) from a real, lit, path-traced render — full measured numbers, the cost
-  gate, and any deviation are in the scene's own header.  110/110 test
-  assertions pass.
+  gate, and any deviation are in the scene's own header.  A 2026-09-10 review
+  round moved `stone_d` off the ORIGINAL position (0.26, 0.035, 0.09), which
+  projected ~31° off the beauty camera's view axis and was out of frame, to
+  (0.05, 0.035, −0.22) on the far strip `sand_nz` (in frame, falling just soft
+  beyond the DoF far limit) — a recorded spec correction, not an open finding;
+  the same round tightened the cost gate to the spec's ≤ 1.15× target (was
+  ≤ 1.30×), the hop-count march assertion, and the no-signal-text check.
+  115/115 (118/118 with the cost gate) test assertions pass.
 
 ---
 

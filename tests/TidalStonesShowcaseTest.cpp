@@ -231,9 +231,17 @@ static void TestStoneD( Scene& s )
 	Check( stoneD != 0, "(b) stone_d is present" );
 	if( !stoneD ) return;
 
+	// stone_d was moved 2026-09-10 (P1-3) from (0.26, 0.035, 0.09) on `sand_px`
+	// to (0.05, 0.035, -0.22) on the FAR strip `sand_nz` -- the original
+	// position projected ~31.0 deg off the beauty camera's view axis against
+	// the lens/sensor's 19.8 deg horizontal half-FOV (out of frame); see the
+	// scene header's Deviations item 4.  Stations below are the SAME formula
+	// (equator / mid-depth / bottom relative to the sphere's own centre and
+	// radius), translated to the new centre.
+
 	// B6a: equator, 5 mm above the sand -> 0.
 	{
-		const Point3 p( 0.29, 0.035, 0.09 );
+		const Point3 p( 0.08, 0.035, -0.22 );
 		const Scalar v = InteriorAt( s.mgr, p, stoneD, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0 ), Scalar( 1e-9 ), "(b) MONEY B6a: stone_d equator interior(0.02) = 0" );
 	}
@@ -241,13 +249,13 @@ static void TestStoneD( Scene& s )
 	{
 		const Scalar hr = std::sqrt( Scalar( 0.03 ) * Scalar( 0.03 ) - Scalar( 0.015 ) * Scalar( 0.015 ) );
 		CheckClose( hr, Scalar( 0.0259808 ), Scalar( 1e-6 ), "(b) B6b horizontal radius re-derived" );
-		const Point3 p( 0.26 + hr, 0.02, 0.09 );
+		const Point3 p( 0.05 + hr, 0.02, -0.22 );
 		const Scalar v = InteriorAt( s.mgr, p, stoneD, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0.5 ), Scalar( 1e-9 ), "(b) MONEY B6b: stone_d mid-depth interior(0.02) = 0.5" );
 	}
 	// B6c: bottom, 2.5 cm under -> 1.0.
 	{
-		const Point3 p( 0.26, 0.005, 0.09 );
+		const Point3 p( 0.05, 0.005, -0.22 );
 		const Scalar v = InteriorAt( s.mgr, p, stoneD, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 1.0 ), Scalar( 1e-9 ), "(b) MONEY B6c: stone_d bottom interior(0.02) = 1.0" );
 	}
@@ -648,9 +656,13 @@ static PixelCoord ProjectOverhead( const Point3& p )
 //! from the water's ENTRY point on a hit named "water" (recomputing the
 //! remaining distance from the NEW origin -- never decrementing by
 //! range), any other nearer hit is an occlusion, 4 hops exhausted is an
-//! occlusion.
+//! occlusion.  `outHops` is the number of ray casts consumed to reach a
+//! VISIBLE verdict (1 + the loop's `hop` index at the return) -- spec §0:
+//! ONE for a station above the waterline (its ray reaches the station
+//! before the water), TWO for a submerged one (the water's entry, then
+//! the station).
 static bool StationVisibleOverhead( IObjectManager* mgr, IObjectPriv* water,
-	const Point3& origin, const Point3& station, std::string& why )
+	const Point3& origin, const Point3& station, std::string& why, int& outHops )
 {
 	Point3 cur = origin;
 	for( int hop = 0; hop < 4; ++hop ) {
@@ -659,6 +671,7 @@ static bool StationVisibleOverhead( IObjectManager* mgr, IObjectPriv* water,
 		mgr->IntersectRay( ri, true, false, false );
 		const Scalar dist = Vector3Ops::Magnitude( Vector3Ops::mkVector3( station, cur ) );
 		if( !ri.geometric.bHit || ri.geometric.range >= dist - Scalar( 1e-6 ) ) {
+			outHops = hop + 1;
 			return true; // VISIBLE
 		}
 		if( ri.pObject == water ) {
@@ -666,9 +679,11 @@ static bool StationVisibleOverhead( IObjectManager* mgr, IObjectPriv* water,
 			continue;
 		}
 		why = "occluded by another (nearer) object";
+		outHops = hop + 1;
 		return false;
 	}
 	why = "march exhausted 4 hops";
+	outHops = 4;
 	return false;
 }
 
@@ -678,6 +693,7 @@ struct StationSpec
 	Point3		world;
 	Scalar		wantRatio;
 	Scalar		band;
+	int			expectHops;	// 1 above the waterline, 2 submerged (spec §0)
 };
 
 static void TestPainterProbe( Scene& s, const fs::path& scenePath )
@@ -697,11 +713,10 @@ static void TestPainterProbe( Scene& s, const fs::path& scenePath )
 	const Point3 faceCentre( centre.x + Scalar( 0.01 ) * n.x, centre.y + Scalar( 0.01 ) * n.y, centre.z );
 
 	std::vector<StationSpec> stations;
-	stations.push_back( { "B1 (stone_a dry top)", Point3( 0, 0.06, 0 ), Scalar( 0 ), Scalar( 0.08 ) } );
+	// B1 is above the waterline (dry) -> 1 hop.
+	stations.push_back( { "B1 (stone_a dry top)", Point3( 0, 0.06, 0 ), Scalar( 0 ), Scalar( 0.08 ), 1 } );
 	const Scalar targets[4]  = { Scalar( 0.0 ), Scalar( 0.01 ), Scalar( 0.02 ), Scalar( 0.035 ) };
 	const Scalar want[4]     = { Scalar( 1.0 ), Scalar( 1.0 ), Scalar( 0.43 ), Scalar( 0.0 ) };
-	const Scalar bandLo[4]   = { Scalar( 0.08 ), Scalar( 0.08 ), Scalar( 0.15 ), Scalar( 0.08 ) };
-	const Scalar bandHi[4]   = { Scalar( 0.08 ), Scalar( 0.08 ), Scalar( 0.15 ), Scalar( 0.08 ) };
 	const char* labels[4] = { "B9a (y=0.0)", "B9b (y=0.01)", "B9c (y=0.02)", "B9d (y=0.035)" };
 	for( int i = 0; i < 4; ++i ) {
 		const Scalar sOff = ( targets[i] - faceCentre.y ) / t.y;
@@ -709,19 +724,28 @@ static void TestPainterProbe( Scene& s, const fs::path& scenePath )
 		StationSpec sp;
 		sp.label = labels[i]; sp.world = world; sp.wantRatio = want[i];
 		sp.band = ( i == 2 ) ? Scalar( 0.15 ) : Scalar( 0.08 );
+		// B9d (y=0.035) is the dry station -> 1 hop; B9a/B9b/B9c are
+		// submerged (target y <= 0.02, all below the y=0.03 waterline) ->
+		// 2 hops (the water's entry, then the station).
+		sp.expectHops = ( i == 3 ) ? 1 : 2;
 		stations.push_back( sp );
 	}
-	(void)bandLo; (void)bandHi;
 
 	// Occlusion, checked against the TRACKED scene's geometry (identical
-	// to the probe/control copies -- only materials differ).
+	// to the probe/control copies -- only materials differ).  Also assert
+	// the hop count itself (spec §0): 1 above the waterline, 2 submerged.
 	const Point3 camLoc( -0.016, 0.60, -0.10 );
 	for( const StationSpec& sp : stations ) {
 		std::string why;
-		const bool vis = StationVisibleOverhead( s.mgr, water, camLoc, sp.world, why );
+		int hops = 0;
+		const bool vis = StationVisibleOverhead( s.mgr, water, camLoc, sp.world, why, hops );
 		std::cout << "    " << sp.label << " visible=" << ( vis ? "yes" : "no" )
-			<< ( vis ? "" : ( " (" + why + ")" ) ) << std::endl;
+			<< " hops=" << hops << ( vis ? "" : ( " (" + why + ")" ) ) << std::endl;
 		Check( vis, std::string( "(f) sightline to " ) + sp.label + " is unoccluded from the overhead camera" );
+		if( vis ) {
+			Check( hops == sp.expectHops,
+				std::string( "(f) " ) + sp.label + " hop count matches the march (1 above the waterline, 2 submerged)" );
+		}
 	}
 
 	// Build + render the probe and control copies.
@@ -813,8 +837,21 @@ static void TestCostGate( const std::string& trackedText )
 	// no constant folding, so the rest of each program still executes --
 	// the delta isolates the signal call + its L1 memo lookup.
 	const std::string noSignalText = ReplaceAll( trackedText, "interior(0.02)", "0" );
-	Check( noSignalText.find( "def\t\t\tburied  0" ) != std::string::npos ||
-		noSignalText != trackedText, "(g) the no-signal text really differs from the shipped one" );
+	// `interior(0.02)` also appears in the header's prose (the DOCTRINE
+	// paragraph, the station-table caption, the "ONE FIELD DRIVES THREE
+	// SLOTS" comment) -- ReplaceAll touches those too, harmlessly (they are
+	// `#` comments). What actually matters is that exactly the THREE real
+	// `def buried interior(0.02)` lines (expr_stones, sp_stone_rough,
+	// sp_stone_coat) became `def buried 0` -- count the exact def-line
+	// pattern rather than a loose "text differs" check that comment-only
+	// edits would also satisfy.
+	{
+		const std::string defPattern = "def\t\t\tburied  0";
+		std::size_t count = 0, pos = 0;
+		while( ( pos = noSignalText.find( defPattern, pos ) ) != std::string::npos ) { ++count; pos += defPattern.length(); }
+		std::cout << "    no-signal `def buried 0` line count = " << count << " (want 3)" << std::endl;
+		Check( count == 3, "(g) the no-signal text replaced exactly the 3 `def buried interior(0.02)` lines" );
+	}
 
 	std::vector<double> liveRuns, noSigRuns;
 	// 2 warm-ups (discarded) then >= 3 interleaved pairs.
@@ -838,8 +875,8 @@ static void TestCostGate( const std::string& trackedText )
 	const double ratio = liveMean / noSigMean;
 	std::cout << "    MEASURED: live mean = " << liveMean << "s, no-signal mean = " << noSigMean
 		<< "s, ratio = " << ratio << "  (target <= 1.15x)" << std::endl;
-	Check( ratio <= 1.30, "(g) cost ratio is within a generous bound of the 1.15x target "
-		"(recorded exactly in the scene header/report; a small-scene timing is noisy)" );
+	Check( ratio <= 1.15, "(g) cost ratio is within the spec's 1.15x target "
+		"(recorded exactly in the scene header/report)" );
 }
 
 int main()
