@@ -2837,7 +2837,7 @@ header.
   beyond the DoF far limit) — a recorded spec correction, not an open finding;
   the same round tightened the cost gate to the spec's ≤ 1.15× target (was
   ≤ 1.30×), the hop-count march assertion, and the no-signal-text check.
-  115/115 (118/118 with the cost gate) test assertions pass.
+  122/122 test assertions pass (119 without the cost gate's three).
 
 ---
 

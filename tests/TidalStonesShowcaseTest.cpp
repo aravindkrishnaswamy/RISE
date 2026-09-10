@@ -530,6 +530,10 @@ static void TestStoneE( Scene& s )
 	IObjectPriv* bed = s.mgr->GetItem( "pool_bed" );
 	Check( bed != 0, "(e) pool_bed is present" );
 	if( !bed ) return;
+	IObjectPriv* waterE = s.mgr->GetItem( "water" );
+	Check( waterE != 0, "(e) water is present" );
+	if( !waterE ) return;
+	const Scalar waterTopE = BoxTopY( waterE );
 
 	const FlagstoneFrame f = ComputeFlagstoneFrame( stoneE );
 	std::cout.precision( 12 );
@@ -554,9 +558,16 @@ static void TestStoneE( Scene& s )
 	std::cout << "    face centre = (" << (double)f.faceCentre.x << ", " << (double)f.faceCentre.y
 		<< ", " << (double)f.faceCentre.z << ")" << std::endl;
 
+	// Target heights are the probe recipe; the expected depths come from the
+	// LIVE water top (never a typed 0.03), and interior = clamp(depth / 0.02).
 	const Scalar targets[4] = { Scalar( 0.0 ), Scalar( 0.01 ), Scalar( 0.02 ), Scalar( 0.035 ) };
-	const Scalar wantDepth[4] = { Scalar( 0.03 ), Scalar( 0.02 ), Scalar( 0.01 ), Scalar( -0.005 ) };
-	const Scalar wantInterior[4] = { Scalar( 1.0 ), Scalar( 1.0 ), Scalar( 0.5 ), Scalar( 0.0 ) };
+	Scalar wantDepth[4];
+	Scalar wantInterior[4];
+	for( int i = 0; i < 4; ++i ) {
+		wantDepth[i] = waterTopE - targets[i];
+		const Scalar ramp = wantDepth[i] / Scalar( 0.02 );
+		wantInterior[i] = ramp < Scalar( 0 ) ? Scalar( 0 ) : ( ramp > Scalar( 1 ) ? Scalar( 1 ) : ramp );
+	}
 	Point3 b9world[4];
 
 	for( int i = 0; i < 4; ++i ) {
