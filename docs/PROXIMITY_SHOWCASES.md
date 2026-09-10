@@ -1,7 +1,11 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised fifteen times the same day after
-adversarial rounds (round 15, 3 P1s, one family: the two path-traced
+Status: SPEC, 2026-09-10, revised sixteen times the same day after
+adversarial rounds (round 16, 3 P1s, the same family: no light named a
+`color` (default black); no scene named a `file_rasterizeroutput` and
+showcase 1's carried one would overwrite the pavilion's render; the
+probe's light-erase was unscoped and would have blinded showcase 1's
+stations. Round 15, 3 P1s, one family: the two path-traced
 scenes named no `global` shader chunk, which the PT rasterizer refuses
 without; the pool bed and sand strips named no material; the bunny's own
 signal painter was implied by "the same kind". Round 14, 1 P1: the wall
@@ -174,12 +178,16 @@ rasterizers). The painter stations below prove it anyway.
   painter reference (an inline `0 0 0` fails to resolve and the derive
   diagnostic fires), and its default `none` is the painter
   `InitializeContainers` registers as uniform (0, 0, 0). Relief modifiers
-  stripped, AND erase every light chunk but the key with
-  `Cst::DocEraseChunkTidy` — each erase resolves
-  `DocFindByName("ambient_light/<name>")` → `DocIndexOfNodeId` on the
-  CURRENT document (an erase drops one or two items and shifts every later
-  index, like an insert), and the erases run before the inserts. The fills
-  are `ambient_light` CHUNKS, not a `radiance_map` line on the rasterizer;
+  stripped, AND — in showcases 2 and 3 ONLY — erase the `ambient_light`
+  fill with `Cst::DocEraseChunkTidy`, leaving the `omni_light` key as the
+  sole light; each erase resolves `DocFindByName("ambient_light/<name>")`
+  (the fills carry a `name`; an unnamed chunk is unaddressable) →
+  `DocIndexOfNodeId` on the CURRENT document (an erase drops one or two
+  items and shifts every later index, like an insert), and the erases run
+  before the inserts. Showcase 1's probe keeps BOTH pavilion omni lights
+  (S1's control depends on `fill_light`, S6's on both) and erases
+  nothing. The fills are `ambient_light` CHUNKS, not a `radiance_map`
+  line on the rasterizer;
   none of the three scenes carries a `radiance_map` or a relief modifier,
   and a worker who adds one strips it in the probe with `DocRemoveParam` /
   `DocEraseChunkTidy` and says so. Why erase: an `ambient_light` is an
@@ -312,7 +320,19 @@ rasterizers). The painter stations below prove it anyway.
   derive diagnostic fires) when it is missing — `shaderop
   DefaultDirectLighting` in showcase 1 (the pavilion's chunk, kept),
   `shaderop DefaultPathTracing` in showcases 2 and 3 (the
-  `plank_closeup` precedent).
+  `plank_closeup` precedent). Every LIGHT chunk names `color` (and
+  `colorspace` when the triple is read off a picker): `omni_light`,
+  `ambient_light`, `spot_light` and `directional_light` all default
+  `color` to `0 0 0`, a light that emits nothing whatever its `power`.
+  Every scene ships a `file_rasterizeroutput` (`pattern
+  rendered/<scene name>`, `type PNG`, `bpp 8`, `color_space sRGB`, the
+  `plank_closeup` shape) — nothing supplies one by default, §0's probe
+  calls `Job::RemoveRasterizerOutputs()` on it, and the beauty deliverable
+  is written through it; showcase 1 RE-POINTS the carried pavilion
+  output's `pattern` to `rendered/pavilion_colonnade` so it does not
+  overwrite the tracked pavilion's render. The shipped `samples` is
+  stated per scene (64 in showcase 1; 32, the descriptor default, in
+  showcases 2 and 3 — the probe copies set 512).
 - **Ledgers**: `CstDeriveGoldenTest` gains one row per NEW scene (no tracked
   scene is edited by this spec, so no existing row drifts); the
   `scenes/FeatureBased/README.md` entry follows the plank entry's shape; the
@@ -344,9 +364,12 @@ the `global` `standard_shader` STAYS: nothing in the file names it, but
 (`RasterizerDefaults.h` `defaultShader = "global"`) and it is what makes
 the direct-only claim true — so every surface is direct-only and the
 claim is scene-wide) — and the two omni lights), framed on cap1's foot. Every carried object keeps
-the pavilion's material verbatim (`marble_col` on the columns and
-ceiling, `marble_dark` on the back wall, `polished_floor` on the floor);
-only the caps are re-pointed, to the new `marble_cap`. NO prop is relocated into the frame: the
+the pavilion's material verbatim, painters included (`marble_col` over
+`pnt_marble_white` on the columns and ceiling, `marble_dark` over
+`pnt_marble_dark` on the back wall, `polished_floor` over the
+`pnt_floor_checker` pair on the floor); only the caps are re-pointed, to
+the new `marble_cap`; the carried `file_rasterizeroutput`'s `pattern`
+becomes `rendered/pavilion_colonnade`. NO prop is relocated into the frame: the
 pavilion's `vasegeom` is an unscaled Bezier teapot 6.5 world units wide
 (`AddBezierPatchGeometry` recentres, never normalises), and the glass
 sphere, its pedestal, the four `cap_top*` capitals at y = 4.9 and the
@@ -546,7 +569,7 @@ is unchanged by the 1 mm drop — 36.8° above horizontal, and the
 sightline crosses the water at 53.2° to the WATER's normal — far outside
 §0's 10° rule, hence the overhead probe). Lighting: the key is an
 `omni_light` PINNED at (−0.35, 0.80, 0.45), camera-left and above; a dim
-sky fills. `pathtracing_pel_rasterizer` (with the `global` `standard_shader`
+sky fills (both lights' `color` and `power` under **Lights** below). `pathtracing_pel_rasterizer` (with the `global` `standard_shader`
 chunk, `shaderop DefaultPathTracing`, per §0) with `transparent_shadows
 TRUE` — MANDATORY and recorded in the header: the default is FALSE and
 `RayCaster::CastShadowRayAuto` then runs the binary occlusion test, so
@@ -564,8 +587,7 @@ B4 and stone_b's bottom face away from the key (n·L < 0) and are
 query-only anyway; the stations that carry painter readings do face it —
 B1 (n = +y) at n·L = 0.79 and the four B9 points (n = (sin 25°, cos 25°,
 0)) at n·L = 0.54–0.57 — so their probe controls are not dark. The sky
-fill is an `ambient_light` chunk (erased in the probe copies); the key's
-`power` is pinned by the worker so the beauty is exposed and recorded. An `omni_light`
+fill is the `ambient_light` `sky_fill` (erased in the probe copies). An `omni_light`
 has no geometry and occludes nothing.
 
 **Why `interior` and not `proximity`.** A point on a stone below the
@@ -573,6 +595,13 @@ waterline is 1–5 cm from the water's TOP face; `proximity(r)` would paint
 everything under water uniformly (or nothing, past r). `interior(0.02)` =
 clamp(depth/2 cm): 0 above the waterline, a ramp over the first 2 cm, 1
 below — a crisp line AT the waterline and a sheen that saturates 2 cm down.
+
+**Lights.** The key `omni_light` at (−0.35, 0.80, 0.45): `color 1.0
+0.96 0.90` (linear Rec.709, a warm white), `power` chosen by the worker
+for exposure and recorded. The fill `ambient_light` named `sky_fill`:
+`color 0.55 0.65 0.80` (a cool sky), `power` dim (about a tenth of the
+key's contribution at B1, recorded). `samples 32`, the descriptor
+default, stated in the chunk.
 
 **Receivers' recipe.** The five stones share ONE material triple — one
 `coated_material` whose `base` is one `ggx_material` (`fresnel_mode
@@ -684,7 +713,7 @@ close-up. Layout:
   y ∈ [−0.01, 0.39] and the shelf's back face share a 0.60 × 0.01 m
   coplanar patch, hidden below and behind the shelf top; stated, not
   moved); a plain `lambertian_material` whose reflectance is a matte
-  plaster painter (the object's `material` defaults to `none`, the null
+  plaster `uniformcolor_painter` (the object's `material` defaults to `none`, the null
   material, if left unstated); it reads no signal.
 - `bunny`: `risemesh_geometry` (`file models/risemesh/bunny.risemesh`), `position 0
   Y_b 0` with Y_b = −(lowest vertex y) so the lowest vertex touches y = 0
@@ -704,8 +733,8 @@ close-up. Layout:
   identically zero here since Y_b = −0.0329874 — `scale 0.35 0.35 0.35` (three
   components — a single number derives to a DEGENERATE (0.35, 0, 0)
   transform silently), its lowest vertex on the bunny's highest, re-derived
-  and asserted at 1e-6; a plain `lambertian_material` with a uniform
-  colour (the object's `material` defaults to `none`, so an unstated
+  and asserted at 1e-6; a plain `lambertian_material` over a
+  `uniformcolor_painter` (the object's `material` defaults to `none`, so an unstated
   object is added with NO material and renders black); it reads no
   signal.
 Camera: `thinlens_camera` at (0.22, 0.25, 0.42) looking at (0, 0.06, 0),
@@ -716,9 +745,11 @@ fall soft; the bunny's near flank at 0.40 m and the shelf's near edge fall
 soft, stated in the header); the shelf top at the contact vertex is seen
 at 27.2° elevation from 0.547 m, the 2 cm ring at 20 px radial (44.7 px
 tangential × sin 27.2° at 800 px). Lighting: the key is an `omni_light`
-PINNED at (−0.35, 0.45, 0.25), camera-left and above, its `power` chosen
-by the worker for exposure and recorded; a dim `ambient_light` fills
-(erased in the probe copies). From the key, n·L at the shelf's painter
+PINNED at (−0.35, 0.45, 0.25), camera-left and above, `color 1.0 0.96
+0.90` (linear Rec.709), its `power` chosen by the worker for exposure and
+recorded; a dim `ambient_light` named `room_fill`, `color 0.60 0.62
+0.66`, fills (erased in the probe copies). `samples 32`, the descriptor
+default, stated in the chunk. From the key, n·L at the shelf's painter
 stations is 0.79 (M1p), 0.78 (M1q), 0.80 (M3) — the shadow rays leave
 toward −x, away from the bunny, and the test casts each one against the
 loaded scene and asserts it clear (the bunny, though blacked, still
