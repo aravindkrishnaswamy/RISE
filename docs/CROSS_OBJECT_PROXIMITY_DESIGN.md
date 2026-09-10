@@ -1478,8 +1478,8 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
 | scene D reads 0 under the light panel | PASS (exactly 0) |
 | Sponza ≤ 1.25× baseline with the query forced at every hit | **PASS at 1.067× — after the TLAS point query. FAILED at 1.273× on the flat scan, which is why the upgrade shipped** |
 | Sponza floor ≥ 0.5 within 2 cm of a wall at `proximity(0.04)` | PASS (0.50, exactly at the gate) |
-| `MeshClosestPointTest` | 63 passed, 0 failed (56 before review round 1's four (h) families and three station checks) |
-| `ProximitySignalTest` | 124 passed, 0 failed (107 before review round 1's (g2) TLAS staleness contract) |
+| `MeshClosestPointTest` | 65 passed, 0 failed (56 before review round 1's four (h) families and three station checks; 63 before review round 2's TLAS-ran assertions) |
+| `ProximitySignalTest` | 123 passed, 0 failed (107 before review round 1's (g2) TLAS staleness contract; 124 before review round 2 dropped its tautological third check) |
 | `ProximityInvalidationTest` | 25 passed, 0 failed |
 | `ExpressionMemoTest` | 196 passed, 0 failed |
 | `TextureExpressionVMTest` | 846 passed, 0 failed (unmoved) |
