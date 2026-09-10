@@ -391,6 +391,22 @@ namespace RISE
 				return pBoxes.load( std::memory_order_acquire ) != 0;
 			}
 
+			//! TEST-ONLY: how many primitives does the top-level BVH hold?
+			//!
+			//! Exists so a differential test comparing the TLAS point-query
+			//! candidate source against the flat-scan one can assert the
+			//! TLAS side actually WALKED A TREE rather than passing
+			//! vacuously because the build gate (`bUseBSPtree &&
+			//! items.size() > nMaxObjectsPerNode`) stopped holding. Returns
+			//! 0 when no top-level BVH has been built (including the small-
+			//! scene / `bUseBSPtree` FALSE regime), matching `BVH::numPrims()`
+			//! when one has.
+			std::size_t TopLevelPrimCount() const
+			{
+				BVH<const IObjectPriv*>* const localBVH = pBVH.load( std::memory_order_acquire );
+				return localBVH ? localBVH->numPrims() : 0;
+			}
+
 			void EnumerateObjects( IEnumCallback<IObject>& pFunc ) const;
 			void EnumerateObjects( IEnumCallback<IObjectPriv>& pFunc ) const;
 

@@ -79,6 +79,7 @@
 #include "../src/Library/Geometry/InfinitePlaneGeometry.h"
 #include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Managers/ObjectManager.h"	// (h)'s TopLevelPrimCount, proving the TLAS side of the differential actually walked a tree
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/SurfaceSignalProximity.h"
 #include "../src/Library/Objects/Object.h"
@@ -732,12 +733,14 @@ static void TestCandidateSourcesAgree()
 		objs.push_back( infPlaneObj );
 
 		// An EMITTER, which `ProximityCandidateDistance` must exclude on
-		// BOTH sources (docs 5.2's "emitters never count").  Placed to
-		// overlap the dense sphere cluster above so it is often the
-		// CLOSEST geometry in world space -- if either source's exclusion
-		// slipped, that source alone would answer with the emitter's
-		// distance and the cross-check below would catch it directly
-		// rather than by chance in the N-probe loop.
+		// BOTH sources (docs 5.2's "emitters never count").  Placed at
+		// kEmitterPos, z = -10 -- ISOLATED, off in its own corner of the
+		// probe volume and well clear of the dense sphere cluster above
+		// (see the z-range note a few lines up) -- so the TARGETED probe
+		// below (the emitter's own centre, at a radius only the emitter
+		// itself could satisfy) exercises the exclusion directly: if either
+		// source's exclusion slipped, THAT source alone would answer with
+		// the emitter's own distance instead of refusing.
 		SphereGeometry* eg = new SphereGeometry( Scalar( 0.3 ) );
 		IMaterial* pBase = 0;
 		IPainter* pRad = 0;
@@ -797,6 +800,24 @@ static void TestCandidateSourcesAgree()
 	mgrTree->PrepareForRendering();
 	mgrFlat->PrepareForRendering();
 
+	// THE VACUOUS-PASS GUARD.  Everything below compares the TLAS point
+	// query against the flat scan -- but that comparison is only a real
+	// test of the TLAS traversal if a TLAS actually got built and walked.
+	// `RISE_API_CreateObjectManager( &mgrTree, true, false, 4, 32 )` above
+	// requests one, but the build is still gated on `items.size() >
+	// nMaxObjectsPerNode` (ObjectManager::PrepareForRendering) -- if that
+	// gate ever stopped holding (fewer objects added above, or the
+	// threshold changed), `mgrTree` would silently fall back to the exact
+	// same flat scan `mgrFlat` uses, and every agreement check below would
+	// pass for having nothing to disagree about.
+	{
+		const ObjectManager* const mgrTreeConcrete = dynamic_cast<const ObjectManager*>( mgrTree );
+		Check( mgrTreeConcrete != 0, "(h) mgrTree is the concrete ObjectManager (TopLevelPrimCount reachable)" );
+		Check( mgrTreeConcrete && mgrTreeConcrete->TopLevelPrimCount() > 0,
+			"(h) MONEY -- a top-level BVH was actually built over objs.size() objects, so the "
+			"agreement checks below are exercising the TLAS traversal, not two flat scans" );
+	}
+
 	const unsigned int N = 6000;
 	RandomNumberGenerator rng( 5150u );
 	unsigned int mismatch = 0, agreedAnswered = 0, agreedFar = 0;
@@ -830,12 +851,22 @@ static void TestCandidateSourcesAgree()
 	// specific hazard is checked directly rather than trusted to show up by
 	// chance in the N-probe loop.
 	{
-		// The infinite plane is z = 0 in world space (identity transform;
-		// see InfinitePlaneGeometry::DistanceToSurface's own comment: "the
-		// plane is z = 0, so the answer is |z|").  (0, 0, 0.05) is a
-		// genuine, non-refusing answer at 0.05 -- and BOTH sources must
-		// find it: a TLAS build that mishandled its +/-inf box would prune
-		// it out of some node and answer with something else (or refuse).
+		// THE PROBE WHOSE ANSWER ACTUALLY DEPENDS ON THE TREE.  Every other
+		// check in this function would pass identically even if `mgrTree`'s
+		// TLAS build had silently degenerated to the flat scan (see the
+		// vacuous-pass guard above) -- but a mishandled +/-inf box is a
+		// TLAS-SPECIFIC failure mode with no flat-scan analogue: the flat
+		// scan never prunes anything, so it cannot fail this way, while the
+		// TLAS's SAH build could put the infinite plane's node on the wrong
+		// side of a split and prune it out of a query's traversal. The plane
+		// is z = 0 in world space (identity transform; see
+		// InfinitePlaneGeometry::DistanceToSurface's own comment: "the plane
+		// is z = 0, so the answer is |z|").  (0, 0, 0.05) is a genuine,
+		// non-refusing answer at 0.05 -- and BOTH sources must find it: a
+		// TLAS build that mishandled its +/-inf box would prune it out of
+		// some node and answer with something else (or refuse), which is
+		// exactly the failure this probe -- unlike the others in this
+		// function -- is actually capable of catching.
 		const Point3 pNearPlane( 0, 0, 0.05 );
 		Scalar dT = 0, dF = 0;
 		const bool okT = mgrTree->NearestOtherSurface( pNearPlane, objs[0], Scalar( 0.2 ), dT );
@@ -884,8 +915,10 @@ static void TestCandidateSourcesAgree()
 		const bool okF = mgrFlat->NearestOtherSurface( pAniso, objs[0], Scalar( 5 ), dF );
 		Check( okT && okF && dT == dF,
 			"(h) the anisotropic sphere's sigma-pair upper bound is bit-identical on both sources" );
-		Check( okT && dT > Scalar( 0.99 ),
-			"(h) ...and it is a real over-report (>= the true 1.0 gap), not an accidental exact hit" );
+		Check( okT && dT >= Scalar( 1 ),
+			"(h) ...and it is a real over-report (>= the true 1.0 gap): Object::DistanceToSurface "
+			"returns dObject*sigma_max, an upper bound on the true distance, so it can never read "
+			"UNDER the true gap it bounds (measured ~1.22 here)" );
 	}
 
 	mgrFlat->release();

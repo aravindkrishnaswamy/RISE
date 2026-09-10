@@ -926,9 +926,14 @@ static void TestTLASStalenessViaJobAddObject()
 	Check( rayStillBlind,
 		"(g2) ...and IntersectRay is EQUALLY blind -- the picture and the signal are stale "
 		"together, not one before the other" );
-	Check( proxStillBlind == rayStillBlind,
-		"(g2) ...stated as the identity the design promises: proximity is exactly as stale "
-		"as the render, never staler and never fresher" );
+	// NOTE: `proxStillBlind == rayStillBlind` is NOT checked as a separate
+	// assertion here -- with both operands individually pinned to `true` by
+	// the two Checks immediately above, that equality is a tautology (true
+	// == true) and would read as an independent guard while proving
+	// nothing beyond what they already established. The identity the
+	// design promises -- proximity is exactly as stale as the render,
+	// never staler and never fresher -- is exactly what those two Checks,
+	// taken together, already state.
 
 	// REBUILD -- the documented recovery -- and both must now see it.
 	mgr->InvalidateSpatialStructure();
