@@ -399,18 +399,21 @@ static Cst::NodeRef NewlineLeaf()
 //! blacked), force `oidn_denoise FALSE` + `samples 512` on the
 //! rasterizer chunk.  Mirrors docs/PROXIMITY_SHOWCASES.md 0's recipe:
 //! the inserted black material's three-leaf splice
-//! ([leadSep][chunk][trailSep]) goes BEFORE the first object chunk
-//! (`standard_object/shelf`) so it derives before anything names it.
+//! ([leadSep][chunk][trailSep]) goes in front of the FIRST object chunk
+//! that NAMES it (`standard_object/wall` -- the shelf is the receiver and
+//! keeps its own material), not at a receiver's index, per section 0.
 static Cst::Document BuildProbeDocument( const Cst::Document& baseDoc, const std::string& exprValue )
 {
 	Cst::Document doc = baseDoc;
 
-	// 1. Insert the shared black material before the FIRST object chunk.
-	const Cst::NodeId shelfObjId = Cst::DocFindByName( doc, "standard_object/shelf" );
-	Check( shelfObjId > 0, "(d) DocFindByName(standard_object/shelf) resolves" );
-	Cst::NodeRef shelfObjItem;
-	const int shelfIdx = Cst::DocIndexOfNodeId( doc, shelfObjId, &shelfObjItem );
-	Check( shelfIdx >= 0, "(d) DocIndexOfNodeId(shelf) resolves" );
+	// 1. Insert the shared black material in front of the FIRST object chunk
+	//    that names it: the wall (document order shelf, wall, bunny, dragon;
+	//    the shelf is the receiver and is never repointed).
+	const Cst::NodeId wallObjId = Cst::DocFindByName( doc, "standard_object/wall" );
+	Check( wallObjId > 0, "(d) DocFindByName(standard_object/wall) resolves" );
+	Cst::NodeRef wallObjItem;
+	const int wallIdx = Cst::DocIndexOfNodeId( doc, wallObjId, &wallObjItem );
+	Check( wallIdx >= 0, "(d) DocIndexOfNodeId(wall) resolves" );
 
 	Cst::Document blackChunkDoc = Cst::ParseToCst( std::string(
 		"lambertian_material\n{\nname\tprobe_black\n}\n" ) );
@@ -419,9 +422,9 @@ static Cst::Document BuildProbeDocument( const Cst::Document& baseDoc, const std
 	Cst::NodeRef lead = NewlineLeaf();
 	Cst::NodeRef trail = NewlineLeaf();
 
-	doc = Cst::DocInsertItem( doc, shelfIdx,     lead );
-	doc = Cst::DocInsertItem( doc, shelfIdx + 1, blackChunkItem );
-	doc = Cst::DocInsertItem( doc, shelfIdx + 2, trail );
+	doc = Cst::DocInsertItem( doc, wallIdx,     lead );
+	doc = Cst::DocInsertItem( doc, wallIdx + 1, blackChunkItem );
+	doc = Cst::DocInsertItem( doc, wallIdx + 2, trail );
 
 	// 2. Repoint wall / bunny / dragon's `material` to the black one.
 	//    NodeId-based setters -- unaffected by the index shift above.
