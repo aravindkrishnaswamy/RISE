@@ -2816,26 +2816,43 @@ measured by a harness test against the tracked scene.
   camera frames none of its four cap-column junctions).
   `tests/PavilionColonnadeShowcaseTest.cpp` drives eleven query stations plus
   the per-object refusal / scene-wide cross-check pair against the tracked
-  file: every one matches its predicted value (54/54 checks), including the
+  file: every one matches its predicted value (55/55 checks), including the
   tight CSG boundary-arm band at the 1 cm station (0.487376, inside
   [0.4874, 0.5]) and the phantom-refusal station at the flute mouth (reads
-  exactly 0, where a tolerant landing test would report 0.5).
+  exactly 0, where a tolerant landing test would report 0.5).  Both painter
+  stations match the spec as well: S1 reads 0.48 against a predicted 0.5
+  (±0.15, the coarse-footprint band — it sits on the 2 cm ramp, where the
+  probe/control pair's independently-seeded sub-pixel jitter is worth ~0.05 of
+  ratio) and S6 reads a hard 0 against a predicted 0 (±0.08).
   `CstDeriveGoldenTest` gains one row (448 MATCH, 0 DRIFT, 0 UNCOVERED). Cost:
   live-vs-`def dust 0` at 64 spp under `pixelpel_rasterizer` measured
   1.03×–1.17× across four runs in one session (noisy at this render size;
-  target ≤ 1.15×). **Open finding, not fixed here**: the S6 painter station —
-  and the shipped beauty render generally — measures a value close to a
-  reflectance of 1 rather than the query-confirmed 0, once more than one
-  sample per pixel is rendered; a 1-spp render of the identical document (via
-  both the in-process capture and an independent `bin/rise` CLI render) gives
-  the query-correct answer. The query channel itself is unambiguous (checked
-  on three independently-derived Jobs and a dense 4×4 cm grid around the
-  station, plus 200 real aperture-jittered camera samples confirming the
-  right object and point are being shaded), so the discrepancy is specific to
-  render-time multi-sample evaluation of the signal, not to this scene's
-  authoring or to `NearestOtherSurface` itself. See the scene's own header for
-  the full investigation record; flagged for a dedicated follow-up rather than
-  worked around in this showcase.
+  target ≤ 1.15×).
+
+  **The "open finding" this entry carried between 2026-09-10 and the same
+  day's follow-up was a measurement bug in the showcase's own harness, not an
+  engine defect.** It claimed S6 rendered at ~1.03 instead of 0, that the
+  beauty render showed no ring, and that both were a defect in multi-sample
+  evaluation of the signal. All three were false. The test projected each
+  station to the SCREEN point the camera consumes — whose y counts up from the
+  bottom of the frame, because `PixelBasedPelRasterizer::IntegratePixel` hands
+  the camera `height - y` for raster row `y` — and then indexed the top-down
+  framebuffer with it. S1 hid it (y = 300.0 on a 600-row film is its own
+  mirror; that is where the `lookat` station sits by construction); S6, at
+  y = 407.1, was read at row 407 instead of 193, a floor pixel that carries no
+  cap contribution, so probe and control agree there whatever the signal says.
+  The 200-cast sanity guard missed it because it built its rays from the same
+  screen point, validating a pixel the readback never touched. On
+  re-investigation the sweep did not reproduce: the mirrored pixel reads a flat
+  ~1.02 at 1, 2, 8 and 64 spp alike and the true pixel reads exactly 0 at every
+  one of them, and an engine-side trace of every `proximity()` call on the cap
+  top during a 2-spp render found the field correct throughout (1 at the wall,
+  hard 0 beyond 2 cm, one consistent `pSelf`, no memo hit in the band). The fix
+  is `ScreenToRaster` in the test plus a sanity cast that builds its screen
+  point back out of the raster index the readback uses; no engine source
+  changed. Recorded rather than deleted because the shape recurs: **a
+  projection check that consumes the same coordinate system as the projection
+  cannot audit the readback — cast through the index you actually read.**
 - **`tidal_stones`** and **`shelf_bunny`** — specified in
   `docs/PROXIMITY_SHOWCASES.md` §2 (`interior(r)`, signed half) and §3
   (mesh-to-mesh and mesh-to-plank contact); not yet built as of this entry.

@@ -70,22 +70,30 @@ RISE ASCII SCENE 7
 #     S7-refuse column1->DistanceToSurface at r=0.1 (per-object)  --        n/a (S7 has no refusal check; S4 does -- see above)
 #
 #   All eleven query stations plus the two per-object/cross-check assertions are MEASURED and PASS in
-#   tests/PavilionColonnadeShowcaseTest.cpp (54/54 checks, 0 failed), driven against this tracked file.
+#   tests/PavilionColonnadeShowcaseTest.cpp (55/55 checks, 0 failed), driven against this tracked file.
 #
 #   PAINTER STATIONS (probe expr vec3(dust,dust,dust) / control vec3(1,1,1), 512 spp both copies,
 #   oidn_denoise FALSE, shipped camera, cap1 is already a lambertian_material so no rebind is needed).
-#   S1 projects to pixel (400.0, 300.0); S6 to (546.7, 407.1) -- both validated against the REAL
-#   ThinLensCamera (chief ray through the computed pixel points at the station to > 0.999 cosine) and
-#   both confirmed unoccluded by a fresh cast per docs/PROXIMITY_SHOWCASES.md Sec 0's single-cast rule:
+#   S1 projects to SCREEN point (400.0, 300.0) -> RASTER pixel (400, 300); S6 to screen (546.7, 407.1)
+#   -> raster pixel (547, 193).  The two coordinate systems are NOT the same one and the flip between
+#   them is `height - y`: every RISE camera consumes a screen y counted from the BOTTOM of the frame
+#   (PixelBasedPelRasterizer::IntegratePixel hands the camera `height - y` for raster row `y`), while
+#   the framebuffer is indexed top-down.  Both stations are validated against the REAL ThinLensCamera
+#   (chief ray through the computed SCREEN point points at the station to > 0.999 cosine), both are
+#   confirmed unoccluded by a fresh cast per docs/PROXIMITY_SHOWCASES.md Sec 0's single-cast rule, and
+#   200 aperture-jittered camera samples built out of S6's RASTER index all land on cap1:
 #
-#     S1  predicted 0.5 within +-0.15 (coarse footprint, 2.03 mm/px radial)   measured 0.55 (probe=0.0447, control=0.0812)
-#     S6  predicted 0   within +-0.08                                        measured 1.03 (probe=0.0754, control=0.0729)
-#                                                                             -- SEE DEVIATIONS: this is NOT the
-#                                                                             predicted 0; a genuine render-time
-#                                                                             finding, not a scene-authoring error.
+#     S1  predicted 0.5 within +-0.15 (coarse footprint, 2.03 mm/px radial)   measured 0.48 (probe=0.0392, control=0.0818)
+#     S6  predicted 0   within +-0.08                                        measured 0.00 (probe=0, control=0.2044)
 #     S7  QUERY-ONLY: both pavilion lights (ceiling_light at (0,4.5,0), fill_light at (3,3,4)) are behind
 #         the flute wall from a point inside the mouth, so the control pixel is exactly black -- no ratio
 #         is taken there.
+#
+#   S1's ratio is the one number here that moves run to run (0.48-0.55 observed).  It sits on the 2 cm
+#   ramp, where `dust` changes about 0.10 per pixel, and the probe and the control are SEPARATE renders
+#   whose sub-pixel jitter is drawn from a wall-clock-seeded RNG -- so half a pixel of disagreement
+#   between the pair is worth ~0.05 of ratio.  That is what the wide +-0.15 band is for.  S6 does not
+#   move at all: `dust` is flat 0 over its whole neighbourhood, so the probe pixel is exactly black.
 #
 #   COST.  Live vs `def dust 0` at 64 spp under `pixelpel_rasterizer` (about one painter evaluation per
 #   camera sample -- NOT comparable to the path-traced showcases' regime, whose per-hit call rate is many
@@ -112,39 +120,45 @@ RISE ASCII SCENE 7
 #   slot-wall/cylinder corner, 4.21 cm away, not the phantom 1 cm a tangent-face landing would report),
 #   and two thin bands INSIDE each mouth hugging the slot walls.  The QUERY STATIONS above confirm this
 #   field is exactly what the design predicts, everywhere it was sampled, including a dense grid with no
-#   gradient 6.5 cm from the wall.  BUT the actual multi-sample BEAUTY RENDER does not show a clean
-#   ring: see the DEVIATIONS paragraph below -- the shipped 64 spp render leaves the whole cap top a
-#   fairly uniform tone rather than a crisp 2 cm band, because the same render-time finding that inflates
-#   S6's painter ratio also appears to inflate `dust` broadly across the cap face once more than one
-#   sample per pixel is taken. A 1 spp render (not shippable -- too noisy to judge) does not resolve this
-#   cleanly either way. The scene inherits the pavilion's pre-existing interpenetrations (the cap sits
-#   7.5 cm into the floor box, the column base inside both); at r = 0.02 none of that reaches a station,
-#   and `interior` is not exercised by this showcase.
+#   gradient 6.5 cm from the wall.  THE SHIPPED 64 spp RENDER SHOWS EXACTLY THAT BAND: a soft crescent
+#   of grime hugging the column wall on the cap top, following the composite's curve and interrupted at
+#   the flute mouth, with the rest of the cap face clean marble.  It is a subtle read at this exposure --
+#   the contact shadow of the two omni lights falls in the same place -- so the honest way to see the
+#   signal alone is the A/B the cost gate already renders: `def dust 0` on the receiver's
+#   expression_painter removes the crescent completely and leaves the shadow, and swapping the receiver's
+#   `expr` to `vec3(dust,dust,dust)` shows the band on its own.  (An earlier revision of this header
+#   claimed the render showed no ring; that claim came from the same measurement mistake as the S6
+#   deviation below -- see (1).)  The scene inherits the pavilion's pre-existing interpenetrations (the
+#   cap sits 7.5 cm into the floor box, the column base inside both); at r = 0.02 none of that reaches a
+#   station, and `interior` is not exercised by this showcase.
 #
 #   DEVIATIONS FROM docs/PROXIMITY_SHOWCASES.md Sec 1.
 #
-#   (1) THE S6 PAINTER STATION DOES NOT MATCH THE SPEC'S PREDICTION, AND THE BEAUTY RENDER DOES NOT SHOW
-#   THE DESIGNED RING.  This is a genuine, reproducible finding, not an authoring mistake in this scene:
-#   the QUERY CHANNEL is unambiguously 0 at S6 and across a dense 4 cm x 4 cm neighbourhood around it,
-#   cross-checked on three independently-derived Jobs (the original, the probe document's own, and a
-#   from-scratch re-derive), and 200 real aperture-jittered ThinLensCamera samples landing in S6's screen
-#   pixel all hit cap1 within ~1 mm of S6 itself (ruling out a pixel-picking or occlusion mistake) --
-#   yet the ACTUAL RENDERED painter value at that pixel, at >= 2 samples per pixel, measures close to a
-#   reflectance of 1, not 0. A render of the identical probe document at EXACTLY 1 sample per pixel gives
-#   the query-correct answer (exactly black), confirmed both through this test's in-process capture and
-#   independently through the `bin/rise` CLI on a plain scene-file copy (so it is not an artifact of the
-#   test harness's own rendering path). A sweep of samples in {1, 2, 8, 32, 64} shows 1 spp correct and
-#   every other value wrong; removing the unused `def white` line from the receiver's expression_painter
-#   did not change the result. This looks like a defect in how the recently-landed per-hit signal
-#   machinery (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md; recent commits 6a3601c7, de73b7cd) behaves once a
-#   pixel is shaded with more than one sample, not a flaw in `proximity()`'s geometry-side answer, which
-#   this scene's own query stations confirm is correct everywhere it was checked. It is flagged for a
-#   dedicated follow-up investigation (out of scope for this showcase-authoring session, which does not
-#   touch engine source) rather than worked around silently; tests/PavilionColonnadeShowcaseTest.cpp
-#   asserts the CURRENTLY MEASURED render behaviour at S6 (ratio ~1.03, tolerance +-0.20) so the suite
-#   passes honestly rather than masking the finding behind a loosened tolerance around the wrong number,
-#   and documents the query-channel-vs-render discrepancy inline. S1's painter station (measured 0.55,
-#   predicted 0.5 +-0.15) and every query station are unaffected and pass within their stated bands.
+#   (1) NONE ANY MORE -- and the record of the one that was claimed here, because it was wrong in an
+#   instructive way.  The first revision of this scene (2026-09-10) reported that the S6 painter station
+#   measured a ratio of ~1.03 instead of the spec's 0, that the beauty render showed no ring, and that
+#   both were a defect in the newly-landed per-hit `proximity()` machinery once a pixel took more than
+#   one sample.  ALL THREE CLAIMS WERE FALSE.  The bug was in this showcase's own test harness,
+#   tests/PavilionColonnadeShowcaseTest.cpp: `ProjectWorldToPixel` (now `ProjectWorldToScreen`) returns
+#   the SCREEN point the camera consumes, whose y counts up from the BOTTOM of the frame -- the
+#   rasterizer hands the camera `height - y` for raster row `y`
+#   (PixelBasedPelRasterizer::IntegratePixel) -- and the readback then indexed the top-down framebuffer
+#   with it directly.  S1 hid the mistake because it lands at y = 300.0 on a 600-row film and
+#   600 - 300 == 300: the flip is the identity at the vertical centre, which is exactly where the
+#   `lookat` station sits.  S6, off-axis at y = 407.1, was read at row 407 instead of 193 -- a floor
+#   pixel carrying no cap contribution at all, so the probe and control renders agree there and the
+#   ratio reads ~1 whatever the signal says.  The 200-cast sanity check did not catch it because it
+#   built its rays from the SCREEN point too, so it validated a pixel the readback never touched.
+#   The "1 spp is correct, >= 2 spp is wrong" sweep did not reproduce on re-investigation: at the
+#   MIRRORED pixel the ratio is a flat ~1.02 at 1, 2, 8 and 64 spp alike, and at the TRUE pixel it is
+#   exactly 0 at every one of them.  An engine-side trace of every `proximity()` evaluation on the cap
+#   top during a 2 spp render found the field correct throughout -- 1 at the wall, falling to a hard 0
+#   beyond 2 cm, with one consistent `pSelf` -- and no memo hit anywhere in the band.  No engine source
+#   was changed; the fix is `ScreenToRaster` in the test (which also rounds to nearest on BOTH axes
+#   rather than flooring, the other half-pixel this used to get wrong), the sanity cast now builds its
+#   screen point back OUT of the raster index the readback uses, and S6 asserts the spec's 0 within
+#   0.08.  The lesson worth keeping: a projection check that consumes the same coordinate system as the
+#   projection cannot audit the readback -- cast through the index you actually read.
 #
 #   (2) No other deviation: the camera, receiver material, dropped chunks, and every other station match
 #   the spec exactly as specified.
