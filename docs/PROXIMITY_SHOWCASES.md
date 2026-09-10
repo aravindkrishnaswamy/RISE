@@ -1,7 +1,8 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised thirteen times the same day after
-adversarial rounds (round 13, 1 P1: the march's "expected hop count is
+Status: SPEC, 2026-09-10, revised fourteen times the same day after
+adversarial rounds (round 14, 1 P1: the wall named a painter but no
+material chunk, so it would have derived to the null material. Round 13, 1 P1: the march's "expected hop count is
 two" was stated for the two dry stations too. Round 12, 1 P1: the rewritten march had no VISIBLE
 outcome, so the receiver hit at the station counted as an occluder.
 Round 11, 1 P1: the march decremented its remaining
@@ -240,9 +241,10 @@ rasterizers). The painter stations below prove it anyway.
   meshes load single-sided, so a front-only cast would depend on the
   winding): if the test passes → VISIBLE, else OCCLUDED by `pObject`.
   Rule (iii) for those two: showcase 3 has no refractive object;
-  showcase 1's only dielectric is the floor's `polished_material`, whose
-  y ∈ [−0.1, 0.1] slab no station sightline crosses (both stations are
-  at y = 0.175 and the camera above). Showcase 2 MARCHES with
+  showcase 1 has no transmissive object either — the floor's
+  `polished_material` is a Fresnel coat over a Lambertian substrate, not
+  a refractive body, and no station sightline crosses its y ∈ [−0.1, 0.1]
+  slab in any case (both stations are at y = 0.175 and the camera above). Showcase 2 MARCHES with
   `(true, false, false)`, front faces only: at every hop, if the test
   passes → VISIBLE; else a hit whose `pObject` is the object named
   `water` (resolved by `IObjectManager::GetItem` — the object the 10°
@@ -656,7 +658,9 @@ close-up. Layout:
   face at z = −0.12 is flush with the shelf's back edge (the wall's
   y ∈ [−0.01, 0.39] and the shelf's back face share a 0.60 × 0.01 m
   coplanar patch, hidden below and behind the shelf top; stated, not
-  moved); a matte plaster painter; it reads no signal.
+  moved); a plain `lambertian_material` whose reflectance is a matte
+  plaster painter (the object's `material` defaults to `none`, the null
+  material, if left unstated); it reads no signal.
 - `bunny`: `risemesh_geometry` (`file models/risemesh/bunny.risemesh`), `position 0
   Y_b 0` with Y_b = −(lowest vertex y) so the lowest vertex touches y = 0
   (scene D: −0.0329874 for a plane at 0 — the same number here, re-derived
