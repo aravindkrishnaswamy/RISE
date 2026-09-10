@@ -830,11 +830,17 @@ namespace RISE
 	//! BDPTPelRasterizer::PreRenderSetup, BDPTSpectralRasterizer::
 	//! PreRenderSetup, VCMRasterizerBase::PreRenderSetup, and
 	//! MLTRasterizer::RenderFrameOfMLT for the four call sites.  Cheap:
-	//! two relaxed atomic loads (SurfaceCurvatureDemand and
-	//! SurfaceSignalDemand cover `curv` and `occlusion`/`thickness`
-	//! respectively -- an expression can key on either family without
-	//! calling the other), gated so a scene that never mentions any of
-	//! the three signals costs nothing beyond the two loads.
+	//! two relaxed atomic loads.  `SurfaceCurvatureDemand` covers `curv`
+	//! alone; `SurfaceSignalDemand` is built from a compiled program's
+	//! `UsesSurfaceSignals()` (`!m_signalCalls.empty()`,
+	//! ExpressionPainter.h), which fires for ALL FIVE of the other
+	//! signals -- `occlusion`, `thickness`, `convexity`, and the two
+	//! cross-object ones, `proximity` and `interior` -- so the two
+	//! counters between them cover all SIX, not three: an expression
+	//! calling only `proximity()`, say, still trips `SurfaceSignalDemand`
+	//! and is caught by the warning below exactly as an `occlusion()`
+	//! caller is.  Gated so a scene that never mentions any of the six
+	//! costs nothing beyond the two loads.
 	//!
 	//! `pLog` may be null (defensive; every call site has a live log in
 	//! practice) -- a null log means "cannot report," not "nothing to
