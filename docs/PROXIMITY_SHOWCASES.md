@@ -1,7 +1,8 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised nine times the same day after adversarial
-rounds (round 9, 1 P1: the `self` enumeration put S5 on cap1 while its
+Status: SPEC, 2026-09-10, revised ten times the same day after adversarial
+rounds (round 10, 1 P1: the sightline march resumed from the water's EXIT
+face, 0.6 m past the stations it was meant to check. Round 9, 1 P1: the `self` enumeration put S5 on cap1 while its
 stations lie on cap2. Round 8, 1 P1: no station named its `self`, and a null `self`
 lets the receiver answer at distance 0. Round 7, 1 P1: `vec3()` takes three scalars, so every probe
 expression as written failed to compile. Round 6, 3 P1s: a bare inserted chunk glues its `}` onto the
@@ -149,8 +150,12 @@ rasterizers). The painter stations below prove it anyway.
   the albedo with no other change, so its probe is the `expr` swap alone;
   showcases 2 and 3 are path-traced, where interreflection off the other
   surfaces is not linear in the receiver's albedo, so BOTH copies also
-  rebind every non-receiver material to a black `lambertian_material`
-  (showcase 2's water keeps its dielectric) with relief modifiers
+  point every non-receiver OBJECT's `material` parameter at the inserted
+  black `lambertian_material` (`DocSetOrAddParamValue` on the object
+  chunk — never an edit of a material chunk in place: showcase 2's five
+  stones share one, so the receivers are repointed to their Lambertian
+  FIRST and the other three stones to the black one; showcase 2's water
+  object keeps its dielectric) with relief modifiers
   stripped, AND erase every light chunk but the key with
   `Cst::DocEraseChunkTidy` — each erase resolves
   `DocFindByName("ambient_light/<name>")` → `DocIndexOfNodeId` on the
@@ -198,16 +203,22 @@ rasterizers). The painter stations below prove it anyway.
   adjudicates and the pixel is a sanity check with a stated wide band. A
   painter station is read ONLY where the sightline from the probe camera to
   the station is unoccluded — the test CASTS that ray against the loaded
-  scene. `IObjectManager::IntersectRay` is closest-hit only and
-  `RayIntersection::pObject` names what it hit, so the test MARCHES: from
-  the camera toward the station, cast with `bComputeExitInfo = true`; no
-  hit, or a hit beyond the station (distance ≥ remaining − 1e-6) → the
+  scene. `IObjectManager::IntersectRay(ri, bHitFrontFaces, bHitBackFaces,
+  bComputeExitInfo)` is closest-hit only and `RayIntersection::pObject`
+  names what it hit, so the test MARCHES: from the camera toward the
+  station, cast with `(true, false, false)` — front faces only; no hit,
+  or a hit beyond the station (distance ≥ remaining − 1e-6) → the
   station is VISIBLE; a hit whose `pObject` is the scene's one refractive
   object (showcase 2's `water`, resolved by name through
   `IObjectManager::GetItem` — the object the 10° clause governs; there is
-  no "is a dielectric" query on `IMaterial`) → continue from the hit's
-  `ptExit` (the whole slab skipped) for at most 4 iterations; any other
-  hit → OCCLUDED by that object. A vertex-distance margin is only a
+  no "is a dielectric" query on `IMaterial`) → restart from that hit's
+  ENTRY point, `ri.geometric.ptIntersection + 1e-6·dir` (NOT `ptExit`:
+  for a ray entering from outside `range2` is the far face, here the
+  water's bottom at y = −0.57, 0.6 m past the submerged stations and the
+  bed), with the remaining distance reduced by the hit's `range`; under
+  front-faces-only `BoxGeometry::IntersectRay` refuses an origin inside
+  the box, so the water cannot re-report itself from inside; at most 4
+  hops; any other hit → OCCLUDED by that object. A vertex-distance margin is only a
   secondary "not on the silhouette" guard, neither necessary nor
   sufficient —
   where the CONTROL pixel is non-zero (asserted before
@@ -268,9 +279,12 @@ silhouette only: the caps shade under the scene's default
 all and its ratio is exactly the albedo, which is why §0 exempts this
 showcase from the black-out (the pavilion's floor carries `shader
 floor_shader` = `DefaultPathTracing`; the new scene DROPS that line, and
-the now-unreferenced `floor_shader` and `glass_shader` chunks with it, so
-every surface is direct-only and the claim is scene-wide) — and the two
-omni lights), framed on cap1's foot. NO prop is relocated into the frame: the
+the now-unreferenced `floor_shader` and `glass_shader` chunks with it —
+the `global` `standard_shader` STAYS: nothing in the file names it, but
+`pixelpel_rasterizer`'s `defaultshader` resolves that name
+(`RasterizerDefaults.h` `defaultShader = "global"`) and it is what makes
+the direct-only claim true — so every surface is direct-only and the
+claim is scene-wide) — and the two omni lights), framed on cap1's foot. NO prop is relocated into the frame: the
 pavilion's `vasegeom` is an unscaled Bezier teapot 6.5 world units wide
 (`AddBezierPatchGeometry` recentres, never normalises), and the glass
 sphere, its pedestal, the four `cap_top*` capitals at y = 4.9 and the
@@ -345,9 +359,14 @@ scene and ADDS S6, S7, the painter stations and the cost.
   query at r = 0.02; the per-object `column1->DistanceToSurface` at r = 0.1
   REFUSES (the scene-wide query at 0.1 answers 0.075 from the floor top at
   y = 0.1 — the cross-check (l) uses).
-- S5 on the rotated `column2` (`orientation 0 45 0`, present in the
-  scene): local (0.088925, y, 0.244320) and local (0, y, 0.26) pushed
-  through `column2->GetFinalTransformMatrix()` → 0.5 (band) and 0.
+- S5 on the rotated `column2` (`orientation 0 45 0`, `position 2.5 2.5
+  2.5`, present in the scene): local (0.088925, −2.325, 0.244320) and
+  local (0, −2.325, 0.26) — local y = 0.175 − 2.5, so the stations land
+  on cap2's top face; the test asserts the transformed world y = 0.175,
+  because a station left at mid-column height still reads 0.5 and 0 while
+  lying on no surface — pushed through `column2->GetFinalTransformMatrix()`
+  → world (2.735640, 0.175, 2.609880) and (2.683848, 0.175, 2.683848) →
+  0.5 (band) and 0, `self` = cap2.
 - S6 cap1 top, 6.5 cm from the wall = 0.315 from the axis along local +x:
   (−2.185, 0.175, 2.5) → 0 (nothing within 2 cm; the cap's half-width 0.35
   keeps it on the cap; the floor top is 7.5 cm below); sightline clears the
@@ -383,8 +402,8 @@ showcases.
 New scene `scenes/FeatureBased/Textures/tidal_stones.RISEscene`, 0.4 m
 close-up. Layout (axis-aligned boxes unless stated; every dimension is
 width × height × depth = x × y × z; centres given):
-- `water`: `dielectric_material` (`ior 1.33`, `tau` WHITE — the
-  descriptor's default `tau` is 0, a fully absorbing black block —
+- `water`: `dielectric_material` (`ior 1.33`, `tau 1.0` — the Scalar
+  pipe; the descriptor's default is 0, a fully absorbing black block —
   `scattering 1000000`, delta pass-through) box 0.36 × 0.60 × 0.36 at
   (0, −0.27, 0) → x, z ∈ [−0.18, 0.18], y ∈ [−0.57, 0.03]; the WATERLINE
   is y = 0.03. Deep so that on every stone's side the TOP face is the
