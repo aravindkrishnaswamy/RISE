@@ -1908,6 +1908,18 @@ namespace RISE
 						"material that is still one flat colour on curved geometry -- which is what a "
 						"DESIGN NOTE about unworn materials is pointing at, so the no-argument call is the "
 						"usual one." ) );
+					props.set( "contact_radius", NumberProp(
+						"OPTIONAL, a WORLD LENGTH; default 0 = off. Above 0 this ALSO grimes the CONTACT "
+						"SEAM -- where this material's surface comes within that distance of ANOTHER "
+						"object -- using proximity(), and it lets a FLAT receiver qualify at all: a plank "
+						"lying on a plane, a flange bolted to a box. Those are refused without it, because "
+						"curvature alone has nothing to key on there. YOU choose the number from the "
+						"scene's own feature sizes and units: 0.002 is two millimetres in a metre-scale "
+						"scene, which suits a nail resting on a board; a 2 cm radius (0.02) suits a bench "
+						"foot on a floor. Too large and the seam becomes a wash." ) );
+					props.set( "contact_grime", NumberProp(
+						"OPTIONAL, 0..1, default 0.5. How strongly the contact seam grimes, relative to "
+						"the curvature crevices. Only read when contact_radius > 0." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
 					// Commit-only, and for the SAME reason vary_material is: this
@@ -1946,7 +1958,11 @@ namespace RISE
 						"render the flat colour it started from, or when it collides with `add_wetness`'s own "
 						"composition (a WET material's colour slot is already bound to an expression_painter, "
 						"never a plain uniformcolor_painter -- the two verbs cannot currently be combined on "
-						"one material; whichever ran first locks the other out). Returns {ok,applied,rawCode,status,"
+						"one material; whichever ran first locks the other out). THE FLAT-RECEIVER REFUSAL "
+						"IS LIFTED BY `contact_radius`: with it set, a material whose every object sits on "
+						"planar or patch geometry becomes a candidate, and the body it gets is the CONTACT "
+						"recipe -- proximity() alone, no curv and no occlusion, since neither would say "
+						"anything on a flat face. Returns {ok,applied,rawCode,status,"
 						"retriable,headVersion,message,material,materialKind,colorSlot,painter,roughPainter,"
 						"roughSlots,previousRoughness,baseColor,geometry,qualifying,objects}. A PRE-COMMIT "
 						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "

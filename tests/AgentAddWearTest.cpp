@@ -87,6 +87,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cctype>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/Cst/Cst.h"
@@ -2531,6 +2532,403 @@ static void TestDimLightRemeasureNote()
 	}
 }
 
+
+//----------------------------------------------------------------------
+// P: contact_radius -- the CROSS-OBJECT half of the wear composition
+// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+//----------------------------------------------------------------------
+
+//! The text of the chunk whose `name` line names `chunkName`, from its
+//! keyword line to the closing brace.  Substring assertions on the WHOLE
+//! document cannot tell the colour chunk from the roughness one, and the
+//! two carry the same shared prelude -- so "exactly once" is only a real
+//! claim per chunk.
+//! The MATCH MUST END AT A WORD BOUNDARY.  `add_wear` mints `X_wear` and
+//! `X_wearrough`, and the roughness chunk is spliced LAST so it lands
+//! FIRST -- so a plain `find("name X_wear")` returns the ROUGHNESS chunk
+//! when asked for the colour one, and every assertion about the colour
+//! recipe then silently measures the other chunk.  (It did, once.)
+static std::string ChunkTextOf( const std::string& doc, const std::string& chunkName )
+{
+	std::size_t at = doc.find( chunkName );
+	while( at != std::string::npos ) {
+		const std::size_t e = at + chunkName.size();
+		const bool endsClean = ( e >= doc.size() ) ||
+			!( std::isalnum( static_cast<unsigned char>( doc[e] ) ) || doc[e] == '_' );
+		// ...and it must be the chunk's own `name` line, not a reference to
+		// it from a material slot.
+		std::size_t bol = doc.rfind( '\n', at );
+		bol = ( bol == std::string::npos ) ? 0 : bol + 1;
+		const std::string line = doc.substr( bol, at - bol );
+		const bool isNameLine = ( line.find( "name" ) != std::string::npos ) &&
+			( line.find_first_not_of( " \t" ) != std::string::npos ) &&
+			( line.substr( line.find_first_not_of( " \t" ) ).compare( 0, 4, "name" ) == 0 );
+		if( endsClean && isNameLine ) {
+			const std::size_t open  = doc.rfind( '{', at );
+			const std::size_t close = doc.find( '}', at );
+			if( open == std::string::npos || close == std::string::npos ) return std::string();
+			return doc.substr( open, close - open + 1 );
+		}
+		at = doc.find( chunkName, at + 1 );
+	}
+	return std::string();
+}
+
+static int CountOccurrences( const std::string& hay, const std::string& needle )
+{
+	if( needle.empty() ) return 0;
+	int n = 0;
+	std::size_t at = hay.find( needle );
+	while( at != std::string::npos ) { ++n; at = hay.find( needle, at + needle.size() ); }
+	return n;
+}
+
+//! EVERY `param` a chunk declares must be READ somewhere in that chunk
+//! outside its own declaration line.  The VM has no compile-time backstop
+//! for an unreferenced `param` -- `AddParam` only registers a slot -- so a
+//! recipe that dropped a consumer while keeping its knob would ship an
+//! inert slider and nothing would say so.  Asserted BY NAME over the
+//! emitted text, which is the only place the fact lives.
+static bool EveryParamIsRead( const std::string& chunkText, std::string& firstDead )
+{
+	firstDead.clear();
+	std::vector<std::string> names;
+	std::size_t at = chunkText.find( "param" );
+	while( at != std::string::npos ) {
+		const std::size_t eol = chunkText.find( '\n', at );
+		const std::string line = chunkText.substr( at, ( eol == std::string::npos ? chunkText.size() : eol ) - at );
+		const std::size_t ns = line.find_first_not_of( " \t", 5 );
+		if( ns != std::string::npos ) {
+			const std::size_t ne = line.find_first_of( " \t", ns );
+			if( ne != std::string::npos ) names.push_back( line.substr( ns, ne - ns ) );
+		}
+		at = ( eol == std::string::npos ) ? std::string::npos : chunkText.find( "param", eol );
+	}
+	for( const std::string& nm : names ) {
+		// Count every whole-word occurrence; one of them is the declaration.
+		int uses = 0;
+		std::size_t p = chunkText.find( nm );
+		while( p != std::string::npos ) {
+			const bool leftOk  = ( p == 0 ) ||
+				!( std::isalnum( static_cast<unsigned char>( chunkText[p-1] ) ) || chunkText[p-1] == '_' );
+			const std::size_t e = p + nm.size();
+			const bool rightOk = ( e >= chunkText.size() ) ||
+				!( std::isalnum( static_cast<unsigned char>( chunkText[e] ) ) || chunkText[e] == '_' );
+			if( leftOk && rightOk ) ++uses;
+			p = chunkText.find( nm, p + 1 );
+		}
+		if( uses < 2 ) { firstDead = nm; return false; }
+	}
+	return true;
+}
+
+//! A flat BOX receiver with a neighbour close enough for the contact seam
+//! to have something to measure -- the flagship case the curvature-only
+//! verb has always refused.
+static std::string SceneFlatReceiver()
+{
+	std::string s = Preamble();
+	s += "box_geometry\n{\n\tname slab\n\twidth 4\n\theight 0.2\n\tdepth 4\n}\n\n";
+	s += "sphere_geometry\n{\n\tname pebble\n\tradius 0.35\n}\n\n";
+	s += Ggx( "mat_deck", "pnt_bronze", "0.3" );
+	// THE NEIGHBOUR MUST NOT ITSELF QUALIFY, or the scene has a curved
+	// candidate and the "no material qualifies" and "qualifyingMaterials
+	// is 0" checks below would be measuring the pebble instead of the
+	// deck.  A perlin-bound reflectance already varies, so clause (a)
+	// turns it down -- and it is still a perfectly good NEIGHBOUR for the
+	// deck's contact seam, which is all this fixture needs it to be.
+	s += "perlin3d_painter\n{\n\tname pnt_pebble\n\tcolora pnt_bronze\n\tcolorb pnt_spec\n}\n\n";
+	s += "lambertian_material\n{\n\tname mat_pebble\n\treflectance pnt_pebble\n}\n\n";
+	s += "standard_object\n{\n\tname o_deck\n\tgeometry slab\n\tmaterial mat_deck\n\tposition 0 0 0\n}\n\n";
+	s += "standard_object\n{\n\tname o_pebble\n\tgeometry pebble\n\tmaterial mat_pebble\n\tposition 0 0.45 0\n}\n\n";
+	return s;
+}
+
+static void TestContactRadius()
+{
+	std::printf( "P: contact_radius -- the contact seam, and the flat receiver it unlocks\n" );
+
+	// ---- P1: contact_radius 0 keeps TODAY'S body, to the line ----------
+	//
+	// The byte-identity claim §5.6 makes, expressed as assertions over the
+	// emitted text: the prelude's own `crevice_mask` line unchanged, both
+	// CONSUMING lines unchanged, and not one contact token anywhere.
+	{
+		const std::string tmp = TempPath( "addwear_p1.RISEscene" );
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "P1: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_b", nullptr, 0.0, 0.5 );
+			Check( r.ok && r.applied, std::string( "P1: contact_radius 0 applies as before -- " ) + r.message );
+			const std::string doc = sess->ReadDocument();
+			Check( doc.find( "clamp(crevice_raw*cavity_boost, 0, 1)" ) != std::string::npos,
+			       "P1 MONEY: the `crevice_mask` line is TODAY'S, with no addend -- the shared prelude "
+			       "is byte-identical at contact_radius 0" );
+			Check( doc.find( "mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)" ) != std::string::npos,
+			       "P1: ...the colour chunk's consuming line is unchanged" );
+			Check( doc.find( "mix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)" )
+			       != std::string::npos,
+			       "P1: ...and the roughness chunk's" );
+			Check( doc.find( "contact_" ) == std::string::npos,
+			       "P1 MONEY: not one `contact_` token is emitted -- the argument is genuinely off, "
+			       "not merely defaulted to something inert" );
+			Check( doc.find( "proximity(" ) == std::string::npos,
+			       "P1: ...and no proximity() call at all" );
+			Check( r.qualifyingMaterials == 3,
+			       "P1: the scan's own count is unchanged -- `qualifyingMaterials` still reports the "
+			       "CURVED candidates" );
+			Check( r.geometryKind == "sdf_geometry", "P1: ...and the geometry kind it names" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P2: a CURVING receiver, with the contact term folded in --------
+	{
+		const std::string tmp = TempPath( "addwear_p2.RISEscene" );
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "P2: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_b", nullptr, 0.002, 0.6 );
+			Check( r.ok && r.applied, std::string( "P2: applied -- " ) + r.message );
+			const std::string doc = sess->ReadDocument();
+
+			Check( doc.find( "clamp(crevice_raw*cavity_boost + contact_grime*contact_mask, 0, 1)" )
+			       != std::string::npos,
+			       "P2 MONEY: the contact term enters at the ONE `crevice_mask` line BOTH chunks read, "
+			       "so the colour and roughness halves agree by construction -- and the result is "
+			       "CLAMPED, which is the only bound that holds (a `param`'s max is slider metadata "
+			       "the VM ignores, and `mix` does not clamp its weight)" );
+			Check( doc.find( "mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)" ) != std::string::npos &&
+			       doc.find( "mix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)" )
+			       != std::string::npos,
+			       "P2 MONEY: the two CONSUMING lines are BYTE-IDENTICAL to the contact-free recipe's "
+			       "-- the term was added to the shared prelude, not to each consumer" );
+
+			const std::string colourChunk = ChunkTextOf( doc, r.colorPainter );
+			const std::string roughChunk  = ChunkTextOf( doc, r.roughnessPainter );
+			Check( !colourChunk.empty() && !roughChunk.empty(), "P2: both minted chunks are locatable" );
+			Check( CountOccurrences( colourChunk, "proximity(" ) == 1,
+			       "P2 MONEY: the colour chunk calls proximity() EXACTLY ONCE (got " +
+			       std::to_string( CountOccurrences( colourChunk, "proximity(" ) ) + ")" );
+			Check( CountOccurrences( roughChunk, "proximity(" ) == 1,
+			       "P2: ...and so does the roughness chunk" );
+			Check( colourChunk.find( "proximity(contact_r)" ) != std::string::npos,
+			       "P2 MONEY: the radius is the RETUNABLE `contact_r` param, not a baked literal -- "
+			       "safe here precisely because `proximity` has no DynR twin, unlike the "
+			       "occlusion(0.08) on the line above it" );
+			Check( colourChunk.find( "occlusion(0.08)" ) != std::string::npos,
+			       "P2: ...and that occlusion literal is still a literal, for the opposite reason" );
+
+			bool okR = false, okG = false;
+			const double cr = ParamValueInChunk( doc, r.colorPainter, "contact_r", okR );
+			const double cg = ParamValueInChunk( doc, r.colorPainter, "contact_grime", okG );
+			Check( okR && okG && std::fabs( cr - 0.002 ) < 1e-12 && std::fabs( cg - 0.6 ) < 1e-12,
+			       "P2: the two arguments land in the emitted params verbatim (contact_r 0.002, "
+			       "contact_grime 0.6)" );
+
+			std::string dead;
+			Check( EveryParamIsRead( colourChunk, dead ),
+			       "P2: every param the colour chunk declares is READ (dead: " + dead + ")" );
+			Check( EveryParamIsRead( roughChunk, dead ),
+			       "P2: every param the roughness chunk declares is READ (dead: " + dead + ")" );
+
+			Check( pJob->GetScene() != nullptr, "P2: the rewritten document still derives" );
+			{
+				const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( doc );
+				bool anyError = false;
+				for( const Agent::AgentDiagnostic& d : diags )
+					if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+				Check( !anyError, "P2 MONEY: ZERO error diagnostics -- the contact body really compiles "
+				       "in the VM, `proximity(contact_r)` and all" );
+			}
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P3: a FLAT receiver, accepted from the barren list -------------
+	{
+		const std::string tmp = TempPath( "addwear_p3.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P3: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// WITHOUT the argument it is still refused, with the same words.
+			{
+				const Agent::AgentSession::AgentAddWearResult no = sess->AddWear( "mat_deck" );
+				Check( !no.ok && !no.applied,
+				       "P3 MONEY: WITHOUT contact_radius the flat receiver is still refused" );
+				Check( no.message.find( "planar or patch geometry" ) != std::string::npos,
+				       "P3: ...with the same clause-(c) words as before -- got: " + no.message );
+			}
+
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_deck", nullptr, 0.01, 0.7 );
+			Check( r.ok && r.applied,
+			       std::string( "P3 MONEY: WITH contact_radius the flat box receiver is ACCEPTED -- " ) + r.message );
+			Check( r.geometryKind == "box_geometry",
+			       "P3: ...and the result names the BARREN geometry kind it landed on" );
+			Check( r.qualifyingMaterials == 0,
+			       "P3 MONEY: `qualifyingMaterials` still reports the CURVED count (0 here) -- the "
+			       "barren list is a second source, not a widening of the scan's own output" );
+			Check( r.message.find( "touch" ) != std::string::npos ||
+			       r.message.find( "proximity" ) != std::string::npos,
+			       "P3: the success message says it TOUCHES a neighbour rather than that it curves -- "
+			       "got: " + r.message );
+
+			const std::string doc = sess->ReadDocument();
+			const std::string colourChunk = ChunkTextOf( doc, r.colorPainter );
+			const std::string roughChunk  = ChunkTextOf( doc, r.roughnessPainter );
+			Check( !colourChunk.empty() && !roughChunk.empty(), "P3: both minted chunks are locatable" );
+
+			// THE CONTACT RECIPE: no curv, no occlusion, no wear_mask.  On a
+			// flat face `curv` is 0 everywhere, so the edge/crevice half
+			// would collapse to a pure-noise wash plus a dead occlusion call
+			// per shade.
+			Check( colourChunk.find( "curv" ) == std::string::npos &&
+			       roughChunk.find( "curv" ) == std::string::npos,
+			       "P3 MONEY: the barren body reads NO `curv` -- it is 0 everywhere on a box, so a "
+			       "curvature mask there is a pure-noise wash dressed as wear" );
+			Check( colourChunk.find( "occlusion" ) == std::string::npos &&
+			       roughChunk.find( "occlusion" ) == std::string::npos,
+			       "P3 MONEY: ...and no `occlusion()` -- a dead call per shade otherwise" );
+			Check( colourChunk.find( "wear_mask" ) == std::string::npos &&
+			       roughChunk.find( "wear_mask" ) == std::string::npos,
+			       "P3: ...and no `wear_mask`" );
+			Check( colourChunk.find( "edge_tint" ) == std::string::npos &&
+			       colourChunk.find( "edge_desat" ) == std::string::npos &&
+			       colourChunk.find( "edge_lift" ) == std::string::npos,
+			       "P3: ...and none of the edge half's knobs or defs" );
+			Check( roughChunk.find( "rough_polished" ) == std::string::npos,
+			       "P3: ...and no `rough_polished`, which rides the mask that is not there" );
+
+			Check( doc.find( "clamp(contact_grime*contact_mask, 0, 1)" ) != std::string::npos,
+			       "P3 MONEY: the barren `crevice_mask` IS the contact mask, clamped" );
+			Check( colourChunk.find( "mix(base, patina_tint, crevice_mask)" ) != std::string::npos,
+			       "P3: the colour chunk consumes it as a single mix" );
+			Check( roughChunk.find( "mix(rough_base, rough_crusted, crevice_mask)" ) != std::string::npos,
+			       "P3: ...and the roughness chunk as its own" );
+			Check( CountOccurrences( colourChunk, "proximity(" ) == 1 &&
+			       CountOccurrences( roughChunk, "proximity(" ) == 1,
+			       "P3: exactly one proximity() call per chunk" );
+
+			std::string dead;
+			Check( EveryParamIsRead( colourChunk, dead ),
+			       "P3 MONEY: every param the barren colour chunk declares is READ -- no inert "
+			       "slider (dead: " + dead + ")" );
+			Check( EveryParamIsRead( roughChunk, dead ),
+			       "P3 MONEY: ...and every param of the barren roughness chunk (dead: " + dead + ")" );
+
+			Check( pJob->GetScene() != nullptr, "P3 MONEY: the rewritten flat-receiver scene DERIVES" );
+			{
+				const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( doc );
+				bool anyError = false;
+				for( const Agent::AgentDiagnostic& d : diags )
+					if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+				Check( !anyError, "P3: ...with ZERO error diagnostics" );
+			}
+			{
+				Agent::AgentRenderParams rp;
+				rp.width = 32; rp.height = 32; rp.samples = 4;
+				const Agent::AgentRenderResult rr = sess->Render( rp );
+				Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+				       "P3: ...and renders non-black" );
+			}
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P4: the BARE call selects over the union -----------------------
+	{
+		const std::string tmp = TempPath( "addwear_p4.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P4: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( std::string(), nullptr, 0.01, 0.5 );
+			Check( r.ok && r.applied && r.material == "mat_deck",
+			       std::string( "P4 MONEY: the BARE call takes the flat receiver when contact_radius is "
+			       "set -- the union pool, under the SAME prominence rule -- " ) + r.message );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P5: it REFUSES a body that already reads the cross-object pair -
+	//
+	// `proximity` IS the contact signal this argument writes, so a body
+	// already reading it is already painting this wear; `interior` is its
+	// signed sibling and joins the list for the same reason.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_prox\n\tparam k 1.0\n"
+		        "\texpression clamp(k*proximity(0.002), 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_prox", "pnt_bronze", "sp_prox" );
+		body += Obj( "o1", "blob", "mat_prox", 0 );
+		ExpectRefusal( "already-contact", body, "already binds an expression that reads", "mat_prox" );
+	}
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_int\n\tparam k 1.0\n"
+		        "\texpression clamp(k*interior(0.002), 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_int", "pnt_bronze", "sp_int" );
+		body += Obj( "o1", "blob", "mat_int", 0 );
+		ExpectRefusal( "already-interior", body, "already binds an expression that reads", "mat_int" );
+	}
+
+	// ---- P6: the TWO pinned exceptions to the byte-identity claim -------
+	//
+	// Both print at contact_radius 0, so both had to be asserted by NEW
+	// checks: the existing ones match only the OPENING substring of each
+	// message, which an appended clause and a widened list leave intact.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_worn2\n\tparam k 3.0\n"
+		        "\texpression clamp(-curv*k + 0.5, 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_worn2", "pnt_bronze", "sp_worn2" );
+		body += Obj( "o1", "blob", "mat_worn2", 0 );
+		const std::string tmp = TempPath( "addwear_p6a.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "P6a: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_worn2" );
+			Check( !r.ok && r.message.find( "`interior`" ) != std::string::npos,
+			       "P6a MONEY: clause (d)'s decline string names ALL SIX signals including `interior` "
+			       "-- the predicate has matched more than the three it used to list since "
+			       "`convexity` shipped, and the text is only now caught up -- got: " + r.message );
+			Check( r.message.find( "`convexity`" ) != std::string::npos &&
+			       r.message.find( "`proximity`" ) != std::string::npos,
+			       "P6a: ...and `convexity` and `proximity` with it" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+	{
+		// The bare-call "nothing qualifies" message, on a scene where the
+		// only material sits on a flat box: the appended clause has to tell
+		// the caller that `contact_radius` is what unlocks it.
+		const std::string tmp = TempPath( "addwear_p6b.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P6b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( !r.ok && !r.applied, "P6b: the bare call at contact_radius 0 still refuses" );
+			Check( r.message.find( "no material in this document is a flat, readable colour" ) != std::string::npos,
+			       "P6b: ...with its OPENING words unchanged (which is why the appended clause needs "
+			       "its own check)" );
+			Check( r.message.find( "contact_radius" ) != std::string::npos,
+			       "P6b MONEY: ...and an APPENDED clause telling the caller that a FLAT receiver "
+			       "qualifies once `contact_radius` is set -- advice for exactly this call, which is "
+			       "why it prints at contact_radius 0 -- got: " + r.message );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "AgentAddWearTest -- GEOMETRY_SHADING_SIGNALS sec 11: add_wear\n" );
@@ -2547,6 +2945,7 @@ int main()
 	TestEnclosedLightShellNote();
 	TestDimHeroLightNote();
 	TestDimLightRemeasureNote();
+	TestContactRadius();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

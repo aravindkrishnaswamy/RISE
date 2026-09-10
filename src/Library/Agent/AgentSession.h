@@ -6594,8 +6594,26 @@ namespace RISE
 			//! staged-proposal form under External authority (there is no
 			//! AgentProposalKind an Owner could approve card-by-card for a
 			//! composite swap).
+			//! `contactRadius` is a WORLD LENGTH and defaults to 0 = OFF, at
+			//! which every output of this verb -- the chosen material, the
+			//! emitted chunk text, the messages -- is byte-identical to what
+			//! it was before Phase 3 of the cross-object arc
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6), with exactly two
+			//! pinned exceptions (clause (d)'s corrected decline string and
+			//! the bare-call message's appended clause).  Above 0 it folds a
+			//! `proximity(contact_r)` term into the crevice endpoint of the
+			//! SHARED mask prelude, and it opens a second candidate source:
+			//! materials whose every bound object sits on FLAT geometry,
+			//! which the curvature-only verb has always had to refuse.
+			//!
+			//! `contactGrime` is that term's weight, clamped to [0, 1] here;
+			//! the bound that actually HOLDS in the emitted body is the outer
+			//! `clamp(..., 0, 1)` on the `crevice_mask` line, since a `param`'s
+			//! `min`/`max` is slider metadata the VM ignores.
 			AgentAddWearResult AddWear( const std::string& material = std::string(),
-			                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+			                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr,
+			                            double contactRadius = 0.0,
+			                            double contactGrime = 0.5 );
 
 			//! docs/WETNESS_COAT_DESIGN.md sec 6/13 (2026-08-31): what
 			//! `AgentSession::AddWetness` did, or the reason it declined.

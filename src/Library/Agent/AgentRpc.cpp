@@ -4314,7 +4314,7 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// add_wear {material?, baseHeadVersion?}
+				// add_wear {material?, contact_radius?, contact_grime?, baseHeadVersion?}
 				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
 				//       material,materialKind,colorSlot,painter,roughPainter,
 				//       roughSlots:[string,...],previousRoughness,baseColor:[r,g,b],
@@ -4327,6 +4327,14 @@ namespace RISE
 				//   back as ok=false with the reason in `message` -- a SUCCESSFUL
 				//   response, not a JSON-RPC error, the same shape vary_material
 				//   uses for its own "nothing qualifies" case.
+				//   docs/CROSS_OBJECT_PROXIMITY_DESIGN.md sec 5.6 (2026-09-09):
+				//   `contact_radius` is a WORLD LENGTH, default 0 = OFF (every
+				//   output byte-identical to before it existed).  Above 0 it folds
+				//   a `proximity(contact_r)` contact-seam term into the crevice
+				//   endpoint, and it lets a FLAT receiver -- a plank on a plane, a
+				//   flange on a box -- qualify at all, which the curvature-only
+				//   verb has always had to refuse.  `contact_grime` (default 0.5,
+				//   [0,1]) is that term's weight.
 				//--------------------------------------------------------------
 				if( m == "add_wear" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -4336,13 +4344,49 @@ namespace RISE
 						else if( !mv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
 					}
+					// The contact pair.  Both OPTIONAL; absent means "off" /
+					// "the default weight", and a call that names neither is
+					// byte-identical to every add_wear call before Phase 3.
+					double contactRadius = 0.0;
+					double contactGrime  = 0.5;
+					if( const JsonValue* cr = params.find( "contact_radius" ) ) {
+						if( !cr->isNumber() ) {
+							if( !cr->isNull() )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_radius' must be a number (a WORLD length; 0 = off)" );
+						}
+						else {
+							const double v = cr->asNumber();
+							if( !RISE::IsFiniteDouble( v ) || v < 0.0 )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_radius' must be a finite, non-negative world length "
+									"(0 = off)" );
+							contactRadius = v;
+						}
+					}
+					if( const JsonValue* cg = params.find( "contact_grime" ) ) {
+						if( !cg->isNumber() ) {
+							if( !cg->isNull() )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_grime' must be a number in [0, 1]" );
+						}
+						else {
+							const double v = cg->asNumber();
+							if( !RISE::IsFiniteDouble( v ) || v < 0.0 || v > 1.0 )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_grime' must be a finite number in [0, 1]" );
+							contactGrime = v;
+						}
+					}
+
 					RISE::Cst::CstHeadVersion base;
 					std::string bErr;
 					const int b = ParseBaseHeadVersionParam( params, base, bErr );
 					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 
 					const AgentSession::AgentAddWearResult wr =
-						s->AddWear( materialStr, ( b == 1 ) ? &base : nullptr );
+						s->AddWear( materialStr, ( b == 1 ) ? &base : nullptr,
+						            contactRadius, contactGrime );
 
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok",          JsonValue::MakeBool( wr.ok ) );

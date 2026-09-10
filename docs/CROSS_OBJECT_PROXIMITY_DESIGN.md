@@ -2369,6 +2369,49 @@ use for, so walking it would visit every leaf anyway with the traversal's
 overhead added. `interior` is therefore linear in object count on every
 scene — added to §10.
 
+#### S5 — `add_wear`'s contact term
+
+Two new parameters on the verb, `contact_radius` (world length, default 0 =
+off) and `contact_grime` (default 0.5, clamped to [0,1] at the entry point).
+`BuildWearMaskPreludeText` gains three `param` lines and a `def contact_mask`,
+and the existing `crevice_mask` line grows one addend — the SHARED prelude, so
+the colour and roughness chunks agree by construction and their two consuming
+lines are untouched. The `WearMaterial_` fill is hoisted above clause (c)'s
+test and barren records go to a new `wearBarrenCandidates` list that only a
+`contact_radius > 0` call reads. A barren pick gets the CONTACT recipe: no
+`curv`, no `occlusion`, no `wear_mask`.
+
+| Phase-3 S5 gate | verdict |
+|---|---|
+| warning-free `make -C build/make/rise -j8 all` | PASS |
+| refuses on a body already reading `proximity` / `interior` | PASS — both, each with the clause-(d) refusal and a byte-identical document afterwards |
+| a curving receiver calls `proximity(contact_r)` EXACTLY ONCE per chunk, via `crevice_mask` | PASS — 1 in the colour chunk, 1 in the roughness chunk, counted per chunk (the shared prelude is in both, so a whole-document count would have been 2 and meaningless) |
+| the two CONSUMING lines are byte-identical to today's | PASS — `mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)` and its roughness twin, asserted verbatim |
+| the `crevice_mask` line is wrapped in `clamp(…, 0, 1)` on BOTH recipes | PASS — `clamp(crevice_raw*cavity_boost + contact_grime*contact_mask, 0, 1)` and `clamp(contact_grime*contact_mask, 0, 1)` |
+| the radius is the retunable `contact_r` param; `occlusion(0.08)` stays a literal | PASS — both asserted in the same chunk, which is where the contrast lives |
+| a flat BOX receiver is accepted from the barren list, and the scene derives | PASS — `add_wear { material: "mat_deck", contact_radius: 0.01 }` applies on a `box_geometry` receiver; the document derives, validates with ZERO error diagnostics, and renders non-black |
+| the same receiver WITHOUT the argument is still refused, in the same words | PASS — "planar or patch geometry", unchanged |
+| the barren body has no `curv`, no `occlusion`, no `wear_mask` | PASS — plus no `edge_tint` / `edge_desat` / `edge_lift` / `rough_polished`, each asserted absent |
+| every `param` either barren chunk declares is referenced outside its own declaration | PASS — asserted BY NAME over the emitted text (whole-word count ≥ 2 per declared name), since the VM has no such check |
+| `qualifyingMaterials` keeps reporting the CURVED count | PASS — 0 on a scene whose only qualifying-shaped material is the flat one, while the call still applies |
+| the bare call selects over the UNION when contact is on | PASS — takes `mat_deck`, the flat receiver |
+| `contact_radius 0` is byte-identical: today's `crevice_mask` line, today's consuming lines, and NOT ONE `contact_` token or `proximity(` call anywhere | PASS |
+| exception 1 — clause (d)'s corrected string, pinned by a NEW check naming its new text | PASS — the message now names `curv` / `occlusion` / `thickness` / `convexity` / `proximity` / `interior`; the existing check matches only the opening substring, which is why this needed its own |
+| exception 2 — the bare-call message's appended clause, pinned by a NEW check | PASS — the opening words are unchanged (asserted) and the appended clause names `contact_radius` |
+| the MCP and chat tool COUNTS do not move (43 / 38) | PASS — `AgentMcpStdioSmokeTest` 21/21 pins 43, `AgentChatLoopTest` 1745/1745 pins 38 |
+| `AgentAddWearTest` | 351 passed, 0 failed (287 before) |
+| `AgentAddWetnessTest` / `AgentSkillsTest` / `AgentReadValidateTest` / `AgentAutonomyPolicyTest` | 210 / 628 / 341 / 404, 0 failed |
+
+One bug the gates caught in this slice's own code, recorded because the
+symptom was unhelpful: the bare-call union pool was declared inside the
+`else` branch while `pick` pointed INTO it, so every later `pick->` read was
+a dangling one — the verb reported ``rebinding `` on `` did not take``. The
+vector now lives at function scope. A second, in the test rather than the
+code: `add_wear` mints `X_wear` and `X_wearrough` and splices the roughness
+chunk last (so it lands first), so a plain `find("name X_wear")` returned the
+ROUGHNESS chunk when asked for the colour one — the helper now requires a word
+boundary and a `name` line.
+
 
 ---
 

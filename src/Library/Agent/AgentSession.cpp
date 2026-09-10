@@ -3679,16 +3679,18 @@ namespace RISE
 			//! builtins.  Over-matching here can only make this verb DECLINE a
 			//! material a human already textured, which is the safe direction.
 			//!
-			//! ALL FIVE are listed, not the original three: `convexity` and
-			//! `proximity` shipped after this list was written and drifted
-			//! out of it.  `proximity` is the one that matters most here --
-			//! it is the CONTACT-GRIME signal, so a body that already reads
-			//! it is by definition already painting the wear this verb would
-			//! add, and `add_wear` must stand down rather than double it.
+			//! ALL SIX are listed, not the original three: `convexity`,
+			//! `proximity` and `interior` each shipped after this list was
+			//! written.  The two CROSS-OBJECT ones matter most here --
+			//! `proximity` IS the contact-grime signal this verb's
+			//! `contact_radius` argument writes, so a body that already reads
+			//! it (or its signed sibling) is by definition already painting
+			//! the wear this verb would add, and `add_wear` must stand down
+			//! rather than double it.
 			bool WearBodyReadsGeometrySignals_( const std::string& body )
 			{
 				static const char* const kSignals[] = {
-					"curv", "occlusion", "thickness", "convexity", "proximity"
+					"curv", "occlusion", "thickness", "convexity", "proximity", "interior"
 				};
 				for( const char* sigName : kSignals ) {
 					const std::string sig( sigName );
@@ -4996,6 +4998,17 @@ namespace RISE
 			//! lexicographically by name) rather than a second private notion of
 			//! prominence: design-note condition L NAMES the material a bare
 			//! `add_wear` call takes, so the two must be one function.
+			//!
+			//! ONE FUNCTION, TWO POOLS since Phase 3 of the cross-object arc
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).  The RULE is still
+			//! shared -- that is what this comment promises and it still holds
+			//! -- but a bare `add_wear` call carrying `contact_radius > 0`
+			//! runs it over the CURVED candidates UNIONED with the barren
+			//! ones, while condition L keeps running it over the curved list
+			//! alone.  So the note's advertised material and the verb's own
+			//! pick MAY differ for such a call, and that is correct: the note
+			//! advertises a BARE call, and a bare call without the argument
+			//! still cannot take a flat receiver.
 			const WearMaterial_* SelectMaterialToWear_( const std::vector<WearMaterial_>& mats )
 			{
 				const WearMaterial_* best = nullptr;
@@ -6152,6 +6165,25 @@ namespace RISE
 				//! and for the same reason: the note must not be able to advertise
 				//! a call the verb then declines to make.
 				std::vector<WearMaterial_> wearCandidateMaterials;
+				//! The BARREN half, added by Phase 3 of the cross-object arc
+				//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6): every material
+				//! that clears clauses (a), (b) and (d) but fails (c) BECAUSE
+				//! every object bound to it sits on planar or patch geometry.
+				//! These are exactly the two flagship contact receivers -- a
+				//! plank on a plane, a flange on a box -- so they are kept
+				//! rather than dropped, in a SEPARATE list that ONLY an
+				//! `add_wear` call carrying `contact_radius > 0` reads.
+				//!
+				//! THE SCAN'S EXISTING OUTPUTS DO NOT MOVE.  These records are
+				//! not in `wearCandidateMaterials`, they do not change
+				//! `wearCandidateCount` (which keeps reporting the CURVED
+				//! count), they are not in `wearCandidateNames`, and their
+				//! decline reason is still recorded in `wearDeclineReasons`
+				//! word for word -- because a call WITHOUT the argument must
+				//! still refuse them for exactly that reason.  A material with
+				//! no identifiable geometry at all is NOT here: there is
+				//! nothing to say it touches anything.
+				std::vector<WearMaterial_> wearBarrenCandidates;
 				//! Why each material that HAS colour slots but did NOT qualify was
 				//! turned down (name -> one clause-shaped reason).  Populated for
 				//! the declined only; the VERB reads it to answer a named
@@ -8061,14 +8093,28 @@ namespace RISE
 								               "be combined on one material (each verb refuses what the other has "
 								               "already rewritten)" )
 								: std::string( "it already binds an expression that reads `curv` / `occlusion` / "
-								               "`thickness` -- this surface has been worn once already, and a "
-								               "second pass would stack two wear layers rather than deepen one" );
+								               "`thickness` / `convexity` / `proximity` / `interior` -- this "
+								               "surface has been worn once already, and a second pass would stack "
+								               "two wear layers rather than deepen one" );
 							continue;
 						}
 
 						// -- clause (c): at least one bound object on geometry with
 						// a real normal field.
+						//
+						// THE RECORD IS FILLED BEFORE THE TEST since Phase 3 of
+						// the cross-object arc (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+						// §5.6), and the loop-local geometry kind is CAPTURED
+						// into it either way.  A BARREN receiver -- a plank on a
+						// plane, a flange on a box -- is exactly the flagship
+						// contact case, so it can no longer be dropped on the
+						// floor here: it goes to a SEPARATE list that only a
+						// `contact_radius > 0` call reads.  The decline reason is
+						// still recorded, unchanged, because a call WITHOUT that
+						// argument must refuse it for the same reason and with
+						// the same words as before.
 						std::string curvKind;
+						std::string barrenKind;
 						bool sawBarrenOnly = false;
 						{
 							const std::map<std::string, std::vector<std::string> >::const_iterator ob =
@@ -8077,19 +8123,15 @@ namespace RISE
 								for( const std::string& objName : ob->second ) {
 									const std::string gk = geometryKindOfObject( objName );
 									if( gk.empty() ) continue;
-									if( CurvBarrenGeometryKind_( gk ) ) { sawBarrenOnly = true; continue; }
+									if( CurvBarrenGeometryKind_( gk ) ) {
+										sawBarrenOnly = true;
+										if( barrenKind.empty() ) barrenKind = gk;
+										continue;
+									}
 									curvKind = gk;
 									break;
 								}
 							}
-						}
-						if( curvKind.empty() ) {
-							c.wearDeclineReasons[pm.name] = sawBarrenOnly
-								? std::string( "every object bound to it sits on planar or patch geometry, where `curv` "
-								               "is 0 everywhere a ray can land -- a curvature wear mask would render "
-								               "exactly the flat colour that is there now" )
-								: std::string( "no `standard_object` binds it to a geometry this scan can identify" );
-							continue;
 						}
 
 						WearMaterial_ w;
@@ -8098,7 +8140,7 @@ namespace RISE
 						w.kind             = pm.kind;
 						w.colorSlot        = bestSlot;
 						w.colorPainter     = bestPainter;
-						w.curvGeometryKind = curvKind;
+						w.curvGeometryKind = curvKind.empty() ? barrenKind : curvKind;
 						{
 							const std::array<double, 3>& rgb = uniformColorPainters.find( bestPainter )->second;
 							w.baseR = rgb[0]; w.baseG = rgb[1]; w.baseB = rgb[2];
@@ -8130,6 +8172,21 @@ namespace RISE
 							w.hasRoughness   = true;
 							break;
 						}
+
+						if( curvKind.empty() ) {
+							c.wearDeclineReasons[pm.name] = sawBarrenOnly
+								? std::string( "every object bound to it sits on planar or patch geometry, where `curv` "
+								               "is 0 everywhere a ray can land -- a curvature wear mask would render "
+								               "exactly the flat colour that is there now" )
+								: std::string( "no `standard_object` binds it to a geometry this scan can identify" );
+							// A material with NO identifiable geometry at all is
+							// not a contact candidate either -- there is nothing
+							// to say it touches anything.  Only the BARREN case
+							// goes to the second list.
+							if( sawBarrenOnly ) c.wearBarrenCandidates.push_back( w );
+							continue;
+						}
+
 						c.wearCandidateMaterials.push_back( w );
 					}
 				}
@@ -37481,9 +37538,54 @@ namespace RISE
 			//! two in-gamut colours; a lift is a mix toward white; a darken is a
 			//! multiply by a 0..1 param) rather than by a vec3 clamp that does not
 			//! exist.
-			std::string BuildWearMaskPreludeText( double breakupScale, double grimeScale, double seed )
+			//! `contactRadius <= 0` reproduces the pre-Phase-3 text BYTE FOR
+			//! BYTE -- the params, their order, the `seed`, the four `def`s and
+			//! the `crevice_mask` line -- which is what makes
+			//! `contact_radius 0` a no-op the test can pin as an equality
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+			//!
+			//! ABOVE 0 the contact term enters the SHARED prelude, so the
+			//! colour chunk and the roughness chunk agree by construction as
+			//! they already do: three `param` lines, one `def contact_mask`,
+			//! and the existing `crevice_mask` line grows one addend.  The two
+			//! CONSUMING lines -- the `expr` in each chunk -- are untouched.
+			//!
+			//! `contact_r` IS A RETUNABLE PARAM rather than a literal, and that
+			//! is safe here precisely because `proximity` has NO `DynR` twin:
+			//! a computed radius costs what a literal one does, so nothing is
+			//! lost by letting a human scrub it.  Contrast `occlusion(0.08)`
+			//! on the `cavity_boost` line, which stays a LITERAL because the
+			//! baked mesh path can only answer a radius it was baked at.
+			//!
+			//! `contactOnly` is the BARREN receiver's recipe (§5.6): on a flat
+			//! box or plane `curv` is 0 everywhere, so the edge/crevice half
+			//! would collapse to `clamp(breakup_amp*fbm)` -- a pure-noise wash
+			//! over the whole face, plus a dead `occlusion(0.08)` per shade.
+			//! So that half is not emitted at all, and no chunk declares a
+			//! `param` nothing reads (the VM has no compile-time backstop for
+			//! an unreferenced `param`: `AddParam` only registers a slot).
+			std::string BuildWearMaskPreludeText( double breakupScale, double grimeScale, double seed,
+			                                      double contactRadius = 0.0, double contactGrime = 0.5,
+			                                      bool contactOnly = false )
 			{
+				const bool contact = ( contactRadius > 0.0 );
 				std::string t;
+
+				if( contactOnly ) {
+					t += "\tparam\t\t\tcontact_grime " + MicrosurfaceFmt_( contactGrime ) +
+						" min 0 max 1 step 0.01 label \"Contact grime weight\"\n";
+					t += "\tparam\t\t\tcontact_r " + MicrosurfaceFmt_( contactRadius ) +
+						" min 0.0001 max 1 step 0.0001 label \"Contact radius (world)\"\n";
+					t += "\tparam\t\t\tcontact_scale " + MicrosurfaceFmt_( grimeScale ) +
+						" min 0.1 max 40 step 0.1 label \"Contact noise scale\"\n";
+					t += "\tparam\t\t\tbreakup_amp 0.35 min 0 max 1 step 0.01 label \"Noise breakup amount\"\n";
+					t += "\tseed\t\t\t" + MicrosurfaceFmt_( seed ) + "\n";
+					t += "\tdef\t\t\t\tjitter vec3(seed, seed*1.7, seed*2.3)\n";
+					t += "\tdef\t\t\t\tcontact_mask clamp(proximity(contact_r) + breakup_amp*fbm(P*contact_scale + jitter, 4, 0.5, 2.0), 0, 1)\n";
+					t += "\tdef\t\t\t\tcrevice_mask clamp(contact_grime*contact_mask, 0, 1)\n";
+					return t;
+				}
+
 				t += "\tparam\t\t\tedge_wear 2.5 min 0 max 12 step 0.1 label \"Edge wear strength\"\n";
 				t += "\tparam\t\t\tcrevice_grime 3.5 min 0 max 12 step 0.1 label \"Crevice grime strength\"\n";
 				t += "\tparam\t\t\tbreakup_amp 0.35 min 0 max 1 step 0.01 label \"Noise breakup amount\"\n";
@@ -37492,12 +37594,32 @@ namespace RISE
 				t += "\tparam\t\t\tgrime_scale " + MicrosurfaceFmt_( grimeScale ) +
 					" min 0.1 max 40 step 0.1 label \"Grime noise scale\"\n";
 				t += "\tparam\t\t\tcavity_gain 1.2 min 0 max 4 step 0.05 label \"Cavity deepening\"\n";
+				if( contact ) {
+					t += "\tparam\t\t\tcontact_grime " + MicrosurfaceFmt_( contactGrime ) +
+						" min 0 max 1 step 0.01 label \"Contact grime weight\"\n";
+					t += "\tparam\t\t\tcontact_r " + MicrosurfaceFmt_( contactRadius ) +
+						" min 0.0001 max 1 step 0.0001 label \"Contact radius (world)\"\n";
+					t += "\tparam\t\t\tcontact_scale " + MicrosurfaceFmt_( grimeScale ) +
+						" min 0.1 max 40 step 0.1 label \"Contact noise scale\"\n";
+				}
 				t += "\tseed\t\t\t" + MicrosurfaceFmt_( seed ) + "\n";
 				t += "\tdef\t\t\t\tjitter vec3(seed, seed*1.7, seed*2.3)\n";
 				t += "\tdef\t\t\t\twear_mask clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter, 4, 0.5, 2.0), 0, 1)\n";
 				t += "\tdef\t\t\t\tcrevice_raw clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter, 4, 0.5, 2.0), 0, 1)\n";
 				t += "\tdef\t\t\t\tcavity_boost 1.0 + cavity_gain*(1.0 - occlusion(0.08))\n";
-				t += "\tdef\t\t\t\tcrevice_mask clamp(crevice_raw*cavity_boost, 0, 1)\n";
+				if( contact ) {
+					t += "\tdef\t\t\t\tcontact_mask clamp(proximity(contact_r) + breakup_amp*fbm(P*contact_scale + jitter, 4, 0.5, 2.0), 0, 1)\n";
+					// The contact term folds into the CREVICE endpoint (patina
+					// colour, crusted roughness) at the ONE line both chunks
+					// read, and the result is clamped -- which is the only
+					// bound that actually holds, since `min`/`max` on a `param`
+					// is slider metadata the VM ignores and `mix` does not
+					// clamp its weight.
+					t += "\tdef\t\t\t\tcrevice_mask clamp(crevice_raw*cavity_boost + contact_grime*contact_mask, 0, 1)\n";
+				}
+				else {
+					t += "\tdef\t\t\t\tcrevice_mask clamp(crevice_raw*cavity_boost, 0, 1)\n";
+				}
 				return t;
 			}
 
@@ -37508,24 +37630,36 @@ namespace RISE
 			//! used to bind is superseded.
 			std::string BuildWearColorPainterText( const std::string& chunkName,
 			                                       double baseR, double baseG, double baseB,
-			                                       double breakupScale, double grimeScale, double seed )
+			                                       double breakupScale, double grimeScale, double seed,
+			                                       double contactRadius = 0.0, double contactGrime = 0.5,
+			                                       bool contactOnly = false )
 			{
 				std::string t = "expression_painter\n{\n";
 				t += "\tname\t\t\t" + chunkName + "\n";
 				t += "\tparam\t\t\tbase_r " + MicrosurfaceFmt_( baseR ) + " min 0 max 1 step 0.005 label \"Base colour R\"\n";
 				t += "\tparam\t\t\tbase_g " + MicrosurfaceFmt_( baseG ) + " min 0 max 1 step 0.005 label \"Base colour G\"\n";
 				t += "\tparam\t\t\tbase_b " + MicrosurfaceFmt_( baseB ) + " min 0 max 1 step 0.005 label \"Base colour B\"\n";
-				t += "\tparam\t\t\tedge_desat 0.45 min 0 max 1 step 0.01 label \"Edge desaturation\"\n";
-				t += "\tparam\t\t\tedge_lift 0.30 min 0 max 1 step 0.01 label \"Edge lift toward white\"\n";
+				// The EDGE half is not emitted on a barren receiver: `curv` is
+				// 0 there, so `wear_mask` -- and with it `edge_tint` and both
+				// of these knobs -- would be inert.
+				if( !contactOnly ) {
+					t += "\tparam\t\t\tedge_desat 0.45 min 0 max 1 step 0.01 label \"Edge desaturation\"\n";
+					t += "\tparam\t\t\tedge_lift 0.30 min 0 max 1 step 0.01 label \"Edge lift toward white\"\n";
+				}
 				t += "\tparam\t\t\tpatina_desat 0.35 min 0 max 1 step 0.01 label \"Patina desaturation\"\n";
 				t += "\tparam\t\t\tpatina_darken 0.35 min 0 max 1 step 0.01 label \"Patina darkening\"\n";
-				t += BuildWearMaskPreludeText( breakupScale, grimeScale, seed );
+				t += BuildWearMaskPreludeText( breakupScale, grimeScale, seed,
+				                               contactRadius, contactGrime, contactOnly );
 				t += "\tdef\t\t\t\tbase vec3(base_r, base_g, base_b)\n";
 				t += "\tdef\t\t\t\tlum dot(base, vec3(0.2126, 0.7152, 0.0722))\n";
 				t += "\tdef\t\t\t\tgrey vec3(lum, lum, lum)\n";
-				t += "\tdef\t\t\t\tedge_tint mix(mix(base, grey, edge_desat), vec3(1, 1, 1), edge_lift)\n";
+				if( !contactOnly ) {
+					t += "\tdef\t\t\t\tedge_tint mix(mix(base, grey, edge_desat), vec3(1, 1, 1), edge_lift)\n";
+				}
 				t += "\tdef\t\t\t\tpatina_tint mix(base, grey, patina_desat) * patina_darken\n";
-				t += "\texpr\t\t\tmix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)\n";
+				t += contactOnly
+					? "\texpr\t\t\tmix(base, patina_tint, crevice_mask)\n"
+					: "\texpr\t\t\tmix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)\n";
 				t += "}\n";
 				return t;
 			}
@@ -37542,21 +37676,35 @@ namespace RISE
 			std::string BuildWearRoughnessPainterText( const std::string& chunkName,
 			                                           double lo, double base, double hi,
 			                                           double breakupScale, double grimeScale, double seed,
-			                                           bool asColourPipe )
+			                                           bool asColourPipe,
+			                                           double contactRadius = 0.0, double contactGrime = 0.5,
+			                                           bool contactOnly = false )
 			{
 				const double sliderMax = ( hi > 1.0 ) ? hi : 1.0;
 				std::string t = asColourPipe ? "expression_painter\n{\n" : "scalar_painter\n{\n";
 				t += "\tname\t\t\t" + chunkName + "\n";
 				t += "\tparam\t\t\trough_base " + MicrosurfaceFmt_( base ) +
 					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Unworn roughness\"\n";
-				t += "\tparam\t\t\trough_polished " + MicrosurfaceFmt_( lo ) +
-					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Rubbed-edge roughness\"\n";
+				// The POLISHED endpoint rides `wear_mask`, which a barren
+				// receiver does not have -- so it is not declared there.
+				if( !contactOnly ) {
+					t += "\tparam\t\t\trough_polished " + MicrosurfaceFmt_( lo ) +
+						" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Rubbed-edge roughness\"\n";
+				}
 				t += "\tparam\t\t\trough_crusted " + MicrosurfaceFmt_( hi ) +
 					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Crevice roughness\"\n";
-				t += BuildWearMaskPreludeText( breakupScale, grimeScale, seed );
-				t += asColourPipe
-					? "\texpr\t\t\tmix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)\n"
-					: "\texpression\t\tmix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)\n";
+				t += BuildWearMaskPreludeText( breakupScale, grimeScale, seed,
+				                               contactRadius, contactGrime, contactOnly );
+				if( contactOnly ) {
+					t += asColourPipe
+						? "\texpr\t\t\tmix(rough_base, rough_crusted, crevice_mask)\n"
+						: "\texpression\t\tmix(rough_base, rough_crusted, crevice_mask)\n";
+				}
+				else {
+					t += asColourPipe
+						? "\texpr\t\t\tmix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)\n"
+						: "\texpression\t\tmix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)\n";
+				}
 				t += "}\n";
 				return t;
 			}
@@ -37814,7 +37962,8 @@ namespace RISE
 		}
 
 		AgentSession::AgentAddWearResult AgentSession::AddWear(
-			const std::string& material, const RISE::Cst::CstHeadVersion* baseOrNull )
+			const std::string& material, const RISE::Cst::CstHeadVersion* baseOrNull,
+			double contactRadius, double contactGrime )
 		{
 			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
 			// capture point -- see ProposePatch's / VaryMaterial's copy of this
@@ -37858,10 +38007,46 @@ namespace RISE
 			const DesignNoteConditions_ cond = ComputeDesignNoteConditionsFromDoc_( headDoc );
 			out.qualifyingMaterials = cond.wearCandidateCount;
 
+			// THE CONTACT ARGUMENT, normalised once.  `contact_radius <= 0`
+			// (the default) is OFF and every path below is byte-identical to
+			// what it was; above 0 it opens the BARREN list as a second
+			// candidate source and adds the contact term to the emitted body
+			// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+			//
+			// `contact_grime` is CLAMPED here rather than trusted: its
+			// descriptor `min`/`max` is slider metadata a caller can ignore,
+			// and the bound that actually holds in the emitted body is the
+			// outer `clamp(..., 0, 1)` on the `crevice_mask` line.  Clamping
+			// the param too costs nothing and keeps the written number inside
+			// the range the descriptor advertises.
+			const bool   contactOn = ( contactRadius > 0.0 ) && RISE::IsFiniteDouble( contactRadius );
+			const double contactR  = contactOn ? contactRadius : 0.0;
+			const double contactG  = ( contactGrime < 0.0 ) ? 0.0
+			                       : ( contactGrime > 1.0 ) ? 1.0 : contactGrime;
+
 			const WearMaterial_* pick = nullptr;
+			bool pickIsBarren = false;
+			// THE UNION POOL LIVES AT THIS SCOPE, not inside the bare-call
+			// branch below, because `pick` points INTO it: a vector declared
+			// in that branch would be destroyed at its closing brace and every
+			// later `pick->` read would be a dangling one.  (It was, once --
+			// the verb reported "rebinding `` on `` did not take", which is
+			// what a freed `WearMaterial_` looks like from the far side.)
+			std::vector<WearMaterial_> unionPool;
 			if( !material.empty() ) {
 				for( const WearMaterial_& m : cond.wearCandidateMaterials )
 					if( m.name == material ) { pick = &m; break; }
+				// THE BARREN LIST IS CONSULTED BEFORE THE DECLINE REASON, and
+				// the order is the whole point: `wearDeclineReasons` already
+				// carries a "planar or patch geometry" entry for exactly these
+				// materials, so a lookup that ran first would turn
+				// `add_wear { material: "bench_top", contact_radius: 0.002 }`
+				// away with a message about `curv` -- for a call that is not
+				// asking for `curv` at all.
+				if( !pick && contactOn ) {
+					for( const WearMaterial_& m : cond.wearBarrenCandidates )
+						if( m.name == material ) { pick = &m; pickIsBarren = true; break; }
+				}
 				if( !pick ) {
 					// THREE distinct answers, because they need three different
 					// corrections: the name is not a chunk at all; the name is a
@@ -37892,7 +38077,27 @@ namespace RISE
 				}
 			}
 			else {
-				pick = SelectMaterialToWear_( cond.wearCandidateMaterials );
+				// THE BARE PICK SELECTS OVER THE UNION when contact is on --
+				// the curved candidates and the barren ones together, under
+				// the SAME `SelectMaterialToWear_` rule (most objects bound,
+				// ties lexicographic), so a flat receiver can win outright.
+				// The DESIGN-NOTE path is unchanged: `c.addWearName` still
+				// comes from the curved list alone, because the note
+				// advertises a BARE call and a bare call without this argument
+				// still cannot take a flat receiver.  So with
+				// `contact_radius > 0` the verb's own pick MAY differ from the
+				// note's, which is stated at the note's own site.
+				if( contactOn ) {
+					unionPool = cond.wearCandidateMaterials;
+					unionPool.insert( unionPool.end(),
+					                  cond.wearBarrenCandidates.begin(), cond.wearBarrenCandidates.end() );
+				}
+				pick = contactOn ? SelectMaterialToWear_( unionPool )
+				                 : SelectMaterialToWear_( cond.wearCandidateMaterials );
+				if( pick && contactOn ) {
+					for( const WearMaterial_& m : cond.wearBarrenCandidates )
+						if( m.name == pick->name ) { pickIsBarren = true; break; }
+				}
 				if( !pick ) {
 					out.message = "add_wear refused: no material in this document is a flat, readable colour "
 						"on geometry that curves -- it needs a material whose colour slot is bound to a "
@@ -37902,7 +38107,10 @@ namespace RISE
 						"0 everywhere). Every material here is either already worn, already varying, "
 						"unreadable, or planar-only. Author such a material first, or bind an "
 						"`expression_painter` reading `curv` by hand (read_skill "
-						"{\"name\":\"materials-and-media-basics\"}) -- document unchanged";
+						"{\"name\":\"materials-and-media-basics\"}) -- document unchanged. A FLAT receiver "
+						"(a plank on a plane, a flange on a box) qualifies once `contact_radius` is set: "
+						"that argument wears the CONTACT SEAM with `proximity()` instead of the curvature, "
+						"and needs no curving geometry at all";
 					return out;
 				}
 			}
@@ -38023,7 +38231,8 @@ namespace RISE
 					const int before = RISE::Cst::DocItemCount( work );
 					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
 						BuildWearColorPainterText( colorFieldName, pick->baseR, pick->baseG, pick->baseB,
-						                           breakupScale, grimeScale, seed ) );
+						                           breakupScale, grimeScale, seed,
+						                           contactR, contactG, pickIsBarren ) );
 					if( RISE::Cst::DocItemCount( work ) == before ) {
 						out.message = "add_wear refused: internal -- the generated `expression_painter` chunk "
 							"did not parse; nothing changed";
@@ -38036,7 +38245,8 @@ namespace RISE
 					const int before = RISE::Cst::DocItemCount( work );
 					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
 						BuildWearRoughnessPainterText( roughFieldName, lo, pick->roughness, hi,
-						                               breakupScale, grimeScale, seed, roughColourPipe ) );
+						                               breakupScale, grimeScale, seed, roughColourPipe,
+						                               contactR, contactG, pickIsBarren ) );
 					if( RISE::Cst::DocItemCount( work ) == before ) {
 						out.message = "add_wear refused: internal -- the generated `" + roughChunkKind +
 							"` chunk did not parse; nothing changed";
@@ -38169,11 +38379,21 @@ namespace RISE
 				std::string m;
 				if( commit.applied ) {
 					m = "`" + pick->name + "` (" + pick->kind + ") now wears: its " + pick->colorSlot +
-						" is bound to `" + colorFieldName + "`, an expression_painter mixing an edge tint "
-						"and a patina tint over the " + MicrosurfaceFmt_( pick->baseR ) + " " +
+						" is bound to `" + colorFieldName + "`, an expression_painter mixing "
+						+ ( pickIsBarren
+							? std::string( "a patina tint" )
+							: std::string( "an edge tint and a patina tint" ) )
+						+ " over the " + MicrosurfaceFmt_( pick->baseR ) + " " +
 						MicrosurfaceFmt_( pick->baseG ) + " " + MicrosurfaceFmt_( pick->baseB ) +
-						" that was there, keyed on `curv` (convex = edge, concave = crevice) and deepened "
-						"by occlusion";
+						" that was there, keyed on "
+						+ ( pickIsBarren
+							? ( "`proximity(" + MicrosurfaceFmt_( contactR ) + ")` -- the CONTACT SEAM where "
+							    "another object comes within that world distance" )
+							: std::string( "`curv` (convex = edge, concave = crevice) and deepened by occlusion" ) );
+					if( !pickIsBarren && contactOn ) {
+						m += ", with a contact term from `proximity(" + MicrosurfaceFmt_( contactR ) +
+							")` folded into the crevice endpoint at weight " + MicrosurfaceFmt_( contactG );
+					}
 					if( !reboundRoughSlots.empty() ) {
 						std::string slots;
 						for( const std::string& s : reboundRoughSlots ) {
@@ -38184,10 +38404,23 @@ namespace RISE
 							" reading the SAME masks -- polished on the edges, rougher in the crevices, "
 							"banded around the " + MicrosurfaceFmt_( pick->roughness ) + " that was there";
 					}
-					m += ". The signal reads because this material's objects sit on " + pick->curvGeometryKind +
-						". ONE full re-derive, ONE undo step. Retune it with propose_patch on the named "
-						"params (edge_wear, crevice_grime, cavity_gain, breakup_amp, the base_r/g/b and the "
-						"tint knobs) or the `seed`; `" + pick->colorPainter + "` is now referenced by one "
+					m += pickIsBarren
+						? ( ". The signal reads even though this material's objects sit on " +
+						    pick->curvGeometryKind + " -- `proximity` measures the REST OF THE SCENE, so a "
+						    "flat receiver that TOUCHES A NEIGHBOUR needs no curvature of its own" )
+						: ( ". The signal reads because this material's objects sit on " +
+						    pick->curvGeometryKind );
+					m += ". ONE full re-derive, ONE undo step. Retune it with propose_patch on the named "
+						"params (";
+					m += pickIsBarren
+						? std::string( "contact_r, contact_grime, contact_scale, breakup_amp, the base_r/g/b "
+						               "and the patina knobs" )
+						: ( contactOn
+							? std::string( "edge_wear, crevice_grime, cavity_gain, breakup_amp, contact_r, "
+							               "contact_grime, contact_scale, the base_r/g/b and the tint knobs" )
+							: std::string( "edge_wear, crevice_grime, cavity_gain, breakup_amp, the base_r/g/b "
+							               "and the tint knobs" ) );
+					m += ") or the `seed`; `" + pick->colorPainter + "` is now referenced by one "
 						"less slot -- remove_chunk it if nothing else uses it. The same idiom applies to "
 						"every other material in the scene.";
 				}
