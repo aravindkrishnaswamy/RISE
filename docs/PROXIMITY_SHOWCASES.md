@@ -1,8 +1,12 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised fourteen times the same day after
-adversarial rounds (round 14, 1 P1: the wall named a painter but no
-material chunk, so it would have derived to the null material. Round 13, 1 P1: the march's "expected hop count is
+Status: SPEC, 2026-09-10, revised fifteen times the same day after
+adversarial rounds (round 15, 3 P1s, one family: the two path-traced
+scenes named no `global` shader chunk, which the PT rasterizer refuses
+without; the pool bed and sand strips named no material; the bunny's own
+signal painter was implied by "the same kind". Round 14, 1 P1: the wall
+named a painter but no material chunk, so it would have derived to the
+null material. Round 13, 1 P1: the march's "expected hop count is
 two" was stated for the two dry stations too. Round 12, 1 P1: the rewritten march had no VISIBLE
 outcome, so the receiver hit at the station counted as an occluder.
 Round 11, 1 P1: the march decremented its remaining
@@ -297,6 +301,18 @@ rasterizers). The painter stations below prove it anyway.
   `pixelpel_rasterizer` scene evaluates the painter about once per camera
   sample, a path-traced scene many times more — the three figures are not
   comparable with each other and §8.5 says so.
+- **Every object is fully bound**: for each object the scene names its
+  geometry chunk kind, its material chunk kind and the painter(s) that
+  material binds; `standard_object`'s `material` defaults to `none`, so
+  an object left unstated is added with NO material and renders black.
+  Every scene ships a `standard_shader { name global … }` chunk: the
+  rasterizers' `defaultshader` resolves that name and
+  `Job::SetPathTracingPelRasterizer` REFUSES ("Default shader not
+  found", the chunk fails to apply, the scene has no rasterizer and the
+  derive diagnostic fires) when it is missing — `shaderop
+  DefaultDirectLighting` in showcase 1 (the pavilion's chunk, kept),
+  `shaderop DefaultPathTracing` in showcases 2 and 3 (the
+  `plank_closeup` precedent).
 - **Ledgers**: `CstDeriveGoldenTest` gains one row per NEW scene (no tracked
   scene is edited by this spec, so no existing row drifts); the
   `scenes/FeatureBased/README.md` entry follows the plank entry's shape; the
@@ -327,7 +343,10 @@ the `global` `standard_shader` STAYS: nothing in the file names it, but
 `pixelpel_rasterizer`'s `defaultshader` resolves that name
 (`RasterizerDefaults.h` `defaultShader = "global"`) and it is what makes
 the direct-only claim true — so every surface is direct-only and the
-claim is scene-wide) — and the two omni lights), framed on cap1's foot. NO prop is relocated into the frame: the
+claim is scene-wide) — and the two omni lights), framed on cap1's foot. Every carried object keeps
+the pavilion's material verbatim (`marble_col` on the columns and
+ceiling, `marble_dark` on the back wall, `polished_floor` on the floor);
+only the caps are re-pointed, to the new `marble_cap`. NO prop is relocated into the frame: the
 pavilion's `vasegeom` is an unscaled Bezier teapot 6.5 world units wide
 (`AddBezierPatchGeometry` recentres, never normalises), and the glass
 sphere, its pedestal, the four `cap_top*` capitals at y = 4.9 and the
@@ -450,18 +469,23 @@ width × height × depth = x × y × z; centres given):
   pipe; the descriptor's default is 0, a fully absorbing black block —
   `scattering 1000000`, delta pass-through) box 0.36 × 0.60 × 0.36 at
   (0, −0.27, 0) → x, z ∈ [−0.18, 0.18], y ∈ [−0.57, 0.03]; the WATERLINE
-  is y = 0.03. Deep so that on every stone's side the TOP face is the
-  nearest face. The camera is outside the box, so no IOR-stack seeding
-  question arises.
-- `pool_bed`: opaque sand box 0.34 × 0.53 × 0.34 at (0, −0.285, 0) → y ∈
-  [−0.55, −0.02], inside the water; the stones rest on its top (y = −0.02),
+  is y = 0.03; a `box_geometry`. Deep so that on every stone's side the
+  TOP face is the nearest face. The camera is outside the box, so no
+  IOR-stack seeding question arises. (The bed, the strips and the water
+  are all repointed at `probe_black` or kept in the probe copies per §0;
+  their materials matter to the beauty only.)
+- `pool_bed`: `box_geometry` 0.34 × 0.53 × 0.34 at (0, −0.285, 0) → y ∈
+  [−0.55, −0.02], inside the water; a `lambertian_material` whose
+  `reflectance` is a `uniformcolor_painter` at a damp-sand triple; the stones rest on its top (y = −0.02),
   visible through the water as the pool floor. Its top computes to
   −0.019999999999999962 in double while a stone bottom at 0.02 − 0.04 is
   −0.02 exactly, so a resting point is inside the bed by 3.8e-17 and
   `DeepestOtherContainment` DOES count it — at depth 3.8e-17, dominated by
   the water's depth under the running MAXIMUM. The header says this; the
   test asserts the water's value.
-- `sand`: four opaque strips, top at y = 0.03, inner faces 0.5 mm outside
+- `sand`: four opaque `box_geometry` strips sharing ONE
+  `lambertian_material` whose `reflectance` is a dry-sand
+  `uniformcolor_painter`, top at y = 0.03, inner faces 0.5 mm outside
   the water (no coincident face with the dielectric; the 0.5 mm seam images
   at about a pixel — 1.24 px face-on at 800 px, 0.86 px after the beauty
   camera's foreshortening — and reads as the pool's rim): `sand_px` 0.2195 × 0.10 × 0.80
@@ -522,8 +546,9 @@ is unchanged by the 1 mm drop — 36.8° above horizontal, and the
 sightline crosses the water at 53.2° to the WATER's normal — far outside
 §0's 10° rule, hence the overhead probe). Lighting: the key is an
 `omni_light` PINNED at (−0.35, 0.80, 0.45), camera-left and above; a dim
-sky fills. `pathtracing_pel_rasterizer` with `transparent_shadows TRUE` —
-MANDATORY and recorded in the header: the default is FALSE and
+sky fills. `pathtracing_pel_rasterizer` (with the `global` `standard_shader`
+chunk, `shaderop DefaultPathTracing`, per §0) with `transparent_shadows
+TRUE` — MANDATORY and recorded in the header: the default is FALSE and
 `RayCaster::CastShadowRayAuto` then runs the binary occlusion test, so
 every NEE shadow ray from a submerged surface to any light is blocked by
 the water box. With it on, `CastShadowRayTransmittance` carries the
@@ -653,7 +678,7 @@ close-up. Layout:
   whose reflectance is a painted, slightly worn `expression_painter` (the
   plank's wear recipe at the author's discretion, plus `def dust
   proximity(0.02)` mixed into a warm grey) — Lambertian so the §0 probe is
-  the `expr` swap alone; the bunny's material is the same kind.
+  the `expr` swap alone.
 - `wall`: `box_geometry` 0.60 × 0.40 × 0.02 at (0, 0.19, −0.13) → its front
   face at z = −0.12 is flush with the shelf's back edge (the wall's
   y ∈ [−0.01, 0.39] and the shelf's back face share a 0.60 × 0.01 m
@@ -664,9 +689,15 @@ close-up. Layout:
 - `bunny`: `risemesh_geometry` (`file models/risemesh/bunny.risemesh`), `position 0
   Y_b 0` with Y_b = −(lowest vertex y) so the lowest vertex touches y = 0
   (scene D: −0.0329874 for a plane at 0 — the same number here, re-derived
-  by the test from the vertex array and asserted at 1e-6). The bunny's
-  footprint must stay inside the shelf and > 2 cm from the wall: the test
-  asserts the bunny's bounding box against the plank's extents.
+  by the test from the vertex array and asserted at 1e-6); a
+  `lambertian_material` whose `reflectance` is the bunny's OWN
+  `expression_painter` — `def dust proximity(0.02)` mixed into the
+  bunny's base colour, a separate chunk from the shelf's (a `def` is per
+  chunk; the cost gate zeroes `dust` in BOTH chunks); the bunny is a
+  signal receiver in the beauty (it is blacked in the probe copies, where
+  no station is read on it). The bunny's footprint must stay inside the
+  shelf and > 2 cm from the wall: the test asserts the bunny's bounding
+  box against the shelf's extents.
 - `dragon`: `risemesh_geometry` (`file models/risemesh/dragon_small.risemesh`) at
   scene D's ABSOLUTE position (−0.0318315, 0.135862595, −0.014760295),
   which is relative-to-bunny once corrected by (0, Y_b + 0.0329874, 0) —
@@ -674,8 +705,9 @@ close-up. Layout:
   components — a single number derives to a DEGENERATE (0.35, 0, 0)
   transform silently), its lowest vertex on the bunny's highest, re-derived
   and asserted at 1e-6; a plain `lambertian_material` with a uniform
-  colour (the object's `material` defaults to `none`, the null material,
-  if left unstated); it reads no signal.
+  colour (the object's `material` defaults to `none`, so an unstated
+  object is added with NO material and renders black); it reads no
+  signal.
 Camera: `thinlens_camera` at (0.22, 0.25, 0.42) looking at (0, 0.06, 0),
 50 mm, f/16, focus 0.52 m (DoF [0.458, 0.601] m at a 1-px circle of
 confusion: M1 at 0.547 m and every M3 candidate — +z 0.511, +x 0.524, −x
@@ -690,7 +722,8 @@ by the worker for exposure and recorded; a dim `ambient_light` fills
 stations is 0.79 (M1p), 0.78 (M1q), 0.80 (M3) — the shadow rays leave
 toward −x, away from the bunny, and the test casts each one against the
 loaded scene and asserts it clear (the bunny, though blacked, still
-occludes). `pathtracing_pel_rasterizer`.
+occludes). `pathtracing_pel_rasterizer` with the `global`
+`standard_shader` chunk, `shaderop DefaultPathTracing`, per §0.
 
 **What it shows.** Mesh neighbours as SHEETS: the shelf reads
 `proximity(0.02)` and draws a dust ring around the bunny's single contact
@@ -709,8 +742,8 @@ pinned by M5, and the reason the bunny must sit > 2 cm clear of it
 (asserted by the test from the bunny's bounding box).
 
 **Stations** (r = 0.02; a `NearestOtherSurface` point query does not depend
-on the receiver's family, so scene D's measured values transfer to the plank
-at the same relative offsets).
+on the receiver's family, so scene D's measured values transfer to the
+shelf at the same relative offsets).
 - M1 shelf top (y = 0), 1 mm outside the contact vertex's xz in each of ±x,
   ±z → ≥ 0.9 (scene D: 0.9519 / 0.9740 / 0.9865 / 0.9913 — re-measured
   here, not copied).
@@ -767,8 +800,9 @@ at the same relative offsets).
   the bunny's own base band; nothing on the dragon. Judged honestly
   against that prediction.
 
-**Cost.** Live vs `def dust 0` on both receivers; both meshes answer on
-their own BVHs; the mesh family's figure in the path-traced regime.
+**Cost.** Live vs `def dust 0` in both chunks that declare it (the
+shelf's and the bunny's painters); both meshes answer on their own BVHs;
+the mesh family's figure in the path-traced regime.
 
 ## 4. Deliverables per showcase (one worker each, parallel, separate worktrees)
 
