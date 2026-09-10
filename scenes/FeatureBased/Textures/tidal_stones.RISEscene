@@ -92,6 +92,12 @@ RISE ASCII SCENE 7
 #   (`pathtracing_pel_rasterizer`) evaluates the painter many times per pixel (every bounce that hits a
 #   stone), not once per camera sample like the pavilion's `pixelpel_rasterizer`, and its figure is not
 #   comparable to that showcase's.
+#   RE-CHECKED 2026-09-10 (P1-2 review round, after the camera `lookat` fix below): the camera-only change
+#   does not touch the painter/signal call sites, so the table above is NOT replaced -- re-run anyway as
+#   part of the full suite gate: 3 fresh interleaved pairs gave live mean 5.295s, no-signal mean 5.276s,
+#   ratio 1.0036x (still comfortably <= 1.15x; the ~5.3s vs the table's ~5.7s absolute times reflect
+#   ordinary machine-load variance between sessions, not the scene edit -- the RATIO, which is what the
+#   gate checks, is unchanged in substance).
 #
 #   TIR / LIGHTING.  `transparent_shadows TRUE` is MANDATORY (recorded here): the default is FALSE, and
 #   `RayCaster::CastShadowRayAuto` then runs the binary occlusion test, blocking every NEE shadow ray from
@@ -132,11 +138,29 @@ RISE ASCII SCENE 7
 #      near side; re-recorded honestly here rather than repeated.
 #      FIX: moved `stone_d` to (0.05, 0.035, -0.22) on the FAR strip `sand_nz` (re-derived against the same
 #      camera-basis formula that reproduces the overhead probe camera's own stated angles): now 9.3 deg
-#      horizontal / 13.5 deg vertical off the view axis, inside the 19.8 deg / 15.1 deg half-FOVs -- IN
-#      FRAME. Its new axial depth is 0.624 m, 1.6 cm BEYOND the f/22 DoF far limit of 0.6084 m (circle of
-#      confusion ~1.1 px at that depth) -- it falls just soft, not inside the stated DoF range; the beauty
-#      paragraph below says what this looks like. `stone_d`'s B6a/B6b/B6c stations (unchanged formula,
-#      translated to the new centre) still match 0/0.5/1.0 exactly -- see the station table above.
+#      horizontal / 13.5 deg vertical off the (THEN-current) view axis, inside the 19.8 deg / 15.1 deg
+#      half-FOVs -- IN FRAME by that arithmetic. Its axial depth under that camera was 0.624 m, 1.6 cm
+#      BEYOND the f/22 DoF far limit of 0.6084 m (circle of confusion ~1.1 px at that depth) -- falling
+#      just soft, not inside the stated DoF range. `stone_d`'s B6a/B6b/B6c stations (unchanged formula,
+#      translated to the new centre) still match 0/0.5/1.0 exactly -- see the station table above. NOTE:
+#      the 9.3/13.5 deg and 0.624 m figures in this item were measured against the OLD `lookat
+#      (0, 0, -0.02)` and are SUPERSEDED by item 5 below -- 13.5 deg vertical turned out to still clip the
+#      top of the frame against the 15.1 deg half-vFOV once the 2.7 deg angular radius is added back in.
+#   5. CORRECTED 2026-09-10 (P1-2 review round; camera-only fix, `stone_d` itself untouched this time).
+#      Item 4's "9.3 / 13.5 deg, IN FRAME" verdict missed the stone's own ANGULAR RADIUS: 13.5 deg centre +
+#      2.75 deg angular radius = 16.25 deg, past the 15.1 deg half-vFOV -- `stone_d`'s top ~20 px were
+#      actually CROPPED (stone pixels found at row 0 of the rendered PNG). No position on any sand strip
+#      clears the top edge under that `lookat` without leaving the DoF/frame envelope some other way, so
+#      the FIX is to the CAMERA instead: `lookat` moves from (0, 0, -0.02) to (0, 0, -0.08); `location`
+#      (0.10, 0.36, 0.34) is UNCHANGED, so the flagstone's elevation above horizontal (36.8 deg), its
+#      angle to the water normal (53.2 deg) and the DoF range [0.4244, 0.6084] all carry over exactly --
+#      only the view-axis elevation moves, from 43.9 deg to 39.8 deg (both re-derived in the camera
+#      chunk's own comment above). Re-derived under the NEW axis: `stone_d` is now 7.3 deg horizontal /
+#      9.5 deg vertical off-axis with the same 2.7 deg angular radius -- 2.9 deg / ~57 px of margin to the
+#      nearer (top) edge. The full framing-margins table (all five stones, confirming none of them touch
+#      an edge under the corrected camera) is in the camera chunk's own comment block above. Verified by
+#      READING the re-rendered PNG's edge rows (top/bottom/left/right): no stone pixel touches row 0,
+#      row 599, column 0 or column 799.
 #   No other deviation from the spec was needed: every query station, both painter-probe receivers, the
 #   TIR cone check, and the cost gate all landed inside their predicted bands on the first working scene
 #   revision (after the fixes above).
@@ -150,10 +174,11 @@ RISE ASCII SCENE 7
 #   a cartoon waterline. What it does NOT draw: the effect is SUBTLE at normal viewing size -- it reads
 #   first as a soft contact shadow and only on close inspection (or the header's own contrast-boosted
 #   crops, not shipped) as a colour/gloss change; a viewer not told to look for it could miss it. RE-JUDGED
-#   2026-09-10 after `stone_d`'s correction (Deviations item 4): `stone_d` is now VISIBLE, in the upper
-#   right of the frame on the far `sand_nz` strip, falling just soft (its 0.624 m axial depth is 1.6 cm
-#   past the DoF far limit) next to the three sharp foreground stones -- a mild, honest depth cue rather
-#   than a defect. It still does not draw a coloured burial ramp on `stone_d` itself: every point of its
+#   2026-09-10 after `stone_d`'s position correction (Deviations item 4) and the camera `lookat` correction
+#   (Deviations item 5): `stone_d` is now VISIBLE and fully IN FRAME, in the upper right on the far
+#   `sand_nz` strip, falling just soft (its 0.6354 m axial depth under the corrected camera is 2.7 cm past
+#   the DoF far limit) next to the three sharp foreground stones -- a mild, honest depth cue rather than a
+#   defect. It still does not draw a coloured burial ramp on `stone_d` itself: every point of its
 #   visible surface is above the sand (buried = 0 there), and the actual wet-to-1.0 ramp is inside the
 #   opaque sand, unseen, exactly as the spec calls for. The scene does not show the pool's water as a
 #   distinct visual element -- BY DESIGN (SS2's flush waterline means the only tell is the stones
@@ -196,15 +221,26 @@ file_rasterizeroutput
 # Camera.  RECOMPUTED this session (near = s*f^2/(f^2+N*c*(s-f)), far =
 # s*f^2/(f^2-N*c*(s-f)), s=0.50 m, f=0.050 m, N=22, c=0.000045 m -- one pixel
 # of the 36 mm sensor at 800 px wide): near 0.4244 m, far 0.6084 m, matching
-# the header's [0.424, 0.608] to 4 decimals.  View axis: |location-lookat| =
-# (-0.10,-0.36,-0.36), horizontal distance 0.3736 m, elevation
-# atan(0.36/0.3736) = 43.94 deg (header: 43.9 deg).  Distances re-derived from
-# the shipped `location`/`position` chunks: stone_a's top 0.463 m, the
-# flagstone's centre 0.571 m -- both inside the DoF range above.
+# the header's [0.424, 0.608] to 4 decimals.  `location` and `focus_distance`
+# are unaffected by the `lookat` correction below (item 5), so this DoF range,
+# the flagstone's elevation above horizontal (36.8 deg) and its angle to the
+# water normal (53.2 deg) all carry over unchanged -- all four depend only on
+# `location`, not on which way the camera is pointed.
+#
+# View axis, RECOMPUTED 2026-09-10 for the corrected `lookat (0, 0, -0.08)`
+# (P1-2 review round): |lookat-location| = (-0.10,-0.36,-0.42), horizontal
+# distance sqrt(0.10^2+0.42^2) = 0.4317 m, elevation atan(0.36/0.4317) =
+# 39.82 deg (was 43.94 deg at the old `lookat (0,0,-0.02)`).  Distances
+# re-derived from the shipped `location`/`position` chunks: stone_a's top
+# 0.463 m, the flagstone's centre 0.571 m -- both EUCLIDEAN distances from the
+# fixed `location`, so unchanged by the `lookat` correction -- both inside
+# the DoF range above.
 #
 # FRAMING ARITHMETIC (spec Sec.0's >= 8 px radial rule; thin-lens magnification
 # f/(d-f), 22.22 px/mm over the 36 mm sensor at 800 px, x sin(elevation) for the
-# radial foreshortening), for the two painter RECEIVERS' 2 cm ring:
+# radial foreshortening), for the two painter RECEIVERS' 2 cm ring -- these use
+# the camera-to-point LINE's own elevation (a function of `location` and the
+# point only), so they too are unaffected by the `lookat` correction:
 #   stone_a: waterline point (0.0387298, 0.03, 0) is at d=0.4767 m, elevation
 #   43.7 deg -> magnification f/(d-f)=0.1172 -> tangential 2.344 mm (of the
 #   20 mm/2 cm span) -> radial 2.344*sin(43.7)=1.619 mm -> 35.97 px (all of
@@ -222,11 +258,38 @@ file_rasterizeroutput
 # `stone_d` (0.26, 0.035, 0.09) ORIGINALLY projected ~31 deg off the view axis
 # against this lens/sensor's 19.8 deg half-FOV -- OUTSIDE the frame
 # horizontally -- and was CORRECTED 2026-09-10 (header "Deviations" item 4) to
-# (0.05, 0.035, -0.22) on `sand_nz`: now at d=0.624 m axial depth (1.6 cm
-# BEYOND the 0.6084 m DoF far limit -- circle of confusion ~1.1 px, it falls
-# just soft, NOT inside the stated DoF range), 9.3 deg horizontal / 13.5 deg
-# vertical off the view axis against the 19.8 deg / 15.1 deg half-FOVs -- IN
-# FRAME (still not a MONEY station; B6a/b/c are query-only regardless).
+# (0.05, 0.035, -0.22) on `sand_nz`.
+#
+# CORRECTED AGAIN 2026-09-10 (P1-2 review round, "Deviations" item 5): even at
+# its new position, stone_d's centre sat 13.5 deg above the OLD view axis
+# against a 15.1 deg half-vFOV with a 2.7 deg angular radius -- its top ~20 px
+# were cropped (stone pixels found at row 0).  No sand-strip position clears
+# the top edge under the OLD `lookat (0, 0, -0.02)`, so `lookat` was moved to
+# (0, 0, -0.08) instead -- `location` UNCHANGED, so the flagstone's elevation/
+# water-normal angle/DoF above carry over exactly.  Re-derived under the NEW
+# view axis (camera basis right = normalize(cross(forward,up)), u =
+# cross(right,forward)): stone_d's axial depth becomes 0.6354 m (was 0.6237 m
+# -- still 2.7 cm BEYOND the 0.6084 m DoF far limit, circle of confusion
+# ~1.20 px, falling just soft as before, NOT inside the stated DoF range), now
+# 7.3 deg horizontal / 9.5 deg vertical off the NEW view axis (was 9.3 deg /
+# 13.5 deg off the OLD axis) against the 19.8 deg / 15.1 deg half-FOVs -- IN
+# FRAME with margin (see the framing-margins table below), still not a MONEY
+# station (B6a/b/c are query-only regardless).
+#
+# FRAMING MARGINS at the corrected `lookat (0, 0, -0.08)` (same camera basis;
+# angular radius = atan(bounding-sphere radius / depth); margin = the
+# relevant half-FOV minus |off-axis angle| minus angular radius; all margins
+# below are POSITIVE, i.e. no stone touches an edge -- confirmed against the
+# re-rendered PNG's edge rows, not just this arithmetic):
+#   | stone   | centre off-axis (h / v) | angular radius | nearer-edge margin |
+#   |---------|--------------------------|-----------------|---------------------|
+#   | stone_a | -2.17 deg / -4.03 deg    | 4.67 deg        | 6.41 deg vert (~127 px) |
+#   | stone_b | +8.86 deg / -2.70 deg    | 5.52 deg        | 5.42 deg horiz (~110 px) |
+#   | stone_c | -12.40 deg / -6.56 deg   | ~5.35 deg (SDF pebble, conservative bound: max(sphere1 r=0.03, offset 0.02 + sphere2 r=0.022) + margin) | 2.04 deg horiz (~41 px) |
+#   | stone_d | +7.27 deg / +9.53 deg    | 2.70 deg        | 2.88 deg vert (~57 px) |
+#   | stone_e | -1.08 deg / +2.98 deg (face centre) | ~5.03 deg | 7.09 deg vert (~141 px) |
+#   half-FOVs: 19.80 deg horizontal, 15.11 deg vertical (unchanged by the
+#   `lookat` correction -- lens/sensor only).
 #
 # The flagstone's top face crosses the waterline at a shallow elevation from
 # this camera, and the SIGHTLINE to it crosses the water at ~53 deg to the
@@ -239,7 +302,7 @@ thinlens_camera
 {
 	name				beauty_cam
 	location			0.10 0.36 0.34
-	lookat				0 0.0 -0.02
+	lookat				0 0.0 -0.08
 	up					0 1 0
 	sensor_size			36
 	focal_length		50

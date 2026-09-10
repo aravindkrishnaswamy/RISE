@@ -154,6 +154,113 @@ static Scalar InteriorAt( IObjectManager* mgr, const Point3& p, const IObjectPri
 }
 
 //======================================================================
+// Live-geometry derivation helpers (2026-09-10 P1 fix).  Every station
+// below used to be a TYPED LITERAL that merely equalled the chunk's own
+// numbers -- a scene edit that moved a stone within the same slab (same
+// containment verdict) would leave the test green while it no longer
+// sampled the stone's surface.  These helpers pull the object's centre,
+// radius/semi-axes/half-extents and the water/sand "top" height from the
+// LIVE object (`GetFinalTransformMatrix()` + the geometry's own
+// `GenerateBoundingSphere`/`GenerateBoundingBox`, both public IGeometry
+// members), never from a hand-typed number.  `GenerateBoundingBox()` on
+// SphereGeometry/EllipsoidGeometry/BoxGeometry each report the EXACT
+// object-space extents (verified against the .cpp sources: sphere returns
+// (-R,-R,-R)/(R,R,R), ellipsoid returns the exact per-axis semi-axes, box
+// returns (-w/2,-h/2,-d/2)/(w/2,h/2,d/2) -- none of the three pad or
+// approximate), so no separate accessor is needed on the geometry classes.
+//======================================================================
+
+//! World-space centre of an object: the live transform applied to its
+//! own local origin.
+static Point3 ObjectCentre( const IObjectPriv* obj )
+{
+	return Point3Ops::Transform( obj->GetFinalTransformMatrix(), Point3( 0, 0, 0 ) );
+}
+
+//! Exact radius of a (uniform) sphere, read from the geometry itself --
+//! SphereGeometry::GenerateBoundingSphere reports `m_dRadius` verbatim.
+static Scalar SphereRadius( const IObjectPriv* obj )
+{
+	Point3 c; Scalar r = 0;
+	obj->GetGeometry()->GenerateBoundingSphere( c, r );
+	return r;
+}
+
+//! The three object-space semi-axes of an ellipsoid --
+//! EllipsoidGeometry::GenerateBoundingBox returns exactly
+//! (-m_vRadius, +m_vRadius), so `ur` IS the semi-axis vector.
+static Vector3 EllipsoidSemiAxes( const IObjectPriv* obj )
+{
+	const BoundingBox bb = obj->GetGeometry()->GenerateBoundingBox();
+	return Vector3( bb.ur.x, bb.ur.y, bb.ur.z );
+}
+
+//! The three object-space half-extents of a box --
+//! BoxGeometry::GenerateBoundingBox returns exactly
+//! (-w/2,-h/2,-d/2)/(w/2,h/2,d/2), so `ur` IS the half-extent vector.
+static Vector3 BoxHalfExtents( const IObjectPriv* obj )
+{
+	const BoundingBox bb = obj->GetGeometry()->GenerateBoundingBox();
+	return Vector3( bb.ur.x, bb.ur.y, bb.ur.z );
+}
+
+//! World-space Y of an AXIS-ALIGNED box object's top face (water, sand,
+//! bed -- none of them carry a rotation): the live transform applied to
+//! the geometry's own local top-face point (0, halfHeight, 0).
+static Scalar BoxTopY( const IObjectPriv* obj )
+{
+	const Vector3 half = BoxHalfExtents( obj );
+	const Point3 top = Point3Ops::Transform( obj->GetFinalTransformMatrix(), Point3( 0, half.y, 0 ) );
+	return top.y;
+}
+
+//! The tilted flagstone's live frame: centre, top-face normal `n` and
+//! rise direction `t`, and the top-face centre -- shared by (e)
+//! TestStoneE and (f) TestPainterProbe so the two never carry independent
+//! copies of the same derivation to drift apart.  `n`/`t` come from
+//! transforming the box's own local +Y (top-face normal) and local -X
+//! (rise direction, matching `orientation 0 0 -25`'s Z-only yaw) axes by
+//! the LIVE matrix -- no hard-coded degree value anywhere, so this holds
+//! for whatever orientation the chunk carries, not just -25.
+struct FlagstoneFrame
+{
+	Point3	centre;
+	Vector3	n;
+	Vector3	t;
+	Point3	faceCentre;
+	Vector3	halfExtents;	// object-space half (width, height, depth)
+};
+
+static FlagstoneFrame ComputeFlagstoneFrame( const IObjectPriv* stoneE )
+{
+	FlagstoneFrame f;
+	const Matrix4 toWorld = stoneE->GetFinalTransformMatrix();
+	f.centre = Point3Ops::Transform( toWorld, Point3( 0, 0, 0 ) );
+	f.n = Vector3Ops::Transform( toWorld, Vector3( 0, 1, 0 ) );
+	f.t = Vector3Ops::Transform( toWorld, Vector3( -1, 0, 0 ) );
+	f.halfExtents = BoxHalfExtents( stoneE );
+	f.faceCentre = Point3(
+		f.centre.x + f.halfExtents.y * f.n.x,
+		f.centre.y + f.halfExtents.y * f.n.y,
+		f.centre.z + f.halfExtents.y * f.n.z );
+	return f;
+}
+
+//! A point on a sphere's silhouette in the XZ plane at world height `y`:
+//! `dy` is measured from the sphere's own centre (NOT from any container
+//! top), so this same formula produces the dry apex (`y = centre.y +
+//! radius`), the equator (`y = centre.y`), the bottom (`y = centre.y -
+//! radius`) and any partial-depth ring in between -- exactly the family
+//! of B1-B6 stations, all from one derivation.
+static Point3 SphereStationAtY( const Point3& centre, const Scalar radius, const Scalar y )
+{
+	const Scalar dy = centre.y - y;
+	const Scalar rad2 = radius * radius - dy * dy;
+	const Scalar horizontal = ( rad2 > Scalar( 0 ) ) ? std::sqrt( rad2 ) : Scalar( 0 );
+	return Point3( centre.x + horizontal, y, centre.z );
+}
+
+//======================================================================
 // (a) B1-B5 -- stone_a, a plain sphere
 //======================================================================
 
@@ -164,37 +271,49 @@ static void TestStoneA( Scene& s )
 	IObjectPriv* stoneA = s.mgr->GetItem( "stone_a" );
 	Check( stoneA != 0, "(a) stone_a is present" );
 	if( !stoneA ) return;
+	IObjectPriv* water = s.mgr->GetItem( "water" );
+	Check( water != 0, "(a) water is present" );
+	if( !water ) return;
 
-	// B1: top, (0, 0.06, 0) -- dry, no containment.
+	// Derived from the LIVE objects -- centre + radius from stone_a's own
+	// transform/geometry, water top from the water box's own
+	// transform/geometry -- never a typed literal that merely equals the
+	// chunk's numbers (2026-09-10 P1 fix).
+	const Point3 centre = ObjectCentre( stoneA );
+	const Scalar radius = SphereRadius( stoneA );
+	const Scalar waterTop = BoxTopY( water );
+	std::cout << "    stone_a centre=(" << (double)centre.x << "," << (double)centre.y << ","
+		<< (double)centre.z << ") radius=" << (double)radius << " waterTop=" << (double)waterTop << std::endl;
+
+	// B1: dry apex -- centre.y + radius, no containment.
 	{
-		const Point3 p( 0, 0.06, 0 );
+		const Point3 p = SphereStationAtY( centre, radius, centre.y + radius );
 		const Scalar v = InteriorAt( s.mgr, p, stoneA, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0 ), Scalar( 1e-9 ), "(a) MONEY B1: stone_a top interior(0.02) = 0" );
 	}
-	// B2: waterline ring, sqrt(0.04^2 - 0.01^2) = 0.0387298.
+	// B2: waterline -- y = waterTop exactly.
 	{
-		const Scalar ring = std::sqrt( Scalar( 0.04 ) * Scalar( 0.04 ) - Scalar( 0.01 ) * Scalar( 0.01 ) );
-		CheckClose( ring, Scalar( 0.0387298 ), Scalar( 1e-6 ), "(a) B2 ring radius re-derived" );
-		const Point3 p( ring, 0.03, 0 );
+		const Point3 p = SphereStationAtY( centre, radius, waterTop );
 		const Scalar v = InteriorAt( s.mgr, p, stoneA, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0 ), Scalar( 1e-9 ), "(a) MONEY B2: stone_a at the waterline interior(0.02) = 0" );
 	}
-	// B3: 1 cm under, depth 0.01 -> 0.5.
+	// B3: 1 cm under the waterline (0.01 is the PROBE's own recipe -- a
+	// chosen sample depth, not a scene chunk value) -> 0.5.
 	{
-		const Point3 p( 0.04, 0.02, 0 );
+		const Point3 p = SphereStationAtY( centre, radius, waterTop - Scalar( 0.01 ) );
 		const Scalar v = InteriorAt( s.mgr, p, stoneA, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0.5 ), Scalar( 1e-9 ), "(a) MONEY B3: stone_a 1 cm under interior(0.02) = 0.5" );
 	}
-	// B4: 2 cm under, depth 0.02 -> 1.0.
+	// B4: 2 cm under the waterline -> 1.0.
 	{
-		const Scalar ring = std::sqrt( Scalar( 0.04 ) * Scalar( 0.04 ) - Scalar( 0.01 ) * Scalar( 0.01 ) );
-		const Point3 p( ring, 0.01, 0 );
+		const Point3 p = SphereStationAtY( centre, radius, waterTop - Scalar( 0.02 ) );
 		const Scalar v = InteriorAt( s.mgr, p, stoneA, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 1.0 ), Scalar( 1e-9 ), "(a) MONEY B4: stone_a 2 cm under interior(0.02) = 1.0" );
 	}
-	// B5: bottom, (0,-0.02,0) -- water top 0.05 away, bed at 3.8e-17 (dominated) -> running max 0.05 -> 1.0.
+	// B5: bottom -- centre.y - radius -- water top ~0.05 away, bed's own
+	// tiny closed-form depth dominated but present in the running max -> 1.0.
 	{
-		const Point3 p( 0, -0.02, 0 );
+		const Point3 p = SphereStationAtY( centre, radius, centre.y - radius );
 		const Scalar v = InteriorAt( s.mgr, p, stoneA, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 1.0 ), Scalar( 1e-9 ), "(a) MONEY B5: stone_a bottom interior(0.02) = 1.0" );
 
@@ -204,16 +323,12 @@ static void TestStoneA( Scene& s )
 		IObjectPriv* bed = s.mgr->GetItem( "pool_bed" );
 		Check( bed != 0, "(a) pool_bed is present" );
 		if( bed ) {
-			// pool_bed top is y = -0.285 + 0.53/2 = -0.02; the station is
-			// 0.02 - (-0.02) = 0.04 in y from the bed's CENTRE, i.e. 1e-17-ish
-			// short of the top by construction (double rounding), matching
-			// the header's 3.8e-17 claim in spirit: the point is at or a hair
-			// inside the bed top.
+			const Scalar wantDepth = waterTop - p.y;
 			Scalar depth = 0;
 			Check( s.mgr->DeepestOtherContainment( p, stoneA, Scalar( 10 ), depth ),
 				"(a) ...the scene-wide containment query answers at B5" );
-			CheckClose( depth, Scalar( 0.05 ), Scalar( 1e-6 ),
-				"(a) ...with the water's own depth (0.05), the running MAXIMUM over every "
+			CheckClose( depth, wantDepth, Scalar( 1e-6 ),
+				"(a) ...with the water's own depth (waterTop - p.y), the running MAXIMUM over every "
 				"containing neighbour (the bed's contribution is dominated, not absent)" );
 		}
 	}
@@ -230,6 +345,9 @@ static void TestStoneD( Scene& s )
 	IObjectPriv* stoneD = s.mgr->GetItem( "stone_d" );
 	Check( stoneD != 0, "(b) stone_d is present" );
 	if( !stoneD ) return;
+	IObjectPriv* sandNz = s.mgr->GetItem( "sand_nz" );
+	Check( sandNz != 0, "(b) sand_nz is present" );
+	if( !sandNz ) return;
 
 	// stone_d was moved 2026-09-10 (P1-3) from (0.26, 0.035, 0.09) on `sand_px`
 	// to (0.05, 0.035, -0.22) on the FAR strip `sand_nz` -- the original
@@ -237,25 +355,31 @@ static void TestStoneD( Scene& s )
 	// the lens/sensor's 19.8 deg horizontal half-FOV (out of frame); see the
 	// scene header's Deviations item 4.  Stations below are the SAME formula
 	// (equator / mid-depth / bottom relative to the sphere's own centre and
-	// radius), translated to the new centre.
+	// radius) as (a) above, re-derived from the LIVE stone_d/sand_nz objects
+	// rather than typed against the current position -- a scene edit that
+	// moves the stone within the sand strip stays correct here.
+	const Point3 centre = ObjectCentre( stoneD );
+	const Scalar radius = SphereRadius( stoneD );
+	const Scalar sandTop = BoxTopY( sandNz );
+	std::cout << "    stone_d centre=(" << (double)centre.x << "," << (double)centre.y << ","
+		<< (double)centre.z << ") radius=" << (double)radius << " sandTop=" << (double)sandTop << std::endl;
 
-	// B6a: equator, 5 mm above the sand -> 0.
+	// B6a: equator -- y = centre.y (dy = 0, horizontal = radius) -> 0.
 	{
-		const Point3 p( 0.08, 0.035, -0.22 );
+		const Point3 p = SphereStationAtY( centre, radius, centre.y );
 		const Scalar v = InteriorAt( s.mgr, p, stoneD, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0 ), Scalar( 1e-9 ), "(b) MONEY B6a: stone_d equator interior(0.02) = 0" );
 	}
-	// B6b: mid-depth, horizontal radius sqrt(0.03^2-0.015^2)=0.0259808, depth 0.01 -> 0.5.
+	// B6b: mid-depth, 1 cm below the sand top (the PROBE's own recipe, not
+	// a scene chunk value) -> 0.5.
 	{
-		const Scalar hr = std::sqrt( Scalar( 0.03 ) * Scalar( 0.03 ) - Scalar( 0.015 ) * Scalar( 0.015 ) );
-		CheckClose( hr, Scalar( 0.0259808 ), Scalar( 1e-6 ), "(b) B6b horizontal radius re-derived" );
-		const Point3 p( 0.05 + hr, 0.02, -0.22 );
+		const Point3 p = SphereStationAtY( centre, radius, sandTop - Scalar( 0.01 ) );
 		const Scalar v = InteriorAt( s.mgr, p, stoneD, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0.5 ), Scalar( 1e-9 ), "(b) MONEY B6b: stone_d mid-depth interior(0.02) = 0.5" );
 	}
-	// B6c: bottom, 2.5 cm under -> 1.0.
+	// B6c: bottom -- centre.y - radius -> 1.0.
 	{
-		const Point3 p( 0.05, 0.005, -0.22 );
+		const Point3 p = SphereStationAtY( centre, radius, centre.y - radius );
 		const Scalar v = InteriorAt( s.mgr, p, stoneD, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 1.0 ), Scalar( 1e-9 ), "(b) MONEY B6c: stone_d bottom interior(0.02) = 1.0" );
 	}
@@ -272,27 +396,53 @@ static void TestStoneB( Scene& s )
 	IObjectPriv* stoneB = s.mgr->GetItem( "stone_b" );
 	Check( stoneB != 0, "(c) stone_b is present" );
 	if( !stoneB ) return;
+	IObjectPriv* water = s.mgr->GetItem( "water" );
+	Check( water != 0, "(c) water is present" );
+	if( !water ) return;
 
-	// B7a: bottom, (0.09, -0.02, -0.05) -> depth 0.05 -> 1.0.
+	const Matrix4 toWorld = stoneB->GetFinalTransformMatrix();
+	const Point3 centre = ObjectCentre( stoneB );
+	const Vector3 axes = EllipsoidSemiAxes( stoneB );	// (a, b, c) semi-axes, live from the geometry
+	const Scalar waterTop = BoxTopY( water );
+	std::cout << "    stone_b centre=(" << (double)centre.x << "," << (double)centre.y << ","
+		<< (double)centre.z << ") axes=(" << (double)axes.x << "," << (double)axes.y << ","
+		<< (double)axes.z << ") waterTop=" << (double)waterTop << std::endl;
+
+	// B7a: bottom -- local (0,-b,0) transformed by the live matrix -> depth
+	// (waterTop - world.y) -> 1.0.
 	{
-		const Point3 p( 0.09, -0.02, -0.05 );
+		const Point3 local( 0, -axes.y, 0 );
+		const Point3 p = Point3Ops::Transform( toWorld, local );
 		const Scalar v = InteriorAt( s.mgr, p, stoneB, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 1.0 ), Scalar( 1e-9 ), "(c) MONEY B7a: stone_b bottom interior(0.02) = 1.0" );
 	}
-	// B7b: waterline point on the ellipsoid.  Local y = 0.02 (world 0.03 -
-	// centre y 0.01) is 2/3 of the 0.03 semi-axis; the local xz ellipse at
-	// that height has semi-axes (0.05, 0.035) * sqrt(5)/3.  Take the point
-	// at local +x, rotate by the 20 deg yaw (Y-only: SetOrientation =
-	// XRotation*YRotation*ZRotation, row-vector v' = v*M), translate.
+	// B7b: waterline point on the ellipsoid.  The chunk's orientation is
+	// `0 20 0` (Y-only yaw), and a rotation about Y leaves the Y basis
+	// vector fixed -- checked below rather than assumed -- so world.y =
+	// centre.y + localY exactly, with NO dependence on the yaw angle.
+	// localY is therefore just `waterTop - centre.y` (solved from the
+	// LIVE water top and stone_b centre, not typed from the chunk's
+	// numbers).  The local xz ellipse at that height has semi-axes
+	// `(a, c) * sqrt(1 - (localY/b)^2)`; take the point at local +x
+	// (z = 0), then transform by the live matrix (rotate + translate).
 	{
-		const Scalar aLocal = Scalar( 0.05 ) * std::sqrt( Scalar( 5 ) ) / Scalar( 3 );
-		const Point3 local( aLocal, Scalar( 0.02 ), 0 );
-		const Matrix4 toWorld = stoneB->GetFinalTransformMatrix();
+		const Vector3 worldYAxis = Vector3Ops::Transform( toWorld, Vector3( 0, 1, 0 ) );
+		std::cout << "    stone_b's local +Y axis maps to world (" << (double)worldYAxis.x << ", "
+			<< (double)worldYAxis.y << ", " << (double)worldYAxis.z << ")  (expect (0,1,0))" << std::endl;
+		Check( std::fabs( (double)worldYAxis.x ) < 1e-9 && std::fabs( (double)worldYAxis.y - 1.0 ) < 1e-9
+				&& std::fabs( (double)worldYAxis.z ) < 1e-9,
+			"(c) ...stone_b's orientation is Y-only (rotation preserves the Y axis), so localY maps 1:1 to world Y" );
+
+		const Scalar localY = waterTop - centre.y;
+		const Scalar ratio = localY / axes.y;
+		const Scalar under = Scalar( 1 ) - ratio * ratio;
+		const Scalar aLocal = axes.x * std::sqrt( under > Scalar( 0 ) ? under : Scalar( 0 ) );
+		const Point3 local( aLocal, localY, 0 );
 		const Point3 world = Point3Ops::Transform( toWorld, local );
 		std::cout << "    B7b world point: (" << (double)world.x << ", " << (double)world.y
-			<< ", " << (double)world.z << ")  (expect y = 0.03)" << std::endl;
-		CheckClose( world.y, Scalar( 0.03 ), Scalar( 1e-6 ),
-			"(c) ...the rotated/translated point really lands on the waterline (y = 0.03)" );
+			<< ", " << (double)world.z << ")  (expect y = waterTop = " << (double)waterTop << ")" << std::endl;
+		CheckClose( world.y, waterTop, Scalar( 1e-6 ),
+			"(c) ...the rotated/translated point really lands on the waterline" );
 		const Scalar v = InteriorAt( s.mgr, world, stoneB, Scalar( 0.02 ) );
 		CheckClose( v, Scalar( 0 ), Scalar( 1e-9 ), "(c) MONEY B7b: stone_b waterline interior(0.02) = 0" );
 	}
@@ -339,12 +489,19 @@ static void TestStoneC( Scene& s )
 	CheckClose( xRoot, Scalar( -0.0282843 ), Scalar( 1e-4 ),
 		"(d) ...the bisected root is near the small sphere's own -x surface point" );
 
-	// Translate by the chunk's position (-0.08, 0.01, 0.04) -- no rotation
-	// or scale on this object, so world = object + position.
-	const Point3 world( xRoot + Scalar( -0.08 ), Scalar( 0.01 ) + Scalar( 0.01 ), Scalar( 0 ) + Scalar( 0.04 ) );
+	// Transform the object-space bisection root (x = xRoot, the SAME
+	// y = 0.01 / z = 0 the bisection itself queried at) by the LIVE
+	// transform, rather than typing the chunk's position numbers directly
+	// -- stone_c carries no rotation/scale, so this reduces to a translate,
+	// but it now tracks a scene edit to `position` automatically.
+	const Point3 objectPoint( xRoot, Scalar( 0.01 ), 0 );
+	const Point3 world = Point3Ops::Transform( stoneC->GetFinalTransformMatrix(), objectPoint );
+	const Point3 centre = ObjectCentre( stoneC );
 	std::cout << "    B8 world point: (" << (double)world.x << ", " << (double)world.y
-		<< ", " << (double)world.z << ")  (expect y = 0.02)" << std::endl;
-	CheckClose( world.y, Scalar( 0.02 ), Scalar( 1e-6 ), "(d) ...world y really is 0.02 (depth 0.01)" );
+		<< ", " << (double)world.z << ")  (expect y = centre.y + 0.01 = "
+		<< (double)( centre.y + Scalar( 0.01 ) ) << ")" << std::endl;
+	CheckClose( world.y, centre.y + Scalar( 0.01 ), Scalar( 1e-6 ),
+		"(d) ...world y really is the object-space probe's y translated by the live centre" );
 
 	const Scalar v = InteriorAt( s.mgr, world, stoneC, Scalar( 0.02 ) );
 	CheckClose( v, Scalar( 0.5 ), Scalar( 1e-9 ), "(d) MONEY B8: stone_c pebble surface interior(0.02) = 0.5" );
@@ -370,27 +527,32 @@ static void TestStoneE( Scene& s )
 	IObjectPriv* stoneE = s.mgr->GetItem( "stone_e" );
 	Check( stoneE != 0, "(e) stone_e is present" );
 	if( !stoneE ) return;
+	IObjectPriv* bed = s.mgr->GetItem( "pool_bed" );
+	Check( bed != 0, "(e) pool_bed is present" );
+	if( !bed ) return;
 
-	// The resting centre, re-derived: -0.02 + 0.05*sin(25) + 0.01*cos(25).
-	const Scalar deg25 = Scalar( 25 ) * Scalar( M_PI ) / Scalar( 180 );
-	const Scalar cy = Scalar( -0.02 ) + Scalar( 0.05 ) * std::sin( deg25 ) + Scalar( 0.01 ) * std::cos( deg25 );
+	const FlagstoneFrame f = ComputeFlagstoneFrame( stoneE );
 	std::cout.precision( 12 );
-	std::cout << "    derived centre y = " << (double)cy << "  (header 0.010193991)" << std::endl;
-	CheckClose( cy, Scalar( 0.010193991 ), Scalar( 1e-8 ), "(e) MONEY: stone_e centre y matches the header" );
+	std::cout << "    stone_e centre=(" << (double)f.centre.x << "," << (double)f.centre.y << ","
+		<< (double)f.centre.z << ") n=(" << (double)f.n.x << "," << (double)f.n.y << "," << (double)f.n.z
+		<< ") t=(" << (double)f.t.x << "," << (double)f.t.y << "," << (double)f.t.z << ")" << std::endl;
 
-	// n (top face normal) and t (rise direction), per Transformable::SetOrientation
-	// (XRotation*YRotation*ZRotation, row-vector v' = v*M -- verified against
-	// the engine's own matrix build in src/Library/Utilities/Math3D/MatricesOps.h;
-	// no deviation from the spec's stated n/t was needed).
-	const Vector3 n( std::sin( deg25 ), std::cos( deg25 ), 0 );
-	const Vector3 t( -std::cos( deg25 ), std::sin( deg25 ), 0 );
-
-	const Point3 centre( -0.02, cy, -0.10 );
-	const Point3 faceCentre( centre.x + Scalar( 0.01 ) * n.x, centre.y + Scalar( 0.01 ) * n.y, centre.z );
-	std::cout << "    face centre = (" << (double)faceCentre.x << ", " << (double)faceCentre.y
-		<< ", " << (double)faceCentre.z << ")  (header (-0.015774, 0.0192571, -0.10))" << std::endl;
-	CheckClose( faceCentre.x, Scalar( -0.015774 ), Scalar( 1e-5 ), "(e) face centre x" );
-	CheckClose( faceCentre.y, Scalar( 0.0192571 ), Scalar( 1e-5 ), "(e) face centre y" );
+	// Sanity print/check ONLY (never the source of a coordinate below): the
+	// resting-height model -- bed top + halfWidth*sin(angle) +
+	// halfHeight*cos(angle), with `angle` itself read back out of the live
+	// normal `n` (atan2, no hard-coded degree literal) -- predicts the
+	// SAME centre.y the live transform already reports.
+	{
+		const Scalar bedTop = BoxTopY( bed );
+		const Scalar angle = std::atan2( f.n.x, f.n.y );
+		const Scalar predictedCy = bedTop + f.halfExtents.x * std::sin( angle ) + f.halfExtents.y * std::cos( angle );
+		std::cout << "    resting-height model predicts centre y = " << (double)predictedCy
+			<< "  (live centre y = " << (double)f.centre.y << ")" << std::endl;
+		CheckClose( predictedCy, f.centre.y, Scalar( 1e-8 ),
+			"(e) sanity: the algebraic resting-height model matches the live centre y" );
+	}
+	std::cout << "    face centre = (" << (double)f.faceCentre.x << ", " << (double)f.faceCentre.y
+		<< ", " << (double)f.faceCentre.z << ")" << std::endl;
 
 	const Scalar targets[4] = { Scalar( 0.0 ), Scalar( 0.01 ), Scalar( 0.02 ), Scalar( 0.035 ) };
 	const Scalar wantDepth[4] = { Scalar( 0.03 ), Scalar( 0.02 ), Scalar( 0.01 ), Scalar( -0.005 ) };
@@ -398,11 +560,11 @@ static void TestStoneE( Scene& s )
 	Point3 b9world[4];
 
 	for( int i = 0; i < 4; ++i ) {
-		const Scalar s_ = ( targets[i] - faceCentre.y ) / t.y;
-		const Point3 world( faceCentre.x + s_ * t.x, faceCentre.y + s_ * t.y, faceCentre.z );
+		const Scalar s_ = ( targets[i] - f.faceCentre.y ) / f.t.y;
+		const Point3 world( f.faceCentre.x + s_ * f.t.x, f.faceCentre.y + s_ * f.t.y, f.faceCentre.z + s_ * f.t.z );
 		b9world[i] = world;
 		CheckClose( world.y, targets[i], Scalar( 1e-9 ), "(e) B9 point lands on the target height" );
-		Check( std::fabs( (double)s_ ) <= 0.05 + 1e-9, "(e) ...within the 0.05 half-length" );
+		Check( std::fabs( (double)s_ ) <= (double)f.halfExtents.x + 1e-9, "(e) ...within the half-length" );
 
 		const Scalar v = InteriorAt( s.mgr, world, stoneE, Scalar( 0.02 ) );
 		std::cout << "    B9 target y=" << (double)targets[i] << ": s=" << (double)s_
@@ -702,25 +864,32 @@ static void TestPainterProbe( Scene& s, const fs::path& scenePath )
 
 	IObjectPriv* water = s.mgr->GetItem( "water" );
 	Check( water != 0, "(f) water object found for the sightline march" );
+	IObjectPriv* stoneA = s.mgr->GetItem( "stone_a" );
+	Check( stoneA != 0, "(f) stone_a is present" );
+	IObjectPriv* stoneE = s.mgr->GetItem( "stone_e" );
+	Check( stoneE != 0, "(f) stone_e is present" );
+	if( !water || !stoneA || !stoneE ) return;
 
 	// The five stations the overhead camera reads: B1 (dry) and the four
-	// B9 points, re-derived exactly as (e) does.
-	const Scalar deg25 = Scalar( 25 ) * Scalar( M_PI ) / Scalar( 180 );
-	const Scalar cy = Scalar( -0.02 ) + Scalar( 0.05 ) * std::sin( deg25 ) + Scalar( 0.01 ) * std::cos( deg25 );
-	const Vector3 n( std::sin( deg25 ), std::cos( deg25 ), 0 );
-	const Vector3 t( -std::cos( deg25 ), std::sin( deg25 ), 0 );
-	const Point3 centre( -0.02, cy, -0.10 );
-	const Point3 faceCentre( centre.x + Scalar( 0.01 ) * n.x, centre.y + Scalar( 0.01 ) * n.y, centre.z );
+	// B9 points, re-derived from the SAME live-object helpers/frame as (a)
+	// and (e) -- `ComputeFlagstoneFrame` is the single source shared by
+	// both, rather than an independent hand-typed copy of the formula.
+	const Point3 centreA = ObjectCentre( stoneA );
+	const Scalar radiusA = SphereRadius( stoneA );
+	const FlagstoneFrame f = ComputeFlagstoneFrame( stoneE );
 
 	std::vector<StationSpec> stations;
 	// B1 is above the waterline (dry) -> 1 hop.
-	stations.push_back( { "B1 (stone_a dry top)", Point3( 0, 0.06, 0 ), Scalar( 0 ), Scalar( 0.08 ), 1 } );
+	{
+		const Point3 b1 = SphereStationAtY( centreA, radiusA, centreA.y + radiusA );
+		stations.push_back( { "B1 (stone_a dry top)", b1, Scalar( 0 ), Scalar( 0.08 ), 1 } );
+	}
 	const Scalar targets[4]  = { Scalar( 0.0 ), Scalar( 0.01 ), Scalar( 0.02 ), Scalar( 0.035 ) };
 	const Scalar want[4]     = { Scalar( 1.0 ), Scalar( 1.0 ), Scalar( 0.43 ), Scalar( 0.0 ) };
 	const char* labels[4] = { "B9a (y=0.0)", "B9b (y=0.01)", "B9c (y=0.02)", "B9d (y=0.035)" };
 	for( int i = 0; i < 4; ++i ) {
-		const Scalar sOff = ( targets[i] - faceCentre.y ) / t.y;
-		const Point3 world( faceCentre.x + sOff * t.x, faceCentre.y + sOff * t.y, faceCentre.z );
+		const Scalar sOff = ( targets[i] - f.faceCentre.y ) / f.t.y;
+		const Point3 world( f.faceCentre.x + sOff * f.t.x, f.faceCentre.y + sOff * f.t.y, f.faceCentre.z + sOff * f.t.z );
 		StationSpec sp;
 		sp.label = labels[i]; sp.world = world; sp.wantRatio = want[i];
 		sp.band = ( i == 2 ) ? Scalar( 0.15 ) : Scalar( 0.08 );

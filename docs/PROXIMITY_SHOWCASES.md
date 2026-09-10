@@ -602,17 +602,27 @@ width × height × depth = x × y × z; centres given):
   station. **Corrected 2026-09-10 by the implementation**: the position
   originally specified here, (0.26, 0.035, 0.09) on `sand_px`, projects
   ~31.0° off the beauty camera's view axis against the lens/sensor's 19.8°
-  horizontal half-FOV — out of frame. Moved to the far strip `sand_nz`,
-  which brings it to 9.3° horizontal / 13.5° vertical off-axis (inside the
-  19.8°/15.1° half-FOVs) at a 0.624 m axial depth — 1.6 cm beyond the
-  0.608 m DoF far limit, so it falls just soft rather than sharply out of
-  focus. The B6 stations below are re-derived at the new position (same
-  formula, translated).
+  horizontal half-FOV — out of frame. Moved to the far strip `sand_nz`. At
+  the ORIGINAL `lookat (0, 0, −0.02)` this put it at 9.3° horizontal / 13.5°
+  vertical off-axis — inside the raw 19.8°/15.1° half-FOVs, but a review
+  round caught that 13.5° PLUS the stone's own 2.7° angular radius (16.2°)
+  exceeds the 15.1° half-vFOV: its top ~20 px were actually cropped (stone
+  pixels at row 0). **Corrected again 2026-09-10 (camera-only fix, see the
+  camera line below)**: with `lookat` moved to (0, 0, −0.08), `stone_d` is
+  now 7.3° horizontal / 9.5° vertical off the (new) axis, ~2.9° / ~57 px of
+  margin to the nearer (top) edge, at a 0.6354 m axial depth — 2.7 cm beyond
+  the 0.608 m DoF far limit, so it falls just soft rather than sharply out
+  of focus. The B6 stations below are re-derived at the new position (same
+  formula, translated); they do not depend on the camera at all.
 Camera (beauty): `thinlens_camera` at (0.10, 0.36, 0.34) looking at
-(0, 0.0, −0.02), 50 mm, f/22, focus 0.50 m (DoF [0.424, 0.608] m at a 1-px
-circle of confusion, which holds stone_a's top at 0.46 m and the flagstone
-at 0.57 m; `stone_d`, at its corrected position, falls just soft at 0.624 m
-— see above); the view axis is at 43.9°, the
+(0, 0.0, −0.08) — **corrected 2026-09-10: lookat (0, 0, −0.08) so stone_d
+clears the top edge** (was (0, 0, −0.02); `location` and `focus_distance`
+unchanged, so the DoF range and the flagstone's elevation/water-normal
+angles below are unaffected) — 50 mm, f/22, focus 0.50 m (DoF
+[0.424, 0.608] m at a 1-px circle of confusion, which holds stone_a's top
+at 0.46 m and the flagstone at 0.57 m; `stone_d`, at its corrected
+position, falls just soft at 0.6354 m — see above); the view axis is now at
+39.8° (was 43.9° at the old lookat), the
 flagstone is seen at 36.8° elevation and its 2 cm ramp images at ≥ 8 px
 radial (the header shows the arithmetic; the flagstone's top face is
 seen at 39.0° above its own tilted face — the rounded 36.8°/39.0° pair
