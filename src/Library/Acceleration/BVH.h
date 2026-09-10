@@ -1764,14 +1764,24 @@ namespace RISE
 		//! is skipped only when the distance from `p` to that node's AABB is
 		//! `>= best`, and every primitive the node owns lies INSIDE that AABB,
 		//! so each of them is at least that far -- none of them could have
-		//! lowered `best`.  The boxes are `float` and conservatively rounded
-		//! OUTWARD at build (see the class header), which can only make the
-		//! box-to-point distance SMALLER than the true one, i.e. can only
-		//! make the pruning admit a node it could have skipped.  Sound in the
-		//! only direction that matters.  A tie (two primitives at bit-equal
-		//! distance) is the sole freedom: brute force and this traversal may
-		//! attribute the minimum to different primitives, but the VALUE they
-		//! report is the same number.
+		//! lowered `best`.  TWO roundings feed that box-to-point distance,
+		//! and only one of them is a hazard.  The box itself is `float`,
+		//! conservatively rounded OUTWARD by 1 ulp at build (see the class
+		//! header), which can only make the box-to-point distance SMALLER
+		//! than the true one -- can only make the pruning admit a node it
+		//! could have skipped.  Sound in that direction, and it is the only
+		//! one this box ever moves in.  The QUERY POINT `p`, separately,
+		//! stays in full `Scalar` precision end to end (`PointBoxDistanceF`'s
+		//! own doc comment has the fixed history: it used to be cast down to
+		//! `float` first, which rounds to NEAREST and can move the reported
+		//! distance in EITHER direction -- including OVER-stating it enough
+		//! to wrongly prune a node whose primitive answers within `best`,
+		//! the unsound direction).  With `p` never rounded, the only
+		//! remaining approximation is the box's outward pad, which is sound.
+		//! A tie (two primitives at bit-equal distance) is the sole freedom:
+		//! brute force and this traversal may attribute the minimum to
+		//! different primitives, but the VALUE they report is the same
+		//! number.
 		//!
 		//! ORDERING.  Children are visited nearest-AABB-first (the two-child
 		//! sort below), which is what makes `best` fall quickly and the
@@ -1802,6 +1812,23 @@ namespace RISE
 		//! `Element` types AND different lambda types, hence different
 		//! instantiations with different stacks.  A future consumer that made
 		//! them the same would need a local stack instead.
+		//!
+		//! ALSO NOT RE-ENTRANT-SAFE against a `primDist` that REALIZES
+		//! deferred geometry.  `DisplacedGeometry::Realize()` is reachable
+		//! from the leaf loop (`TriangleMeshGeometryIndexed::DistanceToSurface`
+		//! forwards to a realized mesh's traversal, and `ObjectManager`'s own
+		//! `primDist` can hit a `DisplacedGeometry` object directly), and it
+		//! must never itself evaluate a painter whose expression calls
+		//! `proximity()` -- that would re-enter `NearestOtherSurface` while
+		//! the outer query is still walking the TLAS, i.e. while `pBVH` may be
+		//! mid-read and the `thread_local` stack above is still live for this
+		//! same instantiation.  Unreachable today for two independent
+		//! reasons: `ObjectManager::RealizeAllObjects()` bakes every deferred
+		//! geometry BEFORE any query is issued (`CreateBVH`/`EnsureBoxSnapshot`
+		//! both call it first), so a query-time `Realize()` call is always a
+		//! no-op early return; and `DisplacedGeometry::Realize()` carries its
+		//! own DEBUG-build assert against being invoked after the render
+		//! freeze, which would catch a future caller that skipped the bake.
 		//!
 		//! `useElementBoxTest` (default FALSE) adds a per-element point-to-box
 		//! lower-bound test at the leaf, ahead of `primDist`, skipping any
@@ -1841,8 +1868,6 @@ namespace RISE
 			if( nodes.empty() || prims.empty() ) return false;
 			if( !( maxDist > Scalar( 0 ) ) ) return false;
 
-			const float pf[3] = { (float)p.x, (float)p.y, (float)p.z };
-
 			Scalar best  = maxDist;
 			bool   found = false;
 
@@ -1852,7 +1877,7 @@ namespace RISE
 			static thread_local std::vector<Entry> stack;
 			stack.clear();
 
-			const Scalar rootDist = PointBoxDistanceF( pf, nodes[0].bboxMin, nodes[0].bboxMax );
+			const Scalar rootDist = PointBoxDistanceF( p, nodes[0].bboxMin, nodes[0].bboxMax );
 			if( !( rootDist < best ) ) return false;
 			stack.push_back( Entry{ 0u, rootDist } );
 
@@ -1888,8 +1913,8 @@ namespace RISE
 				} else {
 					const uint32_t leftIdx  = node.firstPrimOrLeft;
 					const uint32_t rightIdx = leftIdx + 1;
-					const Scalar dL = PointBoxDistanceF( pf, nodes[leftIdx].bboxMin,  nodes[leftIdx].bboxMax );
-					const Scalar dR = PointBoxDistanceF( pf, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax );
+					const Scalar dL = PointBoxDistanceF( p, nodes[leftIdx].bboxMin,  nodes[leftIdx].bboxMax );
+					const Scalar dR = PointBoxDistanceF( p, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax );
 					// FARTHER child pushed first so the NEARER one pops
 					// first and lowers `best` before the far one is even
 					// re-tested.
@@ -1910,16 +1935,37 @@ namespace RISE
 
 	protected:
 		//! Distance from a point to an axis-aligned box, 0 when inside.  The
-		//! bounds are the node's conservative `float` AABB; the arithmetic is
-		//! done in `Scalar` so the comparison against a `Scalar` best is not
-		//! itself a rounding step.  Reading outward-rounded bounds can only
-		//! UNDER-state this distance, which is the safe direction for
-		//! pruning (see ClosestPointDistance's contract).
-		static Scalar PointBoxDistanceF( const float p[3], const float lo[3], const float hi[3] )
+		//! bounds are the node's conservative `float` AABB, rounded OUTWARD
+		//! by 1 ulp at build time (`std::nextafter`, see the class header);
+		//! `p` is the query point kept in full `Scalar` precision -- NOT cast
+		//! down to `float` -- and `lo`/`hi` are WIDENED from `float` to
+		//! `Scalar`, which is always exact (every `float` value is exactly
+		//! representable in `Scalar`/`double`).  So of the two roundings a
+		//! caller could introduce here, only one is live, and it is the safe
+		//! one: the box's outward pad can only UNDER-state this distance,
+		//! which can only make the pruning ADMIT a node it could have
+		//! skipped -- never the reverse.
+		//!
+		//! THIS USED TO ALSO CAST `p` DOWN TO `float` before calling in
+		//! (`ClosestPointDistance` built a `const float pf[3]` once at the
+		//! top and passed that to every call here), which introduced a
+		//! SECOND rounding this function's contract did not account for --
+		//! and one that rounds to NEAREST, not outward, so it can move the
+		//! reported box distance in EITHER direction.  Measured: at
+		//! `|coord| ~= 1024` the nearest-rounding error is up to
+		//! `0.25 * ulp_f(|coord|) ~= 2.92e-5` in the OVER-stating direction,
+		//! which is the UNSOUND one for this function's contract -- it can
+		//! make the pruning SKIP a node whose primitive is nearer than
+		//! `best`, silently under-painting a seam the exact algorithm would
+		//! have found.  Fixed by keeping `p` in `Scalar` all the way from
+		//! `ClosestPointDistance`'s parameter to here; there is no longer a
+		//! `pf[3]` anywhere in this class.
+		static Scalar PointBoxDistanceF( const Point3& p, const float lo[3], const float hi[3] )
 		{
 			Scalar sum = Scalar( 0 );
+			const Scalar pc[3] = { p.x, p.y, p.z };
 			for( int k = 0; k < 3; ++k ) {
-				const Scalar v  = (Scalar)p[k];
+				const Scalar v  = pc[k];
 				const Scalar l  = (Scalar)lo[k];
 				const Scalar h  = (Scalar)hi[k];
 				const Scalar dk = ( v < l ) ? ( l - v ) : ( ( v > h ) ? ( v - h ) : Scalar( 0 ) );
