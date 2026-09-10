@@ -524,10 +524,12 @@ pinhole_camera
 	fov			40.0
 }
 
-# THE STONE's field.  `buried` is interior(): 0 on the cap in air, 0.5 at
-# the lowest point 1 cm under the surface.  Used RAW apart from a noise
-# breakup -- a threshold would replace the measured depth with a painted
-# line, which is the one thing this signal exists to avoid.
+# THE STONE's field.  `buried` is interior(): 0 at the waterline, 0.5 one
+# centimetre under it, and saturated at 1 from 2 cm down -- because the pool
+# is deep enough that its SURFACE is the nearest face over the whole stone.
+# Used RAW apart from a noise breakup -- a threshold would replace the
+# measured depth with a painted line, which is the one thing this signal
+# exists to avoid.
 expression_painter
 {
 	name		expr_stone

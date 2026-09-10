@@ -177,16 +177,19 @@ namespace RISE
 			//! `SignedDistanceLower`).  Three branches produce the pair,
 			//! recorded in `m_sigmaSource`:
 			//!
-			//!   * EXACT when `M^T M = s^2 I` within 1e-9 relative -- a
+			//!   * EXACT when `M^T M = s^2 I` within 1e-12 relative -- a
 			//!     rotation, a reflection, a uniform scale, or any
 			//!     composition of them.  Both bounds are then `s`,
 			//!     un-widened, and the transform costs the query nothing.
-			//!     The tolerance is 1e-12 RELATIVE since Phase 3 (it was
-			//!     1e-9): this branch now also decides whether
+			//!     The tolerance was 1e-9 before Phase 3, which tightened
+			//!     it: this branch now also decides whether
 			//!     `SignedDistanceLower` may flag its answer EXACT, which
-			//!     a CSG boundary arm consumes, and a `1 + 7e-10`
-			//!     anisotropy passing as "uniform" would carry that flag
-			//!     while over-reading by ~7e-11 relative.
+			//!     a CSG boundary arm consumes, and at 1e-9 a
+			//!     `scale (1, 1, 1 + 7e-10)` passed as "uniform" and
+			//!     carried that flag while its single stored value sat
+			//!     +2.33e-10 ABOVE the true `sigma_min` AND 4.67e-10 below
+			//!     the true `sigma_max` -- unsafe in both directions.  See
+			//!     ComputeSigmaExtremes for the arithmetic.
 			//!   * JACOBI otherwise, since Phase 3: a one-sided Jacobi SVD
 			//!     on `M` gives the TRUE extremal singular values to
 			//!     rounding, and the stored pair is WIDENED apart by a

@@ -393,7 +393,13 @@ engine caches only `|det|^(1/3)` today (`m_worldLinearScale`) and has no
 eigenvalue or SVD code anywhere; Phase 1 adds **σ_max and σ_min bounds** to
 `FinalizeTransformations` WITHOUT new eigen-numerics: if the upper 3×3 `M`
 satisfies `MᵀM = s²·I` within 1e-9 relative (a rotation, reflection or uniform
-scale — every object in scenes A–E) then `σ_max = σ_min = s` **exactly**;
+scale — every object in scenes A–E) then `σ_max = σ_min = s` **exactly**
+(**TIGHTENED TO 1e-12 at Phase-3 implementation, §8.4 S2** — at 1e-9 a
+`scale (1, 1, 1 + 7e-10)` passed as uniform and carried the exactness flag
+while its single stored value sat 2.33e-10 ABOVE the true `σ_min` and 4.67e-10
+BELOW the true `σ_max`, unsafe in both directions; harmless while nothing read
+the flag, but Phase 3 gives it a consumer that reads "the magnitude IS the
+distance");
 otherwise the sound one-liners `σ_max ≤ ‖M‖_F` and `σ_min ≥ |det| / σ_max²`
 (loose, never unsafe; the error factor `σ_max/σ_min` is disclosed once per
 object in the log).
@@ -636,7 +642,12 @@ taken over the operands that ANSWER (`d ≤ d_A ≤ u_A` holds whatever B does),
 so a union refuses only when both operands refuse; and
 the union's SIGNED LOWER BOUND — which a parent composite ("a union inside a
 subtraction") and `interior` both need — is `min(f_A, f_B)` over the operands'
-signed lower bounds (sign exact: inside the union iff inside either; outside,
+signed lower bounds (~~sign exact: inside the union iff inside either~~ —
+**FALSE, and it is the identity P1-A rests on: `int(A ∪ B) ⊋ int(A) ∪ int(B)`,
+because a shared FACE lies in the union's interior and in neither operand's.
+What is true, and what every consumer actually uses, is the tri-state
+`f < 0 ⇒ strictly inside`, `f > 0 ⇒ strictly outside the closure`,
+`f = 0 ⇒ NO INFORMATION`**; outside,
 `min(f_A, f_B) ≤ min(d_A, d_B) = d`; inside, the depth to leave `A ∪ B` is at
 least `max(depth_A, depth_B) = |min(f_A, f_B)|`), answered only when BOTH
 operands answer it. A union accepts a SHEET operand for the unsigned query
@@ -880,7 +891,9 @@ indistinguishable at `!m_sigmaExact`) and the degenerate refusal (which runs BEF
 after the nudge). Because the chain of inequalities the design rests on must
 survive rounding, on the Jacobi path the stored `σ_max` is widened UP and
 `σ_min` DOWN. **CORRECTED AT IMPLEMENTATION (§8.4 S2): the widening is
-RELATIVE and condition-scaled (`16 · eps · σ_max/σ_min`), not "four ulps".**
+RELATIVE and condition-scaled (`16 · eps · σ_max/σ_min`, capped at 0.5 — the
+cap is reachable above cond ≈ 1.4e14 and is load-bearing there), not "four
+ulps".**
 A fixed ulp count cannot bound a relative error — a review checked the
 four-ulp claim in exact arithmetic and broke it on an ordinary
 well-conditioned matrix (cond 29.6, every entry O(1)), where the computed
@@ -1319,9 +1332,14 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   probe stays at the centre (the bound is tight along the whole minor axis,
   the centre is simply the point the fixture has) and the test says so;
   inside two overlapping spheres the
-  larger depth; inside the overlap of a UNION composite of those two spheres
-  the exported `min` under-reads (asserted ≤ the true depth, and < it at a
-  point deeper than either operand's depth); a mesh neighbour contributes 0; a computed radius is accepted;
+  larger depth; inside the overlap of a UNION composite the exported `min`
+  under-reads (asserted ≤ the true depth, and < it at a point deeper than
+  either operand's depth).  **NOT the same pair** — the union check is its
+  own fixture (two R = 2 spheres 1.5 apart, probed at `(0.4, 0, 0)` where the
+  operand depths are 1.6 and 0.9 and so distinguishable) rather than the
+  1.0 / 0.5 pair the two-neighbour row uses, because on the mid-plane of a
+  symmetric pair `min` and `max` are indistinguishable and the check would
+  have proved nothing; a mesh neighbour contributes 0; a computed radius is accepted;
   the parse diagnostic names a world length for `interior`; an `interior`-only
   scene builds the eager snapshot (demand covers it); the memo keys/L1 rows
   extended (`fn = 4`), red-proved; `kL1Ways = 8` with the raised TLS ceiling
@@ -2247,7 +2265,9 @@ outSigmaMax, outSource )` (declared in `Object.h`, defined in `Object.cpp`;
 no new file, so the five-build-project rule does not fire). Three branches —
 the unchanged similarity fast path, a one-sided Jacobi SVD on `M` (≤ 30
 sweeps, columns rotated until mutually orthogonal, singular values read off
-as the column norms, results widened four ulps apart), and the Phase-1
+as the column norms, then **widened apart by a RELATIVE, condition-scaled
+factor** — `16 · eps · σ_max/σ_min`, capped at 0.5; review round 1 retired the
+"four ulps" this row originally claimed, see below), and the Phase-1
 Frobenius/determinant pair as the non-convergence fallback. The degenerate
 refusal runs on `|det|` **before** Jacobi, which is what makes `σ_min > 0`
 true after the downward nudge. `m_sigmaSource` (three-state) carries the
@@ -2260,7 +2280,7 @@ site that assigns the source, and both are copied in `CloneStateTo`.
 | fast path within 1e-12 of the written reference on a rotation, a reflection, a uniform scale | PASS — 1, 1, 1.5 on both ends of each |
 | Jacobi within 1e-9 on `(3, 1, 0.4)` | PASS — σ_max 3, σ_min 0.4 (the loose pair was 3.187 / 0.1181) |
 | Jacobi within 1e-9 on a SHEAR | PASS — 1.6180339887 / 0.6180339887, the golden ratio and its reciprocal, derived by hand from `M^T M`'s eigenvalues `(3 ± √5)/2`; the same shear at zero sweeps falls back to 2.0 / 0.25 |
-| the four-ulp widening goes OUTWARD | PASS — `σ_max ≥` and `σ_min ≤` the written reference asserted on both Jacobi fixtures |
+| the widening goes OUTWARD | PASS — `σ_max ≥` and `σ_min ≤` the written reference asserted on both Jacobi fixtures. (Originally "four ulps"; review round 1 replaced the rule with a relative, condition-scaled factor and re-measured — 0 violations of `σ_min ≤ true ≤ σ_max` across ~67,000 matrices including round 1's own counter-example family, where a four-ulp nudge violates 134 times in 7,500) |
 | `(3, 1, 0.4)` search-radius inflation 8.47× → 2.5× | PASS — **8.46667× → 2.5×**, both computed in the test from the same matrix by the same routine (the "before" number comes from a zero-sweep call, not from a quotation). σ ratio 26.9873 → 7.5, matching §5.6's two figures |
 | exactness is NOT claimed: unsigned ≥ and lower bound ≤ the truth | PASS — at `(0,5,0)` on the `(3,1,0.4)` solid: true 4, unsigned 12 (over-report **3.0×**, down from 12.7499 / **3.19×**), signed lower bound 1.6 (up from 0.472441); `exact = false` still, since Jacobi is not a similarity |
 | the `Loose` state is reached by a zero-sweep unit call checking the RETURNED state | PASS |
@@ -2359,16 +2379,16 @@ two queries cannot drift on them). `ExpressionProgram::UsesProximity()` becomes
 | `interior` is 0 outside every neighbour | PASS — exactly 0 (tolerance 0, not 1e-9) at five scene-C probes |
 | the six interpenetration probes read `min(depth/r, 1)` within 1e-9 | PASS — box / sphere / capped cylinder / torus tube / ellipsoid / SDF at depths 1, 1, 1, 0.5, 1, 1; each checked at `r = 4` (reading depth/4) **and** at `r = depth` (reading exactly 1). The ellipsoid probe stays at the CENTRE, where its lower bound is tight, and the test says so |
 | inside two overlapping spheres, the LARGER depth | PASS — 1.0 where the operands' own depths are 1.0 and 0.5; a point inside only the smaller reads its 0.1; a point inside neither REFUSES (which `interior` reads as 0) |
-| inside a UNION composite's overlap the exported depth under-reads | PASS — at `(0.4, 0, 0)` between two R = 2 spheres 1.5 apart: operand depths **1.6 / 0.9**, exported **1.6**, true union depth **1.95959**. Asserted ≤ the truth *and* STRICTLY < it. The probe is deliberately OFF the mid-plane: review round 1 moved it there because at `(0.75, 0, 0)` both operand depths are 1.25 and `min`/`max` are indistinguishable — which is how the check's own claim was found to be inverted (`|min(f_A, f_B)|` is `max(depth_A, depth_B)`, the DEEPER, not the shallower) |
+| inside a UNION composite's overlap the exported depth under-reads | PASS — at `(0.4, 0, 0)` between two R = 2 spheres 1.5 apart: operand depths **1.6 / 0.9**, exported **1.6**, true union depth **1.886796**. Asserted ≤ the truth *and* STRICTLY < it. The probe is deliberately OFF the mid-plane: review round 1 moved it there because at `(0.75, 0, 0)` both operand depths are 1.25 and `min`/`max` are indistinguishable — which is how the check's own claim was found to be inverted (`|min(f_A, f_B)|` is `max(depth_A, depth_B)`, the DEEPER, not the shallower). **Review round 2 corrected the reference**: this row said 1.95959, the perpendicular distance to A's own surface, but the union's nearest boundary point is the CREASE where the two spheres meet — 1.886796. The old figure was permissive by 0.073 in the forbidden direction; the test now derives the crease in code |
 | a mesh neighbour contributes 0 | PASS, with teeth (the same mesh answers the UNSIGNED query at 0.5) |
-| a computed radius is accepted | PASS — `interior(2.0*2.0)` equals `interior(4.0)` to 1e-12 at a real manager hit, with a non-zero reading (0.25) proving the agreement is not two neutrals matching |
+| a computed radius is accepted | PASS — on the **SDF** receiver, `interior(2.0*2.0)` equals `interior(4.0)` to 1e-12 at a real manager hit. Review round 1 found the original form of this check to be a **tautology**: on the provider-less plane it used, a mis-compiled `interior` and a correct one both read the neutral 0, so `0 == 0` passed even with the DynR guard removed. The SDF receiver publishes a provider, so a third probe asserts `convexity(0.5)` reads a real non-zero there while `interior` reads 0 — the two are no longer confusable, and the equality is no longer two neutrals matching |
 | the parse diagnostic names a WORLD LENGTH, in `interior`'s own words | PASS — the ternary is three-way; `interior`'s message says "depth of burial", proximity's does not, and neither says FRACTION |
 | an `interior`-only scene builds the eager snapshot | PASS — `ProximityInvalidationTest` (c) now probes three bodies: none (no snapshot), `proximity()` (snapshot), `interior()` only (**snapshot**) |
 | the memo keys extend, red-proved | PASS — a new `ExpressionMemoTest` (p): at the centre of a box neighbour `proximity` reads 1 and `interior` reads 0.125 at the SAME hit and radius, **in both orders**, so `fn` is doing the separating; and the generation bump clears an `interior` entry with the stale answer red-proved first |
 | `kL1Ways = 8`, the raised ceiling asserted and the bytes printed | PASS — **2432 bytes** exactly (asserted as an equality, not only under the 4096 ceiling), 43.8 kB across 18 workers |
 | **L1 hit rate on `plank_closeup` unchanged** | PASS — **0.8967 → 0.8968**. Measured, not argued: a temporary hit/miss counter in `L1Find`, `plank_closeup` at 160 × 120 / 2 spp, `kL1Ways = 4` gives 544 479 hits / 62 698 misses and `kL1Ways = 8` gives 543 931 / 62 607. The counter and the probe scene were removed in the same slice (`grep L1PROBE src` empty). Worth measuring rather than reasoning: round-robin replacement is FIFO, and FIFO is not a stack algorithm, so more ways *can* in principle lower a hit rate (Belady) |
 | `TextureExpressionVMTest` 846/846 | PASS (unmoved) |
-| `AgentSkillsTest` at 33 snippets, the new `interior` fence deriving with zero diagnostics and rendering | PASS — 628 passed, 0 failed; the fence renders 128 × 128 at mean RGB (0.2565, 0.2633, 0.2761) |
+| `AgentSkillsTest` at 33 snippets, the new `interior` fence deriving with zero diagnostics and rendering | PASS — 628 passed, 0 failed; the fence renders 128 × 128 at mean RGB (0.2564, 0.2632, 0.2760), luma **0.2627**, inside the required (0.02, 0.98) band. (Re-measured in review round 2 — the figures moved in the fourth decimal, which is the render's own seed noise, not a behaviour change) |
 | `ProximitySignalTest` | 386 passed, 0 failed (325 after S3) |
 | `ExpressionMemoTest` | 205 passed, 0 failed (196 before) |
 | `ProximityInvalidationTest` | 26 passed, 0 failed (25 before) |
@@ -2542,11 +2562,11 @@ Also fixed in the same round:
 | `LocalBoxDiagonal` was **duplicated**, not hoisted, while three places said "hoisted" | `SelfHitRootFloor` now calls it; the A-only rationale moved into the helper |
 | `LandingAdmits` selected its arms with `intersection ? … : …`, so a union would silently take the subtraction disjuncts (unreachable, but a trap) | explicit refusal for any other op |
 | `SDFGeometry::SignedDistanceLower` could return `EvaluateParts`' `+1e30` "nothing here" sentinel as a lower bound (a part list whose first op is `subtract`/`intersect`) | screened, as the unsigned query already is by its bracket |
-| the fast path's 1e-9 similarity tolerance set the exactness flag on a `1 + 7e-10` anisotropy — harmless in Phase 1, but Phase 3 gave that flag a consumer that treats it as "the magnitude IS the distance" | tightened to **1e-12** (four orders of headroom over a composed Euler rotation's ~1e-16 drift), with the residual window disclosed on the flag itself rather than claimed away |
+| the fast path's 1e-9 similarity tolerance set the exactness flag on a `1 + 7e-10` anisotropy — harmless in Phase 1, but Phase 3 gave that flag a consumer that treats it as "the magnitude IS the distance" | tightened to **1e-12** (**about three orders of measured headroom**, not the "four orders" round 1 asserted: the worst uniformity residual is 6.50e-16 over 200,000 rotation × uniform-scale samples spanning eight decades of scale and 1.43e-15 over 50,000 nine-deep rotation chains — 0 of the 250,000 exceeds 1e-12), with the residual window disclosed on the flag itself rather than claimed away |
 | `sqrt(alpha*beta)` in the Jacobi threshold overflows to `inf` above column norms ~1.2e77, after which no pair rotates and the loop declares CONVERGENCE on raw column norms | two separate square roots |
 | the `add_wear` bare-call clause about `contact_radius` printed even when the caller **had** passed it | gated on `!contactOn`, matching §5.6's "advice for exactly that call" |
 | `contact_r` was emitted with a fixed `max 1`, so a metre-scale radius of 2 sat under its own slider max and the first slider touch would halve it | bounds widen to contain the value, as the roughness chunk's `sliderMax` already does |
-| six enumerating comments falsified by this arc (`UsesCrossObject`'s own doc still said "proximity specifically"; `CallFunc`'s "ONE case"; "the CROSS-OBJECT signal"; the `SurfaceSignalProximity.h` include note; `ProximityDemand::Any`'s one-liner; a subject/verb break this arc introduced into two descriptor strings) | corrected |
+| six enumerating comments falsified by this arc (`UsesCrossObject`'s own doc still said "proximity specifically"; `CallFunc`'s "ONE case"; "the CROSS-OBJECT signal"; the `SurfaceSignalProximity.h` include note; `ProximityDemand::Any`'s one-liner; a subject/verb break this arc introduced into two descriptor strings) | corrected — **except the descriptor-string half, which review round 2 found still present in both strings after round 1 listed it here as done.** Now actually fixed, by deleting the sentence (it was redundant with the "ALL SIX SIGNALS" sentence beside it). Recorded rather than quietly amended: a fix claimed and not made is the failure mode this table exists to catch |
 | the skill's `interior` fence taught the **wrong model** — "1 cm below the surface" was 5 cm, and the mask is not monotone in a shallow pool (it saturates at mid-water, because `interior` measures distance to the NEAREST face of the container, including its floor) | the pool is now 60 cm deep so the surface really is the nearest face over the stone, the numbers are recomputed (0 at the waterline, 0.5 one cm under, saturated from 2 cm down), and the nearest-face rule is stated as the first thing that decides whether the signal is the right tool |
 
 Two findings recorded and NOT acted on, with reasons: `DeepestOtherContainment`
@@ -2555,6 +2575,49 @@ caller, but the design deliberately specifies no prune and a direct caller
 need not pass the radius as the budget; and a numerically-singular matrix
 still passes the `|det| > 0` gate — unchanged from Phase 1, now stated at the
 gate as a residual rather than a guarantee.
+
+#### Review round 2 — no correctness bug; four truth-of-reference P1s
+
+Two fresh reviewers on the round-1 state. The CSG / sigma reviewer
+**re-derived both round-1 fixes numerically and found no correctness bug**:
+the composite-exactness withdrawal closes the seam over-read, and the
+relative, condition-scaled widening holds `σ_min ≤ true ≤ σ_max` across
+~67,000 matrices including round 1's own counter-example family. The
+tests / docs reviewer found four P1s, and **every one of them is a claim
+that was not true rather than behaviour that was wrong** — which is the
+failure mode this arc kept producing:
+
+| round-2 P1 | resolution |
+|---|---|
+| the union-overlap test's `trueDepth` reference was **1.959592**, the perpendicular distance to A's own surface — but the union's nearest boundary point is the CREASE, at 1.886796. The check was permissive by 0.073 **in the forbidden direction** | the crease is derived in code (`rho = sqrt(R² − (h/2)²)`, then `hypot`), and §8.4 S4 + §10 both carry the corrected figure |
+| §5.6's "**sign exact: inside the union iff inside either**" parenthetical — the exact false identity P1-A rests on — was never struck when P1-A was fixed | struck, with the counter-example (`int(A ∪ B) ⊋ int(A) ∪ int(B)`; a shared face is interior to the union and to neither operand) and the tri-state that replaces it (`f<0` inside, `f>0` outside the closure, **`f=0` no information**), stated in §5.6, in `IObject::SignedDistanceLower`'s contract, and in §10 |
+| §10's `interior`-under-reads residual still carried **all three** claims round 1 refuted — "exact ON and OUTSIDE the zero set", "the min is the SHALLOWER", and the 1.25 / 1.85405 numbers | rewritten from the measurement: lower bound everywhere, `|min| = max(depth_A, depth_B)` (the DEEPER), 1.6 exported against a true 1.886796 |
+| the round-1 table above listed the descriptor strings' subject/verb break as **corrected**, and it was still present in both strings | actually deleted now, and the round-1 row says so rather than being quietly amended |
+
+Three smaller corrections in the same batch: `Object.h`'s tightening rationale
+quoted `~7e-11` without recomputing it (the true figures are **+2.333e-10
+above `σ_min` and 4.667e-10 below `σ_max`** — so the old 1e-9 window was
+unsafe for the UNSIGNED bound too, which the note had omitted); the
+"four orders of headroom" on 1e-12 is **about three**, and is now measured
+rather than reasoned (worst residual 6.50e-16 over 200,000 rotation ×
+uniform-scale samples over eight decades of scale, 1.43e-15 over 50,000
+nine-deep rotation chains, 0 of 250,000 above 1e-12); and
+`CSGObject.cpp`'s surviving
+`outExact = ex && m_sigmaExact` is labelled DEFENCE IN DEPTH rather than a
+live path, since `ComposedSignedLocal` now leaves `ex` false for every
+operation.
+
+**Final suite counts after the round-2 batch** (each run alone from the
+worktree root with `RISE_MEDIA_PATH="$PWD/"`):
+
+| suite | count |
+|---|---|
+| `ProximitySignalTest` | **432 passed, 0 failed** (401 after S5) |
+| `AgentAddWearTest` | **362 passed, 0 failed** (351 after S5) |
+| `ExpressionMemoTest` | 205 passed, 0 failed |
+| `ProximityInvalidationTest` | 26 passed, 0 failed |
+| `TextureExpressionVMTest` | 846 passed, 0 failed (unmoved, as the memo FP contract requires) |
+| `AgentSkillsTest` | 628 passed, 0 failed |
 
 
 ---
@@ -2782,12 +2845,25 @@ gate as a residual rather than a guarantee.
   visit every leaf anyway with the traversal's overhead added. `proximity` on
   a TLAS-backed scene is not linear; `interior` is.
 - **`interior` UNDER-READS inside a UNION composite's overlap.** A union
-  exports `min(f_A, f_B)` as its signed lower bound, which is exact ON and
-  OUTSIDE the zero set and only a lower bound INSIDE: at a point deeper in the
-  union than either operand alone, the min is the SHALLOWER of the two depths.
-  Measured (§8.4 S4): 1.25 exported against a true union depth of 1.85405.
-  The under-paint direction, and asserted as a strict inequality rather than
-  claimed.
+  exports `min(f_A, f_B)` as its signed lower bound. **It is a LOWER BOUND
+  EVERYWHERE, exact nowhere that this arc relies on** — review round 1
+  retired this bullet's original "exact ON and OUTSIDE the zero set" claim
+  (`min` of two lower bounds is a lower bound, not an equality: outside two
+  abutting spheres the true distance to the union exceeds `min(d_A, d_B)`
+  nowhere, but on the SEAM the union's interior contains points where both
+  operands report 0), and with it the composite's `outExact` export — **no
+  composite reports exactness now**, because a union that flagged its seam
+  zero as exact let a parent subtraction's boundary arm land inside the
+  subtrahend (P1-A: 0.25 reported against a true 0.75). Inside the overlap,
+  `|min(f_A, f_B)| = max(depth_A, depth_B)` — the DEEPER of the two operand
+  depths, not the shallower, since leaving the union means leaving both.
+  Measured (§8.4 S4) at `(0.4, 0, 0)` between two R = 2 spheres 1.5 apart:
+  operand depths **1.6** and **0.9**, exported **1.6**, against a true union
+  depth of **1.886796** (the distance to the crease, which is the nearest
+  point of the union's boundary — not the 1.959592 perpendicular to A that
+  round 2 caught this doc using, a reference that was permissive by 0.073 in
+  the forbidden direction). The under-paint direction, and asserted as a
+  strict inequality rather than claimed.
 - The query reads other objects' transforms and so joins the pre-existing
   per-sample `EvaluateAtTime` race (ARCHITECTURE.md), no wider than
   `Object::IntersectRay` already does.

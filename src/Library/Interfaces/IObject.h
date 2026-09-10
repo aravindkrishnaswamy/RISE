@@ -268,6 +268,21 @@ namespace RISE
 		//! this flag its first consumer that treats it as "the magnitude
 		//! IS the distance" -- a CSG composite's boundary arm.
 		//!
+		//! THE SIGN IS TRI-STATE HERE, not the two-state "negative
+		//! inside" that `IGeometry`'s single-primitive contract can
+		//! promise.  `f < 0` means strictly inside; `f > 0` means
+		//! strictly outside the closure; **`f == 0` carries NO
+		//! INFORMATION** and a caller must not read it as either.  A CSG
+		//! COMPOSITE is why: a union's `min(f_A, f_B)` is 0 on the SEAM
+		//! between two abutting operands, which is an INTERIOR point of
+		//! the union and a boundary point of each operand --
+		//! `int(A u B)` strictly contains `int(A) u int(B)`.  Reading
+		//! that 0 as "on the surface, and exactly so" is the over-read
+		//! Phase 3's first review round measured (a parent subtraction's
+		//! boundary arm admitted a landing inside its subtrahend, 0.25
+		//! reported against a true 0.75), and it is why NO composite
+		//! sets `outExact`.
+		//!
 		//! DEFAULTED to a refusal, declared LAST + defaulted: no vtable
 		//! claim on any existing slot.
 		//! \return TRUE and writes both outputs, or FALSE with
@@ -275,7 +290,7 @@ namespace RISE
 		virtual bool SignedDistanceLower(
 			const Point3& ptWorld,			///< [in] Query point, WORLD space
 			const Scalar maxDistWorld,		///< [in] Effort budget, world units; NOT a range refusal
-			Scalar& outSigned,				///< [out] Signed lower bound (negative inside), world units
+			Scalar& outSigned,				///< [out] Signed lower bound, world units: `<0` strictly inside, `>0` strictly outside, `0` no information
 			bool& outExact					///< [out] TRUE when the magnitude is the exact distance
 			) const
 		{

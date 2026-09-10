@@ -1669,8 +1669,8 @@ static void TestExactSigma()
 		CheckClose( aniso->SigmaMin(), Scalar( 0.4 ), Scalar( 1e-9 ),
 			"(i) MONEY -- ...and sigmaMin is the TRUE 0.4, not |det|/||M||_F^2 = 0.1181" );
 		Check( aniso->SigmaMax() >= Scalar( 3 ),
-			"(i) ...with the four-ulp widening upward on sigmaMax, so `d_w <= sigmaMax * d_o` "
-			"survives rounding" );
+			"(i) ...with the relative, condition-scaled widening upward on sigmaMax, so "
+			"`d_w <= sigmaMax * d_o` survives rounding" );
 		Check( aniso->SigmaMin() <= Scalar( 0.4 ),
 			"(i) ...and downward on sigmaMin, so `d_w >= sigmaMin * d_o` does too" );
 
@@ -1751,7 +1751,7 @@ static void TestExactSigma()
 		CheckClose( sh->SigmaMin(), invPhi, Scalar( 1e-9 ),
 			"(i) MONEY -- ...and to its reciprocal 0.6180339887" );
 		Check( sh->SigmaMax() >= phi && sh->SigmaMin() <= invPhi,
-			"(i) ...widened outward by the four-ulp nudge, never inward" );
+			"(i) ...widened OUTWARD by the relative, condition-scaled factor, never inward" );
 
 		// TEETH: the loose pair on the SAME shear is visibly worse, so the
 		// two checks above are measuring Jacobi and not an accident of the
@@ -2030,7 +2030,7 @@ static void TestCsgComposites()
 			Scalar dGot = 0;
 			CsgLandingArm aCtl = CsgLandingArm::None;
 			Check( c->DistanceToSurfaceWithArm( Point3( 0.06, 1, 0.26 ), Scalar( 0.1 ), dGot, aCtl ),
-				"(j) MONEY -- POSITIVE CONTROL: one slot-width further out in x, the SAME "
+				"(j) MONEY -- POSITIVE CONTROL: past the slot's half-width in x, the SAME "
 				"composite at the SAME radius ANSWERS -- so the 60 refusals above are the "
 				"phantom guard, not a composite that has gone quiet near that face" );
 			Check( dGot >= dCtl - Scalar( 1e-12 ),
@@ -2137,7 +2137,12 @@ static void TestCsgComposites()
 		aRef->addref(); bRef->addref();
 		CSGObject* c = MakeCsg( CSG_INTERSECTION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
 
-		const int steps = 120;			// spacing 0.02 over a 2.4-unit box
+		// 120 steps over a 1.6 x 2.4 x 2.4 box: spacing 0.013333 in x and
+		// 0.02 in y and z.  The `cellDiag` below uses the LARGEST spacing
+		// on every axis (0.02 * sqrt 3 = 0.03464 against the true
+		// 0.03127), which is the conservative direction for a slack that
+		// is SUBTRACTED from the reference.
+		const int steps = 120;
 		const Point3 lo( -0.2, -1.2, -1.2 ), hi( 1.4, 1.2, 1.2 );
 		const Point3 stations[4] = {
 			Point3( 0.6, 2.0, 0 ), Point3( 0.6, 0, 2.0 ),
@@ -2183,14 +2188,14 @@ static void TestCsgComposites()
 		}
 		Check( answered > 0, "(j) the intersection answered at least one station" );
 		Check( gapMax <= Scalar( 0.05 ),
-			"(j) MONEY -- intersection gap_max MEASURED (grid spacing 0.02, 121^3 samples), "
-			"asserted <= 0.05" );
+			"(j) MONEY -- intersection gap_max MEASURED (grid 121^3 samples, spacing 0.0133 in x and "
+			"0.02 in y/z), asserted <= 0.05" );
 		Check( gapMin >= -cellDiag - Scalar( 1e-9 ),
 			"(j) MONEY -- ...and gap_MIN is bounded below by one grid-cell diagonal, which is "
 			"the side an over-read would break" );
 		std::cout << "    intersection gap_max = " << (double)gapMax << ", gap_min = " << (double)gapMin
-			<< " over " << answered << " stations (grid spacing 0.02, cell diagonal "
-			<< (double)cellDiag << ")" << std::endl;
+			<< " over " << answered << " stations (grid spacing 0.0133 in x, 0.02 in y/z; "
+			   "cell-diagonal slack " << (double)cellDiag << ")" << std::endl;
 
 		aRef->release(); bRef->release();
 		c->release();
@@ -2558,8 +2563,15 @@ static void TestCsgComposites()
 		const Scalar trueDist = Scalar( 0.75 );
 		Scalar dc = 0;
 		CsgLandingArm ac = CsgLandingArm::None;
+		// COUNTED, and asserted non-zero below.  A refusal here is
+		// legitimately SAFE (an under-paint), so it cannot itself be a
+		// failure -- but if BOTH probes ever refuse, the only fixture
+		// pinning the over-read this block exists for would go silent with
+		// nothing red.  Review round 2 asked for the counter.
+		int abuttingAnswers = 0;
 		const bool answered = carved->DistanceToSurfaceWithArm( probe, Scalar( 10 ), dc, ac );
 		if( answered ) {
+			++abuttingAnswers;
 			Check( dc >= trueDist - Scalar( 1e-9 ),
 				"(j) MONEY -- the carved cube NEVER reports closer than the true 0.75 from inside "
 				"its cavity. A union that exported exactness reported 0.25 here -- contact "
@@ -2578,10 +2590,15 @@ static void TestCsgComposites()
 		Scalar ds = 0;
 		CsgLandingArm as = CsgLandingArm::None;
 		if( carved->DistanceToSurfaceWithArm( Point3( 0, 0, 0 ), Scalar( 10 ), ds, as ) ) {
+			++abuttingAnswers;
 			Check( ds >= Scalar( 1 ) - Scalar( 1e-9 ),
 				"(j) MONEY -- a query point ON the seam is 1.0 from the real solid and never "
 				"reads contact" );
 		}
+		Check( abuttingAnswers > 0,
+			"(j) MONEY -- at least ONE of the two abutting-union probes ANSWERED, so the "
+			"over-read assertions above are live rather than skipped -- the durability guard "
+			"review round 2 asked for on the fixture that pins P1-A" );
 
 		b1Ref->release(); b2Ref->release();
 		carved->release();
@@ -2802,19 +2819,24 @@ static void TestInterior( const Fixture& f )
 		    && u->SignedDistanceLower( p, Scalar( 10 ), fU, eU ),
 			"(k) both operands and the union answer at the overlap probe" );
 
-		// The TRUE depth of the union there: the union's boundary is the
-		// two spheres' outer envelope, and by symmetry the nearest exit
-		// from (0.75, 0, 0) is perpendicular to the centre line -- through
-		// EITHER sphere's wall at radius 2 -- so the true depth is
-		// 2 - sqrt(0.75^2) measured from whichever centre is nearer... in
-		// fact the nearest boundary point is straight out along +y from
-		// the deeper sphere, at distance sqrt(2^2 - 0.75^2) = 1.8540 from
-		// the probe.  Both operands' own depths are smaller than that.
-		// The union of two R = 2 spheres 1.5 apart; the probe is 0.4 from
-		// A's centre and 1.1 from B's, so the operand depths are 1.6 and
-		// 0.9.  The nearest exit from the union at this point is
-		// perpendicular to the centre line through A's wall.
-		const Scalar trueDepth = (Scalar)std::sqrt( 4.0 - 0.4*0.4 );
+		// THE TRUE DEPTH OF THE UNION, and it is the CREASE -- not either
+		// sphere's wall.  The probe is 0.4 from A's centre and 1.1 from
+		// B's, so the operand depths are 1.6 and 0.9.  A's wall is 1.9596
+		// away straight out along +y, and that point really is ON the
+		// union's boundary (it lies outside B) -- but the two spheres'
+		// surfaces MEET on a circle, and that crease is nearer.  Solving
+		// `|p| = 2` and `|p - (1.5,0,0)| = 2` puts it at x = 0.75,
+		// rho = 1.85405, which from (0.4, 0, 0) is
+		// hypot(0.35, 1.85405) = 1.886796 away.
+		//
+		// REVIEW ROUND 2 CAUGHT THE PERPENDICULAR 1.9596 SITTING HERE, and
+		// the error mattered in the forbidden direction: as a reference it
+		// made the lower-bound check below PERMISSIVE by 0.073, admitting
+		// any export in [1.886796, 1.959592] -- an OVER-read.  A reference
+		// for a never-over-read invariant has to be the true MINIMUM over
+		// the boundary, not a convenient point on it.
+		const Scalar trueDepth = (Scalar)std::sqrt(
+			( 0.75 - 0.4 ) * ( 0.75 - 0.4 ) + ( 4.0 - 0.75 * 0.75 ) );
 		CheckClose( -fA, Scalar( 1.6 ), Scalar( 1e-9 ), "(k) operand A's depth is 1.6" );
 		CheckClose( -fB, Scalar( 0.9 ), Scalar( 1e-9 ), "(k) ...and operand B's is 0.9" );
 		// `min` is taken on the SIGNED values, so it picks the most

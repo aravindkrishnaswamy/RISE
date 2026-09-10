@@ -88,9 +88,11 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 	const Scalar frob = sqrt( n0 + n1 + n2 );
 
 	// THE DEGENERATE REFUSAL RUNS FIRST, BEFORE JACOBI, and the order is
-	// load-bearing: it is what makes `sigmaMin > 0` true after the
-	// four-ulp downward nudge below, since a genuinely invertible map's
-	// smallest singular value is many ulps clear of zero.
+	// load-bearing: it is what lets the widening below start from a
+	// STRICTLY POSITIVE `sigma_min`.  The property that keeps it positive
+	// afterwards is the widening's own shape -- a multiply by at least
+	// 0.5 -- not a ulp count, and it is re-checked at that site for the
+	// subnormal case; see the nudge block for both.
 	//
 	// WHAT THIS GATE DOES NOT CATCH, said because Phase 3 made it matter
 	// more: a NUMERICALLY singular matrix (two near-parallel columns)
@@ -117,15 +119,28 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 	// no longer only chooses a fast path, it also decides whether
 	// `m_sigmaExact` -- and through it `SignedDistanceLower`'s exactness
 	// flag, and through THAT a CSG composite's boundary arm -- may treat
-	// `x sigmaMin` as the distance rather than a bound.  At 1e-9 a
-	// `scale (1, 1, 1 + 7e-10)` passed as "uniform" and was flagged EXACT
-	// while its stored magnitude sat ~7e-11 relative ABOVE the truth; an
-	// imported or interpolated matrix (glTF, the bridge, an animation
-	// lerp) can land in that window even though hand-authored scene text
-	// never does.  1e-12 keeps every real rotation and uniform scale on
-	// the fast path with four orders to spare (a composed Euler rotation's
-	// norms differ from `s2` by ~1e-16) and narrows the window this flag
-	// can lie in by three orders.  It cannot be closed entirely without
+	// `x sigmaMin` as the distance rather than a bound.
+	//
+	// AT 1e-9 THE WINDOW WAS UNSAFE IN BOTH DIRECTIONS, which the first
+	// draft of this comment understated in one and omitted the other.  A
+	// `scale (1, 1, 1 + d)` with `d = 7e-10` passes the uniform test
+	// (`|n2 - s2| = 4d/3 = 9.33e-10` against a tolerance of 1e-9) and
+	// stores the single value `sqrt(s2) = 1 + d/3`.  Against the TRUE
+	// pair (1, 1 + d) that is +2.333e-10 relative ABOVE `sigma_min` --
+	// breaking the signed query's `d_w >= sigma_min * d_o` -- and
+	// 4.667e-10 BELOW `sigma_max`, breaking the UNSIGNED query's
+	// `d_w <= sigma_max * d_o` as well; and it is flagged EXACT while
+	// doing both.  An imported or interpolated matrix (glTF, the bridge,
+	// an animation lerp) can land in that window even though
+	// hand-authored scene text never does.  1e-12 keeps every real
+	// rotation and uniform scale on the fast path with about THREE orders
+	// to spare -- MEASURED, not reasoned: the worst uniformity residual
+	// (max over the three `|n_i - s2|` and the three `|dot|`, relative to
+	// `s2`) is 6.50e-16 over 200,000 rotation-times-uniform-scale samples
+	// spanning eight decades of scale, and 1.43e-15 over 50,000 nine-deep
+	// rotation chains; zero of the 250,000 exceeds 1e-12 -- and narrows
+	// the window this flag can lie in by three orders.  It cannot be
+	// closed entirely without
 	// refusing genuine similarities to rounding, so what remains is
 	// DISCLOSED rather than claimed away: inside the window the flag means
 	// "a similarity to 1e-12 relative", not "a similarity exactly".
@@ -1620,7 +1635,8 @@ bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld
 		// contact -- 2.5x on that transform since Phase 3, 8.47x before.
 		const char* const sourceWord =
 			( m_sigmaSource == SigmaSource::Jacobi )
-				? "EXACT singular values (one-sided Jacobi, widened four ulps)"
+				? "EXACT singular values (one-sided Jacobi, widened by a relative, "
+				  "condition-scaled factor)"
 				: "the LOOSE Frobenius/determinant pair (the Jacobi sweep cap was hit)";
 		// The RATIO's meaning differs by state, so the sentence that
 		// qualifies it does too.  On the `Jacobi` path it is the

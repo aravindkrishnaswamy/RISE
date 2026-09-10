@@ -203,7 +203,18 @@ static double ParamValueInChunk( const std::string& doc, const std::string& chun
 			const std::size_t e = at + chunkName.size();
 			const bool endsClean = ( e >= doc.size() ) ||
 				!( std::isalnum( static_cast<unsigned char>( doc[e] ) ) || doc[e] == '_' );
-			if( endsClean ) { namePos = at; break; }
+			// ...AND IT MUST BE THE CHUNK'S OWN `name` LINE, not a
+			// reference to it from a material slot.  Without this the
+			// helper depends on every painter chunk preceding the material
+			// that binds it -- true today, and not a property this file
+			// should rest on.
+			std::size_t bol = doc.rfind( '\n', at );
+			bol = ( bol == std::string::npos ) ? 0 : bol + 1;
+			const std::string line = doc.substr( bol, at - bol );
+			const std::size_t ls = line.find_first_not_of( " \t" );
+			const bool isNameLine = ( ls != std::string::npos ) &&
+				line.compare( ls, 4, "name" ) == 0;
+			if( endsClean && isNameLine ) { namePos = at; break; }
 			at = doc.find( chunkName, at + 1 );
 		}
 	}
@@ -2868,6 +2879,82 @@ static void TestContactRadius()
 			Check( r.ok && r.applied && r.material == "mat_deck",
 			       std::string( "P4 MONEY: the BARE call takes the flat receiver when contact_radius is "
 			       "set -- the union pool, under the SAME prominence rule -- " ) + r.message );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P4b: THE TWO ROUND-1 FIXES, pinned -----------------------------
+	//
+	// (a) `contact_r`'s slider bounds must CONTAIN the value written on
+	// them.  A fixed `max 1` looked harmless: `min`/`max` are metadata the
+	// VM ignores at evaluation, so a metre-scale scene asking for a 2-unit
+	// radius got `contact_r 2` sitting under `max 1`, and the first touch
+	// of that slider in a property panel would have halved it.  Nothing
+	// exercised the widening branch until this check.
+	{
+		const std::string tmp = TempPath( "addwear_p4b.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P4b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r =
+				sess->AddWear( "mat_deck", nullptr, 2.5, 0.5 );
+			Check( r.ok && r.applied,
+				std::string( "P4b: a metre-scale contact_radius applies -- " ) + r.message );
+			const std::string doc = sess->ReadDocument();
+			const std::string colourChunk = ChunkTextOf( doc, r.colorPainter );
+			Check( !colourChunk.empty(), "P4b: the minted chunk is locatable" );
+			bool okR = false;
+			const double cr = ParamValueInChunk( doc, r.colorPainter, "contact_r", okR );
+			Check( okR && std::fabs( cr - 2.5 ) < 1e-12, "P4b: contact_r carries the 2.5 asked for" );
+			// The line reads `param contact_r 2.5 min <lo> max <hi> ...`;
+			// what matters is that `hi` is not below the value.
+			const std::size_t at = colourChunk.find( "contact_r" );
+			Check( at != std::string::npos, "P4b: the contact_r line is present" );
+			if( at != std::string::npos ) {
+				const std::size_t eol = colourChunk.find( '\n', at );
+				const std::string line = colourChunk.substr( at, eol - at );
+				const std::size_t mx = line.find( "max " );
+				Check( mx != std::string::npos, "P4b: it declares a max" );
+				if( mx != std::string::npos ) {
+					const double hi = std::strtod( line.c_str() + mx + 4, nullptr );
+					Check( hi >= 2.5 - 1e-12,
+						"P4b MONEY -- the slider max (" + std::to_string( hi ) + ") CONTAINS the "
+						"2.5 written on the same line, so scrubbing the slider cannot silently "
+						"shrink the radius the caller asked for" );
+				}
+			}
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+	// (b) the bare-call clause about `contact_radius` is ADVICE FOR A CALL
+	// THAT DID NOT SET IT.  P6b pins that it PRINTS at 0; this pins that it
+	// is ABSENT when the caller already passed the argument and still
+	// found nothing -- repeating the advice back would read as the verb not
+	// having noticed.  The fixture's only colour-bearing materials are
+	// already worn, so nothing qualifies on either list.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_worn3\n\tparam k 3.0\n"
+		        "\texpression clamp(-curv*k + 0.5, 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_worn3", "pnt_bronze", "sp_worn3" );
+		body += Obj( "o1", "blob", "mat_worn3", 0 );
+		const std::string tmp = TempPath( "addwear_p4c.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "P4c: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r =
+				sess->AddWear( std::string(), nullptr, 0.01, 0.5 );
+			Check( !r.ok && !r.applied, "P4c: nothing qualifies even with contact_radius set" );
+			Check( r.message.find( "no material in this document is a flat, readable colour" )
+			       != std::string::npos,
+				"P4c: ...and the opening words are the same" );
+			Check( r.message.find( "contact_radius" ) == std::string::npos,
+				"P4c MONEY -- the appended clause is ABSENT when the caller ALREADY passed "
+				"contact_radius: it is advice for a call that did not, and handing it back to a "
+				"caller who took it would read as the verb not having noticed -- got: " + r.message );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 		}
 	}

@@ -2753,10 +2753,14 @@ bool CSGObject::SignedDistanceLower( const Point3& ptWorld, const Scalar maxDist
 		return false;
 	}
 
-	// `x sigmaMin`, the LOWER bound's safe direction, and the exactness
-	// flag survives only under a SIMILARITY -- under a non-uniform
-	// transform `x sigmaMin` is a bound, not the distance, the same
-	// condition `Object::SignedDistanceLower` carries.
+	// `x sigmaMin`, the LOWER bound's safe direction.  The `&& m_sigmaExact`
+	// is DEFENCE IN DEPTH, not a live path: `ComposedSignedLocal` leaves
+	// `ex` false for every operation (see its union case for why a union
+	// cannot export it either), so this conjunction is already false.  It
+	// is written out anyway so that the similarity condition
+	// `Object::SignedDistanceLower` carries is stated here too, and so
+	// that a future composed field that COULD be exact would still have to
+	// clear it.
 	const Scalar fWorld = f * m_sigmaMin;
 	if( !RISE::IsFiniteDouble( (double)fWorld ) ) {
 		return false;
