@@ -1,7 +1,9 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised eleven times the same day after
-adversarial rounds (round 11, 1 P1: the march decremented its remaining
+Status: SPEC, 2026-09-10, revised twelve times the same day after
+adversarial rounds (round 12, 1 P1: the rewritten march had no VISIBLE
+outcome, so the receiver hit at the station counted as an occluder.
+Round 11, 1 P1: the march decremented its remaining
 distance by the hit's range, so the 1e-6 restart advance consumed the
 1e-6 visibility margin and every submerged station was "occluded" by
 its own receiver. Round 10, 1 P1: the sightline march resumed from the water's EXIT
@@ -62,12 +64,13 @@ rasterizers). The painter stations below prove it anyway.
   `IObjectManager`, and asks `NearestOtherSurface` / `DeepestOtherContainment`
   at world points it DERIVES from the scene's own chunks — never hard-coded
   answers copied from a previous run. `self` is the object the station
-  lies ON (the receiver: cap1 for S1–S4, S6, S7; CAP2 for S5, whose
-  stations are column2-local points that land on cap2's top face — with
-  cap1 as `self`, cap2 answers at distance 0 and both read 1.0; the shelf
-  for M1–M3 and M5; the bunny for M4; each stone for its B stations): `NearestOtherSurface`
-  accepts a null `self`, and with one every station on a receiver's
-  surface reads 1.0 because the receiver itself answers at distance 0 —
+  lies ON (cap1 for S1–S4, S6, S7; CAP2 for S5, whose stations are
+  column2-local points that land on cap2's top face — with cap1 as
+  `self`, cap2 answers at distance 0 and both read 1.0; the shelf for
+  M1–M3 and M5; the bunny for M4; each stone for its B stations):
+  `NearestOtherSurface` accepts a null `self`, and with one every station
+  on an object's surface reads 1.0 because that object itself answers at
+  distance 0 —
   `ProximitySignalTest` (l) passes the CAP, not the column.
   `DeepestOtherContainment` is indifferent (only a strictly negative
   signed distance counts, and a point on its own surface is not inside
@@ -158,8 +161,10 @@ rasterizers). The painter stations below prove it anyway.
   chunk's `material` — never an edit of a material chunk in place:
   showcase 2's five stones share one; each object owns its own `material`
   line, so the order of the repoints is irrelevant; showcase 2's water
-  object keeps its dielectric). The black material is `lambertian_material
-  { name probe_black }` with NO `reflectance` line: the slot is a pure
+  object keeps its dielectric). The black material is a three-line
+  `lambertian_material` chunk — `lambertian_material` / `{` / `name
+  probe_black` / `}`, braces on their own lines per the rule above — with
+  NO `reflectance` line: the slot is a pure
   painter reference (an inline `0 0 0` fails to resolve and the derive
   diagnostic fires), and its default `none` is the painter
   `InitializeContainers` registers as uniform (0, 0, 0). Relief modifiers
@@ -196,7 +201,8 @@ rasterizers). The painter stations below prove it anyway.
   measured that a 16-spp divide-by-control probe produced ratios above 1
   because the two renders seed independently from the wall clock, and 512
   was needed for every ratio to land in range, worst where the control is
-  dark; the ±0.08 band is stated on top of that. Budget: a probe pair
+  dark; the per-station bands below are stated on top of that noise
+  (±0.08 unless a station's own entry widens it). Budget: a probe pair
   (two 800 × 600 renders at 512 spp) must finish inside 3 minutes of wall
   clock on the gate machine, measured and written in the header; if a
   path-traced showcase exceeds it, the probe copies use a `film` of
@@ -207,7 +213,7 @@ rasterizers). The painter stations below prove it anyway.
   2's flagstone ramp to 18.3 px, both ≥ 8; the bands do not change — they are stated on top of the noise the
   §8.2 precedent measured). The pixel footprint (mm) is stated; where
   the footprint is coarser than the station spacing the query station
-  adjudicates and the pixel is a sanity check with a stated wide band.
+  adjudicates and the pixel is a sanity check with a stated wide band. A
   painter station is read ONLY where (i) the sightline from the probe
   camera to the station is unoccluded, (ii) the CONTROL pixel is non-zero
   (asserted before dividing: a station no light reaches has a 0/0
@@ -217,32 +223,39 @@ rasterizers). The painter stations below prove it anyway.
   Occlusion is decided by CASTING against the loaded scene.
   `IObjectManager::IntersectRay(ri, bHitFrontFaces, bHitBackFaces,
   bComputeExitInfo)` is closest-hit only and `RayIntersection::pObject`
-  names what it hit. Each cast builds a FRESH record, `RayIntersection
-  ri( Ray(origin, Vector3Ops::Normalize(dir)), nullRasterizerState )`
-  (the `Ray` ctor recomputes `invDir`; `range` starts at infinity from
-  the ctor — `ObjectManager::IntersectRay`'s ≤ 4-object linear branch,
-  which showcase 3's four objects take, neither resets nor ignores the
-  incoming `range`, so a reused record truncates at the previous hit).
-  Showcases 1 and 3 have no refractive object: one cast with
-  `(true, true, false)` (both faces — the meshes load single-sided, so a
-  front-only cast would depend on the model's winding) — no hit, or a
-  hit beyond the station (`range` ≥ |station − origin| − 1e-6; `range`
-  is world units) → VISIBLE, else OCCLUDED by `pObject`. Showcase 2
-  MARCHES with `(true, false, false)`, front faces only: a hit whose
-  `pObject` is the object named `water` (resolved by
-  `IObjectManager::GetItem` — the object the 10° clause governs; there is
-  no "is a dielectric" query on `IMaterial`) restarts from that hit's
-  ENTRY point, `ri.geometric.ptIntersection + 1e-6·dir` (NOT `ptExit`:
-  for a ray entering from outside, `range2` is the far face, here the
-  water's bottom at y = −0.57, 0.6 m past the submerged stations and the
-  bed), and the remaining distance is RECOMPUTED as |station − new
-  origin| at every hop — never decremented by `range`, because
+  names what it hit. With `u = Vector3Ops::Normalize(station − origin)`
+  the UNIT direction, each cast builds a FRESH record, `RayIntersection
+  ri( Ray(origin, u), nullRasterizerState )` (the `Ray` ctor recomputes
+  `invDir`; `range` starts at `RISE_INFINITY`, DBL_MAX, from the ctor —
+  `ObjectManager::IntersectRay`'s ≤ 4-object linear branch, which
+  showcase 3's four objects take, neither resets nor ignores the incoming
+  `range`, so a reused record truncates at the previous hit). The
+  VISIBILITY TEST, applied to every cast: no hit, or a hit with `range`
+  ≥ |station − origin| − 1e-6 (`range` is world units; the receiver
+  itself is hit AT the station, 1e-12 short) → VISIBLE. Showcases 1 and
+  3 use one cast with `(true, true, false)`, both faces (showcase 3's
+  meshes load single-sided, so a front-only cast would depend on the
+  winding; showcase 1's only dielectric is the floor's
+  `polished_material`, whose y ∈ [−0.1, 0.1] slab no station sightline
+  crosses — both stations are at y = 0.175 and the camera above): the
+  test passes → VISIBLE, else OCCLUDED by `pObject`. Showcase 2 MARCHES
+  with `(true, false, false)`, front faces only: at every hop the test
+  passes → VISIBLE; else a hit whose `pObject` is the object named
+  `water` (resolved by `IObjectManager::GetItem` — the object the 10°
+  clause governs; there is no "is a dielectric" query on `IMaterial`)
+  restarts from that hit's ENTRY point, `ri.geometric.ptIntersection +
+  1e-6·u` (NOT `ptExit`: for a ray entering from outside, `range2` is the
+  far face, here the water's bottom at y = −0.57, 0.6 m past the
+  submerged stations and the bed), with |station − origin| RECOMPUTED
+  from the new origin — never decremented by `range`, because
   `Object::IntersectRay` publishes the hit 1e-12 short and the 1e-6
   advance would then consume the 1e-6 margin exactly, reporting every
   submerged station occluded by its own receiver; under front-faces-only
   `BoxGeometry::IntersectRay` refuses an origin inside the box, so the
-  water cannot re-report itself from inside; at most 4 hops; any other
-  hit → OCCLUDED by that object. A vertex-distance margin is only a
+  water cannot re-report itself from inside; else any other, NEARER hit
+  → OCCLUDED by that object; a march that exhausts 4 hops is OCCLUDED
+  and the test says so (the expected count is two: the water's entry,
+  then the station). A vertex-distance margin is only a
   secondary "not on the silhouette" guard, neither necessary nor
   sufficient. "Receiver" throughout this document means the object a
   painter station is read on (cap1; stone_a and stone_e; the shelf) —
@@ -553,7 +566,8 @@ and the coat would otherwise add the same term to probe and control.
 
 **Stations** (the container at every station is the water box or the sand
 strip — exact families; tolerance 1e-9; every station point is ON the
-receiver's surface, derived from the chunk's centre, radii and orientation):
+surface of the object it lies on, derived from the chunk's centre, radii
+and orientation):
 - B1 stone_a top (0, 0.06, 0) → 0.
 - B2 stone_a at the waterline: ring radius sqrt(0.04² − 0.01²) = 0.0387298;
   (0.0387298, 0.03, 0) → 0 (the water's top face computes to
