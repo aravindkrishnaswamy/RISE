@@ -1,7 +1,8 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised eight times the same day after adversarial
-rounds (round 8, 1 P1: no station named its `self`, and a null `self`
+Status: SPEC, 2026-09-10, revised nine times the same day after adversarial
+rounds (round 9, 1 P1: the `self` enumeration put S5 on cap1 while its
+stations lie on cap2. Round 8, 1 P1: no station named its `self`, and a null `self`
 lets the receiver answer at distance 0. Round 7, 1 P1: `vec3()` takes three scalars, so every probe
 expression as written failed to compile. Round 6, 3 P1s: a bare inserted chunk glues its `}` onto the
 next keyword and the CST derive rejects it; the 5 mm M1p painter station
@@ -57,8 +58,10 @@ rasterizers). The painter stations below prove it anyway.
   `IObjectManager`, and asks `NearestOtherSurface` / `DeepestOtherContainment`
   at world points it DERIVES from the scene's own chunks — never hard-coded
   answers copied from a previous run. `self` is the object the station
-  lies ON (the receiver: cap1 for S1–S7, the shelf for M1–M3 and M5, the
-  bunny for M4, each stone for its B stations): `NearestOtherSurface`
+  lies ON (the receiver: cap1 for S1–S4, S6, S7; CAP2 for S5, whose
+  stations are column2-local points that land on cap2's top face — with
+  cap1 as `self`, cap2 answers at distance 0 and both read 1.0; the shelf
+  for M1–M3 and M5; the bunny for M4; each stone for its B stations): `NearestOtherSurface`
   accepts a null `self`, and with one every station on a receiver's
   surface reads 1.0 because the receiver itself answers at distance 0 —
   `ProximitySignalTest` (l) passes the CAP, not the column.
@@ -111,11 +114,12 @@ rasterizers). The painter stations below prove it anyway.
   continues, and the receiver is MISSING from the probe) — so the test
   inserts it AT the receiver object's own index (`DocFindByName` →
   `DocIndexOfNodeId`), which is after the expression painter the object
-  already depends on. The three-leaf form is the one the APPEND precedent
-  `Job::ApplyCstInsertCameraChunk` uses (`[leadSep][chunk][trailSep]`; no
-  in-tree caller inserts mid-document, but `DocInsertItem` documents an
-  arbitrary clamped index), with the glue-safety rules of
-  `Job::ApplyCstRestoreChunkAt`: a Chunk node's
+  already depends on. The three-leaf form is the one both
+  `Job::ApplyCstInsertCameraChunk` (appending) and `Job::ApplyCstInsertChunk`
+  (inserting MID-document at a declaration-tier index — a
+  `lambertian_material` is tier 1 and lands before its consumers) use
+  unconditionally (`[leadSep][chunk][trailSep]`), with the glue-safety
+  rules of `Job::ApplyCstRestoreChunkAt`: a Chunk node's
   bytes end in `}` and its trailing newline is a SEPARATE Trivia item, so
   a bare chunk spliced in front of the object reads `}standard_object` on
   one line, `ChunkBraceViolations` rejects it ("chunk braces must be on
@@ -125,10 +129,12 @@ rasterizers). The painter stations below prove it anyway.
   leaves (`ParseToCst("\n")`, item 0, built twice) and inserts
   `[leadSep][chunk][trailSep]` at i, i+1, i+2 — the three-leaf form the
   precedent uses unconditionally, so nothing depends on what item i−1
-  happens to be. Several inserts (two rebound receivers in showcase 2,
-  plus the shared black material in showcases 2 and 3) shift every later
-  index by three, so each insert re-resolves its index from the NodeId
-  after the previous one (or the inserts run in descending index order);
+  happens to be. Several inserts (the rebound receivers' Lambertian in
+  showcase 2, plus the shared black material in showcases 2 and 3) shift every later
+  index by three (showcase 2 inserts one shared Lambertian for its two
+  receivers plus the black material; showcase 3 only the black material),
+  so each insert re-resolves its index from the NodeId after the previous
+  one (or the inserts run in descending index order);
   every inserted chunk carries a DISTINCT name (`DocFindByName` refuses a
   duplicate); the shared black `lambertian_material` goes in front of the
   FIRST object chunk that names it, not at a receiver's index. Both
@@ -192,12 +198,18 @@ rasterizers). The painter stations below prove it anyway.
   adjudicates and the pixel is a sanity check with a stated wide band. A
   painter station is read ONLY where the sightline from the probe camera to
   the station is unoccluded — the test CASTS that ray against the loaded
-  scene (`IObjectManager::IntersectRay`, comparing the first hit's object
-  with the station's own and SKIPPING hits on the dielectric interfaces
-  the refraction clause governs — showcase 2's submerged stations are
-  first "hit" at the water's top face, which is not an occlusion; a hit
-  on any opaque object is; a vertex-distance margin is only a secondary
-  "not on the silhouette" guard, neither necessary nor sufficient) —
+  scene. `IObjectManager::IntersectRay` is closest-hit only and
+  `RayIntersection::pObject` names what it hit, so the test MARCHES: from
+  the camera toward the station, cast with `bComputeExitInfo = true`; no
+  hit, or a hit beyond the station (distance ≥ remaining − 1e-6) → the
+  station is VISIBLE; a hit whose `pObject` is the scene's one refractive
+  object (showcase 2's `water`, resolved by name through
+  `IObjectManager::GetItem` — the object the 10° clause governs; there is
+  no "is a dielectric" query on `IMaterial`) → continue from the hit's
+  `ptExit` (the whole slab skipped) for at most 4 iterations; any other
+  hit → OCCLUDED by that object. A vertex-distance margin is only a
+  secondary "not on the silhouette" guard, neither necessary nor
+  sufficient —
   where the CONTROL pixel is non-zero (asserted before
   dividing: a station no light reaches has a 0/0 ratio), and, if the
   sightline crosses a refractive interface, within 10° of that
@@ -255,7 +267,8 @@ silhouette only: the caps shade under the scene's default
 `DefaultDirectLighting` shader, so a cap pixel takes no indirect light at
 all and its ratio is exactly the albedo, which is why §0 exempts this
 showcase from the black-out (the pavilion's floor carries `shader
-floor_shader` = `DefaultPathTracing`; the new scene DROPS that line so
+floor_shader` = `DefaultPathTracing`; the new scene DROPS that line, and
+the now-unreferenced `floor_shader` and `glass_shader` chunks with it, so
 every surface is direct-only and the claim is scene-wide) — and the two
 omni lights), framed on cap1's foot. NO prop is relocated into the frame: the
 pavilion's `vasegeom` is an unscaled Bezier teapot 6.5 world units wide
@@ -410,24 +423,26 @@ width × height × depth = x × y × z; centres given):
   so its lowest point (0.01 − 0.03 = −0.02) rests on the bed. Container: the
   water box (exact).
 - `stone_e`: a tilted FLAGSTONE — `box_geometry` 0.10 × 0.02 × 0.06 at
-  (−0.02, 0.01019399, −0.10) (the exact resting centre is −0.02 +
-  0.05·sin 25° + 0.01·cos 25° = 0.0101939909574; eight decimals put the
-  low corner within 4e-10 of the bed top, inside the 1e-9 tolerance;
-  0.0101940 would leave it 9.0e-9 ABOVE), `orientation 0 0 −25` (the scene language's
+  (−0.02, 0.010193991, −0.10) (the exact resting centre is −0.02 +
+  0.05·sin 25° + 0.01·cos 25° = 0.0101939909574; nine decimals put the
+  low corner 4.3e-11 ABOVE the bed top, a 23× margin inside the 1e-9
+  tolerance; eight decimals, 0.01019399, would put it 9.6e-10 BELOW —
+  inside the bed by 96 % of the tolerance — and 0.0101940 9.0e-9 above),
+  `orientation 0 0 −25` (the scene language's
   Euler triple is applied about the box's own centre; a −25° rotation about
   z tilts the top normal to n = (sin 25°, cos 25°, 0) and the top face
   RISES toward −x along t = (−cos 25°, sin 25°, 0)). The top face's centre
   is the box centre + 0.01·n = (−0.015774, 0.0192571, −0.10); the rotated
   corners lie at y = −0.020 (the low corner rests on the bed top to
-  within 4e-10 — on which side is rounding, and no B9 station depends on
-  it since the water's 0.03–0.05 dominates the running maximum), −0.0019,
+  within 4.3e-11, above it; no B9 station depends on that since the
+  water's 0.03–0.05 dominates the running maximum), −0.0019,
   0.0223 and 0.0404, so the
   face crosses the waterline. A station at signed distance s along t from
   the face centre has y = 0.0192571 + s·sin 25°; the test SOLVES s for
   each target y (below) and asserts
   |s| ≤ 0.05. This is the receiver whose wet ramp is readable — from the
   OVERHEAD probe camera (§2 painter stations), not from the beauty camera,
-  whose sightlines cross the water at ~51° to its normal.
+  whose sightlines cross the water at 53.2° to its normal.
 - `stone_d`: `sphere_geometry` r = 0.03 at (0.26, 0.035, 0.09), on `sand_px`
   (x ∈ [0.23, 0.29] inside the strip's [0.1805, 0.40]): equator ring 5 mm
   above the sand, bottom 2.5 cm under. Its burial line is visible AT the
@@ -439,7 +454,7 @@ circle of confusion, which holds stone_d at 0.44 m and stone_a's top at
 0.46 m as well as the flagstone at 0.57 m); the view axis is at 43.9°, the
 flagstone is seen at 36.8° elevation and its 2 cm ramp images at ≥ 8 px
 radial (the header shows the arithmetic; the flagstone's top face is
-seen at 38.9° above its own tilted face — the rounded 36.8°/38.9° pair
+seen at 39.0° above its own tilted face — the rounded 36.8°/39.0° pair
 is unchanged by the 1 mm drop — 36.8° above horizontal, and the
 sightline crosses the water at 53.2° to the WATER's normal — far outside
 §0's 10° rule, hence the overhead probe). Lighting: the key is an
@@ -471,8 +486,11 @@ everything under water uniformly (or nothing, past r). `interior(0.02)` =
 clamp(depth/2 cm): 0 above the waterline, a ramp over the first 2 cm, 1
 below — a crisp line AT the waterline and a sheen that saturates 2 cm down.
 
-**Receivers' recipe.** Each stone is a `coated_material` whose `base` is a
-`ggx_material` (`fresnel_mode schlick_f0`, a dielectric) with `rd` bound to
+**Receivers' recipe.** The five stones share ONE material triple — one
+`coated_material` whose `base` is one `ggx_material` (`fresnel_mode
+schlick_f0`, a dielectric; `rs` bound to a shared `uniformcolor_painter`
+at the dielectric F0 0.04 — its default is `none`, the null painter, which
+would give the base no specular at all) with `rd` bound to
 an `expression_painter` (`def buried interior(0.02)`; `expr mix(dry, wet,
 buried)`; a fine `fbm` grain scaled by `(1 − buried)` so grain shows only
 on the dry part; ONE `expression_painter` chunk shared by all five
@@ -486,9 +504,10 @@ memo hit), and whose `coat_weight` is a third `scalar_painter` reading
 `coated_material` has no reflectance slot of its own, hence the `base`.)
 One field drives colour, roughness and coat; three chunks declare it. All
 five stones carry the recipe; two (stone_a, stone_e) carry painter
-stations, and for the probe those two are REBOUND to a Lambertian per §0
-(the GGX `rs` and the coat would otherwise add the same term to probe and
-control).
+stations, and for the probe those two are REBOUND per §0 to ONE inserted
+`lambertian_material` (both name the shared painter, so one chunk serves
+both; a single insert, before the first of the two objects) — the GGX `rs`
+and the coat would otherwise add the same term to probe and control.
 
 **Stations** (the container at every station is the water box or the sand
 strip — exact families; tolerance 1e-9; every station point is ON the
@@ -532,8 +551,10 @@ receiver's surface, derived from the chunk's centre, radii and orientation):
 - Painter stations from an OVERHEAD PROBE CAMERA (the probe and control
   copies re-point the shipped `thinlens_camera`: `location −0.016 0.60
   −0.10`, `lookat −0.016 0.0 −0.10`, `up 0 0 −1` — the default `up 0 1 0`
-  is parallel to the view and `SafeUnitUp_` would pick an arbitrary axis —
-  `focus_distance 0.58`, the f/22 stays): the sightline to the y = 0.02
+  is parallel to the view —
+  `focus_distance 0.58`, the f/22 stays; with the default `up`,
+  `SafeUnitUp_` picks an axis of its own — world +x here — not the
+  author's): the sightline to the y = 0.02
   ramp station is within three pixels of the camera axis (1.4 mm off,
   0.13° incidence, a refractive displacement of microns), the deepest B9
   station is 4.0° off axis (a 0.5 mm ≈ 1 px lateral shift, harmless where
