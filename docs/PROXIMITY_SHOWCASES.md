@@ -1,7 +1,11 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised five times the same day after adversarial
-rounds (round 5, 4 P1s: an appended probe material derives AFTER the
+Status: SPEC, 2026-09-10, revised six times the same day after adversarial
+rounds (round 6, 3 P1s: a bare inserted chunk glues its `}` onto the
+next keyword and the CST derive rejects it; the 5 mm M1p painter station
+is occluded by the bunny's flaring foot and reads 0.96, not 0.75; S7's
+control pixel is black because both pavilion lights are behind the flute
+wall. Round 5, 4 P1s: an appended probe material derives AFTER the
 object that names it, which then silently fails to add; M4's 5 mm station
 IS a closed form, 0.75, because the contact plane bounds the dragon from
 below; the M3 direction rule was a vertical-column test while two
@@ -91,22 +95,38 @@ rasterizers). The painter stations below prove it anyway.
   `material` at it with `DocSetOrAddParamValue`. The insertion INDEX
   matters: `DeriveToJob` applies chunks in document order and
   `Job::AddObject` resolves the material name at apply time (an unknown
-  name fails that one chunk, the derive continues, and the receiver is
-  silently MISSING from the probe), while every in-tree `DocInsertItem`
-  call site appends at the end — so the test builds the item the Job.cpp
-  way (`ParseToCst(chunkText)`, first `NodeKind::Chunk` item via
-  `DocResolveNodeId(DocNodeIdAt(d, i))`) and inserts it AT the receiver
-  object's own index (`DocFindByName` → `DocIndexOfNodeId`), which is
-  after the expression painter the object already depends on. Both
-  derives assert `diagnostics.empty()`, as `MeshClosestPointTest`'s
-  `LoadSceneD` does. The black-out is scoped per showcase: showcase 1
+  name fails that one chunk with an "apply failed" diagnostic, the derive
+  continues, and the receiver is MISSING from the probe) — so the test
+  inserts it AT the receiver object's own index (`DocFindByName` →
+  `DocIndexOfNodeId`), which is after the expression painter the object
+  already depends on. The precedent for a mid-document insert is
+  `Job::ApplyCstInsertCameraChunk` (`[leadSep][chunk][trailSep]`) and the
+  glue-safety rules in `Job::ApplyCstRestoreChunkAt`: a Chunk node's
+  bytes end in `}` and its trailing newline is a SEPARATE Trivia item, so
+  a bare chunk spliced in front of the object reads `}standard_object` on
+  one line, `ChunkBraceViolations` rejects it ("chunk braces must be on
+  their own lines") and the material is skipped. The test therefore
+  builds the chunk (`ParseToCst(chunkText)`, first `NodeKind::Chunk` item
+  via `DocResolveNodeId(DocNodeIdAt(d, i))`) AND a `"\n"` Trivia leaf
+  (`ParseToCst("\n")`, item 0) and inserts `[chunk][sep]` at i, i+1.
+  Both derives assert `diagnostics.empty()`, as `MeshClosestPointTest`'s
+  `LoadSceneD` does. The rasterizer and `film` chunks are UNNAMED, so
+  `DocFindByName` cannot address them: the test enumerates
+  `DocItemCount` / `DocNodeIdAt` / `DocResolveNodeId` and matches the
+  item's role (ending in `_rasterizer`; equal to `film`). The setter list
+  for the rasterizer chunk is `oidn_denoise FALSE` AND `samples 512` (the
+  shipped scenes render at fewer). The black-out is scoped per showcase: showcase 1
   renders under the direct-only `pixelpel_rasterizer`, where the ratio is
   the albedo with no other change, so its probe is the `expr` swap alone;
   showcases 2 and 3 are path-traced, where interreflection off the other
   surfaces is not linear in the receiver's albedo, so BOTH copies also
   rebind every non-receiver material to a black `lambertian_material`
   (showcase 2's water keeps its dielectric) with relief modifiers
-  stripped. The probe `expr` is `vec3(<the signal def's name>)` —
+  stripped, AND remove every light but the key (showcase 2's sky fill
+  would otherwise reflect off the water at R = 0.02 into every submerged
+  pixel of both copies, pulling the ratio toward 1 exactly as the coat
+  would; an omni is a delta light, so the water's specular arm then
+  reflects nothing). The probe `expr` is `vec3(<the signal def's name>)` —
   `dust` in showcases 1 and 3, `buried` in showcase 2. `SourceHygieneTest` hard-fails
   any test that defines an `IRasterizerOutput` unless the FILE contains
   the contiguous text `oidn_denoise false` (case-insensitive); the setter
@@ -126,14 +146,22 @@ rasterizers). The painter stations below prove it anyway.
   clock on the gate machine, measured and written in the header; if a
   path-traced showcase exceeds it, the probe copies use a `film` of
   400 × 300 with every footprint below doubled and restated in the header
-  (the bands do not change — they are stated on top of the noise the
+  (the circle of confusion doubles too, so the quoted DoF intervals then
+  describe the beauty copies only and the probe's are wider; the framing
+  rule survives — showcase 3's ring falls to 10.2 px radial and showcase
+  2's flagstone ramp to 18.3 px, both ≥ 8; the bands do not change — they are stated on top of the noise the
   §8.2 precedent measured). The pixel footprint (mm) is stated; where
   the footprint is coarser than the station spacing the query station
   adjudicates and the pixel is a sanity check with a stated wide band. A
   painter station is read ONLY where the sightline from the probe camera to
-  the station is unoccluded and, if it crosses a refractive interface, is
-  within 10° of that interface's normal (so the refractive displacement is
-  under a pixel — the header shows the angle).
+  the station is unoccluded — the test CASTS that ray against the loaded
+  scene (`IObjectManager::IntersectRay`; a vertex-distance margin is only
+  a secondary "not on the silhouette" guard, neither necessary nor
+  sufficient) — where the CONTROL pixel is non-zero (asserted before
+  dividing: a station no light reaches has a 0/0 ratio), and, if the
+  sightline crosses a refractive interface, within 10° of that
+  interface's normal (so the refractive displacement is under a pixel —
+  the header shows the angle).
 - **Framing rule**: a receiver's 2 cm ring must image at ≥ 8 px across in
   the RADIAL direction (tangential size × sin(elevation); thin-lens
   magnification f/(d − f)), its face seen at ≥ 25° elevation, and every
@@ -181,8 +209,10 @@ foot study of its own.
 **New scene** `scenes/FeatureBased/Combined/pavilion_colonnade.RISEscene`,
 built from the pavilion's chunks (the same `colcylgeom`, `flutegeom`,
 `capgeom`, all four columns and caps at (±2.5, ·, ±2.5) with the pavilion's
-orientations, the floor, the ceiling and back wall for bounce, the two omni
-lights), framed on cap1's foot. NO prop is relocated into the frame: the
+orientations, the floor, the ceiling and back wall — for framing and
+silhouette only: `pixelpel_rasterizer` is direct-only and they bounce
+nothing, which is why §0 exempts this showcase from the black-out — and
+the two omni lights), framed on cap1's foot. NO prop is relocated into the frame: the
 pavilion's `vasegeom` is an unscaled Bezier teapot 6.5 world units wide
 (`AddBezierPatchGeometry` recentres, never normalises), and the glass
 sphere's pedestal is out of frame — this is a foot study of marble, floor
@@ -270,9 +300,15 @@ scene and ADDS S6, S7, the painter stations and the cost.
   (the boundary arm fires on the box's exact face; verified in review). The
   sightline enters the cylinder's disc at local x = 0.029 ≤ 0.04, through
   the mouth.
-- Painter stations at S1, S6, S7 from the shipped camera (the cap is
-  already a Lambertian; the `expr` swap alone is the probe): 0.5 / 0 / 0.5
-  within 0.15 at S1 and S7 (2.03 mm/px radial, stated) and 0.08 at S6.
+- Painter stations at S1 and S6 ONLY, from the shipped camera (the cap is
+  already a Lambertian; the `expr` swap alone is the probe): 0.5 within
+  0.15 at S1 (2.03 mm/px radial, stated) and 0 within 0.08 at S6. S7 is
+  QUERY-only: the pavilion's two lights, `ceiling_light` (0, 4.5, 0) and
+  `fill_light` (3, 3, 4), are both behind the flute wall from a point
+  inside the mouth (their shadow rays hit the local x = 0.04 slab at
+  radius 0.19 and 0.21, inside the cylinder), so under the direct-only
+  rasterizer S7's control pixel is exactly black. S1 is lit by the fill
+  light only, S6 by both (ray-marched in review).
 - Beauty: the outer ring on cap1 with its wedge break at the near mouth and
   the inner bands inside it; judged honestly, including what the 20°
   azimuth of the camera hides on the far side.
@@ -365,9 +401,13 @@ water's normal as seen from every submerged station; a RAKING key would
 be blocked with the flag on exactly as off. From the pinned key the
 deepest B9 station sees it 39.8° from vertical, B4 37.0°, stone_b's
 bottom 39.1°, B8 31.3° (all exiting the water inside the pool footprint,
-clear of the sand rim), so the submerged half is lit by NEE and the probe
-controls are not dark. The key is 0.67 m from the overhead probe camera
-and off its axis, so it occludes no probe sightline.
+clear of the sand rim), so every submerged station's shadow ray refracts
+out. Whether a station is LIT is a separate question of its own normal:
+B4 and stone_b's bottom face away from the key (n·L < 0) and are
+query-only anyway; the stations that carry painter readings do face it —
+B1 (n = +y) at n·L = 0.77 and the four B9 points (n = (sin 25°, cos 25°,
+0)) at n·L = 0.57 — so their probe controls are not dark. An `omni_light`
+has no geometry and occludes nothing.
 
 **Why `interior` and not `proximity`.** A point on a stone below the
 waterline is 1–5 cm from the water's TOP face; `proximity(r)` would paint
@@ -436,13 +476,17 @@ receiver's surface, derived from the chunk's centre, radii and orientation):
   −0.10`, `lookat −0.016 0.0 −0.10`, `up 0 0 −1` — the default `up 0 1 0`
   is parallel to the view and `SafeUnitUp_` would pick an arbitrary axis —
   `focus_distance 0.58`, the f/22 stays): the sightline to the y = 0.02
-  ramp station is on the camera axis (0° to the water's normal, no
-  refractive displacement), the deepest B9 station is 4.2° off axis (a
-  0.5 mm ≈ 1 px lateral shift, harmless where the value is saturated at
-  1.0), and the flagstone's top face is seen at 65° elevation; the angles
-  are stated. Stations: B1 on stone_a's dry top (0) and the four B9 points
-  (1.0 / 1.0 / 0.5 / 0) within 0.08. B3/B4 (a sphere's flank under water)
-  are QUERY-only.
+  ramp station is within a pixel of the camera axis (0.8 mm off, 0.08°
+  incidence, a refractive displacement of microns), the deepest B9
+  station is 4.2° off axis (a 0.5 mm ≈ 1 px lateral shift, harmless where
+  the value is saturated at 1.0), and the flagstone's top face is seen at
+  65° elevation; the angles are stated. Stations: B1 on stone_a's dry top
+  (0) and the four B9 points (1.0 / 1.0 / 0.5 / 0), within 0.08 except the
+  y = 0.02 station (0.5) at 0.12: the water's underside returns about
+  1 − 1/n² of the receiver's own diffuse radiance onto it, a term
+  quadratic in albedo that cancels at the two saturated stations and the
+  dry one but not at the mid-ramp one. B3/B4 (a sphere's flank under
+  water) are QUERY-only.
 - Beauty: a crisp waterline on every wet stone, a sheen saturating 2 cm
   down on the flagstone and the sphere, dry grain above, the ellipsoid and
   pebble carrying the same line, stone_d's burial line in dry sand. Judged
@@ -518,9 +562,9 @@ at the same relative offsets).
   sightline from the camera passes ≥ 2 mm from every bunny vertex → 0.
   Predicted from the vertex array: −x is clear by 33.1 mm with a sightline
   ≥ 20.5 mm from the bunny; +z is only 21.5 mm clear; +x (4.6 mm) and −z
-  (11.9 mm) would read ~0.77 and ~0.41 and their sightlines graze the
-  bunny at 0.2 mm. The chosen direction and the clearances found are
-  printed and recorded in the header.
+  (11.9 mm) would read ~0.77 and ~0.41 and their sightlines are BLOCKED
+  (two triangle hits each). The chosen direction and the clearances found
+  are printed and recorded in the header.
 - M4 the bunny's highest vertex with the bunny as `self` → 1.0 (the
   dragon's lowest vertex sits on it, distance 0); 5 mm below it (inside
   the bunny — a query-only station) → 0.75 EXACTLY, the one mesh station
@@ -535,12 +579,19 @@ at the same relative offsets).
   z = −0.09 → 0.
 - Painter stations (both copies black-out everything but the shelf per
   §0; footprint at the contact 0.45 mm/px tangential, 0.98 mm/px radial
-  at 800 px): NOT at M1 — the sightline to each 1 mm station passes
-  within 0.1–0.6 mm of a bunny vertex, so that pixel straddles the bunny's
-  own silhouette (§8.2's nail failure) — but at M1p, 5 mm from the contact
-  vertex in M3's derived clear direction: predicted ~0.75 (the query
-  measures it first and adjudicates; the sightline must clear every bunny
-  vertex by ≥ 2 mm, checked) → the query's value within 0.15; and M3 → 0
+  at 800 px): NOT at M1 — the sightline to each 1 mm station is blocked by
+  the bunny (one or two triangle hits; the pixel is the bunny's own
+  silhouette, §8.2's nail failure) — and NOT at 5 mm either: the foot
+  flares, so a station 5 mm out along −x is still 0.83 mm from the
+  bunny's surface (reads 0.96, not "1 − 5/20") and its sightline is
+  blocked. The ray cast against the bunny first goes clear between 22 and
+  24 mm out. Painter stations therefore at M1p, 28 mm from the contact
+  vertex along −x (predicted from the mesh 0.31, nearest surface 13.7 mm;
+  sightline clear, 3.5 mm from the nearest vertex) and M1q, 30 mm along
+  +z (predicted 0.84 — the foot's flare keeps the surface 3.2 mm away;
+  sightline clear, 3.3 mm from the nearest vertex): each within 0.15 of
+  the QUERY's value at the same point, the query adjudicating; the
+  distances are asserted clear by the ray cast, not assumed. M3 → 0
   within 0.08. No painter station on the bunny at M4: the pixel there
   shows the dragon's foot, not the bunny.
 - Beauty: the dust ring around the foot, the darkening under the dragon's
