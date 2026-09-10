@@ -724,6 +724,20 @@ Scalar TriangleMeshGeometryIndexed::PointTriangleDistance(
 		return m;
 	}
 
+	// THE NEEDLE-TRIANGLE REGIME (review round 1, item 6c).  `denom > 0`
+	// here does not mean well-conditioned: a needle -- three nearly
+	// colinear vertices, tiny area relative to its own edge lengths -- can
+	// pass this guard with `denom` a small positive number that is itself
+	// the DIFFERENCE of much larger `d1..d6` products (`va`/`vb`/`vc` each
+	// carry that same cancellation).  `v` and `w` can then carry a large
+	// RELATIVE error.  What that error is NOT is unbounded or NaN: `denom`
+	// is checked strictly `> 0` above (the only path to a 0/0 divide is the
+	// branch already taken for it), and `q = a + ab*v + ac*w` is a point
+	// built from THIS triangle's own edge vectors -- however wrong `v`/`w`
+	// are, `q`'s displacement from `a` is a linear combination of `ab` and
+	// `ac`, so the worst-case positional error this branch can produce is
+	// bounded by a small multiple of the triangle's OWN size (`|ab|`,
+	// `|ac|`), never an error unrelated to the geometry being queried.
 	const Scalar v = vb / denom;
 	const Scalar w = vc / denom;
 	const Point3 q = Point3Ops::mkPoint3( a, ab * v + ac * w );

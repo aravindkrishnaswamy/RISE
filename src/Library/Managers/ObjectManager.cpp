@@ -632,9 +632,25 @@ Scalar ObjectManager::ProximityCandidateDistance(
 	// per-point-failure case the message states explicitly rather than
 	// branding the object as a member of a family that never answers.  An
 	// SDF that was merely out of range answers it, and says nothing.  An
-	// indexed MESH is not O(1) either: the confirm re-runs its
-	// closest-point traversal unbounded, which visits the whole tree --
-	// once per mesh, ever.
+	// indexed MESH is not O(1) either: the confirm re-runs
+	// `BVH::ClosestPointDistance` unbounded (`maxDist = RISE_INFINITY`),
+	// once per mesh, ever (the one-shot latch above).  REASONED BOUND, not
+	// measured (the `RISE_PROX_FORCE` hook that would make a fresh Sponza
+	// number cheap was removed with the rest of that measurement's
+	// instrumentation -- see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3):
+	// an earlier draft of this comment claimed the unbounded call "visits
+	// the whole tree", which OVERSTATES it.  `ClosestPointDistance` starts
+	// `best` at `maxDist` and prunes any subtree whose box-to-point
+	// distance is `>= best`; with `best` seeded at infinity the FIRST leaf
+	// primitive the nearest-first descent reaches collapses `best` to a
+	// real, finite number (any primitive's true distance is finite), and
+	// every node visited after that is pruned exactly as a normally-bounded
+	// query would prune it.  So the unbounded confirm costs about the same
+	// as one ORDINARY closest-point query against that mesh -- not a
+	// full-tree scan -- unless the tree's own build quality is degenerate
+	// enough that the nearest-first ordering fails to reach a good
+	// candidate quickly, which is a BVH-quality question, not a property of
+	// this being an unbounded call.
 	//
 	// WHAT THIS DELIBERATELY GIVES UP: if an object's FIRST refusal is the
 	// benign far one, the latch is spent and a later bracket-budget failure
@@ -665,6 +681,18 @@ bool ObjectManager::NearestOtherSurface(
 		return false;
 	}
 
+	// UNCONDITIONAL, even though `snap` below is read ONLY by the flat-scan
+	// branch further down and never by the TLAS branch (review round 1,
+	// item 6d) -- on a TLAS-backed scene this call's `snap` result is
+	// simply discarded a few lines later.  Kept anyway because
+	// `EnsureBoxSnapshot` carries `RealizeAllObjects()` (see its own
+	// comment), which this function needs on EITHER path: a query reached
+	// through the lazy `IntersectRay` self-heal (no prior
+	// `PrepareForRendering`) must not ask a still-unrealized
+	// `DisplacedGeometry` for its distance, exactly the hazard `CreateBVH`
+	// guards against for its own path.  `Realize()` is idempotent and
+	// one-shot per geometry, so calling it here when the TLAS build already
+	// did is a cheap no-op, not double work.
 	EnsureBoxSnapshot();
 	// ONE copy of the pointer, then a lock-free read of an immutable
 	// object.  Re-reading `pBoxes` inside the loop would reintroduce

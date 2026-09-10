@@ -1447,6 +1447,23 @@ visible in the table and is machine warm-up / thermal, not a measurement
 artifact specific to one arm — it moves all three columns together and
 the RATIOS stay flat.
 
+**The once-per-mesh refusal confirm's cost (review round 1, item 6b) is a
+REASONED BOUND, not a fresh measurement** -- the `RISE_PROX_FORCE` hook that
+would make a Sponza number for this cheap was already removed by the time this
+question was asked, and re-adding it solely for this bound was not judged
+worth the overhead. `ObjectManager::ProximityCandidateDistance`'s comment used
+to claim the confirm (an unbounded `BVH::ClosestPointDistance` call, run once
+per mesh object via the one-shot latch) "visits the whole tree", which
+OVERSTATES it: the traversal seeds `best` at `maxDist` and prunes any subtree
+whose box-to-point distance is `>= best`; with `best` seeded at infinity, the
+first leaf primitive the nearest-first descent reaches collapses `best` to a
+real finite number, after which every later node is pruned exactly as a
+normally-bounded query would prune it. So the unbounded confirm costs about
+the same as one ORDINARY closest-point query against that mesh, not a
+full-tree scan -- bounded by the BVH's own build quality, not by this call
+being unbounded. Comment corrected at the site (ObjectManager.cpp, the
+`ProximityCandidateDistance` refusal-confirm block).
+
 **Gate summary.**
 
 | Phase-2 gate | verdict |
@@ -1468,7 +1485,7 @@ the RATIOS stay flat.
 | `DisplacedGeometryTest` / `GeometryUVRoundtripTest` | PASS |
 | `CstDeriveGoldenTest` | PASS; regenerated golden differs by exactly ONE added row (scene D) |
 | `SourceHygieneTest` | 165 passed, 0 failed |
-| every suite naming `TriangleMeshGeometryIndexed` / `DisplacedGeometry` / `BVH` | 46 suites, all green, run one at a time |
+| every suite naming `TriangleMeshGeometryIndexed` / `DisplacedGeometry` / `BVH` | `grep -rlE "TriangleMeshGeometryIndexed\|DisplacedGeometry\|BVH" tests/*.cpp` -- **47** suites (re-run 2026-09-09, review round 1 item 6a; the original "46" was off by one, not re-derived at the time), all green, run one at a time |
 | `ExpressionEval.h` byte-identical to `d722d4d6` | PASS (`git diff` empty) |
 | temporary hooks removed | PASS (`grep -rn "RISE_PROX_FORCE" src` empty; probe tool deleted) |
 
