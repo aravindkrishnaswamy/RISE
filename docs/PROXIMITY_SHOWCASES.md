@@ -1,7 +1,8 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised six times the same day after adversarial
-rounds (round 6, 3 P1s: a bare inserted chunk glues its `}` onto the
+Status: SPEC, 2026-09-10, revised seven times the same day after adversarial
+rounds (round 7, 1 P1: `vec3()` takes three scalars, so every probe
+expression as written failed to compile. Round 6, 3 P1s: a bare inserted chunk glues its `}` onto the
 next keyword and the CST derive rejects it; the 5 mm M1p painter station
 is occluded by the bunny's flaring foot and reads 0.96, not 0.75; S7's
 control pixel is black because both pavilion lights are behind the flute
@@ -74,8 +75,10 @@ rasterizers). The painter stations below prove it anyway.
   Mechanism (all existing API): `Cst::ParseToCst` the tracked file →
   `Cst::DocSetOrAddParamValue(doc, chunkId, …)` (NOT `DocSetParamValue`,
   which silently no-ops when the parameter is absent from the chunk) to
-  replace the receiver painter's `expr` (probe: `vec3(dust)` — the RAW
-  signal, exactly as design §8.2's albedo protocol; control: `vec3(1)`;
+  replace the receiver painter's `expr` (probe: `vec3(dust, dust, dust)`
+  — the RAW signal, exactly as design §8.2's albedo protocol, whose
+  `vec3()` takes THREE scalars (`ParseVec3Ctor` demands the commas; a
+  one-argument `vec3(dust)` does not compile); control: `vec3(1, 1, 1)`;
   swapping only the `def` would leave the beauty `mix`/`clamp`/`fbm` in
   both copies and the ratio would not be the signal) and to set
   `oidn_denoise FALSE` on the rasterizer chunk (MANDATORY: the default is
@@ -107,9 +110,18 @@ rasterizers). The painter stations below prove it anyway.
   one line, `ChunkBraceViolations` rejects it ("chunk braces must be on
   their own lines") and the material is skipped. The test therefore
   builds the chunk (`ParseToCst(chunkText)`, first `NodeKind::Chunk` item
-  via `DocResolveNodeId(DocNodeIdAt(d, i))`) AND a `"\n"` Trivia leaf
-  (`ParseToCst("\n")`, item 0) and inserts `[chunk][sep]` at i, i+1.
-  Both derives assert `diagnostics.empty()`, as `MeshClosestPointTest`'s
+  via `DocResolveNodeId(DocNodeIdAt(d, i))`) AND two `"\n"` Trivia
+  leaves (`ParseToCst("\n")`, item 0, built twice) and inserts
+  `[leadSep][chunk][trailSep]` at i, i+1, i+2 — the three-leaf form the
+  precedent uses unconditionally, so nothing depends on what item i−1
+  happens to be. Several inserts (two rebound receivers in showcase 2,
+  plus the shared black material in showcases 2 and 3) shift every later
+  index by three, so each insert re-resolves its index from the NodeId
+  after the previous one (or the inserts run in descending index order);
+  every inserted chunk carries a DISTINCT name (`DocFindByName` refuses a
+  duplicate); the shared black `lambertian_material` goes in front of the
+  FIRST object chunk that names it, not at a receiver's index. Both
+  derives assert `diagnostics.empty()`, as `MeshClosestPointTest`'s
   `LoadSceneD` does. The rasterizer and `film` chunks are UNNAMED, so
   `DocFindByName` cannot address them: the test enumerates
   `DocItemCount` / `DocNodeIdAt` / `DocResolveNodeId` and matches the
@@ -122,12 +134,17 @@ rasterizers). The painter stations below prove it anyway.
   surfaces is not linear in the receiver's albedo, so BOTH copies also
   rebind every non-receiver material to a black `lambertian_material`
   (showcase 2's water keeps its dielectric) with relief modifiers
-  stripped, AND remove every light but the key (showcase 2's sky fill
-  would otherwise reflect off the water at R = 0.02 into every submerged
-  pixel of both copies, pulling the ratio toward 1 exactly as the coat
-  would; an omni is a delta light, so the water's specular arm then
-  reflects nothing). The probe `expr` is `vec3(<the signal def's name>)` —
-  `dust` in showcases 1 and 3, `buried` in showcase 2. `SourceHygieneTest` hard-fails
+  stripped, AND erase every light chunk but the key with
+  `Cst::DocEraseChunkTidy` (showcase 2's sky fill is an `ambient_light`
+  CHUNK, not a `radiance_map` line on the rasterizer — none of the three
+  scenes carries a `radiance_map` or a relief modifier, and a worker who
+  adds one strips it in the probe with `DocRemoveParam` /
+  `DocEraseChunkTidy` and says so; an environment seen by the water's
+  specular arm would reflect at R = 0.02 into every submerged pixel of
+  both copies, pulling the ratio toward 1 exactly as the coat would; an
+  omni is a delta light, so the water's specular arm then reflects
+  nothing). The probe `expr` is `vec3(x, x, x)` with x the signal def's
+  name — `dust` in showcases 1 and 3, `buried` in showcase 2. `SourceHygieneTest` hard-fails
   any test that defines an `IRasterizerOutput` unless the FILE contains
   the contiguous text `oidn_denoise false` (case-insensitive); the setter
   call `DocSetOrAddParamValue(doc, id, "oidn_denoise", 0, "FALSE")` does
@@ -215,8 +232,8 @@ nothing, which is why §0 exempts this showcase from the black-out — and
 the two omni lights), framed on cap1's foot. NO prop is relocated into the frame: the
 pavilion's `vasegeom` is an unscaled Bezier teapot 6.5 world units wide
 (`AddBezierPatchGeometry` recentres, never normalises), and the glass
-sphere's pedestal is out of frame — this is a foot study of marble, floor
-checker and the columns behind. Camera, verified in review against the
+sphere, its pedestal, the cap tops and the vase are NOT carried over —
+this is a foot study of marble, floor checker and the columns behind. Camera, verified in review against the
 framing rule:
 ```
 thinlens_camera
@@ -234,7 +251,7 @@ distance 1.343 m → a 2 cm ring images at 17.2 px tangential, 9.9 px radial
 circle of confusion the DoF is [0.979, 2.140] m, holding S1 (1.343), S7
 (1.377), S6 (1.578) and the cap's far corner (1.891). One pixel at S1 is
 1.16 mm tangential and 2.03 mm RADIAL (÷ sin 35°), so a pixel spans about
-0.10 of signal across the 1 cm ramp: the query station adjudicates S1 and
+0.10 of signal across the 2 cm ramp: the query station adjudicates S1 and
 S7, and their painter bands are the wide ±0.15 of §0's coarse-footprint
 clause. The camera is 1.341 m
 from column1's axis, above the floor, outside cap1's footprint. `pixelpel_rasterizer`
@@ -244,9 +261,9 @@ beauty render (the probe copies force it off).
 **Receiver.** One new material `marble_cap` on all four caps (the frame
 holds cap1; the others carry it harmlessly): a
 `lambertian_material` whose reflectance is an `expression_painter` —
-`def dust proximity(0.02)`; `expr mix(vec3(marble white), vec3(0.42, 0.36,
-0.30), clamp(dust*0.85 + 0.08*fbm(P*180.0, 3, 0.5, 2.0), 0, 1))` with the
-pavilion's marble white (no `jitter` — it is not a context variable; a
+`def dust proximity(0.02)`; `def white vec3(r, g, b)` — the pavilion
+marble's reflectance triple copied verbatim; `expr mix(white, vec3(0.42,
+0.36, 0.30), clamp(dust*0.85 + 0.08*fbm(P*180.0, 3, 0.5, 2.0), 0, 1))` (no `jitter` — it is not a context variable; a
 `seed` line plus `def jitter vec3(seed, seed*1.7, seed*2.3)` is the wear
 prelude's way if breakup jitter is wanted). No relief, no roughness. A
 `def` is per chunk.
@@ -363,15 +380,17 @@ width × height × depth = x × y × z; centres given):
   so its lowest point (0.01 − 0.03 = −0.02) rests on the bed. Container: the
   water box (exact).
 - `stone_e`: a tilted FLAGSTONE — `box_geometry` 0.10 × 0.02 × 0.06 at
-  (−0.02, 0.0111940, −0.10), `orientation 0 0 −25` (the scene language's
+  (−0.02, 0.0101940, −0.10), `orientation 0 0 −25` (the scene language's
   Euler triple is applied about the box's own centre; a −25° rotation about
   z tilts the top normal to n = (sin 25°, cos 25°, 0) and the top face
   RISES toward −x along t = (−cos 25°, sin 25°, 0)). The top face's centre
-  is the box centre + 0.01·n = (−0.015774, 0.0202571, −0.10); the rotated
-  corners lie at y = −0.019 (1 mm above the bed, no interpenetration),
-  −0.0009, 0.0233 and 0.0414, so the face crosses the waterline. A station
-  at signed distance s along t from the face centre has y = 0.0202571 +
-  s·sin 25°; the test SOLVES s for each target y (below) and asserts
+  is the box centre + 0.01·n = (−0.015774, 0.0192571, −0.10); the rotated
+  corners lie at y = −0.020 (the low corner RESTS on the bed top, like
+  the spheres' bottoms — within rounding of −0.02, and the bed's count is
+  dominated by the water either way), −0.0019, 0.0223 and 0.0404, so the
+  face crosses the waterline. A station at signed distance s along t from
+  the face centre has y = 0.0192571 + s·sin 25°; the test SOLVES s for
+  each target y (below) and asserts
   |s| ≤ 0.05. This is the receiver whose wet ramp is readable — from the
   OVERHEAD probe camera (§2 painter stations), not from the beauty camera,
   whose sightlines cross the water at ~51° to its normal.
@@ -386,7 +405,8 @@ circle of confusion, which holds stone_d at 0.44 m and stone_a's top at
 0.46 m as well as the flagstone at 0.57 m); the view axis is at 43.9°, the
 flagstone is seen at 36.8° elevation and its 2 cm ramp images at ≥ 8 px
 radial (the header shows the arithmetic; the flagstone's top face is
-seen at 38.9° above its own tilted face, 36.8° above horizontal, and the
+seen at 38.9° above its own tilted face — the rounded 36.8°/38.9° pair
+is unchanged by the 1 mm drop — 36.8° above horizontal, and the
 sightline crosses the water at 53.2° to the WATER's normal — far outside
 §0's 10° rule, hence the overhead probe). Lighting: the key is an
 `omni_light` PINNED at (−0.35, 0.80, 0.45), camera-left and above; a dim
@@ -405,8 +425,10 @@ clear of the sand rim), so every submerged station's shadow ray refracts
 out. Whether a station is LIT is a separate question of its own normal:
 B4 and stone_b's bottom face away from the key (n·L < 0) and are
 query-only anyway; the stations that carry painter readings do face it —
-B1 (n = +y) at n·L = 0.77 and the four B9 points (n = (sin 25°, cos 25°,
-0)) at n·L = 0.57 — so their probe controls are not dark. An `omni_light`
+B1 (n = +y) at n·L = 0.79 and the four B9 points (n = (sin 25°, cos 25°,
+0)) at n·L = 0.54–0.57 — so their probe controls are not dark. The sky
+fill is an `ambient_light` chunk (erased in the probe copies); the key's
+`power` is pinned by the worker so the beauty is exposed and recorded. An `omni_light`
 has no geometry and occludes nothing.
 
 **Why `interior` and not `proximity`.** A point on a stone below the
@@ -466,8 +488,8 @@ receiver's surface, derived from the chunk's centre, radii and orientation):
   WORLD coordinates to the object-space evaluator would land the station on
   the waterline and read 0.
 - B9 stone_e (the flagstone): four points on its top face at the TARGET
-  heights y = 0.0, 0.01, 0.02, 0.035 (s = −0.04793, −0.02427, −0.00061,
-  +0.03488 along t, all within the 0.05 half-length) → depths 0.03, 0.02,
+  heights y = 0.0, 0.01, 0.02, 0.035 (s = −0.04557, −0.02190, +0.00176,
+  +0.03725 along t, all within the 0.05 half-length) → depths 0.03, 0.02,
   0.01, −0.005 → 1.0, 1.0, 0.5, 0. The test builds the points from the
   chunk's centre, dimensions and orientation and asserts they lie on the
   face.
@@ -476,17 +498,20 @@ receiver's surface, derived from the chunk's centre, radii and orientation):
   −0.10`, `lookat −0.016 0.0 −0.10`, `up 0 0 −1` — the default `up 0 1 0`
   is parallel to the view and `SafeUnitUp_` would pick an arbitrary axis —
   `focus_distance 0.58`, the f/22 stays): the sightline to the y = 0.02
-  ramp station is within a pixel of the camera axis (0.8 mm off, 0.08°
-  incidence, a refractive displacement of microns), the deepest B9
-  station is 4.2° off axis (a 0.5 mm ≈ 1 px lateral shift, harmless where
+  ramp station is within three pixels of the camera axis (1.4 mm off,
+  0.13° incidence, a refractive displacement of microns), the deepest B9
+  station is 4.0° off axis (a 0.5 mm ≈ 1 px lateral shift, harmless where
   the value is saturated at 1.0), and the flagstone's top face is seen at
   65° elevation; the angles are stated. Stations: B1 on stone_a's dry top
   (0) and the four B9 points (1.0 / 1.0 / 0.5 / 0), within 0.08 except the
-  y = 0.02 station (0.5) at 0.12: the water's underside returns about
-  1 − 1/n² of the receiver's own diffuse radiance onto it, a term
-  quadratic in albedo that cancels at the two saturated stations and the
-  dry one but not at the mid-ramp one. B3/B4 (a sphere's flank under
-  water) are QUERY-only.
+  y = 0.02 station, whose band is ONE-SIDED, [0.34, 0.55]: the water's
+  underside returns up to 1 − 1/n² = 0.43 of the receiver's own diffuse
+  radiance onto it, a term quadratic in albedo that cancels at the two
+  saturated stations and the dry one but can only pull the mid-ramp ratio
+  DOWN — to 0.42 for one full local bounce, 0.36 for full multiple
+  scattering, and less in practice because the mirror bounce lands ~2 cm
+  away on a 0.10 × 0.06 face surrounded by blacked surfaces. B3/B4 (a
+  sphere's flank under water) are QUERY-only.
 - Beauty: a crisp waterline on every wet stone, a sheen saturating 2 cm
   down on the flagstone and the sphere, dry grain above, the ellipsoid and
   pebble carrying the same line, stone_d's burial line in dry sand. Judged
@@ -532,14 +557,25 @@ confusion: M1 at 0.547 m and every M3 candidate — +z 0.511, +x 0.524, −x
 fall soft; the bunny's near flank at 0.40 m and the shelf's near edge fall
 soft, stated in the header); the shelf top at the contact vertex is seen
 at 27.2° elevation from 0.547 m, the 2 cm ring at 20 px radial (44.7 px
-tangential × sin 27.2° at 800 px). A raking key from the left; `pathtracing_pel_rasterizer`.
+tangential × sin 27.2° at 800 px). Lighting: the key is an `omni_light`
+PINNED at (−0.35, 0.45, 0.25), camera-left and above, its `power` chosen
+by the worker for exposure and recorded; a dim `ambient_light` fills
+(erased in the probe copies). From the key, n·L at the shelf's painter
+stations is 0.79 (M1p), 0.78 (M1q), 0.80 (M3) — the shadow rays leave
+toward −x, away from the bunny, and the test casts each one against the
+loaded scene and asserts it clear (the bunny, though blacked, still
+occludes). `pathtracing_pel_rasterizer`.
 
 **What it shows.** Mesh neighbours as SHEETS: the shelf reads
 `proximity(0.02)` and draws a dust ring around the bunny's single contact
 vertex (the bunny touches at ONE vertex; scene D's "four" were four probe
 directions from it); the BUNNY reads `proximity(0.02)` from the dragon's
 feet (mesh ↔ mesh, the case scene D pins at 1.0 with the bunny as self) and
-darkens there; the dragon reads nothing. The shelf ALSO reads the wall: its
+darkens there — and ALSO from the shelf, so the bunny carries a band around
+its whole base wherever its surface is within 2 cm of the shelf top
+(predicted, judged in the beauty); the dragon reads nothing, and the shelf
+never sees the dragon (its lowest point is 15.4 cm above the shelf top).
+The shelf ALSO reads the wall: its
 back edge is flush with the wall's front face, so a 2 cm dust band runs the
 full length of the shelf along the wall, reading 1.0 at the joint and 0 by
 2 cm out — the box neighbour's exact closed form, predicted here and
@@ -561,7 +597,7 @@ at the same relative offsets).
   can be nearer than any vertex, so the margin is the guard) AND whose
   sightline from the camera passes ≥ 2 mm from every bunny vertex → 0.
   Predicted from the vertex array: −x is clear by 33.1 mm with a sightline
-  ≥ 20.5 mm from the bunny; +z is only 21.5 mm clear; +x (4.6 mm) and −z
+  20.5 mm from the nearest bunny vertex; +z is only 21.5 mm clear; +x (4.6 mm) and −z
   (11.9 mm) would read ~0.77 and ~0.41 and their sightlines are BLOCKED
   (two triangle hits each). The chosen direction and the clearances found
   are printed and recorded in the header.
@@ -584,7 +620,7 @@ at the same relative offsets).
   silhouette, §8.2's nail failure) — and NOT at 5 mm either: the foot
   flares, so a station 5 mm out along −x is still 0.83 mm from the
   bunny's surface (reads 0.96, not "1 − 5/20") and its sightline is
-  blocked. The ray cast against the bunny first goes clear between 22 and
+  blocked. The ray cast against the bunny first goes clear between 23 and
   24 mm out. Painter stations therefore at M1p, 28 mm from the contact
   vertex along −x (predicted from the mesh 0.31, nearest surface 13.7 mm;
   sightline clear, 3.5 mm from the nearest vertex) and M1q, 30 mm along
