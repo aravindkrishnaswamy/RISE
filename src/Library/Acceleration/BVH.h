@@ -1838,17 +1838,30 @@ namespace RISE
 		//! is three vertex reads and an `Include`; for `ObjectManager`'s
 		//! `IObjectPriv*` elements it is `Object::getBoundingBox()`, which
 		//! RE-TRANSFORMS all 8 local-box corners through the object's full
-		//! world matrix on every call (Object.cpp) -- not cached.  Whether
-		//! that pays depends on what `primDist` itself costs: cheap for a
-		//! single triangle (the mesh's own leaves), so the extra box test is
-		//! pure overhead there and this parameter defaults to FALSE and the
-		//! mesh's own traversal (`TriangleMeshGeometryIndexed::DistanceToSurface`)
-		//! never passes TRUE.  Expensive for a TLAS leaf, where `primDist` may
-		//! recurse into a whole mesh's own inner BVH walk -- skipping that
-		//! walk for an out-of-range object is worth one box-corner transform,
-		//! which is what `ObjectManager::NearestOtherSurface` measured on
-		//! Sponza (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3) and why it
-		//! passes TRUE.  The box test is done ENTIRELY in `Scalar` against the
+		//! world matrix on every call (Object.cpp) -- not cached.
+		//!
+		//! `ObjectManager::NearestOtherSurface`'s TLAS walk passes TRUE, on
+		//! the reasoning that a TLAS leaf's `primDist` may recurse into a
+		//! whole mesh's own inner BVH walk, so skipping that walk for an
+		//! out-of-range object is worth one box-corner transform.  MEASURED
+		//! on Sponza (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3): the pre-test
+		//! roughly HALVES the candidates evaluated per query (11.08 -> 5.62),
+		//! exactly as intended, but that reduction was **not** clearly a
+		//! wall-clock win on that scene (1.067x before the pre-test, 1.094x
+		//! after, both comfortably inside the ≤1.25x gate) -- `getBoundingBox`'s
+		//! own re-transform cost appears to be competing with the mesh
+		//! recursion it exists to skip, rather than clearly beating it.  Kept
+		//! because both measurements pass with headroom and the candidate-count
+		//! reduction is a real, useful metric in its own right, not because a
+		//! wall-clock improvement was demonstrated.
+		//!
+		//! The mesh's own traversal (`TriangleMeshGeometryIndexed::DistanceToSurface`)
+		//! never passes TRUE, on the UNTESTED reasoning that a single triangle's
+		//! `primDist` is already cheap, so the extra box test would be pure
+		//! overhead -- this has not been exercised with a timing run; treat it
+		//! as reasoning, not measurement, until someone records a real number.
+		//!
+		//! The box test is done ENTIRELY in `Scalar` against the
 		//! element's own (un-rounded, un-compacted-to-float) box -- see
 		//! `PointBoxDistance` below -- so it introduces no cross-precision
 		//! rounding hazard of its own (contrast `PointBoxDistanceF`'s node-box

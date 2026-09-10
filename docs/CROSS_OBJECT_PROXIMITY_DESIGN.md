@@ -1325,6 +1325,55 @@ per-object box test in between. That trade is strongly positive here (405 box
 tests traded for ~6 extra distance calls, most of which refuse immediately),
 and it is the obvious place to look first if a future scene regresses.
 
+**Post per-element pre-test re-measurement (review round 1, item 2).** The
+`useElementBoxTest` per-element AABB pre-test (BVH.h, gated on TLAS leaves
+only) was added to cut the 11.0785 candidates/query figure above by skipping a
+leaf's occupants whose own box is already past the running best. Re-measured
+with the SAME `RISE_PROX_FORCE` hook and protocol (removed again before this
+commit; `grep -rn "RISE_PROX_FORCE" src` empty at commit time), two warm-ups
+(20.069 s / 20.434 s base) then **five** interleaved base/forced pairs — more
+than the ≥ 3 the protocol asks for, because pair 2 read anomalously (forced
+*faster* than base) and a third pair alone would not have shown whether that
+was noise:
+
+| pair | base | forced | ratio |
+|---|---:|---:|---:|
+| p1 | 19.564 s | 21.502 s | 1.099× |
+| p2 | 20.503 s | 20.373 s | 0.994× |
+| p3 | 19.683 s | 21.638 s | 1.099× |
+| p4 | 19.677 s | 22.476 s | 1.142× |
+| p5 | 19.531 s | 22.229 s | 1.138× |
+| **mean** | **19.792 s** | **21.644 s** | **1.094×** (mean of per-pair ratios; 1.093× on the pooled means) |
+
+**1.094× against ≤ 1.25×: PASS.** The counter after the pre-test: **5.617
+candidates evaluated per query** (5.6172 / 5.6166 / 5.6167 / 5.6172 / 5.6174
+across the five forced runs), essentially halving the 11.0785 figure above,
+exactly as the pre-test is supposed to do. **The wall-clock ratio did not
+improve alongside it** — 1.094× here against 1.067× before the pre-test
+landed, both comfortably inside the gate but the pre-test's candidate-count
+win is not visibly a wall-clock win on this scene. The likely reason is
+`useElementBoxTest`'s own stated cost: `Object::getBoundingBox()` "RE-TRANSFORMS
+all 8 local-box corners through the object's full world matrix on every call
+… not cached" (BVH.h), so on Sponza — where most TLAS leaf occupants a query
+reaches are already close enough to answer rather than to refuse — the box
+test's own per-candidate cost is competing with, not clearly beating, the
+mesh-recursion cost it exists to skip. Both measurements pass the ≤ 1.25× gate
+with headroom, so this is recorded as an open, honest finding rather than a
+regression to fix: the pre-test is a legitimate reduction in *distance calls*,
+which is the metric its own commit message named, and this document no longer
+overclaims a wall-clock win it did not clearly produce.
+
+**The mesh-path question is UNTESTED, not measured.** BVH.h's
+`useElementBoxTest` doc comment reasons (rather than measures) that the
+pre-test is pure overhead on the mesh family's own traversal — a single
+triangle's `primDist` is already cheap, so paying a fresh
+`GetElementBoundingBox` (three vertex reads + an `Include`) ahead of it has
+nothing to win back. That reasoning was not exercised with a timing run in
+this round; the comment is worded as reasoning rather than as a Sponza-style
+measurement, and any future contributor testing `useElementBoxTest = true` for
+`TriangleMeshGeometryIndexed::DistanceToSurface` should record a real number
+rather than trust the inference.
+
 *The seam gate.* Measured with a throwaway probe tool (deleted with the hooks)
 that finds the floor and the nearest wall by ray casting, so the coordinates
 are the asset's rather than guessed. The floor point is (−6, ≈0, 0); the
