@@ -705,7 +705,7 @@ Scalar TriangleMeshGeometryIndexed::PointTriangleDistance(
 	}
 
 	// INTERIOR -- but only if there IS an interior.  `va + vb + vc` is the
-	// squared doubled area of the triangle scaled by the region weights; it
+	// squared doubled area of the triangle (`4 * Area^2`, independent of `p`); it
 	// vanishes exactly for a degenerate (zero-area) triangle, for which the
 	// surface is the union of the three edges and the minimum over them is
 	// the exact answer.  Reaching the divide with a vanishing denominator
@@ -739,21 +739,23 @@ Scalar TriangleMeshGeometryIndexed::PointTriangleDistance(
 	// being a linear combination of THIS triangle's own edge vectors does
 	// NOT, on its own, bound `q`'s displacement from `a` to "a small
 	// multiple of the triangle's own size": `v`/`w` are unclamped ratios,
-	// and if `denom` alone were driven toward 0 by cancellation while
-	// `vb`/`vc` were not, the ratio could grow arbitrarily large. What
-	// actually keeps it bounded is that `va`, `vb`, `vc`, and `denom` are
-	// NOT independent quantities -- they are built from the SAME `d1..d6`
-	// products via a Cramer's-rule identity (`va + vb + vc` is `4 *
-	// Area^2`, i.e. `denom` itself is proportional to the triangle's own
-	// squared area), so a cancellation that shrinks `denom` shrinks
-	// `va`/`vb`/`vc` by the same mechanism -- numerator and denominator
-	// error correlate rather than varying independently, which is why the
-	// ratio stays controlled even when the individual `d1..d6` products do
-	// not. This is EMPIRICALLY SUPPORTED, not algebraically proven here:
-	// no NaN and no blow-up has been observed across 24 orders of
-	// magnitude of triangle degeneracy in the fixture that exercises this
-	// branch, and that empirical boundedness -- not a closed-form error
-	// bound on `v`/`w` -- is what this comment is actually claiming.
+	// and `denom` (`va + vb + vc`, the Cramer's-rule identity `4 * Area^2`)
+	// depends on the triangle ALONE while `vb`/`vc` scale with `|ap|`-sized
+	// products -- so shared provenance in `d1..d6` does NOT bound the
+	// ratio: fix a needle and slide `p` along its plane and `vb/denom`
+	// grows without limit.  What actually bounds `v`/`w` is the REGION
+	// TESTS above: reaching this line means every vertex region and every
+	// edge region was excluded, so `(v, w)` are the barycentrics of `p`'s
+	// in-triangle projection, which lie in `[0, 1]` in exact arithmetic
+	// with `v + w <= 1`; rounding can push them past those bounds only by
+	// the region tests' own rounding slack.  Measured on needles
+	// `a=(0,0,0) b=(1,0,0) c=(0.5,eps,0)` with 300k probes each: eps=1e-4
+	// reaches this branch 58k times with worst max(|v|,|w|) = 0.998;
+	// eps=1e-8 43k times, worst 0.9976; at eps<=1e-12 the branch is never
+	// reached (the region tests route every probe to an edge or vertex).
+	// No NaN is possible here: `denom > 0` is tested above, and a positive
+	// denormal `denom` dividing a bounded `vb` gives a finite (possibly
+	// large) `v` that the region tests have already excluded in practice.
 	const Scalar v = vb / denom;
 	const Scalar w = vc / denom;
 	const Point3 q = Point3Ops::mkPoint3( a, ab * v + ac * w );

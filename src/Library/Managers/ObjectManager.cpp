@@ -1260,6 +1260,17 @@ void ObjectManager::Shutdown()
 		if( localBVH ) {
 			safe_release( localBVH );
 		}
+		// The octree sibling gets the same null-then-free: the rationale
+		// above (every registered object is about to be handed back for
+		// release, and `IntersectRay`'s `if( !pOctree ) CreateOctree()`
+		// self-heal is defeated by a stale non-null pointer) applies to it
+		// verbatim.  Still a plain pointer -- this is the between-passes
+		// writer side only, as in `InvalidateSpatialStructure`.
+		if( pOctree ) {
+			Octree<const IObjectPriv*>* localOctree = pOctree;
+			pOctree = 0;
+			safe_release( localOctree );
+		}
 	}
 	mSpatialGen = NextSpatialGeneration();
 	delete pBoxes.load( std::memory_order_relaxed );
@@ -1711,10 +1722,14 @@ void ObjectManager::PrepareForRendering() const
 
 void ObjectManager::InvalidateSpatialStructure() const
 {
-	mSpatialGen = NextSpatialGeneration();   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
-
-	// THE WHOLE BODY runs under `treeCreationMutex` now, not only the
-	// `pBoxes`/`retiredBoxes` cleanup that always did.  Without that, an
+	// THE WHOLE BODY -- the generation bump, the tree teardown and the
+	// snapshot cleanup -- runs under `treeCreationMutex` now, not only the
+	// `pBoxes`/`retiredBoxes` cleanup that always did; only the trailing
+	// shadow-cache reset sits outside it (a plain memset on a per-manager
+	// array no builder touches).  `mSpatialGen` is a plain non-atomic
+	// counter read cross-thread by `GetSpatialStructureGeneration()`, so
+	// bumping it inside the lock, as `Shutdown()` does, keeps the two sites
+	// consistent.  Without that, an
 	// invalidate can be LOST against a concurrent lazy self-heal: a render
 	// thread's unlocked `pBVH` read comes back null (no prior
 	// `PrepareForRendering`) and calls `CreateBVH()`, which takes the mutex
@@ -1728,6 +1743,7 @@ void ObjectManager::InvalidateSpatialStructure() const
 	// (which then rebuilds fresh) or strictly after its publish (which this
 	// call then tears down) -- never in the gap that dropped the invalidate.
 	treeCreationMutex.lock();
+	mSpatialGen = NextSpatialGeneration();   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
 	{
 		// EXCHANGE TO NULL FIRST, `safe_release` the OLD pointer SECOND.
 		// A concurrent unlocked reader (`IntersectRay` et al., outside this

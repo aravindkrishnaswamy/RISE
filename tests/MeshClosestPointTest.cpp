@@ -814,7 +814,7 @@ static void TestCandidateSourcesAgree()
 		const ObjectManager* const mgrTreeConcrete = dynamic_cast<const ObjectManager*>( mgrTree );
 		Check( mgrTreeConcrete != 0, "(h) mgrTree is the concrete ObjectManager (TopLevelPrimCount reachable)" );
 		Check( mgrTreeConcrete && mgrTreeConcrete->TopLevelPrimCount() > 0,
-			"(h) MONEY -- a top-level BVH was actually built over objs.size() objects, so the "
+			"(h) MONEY -- a top-level BVH was actually built over the world-visible objects (objs.size() minus the one invisible sphere), so the "
 			"agreement checks below are exercising the TLAS traversal, not two flat scans" );
 	}
 
@@ -864,9 +864,11 @@ static void TestCandidateSourcesAgree()
 		// is z = 0, so the answer is |z|").  (0, 0, 0.05) is a genuine,
 		// non-refusing answer at 0.05 -- and BOTH sources must find it: a
 		// TLAS build that mishandled its +/-inf box would prune it out of
-		// some node and answer with something else (or refuse), which is
-		// exactly the failure this probe -- unlike the others in this
-		// function -- is actually capable of catching.
+		// some node and answer with something else (or refuse).  The 6000-probe
+		// differential below covers that too (thousands of its probes are
+		// within radius of the z = 0 plane), so this station is the SPELLED-OUT
+		// case, not the only guard; what it uniquely adds is a closed-form
+		// answer (0.05) rather than mere agreement between the two sources.
 		const Point3 pNearPlane( 0, 0, 0.05 );
 		Scalar dT = 0, dF = 0;
 		const bool okT = mgrTree->NearestOtherSurface( pNearPlane, objs[0], Scalar( 0.2 ), dT );

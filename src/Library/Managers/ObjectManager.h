@@ -65,9 +65,10 @@ namespace RISE
 			// once a reader observes the new pointer, it is guaranteed to
 			// observe everything the builder wrote before publishing it.
 			//
-			// `InvalidateSpatialStructure` now runs its ENTIRE body under
-			// `treeCreationMutex` (the same mutex `CreateBVH` holds for its
-			// whole body), specifically so an invalidate cannot be LOST
+			// `InvalidateSpatialStructure` now runs its body -- the generation
+			// bump, the tree teardown and the snapshot cleanup; only the trailing
+			// shadow-cache memset sits outside -- under `treeCreationMutex` (the
+			// same mutex `CreateBVH` holds for its whole body), specifically so an invalidate cannot be LOST
 			// against a concurrent lazy `CreateBVH()` self-heal: without the
 			// lock, a self-heal could pass its "is `pBVH` already built"
 			// re-check just before the invalidate's exchange-to-null landed,
