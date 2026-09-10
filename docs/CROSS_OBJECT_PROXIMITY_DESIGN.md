@@ -157,9 +157,11 @@ Conventions, matching the signal family (signals design §9):
   that showed it). That proof is over the reals; the operands' closed forms
   are ROUNDED, so within ~1 ulp of a tangency of two exact operands the
   computed pair could satisfy an arm the real set does not — a band of
-  ~5 nm on `column2` (down from 1.6 µm under a tolerance), and on the flute
-  itself foreclosed outright because the computed `f_A` is never below the
-  computed `f_B` there (§5.6). Stated, not tolerated.
+  order `sqrt(2R·ulp)`, ~5 nm at R = 0.25 (down from 1.6 µm under a
+  tolerance) for a hypothetical tangent pair; on `column2`'s only tangent
+  pair, the flute, it is foreclosed outright because the computed `f_A` is
+  never below the computed `f_B` near the tangency (§5.6). Stated, not
+  tolerated.
 - **A non-finite hit point refuses** (reads 0), as `RadiusUsable` refuses a
   non-finite radius.
 
@@ -553,7 +555,9 @@ Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
 2026-09-09 before Phase 3 began; revised the same day after three adversarial
-rounds (round 12, 2 P1s: the flute walk's numbers were wrong and blamed the
+rounds (round 13, no P1 — sweep statistics re-attached to their conditions,
+the rounding band scoped, the exact-station reference named as the closed
+form, the exception count made consistent; round 12, 2 P1s: the flute walk's numbers were wrong and blamed the
 wrong disjunct; the header that hosts the `interior` body was unnamed;
 round 11, 3 P1s: the boundary arm's τ tolerance re-admitted the
 flute phantom from a station 1 µm off its axis, so the tolerance is gone
@@ -625,8 +629,9 @@ first case). But the composite can only use what the operands report, and
 `min(exact, under-read)` under-reads. So the union's UNSIGNED answer is
 `min(u_A, u_B)` over the operands' unsigned upper bounds, itself an upper bound
 (`d = min(d_A, d_B) ≤ min(u_A, u_B)`), exact when both operands' unsigned
-answers are exact (no flag is carried for the unsigned answer; the signed
-flag below has the stricter similarity condition because of `×σ_min`) —
+answers are exact under a similarity (the unsigned path's `×σ_max` is a
+bound under anisotropy exactly as the signed path's `×σ_min` is; no flag is
+carried for the unsigned answer, nothing consumes one) —
 taken over the operands that ANSWER (`d ≤ d_A ≤ u_A` holds whatever B does),
 so a union refuses only when both operands refuse; and
 the union's SIGNED LOWER BOUND — which a parent composite ("a union inside a
@@ -686,19 +691,24 @@ other operand, so a landing within `τ` of a surface can be within `τ` of
 the phantom, not of the real solid. On the flute, stations within a few
 micrometres of the slot's axis show it (recomputed in doubles, round 12):
 from local `(1e-6, ·, 0.26)` the radial descent lands at `q ≈ (9.615e-7,
-·, 0.25 − 1.85e-12)` — `f_A(q) = 0.0` exactly (`sqrt(x·x) = x` plus the
-exact step), `f_B(q) = −1.85e-12`, 1.85 pm INSIDE the slab. Across 200 000
-such stations `f_A` rounds to 0 or −1 ulp at ~46 % of them, and `f_B ≥
-−τ` (τ = 5e-12) holds at ~25 %, so the tolerant `f_A < 0 ∧ f_B ≥ −τ`
-disjunct admits a landing that is inside the subtrahend — not in the real
-solid at all — and reports a 1.00 cm chord where the real solid is 4.21 cm
-away: `proximity(0.02)` = 0.5 against a truth of 0, the forbidden
-direction by 3 cm, on a quarter of nearby stations. Under the strict rule
-those landings are rejected by the STRICT side (`f_B < 0` by 1.85e-12,
-four orders above ulp noise), and structurally: `fl(sqrt(fl(x² + z²))) ≥
-fl(sqrt(fl(z²))) = |z|` by monotone rounding, so the computed `f_A` is
-never below the computed `f_B` anywhere in the slot and `{f_A ≤ 0 ∧ f_B >
-0}` is empty NUMERICALLY there, not only over the reals. Neither arm admits
+·, 0.25 − 1.85e-12)` — the descent is a radial rescale `q = (0.25/R)·p`,
+so `f_A(q)` computes to exactly 0.0 at this station (not in general: it is
+strictly negative at 47 % of nearby stations and +1 ulp at 0.3 %) and
+`f_B(q) = −1.8491·x² = −1.85e-12`, 1.85 pm INSIDE the slab. Across 200 000
+such stations `f_A < 0` strictly at 47 % and `f_B ≥ −τ` (τ = 5e-12) at
+53 %, jointly 25 %, so the tolerant `f_A < 0 ∧ f_B ≥ −τ` disjunct admits a
+landing that is inside the subtrahend — not in the real solid at all — and
+reports a 1.00 cm chord where the real solid is 4.21 cm away:
+`proximity(0.02)` = 0.5 against a truth of 0, the forbidden direction by
+3 cm, on a quarter of nearby stations. Under the strict rule those landings
+are rejected by the STRICT side (`f_B < 0` by 1.85e-12, four orders above
+ulp noise), and structurally near the tangency (where the slab's active
+face is its z face, `|z| ≥ |x| + 0.21`): `fl(sqrt(fl(x² + z²))) ≥
+fl(sqrt(fl(z²)))` by monotone rounding and `fl(sqrt(fl(z²))) = |z|` for
+every double away from over/underflow — the box's own form takes `|z|` by
+`fabs`, which is exact — so the computed `f_A` is never below the computed
+`f_B` there and `{f_A ≤ 0 ∧ f_B > 0}` is empty NUMERICALLY, not only over
+the reals. Neither arm admits
 `f_A = f_B = 0` (the strict side rejects it), which is what keeps the exact
 tangency out as well. The exactness flag is set only for a NON-DEGENERATE
 operand (a zero radius or extent makes `closure(A)` lower-dimensional, the
@@ -881,9 +891,11 @@ sentence is rewritten: its title ("the CROSS-OBJECT half" becomes the
 cross-object PAIR), "its three siblings", "THE SECOND POLICY BODY … not a
 fourth branch", and "WHO MUST INCLUDE IT: any translation unit that CALLS
 `Proximity`" (or `Interior`); and `src/Library/Utilities/PathVertexEval.h`'s
-declined-contract comment ("the cross-object proximity channel", "one
-widening for all four") gains `interior`, since §10 commits it to the same
-gap; `ParseCall`'s `isSignalFn` gains
+declined-contract comment (all five count phrases: "the three signals that
+share this channel", "one widening for all four", "widening for ONE of the
+four", "exactly as `occlusion`, `thickness` and `convexity` read theirs",
+"doing all four at once") gains `interior`, since §10 commits it to the
+same gap; `ParseCall`'s `isSignalFn` gains
 the id AND its unit diagnostic becomes a three-way (fraction / world length for
 `proximity` / world length for `interior`) instead of a binary ternary —
 and its other two consumers are re-read as the code demands: the
@@ -914,11 +926,13 @@ preamble ("the four honest-fallback wrappers", "THREE OF THE FOUR ARE
 SELF-SIGNALS … the fourth, `proximity`, is CROSS-OBJECT", "ZERO IS THE
 HONEST ABSENCE for all four") and a `NeutralInterior()` beside
 `NeutralProximity()` for `CallFunc`'s no-provider arm,
-`ExpressionEval.h`'s `SignalRadiusCall::fn` comment and the
+`ExpressionEval.h`'s `SignalRadiusCall::fn` comment, its "58 and 59
+remain free in this band" prose beside the assert, and the
 `UsesSurfaceSignals`/`SurfaceSignalCalls` comments that enumerate four
 calls, `ExpressionPainter.cpp`'s "the one signal whose answer can move
-because a NEIGHBOUR moved" — plus `ExpressionPainter.h`'s "all five"
-comment, `ExpressionMemo.h`'s `fn` field comment and its `kL1Ways` block
+because a NEIGHBOUR moved" and its "a roughness pipe's proximity entries"
+note — plus `ExpressionPainter.h`'s four count-bearing sentences ("carries
+all four", "all five" twice, "the same four builtins"), `ExpressionMemo.h`'s `fn` field comment and its `kL1Ways` block
 ("exactly four signals wide", "1824 bytes", "eight ways would blow the
 2048-byte ceiling" — all false after Phase 3); `CSGObject`'s new
 `DistanceToSurface`/`SignedDistanceLower`/`DescribeKind` bodies carry NO
@@ -1013,8 +1027,9 @@ pick gets the colour chunk alone, as today. Clause (d)'s decline string,
 which names only `curv`/`occlusion`/`thickness` while the predicate matches
 five signals, gains `proximity`/`convexity`/`interior` — a second `add_wear`
 on a contact body is the common case that hits it. That string lives in
-the conditions scan and changes for EVERY input, so it is the ONE deliberate
-exception to the byte-identity claim below; the test pins its new text with
+the conditions scan and changes for EVERY input, so it is the first of the
+TWO deliberate exceptions to the byte-identity claim below (the bare-call
+message's appended clause is the second); the test pins its new text with
 a NEW assertion that names `interior` (today's `already-worn` check matches
 the opening substring, which an appended clause leaves intact, so it cannot
 detect the correction). The edge half (`edge_wear`,
@@ -1182,17 +1197,18 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   signed distances (`d_A < 0 ∧ d_B < 0` / `d_A < 0 ∧ d_B > 0` — never
   `f ≤ 0`, which contains the phantom touching set) with `gap_max` recorded
   and the grid spacing stated, and for a composite of EXACT operands
-  `reported == reference` to 1e-12 at the radial station of a
-  cylinder-minus-box (the boundary arm fired: `f_A = 0.26 ⊖ 0.25` is exact
+  `reported == closed form` to 1e-12 (the CLOSED FORM, not the grid — a
+  grid reference is `d + O(spacing)`, as §5.2 phrases the `n_sdf_sphere`
+  case) at the radial station of a cylinder-minus-box (the boundary arm fired: `f_A = 0.26 ⊖ 0.25` is exact
   by Sterbenz, so `0.26 ⊖ f_A = 0.25` exactly and `sqrt(x·x) = x` makes
   `f_A` a true 0 at the landing — the station does NOT exercise rounding)
-  and `reference ≤ reported ≤ reference + gap_max` at an OBLIQUE station
-  (a torus operand, or a cylinder station off its axis) whose landing
-  residual is genuinely nonzero, the fixture chosen so the reached operand
-  carries the composite's nearest point (then `gap_max` is one probe step,
-  ε, when the arm misses), with the test recording WHICH arm fired there
-  and asserting the answer never falls below the reference (the invariant
-  a tolerance would have broken); `reported −
+  and `d ≤ reported ≤ d + gap_max` at an OBLIQUE station (a torus operand,
+  or a cylinder station off its axis) whose landing residual is genuinely
+  nonzero, `d` the closed form there, the fixture chosen so the reached
+  operand carries the composite's nearest point (then `gap_max` is one
+  probe step, ε, when the arm misses), with the test recording WHICH arm
+  fired there and asserting `reported ≥ d` (the invariant a tolerance would
+  have broken); `reported −
   reference ≤ gap_max` with `gap_max` recorded where a bound operand is
   reached; the phantom stations themselves — cylinder-minus-tangent-slab
   queried from local `(x, ·, 0.26)` for a sweep of `x ∈ [1e-7, 3e-6]`, the
@@ -1248,7 +1264,11 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   every column operand — 18 objects — so the copy paints all of them),
   judged honestly, and the tracked scene is not edited beyond one pin: a
   `capped TRUE` line written into `colcylgeom`, so a later edit cannot turn
-  the column into a sheet and void this gate silently;
+  the column into a sheet and void this gate silently (the scene is in
+  `CstDeriveGoldenTest`'s manifest, which hashes `DumpJob`, and the pin is
+  the parser default, so the digest does not move); `SourceHygieneTest`'s
+  closed `signals`-writer census already lists `CSGObject.cpp`, so the
+  composite bodies do not trip it;
 - exact σ: `SigmaMin()/SigmaMax()` within 1e-12 of the written reference on
   the rotation, reflection and uniform scale (fast path) and within 1e-9 on
   `(3, 1, 0.4)` and the shear (Jacobi); the `(3, 1, 0.4)` object's search-
@@ -2209,8 +2229,10 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
   sheet or heightfield-SDF operand, a union of two refusing operands, a bracket with no admitted
   landing in budget, and a seam gradient below 1e-12) read far. An
   intersection/subtraction answers within `[d, d + gap_max]` — never below
-  `d` — with `gap = 0` when an exact-operand landing's arm fires, `ε` when
-  rounding sends an exact landing to the probe, and the measured `gap_max`
+  `d` — with `gap = 0` when an exact-operand landing's arm fires, one probe
+  step (ε on the fixtures; a solid thinner than ε at the landing takes the
+  doubling steps or refuses) when rounding sends an exact landing to the
+  probe, and the measured `gap_max`
   (probe step ε = 5e-5 of the local diagonal, floored at 1e-6, its first
   term) when a bound operand is reached, scaled by the composite's σ_max in
   world space; a point exactly on its surface reads 0 in the first case and
