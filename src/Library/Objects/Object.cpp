@@ -19,7 +19,8 @@
 #include "../Intersection/TextureFootprintCompute.h"
 #include "../Utilities/GeometricUtilities.h"
 #include <atomic>		// P2a: log-once idiom for UniformRandomPoint's null-geometry fallback warning
-#include <cmath>		// std::nextafter -- the Jacobi pair's four-ulp widening
+#include <cmath>		// the Jacobi sweep's sqrt / fabs
+#include <cfloat>		// DBL_EPSILON -- the Jacobi pair's relative widening
 #include <algorithm>	// std::min / std::max over the three singular values
 
 using namespace RISE;
@@ -65,9 +66,11 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 	// Vector3Ops::Transform uses (`out.x = m._00*v.x + m._10*v.y +
 	// m._20*v.z`, and so on): so `M * e0` is (_00, _01, _02) -- the first
 	// COLUMN of the linear map, which is what a one-sided Jacobi rotates.
-	// Taking them this way rather than transposing by hand is what keeps
-	// this routine from silently disagreeing with the transform it is
-	// describing.
+	// Reading them from the same convention the transform itself uses is
+	// how this stays right if that convention ever changes.  It is NOT a
+	// correctness argument about transposition: singular values are
+	// transpose-invariant, so a row/column mix-up here would be
+	// undetectable precisely because it would be harmless.
 	const Vector3 c0( m._00, m._01, m._02 );
 	const Vector3 c1( m._10, m._11, m._12 );
 	const Vector3 c2( m._20, m._21, m._22 );
@@ -88,20 +91,47 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 	// load-bearing: it is what makes `sigmaMin > 0` true after the
 	// four-ulp downward nudge below, since a genuinely invertible map's
 	// smallest singular value is many ulps clear of zero.
+	//
+	// WHAT THIS GATE DOES NOT CATCH, said because Phase 3 made it matter
+	// more: a NUMERICALLY singular matrix (two near-parallel columns)
+	// yields a rounding-noise `det3` that is nonzero, passes here, and
+	// then gets a noise-level `sigma_min` from Jacobi which is not a lower
+	// bound on the true `sigma_min` of 0.  Phase 1's `|det|/||M||_F^2`
+	// carried at least 2x slack and absorbed it; Phase 3's tight pair does
+	// not, and the condition-scaled widening below only softens it.  Such
+	// a transform renders as a collapsed object anyway, so the query's
+	// answer for it is academic -- but it is a residual, not a guarantee.
 	if( !( absDet3 > Scalar( 0 ) ) || !RISE::IsFiniteDouble( static_cast<double>( frob ) ) ) {
 		return false;
 	}
 
-	// THE EXACT FAST PATH, unchanged and un-nudged.  `M^T M == s^2 I` ?
-	// Its entries are the pairwise dot products of the three images, so
-	// the test is "equal squared lengths, mutually orthogonal".  RELATIVE
-	// to `s^2` = the mean squared length, so it scales with the object and
-	// is not a fixed absolute epsilon.  A rotation, a reflection, a
-	// uniform scale, or any composition of them lands here, every
-	// singular value is exactly `sqrt(s2)`, and the query pays nothing.
+	// THE EXACT FAST PATH, un-widened.  `M^T M == s^2 I` ?  Its entries
+	// are the pairwise dot products of the three images, so the test is
+	// "equal squared lengths, mutually orthogonal".  RELATIVE to `s^2` =
+	// the mean squared length, so it scales with the object and is not a
+	// fixed absolute epsilon.  A rotation, a reflection, a uniform scale,
+	// or any composition of them lands here, every singular value is
+	// exactly `sqrt(s2)`, and the query pays nothing.
+	//
+	// THE TOLERANCE IS 1e-12, TIGHTENED FROM 1e-9 (Phase 3): this branch
+	// no longer only chooses a fast path, it also decides whether
+	// `m_sigmaExact` -- and through it `SignedDistanceLower`'s exactness
+	// flag, and through THAT a CSG composite's boundary arm -- may treat
+	// `x sigmaMin` as the distance rather than a bound.  At 1e-9 a
+	// `scale (1, 1, 1 + 7e-10)` passed as "uniform" and was flagged EXACT
+	// while its stored magnitude sat ~7e-11 relative ABOVE the truth; an
+	// imported or interpolated matrix (glTF, the bridge, an animation
+	// lerp) can land in that window even though hand-authored scene text
+	// never does.  1e-12 keeps every real rotation and uniform scale on
+	// the fast path with four orders to spare (a composed Euler rotation's
+	// norms differ from `s2` by ~1e-16) and narrows the window this flag
+	// can lie in by three orders.  It cannot be closed entirely without
+	// refusing genuine similarities to rounding, so what remains is
+	// DISCLOSED rather than claimed away: inside the window the flag means
+	// "a similarity to 1e-12 relative", not "a similarity exactly".
 	{
 		const Scalar s2  = ( n0 + n1 + n2 ) / Scalar( 3 );
-		const Scalar tol = Scalar( 1e-9 ) * s2;
+		const Scalar tol = Scalar( 1e-12 ) * s2;
 		const bool uniform =
 			   fabs( n0 - s2 ) <= tol && fabs( n1 - s2 ) <= tol && fabs( n2 - s2 ) <= tol
 			&& fabs( Vector3Ops::Dot( c0, c1 ) ) <= tol
@@ -132,7 +162,18 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 				// RELATIVE threshold, at a few ulps of the product of the
 				// two column norms: an absolute one would either never
 				// converge on a large object or stop early on a small one.
-				if( !( fabs( gamma ) > Scalar( 1e-15 ) * sqrt( alpha * beta ) ) ) {
+				//
+				// TWO SEPARATE SQUARE ROOTS, not `sqrt(alpha*beta)`, and
+				// that is not a style choice: column norms above ~1.2e77
+				// overflow the PRODUCT to +inf while each factor is finite,
+				// the threshold becomes inf, no pair is ever rotated, and
+				// the sweep loop then declares CONVERGENCE on the raw
+				// column norms -- reporting `Jacobi` for a pair that
+				// under-states sigma_max and over-states sigma_min by an
+				// unbounded factor.  `sqrt(alpha) * sqrt(beta)` is the same
+				// number for every input that does not overflow and is
+				// finite for every input that does.
+				if( !( fabs( gamma ) > Scalar( 1e-15 ) * sqrt( alpha ) * sqrt( beta ) ) ) {
 					continue;
 				}
 				rotated = true;
@@ -162,21 +203,51 @@ bool RISE::Implementation::ComputeSigmaExtremes(
 		Scalar smax = std::max( s0, std::max( s1, s2 ) );
 		Scalar smin = std::min( s0, std::min( s1, s2 ) );
 		if( RISE::IsFiniteDouble( (double)smax ) && smin > Scalar( 0 ) ) {
-			// FOUR ULPS APART, because the whole design rests on a chain of
+			// WIDENED APART, because the whole design rests on a chain of
 			// inequalities -- `d_w <= sigmaMax * d_o` for the unsigned
 			// answer, `d_w >= sigmaMin * d_o` for the signed one -- and
-			// Jacobi returns the singular values to rounding, not below
-			// and above them.  Widening the pair by a few ulps costs
-			// nothing measurable and keeps every one of those inequalities
-			// true of the STORED numbers rather than of the exact ones.
-			for( int i = 0; i < 4; ++i ) {
-				smax = (Scalar)std::nextafter( (double)smax, HUGE_VAL );
-				smin = (Scalar)std::nextafter( (double)smin, 0.0 );
+			// Jacobi returns the singular values to ROUNDING, which is
+			// neither below nor above them.
+			//
+			// THE WIDENING IS RELATIVE AND CONDITION-SCALED, and a FIXED
+			// ULP COUNT IS NOT ENOUGH -- this is a correction to §5.6's
+			// "four ulps", made after a review checked the claim in exact
+			// arithmetic and broke it on an ordinary matrix.  One-sided
+			// Jacobi's error is relative and grows with the condition
+			// number: on a well-conditioned example (cond 29.6, every entry
+			// O(1)) the computed `sigma_min` sat TWELVE ulps above the true
+			// one, so four downward nudges left the stored number still
+			// above it and `d_w >= sigmaMin * d_o` false of what is
+			// actually stored.  At cond ~3e12 the gap reaches 6.4e-5
+			// RELATIVE, which no ulp count reaches at all.
+			//
+			// So the pair is widened by `k * eps * (smax/smin)` in
+			// RELATIVE terms, which tracks the error's own growth.  THE
+			// DIRECTION IS FREE: widening can only make the unsigned answer
+			// larger and the signed one smaller, i.e. only ever more
+			// conservative, so a generous factor costs looseness and never
+			// correctness -- which is why this is a heuristic bound tied to
+			// the measured error's shape rather than a proof.
+			const Scalar kWiden = Scalar( 16 );
+			Scalar rel = kWiden * (Scalar)DBL_EPSILON * ( smax / smin );
+			if( !RISE::IsFiniteDouble( (double)rel ) || rel > Scalar( 0.5 ) ) {
+				rel = Scalar( 0.5 );		// a pair this ill-conditioned is loose either way
 			}
-			outSigmaMax = smax;
-			outSigmaMin = smin;
-			outSource   = SigmaSource::Jacobi;
-			return true;
+			smax *= ( Scalar( 1 ) + rel );
+			smin *= ( Scalar( 1 ) - rel );
+			// The widening cannot reach zero from a positive `smin` (it is
+			// a multiply by at least 0.5), so `sigmaMin > 0` still holds
+			// here -- the property the degenerate refusal above exists to
+			// give this line.  Re-checked rather than asserted, because a
+			// subnormal `smin` is the one input where a multiply can
+			// underflow to 0 and the pair must then be refused, not
+			// published as a `Jacobi` answer with a zero in it.
+			if( RISE::IsFiniteDouble( (double)smax ) && smin > Scalar( 0 ) ) {
+				outSigmaMax = smax;
+				outSigmaMin = smin;
+				outSource   = SigmaSource::Jacobi;
+				return true;
+			}
 		}
 	}
 
@@ -1551,15 +1622,28 @@ bool Object::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWorld
 			( m_sigmaSource == SigmaSource::Jacobi )
 				? "EXACT singular values (one-sided Jacobi, widened four ulps)"
 				: "the LOOSE Frobenius/determinant pair (the Jacobi sweep cap was hit)";
+		// The RATIO's meaning differs by state, so the sentence that
+		// qualifies it does too.  On the `Jacobi` path it is the
+		// transform's TRUE singular ratio and is attained along the top
+		// singular vector; on the `Loose` path it is a bound computed from
+		// a bound (26.99 on `scale (3, 1, 0.4)`, whose true ratio is 7.5)
+		// and is attained NOWHERE.  The pre-Phase-3 text said the second
+		// explicitly, and a single sentence for both would have lost it.
+		const char* const ratioWord =
+			( m_sigmaSource == SigmaSource::Jacobi )
+				? "the transform's true singular ratio, attained along its top singular vector, so "
+				  "the over-report an author measures off that direction is smaller"
+				: "a bound computed from a bound, attained nowhere -- the true ratio is smaller "
+				  "again, and the loose pair is what makes this number read alarmingly";
 		GlobalLog()->PrintEx( eLog_Info,
 			"Object::DistanceToSurface:: an object with an ANISOTROPIC transform reads proximity() "
 			"through %s.  Reported distances are an UPPER bound, over-read by at most %.3gx "
-			"(sigmaMax %.6g / sigmaMin %.6g) -- attained only along the top singular vector, so the "
-			"over-report an author measures is typically smaller; and the object-space search "
+			"(sigmaMax %.6g / sigmaMin %.6g) -- %s; and the object-space search "
 			"radius is inflated %.3gx, which is the cost side.  The signal can only UNDER-paint "
 			"contact as a result; see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2 and 5.6.",
 			sourceWord,
 			(double)( m_sigmaMax / m_sigmaMin ), (double)m_sigmaMax, (double)m_sigmaMin,
+			ratioWord,
 			(double)( Scalar( 1 ) / m_sigmaMin ) );
 	}
 

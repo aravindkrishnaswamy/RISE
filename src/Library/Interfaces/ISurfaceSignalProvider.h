@@ -774,7 +774,8 @@ namespace RISE
 			return counter;
 		}
 
-		//! Does any live compiled program call `proximity()`?  One relaxed
+		//! Does any live compiled program call EITHER cross-object signal --
+		//! `proximity()` or `interior()`?  One relaxed
 		//! atomic load.
 		inline bool Any()
 		{

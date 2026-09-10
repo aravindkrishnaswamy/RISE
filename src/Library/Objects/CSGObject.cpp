@@ -2119,41 +2119,19 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 	// applied -- unlike `getBoundingBox`, which answers in the PARENT's frame.
 	// A subtraction can never extend past operand A, matching that function.
 	// `maxWindow <= 0` means "no usable box" and disables the cap.
+	//
+	// THE DIAGONAL COMES FROM `LocalBoxDiagonal`, which is this block
+	// extracted verbatim (Phase 3 of the cross-object arc): the proximity
+	// bracket needs exactly the same number for its probe step, and two
+	// copies of a screen this fiddly -- A-only for a subtraction, the
+	// `isfinite` / `< 1e30` extent test, the `diag > 0` guard -- would be
+	// free to drift.  `maxWindow == 0` keeps its meaning here ("no usable
+	// box", cap disabled), which is what the helper's `false` maps to.
 	Scalar maxWindow = Scalar(0);
-	if( pObjectA ) {
-		// For a SUBTRACTION the cap box is A's alone, matching the visible
-		// extent getBoundingBox reports.  The closing review of 269a5ad2
-		// asked for both operands' boxes here, because a subtrahend whose
-		// own step-off band exceeds the minuend (an SDF blade with an
-		// authored epsilon of 0.02 carving a box smaller than 0.4 units) is
-		// capped below its own floor and dropped -- but widening the cap to
-		// B's box re-admits exactly the reach CsgFloorOwnershipTest Test 9
-		// pins: a degenerate subtrahend (radius 4000, floor 5657) whose box
-		// would let its ownership ray charge that floor on A's face.  The
-		// two cases cannot both hold with a size-only cap; the degenerate
-		// one is the dangerous direction (over-statement), the coarse-
-		// epsilon one only under-states into the graceful entry-payload
-		// fallback, so A's box stays the bound and the other is recorded as
-		// an accepted residual in docs/CLOTH_FABRIC_DESIGN.md debt 25.
-		BoundingBox bbLocal = pObjectA->getBoundingBox();
-		if( op != CSG_SUBTRACTION && pObjectB ) {
-			bbLocal.Include( pObjectB->getBoundingBox() );
-		}
-		const Scalar ex = bbLocal.ur.x - bbLocal.ll.x;
-		const Scalar ey = bbLocal.ur.y - bbLocal.ll.y;
-		const Scalar ez = bbLocal.ur.z - bbLocal.ll.z;
-		// Same "is this a real, built, finite box" screen
-		// `Geometry::BoundingBoxRootFloor` applies, and for the same reason: an
-		// unbuilt mesh and an infinite plane both report +-RISE_INFINITY, whose
-		// extents overflow.  1e30 is RISE's own unbounded-coordinate sentinel.
-		const Scalar kMaxSaneExtent = Scalar(1e30);
-		if( ex >= Scalar(0) && ey >= Scalar(0) && ez >= Scalar(0) &&
-		    std::isfinite( ex ) && std::isfinite( ey ) && std::isfinite( ez ) &&
-		    ex < kMaxSaneExtent && ey < kMaxSaneExtent && ez < kMaxSaneExtent ) {
-			const Scalar diag = std::sqrt( ex*ex + ey*ey + ez*ez );
-			if( std::isfinite( diag ) && diag > Scalar(0) ) {
-				maxWindow = diag;
-			}
+	{
+		Scalar diagLocal = Scalar(0);
+		if( LocalBoxDiagonal( diagLocal ) ) {
+			maxWindow = diagLocal;
 		}
 	}
 
@@ -2332,6 +2310,21 @@ bool CSGObject::LocalBoxDiagonal( Scalar& outDiag ) const
 	// minuend.  A nested operand's box recurses through its own
 	// `getBoundingBox`, which answers in ITS parent's frame -- this
 	// composite's local frame, since CSG operands cannot be parented.
+	//
+	// A-ONLY IS A SETTLED TRADE, carried here from `SelfHitRootFloor`
+	// (which now calls this function rather than repeating it).  The
+	// closing review of 269a5ad2 asked for BOTH operands' boxes, because a
+	// subtrahend whose own step-off band exceeds the minuend (an SDF blade
+	// with an authored epsilon of 0.02 carving a box smaller than 0.4
+	// units) is capped below its own floor and dropped -- but widening to
+	// B's box re-admits exactly the reach `CsgFloorOwnershipTest` Test 9
+	// pins: a degenerate subtrahend (radius 4000, floor 5657) whose box
+	// would let its ownership ray charge that floor on A's face.  The two
+	// cannot both hold with a size-only cap; the degenerate one is the
+	// dangerous direction (over-statement) and the coarse-epsilon one only
+	// under-states into a graceful fallback, so A's box stays the bound
+	// and the other is an accepted residual (docs/CLOTH_FABRIC_DESIGN.md
+	// debt 25).
 	BoundingBox bbLocal = pObjectA->getBoundingBox();
 	if( op != CSG_SUBTRACTION && pObjectB ) {
 		bbLocal.Include( pObjectB->getBoundingBox() );
@@ -2380,12 +2373,39 @@ bool CSGObject::ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDist
 	switch( op )
 	{
 	case CSG_UNION:
-		// Sign exact (inside the union iff inside either); outside,
-		// `min(f_A, f_B) <= min(d_A, d_B) = d`; inside, the depth to
-		// leave `A union B` is at least `max(depth_A, depth_B)`, which is
-		// `|min(f_A, f_B)|`.  The ONE op that can export exactness.
+		// Outside, `min(f_A, f_B) <= min(d_A, d_B) = d`; inside, the depth
+		// to leave `A union B` is at least `max(depth_A, depth_B)`, which
+		// is `|min(f_A, f_B)|`.  Both are lower bounds, which is the
+		// contract.
+		//
+		// A UNION NEVER EXPORTS EXACTNESS, and this is a CORRECTION to
+		// §5.6, which says it may when both operands do and its own sigma
+		// is exact.  That rule is unsound on ABUTTING operands, and the
+		// review round that found it traced the whole failure:
+		// `min(f_A, f_B)` is 0 not only on the union's boundary but on
+		// every INTERIOR point where the two operands' boundaries meet
+		// from opposite sides -- a shared face, a set of positive AREA.
+		// Two boxes stacked to make a cube read `min = 0` all over the
+		// seam plane, where the true signed distance is the depth of the
+		// cube.  Exported with the flag set, that lets a PARENT
+		// subtraction's boundary arm (`exB && f_A < 0 && f_B >= 0`) admit
+		// a landing that is strictly INSIDE the subtrahend -- not in the
+		// real solid at all -- which is the round-3 phantom one level up
+		// and an OVER-READ of contact, the one direction this signal must
+		// never fail in.  Measured on `box(2,2,1)@-0.5 union box(2,2,1)@+0.5`
+		// subtracted from a 4-cube: reported 0.25 against a true 0.75.
+		//
+		// Dropping the flag closes it completely, because every OTHER
+		// consumer of this field only ever reads a STRICT sign: the strict
+		// arms need `< 0` or `> 0` (an interior seam reads 0 and is
+		// refused), `interior` counts only `f < 0` (an interior seam
+		// contributes 0 depth -- an under-read, the safe direction), and a
+		// parent's own `max` composition keeps the correct
+		// outside-or-on sign there.  The cost is that a union of exact
+		// operands now always sends a parent to the probe, which §5.6
+		// already names as the safe direction for a missed boundary
+		// landing.
 		outF = std::min( outFA, outFB );
-		outExact = outExactA && outExactB;
 		break;
 	case CSG_INTERSECTION:
 		outF = std::max( outFA, outFB );
@@ -2396,11 +2416,12 @@ bool CSGObject::ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDist
 	default:
 		return false;
 	}
-	// `max(a, b)` UNDER-READS near a seam even over exact operands, and
-	// its zero set is the phantom touching set -- so a parent's boundary
-	// arm must not be allowed to land on it (the same bug one level up).
-	// `outExact` is left false for both of those, set above only for the
-	// union.
+	// NO COMPOSITE EXPORTS EXACTNESS.  `max(a, b)` under-reads near a seam
+	// even over exact operands and its zero set is the phantom touching
+	// set; `min(a, b)` is 0 on a union's INTERIOR seams (see the union
+	// case above).  Either way a parent's boundary arm must not be allowed
+	// to land on a composite's zero set, so `outExact` is left false --
+	// initialised false at the top of this function and never set.
 	return RISE::IsFiniteDouble( (double)outF );
 }
 
@@ -2414,6 +2435,16 @@ bool CSGObject::LandingAdmits( const Point3& qLocal, const Scalar maxDistLocal,
 	bool ex = false, exA = false, exB = false;
 	if( !ComposedSignedLocal( qLocal, maxDistLocal, f, ex, fA, exA, fB, exB ) ) {
 		outOperandRefused = true;
+		return false;
+	}
+
+	// A UNION NEVER REACHES HERE -- it answers `min` directly and never
+	// runs the bracket -- and saying so structurally rather than letting
+	// it fall into the subtraction's disjuncts is the point: the two arms
+	// below are written as an `intersection`/`else` pair, and an `else`
+	// that silently means "subtraction OR union" is the shape this file's
+	// own `ComposedSignedLocal` switch exists to avoid.
+	if( op != CSG_INTERSECTION && op != CSG_SUBTRACTION ) {
 		return false;
 	}
 

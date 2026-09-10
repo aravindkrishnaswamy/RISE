@@ -348,6 +348,16 @@ namespace RISE
 		//!     a box that does not contain the point cannot contain it,
 		//!     and unlike the proximity scan the test is ORDINARY
 		//!     containment with no radius expansion.
+		//!   * IT READS THE AABB SNAPSHOT, NEVER THE TLAS, so on a
+		//!     TLAS-backed scene it is stale in a DIFFERENT way from
+		//!     `NearestOtherSurface`: `EnsureBoxSnapshot` carries an
+		//!     add-detecting entry-count check and the top-level tree does
+		//!     not, so an object added without an invalidate is invisible
+		//!     to the RENDER and to `proximity` but VISIBLE here.  That is
+		//!     the over-paint direction and it is disclosed in the design's
+		//!     §10 rather than fixed -- the tree prunes on "further than
+		//!     the running best", which a MAXIMUM has no use for, so
+		//!     walking it would visit every leaf anyway.
 		//!   * IT DOES NOT LOG REFUSALS.  Every SHEET family refuses
 		//!     containment at every point BY DESIGN -- a plane, a disk, an
 		//!     open cylinder, a mesh, a patch and hair have no inside to

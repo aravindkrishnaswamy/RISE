@@ -172,7 +172,7 @@
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/ProceduralNoiseCore.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness()/convexity() dispatch channel
-#include "../Interfaces/SurfaceSignalProximity.h"	// proximity()'s body -- CallFunc CALLS it, so the definition must be here
+#include "../Interfaces/SurfaceSignalProximity.h"	// proximity()'s and interior()'s bodies -- CallFunc CALLS both, so the definitions must be here
 #include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
 
 namespace RISE
@@ -459,8 +459,9 @@ namespace RISE
 			static const int kFnOcclusionDynR = 53;
 			static const int kFnThicknessDynR = 54;
 			static const int kFnConvexityDynR = 56;
-			//! `proximity(radius)` -- the CROSS-OBJECT signal
-			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md).  `clamp(1 - d/r,
+			//! `proximity(radius)` -- the FIRST of the two CROSS-OBJECT
+			//! signals (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md; `interior`,
+			//! its signed sibling, is below).  `clamp(1 - d/r,
 			//! 0, 1)` for `d` the shortest distance to any OTHER
 			//! world-visible, non-emissive object's surface: 1 = touching,
 			//! 0 = nothing within `r`.  Its three neighbours above are
@@ -738,14 +739,17 @@ namespace RISE
 			//! trigger, which genuinely does need to know up front.
 			bool UsesSurfaceSignals() const { return !m_signalCalls.empty(); }
 
-			//! Does this program call `proximity()` specifically?  Resolved
-			//! at COMPILE time from the same `m_signalCalls` list.
+			//! Does this program call EITHER CROSS-OBJECT signal --
+			//! `proximity()` or `interior()`?  Resolved at COMPILE time from
+			//! the same `m_signalCalls` list.
 			//!
 			//! SEPARATE from UsesSurfaceSignals, and wired to a REAL cost
-			//! gate rather than a diagnostic: `proximity` is the one signal
-			//! in the family with a scene-level prerequisite (the object
-			//! manager's world-AABB snapshot), so a scene that never calls
-			//! it must not pay for one.  See ProximityDemand's own doc
+			//! gate rather than a diagnostic: those two are the signals with
+			//! a scene-level prerequisite (the object manager's world-AABB
+			//! snapshot, which BOTH read), so a scene that calls neither
+			//! must not pay for one -- and an `interior`-only scene must
+			//! still register, which is exactly why this is not named
+			//! `UsesProximity` any more.  See ProximityDemand's own doc
 			//! comment in ISurfaceSignalProvider.h.
 			//!
 			//! Linear over the call list, which is a handful of entries and
@@ -2655,15 +2659,16 @@ namespace RISE
 					return pSignals ? pSignals->Convexity( a[0], true ) : SurfaceSignalInfo::NeutralConvexity();
 				case kFnConvexityDynR:
 					return pSignals ? pSignals->Convexity( a[0], false ) : SurfaceSignalInfo::NeutralConvexity();
-				// --- the CROSS-OBJECT signal
-				// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md) ---
-				// ONE case, no DynR twin: the radius is a WORLD LENGTH and
-				// there is no bake for a constant-radius proof to feed, so
-				// a computed radius costs what a literal one does.  THIS IS
-				// THE ONE DELIBERATE MOVE of CallFunc's byte-identity pin;
-				// this body is now the pinned one (ExpressionMemo.h's
-				// header names the set).  Eval, EvalVec3, RunAny and
-				// CallFuncVec3 are unchanged.
+				// --- the CROSS-OBJECT PAIR
+				// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6) ---
+				// TWO cases, NEITHER with a DynR twin: both radii are WORLD
+				// LENGTHS and there is no bake for a constant-radius proof
+				// to feed, so a computed radius costs what a literal one
+				// does.  THESE ARE THE ONLY TWO DELIBERATE MOVES of
+				// CallFunc's byte-identity pin -- one per signal, each
+				// disclosed in its own arc; this body is the pinned one
+				// (ExpressionMemo.h's header names the set).  Eval,
+				// EvalVec3, RunAny and CallFuncVec3 are unchanged.
 				case kFnProximity:
 					return pSignals ? pSignals->Proximity( a[0] ) : SurfaceSignalInfo::NeutralProximity();
 				// ONE more case, and the pin MOVES ONCE MORE -- disclosed

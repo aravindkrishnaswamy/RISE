@@ -1277,11 +1277,16 @@ static void TestBuiltinEndToEnd( const Fixture& f )
 //! One signed probe against ONE object, bypassing the manager: what
 //! `interior` and a CSG composite's composed field both read.  Returns
 //! true and fills both outputs, or false on a refusal.
+//! DELIBERATELY DOES NOT PRE-CLEAR ITS OUT-PARAMETERS.  The contract on
+//! `IGeometry::SignedDistanceLower` is that the REFUSING path clears
+//! `outExact` itself, "so an implementer that forgets it cannot leak a
+//! stale `true` from the caller's stack" -- and a helper that zeroed the
+//! flag on the way in would make every "the refusal CLEARS the flag" check
+//! below untestable, proving only that the refusal does not positively SET
+//! it.  Callers that want teeth poison the flag with `true` first.
 static bool SignedAt( const IObjectPriv* obj, const Point3& p, const Scalar r,
 	Scalar& outSigned, bool& outExact )
 {
-	outSigned = Scalar( 0 );
-	outExact  = false;
 	return obj && obj->SignedDistanceLower( p, r, outSigned, outExact );
 }
 
@@ -1477,8 +1482,11 @@ static void TestSignedLowerBound( const Fixture& f )
 			Check( !ex, std::string( "(h) ...and the refusal CLEARS the exactness flag (" )
 				+ rows[i].name + ")" );
 
-			// The point is taken directly under each fixture so the
-			// unsigned answer is a real, in-range one.
+			// ONE point for all nine rows, at an UNBOUNDED radius: what is
+			// under test is the FAMILY's answer/refusal, not a distance, so
+			// the station only has to be somewhere the query is well posed
+			// -- and an unbounded radius makes every answering family
+			// answer from anywhere.
 			Scalar d = Scalar( 0 );
 			const bool ans = o->DistanceToSurface( Point3( 0, 0, 0 ), RISE_INFINITY, d );
 			Check( ans == rows[i].answersUnsigned,
@@ -1905,13 +1913,15 @@ static void TestCsgComposites()
 			"(j) ...and answers from above operand B" );
 		CheckClose( d, Scalar( 4 ), Scalar( 1e-9 ), "(j) ...with B's 4 this time" );
 
-		// EXACTNESS EXPORT: a union of two EXACT operands under an exact
-		// sigma carries the flag -- the one operation that can.
-		Scalar fv = 0; bool ex = false;
+		// EXACTNESS EXPORT: NO COMPOSITE CARRIES THE FLAG, a union of two
+		// exact operands included.  §5.6 allows one to; that rule is
+		// UNSOUND and the fixture two blocks down is the counterexample.
+		Scalar fv = 0; bool ex = true;
 		Check( u->SignedDistanceLower( Point3( 0, 5, 0 ), Scalar( 100 ), fv, ex ),
 			"(j) the union answers the SIGNED query" );
 		CheckClose( fv, Scalar( 4 ), Scalar( 1e-9 ), "(j) ...with min(f_A, f_B) = 4" );
-		Check( ex, "(j) MONEY -- a UNION of two exact operands EXPORTS exactness" );
+		Check( !ex, "(j) MONEY -- a UNION does NOT export exactness, even over two exact "
+			"operands: `min(f_A, f_B)` is 0 on its INTERIOR seams wherever the operands abut" );
 
 		// ...and INSIDE the union it is a depth.
 		Check( u->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 100 ), fv, ex ),
@@ -2006,6 +2016,29 @@ static void TestCsgComposites()
 		Check( answered == 0,
 			"(j) MONEY -- all 60 stations of the phantom sweep x in [1e-7, 3e-6] at local "
 			"(x, 1, 0.26) REFUSE; none reports the 1.00 cm tangency chord" );
+
+		// THE POSITIVE CONTROL, without which "the guard refuses the
+		// phantom" is indistinguishable from "this composite refuses
+		// everything near that face".  Local (0.06, 1, 0.26) is past the
+		// slot's own half-width of 0.04, so the radial descent lands on a
+		// piece of cylinder wall the slot does NOT remove -- a real
+		// surface -- and the query must ANSWER there, at the closed form
+		// sqrt(0.06^2 + 0.26^2) - 0.25.
+		{
+			const Scalar rhoCtl = (Scalar)std::sqrt( 0.06*0.06 + 0.26*0.26 );
+			const Scalar dCtl   = rhoCtl - Scalar( 0.25 );
+			Scalar dGot = 0;
+			CsgLandingArm aCtl = CsgLandingArm::None;
+			Check( c->DistanceToSurfaceWithArm( Point3( 0.06, 1, 0.26 ), Scalar( 0.1 ), dGot, aCtl ),
+				"(j) MONEY -- POSITIVE CONTROL: one slot-width further out in x, the SAME "
+				"composite at the SAME radius ANSWERS -- so the 60 refusals above are the "
+				"phantom guard, not a composite that has gone quiet near that face" );
+			Check( dGot >= dCtl - Scalar( 1e-12 ),
+				"(j) ...at or above its closed form " + std::to_string( (double)dCtl ) );
+			std::cout << "    positive control at local (0.06, 1, 0.26): closed form "
+				<< (double)dCtl << ", reported " << (double)dGot
+				<< ", arm " << ArmName( aCtl ) << std::endl;
+		}
 		std::cout << "    the phantom sweep's true corner distance is "
 			<< (double)trueCorner << " (4.21 cm), which the refusal under-paints" << std::endl;
 		Check( trueCorner > Scalar( 0.04 ),
@@ -2110,7 +2143,16 @@ static void TestCsgComposites()
 			Point3( 0.6, 2.0, 0 ), Point3( 0.6, 0, 2.0 ),
 			Point3( -1.5, 0, 0 ),  Point3( 0.6, 1.5, 1.5 ) };
 
+		// THE GRID CELL'S DIAGONAL is the whole slack on the reference:
+		// it minimises over grid POINTS strictly inside the solid, so
+		// `d <= ref <= d + cellDiagonal`.  That two-sided bracket is what
+		// lets the LOWER side be asserted, and the lower side is the one
+		// that matters -- `reported < d` is contact painted where there is
+		// none, and `gap_max` alone (an upper bound on `reported - ref`)
+		// says nothing about it.
+		const Scalar cellDiag = Scalar( 0.02 ) * (Scalar)std::sqrt( 3.0 );
 		Scalar gapMax = Scalar( -RISE_INFINITY );
+		Scalar gapMin = Scalar( RISE_INFINITY );
 		int answered = 0;
 		for( int i = 0; i < 4; ++i ) {
 			Scalar d = 0;
@@ -2119,6 +2161,9 @@ static void TestCsgComposites()
 			++answered;
 			const Scalar ref = GridSearchDistanceToComposite(
 				aRef, bRef, CSG_INTERSECTION, stations[i], lo, hi, steps );
+			Check( ref < RISE_INFINITY,
+				"(j) the grid found the solid at all (an all-refusing operand would make every "
+				"gap check below trivially true)" );
 			Scalar lower = 0; bool ex = false;
 			Check( c->SignedDistanceLower( stations[i], Scalar( 20 ), lower, ex ),
 				"(j) the intersection answers its own signed lower bound" );
@@ -2126,6 +2171,12 @@ static void TestCsgComposites()
 				"(j) MONEY -- lower <= reported at every answering intersection station" );
 			const Scalar gap = d - ref;
 			if( gap > gapMax ) gapMax = gap;
+			if( gap < gapMin ) gapMin = gap;
+			Check( gap >= -cellDiag - Scalar( 1e-9 ),
+				"(j) MONEY -- reported >= ref - cellDiagonal at this intersection station, i.e. NEVER "
+				"BELOW the true distance. This is the never-over-read invariant checked against "
+				"an INDEPENDENT reference; `lower <= reported` beside it compares the code "
+				"against itself" );
 			std::cout << "    intersection station " << i << ": lower " << (double)lower
 				<< ", grid ref " << (double)ref << ", reported " << (double)d
 				<< ", gap " << (double)gap << ", arm " << ArmName( arm ) << std::endl;
@@ -2134,8 +2185,12 @@ static void TestCsgComposites()
 		Check( gapMax <= Scalar( 0.05 ),
 			"(j) MONEY -- intersection gap_max MEASURED (grid spacing 0.02, 121^3 samples), "
 			"asserted <= 0.05" );
-		std::cout << "    intersection gap_max = " << (double)gapMax
-			<< " over " << answered << " stations (grid spacing 0.02)" << std::endl;
+		Check( gapMin >= -cellDiag - Scalar( 1e-9 ),
+			"(j) MONEY -- ...and gap_MIN is bounded below by one grid-cell diagonal, which is "
+			"the side an over-read would break" );
+		std::cout << "    intersection gap_max = " << (double)gapMax << ", gap_min = " << (double)gapMin
+			<< " over " << answered << " stations (grid spacing 0.02, cell diagonal "
+			<< (double)cellDiag << ")" << std::endl;
 
 		aRef->release(); bRef->release();
 		c->release();
@@ -2154,7 +2209,16 @@ static void TestCsgComposites()
 			Point3( -1.5, 0, 0 ), Point3( 0, -1.3, 0 ),
 			Point3( 0, 0, -1.7 ), Point3( -1.2, 0.5, 0.5 ) };
 
+		// THE GRID CELL'S DIAGONAL is the whole slack on the reference:
+		// it minimises over grid POINTS strictly inside the solid, so
+		// `d <= ref <= d + cellDiagonal`.  That two-sided bracket is what
+		// lets the LOWER side be asserted, and the lower side is the one
+		// that matters -- `reported < d` is contact painted where there is
+		// none, and `gap_max` alone (an upper bound on `reported - ref`)
+		// says nothing about it.
+		const Scalar cellDiag = Scalar( 0.02 ) * (Scalar)std::sqrt( 3.0 );
 		Scalar gapMax = Scalar( -RISE_INFINITY );
+		Scalar gapMin = Scalar( RISE_INFINITY );
 		int answered = 0;
 		for( int i = 0; i < 4; ++i ) {
 			Scalar d = 0;
@@ -2163,6 +2227,9 @@ static void TestCsgComposites()
 			++answered;
 			const Scalar ref = GridSearchDistanceToComposite(
 				aRef, bRef, CSG_SUBTRACTION, stations[i], lo, hi, steps );
+			Check( ref < RISE_INFINITY,
+				"(j) the grid found the solid at all (an all-refusing operand would make every "
+				"gap check below trivially true)" );
 			Scalar lower = 0; bool ex = false;
 			Check( c->SignedDistanceLower( stations[i], Scalar( 20 ), lower, ex ),
 				"(j) the subtraction answers its own signed lower bound" );
@@ -2170,6 +2237,12 @@ static void TestCsgComposites()
 				"(j) MONEY -- lower <= reported at every answering subtraction station" );
 			const Scalar gap = d - ref;
 			if( gap > gapMax ) gapMax = gap;
+			if( gap < gapMin ) gapMin = gap;
+			Check( gap >= -cellDiag - Scalar( 1e-9 ),
+				"(j) MONEY -- reported >= ref - cellDiagonal at this subtraction station, i.e. NEVER "
+				"BELOW the true distance. This is the never-over-read invariant checked against "
+				"an INDEPENDENT reference; `lower <= reported` beside it compares the code "
+				"against itself" );
 			std::cout << "    subtraction station " << i << ": lower " << (double)lower
 				<< ", grid ref " << (double)ref << ", reported " << (double)d
 				<< ", gap " << (double)gap << ", arm " << ArmName( arm ) << std::endl;
@@ -2178,8 +2251,12 @@ static void TestCsgComposites()
 		Check( gapMax <= Scalar( 0.05 ),
 			"(j) MONEY -- subtraction gap_max MEASURED (grid spacing 0.02, 111^3 samples), "
 			"asserted <= 0.05" );
-		std::cout << "    subtraction gap_max = " << (double)gapMax
-			<< " over " << answered << " stations (grid spacing 0.02)" << std::endl;
+		Check( gapMin >= -cellDiag - Scalar( 1e-9 ),
+			"(j) MONEY -- ...and gap_MIN is bounded below by one grid-cell diagonal, which is "
+			"the side an over-read would break" );
+		std::cout << "    subtraction gap_max = " << (double)gapMax << ", gap_min = " << (double)gapMin
+			<< " over " << answered << " stations (grid spacing 0.02, cell diagonal "
+			<< (double)cellDiag << ")" << std::endl;
 
 		aRef->release(); bRef->release();
 		c->release();
@@ -2432,6 +2509,83 @@ static void TestCsgComposites()
 		CheckClose( d, Scalar( 2 ), Scalar( 1e-9 ), "(j) ...with the box's 3 - 1 = 2" );
 		outer->release();
 	}
+
+	// --- THE ABUTTING UNION, which is the fixture the two spheres above
+	// could not be.  Their boundaries meet on a CIRCLE that lies ON the
+	// union's own boundary; two boxes STACKED into a cube meet on a shared
+	// FACE that lies in the union's INTERIOR, and there `min(f_A, f_B)` is
+	// 0 while the true signed distance is the cube's depth.
+	//
+	// Exported with an exactness flag -- which §5.6 allows and this
+	// implementation refuses -- that lets the parent subtraction's
+	// boundary arm admit a landing strictly INSIDE the subtrahend, i.e.
+	// not in the real solid, and report a chord SHORTER than the truth.
+	// That is an OVER-READ of contact, the one direction the signal must
+	// never fail in, and it is the round-3 phantom one level up.
+	{
+		Object* b1 = MakeOperand( new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 1 ) ),
+			Point3( 0, 0, -0.5 ) );
+		Object* b2 = MakeOperand( new BoxGeometry( Scalar( 2 ), Scalar( 2 ), Scalar( 1 ) ),
+			Point3( 0, 0, 0.5 ) );
+		Object* b1Ref = b1; Object* b2Ref = b2;
+		b1Ref->addref(); b2Ref->addref();
+		CSGObject* cube = MakeCsg( CSG_UNION, b1, b2, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		// THE SEAM ITSELF: the two boxes abut at z = 0, so the union's
+		// exported field reads 0 at the CUBE'S CENTRE -- an interior point
+		// one whole unit from the nearest real surface.
+		Scalar fSeam = 0; bool exSeam = true;
+		Check( cube->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 10 ), fSeam, exSeam ),
+			"(j) the abutting union answers at its interior seam" );
+		CheckClose( fSeam, Scalar( 0 ), Scalar( 1e-12 ),
+			"(j) MONEY -- `min(f_A, f_B)` is EXACTLY 0 at the cube's centre, an INTERIOR point "
+			"1.0 from the nearest surface: the union's zero set is not its boundary" );
+		Check( !exSeam,
+			"(j) MONEY -- ...and the union does NOT flag that 0 as exact. If it did, the parent "
+			"subtraction below would admit this point as a boundary landing and report contact "
+			"1.0 unit from anything real" );
+
+		Object* big = MakeOperand( new BoxGeometry( Scalar( 4 ), Scalar( 4 ), Scalar( 4 ) ),
+			Point3( 0, 0, 0 ) );
+		CSGObject* carved = MakeCsg( CSG_SUBTRACTION, big, cube, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+
+		// The probe sits in the CAVITY at (0, 0, -0.25).  The descent's
+		// single step lands exactly on the seam (the arithmetic is
+		// Sterbenz-exact), so this is the station that breaks if the flag
+		// ever comes back.  The nearest REAL surface is the cavity wall at
+		// z = -1, three times further away.
+		const Point3 probe( 0, 0, -0.25 );
+		const Scalar trueDist = Scalar( 0.75 );
+		Scalar dc = 0;
+		CsgLandingArm ac = CsgLandingArm::None;
+		const bool answered = carved->DistanceToSurfaceWithArm( probe, Scalar( 10 ), dc, ac );
+		if( answered ) {
+			Check( dc >= trueDist - Scalar( 1e-9 ),
+				"(j) MONEY -- the carved cube NEVER reports closer than the true 0.75 from inside "
+				"its cavity. A union that exported exactness reported 0.25 here -- contact "
+				"painted 3x too close, which is how this fixture was found" );
+			std::cout << "    abutting union-in-subtraction: true 0.75, reported " << (double)dc
+				<< ", arm " << ArmName( ac ) << std::endl;
+		}
+		else {
+			std::cout << "    abutting union-in-subtraction: REFUSED (an under-paint, which is "
+				"the safe direction)" << std::endl;
+		}
+
+		// ...and the degenerate twin: a query point ON the seam.  It has
+		// `f0 == 0`, skips the inside early-return, and must not be
+		// admitted at zero distance.
+		Scalar ds = 0;
+		CsgLandingArm as = CsgLandingArm::None;
+		if( carved->DistanceToSurfaceWithArm( Point3( 0, 0, 0 ), Scalar( 10 ), ds, as ) ) {
+			Check( ds >= Scalar( 1 ) - Scalar( 1e-9 ),
+				"(j) MONEY -- a query point ON the seam is 1.0 from the real solid and never "
+				"reads contact" );
+		}
+
+		b1Ref->release(); b2Ref->release();
+		carved->release();
+	}
 	{
 		// intersection-in-subtraction, and the nested composite's own
 		// exactness export checked directly.
@@ -2621,13 +2775,14 @@ static void TestInterior( const Fixture& f )
 		big->release();
 	}
 
-	// --- INSIDE A UNION COMPOSITE'S OVERLAP the exported `min` UNDER-READS.
-	// A union exports `min(f_A, f_B)` as its signed lower bound, which is
-	// exact ON and OUTSIDE the zero set but only a LOWER bound INSIDE: at a
-	// point deeper in the union than either operand alone, the min is the
-	// SHALLOWER of the two depths.  §10 records this as a residual; here it
-	// is asserted, both as an inequality and as a STRICT one at a point
-	// where the two differ.
+	// --- INSIDE A UNION COMPOSITE'S OVERLAP the exported depth UNDER-READS.
+	// A union exports `min(f_A, f_B)` as its signed lower bound -- whose
+	// MAGNITUDE is `max(depth_A, depth_B)`, the DEEPER of the two, which is
+	// the right lower bound because leaving the union means leaving both.
+	// It is still only a lower bound: at a point deeper in the UNION than
+	// either operand alone, the union's true depth exceeds both.  §10
+	// records this as a residual; here it is asserted, both as an
+	// inequality and as a STRICT one.
 	{
 		Object* a = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
 		Object* b = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 1.5, 0, 0 ) );
@@ -2635,8 +2790,12 @@ static void TestInterior( const Fixture& f )
 		aRef->addref(); bRef->addref();
 		CSGObject* u = MakeCsg( CSG_UNION, a, b, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
 
-		// The probe sits between the two centres, deep in the overlap.
-		const Point3 p( 0.75, 0, 0 );
+		// The probe sits OFF THE MID-PLANE, deliberately: at (0.75, 0, 0)
+		// the two operand depths are both 1.25, and `std::min` of two equal
+		// numbers cannot tell `min` from `max`, from a mean, or from
+		// "whichever operand was visited first".  At (0.4, 0, 0) they are
+		// 1.6 and 0.9, which discriminates.
+		const Point3 p( 0.4, 0, 0 );
 		Scalar fA = 0, fB = 0, fU = 0; bool eA = false, eB = false, eU = false;
 		Check( aRef->SignedDistanceLower( p, Scalar( 10 ), fA, eA )
 		    && bRef->SignedDistanceLower( p, Scalar( 10 ), fB, eB )
@@ -2651,15 +2810,33 @@ static void TestInterior( const Fixture& f )
 		// fact the nearest boundary point is straight out along +y from
 		// the deeper sphere, at distance sqrt(2^2 - 0.75^2) = 1.8540 from
 		// the probe.  Both operands' own depths are smaller than that.
-		const Scalar trueDepth = (Scalar)std::sqrt( 4.0 - 0.75*0.75 );
-		CheckClose( -fU, std::min( -fA, -fB ), Scalar( 1e-12 ),
-			"(k) the union exports min(f_A, f_B), i.e. the SHALLOWER depth" );
+		// The union of two R = 2 spheres 1.5 apart; the probe is 0.4 from
+		// A's centre and 1.1 from B's, so the operand depths are 1.6 and
+		// 0.9.  The nearest exit from the union at this point is
+		// perpendicular to the centre line through A's wall.
+		const Scalar trueDepth = (Scalar)std::sqrt( 4.0 - 0.4*0.4 );
+		CheckClose( -fA, Scalar( 1.6 ), Scalar( 1e-9 ), "(k) operand A's depth is 1.6" );
+		CheckClose( -fB, Scalar( 0.9 ), Scalar( 1e-9 ), "(k) ...and operand B's is 0.9" );
+		// `min` is taken on the SIGNED values, so it picks the most
+		// NEGATIVE -- i.e. `|min(f_A, f_B)| = max(depth_A, depth_B)`, the
+		// DEEPER of the two.  That is the right lower bound: leaving the
+		// union means leaving BOTH operands, so the union's depth is at
+		// least the larger of the individual depths.  A probe on the
+		// mid-plane, where the two depths are equal, cannot tell that from
+		// the shallower one -- and this check asserted the shallower until
+		// the probe was moved off it.
+		CheckClose( -fU, Scalar( 1.6 ), Scalar( 1e-9 ),
+			"(k) MONEY -- the union exports the DEEPER of the two depths (1.6), which is "
+			"`|min(f_A, f_B)| = max(depth_A, depth_B)` -- and a mid-plane probe, where both are "
+			"1.25, could not have told that from the shallower" );
+		CheckClose( -fU, std::max( -fA, -fB ), Scalar( 1e-12 ),
+			"(k) ...i.e. exactly max(depth_A, depth_B), the magnitude of min(f_A, f_B)" );
 		Check( -fU <= trueDepth + Scalar( 1e-9 ),
 			"(k) MONEY -- the exported depth is a LOWER bound on the union's true depth" );
 		Check( -fU < trueDepth - Scalar( 1e-6 ),
 			"(k) MONEY -- and STRICTLY under-reads at a point deeper in the union than either "
 			"operand alone: the residual §10 records, asserted rather than claimed" );
-		std::cout << "    union overlap at (0.75,0,0): operand depths " << (double)(-fA)
+		std::cout << "    union overlap at (0.4,0,0): operand depths " << (double)(-fA)
 			<< " / " << (double)(-fB) << ", exported " << (double)(-fU)
 			<< ", true union depth " << (double)trueDepth << std::endl;
 
@@ -2798,27 +2975,49 @@ static void TestInterior( const Fixture& f )
 	// --- A COMPUTED RADIUS IS ACCEPTED, and reaches the same answer as a
 	// literal one.  `interior` has no `DynR` twin, so ParseCall's remap
 	// must fall through to its own id -- the guard `proximity` needed, one
-	// signal later.  PROVED BEHAVIOURALLY: a convexity call on this
-	// receiver would read its neutral 0, which the literal answer is not.
+	// signal later.  Without it a computed-radius `interior(...)` compiles
+	// to `kFnConvexityDynR`.
+	//
+	// THE RECEIVER IS THE SDF SPHERE, NOT THE FLOOR, and that choice is
+	// the whole test.  On the infinite plane -- where the proximity twin
+	// of this check runs -- there is no signal provider, so a mis-compiled
+	// convexity would read its NEUTRAL 0; and `interior` on a floor point
+	// inside nothing is ALSO 0.  The equality would then hold with the
+	// guard removed: `0 == 0`, a tautology.  An SDF publishes a provider,
+	// so a mis-compiled convexity reads a real non-zero number there while
+	// `interior` still reads 0 -- two values that cannot be confused.  The
+	// third probe below asserts that separation is live rather than
+	// assumed.
 	{
-		Scalar vLit = Scalar( -1 ), vComp = Scalar( -1 );
-		Check( EvalAtManagerHit( f, Point3( 8.5, 5, 0 ), Vector3( 0, -1, 0 ), "interior(4.0)", vLit ),
-			"(k) literal-radius interior compiles and evaluates at a real hit" );
-		Check( EvalAtManagerHit( f, Point3( 8.5, 5, 0 ), Vector3( 0, -1, 0 ), "interior(2.0*2.0)", vComp ),
-			"(k) COMPUTED-radius interior compiles and evaluates" );
-		CheckClose( vComp, vLit, Scalar( 1e-12 ),
-			"(k) MONEY -- a COMPUTED radius gives the same answer as the literal one: the DynR "
-			"remap's fall-through is not turning interior() into convexity()" );
+		const Point3  origin( 54, 6, 0 );		// above `n_sdf_sphere` at (54, 3, 0), R = 1
+		const Vector3 down( 0, -1, 0 );
 
-		// ...and at a hit INSIDE a neighbour the builtin is non-zero, so
-		// the equality above is not two neutrals agreeing.  The ray is
-		// fired at the floor under `n_below` (a box 2 units under the
-		// floor, top at y = -2): the floor point is not inside it, so
-		// instead drive the channel directly at a point that IS.
+		Scalar vConv = Scalar( -1 );
+		Check( EvalAtManagerHit( f, origin, down, "convexity(0.5)", vConv ),
+			"(k) convexity evaluates at the SDF hit" );
+		Check( vConv > Scalar( 0.01 ),
+			"(k) MONEY -- ...and reads a REAL non-zero value there (" + std::to_string( (double)vConv ) +
+			"), so a mis-compiled interior would be visibly different from the 0 below -- this is "
+			"what makes the equality that follows a test rather than a tautology" );
+
+		Scalar vLit = Scalar( -1 ), vComp = Scalar( -1 );
+		Check( EvalAtManagerHit( f, origin, down, "interior(0.5)", vLit ),
+			"(k) literal-radius interior compiles and evaluates at the same hit" );
+		Check( EvalAtManagerHit( f, origin, down, "interior(0.25*2.0)", vComp ),
+			"(k) COMPUTED-radius interior compiles and evaluates" );
+		CheckClose( vLit, Scalar( 0 ), Scalar( 1e-12 ),
+			"(k) the SDF's own surface is inside no OTHER object, so interior reads 0 there" );
+		CheckClose( vComp, vLit, Scalar( 1e-12 ),
+			"(k) MONEY -- a COMPUTED radius gives the same answer as the literal one, and on a "
+			"receiver where convexity would NOT: the DynR remap's fall-through is not turning "
+			"interior() into convexity()" );
+
+		// ...and the builtin is capable of a non-zero reading at all, so
+		// the 0 above is the geometry and not a dead signal.
 		const Scalar vInside = InteriorAt( f, Point3( 6, 3, 0 ), f.floorObj, Scalar( 4 ) );
-		Check( vInside > Scalar( 0.2 ),
-			"(k) ...teeth: the builtin reads a real non-zero value inside a neighbour (0.25), so "
-			"the agreement above is not two neutrals matching" );
+		CheckClose( vInside, Scalar( 0.25 ), Scalar( 1e-9 ),
+			"(k) ...teeth: the same builtin reads 0.25 at the centre of `n_box`, so the 0 above "
+			"is the absence of a container, not a signal that never fires" );
 	}
 }
 

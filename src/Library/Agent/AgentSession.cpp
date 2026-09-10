@@ -37538,6 +37538,25 @@ namespace RISE
 			//! two in-gamut colours; a lift is a mix toward white; a darken is a
 			//! multiply by a 0..1 param) rather than by a vec3 clamp that does not
 			//! exist.
+			//! THE `contact_r` PARAM LINE, with slider bounds that CONTAIN
+			//! the value written on it.  A fixed `max 1` looked harmless and
+			//! is not: `min`/`max` are slider metadata the VM ignores at
+			//! evaluation, so a metre-scale scene asking for a 2-unit radius
+			//! would get `contact_r 2` sitting under `max 1`, and the first
+			//! touch of that slider in a property panel would silently halve
+			//! it.  The band therefore widens to the value, exactly as
+			//! `BuildWearRoughnessPainterText`'s `sliderMax` already does
+			//! for a roughness above 1.
+			std::string ContactRadiusParamLine_( double contactRadius )
+			{
+				const double lo = ( contactRadius < 0.0001 ) ? contactRadius : 0.0001;
+				const double hi = ( contactRadius > 1.0 )    ? contactRadius : 1.0;
+				return "\tparam\t\t\tcontact_r " + MicrosurfaceFmt_( contactRadius ) +
+					" min " + MicrosurfaceFmt_( lo ) +
+					" max " + MicrosurfaceFmt_( hi ) +
+					" step 0.0001 label \"Contact radius (world)\"\n";
+			}
+
 			//! `contactRadius <= 0` reproduces the pre-Phase-3 text BYTE FOR
 			//! BYTE -- the params, their order, the `seed`, the four `def`s and
 			//! the `crevice_mask` line -- which is what makes
@@ -37574,8 +37593,7 @@ namespace RISE
 				if( contactOnly ) {
 					t += "\tparam\t\t\tcontact_grime " + MicrosurfaceFmt_( contactGrime ) +
 						" min 0 max 1 step 0.01 label \"Contact grime weight\"\n";
-					t += "\tparam\t\t\tcontact_r " + MicrosurfaceFmt_( contactRadius ) +
-						" min 0.0001 max 1 step 0.0001 label \"Contact radius (world)\"\n";
+					t += ContactRadiusParamLine_( contactRadius );
 					t += "\tparam\t\t\tcontact_scale " + MicrosurfaceFmt_( grimeScale ) +
 						" min 0.1 max 40 step 0.1 label \"Contact noise scale\"\n";
 					t += "\tparam\t\t\tbreakup_amp 0.35 min 0 max 1 step 0.01 label \"Noise breakup amount\"\n";
@@ -37597,8 +37615,7 @@ namespace RISE
 				if( contact ) {
 					t += "\tparam\t\t\tcontact_grime " + MicrosurfaceFmt_( contactGrime ) +
 						" min 0 max 1 step 0.01 label \"Contact grime weight\"\n";
-					t += "\tparam\t\t\tcontact_r " + MicrosurfaceFmt_( contactRadius ) +
-						" min 0.0001 max 1 step 0.0001 label \"Contact radius (world)\"\n";
+					t += ContactRadiusParamLine_( contactRadius );
 					t += "\tparam\t\t\tcontact_scale " + MicrosurfaceFmt_( grimeScale ) +
 						" min 0.1 max 40 step 0.1 label \"Contact noise scale\"\n";
 				}
@@ -38107,10 +38124,18 @@ namespace RISE
 						"0 everywhere). Every material here is either already worn, already varying, "
 						"unreadable, or planar-only. Author such a material first, or bind an "
 						"`expression_painter` reading `curv` by hand (read_skill "
-						"{\"name\":\"materials-and-media-basics\"}) -- document unchanged. A FLAT receiver "
-						"(a plank on a plane, a flange on a box) qualifies once `contact_radius` is set: "
-						"that argument wears the CONTACT SEAM with `proximity()` instead of the curvature, "
-						"and needs no curving geometry at all";
+						"{\"name\":\"materials-and-media-basics\"})";
+					// THE APPENDED CLAUSE IS ADVICE FOR A CALL THAT DID NOT
+					// SET THE ARGUMENT, so it prints only for such a call.
+					// A caller who DID pass `contact_radius` and still found
+					// nothing has already taken this advice, and repeating
+					// it back would read as the verb not having noticed.
+					out.message += contactOn
+						? std::string( " -- document unchanged" )
+						: std::string( " -- document unchanged. A FLAT receiver (a plank on a plane, a "
+						               "flange on a box) qualifies once `contact_radius` is set: that "
+						               "argument wears the CONTACT SEAM with `proximity()` instead of the "
+						               "curvature, and needs no curving geometry at all" );
 					return out;
 				}
 			}

@@ -1876,6 +1876,18 @@ bool SDFGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxD
 	if( !RISE::IsFiniteDouble( (double)f ) ) {
 		return false;
 	}
+	// THE "NOTHING HERE" SENTINEL, screened.  `EvaluateParts` starts from
+	// `d = +1e30` and a part list whose FIRST op is `subtract` or
+	// `intersect` never lowers it, so `Map` can hand back that sentinel
+	// rather than a field value -- and 1e30 is emphatically not a lower
+	// bound on anything.  The UNSIGNED query cannot leak it (it brackets a
+	// sign change and refuses when none is found); this one reports `Map`
+	// directly, so it has to screen for it.  RISE's own
+	// unbounded-coordinate sentinel is the threshold, matching
+	// `Geometry::BoundingBoxRootFloor` and `CSGObject::LocalBoxDiagonal`.
+	if( !( std::fabs( (double)f ) < 1e30 ) ) {
+		return false;
+	}
 	outSigned = f;
 	return true;
 }

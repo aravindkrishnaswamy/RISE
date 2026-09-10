@@ -452,8 +452,17 @@ mandatory.  Reach for it when what you want to paint is BURIAL rather than
 contact: the wet flank of a stone below a waterline, the sunk part of a
 post in soil, the darkened band of a bead pressed into resin.
 
-Two things decide whether it is the right tool:
+Three things decide whether it is the right tool, and the first is the one
+that will surprise you:
 
+- **It measures distance to the NEAREST surface of the containing solid, not
+  depth below its top.**  So a THIN neighbour saturates in its MIDDLE and
+  reads LESS near both of its faces: in a pool 4 cm deep, a point 2 cm down
+  is 2 cm from the surface AND 2 cm from the floor, and a point 3 cm down is
+  only 1 cm from the floor -- it reads *less* buried than the one above it.
+  If you want a clean depth ramp under one face, the neighbour has to be DEEP
+  compared with `r` in every other direction, which is why the pool in the
+  fence below is 60 cm deep for a 2 cm radius.
 - **Only the SOLID families contribute to it.**  A sphere, box, capped
   cylinder, torus, ellipsoid, `sdf_geometry` or a CSG composite of those
   can say whether a point is inside; every SHEET -- a plane, a disk, an
@@ -468,13 +477,14 @@ Two things decide whether it is the right tool:
   TRANSMITS -- water, resin, glass -- or where the composition will later
   move one of the two apart.  The fence below is the first case.
 
-The fixture: a stone sphere of radius 4 cm resting in a 6 cm-deep pool
-whose surface is at y = 0.03, with the stone's centre at y = 0.02, so its
-lowest point sits 1 cm above the pool floor and 1 cm below the surface.
-`interior(0.02)` therefore reads exactly **0.5** at that lowest point,
-falls continuously to exactly **0** at the waterline, and is 0 on the cap
-in air -- which is what draws the wet line, at the depth you asked for
-rather than at a hand-placed height.
+The fixture: a stone sphere of radius 4 cm sitting in a DEEP pool (60 cm,
+so the floor and the sides are never the nearest face over the stone) whose
+surface is at y = 0.03, with the stone's centre at y = 0.02 -- so the stone
+straddles the waterline, its top 3 cm in air and its lowest point 5 cm
+under.  With `r` = 2 cm the closed forms are: exactly **0** at the
+waterline, exactly **0.5** one centimetre under it, and saturated at
+**1** everywhere 2 cm or more below -- a clean wet line at the depth you
+asked for rather than at a hand-placed height, and 0 on the cap in air.
 
 ```rise
 RISE ASCII SCENE 7
@@ -578,11 +588,15 @@ dielectric_material
 	scattering	1000000
 }
 
+# 60 cm DEEP, so that over the stone the nearest face of this box is always
+# the SURFACE -- see the note above about what `interior` actually measures.
+# A shallow pool would saturate at mid-water and read LESS at the stone's
+# lowest point, which is the opposite of a wet line.
 box_geometry
 {
 	name	geo_water
 	width	0.30
-	height	0.06
+	height	0.60
 	depth	0.30
 }
 
@@ -591,7 +605,7 @@ standard_object
 	name		obj_water
 	geometry	geo_water
 	material	mat_water
-	position	0 0 0
+	position	0 -0.27 0
 }
 
 uniformcolor_painter
@@ -619,7 +633,7 @@ standard_object
 	name		obj_bed
 	geometry	geo_bed
 	material	mat_bed
-	position	0 -0.05 0
+	position	0 -0.59 0
 }
 
 rect_light

@@ -259,6 +259,15 @@ namespace RISE
 		//! anisotropic transform `×σ_min` is a bound, not the distance, so
 		//! the flag must be dropped even for a closed-form family.
 		//!
+		//! "SIMILARITY" IS MEASURED TO 1e-12 RELATIVE, not exactly, and
+		//! the difference is disclosed rather than claimed away: a
+		//! transform inside that window (an imported or interpolated
+		//! matrix can land there; hand-authored scene text does not) is
+		//! flagged exact while its magnitude sits up to ~1e-12 relative
+		//! off the true distance.  The window was 1e-9 before Phase 3 gave
+		//! this flag its first consumer that treats it as "the magnitude
+		//! IS the distance" -- a CSG composite's boundary arm.
+		//!
 		//! DEFAULTED to a refusal, declared LAST + defaulted: no vtable
 		//! claim on any existing slot.
 		//! \return TRUE and writes both outputs, or FALSE with

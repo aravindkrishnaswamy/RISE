@@ -184,11 +184,29 @@ static double LumaOf( const RISEPel& p )
 
 //! The value on the FIRST `param <which> <value> ...` line at or after
 //! chunk `chunkName`'s `name` line.
+//! THE NAME MUST MATCH AT A WORD BOUNDARY.  `add_wear` mints `X_wear` and
+//! `X_wearrough`, and the roughness chunk is spliced LAST so it lands
+//! FIRST -- so a bare `find(chunkName)` asked for the COLOUR chunk returns
+//! a position inside the ROUGHNESS one, and the forward `param` scan then
+//! reads the wrong chunk's value.  The same shape as the `ChunkTextOf` bug
+//! §8.4 S5 records; this pre-existing helper carried it too, and the
+//! contact params (which exist in BOTH chunks with the same values) are
+//! exactly where it would have gone unnoticed.
 static double ParamValueInChunk( const std::string& doc, const std::string& chunkName,
                                  const std::string& which, bool& ok )
 {
 	ok = false;
-	const std::size_t namePos = doc.find( chunkName );
+	std::size_t namePos = std::string::npos;
+	{
+		std::size_t at = doc.find( chunkName );
+		while( at != std::string::npos ) {
+			const std::size_t e = at + chunkName.size();
+			const bool endsClean = ( e >= doc.size() ) ||
+				!( std::isalnum( static_cast<unsigned char>( doc[e] ) ) || doc[e] == '_' );
+			if( endsClean ) { namePos = at; break; }
+			at = doc.find( chunkName, at + 1 );
+		}
+	}
 	if( namePos == std::string::npos ) return 0.0;
 	std::size_t pos = namePos;
 	while( true ) {

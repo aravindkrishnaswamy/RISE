@@ -42,8 +42,15 @@ namespace RISE
 		//!                 exactly `s`, un-nudged.
 		//!   * `Jacobi` -- the one-sided Jacobi SVD converged.  The pair is
 		//!                 the TRUE extremal singular values to rounding,
-		//!                 nudged apart by four ulps so the inequality
-		//!                 chain the query rests on survives it.
+		//!                 then WIDENED apart by a RELATIVE, condition-
+		//!                 scaled factor (`16 * eps * sigmaMax/sigmaMin`).
+		//!                 A fixed ulp count would not do: Jacobi's error
+		//!                 is relative and grows with the condition number
+		//!                 -- see ComputeSigmaExtremes for the measured
+		//!                 counter-example that retired the four-ulp rule.
+		//!                 Widening is free in the safe direction, so this
+		//!                 is a heuristic tied to the error's shape rather
+		//!                 than a proof.
 		//!   * `Loose`  -- the sweep cap was hit and the Frobenius /
 		//!                 determinant pair stands in.  Sound, and wide:
 		//!                 on `scale (3, 1, 0.4)` it is 3.19 / 0.118
@@ -173,11 +180,19 @@ namespace RISE
 			//!   * EXACT when `M^T M = s^2 I` within 1e-9 relative -- a
 			//!     rotation, a reflection, a uniform scale, or any
 			//!     composition of them.  Both bounds are then `s`,
-			//!     un-nudged, and the transform costs the query nothing.
+			//!     un-widened, and the transform costs the query nothing.
+			//!     The tolerance is 1e-12 RELATIVE since Phase 3 (it was
+			//!     1e-9): this branch now also decides whether
+			//!     `SignedDistanceLower` may flag its answer EXACT, which
+			//!     a CSG boundary arm consumes, and a `1 + 7e-10`
+			//!     anisotropy passing as "uniform" would carry that flag
+			//!     while over-reading by ~7e-11 relative.
 			//!   * JACOBI otherwise, since Phase 3: a one-sided Jacobi SVD
 			//!     on `M` gives the TRUE extremal singular values to
-			//!     rounding, and the stored pair is nudged apart by four
-			//!     ulps so the inequality chain survives that rounding.
+			//!     rounding, and the stored pair is WIDENED apart by a
+			//!     relative, condition-scaled factor so the inequality
+			//!     chain survives that rounding (a fixed ulp count does
+			//!     not -- ComputeSigmaExtremes has the counter-example).
 			//!     These are still called BOUNDS and the word is earned:
 			//!     `x sigmaMax` bounds the world distance and is ATTAINED
 			//!     only along the top singular vector, so an anisotropic

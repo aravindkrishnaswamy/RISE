@@ -779,10 +779,15 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// TRANSMIT for the point to be made at all -- a surface inside an
 	// OPAQUE neighbour is behind that neighbour and the camera never sees
 	// it -- and the fixture is sized so the numbers in the prose are
-	// closed forms rather than impressions: the stone's lowest point sits
-	// exactly 1 cm inside a pool 2 cm is the saturation depth of, so
-	// `interior(0.02)` is exactly 0.5 there and exactly 0 at the
-	// waterline.
+	// closed forms rather than impressions: the pool is 60 cm DEEP for a
+	// 2 cm radius, so over the stone the nearest face of the water box is
+	// always the SURFACE, and `interior(0.02)` is exactly 0 at the
+	// waterline, exactly 0.5 one centimetre under it, and saturated at 1
+	// from 2 cm down.  THE DEPTH IS LOAD-BEARING, not decoration: this
+	// signal measures distance to the NEAREST surface of the containing
+	// solid, not depth below its top, so a shallow pool would saturate at
+	// mid-water and read LESS at the stone's lowest point -- the opposite
+	// of a wet line, and what the first draft of this fence taught.
 	Check( totalSnippets == 33, "the seed skills carry the expected 33 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }

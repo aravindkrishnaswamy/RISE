@@ -372,8 +372,9 @@ bool SphereGeometry::DistanceToSurface( const Point3& ptObject, const Scalar max
 //! IGeometry::SignedDistanceLower -- the SAME field, UNCLAMPED.
 //!
 //! `|p| - R` is the exact signed distance to the sphere on both sides, so
-//! this is the one place where "lower bound" and "the distance" coincide,
-//! and the exactness flag says so -- which is what lets a CSG composite's
+//! for this family -- as for the box, the capped cylinder and the torus --
+//! "lower bound" and "the distance" coincide, and the exactness flag says
+//! so.  That is what lets a CSG composite's
 //! BOUNDARY ARM admit a landing exactly on a sphere operand's surface
 //! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
 //!

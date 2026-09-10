@@ -4328,8 +4328,13 @@ namespace RISE
 				//   response, not a JSON-RPC error, the same shape vary_material
 				//   uses for its own "nothing qualifies" case.
 				//   docs/CROSS_OBJECT_PROXIMITY_DESIGN.md sec 5.6 (2026-09-09):
-				//   `contact_radius` is a WORLD LENGTH, default 0 = OFF (every
-				//   output byte-identical to before it existed).  Above 0 it folds
+				//   `contact_radius` is a WORLD LENGTH, default 0 = OFF -- at
+				//   which every output is byte-identical to before it existed
+				//   with exactly TWO pinned exceptions, both messages: clause
+				//   (d)'s decline string (which now names all six shading
+				//   signals) and the bare-call "no material qualifies" text
+				//   (which gains a clause about this argument, and only when
+				//   the call did not pass it).  See `AgentSession::AddWear`.  Above 0 it folds
 				//   a `proximity(contact_r)` contact-seam term into the crevice
 				//   endpoint, and it lets a FLAT receiver -- a plank on a plane, a
 				//   flange on a box -- qualify at all, which the curvature-only

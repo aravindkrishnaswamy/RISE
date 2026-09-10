@@ -782,13 +782,30 @@ parent composite and to `interior`, with the composite's `×σ_min` applied —
 and it NEVER sets the exactness flag: `max(a, b)` under-reads near a seam
 even over exact operands, and its zero set is the phantom touching set, so a
 parent's boundary arm must not land on it (the round-3 bug one level up).
-A union exports `min(f_A, f_B)` and sets the flag only when both operands
-set it AND its own σ is exact (a similarity), since `×σ_min` under a
-non-uniform one is a bound — and the flag means "exact ON and OUTSIDE the
-zero set", which is all a parent's boundary arm consumes; INSIDE, `min(f_A,
-f_B)` is only a lower bound on the union's depth (two overlapping unit-deep
+A union exports `min(f_A, f_B)`; INSIDE, that is
+only a lower bound on the union's depth (two overlapping unit-deep
 slabs read depth 0.5 at a point 1.5 deep in their union), so `interior(r)`
-under-reads inside a union's overlap — a §10 residual. At a max/min seam two nearly opposed operand
+under-reads inside a union's overlap — a §10 residual.
+**~~and sets the flag only when both operands set it AND its own σ is
+exact~~ — CORRECTED AT IMPLEMENTATION (§8.4 S3): NO COMPOSITE exports the
+exactness flag, a union included.** The rule above is unsound, and the
+review that found it traced the whole failure: `min(f_A, f_B)` is 0 not only
+on the union's boundary but on every INTERIOR point where the two operands'
+boundaries meet from opposite sides — a shared face, a set of positive AREA.
+Two boxes stacked into a cube read `min = 0` all over the seam plane, where
+the true signed distance is the cube's depth. Exported with the flag set,
+that lets a PARENT subtraction's boundary arm (`exB ∧ f_A < 0 ∧ f_B ≥ 0`)
+admit a landing strictly INSIDE the subtrahend — not in the real solid at
+all — which is the round-3 phantom one level up and an OVER-READ of contact.
+Measured: `box(2,2,1)@−0.5 ∪ box(2,2,1)@+0.5` subtracted from a 4-cube
+reported **0.25 against a true 0.75**. Dropping the flag closes it
+completely, because every other consumer of the exported field reads only a
+STRICT sign (the strict arms need `< 0` or `> 0`, and an interior seam reads
+0; `interior` counts only `f < 0`, so a seam contributes 0 depth — the safe
+direction). The §8 gate's union-in-subtraction row used two OVERLAPPING
+spheres, whose `∂A ∩ ∂B` circle lies ON the union's boundary — precisely the
+configuration that dodges this — which is why an ABUTTING fixture is now
+pinned beside it. At a max/min seam two nearly opposed operand
 gradients can cancel the composite's, and a gradient below 1e-12 makes the
 candidate REFUSE (an under-paint, never a wrong answer — the SDF's fabricated
 `(0,1,0)` fallback is not reused). `SignedDistanceLower` NEVER refuses for
@@ -861,8 +878,17 @@ cap hit, Frobenius/det pair, ratio 26.99) — and the print site names the
 state, since a converged and a fallen-back object are otherwise
 indistinguishable at `!m_sigmaExact`) and the degenerate refusal (which runs BEFORE Jacobi on `|det|`, so `σ_min > 0` holds
 after the nudge). Because the chain of inequalities the design rests on must
-survive rounding, on the Jacobi path the stored `σ_max` is nudged UP and
-`σ_min` DOWN by four ulps.
+survive rounding, on the Jacobi path the stored `σ_max` is widened UP and
+`σ_min` DOWN. **CORRECTED AT IMPLEMENTATION (§8.4 S2): the widening is
+RELATIVE and condition-scaled (`16 · eps · σ_max/σ_min`), not "four ulps".**
+A fixed ulp count cannot bound a relative error — a review checked the
+four-ulp claim in exact arithmetic and broke it on an ordinary
+well-conditioned matrix (cond 29.6, every entry O(1)), where the computed
+`σ_min` sat TWELVE ulps above the true one so four downward nudges left the
+stored number still above it; at cond ~3e12 the gap reaches 6.4e-5 relative,
+which no ulp count reaches. Widening is free in the safe direction (it can
+only make the unsigned answer larger and the signed one smaller), so the
+factor is a heuristic tied to the measured error's shape rather than a proof.
 Reflections need nothing (singular values are those of `|M|`). `Object` exposes
 `SigmaMin()/SigmaMax()` for tests, which compare against reference values
 written into the test for a rotation, a reflection, a uniform scale,
@@ -2333,7 +2359,7 @@ two queries cannot drift on them). `ExpressionProgram::UsesProximity()` becomes
 | `interior` is 0 outside every neighbour | PASS — exactly 0 (tolerance 0, not 1e-9) at five scene-C probes |
 | the six interpenetration probes read `min(depth/r, 1)` within 1e-9 | PASS — box / sphere / capped cylinder / torus tube / ellipsoid / SDF at depths 1, 1, 1, 0.5, 1, 1; each checked at `r = 4` (reading depth/4) **and** at `r = depth` (reading exactly 1). The ellipsoid probe stays at the CENTRE, where its lower bound is tight, and the test says so |
 | inside two overlapping spheres, the LARGER depth | PASS — 1.0 where the operands' own depths are 1.0 and 0.5; a point inside only the smaller reads its 0.1; a point inside neither REFUSES (which `interior` reads as 0) |
-| inside a UNION composite's overlap the exported `min` under-reads | PASS — at `(0.75, 0, 0)` between two R = 2 spheres 1.5 apart: operand depths 1.25 / 1.25, exported **1.25**, true union depth **1.85405**. Asserted ≤ the truth *and* STRICTLY < it |
+| inside a UNION composite's overlap the exported depth under-reads | PASS — at `(0.4, 0, 0)` between two R = 2 spheres 1.5 apart: operand depths **1.6 / 0.9**, exported **1.6**, true union depth **1.95959**. Asserted ≤ the truth *and* STRICTLY < it. The probe is deliberately OFF the mid-plane: review round 1 moved it there because at `(0.75, 0, 0)` both operand depths are 1.25 and `min`/`max` are indistinguishable — which is how the check's own claim was found to be inverted (`|min(f_A, f_B)|` is `max(depth_A, depth_B)`, the DEEPER, not the shallower) |
 | a mesh neighbour contributes 0 | PASS, with teeth (the same mesh answers the UNSIGNED query at 0.5) |
 | a computed radius is accepted | PASS — `interior(2.0*2.0)` equals `interior(4.0)` to 1e-12 at a real manager hit, with a non-zero reading (0.25) proving the agreement is not two neutrals matching |
 | the parse diagnostic names a WORLD LENGTH, in `interior`'s own words | PASS — the ternary is three-way; `interior`'s message says "depth of burial", proximity's does not, and neither says FRACTION |
@@ -2458,6 +2484,77 @@ crop actually shows:
   slab is 0.5 deep — the column's whole diameter — so it cuts right through;
   that is the tracked scene as authored, and it is the same fact that makes
   the slot's ±z faces tangent to the cylinder and the phantom possible at all.
+
+#### Review round 1 — two P1s, both in code the gates passed
+
+Four orthogonal reviewers on the six committed slices. Two P1s, and neither
+was a slip: each is a rule **§5.6 itself states** that turns out to be
+unsound, so the fix is a documented deviation from a converged design rather
+than a correction to the implementation of it. Both are now pinned by
+fixtures the original gates could not have caught.
+
+**P1-A — a UNION must NOT export the exactness flag (§5.6 says it may).**
+`min(f_A, f_B)` is 0 not only on the union's boundary but on every INTERIOR
+point where the operands' boundaries meet from opposite sides — a shared
+face, a set of positive area. Two boxes stacked into a cube read 0 all over
+the seam plane. Flagged exact, that lets a parent subtraction's boundary arm
+(`exB ∧ f_A < 0 ∧ f_B ≥ 0`) admit a landing strictly inside the subtrahend.
+Measured on `box(2,2,1)@−0.5 ∪ box(2,2,1)@+0.5` subtracted from a 4-cube,
+probed from the cavity at `(0,0,−0.25)`: **reported 0.25 against a true
+0.75** — contact painted 3× too close, the one direction §2 forbids. The
+descent's single step lands on the seam *exactly* (Sterbenz), so it is not a
+knife-edge coincidence; the whole slab `z ∈ [−0.5, −0.25]` does it, and a
+query point ON the seam reads 0. **Why the gate missed it:** §8's
+union-in-subtraction row uses two OVERLAPPING spheres, whose intersection
+circle lies ON the union's boundary — the one configuration that dodges it.
+**Fix:** no composite exports exactness. Every other consumer of the field
+reads a strict sign, so nothing else moves. An ABUTTING fixture is now pinned
+beside the overlapping one, asserting the seam reads exactly 0, that the flag
+is false there, and that the carved cube never reports below 0.75.
+
+**P1-B — the four-ulp σ widening does not bound a relative error.** A
+reviewer replicated `ComputeSigmaExtremes` in exact arithmetic (reference
+singular values from the rational `MᵀM` cubic, Newton-refined to 80 digits)
+and broke the claim on an **ordinary well-conditioned matrix** — cond 29.6,
+every entry O(1) — where the computed `σ_min` sat **twelve ulps** above the
+true one, so four downward nudges left the stored number still above it and
+`d_w ≥ σ_min·d_o` false of what is actually stored. 18 of 7 500
+`R₂·diag(3,1,0.4)·R₁` transforms (a `scale (3,1,0.4)` object under a rotated
+parent — authorable today) violate it; at cond ~3e12 the gap is **6.4e-5
+relative**, which no ulp count reaches. Practical magnitude is ~1e-15
+relative and nothing renders differently; what was wrong is the *claim*, in
+three code sites and the design. **Fix:** the widening is now RELATIVE and
+condition-scaled, `16·eps·(σ_max/σ_min)`, capped at 0.5. Widening is free in
+the safe direction — it can only make the unsigned answer larger and the
+signed one smaller — so this is a heuristic tied to the error's measured
+shape, and it is now described as one rather than as a guarantee.
+
+Also fixed in the same round:
+
+| finding | fix |
+|---|---|
+| the `interior` computed-radius check was a **tautology** — on a provider-less plane a mis-compiled `convexity` reads its neutral 0 and `interior` reads 0 too, so `0 == 0` passed with the DynR guard removed | moved to the **SDF** receiver, which publishes a provider: `convexity(0.5)` reads a real non-zero there (asserted, as the third probe) while `interior` reads 0, so the two are no longer confusable |
+| the grid gate asserted only `gap_max` — the **harmless** side. A composite that under-reported at every station (contact painted where there is none) passed | added the LOWER-side guard `reported ≥ ref − cellDiagonal` per station and a `gap_min` summary, plus `ref < RISE_INFINITY` so an all-refusing operand cannot make the check vacuous. This would have caught P1-A |
+| the union-overlap probe sat on the mid-plane, where both operand depths are 1.25 — `min` and `max` are indistinguishable | moved to `(0.4, 0, 0)`: depths 1.6 and 0.9. **The move immediately failed the check and showed the claim was inverted**: `min` is taken on the SIGNED values, so `|min(f_A, f_B)|` is `max(depth_A, depth_B)` — the DEEPER of the two (1.6), which is also the CORRECT lower bound, since leaving the union means leaving both. The assertion and the surrounding prose now say the deeper |
+| the phantom sweep had **no positive control** — "the guard refuses the phantom" was not separated from "this composite refuses everything near that face" | added a station one slot-width further out in x, where the same composite at the same radius must ANSWER at its closed form |
+| `SignedAt` pre-cleared `outExact`, defeating the `true` sentinel the sheet loop sets and reducing nine "the refusal CLEARS the flag" checks to "does not SET it" | the helper no longer pre-clears |
+| `ParamValueInChunk` (pre-existing) carried the same prefix bug `ChunkTextOf` was hardened against — asked for `X_wear` it matched inside `X_wearrough`, so the colour chunk's contact params were never actually asserted | word-boundary match |
+| `LocalBoxDiagonal` was **duplicated**, not hoisted, while three places said "hoisted" | `SelfHitRootFloor` now calls it; the A-only rationale moved into the helper |
+| `LandingAdmits` selected its arms with `intersection ? … : …`, so a union would silently take the subtraction disjuncts (unreachable, but a trap) | explicit refusal for any other op |
+| `SDFGeometry::SignedDistanceLower` could return `EvaluateParts`' `+1e30` "nothing here" sentinel as a lower bound (a part list whose first op is `subtract`/`intersect`) | screened, as the unsigned query already is by its bracket |
+| the fast path's 1e-9 similarity tolerance set the exactness flag on a `1 + 7e-10` anisotropy — harmless in Phase 1, but Phase 3 gave that flag a consumer that treats it as "the magnitude IS the distance" | tightened to **1e-12** (four orders of headroom over a composed Euler rotation's ~1e-16 drift), with the residual window disclosed on the flag itself rather than claimed away |
+| `sqrt(alpha*beta)` in the Jacobi threshold overflows to `inf` above column norms ~1.2e77, after which no pair rotates and the loop declares CONVERGENCE on raw column norms | two separate square roots |
+| the `add_wear` bare-call clause about `contact_radius` printed even when the caller **had** passed it | gated on `!contactOn`, matching §5.6's "advice for exactly that call" |
+| `contact_r` was emitted with a fixed `max 1`, so a metre-scale radius of 2 sat under its own slider max and the first slider touch would halve it | bounds widen to contain the value, as the roughness chunk's `sliderMax` already does |
+| six enumerating comments falsified by this arc (`UsesCrossObject`'s own doc still said "proximity specifically"; `CallFunc`'s "ONE case"; "the CROSS-OBJECT signal"; the `SurfaceSignalProximity.h` include note; `ProximityDemand::Any`'s one-liner; a subject/verb break this arc introduced into two descriptor strings) | corrected |
+| the skill's `interior` fence taught the **wrong model** — "1 cm below the surface" was 5 cm, and the mask is not monotone in a shallow pool (it saturates at mid-water, because `interior` measures distance to the NEAREST face of the container, including its floor) | the pool is now 60 cm deep so the surface really is the nearest face over the stone, the numbers are recomputed (0 at the waterline, 0.5 one cm under, saturated from 2 cm down), and the nearest-face rule is stated as the first thing that decides whether the signal is the right tool |
+
+Two findings recorded and NOT acted on, with reasons: `DeepestOtherContainment`
+could prune on saturation (`best ≥ maxDepth`) — exact and free for the one
+caller, but the design deliberately specifies no prune and a direct caller
+need not pass the radius as the budget; and a numerically-singular matrix
+still passes the `|det| > 0` gate — unchanged from Phase 1, now stated at the
+gate as a residual rather than a guarantee.
 
 
 ---
@@ -2664,6 +2761,19 @@ crop actually shows:
   inside half for the solid families only (meshes and every sheet family
   contribute 0 to it, silently — a shared refusal latch would print the
   proximity message for every mesh and plane in the scene).
+- **`interior` sees a TLAS-backed scene's object set through the AABB
+  SNAPSHOT, not through the tree — so it is stale in a DIFFERENT way from
+  `proximity`.** `DeepestOtherContainment` calls `EnsureBoxSnapshot()`,
+  which carries the add-detecting entry-count check; `NearestOtherSurface`
+  on a TLAS-backed scene walks `pBVH`, which has none. After a
+  `Job::AddObject` with no `InvalidateSpatialStructure` on a scene of more
+  than four objects, the new object is invisible to `IntersectRay` and to
+  `proximity` (§8.3's "the signal is exactly as stale as the render") and
+  VISIBLE to `interior`. That is the OVER-paint direction — burial read
+  from geometry that is not in the frame — and it is the one place this
+  design has it. Not fixed: the fix is either a count check on the TLAS
+  (which §8.3 deliberately declined) or a tree walk for a MAXIMUM query
+  (which has no pruning to offer). Stated, not tolerated.
 - **`interior` is LINEAR in object count on every scene, including a
   TLAS-backed one** (added Phase 3 S4). `DeepestOtherContainment` walks the
   flat AABB snapshot with an ordinary containment test rather than the

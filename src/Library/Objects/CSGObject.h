@@ -125,9 +125,14 @@ namespace RISE
 			//! the geometry and a `CSGObject` has none, so nothing in the
 			//! scene could measure its distance to a CSG result.
 			//!
-			//! A UNION answers `min` over the operands that ANSWER, which
-			//! is exact when both are (every union-boundary point lies on
-			//! one operand's boundary).  An INTERSECTION or a SUBTRACTION
+			//! A UNION answers `min` over the operands that ANSWER -- the
+			//! true distance when both operands' unsigned answers are
+			//! exact AND this composite's own transform is a similarity
+			//! (the `x sigmaMax` below is a bound, not the distance, under
+			//! anisotropy), since every union-boundary point lies on one
+			//! operand's boundary.  Nothing consumes an unsigned
+			//! exactness, so no flag is carried for it.  An INTERSECTION
+			//! or a SUBTRACTION
 			//! cannot: the nearest operand-surface point may not be on the
 			//! composite's surface at all, so `min` there is a LOWER bound
 			//! -- the forbidden direction.  Those two compose the operands'
@@ -141,12 +146,17 @@ namespace RISE
 			//! IObject::SignedDistanceLower for a COMPOSITE -- what a PARENT
 			//! composite and `interior(r)` both read.  A union exports
 			//! `min(f_A, f_B)`; an intersection `max(f_A, f_B)`; a
-			//! subtraction `max(f_A, -f_B)`.  Only the UNION can carry the
-			//! exactness flag, and only when both operands do AND this
-			//! composite's own sigma is exact: `max(a, b)` under-reads near
-			//! a seam even over exact operands, and its zero set IS the
-			//! phantom touching set, so a parent's boundary arm must never
-			//! land on it.
+			//! subtraction `max(f_A, -f_B)`.  NO COMPOSITE CARRIES THE
+			//! EXACTNESS FLAG -- a CORRECTION to §5.6, which allows a union
+			//! to when both operands do.  `max(a, b)` under-reads near a
+			//! seam even over exact operands and its zero set IS the
+			//! phantom touching set; and `min(a, b)` is 0 on a union's
+			//! INTERIOR seams, wherever two operands ABUT (two boxes
+			//! stacked into a cube read 0 all over the shared face).  A
+			//! parent's boundary arm landing on either would be admitting a
+			//! point that is not in the real solid -- the round-3 phantom
+			//! one level up.  See `ComposedSignedLocal`'s union case for
+			//! the traced failure and the measured numbers.
 			bool SignedDistanceLower( const Point3& ptWorld, const Scalar maxDistWorld,
 				Scalar& outSigned, bool& outExact ) const;
 
