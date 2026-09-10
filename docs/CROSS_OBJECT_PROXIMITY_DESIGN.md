@@ -2307,12 +2307,15 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
   scene the query is exactly as stale as the render is, because
   `IntersectRay` walks the same tree -- the snapshot's add-detecting count
   check (§8.1) governs only the small-scene fallback now.  (ii) A BVH leaf
-  holds up to four objects and the traversal evaluates all of a leaf's
-  occupants once the leaf's box is within the running best, with no
-  per-object box test in between: 11.08 distance calls per query on Sponza
-  against the flat scan's 4.64.  Strongly positive there (405 box tests
-  traded for ~6 mostly-refusing distance calls) and the first place to look
-  if a scene with expensive-to-answer neighbours regresses.
+  holds up to four objects; the traversal first evaluated all of a leaf's
+  occupants once the leaf's box was within the running best (11.08 distance
+  calls per query on Sponza against the flat scan's 4.64), and review
+  round 1 added a per-element box pre-test on the TLAS path that halves
+  that to 5.617 calls per query (§8.3) -- without moving the wall clock
+  (1.094× on five pairs), so the remaining cost is the traversal itself,
+  not the distance calls, and a scene with expensive-to-answer neighbours
+  (composed SDFs in a leaf) is still the first place to look if one
+  regresses.
 - **A mesh neighbour is a SHEET, and no other shipped family is.**  Every
   solid family clamps a signed field at zero, so a point inside reads 1;
   a point inside a closed MESH reads its honest distance to the nearest
