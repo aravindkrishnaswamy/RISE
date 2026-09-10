@@ -1404,6 +1404,49 @@ independent random sequences (path guiding is on in this scene, and renders
 seed from the wall clock), so the difference is dominated by sampling noise,
 not by dust. Frames and crops are in `$OUT/sponzaE_*.png`.
 
+**`weathered_workbench`'s Phase-1 cost gate re-measured on the Phase-2 TLAS
+path (review round 1, item 1).** §8.2's number (1.075×/1.092×) was measured
+before the TLAS point query existed, on the flat-scan-always code of that
+era. `weathered_workbench.RISEscene` has 8 objects, above `nMaxObjectsPerNode`
+(4), so on this branch its proximity query goes through
+`BVH::ClosestPointDistance` exactly as Sponza's does — a different code path
+than the one §8.2 measured, and that number is stale for it.
+
+Re-measured with §8.2's own protocol: two baselines (a "no-prox" copy with
+both `def contact proximity(0.02)` lines replaced by `def contact 0.0`,
+isolating just the query's cost; and "pristine", the file at `9ae731a9`, the
+commit immediately before the flange-grime feature landed), interleaved as
+triples, 640 × 480 × 12, two warm-ups (2.449 s / 2.454 s on the shipped
+scene) then **five** interleaved triples on a machine confirmed idle before
+each (`ps aux | grep -E "bin/rise|make|clang|cc1plus"` empty):
+
+| triple | pristine | no-prox | shipped | shipped/no-prox | shipped/pristine |
+|---|---:|---:|---:|---:|---:|
+| t1 | 2.247 s | 2.452 s | 2.482 s | 1.012× | 1.105× |
+| t2 | 2.287 s | 2.473 s | 2.515 s | 1.017× | 1.100× |
+| t3 | 2.314 s | 2.502 s | 2.525 s | 1.009× | 1.091× |
+| t4 | 2.345 s | 2.524 s | 2.547 s | 1.009× | 1.086× |
+| t5 | 2.347 s | 2.553 s | 2.555 s | 1.001× | 1.089× |
+| **mean** | **2.308 s** | **2.501 s** | **2.525 s** | **1.010×** (mean of per-triple ratios) | **1.094×** (mean of per-triple ratios) |
+
+**1.010× against the no-prox control, 1.094× against pristine — PASS against
+the ≤ 1.10 gate on both baselines**, though the two disagree far more than
+§8.2's original ~1.6% baseline gap did (theirs: no-prox and pristine agreed
+within 0.3%; this run's pristine-to-no-prox gap is ~8%). That gap is NOT the
+proximity query — the no-prox copy isolates exactly that cost and reads
+1.010×, comfortably inside the gate with room to spare. The gap is scene
+EVOLUTION between `9ae731a9` (pristine) and the shipped file that has nothing
+to do with this signal: the vise geometry work (`e3bef58c`, cast-iron field
+sized to a measured footprint) and other tuning commits in between added real
+cost of their own. Reported for completeness because the protocol asks for
+both baselines, but **the no-prox ratio (1.010×) is the number that actually
+answers "what does `proximity()` cost on this scene through the TLAS path"**,
+and it says: negligible. A monotonic upward drift across all three arms
+triple-to-triple (2.247 s → 2.347 s pristine, similarly for the other two) is
+visible in the table and is machine warm-up / thermal, not a measurement
+artifact specific to one arm — it moves all three columns together and
+the RATIOS stay flat.
+
 **Gate summary.**
 
 | Phase-2 gate | verdict |
