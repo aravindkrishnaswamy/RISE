@@ -555,7 +555,7 @@ Phase 3 is not four independent conveniences; three of its items rest on one
 new capability — a per-family **signed distance LOWER bound** with an exact
 sign — and the fourth (exact σ) tightens a bound Phase 1 left loose. Written
 2026-09-09 before Phase 3 began; revised the same day after three adversarial
-rounds (round 13, no P1 — sweep statistics re-attached to their conditions,
+rounds (round 14, no P1 — the design is converged; round 13, no P1 — sweep statistics re-attached to their conditions,
 the rounding band scoped, the exact-station reference named as the closed
 form, the exception count made consistent; round 12, 2 P1s: the flute walk's numbers were wrong and blamed the
 wrong disjunct; the header that hosts the `interior` body was unnamed;
@@ -693,10 +693,13 @@ micrometres of the slot's axis show it (recomputed in doubles, round 12):
 from local `(1e-6, ·, 0.26)` the radial descent lands at `q ≈ (9.615e-7,
 ·, 0.25 − 1.85e-12)` — the descent is a radial rescale `q = (0.25/R)·p`,
 so `f_A(q)` computes to exactly 0.0 at this station (not in general: it is
-strictly negative at 47 % of nearby stations and +1 ulp at 0.3 %) and
+strictly negative at 45–47 % of nearby stations and +1 ulp at under 1 %,
+the exact figures depending on whether the descent is modelled as the
+rescale or as the literal `p − f·ĝ`) and
 `f_B(q) = −1.8491·x² = −1.85e-12`, 1.85 pm INSIDE the slab. Across 200 000
-such stations `f_A < 0` strictly at 47 % and `f_B ≥ −τ` (τ = 5e-12) at
-53 %, jointly 25 %, so the tolerant `f_A < 0 ∧ f_B ≥ −τ` disjunct admits a
+such stations `f_A < 0` strictly at 45–47 % and `f_B ≥ −τ` (τ = 5e-12) at
+53 % (the τ crossover `|x| = sqrt(5e-12/1.8491)` = 1.64 µm over the
+sweep's `[1e-7, 3e-6]`), jointly ~24 %, so the tolerant `f_A < 0 ∧ f_B ≥ −τ` disjunct admits a
 landing that is inside the subtrahend — not in the real solid at all — and
 reports a 1.00 cm chord where the real solid is 4.21 cm away:
 `proximity(0.02)` = 0.5 against a truth of 0, the forbidden direction by
@@ -952,7 +955,7 @@ by design, so a shared latch would print the proximity message for every mesh
 and plane in the scene; refusal here is silent and disclosed. **The L1 memo's
 cliff**: `kL1Ways = 4` equals the number of signal kinds today, and `interior`
 is the fifth, so a body that queries all five would evict round-robin at 0 %
-hit rate; `kL1Ways` goes to 8, which puts `Tables` at ~2400 bytes, over the
+hit rate; `kL1Ways` goes to 8, which puts `Tables` at 2432 bytes, over the
 2048-byte ceiling `ExpressionMemoTest` (g) asserts — the ceiling was a
 regression guard, not a budget, and is raised to 4096 with the reason recorded
 in the test and in §6.5 of the convexity doc (43.8 kB across this machine's 18
@@ -1198,8 +1201,8 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   `f ≤ 0`, which contains the phantom touching set) with `gap_max` recorded
   and the grid spacing stated, and for a composite of EXACT operands
   `reported == closed form` to 1e-12 (the CLOSED FORM, not the grid — a
-  grid reference is `d + O(spacing)`, as §5.2 phrases the `n_sdf_sphere`
-  case) at the radial station of a cylinder-minus-box (the boundary arm fired: `f_A = 0.26 ⊖ 0.25` is exact
+  grid reference is `d + O(spacing)`; scene C's `n_sdf_sphere` — a field
+  exact outside — is the precedent for asserting a closed form at 1e-9) at the radial station of a cylinder-minus-box (the boundary arm fired: `f_A = 0.26 ⊖ 0.25` is exact
   by Sterbenz, so `0.26 ⊖ f_A = 0.25` exactly and `sqrt(x·x) = x` makes
   `f_A` a true 0 at the landing — the station does NOT exercise rounding)
   and `d ≤ reported ≤ d + gap_max` at an OBLIQUE station (a torus operand,
