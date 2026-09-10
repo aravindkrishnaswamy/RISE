@@ -2829,8 +2829,9 @@ against the tracked scene, never hard-coded.
   station (M3, 5 cm out) is picked by the test from a four-way sweep of
   vertex-distance clearance AND camera-sightline occlusion — the naive
   "furthest candidate" guess is wrong twice over (two of the four
-  candidates are within the radius, and two more are camera-occluded by
-  the bunny's own silhouette). The two painter stations (M1p, M1q) read
+  candidates, +x and −z, are both within the radius AND camera-occluded
+  by the bunny's own silhouette; +z clears the radius but not the 25 mm
+  margin guard). The two painter stations (M1p, M1q) read
   0.3195 / 0.8327 against a query of 0.3136 / 0.8385 (both within the
   ±0.15 noise band the §0 protocol expects at 512 spp), and the third (M3)
   reads exactly 0 against a query of exactly 0. Cost: 1.04x live vs

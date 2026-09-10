@@ -252,6 +252,12 @@ static bool DeriveGeometry( const fs::path& root, GeometryFacts& out )
 	for( int d = 0; d < 4; ++d ) {
 		if( out.m3ClearMM[d] > Scalar( 25.0 ) ) { ++clearCount; clearIdx = d; }
 	}
+	// The spec derives M3's direction by BOTH the 25 mm vertex clearance AND an
+	// unoccluded camera sightline. This geometry section runs before the scene
+	// (and its camera) is loaded, so the vertex clearance selects here and the
+	// sightline of the selected direction is asserted in section (c); on this
+	// asset only one candidate clears 25 mm, so a mismatch fails loudly rather
+	// than silently picking an occluded direction.
 	Check( clearCount == 1, "(a) MONEY: exactly one M3 candidate clears the 25 mm vertex-distance guard" );
 	out.m3DirIndex = clearIdx;
 	if( clearIdx >= 0 ) out.m3Station = candidates[clearIdx];

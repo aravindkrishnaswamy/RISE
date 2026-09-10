@@ -33,7 +33,7 @@ RISE ASCII SCENE 7
 #       within 2 cm of the shelf top) and the dragon (mesh-on-mesh at the dragon's feet, pinned at M4).
 #
 #   The dragon reads nothing (a plain Lambertian) and the shelf never sees the dragon: the dragon's lowest
-#   point sits 15.4 cm above the shelf top, ten times the 2 cm radius. The wall reads nothing either.
+#   point sits 15.4 cm above the shelf top, 7.7x the 2 cm radius. The wall reads nothing either.
 #
 #   ------------------------------------------------------------------------------------------------
 #   GEOMETRY
@@ -71,7 +71,7 @@ RISE ASCII SCENE 7
 #   ------------------------------------------------------------------------------------------------
 #
 #     location (0.22, 0.25, 0.42), lookat (0, 0.06, 0), up (0, 1, 0)
-#     distance to lookat            |location - lookat| = sqrt(0.22^2 + 0.19^2 + 0.42^2) = 0.507 m
+#     distance to lookat            |location - lookat| = sqrt(0.22^2 + 0.19^2 + 0.42^2) = 0.511 m
 #     sensor                        36 mm (horizontal extent)
 #     DoF (1-px circle of confusion, c = 0.045 mm at 800 px wide):
 #         near = s*f^2 / (f^2 + N*c*(s-f)) = 0.52*0.0025 / (0.0025 + 16*0.000045*0.47) = 0.458 m
@@ -80,7 +80,7 @@ RISE ASCII SCENE 7
 #     inside [0.458, 0.601].  The bunny's near flank (~0.40 m) and the shelf's near edge fall soft;
 #     stated, not hidden.
 #     Framing: the shelf top at the contact vertex is seen at 27.2 deg elevation (asin(0.25 / 0.547)) from
-#     0.547 m; a 2 cm ring there images at 20 px radial (2 * 0.02 m tangential subtense in pixels,
+#     0.547 m; a 2 cm ring there images at 20 px radial (0.02 m tangential subtense in pixels,
 #     44.7 px, times sin(27.2 deg)) -- comfortably over the framing rule's 8 px floor.
 #
 #   ------------------------------------------------------------------------------------------------
@@ -91,7 +91,7 @@ RISE ASCII SCENE 7
 #   `key`, pinned at (-0.35, 0.45, 0.25), camera-left and above, color (1.0, 0.96, 0.90) linear Rec.709
 #   (no gamma decode -- SCENE_CONVENTIONS.md 4).  `power` chosen for exposure: see "EXPOSURE" below.
 #   n.L at the shelf's painter stations, computed from the light and station geometry alone (independent
-#   of `power`): 0.7854 (M1p), 0.7822 (M1q), 0.7990 (M3) -- the shadow rays leave toward -x, away from the
+#   of `power`): 0.7854 (M1p), 0.7821 (M1q), 0.7993 (M3) -- the shadow rays leave toward -x, away from the
 #   bunny; the test casts each against the loaded scene and asserts it clear (the bunny, though blacked in
 #   the probe copies, still occludes).  No fill: indirect light off the wall and shelf top does that job
 #   (`shaderop DefaultPathTracing`); the bunny's upper, away-from-key flank reads near-black against the
