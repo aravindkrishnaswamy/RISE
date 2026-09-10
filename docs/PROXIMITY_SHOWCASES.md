@@ -1,7 +1,9 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, revised eighteen times the same day after
-adversarial rounds (round 18, 2 P1s: `DocIndexOfNodeId`'s absent value is
+Status: SPEC, 2026-09-10, revised nineteen times the same day after
+adversarial rounds (round 19, 1 P1: stripping a relief modifier by
+erasing its chunk leaves the object's `modifier` name dangling and
+`Job::AddObject` fails the object. Round 18, 2 P1s: `DocIndexOfNodeId`'s absent value is
 −1 and 0 is a legal index, so the "non-zero" assertion guarded nothing;
 the conventions doc's own remedies for a dark scene — an area light or a
 sky — would extinguish the probe or survive into it unaddressed, so
@@ -183,8 +185,9 @@ rasterizers). The painter stations below prove it anyway.
   for the rasterizer chunk is `oidn_denoise FALSE` AND `samples 512` (the
   shipped scenes render at fewer). The black-out is scoped per showcase: showcase 1
   renders under the direct-only `pixelpel_rasterizer`, where the ratio is
-  the albedo with no other change, so its probe is the `expr` swap alone;
-  showcases 2 and 3 are path-traced, where interreflection off the other
+  the albedo with no other change, so its probe is the `expr` swap alone
+  (plus the two rasterizer setters every probe gets); showcases 2 and 3
+  are path-traced, where interreflection off the other
   surfaces is not linear in the receiver's albedo, so BOTH copies also
   point every non-receiver OBJECT's `material` parameter at the inserted
   black `lambertian_material` (`DocSetOrAddParamValue` on the object
@@ -217,12 +220,16 @@ rasterizers). The painter stations below prove it anyway.
   re-issuing lands it; that refusal is not a reason to substitute an area
   light). No scene carries an `ambient_light` (§3.5: never author one —
   a flat unshadowed constant that path tracing makes redundant — and the
-  agent surface REFUSES the chunk on every route), a `radiance_map`, a
-  skylight or a relief modifier. A worker who adds a `radiance_map`
-  (`DocRemoveParam` on the rasterizer chunk) or a modifier
-  (`DocEraseChunkTidy`) for the BEAUTY strips it from both probe copies
-  and says so; a skylight chunk carries no `name` and would have to be
-  found by role enumeration like the rasterizer — do not add one. With
+  agent surface REFUSES the chunk on every route), a `radiance_map` (on
+  the rasterizer or per-object on a `standard_object` — both forbidden,
+  same reason), a skylight (its chunk carries no `name` and would have to
+  be found by role enumeration like the rasterizer — do not add one) or a
+  relief modifier. A worker who adds a modifier for the BEAUTY strips it
+  from both probe copies with `DocRemoveParam` on each OBJECT chunk that
+  names it through its `modifier` param — NOT by erasing the modifier
+  chunk, which leaves the name dangling so `Job::AddObject` fails the
+  object outright ("Modifier not found") and the receiver is missing; the
+  unreferenced chunk may then be left in place — and says so. With
   the probe and the CONTROL copies lit identically — the same lights, the
   same black-out — the ratio argument needs no lighting caveat (the
   beauty is lit the same but not blacked; it is judged, not divided). The
@@ -495,7 +502,8 @@ scene and ADDS S6, S7, the painter stations and the cost.
   sightline enters the cylinder's disc at local x = 0.029 ≤ 0.04, through
   the mouth.
 - Painter stations at S1 and S6 ONLY, from the shipped camera (the cap is
-  already a Lambertian; the `expr` swap alone is the probe): 0.5 within
+  already a Lambertian; the `expr` swap plus the two rasterizer setters
+  is the probe): 0.5 within
   0.15 at S1 (2.03 mm/px radial, stated) and 0 within 0.08 at S6. S7 is
   QUERY-only: the pavilion's two lights, `ceiling_light` (0, 4.5, 0) and
   `fill_light` (3, 3, 4), are both behind the flute wall from a point
