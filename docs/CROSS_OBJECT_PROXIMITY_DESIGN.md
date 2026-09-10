@@ -1222,10 +1222,12 @@ the INDEXED family answers exactly 1.0 from the same probe point.
 mismatches** against the serial reference, bit for bit.
 
 **(h) The two candidate sources agree.** Two managers over ONE SHARED object
-set (10 spheres + a tessellated-sphere mesh), differing only in `bUseBSPtree`,
+set (10 spheres + a tessellated-sphere mesh, and since review round 1 an
+infinite plane, an emitter, a world-invisible sphere and an anisotropically
+scaled sphere), differing only in `bUseBSPtree`,
 so one walks the TLAS and the other cannot build one; 6,000 probes at three
-radii with `self` rotating through the set: **2,484 agreed-answered, 3,516
-agreed-far, 0 mismatches**. Sharing the objects rather than rebuilding them is
+radii with `self` rotating through the set: **3,018 agreed-answered, 2,982
+agreed-far, 0 mismatches** (2,484 / 3,516 before the four families joined). Sharing the objects rather than rebuilding them is
 what makes the comparison exact — there is no second construction for a float
 to differ in.
 
@@ -1343,7 +1345,7 @@ was noise:
 | p3 | 19.683 s | 21.638 s | 1.099× |
 | p4 | 19.677 s | 22.476 s | 1.142× |
 | p5 | 19.531 s | 22.229 s | 1.138× |
-| **mean** | **19.792 s** | **21.644 s** | **1.094×** (mean of per-pair ratios; 1.093× on the pooled means) |
+| **mean** | **19.792 s** | **21.644 s** | **1.094×** (mean of per-pair ratios; 1.094× on the pooled means, 21.6436/19.7916) |
 
 **1.094× against ≤ 1.25×: PASS.** The counter after the pre-test: **5.617
 candidates evaluated per query** (5.6172 / 5.6166 / 5.6167 / 5.6172 / 5.6174
@@ -1476,8 +1478,8 @@ being unbounded. Comment corrected at the site (ObjectManager.cpp, the
 | scene D reads 0 under the light panel | PASS (exactly 0) |
 | Sponza ≤ 1.25× baseline with the query forced at every hit | **PASS at 1.067× — after the TLAS point query. FAILED at 1.273× on the flat scan, which is why the upgrade shipped** |
 | Sponza floor ≥ 0.5 within 2 cm of a wall at `proximity(0.04)` | PASS (0.50, exactly at the gate) |
-| `MeshClosestPointTest` | 56 passed, 0 failed |
-| `ProximitySignalTest` | 107 passed, 0 failed |
+| `MeshClosestPointTest` | 63 passed, 0 failed (56 before review round 1's four (h) families and three station checks) |
+| `ProximitySignalTest` | 124 passed, 0 failed (107 before review round 1's (g2) TLAS staleness contract) |
 | `ProximityInvalidationTest` | 25 passed, 0 failed |
 | `ExpressionMemoTest` | 196 passed, 0 failed |
 | `TextureExpressionVMTest` | 846 passed, 0 failed (unmoved) |
