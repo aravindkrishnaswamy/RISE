@@ -88,8 +88,11 @@ scene points at a Windows path and must be copied with `file` rewritten.
 where `d` is the shortest distance from the hit point to the surface of any
 **other** world-visible object. **1 = touching, 0 = nothing within `r`.** The
 neutral fallback is **0** (the do-nothing end, like `convexity`): no scene, no
-neighbour that can answer, an unusable radius, or a non-PT integrator's rebuilt
-record all read 0 and paint nothing.
+neighbour that can answer, an unusable radius, a BSSRDF entry vertex, or (until
+slice S3 of SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md lands) `LightSampler`'s
+hand-built emitter record all read 0 and paint nothing. (Before 2026-09-11 this
+list also held "a non-PT integrator's rebuilt record"; slice S1 closed that —
+§5.1, §10.)
 
 Why this quantity and not a visibility one: §8.1's measurement. A thin object on
 a plane subtends grazing directions only, so every hemisphere estimator reads a
@@ -1157,7 +1160,10 @@ intersection/subtraction with one refuses).
 - **Thread safety of the memo:** the query rides the existing `thread_local`
   tables (trivially constructible and destructible, `static_assert`ed); nothing
   new is shared.
-- **PT-first; BDPT/VCM/MLT residual** identical in extent to the other signals.
+- **PT-first; BDPT/VCM/MLT residual** identical in extent to the other signals
+  (**CLOSED 2026-09-11** for the surface-vertex rebuild by slice S1 of
+  SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md; the `LightSampler` emitter-record
+  residual is slice S3 — see §10).
 
 ---
 
@@ -3244,10 +3250,12 @@ measured by a harness test against the tracked scene.
   intersection or subtraction with a SHEET or heightfield-SDF operand, a union
   of two refusing operands, a bracket that finds no admitted landing in
   budget, and a seam gradient below 1e-12.
-- **The signal is PT-only more sharply than the first bullet suggests.** The
-  channel is stamped by `ObjectManager::IntersectRay`, so EVERY consumer that
-  builds its own hit record reads the neutral 0 — `PathVertexEval`, the GUI's
-  painter preview, realize-time displacement, `HairGenerator`. That is the same
+- **Every consumer that builds its own hit record reads the neutral 0** — the
+  GUI's painter preview, realize-time displacement, `HairGenerator`, BSSRDF
+  entry vertices, and (until slice S3) `LightSampler`'s emitter record. The
+  channel is stamped by `ObjectManager::IntersectRay`, and since 2026-09-11
+  `PathVertexEval::PopulateRIGFromVertex` FORWARDS that stamp (it no longer
+  belongs in this list — the first bullet above is CLOSED). That is the same
   set the other three signals are neutral on, but here the neutral means "no
   contact anywhere in the scene", which is a more visible absence than
   "unoccluded".
