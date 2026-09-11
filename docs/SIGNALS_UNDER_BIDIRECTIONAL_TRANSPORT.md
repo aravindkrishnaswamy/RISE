@@ -465,7 +465,7 @@ Ledger (filled per slice):
   | after S1 `089dfa76` | 19.0 ± 0.4 | 21.3 ± 0.2 | 22.6 ± 0.1 | 2.18e-4 | 9.58e-3 | 2.49e-5 | 0.2819 (1.039×) | 0.1503 (0.554×) |
   | after S3+S4 `b7fe5f51` | 19.6 ± 0.4 | 22.5 ± 1.0 | 23.6 ± 0.1 | 2.18e-4 | 9.58e-3 | 2.49e-5 | 0.2818 | 0.1503 |
 
-  σ²·T (BDPT): 0.216 → 0.204 → 0.215; (VCM): 5.9e-4 → 5.6e-4 → 5.9e-4. Reading: S1 bought the memo win (−6 % BDPT, −5 % VCM); S3's probe gives it back on this scene (+5–6 % BDPT, 21.3 → 22.5 s; +4.6 % VCM, 22.6 → 23.6 s: the plank's two `rect_light` luminaries are NEE-sampled with the gate open, so every NEE sample pays one object-level closest-hit) — net ≈ master within noise (BDPT 22.5 vs 22.7, VCM 23.6 vs 23.8), σ² unchanged throughout (the image is the same image after S1; the plank's emitters read no signal, so S3 changes nothing here). The final-round reviewer's independent single runs (PT 20.1 s, BDPT 22.6 s) agree.
+  σ²·T (BDPT): 0.215 → 0.204 → 0.215; (VCM): 5.9e-4 → 5.6e-4 → 5.9e-4. Reading: S1 bought the memo win (−6 % BDPT, −5 % VCM); S3's probe gives it back on this scene (+5–6 % BDPT, 21.3 → 22.5 s; +4.6 % VCM, 22.6 → 23.6 s: the plank's two `rect_light` luminaries are NEE-sampled with the gate open, so every NEE sample pays one object-level closest-hit) — net ≈ master within noise (BDPT 22.5 vs 22.7, VCM 23.6 vs 23.8), σ² unchanged throughout (the image is the same image after S1; the plank's emitters read no signal, so S3 changes nothing here). The final-round reviewer's independent single runs (PT 20.1 s, BDPT 22.6 s) agree.
 
 ## 10. Residuals and non-goals (stated up front)
 
