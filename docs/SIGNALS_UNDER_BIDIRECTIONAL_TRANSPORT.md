@@ -337,21 +337,26 @@ Once S1–S3 have landed and §6 is green:
 - Delete `SurfaceSignalDemand` (its only consumer was the warning) and the
   `m_signalDemand` registrations in both expression painters;
   `SurfaceCurvatureDemand` and `ProximityDemand` stay (they gate real work).
-- Rewrite the limitation family in one pass: the curv/occlusion/... builtin
-  descriptor text (`ChunkParserRegistry.cpp` ~:1631 and any twin),
-  `scenes/FeatureBased/README.md` ~:56, OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md
-  ~:813, PROXIMITY_SHOWCASES.md, `ExpressionPainter.h` / `ExpressionEval.h`
-  comments, `MeshSignalBake.cpp`, `ISurfaceSignalProvider.h` (the
-  `SurfaceSignalInfo` "ZERO IS THE HONEST ABSENCE" paragraph names
-  `PopulateRIGFromVertex` as a neutral source), `RayIntersectionGeometric.h`,
-  `BDPTVertex.h`, `PathVertexEval.h`. Separately, the `tests/ProximitySignalTest.cpp`
-  comment near its "(f) teeth" checks names `SurfaceSignalDemand` as what a
-  signal call registers — it must follow that namespace out when the second
-  bullet above deletes it (it carries no integrator claim of its own).
+- The limitation family, per file, with its status at the S1 branch head
+  (S4 finishes every row marked "S4"; rows marked "S1" are already true and
+  need only their "(until S3)" clauses dropped once S3 lands):
+
+  | surface | status |
+  |---------|--------|
+  | `ChunkParserRegistry.cpp` builtin descriptors (~:1631 scalar pipe, ~:6958 colour pipe) — "BDPT / VCM / MLT currently evaluate them as their neutral fallback in PARTS of their transport … one-time warning" | S4 |
+  | `scenes/FeatureBased/README.md` ~:56 and the two showcase headers `GeometrySignals/weathered_reliquary.RISEscene`, `Materials/velvet_cushion.RISEscene` | S4 |
+  | OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §7 "BDPT / VCM / MLT residual"; PROXIMITY_SHOWCASES.md (the containment-warning sentence) | S4 |
+  | `ExpressionPainter.h` (`m_signalDemand` comments) / `ExpressionEval.h`; `MeshSignalBake.cpp` | S4 (the member goes with `SurfaceSignalDemand`) |
+  | `ISurfaceSignalProvider.h` "ZERO IS THE HONEST ABSENCE" paragraph and `NeutralProximity()`'s doc block; `SurfaceSignalProximity.h` precondition table; `RayIntersectionGeometric.h` `signals` comment; `BDPTVertex.h`; `PathVertexEval.h` contract block | S1 — rewritten: they state that `PopulateRIGFromVertex` FORWARDS the stamp and name the S3 residual |
+  | `ISurfaceSignalProvider.h` `WarnIfNonPTRenderHasLiveSignalConsumer` doc block + `PrintEx` string | S1 — narrowed to the S3 residual; S4 deletes the helper, its five call sites, `SurfaceSignalDemand`, and the two `m_signalDemand` members |
+  | `tests/ProximitySignalTest.cpp` — the comment near its "(f) teeth" checks names `SurfaceSignalDemand` as what a signal call registers (no integrator claim of its own) | S4 — follows the namespace out |
+  | `skills/agent/materials-and-media-basics.md` wetness section ("A wet PT render will not match…") | S4 |
+  | WETNESS_COAT_DESIGN.md (§3.7 item 3, §6.9 item 10, §9, §12 item 1); CLOTH_FABRIC_DESIGN.md (§15 item 8) | S1 — interim dated notes; S4 final wording |
+  | CROSS_OBJECT_PROXIMITY_DESIGN.md §2 definition, §5.1, §6 "PT-first" bullet, §10 both bullets | S1 — closed with dated notes; S4 drops the "(until S3)" clauses |
+
 - GEOMETRY_SHADING_SIGNALS_DESIGN.md: header status line + §13 "Known
   residual" + §14 item 11 → **CLOSED 2026-09-xx** with the §6.2 numbers and
-  §7 cost deltas. CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1, §10 and the
-  "PT-only more sharply" bullet → closed likewise.
+  §7 cost deltas (S4).
 - AUTO_RASTERIZER_DESIGN.md: one sentence recording that no signal rule
   ever existed and none is needed.
 - `docs/README.md` index entry for this document; `tests/README.md` row for
@@ -362,15 +367,8 @@ Once S1–S3 have landed and §6 is green:
   rewritten to the post-S3 truth (an earlier audit line here claimed no
   skill carried one — reviewer D of S1 round 2 found this one).
   `procedural-textures.md` and `object-modeling-recipes.md` carry only
-  neutral-value teaching, which stays true. The two showcase scene headers
-  `scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene` and
-  `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` repeat the README
-  sentence and are part of the same family. So do the two material design
-  docs that restate item 11 as an inherited debt —
-  WETNESS_COAT_DESIGN.md (§3.7 item 3, §6.9 item 10, §9, §12 item 1) and
-  CLOTH_FABRIC_DESIGN.md (§15 item 8) — annotated with the interim S1 truth
-  on the branch (round 5 of S1 found them); S4 gives them their final wording
-  once S3 lands.
+  neutral-value teaching, which stays true. (The showcase headers and the
+  two material design docs are rows of the table above.)
 
 ## 9. Slices, gates, reviewers
 
@@ -394,7 +392,7 @@ logs, every "neutral under BDPT" sentence in the tree found and fixed.
 
 Ledger (filled per slice):
 
-- S1 — landed `925c2720` (sizeof(BDPTVertex) 608 → 1016 B, +408 exactly, recomputed by two reviewers; 15 gate suites green, 0 warnings over 228 recompiled TUs). Review round 1 (A transport/MIS on Opus, B test strength, C comment fidelity; its fixes landed in two commits, `cb210926` and `5b28c33e` — the latter's title says "round 2" but it is round 1's P2 follow-up): transport core CLEAN; one P1 shared by A and C — the containment warning's doc block and runtime string still claimed the whole bidirectional transport reads neutral — fixed `cb210926` (narrowed to the S3 residual); P2s fixed `cb210926` (doc counts, symbol cites, S3 scope: HWSS companion record + LIGHT-root vertex copy, five call sites) and `5b28c33e` (sentinel test 55 → 68 checks: mixed-boolean passes close the same-struct boolean-swap blind spot, `mediumIOR`→`ambientIOR` sentinels incl. the ≤0 guard; `VCMLightVertex.h` stale vColor replay comments rewritten). B's red-proofs: dropping each of the three copies goes red by member name (13 / 16 / 11 FAILs); a population-site omission is caught by NO S1 suite — that is §6's job, as designed. Round 2 (D doc family, E correctness — fresh): D found ONE P1 — the proximity doc's §10 residual bullet still said the contract was "explicitly declined", contradicting its own §5.1 — fixed in the next commit, together with D's P2 (the §8 skill-audit line was wrong: `materials-and-media-basics.md` carries an integrator warning; now on S4's list). E: _pending_. Round 3 (doc fidelity, fresh): TWO P1s, both the same stale sentence in CROSS_OBJECT_PROXIMITY_DESIGN.md that round 2 had fixed in one place (§2 the signal's definition; §10 the "PT-only more sharply" bullet) — fixed in the next commit together with the §6 "Engine principles, checked" bullet ("PT-first; BDPT/VCM/MLT residual"), after a whole-file sweep for the family (`PathVertexEval`, `rebuilt record`, `non-PT`, `read 0`, `PT-only`, `BDPT/VCM/MLT`). E (round 2, correctness, fresh): CLEAN, zero P1 — both population sites copy before every exit, defaults value-initialised, thread-locals cleared per sample, no layout consumer of sizeof(BDPTVertex); red-proof recount 18/13/13 on the 68-check suite reconciles with 16/13/11 on the 55-check suite; one P2 (the warning's doc block attributed the light-subpath root vertex to LightSampler.cpp — it is built by GenerateLightSubpathImpl) fixed in the round-4 commit. Round 4 (doc fidelity, fresh): TWO P1s — `NeutralProximity()`'s doc block in ISurfaceSignalProvider.h still listed "a hit rebuilt by BDPT/VCM/MLT" (a SOURCE sibling the doc sweeps never covered), and this document's §1 problem statement carried no closure note — plus the `§8.x` mis-cite; all fixed in the next commit, together with the same sentence's last sibling in SurfaceSignalProximity.h (found by a supervisor grep of all of src/ for `BDPT/VCM/MLT`). Round 5 (doc fidelity, fresh): FIVE P1s, all the same restated debt in two material design docs the branch had never touched — WETNESS_COAT_DESIGN.md ×4 and CLOTH_FABRIC_DESIGN.md ×1 — annotated with the interim S1 truth in the next commit after a docs-wide grep for `item 11` and the "neutral in parts" phrasing (the only other hits are the S4-scheduled files). Round 6 (doc fidelity, fresh, pinned to `8687bfb1`): ONE P1 — a section mis-cite in §8 (WETNESS_COAT_DESIGN.md's item-10 list is §6.9, not §6.10); every annotation's content verified true; every hit outside the S4-scheduled files classified true/historical/unrelated. Fixed in the next commit. Round 7 (confirming pass): the one-line fix confirmed; ONE P1 in the original text — §8 cited `tests/ProximitySignalTest.cpp ~:1282` as carrying the integrator sentence; it carries a `SurfaceSignalDemand` mention (S4 deletes that namespace), nothing about integrators — reworded. Round 8 (confirming): _pending_.
+- S1 — landed `925c2720` (sizeof(BDPTVertex) 608 → 1016 B, +408 exactly, recomputed by two reviewers; 15 gate suites green, 0 warnings over 228 recompiled TUs). Review round 1 (A transport/MIS on Opus, B test strength, C comment fidelity; its fixes landed in two commits, `cb210926` and `5b28c33e` — the latter's title says "round 2" but it is round 1's P2 follow-up): transport core CLEAN; one P1 shared by A and C — the containment warning's doc block and runtime string still claimed the whole bidirectional transport reads neutral — fixed `cb210926` (narrowed to the S3 residual); P2s fixed `cb210926` (doc counts, symbol cites, S3 scope: HWSS companion record + LIGHT-root vertex copy, five call sites) and `5b28c33e` (sentinel test 55 → 68 checks: mixed-boolean passes close the same-struct boolean-swap blind spot, `mediumIOR`→`ambientIOR` sentinels incl. the ≤0 guard; `VCMLightVertex.h` stale vColor replay comments rewritten). B's red-proofs: dropping each of the three copies goes red by member name (13 / 16 / 11 FAILs); a population-site omission is caught by NO S1 suite — that is §6's job, as designed. Round 2 (D doc family, E correctness — fresh): D found ONE P1 — the proximity doc's §10 residual bullet still said the contract was "explicitly declined", contradicting its own §5.1 — fixed in the next commit, together with D's P2 (the §8 skill-audit line was wrong: `materials-and-media-basics.md` carries an integrator warning; now on S4's list). E: _pending_. Round 3 (doc fidelity, fresh): TWO P1s, both the same stale sentence in CROSS_OBJECT_PROXIMITY_DESIGN.md that round 2 had fixed in one place (§2 the signal's definition; §10 the "PT-only more sharply" bullet) — fixed in the next commit together with the §6 "Engine principles, checked" bullet ("PT-first; BDPT/VCM/MLT residual"), after a whole-file sweep for the family (`PathVertexEval`, `rebuilt record`, `non-PT`, `read 0`, `PT-only`, `BDPT/VCM/MLT`). E (round 2, correctness, fresh): CLEAN, zero P1 — both population sites copy before every exit, defaults value-initialised, thread-locals cleared per sample, no layout consumer of sizeof(BDPTVertex); red-proof recount 18/13/13 on the 68-check suite reconciles with 16/13/11 on the 55-check suite; one P2 (the warning's doc block attributed the light-subpath root vertex to LightSampler.cpp — it is built by GenerateLightSubpathImpl) fixed in the round-4 commit. Round 4 (doc fidelity, fresh): TWO P1s — `NeutralProximity()`'s doc block in ISurfaceSignalProvider.h still listed "a hit rebuilt by BDPT/VCM/MLT" (a SOURCE sibling the doc sweeps never covered), and this document's §1 problem statement carried no closure note — plus the `§8.x` mis-cite; all fixed in the next commit, together with the same sentence's last sibling in SurfaceSignalProximity.h (found by a supervisor grep of all of src/ for `BDPT/VCM/MLT`). Round 5 (doc fidelity, fresh): FIVE P1s, all the same restated debt in two material design docs the branch had never touched — WETNESS_COAT_DESIGN.md ×4 and CLOTH_FABRIC_DESIGN.md ×1 — annotated with the interim S1 truth in the next commit after a docs-wide grep for `item 11` and the "neutral in parts" phrasing (the only other hits are the S4-scheduled files). Round 6 (doc fidelity, fresh, pinned to `8687bfb1`): ONE P1 — a section mis-cite in §8 (WETNESS_COAT_DESIGN.md's item-10 list is §6.9, not §6.10); every annotation's content verified true; every hit outside the S4-scheduled files classified true/historical/unrelated. Fixed in the next commit. Round 7 (confirming pass): the one-line fix confirmed; ONE P1 in the original text — §8 cited `tests/ProximitySignalTest.cpp ~:1282` as carrying the integrator sentence; it carries a `SurfaceSignalDemand` mention (S4 deletes that namespace), nothing about integrators — reworded. Round 8 (confirming): ONE P1 — §8's parenthetical on `ISurfaceSignalProvider.h` still described that paragraph's PRE-S1 wording ("names PopulateRIGFromVertex as a neutral source"); §8's family list is now a per-file STATUS table (S1-done / S4) so it cannot describe a snapshot again. Round 9 (confirming): _pending_.
 - S2 — _pending_
 - S3 — _pending_
 - S4 — _pending_
