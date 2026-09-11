@@ -143,54 +143,69 @@
 //
 //  BAND: 5 % relative on the per-channel mean.
 //
-//    Derived from the observed run-to-run spread at 40x40 (renders seed
-//    from the wall clock, and BDPT/VCM splat accumulation is
-//    thread-order dependent, so every render is an independent draw).
-//    FIVE full runs of the row set on an Apple-silicon Mac, worst
-//    |EXPR/CONTROL - 1| per row, in percent:
+//    Derived from the observed run-to-run spread at 40x40.  RISE renders
+//    are NOT wall-clock seeded (an earlier draft of this comment claimed
+//    they were, the same mistake tests/SignalIntegratorConsistencyTest.cpp
+//    made and corrected): every render worker's `RandomNumberGenerator`
+//    draws its default `seed = rand()` from libc's global state, read and
+//    mutated unsynchronized across `ThreadPool::ParallelFor` threads, and
+//    BDPT/VCM splat accumulation is thread-order dependent on top of that
+//    -- so the row-to-row independence below comes from the distinct
+//    `std::srand( g_seedBase + g_renderIndex++ )` this file now issues
+//    before every `Rasterize()` call (see g_seedBase's declaration), not
+//    from the clock.  FIVE FRESH RUNS at seed bases 1000, 2000, 3000,
+//    4000, 5000 (`./SignalEmitterRecordTest <base>`; logs saved as
+//    s3_final_seed<base>.txt), worst |EXPR/CONTROL - 1| per row, in
+//    percent:
 //
-//      A / PT                  0.056  0.020  0.022  0.063  0.018
-//      A / BDPT                0.481  0.211  0.217  0.222  0.377
-//      A / VCM                 0.150  0.099  0.109  0.090  0.129
-//      A / PT-spectral         0.995  0.143  0.187  0.622  0.019
-//      A / BDPT-spectral       0.269  1.144  0.717  0.225  0.583
-//      A / VCM-spectral        0.248  0.024  0.310  0.659  0.403
-//      A / BDPT-spec + HWSS    0.061  0.475  0.620  0.845  0.402
-//      B / PT                  0.009  0.017  0.015  0.080  0.055
-//      C / PT                  0.323  0.819  0.651  0.188  0.148
-//      C / BDPT                0.002  0.010  0.014  0.013  0.040
-//      C / VCM                 0.068  0.010  0.016  0.041  0.005
-//      D / PT                  0.070  0.039  0.027  0.012  0.015
-//      D / BDPT                0.144  0.068  0.176  0.168  0.201
-//      D / VCM                 0.118  0.115  0.236  0.062  0.051
-//      D gate-inv CONTROL      0.014  0.065  0.030  0.007  0.004
-//      D gate-inv EXPR         0.003  0.010  0.005  0.039  0.003
-//      E / PT                  0.028  0.014  0.004  0.039  0.017
-//      E / BDPT                0.043  0.039  0.129  0.026  0.126
-//      E / VCM                 0.037  0.081  0.236  0.261  0.289
-//      F / PT                  0.011  0.046  0.028  0.054  0.051
-//      F / BDPT                0.005  0.010  0.083  0.010  0.070
-//      F / VCM                 0.004  0.002  0.037  0.058  0.060
+//      A / PT                  0.049  0.077  0.040  0.021  0.053
+//      A / BDPT                0.107  0.358  0.456  0.112  0.142
+//      A / VCM                 0.156  0.053  0.005  0.100  0.201
+//      A / PT-spectral         0.719  0.372  0.823  0.342  0.615
+//      A / BDPT-spectral       0.639  0.194  0.962  0.375  0.100
+//      A / VCM-spectral        0.773  0.359  0.876  0.820  0.579
+//      A / BDPT-spec + HWSS    0.361  0.184  0.217  0.349  0.371
+//      B / PT                  0.028  0.039  0.016  0.019  0.022
+//      C / PT                  0.037  0.036  0.338  0.328  0.268
+//      C / BDPT                0.005  0.012  0.002  0.031  0.015
+//      C / VCM                 0.014  0.043  0.008  0.017  0.064
+//      D / PT                  0.036  0.007  0.067  0.011  0.006
+//      D / BDPT                0.046  0.131  0.007  0.031  0.469
+//      D / VCM                 0.012  0.032  0.114  0.331  0.176
+//      D gate-inv CONTROL      0.106  0.059  0.054  0.041  0.018
+//      D gate-inv EXPR         0.018  0.027  0.036  0.067  0.017
+//      E / PT                  0.088  0.146  0.022  0.051  0.010
+//      E / BDPT                0.067  0.453  0.237  0.204  0.196
+//      E / VCM                 0.210  0.373  0.005  0.364  0.107
+//      F / PT                  0.005  0.036  0.115  0.096  0.078
+//      F / BDPT                0.048  0.031  0.066  0.084  0.026
+//      F / VCM                 0.000  0.052  0.098  0.028  0.041
 //
-//    THE LARGEST OF THESE FIVE RUNS IS 1.14 % (A / BDPT-spectral,
-//    run 2).  That is a five-run MAXIMUM, not a bound on the row, and
-//    saying otherwise is what the round-2 review corrected (H2 P2-9):
-//    the previous header called 0.61 % "worst observed" and reviewers
-//    then saw 0.74 % and 1.10 % on the same spectral rows.  The band is
-//    set from the TAIL BEHAVIOUR of those rows -- the non-HWSS spectral
-//    rows draw one wavelength per pixel sample, so their per-channel
-//    mean is chromatically noisy and does excur past 1 % -- and 5 % is
-//    roughly 4x the largest seen across the dozen-odd runs behind this
-//    file while still sitting 64x below the smallest sensitivity swing
-//    (318 %).  A row that regressed to a neutral read moves 8 %
-//    (C / VCM, red-proof 9) to 75 % (most others), so the band
-//    separates the two populations by more than an order of magnitude
-//    at either end.  It is NOT a promise that a given run lands under
-//    1.14 %.
+//    THE LARGEST OF THESE FIVE RUNS IS 0.96 % (A / BDPT-spectral, seed
+//    base 3000).  That is a five-run MAXIMUM, not a bound on the row --
+//    the round-2 review's correction (H2 P2-9) still applies: an earlier
+//    header called 0.61 % "worst observed" and reviewers then saw 0.74 %
+//    and 1.10 % on the same spectral rows, and this re-measurement (now
+//    genuinely independent, not a wall-clock hope) puts the observed
+//    ceiling at 0.96 %, still not a promise for every future run.  The
+//    margin to the 5 % band from THIS measurement is 5.2x (5 / 0.96);
+//    earlier, non-frozen-seed rounds observed C/PT as high as 1.53 %,
+//    A/BDPT-spectral+HWSS 1.27 % and E/BDPT 0.65 % over just two ad hoc
+//    runs, which is why the band is set from TAIL BEHAVIOUR, not from
+//    any one run's maximum: the non-HWSS spectral rows draw one wavelength per pixel
+//    sample, so their per-channel mean is chromatically noisy and can
+//    excur past 1 % on an unlucky draw, and 5 % keeps roughly 4-5x
+//    headroom above every ceiling observed across this file's history
+//    while still sitting 60x+ below the smallest sensitivity swing
+//    (~320 %).  A row that regressed to a neutral read moves 8 %
+//    (C / VCM, red-proof 9) to 75 % (most others), so the band separates
+//    the two populations by more than an order of magnitude at either
+//    end.  It is NOT a promise that a given run lands under 0.96 %, only
+//    that the tail is nowhere near the failure population.
 //
-//    The SENSITIVITY rows measured 399.7-400.5 % (curv and Po
-//    families), 317.7-323.2 % (proximity) and 399.9-400.4 % (family F)
-//    across the same five runs.
+//    The SENSITIVITY rows measured 399.6-400.5 % (curv and Po families),
+//    319.5-322.2 % (proximity) and 399.7-400.3 % (family F) across the
+//    same five seeded runs.
 //
 //    SAMPLE COUNTS ARE NOT UNIFORM, and both departures from the base
 //    48 are deliberate and were measured, not guessed:
@@ -200,7 +215,7 @@
 //        noise is the largest in the suite.  Nine runs at the original
 //        48 samples spread to 2.89 %, and five runs at 192 still
 //        reached 1.67 %; 384 brought the worst of five to 0.85 %, and
-//        the five runs tabled above to 0.27 %.
+//        the five seeded runs tabled above to 0.34 %.
 //      * THE NON-HWSS SPECTRAL ROWS RUN AT 2048.  `spectral_samples 1`
 //        draws ONE wavelength per pixel sample out of 380-720 nm, so
 //        the per-channel mean carries a CHROMATIC error the RGB rows do
@@ -272,10 +287,13 @@
 //        the probe cleared the floor only on roughly half the samples,
 //        the ones whose Newton projection happened to land OUTSIDE the
 //        true surface -- the half that landed INSIDE lowered the
-//        clearance below the floor and refused instead.  That
-//        measurement is what sizes
-//        `kEmitterProbeStandoffCushionFraction`, whose 0.001 * diag was
-//        then confirmed over five runs at worst 0.494 % on family E.)
+//        clearance below the floor and refused instead.  THAT 37.4 / 35.1
+//        CUSHION-0 COLLAPSE is what sizes
+//        `kEmitterProbeStandoffCushionFraction` -- 0.001 * diag is what
+//        closes it, not any post-hoc percentage -- and the choice is only
+//        CONFIRMED, not derived, by family E's five-seeded-run worst of
+//        0.45 % (E / BDPT, seed base 2000; see the table above), well
+//        inside the 5 % band.
 //
 //    (4) Skip `ApplyEmitterSurface` at the NM NEE site
 //        (`LightSampler::EvaluateDirectLightingNM`).  1 FAIL:
@@ -1444,9 +1462,14 @@ int main( int argc, char** argv )
 
 	// The unified-probe row.  At HEAD~ -- with the NEE sites still
 	// firing along `vToLight` -- PT read 23.2 % off its baked control
-	// while BDPT and VCM read 0.085 % and 0.084 % off theirs.  See the
-	// emitter's own comment for why, and the red-proof list in the file
-	// header for the mutation that reproduces it.
+	// while BDPT and VCM stayed inside the band (red-proof (11) in the
+	// file header reproduces this exact scenario by mutation on the
+	// current tree and is the authoritative figure: F/BDPT 0.00065 %,
+	// F/VCM 0.0069 % -- this comment used to carry a stale, differently
+	// derived 0.085 % / 0.084 % pair for the same claim; keep the
+	// header's number).  See the emitter's own comment for why, and the
+	// red-proof list in the file header for the mutation that
+	// reproduces it.
 	static const Family kTwoLobe = {
 		"F: two-lobe SDF emitter, casts_shadows FALSE, keyed on curv",
 		kCommonHead, kEmitterSdfTwoLobe,
