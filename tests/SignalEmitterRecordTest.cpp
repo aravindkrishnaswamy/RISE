@@ -71,7 +71,7 @@
 //    every surface point, so `clamp(8*|Po|^2, 0, 1)` saturates to 1
 //    with 2x headroom.  The control is again `1.0`.
 //
-//  THE FIVE FAMILIES, and what each one is the only witness for
+//  THE SIX FAMILIES, and what each one is the only witness for
 //
 //    A  SDF sphere, `curv`.  The broadest row set: PT / BDPT / VCM in
 //       RGB, all three again SPECTRAL, and BDPT-spectral once more with
@@ -84,10 +84,13 @@
 //       curvature path (the Weingarten map via dndu/dndv, not an SDF
 //       field Hessian) has to arrive at the record too.
 //    C  flat quad + box neighbour, `proximity(1.0)`.  The cross-object
-//       triple.  Run under BDPT and VCM as well as PT, because those
-//       two are the only rows that carry the triple through
-//       `ProbeEmitterSurfaceAlongNormal` rather than through the NEE
-//       `ProbeEmitterSurface`.
+//       triple.  Run under BDPT and VCM as well as PT because the
+//       triple reaches them by a different ROUTE: PT probes at the NEE
+//       site and applies the payload there, while BDPT and VCM get it
+//       off `LightSample::surface`, probed once in `SampleLight`.
+//       (Both routes call the same `ProbeEmitterSurface` since the
+//       round-2 review; before it they called different functions, and
+//       red-proof (2) is what pins the `SampleLight` one.)
 //    D  SDF sphere, `Po`, with NO SIGNAL PAINTER ANYWHERE IN THE SCENE.
 //       `Po` is not signal state, so it must not ride the probe's
 //       process-wide gate; this family renders with that gate CLOSED
@@ -95,11 +98,25 @@
 //       renders the same emitter with an unrelated `curv` painter added
 //       to the RECEIVER (which opens the gate without changing a pixel
 //       of the receiver) and requires the emitter's mean not to move.
+//       That block now ASSERTS the gate is shut before each of its two
+//       closed renders, so a demand leaked from an earlier family
+//       cannot turn an open-versus-closed comparison into an
+//       open-versus-open one and make it pass vacuously.
 //    E  SDF sphere at `epsilon 0.002`, `curv`.  The luminary's own
 //       `SelfHitRootFloor` is then four times the flat standoff the
 //       normal-aligned probe used to use, so the probe was marched past
-//       the face it was aimed at and refused -- PT live, BDPT and VCM
-//       neutral.
+//       the face it was aimed at and refused.  Since the probe was
+//       unified this row goes red under ALL THREE integrators when the
+//       standoff is flattened -- it used to leave PT green, which was
+//       the disagreement itself.
+//    F  two-lobe SDF, `casts_shadows FALSE`, `curv`.  THE UNIFIED-PROBE
+//       WITNESS: with the NEE sites firing along `vToLight` instead of
+//       along the sampled normal, PT reads 23 % off its baked control
+//       while BDPT and VCM read 0.0007 % and 0.007 % off theirs -- one
+//       scene, one frame, PT and the bidirectional families disagreeing
+//       about the same surface.  See the emitter's own comment for the
+//       geometry and for why the review's grazing-incidence model is
+//       NOT what makes this row work.
 //
 //  SENSITIVITY -- the check cannot pass by insensitivity
 //
@@ -132,31 +149,48 @@
 //    FIVE full runs of the row set on an Apple-silicon Mac, worst
 //    |EXPR/CONTROL - 1| per row, in percent:
 //
-//      A / PT                  0.078  0.058  0.062  0.063  0.062
-//      A / BDPT                0.434  0.171  0.228  0.042  0.018
-//      A / VCM                 0.020  0.158  0.014  0.218  0.010
-//      A / PT-spectral         0.282  0.303  0.336  0.285  0.476
-//      A / BDPT-spectral       0.606  0.320  0.316  0.528  0.517
-//      A / VCM-spectral        0.304  0.468  0.310  0.254  0.209
-//      A / BDPT-spec + HWSS    0.209  0.287  0.320  0.184  0.124
-//      B / PT                  0.022  0.019  0.090  0.033  0.038
-//      C / PT                  0.181  0.269  0.023  0.084  0.082
-//      C / BDPT                0.006  0.025  0.005  0.039  0.019
-//      C / VCM                 0.030  0.007  0.024  0.025  0.025
-//      D / PT                  0.031  0.039  0.041  0.024  0.015
-//      D / BDPT                0.287  0.565  0.000  0.483  0.445
-//      D / VCM                 0.063  0.120  0.046  0.145  0.156
-//      D gate-inv CONTROL      0.059  0.040  0.036  0.014  0.055
-//      D gate-inv EXPR         0.000  0.033  0.004  0.075  0.001
-//      E / PT                  0.025  0.044  0.020  0.068  0.058
-//      E / BDPT                0.104  0.040  0.090  0.084  0.336
-//      E / VCM                 0.520  0.018  0.067  0.021  0.168
+//      A / PT                  0.056  0.020  0.022  0.063  0.018
+//      A / BDPT                0.481  0.211  0.217  0.222  0.377
+//      A / VCM                 0.150  0.099  0.109  0.090  0.129
+//      A / PT-spectral         0.995  0.143  0.187  0.622  0.019
+//      A / BDPT-spectral       0.269  1.144  0.717  0.225  0.583
+//      A / VCM-spectral        0.248  0.024  0.310  0.659  0.403
+//      A / BDPT-spec + HWSS    0.061  0.475  0.620  0.845  0.402
+//      B / PT                  0.009  0.017  0.015  0.080  0.055
+//      C / PT                  0.323  0.819  0.651  0.188  0.148
+//      C / BDPT                0.002  0.010  0.014  0.013  0.040
+//      C / VCM                 0.068  0.010  0.016  0.041  0.005
+//      D / PT                  0.070  0.039  0.027  0.012  0.015
+//      D / BDPT                0.144  0.068  0.176  0.168  0.201
+//      D / VCM                 0.118  0.115  0.236  0.062  0.051
+//      D gate-inv CONTROL      0.014  0.065  0.030  0.007  0.004
+//      D gate-inv EXPR         0.003  0.010  0.005  0.039  0.003
+//      E / PT                  0.028  0.014  0.004  0.039  0.017
+//      E / BDPT                0.043  0.039  0.129  0.026  0.126
+//      E / VCM                 0.037  0.081  0.236  0.261  0.289
+//      F / PT                  0.011  0.046  0.028  0.054  0.051
+//      F / BDPT                0.005  0.010  0.083  0.010  0.070
+//      F / VCM                 0.004  0.002  0.037  0.058  0.060
 //
-//    Worst observed 0.61 %, on A / BDPT-spectral.  The 5 % band is 8.2x
-//    that and 63x below the smallest sensitivity swing (318 %), so it
-//    can absorb the noise and cannot absorb a neutral read.  The
-//    SENSITIVITY rows measured 399.6-400.6 % (curv and Po families) and
-//    318-323 % (proximity) across the same five runs.
+//    THE LARGEST OF THESE FIVE RUNS IS 1.14 % (A / BDPT-spectral,
+//    run 2).  That is a five-run MAXIMUM, not a bound on the row, and
+//    saying otherwise is what the round-2 review corrected (H2 P2-9):
+//    the previous header called 0.61 % "worst observed" and reviewers
+//    then saw 0.74 % and 1.10 % on the same spectral rows.  The band is
+//    set from the TAIL BEHAVIOUR of those rows -- the non-HWSS spectral
+//    rows draw one wavelength per pixel sample, so their per-channel
+//    mean is chromatically noisy and does excur past 1 % -- and 5 % is
+//    roughly 4x the largest seen across the dozen-odd runs behind this
+//    file while still sitting 64x below the smallest sensitivity swing
+//    (318 %).  A row that regressed to a neutral read moves 8 %
+//    (C / VCM, red-proof 9) to 75 % (most others), so the band
+//    separates the two populations by more than an order of magnitude
+//    at either end.  It is NOT a promise that a given run lands under
+//    1.14 %.
+//
+//    The SENSITIVITY rows measured 399.7-400.5 % (curv and Po
+//    families), 317.7-323.2 % (proximity) and 399.9-400.4 % (family F)
+//    across the same five runs.
 //
 //    SAMPLE COUNTS ARE NOT UNIFORM, and both departures from the base
 //    48 are deliberate and were measured, not guessed:
@@ -187,53 +221,68 @@
 //  before the next.  Percentages are |EXPR/CONTROL - 1| on the row
 //  named; every row not named stayed inside the band.
 //
-//    THE CHOKE POINT IS `EmitterProbeWanted()`, not
-//    `ProbeEmitterSurface`.  An earlier draft of this header said to
-//    force `ProbeEmitterSurface` to return false, which only disables
-//    the two NEE sites -- the BDPT light-subpath root, its two NM twins
-//    and VCM's light vertex all reach the probe through
-//    `ProbeEmitterSurfaceAlongNormal`, a separate public entry point
-//    with its own gate check.  `EmitterProbeWanted()` is the one edit
-//    that restores the pre-S3 fallback at ALL SEVEN sites.
+//    THE CHOKE POINT IS `EmitterProbeWanted()`.  It is now a public
+//    static on `LightSampler` (the two NEE sites ask it to keep a
+//    416-byte payload out of their per-sample loop), and forcing it to
+//    return false restores the pre-S3 fallback at ALL SEVEN sites at
+//    once -- there is only ONE probe entry point behind it since the
+//    round-2 transport review.
 //
-//    (1) `EmitterProbeWanted()` -> false.  17 FAILs / 47 passes.  Every
-//        MONEY row outside family D goes red: A/PT 75.32, A/BDPT 74.89,
-//        A/VCM 68.78, A/PT-spectral 75.72, A/BDPT-spectral 75.10,
-//        A/VCM-spectral 67.92, A/BDPT-spec+HWSS 74.51, B/PT 75.32,
-//        C/PT 43.88, C/BDPT 75.71, C/VCM 68.47, E/PT 75.29,
-//        E/BDPT 75.00, E/VCM 69.08.  The A, B and E SENSITIVITY rows
-//        also go red, at 23.49 / 23.37 / 23.40 -- correctly, because
-//        with the probe off EXPR has collapsed most of the way onto
-//        NEUTRAL; the ~23.4 % that survives is the BSDF-sampled
-//        continuation that hits the emitter through a REAL record and
-//        was never neutral.  That PT goes red at all is the point: this
-//        slice is not a bidirectional-only fix.
-//        FAMILY D IS UNTOUCHED (0.002 / 0.005 / 0.138, gate-invariance
-//        0.058 / 0.056), which is the whole reason it exists: `Po` is
+//    (1) `EmitterProbeWanted()` -> false.  20 FAILs / 57 passes.  Every
+//        MONEY row outside family D goes red: A/PT 75.32, A/BDPT 74.88,
+//        A/VCM 68.72, A/PT-spectral 75.54, A/BDPT-spectral 75.04,
+//        A/VCM-spectral 67.29, A/BDPT-spec+HWSS 74.44, B/PT 75.34,
+//        C/PT 43.84, C/BDPT 75.69, C/VCM 68.48, E/PT 75.29,
+//        E/BDPT 74.99, E/VCM 68.90, F/PT 67.82, F/BDPT 68.09,
+//        F/VCM 65.16.  The A, B and E SENSITIVITY rows also go red, at
+//        23.12 / 23.46 / 23.47 -- correctly, because with the probe off
+//        EXPR has collapsed most of the way onto NEUTRAL; the ~23 %
+//        that survives is the BSDF-sampled continuation that hits the
+//        emitter through a REAL record and was never neutral.  C's and
+//        F's sensitivity rows stay green (135.4 / 60.8), being further
+//        from their neutrals to begin with.  That PT goes red at all is
+//        the point: this slice is not a bidirectional-only fix.
+//        FAMILY D IS UNTOUCHED (0.021 / 0.008 / 0.038, gate-invariance
+//        0.003 / 0.028), which is the whole reason it exists: `Po` is
 //        deliberately outside this gate.
 //
 //    (2) Pass 0 instead of `scene.GetObjects()` at the `SampleLight`
 //        probe site, so the cross-object triple is never stamped on the
-//        NORMAL-ALIGNED probe's payload while the NEE probe keeps its
-//        own.  2 FAILs, and exactly the two rows H's review asked for:
-//        C/BDPT 75.70, C/VCM 68.50.  C/PT stays green at 0.017.
+//        payload BDPT and VCM read while the NEE sites keep their own.
+//        2 FAILs: C/BDPT 75.70, C/VCM 68.50.  C/PT stays green at
+//        0.017.  (Measured before the probe unification and NOT re-run
+//        after it: the site, its argument and the rows that can see it
+//        are all unchanged, and family F is keyed on `curv`, which this
+//        mutation does not touch.)
 //
 //    (3) Delete the SelfHitRootFloor-derived term, i.e. restore the
-//        flat `kEmitterProbeStandoffFraction * diag` standoff.  2 FAILs:
-//        E/BDPT 74.93, E/VCM 68.99, with E/PT green at 0.064.  That
-//        split -- PT live, BDPT and VCM neutral, on one scene, in one
-//        frame -- is the disagreement the whole slice exists to remove.
+//        flat `kEmitterProbeStandoffFraction * diag` standoff.  4 FAILs:
+//        E/PT 75.27, E/BDPT 75.13, E/VCM 68.98, and E's sensitivity row
+//        at 23.66.
+//
+//        THIS RESULT CHANGED WITH THE UNIFICATION, and the change is
+//        the point.  Before it the same mutation left E/PT GREEN at
+//        0.064 while only BDPT and VCM went red -- PT reached this
+//        emitter through a probe with no standoff at all, so the
+//        standoff bug could not touch it.  All three now share one
+//        probe and fail together, which is what "the three integrators
+//        refuse identically" means operationally.
 //        (With the intermediate `1.01 * floor` standoff, before the
-//        acceptance-tolerance cushion was added, the same two rows sat
-//        at 37.4 / 35.1: the probe cleared the floor on roughly half
-//        the samples, the ones whose Newton projection happened to land
-//        inside the true surface.)
+//        cushion was added, the BDPT and VCM rows sat at 37.4 / 35.1:
+//        the probe cleared the floor on roughly half the samples, the
+//        ones whose Newton projection happened to land inside the true
+//        surface.  That measurement is what sizes
+//        `kEmitterProbeStandoffCushionFraction`, whose 0.001 * diag was
+//        then confirmed over five runs at worst 0.494 % on family E.)
 //
 //    (4) Skip `ApplyEmitterSurface` at the NM NEE site
 //        (`LightSampler::EvaluateDirectLightingNM`).  1 FAIL:
 //        A/PT-spectral 75.63.  Nothing else moves -- this site is
 //        reached by the spectral PT rasterizer and by nothing else in
-//        the suite, which is precisely why the spectral rows were added.
+//        the suite, which is precisely why the spectral rows were
+//        added.  (Measured before the unification and not re-run: the
+//        site still exists, still applies the payload, and family F has
+//        no spectral row.)
 //
 //    (5) Skip `ApplyEmitterSurface` at BDPT's NM hero `Le` rebuild.
 //        WEAK, and reported as measured rather than as a red-proof:
@@ -266,31 +315,55 @@
 //        and -- the reproduction of the review's own finding -- the
 //        GATE-INVARIANCE EXPR row at 304.81, i.e. the gate-OPEN render
 //        is 4.05x the gate-CLOSED one from adding a `curv` painter to
-//        an unrelated object.  (The review measured 2.94x on its own
-//        repro; this row saturates its clamp fully, so the swing is the
-//        full 1.0/0.2 exitance ratio diluted only by the BSDF-sampled
-//        continuation.)  The gate-invariance CONTROL row stays green at
-//        0.073, which is what makes the 304.81 attributable to `Po`
-//        alone rather than to the receiver's painter.
+//        an unrelated object.  The gate-invariance CONTROL row stays
+//        green at 0.073, which is what makes the 304.81 attributable to
+//        `Po` alone rather than to the receiver's painter.  (Measured
+//        before the unification and not re-run: family D is the only
+//        family keyed on `Po`, and neither it nor the gate-invariance
+//        block changed.)
 //
 //    THE SITE-TO-ROW MAP, established by isolating each remaining site.
 //    Every one of the seven converted sites has a row that sees it,
 //    except the two named in (5) and (6):
 //
 //    (8) BDPT's `type == LIGHT` root vertex (`if( ls.surface.valid )`
-//        forced false).  5 FAILs: A/BDPT 74.87, A/BDPT-spectral 75.04,
-//        A/BDPT-spec+HWSS 74.40, C/BDPT 8.04, E/BDPT 75.06.  Every VCM
-//        row stays green.
+//        forced false).  6 FAILs: A/BDPT 74.81, A/BDPT-spectral 75.03,
+//        A/BDPT-spec+HWSS 74.56, C/BDPT 7.99, E/BDPT 75.01,
+//        F/BDPT 68.07.  Every VCM and PT row stays green.
 //
 //    (9) VCM's light-vertex NEE record (`ApplyEmitterSurface` skipped).
-//        4 FAILs: A/VCM 56.87, A/VCM-spectral 64.06, C/VCM 8.65,
-//        E/VCM 57.17.  Every BDPT row stays green.
+//        5 FAILs: A/VCM 56.84, A/VCM-spectral 64.55, C/VCM 8.64,
+//        E/VCM 57.21, F/VCM 59.21.  Every BDPT row stays green.
 //
 //   (10) The RGB NEE site (`ApplyEmitterSurface` skipped in
-//        `LightSampler::EvaluateDirectLighting`).  7 FAILs: A/PT 75.31,
-//        B/PT 75.30, C/PT 44.06, E/PT 75.30 and the three PT
-//        sensitivity rows.  Every BDPT, VCM and spectral row stays
-//        green.
+//        `LightSampler::EvaluateDirectLighting`).  8 FAILs: A/PT 75.31,
+//        B/PT 75.32, C/PT 44.44, E/PT 75.30, F/PT 67.77 and the A, B
+//        and E PT sensitivity rows (23.46 / 23.43 / 23.59).  Every
+//        BDPT, VCM and spectral row stays green.
+//
+//   (11) THE UNIFICATION ITSELF: restore the pre-round-2
+//        along-`vToLight` NEE probe -- same acceptance tolerance, same
+//        cross-object stamp, same gate, only fired from
+//        `ri.ptIntersection` toward `ptOnLum` with no travel limit
+//        instead of from `ptOnLum + standoff*n` back along `-n`.
+//        1 FAIL, and it is family F alone: F/PT 23.24, with
+//        F/BDPT 0.00065 and F/VCM 0.0069.  Every other row in the suite
+//        stays inside the band, which is what makes the failure
+//        attributable to the probe's DIRECTION rather than to anything
+//        else about family F.
+//
+//    WHAT (11) DOES NOT SHOW, stated because the review predicted it
+//    would.  H2 P1-1 reasoned that the along-ray probe refuses at
+//    GRAZING incidence, the `delta / cos(theta)` term exceeding the 1 %
+//    acceptance tolerance below cos(theta) ~ 0.2 on family E's
+//    `epsilon 0.002`.  That does not reproduce: family E is green
+//    there, and an exploratory sweep of the same sphere to
+//    `epsilon 0.05` -- an SDF hit band FIVE TIMES the acceptance
+//    tolerance at normal incidence -- left every row green as well.
+//    `SDFGeometry`'s sampled point and its marched hit evidently agree
+//    far more tightly than that arithmetic assumes.  The asymmetry the
+//    review found is real; the mechanism family F uses to expose it is
+//    the wrong-surface window, not incidence.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -1275,14 +1348,18 @@ int main()
 	// quad -- see kEmitterQuadWithNeighbour for the geometry that makes
 	// the closed form uniform.
 	//
-	// 192 SAMPLES, four times every other family's, for two reasons.
+	// 384 SAMPLES, eight times every other family's, for two reasons.
 	// (1) It is by far the dimmest row (mean ~0.047 against ~0.39), so
 	// its relative MC noise is the largest -- nine runs of the original
-	// 48-sample row spread to 2.89 %, against a 5 % band.  (2) It now
-	// runs BDPT and VCM as well as PT, and those two are the only rows in
-	// the suite that exercise the cross-object triple through
-	// `ProbeEmitterSurfaceAlongNormal` rather than through the NEE
-	// `ProbeEmitterSurface`.
+	// 48-sample row spread to 2.89 %, against a 5 % band; see the file
+	// header's band derivation for the 48 / 192 / 384 ladder.  (2) It
+	// runs BDPT and VCM as well as PT, and those two are the only rows
+	// in the suite that reach the cross-object triple through
+	// `LightSample::surface` -- probed once in `SampleLight` -- rather
+	// than through the NEE sites' own probe call.  Both call the same
+	// `ProbeEmitterSurface` since the round-2 transport review; what
+	// differs is WHERE the payload is stored and which red-proof pins
+	// it, (2) for the `SampleLight` route and (10) for the NEE one.
 	static const Family kProximity = {
 		"C: quad emitter + box neighbour at h=0.2, exitance keyed on proximity(1.0)",
 		kCommonHead,
