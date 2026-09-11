@@ -364,7 +364,7 @@ expression_painter
 	def				hE cellhash(bu + 97.0)
 	def				hF cellhash(bu + 131.0)
 
-	# --- step 2: THIS BOARD'S OWN PITH AXIS.  30-115 mm below its face,
+	# --- step 2: THIS BOARD'S OWN PITH AXIS.  50-190 mm below its face,
 	# offset up to 40 mm across it, and tilted 0.9-2.6 degrees out of the
 	# board's length.  The tilt is the cathedral: the arch of ring radius R
 	# closes where the local pith depth reaches R, and the depth varies
@@ -413,8 +413,10 @@ expression_painter
 	def				gs sqrt(max(1.0 - unN*unN, 0.0004))
 	def				rfade smoothstep(1.15*fw, 2.6*fw, rm/gs)
 
-	# --- step 6: the coarse figure, at 38 mm across x 145 mm along (3.5 px
-	# x 13 px).  It is legitimate at this amplitude precisely BECAUSE it is
+	# --- step 6: the coarse figure, at 77 mm across x 285 mm along (7 px
+	# x 27 px at 10.7 mm/px; the 38 x 145 mm first cut fell inside fbm's
+	# footprint fade, see the WRONG list).  It is legitimate at this
+	# amplitude precisely BECAUSE it is
 	# coarser than the ring spacing, so it moves neighbouring rings together
 	# instead of scrambling them -- and it is the only wood term that
 	# survives everywhere on this top, the rings having been faded out
@@ -544,12 +546,14 @@ expression_painter
 # CONSUMER 1 -- COLOUR.  Aged softwood: joint dirt and knot core at the
 # bottom, late wood, the early-wood PLATEAU, and burnished wear at the top.
 #
-# The plateau is held nearly flat from 0.52 to 0.88 on purpose: a smooth
-# colour gradient across each ring gives every ring the tonal signature of
-# a shaded cylinder and the board turns into corrugated sheet.
+# The early-wood band (field 0.48-0.80) is a gentle 1.9:1 rise, 0.159 ->
+# 0.301 in luminance, NOT a flat plateau: at this footprint the rings are
+# sub-pixel, so a ring-scale gradient cannot read as a shaded cylinder the
+# way it does on plank_closeup, and the rise is what separates one board's
+# tone from its neighbour's (see the WRONG list).
 #
-# Plateau-to-late-wood is 0.273 -> 0.112 in luminance, 2.4:1.  Real pine is
-# nearer 2.5:1; the 18:1 an eager ramp reaches for is itself a "generated"
+# Plateau-to-late-wood is 0.301 -> 0.105 in luminance (the 0.80 stop
+# against the 0.32 stop), 2.9:1.  Real pine is nearer 2.5:1; the 18:1 an eager ramp reaches for is itself a "generated"
 # tell and it drowns the relief, which is the cue that actually reads as
 # carved.  The two darkest stops are RESERVED for the knots, the joint dirt
 # and the grime -- and `expr_top`'s sum is what enforces that reservation.
@@ -855,7 +859,7 @@ scalar_painter
 }
 
 # The legs are seen nearly FACE-ON, not at 14 degrees like the top, so the
-# grazing-budget argument that pins the top at `max_slope 0.30` does not
+# grazing-budget argument that pins the top at `max_slope 0.18` does not
 # apply to them -- their geometric horizon is far away and they can carry
 # the 0.5-1.0 the skill doc recommends generally.  0.45 is the value that
 # reads without any of them showing a black tilt.

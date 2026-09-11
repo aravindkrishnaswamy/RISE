@@ -1500,6 +1500,11 @@ added last and anisotropically.  The rules below are that order.
   `scalar_painter` bridge into roughness, the same field raw into
   `relief_modifier`.  Ridge, dark band and dull sheen become one feature
   seen three ways -- what independent per-channel noises can't fake.
+  Refinement (`weathered_workbench`, 2026-09-10): a term about the
+  surface's HISTORY (dirt, wear, stains) is not a term about its SHAPE.
+  Feed relief the shape channel only; a raw-bound history term carves the
+  dirt (591 near-black pixels per 10 000 on the bench top until the field
+  was split).
 - **Lighting that reveals relief.**  A small, low key light raking
   ACROSS the grain (not along it), plus a soft fill so the shadow side
   doesn't go dead.  Panel SIZE matters as much as angle: a broad source
