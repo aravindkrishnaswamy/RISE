@@ -68,6 +68,65 @@
 //  the log's actual value (0.368865); every other cited value reproduced
 //  bit-for-bit).  See each finding's own comment at its fix site.
 //
+//  A THIRD fix round (this commit, worktree signals-bidir) addressed a P1:
+//  this file's seeding comments (this one included, in earlier drafts) at
+//  three sites claimed every render was "wall-clock seeded" -- FALSE.
+//  `RandomNumberGenerator( unsigned int seed = rand() )`
+//  (src/Library/Utilities/RandomNumbers.h ~:32) and per-thread
+//  construction in src/Library/Rendering/RasterizeDispatchers.h (~:147,
+//  ~:201) read libc `rand()` from several worker threads with no
+//  `srand()` anywhere in this binary's call path -- the run-to-run spread
+//  this file relies on for independent sub-renders is an unsynchronized
+//  DATA RACE, not a seeding policy.  tests/FabricRenderTest.cpp and
+//  tests/PrimitiveSelfHitTest.cpp document exactly this fact and fix it
+//  the same way, adopted here: an optional seed base (`argv[1]`, default
+//  1000) and `std::srand( g_seedBase + g_renderIndex++ )` immediately
+//  before every `Job::Rasterize()` call this file issues (Layer 1's
+//  `RenderSceneText`, Layer 2's `RenderShowcaseVariant` -- once per
+//  variant, so E and B each get their own seed).  The three false
+//  "wall-clock" claims are corrected at their sites (see g_seedBase's own
+//  declaration for the full seeding rationale).  A hard
+//  `Check( ratioCount == kLayer2MaskedSubRenders )` was also added: the
+//  masked sub-render loop previously `continue`d silently past a failed
+//  or degenerate sub-render, which could average over fewer renders than
+//  the band below was actually measured against without failing loudly.
+//
+//  RE-DERIVING K UNDER EXPLICIT SEEDING.  The SECOND fix round's K=6
+//  choice (below) was measured against the wall-clock-race spread, which
+//  turned out not to be a controlled independent sample -- moving to
+//  explicit, reproducible seed bases surfaced a WIDER true spread than
+//  the K=6-era numbers showed.  Six independent seed bases (1000, 2000,
+//  ..., 6000; one `SIGNAL_CONSISTENCY_FILTER=plank ./bin/tests/
+//  SignalIntegratorConsistencyTest <base>` run each, full logs
+//  .../scratchpad/s2_plank_seeded_b1000.txt through b6000.txt) were run
+//  at each of three K values in turn:
+//    K=6  (unchanged from the second fix round): BDPT masked ratio mean
+//         -0.0723, sample sd 0.0283, worst -0.1197.  4sigma bar: band
+//         (0.20) - |mean| = 0.1277 >= 4*sd = 0.1131 -- PASSES (margin
+//         1.13x).  2x-worst bar: band (0.20) < 2*|worst| = 0.2394 --
+//         FAILS (margin 0.84x).  VCM: mean -0.0548, sd 0.0132, worst
+//         -0.0695 -- both bars pass comfortably (margins 2.75x / 1.44x).
+//         BDPT-only problem, matching the K-P1 finding's own observation
+//         that this metric is BDPT-only -- REJECTED (K=6 no longer
+//         clears both bars once genuinely independent samples are used).
+//    K=9  (.../scratchpad/s2_plank_k9_b1000.txt through b6000.txt): BDPT
+//         mean -0.0676, sd 0.0183, worst -0.1024.  4sigma bar: 0.1406 <=
+//         0.20 -- PASSES (margin 1.42x).  2x-worst bar: 0.2049 > 0.20 --
+//         STILL FAILS, though closer (margin 0.98x).  VCM: mean -0.0548,
+//         sd 0.0119, worst -0.0712 -- both bars pass (1.95x / 1.40x) --
+//         REJECTED (BDPT 2x-worst bar not yet cleared).
+//    K=12 (.../scratchpad/s2_plank_k12_b1000.txt through b6000.txt): BDPT
+//         mean -0.0695, sd 0.0121, worst -0.0885.  4sigma bar: 0.1180 <=
+//         0.20 -- PASSES (margin 1.70x).  2x-worst bar: 0.1770 <= 0.20 --
+//         PASSES (margin 1.13x).  VCM: mean -0.0579, sd 0.0143, worst
+//         -0.0773.  4sigma bar: 0.1149 <= 0.20 -- PASSES (margin 1.74x).
+//         2x-worst bar: 0.1545 <= 0.20 -- PASSES (margin 1.29x) -- CHOSEN.
+//         `kLayer2MaskedSubRenders` raised 6 -> 12.  Cost: two fresh
+//         default whole-suite runs measured 104.47s and 108.69s wall
+//         (.../scratchpad/s2_fixround3_run1.txt, run2.txt) -- up from
+//         ~70s at K=6, still under the ~2 minute budget but with less
+//         headroom than before (see the KNOBS section below).
+//
 //  TWO LAYERS (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6):
 //
 //  LAYER 1 -- CONSTANT-SIGNAL UNIT SCENES (section 6.1, "the sharp gate").
@@ -472,8 +531,12 @@
 //       reduction for this metric -- REJECTED.
 //    2. Average the FINAL masked ratio over `kLayer2MaskedSubRenders`
 //       INDEPENDENT full renders (fresh Job/Rasterizer per sub-render, so
-//       each gets its own wall-clock-seeded RNG -- see
-//       RenderShowcaseVariant/RunLayer2Showcase's masked-ratio loop).
+//       each gets its own explicit `srand( g_seedBase + g_renderIndex++ )`
+//       call immediately before its `Rasterize()` -- see
+//       RenderShowcaseVariant/RunLayer2Showcase's masked-ratio loop, and
+//       the seeding comment at g_seedBase's declaration for why this is
+//       NOT "wall-clock seeded": independence across sub-renders comes
+//       from each one's distinct explicit seed, not the clock).
 //       n=6 plank runs at kLayer2MaskedSubRenders=4 gave BDPT mean
 //       -0.0623, sd 0.0332, worst -0.0957 -- both bars now pass, but only
 //       just (margin 1.04x on the 4sigma bar).  Raising to 6 sub-renders
@@ -505,14 +568,21 @@
 //  `showcase`, and the four showcase names `plank`, `tidal`, `bunny`,
 //  `pavilion`) restricts which layer/scene runs, like FabricRenderTest's
 //  own filter.  Unset (the default, and the CI invocation) runs BOTH
-//  layers, all six unit scenes and all four showcases.  Default runtime
-//  on this machine: ~70 seconds wall (layer 1 ~20s, layer 2 ~50s at
-//  kLayer2Samples=32 -- up from the original author's 16 -- with
-//  kLayer2MaskedSubRenders=6 independent sub-renders per BDPT/VCM masked
-//  ratio (K-P1, this fix round; see "BAND DERIVATION -- MASKED LAYER" for
-//  why 6 independent sub-renders, not a higher single-render spp, is what
-//  actually closes the plank BDPT flake risk).  Comfortably under the
-//  ~2 minute budget.
+//  layers, all six unit scenes and all four showcases.  `argv[1]`, if
+//  given, is an alternate seed base (default 1000; see "A THIRD fix
+//  round" above and g_seedBase's own declaration) -- pass a different one
+//  for a genuinely independent sample, the same convention
+//  tests/FabricRenderTest.cpp and tests/PrimitiveSelfHitTest.cpp use.
+//  Default runtime on this machine: ~104 seconds wall (two fresh measured
+//  runs, .../scratchpad/s2_fixround3_run1.txt and run2.txt; layer 1 ~20s,
+//  layer 2 ~84s at kLayer2Samples=32 -- up from the original author's 16
+//  -- with kLayer2MaskedSubRenders=12 independent sub-renders per
+//  BDPT/VCM masked ratio (raised from 6 -> 12 this fix round; see
+//  "RE-DERIVING K UNDER EXPLICIT SEEDING" above for why 6, and even 9,
+//  stopped clearing the plank BDPT masked ratio's 2x-worst band bar once
+//  genuinely independent seeded samples replaced the wall-clock-race
+//  spread).  Still under the ~2 minute budget, though with less headroom
+//  than the K=6-era ~70s.
 //
 //  Tabs: 4
 //
@@ -568,6 +638,39 @@ namespace RISE
 
 static int passCount = 0;
 static int failCount = 0;
+
+//! (round-3 fix) SEEDING.  This binary does not go through
+//! src/RISE/commandconsole.cpp's `main()` -- the only place in the tree
+//! that calls `srand( GetMilliseconds() )` -- so libc's `rand()` starts
+//! from its default state here.  What actually varies run to run is that
+//! every render worker constructs `RandomNumberGenerator random;`
+//! (default argument `seed = rand()`, src/Library/Utilities/
+//! RandomNumbers.h ~:32) concurrently from `ThreadPool::ParallelFor`
+//! (src/Library/Rendering/RasterizeDispatchers.h ~:147, ~:201) -- i.e.
+//! libc `rand()`'s hidden global state is read and mutated from several
+//! threads with NO synchronisation.  That is an unsynchronized DATA RACE,
+//! not a "wall-clock seeded" policy (this file's own comments used to
+//! claim the latter at three sites -- all three were wrong and are fixed
+//! at their sites).  tests/FabricRenderTest.cpp and
+//! tests/PrimitiveSelfHitTest.cpp hit the exact same fact and adopt the
+//! same fix: an OPTIONAL SEED BASE (argv[1], default `kDefaultSeedBase`)
+//! with `std::srand( g_seedBase + g_renderIndex++ )` called immediately
+//! before every render this file issues (Layer 1's `RenderSceneText`,
+//! Layer 2's `RenderShowcaseVariant` -- once per Job::Rasterize() call,
+//! so variant E and variant B each get their own seed).  Two
+//! consequences: the default invocation is REPRODUCIBLE in intent (same
+//! renders start from the same `rand()` state every time), and
+//! `./SignalIntegratorConsistencyTest 2000`, `3000`, ... are independent
+//! BY CONSTRUCTION -- different, documented, far-apart seed bases --
+//! rather than by hoping the worker-side race decorrelates them.  NOT
+//! claimed: bit-exact reproducibility of a single run -- the worker-side
+//! race still perturbs which worker draws which seed, so two runs at the
+//! same base agree closely but not exactly; independence across
+//! sub-renders comes from the distinct `srand` value each one starts
+//! from, not from the clock.
+static const unsigned int kDefaultSeedBase = 1000u;
+static unsigned int g_seedBase = kDefaultSeedBase;
+static unsigned int g_renderIndex = 0;
 
 static void Check( bool condition, const std::string& testName )
 {
@@ -721,6 +824,11 @@ static ImageStats RenderSceneText( const std::string& sceneText, const char* tag
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "signal consistency capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	// See the seeding comment at g_seedBase's declaration: this binary is
+	// not wall-clock seeded, so the starting `rand()` state for this
+	// render's worker threads is set explicitly here rather than left to
+	// the unsynchronized libc race.
+	std::srand( g_seedBase + g_renderIndex++ );
 	const bool bRendered = pJob->Rasterize();
 	if( bRendered ) {
 		result = ComputeStats( *pCap );
@@ -1629,11 +1737,13 @@ static const unsigned int kLayer2Samples = 32;
 //! own earlier note that 64 spp "did not tighten the ratio spread".  The
 //! fix that DOES work empirically is averaging the FINAL masked ratio
 //! over kLayer2MaskedSubRenders independent full renders (fresh Job/
-//! Rasterizer per sub-render, so each gets its own wall-clock RNG seed --
-//! see RunLayer2Showcase's masked-ratio loop) for BDPT/VCM only; PT is
-//! untouched (K=1, its own noise is already <0.05% per OBSERVED POST-FIX
-//! NUMBERS).
-static const unsigned int kLayer2MaskedSubRenders = 6;
+//! Rasterizer per sub-render, so each gets its own explicit
+//! `srand( g_seedBase + g_renderIndex++ )` seed immediately before its
+//! `Rasterize()` call -- NOT the clock, see the seeding comment at
+//! g_seedBase's declaration -- see RunLayer2Showcase's masked-ratio loop)
+//! for BDPT/VCM only; PT is untouched (K=1, its own noise is already
+//! <0.05% per OBSERVED POST-FIX NUMBERS).
+static const unsigned int kLayer2MaskedSubRenders = 12;
 static const double kLayer2Band = 0.05;			// design doc section 6.2's own number (whole-image)
 static const double kLayer2SensitivityBand = 0.05;	// whole-image
 static const double kLayer2MaskThreshold = 0.20;	// |PT(E)-PT(B)|/PT(B) > this -> "the signal moved this pixel"
@@ -1836,8 +1946,12 @@ static BlowupClass ClassifyBlowup(
 //! call builds fresh Cst::Documents, a fresh Job/Rasterizer pair and a
 //! fresh render -- exactly what the ORIGINAL per-integrator loop already
 //! did once per (showcase, integrator); calling it again gets an
-//! independently-seeded render (RISE renders seed from wall clock), which
-//! is what actually reduces the masked ratio's run-to-run spread -- see
+//! independently-seeded render (this function calls
+//! `srand( g_seedBase + g_renderIndex++ )` immediately before each of its
+//! two `Rasterize()` calls -- see the seeding comment at g_seedBase's
+//! declaration for why that is NOT "RISE renders seed from wall clock",
+//! which is what this comment used to claim), which is what actually
+//! reduces the masked ratio's run-to-run spread -- see
 //! kLayer2MaskedSubRenders' own comment for why raising spp in a SINGLE
 //! render does not.
 static bool RenderShowcaseVariant(
@@ -1872,8 +1986,16 @@ static bool RenderShowcaseVariant(
 	jobE->GetRasterizer()->AddRasterizerOutput( capE );
 	jobB->GetRasterizer()->AddRasterizerOutput( capB );
 
+	// See the seeding comment at g_seedBase's declaration: this binary is
+	// not wall-clock seeded.  E and B each get their own explicit `srand`
+	// call immediately before their own `Rasterize()`, so a sub-render
+	// call (see kLayer2MaskedSubRenders below) is independent of the
+	// sub-render before it by construction, not by hoping the
+	// unsynchronized worker-side `rand()` race decorrelates them.
 	bool renderedE = false, renderedB = false;
+	std::srand( g_seedBase + g_renderIndex++ );
 	const std::string logE = CaptureStdoutDuring( [&]() { renderedE = jobE->Rasterize(); } );
+	std::srand( g_seedBase + g_renderIndex++ );
 	const std::string logB = CaptureStdoutDuring( [&]() { renderedB = jobB->Rasterize(); } );
 	Check( renderedE, std::string( keyword ) + " " + IntegratorName(integ) + " variant E renders" );
 	Check( renderedB, std::string( keyword ) + " " + IntegratorName(integ) + " variant B renders" );
@@ -2107,6 +2229,21 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 			}
 		}
 
+		// (round-3 fix, task item 4) The loop above `continue`s past any
+		// sub-render that fails to derive or comes back with a mismatched
+		// or degenerate pixel array, so a bad run could silently average
+		// over fewer than kLayer2MaskedSubRenders sub-renders instead of
+		// failing loudly -- "RE-DERIVING K UNDER EXPLICIT SEEDING" above
+		// was measured at exactly kLayer2MaskedSubRenders (K=12 as of
+		// this fix round), so a quietly-smaller K is an unmeasured
+		// estimator, not the one the band was derived against.
+		if( r.integ == Integrator::BDPT || r.integ == Integrator::VCM ) {
+			Check( ratioCount == (int)kLayer2MaskedSubRenders,
+				std::string( spec.keyword ) + " " + IntegratorName(r.integ)
+				+ " (masked): all " + std::to_string(kLayer2MaskedSubRenders)
+				+ " sub-renders succeeded (got " + std::to_string(ratioCount) + ")" );
+		}
+
 		const double ratio = ratioSum / double( ratioCount );
 		std::cout << "  MASKED " << IntegratorName(r.integ) << ": R_E=" << R_E << " R_B=" << R_B
 		          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
@@ -2123,13 +2260,22 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 
 int main( int argc, char** argv )
 {
-	(void)argc; (void)argv;
+	// See the seeding comment at g_seedBase's declaration.  argv[1], if
+	// given, is an alternate seed base -- the FabricRenderTest /
+	// PrimitiveSelfHitTest convention for taking a genuinely independent
+	// sample on demand (e.g. `./SignalIntegratorConsistencyTest 2000`).
+	if( argc > 1 ) {
+		const long v = std::strtol( argv[1], nullptr, 10 );
+		if( v > 0 ) g_seedBase = (unsigned int)v;
+	}
 
 	if( const char* env = std::getenv( "SIGNAL_CONSISTENCY_FILTER" ) ) {
 		g_filter = env;
 	}
 
 	std::cout << "SignalIntegratorConsistencyTest -- docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md S2" << std::endl;
+	std::cout << "seed base = " << g_seedBase
+		<< "  (pass a different one as argv[1] for an independent sample)" << std::endl;
 	if( !g_filter.empty() ) std::cout << "Filter: " << g_filter << std::endl;
 
 	if( WantsLayer1() ) {
