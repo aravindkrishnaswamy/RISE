@@ -113,10 +113,11 @@ FisheyeCamera::~FisheyeCamera( )
 {
 }
 
-bool FisheyeCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const Point2& ptOnScreen ) const
+bool FisheyeCamera::ComputeWorldDirection(
+	const Scalar screenX, const Scalar screenY, Vector3& dir ) const
 {
-	const Scalar x = (scale/2) - scale*ptOnScreen.x*OVwidth;
-	const Scalar y = scale*ptOnScreen.y*OVheight - (scale/2);
+	const Scalar x = (scale/2) - scale*screenX*OVwidth;
+	const Scalar y = scale*screenY*OVheight - (scale/2);
 
 	const Scalar radius = sqrt( x*x+y*y );
 
@@ -128,10 +129,78 @@ bool FisheyeCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const Point
 	const Scalar theta = atan2( y, x );
 	Vector3 v( radius * cos(theta), radius * sin(theta), sqrt( 1.0 - radius*radius ) );
 
-	ray.Set( 
+	dir = Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans,v));
+
+	return true;
+}
+
+bool FisheyeCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const Point2& ptOnScreen ) const
+{
+	Vector3 d;
+	if( !ComputeWorldDirection( ptOnScreen.x, ptOnScreen.y, d ) ) {
+		// No ray
+		return false;
+	}
+
+	ray.Set(
 		frame.GetOrigin(),
-		Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans,v))
+		d
 		);
+
+	// Ray differentials.  Every primary ray shares the frame origin,
+	// so the ORIGIN offsets are exactly zero and the whole footprint
+	// lives in the direction offsets — the mirror image of
+	// OrthographicCamera, and the same shape as PinholeCamera /
+	// ThinLensCamera.
+	//
+	// The mapping is NONLINEAR, and that is fine: the convention here
+	// (Igehy 1999, and what PinholeCamera does on its linear map) is a
+	// ONE-FULL-PIXEL FINITE DIFFERENCE OF THE EXACT MAPPING, not a
+	// linearisation of it.  Re-entering `ComputeWorldDirection` at
+	// pixel + 1 therefore gives the correct answer without needing a
+	// pixel-to-direction Jacobian to exist in closed form — and it
+	// automatically inherits the pixelAR stretch and the frame
+	// rotation, which a hand-rolled angular pitch would have to
+	// re-derive and could silently drift from.
+	//
+	// What the resulting footprint MEASURES, since the pixel solid
+	// angle grows toward the rim: exactly the chord between the
+	// central ray and the ray this camera would really generate for
+	// the neighbouring pixel.  The projection is `r = sin(theta)`
+	// (image radius = the SINE of the angle off the optical axis —
+	// an ORTHOGRAPHIC fisheye, not the equidistant `r = theta` older
+	// comments claimed), so on axis the chord is
+	// `2*sin(asin(scale/width)/2)` and NOT `scale/width`: the two
+	// differ by a relative 1.2e-6 at the shipped 500-px / scale 1.6
+	// settings, which is why TextureFootprintTest 15a pins the exact
+	// form.  Off axis the step is longer, correctly reporting the
+	// coarser angular sampling out there.
+	//
+	// THE RIM.  A pixel whose OWN radius is inside the unit disc can
+	// have its +x or +y neighbour outside it — there is no direction
+	// at the neighbour, so there is no honest differential.  Rather
+	// than fabricate one (clamping to the rim would under-report the
+	// footprint by an unbounded factor, and extrapolating would put
+	// the auxiliary on a direction the camera never generates), leave
+	// `hasDifferentials` FALSE for that ray.  Downstream that is the
+	// documented neutral fallback: `ComputeFootprintVectors` early-
+	// outs, `widthValid` stays false, `fw` reads 0, and the texture
+	// point-samples exactly as it did before this change.  Both
+	// auxiliaries are required — a half-populated `diffs` would let
+	// `ComputeFootprintVectors` average a live dpdx against a stale
+	// dpdy.  The main ray is unaffected either way; only the
+	// footprint is withheld.
+	//
+	// Must follow `ray.Set`, which clears hasDifferentials.
+	Vector3 dAuxX, dAuxY;
+	if( ComputeWorldDirection( ptOnScreen.x + Scalar( 1 ), ptOnScreen.y, dAuxX ) &&
+	    ComputeWorldDirection( ptOnScreen.x, ptOnScreen.y + Scalar( 1 ), dAuxY ) ) {
+		ray.diffs.rxOrigin = Vector3( 0, 0, 0 );	// shared frame origin
+		ray.diffs.ryOrigin = Vector3( 0, 0, 0 );
+		ray.diffs.rxDir = dAuxX - d;
+		ray.diffs.ryDir = dAuxY - d;
+		ray.hasDifferentials = true;
+	}
 
 	return true;
 }

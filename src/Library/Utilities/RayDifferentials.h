@@ -33,12 +33,18 @@
 //      freshly-Set ray — every scattered ray, shadow ray, NEE ray
 //      and photon — is differential-free by construction, and the
 //      surfaces it hits report fw = 0 and point-sample.
-//    - The cameras that SET them are PinholeCamera,
-//      ThinLensCamera and OrthographicCamera (the latter two since
-//      2026-09-10).  FisheyeCamera does not, and is the only
-//      remaining camera that does not -- its equal-area /
-//      equidistant mapping has no single linear pixel-to-direction
-//      Jacobian, so its differentials are their own piece of work.
+//    - EVERY camera RISE ships SETS them: PinholeCamera,
+//      ThinLensCamera, OrthographicCamera and FisheyeCamera (the
+//      last three since 2026-09-10).  The fisheye's mapping is
+//      NONLINEAR and has no single pixel-to-direction Jacobian, but
+//      it does not need one: the convention is a one-full-pixel
+//      FINITE DIFFERENCE of the exact mapping, which re-entering
+//      the camera's own construction at pixel + 1 evaluates
+//      directly.  Its one gap is the RIM: a pixel inside the
+//      projection's 180-degree disc whose +x or +y neighbour is
+//      outside it has no honest auxiliary ray, so FisheyeCamera
+//      leaves hasDifferentials FALSE there rather than fabricating
+//      one, and those pixels fall back to point sampling.
 //    - The only two transfers in the renderer are straight-line,
 //      not scattering: RayCaster's x-ray continuation and
 //      CSGObject's reversed exit probe.
@@ -77,6 +83,14 @@ namespace RISE
 	//! For an ORTHOGRAPHIC camera it is the mirror image: the
 	//! direction offsets are exactly zero (parallel projection) and
 	//! the origin offsets carry the one-pixel viewport pitch.
+	//!
+	//! For a FISHEYE camera the origin offsets are zero again (one
+	//! shared frame origin) and the direction offsets carry the
+	//! chord to the neighbouring pixel's ray under the camera's
+	//! `r = sin(theta)` mapping -- which GROWS toward the rim,
+	//! correctly reporting the coarser angular sampling out there.
+	//! On axis it is `2*sin(asin(scale/width)/2)`, not `scale/width`
+	//! (that would be the equidistant projection's answer).
 	struct RayDifferentials
 	{
 		Vector3 rxOrigin;

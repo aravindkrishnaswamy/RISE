@@ -270,6 +270,15 @@ Other camera types (`ThinLensCamera`, `FisheyeCamera`,
 `hasDifferentials = false` for v1.  Add proper differentials in
 follow-ups when needed.
 
+**Status 2026-09-10 — those follow-ups all landed.** Every camera RISE
+ships now populates differentials: `ThinLensCamera::EmitRayThroughLens`
+and `OrthographicCamera::GenerateRay` (commit `aaa27a93`), then
+`FisheyeCamera::GenerateRay`.  The only camera-side `hasDifferentials
+== false` left is the fisheye's rim band, where the neighbouring pixel
+falls outside the projection's 180° disc and no auxiliary ray exists.
+See [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
+§12.
+
 **Note**: footprint per primary ray is the FULL pixel size, NOT
 divided by spp.  Stochastic averaging across N samples per pixel
 integrates over the pixel-area mip-cone correctly.  Each sample

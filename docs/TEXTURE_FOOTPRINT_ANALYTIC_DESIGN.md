@@ -44,7 +44,7 @@ on the mesh path too.
 | # | Fact | Symbol |
 |---|---|---|
 | F1 | Differentials live on the ray: `hasDifferentials`, `diffs.{rxOrigin,ryOrigin,rxDir,ryDir}`, offsets from the central origin/direction | `Ray::hasDifferentials`, `Ray::diffs`, `RayDifferentials` |
-| F2 | **Superseded 2026-09-10 — see §12.** As designed: **only** `PinholeCamera::GenerateRay` sets them; `ThinLensCamera`, `OrthographicCamera`, `FisheyeCamera` do not — no `diffs` reference in any of those files. As of §12, `ThinLensCamera` and `OrthographicCamera` do; `FisheyeCamera` still does not | `PinholeCamera::GenerateRay`, `ThinLensCamera::EmitRayThroughLens`, `OrthographicCamera::GenerateRay` |
+| F2 | **Superseded 2026-09-10 — see §12.** As designed: **only** `PinholeCamera::GenerateRay` sets them; `ThinLensCamera`, `OrthographicCamera`, `FisheyeCamera` do not — no `diffs` reference in any of those files. As of §12, **all four do**; the only camera-side gap left is the fisheye's rim band (§12.3) | `PinholeCamera::GenerateRay`, `ThinLensCamera::EmitRayThroughLens`, `OrthographicCamera::GenerateRay`, `FisheyeCamera::GenerateRay` |
 | F3 | `Ray::Set` / `Ray::SetDir` clear `hasDifferentials` — any freshly-`Set` ray is differential-free by construction | `Ray::Set`, `Ray::SetDir` |
 | F4 | **Differentials are never propagated through a scattering bounce.** `RayDifferentials.h`'s own header advertises "`PropagateThroughReflection` / `PropagateThroughRefraction` apply Igehy's closed-form formulas" — **those functions do not exist anywhere in `src/`.** The struct has four `Vector3` members and a default ctor, nothing else | `RayDifferentials` (header comment vs. body) |
 | F5 | The only two transfers are straight-line: `RayCaster`'s x-ray continuation (`rxOrigin += t·rxDir`) and `CSGObject`'s reversed exit probe (same transfer, then `rxDir` negated) | `RayCaster::ResolveXrayView_`, `CSGObject::AdoptCsgExitFacePayloadViaProbe` |
@@ -343,9 +343,10 @@ Cost per hit **that carries differentials**: two dot products, two divides,
 two 3-vector scaled adds, and (for the fold) two matrix-vector transforms
 plus two `sqrt`. Nothing on a ray with `hasDifferentials == false`, which by
 F2/F3/F4 is **every shadow ray, every NEE ray, every photon, every ray after
-the first scattering bounce, and every ray from the thin-lens, orthographic
-and fisheye cameras** (the thin-lens and orthographic halves of that list
-closed 2026-09-10, §12; only the fisheye remains). In practice this is a primary-visibility-only cost,
+the first scattering bounce, and a fisheye primary ray in the rim band**
+(§12.3). The thin-lens, orthographic and fisheye cameras were all on that
+list until 2026-09-10, §12; every camera RISE ships emits differentials
+now. In practice this is a primary-visibility-only cost,
 and it is strictly cheaper than today on meshes (F9: once per ray, not once
 per accepted candidate).
 
@@ -1244,13 +1245,60 @@ separate change was needed there. `TextureFootprintTest` 14f still uses a
 world X/Y axes coincide, so `x*U + y*V` is bit-identical to the old
 `Vector3(-x, y, 0)` there — see 14h); 14g/14h/14i cover the fix itself (§12.4).
 
-### 12.3 Fisheye — out of scope
+### 12.3 Fisheye — closed the same day, with one deliberate gap
 
-`FisheyeCamera` still emits none. Its equal-area / equidistant mapping has no
-single linear pixel-to-direction Jacobian the way a perspective projection
-does; a correct differential there is its own piece of work (and the design's
-own §3 grazing caveat bites harder at the rim). `fw == 0` on a fisheye render
-remains the honest answer.
+`FisheyeCamera::GenerateRay` populates differentials too, by the same
+re-enter-the-construction rule: the mapping moved into
+`FisheyeCamera::ComputeWorldDirection( screenX, screenY, dir )`, and the
+auxiliaries call it at `ptOnScreen.x + 1` / `ptOnScreen.y + 1`. Every primary
+ray shares the frame origin, so `rxOrigin`/`ryOrigin` are exactly zero and the
+whole footprint lives in `rxDir`/`ryDir` — the mirror image of the
+orthographic camera.
+
+**The nonlinearity was never the obstacle it was billed as.** The convention
+in this design is a one-FULL-pixel *finite difference of the exact mapping*
+(Igehy) — not a linearisation of it — so no closed-form pixel-to-direction
+Jacobian has to exist. `PinholeCamera` does the same thing; it is only
+because a perspective map is linear that the two happen to coincide there.
+
+**And the projection is not what this document, `CAMERAS_ROADMAP.md` and the
+`fisheye_camera` chunk descriptor all said it was.** `GenerateRay` builds
+`direction = (x, y, sqrt(1 - x² - y²))` for the image-plane point `(x, y)`,
+i.e. **image radius = `sin θ`** — an **orthographic** fisheye, not the
+equidistant `r = θ` ("equal-area / equidistant") those three claimed. All
+three are corrected. That is not cosmetic here: it changes the closed form the
+test asserts. On axis the differential magnitude is the chord subtending
+`asin(pitch)`,
+
+> `|rxDir| = 2·sin( asin(scale/width) / 2 )`, with `pitch = scale/width`
+
+which is **not** `scale/width` — at the shipped `scale 1.6` / 500-px settings
+the two differ by a relative `1.2e-6`, a thousand times the test's `1e-9`
+gate. Off axis the chord is longer, correctly reporting the coarser angular
+sampling out there. `scale` itself is an image-plane extent in those sine
+units, not an angle: `x` runs over `[-scale/2, +scale/2]`, and `scale 2.0`
+inscribes the full 180° circle in a square frame. (The `DEG_TO_RAD` in
+`FisheyeCamera::SetIntermediateValue` applies only on the **keyframe** path;
+the parser and `Job::AddFisheyeCamera` pass `scale` through raw. That
+inconsistency predates this change and is left alone here, but it is real.)
+
+**The one gap, by decision: the rim.** A pixel whose own radius is inside the
+projection's unit disc can have its `+x` or `+y` neighbour *outside* it — the
+camera generates no ray there, so there is no honest auxiliary. `GenerateRay`
+leaves `hasDifferentials` **false** for such a ray rather than fabricating
+one: clamping the auxiliary to the rim would under-report the footprint by an
+unbounded factor as the pixel approaches the limit, and extrapolating would
+put it on a direction the camera never generates. Downstream that is the
+neutral fallback this design already specifies — `ComputeFootprintVectors`
+early-outs, `widthValid` stays false, `fw` reads 0, the texture point-samples.
+The **main** ray is unaffected; only the footprint is withheld. Both
+auxiliaries are required together: a half-populated `diffs` would let
+`ComputeFootprintVectors` average a live `dpdx` against a stale `dpdy`. At the test fixture's `scale 1.6` on a 512-px square frame (the shipped
+`scenes/Tests/Cameras/fisheye.RISEscene` uses the same `scale` on 500 px) the
+band measures **one pixel wide** along the frame diagonal — 226 interior
+pixels, 1 rim, 29 with no ray at all (test 15c). The §3 grazing caveat still bites
+hardest at the rim, as predicted — but that is the generic caveat, not a
+fisheye-specific hole.
 
 ### 12.4 Coverage
 
@@ -1284,6 +1332,35 @@ to the pre-fix world-axis formula, recomputed independently in the test, not
 copied from the camera; (i) `rxOrigin`/`ryOrigin` equal the finite difference
 of two independently generated main rays one pixel apart, for the `top_down`
 camera — the differential-side counterpart of (g)/(h).
+
+`TextureFootprintTest` test 15 covers the fisheye, five parts. (a) the on-axis
+closed form: `|rxDir|` and `|ryDir|` both equal `2·sin(asin(scale/width)/2)` to
+a relative `1e-9` (measured `1.4e-14`), with an in-test **oracle assertion that
+the equidistant `scale/width` is off by more than `1e-6`** — so the check
+discriminates the two projection conventions rather than merely restating "the
+step is about a pixel" — plus an exact-zero assertion on both origin offsets.
+Written as `2·sin(asin(p)/2)` and not the algebraically equal
+`sqrt(2(1-sqrt(1-p²)))`, which loses five digits to cancellation at this pitch
+and would only be good to `3e-12`. (b) `rxDir`/`ryDir` equal the difference of
+two independently generated main rays one pixel apart, at the centre **and off
+axis** where the nonlinearity is real — `0.0` at both, against a `1e-15`
+assertion; this is the part a linearised angular-pitch differential passes at
+the centre and fails off axis. (c) walking the `+x`/`+y` frame diagonal
+outward produces all **three** distinct outcomes and they are distinguishable:
+226 interior pixels with differentials, **1** rim pixel with a valid main ray
+and none, 29 outside with no ray at all — and the rim pixel is asserted to be
+the *last* one with a ray, so the withheld differential is provably a boundary
+effect and not a hole in the interior, with the pixel one step inside it
+asserted to still carry them. (d) end-to-end through `Object::IntersectRay`: on
+a face-on plane at distance `d`, `worldWidth` is exactly `d·tan(asin(pitch))`
+to `1.4e-14` relative (the naive `d·pitch` is off by `4.9e-6`). (e) at
+`pixelAR 2` the finite-difference identity still holds exactly (`0.0` against
+`1e-15`) *and* the two axes read different magnitudes (`5.16e-3` vs `2.98e-3`)
+— the stretch is genuinely carried into the differentials, which a hand-rolled
+angular pitch that dropped it would fail while passing (a)/(b)/(d), all at
+`pixelAR 1`. Red-proofed live by shrinking the fisheye x step to half a pixel:
+15a, 15b (both pixels), 15d and 15e fail; 15c, which is structural, correctly
+does not.
 
 ### 12.5 What it moves in practice (measured 2026-09-10)
 
@@ -1325,3 +1402,41 @@ the two extra `ComputeWorldDirection` calls per primary ray are the same tax
 `PinholeCamera` has always paid, and on a path-traced scene they do not
 register above run-to-run variation. `RISE_Log.txt` was empty (0 bytes) on all
 nine renders.
+
+### 12.6 What the fisheye moves in practice (measured 2026-09-10)
+
+Both scenes that name a `fisheye_camera`, same protocol — two runs from the
+post-change binary for the wall-clock-seed noise floor, one from a binary with
+only `FisheyeCamera.cpp`/`.h` reverted to `7ac6180a`. Mean absolute difference
+in 8-bit-equivalent levels over all pixels and channels.
+
+| scene | noise floor | before vs. after | verdict |
+|---|---|---|---|
+| `Tests/Cameras/fisheye` (500×500, pixelpel 64 spp, tent filter) | 0.7102 | 0.7104 / 0.7099 | **exactly at the floor** (1.000×) |
+| `FeatureBased/Combined/planetary_survey` (800×800, pixelpel 49 spp) | 0.08195 | 0.08157 / 0.07883 | **at the floor** (0.979×) |
+
+**Neither scene has a footprint consumer, so the floor is the expected and
+correct result — not evidence the differentials are inert.** Checked against
+the actual consumer set (`TexturePainter`, `ExpressionPainter`,
+`StochasticTilePainter`, `ScatterPainter`, `MappingPainter`,
+`TexCoord1Painter`, `WeaveBRDF`, `ReliefModifier`):
+
+* **`planetary_survey`** paints entirely with `perlin3d_painter`,
+  `voronoi3d_painter`, `perlin2d_painter`, `blend_painter`,
+  `blackbody_painter` and `uniformcolor_painter`. None reads `txFootprint`.
+  No image painter, no `expression_painter`, no `relief_modifier`.
+* **`Tests/Cameras/fisheye`** does contain one `TexturePainter` — the
+  `hdr_painter` on `uffizi_probe.hdr` — but it is bound to the rasterizer's
+  `radiance_map`, i.e. the environment, which is sampled by ray *direction*
+  with no surface hit and therefore no `RayIntersectionGeometric` to carry a
+  footprint. `TexturePainter::GetColor` keys mip selection on
+  `ri.txFootprint.valid`, which never exists on that path. The two surfaces in
+  the scene are `perfectreflector_material`s fed by `iridescent_painter` /
+  `uniformcolor_painter` — neither a consumer.
+
+So the fisheye's differentials are correct-and-currently-unconsumed on the
+shipped corpus: their value is that the *next* fisheye scene to use an
+`expression_painter`, a mip-mapped texture or a `relief_modifier` gets a real
+`fw` instead of silently aliasing. Composition is unchanged on both scenes
+(inspected side by side). `RISE_Log.txt` was empty (0 bytes) on all six
+renders.

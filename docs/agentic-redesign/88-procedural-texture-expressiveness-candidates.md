@@ -393,8 +393,12 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
    non-pinhole cameras all still read 0.0 today; that is the honest
    "point sample" answer, not a regression).  **(Both of those last two
    are now closed: every geometry publishes a primary-hit footprint
-   since 2026-09-06, and the thin-lens and orthographic cameras emit
-   differentials since 2026-09-10 -- only the fisheye still reads 0.0.
+   since 2026-09-06, and EVERY camera RISE ships emits differentials
+   since 2026-09-10 -- thin-lens, orthographic and fisheye alike.  The
+   only camera-side residual is the fisheye's RIM band, where the +x/+y
+   neighbouring pixel falls outside the projection's 180-degree disc and
+   the camera withholds the differential rather than fabricating one, so
+   those pixels still read 0.0.
    See docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md.)**  **Caveat (2026-09-06,
    relief-modifier arc, docs/RELIEF_MODIFIER_DESIGN.md §3.3):** on a
    SCALED mesh instance, `fw` was still an OBJECT-space length until
