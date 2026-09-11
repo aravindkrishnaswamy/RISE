@@ -349,9 +349,16 @@ Once S1–S3 have landed and §6 is green:
   ever existed and none is needed.
 - `docs/README.md` index entry for this document; `tests/README.md` row for
   the new test.
-- Agent skills: `skills/agent/*.md` carry no integrator warning about
-  signals (audited 2026-09-11: only neutral-value teaching, which stays
-  true); nothing to change there.
+- Agent skills: `skills/agent/materials-and-media-basics.md` (the wetness
+  section, "A wet PT render will not match a wet BDPT or VCM render")
+  carries an integrator warning about `occlusion()` / `curv` and must be
+  rewritten to the post-S3 truth (an earlier audit line here claimed no
+  skill carried one — reviewer D of S1 round 2 found this one).
+  `procedural-textures.md` and `object-modeling-recipes.md` carry only
+  neutral-value teaching, which stays true. The two showcase scene headers
+  `scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene` and
+  `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` repeat the README
+  sentence and are part of the same family.
 
 ## 9. Slices, gates, reviewers
 
@@ -375,7 +382,7 @@ logs, every "neutral under BDPT" sentence in the tree found and fixed.
 
 Ledger (filled per slice):
 
-- S1 — landed `925c2720` (sizeof(BDPTVertex) 608 → 1016 B, +408 exactly, recomputed by two reviewers; 15 gate suites green, 0 warnings over 228 recompiled TUs). Review round 1 (A transport/MIS on Opus, B test strength, C comment fidelity): transport core CLEAN; one P1 shared by A and C — the containment warning's doc block and runtime string still claimed the whole bidirectional transport reads neutral — fixed `cb210926` (narrowed to the S3 residual); P2s fixed `cb210926` (doc counts, symbol cites, S3 scope: HWSS companion record + LIGHT-root vertex copy, five call sites) and `5b28c33e` (sentinel test 55 → 68 checks: mixed-boolean passes close the same-struct boolean-swap blind spot, `mediumIOR`→`ambientIOR` sentinels incl. the ≤0 guard; `VCMLightVertex.h` stale vColor replay comments rewritten). B's red-proofs: dropping each of the three copies goes red by member name (13 / 16 / 11 FAILs); a population-site omission is caught by NO S1 suite — that is §6's job, as designed. Round 2: _pending_.
+- S1 — landed `925c2720` (sizeof(BDPTVertex) 608 → 1016 B, +408 exactly, recomputed by two reviewers; 15 gate suites green, 0 warnings over 228 recompiled TUs). Review round 1 (A transport/MIS on Opus, B test strength, C comment fidelity; its fixes landed in two commits, `cb210926` and `5b28c33e` — the latter's title says "round 2" but it is round 1's P2 follow-up): transport core CLEAN; one P1 shared by A and C — the containment warning's doc block and runtime string still claimed the whole bidirectional transport reads neutral — fixed `cb210926` (narrowed to the S3 residual); P2s fixed `cb210926` (doc counts, symbol cites, S3 scope: HWSS companion record + LIGHT-root vertex copy, five call sites) and `5b28c33e` (sentinel test 55 → 68 checks: mixed-boolean passes close the same-struct boolean-swap blind spot, `mediumIOR`→`ambientIOR` sentinels incl. the ≤0 guard; `VCMLightVertex.h` stale vColor replay comments rewritten). B's red-proofs: dropping each of the three copies goes red by member name (13 / 16 / 11 FAILs); a population-site omission is caught by NO S1 suite — that is §6's job, as designed. Round 2 (D doc family, E correctness — fresh): D found ONE P1 — the proximity doc's §10 residual bullet still said the contract was "explicitly declined", contradicting its own §5.1 — fixed in the next commit, together with D's P2 (the §8 skill-audit line was wrong: `materials-and-media-basics.md` carries an integrator warning; now on S4's list). E: _pending_. Round 3 (doc fidelity on the final state): _pending_.
 - S2 — _pending_
 - S3 — _pending_
 - S4 — _pending_

@@ -3030,9 +3030,14 @@ measured by a harness test against the tracked scene.
 
 ## 10. Residuals, stated up front
 
-- BDPT/VCM/MLT rebuilt records read 0 for `proximity` and, after Phase 3,
-  `interior` (the family's disclosed gap; the `PathVertexEval` contract is
-  explicitly declined for the same reason as for the other three signals).
+- ~~BDPT/VCM/MLT rebuilt records read 0 for `proximity` and `interior`~~ —
+  **CLOSED 2026-09-11 (slice S1 of
+  [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)):**
+  the `PathVertexEval` contract is honoured (see §5.1), so every surface
+  vertex BDPT/VCM/MLT price reads the live channel. What still reads 0 is the
+  hand-built EMITTER record `LightSampler` makes for NEE light samples and
+  the light-subpath root (an emissive material keyed on `proximity`, under PT
+  too — slice S3), and BSSRDF entry vertices (integrator-consistent).
 - Refusing families (RAW meshes, patches, hair, heightfield SDFs; CSG
   composites until Phase 3 — **after it (SHIPPED 2026-09-09)**, an
   intersection/subtraction with a
