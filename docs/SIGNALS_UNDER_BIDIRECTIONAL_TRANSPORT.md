@@ -37,7 +37,7 @@ Why this is a bias and not "an honest flat mask": the forward walk **samples**
 the continuation direction with the live record (the SPF's `Scatter` sees
 `ri.geometric` straight from the intersection) and then **prices** that same
 sample through the rebuilt record (`EvalBSDFAtVertex( vertices.back(), … )`
-at `BDPTIntegrator.cpp` ~:2663 / ~:6175). One material, one vertex, one
+in both subpath generators). One material, one vertex, one
 path: sampled with the true roughness, weighted with the neutral one. The
 MIS reverse pdfs (`EvalPdfAtVertex`) go through the same rebuild, so the
 strategy weights are computed for a material that is not the one the samples
@@ -61,12 +61,12 @@ neutral (none found — see §1); **(c)** structurally cannot carry a signal
 
 | # | Site | What is evaluated | Class | Disposition |
 |---|------|-------------------|-------|-------------|
-| 1 | `PathVertexEval::PopulateRIGFromVertex` — called by name 6× inside `PathVertexEval.h` (the four `Eval*AtVertex{,NM}` bodies plus the two BSSRDF-entry rebuilds), 5× in `BDPTIntegrator.cpp` (the emitter evals) and 2× in `VCMIntegrator.cpp`; reached indirectly by every `EvalBSDFAtVertex` / `EvalPdfAtVertex` consumer — 48 mentions in `BDPTIntegrator.cpp`, 17 in `VCMIntegrator.cpp`, through the 11-line tag-dispatch wrapper `PathValueOps.h`, which rebuilds nothing itself (MLT drives BDPT's machinery and inherits all of them) | BSDF value (`EvalBSDFAtVertex{,NM}`), SPF pdf (`EvalPdfAtVertex{,NM}`) for: forward-walk throughput re-pricing (eye ~:2663, light ~:6175), OpenPGL guiding RIS candidate scoring (~:2462–2547, ~:6000–6085), HWSS companion evals (~:2681, ~:6201, ~:6564), every connection strategy (s,t), NEE at eye vertices, MIS reverse pdfs (~:2758, ~:6270, ~:3915–4447), VCM connections (~:1910–1938) and VCM merges at the EYE vertex (~:2260–2267), emitter radiance at eye-end vertices (`LuminaryRadiance` ~:2939, `EvalEmitterRadiance` ~:2983/3016), BSSRDF profile Fresnel/IOR at entry vertices | (a) forward AND reverse | **S1**: widen `BDPTVertex` (§3) |
-| 2 | `BDPTIntegrator.cpp` eye-subpath vertex population (~:2109) and light-subpath population (~:5625) | the copy from `ri.geometric` into the vertex | (a) | **S1**: copy `derivatives`, `signals`, `txFootprint` |
-| 3 | BSSRDF entry vertices (~:2280, ~:2390, ~:5807, ~:5919) built from `BSSRDFSampling::SampleResult` (entry point / normals / ONB only) | `FresnelTransmission(cos, rig)` / `GetIOR(rig)` on the diffusion profile | (a)-narrow, **integrator-consistent**: PT builds its BSSRDF entry record by hand too (`BSSRDFSampling.h` comment "PT 1508/etc.") | residual, disclosed in §10 — an IOR painter keyed on a signal at a BSSRDF entry reads neutral under every integrator alike; not a PT-vs-BDPT disagreement |
+| 1 | `PathVertexEval::PopulateRIGFromVertex` — called by name 6× inside `PathVertexEval.h` (the four `Eval*AtVertex{,NM}` bodies plus the two BSSRDF-entry rebuilds), 5× in `BDPTIntegrator.cpp` (three emitter-radiance evals — `LuminaryRadiance`, `EvalEmitterRadiance` Pel/NM — plus the zero-exitance-light NEE sweep and `GetSpecularInfoNM`'s delta-vertex IOR lookup) and 2× in `VCMIntegrator.cpp`; reached indirectly by every `EvalBSDFAtVertex` / `EvalPdfAtVertex` consumer — 41 occurrences in `BDPTIntegrator.cpp`, 14 in `VCMIntegrator.cpp` — through the tag-dispatch wrapper `PathValueOps.h`, which rebuilds nothing itself (MLT drives BDPT's machinery and inherits all of them) | BSDF value (`EvalBSDFAtVertex{,NM}`), SPF pdf (`EvalPdfAtVertex{,NM}`) for: forward-walk throughput re-pricing (`EvalBSDFAtVertex( vertices.back(), … )` in `GenerateEyeSubpathImpl` / `GenerateLightSubpathImpl`), OpenPGL guiding RIS candidate scoring and HWSS companion evals in both generators, every connection strategy (s,t), NEE at eye vertices, MIS reverse pdfs (`pdfRev` in both generators and every `EvalPdfAtVertex` in the connection strategies), VCM connections and VCM merges at the EYE vertex (`EvaluateMergesImpl`), emitter radiance at eye-end vertices (`LuminaryRadiance`, `EvalEmitterRadiance`), BSSRDF profile Fresnel/IOR at entry vertices | (a) forward AND reverse | **S1**: widen `BDPTVertex` (§3) |
+| 2 | `BDPTIntegrator.cpp` eye-subpath vertex population (`GenerateEyeSubpathImpl`, the `BDPTVertex v; v.type = SURFACE` block) and light-subpath population (`GenerateLightSubpathImpl`, same block) | the copy from `ri.geometric` into the vertex | (a) | **S1**: copy `derivatives`, `signals`, `txFootprint` |
+| 3 | BSSRDF entry vertices (the four `BDPTVertex entryV` sites, diffusion-profile and random-walk, eye and light) built from `BSSRDFSampling::SampleResult` (entry point / normals / ONB only) | `FresnelTransmission(cos, rig)` / `GetIOR(rig)` on the diffusion profile | (a)-narrow, **integrator-consistent**: PT builds its BSSRDF entry record by hand too (`BSSRDFSampling.h` comment "PT 1508/etc.") | residual, disclosed in §10 — an IOR painter keyed on a signal at a BSSRDF entry reads neutral under every integrator alike; not a PT-vs-BDPT disagreement |
 | 4 | VCM `LightVertex` store (`VCMLightVertex.h`) | nothing — merges evaluate the BSDF at the **eye** `BDPTVertex` only (`EvalBSDFAtVertex<Tag>( v, wiAtEye, … )`, ~:2260); the stored light vertex contributes `wi`, throughput and MIS quantities | n/a | no widening of the store; stated in the store's header by S1 |
 | 5 | `LightSampler.cpp` NEE emitter records (~:1949 RGB, ~:2451 NM): `vNormal/vGeomNormal/ptCoord/onb` only, from `UniformRandomPoint` | `IEmitter::emittedRadiance{,NM}` — the emission painter | (a) for an emissive material whose radiance keys on a signal; reaches **PT** | **S3** (§5) |
-| 6 | `LightSampler::SampleLight` emission record (~:1124) → consumed as `ls.Le` by BDPT's light-subpath root (~:5232; the NM twin at ~:5239 rebuilds the same minimal record) and VCM's (~:1299) | light-subpath root `Le` | (a), same material class as #5 | **S3** |
+| 6 | `LightSampler::SampleLight` emission record (~:1124) → consumed as `ls.Le` by BDPT's light-subpath root (`GenerateLightSubpathImpl`; the NM hero twin AND the HWSS companion-wavelength twin `rigW` rebuild the same minimal record beside it) and VCM's (`VCMIntegrator.cpp`, the `SampleLight` consumer). The LIGHT-type root vertex built there also carries default `derivatives`/`signals`, and two emitter evals price THROUGH it via the helper (`LuminaryRadiance` for the t=1 splat; VCM's light→camera splat) | light-subpath root `Le`, and the light-vertex emitter evals | (a), same material class as #5 | **S3**: the record AND the copy onto the root vertex |
 | 7 | `MediumTransport.cpp` scatter records (~:128, ~:165): a medium point, `vNormal = wo` | phase-function NEE through `EvaluateDirectLighting` | (c) no surface | none |
 | 8 | Photon-map emission (`LuminaryManager.cpp` samples `UniformRandomPoint`; photon power comes from `averageRadiantExitance`, a 10×10 UV-grid average computed at emitter construction against an empty `Ray()` record — `LambertianEmitter::RefreshAverages`, same in Phong/Composite) | photon power budget / light-importance weights, **not** a per-point radiance | (c) a design-level average; no hit exists | none; the average is deliberately record-free (its comment says so). Photon **hits** during tracing are evaluated on live intersection records |
 | 9 | `ManifoldSolver.cpp` / `SMSPhotonMap.cpp` `SampleLight` consumers | seed positions | (c) | none |
@@ -200,8 +200,17 @@ constraints:
 - **The shadow test is not replaced** (transparent-shadow transmittance
   through `ShadowOccluded*` stays as is); the probe is one extra
   object-level closest-hit under the gate.
-- **The NM twins** (~:2451 and BDPT ~:5239) get the same record; the RGB
-  and NM sites share one helper so they cannot drift.
+- **All twins get the same record**: the NM NEE site beside the RGB one in
+  `LightSampler.cpp`, and in `GenerateLightSubpathImpl` BOTH the NM hero
+  `Le` rebuild and the HWSS companion-wavelength `rigW` rebuild (fixing the
+  hero alone would leave a hero-live / companion-neutral split — the
+  spectral form of the §1 defect). RGB and NM sites share one helper so
+  they cannot drift.
+- **The LIGHT-type root vertex is widened too**: `GenerateLightSubpathImpl`
+  copies the record's `derivatives` / `signals` onto the `type == LIGHT`
+  root vertex, because `LuminaryRadiance` (the t=1 splat's emitter eval) and
+  VCM's light→camera splat price the root THROUGH `PopulateRIGFromVertex`;
+  a better record inside `LightSampler` alone would leave those two neutral.
 
 Test (in S3): an emissive SDF sphere whose exitance expression keys on
 `curv` (constant on a sphere, so the "baked" control is a plain constant),
@@ -315,9 +324,11 @@ PT's σ²·T on the same image class.
 
 Once S1–S3 have landed and §6 is green:
 
-- Delete `WarnIfNonPTRenderHasLiveSignalConsumer` and its four call sites
+- Delete `WarnIfNonPTRenderHasLiveSignalConsumer` and its five call sites
   (`BDPTPelRasterizer.h`, `BDPTSpectralRasterizer.h`,
   `VCMRasterizerBase.cpp`, `MLTRasterizer.cpp`, `MLTSpectralRasterizer.cpp`).
+  (Between S1 and S4 its text is NARROWED, not deleted — S1's review round
+  found the old wording false the moment S1 landed.)
 - Delete `SurfaceSignalDemand` (its only consumer was the warning) and the
   `m_signalDemand` registrations in both expression painters;
   `SurfaceCurvatureDemand` and `ProximityDemand` stay (they gate real work).

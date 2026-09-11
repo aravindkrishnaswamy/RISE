@@ -826,20 +826,26 @@ namespace RISE
 	}
 
 	//! Containment diagnostic for the geometry-derived shading signals'
-	//! disclosed BDPT/VCM/MLT gap (design doc §13 Phase-2 "Known residual",
-	//! §14 item 11): `PathVertexEval.h`'s `PopulateRIGFromVertex` -- and
-	//! every evaluation downstream of it (forward-walk throughput
-	//! re-pricing, NEE/connections, MIS reverse-pdf, OpenPGL guiding RIS,
-	//! HWSS companion evals, VCM merges, and MLT which drives BDPT's own
-	//! machinery) -- carries neither `derivatives` nor `signals`, so
-	//! `curv`, `occlusion` and `thickness` read their neutral fallback at
-	//! those sites.  PT is unaffected and evaluates all three fully.
+	//! BDPT/VCM/MLT gap (design doc §14 item 11), NARROWED 2026-09-11 by
+	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md slice S1: the
+	//! `BDPTVertex` now carries `derivatives`, `signals` and
+	//! `txFootprint`, and `PathVertexEval::PopulateRIGFromVertex` replays
+	//! them, so every surface-vertex evaluation downstream of it (forward
+	//! re-pricing, connections, MIS reverse-pdf, guiding RIS, HWSS
+	//! companions, VCM merges, MLT) reads the LIVE signals.  What is still
+	//! neutral until slice S3 lands is the hand-built EMITTER record
+	//! `LightSampler.cpp` makes for NEE light samples and for the
+	//! light-subpath root -- an emissive material whose radiance keys on a
+	//! signal reads it live when hit directly and neutral when reached
+	//! that way, under PT as well as under the bidirectional families.
+	//! That is what the warning below now says; slice S4 removes it.
 	//!
 	//! Call once from each BDPT/VCM/MLT-family rasterizer's own
 	//! pre-render hook (never per pixel or per sample) -- see
 	//! BDPTPelRasterizer::PreRenderSetup, BDPTSpectralRasterizer::
-	//! PreRenderSetup, VCMRasterizerBase::PreRenderSetup, and
-	//! MLTRasterizer::RenderFrameOfMLT for the four call sites.  Cheap:
+	//! PreRenderSetup, VCMRasterizerBase::PreRenderSetup,
+	//! MLTRasterizer::RenderFrameOfMLT and MLTSpectralRasterizer's
+	//! frame entry for the five call sites.  Cheap:
 	//! two relaxed atomic loads.  `SurfaceCurvatureDemand` covers `curv`
 	//! alone; `SurfaceSignalDemand` is built from a compiled program's
 	//! `UsesSurfaceSignals()` (`!m_signalCalls.empty()`,
@@ -859,20 +865,18 @@ namespace RISE
 	{
 		if( !pLog || !familyName ) return;
 		if( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ) {
-			// NAMES ALL SIX.  The message used to say
-			// "curv/occlusion/thickness", which had already drifted when
-			// `convexity` shipped, drifted again when `proximity` did, and
-			// again when `interior` joined it -- and a warning that does
-			// not name the signal an author is actually using reads as
-			// being about somebody else's problem.  The two CROSS-OBJECT
-			// ones are the sharpest here: their neutrals mean "no contact
-			// anywhere in the scene" and "buried in nothing", so a grime
-			// mask simply stops painting.
+			// NAMES ALL SIX signals and the ONE remaining neutral site
+			// (post-S1 text; see the doc comment above).  A warning that
+			// does not name the signal an author is actually using, or that
+			// overstates the gap, reads as being about somebody else's
+			// problem -- the previous wording claimed the whole transport
+			// was neutral, which stopped being true when S1 landed.
 			pLog->PrintEx( eLog_Warning,
-				"%s:: curv/occlusion/thickness/convexity/proximity/interior evaluate as neutral "
-				"in parts of BDPT/VCM/MLT transport; PT renders them fully -- see "
-				"docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md and, for proximity and interior, "
-				"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md",
+				"%s:: curv/occlusion/thickness/convexity/proximity/interior are live at every "
+				"surface vertex of BDPT/VCM/MLT since slice S1; the one remaining neutral read is "
+				"an EMISSIVE material keyed on a signal when its light is reached by NEE or as the "
+				"light-subpath root (LightSampler's hand-built emitter record, pending slice S3) -- "
+				"see docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md",
 				familyName );
 		}
 	}

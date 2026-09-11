@@ -281,7 +281,7 @@ must gain a `BDPTVertex` slot, population in both subpath generators, a copy in
 `PopulateRIGFromVertex` and a sentinel in `BDPTVertexRIGRebuildTest`) for the
 same reason the signals design §14 item 11 declined it for the three existing
 signals. That decline is withdrawn: `derivatives`, `signals` and `txFootprint`
-all four ride the vertex now, the contract is honoured in full, and the
+all three ride the vertex now, the contract is honoured in full, and the
 `BDPTVertexRIGRebuildTest` sentinels cover every scalar, pointer and flag of the
 three structs. The reason for the withdrawal is that the gap was never an honest
 flat mask — the bidirectional walk SAMPLES its continuation direction against
