@@ -71,7 +71,7 @@ namespace RISE
 			kLVF_IsDelta		= 1 << 0,	///< Sampled interaction at this vertex is a delta (specular) BSDF lobe
 			kLVF_IsConnectible	= 1 << 1,	///< Material has at least one non-delta BxDF component
 			kLVF_IsBSSRDFEntry	= 1 << 2,	///< Skip: non-analytic PDF, recurrence terminates here
-			kLVF_HasVertexColor	= 1 << 3	///< vColor was populated from a colored mesh hit; consumers should mirror it into the reconstructed ri.bHasVertexColor
+			kLVF_HasVertexColor	= 1 << 3	///< Set when vColor was populated from a colored mesh hit at store time. No merge-path reader exists (verified 2026-09-11: `lv.vColor` / this bit have exactly one write site, VCMIntegrator.cpp's ConvertLightSubpath, and no reader anywhere in tree) -- the light side's material response is already folded into `throughput` by the time it reaches the store. Kept for the KD-tree layout and any future consumer.
 		};
 
 		/// Compact per-vertex record stored in the VCM light vertex
@@ -114,12 +114,19 @@ namespace RISE
 			VCMMisQuantities	mis;			///< dVCM/dVC/dVM at this vertex after the geometric update
 
 			//! Per-vertex color interpolated by the geometry at hit time
-			//! (linear ROMM RGB; see RISEPel).  Replayed into the
-			//! reconstructed RayIntersectionGeometric on merge so the
-			//! vertex-color painter sees the same color it would on a
-			//! direct PT path.  bHasVertexColor mirrors the intersection
-			//! field of the same name; encoded as a flag bit on `flags`
-			//! to avoid a per-vertex padding hole.
+			//! (linear Rec.709 RGB; see RISEPel).  Written once, at store
+			//! time (VCMIntegrator::ConvertLightSubpath), and has no
+			//! reader: `EvaluateMergesImpl` evaluates the BSDF and both
+			//! its PDFs at the EYE `BDPTVertex` only (see the file
+			//! header), so the light side's material response is already
+			//! folded into `throughput` by the time it reaches this
+			//! struct.  Not replayed into any reconstructed
+			//! RayIntersectionGeometric -- no merge path builds one from
+			//! a LightVertex.  Kept for the KD-tree layout and any
+			//! future consumer that needs the light-side color directly;
+			//! bHasVertexColor (kLVF_HasVertexColor on `flags`, chosen to
+			//! avoid a per-vertex padding hole) mirrors the intersection
+			//! field of the same name for the same reason.
 			RISEPel				vColor;
 
 			LightVertex() :

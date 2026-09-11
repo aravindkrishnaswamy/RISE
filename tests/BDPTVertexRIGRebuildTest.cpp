@@ -29,6 +29,28 @@
 //    its own Check.  When adding a new mirrored field, extend this
 //    test the same way.
 //
+//    BOOLEANS NEED A SECOND, MIXED PASS.  A uniquely-valued sentinel
+//    means nothing for a bool -- there are only two values, so every
+//    boolean in a struct shares its value with every other boolean in
+//    the same struct across the all-true (TestPopulateRIG_AllFields)
+//    and all-false (TestPopulateRIG_DefaultsAlsoCopy) cases.  A
+//    member-by-member copy that SWAPPED two same-struct booleans (e.g.
+//    `valid` <-> `curvatureValid` in `derivatives`) would pass both of
+//    those cases undetected: PopulateCurvature would take the wrong
+//    branch and nothing here would catch it.
+//    TestPopulateRIG_MixedBooleanPatterns runs two additional passes
+//    whose boolean assignments are chosen so every pair of same-struct
+//    booleans differs in at least one pass -- see that function's
+//    comment for the derivation.  `signals.bComplementedField` has no
+//    same-struct boolean sibling to be swapped with, so it needs no
+//    mixed pass of its own; the existing all-true / all-false cases
+//    already cover it.
+//
+//    ambientIOR (BDPTVertex::mediumIOR, the G6 stamp) is a scalar
+//    guarded by a branch, not a straight copy, so it gets its own
+//    sentinel function: TestPopulateRIG_AmbientIOR exercises the
+//    pass-through branch and both guard inputs (zero and negative).
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <iostream>
@@ -511,6 +533,190 @@ void TestPopulateRIG_DefaultsAlsoCopy()
 }
 
 //////////////////////////////////////////////////////////////////////
+// TestPopulateRIG_MixedBooleanPatterns
+//
+// Closes the boolean-swap blind spot in the all-true / all-false
+// sentinel cases above.  With only two values, a bool can never carry
+// a "uniquely-valued" sentinel the way a scalar or pointer can -- so a
+// member-by-member copy that SWAPPED two same-struct booleans (e.g.
+// `derivatives.valid` <-> `derivatives.curvatureValid`, which would
+// make PopulateCurvature take the wrong branch) passes both the
+// all-true and all-false cases undetected, because within each of
+// those cases every boolean in the struct already shares its
+// neighbours' value.
+//
+// The fix: run two more passes whose per-boolean assignment is chosen
+// so every PAIR of same-struct booleans differs in at least one pass.
+// Treat each boolean's two-pass assignment as a 2-bit column; a swap
+// between booleans i and j is invisible iff their columns are
+// identical, so the passes below give `derivatives`' three booleans
+// (valid, curvatureValid, texChartValid) the columns (T,F), (F,T) and
+// (F,F) -- pairwise distinct, so no swap among the three can hide --
+// and give `txFootprint`'s two booleans (valid, widthValid) the
+// columns (T,F) and (F,T), the inverse of each other.
+//
+// `signals.bComplementedField` is the only boolean in SurfaceSignalInfo
+// -- it has no same-struct sibling to be swapped with, so it is not
+// re-exercised here; the existing all-true / all-false cases already
+// pin its value.
+//////////////////////////////////////////////////////////////////////
+void TestPopulateRIG_MixedBooleanPatterns()
+{
+	std::cout << "Testing PopulateRIGFromVertex against mixed boolean patterns "
+		"(catches a same-struct boolean swap the all-true/all-false cases can't)..." << std::endl;
+
+	// ---- Pass A: derivatives (valid, curvatureValid, texChartValid) =
+	// (true, false, false); txFootprint (valid, widthValid) = (true, false).
+	{
+		BDPTVertex v;
+		v.type   = BDPTVertex::SURFACE;
+		v.normal = Vector3( 0, 0, 1 );
+		v.onb.CreateFromW( v.normal );
+
+		v.derivatives.valid          = true;
+		v.derivatives.curvatureValid = false;
+		v.derivatives.texChartValid  = false;
+
+		v.txFootprint.valid      = true;
+		v.txFootprint.widthValid = false;
+
+		const Ray dummyRay( Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) );
+		RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+
+		PathVertexEval::PopulateRIGFromVertex( v, ri );
+
+		Check( ri.derivatives.valid == true,
+			"[mixed pass A] derivatives.valid should be true" );
+		Check( ri.derivatives.curvatureValid == false,
+			"[mixed pass A] derivatives.curvatureValid should be false "
+			"(a valid<->curvatureValid swap would flip this)" );
+		Check( ri.derivatives.texChartValid == false,
+			"[mixed pass A] derivatives.texChartValid should be false "
+			"(a valid<->texChartValid swap would flip this)" );
+
+		Check( ri.txFootprint.valid == true,
+			"[mixed pass A] txFootprint.valid should be true" );
+		Check( ri.txFootprint.widthValid == false,
+			"[mixed pass A] txFootprint.widthValid should be false "
+			"(a valid<->widthValid swap would flip this)" );
+	}
+
+	// ---- Pass B: derivatives (valid, curvatureValid, texChartValid) =
+	// (false, true, false); txFootprint (valid, widthValid) = (false, true)
+	// -- the inverse of pass A.
+	{
+		BDPTVertex v;
+		v.type   = BDPTVertex::SURFACE;
+		v.normal = Vector3( 0, 0, 1 );
+		v.onb.CreateFromW( v.normal );
+
+		v.derivatives.valid          = false;
+		v.derivatives.curvatureValid = true;
+		v.derivatives.texChartValid  = false;
+
+		v.txFootprint.valid      = false;
+		v.txFootprint.widthValid = true;
+
+		const Ray dummyRay( Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) );
+		RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+
+		PathVertexEval::PopulateRIGFromVertex( v, ri );
+
+		Check( ri.derivatives.valid == false,
+			"[mixed pass B] derivatives.valid should be false "
+			"(a valid<->curvatureValid swap would flip this)" );
+		Check( ri.derivatives.curvatureValid == true,
+			"[mixed pass B] derivatives.curvatureValid should be true" );
+		Check( ri.derivatives.texChartValid == false,
+			"[mixed pass B] derivatives.texChartValid should be false "
+			"(a curvatureValid<->texChartValid swap would flip this)" );
+
+		Check( ri.txFootprint.valid == false,
+			"[mixed pass B] txFootprint.valid should be false "
+			"(a valid<->widthValid swap would flip this)" );
+		Check( ri.txFootprint.widthValid == true,
+			"[mixed pass B] txFootprint.widthValid should be true" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// TestPopulateRIG_AmbientIOR
+//
+// `PopulateRIGFromVertex` writes `ri.ambientIOR` from
+// `vertex.mediumIOR` through a guard -- `(mediumIOR > 0.0) ?
+// mediumIOR : 1.0` -- rather than a straight copy, so it needs its
+// own sentinel coverage distinct from the struct-copy fields above:
+// one case exercising the pass-through branch, and two exercising the
+// guard (zero and negative).  Each destination `ri.ambientIOR` is
+// pre-poisoned to a value equal to none of the expected outcomes, so a
+// forgotten write is caught rather than accidentally matching either
+// branch's result.
+//////////////////////////////////////////////////////////////////////
+void TestPopulateRIG_AmbientIOR()
+{
+	std::cout << "Testing PopulateRIGFromVertex's ambientIOR guard..." << std::endl;
+
+	const Scalar kPoison = -999.0;
+
+	// mediumIOR = 1.337 (positive, non-default) -> ambientIOR should
+	// pass through unchanged.
+	{
+		BDPTVertex v;
+		v.type      = BDPTVertex::SURFACE;
+		v.normal    = Vector3( 0, 0, 1 );
+		v.onb.CreateFromW( v.normal );
+		v.mediumIOR = 1.337;
+
+		const Ray dummyRay( Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) );
+		RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+		ri.ambientIOR = kPoison;
+
+		PathVertexEval::PopulateRIGFromVertex( v, ri );
+
+		Check( IsClose( ri.ambientIOR, 1.337 ),
+			"ambientIOR should mirror vertex.mediumIOR (1.337) when positive" );
+	}
+
+	// mediumIOR = 0.0 -> guard should substitute 1.0 (air).
+	{
+		BDPTVertex v;
+		v.type      = BDPTVertex::SURFACE;
+		v.normal    = Vector3( 0, 0, 1 );
+		v.onb.CreateFromW( v.normal );
+		v.mediumIOR = 0.0;
+
+		const Ray dummyRay( Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) );
+		RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+		ri.ambientIOR = kPoison;
+
+		PathVertexEval::PopulateRIGFromVertex( v, ri );
+
+		Check( IsClose( ri.ambientIOR, 1.0 ),
+			"ambientIOR should guard mediumIOR == 0.0 to 1.0 (air), "
+			"not pass the non-positive value through" );
+	}
+
+	// mediumIOR = -2.0 -> guard should substitute 1.0 (air).
+	{
+		BDPTVertex v;
+		v.type      = BDPTVertex::SURFACE;
+		v.normal    = Vector3( 0, 0, 1 );
+		v.onb.CreateFromW( v.normal );
+		v.mediumIOR = -2.0;
+
+		const Ray dummyRay( Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) );
+		RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+		ri.ambientIOR = kPoison;
+
+		PathVertexEval::PopulateRIGFromVertex( v, ri );
+
+		Check( IsClose( ri.ambientIOR, 1.0 ),
+			"ambientIOR should guard mediumIOR == -2.0 (negative) to 1.0 (air), "
+			"not pass the non-positive value through" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 int main()
@@ -519,6 +725,8 @@ int main()
 
 	TestPopulateRIG_AllFields();
 	TestPopulateRIG_DefaultsAlsoCopy();
+	TestPopulateRIG_MixedBooleanPatterns();
+	TestPopulateRIG_AmbientIOR();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
