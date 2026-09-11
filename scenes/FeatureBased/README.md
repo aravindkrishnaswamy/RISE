@@ -362,10 +362,21 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   each earning its keep on different mechanisms.
 
   `weathered_workbench.RISEscene` is the composition hero: a wooden workbench whose top
-  is driven by ONE `expression_painter` grain field consumed twice -- a `ramp_painter`
-  for wood colour and a `scalar_painter{painter}` bridge for GGX roughness, so gloss
-  follows grain. `scatter_painter` scatters oil-stain stamps that a `blend_painter{mode
-  multiply}` darkens onto the wood. A bolted-on cast-iron bench vise -- a fifteen-part
+  is EIGHT BOARDS -- an `sdf_geometry` of eight 133 mm roundboxes on a slab, with real
+  5 mm joints -- driven by ONE `expression_painter` field that returns a vec3 so its two
+  consumers can stop at different points in the same sum: channel R (wood plus every
+  process term) feeds a `ramp_painter` for colour and a `scalar_painter{painter}` bridge
+  for GGX roughness, while channel G (the continuous coarse undulation alone) feeds
+  `relief_modifier`. Every feature size is derived from a MEASURED pixel footprint
+  (`fw` p50 = 10.7 mm over the top face), which is why the 4.5 mm growth rings reach
+  roughness only, why the cathedral crowns are faded in against `fw` by an analytic
+  face-spacing term, and why the eight boards -- each with its own pith depth, tilt, ring
+  spacing and tone -- are the structure the camera can actually resolve. `convexity()`
+  polishes the board arrises, the analytic distance to a board edge puts the crack and its
+  dirt in the joint, and the rare events (two knots, a ring left by a wet tin, one oil
+  patch) are hand-placed rather than scattered. The four legs carry the same wood at their
+  own smaller footprint with the grain running up the post, plain. A bolted-on cast-iron
+  bench vise -- a fifteen-part
   `sdf_geometry` whose silhouette (base flange, fixed and sliding jaws, proud machined jaw
   pads, lead screw, T-handle) says what it is before any painter touches it -- carries ONE
   weathering field consumed four ways: `ramp_painter` for the paint-to-rust colour, a

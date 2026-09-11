@@ -84,7 +84,9 @@ RISE ASCII SCENE 7
 #      one end check; a few resin lines thresholded off the top of a low-frequency field.  Quiet
 #      everywhere else.  Uniform busy-ness is the other half of "obviously generated".
 #
-#   5. ONE FIELD DRIVES COLOUR, ROUGHNESS AND RELIEF.  `expr_plank` is the only wood field.
+#   5. ONE FIELD DRIVES COLOUR, ROUGHNESS AND RELIEF.  (Refinement from weathered_workbench, 2026-09-10:
+#      a term about the surface's HISTORY -- dirt, wear, stains -- is not a term about its SHAPE; bind the
+#      shape channel raw to relief and keep history terms in colour/roughness, or the relief carves dirt.)  `expr_plank` is the only wood field.
 #      `ramp_plank` colours it, `sp_plank_rough` bridges it to GGX roughness (plus `sp_pore`'s
 #      zero-mean detail through `scalar_painter { add }`), `sp_plank_relief` bridges it raw into
 #      `relief_modifier`.  Ridge, dark band and dull sheen are the SAME feature seen three ways,
