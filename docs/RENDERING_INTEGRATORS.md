@@ -492,9 +492,10 @@ Two practical considerations:
 
   The E-vs-B control of that test (signals live vs. every signal call
   replaced by its neutral constant) moves the whole-image mean by only
-  0.05 %–1.9 % under PT (plank ~0.3 %, tidal ~0.05 %, bunny ~1.8 %,
-  pavilion ~0.9 %) and by a similar 0.1 %–2 % under BDPT/VCM, while the
-  blow-ups are 2–3 orders of magnitude and identical for E and B — so
+  0.03 %–1.9 % under PT (plank ~0.3 %, tidal ~0.03 %, bunny ~1.8 %,
+  pavilion ~1.0 %) and by a similar 0.05 %–1.9 % under BDPT/VCM (the
+  test's own header carries the per-run values), while the blow-ups are
+  2–3 orders of magnitude and identical for E and B — so
   none of this is the neutral-signal gap that document closes.  Not root-caused; step 0 of
   [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md) has
   NOT been run on these scenes.  Observations that narrow it: the VCM
@@ -507,9 +508,12 @@ Two practical considerations:
   no radiance map, while the env-lit plank shows only the known VCM env
   bias class (0.55×).  The consistency test prints a labelled
   `INTEGRATOR DISAGREEMENT` line and skips its ratio-of-ratios
-  assertion for any (showcase, integrator) whose mean is outside
-  [0.5×, 2×] of PT, counting the skips in its summary, so this debt
-  cannot hide inside that test's green.
+  assertion only when BOTH the live (E) and the neutral-baked (B)
+  variants of a (showcase, integrator) fall outside [0.5×, 2×] of PT
+  AND agree with each other within 10 %; a one-sided or disagreeing
+  blow-up is the signature of a signal-attributable regression and
+  FAILS instead.  Skips are counted in the summary, so this debt cannot
+  hide inside that test's green.
 
 ## 8. Cross-references
 
