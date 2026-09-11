@@ -375,7 +375,7 @@ logs, every "neutral under BDPT" sentence in the tree found and fixed.
 
 Ledger (filled per slice):
 
-- S1 — landed `925c2720` (worker report: sizeof(BDPTVertex) 608 → 1016 B, +408 exactly; BDPTVertexRIGRebuildTest 11 → 55 checks; 15 gate suites green, 0 warnings over 228 recompiled TUs). Review rounds: _pending_.
+- S1 — landed `925c2720` (sizeof(BDPTVertex) 608 → 1016 B, +408 exactly, recomputed by two reviewers; 15 gate suites green, 0 warnings over 228 recompiled TUs). Review round 1 (A transport/MIS on Opus, B test strength, C comment fidelity): transport core CLEAN; one P1 shared by A and C — the containment warning's doc block and runtime string still claimed the whole bidirectional transport reads neutral — fixed `cb210926` (narrowed to the S3 residual); P2s fixed `cb210926` (doc counts, symbol cites, S3 scope: HWSS companion record + LIGHT-root vertex copy, five call sites) and `5b28c33e` (sentinel test 55 → 68 checks: mixed-boolean passes close the same-struct boolean-swap blind spot, `mediumIOR`→`ambientIOR` sentinels incl. the ≤0 guard; `VCMLightVertex.h` stale vColor replay comments rewritten). B's red-proofs: dropping each of the three copies goes red by member name (13 / 16 / 11 FAILs); a population-site omission is caught by NO S1 suite — that is §6's job, as designed. Round 2: _pending_.
 - S2 — _pending_
 - S3 — _pending_
 - S4 — _pending_
