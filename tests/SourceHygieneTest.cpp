@@ -4770,7 +4770,7 @@ int main()
 	// does the writing, only that no NEW file has joined the set.  That is
 	// still the check that matters, because every hazardous addition would be
 	// in a new file (a new geometry intersector, a new transform layer, a new
-	// painter pipe) rather than smuggled into one of the nine below.
+	// painter pipe) rather than smuggled into one of the ten below.
 	//
 	// RED-PROVED by adding `ri.geometric.signals.primId = 3;` to a scratch
 	// copy of Rendering/RayCaster.cpp: the census reported RayCaster.cpp and
@@ -4844,7 +4844,7 @@ int main()
 			std::cout << "  signals writer: " << w << std::endl;
 		}
 
-		// The NINE files allowed to write it, and why each one is:
+		// The TEN files allowed to write it, and why each one is:
 		//   BDPTIntegrator.cpp                         `v.signals = ri.geometric
 		//                                              .signals` at the eye and
 		//                                              light subpath generators.
@@ -4884,6 +4884,33 @@ int main()
 		//   ExpressionPainter.cpp                      PopulateSignals' by-value copy
 		//                                              into the context, plus the two
 		//                                              BuildContext `time` stamps
+		//   LightSampler.cpp                           `rig.signals = payload.channel`
+		//                                              in ApplyEmitterSurface.  Stamps a
+		//                                              REAL intersection's channel
+		//                                              exactly as ObjectManager does, on
+		//                                              a record NO MANAGER PRODUCED: a
+		//                                              light sample is a point
+		//                                              UniformRandomPoint returned, not
+		//                                              a traversal result, so the
+		//                                              cross-object triple has no other
+		//                                              way to reach it.  The channel is
+		//                                              obtained by ProbeEmitterSurface
+		//                                              firing one object-level
+		//                                              closest-hit at the luminary and
+		//                                              keeping the record only if it
+		//                                              landed on the sampled point --
+		//                                              never fabricated, and a no-op
+		//                                              unless a signal consumer is live.
+		//                                              Added by docs/SIGNALS_UNDER_
+		//                                              BIDIRECTIONAL_TRANSPORT.md §5
+		//                                              (slice S3); without it an
+		//                                              EMISSIVE material keyed on a
+		//                                              signal read the live value when a
+		//                                              camera ray hit it and the neutral
+		//                                              one when NEE or a light-subpath
+		//                                              root reached the same point --
+		//                                              under PT as well as under the
+		//                                              bidirectional families.
 		//   ObjectManager.cpp                          THE cross-object stamp
 		//   PathVertexEval.h                           `ri.signals = vertex
 		//                                              .signals` in
@@ -4907,6 +4934,7 @@ int main()
 			"CSGObject.cpp",
 			"ExpressionEval.h",
 			"ExpressionPainter.cpp",
+			"LightSampler.cpp",
 			"ObjectManager.cpp",
 			"PathVertexEval.h",
 			"RayIntersectionGeometric.h",
@@ -4919,10 +4947,11 @@ int main()
 			setMatches = ( writers[i] == kAllowedSignalWriters[i] );
 		}
 		Check( setMatches,
-		       "cross-object signal channel: `signals` is assigned ONLY in the nine files "
+		       "cross-object signal channel: `signals` is assigned ONLY in the ten files "
 		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 sanctions (seven that stamp or "
-		       "adopt it, plus the two that FORWARD the stamp onto a BDPTVertex and back out "
-		       "of it per docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3.1) -- a new writer "
+		       "adopt it, the two that FORWARD the stamp onto a BDPTVertex and back out "
+		       "of it per docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3.1, and the one "
+		       "that stamps a PROBED emitter record per that document's §5) -- a new writer "
 		       "would clobber ObjectManager::IntersectRay's pScene/pSelf/ptWorld stamp and "
 		       "silently turn every proximity() in the frame into its neutral 0" );
 		if( !setMatches ) {

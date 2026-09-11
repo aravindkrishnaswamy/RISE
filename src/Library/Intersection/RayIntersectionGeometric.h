@@ -429,6 +429,15 @@ namespace RISE
 		//! reading the neutral — the bidirectional integrators used to
 		//! sample against the live record and then price the same sample
 		//! against a neutral one, which is a bias, not a flat mask.
+		//!
+		//! AND PROBED ONTO A SAMPLED EMISSION POINT (same date, §5 of that
+		//! document): a light sample is a point `UniformRandomPoint`
+		//! returned, not a hit, so `LightSampler::ProbeEmitterSurface`
+		//! fires one closest-hit at the luminary and stamps THIS field
+		//! from the resulting record — including the cross-object triple,
+		//! with exactly the values `ObjectManager::IntersectRay` uses. It
+		//! is the one place other than that function where the triple is
+		//! written, and SourceHygieneTest pins the pair.
 		SurfaceSignalInfo			signals;
 
 		//! Texture-space footprint at the hit point — Landing 2.  Computed

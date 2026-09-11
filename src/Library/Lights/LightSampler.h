@@ -81,6 +81,7 @@
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IBSDF.h"
+#include "../Intersection/RayIntersectionGeometric.h"	// SurfaceDerivativesInfo / SurfaceSignalInfo / TextureFootprint, by value on EmitterSurfacePayload
 #include "../Interfaces/IMedium.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/RandomNumbers.h"
@@ -101,6 +102,76 @@ namespace RISE
 
 	namespace Implementation
 	{
+		//! THE EMITTER PROBE'S TWO SCALE-RELATIVE CONSTANTS, both expressed
+		//! as a fraction of the luminary's WORLD bounding-box diagonal `D`
+		//! -- the same "no absolute length may appear in a geometric gate"
+		//! convention `IGeometry::SelfHitRootFloor` and `scaleHint` follow,
+		//! and for the same reason: a constant that is right for a 1-unit
+		//! lamp is wrong for a 1000-unit sky panel.
+		//!
+		//! ACCEPT: 1 % of D.  Upper bound chosen so a hit on a genuinely
+		//! DIFFERENT part of a non-convex luminary -- which is O(D) away --
+		//! is rejected with three orders of margin.  Lower bound set by what
+		//! a real intersector's own positional error can be: FP error on a
+		//! closest-hit is ~1e-12 relative, but an SDF luminary's sampled
+		//! point comes off a marching-cubes extraction of the field while
+		//! the probe lands on the ray-marched zero set, and those two
+		//! surfaces differ by the extraction's cell size, not by an ulp.
+		//! 1 % clears that and still cannot admit a wrong-part hit.
+		static const Scalar kEmitterProbeAcceptFraction = Scalar( 0.01 );
+
+		//! STANDOFF: 0.1 % of D -- one tenth of the acceptance tolerance, so
+		//! the standoff can never by itself push a hit out of the band, and
+		//! ~9 orders above every geometry's `SelfHitRootFloor` (which is
+		//! `NEARZERO * (1 + |o|_1)`, i.e. 1e-12 relative), so the probe can
+		//! never be swallowed as a self-hit root.
+		static const Scalar kEmitterProbeStandoffFraction = Scalar( 0.001 );
+
+		//! THE SHADING PAYLOAD A SAMPLED EMISSION POINT CANNOT CARRY BY
+		//! ITSELF (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, slice S3).
+		//!
+		//! `IObject::UniformRandomPoint` returns a position, a normal and a UV
+		//! -- and nothing else.  Every emitter record built from one of those
+		//! samples (the two NEE sites in LightSampler.cpp, `SampleLight`'s
+		//! emission record, and the three records BDPT / VCM rebuild beside
+		//! it) therefore left `derivatives`, `signals` and `txFootprint`
+		//! DEFAULT, so an emissive material whose radiance keys on `curv`,
+		//! `occlusion(r)`, `proximity(r)` -- any of the six geometry signals --
+		//! read the documented neutral there while the SAME material read the
+		//! live value when a camera ray hit the emitter directly.  That is a
+		//! within-scene inconsistency, and it reaches plain PT (NEE), not just
+		//! the bidirectional families.
+		//!
+		//! These four fields are recovered from a REAL intersection --
+		//! `LightSampler::ProbeEmitterSurface` fires one object-level
+		//! closest-hit at the luminary and keeps the record only if it lands
+		//! on the sampled point -- never fabricated.  `valid` false means the
+		//! probe was gated off or refused and every consumer must leave its
+		//! hand-built record exactly as it was.
+		//!
+		//! WHY ONLY THESE FOUR.  They are precisely the fields the hand-built
+		//! records leave DEFAULT.  Everything the sampled point already
+		//! determines -- `ptIntersection`, `vNormal`, `vGeomNormal`, `onb`,
+		//! `ptCoord` -- is deliberately NOT carried, so the emission geometry
+		//! and every pdf derived from it (`cosLight`, `pdfPosition`,
+		//! `pdfDirection`) stay bit-for-bit what they are today and the only
+		//! thing this slice can move is a signal read.
+		//!
+		//! `pmxWorldToObject` is likewise not carried: its only consumer is an
+		//! `IRayIntersectionModifier`, and no modifier runs on an emitter
+		//! record (`Modify` would perturb `vNormal`, which the paragraph above
+		//! forbids).
+		struct EmitterSurfacePayload
+		{
+			SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature -- drives `curv` / `curvR`
+			SurfaceSignalInfo		channel;		///< the geometry-signal channel: own-surface half from the geometry, cross-object triple stamped exactly as ObjectManager::IntersectRay does
+			TextureFootprint		txFootprint;	///< pixel footprint; all-zero for a probe ray (no differentials) but carried so a future landing cannot silently reopen the gap
+			Point3					ptObjIntersec;	///< object-space hit point -- the expression VM's `Po`
+			bool					valid;			///< false = probe gated off or refused; consumers must not apply this
+
+			EmitterSurfacePayload() : ptObjIntersec( 0, 0, 0 ), valid( false ) {}
+		};
+
 		/// Describes a sampled emission event from a light or mesh luminary
 		struct LightSample
 		{
@@ -123,6 +194,17 @@ namespace RISE
 			/// and mesh luminaries — they use their own pLight /
 			/// pLuminary emitter for NM.
 			const IRadianceMap*	pEnvLight;
+			/// The shading payload `SampleLight` recovered for `position` by
+			/// probing the luminary (see EmitterSurfacePayload above).  Rides
+			/// on the sample because FOUR consumers rebuild their own record
+			/// from this one point and must all see the same channel:
+			/// `SampleLight`'s own `Le` record, `GenerateLightSubpathImpl`'s
+			/// NM hero `Le` rebuild AND its HWSS companion-wavelength twin,
+			/// and `VCMIntegrator`'s light-vertex NEE record.  Apply it with
+			/// `LightSampler::ApplyEmitterSurface`.  `valid` false on every
+			/// delta light and every env sample (no surface exists) and
+			/// whenever the probe was gated off or refused.
+			EmitterSurfacePayload	surface;
 		};
 
 		/// Unified light sampling utility shared by PT and BDPT.
@@ -217,6 +299,104 @@ namespace RISE
 
 		public:
 			LightSampler();
+
+			//
+			// THE EMITTER-RECORD PROBE (slice S3 of
+			// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
+			//
+			// Recovers the shading payload (`derivatives` / the signal
+			// channel / `txFootprint` / `ptObjIntersec`) for a point that was
+			// SAMPLED on a luminary rather than HIT, by firing one
+			// object-level closest-hit at that luminary and keeping the
+			// resulting record only if it landed on the sampled point.
+			//
+			// STATIC, and public, for two reasons: the same payload has to
+			// reach five hand-built records that live in three different
+			// translation units (LightSampler.cpp's two NEE sites,
+			// BDPTIntegrator.cpp's NM hero + HWSS companion rebuilds,
+			// VCMIntegrator.cpp's light-vertex NEE record), and RGB and NM
+			// must share ONE implementation so they cannot drift -- the
+			// spectral form of the defect this slice closes.
+			//
+
+			//! Probe `pLum` for the shading payload at `ptOnLum`.
+			//!
+			//! GATED: returns false immediately (no ray, no bounding-box
+			//! query) unless `SurfaceCurvatureDemand::Any() ||
+			//! SurfaceSignalDemand::Any()`, so a scene with no
+			//! signal-reading painter takes the pre-S3 path byte-for-byte.
+			//! The gate lives HERE rather than at the call sites so a future
+			//! site cannot forget it.
+			//!
+			//! ACCEPTANCE RULE, in full: the probe is accepted iff (a) the
+			//! gate is open, (b) `pLum` is non-null and its world bounding
+			//! box has a finite, strictly-positive diagonal `D`, (c) the
+			//! probe ray hits `pLum`, and (d) the hit point is within
+			//! `kEmitterProbeAcceptFraction * D` of `ptOnLum`.  Anything
+			//! else -- a miss, a nearer hit on some other part of a
+			//! non-convex luminary, an unbounded luminary -- returns false
+			//! and the caller keeps today's minimal record.  A fabricated
+			//! payload is never produced.
+			//!
+			//! WHY A DISTANCE TEST AND NOT "any hit on the right object":
+			//! for a CONVEX luminary the entry point along a ray aimed at a
+			//! front-facing sampled point IS that sampled point, so the test
+			//! passes by construction; for a concave one (a torus, a mesh
+			//! shell) the closest hit can be a different part of the same
+			//! surface, whose curvature / occlusion / proximity are a
+			//! different material state entirely.  Reading THAT would be a
+			//! fabrication with extra steps.
+			//!
+			//! \return TRUE and fills @a outPayload (with `valid` true); FALSE
+			//!         leaves @a outPayload untouched.
+			static bool ProbeEmitterSurface(
+				const IObject*			pLum,			///< [in] the luminary the point was sampled on
+				const IObjectManager*	pObjects,		///< [in] the scene's object manager -- becomes `signals.pScene`, exactly as ObjectManager::IntersectRay stamps it
+				const Point3&			ptOnLum,		///< [in] the sampled point, in world space
+				const Ray&				probe,			///< [in] the probe ray (origin + unit direction); physically the ray the record is built FOR
+				const Scalar			probeMaxDist,	///< [in] how far along @a probe to look, world units
+				EmitterSurfacePayload&	outPayload		///< [out] written only on acceptance
+				);
+
+			//! Build the standard NORMAL-ALIGNED probe for a sampled point:
+			//! stand off along `+normal` by a diagonal-relative distance and
+			//! fire back along `-normal`.  Used where no natural probe
+			//! direction exists -- `SampleLight`'s emission record, whose
+			//! consumers (the BDPT light-subpath root and its two NM twins,
+			//! VCM's light-vertex NEE) each look at the point from a
+			//! different direction.
+			//!
+			//! The standoff is `kEmitterProbeStandoffFraction * D` (D = the
+			//! luminary's world bbox diagonal), which clears every
+			//! geometry's `SelfHitRootFloor` -- those floors are
+			//! `NEARZERO * (1 + |o|_1)` scaled, i.e. ~1e-12 relative, nine
+			//! orders below this -- by an enormous margin, while staying far
+			//! inside the acceptance tolerance so the standoff itself can
+			//! never cause a rejection.
+			//!
+			//! \return TRUE and fills @a outPayload; FALSE on refusal.
+			static bool ProbeEmitterSurfaceAlongNormal(
+				const IObject*			pLum,
+				const IObjectManager*	pObjects,
+				const Point3&			ptOnLum,
+				const Vector3&			normal,			///< [in] unit outward normal at @a ptOnLum
+				EmitterSurfacePayload&	outPayload
+				);
+
+			//! Copy an accepted payload onto a hand-built emitter record.  A
+			//! no-op when `payload.valid` is false, which is what makes every
+			//! call site's fallback "do nothing" rather than "build a second
+			//! record".
+			//!
+			//! Deliberately OUT OF LINE (not an inline in this header): the
+			//! `signals` assignment it performs is the one SourceHygieneTest
+			//! pins at file granularity, and keeping it in LightSampler.cpp
+			//! keeps the sanctioned writer set at ONE new file for this slice
+			//! instead of four.
+			static void ApplyEmitterSurface(
+				RayIntersectionGeometric&		rig,
+				const EmitterSurfacePayload&	payload
+				);
 
 			//
 			// LIGHT SOLO — render with exactly one light enabled.

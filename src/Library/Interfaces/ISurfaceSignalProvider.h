@@ -442,11 +442,13 @@ namespace RISE
 		//! a feature rather than as an absence.  Reached whenever the
 		//! channel carries no scene or no self object (a hand-built test
 		//! record, the GUI's painter preview, realize-time evaluation, a
-		//! BSSRDF entry vertex, or -- until slice S3 of
-		//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md -- LightSampler's
-		//! emitter record; a BDPT / VCM / MLT rebuild FORWARDS the stamp
-		//! since 2026-09-11 and is NOT in this list), the radius or the
-		//! point is unusable, or every candidate refused.
+		//! BSSRDF entry vertex, or an emitter record whose probe REFUSED --
+		//! a concave or unbounded luminary, see
+		//! `LightSampler::ProbeEmitterSurface`), the radius or the point is
+		//! unusable, or every candidate refused.  NOT in this list since
+		//! 2026-09-11 (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md):
+		//! a BDPT / VCM / MLT rebuild, which FORWARDS the stamp (§3), nor
+		//! an ACCEPTED emitter record, which carries a probed one (§5).
 		static Scalar NeutralProximity() { return Scalar( 0 ); }
 
 		//! THE NEUTRAL INTERIOR: 0 == inside no neighbour.  The same
@@ -656,28 +658,45 @@ namespace RISE
 		}
 	};
 
-	//! DIAGNOSTIC-ONLY consumption gate for `occlusion()` / `thickness()`,
-	//! mirroring SurfaceCurvatureDemand's mechanism (SurfaceCurvature.h)
-	//! exactly, for exactly the reason Phase 1's counter was thread-safe:
-	//! an atomic mutated only at painter construction/destruction (scene
-	//! build/teardown), loaded relaxed from render threads.
+	//! Consumption gate for `occlusion()` / `thickness()` / `convexity()`
+	//! and the cross-object pair, mirroring SurfaceCurvatureDemand's
+	//! mechanism (SurfaceCurvature.h) exactly, for exactly the reason
+	//! Phase 1's counter was thread-safe: an atomic mutated only at painter
+	//! construction/destruction (scene build/teardown), loaded relaxed from
+	//! render threads.
 	//!
 	//! UNLIKE SurfaceCurvatureDemand, this gate does NOT control the
 	//! per-hit provider install -- SurfaceSignalInfo's own doc (above) and
 	//! design doc §13 item 2 already settled that the stamp is
 	//! unconditional (a pointer plus six scalars, cheaper to always write
-	//! than to gate).  Its ONLY consumer is the Phase-2 fix-round
-	//! containment diagnostic (design doc §14 item 11): when a BDPT/VCM/
-	//! MLT-family render begins, `Any()` answers "does any live compiled
-	//! expression call occlusion()/thickness() anywhere in the process",
-	//! so the rasterizer can emit one GlobalLog warning naming the
-	//! disclosed neutral-signal gap on those integrator families, without
-	//! doing a real scene-wide painter walk that does not exist (same
-	//! argument as SurfaceCurvatureDemand's own doc comment).  A false
-	//! positive here (a scene from a DIFFERENT job in the same process
-	//! still holding a signal-reading painter alive) means one spurious
-	//! warning line, never a wrong render -- the conservative direction
-	//! for a diagnostic.
+	//! than to gate).
+	//!
+	//! IT HAS TWO CONSUMERS.  It was DIAGNOSTIC-ONLY until 2026-09-11; the
+	//! second one is real work and outlives the first:
+	//!
+	//!   1. REAL WORK (slice S3 of
+	//!      docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, added
+	//!      2026-09-11): together with `SurfaceCurvatureDemand::Any()` it
+	//!      gates `LightSampler::ProbeEmitterSurface`, the one extra
+	//!      object-level closest-hit per NEE sample / light-subpath root
+	//!      that recovers a sampled emission point's shading payload.  With
+	//!      both counters at zero the probe returns immediately and the
+	//!      light-sampling path is byte-for-byte what it was before S3 --
+	//!      no ray, not even a bounding-box read.  **This consumer means
+	//!      the counter can NOT be deleted with the warning below**
+	//!      (design §8's removal list says otherwise and predates S3).
+	//!   2. DIAGNOSTIC (design doc §14 item 11): the one-time
+	//!      `WarnIfNonPTRenderHasLiveSignalConsumer` notice at the start of
+	//!      a BDPT/VCM/MLT-family render, which answers "does any live
+	//!      compiled expression call one of these builtins anywhere in the
+	//!      process" without a scene-wide painter walk that does not exist.
+	//!
+	//! A false positive on either (a scene from a DIFFERENT job in the same
+	//! process still holding a signal-reading painter alive) costs one
+	//! spurious log line and, at most, one probe ray per light sample on a
+	//! scene that did not need it -- never a wrong render.  That is the
+	//! conservative direction for both consumers: the probe only ever makes
+	//! a record MORE faithful.
 	namespace SurfaceSignalDemand
 	{
 		//! The single counter.  A function-local static inside an inline
@@ -830,22 +849,35 @@ namespace RISE
 	}
 
 	//! Containment diagnostic for the geometry-derived shading signals'
-	//! BDPT/VCM/MLT gap (design doc §14 item 11), NARROWED 2026-09-11 by
-	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md slice S1: the
-	//! `BDPTVertex` now carries `derivatives`, `signals` and
-	//! `txFootprint`, and `PathVertexEval::PopulateRIGFromVertex` replays
-	//! them, so every surface-vertex evaluation downstream of it (forward
-	//! re-pricing, connections, MIS reverse-pdf, guiding RIS, HWSS
-	//! companions, VCM merges, MLT) reads the LIVE signals.  What is still
-	//! neutral until slice S3 lands is the hand-built EMITTER record:
-	//! the one `LightSampler.cpp` makes for NEE light samples, and the
-	//! `type == LIGHT` root vertex `GenerateLightSubpathImpl`
-	//! (`BDPTIntegrator.cpp`, shared by BDPT and VCM) builds from
-	//! `LightSampler::SampleLight`'s sampled point -- an emissive material
-	//! whose radiance keys on a signal reads it live when hit directly and
-	//! neutral when reached those ways, under PT as well as under the
-	//! bidirectional families.
-	//! That is what the warning below now says; slice S4 removes it.
+	//! BDPT/VCM/MLT gap (design doc §14 item 11), NARROWED TWICE by
+	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md and now reporting NO
+	//! BIDIRECTIONAL-SPECIFIC GAP AT ALL:
+	//!
+	//!   * slice S1 (2026-09-11) put `derivatives`, `signals` and
+	//!     `txFootprint` on `BDPTVertex` and made
+	//!     `PathVertexEval::PopulateRIGFromVertex` replay them, so every
+	//!     surface-vertex evaluation downstream of it (forward re-pricing,
+	//!     connections, MIS reverse-pdf, guiding RIS, HWSS companions, VCM
+	//!     merges, MLT) reads the LIVE signals;
+	//!   * slice S3 (§5) closed the last one, the hand-built EMITTER
+	//!     record -- `LightSampler`'s two NEE records and its
+	//!     `SampleLight` emission record, the `type == LIGHT` root vertex
+	//!     `GenerateLightSubpathImpl` builds, and the NM hero / HWSS
+	//!     companion / VCM light-vertex rebuilds beside them.  Those are
+	//!     now stamped from a REAL probe intersection on the luminary
+	//!     (`LightSampler::ProbeEmitterSurface`), gated on this very pair
+	//!     of counters.
+	//!
+	//! What still reads neutral is INTEGRATOR-CONSISTENT -- PT reads it
+	//! neutral in exactly the same places, so it is not a "your render
+	//! disagrees with PT" hazard: a BSSRDF entry vertex (design §10), and
+	//! an emitter whose probe REFUSES because the sampled point is not the
+	//! nearest hit along the probe (a concave luminary) or because the
+	//! luminary is unbounded.
+	//!
+	//! The warning below now says exactly that.  It is kept only so the
+	//! removal is one slice's reviewable change rather than a silent side
+	//! effect of S3; slice S4 deletes it and `SurfaceSignalDemand` with it.
 	//!
 	//! Call once from each BDPT/VCM/MLT-family rasterizer's own
 	//! pre-render hook (never per pixel or per sample) -- see
@@ -872,18 +904,30 @@ namespace RISE
 	{
 		if( !pLog || !familyName ) return;
 		if( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ) {
-			// NAMES ALL SIX signals and the ONE remaining neutral site
-			// (post-S1 text; see the doc comment above).  A warning that
+			// NAMES ALL SIX signals, and states the post-S3 truth: there is
+			// no bidirectional-specific neutral read left.  A warning that
 			// does not name the signal an author is actually using, or that
-			// overstates the gap, reads as being about somebody else's
-			// problem -- the previous wording claimed the whole transport
-			// was neutral, which stopped being true when S1 landed.
+			// OVERSTATES the gap, reads as being about somebody else's
+			// problem -- the pre-S1 wording claimed the whole transport was
+			// neutral, and the pre-S3 wording still claimed the emitter
+			// record was, both of which stopped being true the moment the
+			// matching slice landed.
+			//
+			// SEVERITY DELIBERATELY UNCHANGED at eLog_Warning even though
+			// the text no longer reports a hazard: the level is part of
+			// this diagnostic's contract (and of its name), and slice S4
+			// deletes the whole thing, so dropping it to eLog_Info here
+			// would be a second behaviour change to review for two slices'
+			// worth of lifetime.  The text carries the truth instead.
 			pLog->PrintEx( eLog_Warning,
 				"%s:: curv/occlusion/thickness/convexity/proximity/interior are live at every "
-				"surface vertex of BDPT/VCM/MLT since slice S1; the one remaining neutral read is "
-				"an EMISSIVE material keyed on a signal when its light is reached by NEE or as the "
-				"light-subpath root (LightSampler's hand-built emitter record, pending slice S3) -- "
-				"see docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md",
+				"surface vertex (slice S1) AND at every emitter record reached by NEE or as the "
+				"light-subpath root (slice S3, one probe ray per light sample while this message "
+				"appears).  No BDPT/VCM/MLT-specific neutral read remains; what is still neutral "
+				"-- a BSSRDF entry vertex, and an emitter whose probe refuses on a concave or "
+				"unbounded luminary -- reads neutral under PT identically, so there is nothing "
+				"here to work around.  See docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md; "
+				"slice S4 removes this notice.",
 				familyName );
 		}
 	}

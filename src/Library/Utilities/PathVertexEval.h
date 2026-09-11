@@ -149,11 +149,23 @@ namespace RISE
 		//     a residual in docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
 		//     §10.  Closing it means a probe record in
 		//     `BSSRDFSampling::SampleResult`; out of scope here.
-		//   * NON-SURFACE VERTICES -- camera, light, env and medium.
-		//     There is no surface to publish signals for, so the defaults
-		//     are the whole truth.  (A rebuild is only ever handed to a
+		//   * NON-SURFACE VERTICES -- camera, env and medium.  There is no
+		//     surface to publish signals for, so the defaults are the
+		//     whole truth.  (A rebuild is only ever handed to a
 		//     BSDF / painter at a SURFACE vertex; medium vertices go to
 		//     the phase function, which reads none of these.)
+		//   * A `type == LIGHT` ROOT VERTEX is NOT in that list any more.
+		//     It was until 2026-09-11: a mesh luminary's root IS a
+		//     surface, and TWO emitter evaluations price it through THIS
+		//     function -- `LuminaryRadiance` (BDPT's t=1 light-to-camera
+		//     splat) and VCM's own light-to-camera splat -- so leaving it
+		//     default made an emissive material keyed on a signal read
+		//     neutral there.  Slice S3
+		//     (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5) has
+		//     `GenerateLightSubpathImpl` copy a PROBED payload onto it,
+		//     from `LightSample::surface`, so this function replays that
+		//     too.  A DELTA light's root, and an env root, still carry the
+		//     defaults -- correctly: neither has a surface.
 		//
 		// `txFootprint` is carried although it is all-zero under today's
 		// bidirectional rasterizers -- BDPT / VCM / MLT emit no ray

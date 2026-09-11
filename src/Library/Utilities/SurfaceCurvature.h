@@ -211,6 +211,17 @@ namespace RISE
 	//! builtins and need no gate of their own; but they DO read
 	//! `derivatives.scaleHint` for radius defaulting, which this gate also
 	//! controls today.  Widen the predicate (not the mechanism) then.
+	//!
+	//! SECOND CONSUMER (2026-09-11,
+	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5 slice S3): this
+	//! counter OR'd with `SurfaceSignalDemand::Any()` also gates
+	//! `LightSampler::ProbeEmitterSurface` -- the one extra object-level
+	//! closest-hit per NEE sample / light-subpath root that recovers the
+	//! shading payload for a point `UniformRandomPoint` merely SAMPLED.
+	//! The same conservatism applies unchanged: a live curvature-reading
+	//! painter anywhere in the process buys one probe ray per light sample
+	//! on scenes that may not need it, and the probe only ever makes a
+	//! record more faithful -- performance, never correctness.
 	namespace SurfaceCurvatureDemand
 	{
 		//! The single counter.  A function-local static inside an inline

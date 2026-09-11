@@ -208,12 +208,17 @@ namespace RISE
 			//! (ExpressionEval.h).  Unlike m_curvatureDemand above, this does NOT
 			//! gate any per-hit work -- see SurfaceSignalDemand's own doc comment
 			//! (ISurfaceSignalProvider.h) for why the provider install stays
-			//! unconditional.  Its only job is to let a BDPT/VCM/MLT rasterizer
-			//! ask "is anyone using a signal this integrator family evaluates as
-			//! neutral in parts of its transport" at render start, for the
-			//! one-time containment warning -- counting the cross-object pair
-			//! here is what makes that warning's "all six"
-			//! (curv/occlusion/thickness/convexity/proximity/interior,
+			//! unconditional.  It has TWO jobs since 2026-09-11, and the first
+			//! is REAL WORK, not a diagnostic: with `SurfaceCurvatureDemand` it
+			//! gates `LightSampler::ProbeEmitterSurface`, the probe that makes a
+			//! sampled emission point's record carry live signals
+			//! (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5) -- so a
+			//! painter that registers here is what makes an emissive material
+			//! keyed on a signal read that signal under NEE.  Second, it lets a
+			//! BDPT/VCM/MLT rasterizer answer "is anyone using one of these
+			//! signals" at render start for the one-time containment notice --
+			//! counting the cross-object pair here is what makes that notice's
+			//! "all six" (curv/occlusion/thickness/convexity/proximity/interior,
 			//! WarnIfNonPTRenderHasLiveSignalConsumer) true for a painter that
 			//! calls only `proximity()` or only `interior()`.
 			SurfaceSignalDemand::Registration m_signalDemand;
@@ -323,7 +328,10 @@ namespace RISE
 			//! -- `proximity()` on this pipe is what a scalar wear/grime slot
 			//! (`scalar_painter { expression "1-proximity(0.002)" }`) uses in
 			//! practice, and is part of what makes the "all six" in
-			//! WarnIfNonPTRenderHasLiveSignalConsumer's warning true.
+			//! WarnIfNonPTRenderHasLiveSignalConsumer's notice true -- and,
+			//! since 2026-09-11, part of what opens the
+			//! `LightSampler::ProbeEmitterSurface` gate for a scalar emission
+			//! slot keyed on a cross-object signal.
 			SurfaceSignalDemand::Registration m_signalDemand;
 			//! See ExpressionPainter::m_proximityDemand -- the same COST
 			//! gate on the physical-scalar pipe, and it covers `interior()`

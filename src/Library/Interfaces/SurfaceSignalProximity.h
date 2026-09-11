@@ -87,10 +87,14 @@ namespace RISE
 		// defensive padding:
 		//   pScene   0 on any record the object manager did not produce --
 		//            the GUI's painter preview, a hand-built test record,
-		//            a BSSRDF entry vertex, LightSampler's emitter record
-		//            (until slice S3).  A BDPT / VCM / MLT rebuild is NOT
-		//            such a record since 2026-09-11: PathVertexEval
-		//            forwards the stamp (SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md).
+		//            a BSSRDF entry vertex, or an emitter record whose
+		//            probe REFUSED (a concave or unbounded luminary).  Two
+		//            record kinds LEFT this list on 2026-09-11
+		//            (SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): a
+		//            BDPT / VCM / MLT rebuild, which forwards the stamp
+		//            through PathVertexEval (§3), and an ACCEPTED emitter
+		//            record, on which LightSampler::ProbeEmitterSurface
+		//            stamps the triple from a real probe hit (§5).
 		//   pSelf    0 on a MISS (nothing was hit, so there is no receiver
 		//            and no self to exclude).
 		//   radius   the runtime half of the parse-time literal check, for

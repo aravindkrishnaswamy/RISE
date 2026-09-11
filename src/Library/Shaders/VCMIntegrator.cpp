@@ -1303,6 +1303,15 @@ namespace
 					// ls.normal is geometric on luminary meshes (no Phong/
 					// bump on emitters); mirror for downstream consumers.
 					rig.vGeomNormal = ls.normal;
+					// THE FOURTH consumer of `SampleLight`'s one probed
+					// payload (slice S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_
+					// TRANSPORT.md §5): VCM's light-vertex NEE record.  The
+					// other three are LightSampler's own emission record
+					// and BDPTIntegrator's NM hero + HWSS companion
+					// rebuilds.  A no-op when the probe was gated off or
+					// refused, so a scene with no signal-reading painter is
+					// byte-for-byte unchanged.
+					LightSampler::ApplyEmitterSurface( rig, ls.surface );
 					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, ls.normal, tag );
 				}
 			} else if( envCaseVCM ) {

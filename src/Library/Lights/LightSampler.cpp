@@ -29,6 +29,8 @@
 #include "../Utilities/PathTransportUtilities.h"
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"	// SurfaceCurvatureDemand / SurfaceSignalDemand -- the emitter-probe gate
+#include "../Interfaces/IObjectManager.h"		// the `signals.pScene` the probe stamps
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -507,6 +509,254 @@ static Scalar EvalShadowTransmittanceNM(
 }
 
 using PathTransportUtilities::PowerHeuristic;
+
+//////////////////////////////////////////////////////////////////////
+//
+// THE EMITTER-RECORD PROBE
+// (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, slice S3)
+//
+// THE PROBLEM, in one sentence: `IObject::UniformRandomPoint` returns a
+// position, a normal and a UV, so every emitter record built from one is
+// missing exactly the fields the geometry-signal builtins read -- and an
+// emissive material keyed on `curv` / `occlusion(r)` / `proximity(r)`
+// therefore read its LIVE value when a camera ray hit the emitter and its
+// NEUTRAL value when NEE or a light-subpath root reached the same point on
+// the same surface in the same frame.
+//
+// THE FIX, in one sentence: fire ONE object-level closest-hit at the
+// luminary along the ray the record is built for, and if it lands on the
+// sampled point, keep the record's shading payload.
+//
+// WHY AN INTERSECTION AND NOT A RECONSTRUCTION.  Every alternative is a
+// fabrication.  `derivatives` would have to be re-derived from the
+// geometry's parameterisation (which `UniformRandomPoint` does not report
+// -- it returns a UV, not the chart the UV belongs to, and the two differ
+// on every composite); the own-surface `signals` half carries a
+// `primId` + barycentrics that only the intersector knows; the
+// cross-object triple needs the WORLD point that the winning record
+// carries.  The one thing in the engine that produces all three
+// consistently is `Object::IntersectRay`, so that is what we call.  This
+// is the same reasoning that put the S1 fix in `BDPTVertex` rather than
+// in a recomputation at the rebuild site.
+//
+// WHAT THE PROBE COSTS, and when.  One object-level closest-hit per NEE
+// sample and per light-subpath root -- an `IObject::IntersectRay` against
+// ONE object, not a scene traversal.  It is paid ONLY when
+// `SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any()`, i.e. only
+// when some live compiled expression in the process actually calls one of
+// the six signal builtins.  Both are relaxed atomic loads that are already
+// on the per-hit path elsewhere; a scene with no signal-reading painter
+// takes the pre-S3 code path byte-for-byte, casts no extra ray, and does
+// not even read the luminary's bounding box.
+//
+// WHAT THE PROBE COSTS, MEASURED.  PT, 160x160, 256 spp, one small SDF
+// sphere luminary that every visible receiver point NEE-samples every
+// sample -- a deliberate worst case, since nothing in the frame dilutes
+// the per-light-sample probe.  Interleaved 5-run means on an
+// Apple-silicon Mac: probe ON 985 +- 23 ms, probe forced off with
+// everything else identical 837 +- 29 ms => +149 ms, +17.8 %.  The gate
+// CLOSED (the same scene with the signal baked to a literal, so no
+// painter registers a demand) runs at 821 +- 20 ms, within one stddev of
+// the probe-off figure -- i.e. the gate itself costs nothing measurable.
+//
+// THE GATE LIVES IN the two public entry points, not at the five call
+// sites, so a sixth site cannot be added without it.
+//
+//////////////////////////////////////////////////////////////////////
+
+namespace
+{
+	//! IS THE PROBE WANTED AT ALL?  The design's first fixed constraint:
+	//! two relaxed atomic loads, and everything downstream of them -- the
+	//! bounding-box query, the ray -- is behind this.  Factored out so
+	//! both public entry points ask exactly the same question and a
+	//! future third one cannot ask a different one.
+	inline bool EmitterProbeWanted()
+	{
+		return SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any();
+	}
+
+	//! THE SCALE the probe's two constants are relative to: the luminary's
+	//! WORLD bounding-box diagonal, the same characteristic length
+	//! `scaleHint` and the `radiusFraction` convention use.
+	//!
+	//! \return the diagonal, or 0 when there is no usable one -- an
+	//!         UNBOUNDED luminary (an infinite plane) has no finite
+	//!         diagonal and therefore no meaningful tolerance, and a
+	//!         degenerate one has no scale at all.  Callers REFUSE on 0
+	//!         rather than fall back to an absolute length.
+	Scalar EmitterProbeScale( const IObject* pLum )
+	{
+		if( !pLum ) {
+			return 0;
+		}
+		const BoundingBox bb = pLum->getBoundingBox();
+		const Vector3 diagV = Vector3Ops::mkVector3( bb.ur, bb.ll );
+		const Scalar diag = Vector3Ops::Magnitude( diagV );
+		if( !RISE::IsFiniteDouble( static_cast<double>( diag ) ) || diag <= 0 ) {
+			return 0;
+		}
+		return diag;
+	}
+}
+
+//! The probe proper, with the luminary's scale already in hand so the
+//! normal-aligned entry point below -- which needs the scale to place its
+//! standoff -- does not pay for a second `getBoundingBox()`.
+//!
+//! PRECONDITIONS the two public entry points above already established
+//! and this function therefore does not re-check: the gate is open, and
+//! `diag > 0` -- which `EmitterProbeScale` only returns for a non-null
+//! `pLum` with a finite, non-degenerate world bounding box.
+static bool ProbeEmitterSurfaceAtScale(
+	const IObject*			pLum,
+	const IObjectManager*	pObjects,
+	const Point3&			ptOnLum,
+	const Ray&				probe,
+	const Scalar			probeMaxDist,
+	const Scalar			diag,
+	EmitterSurfacePayload&	outPayload
+	)
+{
+	const Scalar tol = kEmitterProbeAcceptFraction * diag;
+
+	if( !( probeMaxDist > 0 ) ) {
+		return false;
+	}
+
+	// The closest-hit itself.  Both faces are admitted because a luminary
+	// may legitimately be sampled on either side (a two-sided emissive
+	// quad); no exit info is needed.  A LOCAL record, exactly as
+	// ObjectManager::RayElementIntersection uses one, so nothing this
+	// function does can touch a caller's record on a refusal.
+	RayIntersection probeRI( probe, nullRasterizerState );
+	pLum->IntersectRay( probeRI, probeMaxDist, true, true, false );
+	if( !probeRI.geometric.bHit ) {
+		return false;
+	}
+
+	// DID IT LAND ON THE SAMPLED POINT?  See ProbeEmitterSurface's
+	// declaration for why "a hit on the right object" is not enough.
+	const Vector3 miss = Vector3Ops::mkVector3(
+		probeRI.geometric.ptIntersection, ptOnLum );
+	if( Vector3Ops::Magnitude( miss ) > tol ) {
+		return false;
+	}
+
+	// THE CROSS-OBJECT TRIPLE, stamped with EXACTLY the values
+	// `ObjectManager::IntersectRay` stamps at the tail of a real traversal
+	// (`pScene` = the manager that owns the scene, `pSelf` = the record's
+	// own `pObject` so the two identities cannot disagree, `ptWorld` =
+	// `ptIntersection`).  This record never went through the manager --
+	// the probe deliberately asks ONE object rather than traversing --
+	// which is precisely why the triple has to be stamped here; without
+	// it `proximity()` / `interior()` would read their neutral 0 off a
+	// record whose own-surface half is live, which is a worse lie than
+	// the all-neutral record it replaces.
+	//
+	// `pObjects` may be null (a caller with no scene): then the triple
+	// stays empty and the cross-object pair honestly reads neutral while
+	// `curv` and the own-surface three still read live.
+	probeRI.geometric.signals.pScene  = pObjects;
+	probeRI.geometric.signals.pSelf   = probeRI.pObject;
+	probeRI.geometric.signals.ptWorld = probeRI.geometric.ptIntersection;
+
+	outPayload.derivatives   = probeRI.geometric.derivatives;
+	outPayload.channel       = probeRI.geometric.signals;
+	outPayload.txFootprint   = probeRI.geometric.txFootprint;
+	outPayload.ptObjIntersec = probeRI.geometric.ptObjIntersec;
+	outPayload.valid         = true;
+	return true;
+}
+
+bool LightSampler::ProbeEmitterSurface(
+	const IObject*			pLum,
+	const IObjectManager*	pObjects,
+	const Point3&			ptOnLum,
+	const Ray&				probe,
+	const Scalar			probeMaxDist,
+	EmitterSurfacePayload&	outPayload
+	)
+{
+	if( !EmitterProbeWanted() ) {
+		return false;
+	}
+	const Scalar diag = EmitterProbeScale( pLum );
+	if( diag <= 0 ) {
+		return false;
+	}
+	return ProbeEmitterSurfaceAtScale(
+		pLum, pObjects, ptOnLum, probe, probeMaxDist, diag, outPayload );
+}
+
+bool LightSampler::ProbeEmitterSurfaceAlongNormal(
+	const IObject*			pLum,
+	const IObjectManager*	pObjects,
+	const Point3&			ptOnLum,
+	const Vector3&			normal,
+	EmitterSurfacePayload&	outPayload
+	)
+{
+	// Gate first, so the bounding-box query below is not paid by a scene
+	// with no signal consumer -- this entry point needs the luminary's
+	// scale BEFORE it can build its ray, which is why it asks the gate
+	// itself rather than leaving it to the probe.
+	if( !EmitterProbeWanted() ) {
+		return false;
+	}
+	const Scalar diag = EmitterProbeScale( pLum );
+	if( diag <= 0 ) {
+		return false;
+	}
+
+	const Scalar nrm = Vector3Ops::Magnitude( normal );
+	if( !( nrm > NEARZERO ) ) {
+		return false;
+	}
+	const Vector3 nUnit = normal * ( Scalar( 1 ) / nrm );
+
+	// Stand off along +n and fire back along -n.  See the declaration for
+	// why the standoff is a diagonal fraction and why it clears every
+	// geometry's self-hit root floor.  The travel limit is twice the
+	// standoff plus the acceptance tolerance: enough to reach the surface
+	// and a little past it, never far enough to find the FAR side of the
+	// luminary (which would be rejected anyway, at the cost of the
+	// traversal).
+	const Scalar standoff = kEmitterProbeStandoffFraction * diag;
+	const Point3 origin(
+		ptOnLum.x + nUnit.x * standoff,
+		ptOnLum.y + nUnit.y * standoff,
+		ptOnLum.z + nUnit.z * standoff );
+	const Vector3 dir( -nUnit.x, -nUnit.y, -nUnit.z );
+
+	return ProbeEmitterSurfaceAtScale(
+		pLum, pObjects, ptOnLum, Ray( origin, dir ),
+		standoff * Scalar( 2 ) + kEmitterProbeAcceptFraction * diag,
+		diag, outPayload );
+}
+
+void LightSampler::ApplyEmitterSurface(
+	RayIntersectionGeometric&		rig,
+	const EmitterSurfacePayload&	payload
+	)
+{
+	if( !payload.valid ) {
+		// THE FALLBACK, and it is deliberately a no-op: the caller's
+		// hand-built record is left exactly as it was, so a refused or
+		// gated-off probe reproduces the pre-S3 render bit-for-bit.
+		return;
+	}
+	rig.derivatives   = payload.derivatives;
+	// FORWARDS the object manager's own convention rather than replacing a
+	// stamp: this record never passed through ObjectManager::IntersectRay
+	// (a sampled point is not a traversal), and `payload.channel` was
+	// written by ProbeEmitterSurface above with exactly the values that
+	// function stamps.  This is the sole reason LightSampler.cpp appears in
+	// SourceHygieneTest's `signals` writer set -- see its comment table.
+	rig.signals       = payload.channel;
+	rig.txFootprint   = payload.txFootprint;
+	rig.ptObjIntersec = payload.ptObjIntersec;
+}
 
 LightSampler::LightSampler() :
   pPreparedScene( 0 ),
@@ -994,6 +1244,11 @@ bool LightSampler::SampleLight(
 	sample.pdfPosition = 0;
 	sample.pdfDirection = 0;
 	sample.pdfSelect = 0;
+	// Reset the probe payload too, so a caller that REUSES a LightSample
+	// cannot inherit the previous sample's surface (a different point, or
+	// a different luminary entirely).  `valid` false is the honest state
+	// for every light kind but the mesh-luminary branch below.
+	sample.surface = EmitterSurfacePayload();
 
 	const bool bEnvExists = pEnvSampler && pEnvSampler->IsValid() &&
 		pEnvironmentMap && cachedSceneRadius > 0;
@@ -1120,6 +1375,29 @@ bool LightSampler::SampleLight(
 		const Scalar cosTheta = Vector3Ops::Dot( sample.direction, sample.normal );
 		sample.pdfDirection = (cosTheta > 0) ? (cosTheta * INV_PI) : 0;
 
+		// THE SHADING PAYLOAD for this sampled point (slice S3 of
+		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).  Probed ONCE
+		// here and carried on the sample, because FOUR records are built
+		// from this one point and every one of them must read the same
+		// channel: this `rig`, `GenerateLightSubpathImpl`'s NM hero `Le`
+		// rebuild, its HWSS companion-wavelength twin `rigW`, and
+		// `VCMIntegrator`'s light-vertex NEE record.  Probing per consumer
+		// would cost four rays and -- worse -- could disagree between the
+		// hero and its companion wavelengths, which is the spectral form of
+		// the very defect this slice closes.
+		//
+		// A NORMAL-ALIGNED probe: unlike NEE, no single direction is "the"
+		// direction this record is viewed from (the four consumers each
+		// look from somewhere else), so the probe stands off along the
+		// sampled normal and fires back onto the point.
+		//
+		// Gated inside the probe; `valid` stays false on every delta light
+		// and env sample (this branch is the only one that can fill it) and
+		// on refusal, and `ApplyEmitterSurface` is then a no-op.
+		ProbeEmitterSurfaceAlongNormal(
+			lumEntry.pLum, scene.GetObjects(),
+			sample.position, sample.normal, sample.surface );
+
 		// Compute emitted radiance at this point in this direction
 		RayIntersectionGeometric rig( Ray( sample.position, sample.direction ), nullRasterizerState );
 		rig.vNormal = sample.normal;
@@ -1128,6 +1406,7 @@ bool LightSampler::SampleLight(
 		rig.vGeomNormal = sample.normal;
 		rig.ptCoord = coord;
 		rig.onb = onb;
+		ApplyEmitterSurface( rig, sample.surface );
 
 		sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
 	}
@@ -1953,6 +2232,43 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					lumri.ptCoord = lumCoord;
 					lumri.onb.CreateFromW( lumNormal );
 
+					// THE SHADING PAYLOAD for this sampled point (slice S3
+					// of docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
+					// The probe runs along the ray this record is built FOR
+					// -- from the shading point toward the sampled point --
+					// which is also the direction that makes the acceptance
+					// test free on a convex luminary: `cosLight > 0` above
+					// means the sampled point is front-facing, and the
+					// front-facing entry point along a ray is unique, so it
+					// IS the sampled point.
+					//
+					// This is NOT the shadow ray and does not replace it:
+					// the shadow test above stops short of the luminary and
+					// asks the whole scene; this asks ONE object and only
+					// for its shading payload.  Gated inside the probe, so a
+					// scene with no signal-reading painter pays nothing and
+					// `ApplyEmitterSurface` is a no-op.
+					//
+					// The NM twin below runs the identical two calls; they
+					// share this one implementation precisely so an RGB / NM
+					// drift is not expressible.
+					//
+					// TRAVEL LIMIT `RISE_INFINITY` rather than `dist`: the
+					// probe is a CLOSEST-hit, so a larger limit can never
+					// change WHICH hit comes back, only how early the
+					// bounding-box pre-test may bail.  A limit of exactly
+					// `dist` would instead risk cutting the intended hit by
+					// one ulp, and any tighter-than-infinite bound that is
+					// safe would have to be written as an absolute length --
+					// the one thing the scale-relative convention forbids.
+					EmitterSurfacePayload lumSurface;
+					ProbeEmitterSurface(
+						lumEntry.pLum,
+						pPreparedScene ? pPreparedScene->GetObjects() : 0,
+						ptOnLum, Ray( ri.ptIntersection, vToLight ),
+						RISE_INFINITY, lumSurface );
+					ApplyEmitterSurface( lumri, lumSurface );
+
 					const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
 
 					const Scalar geom = area * cosLight / (dist * dist);
@@ -2454,6 +2770,18 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		lumri.vGeomNormal = lumNormal;
 		lumri.ptCoord = lumCoord;
 		lumri.onb.CreateFromW( lumNormal );
+
+		// THE SHADING PAYLOAD -- the NM twin of the RGB site above, calling
+		// the SAME two functions with the same arguments.  See that site
+		// for the full rationale (slice S3 of
+		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
+		EmitterSurfacePayload lumSurface;
+		ProbeEmitterSurface(
+			lumEntry.pLum,
+			pPreparedScene ? pPreparedScene->GetObjects() : 0,
+			ptOnLum, Ray( ri.ptIntersection, vToLight ),
+			RISE_INFINITY, lumSurface );
+		ApplyEmitterSurface( lumri, lumSurface );
 
 		const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
 

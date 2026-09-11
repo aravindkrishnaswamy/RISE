@@ -5283,6 +5283,14 @@ unsigned int GenerateLightSubpathImpl(
 				OrthonormalBasis3D onb;
 				onb.CreateFromW( ls.normal );
 				rig.onb = onb;
+				// THE NM HERO twin of LightSampler's own emission record
+				// (slice S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
+				// §5).  `ls.surface` was probed ONCE inside `SampleLight`
+				// for exactly this point, so the hero, the HWSS companions
+				// below and the RGB record upstream all price the emitter
+				// against the same live channel.  A no-op when the probe
+				// was gated off or refused.
+				LightSampler::ApplyEmitterSurface( rig, ls.surface );
 				LeNM = pEmitter->emittedRadianceNM( rig, ls.direction, ls.normal, tag.nm );
 			}
 		} else if( ls.pLight ) {
@@ -5324,6 +5332,28 @@ unsigned int GenerateLightSubpathImpl(
 		v.pEnvLight = ls.pEnvLight;
 		v.isDelta = ls.isDelta;
 		v.isConnectible = !ls.isDelta;
+
+		// THE LIGHT-TYPE ROOT VERTEX carries the probed payload too (slice
+		// S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5's last
+		// bullet).  Two emitter evaluations price this vertex THROUGH
+		// `PathVertexEval::PopulateRIGFromVertex` rather than through the
+		// records above -- `LuminaryRadiance` (the t=1 light-to-camera
+		// splat) here, and `VCMIntegrator`'s own light-to-camera splat --
+		// so a better record inside `LightSampler` alone would leave those
+		// two reading the neutral channel while everything else on the same
+		// subpath read the live one.
+		//
+		// The three field groups are exactly the ones S1 put on the vertex
+		// for surface hits (§3); `ptObjIntersec` rides along because the
+		// rebuild copies it and the expression VM exposes it as `Po`.
+		// Everything the SAMPLE determines -- position, both normals, the
+		// ONB -- is left as set above, so no pdf or cosine moves.
+		if( ls.surface.valid ) {
+			v.derivatives   = ls.surface.derivatives;
+			v.signals       = ls.surface.channel;
+			v.txFootprint   = ls.surface.txFootprint;
+			v.ptObjIntersec = ls.surface.ptObjIntersec;
+		}
 
 		// pdfFwd is the probability of generating this light vertex
 		// = pdfSelect * pdfPosition
@@ -5414,6 +5444,12 @@ unsigned int GenerateLightSubpathImpl(
 						OrthonormalBasis3D onbW;
 						onbW.CreateFromW( ls.normal );
 						rigW.onb = onbW;
+						// THE HWSS COMPANION twin.  Fixing the hero alone
+						// would leave a hero-live / companion-neutral split
+						// -- the spectral form of the defect slice S3
+						// closes -- so this record gets the SAME probed
+						// payload, from the SAME `ls`.
+						LightSampler::ApplyEmitterSurface( rigW, ls.surface );
 						LeW = pEm->emittedRadianceNM(
 							rigW, ls.direction, ls.normal, pSwlHWSS->lambda[w] );
 					}
