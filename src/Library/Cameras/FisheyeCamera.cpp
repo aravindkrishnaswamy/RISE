@@ -238,7 +238,15 @@ void FisheyeCamera::SetIntermediateValue( const IKeyframeParameter& val )
 	{
 	case SCALE_ID:
 		{
-			scale = *(Scalar*)val.getValue() * DEG_TO_RAD;
+			// `scale` is an image-plane extent in sine units (see
+			// ComputeWorldDirection), NOT an angle -- the parser path
+			// (Job::AddFisheyeCamera -> RISE_API_CreateFisheyeCamera
+			// -> the constructor) and the editor setter
+			// (SetScaleStored) both take it raw.  This used to
+			// multiply by DEG_TO_RAD, making an animated/keyframed
+			// scale ~57.3x smaller than the same number in a scene
+			// file for no unit reason -- fixed 2026-09-10.
+			scale = *(Scalar*)val.getValue();
 		}
 		break;
 	}
