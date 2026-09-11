@@ -3056,7 +3056,9 @@ measured by a harness test against the tracked scene.
   integrator, is a BSSRDF entry vertex (integrator-consistent) and an
   emitter whose probe refuses (a non-finite self-hit floor, or a standoff
   larger than the luminary — reachable only through a CSG luminary's
-  uncapped floor). One residual is not neutral but a bounded neighbour
+  uncapped floor for a uniformly transformed luminary, or a shrink-poisoned
+  SDF part stretched thin along the probe). One residual is not neutral but
+  a bounded neighbour
   read: a second surface of the same luminary inside the probe's standoff
   band along the normal and within the 0.01·D acceptance tolerance is
   ACCEPTED with that neighbour's channel (that document's §10).

@@ -218,10 +218,13 @@ S3 obtains them like this:
   see the next bullet.
 - **`Po` is UNGATED and ray-free.** The emitter record's `ptObjIntersec`
   (the expression VM's `Po`, also read by `voronoi3d_painter` and
-  `mapping_painter`) is computed at all seven emitter-record sites by
-  `LightSampler::EmitterObjectPoint` — the sampled world point through the
-  luminary's final inverse transform (two virtual calls, a 128 B matrix by
-  value, one 4×4 transform). This closes a PRE-EXISTING inconsistency for
+  `mapping_painter`) is computed by `LightSampler::EmitterObjectPoint` —
+  the sampled world point through the luminary's final inverse transform
+  (two virtual calls, a 128 B matrix by value, one 4×4 transform) — at the
+  three sampling sites (`SampleLight`, RGB NEE, NM NEE) and COPIED from
+  `LightSample::ptObjIntersec` at the other four record sites (BDPT's NM
+  hero, HWSS companion and LIGHT root; VCM's NEE record), so the transform
+  is paid once per sampled point. This closes a PRE-EXISTING inconsistency for
   every `Object` luminary — a direct hit carried the live object-space
   point while every NEE record carried `(0,0,0)` — and it must not ride
   the gate, or a `curv` painter on an unrelated material would change a

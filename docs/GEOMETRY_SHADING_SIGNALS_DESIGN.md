@@ -2024,7 +2024,9 @@ is the comparison to beat.
    unfixed tree was off by tens of points. The remaining neutral reads —
    a BSSRDF entry vertex; an emitter whose probe refuses (a non-finite
    self-hit floor, or a standoff larger than the luminary — reachable only
-   through a CSG luminary's uncapped floor); GUI preview / realize-time /
+   through a CSG luminary's uncapped floor for a uniformly transformed
+   luminary, or a shrink-poisoned SDF part stretched thin along the probe);
+   GUI preview / realize-time /
    hand-built test records — are identical under every integrator, not a
    PT-vs-bidirectional split. One residual is NOT neutral but a bounded
    neighbour read: a second surface of the same luminary inside the probe's
