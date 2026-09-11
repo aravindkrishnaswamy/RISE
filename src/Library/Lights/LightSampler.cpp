@@ -909,8 +909,12 @@ void LightSampler::ApplyEmitterSurface(
 {
 	if( !payload.valid ) {
 		// THE FALLBACK, and it is deliberately a no-op: the caller's
-		// hand-built record is left exactly as it was, so a refused or
-		// gated-off probe reproduces the pre-S3 render bit-for-bit.
+		// hand-built record keeps the `derivatives`, `signals` and
+		// `txFootprint` it already had, so a refused or gated-off probe
+		// leaves the rendered output unchanged.  (Not "bit-for-bit the
+		// pre-S3 render", as an earlier draft said: the call sites also
+		// write `ptObjIntersec`, which is ungated by design and lands
+		// whether or not this function does anything.)
 		return;
 	}
 	rig.derivatives   = payload.derivatives;

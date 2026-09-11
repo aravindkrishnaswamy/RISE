@@ -132,55 +132,60 @@
 //    FIVE full runs of the row set on an Apple-silicon Mac, worst
 //    |EXPR/CONTROL - 1| per row, in percent:
 //
-//      A / PT                 0.043  0.063  0.039  0.018  0.007
-//      A / BDPT               0.511  0.178  0.376  0.208  0.043
-//      A / VCM                0.115  0.319  0.019  0.041  0.041
-//      A / PT-spectral        1.442  0.771  0.801  0.491  0.976
-//      A / BDPT-spectral      0.605  1.389  1.267  1.159  0.827
-//      A / VCM-spectral       0.711  1.221  0.411  0.854  1.063
-//      A / BDPT-spec/HWSS     0.242  0.190  0.278  0.253  0.331
-//      B / PT                 0.082  0.024  0.058  0.008  0.036
-//      C / PT                 0.854  0.499  0.149  0.548  0.338
-//      C / BDPT               0.065  0.023  0.010  0.014  0.035
-//      C / VCM                0.011  0.010  0.006  0.002  0.038
-//      D / PT                 0.084  0.022  0.041  0.032  0.057
-//      D / BDPT               0.181  0.428  0.416  0.245  0.355
-//      D / VCM                0.214  0.264  0.271  0.018  0.144
-//      D gate-inv CONTROL     0.038  0.052  0.030  0.030  0.038
-//      D gate-inv EXPR        0.012  0.003  0.026  0.035  0.006
-//      E / PT                 0.044  0.030  0.011  0.007  0.065
-//      E / BDPT               0.388  0.377  0.232  0.229  0.280
-//      E / VCM                0.064  0.047  0.280  0.046  0.052
+//      A / PT                  0.078  0.058  0.062  0.063  0.062
+//      A / BDPT                0.434  0.171  0.228  0.042  0.018
+//      A / VCM                 0.020  0.158  0.014  0.218  0.010
+//      A / PT-spectral         0.282  0.303  0.336  0.285  0.476
+//      A / BDPT-spectral       0.606  0.320  0.316  0.528  0.517
+//      A / VCM-spectral        0.304  0.468  0.310  0.254  0.209
+//      A / BDPT-spec + HWSS    0.209  0.287  0.320  0.184  0.124
+//      B / PT                  0.022  0.019  0.090  0.033  0.038
+//      C / PT                  0.181  0.269  0.023  0.084  0.082
+//      C / BDPT                0.006  0.025  0.005  0.039  0.019
+//      C / VCM                 0.030  0.007  0.024  0.025  0.025
+//      D / PT                  0.031  0.039  0.041  0.024  0.015
+//      D / BDPT                0.287  0.565  0.000  0.483  0.445
+//      D / VCM                 0.063  0.120  0.046  0.145  0.156
+//      D gate-inv CONTROL      0.059  0.040  0.036  0.014  0.055
+//      D gate-inv EXPR         0.000  0.033  0.004  0.075  0.001
+//      E / PT                  0.025  0.044  0.020  0.068  0.058
+//      E / BDPT                0.104  0.040  0.090  0.084  0.336
+//      E / VCM                 0.520  0.018  0.067  0.021  0.168
 //
-//    Worst observed 1.44 %, on A / PT-spectral.  The 5 % band is 3.5x
-//    that and 63x below the smallest sensitivity swing (316 %), so it
-//    can absorb the noise and cannot absorb a neutral read.
+//    Worst observed 0.61 %, on A / BDPT-spectral.  The 5 % band is 8.2x
+//    that and 63x below the smallest sensitivity swing (318 %), so it
+//    can absorb the noise and cannot absorb a neutral read.  The
+//    SENSITIVITY rows measured 399.6-400.6 % (curv and Po families) and
+//    318-323 % (proximity) across the same five runs.
 //
 //    SAMPLE COUNTS ARE NOT UNIFORM, and both departures from the base
-//    48 are deliberate:
+//    48 are deliberate and were measured, not guessed:
 //
 //      * ROW C RUNS AT 384.  It is the dimmest family by an order of
 //        magnitude (mean ~0.048 against ~0.39), so its relative MC
 //        noise is the largest in the suite.  Nine runs at the original
 //        48 samples spread to 2.89 %, and five runs at 192 still
-//        reached 1.67 %; 384 brings the worst of five to 0.85 %.
-//      * THE NON-HWSS SPECTRAL ROWS RUN AT 1024.  `spectral_samples 1`
+//        reached 1.67 %; 384 brought the worst of five to 0.85 %, and
+//        the five runs tabled above to 0.27 %.
+//      * THE NON-HWSS SPECTRAL ROWS RUN AT 2048.  `spectral_samples 1`
 //        draws ONE wavelength per pixel sample out of 380-720 nm, so
 //        the per-channel mean carries a CHROMATIC error the RGB rows do
-//        not have -- 4.0 % (BDPT-spectral) and 5.2 % (VCM-spectral) at
-//        48 samples, against a 5 % band, i.e. noise indistinguishable
-//        from a failure.  384 brought it to 2.3 %, 1024 to 1.44 %.  The
-//        HWSS row needs none of that (0.40 % at 48): a hero wavelength
-//        with seven companions averages the bundle WITHIN each sample,
-//        which is exactly the variance at issue.  It is given 96 for
-//        headroom at negligible cost.
+//        not have: 4.0 % (BDPT-spectral) and 5.2 % (VCM-spectral) at 48
+//        samples, against a 5 % band -- i.e. noise indistinguishable
+//        from a failure.  384 brought it to 2.3 %, 1024 to 2.2 % worst
+//        of nine, 2048 to 0.61 %.  The HWSS row needs none of that
+//        (0.40 % at 48): a hero wavelength with seven companions
+//        averages the bundle WITHIN each sample, which is exactly the
+//        variance at issue.  It is given 96 for headroom at negligible
+//        cost.
 //
-//    Whole-suite runtime at these counts is ~35 s.
+//    Whole-suite runtime at these counts is ~57 s.
 //
-//  RED-PROOF, performed in the slice's own isolated worktree (never
-//  the shared checkout), on the state this file was committed with.
-//  Each mutation was reverted with `git checkout --` and
-//  `git status --short` checked clean before the next.
+//  RED-PROOF, performed in this slice's own isolated worktree (never
+//  the shared checkout).  Each mutation was reverted with
+//  `git checkout -- <file>` and `git status --short` checked clean
+//  before the next.  Percentages are |EXPR/CONTROL - 1| on the row
+//  named; every row not named stayed inside the band.
 //
 //    THE CHOKE POINT IS `EmitterProbeWanted()`, not
 //    `ProbeEmitterSurface`.  An earlier draft of this header said to
@@ -188,39 +193,104 @@
 //    the two NEE sites -- the BDPT light-subpath root, its two NM twins
 //    and VCM's light vertex all reach the probe through
 //    `ProbeEmitterSurfaceAlongNormal`, a separate public entry point
-//    with its own gate check.  Forcing `EmitterProbeWanted()` to return
-//    false is the one edit that restores the pre-S3 fallback at ALL
-//    SEVEN sites.
+//    with its own gate check.  `EmitterProbeWanted()` is the one edit
+//    that restores the pre-S3 fallback at ALL SEVEN sites.
 //
-//    (1) `EmitterProbeWanted()` -> false.  Every MONEY row in every
-//        family but D goes red; D (which keys on `Po`, deliberately
-//        ungated) stays green, which is the whole point of that family:
-//        RED_1_ROWS
+//    (1) `EmitterProbeWanted()` -> false.  17 FAILs / 47 passes.  Every
+//        MONEY row outside family D goes red: A/PT 75.32, A/BDPT 74.89,
+//        A/VCM 68.78, A/PT-spectral 75.72, A/BDPT-spectral 75.10,
+//        A/VCM-spectral 67.92, A/BDPT-spec+HWSS 74.51, B/PT 75.32,
+//        C/PT 43.88, C/BDPT 75.71, C/VCM 68.47, E/PT 75.29,
+//        E/BDPT 75.00, E/VCM 69.08.  The A, B and E SENSITIVITY rows
+//        also go red, at 23.49 / 23.37 / 23.40 -- correctly, because
+//        with the probe off EXPR has collapsed most of the way onto
+//        NEUTRAL; the ~23.4 % that survives is the BSDF-sampled
+//        continuation that hits the emitter through a REAL record and
+//        was never neutral.  That PT goes red at all is the point: this
+//        slice is not a bidirectional-only fix.
+//        FAMILY D IS UNTOUCHED (0.002 / 0.005 / 0.138, gate-invariance
+//        0.058 / 0.056), which is the whole reason it exists: `Po` is
+//        deliberately outside this gate.
 //
-//    (2) Drop `scene.GetObjects()` at the `SampleLight` probe site
-//        (pass 0 instead), so the cross-object triple is never stamped
-//        on the NORMAL-ALIGNED probe's payload while the NEE probe
-//        keeps its own:
-//        RED_2_ROWS
+//    (2) Pass 0 instead of `scene.GetObjects()` at the `SampleLight`
+//        probe site, so the cross-object triple is never stamped on the
+//        NORMAL-ALIGNED probe's payload while the NEE probe keeps its
+//        own.  2 FAILs, and exactly the two rows H's review asked for:
+//        C/BDPT 75.70, C/VCM 68.50.  C/PT stays green at 0.017.
 //
-//    (3) Restore the flat `kEmitterProbeStandoffFraction * diag`
-//        standoff (i.e. delete the SelfHitRootFloor-derived term):
-//        RED_3_ROWS
+//    (3) Delete the SelfHitRootFloor-derived term, i.e. restore the
+//        flat `kEmitterProbeStandoffFraction * diag` standoff.  2 FAILs:
+//        E/BDPT 74.93, E/VCM 68.99, with E/PT green at 0.064.  That
+//        split -- PT live, BDPT and VCM neutral, on one scene, in one
+//        frame -- is the disagreement the whole slice exists to remove.
+//        (With the intermediate `1.01 * floor` standoff, before the
+//        acceptance-tolerance cushion was added, the same two rows sat
+//        at 37.4 / 35.1: the probe cleared the floor on roughly half
+//        the samples, the ones whose Newton projection happened to land
+//        inside the true surface.)
 //
 //    (4) Skip `ApplyEmitterSurface` at the NM NEE site
-//        (`LightSampler::EvaluateDirectLightingNM`):
-//        RED_4_ROWS
+//        (`LightSampler::EvaluateDirectLightingNM`).  1 FAIL:
+//        A/PT-spectral 75.63.  Nothing else moves -- this site is
+//        reached by the spectral PT rasterizer and by nothing else in
+//        the suite, which is precisely why the spectral rows were added.
 //
-//    (5) Skip `ApplyEmitterSurface` at BDPT's NM hero `Le` rebuild:
-//        RED_5_ROWS
+//    (5) Skip `ApplyEmitterSurface` at BDPT's NM hero `Le` rebuild.
+//        WEAK, and reported as measured rather than as a red-proof:
+//        the only row that moves at all is A/VCM-spectral, at 5.70 /
+//        3.41 / 4.50 over three runs -- i.e. straddling the 5 % band.
+//        A/BDPT-spectral moves 0.10 / 0.82 / 0.66, inside its own noise.
 //
-//    (6) Skip `ApplyEmitterSurface` at BDPT's HWSS companion rebuild:
-//        RED_6_ROWS
+//    (6) Skip `ApplyEmitterSurface` at BDPT's HWSS companion rebuild.
+//        NO ROW MOVES (the HWSS row reads 0.299, its usual noise).
 //
-//    (7) Carry `ptObjIntersec` on the GATED payload again (the state
-//        this slice's first draft shipped), and compare family D's
-//        gate-CLOSED render against its gate-OPEN one:
-//        RED_7_ROWS
+//    WHY (5) AND (6) ARE WEAK, and what that means.  Proofs (8) and (9)
+//    below show where BDPT and VCM actually price this emitter: BDPT
+//    through the `type == LIGHT` ROOT VERTEX (`LuminaryRadiance` /
+//    `PopulateRIGFromVertex`), VCM through its own light-vertex NEE
+//    record.  The hero `LeNM` and its HWSS companions set the light
+//    SUBPATH's throughput instead, which only reaches the film through
+//    the s>=1 connection and t=1 splat strategies -- and on a scene
+//    this simple (pinhole camera, one diffuse receiver, an area light
+//    every eye vertex can see) MIS weights those down to a few percent.
+//    Making them dominant needs a light-tracing- or caustic-dominated
+//    scene, not a knob on this one.  The two sites ARE converted and
+//    their code path is exercised by every spectral row; what this
+//    suite does not have is a row that would go red if they regressed.
+//    Recorded here rather than papered over.
+//
+//    (7) Make `LightSampler::EmitterObjectPoint` return its `fallback`
+//        when the gate is closed -- i.e. put `Po` back on the GATED
+//        payload, the state this slice's first draft shipped.  5 FAILs:
+//        D/PT 75.32, D/BDPT 74.85, D/VCM 68.73, D's sensitivity row,
+//        and -- the reproduction of the review's own finding -- the
+//        GATE-INVARIANCE EXPR row at 304.81, i.e. the gate-OPEN render
+//        is 4.05x the gate-CLOSED one from adding a `curv` painter to
+//        an unrelated object.  (The review measured 2.94x on its own
+//        repro; this row saturates its clamp fully, so the swing is the
+//        full 1.0/0.2 exitance ratio diluted only by the BSDF-sampled
+//        continuation.)  The gate-invariance CONTROL row stays green at
+//        0.073, which is what makes the 304.81 attributable to `Po`
+//        alone rather than to the receiver's painter.
+//
+//    THE SITE-TO-ROW MAP, established by isolating each remaining site.
+//    Every one of the seven converted sites has a row that sees it,
+//    except the two named in (5) and (6):
+//
+//    (8) BDPT's `type == LIGHT` root vertex (`if( ls.surface.valid )`
+//        forced false).  5 FAILs: A/BDPT 74.87, A/BDPT-spectral 75.04,
+//        A/BDPT-spec+HWSS 74.40, C/BDPT 8.04, E/BDPT 75.06.  Every VCM
+//        row stays green.
+//
+//    (9) VCM's light-vertex NEE record (`ApplyEmitterSurface` skipped).
+//        4 FAILs: A/VCM 56.87, A/VCM-spectral 64.06, C/VCM 8.65,
+//        E/VCM 57.17.  Every BDPT row stays green.
+//
+//   (10) The RGB NEE site (`ApplyEmitterSurface` skipped in
+//        `LightSampler::EvaluateDirectLighting`).  7 FAILs: A/PT 75.31,
+//        B/PT 75.30, C/PT 44.06, E/PT 75.30 and the three PT
+//        sensitivity rows.  Every BDPT, VCM and spectral row stays
+//        green.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -1031,23 +1101,24 @@ static const RowSpec kRowsRGB3[3] = {
 };
 static const RowSpec kRowsPTOnly[1] = { { eRK_PT, false, 0 } };
 
-//! THE SPECTRAL ROWS CARRY THEIR OWN SAMPLE COUNT, and it is eight
-//! times the RGB rows'.  Not because the emitter record is any noisier
-//! there, but because `spectral_samples 1` draws ONE wavelength per
-//! pixel sample out of the 380-720 nm band: the per-channel mean then
-//! carries a CHROMATIC MC error the RGB rows do not have, and at 48
-//! samples it measured 4.0 % (BDPT-spectral) and 5.2 % (VCM-spectral)
-//! against a 5 % band -- noise, not a signal read, but enough to make
-//! the row meaningless either way.  384 samples brings it under 1.5 %.
-//! The HWSS row needs none of that (it measured 0.40 % at 48): a hero
+//! THE NON-HWSS SPECTRAL ROWS CARRY THEIR OWN SAMPLE COUNT, and it is
+//! forty-odd times the RGB rows'.  Not because the emitter record is
+//! any noisier there, but because `spectral_samples 1` draws ONE
+//! wavelength per pixel sample out of the 380-720 nm band: the
+//! per-channel mean then carries a CHROMATIC MC error the RGB rows do
+//! not have, measured at 4.0 % (BDPT-spectral) and 5.2 %
+//! (VCM-spectral) at 48 samples against a 5 % band -- noise, not a
+//! signal read, but enough to make the row meaningless either way.
+//! See the file header's band derivation for the 384 / 1024 / 2048
+//! ladder.  The HWSS row needs none of it (0.40 % at 48): a hero
 //! wavelength with seven companions averages the bundle within each
 //! sample, which is exactly the chromatic variance at issue.  It is
 //! given 96 anyway, for headroom at no meaningful cost.
 static const RowSpec kRowsFull[7] = {
 	{ eRK_PT, false, 0 }, { eRK_BDPT, false, 0 }, { eRK_VCM, false, 0 },
-	{ eRK_PT_SPECTRAL, false, 1024 },
-	{ eRK_BDPT_SPECTRAL, false, 1024 },
-	{ eRK_VCM_SPECTRAL, false, 1024 },
+	{ eRK_PT_SPECTRAL, false, 2048 },
+	{ eRK_BDPT_SPECTRAL, false, 2048 },
+	{ eRK_VCM_SPECTRAL, false, 2048 },
 	// HWSS on the BDPT-spectral row: the companion-wavelength `rigW`
 	// rebuild in `GenerateLightSubpathImpl` lives there and nowhere else.
 	{ eRK_BDPT_SPECTRAL, true, 96 }
