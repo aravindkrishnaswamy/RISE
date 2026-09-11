@@ -38,8 +38,9 @@
 //                                 point sample, no filter info -- the
 //                                 honest answer on any surface that
 //                                 doesn't populate a footprint (secondary
-//                                 bounces, non-pinhole cameras -- doc 88
-//                                 S9).  fbm/turbulence/ridged rescale it
+//                                 bounces; the fisheye camera, the one
+//                                 camera that still emits no differentials
+//                                 -- doc 88 S9).  fbm/turbulence/ridged rescale it
 //                                 into their OWN domain automatically
 //                                 (see those builtins below), so a body
 //                                 that scales the position argument does

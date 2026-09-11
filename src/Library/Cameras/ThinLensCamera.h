@@ -118,6 +118,27 @@ namespace RISE
 
 			Matrix4	ComputeScaleFromAR( ) const;
 
+			//! The whole per-(film sample, lens point) direction
+			//! construction: image-plane sample with shift, chief-ray
+			//! intersection with the (possibly tilted) focal plane, and
+			//! the normalised WORLD direction from `ptOnLens` to that
+			//! focus point.  `screenX` / `screenY` are raster
+			//! coordinates, `ptOnLens` is the camera-local aperture
+			//! point (already pixelAR-compensated).
+			//!
+			//! Single source of truth for both `GenerateRay` /
+			//! `GenerateRayWithLensSample` and for the +x / +y
+			//! differential rays, so lens shift, anamorphic squeeze,
+			//! focal-plane tilt and aperture-blade shaping are
+			//! inherited by the differentials rather than re-derived.
+			Vector3 ComputeWorldDirection( const Point3& ptOnLens, const Scalar screenX, const Scalar screenY ) const;
+
+			//! Populate `r` (origin, direction AND ray differentials)
+			//! for one film sample through one aperture point.  Shared
+			//! tail of both public generators; see the implementation
+			//! for what the thin-lens differential measures.
+			void EmitRayThroughLens( Ray& r, const Point3& ptOnLens, const Point2& ptOnScreen ) const;
+
 			//! Recomputes camera parameters from class values
 			void Recompute( const unsigned int width, const unsigned int height ) override;
 

@@ -108,14 +108,40 @@ OrthographicCamera::~OrthographicCamera( )
 
 bool OrthographicCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const Point2& ptOnScreen ) const
 {
-	const Scalar x = (frame.GetWidth()/2-ptOnScreen.x)/Scalar(frame.GetWidth()) * viewportScale.x;
-	const Scalar y = (ptOnScreen.y - frame.GetHeight()/2)/Scalar(frame.GetHeight()) * viewportScale.y;
+	// The per-film-sample origin offset, as a function of the raster
+	// coordinate.  Factored out of the `ray.Set` below ONLY so the
+	// differential rays can re-enter the identical expression: the
+	// auxiliary ray must be the ray this camera would actually
+	// generate for the neighbouring pixel, whatever that expression
+	// is, rather than a separately-derived pixel pitch that could
+	// drift from it.
+	auto originOffset = [&]( const Scalar screenX, const Scalar screenY ) -> Vector3 {
+		const Scalar x = (frame.GetWidth()/2-screenX)/Scalar(frame.GetWidth()) * viewportScale.x;
+		const Scalar y = (screenY - frame.GetHeight()/2)/Scalar(frame.GetHeight()) * viewportScale.y;
+		return Vector3( -x, y, 0.0 );
+	};
+
+	const Vector3 o = originOffset( ptOnScreen.x, ptOnScreen.y );
 	Vector3 v( 0, 0, 1 );
 
-	ray.Set( 
-		Point3Ops::mkPoint3( frame.GetOrigin(), Vector3( -x, y, 0.0 ) ),
+	ray.Set(
+		Point3Ops::mkPoint3( frame.GetOrigin(), o ),
 		Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans,v))
 		);
+
+	// Ray differentials.  An orthographic camera's rays are parallel,
+	// so a one-FULL-pixel step (Igehy's convention, matching
+	// PinholeCamera) moves only the ORIGIN — by exactly one pixel of
+	// viewport pitch — and leaves the direction alone.  That makes the
+	// footprint at a hit the viewport pitch divided by the cosine of
+	// incidence, which is the correct answer for a parallel projection
+	// and is independent of distance (unlike the pinhole's d·theta).
+	// Must follow `ray.Set`, which clears hasDifferentials.
+	ray.diffs.rxOrigin = originOffset( ptOnScreen.x + Scalar( 1 ), ptOnScreen.y ) - o;
+	ray.diffs.ryOrigin = originOffset( ptOnScreen.x, ptOnScreen.y + Scalar( 1 ) ) - o;
+	ray.diffs.rxDir = Vector3( 0, 0, 0 );	// parallel projection: shared direction
+	ray.diffs.ryDir = Vector3( 0, 0, 0 );
+	ray.hasDifferentials = true;
 
 	return true;
 }
