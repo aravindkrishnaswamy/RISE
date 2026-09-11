@@ -214,8 +214,19 @@ namespace RISE
 				// caller.
 				if( v > 0 ) sceneUnitMeters = v;
 			}
-			inline void SetTiltX( Scalar v )                   { tiltX = v; }
-			inline void SetTiltY( Scalar v )                   { tiltY = v; }
+			//! The parser refuses |tilt| >= 80 degrees (see the
+			//! thinlens_camera descriptor); the editor property path and
+			//! the Blender bridge reach these setters and the constructor
+			//! directly, so the same bound is enforced here.  Past it the
+			//! focal plane's vanishing line crosses the frame and
+			//! ComputeWorldDirection's n_dot_p changes sign mid-image.
+			static Scalar ClampTilt( const Scalar v )
+			{
+				const Scalar kMaxTiltRad = Scalar( 1.396 );	// 80 degrees, matches the parser
+				return v > kMaxTiltRad ? kMaxTiltRad : ( v < -kMaxTiltRad ? -kMaxTiltRad : v );
+			}
+			inline void SetTiltX( Scalar v )                   { tiltX = ClampTilt( v ); }
+			inline void SetTiltY( Scalar v )                   { tiltY = ClampTilt( v ); }
 			inline void SetShiftX( Scalar v )                  { shiftX = v; }
 			inline void SetShiftY( Scalar v )                  { shiftY = v; }
 			inline void SetApertureBlades( unsigned int v )    { apertureBlades = v; }
