@@ -123,7 +123,9 @@
 //         -0.0773.  4sigma bar: 0.1149 <= 0.20 -- PASSES (margin 1.74x).
 //         2x-worst bar: 0.1545 <= 0.20 -- PASSES (margin 1.29x) -- CHOSEN.
 //         `kLayer2MaskedSubRenders` raised 6 -> 12.  Cost: two fresh
-//         default whole-suite runs measured 104.47s and 108.69s wall
+//         default whole-suite runs measured 104.47s and 108.69s wall (read
+//         off the `time` wrapper around each run -- the cited logs are the
+//         suites' stdout and carry no clock line)
 //         (.../scratchpad/s2_fixround3_run1.txt, run2.txt) -- up from
 //         ~70s at K=6, still under the ~2 minute budget but with less
 //         headroom than before (see the KNOBS section below).

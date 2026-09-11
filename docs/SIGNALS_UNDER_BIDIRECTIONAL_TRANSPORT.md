@@ -181,50 +181,85 @@ widened one, and no site rebuilds a record by any other route.
 
 ## 5. The fix for rows 5–6: `LightSampler` emitter records (S3)
 
+**(As built — rewritten after S3's three review rounds; the original draft
+prescribed a second, along-`vToLight` probe for NEE, which S3 round 2 found
+to have a different refusal predicate from the root probe and deleted.)**
+
 The NEE light sample and the light-subpath root are **sampled points**, not
 hits: `IObject::UniformRandomPoint` returns position, normal and UV only, and
 no geometry stamps derivatives or signals for a point it did not intersect.
-Two honest routes exist; S3 picks between them by cost, with these fixed
-constraints:
+S3 obtains them like this:
 
-- **Zero cost when no signal consumer is live.** Gate on
-  `SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any()` (both
-  relaxed atomic loads, already process-wide). Scenes without signal-reading
-  painters take today's path byte-for-byte.
-- **The record must come from a real intersection.** Never fabricate
-  derivatives or signals for a sampled point. Under the gate, obtain the
-  emitter record by intersecting the **luminary object itself**
-  (`IObject::IntersectRay` on `lumEntry.pLum`, whose transform layer stamps
-  `derivatives` and whose geometry stamps the own-surface signal half) along
-  the ray the record is built for — for NEE, from the shading point toward
-  `ptOnLum`; for the light-subpath root, a short probe onto the sampled
-  point along `-normal` — then stamp the cross-object triple
-  (`pScene`/`pSelf`/`ptWorld`) exactly as `ObjectManager::IntersectRay`
-  does, with the same values. `LightSampler.cpp` joins the hygiene set with
-  that rationale (§3.1). Accept the hit only if it lands on the luminary
-  within a distance tolerance derived from the object's diagonal (the
-  `SelfHitRootFloor` convention), else fall back to today's record.
-- **The shadow test is not replaced** (transparent-shadow transmittance
-  through `ShadowOccluded*` stays as is); the probe is one extra
-  object-level closest-hit under the gate.
-- **All twins get the same record**: the NM NEE site beside the RGB one in
-  `LightSampler.cpp`, and in `GenerateLightSubpathImpl` BOTH the NM hero
-  `Le` rebuild and the HWSS companion-wavelength `rigW` rebuild (fixing the
-  hero alone would leave a hero-live / companion-neutral split — the
-  spectral form of the §1 defect). RGB and NM sites share one helper so
-  they cannot drift.
-- **The LIGHT-type root vertex is widened too**: `GenerateLightSubpathImpl`
-  copies the record's `derivatives` / `signals` onto the `type == LIGHT`
-  root vertex, because `LuminaryRadiance` (the t=1 splat's emitter eval) and
-  VCM's light→camera splat price the root THROUGH `PopulateRIGFromVertex`;
-  a better record inside `LightSampler` alone would leave those two neutral.
+- **One normal-aligned probe** — `LightSampler::ProbeEmitterSurface` —
+  shared by the two NEE sites (RGB and NM) and by `SampleLight` for the
+  light-subpath root, called with the same arguments (the sampled point,
+  the sampled normal, the luminary, the object manager) at every site, so
+  PT, BDPT and VCM **refuse in exactly the same places**. It stands off the
+  sampled point along its normal by
+  `max( 0.001·D, 1.01·SelfHitRootFloor_world + 0.001·D )` (D = the luminary's
+  world bbox diagonal; the floor asked in the luminary's local frame and
+  converted by the ray's stretch; the 0.001·D cushion is the smaller of the
+  two values tried — 0 fails on a high-epsilon SDF because a sample the
+  Newton projection left INSIDE the surface trips the marcher's step-off),
+  fires back along the normal with a travel limit of `2·standoff + 0.01·D`,
+  intersects the **luminary object itself** (`IObject::IntersectRay`, whose
+  transform layer stamps `derivatives` and whose geometry stamps the
+  own-surface signal half), and accepts iff the hit is on that luminary
+  within `0.01·D` of the sampled point; then it stamps the cross-object
+  triple (`pScene`/`pSelf`/`ptWorld`) with the values
+  `ObjectManager::IntersectRay` would, so `LightSampler.cpp` is the tenth
+  sanctioned `signals` writer (§3.1). On refusal the record is left exactly
+  as it was.
+- **Gated** on `SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any()`
+  (two relaxed atomic loads, checked before any bounding-box read or
+  payload construction). With no signal-reading painter alive: no ray is
+  cast, no bounding box is read, no signal field moves, no sampler
+  dimension is consumed — the render is unchanged. Not "byte-for-byte":
+  see the next bullet.
+- **`Po` is UNGATED and ray-free.** The emitter record's `ptObjIntersec`
+  (the expression VM's `Po`, also read by `voronoi3d_painter` and
+  `mapping_painter`) is computed at all seven emitter-record sites by
+  `LightSampler::EmitterObjectPoint` — the sampled world point through the
+  luminary's final inverse transform (two virtual calls, a 128 B matrix by
+  value, one 4×4 transform). This closes a PRE-EXISTING inconsistency for
+  every `Object` luminary — a direct hit carried the live object-space
+  point while every NEE record carried `(0,0,0)` — and it must not ride
+  the gate, or a `curv` painter on an unrelated material would change a
+  `Po`-keyed emitter's brightness (S3 round 1 reproduced exactly that at
+  2.94×). CSG composites keep `(0,0,0)` (their direct hit reports the
+  winning operand's frame); delta and env samples have no surface.
+- **What the probe applies** (`ApplyEmitterSurface`): `derivatives`,
+  `signals`, `txFootprint` — nothing else. The sampled point, normal, ONB,
+  UV and every pdf/cosine are untouched, so no MIS quantity moves.
+- **Every twin gets the same record**: the NM NEE site, and in
+  `GenerateLightSubpathImpl` the NM hero `Le` rebuild, the HWSS
+  companion-wavelength `rigW` rebuild and the `type == LIGHT` root vertex
+  (`derivatives`/`signals`/`txFootprint` copied onto it, so
+  `LuminaryRadiance` and VCM's light→camera splat price the root live
+  through `PopulateRIGFromVertex`), and VCM's own NEE record — five
+  consumers of `LightSample::surface`, seven record sites.
+- **The shadow test is not replaced** and still runs before the NEE probe;
+  that ordering is a cost ordering (an occluded sample never pays a probe),
+  not a correctness bound — the normal-aligned probe never looks down the
+  shadow ray.
+- **Residuals** (§10): the probe refuses — neutral, identically under every
+  integrator — on a non-finite floor or a standoff larger than D (reachable
+  only through a CSG luminary's uncapped floor, for a uniformly transformed
+  luminary); and a second surface of the same luminary inside the standoff
+  band along the normal and within the tolerance is ACCEPTED with that
+  neighbour's channel (a bounded neighbour read, not a neutral one).
 
-Test (in S3): an emissive SDF sphere whose exitance expression keys on
-`curv` (constant on a sphere, so the "baked" control is a plain constant),
-lighting a Lambertian plane; under PT the plane's mean with the expression
-must equal the mean with the constant within band; the same under BDPT and
-VCM. Red-proof: with the probe disabled the PT row goes red (NEE reads
-neutral `curv = 0`), which pins that this slice reaches PT.
+Test (S3): `tests/SignalEmitterRecordTest.cpp` — six families (an emissive
+SDF sphere and an analytic sphere keyed on `curv`, whose closed-form control
+is `1.0`; a `proximity(1.0)`-keyed quad beside a box; a `Po`-keyed emitter
+with no signal painter plus a gate-invariance block; a high-epsilon SDF
+whose floor exceeds the flat standoff; a two-lobe non-convex emitter with
+`casts_shadows FALSE` whose far lobe the along-ray probe missed), PT/BDPT/VCM
+plus spectral and HWSS rows, seeded per render. Red-proofs (eleven, in the
+header): forcing `EmitterProbeWanted()` false reddens every money row
+including PT (the slice reaches PT); dropping the cross-object stamp
+reddens only the proximity rows; a flat standoff reddens the high-epsilon
+family; the along-ray probe reddens the two-lobe family at PT 23 %.
 
 ## 6. The money test — `SignalIntegratorConsistencyTest` (S2)
 

@@ -220,8 +220,11 @@ namespace RISE
 	//! shading payload for a point `UniformRandomPoint` merely SAMPLED.
 	//! The same conservatism applies unchanged: a live curvature-reading
 	//! painter anywhere in the process buys one probe ray per light sample
-	//! on scenes that may not need it, and the probe only ever makes a
-	//! record more faithful -- performance, never correctness.
+	//! on scenes that may not need it; a false positive of this counter is
+	//! a cost, not a new correctness risk -- the probe's own bounded
+	//! residual (a second surface of the same luminary inside its standoff
+	//! band, LightSampler.h) exists whether or not the gate was opened for
+	//! a reason.
 	namespace SurfaceCurvatureDemand
 	{
 		//! The single counter.  A function-local static inside an inline

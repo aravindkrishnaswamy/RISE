@@ -1307,12 +1307,14 @@ namespace
 					// Phong/bump modifier runs on an emitter record, so
 					// mirroring it keeps the record self-consistent.
 					rig.vGeomNormal = ls.normal;
-					// THE FOURTH consumer of `SampleLight`'s one probed
-					// payload (slice S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_
-					// TRANSPORT.md §5): VCM's light-vertex NEE record.  The
-					// other three are LightSampler's own emission record
-					// and BDPTIntegrator's NM hero + HWSS companion
-					// rebuilds.  A no-op when the probe was gated off or
+					// THE FOURTH `ApplyEmitterSurface` consumer of
+					// `SampleLight`'s one probed payload (slice S3,
+					// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5): VCM's
+					// light-vertex NEE record.  The other three are
+					// LightSampler's own emission record and BDPTIntegrator's
+					// NM hero + HWSS companion rebuilds; the fifth consumer of
+					// the payload, BDPT's `type == LIGHT` root vertex, copies
+					// the fields directly instead of calling the helper.  A no-op when the probe was gated off or
 					// refused, so with the gate closed this record's
 					// rendered contribution is unchanged.
 					LightSampler::ApplyEmitterSurface( rig, ls.surface );

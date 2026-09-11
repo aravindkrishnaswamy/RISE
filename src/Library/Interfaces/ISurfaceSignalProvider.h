@@ -727,11 +727,17 @@ namespace RISE
 	//! `SurfaceCurvatureDemand`: a false positive (a scene from a
 	//! DIFFERENT job in the same process still holding a signal-reading
 	//! painter alive) costs one extra probe ray at each emitter-record
-	//! site it is asked at for a scene that did not need it -- NEVER a
-	//! WRONG record, since the probe only ever accepts a real intersection
-	//! or leaves the hand-built record exactly as it was.  The gate can
-	//! only make a record MORE faithful than the neutral default, never
-	//! less, so a false positive is a pure cost, not a correctness risk.
+	//! site it is asked at for a scene that did not need it -- never a
+	//! FABRICATED record, since the probe only ever accepts a real
+	//! intersection on that luminary or leaves the hand-built record
+	//! exactly as it was.  The one way an accepted record can describe the
+	//! wrong point is the probe's own disclosed residual, independent of
+	//! the gate: a second surface of the SAME luminary inside the standoff
+	//! band along the normal and within the acceptance tolerance is
+	//! accepted with that neighbour's channel (see
+	//! `kEmitterProbeStandoffCushionFraction` in LightSampler.h).  A false
+	//! positive of THIS counter adds only the probe's cost on a scene that
+	//! never reads the result.
 	namespace SurfaceSignalDemand
 	{
 		//! The single counter.  A function-local static inside an inline

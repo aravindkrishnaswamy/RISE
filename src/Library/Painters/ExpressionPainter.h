@@ -207,11 +207,11 @@ namespace RISE
 			//! cross-object signal (`proximity()` / `interior()`)
 			//! anywhere -- it is built from `prog.UsesSurfaceSignals()`, which is
 			//! `!m_signalCalls.empty()`, and `m_signalCalls` carries all five
-			//! (ExpressionEval.h).  Unlike m_curvatureDemand above, this does NOT
-			//! gate any per-hit work -- see SurfaceSignalDemand's own doc comment
-			//! (ISurfaceSignalProvider.h) for why the provider install stays
-			//! unconditional.  Since 2026-09-11 this is REAL WORK, not a
-			//! diagnostic: with `SurfaceCurvatureDemand` it gates
+			//! (ExpressionEval.h).  It does NOT gate the per-hit provider
+			//! install -- see SurfaceSignalDemand's own doc comment
+			//! (ISurfaceSignalProvider.h) for why that stays unconditional --
+			//! but since 2026-09-11 it gates REAL WORK elsewhere: with
+			//! `SurfaceCurvatureDemand` it gates
 			//! `LightSampler::ProbeEmitterSurface`, the probe that makes a
 			//! sampled emission point's record carry live signals
 			//! (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5) -- so a
