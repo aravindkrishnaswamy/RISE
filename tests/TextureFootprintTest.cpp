@@ -96,6 +96,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/Library/Cameras/FisheyeCamera.h"
 #include "../src/Library/Cameras/OrthographicCamera.h"
 #include "../src/Library/Cameras/PinholeCamera.h"
 #include "../src/Library/Cameras/ThinLensCamera.h"
@@ -2089,6 +2090,325 @@ static void Test14_ThinLensAndOrthoDifferentials()
 }
 
 //////////////////////////////////////////////////////////////////////
+//  Test 15 -- the fisheye camera carries differentials too, and its
+//  RIM withholds them rather than faking one.  It was the last camera
+//  emitting none, so every hit from the 2 `.RISEscene` files that name
+//  a `fisheye_camera` reported widthValid false / fw == 0.
+//////////////////////////////////////////////////////////////////////
+
+//! The shipped `scenes/Tests/Cameras/fisheye.RISEscene` value.  It
+//! matters that this is > sqrt(2)/... enough to push the frame CORNERS
+//! outside the projection's unit disc: at 1.6 the on-axis half-extent
+//! is 0.8 and the corner radius is 0.8*sqrt(2) = 1.131 > 1, which is
+//! what gives test 15c a real rim to find.
+static const Scalar kFisheyeScale = 1.6;
+
+//! A square fisheye camera at `eye` looking at `at`.
+static FisheyeCamera* MakeFisheye(
+	const Point3& eye, const Point3& at, const Vector3& up,
+	const Scalar sc, const Scalar pixelAR = Scalar( 1 ) )
+{
+	return new FisheyeCamera(
+		eye, at, up,
+		kRes, kRes,
+		pixelAR,								// pixelAR
+		Scalar( 1 ),							// exposure
+		Scalar( 0 ),							// scanningRate
+		Scalar( 0 ),							// pixelRate
+		Vector3( 0, 0, 0 ),						// orientation
+		Vector2( 0, 0 ),						// target_orientation
+		sc );
+}
+
+//! A ray through a chosen pixel.  `ok` receives `GenerateRay`'s own
+//! return value -- a fisheye pixel outside the unit disc has no ray at
+//! all, which is a distinct outcome from "a ray with no differentials"
+//! and test 15c needs to tell the two apart.  The camera consumes no
+//! randoms, but `GenerateRay` still takes an rc.
+static Ray FisheyeRay( const FisheyeCamera& cam, const Point2& pixel, bool& ok )
+{
+	RandomNumberGenerator rng( 17u );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+	Ray r;
+	ok = cam.GenerateRay( rc, r, pixel );
+	return r;
+}
+
+//! A square clipped plane in z = 0, facing a camera parked on +Z.
+//! (`BuildXZPlane` is the y = 0 one the top-down tests use.)
+static ClippedPlaneGeometry* BuildXYPlane( const Scalar half )
+{
+	const Point3 corners[4] = {
+		Point3( -half, -half, 0 ),
+		Point3(  half, -half, 0 ),
+		Point3(  half,  half, 0 ),
+		Point3( -half,  half, 0 )
+	};
+	return new ClippedPlaneGeometry( corners, true );
+}
+
+static void Test15_FisheyeDifferentials()
+{
+	std::cout << "Test 15: the fisheye camera emits ray differentials, and withholds them at the rim" << std::endl;
+
+	const Point2 centrePixel( Scalar( kRes ) * Scalar( 0.5 ), Scalar( kRes ) * Scalar( 0.5 ) );
+	const Point2 offPixel( Scalar( kRes ) * Scalar( 0.31 ), Scalar( kRes ) * Scalar( 0.72 ) );
+	const Scalar d = 5.0;
+
+	//! One pixel of image-plane step, on either axis of a square frame.
+	//! `FisheyeCamera::ComputeWorldDirection` maps raster x through
+	//! `scale/2 - scale*x/width`, so the step is exactly `scale/width`
+	//! -- in IMAGE-PLANE units, not radians.
+	const Scalar pitch = kFisheyeScale / Scalar( kRes );
+
+	// ---- 15a: the on-axis closed form -----------------------------
+	//
+	// The projection is `direction = (x, y, sqrt(1 - x^2 - y^2))` for
+	// (x, y) the image-plane point, i.e. image radius = SIN of the
+	// angle off the optical axis: an ORTHOGRAPHIC fisheye, NOT the
+	// equidistant `r = theta` the old docs and the chunk descriptor
+	// claimed.  So at the centre, where the main ray is the optical
+	// axis, the differential is the CHORD subtending `asin(pitch)`:
+	//
+	//     |rxDir| = 2*sin( asin(scale/width) / 2 )
+	//
+	// written that way rather than as the algebraically equal
+	// sqrt(2*(1 - sqrt(1 - pitch^2))), which loses five digits to
+	// cancellation at this pitch and would only be good to ~3e-12.
+	//
+	// The naive `scale/width` -- the answer for an EQUIDISTANT
+	// projection, and what a linearised Jacobian would produce -- is
+	// wrong by a relative 1.2e-6 here, a thousand times the 1e-9 gate
+	// below, so this check discriminates the two conventions rather
+	// than merely restating "the step is about a pixel".
+	{
+		FisheyeCamera* cam = MakeFisheye( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), kFisheyeScale );
+		bool ok = false;
+		const Ray r = FisheyeRay( *cam, centrePixel, ok );
+		cam->release();
+
+		CHECK( ok && r.hasDifferentials, "15a: (control) the centre ray exists and carries differentials" );
+
+		const Scalar closed = Scalar( 2 ) * std::sin( Scalar( 0.5 ) * std::asin( pitch ) );
+		const Scalar mx = Vector3Ops::Magnitude( r.diffs.rxDir );
+		const Scalar my = Vector3Ops::Magnitude( r.diffs.ryDir );
+		const Scalar relX = std::fabs( mx - closed ) / closed;
+		const Scalar relY = std::fabs( my - closed ) / closed;
+		const Scalar relNaive = std::fabs( pitch - closed ) / closed;
+
+		std::cout << "    15a |rxDir| " << std::scientific << std::setprecision(12) << mx
+		          << "  2sin(asin(p)/2) " << closed
+		          << "  rel " << std::setprecision(3) << relX
+		          << "  (equidistant p=" << std::setprecision(12) << pitch
+		          << " would be off by rel " << std::setprecision(3) << relNaive << ")"
+		          << std::defaultfloat << std::endl;
+
+		CHECK( relX < Scalar( 1e-9 ) && relY < Scalar( 1e-9 ),
+			"15a: the on-axis differential magnitude is the exact orthographic-fisheye chord on both axes ("
+			<< relX << ", " << relY << ")" );
+		CHECK( relNaive > Scalar( 1e-6 ),
+			"15a: (oracle) and that is NOT the equidistant scale/width, which 15a would otherwise not "
+			"discriminate (" << relNaive << ")" );
+
+		// Single shared origin: the offsets must be exactly zero, not
+		// merely small.
+		CHECK( r.diffs.rxOrigin.x == Scalar( 0 ) && r.diffs.rxOrigin.y == Scalar( 0 ) && r.diffs.rxOrigin.z == Scalar( 0 ) &&
+		       r.diffs.ryOrigin.x == Scalar( 0 ) && r.diffs.ryOrigin.y == Scalar( 0 ) && r.diffs.ryOrigin.z == Scalar( 0 ),
+			"15a: every fisheye primary ray shares the frame origin, so both origin offsets are exactly zero" );
+	}
+
+	// ---- 15b: the differentials ARE the finite difference ----------
+	//
+	// The convention is a one-FULL-pixel finite difference of the exact
+	// mapping, so the differentials must equal the difference of two
+	// rays this same camera generates independently, through the public
+	// entry point only.  Checked at the centre AND well off axis, where
+	// the mapping's nonlinearity is real -- this is the assertion a
+	// linearised "angular pitch" differential fails off axis even
+	// though it passes at the centre.  Red-proof: halving the step
+	// inside FisheyeCamera::GenerateRay fails this at both pixels.
+	{
+		FisheyeCamera* cam = MakeFisheye( Point3( 1, 2, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), kFisheyeScale );
+
+		for( int k = 0; k < 2; k++ ) {
+			const Point2 px = ( k == 0 ) ? centrePixel : offPixel;
+			const char*  what = ( k == 0 ) ? "centre" : "off-axis";
+
+			bool ok0 = false, okX = false, okY = false;
+			const Ray r0 = FisheyeRay( *cam, px, ok0 );
+			const Ray rX = FisheyeRay( *cam, Point2( px.x + Scalar( 1 ), px.y ), okX );
+			const Ray rY = FisheyeRay( *cam, Point2( px.x, px.y + Scalar( 1 ) ), okY );
+
+			CHECK( ok0 && okX && okY && r0.hasDifferentials,
+				"15b: (control) all three " << what << " rays exist and the central one carries differentials" );
+
+			const Vector3 oracleRx( rX.Dir().x - r0.Dir().x, rX.Dir().y - r0.Dir().y, rX.Dir().z - r0.Dir().z );
+			const Vector3 oracleRy( rY.Dir().x - r0.Dir().x, rY.Dir().y - r0.Dir().y, rY.Dir().z - r0.Dir().z );
+
+			const Scalar errRx = MaxAbsDiff( r0.diffs.rxDir, oracleRx );
+			const Scalar errRy = MaxAbsDiff( r0.diffs.ryDir, oracleRy );
+
+			std::cout << "    15b " << what << " |rxDir - oracle| " << std::scientific << std::setprecision(3) << errRx
+			          << "  |ryDir - oracle| " << errRy << std::defaultfloat << std::endl;
+
+			CHECK( errRx < Scalar( 1e-15 ) && errRy < Scalar( 1e-15 ),
+				"15b: rxDir/ryDir equal the difference of two independently generated main rays one pixel "
+				"apart, " << what << " (" << errRx << ", " << errRy << ")" );
+		}
+
+		cam->release();
+	}
+
+	// ---- 15c: the rim withholds differentials, it does not fake one -
+	//
+	// A fisheye pixel INSIDE the unit disc can have its +x or +y
+	// neighbour OUTSIDE it -- the camera generates no ray there, so
+	// there is no honest differential.  The decision is to leave
+	// hasDifferentials FALSE for that ray (fw reads 0, the texture
+	// point-samples: the documented neutral fallback) while still
+	// returning the main ray.  Three distinct outcomes must exist and
+	// be distinguishable, walking the +x/+y frame diagonal outward:
+	// interior (ray + differentials), rim (ray, no differentials),
+	// outside (no ray at all).
+	{
+		FisheyeCamera* cam = MakeFisheye( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), kFisheyeScale );
+
+		int nInterior = 0, nRim = 0, nOutside = 0;
+		int firstRim = -1, lastWithRay = -1;
+		for( unsigned int t = kRes / 2; t < kRes; t++ ) {
+			bool ok = false;
+			const Scalar tf = Scalar( t );
+			const Point2 px( tf, tf );
+			const Ray r = FisheyeRay( *cam, px, ok );
+			if( !ok ) { nOutside++; continue; }
+			lastWithRay = int( t );
+			if( r.hasDifferentials ) {
+				nInterior++;
+			} else {
+				nRim++;
+				if( firstRim < 0 ) firstRim = int( t );
+			}
+		}
+
+		std::cout << "    15c along the +x/+y diagonal: " << nInterior << " interior, "
+		          << nRim << " rim (first at pixel " << firstRim << "), "
+		          << nOutside << " outside; last pixel with a ray " << lastWithRay << std::endl;
+
+		CHECK( nInterior > 0, "15c: interior pixels carry differentials (" << nInterior << ")" );
+		CHECK( nRim > 0,
+			"15c: at least one pixel has a valid MAIN ray but no differentials -- the rim case exists and is "
+			"reachable at the shipped scale (" << nRim << ")" );
+		CHECK( nOutside > 0, "15c: and past the angular limit GenerateRay returns false outright (" << nOutside << ")" );
+
+		// The rim band is exactly the pixels whose main ray is the last
+		// one inside the disc: nothing with a ray follows a pixel
+		// without one along this monotone walk, so `firstRim` really is
+		// the boundary and not a hole in the middle of the frame.
+		CHECK( firstRim >= 0 && lastWithRay == firstRim,
+			"15c: the rim pixel is the LAST one with a ray -- the withheld differential is a boundary "
+			"effect, not a hole in the interior (first rim " << firstRim << ", last with ray " << lastWithRay << ")" );
+
+		// And the pixel just inside it does carry them, so the band is
+		// one pixel wide here rather than the whole frame.
+		{
+			bool okIn = false;
+			const Ray rin = FisheyeRay( *cam, Point2( Scalar( firstRim - 1 ), Scalar( firstRim - 1 ) ), okIn );
+			CHECK( okIn && rin.hasDifferentials,
+				"15c: the pixel one step inside the rim still carries differentials" );
+		}
+
+		cam->release();
+	}
+
+	// ---- 15d: the footprint on a face-on plane ---------------------
+	//
+	// Camera on +Z at distance d from the z = 0 plane, shooting the
+	// centre pixel down the optical axis.  The +x auxiliary leaves the
+	// SAME origin at angle theta = asin(pitch) off that axis, so it
+	// lands d*tan(theta) away on the plane -- and the same on y for a
+	// square frame, so ComputeFootprintVectors' mean of the two
+	// magnitudes is d*tan(asin(pitch)) exactly.  This is the end-to-end
+	// check: camera -> Object::IntersectRay -> txFootprint.worldWidth.
+	{
+		ClippedPlaneGeometry* g = BuildXYPlane( Scalar( 10 ) );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+
+		FisheyeCamera* cam = MakeFisheye( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), kFisheyeScale );
+		bool ok = false;
+		const Ray r = FisheyeRay( *cam, centrePixel, ok );
+		cam->release();
+
+		const RayIntersection ri = Cast( *o, r );
+		o->release();
+
+		CHECK( ok && ri.geometric.bHit, "15d: (control) the centre ray hits the face-on plane" );
+		CHECK( ri.geometric.txFootprint.widthValid,
+			"15d: a fisheye hit populates widthValid -- this is the whole change" );
+
+		const Scalar closed = d * std::tan( std::asin( pitch ) );
+		const Scalar w = ri.geometric.txFootprint.worldWidth;
+		const Scalar rel = ( closed > 0 ) ? std::fabs( w - closed ) / closed : Scalar( 1 );
+		const Scalar relNaive = std::fabs( d * pitch - closed ) / closed;
+
+		std::cout << "    15d worldWidth " << std::scientific << std::setprecision(12) << w
+		          << "  d*tan(asin(p)) " << closed
+		          << "  rel " << std::setprecision(3) << rel
+		          << "  (d*p would be off by rel " << relNaive << ")" << std::defaultfloat << std::endl;
+
+		CHECK( rel < Scalar( 1e-9 ),
+			"15d: worldWidth on a face-on plane at distance d is exactly d*tan(asin(scale/width)) ("
+			<< rel << ")" );
+	}
+
+	// ---- 15e: pixelAR is inherited, not re-derived ------------------
+	//
+	// With a non-square pixel the mapping picks up the m2 stretch AND a
+	// renormalisation that is no longer a no-op, so there is no tidy
+	// closed form -- but the finite-difference identity still holds
+	// exactly, because the auxiliaries re-enter the same
+	// ComputeWorldDirection the main ray used.  A hand-rolled angular
+	// pitch that forgot the stretch would pass 15a/15b/15d (all at
+	// pixelAR 1) and fail only here.
+	{
+		FisheyeCamera* cam = MakeFisheye( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+		                                  kFisheyeScale, Scalar( 2 ) );
+
+		bool ok0 = false, okX = false, okY = false;
+		const Ray r0 = FisheyeRay( *cam, offPixel, ok0 );
+		const Ray rX = FisheyeRay( *cam, Point2( offPixel.x + Scalar( 1 ), offPixel.y ), okX );
+		const Ray rY = FisheyeRay( *cam, Point2( offPixel.x, offPixel.y + Scalar( 1 ) ), okY );
+		cam->release();
+
+		CHECK( ok0 && okX && okY && r0.hasDifferentials,
+			"15e: (control) the pixelAR 2 off-axis rays exist and carry differentials" );
+
+		const Vector3 oracleRx( rX.Dir().x - r0.Dir().x, rX.Dir().y - r0.Dir().y, rX.Dir().z - r0.Dir().z );
+		const Vector3 oracleRy( rY.Dir().x - r0.Dir().x, rY.Dir().y - r0.Dir().y, rY.Dir().z - r0.Dir().z );
+		const Scalar errRx = MaxAbsDiff( r0.diffs.rxDir, oracleRx );
+		const Scalar errRy = MaxAbsDiff( r0.diffs.ryDir, oracleRy );
+
+		// x and y must not read the same at pixelAR 2 -- that is the
+		// stretch actually being present rather than silently dropped.
+		const Scalar mx = Vector3Ops::Magnitude( r0.diffs.rxDir );
+		const Scalar my = Vector3Ops::Magnitude( r0.diffs.ryDir );
+
+		std::cout << "    15e pixelAR 2: |rxDir| " << std::scientific << std::setprecision(6) << mx
+		          << "  |ryDir| " << my
+		          << "  |rxDir - oracle| " << std::setprecision(3) << errRx
+		          << "  |ryDir - oracle| " << errRy << std::defaultfloat << std::endl;
+
+		CHECK( errRx < Scalar( 1e-15 ) && errRy < Scalar( 1e-15 ),
+			"15e: under pixelAR 2 the differentials are still the exact finite difference ("
+			<< errRx << ", " << errRy << ")" );
+		CHECK( std::fabs( mx - my ) > Scalar( 1e-4 ),
+			"15e: (oracle) and the two axes differ, i.e. the pixelAR stretch is genuinely in the "
+			"differentials (" << mx << " vs " << my << ")" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 
 int main()
 {
@@ -2108,6 +2428,7 @@ int main()
 	Test12_NoChartNoJacobian();
 	Test13_ObjectSpaceWidth();
 	Test14_ThinLensAndOrthoDifferentials();
+	Test15_FisheyeDifferentials();
 
 	std::cout << std::endl;
 	std::cout << g_passes << " passed, " << g_failures << " failed." << std::endl;

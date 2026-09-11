@@ -1065,12 +1065,15 @@ Three things about it that are easy to get wrong:
 - **`grain_world` is the finest feature's size in WORLD units** — for the fbm
   above, roughly `1 / (drift_scale · lacunarity^(octaves-1))`. It is the one
   number to re-derive when the subject is rescaled.
-- **`fw` is `0.0` where no footprint is available** — secondary bounces, and a
-  `fisheye_camera` render — and `smoothstep(a, b, 0)` is `0`, so the fade
-  correctly *disengages* there rather than snapping to the mean.  (This used to
-  read "non-mesh geometry" as well: every geometry has published a primary-hit
-  footprint since 2026-09-06, and `thinlens_camera` / `orthographic_camera`
-  since 2026-09-10 —
+- **`fw` is `0.0` where no footprint is available** — secondary bounces, and the
+  rim band of a `fisheye_camera` render (the pixels whose +x/+y neighbour falls
+  outside the projection's 180° disc, where no honest differential exists) —
+  and `smoothstep(a, b, 0)` is `0`, so the fade correctly *disengages* there
+  rather than snapping to the mean.  (This list used to be much longer:
+  "non-mesh geometry" left it when every geometry started publishing a
+  primary-hit footprint on 2026-09-06, `thinlens_camera` /
+  `orthographic_camera` on 2026-09-10, and the fisheye's INTERIOR the same day
+  — every camera RISE ships now emits differentials —
   [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
   §12.)
 - **`fbm` already fades its own high octaves against `fw` internally.** The

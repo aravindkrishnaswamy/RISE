@@ -34463,7 +34463,13 @@ namespace RISE
 				  "volume the frame covers, and `fov` does not apply.",
 				  nullptr },
 				{ "fisheye_camera",
-				  "fisheye_camera -- an equidistant fisheye; `scale` is its one own parameter.",
+				  "fisheye_camera -- an ORTHOGRAPHIC fisheye (image radius = sin of the angle off "
+				  "axis), NOT the equidistant kind this line claimed until 2026-09-10. `scale` is "
+				  "its one own parameter and is an image-plane extent across the frame width in "
+				  "those sine units, NOT an angle. At pixelAR 1: `scale 2.0` inscribes the full "
+				  "180-degree circle (black corners, where the sample falls outside the disc and "
+				  "no ray is generated), `scale 1.0` gives a 60-degree-wide field with no "
+				  "clipping. A pixelAR other than 1 changes the realised field too.",
 				  nullptr },
 				{ "onb_pinhole_camera",
 				  "onb_pinhole_camera -- a pinhole given by two basis vectors (`va`, `vb`, "

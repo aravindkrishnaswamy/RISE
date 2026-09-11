@@ -431,10 +431,12 @@ only primary hits carry differentials at all
 so at its `ctx.fw` assignment), because `Ray::Set` clears
 `hasDifferentials` and no propagation helper exists for a scattering
 bounce. So a relief surface seen in a mirror, or through glass, or on a
-secondary bounce still gets `s = step` with no fade — and so does the fisheye camera,
-which never sets differentials.  (The thin-lens and orthographic cameras were
-on that list until 2026-09-10; both now populate differentials, so their
-primary hits fade like a pinhole's — see
+secondary bounce still gets `s = step` with no fade — and so does the rim band of a
+fisheye render, where the +x/+y neighbouring pixel falls outside the
+projection's 180° disc and the camera deliberately withholds a differential
+rather than fabricating one.  (The thin-lens, orthographic AND fisheye cameras
+were all on that list until 2026-09-10; every camera RISE ships now populates
+differentials, so their primary hits fade like a pinhole's — see
 [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
 §12.)
 

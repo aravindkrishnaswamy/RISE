@@ -1011,8 +1011,11 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// two-flag contract on TextureFootprint.  Costs nothing at all when
 		// ray.hasDifferentials is false, which is every shadow ray, every
 		// NEE ray, every photon, every ray after the first scattering
-		// bounce, and every ray from the thin-lens / orthographic / fisheye
-		// cameras.
+		// bounce, and (since 2026-09-10 the ONLY camera-side case left)
+		// a fisheye primary ray in the rim band, whose +x/+y neighbour
+		// falls outside the projection's 180-degree disc.  The thin-lens,
+		// orthographic and fisheye cameras emitted none at all before
+		// that date; every camera RISE ships emits them now.
 		if( ri.geometric.ray.hasDifferentials ) {
 			ComputeFootprintVectors( ri.geometric, ri.geometric.ray );
 			SolveFootprintUV( ri.geometric );

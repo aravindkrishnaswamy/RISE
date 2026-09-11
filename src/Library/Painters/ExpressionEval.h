@@ -38,9 +38,13 @@
 //                                 point sample, no filter info -- the
 //                                 honest answer on any surface that
 //                                 doesn't populate a footprint (secondary
-//                                 bounces; the fisheye camera, the one
-//                                 camera that still emits no differentials
-//                                 -- doc 88 S9).  fbm/turbulence/ridged rescale it
+//                                 bounces; the RIM BAND of a fisheye
+//                                 render, where the neighbouring pixel
+//                                 falls outside the 180-degree disc and
+//                                 the camera withholds the differential
+//                                 rather than fabricating one.  Every
+//                                 camera RISE ships emits differentials
+//                                 since 2026-09-10 -- doc 88 S9).  fbm/turbulence/ridged rescale it
 //                                 into their OWN domain automatically
 //                                 (see those builtins below), so a body
 //                                 that scales the position argument does

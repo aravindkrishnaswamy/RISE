@@ -33,7 +33,7 @@ Source files in [src/Library/Cameras/](../src/Library/Cameras/):
 | Pinhole (FOV)         | [PinholeCamera.h](../src/Library/Cameras/PinholeCamera.h) | `pinhole_camera`        | Plain perspective. Phase 1.5 added `iso` / `fstop` for EV. |
 | Pinhole (ONB)         | (same)                                   | `onb_pinhole_camera`    | Basis-built variant for explicit axes. |
 | Orthographic          | [OrthographicCamera.h](../src/Library/Cameras/OrthographicCamera.h) | `orthographic_camera`   | Parallel projection. |
-| Fisheye               | [FisheyeCamera.h](../src/Library/Cameras/FisheyeCamera.h) | `fisheye_camera`        | Equidistant projection (180° field). |
+| Fisheye               | [FisheyeCamera.h](../src/Library/Cameras/FisheyeCamera.h) | `fisheye_camera`        | **Orthographic** projection — image radius = `sin θ`, 180° field at `scale 2.0`. (This row said "equidistant" until 2026-09-10; `GenerateRay` has always built `(x, y, sqrt(1-x²-y²))`, which is `r = sin θ`, not `r = θ`.) `scale` is the image-plane extent across the frame width in those sine units, not an angle (at `pixelAR` 1: `2.0` = 180° across the width with clipped corners, `1.0` = 60° with none). Emits ray differentials since 2026-09-10, except in the rim band. |
 | Thin-lens             | [ThinLensCamera.h](../src/Library/Cameras/ThinLensCamera.h) | `thinlens_camera`       | Photographic quartet (sensor / focal / fstop / focus), polygonal aperture, anamorphic, tilt-shift, mm-input + `scene_options { scene_unit }`, ISO/EV. |
 | *(reserved)*          | —                                        | `realistic_camera`      | **Keyword reserved for Phase 4 (multi-element lens).** Currently unregistered — using it in a scene fails parse loudly. |
 

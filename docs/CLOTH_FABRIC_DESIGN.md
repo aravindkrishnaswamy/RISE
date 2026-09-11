@@ -1611,10 +1611,11 @@ scalar_painter
 As the footprint `fw` grows past the cell size the angle field fades to π/4 —
 the mean of a two-family weave — and the anisotropy fades with it, which is
 exactly right: a woven surface seen from far enough away *is* isotropic. Note
-`fw` is **0.0 where no footprint is available** (secondary bounces, and a
-`fisheye_camera` render — this used to also name "non-mesh geometry", true
-until the 2026-09-06 footprint arc, and the thin-lens / orthographic cameras,
-true until 2026-09-10), and `smoothstep(a, b, 0)` is 0, so the fade correctly
+`fw` is **0.0 where no footprint is available** (secondary bounces, and the rim
+band of a `fisheye_camera` render, where the neighbouring pixel falls outside
+the 180° disc — this used to also name "non-mesh geometry", true until the
+2026-09-06 footprint arc, and the thin-lens / orthographic cameras and the
+fisheye's whole frame, true until 2026-09-10), and `smoothstep(a, b, 0)` is 0, so the fade correctly
 disengages on those hits rather than snapping to the mean. This idiom should be in the skill
 text, because no author will derive it.
 
