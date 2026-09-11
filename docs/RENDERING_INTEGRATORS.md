@@ -472,6 +472,42 @@ Two practical considerations:
   the old reference could not host; every pre-existing topology agrees
   more tightly than before and no tolerance was loosened.
 
+- **Debt 28 (OPEN, recorded 2026-09-11) — BDPT/VCM blow-ups on three
+  shipped signal showcases, NOT signal-attributable.**  Found by the
+  showcase layer of `tests/SignalIntegratorConsistencyTest.cpp` (the
+  money test of [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+  §6.2) and reproduced through the CLI on master `185b0d5f` with the
+  scene's rasterizer chunk swapped, `oidn_denoise FALSE`, `pixel_filter
+  box`, EXR `Rec709RGB_Linear`, everything else as shipped (the BDPT/VCM
+  chunks do not accept `transparent_shadows`, so tidal's was dropped):
+
+  | scene | res / spp | PT mean R | BDPT / PT | VCM / PT |
+  |-------|-----------|-----------|-----------|----------|
+  | `Textures/tidal_stones` | 160×120 / 16 | 0.134 | **338×** | **1656×** |
+  | `Textures/tidal_stones` | 400×300 / 8 | 0.135 | **157×** | **1012×** |
+  | `Textures/tidal_stones` | 800×600 / 8 | 0.135 | **171×** | **433×** |
+  | `Textures/shelf_bunny` | 800×600 / 8 | 0.931 | 1.02× | **4558×** |
+  | `Combined/pavilion_colonnade` | 160×120 / 16 (in-process) | — | ≈1.0× | **≈750×** |
+  | `Textures/plank_closeup` | 640×480 / 48 | 0.271 | 1.03× | **0.55×** |
+
+  The E-vs-B control of that test (signals live vs. every signal call
+  replaced by its neutral constant) agrees to < 0.1 % under every
+  integrator on every showcase, so none of this is the neutral-signal
+  gap that document closes.  Not root-caused; step 0 of
+  [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md) has
+  NOT been run on these scenes.  Observations that narrow it: the VCM
+  ratio on tidal scales roughly with 1/pixel-count (1656× → 433× from
+  19 200 to 480 000 pixels), which points at a splat / merge-radius
+  normalisation term rather than at transport; shelf_bunny's BDPT tracks
+  PT while its VCM does not, so the two families do not share one cause;
+  the three blown-up scenes are omni-lit with SDF or mesh receivers and
+  no radiance map, while the env-lit plank shows only the known VCM env
+  bias class (0.55×).  The consistency test prints a labelled
+  `INTEGRATOR DISAGREEMENT` line and skips its ratio-of-ratios
+  assertion for any (showcase, integrator) whose mean is outside
+  [0.5×, 2×] of PT, counting the skips in its summary, so this debt
+  cannot hide inside that test's green.
+
 ## 8. Cross-references
 
 - Per-parameter reference for each rasterizer chunk (and the
