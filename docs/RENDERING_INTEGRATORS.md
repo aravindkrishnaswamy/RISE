@@ -491,14 +491,17 @@ Two practical considerations:
   | `Textures/plank_closeup` | 640×480 / 48 | 0.271 | 1.03× | **0.55×** |
 
   The E-vs-B control of that test (signals live vs. every signal call
-  replaced by its neutral constant) agrees to < 0.1 % under every
-  integrator on every showcase, so none of this is the neutral-signal
-  gap that document closes.  Not root-caused; step 0 of
+  replaced by its neutral constant) moves the whole-image mean by only
+  0.05 %–1.9 % under PT (plank ~0.3 %, tidal ~0.05 %, bunny ~1.8 %,
+  pavilion ~0.9 %) and by a similar 0.1 %–2 % under BDPT/VCM, while the
+  blow-ups are 2–3 orders of magnitude and identical for E and B — so
+  none of this is the neutral-signal gap that document closes.  Not root-caused; step 0 of
   [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md) has
   NOT been run on these scenes.  Observations that narrow it: the VCM
-  ratio on tidal scales roughly with 1/pixel-count (1656× → 433× from
-  19 200 to 480 000 pixels), which points at a splat / merge-radius
-  normalisation term rather than at transport; shelf_bunny's BDPT tracks
+  ratio on tidal DECREASES with resolution, sub-linearly in pixel count
+  (1656× → 1012× → 433× from 19 200 to 120 000 to 480 000 pixels; a
+  1/N law would give 265× and 66×), which still points at a pixel-count-
+  dependent normalisation (splat / merge radius) rather than at transport; shelf_bunny's BDPT tracks
   PT while its VCM does not, so the two families do not share one cause;
   the three blown-up scenes are omni-lit with SDF or mesh receivers and
   no radiance map, while the env-lit plank shows only the known VCM env

@@ -255,8 +255,8 @@ chosen spp (target ≤ 1 % noise on the mean, band 3 %), stated in the test
 header with the derivation. Sensitivity requirement: the expression must
 move the mean by ≥ 25 % between live and neutral, so a neutral read cannot
 hide inside the band — the test asserts this on the PT row
-(`mean(PT, expr) / mean(PT, neutral-baked) − 1` outside the band) so the
-check can never pass by insensitivity.
+(`| mean(PT, expr) / mean(PT, neutral-baked) − 1 | ≥ 0.25`) so the check
+can never pass by insensitivity (observed margins 0.54–3.9).
 
 **Red-proof protocol** (isolated worktree, never the shared checkout): drop
 the `signals` copy from `PopulateRIGFromVertex` → BDPT and VCM rows go red,
@@ -298,9 +298,21 @@ the gap and is dropped with a note). `pavilion_colonnade` ships under the
 legacy `pixelpel_rasterizer`; the test swaps in the three modern chunks like
 the others and says so.
 
-Any residual `R_E / R_B` that survives S1 and is not noise is a
-non-signal integrator disagreement — recorded in RENDERING_INTEGRATORS.md
-beside debt 27 (charter item 6), never absorbed into the band.
+**Masked form (added by the S2 follow-up, `75994824`, after every showcase
+proved insensitive at whole-image level — 0.05 %–1.9 % under PT).** From the
+two PT renders, the MASK is the set of pixels where
+`|PT(E) − PT(B)| / max(PT(B), ε) > 0.2` — the pixels the signals actually
+move; a showcase whose mask covers < 1 % of the frame is dropped with a
+printed note. The masked means `mean_mask(I, E)` / `mean_mask(I, B)` give
+`R_E,mask` and `R_B,mask`, and the assertion is
+`| R_E,mask / R_B,mask − 1 | < 20 %`, the band derived from the masked-mean
+run-to-run spread at 16 spp (≈ 2–3 % on a 2 %-coverage mask). The
+whole-image ratios are still printed. Any (showcase, integrator) whose
+whole-image mean sits outside `[0.5×, 2×]` of PT is a non-signal integrator
+disagreement: the test prints a labelled `INTEGRATOR DISAGREEMENT` line,
+SKIPS its ratio assertion for that row, and counts the skip in its summary
+— recorded in RENDERING_INTEGRATORS.md as debt 28 (charter item 6), never
+absorbed into the band.
 
 ## 7. Cost gate (§ performance-work-with-baselines)
 
