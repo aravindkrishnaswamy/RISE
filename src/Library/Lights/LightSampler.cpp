@@ -2969,7 +2969,11 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
 		lumri.vNormal = lumNormal;
-		// Luminary normal is geometric; mirror.
+		// `lumNormal` is `UniformRandomPoint`'s normal -- the INTERPOLATED
+		// VERTEX normal on a mesh luminary with per-vertex normals, the face
+		// normal otherwise (see the RGB twin above and
+		// `GeometricUtilities::PointOnTriangle`); mirror it so the record is
+		// self-consistent.
 		lumri.vGeomNormal = lumNormal;
 		lumri.ptCoord = lumCoord;
 		lumri.onb.CreateFromW( lumNormal );
