@@ -101,11 +101,12 @@
 //  .../scratchpad/s2_plank_seeded_b1000.txt through b6000.txt) were run
 //  at each of three K values in turn:
 //    K=6  (unchanged from the second fix round): BDPT masked ratio mean
-//         -0.0723, sample sd 0.0283, worst -0.1197.  4sigma bar: band
-//         (0.20) - |mean| = 0.1277 >= 4*sd = 0.1131 -- PASSES (margin
-//         1.13x).  2x-worst bar: band (0.20) < 2*|worst| = 0.2394 --
+//         -0.0723, sample sd 0.0283, worst -0.1197.  4sigma bar: |mean|
+//         + 4*sd = 0.1854 <= band (0.20) -- PASSES (margin 1.08x; every
+//         margin below is band / (|mean| + 4*sd) or band / (2*|worst|)).
+//         2x-worst bar: band (0.20) < 2*|worst| = 0.2394 --
 //         FAILS (margin 0.84x).  VCM: mean -0.0548, sd 0.0132, worst
-//         -0.0695 -- both bars pass comfortably (margins 2.75x / 1.44x).
+//         -0.0695 -- both bars pass comfortably (margins 1.86x / 1.44x).
 //         BDPT-only problem, matching the K-P1 finding's own observation
 //         that this metric is BDPT-only -- REJECTED (K=6 no longer
 //         clears both bars once genuinely independent samples are used).
