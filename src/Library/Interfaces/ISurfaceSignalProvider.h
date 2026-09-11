@@ -452,16 +452,30 @@ namespace RISE
 		//! refuses on: an UNBOUNDED or degenerate luminary (no finite
 		//! bounding-box diagonal to size its tolerances against); a
 		//! `SelfHitRootFloor` that is not finite, or is so wide the derived
-		//! standoff would exceed the luminary itself (a CSG composite can
-		//! reach this, an SDF cannot); and a SECOND SURFACE OF THE SAME
+		//! standoff would exceed the luminary itself (for a
+		//! UNIFORMLY-TRANSFORMED luminary a CSG composite can reach this
+		//! and an SDF cannot -- SDFGeometry caps its own local floor at
+		//! 0.5 * its local diagonal, but that cap is on the LOCAL floor;
+		//! a shrink-poisoned SDF part inside a NON-uniformly stretched
+		//! object divides by that object's direction stretch to reach
+		//! world units, so it can reach `standoff > diag` too); and a
+		//! SECOND SURFACE OF THE SAME
 		//! LUMINARY inside the standoff band along the sampled normal and
 		//! further than the acceptance tolerance from the sampled point --
-		//! a louvred or stacked single-object fixture.  An earlier version
-		//! of this list said "a concave or unbounded luminary", which was
-		//! the along-`vToLight` NEE probe's failure mode and is no longer
-		//! one: the normal-aligned probe is not aimed down the line of
-		//! sight and so cannot be intercepted by a distant lobe of the same
-		//! surface.
+		//! a louvred or stacked single-object fixture.  INSIDE the
+		//! tolerance that second surface is ACCEPTED instead, stamping
+		//! `pScene` with THAT NEIGHBOUR'S OWN live channel -- a silent,
+		//! bounded neighbour read (at most one standoff, <= 0.5 % of `D`,
+		//! away), not a neutral one -- and for every luminary whose
+		//! `SelfHitRootFloor` is <= 0.0089 * D (every analytic primitive;
+		//! every SDF at `epsFrac` <= 0.00446, which covers both the 5e-5
+		//! scene default and family E's 0.002) the beyond-tolerance refusal
+		//! is unreachable, so this mode is CSG-composite-only in practice.
+		//! An earlier version of this list said "a concave or unbounded
+		//! luminary", which was the along-`vToLight` NEE probe's failure
+		//! mode and is no longer one: the normal-aligned probe is not aimed
+		//! down the line of sight and so cannot be intercepted by a distant
+		//! lobe of the same surface.
 		//!
 		//! NOT in this list since 2026-09-11
 		//! (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md):
@@ -689,34 +703,35 @@ namespace RISE
 	//! unconditional (a pointer plus six scalars, cheaper to always write
 	//! than to gate).
 	//!
-	//! IT HAS TWO CONSUMERS.  It was DIAGNOSTIC-ONLY until 2026-09-11; the
-	//! second one is real work and outlives the first:
+	//! ITS ONE CONSUMER is REAL WORK, not a diagnostic (slice S3 of
+	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, added 2026-09-11):
+	//! together with `SurfaceCurvatureDemand::Any()`, tested through
+	//! `LightSampler::EmitterProbeWanted()`, it gates
+	//! `LightSampler::ProbeEmitterSurface`, the one extra object-level
+	//! closest-hit at each of the seven emitter-record sites (the two NEE
+	//! sites, `SampleLight`'s own record, and the five `ls.surface`
+	//! consumers -- the NM hero `Le`, its HWSS companion, the BDPT
+	//! `type == LIGHT` root vertex, and VCM's light-vertex NEE record,
+	//! besides `SampleLight`'s own) that recovers a sampled emission
+	//! point's shading payload.  With both counters at zero
+	//! `EmitterProbeWanted()` returns false and every one of those sites
+	//! returns immediately: the rendered output is unchanged, no ray is
+	//! cast and no bounding box is read.  (Not "byte-for-byte": the
+	//! emitter sites still fill `ptObjIntersec`, which is UNGATED by
+	//! design because `Po` is read by painters that register no signal
+	//! demand.)  This is a real, standing consumer, so **this counter is
+	//! NOT deleted with the warning below** (design §8's removal list
+	//! predates S3 and is wrong on that point).
 	//!
-	//!   1. REAL WORK (slice S3 of
-	//!      docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, added
-	//!      2026-09-11): together with `SurfaceCurvatureDemand::Any()` it
-	//!      gates `LightSampler::ProbeEmitterSurface`, the one extra
-	//!      object-level closest-hit per NEE sample / light-subpath root
-	//!      that recovers a sampled emission point's shading payload.  With
-	//!      both counters at zero the probe returns immediately: the
-	//!      rendered output is unchanged, no ray is cast and no bounding
-	//!      box is read.  (Not "byte-for-byte": the emitter sites still
-	//!      fill `ptObjIntersec`, which is UNGATED by design because `Po`
-	//!      is read by painters that register no signal demand.)  **This consumer means
-	//!      the counter can NOT be deleted with the warning below**
-	//!      (design §8's removal list says otherwise and predates S3).
-	//!   2. DIAGNOSTIC (design doc §14 item 11): the one-time
-	//!      `WarnIfNonPTRenderHasLiveSignalConsumer` notice at the start of
-	//!      a BDPT/VCM/MLT-family render, which answers "does any live
-	//!      compiled expression call one of these builtins anywhere in the
-	//!      process" without a scene-wide painter walk that does not exist.
-	//!
-	//! A false positive on either (a scene from a DIFFERENT job in the same
-	//! process still holding a signal-reading painter alive) costs one
-	//! spurious log line and, at most, one probe ray per light sample on a
-	//! scene that did not need it -- never a wrong render.  That is the
-	//! conservative direction for both consumers: the probe only ever makes
-	//! a record MORE faithful.
+	//! IT IS PROCESS-WIDE AND CONSERVATIVE, exactly like
+	//! `SurfaceCurvatureDemand`: a false positive (a scene from a
+	//! DIFFERENT job in the same process still holding a signal-reading
+	//! painter alive) costs one extra probe ray at each emitter-record
+	//! site it is asked at for a scene that did not need it -- NEVER a
+	//! WRONG record, since the probe only ever accepts a real intersection
+	//! or leaves the hand-built record exactly as it was.  The gate can
+	//! only make a record MORE faithful than the neutral default, never
+	//! less, so a false positive is a pure cost, not a correctness risk.
 	namespace SurfaceSignalDemand
 	{
 		//! The single counter.  A function-local static inside an inline
@@ -868,111 +883,6 @@ namespace RISE
 		};
 	}
 
-	//! Containment diagnostic for the geometry-derived shading signals'
-	//! BDPT/VCM/MLT gap (design doc §14 item 11), NARROWED TWICE by
-	//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md and now reporting NO
-	//! BIDIRECTIONAL-SPECIFIC GAP AT ALL:
-	//!
-	//!   * slice S1 (2026-09-11) put `derivatives`, `signals` and
-	//!     `txFootprint` on `BDPTVertex` and made
-	//!     `PathVertexEval::PopulateRIGFromVertex` replay them, so every
-	//!     surface-vertex evaluation downstream of it (forward re-pricing,
-	//!     connections, MIS reverse-pdf, guiding RIS, HWSS companions, VCM
-	//!     merges, MLT) reads the LIVE signals;
-	//!   * slice S3 (§5) closed the last one, the hand-built EMITTER
-	//!     record -- `LightSampler`'s two NEE records and its
-	//!     `SampleLight` emission record, the `type == LIGHT` root vertex
-	//!     `GenerateLightSubpathImpl` builds, and the NM hero / HWSS
-	//!     companion / VCM light-vertex rebuilds beside them.  Those are
-	//!     now stamped from a REAL probe intersection on the luminary
-	//!     (`LightSampler::ProbeEmitterSurface`), gated on this very pair
-	//!     of counters.
-	//!
-	//! What still reads neutral is INTEGRATOR-CONSISTENT -- PT reads it
-	//! neutral in exactly the same places, so it is not a "your render
-	//! disagrees with PT" hazard.  That claim is only true as of the
-	//! round-2 transport review of S3 (H2 P1-1), which UNIFIED the probe:
-	//! before it the two NEE sites fired along `vToLight` while the
-	//! light-subpath root fired along the sampled normal, the two refused
-	//! in different places, and PT and the bidirectional families could
-	//! therefore disagree on the same surface in the same frame
-	//! (measured: tests/SignalEmitterRecordTest family F, PT 23 % off its
-	//! baked control with BDPT and VCM inside 0.1 % of theirs).  There is
-	//! now ONE probe and one refusal predicate.
-	//!
-	//! The three things that still read neutral, identically under every
-	//! integrator: a BSSRDF entry vertex (design §10); an emitter whose
-	//! `SelfHitRootFloor` is non-finite or wider than the luminary itself,
-	//! or which is unbounded and so has no diagonal to size the probe
-	//! against; and an emitter with a SECOND SURFACE OF ITS OWN inside the
-	//! probe standoff along the sampled normal -- a louvred or stacked
-	//! single-object fixture.  See `LightSampler::ProbeEmitterSurface`.
-	//!
-	//! The warning below now says exactly that.  It is kept only so the
-	//! removal is one slice's reviewable change rather than a silent side
-	//! effect of S3; slice S4 deletes THE WARNING.
-	//!
-	//! `SurfaceSignalDemand` and `SurfaceCurvatureDemand` STAY.  An earlier
-	//! draft of this sentence said S4 deletes the counter "with it", which
-	//! contradicts those counters' own declarations above: since S3 they
-	//! GATE the emitter probe, which is real work and outlives the
-	//! diagnostic entirely.  Design §8's removal list -- written when the
-	//! warning was the counter's only consumer -- is wrong for the same
-	//! reason and needs the supervisor's ledger edit before S4.
-	//!
-	//! Call once from each BDPT/VCM/MLT-family rasterizer's own
-	//! pre-render hook (never per pixel or per sample) -- see
-	//! BDPTPelRasterizer::PreRenderSetup, BDPTSpectralRasterizer::
-	//! PreRenderSetup, VCMRasterizerBase::PreRenderSetup,
-	//! MLTRasterizer::RenderFrameOfMLT and MLTSpectralRasterizer's
-	//! frame entry for the five call sites.  Cheap:
-	//! two relaxed atomic loads.  `SurfaceCurvatureDemand` covers `curv`
-	//! alone; `SurfaceSignalDemand` is built from a compiled program's
-	//! `UsesSurfaceSignals()` (`!m_signalCalls.empty()`,
-	//! ExpressionPainter.h), which fires for ALL FIVE of the other
-	//! signals -- `occlusion`, `thickness`, `convexity`, and the two
-	//! cross-object ones, `proximity` and `interior` -- so the two
-	//! counters between them cover all SIX, not three: an expression
-	//! calling only `proximity()`, say, still trips `SurfaceSignalDemand`
-	//! and is caught by the warning below exactly as an `occlusion()`
-	//! caller is.  Gated so a scene that never mentions any of the six
-	//! costs nothing beyond the two loads.
-	//!
-	//! `pLog` may be null (defensive; every call site has a live log in
-	//! practice) -- a null log means "cannot report," not "nothing to
-	//! report," so the check is skipped silently rather than crashing.
-	inline void WarnIfNonPTRenderHasLiveSignalConsumer( ILog* pLog, const char* familyName )
-	{
-		if( !pLog || !familyName ) return;
-		if( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ) {
-			// NAMES ALL SIX signals, and states the post-S3 truth: there is
-			// no bidirectional-specific neutral read left.  A warning that
-			// does not name the signal an author is actually using, or that
-			// OVERSTATES the gap, reads as being about somebody else's
-			// problem -- the pre-S1 wording claimed the whole transport was
-			// neutral, and the pre-S3 wording still claimed the emitter
-			// record was, both of which stopped being true the moment the
-			// matching slice landed.
-			//
-			// SEVERITY DELIBERATELY UNCHANGED at eLog_Warning even though
-			// the text no longer reports a hazard: the level is part of
-			// this diagnostic's contract (and of its name), and slice S4
-			// deletes the whole thing, so dropping it to eLog_Info here
-			// would be a second behaviour change to review for two slices'
-			// worth of lifetime.  The text carries the truth instead.
-			pLog->PrintEx( eLog_Warning,
-				"%s:: curv/occlusion/thickness/convexity/proximity/interior are live at every "
-				"surface vertex (slice S1) AND at every emitter record reached by NEE or as the "
-				"light-subpath root (slice S3, one probe ray per light sample while this message "
-				"appears).  No BDPT/VCM/MLT-specific neutral read remains: PT, BDPT and VCM now "
-				"share ONE emitter probe and refuse in exactly the same places -- an unbounded "
-				"luminary, a self-hit floor wider than the luminary itself, or a second surface "
-				"of the same luminary inside the probe standoff (a louvred fixture) -- plus "
-				"BSSRDF entry vertices, which every integrator reads neutral.  See "
-				"docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md; slice S4 removes this notice.",
-				familyName );
-		}
-	}
 }
 
 #endif

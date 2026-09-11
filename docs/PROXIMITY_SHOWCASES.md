@@ -80,9 +80,9 @@ BDPT/VCM/MLT's own per-vertex rebuild carries the same `signals` channel
 forward too, so `proximity`/`interior` read live there as well — no
 bidirectional-specific neutral read remains for either signal.
 `WarnIfNonPTRenderHasLiveSignalConsumer`, the one-time warning the old text
-here alluded to, is called only by the BDPT/VCM/MLT rasterizers and is
-scheduled for removal now that it has nothing left to warn about. The
-painter stations below prove liveness anyway.
+here alluded to, was deleted in the `signals-bidir` arc's S4 slice
+(2026-09-11) now that it had nothing left to warn about. The painter
+stations below prove liveness anyway.
 
 ## 0. Shared gate protocol
 

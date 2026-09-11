@@ -328,13 +328,6 @@ namespace
 //////////////////////////////////////////////////////////////////////
 void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 {
-	// Phase-2 fix round containment diagnostic (design doc §14 item 11) --
-	// see WarnIfNonPTRenderHasLiveSignalConsumer's own doc comment
-	// (ISurfaceSignalProvider.h).  Ahead of the early-return below: the
-	// warning concerns the render about to start, independent of whether
-	// this particular call finds an integrator/store already set up.
-	WarnIfNonPTRenderHasLiveSignalConsumer( GlobalLog(), "VCM" );
-
 	if( !pIntegrator || !pLightVertexStore ) {
 		return;
 	}

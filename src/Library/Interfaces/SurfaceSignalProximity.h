@@ -91,10 +91,19 @@ namespace RISE
 		//            probe REFUSED.  Since the round-2 transport review of S3 that
 		//            means an UNBOUNDED luminary, a self-hit floor wider than the
 		//            luminary itself, or a second surface of the same luminary
-		//            inside the probe standoff -- NOT "a concave luminary", which
-		//            was the along-`vToLight` NEE probe's failure and went away
-		//            when the probe was unified on the normal-aligned one
-		//            (LightSampler::ProbeEmitterSurface).  Two record kinds LEFT
+		//            inside the standoff band AND FURTHER than the acceptance
+		//            tolerance from the sampled point -- NOT "a concave luminary",
+		//            which was the along-`vToLight` NEE probe's failure and went
+		//            away when the probe was unified on the normal-aligned one
+		//            (LightSampler::ProbeEmitterSurface).  A second surface INSIDE
+		//            that tolerance is not on this list at all: it is ACCEPTED,
+		//            stamping `pScene` with the neighbour's own live channel -- a
+		//            silent, bounded read (at most one standoff, <= 0.5 % of `D`,
+		//            away), not a neutral one -- and the beyond-tolerance refusal
+		//            is unreachable for any luminary whose self-hit floor is
+		//            <= 0.0089 * D (every analytic primitive; every SDF at
+		//            `epsFrac` <= 0.00446, covering both the 5e-5 default and
+		//            family E's 0.002).  Two record kinds LEFT
 		//            this list on 2026-09-11
 		//            (SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): a
 		//            BDPT / VCM / MLT rebuild, which forwards the stamp

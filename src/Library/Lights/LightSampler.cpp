@@ -684,7 +684,8 @@ bool LightSampler::ProbeEmitterSurface(
 	// (`NEARZERO * (1 + |o|_1)`).  `SDFGeometry`'s is
 	// `min( 2 * m_eps / shrink / cosI, 0.5 * diagonal )` with
 	// `m_eps = max( diagonal * m_epsFrac, 1e-6 )`: 4e-3 of the diagonal at
-	// `epsilon 0.002`, 1e-2 of it for a part authored `scale 0.1 1 1` at
+	// `epsilon 0.002`, 1e-3 of it -- exactly `kEmitterProbeStandoffFraction`
+	// itself, not "far above" it -- for a part authored `scale 0.1 1 1` at
 	// the DEFAULT epsilon, and up to 0.5 of it at the documented
 	// grazing/shrink worst case.  Below its own floor the SDF treats the
 	// probe origin as spawned ON the surface and marches it forward in
@@ -708,9 +709,15 @@ bool LightSampler::ProbeEmitterSurface(
 	// THE CUSHION IS NOT SLOP, and it is not the acceptance tolerance
 	// either.  The floor is a bound measured from the TRUE surface, and
 	// what the caller holds is a SAMPLED point that may not be on it --
-	// `UniformRandomPoint` Newton-projects, it does not solve exactly -- so
-	// `margin * floor` alone under-shoots on roughly half the samples, the
-	// half whose projection landed OUTSIDE.  The first implementation used
+	// `UniformRandomPoint` Newton-projects, it does not solve exactly.
+	// `SDFGeometry::March` steps off when `|Map(o)| <= surfBand`, and `Map`
+	// is positive OUTSIDE: with `o = ptOnLum + s * n` and the sample's true
+	// displacement a signed `delta` (positive = outside), `Map(o) = s +
+	// delta`, so `margin * floor` alone under-shoots on roughly half the
+	// samples -- the half whose projection landed INSIDE (`delta < 0`,
+	// clearance lowered to `s - |delta|`); a projection that landed OUTSIDE
+	// raises the clearance instead and is the safe half.  The first
+	// implementation used
 	// `kEmitterProbeAcceptFraction * diag` (1 % of the diagonal) for this,
 	// which both over-paid by 10x and made `kEmitterProbeStandoffFraction`
 	// unreachable.  `kEmitterProbeStandoffCushionFraction` is the measured
@@ -751,16 +758,23 @@ bool LightSampler::ProbeEmitterSurface(
 	// ray that has to cross the whole of it, the acceptance test could only
 	// ever see a far face, and "change nothing" is the honest answer.
 	//
-	// WHICH GEOMETRY CAN ACTUALLY REACH THIS.  Not an SDF, despite what an
-	// earlier draft of this comment said: with the cushion at 0.1 % of the
-	// diagonal, `1.01 * floor + 0.001 * diag > diag` needs
-	// `floor > 0.989 * diag`, and `SDFGeometry` caps its own floor at
-	// `0.5 * diagonal`.  A CSG LUMINARY CAN: `CSGObject::SelfHitRootFloor`
-	// returns the worst OPERAND's floor (converted by that operand's own
-	// direction stretch) with NO cap by the composite's bounding box, so an
-	// operand that is mostly clipped away -- a large SDF intersected down
-	// to a small solid -- contributes a floor measured against ITS OWN
-	// diagonal while `diag` here is the composite's.
+	// WHICH GEOMETRY CAN ACTUALLY REACH THIS, for a UNIFORMLY-TRANSFORMED
+	// luminary.  Not an SDF, despite what an earlier draft of this comment
+	// said: with the cushion at 0.1 % of the diagonal,
+	// `1.01 * floor + 0.001 * diag > diag` needs `floor > 0.989 * diag`,
+	// and `SDFGeometry` caps its own LOCAL floor at `0.5 * localDiagonal`
+	// -- which only bounds `floorWorld` the same way when `sStretch` is 1.
+	// A CSG LUMINARY CAN: `CSGObject::SelfHitRootFloor` returns the worst
+	// OPERAND's floor (converted by that operand's own direction stretch)
+	// with NO cap by the composite's bounding box, so an operand that is
+	// mostly clipped away -- a large SDF intersected down to a small solid
+	// -- contributes a floor measured against ITS OWN diagonal while `diag`
+	// here is the composite's.  A NON-UNIFORMLY SCALED SDF luminary reaches
+	// it too, by the same division: `floorWorld = floor_local / sStretch`
+	// above, and a shrink-poisoned part inside an object stretched thin
+	// along the probe direction can push `sStretch` small enough to send
+	// `floorWorld` past `diag` even though `floor_local` never left its own
+	// `0.5 * localDiagonal` cap.
 	if( !( standoff > 0 ) || standoff > diag ) {
 		return false;
 	}
@@ -1528,17 +1542,18 @@ bool LightSampler::SampleLight(
 
 		// THE SHADING PAYLOAD for this sampled point (slice S3 of
 		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).  Probed ONCE
-		// here and carried on the sample, because FOUR records are built
+		// here and carried on the sample, because FIVE records are built
 		// from this one point and every one of them must read the same
 		// channel: this `rig`, `GenerateLightSubpathImpl`'s NM hero `Le`
-		// rebuild, its HWSS companion-wavelength twin `rigW`, and
-		// `VCMIntegrator`'s light-vertex NEE record.  Probing per consumer
-		// would cost four rays and -- worse -- could disagree between the
-		// hero and its companion wavelengths, which is the spectral form of
-		// the very defect this slice closes.
+		// rebuild, its HWSS companion-wavelength twin `rigW`, the BDPT
+		// `type == LIGHT` root vertex, and `VCMIntegrator`'s light-vertex
+		// NEE record.  Probing per consumer would cost five rays and --
+		// worse -- could disagree between the hero and its companion
+		// wavelengths, which is the spectral form of the very defect this
+		// slice closes.
 		//
 		// The probe is NORMAL-ALIGNED: no single direction is "the"
-		// direction this record is viewed from (the four consumers each
+		// direction this record is viewed from (the five consumers each
 		// look from somewhere else), so it stands off along the sampled
 		// normal and fires back onto the point.  Since the round-2
 		// transport review the two NEE sites use this SAME entry point, so
@@ -1553,7 +1568,7 @@ bool LightSampler::SampleLight(
 
 		// `Po`, on the other hand, is NOT gated and costs no ray -- it is
 		// read by painters that register no signal demand.  Carried on the
-		// sample for the same four consumers, for the same reason.
+		// sample for the same five consumers, for the same reason.
 		sample.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, sample.position, sample.ptObjIntersec );
 

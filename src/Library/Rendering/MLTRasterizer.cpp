@@ -760,12 +760,6 @@ bool MLTRasterizer::RenderFrameOfMLT(
 {
 	pImageOut = 0;
 
-	// Phase-2 fix round containment diagnostic (design doc §14 item 11) --
-	// see WarnIfNonPTRenderHasLiveSignalConsumer's own doc comment
-	// (ISurfaceSignalProvider.h).  MLT drives BDPT's own machinery, so it
-	// inherits the same neutral-signal gap unchanged.
-	WarnIfNonPTRenderHasLiveSignalConsumer( GlobalLog(), "MLT" );
-
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Starting PSSMLT render (%ux%u)", width, height );
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap samples: %u, Chains: %u, Mutations/pixel: %u, Large step prob: %.2f",
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb );

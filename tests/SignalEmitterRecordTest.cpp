@@ -269,9 +269,11 @@
 //        refuse identically" means operationally.
 //        (With the intermediate `1.01 * floor` standoff, before the
 //        cushion was added, the BDPT and VCM rows sat at 37.4 / 35.1:
-//        the probe cleared the floor on roughly half the samples, the
-//        ones whose Newton projection happened to land inside the true
-//        surface.  That measurement is what sizes
+//        the probe cleared the floor only on roughly half the samples,
+//        the ones whose Newton projection happened to land OUTSIDE the
+//        true surface -- the half that landed INSIDE lowered the
+//        clearance below the floor and refused instead.  That
+//        measurement is what sizes
 //        `kEmitterProbeStandoffCushionFraction`, whose 0.001 * diag was
 //        then confirmed over five runs at worst 0.494 % on family E.)
 //
@@ -404,6 +406,25 @@ namespace RISE
 	bool RISE_CreateJobPriv( IJobPriv** ppi );
 }
 
+//! SEEDING (P2-6 of the S3 round-3 comment review).  This binary does not
+//! go through src/RISE/commandconsole.cpp's `main()` -- the only place in
+//! the tree that calls `srand( GetMilliseconds() )` -- so RISE renders
+//! here are NOT wall-clock seeded; what actually varies run to run is
+//! every render worker's `RandomNumberGenerator random;` default argument
+//! `seed = rand()` racing unsynchronized across `ThreadPool::ParallelFor`
+//! threads.  tests/SignalIntegratorConsistencyTest.cpp,
+//! tests/FabricRenderTest.cpp and tests/PrimitiveSelfHitTest.cpp hit the
+//! same fact and adopt the same fix, used here too: an optional seed base
+//! (`argv[1]`, default `kDefaultSeedBase`) with
+//! `std::srand( g_seedBase + g_renderIndex++ )` immediately before every
+//! `Rasterize()` call, so the default invocation is reproducible in
+//! intent and `./SignalEmitterRecordTest 2000` is an independent sample
+//! by construction rather than by hoping the worker-side race decorrelates
+//! it.
+static const unsigned int kDefaultSeedBase = 1000u;
+static unsigned int g_seedBase = kDefaultSeedBase;
+static unsigned int g_renderIndex = 0;
+
 static int passCount = 0;
 static int failCount = 0;
 
@@ -529,6 +550,11 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	// See the seeding comment at g_seedBase's declaration: this binary is
+	// not wall-clock seeded, so the starting `rand()` state for this
+	// render's worker threads is set explicitly here rather than left to
+	// the unsynchronized libc race.
+	std::srand( g_seedBase + g_renderIndex++ );
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -1309,13 +1335,26 @@ static const RowSpec kRowsFull[7] = {
 	{ eRK_BDPT_SPECTRAL, true, 96 }
 };
 
-int main()
+int main( int argc, char** argv )
 {
+	// See the seeding comment at g_seedBase's declaration.  argv[1], if
+	// given, is an alternate seed base -- the SignalIntegratorConsistencyTest
+	// / FabricRenderTest / PrimitiveSelfHitTest convention for taking a
+	// genuinely independent sample on demand (e.g.
+	// `./SignalEmitterRecordTest 2000`).
+	if( argc > 1 ) {
+		const long v = std::strtol( argv[1], nullptr, 10 );
+		if( v > 0 ) g_seedBase = (unsigned int)v;
+	}
+
 	std::cout << "SignalEmitterRecordTest -- emissive materials keyed on a geometry signal,"
 	          << std::endl
 	          << "reached ONLY through NEE / the light-subpath root"
 	          << std::endl
 	          << "(docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, slice S3)"
+	          << std::endl
+	          << "seed base = " << g_seedBase
+	          << "  (pass a different one as argv[1] for an independent sample)"
 	          << std::endl << std::endl;
 
 	// curv on a sphere = 2*sqrt(3) ~ 3.464, radius-independent, so

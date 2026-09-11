@@ -5460,6 +5460,7 @@ unsigned int GenerateLightSubpathImpl(
 						rigW.bHit = true;
 						rigW.ptIntersection = ls.position;
 						rigW.vNormal = ls.normal;
+						rigW.vGeomNormal = ls.normal;
 						OrthonormalBasis3D onbW;
 						onbW.CreateFromW( ls.normal );
 						rigW.onb = onbW;
@@ -5468,7 +5469,10 @@ unsigned int GenerateLightSubpathImpl(
 						// -- the spectral form of the defect slice S3
 						// closes -- so this record gets the SAME probed
 						// payload, and the same ungated `Po`, from the
-						// SAME `ls`.
+						// SAME `ls`.  `vGeomNormal` is set here too (an
+						// earlier draft left it default, unlike the hero
+						// `rig` above) -- `rig` and `rigW` are now built
+						// identically field-for-field.
 						LightSampler::ApplyEmitterSurface( rigW, ls.surface );
 						rigW.ptObjIntersec = ls.ptObjIntersec;
 						LeW = pEm->emittedRadianceNM(

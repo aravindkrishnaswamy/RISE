@@ -210,19 +210,17 @@ namespace RISE
 			//! (ExpressionEval.h).  Unlike m_curvatureDemand above, this does NOT
 			//! gate any per-hit work -- see SurfaceSignalDemand's own doc comment
 			//! (ISurfaceSignalProvider.h) for why the provider install stays
-			//! unconditional.  It has TWO jobs since 2026-09-11, and the first
-			//! is REAL WORK, not a diagnostic: with `SurfaceCurvatureDemand` it
-			//! gates `LightSampler::ProbeEmitterSurface`, the probe that makes a
+			//! unconditional.  Since 2026-09-11 this is REAL WORK, not a
+			//! diagnostic: with `SurfaceCurvatureDemand` it gates
+			//! `LightSampler::ProbeEmitterSurface`, the probe that makes a
 			//! sampled emission point's record carry live signals
 			//! (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5) -- so a
 			//! painter that registers here is what makes an emissive material
-			//! keyed on a signal read that signal under NEE.  Second, it lets a
-			//! BDPT/VCM/MLT rasterizer answer "is anyone using one of these
-			//! signals" at render start for the one-time containment notice --
-			//! counting the cross-object pair here is what makes that notice's
-			//! "all six" (curv/occlusion/thickness/convexity/proximity/interior,
-			//! WarnIfNonPTRenderHasLiveSignalConsumer) true for a painter that
-			//! calls only `proximity()` or only `interior()`.
+			//! keyed on a signal read that signal under NEE, and counting the
+			//! cross-object pair here is what opens that gate for a painter
+			//! that calls only `proximity()` or only `interior()`.  (Slice S4
+			//! deleted the one-time containment notice this counter used to
+			//! also feed; the probe gate is its sole consumer now.)
 			SurfaceSignalDemand::Registration m_signalDemand;
 
 			//! COST gate, not a diagnostic one -- see ProximityDemand's doc
@@ -320,20 +318,19 @@ namespace RISE
 			//! signal: `scalar_painter { expression "clamp(-curv,0,1)" }`
 			//! feeding a roughness slot.
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
-			//! See ExpressionPainter::m_signalDemand -- same RAII gate (NOT
-			//! diagnostic-only; it gates real work since S3) on the physical-scalar pipe, active for the same
-			//! five builtins (`occlusion()` / `thickness()` / `convexity()` /
-			//! `proximity()` / `interior()`, via `prog.UsesSurfaceSignals()`).  `scalar_painter
+			//! See ExpressionPainter::m_signalDemand -- same RAII gate (real
+			//! work since S3, not diagnostic-only) on the physical-scalar
+			//! pipe, active for the same five builtins (`occlusion()` /
+			//! `thickness()` / `convexity()` / `proximity()` / `interior()`,
+			//! via `prog.UsesSurfaceSignals()`).  `scalar_painter
 			//! { expression "occlusion(0.1)" }` feeding a dirt/wear slot is at
 			//! least as likely an authoring shape as the colour pipe's, so
-			//! both must register or the containment diagnostic would miss it
-			//! -- `proximity()` on this pipe is what a scalar wear/grime slot
-			//! (`scalar_painter { expression "1-proximity(0.002)" }`) uses in
-			//! practice, and is part of what makes the "all six" in
-			//! WarnIfNonPTRenderHasLiveSignalConsumer's notice true -- and,
-			//! since 2026-09-11, part of what opens the
-			//! `LightSampler::ProbeEmitterSurface` gate for a scalar emission
-			//! slot keyed on a cross-object signal.
+			//! both must register or the `LightSampler::ProbeEmitterSurface`
+			//! gate would miss it -- `proximity()` on this pipe is what a
+			//! scalar wear/grime slot (`scalar_painter
+			//! { expression "1-proximity(0.002)" }`) uses in practice, and
+			//! since 2026-09-11 this is part of what opens that probe gate
+			//! for a scalar emission slot keyed on a cross-object signal.
 			SurfaceSignalDemand::Registration m_signalDemand;
 			//! See ExpressionPainter::m_proximityDemand -- the same COST
 			//! gate on the physical-scalar pipe, and it covers `interior()`

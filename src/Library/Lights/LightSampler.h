@@ -171,8 +171,9 @@ namespace RISE
 		//! `min( 2 * m_eps / shrink / cosI, 0.5 * diagonal )` with
 		//! `m_eps = max( D * m_epsFrac, 1e-6 )`: 1e-4 * D at the 5e-5 scene
 		//! default with a uniform field, but 4e-3 * D at `epsilon 0.002`,
-		//! 1e-2 * D for a part authored `scale 0.1 1 1` (shrink 0.1) at the
-		//! default epsilon, and up to 0.5 * D at its documented
+		//! 1e-3 * D -- exactly this constant's own fraction, not "far
+		//! above" it -- for a part authored `scale 0.1 1 1` (shrink 0.1) at
+		//! the default epsilon, and up to 0.5 * D at its documented
 		//! grazing/shrink worst case.  Below those the geometry marches the
 		//! probe straight past the face it was aimed at and the probe
 		//! REFUSES.
@@ -181,14 +182,20 @@ namespace RISE
 		//! THE CUSHION ADDED ON TOP OF THE GEOMETRY'S OWN FLOOR, and the
 		//! reason it exists: the floor is a bound measured from the TRUE
 		//! surface, while what the caller holds is a SAMPLED point that may
-		//! sit slightly outside it.  `kEmitterProbeStandoffMargin * floor`
-		//! alone therefore under-shoots on roughly half the samples -- the
-		//! half whose projection landed outside -- and the probe refuses on
-		//! those (measured: SignalEmitterRecordTest's family E sat 37 % /
+		//! sit slightly to either side of it.  `SDFGeometry::March` steps
+		//! off when `|Map(o)| <= surfBand`, and `Map` is positive OUTSIDE:
+		//! with `o = ptOnLum + s * n` and the sample's true displacement a
+		//! signed `delta` (positive = outside), `Map(o) = s + delta`, so a
+		//! sample whose projection landed INSIDE (`delta < 0`) LOWERS the
+		//! clearance to `s - |delta|` and is the half `kEmitterProbeStandoffMargin
+		//! * floor` alone under-shoots on -- a sample that landed OUTSIDE
+		//! raises it instead and is the safe half -- and the probe refuses
+		//! on those (measured: SignalEmitterRecordTest's family E sat 37 % /
 		//! 35 % off its baked control on the BDPT and VCM rows at
 		//! `1.01 * floor` with no cushion at all).
 		//!
-		//! 0.1 % of D, MEASURED as the smallest that holds.  The first
+		//! 0.1 % of D -- the smaller of the two values TRIED (0 fails; see
+		//! the cushion-0 measurement above).  The first
 		//! implementation used `kEmitterProbeAcceptFraction * D` here -- 1 %
 		//! -- which is ten times larger than it needs to be and, being
 		//! unconditionally above `kEmitterProbeStandoffFraction * D`, made
@@ -229,8 +236,11 @@ namespace RISE
 		//! `IObject::UniformRandomPoint` returns a position, a normal and a UV
 		//! -- and nothing else.  Every emitter record built from one of those
 		//! samples (the two NEE sites in LightSampler.cpp, `SampleLight`'s
-		//! emission record, and the three records BDPT / VCM rebuild beside
-		//! it) therefore left `derivatives`, `signals` and `txFootprint`
+		//! own emission record, and the four records BDPT / VCM rebuild
+		//! beside it -- the NM hero `Le`, its HWSS companion, the BDPT
+		//! `type == LIGHT` root vertex, and VCM's light-vertex NEE record;
+		//! seven record sites in all) therefore left `derivatives`,
+		//! `signals` and `txFootprint`
 		//! DEFAULT, so an emissive material whose radiance keys on `curv`,
 		//! `occlusion(r)`, `proximity(r)` -- any of the six geometry signals --
 		//! read the documented neutral there while the SAME material read the
@@ -269,7 +279,7 @@ namespace RISE
 		//! painter elsewhere in the process happened to keep a signal demand
 		//! alive.  It is instead computed UNGATED and WITHOUT a ray at every
 		//! emitter-record site by `LightSampler::EmitterObjectPoint`, and
-		//! carried on `LightSample::ptObjIntersec` for the four consumers
+		//! carried on `LightSample::ptObjIntersec` for the five consumers
 		//! that rebuild their own record.
 		//!
 		//! `pmxWorldToObject` is likewise not carried: its only consumer is an
@@ -310,11 +320,13 @@ namespace RISE
 			const IRadianceMap*	pEnvLight;
 			/// The shading payload `SampleLight` recovered for `position` by
 			/// probing the luminary (see EmitterSurfacePayload above).  Rides
-			/// on the sample because FOUR consumers rebuild their own record
+			/// on the sample because FIVE consumers rebuild their own record
 			/// from this one point and must all see the same channel:
 			/// `SampleLight`'s own `Le` record, `GenerateLightSubpathImpl`'s
 			/// NM hero `Le` rebuild AND its HWSS companion-wavelength twin,
-			/// and `VCMIntegrator`'s light-vertex NEE record.  Apply it with
+			/// the BDPT `type == LIGHT` root vertex (a direct field copy,
+			/// not through `ApplyEmitterSurface`), and `VCMIntegrator`'s
+			/// light-vertex NEE record.  Apply it with
 			/// `LightSampler::ApplyEmitterSurface`.  `valid` false on every
 			/// delta light and every env sample (no surface exists) and
 			/// whenever the probe was gated off or refused.

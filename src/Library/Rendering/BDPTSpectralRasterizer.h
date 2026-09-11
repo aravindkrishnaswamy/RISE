@@ -50,10 +50,6 @@ namespace RISE
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 			{
 				PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
-				// Phase-2 fix round containment diagnostic (design doc
-				// §14 item 11) -- see WarnIfNonPTRenderHasLiveSignalConsumer's
-				// own doc comment (ISurfaceSignalProvider.h).
-				WarnIfNonPTRenderHasLiveSignalConsumer( GlobalLog(), "BDPT" );
 			}
 
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of

@@ -637,12 +637,6 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 {
 	pImageOut = 0;
 
-	// Phase-2 fix round containment diagnostic (design doc §14 item 11) --
-	// see WarnIfNonPTRenderHasLiveSignalConsumer's own doc comment
-	// (ISurfaceSignalProvider.h).  MLT drives BDPT's own machinery, so it
-	// inherits the same neutral-signal gap unchanged.
-	WarnIfNonPTRenderHasLiveSignalConsumer( GlobalLog(), "MLT" );
-
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Starting spectral PSSMLT render (%ux%u)", width, height );
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Lambda range: [%.1f, %.1f] nm, Spectral samples: %u, HWSS: %s",
 		lambda_begin, lambda_end, nSpectralSamples, bUseHWSS ? "yes" : "no" );
