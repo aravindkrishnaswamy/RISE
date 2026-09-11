@@ -308,11 +308,18 @@ printed note. The masked means `mean_mask(I, E)` / `mean_mask(I, B)` give
 `| R_E,mask / R_B,mask − 1 | < 20 %`, the band derived from the masked-mean
 run-to-run spread at 16 spp (≈ 2–3 % on a 2 %-coverage mask). The
 whole-image ratios are still printed. Any (showcase, integrator) whose
-whole-image mean sits outside `[0.5×, 2×]` of PT is a non-signal integrator
-disagreement: the test prints a labelled `INTEGRATOR DISAGREEMENT` line,
-SKIPS its ratio assertion for that row, and counts the skip in its summary
-— recorded in RENDERING_INTEGRATORS.md as debt 28 (charter item 6), never
-absorbed into the band.
+whole-image means for BOTH E and B sit outside `[0.5×, 2×]` of PT AND agree
+with each other (`| mean(I,E)/mean(I,B) − 1 | < 10 %`) is a non-signal
+integrator disagreement: the test prints a labelled `INTEGRATOR
+DISAGREEMENT` line with both ratios, SKIPS its ratio assertion for that
+row, and counts the skip in its summary — recorded in
+RENDERING_INTEGRATORS.md as debt 28 (charter item 6), never absorbed into
+the band. An ASYMMETRIC blow-up (only E or only B outside the window, or E
+and B disagreeing by more than 10 %) is exactly the signature of a
+signal-attributable regression and FAILS instead of skipping (S2 review
+round 1, finding F2). The convexity control constant is a 21×21
+camera-frustum quadrature of the per-hit value, cross-checked against 33×33
+to within 1 % (the per-hit "spin" bias converges from 21 on).
 
 ## 7. Cost gate (§ performance-work-with-baselines)
 
