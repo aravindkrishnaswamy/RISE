@@ -89,13 +89,16 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
 
+#include "../src/Library/Cameras/OrthographicCamera.h"
 #include "../src/Library/Cameras/PinholeCamera.h"
+#include "../src/Library/Cameras/ThinLensCamera.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/CircularDiskGeometry.h"
 #include "../src/Library/Geometry/ClippedPlaneGeometry.h"
@@ -1494,6 +1497,598 @@ static void Test13_ObjectSpaceWidth()
 }
 
 //////////////////////////////////////////////////////////////////////
+//  Test 14 -- the thin-lens and orthographic cameras carry
+//  differentials too (they used to emit none, so EVERY hit from a
+//  `thinlens_camera` scene reported widthValid false / fw == 0, which
+//  silently disabled mip LOD, the relief modifier's footprint-driven
+//  step and the fbm octave fade on the 20 `.RISEscene` files that name
+//  a `thinlens_camera` (and the 2 that name an `orthographic_camera`).
+//////////////////////////////////////////////////////////////////////
+
+//! The focal length, in MILLIMETRES, whose derived VERTICAL fov is
+//! exactly `kFovDeg` on a square frame at `pixelAR = 1`.
+//! `ThinLensCamera::Recompute` computes
+//!   effective_sensor_v = sensor / (width*pixelAR/height)
+//!   fov               = 2*atan(effective_sensor_v / (2*focal))
+//! so on a square frame effective_sensor_v == sensor and inverting for
+//! focal gives sensor / (2*tan(fov/2)).  Matching the fov is what lets
+//! test 14a compare the two cameras' differentials at all.
+static const Scalar kSensorMM = 36.0;
+static Scalar MatchedFocalMM()
+{
+	return kSensorMM / ( Scalar( 2 ) * std::tan( kFovDeg * kPi / Scalar( 180 ) * Scalar( 0.5 ) ) );
+}
+
+//! A square thin-lens camera whose vertical fov matches `MakeCamera`'s
+//! pinhole.  `fstop` sets the aperture (diameter = focal/fstop);
+//! `shiftXmm` / `shiftYmm` are the Phase-1.1 lens shift in mm.
+static ThinLensCamera* MakeThinLens(
+	const Point3& eye, const Point3& at, const Vector3& up,
+	const Scalar focusDistance, const Scalar fstop,
+	const Scalar shiftXmm = Scalar( 0 ), const Scalar shiftYmm = Scalar( 0 ) )
+{
+	return new ThinLensCamera(
+		eye, at, up,
+		kSensorMM, MatchedFocalMM(), fstop, focusDistance,
+		Scalar( 1 ),							// sceneUnitMeters (metres scene)
+		kRes, kRes,
+		Scalar( 1 ),							// pixelAR
+		Scalar( 1 ),							// exposure
+		Scalar( 0 ),							// scanningRate
+		Scalar( 0 ),							// pixelRate
+		Vector3( 0, 0, 0 ),						// orientation
+		Vector2( 0, 0 ),						// target_orientation
+		0,										// apertureBlades (disk)
+		Scalar( 0 ),							// apertureRotation
+		Scalar( 1 ),							// anamorphicSqueeze
+		Scalar( 0 ), Scalar( 0 ),				// tiltX, tiltY
+		shiftXmm, shiftYmm );
+}
+
+//! A square orthographic camera at `eye` looking at `at`, viewport
+//! scale `vp` on both axes.
+static OrthographicCamera* MakeOrtho( const Point3& eye, const Point3& at, const Vector3& up, const Scalar vp )
+{
+	return new OrthographicCamera(
+		eye, at, up,
+		kRes, kRes, Vector2( vp, vp ),
+		Scalar( 1 ), Scalar( 1 ), Scalar( 0 ), Scalar( 0 ),
+		Vector3( 0, 0, 0 ), Vector2( 0, 0 ) );
+}
+
+//! A ray through a chosen pixel, deterministic rng (the orthographic
+//! camera doesn't consume randoms, but GenerateRay still takes an
+//! rc).
+static Ray OrthoRay( const OrthographicCamera& cam, const Point2& pixel )
+{
+	RandomNumberGenerator rng( 13u );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+	Ray r;
+	cam.GenerateRay( rc, r, pixel );
+	return r;
+}
+
+//! `GeometricUtilities::PointOnDisk`'s Shirley concentric map sends
+//! (0.5, 0.5) to EXACTLY (0, 0) -- both of its intermediate
+//! coordinates are exactly 0 there and the function short-circuits --
+//! so `GenerateRayWithLensSample` with this sample is the aperture-0
+//! limit EXACTLY, with no 1/fstop epsilon anywhere.  That is what
+//! makes the 1e-12 comparison against the pinhole meaningful rather
+//! than a restatement of "fstop was large".
+static const Point2 kLensCentre( 0.5, 0.5 );
+
+//! A ray through a chosen pixel and a chosen point on the aperture.
+static Ray ThinLensRay( const ThinLensCamera& cam, const Point2& pixel, const Point2& lensSample )
+{
+	RandomNumberGenerator rng( 7u );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+	Ray r;
+	cam.GenerateRayWithLensSample( rc, r, pixel, lensSample );
+	return r;
+}
+
+static Scalar MaxAbsDiff( const Vector3& a, const Vector3& b )
+{
+	return std::max( std::max( std::fabs( a.x - b.x ), std::fabs( a.y - b.y ) ),
+	                 std::fabs( a.z - b.z ) );
+}
+
+static void Test14_ThinLensAndOrthoDifferentials()
+{
+	std::cout << "Test 14: thin-lens and orthographic cameras emit ray differentials" << std::endl;
+
+	const Point2 centrePixel( Scalar( kRes ) * Scalar( 0.5 ), Scalar( kRes ) * Scalar( 0.5 ) );
+	const Point2 offPixel( Scalar( kRes ) * Scalar( 0.31 ), Scalar( kRes ) * Scalar( 0.72 ) );
+	const Scalar d = 5.0;			// camera distance AND focus distance
+
+	// ---- 14a: at aperture 0 the thin lens reproduces the pinhole ----
+	//
+	// Both cameras sit at the same place with the same vertical fov and
+	// the same square film.  A lens of zero radius IS a pinhole, so the
+	// central direction and BOTH differential offsets must agree to
+	// round-off.  This is the test that catches a film-distance factor
+	// left in, an sx/sy sign slip, or a half-pixel-vs-full-pixel step.
+	{
+		PinholeCamera*  pin  = MakeCamera( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		ThinLensCamera* thin = MakeThinLens( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), d, Scalar( 2.8 ) );
+
+		for( int k = 0; k < 2; k++ ) {
+			const Point2 px = ( k == 0 ) ? centrePixel : offPixel;
+
+			RandomNumberGenerator rng( 3u );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			Ray rp;
+			pin->GenerateRay( rc, rp, px );
+
+			const Ray rt = ThinLensRay( *thin, px, kLensCentre );
+
+			const Scalar dOrigin = std::max( std::max(
+				std::fabs( rp.origin.x - rt.origin.x ), std::fabs( rp.origin.y - rt.origin.y ) ),
+				std::fabs( rp.origin.z - rt.origin.z ) );
+			const Scalar dDir = MaxAbsDiff( rp.Dir(), rt.Dir() );
+			const Scalar dRx  = MaxAbsDiff( rp.diffs.rxDir, rt.diffs.rxDir );
+			const Scalar dRy  = MaxAbsDiff( rp.diffs.ryDir, rt.diffs.ryDir );
+
+			std::cout << "    14a pixel " << ( k == 0 ? "centre" : "off-axis" )
+			          << "  |d origin| " << std::scientific << std::setprecision(3) << dOrigin
+			          << "  |d dir| " << dDir
+			          << "  |d rxDir| " << dRx << "  |d ryDir| " << dRy
+			          << std::defaultfloat << std::endl;
+
+			CHECK( dOrigin < Scalar( 1e-12 ),
+				"14a: the zero-aperture thin lens shares the pinhole's origin (" << dOrigin << ")" );
+			CHECK( dDir < Scalar( 1e-12 ),
+				"14a: the zero-aperture thin lens shares the pinhole's direction (" << dDir << ")" );
+			CHECK( dRx < Scalar( 1e-12 ),
+				"14a: rxDir matches PinholeCamera's at matched fov / film (" << dRx << ")" );
+			CHECK( dRy < Scalar( 1e-12 ),
+				"14a: ryDir matches PinholeCamera's at matched fov / film (" << dRy << ")" );
+			CHECK( rt.hasDifferentials, "14a: the thin-lens ray carries differentials at all" );
+		}
+
+		pin->release();
+		thin->release();
+	}
+
+	// ---- 14b / 14c: the closed form, at and beyond the focal plane --
+	//
+	// Face-on plane, chief ray (lens centre).  One pixel of film
+	// subtends exactly `2*tan(fov/2)/height` at unit image distance, so
+	// the auxiliary ray's displacement on a plane a distance D away,
+	// perpendicular to the axis, is exactly D * that -- EXACTLY, not to
+	// within the tan/angle approximation, because the pixel step is
+	// already a tangent.  At D == focusDistance this is the "the
+	// footprint at the plane of focus is the pinhole footprint"
+	// statement; at D == 2*focusDistance it doubles, which is the
+	// statement that the differential is the pinhole-at-this-lens-point
+	// and NOT something that collapses at the plane of focus.
+	{
+		ThinLensCamera* thin = MakeThinLens( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), d, Scalar( 2.8 ) );
+		const Ray ray = ThinLensRay( *thin, centrePixel, kLensCentre );
+		thin->release();
+
+		Scalar wAtFocus = 0, wBeyond = 0;
+		bool   vAtFocus = false, vBeyond = false;
+		for( int k = 0; k < 2; k++ ) {
+			// Disk in the z = 0 plane, moved to z = -(D - d) so the
+			// camera-to-plane distance along the axis is D.
+			const Scalar D = ( k == 0 ) ? d : ( Scalar( 2 ) * d );
+			CircularDiskGeometry* g = new CircularDiskGeometry( 50.0, 'z' );
+			Object* o = new Object( g );
+			g->release();
+			o->SetPosition( Point3( 0, 0, d - D ) );
+			o->FinalizeTransformations();
+			const RayIntersection ri = Cast( *o, ray );
+			CHECK( ri.geometric.bHit, "14b: (control) the chief ray hits the face-on plane" );
+			if( k == 0 ) { vAtFocus = ri.geometric.txFootprint.widthValid; wAtFocus = ri.geometric.txFootprint.worldWidth; }
+			else         { vBeyond  = ri.geometric.txFootprint.widthValid; wBeyond  = ri.geometric.txFootprint.worldWidth; }
+			o->release();
+		}
+
+		const Scalar closed = d * PixelAngle();		// 2*d*tan(fov/2)/height
+		std::cout << "    14b worldWidth@focus " << std::scientific << std::setprecision(9) << wAtFocus
+		          << "  closed form " << closed
+		          << "   14c ratio " << std::defaultfloat << std::setprecision(12)
+		          << ( wAtFocus > 0 ? wBeyond / wAtFocus : Scalar( 0 ) ) << std::endl;
+
+		CHECK( vAtFocus && vBeyond,
+			"14b: a thin-lens hit reports widthValid -- it reported FALSE on every thin-lens scene "
+			"before this change" );
+		CHECK( closed > 0 && std::fabs( wAtFocus - closed ) / closed < Scalar( 1e-9 ),
+			"14b: the footprint at the plane of focus is exactly 2*d*tan(fov/2)/height ("
+			<< std::setprecision(12) << wAtFocus << " vs " << closed << ")" );
+		const Scalar ratio = ( wAtFocus > 0 ) ? ( wBeyond / wAtFocus ) : Scalar( 0 );
+		CHECK( std::fabs( ratio - Scalar( 2 ) ) < Scalar( 1e-9 ),
+			"14c: at twice the focal distance the footprint doubles (" << std::setprecision(12)
+			<< ratio << ")" );
+
+		// 14b2 -- the same claim for an OFF-CENTRE lens sample, which is
+		// the one that is actually about a LENS rather than about a
+		// pinhole.  A film sample's conjugate point on the plane of focus
+		// does not depend on which point of the aperture the ray left
+		// from -- that is what "in focus" means -- so the main-and-
+		// auxiliary displacement there, and hence worldWidth, must be the
+		// SAME for every lens sample even though the direction offsets
+		// themselves are not.  A differential that re-derived its geometry
+		// from the axis, or that widened by the circle of confusion, would
+		// break here and nowhere else in this test.
+		ThinLensCamera* thin2 = MakeThinLens( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), d, Scalar( 1.4 ) );
+		const Point2 farLens( 0.97, 0.11 );		// well out toward the rim
+		const Ray rayCentre = ThinLensRay( *thin2, centrePixel, kLensCentre );
+		const Ray rayRim    = ThinLensRay( *thin2, centrePixel, farLens );
+		thin2->release();
+
+		const Scalar lensSeparation = std::sqrt(
+			( rayRim.origin.x - rayCentre.origin.x ) * ( rayRim.origin.x - rayCentre.origin.x ) +
+			( rayRim.origin.y - rayCentre.origin.y ) * ( rayRim.origin.y - rayCentre.origin.y ) +
+			( rayRim.origin.z - rayCentre.origin.z ) * ( rayRim.origin.z - rayCentre.origin.z ) );
+
+		Scalar wCentre = 0, wRim = 0;
+		for( int k = 0; k < 2; k++ ) {
+			CircularDiskGeometry* g = new CircularDiskGeometry( 50.0, 'z' );
+			Object* o = new Object( g );
+			g->release();
+			o->FinalizeTransformations();		// disk stays at z = 0, i.e. the plane of focus
+			const RayIntersection ri = Cast( *o, ( k == 0 ) ? rayCentre : rayRim );
+			CHECK( ri.geometric.bHit, "14b2: (control) both lens samples hit the plane of focus" );
+			if( k == 0 ) { wCentre = ri.geometric.txFootprint.worldWidth; }
+			else         { wRim    = ri.geometric.txFootprint.worldWidth; }
+			o->release();
+		}
+
+		std::cout << "    14b2 lens samples " << std::scientific << std::setprecision(3)
+		          << lensSeparation << " apart on the aperture; worldWidth "
+		          << std::setprecision(9) << wCentre << " vs " << wRim << std::defaultfloat << std::endl;
+
+		CHECK( lensSeparation > Scalar( 1e-4 ),
+			"14b2: (oracle) the two lens samples really are far apart on the aperture ("
+			<< lensSeparation << ") -- otherwise the next check is vacuous" );
+		CHECK( wCentre > 0 && std::fabs( wRim - wCentre ) / wCentre < Scalar( 1e-9 ),
+			"14b2: the footprint at the plane of focus is the SAME from any lens sample ("
+			<< std::setprecision(12) << wCentre << " vs " << wRim << ")" );
+	}
+
+	// ---- 14d: the differentials inherit the lens shift ---------------
+	//
+	// Oracle: two INDEPENDENTLY generated main rays, one pixel apart,
+	// through the SAME point on the lens.  Their direction difference is
+	// by definition what rxDir must hold -- and, unlike the shared code
+	// path, the oracle never looks at `diffs`.
+	//
+	// RED-PROOF (the reason this test is not a tautology): the same
+	// oracle evaluated on a camera with shift_x = shift_y = 0 gives a
+	// MATERIALLY different vector.  If the differentials had been
+	// re-derived from the unshifted image-plane geometry -- the obvious
+	// hand-rolled implementation -- they would match `unshifted` here
+	// and the first CHECK below would fail.  The separation printed is
+	// the margin by which the test discriminates.
+	{
+		const Scalar shiftMM = 8.0;
+		ThinLensCamera* shifted   = MakeThinLens( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+		                                          d, Scalar( 2.0 ), shiftMM, -Scalar( 5 ) );
+		ThinLensCamera* unshifted = MakeThinLens( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+		                                          d, Scalar( 2.0 ) );
+
+		// A genuinely off-centre point on the aperture, so the test also
+		// pins that the auxiliaries share the MAIN ray's lens sample
+		// rather than silently re-sampling the centre.
+		const Point2 lensSample( 0.83, 0.17 );
+
+		const Ray  r0 = ThinLensRay( *shifted, offPixel, lensSample );
+		const Ray  rX = ThinLensRay( *shifted, Point2( offPixel.x + Scalar( 1 ), offPixel.y ), lensSample );
+		const Ray  rY = ThinLensRay( *shifted, Point2( offPixel.x, offPixel.y + Scalar( 1 ) ), lensSample );
+
+		const Vector3 oracleRx = rX.Dir() - r0.Dir();
+		const Vector3 oracleRy = rY.Dir() - r0.Dir();
+
+		const Ray u0 = ThinLensRay( *unshifted, offPixel, lensSample );
+		const Ray uX = ThinLensRay( *unshifted, Point2( offPixel.x + Scalar( 1 ), offPixel.y ), lensSample );
+		const Vector3 unshiftedRx = uX.Dir() - u0.Dir();
+
+		const Scalar errRx = MaxAbsDiff( r0.diffs.rxDir, oracleRx );
+		const Scalar errRy = MaxAbsDiff( r0.diffs.ryDir, oracleRy );
+		const Scalar sep   = MaxAbsDiff( oracleRx, unshiftedRx );
+
+		// The lens sample is shared, so the auxiliary rays sit on the
+		// same point of the aperture: zero origin offsets, and the two
+		// oracle rays literally share r0's origin.
+		const Scalar originDrift = std::max( std::max(
+			std::fabs( rX.origin.x - r0.origin.x ), std::fabs( rX.origin.y - r0.origin.y ) ),
+			std::fabs( rX.origin.z - r0.origin.z ) );
+
+		std::cout << "    14d |rxDir - oracle| " << std::scientific << std::setprecision(3) << errRx
+		          << "  |ryDir - oracle| " << errRy
+		          << "  red-proof separation (shifted vs unshifted oracle) " << sep
+		          << std::defaultfloat << std::endl;
+
+		CHECK( errRx < Scalar( 1e-15 ) && errRy < Scalar( 1e-15 ),
+			"14d: rxDir / ryDir equal the difference of two independently generated main rays one "
+			"pixel apart through the same lens point (" << errRx << ", " << errRy << ")" );
+		CHECK( sep > Scalar( 1e-6 ),
+			"14d (red-proof): the shifted camera's one-pixel direction step differs materially from "
+			"the unshifted camera's -- so 14d's first check really does pin the shift ("
+			<< sep << ")" );
+		CHECK( originDrift < Scalar( 1e-15 ),
+			"14d: the auxiliary rays share the main ray's lens point, hence its origin ("
+			<< originDrift << ")" );
+		CHECK( MaxAbsDiff( r0.diffs.rxOrigin, Vector3( 0, 0, 0 ) ) == Scalar( 0 ) &&
+		       MaxAbsDiff( r0.diffs.ryOrigin, Vector3( 0, 0, 0 ) ) == Scalar( 0 ),
+			"14d: shared lens point => exactly zero origin offsets" );
+
+		shifted->release();
+		unshifted->release();
+	}
+
+	// ---- 14e: EVERY generated thin-lens ray carries differentials ----
+	//
+	// Both entry points, across the frame, with the real random aperture
+	// sampling and with polygonal blades + anamorphic squeeze engaged
+	// (the shaped-aperture path is a different branch of SampleAperture,
+	// and it must not be able to leave hasDifferentials false).
+	{
+		ThinLensCamera* thin = MakeThinLens( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), d, Scalar( 1.4 ) );
+		RandomNumberGenerator rng( 11u );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+
+		int nRays = 0, nWithDiffs = 0, nNonDegenerate = 0;
+		for( int j = 0; j < 5; j++ ) {
+			for( int i = 0; i < 5; i++ ) {
+				const Point2 px( Scalar( kRes ) * ( Scalar( i ) + Scalar( 0.5 ) ) / Scalar( 5 ),
+				                 Scalar( kRes ) * ( Scalar( j ) + Scalar( 0.5 ) ) / Scalar( 5 ) );
+				Ray a;  thin->GenerateRay( rc, a, px );
+				Ray b;  thin->GenerateRayWithLensSample( rc, b, px, Point2( 0.21, 0.64 ) );
+				nRays += 2;
+				nWithDiffs += ( a.hasDifferentials ? 1 : 0 ) + ( b.hasDifferentials ? 1 : 0 );
+				if( Vector3Ops::Magnitude( a.diffs.rxDir ) > Scalar( 0 ) &&
+				    Vector3Ops::Magnitude( a.diffs.ryDir ) > Scalar( 0 ) ) nNonDegenerate++;
+				if( Vector3Ops::Magnitude( b.diffs.rxDir ) > Scalar( 0 ) &&
+				    Vector3Ops::Magnitude( b.diffs.ryDir ) > Scalar( 0 ) ) nNonDegenerate++;
+			}
+		}
+		thin->release();
+
+		CHECK( nWithDiffs == nRays,
+			"14e: hasDifferentials is true on every generated thin-lens ray, both entry points ("
+			<< nWithDiffs << " / " << nRays << ")" );
+		CHECK( nNonDegenerate == nRays,
+			"14e: and the offsets are non-degenerate, not a zeroed struct ("
+			<< nNonDegenerate << " / " << nRays << ")" );
+	}
+
+	// ---- 14f: the orthographic camera ------------------------------
+	//
+	// Parallel projection: the one-pixel step is a pure ORIGIN offset of
+	// one viewport pitch and the direction offsets are exactly zero, so
+	// on a face-on plane the footprint is the pitch itself -- constant
+	// with distance, unlike the pinhole's d*theta.  The camera looks
+	// down -Z here: `OrthographicCamera::GenerateRay` now expresses its
+	// film offset in the camera's own basis (frame.GetBasis().u()/.v())
+	// rather than the world x/y axes, and -Z-with-+Y-up is the
+	// orientation in which the two coincide (see 14h), so this test
+	// measures the differentials and not the basis routing.  14g/14h/14i
+	// below cover the basis fix itself: a top-down camera, where world
+	// axes and the camera basis do NOT coincide, used to have its
+	// vertical film offset run along the VIEW direction instead of
+	// across the film plane (every pixel in a column sampled the same
+	// world point).
+	{
+		const Scalar vp = 4.0;		// viewport scale, both axes
+		const Scalar pitch = vp / Scalar( kRes );
+		OrthographicCamera* cam = new OrthographicCamera(
+			Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+			kRes, kRes, Vector2( vp, vp ),
+			Scalar( 1 ), Scalar( 1 ), Scalar( 0 ), Scalar( 0 ),
+			Vector3( 0, 0, 0 ), Vector2( 0, 0 ) );
+
+		RandomNumberGenerator rng( 5u );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		Ray ray;
+		cam->GenerateRay( rc, ray, centrePixel );
+		cam->release();
+
+		CHECK( ray.hasDifferentials, "14f: the orthographic ray carries differentials" );
+		CHECK( MaxAbsDiff( ray.diffs.rxDir, Vector3( 0, 0, 0 ) ) == Scalar( 0 ) &&
+		       MaxAbsDiff( ray.diffs.ryDir, Vector3( 0, 0, 0 ) ) == Scalar( 0 ),
+			"14f: a parallel projection's auxiliary rays share the main direction exactly" );
+
+		Scalar wNear = 0, wFar = 0;
+		for( int k = 0; k < 2; k++ ) {
+			const Scalar D = ( k == 0 ) ? d : ( Scalar( 3 ) * d );
+			CircularDiskGeometry* g = new CircularDiskGeometry( 50.0, 'z' );
+			Object* o = new Object( g );
+			g->release();
+			o->SetPosition( Point3( 0, 0, d - D ) );
+			o->FinalizeTransformations();
+			const RayIntersection ri = Cast( *o, ray );
+			CHECK( ri.geometric.bHit, "14f: (control) the orthographic ray hits the face-on plane" );
+			if( k == 0 ) { wNear = ri.geometric.txFootprint.worldWidth; }
+			else         { wFar  = ri.geometric.txFootprint.worldWidth; }
+			o->release();
+		}
+
+		std::cout << "    14f worldWidth " << std::scientific << std::setprecision(9) << wNear
+		          << "  viewport pitch " << pitch
+		          << "  at 3x distance " << wFar << std::defaultfloat << std::endl;
+
+		CHECK( std::fabs( wNear - pitch ) / pitch < Scalar( 1e-9 ),
+			"14f: the orthographic footprint is one viewport pitch (" << std::setprecision(12)
+			<< wNear << " vs " << pitch << ")" );
+		CHECK( std::fabs( wFar - wNear ) / pitch < Scalar( 1e-9 ),
+			"14f: and it does NOT change with distance, unlike the pinhole's d*theta ("
+			<< std::setprecision(12) << wFar << ")" );
+	}
+
+	// ---- 14g: a TOP-DOWN orthographic camera -- the film offset must
+	// live in the camera's OWN basis (U/V), never the world x/y axes -
+	//
+	// This is the `top_down` camera from
+	// scenes/Tests/Cameras/multiple_cameras.RISEscene, the scene that
+	// surfaced the bug: eye (0,10,0), lookat the origin, up (0,0,-1).
+	// Its view direction W is world -Y.  `OrthonormalBasis3D::
+	// CreateFromWV` is re-run HERE, independently of the camera and of
+	// the fix, as the oracle for U/V/W -- not copied from
+	// OrthographicCamera.cpp.
+	//
+	// Closed form: a one-pixel step in raster X must move the ray
+	// origin by exactly one viewport pitch, parallel to U; a one-pixel
+	// step in raster Y must move it by one pitch, parallel to V; and
+	// NEITHER may have a component along W.  That last clause is the
+	// bug itself: the pre-fix code added the vertical film offset
+	// directly to world Y, which for this orientation IS the view
+	// direction W, so every pixel in a raster column diffed by a
+	// vector parallel to W instead of across the film -- the whole
+	// image sampled one world line.
+	{
+		const Scalar vp = 4.0;
+		const Scalar pitch = vp / Scalar( kRes );
+
+		OrthonormalBasis3D onb;
+		onb.CreateFromWV(
+			Vector3Ops::Normalize( Vector3( 0, -10, 0 ) ),		// forward: lookat(0,0,0) - eye(0,10,0)
+			Vector3( 0, 0, -1 ) );								// up, as authored
+		const Vector3 U = onb.u();
+		const Vector3 V = onb.v();
+		const Vector3 W = onb.w();
+
+		CHECK( std::fabs( Vector3Ops::Dot( U, W ) ) < Scalar( 1e-15 ) &&
+		       std::fabs( Vector3Ops::Dot( V, W ) ) < Scalar( 1e-15 ) &&
+		       std::fabs( Vector3Ops::Dot( U, V ) ) < Scalar( 1e-15 ),
+			"14g: (oracle) U, V, W really are mutually orthogonal" );
+
+		OrthographicCamera* cam = MakeOrtho( Point3( 0, 10, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ), vp );
+		const Ray r0 = OrthoRay( *cam, centrePixel );
+		const Ray rX = OrthoRay( *cam, Point2( centrePixel.x + Scalar( 1 ), centrePixel.y ) );
+		const Ray rY = OrthoRay( *cam, Point2( centrePixel.x, centrePixel.y + Scalar( 1 ) ) );
+		cam->release();
+
+		const Vector3 stepX( rX.origin.x - r0.origin.x, rX.origin.y - r0.origin.y, rX.origin.z - r0.origin.z );
+		const Vector3 stepY( rY.origin.x - r0.origin.x, rY.origin.y - r0.origin.y, rY.origin.z - r0.origin.z );
+
+		// x = (width/2 - screenX)/width * vp decreases by pitch as
+		// screenX increases by one; y = (screenY - height/2)/height *
+		// vp increases by pitch as screenY increases by one.  The
+		// offset is x*U + y*V (OrthographicCamera.cpp), so:
+		const Vector3 expectedStepX = U * ( -pitch );
+		const Vector3 expectedStepY = V * pitch;
+
+		std::cout << "    14g stepX " << std::scientific << std::setprecision(6)
+		          << stepX.x << " " << stepX.y << " " << stepX.z
+		          << "  stepY " << stepY.x << " " << stepY.y << " " << stepY.z
+		          << std::defaultfloat << std::endl;
+
+		CHECK( MaxAbsDiff( stepX, expectedStepX ) < Scalar( 1e-12 ),
+			"14g: a one-pixel raster-X step moves the origin by exactly one pitch along U ("
+			<< MaxAbsDiff( stepX, expectedStepX ) << ")" );
+		CHECK( MaxAbsDiff( stepY, expectedStepY ) < Scalar( 1e-12 ),
+			"14g: a one-pixel raster-Y step moves the origin by exactly one pitch along V ("
+			<< MaxAbsDiff( stepY, expectedStepY ) << ")" );
+		CHECK( std::fabs( Vector3Ops::Dot( stepX, W ) ) < Scalar( 1e-12 ) &&
+		       std::fabs( Vector3Ops::Dot( stepY, W ) ) < Scalar( 1e-12 ),
+			"14g: neither step has a component along W (the view direction) -- the bug" );
+		CHECK( std::fabs( Vector3Ops::Magnitude( stepX ) - pitch ) < Scalar( 1e-12 ) &&
+		       std::fabs( Vector3Ops::Magnitude( stepY ) - pitch ) < Scalar( 1e-12 ),
+			"14g: both steps have magnitude exactly one viewport pitch" );
+
+		// Red-proof: the pre-fix (parent-commit) formula added the
+		// offset directly along the world x/y axes.  Reconstruct what
+		// IT would have produced for the same raster-Y step, using the
+		// same x/y fractions, and confirm it (a) disagrees materially
+		// with the fixed stepY and (b) is the one with the illegal
+		// component along W -- i.e. this test really does discriminate
+		// the bug rather than passing vacuously.
+		{
+			const Scalar y0 = ( centrePixel.y - Scalar( kRes ) / Scalar( 2 ) ) / Scalar( kRes ) * vp;
+			const Scalar y1 = ( ( centrePixel.y + Scalar( 1 ) ) - Scalar( kRes ) / Scalar( 2 ) ) / Scalar( kRes ) * vp;
+			const Vector3 oldOffset0( 0, y0, 0 );			// old code: Vector3(-x, y, 0), x unchanged here
+			const Vector3 oldOffset1( 0, y1, 0 );
+			const Vector3 oldStepY = oldOffset1 - oldOffset0;
+
+			std::cout << "    14g red-proof: pre-fix stepY " << std::scientific << std::setprecision(6)
+			          << oldStepY.x << " " << oldStepY.y << " " << oldStepY.z
+			          << "  |dot with W| " << std::fabs( Vector3Ops::Dot( oldStepY, W ) )
+			          << std::defaultfloat << std::endl;
+
+			CHECK( MaxAbsDiff( oldStepY, expectedStepY ) > Scalar( 1e-3 ),
+				"14g (red-proof): the pre-fix world-axis formula disagrees materially with the "
+				"fixed stepY (" << MaxAbsDiff( oldStepY, expectedStepY ) << ") -- otherwise this "
+				"test would pass even with the bug restored" );
+			CHECK( std::fabs( Vector3Ops::Dot( oldStepY, W ) ) > pitch * Scalar( 0.5 ),
+				"14g (red-proof): and it DOES have a large component along W, which is exactly the "
+				"bug (" << std::fabs( Vector3Ops::Dot( oldStepY, W ) ) << " vs pitch " << pitch << ")" );
+		}
+	}
+
+	// ---- 14h: -Z/+Y orientation is BIT-IDENTICAL to the pre-fix
+	// (parent-commit) world-axis formula ------------------------------
+	//
+	// Parent commit aaa27a93 computed the origin offset as the raw
+	// world vector Vector3(-x, y, 0) added to the frame origin.  For a
+	// camera looking down -Z with +Y up that is mathematically
+	// identical to the fixed `x*U + y*V` expression (U = -worldX,
+	// V = +worldY for that orientation, per OrthonormalBasis3D::
+	// CreateFromWV -- see the derivation comment in
+	// OrthographicCamera.cpp), so the fix must not move a single bit
+	// of output here.  The parent-commit formula is recomputed
+	// directly below as an independent oracle -- it does not call any
+	// camera code.
+	{
+		const Scalar vp = 4.0;
+		const Point3 eye( 0, 0, d );
+		OrthographicCamera* cam = MakeOrtho( eye, Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), vp );
+		const Ray r = OrthoRay( *cam, offPixel );
+		cam->release();
+
+		const Scalar x = ( Scalar( kRes ) / Scalar( 2 ) - offPixel.x ) / Scalar( kRes ) * vp;
+		const Scalar y = ( offPixel.y - Scalar( kRes ) / Scalar( 2 ) ) / Scalar( kRes ) * vp;
+		const Point3 parentOrigin( eye.x - x, eye.y + y, eye.z );
+
+		const Scalar dOrigin = std::max( std::max(
+			std::fabs( r.origin.x - parentOrigin.x ), std::fabs( r.origin.y - parentOrigin.y ) ),
+			std::fabs( r.origin.z - parentOrigin.z ) );
+
+		std::cout << "    14h |origin - parent-commit formula| " << std::scientific
+		          << std::setprecision(3) << dOrigin << std::defaultfloat << std::endl;
+
+		CHECK( dOrigin < Scalar( 1e-15 ),
+			"14h: -Z/+Y orientation is bit-identical to the pre-fix world-axis formula ("
+			<< dOrigin << ")" );
+	}
+
+	// ---- 14i: differentials equal the finite difference of two
+	// independently generated main rays, for the TOP-DOWN camera ------
+	//
+	// Same pattern as 14d (ThinLensCamera): two rays one pixel apart,
+	// generated through the public entry point only, oracle their
+	// origin difference against r0.diffs.{rx,ry}Origin.  This is the
+	// orientation where a hand-rolled "pixel pitch along world axes"
+	// differential (rather than one that re-enters the SAME basis-
+	// aware originOffset lambda the main ray used) would drift from
+	// the true finite difference.
+	{
+		const Scalar vp = 4.0;
+		OrthographicCamera* cam = MakeOrtho( Point3( 0, 10, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ), vp );
+
+		const Ray r0 = OrthoRay( *cam, offPixel );
+		const Ray rX = OrthoRay( *cam, Point2( offPixel.x + Scalar( 1 ), offPixel.y ) );
+		const Ray rY = OrthoRay( *cam, Point2( offPixel.x, offPixel.y + Scalar( 1 ) ) );
+		cam->release();
+
+		const Vector3 oracleRxOrigin( rX.origin.x - r0.origin.x, rX.origin.y - r0.origin.y, rX.origin.z - r0.origin.z );
+		const Vector3 oracleRyOrigin( rY.origin.x - r0.origin.x, rY.origin.y - r0.origin.y, rY.origin.z - r0.origin.z );
+
+		const Scalar errRx = MaxAbsDiff( r0.diffs.rxOrigin, oracleRxOrigin );
+		const Scalar errRy = MaxAbsDiff( r0.diffs.ryOrigin, oracleRyOrigin );
+
+		std::cout << "    14i |rxOrigin - oracle| " << std::scientific << std::setprecision(3) << errRx
+		          << "  |ryOrigin - oracle| " << errRy << std::defaultfloat << std::endl;
+
+		CHECK( errRx < Scalar( 1e-12 ) && errRy < Scalar( 1e-12 ),
+			"14i: rxOrigin/ryOrigin equal the difference of two independently generated main rays "
+			"one pixel apart, for the top-down camera (" << errRx << ", " << errRy << ")" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 
 int main()
 {
@@ -1512,6 +2107,7 @@ int main()
 	Test11_ChartOracle();
 	Test12_NoChartNoJacobian();
 	Test13_ObjectSpaceWidth();
+	Test14_ThinLensAndOrthoDifferentials();
 
 	std::cout << std::endl;
 	std::cout << g_passes << " passed, " << g_failures << " failed." << std::endl;

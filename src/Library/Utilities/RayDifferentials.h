@@ -33,8 +33,12 @@
 //      freshly-Set ray — every scattered ray, shadow ray, NEE ray
 //      and photon — is differential-free by construction, and the
 //      surfaces it hits report fw = 0 and point-sample.
-//    - Only PinholeCamera::GenerateRay ever SETS them.
-//      ThinLensCamera, OrthographicCamera and FisheyeCamera do not.
+//    - The cameras that SET them are PinholeCamera,
+//      ThinLensCamera and OrthographicCamera (the latter two since
+//      2026-09-10).  FisheyeCamera does not, and is the only
+//      remaining camera that does not -- its equal-area /
+//      equidistant mapping has no single linear pixel-to-direction
+//      Jacobian, so its differentials are their own piece of work.
 //    - The only two transfers in the renderer are straight-line,
 //      not scattering: RayCaster's x-ray continuation and
 //      CSGObject's reversed exit probe.
@@ -58,12 +62,21 @@ namespace RISE
 	//! auxiliary rays one screen-pixel to the +x and +y.
 	//!
 	//! For a pinhole camera, all primary rays share an origin, so
-	//! `rxOrigin` and `ryOrigin` are zero on freshly-spawned rays;
-	//! after a refractive bounce, origin offsets become non-zero.
-	//! For a thin-lens camera, primary rays already have non-zero
-	//! origin offsets (each pixel-neighbour samples a different
-	//! lens position) — that's a v1.1 enhancement; v1's pinhole
-	//! emits zero origin offsets.
+	//! `rxOrigin` and `ryOrigin` are zero on freshly-spawned rays.
+	//!
+	//! For a THIN-LENS camera they are zero as well, and that is a
+	//! deliberate choice rather than an omission: the +x / +y
+	//! auxiliary rays go through the SAME sampled lens point as the
+	//! main ray (PBRT-v4's `PerspectiveCamera::
+	//! GenerateRayDifferential` convention), so only the film sample
+	//! moves.  The differential then measures the pixel footprint of
+	//! the pinhole sitting at that lens point; defocus blur is
+	//! produced by integrating many lens samples per pixel, NOT by
+	//! inflating each sample's texture filter.
+	//!
+	//! For an ORTHOGRAPHIC camera it is the mirror image: the
+	//! direction offsets are exactly zero (parallel projection) and
+	//! the origin offsets carry the one-pixel viewport pitch.
 	struct RayDifferentials
 	{
 		Vector3 rxOrigin;

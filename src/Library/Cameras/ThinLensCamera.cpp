@@ -318,8 +318,8 @@ ThinLensCamera::ThinLensCamera(
   apertureBlades( apertureBlades_ ),
   apertureRotation( apertureRotation_ ),
   anamorphicSqueeze( anamorphicSqueeze_ ),
-  tiltX( tiltX_ ),
-  tiltY( tiltY_ ),
+  tiltX( ClampTilt( tiltX_ ) ),
+  tiltY( ClampTilt( tiltY_ ) ),
   shiftX( shiftX_ ),
   shiftY( shiftY_ ),
   fov( 0 ),
@@ -357,14 +357,9 @@ void ThinLensCamera::RegenerateData()
 	evCompensation_ = ComputeExposureCompensationEV( iso_, fstop, exposureTime, "ThinLensCamera" );
 }
 
-bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const
+Vector3 ThinLensCamera::ComputeWorldDirection(
+	const Point3& ptOnLens, const Scalar screenX, const Scalar screenY ) const
 {
-	const Point2 uv( rc.random.CanonicalRandom(), rc.random.CanonicalRandom() );
-	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, uv );
-
-	// Pre-divide aperture X by pixelAR — see header `pixelARInv` doc.
-	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
-
 	// Image-plane sample (with optional shift, Phase 1.1).  Sensor
 	// sits at z = -filmDistance in camera-local coords; sx/sy
 	// convert pixel coords to scene-units on the sensor.  Shift
@@ -377,8 +372,8 @@ bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2
 	//                 right", image content moves LEFT in frame.
 	//   shift_y > 0 → lens shifts UP (along +V)    → camera "looks
 	//                 up",    image content moves DOWN in frame.
-	const Scalar x_pix = ptOnScreen.x + dx;
-	const Scalar y_pix = ptOnScreen.y + dy;
+	const Scalar x_pix = screenX + dx;
+	const Scalar y_pix = screenY + dy;
 	const Scalar x_img = x_pix * sx - shiftX_sceneUnits;
 	const Scalar y_img = y_pix * sy - shiftY_sceneUnits;
 
@@ -392,9 +387,74 @@ bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2
 	const Scalar oneMinusT = kFocus / n_dot_p;
 	const Point3 focus( oneMinusT * x_img, oneMinusT * y_img, oneMinusT * (-filmDistance) );
 
-	r.Set(
-		Point3Ops::Transform(mxTrans,ptOnLens),
-		Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans, Vector3Ops::mkVector3(focus, ptOnLens))) );
+	return Vector3Ops::Normalize(
+		Vector3Ops::Transform( mxTrans, Vector3Ops::mkVector3( focus, ptOnLens ) ) );
+}
+
+void ThinLensCamera::EmitRayThroughLens(
+	Ray& r, const Point3& ptOnLens, const Point2& ptOnScreen ) const
+{
+	const Vector3 d = ComputeWorldDirection( ptOnLens, ptOnScreen.x, ptOnScreen.y );
+
+	r.Set( Point3Ops::Transform( mxTrans, ptOnLens ), d );
+
+	// Ray differentials, PBRT-v4 `PerspectiveCamera::
+	// GenerateRayDifferential` thin-lens convention: the +x / +y
+	// auxiliary rays leave the SAME point on the lens as the main
+	// ray and are refocused through the plane of focus in exactly
+	// the same way — only the film sample moves, by one FULL pixel
+	// (Igehy's convention; the per-sample jitter is spatial
+	// integration, not footprint shrinkage).  Re-entering
+	// ComputeWorldDirection rather than re-deriving the geometry is
+	// what makes the auxiliaries inherit the lens shift, the
+	// anamorphic squeeze, the focal-plane tilt and the blade shaping
+	// automatically — a hand-rolled offset would silently drift from
+	// the main ray the next time any of those grows a term.
+	//
+	// What the resulting footprint MEANS, since a thin lens has no
+	// single "pixel cone":
+	//   - At the plane of focus the main ray and its auxiliary land on
+	//     the film sample's conjugate points, which by the definition
+	//     of focus do not depend on which lens point they left from —
+	//     so the FOOTPRINT there is the pinhole footprint for the same
+	//     fov / film, for EVERY lens sample, and it is the true pixel
+	//     footprint.  (The direction offsets themselves do vary with
+	//     the lens point; only at the lens centre are they numerically
+	//     the pinhole's.)  TextureFootprintTest 14b pins the closed
+	//     form and 14b2 the lens-sample invariance.
+	//   - Away from it, the differential measures the pixel footprint
+	//     of the PINHOLE SITTING AT THIS LENS POINT.  That is the
+	//     standard choice (PBRT, Mitsuba): defocus blur is produced
+	//     by integrating many lens samples per pixel, NOT by
+	//     inflating each sample's texture filter.  Widening the
+	//     footprint by the circle of confusion instead would
+	//     double-count the blur and over-filter the texture.
+	//   - With aperture radius 0 every sample lands on ptOnLens
+	//     (0, 0, 0) and the result is identical to PinholeCamera's
+	//     differentials at matched fov / film (TextureFootprintTest
+	//     Test14a pins that at 1e-12).
+	//
+	// Origin offsets stay zero: the auxiliaries share the lens point
+	// with the main ray by construction.  Must follow `r.Set`, which
+	// clears hasDifferentials.
+	const Vector3 dAuxX = ComputeWorldDirection( ptOnLens, ptOnScreen.x + Scalar( 1 ), ptOnScreen.y );
+	const Vector3 dAuxY = ComputeWorldDirection( ptOnLens, ptOnScreen.x, ptOnScreen.y + Scalar( 1 ) );
+	r.diffs.rxOrigin = Vector3( 0, 0, 0 );
+	r.diffs.ryOrigin = Vector3( 0, 0, 0 );
+	r.diffs.rxDir = dAuxX - d;
+	r.diffs.ryDir = dAuxY - d;
+	r.hasDifferentials = true;
+}
+
+bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const
+{
+	const Point2 uv( rc.random.CanonicalRandom(), rc.random.CanonicalRandom() );
+	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, uv );
+
+	// Pre-divide aperture X by pixelAR — see header `pixelARInv` doc.
+	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
+
+	EmitRayThroughLens( r, ptOnLens, ptOnScreen );
 	return true;
 }
 
@@ -416,18 +476,7 @@ bool ThinLensCamera::GenerateRayWithLensSample(
 	// and GenerateRay above.
 	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
 
-	const Scalar x_pix = ptOnScreen.x + dx;
-	const Scalar y_pix = ptOnScreen.y + dy;
-	const Scalar x_img = x_pix * sx - shiftX_sceneUnits;   // see GenerateRay for sign convention
-	const Scalar y_img = y_pix * sy - shiftY_sceneUnits;
-
-	const Scalar n_dot_p   = nFocusX * x_img + nFocusY * y_img + nFocusZ * (-filmDistance);
-	const Scalar oneMinusT = kFocus / n_dot_p;
-	const Point3 focus( oneMinusT * x_img, oneMinusT * y_img, oneMinusT * (-filmDistance) );
-
-	r.Set(
-		Point3Ops::Transform(mxTrans,ptOnLens),
-		Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans, Vector3Ops::mkVector3(focus, ptOnLens))) );
+	EmitRayThroughLens( r, ptOnLens, ptOnScreen );
 	return true;
 }
 

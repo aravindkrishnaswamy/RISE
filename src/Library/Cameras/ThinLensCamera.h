@@ -118,6 +118,27 @@ namespace RISE
 
 			Matrix4	ComputeScaleFromAR( ) const;
 
+			//! The whole per-(film sample, lens point) direction
+			//! construction: image-plane sample with shift, chief-ray
+			//! intersection with the (possibly tilted) focal plane, and
+			//! the normalised WORLD direction from `ptOnLens` to that
+			//! focus point.  `screenX` / `screenY` are raster
+			//! coordinates, `ptOnLens` is the camera-local aperture
+			//! point (already pixelAR-compensated).
+			//!
+			//! Single source of truth for both `GenerateRay` /
+			//! `GenerateRayWithLensSample` and for the +x / +y
+			//! differential rays, so lens shift, anamorphic squeeze,
+			//! focal-plane tilt and aperture-blade shaping are
+			//! inherited by the differentials rather than re-derived.
+			Vector3 ComputeWorldDirection( const Point3& ptOnLens, const Scalar screenX, const Scalar screenY ) const;
+
+			//! Populate `r` (origin, direction AND ray differentials)
+			//! for one film sample through one aperture point.  Shared
+			//! tail of both public generators; see the implementation
+			//! for what the thin-lens differential measures.
+			void EmitRayThroughLens( Ray& r, const Point3& ptOnLens, const Point2& ptOnScreen ) const;
+
 			//! Recomputes camera parameters from class values
 			void Recompute( const unsigned int width, const unsigned int height ) override;
 
@@ -193,8 +214,19 @@ namespace RISE
 				// caller.
 				if( v > 0 ) sceneUnitMeters = v;
 			}
-			inline void SetTiltX( Scalar v )                   { tiltX = v; }
-			inline void SetTiltY( Scalar v )                   { tiltY = v; }
+			//! The parser refuses |tilt| >= 80 degrees (see the
+			//! thinlens_camera descriptor); the editor property path and
+			//! the Blender bridge reach these setters and the constructor
+			//! directly, so the same bound is enforced here.  Past it the
+			//! focal plane's vanishing line crosses the frame and
+			//! ComputeWorldDirection's n_dot_p changes sign mid-image.
+			static Scalar ClampTilt( const Scalar v )
+			{
+				const Scalar kMaxTiltRad = Scalar( 1.396 );	// 80 degrees, matches the parser
+				return v > kMaxTiltRad ? kMaxTiltRad : ( v < -kMaxTiltRad ? -kMaxTiltRad : v );
+			}
+			inline void SetTiltX( Scalar v )                   { tiltX = ClampTilt( v ); }
+			inline void SetTiltY( Scalar v )                   { tiltY = ClampTilt( v ); }
 			inline void SetShiftX( Scalar v )                  { shiftX = v; }
 			inline void SetShiftY( Scalar v )                  { shiftY = v; }
 			inline void SetApertureBlades( unsigned int v )    { apertureBlades = v; }

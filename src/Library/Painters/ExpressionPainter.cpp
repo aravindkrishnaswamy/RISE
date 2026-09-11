@@ -114,9 +114,12 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	// this comment's former "triangle-mesh geometry, the only geometry that
 	// currently populates txFootprint" claim).  Stays 0 where there is
 	// genuinely no filter information: secondary/diffuse bounces spawn a
-	// fresh Ray with hasDifferentials=false, and the thin-lens /
-	// orthographic / fisheye cameras never set differentials at all -- that
-	// is the honest "point sample, no filter info" answer, not a bug.
+	// fresh Ray with hasDifferentials=false, and the FISHEYE camera never
+	// sets differentials at all -- that is the honest "point sample, no
+	// filter info" answer, not a bug.  (The thin-lens and orthographic
+	// cameras used to be on that list; since 2026-09-10 both populate
+	// differentials -- see ThinLensCamera::EmitRayThroughLens and
+	// OrthographicCamera::GenerateRay.)
 	ctx.fw = ri.txFootprint.widthValid ? ri.txFootprint.worldWidth : Scalar(0);
 	// 2026-09-06: the SAME footprint in the frame `Po` is written in, so an
 	// object-space noise domain (`fbm(Po*62, ...)`) can be filtered too.
@@ -316,9 +319,12 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	// this comment's former "triangle-mesh geometry, the only geometry that
 	// currently populates txFootprint" claim).  Stays 0 where there is
 	// genuinely no filter information: secondary/diffuse bounces spawn a
-	// fresh Ray with hasDifferentials=false, and the thin-lens /
-	// orthographic / fisheye cameras never set differentials at all -- that
-	// is the honest "point sample, no filter info" answer, not a bug.
+	// fresh Ray with hasDifferentials=false, and the FISHEYE camera never
+	// sets differentials at all -- that is the honest "point sample, no
+	// filter info" answer, not a bug.  (The thin-lens and orthographic
+	// cameras used to be on that list; since 2026-09-10 both populate
+	// differentials -- see ThinLensCamera::EmitRayThroughLens and
+	// OrthographicCamera::GenerateRay.)
 	ctx.fw = ri.txFootprint.widthValid ? ri.txFootprint.worldWidth : Scalar(0);
 	// 2026-09-06: the SAME footprint in the frame `Po` is written in, so an
 	// object-space noise domain (`fbm(Po*62, ...)`) can be filtered too.

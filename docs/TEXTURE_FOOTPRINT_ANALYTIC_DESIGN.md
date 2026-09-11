@@ -44,7 +44,7 @@ on the mesh path too.
 | # | Fact | Symbol |
 |---|---|---|
 | F1 | Differentials live on the ray: `hasDifferentials`, `diffs.{rxOrigin,ryOrigin,rxDir,ryDir}`, offsets from the central origin/direction | `Ray::hasDifferentials`, `Ray::diffs`, `RayDifferentials` |
-| F2 | **Only** `PinholeCamera::GenerateRay` sets them. `ThinLensCamera`, `OrthographicCamera`, `FisheyeCamera` do not — no `diffs` reference in any of those files | `PinholeCamera::GenerateRay` |
+| F2 | **Superseded 2026-09-10 — see §12.** As designed: **only** `PinholeCamera::GenerateRay` sets them; `ThinLensCamera`, `OrthographicCamera`, `FisheyeCamera` do not — no `diffs` reference in any of those files. As of §12, `ThinLensCamera` and `OrthographicCamera` do; `FisheyeCamera` still does not | `PinholeCamera::GenerateRay`, `ThinLensCamera::EmitRayThroughLens`, `OrthographicCamera::GenerateRay` |
 | F3 | `Ray::Set` / `Ray::SetDir` clear `hasDifferentials` — any freshly-`Set` ray is differential-free by construction | `Ray::Set`, `Ray::SetDir` |
 | F4 | **Differentials are never propagated through a scattering bounce.** `RayDifferentials.h`'s own header advertises "`PropagateThroughReflection` / `PropagateThroughRefraction` apply Igehy's closed-form formulas" — **those functions do not exist anywhere in `src/`.** The struct has four `Vector3` members and a default ctor, nothing else | `RayDifferentials` (header comment vs. body) |
 | F5 | The only two transfers are straight-line: `RayCaster`'s x-ray continuation (`rxOrigin += t·rxDir`) and `CSGObject`'s reversed exit probe (same transfer, then `rxDir` negated) | `RayCaster::ResolveXrayView_`, `CSGObject::AdoptCsgExitFacePayloadViaProbe` |
@@ -344,7 +344,8 @@ two 3-vector scaled adds, and (for the fold) two matrix-vector transforms
 plus two `sqrt`. Nothing on a ray with `hasDifferentials == false`, which by
 F2/F3/F4 is **every shadow ray, every NEE ray, every photon, every ray after
 the first scattering bounce, and every ray from the thin-lens, orthographic
-and fisheye cameras**. In practice this is a primary-visibility-only cost,
+and fisheye cameras** (the thin-lens and orthographic halves of that list
+closed 2026-09-10, §12; only the fisheye remains). In practice this is a primary-visibility-only cost,
 and it is strictly cheaper than today on meshes (F9: once per ray, not once
 per accepted candidate).
 
@@ -1167,3 +1168,160 @@ transform (`fbm(Po*k)` on a `scale s` object fades at the same octave as
 non-uniform-scale side, and `fwo == 0` short-circuit. Tests 63/67's `==`
 goldens are extended rather than rewritten — a `P`-only body must still
 evaluate bit-for-bit as it did.
+
+
+## 12. Addendum (2026-09-10): the thin-lens and orthographic cameras carry differentials
+
+**What F2 cost.** `hasDifferentials` false means `ComputeFootprintVectors`
+early-outs, which means `widthValid` false, `worldWidth` 0, `objectWidth` 0 —
+so on **every** scene shot through a `thinlens_camera` (20 `.RISEscene` files
+in the tree name one, e.g. `scenes/FeatureBased/Hair/variety_gallery.RISEscene`
+with its `fbm(Po*62)`; 2 more use `orthographic_camera`)
+mip LOD fell back to the base level, `ReliefModifier`'s footprint-driven step
+fell back to the fixed `step`, and `Builder::NoiseFwScale`'s octave fade was
+inert at `fw == 0`. None of that announced itself; it looked like "this scene
+just aliases".
+
+### 12.1 The thin-lens construction
+
+`ThinLensCamera::GenerateRay` and `GenerateRayWithLensSample` now share
+`EmitRayThroughLens`, and the per-(film sample, lens point) geometry is
+`ComputeWorldDirection` — image-plane sample with shift, chief-ray
+intersection with the possibly-tilted focal plane, normalise. The +x / +y
+auxiliary rays call **that same function** with the pixel offset by one full
+pixel (Igehy's convention, matching `PinholeCamera`) and the **same**
+`ptOnLens`. This is PBRT-v4's `PerspectiveCamera::GenerateRayDifferential`
+thin-lens rule. Re-entering the shared construction, rather than re-deriving
+an offset, is what makes the auxiliaries inherit the lens shift, the
+anamorphic squeeze, the focal-plane tilt and the aperture-blade shaping
+automatically.
+
+What the resulting footprint *means*, since a thin lens has no single pixel
+cone:
+
+* **At the plane of focus** the main ray and its auxiliary land on the film
+  sample's conjugate points, which by the definition of focus do not depend on
+  which lens point they left from — so the FOOTPRINT there is the pinhole
+  footprint for the same fov / film, *for every lens sample*, and it is the
+  true pixel footprint. (The direction offsets themselves do vary with the
+  lens point; only at the lens centre are they numerically the pinhole's.)
+* **Away from it** the differential measures the pixel footprint of the
+  *pinhole located at that lens point*. That is the standard choice: defocus
+  blur is produced by integrating many lens samples per pixel, not by
+  inflating each sample's texture filter. Widening the footprint by the
+  circle of confusion instead would double-count the blur and over-filter.
+* **At aperture radius 0** the result is identical to `PinholeCamera`'s
+  differentials at matched fov / film — pinned at 1e-12.
+
+Origin offsets stay exactly zero (shared lens point). Both writes follow
+`r.Set`, which clears `hasDifferentials`.
+
+### 12.2 Orthographic
+
+Parallel projection: the one-pixel step is a pure **origin** offset of one
+viewport pitch, direction offsets exactly zero. The footprint on a face-on
+plane is then the pitch itself, constant with distance — the correct answer
+for a parallel projection, and unlike the pinhole's `d·theta`. The offsets are
+computed by re-entering the camera's own film-offset expression at pixel + 1
+rather than by a separately-derived pitch, so the auxiliary is by construction
+the ray the camera would actually generate for the neighbouring pixel.
+
+**2026-09-10 follow-up: the world-axis mis-orientation noted above is now
+fixed.** `OrthographicCamera::GenerateRay` used to add the film offset along
+the **world** x/y axes (`Vector3(-x, y, 0)`), so a camera whose basis doesn't
+happen to coincide with world X/Y — e.g. `scenes/Tests/Cameras/
+multiple_cameras.RISEscene`'s `top_down` camera (eye `(0,10,0)`, up
+`(0,0,-1)`) — had its *vertical* film offset run along the world Y axis,
+which for that camera IS the view direction: every pixel in a raster column
+sampled the same world point, and the rendered image was a single sheared
+line of the scene rather than a plan view. The offset is now expressed in the
+camera's own basis, `frame.GetBasis().u()` / `.v()`, the same routing
+`PinholeCamera`/`ThinLensCamera` get by pushing the screen point through
+`mxTrans`. Because the auxiliaries re-enter the same `originOffset`
+expression the main ray used, the differential fix is automatic — no
+separate change was needed there. `TextureFootprintTest` 14f still uses a
+`-Z`-looking, `+Y`-up camera (the orientation in which the camera basis and
+world X/Y axes coincide, so `x*U + y*V` is bit-identical to the old
+`Vector3(-x, y, 0)` there — see 14h); 14g/14h/14i cover the fix itself (§12.4).
+
+### 12.3 Fisheye — out of scope
+
+`FisheyeCamera` still emits none. Its equal-area / equidistant mapping has no
+single linear pixel-to-direction Jacobian the way a perspective projection
+does; a correct differential there is its own piece of work (and the design's
+own §3 grazing caveat bites harder at the rim). `fw == 0` on a fisheye render
+remains the honest answer.
+
+### 12.4 Coverage
+
+`TextureFootprintTest` test 14, seven parts: (a) aperture-0 thin lens
+reproduces the pinhole's origin, direction and both differential offsets to
+1e-12, at the centre pixel and off-axis; (b) the footprint at the plane of
+focus is exactly `2·d·tan(fov/2)/height`; (b2) and it is the SAME from an
+off-centre lens sample as from the lens centre — the claim that is about a
+lens rather than about a pinhole, and the one a circle-of-confusion-widened
+differential would fail; (c) it doubles at twice the focal distance; (d) `rxDir` / `ryDir` equal the difference of two independently
+generated main rays one pixel apart through the same lens point, on a
+shift-`x`/shift-`y` camera, with an in-test red-proof that the same oracle on
+an unshifted camera differs by 1.1e-4 — four orders above the 1e-15 assertion
+— so the check really does pin the shift; (e) `hasDifferentials` true and the
+offsets non-degenerate on every ray from both entry points across the frame;
+(f) the orthographic footprint is one viewport pitch and does not change with
+distance. Red-proofed live by shrinking the thin-lens x step to half a pixel:
+14a, 14b and 14d fail (14c, a ratio, correctly does not — which is why the
+closed form in 14b exists).
+
+Three more parts (added with the 2026-09-10 world-axis fix): (g) the
+`top_down` orientation — a raster-X step moves the origin by exactly one
+viewport pitch parallel to `U`, a raster-Y step moves it by one pitch parallel
+to `V`, and *neither* has a component along `W` (the view direction), against
+an oracle `OrthonormalBasis3D` built independently in the test; an in-test
+red-proof reconstructs the pre-fix `Vector3(-x, y, 0)` formula's raster-Y
+step and shows it disagrees with the fixed step by more than `1e-3` *and* has
+a component along `W` of more than half a pitch, i.e. the red-proof itself
+reproduces the bug; (h) the `-Z`/`+Y` orientation is bit-identical (`< 1e-15`)
+to the pre-fix world-axis formula, recomputed independently in the test, not
+copied from the camera; (i) `rxOrigin`/`ryOrigin` equal the finite difference
+of two independently generated main rays one pixel apart, for the `top_down`
+camera — the differential-side counterpart of (g)/(h).
+
+### 12.5 What it moves in practice (measured 2026-09-10)
+
+Three renders per scene at each scene's shipped settings: two from the same
+(post-change) binary for a noise floor — RISE seeds from the wall clock, so two
+runs differ — and one from a binary with only the two camera `.cpp`/`.h` files
+reverted to `1d8bb788`. Mean absolute difference in 8-bit levels over all
+pixels and channels.
+
+| scene | noise floor | before vs. after | verdict |
+|---|---|---|---|
+| `Hair/variety_gallery` (1400×1050, PT 256 spp) | 3.682 | 3.678 / 3.680 | **at the floor** |
+| `Tests/Cameras/thinlens` (1024×512, pixelpel 64 spp) | 0.3368 | 0.3367 | **at the floor** |
+| `Textures/tidal_stones` (800×600, 32 spp) | 0.2854 | 0.3065 / 0.3082 | **+7.4 % over the floor**, localized |
+
+Both null results are structural, not evidence the differentials are inert —
+and each names a real limit worth knowing:
+
+* **`variety_gallery` has no shading-time footprint consumer at all.** Its four
+  `fbm(Po·…)` bodies are `scalar_painter`s bound to the hair modifier's
+  `density` and `length_painter`, which are evaluated at **groom build time**,
+  where there is no camera ray and `fw` has always been 0. The scene contains
+  no `expression_painter`, no image painter, no `relief_modifier`. A camera
+  differential cannot reach a build-time painter.
+* **`Tests/Cameras/thinlens` textures a `box_geometry`.** Its `png_painter`
+  needs `txFootprint.valid` — the UV Jacobian — and a box publishes no UV
+  chart, so mip LOD declines by design (test 6 pins exactly that). It gets an
+  honest `worldWidth` now and nothing consumes it.
+* **`tidal_stones` is the one that bites**, and for the expected reason: its
+  `expression_painter` runs `fbm(vec3(P.x·450, P.y·450, P.z·450), …)` on a
+  shading hit, so the octave fade now filters at `450·fw` instead of at 0. The
+  per-tile map puts the whole difference on the stones and the flagstone —
+  background and sky tiles move by less than the floor — and the fine grain on
+  the domes is visibly smoother, which is the fade retiring octaves the pixel
+  cannot resolve.
+
+Wall clock was 881 s / 869 s (after) vs 851 s (before) on `variety_gallery`;
+the two extra `ComputeWorldDirection` calls per primary ray are the same tax
+`PinholeCamera` has always paid, and on a path-traced scene they do not
+register above run-to-run variation. `RISE_Log.txt` was empty (0 bytes) on all
+nine renders.

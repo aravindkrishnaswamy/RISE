@@ -431,8 +431,12 @@ only primary hits carry differentials at all
 so at its `ctx.fw` assignment), because `Ray::Set` clears
 `hasDifferentials` and no propagation helper exists for a scattering
 bounce. So a relief surface seen in a mirror, or through glass, or on a
-secondary bounce still gets `s = step` with no fade — and so do the
-thin-lens, orthographic and fisheye cameras, which never set differentials.
+secondary bounce still gets `s = step` with no fade — and so does the fisheye camera,
+which never sets differentials.  (The thin-lens and orthographic cameras were
+on that list until 2026-09-10; both now populate differentials, so their
+primary hits fade like a pinhole's — see
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
+§12.)
 
 **`txFootprint.worldWidth` is now world-correct under instance scale
 (2026-09-06, fix round 2, P2-A) — it was NOT before this fix.**
