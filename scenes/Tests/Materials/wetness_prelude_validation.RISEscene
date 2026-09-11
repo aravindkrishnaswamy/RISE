@@ -34,9 +34,11 @@ RISE ASCII SCENE 7
 #############################################################################################################
 
 ##################################################
-# Renderer -- default PT.  Signals (curv, occlusion)
-# are fully correct only under PT; this scene does
-# not exercise BDPT/VCM/MLT.
+# Renderer -- default PT, as a plain rasterizer
+# choice.  Signals (curv, occlusion) are read live
+# under PT, BDPT, VCM and MLT alike since 2026-09-11
+# (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md);
+# this scene does not exercise BDPT/VCM/MLT.
 ##################################################
 
 uniformcolor_painter

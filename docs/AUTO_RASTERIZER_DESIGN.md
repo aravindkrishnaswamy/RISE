@@ -52,6 +52,21 @@ contraindicated: §2 of the decision doc.)
 The auto-rasterizer runs Tier 0 (pin?) → else Tier 1 (guess) → else Tier 2
 (probe, if enabled) and delegates to the chosen concrete rasterizer.
 
+**No signal-based routing rule ever existed here, and none is needed
+(2026-09-11).** Tiers 0–2 key on transmissive-material presence, positional
+lights, glossy-bounce coverage and measured σ²·T — never on whether a scene's
+painters call `curv`/`occlusion`/`convexity`/`thickness`/`proximity`/
+`interior`. That was a deliberate gap while BDPT/VCM/MLT read those six
+geometry signals as neutral in parts of their transport
+([GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md) §14
+item 11): there was nothing for a routing rule to steer around, since a
+signal-consuming scene misrouted to BDPT/VCM just as it would to PT. Since
+[SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+closed that gap, all six signals are read live under every integrator this
+dispatcher can choose, so a routing rule keyed on signal use would have
+nothing to protect against either — the absence stays correct for a new
+reason, not the old one.
+
 ---
 
 ## 3. Architecture — a thin-shell `auto_rasterizer`

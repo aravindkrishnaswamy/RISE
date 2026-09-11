@@ -4678,14 +4678,20 @@ yet known (§10.1).
    closed form is [from memory]. Not implemented here, so not blocking — but
    recorded so nobody hard-codes the constant from this document.
 7. **Zhu 2023 and Jin 2022 parameter sets are unobtained.** Phase 2's first gate.
-8. **BDPT/VCM/MLT read the geometry signals as neutral** in parts of their
+8. ~~**BDPT/VCM/MLT read the geometry signals as neutral** in parts of their
    transport, because those integrators hand-build `RayIntersectionGeometric`
    records omitting `derivatives` and `signals`. Inherited, not created, by this
-   design. Consequence: **a `curv`-driven seam-wear fabric will not match between
-   a PT render and a BDPT or VCM render of the same scene**, and
-   `auto_rasterizer` can route there without the author choosing it. The same
-   debt [WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) §12 item 1 carries.
-   (**CLOSED for every surface vertex 2026-09-11** by slice S1 of [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): `BDPTVertex` now carries `derivatives` / `signals` / `txFootprint` and `PathVertexEval` replays them, so BDPT/VCM/MLT read the signals live at every surface vertex; the remaining neutral read is `LightSampler`'s hand-built emitter record for an EMISSIVE signal-keyed material — slice S3 — plus BSSRDF entry vertices. Sentence kept as written for the history.)
+   design. Consequence: a `curv`-driven seam-wear fabric will not match between
+   a PT render and a BDPT or VCM render of the same scene, and
+   `auto_rasterizer` can route there without the author choosing it.~~
+   **CLOSED 2026-09-11** by [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+   (slices S1 + S3, the same arc that closes
+   [WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) §12 item 1): `BDPTVertex`
+   carries `derivatives` / `signals` / `txFootprint` and `PathVertexEval`
+   replays them, so BDPT/VCM/MLT read the signals live at every surface
+   vertex; `LightSampler`'s NEE record and light-subpath root read a real
+   intersection on the luminary too, under PT as well, so a `curv`-driven
+   seam-wear fabric now matches across PT, BDPT and VCM.
 9. **`ScatteredRayContainer::kCapacity = 12` drops silently**
    ([ISPF.h:116](../src/Library/Interfaces/ISPF.h)). A `fabric_material` nested
    under a deep composite could lose energy invisibly. An argument for the

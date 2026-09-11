@@ -88,11 +88,12 @@ scene points at a Windows path and must be copied with `file` rewritten.
 where `d` is the shortest distance from the hit point to the surface of any
 **other** world-visible object. **1 = touching, 0 = nothing within `r`.** The
 neutral fallback is **0** (the do-nothing end, like `convexity`): no scene, no
-neighbour that can answer, an unusable radius, a BSSRDF entry vertex, or (until
-slice S3 of SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md lands) `LightSampler`'s
-hand-built emitter record all read 0 and paint nothing. (Before 2026-09-11 this
-list also held "a non-PT integrator's rebuilt record"; slice S1 closed that —
-§5.1, §10.)
+neighbour that can answer, an unusable radius, a BSSRDF entry vertex, or an
+emitter record whose probe refuses (SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
+§5, §10) all read 0 and paint nothing. (Before 2026-09-11 this list also held
+"a non-PT integrator's rebuilt record" and, before slice S3 landed,
+"`LightSampler`'s hand-built emitter record" unconditionally; slices S1 and S3
+closed both — §5.1, §10.)
 
 Why this quantity and not a visibility one: §8.1's measurement. A thin object on
 a plane subtends grazing directions only, so every hemisphere estimator reads a
@@ -268,12 +269,18 @@ tell the two apart, so it is listed rather than excluded), and — since
 2026-09-11 — the two files that FORWARD the stamp through a `BDPTVertex`:
 `BDPTIntegrator.cpp` (`v.signals = ri.geometric.signals` at both subpath
 generators) and `PathVertexEval.h` (`ri.signals = vertex.signals` in
-`PopulateRIGFromVertex`). Those last two do not replace the stamp, they relay
+`PopulateRIGFromVertex`). Those two do not replace the stamp, they relay
 it: the source is the record `ObjectManager::IntersectRay` stamped, so what
 reaches the painter is the object manager's own value one or two hops later,
 never a default-constructed channel over a stamp
 ([SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
-§3.1). Nine files in all — pinned by `SourceHygieneTest`
+§3.1). A tenth writer joined 2026-09-11 by slice S3 of the same document:
+`LightSampler.cpp`'s `ApplyEmitterSurface` stamps `rig.signals =
+payload.channel` on a record no manager produced — a sampled emission point,
+not a traversal result — using a channel obtained by `ProbeEmitterSurface`
+firing one real closest-hit at the luminary and keeping the record only if it
+landed on the sampled point; never fabricated, and a no-op unless a signal
+consumer is live. Ten files in all — pinned by `SourceHygieneTest`
 at FILE granularity (its guards are substring finds over flattened bodies
 against an exact filename set), which is the granularity it can express. `PropagateCastInputs` (inputs only) does not carry it.
 
@@ -1160,10 +1167,12 @@ intersection/subtraction with one refuses).
 - **Thread safety of the memo:** the query rides the existing `thread_local`
   tables (trivially constructible and destructible, `static_assert`ed); nothing
   new is shared.
-- **PT-first; BDPT/VCM/MLT residual** identical in extent to the other signals
-  (**CLOSED 2026-09-11** for the surface-vertex rebuild by slice S1 of
-  SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md; the `LightSampler` emitter-record
-  residual is slice S3 — see §10).
+- ~~**PT-first; BDPT/VCM/MLT residual** identical in extent to the other
+  signals~~ — **CLOSED 2026-09-11** (SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md,
+  slices S1 + S3): the surface-vertex rebuild and the `LightSampler`
+  emitter record both read live now, under every integrator — see §10 for
+  the residual that remains (identical under every integrator, not a
+  PT-vs-bidirectional split).
 
 ---
 
@@ -3037,13 +3046,17 @@ measured by a harness test against the tracked scene.
 ## 10. Residuals, stated up front
 
 - ~~BDPT/VCM/MLT rebuilt records read 0 for `proximity` and `interior`~~ —
-  **CLOSED 2026-09-11 (slice S1 of
-  [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)):**
-  the `PathVertexEval` contract is honoured (see §5.1), so every surface
-  vertex BDPT/VCM/MLT price reads the live channel. What still reads 0 is the
-  hand-built EMITTER record `LightSampler` makes for NEE light samples and
-  the light-subpath root (an emissive material keyed on `proximity`, under PT
-  too — slice S3), and BSSRDF entry vertices (integrator-consistent).
+  **CLOSED 2026-09-11** ([SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md),
+  slices S1 + S3): the `PathVertexEval` contract is honoured (see §5.1), so
+  every surface vertex BDPT/VCM/MLT price reads the live channel, and
+  `LightSampler`'s NEE record and light-subpath root now read a real
+  intersection on the luminary too, under PT as well — closing the
+  hand-built EMITTER record gap for an emissive material keyed on
+  `proximity` or `interior`. What still reads 0, identically under every
+  integrator, is a BSSRDF entry vertex (integrator-consistent) and an
+  emitter whose probe refuses (a non-finite self-hit floor, a standoff
+  larger than the luminary, or a second surface of the same luminary within
+  the standoff band along the normal — that document's §10).
 - Refusing families (RAW meshes, patches, hair, heightfield SDFs; CSG
   composites until Phase 3 — **after it (SHIPPED 2026-09-09)**, an
   intersection/subtraction with a
@@ -3251,14 +3264,16 @@ measured by a harness test against the tracked scene.
   of two refusing operands, a bracket that finds no admitted landing in
   budget, and a seam gradient below 1e-12.
 - **Every consumer that builds its own hit record reads the neutral 0** — the
-  GUI's painter preview, realize-time displacement, `HairGenerator`, BSSRDF
-  entry vertices, and (until slice S3) `LightSampler`'s emitter record. The
-  channel is stamped by `ObjectManager::IntersectRay`, and since 2026-09-11
+  GUI's painter preview, realize-time displacement, `HairGenerator`, and
+  BSSRDF entry vertices. The channel is stamped by
+  `ObjectManager::IntersectRay`, and since 2026-09-11
   `PathVertexEval::PopulateRIGFromVertex` FORWARDS that stamp (it no longer
-  belongs in this list — the first bullet above is CLOSED). That is the same
-  set the other three signals are neutral on, but here the neutral means "no
-  contact anywhere in the scene", which is a more visible absence than
-  "unoccluded".
+  belongs in this list — the first bullet above is CLOSED) and
+  `LightSampler`'s emitter record does too, through the S3 probe (it no
+  longer belongs in this list either, except when the probe itself refuses —
+  see the first bullet above). That is the same set the other three signals
+  are neutral on, but here the neutral means "no contact anywhere in the
+  scene", which is a more visible absence than "unoccluded".
 - **Fixed in this fix round (wave-2 integration, 2026-09-08): the agent-facing
   draft-preview descriptor strings were wrong.** They claimed quality:"draft"
   "IGNORES the scene's authored materials and lighting entirely"; in fact

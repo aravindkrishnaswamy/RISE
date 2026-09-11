@@ -73,9 +73,16 @@ and roughness, raking light) and the standing conventions: never over-read
 contact, world-length radii, no `DynR` twin for either signal. The signal is
 stamped on the winning record in `ObjectManager::IntersectRay`, so every
 rasterizer that routes hits through it sees it — including the legacy
-`pixelpel_rasterizer` with `DefaultDirectLighting` (verified in review;
-`WarnIfNonPTRenderHasLiveSignalConsumer` is called only by the BDPT/VCM/MLT
-rasterizers). The painter stations below prove it anyway.
+`pixelpel_rasterizer` with `DefaultDirectLighting` (verified in review) — and,
+since the `signals-bidir` arc's S1 slice (2026-09-11,
+[SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)),
+BDPT/VCM/MLT's own per-vertex rebuild carries the same `signals` channel
+forward too, so `proximity`/`interior` read live there as well — no
+bidirectional-specific neutral read remains for either signal.
+`WarnIfNonPTRenderHasLiveSignalConsumer`, the one-time warning the old text
+here alluded to, is called only by the BDPT/VCM/MLT rasterizers and is
+scheduled for removal now that it has nothing left to warn about. The
+painter stations below prove liveness anyway.
 
 ## 0. Shared gate protocol
 

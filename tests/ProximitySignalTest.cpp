@@ -1279,7 +1279,11 @@ static void TestBuiltinEndToEnd( const Fixture& f )
 	}
 
 	// --- IT IS RECORDED AS A SIGNAL CALL SITE, which is what makes a body
-	// containing it memo-worthy and what SurfaceSignalDemand counts.
+	// containing it memo-worthy and what SurfaceSignalDemand counts --
+	// since 2026-09-11 (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md) the
+	// same counter also gates LightSampler's emitter-surface probe, so a
+	// `proximity()`-only body registering here is what lets an emissive
+	// material keyed on it read live under NEE too.
 	{
 		ExpressionProgram p = ExpressionProgram::Invalid();
 		Check( CompileWithContext( "proximity(0.002)", p ), "(f) a proximity body compiles" );

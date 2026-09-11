@@ -8,13 +8,17 @@ family in CSG/back-face `dndu/dndv` negation the review loop surfaced beyond
 this doc's scope). Where the implementation differs from this document's
 sketch, the amendments are marked **AMENDED (2026-08-29)** in the relevant
 section. **Open debts:** the Phase-1 cross-provider census (requires hosted
-provider keys; harness + scenario configs in place, not yet run); the
+provider keys; harness + scenario configs in place, not yet run). ~~the
 BDPT/VCM/MLT neutral-signal transport gap (§14 item 11 — contained by a
 startup diagnostic + honest descriptor text; the real fix is the
 `PathVertexEval.h:94-106` widening contract, plus the `LightSampler`
-NEE/photon-emission records). **Phase 4 remains observed-need gated and
-untouched** — its scene-wide-AO item was re-measured on two throwaway
-prototypes 2026-09-07 and declined again with numbers (§8.1).
+NEE/photon-emission records).~~ **CLOSED 2026-09-11** — see §14 item 11 and
+[SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+(both fixes shipped: the `PathVertexEval.h` widening contract, slice S1, and
+the `LightSampler` NEE/light-subpath-root records, slice S3). **Phase 4
+remains observed-need gated and untouched** — its scene-wide-AO item was
+re-measured on two throwaway prototypes 2026-09-07 and declined again with
+numbers (§8.1).
 **Date:** 2026-08-29.
 **Inputs:** a six-pass source-grounded survey of the RISE tree — the expression
 VM ([ExpressionEval.h](../src/Library/Painters/ExpressionEval.h),
@@ -1530,6 +1534,23 @@ shipped differs from the sketch above, all deliberate:
    dynamic and answer with the neutral fallback rather than substitute the
    baked radius.
 
+**Known residual — CLOSED 2026-09-11.** Both instances (a)/(b) and (c) below
+are fixed by [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md):
+slice S1 widened `BDPTVertex` with `derivatives` / `signals` / `txFootprint`
+and `PathVertexEval` replays them, so BDPT/VCM/MLT read the signals live at
+every surface vertex — the mixed true/neutral evaluation within one path
+that (b) describes cannot happen any more. Slice S3 gave `LightSampler`'s
+NEE record and light-subpath root a real intersection on the luminary
+through a gated normal-aligned probe, under PT as well, closing (c) too. The
+remaining neutral reads (a BSSRDF entry vertex; an emitter whose probe
+refuses; GUI preview / realize-time / hand-built records) are identical
+under every integrator, not a PT-vs-bidirectional split — see that
+document's §10. §14 item 11 records the closure; the original residual text
+is kept below for history.
+
+<details>
+<summary>Original text, kept for history (pre-2026-09-11)</summary>
+
 **Known residual, disclosed not fixed — CORRECTED 2026-08-29 (Phase-2 fix
 round; the paragraph below replaces an earlier, narrower draft that
 undercounted both the surface and the severity):**
@@ -1589,6 +1610,8 @@ slice (emissive materials that both key radiance on these signals and are
 reached via NEE/photon emission) — contained enough to defer as a diagnostic
 rather than block on, but no longer safe to describe as "an honest flat
 mask."
+
+</details>
 
 ### Phase 3 — mesh bakes behind the same names
 
@@ -1980,7 +2003,35 @@ is the comparison to beat.
    on it.** If vertex animation exists or is added, M3 needs a time key or
    explicit per-frame invalidation; M1 and M2 are unaffected (both evaluate per
    hit from live state).
-11. **BDPT/VCM/MLT + LightSampler neutral-signal gap — deferred, not fixed**
+11. **BDPT/VCM/MLT + LightSampler neutral-signal gap — CLOSED 2026-09-11**
+   ([SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)).
+   All six geometry signals (`curv`/`curvR`, `occlusion(r)`, `thickness(r)`,
+   `convexity(r)`, `proximity(r)`, `interior(r)`) are read live at every
+   surface vertex under PT, BDPT, VCM and MLT alike: slice S1 widened
+   `BDPTVertex` with `derivatives` / `signals` / `txFootprint` and
+   `PathVertexEval::PopulateRIGFromVertex` replays them, so the forward
+   walk's throughput re-evaluation, connection/NEE, MIS reverse-pdf, OpenPGL
+   guiding RIS, the HWSS companion evals and VCM merges (MLT inherits all of
+   it) all price the same record the live hit did — the mixed true/neutral
+   evaluation of one material within one walk that used to bias color and
+   sampling-pdf consistency cannot happen any more. Slice S3 closed
+   `LightSampler.cpp`'s hand-built NEE and light-subpath-root records too,
+   via a gated normal-aligned probe on the luminary, under PT as well —
+   closing the plain-PT case for an emissive material keyed on a signal.
+   Measured: `SignalIntegratorConsistencyTest` (six constant-signal scenes)
+   and `SignalEmitterRecordTest` (21 checks) both show PT/BDPT/VCM agreeing
+   with the closed-form control within a few tenths of a percent, where the
+   unfixed tree was off by tens of points. The remaining neutral reads —
+   a BSSRDF entry vertex; an emitter whose probe refuses (a non-finite
+   self-hit floor, a standoff larger than the luminary, or a second surface
+   of the same luminary within the standoff band); GUI preview /
+   realize-time / hand-built test records — are identical under every
+   integrator, not a PT-vs-bidirectional split; see that document's §10.
+
+   <details>
+   <summary>Original text, kept for history (pre-2026-09-11)</summary>
+
+   **BDPT/VCM/MLT + LightSampler neutral-signal gap — deferred, not fixed**
    (§13 Phase-2 "Known residual," corrected 2026-08-29). Two independent hand-
    built-record sites read `curv`/`occlusion`/`thickness` as neutral instead
    of live: (a) every `PathVertexEval.h::PopulateRIGFromVertex` consumer
@@ -2003,6 +2054,8 @@ is the comparison to beat.
    the interim — see the descriptor text in `ChunkParserRegistry.cpp` for the
    curv/occlusion/thickness builtins, which now states this limitation
    directly.
+
+   </details>
 
 ---
 

@@ -129,9 +129,10 @@ standard_shader
 	shaderop		DefaultDirectLighting
 }
 
-# PT, because `curv` / `occlusion()` are fully correct only under unidirectional
-# path tracing -- BDPT/VCM/MLT evaluate them as their neutral fallback in parts
-# of their transport (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md).
+# PT, as a plain rasterizer choice -- `curv` / `occlusion()` are read live
+# under PT, BDPT, VCM and MLT alike since 2026-09-11
+# (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md), so this is not a
+# signal-correctness requirement.
 pathtracing_pel_rasterizer
 {
 	samples				128

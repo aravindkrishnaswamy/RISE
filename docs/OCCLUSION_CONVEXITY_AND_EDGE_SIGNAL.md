@@ -793,7 +793,30 @@ FAIL where the environment cannot support that.
 
 ---
 
-## 7. BDPT / VCM / MLT residual
+## 7. BDPT / VCM / MLT residual — CLOSED 2026-09-11
+
+**Superseded.** The Phase-2 residual this section recorded — `curv`,
+`occlusion`, `thickness` and `convexity` reading their neutral fallback in
+parts of BDPT / VCM / MLT transport — is closed by the `signals-bidir` arc;
+see [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+and [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
+§14 item 11. All six geometry signals, `convexity` included, are read live at
+every surface vertex under PT, BDPT, VCM and MLT alike — the forward walk's
+per-bounce re-evaluation, connection/NEE, and the MIS reverse-pdf evaluation
+all price the same `RayIntersectionGeometric::signals` the live hit carried.
+`convexity` travels that same channel, so it closed for free alongside the
+other five; no signal-specific work was needed here. The remaining neutral
+reads (a BSSRDF entry vertex; an emitter whose probe refuses; GUI preview /
+realize-time / hand-built records) are identical under every integrator, not
+a PT-vs-bidirectional split — see that document's §10.
+
+`SurfaceSignalDemand` and its `m_signalCalls` registrations **stay** — the
+counter now gates the live, real emitter-record probe rather than a
+diagnostic warning (the S4 slice narrows the doc comments accordingly; the
+warning itself, `WarnIfNonPTRenderHasLiveSignalConsumer`, was deleted).
+
+<details>
+<summary>Original text, kept for history (pre-2026-09-11)</summary>
 
 Unchanged from, and identical in extent to, the Phase-2 residual already
 recorded in [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
@@ -813,6 +836,8 @@ is asked "does any live compiled expression call these builtins", and
 that uses only `convexity` under BDPT still gets the warning. The neutral
 direction is the conservative one for the new signal too — an absent `convexity`
 wears nothing, rather than wearing every edge in the frame.
+
+</details>
 
 ---
 

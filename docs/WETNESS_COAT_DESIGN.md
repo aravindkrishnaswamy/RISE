@@ -702,10 +702,19 @@ shipped 2026-08-29. Wetness consumes them unchanged:
    the *do-nothing* end of the range (occlusion 1 = unoccluded), so a mask built
    on unsupported geometry lights nothing up rather than everything. **This is a
    hard constraint on the pooling recipe** and §6.8 flags it explicitly.
-3. **BDPT / VCM / MLT read these signals as neutral in parts of their transport.**
+3. ~~**BDPT / VCM / MLT read these signals as neutral in parts of their transport.**
    The descriptor states it plainly and the design doc's §14 item 11 scopes it.
-   Wetness inherits this whole. §9 states the visible consequence honestly.
-   (**CLOSED for every surface vertex 2026-09-11** by slice S1 of [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): `BDPTVertex` now carries `derivatives` / `signals` / `txFootprint` and `PathVertexEval` replays them, so BDPT/VCM/MLT read the signals live at every surface vertex; the remaining neutral read is `LightSampler`'s hand-built emitter record for an EMISSIVE signal-keyed material — slice S3 — plus BSSRDF entry vertices. Sentence kept as written for the history.)
+   Wetness inherits this whole. §9 states the visible consequence honestly.~~
+   **CLOSED 2026-09-11** by [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+   (slice S1 + S3): `BDPTVertex` carries `derivatives` / `signals` /
+   `txFootprint` and `PathVertexEval` replays them, so BDPT/VCM/MLT read
+   these signals live at every surface vertex; and `LightSampler`'s NEE
+   record and light-subpath root now read a real intersection on the
+   luminary too, under PT as well, so a wet, emissive material keyed on a
+   signal is no longer a special case. The only reads that stay neutral
+   are identical under every integrator (a BSSRDF entry vertex; an
+   emitter whose probe refuses; non-transport GUI/preview paths) — none
+   of them is the wetness recipe. §9 is updated to match.
 
 ### 3.8 Geometry-level water is already RISE's live idiom
 
@@ -1633,10 +1642,11 @@ geometry problem, and this recipe is the answer.
    one large terrain mesh are out of reach and belong to §6.8's geometry route.
 8. "Dry under an overhang" needs self-concavity or an authored mask (§6.5).
 9. Heightfield SDF terrain cannot drive the pooling mask (§6.8).
-10. Signal-driven masks read neutral on parts of BDPT/VCM/MLT transport (§9)
-    — **CLOSED 2026-09-11 for surface vertices** (slice S1 of
-    SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md; emissive-material NEE records
-    remain until S3).
+10. ~~Signal-driven masks read neutral on parts of BDPT/VCM/MLT transport (§9)~~
+    — **CLOSED 2026-09-11** (slices S1 + S3 of
+    SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): surface vertices AND
+    emissive-material NEE/light-subpath-root records both read live now,
+    under PT too.
 11. Oren-Nayar bases get darkening only, no film; metallic bases get film only, no
     darkening (§2.1, §6.2, §6.4).
 12. **The GGX/PBR in-place branch is not a water film** — it sharpens the base's
@@ -2018,25 +2028,28 @@ strong-indirect/glossy and VCM only for caustics
 `auto_rasterizer` dispatcher applies that map automatically. Wetness must look
 right under PT first, and its documentation should not steer authors off PT.
 
-**The signal-neutrality debt is inherited whole, and its consequence is
-visible.** `curv`, `occlusion()`, and `thickness()` evaluate to their **neutral
-fallback** in parts of BDPT/VCM/MLT transport, because those integrators
-hand-build `RayIntersectionGeometric` records that omit `derivatives` and
-`signals` ([GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
-§14 item 11; the renderer already emits a one-time warning, per the descriptor at
-[ChunkParserRegistry.cpp:1601](../src/Library/Parsers/ChunkParserRegistry.cpp)).
-(**CLOSED for every surface vertex 2026-09-11** by slice S1 of [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): `BDPTVertex` now carries `derivatives` / `signals` / `txFootprint` and `PathVertexEval` replays them, so BDPT/VCM/MLT read the signals live at every surface vertex; the remaining neutral read is `LightSampler`'s hand-built emitter record for an EMISSIVE signal-keyed material — slice S3 — plus BSSRDF entry vertices. Sentence kept as written for the history.) The paragraph
-below describes the pre-S1 state.
+**The signal-neutrality debt is CLOSED 2026-09-11.** `curv`, `occlusion()`, and
+`thickness()` used to evaluate to their neutral fallback in parts of
+BDPT/VCM/MLT transport, because those integrators hand-built
+`RayIntersectionGeometric` records that omitted `derivatives` and `signals`
+([GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md) §14
+item 11). [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+closes it in full: slice S1 widened `BDPTVertex` with `derivatives` / `signals`
+/ `txFootprint` and `PathVertexEval` replays them, so BDPT/VCM/MLT read the
+signals live at every surface vertex; slice S3 gave `LightSampler`'s hand-built
+NEE record and the light-subpath root the same treatment through a gated
+normal-aligned probe on the luminary, under PT as well, closing the one
+remaining case (an emissive material keyed on a signal). The only reads that
+stay neutral — a BSSRDF entry vertex, an emitter whose probe refuses, and
+non-transport GUI/preview paths — are identical under every integrator, not a
+PT-vs-bidirectional split; none of them is the wetness recipe.
 
-**Say the consequence plainly: a signal-driven wet surface will not match between
-a PT render and a BDPT or VCM render of the same scene.** Neutral occlusion is 1
-(unoccluded), so on those transport paths the pooling term collapses and the
-surface reads *drier*, in patches, mixed with correct values from the primary
-path. And because the `auto_rasterizer` dispatcher can route a scene to BDPT or
-VCM on its own, an author can hit this without ever selecting a non-PT
-integrator. The verb's design note and the skill text must say so. This is not a
-new debt wetness creates; it is an existing one wetness makes more visible,
-because a wet/dry boundary is a higher-contrast artifact than a grime gradient.
+**A signal-driven wet surface now matches between PT, BDPT and VCM renders of
+the same scene**, so `auto_rasterizer` routing to BDPT or VCM no longer changes
+the wet look. This was not a debt wetness created; it was an existing one
+wetness made more visible, because a wet/dry boundary is a higher-contrast
+artifact than a grime gradient — and it is gone now for the same reason it
+used to be visible: the pooling term reads the real signal everywhere.
 
 **Mirror-flat pools are caustic-adjacent, but introduce no new chains.** A
 near-delta coat lobe over a diffuse substrate creates specular-diffuse paths, not
@@ -2236,15 +2249,17 @@ timing exists because no implementation exists.
 
 ## 12. Correctness debts and open items
 
-1. **BDPT/VCM/MLT read the geometry signals as neutral** in parts of their
+1. ~~**BDPT/VCM/MLT read the geometry signals as neutral** in parts of their
    transport — inherited, not created, by this design. Wetness makes it more
    visible than grime did (§9). Fix is the `PathVertexEval.h:94-106` widening
    contract plus the `LightSampler` NEE/photon-emission records
    ([GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md) §14
-   item 11). **Deferred; unchanged by this document.** **UPDATE 2026-09-11:**
-   the widening contract half SHIPPED (slice S1 of
-   [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md));
-   the `LightSampler` half is slice S3 of the same document.
+   item 11).~~ **CLOSED 2026-09-11**: both halves shipped —
+   the `PathVertexEval.h` widening contract (slice S1) and the `LightSampler`
+   NEE/light-subpath-root records (slice S3) of
+   [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md).
+   BDPT/VCM/MLT now read all six geometry signals live at every surface
+   vertex and at emitter records alike, so wetness inherits no residual here.
 2. **`CompositeSPF`'s 96 % energy loss in the coat-over-diffuse regime**
    (Findings A and D). This design **routes around** it rather than fixing it.
    The fix belongs to Landing 6's owner; if it lands, `composite_material` becomes

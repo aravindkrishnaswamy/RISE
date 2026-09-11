@@ -3,11 +3,11 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           weathered_reliquary.RISEscene                                                          #
-#   Description:    "The Weathered Reliquary" -- the canonical showcase for the geometry-derived shading   #
+#   Description:    "The Weathered Reliquary" -- the canonical showcase for the geometry-derived shading    #
 #                   signals (curv/curvR, occlusion(r), thickness(r)) shipped in                             #
-#                   docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md.  A dusk-lit museum tableau on one carved       #
-#                   stone plinth, path traced (signals are fully correct only under PT -- see the           #
-#                   descriptor text on expression_painter/scalar_painter for the BDPT/VCM/MLT residual).    #
+#                   docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md.  A dusk-lit museum tableau on one carved stone #
+#                   plinth, path traced (signals read live under PT, BDPT, VCM and MLT alike since          #
+#                   2026-09-11 -- see docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md).                       #
 #                                                                                                           #
 #                   Five things to look at:                                                                 #
 #                     1. THE BRONZE GUARDIAN (skeleton_geometry, an SDF): curv drives bright polished-edge  #
@@ -52,11 +52,11 @@ RISE ASCII SCENE 7
 
 ##################################################
 # Renderer -- Path Tracing.  Signals (curv,
-# occlusion, thickness) are fully correct only
-# under PT; BDPT/VCM/MLT evaluate them as their
-# neutral fallback in parts of their transport
-# (design doc Phase-2 known-residual paragraph),
-# so this showcase does NOT use BDPT/VCM.
+# occlusion, thickness) are read live under PT,
+# BDPT, VCM and MLT alike since 2026-09-11 (see
+# docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md),
+# so PT here is a plain rasterizer choice, not a
+# signal-correctness requirement.
 ##################################################
 
 # Declared before the rasterizer (which references it as `radiance_map`) --

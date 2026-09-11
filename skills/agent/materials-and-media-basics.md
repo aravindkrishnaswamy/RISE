@@ -1077,15 +1077,15 @@ shipping at `tidepools.RISEscene:395`: `dielectric_material { tau 0.85
 — is `WETNESS_COAT_DESIGN.md` §6.7's own illustrative example, not a
 shipped scene; don't cite it as one.)
 
-**A wet PT render will not match a wet BDPT or VCM render of the same
-scene.**  `occlusion()` and `curv` read their neutral fallback on parts
-of BDPT/VCM/MLT transport (those integrators omit the derivative/signal
-records PT carries), so the pooling term collapses and the surface
-reads patchily drier wherever a non-PT strategy contributed — and
-`auto_rasterizer` can route there without you choosing a non-PT
-integrator by name.  Validate a wet-highlight render's numbers under PT
-with `oidn_denoise FALSE`; OIDN is measured to inflate exactly the kind
-of sharp, near-deterministic highlight a pooled coat produces.
+**A wet PT, BDPT, VCM and MLT render of the same scene now agree.**
+Since 2026-09-11 `occlusion()` and `curv` are read live at every surface
+vertex under all four integrators
+(docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md) — the pooling term no
+longer collapses under a bidirectional strategy, and `auto_rasterizer`
+routing to BDPT or VCM changes nothing about the wet look. The one
+caveat left is unrelated to signals: OIDN is measured to inflate exactly
+the kind of sharp, near-deterministic highlight a pooled coat produces,
+so validate a wet-highlight render's numbers with `oidn_denoise FALSE`.
 
 ## Cloth and fabric — a sheen lobe over a weave-shaped substrate
 

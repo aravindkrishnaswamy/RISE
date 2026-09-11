@@ -52,9 +52,9 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   (curv/curvR, occlusion(r), thickness(r)) from docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md.
 
   `weathered_reliquary.RISEscene` is "The Weathered Reliquary" -- a dusk-lit museum
-  tableau on one carved stone plinth, path traced (the signals are fully correct only
-  under PT; BDPT/VCM/MLT evaluate them as their neutral fallback in parts of their
-  transport). Five things, each proving one facet of the design doc: (1) a bronze
+  tableau on one carved stone plinth, path traced (the signals read live under
+  PT, BDPT, VCM and MLT alike since 2026-09-11 --
+  docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md). Five things, each proving one facet of the design doc: (1) a bronze
   guardian idol (`skeleton_geometry`, an 18-joint creature SDF) whose base colour,
   metallic AND roughness are all driven by ONE shared `curv` + `occlusion()` wear
   field -- bright polished highlights on convex masses, deep patina in genuinely

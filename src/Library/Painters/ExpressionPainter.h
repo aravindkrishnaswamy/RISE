@@ -199,8 +199,10 @@ namespace RISE
 			//! SurfaceCurvatureDemand for the mechanism and its documented
 			//! process-wide conservatism.
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
-			//! SIGNAL DEMAND, diagnostic-only (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
-			//! §14 item 11).  Active iff this painter's compiled body calls
+			//! SIGNAL DEMAND (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 11,
+			//! CLOSED 2026-09-11 -- docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md).
+			//! NOT diagnostic-only, despite the name: since S3 it gates real
+			//! work (below).  Active iff this painter's compiled body calls
 			//! `occlusion()` / `convexity()` / `thickness()` OR either
 			//! cross-object signal (`proximity()` / `interior()`)
 			//! anywhere -- it is built from `prog.UsesSurfaceSignals()`, which is
@@ -318,8 +320,8 @@ namespace RISE
 			//! signal: `scalar_painter { expression "clamp(-curv,0,1)" }`
 			//! feeding a roughness slot.
 			SurfaceCurvatureDemand::Registration m_curvatureDemand;
-			//! See ExpressionPainter::m_signalDemand -- same diagnostic-only
-			//! RAII gate on the physical-scalar pipe, active for the same
+			//! See ExpressionPainter::m_signalDemand -- same RAII gate (NOT
+			//! diagnostic-only; it gates real work since S3) on the physical-scalar pipe, active for the same
 			//! five builtins (`occlusion()` / `thickness()` / `convexity()` /
 			//! `proximity()` / `interior()`, via `prog.UsesSurfaceSignals()`).  `scalar_painter
 			//! { expression "occlusion(0.1)" }` feeding a dirt/wear slot is at
