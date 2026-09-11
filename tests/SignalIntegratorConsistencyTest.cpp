@@ -35,10 +35,23 @@
 //  BDPT/VCM row pass -- the bands are derived from PT's own run-to-run
 //  noise (section "BAND DERIVATION"), not tuned to hide a regression.
 //
+//  A later fix round (this commit, worktree signals-bidir) addressed two
+//  reviewers' findings on this file: F1 (positive rasterizer-keyword +
+//  param verification), F2 (asymmetric-blowup fail-loud path), F3
+//  (convexity finer-grid cross-check, which raised the control's own grid
+//  from 9x9 to 21x21), F4 (n=5 masked-band re-derivation, 3-decimal
+//  coverage printing), F5 (one shared `kSdfSamplingDetail` constant), G1
+//  (six unit scenes, not four), G2 (corrected convexity band-derivation
+//  history), G3 (pre-fix numbers re-cited verbatim from their log), G6/G7
+//  (honest post-fix/masked-example ranges re-cited from two fresh runs),
+//  and G9 (the design doc's actual 25% Layer-1 sensitivity band, not 3%).
+//  See each finding's own comment at its fix site, and the sections below
+//  they update.
+//
 //  TWO LAYERS (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6):
 //
 //  LAYER 1 -- CONSTANT-SIGNAL UNIT SCENES (section 6.1, "the sharp gate").
-//  Four small inline scenes, each built so ONE signal is a KNOWN CONSTANT
+//  Six small inline scenes, each built so ONE signal is a KNOWN CONSTANT
 //  over the entire framed region -- known either by an exact closed form
 //  (curv on a sphere: `2*sqrt(3)`, independent of radius, from
 //  SurfaceCurvatureTest; proximity/interior on box-family receivers: the
@@ -56,12 +69,18 @@
 //
 //  and, on the PT row only, a SENSITIVITY check that the same expression
 //  moved the mean by a wide margin between the signal's LIVE value and its
-//  documented NEUTRAL:
+//  documented NEUTRAL, using a DELIBERATELY WIDER band than the
+//  consistency check above -- design doc section 6.1's own number is 25%,
+//  not the 3% consistency band (G9: an earlier draft of this file used 3%
+//  here too, which is far too tight a bar for "moved by a wide margin" and
+//  would have let a barely-sensitive expression pass):
 //
-//      | mean(PT, expr) / mean(PT, neutral-baked) - 1 | > band
+//      | mean(PT, expr) / mean(PT, neutral-baked) - 1 | > 0.25
 //
 //  so the consistency check can never pass by insensitivity (a broken
 //  program that always reads 0 would trivially match a control of 0).
+//  Observed margins on every scene (0.54-3.92, see OBSERVED POST-FIX
+//  NUMBERS below) clear 25% by a wide margin.
 //
 //  LAYER 2 -- SHOWCASE RATIO-OF-RATIOS (section 6.2, "the money numbers").
 //  For each of plank_closeup, tidal_stones, shelf_bunny (Textures/) and
@@ -165,36 +184,37 @@
 //  `git status --short` and a `git diff --stat` with no output) and the
 //  library rebuilt clean before any further work.
 //
-//  OBSERVED POST-FIX NUMBERS (this session, worktree signals-bidir-test at
-//  HEAD 5a15586a rebased onto S1's 8687bfb1, S1's `PopulateRIGFromVertex`
-//  widening IN the tree -- full log in .../scratchpad/s2_postfix_run.txt,
-//  same directory as the red-proof logs above).  Layer 1,
-//  `mean(I,expr)/mean(I,control) - 1` per scene/integrator:
-//
-//      scene       PT             BDPT       VCM        MLT (curv only)
-//      curv        -0.0004        +0.0003    +0.0007    -2e-16
-//      convexity   +0.0143        +0.0135    +0.0139    --
-//      occlusion   -0.0000056     +0.0000053 +3.4e-7    --
-//      thickness   -7.4e-7        +2.5e-7    -1.4e-6    --
-//      proximity   +0.0000124     -0.0000148 +0.0000196 --
-//      interior    -0.0000059     -0.0000218 +0.0000113 --
-//
-//  Every row (PT, BDPT, VCM, and the MLT smoke row) PASSES the 3% band --
-//  the GREEN half of the red-proof, exactly as section 3 predicts post-S1.
-//  Sensitivity margins on the PT row (unchanged from pre-fix within noise,
-//  as expected -- PT never rebuilds a vertex, so S1 cannot move its
-//  numbers): curv 3.08, convexity 1.25, occlusion 3.91, thickness -0.54,
-//  proximity 2.13, interior 3.16, all comfortably outside the 3% band.
+//  OBSERVED POST-FIX NUMBERS (this fix round -- reviewer findings F1-F5,
+//  G1-G3, G6/G7, G9 below -- worktree signals-bidir, two independent
+//  default runs after all of them landed; full logs .../scratchpad/
+//  s2_fixround_run1.txt and run2.txt).  Layer 1: every row (PT, BDPT, VCM,
+//  and the MLT smoke row), all six scenes, both runs --
+//  `|mean(I,expr)/mean(I,control)-1|` stays under 2e-3 (worst observed:
+//  convexity VCM -0.00189 in run1; every other scene/integrator row is
+//  several times tighter, most an order of magnitude or more) --
+//  comfortably inside the 3% band, the
+//  GREEN half of the red-proof, exactly as section 3 predicts post-S1.
+//  (G6/G7: an earlier draft of this table cited exact tiny per-scene
+//  values, e.g. "thickness VCM -1.4e-6", that did not match the log they
+//  claimed to cite and were Monte-Carlo noise at this sample count anyway
+//  -- replaced with the honest range above, re-derived from the two runs
+//  actually cited.)  PT sensitivity margins (unchanged from pre-fix within
+//  noise, as expected -- PT never rebuilds a vertex, so S1 cannot move its
+//  numbers): curv ~3.09, convexity ~1.25, occlusion ~3.93, thickness
+//  -0.542, proximity ~2.13, interior ~3.16 -- all comfortably outside the
+//  25% sensitivity band (G9 below; NOT the 3% consistency band -- the two
+//  are different numbers for different checks).
 //
 //  Layer 2 (see "LAYER 2 FINDING" below for the full per-showcase
-//  breakdown): every showcase now renders at its correctly resized
-//  dimensions (the film-chunk fix), every integrator marker check passes
-//  (the rasterizer-swap verification), and the MASKED ratio-of-ratios
-//  passes on every non-blown-up (showcase, integrator) pair -- plank
-//  BDPT/VCM, bunny BDPT, pavilion BDPT.  Full run: 234 passed / 0 failed /
-//  4 blow-up skips (tidal BDPT, tidal VCM, bunny VCM, pavilion VCM -- all
+//  breakdown): every showcase renders at its correctly resized dimensions
+//  (the film-chunk fix), every integrator marker check AND every
+//  keyword/parameter read-back (F1, this fix round) passes, and the
+//  masked ratio-of-ratios passes on every (showcase, integrator) row not
+//  caught by the blow-up gate.  Both runs: 332 passed / 0 failed / 4
+//  blow-up skips (tidal BDPT, tidal VCM, bunny VCM, pavilion VCM -- all
 //  pre-existing non-signal integrator disagreements, not a signals
-//  regression).
+//  regression; F2 below explains why none of the four qualify as an
+//  ASYMMETRIC blow-up instead).
 //
 //  OBSERVED PRE-FIX NUMBERS (historical record from the S2 test's original
 //  author, worktree signals-bidir-test at ed3e6063 -- BEFORE S1 landed,
@@ -202,44 +222,71 @@
 //  Layer-1 assertions are written against; PT's own numbers are IDENTICAL
 //  pre- and post-fix within run-to-run noise, since PT never rebuilds a
 //  vertex and is therefore untouched by S1 -- compare the PT column above
-//  to the PT column below).  Two independent runs -- full log in
+//  to the PT column below).  Every number below is taken verbatim
+//  (`grep ratio-1=`) from the cited log -- (G3, this fix round) an earlier
+//  draft of this table had transcribed the wrong number for convexity
+//  BDPT (-0.541, which is actually thickness's OWN PT sensitivity ratio
+//  from the same log, not convexity's BDPT consistency ratio; the log's
+//  real convexity BDPT value is -0.549953).  Full log:
 //  /private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/
-//  f398a734-fdcc-484a-9edd-d32d2ce33bf5/scratchpad/s2_prefix_run.txt).
+//  f398a734-fdcc-484a-9edd-d32d2ce33bf5/scratchpad/s2_prefix_run.txt.
 //  Layer 1, `mean(I,expr)/mean(I,control) - 1` per scene/integrator:
 //
-//      scene       PT             BDPT       VCM        MLT (curv only)
-//      curv        -0.00008       -0.755     -0.755     -0.755
-//      convexity   +0.014         -0.541     -0.550     --
-//      occlusion   +0.0000017     -0.822     -0.824     --
-//      thickness   -0.0000003     +1.183     +1.183     --
-//      proximity   +0.00004       -0.694     -0.692     --
-//      interior    +0.00002       -0.756     -0.758     --
+//      scene       PT              BDPT         VCM          MLT (curv only)
+//      curv        +0.000152       -0.755303    -0.755323    -0.755286
+//      convexity   +0.014855       -0.549953    -0.550399    --
+//      occlusion   -0.00000299     -0.821765    -0.823770    --
+//      thickness   -0.00000086     +1.182770    +1.182760    --
+//      proximity   -0.0000242      -0.692705    -0.690414    --
+//      interior    -0.0000588      -0.755329    -0.757079    --
 //
 //  Every PT row passes the 3% band; every BDPT/VCM row (and the MLT row)
-//  fails it by 54-118 percentage points -- the RED half of the red-proof,
+//  fails it by 55-118 percentage points -- the RED half of the red-proof,
 //  exactly as section 3 predicts pre-S1.  Sensitivity margins
-//  (`mean(PT,expr)/mean(PT,neutral)-1`, all comfortably outside the 3%
-//  band): curv 3.09, convexity 1.25, occlusion 3.93, thickness -0.54,
-//  proximity 2.13, interior 3.16.  13/13 expected red rows fired, 0
-//  unexpected reds, 117 passed / 13 failed overall.
+//  (`mean(PT,expr)/mean(PT,neutral)-1`, all comfortably outside the 25%
+//  sensitivity band -- G9 below): curv 3.08708, convexity 1.25517,
+//  occlusion 3.92066, thickness -0.541867, proximity 2.12706, interior
+//  3.15597.  13/13 expected red rows fired, 0 unexpected reds, 117 passed
+//  / 13 failed overall.
 //
 //  BAND DERIVATION -- MEASURED SPREAD.  Two independent PT runs at the
 //  final (scene, 48 spp) settings gave `mean(PT,expr)/mean(PT,control)-1`
-//  agreeing to within 1e-4 on every scene except convexity (9.3e-3 vs
-//  1.4e-2 across two harness formulations, both well inside 3%) -- i.e.
-//  <0.05% Monte Carlo noise on five of six scenes and a single-digit-
-//  percent APPROXIMATION gap (not noise) on convexity, whose estimator's
-//  per-hit sampling "spin" (the expression_painter builtin doc's own
-//  language) is measurably position-dependent on the sphere (a 9-point
-//  harness quadrature spanning the camera's frustum found convexity(0.3)
-//  ranging 0.304-0.440, average 0.369, against a single off-axis
-//  station's 0.316 -- a 13.6-percentage-point spread that made the
-//  single-point reference miss the image mean by 9.3%; the 9x9 quadrature
-//  average brings PT to 1.4%).  3% comfortably covers both the <0.05%
-//  noise floor and convexity's ~1.4% quadrature-approximation residual,
-//  while remaining a fraction of every observed BDPT/VCM bias (54-118
-//  points).  Layer 2's 5% band is the design doc's own number, at the
-//  coarser (160x120, 16 spp) showcase resolution.
+//  agreeing to within 1e-4 on five of six scenes (i.e. <0.05% Monte Carlo
+//  noise).  Convexity is the exception, and its history is a
+//  SUPERSESSION, not two formulations that were "both well inside 3%"
+//  (G2, this fix round: an earlier draft of this paragraph said exactly
+//  that, citing "9.3e-3 vs 1.4e-2" -- which understated the real number by
+//  an order of magnitude and hid that the first formulation FAILED the
+//  band).  What actually happened: convexity(r)'s estimator is a
+//  32-direction discrete sample of the query ball, "spun about the normal
+//  per hit so the answer is an expectation rather than a multiple of
+//  1/12" (the expression_painter builtin doc's own language) -- a
+//  DETERMINISTIC per-hit result (reproduced bit-for-bit across repeat
+//  program runs; this is discretization bias, not wall-clock noise) that
+//  is nonetheless measurably POSITION-dependent on the sphere.  The
+//  file's ORIGINAL control value used a single hand-picked off-axis
+//  station's ComputeConvexity answer (0.316); against that reference PT's
+//  own layer-1 ratio measured 9.3% -- OUTSIDE the eventual 3% band and
+//  the reason this formulation was SUPERSEDED -- because a 9-point harness
+//  quadrature spanning the camera's frustum found convexity(0.3) actually
+//  ranging 0.304-0.440 (a 13.6-percentage-point spread) with a 9x9 average
+//  of 0.369, 9.3% away from that single station.  The quadrature-average
+//  harness that superseded it (`RunConvexityQuadrature`/
+//  `BuildConvexityScene`) brought PT's ratio down to ~1.4% at 9x9 --
+//  inside 3%, but (F3, this fix round) that 9x9 grid itself disagreed
+//  with a 15x15 re-run of the SAME quadrature by 2.06% (0.366997 vs
+//  0.374733) -- real, deterministic discretization bias, not noise.  A
+//  sweep at N=9,15,21,27,33,41 found the average stabilizing from N=21
+//  onward (21: 0.379127, 27: 0.377271, 33: 0.378536, 41: 0.378159 -- all
+//  mutually within ~0.5%), so the grid this file actually uses was raised
+//  to 21x21 and is cross-checked against 33x33 inside `BuildConvexityScene`
+//  itself (asserted <1% agreement; observed 0.156%).  Against the new
+//  21x21 control, PT's layer-1 convexity ratio is now ~0.0001-0.001 (see
+//  OBSERVED POST-FIX NUMBERS above) -- indistinguishable from the other
+//  five scenes' <0.05% noise floor.  3% comfortably covers that noise
+//  floor with wide margin, while remaining a fraction of every observed
+//  BDPT/VCM bias (55-118 points).  Layer 2's 5% band is the design doc's
+//  own number, at the coarser (160x120, 16 spp) showcase resolution.
 //
 //  LAYER 2 HARNESS FIXES (S2 follow-up).  The original S2 author's
 //  `ResizeFilmChunk`/`SwapRasterizer` were raw-text regex/brace-counting
@@ -286,51 +333,93 @@
 //  hook on every VCM render and prints on every branch), and for PT the
 //  ABSENCE of both (PT's own "Progressive::" line is shared with VCM's
 //  progressive pass, so it isn't distinctive on its own) -- so a swap that
-//  silently fell back to PT would now fail loudly instead of producing an
-//  unremarkable-looking mean.
+//  silently fell back to a different integrator would fail loudly via the
+//  log once the render actually ran, instead of producing an
+//  unremarkable-looking mean.  (F1, this fix round) `CheckIntegratorMarker`
+//  alone only fires AFTER a render completes and only distinguishes
+//  "BDPT/VCM specifically ran" from "neither did" -- it does not prove the
+//  DOCUMENT about to be rendered carried the intended keyword before that
+//  render started.  `VerifySwappedRasterizerChunk` closes that gap: it
+//  resolves the swapped document's own `*_rasterizer` chunk by role and
+//  hard-`Check`s that its keyword (`Chunk::role`) equals the intended
+//  integrator's (`pathtracing_pel_rasterizer` / `bdpt_pel_rasterizer` /
+//  `vcm_pel_rasterizer`) for EVERY integrator, including PT, plus a
+//  read-back that the chunk still carries `oidn_denoise FALSE` and
+//  `pixel_filter box`.  Between the two checks, a swap that silently fell
+//  back to a different integrator's chunk now fails loudly at the
+//  document level (before any render runs) as well as the log level
+//  (after one does).
 //
-//  LAYER 2 FINDING (post-fix, this session, kLayer2Samples=32).  At
+//  LAYER 2 FINDING (this fix round, worktree signals-bidir,
+//  kLayer2Samples=32, two independent default runs -- full logs
+//  .../scratchpad/s2_fixround_run1.txt and run2.txt).  At
 //  160x120, all FOUR showcases' WHOLE-IMAGE `mean(PT,E)` vs `mean(PT,B)`
-//  still differ by well under the 5% sensitivity band (plank ~0.3%,
-//  tidal_stones ~0.05%, shelf_bunny ~1.8%, pavilion_colonnade ~0.9%) --
-//  each signal-driven region (a nail's contact seam, a buried stone's
-//  waterline, dust under a bunny's foot, a column's crevice wear) is too
-//  small a fraction of the WHOLE-IMAGE mean to move it past noise at this
-//  resolution, exactly as the pre-fix run already found -- so the
-//  WHOLE-IMAGE ratio-of-ratios is dropped on all four, as designed.  The
-//  MASKED form (this session's addendum) DOES witness the gap: mask
-//  coverage ranged 2.1% (plank) to 12.8% (tidal) of pixels, and on every
-//  (showcase, integrator) pair NOT caught by the blow-up gate the masked
-//  ratio-of-ratios PASSED comfortably inside the 20% band -- plank BDPT
-//  (R_E/R_B-1 = +0.031 to -0.10 across repeat runs), plank VCM (-0.04 to
-//  -0.07), bunny BDPT (+0.015), pavilion BDPT (+0.006).  BLOW-UP SKIPS
-//  (task item 5 -- recorded, not investigated, not asserted on): tidal
-//  BDPT (mean(BDPT)/mean(PT) ~= 1100x), tidal VCM (~3500x), bunny VCM
-//  (~4450x), pavilion VCM (~750x) -- all pre-existing, non-signal
-//  integrator disagreements (E and B agree with EACH OTHER under the
-//  blown-up integrator; only the comparison to PT is meaningless), matching
-//  the supervisor's independently-reproduced CLI figures (tidal BDPT
+//  still differ by well under the 5% sensitivity band across both runs
+//  (plank 0.24%-0.30%, tidal_stones 0.03%-0.04%, shelf_bunny 1.85%-1.86%,
+//  pavilion_colonnade 0.97%-0.98%) -- each signal-driven region (a nail's
+//  contact seam, a buried stone's waterline, dust under a bunny's foot, a
+//  column's crevice wear) is too small a fraction of the WHOLE-IMAGE mean
+//  to move it past noise at this resolution, exactly as the pre-fix run
+//  already found -- so the WHOLE-IMAGE ratio-of-ratios is dropped on all
+//  four, as designed.  The MASKED form DOES witness the gap: mask coverage
+//  ranged 2.12%-2.20% (plank) to 13.1%-13.2% (tidal) of pixels across both
+//  runs (bunny 6.60%-6.72%, pavilion 6.69%-6.82%), and on every (showcase,
+//  integrator) pair NOT caught by the blow-up gate the masked
+//  ratio-of-ratios PASSED comfortably inside the 20% band.  (G6/G7: an
+//  earlier draft cited exact tiny values here -- e.g. "pavilion BDPT
+//  +0.006" -- that did not match their own cited log and are Monte-Carlo
+//  noise at this sample count anyway; replaced with the honest range
+//  below, re-derived from the two runs actually cited above.)  Observed
+//  across both runs: plank BDPT R_E/R_B-1 in {-0.0385, -0.1062}, plank VCM
+//  in {-0.0521, -0.0582}, bunny BDPT in {+0.0248, +0.0263}, pavilion BDPT
+//  in {+0.0074, +0.0102} -- every one of the eight rows inside the 20%
+//  band, though plank BDPT's -0.1062 leaves under 2x headroom (see BAND
+//  DERIVATION -- MASKED LAYER below for why the band stays at 20% rather
+//  than tightening).  BLOW-UP SKIPS (task item 5; F2, this fix round, adds
+//  the E/B-agreement half of the gate -- recorded, not investigated, not
+//  asserted on): tidal BDPT (mean(BDPT)/mean(PT,E) ~1099.5-1099.7x,
+//  mean(BDPT)/mean(PT,B) ~1112.9-1113.0x, E/B agree within ~1.23%), tidal
+//  VCM (~3465.9-3466.5x / ~3466.8-3467.0x, agree within ~0.05%), bunny VCM
+//  (~4450.4-4450.5x / ~4445.0-4445.3x, agree within ~1.74%), pavilion VCM
+//  (~749.9-750.1x / ~745.5-745.7x, agree within ~0.39%) -- all four
+//  comfortably inside the 10% E/B-agreement band (`kLayer2BlowupAgreeBand`),
+//  so all four classify as `BlowupClass::Blowup` (the known, pre-existing,
+//  non-signal case) rather than `BlowupClass::Asymmetric`; neither run
+//  flagged any row as a possible signal-attributable regression instead.
+//  These figures match the supervisor's independently-reproduced CLI
+//  figures (tidal BDPT
 //  157-338x, tidal VCM 433-1656x, bunny VCM ~4558x across 160x120/
 //  400x300/800x600) and VCM's known auto-radius instability at low spp
 //  (flagged in the pre-fix run for whoever next touches VCM's auto-radius
-//  pre-pass; still open).  `g_blowupSkipCount` == 4 on the default run.
+//  pre-pass; still open).  `g_blowupSkipCount` == 4 on both runs.
 //
 //  BAND DERIVATION -- MASKED LAYER.  The masked ratio-of-ratios averages
-//  over a MUCH smaller pixel set (roughly 200-2500 of 19200 pixels
+//  over a MUCH smaller pixel set (roughly 400-2600 of 19200 pixels
 //  depending on showcase) than the whole-image form, so it carries more
-//  Monte Carlo noise per sample.  Measured by re-running plank_closeup's
-//  masked BDPT/VCM ratio 3 independent times at the shipped (scene, 32 spp)
-//  settings: BDPT R_E/R_B-1 in {-0.046, -0.064, -0.098}, VCM in {-0.073,
-//  -0.037, -0.063} -- max observed |ratio| 0.098.  Raising samples to 64
-//  did not tighten this (repeat spread ~0.057, similar order) while
-//  SHRINKING mask coverage toward the 1% floor (1.15-1.16%, one auto-radius
-//  hiccup away from a false "insensitive" drop) -- the mask's hard 20%
-//  threshold interacts with pixel-level noise in a way plain sample-count
-//  scaling doesn't fix, so 32 spp (kLayer2Samples) was kept.  The 20% band
-//  (kLayer2MaskedBand) is roughly 2x the observed max spread, the same
-//  safety-margin convention Layer 1's 3% band uses relative to its <0.05%
-//  noise floor.  This band is intentionally looser than Layer 1's 3% --
-//  it is a production-scene diagnostic, not the sharp gate; Layer 1 is
+//  Monte Carlo noise per sample.  (F4, this fix round) Re-derived from
+//  n=5 independent runs of plank_closeup's masked BDPT/VCM ratio at the
+//  shipped (scene, 32 spp) settings (was n=3) -- full logs
+//  .../scratchpad/s2_plank_n5_run1.txt through run5.txt: BDPT R_E/R_B-1 in
+//  {+0.0012, -0.0171, -0.0346, -0.1282, -0.0911}, VCM in {-0.0419, -0.0598,
+//  -0.0741, -0.0626, -0.0526} -- max observed |ratio| 0.1282 (BDPT), wider
+//  than n=3's 0.098 (more samples of a noisy estimator found a WIDER tail,
+//  not a narrower one -- consistent with the -0.1062 seen on the SAME
+//  plank/BDPT row in one of the two OBSERVED POST-FIX default runs above).
+//  Mask coverage across the same 5 runs: 2.089%-2.276% -- printed to 3
+//  decimal places (this fix round) so a reader sees the ~2x headroom over
+//  the 1% floor (`kLayer2MaskMinCoverage`) directly instead of it rounding
+//  away at "2%".  Raising samples to 64 did not tighten the ratio spread
+//  (repeat spread ~0.057, similar order) while SHRINKING mask coverage
+//  toward the 1% floor (1.15-1.16%, one auto-radius hiccup away from a
+//  false "insensitive" drop) -- the mask's hard 20% threshold interacts
+//  with pixel-level noise in a way plain sample-count scaling doesn't fix,
+//  so 32 spp (kLayer2Samples) was kept.  The 20% band (kLayer2MaskedBand)
+//  is roughly 1.5x the n=5 observed max spread (0.1282) -- tighter
+//  headroom than the n=3-derived "roughly 2x" an earlier draft claimed,
+//  but still comfortably clear of every value observed in this fix
+//  round's own default runs (LAYER 2 FINDING above tops out at 0.1062 on
+//  that same row).  This band is intentionally looser than Layer 1's 3%
+//  -- it is a production-scene diagnostic, not the sharp gate; Layer 1 is
 //  the file's primary red/green witness (per its own header framing
 //  above), and the masked Layer-2 numbers are corroborating evidence on
 //  real showcase content.
@@ -339,7 +428,7 @@
 //  `showcase`, and the four showcase names `plank`, `tidal`, `bunny`,
 //  `pavilion`) restricts which layer/scene runs, like FabricRenderTest's
 //  own filter.  Unset (the default, and the CI invocation) runs BOTH
-//  layers, all four unit scenes and all four showcases.  Default runtime
+//  layers, all six unit scenes and all four showcases.  Default runtime
 //  on this machine: ~38 seconds wall (layer 1 ~20s, layer 2 ~18s at
 //  kLayer2Samples=32, up from the original author's 16 -- the extra
 //  samples buy headroom for the masked ratio's per-pixel noise without
@@ -355,6 +444,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -421,7 +511,7 @@ static bool FilterAllows( const char* keyword )
 	return g_filter.find( keyword ) != std::string::npos;
 }
 
-//! Layer 1 (the four constant-signal unit scenes) runs when the filter is
+//! Layer 1 (the six constant-signal unit scenes) runs when the filter is
 //! unset or names "unit".
 static bool WantsLayer1()
 {
@@ -657,6 +747,15 @@ static bool CompileWithContext( const std::string& body, ExpressionProgram& out 
 	return b.Finalize( body, out );
 }
 
+//! (F5) The ONE sampling-detail value shared by every scene-text `part`
+//! chunk this file authors AND every hand-built SDFGeometry in
+//! EvalAtSdfHit below, so the two constructions can never silently drift
+//! apart -- before this constant existed, EvalAtSdfHit relied on
+//! SDFGeometry's own default argument (also 64) matching the scene text's
+//! literal `sampling_detail 64` by coincidence; a future change to either
+//! default would break that coincidence without anyone noticing.
+static const int kSdfSamplingDetail = 64;
+
 //! Evaluate `body` (an expression referencing occlusion/convexity/thickness)
 //! at the first hit of (origin,dir) against an SDFGeometry built from
 //! `parts`.  Returns false on miss or compile failure.
@@ -665,7 +764,7 @@ static bool EvalAtSdfHit(
 	const Point3& origin, const Vector3& dir,
 	const std::string& body, Scalar& outValue )
 {
-	SDFGeometry* g = new SDFGeometry( parts, 512, Scalar( 1e-5 ) );
+	SDFGeometry* g = new SDFGeometry( parts, 512, Scalar( 1e-5 ), kSdfSamplingDetail );
 	Object* obj = new Object( g );
 	safe_release( g );
 	obj->FinalizeTransformations();
@@ -721,7 +820,7 @@ static std::string BuildSignalScene(
 	return ss.str();
 }
 
-//! The four layer-1 unit-scene descriptors.
+//! The six layer-1 unit-scene descriptors.
 struct SignalUnitScene
 {
 	const char* name;
@@ -733,7 +832,7 @@ struct SignalUnitScene
 };
 
 //======================================================================
-// LAYER 1 -- scene geometry.  Film is 32x32 for all four (BDPTStrategy-
+// LAYER 1 -- scene geometry.  Film is 32x32 for all six (BDPTStrategy-
 // BalanceTest's own precedent: sub-percent MC noise on a smooth scene's
 // mean at moderate spp over ~1000 pixels).
 //======================================================================
@@ -782,6 +881,45 @@ static SignalUnitScene BuildCurvScene()
 // call, just off the Monte Carlo path.  This is still independent of the
 // render (no pixel from the actual render feeds back into it) and still
 // a strong oracle (direct evaluation, not a theoretical approximation).
+//! (F3) An NxN pinhole quadrature of `exprBody` over normalized device
+//! coordinates [-0.9,0.9]^2 (staying off the silhouette) against a
+//! square-aspect pinhole camera with vertical fov `fovDeg` -- factored out
+//! of BuildConvexityScene so the SAME quadrature can be run at two grid
+//! sizes and cross-checked against each other for grid-size convergence
+//! (a coarse quadrature converging to a strictly-better one is separate
+//! evidence from PT's own Monte-Carlo run-to-run spread; both bound the
+//! same "is the control number trustworthy?" question from different
+//! sides).
+static double RunConvexityQuadrature(
+	const std::vector<SDFGeometry::Part>& parts, const Point3& camLoc, double fovDeg,
+	const std::string& exprBody, int N, double* outMin, double* outMax, int* outCount )
+{
+	const double halfFov = fovDeg * 0.5 * (M_PI / 180.0);
+	const double tanHalf = std::tan( halfFov );
+	double sum = 0.0;
+	int count = 0;
+	double minV = 1e30, maxV = -1e30;
+	for( int iy = 0; iy < N; ++iy ) {
+		for( int ix = 0; ix < N; ++ix ) {
+			const double ndcX = -0.9 + 1.8 * ( double(ix) / double(N-1) );
+			const double ndcY = -0.9 + 1.8 * ( double(iy) / double(N-1) );
+			Vector3 dir = Vector3Ops::Normalize( Vector3(
+				ndcX * tanHalf, ndcY * tanHalf, -1.0 ) );
+			Scalar v = 0;
+			if( EvalAtSdfHit( parts, camLoc, dir, exprBody, v ) ) {
+				sum += double(v);
+				count++;
+				minV = std::min( minV, double(v) );
+				maxV = std::max( maxV, double(v) );
+			}
+		}
+	}
+	if( outMin ) *outMin = minV;
+	if( outMax ) *outMax = maxV;
+	if( outCount ) *outCount = count;
+	return count > 0 ? sum / double(count) : 0.0;
+}
+
 static SignalUnitScene BuildConvexityScene( double* outHarnessValue )
 {
 	SignalUnitScene s;
@@ -792,7 +930,7 @@ static SignalUnitScene BuildConvexityScene( double* outHarnessValue )
 	const double fovDeg = 32.0;
 	std::ostringstream g;
 	g << "sdf_geometry\n{\n\tname convex_sphere\n\tpart sphere union 0  0 0 0  0 0 0  1 1 1  " << rho << " 0 0  0\n"
-	  << "\tmaxsteps 512\n\tepsilon 0.00001\n\tsampling_detail 64\n}\n\n";
+	  << "\tmaxsteps 512\n\tepsilon 0.00001\n\tsampling_detail " << kSdfSamplingDetail << "\n}\n\n";
 	g << "standard_object\n{\n\tname obj_convex\n\tgeometry convex_sphere\n\tmaterial sig_mat\n}\n\n";
 	g << "pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov " << fovDeg << "\n}\n\n";
 	g << "omni_light\n{\n\tname l_convex\n\tpower 6.0\n\tcolor 1 1 1\n\tposition 3 3 6\n}\n\n";
@@ -812,32 +950,43 @@ static SignalUnitScene BuildConvexityScene( double* outHarnessValue )
 	// [-0.9,0.9]^2 (staying off the silhouette, where a grazing ray can
 	// miss the sphere entirely), matching a square-aspect pinhole camera
 	// with vertical fov = fovDeg.
-	const int N = 9;
-	const double halfFov = fovDeg * 0.5 * (M_PI / 180.0);
-	const double tanHalf = std::tan( halfFov );
-	double sum = 0.0;
-	int count = 0;
+	//
+	// (F3) Grid size is 21x21, not the original 9x9: this quadrature's
+	// per-hit result is DETERMINISTIC (a fixed-seed "spin", not wall-clock
+	// noise -- reproduced bit-for-bit across repeat runs), so a 9x9-vs-15x15
+	// cross-check measures true discretization bias, and 9x9 vs 15x15
+	// disagreed by 2.06% (avg 0.366997 vs 0.374733) -- outside the 1% bound
+	// this cross-check enforces.  A sweep at N=9,15,21,27,33,41 (kept in
+	// the S2 fix-round commit message, not in this file) found the average
+	// stabilizing from N=21 onward (21: 0.379127, 27: 0.377271, 33:
+	// 0.378536, 41: 0.378159 -- all mutually within ~0.5%), so the primary
+	// grid was raised to 21x21 and is cross-checked against 33x33 below.
+	const int N = 21;
 	double minV = 1e30, maxV = -1e30;
-	for( int iy = 0; iy < N; ++iy ) {
-		for( int ix = 0; ix < N; ++ix ) {
-			const double ndcX = -0.9 + 1.8 * ( double(ix) / double(N-1) );
-			const double ndcY = -0.9 + 1.8 * ( double(iy) / double(N-1) );
-			Vector3 dir = Vector3Ops::Normalize( Vector3(
-				ndcX * tanHalf, ndcY * tanHalf, -1.0 ) );
-			Scalar v = 0;
-			if( EvalAtSdfHit( parts, camLoc, dir, tb.str(), v ) ) {
-				sum += double(v);
-				count++;
-				minV = std::min( minV, double(v) );
-				maxV = std::max( maxV, double(v) );
-			}
-		}
-	}
+	int count = 0;
+	const double avg = RunConvexityQuadrature( parts, camLoc, fovDeg, tb.str(), N, &minV, &maxV, &count );
 	Check( count > ( N * N ) / 2, "(harness) convexity quadrature hits the sphere over most of the grid" );
-	const double avg = count > 0 ? sum / double(count) : 0.0;
 	std::cout << "  (harness) convexity(" << rFrac << ") quadrature: N=" << count
 	          << " avg=" << avg << " min=" << minV << " max=" << maxV
 	          << " spread=" << ( maxV - minV ) << std::endl;
+
+	// (F3) Grid-size cross-check: re-run the SAME quadrature at 33x33 and
+	// assert the two grid sizes agree within 1% -- bounding the quadrature
+	// bias itself (as distinct from PT's own Monte-Carlo run-to-run spread,
+	// which BAND DERIVATION in the file header measures separately).  If
+	// this ever fails again, the fix is to raise the grid this function
+	// actually uses for `avg` further (currently 21x21) and re-state the
+	// observed convergence in the file header -- not to loosen the 1% check.
+	const int Nfine = 33;
+	double minFine = 1e30, maxFine = -1e30;
+	int countFine = 0;
+	const double avgFine = RunConvexityQuadrature( parts, camLoc, fovDeg, tb.str(), Nfine, &minFine, &maxFine, &countFine );
+	Check( countFine > ( Nfine * Nfine ) / 2, "(harness) convexity 33x33 cross-check quadrature hits the sphere over most of the grid" );
+	const double gridConvergence = avg != 0.0 ? std::fabs( avg / avgFine - 1.0 ) : std::fabs( avgFine );
+	std::cout << "  (harness) convexity(" << rFrac << ") grid-size cross-check: 21x21 avg=" << avg
+	          << " vs 33x33 avg=" << avgFine << " |21x21/33x33-1|=" << gridConvergence << std::endl;
+	Check( gridConvergence < 0.01,
+		"(harness) convexity quadrature: 21x21 and 33x33 grids agree within 1% (quadrature-bias bound)" );
 
 	*outHarnessValue = avg;
 	std::ostringstream cv;
@@ -871,7 +1020,7 @@ static SignalUnitScene BuildOcclusionScene( double* outHarnessValue )
 	g << "sdf_geometry\n{\n\tname pocket_sdf\n"
 	  << "\tpart sphere union 0     0 0 0    0 0 0   1 1 1   " << bigR << " 0 0   0\n"
 	  << "\tpart sphere subtract 0  0 0 2.0  0 0 0   1 1 1   " << rho << " 0 0   0\n"
-	  << "\tmaxsteps 512\n\tepsilon 0.00001\n\tsampling_detail 64\n}\n\n";
+	  << "\tmaxsteps 512\n\tepsilon 0.00001\n\tsampling_detail " << kSdfSamplingDetail << "\n}\n\n";
 	g << "standard_object\n{\n\tname obj_pocket\n\tgeometry pocket_sdf\n\tmaterial sig_mat\n}\n\n";
 	g << "pinhole_camera\n{\n\tlocation 0 0 2.9\n\tlookat 0 0 0.5\n\tup 0 1 0\n\tfov 8.0\n}\n\n";
 	g << "omni_light\n{\n\tname l_pocket\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0.3 0.3 2.7\n}\n\n";
@@ -917,7 +1066,7 @@ static SignalUnitScene BuildThicknessScene( double* outHarnessValue )
 	const double rFrac = 0.1;
 	std::ostringstream g;
 	g << "sdf_geometry\n{\n\tname slab_sdf\n\tpart box union 0  0 0 0  0 0 0  1 1 1  5.0 5.0 " << halfW << "  0\n"
-	  << "\tmaxsteps 512\n\tepsilon 0.00001\n\tsampling_detail 64\n}\n\n";
+	  << "\tmaxsteps 512\n\tepsilon 0.00001\n\tsampling_detail " << kSdfSamplingDetail << "\n}\n\n";
 	g << "standard_object\n{\n\tname obj_slab\n\tgeometry slab_sdf\n\tmaterial sig_mat\n}\n\n";
 	g << "pinhole_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 4.0\n}\n\n";
 	g << "omni_light\n{\n\tname l_slab\n\tpower 6.0\n\tcolor 1 1 1\n\tposition 2 2 5\n}\n\n";
@@ -1027,7 +1176,7 @@ static void RunLayer1Scene( const SignalUnitScene& scene, bool includeMlt )
 	if( includeMlt ) integrators.push_back( Integrator::MLT );
 
 	const double band = 0.03;			// 3% -- see header BAND DERIVATION
-	const double sensitivityBand = 0.03;	// must be OUTSIDE this
+	const double sensitivityBand = 0.25;	// (G9) design doc section 6.1: must be OUTSIDE 25%, not 3% -- every observed margin (0.54-3.92) clears this comfortably
 
 	double ptExprMean = 0.0, ptNeutralMean = 0.0;
 	bool ptOk = false;
@@ -1346,6 +1495,7 @@ static const double kLayer2MaskThreshold = 0.20;	// |PT(E)-PT(B)|/PT(B) > this -
 static const double kLayer2MaskMinCoverage = 0.01;	// mask must cover >= 1% of pixels to be trusted
 static const double kLayer2MaskedBand = 0.20;		// see "BAND DERIVATION -- MASKED LAYER" in the file header
 static const double kLayer2BlowupLow = 0.5, kLayer2BlowupHigh = 2.0;	// non-signal integrator-disagreement gate
+static const double kLayer2BlowupAgreeBand = 0.10;	// (F2) E and B must also agree with EACH OTHER within this to call a blow-up "not signal-attributable"
 
 //! Total blow-up skips across every showcase/integrator (task item 5):
 //! counted here, printed in main()'s summary, never silently absorbed.
@@ -1403,6 +1553,55 @@ static void CheckIntegratorMarker( Integrator integ, const std::string& log, con
 	}
 }
 
+//! (F1) The keyword SwapRasterizerCst is supposed to have written for each
+//! integrator -- the POSITIVE half of the swap verification.
+//! CheckIntegratorMarker above is a log-side witness (present markers
+//! prove BDPT/VCM specifically ran); this is a document-side witness
+//! (the chunk that will actually be derived really is that keyword) so a
+//! swap that silently produced/left a `pathtracing_pel_rasterizer` chunk
+//! for a BDPT or VCM row fails loudly here even before any render happens.
+static const char* ExpectedRasterizerKeyword( Integrator integ )
+{
+	switch( integ ) {
+		case Integrator::PT:   return "pathtracing_pel_rasterizer";
+		case Integrator::BDPT: return "bdpt_pel_rasterizer";
+		case Integrator::VCM:  return "vcm_pel_rasterizer";
+		case Integrator::MLT:  return "mlt_rasterizer";
+	}
+	return "";
+}
+
+//! (F1) Positive verification of a post-SwapRasterizerCst document: the
+//! unique `*_rasterizer` chunk resolves, its keyword (Chunk::role) is
+//! EXACTLY the intended integrator's, and it still carries
+//! `oidn_denoise FALSE` + `pixel_filter box` (read back from the chunk's
+//! own parameters, not assumed from the text this file generated) -- the
+//! same non-MIS-cause checklist every rasterizer builder in this file is
+//! written to satisfy (docs/skills/bdpt-vcm-mis-balance.md Step 0).
+static void VerifySwappedRasterizerChunk( const Cst::Document& doc, Integrator integ, const std::string& keyword, const char* variantTag )
+{
+	const std::string tag = keyword + " " + variantTag + " " + IntegratorName( integ );
+	const Cst::NodeId rastId = FindChunkByRole( doc, std::string(), "_rasterizer" );
+	Check( rastId > 0, tag + ": swapped rasterizer chunk resolves by role" );
+	if( rastId == 0 ) return;
+
+	const Cst::NodeRef rastChunk = Cst::DocResolveNodeId( doc, rastId );
+	const std::string expected = ExpectedRasterizerKeyword( integ );
+	Check( (bool)rastChunk && rastChunk->role == expected,
+		tag + ": swapped rasterizer chunk keyword is \"" + expected + "\" (got \""
+		+ ( rastChunk ? rastChunk->role : std::string("<null>") ) + "\") -- a swap that silently fell back to a "
+		"different integrator's chunk now fails loudly here, not just in a flat-looking mean" );
+	if( !rastChunk ) return;
+
+	bool hasOidn = false, hasFilter = false;
+	const std::string oidnVal   = Cst::ParamValueAsParsed( rastChunk, "oidn_denoise", &hasOidn );
+	const std::string filterVal = Cst::ParamValueAsParsed( rastChunk, "pixel_filter", &hasFilter );
+	Check( hasOidn && oidnVal == "FALSE",
+		tag + ": swapped chunk carries oidn_denoise FALSE (got \"" + ( hasOidn ? oidnVal : std::string("<absent>") ) + "\")" );
+	Check( hasFilter && filterVal == "box",
+		tag + ": swapped chunk carries pixel_filter box (got \"" + ( hasFilter ? filterVal : std::string("<absent>") ) + "\")" );
+}
+
 //! Per-pixel composited-over-black scalar (base*coverage averaged across
 //! channels) -- the SAME quantity ComputeStats averages over the whole
 //! image, kept per-pixel here so the masked ratio-of-ratios (design doc
@@ -1434,6 +1633,37 @@ struct Layer2Row
 	double meanE = 0.0, meanB = 0.0;
 };
 
+//! (F2) A whole-image blow-up gate that keys ONLY on `mean(I,E)/mean(PT,E)`
+//! cannot tell a genuine "E and B agree with each other, only the OTHER
+//! integrator disagrees with PT" non-signal blow-up (the documented VCM
+//! auto-radius case) from an ASYMMETRIC one where E and B disagree WITH
+//! EACH OTHER under the blown-up integrator -- which would itself be
+//! evidence of a signal-attributable regression hiding behind the skip.
+//! Blowup:     both ratioE and ratioB fall outside [0.5x,2x] of PT AND
+//!             r.meanE/r.meanB agrees with 1 within kLayer2BlowupAgreeBand
+//!             -- the known, previously-recorded non-signal case.
+//! Asymmetric: only one of {ratioE,ratioB} is outside the band, OR both
+//!             are outside but E/B disagree by more than the agree band --
+//!             NOT skipped; the caller must fail loudly on this.
+enum class BlowupClass { None, Blowup, Asymmetric };
+
+static BlowupClass ClassifyBlowup(
+	const Layer2Row& r, double meanPT_E, double meanPT_B,
+	double* outRatioE, double* outRatioB, double* outAgree )
+{
+	const double ratioE = meanPT_E != 0.0 ? r.meanE / meanPT_E : 0.0;
+	const double ratioB = meanPT_B != 0.0 ? r.meanB / meanPT_B : 0.0;
+	*outRatioE = ratioE;
+	*outRatioB = ratioB;
+	const bool eOut = ( meanPT_E == 0.0 ) || ratioE < kLayer2BlowupLow || ratioE > kLayer2BlowupHigh;
+	const bool bOut = ( meanPT_B == 0.0 ) || ratioB < kLayer2BlowupLow || ratioB > kLayer2BlowupHigh;
+	const double agree = ( r.meanB != 0.0 ) ? std::fabs( r.meanE / r.meanB - 1.0 ) : 1e9;
+	*outAgree = agree;
+	if( eOut && bOut && agree < kLayer2BlowupAgreeBand ) return BlowupClass::Blowup;
+	if( eOut || bOut ) return BlowupClass::Asymmetric;
+	return BlowupClass::None;
+}
+
 static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 {
 	const fs::path scenePath = root / spec.relPath;
@@ -1458,6 +1688,8 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	for( Integrator integ : { Integrator::PT, Integrator::BDPT, Integrator::VCM } ) {
 		Cst::Document docE = SwapRasterizerCst( Cst::ParseToCst( variantEText ), integ, kLayer2Samples );
 		Cst::Document docB = SwapRasterizerCst( Cst::ParseToCst( variantBText ), integ, kLayer2Samples );
+		VerifySwappedRasterizerChunk( docE, integ, spec.keyword, "E" );
+		VerifySwappedRasterizerChunk( docB, integ, spec.keyword, "B" );
 
 		Job* jobE = new Job();
 		Job* jobB = new Job();
@@ -1540,26 +1772,38 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		          << ") -- dropped from the WHOLE-IMAGE R_E/R_B assertion (cannot witness the gap either way)." << std::endl;
 	}
 
-	// Per-integrator blow-up gate (task item 5): a >2x or <0.5x whole-image
-	// disagreement with PT is a KNOWN non-signal integrator issue (VCM
-	// auto-radius instability at low spp; see docs/RENDERING_INTEGRATORS.md)
-	// -- both the whole-image and the masked ratio-of-ratios are meaningless
-	// there and MUST be skipped, not asserted on.
-	auto isBlowup = [&]( const Layer2Row& r ) -> bool {
-		if( meanPT_E == 0.0 ) return true;
-		const double wholeRatio = r.meanE / meanPT_E;
-		return wholeRatio < kLayer2BlowupLow || wholeRatio > kLayer2BlowupHigh;
-	};
-
+	// (F2) Per-integrator blow-up gate (task item 5): a >2x or <0.5x
+	// whole-image disagreement with PT is a KNOWN non-signal integrator
+	// issue (VCM auto-radius instability at low spp; see
+	// docs/RENDERING_INTEGRATORS.md) ONLY when E and B agree with EACH
+	// OTHER under the blown-up integrator -- both the whole-image and the
+	// masked ratio-of-ratios are meaningless there and are SKIPPED, not
+	// asserted on.  An ASYMMETRIC blow-up (only one of E/B outside the
+	// band, or both outside but disagreeing with each other by more than
+	// 10%) is NOT skipped -- it is exactly the shape a signal-attributable
+	// regression would take (E and B priced differently by the SAME
+	// integrator), so it fails loudly here instead.
 	for( const Layer2Row& r : rows ) {
 		if( r.integ == Integrator::PT ) continue;
-		if( isBlowup( r ) ) {
-			const double wholeRatio = meanPT_E != 0.0 ? r.meanE / meanPT_E : 0.0;
-			std::cout << "  " << IntegratorName(r.integ) << ": mean(" << IntegratorName(r.integ) << ")/mean(PT) = " << wholeRatio
+		double ratioE = 0.0, ratioB = 0.0, agree = 0.0;
+		const BlowupClass cls = ClassifyBlowup( r, meanPT_E, meanPT_B, &ratioE, &ratioB, &agree );
+		if( cls == BlowupClass::Blowup ) {
+			std::cout << "  " << IntegratorName(r.integ) << ": mean(" << IntegratorName(r.integ) << ")/mean(PT,E) = " << ratioE
+			          << "  mean(" << IntegratorName(r.integ) << ")/mean(PT,B) = " << ratioB
+			          << "  (E/B agree within " << agree << ")"
 			          << " -- INTEGRATOR DISAGREEMENT (not signal-attributable; recorded in docs/RENDERING_INTEGRATORS.md)"
 			          << " -- SKIPPING ratio-of-ratios for this showcase." << std::endl;
 			g_blowupSkipCount++;
 			continue;
+		}
+		if( cls == BlowupClass::Asymmetric ) {
+			std::cout << "  " << IntegratorName(r.integ) << ": mean(" << IntegratorName(r.integ) << ")/mean(PT,E) = " << ratioE
+			          << "  mean(" << IntegratorName(r.integ) << ")/mean(PT,B) = " << ratioB
+			          << "  E/B disagreement = " << agree
+			          << "  -- ASYMMETRIC BLOW-UP (possible signal-attributable regression, NOT skipped)" << std::endl;
+			Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ)
+				+ ": asymmetric blow-up (ratioE=" + std::to_string(ratioE) + " ratioB=" + std::to_string(ratioB)
+				+ " E/B disagreement=" + std::to_string(agree) + ") is NOT a known non-signal integrator disagreement" );
 		}
 		if( sensitive ) {
 			if( r.meanE == 0.0 || meanPT_E == 0.0 || r.meanB == 0.0 ) {
@@ -1604,12 +1848,19 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		if( std::fabs( e - b ) / std::max( b, kMaskEps ) > kLayer2MaskThreshold ) { mask[i] = true; maskCount++; }
 	}
 	const double maskFrac = double( maskCount ) / double( N );
-	std::cout << "  MASK: " << maskCount << "/" << N << " pixels (" << ( maskFrac * 100.0 )
+	// (F4) 3 decimal places on the printed coverage percentage: plank's
+	// coverage (~2.1%, see BAND DERIVATION -- MASKED LAYER in the file
+	// header) sits at roughly 2x the 1% floor, and that headroom is only
+	// visible to a reader at this precision -- "2%" alone looks alarmingly
+	// close to the floor.
+	std::cout << "  MASK: " << maskCount << "/" << N << " pixels ("
+	          << std::fixed << std::setprecision(3) << ( maskFrac * 100.0 ) << std::defaultfloat << std::setprecision(6)
 	          << "%) with |PT(E)-PT(B)|/PT(B) > " << ( kLayer2MaskThreshold * 100.0 ) << "%" << std::endl;
 
 	if( maskFrac < kLayer2MaskMinCoverage ) {
-		std::cout << "  NOTE: " << spec.keyword << " masked coverage " << ( maskFrac * 100.0 ) << "% < "
-		          << ( kLayer2MaskMinCoverage * 100.0 ) << "% -- skipping the masked ratio-of-ratios (too few pixels to witness the gap)." << std::endl;
+		std::cout << "  NOTE: " << spec.keyword << " masked coverage "
+		          << std::fixed << std::setprecision(3) << ( maskFrac * 100.0 ) << std::defaultfloat << std::setprecision(6)
+		          << "% < " << ( kLayer2MaskMinCoverage * 100.0 ) << "% -- skipping the masked ratio-of-ratios (too few pixels to witness the gap)." << std::endl;
 		return;
 	}
 
@@ -1626,7 +1877,11 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 
 	for( const Layer2Row& r : rows ) {
 		if( r.integ == Integrator::PT ) continue;
-		if( isBlowup( r ) ) continue;		// already reported + counted above
+		{
+			double ratioE = 0.0, ratioB = 0.0, agree = 0.0;
+			if( ClassifyBlowup( r, meanPT_E, meanPT_B, &ratioE, &ratioB, &agree ) == BlowupClass::Blowup )
+				continue;		// already reported + counted above; an Asymmetric row was already Checked(false) above but still gets a masked ratio printed
+		}
 		if( r.valsE.size() != N || r.valsB.size() != N || maskedPT_E == 0.0 || maskedPT_B == 0.0 ) {
 			Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": masked means available for R_E/R_B" );
 			continue;
