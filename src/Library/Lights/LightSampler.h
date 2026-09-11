@@ -111,56 +111,116 @@ namespace RISE
 		//!
 		//! ACCEPT: 1 % of D.  UPPER bound: a hit on a genuinely DIFFERENT
 		//! part of a non-convex luminary is O(D) away, so 1 % rejects it
-		//! with two orders of margin.  LOWER bound: NOT the intersector's
-		//! floating-point error, and NOT (as an earlier draft of this
-		//! comment claimed) a marching-cubes-versus-ray-march surface
-		//! disagreement -- `SDFGeometry::UniformRandomPoint` Newton-projects
-		//! its samples onto the ray-marched zero set to within ~5e-5 of the
-		//! diagonal, so the two surfaces are the SAME surface to that
-		//! accuracy and no extraction-cell term exists.  What the tolerance
-		//! actually has to absorb is INCIDENCE.  The NEE probe travels from
-		//! the shading point along `vToLight`, and the only thing the caller
-		//! guarantees about that direction is `cosLight > 0`; a grazing
-		//! sample therefore converts the intersector's perpendicular surface
-		//! band `delta` into a longitudinal displacement `delta / cos(theta)`
-		//! along the ray.  For an SDF, `delta` is its own hit epsilon divided
-		//! by the field's Lipschitz shrink -- `2 * m_epsFrac * D / shrink` --
-		//! which at the 5e-5 default and a uniform field is 1e-4 * D, so 1 %
-		//! still covers incidences down to cos(theta) ~ 0.01.  For every
-		//! analytic primitive `delta` is ulp-scale and the whole budget is
-		//! incidence.  The margin against a WRONG-PART hit is therefore two
-		//! orders (1 % of D against the O(D) separation of two distinct
-		//! parts), not the "three orders" the earlier draft asserted.
+		//! with two orders of margin.  LOWER bound: what the tolerance has
+		//! to absorb, now that there is ONE probe and it is NORMAL-ALIGNED
+		//! (round-2 transport review, H2 P1-1), is only
+		//!
+		//!   (a) the PROJECTION RESIDUAL -- `UniformRandomPoint` returns a
+		//!       point that is on the true surface only to its own
+		//!       accuracy.  `SDFGeometry`'s Newton-projects onto the
+		//!       ray-marched zero set; the residual measured during S3 is
+		//!       ~3e-5 of the diagonal (LightSampler.cpp quotes the same
+		//!       number at the acceptance test, and that is the only place
+		//!       it is stated).  An earlier draft of this comment gave 5e-5
+		//!       here and 3e-5 there, which is the default `m_epsFrac`
+		//!       confused with a measurement.
+		//!   (b) the intersector's own perpendicular surface band AT NORMAL
+		//!       INCIDENCE -- for an SDF, its hit epsilon over the field's
+		//!       Lipschitz shrink; for every analytic primitive, ulp-scale.
+		//!
+		//! THERE IS NO `delta / cos(theta)` TERM ANY MORE, and that is the
+		//! whole point of the unification: the probe stands off along the
+		//! sampled point's OWN normal and fires back along it, so the probe
+		//! line passes through the sampled point exactly and meets the
+		//! surface at incidence 1 by construction.  On a mesh luminary
+		//! `UniformRandomPoint`'s normal is the INTERPOLATED vertex normal,
+		//! which is not the face normal -- but the probe line still passes
+		//! through the sampled point, and a triangle sample has no
+		//! projection residual at all, so the two effects multiply to zero
+		//! there rather than adding a lateral offset.
+		//!
+		//! (The pre-unification NEE probe fired along `vToLight`, whose only
+		//! guarantee is `cosLight > 0`, and DID carry a `delta / cos(theta)`
+		//! term.  Measured on tests/SignalEmitterRecordTest's SDF sphere it
+		//! never came close to this tolerance -- family E is green at
+		//! `epsilon 0.002`, and an exploratory sweep to `epsilon 0.05` left
+		//! it green as well, so that term was far smaller in practice than
+		//! the review's arithmetic suggested.  What the along-`vToLight`
+		//! probe DID fail at is the wrong-surface window, which is what
+		//! family F now witnesses.)
 		static const Scalar kEmitterProbeAcceptFraction = Scalar( 0.01 );
 
-		//! STANDOFF FLOOR: 0.1 % of D.  This is a FLOOR, not the standoff
-		//! itself -- `ProbeEmitterSurfaceAlongNormal` takes the larger of
-		//! this and the luminary's OWN self-hit root floor, because
+		//! STANDOFF FLOOR: 0.1 % of D.  The formula the probe actually uses
+		//! is
+		//!
+		//!   standoff = max( kEmitterProbeStandoffFraction * D,
+		//!                   kEmitterProbeStandoffMargin * floorWorld
+		//!                     + kEmitterProbeStandoffCushionFraction * D )
+		//!
+		//! and THIS constant is the first argument: the standoff when the
+		//! luminary's own `SelfHitRootFloor` is unavailable (a degenerate
+		//! transform, the one branch that cannot ask for it), and the
+		//! guarantee that a geometry which UNDER-states its floor -- the
+		//! contract permits an ulp-scale answer -- never gets a
+		//! zero-length probe ray.
+		//!
+		//! It has to be a floor rather than the whole standoff because
 		//! `IGeometry::SelfHitRootFloor` is virtual with eleven in-tree
-		//! overrides and several of them are far above any fixed fraction of
-		//! D.  `SDFGeometry`'s, the worst, is
+		//! overrides and several are far above any fixed fraction of D.
+		//! `SDFGeometry`'s, the worst, is
 		//! `min( 2 * m_eps / shrink / cosI, 0.5 * diagonal )` with
 		//! `m_eps = max( D * m_epsFrac, 1e-6 )`: 1e-4 * D at the 5e-5 scene
-		//! default with a uniform field, but 1e-2 * D for a part authored
-		//! `scale 0.1 1 1` (shrink 0.1) at the same epsilon, and up to
-		//! 0.5 * D at its documented grazing/shrink worst case.  A fixed
-		//! 0.001 * D standoff is BELOW those: the probe would be marched
-		//! straight past the face it was aimed at, miss, and REFUSE -- while
-		//! the NEE probe, which has no standoff at all, would accept.  That
-		//! is exactly the PT-live / BDPT-neutral disagreement this slice
-		//! exists to remove, so the standoff is derived from the geometry
-		//! instead and this constant only keeps a geometry that UNDER-states
-		//! its floor (the contract permits an ulp-scale answer) from firing
-		//! a zero-length ray.
+		//! default with a uniform field, but 4e-3 * D at `epsilon 0.002`,
+		//! 1e-2 * D for a part authored `scale 0.1 1 1` (shrink 0.1) at the
+		//! default epsilon, and up to 0.5 * D at its documented
+		//! grazing/shrink worst case.  Below those the geometry marches the
+		//! probe straight past the face it was aimed at and the probe
+		//! REFUSES.
 		static const Scalar kEmitterProbeStandoffFraction = Scalar( 0.001 );
+
+		//! THE CUSHION ADDED ON TOP OF THE GEOMETRY'S OWN FLOOR, and the
+		//! reason it exists: the floor is a bound measured from the TRUE
+		//! surface, while what the caller holds is a SAMPLED point that may
+		//! sit slightly outside it.  `kEmitterProbeStandoffMargin * floor`
+		//! alone therefore under-shoots on roughly half the samples -- the
+		//! half whose projection landed outside -- and the probe refuses on
+		//! those (measured: SignalEmitterRecordTest's family E sat 37 % /
+		//! 35 % off its baked control on the BDPT and VCM rows at
+		//! `1.01 * floor` with no cushion at all).
+		//!
+		//! 0.1 % of D, MEASURED as the smallest that holds.  The first
+		//! implementation used `kEmitterProbeAcceptFraction * D` here -- 1 %
+		//! -- which is ten times larger than it needs to be and, being
+		//! unconditionally above `kEmitterProbeStandoffFraction * D`, made
+		//! that constant dead code outside the degenerate-transform branch
+		//! (round-2 transport review, H2 P2-3).
+		//!
+		//! WHAT THE CUSHION COSTS, stated rather than hidden: the probe
+		//! takes the CLOSEST hit from `ptOnLum + standoff * n` back along
+		//! `-n`, so a SECOND surface of the same luminary lying in the
+		//! `(0, standoff]` band directly above the sampled point is
+		//! intercepted instead -- and since `standoff` is normally well
+		//! under `kEmitterProbeAcceptFraction * D`, that interception is
+		//! ACCEPTED rather than refused.  A louvred or stacked
+		//! single-object fixture whose blades are within
+		//! `max( 0.001 * D, 1.01 * floor + 0.001 * D )` of each other along
+		//! the blade normal therefore reads its neighbour's signals.  The
+		//! band is a tenth of what it was before this constant was split
+		//! out, and no smaller band is available: below the geometry's own
+		//! floor the probe cannot be fired at all.
+		static const Scalar kEmitterProbeStandoffCushionFraction = Scalar( 0.001 );
 
 		//! How far PAST `SelfHitRootFloor` the standoff stands.  The
 		//! published contract (IGeometry.h, "Contract for overriders") is
 		//! "the return must be an UPPER bound on the geometry's own gate
 		//! along `localDir` -- a caller standing off by more than this and
-		//! firing back must get the hit", so any strictly-greater multiplier
-		//! satisfies it; 1 % is the smallest that also clears the rounding
-		//! of the two frame transforms the floor is carried through.
+		//! firing back must get the hit", so ANY strictly-greater
+		//! multiplier satisfies it and 1 % is simply a small one.  (An
+		//! earlier draft called it "the smallest that also clears the
+		//! rounding of the two frame transforms" the floor is carried
+		//! through.  Nothing measures that rounding, and nothing here
+		//! bounds it; the cushion above, not this multiplier, is what was
+		//! actually measured.)
 		static const Scalar kEmitterProbeStandoffMargin = Scalar( 1.01 );
 
 		//! THE SHADING PAYLOAD A SAMPLED EMISSION POINT CANNOT CARRY BY
@@ -193,6 +253,11 @@ namespace RISE
 		//! derived from it (`cosLight`, `pdfPosition`, `pdfDirection`) stay
 		//! bit-for-bit what they are today and the only thing the PROBE can
 		//! move is a signal read.
+		//!
+		//! SIZE: 416 bytes (168 + 136 + 104 + a bool, measured at this
+		//! tree's HEAD; an earlier comment said 440).  That is why the call
+		//! sites construct one only INSIDE the probe gate rather than once
+		//! per light sample unconditionally.
 		//!
 		//! `ptObjIntersec` DELIBERATELY DOES NOT RIDE HERE, and that is a
 		//! correction to this slice's first draft (transport review, P1-1).
@@ -378,98 +443,107 @@ namespace RISE
 			// spectral form of the defect this slice closes.
 			//
 
-			//! Probe `pLum` for the shading payload at `ptOnLum`.
+			//! IS THE PROBE WANTED AT ALL?  `SurfaceCurvatureDemand::Any()
+			//! || SurfaceSignalDemand::Any()` -- two relaxed atomic loads.
+			//!
+			//! `ProbeEmitterSurface` asks this ITSELF and returns false
+			//! immediately when it is false, so a call site can never
+			//! forget the gate.  It is public only so a site on a hot loop
+			//! can ALSO skip the 416-byte `EmitterSurfacePayload` it would
+			//! otherwise default-construct per light sample, and skip
+			//! fetching the scene's object manager, with the gate closed
+			//! (round-2 transport review, H2 P2-6).  Skipping the payload
+			//! is the only thing this may be used for; it is not a licence
+			//! to build a record from anything but an accepted probe.
+			static bool EmitterProbeWanted();
+
+			//! PROBE `pLum` FOR THE SHADING PAYLOAD AT `ptOnLum` -- the ONE
+			//! probe, shared by all seven emitter-record sites so that PT,
+			//! BDPT and VCM refuse in exactly the same places.
+			//!
+			//! Stands off from `ptOnLum` along `+normal` and fires back
+			//! along `-normal`.  Until the round-2 transport review (H2
+			//! P1-1) the two NEE sites instead fired along `vToLight` --
+			//! from the shading point toward the sampled point -- through a
+			//! SECOND public entry point with its own acceptance behaviour,
+			//! so PT and the bidirectional families could and did disagree
+			//! about whether a given emitter read its signals live.  That
+			//! entry point is gone; `tests/SignalEmitterRecordTest`'s
+			//! family F is the witness (PT 23 % off its baked control while
+			//! BDPT and VCM were within 0.1 % of theirs, on one scene in one
+			//! frame).
 			//!
 			//! GATED: returns false immediately unless
-			//! `SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any()`.
-			//! With the gate closed the rendered output is unchanged and no
-			//! ray is cast and no bounding box is read -- which is the
-			//! claim that matters and is checkable; an earlier draft said
-			//! "byte-for-byte", which overclaims (the caller still
-			//! default-constructs its payload, and the sites still fill
-			//! `ptObjIntersec`, which is ungated by design).  The gate lives
-			//! HERE rather than at the call sites so a future site cannot
-			//! forget it.
-			//!
-			//! ACCEPTANCE RULE, in full: the probe is accepted iff (a) the
-			//! gate is open, (b) `pLum` is non-null and its world bounding
-			//! box has a finite, strictly-positive diagonal `D`, (c) the
-			//! probe ray hits `pLum`, and (d) the hit point is within
-			//! `kEmitterProbeAcceptFraction * D` of `ptOnLum`.  Anything
-			//! else -- a miss, a nearer hit on some other part of a
-			//! non-convex luminary, an unbounded luminary -- returns false
-			//! and the caller keeps today's minimal record.  A fabricated
-			//! payload is never produced.
-			//!
-			//! WHY A DISTANCE TEST AND NOT "any hit on the right object":
-			//! for a CONVEX luminary the entry point along a ray aimed at a
-			//! front-facing sampled point IS that sampled point, so the test
-			//! passes by construction; for a concave one (a torus, a mesh
-			//! shell) the closest hit can be a different part of the same
-			//! surface, whose curvature / occlusion / proximity are a
-			//! different material state entirely.  Reading THAT would be a
-			//! fabrication with extra steps.
-			//!
-			//! \return TRUE and fills @a outPayload (with `valid` true); FALSE
-			//!         leaves @a outPayload untouched.
-			static bool ProbeEmitterSurface(
-				const IObject*			pLum,			///< [in] the luminary the point was sampled on
-				const IObjectManager*	pObjects,		///< [in] the scene's object manager -- becomes `signals.pScene`, exactly as ObjectManager::IntersectRay stamps it
-				const Point3&			ptOnLum,		///< [in] the sampled point, in world space
-				const Ray&				probe,			///< [in] the probe ray (origin + unit direction); physically the ray the record is built FOR
-				const Scalar			probeMaxDist,	///< [in] how far along @a probe to look, world units
-				EmitterSurfacePayload&	outPayload		///< [out] written only on acceptance
-				);
-
-			//! Build the standard NORMAL-ALIGNED probe for a sampled point:
-			//! stand off along `+normal` by a diagonal-relative distance and
-			//! fire back along `-normal`.  Used where no natural probe
-			//! direction exists -- `SampleLight`'s emission record, whose
-			//! consumers (the BDPT light-subpath root and its two NM twins,
-			//! VCM's light-vertex NEE) each look at the point from a
-			//! different direction.
+			//! `EmitterProbeWanted()`.  With the gate closed the rendered
+			//! output is unchanged, no ray is cast and no bounding box is
+			//! read -- which is the claim that matters and is checkable; an
+			//! earlier draft said "byte-for-byte", which overclaims (the
+			//! sites still fill `ptObjIntersec`, which is ungated by
+			//! design).  The gate lives HERE rather than at the call sites
+			//! so a future site cannot forget it.
 			//!
 			//! THE STANDOFF IS DERIVED FROM THE GEOMETRY, not from a fixed
 			//! fraction of the luminary's diagonal `D`:
 			//!
 			//!   standoff = max( kEmitterProbeStandoffFraction * D,
-			//!                   kEmitterProbeStandoffMargin * floorWorld )
+			//!                   kEmitterProbeStandoffMargin * floorWorld
+			//!                     + kEmitterProbeStandoffCushionFraction * D )
 			//!
-			//! where `floorWorld` is `IObject::SelfHitRootFloor` asked in the
-			//! luminary's own local frame and mapped back to world units by
-			//! dividing by the direction stretch `|M_inv * dir|` -- exactly
-			//! the conversion `CSGObject::SelfHitRootFloor` performs on each
-			//! operand.  The published contract (IGeometry.h, "Contract for
-			//! overriders") is that a caller standing off by MORE than the
-			//! returned floor and firing back must get the hit, so this
-			//! standoff is the smallest one the engine guarantees works.
+			//! where `floorWorld` is `IObject::SelfHitRootFloor` asked in
+			//! the luminary's own local frame and mapped back to world units
+			//! by dividing by the direction stretch `|M_inv * dir|` --
+			//! exactly the conversion `CSGObject::SelfHitRootFloor` performs
+			//! on each operand.  The published contract (IGeometry.h,
+			//! "Contract for overriders") is that a caller standing off by
+			//! MORE than the returned floor and firing back must get the
+			//! hit, so this standoff is the smallest one the engine
+			//! guarantees works.  See the three constants above for what
+			//! each term is for and what the cushion costs.
 			//!
-			//! An earlier draft used the fixed `0.001 * D` and justified it
-			//! as "~9 orders above every geometry's SelfHitRootFloor".  That
-			//! was FALSE: `SelfHitRootFloor` is virtual with eleven in-tree
-			//! overrides, and `SDFGeometry`'s reaches `1e-2 * D` for a part
-			//! authored `scale 0.1 1 1` at the default epsilon and `0.5 * D`
-			//! at its documented grazing/shrink worst case.  Below the floor
-			//! the geometry marches the probe past the face it was aimed at,
-			//! the probe misses and REFUSES -- while the NEE probe, which
-			//! stands off not at all, accepts.  PT would then read the
-			//! emitter's signal live and BDPT / VCM would read it neutral:
-			//! precisely the disagreement this slice exists to remove, and
-			//! precisely what the narrowed containment warning now claims no
-			//! longer exists.
+			//! ACCEPTANCE RULE, in full: accepted iff (a) the gate is open,
+			//! (b) `pLum` is non-null and its world bounding box has a
+			//! finite, strictly-positive diagonal `D`, (c) `normal` is
+			//! usable, (d) the derived standoff is finite and no wider than
+			//! `D`, (e) the probe ray hits `pLum`, and (f) the hit is within
+			//! `kEmitterProbeAcceptFraction * D` of `ptOnLum`.
 			//!
-			//! REFUSES (rather than clamping) when the derived standoff is
-			//! not finite or exceeds `D` itself: a geometry whose self-hit
-			//! gate is wider than the whole luminary cannot be probed from
-			//! outside it at all, and "change nothing" is the honest answer.
+			//! THE REFUSAL MODES THAT SURVIVE, and they are now the SAME
+			//! THREE for PT, BDPT, VCM and MLT:
 			//!
-			//! \return TRUE and fills @a outPayload; FALSE on refusal.
-			static bool ProbeEmitterSurfaceAlongNormal(
-				const IObject*			pLum,
-				const IObjectManager*	pObjects,
-				const Point3&			ptOnLum,
-				const Vector3&			normal,			///< [in] unit outward normal at @a ptOnLum
-				EmitterSurfacePayload&	outPayload
+			//!   (a) a non-finite `SelfHitRootFloor`, or one so wide that
+			//!       the standoff would exceed `D` -- a geometry whose
+			//!       self-hit gate is wider than the whole luminary cannot
+			//!       be probed from outside it, and "change nothing" is the
+			//!       honest answer.  See the note at that check for which
+			//!       geometry can actually reach it.
+			//!   (b) a SECOND SURFACE OF THE SAME LUMINARY within the
+			//!       standoff band along `+normal` and further than the
+			//!       acceptance tolerance from `ptOnLum` -- a louvred or
+			//!       stacked single-object fixture.  (Inside the tolerance
+			//!       it is accepted instead, which the cushion constant's
+			//!       note states.)
+			//!   (c) a BSSRDF entry vertex, which is not an emitter record
+			//!       at all but is listed with these because it is the
+			//!       other place `SurfaceSignalInfo` reads neutral under
+			//!       every integrator.
+			//!
+			//! WHY A DISTANCE TEST AND NOT "any hit on the right object":
+			//! for a CONVEX luminary the near-side hit along the normal IS
+			//! the sampled point, so the test passes by construction; for a
+			//! concave one (a torus, a mesh shell, a two-lobe SDF) some
+			//! other part of the same surface can intercept, and its
+			//! curvature / occlusion / proximity are a different material
+			//! state entirely.  Reading THAT would be a fabrication with
+			//! extra steps.
+			//!
+			//! \return TRUE and fills @a outPayload (with `valid` true);
+			//!         FALSE leaves @a outPayload untouched.
+			static bool ProbeEmitterSurface(
+				const IObject*			pLum,			///< [in] the luminary the point was sampled on
+				const IObjectManager*	pObjects,		///< [in] the scene's object manager -- becomes `signals.pScene`, exactly as ObjectManager::IntersectRay stamps it
+				const Point3&			ptOnLum,		///< [in] the sampled point, in world space
+				const Vector3&			normal,			///< [in] unit outward normal at @a ptOnLum, as `UniformRandomPoint` returned it
+				EmitterSurfacePayload&	outPayload		///< [out] written only on acceptance
 				);
 
 			//! Copy an accepted payload onto a hand-built emitter record.  A
@@ -504,14 +578,27 @@ namespace RISE
 			//! this slice entirely and reaches plain PT: a camera ray that
 			//! HIT the emitter got a live `Po` from `Object::IntersectRay`,
 			//! while every NEE / light-root record built from the same
-			//! sampled point carried `(0,0,0)`.
+			//! sampled point carried `(0,0,0)`.  CLOSED FOR AN `Object`,
+			//! NOT FOR A CSG COMPOSITE: a composite returns @a fallback
+			//! here (see below), so its NEE `Po` is still `(0,0,0)` while a
+			//! direct hit on it gets the WINNING OPERAND's object point
+			//! through `CSGObject::AdoptCsgSurfacePayload`.  That gap is
+			//! unchanged by this slice and is stated wherever the closure
+			//! is claimed (round-2 transport review, H2 P2-7).
 			//!
 			//! HOW: one multiply through the luminary's own
 			//! `GetFinalInverseTransformMatrix()` -- the very matrix
-			//! `Object::IntersectRay` transforms its ray with, and whose
-			//! forward partner maps `ptObjIntersec` back to
-			//! `ptIntersection`.  No intersection is performed and nothing
-			//! is estimated.
+			//! `Object::IntersectRay` transforms its ray with.  No
+			//! intersection is performed and nothing is estimated.
+			//!
+			//! IT IS NOT THE SAME NUMBER A DIRECT HIT PRODUCES, quite:
+			//! `Object::IntersectRay` writes
+			//! `localRay.PointAtLength( range - SURFACE_INTERSEC_ERROR )`,
+			//! i.e. it backs the object-space point off along the LOCAL ray
+			//! by the object's own self-hit epsilon, while this is the
+			//! EXACT inverse image of the world point.  The two therefore
+			//! agree to `SURFACE_INTERSEC_ERROR` (1e-12 by default,
+			//! author-settable per object), not bit-for-bit.
 			//!
 			//! \return the object-space point, or @a fallback when the
 			//!         luminary has no single object frame.  A CSG COMPOSITE

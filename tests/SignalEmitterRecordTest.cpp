@@ -316,6 +316,12 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+// For family D's gate-invariance block: the two process-wide counters
+// `LightSampler::EmitterProbeWanted()` reads.  The block asserts they are
+// at zero before each gate-CLOSED render, so a leaked registration cannot
+// make the comparison vacuous.
+#include "../src/Library/Utilities/SurfaceCurvature.h"
+#include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -778,6 +784,97 @@ static const char* kEmitterSdfCoarseEps =
 	"}\n"
 	"\n";
 
+//! FAMILY F: a TWO-LOBE (non-convex) SDF emitter with
+//! `casts_shadows FALSE`, keyed on `curv`.  THE WITNESS FOR THE
+//! UNIFIED PROBE (round-2 transport review of slice S3, H2 P1-1).
+//!
+//! WHY THIS ROW EXISTS.  Until that review there were TWO emitter
+//! probes with DIFFERENT refusal predicates: the two NEE sites fired
+//! along `vToLight`, from the shading point toward the sampled point,
+//! with no travel limit; `SampleLight` -- and therefore the BDPT
+//! light-subpath root, its two NM twins and VCM's light vertex --
+//! stood off along the sampled normal and fired back.  An emitter
+//! that refuses one and not the other renders with PT reading its
+//! signals LIVE and BDPT / VCM reading them NEUTRAL on the same
+//! surface in the same frame, or the reverse.  This family makes that
+//! happen and then requires it not to.
+//!
+//! THE MECHANISM IS THE WRONG-SURFACE WINDOW, not grazing incidence.
+//! The review predicted the along-`vToLight` probe would refuse at
+//! grazing (`delta / cos(theta)` exceeding the acceptance tolerance),
+//! and that prediction does NOT reproduce: family E is green at
+//! `epsilon 0.002`, and an exploratory sweep of the same sphere to
+//! `epsilon 0.05` -- an SDF hit band five times the acceptance
+//! tolerance at NORMAL incidence -- left every row green as well, so
+//! the sampled point and the marched hit agree far more tightly than
+//! that arithmetic assumes.  What the along-ray probe really fails is
+//! aiming down the LINE OF SIGHT: on a non-convex luminary the
+//! closest hit along that line can be a different part of the same
+//! surface, whose curvature / occlusion / proximity are a different
+//! material state, and the probe then correctly refuses -- leaving PT
+//! alone reading neutral.  The normal-aligned probe is never aimed
+//! down that line and cannot be intercepted except within its own
+//! standoff band.
+//!
+//! THE GEOMETRY, and why each number is what it is.  One
+//! `sdf_geometry` with two disjoint sphere parts on the line from the
+//! receiver to the emitter: a NEAR lobe of radius 0.5 at the family
+//! A/B/D/E emitter position (0, 1.8, 1.2), 2.163 from the receiver's
+//! centre, and a FAR lobe of radius 0.64 at 3.6 along the same ray
+//! (local offset (0, 1.196, 0.797)).  The gap between them is 0.30,
+//! nine times the acceptance tolerance (1 % of the 3.294 bbox
+//! diagonal), so a probe that lands on the wrong lobe is refused, not
+//! quietly accepted.
+//!
+//! THE NEAR LOBE HIDES THE FAR ONE: angular radius asin(0.5/2.163) =
+//! 13.4 degrees against asin(0.64/3.6) = 10.2, so every
+//! line-of-sight probe aimed at a far-lobe sample from near the
+//! receiver's centre is intercepted by the near lobe.  The far lobe
+//! still carries about a third of the energy -- area goes as r^2 and
+//! irradiance as 1/d^2, so its weight is (0.64/3.6)^2 against the
+//! near lobe's (0.5/2.163)^2, a ratio of 0.59 -- which is what turns
+//! a refusal into a measurable mean shift.  It cannot be made to
+//! carry MORE than half: the same r/d that makes the near lobe
+//! occlude makes it brighter.
+//!
+//! `casts_shadows FALSE` IS LOAD-BEARING, and it is the documented
+//! hazard, not a contrivance: `ProbeEmitterSurface`'s own comment
+//! used to note that the NEE shadow test narrowed the wrong-surface
+//! window "only when the luminary casts shadows".  With shadows on,
+//! a far-lobe sample is occluded by the near lobe, discarded, and
+//! contributes to neither document -- so the hazard the along-ray
+//! probe carried is exactly the one a no-shadow luminary exposes.
+//!
+//! CLOSED-FORM CONTROL, same as families A / B / E.  `curv` is
+//! `H * scaleHint`; on a sphere of radius r, H = 1/r, and scaleHint
+//! is the WHOLE geometry's bbox diagonal 3.294 -- so the near lobe
+//! reads 6.59 and the far lobe 5.15, and `clamp(curv,0,1)` saturates
+//! to exactly 1 on both with five times the headroom the clamp needs.
+//! The control is the literal `1.0`; the neutral is `0.0`.
+//!
+//! BOTH LOBES STAY OUT OF FRAME.  The camera is at (0,0,3.5) with a
+//! 30-degree fov; the near lobe subtends 9.9 degrees about an axis 38
+//! degrees off the view direction and the far lobe 11 degrees about
+//! one 63 degrees off, so neither reaches the 15-degree half-angle.
+//! No camera ray hits the emitter, exactly as in every other family.
+static const char* kEmitterSdfTwoLobe =
+	"sdf_geometry\n"
+	"{\n"
+	"\tname g_lum\n"
+	"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.5 0 0  0\n"
+	"\tpart sphere union 0  0 1.196 0.797  0 0 0  1 1 1  0.64 0 0  0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_lum\n"
+	"\tgeometry g_lum\n"
+	"\tmaterial mat_lum\n"
+	"\tposition 0 1.8 1.2\n"
+	"\tcasts_shadows FALSE\n"
+	"}\n"
+	"\n";
+
 //! THE INTEGRATOR CHUNKS, built rather than hard-coded, because three
 //! things vary across the rows: the integrator, the sample count (row C
 //! is the dimmest family and needs more; see the band derivation in the
@@ -1051,10 +1148,25 @@ static void RunGateInvariance( const Family& f )
 {
 	const std::string rast = MakeRasterizer( eRK_PT, f.samples, false );
 
+	// THE GATE MUST ACTUALLY BE CLOSED for the two "CLOSED" renders, or
+	// this whole block is vacuous: a signal-reading painter leaked from
+	// ANY earlier family in this process (the counters are process-wide
+	// and only a painter's destructor decrements them) would open the
+	// gate for all four renders, the OPEN/CLOSED comparison would be
+	// open-versus-open, and it would pass no matter what `Po` did.
+	// Asserted immediately before each closed render rather than once at
+	// the top, because a leak could appear between them (round-2
+	// transport review, H2 P2-10).
+	Check( !( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ),
+	       "D gate-invariance: the probe gate is CLOSED before the gate-CLOSED CONTROL "
+	       "render (no signal demand leaked from an earlier family)" );
 	const ImageStats ctrlClosed = Render(
 		kCommonHead, f.emitterChunks, f.exprControl, f.scale, rast, "gcc" );
 	const ImageStats ctrlOpen = Render(
 		kCommonHeadSignalReceiver, f.emitterChunks, f.exprControl, f.scale, rast, "gco" );
+	Check( !( SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any() ),
+	       "D gate-invariance: the probe gate is CLOSED before the gate-CLOSED EXPR "
+	       "render (the gate-OPEN render above released its painter)" );
 	const ImageStats exprClosed = Render(
 		kCommonHead, f.emitterChunks, f.exprSignal, f.scale, rast, "gec" );
 	const ImageStats exprOpen = Render(
@@ -1214,12 +1326,24 @@ int main()
 		kRowsRGB3, 3
 	};
 
+	// The unified-probe row.  At HEAD~ -- with the NEE sites still
+	// firing along `vToLight` -- PT read 23.2 % off its baked control
+	// while BDPT and VCM read 0.085 % and 0.084 % off theirs.  See the
+	// emitter's own comment for why, and the red-proof list in the file
+	// header for the mutation that reproduces it.
+	static const Family kTwoLobe = {
+		"F: two-lobe SDF emitter, casts_shadows FALSE, keyed on curv",
+		kCommonHead, kEmitterSdfTwoLobe,
+		"0.2 + 0.8*clamp(curv,0,1)", "0.2 + 0.8*1.0", "0.2 + 0.8*0.0",
+		20.0, 48, kRowsRGB3, 3
+	};
 	RunFamily( kSdfCurv );
 	RunFamily( kAnalyticCurv );
 	RunFamily( kProximity );
 	RunFamily( kObjectPoint );
 	RunGateInvariance( kObjectPoint );
 	RunFamily( kShrunkSdfCurv );
+	RunFamily( kTwoLobe );
 
 	std::cout << std::endl
 	          << "Passed: " << passCount << "  Failed: " << failCount << std::endl;

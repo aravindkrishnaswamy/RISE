@@ -564,7 +564,26 @@ using PathTransportUtilities::PowerHeuristic;
 // Filling it unconditionally also closes a PRE-EXISTING inconsistency
 // that predates the slice and reaches plain PT: a camera ray that HIT the
 // emitter got a live `Po`, every NEE record built from a sampled point
-// got `(0,0,0)`.
+// got `(0,0,0)`.  CLOSED FOR AN `Object`, NOT FOR A CSG COMPOSITE: a
+// composite has no single object frame, so `EmitterObjectPoint` returns
+// the record's existing `(0,0,0)` while a direct hit on the same
+// composite still gets the WINNING OPERAND's object point through
+// `CSGObject::AdoptCsgSurfacePayload`.  That residual is untouched by
+// this slice and is named wherever the closure is claimed (round-2
+// transport review, H2 P2-7).
+//
+// WHAT THE GATE-CLOSED PATH STILL COSTS, stated rather than implied.  The
+// probe itself costs nothing: `EmitterProbeWanted()` is two relaxed
+// atomic loads and every call site asks it before building anything.  The
+// `Po` fill is NOT free and NOT gated -- per emitter record it is two
+// virtual calls (`GetGeometry`, `GetFinalInverseTransformMatrix`), a
+// 128-byte `Matrix4` returned BY VALUE, and one 4x4 point transform, on
+// the NEE path and on `ManifoldSolver`'s per-shading-point `SampleLight`
+// alike.  That is the honest ungated cost, and it is the price of `Po`
+// not depending on a process-wide gate.  (Until the round-2 review the
+// two NEE sites ALSO default-constructed a 416-byte
+// `EmitterSurfacePayload` per light sample with the gate closed, and
+// fetched the scene's object manager; both are now inside the gate.)
 //
 // WHAT THE PROBE COSTS, MEASURED.  PT, 160x160, 256 spp, one small SDF
 // sphere luminary that every visible receiver point NEE-samples every
@@ -576,24 +595,15 @@ using PathTransportUtilities::PowerHeuristic;
 // painter registers a demand) runs at 821 +- 20 ms, within one stddev of
 // the probe-off figure -- i.e. the gate itself costs nothing measurable.
 //
-// THE GATE LIVES IN the two public entry points, not at the five call
-// sites, so a sixth site cannot be added without it.
+// THE GATE LIVES IN `ProbeEmitterSurface` itself, not only at the call
+// sites, so a new site cannot be added without it.  The sites ask it as
+// well, but only to skip allocating a payload they will not use.
 //
 //////////////////////////////////////////////////////////////////////
 
 namespace
 {
-	//! IS THE PROBE WANTED AT ALL?  The design's first fixed constraint:
-	//! two relaxed atomic loads, and everything downstream of them -- the
-	//! bounding-box query, the ray -- is behind this.  Factored out so
-	//! both public entry points ask exactly the same question and a
-	//! future third one cannot ask a different one.
-	inline bool EmitterProbeWanted()
-	{
-		return SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any();
-	}
-
-	//! THE SCALE the probe's two constants are relative to: the luminary's
+	//! THE SCALE the probe's constants are relative to: the luminary's
 	//! WORLD bounding-box diagonal, the same characteristic length
 	//! `scaleHint` and the `radiusFraction` convention use.
 	//!
@@ -617,29 +627,156 @@ namespace
 	}
 }
 
-//! The probe proper, with the luminary's scale already in hand so the
-//! normal-aligned entry point below -- which needs the scale to place its
-//! standoff -- does not pay for a second `getBoundingBox()`.
-//!
-//! PRECONDITIONS the two public entry points above already established
-//! and this function therefore does not re-check: the gate is open, and
-//! `diag > 0` -- which `EmitterProbeScale` only returns for a non-null
-//! `pLum` with a finite, non-degenerate world bounding box.
-static bool ProbeEmitterSurfaceAtScale(
+bool LightSampler::EmitterProbeWanted()
+{
+	// The design's first fixed constraint: two relaxed atomic loads, and
+	// everything downstream of them -- the bounding-box query, the
+	// standoff derivation, the ray -- is behind this.  `ProbeEmitterSurface`
+	// asks it itself; it is public only so a hot call site can also skip
+	// the 416-byte payload it would otherwise default-construct.
+	return SurfaceCurvatureDemand::Any() || SurfaceSignalDemand::Any();
+}
+
+bool LightSampler::ProbeEmitterSurface(
 	const IObject*			pLum,
 	const IObjectManager*	pObjects,
 	const Point3&			ptOnLum,
-	const Ray&				probe,
-	const Scalar			probeMaxDist,
-	const Scalar			diag,
+	const Vector3&			normal,
 	EmitterSurfacePayload&	outPayload
 	)
 {
-	const Scalar tol = kEmitterProbeAcceptFraction * diag;
-
-	if( !( probeMaxDist > 0 ) ) {
+	// ONE PROBE, ONE REFUSAL PREDICATE.  Until the round-2 transport
+	// review (H2 P1-1) there were TWO public entry points: this
+	// normal-aligned one, used by `SampleLight` (and therefore by the BDPT
+	// light-subpath root, its two NM twins and VCM's light vertex), and an
+	// along-`vToLight` one used by the two NEE sites.  They refused in
+	// different places -- which meant PT could read an emitter's signals
+	// live while BDPT and VCM read them neutral on the same surface in the
+	// same frame, or the reverse.  The along-ray entry point is gone and
+	// the NEE sites call this.
+	//
+	// Gate FIRST, so the bounding-box query below is not paid by a scene
+	// with no signal consumer.
+	if( !EmitterProbeWanted() ) {
 		return false;
 	}
+	const Scalar diag = EmitterProbeScale( pLum );
+	if( diag <= 0 ) {
+		return false;
+	}
+
+	const Scalar nrm = Vector3Ops::Magnitude( normal );
+	if( !( nrm > NEARZERO ) ) {
+		return false;
+	}
+	const Vector3 nUnit = normal * ( Scalar( 1 ) / nrm );
+
+	const Vector3 dir( -nUnit.x, -nUnit.y, -nUnit.z );
+
+	const Scalar tol = kEmitterProbeAcceptFraction * diag;
+
+	// THE STANDOFF, DERIVED FROM THE GEOMETRY.
+	//
+	// This slice's first draft used a flat `kEmitterProbeStandoffFraction *
+	// diag` and justified it as "~9 orders above every geometry's
+	// SelfHitRootFloor".  `SelfHitRootFloor` is VIRTUAL with eleven in-tree
+	// overrides, and that claim only held for the interface default
+	// (`NEARZERO * (1 + |o|_1)`).  `SDFGeometry`'s is
+	// `min( 2 * m_eps / shrink / cosI, 0.5 * diagonal )` with
+	// `m_eps = max( diagonal * m_epsFrac, 1e-6 )`: 4e-3 of the diagonal at
+	// `epsilon 0.002`, 1e-2 of it for a part authored `scale 0.1 1 1` at
+	// the DEFAULT epsilon, and up to 0.5 of it at the documented
+	// grazing/shrink worst case.  Below its own floor the SDF treats the
+	// probe origin as spawned ON the surface and marches it forward in
+	// `4 * m_eps` steps until it clears the band -- straight past the face
+	// it was aimed at.  MEASURED on tests/SignalEmitterRecordTest's family
+	// E before this was fixed: BDPT 37.4 %, VCM 35.1 % off their baked
+	// controls.
+	//
+	// FRAME.  `IObject::SelfHitRootFloor` answers in the luminary's OWN
+	// LOCAL frame and in that frame's units, so the query is transformed in
+	// and the answer transformed back -- dividing by the direction stretch
+	// `s = |M_inv * dir|`, exactly the conversion
+	// `CSGObject::SelfHitRootFloor` performs on each operand.  The origin
+	// handed in is `ptOnLum` rather than the (not yet known) standoff
+	// point, which is the right argument anyway: the floors that depend on
+	// the origin depend on it only through its COORDINATE MAGNITUDE, and a
+	// point and a point one floor away from it agree there to many digits.
+	// The normal is carried by the inverse-transpose, i.e. the transpose of
+	// the forward matrix.
+	//
+	// THE CUSHION IS NOT SLOP, and it is not the acceptance tolerance
+	// either.  The floor is a bound measured from the TRUE surface, and
+	// what the caller holds is a SAMPLED point that may not be on it --
+	// `UniformRandomPoint` Newton-projects, it does not solve exactly -- so
+	// `margin * floor` alone under-shoots on roughly half the samples, the
+	// half whose projection landed OUTSIDE.  The first implementation used
+	// `kEmitterProbeAcceptFraction * diag` (1 % of the diagonal) for this,
+	// which both over-paid by 10x and made `kEmitterProbeStandoffFraction`
+	// unreachable.  `kEmitterProbeStandoffCushionFraction` is the measured
+	// replacement; see its declaration for the measurement and for what the
+	// resulting interception band costs.
+	Scalar standoff = kEmitterProbeStandoffFraction * diag;
+	{
+		const Matrix4 mxInv = pLum->GetFinalInverseTransformMatrix();
+		const Vector3 dLocalUnnorm = Vector3Ops::Transform( mxInv, dir );
+		const Scalar sStretch = Vector3Ops::Magnitude( dLocalUnnorm );
+		if( sStretch > NEARZERO ) {
+			const Point3 oLocal = Point3Ops::Transform( mxInv, ptOnLum );
+			const Vector3 dLocal(
+				dLocalUnnorm.x / sStretch,
+				dLocalUnnorm.y / sStretch,
+				dLocalUnnorm.z / sStretch );
+			const Matrix4 mxFwdT = Matrix4Ops::Transpose( pLum->GetFinalTransformMatrix() );
+			const Vector3 nLocalUnnorm = Vector3Ops::Transform( mxFwdT, nUnit );
+			const Scalar nLocalMag = Vector3Ops::Magnitude( nLocalUnnorm );
+			const Vector3 nLocal = ( nLocalMag > NEARZERO )
+				? Vector3( nLocalUnnorm.x / nLocalMag,
+				           nLocalUnnorm.y / nLocalMag,
+				           nLocalUnnorm.z / nLocalMag )
+				: nUnit;
+			const Scalar floorWorld =
+				pLum->SelfHitRootFloor( oLocal, dLocal, nLocal ) / sStretch;
+			if( !RISE::IsFiniteDouble( static_cast<double>( floorWorld ) ) ) {
+				return false;			// a floor we cannot reason about
+			}
+			standoff = std::max( standoff,
+				kEmitterProbeStandoffMargin * floorWorld
+					+ kEmitterProbeStandoffCushionFraction * diag );
+		}
+	}
+
+	// REFUSE rather than clamp when the derived standoff is wider than the
+	// luminary itself: the origin would then sit outside the shape along a
+	// ray that has to cross the whole of it, the acceptance test could only
+	// ever see a far face, and "change nothing" is the honest answer.
+	//
+	// WHICH GEOMETRY CAN ACTUALLY REACH THIS.  Not an SDF, despite what an
+	// earlier draft of this comment said: with the cushion at 0.1 % of the
+	// diagonal, `1.01 * floor + 0.001 * diag > diag` needs
+	// `floor > 0.989 * diag`, and `SDFGeometry` caps its own floor at
+	// `0.5 * diagonal`.  A CSG LUMINARY CAN: `CSGObject::SelfHitRootFloor`
+	// returns the worst OPERAND's floor (converted by that operand's own
+	// direction stretch) with NO cap by the composite's bounding box, so an
+	// operand that is mostly clipped away -- a large SDF intersected down
+	// to a small solid -- contributes a floor measured against ITS OWN
+	// diagonal while `diag` here is the composite's.
+	if( !( standoff > 0 ) || standoff > diag ) {
+		return false;
+	}
+
+	// Stand off along +n and fire back along -n.  The travel limit is twice
+	// the standoff plus the acceptance tolerance: enough to reach the
+	// surface and a little past it.  It is ADVISORY, not a hard clamp --
+	// `Object::IntersectRay` applies `dHowFar` to its bounding-box pre-test
+	// and then lets the geometry march as far as it likes -- so the
+	// acceptance test, not this limit, is what rejects a far-side hit.
+	const Point3 origin(
+		ptOnLum.x + nUnit.x * standoff,
+		ptOnLum.y + nUnit.y * standoff,
+		ptOnLum.z + nUnit.z * standoff );
+	const Ray probe( origin, dir );
+	const Scalar probeMaxDist = standoff * Scalar( 2 ) + tol;
 
 	// The closest-hit itself.  Both faces are admitted because a luminary
 	// may legitimately be sampled on either side (a two-sided emissive
@@ -652,45 +789,30 @@ static bool ProbeEmitterSurfaceAtScale(
 		return false;
 	}
 
-	// DID IT LAND ON THE SAMPLED POINT?  See ProbeEmitterSurface's
-	// declaration for why "a hit on the right object" is not enough.
+	// DID IT LAND ON THE SAMPLED POINT?  See the declaration for why "a hit
+	// on the right object" is not enough.
 	//
-	// WHAT THE 1 % OF `diag` TOLERANCE IS ACTUALLY ABSORBING.  Not a
-	// surface-extraction disagreement: this slice's first draft justified
-	// the number by claiming an SDF luminary's sampled point comes off a
-	// marching-cubes extraction while the probe lands on the ray-marched
-	// zero set, and that is simply not how `SDFGeometry::UniformRandomPoint`
-	// works -- it Newton-projects each sample onto the SAME ray-marched
-	// zero set (measured residual here ~3e-5 of the diagonal).  What the
-	// tolerance has to absorb is (a) that projection residual and (b)
-	// INCIDENCE.  The NEE entry point fires along `vToLight`, and the only
-	// thing the caller guarantees about that direction is `cosLight > 0`;
-	// a grazing sample therefore turns the intersector's PERPENDICULAR
-	// surface band `delta` into a LONGITUDINAL displacement
-	// `delta / cos(theta)` along the probe.  For an SDF, `delta` is its hit
-	// epsilon over the field's Lipschitz shrink (`2 * m_epsFrac * diag /
-	// shrink`, i.e. 1e-4 * diag at the 5e-5 default with a uniform field);
-	// for every analytic primitive it is ulp-scale and the entire budget is
-	// incidence.  1 % therefore still covers incidences to cos(theta) ~ 0.01
-	// on a default SDF and to essentially any angle elsewhere.
+	// WHAT THE 1 % OF `diag` TOLERANCE IS ACTUALLY ABSORBING, now that the
+	// probe is normal-aligned everywhere.  Not a surface-extraction
+	// disagreement: this slice's first draft claimed an SDF luminary's
+	// sampled point comes off a marching-cubes extraction while the probe
+	// lands on the ray-marched zero set, and that is not how
+	// `SDFGeometry::UniformRandomPoint` works -- it Newton-projects each
+	// sample onto the SAME ray-marched zero set (measured residual ~3e-5 of
+	// the diagonal; this is the one place that number is stated).  And NOT
+	// incidence either, which is what the second draft claimed: the probe
+	// line runs along the sampled point's own normal and therefore passes
+	// through that point exactly, meeting the surface at incidence 1.  What
+	// is left is the projection residual plus the intersector's own
+	// perpendicular surface band at normal incidence -- for an SDF its hit
+	// epsilon over the field's Lipschitz shrink, for every analytic
+	// primitive ulp-scale.
 	//
-	// THE MARGIN AGAINST A WRONG-PART HIT is two orders, not the three the
-	// first draft claimed: two distinct parts of a non-convex luminary are
-	// O(diag) apart and this admits 1e-2 * diag.
-	//
-	// AND THE WINDOW IS NARROWER THAN THAT IN PRACTICE, for a reason worth
-	// stating because it is LOAD-BEARING and not local to this function:
-	// the NEE call sites run the probe only on samples that already passed
-	// the SHADOW TEST, so nothing of the luminary stands between the
-	// shading point and `ptOnLum` and the closest hit along `vToLight` is
-	// the near face by construction.  On a concave luminary the residual
-	// wrong-surface window is then `min( the shadow ray's own epsilon,
-	// tol )`.  That protection is NOT free-standing: a luminary with
-	// `casts_shadows FALSE`, or a render with `bReceivesShadows` false,
-	// skips the shadow test entirely, and then only `tol` stands between a
-	// concave luminary's near face and a far one.  `tol` alone is what the
-	// two paragraphs above size, which is why they are stated in their own
-	// right.
+	// THE MARGIN AGAINST A WRONG-PART HIT is two orders: two distinct parts
+	// of a non-convex luminary are O(diag) apart and this admits
+	// 1e-2 * diag.  What the tolerance does NOT protect against is a second
+	// surface of the same luminary inside the standoff band along +n; see
+	// `kEmitterProbeStandoffCushionFraction`.
 	const Vector3 miss = Vector3Ops::mkVector3(
 		probeRI.geometric.ptIntersection, ptOnLum );
 	if( Vector3Ops::Magnitude( miss ) > tol ) {
@@ -724,160 +846,6 @@ static bool ProbeEmitterSurfaceAtScale(
 	outPayload.txFootprint   = probeRI.geometric.txFootprint;
 	outPayload.valid         = true;
 	return true;
-}
-
-bool LightSampler::ProbeEmitterSurface(
-	const IObject*			pLum,
-	const IObjectManager*	pObjects,
-	const Point3&			ptOnLum,
-	const Ray&				probe,
-	const Scalar			probeMaxDist,
-	EmitterSurfacePayload&	outPayload
-	)
-{
-	if( !EmitterProbeWanted() ) {
-		return false;
-	}
-	const Scalar diag = EmitterProbeScale( pLum );
-	if( diag <= 0 ) {
-		return false;
-	}
-	return ProbeEmitterSurfaceAtScale(
-		pLum, pObjects, ptOnLum, probe, probeMaxDist, diag, outPayload );
-}
-
-bool LightSampler::ProbeEmitterSurfaceAlongNormal(
-	const IObject*			pLum,
-	const IObjectManager*	pObjects,
-	const Point3&			ptOnLum,
-	const Vector3&			normal,
-	EmitterSurfacePayload&	outPayload
-	)
-{
-	// Gate first, so the bounding-box query below is not paid by a scene
-	// with no signal consumer -- this entry point needs the luminary's
-	// scale BEFORE it can build its ray, which is why it asks the gate
-	// itself rather than leaving it to the probe.
-	if( !EmitterProbeWanted() ) {
-		return false;
-	}
-	const Scalar diag = EmitterProbeScale( pLum );
-	if( diag <= 0 ) {
-		return false;
-	}
-
-	const Scalar nrm = Vector3Ops::Magnitude( normal );
-	if( !( nrm > NEARZERO ) ) {
-		return false;
-	}
-	const Vector3 nUnit = normal * ( Scalar( 1 ) / nrm );
-
-	const Vector3 dir( -nUnit.x, -nUnit.y, -nUnit.z );
-
-	// THE STANDOFF, DERIVED FROM THE GEOMETRY.
-	//
-	// This slice's first draft used a flat `kEmitterProbeStandoffFraction *
-	// diag` and justified it as "~9 orders above every geometry's
-	// SelfHitRootFloor".  `SelfHitRootFloor` is VIRTUAL with eleven in-tree
-	// overrides, and that claim only held for the interface default
-	// (`NEARZERO * (1 + |o|_1)`).  `SDFGeometry`'s is
-	// `min( 2 * m_eps / shrink / cosI, 0.5 * diagonal )` with
-	// `m_eps = max( diagonal * m_epsFrac, 1e-6 )`: 4e-3 of the diagonal at
-	// `epsilon 0.002`, 1e-2 of it for a part authored `scale 0.1 1 1` at
-	// the DEFAULT epsilon, and up to 0.5 of it at the documented
-	// grazing/shrink worst case.  Below its own floor the SDF treats the
-	// probe origin as spawned ON the surface and marches it forward in
-	// `4 * m_eps` steps until it clears the band -- straight past the face
-	// it was aimed at.  The probe then misses (or lands on the FAR side and
-	// is rejected) and REFUSES, while the NEE entry point, which stands off
-	// not at all, accepts: PT reads the emitter's signal live and BDPT /
-	// VCM read it neutral.  That is the exact disagreement this slice
-	// exists to remove and that the narrowed containment warning now claims
-	// no longer exists.  MEASURED on tests/SignalEmitterRecordTest's family
-	// E before this was fixed: PT 0.02 % off its baked control, BDPT 37.4 %,
-	// VCM 35.1 %.
-	//
-	// FRAME.  `IObject::SelfHitRootFloor` answers in the luminary's OWN
-	// LOCAL frame and in that frame's units, so the query is transformed in
-	// and the answer transformed back -- dividing by the direction stretch
-	// `s = |M_inv * dir|`, exactly the conversion
-	// `CSGObject::SelfHitRootFloor` performs on each operand.  The origin
-	// handed in is `ptOnLum` rather than the (not yet known) standoff
-	// point, which is the right argument anyway: the floors that depend on
-	// the origin depend on it only through its COORDINATE MAGNITUDE, and a
-	// point and a point one floor away from it agree there to many digits.
-	// The normal is carried by the inverse-transpose, i.e. the transpose of
-	// the forward matrix.
-	//
-	// THE `+ tol` CUSHION IS NOT SLOP.  The floor is a bound measured from
-	// the TRUE surface, and what the caller holds is a SAMPLED point that
-	// may not be on it -- `UniformRandomPoint` Newton-projects, it does not
-	// solve exactly.  The engine's own declared bound on that gap is the
-	// acceptance tolerance: `tol` is precisely how far from `ptOnLum` this
-	// function is willing to believe the surface is.  Standing off
-	// `margin * floor` alone therefore under-shoots whenever the sample
-	// sits slightly OUTSIDE the surface, which is half of them -- measured
-	// as an intermittent far-side hit at `1.01 * floor`, with the probe
-	// refusing on those samples and family E still 37 % red.  Adding `tol`
-	// makes the standoff clear the floor no matter where inside the
-	// acceptance window the true surface actually is.  The multiplier on
-	// `floor` itself stays at `kEmitterProbeStandoffMargin`, which covers
-	// only the rounding of the two frame transforms above.
-	Scalar standoff = kEmitterProbeStandoffFraction * diag;
-	{
-		const Matrix4 mxInv = pLum->GetFinalInverseTransformMatrix();
-		const Vector3 dLocalUnnorm = Vector3Ops::Transform( mxInv, dir );
-		const Scalar sStretch = Vector3Ops::Magnitude( dLocalUnnorm );
-		if( sStretch > NEARZERO ) {
-			const Point3 oLocal = Point3Ops::Transform( mxInv, ptOnLum );
-			const Vector3 dLocal(
-				dLocalUnnorm.x / sStretch,
-				dLocalUnnorm.y / sStretch,
-				dLocalUnnorm.z / sStretch );
-			const Matrix4 mxFwdT = Matrix4Ops::Transpose( pLum->GetFinalTransformMatrix() );
-			const Vector3 nLocalUnnorm = Vector3Ops::Transform( mxFwdT, nUnit );
-			const Scalar nLocalMag = Vector3Ops::Magnitude( nLocalUnnorm );
-			const Vector3 nLocal = ( nLocalMag > NEARZERO )
-				? Vector3( nLocalUnnorm.x / nLocalMag,
-				           nLocalUnnorm.y / nLocalMag,
-				           nLocalUnnorm.z / nLocalMag )
-				: nUnit;
-			const Scalar floorWorld =
-				pLum->SelfHitRootFloor( oLocal, dLocal, nLocal ) / sStretch;
-			if( !RISE::IsFiniteDouble( static_cast<double>( floorWorld ) ) ) {
-				return false;			// a floor we cannot reason about
-			}
-			standoff = std::max( standoff,
-				kEmitterProbeStandoffMargin * floorWorld
-					+ kEmitterProbeAcceptFraction * diag );
-		}
-	}
-
-	// REFUSE rather than clamp when the derived standoff is wider than the
-	// luminary itself: the origin would then sit outside the shape along a
-	// ray that has to cross the whole of it, the acceptance test could only
-	// ever see a far face, and "change nothing" is the honest answer.  This
-	// is reachable only through `SDFGeometry`'s own `0.5 * diagonal` cap,
-	// i.e. a field whose surface epsilon is a quarter of the shape.
-	if( !( standoff > 0 ) || standoff > diag ) {
-		return false;
-	}
-
-	// Stand off along +n and fire back along -n.  The travel limit is twice
-	// the standoff plus the acceptance tolerance: enough to reach the
-	// surface and a little past it.  It is ADVISORY, not a hard clamp --
-	// `Object::IntersectRay` applies `dHowFar` to its bounding-box pre-test
-	// and then lets the geometry march as far as it likes -- so the
-	// acceptance test, not this limit, is what rejects a far-side hit.
-	const Point3 origin(
-		ptOnLum.x + nUnit.x * standoff,
-		ptOnLum.y + nUnit.y * standoff,
-		ptOnLum.z + nUnit.z * standoff );
-
-	return ProbeEmitterSurfaceAtScale(
-		pLum, pObjects, ptOnLum, Ray( origin, dir ),
-		standoff * Scalar( 2 ) + kEmitterProbeAcceptFraction * diag,
-		diag, outPayload );
 }
 
 Point3 LightSampler::EmitterObjectPoint(
@@ -921,7 +889,7 @@ void LightSampler::ApplyEmitterSurface(
 	// FORWARDS the object manager's own convention rather than replacing a
 	// stamp: this record never passed through ObjectManager::IntersectRay
 	// (a sampled point is not a traversal), and `payload.channel` was
-	// written by ProbeEmitterSurface above with exactly the values that
+	// written by `ProbeEmitterSurface` above with exactly the values that
 	// function stamps.  This is the sole reason LightSampler.cpp appears in
 	// SourceHygieneTest's `signals` writer set -- see its comment table.
 	rig.signals       = payload.channel;
@@ -1420,7 +1388,8 @@ bool LightSampler::SampleLight(
 	// a different luminary entirely).  `valid` false is the honest state
 	// for every light kind but the mesh-luminary branch below.
 	//
-	// ONE STORE, not a 440-byte default-construct: every consumer gates on
+	// ONE STORE, not a 416-byte default-construct (168 + 136 + 104 + a
+	// bool, measured at this tree's HEAD): every consumer gates on
 	// `valid`, so clearing the flag makes the other three members
 	// unreachable and assigning them is pure cost.  `SampleLight` is on
 	// the per-light-sample path AND on `ManifoldSolver`'s per-shading-point
@@ -1568,15 +1537,17 @@ bool LightSampler::SampleLight(
 		// hero and its companion wavelengths, which is the spectral form of
 		// the very defect this slice closes.
 		//
-		// A NORMAL-ALIGNED probe: unlike NEE, no single direction is "the"
+		// The probe is NORMAL-ALIGNED: no single direction is "the"
 		// direction this record is viewed from (the four consumers each
-		// look from somewhere else), so the probe stands off along the
-		// sampled normal and fires back onto the point.
+		// look from somewhere else), so it stands off along the sampled
+		// normal and fires back onto the point.  Since the round-2
+		// transport review the two NEE sites use this SAME entry point, so
+		// PT, BDPT and VCM now refuse in exactly the same places.
 		//
 		// Gated inside the probe; `valid` stays false on every delta light
 		// and env sample (this branch is the only one that can fill it) and
 		// on refusal, and `ApplyEmitterSurface` is then a no-op.
-		ProbeEmitterSurfaceAlongNormal(
+		ProbeEmitterSurface(
 			lumEntry.pLum, scene.GetObjects(),
 			sample.position, sample.normal, sample.surface );
 
@@ -2437,40 +2408,61 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 					// THE SHADING PAYLOAD for this sampled point (slice S3
 					// of docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
-					// The probe runs along the ray this record is built FOR
-					// -- from the shading point toward the sampled point --
-					// which is also the direction that makes the acceptance
-					// test free on a convex luminary: `cosLight > 0` above
-					// means the sampled point is front-facing, and the
-					// front-facing entry point along a ray is unique, so it
-					// IS the sampled point.
+					//
+					// THE SAME PROBE THE LIGHT-SUBPATH ROOT USES, since the
+					// round-2 transport review (H2 P1-1).  It used to fire
+					// along `vToLight` -- the ray this record is built FOR
+					// -- through a second public entry point that refused
+					// in different places from the normal-aligned one, so
+					// PT and the bidirectional families disagreed about
+					// which emitters read their signals live.  The
+					// concrete failure that entry point had and this one
+					// does not is the WRONG-SURFACE WINDOW: aimed from the
+					// shading point, the closest hit along the ray can be a
+					// different part of a concave luminary, and then the
+					// probe refuses and PT alone reads neutral.
+					// tests/SignalEmitterRecordTest's family F measured
+					// that at PT 23 % off its baked control with BDPT and
+					// VCM inside 0.1 % of theirs.
 					//
 					// This is NOT the shadow ray and does not replace it:
 					// the shadow test above stops short of the luminary and
 					// asks the whole scene; this asks ONE object and only
-					// for its shading payload.  Gated inside the probe, so a
-					// scene with no signal-reading painter pays nothing and
-					// `ApplyEmitterSurface` is a no-op.
+					// for its shading payload.
 					//
-					// The NM twin below runs the identical two calls; they
+					// THE SHADOW-TEST-FIRST ORDERING IS KEPT, but it is now
+					// a COST ordering, not a correctness bound, and that is
+					// a change worth stating.  While the probe fired along
+					// `vToLight` with no travel limit, the shadow test
+					// genuinely narrowed its wrong-surface window (nothing
+					// of the luminary stood between the two points, so the
+					// closest hit was the near face by construction).  The
+					// normal-aligned probe never looks along that line, and
+					// bounds its own window instead -- with the acceptance
+					// tolerance and a travel limit of twice the standoff.
+					// What the ordering still buys is that a sample which
+					// contributes nothing never pays for a ray.
+					//
+					// THE GATE IS ASKED HERE TOO, which the probe would do
+					// anyway.  The point is to keep the 416-byte
+					// `EmitterSurfacePayload` -- and the object-manager
+					// fetch -- out of the per-sample loop when no painter
+					// in the process reads a signal (round-2 review, H2
+					// P2-6).  The probe still gates itself, so a future
+					// site that forgets this cannot read a fabricated
+					// record.
+					//
+					// The NM twin below runs the identical calls; they
 					// share this one implementation precisely so an RGB / NM
 					// drift is not expressible.
-					//
-					// TRAVEL LIMIT `RISE_INFINITY` rather than `dist`: the
-					// probe is a CLOSEST-hit, so a larger limit can never
-					// change WHICH hit comes back, only how early the
-					// bounding-box pre-test may bail.  A limit of exactly
-					// `dist` would instead risk cutting the intended hit by
-					// one ulp, and any tighter-than-infinite bound that is
-					// safe would have to be written as an absolute length --
-					// the one thing the scale-relative convention forbids.
-					EmitterSurfacePayload lumSurface;
-					ProbeEmitterSurface(
-						lumEntry.pLum,
-						pPreparedScene ? pPreparedScene->GetObjects() : 0,
-						ptOnLum, Ray( ri.ptIntersection, vToLight ),
-						RISE_INFINITY, lumSurface );
-					ApplyEmitterSurface( lumri, lumSurface );
+					if( EmitterProbeWanted() ) {
+						EmitterSurfacePayload lumSurface;
+						ProbeEmitterSurface(
+							lumEntry.pLum,
+							pPreparedScene ? pPreparedScene->GetObjects() : 0,
+							ptOnLum, lumNormal, lumSurface );
+						ApplyEmitterSurface( lumri, lumSurface );
+					}
 
 					// `Po` -- UNGATED and ray-free, so it lands whether or
 					// not a signal painter exists anywhere in the process.
@@ -2983,16 +2975,18 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		lumri.onb.CreateFromW( lumNormal );
 
 		// THE SHADING PAYLOAD -- the NM twin of the RGB site above, calling
-		// the SAME two functions with the same arguments.  See that site
+		// the SAME functions with the same arguments, including the same
+		// normal-aligned probe and the same gate fast-path.  See that site
 		// for the full rationale (slice S3 of
 		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
-		EmitterSurfacePayload lumSurface;
-		ProbeEmitterSurface(
-			lumEntry.pLum,
-			pPreparedScene ? pPreparedScene->GetObjects() : 0,
-			ptOnLum, Ray( ri.ptIntersection, vToLight ),
-			RISE_INFINITY, lumSurface );
-		ApplyEmitterSurface( lumri, lumSurface );
+		if( EmitterProbeWanted() ) {
+			EmitterSurfacePayload lumSurface;
+			ProbeEmitterSurface(
+				lumEntry.pLum,
+				pPreparedScene ? pPreparedScene->GetObjects() : 0,
+				ptOnLum, lumNormal, lumSurface );
+			ApplyEmitterSurface( lumri, lumSurface );
+		}
 		lumri.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 

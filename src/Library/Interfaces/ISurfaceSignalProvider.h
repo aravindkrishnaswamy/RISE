@@ -442,11 +442,29 @@ namespace RISE
 		//! a feature rather than as an absence.  Reached whenever the
 		//! channel carries no scene or no self object (a hand-built test
 		//! record, the GUI's painter preview, realize-time evaluation, a
-		//! BSSRDF entry vertex, or an emitter record whose probe REFUSED --
-		//! a concave or unbounded luminary, see
-		//! `LightSampler::ProbeEmitterSurface`), the radius or the point is
-		//! unusable, or every candidate refused.  NOT in this list since
-		//! 2026-09-11 (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md):
+		//! BSSRDF entry vertex, or an emitter record whose probe REFUSED),
+		//! the radius or the point is unusable, or every candidate refused.
+		//!
+		//! THE EMITTER PROBE'S REFUSALS, NAMED (round-2 transport review of
+		//! slice S3, H2 P1-1; `LightSampler::ProbeEmitterSurface` carries
+		//! the full statement).  There is now ONE probe and therefore ONE
+		//! refusal predicate, shared by PT, BDPT, VCM and MLT, and it
+		//! refuses on: an UNBOUNDED or degenerate luminary (no finite
+		//! bounding-box diagonal to size its tolerances against); a
+		//! `SelfHitRootFloor` that is not finite, or is so wide the derived
+		//! standoff would exceed the luminary itself (a CSG composite can
+		//! reach this, an SDF cannot); and a SECOND SURFACE OF THE SAME
+		//! LUMINARY inside the standoff band along the sampled normal and
+		//! further than the acceptance tolerance from the sampled point --
+		//! a louvred or stacked single-object fixture.  An earlier version
+		//! of this list said "a concave or unbounded luminary", which was
+		//! the along-`vToLight` NEE probe's failure mode and is no longer
+		//! one: the normal-aligned probe is not aimed down the line of
+		//! sight and so cannot be intercepted by a distant lobe of the same
+		//! surface.
+		//!
+		//! NOT in this list since 2026-09-11
+		//! (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md):
 		//! a BDPT / VCM / MLT rebuild, which FORWARDS the stamp (§3), nor
 		//! an ACCEPTED emitter record, which carries a probed one (§5).
 		static Scalar NeutralProximity() { return Scalar( 0 ); }
@@ -872,10 +890,23 @@ namespace RISE
 	//!
 	//! What still reads neutral is INTEGRATOR-CONSISTENT -- PT reads it
 	//! neutral in exactly the same places, so it is not a "your render
-	//! disagrees with PT" hazard: a BSSRDF entry vertex (design §10), and
-	//! an emitter whose probe REFUSES because the sampled point is not the
-	//! nearest hit along the probe (a concave luminary) or because the
-	//! luminary is unbounded.
+	//! disagrees with PT" hazard.  That claim is only true as of the
+	//! round-2 transport review of S3 (H2 P1-1), which UNIFIED the probe:
+	//! before it the two NEE sites fired along `vToLight` while the
+	//! light-subpath root fired along the sampled normal, the two refused
+	//! in different places, and PT and the bidirectional families could
+	//! therefore disagree on the same surface in the same frame
+	//! (measured: tests/SignalEmitterRecordTest family F, PT 23 % off its
+	//! baked control with BDPT and VCM inside 0.1 % of theirs).  There is
+	//! now ONE probe and one refusal predicate.
+	//!
+	//! The three things that still read neutral, identically under every
+	//! integrator: a BSSRDF entry vertex (design §10); an emitter whose
+	//! `SelfHitRootFloor` is non-finite or wider than the luminary itself,
+	//! or which is unbounded and so has no diagonal to size the probe
+	//! against; and an emitter with a SECOND SURFACE OF ITS OWN inside the
+	//! probe standoff along the sampled normal -- a louvred or stacked
+	//! single-object fixture.  See `LightSampler::ProbeEmitterSurface`.
 	//!
 	//! The warning below now says exactly that.  It is kept only so the
 	//! removal is one slice's reviewable change rather than a silent side
@@ -933,11 +964,12 @@ namespace RISE
 				"%s:: curv/occlusion/thickness/convexity/proximity/interior are live at every "
 				"surface vertex (slice S1) AND at every emitter record reached by NEE or as the "
 				"light-subpath root (slice S3, one probe ray per light sample while this message "
-				"appears).  No BDPT/VCM/MLT-specific neutral read remains; what is still neutral "
-				"-- a BSSRDF entry vertex, and an emitter whose probe refuses on a concave or "
-				"unbounded luminary -- reads neutral under PT identically, so there is nothing "
-				"here to work around.  See docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md; "
-				"slice S4 removes this notice.",
+				"appears).  No BDPT/VCM/MLT-specific neutral read remains: PT, BDPT and VCM now "
+				"share ONE emitter probe and refuse in exactly the same places -- an unbounded "
+				"luminary, a self-hit floor wider than the luminary itself, or a second surface "
+				"of the same luminary inside the probe standoff (a louvred fixture) -- plus "
+				"BSSRDF entry vertices, which every integrator reads neutral.  See "
+				"docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md; slice S4 removes this notice.",
 				familyName );
 		}
 	}

@@ -88,8 +88,14 @@ namespace RISE
 		//   pScene   0 on any record the object manager did not produce --
 		//            the GUI's painter preview, a hand-built test record,
 		//            a BSSRDF entry vertex, or an emitter record whose
-		//            probe REFUSED (a concave or unbounded luminary).  Two
-		//            record kinds LEFT this list on 2026-09-11
+		//            probe REFUSED.  Since the round-2 transport review of S3 that
+		//            means an UNBOUNDED luminary, a self-hit floor wider than the
+		//            luminary itself, or a second surface of the same luminary
+		//            inside the probe standoff -- NOT "a concave luminary", which
+		//            was the along-`vToLight` NEE probe's failure and went away
+		//            when the probe was unified on the normal-aligned one
+		//            (LightSampler::ProbeEmitterSurface).  Two record kinds LEFT
+		//            this list on 2026-09-11
 		//            (SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): a
 		//            BDPT / VCM / MLT rebuild, which forwards the stamp
 		//            through PathVertexEval (§3), and an ACCEPTED emitter
