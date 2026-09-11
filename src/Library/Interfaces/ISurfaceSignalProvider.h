@@ -680,9 +680,11 @@ namespace RISE
 	//!      gates `LightSampler::ProbeEmitterSurface`, the one extra
 	//!      object-level closest-hit per NEE sample / light-subpath root
 	//!      that recovers a sampled emission point's shading payload.  With
-	//!      both counters at zero the probe returns immediately and the
-	//!      light-sampling path is byte-for-byte what it was before S3 --
-	//!      no ray, not even a bounding-box read.  **This consumer means
+	//!      both counters at zero the probe returns immediately: the
+	//!      rendered output is unchanged, no ray is cast and no bounding
+	//!      box is read.  (Not "byte-for-byte": the emitter sites still
+	//!      fill `ptObjIntersec`, which is UNGATED by design because `Po`
+	//!      is read by painters that register no signal demand.)  **This consumer means
 	//!      the counter can NOT be deleted with the warning below**
 	//!      (design §8's removal list says otherwise and predates S3).
 	//!   2. DIAGNOSTIC (design doc §14 item 11): the one-time
@@ -877,7 +879,15 @@ namespace RISE
 	//!
 	//! The warning below now says exactly that.  It is kept only so the
 	//! removal is one slice's reviewable change rather than a silent side
-	//! effect of S3; slice S4 deletes it and `SurfaceSignalDemand` with it.
+	//! effect of S3; slice S4 deletes THE WARNING.
+	//!
+	//! `SurfaceSignalDemand` and `SurfaceCurvatureDemand` STAY.  An earlier
+	//! draft of this sentence said S4 deletes the counter "with it", which
+	//! contradicts those counters' own declarations above: since S3 they
+	//! GATE the emitter probe, which is real work and outlives the
+	//! diagnostic entirely.  Design §8's removal list -- written when the
+	//! warning was the counter's only consumer -- is wrong for the same
+	//! reason and needs the supervisor's ledger edit before S4.
 	//!
 	//! Call once from each BDPT/VCM/MLT-family rasterizer's own
 	//! pre-render hook (never per pixel or per sample) -- see

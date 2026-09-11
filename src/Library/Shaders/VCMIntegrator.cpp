@@ -1300,8 +1300,12 @@ namespace
 					rig.bHit = true;
 					rig.ptIntersection = ls.position;
 					rig.vNormal = ls.normal;
-					// ls.normal is geometric on luminary meshes (no Phong/
-					// bump on emitters); mirror for downstream consumers.
+					// `ls.normal` is `UniformRandomPoint`'s normal: the
+					// INTERPOLATED VERTEX normal on a mesh luminary with
+					// per-vertex normals, the face normal when there are
+					// none (`GeometricUtilities::PointOnTriangle`).  No
+					// Phong/bump modifier runs on an emitter record, so
+					// mirroring it keeps the record self-consistent.
 					rig.vGeomNormal = ls.normal;
 					// THE FOURTH consumer of `SampleLight`'s one probed
 					// payload (slice S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_
@@ -1309,9 +1313,13 @@ namespace
 					// other three are LightSampler's own emission record
 					// and BDPTIntegrator's NM hero + HWSS companion
 					// rebuilds.  A no-op when the probe was gated off or
-					// refused, so a scene with no signal-reading painter is
-					// byte-for-byte unchanged.
+					// refused, so with the gate closed this record's
+					// rendered contribution is unchanged.
 					LightSampler::ApplyEmitterSurface( rig, ls.surface );
+					// `Po` separately and UNCONDITIONALLY -- ray-free and
+					// ungated by design; see
+					// `LightSampler::EmitterObjectPoint`.
+					rig.ptObjIntersec = ls.ptObjIntersec;
 					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, ls.normal, tag );
 				}
 			} else if( envCaseVCM ) {
@@ -1347,10 +1355,18 @@ namespace
 
 			// Geometry-term cosines use the GEOMETRIC normal — the
 			// solid-angle <-> area Jacobian depends on actual face
-			// orientation (Veach §8.2.2 / PBRT 4e §13.6.4).  ls.normal
-			// is supplied by LightSampler::UniformRandomPoint, which
-			// already returns the geometric face normal, so it is used
-			// as-is on the light side.
+			// orientation (Veach §8.2.2 / PBRT 4e §13.6.4).  On the light
+			// side the only normal available is `ls.normal`, which
+			// `IObject::UniformRandomPoint` supplies: on a mesh luminary
+			// that is the INTERPOLATED VERTEX normal where the mesh has
+			// per-vertex normals and the face normal where it does not
+			// (`GeometricUtilities::PointOnTriangle` averages `t.normals[]`
+			// and only cross-products as a fallback).  It is used as-is
+			// because it is the sampler's own normal and therefore the one
+			// `pdfPosition` was expressed against; on a smooth-shaded mesh
+			// emitter it is a shading normal, and that inherited
+			// approximation is pre-existing and out of this slice's scope
+			// (an earlier comment here asserted it was geometric).
 			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.geomNormal, dirForMIS_vcm ) );
 			Scalar cosAtLight = 0;
 			Scalar G = 0;

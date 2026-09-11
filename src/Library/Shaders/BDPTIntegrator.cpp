@@ -5291,6 +5291,13 @@ unsigned int GenerateLightSubpathImpl(
 				// against the same live channel.  A no-op when the probe
 				// was gated off or refused.
 				LightSampler::ApplyEmitterSurface( rig, ls.surface );
+				// `Po`, separately and UNCONDITIONALLY: `ls.ptObjIntersec`
+				// is filled without a ray and without the signal gate (see
+				// `LightSampler::EmitterObjectPoint`), because painters
+				// that read `Po` register no signal demand.  `(0,0,0)` --
+				// this record's previous value -- for a delta light, an
+				// env sample, and a CSG-composite luminary.
+				rig.ptObjIntersec = ls.ptObjIntersec;
 				LeNM = pEmitter->emittedRadianceNM( rig, ls.direction, ls.normal, tag.nm );
 			}
 		} else if( ls.pLight ) {
@@ -5314,10 +5321,17 @@ unsigned int GenerateLightSubpathImpl(
 		v.type = BDPTVertex::LIGHT;
 		v.position = ls.position;
 		v.normal = ls.normal;
-		// Light samples come from `LightSampler::UniformRandomPoint` on the
-		// luminary mesh — that normal is the geometric face normal (no
-		// Phong / bump perturbation applies to luminaire surfaces here),
-		// so shading == geometric on light vertex 0.
+		// Light samples come from `IObject::UniformRandomPoint` on the
+		// luminary mesh.  That normal is the INTERPOLATED VERTEX normal
+		// where the mesh carries per-vertex normals and the face normal
+		// where it does not -- `GeometricUtilities::PointOnTriangle`
+		// barycentrically averages `t.normals[]` and only falls back to the
+		// cross product for a triangle with none.  (An earlier comment here
+		// called it the geometric face normal flatly; corrected in the S3
+		// review.)  No Phong / bump MODIFIER perturbs a luminaire record,
+		// so shading == geometric on light vertex 0 in the sense that
+		// matters: both fields hold the one normal the sampler produced and
+		// the pdf was expressed against.
 		v.geomNormal = ls.normal;
 		v.onb.CreateFromW( ls.normal );
 		v.pMaterial = 0;
@@ -5352,8 +5366,13 @@ unsigned int GenerateLightSubpathImpl(
 			v.derivatives   = ls.surface.derivatives;
 			v.signals       = ls.surface.channel;
 			v.txFootprint   = ls.surface.txFootprint;
-			v.ptObjIntersec = ls.surface.ptObjIntersec;
 		}
+		// `ptObjIntersec` is NOT under that gate: `Po` is read by painters
+		// that register no signal demand, so it must not depend on the
+		// process-wide probe gate.  `ls.ptObjIntersec` is `(0,0,0)` --
+		// exactly what this vertex carried before -- whenever there is no
+		// single object frame to map into.
+		v.ptObjIntersec = ls.ptObjIntersec;
 
 		// pdfFwd is the probability of generating this light vertex
 		// = pdfSelect * pdfPosition
@@ -5448,8 +5467,10 @@ unsigned int GenerateLightSubpathImpl(
 						// would leave a hero-live / companion-neutral split
 						// -- the spectral form of the defect slice S3
 						// closes -- so this record gets the SAME probed
-						// payload, from the SAME `ls`.
+						// payload, and the same ungated `Po`, from the
+						// SAME `ls`.
 						LightSampler::ApplyEmitterSurface( rigW, ls.surface );
+						rigW.ptObjIntersec = ls.ptObjIntersec;
 						LeW = pEm->emittedRadianceNM(
 							rigW, ls.direction, ls.normal, pSwlHWSS->lambda[w] );
 					}
