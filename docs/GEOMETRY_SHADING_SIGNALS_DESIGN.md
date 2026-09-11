@@ -2019,14 +2019,19 @@ is the comparison to beat.
    via a gated normal-aligned probe on the luminary, under PT as well —
    closing the plain-PT case for an emissive material keyed on a signal.
    Measured: `SignalIntegratorConsistencyTest` (six constant-signal scenes)
-   and `SignalEmitterRecordTest` (21 checks) both show PT/BDPT/VCM agreeing
+   and `SignalEmitterRecordTest` (77 checks) both show PT/BDPT/VCM agreeing
    with the closed-form control within a few tenths of a percent, where the
    unfixed tree was off by tens of points. The remaining neutral reads —
    a BSSRDF entry vertex; an emitter whose probe refuses (a non-finite
-   self-hit floor, a standoff larger than the luminary, or a second surface
-   of the same luminary within the standoff band); GUI preview /
-   realize-time / hand-built test records — are identical under every
-   integrator, not a PT-vs-bidirectional split; see that document's §10.
+   self-hit floor, or a standoff larger than the luminary — reachable only
+   through a CSG luminary's uncapped floor); GUI preview / realize-time /
+   hand-built test records — are identical under every integrator, not a
+   PT-vs-bidirectional split. One residual is NOT neutral but a bounded
+   neighbour read: a second surface of the same luminary inside the probe's
+   standoff band along the normal and within the 0.01·D acceptance
+   tolerance is ACCEPTED with that neighbour's live channel (another point
+   of the same luminary at most 0.5 % of its diagonal away); see that
+   document's §10.
 
    <details>
    <summary>Original text, kept for history (pre-2026-09-11)</summary>
