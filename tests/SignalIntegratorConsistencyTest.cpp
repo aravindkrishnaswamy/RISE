@@ -48,6 +48,26 @@
 //  See each finding's own comment at its fix site, and the sections below
 //  they update.
 //
+//  A SECOND fix round (this commit, worktree signals-bidir) addressed four
+//  more findings: K-P1 (the plank BDPT masked ratio's flake risk -- see
+//  "BAND DERIVATION -- MASKED LAYER" for the full n=9-then-n=6 derivation;
+//  the fix is averaging the masked ratio over `kLayer2MaskedSubRenders`=6
+//  INDEPENDENT full sub-renders for BDPT/VCM, not a higher single-render
+//  spp, which was tried first and measured to make the spread WORSE), K-P2a
+//  (`FindChunkByRoleCounted` + a hard `Check(count == 1)` on both
+//  `*_rasterizer` lookups, guarding against Job::RegisterAndActivateRasterizer's
+//  last-parsed-chunk-wins activation semantics -- see that function's own
+//  comment for the Job.cpp line citations), K-P2b (`ClassifyBlowup`'s
+//  `agree` now computes the LITERAL `|ratioE/ratioB - 1|` the comment always
+//  claimed, not `|meanE/meanB - 1|` -- the two only coincided because every
+//  showcase measured is whole-image insensitive), and L-P2 (the convexity
+//  N=9/15/27/41 sweep points, previously cited from an unsaved log, were
+//  re-run with a temporary env-gated block and saved to
+//  .../scratchpad/s2_convexity_sweep.txt -- one number, the 9x9-vs-15x15
+//  disagreement, was a transcription error (0.366997) and is corrected to
+//  the log's actual value (0.368865); every other cited value reproduced
+//  bit-for-bit).  See each finding's own comment at its fix site.
+//
 //  TWO LAYERS (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6):
 //
 //  LAYER 1 -- CONSTANT-SIGNAL UNIT SCENES (section 6.1, "the sharp gate").
@@ -210,11 +230,16 @@
 //  (the film-chunk fix), every integrator marker check AND every
 //  keyword/parameter read-back (F1, this fix round) passes, and the
 //  masked ratio-of-ratios passes on every (showcase, integrator) row not
-//  caught by the blow-up gate.  Both runs: 332 passed / 0 failed / 4
-//  blow-up skips (tidal BDPT, tidal VCM, bunny VCM, pavilion VCM -- all
-//  pre-existing non-signal integrator disagreements, not a signals
-//  regression; F2 below explains why none of the four qualify as an
-//  ASYMMETRIC blow-up instead).
+//  caught by the blow-up gate.  First fix round, kLayer2MaskedSubRenders=1:
+//  332 passed / 0 failed / 4 blow-up skips (tidal BDPT, tidal VCM, bunny
+//  VCM, pavilion VCM -- all pre-existing non-signal integrator
+//  disagreements, not a signals regression; F2 below explains why none of
+//  the four qualify as an ASYMMETRIC blow-up instead).  SECOND fix round,
+//  kLayer2MaskedSubRenders=6 (K-P1 -- each of the 6 extra sub-renders per
+//  BDPT/VCM row adds its own set of derive/render/marker/dimension
+//  Checks): whole-suite total grows to 900 passed / 0 failed / 4 blow-up
+//  skips on both s2_fixround2_run1.txt and run2.txt (same four rows), 0
+//  regressions from the K=6 sub-render change.
 //
 //  OBSERVED PRE-FIX NUMBERS (historical record from the S2 test's original
 //  author, worktree signals-bidir-test at ed3e6063 -- BEFORE S1 landed,
@@ -274,12 +299,20 @@
 //  harness that superseded it (`RunConvexityQuadrature`/
 //  `BuildConvexityScene`) brought PT's ratio down to ~1.4% at 9x9 --
 //  inside 3%, but (F3, this fix round) that 9x9 grid itself disagreed
-//  with a 15x15 re-run of the SAME quadrature by 2.06% (0.366997 vs
-//  0.374733) -- real, deterministic discretization bias, not noise.  A
-//  sweep at N=9,15,21,27,33,41 found the average stabilizing from N=21
+//  with a 15x15 re-run of the SAME quadrature by 2.06% (0.368865 vs
+//  0.374733) -- real, deterministic discretization bias, not noise.  (L-P2,
+//  this fix round: re-ran with a temporary env-gated sweep -- since removed
+//  -- and saved the output verbatim to .../scratchpad/s2_convexity_sweep.txt;
+//  N=9 avg is 0.368865, not the earlier draft's rounded "0.369", which is
+//  why the 9x9-vs-15x15 disagreement above now reads 0.368865 vs 0.374733
+//  instead of the previous "0.366997 vs 0.374733" -- 0.366997 does not
+//  appear in the corroborating log at all and was a transcription error.)
+//  A sweep at N=9,15,21,27,33,41 found the average stabilizing from N=21
 //  onward (21: 0.379127, 27: 0.377271, 33: 0.378536, 41: 0.378159 -- all
-//  mutually within ~0.5%), so the grid this file actually uses was raised
-//  to 21x21 and is cross-checked against 33x33 inside `BuildConvexityScene`
+//  mutually within ~0.5%, and every one of these six values, N=9 and
+//  N=15 included, is reproduced bit-for-bit in s2_convexity_sweep.txt),
+//  so the grid this file actually uses was raised to 21x21 and is
+//  cross-checked against 33x33 inside `BuildConvexityScene`
 //  itself (asserted <1% agreement; observed 0.156%).  Against the new
 //  21x21 control, PT's layer-1 convexity ratio is now ~0.0001-0.001 (see
 //  OBSERVED POST-FIX NUMBERS above) -- indistinguishable from the other
@@ -350,89 +383,136 @@
 //  document level (before any render runs) as well as the log level
 //  (after one does).
 //
-//  LAYER 2 FINDING (this fix round, worktree signals-bidir,
-//  kLayer2Samples=32, two independent default runs -- full logs
-//  .../scratchpad/s2_fixround_run1.txt and run2.txt).  At
+//  LAYER 2 FINDING (SECOND fix round, worktree signals-bidir,
+//  kLayer2Samples=32, kLayer2MaskedSubRenders=6, two independent default
+//  runs -- full logs .../scratchpad/s2_fixround2_run1.txt and run2.txt;
+//  supersedes the first fix round's numbers below, which predate both
+//  K-P1's sub-render averaging and K-P2b's literal-ratio `agree` fix).  At
 //  160x120, all FOUR showcases' WHOLE-IMAGE `mean(PT,E)` vs `mean(PT,B)`
 //  still differ by well under the 5% sensitivity band across both runs
-//  (plank 0.24%-0.30%, tidal_stones 0.03%-0.04%, shelf_bunny 1.85%-1.86%,
-//  pavilion_colonnade 0.97%-0.98%) -- each signal-driven region (a nail's
-//  contact seam, a buried stone's waterline, dust under a bunny's foot, a
-//  column's crevice wear) is too small a fraction of the WHOLE-IMAGE mean
-//  to move it past noise at this resolution, exactly as the pre-fix run
-//  already found -- so the WHOLE-IMAGE ratio-of-ratios is dropped on all
-//  four, as designed.  The MASKED form DOES witness the gap: mask coverage
-//  ranged 2.12%-2.20% (plank) to 13.1%-13.2% (tidal) of pixels across both
-//  runs (bunny 6.60%-6.72%, pavilion 6.69%-6.82%), and on every (showcase,
-//  integrator) pair NOT caught by the blow-up gate the masked
-//  ratio-of-ratios PASSED comfortably inside the 20% band.  (G6/G7: an
-//  earlier draft cited exact tiny values here -- e.g. "pavilion BDPT
-//  +0.006" -- that did not match their own cited log and are Monte-Carlo
-//  noise at this sample count anyway; replaced with the honest range
-//  below, re-derived from the two runs actually cited above.)  Observed
-//  across both runs: plank BDPT R_E/R_B-1 in {-0.0385, -0.1062}, plank VCM
-//  in {-0.0521, -0.0582}, bunny BDPT in {+0.0248, +0.0263}, pavilion BDPT
-//  in {+0.0074, +0.0102} -- every one of the eight rows inside the 20%
-//  band, though plank BDPT's -0.1062 leaves under 2x headroom (see BAND
-//  DERIVATION -- MASKED LAYER below for why the band stays at 20% rather
-//  than tightening).  BLOW-UP SKIPS (task item 5; F2, this fix round, adds
-//  the E/B-agreement half of the gate -- recorded, not investigated, not
-//  asserted on): tidal BDPT (mean(BDPT)/mean(PT,E) ~1099.5-1099.7x,
-//  mean(BDPT)/mean(PT,B) ~1112.9-1113.0x, E/B agree within ~1.23%), tidal
-//  VCM (~3465.9-3466.5x / ~3466.8-3467.0x, agree within ~0.05%), bunny VCM
-//  (~4450.4-4450.5x / ~4445.0-4445.3x, agree within ~1.74%), pavilion VCM
-//  (~749.9-750.1x / ~745.5-745.7x, agree within ~0.39%) -- all four
-//  comfortably inside the 10% E/B-agreement band (`kLayer2BlowupAgreeBand`),
-//  so all four classify as `BlowupClass::Blowup` (the known, pre-existing,
-//  non-signal case) rather than `BlowupClass::Asymmetric`; neither run
-//  flagged any row as a possible signal-attributable regression instead.
-//  These figures match the supervisor's independently-reproduced CLI
-//  figures (tidal BDPT
+//  (plank 0.23%-0.29%, tidal_stones 0.027%-0.049%, shelf_bunny
+//  1.838%-1.842%, pavilion_colonnade 0.851%-0.858%) -- each signal-driven
+//  region (a nail's contact seam, a buried stone's waterline, dust under a
+//  bunny's foot, a column's crevice wear) is too small a fraction of the
+//  WHOLE-IMAGE mean to move it past noise at this resolution -- so the
+//  WHOLE-IMAGE ratio-of-ratios is dropped on all four, as designed.  The
+//  MASKED form DOES witness the gap: mask coverage ranged 2.146%-2.203%
+//  (plank) to 12.740%-13.057% (tidal) of pixels across both runs (bunny
+//  6.828%-6.911%, pavilion 6.745%-6.849%), and on every (showcase,
+//  integrator) pair NOT caught by the blow-up gate the K=6-sub-render-
+//  averaged masked ratio-of-ratios PASSED comfortably inside the 20%
+//  band.  Observed across both runs: plank BDPT R_E/R_B-1 (K=6 average)
+//  in {-0.0793, -0.0472}, plank VCM in {-0.0688, -0.0430}, bunny BDPT in
+//  {+0.0089, +0.0109}, pavilion BDPT in {-0.0132, -0.0188} -- every one of
+//  the eight rows now sits well inside the 20% band with 2.5x-22x
+//  headroom (see "BAND DERIVATION -- MASKED LAYER" below for the fuller
+//  n=6-run plank derivation that motivated K=6).  BLOW-UP SKIPS (task
+//  item 5; the `agree` figures below are the K-P2b LITERAL
+//  |ratioE/ratioB - 1|, not the pre-K-P2b |meanE/meanB - 1| -- both
+//  formulas classify the same four rows as `BlowupClass::Blowup`, since
+//  every showcase here is whole-image insensitive, but the literal
+//  numbers differ slightly from the first fix round's citation below):
+//  tidal BDPT (mean(BDPT)/mean(PT,E) ~1099.5-1099.8x, mean(BDPT)/mean(PT,B)
+//  ~1112.9-1113.0x, E/B agree within 1.18%-1.20%), tidal VCM
+//  (~3466.0-3466.8x / ~3466.9-3467.0x, agree within 0.0046%-0.026%), bunny
+//  VCM (~4449.9-4450.0x / ~4445.1-4445.3x, agree within 0.105%-0.109%),
+//  pavilion VCM (~749.5-749.8x / ~746.0-746.3x, agree within 0.465%-0.474%)
+//  -- all four comfortably inside the 10% E/B-agreement band
+//  (`kLayer2BlowupAgreeBand`), so all four classify as `BlowupClass::Blowup`
+//  (the known, pre-existing, non-signal case) rather than
+//  `BlowupClass::Asymmetric`; neither run flagged any row as a possible
+//  signal-attributable regression instead.  These figures match the
+//  supervisor's independently-reproduced CLI figures (tidal BDPT
 //  157-338x, tidal VCM 433-1656x, bunny VCM ~4558x across 160x120/
 //  400x300/800x600) and VCM's known auto-radius instability at low spp
 //  (flagged in the pre-fix run for whoever next touches VCM's auto-radius
 //  pre-pass; still open).  `g_blowupSkipCount` == 4 on both runs.
 //
+//  FIRST fix round's numbers (kLayer2MaskedSubRenders=1 -- i.e. what the
+//  file measured before K-P1 -- and the pre-K-P2b `agree` formula), kept
+//  for the historical record: full logs .../scratchpad/s2_fixround_run1.txt
+//  and run2.txt.  Mask coverage ranged 2.12%-2.20% (plank) to 13.1%-13.2%
+//  (tidal) of pixels (bunny 6.60%-6.72%, pavilion 6.69%-6.82%); observed
+//  single-sub-render masked ratios: plank BDPT R_E/R_B-1 in {-0.0385,
+//  -0.1062}, plank VCM in {-0.0521, -0.0582}, bunny BDPT in {+0.0248,
+//  +0.0263}, pavilion BDPT in {+0.0074, +0.0102} -- every one of the eight
+//  rows inside the 20% band, though plank BDPT's -0.1062 left under 2x
+//  headroom, which is exactly the flake risk K-P1 closes.  Blow-up
+//  agreement (pre-K-P2b |meanE/meanB-1| formula): tidal BDPT ~1.23%, tidal
+//  VCM ~0.05%, bunny VCM ~1.74%, pavilion VCM ~0.39%.
+//
 //  BAND DERIVATION -- MASKED LAYER.  The masked ratio-of-ratios averages
 //  over a MUCH smaller pixel set (roughly 400-2600 of 19200 pixels
 //  depending on showcase) than the whole-image form, so it carries more
-//  Monte Carlo noise per sample.  (F4, this fix round) Re-derived from
-//  n=5 independent runs of plank_closeup's masked BDPT/VCM ratio at the
-//  shipped (scene, 32 spp) settings (was n=3) -- full logs
-//  .../scratchpad/s2_plank_n5_run1.txt through run5.txt: BDPT R_E/R_B-1 in
-//  {+0.0012, -0.0171, -0.0346, -0.1282, -0.0911}, VCM in {-0.0419, -0.0598,
-//  -0.0741, -0.0626, -0.0526} -- max observed |ratio| 0.1282 (BDPT), wider
-//  than n=3's 0.098 (more samples of a noisy estimator found a WIDER tail,
-//  not a narrower one -- consistent with the -0.1062 seen on the SAME
-//  plank/BDPT row in one of the two OBSERVED POST-FIX default runs above).
-//  Mask coverage across the same 5 runs: 2.089%-2.276% -- printed to 3
-//  decimal places (this fix round) so a reader sees the ~2x headroom over
-//  the 1% floor (`kLayer2MaskMinCoverage`) directly instead of it rounding
-//  away at "2%".  Raising samples to 64 did not tighten the ratio spread
-//  (repeat spread ~0.057, similar order) while SHRINKING mask coverage
-//  toward the 1% floor (1.15-1.16%, one auto-radius hiccup away from a
-//  false "insensitive" drop) -- the mask's hard 20% threshold interacts
-//  with pixel-level noise in a way plain sample-count scaling doesn't fix,
-//  so 32 spp (kLayer2Samples) was kept.  The 20% band (kLayer2MaskedBand)
-//  is roughly 1.5x the n=5 observed max spread (0.1282) -- tighter
-//  headroom than the n=3-derived "roughly 2x" an earlier draft claimed,
-//  but still comfortably clear of every value observed in this fix
-//  round's own default runs (LAYER 2 FINDING above tops out at 0.1062 on
-//  that same row).  This band is intentionally looser than Layer 1's 3%
-//  -- it is a production-scene diagnostic, not the sharp gate; Layer 1 is
-//  the file's primary red/green witness (per its own header framing
-//  above), and the masked Layer-2 numbers are corroborating evidence on
-//  real showcase content.
+//  Monte Carlo noise per sample.
+//
+//  (K-P1, this fix round) The single-sub-render metric (kLayer2MaskedSub-
+//  Renders=1, i.e. what the file measured before this round) was flake
+//  risk, not just noisy: across 9 independent runs at the shipped
+//  (scene, 32 spp) settings -- 5 from .../scratchpad/s2_plank_n5_run1.txt
+//  through run5.txt, 2 from s2_fixround_run1.txt/run2.txt, 2 from
+//  reviewer2_run1.txt/run2.txt -- plank's masked BDPT ratio was
+//  {+0.0012, -0.0171, -0.0346, -0.1282, -0.0911, -0.0385, -0.1062,
+//  -0.0470, -0.0369}: mean -0.0554, sample sd 0.0432, worst -0.1282 --
+//  only 1.66sigma from the 20% band edge at the worst observation, and
+//  the "band >= 4sigma from the mean" check FAILS (0.145 available vs
+//  0.173 needed) as does "band >= 2x worst" (0.20 available vs 0.256
+//  needed).  VCM's own 9-run stats (mean -0.0590, sd 0.0096, worst
+//  -0.0741) already clear both bars comfortably -- this was a BDPT-only
+//  problem, though the fix below is applied to both "for symmetry" per
+//  the finding that reopened this.
+//
+//  Two mitigations were tried, empirically, in this order:
+//    1. Raise kLayer2Samples for BDPT/VCM only (96 spp, 3x).  n=6 plank
+//       runs gave BDPT mean -0.0799, sd 0.0549, worst -0.1327 -- WORSE
+//       on every statistic than the 32-spp n=9 baseline above, matching
+//       this file's own earlier note (previous fix round) that 64 spp
+//       "did not tighten the ratio spread" for the same masked estimator.
+//       A single render's spp does not behave like naive 1/sqrt(N) noise
+//       reduction for this metric -- REJECTED.
+//    2. Average the FINAL masked ratio over `kLayer2MaskedSubRenders`
+//       INDEPENDENT full renders (fresh Job/Rasterizer per sub-render, so
+//       each gets its own wall-clock-seeded RNG -- see
+//       RenderShowcaseVariant/RunLayer2Showcase's masked-ratio loop).
+//       n=6 plank runs at kLayer2MaskedSubRenders=4 gave BDPT mean
+//       -0.0623, sd 0.0332, worst -0.0957 -- both bars now pass, but only
+//       just (margin 1.04x on the 4sigma bar).  Raising to 6 sub-renders
+//       (n=6 plank runs, full logs .../scratchpad/s2_plank_bdpt_n1.txt
+//       through n6.txt) gave BDPT mean -0.0550, sd 0.0185, worst -0.0700
+//       (margin 1.96x on the 4sigma bar, 1.43x on the 2x-worst bar) and
+//       VCM mean -0.0486, sd 0.0066, worst -0.0605 (margin 5.72x / 1.65x)
+//       -- CHOSEN.  kLayer2MaskedSubRenders=6 adds ~35s to the default
+//       whole-suite runtime (~35s at K=1 measured earlier this round ->
+//       ~70s at K=6, both measured on this machine) -- comfortably under
+//       the ~2 minute budget.
+//
+//  Mask coverage is unaffected by K (it is built once from the single PT
+//  render, independent of BDPT/VCM sub-render count): 2.089%-2.276% across
+//  the historical n=5 run, printed to 3 decimal places so a reader sees
+//  the ~2x headroom over the 1% floor (`kLayer2MaskMinCoverage`) directly
+//  instead of it rounding away at "2%".  The 20% band (kLayer2MaskedBand)
+//  is kept as-is -- widening it was never necessary once the ESTIMATOR
+//  (K=6 sub-render average) was fixed rather than the band; every K=6
+//  observation above (BDPT worst -0.0700, -0.1600 as a single-sub-render
+//  outlier that the K=6 average absorbs -- see run 1 of
+//  s2_plank_bdpt_n1.txt) sits comfortably inside it.  This band is
+//  intentionally looser than Layer 1's 3% -- it is a production-scene
+//  diagnostic, not the sharp gate; Layer 1 is the file's primary
+//  red/green witness (per its own header framing above), and the masked
+//  Layer-2 numbers are corroborating evidence on real showcase content.
 //
 //  KNOBS.  `SIGNAL_CONSISTENCY_FILTER` (env, substring match against `unit`,
 //  `showcase`, and the four showcase names `plank`, `tidal`, `bunny`,
 //  `pavilion`) restricts which layer/scene runs, like FabricRenderTest's
 //  own filter.  Unset (the default, and the CI invocation) runs BOTH
 //  layers, all six unit scenes and all four showcases.  Default runtime
-//  on this machine: ~38 seconds wall (layer 1 ~20s, layer 2 ~18s at
-//  kLayer2Samples=32, up from the original author's 16 -- the extra
-//  samples buy headroom for the masked ratio's per-pixel noise without
-//  materially changing total runtime).
+//  on this machine: ~70 seconds wall (layer 1 ~20s, layer 2 ~50s at
+//  kLayer2Samples=32 -- up from the original author's 16 -- with
+//  kLayer2MaskedSubRenders=6 independent sub-renders per BDPT/VCM masked
+//  ratio (K-P1, this fix round; see "BAND DERIVATION -- MASKED LAYER" for
+//  why 6 independent sub-renders, not a higher single-render spp, is what
+//  actually closes the plank BDPT flake risk).  Comfortably under the
+//  ~2 minute budget.
 //
 //  Tabs: 4
 //
@@ -955,12 +1035,15 @@ static SignalUnitScene BuildConvexityScene( double* outHarnessValue )
 	// per-hit result is DETERMINISTIC (a fixed-seed "spin", not wall-clock
 	// noise -- reproduced bit-for-bit across repeat runs), so a 9x9-vs-15x15
 	// cross-check measures true discretization bias, and 9x9 vs 15x15
-	// disagreed by 2.06% (avg 0.366997 vs 0.374733) -- outside the 1% bound
-	// this cross-check enforces.  A sweep at N=9,15,21,27,33,41 (kept in
-	// the S2 fix-round commit message, not in this file) found the average
-	// stabilizing from N=21 onward (21: 0.379127, 27: 0.377271, 33:
-	// 0.378536, 41: 0.378159 -- all mutually within ~0.5%), so the primary
-	// grid was raised to 21x21 and is cross-checked against 33x33 below.
+	// disagreed by 2.06% (avg 0.368865 vs 0.374733) -- outside the 1% bound
+	// this cross-check enforces.  (L-P2, this fix round) A sweep at
+	// N=9,15,21,27,33,41 -- re-run with a temporary env-gated block and
+	// saved verbatim to .../scratchpad/s2_convexity_sweep.txt, since this
+	// file itself carries only the production N=21/N=33 pair -- found the
+	// average stabilizing from N=21 onward (21: 0.379127, 27: 0.377271,
+	// 33: 0.378536, 41: 0.378159 -- all mutually within ~0.5%), so the
+	// primary grid was raised to 21x21 and is cross-checked against
+	// 33x33 below.
 	const int N = 21;
 	double minV = 1e30, maxV = -1e30;
 	int count = 0;
@@ -1363,6 +1446,45 @@ static Cst::NodeId FindChunkByRole( const Cst::Document& doc, const std::string&
 	return 0;
 }
 
+//! (K-P2a) Counted sibling of FindChunkByRole: returns the FIRST matching
+//! chunk (same semantics as above) but also reports how many top-level
+//! chunks matched via `*outCount`.  A "_rasterizer" lookup that silently
+//! returns the first of TWO matches would be dangerously misleading here:
+//! Job::RegisterAndActivateRasterizer (src/Library/Job.cpp:14841, the
+//! unconditional `pRasterizer = pRaster; activeRasterizerName = name;`
+//! at Job.cpp:14878-14879, run again by every Add*Rasterizer call with no
+//! guard) makes the LAST-PARSED rasterizer chunk the one that actually
+//! renders -- so if a showcase scene ever grew a second `*_rasterizer`
+//! chunk (e.g. a leftover from a hand-edit), FindChunkByRole's "first
+//! match" would resolve, verify, and structurally replace the WRONG one
+//! while the derived job quietly rendered the other, untouched chunk.
+//! The callers below hard-`Check(count == 1)` so that scenario fails
+//! loudly instead of silently mis-swapping.
+static Cst::NodeId FindChunkByRoleCounted( const Cst::Document& doc, const std::string& roleExact, const std::string& roleSuffix, int* outCount )
+{
+	const int n = Cst::DocItemCount( doc );
+	Cst::NodeId first = 0;
+	int count = 0;
+	for( int i = 0; i < n; ++i ) {
+		const Cst::NodeId nid = Cst::DocNodeIdAt( doc, i );
+		const Cst::NodeRef it = Cst::DocResolveNodeId( doc, nid );
+		if( !it || it->kind != Cst::NodeKind::Chunk ) continue;
+		const std::string& role = it->role;
+		bool matches = false;
+		if( !roleExact.empty() && role == roleExact ) matches = true;
+		if( !roleSuffix.empty() && role.size() > roleSuffix.size() &&
+			role.compare( role.size() - roleSuffix.size(), roleSuffix.size(), roleSuffix ) == 0 ) {
+			matches = true;
+		}
+		if( matches ) {
+			if( count == 0 ) first = nid;
+			++count;
+		}
+	}
+	if( outCount ) *outCount = count;
+	return first;
+}
+
 //! Resize the scene's `film` chunk to an aspect-preserving ~`targetWidth`-
 //! wide target by STRUCTURAL node edit (DocSetOrAddParamValue on the
 //! film chunk found via FindChunkByRole), never by text regex -- see that
@@ -1452,9 +1574,18 @@ static std::string BuildSwapRasterizerText( Integrator integrator, unsigned int 
 static Cst::Document SwapRasterizerCst( const Cst::Document& inDoc, Integrator integrator, unsigned int samples )
 {
 	Cst::Document doc = inDoc;
-	const Cst::NodeId rastId = FindChunkByRole( doc, std::string(), "_rasterizer" );
+	int rastCount = 0;
+	const Cst::NodeId rastId = FindChunkByRoleCounted( doc, std::string(), "_rasterizer", &rastCount );
 	Check( rastId > 0, "Layer 2: the showcase's rasterizer chunk is found by role" );
-	if( rastId == 0 ) return doc;
+	// (K-P2a) Job::RegisterAndActivateRasterizer activates whichever
+	// rasterizer chunk was parsed LAST (Job.cpp:14841, unconditional
+	// pRasterizer/activeRasterizerName assignment at 14878-14879) -- a
+	// scene with two `*_rasterizer` chunks would silently derive/render
+	// the SECOND one while this function structurally replaces the FIRST
+	// (FindChunkByRole's documented "first match" semantics).  Fail loudly
+	// instead of swapping the wrong chunk.
+	Check( rastCount == 1, "Layer 2: the showcase has EXACTLY ONE rasterizer chunk (found " + std::to_string( rastCount ) + ")" );
+	if( rastId == 0 || rastCount != 1 ) return doc;
 
 	const Cst::NodeRef rastChunk = Cst::DocResolveNodeId( doc, rastId );
 	Cst::NodeRef rastItem;
@@ -1489,6 +1620,20 @@ static const ShowcaseSpec kShowcases[] = {
 
 static const unsigned int kLayer2TargetWidth = 160;
 static const unsigned int kLayer2Samples = 32;
+//! (K-P1, this fix round) The plank BDPT masked ratio-of-ratios sat only
+//! 1.66sigma from the 20% band edge over 9 independent runs at 32 spp --
+//! see "BAND DERIVATION -- MASKED LAYER" for the measurement.  Raising
+//! kLayer2Samples to 96 for BDPT/VCM (tried first, empirically) did NOT
+//! shrink the spread -- it made it slightly WORSE (n=6 sd 0.0549 vs the
+//! 32-spp n=9 sd 0.0432, worst -0.1327 vs -0.1282) -- matching the file's
+//! own earlier note that 64 spp "did not tighten the ratio spread".  The
+//! fix that DOES work empirically is averaging the FINAL masked ratio
+//! over kLayer2MaskedSubRenders independent full renders (fresh Job/
+//! Rasterizer per sub-render, so each gets its own wall-clock RNG seed --
+//! see RunLayer2Showcase's masked-ratio loop) for BDPT/VCM only; PT is
+//! untouched (K=1, its own noise is already <0.05% per OBSERVED POST-FIX
+//! NUMBERS).
+static const unsigned int kLayer2MaskedSubRenders = 6;
 static const double kLayer2Band = 0.05;			// design doc section 6.2's own number (whole-image)
 static const double kLayer2SensitivityBand = 0.05;	// whole-image
 static const double kLayer2MaskThreshold = 0.20;	// |PT(E)-PT(B)|/PT(B) > this -> "the signal moved this pixel"
@@ -1581,9 +1726,15 @@ static const char* ExpectedRasterizerKeyword( Integrator integ )
 static void VerifySwappedRasterizerChunk( const Cst::Document& doc, Integrator integ, const std::string& keyword, const char* variantTag )
 {
 	const std::string tag = keyword + " " + variantTag + " " + IntegratorName( integ );
-	const Cst::NodeId rastId = FindChunkByRole( doc, std::string(), "_rasterizer" );
+	int rastCount = 0;
+	const Cst::NodeId rastId = FindChunkByRoleCounted( doc, std::string(), "_rasterizer", &rastCount );
 	Check( rastId > 0, tag + ": swapped rasterizer chunk resolves by role" );
-	if( rastId == 0 ) return;
+	// (K-P2a) Same one-and-only-one guard as SwapRasterizerCst -- see that
+	// function's comment for why "first match" alone is not enough
+	// (Job::RegisterAndActivateRasterizer activates the LAST-parsed
+	// rasterizer chunk, Job.cpp:14841/14878-14879).
+	Check( rastCount == 1, tag + ": exactly one rasterizer chunk resolves by role (found " + std::to_string( rastCount ) + ")" );
+	if( rastId == 0 || rastCount != 1 ) return;
 
 	const Cst::NodeRef rastChunk = Cst::DocResolveNodeId( doc, rastId );
 	const std::string expected = ExpectedRasterizerKeyword( integ );
@@ -1640,11 +1791,25 @@ struct Layer2Row
 //! EACH OTHER under the blown-up integrator -- which would itself be
 //! evidence of a signal-attributable regression hiding behind the skip.
 //! Blowup:     both ratioE and ratioB fall outside [0.5x,2x] of PT AND
-//!             r.meanE/r.meanB agrees with 1 within kLayer2BlowupAgreeBand
-//!             -- the known, previously-recorded non-signal case.
+//!             ratioE/ratioB agrees with 1 within kLayer2BlowupAgreeBand --
+//!             the known, previously-recorded non-signal case.
 //! Asymmetric: only one of {ratioE,ratioB} is outside the band, OR both
 //!             are outside but E/B disagree by more than the agree band --
 //!             NOT skipped; the caller must fail loudly on this.
+//!
+//! (K-P2b, this fix round) `agree` is the LITERAL ratio-of-ratios
+//! agreement |ratioE/ratioB - 1|, not meanE/meanB.  An earlier draft
+//! computed |meanE/meanB - 1| here while this comment (and the printed
+//! "E/B agree within" lines) claimed ratioE/ratioB -- the two coincide
+//! only when meanPT_E ~= meanPT_B, since
+//! ratioE/ratioB = (meanE/meanPT_E)/(meanB/meanPT_B)
+//!              = (meanE/meanB) * (meanPT_B/meanPT_E).
+//! Every showcase this file has run against happens to be whole-image
+//! INSENSITIVE (mean(PT,E) ~= mean(PT,B), see "LAYER 2 FINDING" in the
+//! file header), which is exactly the condition under which the two
+//! formulas agree -- so the old code's classifications were correct by
+//! coincidence, not by construction.  Compute the quantity the comment
+//! (and the skip-report text below) actually claims.
 enum class BlowupClass { None, Blowup, Asymmetric };
 
 static BlowupClass ClassifyBlowup(
@@ -1657,11 +1822,89 @@ static BlowupClass ClassifyBlowup(
 	*outRatioB = ratioB;
 	const bool eOut = ( meanPT_E == 0.0 ) || ratioE < kLayer2BlowupLow || ratioE > kLayer2BlowupHigh;
 	const bool bOut = ( meanPT_B == 0.0 ) || ratioB < kLayer2BlowupLow || ratioB > kLayer2BlowupHigh;
-	const double agree = ( r.meanB != 0.0 ) ? std::fabs( r.meanE / r.meanB - 1.0 ) : 1e9;
+	const double agree = ( ratioB != 0.0 ) ? std::fabs( ratioE / ratioB - 1.0 ) : 1e9;
 	*outAgree = agree;
 	if( eOut && bOut && agree < kLayer2BlowupAgreeBand ) return BlowupClass::Blowup;
 	if( eOut || bOut ) return BlowupClass::Asymmetric;
 	return BlowupClass::None;
+}
+
+//! (K-P1, this fix round) The single-render body the per-integrator loop
+//! in RunLayer2Showcase used to inline, factored out so it can ALSO be
+//! called for the extra independent sub-renders the masked ratio-of-
+//! ratios averages over (kLayer2MaskedSubRenders) for BDPT/VCM.  Each
+//! call builds fresh Cst::Documents, a fresh Job/Rasterizer pair and a
+//! fresh render -- exactly what the ORIGINAL per-integrator loop already
+//! did once per (showcase, integrator); calling it again gets an
+//! independently-seeded render (RISE renders seed from wall clock), which
+//! is what actually reduces the masked ratio's run-to-run spread -- see
+//! kLayer2MaskedSubRenders' own comment for why raising spp in a SINGLE
+//! render does not.
+static bool RenderShowcaseVariant(
+	const std::string& variantEText, const std::string& variantBText,
+	Integrator integ, unsigned int samples, const char* keyword,
+	unsigned int targetW, unsigned int targetH, Layer2Row* outRow, bool* outDerived = nullptr )
+{
+	if( outDerived ) *outDerived = false;
+	outRow->integ = integ;
+	Cst::Document docE = SwapRasterizerCst( Cst::ParseToCst( variantEText ), integ, samples );
+	Cst::Document docB = SwapRasterizerCst( Cst::ParseToCst( variantBText ), integ, samples );
+	VerifySwappedRasterizerChunk( docE, integ, keyword, "E" );
+	VerifySwappedRasterizerChunk( docB, integ, keyword, "B" );
+
+	Job* jobE = new Job();
+	Job* jobB = new Job();
+	std::vector<std::string> diagsE, diagsB;
+	Cst::DeriveToJob( docE, *jobE, &diagsE );
+	Cst::DeriveToJob( docB, *jobB, &diagsB );
+	for( const auto& d : diagsE ) std::cout << "  " << keyword << " " << IntegratorName(integ) << " E diagnostic: " << d << std::endl;
+	for( const auto& d : diagsB ) std::cout << "  " << keyword << " " << IntegratorName(integ) << " B diagnostic: " << d << std::endl;
+	Check( diagsE.empty(), std::string( keyword ) + " " + IntegratorName(integ) + " variant E derives with no diagnostics" );
+	Check( diagsB.empty(), std::string( keyword ) + " " + IntegratorName(integ) + " variant B derives with no diagnostics" );
+	if( !diagsE.empty() || !diagsB.empty() ) { safe_release( jobE ); safe_release( jobB ); return false; }
+	if( outDerived ) *outDerived = true;
+
+	jobE->RemoveRasterizerOutputs();
+	jobB->RemoveRasterizerOutputs();
+
+	CapturingRasterizerOutput* capE = new CapturingRasterizerOutput(); capE->addref();
+	CapturingRasterizerOutput* capB = new CapturingRasterizerOutput(); capB->addref();
+	jobE->GetRasterizer()->AddRasterizerOutput( capE );
+	jobB->GetRasterizer()->AddRasterizerOutput( capB );
+
+	bool renderedE = false, renderedB = false;
+	const std::string logE = CaptureStdoutDuring( [&]() { renderedE = jobE->Rasterize(); } );
+	const std::string logB = CaptureStdoutDuring( [&]() { renderedB = jobB->Rasterize(); } );
+	Check( renderedE, std::string( keyword ) + " " + IntegratorName(integ) + " variant E renders" );
+	Check( renderedB, std::string( keyword ) + " " + IntegratorName(integ) + " variant B renders" );
+	CheckIntegratorMarker( integ, logE, keyword, "E" );
+	CheckIntegratorMarker( integ, logB, keyword, "B" );
+
+	if( renderedE ) {
+		Check( capE->width == targetW && capE->height == targetH,
+			std::string( keyword ) + " " + IntegratorName(integ) + " E: captured image is the requested "
+			+ std::to_string(targetW) + "x" + std::to_string(targetH) + " (got "
+			+ std::to_string(capE->width) + "x" + std::to_string(capE->height) + ")" );
+		ComputePerPixelValues( *capE, outRow->valsE );
+		outRow->meanE = VectorMean( outRow->valsE );
+	}
+	if( renderedB ) {
+		Check( capB->width == targetW && capB->height == targetH,
+			std::string( keyword ) + " " + IntegratorName(integ) + " B: captured image is the requested "
+			+ std::to_string(targetW) + "x" + std::to_string(targetH) + " (got "
+			+ std::to_string(capB->width) + "x" + std::to_string(capB->height) + ")" );
+		ComputePerPixelValues( *capB, outRow->valsB );
+		outRow->meanB = VectorMean( outRow->valsB );
+	}
+
+	std::cout << "  " << IntegratorName(integ) << ": mean(E)=" << outRow->meanE << " mean(B)=" << outRow->meanB << std::endl;
+
+	capE->release();
+	capB->release();
+	safe_release( jobE );
+	safe_release( jobB );
+
+	return renderedE && renderedB;
 }
 
 static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
@@ -1686,68 +1929,15 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	std::vector<Layer2Row> rows;
 
 	for( Integrator integ : { Integrator::PT, Integrator::BDPT, Integrator::VCM } ) {
-		Cst::Document docE = SwapRasterizerCst( Cst::ParseToCst( variantEText ), integ, kLayer2Samples );
-		Cst::Document docB = SwapRasterizerCst( Cst::ParseToCst( variantBText ), integ, kLayer2Samples );
-		VerifySwappedRasterizerChunk( docE, integ, spec.keyword, "E" );
-		VerifySwappedRasterizerChunk( docB, integ, spec.keyword, "B" );
-
-		Job* jobE = new Job();
-		Job* jobB = new Job();
-		std::vector<std::string> diagsE, diagsB;
-		Cst::DeriveToJob( docE, *jobE, &diagsE );
-		Cst::DeriveToJob( docB, *jobB, &diagsB );
-		for( const auto& d : diagsE ) std::cout << "  " << spec.keyword << " " << IntegratorName(integ) << " E diagnostic: " << d << std::endl;
-		for( const auto& d : diagsB ) std::cout << "  " << spec.keyword << " " << IntegratorName(integ) << " B diagnostic: " << d << std::endl;
-		Check( diagsE.empty(), std::string( spec.keyword ) + " " + IntegratorName(integ) + " variant E derives with no diagnostics" );
-		Check( diagsB.empty(), std::string( spec.keyword ) + " " + IntegratorName(integ) + " variant B derives with no diagnostics" );
-		if( !diagsE.empty() || !diagsB.empty() ) { safe_release( jobE ); safe_release( jobB ); continue; }
-
-		jobE->RemoveRasterizerOutputs();
-		jobB->RemoveRasterizerOutputs();
-
-		CapturingRasterizerOutput* capE = new CapturingRasterizerOutput(); capE->addref();
-		CapturingRasterizerOutput* capB = new CapturingRasterizerOutput(); capB->addref();
-		jobE->GetRasterizer()->AddRasterizerOutput( capE );
-		jobB->GetRasterizer()->AddRasterizerOutput( capB );
-
-		bool renderedE = false, renderedB = false;
-		const std::string logE = CaptureStdoutDuring( [&]() { renderedE = jobE->Rasterize(); } );
-		const std::string logB = CaptureStdoutDuring( [&]() { renderedB = jobB->Rasterize(); } );
-		Check( renderedE, std::string( spec.keyword ) + " " + IntegratorName(integ) + " variant E renders" );
-		Check( renderedB, std::string( spec.keyword ) + " " + IntegratorName(integ) + " variant B renders" );
-		CheckIntegratorMarker( integ, logE, spec.keyword, "E" );
-		CheckIntegratorMarker( integ, logB, spec.keyword, "B" );
-
 		Layer2Row row;
-		row.integ = integ;
-		if( renderedE ) {
-			Check( capE->width == targetW && capE->height == targetH,
-				std::string( spec.keyword ) + " " + IntegratorName(integ) + " E: captured image is the requested "
-				+ std::to_string(targetW) + "x" + std::to_string(targetH) + " (got "
-				+ std::to_string(capE->width) + "x" + std::to_string(capE->height) + ")" );
-			ComputePerPixelValues( *capE, row.valsE );
-			row.meanE = VectorMean( row.valsE );
-		}
-		if( renderedB ) {
-			Check( capB->width == targetW && capB->height == targetH,
-				std::string( spec.keyword ) + " " + IntegratorName(integ) + " B: captured image is the requested "
-				+ std::to_string(targetW) + "x" + std::to_string(targetH) + " (got "
-				+ std::to_string(capB->width) + "x" + std::to_string(capB->height) + ")" );
-			ComputePerPixelValues( *capB, row.valsB );
-			row.meanB = VectorMean( row.valsB );
-		}
-
-		std::cout << "  " << IntegratorName(integ) << ": mean(E)=" << row.meanE << " mean(B)=" << row.meanB << std::endl;
-
-		capE->release();
-		capB->release();
-		safe_release( jobE );
-		safe_release( jobB );
+		bool derived = false;
+		const bool renderedBoth = RenderShowcaseVariant( variantEText, variantBText, integ, kLayer2Samples, spec.keyword, targetW, targetH, &row, &derived );
+		if( !derived ) continue;		// matches the original loop's "diagnostics non-empty -> skip this row entirely"
 
 		if( integ == Integrator::PT ) {
 			meanPT_E = row.meanE;
 			meanPT_B = row.meanB;
-			ptOk = renderedE && renderedB;
+			ptOk = renderedBoth;
 		}
 		rows.push_back( std::move( row ) );
 	}
@@ -1894,9 +2084,33 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		}
 		const double R_E = maskedE / maskedPT_E;
 		const double R_B = maskedB / maskedPT_B;
-		const double ratio = R_E / R_B - 1.0;
+		double ratioSum = R_E / R_B - 1.0;
+		int ratioCount = 1;
+
+		// (K-P1) BDPT/VCM average the masked ratio over kLayer2MaskedSubRenders
+		// INDEPENDENT full renders (this row's own render above is sub-render
+		// #1) -- see that constant's comment for the measurement that shows
+		// this, not a higher single-render spp, is what actually shrinks the
+		// run-to-run spread of this metric.  PT is not looped here (K=1):
+		// its own noise is already <0.05% (OBSERVED POST-FIX NUMBERS).
+		if( r.integ == Integrator::BDPT || r.integ == Integrator::VCM ) {
+			for( unsigned int sub = 1; sub < kLayer2MaskedSubRenders; ++sub ) {
+				Layer2Row subRow;
+				bool subDerived = false;
+				RenderShowcaseVariant( variantEText, variantBText, r.integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
+				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) continue;
+				const double subMaskedE = maskedMean( subRow.valsE );
+				const double subMaskedB = maskedMean( subRow.valsB );
+				if( subMaskedE == 0.0 || subMaskedB == 0.0 ) continue;
+				ratioSum += ( subMaskedE / maskedPT_E ) / ( subMaskedB / maskedPT_B ) - 1.0;
+				ratioCount++;
+			}
+		}
+
+		const double ratio = ratioSum / double( ratioCount );
 		std::cout << "  MASKED " << IntegratorName(r.integ) << ": R_E=" << R_E << " R_B=" << R_B
-		          << " R_E/R_B-1=" << ratio
+		          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
+		          << "  avg over " << ratioCount << " sub-render(s)=" << ratio
 		          << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
 		Check( std::fabs( ratio ) < kLayer2MaskedBand,
 			std::string( spec.keyword ) + " " + IntegratorName(r.integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
