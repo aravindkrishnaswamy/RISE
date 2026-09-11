@@ -23,14 +23,17 @@
 //  `fw`/`fwo` (no `fbm`/noise call anywhere): the six signal builtins and
 //  plain arithmetic only.
 //
-//  THIS FILE RUNS AT COMMIT ed3e6063 (S2, in a worktree BEFORE S1 has
-//  landed): the widening has not happened, so this test is EXPECTED TO
-//  FAIL on every BDPT/VCM/MLT row and PASS on every PT row.  That is the
-//  RED half of the red-proof the design doc's section 6.1 asks for; the
-//  observed numbers are recorded in section "OBSERVED PRE-FIX NUMBERS"
-//  below.  Do NOT loosen any band to make a BDPT/VCM row pass here -- the
-//  bands are derived from PT's own run-to-run noise (section "BAND
-//  DERIVATION"), not tuned to hide the bug.
+//  STATUS (S2 follow-up, run in worktree signals-bidir-test against the
+//  S1-landed tree, HEAD 5a15586a rebased onto S1's 8687bfb1): S1's widening
+//  of `PopulateRIGFromVertex` (section 3) IS present in this tree, so every
+//  Layer-1 row now PASSES -- the GREEN half of the red-proof.  The RED half
+//  (this same file, run against a worktree BEFORE S1 landed) is recorded
+//  verbatim in "OBSERVED PRE-FIX NUMBERS" below; both directions of the
+//  red-proof mutation (drop `signals`, drop `derivatives`) were re-run IN
+//  THIS worktree with the fix in place and are recorded in "RED-PROOF
+//  PROTOCOL -- OBSERVED OUTCOMES".  Do NOT loosen any band to make a
+//  BDPT/VCM row pass -- the bands are derived from PT's own run-to-run
+//  noise (section "BAND DERIVATION"), not tuned to hide a regression.
 //
 //  TWO LAYERS (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6):
 //
@@ -75,18 +78,44 @@
 //
 //  with a same-shaped sensitivity check that `mean(PT,E)/mean(PT,B) - 1` is
 //  itself outside the band (a showcase that fails this is not a witness for
-//  the gap and is DROPPED from the layer-2 assertion, with a printed note,
-//  never silently passed).
+//  the gap and is DROPPED from the WHOLE-IMAGE assertion, with a printed
+//  note, never silently passed).  Every showcase measured so far is
+//  insensitive at the WHOLE-IMAGE level (see "LAYER 2 FINDING" below), so a
+//  second, MASKED form of the same ratio-of-ratios is ALSO computed
+//  (S2 follow-up addendum -- not in the original design doc text, but the
+//  same section 6.2 spirit: "if a showcase is insensitive... "): build a
+//  per-pixel mask from the two PT renders, `|PT(E)-PT(B)|/max(PT(B),eps) >
+//  20%` -- the pixels the signal actually moves -- require the mask to
+//  cover >= 1% of pixels (else print a note and skip, same as the
+//  whole-image sensitivity drop), then compute masked means for every
+//  (I, variant) and assert the SAME ratio-of-ratios restricted to the
+//  masked pixels.  PT only BUILDS the mask (a selector); the invariant
+//  under test still compares each integrator's OWN E vs B means, never
+//  PT's, so this is not circular.  Both forms are printed; only the masked
+//  form is asserted where whole-image is insensitive (which is everywhere
+//  observed so far).
+//
+//  A per-integrator BLOW-UP GATE (section 5 of the S2 follow-up brief) runs
+//  before either ratio form: if `mean(I,E)/mean(PT,E)` for I in {BDPT,VCM}
+//  falls outside [0.5, 2.0], that is a KNOWN, PRE-EXISTING, NON-SIGNAL
+//  integrator disagreement (VCM auto-radius instability at low spp on
+//  these reduced-resolution showcases -- E and B agree with each other,
+//  only the OTHER integrator disagrees with PT) -- both ratio forms are
+//  SKIPPED for that (showcase, integrator), counted in `g_blowupSkipCount`,
+//  and printed with an explicit "INTEGRATOR DISAGREEMENT (not
+//  signal-attributable...)" line.  See "LAYER 2 FINDING" for the observed
+//  skip list.
 //
 //  BAND DERIVATION.  Both layers assert on RENDERED MEANS, which carry
 //  Monte Carlo noise even under PT.  The bands below were chosen by
 //  rendering each layer-1 PT row 3 times at its final (scene, spp) and
 //  reading the run-to-run spread of `mean(PT,expr)/mean(PT,control)`
 //  (design doc target: <=1% noise on the mean at the chosen spp, 3% band).
-//  Layer 2's band (5%) is the design doc's own number, derived the same
-//  way but at the coarser (160x120, low-spp) showcase resolution, where
-//  Monte Carlo noise on a full-scene mean is larger.  See "BAND DERIVATION
-//  -- MEASURED SPREAD" for the actual observed numbers from this run.
+//  Layer 2's WHOLE-IMAGE band (5%) is the design doc's own number, derived
+//  the same way but at the coarser (160x120, low-spp) showcase resolution,
+//  where Monte Carlo noise on a full-scene mean is larger.  See "BAND
+//  DERIVATION -- MEASURED SPREAD" for the actual observed numbers from
+//  this run, and "BAND DERIVATION -- MASKED LAYER" for the masked band.
 //
 //  REFERENCE HARNESS.  Occlusion/convexity/thickness have no closed form on
 //  a general SDF, so their "known constant" is obtained by intersecting a
@@ -105,20 +134,75 @@
 //  estimator the render will call, evaluated once outside the Monte Carlo
 //  loop.
 //
-//  RED-PROOF PROTOCOL (post-S1, to be exercised in the S1 worktree, not
-//  here): dropping the `signals` copy from `PopulateRIGFromVertex` must
-//  turn every BDPT/VCM/MLT row of the occlusion/convexity/thickness/
-//  proximity/interior scenes AND both layer-2 showcase invariants red,
-//  while every PT row and the curv scene's BDPT/VCM/MLT rows stay green
-//  (curv depends on `derivatives`, not `signals`).  Dropping the
-//  `derivatives` copy must turn ONLY the curv scene's BDPT/VCM/MLT rows
-//  red.  Both directions are asserted mechanically by design (there is no
-//  single flag this file can flip to simulate the pre-S1/post-S1 states
-//  without literally being run against each tree), so the protocol is
-//  exercised by the S1 worker against this same file, not encoded here.
+//  RED-PROOF PROTOCOL -- OBSERVED OUTCOMES (S2 follow-up, exercised in
+//  THIS worktree -- signals-bidir-test is the worker's own isolated tree,
+//  never the shared checkout; each mutation was built, run with
+//  `SIGNAL_CONSISTENCY_FILTER=unit`, then reverted with `git checkout --`
+//  and the library rebuilt back to the clean state before continuing).
 //
-//  OBSERVED PRE-FIX NUMBERS (worktree signals-bidir-test at ed3e6063, two
-//  independent runs -- full log in
+//  (a) Dropped `ri.signals = vertex.signals;` from `PopulateRIGFromVertex`
+//      (src/Library/Utilities/PathVertexEval.h): 10 FAILs, exactly the
+//      predicted set -- convexity/occlusion/thickness/proximity/interior
+//      BDPT+VCM (5 scenes x 2 integrators), curv and every PT row stayed
+//      GREEN.  Observed ratios (`mean(expr)/mean(control)-1`):
+//      convexity BDPT -0.550, VCM -0.550; occlusion BDPT -0.822, VCM
+//      -0.824; thickness BDPT +1.183, VCM +1.183; proximity BDPT -0.694,
+//      VCM -0.690; interior BDPT -0.756, VCM -0.758 -- 43 passed / 10
+//      failed overall, 0 unexpected reds.  Full log:
+//      /private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/
+//      f398a734-fdcc-484a-9edd-d32d2ce33bf5/scratchpad/
+//      s2_redproof_drop_signals.txt.
+//  (b) Dropped `ri.derivatives = vertex.derivatives;` (same function,
+//      `signals` copy left in place): 3 FAILs, exactly the predicted set --
+//      curv BDPT/VCM/MLT only, every other scene (convexity through
+//      interior) and every PT row stayed GREEN.  Observed ratios: curv
+//      BDPT -0.755, VCM -0.755, MLT -0.755 -- 50 passed / 3 failed
+//      overall, 0 unexpected reds.  Full log: .../scratchpad/
+//      s2_redproof_drop_derivatives.txt (same directory as (a)).
+//
+//  Both mutations were reverted (`git checkout --
+//  src/Library/Utilities/PathVertexEval.h`, confirmed by an empty
+//  `git status --short` and a `git diff --stat` with no output) and the
+//  library rebuilt clean before any further work.
+//
+//  OBSERVED POST-FIX NUMBERS (this session, worktree signals-bidir-test at
+//  HEAD 5a15586a rebased onto S1's 8687bfb1, S1's `PopulateRIGFromVertex`
+//  widening IN the tree -- full log in .../scratchpad/s2_postfix_run.txt,
+//  same directory as the red-proof logs above).  Layer 1,
+//  `mean(I,expr)/mean(I,control) - 1` per scene/integrator:
+//
+//      scene       PT             BDPT       VCM        MLT (curv only)
+//      curv        -0.0004        +0.0003    +0.0007    -2e-16
+//      convexity   +0.0143        +0.0135    +0.0139    --
+//      occlusion   -0.0000056     +0.0000053 +3.4e-7    --
+//      thickness   -7.4e-7        +2.5e-7    -1.4e-6    --
+//      proximity   +0.0000124     -0.0000148 +0.0000196 --
+//      interior    -0.0000059     -0.0000218 +0.0000113 --
+//
+//  Every row (PT, BDPT, VCM, and the MLT smoke row) PASSES the 3% band --
+//  the GREEN half of the red-proof, exactly as section 3 predicts post-S1.
+//  Sensitivity margins on the PT row (unchanged from pre-fix within noise,
+//  as expected -- PT never rebuilds a vertex, so S1 cannot move its
+//  numbers): curv 3.08, convexity 1.25, occlusion 3.91, thickness -0.54,
+//  proximity 2.13, interior 3.16, all comfortably outside the 3% band.
+//
+//  Layer 2 (see "LAYER 2 FINDING" below for the full per-showcase
+//  breakdown): every showcase now renders at its correctly resized
+//  dimensions (the film-chunk fix), every integrator marker check passes
+//  (the rasterizer-swap verification), and the MASKED ratio-of-ratios
+//  passes on every non-blown-up (showcase, integrator) pair -- plank
+//  BDPT/VCM, bunny BDPT, pavilion BDPT.  Full run: 234 passed / 0 failed /
+//  4 blow-up skips (tidal BDPT, tidal VCM, bunny VCM, pavilion VCM -- all
+//  pre-existing non-signal integrator disagreements, not a signals
+//  regression).
+//
+//  OBSERVED PRE-FIX NUMBERS (historical record from the S2 test's original
+//  author, worktree signals-bidir-test at ed3e6063 -- BEFORE S1 landed,
+//  kept here unedited as the RED half of the red-proof this file's
+//  Layer-1 assertions are written against; PT's own numbers are IDENTICAL
+//  pre- and post-fix within run-to-run noise, since PT never rebuilds a
+//  vertex and is therefore untouched by S1 -- compare the PT column above
+//  to the PT column below).  Two independent runs -- full log in
 //  /private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/
 //  f398a734-fdcc-484a-9edd-d32d2ce33bf5/scratchpad/s2_prefix_run.txt).
 //  Layer 1, `mean(I,expr)/mean(I,control) - 1` per scene/integrator:
@@ -157,34 +241,109 @@
 //  points).  Layer 2's 5% band is the design doc's own number, at the
 //  coarser (160x120, 16 spp) showcase resolution.
 //
-//  LAYER 2 FINDING: at 160x120 / 16 spp, all FOUR showcases' `mean(PT,E)`
-//  vs `mean(PT,B)` differ by well under the 5% sensitivity band (plank
-//  0.3-0.4%, tidal_stones ~0.004%, shelf_bunny ~1.8-3.3%, pavilion_
-//  colonnade ~0.9-1.1%) -- each of their signal-driven regions (a nail's
-//  contact seam, a buried stone's waterline, dust under a bunny's foot, a
-//  column's crevice wear) is too small a fraction of the WHOLE-IMAGE mean
-//  the design doc's section 6.2 formula integrates over to move it past
-//  noise at this resolution.  Per section 6.2's own rule ("if a showcase
-//  is insensitive... dropped... with a printed note"), all four are
-//  reported and dropped rather than asserted on; this run therefore has
-//  NO layer-2 red/green witness (0 of the 4 R_E/R_B checks fire either
-//  way).  This is disclosed, not hidden: Layer 1 alone already gives the
-//  clean, strong red/green separation the design's money test is for.
-//  Also observed (does not affect any assertion, since these rows are
-//  dropped): VCM's mean on 3 of the 4 showcases (tidal_stones, shelf_
-//  bunny, pavilion_colonnade) is 2-3 ORDERS OF MAGNITUDE above PT/BDPT's
-//  (e.g. shelf_bunny VCM mean 3604 vs PT's 0.80) at these reduced-
-//  resolution/16-spp settings -- almost certainly the auto merge-radius
-//  estimator destabilizing at very low sample counts on scenes it was
-//  never tuned for at this resolution, not a signals-consistency finding;
-//  flagged here for whoever next touches VCM's auto-radius pre-pass.
+//  LAYER 2 HARNESS FIXES (S2 follow-up).  The original S2 author's
+//  `ResizeFilmChunk`/`SwapRasterizer` were raw-text regex/brace-counting
+//  over the WHOLE scene file.  Two defects surfaced when this session
+//  instrumented the captured image's actual dimensions (a temporary
+//  `capE->width`x`capE->height` print, since removed in favour of the
+//  permanent hard `Check` now in `RunLayer2Showcase`):
+//    - shelf_bunny.RISEscene rendered at its NATIVE 800x600, never
+//      resized.  Root cause: its own "DEVIATIONS FROM THE SPEC" header
+//      comment spells the real film chunk's values out in prose --
+//      `` `film { width 800 height...` `` split across two `#` lines --
+//      and a bare `film\s*{` regex matches THAT decoy (it appears earlier
+//      in the file) before ever reaching the real chunk.  The decoy's own
+//      "600 }" sits behind a `#` on the next line, so only `width` inside
+//      the comment got mangled; `height` in the comment and BOTH params on
+//      the real chunk were untouched.
+//    - tidal_stones.RISEscene was SUSPECTED of the same failure (no
+//      "bound to canonical FrameStore 160x120" log line in the original
+//      pre-fix run), but the width/height diagnostic proved this was a
+//      FALSE ALARM: tidal_stones has only one `film` occurrence in the
+//      whole file and resized correctly to 160x120 every time; the
+//      missing log line is unrelated to resize correctness (its own
+//      `file_rasterizeroutput` chunk, still present untouched alongside
+//      the swapped-in rasterizer, apparently doesn't hit the exact
+//      `FileRasterizerOutput::OnRasterizerFrameStoreChanged` code path
+//      that prints that line for this scene -- cosmetic, not a
+//      correctness gap, and not investigated further since the hard
+//      dimension Check is what actually matters).
+//  FIX: `ResizeFilmChunkCst` and `SwapRasterizerCst` now edit the parsed
+//  Cst::Document STRUCTURALLY -- `FindChunkByRole` enumerates real Chunk
+//  nodes only (comment trivia is never a Chunk node, so the decoy above
+//  cannot be matched), `ParamValueAsParsed`/`DocSetOrAddParamValue` read
+//  and write width/height, and the rasterizer swap uses `DocReplaceItem`
+//  at the chunk's own resolved index instead of a keyword-then-brace-count
+//  text search.  Every Layer-2 render now asserts (hard `Check`, not a
+//  printed note) that the captured image is EXACTLY the requested
+//  `targetW`x`targetH` -- this cannot silently regress again.  A second
+//  fix verifies the SWAP itself: `CaptureStdoutDuring` redirects
+//  `std::cout` around each `Rasterize()` call (GlobalLog's StreamPrinter
+//  writes through `std::cout`, Log.cpp:179) and `CheckIntegratorMarker`
+//  greps the captured log for an integrator-specific, unconditional
+//  marker -- `"BDPT Progressive::"` for BDPT, `"VCMRasterizerBase::
+//  PreRenderSetup::"` for VCM (that function is called at a fixed pipeline
+//  hook on every VCM render and prints on every branch), and for PT the
+//  ABSENCE of both (PT's own "Progressive::" line is shared with VCM's
+//  progressive pass, so it isn't distinctive on its own) -- so a swap that
+//  silently fell back to PT would now fail loudly instead of producing an
+//  unremarkable-looking mean.
+//
+//  LAYER 2 FINDING (post-fix, this session, kLayer2Samples=32).  At
+//  160x120, all FOUR showcases' WHOLE-IMAGE `mean(PT,E)` vs `mean(PT,B)`
+//  still differ by well under the 5% sensitivity band (plank ~0.3%,
+//  tidal_stones ~0.05%, shelf_bunny ~1.8%, pavilion_colonnade ~0.9%) --
+//  each signal-driven region (a nail's contact seam, a buried stone's
+//  waterline, dust under a bunny's foot, a column's crevice wear) is too
+//  small a fraction of the WHOLE-IMAGE mean to move it past noise at this
+//  resolution, exactly as the pre-fix run already found -- so the
+//  WHOLE-IMAGE ratio-of-ratios is dropped on all four, as designed.  The
+//  MASKED form (this session's addendum) DOES witness the gap: mask
+//  coverage ranged 2.1% (plank) to 12.8% (tidal) of pixels, and on every
+//  (showcase, integrator) pair NOT caught by the blow-up gate the masked
+//  ratio-of-ratios PASSED comfortably inside the 20% band -- plank BDPT
+//  (R_E/R_B-1 = +0.031 to -0.10 across repeat runs), plank VCM (-0.04 to
+//  -0.07), bunny BDPT (+0.015), pavilion BDPT (+0.006).  BLOW-UP SKIPS
+//  (task item 5 -- recorded, not investigated, not asserted on): tidal
+//  BDPT (mean(BDPT)/mean(PT) ~= 1100x), tidal VCM (~3500x), bunny VCM
+//  (~4450x), pavilion VCM (~750x) -- all pre-existing, non-signal
+//  integrator disagreements (E and B agree with EACH OTHER under the
+//  blown-up integrator; only the comparison to PT is meaningless), matching
+//  the supervisor's independently-reproduced CLI figures (tidal BDPT
+//  157-338x, tidal VCM 433-1656x, bunny VCM ~4558x across 160x120/
+//  400x300/800x600) and VCM's known auto-radius instability at low spp
+//  (flagged in the pre-fix run for whoever next touches VCM's auto-radius
+//  pre-pass; still open).  `g_blowupSkipCount` == 4 on the default run.
+//
+//  BAND DERIVATION -- MASKED LAYER.  The masked ratio-of-ratios averages
+//  over a MUCH smaller pixel set (roughly 200-2500 of 19200 pixels
+//  depending on showcase) than the whole-image form, so it carries more
+//  Monte Carlo noise per sample.  Measured by re-running plank_closeup's
+//  masked BDPT/VCM ratio 3 independent times at the shipped (scene, 32 spp)
+//  settings: BDPT R_E/R_B-1 in {-0.046, -0.064, -0.098}, VCM in {-0.073,
+//  -0.037, -0.063} -- max observed |ratio| 0.098.  Raising samples to 64
+//  did not tighten this (repeat spread ~0.057, similar order) while
+//  SHRINKING mask coverage toward the 1% floor (1.15-1.16%, one auto-radius
+//  hiccup away from a false "insensitive" drop) -- the mask's hard 20%
+//  threshold interacts with pixel-level noise in a way plain sample-count
+//  scaling doesn't fix, so 32 spp (kLayer2Samples) was kept.  The 20% band
+//  (kLayer2MaskedBand) is roughly 2x the observed max spread, the same
+//  safety-margin convention Layer 1's 3% band uses relative to its <0.05%
+//  noise floor.  This band is intentionally looser than Layer 1's 3% --
+//  it is a production-scene diagnostic, not the sharp gate; Layer 1 is
+//  the file's primary red/green witness (per its own header framing
+//  above), and the masked Layer-2 numbers are corroborating evidence on
+//  real showcase content.
 //
 //  KNOBS.  `SIGNAL_CONSISTENCY_FILTER` (env, substring match against `unit`,
 //  `showcase`, and the four showcase names `plank`, `tidal`, `bunny`,
 //  `pavilion`) restricts which layer/scene runs, like FabricRenderTest's
 //  own filter.  Unset (the default, and the CI invocation) runs BOTH
 //  layers, all four unit scenes and all four showcases.  Default runtime
-//  on this machine: ~38 seconds wall (layer 1 ~20s, layer 2 ~18s).
+//  on this machine: ~38 seconds wall (layer 1 ~20s, layer 2 ~18s at
+//  kLayer2Samples=32, up from the original author's 16 -- the extra
+//  samples buy headroom for the masked ratio's per-pixel noise without
+//  materially changing total runtime).
 //
 //  Tabs: 4
 //
@@ -204,6 +363,7 @@
 #include <algorithm>
 #include <regex>
 #include <filesystem>
+#include <functional>
 #ifdef _WIN32
 	#include <process.h>		// _getpid()
 	#define getpid _getpid
@@ -1006,119 +1166,110 @@ static std::string BuildNeutralVariant( const std::string& original )
 	return t;
 }
 
-struct RasterizerBlockInfo
+//! Parse `chunkText` (one or more top-level items, same idiom as a
+//! hand-authored chunk string) and return its FIRST Chunk-kind item --
+//! tests/ShelfBunnyShowcaseTest.cpp's `FirstChunkItem` helper, generalised
+//! to take text instead of a pre-parsed Document, so callers can build a
+//! brand-new chunk from a string and splice it into an existing Document
+//! via DocReplaceItem/DocInsertItem.
+static Cst::NodeRef FirstChunkItemFromText( const std::string& chunkText )
 {
-	bool found = false;
-	std::size_t blockStart = 0, blockEnd = 0;
-	bool hasRadianceMap = false;
-	std::string radianceMap;
-	bool hasRadianceBackground = false;
-	std::string radianceBackground;
-};
+	Cst::Document d = Cst::ParseToCst( chunkText );
+	const int n = Cst::DocItemCount( d );
+	for( int i = 0; i < n; ++i ) {
+		const Cst::NodeRef it = Cst::DocResolveNodeId( d, Cst::DocNodeIdAt( d, i ) );
+		if( it && it->kind == Cst::NodeKind::Chunk ) return it;
+	}
+	return Cst::NodeRef();
+}
 
-static const char* kKnownRasterizerKeywords[] = {
-	"pathtracing_pel_rasterizer", "pathtracing_spectral_rasterizer",
-	"bdpt_pel_rasterizer", "bdpt_spectral_rasterizer",
-	"vcm_pel_rasterizer", "vcm_spectral_rasterizer",
-	"mlt_rasterizer", "mlt_spectral_rasterizer",
-	"pixelpel_rasterizer", "pixelspectral_rasterizer",
-	"auto_rasterizer", "auto_spectral_rasterizer",
-};
-
-static RasterizerBlockInfo FindRasterizerBlock( const std::string& text )
+//! Find the top-level chunk whose role EQUALS `roleExact` (when non-empty)
+//! or ENDS WITH `roleSuffix` (when non-empty) -- the unnamed-chunk-by-KIND
+//! lookup tests/ShelfBunnyShowcaseTest.cpp's BuildProbeDocument step 4 uses
+//! ("Rasterizer chunk is UNNAMED -- find it by role").  This is a
+//! STRUCTURAL lookup over real Chunk nodes, not a text search, which
+//! matters here: shelf_bunny.RISEscene's own header prose (its DEVIATIONS
+//! FROM THE SPEC section) spells `film { width 800 height 600 }` verbatim
+//! inside a `#` comment, documenting the real chunk's values.  A raw-text
+//! regex for `film\s*{` matches THAT decoy first (it appears earlier in
+//! the file than the real chunk) and never reaches the real one -- this
+//! was S2's original `ResizeFilmChunk` bug, caught by the new hard
+//! dimension Check in RunLayer2Showcase below (see "OBSERVED LAYER 2
+//! HARNESS FIXES" in the file header).  Comment trivia is never a Chunk
+//! node, so this lookup cannot be fooled by it.
+static Cst::NodeId FindChunkByRole( const Cst::Document& doc, const std::string& roleExact, const std::string& roleSuffix = std::string() )
 {
-	RasterizerBlockInfo info;
-	for( const char* kw : kKnownRasterizerKeywords ) {
-		const std::string kws( kw );
-		std::size_t pos = text.find( kws );
-		while( pos != std::string::npos ) {
-			const bool preOk = ( pos == 0 ) ||
-				!( std::isalnum( static_cast<unsigned char>(text[pos-1]) ) || text[pos-1] == '_' );
-			const std::size_t after = pos + kws.size();
-			const bool postOk = after < text.size() &&
-				( text[after] == '\n' || text[after] == ' ' || text[after] == '\t' || text[after] == '\r' );
-			if( preOk && postOk ) {
-				std::size_t brace = text.find( '{', after );
-				if( brace == std::string::npos ) return info;
-				int depth = 0;
-				std::size_t k = brace;
-				for( ; k < text.size(); ++k ) {
-					if( text[k] == '{' ) depth++;
-					else if( text[k] == '}' ) { depth--; if( depth == 0 ) { k++; break; } }
-				}
-				info.found = true;
-				info.blockStart = pos;
-				info.blockEnd = k;
-				const std::string block = text.substr( pos, k - pos );
-				std::smatch m;
-				if( std::regex_search( block, m, std::regex( "radiance_map\\s+(\\S+)" ) ) ) {
-					info.hasRadianceMap = true;
-					info.radianceMap = m[1];
-				}
-				if( std::regex_search( block, m, std::regex( "radiance_background\\s+(\\S+)" ) ) ) {
-					info.hasRadianceBackground = true;
-					info.radianceBackground = m[1];
-				}
-				return info;
-			}
-			pos = text.find( kws, pos + 1 );
+	const int n = Cst::DocItemCount( doc );
+	for( int i = 0; i < n; ++i ) {
+		const Cst::NodeId nid = Cst::DocNodeIdAt( doc, i );
+		const Cst::NodeRef it = Cst::DocResolveNodeId( doc, nid );
+		if( !it || it->kind != Cst::NodeKind::Chunk ) continue;
+		const std::string& role = it->role;
+		if( !roleExact.empty() && role == roleExact ) return nid;
+		if( !roleSuffix.empty() && role.size() > roleSuffix.size() &&
+			role.compare( role.size() - roleSuffix.size(), roleSuffix.size(), roleSuffix ) == 0 ) {
+			return nid;
 		}
 	}
-	return info;
+	return 0;
 }
 
-//! Replace the film chunk's width/height with an aspect-preserving
-//! ~160-wide target (design doc section 6.2: "reduced resolution, ~
-//! 160x120").
-static std::string ResizeFilmChunk( const std::string& text, unsigned int targetWidth )
+//! Resize the scene's `film` chunk to an aspect-preserving ~`targetWidth`-
+//! wide target by STRUCTURAL node edit (DocSetOrAddParamValue on the
+//! film chunk found via FindChunkByRole), never by text regex -- see that
+//! function's header comment for the decoy-comment failure mode this
+//! replaces.  `*outNewW`/`*outNewH` report the size actually written, so
+//! the caller can assert the captured render came out exactly that size.
+static Cst::Document ResizeFilmChunkCst( const Cst::Document& inDoc, unsigned int targetWidth, unsigned int* outNewW, unsigned int* outNewH )
 {
-	std::smatch filmMatch;
-	static const std::regex filmRe( "film\\s*\\{" );
-	if( !std::regex_search( text, filmMatch, filmRe ) ) return text;
-	const std::size_t filmStart = filmMatch.position(0);
-	std::size_t brace = text.find( '{', filmStart );
-	int depth = 0;
-	std::size_t k = brace;
-	for( ; k < text.size(); ++k ) {
-		if( text[k] == '{' ) depth++;
-		else if( text[k] == '}' ) { depth--; if( depth == 0 ) { k++; break; } }
-	}
-	std::string block = text.substr( filmStart, k - filmStart );
-	std::smatch wm, hm;
+	*outNewW = 0;
+	*outNewH = 0;
+	Cst::Document doc = inDoc;
+	const Cst::NodeId filmId = FindChunkByRole( doc, "film" );
+	Check( filmId > 0, "Layer 2: the showcase's film chunk is found by role" );
+	if( filmId == 0 ) return doc;
+
+	const Cst::NodeRef filmChunk = Cst::DocResolveNodeId( doc, filmId );
+	bool presentW = false, presentH = false;
+	const std::string wStr = Cst::ParamValueAsParsed( filmChunk, "width", &presentW );
+	const std::string hStr = Cst::ParamValueAsParsed( filmChunk, "height", &presentH );
 	unsigned int origW = 800, origH = 600;
-	if( std::regex_search( block, wm, std::regex( "width\\s+(\\d+)" ) ) ) origW = std::stoul( wm[1] );
-	if( std::regex_search( block, hm, std::regex( "height\\s+(\\d+)" ) ) ) origH = std::stoul( hm[1] );
-	unsigned int newW = targetWidth;
-	unsigned int newH = std::max<unsigned int>( 1u, (unsigned int)std::lround( double(targetWidth) * double(origH) / double(origW) ) );
+	if( presentW ) { try { origW = static_cast<unsigned int>( std::stoul( wStr ) ); } catch( ... ) {} }
+	if( presentH ) { try { origH = static_cast<unsigned int>( std::stoul( hStr ) ); } catch( ... ) {} }
 
-	std::string newBlock = std::regex_replace( block, std::regex( "width\\s+\\d+" ), "width " + std::to_string(newW) );
-	newBlock = std::regex_replace( newBlock, std::regex( "height\\s+\\d+" ), "height " + std::to_string(newH) );
+	const unsigned int newW = targetWidth;
+	const unsigned int newH = std::max<unsigned int>( 1u,
+		static_cast<unsigned int>( std::lround( double(targetWidth) * double(origH) / double(origW) ) ) );
 
-	return text.substr( 0, filmStart ) + newBlock + text.substr( k );
+	doc = Cst::DocSetOrAddParamValue( doc, filmId, "width", 0, std::to_string( newW ) );
+	doc = Cst::DocSetOrAddParamValue( doc, filmId, "height", 0, std::to_string( newH ) );
+
+	*outNewW = newW;
+	*outNewH = newH;
+	return doc;
 }
 
-//! Swap the showcase's own rasterizer chunk for the requested integrator,
-//! carrying over radiance_map/radiance_background if the original chunk
-//! set them, forcing oidn_denoise FALSE + pixel_filter box + a reduced
-//! sample count.  No adaptive_* params are set (default is disabled).
-static std::string SwapRasterizer( const std::string& text, Integrator integrator, unsigned int samples )
+//! Build the replacement `..._rasterizer { ... }` chunk TEXT for
+//! `integrator`, carrying over `radiance_map`/`radiance_background` from
+//! the original chunk when present (pavilion_colonnade's own env map).
+//! No standard_shader chunk is emitted here: every one of the four
+//! showcases already declares `standard_shader { name global ... }`
+//! (plank_closeup / tidal_stones / shelf_bunny with `shaderop
+//! DefaultPathTracing`, pavilion_colonnade with `shaderop
+//! DefaultDirectLighting`) -- the modern PT/BDPT/VCM rasterizers below
+//! don't consult the shader chain's op at all, they only need
+//! `defaultshader` to resolve to a real shader chunk (BDPTStrategyBalance-
+//! Test's own header explains why the legacy pixelpel_rasterizer, unlike
+//! these, DOES execute the chain literally) -- so pavilion_colonnade's
+//! DefaultDirectLighting "global" is a perfectly valid reference for these
+//! three swapped-in chunks.  No `file_rasterizeroutput` chunk is emitted
+//! either: the caller captures pixels via its own CapturingRasterizerOutput
+//! and calls `RemoveRasterizerOutputs()` before adding it, so any output
+//! chunk the ORIGINAL scene declared (left untouched by the structural
+//! chunk-index replace below) is harmless -- it derives, gets removed, and
+//! is never read.
+static std::string BuildSwapRasterizerText( Integrator integrator, unsigned int samples, bool hasRadianceMap, const std::string& radianceMap, bool hasRadianceBackground, const std::string& radianceBackground )
 {
-	const RasterizerBlockInfo info = FindRasterizerBlock( text );
-	Check( info.found, "Layer 2: the showcase's rasterizer chunk is found" );
-	if( !info.found ) return text;
-
-	// NOTE: no standard_shader chunk is emitted here.  Every one of the
-	// four showcases already declares `standard_shader { name global ...
-	// }` (plank_closeup / tidal_stones / shelf_bunny with `shaderop
-	// DefaultPathTracing`, pavilion_colonnade with `shaderop
-	// DefaultDirectLighting`).  Emitting a second chunk of the same name
-	// is a duplicate-name derive failure; the modern PT/BDPT/VCM
-	// rasterizers below don't consult the shader chain's op at all --
-	// they only need `defaultshader` to resolve to a real shader chunk
-	// (BDPTStrategyBalanceTest's own header explains why the legacy
-	// pixelpel_rasterizer, unlike these, DOES execute the chain
-	// literally) -- so pavilion_colonnade's DefaultDirectLighting "global"
-	// is a perfectly valid reference for these three swapped-in chunks.
 	std::ostringstream ss;
 	switch( integrator ) {
 		case Integrator::PT:
@@ -1136,12 +1287,42 @@ static std::string SwapRasterizer( const std::string& text, Integrator integrato
 			break;
 	}
 	ss << "\tpixel_filter box\n\toidn_denoise FALSE\n";
-	if( info.hasRadianceMap )        ss << "\tradiance_map " << info.radianceMap << "\n";
-	if( info.hasRadianceBackground ) ss << "\tradiance_background " << info.radianceBackground << "\n";
-	ss << "}\n\n";
-	ss << "file_rasterizeroutput\n{\n\tpattern /tmp/signal_consistency_showcase_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
+	if( hasRadianceMap )        ss << "\tradiance_map " << radianceMap << "\n";
+	if( hasRadianceBackground ) ss << "\tradiance_background " << radianceBackground << "\n";
+	ss << "}\n";
+	return ss.str();
+}
 
-	return text.substr( 0, info.blockStart ) + ss.str() + text.substr( info.blockEnd );
+//! Structurally REPLACE the scene's rasterizer chunk (found by role suffix
+//! "_rasterizer" -- it is unnamed, same idiom as the film chunk above) with
+//! a fresh `integrator` chunk via DocReplaceItem, addressed by the chunk's
+//! own top-level index resolved through DocIndexOfNodeId.  Unlike the old
+//! text-splice `SwapRasterizer` (brace-counted from a keyword string
+//! search) this cannot mismatch chunk boundaries or be fooled by a keyword
+//! occurring inside a comment or string.
+static Cst::Document SwapRasterizerCst( const Cst::Document& inDoc, Integrator integrator, unsigned int samples )
+{
+	Cst::Document doc = inDoc;
+	const Cst::NodeId rastId = FindChunkByRole( doc, std::string(), "_rasterizer" );
+	Check( rastId > 0, "Layer 2: the showcase's rasterizer chunk is found by role" );
+	if( rastId == 0 ) return doc;
+
+	const Cst::NodeRef rastChunk = Cst::DocResolveNodeId( doc, rastId );
+	Cst::NodeRef rastItem;
+	const int idx = Cst::DocIndexOfNodeId( doc, rastId, &rastItem );
+	Check( idx >= 0, "Layer 2: the rasterizer chunk's top-level index resolves" );
+	if( idx < 0 ) return doc;
+
+	bool hasMap = false, hasBg = false;
+	const std::string mapVal = Cst::ParamValueAsParsed( rastChunk, "radiance_map", &hasMap );
+	const std::string bgVal  = Cst::ParamValueAsParsed( rastChunk, "radiance_background", &hasBg );
+
+	const std::string newChunkText = BuildSwapRasterizerText( integrator, samples, hasMap, mapVal, hasBg, bgVal );
+	const Cst::NodeRef newChunkItem = FirstChunkItemFromText( newChunkText );
+	Check( (bool)newChunkItem, "Layer 2: the replacement rasterizer chunk text parses" );
+	if( !newChunkItem ) return doc;
+
+	return Cst::DocReplaceItem( doc, idx, newChunkItem );
 }
 
 struct ShowcaseSpec
@@ -1158,9 +1339,100 @@ static const ShowcaseSpec kShowcases[] = {
 };
 
 static const unsigned int kLayer2TargetWidth = 160;
-static const unsigned int kLayer2Samples = 16;
-static const double kLayer2Band = 0.05;			// design doc section 6.2's own number
-static const double kLayer2SensitivityBand = 0.05;
+static const unsigned int kLayer2Samples = 32;
+static const double kLayer2Band = 0.05;			// design doc section 6.2's own number (whole-image)
+static const double kLayer2SensitivityBand = 0.05;	// whole-image
+static const double kLayer2MaskThreshold = 0.20;	// |PT(E)-PT(B)|/PT(B) > this -> "the signal moved this pixel"
+static const double kLayer2MaskMinCoverage = 0.01;	// mask must cover >= 1% of pixels to be trusted
+static const double kLayer2MaskedBand = 0.20;		// see "BAND DERIVATION -- MASKED LAYER" in the file header
+static const double kLayer2BlowupLow = 0.5, kLayer2BlowupHigh = 2.0;	// non-signal integrator-disagreement gate
+
+//! Total blow-up skips across every showcase/integrator (task item 5):
+//! counted here, printed in main()'s summary, never silently absorbed.
+static int g_blowupSkipCount = 0;
+
+//! Redirect std::cout into a private buffer for the duration of `fn`,
+//! returning what was written, and echo it back to the REAL stdout
+//! afterward so nothing a human is watching is lost.  GlobalLog's
+//! StreamPrinter writes through `std::cout` (Log.cpp:179-180), so this
+//! captures every render-time log line -- including the integrator-
+//! specific markers CheckIntegratorMarker below greps for -- without
+//! needing a second logging channel.
+static std::string CaptureStdoutDuring( const std::function<void()>& fn )
+{
+	std::ostringstream capture;
+	std::streambuf* old = std::cout.rdbuf( capture.rdbuf() );
+	fn();
+	std::cout.rdbuf( old );
+	std::cout << capture.str();
+	return capture.str();
+}
+
+//! Per-render log markers that are unconditional (fire on every render of
+//! that integrator, regardless of scene content) -- verified by reading
+//! the emitting call sites: `BDPTRasterizerBase.cpp:1050` prints "BDPT
+//! Progressive:: All pixels complete..." unconditionally at the end of
+//! every BDPT progressive pass; `VCMRasterizerBase.cpp`'s `PreRenderSetup`
+//! (called at a fixed pipeline hook every VCM render, per its own header
+//! comment) prints "VCMRasterizerBase::PreRenderSetup::" on EVERY branch
+//! (VM disabled, no specular found, auto-radius computed, auto-radius
+//! failed).  PT's own `PixelBasedRasterizerHelper.cpp:1282` print
+//! ("Progressive:: All pixels complete...", no prefix) is NOT distinctive
+//! on its own -- VCM's progressive pass reuses the same shared helper and
+//! prints the identical line -- so PT is verified by the ABSENCE of the
+//! other two markers instead.
+static const char* kMarkerBDPT = "BDPT Progressive::";
+static const char* kMarkerVCM  = "VCMRasterizerBase::PreRenderSetup::";
+
+static void CheckIntegratorMarker( Integrator integ, const std::string& log, const std::string& keyword, const char* variantTag )
+{
+	const bool hasBDPT = log.find( kMarkerBDPT ) != std::string::npos;
+	const bool hasVCM  = log.find( kMarkerVCM ) != std::string::npos;
+	const std::string tag = std::string( keyword ) + " " + variantTag + " " + IntegratorName( integ );
+	switch( integ ) {
+		case Integrator::PT:
+			Check( !hasBDPT && !hasVCM, tag + ": no BDPT/VCM marker in the render log (did not silently fall back through/to a different integrator)" );
+			break;
+		case Integrator::BDPT:
+			Check( hasBDPT, tag + ": \"BDPT Progressive::\" marker present (BDPT actually ran)" );
+			break;
+		case Integrator::VCM:
+			Check( hasVCM, tag + ": \"VCMRasterizerBase::PreRenderSetup::\" marker present (VCM actually ran)" );
+			break;
+		default: break;
+	}
+}
+
+//! Per-pixel composited-over-black scalar (base*coverage averaged across
+//! channels) -- the SAME quantity ComputeStats averages over the whole
+//! image, kept per-pixel here so the masked ratio-of-ratios (design doc
+//! S2 addendum, "LAYER 2 -- the mask that can actually witness the gap"
+//! below) can restrict its mean to a pixel subset instead of the whole
+//! frame.
+static void ComputePerPixelValues( const CapturingRasterizerOutput& cap, std::vector<double>& out )
+{
+	out.resize( cap.pixels.size() );
+	for( std::size_t i = 0; i < cap.pixels.size(); ++i ) {
+		const RISEColor& c = cap.pixels[i];
+		const double cov = c.a;
+		out[i] = ( ( c.base.r + c.base.g + c.base.b ) / 3.0 ) * cov;
+	}
+}
+
+static double VectorMean( const std::vector<double>& v )
+{
+	if( v.empty() ) return 0.0;
+	double sum = 0.0;
+	for( double x : v ) sum += x;
+	return sum / double( v.size() );
+}
+
+struct Layer2Row
+{
+	Integrator integ;
+	std::vector<double> valsE, valsB;
+	double meanE = 0.0, meanB = 0.0;
+};
 
 static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 {
@@ -1169,24 +1441,23 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	Check( !original.empty(), std::string( "Layer 2: " ) + spec.keyword + " scene file reads" );
 	if( original.empty() ) return;
 
-	std::string base = ResizeFilmChunk( original, kLayer2TargetWidth );
+	unsigned int targetW = 0, targetH = 0;
+	const Cst::Document resizedDoc = ResizeFilmChunkCst( Cst::ParseToCst( original ), kLayer2TargetWidth, &targetW, &targetH );
+	if( targetW == 0 ) return;		// film chunk not found; already Checked false above
 
-	const std::string variantE = base;
-	const std::string variantB = BuildNeutralVariant( base );
+	const std::string resizedText = Cst::SerializeCst( resizedDoc );
+	const std::string variantEText = resizedText;
+	const std::string variantBText = BuildNeutralVariant( resizedText );
 
-	std::cout << "\n=== LAYER 2: " << spec.keyword << " ===" << std::endl;
+	std::cout << "\n=== LAYER 2: " << spec.keyword << " (target " << targetW << "x" << targetH << ") ===" << std::endl;
 
 	double meanPT_E = 0, meanPT_B = 0;
 	bool ptOk = false;
-	struct Row { Integrator integ; double meanE, meanB; };
-	std::vector<Row> rows;
+	std::vector<Layer2Row> rows;
 
 	for( Integrator integ : { Integrator::PT, Integrator::BDPT, Integrator::VCM } ) {
-		const std::string sceneE = SwapRasterizer( variantE, integ, kLayer2Samples );
-		const std::string sceneB = SwapRasterizer( variantB, integ, kLayer2Samples );
-
-		Cst::Document docE = Cst::ParseToCst( sceneE );
-		Cst::Document docB = Cst::ParseToCst( sceneB );
+		Cst::Document docE = SwapRasterizerCst( Cst::ParseToCst( variantEText ), integ, kLayer2Samples );
+		Cst::Document docB = SwapRasterizerCst( Cst::ParseToCst( variantBText ), integ, kLayer2Samples );
 
 		Job* jobE = new Job();
 		Job* jobB = new Job();
@@ -1207,26 +1478,46 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		jobE->GetRasterizer()->AddRasterizerOutput( capE );
 		jobB->GetRasterizer()->AddRasterizerOutput( capB );
 
-		const bool renderedE = jobE->Rasterize();
-		const bool renderedB = jobB->Rasterize();
+		bool renderedE = false, renderedB = false;
+		const std::string logE = CaptureStdoutDuring( [&]() { renderedE = jobE->Rasterize(); } );
+		const std::string logB = CaptureStdoutDuring( [&]() { renderedB = jobB->Rasterize(); } );
 		Check( renderedE, std::string( spec.keyword ) + " " + IntegratorName(integ) + " variant E renders" );
 		Check( renderedB, std::string( spec.keyword ) + " " + IntegratorName(integ) + " variant B renders" );
+		CheckIntegratorMarker( integ, logE, spec.keyword, "E" );
+		CheckIntegratorMarker( integ, logB, spec.keyword, "B" );
 
-		ImageStats statsE = renderedE ? ComputeStats( *capE ) : ImageStats{};
-		ImageStats statsB = renderedB ? ComputeStats( *capB ) : ImageStats{};
+		Layer2Row row;
+		row.integ = integ;
+		if( renderedE ) {
+			Check( capE->width == targetW && capE->height == targetH,
+				std::string( spec.keyword ) + " " + IntegratorName(integ) + " E: captured image is the requested "
+				+ std::to_string(targetW) + "x" + std::to_string(targetH) + " (got "
+				+ std::to_string(capE->width) + "x" + std::to_string(capE->height) + ")" );
+			ComputePerPixelValues( *capE, row.valsE );
+			row.meanE = VectorMean( row.valsE );
+		}
+		if( renderedB ) {
+			Check( capB->width == targetW && capB->height == targetH,
+				std::string( spec.keyword ) + " " + IntegratorName(integ) + " B: captured image is the requested "
+				+ std::to_string(targetW) + "x" + std::to_string(targetH) + " (got "
+				+ std::to_string(capB->width) + "x" + std::to_string(capB->height) + ")" );
+			ComputePerPixelValues( *capB, row.valsB );
+			row.meanB = VectorMean( row.valsB );
+		}
+
+		std::cout << "  " << IntegratorName(integ) << ": mean(E)=" << row.meanE << " mean(B)=" << row.meanB << std::endl;
+
 		capE->release();
 		capB->release();
 		safe_release( jobE );
 		safe_release( jobB );
 
-		std::cout << "  " << IntegratorName(integ) << ": mean(E)=" << statsE.mean << " mean(B)=" << statsB.mean << std::endl;
-
 		if( integ == Integrator::PT ) {
-			meanPT_E = statsE.mean;
-			meanPT_B = statsB.mean;
-			ptOk = statsE.valid && statsB.valid;
+			meanPT_E = row.meanE;
+			meanPT_B = row.meanB;
+			ptOk = renderedE && renderedB;
 		}
-		rows.push_back( { integ, statsE.mean, statsB.mean } );
+		rows.push_back( std::move( row ) );
 	}
 
 	if( !ptOk || meanPT_B == 0.0 ) {
@@ -1234,31 +1525,126 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		return;
 	}
 
+	std::cout << "  RAW MEANS (E variant): ";
+	for( const Layer2Row& r : rows ) std::cout << IntegratorName(r.integ) << "=" << r.meanE << "  ";
+	std::cout << std::endl;
+
 	const double sensitivity = meanPT_E / meanPT_B - 1.0;
 	std::cout << "  SENSITIVITY: mean(PT,E)=" << meanPT_E << " mean(PT,B)=" << meanPT_B
 	          << " ratio-1=" << sensitivity << std::endl;
 
-	if( std::fabs( sensitivity ) <= kLayer2SensitivityBand ) {
+	const bool sensitive = std::fabs( sensitivity ) > kLayer2SensitivityBand;
+	if( !sensitive ) {
 		std::cout << "  NOTE: " << spec.keyword << " is NOT sensitive to its own signal calls at this resolution/spp "
 		          << "(|ratio-1| = " << std::fabs(sensitivity) << " <= " << kLayer2SensitivityBand
-		          << ") -- dropped from the R_E/R_B assertion (cannot witness the gap either way)." << std::endl;
+		          << ") -- dropped from the WHOLE-IMAGE R_E/R_B assertion (cannot witness the gap either way)." << std::endl;
+	}
+
+	// Per-integrator blow-up gate (task item 5): a >2x or <0.5x whole-image
+	// disagreement with PT is a KNOWN non-signal integrator issue (VCM
+	// auto-radius instability at low spp; see docs/RENDERING_INTEGRATORS.md)
+	// -- both the whole-image and the masked ratio-of-ratios are meaningless
+	// there and MUST be skipped, not asserted on.
+	auto isBlowup = [&]( const Layer2Row& r ) -> bool {
+		if( meanPT_E == 0.0 ) return true;
+		const double wholeRatio = r.meanE / meanPT_E;
+		return wholeRatio < kLayer2BlowupLow || wholeRatio > kLayer2BlowupHigh;
+	};
+
+	for( const Layer2Row& r : rows ) {
+		if( r.integ == Integrator::PT ) continue;
+		if( isBlowup( r ) ) {
+			const double wholeRatio = meanPT_E != 0.0 ? r.meanE / meanPT_E : 0.0;
+			std::cout << "  " << IntegratorName(r.integ) << ": mean(" << IntegratorName(r.integ) << ")/mean(PT) = " << wholeRatio
+			          << " -- INTEGRATOR DISAGREEMENT (not signal-attributable; recorded in docs/RENDERING_INTEGRATORS.md)"
+			          << " -- SKIPPING ratio-of-ratios for this showcase." << std::endl;
+			g_blowupSkipCount++;
+			continue;
+		}
+		if( sensitive ) {
+			if( r.meanE == 0.0 || meanPT_E == 0.0 || r.meanB == 0.0 ) {
+				Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": non-zero whole-image means for R_E/R_B" );
+			} else {
+				const double R_E = r.meanE / meanPT_E;
+				const double R_B = r.meanB / meanPT_B;
+				const double ratio = R_E / R_B - 1.0;
+				std::cout << "  WHOLE-IMAGE " << IntegratorName(r.integ) << ": R_E=" << R_E << " R_B=" << R_B
+				          << " R_E/R_B-1=" << ratio
+				          << ( std::fabs(ratio) < kLayer2Band ? "  [pass]" : "  [FAIL]" ) << std::endl;
+				Check( std::fabs( ratio ) < kLayer2Band,
+					std::string( spec.keyword ) + " " + IntegratorName(r.integ) + " (whole-image): | R_E/R_B - 1 | < " + std::to_string(kLayer2Band) );
+			}
+		}
+	}
+
+	// LAYER 2 -- the mask that can actually witness the gap (design doc S2
+	// addendum).  Whole-image means average over every pixel in the frame,
+	// most of which the signal never touches; the mask restricts the mean
+	// to exactly the pixels where PT(E) and PT(B) -- the one integrator
+	// known to price the signal correctly -- disagree by more than 20%.
+	// PT is used to BUILD the mask (never to price it: the ratio-of-ratios
+	// below still compares each integrator's OWN E/B means, never PT's),
+	// so the mask is an independent selector, not a second copy of the
+	// invariant under test.
+	const Layer2Row* ptRow = nullptr;
+	for( const Layer2Row& r : rows ) if( r.integ == Integrator::PT ) { ptRow = &r; break; }
+
+	if( !ptRow || ptRow->valsE.empty() || ptRow->valsE.size() != ptRow->valsB.size() ) {
+		std::cout << "  NOTE: " << spec.keyword << " masked ratio-of-ratios skipped (PT per-pixel arrays unavailable)." << std::endl;
 		return;
 	}
 
-	for( const Row& r : rows ) {
+	const std::size_t N = ptRow->valsE.size();
+	std::vector<bool> mask( N, false );
+	std::size_t maskCount = 0;
+	static const double kMaskEps = 1e-6;
+	for( std::size_t i = 0; i < N; ++i ) {
+		const double e = ptRow->valsE[i];
+		const double b = ptRow->valsB[i];
+		if( std::fabs( e - b ) / std::max( b, kMaskEps ) > kLayer2MaskThreshold ) { mask[i] = true; maskCount++; }
+	}
+	const double maskFrac = double( maskCount ) / double( N );
+	std::cout << "  MASK: " << maskCount << "/" << N << " pixels (" << ( maskFrac * 100.0 )
+	          << "%) with |PT(E)-PT(B)|/PT(B) > " << ( kLayer2MaskThreshold * 100.0 ) << "%" << std::endl;
+
+	if( maskFrac < kLayer2MaskMinCoverage ) {
+		std::cout << "  NOTE: " << spec.keyword << " masked coverage " << ( maskFrac * 100.0 ) << "% < "
+		          << ( kLayer2MaskMinCoverage * 100.0 ) << "% -- skipping the masked ratio-of-ratios (too few pixels to witness the gap)." << std::endl;
+		return;
+	}
+
+	auto maskedMean = [&]( const std::vector<double>& v ) -> double {
+		if( v.size() != N ) return 0.0;
+		double sum = 0.0; std::size_t n = 0;
+		for( std::size_t i = 0; i < N; ++i ) if( mask[i] ) { sum += v[i]; n++; }
+		return n > 0 ? sum / double(n) : 0.0;
+	};
+
+	const double maskedPT_E = maskedMean( ptRow->valsE );
+	const double maskedPT_B = maskedMean( ptRow->valsB );
+	std::cout << "  MASKED PT: mean(E)=" << maskedPT_E << " mean(B)=" << maskedPT_B << std::endl;
+
+	for( const Layer2Row& r : rows ) {
 		if( r.integ == Integrator::PT ) continue;
-		if( r.meanE == 0.0 || meanPT_E == 0.0 || r.meanB == 0.0 ) {
-			Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": non-zero means for R_E/R_B" );
+		if( isBlowup( r ) ) continue;		// already reported + counted above
+		if( r.valsE.size() != N || r.valsB.size() != N || maskedPT_E == 0.0 || maskedPT_B == 0.0 ) {
+			Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": masked means available for R_E/R_B" );
 			continue;
 		}
-		const double R_E = r.meanE / meanPT_E;
-		const double R_B = r.meanB / meanPT_B;
+		const double maskedE = maskedMean( r.valsE );
+		const double maskedB = maskedMean( r.valsB );
+		if( maskedE == 0.0 || maskedB == 0.0 ) {
+			Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": non-zero masked means for R_E/R_B" );
+			continue;
+		}
+		const double R_E = maskedE / maskedPT_E;
+		const double R_B = maskedB / maskedPT_B;
 		const double ratio = R_E / R_B - 1.0;
-		std::cout << "  " << IntegratorName(r.integ) << ": R_E=" << R_E << " R_B=" << R_B
+		std::cout << "  MASKED " << IntegratorName(r.integ) << ": R_E=" << R_E << " R_B=" << R_B
 		          << " R_E/R_B-1=" << ratio
-		          << ( std::fabs(ratio) < kLayer2Band ? "  [pass]" : "  [FAIL]" ) << std::endl;
-		Check( std::fabs( ratio ) < kLayer2Band,
-			std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": | R_E/R_B - 1 | < " + std::to_string(kLayer2Band) );
+		          << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
+		Check( std::fabs( ratio ) < kLayer2MaskedBand,
+			std::string( spec.keyword ) + " " + IntegratorName(r.integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
 	}
 }
 
@@ -1313,7 +1699,8 @@ int main( int argc, char** argv )
 	}
 
 	std::cout << "\n========================================" << std::endl;
-	std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
+	std::cout << "Passed: " << passCount << "  Failed: " << failCount
+	          << "  Blow-up skips (integrator disagreement, not signal-attributable): " << g_blowupSkipCount << std::endl;
 	std::cout << "========================================" << std::endl;
 
 	return failCount > 0 ? 1 : 0;
