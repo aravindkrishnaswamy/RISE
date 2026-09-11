@@ -440,8 +440,12 @@ namespace RISE
 		//! must read "no neighbour here" and paint nothing.  The neutral 1
 		//! ("touching everywhere") would grime the whole frame and read as
 		//! a feature rather than as an absence.  Reached whenever the
-		//! channel carries no scene or no self object (a hit rebuilt by
-		//! BDPT/VCM/MLT, a hand-built record, a preview), the radius or the
+		//! channel carries no scene or no self object (a hand-built test
+		//! record, the GUI's painter preview, realize-time evaluation, a
+		//! BSSRDF entry vertex, or -- until slice S3 of
+		//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md -- LightSampler's
+		//! emitter record; a BDPT / VCM / MLT rebuild FORWARDS the stamp
+		//! since 2026-09-11 and is NOT in this list), the radius or the
 		//! point is unusable, or every candidate refused.
 		static Scalar NeutralProximity() { return Scalar( 0 ); }
 
@@ -833,11 +837,14 @@ namespace RISE
 	//! them, so every surface-vertex evaluation downstream of it (forward
 	//! re-pricing, connections, MIS reverse-pdf, guiding RIS, HWSS
 	//! companions, VCM merges, MLT) reads the LIVE signals.  What is still
-	//! neutral until slice S3 lands is the hand-built EMITTER record
-	//! `LightSampler.cpp` makes for NEE light samples and for the
-	//! light-subpath root -- an emissive material whose radiance keys on a
-	//! signal reads it live when hit directly and neutral when reached
-	//! that way, under PT as well as under the bidirectional families.
+	//! neutral until slice S3 lands is the hand-built EMITTER record:
+	//! the one `LightSampler.cpp` makes for NEE light samples, and the
+	//! `type == LIGHT` root vertex `GenerateLightSubpathImpl`
+	//! (`BDPTIntegrator.cpp`, shared by BDPT and VCM) builds from
+	//! `LightSampler::SampleLight`'s sampled point -- an emissive material
+	//! whose radiance keys on a signal reads it live when hit directly and
+	//! neutral when reached those ways, under PT as well as under the
+	//! bidirectional families.
 	//! That is what the warning below now says; slice S4 removes it.
 	//!
 	//! Call once from each BDPT/VCM/MLT-family rasterizer's own

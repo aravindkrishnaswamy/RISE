@@ -86,8 +86,11 @@ namespace RISE
 		// THE PRECONDITIONS, all four, and each is a real case rather than
 		// defensive padding:
 		//   pScene   0 on any record the object manager did not produce --
-		//            a BDPT/VCM/MLT rebuild, the GUI's painter preview, a
-		//            hand-built test record.
+		//            the GUI's painter preview, a hand-built test record,
+		//            a BSSRDF entry vertex, LightSampler's emitter record
+		//            (until slice S3).  A BDPT / VCM / MLT rebuild is NOT
+		//            such a record since 2026-09-11: PathVertexEval
+		//            forwards the stamp (SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md).
 		//   pSelf    0 on a MISS (nothing was hit, so there is no receiver
 		//            and no self to exclude).
 		//   radius   the runtime half of the parse-time literal check, for
