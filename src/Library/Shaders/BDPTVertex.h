@@ -51,6 +51,7 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Intersection/RayIntersectionGeometric.h"	// SurfaceDerivativesInfo / TextureFootprint, and (transitively) SurfaceSignalInfo
 
 namespace RISE
 {
@@ -92,8 +93,10 @@ namespace RISE
 		// ---------------------------------------------------------------
 		// Surface state mirrored from RayIntersectionGeometric — the fields
 		// in this block PLUS the per-vertex-color block below (vColor,
-		// bHasVertexColor).  When adding any new mirrored field, also
-		// update PathVertexEval::PopulateRIGFromVertex AND extend
+		// bHasVertexColor) AND the shading-input block after it
+		// (derivatives, signals, txFootprint).  When adding any new
+		// mirrored field, also update
+		// PathVertexEval::PopulateRIGFromVertex AND extend
 		// tests/BDPTVertexRIGRebuildTest.cpp with a sentinel assertion.
 		// See the contract block above PopulateRIGFromVertex for the
 		// failure mode this protocol prevents.
@@ -125,6 +128,38 @@ namespace RISE
 		/// surface hits on geometry without per-vertex colors.
 		RISEPel					vColor;
 		bool					bHasVertexColor;
+
+		// ---------------------------------------------------------------
+		// SHADING-INPUT STATE mirrored from RayIntersectionGeometric.
+		// Unlike the block above (which a BSDF reads for geometry), these
+		// three are what a PAINTER reads: the expression VM's `curv` /
+		// `curvR` come from `derivatives`, its `occlusion(r)` /
+		// `thickness(r)` / `convexity(r)` / `proximity(r)` / `interior(r)`
+		// from `signals`, and its `fw` / `fwo` footprint-fade from
+		// `txFootprint`.
+		//
+		// They are carried because BDPT / VCM / MLT **sample** the
+		// continuation direction against the live record the object
+		// manager stamped and then **price** that same sample — forward
+		// throughput, every (s,t) connection, every MIS reverse pdf,
+		// every VCM merge at the eye vertex — against the record
+		// `PathVertexEval::PopulateRIGFromVertex` rebuilds from this
+		// vertex.  Without them one material was sampled with its true
+		// roughness and weighted with the neutral one, which is a bias,
+		// not a flat mask (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
+		// §1 and §3).
+		//
+		// Populated ONLY at the two surface-from-intersection vertex
+		// sites (the eye and light subpath generators), straight from
+		// `ri.geometric` after `ri.pModifier->Modify`.  Camera, light,
+		// env and medium vertices keep the defaults — an honest "no
+		// surface".  BSSRDF entry vertices keep them too (design §10
+		// residual: PT builds its entry record by hand the same way, so
+		// that one is integrator-consistent).
+		// ---------------------------------------------------------------
+		SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature + the texcoord chart map
+		SurfaceSignalInfo		signals;		///< the geometry-signal channel: own-surface half (provider, primId, barycentrics) AND cross-object half (pScene/pSelf/ptWorld)
+		TextureFootprint		txFootprint;	///< pixel footprint; all-zero under today's bidirectional rasterizers (they emit no ray differentials) but carried so a future landing cannot silently reopen the gap
 
 		RISEPel					throughput;		///< Cumulative throughput from subpath origin (alpha_i)
 		Scalar					throughputNM;	///< Spectral throughput for a single wavelength
@@ -292,6 +327,16 @@ namespace RISE
 		pObject( 0 ),
 		vColor( RISEPel( 0, 0, 0 ) ),
 		bHasVertexColor( false ),
+		// Listed explicitly although each of the three has a
+		// user-provided default constructor that would run anyway: the
+		// point of the list is that a reader auditing "does every
+		// construction site zero-initialise the new fields?" can answer
+		// yes from here.  Their own defaults ARE the honest absence —
+		// `valid` / `curvatureValid` / `texChartValid` false, `scaleHint`
+		// 1.0, a null `pProvider` / `pScene`, an invalid footprint.
+		derivatives(),
+		signals(),
+		txFootprint(),
 		throughput( RISEPel( 0, 0, 0 ) ),
 		throughputNM( 0 ),
 		pdfFwd( 0 ),

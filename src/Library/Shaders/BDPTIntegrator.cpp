@@ -2128,6 +2128,31 @@ namespace {
 			// docs/PRE_PHASE1_STATUS.md "Phase 2c F2a outcome".)
 			v.vColor = ri.geometric.vColor;
 			v.bHasVertexColor = ri.geometric.bHasVertexColor;
+			// SHADING-INPUT STATE — the three fields a PAINTER reads and
+			// the BSDF-geometry block above does not carry: `derivatives`
+			// (the expression VM's `curv` / `curvR`), `signals` (its
+			// `occlusion` / `thickness` / `convexity` own-surface half AND
+			// its `proximity` / `interior` cross-object half) and
+			// `txFootprint` (its `fw` / `fwo`).  Copied HERE, after
+			// `ri.pModifier->Modify` and beside `vColor`, because this
+			// walk samples the continuation direction against this very
+			// record and then re-prices that sample — plus every
+			// connection, every MIS reverse pdf and every VCM merge at
+			// this vertex — through the record
+			// `PathVertexEval::PopulateRIGFromVertex` rebuilds from the
+			// vertex.  Sampling with the live material and weighting with
+			// the neutral one is a bias, not a flat mask
+			// (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §1).
+			//
+			// `signals` in particular carries the object manager's
+			// `pScene` / `pSelf` / `ptWorld` stamp FORWARD, one hop: the
+			// source is the record `ObjectManager::IntersectRay` stamped,
+			// so nothing here can put a default-constructed channel over a
+			// stamp.  That is the argument that keeps this file inside
+			// SourceHygieneTest's closed writer set (design §3.1).
+			v.derivatives = ri.geometric.derivatives;
+			v.signals = ri.geometric.signals;
+			v.txFootprint = ri.geometric.txFootprint;
 			v.pMaterial = ri.pMaterial;
 			v.pObject = ri.pObject;
 			v.pLight = 0;
@@ -2283,6 +2308,13 @@ namespace {
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
 							entryV.onb = bssrdf.entryONB;
+							// derivatives / signals / txFootprint stay at their
+							// defaults here: the entry point comes from
+							// BSSRDFSampling::SampleResult (position, normals, ONB
+							// only), not from a stamped hit -- the same hand-built
+							// record PT uses, so this is integrator-consistent and
+							// not a PT-vs-BDPT disagreement.  Disclosed residual:
+							// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
 							entryV.pMaterial = ri.pMaterial;
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
@@ -2393,6 +2425,13 @@ namespace {
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
 							entryV.onb = bssrdf.entryONB;
+							// derivatives / signals / txFootprint stay at their
+							// defaults here: the entry point comes from
+							// BSSRDFSampling::SampleResult (position, normals, ONB
+							// only), not from a stamped hit -- the same hand-built
+							// record PT uses, so this is integrator-consistent and
+							// not a PT-vs-BDPT disagreement.  Disclosed residual:
+							// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
 							entryV.pMaterial = ri.pMaterial;
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
@@ -5634,6 +5673,16 @@ unsigned int GenerateLightSubpathImpl(
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.vColor = ri.geometric.vColor;
 		v.bHasVertexColor = ri.geometric.bHasVertexColor;
+		// SHADING-INPUT STATE — the light-subpath twin of the eye-subpath
+		// copy in GenerateEyeSubpathImpl; see the long comment there for
+		// why a painter-read field has to travel on the vertex and why
+		// this file is a sanctioned `signals` writer (the value copied is
+		// the object manager's own stamp, forwarded one hop).  Both sides
+		// must carry them or a connection strategy would price its two
+		// ends against different material states.
+		v.derivatives = ri.geometric.derivatives;
+		v.signals = ri.geometric.signals;
+		v.txFootprint = ri.geometric.txFootprint;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -5810,6 +5859,12 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
+						// derivatives / signals / txFootprint stay at their
+						// defaults here -- see the eye-subpath BSSRDF entry
+						// sites: a SampleResult is not a stamped hit, PT builds
+						// its entry record the same way, and the residual is
+						// disclosed in
+						// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;
@@ -5922,6 +5977,12 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
+						// derivatives / signals / txFootprint stay at their
+						// defaults here -- see the eye-subpath BSSRDF entry
+						// sites: a SampleResult is not a stamped hit, PT builds
+						// its entry record the same way, and the residual is
+						// disclosed in
+						// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;

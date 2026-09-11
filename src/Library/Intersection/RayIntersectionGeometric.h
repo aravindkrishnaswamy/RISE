@@ -421,6 +421,14 @@ namespace RISE
 		//! values.  This is the narrow, typed version of the PainterContext
 		//! refactor `pCustom`'s comment above has been asking for — one
 		//! channel, not the whole refactor.
+		//!
+		//! MIRRORED ONTO `BDPTVertex` (2026-09-11,
+		//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3), so a record
+		//! `PathVertexEval::PopulateRIGFromVertex` rebuilds at a BDPT /
+		//! VCM / MLT subpath vertex carries the stamp forward instead of
+		//! reading the neutral — the bidirectional integrators used to
+		//! sample against the live record and then price the same sample
+		//! against a neutral one, which is a bias, not a flat mask.
 		SurfaceSignalInfo			signals;
 
 		//! Texture-space footprint at the hit point — Landing 2.  Computed

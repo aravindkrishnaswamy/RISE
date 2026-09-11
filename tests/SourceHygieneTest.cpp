@@ -4770,7 +4770,7 @@ int main()
 	// does the writing, only that no NEW file has joined the set.  That is
 	// still the check that matters, because every hazardous addition would be
 	// in a new file (a new geometry intersector, a new transform layer, a new
-	// painter pipe) rather than smuggled into one of the six below.
+	// painter pipe) rather than smuggled into one of the nine below.
 	//
 	// RED-PROVED by adding `ri.geometric.signals.primId = 3;` to a scratch
 	// copy of Rendering/RayCaster.cpp: the census reported RayCaster.cpp and
@@ -4844,7 +4844,28 @@ int main()
 			std::cout << "  signals writer: " << w << std::endl;
 		}
 
-		// The SEVEN files allowed to write it, and why each one is:
+		// The NINE files allowed to write it, and why each one is:
+		//   BDPTIntegrator.cpp                         `v.signals = ri.geometric
+		//                                              .signals` at the eye and
+		//                                              light subpath generators.
+		//                                              FORWARDS the stamp rather
+		//                                              than replacing it: the
+		//                                              source is the record
+		//                                              ObjectManager::IntersectRay
+		//                                              stamped, so the value that
+		//                                              reaches the painter is the
+		//                                              object manager's own, one
+		//                                              hop later.  Added by
+		//                                              docs/SIGNALS_UNDER_
+		//                                              BIDIRECTIONAL_TRANSPORT.md
+		//                                              §3.1 -- without it BDPT /
+		//                                              VCM / MLT sampled the
+		//                                              continuation direction
+		//                                              against the live record
+		//                                              and then PRICED the same
+		//                                              sample against a neutral
+		//                                              one, which is a bias, not
+		//                                              a flat mask.
 		//   CSGObject.cpp                              adoption + the three
 		//                                              nObject / bComplementedField
 		//                                              flips
@@ -4864,14 +4885,30 @@ int main()
 		//                                              into the context, plus the two
 		//                                              BuildContext `time` stamps
 		//   ObjectManager.cpp                          THE cross-object stamp
+		//   PathVertexEval.h                           `ri.signals = vertex
+		//                                              .signals` in
+		//                                              PopulateRIGFromVertex --
+		//                                              the other end of the
+		//                                              BDPTIntegrator.cpp copy
+		//                                              above, putting the same
+		//                                              forwarded stamp back into
+		//                                              the rebuilt record.  Same
+		//                                              rationale, same design
+		//                                              §3.1: the value is the
+		//                                              object manager's, two hops
+		//                                              later, never a
+		//                                              default-constructed
+		//                                              channel over a stamp.
 		//   RayIntersectionGeometric.h                 the record's own operator=
 		//   SDFGeometry.cpp                            the SDF intersector's stamp
 		//   TriangleMeshGeometryIndexedSpecializations.h   the mesh intersector's
 		const char* kAllowedSignalWriters[] = {
+			"BDPTIntegrator.cpp",
 			"CSGObject.cpp",
 			"ExpressionEval.h",
 			"ExpressionPainter.cpp",
 			"ObjectManager.cpp",
+			"PathVertexEval.h",
 			"RayIntersectionGeometric.h",
 			"SDFGeometry.cpp",
 			"TriangleMeshGeometryIndexedSpecializations.h",
@@ -4882,10 +4919,12 @@ int main()
 			setMatches = ( writers[i] == kAllowedSignalWriters[i] );
 		}
 		Check( setMatches,
-		       "cross-object signal channel: `signals` is assigned ONLY in the seven files "
-		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 sanctions -- a new writer would "
-		       "clobber ObjectManager::IntersectRay's pScene/pSelf/ptWorld stamp and silently "
-		       "turn every proximity() in the frame into its neutral 0" );
+		       "cross-object signal channel: `signals` is assigned ONLY in the nine files "
+		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 sanctions (seven that stamp or "
+		       "adopt it, plus the two that FORWARD the stamp onto a BDPTVertex and back out "
+		       "of it per docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3.1) -- a new writer "
+		       "would clobber ObjectManager::IntersectRay's pScene/pSelf/ptWorld stamp and "
+		       "silently turn every proximity() in the frame into its neutral 0" );
 		if( !setMatches ) {
 			std::cout << "  expected exactly:" << std::endl;
 			for( size_t i = 0; i < nAllowed; ++i ) {

@@ -368,13 +368,23 @@ namespace RISE
 		//! nothing assigns `signals` after that function returns;
 		//! SourceHygieneTest pins the write-site set at file granularity.
 		//!
-		//! ZERO IS THE HONEST ABSENCE for all five: a record rebuilt by
-		//! `PathVertexEval::PopulateRIGFromVertex` (BDPT / VCM / MLT), a
-		//! hit found by something other than the object manager, or a
-		//! hand-built test record carries `pScene == 0` and reads the
-		//! neutral 0 from `Proximity` and from `Interior` -- the same
-		//! disclosed gap the other three signals already have on those
-		//! integrator families.
+		//! ZERO IS THE HONEST ABSENCE for all five: a record that carries
+		//! `pScene == 0` reads the neutral 0 from `Proximity` and from
+		//! `Interior`.  Since 2026-09-11
+		//! (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3) the
+		//! BIDIRECTIONAL INTEGRATORS ARE NO LONGER IN THAT LIST: the
+		//! whole struct rides on `BDPTVertex` and
+		//! `PathVertexEval::PopulateRIGFromVertex` copies it back out, so
+		//! a BDPT / VCM / MLT record forwards the object manager's own
+		//! stamp rather than a default.  What still reads zero, honestly:
+		//! a hand-built test record, the GUI's painter preview
+		//! (`PainterPreview.cpp`), realize-time evaluation
+		//! (`HairGenerator.cpp`, `GeometryUtilities.cpp`,
+		//! `TriangleMeshGeometryIndexed.cpp`) -- none of which is
+		//! transport -- BSSRDF entry vertices, whose record is a sampled
+		//! point rather than a resolved hit under EVERY integrator
+		//! including PT (design §10), and any hit found by something
+		//! other than the object manager.
 		const IObjectManager*			pScene;		//!< the manager that found this hit; 0 = none
 		const IObject*					pSelf;		//!< == ri.pObject: the object the hit belongs to
 		Point3							ptWorld;	//!< the hit in WORLD space (== ri.ptIntersection)

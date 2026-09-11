@@ -258,19 +258,38 @@ that nothing assigns `signals` after `ObjectManager::IntersectRay` returns** —
 true today — the write sites are the two geometry intersectors
 (`SDFGeometry.cpp`, `TriangleMeshGeometryIndexedSpecializations.h`),
 `CSGObject.cpp` (adoption plus three `nObject`/`bComplementedField` flips inside
-`CSGObject::IntersectRay`), the record's own `operator=`, and `BuildContext`'s
-by-value copy — all at or below the stamp — and pinned by `SourceHygieneTest`
+`CSGObject::IntersectRay`), the record's own `operator=`, `BuildContext`'s
+by-value copy, `ExpressionEval.h`'s `k.signals = ctx.signals.MemoHitKey()` (an
+`ExpressionMemo::SignalHitKey`, not a `SurfaceSignalInfo` — a text scan cannot
+tell the two apart, so it is listed rather than excluded), and — since
+2026-09-11 — the two files that FORWARD the stamp through a `BDPTVertex`:
+`BDPTIntegrator.cpp` (`v.signals = ri.geometric.signals` at both subpath
+generators) and `PathVertexEval.h` (`ri.signals = vertex.signals` in
+`PopulateRIGFromVertex`). Those last two do not replace the stamp, they relay
+it: the source is the record `ObjectManager::IntersectRay` stamped, so what
+reaches the painter is the object manager's own value one or two hops later,
+never a default-constructed channel over a stamp
+([SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+§3.1). Nine files in all — pinned by `SourceHygieneTest`
 at FILE granularity (its guards are substring finds over flattened bodies
 against an exact filename set), which is the granularity it can express. `PropagateCastInputs` (inputs only) does not carry it.
 
-BDPT/VCM/MLT records rebuilt by `PathVertexEval::PopulateRIGFromVertex` carry the
-defaults and read the neutral 0. **This declines `PathVertexEval.h`'s written
-contract** (a new consumed field must gain a `BDPTVertex` slot, population in
-both subpath generators, a copy in `PopulateRIGFromVertex` and a sentinel in
-`BDPTVertexRIGRebuildTest`) for the same reason the signals design §14 item 11
-declined it for the three existing signals: the gap is already disclosed, the
-fix is the same widening for all four, and widening for one would leave a
-mixed-truth state. The new fields are added to that contract's list as declined.
+**CLOSED 2026-09-11 (slice S1):** BDPT/VCM/MLT records rebuilt by
+`PathVertexEval::PopulateRIGFromVertex` used to carry the defaults and read the
+neutral 0, declining `PathVertexEval.h`'s written contract (a new consumed field
+must gain a `BDPTVertex` slot, population in both subpath generators, a copy in
+`PopulateRIGFromVertex` and a sentinel in `BDPTVertexRIGRebuildTest`) for the
+same reason the signals design §14 item 11 declined it for the three existing
+signals. That decline is withdrawn: `derivatives`, `signals` and `txFootprint`
+all four ride the vertex now, the contract is honoured in full, and the
+`BDPTVertexRIGRebuildTest` sentinels cover every scalar, pointer and flag of the
+three structs. The reason for the withdrawal is that the gap was never an honest
+flat mask — the bidirectional walk SAMPLES its continuation direction against
+the live stamped record and then PRICES that same sample (plus every connection
+and every MIS reverse pdf) against the rebuilt one, so one vertex was sampled
+with the true material and weighted with the neutral one. Two honest defaults
+remain and are disclosed there: BSSRDF entry vertices (whose record is a sampled
+point under *every* integrator, PT included) and non-surface vertices.
 
 **Memo keys.** The four fields enter `SignalHitKey` (11 → 17: two pointers, three
 scalars, `time`) and therefore `ProgramKey` (29 → 35) and `SignalKey` (3 + 17 =
@@ -1407,10 +1426,13 @@ corrected this document:
   assign `signals`; `ExpressionEval.h`'s `k.signals = ctx.signals.MemoHitKey()`
   is a seventh. It assigns an `ExpressionMemo::SignalHitKey`, not a
   `SurfaceSignalInfo`, and a text scan cannot tell the two apart, so
-  `SourceHygieneTest`'s census lists seven and says why.
+  `SourceHygieneTest`'s census lists seven and says why. (Seven as of that
+  commit; nine since 2026-09-11 — the two stamp-forwarding writers §5.1 now
+  names.)
 - **`PathVertexEval.h` had no "declined list" to add to.** §5.1 says to add the
   four fields to one. There was none; the commit creates it, covering
-  `derivatives` and the whole of `signals`.
+  `derivatives` and the whole of `signals`. (That declined list is GONE as of
+  2026-09-11 — the fields are carried; see §5.1's "CLOSED" note.)
 - **The design's file-level assumptions about `override` do not hold for two
   geometries.** `InfinitePlaneGeometry` and `CircularDiskGeometry` mark no
   member `override`, so the new method does not either — adding the first

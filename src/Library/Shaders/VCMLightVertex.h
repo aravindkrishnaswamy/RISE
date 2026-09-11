@@ -17,6 +17,22 @@
 //    lean copy that reconstructs OrthonormalBasis3D on demand from
 //    the normal at merge time.
 //
+//    THE STORE CARRIES NO SIGNAL / DERIVATIVE / FOOTPRINT FIELDS, BY
+//    DESIGN.  Merging evaluates the BSDF and both its PDFs at the EYE
+//    `BDPTVertex` only -- `EvalBSDFAtVertex<Tag>( v, wiAtEye, woAtEye,
+//    tag )` and the two `EvalPdfAtVertex<Tag>( v, ... )` beside it in
+//    VCMIntegrator's `EvaluateMergesImpl` merge loop -- and all this
+//    stored vertex contributes is `wi`, the throughput and the MIS
+//    running quantities.  So the painter-input state that
+//    docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3 added to
+//    `BDPTVertex` (derivatives / signals / txFootprint) is already live
+//    at the only vertex a merge reads a material at; widening this
+//    store would cost the per-photon memory budget above and buy
+//    nothing (design §2 row 4).  Note the CONNECTIONS path is
+//    different and needs no exception: `EvaluateConnections` walks the
+//    light `BDPTVertex` array, not this store, so both of its ends are
+//    already widened.
+//
 //    The first two fields (ptPosition and plane) must match the
 //    layout expected by the VCMLightVertexKDTree<T> template so the
 //    balance/query algorithms can be instantiated on this type.

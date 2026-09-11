@@ -101,41 +101,66 @@ namespace RISE
 		//      (and the spectral / VCM equivalents).
 		//   3. Add the copy below.
 		//   4. Extend tests/BDPTVertexRIGRebuildTest.cpp with a sentinel
-		//      assertion for the new field.
+		//      assertion for the new field -- one per SCALAR, POINTER and
+		//      FLAG, not one per struct: a nested struct copied by
+		//      assignment still has to be checked member by member, or a
+		//      hand-rolled field-by-field copy could drop one silently.
 		// The cross-reference comment in BDPTVertex.h points the next
 		// developer at this contract.
 		//
-		// DECLINED, DELIBERATELY -- fields consumed by painter paths that
-		// this rebuild does NOT carry, so an expression evaluated at a
-		// BDPT / VCM / MLT vertex reads their documented NEUTRAL rather
-		// than a value.  Listed here because a contract with silent
-		// exceptions is worse than one that names them:
+		// THE PAINTER-INPUT FIELDS ARE CARRIED (2026-09-11,
+		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3).  This block
+		// used to say the opposite -- `derivatives`, `signals` and
+		// `txFootprint` were DECLINED, so an expression evaluated at a
+		// BDPT / VCM / MLT vertex read the documented neutral for `curv`,
+		// `curvR`, `occlusion`, `thickness`, `convexity`, `proximity` and
+		// `interior`.  That was a BIAS, not a flat mask: the forward walk
+		// SAMPLES its continuation direction against the live record the
+		// object manager stamped and then PRICES that same sample -- and
+		// every (s,t) connection, every MIS reverse pdf, every VCM merge
+		// at the eye vertex -- against the record rebuilt here.  One
+		// material, one vertex, one path, sampled with the true roughness
+		// and weighted with the neutral one (design §1).  All three are
+		// now copied below.
 		//
-		//   * `derivatives` (curv / curvR / scaleHint, and the UV
-		//     Jacobian) and `signals`' own-surface half (pProvider,
-		//     ptObject, nObject, primId, baryA, baryB,
-		//     bComplementedField) -- declined by
-		//     docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 11.
-		//   * `signals.pScene`, `signals.pSelf`, `signals.ptWorld` and
-		//     `signals.time` -- the cross-object channel, which since
-		//     Phase 3 carries BOTH `proximity` and `interior`, declined by
-		//     docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 and §5.6 for
-		//     the SAME reason and with the same argument: the gap is
-		//     already disclosed for the three self-signals that share this
-		//     channel, the fix is one widening for all five (a BDPTVertex
-		//     slot, population in both subpath generators, the copy here
-		//     and a BDPTVertexRIGRebuildTest sentinel), and widening for
-		//     ONE of the five would leave a mixed-truth state -- some
-		//     signals live on those integrators and some neutral, with
-		//     nothing in the record saying which.  `proximity` and
-		//     `interior` therefore read their neutral 0 (paint nothing)
-		//     wherever this rebuild is the source of the record, exactly as
-		//     `occlusion`, `thickness` and `convexity` read theirs.  PT is
-		//     unaffected: it evaluates against records the object manager
-		//     stamped.
+		// WHY THE COPY IS SAFE UNDER THE HYGIENE INVARIANT (§3.1).
+		// SourceHygieneTest pins the set of files that assign `signals`,
+		// and the invariant it protects is "nothing puts a
+		// DEFAULT-CONSTRUCTED channel over `ObjectManager::IntersectRay`'s
+		// stamp".  This copy does the reverse: it FORWARDS that stamp.
+		// The chain is `ObjectManager::IntersectRay` stamps
+		// `ri.geometric.signals` -> the subpath generator copies it onto
+		// the vertex -> this function copies it back into the rebuilt
+		// record.  The value a painter finally reads is the object
+		// manager's own, two hops later, never a default over a stamp.
+		// `PathVertexEval.h` and `BDPTIntegrator.cpp` are in the allowed
+		// writer set for exactly that reason.
 		//
-		// Adding any of them means doing all five at once, and saying so
-		// in the commit.
+		// TWO HONEST DEFAULTS REMAIN, and they are defaults because no
+		// stamp exists to forward -- not because the copy declines one:
+		//
+		//   * BSSRDF ENTRY VERTICES.  Their record is built from
+		//     `BSSRDFSampling::SampleResult` (entry point, normals, ONB),
+		//     which is a sampled point on a surface, not an intersection
+		//     the object manager resolved.  PT builds its entry record by
+		//     hand the same way, so an IOR or Fresnel painter keyed on a
+		//     signal at a subsurface entry reads neutral under EVERY
+		//     integrator alike -- integrator-consistent, and disclosed as
+		//     a residual in docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
+		//     §10.  Closing it means a probe record in
+		//     `BSSRDFSampling::SampleResult`; out of scope here.
+		//   * NON-SURFACE VERTICES -- camera, light, env and medium.
+		//     There is no surface to publish signals for, so the defaults
+		//     are the whole truth.  (A rebuild is only ever handed to a
+		//     BSDF / painter at a SURFACE vertex; medium vertices go to
+		//     the phase function, which reads none of these.)
+		//
+		// `txFootprint` is carried although it is all-zero under today's
+		// bidirectional rasterizers -- BDPT / VCM / MLT emit no ray
+		// differentials, so nothing stamps it there.  The contract is
+		// "every field a painter consumer reads", and carrying it now
+		// means a future bidirectional ray-differential landing cannot
+		// silently reopen the gap.
 		//////////////////////////////////////////////////////////////////////
 		inline void PopulateRIGFromVertex(
 			const BDPTVertex& vertex,
@@ -153,6 +178,16 @@ namespace RISE
 			ri.ptObjIntersec   = vertex.ptObjIntersec;
 			ri.vColor          = vertex.vColor;
 			ri.bHasVertexColor = vertex.bHasVertexColor;
+			// The painter-input triple.  `signals` here is the object
+			// manager's own stamp arriving two hops later (stamped on the
+			// live record, copied onto the vertex by the subpath
+			// generator, copied back out here) -- never a
+			// default-constructed channel placed over a stamp, which is
+			// the invariant SourceHygieneTest's writer-set check protects.
+			// See the contract block above.
+			ri.derivatives     = vertex.derivatives;
+			ri.signals         = vertex.signals;
+			ri.txFootprint     = vertex.txFootprint;
 			// G6: replay the enclosing (ambient) medium IOR captured at trace
 			// time (BDPTVertex::mediumIOR = IORStack::top() at hit production;
 			// SetCurrentObject does NOT push, so this is the medium the ray was
