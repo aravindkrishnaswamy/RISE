@@ -115,10 +115,36 @@ bool OrthographicCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const 
 	// generate for the neighbouring pixel, whatever that expression
 	// is, rather than a separately-derived pixel pitch that could
 	// drift from it.
+	//
+	// `x`/`y` are film-plane coordinates; they must be expressed in
+	// the CAMERA's basis (frame.GetBasis().u()/.v()), not the world
+	// x/y axes.  PinholeCamera/ThinLensCamera do the equivalent
+	// routing by pushing the screen point through `mxTrans` (which
+	// embeds the frame's rotation); here the offset is built directly
+	// from the basis vectors because `mxTrans` operates in raster
+	// pixel units via `m1`/`m2` (see Recompute) rather than the
+	// fractional-of-viewportScale units `x`/`y` use.
+	//
+	// Sign: `OrthonormalBasis3D::CreateFromWV(w,v)` sets
+	// U = normalize(cross(v,W)) = -cross(W,v), i.e. U is the NEGATION
+	// of the conventional "camera right" vector cross(forward,up) --
+	// and V = cross(W,U) recovers (the orthogonalized) input `up`
+	// exactly.  So for a camera looking down -Z with +Y up,
+	// U = -worldX and V = +worldY (verified against
+	// `OrthonormalBasis3D::CreateFromWV`'s cross-product definitions),
+	// and `x*U + y*V` reduces to `x*(-worldX) + y*worldY` ==
+	// `Vector3(-x, y, 0)` -- the exact old (world-axis) expression.
+	// That identity holds regardless of orientation (U/V are always
+	// -right/up in world space, by the same construction), so this
+	// is bit-identical to the old expression for -Z/+Y and correctly
+	// rotates the offset into the film plane for every other
+	// orientation (e.g. a top-down camera, where V is a horizontal
+	// world axis, not world Y).
+	const OrthonormalBasis3D& basis = frame.GetBasis();
 	auto originOffset = [&]( const Scalar screenX, const Scalar screenY ) -> Vector3 {
 		const Scalar x = (frame.GetWidth()/2-screenX)/Scalar(frame.GetWidth()) * viewportScale.x;
 		const Scalar y = (screenY - frame.GetHeight()/2)/Scalar(frame.GetHeight()) * viewportScale.y;
-		return Vector3( -x, y, 0.0 );
+		return basis.u() * x + basis.v() * y;
 	};
 
 	const Vector3 o = originOffset( ptOnScreen.x, ptOnScreen.y );

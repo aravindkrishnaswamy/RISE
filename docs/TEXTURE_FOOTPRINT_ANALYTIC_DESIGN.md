@@ -1226,14 +1226,23 @@ computed by re-entering the camera's own film-offset expression at pixel + 1
 rather than by a separately-derived pitch, so the auxiliary is by construction
 the ray the camera would actually generate for the neighbouring pixel.
 
-Noted, **not** fixed here: `OrthographicCamera::GenerateRay` adds that film
-offset along the **world** x/y axes rather than the camera's own U/V basis, so
-a rotated orthographic camera's film plane is mis-oriented. That is
-pre-existing and independent of differentials — and because the auxiliaries
-re-enter the same expression, the differential stays consistent with whatever
-the camera actually renders. `TextureFootprintTest` 14f therefore uses a
-`-Z`-looking, `+Y`-up camera, the orientation in which world and camera axes
-coincide, so the test measures differentials and not that quirk.
+**2026-09-10 follow-up: the world-axis mis-orientation noted above is now
+fixed.** `OrthographicCamera::GenerateRay` used to add the film offset along
+the **world** x/y axes (`Vector3(-x, y, 0)`), so a camera whose basis doesn't
+happen to coincide with world X/Y — e.g. `scenes/Tests/Cameras/
+multiple_cameras.RISEscene`'s `top_down` camera (eye `(0,10,0)`, up
+`(0,0,-1)`) — had its *vertical* film offset run along the world Y axis,
+which for that camera IS the view direction: every pixel in a raster column
+sampled the same world point, and the rendered image was a single sheared
+line of the scene rather than a plan view. The offset is now expressed in the
+camera's own basis, `frame.GetBasis().u()` / `.v()`, the same routing
+`PinholeCamera`/`ThinLensCamera` get by pushing the screen point through
+`mxTrans`. Because the auxiliaries re-enter the same `originOffset`
+expression the main ray used, the differential fix is automatic — no
+separate change was needed there. `TextureFootprintTest` 14f still uses a
+`-Z`-looking, `+Y`-up camera (the orientation in which the camera basis and
+world X/Y axes coincide, so `x*U + y*V` is bit-identical to the old
+`Vector3(-x, y, 0)` there — see 14h); 14g/14h/14i cover the fix itself (§12.4).
 
 ### 12.3 Fisheye — out of scope
 
@@ -1261,6 +1270,20 @@ offsets non-degenerate on every ray from both entry points across the frame;
 distance. Red-proofed live by shrinking the thin-lens x step to half a pixel:
 14a, 14b and 14d fail (14c, a ratio, correctly does not — which is why the
 closed form in 14b exists).
+
+Three more parts (added with the 2026-09-10 world-axis fix): (g) the
+`top_down` orientation — a raster-X step moves the origin by exactly one
+viewport pitch parallel to `U`, a raster-Y step moves it by one pitch parallel
+to `V`, and *neither* has a component along `W` (the view direction), against
+an oracle `OrthonormalBasis3D` built independently in the test; an in-test
+red-proof reconstructs the pre-fix `Vector3(-x, y, 0)` formula's raster-Y
+step and shows it disagrees with the fixed step by more than `1e-3` *and* has
+a component along `W` of more than half a pitch, i.e. the red-proof itself
+reproduces the bug; (h) the `-Z`/`+Y` orientation is bit-identical (`< 1e-15`)
+to the pre-fix world-axis formula, recomputed independently in the test, not
+copied from the camera; (i) `rxOrigin`/`ryOrigin` equal the finite difference
+of two independently generated main rays one pixel apart, for the `top_down`
+camera — the differential-side counterpart of (g)/(h).
 
 ### 12.5 What it moves in practice (measured 2026-09-10)
 

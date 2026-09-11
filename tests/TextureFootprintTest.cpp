@@ -1545,6 +1545,29 @@ static ThinLensCamera* MakeThinLens(
 		shiftXmm, shiftYmm );
 }
 
+//! A square orthographic camera at `eye` looking at `at`, viewport
+//! scale `vp` on both axes.
+static OrthographicCamera* MakeOrtho( const Point3& eye, const Point3& at, const Vector3& up, const Scalar vp )
+{
+	return new OrthographicCamera(
+		eye, at, up,
+		kRes, kRes, Vector2( vp, vp ),
+		Scalar( 1 ), Scalar( 1 ), Scalar( 0 ), Scalar( 0 ),
+		Vector3( 0, 0, 0 ), Vector2( 0, 0 ) );
+}
+
+//! A ray through a chosen pixel, deterministic rng (the orthographic
+//! camera doesn't consume randoms, but GenerateRay still takes an
+//! rc).
+static Ray OrthoRay( const OrthographicCamera& cam, const Point2& pixel )
+{
+	RandomNumberGenerator rng( 13u );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+	Ray r;
+	cam.GenerateRay( rc, r, pixel );
+	return r;
+}
+
 //! `GeometricUtilities::PointOnDisk`'s Shirley concentric map sends
 //! (0.5, 0.5) to EXACTLY (0, 0) -- both of its intermediate
 //! coordinates are exactly 0 there and the function short-circuits --
@@ -1838,11 +1861,16 @@ static void Test14_ThinLensAndOrthoDifferentials()
 	// one viewport pitch and the direction offsets are exactly zero, so
 	// on a face-on plane the footprint is the pitch itself -- constant
 	// with distance, unlike the pinhole's d*theta.  The camera looks
-	// down -Z here deliberately: `OrthographicCamera::GenerateRay` adds
-	// its film offset along the WORLD x/y axes rather than the camera's
-	// own U/V (a pre-existing quirk, untouched by this change), and
-	// -Z-with-+Y-up is the orientation in which the two coincide, so
-	// this test measures the differentials and not that quirk.
+	// down -Z here: `OrthographicCamera::GenerateRay` now expresses its
+	// film offset in the camera's own basis (frame.GetBasis().u()/.v())
+	// rather than the world x/y axes, and -Z-with-+Y-up is the
+	// orientation in which the two coincide (see 14h), so this test
+	// measures the differentials and not the basis routing.  14g/14h/14i
+	// below cover the basis fix itself: a top-down camera, where world
+	// axes and the camera basis do NOT coincide, used to have its
+	// vertical film offset run along the VIEW direction instead of
+	// across the film plane (every pixel in a column sampled the same
+	// world point).
 	{
 		const Scalar vp = 4.0;		// viewport scale, both axes
 		const Scalar pitch = vp / Scalar( kRes );
@@ -1888,6 +1916,175 @@ static void Test14_ThinLensAndOrthoDifferentials()
 		CHECK( std::fabs( wFar - wNear ) / pitch < Scalar( 1e-9 ),
 			"14f: and it does NOT change with distance, unlike the pinhole's d*theta ("
 			<< std::setprecision(12) << wFar << ")" );
+	}
+
+	// ---- 14g: a TOP-DOWN orthographic camera -- the film offset must
+	// live in the camera's OWN basis (U/V), never the world x/y axes -
+	//
+	// This is the `top_down` camera from
+	// scenes/Tests/Cameras/multiple_cameras.RISEscene, the scene that
+	// surfaced the bug: eye (0,10,0), lookat the origin, up (0,0,-1).
+	// Its view direction W is world -Y.  `OrthonormalBasis3D::
+	// CreateFromWV` is re-run HERE, independently of the camera and of
+	// the fix, as the oracle for U/V/W -- not copied from
+	// OrthographicCamera.cpp.
+	//
+	// Closed form: a one-pixel step in raster X must move the ray
+	// origin by exactly one viewport pitch, parallel to U; a one-pixel
+	// step in raster Y must move it by one pitch, parallel to V; and
+	// NEITHER may have a component along W.  That last clause is the
+	// bug itself: the pre-fix code added the vertical film offset
+	// directly to world Y, which for this orientation IS the view
+	// direction W, so every pixel in a raster column diffed by a
+	// vector parallel to W instead of across the film -- the whole
+	// image sampled one world line.
+	{
+		const Scalar vp = 4.0;
+		const Scalar pitch = vp / Scalar( kRes );
+
+		OrthonormalBasis3D onb;
+		onb.CreateFromWV(
+			Vector3Ops::Normalize( Vector3( 0, -10, 0 ) ),		// forward: lookat(0,0,0) - eye(0,10,0)
+			Vector3( 0, 0, -1 ) );								// up, as authored
+		const Vector3 U = onb.u();
+		const Vector3 V = onb.v();
+		const Vector3 W = onb.w();
+
+		CHECK( std::fabs( Vector3Ops::Dot( U, W ) ) < Scalar( 1e-15 ) &&
+		       std::fabs( Vector3Ops::Dot( V, W ) ) < Scalar( 1e-15 ) &&
+		       std::fabs( Vector3Ops::Dot( U, V ) ) < Scalar( 1e-15 ),
+			"14g: (oracle) U, V, W really are mutually orthogonal" );
+
+		OrthographicCamera* cam = MakeOrtho( Point3( 0, 10, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ), vp );
+		const Ray r0 = OrthoRay( *cam, centrePixel );
+		const Ray rX = OrthoRay( *cam, Point2( centrePixel.x + Scalar( 1 ), centrePixel.y ) );
+		const Ray rY = OrthoRay( *cam, Point2( centrePixel.x, centrePixel.y + Scalar( 1 ) ) );
+		cam->release();
+
+		const Vector3 stepX( rX.origin.x - r0.origin.x, rX.origin.y - r0.origin.y, rX.origin.z - r0.origin.z );
+		const Vector3 stepY( rY.origin.x - r0.origin.x, rY.origin.y - r0.origin.y, rY.origin.z - r0.origin.z );
+
+		// x = (width/2 - screenX)/width * vp decreases by pitch as
+		// screenX increases by one; y = (screenY - height/2)/height *
+		// vp increases by pitch as screenY increases by one.  The
+		// offset is x*U + y*V (OrthographicCamera.cpp), so:
+		const Vector3 expectedStepX = U * ( -pitch );
+		const Vector3 expectedStepY = V * pitch;
+
+		std::cout << "    14g stepX " << std::scientific << std::setprecision(6)
+		          << stepX.x << " " << stepX.y << " " << stepX.z
+		          << "  stepY " << stepY.x << " " << stepY.y << " " << stepY.z
+		          << std::defaultfloat << std::endl;
+
+		CHECK( MaxAbsDiff( stepX, expectedStepX ) < Scalar( 1e-12 ),
+			"14g: a one-pixel raster-X step moves the origin by exactly one pitch along U ("
+			<< MaxAbsDiff( stepX, expectedStepX ) << ")" );
+		CHECK( MaxAbsDiff( stepY, expectedStepY ) < Scalar( 1e-12 ),
+			"14g: a one-pixel raster-Y step moves the origin by exactly one pitch along V ("
+			<< MaxAbsDiff( stepY, expectedStepY ) << ")" );
+		CHECK( std::fabs( Vector3Ops::Dot( stepX, W ) ) < Scalar( 1e-12 ) &&
+		       std::fabs( Vector3Ops::Dot( stepY, W ) ) < Scalar( 1e-12 ),
+			"14g: neither step has a component along W (the view direction) -- the bug" );
+		CHECK( std::fabs( Vector3Ops::Magnitude( stepX ) - pitch ) < Scalar( 1e-12 ) &&
+		       std::fabs( Vector3Ops::Magnitude( stepY ) - pitch ) < Scalar( 1e-12 ),
+			"14g: both steps have magnitude exactly one viewport pitch" );
+
+		// Red-proof: the pre-fix (parent-commit) formula added the
+		// offset directly along the world x/y axes.  Reconstruct what
+		// IT would have produced for the same raster-Y step, using the
+		// same x/y fractions, and confirm it (a) disagrees materially
+		// with the fixed stepY and (b) is the one with the illegal
+		// component along W -- i.e. this test really does discriminate
+		// the bug rather than passing vacuously.
+		{
+			const Scalar y0 = ( centrePixel.y - Scalar( kRes ) / Scalar( 2 ) ) / Scalar( kRes ) * vp;
+			const Scalar y1 = ( ( centrePixel.y + Scalar( 1 ) ) - Scalar( kRes ) / Scalar( 2 ) ) / Scalar( kRes ) * vp;
+			const Vector3 oldOffset0( 0, y0, 0 );			// old code: Vector3(-x, y, 0), x unchanged here
+			const Vector3 oldOffset1( 0, y1, 0 );
+			const Vector3 oldStepY = oldOffset1 - oldOffset0;
+
+			std::cout << "    14g red-proof: pre-fix stepY " << std::scientific << std::setprecision(6)
+			          << oldStepY.x << " " << oldStepY.y << " " << oldStepY.z
+			          << "  |dot with W| " << std::fabs( Vector3Ops::Dot( oldStepY, W ) )
+			          << std::defaultfloat << std::endl;
+
+			CHECK( MaxAbsDiff( oldStepY, expectedStepY ) > Scalar( 1e-3 ),
+				"14g (red-proof): the pre-fix world-axis formula disagrees materially with the "
+				"fixed stepY (" << MaxAbsDiff( oldStepY, expectedStepY ) << ") -- otherwise this "
+				"test would pass even with the bug restored" );
+			CHECK( std::fabs( Vector3Ops::Dot( oldStepY, W ) ) > pitch * Scalar( 0.5 ),
+				"14g (red-proof): and it DOES have a large component along W, which is exactly the "
+				"bug (" << std::fabs( Vector3Ops::Dot( oldStepY, W ) ) << " vs pitch " << pitch << ")" );
+		}
+	}
+
+	// ---- 14h: -Z/+Y orientation is BIT-IDENTICAL to the pre-fix
+	// (parent-commit) world-axis formula ------------------------------
+	//
+	// Parent commit aaa27a93 computed the origin offset as the raw
+	// world vector Vector3(-x, y, 0) added to the frame origin.  For a
+	// camera looking down -Z with +Y up that is mathematically
+	// identical to the fixed `x*U + y*V` expression (U = -worldX,
+	// V = +worldY for that orientation, per OrthonormalBasis3D::
+	// CreateFromWV -- see the derivation comment in
+	// OrthographicCamera.cpp), so the fix must not move a single bit
+	// of output here.  The parent-commit formula is recomputed
+	// directly below as an independent oracle -- it does not call any
+	// camera code.
+	{
+		const Scalar vp = 4.0;
+		const Point3 eye( 0, 0, d );
+		OrthographicCamera* cam = MakeOrtho( eye, Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), vp );
+		const Ray r = OrthoRay( *cam, offPixel );
+		cam->release();
+
+		const Scalar x = ( Scalar( kRes ) / Scalar( 2 ) - offPixel.x ) / Scalar( kRes ) * vp;
+		const Scalar y = ( offPixel.y - Scalar( kRes ) / Scalar( 2 ) ) / Scalar( kRes ) * vp;
+		const Point3 parentOrigin( eye.x - x, eye.y + y, eye.z );
+
+		const Scalar dOrigin = std::max( std::max(
+			std::fabs( r.origin.x - parentOrigin.x ), std::fabs( r.origin.y - parentOrigin.y ) ),
+			std::fabs( r.origin.z - parentOrigin.z ) );
+
+		std::cout << "    14h |origin - parent-commit formula| " << std::scientific
+		          << std::setprecision(3) << dOrigin << std::defaultfloat << std::endl;
+
+		CHECK( dOrigin < Scalar( 1e-15 ),
+			"14h: -Z/+Y orientation is bit-identical to the pre-fix world-axis formula ("
+			<< dOrigin << ")" );
+	}
+
+	// ---- 14i: differentials equal the finite difference of two
+	// independently generated main rays, for the TOP-DOWN camera ------
+	//
+	// Same pattern as 14d (ThinLensCamera): two rays one pixel apart,
+	// generated through the public entry point only, oracle their
+	// origin difference against r0.diffs.{rx,ry}Origin.  This is the
+	// orientation where a hand-rolled "pixel pitch along world axes"
+	// differential (rather than one that re-enters the SAME basis-
+	// aware originOffset lambda the main ray used) would drift from
+	// the true finite difference.
+	{
+		const Scalar vp = 4.0;
+		OrthographicCamera* cam = MakeOrtho( Point3( 0, 10, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ), vp );
+
+		const Ray r0 = OrthoRay( *cam, offPixel );
+		const Ray rX = OrthoRay( *cam, Point2( offPixel.x + Scalar( 1 ), offPixel.y ) );
+		const Ray rY = OrthoRay( *cam, Point2( offPixel.x, offPixel.y + Scalar( 1 ) ) );
+		cam->release();
+
+		const Vector3 oracleRxOrigin( rX.origin.x - r0.origin.x, rX.origin.y - r0.origin.y, rX.origin.z - r0.origin.z );
+		const Vector3 oracleRyOrigin( rY.origin.x - r0.origin.x, rY.origin.y - r0.origin.y, rY.origin.z - r0.origin.z );
+
+		const Scalar errRx = MaxAbsDiff( r0.diffs.rxOrigin, oracleRxOrigin );
+		const Scalar errRy = MaxAbsDiff( r0.diffs.ryOrigin, oracleRyOrigin );
+
+		std::cout << "    14i |rxOrigin - oracle| " << std::scientific << std::setprecision(3) << errRx
+		          << "  |ryOrigin - oracle| " << errRy << std::defaultfloat << std::endl;
+
+		CHECK( errRx < Scalar( 1e-12 ) && errRy < Scalar( 1e-12 ),
+			"14i: rxOrigin/ryOrigin equal the difference of two independently generated main rays "
+			"one pixel apart, for the top-down camera (" << errRx << ", " << errRy << ")" );
 	}
 }
 
