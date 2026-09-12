@@ -53,6 +53,7 @@
 #include "StabilityConfig.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/ISPF.h"
+#include "../Intersection/RayIntersectionGeometric.h"
 
 namespace RISE
 {
@@ -255,6 +256,35 @@ namespace RISE
 		{
 			const Scalar pa2 = pa * pa;
 			return pa2 / (pa2 + pb * pb);
+		}
+
+		/// Resolve a replaced direction's medium without changing its proposal.
+		/// The selected SPF transition applies on the same geometric side as
+		/// its sampled ray. An opposite-side guide sample keeps the input stack.
+		/// Call only for replacements; ordinary SPF continuations keep their
+		/// original state. Exact RIS candidate-0 reuse also keeps that state.
+		/// The sign test is invariant to ray-oriented normal flips. A missing
+		/// geometric normal falls back to the sampling frame; tangent or invalid
+		/// sides cannot establish a transition and retain the input stack.
+		/// Returned pointers are borrowed until the scattered container dies.
+		inline const IORStack* GuidedContinuationIORStack(
+			const ScatteredRay& selected,
+			const IORStack& current,
+			const RayIntersectionGeometric& rig,
+			const Vector3& direction
+			)
+		{
+			if( !selected.ior_stack ) return &current;
+			const Vector3& original = selected.ray.Dir();
+			if( direction.x == original.x && direction.y == original.y && direction.z == original.z ) {
+				return selected.ior_stack;
+			}
+			Vector3 normal = rig.vGeomNormal;
+			if( Vector3Ops::Dot( normal, normal ) <= NEARZERO ) normal = rig.onb.w();
+			const Scalar before = Vector3Ops::Dot( original, normal );
+			const Scalar after = Vector3Ops::Dot( direction, normal );
+			return ((before > 0 && after > 0) || (before < 0 && after < 0))
+				? selected.ior_stack : &current;
 		}
 
 #ifdef RISE_ENABLE_OPENPGL

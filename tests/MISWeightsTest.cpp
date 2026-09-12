@@ -206,6 +206,52 @@ static void TestExtremeRatios()
 	Check( std::isfinite( w ), "extreme values: no NaN/Inf" );
 }
 
+// DL-03 boundary checks complement the real trained-integrator red proof.
+static void TestGuidedContinuationStack()
+{
+	using PathTransportUtilities::GuidedContinuationIORStack;
+	IORStack before(1.33), after(1.0);
+	ScatteredRay selected;
+	selected.ior_stack = &after;
+	selected.delete_stack = false;
+	selected.ray.Set(Point3(0,0,0), Vector3(0,0,1));
+	const RasterizerState rast{};
+	RayIntersectionGeometric rig(Ray(Point3(0,0,-1),Vector3(0,0,1)),rast);
+	rig.vGeomNormal = Vector3(0,0,1);
+	rig.onb.CreateFromW(Vector3(1,0,0));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8)) == &after,
+		"DL-03 outward replacement preserves selected transition");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8)) == &before,
+		"DL-03 inward replacement preserves current medium");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(1,0,0)) == &before,
+		"DL-03 tangent replacement has no established crossing");
+	rig.vGeomNormal = Vector3(0,0,-1);
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8)) == &after,
+		"DL-03 geometric normal orientation does not change side matching");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8)) == &before,
+		"DL-03 reversed geometric normal preserves inward state");
+	rig.vGeomNormal = Vector3(0,0,0);
+	rig.onb.CreateFromW(Vector3(0,0,1));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8)) == &after,
+		"DL-03 missing geometric normal falls back to sampling frame");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8)) == &before,
+		"DL-03 fallback frame also preserves inward state");
+	rig.onb.CreateFromW(Vector3(1,0,0));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8)) == &before,
+		"DL-03 tangent selected direction has no inferred transition");
+	Check(GuidedContinuationIORStack(selected,before,rig,selected.ray.Dir()) == &after,
+		"DL-03 unchanged RIS candidate preserves existing SPF state");
+	rig.vGeomNormal = Vector3(0,0,1);
+	selected.ray.Set(Point3(0,0,0),Vector3(0,0,-1));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8)) == &after,
+		"DL-03 same-side transition works for negative selected hemisphere");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8)) == &before,
+		"DL-03 opposite positive hemisphere retains input state");
+	selected.ior_stack = 0;
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8)) == &before,
+		"DL-03 absent selected transition retains input state");
+}
+
 //////////////////////////////////////////////////////////////////////
 // Main
 //////////////////////////////////////////////////////////////////////
@@ -219,6 +265,7 @@ int main()
 	TestWeightSum();
 	TestPowerHeuristic();
 	TestExtremeRatios();
+	TestGuidedContinuationStack();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

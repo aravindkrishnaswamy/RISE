@@ -2500,6 +2500,7 @@ namespace {
 			}
 			// --- End BSSRDF sampling ---
 
+			const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
 	#ifdef RISE_ENABLE_OPENPGL
 			// --- Path guiding (eye subpath) ---
 			bool usedGuidedDirection = false;
@@ -2642,6 +2643,10 @@ namespace {
 					}
 				}
 			}
+			if( usedGuidedDirection ) {
+				traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
+					*pScat, iorStack, ri.geometric, guidedDir );
+			}
 			if constexpr( Traits::is_nm ) {
 				// NM-only inline guiding-training sample.  The Pel path trains
 				// from connection results in a post-pass instead -- preserved
@@ -2655,9 +2660,7 @@ namespace {
 				{
 					const Ray trainingRay = usedGuidedDirection ?
 						Ray( pScat->ray.origin, guidedDir ) : pScat->ray;
-					const IORStack& trainingIorStack = usedGuidedDirection ?
-						iorStack :
-						(pScat->ior_stack ? *pScat->ior_stack : iorStack);
+					const IORStack& trainingIorStack = *traceIorStack;
 					RecordGuidingTrainingSampleNM(
 						pGuidingField,
 						rc,
@@ -2782,21 +2785,11 @@ namespace {
 			// Its light-side twin `GenerateLightSubpathImpl` carries
 			// IMPORTANCE and deliberately gets NO factor -- that asymmetry
 			// is what makes a VCM merge (flux-side photon x radiance-side
-			// eye vertex) come out right.  Gated on `!usedGuidedDirection`
-			// for the same reason the iorStack copy at the bottom of this
-			// loop is: a guided direction is not the SPF's, so it does not
-			// take the SPF's stack transition.  `beta` is what gets stored
-			// on the NEXT vertex (StoreThroughput), so every downstream
-			// consumer -- connections, splats, VCM merges, the MLT
-			// re-evaluation -- reads the scaled value and none of them
-			// re-derive it.
+			// eye vertex) come out right. The resolved continuation stack also
+			// supplies training and the next vertex: guiding changes the
+			// direction, not the medium associated with that geometric side.
 			{
-	#ifdef RISE_ENABLE_OPENPGL
-				const Scalar etaScale = usedGuidedDirection ? Scalar( 1 )
-					: RadianceEtaScale( iorStack, pScat->ior_stack );
-	#else
-				const Scalar etaScale = RadianceEtaScale( iorStack, pScat->ior_stack );
-	#endif
+				const Scalar etaScale = RadianceEtaScale( iorStack, traceIorStack );
 				if( etaScale != Scalar( 1 ) ) {
 					localScatteringWeight = localScatteringWeight * etaScale;
 					beta = beta * etaScale;
@@ -2860,9 +2853,7 @@ namespace {
 				vertices.back().guidingScatteringWeight = localScatteringWeight;
 				vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 				vertices.back().guidingEta =
-					(pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
-						pScat->ior_stack->top() :
-						(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
+					traceIorStack->top() > NEARZERO ? traceIorStack->top() : Scalar( 1 );
 				vertices.back().guidingRoughness = pScat->isDelta ?
 					Scalar( 0.0 ) :
 					(pScat->type == ScatteredRay::eRayDiffuse ? Scalar( 1.0 ) : Scalar( 0.5 ));
@@ -2918,12 +2909,8 @@ namespace {
 			currentRay = pScat->ray;
 	#endif
 			currentRay.Advance( BDPT_RAY_EPSILON );
-		#ifdef RISE_ENABLE_OPENPGL
-			if( !usedGuidedDirection && pScat->ior_stack ) {
-		#else
-			if( pScat->ior_stack ) {
-		#endif
-				iorStack = *pScat->ior_stack;
+			if( traceIorStack != &iorStack ) {
+				iorStack = *traceIorStack;
 			}
 		}
 
@@ -6231,6 +6218,7 @@ unsigned int GenerateLightSubpathImpl(
 		}
 		// --- End BSSRDF sampling ---
 
+		const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
 #ifdef RISE_ENABLE_OPENPGL
 		// --- Path guiding (light subpath) ---
 		// Query the shared guiding field at each light subpath surface vertex
@@ -6383,6 +6371,10 @@ unsigned int GenerateLightSubpathImpl(
 				}
 			}
 		}
+		if( usedGuidedDirection ) {
+			traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
+				*pScat, iorStack, ri.geometric, guidedDir );
+		}
 #endif
 		// --- End light subpath path guiding ---
 
@@ -6528,9 +6520,7 @@ unsigned int GenerateLightSubpathImpl(
 			vertices.back().guidingScatteringWeight = localScatteringWeight;
 			vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 			vertices.back().guidingEta =
-				(pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
-					pScat->ior_stack->top() :
-					(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
+				traceIorStack->top() > NEARZERO ? traceIorStack->top() : Scalar( 1 );
 			vertices.back().guidingRoughness = pScat->isDelta ?
 				Scalar( 0.0 ) :
 				(pScat->type == ScatteredRay::eRayDiffuse ? Scalar( 1.0 ) : Scalar( 0.5 ));
@@ -6621,12 +6611,8 @@ unsigned int GenerateLightSubpathImpl(
 		currentRay = pScat->ray;
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
-	#ifdef RISE_ENABLE_OPENPGL
-		if( !usedGuidedDirection && pScat->ior_stack ) {
-	#else
-		if( pScat->ior_stack ) {
-	#endif
-			iorStack = *pScat->ior_stack;
+		if( traceIorStack != &iorStack ) {
+			iorStack = *traceIorStack;
 		}
 	}
 
