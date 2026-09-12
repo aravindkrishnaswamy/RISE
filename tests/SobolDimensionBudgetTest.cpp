@@ -724,6 +724,13 @@ static void TestApertureDrawConsumption()
 
 	for( unsigned int r = 0; r < sizeof(rows)/sizeof(rows[0]); r++ )
 	{
+		// Per-row flag: `ok` is the OVERALL pass/fail this function exits
+		// on, so it must never be reset -- but printing it as-is for
+		// EVERY row's summary line meant one early failing row left
+		// every later row's "OK"/"FAIL" print wrong (always FAIL) even
+		// when that row itself passed both policies.  `rowOk` is scoped
+		// to this iteration; `ok` still accumulates across all rows.
+		bool rowOk = true;
 		for( unsigned int p = 0; p < 2; p++ )
 		{
 			DimensionAuditSampler audit( 1234 + r );
@@ -742,12 +749,13 @@ static void TestApertureDrawConsumption()
 					<< ") consumed " << dims << " dimensions and "
 					<< audit.GetStreamSwitches() << " stream switches; expected "
 					<< rows[r].expect << " and " << expectSwitches << "\n";
+				rowOk = false;
 				ok = false;
 			}
 		}
 		std::cout << "  " << rows[r].name << ": " << rows[r].expect
 			<< " dimensions consumed, both policies: "
-			<< ( ok ? "OK" : "FAIL" ) << "\n";
+			<< ( rowOk ? "OK" : "FAIL" ) << "\n";
 	}
 
 	// ------------------------------------------------------------

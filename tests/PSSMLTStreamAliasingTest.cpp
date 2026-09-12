@@ -56,6 +56,7 @@
 
 #include "../src/Library/Utilities/PSSMLTSampler.h"
 #include "../src/Library/Cameras/CameraUtilities.h"
+#include "../src/Library/Cameras/ThinLensCamera.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -300,12 +301,26 @@ static void TestKNumStreamsMinimum()
 	// ------------------------------------------------------------
 	// C2: the MLT film/lens/APERTURE block on stream 48.
 	//
-	// Debt 28's t==1 aperture point is drawn as a THIRD Get2D on
-	// stream 48, contiguous with the film and lens samples, so under
-	// PSSMLT it occupies lanes 48 + 49*4 = 244 and 48 + 49*5 = 293.
-	// Six consecutive draws on stream 48 must therefore be six
-	// distinct primary samples, and none of them may equal a sample
-	// any integrator stream 0..47 can reach at the same depth.
+	// Debt 28's t==1 aperture point is drawn as a further Get2D on
+	// stream 48, contiguous with the film and lens samples.  This
+	// probes `MLTRasterizer` (RGB): film Get2D + lens Get2D consume
+	// 4 lanes, so the aperture Get2D lands at 48 + 49*4 = 244 and
+	// 48 + 49*5 = 293 -- six consecutive draws on stream 48.
+	// `MLTSpectralRasterizer` pre-consumes `nSpectralSamples` (S)
+	// additional wavelength Get1Ds from stream 48 before the
+	// aperture draw, so its aperture lanes are 48 + 49*(4+S) and
+	// 48 + 49*(5+S) (440/489 at the default S=4) -- not probed here,
+	// see CameraUtilities.h's `APERTURE_CURRENT_STREAM` doc.
+	//
+	// Six consecutive draws on stream 48 must be six distinct
+	// primary samples, and none of them may equal a sample any
+	// integrator stream 0..47 can reach at the same depth.  This is
+	// the residue-mod-49 argument, not a claim about lane depth --
+	// and it only holds for streams that stay below 49.  The eye
+	// walk's `StartStream( 16u + depth )` reaches stream 48 itself
+	// at eye depth 32 (and aliases further stream-48+ lanes beyond
+	// that) -- a pre-existing overrun this test does not probe;
+	// see docs/RENDERING_INTEGRATORS.md §7.
 	// ------------------------------------------------------------
 	{
 		PSSMLTSampler* pS = MakeSampler( 99991, 1.0 );
@@ -415,6 +430,92 @@ static void TestKNumStreamsMinimum()
 			<< kDedicated << " -> (stream " << ( kDedicated % lanes )
 			<< ", sample " << ( kDedicated / lanes )
 			<< "), so neither may be used under PSSMLT: OK\n";
+	}
+
+	// ------------------------------------------------------------
+	// C4: BEHAVIOURAL guard on the real PSSMLTSampler + the real
+	// `DrawApertureSample`.  (B2 P2-3, debt 28 round 2.)
+	//
+	// C3 above only checks the ARITHMETIC of the multiplexing rule
+	// against literal constants -- it never calls `DrawApertureSample`
+	// or touches a real sampler.  Test D (below) is the complementary
+	// SOURCE-TEXT guard: a substring search over the MLT rasterizer
+	// files for `APERTURE_CURRENT_STREAM` / `kApertureSamplerStream`.
+	// Neither actually exercises the claim that the aperture draw stays
+	// on the CURRENTLY ACTIVE stream (residue 48, in the RGB
+	// rasterizer's case) -- a rename of `DrawApertureSample` to
+	// something not containing those literal tokens would sail through
+	// Test D, and a refactor that quietly called `StartStream` again
+	// inside the `APERTURE_CURRENT_STREAM` branch (breaking the residue
+	// invariant this whole file is about) would sail through C3, since
+	// C3 never calls the function it is reasoning about.
+	//
+	// This probe does what EvaluateSampleSpectral does at S=0 (no
+	// wavelength draws): StartStream(48), draw the film + lens Get2Ds
+	// (4 raw draws, sampleIndex 0..3), then call the REAL
+	// `DrawApertureSample( thinLens, sampler, APERTURE_CURRENT_STREAM )`
+	// and capture the two values it returns.  A second, independent
+	// sampler with the IDENTICAL seed reproduces the same six draws by
+	// hand (`StartStream(48)` then six raw `Get1D()`s) with no camera
+	// or aperture helper involved at all.  `PSSMLTSampler`'s per-lane
+	// value is a deterministic function of (seed, streamIndex,
+	// sampleIndex) alone (see Get1D's `idx` formula), so the two must
+	// agree bit-for-bit IF AND ONLY IF `DrawApertureSample` really did
+	// nothing more than two more `Get1D`s on the stream that was
+	// already active -- which is exactly the residue-48 claim, tested
+	// on the running code rather than asserted about it.
+	// ------------------------------------------------------------
+	{
+		ThinLensCamera* thinLens = new ThinLensCamera(
+			Point3( 0, 0, 6 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+			36.0, 50.0, 2.8, 4.0, 1.0,
+			64, 64, 1.0, 0.0, 0.0, 0.0,
+			Vector3( 0, 0, 0 ), Vector2( 0, 0 ),
+			0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0 );
+
+		PSSMLTSampler* pReal = MakeSampler( 424242, 1.0 );
+		pReal->StartIteration();
+		pReal->StartStream( 48 );
+		Scalar filmLens[4];
+		for( int i = 0; i < 4; i++ ) filmLens[i] = pReal->Get1D();
+		const Point2 apertureSample = BDPTCameraUtilities::DrawApertureSample(
+			*thinLens, *pReal, BDPTCameraUtilities::APERTURE_CURRENT_STREAM );
+
+		PSSMLTSampler* pShadow = MakeSampler( 424242, 1.0 );
+		pShadow->StartIteration();
+		pShadow->StartStream( 48 );
+		Scalar shadow[6];
+		for( int i = 0; i < 6; i++ ) shadow[i] = pShadow->Get1D();
+
+		bool behaviourOk = true;
+		for( int i = 0; i < 4; i++ ) {
+			if( filmLens[i] != shadow[i] ) {
+				std::cerr << "  FAIL: film/lens draw " << i
+					<< " diverged between the two identically-seeded samplers "
+					<< "before DrawApertureSample was even called -- MakeSampler "
+					<< "is not reproducing the same stream.\n";
+				behaviourOk = false;
+			}
+		}
+		if( apertureSample.x != shadow[4] || apertureSample.y != shadow[5] ) {
+			std::cerr << "  FAIL: DrawApertureSample( APERTURE_CURRENT_STREAM ) "
+				<< "returned (" << apertureSample.x << ", " << apertureSample.y
+				<< ") but two more raw Get1D()s on the SAME already-active "
+				<< "stream 48 give (" << shadow[4] << ", " << shadow[5] << ").  "
+				<< "DrawApertureSample is doing something other than drawing "
+				<< "from the currently active stream under "
+				<< "APERTURE_CURRENT_STREAM -- the residue-48 argument no "
+				<< "longer describes what the code does.\n";
+			behaviourOk = false;
+		}
+
+		pReal->release();
+		pShadow->release();
+		thinLens->release();
+
+		if( !behaviourOk ) exit( 1 );
+		std::cout << "  DrawApertureSample( APERTURE_CURRENT_STREAM ) behaviourally "
+			<< "matches two more raw draws on the already-active stream 48: OK\n";
 	}
 
 	std::cout << "  Passed!\n";
@@ -598,6 +699,21 @@ static void TestSourceGuard()
 		// (constant / 49).  Whole-file check, not EvaluateSample-only,
 		// because the draw moved out of that function in the spectral
 		// rasterizer.
+		//
+		// (B2 P2-3, debt 28 round 2) What this pins, precisely: it is a
+		// SOURCE-TEXT substring search for the literal tokens
+		// `APERTURE_CURRENT_STREAM` / `kApertureSamplerStream` /
+		// `APERTURE_DEDICATED_STREAM` in the two MLT rasterizer files --
+		// nothing here calls `DrawApertureSample` or touches a real
+		// sampler.  A rename of the enum values, or a refactor that
+		// stopped calling `DrawApertureSample` by name and inlined its
+		// body instead, would silently pass or fail this guard without
+		// the underlying behaviour changing at all.  The BEHAVIOURAL
+		// twin -- constructing a real `PSSMLTSampler`, calling the real
+		// `DrawApertureSample`, and checking its draws land where the
+		// residue argument says they should -- is C4 in
+		// TestKNumStreamsMinimum above; this is its source-text
+		// complement, not a replacement for it.
 		{
 			std::ifstream whole( paths[f] );
 			std::string wline;
