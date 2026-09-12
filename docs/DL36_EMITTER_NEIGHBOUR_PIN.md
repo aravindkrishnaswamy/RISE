@@ -77,7 +77,13 @@ channel evaluation. It is not a rendered end-to-end test of every listed
 consumer. Existing SignalEmitterRecordTest render families remain the
 broader gate. DL-19's individual NM/HWSS conversion red-proof gap and
 DL-22's BSSRDF entry payload remain open; this pin does not close them.
-No new emitter-propagation defect was found. The existing DL-40 nonfinite
+Independent review found a separate sampled-UV propagation defect, now
+DL-44: SampleLight evaluates RGB emission using its local sampled coord,
+but LightSample carries no UV. BDPT NM/HWSS rebuilds, its LIGHT root, and
+VCM rebuilt emission retain default (0,0), which UV-dependent painters
+consume; MLT shares BDPT generation. This is static evidence with a
+dedicated two-texel red-proof pending, not a measured rendering result.
+The existing DL-40 nonfinite
 comparison gap also applies to this test harness: ComputeStats marks
 nonempty captures valid without finite checks, and WorstRelDiff uses fmax,
 which can discard a NaN difference. DL-40 now explicitly includes this
