@@ -73,13 +73,13 @@ public:
 	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo,
 		const IORStack& stack ) const override {
 		++observed.pdfQueries;
-		if(observed.initialExit && !observed.arrived && ri.ptIntersection == Point3(0,0,0)) ++observed.exitGuideQueries;
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitGuideQueries;
 		return real.Pdf(ri, wo, stack);
 	}
 	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, Scalar nm,
 		const IORStack& stack ) const override {
 		++observed.pdfQueries;
-		if(observed.initialExit && !observed.arrived && ri.ptIntersection == Point3(0,0,0)) ++observed.exitGuideQueries;
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitGuideQueries;
 		return real.PdfNM(ri, wo, nm, stack);
 	}
 };
