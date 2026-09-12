@@ -358,7 +358,7 @@ void TestSwNormalization()
 		// Estimator: (1/N) * sum[ Sw(wi) * cos(theta) / (cos/pi) ]
 		//          = (1/N) * sum[ Sw(wi) * pi ]
 		// But Sw = Ft/(c*pi), so estimator = (1/N) * sum[ Ft(cos) / c ]
-		const int N = 131072;
+		const int N = 1000000;
 		double estimate = 0;
 
 		for( int i = 0; i < N; i++ )
@@ -408,7 +408,8 @@ void TestWeightConsistency()
 
 	const Scalar eta = 1.3;
 	const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-	const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+	// 2 integral_0^1 mu*(1-F0)*(1-(1-mu)^5) dmu.
+	const Scalar c = 2.0 * (1.0 - F0) * (0.5 - 1.0 / 42.0);
 
 	// Test that Sw = Ft / (c*pi) for various angles
 	bool allPass = true;
