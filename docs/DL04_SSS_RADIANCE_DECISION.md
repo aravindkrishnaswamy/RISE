@@ -4,8 +4,8 @@ Base master: `df5e17f996967a5a7a5ed379bae4b6b3a2efe3ac`.
 This records the source audit, measured probes, and the coarse convention gate
 at test commit `25421dd6`. Production transport is unchanged. DL-04 remains
 open: formal review, mutation discrimination and the final gate record are
-pending. Defaults below are the current `25421dd6` snapshot, pending further
-convergence decisions; they are not a finalized release contract.
+pending. The selected final defaults below follow the additional cap probes; the
+final-default gate and mutation record are still pending.
 
 ## Complete event versus one boundary
 
@@ -104,7 +104,7 @@ bitwise repeatability under worker-side random scheduling.
 These have separate ledger entries or documented model limitations;
 none licenses a guessed constant repair in this row.
 
-## Current convention-gate contract (25421dd6; review pending)
+## Convention-gate contract (review pending)
 
 An ordinary invocation runs the full three-model, three-topology matrix,
 with four trials by default. Before rendering, it runs four separately
@@ -123,9 +123,9 @@ square from the measured baseline. They do not assert exact energy
 conservation, independently established QMC uncertainty, or closure of
 the residual mechanisms below. The first unchanged-library gate at 256 spp passed; mutation rejection remains to be run.
 
-Current defaults are 16x16, 1024 spp, four trials, seed base 1000,
+Selected defaults are 16x16, 256 spp, four trials, seed base 1000,
 material IOR 1.5, ellipsoid radii `(40,40,10)` centered at z=-10,
-and volume/RW/path caps 256/512/1024. Ordinary gate mode permits IOR
+and volume/RW/path caps 1024/8192/4096. Ordinary gate mode permits IOR
 1.5 or 2, requires at least 256 spp and four trials, curved R=40 and
 an ideal enclosure. The camera remains outside the SSS solid; water
 views place it inside or outside a separate IOR-1.33 enclosure.
@@ -178,6 +178,18 @@ Changing all three caps together does not isolate which cap causes each
 shift. The RW shift is large, so the low-cap value near unity is not proof
 of exact normalization; raising spp at the higher caps does not remove it.
 The eta-2 run is an IOR sweep, not an eta-square code mutation.
+
+Further 256-spp air probes hold volume/path caps at 1024/4096 and vary
+only RW cap. At 8192, explicit/diffusion/RW red means are
+0.9983515292 / 1.077335797 / 1.102736646; at 16384, they are
+0.9983629734 / 1.077334751 / 1.102281013. The RW means differ by
+less than 0.05%; this bounded cap comparison supports selecting 8192 for
+the fixture, without claiming exact infinite-walk convergence. Both logs
+(`air-rw8192.log`, `air-rw16384.log`) end:
+`Guards passed: 29499 failed: 0. Probe complete; no convention bounds applied.`
+The earlier 256-versus-1024 spp comparisons at matched caps differ far
+less than the coarse 20% convention band, so the final default uses 256 spp.
+
 
 Independent helper probes use local seeds 1000–1003, avoiding the fixed
 pixel Sobol sequence. `full` below is the helper event before adding

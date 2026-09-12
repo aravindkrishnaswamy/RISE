@@ -20,13 +20,13 @@
 // K=4 is an initial sanity measurement; K=1 has no variance estimate.
 //
 // Run from the repository root with RISE_MEDIA_PATH="$PWD/". Defaults:
-// 16x16, 1024 spp, 4 trials, ior 1.5, sigma_a=0, sigma_s=2, g=0.
+// 16x16, 256 spp, 4 trials, ior 1.5, sigma_a=0, sigma_s=2, g=0.
 // --probe labels a diagnostic run; --samples N (perfect square), --trials K,
 // --seed N, --ior N, --outer-fresnel, --slab-radius R are optional.
 // The default curved ellipsoid is (R,R,10) centered at z=-10, R=40.
 // --flat selects the diagnostic box for the DL-52 planar probe-origin hole;
 // --curved explicitly restores curved geometry (last shape flag wins).
-// --volume-cap N / --rw-cap N / --path-cap N default to 256 / 512 / 1024.
+// --volume-cap N / --rw-cap N / --path-cap N default to 1024 / 8192 / 4096.
 // --air-only implies --probe and runs all three models' air baseline only.
 // --helper-only implies --probe, loads only the diffusion air scene, and
 // samples the actual BSSRDF helper without any rasterization. Its trials use
@@ -101,8 +101,8 @@ const char* TopologyName( Topology t )
 	return "unknown_topology";
 }
 struct Config {
-	unsigned int samples = 1024, trials = 4, seedBase = 1000;
-	unsigned int volumeCap = 256, rwCap = 512, pathCap = 1024;
+	unsigned int samples = 256, trials = 4, seedBase = 1000;
+	unsigned int volumeCap = 1024, rwCap = 8192, pathCap = 4096;
 	unsigned int helperAttempts = 256;
 	double surfaceIOR = 1.5, slabRadius = 40;
 	bool probe = false, outerFresnel = false, curved = true, airOnly = false;
