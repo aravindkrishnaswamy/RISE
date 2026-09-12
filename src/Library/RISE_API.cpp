@@ -230,6 +230,24 @@ namespace RISE
 			return false;
 		}
 
+		// The scene parser rejects `anamorphic_squeeze <= 0` (thinlens_camera
+		// descriptor) because it collapses or mirrors the aperture, driving
+		// ThinLensCamera::GetApertureWorldArea() to zero or negative and
+		// splitting the eye ray from the t==1 bidirectional connection onto
+		// different camera vertices (see that method's own comment).  This
+		// API entry point is also reachable directly (editor, Blender
+		// bridge) without going through the parser, so enforce the same
+		// bound here rather than constructing a camera with a silently
+		// broken aperture.
+		if( anamorphicSqueeze <= 0 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateThinlensCamera:: anamorphicSqueeze must be > 0 (got %f) -- it scales "
+				"the aperture's x half-axis, so 0 collapses the aperture to a line and a negative "
+				"value mirrors it; use a value in (0,1] for oval bokeh, 1.0 for circular.",
+				anamorphicSqueeze );
+			return false;
+		}
+
 		(*ppi) = new ThinLensCamera( ptLocation, ptLookAt, vUp, sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY, iso );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "thinlens camera" );
 		return true;

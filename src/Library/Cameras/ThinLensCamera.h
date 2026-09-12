@@ -16,6 +16,7 @@
 #define THINLENS_CAMERA_
 
 #include "CameraCommon.h"
+#include "../Interfaces/ILog.h"
 
 namespace RISE
 {
@@ -238,7 +239,34 @@ namespace RISE
 			inline void SetShiftY( Scalar v )                  { shiftY = v; }
 			inline void SetApertureBlades( unsigned int v )    { apertureBlades = v; }
 			inline void SetApertureRotation( Scalar v )        { apertureRotation = v; }
-			inline void SetAnamorphicSqueeze( Scalar v )       { anamorphicSqueeze = v; }
+			//! The parser rejects `anamorphic_squeeze <= 0` (see the
+			//! thinlens_camera descriptor and GetApertureWorldArea()'s
+			//! own comment): it collapses or mirrors the aperture,
+			//! driving GetApertureWorldArea() to zero or negative, which
+			//! makes BDPTCameraUtilities::HasFiniteAperture FALSE and
+			//! splits the eye ray (still sampling the collapsed segment)
+			//! from the t==1 connection (now imaging through the lens
+			//! CENTRE) onto different camera vertices.  The parser only
+			//! validates the AUTHORED value, though -- a KEYFRAMED
+			//! squeeze interpolating between two positive endpoints can
+			//! pass through 0 at a runtime-interpolated time the parser
+			//! never sees, and the editor / Blender-bridge property path
+			//! reaches this setter directly, bypassing the parser
+			//! entirely.  Enforce the same bound here: reject and keep
+			//! the last valid value rather than silently splitting the
+			//! paths mid-animation.
+			inline void SetAnamorphicSqueeze( Scalar v )
+			{
+				if( v > 0 ) {
+					anamorphicSqueeze = v;
+				} else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ThinLensCamera::SetAnamorphicSqueeze:: rejected non-positive value %f "
+						"(a keyframed anamorphic_squeeze crossed <= 0); keeping %f -- see "
+						"GetApertureWorldArea()'s contract for why 0 or negative is unsafe.",
+						v, anamorphicSqueeze );
+				}
+			}
 
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
 
@@ -273,7 +301,13 @@ namespace RISE
 			//! bidirectional integrators would connect t==1 to the lens
 			//! CENTRE while `GenerateRay` went on sampling the collapsed
 			//! line segment -- eye and light layers imaging through
-			//! different camera vertices.
+			//! different camera vertices.  The parser only validates the
+			//! AUTHORED value, though, so `SetAnamorphicSqueeze` (reached
+			//! by keyframe interpolation, the editor, and the Blender
+			//! bridge) and `RISE_API_CreateThinlensCamera` (reached by any
+			//! direct API caller) enforce the same `> 0` bound themselves
+			//! (debt 28 round 2, A2 P2-5) -- this contract holds for every
+			//! construction path, not only scene-file authoring.
 			//!
 			//! `SampleLensPoint` is UNIFORM over this area -- the disk
 			//! path is uniform by construction and the n-gon path's

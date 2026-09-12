@@ -691,7 +691,10 @@ void ThinLensCamera::SetIntermediateValue( const IKeyframeParameter& val )
 		apertureRotation = *(Scalar*)val.getValue() * DEG_TO_RAD;
 		break;
 	case ANAMORPHIC_ID:
-		anamorphicSqueeze = *(Scalar*)val.getValue();
+		// Route through the validated setter -- a keyframed squeeze can
+		// interpolate through <= 0 without the parser ever seeing it;
+		// see SetAnamorphicSqueeze's own comment.
+		SetAnamorphicSqueeze( *(Scalar*)val.getValue() );
 		break;
 	case TILT_X_ID:
 		// Parser/editor surface tilt in degrees; storage is radians.
