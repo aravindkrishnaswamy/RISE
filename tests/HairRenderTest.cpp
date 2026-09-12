@@ -117,6 +117,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -246,6 +249,7 @@ static ImageStats RenderAndComputeStats( const std::string& sceneText, const cha
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	if( bRendered ) {
 		result = ComputeStats( *pCap );
@@ -370,13 +374,13 @@ static std::string RasterizerPTRgb( unsigned int samples, unsigned int rrMinDept
 		"pathtracing_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\trr_min_depth " << rrMinDepth << "\n"
-		"\toidn_denoise FALSE\n";
+		"\tpixel_filter box\n\toidn_denoise FALSE\n";
 	if( maxGlossyBounce > 0 ) ss << "\tmax_glossy_bounce " << maxGlossyBounce << "\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
 	ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 	ss <<
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/hair_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -387,12 +391,12 @@ static std::string RasterizerPTSpectral( unsigned int samples, bool hwss, unsign
 		"pathtracing_spectral_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\trr_min_depth " << rrMinDepth << "\n"
-		"\toidn_denoise FALSE\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
 		"\thwss " << (hwss ? "true" : "false") << "\n"
 		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/hair_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -403,12 +407,12 @@ static std::string RasterizerBDPTRgb( unsigned int samples, unsigned int maxEyeD
 		"bdpt_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
-		"\toidn_denoise FALSE\n";
+		"\tpixel_filter box\n\toidn_denoise FALSE\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
 	ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 	ss <<
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/hair_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -424,11 +428,11 @@ static std::string RasterizerPTRgbNoEnv( unsigned int samples, unsigned int rrMi
 		"pathtracing_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\trr_min_depth " << rrMinDepth << "\n"
-		"\toidn_denoise FALSE\n";
+		"\tpixel_filter box\n\toidn_denoise FALSE\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
 	ss <<
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/hair_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -439,11 +443,11 @@ static std::string RasterizerBDPTRgbNoEnv( unsigned int samples, unsigned int ma
 		"bdpt_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
-		"\toidn_denoise FALSE\n";
+		"\tpixel_filter box\n\toidn_denoise FALSE\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
 	ss <<
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/hair_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 

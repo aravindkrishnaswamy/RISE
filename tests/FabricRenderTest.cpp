@@ -392,12 +392,12 @@ static std::string RasterizerPTRgb( unsigned int samples, unsigned int rrMinDept
 		"pathtracing_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\trr_min_depth " << rrMinDepth << "\n"
-		"\toidn_denoise FALSE\n";
+		"\tpixel_filter box\n\toidn_denoise FALSE\n";
 	if( clamp > 0.0 ) ss << "\tindirect_clamp " << clamp << "\n\tdirect_clamp " << clamp << "\n";
 	ss <<
 		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -408,12 +408,12 @@ static std::string RasterizerPTSpectral( unsigned int samples, bool hwss, unsign
 		"pathtracing_spectral_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\trr_min_depth " << rrMinDepth << "\n"
-		"\toidn_denoise FALSE\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
 		"\thwss " << (hwss ? "true" : "false") << "\n"
 		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -425,12 +425,12 @@ static std::string RasterizerBDPTRgb( unsigned int samples, unsigned int maxEyeD
 		"bdpt_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
-		"\toidn_denoise FALSE\n";
+		"\tpixel_filter box\n\toidn_denoise FALSE\n";
 	if( clamp > 0.0 ) ss << "\tindirect_clamp " << clamp << "\n\tdirect_clamp " << clamp << "\n";
 	ss <<
 		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -449,9 +449,9 @@ static std::string RasterizerPTRgbNoEnv( unsigned int samples, unsigned int rrMi
 		"pathtracing_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\trr_min_depth " << rrMinDepth << "\n"
-		"\toidn_denoise FALSE\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -462,11 +462,11 @@ static std::string RasterizerBDPTRgbNoEnv( unsigned int samples, unsigned int ma
 		"bdpt_pel_rasterizer\n{\n"
 		"\tsamples " << samples << "\n"
 		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
-		"\toidn_denoise FALSE\n";
+		"\tpixel_filter box\n\toidn_denoise FALSE\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
 	ss <<
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -481,9 +481,9 @@ static std::string RasterizerVCMRgbNoEnv( unsigned int samples, unsigned int max
 		"\tsamples " << samples << "\n"
 		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
 		"\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
-		"\toidn_denoise FALSE\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -1184,8 +1184,8 @@ static std::string RasterizerBDPTRgbNoEnvDeep( unsigned int samples )
 	std::ostringstream ss;
 	ss <<
 		"bdpt_pel_rasterizer\n{\n\tsamples " << samples << "\n"
-		"\tmax_eye_depth 12\n\tmax_light_depth 12\n\toidn_denoise FALSE\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"\tmax_eye_depth 12\n\tmax_light_depth 12\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -1195,8 +1195,8 @@ static std::string RasterizerVCMRgbNoEnvDeep( unsigned int samples )
 	ss <<
 		"vcm_pel_rasterizer\n{\n\tsamples " << samples << "\n"
 		"\tmax_eye_depth 12\n\tmax_light_depth 12\n"
-		"\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern rendered/fabric_render_test_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 

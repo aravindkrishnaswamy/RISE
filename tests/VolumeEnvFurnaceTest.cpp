@@ -326,6 +326,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -461,6 +464,7 @@ static ImageStats RenderAndComputeStats( const std::string& sceneText, const cha
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	if( bRendered ) {
 		result = ComputeStats( *pCap );
@@ -666,7 +670,7 @@ static std::string RasterizerPTRgb( unsigned int samples )
 		"\tpixel_filter box\n"
 		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_env_furnace_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/volume_env_furnace_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 
@@ -682,7 +686,7 @@ static std::string RasterizerPTSpectral( unsigned int samples, bool hwss )
 		"\thwss " << (hwss ? "true" : "false") << "\n"
 		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_env_furnace_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern rendered/volume_env_furnace_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	return ss.str();
 }
 

@@ -116,6 +116,9 @@
 #endif
 #include <vector>
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Agent;
 
@@ -367,6 +370,7 @@ static void RunPerModeEndToEndTest()
 	// pixel bounding box, for the wireframe bright/dim assertion.
 	AgentRenderParams objP;
 	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult objR = session->Render( objP );
 	Check( objR.ok && objR.renderMode == "objectmap", "reference objectmap render succeeds" );
 	Decoded objDec;
@@ -400,6 +404,7 @@ static void RunPerModeEndToEndTest()
 		// wantSamplesOverride || quality==Draft).
 		p.samples = 8;
 
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		Check( r.ok, modeName + ": render succeeds" );
 		Check( r.renderMode == modeName, modeName + ": renderMode echoes the registry name" );
@@ -519,6 +524,7 @@ static void RunFilmRestoreTest()
 	p.viewMode     = Implementation::ViewportRenderMode::Depth;
 	p.width  = 40;
 	p.height = 30;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult r = session->Render( p );
 	Check( r.ok, "view-mode render with a width/height override succeeds" );
 	Check( r.width == 40 && r.height == 30, "the render itself used the OVERRIDE dims 40x30" );
@@ -578,6 +584,7 @@ static void RunBeautyVariantEndToEndTest()
 		// be ignored (fixed config) and trip the honest note.
 		p.samples = 999;
 
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		Check( r.ok, std::string( v.name ) + ": render succeeds" );
 		Check( r.renderMode == v.name, std::string( v.name ) + ": renderMode echoes the registry name" );
@@ -630,6 +637,7 @@ static void RunBeautyVariantEndToEndTest()
 		p.viewMode     = Implementation::ViewportRenderMode::DeepReflect;
 		p.width  = 64;
 		p.height = 48;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		Check( r.ok, "deep_reflect with a width/height override succeeds" );
 		Check( r.width == 16 && r.height == 12,
@@ -693,6 +701,7 @@ static void RunDirectModeMissingIndirectBleedTest()
 	// wall_obj's and floor_obj's own screen-space silhouettes.
 	AgentRenderParams objP;
 	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult objR = session->Render( objP );
 	Check( objR.ok && objR.renderMode == "objectmap", "reference objectmap render succeeds" );
 	Decoded objDec;
@@ -767,6 +776,7 @@ static void RunDirectModeMissingIndirectBleedTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) return out;
 		if( !DecodePng( r.png, out.dec ) ) return out;
@@ -879,6 +889,7 @@ static void RunIndirectModeEnvBackgroundBlackTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -937,6 +948,7 @@ static void RunIndirectModeNoIndirectPathTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -1039,6 +1051,7 @@ static void RunIndirectModeBsdfMisPartnerLeakTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -1095,6 +1108,7 @@ static void RunIndirectModeColorBleedSceneMeanTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -1201,6 +1215,7 @@ static void RunClayLightsAlbedoIndependenceTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session.Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return 0.0; }
 		Decoded dec;
@@ -1277,12 +1292,14 @@ static void RunViewArgEndToEndTest()
 
 	AgentRenderParams pFront;
 	pFront.view = "camFront";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rFront = session->Render( pFront );
 	Check( rFront.ok, "view:\"camFront\" render succeeds" );
 	Check( rFront.cameraOverridden, "view:\"camFront\" applied a camera override" );
 
 	AgentRenderParams pSide;
 	pSide.view = "camSide";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rSide = session->Render( pSide );
 	Check( rSide.ok, "view:\"camSide\" render succeeds" );
 	Check( rSide.cameraOverridden, "view:\"camSide\" applied a camera override" );
@@ -1311,6 +1328,7 @@ static void RunViewArgEndToEndTest()
 	// names -- never silently falls back to the active camera.
 	AgentRenderParams pBad;
 	pBad.view = "definitely_not_a_camera_or_view";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rBad = session->Render( pBad );
 	Check( !rBad.ok, "an unresolvable view name fails the render" );
 	Check( rBad.message.find( "definitely_not_a_camera_or_view" ) != std::string::npos,
@@ -1348,6 +1366,7 @@ static void RunRpcModeParityTest()
 	if( !session ) { pJob->release(); return; }
 
 	AgentRpcDispatcher rpc( std::move( session ) );
+	std::srand( g_renderSeed++ );
 	const std::string resp = rpc.HandleLine( RenderModeReq( 1, "definitely_not_a_mode" ) );
 
 	JsonValue env; std::string perr;
@@ -1390,6 +1409,7 @@ static void RunNoRenderOnInvalidModeTest()
 	const std::vector<unsigned char> before = rpc.Session()->ReadImage( 0, w0, h0 );
 	Check( before.empty(), "a fresh session's cached image is empty before any render" );
 
+	std::srand( g_renderSeed++ );
 	const std::string resp = rpc.HandleLine( RenderModeReq( 1, "definitely_not_a_mode" ) );
 	JsonValue env; std::string perr;
 	Check( JsonParse( resp, env, perr ), "invalid-mode response parses as JSON" );
@@ -1526,6 +1546,7 @@ static void RunXrayCoverageTest()
 	// FRONT of mesh_obj, it should fully occlude mesh_obj's silhouette here.
 	AgentRenderParams objP;
 	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult objR = session->Render( objP );
 	Check( objR.ok && objR.renderMode == "objectmap", "xray-scene reference objectmap render succeeds" );
 	Decoded objDec;
@@ -1545,6 +1566,7 @@ static void RunXrayCoverageTest()
 	AgentRenderParams facetsDefault;
 	facetsDefault.renderTarget = AgentRenderTarget::ViewMode;
 	facetsDefault.viewMode     = Implementation::ViewportRenderMode::Facets;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rFacetsDefault = session->Render( facetsDefault );
 	Check( rFacetsDefault.ok, "facets at the default (xray implicitly false) succeeds" );
 	Check( rFacetsDefault.message.find( "xray" ) != std::string::npos,
@@ -1555,6 +1577,7 @@ static void RunXrayCoverageTest()
 	// (b) facets with an EXPLICIT xray:true -- shows the mesh underneath.
 	AgentRenderParams facetsXray = facetsDefault;
 	facetsXray.xray = true;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rFacetsXray = session->Render( facetsXray );
 	Check( rFacetsXray.ok, "facets with explicit xray:true succeeds" );
 	Decoded decFacetsXray;
@@ -1582,6 +1605,7 @@ static void RunXrayCoverageTest()
 	AgentRenderParams depthDefault;
 	depthDefault.renderTarget = AgentRenderTarget::ViewMode;
 	depthDefault.viewMode     = Implementation::ViewportRenderMode::Depth;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rDepthDefault = session->Render( depthDefault );
 	Check( rDepthDefault.ok, "depth at the default (xray implicitly false) succeeds" );
 	Decoded decDepthDefault;
@@ -1589,6 +1613,7 @@ static void RunXrayCoverageTest()
 
 	AgentRenderParams depthXray = depthDefault;
 	depthXray.xray = true;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rDepthXray = session->Render( depthXray );
 	Check( rDepthXray.ok, "depth with explicit xray:true succeeds" );
 	Decoded decDepthXray;
@@ -1611,6 +1636,7 @@ static void RunXrayCoverageTest()
 	// renderTarget stays Beauty (the default); xray is explicitly enabled to
 	// prove it is honestly ignored under mode:beauty.
 	beautyXray.xray = true;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rBeautyXray = session->Render( beautyXray );
 	Check( rBeautyXray.ok, "explicit xray:true with mode:beauty is accepted (not rejected)" );
 	Check( rBeautyXray.message.find( "ignored" ) != std::string::npos,
@@ -1689,6 +1715,7 @@ static bool RenderPreviewPipeline( const IScenePriv& scene, bool xray, Decoded& 
 
 	Agent::InMemoryRasterizerOutput* sink = new Agent::InMemoryRasterizerOutput();
 	rast->AddRasterizerOutput( sink );
+	std::srand( g_renderSeed++ );
 	rast->RasterizeScene( scene, 0, nullptr );
 	const std::vector<unsigned char> png = sink->ToPng();
 	const bool decoded = DecodePng( png, out );
@@ -1811,6 +1838,7 @@ static bool RenderOnPersistentCaster( IRasterizer& rast, const IScenePriv& scene
 {
 	Agent::InMemoryRasterizerOutput* sink = new Agent::InMemoryRasterizerOutput();
 	rast.AddRasterizerOutput( sink );
+	std::srand( g_renderSeed++ );
 	rast.RasterizeScene( scene, 0, nullptr );
 	const std::vector<unsigned char> png = sink->ToPng();
 	const bool decoded = DecodePng( png, out );
@@ -2239,6 +2267,7 @@ static void RunLargeTransverseCoordinateXrayTest()
 	// RunXrayCoverageTest above).
 	AgentRenderParams objP;
 	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult objR = session->Render( objP );
 	Check( objR.ok && objR.renderMode == "objectmap", "large-X reference objectmap render succeeds" );
 	Decoded objDec;
@@ -2258,6 +2287,7 @@ static void RunLargeTransverseCoordinateXrayTest()
 	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
 	depthP.xray         = true;
 	// This regression specifically exercises the explicit see-through path.
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "large-X depth render succeeds" );
 	Decoded decDepth;
@@ -2336,6 +2366,7 @@ static void RunScaledGlassStandoffTest()
 
 	AgentRenderParams objP;
 	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult objR = session->Render( objP );
 	Check( objR.ok, "scaled-glass reference objectmap render succeeds" );
 	Decoded objDec;
@@ -2356,6 +2387,7 @@ static void RunScaledGlassStandoffTest()
 	// This regression exercises the explicit see-through walk.  The product
 	// default is intentionally opaque to transparent objects.
 	depthP.xray         = true;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "scaled-glass depth render succeeds" );
 	Decoded decDepth;
@@ -2463,6 +2495,7 @@ static void RunThinGlassNearOpaqueDiscriminationTest()
 
 	AgentRenderParams objP;
 	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult objR = session->Render( objP );
 	Check( objR.ok, "thin-glass reference objectmap render succeeds" );
 	Decoded objDec;
@@ -2481,6 +2514,7 @@ static void RunThinGlassNearOpaqueDiscriminationTest()
 	depthP.renderTarget = AgentRenderTarget::ViewMode;
 	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
 	depthP.xray         = true;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "thin-glass depth render succeeds" );
 	Decoded decDepth;
@@ -2583,6 +2617,7 @@ static void RunDoubleSidedThinMeshNearOpaqueDiscriminationTest()
 
 	AgentRenderParams objP;
 	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult objR = session->Render( objP );
 	Check( objR.ok, "thin-double-sided-mesh reference objectmap render succeeds" );
 	Decoded objDec;
@@ -2601,6 +2636,7 @@ static void RunDoubleSidedThinMeshNearOpaqueDiscriminationTest()
 	depthP.renderTarget = AgentRenderTarget::ViewMode;
 	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
 	depthP.xray         = true;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "thin-double-sided-mesh depth render succeeds" );
 	Decoded decDepth;
@@ -2652,6 +2688,7 @@ static bool RenderBeautyVariantPipeline(
 	}
 	Agent::InMemoryRasterizerOutput* sink = new Agent::InMemoryRasterizerOutput();
 	rast->AddRasterizerOutput( sink );
+	std::srand( g_renderSeed++ );
 	rast->RasterizeScene( scene, 0, nullptr );
 	const std::vector<unsigned char> png = sink->ToPng();
 	const bool decoded = DecodePng( png, out );
@@ -2823,6 +2860,7 @@ static void RunBeautyVariantSSSDefaultShaderTest()
 	{
 		AgentRenderParams objP;
 		objP.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult objR = objSession->Render( objP );
 		Check( objR.ok && objR.renderMode == "objectmap", "backlit-SSS reference objectmap render succeeds" );
 		Decoded objDec;
@@ -3011,6 +3049,7 @@ static void RunClayLightsMaterialIndependenceMirrorTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session.Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -3122,6 +3161,7 @@ static void RunClayLightsSSSBypassTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session.Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return dec; }
 		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); }
@@ -3211,6 +3251,7 @@ static void RunIndirectPrimaryMediumScatterTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -3285,6 +3326,7 @@ static void RunIndirectModeMirrorKeepsEnvReflectionTest()
 	{
 		AgentRenderParams objP;
 		objP.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult objR = session->Render( objP );
 		Check( objR.ok, "mirror-under-env reference objectmap render succeeds" );
 		Decoded objDec;
@@ -3307,6 +3349,7 @@ static void RunIndirectModeMirrorKeepsEnvReflectionTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -3372,6 +3415,7 @@ static void RunIndirectModeMirrorReflectsLightTest()
 	{
 		AgentRenderParams objP;
 		objP.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult objR = session->Render( objP );
 		Check( objR.ok, "mirror-floor reference objectmap render succeeds" );
 		Decoded objDec;
@@ -3394,6 +3438,7 @@ static void RunIndirectModeMirrorReflectsLightTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -3469,6 +3514,7 @@ static void RunIndirectModeDiffuseUnderEnvSuppressedTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = mode;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
 		Decoded dec;
@@ -3720,6 +3766,7 @@ static void RunIsolateOnlyNamedObjectRendersTest()
 
 	AgentRenderParams fullP;
 	fullP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult fullR = session->Render( fullP );
 	Check( fullR.ok, "whole-scene objectmap renders" );
 	Check( fullR.legend.size() == 2, "whole-scene objectmap legend has BOTH objects" );
@@ -3743,6 +3790,7 @@ static void RunIsolateOnlyNamedObjectRendersTest()
 	isoP.camera.hasLocation = true; isoP.camera.location = "0 0 6";
 	isoP.camera.hasLookAt   = true; isoP.camera.lookAt   = "0 0 0";
 	isoP.camera.hasUp       = true; isoP.camera.up       = "0 1 0";
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult isoR = session->Render( isoP );
 	Check( isoR.ok, std::string( "isolated objectmap renders: " ) + isoR.message );
 	Check( isoR.isolateApplied, "isolated render reports isolateApplied=true" );
@@ -3914,6 +3962,7 @@ static void RunIsolateLeavesCsgOperandsIntactTest()
 	isoP.camera.hasLocation = true; isoP.camera.location = "0 0 6";
 	isoP.camera.hasLookAt   = true; isoP.camera.lookAt   = "0 0 0";
 	isoP.camera.hasUp       = true; isoP.camera.up       = "0 1 0";
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult isoR = session->Render( isoP );
 	Check( isoR.ok, std::string( "csg-isolate: the isolate render succeeds: " ) + isoR.message );
 	Check( isoR.isolateApplied, "csg-isolate: ... and reports isolateApplied=true, so the hide pass really ran" );
@@ -3941,6 +3990,7 @@ static void RunIsolateLeavesCsgOperandsIntactTest()
 	// AND AFTER A SECOND CONSECUTIVE ISOLATE RENDER -- the sequence a real
 	// session produces, and the one that turns a single leak into a state the
 	// scene never recovers from without a full re-derive.
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult isoR2 = session->Render( isoP );
 	Check( isoR2.ok && isoR2.isolateApplied,
 	       std::string( "csg-isolate: a SECOND isolate render succeeds: " ) + isoR2.message );
@@ -3959,6 +4009,7 @@ static void RunIsolateLeavesCsgOperandsIntactTest()
 		plainP.camera.hasLocation = true; plainP.camera.location = "0 0 6";
 		plainP.camera.hasLookAt   = true; plainP.camera.lookAt   = "0 0 0";
 		plainP.camera.hasUp       = true; plainP.camera.up       = "0 1 0";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult plainR = session->Render( plainP );
 		Check( plainR.ok && !plainR.isolateApplied,
 		       std::string( "csg-isolate: a plain (non-isolate) objectmap render follows: " ) + plainR.message );
@@ -4009,6 +4060,7 @@ static void RunIsolateAutoFramingTest()
 
 	AgentRenderParams fullP;
 	fullP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult fullR = session->Render( fullP );
 	Check( fullR.ok, "whole-scene objectmap renders" );
 	const LegendEntry* fullSph = FindLegend( fullR, "part" );
@@ -4019,6 +4071,7 @@ static void RunIsolateAutoFramingTest()
 	AgentRenderParams isoP;
 	isoP.renderTarget = AgentRenderTarget::ObjectMap;
 	isoP.isolate = "part";
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult isoR = session->Render( isoP );
 	Check( isoR.ok, std::string( "auto-framed isolated objectmap renders: " ) + isoR.message );
 	Check( isoR.isolateAutoFramed, "with no camera/view supplied the render IS auto-framed" );
@@ -4085,6 +4138,7 @@ static void RunIsolateComposesWithModesTest()
 		AgentRenderParams fullP;
 		fullP.renderTarget = AgentRenderTarget::ViewMode;
 		fullP.viewMode     = c.mode;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult fullR = session->Render( fullP );
 		Check( fullR.ok, std::string( "whole-scene " ) + c.name + " renders" );
 		Decoded fullD; Check( DecodePng( fullR.png, fullD ), std::string( c.name ) + " whole-scene PNG decodes" );
@@ -4093,6 +4147,7 @@ static void RunIsolateComposesWithModesTest()
 		isoP.renderTarget = AgentRenderTarget::ViewMode;
 		isoP.viewMode     = c.mode;
 		isoP.isolate      = "part";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult isoR = session->Render( isoP );
 		Check( isoR.ok, std::string( "isolated " ) + c.name + " renders: " + isoR.message );
 		Check( isoR.isolateApplied && isoR.isolateAutoFramed,
@@ -4116,6 +4171,7 @@ static void RunIsolateComposesWithModesTest()
 	AgentRenderParams draftP;
 	draftP.quality = AgentRenderQuality::Draft;
 	draftP.isolate = "part";
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult draftR = session->Render( draftP );
 	Check( draftR.ok, std::string( "isolated draft renders: " ) + draftR.message );
 	Check( draftR.renderMode == "draft" && draftR.isolateApplied,
@@ -4125,6 +4181,7 @@ static void RunIsolateComposesWithModesTest()
 
 	AgentRenderParams beautyP;
 	beautyP.isolate = "part";
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult beautyR = session->Render( beautyP );
 	Check( beautyR.ok, std::string( "isolated beauty renders: " ) + beautyR.message );
 	Check( beautyR.renderMode == "production" && beautyR.isolateApplied,
@@ -4154,6 +4211,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.isolate = "no_such_object";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( !r.ok, "an unknown isolate name FAILS the render" );
 		Check( r.message.find( "unknown object \"no_such_object\"" ) != std::string::npos,
@@ -4165,6 +4223,7 @@ static void RunIsolateNameFailureTest()
 
 		AgentRenderParams plainP;
 		plainP.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult after = session->Render( plainP );
 		Check( after.ok && after.legend.size() == 2,
 		       "the scene is UNTOUCHED by the refusal -- the next objectmap still sees both objects" );
@@ -4185,6 +4244,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.isolate = "grid";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( !r.ok, "an instancing-chunk name FAILS the render rather than picking an instance" );
 		Check( r.message.find( "AMBIGUOUS" ) != std::string::npos &&
@@ -4194,6 +4254,7 @@ static void RunIsolateNameFailureTest()
 		// `isolate:"grid[0,0]"` below is hiding four, not one.
 		AgentRenderParams allP;
 		allP.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult allR = session->Render( allP );
 		Check( allR.ok && allR.legend.size() == 5,
 		       "(control) the counted source derived four repetitions PLUS its source -- five world-visible entries" );
@@ -4210,6 +4271,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams okP;
 		okP.renderTarget = AgentRenderTarget::ObjectMap;
 		okP.isolate = "grid[0,0]";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult okR = session->Render( okP );
 		Check( okR.ok && okR.legend.size() == 1 && okR.legend[0].name == "grid[0,0]",
 		       "one instance's FULL name isolates exactly that instance" );
@@ -4233,6 +4295,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.isolate = "op_a";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( !r.ok, "a CSG operand FAILS the render" );
 		Check( r.message.find( "not independently renderable" ) != std::string::npos &&
@@ -4247,6 +4310,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams p2;
 		p2.renderTarget = AgentRenderTarget::ObjectMap;
 		p2.isolate = "op_c";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r2 = session->Render( p2 );
 		Check( !r2.ok, "the second CSG's operand FAILS the render too" );
 		Check( r2.message.find( "\"csg_second\"" ) != std::string::npos,
@@ -4261,6 +4325,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams rootP;
 		rootP.renderTarget = AgentRenderTarget::ObjectMap;
 		rootP.isolate = "csg_root";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult rootR = session->Render( rootP );
 		Check( rootR.ok && rootR.isolateApplied, "the CSG composite itself isolates fine" );
 
@@ -4274,6 +4339,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams nestP;
 		nestP.renderTarget = AgentRenderTarget::ObjectMap;
 		nestP.isolate = "csg_inner";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult nestR = session->Render( nestP );
 		Check( !nestR.ok, "a NESTED composite used as an operand fails the render" );
 		Check( nestR.message.find( "CONTAINER" ) == std::string::npos,
@@ -4299,6 +4365,7 @@ static void RunIsolateNameFailureTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.isolate = "degen_obj";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( !r.ok, "a degenerate-bbox isolate with no caller camera FAILS the render" );
 		Check( r.message.find( "degen_obj" ) != std::string::npos &&
@@ -4321,6 +4388,7 @@ static void RunIsolateNameFailureTest()
 		// hidden here.
 		AgentRenderParams plainP;
 		plainP.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult after = session->Render( plainP );
 		Check( after.ok && after.legend.size() == 2,
 		       "MONEY ASSERTION (G1-d4): the scene is UNTOUCHED by the refusal -- the next objectmap "
@@ -4331,6 +4399,7 @@ static void RunIsolateNameFailureTest()
 		// perturbed by the failed attempt on its sibling.
 		AgentRenderParams okP;
 		okP.isolate = "sph_obj";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult okR = session->Render( okP );
 		Check( okR.ok && okR.isolateApplied, "the NORMAL object still isolates fine after the refusal" );
 
@@ -4352,6 +4421,7 @@ static void RunIsolateNameFailureTest()
 		camP.isolate = "degen_obj";
 		camP.camera.hasLocation = true;  camP.camera.location = "0 0 4";
 		camP.camera.hasLookAt   = true;  camP.camera.lookAt   = "0.6 0 0";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult camR = session->Render( camP );
 		Check( camR.ok && camR.isolateApplied,
 		       "the documented remedy WORKS: an explicit camera isolates a degenerate object" );
@@ -4394,6 +4464,7 @@ static void RunIsolateNonPinholeCoverageSuppressedTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.isolate = "sph_obj";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( r.ok && r.isolateApplied, std::string( "the ortho-camera isolate render itself succeeds: " ) + r.message );
 		Check( r.isolateAutoFramed, "no caller camera was supplied -- auto-framing applied" );
@@ -4422,6 +4493,7 @@ static void RunIsolateNonPinholeCoverageSuppressedTest()
 		p.isolate = "sph_obj";
 		p.camera.hasLocation = true; p.camera.location = "0 0 5";
 		p.camera.hasLookAt   = true; p.camera.lookAt   = "0 0 0";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( r.ok && r.isolateApplied,
 		       std::string( "the ortho-camera isolate render with a caller camera succeeds: " ) + r.message );
@@ -4466,15 +4538,18 @@ static void RunIsolateRestoresSceneTest()
 
 		AgentRenderParams mapP;
 		mapP.renderTarget = AgentRenderTarget::ObjectMap;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult before = session->Render( mapP );
 		Check( before.ok, "pre-isolate objectmap renders" );
 		Decoded beforeD; Check( DecodePng( before.png, beforeD ), "pre-isolate PNG decodes" );
 
 		AgentRenderParams isoP;
 		isoP.isolate = "sph_obj";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult isoR = session->Render( isoP );
 		Check( isoR.ok, std::string( "the isolate render itself succeeds: " ) + isoR.message );
 
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult after = session->Render( mapP );
 		Check( after.ok, "post-isolate objectmap renders" );
 		Decoded afterD; Check( DecodePng( after.png, afterD ), "post-isolate PNG decodes" );
@@ -4509,6 +4584,7 @@ static void RunIsolateRestoresSceneTest()
 		auto meanOf = [&]( const AgentRenderResult& r ) { return ( r.meanR + r.meanG + r.meanB ) / 3.0; };
 
 		AgentRenderParams beautyP;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult before = session->Render( beautyP );
 		Check( before.ok, "pre-isolate beauty renders" );
 		const double beforeMean = meanOf( before );
@@ -4524,6 +4600,7 @@ static void RunIsolateRestoresSceneTest()
 			lampOnlyP.isolate = "lamp";
 			lampOnlyP.camera.hasLocation = true; lampOnlyP.camera.location = "0 0 6";
 			lampOnlyP.camera.hasLookAt   = true; lampOnlyP.camera.lookAt   = "0 0 0";
+			std::srand( g_renderSeed++ );
 			const AgentRenderResult lampOnly = session->Render( lampOnlyP );
 			Check( lampOnly.ok && meanOf( lampOnly ) < beforeMean * 0.05,
 			       "fixture check: at the scene camera the emitter itself is OFF-SCREEN, so the frame "
@@ -4532,9 +4609,11 @@ static void RunIsolateRestoresSceneTest()
 
 		AgentRenderParams isoP;
 		isoP.isolate = "lit";                 // hides `lamp`, the ONLY light source
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult isoR = session->Render( isoP );
 		Check( isoR.ok, std::string( "isolating the lit object succeeds: " ) + isoR.message );
 
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult after = session->Render( beautyP );
 		Check( after.ok, "post-isolate beauty renders" );
 		const double afterMean = meanOf( after );
@@ -4595,6 +4674,7 @@ static void RunIsolateFirstRenderTlasTest()
 	AgentRenderParams isoP;
 	isoP.renderTarget = AgentRenderTarget::ObjectMap;
 	isoP.isolate = "o3";
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult isoR = session->Render( isoP );
 	Check( isoR.ok, std::string( "the first-ever render, isolated, succeeds: " ) + isoR.message );
 	Check( isoR.legend.size() == 1 && isoR.legend[0].name == "o3",
@@ -4602,6 +4682,7 @@ static void RunIsolateFirstRenderTlasTest()
 
 	AgentRenderParams mapP;
 	mapP.renderTarget = AgentRenderTarget::ObjectMap;
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult after = session->Render( mapP );
 	Check( after.ok, "the following whole-scene objectmap renders" );
 	Check( after.legend.size() == 6,
@@ -4689,6 +4770,7 @@ static void RunIsolateFirstRenderAutoIntegratorTest()
 		       "fixture check: nothing has resolved the dispatcher yet (still \"auto\")" );
 
 		AgentRenderParams p;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( r.ok, std::string( "the baseline whole-scene beauty render succeeds: " ) + r.message );
 
@@ -4718,6 +4800,7 @@ static void RunIsolateFirstRenderAutoIntegratorTest()
 
 		AgentRenderParams isoP;
 		isoP.isolate = "plain";               // the opaque object; `glass` gets hidden
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult isoR = session->Render( isoP );
 		Check( isoR.ok, std::string( "the first-ever render, isolated, succeeds: " ) + isoR.message );
 		Check( isoR.isolateApplied && isoR.renderMode == "production",
@@ -4739,6 +4822,7 @@ static void RunIsolateFirstRenderAutoIntegratorTest()
 
 		// ...and it stays right for the user's own later whole-scene render.
 		AgentRenderParams fullP;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult fullR = session->Render( fullP );
 		Check( fullR.ok, std::string( "the following whole-scene beauty render succeeds: " ) + fullR.message );
 		Check( std::string( rast->ResolvedIntegratorName() ) == baseName &&
@@ -4768,6 +4852,7 @@ static void RunIsolateRespectsAgentCapsTest()
 	AgentRenderParams p;
 	p.isolate = "sph_obj";
 	p.fromAgentSurface = true;   // exactly what AgentRpc.cpp's render handler sets
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult r = session->Render( p );
 	Check( r.ok, std::string( "capped isolate render succeeds: " ) + r.message );
 	Check( r.isolateApplied && r.isolateAutoFramed, "the capped render is still isolated + auto-framed" );
@@ -4883,6 +4968,7 @@ static void RunIsolateRpcSurfaceTest()
 	// A non-string is a clean -32602.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"isolate\":7}}" ), env, perr ),
 			"non-string isolate response parses" );
@@ -4893,6 +4979,7 @@ static void RunIsolateRpcSurfaceTest()
 	// An ordinary render carries NO `isolate` result object.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"width\":64,\"height\":48}}" ), env, perr ),
 			"plain render response parses" );
@@ -4903,6 +4990,7 @@ static void RunIsolateRpcSurfaceTest()
 	// An isolate render carries the full fact block.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render\",\"params\":{\"isolate\":\"sph_obj\",\"mode\":\"normals\"}}" ),
 			env, perr ), "isolate render response parses" );
@@ -4925,6 +5013,7 @@ static void RunIsolateRpcSurfaceTest()
 	// resolution needs the live scene, so it belongs to the render, not the parser.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"render\",\"params\":{\"isolate\":\"nope\"}}" ), env, perr ),
 			"unresolvable isolate response parses" );
@@ -4948,6 +5037,7 @@ static void RunIsolateRpcSurfaceTest()
 	// block (bbox/framing) describing an image that was never produced.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render\",\"params\":{\"isolate\":\"sph_obj\",\"light\":\"typo_light\"}}" ),
 			env, perr ), "isolate+bad-light response parses" );
@@ -4982,6 +5072,7 @@ static void RunIsolateRpcSurfaceTest()
 		AgentRpcDispatcher degenRpc( std::move( degenSession ) );
 
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( degenRpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"render\",\"params\":{\"isolate\":\"degen_obj\","
 			"\"mode\":\"objectmap\",\"camera\":{\"location\":\"0 0 4\",\"lookat\":\"0.6 0 0\"}}}" ),
@@ -5148,6 +5239,7 @@ static AgentRenderResult TargetRender( AgentSession& s, const char* isolate, con
 	p.height = 96;
 	p.isolate = isolate;
 	p.target  = target;
+	std::srand( g_renderSeed++ );
 	return s.Render( p );
 }
 
@@ -5330,6 +5422,7 @@ static void RunTargetVantageTest()
 	plain.renderTarget = AgentRenderTarget::ObjectMap;
 	plain.width = 96; plain.height = 96;
 	plain.isolate = "l_obj";
+	std::srand( g_renderSeed++ );
 	const AgentRenderResult p = session->Render( plain );
 	Check( p.ok && p.isolateApplied && p.isolateAutoFramed, "the plain isolate render still works" );
 	Check( !p.targetApplied && p.targetElement.empty(),
@@ -5554,6 +5647,7 @@ static void RunTargetRefusalTest()
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.width = 64; p.height = 64;
 		p.target = "sq";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 		Check( !r.ok, "target without isolate FAILS at the C++ level too" );
 		Check( r.message.find( "requires `isolate`" ) != std::string::npos,
@@ -5579,6 +5673,7 @@ static void RunTargetRpcSurfaceTest()
 	// target without isolate -> a CLEAN -32602 (not a failed render).
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"target\":\"sq\"}}" ),
 			env, perr ), "target-without-isolate response parses" );
@@ -5592,6 +5687,7 @@ static void RunTargetRpcSurfaceTest()
 	// A non-string target is also -32602.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\",\"target\":7}}" ),
 			env, perr ), "non-string target response parses" );
@@ -5602,6 +5698,7 @@ static void RunTargetRpcSurfaceTest()
 	// The success shape, with NO imageMaxEdge.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
 			"\"target\":\"sq\",\"width\":96,\"height\":96,\"mode\":\"objectmap\"}}" ),
@@ -5632,6 +5729,7 @@ static void RunTargetRpcSurfaceTest()
 	// A FAILED render (unknown part) carries no `target` object at all.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
 			"\"target\":\"wing\"}}" ), env, perr ), "unknown-part response parses" );
@@ -5652,6 +5750,7 @@ static void RunTargetRpcSurfaceTest()
 	// that never existed.
 	{
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render\",\"params\":{\"isolate\":\"no_such_object\","
 			"\"target\":\"sq\"}}" ), env, perr ), "resolved-target/failed-isolate response parses" );
@@ -5682,6 +5781,7 @@ static void RunTargetRpcSurfaceTest()
 	// LINE, the only place a duplicate key is still visible; a parsed
 	// object cannot see it at all.
 	{
+		std::srand( g_renderSeed++ );
 		const std::string raw = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
 			"\"target\":\"sq\",\"width\":96,\"height\":96,\"imageMaxEdge\":64}}" );
@@ -5749,6 +5849,7 @@ static void RunTargetEmptySilhouetteTest()
 		// really is empty.
 		p.camera.hasLocation = true;  p.camera.location = "0 0 9";
 		p.camera.hasLookAt   = true;  p.camera.lookAt   = "0 0 100";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = session->Render( p );
 
 		Check( r.ok, std::string( "a render whose frame is empty is still a SUCCESSFUL render: " ) + r.message );
@@ -5813,6 +5914,7 @@ static void RunTargetEmptySilhouetteTest()
 		AgentRpcDispatcher rpc( std::move( session ) );
 
 		JsonValue env; std::string perr;
+		std::srand( g_renderSeed++ );
 		Check( JsonParse( rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
 			"\"target\":\"sq\",\"width\":96,\"height\":96,\"mode\":\"objectmap\","
@@ -5869,6 +5971,7 @@ static void RunTargetComposesWithShippedGatesTest()
 		p.fromAgentSurface = true;
 		p.isolate = "sph_obj";
 		p.target  = "ball";
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult r = s->Render( p );
 		Check( r.ok && r.targetApplied, std::string( "capped comparison runs: " ) + r.message );
 		Check( r.width <= 256 && r.height <= 256,
@@ -5908,6 +6011,7 @@ static void RunTargetComposesWithShippedGatesTest()
 		AgentRenderParams full;
 		full.renderTarget = AgentRenderTarget::ObjectMap;
 		full.width = 64; full.height = 64;
+		std::srand( g_renderSeed++ );
 		const AgentRenderResult fullR = session->Render( full );
 		Check( fullR.ok, "a whole-scene objectmap render follows the comparison" );
 		Check( fullR.legend.size() == 5,

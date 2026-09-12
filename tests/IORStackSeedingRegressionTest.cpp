@@ -105,6 +105,9 @@
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -270,6 +273,7 @@ static CapturingRasterizerOutput* RenderAndCapture( const char* scenePath )
 	pCap->addref();
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	safe_release( pJob );
 
@@ -581,10 +585,10 @@ static const char* kRasterizerPT =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPT =
@@ -605,10 +609,10 @@ static const char* kRasterizerBDPT =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static void RunCameraSideRenderTest()
@@ -867,10 +871,10 @@ static const char* kRasterizerPT_LightTest =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_light_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_light_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPT_LightTest =
@@ -891,10 +895,10 @@ static const char* kRasterizerBDPT_LightTest =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_light_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_light_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static void RunLightSideRenderTest()
