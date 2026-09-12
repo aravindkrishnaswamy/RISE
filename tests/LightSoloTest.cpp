@@ -52,6 +52,9 @@
 	#include <unistd.h>			// getpid()
 #endif
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Agent;
 
@@ -177,6 +180,7 @@ static void RunUnknownLightFailsTest()
 
 	AgentRenderParams p;
 	p.light = "nonexistent_light";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult r = session->Render( p );
 
 	Check( !r.ok, "MONEY ASSERTION: an unresolved light name fails the render (ok:false)" );
@@ -207,6 +211,7 @@ static void RunLightIgnoredUnderDataModesTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.light = "redlight";
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		Check( r.ok, "objectmap + light:\"redlight\" still succeeds" );
 		Check( r.message.find( "light is ignored" ) != std::string::npos,
@@ -217,6 +222,7 @@ static void RunLightIgnoredUnderDataModesTest()
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = Implementation::ViewportRenderMode::Normals;
 		p.light        = "redlight";
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		Check( r.ok, "mode:\"normals\" + light:\"redlight\" still succeeds" );
 		Check( r.message.find( "light is ignored" ) != std::string::npos,
@@ -243,16 +249,19 @@ static void RunUnbiasedPartitionTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights render succeeds" );
 
 	AgentRenderParams pRed;
 	pRed.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rRed = session->Render( pRed );
 	Check( rRed.ok, "solo(redlight) render succeeds" );
 
 	AgentRenderParams pBlue;
 	pBlue.light = "bluelight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rBlue = session->Render( pBlue );
 	Check( rBlue.ok, "solo(bluelight) render succeeds" );
 
@@ -335,6 +344,7 @@ static void RunNonPathTracingIntegratorRefusesSoloTest()
 	// light solo and must not break ordinary VCM rendering.
 	{
 		AgentRenderParams pPlain;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult rPlain = session->Render( pPlain );
 		Check( rPlain.ok, "a VCM render with no `light` arg still succeeds -- the P1-2 gate is scoped "
 		                  "to light solo and does not break ordinary rendering" );
@@ -342,6 +352,7 @@ static void RunNonPathTracingIntegratorRefusesSoloTest()
 
 	AgentRenderParams p;
 	p.light = "redlight";   // a name that RESOLVES; only the integrator is wrong
+	std::srand( g_renderSeed++ );
 	AgentRenderResult r = session->Render( p );
 	std::printf( "  ok=%d message: %s\n", r.ok ? 1 : 0, r.message.c_str() );
 
@@ -397,11 +408,13 @@ static void RunExplicitLightPartitionTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights omni+mesh render succeeds" );
 
 	AgentRenderParams pOmni;
 	pOmni.light = "greenomni";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rOmni = session->Render( pOmni );
 	Check( rOmni.ok, "solo(greenomni) render succeeds -- resolves via the LIGHT MANAGER branch of "
 	                 "SetSoloLightByName (SoloKind::Light), not the object-manager fallback every "
@@ -409,6 +422,7 @@ static void RunExplicitLightPartitionTest()
 
 	AgentRenderParams pMesh;
 	pMesh.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rMesh = session->Render( pMesh );
 	Check( rMesh.ok, "solo(redlight) render succeeds" );
 
@@ -432,6 +446,7 @@ static void RunExplicitLightPartitionTest()
 	AgentRenderResult rRef;
 	if( refSession ) {
 		AgentRenderParams pRef;   // NO solo -- the mesh light is the only light
+		std::srand( g_renderSeed++ );
 		rRef = refSession->Render( pRef );
 		Check( rRef.ok, "mesh-only reference render succeeds" );
 	}
@@ -525,16 +540,19 @@ static void RunEnvironmentPartitionTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights (light + env) render succeeds" );
 
 	AgentRenderParams pLight;
 	pLight.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rLight = session->Render( pLight );
 	Check( rLight.ok, "solo(redlight) render succeeds" );
 
 	AgentRenderParams pEnv;
 	pEnv.light = "environment";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rEnv = session->Render( pEnv );
 	Check( rEnv.ok, "solo(environment) render succeeds -- the reserved \"environment\" name resolves "
 	                "(RayCaster::SetSoloLightByName), without which this identity is unstatable" );
@@ -593,16 +611,19 @@ static void RunUnbiasedPartitionMISHeavyTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights render succeeds" );
 
 	AgentRenderParams pRed;
 	pRed.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rRed = session->Render( pRed );
 	Check( rRed.ok, "solo(redlight) render succeeds" );
 
 	AgentRenderParams pBlue;
 	pBlue.light = "bluelight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rBlue = session->Render( pBlue );
 	Check( rBlue.ok, "solo(bluelight) render succeeds" );
 
@@ -664,6 +685,7 @@ static void RunLightSoloComposesWithBeautyVariantTest()
 	p.renderTarget = AgentRenderTarget::ViewMode;
 	p.viewMode     = Implementation::ViewportRenderMode::Direct;
 	p.light        = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult r = session->Render( p );
 	Check( r.ok, "mode:\"direct\" + light:\"redlight\" succeeds" );
 	if( r.ok ) {

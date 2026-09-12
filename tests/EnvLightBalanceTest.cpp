@@ -169,6 +169,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -317,6 +320,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -574,10 +578,10 @@ static const char* kRasterizerPT =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/env_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/env_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPT =
@@ -601,10 +605,10 @@ static const char* kRasterizerBDPT =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/env_balance_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/env_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCM =
@@ -631,10 +635,10 @@ static const char* kRasterizerVCM =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/env_balance_vcm_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/env_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 //////////////////////////////////////////////////////////////////////
@@ -676,10 +680,10 @@ static const char* kRasterizerPTSpectral =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/env_balance_pts_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/env_balance_pts_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPTSpectral =
@@ -708,10 +712,10 @@ static const char* kRasterizerBDPTSpectral =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/env_balance_bdpts_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/env_balance_bdpts_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCMSpectral =
@@ -743,10 +747,10 @@ static const char* kRasterizerVCMSpectral =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/env_balance_vcms_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/env_balance_vcms_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 //! Omni light for topology E.  `power` on a point light is RADIANT
@@ -1835,10 +1839,10 @@ static const char* kRasterizerPTSubmerged =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/env_balance_pt_submerged_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/env_balance_pt_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 // Topology J's BDPT / VCM rasterizers are just the shared

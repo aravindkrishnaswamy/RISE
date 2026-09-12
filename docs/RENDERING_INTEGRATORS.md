@@ -1040,33 +1040,22 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   channel (B) survived — see the C1 fix commit and the same test's
   updated coverage.
 
-- **Debt 31 (OPEN, review round 2, 2026-09-12; item 2 CLOSED review
-  round 3, 2026-09-12; items 3-4 added review round 4, 2026-09-12) — pre-existing `TranslucentSPF` bug found while
-  auditing the exit-loop fix above, NOT fixed that round.**  Reachable
-  independently of debt 30; does not involve the eta^2 factor.
-  1. **Guided-direction IOR-stack leak (still open).**  The translucent
-     exit lobe (`front`, `ScatteredRay::eRayDiffuse`, non-delta) passes
-     `GuidingSupportsSurfaceSampling`'s type/delta check in both
-     integrators — **corrected, review round 3**: PT's version
-     (`PathTracingIntegrator.cpp` ~line 553) admits any non-delta
-     `eRayDiffuse`/`eRayReflection` scatter, but BDPT's own
-     (`BDPTIntegrator.cpp` ~line 161) admits only `eRayDiffuse`
-     (`return !scat.isDelta && scat.type ==
-     ScatteredRay::eRayDiffuse;` — no `eRayReflection` there); an
-     earlier draft claimed both admit the same pair. Both admit
-     `eRayDiffuse`, which is all this leak needs, so the leak itself is
-     unaffected by the correction — only the parenthetical about what
-     ELSE each function admits was wrong. The lobe carries a POPPED
-     `ior_stack` (`TranslucentSPF.cpp` ~line 248). When the path guiding
-     field replaces the SPF-sampled direction with a guided one, PT sets
-     `traceIorStack = &iorStack` (`PathTracingIntegrator.cpp` ~line 3205
-     and ~line 3260) — the PRE-scatter stack, not the SPF's own
-     `pS->ior_stack` — so the exit lobe's pop is silently dropped and
-     the translucent object stays on the stack. Every later hit then
-     misclassifies as "exiting" (`bEntering` false) when it should read
-     as already outside.  Failing input: any scene with path guiding
-     enabled and a `translucent_material` object, once the guiding
-     field has trained enough to intercept a sample at that vertex.
+- **~~Debt 31: TranslucentSPF residuals from the debt-30 audit.~~ CLOSED
+  2026-09-12 — items 1–4 closed individually below.** Further independent
+  amplitude/mixture/state-generation debts remain DL-38/DL-41/DL-47; this does not assert complete
+  translucent transport correctness.
+  1. **~~Guided-direction IOR-stack leak.~~ CLOSED 2026-09-12 — `8a9bdb18`,
+     `TranslucentIORStackTest: ALL TESTS PASSED`.** PT and BDPT now preserve
+     an available selected exit post-stack for guided continuations crossing the geometric boundary and retain
+     the input stack for opposite-side replacements. Training and eta
+     consumers share that resolved state. Four failed assertions on the
+     unfixed library establish the PT RGB/NM red proof; subsequent BDPT
+     eye/light coverage was first run on the fixed library. Ordinary PT
+     specular arrivals suppress guiding, so the fixture explicitly seeds
+     a diffuse arrival and demands positive actual outward substitutions.
+     BDPT eye RIS's retained-SPF-only case is disclosed under DL-43, not
+     counted as actual guide-direction coverage. See
+     [DL-03 closure and audit](DL03_GUIDED_IOR_CONTINUATION.md).
   2. **`ScatteredRayContainer` overflow leak in the per-channel loop —
      CLOSED, review round 3 (in the same commit range that fixed debt
      30's review round 3 items C1/C2).**  Auditing the shape described

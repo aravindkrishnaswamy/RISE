@@ -142,6 +142,9 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentDiagnostic.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 using RISE::Agent::AgentSession;
@@ -259,6 +262,7 @@ static RenderProbeResult RenderScene( const std::string& sceneText, const char* 
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "csg null-geometry luminaire test capture" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	result.rendered = pJob->Rasterize();
 	result.maxLum   = pCap->maxLum;
 
@@ -302,6 +306,7 @@ static RenderProbeResultWithLog RenderSceneCapturingStdout( const std::string& s
 				CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 				GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "csg null-geometry luminaire stdout-capture test" );
 				pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+				std::srand( g_renderSeed++ );
 				result.rendered = pJob->Rasterize();
 				result.maxLum   = pCap->maxLum;
 				safe_release( pCap );
@@ -349,7 +354,7 @@ static const char* kCSGLuminaireSceneText =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\toidn_denoise FALSE\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
 	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
@@ -407,7 +412,9 @@ static void TestCSGEmissiveObjectSurvivesRerender()
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "csg null-geometry luminaire rerender capture" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	Check( pJob->Rasterize(), "first render did not crash" );
+	std::srand( g_renderSeed++ );
 	Check( pJob->Rasterize(), "second render (re-attach) did not crash" );
 
 	safe_release( pCap );
@@ -667,7 +674,7 @@ static std::string BuildCSGEmissionShaderOpScene()
 		"film\n{\n\twidth 24\n\theight 24\n}\n"
 		"pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
 		"\n"
-		"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 4\n\tlum_samples 1\n\toidn_denoise FALSE\n}\n"
+		"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 4\n\tlum_samples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
 		"\n"
 		"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n"
 		"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n"
@@ -729,7 +736,7 @@ static std::string BuildCSGSSSScene( const char* sssShaderOpChunk )
 		"film\n{\n\twidth 24\n\theight 24\n}\n"
 		"pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
 		"\n"
-		"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 4\n\tlum_samples 1\n\toidn_denoise FALSE\n}\n"
+		"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 4\n\tlum_samples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
 		"\n"
 		"uniformcolor_painter\n{\n\tname white\n\tcolor 1.0 1.0 1.0\n}\n"
 		"lambertian_material\n{\n\tname sss_mat\n\treflectance white\n}\n"
@@ -791,7 +798,7 @@ static const char* kSMSOffscreenCSGScene =
 	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tsms_enabled TRUE\n\toidn_denoise FALSE\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tsms_enabled TRUE\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
 	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
 	"directional_light\n{\n\tname sun\n\tpower 3.14159\n\tcolor 1 1 1\n\tdirection 0 0 1\n}\n\n"

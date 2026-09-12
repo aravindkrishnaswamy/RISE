@@ -91,6 +91,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -218,6 +221,7 @@ static PixelRGB RenderCentralBlock( const std::string& sceneText, const char* ta
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -297,10 +301,10 @@ static std::string BuildScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/raycaster_volabs_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/raycaster_volabs_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"

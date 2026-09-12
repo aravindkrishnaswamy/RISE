@@ -3202,7 +3202,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							scatterThroughput = PTMulDiv( candidates[sel].bsdfEval, candidates[sel].cosTheta, risEffectivePdf );
 							traceRay = Ray( pS->ray.origin, candidates[sel].direction );
 							effectiveBsdfPdf = risEffectivePdf;
-							traceIorStack = &iorStack;
+							traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
+								*pS, iorStack, ri.geometric, traceRay.Dir() );
 						}
 						else
 						{
@@ -3263,7 +3264,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									scatterThroughput = PTMulDiv( fGuided, cosTheta, combinedPdf );
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
-									traceIorStack = &iorStack;
+									traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
+										*pS, iorStack, ri.geometric, traceRay.Dir() );
 									smplBsdfPdf = bsdfPdfGuided;
 									smplGuidePdf = guidePdf;
 									smplCombinedPdf = combinedPdf;
@@ -3319,15 +3321,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			(void)useGuidingPathSegments;  // Used in full guiding implementation
 #endif // RISE_ENABLE_OPENPGL
 
-			// eta^2 basic-radiance factor (debt 30), applied once the
-			// guiding block above has settled BOTH `scatterThroughput` and
-			// `traceIorStack`: a guided direction replaces the SPF's
-			// direction and resets traceIorStack to the unchanged walk
-			// stack, so it must NOT pick up a factor, while the
-			// BSDF-sampled-with-guiding-MIS branch keeps pS->ior_stack and
-			// must.  Reading `traceIorStack` rather than `pS->ior_stack`
-			// gets both cases right by construction.  Identically 1 unless
-			// the medium actually changed.
+			// Radiance follows the resolved continuation medium, whether the
+			// direction came from the SPF or guiding. A same-side exit retains
+			// the SPF pop; an opposite-side guide sample keeps the input stack.
 			{
 				const Scalar etaScale = ( traceIorStack != &iorStack )
 					? RadianceEtaScale( iorStack, traceIorStack )
@@ -3413,9 +3409,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			if( guidingSegment && !skipContinuation )
 			{
 				const Scalar segEta =
-					( pS->ior_stack && pS->ior_stack->top() > NEARZERO ) ?
-						pS->ior_stack->top() :
-						( iorStack.top() > NEARZERO ? iorStack.top() : 1.0 );
+					traceIorStack->top() > NEARZERO ? traceIorStack->top() : Scalar( 1 );
 				const Scalar segRoughness = pS->isDelta ?
 					Scalar( 0.0 ) :
 					( pS->type == ScatteredRay::eRayDiffuse ?

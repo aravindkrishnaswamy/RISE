@@ -177,6 +177,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -307,6 +310,7 @@ static PixelRGB RenderCentralBlock( const std::string& sceneText, const char* ta
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -367,10 +371,10 @@ static std::string BuildRGBScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_rgb_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_rgb_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -487,10 +491,10 @@ static std::string BuildRGBSceneWithOmni(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_omni_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_omni_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -590,10 +594,10 @@ static std::string BuildSpectralScene( double sa )
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_nm_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_nm_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -683,10 +687,10 @@ static std::string BuildRGBSlabScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_slab_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_slab_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -787,10 +791,10 @@ static std::string BuildHeterogeneousSlabScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_het_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_het_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -974,10 +978,10 @@ static std::string BuildLightSubpathSlabScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_lsub_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_lsub_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -1130,10 +1134,10 @@ static std::string BuildGlobalMediumScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_gmed_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_gmed_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -1228,7 +1232,8 @@ static std::string BuildSpectralCurveScene(
 	const std::string& curveName,		// name of the piecewise_linear_function chunk
 	const std::string& curveCps,		// repeated "\tcp <x> <y>\n" control-point lines
 	const std::string& absSpectralRef,	// name bound to absorption_spectral, or "" to omit
-	double sa_rgb )						// RGB-preview absorption (gray fallback triple)
+	double sa_rgb,						// RGB-preview absorption (gray fallback triple)
+	int samples = 256 )
 {
 	std::ostringstream ss;
 	ss <<
@@ -1237,10 +1242,10 @@ static std::string BuildSpectralCurveScene(
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
 		"piecewise_linear_function\n{\n\tname " << curveName << "\n" << curveCps << "}\n\n"
 		"pathtracing_spectral_rasterizer\n{\n"
-		"\tsamples 256\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
+		"\tsamples " << samples << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n"
 		"\tmax_diffuse_bounce 3\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_spectral_curve_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern rendered/volume_spectral_curve_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n"
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		"pinhole_camera\n{\n\tlocation 0 0 -5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
 		"homogeneous_medium\n{\n\tname slab_abs\n"
@@ -1609,7 +1614,7 @@ static std::string BuildGlobalMediumMirrorScene( int samples, double sa, bool hw
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
 	 << "\thwss " << ( hwss ? "TRUE" : "false" ) << "\n" <<
 		"\tmax_diffuse_bounce 3\n\toidn_denoise FALSE\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_gmed_mirror_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern rendered/volume_gmed_mirror_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n"
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		// Camera at origin looking +Z at the mirror; the emissive wall sits
 		// behind the camera (-Z) so it is only seen via the mirror bounce.
@@ -2105,7 +2110,7 @@ static void TestSpectralNoCurveBaselineGray()
 {
 	std::cout << "[V] no curve (RGB-only) => gray in spectral mode (vs [S] red)" << std::endl;
 	const PixelRGB px = RenderCentralBlock(
-		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0 ),
+		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0, 4096 ),
 		"spec_nocurve" );
 	Check( px.valid, "V: render produced a frame" );
 	if( !px.valid ) return;
