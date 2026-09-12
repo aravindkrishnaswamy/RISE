@@ -59,7 +59,7 @@ Paths below are relative to `src/Library/`.
 | `Materials/TranslucentSPF.cpp`, RGB uniform/per-channel and NM entry/backscatter | VERIFIED unchanged for this pattern | These lobes intentionally use N-dependent Phong sampling with matching stored conditional densities; their evaluable mixture remains DL-41. |
 | `Shaders/PathTracingIntegrator.cpp`, ordinary RGB/NM | VERIFIED unchanged consumer | Uses supplied pS->pdf; no compensation for the old negative support. |
 | `Shaders/PathTracingIntegrator.cpp`, HWSS | VERIFIED hero density; OPEN DL-38 companions | Hero consumes stored pdf; companion fallback BSDF*cos/pdf cannot reproduce stateful amplitudes. |
-| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; OPEN DL-03 | Pdf/PdfNM now agree with the diffuse exit sampler; independent guiding-state and probability gaps remain DL-03/DL-42. |
+| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; DL-03 subsequently CLOSED | Pdf/PdfNM agree with the diffuse exit sampler; guiding state was closed by `013b3a15`, while selected-lobe compensation remains DL-42. |
 | `Shaders/BDPTIntegrator.cpp`, eye/light RGB/NM/HWSS | CORRECTED producer; OPEN DL-38/DL-41 | Uses selectProb*effectivePdf forward; reverse reevaluation converts to predecessor pdfRev. Eye guided-candidate argument order is separately DL-43. |
 | `Utilities/PathVertexEval.h` | VERIFIED propagation; OPEN DL-41 full contract | Rebuilds intersection and stack then calls Pdf/PdfNM; does not compensate for the former sign error. |
 | `Shaders/VCMIntegrator.cpp` and MLT rasterizers | VERIFIED shared consumer | VCM consumes inherited pdfRev in MIS recurrence; RGB/NM MLT uses BDPT generators. No duplicate translucent sampler. |
@@ -81,8 +81,8 @@ walks select by kray/total and multiply forward density by selectProb;
 reverse evaluation instead calls Pdf/PdfNM directly. Thus a nonzero
 backscatter or entry-transmission mixture is not represented by a complete
 forward/reverse density pair. NEE also queries with an empty defaultIOR.
-This is separate from the BSDF amplitude gap DL-38 and guiding-state gap
-DL-03. Static evidence is confirmed; no numeric transport deficit is claimed
+This is separate from the BSDF amplitude gap DL-38 and the guiding-state gap
+subsequently closed by DL-03 (`013b3a15`). Static evidence is confirmed; no numeric transport deficit is claimed
 until DL-41's own red proof. The negative-hemisphere-zero assertion in the
 DL-02 test pins the existing conditional API, not an ideal full mixture.
 

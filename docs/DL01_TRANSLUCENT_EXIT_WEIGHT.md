@@ -17,7 +17,7 @@ This is a decision about the existing stateful lampshade model, not a
 claim that its BSDF or every integrator now models a physical volume
 exactly. The diffuse exit support/shape gap was subsequently closed by DL-02
 (`a041e51d`); full mixture density remains DL-41. Guiding-stack
-propagation remains DL-03, and the independent consumer gaps below remain
+propagation was subsequently closed by DL-03 (`013b3a15`); the independent consumer gaps below remain
 open. No IOR convention or sampling distribution changes in DL-01.
 
 ## Reproduction and verification

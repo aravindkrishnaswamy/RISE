@@ -684,44 +684,28 @@ tree currently uses a spatially-varying `ior` painter, so this is
 unexercised, not measured to be wrong. Full detail in the
 `RadianceEtaScale` doc comment (`IORStack.h`).
 
-### 10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak (review round 2, NOT fixed here)
+### ~~10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak~~ CLOSED 2026-09-12 — `013b3a15`, `TranslucentIORStackTest: ALL TESTS PASSED`
 
-Found while auditing the exit-loop fix (C1 of review round 2) for that
-round; independent of the debt-30 eta² factor and recorded here, and as
-debt 31(a) in [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md),
-rather than fixed in this pass.
+PT and BDPT now resolve the continuation stack from the accepted direction:
+a same-side guided exit preserves the SPF pop; an inward replacement retains
+the input stack. Training, radiance eta and continuation consumers use that
+same state. Guide sampling and PDF values are unchanged.
 
-**(review round 3 correction)** An earlier draft of this item claimed
-`PathTracingIntegrator.cpp ~line 553` AND `BDPTIntegrator.cpp ~line 161`
-"both accept any non-delta `eRayDiffuse`/`eRayReflection` scatter." Only
-PT's `GuidingSupportsSurfaceSampling` does that
-(`return scat.type == ScatteredRay::eRayDiffuse || scat.type ==
-ScatteredRay::eRayReflection;`, gated on `!scat.isDelta`); BDPT's own
-`GuidingSupportsSurfaceSampling` (`BDPTIntegrator.cpp` ~line 161) admits
-only `eRayDiffuse` (`return !scat.isDelta && scat.type ==
-ScatteredRay::eRayDiffuse;`) — `eRayReflection` is excluded there. The
-translucent exit lobe (`front`, type `eRayDiffuse`, non-delta) is
-admitted by BOTH functions regardless of this difference, since it is
-always `eRayDiffuse`, so the leak description below is unaffected by
-the correction — only the parenthetical about what else each function
-admits was wrong.
+The real trained PT RGB/NM regression failed four assertions on unfixed
+`00bdcef5` (`d3a5e732` test). Each pipe recorded 45 outward substitutions
+under one-sample guiding, all losing the pop, while inward controls passed.
+The fixed fixture verifies popped object membership and actual re-entry
+classification on a later hit. BDPT eye/light coverage was added afterward
+and first run on the fixed library; it is not a second unfixed red proof.
 
-- **Guided-direction IOR-stack leak.** The translucent exit lobe
-  (`front`, type `eRayDiffuse`, non-delta) is admitted by
-  `GuidingSupportsSurfaceSampling` in both integrators (see the
-  correction above) even though it carries a POPPED `ior_stack`
-  (`TranslucentSPF.cpp` ~line 248). When the path guiding field
-  intercepts that vertex and substitutes a guided direction for the
-  SPF's own sampled one, PT sets `traceIorStack = &iorStack`
-  (`PathTracingIntegrator.cpp` ~line 3205, ~line 3260) — the
-  PRE-scatter stack, not the SPF's `pS->ior_stack` — so the exit lobe's
-  pop never reaches the continuation ray, and the translucent object
-  silently stays on the stack. Every subsequent hit on that object then
-  reads `containsCurrent() == true` and misclassifies as "exiting"
-  (`bEntering == false`) when it should be entering fresh. Failing
-  input: any scene with path guiding enabled and a `translucent_material`
-  object, once training has populated enough of the guiding field to
-  intercept a sample at that vertex.
+The old failing-input claim was too broad: ordinary PT translucent
+entry/backscatter arrives as specular, which suppresses guiding. The PT
+fixture explicitly seeds a diffuse arrival and requires positive actual
+outward substitutions. PT admits non-delta diffuse/reflection lobes, while
+BDPT admits non-delta diffuse only. Both admit the translucent diffuse exit.
+BDPT eye RIS's missing actual guide substitutions in this fixture are
+separately explained by DL-43; that PDF defect remains open. See
+[DL-03 mechanism, audit and verification](DL03_GUIDED_IOR_CONTINUATION.md).
 
 **What used to be item (b) here is CLOSED, not a residual.** An earlier
 draft described a `ScatteredRayContainer` overflow-only leak in the
@@ -743,7 +727,7 @@ never had either shape: it never assigns `ior_stack` inside its
 per-channel loop at all (its only stack-bearing allocation, `front`'s
 pop, is a single assignment made ONCE, outside and after both branches
 — see `TranslucentSPF.cpp` ~line 257). Debt 31 in
-[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) retains the guided-direction leak as item 1 and the closed ownership
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) records the now-closed guided-direction leak as item 1 and the closed ownership
 fix as item 2; later weight/density findings are items 3 and 4. Both
 ownership sub-shapes are closed by code, not by documentation.  (The overflow-carryover fix commit's
 message refers to a "four-way case table above" that was never written

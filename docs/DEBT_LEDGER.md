@@ -39,7 +39,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-01~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 3 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF RGB/NM exit-weight divergence~~ | CLOSED 2026-09-12 | `1239edf2`: `TranslucentSpectralParityTest: 676 checks, 0 failures` (red: 174 failures); primary-layer tau paid once at entry, Beer-only exit/backscatter parent in both pipes. See [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md). | S | physics-bias | user-visible |
 | ~~DL-02~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 4 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF exit-density support and spectral shape mismatch~~ | CLOSED 2026-09-12 | `a041e51d`: `TranslucentSpectralParityTest: 1918 checks, 0 failures` (red: 324 failures). RGB/NM diffuse exits now share positive-shading-hemisphere cosine sampling/evaluation. Full mixture/reverse density remains DL-41. See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). | S | physics-bias | user-visible |
 | ~~DL-36~~ | ~~SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10~~ | ~~Bounded same-luminary neighbour read lacked a regression~~ | CLOSED 2026-09-12 (consistency pin) | `ac9891f3`: SignalEmitterRecordTest --louvres-only reports `Passed: 16  Failed: 0` against the unchanged library. A real two-blade luminary proves accepted upper-blade proximity=0.5 versus sampled lower-blade proximity=0, with sample geometry preserved. Bounded approximation retained as permitted by recipe. See [DL-36 closure](DL36_EMITTER_NEIGHBOUR_PIN.md). | S | physics-bias | user-visible (bounded approximation retained) |
-| DL-03 | RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3 | Path-guiding substitutes a direction at `TranslucentSPF`'s exit lobe without carrying its popped `ior_stack`; the translucent object silently stays on the IOR stack, later hits misclassify entering/exiting | OPEN-confirmed | `TranslucentSPF.cpp` ~line 305-307/438-440 (`front.ior_stack->pop()`); `PathTracingIntegrator.cpp` ~3205/3260 sets `traceIorStack = &iorStack` (pre-scatter stack); `BDPTIntegrator.cpp:161`/`PathTracingIntegrator.cpp:553` `GuidingSupportsSurfaceSampling` admits `eRayDiffuse` unconditionally, confirmed by reading all four sites this sweep | M | physics-bias | user-visible (path guiding + `translucent_material` only) |
+| ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `013b3a15`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ Resolved continuation state follows the accepted direction and is shared by training/eta consumers | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | DL-04 | REFRACTIVE_RADIANCE_SCALING.md §10.1 | Whether `SubSurfaceScatteringSPF`/`RandomWalkSSS`/`BSSRDFSampling::Sw` correctly omit the debt-30 eta^2 factor (telescoping argument) or need it (PBRT-style eta^2 divide) is undecided; direction not pinned down | OPEN-confirmed | Doc's own two-reading analysis (§10.1(a)/(b)); the disambiguating render (matched dielectric-shell-with-medium vs `subsurfacescattering_material`, submerged vs air camera) has not been produced — confirmed absent from `tests/` this sweep | M | physics-bias | user-visible (SSS in non-air medium only) |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
 | DL-37 | IMPROVEMENTS.md "GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned" | `ggx_material` in `eFresnelSchlickF0` mode goes over unity at grazing incidence (ρ = 1.1573 at 80°) because the glTF diffuse-energy split weights the diffuse lobe by the angle-flat `1 − max(F0)` while the Schlick specular term it is meant to complement rises toward 1 as `cos θ → 0` | OPEN-confirmed | `tests/LayeredWhiteFurnaceTest.cpp:1788-1789` (config 17, "White GGX-PBR base alone", `kPostureKnownFailure`) measures ρ = {0.9988, 0.9994, 1.0251, 1.1573} at θ = {0°,30°,60°,80°}; mechanism read directly in `GGXBRDF::albedo` (`GGXBRDF.cpp:514-520`: `diffColor * max(0, 1 − maxF0) + F(θ)`, doc comment at 508-513 stating the Schlick branch evaluates Fresnel at the actual outgoing cosine while diffuse keeps the constant glTF split) and reproduced at sample time in `GGXSPF::Scatter`/`ScatterNM` (`GGXSPF.cpp:216-219`, six analogous sites at 214/260/364/500/545/638) and `GGXBRDF::value`/`valueNM` (nine analogous sites at 209/276/330/399/451/490/514/595/638) — same `1 − maxF0` constant used at every one, confirmed this sweep | M | physics-bias | user-visible (low-F0 GGX at grazing incidence) |
@@ -159,13 +159,14 @@ reflowed otherwise.
 
 ## Counts
 
-Updated by the 2026-09-12 DL-36 cleanup. The original sweep counts
+Updated by the 2026-09-12 DL-03 cleanup. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **40** (the original 36 minus DL-01/DL-02/DL-36, plus independent
+- OPEN-confirmed: **39** (the original 36 minus DL-01/DL-02/DL-36/DL-03, plus independent
   residuals DL-38 through DL-44; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **3** (DL-01, `1239edf2`; DL-02, `a041e51d`;
-  DL-36, `ac9891f3`, consistency pin retaining the bounded approximation)
+- CLOSED-by-cleanup: **4** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+  DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
+  DL-03, `013b3a15`)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -207,19 +208,19 @@ CDF and separate hemisphere integrals now agree at N=1/8 and per-channel
 N=5/10/15. Entry geometric-horizon controls still pass. This closes the
 conditional diffuse exit only; full mixture/reverse densities and NEE
 state are DL-41, BSDF amplitudes are DL-38, and guiding stack propagation
-is DL-03. See [closure and audit](DL02_TRANSLUCENT_EXIT_DENSITY.md).
+was subsequently closed by DL-03. See [closure and audit](DL02_TRANSLUCENT_EXIT_DENSITY.md).
 
-**DL-03 (TranslucentSPF guided-direction IOR-stack leak).** Add a trained
-path-guiding regression with a translucent exit that is demonstrably
-eligible for a guided substitution. Ordinary PT translucent entry and
-backscatter produce specular-classified arrivals, and GuidingEffectiveAlpha
-disables guiding for those arrivals: a trained scene alone is insufficient.
-Use an explicitly seeded guide-eligible PT state or verified BDPT eye/light
-coverage, and assert a positive count of substituted translucent exits.
-Then assert the substituted ray carries the SPF's post-pop `pS->ior_stack`,
-not the pre-scatter stack. A later hit on the same object must read
-`bEntering == true`, with `IORStack::containsCurrent()` false after the exit.
-Zero intercepted exits must fail the test rather than count as a pass.
+**~~DL-03 (TranslucentSPF guided-direction IOR-stack leak).~~ CLOSED
+2026-09-12 — `013b3a15`, `TranslucentIORStackTest: ALL TESTS PASSED`.**
+The trained real-PT regression was red on unfixed `00bdcef5` with four
+outward-stack failures. Explicit guide-eligible diffuse arrival avoids
+ordinary PT translucent specular-arrival suppression; positive actual
+outward substitution counts are required in both guiding modes and both
+RGB/NM. The later same-object Scatter verifies entry classification and
+popped membership, while inward substitutions retain inside state. Added
+BDPT eye/light RGB/NM real-entry/exit coverage passes too; eye RIS retains
+SPF directions because DL-43 remains open, so it is not claimed as actual
+outward-guide coverage. See [closure and audit](DL03_GUIDED_IOR_CONTINUATION.md).
 
 **DL-04 (SSS family eta^2 direction).** Build the two-material observable
 the doc names: a semi-infinite slab as (a) a `dielectric_material` shell
