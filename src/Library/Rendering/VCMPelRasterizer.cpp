@@ -353,11 +353,13 @@ void VCMPelRasterizer::IntegratePixel(
 
 			// Debt 28: the point on the camera's entrance APERTURE that the t=1
 			// splats from this light subpath land on.  Its own sampler stream so
-			// it stays stratified across pixels.  Ignored by every camera whose
-			// aperture is a point; for a thin lens it is what gives the splat
-			// layer the depth of field the eye layer has.
-			sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
-			const Point2 cameraLensSample = sampler.Get2D();
+			// it stays stratified across pixels.  A camera whose aperture is a
+			// point consumes NOTHING here (see DrawApertureSample); for a thin
+			// lens this is what gives the splat layer the depth of field the eye
+			// layer has.
+			const Point2 cameraLensSample =
+				BDPTCameraUtilities::DrawApertureSample( *pCamera, sampler,
+					BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
 
 			RISEPel sampleColor( 0, 0, 0 );
 

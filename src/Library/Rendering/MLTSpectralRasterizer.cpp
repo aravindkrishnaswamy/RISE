@@ -285,6 +285,7 @@ void MLTSpectralRasterizer::EvaluateSingleWavelength(
 	const Ray& cameraRay,
 	const Point2& screenPos,
 	const Point2& cameraRasterPos,
+	const Point2& cameraLensSample,
 	const Scalar nm,
 	const RuntimeContext& rc,
 	std::vector<BDPTIntegrator::ConnectionResultNM>& results,
@@ -304,15 +305,8 @@ void MLTSpectralRasterizer::EvaluateSingleWavelength(
 	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
-	// Debt 28: the point on the camera's entrance APERTURE that the
-	// t==1 light-tracing connections land on.  Its own sampler stream
-	// so it stays stratified across pixels and, under PSSMLT, moves
-	// continuously under a small mutation.  Ignored by every camera
-	// whose aperture is a point; for a thin lens it is what gives the
-	// splat layer the depth of field the eye layer has.
-	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
-	const Point2 cameraLensSample = sampler.Get2D();
-
+	// Debt 28: `cameraLensSample` is the caller's -- drawn from
+	// stream 48 before the subpath walks, see the header.
 	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, nm );
 }
 
@@ -395,13 +389,17 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	}
 
 	// Debt 28: the point on the camera's entrance APERTURE that the
-	// t==1 light-tracing connections land on.  Its own sampler stream
-	// so it stays stratified across pixels and, under PSSMLT, moves
-	// continuously under a small mutation.  Ignored by every camera
-	// whose aperture is a point; for a thin lens it is what gives the
-	// splat layer the depth of field the eye layer has.
-	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
-	const Point2 cameraLensSample = sampler.Get2D();
+	// t==1 light-tracing connections land on.  Drawn from stream 48
+	// (still active here), contiguous after the film, lens and
+	// wavelength samples -- NOT from a dedicated stream, because
+	// PSSMLTSampler only has 49 lanes and a stream index >= 49 aliases
+	// an existing lane instead of getting a fresh one.  See
+	// MLTRasterizer::EvaluateSample for the lane arithmetic.  A camera
+	// whose aperture is a point consumes NOTHING here, so pinhole MLT
+	// chains are unchanged by debt 28.
+	const Point2 cameraLensSample =
+		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+			BDPTCameraUtilities::APERTURE_CURRENT_STREAM );
 
 	// Spectral range
 	const Scalar range = lambda_end - lambda_begin;

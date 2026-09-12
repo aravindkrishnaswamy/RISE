@@ -146,12 +146,14 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 
 	// Debt 28: the point on the camera's entrance APERTURE that the
 	// t==1 light-tracing connections land on.  Its own sampler stream
-	// so it stays stratified across pixels and, under PSSMLT, moves
-	// continuously under a small mutation.  Ignored by every camera
-	// whose aperture is a point; for a thin lens it is what gives the
-	// splat layer the depth of field the eye layer has.
-	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
-	const Point2 cameraLensSample = sampler.Get2D();
+	// so it stays stratified across pixels.  A camera whose aperture
+	// is a point (pinhole / fisheye / orthographic) consumes NOTHING
+	// here -- see DrawApertureSample -- so those renders draw the same
+	// dimensions they did before debt 28.  For a thin lens this is
+	// what gives the splat layer the depth of field the eye layer has.
+	const Point2 cameraLensSample =
+		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+			BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
 
 	// The generator captures both Fast and Accurate guides against the real
 	// trace-time intersection; no camera-to-vertex reconstruction is needed.
@@ -301,12 +303,14 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 			// Debt 28: the point on the camera's entrance APERTURE that the
 			// t==1 light-tracing connections land on.  Its own sampler stream
-			// so it stays stratified across pixels and, under PSSMLT, moves
-			// continuously under a small mutation.  Ignored by every camera
-			// whose aperture is a point; for a thin lens it is what gives the
-			// splat layer the depth of field the eye layer has.
-			sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
-			const Point2 cameraLensSample = sampler.Get2D();
+			// so it stays stratified across pixels.  A camera whose aperture
+			// is a point (pinhole / fisheye / orthographic) consumes NOTHING
+			// here -- see DrawApertureSample -- so those renders draw the same
+			// dimensions they did before debt 28.  For a thin lens this is
+			// what gives the splat layer the depth of field the eye layer has.
+			const Point2 cameraLensSample =
+				BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+					BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
 
 				// The first hero bundle receives the same trace-time AOV capture
 				// inside GenerateEyeSubpathNM.

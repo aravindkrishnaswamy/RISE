@@ -702,6 +702,28 @@ bool BDPTCameraUtilities::HasFiniteAperture(
 	return thinLens != 0 && thinLens->GetApertureWorldArea() > 0;
 }
 
+Point2 BDPTCameraUtilities::DrawApertureSample(
+	const ICamera& cam,
+	ISampler& sampler,
+	ApertureStreamPolicy policy )
+{
+	// Gate BOTH the stream switch and the draw.  Switching streams on
+	// a pinhole would be harmless for Sobol (the next StartStream
+	// overwrites the dimension counter) but it is not harmless for
+	// PSSMLT, where `StartStream` also resets `sampleIndex` -- and the
+	// point of this helper is that every camera without an aperture
+	// leaves the sampler in exactly the state it was in.
+	if( !HasFiniteAperture( cam ) ) {
+		return Point2( 0, 0 );
+	}
+
+	if( policy == APERTURE_DEDICATED_STREAM ) {
+		sampler.StartStream( kApertureSamplerStream );
+	}
+
+	return sampler.Get2D();
+}
+
 bool BDPTCameraUtilities::IsDeltaDirection(
 	const ICamera& cam )
 {

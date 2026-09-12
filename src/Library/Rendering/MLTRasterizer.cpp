@@ -298,6 +298,24 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// to the PSSMLT state, so lens rotations could only happen
 	// as a side effect of film jitter.
 	const Point2 lensSample = sampler.Get2D();
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  It is drawn HERE, as a
+	// third Get2D on stream 48, and not from a stream of its own:
+	// PSSMLTSampler has exactly 49 lanes and multiplexes them as
+	// `idx = stream + 49*sample`, so any stream index >= 49 aliases an
+	// existing lane rather than getting a fresh one (stream 80 is
+	// stream 31's sample 1).  Contiguous here, the aperture occupies
+	// lanes 244/293 against the film's 48/97 and the lens's 146/195,
+	// and every stream-48 lane is == 48 (mod 49), so it can never
+	// collide with an integrator stream 0..47.  Like the lens sample
+	// above it is an independent Markov dimension, so a small mutation
+	// moves the splat aperture point continuously.  A camera whose
+	// aperture is a point consumes NOTHING (see DrawApertureSample),
+	// which keeps every pinhole MLT chain identical to its pre-debt-28
+	// self.
+	const Point2 cameraLensSample =
+		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+			BDPTCameraUtilities::APERTURE_CURRENT_STREAM );
 	const Scalar fx = filmSample.x * static_cast<Scalar>( width  ) - static_cast<Scalar>( 0.5 );
 	const Scalar fy = filmSample.y * static_cast<Scalar>( height ) - static_cast<Scalar>( 0.5 );
 	// screenPos in RISE screen convention (y=0 at bottom, fractional).
@@ -347,14 +365,9 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts );
 
-	// Debt 28: the point on the camera's entrance APERTURE that the
-	// t==1 light-tracing connections land on.  Its own sampler stream
-	// so it stays stratified across pixels and, under PSSMLT, moves
-	// continuously under a small mutation.  Ignored by every camera
-	// whose aperture is a point; for a thin lens it is what gives the
-	// splat layer the depth of field the eye layer has.
-	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
-	const Point2 cameraLensSample = sampler.Get2D();
+	// (The aperture sample `cameraLensSample` was drawn from stream 48
+	// alongside the film and lens samples, before the subpath walks
+	// took the sampler through streams 0..47 -- see there for why.)
 
 	// Evaluate all (s,t) connection strategies via MIS
 	std::vector<BDPTIntegrator::ConnectionResult> results =
