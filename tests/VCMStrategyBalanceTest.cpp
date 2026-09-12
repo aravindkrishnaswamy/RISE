@@ -1210,6 +1210,29 @@ static void TestSubmergedFloorAreaLight()
 // does NOT need H/J's loosened 60%/4x tail bands either; 30%/100% still
 // comfortably covers the observed ~6-14% (p99) and ~8-30% (max) spread
 // with headroom for a different machine or sample count.
+//
+// MEASURED COUNTERFACTUAL (debt 30 review round 3, C4).  This
+// topology's own header claims it "guards" the eye-side/light-side
+// asymmetry, but recorded no counterfactual to back that up.  Measured
+// once, this round: temporarily applied `RadianceEtaScale` inside
+// `GenerateLightSubpathImpl` (BDPTIntegrator.cpp, mirroring the
+// eye-side site in `GenerateEyeSubpathImpl` verbatim -- wrong on
+// purpose, since IMPORTANCE-mode walks must get no factor by
+// construction, §1/§6), rebuilt, ran this test twice (independent
+// unsynchronized-`rand()` runs -- this binary is not seed-argv driven):
+// VCM/PT mean relative diff +45.6067%, +45.7639% (ratio 1.4561, 1.4576;
+// spread 0.0016, ~0.11% of the mean -- tight, as expected: both runs
+// draw from the same wrong code, not from two different physical
+// models). Reverted immediately after
+// (`git diff --stat src/` empty, library rebuilt clean). This is
+// DRAMATICALLY outside the 8% band (+45.6-45.8% vs a =8% gate) -- the
+// band catches a wrongly-applied light-side factor with enormous
+// margin, roughly 5.7x the gate width. No tightening is needed or
+// useful: the true failure signal here is ~46 percentage points, not a
+// few points hiding near the edge of 8%. See BDPTStrategyBalanceTest's
+// topology K header for the same experiment's BDPT twin, which reaches
+// the OPPOSITE conclusion for the opposite reason -- topology K's
+// gate does NOT catch the identical wrong edit at all.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSubmergedCeiling =
 	"film\n"

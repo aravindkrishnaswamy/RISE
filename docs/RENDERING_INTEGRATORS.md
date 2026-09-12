@@ -1040,18 +1040,25 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   channel (B) survived — see the C1 fix commit and the same test's
   updated coverage.
 
-- **Debt 31 (OPEN, review round 2, 2026-09-12) — two pre-existing
-  `TranslucentSPF` bugs found while auditing the exit-loop fix above,
-  NOT fixed this round.**  Both are reachable independently of debt 30;
-  neither involves the eta^2 factor.
-  1. **Guided-direction IOR-stack leak.**  The translucent exit lobe
-     (`front`, `ScatteredRay::eRayDiffuse`, non-delta) passes
-     `GuidingSupportsSurfaceSampling`'s type/delta check
-     (`PathTracingIntegrator.cpp` ~line 553, `BDPTIntegrator.cpp`
-     ~line 161 both admit any non-delta `eRayDiffuse`/`eRayReflection`
-     scatter), even though it carries a POPPED `ior_stack`
-     (`TranslucentSPF.cpp` ~line 248). When the path guiding field
-     replaces the SPF-sampled direction with a guided one, PT sets
+- **Debt 31 (OPEN, review round 2, 2026-09-12; item 2 CLOSED review
+  round 3, 2026-09-12) — pre-existing `TranslucentSPF` bug found while
+  auditing the exit-loop fix above, NOT fixed that round.**  Reachable
+  independently of debt 30; does not involve the eta^2 factor.
+  1. **Guided-direction IOR-stack leak (still open).**  The translucent
+     exit lobe (`front`, `ScatteredRay::eRayDiffuse`, non-delta) passes
+     `GuidingSupportsSurfaceSampling`'s type/delta check in both
+     integrators — **corrected, review round 3**: PT's version
+     (`PathTracingIntegrator.cpp` ~line 553) admits any non-delta
+     `eRayDiffuse`/`eRayReflection` scatter, but BDPT's own
+     (`BDPTIntegrator.cpp` ~line 161) admits only `eRayDiffuse`
+     (`return !scat.isDelta && scat.type ==
+     ScatteredRay::eRayDiffuse;` — no `eRayReflection` there); an
+     earlier draft claimed both admit the same pair. Both admit
+     `eRayDiffuse`, which is all this leak needs, so the leak itself is
+     unaffected by the correction — only the parenthetical about what
+     ELSE each function admits was wrong. The lobe carries a POPPED
+     `ior_stack` (`TranslucentSPF.cpp` ~line 248). When the path guiding
+     field replaces the SPF-sampled direction with a guided one, PT sets
      `traceIorStack = &iorStack` (`PathTracingIntegrator.cpp` ~line 3205
      and ~line 3260) — the PRE-scatter stack, not the SPF's own
      `pS->ior_stack` — so the exit lobe's pop is silently dropped and
@@ -1060,28 +1067,28 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      as already outside.  Failing input: any scene with path guiding
      enabled and a `translucent_material` object, once the guiding
      field has trained enough to intercept a sample at that vertex.
-  2. **`ScatteredRayContainer` overflow leak in the per-channel loop.**
-     `TranslucentSPF.cpp`'s per-channel loops (~line 162-168 entry
-     side; the exit side has the analogous shape) allocate
-     `trans.ior_stack = new IORStack(...)` fresh each iteration and call
-     `scattered.AddScatteredRay(trans)`. `AddScatteredRay` clears
-     `delete_stack` to false ONLY on success
-     (`ScatteredRayContainer.cpp` ~line 42); on overflow it returns
-     false and leaves `delete_stack` untouched. So: iteration succeeds
-     (delete_stack -> false on the local `trans`), the NEXT iteration
-     overwrites `trans.ior_stack` with a freshly `new`'d pointer without
-     resetting `delete_stack` back to true, and if THAT `AddScatteredRay`
-     call fails (container full), the new stack is never stored in the
-     container AND the local `trans`'s destructor won't free it either
-     (because `delete_stack` is still false from the PRIOR success) —
-     an orphaned allocation. Failing input: any scene that drives
-     `ScatteredRayContainer` near `kCapacity` before reaching a
-     `translucent_material`'s per-channel branch — reachable through
-     `CompositeSPF`/`CoatedSPF` re-dispatch, which can add several lobes
-     of their own to the same container before delegating to a wrapped
-     `TranslucentSPF`.
-  Both residuals are recorded in
-  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.
+  2. **`ScatteredRayContainer` overflow leak in the per-channel loop —
+     CLOSED, review round 3 (in the same commit range that fixed debt
+     30's review round 3 items C1/C2).**  Auditing the shape described
+     here for C1 found it understated the bug: the entry per-channel
+     loop's leak is UNCONDITIONAL on the SUCCESS path, not
+     overflow-only — every anisotropic-N entry `Scatter` call leaked
+     two `IORStack`s regardless of container occupancy, because the
+     loop never re-armed `delete_stack` before each new allocation
+     (fixed by doing so). Auditing THAT fix in turn surfaced the
+     narrower overflow-carryover variant this item originally
+     described — an iteration whose `AddScatteredRay` call fails still
+     owns its own stack post-fix, but a later iteration's `new
+     IORStack` would silently overwrite that pointer without freeing it
+     — which was closed in the same round by freeing any such
+     carried-over stack before each reassignment. The exit-side loop
+     never had either shape (it never assigns `ior_stack` inside a
+     per-channel loop at all). See
+     [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md)
+     §10.3 for the closed writeup, and `TranslucentSPF.cpp`'s commit
+     history for this round for the two fix commits.
+  Item 1 is recorded in
+  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.3.
 
 
 ## 8. Cross-references

@@ -57,9 +57,11 @@ namespace RISE
 		//! importance, and threading a `TransportMode` through
 		//! `ISPF::Scatter` would touch ~60 implementations; so a
 		//! RADIANCE-mode consumer must multiply by
-		//! `RISE::RadianceEtaScale( walkStack, scattered.ior_stack )`
-		//! (Utilities/IORStack.h) when it folds kray into its throughput,
-		//! and an IMPORTANCE-mode consumer must not.  See
+		//! `RISE::RadianceEtaScale( walkStack, scat.ior_stack )` (`scat` the
+		//! chosen `ScatteredRay` -- the field lives on a `ScatteredRay`, not
+		//! on the `ScatteredRayContainer` itself; helper declared in
+		//! Utilities/IORStack.h) when it folds kray into its throughput, and
+		//! an IMPORTANCE-mode consumer must not.  See
 		//! docs/REFRACTIVE_RADIANCE_SCALING.md for the site table.
 		RISEPel		kray;
 		Scalar		krayNM;						///< Same, for a single wavelength (spectral processing).  Same eta^2 contract as kray.

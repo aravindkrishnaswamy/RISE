@@ -8,13 +8,28 @@ IMPORTANCE-mode walks (light subpaths, photon tracers, SMS photon seeds,
 detector-sphere rigs) deliberately do not.
 
 Guard: [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp)
-(30 checks, ~27 s), plus `VCMStrategyBalanceTest` topology H (the red row)
+(38 checks, ~27 s), plus `VCMStrategyBalanceTest` topology H (the red row)
 and `BDPTStrategyBalanceTest` topology J (the cancellation pin). Review
 round 2 (2026-09-12) added `VCMStrategyBalanceTest` topology I and
 `BDPTStrategyBalanceTest` topology K, a consistency pin on the same
 scene family where the eye-side and light-tracing-splat strategies are
 MIS-combined for the same path rather than isolated (§2's corrected
-splat row).
+splat row). Review round 3 (2026-09-12) fixed two independent
+pre-existing `TranslucentSPF` bugs found auditing that fix (an
+unconditional-on-success-path `IORStack` leak plus a narrower
+overflow-carryover variant of it, and a channel-0-only lobe gate that
+silently dropped a reflectance/transmittance painter with zero red —
+`tests/TranslucentIORStackTest.cpp`, 44 checks), added a
+`perfectrefractor_material` variant of row A pinning the eta^2 factor's
+second producer (`RefractiveRadianceScalingTest`, 30 → 38 checks), and
+measured — for the first time — the counterfactual `VCMStrategyBalanceTest`
+topology I / `BDPTStrategyBalanceTest` topology K were designed to catch:
+applying the eta^2 factor to the light-tracing-splat side too. VCM's
+topology I catches it dramatically (+45.6-45.8%, ~5.7x its own 8% band);
+BDPT's topology K does NOT catch it at all (indistinguishable from the
+correct-code baseline on this scene) — see both files' topology headers
+for the measured ratios and the honest gap this leaves in topology K's
+coverage.
 
 ---
 
@@ -34,11 +49,7 @@ with `T` the Fresnel transmittance. Light physically entering water from
 air (`n1 = 1 → n2 = 1.33`) gets **brighter** by `1.7689`; light physically
 leaving water for air (`n1 = 1.33 → n2 = 1`) gets **dimmer** by `1/1.7689`.
 This is the textbook statement — a denser medium in equilibrium with an
-external field carries higher radiance. Note that §8's SMS chain
-evaluation and the RISE eye-walk convention below both use the WALK-order
-form instead (they walk backward from a shading point, same as an eye
-subpath) — see the worked example below for why that is the reciprocal
-of this formula, not a repetition of it.
+external field carries higher radiance.
 
 A path tracer's eye subpath does **not** follow that forward direction: it
 starts at the camera and walks *backwards* along the light's direction of
@@ -52,22 +63,44 @@ RADIANCE-mode walk must apply at that scatter is
 throughput *= (η_before / η_after)²
 ```
 
-which is the *reciprocal* of the medium-forward formula above applied to
-the same physical interface crossing, because the walk's `before → after`
-is the reverse of the light's own `n1 → n2` at that point. Worked example,
-camera in air: an eye ray that refracts from air into a submerged object
-has `η_before = 1` (air, where the walk arrived from) and `η_after = 1.33`
-(water, where the scattered ray goes), so its throughput is multiplied by
-`(1/1.33)² = 1/1.7689` — **dimmer** — even though a physical light ray
-crossing the *same* interface point in the *forward* direction (air into
-water) would be amplified by `1.7689` per the medium-forward formula
-above. Both statements are the same physical law; they differ only in
-which of the two opposite-direction rays through that point each one
-describes. §7's "camera INSIDE a refractor looking out: air-side content
-×n²" is the mirror case: the walk's `before` is water (where the camera
-sits) and `after` is air, so `(η_before/η_after)² = 1.33² = n²`, matching
-the medium-forward statement in that case because the walk and the light
-happen to travel the same way through a camera-side crossing.
+**(corrected, review round 3: this is the SAME number as the
+medium-forward formula above for the light actually being transported,
+NOT its reciprocal** — an earlier draft of this section claimed the
+reciprocal relationship and was wrong physics; see the worked example
+below for why.) The walk's `before → after` is the reverse of the
+direction the PHYSICAL light ray travels along that same segment, and
+reversing a ratio while also swapping which medium plays `n1` and which
+plays `n2` cancels out: the light ray that actually delivers radiance
+back to the camera along an eye-walk segment travels FROM `η_after`
+(where the walk is heading, deeper into the scene) TO `η_before` (where
+the walk came from, back toward the camera) — i.e. the walk's `before` is
+the light's DESTINATION medium `n2`, and the walk's `after` is the
+light's SOURCE medium `n1`. Substituting into the medium-forward formula,
+`(n2/n1)² = (η_before/η_after)²` — textually identical to the walk-order
+factor, not its inverse.
+
+Worked example, camera in air: an eye ray that refracts from air into a
+submerged object has `η_before = 1` (air, where the walk arrived from)
+and `η_after = 1.33` (water, where the scattered ray goes), so its
+throughput is multiplied by `(1/1.33)² = 1/1.7689` — **dimmer**. The
+physical light ray this eye-walk segment represents travels water → air
+to reach the camera (`n1 = 1.33`, `n2 = 1`), so the medium-forward formula
+gives `(n2/n1)² = (1/1.33)² = 1/1.7689` — the SAME `1/1.7689`, not
+`1.7689`. (The forward-direction ray through that same interface point,
+air → water, is a genuinely DIFFERENT physical ray — one that would carry
+radiance the other way, deeper into the water, and is not the ray this
+eye walk represents at all; comparing against it, as an earlier draft of
+this section did, is a category error dressed up as a reciprocal
+relationship.) §7's "camera INSIDE a refractor looking out: air-side
+content ×n²" is the identical identity applied the other way: the walk's
+`before` is water (where the camera sits) and `after` is air, so
+`(η_before/η_after)² = 1.33² = n²`, matching the medium-forward formula
+for the physical light ray travelling air → water to reach that camera
+(`n1 = 1, n2 = 1.33`, `(n2/n1)² = n²`). The two formulas agree in BOTH
+directions — there is no case in this document where the eye-walk
+convention and the medium-forward convention disagree; row A (`1/n²`)
+and row B (`n²`) of `RefractiveRadianceScalingTest` are both consistent
+with "identical," neither with "reciprocal."
 
 This is exactly the convention `tests/RefractiveRadianceScalingTest.cpp`'s
 own header states operationally ("Camera in air entering water: x
@@ -76,10 +109,10 @@ there is the walk's medium at each step, not the light's forward-medium
 order.
 
 An IMPORTANCE-mode walk (a light subpath, a photon) transports flux
-forward, in the light's own true direction, so it never needs this
-reciprocal correction — it gets no factor at all, conserved up to
-Fresnel. That asymmetry is not a convention; it *is* the non-symmetry of
-refractive scattering, and it is what makes a merge (a flux-carrying
+forward, in the light's own true direction, so it never applies this
+walk-order factor at all — it gets no factor beyond Fresnel, conserved up
+to Fresnel. That asymmetry is not a convention; it *is* the non-symmetry
+of refractive scattering, and it is what makes a merge (a flux-carrying
 photon paired with a radiance-carrying eye vertex) come out right.
 
 ## 2. What was wrong, and why it hid for years
@@ -336,7 +369,7 @@ is exact even across a layered SPF's internal chain:
 | `Materials/CompositeSPF.cpp` | 4 | — | no | telescoping (§6); an up-exit gets 1, a down-exit gets the single net factor |
 | `Materials/FabricSPF.cpp` | 2 | — | no | pure re-dispatch to the weave BSDF in a fibre frame; no medium change |
 | `Materials/PerfectRefractorSPF.cpp` | 1 push + 1 pop (mirrors `DielectricSPF`'s entry/exit shape) | RADIANCE (consumer-applied, same as `DielectricSPF`) | **yes, via the consumer** | a delta dielectric with no Fresnel-modulated tau/scattering knobs — otherwise the same push-on-entry / pop-on-exit shape as `DielectricSPF`, so it gets the debt-30 factor the same way, from the same consumer sites (§6.1's integrator/shader-op rows), not from any change inside this file itself. No test in the tree exercises `perfectrefractor_material` for the eta² factor specifically: `SPFBSDFConsistencyTest`, `IORStackSeedingRegressionTest`, and `ConnectionLegalityTest` all use it, but for BSDF/pdf/connection-legality correctness, not radiance scaling — the many caustic/SMS scenes under `scenes/Tests/` that use `perfectrefractor_material` are visual, not asserted. |
-| `Materials/PolishedSPF.cpp` | 0 (19 `ior_stack` reads, all `.top()` for Fresnel pricing) | — | no | transmits into the SAME object's substrate (a coat-over-substrate material), never pushing a new medium onto the stack — net factor 1 by construction, the same shape as `CoatedSPF`'s closed layer. |
+| `Materials/PolishedSPF.cpp` | 0 (19 `ior_stack` occurrences total, re-verified review round 3: 7 are `.top()` reads for Fresnel pricing at lines 94, 95, 351, 482, 483, 522, 523; the other 12 are `ISPF::Scatter`/`ScatterNM`/`Pdf`/`PdfNM` signature parameters and pass-through call arguments, not reads) | — | no | transmits into the SAME object's substrate (a coat-over-substrate material), never pushing a new medium onto the stack — net factor 1 by construction, the same shape as `CoatedSPF`'s closed layer. |
 | `Materials/BioSpecSkinSPF.cpp` | 0 | — | no | carries `ior_stack` only as an unused interface parameter (`Scatter`/`ScatterNM` never read it) — **not** `containsCurrent()`-gated the way `GenericHumanTissueSPF` is (see the next row); grep confirms zero non-signature references. |
 | `Materials/GenericHumanTissueSPF.cpp` | 0 (2 `containsCurrent()` reads) | — | no | reads `ior_stack.containsCurrent()` to branch its own scattering behaviour but never pushes or pops — no medium-change site here for the debt-30 factor to apply to. |
 | `Materials/WeaveSPF.cpp` | 0 | — | no | pure pass-through to its own `ScatterImpl`, same "thin transmission, no stack change" shape as `FabricSPF` above. |
@@ -345,16 +378,19 @@ is exact even across a layered SPF's internal chain:
 | `Materials/SubSurfaceScatteringSPF.cpp` back-face exit branch (RGB ~line 300-313, NM ~line 503-513) | 2 | RADIANCE / IMPORTANCE (mode-agnostic) | no — **arguably already correct; untested — NAMED RESIDUAL** | this branch (`// Also emit exit refraction if possible (for light subpaths that need to escape the medium)`) DOES touch the stack: `exitRay.ior_stack = new IORStack(ior_stack); exitRay.ior_stack->pop();`. It only fires when the walk is already inside the object at a back-face hit — reachable because `SubSurfaceScatteringMaterial::GetSpecularInfo` reports `canRefract = true` (`SubSurfaceScatteringMaterial.h` ~119, ~133), so `IORStackSeeding` (~194-209) tracks it and will seed a camera or light source starting inside an SSS object. When the walk was never actually seeded inside the object (the ordinary case: camera outside, BSSRDF entered and exited through the SAME point), this pop is a logged no-op — `IORStack::pop`'s find-and-destroy silently fails because the object was never pushed. When the walk WAS seeded inside (a submerged SSS object, or a camera embedded in one), this pop is a REAL exit transition and the debt-30 consumer-side factor at `RadianceEtaScale` fires exactly as it would for any other material's push/pop. No existing test exercises this branch with a seeded-interior walk. See §10.1(a)/(b). |
 
 **Is this table exhaustive over `src/Library/Materials`?** (review round
-2, 2026-09-12) `grep -ln 'ior_stack\|IORStack' src/Library/Materials/*.cpp`
-returns 24 files. Of those, only four actually push or pop the stack
+2, 2026-09-12; recount verified review round 3, 2026-09-12 — the earlier
+"24"/"20" were an arithmetic slip against this section's OWN enumeration,
+which already summed to 25/21) `grep -ln 'ior_stack\|IORStack'
+src/Library/Materials/*.cpp` returns **25** files. Of those, only four
+actually push or pop the stack
 (`grep -c 'ior_stack->push\|ior_stack\.push\|->pop()\|new IORStack'` > 0):
 `DielectricSPF.cpp` and `TranslucentSPF.cpp` (both covered at length in
 §2/§6/§6.1's `TranslucentSPF` discussion and C1 of this round's fix, not
 repeated as a table row here), `PerfectRefractorSPF.cpp` and
-`SubSurfaceScatteringSPF.cpp` (both rows above). Of the remaining 20, six
-are covered by name above (`CoatedSPF`, `CompositeSPF`, `FabricSPF`,
-`PolishedSPF`, `BioSpecSkinSPF`, `GenericHumanTissueSPF`, `WeaveSPF` —
-seven, not six) because they read the stack (`.top()` or
+`SubSurfaceScatteringSPF.cpp` (both rows above). Of the remaining **21**,
+seven are covered by name above (`CoatedSPF`, `CompositeSPF`, `FabricSPF`,
+`PolishedSPF`, `BioSpecSkinSPF`, `GenericHumanTissueSPF`, `WeaveSPF`)
+because they read the stack (`.top()` or
 `containsCurrent()`) without ever changing it. The remaining files
 (`AshikminShirleyAnisotropicPhongSPF`, `CoatedBRDF`, `CookTorranceSPF`,
 `GGXSPF`, `HairBSDF`, `IMaterial.cpp`, `IsotropicPhongSPF`,
@@ -648,49 +684,69 @@ tree currently uses a spatially-varying `ior` painter, so this is
 unexercised, not measured to be wrong. Full detail in the
 `RadianceEtaScale` doc comment (`IORStack.h`).
 
-### 10.3 Named residuals: two pre-existing `TranslucentSPF` bugs (review round 2, NOT fixed here)
+### 10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak (review round 2, NOT fixed here)
 
-Found while auditing the exit-loop fix (C1) for this round; both are
-independent of the debt-30 eta² factor and are recorded here, and as
-debt 31 in [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md), rather
-than fixed in this pass.
+Found while auditing the exit-loop fix (C1 of review round 2) for that
+round; independent of the debt-30 eta² factor and recorded here, and as
+debt 31(a) in [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md),
+rather than fixed in this pass.
 
-- **(a) Guided-direction IOR-stack leak.** The translucent exit lobe
+**(review round 3 correction)** An earlier draft of this item claimed
+`PathTracingIntegrator.cpp ~line 553` AND `BDPTIntegrator.cpp ~line 161`
+"both accept any non-delta `eRayDiffuse`/`eRayReflection` scatter." Only
+PT's `GuidingSupportsSurfaceSampling` does that
+(`return scat.type == ScatteredRay::eRayDiffuse || scat.type ==
+ScatteredRay::eRayReflection;`, gated on `!scat.isDelta`); BDPT's own
+`GuidingSupportsSurfaceSampling` (`BDPTIntegrator.cpp` ~line 161) admits
+only `eRayDiffuse` (`return !scat.isDelta && scat.type ==
+ScatteredRay::eRayDiffuse;`) — `eRayReflection` is excluded there. The
+translucent exit lobe (`front`, type `eRayDiffuse`, non-delta) is
+admitted by BOTH functions regardless of this difference, since it is
+always `eRayDiffuse`, so the leak description below is unaffected by
+the correction — only the parenthetical about what else each function
+admits was wrong.
+
+- **Guided-direction IOR-stack leak.** The translucent exit lobe
   (`front`, type `eRayDiffuse`, non-delta) is admitted by
-  `GuidingSupportsSurfaceSampling` (`PathTracingIntegrator.cpp`
-  ~line 553; `BDPTIntegrator.cpp` ~line 161 — both accept any non-delta
-  `eRayDiffuse`/`eRayReflection` scatter) even though it carries a
-  POPPED `ior_stack` (`TranslucentSPF.cpp` ~line 248). When the path
-  guiding field intercepts that vertex and substitutes a guided
-  direction for the SPF's own sampled one, PT sets
-  `traceIorStack = &iorStack` (`PathTracingIntegrator.cpp` ~line 3205,
-  ~line 3260) — the PRE-scatter stack, not the SPF's `pS->ior_stack` —
-  so the exit lobe's pop never reaches the continuation ray, and the
-  translucent object silently stays on the stack. Every subsequent hit
-  on that object then reads `containsCurrent() == true` and
-  misclassifies as "exiting" (`bEntering == false`) when it should be
-  entering fresh. Failing input: any scene with path guiding enabled
-  and a `translucent_material` object, once training has populated
-  enough of the guiding field to intercept a sample at that vertex.
-- **(b) `ScatteredRayContainer` overflow leak in the per-channel loop.**
-  `TranslucentSPF.cpp`'s per-channel loops (~line 162-168 on entry; the
-  fixed exit-side loop has the analogous allocation shape) `new`
-  a fresh `IORStack` each iteration and call `scattered.AddScatteredRay`
-  immediately. `AddScatteredRay` clears the local ray's `delete_stack`
-  to false ONLY on success (`ScatteredRayContainer.cpp` ~line 42); on
-  overflow (`freeidx >= kCapacity`) it returns false and leaves
-  `delete_stack` exactly as it found it. So: iteration `i` succeeds
-  (`trans.delete_stack` flips to false), iteration `i+1` overwrites
-  `trans.ior_stack` with a freshly allocated pointer WITHOUT resetting
-  `delete_stack` back to true, and if THAT `AddScatteredRay` call then
-  fails, the new stack is neither stored in the container (so nothing
-  there will free it) nor freed by `trans`'s eventual destructor
-  (because `delete_stack` is still stuck at false from the prior
-  success) — an orphaned heap allocation. Failing input: any scene that
-  drives `ScatteredRayContainer` close to `kCapacity` before reaching a
-  `translucent_material`'s per-channel branch, which is reachable
-  through `CompositeSPF`/`CoatedSPF` re-dispatch adding their own lobes
-  to the same container ahead of a wrapped `TranslucentSPF`.
+  `GuidingSupportsSurfaceSampling` in both integrators (see the
+  correction above) even though it carries a POPPED `ior_stack`
+  (`TranslucentSPF.cpp` ~line 248). When the path guiding field
+  intercepts that vertex and substitutes a guided direction for the
+  SPF's own sampled one, PT sets `traceIorStack = &iorStack`
+  (`PathTracingIntegrator.cpp` ~line 3205, ~line 3260) — the
+  PRE-scatter stack, not the SPF's `pS->ior_stack` — so the exit lobe's
+  pop never reaches the continuation ray, and the translucent object
+  silently stays on the stack. Every subsequent hit on that object then
+  reads `containsCurrent() == true` and misclassifies as "exiting"
+  (`bEntering == false`) when it should be entering fresh. Failing
+  input: any scene with path guiding enabled and a `translucent_material`
+  object, once training has populated enough of the guiding field to
+  intercept a sample at that vertex.
+
+**What used to be item (b) here is CLOSED, not a residual.** An earlier
+draft described a `ScatteredRayContainer` overflow-only leak in the
+entry per-channel loop. Review round 3's audit of that same loop for C1
+(this document's §2/§6.1 `TranslucentSPF` discussion) found the leak is
+actually far WORSE than overflow-only: it is UNCONDITIONAL on the
+SUCCESS path — every anisotropic-N entry `Scatter` call leaked two
+`IORStack`s regardless of container occupancy, because the loop never
+re-armed `delete_stack` before each new allocation (fixed; see the
+`TranslucentSPF.cpp` commit history for this round). Auditing that fix
+against the ORIGINAL overflow-only framing then surfaced a narrower
+residual the success-path fix alone did not close: after re-arming,
+an iteration whose `AddScatteredRay` call FAILS (overflow) still
+retains ownership of its own stack, but a SUBSEQUENT (non-last)
+iteration's `new IORStack` would silently overwrite that pointer
+without freeing it — orphaning it. That was also closed in the same
+round (guard-and-free before each reassignment). The exit-side loop
+never had either shape: it never assigns `ior_stack` inside its
+per-channel loop at all (its only stack-bearing allocation, `front`'s
+pop, is a single assignment made ONCE, outside and after both branches
+— see `TranslucentSPF.cpp` ~line 257). Debt 31 in
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) keeps only item
+(a) (the guided-direction leak above); the former item (b) is removed,
+not merely marked fixed, since both of its sub-shapes are now closed by
+code, not by documentation.
 
 ## 11. Cross-references
 

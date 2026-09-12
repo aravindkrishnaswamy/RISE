@@ -1540,6 +1540,53 @@ static void TestSubmergedFloorCancellation()
 // never resolves the emitter's disk directly -- so it uses its own,
 // tighter 30%/100% tail bands with headroom over the measured 6-9%
 // (p99) and 8% (max) spread).
+//
+// MEASURED COUNTERFACTUAL, AND AN HONEST GAP (debt 30 review round 3,
+// C4).  This topology's own header (above) claims it "pins" the
+// cross-strategy MIS combination and would catch a future change that
+// applies the eta^2 factor to the t==1 splat by mistake.  That claim
+// was never measured.  Measured once, this round: temporarily applied
+// `RadianceEtaScale` inside `GenerateLightSubpathImpl`
+// (BDPTIntegrator.cpp), mirroring the eye-side site verbatim -- the
+// exact wrong edit this row is supposed to catch -- rebuilt, ran this
+// test twice: BDPT/PT mean 0.0126348/0.0124913 = 1.01149 and
+// 0.0126287/0.0124948 = 1.01072 (spread 0.00077, ~0.08%). Reverted
+// immediately after (`git diff --stat src/` empty, library rebuilt
+// clean). BOTH counterfactual runs land INSIDE this file's own
+// previously-measured correct-code range (1.008-1.011, this document's
+// header above) -- the wrong edit is statistically INDISTINGUISHABLE
+// from the correct baseline on this scene.
+//
+// **This row does NOT catch the bug it was written to guard against,
+// and tightening the 8% band would not fix that** -- the counterfactual
+// signal here is ~0.1 percentage points, not a few points hiding near
+// an 8% edge; no band width between 0% and 8% would separate 1.011
+// (wrong) from 1.008-1.011 (correct), because they are the same number
+// within this scene's own MC noise. The likely mechanism (not directly
+// instrumented this round): BDPT's power-2 MIS heuristic gives the
+// t==1 light-tracing-splat strategy a small weight `w_{t=1}` relative
+// to the total for THIS scene, because the competing eye-side
+// strategies (s=0 direct BSDF-sampled emitter, s=1 NEE off the
+// submerged floor) are low-variance, well-conditioned direct-lighting
+// estimators that dominate the MIS-combined estimate for a single flat
+// ceiling patch lit through one delta interface -- the same reason a
+// t==1 splat's MIS weight was found to vanish for a pinhole camera in
+// unrelated env-IBL work (see the env-S0/env-NEE partition
+// investigation referenced from CLAUDE.md's high-value facts). A
+// wrongly-scaled but small-weight contributor moves the combined
+// estimate by a correspondingly small amount, invisible against this
+// scene's own noise floor. VCMStrategyBalanceTest's twin, topology I,
+// reaches the OPPOSITE conclusion on the IDENTICAL wrong edit (VCM has
+// no eye-side strategy competing with its light-tracing splat on THIS
+// scene the way BDPT's s=0/s=1 do, so the splat is not diluted) --
+// +45.6-45.8% there, comfortably caught by the same 8% band. Net: this
+// specific bug class (a wrongly-applied light-side eta^2 factor) is
+// caught by VCM's topology I, not by BDPT's topology K; topology K's
+// real, demonstrated value is the OTHER regressions it was already
+// measured to catch (an asymmetric factor applied to only one of the
+// eye-side strategies, or dropped from them) -- this counterfactual
+// only tested the splat-side direction, which happens to be the one
+// this scene's MIS weighting hides.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSubmergedCeilingK =
 	"film\n"
