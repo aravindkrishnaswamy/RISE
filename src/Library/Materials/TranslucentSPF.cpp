@@ -131,7 +131,13 @@ void TranslucentSPF::Scatter(
 				trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
 				trans.isDelta = false;
 				trans.ior_stack = new IORStack( ior_stack );
-				trans.ior_stack->push( 1.0 );
+				// translucent_material has no ior parameter -- there is no
+				// second medium to enter, so re-push the enclosing medium's
+				// own IOR (RadianceEtaScale then sees before==after and
+				// returns exactly 1) rather than fabricating a jump to
+				// air's 1.0, which would misprice a translucent object
+				// nested inside water or glass.
+				trans.ior_stack->push( ior_stack.top() );
 				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 				scattered.AddScatteredRay( trans );
 			} else {
@@ -152,7 +158,10 @@ void TranslucentSPF::Scatter(
 					trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
 					trans.isDelta = false;
 					trans.ior_stack = new IORStack( ior_stack );
-					trans.ior_stack->push( 1.0 );
+					// See the comment on the single-color-component branch
+					// above: translucent_material has no ior, so re-push
+					// the enclosing medium's own IOR rather than 1.0.
+					trans.ior_stack->push( ior_stack.top() );
 					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 					scattered.AddScatteredRay( trans );
 				}
@@ -302,7 +311,10 @@ void TranslucentSPF::ScatterNM(
 			trans.pdf = (Nval + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval );
 			trans.isDelta = false;
 			trans.ior_stack = new IORStack( ior_stack );
-			trans.ior_stack->push( 1.0 );
+			// NM twin of the RGB entry lobe above: translucent_material has
+			// no ior parameter, so re-push the enclosing medium's own IOR
+			// rather than fabricating a jump to air's 1.0.
+			trans.ior_stack->push( ior_stack.top() );
 			GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 			scattered.AddScatteredRay( trans );
 		}
