@@ -231,6 +231,34 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	return s;
 }
 
+// Exact measurement oracle: surface RGB with coverage and already
+// composited RGB with alpha one describe the same sensor radiance.
+static bool TestCompositedStats()
+{
+	CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+	cap->width = 2;
+	cap->height = 1;
+	cap->pixels = { RISEColor(RISEPel(0.8, 0.4, 0.2), 0.25),
+	                RISEColor(RISEPel(0.0, 0.0, 0.0), 0.0) };
+	const ImageStats surface = ComputeStats(*cap);
+	cap->pixels[0] = RISEColor(RISEPel(0.2, 0.1, 0.05), 1.0);
+	const ImageStats composite = ComputeStats(*cap);
+	const double expected[] = {0.1, 0.05, 0.025};
+	bool valid = surface.valid && composite.valid;
+	for (unsigned c = 0; c < 3; ++c) {
+		valid = valid && std::fabs(surface.mean[c] - expected[c]) < 1e-12
+		              && std::fabs(surface.mean[c] - composite.mean[c]) < 1e-12;
+	}
+	Check(valid, "capture statistics compose coverage alpha over black");
+	if (!valid) {
+		std::cout << "  surface mean R=" << surface.mean[0]
+		          << " composited mean R=" << composite.mean[0]
+		          << " expected R=" << expected[0] << std::endl;
+	}
+	cap->release();
+	return valid;
+}
+
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
 	char path[512];
@@ -1424,6 +1452,8 @@ static void TestSubmergedCeilingMISCombination()
 int main()
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
+
+	if (!TestCompositedStats()) return 1;
 
 	TestDeltaOmniLight();
 	TestMeshEmitterOnly();
