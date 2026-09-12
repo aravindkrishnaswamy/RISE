@@ -100,7 +100,14 @@ void TranslucentSPF::Scatter(
 		front.kray = pRefFront->GetColor(ri);
 		front.type = ScatteredRay::eRayDiffuse;
 
-		if( front.kray[0] > 0 ) {
+		// MaxValue, not channel 0 alone (C2, review round 3): a reflectance
+		// painter like (0, 0.5, 0.5) has zero red but non-zero green/blue,
+		// and gating on channel 0 alone dropped the WHOLE lobe -- 100% of
+		// the green/blue energy along with it.  The exit branch's
+		// equivalent gate (below) already uses
+		// `ColorMath::MaxValue(front.kray) > 0`; this makes the entry gate
+		// consistent with it.
+		if( ColorMath::MaxValue(front.kray) > 0 ) {
 			rv = GeometricUtilities::Perturb( n,
 				acos( sqrt( sampler.Get1D() ) ),
 				TWO_PI * sampler.Get1D() );
@@ -116,7 +123,9 @@ void TranslucentSPF::Scatter(
 		trans.kray = pTrans->GetColor(ri);
 		trans.type = ScatteredRay::eRayTranslucent;
 
-		if( trans.kray[0] > 0 ) {
+		// MaxValue, not channel 0 alone -- see the front-lobe gate above
+		// (C2, review round 3) for the rationale; same trap, same fix.
+		if( ColorMath::MaxValue(trans.kray) > 0 ) {
 			myonb.FlipW();
 
 			const ScalarTriple Nfactor_t = pN->GetValuesAt(ri); const RISEPel Nfactor( Nfactor_t.v[0], Nfactor_t.v[1], Nfactor_t.v[2] );
@@ -157,6 +166,26 @@ void TranslucentSPF::Scatter(
 					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 					trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
 					trans.isDelta = false;
+					// `trans` is ONE local reused across all three loop
+					// iterations.  `AddScatteredRay` only clears
+					// `delete_stack` to false on the CALLER's local after a
+					// successful memcpy (ScatteredRayContainer.cpp) -- it does
+					// NOT touch the value that gets memcpy'd INTO the stored
+					// copy, which is whatever `delete_stack` reads at the
+					// moment of the call.  Iteration 0 starts from the
+					// freshly-constructed `trans` (delete_stack==true from
+					// ScatteredRay's ctor), so its stored copy correctly owns
+					// the stack.  Without this re-arm, iterations 1 and 2
+					// would memcpy a stored copy with `delete_stack==false`
+					// (left over from iteration 0's post-add reset on the
+					// local) alongside a BRAND NEW `IORStack` pointer that
+					// copy is the only reference to -- an unconditional,
+					// two-per-call leak on the success path.  Re-arming right
+					// before every new allocation makes each iteration's
+					// stored copy independently own its own stack, matching
+					// the exit loop below (which never assigns `ior_stack` at
+					// all, so it never needed this).
+					trans.delete_stack = true;
 					trans.ior_stack = new IORStack( ior_stack );
 					// See the comment on the single-color-component branch
 					// above: translucent_material has no ior, so re-push
