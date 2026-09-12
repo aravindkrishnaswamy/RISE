@@ -207,15 +207,17 @@ conditional diffuse exit only; full mixture/reverse densities and NEE
 state are DL-41, BSDF amplitudes are DL-38, and guiding stack propagation
 is DL-03. See [closure and audit](DL02_TRANSLUCENT_EXIT_DENSITY.md).
 
-**DL-03 (TranslucentSPF guided-direction IOR-stack leak).** Add a scene with
-path guiding enabled (`use_path_guiding true`, enough samples to train the
-field) and a `translucent_material` object; after a training pass, verify
-via a counter/log line in `PathTracingIntegrator` that when the guided field
-intercepts a translucent exit vertex, the substituted ray still uses the
-SPF's `pS->ior_stack` (post-pop) rather than the pre-scatter `iorStack`.
-Fixed when a later hit on the same object after a guided exit reads
-`bEntering == true`, not `false`; a red-proof test should assert on the
-`IORStack::containsCurrent()` state after a guided translucent exit.
+**DL-03 (TranslucentSPF guided-direction IOR-stack leak).** Add a trained
+path-guiding regression with a translucent exit that is demonstrably
+eligible for a guided substitution. Ordinary PT translucent entry and
+backscatter produce specular-classified arrivals, and GuidingEffectiveAlpha
+disables guiding for those arrivals: a trained scene alone is insufficient.
+Use an explicitly seeded guide-eligible PT state or verified BDPT eye/light
+coverage, and assert a positive count of substituted translucent exits.
+Then assert the substituted ray carries the SPF's post-pop `pS->ior_stack`,
+not the pre-scatter stack. A later hit on the same object must read
+`bEntering == true`, with `IORStack::containsCurrent()` false after the exit.
+Zero intercepted exits must fail the test rather than count as a pass.
 
 **DL-04 (SSS family eta^2 direction).** Build the two-material observable
 the doc names: a semi-infinite slab as (a) a `dielectric_material` shell

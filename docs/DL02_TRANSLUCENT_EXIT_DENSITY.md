@@ -167,3 +167,11 @@ of a mixture below alpha=1 retains exit support. Complete conditional-lobe
 guiding coverage belongs with the remaining transport work; no unsupported
 numeric bias or zero-support claim is recorded for that normal alone.
 The final fresh review verdicts are in the standalone report.
+
+
+Round 2 examined `30ef1e5e` and found no scoped DL-02 P1/P2 issue. Its
+transport reviewer requested a DL-03 test-recipe clarification: require
+positive interception of a guide-eligible exit, since ordinary PT
+specular arrivals disable guiding. The ledger recipe now explicitly fails
+on zero interceptions and names seeded PT state or verified BDPT coverage.
+This is documentation only; the gated source and tests are unchanged.
