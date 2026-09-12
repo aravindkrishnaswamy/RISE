@@ -242,11 +242,21 @@ static void TestGuidedContinuationStack()
 	Check(GuidedContinuationIORStack(selected,before,rig,selected.ray.Dir()) == &after,
 		"DL-03 unchanged RIS candidate preserves existing SPF state");
 	rig.vGeomNormal = Vector3(0,0,1);
+	rig.ray.Set(Point3(0,0,1),Vector3(0,0,-1));
 	selected.ray.Set(Point3(0,0,0),Vector3(0,0,-1));
 	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8)) == &after,
 		"DL-03 same-side transition works for negative selected hemisphere");
 	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8)) == &before,
 		"DL-03 opposite positive hemisphere retains input state");
+	rig.ray.Set(Point3(0,0,-1),Vector3(0,0,1));
+	rig.onb.CreateFromW(Vector3(std::sqrt(3.0)/2,0,.5));
+	selected.ray.Set(Point3(0,0,0),Vector3(std::sqrt(3.0)/2,0,-.5));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(-.6,0,-.8)) == &before,
+		"DL-03 tilted inward SPF sample must not pop a distinct inward guide");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8)) == &after,
+		"DL-03 outward guide crosses despite tilted inward SPF sample");
+	Check(GuidedContinuationIORStack(selected,before,rig,selected.ray.Dir()) == &after,
+		"DL-03 exact unchanged tilted SPF sample retains legacy state");
 	selected.ior_stack = 0;
 	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8)) == &before,
 		"DL-03 absent selected transition retains input state");
