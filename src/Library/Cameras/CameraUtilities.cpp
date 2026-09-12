@@ -252,8 +252,11 @@ namespace {
 		// aperture cosine and the aperture area -- i.e. what is left
 		// once the caller's 1/p_w has cancelled the 1/A_lens:
 		//
-		//     We * cos(theta) * A_lens = d^2 / (W * H * cos^3(theta))
+		//     We * cos(theta) * A_lens = k / (W * H * cos^3(theta))
 		//
+		// with k = GetImagePlanePixelDensity() = d^2 / pixelAR, d the
+		// image-plane distance in PIXELS (see the note in
+		// PdfDirectionThinLens for where the 1/pixelAR comes from).
 		// A_lens is GONE.  That is the whole of debt 28: a thin lens
 		// gathers exactly as much radiance per unit film area as a
 		// pinhole of the same field of view (opening up trades depth of
