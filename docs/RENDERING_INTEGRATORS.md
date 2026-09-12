@@ -333,7 +333,7 @@ Two practical considerations:
   `pathtracing_spectral_rasterizer` for new scenes; the legacy
   chunk stays around for custom spectral shader-op chains.
 
-## 7.1 The camera path vertex under a finite aperture
+## 6.1 The camera path vertex under a finite aperture
 
 How BDPT and VCM treat the camera end of a path when the camera is a
 `thinlens_camera` rather than a pinhole.  Written up because debt 28
@@ -650,7 +650,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      the origin, so the lens-centre projection now inverts lens SHIFT
      and focal-plane TILT instead of ignoring them.
   5. BDPT's eye-subpath camera vertex 0 sits at `cameraRay.origin`
-     when the aperture is finite (see §7.1 below), not at
+     when the aperture is finite (see §6.1 above), not at
      `GetLocation()`.
 
   **Before / after**, 160×120 / 16 spp, `oidn_denoise FALSE`,
@@ -800,8 +800,11 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
     as a skip rather than a pass or a fail.  At the default seed base
     every row settles at the K = 12 minimum.
   - **Tidal then reads −0.2443 with SE 0.0179** (−0.2432 / 0.0173 on
-    the previous run) — **13.6 standard errors outside the band**,
-    reproducibly.
+    the previous run) — about **2.5 standard errors outside the 0.20
+    band** per run (`(0.2443 − 0.20)/0.0179`; the figure "13.6" an
+    earlier draft quoted here is |mean|/SE, the distance from ZERO), and
+    the real argument is reproducibility: five further fresh runs landed
+    in −0.252…−0.273, none passing.
 
   So the row is a real BDPT-vs-PT disagreement, not a noisy one.  The
   masked set lands on pixels roughly 30× darker than the frame average

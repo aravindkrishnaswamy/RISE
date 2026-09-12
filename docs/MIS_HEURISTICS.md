@@ -238,7 +238,7 @@ What the camera vertex's flags DO decide:
 
 Full treatment, including why RISE's pinhole importance carries `cos³`
 where PBRT-v4's raw `We` carries `cos⁴`, is in
-[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §7.1; the defect
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §6.1; the defect
 that made it matter is debt 28 in the same file's §7.
 
 ## When BDPT and VCM disagree on the same scene
