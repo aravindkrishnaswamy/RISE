@@ -39,6 +39,9 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-01~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 3 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF RGB/NM exit-weight divergence~~ | CLOSED 2026-09-12 | `1239edf2`: `TranslucentSpectralParityTest: 676 checks, 0 failures` (red: 174 failures); primary-layer tau paid once at entry, Beer-only exit/backscatter parent in both pipes. See [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md). | S | physics-bias | user-visible |
 | ~~DL-02~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 4 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF exit-density support and spectral shape mismatch~~ | CLOSED 2026-09-12 | `a041e51d`: `TranslucentSpectralParityTest: 1918 checks, 0 failures` (red: 324 failures). RGB/NM diffuse exits now share positive-shading-hemisphere cosine sampling/evaluation. Full mixture/reverse density remains DL-41. See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). | S | physics-bias | user-visible |
 | ~~DL-36~~ | ~~SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10~~ | ~~Bounded same-luminary neighbour read lacked a regression~~ | CLOSED 2026-09-12 (consistency pin) | `ac9891f3`: SignalEmitterRecordTest --louvres-only reports `Passed: 16  Failed: 0` against the unchanged library. A real two-blade luminary proves accepted upper-blade proximity=0.5 versus sampled lower-blade proximity=0, with sample geometry preserved. Bounded approximation retained as permitted by recipe. See [DL-36 closure](DL36_EMITTER_NEIGHBOUR_PIN.md). | S | physics-bias | user-visible (bounded approximation retained) |
+| DL-48 | DL04_SSS_RADIANCE_DECISION.md: Sw normalization | SSS directional transmission uses the wrong cosine-hemisphere normalization | OPEN-confirmed (analytic/static evidence; red-proof pending) | BSSRDFSampling, RandomWalkSSS and BSSRDFEntryAdapters use c=(41-20*F0)/42 for Schlick transmission, whose actual cosine-hemisphere integral is 20*(1-F0)/21. The normalized directional integral is therefore not one. | S | physics-bias | user-visible (diffusion/random-walk subsurface transport) |
+| DL-50 | DL04_SSS_RADIANCE_DECISION.md: spectral survival | RandomWalkSSS NM exit pays free-flight survival transmittance twice | OPEN-confirmed (static evidence; red-proof pending) | RandomWalkSSS::SampleExit samples the distance-survival event, then multiplies throughputNM by exp(-sigma_t_nm*exitDist); RGB divides Tr by its exit-event probability. Neutral coefficients still diverge. | S | physics-bias | user-visible (spectral random-walk SSS) |
+| DL-51 | DL04_SSS_RADIANCE_DECISION.md: dormant exit fallback | Non-absorbing SubSurfaceScatteringSPF inside exit reads the current interior IOR as its destination before popping | OPEN-confirmed (static evidence; red-proof pending) | Scatter/ScatterNM use Nt=ior_stack.top() on the containsCurrent branch, so a seeded stack computes n_s to n_s Fresnel/Snell before attaching a popped stack. Shipped materials set bAbsorbBackFace=true and do not reach it; the default standalone SPF constructor permits it. | S | physics-bias | latent (standalone non-absorbing SPF; not shipped material behavior) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | DL-04 | REFRACTIVE_RADIANCE_SCALING.md §10.1 | Whether `SubSurfaceScatteringSPF`/`RandomWalkSSS`/`BSSRDFSampling::Sw` correctly omit the debt-30 eta^2 factor (telescoping argument) or need it (PBRT-style eta^2 divide) is undecided; direction not pinned down | OPEN-confirmed | Doc's own two-reading analysis (§10.1(a)/(b)); the disambiguating render (matched dielectric-shell-with-medium vs `subsurfacescattering_material`, submerged vs air camera) has not been produced — confirmed absent from `tests/` this sweep | M | physics-bias | user-visible (SSS in non-air medium only) |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
@@ -56,6 +59,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-38 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: independent residuals | Translucent exit weights lose their stateful extinction/scattering factors when reevaluated through the BSDF, including HWSS companions | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentSPF` has no `EvaluateKrayNM` override; PT HWSS companions use `TranslucentBSDF::valueNM*cos/pdf`, whose data omit extinction/scattering/inside state. `BDPTIntegrator::GenerateEyeSubpathImpl` / `GenerateLightSubpathImpl` reevaluate non-delta BSDF weights; VCM/MLT share these generators. | L | physics-bias | user-visible (translucent bidirectional/HWSS transport) |
 | DL-41 | DL02_TRANSLUCENT_EXIT_DENSITY.md: independent residual | Translucent Pdf/PdfNM omit Phong lobes and selection probabilities; reverse/NEE queries lack the full stateful mixture contract | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentSPF::Pdf` returns only diffuse cosine; BDPT eye/light forward densities include `selectProb`, while reverse `PathValueOps::EvalPdfAtVertex` calls Pdf/PdfNM directly. `LightSampler` area/environment RGB/NM NEE uses empty `defaultIOR`. | L | physics-bias | user-visible (translucent mixed-lobe MIS) |
 | DL-47 | DL03_GUIDED_IOR_CONTINUATION.md: guide-created entry residual | A guide can replace translucent entry reflection with transmission without generating the missing entry membership | OPEN-confirmed (static evidence; red-proof pending) | TranslucentSPF entry reflection is diffuse/non-delta with null ior_stack. TranslucentBSDF permits cross-side transmission; a positive guide PDF makes one-sample PT/BDPT accept it, but the null selected-stack case retains absent membership. The next physical exit is classified as entry. This absent-state producer contract predates DL-03. | L | physics-bias | user-visible (guided translucent entry from a reflection proposal) |
+| DL-49 | DL04_SSS_RADIANCE_DECISION.md: exterior index | SSS profile and random-walk boundary evaluations assume exterior air while surface sampling uses the actual enclosing IOR | OPEN-confirmed (static evidence; red-proof pending) | Profile Fresnel/GetIOR, RandomWalkSSS entry/exit refraction, PT/BDPT entry factors/adapters and rough SubSurfaceScatteringBSDF evaluations use absolute IOR against 1; SubSurfaceScatteringSPF reflection reads ior_stack.top(). Common scaling of exterior/interior indices changes an otherwise identical relative-index problem. | L | physics-bias | user-visible (SSS surrounded by non-air media) |
 | DL-24 | WETNESS_COAT_DESIGN.md §12 item 2 | `CompositeSPF`'s random walk loses ~96% of the energy in the coat-over-diffuse configuration wetness needs; this design routes around it rather than fixing it | OPEN-confirmed | Doc's own measured 96% figure (`WETNESS_COAT_DESIGN.md:101,454-488`); `CompositeSPF.cpp`'s 50/50 `Pdf` and top-wins `GetBSDF` architecture is unchanged by the tree's most recent commits touching that file (`7713e509`/`9e3cf85e`/`f4336aba` fix capacity naming, gap-slant-length and a parameter name, none touch the energy-loss mechanism), confirmed this sweep | L | energy-loss | user-visible (any `composite_material` coat-over-diffuse) |
 | DL-09 | REFRACTIVE_RADIANCE_SCALING.md §10.2 | `RadianceEtaScale` reads the IOR stack's push/pop-time values while `DielectricSPF`/`PerfectRefractorSPF` re-fetch the `ior` painter fresh at each hit; for a spatially-varying `ior` these can differ at an interior vertex (NEE/bounce before exit) | OPEN-confirmed, unexercised | `IORStack.h`'s `RadianceEtaScale` doc comment; re-checked this sweep: `grep -rl 'ior.*scalar_painter'` is NOT empty — `scenes/Tests/GUI/panel_stress_params.RISEscene:232` binds `ior panel_scalar_dispersion`, a `scalar_painter` — but that painter's body (`:182-188`) is three per-channel CONSTANT `param`s combined algebraically (`vec3(ior_r, ior_r+spread*0.5, ior_r+spread)`), with no positional (`P`) term, so it is not actually spatially-varying and does not exercise this row; still no scene binds a position-dependent `ior` | S | precision | internal (no scene exercises it yet) |
 | DL-10 | RENDERING_INTEGRATORS.md debt 28 (fisheye residual) | Fisheye camera's per-pixel solid angle is computed in the pre-stretch local frame while `mxTrans` applies `Stretch(pixelAR,1,1)`; at `pixelAR != 1` the world-space solid angle differs by an uncomputed direction-dependent Jacobian | OPEN-confirmed, unexercised | Doc's own analysis; confirmed no in-tree scene pairs `fisheye_camera` with non-square `pixelAR` (`grep -rl fisheye_camera scenes/` cross-checked against pixelAR values) this sweep | S | precision | internal (no scene exercises it yet) |
@@ -162,11 +166,11 @@ reflowed otherwise.
 
 ## Counts
 
-Updated by the 2026-09-12 DL-03 cleanup. The original sweep counts
+Updated during the 2026-09-12 DL-04 audit (DL-04 remains open). The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **42** (the original 36 minus DL-01/DL-02/DL-36/DL-03, plus independent
-  residuals DL-38 through DL-47; DL-35 remains deliberately absent)
+- OPEN-confirmed: **46** (the original 36 minus DL-01/DL-02/DL-36/DL-03, plus independent
+  residuals DL-38 through DL-51; DL-35 remains deliberately absent)
 - CLOSED-by-cleanup: **4** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`)
@@ -640,3 +644,38 @@ accounting is sufficient. Include multiple-lobe/composite ambiguity and
 coordinate with DL-41, while retaining DL-03's available-exit-state tests.
 This is static evidence with an executable red proof pending; it is not
 DL-46's initial-containment seeding failure.
+
+
+**DL-48 (SSS Sw cosine normalization).** Commit a numerical hemisphere
+integral test of the actual adapters and BSSRDFSampling directional helper
+across relative indices and require integral one; demonstrate the current
+non-unit result before changing c. Derive normalization from the same
+Fresnel law being evaluated, then update all sampled and reevaluated
+weights together (diffusion/RW, RGB/NM, PT/BDPT/VCM/MLT consumers). Confirm
+a conservative furnace without adding a separate eta-square multiplier.
+
+**DL-49 (SSS exterior IOR).** Write a design note for carrying the actual
+exterior index through profile, random-walk and directional evaluation
+contracts. Red-prove co-scaled exterior/interior indices with fixed ratio
+using the real integrator and seeded exterior stack, plus a rendered
+non-air enclosure case. Hold neutral coefficients, directions and lighting
+fixed so observer-interface changes cannot cancel the defect. Cover RGB/NM,
+profile variants, rough BSDF versus SPF, and bidirectional reevaluation.
+Do not encode a guessed constant or alter the complete-event telescoping
+convention to hide relative-index errors.
+
+**DL-50 (RW spectral survival double-count).** Use a real closed object
+and neutral coefficients, with deterministic sampler draws that select an
+exit before a volume collision. The conditional surviving weight must be
+one in both RGB and NM before angular factors; also compare unconditional
+Beer attenuation over repeated draws. Red-prove the NM extra transmittance
+then align it with the probability already paid by distance sampling.
+Keep angular/diffusion approximations separate from this survival weight.
+
+**DL-51 (standalone SSS exit destination IOR).** Construct the real SPF
+with bAbsorbBackFace=false and a seeded object stack inside a distinct
+enclosing medium. Red-prove Snell direction, Fresnel/TIR and popped state
+for RGB/NM at normal and oblique incidence. Resolve the exterior from the
+post-pop state when calculating exit optics. Include bAbsorbBackFace=true
+controls demonstrating shipped materials still absorb that inside hit;
+do not claim that the dormant fallback changes their supported topology.

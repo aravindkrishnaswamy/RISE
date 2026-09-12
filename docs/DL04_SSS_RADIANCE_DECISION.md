@@ -36,7 +36,7 @@ ordinary no-op pop either.
 
 A standalone SPF constructed with the flag false can reach the fallback.
 That is separate API behavior, not production BSSRDF coverage. Its current
-pre-pop destination-IOR read needs a separate defect assessment. The
+pre-pop destination-IOR read is tracked separately as DL-51. The
 camera in the main rendered comparison stays outside the SSS solid.
 
 ## Why the camera ratio is insufficient alone
@@ -80,17 +80,17 @@ bitwise repeatability under worker-side random scheduling.
 
 ## Distinct confounds identified before measuring
 
-- Exterior IOR is hardcoded as air in profile Fresnel and random-walk
+- DL-49: exterior IOR is hardcoded as air in profile Fresnel and random-walk
   refraction/entry factors, while surface SPF reflection reads the stack.
   Changing the surrounding medium is different from moving only the camera.
-- The implemented Schlick transmission has cosine-hemisphere integral
+- DL-48: the implemented Schlick transmission has cosine-hemisphere integral
   `20*(1-F0)/21`, while Sw uses `(41-20*F0)/42`. Those are different
   normalizations. This is not an eta-square omission. Independent exact
   arithmetic at eta=1.5 gives a normal conservative prediction of
   `1603/1675 = 0.957014925373` under an ideal unit-integral spatial profile. This
   is an analytical prediction, not a measured render; the exact arithmetic
   is retained with the evidence.
-- NM random-walk exit multiplies by survival transmittance after a sampled
+- DL-50: NM random-walk exit multiplies by survival transmittance after a sampled
   survival outcome; RGB divides by its event probability. Do not assume
   spectral agreement as an independent reference for this row.
 - Random-walk exits use a diffuse angular approximation; ballistic and
