@@ -22,6 +22,7 @@
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
+#include "../Utilities/BSSRDFSampling.h"
 
 namespace RISE
 {
@@ -40,8 +41,7 @@ namespace BSSRDFAdapters
 			const Scalar eta
 			) : pProfile( profile )
 		{
-			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-			const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+			const Scalar c = BSSRDFSampling::SchlickTransmissionNormalization( eta );
 			swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
 		}
 
@@ -90,8 +90,7 @@ namespace BSSRDFAdapters
 			const Scalar eta
 			) : ior( eta )
 		{
-			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-			const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+			const Scalar c = BSSRDFSampling::SchlickTransmissionNormalization( eta );
 			swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
 		}
 
