@@ -686,10 +686,12 @@ unexercised, not measured to be wrong. Full detail in the
 
 ### ~~10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED`
 
-PT and BDPT now resolve the continuation stack from the accepted direction:
-an outward guided exit preserves the SPF pop; an inward replacement retains
+Given an available selected exit transition, PT and BDPT now resolve the
+continuation stack from the accepted direction: an outward guided exit preserves the SPF pop; an inward replacement retains
 the input stack. Training, radiance eta and continuation consumers use that
-same state. Guide sampling and PDF values are unchanged.
+same state. Guide sampling and PDF values are unchanged. Guide-created
+entry transmission from a null-stack reflection proposal still lacks
+state generation and is tracked separately as DL-47.
 
 The real trained PT RGB/NM regression failed four assertions on unfixed
 `00bdcef5` (`d3a5e732` test). Each pipe recorded 45 outward substitutions

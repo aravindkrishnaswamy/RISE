@@ -8,7 +8,8 @@ light walks skipped the selected SPF stack whenever guiding replaced the
 direction. A translucent outward exit therefore lost its pop, and a later
 hit on that object was classified as another exit.
 
-The repair resolves one borrowed continuation-stack pointer. A replacement
+When the selected SPF sample supplies a transition, the repair resolves
+one borrowed continuation-stack pointer. A replacement
 on the same geometric side as the incoming ray crosses the boundary and
 keeps the selected post-scatter stack; an opposite-side replacement keeps
 the input stack.
@@ -157,3 +158,32 @@ pending, not an observed image result. Membership tracking must be separated
 from specular-refraction capability; this repair does not relabel translucent
 materials as specular. DL-03's seeded PT and actual-entry BDPT tests remain
 honest propagation fixtures and do not claim to close initial containment.
+
+
+## Guide-created entry residual
+
+Fresh transport review identified DL-47, a separate missing-state producer
+contract. At an outside translucent entry the selected diffuse reflection
+has no IOR-stack transition. An inward guide direction can nevertheless
+have positive TranslucentBSDF transmission and positive combined PDF; the
+one-sample PT and BDPT paths accept it while retaining absent membership.
+The next physical exit is therefore interpreted as entry. This behavior
+already exists on the base revision; preserving an available selected exit
+transition cannot manufacture a different lobe's missing entry state.
+The helper intentionally leaves null selected stacks unchanged.
+
+Static witness: incoming direction +Z, geometric/shading normal -Z,
+positive front reflectance and transmission, a selected outward reflection,
+and an accepted inward guide. The BSDF's cross-side branch is positive;
+the front SPF Pdf is zero there, but the guide term keeps the combined PDF
+positive. The null-stack return retains the outside stack. This is source
+reasoning, not an executed entry regression or measured image error.
+
+DL-47 needs material-aware state generation for the accepted direction,
+including ambiguous mixtures; guessing a generic push or rejecting a
+positive proposal without accounting for its probability would be an
+incorrect local shortcut. It is distinct from DL-46 initial containment
+and from changing a PDF alone. Current PT tests start after entry, and
+BDPT tests select actual SPF entry transmission, so neither is claimed as
+coverage of this missing entry-state case. DL-03 closes preservation of
+available selected exit state, not all guided material-state evaluation.
