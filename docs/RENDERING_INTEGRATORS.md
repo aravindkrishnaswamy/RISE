@@ -1092,17 +1092,17 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      the comment block above the entry per-channel loop in
      `TranslucentSPF.cpp` (~lines 169-203), and review round 4
      re-traced every add-success/add-failure combination independently.)
-  3. **RGB vs spectral exit-lobe weight divergence (OPEN, found review
-     round 4, pre-existing).**  `TranslucentSPF::Scatter`'s exit branch
-     weights the exit ray by extinction alone (`front.kray =
-     ColorMath::exponential( -distance*ab )`, `TranslucentSPF.cpp`
-     ~line 225) while `ScatterNM`'s exit branch also multiplies by the
-     transmittance painter (`front.krayNM = GuardedGetColorNM( *pTrans,
-     ri, nm ) * exp(...)`, ~line 384).  Failing input: a
-     `translucent_material` with `transmittance 0.4` exits at
-     0.4·e^(−κd) under a spectral rasterizer and at e^(−κd) under an
-     RGB one — a 2.5× RGB/NM disagreement on the same scene.  Which
-     side is right has not been decided; not touched by debt 30.
+  3. **~~RGB vs spectral exit-lobe weight divergence.~~ CLOSED 2026-09-12
+     — `1239edf2`, `TranslucentSpectralParityTest: 676 checks, 0 failures`.**
+     Both entry paths pay the primary-layer `tau`; each interior segment
+     now pays only Beer extinction before its exit/backscatter split.
+     The spectral parent weight incorrectly multiplied `tau` again,
+     affecting BOTH children. The red-proof on `6486656e` (test commit
+     `fc371041`) had 174 failures. This closes DL-01's lobe-weight
+     divergence, not item 4's directional/Pdf contract or DL-38's
+     separate BSDF/HWSS repricing gap. The actual scene parameter is
+     `tau`, not `transmittance`. See
+     [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
   4. **Spectral exit lobe is MIS-inconsistent with its own pdf (OPEN,
      found review round 4, pre-existing).**  `ScatterNM`'s exit ray
      samples and prices a Phong lobe (`Nval_front`, ~lines 426-434)
