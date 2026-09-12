@@ -47,6 +47,12 @@
 //      C. Mixed delta + mesh light
 //         — combines (A) and (B); validates the auto-radius pre-
 //         pass walks the entire light subpath set correctly.
+//      D. Thin-lens (FINITE-APERTURE) camera at f/22, focused
+//      E. The same camera at f/2.8, defocused by ~4.8 pixels
+//         — VCM's t=1 splat (SplatLightSubpathToCamera) has to
+//         SAMPLE a point on the aperture, connect to THAT point and
+//         divide by its area density, which is what cancels the
+//         1/A_lens inside the thin-lens importance.  Debt 28.
 //
 //    Caustic-required scenes are out of scope here for the same
 //    reason as in BDPTStrategyBalanceTest: PT under-samples
@@ -438,12 +444,19 @@ static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
-	const Tolerances& tol = kStrictTolerances )
+	const Tolerances& tol = kStrictTolerances,
+	// Per-topology rasterizer strings.  Default to this file's shared
+	// 32-spp pair; topologies D / E override them with a 512-spp pair
+	// because a strongly defocused render is far noisier per pixel (see
+	// the comment above SceneCommonThinLens).  The two strings must
+	// still differ ONLY in the rasterizer chunk.
+	const char* ptRasterizer = kRasterizerPT,
+	const char* vcmRasterizer = kRasterizerVCM )
 {
 	std::cout << "Testing PT-vs-VCM: " << topologyName << std::endl;
 
-	const std::string ptScene  = std::string("RISE ASCII SCENE 7\n") + kRasterizerPT  + sceneCommonBlock;
-	const std::string vcmScene = std::string("RISE ASCII SCENE 7\n") + kRasterizerVCM + sceneCommonBlock;
+	const std::string ptScene  = std::string("RISE ASCII SCENE 7\n") + ptRasterizer  + sceneCommonBlock;
+	const std::string vcmScene = std::string("RISE ASCII SCENE 7\n") + vcmRasterizer + sceneCommonBlock;
 
 	const std::string ptPath  = WriteSceneToTempFile( ptScene.c_str(),  "pt"  );
 	const std::string vcmPath = WriteSceneToTempFile( vcmScene.c_str(), "vcm" );
@@ -542,6 +555,191 @@ static void TestMixedLights()
 		std::string( kSceneCommon ) + kLightOmni + kLightMesh );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topologies D / E: FINITE-APERTURE (thin-lens) camera.  Debt 28.
+//
+// The same two scenes as BDPTStrategyBalanceTest's topologies G / H;
+// that file carries the full derivation of the geometry (a 36 mm
+// sensor on a 15.1 mm lens is 100.0 deg of vertical field of view, the
+// emitter sits 0.5 above the receiver so the t=1 strategy carries real
+// MIS weight, and topology E's `focus_distance 0.03` puts a 4.8-pixel
+// circle of confusion on the receiver).
+//
+// VCM is hurt far worse than BDPT by this defect because its t=1
+// weight carries an explicit / mLightSubPathCount: on these scenes
+// BDPT's splat layer lands at ~6% MIS weight while VCM's lands near
+// full weight, so the same 1/(cos(theta)*A_lens) inflation shows up
+// roughly 60x larger in the VCM mean.
+//
+// The reference stays this file's legacy `pixelpel_rasterizer`: both
+// topologies are single-bounce direct lighting on one flat quad with a
+// non-scattering luminaire, so the direct-lighting-only shader chain
+// carries all the energy (the caveat above `kRasterizerPT` is
+// satisfied), and a thin lens changes only which ray each film sample
+// generates -- which the legacy rasterizer draws from
+// `ICamera::GenerateRay` exactly as the modern one does, so PT here has
+// the SAME defocus blur as VCM.  CROSS-CHECKED against
+// `pathtracing_pel_rasterizer` at the same 512 spp: focused 0.0462
+// legacy vs 0.0452 modern (+2.2%), defocused 0.0440 vs 0.0449 (-2.0%),
+// both comfortably inside the 8% band.
+//
+// 512 spp, not this file's usual 32: at 32 spp the defocused row's mean
+// swings ~5% run to run (per-pixel sigma/mu 156% against the focused
+// row's 23%), over half the band.  At 512 spp both rows are stable to
+// under 1% and the pair costs ~2 s.
+//
+// MEASURED PRE-FIX on this machine, VCM mean / PT mean (R channel):
+//   D (f/22,  focused):   18666.3 / 0.0461453 = 404511x over
+//   E (f/2.8, defocused):   302.401 / 0.0451259 =  6701x over
+// and POST-FIX (same run configuration):
+//   D: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
+//   E: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
+//////////////////////////////////////////////////////////////////////
+static std::string SceneCommonThinLens( const char* fstop, const char* focusDistance )
+{
+	return std::string(
+		"film\n"
+		"{\n"
+		"\twidth 32\n"
+		"\theight 32\n"
+		"}\n"
+		"\n"
+		"thinlens_camera\n"
+		"{\n"
+		"\tlocation 0 0 6\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tsensor_size 36\n"
+		"\tfocal_length 15.1\n"
+		"\tfstop " ) + fstop + "\n"
+		"\tfocus_distance " + focusDistance + "\n"
+		"}\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_albedo\n"
+		"\tcolor 0.5 0.5 0.5\n"
+		"}\n"
+		"\n"
+		"lambertian_material\n"
+		"{\n"
+		"\tname mat_diffuse\n"
+		"\treflectance pnt_albedo\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname quad\n"
+		"\tpta -20 -20 0\n"
+		"\tptb 20 -20 0\n"
+		"\tptc 20 20 0\n"
+		"\tptd -20 20 0\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname obj_quad\n"
+		"\tgeometry quad\n"
+		"\tmaterial mat_diffuse\n"
+		"}\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_emit_tl\n"
+		"\tcolor 1.0 1.0 1.0\n"
+		"}\n"
+		"\n"
+		"lambertian_luminaire_material\n"
+		"{\n"
+		"\tname mat_emit_tl\n"
+		"\texitance pnt_emit_tl\n"
+		"\tscale 20.0\n"
+		"\tmaterial none\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname quad_emit_tl\n"
+		"\tpta -0.5 0.5 0.5\n"
+		"\tptb 0.5 0.5 0.5\n"
+		"\tptc 0.5 -0.5 0.5\n"
+		"\tptd -0.5 -0.5 0.5\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname obj_emit_tl\n"
+		"\tgeometry quad_emit_tl\n"
+		"\tmaterial mat_emit_tl\n"
+		"}\n";
+}
+
+// 512-spp twins of kRasterizerPT / kRasterizerVCM -- identical in every
+// other respect so the pair still isolates the integrator.
+static const char* kRasterizerPT512 =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultDirectLighting\n"
+	"}\n"
+	"\n"
+	"pixelpel_rasterizer\n"
+	"{\n"
+	"\tmax_recursion 2\n"
+	"\tsamples 512\n"
+	"\tlum_samples 1\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_pt_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerVCM512 =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 3\n"
+	"\tmax_light_depth 3\n"
+	"\tsamples 512\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_vcm_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static void TestThinLensStoppedDown()
+{
+	RunTopologyTest( "thin-lens f/22 camera, focused (finite aperture)",
+		SceneCommonThinLens( "22", "6.0" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerVCM512 );
+}
+
+static void TestThinLensWideOpenDefocused()
+{
+	RunTopologyTest( "thin-lens f/2.8 camera, 4.8 px defocus (finite aperture)",
+		SceneCommonThinLens( "2.8", "0.03" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerVCM512 );
+}
+
 int main()
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
@@ -549,6 +747,8 @@ int main()
 	TestDeltaOmniLight();
 	TestMeshEmitterOnly();
 	TestMixedLights();
+	TestThinLensStoppedDown();
+	TestThinLensWideOpenDefocused();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

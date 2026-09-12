@@ -47,6 +47,13 @@
 //      F. Gapped thin weave curtain + full-width mesh area emitter
 //         — s=0 through a chain whose middle vertex was sampled as a
 //         delta, competing with s=1 NEE at that same mixed vertex.
+//      G. Thin-lens (FINITE-APERTURE) camera at f/22, focused
+//      H. The same camera at f/2.8, focused 5.97 m in front of the
+//         receiver (~4.8 pixel circle of confusion)
+//         — the t==1 light-tracing strategy has to SAMPLE a point on
+//         the aperture, connect to THAT point, and divide by its area
+//         density, which is what cancels the 1/A_lens inside the
+//         thin-lens importance.  Debt 28.
 //
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
@@ -635,12 +642,19 @@ static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
-	const Tolerances& tol = kStrictTolerances )
+	const Tolerances& tol = kStrictTolerances,
+	// Per-topology rasterizer strings.  Default to this file's shared
+	// 32-spp pair; topologies G / H override them with a 512-spp pair
+	// because a strongly defocused render is far noisier per pixel (see
+	// the comment above SceneCommonThinLens).  The two strings must
+	// still differ ONLY in the rasterizer chunk.
+	const char* ptRasterizer = kRasterizerPT,
+	const char* bdptRasterizer = kRasterizerBDPT )
 {
 	std::cout << "Testing PT-vs-BDPT: " << topologyName << std::endl;
 
-	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + kRasterizerPT   + sceneCommonBlock;
-	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPT + sceneCommonBlock;
+	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + ptRasterizer   + sceneCommonBlock;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + bdptRasterizer + sceneCommonBlock;
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "pt"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdpt" );
@@ -984,6 +998,212 @@ static void TestGappedCurtainAreaLight()
 // this as its legacy-rasterizer instance, now with the mechanism.
 //////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////
+// Topologies G / H: FINITE-APERTURE (thin-lens) camera.  Debt 28.
+//
+// `thinlens_camera` is the only RISE camera whose importance is emitted
+// from a surface of non-zero AREA.  Its importance carries a 1/A_lens
+// exactly because the t==1 light-tracing connection is supposed to
+// SAMPLE a point on that aperture with density 1/A_lens -- the two
+// cancel, and the contribution reduces to the pinhole's.  Connecting to
+// the lens CENTRE while keeping the 1/A_lens multiplies every t==1
+// contribution by 1/(cos(theta) * A_lens): the f/22 row's aperture
+// radius is 15.1 mm / 44 = 3.43e-4 scene units, area 3.70e-7, so the
+// splat layer comes out ~2.7e6 times too bright before MIS.
+//
+// WHY THIS GEOMETRY and not a copy of topology B's.  The t==1 strategy
+// only shows the defect if BDPT's MIS gives it non-negligible weight,
+// and its weight is set by the ratio (camera-side area density at the
+// light vertex) / (light-side area density at the same vertex) --
+// roughly pi * d^2 * r^2 / D^2 with d = H/(2 tan(fov/2)) the image-plane
+// distance in pixels, r the emitter-to-receiver distance and D the
+// camera distance.  Topology B's 30-degree/3.5 m/4 m numbers put that
+// ratio near 1.5e4, i.e. t==1 weight ~5e-9, and a 2.5e5x inflated splat
+// still moves the mean by 1e-3 -- the bug hides completely (measured:
+// BDPT/PT = 1.0010 on topology B's scene with an f/22 thin lens).  A
+// 100-degree lens at 6 m over an emitter 0.5 m above the receiver puts
+// the ratio near 4, i.e. t==1 weight ~0.06, which is the regime the
+// showcase scenes that surfaced debt 28 actually live in.
+//
+// Geometry:
+//   camera  (0, 0, 6) looking at the origin; 36 mm sensor / 15.1 mm
+//           lens = 2*atan(36/30.2) = 100.0 deg VERTICAL field of view
+//   receiver 40x40 Lambertian quad at z = 0 (large enough that the
+//           frame stays fully covered even under topology H's blur, so
+//           no partial-coverage edge pixel can confound the mean)
+//   emitter 1x1 luminaire quad at z = 0.5 facing the receiver
+//
+// Topology H's `focus_distance 0.03` puts the plane of focus 5.97 m in
+// front of the receiver.  Blur in PIXELS for a thin lens is
+//   H * f * |S2-S1| / (2 * N * S2 * (S1-f) * tan(fov/2))
+//     = 32 * 0.0151 * 5.97 / (2 * 2.8 * 6 * 0.0149 * 1.1918) = 4.8 px,
+// far too large for a centre-rasterized light-traced layer to hide
+// inside the pixel grid.  (A wide field of view and a big circle of
+// confusion pull against each other -- the blur formula divides by
+// tan(fov/2) -- which is why the focus plane has to come this close.)
+//
+// 512 spp, not this file's usual 32: the defocused row's per-pixel
+// sigma/mu is 156% against the focused row's 23%, so at 32 spp the mean
+// alone swings ~5% run to run, over half the 8% band.  At 512 spp both
+// rows are stable to under 1% (measured: focused 0.0453 / 0.0452,
+// defocused 0.0449 / 0.0452 across reruns) and the pair costs ~2 s.
+//
+// MEASURED PRE-FIX on this machine, BDPT mean / PT mean (R channel):
+//   G (f/22,  focused):   65.5184  / 0.0452077 = 1449x     over
+//   H (f/2.8, defocused):  1.10416 / 0.0448614 =   24.6x   over
+// and POST-FIX (same run configuration):
+//   G: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
+//   H: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
+// The f/22 row is the harsher of the two precisely because the defect
+// scales as 1/A_lens: stopping down 3 stops from f/2.8 to f/22 shrinks
+// the aperture area 62x and the pinhole-centre splat grows to match.
+//////////////////////////////////////////////////////////////////////
+static std::string SceneCommonThinLens( const char* fstop, const char* focusDistance )
+{
+	return std::string(
+		"film\n"
+		"{\n"
+		"\twidth 32\n"
+		"\theight 32\n"
+		"}\n"
+		"\n"
+		"thinlens_camera\n"
+		"{\n"
+		"\tlocation 0 0 6\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tsensor_size 36\n"
+		"\tfocal_length 15.1\n"
+		"\tfstop " ) + fstop + "\n"
+		"\tfocus_distance " + focusDistance + "\n"
+		"}\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_albedo\n"
+		"\tcolor 0.5 0.5 0.5\n"
+		"}\n"
+		"\n"
+		"lambertian_material\n"
+		"{\n"
+		"\tname mat_diffuse\n"
+		"\treflectance pnt_albedo\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname quad\n"
+		"\tpta -20 -20 0\n"
+		"\tptb 20 -20 0\n"
+		"\tptc 20 20 0\n"
+		"\tptd -20 20 0\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname obj_quad\n"
+		"\tgeometry quad\n"
+		"\tmaterial mat_diffuse\n"
+		"}\n"
+		"\n"
+		// The emitter has to sit CLOSE to the receiver -- see the
+		// MIS-weight arithmetic above -- so it is a small quad 0.5
+		// above the plane rather than kLightMesh's 4.0.
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_emit_tl\n"
+		"\tcolor 1.0 1.0 1.0\n"
+		"}\n"
+		"\n"
+		"lambertian_luminaire_material\n"
+		"{\n"
+		"\tname mat_emit_tl\n"
+		"\texitance pnt_emit_tl\n"
+		"\tscale 20.0\n"
+		"\tmaterial none\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname quad_emit_tl\n"
+		"\tpta -0.5 0.5 0.5\n"
+		"\tptb 0.5 0.5 0.5\n"
+		"\tptc 0.5 -0.5 0.5\n"
+		"\tptd -0.5 -0.5 0.5\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname obj_emit_tl\n"
+		"\tgeometry quad_emit_tl\n"
+		"\tmaterial mat_emit_tl\n"
+		"}\n";
+}
+
+// 512-spp twins of kRasterizerPT / kRasterizerBDPT.  Identical in every
+// other respect (same shader chain, same box filter, same denoiser
+// setting, same depth caps) so the pair still isolates the integrator.
+static const char* kRasterizerPT512 =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 512\n"
+	"\trr_min_depth 8\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/bdpt_balance_pt_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerBDPT512 =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 3\n"
+	"\tmax_light_depth 3\n"
+	"\tsamples 512\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/bdpt_balance_bdpt_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static void TestThinLensStoppedDown()
+{
+	RunTopologyTest( "thin-lens f/22 camera, focused (finite aperture)",
+		SceneCommonThinLens( "22", "6.0" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
+}
+
+static void TestThinLensWideOpenDefocused()
+{
+	RunTopologyTest( "thin-lens f/2.8 camera, 4.8 px defocus (finite aperture)",
+		SceneCommonThinLens( "2.8", "0.03" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -994,6 +1214,8 @@ int main()
 	TestOrthographicCamera();
 	TestBacklitThinCurtain();
 	TestGappedCurtainAreaLight();
+	TestThinLensStoppedDown();
+	TestThinLensWideOpenDefocused();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
