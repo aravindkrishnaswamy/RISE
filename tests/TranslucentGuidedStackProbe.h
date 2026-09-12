@@ -170,7 +170,7 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 					LightSampler* lightSampler = new LightSampler();
 					lightSampler->Prepare(*scene,LuminaryManager::LuminariesList());
 					integrator->SetLightSampler(lightSampler);
-					integrator->SetGuidingField(mode ? &guide : 0,mode ? &guide : 0,.8,1,1,
+					integrator->SetGuidingField(mode ? &guide : 0,mode ? &guide : 0,.8,2,2,
 						mode==2 ? eGuidingRIS : eGuidingOneSampleMIS,2);
 					RandomNumberGenerator rng(12601+trial);
 					EntrySampler sampler(rng,observation);
