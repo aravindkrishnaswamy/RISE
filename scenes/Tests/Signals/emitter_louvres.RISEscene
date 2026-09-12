@@ -1,0 +1,84 @@
+RISE ASCII SCENE 7
+# DL-36 consistency fixture. Both blades are ONE object. The probe for a
+# lower-blade sample along +Z hits the upper blade, 0.001 units away.
+# A separate box starts at Z=0.0015: proximity(0.001) is zero at the
+# sampled lower point but 0.5 at the intercepted upper point.
+film
+{
+ width 16
+ height 16
+}
+pinhole_camera
+{
+ location 0 -3 1
+ lookat 0 0 0
+ up 0 0 1
+ fov 40
+}
+standard_shader
+{
+ name global
+ shaderop DefaultPathTracing
+}
+pathtracing_pel_rasterizer
+{
+ samples 1
+ pixel_filter box
+ oidn_denoise FALSE
+}
+file_rasterizeroutput
+{
+ pattern rendered/emitter_louvres
+ type EXR
+ bpp 32
+ color_space Rec709RGB_Linear
+}
+expression_painter
+{
+ name p_louvre_exitance
+ expr vec3(0.2 + proximity(0.001), 0.2 + proximity(0.001), 0.2 + proximity(0.001))
+}
+lambertian_luminaire_material
+{
+ name mat_louvre
+ exitance p_louvre_exitance
+ scale 1
+ material none
+}
+uniformcolor_painter
+{
+ name p_box
+ color 0.5 0.5 0.5
+ colorspace Rec709RGB_Linear
+}
+lambertian_material
+{
+ name mat_box
+ reflectance p_box
+}
+plymesh_geometry
+{
+ name g_louvres
+ file scenes/Tests/Signals/emitter_louvres.ply
+ double_sided TRUE
+}
+standard_object
+{
+ name obj_louvres
+ geometry g_louvres
+ material mat_louvre
+}
+box_geometry
+{
+ name g_neighbour
+ width 4
+ height 4
+ depth 1
+}
+standard_object
+{
+ name obj_neighbour
+ geometry g_neighbour
+ material mat_box
+ position 0 0 0.5015
+}

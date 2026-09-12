@@ -549,7 +549,12 @@ Ledger (filled per slice):
   integrator-disagreement data from §6.2 is appended there.
 - **No weight formula changes** — MIS heuristics per integrator stay as
   documented in MIS_HEURISTICS.md.
-- **One residual that is not neutral**: a second surface of the same
+- **~~One residual that is not neutral (DL-36)~~ — CLOSED 2026-09-12
+  as a consistency pin, `ac9891f3`, `Passed: 16  Failed: 0`.**
+  The bounded approximation is deliberately retained and directly tested
+  by the real two-blade fixture in SignalEmitterRecordTest; this is not
+  a physics correction across a signal discontinuity. See
+  [DL-36 closure](DL36_EMITTER_NEIGHBOUR_PIN.md). The existing behavior: a second surface of the same
   luminary inside the emitter probe's standoff band along the normal and
   within the 0.01·D acceptance tolerance is accepted with that neighbour's
   live channel (a louvred single-object fixture with blade pitch under

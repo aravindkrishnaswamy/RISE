@@ -11,6 +11,11 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+The DL-36 fixture [Signals/emitter_louvres.RISEscene](Signals/emitter_louvres.RISEscene)
+loads two closely spaced blades as one luminary. SignalEmitterRecordTest
+uses it for an exact bounded-neighbour probe consistency check; the
+fixture preserves the documented approximation rather than correcting it.
+
 ## Directory Index
 
 - `Animation/`: focused animation and exposure regression scenes

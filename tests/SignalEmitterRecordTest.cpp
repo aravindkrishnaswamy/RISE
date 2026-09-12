@@ -404,6 +404,9 @@
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Lights/LightSampler.h"
+#include "../src/Library/Interfaces/SurfaceSignalProximity.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
@@ -1047,10 +1050,10 @@ static std::string MakeRasterizer( RastKind k, int samples, bool hwss )
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/signal_emitter_record_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/signal_emitter_record_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n";
 
 	const bool bSpectral =
@@ -1353,6 +1356,84 @@ static const RowSpec kRowsFull[7] = {
 	{ eRK_BDPT_SPECTRAL, true, 96 }
 };
 
+
+// DL-36 is a consistency pin of the documented bounded-neighbour read,
+// not a physics fix. The real PLY scene has two blades in ONE object.
+// Probing the lower blade from +normal intercepts its upper neighbour.
+// Use live proximity to distinguish that record from both the sampled
+// point and a neutral fallback, then check exactly what replay preserves.
+static void RunBoundedNeighbourRead()
+{
+    std::cout << "DL-36: single-luminary two-blade probe consistency" << std::endl;
+    IJobPriv* job = nullptr;
+    const bool created = RISE_CreateJobPriv(&job) && job;
+    Check(created, "DL-36 job created");
+    if (!created) return;
+    const bool loaded = job->LoadAsciiSceneViaCst(
+        "scenes/Tests/Signals/emitter_louvres.RISEscene");
+    Check(loaded, "DL-36 real louvred scene loaded");
+    if (!loaded) { safe_release(job); return; }
+    const IObject* lum = job->GetObjects()->GetItem("obj_louvres");
+    Check(lum != nullptr, "DL-36 both blades have one luminary identity");
+    Check(LightSampler::EmitterProbeWanted(), "DL-36 live proximity opens probe gate");
+    if (!lum) { safe_release(job); return; }
+    const Point3 sample(0.25, -0.25, 0);
+    EmitterSurfacePayload payload;
+    const bool accepted = LightSampler::ProbeEmitterSurface(
+        lum, job->GetObjects(), sample, Vector3(0, 0, 1), payload);
+    Check(accepted && payload.valid, "DL-36 within-band neighbour is accepted");
+    if (accepted && payload.valid) {
+        Check(payload.channel.pSelf == lum && payload.channel.pScene == job->GetObjects(),
+              "DL-36 accepted neighbour retains luminary and scene identity");
+        const Scalar z = payload.channel.ptWorld.z;
+        Check(std::isfinite(z) && std::fabs(z - 0.001) < 1e-8,
+              "DL-36 probe reads upper blade rather than sampled lower blade");
+        const BoundingBox bb = lum->getBoundingBox();
+        const Scalar diag = Vector3Ops::Magnitude(Vector3Ops::mkVector3(bb.ll, bb.ur));
+        Check(z > 0 && z < 0.001 * diag && z < 0.01 * diag,
+              "DL-36 actual interception lies inside standoff and acceptance bounds");
+        const Scalar live = payload.channel.Proximity(0.001);
+        Check(std::isfinite(live) && std::fabs(live - 0.5) < 1e-6,
+              "DL-36 neighbour carries live half-strength proximity");
+        Scalar sampledDistance = 0;
+        Check(!job->GetObjects()->NearestOtherSurface(sample, lum, 0.001, sampledDistance),
+              "DL-36 sampled lower blade has zero proximity within radius");
+        std::cout << "  sample z=0  accepted z=" << z
+                  << "  accepted proximity=" << live << "  expected=0.5" << std::endl;
+        RayIntersectionGeometric record(Ray(Point3(0, 0, 1), Vector3(0, 0, -1)),
+                                         nullRasterizerState);
+        record.ptIntersection = sample;
+        record.ptObjIntersec = sample;
+        record.vNormal = record.vGeomNormal = Vector3(0, 0, 1);
+        record.onb.CreateFromW(record.vNormal);
+        record.ptCoord = Point2(0.2, 0.7);
+        LightSampler::ApplyEmitterSurface(record, payload);
+        Check(std::fabs(record.signals.Proximity(0.001) - 0.5) < 1e-6,
+              "DL-36 replay forwards accepted live channel");
+        Check(record.ptIntersection.z == 0 && record.ptObjIntersec.z == 0 &&
+              record.vNormal.z == 1 && record.vGeomNormal.z == 1 &&
+              record.onb.w().z == 1 && record.ptCoord.x == 0.2 && record.ptCoord.y == 0.7,
+              "DL-36 replay preserves sampled geometry and UV");
+    }
+    EmitterSurfacePayload upper;
+    const bool upperAccepted = LightSampler::ProbeEmitterSurface(
+        lum, job->GetObjects(), Point3(0.25, -0.25, 0.001), Vector3(0, 0, 1), upper);
+    Check(upperAccepted && upper.valid && std::fabs(upper.channel.ptWorld.z - 0.001) < 1e-8,
+          "DL-36 unobstructed upper-blade sample reads itself");
+    EmitterSurfacePayload lowerBack;
+    const bool lowerAccepted = LightSampler::ProbeEmitterSurface(
+        lum, job->GetObjects(), sample, Vector3(0, 0, -1), lowerBack);
+    Check(lowerAccepted && lowerBack.valid && std::fabs(lowerBack.channel.ptWorld.z) < 1e-8,
+          "DL-36 lower-blade reverse normal avoids the neighbour");
+    EmitterSurfacePayload refused;
+    refused.channel.ptWorld = Point3(3, 4, 5);
+    Check(!LightSampler::ProbeEmitterSurface(lum, job->GetObjects(), sample,
+              Vector3(0, 0, 0), refused) && !refused.valid && refused.channel.ptWorld.z == 5,
+          "DL-36 unusable normal refuses without changing payload");
+    safe_release(job);
+    Check(!LightSampler::EmitterProbeWanted(), "DL-36 scene releases its signal demand");
+}
+
 int main( int argc, char** argv )
 {
 	// See the seeding comment at g_seedBase's declaration.  argv[1], if
@@ -1476,6 +1557,11 @@ int main( int argc, char** argv )
 		"0.2 + 0.8*clamp(curv,0,1)", "0.2 + 0.8*1.0", "0.2 + 0.8*0.0",
 		20.0, 48, kRowsRGB3, 3
 	};
+	RunBoundedNeighbourRead();
+	if (argc > 1 && std::string(argv[1]) == "--louvres-only") {
+		std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	RunFamily( kSdfCurv );
 	RunFamily( kAnalyticCurv );
 	RunFamily( kProximity );
