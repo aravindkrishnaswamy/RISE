@@ -2893,7 +2893,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 //
 // For strategies that reach the camera from the light side (t==1),
 // the contribution lands at an arbitrary pixel, so needsSplat=true
-// and rasterPos is computed via BDPTCameraUtilities::Rasterize().
+// and rasterPos is computed via
+// BDPTCameraUtilities::RasterizeThrough() -- through the SAMPLED
+// aperture point, which is `Rasterize()` exactly when the aperture is
+// a point (debt 28).
 //
 // Delta vertices cannot participate in explicit connections since
 // there is zero probability of the connection direction matching
@@ -5085,7 +5088,20 @@ Scalar BDPTIntegrator::MISWeight(
 
 		for( int i = static_cast<int>(s) - 1; i >= 0; i-- )
 		{
-			// Vertex at position i in the light subpath
+			// Vertex at position i in the light subpath.
+			//
+			// The `eyeVerts[0]` arm is DEAD and is kept only as a
+			// bounds belt: `i` runs from s-1 down to 0, and every
+			// caller reaches this walk with s <= lightVerts.size()
+			// (EvaluateAllStrategies enumerates s over
+			// [0, lightVerts.size()]), so `i < lightVerts.size()`
+			// always holds.  It matters that it is dead: the eye-side
+			// walk below never reads eyeVerts[0] either, which is what
+			// makes a finite aperture a non-event for MIS -- the camera
+			// vertex's positional density is common to every strategy
+			// and cancels (docs/RENDERING_INTEGRATORS.md 7.1).  If this
+			// arm ever fired it would silently mix an EYE vertex's pdfs
+			// into the light-side ratio chain.
 			const BDPTVertex& vi = (static_cast<unsigned int>(i) < lightVerts.size()) ?
 				lightVerts[i] : eyeVerts[0];
 
