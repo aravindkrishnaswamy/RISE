@@ -12,11 +12,18 @@
 //    If kNumStreams is too small, distinct stream indices alias to the
 //    same vector entries, coupling samples that should be independent.
 //
-//    BDPTIntegrator uses streams 0-47 internally:
-//      - Stream 0:     light source sampling
-//      - Streams 1-16: light subpath bounces
-//      - Streams 16-31: eye subpath bounces
-//      - Stream 47:    SMS strategy choices
+//    BDPTIntegrator uses streams 0-47 internally (see
+//    CameraUtilities.h's BDPTCameraUtilities::kApertureSamplerStream
+//    comment for the authoritative table):
+//      - Stream 0:            light source sampling
+//      - Streams 1..1+maxLightDepth+maxVolumeBounce:  light subpath
+//        bounces
+//      - Streams 16..16+maxEyeDepth+maxVolumeBounce:  eye subpath
+//        bounces (reaches 48 at eye depth 32 -- debt 29, a
+//        pre-existing overrun into MLT's stream 48, not fixed here)
+//      - Streams 31-46:       SMS (reserved; unused today)
+//      - Stream 47:           BDPT (s,t) strategy selection
+//        (BDPTIntegrator.cpp's `StartStream( 47 )`)
 //
 //    MLTRasterizer uses stream 48 for the film position.  If
 //    kNumStreams <= 48, stream 48 aliases with stream (48 % kNumStreams)

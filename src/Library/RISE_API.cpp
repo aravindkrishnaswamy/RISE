@@ -231,14 +231,18 @@ namespace RISE
 		}
 
 		// The scene parser rejects `anamorphic_squeeze <= 0` (thinlens_camera
-		// descriptor) because it collapses or mirrors the aperture, driving
-		// ThinLensCamera::GetApertureWorldArea() to zero or negative and
+		// descriptor).  Only `squeeze == 0` collapses the aperture to a
+		// line, driving ThinLensCamera::GetApertureWorldArea() to zero and
 		// splitting the eye ray from the t==1 bidirectional connection onto
-		// different camera vertices (see that method's own comment).  This
-		// API entry point is also reachable directly (editor, Blender
-		// bridge) without going through the parser, so enforce the same
-		// bound here rather than constructing a camera with a silently
-		// broken aperture.
+		// different camera vertices (see that method's own comment).  A
+		// negative squeeze mirrors the aperture instead -- GetApertureWorldArea()
+		// takes `fabs()`, so the area and both samplers stay consistent with
+		// each other -- and is rejected only because it is nonsense authoring
+		// (the error message below spells out the intended `(0,1]` range),
+		// not because it would reproduce the zero-area hazard.  This API
+		// entry point is also reachable directly (editor, Blender bridge)
+		// without going through the parser, so enforce the same bound here
+		// rather than constructing a camera with an unauthored aperture.
 		if( anamorphicSqueeze <= 0 ) {
 			GlobalLog()->PrintEx( eLog_Error,
 				"RISE_API_CreateThinlensCamera:: anamorphicSqueeze must be > 0 (got %f) -- it scales "

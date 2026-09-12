@@ -1995,6 +1995,23 @@ static const double kNoCompleteReferenceThreshold = kReferenceIncompleteThreshol
 //! Printed in main()'s summary alongside the other skip counters.
 static int g_noCompleteReferenceSkipCount = 0;
 
+//! (debt 28 round 4, item 4) Showcases dropped from the WHOLE-IMAGE
+//! R_E/R_B assertion because PT itself is not sensitive to its own
+//! signal calls at this resolution/spp (|ratio-1| <= kLayer2SensitivityBand).
+//! Not a failure -- there is nothing to witness either way at this
+//! sample count -- but it must be COUNTED rather than silently NOTE'd,
+//! so a run that drops every showcase this way is still visible in the
+//! summary line.
+static int g_wholeImageInsensitiveCount = 0;
+
+//! (debt 28 round 4, item 4) Masked layers dropped because the mask
+//! covers < kLayer2MaskMinCoverage of the frame -- too few pixels to
+//! trust a masked ratio-of-ratios.  Not a failure, but counted for the
+//! same reason as `g_wholeImageInsensitiveCount` above: a NOTE alone
+//! can vanish into scrollback and make a whole showcase's masked
+//! coverage silently absent from the result.
+static int g_maskedLayerDroppedCoverageCount = 0;
+
 //! Redirect std::cout into a private buffer for the duration of `fn`,
 //! returning what was written, and echo it back to the REAL stdout
 //! afterward so nothing a human is watching is lost.  GlobalLog's
@@ -2321,6 +2338,7 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		std::cout << "  NOTE: " << spec.keyword << " is NOT sensitive to its own signal calls at this resolution/spp "
 		          << "(|ratio-1| = " << std::fabs(sensitivity) << " <= " << kLayer2SensitivityBand
 		          << ") -- dropped from the WHOLE-IMAGE R_E/R_B assertion (cannot witness the gap either way)." << std::endl;
+		g_wholeImageInsensitiveCount++;
 	}
 
 	// (F2) Per-integrator blow-up gate (task item 5): a >2x or <0.5x
@@ -2385,7 +2403,13 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	for( const Layer2Row& r : rows ) if( r.integ == Integrator::PT ) { ptRow = &r; break; }
 
 	if( !ptRow || ptRow->valsE.empty() || ptRow->valsE.size() != ptRow->valsB.size() ) {
-		std::cout << "  NOTE: " << spec.keyword << " masked ratio-of-ratios skipped (PT per-pixel arrays unavailable)." << std::endl;
+		// Unlike the sensitivity and coverage drops below, this is not a
+		// legitimate "nothing to witness" case -- PT was rendered (ptOk
+		// was already asserted true above) and its per-pixel arrays
+		// SHOULD exist; their absence means the row failed to capture
+		// per-pixel data, silently dropping the whole masked layer for
+		// this showcase.  That is a harness failure, not a NOTE.
+		Check( false, std::string( spec.keyword ) + ": PT per-pixel arrays unavailable for the masked ratio-of-ratios" );
 		return;
 	}
 
@@ -2412,6 +2436,7 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		std::cout << "  NOTE: " << spec.keyword << " masked coverage "
 		          << std::fixed << std::setprecision(3) << ( maskFrac * 100.0 ) << std::defaultfloat << std::setprecision(6)
 		          << "% < " << ( kLayer2MaskMinCoverage * 100.0 ) << "% -- skipping the masked ratio-of-ratios (too few pixels to witness the gap)." << std::endl;
+		g_maskedLayerDroppedCoverageCount++;
 		return;
 	}
 
@@ -2867,7 +2892,9 @@ int main( int argc, char** argv )
 	          << "  Blow-up skips (integrator disagreement, not signal-attributable): " << g_blowupSkipCount
 	          << "  Masked precision skips (cap reached, SE still above target): " << g_maskedPrecisionSkipCount
 	          << "  Reference-incomplete masked rows (PT unusable as reference, BDPT<->VCM cross-check asserted instead): " << g_referenceIncompleteCount
-	          << "  No-complete-reference skips (BDPT and VCM disagree on the neutral variant too, masked cross-check skipped): " << g_noCompleteReferenceSkipCount << std::endl;
+	          << "  No-complete-reference skips (BDPT and VCM disagree on the neutral variant too, masked cross-check skipped): " << g_noCompleteReferenceSkipCount
+	          << "  Whole-image insensitive showcases (PT not sensitive to its own signal at this res/spp): " << g_wholeImageInsensitiveCount
+	          << "  Masked layer dropped: coverage (< " << ( kLayer2MaskMinCoverage * 100.0 ) << "% of pixels): " << g_maskedLayerDroppedCoverageCount << std::endl;
 	std::cout << "========================================" << std::endl;
 
 	return failCount > 0 ? 1 : 0;

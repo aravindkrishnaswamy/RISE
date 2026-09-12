@@ -5116,7 +5116,7 @@ Scalar BDPTIntegrator::MISWeight(
 			// walk below never reads eyeVerts[0] either, which is what
 			// makes a finite aperture a non-event for MIS -- the camera
 			// vertex's positional density is common to every strategy
-			// and cancels (docs/RENDERING_INTEGRATORS.md 7.1).  If this
+			// and cancels (docs/RENDERING_INTEGRATORS.md §6.1).  If this
 			// arm ever fired it would silently mix an EYE vertex's pdfs
 			// into the light-side ratio chain.
 			const BDPTVertex& vi = (static_cast<unsigned int>(i) < lightVerts.size()) ?

@@ -241,13 +241,21 @@ namespace RISE
 			inline void SetApertureRotation( Scalar v )        { apertureRotation = v; }
 			//! The parser rejects `anamorphic_squeeze <= 0` (see the
 			//! thinlens_camera descriptor and GetApertureWorldArea()'s
-			//! own comment): it collapses or mirrors the aperture,
-			//! driving GetApertureWorldArea() to zero or negative, which
-			//! makes BDPTCameraUtilities::HasFiniteAperture FALSE and
-			//! splits the eye ray (still sampling the collapsed segment)
-			//! from the t==1 connection (now imaging through the lens
-			//! CENTRE) onto different camera vertices.  The parser only
-			//! validates the AUTHORED value, though -- a KEYFRAMED
+			//! own comment): `squeeze == 0` collapses the aperture to a
+			//! line, driving GetApertureWorldArea() to zero, which makes
+			//! BDPTCameraUtilities::HasFiniteAperture FALSE and splits
+			//! the eye ray (still sampling the collapsed segment) from
+			//! the t==1 connection (now imaging through the lens CENTRE)
+			//! onto different camera vertices.  A negative squeeze does
+			//! NOT reach that failure mode -- GetApertureWorldArea()
+			//! takes `fabs( anamorphicSqueeze )`, so it mirrors the
+			//! aperture about the lens's x-axis identically for both the
+			//! eye sampler (`SampleLensPoint`) and the t==1 connection
+			//! sampler, at unchanged area.  It is rejected anyway because
+			//! it is nonsense authoring, not a correctness hazard: the
+			//! parser's rejection message already says so ("use a value
+			//! in (0,1] for oval bokeh, 1.0 for circular").  The parser
+			//! only validates the AUTHORED value, though -- a KEYFRAMED
 			//! squeeze interpolating between two positive endpoints can
 			//! pass through 0 at a runtime-interpolated time the parser
 			//! never sees, and the editor / Blender-bridge property path
@@ -294,14 +302,20 @@ namespace RISE
 			//! aperture (fstop -> infinity), which callers must
 			//! treat as the pinhole limit rather than dividing by it.
 			//!
-			//! `anamorphic_squeeze <= 0` would be the OTHER way to reach
+			//! `anamorphic_squeeze == 0` would be the OTHER way to reach
 			//! zero here, and the scene parser rejects it rather than allow
 			//! it (debt 28 review, A P2-3): a zero area makes
 			//! `BDPTCameraUtilities::HasFiniteAperture` false, so the
 			//! bidirectional integrators would connect t==1 to the lens
 			//! CENTRE while `GenerateRay` went on sampling the collapsed
 			//! line segment -- eye and light layers imaging through
-			//! different camera vertices.  The parser only validates the
+			//! different camera vertices.  A negative squeeze does not
+			//! reach that failure mode -- the `fabs()` below keeps the
+			//! area positive and identical for both samplers, just
+			//! mirrored -- and is rejected only because it is nonsense
+			//! authoring (the parser's rejection message spells out the
+			//! intended `(0,1]` range), not because it would split the
+			//! eye/connection paths.  The parser only validates the
 			//! AUTHORED value, though, so `SetAnamorphicSqueeze` (reached
 			//! by keyframe interpolation, the editor, and the Blender
 			//! bridge) and `RISE_API_CreateThinlensCamera` (reached by any

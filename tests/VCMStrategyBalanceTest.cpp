@@ -645,6 +645,8 @@ static void TestMixedLights()
 // and POST-FIX (same run configuration):
 //   D: 0.0450732 / 0.0460411 = 0.979
 //   E: 0.0450605 / 0.0455397 = 0.989
+// (each of these is one draw from a run-to-run spread of a few
+// percentage points; the band, not the figure, is the contract)
 //////////////////////////////////////////////////////////////////////
 static std::string SceneCommonThinLens(
 	const char* fstop,
@@ -804,11 +806,13 @@ static void TestThinLensWideOpenDefocused()
 // splat pass.  Like BDPT's topology I it is a PATH-COVERAGE guard, not
 // a shape one: measured, forcing the connection side onto the disk
 // branch while the eye rays stay hexagonal leaves VCM/PT at 0.997,
-// well inside the band, because debt 28's fix means the aperture area
-// cancels out of `Importance` and the shape only decides which pixel a
-// splat lands in.  The shape/density guarantee is asserted in closed
-// form by tests/CameraImportanceTest.cpp Test 1.  See the fuller note
-// above BDPTStrategyBalanceTest's topology I.
+// well inside the band -- one draw from a run-to-run spread of a few
+// percentage points; the band, not the figure, is the contract --
+// because debt 28's fix means the aperture area cancels out of
+// `Importance` and the shape only decides which pixel a splat lands
+// in.  The shape/density guarantee is asserted in closed form by
+// tests/CameraImportanceTest.cpp Test 1.  See the fuller note above
+// BDPTStrategyBalanceTest's topology I.
 //
 // Defocused on purpose: at the plane of focus every aperture point
 // images to the same pixel.
@@ -849,6 +853,9 @@ static void TestThinLensBladedAperture()
 //   guard only, dVCM untouched:         2.51e-05 / 0.03662 = 0.0007
 //   dVCM = 0 only, splat unguarded:       0.03961 / 0.03662 = 1.082
 //   both fixed:                           0.03681 / 0.03662 = 1.005
+// (each of these is one draw from a run-to-run spread of a few
+// percentage points; the band, not the figure, is the contract -- see
+// the 5-run measurement below for this row's own quantified spread)
 //
 // Note the second row: the guard ALONE makes it worse, because with
 // dVCM enormous the phantom splat was carrying almost all of what

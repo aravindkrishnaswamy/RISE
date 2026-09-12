@@ -1072,6 +1072,8 @@ static void TestGappedCurtainAreaLight()
 // and POST-FIX (same run configuration):
 //   G: 0.0441068 / 0.0452868 = 0.974
 //   H: 0.0444746 / 0.0450516 = 0.987
+// (each of these is one draw from a run-to-run spread of a few
+// percentage points; the band, not the figure, is the contract)
 // with p99 and max agreeing to within 1% and 3% respectively.
 // The f/22 row is the harsher of the two precisely because the defect
 // scales as 1/A_lens: stopping down 3 stops from f/2.8 to f/22 shrinks
@@ -1244,7 +1246,9 @@ static void TestThinLensWideOpenDefocused()
 // `SampleAperture` helper directly -- to pass 0 blades, so the light
 // layer samples a DISK while the eye rays stay hexagonal, leaves this
 // row passing: BDPT/PT 0.969 (VCM's twin 0.997), both inside the 8%
-// band.  That is not a weak test, it is the FIX being true: debt 28's
+// band -- each one draw from a run-to-run spread of a few percentage
+// points; the band, not the figure, is the contract.  That is not a
+// weak test, it is the FIX being true: debt 28's
 // whole point is that the aperture area CANCELS out of `Importance`,
 // so neither the shape nor the area of the sampled aperture appears in
 // a t==1 contribution's weight -- they decide only WHICH PIXEL the

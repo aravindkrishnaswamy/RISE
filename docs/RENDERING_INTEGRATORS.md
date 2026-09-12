@@ -812,9 +812,10 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
 
   So the row is a real BDPT-vs-PT disagreement, not a noisy one.  The
   masked set lands on pixels roughly 30× darker than the frame average
-  (masked PT mean 0.0017 against a whole-image 0.056, over 13.5 % of
-  pixels) and BDPT reads **2–3× PT** there on BOTH variants (masked
-  R_E 2.11, R_B 2.83); the ratio-of-ratios does not cancel it because
+  (masked PT mean 0.0017 against a whole-image 0.056, ≈ 13 % of pixels
+  — 12.96–13.07 % measured) and BDPT reads **2–3× PT** there on BOTH
+  variants (masked R_E 2.11, R_B ≈ 2.8–3.1, 2.60–3.30 observed); the
+  ratio-of-ratios does not cancel it because
   the two differ by 24 %.  Whether that 2–3× is a debt-27-class PT
   strategy gap through the water or something else has NOT been
   diagnosed.  **The band was not widened** — round 2 left the row
