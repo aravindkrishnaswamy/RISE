@@ -49,7 +49,11 @@
 //         delta, competing with s=1 NEE at that same mixed vertex.
 //      G. Thin-lens (FINITE-APERTURE) camera at f/22, focused
 //      H. The same camera at f/2.8, focused 5.97 m in front of the
-//         receiver (~4.8 pixel circle of confusion)
+//         receiver (2.4 pixel circle of confusion, 1.2 px radius)
+//      I. The same defocused camera with a SIX-BLADED aperture
+//         — the polygonal branch of SampleAperture / the polygonal
+//         closed form in GetApertureWorldArea, whose area is 0.827
+//         of the circumscribed disk's
 //         — the t==1 light-tracing strategy has to SAMPLE a point on
 //         the aperture, connect to THAT point, and divide by its area
 //         density, which is what cancels the 1/A_lens inside the
@@ -1034,13 +1038,27 @@ static void TestGappedCurtainAreaLight()
 //   emitter 1x1 luminaire quad at z = 0.5 facing the receiver
 //
 // Topology H's `focus_distance 0.03` puts the plane of focus 5.97 m in
-// front of the receiver.  Blur in PIXELS for a thin lens is
-//   H * f * |S2-S1| / (2 * N * S2 * (S1-f) * tan(fov/2))
-//     = 32 * 0.0151 * 5.97 / (2 * 2.8 * 6 * 0.0149 * 1.1918) = 4.8 px,
-// far too large for a centre-rasterized light-traced layer to hide
-// inside the pixel grid.  (A wide field of view and a big circle of
-// confusion pull against each other -- the blur formula divides by
-// tan(fov/2) -- which is why the focus plane has to come this close.)
+// front of the receiver.  Blur DIAMETER in PIXELS for a thin lens is
+//   H * f * |S2-S1| / (2 * N * S1 * S2 * tan(fov/2))
+//     = 32 * 0.0151 * 5.97 / (2 * 2.8 * 0.03 * 6 * 1.1918) = 2.4 px,
+// i.e. a circle-of-confusion RADIUS of 1.2 px -- still far too large
+// for a centre-rasterized light-traced layer to hide inside the pixel
+// grid.  (A wide field of view and a big circle of confusion pull
+// against each other -- the blur formula divides by tan(fov/2) --
+// which is why the focus plane has to come this close.)
+//
+// An earlier version of this comment wrote (S1 - f) where this one
+// writes S1 and got 4.8 px, exactly 2x too big (debt 28 review,
+// B P2-2).  The sensor-side photographic formula
+//   c_mm = (f/N) * f/(S1-f) * |S2-S1|/S2
+// is per-MILLIMETRE and must be divided by the pixel pitch at the
+// ACTUAL image distance v = f*S1/(S1-f), not at f: the pitch is
+// 2*v*tan(fov/2)/H, and the (S1-f) cancels, leaving the form above.
+// The identical reduction is asserted from the other direction by
+// tests/CameraImportanceTest.cpp's TestAnalyticCircleOfConfusion,
+// whose per-lens-offset displacement is
+//   |L| * H * |1/S1 - 1/S2| / (2 tan(fov/2)),
+// which at |L| = f/(2N) is half of the above -- the radius.
 //
 // 512 spp, not this file's usual 32: the defocused row's per-pixel
 // sigma/mu is 156% against the focused row's 23%, so at 32 spp the mean
@@ -1059,7 +1077,11 @@ static void TestGappedCurtainAreaLight()
 // scales as 1/A_lens: stopping down 3 stops from f/2.8 to f/22 shrinks
 // the aperture area 62x and the pinhole-centre splat grows to match.
 //////////////////////////////////////////////////////////////////////
-static std::string SceneCommonThinLens( const char* fstop, const char* focusDistance )
+static std::string SceneCommonThinLens(
+	const char* fstop,
+	const char* focusDistance,
+	// Topology I: a POLYGONAL aperture.  0 keeps the default disk.
+	const char* apertureBlades = "0" )
 {
 	return std::string(
 		"film\n"
@@ -1077,6 +1099,7 @@ static std::string SceneCommonThinLens( const char* fstop, const char* focusDist
 		"\tfocal_length 15.1\n"
 		"\tfstop " ) + fstop + "\n"
 		"\tfocus_distance " + focusDistance + "\n"
+		"\taperture_blades " + apertureBlades + "\n"
 		"}\n"
 		"\n"
 		"uniformcolor_painter\n"
@@ -1200,8 +1223,51 @@ static void TestThinLensStoppedDown()
 
 static void TestThinLensWideOpenDefocused()
 {
-	RunTopologyTest( "thin-lens f/2.8 camera, 4.8 px defocus (finite aperture)",
+	RunTopologyTest( "thin-lens f/2.8 camera, 2.4 px defocus (finite aperture)",
 		SceneCommonThinLens( "2.8", "0.03" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology I: SIX-BLADED aperture, f/2.8, same defocus as H.
+//
+// Topologies G and H both use the default DISK aperture, so neither
+// exercises the shaped-aperture branch of
+// `ThinLensCamera::SampleAperture` (a sec^2 inverse-CDF over the
+// n-gon's triangles) or the polygonal closed form in
+// `GetApertureWorldArea` (n/2 * R^2 * sin(2 pi/n), 0.827 of the
+// circumscribed disk for a hexagon).  This row runs both end to end.
+//
+// WHAT IT DOES NOT CATCH, measured rather than assumed.  Forcing
+// `ThinLensCamera::SampleLensPoint` -- which ONLY the t==1 connection
+// side calls, since `GenerateRay` reaches the file-local
+// `SampleAperture` helper directly -- to pass 0 blades, so the light
+// layer samples a DISK while the eye rays stay hexagonal, leaves this
+// row passing: BDPT/PT 0.969 (VCM's twin 0.997), both inside the 8%
+// band.  That is not a weak test, it is the FIX being true: debt 28's
+// whole point is that the aperture area CANCELS out of `Importance`,
+// so neither the shape nor the area of the sampled aperture appears in
+// a t==1 contribution's weight -- they decide only WHICH PIXEL the
+// splat lands in.  A shape mismatch is a bokeh-figure defect, not an
+// energy one, and a 1.2 px circle of confusion on a smooth receiver
+// does not move a mean, a p99 or a max.
+//
+// So this row is a path-coverage guard (the polygonal branch runs, is
+// finite, and does not disturb the energy balance), and the SHAPE and
+// DENSITY guarantees live where they can actually be asserted:
+// tests/CameraImportanceTest.cpp Test 1 pins
+// `GetApertureWorldArea == 1 / (SampleLensPoint's density)` for disk,
+// POLYGONAL and anamorphic apertures by Monte-Carlo integration
+// against the closed form.
+//
+// Defocused rather than focused on purpose: at the plane of focus
+// every aperture point images to the same pixel, so the polygonal
+// branch would not even change the sampled ray.
+//////////////////////////////////////////////////////////////////////
+static void TestThinLensBladedAperture()
+{
+	RunTopologyTest( "thin-lens f/2.8, six-bladed aperture, defocused",
+		SceneCommonThinLens( "2.8", "0.03", "6" ),
 		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
 }
 
@@ -1217,6 +1283,7 @@ int main()
 	TestGappedCurtainAreaLight();
 	TestThinLensStoppedDown();
 	TestThinLensWideOpenDefocused();
+	TestThinLensBladedAperture();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

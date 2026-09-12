@@ -673,8 +673,10 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
 
   **Depth of field really is consistent now, not just the mean.**  On
   a synthetic scene built to isolate it (a 100° thin lens at 6 m, the
-  plane of focus 5.97 m in front of the receiver, a 4.8-pixel circle
-  of confusion), the per-pixel distance between the defocused and the
+  plane of focus 5.97 m in front of the receiver, a 2.4-pixel circle
+  of confusion — 1.2 px radius; an earlier draft said 4.8 px, from an
+  `(S1 − f)` that reduces to `S1` once the pixel pitch is taken at the
+  ACTUAL image distance `v = f·S1/(S1 − f)`), the per-pixel distance between the defocused and the
   FOCUSED render of the same integrator is 5.2e-3 (PT), 5.5e-3 (BDPT)
   and 6.0e-3 (VCM), while the distance between integrators at the same
   focus is 2.9e-4 (defocused) and 5.9e-5 (focused) — focus state

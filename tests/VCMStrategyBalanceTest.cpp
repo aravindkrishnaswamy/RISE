@@ -48,11 +48,17 @@
 //         — combines (A) and (B); validates the auto-radius pre-
 //         pass walks the entire light subpath set correctly.
 //      D. Thin-lens (FINITE-APERTURE) camera at f/22, focused
-//      E. The same camera at f/2.8, defocused by ~4.8 pixels
+//      E. The same camera at f/2.8, defocused by 2.4 pixels
 //         — VCM's t=1 splat (SplatLightSubpathToCamera) has to
 //         SAMPLE a point on the aperture, connect to THAT point and
 //         divide by its area density, which is what cancels the
 //         1/A_lens inside the thin-lens importance.  Debt 28.
+//      F. The same defocused camera with a SIX-BLADED aperture
+//         — the polygonal branch of SampleAperture, whose area is
+//         0.827 of the circumscribed disk's.
+//      G. Orthographic (delta-DIRECTION) camera + mesh emitter
+//         — VCM's splat pass must SKIP a delta-direction camera the
+//         way BDPT's t==1 branch does.  Debt 28 review A P2-6.
 //
 //    Caustic-required scenes are out of scope here for the same
 //    reason as in BDPTStrategyBalanceTest: PT under-samples
@@ -395,6 +401,49 @@ static const char* kLightOmni =
 	"\tposition 0.0 0.0 5.0\n"
 	"}\n";
 
+static const char* kSceneCommonOrtho =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
+	"orthographic_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tviewport_scale 2.5 2.5\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad\n"
+	"\tpta -1 -1 0\n"
+	"\tptb 1 -1 0\n"
+	"\tptc 1 1 0\n"
+	"\tptd -1 1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_quad\n"
+	"\tgeometry quad\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n";
+
 static const char* kLightMesh =
 	"uniformcolor_painter\n"
 	"{\n"
@@ -562,8 +611,10 @@ static void TestMixedLights()
 // that file carries the full derivation of the geometry (a 36 mm
 // sensor on a 15.1 mm lens is 100.0 deg of vertical field of view, the
 // emitter sits 0.5 above the receiver so the t=1 strategy carries real
-// MIS weight, and topology E's `focus_distance 0.03` puts a 4.8-pixel
-// circle of confusion on the receiver).
+// MIS weight, and topology E's `focus_distance 0.03` puts a 2.4-pixel
+// circle of confusion -- 1.2 px radius -- on the receiver; that file's
+// derivation was corrected from 4.8 px in the debt 28 review, B P2-2,
+// where an (S1 - f) that should have been S1 doubled it).
 //
 // VCM is hurt far worse than BDPT by this defect because its t=1
 // weight carries an explicit / mLightSubPathCount: on these scenes
@@ -595,7 +646,11 @@ static void TestMixedLights()
 //   D: 0.0450732 / 0.0460411 = 0.979
 //   E: 0.0450605 / 0.0455397 = 0.989
 //////////////////////////////////////////////////////////////////////
-static std::string SceneCommonThinLens( const char* fstop, const char* focusDistance )
+static std::string SceneCommonThinLens(
+	const char* fstop,
+	const char* focusDistance,
+	// Topology F: a POLYGONAL aperture.  0 keeps the default disk.
+	const char* apertureBlades = "0" )
 {
 	return std::string(
 		"film\n"
@@ -613,6 +668,7 @@ static std::string SceneCommonThinLens( const char* fstop, const char* focusDist
 		"\tfocal_length 15.1\n"
 		"\tfstop " ) + fstop + "\n"
 		"\tfocus_distance " + focusDistance + "\n"
+		"\taperture_blades " + apertureBlades + "\n"
 		"}\n"
 		"\n"
 		"uniformcolor_painter\n"
@@ -735,9 +791,82 @@ static void TestThinLensStoppedDown()
 
 static void TestThinLensWideOpenDefocused()
 {
-	RunTopologyTest( "thin-lens f/2.8 camera, 4.8 px defocus (finite aperture)",
+	RunTopologyTest( "thin-lens f/2.8 camera, 2.4 px defocus (finite aperture)",
 		SceneCommonThinLens( "2.8", "0.03" ),
 		kStrictTolerances, kRasterizerPT512, kRasterizerVCM512 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology F: SIX-BLADED aperture, f/2.8, same defocus as E.
+//
+// Runs the shaped-aperture branch of `ThinLensCamera::SampleAperture`
+// and the polygonal `GetApertureWorldArea` end to end through VCM's
+// splat pass.  Like BDPT's topology I it is a PATH-COVERAGE guard, not
+// a shape one: measured, forcing the connection side onto the disk
+// branch while the eye rays stay hexagonal leaves VCM/PT at 0.997,
+// well inside the band, because debt 28's fix means the aperture area
+// cancels out of `Importance` and the shape only decides which pixel a
+// splat lands in.  The shape/density guarantee is asserted in closed
+// form by tests/CameraImportanceTest.cpp Test 1.  See the fuller note
+// above BDPTStrategyBalanceTest's topology I.
+//
+// Defocused on purpose: at the plane of focus every aperture point
+// images to the same pixel.
+//////////////////////////////////////////////////////////////////////
+static void TestThinLensBladedAperture()
+{
+	RunTopologyTest( "thin-lens f/2.8, six-bladed aperture, defocused",
+		SceneCommonThinLens( "2.8", "0.03", "6" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerVCM512 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology G: ORTHOGRAPHIC (delta-DIRECTION) camera + mesh emitter.
+//
+// The mirror of BDPTStrategyBalanceTest's topology D, and it was
+// missing.  Writing it exposed that VCM's orthographic support was
+// broken in TWO places, not one (debt 28 review, A P2-6, and what the
+// row found once it existed):
+//
+//  1. `SplatLightSubpathToCameraImpl` had no delta-direction guard.
+//     An orthographic camera has zero density for the light-tracing
+//     strategy -- every pixel has its OWN ray origin, so there is no
+//     single camera vertex a light vertex can connect to -- and
+//     `BDPTIntegrator`'s t==1 branch has skipped it since the
+//     IsDeltaDirection fix.  VCM splatted anyway.
+//  2. The camera vertex's `emissionPdfW`, which `InitCamera` turns
+//     into `dVCM = N / cameraPdfW`, carried
+//     `PdfDirection`'s ORTHOGRAPHIC return -- 1/A_image, an AREA
+//     density where the recurrence wants a solid-angle one.  dVCM is
+//     the MIS mass reserved for the t==1 strategy; for a
+//     delta-direction camera that strategy does not exist, so the
+//     value must be 0 (exactly what SmallVCM does on the light side
+//     for a delta light, and the mirror of the `isDelta` flag BDPT
+//     already sets on this same vertex).
+//
+// Measured on this row, VCM mean / PT mean:
+//   both defects present (master):        0.00283 / 0.03661 = 0.077
+//   guard only, dVCM untouched:         2.51e-05 / 0.03662 = 0.0007
+//   dVCM = 0 only, splat unguarded:       0.03961 / 0.03662 = 1.082
+//   both fixed:                           0.03681 / 0.03662 = 1.005
+//
+// Note the second row: the guard ALONE makes it worse, because with
+// dVCM enormous the phantom splat was carrying almost all of what
+// little energy VCM produced.  That is why the two land together.  The
+// third row is the guard's own red-proof: the 8.2% excess is precisely
+// the phantom splat, now at full weight.
+//
+// PT is unaffected by any of this, so PT-vs-VCM agreement is the
+// invariant.
+//////////////////////////////////////////////////////////////////////
+static void TestOrthographicCamera()
+{
+	// Same alpha-convention note as the BDPT twin: the 2x2 quad inside
+	// a 2.5x2.5 viewport gives partial-coverage edge pixels, and
+	// ComputeStats compares COMPOSITED radiance so the two conventions
+	// do not confound the mean.
+	RunTopologyTest( "orthographic delta-direction camera + mesh emitter",
+		std::string( kSceneCommonOrtho ) + kLightMesh, kStrictTolerances );
 }
 
 int main()
@@ -749,6 +878,8 @@ int main()
 	TestMixedLights();
 	TestThinLensStoppedDown();
 	TestThinLensWideOpenDefocused();
+	TestThinLensBladedAperture();
+	TestOrthographicCamera();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
