@@ -346,7 +346,7 @@ the "obvious" direction.
 |--------|----------|-----------|---------------|
 | `pinhole_camera`, `fisheye_camera` | a point | finite density | valid |
 | `thinlens_camera` | a region of AREA | finite density | valid |
-| `orthographic_camera` | a point per pixel | **Dirac delta** | **skipped** |
+| `orthographic_camera` | a point per pixel | **Dirac delta** | **skipped** (in BDPT since the IsDeltaDirection fix; in VCM since 2026-09-11 — see the orthographic note in debt 28 below) |
 
 Only the orthographic camera is special-cased.  It is the
 importance-side analogue of a directional light: a non-specular light
@@ -688,9 +688,28 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   reports a point aperture at `GetLocation()`, `RasterizeThrough`
   falls through to `Rasterize`, neither importance branch was
   touched).  Orthographic: it is a delta-DIRECTION camera, so its t==1
-  strategy is skipped outright and none of this reaches it; its
-  per-pixel ray-origin offset is deliberately still not reflected in
-  the camera path vertex.  Fisheye: **clean** — no aperture of
+  strategy is skipped outright and none of debt 28's aperture work
+  reaches it; its per-pixel ray-origin offset is deliberately still not
+  reflected in the camera path vertex.  **But "skipped outright" was
+  only true of BDPT.**  Writing the orthographic mirror of
+  BDPTStrategyBalanceTest's topology D into `VCMStrategyBalanceTest`
+  (topology G, 2026-09-11) found VCM's support broken two ways:
+  `SplatLightSubpathToCameraImpl` had no `IsDeltaDirection` guard at
+  all, and the camera vertex's `emissionPdfW` — which `InitCamera`
+  turns into `dVCM = N / cameraPdfW`, the MIS mass reserved for the
+  t==1 strategy — carried `PdfDirection`'s orthographic return
+  `1/A_image`, an AREA density where the recurrence wants a
+  solid-angle one.  For a delta-direction camera that strategy does not
+  exist, so the value must be **0** (the mirror of the `isDelta` flag
+  BDPT already sets on the same vertex, and what SmallVCM does on the
+  light side for a delta light).  Measured VCM mean / PT mean on
+  topology G: 0.077 with both defects, 0.0007 with the guard alone
+  (worse — the phantom splat had been carrying nearly all of what
+  little energy VCM produced), 1.082 with `dVCM = 0` alone (that 8.2 %
+  excess IS the phantom splat at full weight, the guard's own
+  red-proof), **1.005 with both**.  BDPT is bit-unchanged: the zeroing
+  touches only the VCM post-pass field, while BDPT's own walk keeps
+  using the local `pdfCamDir`.  Fisheye: **clean** — no aperture of
   non-zero area, `Rasterize` and `Importance` read the same direction
   through the same inverse matrix, and its importance is per SOLID
   ANGLE rather than per unit lens area, so there is no `cosθ · A_lens`
@@ -710,44 +729,58 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
 
   **NEW, OPEN, and a direct consequence of this fix —
   `SignalIntegratorConsistencyTest`'s tidal MASKED BDPT row is now
-  asserted and is flaky.**  Before the fix that row never ran: tidal's
-  whole-image BDPT/PT was 338×, outside the blow-up gate's [0.5×, 2×],
-  so both the whole-image and the masked ratio-of-ratios were SKIPPED.
-  Post-fix the whole-image ratio is 1.019 (PT 0.05619, BDPT 0.05724 at
-  the test's 160×120 / reduced-spp configuration, with no
-  `transparent_shadows` on any of the three), the gate no longer fires
-  for BDPT, and the masked ratio-of-ratios runs for the first time —
-  against a 0.20 band, averaged over 12 sub-renders:
+  asserted, and it FAILS.**  Before the fix that row never ran:
+  tidal's whole-image BDPT/PT was 338×, outside the blow-up gate's
+  [0.5×, 2×], so both the whole-image and the masked ratio-of-ratios
+  were SKIPPED.  Post-fix the whole-image ratio is 1.019 (PT 0.05619,
+  BDPT 0.05724 at the test's 160×120 / reduced-spp configuration, with
+  no `transparent_shadows` on any of the three), the gate no longer
+  fires for BDPT, and the masked ratio-of-ratios runs for the first
+  time — against a 0.20 band.
 
-  | seed base | masked BDPT R_E | R_B | avg R_E/R_B − 1 | verdict |
-  |-----------|-----------------|-----|-----------------|---------|
-  | default (run A) | — | — | (failed; not captured) | FAIL |
-  | default (run B) | 1.732 | 2.381 | −0.185 | pass |
-  | 1000 | 1.979 | 2.620 | −0.126 | pass |
-  | 2000 | 2.012 | 2.942 | −0.269 | FAIL |
-  | 3000 | 2.030 | 2.597 | −0.220 | FAIL |
-  | 4000 | 1.920 | 2.801 | −0.300 | FAIL |
+  It first looked like a flake: at a fixed K = 12 sub-renders it
+  failed roughly four runs in six, with the instability apparently in
+  **R_B**, the neutral-signal variant (2.60–2.94 across the six seed
+  bases recorded — and a later run reached 3.30, so treat that span as
+  a lower bound on what R_B does, not a range).  It is not a flake.
+  Reworking the estimator (2026-09-11) settled it:
 
-  Four of six runs fail.  The instability is in **R_B**, the
-  neutral-signal variant (2.60–2.94 across seeds) — R_E is stable at
-  1.92–2.03 — and the mask lands on pixels roughly 30× darker than the
-  frame average (tidal's masked PT mean is 0.0017 against a
-  whole-image 0.056, over 13.5 % of pixels), so the row is measuring a
-  BDPT-vs-PT disagreement of ≈2× concentrated on near-black pixels
-  with very little signal to average.  Whether that ≈2× is a debt-27-
-  class PT strategy gap through the water, a masked-set noise floor,
-  or something else has NOT been diagnosed, and **the test was
-  deliberately not loosened** — widening the band, raising
-  `kLayer2MaskedSubRenders` for this showcase, or root-causing the
-  masked 2× are all open options.  Tidal's VCM row still skips at
-  2.049× (just over the gate's 2.0), which is the same
-  transparent-shadows/merge-recovery effect the table above quantifies.
-  `shelf_bunny` and `pavilion_colonnade`, which were also blow-up
-  skips before, are now fully asserted and clean (masked BDPT +0.010 /
-  VCM +0.010 on bunny; −0.017 / −0.014 on pavilion) — so the fix took
-  the suite from four blow-up skips to one.
+  - **The spread was a common-mode measurement artifact.**  The
+    estimator is `(maskedE/maskedB) · (maskedPT_B/maskedPT_E)`, so the
+    PT pair enters as a single MULTIPLICATIVE factor shared by every
+    sub-render.  Re-rendering only BDPT/VCM averaged away the
+    integrator-side noise and left the PT-side noise fully intact —
+    within-run SE 0.017 against a run-to-run sd of ~0.06, 3.5× larger.
+    Each sub-render now draws its own PT denominator pair.  That moved
+    every OTHER row toward zero (plank BDPT −0.074 → +0.000, plank VCM
+    −0.052 → +0.008, pavilion BDPT −0.039 → −0.011, pavilion VCM
+    −0.036 → −0.009): the shared denominator had been biasing the
+    whole suite negative.
+  - **K is now adaptive**, running to a standard-error target of a
+    quarter of the band with a 48 cap, and a row that reaches the cap
+    without the precision reports `INSUFFICIENT PRECISION` and counts
+    as a skip rather than a pass or a fail.  At the default seed base
+    every row settles at the K = 12 minimum.
+  - **Tidal then reads −0.2443 with SE 0.0179** (−0.2432 / 0.0173 on
+    the previous run) — **13.6 standard errors outside the band**,
+    reproducibly.
 
-  **Guards.**  `tests/CameraImportanceTest.cpp` (new, 956 closed-form
+  So the row is a real BDPT-vs-PT disagreement, not a noisy one.  The
+  masked set lands on pixels roughly 30× darker than the frame average
+  (masked PT mean 0.0017 against a whole-image 0.056, over 13.5 % of
+  pixels) and BDPT reads **2–3× PT** there on BOTH variants (masked
+  R_E 2.11, R_B 2.83); the ratio-of-ratios does not cancel it because
+  the two differ by 24 %.  Whether that 2–3× is a debt-27-class PT
+  strategy gap through the water or something else has NOT been
+  diagnosed.  **The band was not widened and the row was not converted
+  to a skip** — it fails, with a stated precision.  Tidal's VCM row
+  still skips at 2.049× (just over the gate's 2.0), which is the same
+  transparent-shadows/merge-recovery effect the table above
+  quantifies.  `shelf_bunny` and `pavilion_colonnade`, which were also
+  blow-up skips before, are now fully asserted and clean — so the fix
+  took the suite from four blow-up skips to one.
+
+  **Guards.**  `tests/CameraImportanceTest.cpp` (new, 960 closed-form
   checks, no renders, ~1 s) pins the camera-side algebra: the aperture
   area IS one over the sampling density, the inverse projection
   round-trips ray generation to 6e-14 px, the circle of confusion is
@@ -759,7 +792,18 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   `VCMStrategyBalanceTest` topologies D/E add f/22-focused and
   f/2.8-defocused thin-lens rows; red-proofed on the pre-fix tree at
   BDPT 1449× / 24.6× and VCM 404 511× / 6701× over PT, now 0.974 /
-  0.987 and 0.979 / 0.989.  Those topologies are deliberately NOT a
+  0.987 and 0.979 / 0.989.  A six-bladed f/2.8 row was added to both
+  (BDPT topology I, VCM topology F) to run the polygonal aperture
+  branch end to end — it is a path-coverage guard rather than a shape
+  one, because the aperture area cancels out of `Importance` and the
+  shape only decides which pixel a splat lands in (measured: forcing
+  the connection side onto the disk branch while the eye rays stay
+  hexagonal leaves BDPT/PT at 0.969 and VCM/PT at 0.997, both inside
+  the band; the shape/density guarantee is `CameraImportanceTest`'s
+  Test 1 instead).  `VCMStrategyBalanceTest` also gained topology G,
+  the orthographic mirror of BDPT's topology D, which found that VCM's
+  delta-direction-camera support was broken two ways — see the
+  orthographic entry below.  Those topologies are deliberately NOT a
   copy of the suites' pinhole ones: BDPT's t==1 MIS weight is set by
   `π·d²·r²/D²` (camera-side over light-side area density at the light
   vertex), which the pinhole topologies' 30°/3.5 m/4 m geometry puts
