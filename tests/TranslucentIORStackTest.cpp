@@ -585,6 +585,8 @@ static void TestChannelZeroGate()
 	front->release();
 }
 
+#include "TranslucentGuidedStackProbe.h"
+
 int main()
 {
 	GlobalLog();
@@ -593,6 +595,7 @@ int main()
 	TestAnisotropicRGB();
 	TestScatterNM();
 	TestChannelZeroGate();
+	GuidedStackProbe::Run();
 
 	std::cout << std::endl;
 	if( failed == 0 ) {
