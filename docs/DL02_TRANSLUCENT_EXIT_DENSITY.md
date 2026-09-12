@@ -59,8 +59,8 @@ Paths below are relative to `src/Library/`.
 | `Materials/TranslucentSPF.cpp`, RGB uniform/per-channel and NM entry/backscatter | VERIFIED unchanged for this pattern | These lobes intentionally use N-dependent Phong sampling with matching stored conditional densities; their evaluable mixture remains DL-41. |
 | `Shaders/PathTracingIntegrator.cpp`, ordinary RGB/NM | VERIFIED unchanged consumer | Uses supplied pS->pdf; no compensation for the old negative support. |
 | `Shaders/PathTracingIntegrator.cpp`, HWSS | VERIFIED hero density; OPEN DL-38 companions | Hero consumes stored pdf; companion fallback BSDF*cos/pdf cannot reproduce stateful amplitudes. |
-| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; OPEN DL-03 | Pdf/PdfNM now agree with the diffuse exit sampler, but guided substitution still drops its popped stack. |
-| `Shaders/BDPTIntegrator.cpp`, eye/light RGB/NM/HWSS | CORRECTED producer; OPEN DL-38/DL-41 | Uses selectProb*effectivePdf forward; reverse reevaluation calls PathValueOps::EvalPdfAtVertex and converts to predecessor pdfRev. |
+| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; OPEN DL-03 | Pdf/PdfNM now agree with the diffuse exit sampler; independent guiding-state and probability gaps remain DL-03/DL-42. |
+| `Shaders/BDPTIntegrator.cpp`, eye/light RGB/NM/HWSS | CORRECTED producer; OPEN DL-38/DL-41 | Uses selectProb*effectivePdf forward; reverse reevaluation converts to predecessor pdfRev. Eye guided-candidate argument order is separately DL-43. |
 | `Utilities/PathVertexEval.h` | VERIFIED propagation; OPEN DL-41 full contract | Rebuilds intersection and stack then calls Pdf/PdfNM; does not compensate for the former sign error. |
 | `Shaders/VCMIntegrator.cpp` and MLT rasterizers | VERIFIED shared consumer | VCM consumes inherited pdfRev in MIS recurrence; RGB/NM MLT uses BDPT generators. No duplicate translucent sampler. |
 | `Lights/LightSampler.cpp`, RGB/NM area/environment NEE | OPEN DL-41 state query | Evaluates material Pdf/PdfNM using defaultIOR rather than current walk stack. |
@@ -85,6 +85,28 @@ This is separate from the BSDF amplitude gap DL-38 and guiding-state gap
 DL-03. Static evidence is confirmed; no numeric transport deficit is claimed
 until DL-41's own red proof. The negative-hemisphere-zero assertion in the
 DL-02 test pins the existing conditional API, not an ideal full mixture.
+
+## Review residuals
+
+**DL-42 — PT one-sample guiding loses lobe-selection compensation.**
+The ordinary RGB/NM loop initializes scatterThroughput as kray/selectProb.
+When trained one-sample guiding keeps the BSDF candidate, it overwrites
+that value with kray*pdf/combinedPdf, dropping selectProb. This is reachable
+at an ordinary entry reflection on a mixed-lobe material. It is independent
+of the translucent exit sign/shape producer and does not need BSDF
+reevaluation or a substituted stack. Ordinary translucent exits are not a
+clean PT fixture because GuidingEffectiveAlpha disables specular arrivals.
+Static finding verified by the supervisor; no measured render bias claimed.
+
+**DL-43 — BDPT eye guided-candidate PDF arguments are reversed.**
+Both the RIS and one-sample eye guide branches call EvalPdfAtVertex with
+(guided direction, -incoming ray direction), although the utility takes
+(incoming-away, outgoing-away) and evaluates Pdf(outgoing given incoming).
+The light-side twins have the correct order. The error already exists for
+an ordinary Lambertian vertex and is independent of translucent mixture
+state, so it receives its own row rather than being folded into DL-41.
+RGB/NM use the same templated eye code. Static finding verified by the
+supervisor; its dedicated red proof remains to be built.
 
 ## Verification and review
 
@@ -133,3 +155,15 @@ gate, and explicit DL-03/DL-38/DL-41 residuals address those risks.
 
 Final build and independent review evidence is retained in the standalone
 report; review completion does not rely on these self-audit observations.
+
+
+The first independent review round examined `6fd5413c`. Tests and
+documentation reviewers found no P1/P2 issues; transport found no scoped
+DL-02 blocker but identified the independent P1 defects now recorded as
+DL-42 and DL-43. The supervisor verified both against their producers and
+consumers. A proposed inward-guide-normal support defect was not confirmed:
+the guide Sample/Pdf use the same modified distribution and the SPF part
+of a mixture below alpha=1 retains exit support. Complete conditional-lobe
+guiding coverage belongs with the remaining transport work; no unsupported
+numeric bias or zero-support claim is recorded for that normal alone.
+The final fresh review verdicts are in the standalone report.
