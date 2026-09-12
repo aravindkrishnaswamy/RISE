@@ -92,7 +92,7 @@ public:
 		ri.geometric.range = 1;
 		ri.geometric.ptIntersection = ri.geometric.ray.PointAtLength(1);
 		ri.geometric.vNormal = -ri.geometric.ray.Dir();
-		ri.geometric.vNormalFace = ri.geometric.vNormal;
+		ri.geometric.vNormal = ri.geometric.vNormal;
 		ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
 		ri.pObject = &object;
 		ri.pMaterial = &material;
@@ -131,7 +131,7 @@ static void Run()
 	stability.rrMinDepth = 10;
 	PathTracingIntegrator* integrator = new PathTracingIntegrator(ManifoldSolverConfig(), stability);
 	integrator->SetMaxPathDepth(2);
-	const RasterizerState rast;
+	const RasterizerState rast{};
 
 	for( unsigned int spectral = 0; spectral < 2; ++spectral ) {
 		for( unsigned int mode = 0; mode < 3; ++mode ) {
@@ -156,7 +156,7 @@ static void Run()
 				hit.geometric.range = 1;
 				hit.geometric.ptIntersection = Point3(0,0,0);
 				hit.geometric.vNormal = Vector3(0,0,1);
-				hit.geometric.vNormalFace = Vector3(0,0,1);
+				hit.geometric.vNormal = Vector3(0,0,1);
 				hit.geometric.onb.CreateFromW(Vector3(0,0,1));
 				hit.pObject = object;
 				hit.pMaterial = material;
