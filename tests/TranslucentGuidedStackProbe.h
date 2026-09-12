@@ -150,7 +150,6 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 	StabilityConfig stability;
 	stability.rrMinDepth = 10;
 	stability.maxVolumeBounce = 0;
-	stability.branchingThreshold = 1;
 	BDPTIntegrator* integrator = new BDPTIntegrator(3,3,stability);
 	LightManager* lights = new LightManager();
 	PointLight* point = new PointLight(1,RISEPel(1,1,1),true);
