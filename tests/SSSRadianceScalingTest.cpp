@@ -56,7 +56,7 @@ using namespace RISE::Implementation;
 namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
 
 namespace {
-using RGB = std::array<double, 3>;
+using RGBChannels = std::array<double, 3>;
 constexpr unsigned int kFilmSize = 16;
 enum class Model { ExplicitDielectricVolume, DiffusionSSS, RandomWalkSSS };
 enum class Topology { Air, WaterInside, WaterOutside };
@@ -207,7 +207,7 @@ bool CheckGeometry( IJobPriv& job, Model model, Topology topology, const std::st
 			const double expectedY = double(y) / kFilmSize - 0.5;
 			if( !Check( Near( ray.origin.x, expectedX ) && Near( ray.origin.y, expectedY ) &&
 				Near( ray.origin.z, topology == Topology::WaterOutside ? 120 : 4 ) &&
-				Near( ray.dir.x, 0 ) && Near( ray.dir.y, 0 ) && Near( ray.dir.z, -1 ),
+				Near( ray.Dir().x, 0 ) && Near( ray.Dir().y, 0 ) && Near( ray.Dir().z, -1 ),
 				label + ": matched orthographic footprint and normal incidence" ) ) return false;
 			const RasterizerState rast = { x, y };
 			RayIntersection hit( ray, rast );
@@ -244,14 +244,14 @@ protected:
 	~Capture() override = default;
 };
 
-bool ComputeMean( const Capture& capture, RGB& mean, const std::string& label )
+bool ComputeMean( const Capture& capture, RGBChannels& mean, const std::string& label )
 {
 	if( !Check( capture.width == kFilmSize && capture.height == kFilmSize &&
 		capture.pixels.size() == size_t(kFilmSize) * kFilmSize, label + ": complete 16x16 capture" ) ) return false;
-	RGB sum{};
+	RGBChannels sum{};
 	for( size_t pixel = 0; pixel < capture.pixels.size(); ++pixel ) {
 		const RISEColor& color = capture.pixels[pixel];
-		const RGB raw = { color.base.r, color.base.g, color.base.b };
+		const RGBChannels raw = { color.base.r, color.base.g, color.base.b };
 		if( !Check( std::isfinite( color.a ) && color.a >= 0 && color.a <= 1,
 			label + ": finite coverage alpha at pixel " + std::to_string(pixel) ) ) return false;
 		for( size_t channel = 0; channel < 3; ++channel ) {
@@ -273,7 +273,7 @@ struct OwnedInput {
 	std::filesystem::path path;
 	~OwnedInput() { std::error_code ec; std::filesystem::remove( path, ec ); }
 };
-bool Render( Model model, Topology topology, const Config& cfg, RGB& mean, const std::string& label, bool lightingControl = false )
+bool Render( Model model, Topology topology, const Config& cfg, RGBChannels& mean, const std::string& label, bool lightingControl = false )
 {
 	std::error_code ec;
 	std::filesystem::create_directories( "rendered/sss_radiance_scaling", ec );
@@ -305,16 +305,16 @@ bool Render( Model model, Topology topology, const Config& cfg, RGB& mean, const
 	return valid;
 }
 
-void PrintRGB( const RGB& rgb )
+void PrintRGB( const RGBChannels& rgb )
 {
 	std::cout << '(' << rgb[0] << ',' << rgb[1] << ',' << rgb[2] << ')';
 }
-bool Aggregate( const std::vector<RGB>& values, RGB& mean, const std::string& label )
+bool Aggregate( const std::vector<RGBChannels>& values, RGBChannels& mean, const std::string& label )
 {
-	RGB m2{};
-	mean = RGB{};
+	RGBChannels m2{};
+	mean = RGBChannels{};
 	size_t n = 0;
-	for( const RGB& sample : values ) {
+	for( const RGBChannels& sample : values ) {
 		++n;
 		for( size_t channel = 0; channel < 3; ++channel ) {
 			const double delta = sample[channel] - mean[channel];
@@ -322,7 +322,7 @@ bool Aggregate( const std::vector<RGB>& values, RGB& mean, const std::string& la
 			m2[channel] += delta * (sample[channel] - mean[channel]);
 		}
 	}
-	RGB stdev{}, stderrMean{};
+	RGBChannels stdev{}, stderrMean{};
 	for( size_t channel = 0; channel < 3; ++channel ) {
 		if( !Check( n > 0 && std::isfinite(mean[channel]) && mean[channel] > 1e-8 &&
 			std::isfinite(m2[channel]) && m2[channel] >= 0, label + ": valid aggregate" ) ) return false;
@@ -335,7 +335,7 @@ bool Aggregate( const std::vector<RGB>& values, RGB& mean, const std::string& la
 	std::cout << std::endl;
 	return true;
 }
-bool Ratio( const RGB& numerator, const RGB& denominator, RGB& result, const std::string& label )
+bool Ratio( const RGBChannels& numerator, const RGBChannels& denominator, RGBChannels& result, const std::string& label )
 {
 	for( size_t channel = 0; channel < 3; ++channel ) {
 		if( !Check( std::isfinite(numerator[channel]) && std::isfinite(denominator[channel]) &&
@@ -365,20 +365,20 @@ int main( int argc, char** argv )
 	// Cheap air-furnace lighting/capture control before the expensive matrix.
 	Config controlConfig = cfg;
 	controlConfig.samples = 4;
-	RGB controlMean{};
+	RGBChannels controlMean{};
 	if( !Render(Model::ExplicitDielectricVolume, Topology::Air, controlConfig, controlMean, "white_lambertian_sphere_control", true) ) return 1;
 	std::cout << "LIGHTING_CONTROL air white Lambertian sphere samples=4 RGB_mean=";
 	PrintRGB(controlMean); std::cout << " (uniform-furnace reference=1; diagnostic)" << std::endl;
 	const Model models[] = { Model::ExplicitDielectricVolume, Model::DiffusionSSS, Model::RandomWalkSSS };
 	const Topology topologies[] = { Topology::Air, Topology::WaterInside, Topology::WaterOutside };
-	std::array<RGB, 3> observerRatios{};
+	std::array<RGBChannels, 3> observerRatios{};
 	for( size_t m = 0; m < 3; ++m ) {
-		std::array<RGB, 3> means{};
+		std::array<RGBChannels, 3> means{};
 		for( size_t t = 0; t < 3; ++t ) {
 			const std::string label = std::string(ModelName(models[m])) + "/" + TopologyName(topologies[t]);
-			std::vector<RGB> values;
+			std::vector<RGBChannels> values;
 			for( unsigned int trial = 0; trial < cfg.trials; ++trial ) {
-				RGB mean{};
+				RGBChannels mean{};
 				const std::string trialLabel = label + "/trial=" + std::to_string(trial);
 				std::cout << "RENDER " << trialLabel << " seed=" << cfg.seedBase + renderIndex << std::endl;
 				if( !Render(models[m], topologies[t], cfg, mean, trialLabel) ) {
@@ -391,11 +391,11 @@ int main( int argc, char** argv )
 			if( !Aggregate(values, means[t], label) ) return 1;
 		}
 		if( !Ratio(means[1], means[2], observerRatios[m], std::string(ModelName(models[m])) + " water_inside/water_outside") ) return 1;
-		RGB immersionRatio{};
+		RGBChannels immersionRatio{};
 		if( !Ratio(means[1], means[0], immersionRatio, std::string(ModelName(models[m])) + " water_inside/air_furnace") ) return 1;
 	}
 	for( size_t m = 1; m < 3; ++m ) {
-		RGB ratioOfRatios{};
+		RGBChannels ratioOfRatios{};
 		if( !Ratio(observerRatios[m], observerRatios[0], ratioOfRatios,
 			std::string(ModelName(models[m])) + " observer_ratio/explicit_observer_ratio") ) return 1;
 	}
