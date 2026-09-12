@@ -3265,7 +3265,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
 									traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-								*pS, iorStack, ri.geometric, traceRay.Dir() );
+										*pS, iorStack, ri.geometric, traceRay.Dir() );
 									smplBsdfPdf = bsdfPdfGuided;
 									smplGuidePdf = guidePdf;
 									smplCombinedPdf = combinedPdf;
