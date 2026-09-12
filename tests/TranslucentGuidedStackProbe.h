@@ -11,6 +11,10 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Scene.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Managers/LightManager.h"
+#include "../src/Library/Lights/PointLight.h"
+#include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/Utilities/PathGuidingField.h"
 
@@ -21,7 +25,8 @@ struct Observation {
 	bool initialExit = false, poppedSPFStack = false, arrived = false;
 	bool containsOnArrival = false, entryLobeOnArrival = false;
 	Scalar mediumOnArrival = 0;
-	Vector3 spfDirection, tracedDirection;
+	bool hasEntryPrefix = false, forceEntryChoice = false;
+	Vector3 spfDirection, tracedDirection, exitNormal;
 };
 
 class ObservedSPF : public virtual ISPF, public virtual Reference {
@@ -30,7 +35,13 @@ class ObservedSPF : public virtual ISPF, public virtual Reference {
 	void Record( const RayIntersectionGeometric& ri, const IORStack& stack,
 		const ScatteredRayContainer& rays ) const
 	{
-		if( observed.scatters++ == 0 ) {
+		const unsigned int index = observed.scatters++;
+		if( observed.hasEntryPrefix && index == 0 ) {
+			observed.forceEntryChoice = true;
+			return;
+		}
+		if( index == (observed.hasEntryPrefix ? 1u : 0u) ) {
+			observed.exitNormal = ri.vGeomNormal;
 			observed.initialExit = stack.containsCurrent();
 			for( unsigned int i = 0; i < rays.Count(); ++i ) {
 				if( rays[i].type == ScatteredRay::eRayDiffuse && rays[i].ior_stack ) {
@@ -99,6 +110,118 @@ public:
 	}
 };
 
+// The BDPT generators accept camera/light roots rather than a pre-seeded
+// surface. Start outside, select the real translucent entry, then inspect
+// the exit and subsequent hit. This sampler fixes only that entry-lobe
+// choice; all guide sampling uses the seeded independent stream.
+class EntrySampler : public IndependentSampler {
+	Observation& observed;
+public:
+	EntrySampler(const RandomNumberGenerator& rng, Observation& state) : IndependentSampler(rng), observed(state) {}
+	Scalar Get1D() override {
+		if(observed.forceEntryChoice) { observed.forceEntryChoice = false; return .999; }
+		return IndependentSampler::Get1D();
+	}
+};
+class ThreeHitManager : public ObjectManager {
+	const IObject& object;
+	const IMaterial& material;
+	const Observation& observed;
+public:
+	ThreeHitManager(const IObject& obj, const IMaterial& mat, const Observation& state) :
+		ObjectManager(false,false,4,8),object(obj),material(mat),observed(state) {}
+	void IntersectRay(RayIntersection& ri, bool, bool, bool) const override {
+		if(observed.scatters >= 3) return;
+		ri.geometric.bHit = true;
+		ri.geometric.range = 1;
+		ri.geometric.ptIntersection = observed.scatters == 1 ? Point3(0,0,0) : ri.geometric.ray.PointAtLength(1);
+		ri.geometric.vNormal = observed.scatters == 1 ? ri.geometric.ray.Dir() : -ri.geometric.ray.Dir();
+		ri.geometric.vGeomNormal = ri.geometric.vNormal;
+		ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
+		ri.pObject = &object;
+		ri.pMaterial = &material;
+	}
+};
+static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPainter& trans,
+	const IScalarPainter& extinction, const IScalarPainter& exponent,
+	const IScalarPainter& scattering, const IObject& object, const IRayCaster& caster)
+{
+	std::cout << "Sub-test 6: DL-03 trained BDPT real entry/exit/next-hit stack" << std::endl;
+	StabilityConfig stability;
+	stability.rrMinDepth = 10;
+	stability.maxVolumeBounce = 0;
+	stability.branchingThreshold = 1;
+	BDPTIntegrator* integrator = new BDPTIntegrator(3,3,stability);
+	LightManager* lights = new LightManager();
+	PointLight* point = new PointLight(1,RISEPel(1,1,1),true);
+	lights->AddItem(point,"probe_light");
+	point->release();
+	for(unsigned int side=0; side<2; ++side) {
+		for(unsigned int spectral=0; spectral<2; ++spectral) {
+			for(unsigned int mode=0; mode<3; ++mode) {
+				unsigned int reached=0,outwardSub=0,inwardSub=0,retained=0,badOut=0,badIn=0,badInitial=0,badMedium=0;
+				for(unsigned int trial=0; trial<512; ++trial) {
+					Observation observation;
+					observation.hasEntryPrefix = true;
+					ObservedMaterial* material = new ObservedMaterial(front,trans,extinction,exponent,scattering,observation);
+					ThreeHitManager* manager = new ThreeHitManager(object,*material,observation);
+					Scene* scene = new Scene();
+					scene->SetObjectManager(manager);
+					scene->SetLightManager(lights);
+					LightSampler* lightSampler = new LightSampler();
+					lightSampler->Prepare(*scene,LuminaryManager::LuminariesList());
+					integrator->SetLightSampler(lightSampler);
+					integrator->SetGuidingField(mode ? &guide : 0,mode ? &guide : 0,.8,1,1,
+						mode==2 ? eGuidingRIS : eGuidingOneSampleMIS,2);
+					RandomNumberGenerator rng(12601+trial);
+					EntrySampler sampler(rng,observation);
+					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+					std::vector<BDPTVertex> vertices;
+					std::vector<uint32_t> starts;
+					if(side) {
+						if(spectral) integrator->GenerateLightSubpathNM(*scene,caster,sampler,vertices,starts,550,rng,0);
+						else integrator->GenerateLightSubpath(*scene,caster,sampler,vertices,starts,rng);
+					} else {
+						const Ray cameraRay(Point3(0,0,-2),Vector3(0,0,1));
+						if(spectral) integrator->GenerateEyeSubpathNM(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts,550,0);
+						else integrator->GenerateEyeSubpath(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts);
+					}
+					if(!observation.initialExit || !observation.poppedSPFStack) ++badInitial;
+					if(observation.arrived) {
+						++reached;
+						const bool outward=Vector3Ops::Dot(observation.tracedDirection,observation.exitNormal)>0;
+						const bool substituted=Vector3Ops::Magnitude(observation.tracedDirection-observation.spfDirection)>1e-8;
+						if(observation.pdfQueries>0) {
+							if(!substituted) ++retained;
+							else if(outward) ++outwardSub;
+							else ++inwardSub;
+						}
+						if(outward && (observation.containsOnArrival || !observation.entryLobeOnArrival)) ++badOut;
+						if(!outward && (!observation.containsOnArrival || observation.entryLobeOnArrival)) ++badIn;
+						if(std::fabs(observation.mediumOnArrival-1)>1e-12) ++badMedium;
+					}
+					integrator->SetLightSampler(0);
+					lightSampler->release(); scene->release(); manager->release(); material->release();
+				}
+				std::cout << "  BDPT " << (side ? "light" : "eye") << " " << (spectral ? "NM" : "RGB")
+					<< " mode=" << mode << " reached=" << reached << " substituted_out=" << outwardSub
+					<< " substituted_in=" << inwardSub << " retained_spf=" << retained
+					<< " bad_initial=" << badInitial << " bad_out=" << badOut << " bad_in=" << badIn
+					<< " bad_medium=" << badMedium << std::endl;
+				EXPECT(badInitial==0,"DL-03 BDPT real entry leads to real exit with a popped SPF stack");
+				EXPECT(reached>0,"DL-03 BDPT continuation reached same-object observer");
+				EXPECT(badOut==0,"DL-03 BDPT outward exit carries popped stack and next same-object Scatter enters");
+				EXPECT(badIn==0,"DL-03 BDPT inward substitution preserves inside stack");
+				EXPECT(badMedium==0,"DL-03 BDPT surrounding air IOR remains unchanged");
+				if(mode) EXPECT(outwardSub>0,"DL-03 BDPT actual outward guided exit substitution count is positive");
+				if(mode==1) EXPECT(inwardSub>0,"DL-03 BDPT inward guided substitution control is positive");
+				if(mode==2) EXPECT(retained>0,"DL-03 BDPT RIS retained SPF candidate control is positive");
+			}
+		}
+	}
+	integrator->release(); lights->release();
+}
+
 static void Run()
 {
 	std::cout << "Sub-test 5: DL-03 trained PT guided exit stack / later same-object hit" << std::endl;
@@ -135,7 +258,7 @@ static void Run()
 
 	for( unsigned int spectral = 0; spectral < 2; ++spectral ) {
 		for( unsigned int mode = 0; mode < 3; ++mode ) {
-			unsigned int intercepted = 0, substitutedOut = 0, substitutedIn = 0;
+			unsigned int intercepted = 0, substitutedOut = 0, substitutedIn = 0, retainedSPF = 0;
 			unsigned int badOut = 0, badIn = 0, badMedium = 0, badInitial = 0;
 			for( unsigned int trial = 0; trial < 512; ++trial ) {
 				Observation observation;
@@ -176,8 +299,9 @@ static void Run()
 				if( !observation.initialExit || !observation.poppedSPFStack ) ++badInitial;
 				if( observation.arrived ) {
 					++intercepted;
-					const bool outward = observation.tracedDirection.z > 0;
+					const bool outward = Vector3Ops::Dot(observation.tracedDirection,observation.exitNormal) > 0;
 					const bool substituted = Vector3Ops::Magnitude(observation.tracedDirection-observation.spfDirection) > 1e-8;
+					if( !substituted && observation.pdfQueries > 0 ) ++retainedSPF;
 					if( substituted && observation.pdfQueries > 0 ) {
 						if( outward ) ++substitutedOut; else ++substitutedIn;
 					}
@@ -189,7 +313,7 @@ static void Run()
 			}
 			std::cout << "  " << (spectral ? "NM" : "RGB") << " mode=" << mode
 				<< " intercepted=" << intercepted << " substituted_out=" << substitutedOut
-				<< " substituted_in=" << substitutedIn << " bad_out=" << badOut
+				<< " substituted_in=" << substitutedIn << " retained_spf=" << retainedSPF << " bad_out=" << badOut
 				<< " bad_in=" << badIn << " bad_medium=" << badMedium << std::endl;
 			EXPECT(badInitial == 0, "DL-03 real SPF produced an exit with a popped stack on every trial");
 			EXPECT(intercepted > 0, "DL-03 continuation reached the same-object stack observer");
@@ -197,9 +321,11 @@ static void Run()
 			EXPECT(badIn == 0, "DL-03 inward substituted direction preserves inside stack and does not re-enter");
 			EXPECT(badMedium == 0, "DL-03 surrounding water IOR remains unchanged");
 			if( mode ) EXPECT(substitutedOut > 0, "DL-03 non-vacuous outward guided exit substitution count is positive");
+			if( mode == 2 ) EXPECT(retainedSPF > 0, "DL-03 RIS retained SPF candidate control is positive");
 			if( mode == 1 ) EXPECT(substitutedIn > 0, "DL-03 one-sample inward substitution control is positive");
 		}
 	}
+	RunBDPT(*guide,*front,*trans,*extinction,*exponent,*scattering,*object,*caster);
 	integrator->release(); caster->release(); shader->release();
 	object->release(); water->release(); scattering->release(); exponent->release();
 	extinction->release(); trans->release(); front->release(); guide->release();
