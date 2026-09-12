@@ -766,8 +766,12 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   Jacobian of `normalize ∘ Stretch`, not a constant.
 
   **NEW, OPEN, and a direct consequence of this fix —
-  `SignalIntegratorConsistencyTest`'s tidal MASKED BDPT row is now
-  asserted, and it FAILS.**  Before the fix that row never ran:
+  `SignalIntegratorConsistencyTest`'s tidal MASKED BDPT row became
+  assertable, and it FAILED until round 3's reference-completeness gate
+  excluded it (it is now a counted REFERENCE INCOMPLETE skip — BDPT's
+  masked neutral-variant ratio to PT is ≈ 3×, so PT cannot referee it —
+  and the BDPT-vs-VCM gap behind it is debt 30).**  Before the fix that
+  row never ran:
   tidal's whole-image BDPT/PT was 338×, outside the blow-up gate's
   [0.5×, 2×], so both the whole-image and the masked ratio-of-ratios
   were SKIPPED.  Post-fix the whole-image ratio is 1.019 (PT 0.05619,
@@ -813,8 +817,12 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   R_E 2.11, R_B 2.83); the ratio-of-ratios does not cancel it because
   the two differ by 24 %.  Whether that 2–3× is a debt-27-class PT
   strategy gap through the water or something else has NOT been
-  diagnosed.  **The band was not widened and the row was not converted
-  to a skip** — it fails, with a stated precision.  Tidal's VCM row
+  diagnosed.  **The band was not widened** — round 2 left the row
+  failing with a stated precision; round 3 then classified it by the
+  symmetric reference-completeness rule (§6.2 of
+  SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md) as a counted skip, because
+  neither PT nor VCM agrees with BDPT on those pixels even on the neutral
+  variant, and opened debt 30 for the disagreement itself.  Tidal's VCM row
   still skips at 2.049× (just over the gate's 2.0), which is the same
   transparent-shadows/merge-recovery effect the table above
   quantifies.  `shelf_bunny` and `pavilion_colonnade`, which were also

@@ -390,9 +390,10 @@ On `tidal_stones` this triggers for BOTH integrators (BDPT's masked
 `R_B` ≈ 2.8–3.0×, VCM's ≈ 57.5–58×) and the BDPT↔VCM cross-check itself
 sits at the edge of its own 20 % band (−0.1996 to −0.2354 across
 independent runs) — a real, open BDPT-vs-VCM disagreement on that
-masked transport, not a measurement artifact, tracked as new data under
-debt 27 in RENDERING_INTEGRATORS.md. Per the ruling, a cross-check that
-fails is reported, not loosened.
+masked transport, not a measurement artifact, tracked as its own item
+(debt 30) in RENDERING_INTEGRATORS.md — debt 27 keeps only the
+PT-strategy-gap data. Per the ruling, a cross-check that fails is reported,
+not loosened; round 3's symmetric rule then classified it (next paragraph).
 
 **The reference-completeness rule is SYMMETRIC (supervisor ruling, debt
 28 round 3).** The PT-independent BDPT↔VCM cross-check above assumes
