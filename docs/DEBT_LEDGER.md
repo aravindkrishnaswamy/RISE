@@ -43,7 +43,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-50 | DL04_SSS_RADIANCE_DECISION.md: spectral survival | RandomWalkSSS NM exit pays free-flight survival transmittance twice | OPEN-confirmed (static evidence; red-proof pending) | RandomWalkSSS::SampleExit samples the distance-survival event, then multiplies throughputNM by exp(-sigma_t_nm*exitDist); RGB divides Tr by its exit-event probability. Neutral coefficients still diverge. | S | physics-bias | user-visible (spectral random-walk SSS) |
 | DL-51 | DL04_SSS_RADIANCE_DECISION.md: dormant exit fallback | Non-absorbing SubSurfaceScatteringSPF inside exit reads the current interior IOR as its destination before popping | OPEN-confirmed (static evidence; red-proof pending) | Scatter/ScatterNM use Nt=ior_stack.top() on the containsCurrent branch, so a seeded stack computes n_s to n_s Fresnel/Snell before attaching a popped stack. Shipped materials set bAbsorbBackFace=true and do not reach it; the default standalone SPF constructor permits it. | S | physics-bias | latent (standalone non-absorbing SPF; not shipped material behavior) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
-| DL-04 | REFRACTIVE_RADIANCE_SCALING.md §10.1 | Whether `SubSurfaceScatteringSPF`/`RandomWalkSSS`/`BSSRDFSampling::Sw` correctly omit the debt-30 eta^2 factor (telescoping argument) or need it (PBRT-style eta^2 divide) is undecided; direction not pinned down | OPEN-confirmed | Doc's own two-reading analysis (§10.1(a)/(b)); the disambiguating render (matched dielectric-shell-with-medium vs `subsurfacescattering_material`, submerged vs air camera) has not been produced — confirmed absent from `tests/` this sweep | M | physics-bias | user-visible (SSS in non-air medium only) |
+| ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; exact normalization/non-air support/MIS defects remain DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
 | DL-37 | IMPROVEMENTS.md "GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned" | `ggx_material` in `eFresnelSchlickF0` mode goes over unity at grazing incidence (ρ = 1.1573 at 80°) because the glTF diffuse-energy split weights the diffuse lobe by the angle-flat `1 − max(F0)` while the Schlick specular term it is meant to complement rises toward 1 as `cos θ → 0` | OPEN-confirmed | `tests/LayeredWhiteFurnaceTest.cpp:1788-1789` (config 17, "White GGX-PBR base alone", `kPostureKnownFailure`) measures ρ = {0.9988, 0.9994, 1.0251, 1.1573} at θ = {0°,30°,60°,80°}; mechanism read directly in `GGXBRDF::albedo` (`GGXBRDF.cpp:514-520`: `diffColor * max(0, 1 − maxF0) + F(θ)`, doc comment at 508-513 stating the Schlick branch evaluates Fresnel at the actual outgoing cosine while diffuse keeps the constant glTF split) and reproduced at sample time in `GGXSPF::Scatter`/`ScatterNM` (`GGXSPF.cpp:216-219`, six analogous sites at 214/260/364/500/545/638) and `GGXBRDF::value`/`valueNM` (nine analogous sites at 209/276/330/399/451/490/514/595/638) — same `1 − maxF0` constant used at every one, confirmed this sweep | M | physics-bias | user-visible (low-F0 GGX at grazing incidence) |
 | DL-42 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation | OPEN-confirmed (static evidence; red-proof pending) | `PathTracingIntegrator.cpp` initializes `scatterThroughput = kray/selectProb`, then the trained-guiding BSDF branch replaces it with `kray*pdf/combinedPdf` without selectProb. Shared RGB/NM loop; ordinary mixed-lobe entry reflection is reachable. | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
@@ -168,14 +168,14 @@ reflowed otherwise.
 
 ## Counts
 
-Updated during the 2026-09-12 DL-04 audit (DL-04 remains open). The original sweep counts
+Updated for the 2026-09-12 DL-04 convention closure. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **48** (the original 36 minus DL-01/DL-02/DL-36/DL-03, plus independent
+- OPEN-confirmed: **47** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
   residuals DL-38 through DL-53; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **4** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+- CLOSED-by-cleanup: **5** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
-  DL-03, `8a9bdb18`)
+  DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -231,15 +231,19 @@ BDPT eye/light RGB/NM real-entry/exit coverage passes too; eye RIS retains
 SPF directions because DL-43 remains open, so it is not claimed as actual
 outward-guide coverage. See [closure and audit](DL03_GUIDED_IOR_CONTINUATION.md).
 
-**DL-04 (SSS family eta^2 direction).** Build the two-material observable
-the doc names: a semi-infinite slab as (a) a `dielectric_material` shell
-with a scattering interior medium, and (b) `subsurfacescattering_material`
-with matched albedo/mfp, each rendered with a submerged camera and an
-air camera, everything else fixed. Expected invariant if RISE's convention
-is self-consistent: the submerged/air brightness ratio is identical for (a)
-and (b). A `tests/SSSRadianceScalingTest.cpp` asserting that ratio-of-ratios
-== 1 (within MC noise) is the closing guard, however the underlying
-direction resolves.
+**~~DL-04 (SSS family eta^2 direction).~~ CLOSED 2026-09-12 —
+consistency pin, `1b705ce1`.** The original ratio-of-ratios alone cannot
+identify a constant multiplying every SSS event, and the proposed planar
+fixture exposes a separate missing-support defect. The revised test retains
+the matched explicit-volume/diffusion/RW camera matrix, anchors each raw
+observer ratio to 1.33 squared, and adds independent helper and absolute
+conservative-furnace bounds. Both deliberately added eta-square directions
+fail six SSS air-channel checks; a missing observer transform fails nine.
+The unchanged implementation passes. This closes the convention question,
+not exact material equality within MC noise: fixed pixel Sobol scrambles
+are not independent repetitions, and DL-48 through DL-53 retain the distinct
+normalization, relative-index, survival, fallback, support and recursive-MIS
+issues. See [the complete decision record](DL04_SSS_RADIANCE_DECISION.md).
 
 **DL-05 (PT two-layer weave gap, debt 27).** Extend
 `tests/BDPTStrategyBalanceTest.cpp` with a topology pairing two

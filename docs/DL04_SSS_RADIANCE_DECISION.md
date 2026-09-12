@@ -3,9 +3,10 @@
 Base master: `df5e17f996967a5a7a5ed379bae4b6b3a2efe3ac`.
 This records the source audit, measured probes, and the coarse convention gate
 introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.
-Production transport is unchanged. DL-04 remains open pending final review
-and the fresh clean-build selected gates. The selected final defaults below follow the additional cap probes; the
-pre-observer-anchor default gate and eta mutation record are below.
+Production transport is unchanged. DL-04 is recorded as a convention
+consistency pin; final independent review governs merge readiness. The
+selected defaults follow the additional cap probes documented below,
+alongside the pre-observer-anchor gate and eta mutation record.
 
 ## Complete event versus one boundary
 
@@ -104,7 +105,7 @@ bitwise repeatability under worker-side random scheduling.
 These have separate ledger entries or documented model limitations;
 none licenses a guessed constant repair in this row.
 
-## Convention-gate contract (review pending)
+## Convention-gate contract
 
 An ordinary invocation runs the full three-model, three-topology matrix,
 with four trials by default. Before rendering, it runs four separately
@@ -278,7 +279,7 @@ so an extra surface diffuse lobe is not the mechanism. The iterative PT
 loop already applies the correct map-identity condition. DL-53 carries
 the recursive sibling and its direct miss-ray regression recipe.
 
-## Existing focused-test logs; final gates pending
+## Focused-test and build record
 
 The recorded `gate-BSSRDFEntryPointTest`, `gate-BSSRDFSamplingTest`,
 `gate-RandomWalkSSSTest`, `gate-SobolDimensionBudgetTest`,
@@ -295,14 +296,15 @@ yielded `(scanned 306 test files) 165 passed, 0 failed.` in
 
 The clean Xcode build succeeded. Its only `warning:` lines were the
 repository-exempt missing local OIDN library path and AppIntents metadata
-notice. No compiler warning was reported.
+notice. Xcode also emitted two automatic destination-selection notices.
+No compiler warning was reported.
 
 The first actual convention gate, `convention-baseline256.log`, used
 unchanged production transport at test commit `25421dd6`, 256 spp and
 four trials with the original 256/512/1024 caps. It ended verbatim:
 `Guards passed: 572084 failed: 0. Complete-event convention checks complete; exact energy conservation is not asserted.`
-This is baseline-green consistency evidence, not a red proof. Final review,
-the fresh clean-build selected gates remain pending.
+This is baseline-green consistency evidence, not a red proof. The fresh
+clean-build selected gates are recorded below.
 
 ## Family audit and scope
 
@@ -383,3 +385,22 @@ not a production defect. The fixture bytes were restored exactly to
 `92f0553f2717a03f712497de2a156ba63c1e13885349426345c8f3dc9bd4dafc`,
 and its rebuilt executable succeeded. The baseline, mutant, diff and
 restoration logs are retained with the evidence.
+
+## Final branch validation
+
+A fresh make clean/build and nine separately linked selected suites all
+passed with zero compiler diagnostics. A second complete convention gate
+at IOR 2 also passed. The SSS counters are verbatim:
+
+```text
+Guards passed: 572093 failed: 0. Complete-event convention checks complete; exact energy conservation is not asserted.
+Guards passed: 572093 failed: 0. Complete-event convention checks complete; exact energy conservation is not asserted.
+```
+
+The selected suites are SSSRadianceScalingTest, BSSRDFSamplingTest,
+BSSRDFEntryPointTest, RandomWalkSSSTest, SobolDimensionBudgetTest,
+SPFPdfConsistencyTest, SPFBSDFConsistencyTest,
+RefractiveRadianceScalingTest and SourceHygieneTest. Complete logs and
+per-test exit statuses are exported with the report. This is a selected
+class gate, not a full-suite run. Final independent review remains required
+before merge; no production code has changed.

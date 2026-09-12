@@ -559,9 +559,12 @@ sat on the eye side — which made them blind to this factor, and is why
 they were internally consistent and remain valid. See §13 of that
 document.
 
-### 10.1 Named residual: the subsurface-scattering family (§6.1)
+### ~~10.1 Named residual: the subsurface-scattering family (§6.1)~~
 
-**DL-04 audit correction, 2026-09-12; measurements still pending.** The
+CLOSED 2026-09-12 — DL-04 convention consistency pin, `1b705ce1`;
+SSSRadianceScalingTest: 572093 checks, 0 failures on unchanged transport.
+
+**DL-04 audit correction, 2026-09-12.** The
 previous account conflated a complete subsurface event with one boundary,
 misstated PBRT-v4's factor, and treated seeded membership as proof that a
 shipped SSS material could reach its dormant exit branch.
@@ -604,11 +607,12 @@ eta-square mutations supply the discriminating check.
 Matched nonzero physical coefficients do not generally imply equal
 Burley-profile and explicit-volume reflectance. The conservative control
 uses zero absorption. Sw normalization (DL-48), non-air relative-index
-handling (DL-49), spectral random-walk survival (DL-50), and planar probe
-support (DL-52) remain distinct questions. No eta factor should be used to
-hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
-for source evidence, geometry controls and the pending gate. DL-04 remains
-open until its convention discriminator is measured and reviewed.
+handling (DL-49), spectral random-walk survival (DL-50), planar probe
+support (DL-52), and recursive environment MIS (DL-53) remain distinct
+questions. No eta factor should be used to hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
+for source evidence, geometry controls, executed eta mutations and gate
+counters. The closure pins the absence of an unmatched factor; it does not
+claim exact SSS energy conservation or spectral/non-air material equality.
 
 ### 10.2 Named residual: spatially-varying `ior` mismatch (review round 2)
 
