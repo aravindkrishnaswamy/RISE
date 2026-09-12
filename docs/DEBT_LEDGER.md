@@ -32,6 +32,9 @@ coverage/test gap, perf, doc-rot), S before M before L within a class (the
 `perf` class was added this pass — see DL-33). Struck headings in the
 source ledgers point back to the row here (or vice versa) that closed them.
 
+The cleanup procedure for working these rows one at a time is
+[DEBT_LEDGER_HANDOFF_PROMPT.md](DEBT_LEDGER_HANDOFF_PROMPT.md).
+
 ## Table
 
 | id | source doc:item | one-line claim | verdict | evidence | size | class | visibility |
