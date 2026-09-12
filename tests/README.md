@@ -200,7 +200,7 @@ renders.
 
 **What this catches**: Any regression in BSSRDF weight computation, Fresnel handling, profile evaluation, or importance sampling PDF that would break energy conservation.
 
-**Companion unit test**: `tests/BSSRDFSamplingTest.cpp` tests the same properties deterministically without rendering (profile normalization, sampling consistency, Fresnel conservation, Sw normalization, weight formula correctness, flat-slab energy balance).
+**Companion unit tests**: `tests/BSSRDFSamplingTest.cpp` checks profile normalization, sampling consistency, Fresnel conservation, Sw normalization, weight formulas, and flat-slab energy balance. `tests/BSSRDFNormalizationTest.cpp` (DL-48) independently integrates the cosine-hemisphere directional law through the real helper and RGB/NM entry adapters, then checks real diffusion and random-walk samples by their full/spatial ratios. Its profile-backed adapter fixture uses Burley; the Donner-Jensen multipole construction is deliberately outside this shared-Fresnel regression.
 
 ## Path Guiding RIS Regression (Roadmap Stage 8)
 

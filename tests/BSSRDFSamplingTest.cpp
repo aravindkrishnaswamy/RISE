@@ -343,13 +343,10 @@ void TestSwNormalization()
 {
 	std::cout << "Test D: Sw normalization (integral Sw*cos dw = 1)" << std::endl;
 
-	// The Christensen & Burley normalization c = (41-20*F0)/42 is an
-	// empirical fit.  The integral of Sw*cos over the hemisphere is
-	// approximately 1.0 but not exact — errors up to ~3% are expected
-	// for low IOR values.  We use a 5% tolerance to avoid false
-	// failures while still catching catastrophic normalization bugs.
-	// Test IOR values typical of translucent materials (wax, skin, marble).
-	// The c normalization becomes increasingly inaccurate above eta ~1.5.
+	// This is a normalization contract, not an empirical approximation.
+	// Keep the existing helper coverage strict: production Sw must integrate
+	// to one for ordinary material IORs.  The DL-48 companion test derives
+	// the independent directional law and also covers adapters and samples.
 	const Scalar iors[] = { 1.1, 1.3, 1.5 };
 
 	RandomNumberGenerator rng( 54321 );
@@ -361,7 +358,7 @@ void TestSwNormalization()
 		// Estimator: (1/N) * sum[ Sw(wi) * cos(theta) / (cos/pi) ]
 		//          = (1/N) * sum[ Sw(wi) * pi ]
 		// But Sw = Ft/(c*pi), so estimator = (1/N) * sum[ Ft(cos) / c ]
-		const int N = 1000000;
+		const int N = 131072;
 		double estimate = 0;
 
 		for( int i = 0; i < N; i++ )
@@ -379,7 +376,7 @@ void TestSwNormalization()
 		}
 		estimate /= N;
 
-		const bool ok = IsClose( estimate, 1.0, 0.05 );
+		const bool ok = std::isfinite( estimate ) && IsClose( estimate, 1.0, 0.001 );
 		std::cout << "  eta=" << eta << ": integral=" << std::setprecision(6) << estimate
 			<< " expected=1.0"
 			<< " err=" << std::fabs(estimate - 1.0) * 100 << "%"
