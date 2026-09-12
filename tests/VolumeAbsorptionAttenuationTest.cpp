@@ -1232,7 +1232,8 @@ static std::string BuildSpectralCurveScene(
 	const std::string& curveName,		// name of the piecewise_linear_function chunk
 	const std::string& curveCps,		// repeated "\tcp <x> <y>\n" control-point lines
 	const std::string& absSpectralRef,	// name bound to absorption_spectral, or "" to omit
-	double sa_rgb )						// RGB-preview absorption (gray fallback triple)
+	double sa_rgb,						// RGB-preview absorption (gray fallback triple)
+	int samples = 256 )
 {
 	std::ostringstream ss;
 	ss <<
@@ -1241,7 +1242,7 @@ static std::string BuildSpectralCurveScene(
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
 		"piecewise_linear_function\n{\n\tname " << curveName << "\n" << curveCps << "}\n\n"
 		"pathtracing_spectral_rasterizer\n{\n"
-		"\tsamples 256\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
+		"\tsamples " << samples << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n"
 		"\tmax_diffuse_bounce 3\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n\n"
 		"file_rasterizeroutput\n{\n\tpattern rendered/volume_spectral_curve_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n"
@@ -2109,7 +2110,7 @@ static void TestSpectralNoCurveBaselineGray()
 {
 	std::cout << "[V] no curve (RGB-only) => gray in spectral mode (vs [S] red)" << std::endl;
 	const PixelRGB px = RenderCentralBlock(
-		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0 ),
+		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0, 4096 ),
 		"spec_nocurve" );
 	Check( px.valid, "V: render produced a frame" );
 	if( !px.valid ) return;

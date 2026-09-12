@@ -84,7 +84,14 @@ no full-suite runner is used. Render gates run sequentially with nohup logs.
 Necessary harness-only edits seed each render, add missing explicit box
 filters and replace removed capture-output placeholders with relative
 linear EXR. Assertions, tolerances, case selection and scene physics stay
-unchanged. Functional agent PNG tests retain their encoded-image API
+unchanged. The dark spectral no-curve control in VolumeAbsorptionAttenuationTest
+subsequently failed its existing gray-color bound (88 passed, 1 failed).
+Its unguided delta-interface scene cannot execute this repair. Eight
+independently seeded diagnostic trials at each of 256 and 4096 spp support
+sparse spectral/survival sampling as the cause. Only that control now uses
+4096 spp; its optical depth and assertion are unchanged. Full measurements
+and the failed gate log are retained in the standalone report.
+Functional agent PNG tests retain their encoded-image API
 contract; seeds are applied at each outer request. Those PNG assertions
 are not presented as linear radiance measurements.
 
