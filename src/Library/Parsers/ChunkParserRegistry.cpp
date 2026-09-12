@@ -5159,6 +5159,24 @@ namespace RISE
 					unsigned int blades = bag.GetUInt(   "aperture_blades",   0 );
 					double rotation     = bag.GetDouble( "aperture_rotation", 0 );
 					double squeeze      = bag.GetDouble( "anamorphic_squeeze", 1.0 );
+					// The squeeze scales the aperture's x half-axis, so
+					// `squeeze <= 0` collapses the aperture to a line
+					// segment (0) or reflects it (negative).  That makes
+					// `GetApertureWorldArea()` zero or negative, which
+					// makes `BDPTCameraUtilities::HasFiniteAperture`
+					// FALSE -- so BDPT/VCM would connect t==1 to the lens
+					// CENTRE while `GenerateRay` kept sampling the
+					// degenerate segment, i.e. the eye and light layers
+					// would image through different camera vertices
+					// (debt 28 review, A P2-3).  Reject it here rather
+					// than let the integrators disagree silently.
+					if( squeeze <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: `anamorphic_squeeze` must be > 0 (got %f) — it scales the aperture's "
+							"x half-axis, so 0 collapses the aperture to a line and a negative value mirrors it; "
+							"use a value in (0,1] for oval bokeh, 1.0 for circular.", squeeze );
+						return false;
+					}
 					// Tilt-shift (Phase 1.1).  Tilt is degrees in the
 					// scene file (parser converts to radians); shift is
 					// MILLIMETRES.  Defaults of 0 give a plain
@@ -5318,7 +5336,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "focus_distance";     p.kind = ValueKind::Double; p.required = true; p.description = "Focus plane distance in SCENE UNITS (matches geometry coords — e.g. `focus_distance 5` means 5 scene units, which is 5 metres in a default metres scene). No default — set per scene. Must be greater than focal_length-converted-to-scene-units."; p.unitLabel = "scene units"; }
 						{ auto& p = P(); p.name = "aperture_blades";    p.kind = ValueKind::UInt;   p.description = "Polygonal aperture blades; 0 = perfect disk, typical cinematic 5-9."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "aperture_rotation";  p.kind = ValueKind::Double; p.description = "Polygon rotation in degrees."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
-						{ auto& p = P(); p.name = "anamorphic_squeeze"; p.kind = ValueKind::Double; p.description = "Aperture x-axis scale for oval bokeh (1.0 = circular)."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "anamorphic_squeeze"; p.kind = ValueKind::Double; p.description = "Aperture x-axis scale for oval bokeh (1.0 = circular).  Must be > 0."; p.defaultValueHint = "1.0"; }
 						// Tilt-shift (Phase 1.1).  Tilt rotates the
 						// FOCAL plane (Scheimpflug); shift translates
 						// the IMAGE plane (architectural correction).

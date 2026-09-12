@@ -263,8 +263,17 @@ namespace RISE
 			//! (`SampleLensPoint` divides x by pixelAR and `mxTrans`
 			//! multiplies it back, which is exactly what keeps the lens
 			//! axisymmetric in world space).  Zero for a degenerate
-			//! aperture (fstop -> infinity, squeeze 0), which callers must
+			//! aperture (fstop -> infinity), which callers must
 			//! treat as the pinhole limit rather than dividing by it.
+			//!
+			//! `anamorphic_squeeze <= 0` would be the OTHER way to reach
+			//! zero here, and the scene parser rejects it rather than allow
+			//! it (debt 28 review, A P2-3): a zero area makes
+			//! `BDPTCameraUtilities::HasFiniteAperture` false, so the
+			//! bidirectional integrators would connect t==1 to the lens
+			//! CENTRE while `GenerateRay` went on sampling the collapsed
+			//! line segment -- eye and light layers imaging through
+			//! different camera vertices.
 			//!
 			//! `SampleLensPoint` is UNIFORM over this area -- the disk
 			//! path is uniform by construction and the n-gon path's
