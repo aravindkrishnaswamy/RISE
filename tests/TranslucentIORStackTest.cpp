@@ -79,6 +79,35 @@
 //      per-channel loop (it operates on one wavelength at a time), so
 //      it carries no sibling of either RGB-side bug above.
 //
+//    Round 3 (fix worker, debt 30 review round 3) added two more:
+//
+//    Sub-test 2 (extended) -- C1: the entry-side per-channel loop
+//      (~line 148-171) reuses ONE `trans` local across all three
+//      iterations and `new`s a fresh `IORStack` each time.
+//      `ScatteredRayContainer::AddScatteredRay` clears `delete_stack` to
+//      false on the CALLER's local only AFTER a successful memcpy -- it
+//      never touches the value memcpy'd INTO the stored copy.  Pre-fix,
+//      only the first iteration's stored copy owned its stack;
+//      iterations 2 and 3 stored copies with `delete_stack==false`
+//      (carried over from iteration 1's post-add reset) paired with a
+//      brand new allocation nothing else references -- two leaked
+//      `IORStack`s per anisotropic-N entry `Scatter` call, on the
+//      SUCCESS path (this is not an overflow case; see debt 31(b) in
+//      docs/RENDERING_INTEGRATORS.md for the separate overflow-only
+//      leak in the same shape).  Fix: re-arm `trans.delete_stack = true`
+//      immediately before each `new IORStack`, so every stored copy
+//      independently owns what it was given.  Guarded by asserting
+//      `delete_stack == true` on every stored ray with a non-null
+//      `ior_stack` in the entry loop.
+//
+//    Sub-test 4 -- C2: `Scatter`'s entry branch gated the front
+//      (reflection) lobe on `front.kray[0] > 0` and the translucent lobe
+//      on `trans.kray[0] > 0` -- channel 0 (R) alone, so a
+//      reflectance/transmittance painter with zero red and non-zero
+//      green/blue (e.g. (0, 0.5, 0.5)) emitted NEITHER lobe.  The exit
+//      branch's equivalent gate already used
+//      `ColorMath::MaxValue(front.kray) > 0`.  Fixed to match.
+//
 //    In every sub-test, EVERY scattered ray with a non-null ior_stack
 //    (entry: the eRayTranslucent lobe; exit: the eRayDiffuse lobe that
 //    actually leaves the object -- the exit's own possible
@@ -313,6 +342,20 @@ static void TestAnisotropicRGB()
 			EXPECT( entryRays[i].type == ScatteredRay::eRayTranslucent, "aniso: entry ray with a non-null ior_stack is the translucent lobe" );
 			const Scalar scale = RadianceEtaScale( entryStack, entryRays[i].ior_stack );
 			EXPECT_NEAR( scale, 1.0, 1e-9, "aniso RGB entry RadianceEtaScale (per-channel loop)" );
+			// RED-PROOF for C1 (review round 3): the per-channel loop reuses
+			// ONE `trans` local across all three iterations and allocates a
+			// FRESH `IORStack` each time.  `AddScatteredRay` clears
+			// `delete_stack` to false on the CALLER's local only AFTER a
+			// successful memcpy -- it never touches the value that gets
+			// copied INTO the stored ray, which is whatever `delete_stack`
+			// reads at call time.  Pre-fix, only i==0 (the freshly
+			// constructed `trans`, delete_stack==true from the ctor) stored
+			// a copy that owns its stack; i==1 and i==2 stored copies with
+			// delete_stack==false (carried over from i==0's post-add reset)
+			// paired with a BRAND NEW allocation only that copy references
+			// -- two leaked `IORStack`s per call.  Every stored ray with a
+			// non-null `ior_stack` must independently own it.
+			EXPECT( entryRays[i].delete_stack == true, "aniso: entry ray with a non-null ior_stack owns its stack (delete_stack==true) -- C1 leak guard" );
 			entryTranslucentChecked++;
 			krayEntrySum[0] += entryRays[i].kray[0];
 			krayEntrySum[1] += entryRays[i].kray[1];
@@ -474,6 +517,74 @@ static void TestScatterNM()
 	front->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 4: channel-0-only lobe gates (review round 3, C2)
+//
+//  `Scatter`'s entry branch gated the front (reflection) lobe on
+//  `front.kray[0] > 0` and the translucent lobe on `trans.kray[0] > 0`
+//  -- channel 0 (R) alone.  A reflectance/transmittance painter with
+//  zero red and non-zero green/blue, e.g. (0, 0.5, 0.5), read both
+//  gates as false and emitted NEITHER lobe at all: not a partial
+//  channel loss, a total one, since both gates guard the entire `if`
+//  block that samples and adds the ray.  The exit branch's equivalent
+//  gate (TranslucentSPF.cpp ~line 182) already used
+//  `ColorMath::MaxValue(front.kray) > 0`, so this was an entry-side-only
+//  asymmetry.  Fix: both entry gates now use MaxValue, matching the
+//  exit branch.
+//////////////////////////////////////////////////////////////////////
+static void TestChannelZeroGate()
+{
+	std::cout << "Sub-test 4: channel-0-only lobe gate (front.kray[0]>0 / trans.kray[0]>0)" << std::endl;
+
+	// Zero in channel 0 (R), non-zero in channels 1/2 (G, B) -- isotropic N
+	// so both painters exercise the single-ray branch (the loop's own
+	// per-channel bug is C1, covered by sub-test 2).
+	UniformColorPainter* front = new UniformColorPainter( RISEPel(0.0, 0.5, 0.5) );  front->addref();
+	UniformColorPainter* trans = new UniformColorPainter( RISEPel(0.0, 0.5, 0.5) );  trans->addref();
+	UniformScalarPainter* extinction = new UniformScalarPainter( 0.1 );  extinction->addref();
+	UniformScalarPainter* phongN     = new UniformScalarPainter( 10.0 ); phongN->addref();
+	UniformScalarPainter* scatFactor = new UniformScalarPainter( 0.3 );  scatFactor->addref();
+
+	TranslucentSPF* spf = new TranslucentSPF( *front, *trans, *extinction, *phongN, *scatFactor );
+	spf->addref();
+
+	StubObject* waterObj = new StubObject();  waterObj->addref();
+	StubObject* transObj = new StubObject();  transObj->addref();
+
+	RayIntersectionGeometric ri = MakeIntersection();
+	RandomNumberGenerator rng;
+	IndependentSampler sampler( rng );
+
+	IORStack entryStack = MakeEnteringStack( waterObj, transObj, kWaterIOR );
+	ScatteredRayContainer entryRays;
+	spf->Scatter( ri, sampler, entryRays, entryStack );
+
+	bool sawFront = false, sawTrans = false;
+	for( unsigned int i = 0; i < entryRays.Count(); i++ ) {
+		if( entryRays[i].type == ScatteredRay::eRayDiffuse ) {
+			sawFront = true;
+			EXPECT( entryRays[i].kray[1] > 0, "channel-gate: front lobe channel 1 (G) non-zero" );
+			EXPECT( entryRays[i].kray[2] > 0, "channel-gate: front lobe channel 2 (B) non-zero" );
+		}
+		if( entryRays[i].type == ScatteredRay::eRayTranslucent ) {
+			sawTrans = true;
+			EXPECT( entryRays[i].kray[1] > 0, "channel-gate: translucent lobe channel 1 (G) non-zero" );
+			EXPECT( entryRays[i].kray[2] > 0, "channel-gate: translucent lobe channel 2 (B) non-zero" );
+		}
+	}
+	EXPECT( sawFront, "channel-gate: front (reflection) lobe was emitted despite kray[0]==0 -- catches the channel-0-only gate" );
+	EXPECT( sawTrans, "channel-gate: translucent lobe was emitted despite kray[0]==0 -- catches the channel-0-only gate" );
+
+	spf->release();
+	transObj->release();
+	waterObj->release();
+	scatFactor->release();
+	phongN->release();
+	extinction->release();
+	trans->release();
+	front->release();
+}
+
 int main()
 {
 	GlobalLog();
@@ -481,6 +592,7 @@ int main()
 	TestIsotropicRGB();
 	TestAnisotropicRGB();
 	TestScatterNM();
+	TestChannelZeroGate();
 
 	std::cout << std::endl;
 	if( failed == 0 ) {
