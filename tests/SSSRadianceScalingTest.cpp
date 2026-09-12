@@ -594,6 +594,13 @@ int main( int argc, char** argv )
 		}
 		if( cfg.airOnly ) continue;
 		if( !Ratio(means[1], means[2], observerRatios[m], std::string(ModelName(models[m])) + " water_inside/water_outside") ) return 1;
+		if( !cfg.probe ) for( double ratio : observerRatios[m] ) {
+			// An ideal enclosing interface transforms basic radiance by n^2.
+			// Anchor each model before taking ratios-of-ratios: a common
+			// missing observer transform must not cancel into a false pass.
+			Check(std::fabs(ratio / (1.33 * 1.33) - 1) < 0.05,
+				std::string(ModelName(models[m])) + ": observer transform within 5% of enclosure IOR squared");
+		}
 		RGBChannels immersionRatio{};
 		if( !Ratio(means[1], means[0], immersionRatio, std::string(ModelName(models[m])) + " water_inside/air_furnace") ) return 1;
 	}

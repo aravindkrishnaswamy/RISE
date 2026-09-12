@@ -2,10 +2,10 @@
 
 Base master: `df5e17f996967a5a7a5ed379bae4b6b3a2efe3ac`.
 This records the source audit, measured probes, and the coarse convention gate
-at test commit `25421dd6`. Production transport is unchanged. DL-04 remains
-open: formal review, mutation discrimination and the final gate record are
-pending. The selected final defaults below follow the additional cap probes; the
-final-default gate and mutation record are still pending.
+introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.
+Production transport is unchanged. DL-04 remains open pending final review
+and the gate after the observer-anchor strengthening. The selected final defaults below follow the additional cap probes; the
+pre-observer-anchor default gate and eta mutation record are below.
 
 ## Complete event versus one boundary
 
@@ -116,12 +116,13 @@ Rejected helper samples contribute their physical zero; the denominator
 is all attempts, not only successful samples.
 
 The rendered air-furnace mean must be within 3% of one for explicit
-volume and within 20% for diffusion and RW, channel by channel. The
-observer ratio-of-ratios must be within 10% of one, a wiring check only.
+volume and within 20% for diffusion and RW, channel by channel. Each model
+first checks its raw inside/outside observer ratio within 5% of `1.33^2`;
+the ratio-of-ratios must also be within 10% of one. These are wiring checks.
 These are consistency pins intended to distinguish an unmatched eta
 square from the measured baseline. They do not assert exact energy
 conservation, independently established QMC uncertainty, or closure of
-the residual mechanisms below. The first unchanged-library gate at 256 spp passed; mutation rejection remains to be run.
+the residual mechanisms below. The unchanged-library gate passes and both deliberate eta-square directions fail as recorded below.
 
 Selected defaults are 16x16, 256 spp, four trials, seed base 1000,
 material IOR 1.5, ellipsoid radii `(40,40,10)` centered at z=-10,
@@ -146,7 +147,7 @@ inputs under `rendered/sss_radiance_scaling/` are removed on return.
 The following values come from `.claude/debt-DL04/logs/`. They were
 measured on unchanged production transport by the earlier probe fixture;
 their passing guard counts are not executions of the newly added energy
-bounds. No current-default gate pass is claimed here. RGB was retained
+bounds. The later convention-gate evidence is recorded separately below. RGB was retained
 in the logs; the neutral scenes' red-channel means are quoted below.
 All these render groups use four trials and seed base 1000.
 
@@ -302,3 +303,68 @@ four trials with the original 256/512/1024 caps. It ended verbatim:
 `Guards passed: 572084 failed: 0. Complete-event convention checks complete; exact energy conservation is not asserted.`
 This is baseline-green consistency evidence, not a red proof. Final review,
 mutation discrimination and final-default gates remain pending.
+
+## Family audit and scope
+
+The questioned pattern is importing a correction for one refractive boundary
+into an estimator that already collapses entry and exit through the same
+exterior medium. No production site was changed in this row.
+
+| Consumer or material | Status in this row |
+| --- | --- |
+| SubSurfaceScatteringSPF RGB/NM | Shipped front side supplies reflection; complete subsurface transport is sampled by the integrator. Shipped materials absorb membership-selected inside hits. Standalone non-absorbing fallback is DL-51. |
+| BSSRDFSampling RGB/NM full and spatial weights | Complete exterior-to-exterior event; no separate preceding surface transmission. Actual helper and RGB PT measurements pin the absence of an unmatched square. Sw and candidate support remain DL-48/DL-52. |
+| RandomWalkSSS RGB/NM | Samples internal transport and exit; callers handle entry Fresnel probability/weight. The exterior stack is preserved. Relative IOR and spectral survival remain DL-49/DL-50. |
+| BSSRDFEntryAdapters and PathVertexEval | Reevaluate directional factors of the same complete event. They do not add an independent surface-transmission stage. Sw and relative-index issues remain open; adapters are covered by source audit, not a new spectral renderer oracle. |
+| PT RGB/NM and HWSS | RGB/NM share the templated complete-event branches. HWSS SSS routes through NM. New rendered measurements are RGB only; they do not certify spectral equivalence. Recursive environment MIS remains DL-53. |
+| BDPT eye/light RGB/NM; VCM and MLT | BDPT invokes the same helpers, with entry Fresnel selection compensation; it preserves exterior state. VCM/MLT share those subpath generators. Source audit establishes the convention scope; no new complete BDPT/VCM/MLT SSS render matrix is claimed. |
+| Coated/composite/fabric/weave wrappers | No GetDiffusionProfile/GetRandomWalkSSSParams override was found in these wrappers; the IMaterial defaults are null. They do not introduce another modern complete-SSS helper route in this audit. |
+| SMS snell/uniform | Neither complete SSS helper performs an SMS boundary solve. No SMS convention was changed or separately validated here. |
+
+The independent uniform-environment angular calculation in
+`independent-angular.log` integrates the documented Schlick directional
+factor. For eta 1.5 and an ideal unit spatial integral, the expected
+furnace is 0.9570149253711291 with complementary MIS, and
+1.1019213353492017 when continuation has weight one plus the NEE term.
+For eta 2, those values are 0.9261381725547211 and 1.054928492364375.
+These are ideal angular calculations, not exact predictions of the finite
+curved render. They explain why a coarse convention discriminator can pass
+while the separately recorded normalization and MIS defects remain open.
+
+## Executed eta mutation discrimination
+
+At test commit `d33f9d6d`, the selected-default unchanged-library gate
+returned zero and ended:
+`Guards passed: 572084 failed: 0. Complete-event convention checks complete; exact energy conservation is not asserted.`
+
+The deliberate mutations multiply or divide both full and spatial complete
+event weights by the material IOR squared in the PT diffusion and RW
+branches. They leave the explicit-medium reference unchanged. Both were
+built and executed against the same test; neither is an original bug red
+proof. The independent helper prepass stays unchanged because these
+mutations are at the integrator consumer. Measured air red means were:
+
+| Mutation | Explicit | Diffusion | RW | Exit |
+| --- | ---: | ---: | ---: | ---: |
+| times eta squared | 0.9983286409 | 2.37400929 | 2.430093243 | 1 |
+| divide by eta squared | 0.998469785 | 0.501037211 | 0.5118992005 | 1 |
+
+Each mutation ended verbatim:
+`Guards passed: 572078 failed: 6. Complete-event convention checks complete; exact energy conservation is not asserted.`
+The six failures are the three air-furnace channels for each SSS model.
+The ratio-of-ratios still passes, directly illustrating its inability to
+identify the unmatched multiplier by itself. Both mutation builds and
+test builds returned zero with no compiler warnings.
+
+The complete original PathTracingIntegrator.cpp bytes were restored and
+compared to base master, SHA-256
+`75a70797965a8ea095f5a6386448557bbdb8575ce2319c9cd0965a8be5898a84`.
+The restored make and test build both succeeded. No production mutation
+is retained in the branch. Logs and exact diffs accompany the report.
+
+A fresh preflight test reviewer found one P2: a common missing observer
+transform could also cancel out of ratio-of-ratios. The additional raw
+ratio check against `1.33^2` closes that assertion gap. It strengthens
+the observer check without changing either eta discriminator above. The
+strengthened test is committed before its first unchanged-library run;
+that run and the final independent review are still pending.
