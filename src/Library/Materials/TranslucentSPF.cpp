@@ -425,19 +425,14 @@ void TranslucentSPF::ScatterNM(
 			}
 		}
 
-		// Exit ray leaves the object — pop from IOR stack
-		{
-			const Scalar Nval_front = pN->GetValueAtNM(ri,nm);
-			rv = GeometricUtilities::Perturb( n,
-				acos( pow(sampler.Get1D(), 1.0 / (Nval_front + 1.0)) ),
-				TWO_PI * sampler.Get1D() );
-
-			front.ray.Set( ri.ptIntersection, rv );
-			// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
-			const Scalar cosAlpha = fabs( Vector3Ops::Dot( front.ray.Dir(), n ) );
-			front.pdf = (Nval_front + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval_front );
-			front.isDelta = false;
-		}
+		// Exit re-emission is diffuse in both RGB and NM. N controls
+		// entry transmission and internal backscatter, not this exit lobe.
+		rv = GeometricUtilities::Perturb( n,
+			acos( sqrt(sampler.Get1D()) ),
+			TWO_PI * sampler.Get1D() );
+		front.ray.Set( ri.ptIntersection, rv );
+		front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), n ) ) * INV_PI;
+		front.isDelta = false;
 
 		front.ior_stack = new IORStack( ior_stack );
 		front.ior_stack->pop();
@@ -456,15 +451,11 @@ Scalar TranslucentSPF::Pdf(
 	// For the translucent (back hemisphere) component, return 0
 	// (translucent paths have a complex mixed PDF that we approximate as 0)
 	//
-	// Use the IOR stack as the authoritative source for inside/outside,
-	// matching Scatter()/ScatterNM()'s bEntering test: the normal-based
-	// dot-product test misclassifies a back-scattered ray hitting an
-	// enclosing surface from inside the cavity as "exiting" (ISPF::Pdf
-	// already threads ior_stack through, so no interface change is needed).
+	// Both the entry reflection and inside-state exit re-emission
+	// sample around +onb.w(). Membership only controls the entry-only
+	// geometric-horizon gate; it must not reverse the exit PDF support.
 	const bool bFrontFace = !ior_stack.containsCurrent();
-	const Scalar cosTheta = bFrontFace ?
-		Vector3Ops::Dot( wo, ri.onb.w() ) :
-		-Vector3Ops::Dot( wo, ri.onb.w() );
+	const Scalar cosTheta = Vector3Ops::Dot( wo, ri.onb.w() );
 
 	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
 	// gate, front-hemisphere lobe only): a wo the sampler can no longer

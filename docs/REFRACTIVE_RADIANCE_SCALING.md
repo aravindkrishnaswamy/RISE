@@ -760,14 +760,13 @@ weights with RGB. The unfixed-library run on `6486656e`, with test commit
 `fc371041`, reported 174 failures. See
 [DL-01 closure and independent residuals](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
 
-**RGB/NM exit-lobe density (debt 31 item 4 / DL-02) remains OPEN.**
-DL-01's transport review clarified that inside-state `Pdf` evaluates the
-opposite hemisphere from the sampled exit direction in BOTH pipes,
-returning zero even at N=1. NM also samples a Phong shape while `PdfNM`
-forwards to the cosine-shaped `Pdf`. DL-01 changes neither support nor
-sampling distribution. Stateful
-BSDF reevaluation/HWSS companion pricing is separately tracked as DL-38;
-local RGB/NM lobe-weight parity does not establish full renderer parity.
+**~~RGB/NM exit-lobe density support/shape (debt 31 item 4 / DL-02).~~
+CLOSED 2026-09-12 — `a041e51d`, `TranslucentSpectralParityTest: 1918 checks,
+0 failures` (red: 324 failures).** The evaluator now uses the sampled
+positive shading hemisphere, and NM exit sampling is cosine like RGB.
+See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). Stateful BSDF/HWSS
+amplitudes remain DL-38; full mixture/reverse densities and NEE state
+remain DL-41. Local exit-density agreement does not prove renderer parity.
 
 ## 11. Cross-references
 
