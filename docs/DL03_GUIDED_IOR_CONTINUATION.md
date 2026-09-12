@@ -135,3 +135,18 @@ through `f6aa67fd`: `ALL TESTS PASSED`, exit 0, warning-free test build.
 All recorded stack-error counters are zero, including the tilted witnesses
 above. New observed medium values must be finite as well as equal to the
 expected enclosing IOR.
+
+## Initial-containment residual
+
+Following the test's explicit initial state one step further found separate
+DL-46. TranslucentMaterial inherits IMaterial's invalid/non-refracting
+GetSpecularInfo default, while IORStackSeeding::SeedFromPoint admits only
+valid canRefract materials with positive IOR. Thus origins already inside
+a closed translucent object are not seeded with its membership; both
+Scatter variants interpret the first physical exit as entry because they
+read only containsCurrent. PT camera and BDPT eye/light initial seeds share
+this path. This is static evidence with a dedicated origin-inside red proof
+pending, not an observed image result. Membership tracking must be separated
+from specular-refraction capability; this repair does not relabel translucent
+materials as specular. DL-03's seeded PT and actual-entry BDPT tests remain
+honest propagation fixtures and do not claim to close initial containment.
