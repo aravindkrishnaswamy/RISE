@@ -1041,7 +1041,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   updated coverage.
 
 - **Debt 31 (OPEN, review round 2, 2026-09-12; item 2 CLOSED review
-  round 3, 2026-09-12) — pre-existing `TranslucentSPF` bug found while
+  round 3, 2026-09-12; items 3-4 added review round 4, 2026-09-12) — pre-existing `TranslucentSPF` bug found while
   auditing the exit-loop fix above, NOT fixed that round.**  Reachable
   independently of debt 30; does not involve the eta^2 factor.
   1. **Guided-direction IOR-stack leak (still open).**  The translucent
@@ -1086,9 +1086,32 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      per-channel loop at all). See
      [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md)
      §10.3 for the closed writeup, and `TranslucentSPF.cpp`'s commit
-     history for this round for the two fix commits.
+     history for this round for the two fix commits.  (The second fix
+     commit's message refers to a "four-way case table above"; no table
+     was written into that message — the ownership trace it means is
+     the comment block above the entry per-channel loop in
+     `TranslucentSPF.cpp` (~lines 169-203), and review round 4
+     re-traced every add-success/add-failure combination independently.)
+  3. **RGB vs spectral exit-lobe weight divergence (OPEN, found review
+     round 4, pre-existing).**  `TranslucentSPF::Scatter`'s exit branch
+     weights the exit ray by extinction alone (`front.kray =
+     ColorMath::exponential( -distance*ab )`, `TranslucentSPF.cpp`
+     ~line 225) while `ScatterNM`'s exit branch also multiplies by the
+     transmittance painter (`front.krayNM = GuardedGetColorNM( *pTrans,
+     ri, nm ) * exp(...)`, ~line 384).  Failing input: a
+     `translucent_material` with `transmittance 0.4` exits at
+     0.4·e^(−κd) under a spectral rasterizer and at e^(−κd) under an
+     RGB one — a 2.5× RGB/NM disagreement on the same scene.  Which
+     side is right has not been decided; not touched by debt 30.
+  4. **Spectral exit lobe is MIS-inconsistent with its own pdf (OPEN,
+     found review round 4, pre-existing).**  `ScatterNM`'s exit ray
+     samples and prices a Phong lobe (`Nval_front`, ~lines 426-434)
+     while `PdfNM` forwards to `Pdf`, which returns the cosine density;
+     `Scatter`'s RGB exit ray uses cosine.  Any NM consumer that
+     MIS-weights this lobe against NEE uses the wrong density.
   Item 1 is recorded in
-  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.3.
+  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.3;
+  items 3 and 4 are recorded there as well.
 
 
 ## 8. Cross-references

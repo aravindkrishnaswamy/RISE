@@ -746,7 +746,21 @@ pop, is a single assignment made ONCE, outside and after both branches
 [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) keeps only item
 (a) (the guided-direction leak above); the former item (b) is removed,
 not merely marked fixed, since both of its sub-shapes are now closed by
-code, not by documentation.
+code, not by documentation.  (The overflow-carryover fix commit's
+message refers to a "four-way case table above" that was never written
+into the message; the ownership trace it means is the comment block
+above the entry per-channel loop in `TranslucentSPF.cpp`, ~lines
+169-203.)
+
+Two further PRE-EXISTING `TranslucentSPF` defects surfaced in review
+round 4 and are recorded as debt 31 items 3 and 4 in
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md), untouched here:
+the RGB exit lobe weights by extinction alone (`TranslucentSPF.cpp`
+~line 225) while the spectral exit lobe also multiplies by the
+transmittance painter (~line 384) — a 2.5× RGB/NM disagreement at
+`transmittance 0.4`; and the spectral exit lobe samples a Phong
+distribution (~lines 426-434) while `PdfNM` reports the cosine density
+that the RGB exit lobe actually uses.
 
 ## 11. Cross-references
 

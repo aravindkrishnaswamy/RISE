@@ -1192,11 +1192,11 @@ static void TestSubmergedFloorAreaLight()
 // once more to confirm run-to-run stability before picking bands):
 //   PT   mean 0.012496226  (reference)
 //   BDPT mean 0.012631816, 0.012620802 (twin -- topology K in
-//        BDPTStrategyBalanceTest.cpp)             -> ratio 1.008-1.011
+//        BDPTStrategyBalanceTest.cpp)             -> ratio 1.010-1.011
 //   VCM  mean 0.012222825, 0.012205491            -> ratio 0.977-0.978
 // p99:  BDPT 0.021637727/0.021515656 -> ratio 1.059-1.065 vs PT's
 //       0.020320892; VCM 0.017381286/0.017533874 -> ratio 0.855-0.863.
-// max:  BDPT 0.03451538/0.034210205  -> ratio 1.079-1.086 vs PT's
+// max:  BDPT 0.03451538/0.034210205  -> ratio 1.077-1.086 vs PT's
 //       0.0317688; VCM 0.022613525/0.02218628     -> ratio 0.698-0.712.
 // All measured on a 64x64 render, `pixel_filter box`, `oidn_denoise
 // FALSE`, EXR `Rec709RGB_Linear` (read back with a script, not the

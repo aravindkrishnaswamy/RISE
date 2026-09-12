@@ -1502,14 +1502,17 @@ static void TestSubmergedFloorCancellation()
 // GREEN BEFORE AND AFTER this round's TranslucentSPF exit-loop fix
 // (C1) -- this scene's materials (lambertian_material,
 // dielectric_material, lambertian_luminaire_material) never touch
-// TranslucentSPF.  What this pins is the MIS combination itself: a
-// future change that applies the eta^2 factor asymmetrically between
-// the eye-side continuation and the light-tracing splat (e.g. adding
-// it to the splat by mistake, or dropping it from the eye side) would
-// turn this row red while leaving J (an isolated in-and-out
-// cancellation) and VCM's H (an isolated merge, no competing eye-side
-// strategy at all) unaffected -- neither of those two rows exercises
-// this specific cross-strategy combination.
+// TranslucentSPF.  What this pins is the MIS combination itself --
+// eye-side continuation (s=0 / s=1, carrying the 1/n^2 factor) and the
+// light-tracing splat (t=1, carrying none) priced together for one
+// path family.  It is a CONSISTENCY PIN, not a proven guard: the
+// measured counterfactual below shows that a factor wrongly ADDED to
+// the splat does NOT move this row (the splat's MIS share is too small
+// on this scene; VCM's topology I catches that direction instead).  A
+// factor DROPPED from the eye side is expected to move s=0/s=1 by
+// ~1/n^2, but that direction was NOT measured.  Neither J (an isolated
+// in-and-out cancellation) nor VCM's H (an isolated merge) exercises
+// this cross-strategy combination at all.
 //
 // REFERENCE.  Plain `pathtracing_pel_rasterizer`, `transparent_shadows`
 // left at its default (false, and this scene does not set it): PT
@@ -1527,9 +1530,9 @@ static void TestSubmergedFloorCancellation()
 // MEASURED RATIOS (this round, two renders each for BDPT to confirm
 // stability):
 //   PT   mean 0.012496226 (reference)
-//   BDPT mean 0.012631816, 0.012620802               -> ratio 1.008-1.011
+//   BDPT mean 0.012631816, 0.012620802               -> ratio 1.010-1.011
 //   p99  0.021637727, 0.021515656 vs PT's 0.020320892 -> ratio 1.059-1.065
-//   max  0.03451538, 0.034210205 vs PT's 0.0317688     -> ratio 1.079-1.086
+//   max  0.03451538, 0.034210205 vs PT's 0.0317688     -> ratio 1.077-1.086
 // (VCM's ratios on the identical scene are in the twin topology I
 // comment: 0.977-0.978 mean, 0.855-0.863 p99, 0.698-0.712 max -- listed
 // there, not re-derived here, because this file only renders BDPT.)
@@ -1552,16 +1555,17 @@ static void TestSubmergedFloorCancellation()
 // test twice: BDPT/PT mean 0.0126348/0.0124913 = 1.01149 and
 // 0.0126287/0.0124948 = 1.01072 (spread 0.00077, ~0.08%). Reverted
 // immediately after (`git diff --stat src/` empty, library rebuilt
-// clean). BOTH counterfactual runs land INSIDE this file's own
-// previously-measured correct-code range (1.008-1.011, this document's
-// header above) -- the wrong edit is statistically INDISTINGUISHABLE
-// from the correct baseline on this scene.
+// clean). Both counterfactual runs sit within 0.1 percentage points of
+// this file's own previously-measured correct-code range (1.010-1.011,
+// this document's header above; 1.01149 is just above it, 1.01072 is
+// inside it) -- the wrong edit is statistically INDISTINGUISHABLE from
+// the correct baseline on this scene.
 //
 // **This row does NOT catch the bug it was written to guard against,
 // and tightening the 8% band would not fix that** -- the counterfactual
 // signal here is ~0.1 percentage points, not a few points hiding near
 // an 8% edge; no band width between 0% and 8% would separate 1.011
-// (wrong) from 1.008-1.011 (correct), because they are the same number
+// (wrong) from 1.010-1.011 (correct), because they are the same number
 // within this scene's own MC noise. The likely mechanism (not directly
 // instrumented this round): BDPT's power-2 MIS heuristic gives the
 // t==1 light-tracing-splat strategy a small weight `w_{t=1}` relative
@@ -1581,12 +1585,14 @@ static void TestSubmergedFloorCancellation()
 // scene the way BDPT's s=0/s=1 do, so the splat is not diluted) --
 // +45.6-45.8% there, comfortably caught by the same 8% band. Net: this
 // specific bug class (a wrongly-applied light-side eta^2 factor) is
-// caught by VCM's topology I, not by BDPT's topology K; topology K's
-// real, demonstrated value is the OTHER regressions it was already
-// measured to catch (an asymmetric factor applied to only one of the
-// eye-side strategies, or dropped from them) -- this counterfactual
-// only tested the splat-side direction, which happens to be the one
-// this scene's MIS weighting hides.
+// caught by VCM's topology I, not by BDPT's topology K.  Topology K's
+// remaining value is as a consistency pin plus an EXPECTED (not
+// measured) sensitivity to the other direction -- a factor dropped
+// from, or applied to only one of, the eye-side strategies s=0/s=1,
+// which carry most of the MIS weight here and would move the row by
+// up to ~1/n^2 = 0.565x.  This counterfactual only tested the
+// splat-side direction, which this scene's MIS weighting hides; the
+// eye-side direction has NOT been rendered and is not claimed.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSubmergedCeilingK =
 	"film\n"
