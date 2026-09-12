@@ -185,6 +185,25 @@ void TranslucentSPF::Scatter(
 					// stored copy independently own its own stack, matching
 					// the exit loop below (which never assigns `ior_stack` at
 					// all, so it never needed this).
+					//
+					// This loop never checks `AddScatteredRay`'s return value
+					// (debt 31(b), RENDERING_INTEGRATORS.md), so a container
+					// near `kCapacity` can still make an iteration's add FAIL
+					// (overflow).  On failure `AddScatteredRay` leaves
+					// `delete_stack` exactly as it found it -- true, since we
+					// just armed it -- so `trans` correctly RETAINS ownership
+					// of that iteration's stack.  If nothing intervened, the
+					// pointer would then be silently overwritten by the NEXT
+					// iteration's `new IORStack` below, orphaning the still-
+					// owned allocation (a real leak distinct from the one
+					// above).  Free any such carried-over stack before
+					// overwriting the pointer; a no-op on the ordinary path
+					// (iteration 0's `ior_stack` starts null, and a
+					// successful add already cleared `delete_stack` to false,
+					// so there is nothing to free).
+					if( trans.delete_stack ) {
+						safe_delete( trans.ior_stack );
+					}
 					trans.delete_stack = true;
 					trans.ior_stack = new IORStack( ior_stack );
 					// See the comment on the single-color-component branch
