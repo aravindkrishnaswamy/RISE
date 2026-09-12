@@ -55,6 +55,7 @@
 #include <string>
 
 #include "../src/Library/Utilities/PSSMLTSampler.h"
+#include "../src/Library/Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -67,6 +68,16 @@ static PSSMLTSampler* MakeSampler( unsigned int seed, Scalar largeStepProb )
 	// Reference starts at 1 from construction; do NOT addref.
 	return new PSSMLTSampler( seed, largeStepProb );
 }
+
+// Exposes the sampler's own lane count.  It is protected on purpose --
+// callers are not supposed to guess at it -- so the test that pins the
+// lane arithmetic reads it through the derived-class accessor pattern
+// rather than duplicating the literal.
+class StreamLaneProbe : public PSSMLTSampler
+{
+public:
+	static int Lanes() { return kDefaultNumStreams; }
+};
 
 // ================================================================
 // Test A: Stream independence — no index aliasing
@@ -285,6 +296,127 @@ static void TestKNumStreamsMinimum()
 	}
 
 	std::cout << "  Streams 0-48 all produce distinct values: OK\n";
+
+	// ------------------------------------------------------------
+	// C2: the MLT film/lens/APERTURE block on stream 48.
+	//
+	// Debt 28's t==1 aperture point is drawn as a THIRD Get2D on
+	// stream 48, contiguous with the film and lens samples, so under
+	// PSSMLT it occupies lanes 48 + 49*4 = 244 and 48 + 49*5 = 293.
+	// Six consecutive draws on stream 48 must therefore be six
+	// distinct primary samples, and none of them may equal a sample
+	// any integrator stream 0..47 can reach at the same depth.
+	// ------------------------------------------------------------
+	{
+		PSSMLTSampler* pS = MakeSampler( 99991, 1.0 );
+		pS->StartIteration();
+
+		pS->StartStream( 48 );
+		std::vector<Scalar> film48;
+		for( int k = 0; k < 6; k++ ) film48.push_back( pS->Get1D() );
+
+		bool dup = false;
+		for( int i = 0; i < 6; i++ ) {
+			for( int j = i + 1; j < 6; j++ ) {
+				if( film48[i] == film48[j] ) {
+					std::cerr << "  FAIL: stream 48 samples " << i << " and "
+						<< j << " are the same primary sample ("
+						<< film48[i] << ")\n";
+					dup = true;
+				}
+			}
+		}
+
+		// And against every integrator stream at every depth the
+		// stream-48 block spans.
+		for( int st = 0; st <= 47 && !dup; st++ ) {
+			pS->StartStream( st );
+			for( int k = 0; k < 6; k++ ) {
+				const Scalar v = pS->Get1D();
+				for( int j = 0; j < 6; j++ ) {
+					if( v == film48[j] ) {
+						std::cerr << "  FAIL: stream " << st << " sample " << k
+							<< " aliases stream 48 sample " << j << "\n";
+						dup = true;
+					}
+				}
+			}
+		}
+
+		pS->release();
+		if( dup ) {
+			std::cerr << "  The film / lens / aperture block on stream 48 must "
+				<< "occupy six private lanes (48, 97, 146, 195, 244, 293).\n";
+			exit( 1 );
+		}
+		std::cout << "  Stream 48 film+lens+aperture block (lanes 48/97/146/195/244/293)"
+			<< " is private: OK\n";
+	}
+
+	// ------------------------------------------------------------
+	// C3: why the aperture sample may NOT have a stream of its own.
+	//
+	// This is the debt-28 review finding (A P1-1) turned into an
+	// assertion on the multiplexing rule itself, because the rule is
+	// what the finding is about: `idx = stream + kNumStreams*sample`.
+	// A stream index >= kNumStreams does not get a fresh lane -- it
+	// lands on lane (stream mod kNumStreams) at sample depth
+	// (stream / kNumStreams).  With kNumStreams == 49, the constant 80
+	// that debt 28 originally used for the aperture IS stream 31's
+	// sample 1, and the second half of its Get2D (129) IS stream 31's
+	// sample 2.  Stream 31 is the SMS phase.
+	//
+	// Read through a probe subclass because kDefaultNumStreams is
+	// protected -- deliberately: this is the sampler's own invariant,
+	// not a number a caller should be guessing at.
+	// ------------------------------------------------------------
+	{
+		const int lanes = StreamLaneProbe::Lanes();
+
+		if( lanes != 49 ) {
+			std::cerr << "  FAIL: PSSMLTSampler::kDefaultNumStreams is " << lanes
+				<< ", not 49.  Every stream index in the integrators and the "
+				<< "MLT rasterizers must be re-checked against the new bound "
+				<< "before this test is updated.\n";
+			exit( 1 );
+		}
+
+		// Stream 48 (MLT film / lens / aperture) must be a REAL lane.
+		if( !( 48 < lanes ) ) {
+			std::cerr << "  FAIL: stream 48 is >= kNumStreams (" << lanes
+				<< "), so the MLT film/lens/aperture block aliases stream "
+				<< ( 48 % lanes ) << ".\n";
+			exit( 1 );
+		}
+
+		// The historical aperture stream, and the current dedicated
+		// (Sobol-only) one, are both OUTSIDE the lane space.
+		const int kHistoricalApertureStream = 80;
+		const int kDedicated = BDPTCameraUtilities::kApertureSamplerStream;
+
+		if( kHistoricalApertureStream % lanes != 31 ||
+			kHistoricalApertureStream / lanes != 1 )
+		{
+			std::cerr << "  FAIL: the lane arithmetic this test pins has "
+				<< "changed (80 no longer maps to stream 31 sample 1).\n";
+			exit( 1 );
+		}
+
+		if( kDedicated < lanes ) {
+			std::cerr << "  FAIL: kApertureSamplerStream (" << kDedicated
+				<< ") is inside PSSMLT's lane space.  It is documented as a "
+				<< "padded-sampler-only constant; if that changed, re-derive "
+				<< "both the Sobol bound and the PSSMLT one.\n";
+			exit( 1 );
+		}
+
+		std::cout << "  kNumStreams = " << lanes
+			<< "; stream 48 is a real lane; 80 -> (stream 31, sample 1) and "
+			<< kDedicated << " -> (stream " << ( kDedicated % lanes )
+			<< ", sample " << ( kDedicated / lanes )
+			<< "), so neither may be used under PSSMLT: OK\n";
+	}
+
 	std::cout << "  Passed!\n";
 }
 
@@ -456,6 +588,56 @@ static void TestSourceGuard()
 		else
 		{
 			std::cout << "    No dead stream 1/2 assignments: OK\n";
+		}
+
+		// Debt 28 (A P1-1): the t==1 aperture sample must be drawn on
+		// the MLT rasterizer's OWN stream 48, never on
+		// kApertureSamplerStream.  Under PSSMLT that constant (8192,
+		// and 80 before the fix) does not name a lane at all -- it
+		// aliases stream (constant mod 49) at sample
+		// (constant / 49).  Whole-file check, not EvaluateSample-only,
+		// because the draw moved out of that function in the spectral
+		// rasterizer.
+		{
+			std::ifstream whole( paths[f] );
+			std::string wline;
+			bool usesDedicated = false;
+			bool usesCurrent = false;
+			while( std::getline( whole, wline ) )
+			{
+				std::string t = wline;
+				const size_t nz = t.find_first_not_of( " \t" );
+				if( nz != std::string::npos && t.substr( nz, 2 ) == "//" ) continue;
+				if( wline.find( "kApertureSamplerStream" ) != std::string::npos ||
+					wline.find( "APERTURE_DEDICATED_STREAM" ) != std::string::npos ) {
+					usesDedicated = true;
+				}
+				if( wline.find( "APERTURE_CURRENT_STREAM" ) != std::string::npos ) {
+					usesCurrent = true;
+				}
+			}
+
+			if( usesDedicated )
+			{
+				std::cerr << "    FAIL: " << labels[f] << " draws the t==1 "
+					<< "aperture sample from a dedicated stream.  PSSMLTSampler "
+					<< "has 49 lanes; any stream index >= 49 aliases an existing "
+					<< "lane instead of getting a new one.  Draw it as a third "
+					<< "Get2D on stream 48 (APERTURE_CURRENT_STREAM).\n";
+				allPassed = false;
+			}
+			else if( !usesCurrent )
+			{
+				std::cerr << "    FAIL: " << labels[f] << " has no "
+					<< "APERTURE_CURRENT_STREAM aperture draw.  Debt 28's t==1 "
+					<< "connection needs one, on stream 48.\n";
+				allPassed = false;
+			}
+			else
+			{
+				std::cout << "    Aperture drawn on stream 48 "
+					<< "(APERTURE_CURRENT_STREAM), not a >= 49 stream: OK\n";
+			}
 		}
 	}
 

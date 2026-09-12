@@ -422,14 +422,28 @@ static void TestZeroCoCAtFocus()
 //     c = A * f/(S1-f) * |S2-S1|/S2
 // once c is divided by the pixel pitch 2*filmDistance*tan/H.
 //
-// Two things are asserted: the magnitude matches to 1e-9 relative
-// (that is the CoC), and the displacement is ANTI-PARALLEL to the lens
-// offset with the same scale on both axes -- i.e. the blur figure is a
-// circle, not an ellipse or a shear.
+// Three things are asserted: the magnitude matches to 1e-9 relative
+// (that is the CoC); the SIGNED scale is the same on both axes -- so
+// the blur figure is a circle, not an ellipse, a shear or a mirror;
+// and each axis's signed scale equals `kRasterSign{X,Y} * H*(1/S1 -
+// 1/S2)/(2 tan)` with a single pair of +-1 constants shared by every
+// case, which is the statement that the displacement reverses
+// direction when the plane of focus crosses the world point.  (An earlier version of this test claimed the
+// displacement is anti-parallel to the lens offset but compared only
+// magnitudes, so it would have passed a mirrored or a never-reversing
+// blur alike -- debt 28 review, A P2-2.)
 //////////////////////////////////////////////////////////////////////
 static void TestAnalyticCircleOfConfusion()
 {
 	std::cout << "TestAnalyticCircleOfConfusion" << std::endl;
+
+	// Fixed by the camera basis and the raster convention alone
+	// (MakeThinLens looks down -Z with +Y up, and raster y runs DOWN
+	// the image while raster x runs with the projected world x through
+	// one net reflection), so these are the same for every case below
+	// -- which is exactly why asserting them as constants has teeth.
+	const double kRasterSignX = -1.0;
+	const double kRasterSignY = +1.0;
 
 	const double fov = FovVertical( 1.0 );
 	const double tanHalf = tan( fov * 0.5 );
@@ -458,8 +472,23 @@ static void TestAnalyticCircleOfConfusion()
 		Point2 centre;
 		EXPECT( cam->RasterFromLensPoint( world, Point3( 0, 0, 0 ), centre ) );
 
+		// Signed prediction.  kRasterSign is a property of the camera
+		// basis, not of the case: MakeThinLens looks down -Z with +Y up,
+		// and RasterFromLensPoint's projection through the lens centre
+		// carries one net reflection, so a lens offset displaces the
+		// image by kRasterSign * (that magnitude).  Asserting it as a
+		// CONSTANT across all four cases is what pins the sign flip
+		// between "focus in front of the point" and "focus behind it".
+		const double signedFactor =
+			double( kHeight ) * ( 1.0 / cases[c].S1 - 1.0 / cases[c].S2 )
+			  / ( 2.0 * tanHalf );
+		const double expectedSignedScaleX = kRasterSignX * signedFactor;
+		const double expectedSignedScaleY = kRasterSignY * signedFactor;
+		const double expectedScaleMag     = fabs( signedFactor );
+
 		double worstRadiusErr = 0;
 		double worstShapeErr = 0;
+		double worstSignedErr = 0;
 		for( unsigned int a = 0; a < 32; a++ ) {
 			const double th = 2.0 * PI * a / 32.0;
 			const Point3 lens( r * cos( th ), r * sin( th ), 0.0 );
@@ -471,23 +500,44 @@ static void TestAnalyticCircleOfConfusion()
 			worstRadiusErr = std::max( worstRadiusErr,
 				fabs( rad - expectedRadiusPx ) / expectedRadiusPx );
 
-			// Scale consistency on each axis separately: |dx| must be
-			// the same multiple of |lens.x| as |dy| is of |lens.y|.
-			// (An anisotropic bug -- e.g. the pixelAR stretch applied
-			// to one axis only -- shows here and not in the radius.)
-			const double sxScale = ( fabs( lens.x ) > 1e-12 ) ? fabs( dx / lens.x ) : -1;
-			const double syScale = ( fabs( lens.y ) > 1e-12 ) ? fabs( dy / lens.y ) : -1;
-			if( sxScale > 0 && syScale > 0 ) {
+			// SIGNED scale on each axis.  Comparing magnitudes only
+			// (which this test used to do) would pass a renderer whose
+			// blur figure is mirrored, sheared, or points the wrong way
+			// -- all of which still produce a circle of the right
+			// radius.  The closed form predicts the signed value
+			//     d(raster)/d(lens) = kSign * H*(1/S1 - 1/S2)/(2 tan)
+			// on BOTH axes, with kSign a fixed +-1 set only by the
+			// camera basis's raster orientation (the same constant for
+			// every case below, including the two whose (1/S1 - 1/S2)
+			// have opposite sign -- which is the real content: the
+			// displacement REVERSES when the focus plane crosses the
+			// point).
+			const double sxScale = ( fabs( lens.x ) > 1e-12 ) ? ( dx / lens.x ) : 0;
+			const double syScale = ( fabs( lens.y ) > 1e-12 ) ? ( dy / lens.y ) : 0;
+			// Isotropy: the two axes must scale by the same MAGNITUDE
+			// (their signs differ by the raster y-flip, which the
+			// per-axis signed checks below pin exactly).
+			if( fabs( lens.x ) > 1e-12 && fabs( lens.y ) > 1e-12 ) {
 				worstShapeErr = std::max( worstShapeErr,
-					fabs( sxScale - syScale ) / syScale );
+					fabs( fabs( sxScale ) - fabs( syScale ) ) / fabs( syScale ) );
+			}
+			if( fabs( lens.x ) > 1e-12 ) {
+				worstSignedErr = std::max( worstSignedErr,
+					fabs( sxScale - expectedSignedScaleX ) / expectedScaleMag );
+			}
+			if( fabs( lens.y ) > 1e-12 ) {
+				worstSignedErr = std::max( worstSignedErr,
+					fabs( syScale - expectedSignedScaleY ) / expectedScaleMag );
 			}
 		}
 
 		EXPECT_NEAR( worstRadiusErr, 0.0, 1e-9 );
 		EXPECT_NEAR( worstShapeErr,  0.0, 1e-9 );
-		std::printf( "    f/%-5.1f S1=%.2f S2=%.2f  CoC r = %.4f px (err %.2e, shape %.2e)\n",
+		EXPECT_NEAR( worstSignedErr, 0.0, 1e-9 );
+		std::printf( "    f/%-5.1f S1=%.2f S2=%.2f  CoC r = %.4f px (err %.2e, shape %.2e, signed %.2e vs %+.4f px/unit)\n",
 			cases[c].fstop, cases[c].S1, cases[c].S2,
-			expectedRadiusPx, worstRadiusErr, worstShapeErr );
+			expectedRadiusPx, worstRadiusErr, worstShapeErr,
+			worstSignedErr, expectedSignedScaleX );
 		release( cam );
 	}
 }
