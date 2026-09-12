@@ -52,7 +52,13 @@
 //      call's input stack is literally the entry call's output stack.
 //    Sub-test 2 -- anisotropic Phong N (RGBScalarPainter, R != G != B):
 //      exercises the per-channel-loop RGB entry push (~line 154, three
-//      pushes per Scatter call) the same way.
+//      pushes per Scatter call) the same way.  It also red-proofs an
+//      incidental bug found alongside debt 30 in the same loop: entry-side
+//      `trans.kray[0] = p[0]` (TranslucentSPF.cpp ~line 154) wrote channel
+//      0 on every iteration instead of `trans.kray[i] = p[i]`, so summed
+//      across the three emitted rays, kray channels 1 and 2 were always
+//      zero.  The fix mirrors the exit-side loop's `trans.kray[i] = p[i]`
+//      (~line 222), which never had this bug.
 //    Sub-test 3 -- ScatterNM: exercises the NM twin's single entry
 //      push (~line 304) and its exit pop (~line 368).
 //
@@ -274,12 +280,26 @@ static void TestAnisotropicRGB()
 
 	int entryTranslucentChecked = 0;
 	IORStack* exitInput = 0;
+	// RED-PROOF for the incidental per-channel `kray` bug found alongside
+	// debt 30 (TranslucentSPF.cpp ~line 154, entry-side per-channel loop):
+	// each of the three emitted eRayTranslucent rays should carry ONE
+	// live channel (trans.kray[i] = p[i], the rest left at the loop's
+	// `trans.kray = 0` reset), so summing kray across all three rays must
+	// reconstruct the untouched `pTrans->GetColor(ri)` value exactly --
+	// each channel contributed by exactly one ray.  Before the fix, every
+	// iteration wrote `trans.kray[0] = p[0]` regardless of `i`, so the
+	// sum's channels 1 and 2 stayed at zero (dead lobes) while channel 0
+	// was triple-counted.
+	RISEPel krayEntrySum(0,0,0);
 	for( unsigned int i = 0; i < entryRays.Count(); i++ ) {
 		if( entryRays[i].ior_stack != 0 ) {
 			EXPECT( entryRays[i].type == ScatteredRay::eRayTranslucent, "aniso: entry ray with a non-null ior_stack is the translucent lobe" );
 			const Scalar scale = RadianceEtaScale( entryStack, entryRays[i].ior_stack );
 			EXPECT_NEAR( scale, 1.0, 1e-9, "aniso RGB entry RadianceEtaScale (per-channel loop)" );
 			entryTranslucentChecked++;
+			krayEntrySum[0] += entryRays[i].kray[0];
+			krayEntrySum[1] += entryRays[i].kray[1];
+			krayEntrySum[2] += entryRays[i].kray[2];
 			if( !exitInput ) {
 				exitInput = new IORStack( *entryRays[i].ior_stack );
 			}
@@ -289,6 +309,16 @@ static void TestAnisotropicRGB()
 	// channel (three), unconditionally.
 	EXPECT( entryTranslucentChecked == 3, "aniso: three translucent entry lobes (one per color channel) carried a stack" );
 	EXPECT( exitInput != 0, "aniso: captured an entry output stack to chain into the exit call" );
+
+	// pTrans is UniformColorPainter(0.4, 0.4, 0.4) -- the value the
+	// per-channel loop reads into `p` before zeroing trans.kray.
+	const RISEPel expectedKrayEntrySum(0.4, 0.4, 0.4);
+	EXPECT( krayEntrySum[0] > 0, "aniso: entry kray sum channel 0 (R) is non-zero" );
+	EXPECT( krayEntrySum[1] > 0, "aniso: entry kray sum channel 1 (G) is non-zero -- catches trans.kray[0]=p[0] typo" );
+	EXPECT( krayEntrySum[2] > 0, "aniso: entry kray sum channel 2 (B) is non-zero -- catches trans.kray[0]=p[0] typo" );
+	EXPECT_NEAR( krayEntrySum[0], expectedKrayEntrySum[0], 1e-9, "aniso: entry kray sum channel 0 (R) matches single-branch kray" );
+	EXPECT_NEAR( krayEntrySum[1], expectedKrayEntrySum[1], 1e-9, "aniso: entry kray sum channel 1 (G) matches single-branch kray" );
+	EXPECT_NEAR( krayEntrySum[2], expectedKrayEntrySum[2], 1e-9, "aniso: entry kray sum channel 2 (B) matches single-branch kray" );
 
 	// --- Exit, chained from one of the entry call's own output stacks ---
 	exitInput->SetCurrentObject( transObj );
