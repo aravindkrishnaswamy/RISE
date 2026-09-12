@@ -204,7 +204,7 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 						}
 						if(outward && (observation.containsOnArrival || !observation.entryLobeOnArrival)) ++badOut;
 						if(!outward && (!observation.containsOnArrival || observation.entryLobeOnArrival)) ++badIn;
-						if(std::fabs(observation.mediumOnArrival-1)>1e-12) ++badMedium;
+						if(!std::isfinite(observation.mediumOnArrival) || std::fabs(observation.mediumOnArrival-1)>1e-12) ++badMedium;
 					}
 					integrator->SetLightSampler(0);
 					lightSampler->release(); scene->release(); manager->release(); material->release();
@@ -329,7 +329,7 @@ static void Run()
 						// regression judges only actual guide replacements there.
 						if( (substituted || !tilted) && outward && (observation.containsOnArrival || !observation.entryLobeOnArrival) ) ++badOut;
 						if( (substituted || !tilted) && !outward && (!observation.containsOnArrival || observation.entryLobeOnArrival) ) ++badIn;
-						if( std::fabs(observation.mediumOnArrival-kWaterIOR) > 1e-12 ) ++badMedium;
+						if( !std::isfinite(observation.mediumOnArrival) || std::fabs(observation.mediumOnArrival-kWaterIOR) > 1e-12 ) ++badMedium;
 					}
 					scene->release(); manager->release(); material->release();
 				}
