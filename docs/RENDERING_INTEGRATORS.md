@@ -1044,9 +1044,9 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   2026-09-12 — items 1–4 closed individually below.** Further independent
   amplitude/mixture debts remain DL-38/DL-41; this does not assert complete
   translucent transport correctness.
-  1. **~~Guided-direction IOR-stack leak.~~ CLOSED 2026-09-12 — `013b3a15`,
+  1. **~~Guided-direction IOR-stack leak.~~ CLOSED 2026-09-12 — `8a9bdb18`,
      `TranslucentIORStackTest: ALL TESTS PASSED`.** PT and BDPT now preserve
-     the selected post-stack for same-side guided continuations and retain
+     the selected post-stack for guided continuations crossing the geometric boundary and retain
      the input stack for opposite-side replacements. Training and eta
      consumers share that resolved state. Four failed assertions on the
      unfixed library establish the PT RGB/NM red proof; subsequent BDPT

@@ -684,10 +684,10 @@ tree currently uses a spatially-varying `ior` painter, so this is
 unexercised, not measured to be wrong. Full detail in the
 `RadianceEtaScale` doc comment (`IORStack.h`).
 
-### ~~10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak~~ CLOSED 2026-09-12 — `013b3a15`, `TranslucentIORStackTest: ALL TESTS PASSED`
+### ~~10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED`
 
 PT and BDPT now resolve the continuation stack from the accepted direction:
-a same-side guided exit preserves the SPF pop; an inward replacement retains
+an outward guided exit preserves the SPF pop; an inward replacement retains
 the input stack. Training, radiance eta and continuation consumers use that
 same state. Guide sampling and PDF values are unchanged.
 

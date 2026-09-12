@@ -9,8 +9,9 @@ direction. A translucent outward exit therefore lost its pop, and a later
 hit on that object was classified as another exit.
 
 The repair resolves one borrowed continuation-stack pointer. A replacement
-on the same geometric side as the selected SPF ray keeps that ray's
-post-scatter stack; an opposite-side replacement keeps the input stack.
+on the same geometric side as the incoming ray crosses the boundary and
+keeps the selected post-scatter stack; an opposite-side replacement keeps
+the input stack.
 Ordinary SPF samples and exact RIS reuse retain their original state.
 The comparison uses the unperturbed geometric normal, falls back to the
 sampling frame when that normal is absent, and refuses to infer a crossing
@@ -22,8 +23,8 @@ is zero. Blindly copying an exit's popped stack would create incorrect
 inward state. This change neither rejects/resamples proposals nor changes
 PDFs or BSDF amplitudes. Full translucent guiding weights/densities remain
 DL-38/DL-41, PT selected-lobe compensation DL-42, and BDPT eye PDF argument
-order DL-43. Existing tilted SPF exit behavior is retained; this is not a
-new geometric-horizon correction for the sampler itself.
+order DL-43. Existing unchanged tilted SPF exit behavior is retained and now tracked
+as DL-45; this is not a geometric-horizon correction for the sampler itself.
 
 ## Red proof
 
@@ -70,7 +71,7 @@ while training and eta consumers independently chose inconsistent stacks.
 | SMS modes | INAPPLICABLE to replacement | No path-guide direction substitution in their stack handling. |
 
 The helper's boundary tests in MISWeightsTest complement the production
-integration fixture: same/opposite sides, tilted sampling frame, reversed
+integration fixture: incoming-side crossing/reflection, tilted sampling frame, reversed
 geometric normal, missing-normal fallback, tangent cases, exact reuse and
 no selected transition. No library source files were added or removed.
 
@@ -106,3 +107,31 @@ training/eta reading a different state, dangling borrowed stacks, and
 claiming BDPT fixed-code coverage as red proof. Positive substitution and
 query counters, inward controls, the consumed-field audit, loop-local
 ownership and explicit test-history distinctions address those risks.
+
+## Tilted-frame correction and newly observed residual
+
+A second audit found a flaw in first repair `013b3a15`: using the selected
+SPF ray as the side anchor newly misclassified replacements when that SPF
+exit was itself geometrically inward. Exact boundary test `21cf2cec` failed
+two assertions, and real trained tilted-frame PT test `47ebdf86` failed
+eight assertions against that repair. In each RGB/NM one-sample run, 234
+outward and 583 inward replacements following an inward SPF sample got
+the wrong stack; corresponding RIS counts were 42 and 11. All positive
+coverage guards passed. `8a9bdb18` anchors the decision to the incoming ray
+instead. Both red logs and their failing lines are preserved in the fix
+commit and report. The expanded test separates unchanged SPF directions
+from actual replacements, so it does not silently demand an unrelated
+sampler correction from DL-03.
+
+The same fixture observed 1,021 unchanged geometrically inward SPF exits
+in 4,096 unguided trials in each RGB/NM run at a 60-degree shading-normal
+tilt. The real sampler still attaches its popped stack. This is a separate
+observed defect pin, not a failing correctness assertion or an image-bias
+measurement. New DL-45 tracks its exit sampling/PDF/energy policy; changing
+the sampler is outside this state-propagation repair.
+
+The final expanded regression passed against `8a9bdb18` with test refinements
+through `f6aa67fd`: `ALL TESTS PASSED`, exit 0, warning-free test build.
+All recorded stack-error counters are zero, including the tilted witnesses
+above. New observed medium values must be finite as well as equal to the
+expected enclosing IOR.
