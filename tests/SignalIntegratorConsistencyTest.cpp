@@ -604,8 +604,10 @@
 //       average over a different quantity each time.
 //
 //  What that bought, measured over two full runs at the default seed
-//  base.  Every row moved TOWARD zero once the common-mode PT factor was
-//  resampled -- it had been biasing the whole suite negative:
+//  base -- run 1 with the shared PT denominator (one draw, reused by
+//  every sub-render), run 2 with the fix (an independent PT pair per
+//  sub-render).  At THIS seed base every row's single realization moved
+//  TOWARD zero:
 //
 //    row              shared-PT (run 1)   independent-PT (run 2)
 //    plank BDPT         -0.0737             +0.0001
@@ -616,23 +618,70 @@
 //    pavilion VCM       -0.0361             -0.0086
 //    tidal BDPT         -0.2432             -0.2443
 //
-//  K stayed at the 12 minimum on every row (SE 0.0006-0.0179, all under
-//  the 0.05 target), and the whole suite runs in 2:47 on this machine --
-//  the independent PT draws cost ~35s over the 2:11 the adaptive rule
-//  alone took.
+//  One draw per row at one seed base is a REALIZATION, not a measured
+//  bias -- calling this "a systematic negative bias from every row"
+//  would overclaim what two single-sample points can show.  What IS a
+//  measured quantity is the within-run SE the shared-PT estimator
+//  carries (0.017 on tidal, see below) against the run-to-run spread it
+//  produces (~0.06) -- that comparison is what justifies drawing an
+//  independent PT pair per sub-render, independent of which direction
+//  any one row's point estimate happened to move.
 //
-//  AND THE TIDAL ROW IS NOT A FLAKE.  That is the finding: at
-//  -0.2443 with SE 0.0179 (and -0.2432 / 0.0173 on the previous run) it
-//  sits 13.6 standard errors OUTSIDE the 0.20 band, reproducibly.  The
-//  six-run spread that made it look like a flake was the common-mode PT
-//  denominator; with that removed the estimate is tight and it is
-//  tidal's masked BDPT transport that is off, not the measurement.  The
-//  underlying disagreement is large and on both variants (masked R_E
-//  2.11, R_B 2.83 -- BDPT is 2-3x PT on those near-black pixels) and the
-//  ratio-of-ratios does not cancel it because the two differ by 24%.
-//  The band was NOT widened and the row was NOT skipped: it FAILS, and
-//  root-causing that 2-3x is open work, tracked in
-//  docs/RENDERING_INTEGRATORS.md's debt-28 entry.
+//  K stayed at the 12 minimum on every row (SE 0.0006-0.0179, all under
+//  the 0.05 target).  Cost: a fresh PT pair per sub-render multiplies
+//  PT renders by K instead of sharing one draw across all K, which on
+//  this machine is +36s (2:11 with the adaptive rule alone -> 2:47 with
+//  independent PT denominators too) for the whole suite.
+//
+//  AND THE TIDAL ROW IS NOT A FLAKE, but its earlier framing overclaimed
+//  the statistic.  At -0.2443 with SE 0.0179 (and -0.2432 / 0.0173 on
+//  the previous run), the earlier draft of this comment said that sits
+//  "13.6 standard errors outside the 0.20 band" -- that number is
+//  |mean| / SE (i.e. standard errors from ZERO), not standard errors
+//  from the band edge.  The correct distance from the band is
+//  (0.2443 - 0.20) / 0.0179 ~= 2.5 SE (B2 P1-1, debt 28 review round 2)
+//  -- a real miss, but a much smaller one than "13.6" suggested.  The
+//  argument for "not a flake" was never that one number anyway: it is
+//  CROSS-RUN reproducibility.  A second reviewer (B2) saw the row read
+//  -0.252 through -0.273 over five independent fresh runs -- NONE of
+//  them passing -- which is the actual evidence, not any single run's
+//  SE.  (The point estimates above, and elsewhere in this file, read
+//  like exact repeatable numbers; they are not bit-reproducible run to
+//  run -- see the pre-existing worker-side `rand()` race this file's
+//  own `g_seedBase` comment documents -- so treat any single decimal
+//  value here as one draw from that spread, not a constant.)  The
+//  six-run spread that made an EARLIER version of this estimator look
+//  like a flake was the common-mode PT denominator; with that removed
+//  the estimate tightened, and what it settled on is that tidal's
+//  masked BDPT-vs-PT transport really does differ by a large,
+//  reproducible amount -- not that the measurement itself is unreliable.
+//
+//  WHAT CHANGED THIS ROUND (supervisor ruling, debt 28 round 2): the
+//  PT-referenced ratio-of-ratios assumes PT's own bias is
+//  material-independent between the E and B variants at the masked
+//  pixels.  On tidal it is not -- the masked set is exactly the
+//  caustic-lit, near-black region reached by a delta light refracted
+//  through the scene's dielectric water, a transport class PT's NEE
+//  cannot sample at all, so PT's E-vs-B response there is
+//  direct-light-only while BDPT's and VCM's are the full response.
+//  Measured: PT vs BDPT's own neutral-variant (B) masked mean disagree
+//  by ~2.8-3.0x, and PT vs VCM's by ~57.5-58x (VCM's merges recover far
+//  more of that transport than BDPT's connections do) -- both comfortably
+//  past the reference-completeness gate below, so PT is excluded as a
+//  reference for tidal's masked row entirely, on BOTH integrators.  The
+//  PT-independent BDPT<->VCM masked invariant is asserted instead (see
+//  RunLayer2Showcase's "CROSS-INTEGRATOR MASKED INVARIANT" block) --
+//  and it is ITSELF right at the edge of the same 20% band: -0.1996
+//  (SE 0.0199) on one run, -0.2354 (SE 0.0129) on another, i.e. BDPT and
+//  VCM disagree with each other by an amount that straddles the band
+//  rather than sitting cleanly inside or outside it.  Per the ruling,
+//  that is reported honestly rather than papered over: the band was NOT
+//  loosened, and a run that fails the cross-check is a real
+//  signals-vs-integrator finding, not a bug in the test.  Root-causing
+//  the underlying BDPT-vs-VCM gap on tidal's masked pixels (and the
+//  wildly different VCM-vs-BDPT reference-incompleteness magnitudes,
+//  57x vs 2.8x) is open work, tracked under debt 27 in
+//  docs/RENDERING_INTEGRATORS.md.
 //
 //  KNOBS.  `SIGNAL_CONSISTENCY_FILTER` (env, substring match against `unit`,
 //  `showcase`, and the four showcase names `plank`, `tidal`, `bunny`,
@@ -1854,6 +1903,31 @@ static int g_blowupSkipCount = 0;
 //! not buy enough precision to say.  Printed in main()'s summary.
 static int g_maskedPrecisionSkipCount = 0;
 
+//! (supervisor ruling, debt 28 round 2) The masked ratio-of-ratios
+//! R_E/R_B assumes PT's own bias is material-independent across the E
+//! and B variants at the masked pixels.  On a masked set that is itself
+//! reached only by a transport class PT's NEE cannot sample (e.g. a
+//! delta light refracted through a dielectric), PT's E-vs-B response is
+//! direct-light-only while integrator I's is the full response, so
+//! R_E != R_B for a reason that has nothing to do with the signal under
+//! test.  `kReferenceIncompleteThreshold` gates that: if integrator I's
+//! masked NEUTRAL-variant ratio to PT, R_B,mask = mean_mask(I,B) /
+//! mean_mask(PT,B), misses 1 by more than this fraction, PT is not a
+//! usable reference for that row's masked comparison at all -- assert
+//! the PT-independent BDPT<->VCM cross-invariant instead (see
+//! RunLayer2Showcase).  Threshold is deliberately coarse (a gate, not
+//! the asserted quantity) and evaluated from the row's cheap sub-render
+//! #1 rather than an averaged value.
+static const double kReferenceIncompleteThreshold = 0.5;
+
+//! Rows where the masked PT reference was ruled incomplete (see
+//! `kReferenceIncompleteThreshold`) and excluded from the PT-referenced
+//! masked-band assertion.  Printed in main()'s summary alongside the
+//! other skip counters -- this one is not a precision gap, it is a
+//! documented reference-completeness gap (docs/RENDERING_INTEGRATORS.md
+//! debt 27).
+static int g_referenceIncompleteCount = 0;
+
 //! Redirect std::cout into a private buffer for the duration of `fn`,
 //! returning what was written, and echo it back to the REAL stdout
 //! afterward so nothing a human is watching is lost.  GlobalLog's
@@ -2335,25 +2409,75 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		return ptDenomPool[i];
 	};
 
+	// (supervisor ruling, debt 28 round 2) REFERENCE-COMPLETENESS GATE.
+	// The masked ratio-of-ratios R_E/R_B assumes PT's own bias is
+	// material-independent between the E and B variants at the masked
+	// pixels.  That fails when the masked set is reached only by a
+	// transport class PT's NEE cannot sample (a delta light refracted
+	// through a dielectric, on tidal): PT's E-vs-B response there is
+	// direct-light-only while integrator I's is the full response, so
+	// R_E != R_B for a reason unrelated to the signal under test.  Check
+	// that on each row's cheap sub-render #1 (no extra render): if
+	// integrator I's masked NEUTRAL-variant ratio to PT strays more than
+	// `kReferenceIncompleteThreshold` from 1, PT is not a usable
+	// reference for this row's masked comparison -- exclude it from the
+	// PT-referenced assertion below and, instead of silently dropping
+	// it, assert the PT-independent BDPT<->VCM masked invariant (see the
+	// "if( crossCheckNeeded )" block after this loop).
+	struct MaskedRowInfo
+	{
+		Integrator integ = Integrator::PT;
+		bool valid = false;
+		bool wholeImageBlowup = false;
+		bool referenceIncomplete = false;
+		double maskedE = 0.0, maskedB = 0.0;
+		double R_E = 0.0, R_B = 0.0;
+	};
+	std::vector<MaskedRowInfo> maskedInfos;
 	for( const Layer2Row& r : rows ) {
 		if( r.integ == Integrator::PT ) continue;
-		{
-			double ratioE = 0.0, ratioB = 0.0, agree = 0.0;
-			if( ClassifyBlowup( r, meanPT_E, meanPT_B, &ratioE, &ratioB, &agree ) == BlowupClass::Blowup )
-				continue;		// already reported + counted above; an Asymmetric row was already Checked(false) above but still gets a masked ratio printed
-		}
+		MaskedRowInfo info;
+		info.integ = r.integ;
+		double ratioE = 0.0, ratioB = 0.0, agree = 0.0;
+		info.wholeImageBlowup = ( ClassifyBlowup( r, meanPT_E, meanPT_B, &ratioE, &ratioB, &agree ) == BlowupClass::Blowup );
 		if( r.valsE.size() != N || r.valsB.size() != N || maskedPT_E == 0.0 || maskedPT_B == 0.0 ) {
 			Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": masked means available for R_E/R_B" );
+			maskedInfos.push_back( info );
 			continue;
 		}
-		const double maskedE = maskedMean( r.valsE );
-		const double maskedB = maskedMean( r.valsB );
-		if( maskedE == 0.0 || maskedB == 0.0 ) {
+		info.maskedE = maskedMean( r.valsE );
+		info.maskedB = maskedMean( r.valsB );
+		if( info.maskedE == 0.0 || info.maskedB == 0.0 ) {
 			Check( false, std::string( spec.keyword ) + " " + IntegratorName(r.integ) + ": non-zero masked means for R_E/R_B" );
+			maskedInfos.push_back( info );
 			continue;
 		}
-		const double R_E = maskedE / maskedPT_E;
-		const double R_B = maskedB / maskedPT_B;
+		info.R_E = info.maskedE / maskedPT_E;
+		info.R_B = info.maskedB / maskedPT_B;
+		info.referenceIncomplete = std::fabs( info.R_B - 1.0 ) > kReferenceIncompleteThreshold;
+		info.valid = true;
+		maskedInfos.push_back( info );
+	}
+
+	bool crossCheckNeeded = false;
+	for( const MaskedRowInfo& info : maskedInfos ) {
+		if( info.valid && info.referenceIncomplete ) crossCheckNeeded = true;
+	}
+
+	for( const MaskedRowInfo& info : maskedInfos ) {
+		if( !info.valid ) continue;
+
+		if( info.referenceIncomplete ) {
+			std::cout << "  REFERENCE INCOMPLETE ON MASK (PT vs " << IntegratorName(info.integ)
+			          << " neutral-variant masked ratio " << info.R_B << ")" << std::endl;
+			g_referenceIncompleteCount++;
+			continue;		// no PT-referenced assertion for this row -- see the cross-check block below
+		}
+		if( info.wholeImageBlowup ) continue;		// already reported + counted above; masked ratio meaningless here (unchanged pre-existing behavior)
+
+		const Integrator integ = info.integ;
+		const double R_E = info.R_E;
+		const double R_B = info.R_B;
 
 		// Per-sub-render values of the estimator, kept individually (not
 		// just summed) so the standard error below is computable.
@@ -2389,7 +2513,7 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		// error of the mean is above `seTarget`, to a hard cap.  PT is
 		// not looped (K=1): its own noise is already <0.05% (OBSERVED
 		// POST-FIX NUMBERS).
-		if( r.integ == Integrator::BDPT || r.integ == Integrator::VCM ) {
+		if( integ == Integrator::BDPT || integ == Integrator::VCM ) {
 			while( ratios.size() + (std::size_t)subRenderFailures < (std::size_t)kLayer2MaskedSubRendersCap )
 			{
 				if( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders ) {
@@ -2398,7 +2522,7 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 				}
 				Layer2Row subRow;
 				bool subDerived = false;
-				RenderShowcaseVariant( variantEText, variantBText, r.integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
+				RenderShowcaseVariant( variantEText, variantBText, integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
 				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) { subRenderFailures++; continue; }
 				const double subMaskedE = maskedMean( subRow.valsE );
 				const double subMaskedB = maskedMean( subRow.valsB );
@@ -2417,13 +2541,13 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		// longer fixed, so what is asserted is the thing that was
 		// actually wrong: NO sub-render failed, and the minimum sample
 		// size was reached.
-		if( r.integ == Integrator::BDPT || r.integ == Integrator::VCM ) {
+		if( integ == Integrator::BDPT || integ == Integrator::VCM ) {
 			Check( subRenderFailures == 0,
-				std::string( spec.keyword ) + " " + IntegratorName(r.integ)
+				std::string( spec.keyword ) + " " + IntegratorName(integ)
 				+ " (masked): every sub-render succeeded (failures: "
 				+ std::to_string(subRenderFailures) + ")" );
 			Check( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders,
-				std::string( spec.keyword ) + " " + IntegratorName(r.integ)
+				std::string( spec.keyword ) + " " + IntegratorName(integ)
 				+ " (masked): at least " + std::to_string(kLayer2MaskedSubRenders)
 				+ " sub-renders (got " + std::to_string(ratios.size()) + ")" );
 		}
@@ -2433,10 +2557,10 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		ratio /= double( ratios.size() );
 		const double se = standardError();
 
-		const bool loopedRow = ( r.integ == Integrator::BDPT || r.integ == Integrator::VCM );
+		const bool loopedRow = ( integ == Integrator::BDPT || integ == Integrator::VCM );
 		const bool insufficient = loopedRow && se > seTarget;
 
-		std::cout << "  MASKED " << IntegratorName(r.integ) << ": R_E=" << R_E << " R_B=" << R_B
+		std::cout << "  MASKED " << IntegratorName(integ) << ": R_E=" << R_E << " R_B=" << R_B
 		          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
 		          << "  avg over " << ratios.size() << " sub-render(s)=" << ratio;
 		if( loopedRow ) {
@@ -2445,7 +2569,7 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		if( insufficient ) {
 			std::cout << "  [INSUFFICIENT PRECISION]" << std::endl;
 			std::cout << "  INSUFFICIENT PRECISION: " << spec.keyword << " "
-			          << IntegratorName(r.integ)
+			          << IntegratorName(integ)
 			          << " (masked) reached the " << kLayer2MaskedSubRendersCap
 			          << "-sub-render cap with SE=" << se << " > " << seTarget
 			          << ".  The estimate (" << ratio << ") is NOT asserted either way "
@@ -2455,7 +2579,119 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		}
 		std::cout << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
 		Check( std::fabs( ratio ) < kLayer2MaskedBand,
-			std::string( spec.keyword ) + " " + IntegratorName(r.integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
+			std::string( spec.keyword ) + " " + IntegratorName(integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
+	}
+
+	// (supervisor ruling, debt 28 round 2) CROSS-INTEGRATOR MASKED
+	// INVARIANT.  Triggered whenever at least one of {BDPT,VCM}'s masked
+	// PT reference was ruled incomplete above.  The PT-referenced
+	// ratio-of-ratios is unusable there, but a PT-INDEPENDENT invariant
+	// still holds if BDPT and VCM see the same masked-pixel transport:
+	//     | (mean_mask(BDPT,E)/mean_mask(VCM,E))
+	//       / (mean_mask(BDPT,B)/mean_mask(VCM,B)) - 1 | < kLayer2MaskedBand
+	// Algebraically this is (mean_mask(BDPT,E)/mean_mask(BDPT,B))
+	// / (mean_mask(VCM,E)/mean_mask(VCM,B)) - 1 -- each integrator's OWN
+	// E/B self-ratio, compared to the other's -- so PT enters this
+	// computation only through the (fixed, PT-derived) mask's pixel
+	// selection, never through its own masked means.  Both integrators'
+	// self-ratios are measured with the SAME adaptive-K machinery as the
+	// PT-referenced loop above (independent sub-renders, minimum
+	// kLayer2MaskedSubRenders, SE target kLayer2MaskedBand *
+	// kLayer2MaskedSEFraction, capped at kLayer2MaskedSubRendersCap), run
+	// UNCONDITIONALLY for both BDPT and VCM -- including a row whose
+	// whole-image ratio was itself a blow-up skip (tidal's VCM row: the
+	// blow-up gate above only ever gated the PT-REFERENCED assertions;
+	// it must not also suppress the masked means this cross-check needs).
+	if( crossCheckNeeded ) {
+		std::cout << "  CROSS-CHECK TRIGGERED: at least one masked row's PT reference is incomplete -- "
+		          << "asserting the PT-independent BDPT<->VCM masked invariant instead (see "
+		          << "docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6.2)." << std::endl;
+
+		const MaskedRowInfo* bdptInfo = nullptr;
+		const MaskedRowInfo* vcmInfo = nullptr;
+		for( const MaskedRowInfo& info : maskedInfos ) {
+			if( info.integ == Integrator::BDPT ) bdptInfo = &info;
+			if( info.integ == Integrator::VCM  ) vcmInfo  = &info;
+		}
+
+		if( !bdptInfo || !vcmInfo || !bdptInfo->valid || !vcmInfo->valid ) {
+			Check( false, std::string( spec.keyword ) + " BDPT<->VCM (masked cross-check): both rows' masked means are available" );
+		} else {
+			auto standardErrorOf = []( const std::vector<double>& v ) -> double {
+				const std::size_t n = v.size();
+				if( n < 2 ) return -1.0;
+				double mean = 0.0;
+				for( double x : v ) mean += x;
+				mean /= double( n );
+				double ss = 0.0;
+				for( double x : v ) ss += ( x - mean ) * ( x - mean );
+				const double sd = std::sqrt( ss / double( n - 1 ) );
+				return sd / std::sqrt( double( n ) );
+			};
+			const double seTarget = kLayer2MaskedBand * kLayer2MaskedSEFraction;
+
+			//! selfContrast_i = mean_mask(I,E)_i / mean_mask(I,B)_i - 1
+			//! over independent sub-renders of integrator `info.integ`.
+			//! No PT denominator anywhere -- that is the entire point of
+			//! this invariant.
+			auto adaptiveSelfContrast = [&]( const MaskedRowInfo& info, std::vector<double>* outContrasts, int* outFailures ) {
+				outContrasts->push_back( info.maskedE / info.maskedB - 1.0 );
+				*outFailures = 0;
+				while( outContrasts->size() + (std::size_t)*outFailures < (std::size_t)kLayer2MaskedSubRendersCap ) {
+					if( outContrasts->size() >= (std::size_t)kLayer2MaskedSubRenders ) {
+						const double se = standardErrorOf( *outContrasts );
+						if( se >= 0.0 && se <= seTarget ) break;
+					}
+					Layer2Row subRow;
+					bool subDerived = false;
+					RenderShowcaseVariant( variantEText, variantBText, info.integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
+					if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) { (*outFailures)++; continue; }
+					const double subE = maskedMean( subRow.valsE );
+					const double subB = maskedMean( subRow.valsB );
+					if( subE == 0.0 || subB == 0.0 ) { (*outFailures)++; continue; }
+					outContrasts->push_back( subE / subB - 1.0 );
+				}
+			};
+
+			std::vector<double> bdptContrasts, vcmContrasts;
+			int bdptFailures = 0, vcmFailures = 0;
+			adaptiveSelfContrast( *bdptInfo, &bdptContrasts, &bdptFailures );
+			adaptiveSelfContrast( *vcmInfo,  &vcmContrasts,  &vcmFailures );
+
+			Check( bdptFailures == 0, std::string( spec.keyword ) + " BDPT (masked cross-check): every sub-render succeeded (failures: " + std::to_string(bdptFailures) + ")" );
+			Check( vcmFailures == 0,  std::string( spec.keyword ) + " VCM (masked cross-check): every sub-render succeeded (failures: "  + std::to_string(vcmFailures)  + ")" );
+			Check( bdptContrasts.size() >= (std::size_t)kLayer2MaskedSubRenders, std::string( spec.keyword ) + " BDPT (masked cross-check): at least " + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(bdptContrasts.size()) + ")" );
+			Check( vcmContrasts.size()  >= (std::size_t)kLayer2MaskedSubRenders, std::string( spec.keyword ) + " VCM (masked cross-check): at least "  + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(vcmContrasts.size())  + ")" );
+
+			const double meanBdpt = VectorMean( bdptContrasts );
+			const double meanVcm  = VectorMean( vcmContrasts );
+			const double seBdpt = standardErrorOf( bdptContrasts );
+			const double seVcm  = standardErrorOf( vcmContrasts );
+
+			const double bdptSelfRatio = 1.0 + meanBdpt;	// mean_mask(BDPT,E)/mean_mask(BDPT,B)
+			const double vcmSelfRatio  = 1.0 + meanVcm;	// mean_mask(VCM,E)/mean_mask(VCM,B)
+			const double crossRatio = ( vcmSelfRatio != 0.0 ) ? bdptSelfRatio / vcmSelfRatio : 0.0;
+			const double crossValue = crossRatio - 1.0;
+
+			// Delta-method propagation: the relative SE of a ratio of two
+			// INDEPENDENT means is the root-sum-square of their own
+			// relative SEs (first order).  BDPT's and VCM's sub-renders
+			// are drawn independently of each other (and of PT), so this
+			// is the right combination rule.
+			const double relSeBdpt = ( bdptSelfRatio != 0.0 && seBdpt >= 0.0 ) ? std::fabs( seBdpt / bdptSelfRatio ) : 0.0;
+			const double relSeVcm  = ( vcmSelfRatio  != 0.0 && seVcm  >= 0.0 ) ? std::fabs( seVcm  / vcmSelfRatio  ) : 0.0;
+			const double crossSE = std::fabs( crossRatio ) * std::sqrt( relSeBdpt * relSeBdpt + relSeVcm * relSeVcm );
+
+			std::cout << "  CROSS-CHECK masked self-ratio: BDPT mean_mask(E)/mean_mask(B)=" << bdptSelfRatio
+			          << " (K=" << bdptContrasts.size() << " SE=" << seBdpt << ")"
+			          << "  VCM mean_mask(E)/mean_mask(B)=" << vcmSelfRatio
+			          << " (K=" << vcmContrasts.size() << " SE=" << seVcm << ")" << std::endl;
+			std::cout << "  CROSS-CHECK (BDPT/VCM masked self-ratio) - 1 = " << crossValue
+			          << "  SE~=" << crossSE
+			          << ( std::fabs(crossValue) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
+			Check( std::fabs( crossValue ) < kLayer2MaskedBand,
+				std::string( spec.keyword ) + " BDPT<->VCM (masked cross-check): | (mean_mask(BDPT,E)/mean_mask(VCM,E)) / (mean_mask(BDPT,B)/mean_mask(VCM,B)) - 1 | < " + std::to_string(kLayer2MaskedBand) );
+		}
 	}
 }
 
@@ -2521,7 +2757,8 @@ int main( int argc, char** argv )
 	std::cout << "\n========================================" << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount
 	          << "  Blow-up skips (integrator disagreement, not signal-attributable): " << g_blowupSkipCount
-	          << "  Masked precision skips (cap reached, SE still above target): " << g_maskedPrecisionSkipCount << std::endl;
+	          << "  Masked precision skips (cap reached, SE still above target): " << g_maskedPrecisionSkipCount
+	          << "  Reference-incomplete masked rows (PT unusable as reference, BDPT<->VCM cross-check asserted instead): " << g_referenceIncompleteCount << std::endl;
 	std::cout << "========================================" << std::endl;
 
 	return failCount > 0 ? 1 : 0;
