@@ -2275,10 +2275,11 @@ timing exists because no implementation exists.
    change this entry warned about), `Job::AddCompositeMaterial` and the chunk
    descriptor, with the shipped scene migrated to inline scalars. Spectral
    attenuation now matches RGB (0.1194 vs 0.1194, was 0.958 vs 0.119).
-4. **`tidepools.RISEscene:400-404`'s comment is stale** — it claims `tau` cannot
-   vary spatially, which the P2.1 `painter` bridge and the `expression` form have
-   since made false (§3.6). Fix it in passing during Phase 1; it is currently
-   actively misleading an author reading the scene as an example.
+4. ~~**`tidepools.RISEscene:400-404`'s comment is stale**~~ **CLOSED
+   2026-08-31 (commit `aa1f0162c`)** — the comment was rewritten to describe
+   the P2.1 `painter`-bridge capability (`scalar_painter { painter pnt_rock
+   channel R }`) instead of claiming `tau` can't vary spatially; verified
+   against the current scene file this sweep (lines 400-406).
 5. **The Phase-1 coverage energy dip** — `Rd·Rs·(1−c)` from the substrate term
    (≤ 2 % of `Rd` at normal incidence, up to ~50 % at grazing), **plus** an
    additional grazing-concentrated loss from the geometric-horizon coat-lobe drop
