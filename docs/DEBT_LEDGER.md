@@ -53,6 +53,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-45 | DL03_GUIDED_IOR_CONTINUATION.md: tilted-frame residual | TranslucentSPF samples geometrically inward diffuse exits under tilted shading normals and still pops the IOR stack | OPEN-confirmed (observed defect pin; correctness red-proof pending) | `TranslucentSPF.cpp` explicitly exempts exit re-emission from its geometric-horizon gate; RGB/NM exits sample around onb.w and unconditionally pop. DL-03 real-SPF fixture recorded 1021/4096 unchanged inward exits per RGB/NM unguided run at 60-degree shading-normal tilt. Exit Pdf also omits the geometric gate. | M | physics-bias | user-visible (translucent materials with perturbed shading normals) |
 | DL-46 | DL03_GUIDED_IOR_CONTINUATION.md: initial-containment residual | Camera/light origins inside closed translucent objects lack initial IOR-stack membership and misclassify their first exit as entry | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentMaterial` inherits invalid/non-refracting default `GetSpecularInfo`; `IORStackSeeding::SeedFromPoint` accepts only valid canRefract materials. Both TranslucentSPF scatter variants classify exclusively by containsCurrent. Shared PT camera and BDPT eye/light seeds skip this stateful non-refracting material. | M | physics-bias | user-visible (origins inside closed translucent objects) |
 | DL-52 | DL04_SSS_RADIANCE_DECISION.md: planar probe origin | BSSRDF entry probes skip nearby points on a flat surface by advancing from the projection plane before intersecting | OPEN-confirmed (rendered symptom and static mechanism; correctness red-proof pending) | BSSRDFSampling::SampleEntryPoint starts both probe directions on the exit tangent plane and advances by 1e-6 before tracing. A normal probe skips the coplanar near face; distant bottom/side hits do not restore its profile mass. PT and BDPT eye/light RGB/NM share the helper. | M | physics-bias | user-visible (diffusion SSS on planar or nearly planar geometry) |
+| DL-53 | DL04_SSS_RADIANCE_DECISION.md: recursive environment MIS | Recursive RayCaster misses bypass environment MIS when passed the global map explicitly | OPEN-confirmed (static evidence; red-proof pending) | RayCaster RGB/NM/HWSS explicit pRadianceMap branches return raw radiance before their global-map MIS blocks. Complete PT diffusion/RW continuations pass the global map and a positive cosine PDF after adding weighted environment NEE, producing an extra contribution. Iterative PT already checks map identity correctly. | M | physics-bias | user-visible (SSS and eligible recursive environment continuations) |
 | DL-05 | CLOTH_FABRIC_DESIGN.md §15 item 27 | Two-layer gapped weave with the light outside: PT under-reads BDPT/VCM by 1.28-1.55x because PT's binary NEE cannot see through the far layer's delta gap lobe; single layer or light inside is exact | OPEN-confirmed | Doc's own measured table (box/planes, gap 0.1/0.3); mechanism traced to `RayCaster::CastShadowRayTransmittance` (definition starts `RayCaster.cpp:2062`, re-derived this sweep — the previously cited ~1980 was drift) being gated to perfect-specular dielectrics only, confirmed present as described this sweep | L | physics-bias | user-visible |
 | DL-06 | IMPROVEMENTS.md §"VCM env-IBL" (Session 9-13) / CLAUDE.md "Env-IBL deficit" entry | VCM env+mesh strict-tolerance residual (env-S0 <-> env-NEE MIS partition violation) — Session 13 explicitly decided to STOP and accept the disc-area baseline rather than fix it; `plank_closeup`'s VCM 0.55x (RENDERING_INTEGRATORS.md debt 28) is the same known bias class, not a new bug | OPEN-confirmed (deprioritized, not fixed) | `docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md` "Session 13 outcome"; `IMPROVEMENTS.md` lines ~1030-1046; still true in this tree — no VCM env-branch SA-MIS migration commit exists (`git log --oneline -- src/Library/Shaders/VCMIntegrator.cpp` shows no such commit after Session 13) | L | physics-bias | user-visible |
 | DL-07 | CLOTH_FABRIC_DESIGN.md §15 item 17 / WETNESS_COAT_DESIGN.md §12 item 13 | `OrenNayarBRDF::hemisphericalAlbedo` over-estimates (measured ~12.6% high at roughness 0.5, ~25.6% at 1.0), which over-amplifies `fabric_material`'s energy-subtraction and `coated_material`'s Saunderson recycling denominator; not fixable in either wrapper, needs its own bake | OPEN-confirmed | `OrenNayarBRDF.cpp:148-190`'s own doc comment states the bias and that "no clean closed form exists to correct it with"; unchanged this sweep | L | physics-bias | user-visible (rough Oren-Nayar under fabric/coat) |
@@ -170,8 +171,8 @@ reflowed otherwise.
 Updated during the 2026-09-12 DL-04 audit (DL-04 remains open). The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **47** (the original 36 minus DL-01/DL-02/DL-36/DL-03, plus independent
-  residuals DL-38 through DL-52; DL-35 remains deliberately absent)
+- OPEN-confirmed: **48** (the original 36 minus DL-01/DL-02/DL-36/DL-03, plus independent
+  residuals DL-38 through DL-53; DL-35 remains deliberately absent)
 - CLOSED-by-cleanup: **4** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`)
@@ -691,3 +692,14 @@ disconnected geometry, and actual mixture PDFs/hit-count weighting. Audit
 RGB/NM PT and BDPT eye/light consumers (VCM/MLT share BDPT) and probe caps.
 Validate a conservative furnace and geometry convergence without changing
 the complete-event eta convention or absorbing Sw normalization into geometry.
+
+
+**DL-53 (recursive explicit-global-map MIS bypass).** Commit a real
+RayCaster miss-ray regression with positive BSDF PDF and compare null
+map versus explicit scene-global-map pointers against the same analytic
+MIS-weighted radiance. Red-prove RGB/NM/HWSS; preserve PDF-zero delta
+behavior and distinct local override-map semantics. Move common escape
+weighting to a layer shared by both map-selection paths, then audit every
+recursive consumer carrying bsdfPdf and medium survival. Validate complete
+SSS environment NEE plus continuation against an independently integrated
+angular oracle; do not change Sw or eta convention to hide the extra term.

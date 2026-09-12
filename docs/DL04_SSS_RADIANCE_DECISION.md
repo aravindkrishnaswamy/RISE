@@ -134,3 +134,19 @@ therefore reuse those QMC samples; incidental jitter and fallback random
 choices can vary. The fixture labels repeat dispersion descriptively and
 does not use it as a confidence interval for the integral. Sample-count,
 geometry and cap comparisons supplement the absolute convention check.
+
+## Recursive environment MIS (DL-53)
+
+The rendered diffusion air mean exceeds the independently sampled helper
+mean. Source inspection confirms an independent positive extra term:
+complete diffusion/RW branches add MIS-weighted environment NEE, then pass
+the global radiance map and positive cosine PDF into recursive RayCaster.
+Its explicit-map escape branch returns raw radiance before the global-map
+MIS block, for RGB/NM/HWSS. The angular contributions consequently have
+weights `w_NEE + 1` instead of complementary weights. This establishes
+the sign, not a numerical attribution of the observed difference.
+
+The ordinary smooth SSS BSDF is zero; its SPF emits delta Fresnel reflection,
+so an extra surface diffuse lobe is not the mechanism. The iterative PT
+loop already applies the correct map-identity condition. DL-53 carries
+the recursive sibling and its direct miss-ray regression recipe.

@@ -1,4 +1,6 @@
-// DL-04 initial measurement fixture. NOT an eta-normalization oracle yet.
+// DL-04 complete-event eta convention consistency pin.
+// Coarse bounds reject an unmatched eta square; they do not certify exact
+// SSS energy conservation. DL48/49/52/53 and finite walk caps remain separate.
 //
 // Exact guards: the loaded camera samples the same slab top in every model,
 // the requested modern material/medium is bound, and every captured RGB and
@@ -12,7 +14,9 @@
 // A full BSSRDF event can cancel entry 1/eta^2 against exit eta^2. An outer
 // camera ratio alone cannot prove the BSSRDF normalization. Absolute air
 // furnace measurements and later mutation discriminators must establish it.
-// No statistical acceptance band has been guessed from unmeasured output.
+// The unit conservative furnace supplies the reference. A deliberate 20%
+// convention-only allowance retains separately recorded normalization, MIS
+// and sampling errors while rejecting eta^2 and inverse-eta^2 at 1.5 or 2.
 // K=4 is an initial sanity measurement; K=1 has no variance estimate.
 //
 // Run from the repository root with RISE_MEDIA_PATH="$PWD/". Defaults:
@@ -32,7 +36,7 @@
 // diffusion requires near-top coverage so it cannot pass on surface Fresnel
 // alone. This coverage guard does not establish energy normalization.
 // Normal and --probe invocations currently execute the same selected
-// provisional matrix. No physics closure claim or final energy guard yet.
+// matrix; --probe reports measurements without convention bounds.
 
 #include <array>
 #include <cerrno>
@@ -282,7 +286,7 @@ bool CheckGeometry( IJobPriv& job, Model model, Topology topology, const Config&
 // This invokes the real helper on the loaded central camera hit. A profile
 // pointer proves binding only; it does not prove that BSSRDF continuation
 // reaches the illuminated near surface (the flat-box failure in DL-52).
-bool DiagnoseBSSRDFCoverage( IJobPriv& job, const Config& cfg, const std::string& label )
+bool DiagnoseBSSRDFCoverage( IJobPriv& job, const Config& cfg, const std::string& label, bool conventionGuard = false )
 {
 	const IObject* slab = job.GetObjects()->GetItem("slab");
 	const ICamera* camera = job.GetScene()->GetCamera();
@@ -350,6 +354,13 @@ bool DiagnoseBSSRDFCoverage( IJobPriv& job, const Config& cfg, const std::string
 			" spatial_RGB=(" << spatialMean[0] << ',' << spatialMean[1] << ',' << spatialMean[2] << ')' <<
 			" full_RGB=(" << fullMean[0] << ',' << fullMean[1] << ',' << fullMean[2] << ')' <<
 			" FtExit=" << ftExit << " mean_J=spatial_red/FtExit=" << meanJ << std::endl;
+		if( conventionGuard ) {
+			Check(meanJ > 0.9 && meanJ < 1.1, label + ": independent spatial integral within 10% of unit conservative profile");
+			for( size_t channel = 0; channel < 3; ++channel ) {
+				const double furnace = 1 - ftExit + fullMean[channel];
+				Check(furnace > 0.8 && furnace < 1.2, label + ": independent full event rejects unmatched eta square (20% convention bound)");
+			}
+		}
 	}
 	if( cfg.curved ) return Check(nearTop > 0, label + ": curved BSSRDF helper reaches near top");
 	// Known flat probe-origin failure remains visible; do not turn a binding
@@ -402,7 +413,7 @@ struct OwnedInput {
 	std::filesystem::path path;
 	~OwnedInput() { std::error_code ec; std::filesystem::remove( path, ec ); }
 };
-bool RunHelperOnly( const Config& cfg )
+bool RunHelperOnly( const Config& cfg, bool conventionGuard = false )
 {
 	std::error_code ec;
 	std::filesystem::create_directories("rendered/sss_radiance_scaling", ec);
@@ -421,7 +432,7 @@ bool RunHelperOnly( const Config& cfg )
 	}
 	job->RemoveRasterizerOutputs();
 	for( unsigned int trial = 0; trial < cfg.trials; ++trial ) {
-		if( !DiagnoseBSSRDFCoverage(*job, cfg, "helper-only/diffusion_air/trial=" + std::to_string(trial)) ) {
+		if( !DiagnoseBSSRDFCoverage(*job, cfg, "helper-only/diffusion_air/trial=" + std::to_string(trial), conventionGuard) ) {
 			safe_release(job); return false;
 		}
 		++renderIndex; // Next trial constructs a fresh, distinctly seeded local RNG.
@@ -514,8 +525,13 @@ int main( int argc, char** argv )
 		std::cerr << "Usage: SSSRadianceScalingTest [--probe] [--samples square_N] [--trials K] [--seed N] [--ior N] [--outer-fresnel] [--curved|--flat] [--slab-radius R] [--volume-cap N] [--rw-cap N] [--path-cap N] [--air-only] [--helper-only] [--helper-attempts N]\n";
 		return 2;
 	}
-	std::cout << std::setprecision(10) << "SSSRadianceScalingTest: PROVISIONAL " << (cfg.probe ? "PROBE" : "MEASUREMENT") <<
-		"; no eta-normalization assertion\nsamples=" << cfg.samples << " trials=" << cfg.trials <<
+	if( !cfg.probe && (!cfg.curved || cfg.slabRadius != 40 || cfg.outerFresnel ||
+		(cfg.surfaceIOR != 1.5 && cfg.surfaceIOR != 2.0) || cfg.samples < 256 || cfg.trials < 4) ) {
+		std::cerr << "Convention bounds require curved R=40, ideal enclosure, IOR 1.5 or 2, at least 256 spp and 4 trials; use --probe for other diagnostics.\n";
+		return 2;
+	}
+	std::cout << std::setprecision(10) << "SSSRadianceScalingTest: " << (cfg.probe ? "PROBE (no convention bounds)" : "CONVENTION CONSISTENCY PIN") <<
+		"\nsamples=" << cfg.samples << " trials=" << cfg.trials <<
 		" seed_base=" << cfg.seedBase << " surface_ior=" << cfg.surfaceIOR <<
 		" sigma_a=0 sigma_s=2 g=0 film=16x16 max_path_depth=" << cfg.pathCap <<
 		" volume_cap=" << cfg.volumeCap << " rw_cap=" << cfg.rwCap << " helper_attempts=" << cfg.helperAttempts <<
@@ -534,6 +550,12 @@ int main( int argc, char** argv )
 		return failCount == 0 ? 0 : 1;
 	}
 	std::cout << "Libc seeds vary per render; fixed pixel Sobol scrambles repeat. Dispersion is descriptive only, not QMC uncertainty; worker scheduling prevents bitwise reproducibility.\n";
+	if( !cfg.probe ) {
+		Config independent = cfg;
+		independent.helperOnly = true;
+		independent.helperAttempts = 100000;
+		if( !RunHelperOnly(independent, true) || failCount != 0 ) return 1;
+	}
 	// Cheap air-furnace lighting/capture control before the expensive matrix.
 	Config controlConfig = cfg;
 	controlConfig.samples = 4;
@@ -562,6 +584,13 @@ int main( int argc, char** argv )
 				values.push_back(mean);
 			}
 			if( !Aggregate(values, means[t], label) ) return 1;
+			if( !cfg.probe && t == 0 ) {
+				for( size_t channel = 0; channel < 3; ++channel ) {
+					const double allowance = m == 0 ? 0.03 : 0.20;
+					Check(std::fabs(means[t][channel] - 1) < allowance,
+						label + ": absolute conservative furnace rejects unmatched eta square (coarse convention bound)");
+				}
+			}
 		}
 		if( cfg.airOnly ) continue;
 		if( !Ratio(means[1], means[2], observerRatios[m], std::string(ModelName(models[m])) + " water_inside/water_outside") ) return 1;
@@ -572,8 +601,10 @@ int main( int argc, char** argv )
 		RGBChannels ratioOfRatios{};
 		if( !Ratio(observerRatios[m], observerRatios[0], ratioOfRatios,
 			std::string(ModelName(models[m])) + " observer_ratio/explicit_observer_ratio") ) return 1;
+		if( !cfg.probe ) for( double ratio : ratioOfRatios )
+			Check(std::fabs(ratio - 1) < 0.10, "observer ratio-of-ratios within 10% wiring bound; not the eta discriminator");
 	}
 	std::cout << "Guards passed: " << passCount << " failed: " << failCount <<
-		". Provisional measurements complete; no physics acceptance band or eta closure claimed.\n";
+		(cfg.probe ? ". Probe complete; no convention bounds applied.\n" : ". Complete-event convention checks complete; exact energy conservation is not asserted.\n");
 	return failCount == 0 ? 0 : 1;
 }
