@@ -35,10 +35,20 @@ namespace RISE
 		///   0                                    light source sampling
 		///   1 .. 1+maxLightDepth+maxVolumeBounce  light-subpath bounces
 		///   16 .. 16+maxEyeDepth+maxVolumeBounce  eye-subpath bounces
-		///   31 .. 46                              SMS
+		///   31 .. 46                              SMS (reserved; no
+		///                                          `StartStream` call
+		///                                          in this range today
+		///                                          -- inherited from a
+		///                                          stale SobolSampler.h
+		///                                          comment, kept as a
+		///                                          bound, not a claim
+		///                                          of current use)
 		///   47                                    BDPT strategy select
 		///   48                                    MLT film/lens/aperture
-		///   48 + i                                VCM per-eye-vertex NEE
+		///   48 + i, i >= 1                        VCM per-eye-vertex NEE
+		///                                          (i starts at 1; VCM
+		///                                          never itself starts
+		///                                          stream 48)
 		///
 		/// Both walk loops saturate their iteration count at 1024
 		/// (`GenerateEyeSubpath` / `GenerateLightSubpath`), and an
@@ -77,11 +87,37 @@ namespace RISE
 			/// get a fresh lane, it ALIASES an existing one (stream 80
 			/// is stream 31's sample 1, stream 129 its sample 2).  The
 			/// MLT rasterizers therefore draw the aperture point as a
-			/// third `Get2D` on their own stream 48, contiguous with
-			/// the film and lens samples -- lanes 244/293 against the
-			/// film's 48/97 and the lens's 146/195.  Lanes of streams
-			/// 0..48 are partitioned by residue mod 49, so a stream-48
-			/// lane can never collide with an integrator stream.
+			/// further `Get2D` on their own stream 48, contiguous with
+			/// the film and lens samples -- but the exact lanes depend
+			/// on which MLT rasterizer is asking:
+			///   `MLTRasterizer` (RGB): film Get2D + lens Get2D leave
+			///     4 lanes consumed, so the aperture Get2D lands at
+			///     48 + 49*4 = 244 and 48 + 49*5 = 293.
+			///   `MLTSpectralRasterizer::EvaluateSampleSpectral`:
+			///     film + lens are the same 4 lanes, but it THEN
+			///     pre-consumes `nSpectralSamples` (S) wavelength
+			///     `Get1D`s from stream 48 before drawing the
+			///     aperture point, so the aperture lanes shift to
+			///     48 + 49*(4+S) and 48 + 49*(5+S) -- 440/489 at the
+			///     default S=4.
+			/// The safety argument is not "the lane depth stays below
+			/// some fixed number" -- it is that lanes on streams 0..48
+			/// are partitioned by RESIDUE mod 49, and every draw on
+			/// stream 48 (film, lens, wavelengths, aperture, at any
+			/// depth) keeps residue 48, which no stream < 49 can ever
+			/// produce.
+			///
+			/// That residue argument only protects streams that STAY
+			/// below 49.  It is FALSE that a stream-48 lane can never
+			/// collide with an integrator stream in general: the eye
+			/// walk's `StartStream( 16u + depth )` reaches stream 48
+			/// itself at eye depth 32 and aliases stream-48 lanes (and
+			/// beyond) at deeper depths -- a PRE-EXISTING overrun
+			/// (`maxVolumeBounce` defaults to 64, so ordinary scenes
+			/// can reach it) that debt 28 only extends, from 4 lanes
+			/// on stream 48 to 6 (RGB) or 6+S (spectral).  See
+			/// docs/RENDERING_INTEGRATORS.md §7 for the open item; it
+			/// is ledgered as its own debt, not fixed here.
 			APERTURE_CURRENT_STREAM
 		};
 
