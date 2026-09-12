@@ -1,6 +1,6 @@
 # DL-01: translucent exit lobe weights
 
-CLOSED 2026-09-12 — fix `1239edf2`. The regression reports
+CLOSED 2026-09-12 — fix `1239edf2`. The DL-01 regression run reported
 `TranslucentSpectralParityTest: 676 checks, 0 failures`.
 
 ## Contract and root cause
@@ -15,7 +15,8 @@ The fix removes that extra multiplier at the common spectral producer.
 
 This is a decision about the existing stateful lampshade model, not a
 claim that its BSDF or every integrator now models a physical volume
-exactly. Directional/Pdf consistency remains DL-02, guiding-stack
+exactly. The diffuse exit support/shape gap was subsequently closed by DL-02
+(`a041e51d`); full mixture density remains DL-41. Guiding-stack
 propagation remains DL-03, and the independent consumer gaps below remain
 open. No IOR convention or sampling distribution changes in DL-01.
 
@@ -97,7 +98,7 @@ is confirmed; deposited-flux red-proof remains DL-39's separate recipe.
   declares `kWeightTolerance = 1e-3` explicitly as the recipe's absolute band.
 - The extra NM factor affects backscatter as well as the exit ray.
 - Local weight parity does not establish whole-render RGB/NM/HWSS parity;
-  DL-02 and DL-38 remain distinct blockers to that broader claim.
+  DL-38 and DL-41 remain distinct blockers to that broader claim.
 
 Master advanced independently to `0b920978` during the work, removing the
 checked-in handoff prompt and its ledger link. Merge `9ca3727b` preserved

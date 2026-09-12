@@ -1103,15 +1103,15 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      separate BSDF/HWSS repricing gap. The actual scene parameter is
      `tau`, not `transmittance`. See
      [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
-  4. **RGB/NM exit densities are MIS-inconsistent (OPEN, DL-02).**
-     DL-01's transport review clarified the support mismatch:
-     `Scatter` and `ScatterNM` sample exit directions around `+onb.w()`,
-     but inside-state `Pdf` evaluates `-dot(wo,onb.w())`, returning zero
-     on that sampled hemisphere in BOTH pipes, even at N=1. In addition,
-     NM's exit uses a Phong shape (`Nval_front`) while RGB samples cosine
-     and `PdfNM` forwards to the cosine-shaped `Pdf`. DL-02's recipe now
-     tests support at N=1 in RGB/NM before testing the NM shape at other
-     N values. No density implementation is changed by DL-01.
+  4. **~~RGB/NM exit density support/shape mismatch (DL-02).~~ CLOSED
+     2026-09-12 — `a041e51d`, `TranslucentSpectralParityTest: 1918 checks,
+     0 failures` (red: 324 failures).** Both pipes now sample and evaluate
+     cosine density around +onb.w() for the diffuse exit. The inside-state
+     evaluator had used the opposite hemisphere, and NM additionally
+     sampled a Phong exit. Entry/backscatter Phong lobes are unchanged.
+     Complete mixture/reverse densities remain DL-41; this closure does
+     not assert integrator-wide MIS correctness. See
+     [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md).
   Item 1 is recorded in
   [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.3;
   items 3 and 4 are recorded there as well.

@@ -37,7 +37,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | id | source doc:item | one-line claim | verdict | evidence | size | class | visibility |
 |----|------------------|-----------------|---------|----------|------|-------|------------|
 | ~~DL-01~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 3 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF RGB/NM exit-weight divergence~~ | CLOSED 2026-09-12 | `1239edf2`: `TranslucentSpectralParityTest: 676 checks, 0 failures` (red: 174 failures); primary-layer tau paid once at entry, Beer-only exit/backscatter parent in both pipes. See [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md). | S | physics-bias | user-visible |
-| DL-02 | RENDERING_INTEGRATORS.md debt 31 item 4 / REFRACTIVE_RADIANCE_SCALING.md §10.3 | TranslucentSPF exit density uses the opposite hemisphere in both RGB/NM; NM also samples a Phong shape while PdfNM forwards to the cosine-shaped Pdf | OPEN-confirmed | `TranslucentSPF::Scatter` / `ScatterNM` sample exit rays around `+ri.onb.w()`, but inside-state `Pdf` uses `-dot(wo,ri.onb.w())`, returning zero there even at N=1. NM additionally uses `Nval_front` instead of RGB cosine sampling. Scope clarified by the DL-01 transport review. | S | physics-bias | user-visible |
+| ~~DL-02~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 4 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF exit-density support and spectral shape mismatch~~ | CLOSED 2026-09-12 | `a041e51d`: `TranslucentSpectralParityTest: 1918 checks, 0 failures` (red: 324 failures). RGB/NM diffuse exits now share positive-shading-hemisphere cosine sampling/evaluation. Full mixture/reverse density remains DL-41. See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). | S | physics-bias | user-visible |
 | DL-36 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | One residual is not neutral but a bounded neighbour read: a second surface of the SAME luminary inside the emitter probe's standoff band, within 0.01x its diagonal, is accepted with that neighbour's live channel instead of refusing | OPEN-confirmed | Doc's own §10 disclosure (a louvred single-object fixture, blade pitch under ~0.5% of its diagonal); bounded to another point of the same luminary at most `standoff` away; no dedicated red-proof found in `tests/SignalEmitterRecordTest.cpp` this sweep | S | physics-bias | user-visible (narrow: louvred/finely-corrugated single-luminary fixtures only) |
 | DL-03 | RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3 | Path-guiding substitutes a direction at `TranslucentSPF`'s exit lobe without carrying its popped `ior_stack`; the translucent object silently stays on the IOR stack, later hits misclassify entering/exiting | OPEN-confirmed | `TranslucentSPF.cpp` ~line 305-307/438-440 (`front.ior_stack->pop()`); `PathTracingIntegrator.cpp` ~3205/3260 sets `traceIorStack = &iorStack` (pre-scatter stack); `BDPTIntegrator.cpp:161`/`PathTracingIntegrator.cpp:553` `GuidingSupportsSurfaceSampling` admits `eRayDiffuse` unconditionally, confirmed by reading all four sites this sweep | M | physics-bias | user-visible (path guiding + `translucent_material` only) |
 | DL-04 | REFRACTIVE_RADIANCE_SCALING.md §10.1 | Whether `SubSurfaceScatteringSPF`/`RandomWalkSSS`/`BSSRDFSampling::Sw` correctly omit the debt-30 eta^2 factor (telescoping argument) or need it (PBRT-style eta^2 divide) is undecided; direction not pinned down | OPEN-confirmed | Doc's own two-reading analysis (§10.1(a)/(b)); the disambiguating render (matched dielectric-shell-with-medium vs `subsurfacescattering_material`, submerged vs air camera) has not been produced — confirmed absent from `tests/` this sweep | M | physics-bias | user-visible (SSS in non-air medium only) |
@@ -49,6 +49,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-07 | CLOTH_FABRIC_DESIGN.md §15 item 17 / WETNESS_COAT_DESIGN.md §12 item 13 | `OrenNayarBRDF::hemisphericalAlbedo` over-estimates (measured ~12.6% high at roughness 0.5, ~25.6% at 1.0), which over-amplifies `fabric_material`'s energy-subtraction and `coated_material`'s Saunderson recycling denominator; not fixable in either wrapper, needs its own bake | OPEN-confirmed | `OrenNayarBRDF.cpp:148-190`'s own doc comment states the bias and that "no clean closed form exists to correct it with"; unchanged this sweep | L | physics-bias | user-visible (rough Oren-Nayar under fabric/coat) |
 | DL-08 | RENDERING_INTEGRATORS.md debt 29 | `PSSMLTSampler`'s 49-lane stream layout is exceeded by `BDPTIntegrator`'s eye-subpath walk (`StartStream(16u+depth)`) at eye/volume depth >= 32, aliasing MLT's own film/lens/aperture lanes on stream 48 | OPEN-confirmed | `BDPTIntegrator.cpp:1732`; `PSSMLTSampler.cpp:59,75,146-147` (`kNumStreams` default 49, `idx = streamIndex + kNumStreams*sampleIndex`), read directly this sweep; `maxVolumeBounce` default 64 reaches depth 32 in ordinary deep-volume scenes | L | physics-bias | user-visible (MLT + deep volume/eye recursion) |
 | DL-38 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: independent residuals | Translucent exit weights lose their stateful extinction/scattering factors when reevaluated through the BSDF, including HWSS companions | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentSPF` has no `EvaluateKrayNM` override; PT HWSS companions use `TranslucentBSDF::valueNM*cos/pdf`, whose data omit extinction/scattering/inside state. `BDPTIntegrator::GenerateEyeSubpathImpl` / `GenerateLightSubpathImpl` reevaluate non-delta BSDF weights; VCM/MLT share these generators. | L | physics-bias | user-visible (translucent bidirectional/HWSS transport) |
+| DL-41 | DL02_TRANSLUCENT_EXIT_DENSITY.md: independent residual | Translucent Pdf/PdfNM omit Phong lobes and selection probabilities; reverse/NEE queries lack the full stateful mixture contract | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentSPF::Pdf` returns only diffuse cosine; BDPT eye/light forward densities include `selectProb`, while reverse `PathValueOps::EvalPdfAtVertex` calls Pdf/PdfNM directly. `LightSampler` area/environment RGB/NM NEE uses empty `defaultIOR`. | L | physics-bias | user-visible (translucent mixed-lobe MIS) |
 | DL-24 | WETNESS_COAT_DESIGN.md §12 item 2 | `CompositeSPF`'s random walk loses ~96% of the energy in the coat-over-diffuse configuration wetness needs; this design routes around it rather than fixing it | OPEN-confirmed | Doc's own measured 96% figure (`WETNESS_COAT_DESIGN.md:101,454-488`); `CompositeSPF.cpp`'s 50/50 `Pdf` and top-wins `GetBSDF` architecture is unchanged by the tree's most recent commits touching that file (`7713e509`/`9e3cf85e`/`f4336aba` fix capacity naming, gap-slant-length and a parameter name, none touch the energy-loss mechanism), confirmed this sweep | L | energy-loss | user-visible (any `composite_material` coat-over-diffuse) |
 | DL-09 | REFRACTIVE_RADIANCE_SCALING.md §10.2 | `RadianceEtaScale` reads the IOR stack's push/pop-time values while `DielectricSPF`/`PerfectRefractorSPF` re-fetch the `ior` painter fresh at each hit; for a spatially-varying `ior` these can differ at an interior vertex (NEE/bounce before exit) | OPEN-confirmed, unexercised | `IORStack.h`'s `RadianceEtaScale` doc comment; re-checked this sweep: `grep -rl 'ior.*scalar_painter'` is NOT empty — `scenes/Tests/GUI/panel_stress_params.RISEscene:232` binds `ior panel_scalar_dispersion`, a `scalar_painter` — but that painter's body (`:182-188`) is three per-channel CONSTANT `param`s combined algebraically (`vec3(ior_r, ior_r+spread*0.5, ior_r+spread)`), with no positional (`P`) term, so it is not actually spatially-varying and does not exercise this row; still no scene binds a position-dependent `ior` | S | precision | internal (no scene exercises it yet) |
 | DL-10 | RENDERING_INTEGRATORS.md debt 28 (fisheye residual) | Fisheye camera's per-pixel solid angle is computed in the pre-stretch local frame while `mxTrans` applies `Stretch(pixelAR,1,1)`; at `pixelAR != 1` the world-space solid angle differs by an uncomputed direction-dependent Jacobian | OPEN-confirmed, unexercised | Doc's own analysis; confirmed no in-tree scene pairs `fisheye_camera` with non-square `pixelAR` (`grep -rl fisheye_camera scenes/` cross-checked against pixelAR values) this sweep | S | precision | internal (no scene exercises it yet) |
@@ -155,12 +156,12 @@ reflowed otherwise.
 
 ## Counts
 
-Updated by the 2026-09-12 DL-01 cleanup. The original sweep counts
+Updated by the 2026-09-12 DL-02 cleanup. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **38** (the original 36 minus DL-01, plus independent
-  residuals DL-38, DL-39 and DL-40; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **1** (DL-01, `1239edf2`)
+- OPEN-confirmed: **38** (the original 36 minus DL-01/DL-02, plus independent
+  residuals DL-38, DL-39, DL-40 and DL-41; DL-35 remains deliberately absent)
+- CLOSED-by-cleanup: **2** (DL-01, `1239edf2`; DL-02, `a041e51d`)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -191,23 +192,18 @@ endpoints, and chained spectral entry/exit. The absolute weight tolerance
 is explicitly `kWeightTolerance = 1e-3`; the old recipe's claim that
 `TranslucentIORStackTest` already had a `CROSS_VAL_TOL` was incorrect.
 The scene parameter is `tau`, not the old recipe's `transmittance`.
-Direction/Pdf consistency remains DL-02; full integrator/HWSS agreement
-is not claimed (DL-38). See [closure and audit](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
+Diffuse exit-direction/Pdf consistency was subsequently closed by DL-02;
+full mixture density remains DL-41 and integrator/HWSS amplitudes DL-38. See [closure and audit](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
 
-**DL-02 (TranslucentSPF exit-density support and spectral shape).**
-Extend `tests/TranslucentSpectralParityTest.cpp` or
-`tests/TranslucentIORStackTest.cpp` with an inside stack, scattering zero,
-and uniform N=1. Sample both RGB and NM exit rays and compare the stored
-positive `ray.pdf` with `Pdf`/`PdfNM` using the same intersection and
-pre-scatter stack. Expected today: both evaluators return zero on the
-sampled `+onb.w()` hemisphere because inside-state `Pdf` flips the sign.
-Then test N != 1 to expose the additional NM Phong-versus-cosine shape
-difference. Fixed when both support and normalized shape agree between
-sampling and evaluation in both pipes. The original recipe's pointwise
-`kray*pdf == value*|cos|` closure also depends on the separate stateful
-BSDF-weight gap now tracked as DL-38; do not confuse that with this
-density-only row or call a zero-versus-positive support error merely a
-small grazing-angle shape mismatch.
+**~~DL-02 (TranslucentSPF exit-density support and spectral shape).~~ CLOSED
+2026-09-12 — `a041e51d`, `TranslucentSpectralParityTest: 1918 checks, 0 failures`.**
+Test `adc9a286` failed 324 checks against the unfixed `cb9dd0f4` library.
+RGB/NM exit support, stored/evaluated cosine density, fixed-variate inverse
+CDF and separate hemisphere integrals now agree at N=1/8 and per-channel
+N=5/10/15. Entry geometric-horizon controls still pass. This closes the
+conditional diffuse exit only; full mixture/reverse densities and NEE
+state are DL-41, BSDF amplitudes are DL-38, and guiding stack propagation
+is DL-03. See [closure and audit](DL02_TRANSLUCENT_EXIT_DENSITY.md).
 
 **DL-03 (TranslucentSPF guided-direction IOR-stack leak).** Add a scene with
 path guiding enabled (`use_path_guiding true`, enough samples to train the
@@ -556,3 +552,13 @@ when `ComputeStats` rejects nonfinite captured/composited values and
 against the current harness and the existing finite render gates intact.
 This is a separate pre-existing harness robustness defect; the DL-01
 runs reported finite statistics and do not exercise it.
+
+**DL-41 (translucent complete mixed-lobe/reverse density).** Add a focused
+translucent mixture-density test with nonzero entry reflection/transmission
+and inside backscatter. Compare the actual selected-lobe frequencies and
+conditional densities with Pdf/PdfNM over both hemispheres; include RGB
+per-channel N and spectral wavelengths. Assert BDPT eye/light reverse and
+NEE evaluations use the appropriate state and match the same complete
+mixture, then exercise VCM/MLT's shared generators. Fix the mixture/state
+contract rather than multiplying a guessed constant into the corrected
+DL-02 cosine exit. Static evidence only; numeric red proof is pending.
