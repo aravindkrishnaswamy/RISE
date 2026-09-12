@@ -9,7 +9,12 @@ detector-sphere rigs) deliberately do not.
 
 Guard: [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp)
 (30 checks, ~27 s), plus `VCMStrategyBalanceTest` topology H (the red row)
-and `BDPTStrategyBalanceTest` topology J (the cancellation pin).
+and `BDPTStrategyBalanceTest` topology J (the cancellation pin). Review
+round 2 (2026-09-12) added `VCMStrategyBalanceTest` topology I and
+`BDPTStrategyBalanceTest` topology K, a consistency pin on the same
+scene family where the eye-side and light-tracing-splat strategies are
+MIS-combined for the same path rather than isolated (§2's corrected
+splat row).
 
 ---
 
@@ -18,26 +23,64 @@ and `BDPTStrategyBalanceTest` topology J (the cancellation pin).
 Radiance is **not** invariant along a ray that crosses a smooth interface
 between media of different refractive index. The invariant is the *basic
 radiance* `L / n²` (Preisendorfer 1965; Veach 1997 §5.2; PBRT-v4 §9.5.2).
-Crossing from a medium of index `η_before` into one of index `η_after`,
+Stated in plain medium terms, following the light's own physical direction
+of travel from a medium of index `n1` into one of index `n2`,
 
 ```
-L_after = T(θ) · (η_before / η_after)² · L_before
+L2 = T(θ) · (n2 / n1)² · L1
 ```
 
-with `T` the Fresnel transmittance. Entering water from air
-(`1 → 1.33`) the factor is `1/1.7689`; leaving water for air it is
-`1.7689`.
+with `T` the Fresnel transmittance. Light physically entering water from
+air (`n1 = 1 → n2 = 1.33`) gets **brighter** by `1.7689`; light physically
+leaving water for air (`n1 = 1.33 → n2 = 1`) gets **dimmer** by `1/1.7689`.
+This is the textbook statement — a denser medium in equilibrium with an
+external field carries higher radiance. Note that §8's SMS chain
+evaluation and the RISE eye-walk convention below both use the WALK-order
+form instead (they walk backward from a shading point, same as an eye
+subpath) — see the worked example below for why that is the reciprocal
+of this formula, not a repetition of it.
 
-A path tracer that starts at the camera transports radiance *backwards*
-along the light's direction of travel, and the convention that falls out
-(PBRT's `TransportMode::Radiance`, Mitsuba's `TransportMode`) is: at each
-scatter, `η_before` is the index on the side the walk arrived from and
-`η_after` the side it leaves for. A light subpath or a photon transports
-**importance / flux**, which is conserved across the interface up to
-Fresnel — it gets no factor. That asymmetry is not a convention; it *is*
-the non-symmetry of refractive scattering, and it is what makes a merge
-(a flux-carrying photon paired with a radiance-carrying eye vertex) come
-out right.
+A path tracer's eye subpath does **not** follow that forward direction: it
+starts at the camera and walks *backwards* along the light's direction of
+travel. Naming the two sides of a scatter event by the WALK's own
+direction — `η_before` the medium the walk was in when it hit the surface
+(the side it arrived from), `η_after` the medium the scattered ray now
+travels through (the side it leaves for) — the throughput multiplier a
+RADIANCE-mode walk must apply at that scatter is
+
+```
+throughput *= (η_before / η_after)²
+```
+
+which is the *reciprocal* of the medium-forward formula above applied to
+the same physical interface crossing, because the walk's `before → after`
+is the reverse of the light's own `n1 → n2` at that point. Worked example,
+camera in air: an eye ray that refracts from air into a submerged object
+has `η_before = 1` (air, where the walk arrived from) and `η_after = 1.33`
+(water, where the scattered ray goes), so its throughput is multiplied by
+`(1/1.33)² = 1/1.7689` — **dimmer** — even though a physical light ray
+crossing the *same* interface point in the *forward* direction (air into
+water) would be amplified by `1.7689` per the medium-forward formula
+above. Both statements are the same physical law; they differ only in
+which of the two opposite-direction rays through that point each one
+describes. §7's "camera INSIDE a refractor looking out: air-side content
+×n²" is the mirror case: the walk's `before` is water (where the camera
+sits) and `after` is air, so `(η_before/η_after)² = 1.33² = n²`, matching
+the medium-forward statement in that case because the walk and the light
+happen to travel the same way through a camera-side crossing.
+
+This is exactly the convention `tests/RefractiveRadianceScalingTest.cpp`'s
+own header states operationally ("Camera in air entering water: x
+1/1.33^2. Camera in water exiting to air: x 1.33^2.") — before/after
+there is the walk's medium at each step, not the light's forward-medium
+order.
+
+An IMPORTANCE-mode walk (a light subpath, a photon) transports flux
+forward, in the light's own true direction, so it never needs this
+reciprocal correction — it gets no factor at all, conserved up to
+Fresnel. That asymmetry is not a convention; it *is* the non-symmetry of
+refractive scattering, and it is what makes a merge (a flux-carrying
+photon paired with a radiance-carrying eye vertex) come out right.
 
 ## 2. What was wrong, and why it hid for years
 
@@ -67,13 +110,34 @@ direction:
 | PT BSDF-sampled emitter through glass | in-and-out | — | none (cancels) |
 | BDPT s=0 through glass | in-and-out | — | none (cancels) |
 | **VCM / photon-map merge** | one crossing inward | photon (flux) | **×n² too bright** |
-| **BDPT light-tracing splat** | one crossing inward | light subpath (flux) | **×n² too bright** |
+| **BDPT light-tracing splat** | none | light subpath (flux) | **none — consistent by construction** |
 | **transparent-shadow NEE** | one crossing inward | straight shadow ray (flux) | **×n² too bright** |
 | **emitter INSIDE the refractor, viewed from outside** | one crossing inward | — | **×n² too bright** |
 | **camera INSIDE the refractor** | one crossing outward | — | **×1/n² too dim** |
 
-The last two rows are the reference-free ones, and they are what
-`RefractiveRadianceScalingTest` rows A and B assert.
+**Correction (review round 2, 2026-09-12):** an earlier draft of this row
+read "one crossing inward" for the BDPT light-tracing splat and claimed
+the same ×n² pre-fix error as the VCM merge row above it. That is wrong
+on two counts. First, a `t=1` splat has no eye-side subpath at all — the
+"eye side" is the bare camera vertex, so there is no crossing to price
+there. Second, a splat is a straight-line connection test, and a delta
+interface is opaque to one: a light-subpath vertex sitting on the far
+side of the water from the camera cannot validly splat to it at all (the
+connection is occluded, exactly like an NEE shadow ray through the same
+interface). The only way a light-subpath vertex reaches the SAME side as
+the camera is by crossing the interface earlier, *while the light
+subpath is being built* — an ordinary IMPORTANCE-mode scatter, which
+correctly gets no factor whether or not this fix exists. So the splat
+connection itself never had a crossing to misprice; the "bug" this row
+tried to describe doesn't occur on RISE's actual splat mechanics. See
+`BDPTStrategyBalanceTest` topology K (and its VCM twin, topology I in
+`VCMStrategyBalanceTest`) §8-adjacent below for the scene that pins this
+consistent-by-construction behaviour under MIS combination with the
+eye-side strategies that DO cross the interface.
+
+The last two rows of the table (emitter INSIDE / camera INSIDE) are the
+reference-free ones, and they are what `RefractiveRadianceScalingTest`
+rows A and B assert.
 
 ## 3. The exact measurement
 
@@ -115,7 +179,7 @@ Lambertian floor ρ=0.5 at y=0.05 inside a water box y∈[0, 0.3]
 | delta omni, **submerged** | before | 0.000000 | 0.095650 | 0.000000 | 0.102916 | – |
 | delta omni, **submerged** | after | 0.000000 | **0.054075** | 0.000000 | **0.056977** | – |
 | tiny sphere emitter, **submerged** | before | 0.004666 | – | 0.004786 | 0.007252 | **1.554** |
-| tiny sphere emitter, **submerged** | after | 0.004690 | – | 0.004857 | **0.004908** | **1.047** |
+| tiny sphere emitter, **submerged** | after | 0.004690 | – | 0.004857 | **0.004908** | **1.046** |
 
 Read the rows in pairs:
 
@@ -130,7 +194,7 @@ Read the rows in pairs:
   n² within VCM's noise on a delta caustic — and still agree with each
   other (0.949 after, 0.929 before).
 - **Area / submerged** is the headline: VCM was **1.554× PT** and is now
-  **1.047×**. PT and BDPT barely moved (0.004666 → 0.004690,
+  **1.046×** (`0.004908/0.004690 = 1.0465`, rounds to 1.046). PT and BDPT barely moved (0.004666 → 0.004690,
   0.004786 → 0.004857 — both inside their own run-to-run spread), which
   is the cancellation of §2 doing exactly what it is supposed to. This
   probe's emitter radius is 0.03 — a different scene from the two
@@ -151,7 +215,7 @@ Read the rows in pairs:
   PreRenderSetup` log line each run prints its own `effective_radius`
   from the scene's photon density that run), not for a fixed physical
   constant — a rerun at a different seed base or a different sample
-  count will land at a different point inside that band, not on 1.047
+  count will land at a different point inside that band, not on 1.046
   exactly.
 
 ## 5. `tidal_stones` — the debt-30 "BDPT vs VCM ≈ 20×" is TWO separate things
@@ -206,6 +270,26 @@ contributes nothing under the water either way.
 > per companion wavelength the way non-delta `EvalBSDFAtVertexNM`
 > is; see the comments at both sites for the scope of the guarantee.
 >
+> **Bounded error when the broadcast is wrong (review round 2,
+> 2026-09-12).** PT's termination block and BDPT's
+> `HasDispersiveDeltaVertex` (~line 6866) both rely on
+> `IMaterial::GetSpecularInfoNM` to detect a dispersive delta crossing
+> and stop broadcasting the hero's factor to companions that shouldn't
+> share it. Neither `CoatedSPF` nor `CompositeSPF` overrides
+> `GetSpecularInfoNM`, so wrapping a DISPERSIVE dielectric in a
+> `coated_material` or `composite_material` defeats that detection —
+> the hero's etaScale reaches every companion regardless of its own
+> IOR. The per-crossing error this produces is exactly
+> `(η_hero/η_companion)² − 1`: for an illustrative crown-glass-class
+> Δn ≈ 0.02 across 400–700 nm (e.g. 1.50 vs 1.52) that is ≈2.6–2.7%; for
+> an illustrative high-dispersion flint-class Δn ≈ 0.07 (e.g. 1.78 vs
+> 1.85) it climbs to ≈7.4–8.0%. These are illustrative index pairs
+> chosen to match ordinary optical-glass dispersion magnitudes, not a
+> measured catalog curve — the point is that the error is bounded by
+> real Δn, not unbounded, and it compounds once per crossing on a
+> multi-bounce path through such a wrapper. See the matching comment at
+> `PathTracingIntegrator.cpp`'s dispersive-delta-termination site.
+>
 > **IMPORTANCE-mode walk** — light subpaths, photon tracers, SMS photon
 > seeds, detector-sphere rigs. No factor.
 >
@@ -251,8 +335,38 @@ is exact even across a layered SPF's internal chain:
 | `Materials/CoatedSPF.cpp` | 1 | — | no | CLOSED layer: enters and leaves the same medium, so the consumer-side factor is 1, and the coat's own exit-side 1/η² is already inside `CoatedLayer.h`'s closed form |
 | `Materials/CompositeSPF.cpp` | 4 | — | no | telescoping (§6); an up-exit gets 1, a down-exit gets the single net factor |
 | `Materials/FabricSPF.cpp` | 2 | — | no | pure re-dispatch to the weave BSDF in a fibre frame; no medium change |
+| `Materials/PerfectRefractorSPF.cpp` | 1 push + 1 pop (mirrors `DielectricSPF`'s entry/exit shape) | RADIANCE (consumer-applied, same as `DielectricSPF`) | **yes, via the consumer** | a delta dielectric with no Fresnel-modulated tau/scattering knobs — otherwise the same push-on-entry / pop-on-exit shape as `DielectricSPF`, so it gets the debt-30 factor the same way, from the same consumer sites (§6.1's integrator/shader-op rows), not from any change inside this file itself. No test in the tree exercises `perfectrefractor_material` for the eta² factor specifically: `SPFBSDFConsistencyTest`, `IORStackSeedingRegressionTest`, and `ConnectionLegalityTest` all use it, but for BSDF/pdf/connection-legality correctness, not radiance scaling — the many caustic/SMS scenes under `scenes/Tests/` that use `perfectrefractor_material` are visual, not asserted. |
+| `Materials/PolishedSPF.cpp` | 0 (19 `ior_stack` reads, all `.top()` for Fresnel pricing) | — | no | transmits into the SAME object's substrate (a coat-over-substrate material), never pushing a new medium onto the stack — net factor 1 by construction, the same shape as `CoatedSPF`'s closed layer. |
+| `Materials/BioSpecSkinSPF.cpp` | 0 | — | no | carries `ior_stack` only as an unused interface parameter (`Scatter`/`ScatterNM` never read it) — **not** `containsCurrent()`-gated the way `GenericHumanTissueSPF` is (see the next row); grep confirms zero non-signature references. |
+| `Materials/GenericHumanTissueSPF.cpp` | 0 (2 `containsCurrent()` reads) | — | no | reads `ior_stack.containsCurrent()` to branch its own scattering behaviour but never pushes or pops — no medium-change site here for the debt-30 factor to apply to. |
+| `Materials/WeaveSPF.cpp` | 0 | — | no | pure pass-through to its own `ScatterImpl`, same "thin transmission, no stack change" shape as `FabricSPF` above. |
 | `DetectorSpheres/*` | 5 | FLUX | no | measurement rigs; comment only |
-| `Materials/SubSurfaceScatteringSPF.cpp`, `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.h` (`Sw`) | 0 | — | no — **untouched — telescoping argument; PBRT convention differs; NAMED RESIDUAL** | the whole subsurface-scattering family never pushes/pops the IOR stack (BSSRDF entry/exit is priced by the diffusion-profile importance sampling in the integrator, not by a stack transition), so the debt-30 factor is exactly 1 for it, unconditionally. See §10 for the two competing readings of whether that is correct. |
+| `Materials/SubSurfaceScatteringSPF.cpp` (front-face BSSRDF entry), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.h` (`Sw`) | 0 | — | no — **untouched — telescoping argument; PBRT convention differs; NAMED RESIDUAL** | the front-face BSSRDF entry path (`BSSRDFSampling::SampleEntryPoint`, `RandomWalkSSS`) never touches the IOR stack (grep confirms zero `IORStack` references in either) — BSSRDF entry/exit through the SAME interface is priced by the diffusion-profile importance sampling in the integrator, not by a stack transition, so the debt-30 factor is exactly 1 there. This is telescoping applying to an entry-and-exit-through-the-same-interface path, not "SSS never touches the stack" — see the next row. |
+| `Materials/SubSurfaceScatteringSPF.cpp` back-face exit branch (RGB ~line 300-313, NM ~line 503-513) | 2 | RADIANCE / IMPORTANCE (mode-agnostic) | no — **arguably already correct; untested — NAMED RESIDUAL** | this branch (`// Also emit exit refraction if possible (for light subpaths that need to escape the medium)`) DOES touch the stack: `exitRay.ior_stack = new IORStack(ior_stack); exitRay.ior_stack->pop();`. It only fires when the walk is already inside the object at a back-face hit — reachable because `SubSurfaceScatteringMaterial::GetSpecularInfo` reports `canRefract = true` (`SubSurfaceScatteringMaterial.h` ~119, ~133), so `IORStackSeeding` (~194-209) tracks it and will seed a camera or light source starting inside an SSS object. When the walk was never actually seeded inside the object (the ordinary case: camera outside, BSSRDF entered and exited through the SAME point), this pop is a logged no-op — `IORStack::pop`'s find-and-destroy silently fails because the object was never pushed. When the walk WAS seeded inside (a submerged SSS object, or a camera embedded in one), this pop is a REAL exit transition and the debt-30 consumer-side factor at `RadianceEtaScale` fires exactly as it would for any other material's push/pop. No existing test exercises this branch with a seeded-interior walk. See §10.1(a)/(b). |
+
+**Is this table exhaustive over `src/Library/Materials`?** (review round
+2, 2026-09-12) `grep -ln 'ior_stack\|IORStack' src/Library/Materials/*.cpp`
+returns 24 files. Of those, only four actually push or pop the stack
+(`grep -c 'ior_stack->push\|ior_stack\.push\|->pop()\|new IORStack'` > 0):
+`DielectricSPF.cpp` and `TranslucentSPF.cpp` (both covered at length in
+§2/§6/§6.1's `TranslucentSPF` discussion and C1 of this round's fix, not
+repeated as a table row here), `PerfectRefractorSPF.cpp` and
+`SubSurfaceScatteringSPF.cpp` (both rows above). Of the remaining 20, six
+are covered by name above (`CoatedSPF`, `CompositeSPF`, `FabricSPF`,
+`PolishedSPF`, `BioSpecSkinSPF`, `GenericHumanTissueSPF`, `WeaveSPF` —
+seven, not six) because they read the stack (`.top()` or
+`containsCurrent()`) without ever changing it. The remaining files
+(`AshikminShirleyAnisotropicPhongSPF`, `CoatedBRDF`, `CookTorranceSPF`,
+`GGXSPF`, `HairBSDF`, `IMaterial.cpp`, `IsotropicPhongSPF`,
+`LambertianSPF`, `OrenNayarSPF`, `PerfectReflectorSPF`, `SchlickSPF`,
+`SheenSPF`, `WardAnisotropicEllipticalGaussianSPF`,
+`WardIsotropicGaussianSPF`) carry `ior_stack` only as an `ISPF::Scatter`/
+`ScatterNM` interface parameter, pass it through unexamined, and never
+push, pop, or query it — the same shape as `BioSpecSkinSPF` above, not
+individually called out because none of them is a refractive or
+subsurface material where a reader might otherwise expect a site. This
+table is exhaustive over every file that TOUCHES `ior_stack` in
+`src/Library/Materials`.
 
 ### 6.2 One hop deeper (audit-by-bug-pattern)
 
@@ -262,7 +376,24 @@ is exact even across a layered SPF's internal chain:
   throughput. `StoreThroughput` writes the already-scaled `beta` onto the
   vertex, and connections, splats, VCM merges (`v.throughput` /
   `v.throughputNM` in `VCMIntegrator.cpp`) and MLT re-evaluation all read
-  that field. `BDPTVertexRIGRebuildTest` (68 checks) is green.
+  that field. `BDPTVertexRIGRebuildTest` (68 checks) is green. The one
+  place that DOES touch a stored vertex's throughput after the fact is
+  `BDPTIntegrator::RecomputeSubpathThroughputNM` (~line 6770; callers
+  `BDPTSpectralRasterizer.cpp` ~line 407, `MLTSpectralRasterizer.cpp`
+  ~line 476, `VCMSpectralRasterizer.cpp` ~line 498) — the HWSS companion-
+  wavelength re-evaluation that adjusts a hero-wavelength subpath's
+  vertices to a companion wavelength. It rewrites `v.throughputNM` IN
+  PLACE, but only MULTIPLICATIVELY, by a per-vertex ratio
+  `companionValue / heroValue` (emission ratio at the light endpoint,
+  BSDF ratio at a non-delta surface vertex, exactly 1.0 at a delta
+  vertex). It never recomputes the debt-30 etaScale factor from scratch
+  — that factor was already folded into `v.throughputNM` when the hero
+  wavelength's subpath was originally generated, and a multiplicative
+  ratio update cannot remove a factor already baked into the value it
+  multiplies. So the hero's etaScale survives into every companion
+  wavelength's adjusted throughput unchanged, which is exactly why §6's
+  hero-only broadcast convention is safe here: this function is not a
+  second, independent per-wavelength pricing of the interface crossing.
 - **No pdf machinery reads `kray`.** `grep -l kray` over
   `src/Library/Shaders` returns the two integrators, the four shader ops
   and `BDPTIntegrator.h`'s `KrayValue` accessor — `MISWeight`,
@@ -394,10 +525,29 @@ document.
 
 ### 10.1 Named residual: the subsurface-scattering family (§6.1)
 
-`SubSurfaceScatteringSPF`, `RandomWalkSSS`, and `BSSRDFSampling::Sw`
-never touch the IOR stack (§6.1), so the debt-30 factor is exactly 1 on
-every subsurface-scattering path, unconditionally. Two views on whether
-that is correct are open, not reconciled by this work:
+**Corrected (review round 2, 2026-09-12): "never touches the IOR stack" is
+only true of the front-face BSSRDF entry path.** `RandomWalkSSS` and
+`BSSRDFSampling::Sw` never touch it (grep confirms zero references), and
+neither does `SubSurfaceScatteringSPF`'s front-face entry branch — that
+is the ordinary case this section discusses: a BSSRDF entered and exited
+through the SAME interface, for which the debt-30 factor is exactly 1 by
+the telescoping argument below. But `SubSurfaceScatteringSPF`'s BACK-FACE
+exit branch (RGB `SubSurfaceScatteringSPF.cpp` ~line 312-313, NM
+~line 512-513) DOES push and pop: `exitRay.ior_stack = new
+IORStack(ior_stack); exitRay.ior_stack->pop();`. That branch only fires
+for a walk already inside the object at a back-face hit, which is
+reachable — `SubSurfaceScatteringMaterial` reports `canRefract = true`
+(§6.1's table), so `IORStackSeeding` will seed a camera or light source
+that starts inside an SSS object exactly as it would for a dielectric.
+For the ordinary case (walk never seeded inside; entry and exit through
+the same point) the object was never pushed, so this pop is a logged
+no-op and the factor stays 1 — the code is arguably right there, by the
+same telescoping argument. It is a REAL `(n_sss/n_out)²` exit factor only
+for a walk seeded inside the object, which no existing test exercises.
+The residual below is scoped to that telescoping argument (entry and
+exit through the same interface); it does not claim anything about the
+untested seeded-interior case. Two views on whether the telescoping
+scope itself is correct are open, not reconciled by this work:
 
 - **(a) Telescoping argument (the position this fix takes no side
   against).** A BSSRDF is a closed-form solution to the diffusion
@@ -414,17 +564,44 @@ that is correct are open, not reconciled by this work:
   stack" is not a gap; it is the same telescoping collapsed into a
   single opaque closed form instead of two explicit consumer-side
   multiplies.
-- **(b) PBRT-v3's own implementation disagrees with reading (a)
-  literally.** `SeparableBSSRDFAdapter::f` (PBRT-v3 §11.4.3) multiplies
-  the profile evaluation by `(1 - Fr(cosThetaI)) / (etaI * etaI)` when
-  the integrator's transport mode is Radiance — an explicit η² divide
-  that mirrors exactly the kind of factor this debt-30 fix adds at every
-  other RADIANCE-mode dielectric interface. If PBRT's own radiance-mode
-  BSSRDF needs that divide, the pure telescoping-to-1 argument in (a) is
-  incomplete for at least PBRT's formulation, and RISE's BSSRDF may be
-  undercounting light exiting a subsurface material whose *surrounding*
-  medium is not air (e.g. skin submerged in water) by the same n² this
-  whole fix is about.
+- **(b) PBRT's own implementations don't obviously agree with the pure
+  telescoping-to-1 reading in (a) either — corrected, review round 2,
+  2026-09-12; the citation below is from memory of the sources,
+  UNVERIFIED here (no PBRT source tree was checked out this round) and
+  should be re-verified against the actual PBRT source before anyone
+  leans on it.** An earlier draft of this row cited a single
+  `SeparableBSSRDFAdapter::f` that DIVIDES by `eta²` in
+  `TransportMode::Radiance`. As best recollected: PBRT-v3's
+  `SeparableBSSRDFAdapter::f` (§11.4.3) instead MULTIPLIES —
+  `f *= bssrdf->eta * bssrdf->eta` — under `TransportMode::Radiance`; a
+  DIVIDE form, `f /= Sqr(eta)`, appears in PBRT-v4 but on a different
+  class, `NormalizedFresnelBxDF::f`, with `eta` there being the
+  interior/exterior *relative* index rather than a plain absolute IOR.
+  These are not restatements of the same fact — a v3-vs-v4 multiply/
+  divide flip, on top of different callers with different `eta`
+  conventions, is exactly the kind of detail that inverts a sign if
+  transcribed carelessly. **Whichever of the two is the accurate
+  citation, both are non-trivial η-dependent factors in a radiance-mode
+  BSSRDF/Fresnel evaluation that the pure telescoping-to-1 argument in
+  (a) does not obviously account for**, so (a) is not settled as
+  correct by default. Given the citation uncertainty, this residual's
+  conclusion is direction-neutral: **RISE's SSS convention may differ
+  from PBRT's by η² in EITHER direction (too bright or too dim) once the
+  surrounding medium is not air — settle it with the observable below,
+  not with the literature citation.**
+
+Also note a scope gap in the telescoping argument itself: it is stated
+for a path that enters AND exits a BSSRDF through the same interface (a
+sensor and every light source outside the medium). It says nothing about
+a sensor or a light source seeded INSIDE the medium (one crossing, no
+telescoping partner) — which is exactly the untested back-face-exit case
+in §6.1's second SSS row. That gap is moot for `RandomWalkSSS` /
+`BSSRDFSampling::Sw` specifically, because the *entry* path
+(`SampleEntryPoint`) is front-face-only by construction — a BSSRDF walk
+cannot be entered from inside the medium — so the "sensor/source inside
+the medium" case can only ever reach `SubSurfaceScatteringSPF`'s
+separate back-face exit branch (§6.1), not the BSSRDF diffusion-profile
+path this telescoping argument is about.
 
 **The observable that would settle it**, not yet run: author the same
 semi-infinite-slab geometry two ways — once as a `dielectric_material`
@@ -436,12 +613,84 @@ the shell) AND an air camera (outside it, water or another medium
 between camera and shell) with everything else held fixed. If (a) is
 right, the two materials' brightness ratio between the submerged-camera
 and air-camera renders should be IDENTICAL for both materials (both
-telescope to net 1 the same way — no relative shift). If (b) is right,
-the `subsurfacescattering_material` render will be dimmer than the
-explicit-interior render by the same n² factor the air-camera dielectric
-case already exhibits, and by an amount that tracks the surrounding
-medium's index. Neither render has been produced; this residual is
-open.
+telescope to net 1 the same way — no relative shift). If RISE's BSSRDF
+diverges from PBRT's convention as described in (b), the
+`subsurfacescattering_material` render will differ from the
+explicit-interior render by some power of n that tracks the surrounding
+medium's index, in a direction that isn't pinned down without checking
+the actual PBRT source. Neither render has been produced; this residual
+is open.
+
+### 10.2 Named residual: spatially-varying `ior` mismatch (review round 2)
+
+`RadianceEtaScale` (`Utilities/IORStack.h`) reads only `before.top()` and
+`after->top()` — the values recorded on the IOR stack at push/pop time.
+`DielectricSPF` and `PerfectRefractorSPF` instead price their own
+Fresnel/Snell calculation with the `ior` painter's value FRESHLY
+RE-FETCHED at the current hit (`DielectricSPF.cpp` ~line 384
+`pRIndex->GetValuesAt(ri)`; the equivalent `newIOR` parameter shape in
+`PerfectRefractorSPF.cpp`). For a spatially UNIFORM `ior` painter (every
+scene in this document's measurements, and every canonical SMS/dielectric
+test scene in the tree) those two reads are the same number and the
+distinction is invisible. For an `ior` bound to a spatially-varying
+`IScalarPainter` — a graded-index object, or any procedural `ior` texture
+— the ENTRY hit's pushed value and the EXIT (or an interior bounce's)
+freshly-fetched value can differ, and this helper's throughput factor
+would then be computed from a different index than the one the SPF's own
+Fresnel transmittance was priced against. A full entry-to-exit trip
+still telescopes to the physically correct net factor (the same
+mismatched entry value cancels against itself at the matching exit), so
+this is NOT a bug for the ordinary "object seen from outside, light
+outside too" case documented as CORRECT above — it is a residual only for
+contributions gathered at a vertex INSIDE such an object (an NEE
+connection or a bounce before the walk exits). No scene or test in the
+tree currently uses a spatially-varying `ior` painter, so this is
+unexercised, not measured to be wrong. Full detail in the
+`RadianceEtaScale` doc comment (`IORStack.h`).
+
+### 10.3 Named residuals: two pre-existing `TranslucentSPF` bugs (review round 2, NOT fixed here)
+
+Found while auditing the exit-loop fix (C1) for this round; both are
+independent of the debt-30 eta² factor and are recorded here, and as
+debt 31 in [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md), rather
+than fixed in this pass.
+
+- **(a) Guided-direction IOR-stack leak.** The translucent exit lobe
+  (`front`, type `eRayDiffuse`, non-delta) is admitted by
+  `GuidingSupportsSurfaceSampling` (`PathTracingIntegrator.cpp`
+  ~line 553; `BDPTIntegrator.cpp` ~line 161 — both accept any non-delta
+  `eRayDiffuse`/`eRayReflection` scatter) even though it carries a
+  POPPED `ior_stack` (`TranslucentSPF.cpp` ~line 248). When the path
+  guiding field intercepts that vertex and substitutes a guided
+  direction for the SPF's own sampled one, PT sets
+  `traceIorStack = &iorStack` (`PathTracingIntegrator.cpp` ~line 3205,
+  ~line 3260) — the PRE-scatter stack, not the SPF's `pS->ior_stack` —
+  so the exit lobe's pop never reaches the continuation ray, and the
+  translucent object silently stays on the stack. Every subsequent hit
+  on that object then reads `containsCurrent() == true` and
+  misclassifies as "exiting" (`bEntering == false`) when it should be
+  entering fresh. Failing input: any scene with path guiding enabled
+  and a `translucent_material` object, once training has populated
+  enough of the guiding field to intercept a sample at that vertex.
+- **(b) `ScatteredRayContainer` overflow leak in the per-channel loop.**
+  `TranslucentSPF.cpp`'s per-channel loops (~line 162-168 on entry; the
+  fixed exit-side loop has the analogous allocation shape) `new`
+  a fresh `IORStack` each iteration and call `scattered.AddScatteredRay`
+  immediately. `AddScatteredRay` clears the local ray's `delete_stack`
+  to false ONLY on success (`ScatteredRayContainer.cpp` ~line 42); on
+  overflow (`freeidx >= kCapacity`) it returns false and leaves
+  `delete_stack` exactly as it found it. So: iteration `i` succeeds
+  (`trans.delete_stack` flips to false), iteration `i+1` overwrites
+  `trans.ior_stack` with a freshly allocated pointer WITHOUT resetting
+  `delete_stack` back to true, and if THAT `AddScatteredRay` call then
+  fails, the new stack is neither stored in the container (so nothing
+  there will free it) nor freed by `trans`'s eventual destructor
+  (because `delete_stack` is still stuck at false from the prior
+  success) — an orphaned heap allocation. Failing input: any scene that
+  drives `ScatteredRayContainer` close to `kCapacity` before reaching a
+  `translucent_material`'s per-channel branch, which is reachable
+  through `CompositeSPF`/`CoatedSPF` re-dispatch adding their own lobes
+  to the same container ahead of a wrapped `TranslucentSPF`.
 
 ## 11. Cross-references
 

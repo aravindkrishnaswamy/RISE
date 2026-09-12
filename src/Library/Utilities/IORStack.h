@@ -251,17 +251,43 @@ namespace RISE
 	//! `rIndex`, `exitIOR`, or similar locals).  For every topology this
 	//! file's header documents as CORRECT (single closed volumes, nested
 	//! different-material volumes, concentric same-material volumes,
-	//! disjoint same-material objects), the two always agree, because
-	//! `top()` after the SPF's own `push`/`pop` IS the medium it computed
-	//! against.  Under this file's documented OVERLAPPING-SOLIDS
-	//! pathology, they can silently disagree: `pop()`'s `find_and_destroy`
-	//! can remove an entry that is NOT at the top (a slab-from-planes
-	//! object hit downstream of another refractor), leaving `top()`
-	//! reading a medium the SPF never actually refracted from or into. In
-	//! that case this function can return exactly 1 -- or the wrong ratio
-	//! -- for a real medium change DielectricSPF priced between two other
-	//! indices.  Scenes that avoid that pathology (see the file header's
-	//! guidance) are unaffected.
+	//! disjoint same-material objects) with a spatially UNIFORM ior, the
+	//! two agree, because `top()` after the SPF's own `push`/`pop` IS the
+	//! medium it computed against.  Two known exceptions (review round 2,
+	//! 2026-09-12 added the second):
+	//!
+	//! - **Overlapping solids.**  Under this file's documented
+	//!   OVERLAPPING-SOLIDS pathology, they can silently disagree:
+	//!   `pop()`'s `find_and_destroy` can remove an entry that is NOT at
+	//!   the top (a slab-from-planes object hit downstream of another
+	//!   refractor), leaving `top()` reading a medium the SPF never
+	//!   actually refracted from or into. In that case this function can
+	//!   return exactly 1 -- or the wrong ratio -- for a real medium
+	//!   change DielectricSPF priced between two other indices.  Scenes
+	//!   that avoid that pathology (see the file header's guidance) are
+	//!   unaffected.
+	//! - **Spatially varying `ior`.**  At an EXIT hit, the SPF prices its
+	//!   own Snell/Fresnel calculation with the `ior` painter's value AT
+	//!   THAT EXIT HIT (`DielectricSPF.cpp` ~line 384's
+	//!   `pRIndex->GetValuesAt(ri)`, re-fetched fresh on every `Scatter`/
+	//!   `ScatterNM` call; the same shape recurs in
+	//!   `PerfectRefractorSPF.cpp`'s `newIOR` parameter), while
+	//!   `before.top()` here is whatever value was PUSHED at the object's
+	//!   ENTRY hit and has sat on the stack ever since. For a uniform
+	//!   `ior` those are the same number. For an `ior` bound to a
+	//!   spatially-varying `IScalarPainter` (e.g. a graded-index object,
+	//!   `ior` 1.4 at the entry point and 1.6 at the exit point), they
+	//!   differ: this helper's `(1.4/eta_after)^2` does not match the
+	//!   `(1.6/eta_after)^2` the SPF actually priced its Fresnel
+	//!   transmittance against. A full entry-to-exit trip still
+	//!   telescopes to the correct net factor regardless (the SAME
+	//!   mismatched entry value cancels against itself at the matching
+	//!   exit, by the identity in §6 of
+	//!   docs/REFRACTIVE_RADIANCE_SCALING.md), so only contributions
+	//!   GATHERED AT AN INTERIOR VERTEX (a bounce or NEE connection while
+	//!   still inside the graded-index object, before it exits) carry the
+	//!   mismatch between the priced Fresnel value and this helper's
+	//!   throughput factor.
 	//!
 	//! @param before  the walk's current IOR stack at the scattering vertex
 	//! @param after   the scattered ray's stack, or NULL when the SPF left

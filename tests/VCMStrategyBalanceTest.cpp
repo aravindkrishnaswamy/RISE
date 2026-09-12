@@ -954,7 +954,8 @@ static void TestOrthographicCamera()
 // VCM's per-run auto-radius merge-density drift (see this row's own
 // `effective_radius` log line each run), not to pin the ratio to a
 // fixed constant -- docs/REFRACTIVE_RADIANCE_SCALING.md §4 quotes a
-// DIFFERENT scene's diagnostic probe (radius 0.03) at 1.047, and
+// DIFFERENT scene's diagnostic probe (radius 0.03) at 1.046
+// (0.004908/0.004690 = 1.0465, rounds to 1.046), and
 // RefractiveRadianceScalingTest's row C (same 0.08 radius as this row)
 // reads 1.0125 in the same re-measurement; all three are independent
 // samples inside this band, not the same number three ways.

@@ -5405,6 +5405,29 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// krayNM to every companion at delta lobes by convention (predating
 		// this factor).  Applied before RR so the survival probability
 		// sees the throughput the path actually carries.
+		//
+		// BOUNDED ERROR when this broadcast is wrong (review round 2,
+		// 2026-09-12): the unterminated case above is not merely
+		// theoretical -- when a coated_material or composite_material
+		// wraps a DISPERSIVE dielectric, neither CoatedSPF nor
+		// CompositeSPF overrides GetSpecularInfoNM, so this PT
+		// termination block never fires for it (the base-class default
+		// reports non-specular/invalid), and BDPT's
+		// HasDispersiveDeltaVertex (BDPTIntegrator.cpp ~6866) likewise
+		// never sees a dispersive delta vertex through that wrapper --
+		// the hero's etaScale is broadcast to every companion
+		// wavelength regardless of its own IOR. The resulting per-
+		// crossing error is exactly (n_hero/n_companion)^2 - 1: for a
+		// crown-glass-class dielectric (illustrative Delta-n ~ 0.02
+		// across 400-700nm, e.g. n=1.50 vs 1.52) that's about 2.6-2.7%;
+		// for a high-dispersion flint-class dielectric (illustrative
+		// Delta-n ~ 0.07, e.g. n=1.78 vs 1.85) it climbs to about
+		// 7.4-8.0%. These are illustrative index pairs, not a specific
+		// glass catalog's measured curve -- the point is the error
+		// SCALES with the wrapped dielectric's dispersion, is bounded by
+		// ordinary optical Delta-n magnitudes (not unbounded), and
+		// compounds once per crossing on a multi-bounce path through
+		// such a wrapper.
 		{
 			const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );
 			if( etaScale != Scalar( 1 ) ) {

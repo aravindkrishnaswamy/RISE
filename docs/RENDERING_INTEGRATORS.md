@@ -974,7 +974,8 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   the radiance side and came out n^2 bright.  That is what the ledger
   had recorded as "VCM 1.53x over PT on a submerged floor": on the slab
   probe (Lambertian floor inside a water box, tiny sphere emitter and
-  camera both in air) VCM/PT went **1.554 -> 1.047** while PT and BDPT
+  camera both in air) VCM/PT went **1.554 -> 1.046** (0.004908/0.004690
+  = 1.0465, rounds to 1.046) while PT and BDPT
   moved by less than their own run-to-run spread (0.004666 -> 0.004690
   and 0.004786 -> 0.004857).  With a delta omni instead, PT and BDPT
   are exactly 0 both before and after (structural), and the two
@@ -1031,7 +1032,56 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   iteration instead of `trans.kray[i] = p[i]`, zeroing channels 1 and 2
   of that lobe for any `translucent_material` with a non-uniform
   per-channel Phong N; fixed to match the sibling exit-side loop, guard
-  extended in `tests/TranslucentIORStackTest.cpp`.
+  extended in `tests/TranslucentIORStackTest.cpp`.  Review round 2
+  (2026-09-12) found and fixed the EXIT side's sibling of the same
+  pattern (~line 230-231): `front.kray = 0; front.kray[i] = ...` reset
+  every iteration, but `front` (the ray that actually leaves the object)
+  is added to `scattered` only once, after the loop, so only the last
+  channel (B) survived — see the C1 fix commit and the same test's
+  updated coverage.
+
+- **Debt 31 (OPEN, review round 2, 2026-09-12) — two pre-existing
+  `TranslucentSPF` bugs found while auditing the exit-loop fix above,
+  NOT fixed this round.**  Both are reachable independently of debt 30;
+  neither involves the eta^2 factor.
+  1. **Guided-direction IOR-stack leak.**  The translucent exit lobe
+     (`front`, `ScatteredRay::eRayDiffuse`, non-delta) passes
+     `GuidingSupportsSurfaceSampling`'s type/delta check
+     (`PathTracingIntegrator.cpp` ~line 553, `BDPTIntegrator.cpp`
+     ~line 161 both admit any non-delta `eRayDiffuse`/`eRayReflection`
+     scatter), even though it carries a POPPED `ior_stack`
+     (`TranslucentSPF.cpp` ~line 248). When the path guiding field
+     replaces the SPF-sampled direction with a guided one, PT sets
+     `traceIorStack = &iorStack` (`PathTracingIntegrator.cpp` ~line 3205
+     and ~line 3260) — the PRE-scatter stack, not the SPF's own
+     `pS->ior_stack` — so the exit lobe's pop is silently dropped and
+     the translucent object stays on the stack. Every later hit then
+     misclassifies as "exiting" (`bEntering` false) when it should read
+     as already outside.  Failing input: any scene with path guiding
+     enabled and a `translucent_material` object, once the guiding
+     field has trained enough to intercept a sample at that vertex.
+  2. **`ScatteredRayContainer` overflow leak in the per-channel loop.**
+     `TranslucentSPF.cpp`'s per-channel loops (~line 162-168 entry
+     side; the exit side has the analogous shape) allocate
+     `trans.ior_stack = new IORStack(...)` fresh each iteration and call
+     `scattered.AddScatteredRay(trans)`. `AddScatteredRay` clears
+     `delete_stack` to false ONLY on success
+     (`ScatteredRayContainer.cpp` ~line 42); on overflow it returns
+     false and leaves `delete_stack` untouched. So: iteration succeeds
+     (delete_stack -> false on the local `trans`), the NEXT iteration
+     overwrites `trans.ior_stack` with a freshly `new`'d pointer without
+     resetting `delete_stack` back to true, and if THAT `AddScatteredRay`
+     call fails (container full), the new stack is never stored in the
+     container AND the local `trans`'s destructor won't free it either
+     (because `delete_stack` is still false from the PRIOR success) —
+     an orphaned allocation. Failing input: any scene that drives
+     `ScatteredRayContainer` near `kCapacity` before reaching a
+     `translucent_material`'s per-channel branch — reachable through
+     `CompositeSPF`/`CoatedSPF` re-dispatch, which can add several lobes
+     of their own to the same container before delegating to a wrapped
+     `TranslucentSPF`.
+  Both residuals are recorded in
+  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.
 
 
 ## 8. Cross-references

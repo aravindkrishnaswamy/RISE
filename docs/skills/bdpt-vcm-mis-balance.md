@@ -433,17 +433,35 @@ minutes to check; do them before any integrator instrumentation:
    read 1.554x PT on a submerged Lambertian floor.) Radiance is not
    invariant across a refractive interface -- `L / n^2` is -- so a
    RADIANCE-mode walk owes `(eta_before / eta_after)^2` at every medium
-   change. **The reason this masquerades as an MIS bug is that it
-   cancels for PT and BDPT and does not cancel for merges, photon maps,
-   light-tracing splats or transparent-shadow NEE**: an eye path that
-   enters the medium (x 1/n^2) and exits it again toward the emitter
-   (x n^2) nets x1, so PT and BDPT agree with each other and with
-   themselves whether or not the factor is applied, while any strategy
-   whose light side carries FLUX crosses the interface only once on the
-   radiance side and comes out n^2 bright. The ratio you measure sits
-   somewhere between 1 and n^2 depending on how much MIS mass the
-   flux-side strategy carries, which looks exactly like a partial
-   weighting error.
+   change. **Corrected (review round 2, 2026-09-12): for THIS
+   topology -- an emitter (or a directly-lit surface) sealed inside the
+   medium, camera outside -- PT and BDPT do NOT cancel.** The eye path
+   crosses the interface exactly ONCE (camera, in air, straight to the
+   in-medium emitter) with no return crossing to cancel against, so
+   EVERY integrator under-reads by the same missing factor: pre-fix,
+   `RefractiveRadianceScalingTest` row A's red-proof shows PT, BDPT, VCM
+   AND the legacy `pixelpel_rasterizer` all reading `T * L` (0.312 at
+   ior 1.33) instead of the correct `T * L / n^2` (0.176) -- a uniform
+   n^2-too-bright failure across every rasterizer, not an inter-
+   integrator disagreement. That is exactly why this row is
+   REFERENCE-FREE (a closed form, not a PT-vs-VCM comparison): with
+   every integrator wrong by the same amount, there is no "good"
+   integrator here to compare against.
+   **Don't confuse this with the DIFFERENT, cancelling topology** where
+   the light AND the camera are both OUTSIDE the medium and only an
+   intervening surface (not the emitter) is submerged (RISE's own
+   `VCMStrategyBalanceTest` topology H / `BDPTStrategyBalanceTest`
+   topology J): there, the eye path crosses the interface TWICE --
+   inward to reach the submerged surface (x 1/n^2), then back outward
+   toward the emitter (x n^2) -- and the two cancel for PT and BDPT,
+   which is what makes THAT case masquerade as an MIS bug (VCM's merge
+   and BDPT's light-tracing splat only cross once, on the flux side, so
+   they read n^2 too bright while PT/BDPT read correctly by accident).
+   That two-crossing cancellation is a genuinely different mechanism
+   from this cause's one-crossing, no-cancellation, in-medium-emitter
+   case -- see `REFRACTIVE_RADIANCE_SCALING.md` §2 and §4 for the
+   cancelling topology's own numbers, and don't reuse this row's "PT/BDPT
+   cancel" language for it.
    **The one-minute check, and it is reference-free:** put a
    `lambertian_luminaire_material` quad (`exitance` 1, `scale` 1, so
    `L = 1/pi`) inside a `dielectric_material` box (`scattering 1000000`)
