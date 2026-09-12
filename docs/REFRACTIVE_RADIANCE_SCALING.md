@@ -374,7 +374,7 @@ is exact even across a layered SPF's internal chain:
 | `Materials/GenericHumanTissueSPF.cpp` | 0 (2 `containsCurrent()` reads) | — | no | reads `ior_stack.containsCurrent()` to branch its own scattering behaviour but never pushes or pops — no medium-change site here for the debt-30 factor to apply to. |
 | `Materials/WeaveSPF.cpp` | 0 | — | no | pure pass-through to its own `ScatterImpl`, same "thin transmission, no stack change" shape as `FabricSPF` above. |
 | `DetectorSpheres/*` | 5 | FLUX | no | measurement rigs; comment only |
-| `Materials/SubSurfaceScatteringSPF.cpp` (front-face), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.{h,cpp}` | 0 stack transitions in complete-event helpers | exterior to same exterior | no transport change | RISE samples both boundaries together; their basic-radiance factors telescope to one. PBRT applies complementary factors in its surface and BSSRDF stages. DL-04 measures the convention; separate normalization/index/support residuals are DL-48/DL-49/DL-52. See §10.1. |
+| `Materials/SubSurfaceScatteringSPF.cpp` (front-face), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.{h,cpp}` | 0 stack transitions in complete-event helpers | exterior to same exterior | no transport change | RISE samples both boundaries together; their basic-radiance factors telescope to one. PBRT applies complementary factors in its surface and BSSRDF stages. DL-04 measures the convention; normalization was subsequently fixed in DL-48; index/support residuals remain DL-49/DL-52. See §10.1. |
 | `Materials/SubSurfaceScatteringSPF.cpp` inside fallback (`Scatter` / `ScatterNM`) | 2 pop sites | standalone non-absorbing SPF | no transport change | Shipped SSS materials set `bAbsorbBackFace=true`, so membership-selected inside hits return before these sites. The default standalone SPF allows this branch; its destination-IOR read before popping is DL-51. Initial seeding alone does not make it reachable in shipped materials. See §10.1. |
 
 **Is this table exhaustive over `src/Library/Materials`?** (review round
@@ -606,10 +606,10 @@ eta-square mutations supply the discriminating check.
 
 Matched nonzero physical coefficients do not generally imply equal
 Burley-profile and explicit-volume reflectance. The conservative control
-uses zero absorption. Sw normalization (DL-48), non-air relative-index
-handling (DL-49), spectral random-walk survival (DL-50), planar probe
-support (DL-52), and recursive environment MIS (DL-53) remain distinct
-questions. No eta factor should be used to hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
+uses zero absorption. Sw normalization was subsequently corrected in
+[DL-48](DL48_SSS_NORMALIZATION.md). Non-air relative-index handling
+(DL-49), spectral random-walk survival (DL-50), planar probe support
+(DL-52), and recursive environment MIS (DL-53) remain distinct questions. No eta factor should be used to hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
 for source evidence, geometry controls, executed eta mutations and gate
 counters. The closure pins the absence of an unmatched factor; it does not
 claim exact SSS energy conservation or spectral/non-air material equality.

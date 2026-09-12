@@ -1,6 +1,6 @@
 // DL-04 complete-event eta convention consistency pin.
 // Coarse bounds reject an unmatched eta square; they do not certify exact
-// SSS energy conservation. DL48/49/52/53 and finite walk caps remain separate.
+// SSS energy conservation. DL49/52/53 and finite walk caps remain separate.
 //
 // Exact guards: the loaded camera samples the same slab top in every model,
 // the requested modern material/medium is bound, and every captured RGB and
