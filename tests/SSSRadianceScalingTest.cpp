@@ -24,6 +24,10 @@
 // --curved explicitly restores curved geometry (last shape flag wins).
 // --volume-cap N / --rw-cap N / --path-cap N default to 256 / 512 / 1024.
 // --air-only implies --probe and runs all three models' air baseline only.
+// --helper-only implies --probe, loads only the diffusion air scene, and
+// samples the actual BSSRDF helper without any rasterization. Its trials use
+// distinct local RNG seeds. --helper-attempts N defaults to 256 and also
+// controls the coverage diagnostic attached to ordinary diffusion renders.
 // An actual SampleEntryPoint probe records valid and near-top samples; curved
 // diffusion requires near-top coverage so it cannot pass on surface Fresnel
 // alone. This coverage guard does not establish energy normalization.
@@ -57,6 +61,7 @@
 #include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Rendering/PathTracingPelRasterizer.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -94,8 +99,10 @@ const char* TopologyName( Topology t )
 struct Config {
 	unsigned int samples = 1024, trials = 4, seedBase = 1000;
 	unsigned int volumeCap = 256, rwCap = 512, pathCap = 1024;
+	unsigned int helperAttempts = 256;
 	double surfaceIOR = 1.5, slabRadius = 40;
 	bool probe = false, outerFresnel = false, curved = true, airOnly = false;
+	bool helperOnly = false;
 };
 unsigned int passCount = 0, failCount = 0, renderIndex = 0;
 bool Check( bool condition, const std::string& label )
@@ -127,8 +134,9 @@ bool ParseArgs( int argc, char** argv, Config& cfg )
 		else if( arg == "--curved" ) cfg.curved = true;
 		else if( arg == "--flat" ) cfg.curved = false;
 		else if( arg == "--air-only" ) { cfg.airOnly = true; cfg.probe = true; }
+		else if( arg == "--helper-only" ) { cfg.helperOnly = true; cfg.probe = true; }
 		else if( arg == "--samples" || arg == "--trials" || arg == "--seed" ||
-			arg == "--volume-cap" || arg == "--rw-cap" || arg == "--path-cap" ) {
+			arg == "--volume-cap" || arg == "--rw-cap" || arg == "--path-cap" || arg == "--helper-attempts" ) {
 			if( ++i == argc ) return false;
 			unsigned int value = 0;
 			if( !ParseUInt( argv[i], value ) ) return false;
@@ -137,7 +145,8 @@ bool ParseArgs( int argc, char** argv, Config& cfg )
 			else if( arg == "--seed" ) cfg.seedBase = value;
 			else if( arg == "--volume-cap" ) cfg.volumeCap = value;
 			else if( arg == "--rw-cap" ) cfg.rwCap = value;
-			else cfg.pathCap = value;
+			else if( arg == "--path-cap" ) cfg.pathCap = value;
+			else cfg.helperAttempts = value;
 		} else if( arg == "--ior" || arg == "--slab-radius" ) {
 			if( ++i == argc ) return false;
 			errno = 0;
@@ -288,21 +297,60 @@ bool DiagnoseBSSRDFCoverage( IJobPriv& job, const Config& cfg, const std::string
 	slab->IntersectRay(hit, 1000, true, false, false);
 	if( !Check(hit.geometric.bHit && Near(hit.geometric.ptIntersection.z, 0),
 		label + ": central primary slab hit for BSSRDF coverage") ) return false;
-	constexpr unsigned int attempts = 256;
-	unsigned int valid = 0, nearTop = 0;
+	const unsigned int attempts = cfg.helperAttempts;
+	unsigned int valid = 0, nearTop = 0, zOnlyNearTop = 0;
+	RGBChannels spatialSum{}, fullSum{};
 	for( unsigned int attempt = 0; attempt < attempts; ++attempt ) {
 		const BSSRDFSampling::SampleResult result = BSSRDFSampling::SampleEntryPoint(
 			hit.geometric, slab, slab->GetMaterial(), sampler, 0);
+		// Rejected helper samples contribute zero to the unconditional
+		// estimator. This is a physical sampling outcome, not replacement of
+		// an invalid/nonfinite image. Every successful sample is checked.
 		if( !result.valid ) continue;
 		if( !Check(std::isfinite(result.entryPoint.x) && std::isfinite(result.entryPoint.y) &&
 			std::isfinite(result.entryPoint.z) && std::isfinite(result.pdfSurface) && result.pdfSurface > 0 &&
-			std::isfinite(result.weight.r) && std::isfinite(result.weight.g) && std::isfinite(result.weight.b),
+			std::isfinite(result.entryGeomNormal.x) && std::isfinite(result.entryGeomNormal.y) && std::isfinite(result.entryGeomNormal.z) &&
+			std::isfinite(result.weight.r) && std::isfinite(result.weight.g) && std::isfinite(result.weight.b) &&
+			std::isfinite(result.weightSpatial.r) && std::isfinite(result.weightSpatial.g) && std::isfinite(result.weightSpatial.b),
 			label + ": successful BSSRDF helper sample has finite point, weight and positive PDF") ) return false;
+		const RGBChannels spatial = { result.weightSpatial.r, result.weightSpatial.g, result.weightSpatial.b };
+		const RGBChannels full = { result.weight.r, result.weight.g, result.weight.b };
+		for( size_t channel = 0; channel < 3; ++channel ) {
+			spatialSum[channel] += spatial[channel];
+			fullSum[channel] += full[channel];
+		}
 		++valid;
-		if( result.entryPoint.z > -1 ) ++nearTop;
+		if( result.entryPoint.z > -1 ) {
+			++zOnlyNearTop;
+			const Vector3 displacement = Vector3Ops::mkVector3(result.entryPoint, hit.geometric.ptIntersection);
+			const double distanceSquared = Vector3Ops::Dot(displacement, displacement);
+			if( !Check(std::isfinite(distanceSquared), label + ": finite helper displacement") ) return false;
+			if( distanceSquared < 25 && result.entryGeomNormal.z > 0.9 ) ++nearTop;
+		}
 	}
 	std::cout << "BSSRDF_COVERAGE " << label << " attempts=" << attempts << " valid=" << valid <<
-		" nearTop=" << nearTop << " (entryPoint.z>-1; actual helper diagnostic)" << std::endl;
+		" nearTop=" << nearTop << " (entryPoint.z>-1, distance_from_central_hit<5, entryGeomNormal.z>0.9)" <<
+		" zOnlyNearTop=" << zOnlyNearTop << " (legacy z-only diagnostic; can include far sidewalls)" << std::endl;
+	if( cfg.helperOnly ) {
+		const ISubSurfaceDiffusionProfile* profile = slab->GetMaterial()->GetDiffusionProfile();
+		if( !Check(profile != nullptr, label + ": diffusion profile for measured exit transmission") ) return false;
+		const double ftExit = profile->FresnelTransmission(1, hit.geometric);
+		if( !Check(std::isfinite(ftExit) && ftExit > 0, label + ": finite positive measured FtExit denominator") ) return false;
+		RGBChannels spatialMean{}, fullMean{};
+		for( size_t channel = 0; channel < 3; ++channel ) {
+			spatialMean[channel] = spatialSum[channel] / attempts;
+			fullMean[channel] = fullSum[channel] / attempts;
+			if( !Check(std::isfinite(spatialMean[channel]) && std::isfinite(fullMean[channel]),
+				label + ": finite unconditional helper mean") ) return false;
+		}
+		const double meanJ = spatialMean[0] / ftExit;
+		if( !Check(std::isfinite(meanJ), label + ": finite measured mean J") ) return false;
+		std::cout << "HELPER_MEAN " << label << " seed=" << cfg.seedBase + renderIndex <<
+			" denominator_all_attempts=" << attempts <<
+			" spatial_RGB=(" << spatialMean[0] << ',' << spatialMean[1] << ',' << spatialMean[2] << ')' <<
+			" full_RGB=(" << fullMean[0] << ',' << fullMean[1] << ',' << fullMean[2] << ')' <<
+			" FtExit=" << ftExit << " mean_J=spatial_red/FtExit=" << meanJ << std::endl;
+	}
 	if( cfg.curved ) return Check(nearTop > 0, label + ": curved BSSRDF helper reaches near top");
 	// Known flat probe-origin failure remains visible; do not turn a binding
 	// check or the finite reflected-surface signal into an SSS-activity claim.
@@ -354,6 +402,33 @@ struct OwnedInput {
 	std::filesystem::path path;
 	~OwnedInput() { std::error_code ec; std::filesystem::remove( path, ec ); }
 };
+bool RunHelperOnly( const Config& cfg )
+{
+	std::error_code ec;
+	std::filesystem::create_directories("rendered/sss_radiance_scaling", ec);
+	if( !Check(!ec, "helper-only: create relative input directory") ) return false;
+	OwnedInput input{ std::filesystem::path("rendered/sss_radiance_scaling") /
+		("helper_" + std::to_string(::getpid()) + ".RISEscene") };
+	std::ofstream stream(input.path);
+	stream << BuildScene(Model::DiffusionSSS, Topology::Air, cfg, false);
+	stream.close();
+	if( !Check(!stream.fail(), "helper-only: write complete scene input") ) return false;
+	IJobPriv* job = nullptr;
+	if( !Check(RISE_CreateJobPriv(&job) && job, "helper-only: create job") ) { safe_release(job); return false; }
+	if( !Check(job->LoadAsciiSceneViaCst(input.path.string().c_str()), "helper-only: parse native v7 scene") ||
+		!CheckGeometry(*job, Model::DiffusionSSS, Topology::Air, cfg, "helper-only/diffusion_air", false) ) {
+		safe_release(job); return false;
+	}
+	job->RemoveRasterizerOutputs();
+	for( unsigned int trial = 0; trial < cfg.trials; ++trial ) {
+		if( !DiagnoseBSSRDFCoverage(*job, cfg, "helper-only/diffusion_air/trial=" + std::to_string(trial)) ) {
+			safe_release(job); return false;
+		}
+		++renderIndex; // Next trial constructs a fresh, distinctly seeded local RNG.
+	}
+	safe_release(job);
+	return true;
+}
 bool Render( Model model, Topology topology, const Config& cfg, RGBChannels& mean, const std::string& label, bool lightingControl = false )
 {
 	std::error_code ec;
@@ -436,20 +511,29 @@ int main( int argc, char** argv )
 {
 	Config cfg;
 	if( !ParseArgs( argc, argv, cfg ) ) {
-		std::cerr << "Usage: SSSRadianceScalingTest [--probe] [--samples square_N] [--trials K] [--seed N] [--ior N] [--outer-fresnel] [--curved|--flat] [--slab-radius R] [--volume-cap N] [--rw-cap N] [--path-cap N] [--air-only]\n";
+		std::cerr << "Usage: SSSRadianceScalingTest [--probe] [--samples square_N] [--trials K] [--seed N] [--ior N] [--outer-fresnel] [--curved|--flat] [--slab-radius R] [--volume-cap N] [--rw-cap N] [--path-cap N] [--air-only] [--helper-only] [--helper-attempts N]\n";
 		return 2;
 	}
 	std::cout << std::setprecision(10) << "SSSRadianceScalingTest: PROVISIONAL " << (cfg.probe ? "PROBE" : "MEASUREMENT") <<
 		"; no eta-normalization assertion\nsamples=" << cfg.samples << " trials=" << cfg.trials <<
 		" seed_base=" << cfg.seedBase << " surface_ior=" << cfg.surfaceIOR <<
 		" sigma_a=0 sigma_s=2 g=0 film=16x16 max_path_depth=" << cfg.pathCap <<
-		" volume_cap=" << cfg.volumeCap << " rw_cap=" << cfg.rwCap <<
-		"\nmatrix=" << (cfg.airOnly ? "air_only (probe; no observer ratios)" : "all_three_topologies") << "\nshape=" <<
+		" volume_cap=" << cfg.volumeCap << " rw_cap=" << cfg.rwCap << " helper_attempts=" << cfg.helperAttempts <<
+		"\nmatrix=" << (cfg.helperOnly ? "helper_only (diffusion air; no rasterization)" :
+			(cfg.airOnly ? "air_only (probe; no observer ratios)" : "all_three_topologies")) << "\nshape=" <<
 		(cfg.curved ? "ellipsoid" : "flat_box") << " slab_radius=" << cfg.slabRadius <<
 		(cfg.curved ? " radii=(R,R,10), center_z=-10\nouter=" : " (unused for flat box: dimensions=80x80x20, center_z=-10)\nouter=") <<
 		(cfg.outerFresnel ? "Fresnel dielectric water (additive reflected environment affects outside camera)" :
 		"ideal nonreflecting IOR enclosure, n=1.33") <<
-		"\nLibc seeds vary per render; fixed pixel Sobol scrambles repeat. Dispersion is descriptive only, not QMC uncertainty; worker scheduling prevents bitwise reproducibility.\n" << std::flush;
+		"\n" << std::flush;
+	if( cfg.helperOnly ) {
+		std::cout << "Helper trials use separately seeded local IndependentSampler streams; no pixel Sobol samples or rasterization.\n";
+		if( !RunHelperOnly(cfg) ) return 1;
+		std::cout << "Helper guards passed: " << passCount << " failed: " << failCount <<
+			". Unconditional helper measurements complete; no energy acceptance band.\n";
+		return failCount == 0 ? 0 : 1;
+	}
+	std::cout << "Libc seeds vary per render; fixed pixel Sobol scrambles repeat. Dispersion is descriptive only, not QMC uncertainty; worker scheduling prevents bitwise reproducibility.\n";
 	// Cheap air-furnace lighting/capture control before the expensive matrix.
 	Config controlConfig = cfg;
 	controlConfig.samples = 4;
