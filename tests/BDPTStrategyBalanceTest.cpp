@@ -63,6 +63,20 @@
 //         — pins the eta^2 CANCELLATION on an in-and-out eye path.
 //         Green before and after the debt-30 fix, by construction; its
 //         VCM twin (VCMStrategyBalanceTest topology H) is the red one.
+//      K. AIR ceiling patch above a delta water box, diffuse floor and
+//         sphere emitter both SUBMERGED (debt 30 review round 2, C2)
+//         — a CONSISTENCY PIN, not a red row: the eye-side s=0/s=1
+//         strategies (continuing from the ceiling patch, crossing INTO
+//         the water -- one RADIANCE-mode crossing, so debt 30's eta^2
+//         factor applies) and the light-tracing t=1 splat (a light
+//         subpath crossing OUT of the water to reach the same ceiling
+//         vertex -- IMPORTANCE-mode, no factor) are two different MIS
+//         strategies for the SAME physical path, on the two sides of
+//         debt 30's asymmetric rule, and already have to reconcile via
+//         ordinary MIS.  Green before and after this round's
+//         TranslucentSPF fix, which this scene never exercises; its VCM
+//         twin is VCMStrategyBalanceTest topology I (the two share the
+//         same scene text).
 //
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
@@ -1464,6 +1478,247 @@ static void TestSubmergedFloorCancellation()
 		kRasterizerPTSubmergedJ, kRasterizerBDPTSubmergedJ );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology K: AIR ceiling patch above a delta water box; a Lambertian
+// FLOOR and a small sphere EMITTER both SUBMERGED (debt 30 review
+// round 2, C2).  BDPT twin of VCMStrategyBalanceTest topology I --
+// see that file's header comment on this same scene for the full
+// derivation of why it exercises the eta^2 MIS-combination case rather
+// than an isolated cancellation (J) or an isolated red row (VCM's H).
+//
+// For BDPT specifically: s=0 (eye subpath BSDF-samples the emitter
+// directly, no light vertex) and s=1 (NEE from a submerged eye vertex
+// -- the floor -- to the emitter) both continue the eye subpath from
+// the ceiling patch INTO the water, a RADIANCE-mode crossing that
+// carries debt 30's (eta_before/eta_after)^2 = 1/1.33^2 factor.  The
+// t==1 light-tracing splat connects a light subpath vertex (the
+// ceiling patch, reached by refracting OUT of the water from the
+// emitter, optionally via the floor) directly to the camera; that
+// crossing happened while building the light subpath in IMPORTANCE
+// mode, so it carries no factor by construction.  Both are BDPT
+// strategies for the SAME path family, combined by ordinary MIS at the
+// shared ceiling vertex.
+//
+// GREEN BEFORE AND AFTER this round's TranslucentSPF exit-loop fix
+// (C1) -- this scene's materials (lambertian_material,
+// dielectric_material, lambertian_luminaire_material) never touch
+// TranslucentSPF.  What this pins is the MIS combination itself: a
+// future change that applies the eta^2 factor asymmetrically between
+// the eye-side continuation and the light-tracing splat (e.g. adding
+// it to the splat by mistake, or dropping it from the eye side) would
+// turn this row red while leaving J (an isolated in-and-out
+// cancellation) and VCM's H (an isolated merge, no competing eye-side
+// strategy at all) unaffected -- neither of those two rows exercises
+// this specific cross-strategy combination.
+//
+// REFERENCE.  Plain `pathtracing_pel_rasterizer`, `transparent_shadows`
+// left at its default (false, and this scene does not set it): PT
+// reaches the emitter and the submerged floor purely by BSDF sampling
+// through the delta interface, the same family of scatter events
+// BDPT's eye-side strategies use here, so it is unbiased.
+//
+// SPP / SE (this round's own measurement, same scene VCMStrategyBalanceTest
+// topology I re-derives independently): 2048 spp, two renders,
+// `srand` reseeded per run by the CLI's own `srand(GetMilliseconds())`:
+//   run 1 mean 0.012498317, run 2 mean 0.012497488 -- 0.0066% apart
+// (at 512 spp the two-run spread was 0.095%) -- comfortably under the
+// "SE < 1%" bar.
+//
+// MEASURED RATIOS (this round, two renders each for BDPT to confirm
+// stability):
+//   PT   mean 0.012496226 (reference)
+//   BDPT mean 0.012631816, 0.012620802               -> ratio 1.008-1.011
+//   p99  0.021637727, 0.021515656 vs PT's 0.020320892 -> ratio 1.059-1.065
+//   max  0.03451538, 0.034210205 vs PT's 0.0317688     -> ratio 1.079-1.086
+// (VCM's ratios on the identical scene are in the twin topology I
+// comment: 0.977-0.978 mean, 0.855-0.863 p99, 0.698-0.712 max -- listed
+// there, not re-derived here, because this file only renders BDPT.)
+//
+// TOLERANCES.  Kept at this file's shared 8% mean band (kSubmergedTolerances
+// below is topology J's; this row does not need its loosened 60%/4x
+// tail bands -- there is no tiny-emitter firefly tail here, camera
+// never resolves the emitter's disk directly -- so it uses its own,
+// tighter 30%/100% tail bands with headroom over the measured 6-9%
+// (p99) and 8% (max) spread).
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedCeilingK =
+	"film\n"
+	"{\n"
+	"\twidth 64\n"
+	"\theight 64\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0.4 0.15\n"
+	"\tlookat 0 0.6 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 60.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo_a\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse_a\n"
+	"\treflectance pnt_albedo_a\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_a\n"
+	"\tpta -0.6 0.6 0.6\n"
+	"\tptb 0.6 0.6 0.6\n"
+	"\tptc 0.6 0.6 -0.6\n"
+	"\tptd -0.6 0.6 -0.6\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_a\n"
+	"\tgeometry quad_a\n"
+	"\tmaterial mat_diffuse_a\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo_b\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse_b\n"
+	"\treflectance pnt_albedo_b\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_b\n"
+	"\tpta -1 0.05 1\n"
+	"\tptb 1 0.05 1\n"
+	"\tptc 1 0.05 -1\n"
+	"\tptd -1 0.05 -1\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_b\n"
+	"\tgeometry quad_b\n"
+	"\tmaterial mat_diffuse_b\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_water\n"
+	"\tior 1.33\n"
+	"\ttau 1.0\n"
+	"\tscattering 1000000\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname geo_water\n"
+	"\twidth 2.2\n"
+	"\theight 0.3\n"
+	"\tdepth 2.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname water\n"
+	"\tgeometry geo_water\n"
+	"\tmaterial mat_water\n"
+	"\tposition 0 0.15 0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit\n"
+	"\texitance pnt_emit\n"
+	"\tscale 5.0\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"sphere_geometry\n"
+	"{\n"
+	"\tname geo_emit\n"
+	"\tradius 0.06\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit\n"
+	"\tgeometry geo_emit\n"
+	"\tmaterial mat_emit\n"
+	"\tposition 0 0.18 0\n"
+	"}\n";
+
+static const char* kRasterizerPTCeilingK =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 2048\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/bdpt_balance_pt_ceiling_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerBDPTCeilingK =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 1024\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/bdpt_balance_bdpt_ceiling_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const Tolerances kCeilingTolerancesK{ 0.08, 0.30, 1.00 };
+
+static void TestSubmergedCeilingMISCombination()
+{
+	RunTopologyTest( "air ceiling patch, floor + emitter both submerged (eta^2 MIS combination, debt 30 review round 2)",
+		std::string( kSceneSubmergedCeilingK ), kCeilingTolerancesK,
+		kRasterizerPTCeilingK, kRasterizerBDPTCeilingK );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -1478,6 +1733,7 @@ int main()
 	TestThinLensWideOpenDefocused();
 	TestThinLensBladedAperture();
 	TestSubmergedFloorCancellation();
+	TestSubmergedCeilingMISCombination();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
