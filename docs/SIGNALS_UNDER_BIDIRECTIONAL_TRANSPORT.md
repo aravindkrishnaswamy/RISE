@@ -361,6 +361,39 @@ round 1, finding F2). The convexity control constant is a 21×21
 camera-frustum quadrature of the per-hit value, cross-checked against 33×33
 to within 1 % (the per-hit "spin" bias converges from 21 on).
 
+**Reference-completeness gate on the masked layer (supervisor ruling,
+debt 28 camera-aperture review round 2, 2026-09-11).** The masked
+`R_E,mask / R_B,mask` invariant assumes PT's own bias is
+material-independent between the E and B variants at the masked
+pixels — i.e. that whatever PT gets wrong there, it gets wrong the
+same way on both variants, so the ratio-of-ratios cancels it. That
+assumption fails when the masked pixel set is reached only through a
+transport class PT's NEE cannot sample at all (on `tidal_stones`, a
+delta light refracted through the scene's dielectric water): PT's
+response there is direct-light-only on BOTH variants while BDPT's and
+VCM's is the full response, so `R_B,mask` itself — the ratio of
+integrator I's own NEUTRAL-variant masked mean to PT's — sits far from
+1 for a reason that has nothing to do with the signal under test, not
+because PT is a bad reference for the SIGNAL but because PT is an
+INCOMPLETE reference for that transport at all. `RunLayer2Showcase`
+now checks `| R_B,mask − 1 | > 0.5` per (showcase, integrator) before
+trusting the PT-referenced masked assertion; a row that trips it prints
+a labelled `REFERENCE INCOMPLETE ON MASK` line, is excluded from the
+PT-referenced band, and is counted in its own summary counter instead
+of being silently folded into a pass, a fail, or the existing blow-up
+skip. Whenever a showcase trips this gate on either integrator, the
+test asserts a PT-INDEPENDENT invariant instead — BDPT's and VCM's own
+masked E/B self-ratios compared to each other, using the same
+PT-derived mask (a fixed pixel selector) and the same adaptive-K
+sub-render machinery, so PT never enters the asserted quantity at all.
+On `tidal_stones` this triggers for BOTH integrators (BDPT's masked
+`R_B` ≈ 2.8–3.0×, VCM's ≈ 57.5–58×) and the BDPT↔VCM cross-check itself
+sits at the edge of its own 20 % band (−0.1996 to −0.2354 across
+independent runs) — a real, open BDPT-vs-VCM disagreement on that
+masked transport, not a measurement artifact, tracked as new data under
+debt 27 in RENDERING_INTEGRATORS.md. Per the ruling, a cross-check that
+fails is reported, not loosened.
+
 ## 7. Cost gate (§ performance-work-with-baselines)
 
 Scene: `plank_closeup` (signals drive colour, roughness and relief; the

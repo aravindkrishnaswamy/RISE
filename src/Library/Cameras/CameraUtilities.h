@@ -115,9 +115,9 @@ namespace RISE
 			/// beyond) at deeper depths -- a PRE-EXISTING overrun
 			/// (`maxVolumeBounce` defaults to 64, so ordinary scenes
 			/// can reach it) that debt 28 only extends, from 4 lanes
-			/// on stream 48 to 6 (RGB) or 6+S (spectral).  See
-			/// docs/RENDERING_INTEGRATORS.md §7 for the open item; it
-			/// is ledgered as its own debt, not fixed here.
+			/// on stream 48 to 6 (RGB) or 6+S (spectral).  Ledgered as
+			/// debt 29 in docs/RENDERING_INTEGRATORS.md §7, not fixed
+			/// here.
 			APERTURE_CURRENT_STREAM
 		};
 

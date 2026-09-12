@@ -320,7 +320,7 @@ static void TestKNumStreamsMinimum()
 	// walk's `StartStream( 16u + depth )` reaches stream 48 itself
 	// at eye depth 32 (and aliases further stream-48+ lanes beyond
 	// that) -- a pre-existing overrun this test does not probe;
-	// see docs/RENDERING_INTEGRATORS.md §7.
+	// ledgered as debt 29 in docs/RENDERING_INTEGRATORS.md §7.
 	// ------------------------------------------------------------
 	{
 		PSSMLTSampler* pS = MakeSampler( 99991, 1.0 );
