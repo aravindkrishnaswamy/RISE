@@ -7,16 +7,25 @@ produced by re-checking every heading in `CLOTH_FABRIC_DESIGN.md` §15,
 `CROSS_OBJECT_PROXIMITY_DESIGN.md` §10, `RENDERING_INTEGRATORS.md` §7 (debts
 27-31), `REFRACTIVE_RADIANCE_SCALING.md` §10, and `IMPROVEMENTS.md` against
 the code and tests in this tree. Original sweep: debt-sweep worktree, HEAD
-`14bc2cb6`, dated 2026-09-12. **Gap-closure pass** (this revision): same
+`14bc2cb6`, dated 2026-09-12. **Gap-closure pass** (previous revision): same
 worktree, starting HEAD `c287f5fb`, also dated 2026-09-12 — an independent
 verifier found coverage gaps in the first pass (missing items across all
 five design-doc ledgers, stale line-number citations, and one row,
-DL-14, that was wrong on the facts) and this pass closes them; see the
-`## Counts` section for the delta. Every verdict below is cited to a
-file:symbol, test, or commit — no verdict is taken on the source document's
-word alone for anything marked OPEN, and every item enumerated in any of
-the seven source ledgers now appears in exactly one section below (OPEN,
-Already resolved, Doc-rot, or Not-a-debt).
+DL-14, that was wrong on the facts) and that pass closed them. **Final
+completion pass** (this revision): same worktree, starting HEAD
+`56992663`, also dated 2026-09-12 — a second independent verifier found
+the tree otherwise accurate and two remaining gaps: one IMPROVEMENTS.md
+heading (the GGX low-F0 grazing gain) not yet carried into the table as
+DL-37, and six WETNESS_COAT_DESIGN.md §12 items marked resolved in their
+source doc that had not yet been independently re-verified against code
+and tests the way `## Already resolved` requires (now DL-R18..DL-R23, one
+of which — DL-R20 — turned out to be resolved-in-code but only indirectly
+tested, noted as such rather than silently closed); see `## Counts` for
+the delta. Every verdict below is cited to a file:symbol, test, or commit
+— no verdict is taken on the source document's word alone for anything
+marked OPEN, and every item enumerated in any of the seven source ledgers
+now appears in exactly one section below (OPEN, Already resolved,
+Doc-rot, or Not-a-debt).
 
 Sorted by class (physics-bias/energy-loss, precision, API/bridge gap,
 coverage/test gap, perf, doc-rot), S before M before L within a class (the
@@ -33,6 +42,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-03 | RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3 | Path-guiding substitutes a direction at `TranslucentSPF`'s exit lobe without carrying its popped `ior_stack`; the translucent object silently stays on the IOR stack, later hits misclassify entering/exiting | OPEN-confirmed | `TranslucentSPF.cpp` ~line 305-307/438-440 (`front.ior_stack->pop()`); `PathTracingIntegrator.cpp` ~3205/3260 sets `traceIorStack = &iorStack` (pre-scatter stack); `BDPTIntegrator.cpp:161`/`PathTracingIntegrator.cpp:553` `GuidingSupportsSurfaceSampling` admits `eRayDiffuse` unconditionally, confirmed by reading all four sites this sweep | M | physics-bias | user-visible (path guiding + `translucent_material` only) |
 | DL-04 | REFRACTIVE_RADIANCE_SCALING.md §10.1 | Whether `SubSurfaceScatteringSPF`/`RandomWalkSSS`/`BSSRDFSampling::Sw` correctly omit the debt-30 eta^2 factor (telescoping argument) or need it (PBRT-style eta^2 divide) is undecided; direction not pinned down | OPEN-confirmed | Doc's own two-reading analysis (§10.1(a)/(b)); the disambiguating render (matched dielectric-shell-with-medium vs `subsurfacescattering_material`, submerged vs air camera) has not been produced — confirmed absent from `tests/` this sweep | M | physics-bias | user-visible (SSS in non-air medium only) |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
+| DL-37 | IMPROVEMENTS.md "GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned" | `ggx_material` in `eFresnelSchlickF0` mode goes over unity at grazing incidence (ρ = 1.1573 at 80°) because the glTF diffuse-energy split weights the diffuse lobe by the angle-flat `1 − max(F0)` while the Schlick specular term it is meant to complement rises toward 1 as `cos θ → 0` | OPEN-confirmed | `tests/LayeredWhiteFurnaceTest.cpp:1788-1789` (config 17, "White GGX-PBR base alone", `kPostureKnownFailure`) measures ρ = {0.9988, 0.9994, 1.0251, 1.1573} at θ = {0°,30°,60°,80°}; mechanism read directly in `GGXBRDF::albedo` (`GGXBRDF.cpp:514-520`: `diffColor * max(0, 1 − maxF0) + F(θ)`, doc comment at 508-513 stating the Schlick branch evaluates Fresnel at the actual outgoing cosine while diffuse keeps the constant glTF split) and reproduced at sample time in `GGXSPF::Scatter`/`ScatterNM` (`GGXSPF.cpp:216-219`, six analogous sites at 214/260/364/500/545/638) and `GGXBRDF::value`/`valueNM` (nine analogous sites at 209/276/330/399/451/490/514/595/638) — same `1 − maxF0` constant used at every one, confirmed this sweep | M | physics-bias | user-visible (low-F0 GGX at grazing incidence) |
 | DL-05 | CLOTH_FABRIC_DESIGN.md §15 item 27 | Two-layer gapped weave with the light outside: PT under-reads BDPT/VCM by 1.28-1.55x because PT's binary NEE cannot see through the far layer's delta gap lobe; single layer or light inside is exact | OPEN-confirmed | Doc's own measured table (box/planes, gap 0.1/0.3); mechanism traced to `RayCaster::CastShadowRayTransmittance` (definition starts `RayCaster.cpp:2062`, re-derived this sweep — the previously cited ~1980 was drift) being gated to perfect-specular dielectrics only, confirmed present as described this sweep | L | physics-bias | user-visible |
 | DL-06 | IMPROVEMENTS.md §"VCM env-IBL" (Session 9-13) / CLAUDE.md "Env-IBL deficit" entry | VCM env+mesh strict-tolerance residual (env-S0 <-> env-NEE MIS partition violation) — Session 13 explicitly decided to STOP and accept the disc-area baseline rather than fix it; `plank_closeup`'s VCM 0.55x (RENDERING_INTEGRATORS.md debt 28) is the same known bias class, not a new bug | OPEN-confirmed (deprioritized, not fixed) | `docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md` "Session 13 outcome"; `IMPROVEMENTS.md` lines ~1030-1046; still true in this tree — no VCM env-branch SA-MIS migration commit exists (`git log --oneline -- src/Library/Shaders/VCMIntegrator.cpp` shows no such commit after Session 13) | L | physics-bias | user-visible |
 | DL-07 | CLOTH_FABRIC_DESIGN.md §15 item 17 / WETNESS_COAT_DESIGN.md §12 item 13 | `OrenNayarBRDF::hemisphericalAlbedo` over-estimates (measured ~12.6% high at roughness 0.5, ~25.6% at 1.0), which over-amplifies `fabric_material`'s energy-subtraction and `coated_material`'s Saunderson recycling denominator; not fixable in either wrapper, needs its own bake | OPEN-confirmed | `OrenNayarBRDF.cpp:148-190`'s own doc comment states the bias and that "no clean closed form exists to correct it with"; unchanged this sweep | L | physics-bias | user-visible (rough Oren-Nayar under fabric/coat) |
@@ -49,7 +59,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-31 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | A mesh neighbour is a SHEET (no inside test), unlike every solid family which clamps its signed field at zero; `interior(r)` did not close this either, since a mesh contributes 0 to it too | OPEN-confirmed | Doc's own §10 analysis; no closed-mesh containment test exists on `Object.cpp`'s `DistanceToSurface`/`ObjectManager::DeepestOtherContainment` paths, confirmed this sweep | M | precision | user-visible (a receiver buried inside a closed mesh neighbour reads no contact) |
 | DL-16 | CLOTH_FABRIC_DESIGN.md §15 item 4 | `ggx_material.tangent_rotation` stays Color-pipe only; the promised Scalar-pipe alias (so a `fabric_material`'s `weave_rotation` and its substrate's own rotation can share one painter) was never added | OPEN-confirmed | `ChunkParserRegistry.cpp:4495` — `tangent_rotation`'s only descriptor entry is `ParameterPipe::Color`, `p.description` states "a scalar_painter does NOT bind here"; no second `tangent_rotation`-family scalar parameter exists (grepped this sweep) | S | API/bridge gap | user-visible (authoring: can't drive both rotations from one field) |
 | DL-17 | CLOTH_FABRIC_DESIGN.md §15 item 12 | glTF `anisotropy_rotation` is still dropped at import, even though the expression VM's `atan2` (confirmed present) makes the sketched fix executable today | OPEN-confirmed | `GLTFSceneImporter.cpp:1300-1307`'s comment stands; `ChunkParserRegistry.cpp:4560`'s `anisotropy_rotation` descriptor still reads "Phase 1 reads but does not yet APPLY the rotation" — read directly this sweep | S | API/bridge gap | user-visible (glTF import only) |
-| DL-23 | CLOTH_FABRIC_DESIGN.md §15 item 16 (tail) | `coated_material`'s substrate allowlist does not admit `fabric_material`/`weave_material`, so a coat-over-fabric composition (e.g. waxed canvas) is unreachable | OPEN-confirmed | `CoatedMaterial.h:112-113` (`SubstrateAllowlistText()`: "lambertian_material, orennayar_material, ggx_material, pbr_metallic_roughness_material") and `IsSupportedSubstrate` `:120-134` (the `dynamic_cast` allowlist) — `fabric_material`/`weave_material` absent from both, confirmed this sweep | S | API/bridge gap | user-visible (authoring: can't compose a coat over fabric) |
+| DL-23 | CLOTH_FABRIC_DESIGN.md §15 item 16 (tail) / IMPROVEMENTS.md "Clearcoat over `fabric_material` — not composable, unowned" | `coated_material`'s substrate allowlist does not admit `fabric_material`/`weave_material`, so a coat-over-fabric composition (e.g. waxed canvas) is unreachable | OPEN-confirmed | `CoatedMaterial.h:112-113` (`SubstrateAllowlistText()`: "lambertian_material, orennayar_material, ggx_material, pbr_metallic_roughness_material") and `IsSupportedSubstrate` `:120-134` (the `dynamic_cast` allowlist) — `fabric_material`/`weave_material` absent from both, confirmed this sweep; IMPROVEMENTS.md's entry adds that this is a named glTF-import consequence (`KHR_materials_sheen` + `KHR_materials_clearcoat` together lose the clearcoat layer, warn-and-skip named in `GLTFSceneImporter.cpp`) | S | API/bridge gap | user-visible (authoring: can't compose a coat over fabric) |
 | DL-26 | WETNESS_COAT_DESIGN.md §12 item 6c | `add_wetness` and `add_wear` mutually exclude on one material; worn-and-wet, the flagship subject, is unreachable | OPEN-confirmed | `src/Library/Agent/AgentSession.cpp` ~8021/8092/8328 ("add_wear / add_wetness cannot currently be combined on one..."), confirmed present this sweep | S | API/bridge gap | user-visible (agent-authored worn-and-wet materials) |
 | DL-28 | WETNESS_COAT_DESIGN.md §12 item 9 | Water-absorption spectral files must be pre-converted to a transmittance base because `dielectric_material`'s `tau` is `pow(tau,distance)`, not `exp(-sigma*distance)`; a pasted-in published sigma_a table is silently wrong | OPEN-confirmed | `DielectricSPF.cpp:318-323` (`pow(tauVals.v[i], distance)`), confirmed unchanged this sweep; no runtime validation or warning exists for a mismatched-convention input file | S | API/bridge gap | user-visible (authoring trap only, silent) |
 | DL-32 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `standard_object`'s `scale` written with ONE number (e.g. `scale 0.35`) derives to a degenerate transform silently — no diagnostic, the object vanishes from the render, and `DistanceToSurface`'s `sigma_min<=0` gate then refuses every proximity query against it | OPEN-confirmed | `ChunkParserRegistry.cpp`'s `standard_object` `scale` descriptor (`DoubleVec3`, no partial-fill diagnostic); `Object.cpp:1708` warns only for an ANISOTROPIC transform's `proximity()`, not a degenerate one — confirmed no parser-side warning for a partially-specified `DoubleVec3` this sweep | S | API/bridge gap | user-visible (silent scene-authoring trap) |
@@ -88,6 +98,12 @@ the heading's word for it.
 | DL-R15 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior()` saw a TLAS-backed scene's object set through the stale AABB snapshot while `proximity()` walked the live tree — an asymmetry that over-painted a just-added 7th object to `interior()` only | CLOSED-by-code | `ObjectManager.cpp:861` (`DeepestOtherContainment` now uses `BVH::ForEachContainingPoint`, the same TLAS `NearestOtherSurface` uses), confirmed present this sweep, matching `ProximitySignalTest`'s g2 case named in the doc |
 | DL-R16 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | A CSG composite refused every proximity/interior query, making its own surface invisible to every neighbour | CLOSED-by-code | `CSGObject.cpp:2681,2758` (`DistanceToSurfaceWithArm`/`DistanceToSurface` implemented — union answers min over operands that answer, intersection/subtraction bracket the composed signed field), confirmed present this sweep (Phase 3 S3) |
 | DL-R17 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | Non-uniform transforms used the loose Frobenius/determinant sigma bounds pre-Phase-3 | CLOSED-by-code (partial — residual folded into DL-15) | Phase 3 S2 ships a one-sided Jacobi SVD with the Frobenius/determinant pair only as the non-convergence fallback; doc's own measured `scale (3,1,0.4)` figures (search-radius inflation 8.46667x -> 2.5x); the surviving anisotropy-direction residual (`sigma_max` attained only along the top singular vector) is the same mechanism DL-15 tracks, confirmed this sweep |
+| DL-R18 | WETNESS_COAT_DESIGN.md §12 item 3 | `composite_material`'s `extinction` slot was `IPainter` (a physical Beer-Lambert absorption coefficient silently JH-uplifted and clamped to [0,1]); retyped to `IScalarPainter`, CLOSED 2026-09-01 | CLOSED-by-test | Code: `CompositeSPF.h:52` / `CompositeEmitter.h:40` (`const IScalarPainter& extinction;`), `RISE_API.h:1069-1079`'s `RISE_API_CreateCompositeMaterial` and `IJob.h:994`'s `AddCompositeMaterial` both take the scalar-pipe slot, `ChunkParserRegistry.cpp:4352`'s `composite_material` `extinction` descriptor is `ParameterPipe::Scalar`. Test: `tests/CompositeExtinctionTest.cpp` `main()` (~476-492) asserts the NM and RGB attenuation ratios agree post-fix (0.11940 vs 0.11938) inside the shared Beer-Lambert band `[0.05,0.25]`, where the pre-fix `IPainter` routing measured 0.9582 (an order of magnitude off, the JH-uplift-saturation regression band the check guards against) — confirmed present and passing this sweep |
+| DL-R19 | WETNESS_COAT_DESIGN.md §12 item 5 | Phase-1's `Rd·Rs·(1−c)` coverage-mask energy dip (up to ~50% loss at grazing, plus an added geometric-horizon coat-lobe drop in `PolishedSPF.cpp:206-207`) is closed by Phase 2's `coat_weight` mixture, which conserves energy at every coverage fraction instead of treating coverage as an attenuator | CLOSED-by-test | Code: `CoatedBRDF::value` (`CoatedBRDF.cpp:269`, mixture at 316-317: `fBase*(K*cp.weight + RISEPel(1,1,1)*(1−cp.weight)) + RISEPel(fCoat)*cp.weight` — coverage selects between a coated and a bare statistical state, not an attenuating factor). Test: `tests/LayeredWhiteFurnaceTest.cpp` config 13 ("Coated water c=0.5 / white Lambertian", 1595, `kPosturePass`, 2% band) asserts ρ = 1 at every angle at half coverage, explicitly contrasted in its own comment against config 9's Phase-1 dip (1529-1530, `kPostureMatchesPrediction`, ρ falls to 0.8265 at 80°) — confirmed present and passing this sweep |
+| DL-R20 | WETNESS_COAT_DESIGN.md §12 item 6 | Spectral wet-darkening was unreachable in Phase 1 (the expression VM has no `nm` and `expression_painter` uplifts a computed RGB); closed by Phase 2's `valueNM` performing the darkening as per-wavelength recycling `1/(1 − r_i·R(λ))` transport rather than a separate exponent parameter | CLOSED-by-code, test coverage indirect | Code: `CoatedBRDF.h:38-46`'s doc comment ("SPECTRAL WET DARKENING IS TRANSPORT, NOT AN EXPONENT") and `CoatedBRDF::valueNM` (`CoatedBRDF.cpp:320`, substrate sampled at the hero wavelength via `pBase->valueNM` at 336). Test: `tests/LayeredWhiteFurnaceTest.cpp` config 15 (1694-1695, coloured GGX-PBR substrate, `kPostureMatchesPrediction`) quantifies the identical per-channel recycling formula in the RGB pipe (17x composite's energy at normal incidence, matching the Saunderson analytic form to within 0.001-0.014 at 0-60°); `tests/SPFBSDFConsistencyTest.cpp`'s `Coated_GGX_tinted_absorbing_c0.5` reciprocity row (1553) exercises `valueNM` itself, but only reciprocity at one fixed wavelength (550nm), not a magnitude sweep. **No test sweeps multiple wavelengths on one coloured coated substrate to directly assert the per-wavelength chroma-boost magnitude the item describes** — the spectral claim is verified only by (a) the RGB pipe running the identical per-channel formula and (b) a single-wavelength NM correctness check. Classified resolved (mechanism confirmed in code and exercised, but the doc's specific spectral-sweep claim has no dedicated multi-wavelength test) rather than silently closed |
+| DL-R21 | WETNESS_COAT_DESIGN.md §12 item 6a | `polished_material::GetBSDF()` returning a bare `LambertianBRDF(Rd)` (no coat lobe) is a pre-existing defect that made Phase 1's NEE/BDPT/VCM connections see a dry substrate while sampled transport saw the wet split; closed for the wetness use case because Phase 2 re-targets `add_wetness`'s emission from `polished_material` to `coated_material` | CLOSED-by-test (re-target, not a `PolishedMaterial` fix) | Code: `PolishedMaterial.h:49` (`pBRDF = new LambertianBRDF( Rd_ );`) and `:57` (`GetBSDF`) confirmed UNCHANGED this sweep — the underlying defect in `PolishedMaterial` itself still exists and is not itself fixed; the closure is that Phase 2 routes the wetness verb around it entirely (`AgentSession.cpp`'s item-8 re-target, e.g. ~7918-7934/37962-37977/38585-38622, emits a `coated_material` wrapper chunk instead of a bare `polished_material`). Test: `tests/AgentAddWetnessTest.cpp:329,357-358` ("A MONEY: a `coated_material` chunk was minted") asserts the re-target, confirmed present and passing this sweep |
+| DL-R22 | WETNESS_COAT_DESIGN.md §12 item 11 | A single per-channel darkening exponent (Phase 1's `pow(base,k)` fit) over-boosts saturation on already-saturated substrates because its implied `k` varies with base albedo; closed by Phase 2 never forming an exponent at all | CLOSED-by-code | `ChunkParserRegistry.cpp:3420-3421`'s `coated_material` descriptor comment states "deliberately NO `substrate_wet_exponent`"; grepped this sweep — no `substrate_wet_exponent`/`wet_exponent` parameter exists anywhere in `src/Library/` or `tests/`, only three comments explaining its deliberate absence (`ChunkParserRegistry.cpp:3420`, `CoatedBRDF.h:44-45`, `AgentSession.cpp:38591`). The replacement mechanism's correctness is the same `LayeredWhiteFurnaceTest` configs 14/15/17/18 analytic cross-checks DL-R20 cites. The item's specific "over-boosts an already-saturated substrate" failure mode is structurally unreachable now (no exponent parameter exists to mis-fit), so no test targets that failure mode by name — noted as a scope observation, not a coverage gap, since the mechanism the exponent approximated no longer exists |
+| DL-R23 | WETNESS_COAT_DESIGN.md §12 item 12 | Near-white `coat_tint` values in [0.96,1.0) were spectrally discontinuous under the pre-Stage-C flat-illuminant JH LUT (measured collapse to 1.4e-7 at 780nm for a pure white); CLOSED 2026-09-02 by Stage C putting the reference illuminant into the LUT's forward model, leaving only a wavelength-dependent 1−ε asymptote that still needs the untinted-white guard | CLOSED-by-test | Code: `CoatedBRDF.cpp:107-120` (`out.tinted = ( minTint < Scalar(1) - Scalar(1e-6) )`, the untinted-white guard decided once from the authored RGB triple so the RGB and spectral pipes cannot disagree on "is this coat tinted at all"); `IPainter.h:164` (`IsUntintedWhite`) and `:185` (`GuardedGetColorNM`); `tools/JakobHanikaLUTGen.cpp:145-149` (Stage C's D65-in-forward-model retraining, removing the Bradford step). Test: `tests/CoatedMaterialChunkTest.cpp::TestUntintedIsClearSpectrally` (~524-570) asserts an untinted coat responds identically to an explicit-white and an explicit-neutral-Beer-Lambert coat at every 20nm step from 380-780nm, confirmed present and passing this sweep |
 
 ## Doc-rot found and struck this sweep
 
@@ -136,30 +152,27 @@ reflowed otherwise.
 
 ## Counts
 
-Updated by the 2026-09-12 gap-closure pass (see the header note); the
-original sweep's own counts are superseded by these.
+Updated by the 2026-09-12 final completion pass (see the header note); the
+gap-closure pass's own counts are superseded by these.
 
-- OPEN-confirmed: **35** (DL-01 .. DL-22, plus DL-23..DL-34 and DL-36 added
-  this pass — DL-35 was evaluated and placed as NOT-A-DEBT instead, so the
-  numbering has a deliberate gap)
+- OPEN-confirmed: **36** (DL-01 .. DL-22, DL-23..DL-34, DL-36 from the
+  gap-closure pass, plus DL-37 added this pass — DL-35 was evaluated and
+  placed as NOT-A-DEBT instead, so the numbering has a deliberate gap)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
-  fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass; DR-01's
-  line citation, and DR-03/DR-06/DR-07's missing date tokens, were corrected)
-- Already RESOLVED in source, independently re-verified: **17** (DL-R1 ..
-  DL-R17 — DL-R1..DL-R3 from the original sweep; DL-R4..DL-R17 added this
-  pass, covering CLOTH_FABRIC_DESIGN.md §15 items 3/19-26, GEOMETRY_SHADING_
-  SIGNALS_DESIGN.md §14 items 10-11, and CROSS_OBJECT_PROXIMITY_DESIGN.md
-  §10's TLAS-snapshot, CSG-refusal and Frobenius-bound closures)
-- NOT-A-DEBT: **27** (13 from the original sweep + 14 added this pass —
-  design choices, safe-by-design refusals, disclosed non-transport paths,
-  and one already-landed documentation-accuracy fix)
+  fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
+- Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
+  DL-R17 from the original sweep and the gap-closure pass; DL-R18..DL-R23
+  added this pass, covering WETNESS_COAT_DESIGN.md §12 items 3, 5, 6, 6a,
+  11 and 12 — one of these, DL-R20, is resolved-in-code but flagged as
+  tested only indirectly rather than by a dedicated regression)
+- NOT-A-DEBT: **27** (unchanged this pass)
 - UNVERIFIABLE: **0**
 
-Total items re-verified or newly placed by the gap-closure pass: 13 new
-OPEN rows + 14 new Already-resolved rows + 14 new Not-a-debt bullets + 5
-citation corrections (DL-05, DL-09, DL-12, DL-13, DL-14) + 1 rewritten-on-
-the-facts row (DL-14) + 4 doc-rot citation/date fixes (DR-01, DR-03, DR-06,
-DR-07) = **41 items classified, 9 citations corrected**, this pass.
+Total items re-verified or newly placed by the final completion pass: 1 new
+OPEN row (DL-37) + 6 new Already-resolved rows (DL-R18..DL-R23) + 1 second
+source pointer added (DL-23) + 1 recipe rewritten with a named scene,
+protocol, metric and a stated-proposed threshold (DL-27) = **8 items
+classified or substantively rewritten**, this pass.
 
 ## Verification recipes for OPEN items
 
@@ -387,11 +400,31 @@ counterpart both gain a case that applies one verb after the other on the
 same target and asserts non-refusal plus both effects visible in the
 emitted CST.
 
-**DL-27 (wet-highlight variance unmeasured).** Render the wetness recipe's
-`scattering` ceiling at increasing sample counts with `oidn_denoise FALSE`
-and measure RMSE-vs-reference per the `variance-measurement` skill. Fixed
-when a number exists and, if the cost is too high, the recipe's ceiling is
-adjusted with that number cited.
+**DL-27 (wet-highlight variance unmeasured).** WETNESS_COAT_DESIGN.md §11.1
+states no pass threshold of its own — its exact words are: "Unmeasured. It
+should be measured on the worked example, with `oidn_denoise FALSE` (§9),
+before the recipe's default `scattering` ceiling is fixed." So the recipe
+below both names the measurement and **proposes** the threshold the doc
+omits. Scene: `scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene`
+(§6.5's worked example, the same one the Phase-1 exit gate renders at mean
+luma 0.195). Protocol: `docs/skills/variance-measurement.md`'s K-trial
+procedure (K >= 16, `samples 32`, `oidn_denoise FALSE`, `adaptive_max_samples
+0`, EXR output) run twice — once on the scene as authored (`add_wetness`
+applied, `scattering` at its shipped ceiling) and once on a "dry" variant
+with the wetness recipe's coat lobe stripped back to the bare substrate
+(`coat_weight 0`, or the pre-verb material) — both otherwise identical
+(camera, lights, sample count, seed sequence). Metric: `σ²·T`, the
+wall-clock-normalized variance CLAUDE.md's integrator-selection work already
+uses for exactly this kind of cost comparison — `σ²` from
+`bin/tools/HDRVarianceTest.exe` on each K-trial set, `T` the measured
+per-trial wall time, reported as the ratio (wet `σ²·T`) / (dry `σ²·T`).
+Pass threshold (**proposed, not stated in the design doc**): ratio <= 1.5x
+(a near-delta coat lobe may legitimately cost more per unit variance
+reduction than a matte Lambertian one, but a cost more than 50% higher
+should trip a review of the `scattering` ceiling, not ship silently).
+Fixed when that number exists and, if it exceeds the proposed (or a
+user-ratified) threshold, the recipe's `scattering` ceiling is lowered with
+the measured ratio cited in its place.
 
 **DL-28 (water-absorption file pre-conversion trap).** Add a parse-time or
 load-time sanity check on `colors/water_absorption.spectra`-shaped files
@@ -455,3 +488,26 @@ channel consistently (documented as an acceptable second-order effect) or
 is tightened to refuse it. Fixed when the scene exists and the chosen
 behavior is pinned by an assertion rather than left as a disclosed-only
 residual.
+
+**DL-37 (GGX low-F0 grazing gain).** Flip `tests/LayeredWhiteFurnaceTest.cpp`
+config 17's posture from `kPostureKnownFailure` (1788) to an expected-pass
+posture (`kPosturePass` or `kPostureMatchesPrediction`) asserting ρ <= 1 +
+tolerance at every one of the four angles, not just the three that already
+pass. State the physically right weighting before flipping it — two
+candidates, both already precedented elsewhere in this file: (a) a
+per-angle Fresnel-weighted diffuse term `1 − F(θ)` in place of the
+angle-flat `1 − max(F0)`, applied at every one of the fifteen call sites
+DL-37's evidence lists (six in `GGXSPF.cpp`, nine in `GGXBRDF.cpp`); or (b)
+a Kulla-Conty-style product-law compensation, matching the pattern
+`FabricBRDF.h:204-206` already uses to blend a reflect and a transmit arm
+by directional albedo (`scale(l,v) = (1 − m·Ehat(a,|n·v|))·(1 −
+m·Ehat(a,|n·l|)) / (1 − m·EhatMean(a))`) rather than a constant subtraction
+— the same shape would make the diffuse weight fall off toward grazing
+instead of staying pinned at 0.96 while the specular term rises under it.
+Either fix must be extended to the conductor-mode bare row IMPROVEMENTS.md's
+"Scope note" flags as unmeasured (add a config 17-shaped conductor case to
+the same test) before this row closes, since a fix scoped to
+`eFresnelSchlickF0` alone would leave that row unverified. Re-measure
+config 20 (the anisotropic GGX twin, which shares the same disposition per
+its own comment at 1898-1900) at the same time — a fix that doesn't move it
+too is incomplete.
