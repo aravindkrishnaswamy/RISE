@@ -54,6 +54,7 @@
 
 #include "../src/Library/Cameras/ThinLensCamera.h"
 #include "../src/Library/Cameras/PinholeCamera.h"
+#include "../src/Library/Cameras/FisheyeCamera.h"
 #include "../src/Library/Cameras/CameraUtilities.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"
@@ -806,6 +807,104 @@ static void TestDeltaPositionCamerasUnchanged()
 	release( open );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 8 - the FISHEYE camera's importance, audited alongside the
+// thin lens (debt 28's "does any other camera have the same defect?"
+// question).
+//
+// It does not: a fisheye has no aperture of non-zero area, its
+// `Rasterize` and `Importance` read the same direction through the
+// same inverse matrix, and its importance is defined per SOLID ANGLE
+// rather than per unit lens area, so there is no cos(theta) * A_lens
+// fold to get wrong (that is why the fisheye form carries no cosine
+// where the pinhole's carries cos^3).  Pinned here by the same energy
+// invariant Test 6 uses, restated for a spherical film:
+//
+//   A unit-radiance sphere of radius R centred on the camera gives
+//       Phi = integral over the imaged set of G * We dA
+//           = integral of (1/R^2) * (cosAngle/scale^2) * R^2 dw
+//           = Area_xy / scale^2  =  1
+//   because dw = dA_xy / cosAngle and the imaged set is exactly the
+//   square |x|,|y| <= scale/2 (which lies wholly inside the unit disk
+//   for scale <= sqrt(2)).  So the total film response is 1, exactly
+//   as it is for the pinhole and the thin lens.
+//
+// KNOWN, NOT FIXED (reported with debt 28): the fisheye's pixel solid
+// angle scale^2/(W H cosAngle) is measured in the camera's PRE-STRETCH
+// local frame, while `mxTrans` applies Stretch(pixelAR,1,1) to the
+// direction.  At pixelAR != 1 the world-space solid angle per pixel
+// therefore differs from the formula by a direction-dependent
+// Jacobian.  That is a separate, pre-existing measure inconsistency,
+// not debt 28's missing aperture sample; no in-tree scene pairs a
+// fisheye with non-square pixels, and a correct fix needs the full
+// Jacobian of normalize . Stretch rather than a constant.  The row
+// below is therefore pixelAR == 1 only.
+//////////////////////////////////////////////////////////////////////
+static void TestFisheyeFilmResponse()
+{
+	std::cout << "TestFisheyeFilmResponse" << std::endl;
+
+	const double scale = 1.0;
+	FisheyeCamera* cam = new FisheyeCamera(
+		Point3( 0, 0, kCamZ ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+		kWidth, kHeight, kPixelAR,
+		0.0, 0.0, 0.0,
+		Vector3( 0, 0, 0 ), Vector2( 0, 0 ),
+		scale );
+
+	EXPECT( !BDPTCameraUtilities::HasFiniteAperture( *cam ) );
+	const BDPTCameraUtilities::ApertureSample ap =
+		BDPTCameraUtilities::SampleAperture( *cam, Point2( 0.4, 0.6 ) );
+	EXPECT( !ap.isFinite );
+	EXPECT_NEAR( ap.point.z, kCamZ, 1e-15 );
+
+	// Unit-radiance sphere of radius R centred on the camera, walked
+	// on a (theta, phi) grid over the forward hemisphere.  Only the
+	// hemisphere can image, so the integration domain is complete.
+	const double R = 5.0;
+	const unsigned int NT = 1400, NP = 1400;
+	double total = 0;
+	for( unsigned int i = 0; i < NT; i++ ) {
+		const double th = ( i + 0.5 ) * ( PI * 0.5 ) / double( NT );		// 0 .. pi/2
+		const double dth = ( PI * 0.5 ) / double( NT );
+		for( unsigned int j = 0; j < NP; j++ ) {
+			const double ph = ( j + 0.5 ) * ( 2.0 * PI ) / double( NP );
+			const double dph = ( 2.0 * PI ) / double( NP );
+
+			// Camera looks toward world -Z, so the forward hemisphere
+			// is z < kCamZ.
+			const Point3 world(
+				R * sin( th ) * cos( ph ),
+				R * sin( th ) * sin( ph ),
+				kCamZ - R * cos( th ) );
+
+			Point2 raster;
+			if( !BDPTCameraUtilities::RasterizeThrough( *cam, world, ap, raster ) ) continue;
+
+			Vector3 dirToCam = Vector3Ops::mkVector3( ap.point, world );
+			const double dist = Vector3Ops::Magnitude( dirToCam );
+			dirToCam = dirToCam * ( 1.0 / dist );
+
+			// Sphere normal at `world` points back at the camera, so
+			// the geometric cosine is exactly 1.
+			const double G = 1.0 / ( dist * dist );
+
+			Ray camRay( ap.point, -dirToCam );
+			const double We = BDPTCameraUtilities::Importance( *cam, camRay );
+
+			total += G * We * ( R * R * sin( th ) * dth * dph );
+		}
+	}
+
+	// Grid error is the discretisation of the imaged square's boundary
+	// in (theta, phi), O(1/N).
+	EXPECT_REL( total, 1.0, 0.01 );
+	std::printf( "    fisheye scale %.1f  full-field response %.6f (closed form 1)\n",
+		scale, total );
+
+	release( cam );
+}
+
 int main()
 {
 	std::cout << "=== CameraImportanceTest ===" << std::endl;
@@ -817,6 +916,7 @@ int main()
 	TestImportanceMatchesPinholeClosedForm();
 	TestEmittingPlaneFilmResponse();
 	TestDeltaPositionCamerasUnchanged();
+	TestFisheyeFilmResponse();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << g_pass << std::endl;
