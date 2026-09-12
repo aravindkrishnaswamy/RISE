@@ -707,7 +707,18 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   (worse — the phantom splat had been carrying nearly all of what
   little energy VCM produced), 1.082 with `dVCM = 0` alone (that 8.2 %
   excess IS the phantom splat at full weight, the guard's own
-  red-proof), **1.005 with both**.  BDPT is bit-unchanged: the zeroing
+  red-proof), **1.005 with both**.  **The red-proof's 8.2 % sat only
+  0.2 percentage points outside the test's then-shared 8 % mean band
+  (A2 P2-1, debt 28 review round 2) — honestly too close to call a
+  reliable red-proof on its own.**  A 5-run re-measurement of that
+  exact red-proof state (guard disabled, `dVCM = 0` fix kept) gave
+  8.098 %, 8.176 %, 8.075 %, 8.155 %, 8.238 % (mean 8.148 %, sample
+  stddev ≈0.065 pp, relative spread <1 %) — tight enough that the 0.2 pp
+  margin was a real coincidence of magnitude, not measurement noise
+  that could occasionally push the row to a false pass.  `topology G`
+  now asserts against its own tighter band, 4 % mean (same p99/max as
+  `kStrictTolerances`) — the shipped 1.005 sits comfortably inside it
+  while the red-proof now misses by ~4 pp instead of 0.2.  BDPT is bit-unchanged: the zeroing
   touches only the VCM post-pass field, while BDPT's own walk keeps
   using the local `pdfCamDir`.  Fisheye: **clean** — no aperture of
   non-zero area, `Rasterize` and `Importance` read the same direction
