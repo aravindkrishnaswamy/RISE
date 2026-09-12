@@ -37,9 +37,10 @@ namespace
 {
 
 static int gFailures = 0;
-// Ft(cos)*cos is a degree-six polynomial.  The composite midpoint rules
-// below therefore have O(h^2) error; 16K/32K bins leave more than two
-// orders of magnitude below these tolerances in double precision.
+// The normalized cosine integrand has |second derivative| <= 21.
+// Composite midpoint error is therefore <= 21/(24*N*N), below 3.3e-9
+// at 16K bins. These tolerances cover that bound, the 32K reference
+// quadrature, and floating-point direction/ratio evaluation.
 static const Scalar kQuadratureTolerance = 2e-8;
 static const Scalar kRatioTolerance = 5e-8;
 
@@ -75,7 +76,7 @@ static Scalar IndependentTransmission( const Scalar cosine, const Scalar eta )
 	return 1.0 - (f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0));
 }
 
-// c = integral(Ft(w) cos(theta) dw).  This midpoint quadrature is the
+// c = integral(Ft(w) cos(theta) dw) / PI. This midpoint quadrature is the
 // oracle for the normalized directional law and has no production constant.
 static Scalar IndependentCosineNormalization( const Scalar eta )
 {
