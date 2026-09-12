@@ -16,14 +16,17 @@
 // Run from the repository root with RISE_MEDIA_PATH="$PWD/". Defaults:
 // 16x16, 1024 spp, 4 trials, ior 1.5, sigma_a=0, sigma_s=2, g=0.
 // --probe labels a diagnostic run; --samples N (perfect square), --trials K,
-// --seed N, --ior N, --outer-fresnel, --curved, --slab-radius R are optional.
-// --curved uses an ellipsoid (R,R,10) centered at z=-10, R=40 by default.
-// The flat box remains a diagnostic for the DL-52 planar probe-origin hole.
+// --seed N, --ior N, --outer-fresnel, --slab-radius R are optional.
+// The default curved ellipsoid is (R,R,10) centered at z=-10, R=40.
+// --flat selects the diagnostic box for the DL-52 planar probe-origin hole;
+// --curved explicitly restores curved geometry (last shape flag wins).
+// --volume-cap N / --rw-cap N / --path-cap N default to 256 / 512 / 1024.
+// --air-only implies --probe and runs all three models' air baseline only.
 // An actual SampleEntryPoint probe records valid and near-top samples; curved
 // diffusion requires near-top coverage so it cannot pass on surface Fresnel
 // alone. This coverage guard does not establish energy normalization.
-// Both invocations currently
-// execute the same provisional three-model matrix. No physics closure claim.
+// Normal and --probe invocations currently execute the same selected
+// provisional matrix. No physics closure claim or final energy guard yet.
 
 #include <array>
 #include <cerrno>
@@ -88,8 +91,9 @@ const char* TopologyName( Topology t )
 }
 struct Config {
 	unsigned int samples = 1024, trials = 4, seedBase = 1000;
+	unsigned int volumeCap = 256, rwCap = 512, pathCap = 1024;
 	double surfaceIOR = 1.5, slabRadius = 40;
-	bool probe = false, outerFresnel = false, curved = false;
+	bool probe = false, outerFresnel = false, curved = true, airOnly = false;
 };
 unsigned int passCount = 0, failCount = 0, renderIndex = 0;
 bool Check( bool condition, const std::string& label )
@@ -119,10 +123,19 @@ bool ParseArgs( int argc, char** argv, Config& cfg )
 		if( arg == "--probe" ) cfg.probe = true;
 		else if( arg == "--outer-fresnel" ) cfg.outerFresnel = true;
 		else if( arg == "--curved" ) cfg.curved = true;
-		else if( arg == "--samples" || arg == "--trials" || arg == "--seed" ) {
+		else if( arg == "--flat" ) cfg.curved = false;
+		else if( arg == "--air-only" ) { cfg.airOnly = true; cfg.probe = true; }
+		else if( arg == "--samples" || arg == "--trials" || arg == "--seed" ||
+			arg == "--volume-cap" || arg == "--rw-cap" || arg == "--path-cap" ) {
 			if( ++i == argc ) return false;
-			unsigned int& value = arg == "--samples" ? cfg.samples : (arg == "--trials" ? cfg.trials : cfg.seedBase);
+			unsigned int value = 0;
 			if( !ParseUInt( argv[i], value ) ) return false;
+			if( arg == "--samples" ) cfg.samples = value;
+			else if( arg == "--trials" ) cfg.trials = value;
+			else if( arg == "--seed" ) cfg.seedBase = value;
+			else if( arg == "--volume-cap" ) cfg.volumeCap = value;
+			else if( arg == "--rw-cap" ) cfg.rwCap = value;
+			else cfg.pathCap = value;
 		} else if( arg == "--ior" || arg == "--slab-radius" ) {
 			if( ++i == argc ) return false;
 			errno = 0;
@@ -155,7 +168,7 @@ std::string BuildScene( Model model, Topology topology, const Config& cfg, bool 
 		s << (model == Model::DiffusionSSS ? "subsurfacescattering_material" : "randomwalk_sss_material") <<
 			"\n{\n name slab_material\n ior " << cfg.surfaceIOR <<
 			"\n absorption 0\n scattering 2\n g 0\n roughness 0\n";
-		if( model == Model::RandomWalkSSS ) s << " max_bounces 512\n";
+		if( model == Model::RandomWalkSSS ) s << " max_bounces " << cfg.rwCap << "\n";
 		s << "}\n";
 	}
 	// Shared geometry: x/y +/-40, z [-20,0]. The camera is never inside
@@ -183,7 +196,7 @@ std::string BuildScene( Model model, Topology topology, const Config& cfg, bool 
 		"pathtracing_pel_rasterizer\n{\n samples " << cfg.samples <<
 		"\n oidn_denoise FALSE\n pixel_filter box\n adaptive_max_samples 0\n"
 		" pathguiding FALSE\n direct_clamp 0\n indirect_clamp 0\n"
-		" rr_min_depth 8\n rr_threshold 0.05\n max_volume_bounce 256\n"
+		" rr_min_depth 8\n rr_threshold 0.05\n max_volume_bounce " << cfg.volumeCap << "\n"
 		" max_translucent_bounce 256\n max_transmission_bounce 256\n"
 		" radiance_map white\n radiance_scale 1\n radiance_background TRUE\n}\n"
 		"file_rasterizeroutput\n{\n pattern rendered/sss_radiance_scaling_unused\n"
@@ -359,7 +372,7 @@ bool Render( Model model, Topology topology, const Config& cfg, RGBChannels& mea
 	}
 	PathTracingPelRasterizer* pt = dynamic_cast<PathTracingPelRasterizer*>( job->GetRasterizer() );
 	if( !Check( pt != nullptr, label + ": pure RGB PT rasterizer" ) ) { safe_release(job); return false; }
-	pt->SetMaxPathDepth( 1024 );
+	pt->SetMaxPathDepth( cfg.pathCap );
 	// Remove the relative linear-EXR declaration before capture: no output
 	// file or encoded/denoised image participates in the measurement.
 	job->RemoveRasterizerOutputs();
@@ -421,13 +434,15 @@ int main( int argc, char** argv )
 {
 	Config cfg;
 	if( !ParseArgs( argc, argv, cfg ) ) {
-		std::cerr << "Usage: SSSRadianceScalingTest [--probe] [--samples square_N] [--trials K] [--seed N] [--ior N] [--outer-fresnel] [--curved] [--slab-radius R]\n";
+		std::cerr << "Usage: SSSRadianceScalingTest [--probe] [--samples square_N] [--trials K] [--seed N] [--ior N] [--outer-fresnel] [--curved|--flat] [--slab-radius R] [--volume-cap N] [--rw-cap N] [--path-cap N] [--air-only]\n";
 		return 2;
 	}
 	std::cout << std::setprecision(10) << "SSSRadianceScalingTest: PROVISIONAL " << (cfg.probe ? "PROBE" : "MEASUREMENT") <<
 		"; no eta-normalization assertion\nsamples=" << cfg.samples << " trials=" << cfg.trials <<
 		" seed_base=" << cfg.seedBase << " surface_ior=" << cfg.surfaceIOR <<
-		" sigma_a=0 sigma_s=2 g=0 film=16x16 max_path_depth=1024 volume_cap=256 rw_cap=512\nshape=" <<
+		" sigma_a=0 sigma_s=2 g=0 film=16x16 max_path_depth=" << cfg.pathCap <<
+		" volume_cap=" << cfg.volumeCap << " rw_cap=" << cfg.rwCap <<
+		"\nmatrix=" << (cfg.airOnly ? "air_only (probe; no observer ratios)" : "all_three_topologies") << "\nshape=" <<
 		(cfg.curved ? "ellipsoid" : "flat_box") << " slab_radius=" << cfg.slabRadius <<
 		(cfg.curved ? " radii=(R,R,10), center_z=-10\nouter=" : " (unused for flat box: dimensions=80x80x20, center_z=-10)\nouter=") <<
 		(cfg.outerFresnel ? "Fresnel dielectric water (additive reflected environment affects outside camera)" :
@@ -442,10 +457,11 @@ int main( int argc, char** argv )
 	PrintRGB(controlMean); std::cout << " (uniform-furnace reference=1; diagnostic)" << std::endl;
 	const Model models[] = { Model::ExplicitDielectricVolume, Model::DiffusionSSS, Model::RandomWalkSSS };
 	const Topology topologies[] = { Topology::Air, Topology::WaterInside, Topology::WaterOutside };
+	const size_t topologyCount = cfg.airOnly ? 1 : 3;
 	std::array<RGBChannels, 3> observerRatios{};
 	for( size_t m = 0; m < 3; ++m ) {
 		std::array<RGBChannels, 3> means{};
-		for( size_t t = 0; t < 3; ++t ) {
+		for( size_t t = 0; t < topologyCount; ++t ) {
 			const std::string label = std::string(ModelName(models[m])) + "/" + TopologyName(topologies[t]);
 			std::vector<RGBChannels> values;
 			for( unsigned int trial = 0; trial < cfg.trials; ++trial ) {
@@ -461,11 +477,12 @@ int main( int argc, char** argv )
 			}
 			if( !Aggregate(values, means[t], label) ) return 1;
 		}
+		if( cfg.airOnly ) continue;
 		if( !Ratio(means[1], means[2], observerRatios[m], std::string(ModelName(models[m])) + " water_inside/water_outside") ) return 1;
 		RGBChannels immersionRatio{};
 		if( !Ratio(means[1], means[0], immersionRatio, std::string(ModelName(models[m])) + " water_inside/air_furnace") ) return 1;
 	}
-	for( size_t m = 1; m < 3; ++m ) {
+	for( size_t m = 1; !cfg.airOnly && m < 3; ++m ) {
 		RGBChannels ratioOfRatios{};
 		if( !Ratio(observerRatios[m], observerRatios[0], ratioOfRatios,
 			std::string(ModelName(models[m])) + " observer_ratio/explicit_observer_ratio") ) return 1;

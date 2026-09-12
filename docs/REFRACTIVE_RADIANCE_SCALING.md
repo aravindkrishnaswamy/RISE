@@ -374,8 +374,8 @@ is exact even across a layered SPF's internal chain:
 | `Materials/GenericHumanTissueSPF.cpp` | 0 (2 `containsCurrent()` reads) | — | no | reads `ior_stack.containsCurrent()` to branch its own scattering behaviour but never pushes or pops — no medium-change site here for the debt-30 factor to apply to. |
 | `Materials/WeaveSPF.cpp` | 0 | — | no | pure pass-through to its own `ScatterImpl`, same "thin transmission, no stack change" shape as `FabricSPF` above. |
 | `DetectorSpheres/*` | 5 | FLUX | no | measurement rigs; comment only |
-| `Materials/SubSurfaceScatteringSPF.cpp` (front-face BSSRDF entry), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.h` (`Sw`) | 0 | — | no — **untouched — telescoping argument; PBRT convention differs; NAMED RESIDUAL** | the front-face BSSRDF entry path (`BSSRDFSampling::SampleEntryPoint`, `RandomWalkSSS`) never touches the IOR stack (grep confirms zero `IORStack` references in either) — BSSRDF entry/exit through the SAME interface is priced by the diffusion-profile importance sampling in the integrator, not by a stack transition, so the debt-30 factor is exactly 1 there. This is telescoping applying to an entry-and-exit-through-the-same-interface path, not "SSS never touches the stack" — see the next row. |
-| `Materials/SubSurfaceScatteringSPF.cpp` back-face exit branch (RGB ~line 300-313, NM ~line 503-513) | 2 | RADIANCE / IMPORTANCE (mode-agnostic) | no — **arguably already correct; untested — NAMED RESIDUAL** | this branch (`// Also emit exit refraction if possible (for light subpaths that need to escape the medium)`) DOES touch the stack: `exitRay.ior_stack = new IORStack(ior_stack); exitRay.ior_stack->pop();`. It only fires when the walk is already inside the object at a back-face hit — reachable because `SubSurfaceScatteringMaterial::GetSpecularInfo` reports `canRefract = true` (`SubSurfaceScatteringMaterial.h` ~119, ~133), so `IORStackSeeding` (~194-209) tracks it and will seed a camera or light source starting inside an SSS object. When the walk was never actually seeded inside the object (the ordinary case: camera outside, BSSRDF entered and exited through the SAME point), this pop is a logged no-op — `IORStack::pop`'s find-and-destroy silently fails because the object was never pushed. When the walk WAS seeded inside (a submerged SSS object, or a camera embedded in one), this pop is a REAL exit transition and the debt-30 consumer-side factor at `RadianceEtaScale` fires exactly as it would for any other material's push/pop. No existing test exercises this branch with a seeded-interior walk. See §10.1(a)/(b). |
+| `Materials/SubSurfaceScatteringSPF.cpp` (front-face), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.{h,cpp}` | 0 stack transitions in complete-event helpers | exterior to same exterior | no transport change | RISE samples both boundaries together; their basic-radiance factors telescope to one. PBRT applies complementary factors in its surface and BSSRDF stages. DL-04 measures the convention; separate normalization/index/support residuals are DL-48/DL-49/DL-52. See §10.1. |
+| `Materials/SubSurfaceScatteringSPF.cpp` inside fallback (`Scatter` / `ScatterNM`) | 2 pop sites | standalone non-absorbing SPF | no transport change | Shipped SSS materials set `bAbsorbBackFace=true`, so membership-selected inside hits return before these sites. The default standalone SPF allows this branch; its destination-IOR read before popping is DL-51. Initial seeding alone does not make it reachable in shipped materials. See §10.1. |
 
 **Is this table exhaustive over `src/Library/Materials`?** (review round
 2, 2026-09-12; recount verified review round 3, 2026-09-12 — the earlier
@@ -561,101 +561,54 @@ document.
 
 ### 10.1 Named residual: the subsurface-scattering family (§6.1)
 
-**Corrected (review round 2, 2026-09-12): "never touches the IOR stack" is
-only true of the front-face BSSRDF entry path.** `RandomWalkSSS` and
-`BSSRDFSampling::Sw` never touch it (grep confirms zero references), and
-neither does `SubSurfaceScatteringSPF`'s front-face entry branch — that
-is the ordinary case this section discusses: a BSSRDF entered and exited
-through the SAME interface, for which the debt-30 factor is exactly 1 by
-the telescoping argument below. But `SubSurfaceScatteringSPF`'s BACK-FACE
-exit branch (RGB `SubSurfaceScatteringSPF.cpp` ~line 312-313, NM
-~line 512-513) DOES push and pop: `exitRay.ior_stack = new
-IORStack(ior_stack); exitRay.ior_stack->pop();`. That branch only fires
-for a walk already inside the object at a back-face hit, which is
-reachable — `SubSurfaceScatteringMaterial` reports `canRefract = true`
-(§6.1's table), so `IORStackSeeding` will seed a camera or light source
-that starts inside an SSS object exactly as it would for a dielectric.
-For the ordinary case (walk never seeded inside; entry and exit through
-the same point) the object was never pushed, so this pop is a logged
-no-op and the factor stays 1 — the code is arguably right there, by the
-same telescoping argument. It is a REAL `(n_sss/n_out)²` exit factor only
-for a walk seeded inside the object, which no existing test exercises.
-The residual below is scoped to that telescoping argument (entry and
-exit through the same interface); it does not claim anything about the
-untested seeded-interior case. Two views on whether the telescoping
-scope itself is correct are open, not reconciled by this work:
+**DL-04 audit correction, 2026-09-12; measurements still pending.** The
+previous account conflated a complete subsurface event with one boundary,
+misstated PBRT-v4's factor, and treated seeded membership as proof that a
+shipped SSS material could reach its dormant exit branch.
 
-- **(a) Telescoping argument (the position this fix takes no side
-  against).** A BSSRDF is a closed-form solution to the diffusion
-  approximation for light entering a semi-infinite slab at one point and
-  exiting at another, already integrated over the internal random walk.
-  If that closed form is derived (as PBRT-v3's classic dipole is) as an
-  air-to-air quantity — the entry Fresnel transmittance and the internal
-  radiance-to-flux conversion at entry cancelling algebraically against
-  the exit's flux-to-radiance conversion and exit Fresnel transmittance
-  — then the net factor over the whole entry-walk-exit trip is exactly
-  1 by construction, the same telescoping identity §6's `(n_out/n_gap)²
-  · (n_gap/n_below)² = (n_out/n_below)²` states for an explicit
-  multi-interface SPF chain. Under this view, RISE's "never touch the
-  stack" is not a gap; it is the same telescoping collapsed into a
-  single opaque closed form instead of two explicit consumer-side
-  multiplies.
-- **(b) PBRT's own implementations don't obviously agree with the pure
-  telescoping-to-1 reading in (a) either — corrected, review round 2,
-  2026-09-12; the citation below is from memory of the sources,
-  UNVERIFIED here (no PBRT source tree was checked out this round) and
-  should be re-verified against the actual PBRT source before anyone
-  leans on it.** An earlier draft of this row cited a single
-  `SeparableBSSRDFAdapter::f` that DIVIDES by `eta²` in
-  `TransportMode::Radiance`. As best recollected: PBRT-v3's
-  `SeparableBSSRDFAdapter::f` (§11.4.3) instead MULTIPLIES —
-  `f *= bssrdf->eta * bssrdf->eta` — under `TransportMode::Radiance`; a
-  DIVIDE form, `f /= Sqr(eta)`, appears in PBRT-v4 but on a different
-  class, `NormalizedFresnelBxDF::f`, with `eta` there being the
-  interior/exterior *relative* index rather than a plain absolute IOR.
-  These are not restatements of the same fact — a v3-vs-v4 multiply/
-  divide flip, on top of different callers with different `eta`
-  conventions, is exactly the kind of detail that inverts a sign if
-  transcribed carelessly. **Whichever of the two is the accurate
-  citation, both are non-trivial η-dependent factors in a radiance-mode
-  BSSRDF/Fresnel evaluation that the pure telescoping-to-1 argument in
-  (a) does not obviously account for**, so (a) is not settled as
-  correct by default. Given the citation uncertainty, this residual's
-  conclusion is direction-neutral: **RISE's SSS convention may differ
-  from PBRT's by η² in EITHER direction (too bright or too dim) once the
-  surrounding medium is not air — settle it with the observable below,
-  not with the literature citation.**
+RISE's diffusion and random-walk branches sample a complete event from
+exterior n_e into n_s and back into the same exterior. Its two basic-radiance
+factors multiply to `(n_e/n_s)^2 * (n_s/n_e)^2 = 1`. The caller preserves
+the exterior IOR stack and does not precede that event with a separate
+surface transmission. A square factor copied from only one boundary
+would therefore be unmatched.
 
-Also note a scope gap in the telescoping argument itself: it is stated
-for a path that enters AND exits a BSSRDF through the same interface (a
-sensor and every light source outside the medium). It says nothing about
-a sensor or a light source seeded INSIDE the medium (one crossing, no
-telescoping partner) — which is exactly the untested back-face-exit case
-in §6.1's second SSS row. That gap is moot for `RandomWalkSSS` /
-`BSSRDFSampling::Sw` specifically, because the *entry* path
-(`SampleEntryPoint`) is front-face-only by construction — a BSSRDF walk
-cannot be entered from inside the medium — so the "sensor/source inside
-the medium" case can only ever reach `SubSurfaceScatteringSPF`'s
-separate back-face exit branch (§6.1), not the BSSRDF diffusion-profile
-path this telescoping argument is about.
+Verified PBRT-v4 revision `b4ce9687e6c695f5582997c61b0c66cf064bdb4a`
+[divides in ordinary dielectric transmission](https://github.com/mmp/pbrt-v4/blob/b4ce9687e6c695f5582997c61b0c66cf064bdb4a/src/pbrt/bxdfs.cpp#L98)
+and [multiplies in NormalizedFresnelBxDF](https://github.com/mmp/pbrt-v4/blob/b4ce9687e6c695f5582997c61b0c66cf064bdb4a/src/pbrt/bxdfs.h#L1023).
+The earlier claimed v3/v4 multiply/divide reversal was incorrect. The
+[PBRT-v3 derivation](https://pbr-book.org/3ed-2018/Light_Transport_III_Bidirectional_Methods/The_Path-Space_Measurement_Equation)
+explicitly assigns its BSSRDF correction to the second refraction, with
+the first handled by the surface BSDF. Caller context resolves the apparent
+convention conflict.
 
-**The observable that would settle it**, not yet run: author the same
-semi-infinite-slab geometry two ways — once as a `dielectric_material`
-shell with a scattering *interior* medium (an explicit multi-interface
-SPF chain that DOES take the debt-30 factor at both crossings), once as
-`subsurfacescattering_material` on the same shape with matched albedo
-and mean free path — and render both under a submerged camera (inside
-the shell) AND an air camera (outside it, water or another medium
-between camera and shell) with everything else held fixed. If (a) is
-right, the two materials' brightness ratio between the submerged-camera
-and air-camera renders should be IDENTICAL for both materials (both
-telescope to net 1 the same way — no relative shift). If RISE's BSSRDF
-diverges from PBRT's convention as described in (b), the
-`subsurfacescattering_material` render will differ from the
-explicit-interior render by some power of n that tracks the surrounding
-medium's index, in a direction that isn't pinned down without checking
-the actual PBRT source. Neither render has been produced; this residual
-is open.
+SubSurfaceScatteringMaterial, RandomWalkSSSMaterial and
+DonnerJensenSkinBSSRDFMaterial construct their SPF with
+`bAbsorbBackFace=true`; when membership is present, the inside branch
+returns before exit refraction. Seeding a camera inside the SSS solid does
+not make that fallback reachable. Without membership it takes the outside
+branch, rather than an ordinary no-op pop. Standalone construction with
+the flag false permits the fallback, whose pre-pop destination-IOR error
+is separately tracked in DL-51.
+
+The camera remains outside the solid in the revised rendered comparison.
+It moves across an enclosing IOR interface while all three models share
+the same geometry: dielectric plus homogeneous interior, diffusion SSS,
+and random-walk SSS. A camera ratio alone cannot identify an erroneous
+constant multiplying every SSS event, because that constant cancels.
+A Fresnel enclosure also adds reflected environmental radiance. The
+primary observer control therefore uses an ideal nonreflecting enclosure;
+absolute no-enclosure conservative-furnace measurements and unmatched
+eta-square mutations supply the discriminating check.
+
+Matched nonzero physical coefficients do not generally imply equal
+Burley-profile and explicit-volume reflectance. The conservative control
+uses zero absorption. Sw normalization (DL-48), non-air relative-index
+handling (DL-49), spectral random-walk survival (DL-50), and planar probe
+support (DL-52) remain distinct questions. No eta factor should be used to
+hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
+for source evidence, geometry controls and the pending gate. DL-04 remains
+open until its convention discriminator is measured and reviewed.
 
 ### 10.2 Named residual: spatially-varying `ior` mismatch (review round 2)
 
