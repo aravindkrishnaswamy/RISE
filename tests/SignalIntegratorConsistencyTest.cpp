@@ -567,6 +567,73 @@
 //  red/green witness (per its own header framing above), and the masked
 //  Layer-2 numbers are corroborating evidence on real showcase content.
 //
+//  ADAPTIVE K, AND THE COMMON-MODE PT DENOMINATOR (debt 28 follow-up,
+//  2026-09-11).  Everything above this paragraph derived K against the
+//  PLANK showcase.  Debt 28's aperture fix brought tidal's whole-image
+//  BDPT/PT inside the blow-up gate (it had been 338x), so tidal's masked
+//  BDPT row began running for the first time -- and failed about four
+//  runs in six at K=12.  Two changes, in this order:
+//
+//    1. The stopping rule is now a PRECISION target, not a count.  The
+//       loop draws at least kLayer2MaskedSubRenders sub-renders, then
+//       keeps going while the standard error of the mean ratio exceeds
+//       kLayer2MaskedSEFraction of the band (0.25 * 0.20 = 0.05), to a
+//       hard cap of kLayer2MaskedSubRendersCap = 48.  A row that hits
+//       the cap with SE still above target is reported as INSUFFICIENT
+//       PRECISION and counted in `g_maskedPrecisionSkipCount` -- NOT a
+//       pass and NOT a failure, the same honesty the blow-up gate
+//       practises.  Fixed K was the wrong shape of knob for an
+//       estimator whose per-showcase variance differs this much: tidal's
+//       masked pixels are ~30x darker than its frame average (masked PT
+//       mean 0.0017 against a whole-image 0.056, over 13.5% of pixels).
+//
+//    2. Each sub-render now draws its OWN PT denominator pair.  The
+//       estimator is (maskedE/maskedB) * (maskedPT_B/maskedPT_E), so the
+//       PT pair is a MULTIPLICATIVE factor common to every sub-render:
+//       re-rendering only BDPT/VCM averaged away the integrator-side
+//       noise and left the PT-side noise entirely intact.  That is
+//       measurable -- tidal's within-run SE at K=12 was 0.017 against a
+//       run-to-run sd of ~0.06 over the six runs tabulated in
+//       docs/RENDERING_INTEGRATORS.md, 3.5x larger -- so an SE built on
+//       BDPT draws alone is not the SE of the asserted quantity, and a
+//       stopping rule using it stops early and confidently.  The PT
+//       draws come from a per-showcase pool shared by the BDPT and VCM
+//       loops (cost: max(K) PT pairs per showcase, not their sum).  The
+//       MASK is deliberately NOT redrawn -- it is a selector, and
+//       redefining which pixels are measured per sub-render would
+//       average over a different quantity each time.
+//
+//  What that bought, measured over two full runs at the default seed
+//  base.  Every row moved TOWARD zero once the common-mode PT factor was
+//  resampled -- it had been biasing the whole suite negative:
+//
+//    row              shared-PT (run 1)   independent-PT (run 2)
+//    plank BDPT         -0.0737             +0.0001
+//    plank VCM          -0.0515             +0.0082
+//    bunny BDPT         +0.0042             +0.0032
+//    bunny VCM          +0.0063             +0.0031
+//    pavilion BDPT      -0.0391             -0.0113
+//    pavilion VCM       -0.0361             -0.0086
+//    tidal BDPT         -0.2432             -0.2443
+//
+//  K stayed at the 12 minimum on every row (SE 0.0006-0.0179, all under
+//  the 0.05 target), and the whole suite runs in 2:47 on this machine --
+//  the independent PT draws cost ~35s over the 2:11 the adaptive rule
+//  alone took.
+//
+//  AND THE TIDAL ROW IS NOT A FLAKE.  That is the finding: at
+//  -0.2443 with SE 0.0179 (and -0.2432 / 0.0173 on the previous run) it
+//  sits 13.6 standard errors OUTSIDE the 0.20 band, reproducibly.  The
+//  six-run spread that made it look like a flake was the common-mode PT
+//  denominator; with that removed the estimate is tight and it is
+//  tidal's masked BDPT transport that is off, not the measurement.  The
+//  underlying disagreement is large and on both variants (masked R_E
+//  2.11, R_B 2.83 -- BDPT is 2-3x PT on those near-black pixels) and the
+//  ratio-of-ratios does not cancel it because the two differ by 24%.
+//  The band was NOT widened and the row was NOT skipped: it FAILS, and
+//  root-causing that 2-3x is open work, tracked in
+//  docs/RENDERING_INTEGRATORS.md's debt-28 entry.
+//
 //  KNOBS.  `SIGNAL_CONSISTENCY_FILTER` (env, substring match against `unit`,
 //  `showcase`, and the four showcase names `plank`, `tidal`, `bunny`,
 //  `pavilion`) restricts which layer/scene runs, like FabricRenderTest's
@@ -576,16 +643,12 @@
 //  round" above and g_seedBase's own declaration) -- pass a different one
 //  for a genuinely independent sample, the same convention
 //  tests/FabricRenderTest.cpp and tests/PrimitiveSelfHitTest.cpp use.
-//  Default runtime on this machine: ~104 seconds wall (two fresh measured
-//  runs, .../scratchpad/s2_fixround3_run1.txt and run2.txt; layer 1 ~20s,
-//  layer 2 ~84s at kLayer2Samples=32 -- up from the original author's 16
-//  -- with kLayer2MaskedSubRenders=12 independent sub-renders per
-//  BDPT/VCM masked ratio (raised from 6 -> 12 this fix round; see
-//  "RE-DERIVING K UNDER EXPLICIT SEEDING" above for why 6, and even 9,
-//  stopped clearing the plank BDPT masked ratio's 2x-worst band bar once
-//  genuinely independent seeded samples replaced the wall-clock-race
-//  spread).  Still under the ~2 minute budget, though with less headroom
-//  than the K=6-era ~70s.
+//  Default runtime on this machine: 2 minutes 47 seconds wall (measured,
+//  2026-09-11, adaptive K with independent PT denominators; the
+//  fixed-K=12 shared-PT predecessor was 2:11 and the K=6 era ~70s).
+//  Layer 1 is ~20s of that.  K settles at its 12 minimum on every row at
+//  the default seed base, so the adaptive rule costs nothing there and
+//  buys precision only where a showcase needs it, to the 48 cap.
 //
 //  Tabs: 4
 //
@@ -1746,7 +1809,34 @@ static const unsigned int kLayer2Samples = 32;
 //! g_seedBase's declaration -- see RunLayer2Showcase's masked-ratio loop)
 //! for BDPT/VCM only; PT is untouched (K=1, its own noise is already
 //! <0.05% per OBSERVED POST-FIX NUMBERS).
+//!
+//! (debt 28 follow-up, 2026-09-11) K is now ADAPTIVE rather than a
+//! fixed 12.  The tidal showcase's masked BDPT row -- which only began
+//! running at all once debt 28's aperture fix brought tidal's
+//! whole-image BDPT/PT inside the blow-up gate -- failed roughly 4 runs
+//! in 6 at K=12, and the reason is visible in the numbers rather than
+//! in the integrators: tidal's masked pixels are ~30x darker than its
+//! frame average (masked PT mean 0.0017 against a whole-image 0.056,
+//! over 13.5% of pixels), so its per-sub-render masked ratio has a much
+//! wider spread than plank's, and a K tuned on plank is simply not
+//! enough samples there.  Fixed K is the wrong shape of knob for an
+//! estimator whose per-showcase variance differs by that much.
+//!
+//! So the loop keeps drawing sub-renders until the STANDARD ERROR of
+//! the mean ratio is <= kLayer2MaskedSEFraction of the band, or the cap
+//! is reached.  A row that reaches the cap with the standard error
+//! still above that target is NOT quietly passed or failed -- it is
+//! reported as INSUFFICIENT PRECISION and counted as a skip, the same
+//! honesty the blow-up gate already practises.  kLayer2MaskedSubRenders
+//! is the MINIMUM (the sample size the SE estimate itself needs to mean
+//! anything, and the number the band was derived at).
 static const unsigned int kLayer2MaskedSubRenders = 12;
+static const unsigned int kLayer2MaskedSubRendersCap = 48;
+//! Target standard error of the mean masked ratio, as a fraction of
+//! kLayer2MaskedBand.  1/4 of the band means a row that passes is ~4
+//! standard errors inside it -- i.e. the pass is about the estimator's
+//! CENTRE, not about where one draw happened to land.
+static const double kLayer2MaskedSEFraction = 0.25;
 static const double kLayer2Band = 0.05;			// design doc section 6.2's own number (whole-image)
 static const double kLayer2SensitivityBand = 0.05;	// whole-image
 static const double kLayer2MaskThreshold = 0.20;	// |PT(E)-PT(B)|/PT(B) > this -> "the signal moved this pixel"
@@ -1758,6 +1848,11 @@ static const double kLayer2BlowupAgreeBand = 0.10;	// (F2) E and B must also agr
 //! Total blow-up skips across every showcase/integrator (task item 5):
 //! counted here, printed in main()'s summary, never silently absorbed.
 static int g_blowupSkipCount = 0;
+
+//! Masked rows that hit kLayer2MaskedSubRendersCap with the standard
+//! error still above target.  Neither a pass nor a failure: the run did
+//! not buy enough precision to say.  Printed in main()'s summary.
+static int g_maskedPrecisionSkipCount = 0;
 
 //! Redirect std::cout into a private buffer for the duration of `fn`,
 //! returning what was written, and echo it back to the REAL stdout
@@ -2190,6 +2285,56 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	const double maskedPT_B = maskedMean( ptRow->valsB );
 	std::cout << "  MASKED PT: mean(E)=" << maskedPT_E << " mean(B)=" << maskedPT_B << std::endl;
 
+	// (debt 28 follow-up) INDEPENDENT PT DENOMINATORS.
+	//
+	// The estimator is
+	//     R_E/R_B = (maskedE / maskedB) * (maskedPT_B / maskedPT_E),
+	// so the PT pair enters as a single MULTIPLICATIVE factor common to
+	// every sub-render.  Re-rendering only BDPT/VCM therefore averages
+	// away the integrator-side noise and leaves the PT-side noise
+	// untouched -- which is why the old fixed-K estimator's within-run
+	// spread looked small while its across-run spread was ~3.5x larger
+	// (measured on tidal: within-run SE 0.017 at K=12 against a
+	// run-to-run sd of ~0.06 over the six runs tabulated in
+	// docs/RENDERING_INTEGRATORS.md).  An SE computed from BDPT draws
+	// alone is not the SE of the quantity being asserted, and a
+	// stopping rule built on it would stop early and confidently.
+	//
+	// So each sub-render index gets its OWN PT pair, drawn from this
+	// lazily-grown pool.  Index 0 is the primary PT row already
+	// rendered above.  The pool is shared between the BDPT and VCM
+	// loops of the same showcase: sub-render i of both uses PT draw i,
+	// which costs max(K_bdpt, K_vcm) PT pairs per showcase instead of
+	// their sum, at the price of a little correlation BETWEEN the two
+	// rows -- they are separate assertions, so that is harmless.
+	//
+	// The MASK is NOT redrawn.  It is a selector, not part of the
+	// estimator (see the header's note that PT only BUILDS the mask),
+	// and redefining which pixels are measured per sub-render would
+	// average over a different quantity each time.
+	std::vector< std::pair<double,double> > ptDenomPool;
+	ptDenomPool.push_back( std::make_pair( maskedPT_E, maskedPT_B ) );
+
+	//! Returns the i-th independent PT denominator pair, rendering it
+	//! if the pool has not reached that far.  Returns (0,0) if the
+	//! render or its pixel arrays come back unusable, which the caller
+	//! counts as a sub-render failure exactly like an integrator-side one.
+	auto ptDenominators = [&]( std::size_t i ) -> std::pair<double,double> {
+		while( ptDenomPool.size() <= i ) {
+			Layer2Row ptSub;
+			bool ptDerived = false;
+			RenderShowcaseVariant( variantEText, variantBText, Integrator::PT, kLayer2Samples, spec.keyword, targetW, targetH, &ptSub, &ptDerived );
+			if( !ptDerived || ptSub.valsE.size() != N || ptSub.valsB.size() != N ) {
+				return std::make_pair( 0.0, 0.0 );
+			}
+			const double e = maskedMean( ptSub.valsE );
+			const double b = maskedMean( ptSub.valsB );
+			if( e == 0.0 || b == 0.0 ) return std::make_pair( 0.0, 0.0 );
+			ptDenomPool.push_back( std::make_pair( e, b ) );
+		}
+		return ptDenomPool[i];
+	};
+
 	for( const Layer2Row& r : rows ) {
 		if( r.integ == Integrator::PT ) continue;
 		{
@@ -2209,49 +2354,106 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		}
 		const double R_E = maskedE / maskedPT_E;
 		const double R_B = maskedB / maskedPT_B;
-		double ratioSum = R_E / R_B - 1.0;
-		int ratioCount = 1;
 
-		// (K-P1) BDPT/VCM average the masked ratio over kLayer2MaskedSubRenders
-		// INDEPENDENT full renders (this row's own render above is sub-render
-		// #1) -- see that constant's comment for the measurement that shows
-		// this, not a higher single-render spp, is what actually shrinks the
-		// run-to-run spread of this metric.  PT is not looped here (K=1):
-		// its own noise is already <0.05% (OBSERVED POST-FIX NUMBERS).
+		// Per-sub-render values of the estimator, kept individually (not
+		// just summed) so the standard error below is computable.
+		std::vector<double> ratios;
+		ratios.push_back( R_E / R_B - 1.0 );
+		int subRenderFailures = 0;
+
+		// Standard error of the mean of `ratios`.  Returns -1 until
+		// there are at least two samples.
+		auto standardError = [&]() -> double {
+			const std::size_t n = ratios.size();
+			if( n < 2 ) return -1.0;
+			double mean = 0.0;
+			for( double v : ratios ) mean += v;
+			mean /= double( n );
+			double ss = 0.0;
+			for( double v : ratios ) ss += ( v - mean ) * ( v - mean );
+			const double sd = std::sqrt( ss / double( n - 1 ) );	// sample sd
+			return sd / std::sqrt( double( n ) );
+		};
+
+		const double seTarget = kLayer2MaskedBand * kLayer2MaskedSEFraction;
+
+		// (K-P1, then debt 28 follow-up) BDPT/VCM average the masked
+		// ratio over INDEPENDENT full renders -- see
+		// kLayer2MaskedSubRenders' comment for the measurement showing
+		// that this, not a higher single-render spp, is what shrinks the
+		// run-to-run spread.  This row's own render above is
+		// sub-render #1.  The loop now runs to a PRECISION target rather
+		// than a fixed count: at least kLayer2MaskedSubRenders (the
+		// sample size the band was derived at, and the minimum for the
+		// SE estimate to mean anything), then onward while the standard
+		// error of the mean is above `seTarget`, to a hard cap.  PT is
+		// not looped (K=1): its own noise is already <0.05% (OBSERVED
+		// POST-FIX NUMBERS).
 		if( r.integ == Integrator::BDPT || r.integ == Integrator::VCM ) {
-			for( unsigned int sub = 1; sub < kLayer2MaskedSubRenders; ++sub ) {
+			while( ratios.size() + (std::size_t)subRenderFailures < (std::size_t)kLayer2MaskedSubRendersCap )
+			{
+				if( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders ) {
+					const double se = standardError();
+					if( se >= 0.0 && se <= seTarget ) break;
+				}
 				Layer2Row subRow;
 				bool subDerived = false;
 				RenderShowcaseVariant( variantEText, variantBText, r.integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
-				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) continue;
+				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) { subRenderFailures++; continue; }
 				const double subMaskedE = maskedMean( subRow.valsE );
 				const double subMaskedB = maskedMean( subRow.valsB );
-				if( subMaskedE == 0.0 || subMaskedB == 0.0 ) continue;
-				ratioSum += ( subMaskedE / maskedPT_E ) / ( subMaskedB / maskedPT_B ) - 1.0;
-				ratioCount++;
+				if( subMaskedE == 0.0 || subMaskedB == 0.0 ) { subRenderFailures++; continue; }
+				const std::pair<double,double> den = ptDenominators( ratios.size() );
+				if( den.first == 0.0 || den.second == 0.0 ) { subRenderFailures++; continue; }
+				ratios.push_back( ( subMaskedE / den.first ) / ( subMaskedB / den.second ) - 1.0 );
 			}
 		}
 
-		// (round-3 fix, task item 4) The loop above `continue`s past any
-		// sub-render that fails to derive or comes back with a mismatched
-		// or degenerate pixel array, so a bad run could silently average
-		// over fewer than kLayer2MaskedSubRenders sub-renders instead of
-		// failing loudly -- "RE-DERIVING K UNDER EXPLICIT SEEDING" above
-		// was measured at exactly kLayer2MaskedSubRenders (K=12 as of
-		// this fix round), so a quietly-smaller K is an unmeasured
-		// estimator, not the one the band was derived against.
+		// (round-3 fix, task item 4; kept under adaptive K) A sub-render
+		// that fails to derive, or comes back with a mismatched or
+		// degenerate pixel array, used to be `continue`d past silently,
+		// so a bad run could average over fewer sub-renders than the
+		// estimator was measured at.  Under adaptive K the count is no
+		// longer fixed, so what is asserted is the thing that was
+		// actually wrong: NO sub-render failed, and the minimum sample
+		// size was reached.
 		if( r.integ == Integrator::BDPT || r.integ == Integrator::VCM ) {
-			Check( ratioCount == (int)kLayer2MaskedSubRenders,
+			Check( subRenderFailures == 0,
 				std::string( spec.keyword ) + " " + IntegratorName(r.integ)
-				+ " (masked): all " + std::to_string(kLayer2MaskedSubRenders)
-				+ " sub-renders succeeded (got " + std::to_string(ratioCount) + ")" );
+				+ " (masked): every sub-render succeeded (failures: "
+				+ std::to_string(subRenderFailures) + ")" );
+			Check( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders,
+				std::string( spec.keyword ) + " " + IntegratorName(r.integ)
+				+ " (masked): at least " + std::to_string(kLayer2MaskedSubRenders)
+				+ " sub-renders (got " + std::to_string(ratios.size()) + ")" );
 		}
 
-		const double ratio = ratioSum / double( ratioCount );
+		double ratio = 0.0;
+		for( double v : ratios ) ratio += v;
+		ratio /= double( ratios.size() );
+		const double se = standardError();
+
+		const bool loopedRow = ( r.integ == Integrator::BDPT || r.integ == Integrator::VCM );
+		const bool insufficient = loopedRow && se > seTarget;
+
 		std::cout << "  MASKED " << IntegratorName(r.integ) << ": R_E=" << R_E << " R_B=" << R_B
 		          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
-		          << "  avg over " << ratioCount << " sub-render(s)=" << ratio
-		          << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
+		          << "  avg over " << ratios.size() << " sub-render(s)=" << ratio;
+		if( loopedRow ) {
+			std::cout << "  SE=" << se << " (target <= " << seTarget << ")";
+		}
+		if( insufficient ) {
+			std::cout << "  [INSUFFICIENT PRECISION]" << std::endl;
+			std::cout << "  INSUFFICIENT PRECISION: " << spec.keyword << " "
+			          << IntegratorName(r.integ)
+			          << " (masked) reached the " << kLayer2MaskedSubRendersCap
+			          << "-sub-render cap with SE=" << se << " > " << seTarget
+			          << ".  The estimate (" << ratio << ") is NOT asserted either way "
+			          << "-- counted as a skip, not a pass and not a failure." << std::endl;
+			g_maskedPrecisionSkipCount++;
+			continue;
+		}
+		std::cout << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
 		Check( std::fabs( ratio ) < kLayer2MaskedBand,
 			std::string( spec.keyword ) + " " + IntegratorName(r.integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
 	}
@@ -2318,7 +2520,8 @@ int main( int argc, char** argv )
 
 	std::cout << "\n========================================" << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount
-	          << "  Blow-up skips (integrator disagreement, not signal-attributable): " << g_blowupSkipCount << std::endl;
+	          << "  Blow-up skips (integrator disagreement, not signal-attributable): " << g_blowupSkipCount
+	          << "  Masked precision skips (cap reached, SE still above target): " << g_maskedPrecisionSkipCount << std::endl;
 	std::cout << "========================================" << std::endl;
 
 	return failCount > 0 ? 1 : 0;
