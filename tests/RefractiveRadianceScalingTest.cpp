@@ -503,6 +503,86 @@ static void RunRowA( const char* ior, double n )
 }
 
 //////////////////////////////////////////////////////////////////////
+// Row A -- PerfectRefractorSPF variant (review round 3, C3).
+//
+// Same geometry and closed form as row A above; `mat_water` swapped
+// from `dielectric_material` to `perfectrefractor_material`.  That
+// chunk has no `tau` / `scattering` knobs (PerfectRefractorSPF has no
+// attenuation or rough-transmission path at all -- it is a pure delta
+// refractor), so `refractance` is bound to an explicit white painter to
+// match row A's `tau 1.0`; the chunk's own default for `refractance` is
+// "none", which resolves to a BLACK uniformcolor_painter
+// (Job::InitializeContainers), not white -- binding it explicitly
+// avoids a silently-dark scene.
+//
+// This row is GREEN on the current (already-fixed) library: it does
+// not exercise new code.  `PerfectRefractorSPF::DoSingleRGBComponent`
+// pushes/pops the IOR stack the exact same way
+// `DielectricSPF::GenerateScatteredRay` does (docs/
+// REFRACTIVE_RADIANCE_SCALING.md section 6.1's `PerfectRefractorSPF.cpp`
+// row: "yes, via the consumer"), and the eta^2 factor is applied
+// entirely at the consumer sites (PathTracingIntegrator.cpp /
+// BDPTIntegrator.cpp / RefractionShaderOp.cpp), which read the factor
+// off the two IORStacks the SPF handed them and do not distinguish
+// which SPF produced the ray.  So this row pins a SECOND producer
+// through the already-fixed consumer path, not a second code path.
+//////////////////////////////////////////////////////////////////////
+static std::string SceneSubmergedLuminairePerfectRefractor( const char* ior )
+{
+	return std::string(
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n"
+		"\tlocation 0.0 2.5 0.001\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 0 1\n"
+		"\tfov 15.0\n"
+		"}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n"
+		"\tname mat_emit\n\texitance pnt_emit\n\tscale 1.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad\n"
+		"\tpta -1 0.05 1\n\tptb 1 0.05 1\n\tptc 1 0.05 -1\n\tptd -1 0.05 -1\n}\n\n"
+		"standard_object\n{\n\tname obj_quad\n\tgeometry quad\n\tmaterial mat_emit\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"perfectrefractor_material\n{\n\tname mat_water\n\trefractance pnt_white\n\tior " ) + ior + "\n}\n\n"
+		"box_geometry\n{\n\tname geo_water\n\twidth 4\n\theight 0.3\n\tdepth 4\n}\n\n"
+		"standard_object\n{\n\tname water\n\tgeometry geo_water\n"
+		"\tmaterial mat_water\n\tposition 0 0.15 0\n}\n";
+}
+
+static void RunRowAPerfectRefractor( const char* ior, double n )
+{
+	const double L        = 1.0 / 3.14159265358979323846;	// exitance 1 => L = M/pi
+	const double expected = ( 1.0 - R0( n ) ) * L / ( n * n );
+
+	std::cout << "Row A (perfectrefractor_material): submerged Lambertian luminaire, ior " << ior
+	          << "  (closed form T*L/n^2 = " << expected << ")" << std::endl;
+
+	const std::string common = SceneSubmergedLuminairePerfectRefractor( ior );
+	const std::string head( "RISE ASCII SCENE 7\n" );
+
+	struct Row { const char* name; std::string scene; };
+	const Row rows[] = {
+		{ "PT",       head + RasterizerPT( "16" )       + common },
+		{ "BDPT",     head + RasterizerBDPT( "16" )     + common },
+		{ "VCM",      head + RasterizerVCM( "32" )      + common },
+		{ "pixelpel", head + RasterizerPixelPel( "4" )  + common },
+	};
+
+	for( const Row& r : rows ) {
+		const ImageStats s = RenderAndComputeStats( r.scene, "rowA_pr" );
+		const std::string label = std::string( "row A-PR ior " ) + ior + " " + r.name;
+		Check( s.valid, label + ": render produced output" );
+		if( !s.valid ) continue;
+		const double m = GreyMean( s );
+		std::cout << "    " << r.name << "  mean=" << m
+		          << "  ratio-to-closed-form=" << ( m / expected ) << std::endl;
+		Check( std::fabs( m - expected ) <= 0.02 * expected,
+			label + ": mean == T*L/n^2 within 2%" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // Row B -- camera inside the dielectric, uniform env outside.
 //
 // tests/EnvLightBalanceTest.cpp topology J with ior 1.0 -> 1.5.  That
@@ -705,6 +785,7 @@ int main( int argc, char** argv )
 
 	RunRowA( "1.33", 1.33 );
 	RunRowA( "1.5",  1.5  );
+	RunRowAPerfectRefractor( "1.33", 1.33 );
 	RunRowB();
 	RunRowC();
 	RunRowD();
