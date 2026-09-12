@@ -702,6 +702,45 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   fisheye with non-square pixels, and a correct fix needs the full
   Jacobian of `normalize ∘ Stretch`, not a constant.
 
+  **NEW, OPEN, and a direct consequence of this fix —
+  `SignalIntegratorConsistencyTest`'s tidal MASKED BDPT row is now
+  asserted and is flaky.**  Before the fix that row never ran: tidal's
+  whole-image BDPT/PT was 338×, outside the blow-up gate's [0.5×, 2×],
+  so both the whole-image and the masked ratio-of-ratios were SKIPPED.
+  Post-fix the whole-image ratio is 1.019 (PT 0.05619, BDPT 0.05724 at
+  the test's 160×120 / reduced-spp configuration, with no
+  `transparent_shadows` on any of the three), the gate no longer fires
+  for BDPT, and the masked ratio-of-ratios runs for the first time —
+  against a 0.20 band, averaged over 12 sub-renders:
+
+  | seed base | masked BDPT R_E | R_B | avg R_E/R_B − 1 | verdict |
+  |-----------|-----------------|-----|-----------------|---------|
+  | default (run A) | — | — | (failed; not captured) | FAIL |
+  | default (run B) | 1.732 | 2.381 | −0.185 | pass |
+  | 1000 | 1.979 | 2.620 | −0.126 | pass |
+  | 2000 | 2.012 | 2.942 | −0.269 | FAIL |
+  | 3000 | 2.030 | 2.597 | −0.220 | FAIL |
+  | 4000 | 1.920 | 2.801 | −0.300 | FAIL |
+
+  Four of six runs fail.  The instability is in **R_B**, the
+  neutral-signal variant (2.60–2.94 across seeds) — R_E is stable at
+  1.92–2.03 — and the mask lands on pixels roughly 30× darker than the
+  frame average (tidal's masked PT mean is 0.0017 against a
+  whole-image 0.056, over 13.5 % of pixels), so the row is measuring a
+  BDPT-vs-PT disagreement of ≈2× concentrated on near-black pixels
+  with very little signal to average.  Whether that ≈2× is a debt-27-
+  class PT strategy gap through the water, a masked-set noise floor,
+  or something else has NOT been diagnosed, and **the test was
+  deliberately not loosened** — widening the band, raising
+  `kLayer2MaskedSubRenders` for this showcase, or root-causing the
+  masked 2× are all open options.  Tidal's VCM row still skips at
+  2.049× (just over the gate's 2.0), which is the same
+  transparent-shadows/merge-recovery effect the table above quantifies.
+  `shelf_bunny` and `pavilion_colonnade`, which were also blow-up
+  skips before, are now fully asserted and clean (masked BDPT +0.010 /
+  VCM +0.010 on bunny; −0.017 / −0.014 on pavilion) — so the fix took
+  the suite from four blow-up skips to one.
+
   **Guards.**  `tests/CameraImportanceTest.cpp` (new, 956 closed-form
   checks, no renders, ~1 s) pins the camera-side algebra: the aperture
   area IS one over the sampling density, the inverse projection
