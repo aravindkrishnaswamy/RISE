@@ -645,10 +645,14 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   | `pavilion_colonnade` f/16 | BDPT | 0.2770 | 0.2770 | 0.2725 | 1.02× |
   | `pavilion_colonnade` f/16 | VCM  | 217.24 | 0.2772 | 0.2725 | 1.02× |
 
-  A `pinhole_camera` control at tidal's framing is unmoved by the fix
-  (PT 0.0456 / BDPT 0.0443 / VCM 0.0468 before and after, all inside
-  run-to-run noise), and the f/2.8 rows now give the same ratios as
-  the f/22 ones — the defect's `1/A_lens` signature is gone.
+  A `pinhole_camera` control at tidal's framing (`fov 39.6` =
+  2·atan(18/50), same placement, the PT chunk keeping
+  `transparent_shadows TRUE`) is unmoved by the fix — PT 0.134 / BDPT
+  0.079 / VCM 0.141 before and after, the supervisor's pre-fix run and
+  reviewer C's post-fix reproduction agreeing to three figures (an
+  earlier draft of this sentence quoted numbers from a different framing
+  and was corrected in review) — and the f/2.8 rows now give the same
+  ratios as the f/22 ones — the defect's `1/A_lens` signature is gone.
 
   **Tidal's remaining BDPT 0.51× is `transparent_shadows`, not an
   integrator disagreement.**  That parameter is accepted only by
