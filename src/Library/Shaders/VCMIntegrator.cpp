@@ -1635,6 +1635,19 @@ namespace
 			return;
 		}
 
+		// Delta-DIRECTION camera (orthographic): the light-tracing
+		// strategy cannot scatter a non-specular light vertex into the
+		// camera's single parallel direction -- that density is zero --
+		// so the whole splat pass is skipped, exactly as
+		// `BDPTIntegrator`'s t==1 branch has always done.  Without this
+		// the splat both misdirects energy (`Rasterize` on an ortho
+		// camera answers for a DIFFERENT camera vertex than the one the
+		// eye subpath used, since every pixel has its own ray origin)
+		// and takes MIS mass that `wLight` never reserves for it.
+		if( BDPTCameraUtilities::IsDeltaDirection( camera ) ) {
+			return;
+		}
+
 		// Debt 28 -- FINITE-APERTURE cameras.  The camera end of every
 		// t=1 splat on this subpath is a point drawn from the entrance
 		// APERTURE with the primary rays' own shape and density, not

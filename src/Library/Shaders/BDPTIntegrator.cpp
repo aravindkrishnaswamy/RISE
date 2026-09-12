@@ -1645,8 +1645,25 @@ namespace {
 		// VCM post-pass inputs on the camera endpoint: the
 		// directional importance PDF in solid-angle measure (used by
 		// InitCamera), plus a cosine sentinel of 1.0.  BDPT itself
-		// does not read these.
-		vertices[0].emissionPdfW = pdfCamDir;
+		// does not read these (its own walk uses the local
+		// `pdfCamDir` below).
+		//
+		// ZERO for a delta-DIRECTION camera, which is the VCM-side
+		// mirror of the `isDelta` flag BDPT sets on this same vertex.
+		// `InitCamera` maps a non-positive pdf to `dVCM = 0`, and
+		// dVCM is precisely the MIS mass reserved for the
+		// light-tracing (t==1) strategy -- which for an orthographic
+		// camera does not exist, since every pixel has its own ray
+		// origin and no light vertex can connect to a single camera
+		// point.  SmallVCM does the same thing on the light side for
+		// a delta light.  Leaving `PdfDirection`'s orthographic
+		// return (1/A_image, an AREA density, not a solid-angle one)
+		// in here made dVCM enormous and crushed every eye-side
+		// strategy's weight: VCM rendered an orthographic scene at
+		// 7.7% of PT (debt 28 review, A P2-6).
+		const bool cameraIsDeltaDirection =
+			pCamera && BDPTCameraUtilities::IsDeltaDirection( *pCamera );
+		vertices[0].emissionPdfW = cameraIsDeltaDirection ? Scalar( 0 ) : pdfCamDir;
 		vertices[0].cosAtGen = 1.0;
 
 		Scalar pdfFwdPrev = pdfCamDir;
