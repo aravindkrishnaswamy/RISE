@@ -269,48 +269,6 @@ void* MLTSpectralRasterizer::SpectralRoundThread_ThreadProc( void* lpParameter )
 }
 
 //////////////////////////////////////////////////////////////////////
-// EvaluateSingleWavelength - Evaluates BDPT at one wavelength.
-//
-// Generates light and eye subpaths using the NM methods, evaluates
-// all (s,t) connection strategies, and returns the results.
-// The sampler streams are managed by the caller.
-//////////////////////////////////////////////////////////////////////
-
-void MLTSpectralRasterizer::EvaluateSingleWavelength(
-	const IScene& scene,
-	const ICamera& camera,
-	ISampler& sampler,
-	const unsigned int width,
-	const unsigned int height,
-	const Ray& cameraRay,
-	const Point2& screenPos,
-	const Point2& cameraRasterPos,
-	const Point2& cameraLensSample,
-	const Scalar nm,
-	const RuntimeContext& rc,
-	std::vector<BDPTIntegrator::ConnectionResultNM>& results,
-	std::vector<BDPTVertex>& lightVerts,
-	std::vector<BDPTVertex>& eyeVerts
-	) const
-{
-	lightVerts.clear();
-	eyeVerts.clear();
-	std::vector<uint32_t> lightSubpathStarts;
-	std::vector<uint32_t> eyeSubpathStarts;
-
-	// MLT's Markov-chain proposal measure assumes a single subpath —
-	// force threshold=1.0 on both sides to keep the NM generators
-	// emitting single-branch output (matches RGB MLTRasterizer).
-	// Single-wavelength MLT path: pSwlHWSS = nullptr.
-	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
-
-	// Debt 28: `cameraLensSample` is the caller's -- drawn from
-	// stream 48 before the subpath walks, see the header.
-	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, nm );
-}
-
-//////////////////////////////////////////////////////////////////////
 // EvaluateSampleSpectral - Spectral bridge between MLT and BDPT.
 //
 // Consumes samples from the PSSMLTSampler to:

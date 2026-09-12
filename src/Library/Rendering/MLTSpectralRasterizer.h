@@ -117,32 +117,6 @@ namespace RISE
 			/// Thread procedure for parallel spectral chain execution
 			static void* SpectralRoundThread_ThreadProc( void* lpParameter );
 
-			/// Evaluate BDPT at a single wavelength.  Returns per-strategy
-			/// scalar contributions with pixel positions.
-			///
-			/// `cameraLensSample` is the t==1 aperture sample and is
-			/// passed IN rather than drawn here: under PSSMLT it has to
-			/// come from stream 48, contiguous with the film and lens
-			/// samples, and by the time this runs the sampler has been
-			/// through the integrator's streams 0..47.  See
-			/// `MLTRasterizer::EvaluateSample`.
-			void EvaluateSingleWavelength(
-				const IScene& scene,
-				const ICamera& camera,
-				ISampler& sampler,
-				const unsigned int width,
-				const unsigned int height,
-				const Ray& cameraRay,
-				const Point2& screenPos,
-				const Point2& cameraRasterPos,
-				const Point2& cameraLensSample,
-				const Scalar nm,
-				const RuntimeContext& rc,
-				std::vector<BDPTIntegrator::ConnectionResultNM>& results,
-				std::vector<BDPTVertex>& lightVerts,
-				std::vector<BDPTVertex>& eyeVerts
-				) const;
-
 			/// Spectral analog of MLTRasterizer::RenderFrameOfMLT.
 			/// Shared by RasterizeScene and RasterizeSceneAnimation
 			/// so both observe identical spectral chain semantics
