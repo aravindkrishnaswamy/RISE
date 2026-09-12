@@ -1024,6 +1024,15 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   diagnosed further this round; see that section for the two readings
   and the un-run observable that would settle it.
 
+  **Incidental fix found in passing while auditing this area:**
+  `TranslucentSPF::Scatter`'s entry-side per-channel Phong-N loop
+  (`src/Library/Materials/TranslucentSPF.cpp` ~line 154, inside
+  `TranslucentSPF::Scatter`) wrote `trans.kray[0] = p[0]` on every
+  iteration instead of `trans.kray[i] = p[i]`, zeroing channels 1 and 2
+  of that lobe for any `translucent_material` with a non-uniform
+  per-channel Phong N; fixed to match the sibling exit-side loop, guard
+  extended in `tests/TranslucentIORStackTest.cpp`.
+
 
 ## 8. Cross-references
 

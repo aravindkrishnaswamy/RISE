@@ -151,7 +151,7 @@ void TranslucentSPF::Scatter(
 						TWO_PI * ptrand.y );
 
 					trans.kray = 0;
-					trans.kray[0] = p[0];
+					trans.kray[i] = p[i];
 					trans.ray.Set( ri.ptIntersection, rv );
 					// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
 					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
