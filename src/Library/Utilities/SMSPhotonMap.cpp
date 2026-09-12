@@ -272,6 +272,12 @@ namespace
 			// surrounding medium, not air.  Air scenes stay byte-identical (1.0).
 			const Scalar ambIOR = ior_stack.top();
 			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+			// IMPORTANCE mode: NO eta^2 basic-radiance factor (debt 30).  These
+			// are SMS photon SEEDS -- a light-rooted flux walk, same rule as the
+			// photon tracers.  (The SMS chain evaluation in ManifoldSolver.cpp
+			// does apply the factor, because that walk runs eye->light and
+			// carries radiance; the two are disjoint segments, not a double
+			// count.)
 			pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 
 			// Classical caustic pattern: a hit with a non-delta BSDF

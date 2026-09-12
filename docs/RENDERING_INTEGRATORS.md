@@ -547,6 +547,9 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   that unreachable transport from each other, an open question this
   entry does not resolve — tracked as its own item, **debt 30** below,
   since it is a BDPT-vs-VCM disagreement rather than a PT strategy gap.
+  *(Debt 30 is now RESOLVED — see its entry: the disagreement turned out
+  to be BDPT's structural S-D-S gap, so "BDPT and VCM recover different
+  amounts" is right, and the reason is that BDPT recovers none of it.)*
   Debt 26
   — the legacy `pixelpel_rasterizer` reading **0.0416** on a gapped weave
   in front of an area light where the modern `pathtracing_pel_rasterizer`
@@ -770,7 +773,8 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   assertable, and it FAILED until round 3's reference-completeness gate
   excluded it (it is now a counted REFERENCE INCOMPLETE skip — BDPT's
   masked neutral-variant ratio to PT is ≈ 3×, so PT cannot referee it —
-  and the BDPT-vs-VCM gap behind it is debt 30).**  Before the fix that
+  and the BDPT-vs-VCM gap behind it is debt 30, now RESOLVED: BDPT has no
+  strategy for tidal's S-D-S caustic at all).**  Before the fix that
   row never ran:
   tidal's whole-image BDPT/PT was 338×, outside the blow-up gate's
   [0.5×, 2×], so both the whole-image and the masked ratio-of-ratios
@@ -818,7 +822,11 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   ratio-of-ratios does not cancel it because
   the two differ by 24 %.  Whether that 2–3× is a debt-27-class PT
   strategy gap through the water or something else has NOT been
-  diagnosed.  **The band was not widened** — round 2 left the row
+  diagnosed.  *(Diagnosed 2026-09-12 under debt 30: it is a strategy gap,
+  and it is BDPT's as much as PT's — neither can reach the S-D-S caustic,
+  so on the masked pixels BDPT is numerically PT-without-
+  transparent-shadows and only VCM's merges see the transport.  The
+  numbers quoted in this paragraph predate the eta^2 fix.)*  **The band was not widened** — round 2 left the row
   failing with a stated precision; round 3 then classified it by the
   symmetric reference-completeness rule (§6.2 of
   SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md) as a counted skip, because
@@ -894,41 +902,217 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   found; neither test currently probes depth >= 32 under PSSMLT, so
   this overrun has no red-proof guard yet.
 
-- **Debt 30 (OPEN, debt 28 round 3 ruling on
-  `SignalIntegratorConsistencyTest`'s masked layer): BDPT and VCM
-  disagree ≈ 20× on `tidal_stones`' caustic-lit pixels (a delta
-  `omni_light` refracted through the dielectric water onto the
-  stones): neutral-variant masked means PT : BDPT : VCM ≈ 1 : 2.8 : 58;
-  whole-image BDPT 1.02× PT, VCM 2.05× PT.** PT cannot sample these
-  paths at all (delta light behind a dielectric — a debt 27-class
-  strategy gap: PT's NEE can only reach a delta light via a straight,
-  unoccluded shadow ray); BDPT reaches them only through light tracing
-  (s≥2, t=1 strategies); VCM through merging. Which of BDPT and VCM is
-  right is undetermined: candidates are a VCM merge over-count on
-  S-D-S paths from a delta light (compare
-  [docs/skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)'s
-  "delta-light NEE took weight 1 while light tracing splatted the same
-  path" example — a structurally similar double-count would explain
-  VCM's much larger 58× multiplier next to BDPT's 2.8×) or a BDPT
-  under-count (its S-D-S coverage below a merging radius could simply
-  be missing part of the transport that VCM's merges recover). A
-  reference-free check is needed — a closed-form solution for this
-  specific caustic-through-refraction geometry, or an independent
-  renderer (PBRT/Mitsuba) on the equivalent scene — since neither RISE
-  integrator can referee the other here. This is NOT signal-attributable
-  (BDPT's and VCM's own E/B self-ratios — the quantity signals actually
-  move — agree with each other outside the masked pixels, and the
-  discovery mechanism was `SignalIntegratorConsistencyTest`'s
-  reference-completeness gate, not a signals regression). Not
-  root-caused. Surfaced by, and now gated symmetrically in,
-  `tests/SignalIntegratorConsistencyTest.cpp`'s masked layer (see that
-  file's "CROSS-INTEGRATOR MASKED INVARIANT" block and
-  `kNoCompleteReferenceThreshold`): the PT-independent BDPT<->VCM
-  cross-check the reference-completeness gate falls back to is itself
-  skipped on `tidal_stones` now, rather than asserted and left to flake
-  between -0.1996 (pass) and -0.2354 (fail) against its own 20% band —
-  see docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6.2 for the
-  symmetric-gate rule this debt motivated.
+- **Debt 30 (RESOLVED 2026-09-12) — it was TWO things, and only one of
+  them was a bug.  (1) The "BDPT and VCM disagree ~20x on
+  `tidal_stones`' caustic-lit pixels" is BDPT's STRUCTURAL S-D-S gap,
+  not a weighting error in either integrator.  (2) Underneath it sat a
+  real, separate defect that affected every integrator and every
+  refractive scene in the tree: RISE applied NO eta^2 basic-radiance
+  scaling at any dielectric interface.  Fixed; guard
+  `tests/RefractiveRadianceScalingTest.cpp`.  Full write-up:
+  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md).**
+
+  **Finding 1 — the 20x is structural.**  Every caustic-lit stone pixel
+  on `tidal_stones` is `E -> water top (S, delta) -> stone (D) -> water
+  top (S, delta) -> L (delta)`.  BDPT has no strategy for it: s=1 NEE
+  from the stone is blocked by the opaque water surface, t=1
+  (stone -> camera) is blocked the same way, and every other split lands
+  on a delta vertex.  VCM reaches it by merging at the stone.  Measured
+  on the pinhole variant, 160x120, 64 spp, `pixel_filter box`,
+  `oidn_denoise FALSE` (whole-image mean, and the ratio of the SUBMERGED
+  image quadrants to transparent-shadow PT):
+
+  | integrator | mean, pre-fix | mean, post-fix | submerged quadrants vs PT-ts, pre | post |
+  |---|---|---|---|---|
+  | PT `transparent_shadows TRUE` | 0.109177 | 0.090168 | 1 | 1 |
+  | PT `transparent_shadows FALSE` | 0.063864 | 0.063867 | 0.003–0.10 | 0.005–0.16 |
+  | BDPT | 0.064695 | 0.064459 | 0.011–0.10 | 0.012–0.16 |
+  | VCM | 0.113430 | 0.092001 | 0.87–1.24 | 0.96–1.15 |
+
+  On tidal, **BDPT is numerically "PT without transparent shadows"** and
+  VCM tracks transparent-shadow PT — before AND after the fix.  The
+  ledger's `1 : 2.8 : 58` is BDPT/PT ~ 0 on the masked pixels, i.e. a
+  transport-coverage difference of exactly the kind
+  [docs/skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)
+  says not to mistake for an MIS bug.  Neither integrator is wrong here;
+  the earlier speculation about a VCM merge over-count on S-D-S paths
+  from a delta light, and about a BDPT under-count below the merging
+  radius, is **withdrawn** — the numbers above are what a missing
+  strategy looks like, not what a mis-weighted one looks like.  This
+  half needed documentation, not code, and
+  `SignalIntegratorConsistencyTest`'s tidal masked row remains a
+  counted `NO COMPLETE REFERENCE` skip after the fix (post-fix
+  neutral-variant masked means PT : BDPT : VCM = 1 : 2.01 : 33.6; the
+  1 : 2.8 : 58 recorded in earlier rounds was measured before the fix,
+  and VCM's multiple fell by n^2 while PT's masked mean — which carries
+  no under-water transport either way — did not).
+
+  **Finding 2 — the real defect.**  Radiance is not invariant across a
+  smooth refractive interface; `L / n^2` is.  A RADIANCE-mode walk owes
+  `(eta_before / eta_after)^2` at every medium change.  RISE applied it
+  nowhere.  Reference-free measurement — a Lambertian luminaire
+  (`exitance 1`, so `L = 1/pi = 0.318310`) 25 cm inside a water box,
+  viewed from air at near-normal incidence:
+
+  | ior | | PT | BDPT | VCM | pixelpel | physics `T*L/n^2` |
+  |---|---|---|---|---|---|---|
+  | — | dry | 0.318359 | 0.318359 | 0.318359 | 0.318359 | 0.318310 |
+  | 1.33 | wet, pre-fix | 0.311816 | 0.311816 | 0.311816 | 0.312012 | **0.176338** |
+  | 1.33 | wet, post-fix | 0.176310 | 0.176310 | 0.176310 | 0.176392 | 0.176338 |
+
+  Pre-fix every integrator read exactly `T*L` — the Fresnel
+  transmittance applied, the 1/n^2 missing (0.311816/0.176338 = 1.7683,
+  close to but not the same number as n^2 = 1.33^2 = 1.7689 -- the
+  ~0.03% gap is measurement quantization in the pre-fix render, not a
+  different physical constant).
+
+  **Why it hid.**  It CANCELS for PT and BDPT in the common case and
+  does not cancel for anything whose light side carries flux.  An eye
+  path that enters the medium (x 1/n^2) and exits it again toward the
+  emitter (x n^2) nets x1; a merge, a photon gather, a light-tracing
+  splat or a transparent-shadow NEE crosses the interface only once on
+  the radiance side and came out n^2 bright.  That is what the ledger
+  had recorded as "VCM 1.53x over PT on a submerged floor": on the slab
+  probe (Lambertian floor inside a water box, tiny sphere emitter and
+  camera both in air) VCM/PT went **1.554 -> 1.046** (0.004908/0.004690
+  = 1.0465, rounds to 1.046) while PT and BDPT
+  moved by less than their own run-to-run spread (0.004666 -> 0.004690
+  and 0.004786 -> 0.004857).  With a delta omni instead, PT and BDPT
+  are exactly 0 both before and after (structural), and the two
+  estimators that CAN see it both dropped by n^2 and still agree:
+  transparent-shadow PT 0.095650 -> 0.054075 and VCM 0.102916 ->
+  0.056977.
+
+  **The rule.**  Radiance-mode walks (camera-rooted: PT, the BDPT /
+  VCM / MLT eye subpath, the legacy shader-op chain, the final gather)
+  multiply by `(eta_before / eta_after)^2` on a medium change.
+  Importance-mode walks (light subpaths, photon tracers, SMS photon
+  seeds, detector-sphere rigs) and shadow rays get NO factor.  No
+  `TransportMode` was threaded through `ISPF::Scatter` (~60
+  implementations); the factor is applied at the CONSUMER from the two
+  IOR stacks it already holds, via one inline
+  `RISE::RadianceEtaScale` in `Utilities/IORStack.h`, and returns
+  exactly 1 when the medium did not change.  `ManifoldSolver`'s SMS
+  chain already applied the same factor in the same convention and was
+  left alone.  §6.1 of the write-up is the full site table.
+
+  **What changes in shipped scenes:** submerged / encased surfaces and
+  emitters seen from outside get 1/n^2 (0.565x in water, 0.444x in
+  glass); a camera inside a refractor sees air-side content at n^2.
+  Nothing else moves.  `TidalStonesShowcaseTest` measures wet/dry
+  RATIOS and stayed at 122/122; `EnvLightBalanceTest` topology J uses
+  `ior 1.0` and stays bit-exact (116/116);
+  `CausticPhotonMapNormalizationTest` puts its camera UNDER the water,
+  so no interface sits on its eye side, and is unchanged (4/4) — which
+  is also why
+  [CAUSTIC_PHOTONMAP_NORMALIZATION.md](CAUSTIC_PHOTONMAP_NORMALIZATION.md)
+  §11's measurements were blind to this factor and remain valid, and why
+  §11.6's prohibition (on a MERGE-side rescale) is untouched.  See §13
+  of that document.
+
+  **Cost:** one multiply per refraction event.  `tidal_stones` PT-ts
+  456/438/439 ms -> 461/445/447 ms; `plank_closeup`
+  19547/20153/20135 ms -> 19837/20010/19962 ms.  Both inside the
+  run-to-run spread.
+
+  **Residual: SSS family eta^2, see REFRACTIVE_RADIANCE_SCALING.md §10.**
+  The subsurface-scattering family (`SubSurfaceScatteringSPF`,
+  `RandomWalkSSS`, `BSSRDFSampling::Sw`) never touches the IOR stack, so
+  it is untouched by this fix and reads the factor as exactly 1
+  unconditionally — an open question on whether that is correct (a
+  telescoping closed form, matching this fix's own convention) or a gap
+  (PBRT-v3's radiance-mode BSSRDF applies an explicit eta^2 divide).  Not
+  diagnosed further this round; see that section for the two readings
+  and the un-run observable that would settle it.
+
+  **Incidental fix found in passing while auditing this area:**
+  `TranslucentSPF::Scatter`'s entry-side per-channel Phong-N loop
+  (`src/Library/Materials/TranslucentSPF.cpp` ~line 154, inside
+  `TranslucentSPF::Scatter`) wrote `trans.kray[0] = p[0]` on every
+  iteration instead of `trans.kray[i] = p[i]`, zeroing channels 1 and 2
+  of that lobe for any `translucent_material` with a non-uniform
+  per-channel Phong N; fixed to match the sibling exit-side loop, guard
+  extended in `tests/TranslucentIORStackTest.cpp`.  Review round 2
+  (2026-09-12) found and fixed the EXIT side's sibling of the same
+  pattern (~line 230-231): `front.kray = 0; front.kray[i] = ...` reset
+  every iteration, but `front` (the ray that actually leaves the object)
+  is added to `scattered` only once, after the loop, so only the last
+  channel (B) survived — see the C1 fix commit and the same test's
+  updated coverage.
+
+- **Debt 31 (OPEN, review round 2, 2026-09-12; item 2 CLOSED review
+  round 3, 2026-09-12; items 3-4 added review round 4, 2026-09-12) — pre-existing `TranslucentSPF` bug found while
+  auditing the exit-loop fix above, NOT fixed that round.**  Reachable
+  independently of debt 30; does not involve the eta^2 factor.
+  1. **Guided-direction IOR-stack leak (still open).**  The translucent
+     exit lobe (`front`, `ScatteredRay::eRayDiffuse`, non-delta) passes
+     `GuidingSupportsSurfaceSampling`'s type/delta check in both
+     integrators — **corrected, review round 3**: PT's version
+     (`PathTracingIntegrator.cpp` ~line 553) admits any non-delta
+     `eRayDiffuse`/`eRayReflection` scatter, but BDPT's own
+     (`BDPTIntegrator.cpp` ~line 161) admits only `eRayDiffuse`
+     (`return !scat.isDelta && scat.type ==
+     ScatteredRay::eRayDiffuse;` — no `eRayReflection` there); an
+     earlier draft claimed both admit the same pair. Both admit
+     `eRayDiffuse`, which is all this leak needs, so the leak itself is
+     unaffected by the correction — only the parenthetical about what
+     ELSE each function admits was wrong. The lobe carries a POPPED
+     `ior_stack` (`TranslucentSPF.cpp` ~line 248). When the path guiding
+     field replaces the SPF-sampled direction with a guided one, PT sets
+     `traceIorStack = &iorStack` (`PathTracingIntegrator.cpp` ~line 3205
+     and ~line 3260) — the PRE-scatter stack, not the SPF's own
+     `pS->ior_stack` — so the exit lobe's pop is silently dropped and
+     the translucent object stays on the stack. Every later hit then
+     misclassifies as "exiting" (`bEntering` false) when it should read
+     as already outside.  Failing input: any scene with path guiding
+     enabled and a `translucent_material` object, once the guiding
+     field has trained enough to intercept a sample at that vertex.
+  2. **`ScatteredRayContainer` overflow leak in the per-channel loop —
+     CLOSED, review round 3 (in the same commit range that fixed debt
+     30's review round 3 items C1/C2).**  Auditing the shape described
+     here for C1 found it understated the bug: the entry per-channel
+     loop's leak is UNCONDITIONAL on the SUCCESS path, not
+     overflow-only — every anisotropic-N entry `Scatter` call leaked
+     two `IORStack`s regardless of container occupancy, because the
+     loop never re-armed `delete_stack` before each new allocation
+     (fixed by doing so). Auditing THAT fix in turn surfaced the
+     narrower overflow-carryover variant this item originally
+     described — an iteration whose `AddScatteredRay` call fails still
+     owns its own stack post-fix, but a later iteration's `new
+     IORStack` would silently overwrite that pointer without freeing it
+     — which was closed in the same round by freeing any such
+     carried-over stack before each reassignment. The exit-side loop
+     never had either shape (it never assigns `ior_stack` inside a
+     per-channel loop at all). See
+     [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md)
+     §10.3 for the closed writeup, and `TranslucentSPF.cpp`'s commit
+     history for this round for the two fix commits.  (The second fix
+     commit's message refers to a "four-way case table above"; no table
+     was written into that message — the ownership trace it means is
+     the comment block above the entry per-channel loop in
+     `TranslucentSPF.cpp` (~lines 169-203), and review round 4
+     re-traced every add-success/add-failure combination independently.)
+  3. **RGB vs spectral exit-lobe weight divergence (OPEN, found review
+     round 4, pre-existing).**  `TranslucentSPF::Scatter`'s exit branch
+     weights the exit ray by extinction alone (`front.kray =
+     ColorMath::exponential( -distance*ab )`, `TranslucentSPF.cpp`
+     ~line 225) while `ScatterNM`'s exit branch also multiplies by the
+     transmittance painter (`front.krayNM = GuardedGetColorNM( *pTrans,
+     ri, nm ) * exp(...)`, ~line 384).  Failing input: a
+     `translucent_material` with `transmittance 0.4` exits at
+     0.4·e^(−κd) under a spectral rasterizer and at e^(−κd) under an
+     RGB one — a 2.5× RGB/NM disagreement on the same scene.  Which
+     side is right has not been decided; not touched by debt 30.
+  4. **Spectral exit lobe is MIS-inconsistent with its own pdf (OPEN,
+     found review round 4, pre-existing).**  `ScatterNM`'s exit ray
+     samples and prices a Phong lobe (`Nval_front`, ~lines 426-434)
+     while `PdfNM` forwards to `Pdf`, which returns the cosine density;
+     `Scatter`'s RGB exit ray uses cosine.  Any NM consumer that
+     MIS-weights this lobe against NEE uses the wrong density.
+  Item 1 is recorded in
+  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.3;
+  items 3 and 4 are recorded there as well.
+
 
 ## 8. Cross-references
 

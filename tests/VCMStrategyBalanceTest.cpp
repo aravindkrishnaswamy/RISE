@@ -59,6 +59,35 @@
 //      G. Orthographic (delta-DIRECTION) camera + mesh emitter
 //         — VCM's splat pass must SKIP a delta-direction camera the
 //         way BDPT's t==1 branch does.  Debt 28 review A P2-6.
+//      H. SUBMERGED Lambertian floor under a delta water box, small
+//         sphere emitter and camera both in air
+//         — the eta^2 basic-radiance factor at a dielectric interface.
+//         VCM's MERGE carries flux from the light side (no factor) and
+//         must be paired with an eye subpath that DOES carry 1/n^2;
+//         until 2026-09-12 neither side had it and VCM read 1.149x PT
+//         here.  Debt 30; see the row and
+//         docs/REFRACTIVE_RADIANCE_SCALING.md.
+//      I. AIR ceiling patch above a delta water box, diffuse floor and
+//         sphere emitter both SUBMERGED (debt 30 review round 2) — a
+//         CONSISTENCY PIN, not a red row: the same physical path
+//         (emitter -> submerged floor -> refract through the interface
+//         -> ceiling patch -> camera) is reached by strategies on BOTH
+//         sides of the eta^2 asymmetry at once, and VCM's own MIS
+//         mixture of them has to already agree with PT.  VC connections
+//         from the ceiling patch's eye vertex that continue (BSDF-
+//         sampled) through the interface to the emitter, or to the
+//         submerged floor followed by an NEE connection there, both
+//         carry the eye-side 1/n^2 debt-30 factor (a RADIANCE-mode walk
+//         crossing air -> water).  VCM's t=1-shaped light-tracing splat
+//         reaches the SAME ceiling vertex from the emitter side (an
+//         IMPORTANCE-mode light subpath refracting water -> air) and
+//         correctly carries NO factor (§6 of the doc).  Two different
+//         estimators of the same path, on the two sides of an
+//         asymmetric rule, already have to reconcile via ordinary MIS
+//         — this pins that they do.  Expected GREEN before and after
+//         this round's TranslucentSPF fix (which this scene's materials
+//         never touch); a future change that reintroduces the factor on
+//         only one of the two sides is what would turn this row red.
 //
 //    Caustic-required scenes are out of scope here for the same
 //    reason as in BDPTStrategyBalanceTest: PT under-samples
@@ -899,6 +928,493 @@ static void TestOrthographicCamera()
 		std::string( kSceneCommonOrtho ) + kLightMesh, kOrthoTolerances );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology H: SUBMERGED Lambertian floor, small sphere emitter in air,
+// camera in air (debt 30).
+//
+// The eye path crosses a delta dielectric interface before it reaches
+// the shading point, and the light side reaches that same point two
+// different ways: as a BSDF-sampled connection to the emitter (which
+// re-crosses the interface, so the eye walk's eta factors cancel) and
+// as a MERGE against photons that crossed it in the importance
+// direction (where nothing cancels).  Until 2026-09-12 RISE applied no
+// eta^2 basic-radiance factor anywhere, so the merge read n^2 = 1.77x
+// too bright relative to the connection, and VCM's MIS mixture landed
+// between the two.
+//
+// RED-PROOF on the unfixed library (b6c12301), this row's own run:
+//   PT  mean (0.00462878, 0.00462888, 0.00462842)
+//   VCM mean (0.00539856, 0.00540048, 0.00539207)
+//   mean relative diff (16.63%, 16.67%, 16.50%)   FAIL
+// p99 and max were inside the loosened bands even unfixed, so the
+// mean is the assertion doing the work.  Green after the fix.
+//
+// Re-measured 2026-09-12 (debt-30 review round 1): VCM/PT mean =
+// 0.00467741/0.00463638 = 1.0088.  The 8% mean band is sized to cover
+// VCM's per-run auto-radius merge-density drift (see this row's own
+// `effective_radius` log line each run), not to pin the ratio to a
+// fixed constant -- docs/REFRACTIVE_RADIANCE_SCALING.md §4 quotes a
+// DIFFERENT scene's diagnostic probe (radius 0.03) at 1.046
+// (0.004908/0.004690 = 1.0465, rounds to 1.046), and
+// RefractiveRadianceScalingTest's row C (same 0.08 radius as this row)
+// reads 1.0125 in the same re-measurement; all three are independent
+// samples inside this band, not the same number three ways.
+//
+// REFERENCE.  `kRasterizerPTSubmerged` below, NOT the file's shared
+// `kRasterizerPT`: this is the exact topology the caveat above
+// kRasterizerPT warns about (a transmissive material in the scene), so
+// the legacy pixelpel + DefaultDirectLighting reference is invalid
+// here and a real path tracer is required.
+//
+// TOLERANCES.  The mean stays at the strict 8%.  p99 and max are
+// loosened to 60% / 4x: with only BSDF sampling able to find a
+// 0.08-radius emitter through a delta interface, both integrators
+// carry genuine specular fireflies whose per-pixel tails do not agree
+// at any practical sample count -- measured p99 spread across runs is
+// tens of percent while the MEAN, which is the quantity the eta^2 bug
+// moves, is stable to ~1%.  Loosening the tail bands rather than
+// dropping them keeps a catastrophic tail regression visible.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedFloor =
+	"film\n"
+	"{\n"
+	"\twidth 64\n"
+	"\theight 64\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 2.0 2.5 0\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad\n"
+	"\tpta -1 0.05 1\n"
+	"\tptb 1 0.05 1\n"
+	"\tptc 1 0.05 -1\n"
+	"\tptd -1 0.05 -1\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_quad\n"
+	"\tgeometry quad\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_water\n"
+	"\tior 1.33\n"
+	"\ttau 1.0\n"
+	"\tscattering 1000000\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname geo_water\n"
+	"\twidth 2.2\n"
+	"\theight 0.3\n"
+	"\tdepth 2.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname water\n"
+	"\tgeometry geo_water\n"
+	"\tmaterial mat_water\n"
+	"\tposition 0 0.15 0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_sph\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_sph\n"
+	"\texitance pnt_emit_sph\n"
+	"\tscale 42.2\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"sphere_geometry\n"
+	"{\n"
+	"\tname geo_emit_sph\n"
+	"\tradius 0.08\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_sph\n"
+	"\tgeometry geo_emit_sph\n"
+	"\tmaterial mat_emit_sph\n"
+	"\tposition 0 2.5 0\n"
+	"}\n";
+
+static const char* kRasterizerPTSubmerged =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 4096\n"
+	"\toidn_denoise FALSE\n"
+	"\tpixel_filter box\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_pt_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerVCMSubmerged =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 2048\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_vcm_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
+
+static void TestSubmergedFloorAreaLight()
+{
+	RunTopologyTest( "submerged Lambertian floor, sphere emitter in air (eta^2, debt 30)",
+		std::string( kSceneSubmergedFloor ), kSubmergedTolerances,
+		kRasterizerPTSubmerged, kRasterizerVCMSubmerged );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology I: AIR ceiling patch above a delta water box; a Lambertian
+// FLOOR and a small sphere EMITTER both SUBMERGED (debt 30 review
+// round 2, C2).
+//
+// This is the topology named in the review brief where the eye/light
+// asymmetry is MIS-COMBINED across strategies rather than isolated to
+// one side, as in H (VM-only) and its BDPT twin J (an in-and-out
+// cancellation).  The camera sees only the ceiling patch "A"; the only
+// way light reaches it is by crossing the delta water surface:
+//
+//   - VC, continuing from A's eye vertex: the eye subpath scatters
+//     (BSDF-sampled, non-delta Lambertian) off A, crosses INTO the
+//     water (a RADIANCE-mode medium change: air -> water, so debt 30's
+//     (eta_before/eta_after)^2 = 1/1.33^2 = 0.5653 applies), then either
+//     hits the emitter directly (no light vertex) or hits the submerged
+//     floor "B" and connects to the emitter with an ordinary NEE (both
+//     endpoints submerged, so that connection is unobstructed).  Either
+//     way, the ONE interface crossing is on the EYE side and carries
+//     the eta^2 factor.
+//   - VCM's light-tracing splat, from the LIGHT side: a light subpath
+//     rooted at the emitter (optionally bouncing off B first) crosses
+//     OUT of the water to reach A -- an IMPORTANCE-mode medium change,
+//     so debt 30 deliberately applies NO factor (§6) -- then splats A
+//     directly to the camera (A and the camera are both in air; no
+//     interface intervenes on that connection).
+//
+// Both are estimators of the SAME physical path family, combined by
+// ordinary MIS at the shared vertex A.  This is therefore a
+// CONSISTENCY PIN: it is expected to read GREEN both before and after
+// this round's TranslucentSPF exit-loop fix (C1), which this scene's
+// materials (lambertian_material, dielectric_material,
+// lambertian_luminaire_material) never exercise.  What it guards
+// against is a FUTURE change that applies the eta^2 factor to only one
+// of the two strategies above -- e.g. a splat-side "fix" that adds the
+// factor by mistake, or an eye-side change that drops it -- which would
+// break this MIS combination while leaving H and J individually green.
+//
+// REFERENCE.  Plain `pathtracing_pel_rasterizer`, no
+// `transparent_shadows` (its default is already false and this scene
+// does not set it): PT reaches the emitter and the submerged floor
+// purely by BSDF sampling through the delta interface, exactly the
+// same family of scatter events VCM's VC strategies use, so it is an
+// unbiased reference here (same reasoning as kRasterizerPTSubmerged
+// above; this topology needs its own scene, not that one, because the
+// ceiling patch and the floor/emitter placement are different).
+//
+// SPP CHOICE / SE.  Unlike H (a tiny BSDF-sampled emitter directly
+// visible from a floor point, which needs 4096 spp to tame specular-
+// looking fireflies), this scene's camera never has a chance of
+// directly resolving the emitter's disk -- every visible pixel is the
+// diffuse ceiling patch, multiple bounces removed from the source, so
+// the image is smooth at low spp.  Measured on this scene (2048 spp,
+// two renders, `srand` reseeded per run by the CLI's own
+// `srand(GetMilliseconds())`, this round's own measurement):
+//   run 1 mean 0.012498317, run 2 mean 0.012497488 -- 0.0066% apart.
+// At 512 spp the two-run spread was still only 0.095%.  Both are far
+// under the "SE < 1%" bar; 2048 spp was kept for headroom, not because
+// it was needed.
+//
+// MEASURED RATIOS (this round, one render each; BDPT and VCM re-run
+// once more to confirm run-to-run stability before picking bands):
+//   PT   mean 0.012496226  (reference)
+//   BDPT mean 0.012631816, 0.012620802 (twin -- topology K in
+//        BDPTStrategyBalanceTest.cpp)             -> ratio 1.010-1.011
+//   VCM  mean 0.012222825, 0.012205491            -> ratio 0.977-0.978
+// p99:  BDPT 0.021637727/0.021515656 -> ratio 1.059-1.065 vs PT's
+//       0.020320892; VCM 0.017381286/0.017533874 -> ratio 0.855-0.863.
+// max:  BDPT 0.03451538/0.034210205  -> ratio 1.077-1.086 vs PT's
+//       0.0317688; VCM 0.022613525/0.02218628     -> ratio 0.698-0.712.
+// All measured on a 64x64 render, `pixel_filter box`, `oidn_denoise
+// FALSE`, EXR `Rec709RGB_Linear` (read back with a script, not the
+// scene's own file_rasterizeroutput -- these tests read pixels via the
+// in-memory capture, same as every other topology in this file).
+//
+// TOLERANCES.  8% mean / 30% p99 / 100% (2x) max.  The mean band is the
+// same 8% as every other topology in this file even though the
+// measured spread (1-2%) is much smaller than H/J's -- there is no
+// tiny-emitter firefly tail here to force a looser band, so this row
+// does NOT need H/J's loosened 60%/4x tail bands either; 30%/100% still
+// comfortably covers the observed ~6-14% (p99) and ~8-30% (max) spread
+// with headroom for a different machine or sample count.
+//
+// MEASURED COUNTERFACTUAL (debt 30 review round 3, C4).  This
+// topology's own header claims it "guards" the eye-side/light-side
+// asymmetry, but recorded no counterfactual to back that up.  Measured
+// once, this round: temporarily applied `RadianceEtaScale` inside
+// `GenerateLightSubpathImpl` (BDPTIntegrator.cpp, mirroring the
+// eye-side site in `GenerateEyeSubpathImpl` verbatim -- wrong on
+// purpose, since IMPORTANCE-mode walks must get no factor by
+// construction, §1/§6), rebuilt, ran this test twice (independent
+// unsynchronized-`rand()` runs -- this binary is not seed-argv driven):
+// VCM/PT mean relative diff +45.6067%, +45.7639% (ratio 1.4561, 1.4576;
+// spread 0.0016, ~0.11% of the mean -- tight, as expected: both runs
+// draw from the same wrong code, not from two different physical
+// models). Reverted immediately after
+// (`git diff --stat src/` empty, library rebuilt clean). This is
+// DRAMATICALLY outside the 8% band (+45.6-45.8% vs a =8% gate) -- the
+// band catches a wrongly-applied light-side factor with enormous
+// margin, roughly 5.7x the gate width. No tightening is needed or
+// useful: the true failure signal here is ~46 percentage points, not a
+// few points hiding near the edge of 8%. See BDPTStrategyBalanceTest's
+// topology K header for the same experiment's BDPT twin, which reaches
+// the OPPOSITE conclusion for the opposite reason -- topology K's
+// gate does NOT catch the identical wrong edit at all.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedCeiling =
+	"film\n"
+	"{\n"
+	"\twidth 64\n"
+	"\theight 64\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0.4 0.15\n"
+	"\tlookat 0 0.6 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 60.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo_a\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse_a\n"
+	"\treflectance pnt_albedo_a\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_a\n"
+	"\tpta -0.6 0.6 0.6\n"
+	"\tptb 0.6 0.6 0.6\n"
+	"\tptc 0.6 0.6 -0.6\n"
+	"\tptd -0.6 0.6 -0.6\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_a\n"
+	"\tgeometry quad_a\n"
+	"\tmaterial mat_diffuse_a\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo_b\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse_b\n"
+	"\treflectance pnt_albedo_b\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_b\n"
+	"\tpta -1 0.05 1\n"
+	"\tptb 1 0.05 1\n"
+	"\tptc 1 0.05 -1\n"
+	"\tptd -1 0.05 -1\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_b\n"
+	"\tgeometry quad_b\n"
+	"\tmaterial mat_diffuse_b\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_water\n"
+	"\tior 1.33\n"
+	"\ttau 1.0\n"
+	"\tscattering 1000000\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname geo_water\n"
+	"\twidth 2.2\n"
+	"\theight 0.3\n"
+	"\tdepth 2.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname water\n"
+	"\tgeometry geo_water\n"
+	"\tmaterial mat_water\n"
+	"\tposition 0 0.15 0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit\n"
+	"\texitance pnt_emit\n"
+	"\tscale 5.0\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"sphere_geometry\n"
+	"{\n"
+	"\tname geo_emit\n"
+	"\tradius 0.06\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit\n"
+	"\tgeometry geo_emit\n"
+	"\tmaterial mat_emit\n"
+	"\tposition 0 0.18 0\n"
+	"}\n";
+
+static const char* kRasterizerPTCeiling =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 2048\n"
+	"\toidn_denoise FALSE\n"
+	"\tpixel_filter box\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_pt_ceiling_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerVCMCeiling =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 1024\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_vcm_ceiling_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const Tolerances kCeilingTolerances{ 0.08, 0.30, 1.00 };
+
+static void TestSubmergedCeilingMISCombination()
+{
+	RunTopologyTest( "air ceiling patch, floor + emitter both submerged (eta^2 MIS combination, debt 30 review round 2)",
+		std::string( kSceneSubmergedCeiling ), kCeilingTolerances,
+		kRasterizerPTCeiling, kRasterizerVCMCeiling );
+}
+
 int main()
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
@@ -910,6 +1426,8 @@ int main()
 	TestThinLensWideOpenDefocused();
 	TestThinLensBladedAperture();
 	TestOrthographicCamera();
+	TestSubmergedFloorAreaLight();
+	TestSubmergedCeilingMISCombination();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

@@ -333,6 +333,17 @@ void DielectricSPF::DoSingleRGBComponent(
 	bool bDielectric, bFresnel;
 	Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, random, scattering, newIOR, nm, ior_stack );
 
+	// NO eta^2 HERE, DELIBERATELY (debt 30).  The transmission lobe below
+	// carries only Fresnel (1-ref) and Beer's-law tau^distance.  Radiance
+	// is not invariant across the interface -- L/n^2 is -- but whether the
+	// (eta_before/eta_after)^2 factor applies depends on whether the walk
+	// consuming this ray carries RADIANCE (camera-rooted: apply) or
+	// IMPORTANCE / FLUX (light subpath, photon tracer: do not), and an SPF
+	// cannot know which.  The factor therefore lives at the consumer,
+	// which reads it off `dielectric.ior_stack` (pushed / popped just above
+	// in GenerateScatteredRay) via RISE::RadianceEtaScale -- see the
+	// contract on ScatteredRay::kray in Interfaces/ISPF.h and the site
+	// table in docs/REFRACTIVE_RADIANCE_SCALING.md.
 	if( bDielectric && ref < 1.0 ) {
 		if( oneofthree ) {
 			dielectric.kray[oneofthree-1] = dielectric.kray[oneofthree-1] * (1.0-ref);
@@ -419,7 +430,11 @@ void DielectricSPF::ScatterNM(
 
 	bool bDielectric, bFresnel;
 	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM( ri, nm ), pRIndex->GetValueAtNM( ri, nm ), nm, ior_stack );
-	
+
+	// No eta^2 on krayNM either -- same contract as the Pel twin above.
+	// The per-wavelength IOR is already in the stack this ray carries
+	// (`pRIndex->GetValueAtNM` was pushed by GenerateScatteredRay), so a
+	// dispersive medium gets its own factor at the consumer for free.
 	if( bDielectric && ref < 1.0 ) {
 		dielectric.krayNM = dielectric.krayNM * (1.0-ref);
 		scattered.AddScatteredRay( dielectric );

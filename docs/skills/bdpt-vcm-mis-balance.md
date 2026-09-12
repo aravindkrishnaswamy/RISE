@@ -57,15 +57,16 @@ description: |
 
 ## Procedure
 
-### 0. Rule out the eight known non-MIS causes first
+### 0. Rule out the nine known non-MIS causes first
 
-Eight failure modes produce exactly the "bidirectional render
+Nine failure modes produce exactly the "bidirectional render
 disagrees with PT" symptom (or, in cause 3's case, "PT itself
 disagrees with its own material's proven-linear response"; or, in
 cause 4's case, "BDPT/VCM looks like it's over-counting when PT is
 actually the one under-counting"; or, in cause 7's case, "a closed
 solid reads differently than the same faces built as separate
-planes") while the MIS arithmetic is perfectly healthy.  All are
+planes"; or, in cause 8's case, "VCM reads a fixed n^2 over PT on
+anything submerged") while the MIS arithmetic is perfectly healthy.  All are
 minutes to check; do them before any integrator instrumentation:
 
 0. **PT may be the broken one — check IOR-stack seeding when the
@@ -424,6 +425,54 @@ minutes to check; do them before any integrator instrumentation:
    fault; and a `clippedplane_geometry` / `box_geometry` control at the
    same scene scale tells you whether the primitive under suspicion or
    the scene itself is the variable.
+
+8. **A surface or an emitter INSIDE a dielectric with the camera
+   OUTSIDE it — render an in-medium luminaire and compare against
+   `T * L / n^2` before touching any weight.** (Found 2026-09-12, debt
+   30: RISE applied no eta^2 basic-radiance factor anywhere, and VCM
+   read 1.554x PT on a submerged Lambertian floor.) Radiance is not
+   invariant across a refractive interface -- `L / n^2` is -- so a
+   RADIANCE-mode walk owes `(eta_before / eta_after)^2` at every medium
+   change. **Corrected (review round 2, 2026-09-12): for THIS
+   topology -- an emitter (or a directly-lit surface) sealed inside the
+   medium, camera outside -- PT and BDPT do NOT cancel.** The eye path
+   crosses the interface exactly ONCE (camera, in air, straight to the
+   in-medium emitter) with no return crossing to cancel against, so
+   EVERY integrator under-reads by the same missing factor: pre-fix,
+   `RefractiveRadianceScalingTest` row A's red-proof shows PT, BDPT, VCM
+   AND the legacy `pixelpel_rasterizer` all reading `T * L` (0.312 at
+   ior 1.33) instead of the correct `T * L / n^2` (0.176) -- a uniform
+   n^2-too-bright failure across every rasterizer, not an inter-
+   integrator disagreement. That is exactly why this row is
+   REFERENCE-FREE (a closed form, not a PT-vs-VCM comparison): with
+   every integrator wrong by the same amount, there is no "good"
+   integrator here to compare against.
+   **Don't confuse this with the DIFFERENT, cancelling topology** where
+   the light AND the camera are both OUTSIDE the medium and only an
+   intervening surface (not the emitter) is submerged (RISE's own
+   `VCMStrategyBalanceTest` topology H / `BDPTStrategyBalanceTest`
+   topology J): there, the eye path crosses the interface TWICE --
+   inward to reach the submerged surface (x 1/n^2), then back outward
+   toward the emitter (x n^2) -- and the two cancel for PT and BDPT,
+   which is what makes THAT case masquerade as an MIS bug (VCM's merge
+   and BDPT's light-tracing splat only cross once, on the flux side, so
+   they read n^2 too bright while PT/BDPT read correctly by accident).
+   That two-crossing cancellation is a genuinely different mechanism
+   from this cause's one-crossing, no-cancellation, in-medium-emitter
+   case -- see `REFRACTIVE_RADIANCE_SCALING.md` §2 and §4 for the
+   cancelling topology's own numbers, and don't reuse this row's "PT/BDPT
+   cancel" language for it.
+   **The one-minute check, and it is reference-free:** put a
+   `lambertian_luminaire_material` quad (`exitance` 1, `scale` 1, so
+   `L = 1/pi`) inside a `dielectric_material` box (`scattering 1000000`)
+   and point a pinhole camera at it from outside at near-normal
+   incidence. Every integrator must read `T(0) * L / n^2`, e.g.
+   0.176 at ior 1.33 and 0.136 at ior 1.5. Reading `T * L` instead
+   (0.312 / 0.306) means the factor is missing; reading `n^2 * T * L`
+   means it was applied in the wrong direction. Run it at TWO iors --
+   a wrong-direction or hard-coded factor passes one and fails the
+   other. Mechanism, site table and the scene classes whose look
+   changes: [REFRACTIVE_RADIANCE_SCALING.md](../REFRACTIVE_RADIANCE_SCALING.md).
 
 A useful invariant for separating these from real MIS bugs: when you
 instrument per-strategy totals (step 3), compare the per-strategy

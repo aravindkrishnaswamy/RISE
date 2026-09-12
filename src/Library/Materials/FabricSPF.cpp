@@ -235,6 +235,10 @@ void FabricSPF::ScatterImpl(
 	//     container so any IOR-stack state it attaches is preserved; its
 	//     `kray` and `pdf` are OVERWRITTEN below with the mixture values.
 	if( nm < 0 ) {
+		// Pure re-dispatch to the weave BSDF with a fibre-frame `ri`; no
+		// medium change is introduced here, so the debt-30 eta^2 factor is
+		// identically 1 and belongs (as always) to whatever radiance-mode
+		// consumer reads the resulting kray.
 		pBaseSPF->Scatter( weave.Get(), sampler, scattered, ior_stack );
 	} else {
 		pBaseSPF->ScatterNM( weave.Get(), sampler, nm, scattered, ior_stack );

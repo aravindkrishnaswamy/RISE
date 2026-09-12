@@ -145,26 +145,33 @@ void DistributionTracingShaderOp::PerformOperation(
 						ScatteredRay& scat = scattered[i];
 						if( ShouldTraceRay( scat.type ) ) {
 							scat.ray.Advance( 1e-8 );
-							rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray);
+							// eta^2 basic-radiance factor (debt 30): this op
+							// gathers RADIANCE from the eye side, so a lobe
+							// that changes medium scales by
+							// (eta_before/eta_after)^2.  Identically 1 for
+							// every lobe that does not.
+							const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+							rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray) * etaScale;
 							RISEPel	cThisIndirectSample(0,0,0);
 							if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack ) ) {
 								rsum += 1.0/t;
 								hits++;
 							}
-							accruedIndirect = accruedIndirect + cThisIndirectSample * scat.kray;
+							accruedIndirect = accruedIndirect + cThisIndirectSample * scat.kray * etaScale;
 						}
 					}
 				} else {
 					ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), false );
 					if( pScatRay && ShouldTraceRay( pScatRay->type ) ) {
 						pScatRay->ray.Advance( 1e-8 );
-						rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray);
+						const Scalar etaScale = RadianceEtaScale( ior_stack, pScatRay->ior_stack );
+						rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray) * etaScale;
 						RISEPel	cThisIndirectSample(0,0,0);
 						if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack ) ) {
 							rsum += 1.0/t;
 							hits++;
 						}
-						accruedIndirect = accruedIndirect + cThisIndirectSample * pScatRay->kray;
+						accruedIndirect = accruedIndirect + cThisIndirectSample * pScatRay->kray * etaScale;
 					}
 				}
 			}
@@ -233,20 +240,23 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 					ScatteredRay& scat = scattered[i];
 					if( ShouldTraceRay( scat.type ) ) {
 						scat.ray.Advance( 1e-8 );
-						rs2.importance = rs.importance * scat.krayNM;
+						// Same eta^2 factor as the Pel twin above (debt 30).
+						const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+						rs2.importance = rs.importance * scat.krayNM * etaScale;
 						Scalar	cThisIndirectSample = 0;
 						caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
-						c = c + cThisIndirectSample * scat.krayNM;
+						c = c + cThisIndirectSample * scat.krayNM * etaScale;
 					}
 				}
 			} else {
 				ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), true );
 				if( pScatRay && ShouldTraceRay(pScatRay->type) ) {
 					pScatRay->ray.Advance( 1e-8 );
-					rs2.importance = rs.importance * pScatRay->krayNM;
+					const Scalar etaScale = RadianceEtaScale( ior_stack, pScatRay->ior_stack );
+					rs2.importance = rs.importance * pScatRay->krayNM * etaScale;
 					Scalar	cThisIndirectSample = 0;
 					caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack );
-					c = c + cThisIndirectSample * pScatRay->krayNM;
+					c = c + cThisIndirectSample * pScatRay->krayNM * etaScale;
 				}
 			}
 		}

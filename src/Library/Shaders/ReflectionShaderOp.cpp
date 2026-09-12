@@ -49,6 +49,14 @@ void ReflectionShaderOp::PerformOperation(
 		const ScatteredRayContainer& scattered = *pScat;
 		for( unsigned int i=0; i<scattered.Count(); i++ ) {
 			const ScatteredRay& scat = scattered[i];
+			// NO eta^2 factor here (debt 30), and not by omission: this op
+			// only ever consumes eRayReflection lobes, and a reflection
+			// stays in the medium it started in.  DielectricSPF's
+			// from-inside reflection branch allocates an UNCHANGED COPY of
+			// the stack rather than leaving ior_stack null, so
+			// RadianceEtaScale would return exactly 1 on every ray that
+			// reaches this loop.  Its sibling RefractionShaderOp, which
+			// consumes the lobe that does change medium, applies it.
 			if( scat.type==ScatteredRay::eRayReflection )
 			{
 				// Cast and add!
@@ -94,6 +102,14 @@ Scalar ReflectionShaderOp::PerformOperationNM(
 		const ScatteredRayContainer& scattered = *pScat;
 		for( unsigned int i=0; i<pScat->Count(); i++ ) {
 			const ScatteredRay& scat = scattered[i];
+			// NO eta^2 factor here (debt 30), and not by omission: this op
+			// only ever consumes eRayReflection lobes, and a reflection
+			// stays in the medium it started in.  DielectricSPF's
+			// from-inside reflection branch allocates an UNCHANGED COPY of
+			// the stack rather than leaving ior_stack null, so
+			// RadianceEtaScale would return exactly 1 on every ray that
+			// reaches this loop.  Its sibling RefractionShaderOp, which
+			// consumes the lobe that does change medium, applies it.
 			if( scat.type==ScatteredRay::eRayReflection )
 			{
 				// Cast and add!

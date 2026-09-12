@@ -2811,7 +2811,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 				IRayCaster::RAY_STATE rs2 = rs;
 				rs2.depth = depth + 1;
-				rs2.importance = importance * PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) ) / selectProb;
+				// Russian roulette / importance must track the throughput it
+				// is predicting, eta^2 included -- an eye ray entering water
+				// really does carry 1/n^2 less, and a stale importance only
+				// makes RR less efficient, never wrong.
+				rs2.importance = importance
+					* PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) )
+					* RadianceEtaScale( iorStack, pS->ior_stack ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
 				// Accurate guides describe the first non-delta interaction the
@@ -2845,13 +2851,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					break;
 				}
 
+				// eta^2 basic-radiance factor (debt 30).  PT is a
+				// RADIANCE-mode walk, so a lobe that moves the ray into a
+				// different medium scales the throughput by
+				// (eta_before/eta_after)^2; kray carries only Fresnel and
+				// Beer's law (ISPF.h contract).  Applied AFTER lobe
+				// selection on purpose: the selection CDF inside
+				// PTRandomlySelect reads raw kray, so selectProb must stay
+				// in that same domain, and E[kray_I * eta_I / p_I] =
+				// sum_i kray_i * eta_i regardless.  Identically 1 for every
+				// reflection and every non-transmissive lobe.
+				const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );
+
 				// Pel multiplies (throughput * kray) * (1/selectProb); NM
 				// multiplies throughput * (krayNM * (1/selectProb)).  The two
 				// associativities differ at the ULP level, so preserve each.
 				if constexpr ( Traits::is_pel ) {
-					throughput = throughput * PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb );
+					throughput = throughput * PTScatterKray<Tag>( *pS ) * ( etaScale / selectProb );
 				} else {
-					throughput = throughput * ( PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb ) );
+					throughput = throughput * ( PTScatterKray<Tag>( *pS ) * ( etaScale / selectProb ) );
 				}
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
@@ -3300,6 +3318,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			(void)useGuidingPathSegments;  // Used in full guiding implementation
 #endif // RISE_ENABLE_OPENPGL
+
+			// eta^2 basic-radiance factor (debt 30), applied once the
+			// guiding block above has settled BOTH `scatterThroughput` and
+			// `traceIorStack`: a guided direction replaces the SPF's
+			// direction and resets traceIorStack to the unchanged walk
+			// stack, so it must NOT pick up a factor, while the
+			// BSDF-sampled-with-guiding-MIS branch keeps pS->ior_stack and
+			// must.  Reading `traceIorStack` rather than `pS->ior_stack`
+			// gets both cases right by construction.  Identically 1 unless
+			// the medium actually changed.
+			{
+				const Scalar etaScale = ( traceIorStack != &iorStack )
+					? RadianceEtaScale( iorStack, traceIorStack )
+					: Scalar( 1 );
+				if( etaScale != Scalar( 1 ) ) {
+					scatterThroughput = scatterThroughput * etaScale;
+				}
+			}
 
 			// Guide capture is a property of the selected interaction, not of
 			// Russian-roulette or bounce-limit survival. Keeping it before both
@@ -5346,6 +5382,62 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			// Companions inherit hero's selection probability — divide by
 			// the same selectProb for an unbiased per-wavelength estimator.
 			compScatterNM[w] = compWeight > 0 ? compWeight * invSelectProb : 0;
+		}
+
+		// eta^2 basic-radiance factor (debt 30), hero and companions alike.
+		// ONE scalar for the whole bundle is correct here ONLY WHEN the
+		// block above actually terminated secondary wavelengths on a
+		// dispersive delta refraction: that block calls
+		// pSPF->GetSpecularInfoNM(), whose base-class default is
+		// `SpecularInfo()` (non-specular/invalid) -- an SPF that doesn't
+		// override it (e.g. CompositeSPF) never reports `canRefract`, so
+		// swl.TerminateSecondary() is never reached through this path for
+		// it, and any wavelength still active here need NOT share the
+		// hero's index.  For an SPF that DOES implement GetSpecularInfoNM
+		// (DielectricSPF, PerfectRefractorSPF, PolishedSPF), a dispersive
+		// delta refraction has already terminated the rest of the bundle
+		// by this point, so the per-vertex IOR on `pS->ior_stack` (the
+		// HERO's) is the only one still live and one scalar is exact.
+		// This is a property of THIS PT site's termination check, not a
+		// general guarantee about GetSpecularInfoNM implementers -- see
+		// the BDPT/VCM/MLT HWSS eye subpath in BDPTIntegrator.cpp, which
+		// has no equivalent termination and instead applies the hero's
+		// krayNM to every companion at delta lobes by convention (predating
+		// this factor).  Applied before RR so the survival probability
+		// sees the throughput the path actually carries.
+		//
+		// BOUNDED ERROR when this broadcast is wrong (review round 2,
+		// 2026-09-12): the unterminated case above is not merely
+		// theoretical -- when a coated_material or composite_material
+		// wraps a DISPERSIVE dielectric, neither CoatedSPF nor
+		// CompositeSPF overrides GetSpecularInfoNM, so this PT
+		// termination block never fires for it (the base-class default
+		// reports non-specular/invalid), and BDPT's
+		// HasDispersiveDeltaVertex (BDPTIntegrator.cpp ~6866) likewise
+		// never sees a dispersive delta vertex through that wrapper --
+		// the hero's etaScale is broadcast to every companion
+		// wavelength regardless of its own IOR. The resulting per-
+		// crossing error is exactly (n_hero/n_companion)^2 - 1: for a
+		// crown-glass-class dielectric (illustrative Delta-n ~ 0.02
+		// across 400-700nm, e.g. n=1.50 vs 1.52) that's about 2.6-2.7%;
+		// for a high-dispersion flint-class dielectric (illustrative
+		// Delta-n ~ 0.07, e.g. n=1.78 vs 1.85) it climbs to about
+		// 7.4-8.0%. These are illustrative index pairs, not a specific
+		// glass catalog's measured curve -- the point is the error
+		// SCALES with the wrapped dielectric's dispersion, is bounded by
+		// ordinary optical Delta-n magnitudes (not unbounded), and
+		// compounds once per crossing on a multi-bounce path through
+		// such a wrapper.
+		{
+			const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );
+			if( etaScale != Scalar( 1 ) ) {
+				heroScatterNM *= etaScale;
+				compScatterNM[0] = heroScatterNM;
+				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+					if( swl.terminated[w] ) continue;
+					compScatterNM[w] *= etaScale;
+				}
+			}
 		}
 
 		// Russian roulette — use MAX over wavelengths for the survival

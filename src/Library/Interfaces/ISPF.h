@@ -47,8 +47,24 @@ namespace RISE
 
 
 		Ray			ray;						///< The actual Ray
-		RISEPel		kray;						///< Blending factor for this ray
-		Scalar		krayNM;						///< Blending factor for a particular wavelength of light for spectral processing
+
+		//! Blending factor for this ray -- BSDF * cos / pdf, Fresnel and
+		//! Beer's-law attenuation included.
+		//!
+		//! CONTRACT (debt 30, 2026-09-12): kray and krayNM EXCLUDE the
+		//! eta^2 basic-radiance factor of a medium change.  An SPF does not
+		//! know whether the walk consuming it carries radiance or
+		//! importance, and threading a `TransportMode` through
+		//! `ISPF::Scatter` would touch ~60 implementations; so a
+		//! RADIANCE-mode consumer must multiply by
+		//! `RISE::RadianceEtaScale( walkStack, scat.ior_stack )` (`scat` the
+		//! chosen `ScatteredRay` -- the field lives on a `ScatteredRay`, not
+		//! on the `ScatteredRayContainer` itself; helper declared in
+		//! Utilities/IORStack.h) when it folds kray into its throughput, and
+		//! an IMPORTANCE-mode consumer must not.  See
+		//! docs/REFRACTIVE_RADIANCE_SCALING.md for the site table.
+		RISEPel		kray;
+		Scalar		krayNM;						///< Same, for a single wavelength (spectral processing).  Same eta^2 contract as kray.
 		ScatRayType	type;						///< Type of ray
 		Scalar		pdf;						///< Sampling PDF for this scattered direction (solid angle measure)
 		bool		isDelta;					///< True if this ray was sampled from a delta distribution (perfect mirror/refraction)

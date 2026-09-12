@@ -100,7 +100,14 @@ void TranslucentSPF::Scatter(
 		front.kray = pRefFront->GetColor(ri);
 		front.type = ScatteredRay::eRayDiffuse;
 
-		if( front.kray[0] > 0 ) {
+		// MaxValue, not channel 0 alone (C2, review round 3): a reflectance
+		// painter like (0, 0.5, 0.5) has zero red but non-zero green/blue,
+		// and gating on channel 0 alone dropped the WHOLE lobe -- 100% of
+		// the green/blue energy along with it.  The exit branch's
+		// equivalent gate (below) already uses
+		// `ColorMath::MaxValue(front.kray) > 0`; this makes the entry gate
+		// consistent with it.
+		if( ColorMath::MaxValue(front.kray) > 0 ) {
 			rv = GeometricUtilities::Perturb( n,
 				acos( sqrt( sampler.Get1D() ) ),
 				TWO_PI * sampler.Get1D() );
@@ -116,7 +123,9 @@ void TranslucentSPF::Scatter(
 		trans.kray = pTrans->GetColor(ri);
 		trans.type = ScatteredRay::eRayTranslucent;
 
-		if( trans.kray[0] > 0 ) {
+		// MaxValue, not channel 0 alone -- see the front-lobe gate above
+		// (C2, review round 3) for the rationale; same trap, same fix.
+		if( ColorMath::MaxValue(trans.kray) > 0 ) {
 			myonb.FlipW();
 
 			const ScalarTriple Nfactor_t = pN->GetValuesAt(ri); const RISEPel Nfactor( Nfactor_t.v[0], Nfactor_t.v[1], Nfactor_t.v[2] );
@@ -131,7 +140,13 @@ void TranslucentSPF::Scatter(
 				trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
 				trans.isDelta = false;
 				trans.ior_stack = new IORStack( ior_stack );
-				trans.ior_stack->push( 1.0 );
+				// translucent_material has no ior parameter -- there is no
+				// second medium to enter, so re-push the enclosing medium's
+				// own IOR (RadianceEtaScale then sees before==after and
+				// returns exactly 1) rather than fabricating a jump to
+				// air's 1.0, which would misprice a translucent object
+				// nested inside water or glass.
+				trans.ior_stack->push( ior_stack.top() );
 				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 				scattered.AddScatteredRay( trans );
 			} else {
@@ -145,14 +160,56 @@ void TranslucentSPF::Scatter(
 						TWO_PI * ptrand.y );
 
 					trans.kray = 0;
-					trans.kray[0] = p[0];
+					trans.kray[i] = p[i];
 					trans.ray.Set( ri.ptIntersection, rv );
 					// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
 					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 					trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
 					trans.isDelta = false;
+					// `trans` is ONE local reused across all three loop
+					// iterations.  `AddScatteredRay` only clears
+					// `delete_stack` to false on the CALLER's local after a
+					// successful memcpy (ScatteredRayContainer.cpp) -- it does
+					// NOT touch the value that gets memcpy'd INTO the stored
+					// copy, which is whatever `delete_stack` reads at the
+					// moment of the call.  Iteration 0 starts from the
+					// freshly-constructed `trans` (delete_stack==true from
+					// ScatteredRay's ctor), so its stored copy correctly owns
+					// the stack.  Without this re-arm, iterations 1 and 2
+					// would memcpy a stored copy with `delete_stack==false`
+					// (left over from iteration 0's post-add reset on the
+					// local) alongside a BRAND NEW `IORStack` pointer that
+					// copy is the only reference to -- an unconditional,
+					// two-per-call leak on the success path.  Re-arming right
+					// before every new allocation makes each iteration's
+					// stored copy independently own its own stack, matching
+					// the exit loop below (which never assigns `ior_stack` at
+					// all, so it never needed this).
+					//
+					// This loop never checks `AddScatteredRay`'s return value
+					// (debt 31(b), RENDERING_INTEGRATORS.md), so a container
+					// near `kCapacity` can still make an iteration's add FAIL
+					// (overflow).  On failure `AddScatteredRay` leaves
+					// `delete_stack` exactly as it found it -- true, since we
+					// just armed it -- so `trans` correctly RETAINS ownership
+					// of that iteration's stack.  If nothing intervened, the
+					// pointer would then be silently overwritten by the NEXT
+					// iteration's `new IORStack` below, orphaning the still-
+					// owned allocation (a real leak distinct from the one
+					// above).  Free any such carried-over stack before
+					// overwriting the pointer; a no-op on the ordinary path
+					// (iteration 0's `ior_stack` starts null, and a
+					// successful add already cleared `delete_stack` to false,
+					// so there is nothing to free).
+					if( trans.delete_stack ) {
+						safe_delete( trans.ior_stack );
+					}
+					trans.delete_stack = true;
 					trans.ior_stack = new IORStack( ior_stack );
-					trans.ior_stack->push( 1.0 );
+					// See the comment on the single-color-component branch
+					// above: translucent_material has no ior, so re-push
+					// the enclosing medium's own IOR rather than 1.0.
+					trans.ior_stack->push( ior_stack.top() );
 					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 					scattered.AddScatteredRay( trans );
 				}
@@ -203,6 +260,17 @@ void TranslucentSPF::Scatter(
 					RISEPel p = trans.kray;
 					RISEPel f = front.kray;
 					trans.kray = 0;
+					// `front` is added to `scattered` ONCE, after this whole
+					// if/else block (the exit-ray site below) -- unlike
+					// `trans`, which is (correctly) added once per channel
+					// inside this loop.  So `front.kray` must ACCUMULATE all
+					// three channels here, not get reset to 0 each iteration:
+					// zero it once, before the loop, and only ever assign
+					// (never re-zero) the i'th component inside it.  The
+					// previous per-iteration `front.kray = 0;` left every
+					// channel but the last (i=2) at zero on the exit ray --
+					// the sibling of the entry-loop bug fixed in 74cd56f4.
+					front.kray = 0;
 					Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 					for( int i=0; i<3; i++ ) {
 						rv = GeometricUtilities::Perturb( myonb.w(),
@@ -218,7 +286,6 @@ void TranslucentSPF::Scatter(
 							trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
 							trans.isDelta = false;
 						}
-						front.kray = 0;
 						front.kray[i] = f[i] * (1.0-scat[i]);
 						// Back-scattered ray stays inside this object, no stack change
 						scattered.AddScatteredRay( trans );
@@ -302,7 +369,10 @@ void TranslucentSPF::ScatterNM(
 			trans.pdf = (Nval + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval );
 			trans.isDelta = false;
 			trans.ior_stack = new IORStack( ior_stack );
-			trans.ior_stack->push( 1.0 );
+			// NM twin of the RGB entry lobe above: translucent_material has
+			// no ior parameter, so re-push the enclosing medium's own IOR
+			// rather than fabricating a jump to air's 1.0.
+			trans.ior_stack->push( ior_stack.top() );
 			GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 			scattered.AddScatteredRay( trans );
 		}

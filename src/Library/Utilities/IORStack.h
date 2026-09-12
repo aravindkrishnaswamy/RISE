@@ -223,6 +223,105 @@ namespace RISE
 			}
 		}
 	};
+
+	//! Basic-radiance scale for one interface crossing, RADIANCE mode only.
+	//!
+	//! Radiance is NOT invariant across a smooth interface between media of
+	//! different refractive index -- L / n^2 is (the "basic radiance";
+	//! Preisendorfer 1965, Veach 1997 5.2, PBRT-v4 9.5.2).  A walk that
+	//! gathers RADIANCE (anything rooted at a camera: the PT / BDPT-eye /
+	//! VCM-eye / MLT-eye subpaths, the legacy shader-op chain, a final
+	//! gather) must therefore multiply its throughput by
+	//! (eta_before / eta_after)^2 every time the scattered ray's medium
+	//! changes.  A walk that carries IMPORTANCE or FLUX (a BDPT/VCM light
+	//! subpath, any photon tracer, an SMS photon seed, a detector-sphere
+	//! measurement rig) gets NO factor: that asymmetry IS the non-symmetry
+	//! of refractive scattering, and applying the factor on both sides
+	//! would cancel it back out.
+	//!
+	//! `ScatteredRay::kray` / `krayNM` deliberately EXCLUDE this factor
+	//! (see the contract on those fields in ISPF.h) -- ~60 SPF
+	//! implementations would otherwise each need a TransportMode
+	//! parameter.  It is applied at the CONSUMER instead, from the two
+	//! stacks the consumer already holds.
+	//!
+	//! IMPORTANT: this reads ONLY `before.top()` and `after->top()` -- it
+	//! does not, and cannot, consult whatever IOR value the SPF itself
+	//! used for its own Fresnel/refraction calculation (a DielectricSPF's
+	//! `rIndex`, `exitIOR`, or similar locals).  For every topology this
+	//! file's header documents as CORRECT (single closed volumes, nested
+	//! different-material volumes, concentric same-material volumes,
+	//! disjoint same-material objects) with a spatially UNIFORM ior, the
+	//! two agree, because `top()` after the SPF's own `push`/`pop` IS the
+	//! medium it computed against.  Two known exceptions (review round 2,
+	//! 2026-09-12 added the second):
+	//!
+	//! - **Overlapping solids.**  Under this file's documented
+	//!   OVERLAPPING-SOLIDS pathology, they can silently disagree:
+	//!   `pop()`'s `find_and_destroy` can remove an entry that is NOT at
+	//!   the top (a slab-from-planes object hit downstream of another
+	//!   refractor), leaving `top()` reading a medium the SPF never
+	//!   actually refracted from or into. In that case this function can
+	//!   return exactly 1 -- or the wrong ratio -- for a real medium
+	//!   change DielectricSPF priced between two other indices.  Scenes
+	//!   that avoid that pathology (see the file header's guidance) are
+	//!   unaffected.
+	//! - **Spatially varying `ior`.**  At an EXIT hit, the SPF prices its
+	//!   own Snell/Fresnel calculation with the `ior` painter's value AT
+	//!   THAT EXIT HIT (`DielectricSPF.cpp` ~line 384's
+	//!   `pRIndex->GetValuesAt(ri)`, re-fetched fresh on every `Scatter`/
+	//!   `ScatterNM` call; the same shape recurs in
+	//!   `PerfectRefractorSPF.cpp`'s `newIOR` parameter), while
+	//!   `before.top()` here is whatever value was PUSHED at the object's
+	//!   ENTRY hit and has sat on the stack ever since. For a uniform
+	//!   `ior` those are the same number. For an `ior` bound to a
+	//!   spatially-varying `IScalarPainter` (e.g. a graded-index object,
+	//!   `ior` 1.4 at the entry point and 1.6 at the exit point), they
+	//!   differ: this helper's `(1.4/eta_after)^2` does not match the
+	//!   `(1.6/eta_after)^2` the SPF actually priced its Fresnel
+	//!   transmittance against. A full entry-to-exit trip still
+	//!   telescopes to the correct net factor regardless (the SAME
+	//!   mismatched entry value cancels against itself at the matching
+	//!   exit, by the identity in §6 of
+	//!   docs/REFRACTIVE_RADIANCE_SCALING.md), so only contributions
+	//!   GATHERED AT AN INTERIOR VERTEX (a bounce or NEE connection while
+	//!   still inside the graded-index object, before it exits) carry the
+	//!   mismatch between the priced Fresnel value and this helper's
+	//!   throughput factor.
+	//!
+	//! @param before  the walk's current IOR stack at the scattering vertex
+	//! @param after   the scattered ray's stack, or NULL when the SPF left
+	//!                the stack unchanged (the common case: every non-
+	//!                transmissive lobe).  A reflection lobe from inside a
+	//!                dielectric allocates an unchanged COPY rather than
+	//!                leaving this null, which is why the test below
+	//!                compares the top IORs and does not just check for
+	//!                non-null.
+	//! @return        (eta_before / eta_after)^2 computed from
+	//!                `before.top()` and `after->top()` (see above for
+	//!                what that does and does not guarantee), or exactly
+	//!                1 when the two agree or the medium did not change.
+	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after )
+	{
+		if( !after ) {
+			return Scalar( 1 );
+		}
+		const Scalar etaBefore = before.top();
+		const Scalar etaAfter  = after->top();
+		// Equal IORs -> exact 1 with no division, which keeps the
+		// overwhelmingly common reflection / same-index case bit-identical
+		// to the pre-2026-09 behaviour.  Non-positive IORs cannot arise
+		// from a well-formed stack (IORStack's ctor is explicit precisely
+		// to stop a bare `0` becoming an environment IOR of 0), but a
+		// scene can author `ior 0` on a dielectric, and a 0 here would
+		// otherwise produce an infinite or zero throughput rather than a
+		// dark-but-finite material.
+		if( etaBefore == etaAfter || etaBefore <= Scalar( 0 ) || etaAfter <= Scalar( 0 ) ) {
+			return Scalar( 1 );
+		}
+		const Scalar ratio = etaBefore / etaAfter;
+		return ratio * ratio;
+	}
 }
 
 #endif

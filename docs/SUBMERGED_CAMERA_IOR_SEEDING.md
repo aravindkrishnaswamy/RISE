@@ -157,9 +157,37 @@ already paid per eye subpath.  On enclosed-camera scenes the recovered
 transport itself dominates the wall-time change (jellyfish PT 256spp:
 10.4s → 21.8s, almost all of it real added path length).
 
+## The exit factor a submerged camera now picks up (debt 30, 2026-09-12)
+
+Seeding the stack only decides whether the first crossing is classified
+as an exit at all.  What that exit is WORTH changed on 2026-09-12: a
+radiance-mode walk now multiplies its throughput by
+`(eta_before / eta_after)^2` at every medium change, so an eye ray that
+starts inside water (n = 1.33) and leaves for air is scaled by
+**n^2 = 1.7689**, and one that starts inside glass (n = 1.5) by
+**2.25**.  Everything the submerged camera sees through Snell's window
+is that much brighter — which is the correct physics, not a gain: the
+radiance inside a medium of index n in equilibrium with an external
+field of radiance L is n^2 L.  Outside the window, total internal
+reflection is unaffected (a reflection does not change medium, so the
+factor is exactly 1).
+
+The jellyfish scene and every other submerged-camera scene therefore
+render brighter than the figures in this document, which predate the
+fix.  `EnvLightBalanceTest` topology J is the exception and is
+deliberately so: its shell is `ior 1.0`, so its factor is identically 1
+and its closed form stays bit-exactly 1.0.  The refracting sibling of
+that topology — the same geometry at `ior 1.5`, closed form n^2 = 2.25
+— is row B of
+[`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp).
+Mechanism: [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md).
+
 ## Regression coverage
 
-- `EnvLightBalanceTest` topology J — submerged camera, closed-form 1.0.
+- `EnvLightBalanceTest` topology J — submerged camera, closed-form 1.0
+  (`ior 1.0`, so the debt-30 eta^2 factor is 1 and this stays bit-exact).
+- `RefractiveRadianceScalingTest` row B — the same topology at `ior 1.5`,
+  closed form n^2 = 2.25: the EXIT direction of the eta^2 factor.
 - `GeometryUVRoundtripTest::TestObjectWorldArea` — GetArea Jacobian
   (identity / uniform-scale / rotation+translation).
 - Full suite green post-fix (221 run; VCM/BDPT strategy-balance,

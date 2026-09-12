@@ -107,6 +107,13 @@ void GlobalPelPhotonTracer::TracePhoton(
 			ScatteredRayContainer		scattered;
 
 			IndependentSampler samplerWrapper( random );
+		// IMPORTANCE mode: NO eta^2 basic-radiance factor (debt 30).
+		// A photon carries FLUX, and flux is conserved across a smooth
+		// interface up to Fresnel -- it is RADIANCE that picks up
+		// (eta_before/eta_after)^2, and only on the camera-rooted side.
+		// Scaling here too would cancel the non-symmetry and put every
+		// gather/merge that pairs a photon with an eye vertex back where
+		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
 		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 
 			bool bDiffuseComponentAvailable = false;
