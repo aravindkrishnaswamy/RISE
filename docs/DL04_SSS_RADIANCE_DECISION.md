@@ -4,7 +4,7 @@ Base master: `df5e17f996967a5a7a5ed379bae4b6b3a2efe3ac`.
 This records the source audit, measured probes, and the coarse convention gate
 introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.
 Production transport is unchanged. DL-04 remains open pending final review
-and the gate after the observer-anchor strengthening. The selected final defaults below follow the additional cap probes; the
+and the fresh clean-build selected gates. The selected final defaults below follow the additional cap probes; the
 pre-observer-anchor default gate and eta mutation record are below.
 
 ## Complete event versus one boundary
@@ -302,7 +302,7 @@ unchanged production transport at test commit `25421dd6`, 256 spp and
 four trials with the original 256/512/1024 caps. It ended verbatim:
 `Guards passed: 572084 failed: 0. Complete-event convention checks complete; exact energy conservation is not asserted.`
 This is baseline-green consistency evidence, not a red proof. Final review,
-mutation discrimination and final-default gates remain pending.
+the fresh clean-build selected gates remain pending.
 
 ## Family audit and scope
 
@@ -367,4 +367,19 @@ transform could also cancel out of ratio-of-ratios. The additional raw
 ratio check against `1.33^2` closes that assertion gap. It strengthens
 the observer check without changing either eta discriminator above. The
 strengthened test is committed before its first unchanged-library run;
-that run and the final independent review are still pending.
+that run passed as recorded below. Final independent review remains pending.
+
+## Observer-anchor validation
+
+The strengthened unchanged-library test at `1b705ce1` returned zero:
+`Guards passed: 572093 failed: 0. Complete-event convention checks complete; exact energy conservation is not asserted.`
+A deliberate test-fixture mutation changed the enclosing material IOR
+from 1.33 to 1 while retaining the physical oracle. The nine raw observer
+channel checks failed, although ratio-of-ratios still passed:
+`Guards passed: 572084 failed: 9. Complete-event convention checks complete; exact energy conservation is not asserted.`
+That mutation returned exit one. This is a negative control for the test,
+not a production defect. The fixture bytes were restored exactly to
+`1b705ce1`, SHA-256
+`92f0553f2717a03f712497de2a156ba63c1e13885349426345c8f3dc9bd4dafc`,
+and its rebuilt executable succeeded. The baseline, mutant, diff and
+restoration logs are retained with the evidence.
