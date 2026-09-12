@@ -928,6 +928,16 @@ static void TestOrthographicCamera()
 // p99 and max were inside the loosened bands even unfixed, so the
 // mean is the assertion doing the work.  Green after the fix.
 //
+// Re-measured 2026-09-12 (debt-30 review round 1): VCM/PT mean =
+// 0.00467741/0.00463638 = 1.0088.  The 8% mean band is sized to cover
+// VCM's per-run auto-radius merge-density drift (see this row's own
+// `effective_radius` log line each run), not to pin the ratio to a
+// fixed constant -- docs/REFRACTIVE_RADIANCE_SCALING.md §4 quotes a
+// DIFFERENT scene's diagnostic probe (radius 0.03) at 1.047, and
+// RefractiveRadianceScalingTest's row C (same 0.08 radius as this row)
+// reads 1.0125 in the same re-measurement; all three are independent
+// samples inside this band, not the same number three ways.
+//
 // REFERENCE.  `kRasterizerPTSubmerged` below, NOT the file's shared
 // `kRasterizerPT`: this is the exact topology the caveat above
 // kRasterizerPT warns about (a transmissive material in the scene), so

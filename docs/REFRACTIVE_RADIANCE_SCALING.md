@@ -88,12 +88,14 @@ same geometry is row A of the test.
 | ior | | PT | BDPT | VCM | pixelpel | physics |
 |---|---|---|---|---|---|---|
 | — | dry (no box) | 0.318359 | 0.318359 | 0.318359 | 0.318359 | 0.318310 |
-| 1.33 | submerged, **before** | 0.311816 | 0.311816 | 0.311816 | 0.312012 | **0.176339** |
-| 1.33 | submerged, **after** | **0.176310** | **0.176310** | **0.176310** | **0.176392** | 0.176339 |
+| 1.33 | submerged, **before** | 0.311816 | 0.311816 | 0.311816 | 0.312012 | **0.176338** |
+| 1.33 | submerged, **after** | **0.176310** | **0.176310** | **0.176310** | **0.176392** | 0.176338 |
 
 Before: exactly `T·L` — the Fresnel transmittance was applied and the
-1/n² was not (`0.311816 / 0.176339 = 1.7687 = n²`). After: within
-0.02 % of `T·L/n² = 0.97994 · 0.318310 / 1.7689`.
+1/n² was not (`0.311816 / 0.176338 = 1.7683`, close to but not the same
+number as `n² = 1.33² = 1.7689` — the ~0.03 % gap is measurement
+quantization in the "before" render, not a different physical constant).
+After: within 0.02 % of `T·L/n² = 0.97994 · 0.318310 / 1.7689`.
 
 The dry row is 0.318359 rather than 0.318310 because EXR stores half
 floats; 0.318359 is the nearest half to 1/π.
@@ -130,7 +132,27 @@ Read the rows in pairs:
 - **Area / submerged** is the headline: VCM was **1.554× PT** and is now
   **1.047×**. PT and BDPT barely moved (0.004666 → 0.004690,
   0.004786 → 0.004857 — both inside their own run-to-run spread), which
-  is the cancellation of §2 doing exactly what it is supposed to.
+  is the cancellation of §2 doing exactly what it is supposed to. This
+  probe's emitter radius is 0.03 — a different scene from the two
+  regression guards below, so the three numbers are independent
+  measurements of the same physics, not three re-derivations of one
+  run:
+  - `tests/VCMStrategyBalanceTest.cpp` topology H (radius 0.08, 64×64,
+    2048 spp): VCM/PT = 0.00467741/0.00463638 = **1.0088** (re-measured
+    for this round; the file's own header records 1.0066 from its
+    red-proof run and the assertion bands at 8%/60%/4x on mean/p99/max,
+    so both readings pass comfortably).
+  - `tests/RefractiveRadianceScalingTest.cpp` row C (radius 0.08, same
+    scene family, 128/64/2048 spp for PT/BDPT/VCM): VCM/PT =
+    0.00468599/0.00462829 = **1.0125** (re-measured for this round;
+    BDPT/PT = 1.0067 in the same run).
+  All three sit inside VCMStrategyBalanceTest's 8% mean band, which is
+  sized for auto-radius merge drift (the `VCMRasterizerBase::
+  PreRenderSetup` log line each run prints its own `effective_radius`
+  from the scene's photon density that run), not for a fixed physical
+  constant — a rerun at a different seed base or a different sample
+  count will land at a different point inside that band, not on 1.047
+  exactly.
 
 ## 5. `tidal_stones` — the debt-30 "BDPT vs VCM ≈ 20×" is TWO separate things
 
@@ -171,7 +193,18 @@ contributes nothing under the water either way.
 > ray's IOR-stack top changes from `η_before` to `η_after`, multiply the
 > throughput by `(η_before / η_after)²`. Reflection (stack unchanged):
 > ×1. Applies to delta AND rough (`scattering < 1e6`) transmission
-> alike, and to `krayNM` in the spectral / HWSS twins.
+> alike. In the spectral / HWSS twins the factor is **not** re-derived
+> per wavelength: it is computed ONCE from the HERO wavelength's
+> IOR-stack transition (`pS->ior_stack` in PT, `pScat->ior_stack` in the
+> BDPT/VCM/MLT eye subpath) and broadcast as a single scalar to the
+> hero's throughput and every still-live companion wavelength alike
+> (PathTracingIntegrator.cpp's dispersive-delta-termination site, and
+> BDPTIntegrator.cpp's `GenerateEyeSubpathImpl`). This is exact when
+> every wavelength crosses the same medium boundary — the common case,
+> and the same hero-only convention the pre-existing delta-lobe
+> `krayNM` broadcast already used — but is not independently verified
+> per companion wavelength the way non-delta `EvalBSDFAtVertexNM`
+> is; see the comments at both sites for the scope of the guarantee.
 >
 > **IMPORTANCE-mode walk** — light subpaths, photon tracers, SMS photon
 > seeds, detector-sphere rigs. No factor.
@@ -219,6 +252,7 @@ is exact even across a layered SPF's internal chain:
 | `Materials/CompositeSPF.cpp` | 4 | — | no | telescoping (§6); an up-exit gets 1, a down-exit gets the single net factor |
 | `Materials/FabricSPF.cpp` | 2 | — | no | pure re-dispatch to the weave BSDF in a fibre frame; no medium change |
 | `DetectorSpheres/*` | 5 | FLUX | no | measurement rigs; comment only |
+| `Materials/SubSurfaceScatteringSPF.cpp`, `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.h` (`Sw`) | 0 | — | no — **untouched — telescoping argument; PBRT convention differs; NAMED RESIDUAL** | the whole subsurface-scattering family never pushes/pops the IOR stack (BSSRDF entry/exit is priced by the diffusion-profile importance sampling in the integrator, not by a stack transition), so the debt-30 factor is exactly 1 for it, unconditionally. See §10 for the two competing readings of whether that is correct. |
 
 ### 6.2 One hop deeper (audit-by-bug-pattern)
 
@@ -325,6 +359,23 @@ rebuilt between the two states.
 
 Both differences are inside the run-to-run spread of either state.
 
+**Variance note.** PT's stochastic lobe selection at a dielectric delta
+vertex (`PTScatterSelectWeight`, `PathTracingIntegrator.cpp`) weighs
+reflection vs. transmission by `kray` alone -- `F` vs. `1-F` -- because
+`kray` deliberately excludes this factor (§6). The actual contribution
+of the two lobes is `F` and `(1-F) · etaScale`, which no longer matches
+the selection weights once `etaScale != 1`: the transmission lobe is
+now over- or under-selected relative to its true contribution by up to
+a factor of `n²`. This costs variance only -- the `RadianceEtaScale(...)
+/ selectProb` division at the consumer keeps the estimator unbiased
+regardless of how the lobe was picked -- but it is no longer the
+contribution-matched (near-optimal) selection PT's single-lobe scheme
+was designed to approximate. Folding `etaScale` into
+`PTScatterSelectWeight` itself (selecting by `F` vs. `(1-F) · etaScale`)
+would restore the match; not done here, since it touches the selection
+weighting for every PT delta vertex in the tree, not just the ones this
+fix addresses.
+
 ## 10. Relationship to `CAUSTIC_PHOTONMAP_NORMALIZATION.md` §9–§11
 
 §9.3 correctly observed that "RISE applies no η² radiance scaling in
@@ -340,6 +391,57 @@ measurements put the camera **under** the water precisely so no interface
 sat on the eye side — which made them blind to this factor, and is why
 they were internally consistent and remain valid. See §13 of that
 document.
+
+### 10.1 Named residual: the subsurface-scattering family (§6.1)
+
+`SubSurfaceScatteringSPF`, `RandomWalkSSS`, and `BSSRDFSampling::Sw`
+never touch the IOR stack (§6.1), so the debt-30 factor is exactly 1 on
+every subsurface-scattering path, unconditionally. Two views on whether
+that is correct are open, not reconciled by this work:
+
+- **(a) Telescoping argument (the position this fix takes no side
+  against).** A BSSRDF is a closed-form solution to the diffusion
+  approximation for light entering a semi-infinite slab at one point and
+  exiting at another, already integrated over the internal random walk.
+  If that closed form is derived (as PBRT-v3's classic dipole is) as an
+  air-to-air quantity — the entry Fresnel transmittance and the internal
+  radiance-to-flux conversion at entry cancelling algebraically against
+  the exit's flux-to-radiance conversion and exit Fresnel transmittance
+  — then the net factor over the whole entry-walk-exit trip is exactly
+  1 by construction, the same telescoping identity §6's `(n_out/n_gap)²
+  · (n_gap/n_below)² = (n_out/n_below)²` states for an explicit
+  multi-interface SPF chain. Under this view, RISE's "never touch the
+  stack" is not a gap; it is the same telescoping collapsed into a
+  single opaque closed form instead of two explicit consumer-side
+  multiplies.
+- **(b) PBRT-v3's own implementation disagrees with reading (a)
+  literally.** `SeparableBSSRDFAdapter::f` (PBRT-v3 §11.4.3) multiplies
+  the profile evaluation by `(1 - Fr(cosThetaI)) / (etaI * etaI)` when
+  the integrator's transport mode is Radiance — an explicit η² divide
+  that mirrors exactly the kind of factor this debt-30 fix adds at every
+  other RADIANCE-mode dielectric interface. If PBRT's own radiance-mode
+  BSSRDF needs that divide, the pure telescoping-to-1 argument in (a) is
+  incomplete for at least PBRT's formulation, and RISE's BSSRDF may be
+  undercounting light exiting a subsurface material whose *surrounding*
+  medium is not air (e.g. skin submerged in water) by the same n² this
+  whole fix is about.
+
+**The observable that would settle it**, not yet run: author the same
+semi-infinite-slab geometry two ways — once as a `dielectric_material`
+shell with a scattering *interior* medium (an explicit multi-interface
+SPF chain that DOES take the debt-30 factor at both crossings), once as
+`subsurfacescattering_material` on the same shape with matched albedo
+and mean free path — and render both under a submerged camera (inside
+the shell) AND an air camera (outside it, water or another medium
+between camera and shell) with everything else held fixed. If (a) is
+right, the two materials' brightness ratio between the submerged-camera
+and air-camera renders should be IDENTICAL for both materials (both
+telescope to net 1 the same way — no relative shift). If (b) is right,
+the `subsurfacescattering_material` render will be dimmer than the
+explicit-interior render by the same n² factor the air-camera dielectric
+case already exhibits, and by an amount that tracks the surrounding
+medium's index. Neither render has been produced; this residual is
+open.
 
 ## 11. Cross-references
 

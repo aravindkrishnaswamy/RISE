@@ -957,11 +957,14 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   | ior | | PT | BDPT | VCM | pixelpel | physics `T*L/n^2` |
   |---|---|---|---|---|---|---|
   | — | dry | 0.318359 | 0.318359 | 0.318359 | 0.318359 | 0.318310 |
-  | 1.33 | wet, pre-fix | 0.311816 | 0.311816 | 0.311816 | 0.312012 | **0.176339** |
-  | 1.33 | wet, post-fix | 0.176310 | 0.176310 | 0.176310 | 0.176392 | 0.176339 |
+  | 1.33 | wet, pre-fix | 0.311816 | 0.311816 | 0.311816 | 0.312012 | **0.176338** |
+  | 1.33 | wet, post-fix | 0.176310 | 0.176310 | 0.176310 | 0.176392 | 0.176338 |
 
   Pre-fix every integrator read exactly `T*L` — the Fresnel
-  transmittance applied, the 1/n^2 missing (ratio 1.7687 = n^2).
+  transmittance applied, the 1/n^2 missing (0.311816/0.176338 = 1.7683,
+  close to but not the same number as n^2 = 1.33^2 = 1.7689 -- the
+  ~0.03% gap is measurement quantization in the pre-fix render, not a
+  different physical constant).
 
   **Why it hid.**  It CANCELS for PT and BDPT in the common case and
   does not cancel for anything whose light side carries flux.  An eye
@@ -1010,6 +1013,16 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   456/438/439 ms -> 461/445/447 ms; `plank_closeup`
   19547/20153/20135 ms -> 19837/20010/19962 ms.  Both inside the
   run-to-run spread.
+
+  **Residual: SSS family eta^2, see REFRACTIVE_RADIANCE_SCALING.md §10.**
+  The subsurface-scattering family (`SubSurfaceScatteringSPF`,
+  `RandomWalkSSS`, `BSSRDFSampling::Sw`) never touches the IOR stack, so
+  it is untouched by this fix and reads the factor as exactly 1
+  unconditionally — an open question on whether that is correct (a
+  telescoping closed form, matching this fix's own convention) or a gap
+  (PBRT-v3's radiance-mode BSSRDF applies an explicit eta^2 divide).  Not
+  diagnosed further this round; see that section for the two readings
+  and the un-run observable that would settle it.
 
 
 ## 8. Cross-references

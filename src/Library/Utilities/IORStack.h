@@ -245,6 +245,24 @@ namespace RISE
 	//! parameter.  It is applied at the CONSUMER instead, from the two
 	//! stacks the consumer already holds.
 	//!
+	//! IMPORTANT: this reads ONLY `before.top()` and `after->top()` -- it
+	//! does not, and cannot, consult whatever IOR value the SPF itself
+	//! used for its own Fresnel/refraction calculation (a DielectricSPF's
+	//! `rIndex`, `exitIOR`, or similar locals).  For every topology this
+	//! file's header documents as CORRECT (single closed volumes, nested
+	//! different-material volumes, concentric same-material volumes,
+	//! disjoint same-material objects), the two always agree, because
+	//! `top()` after the SPF's own `push`/`pop` IS the medium it computed
+	//! against.  Under this file's documented OVERLAPPING-SOLIDS
+	//! pathology, they can silently disagree: `pop()`'s `find_and_destroy`
+	//! can remove an entry that is NOT at the top (a slab-from-planes
+	//! object hit downstream of another refractor), leaving `top()`
+	//! reading a medium the SPF never actually refracted from or into. In
+	//! that case this function can return exactly 1 -- or the wrong ratio
+	//! -- for a real medium change DielectricSPF priced between two other
+	//! indices.  Scenes that avoid that pathology (see the file header's
+	//! guidance) are unaffected.
+	//!
 	//! @param before  the walk's current IOR stack at the scattering vertex
 	//! @param after   the scattered ray's stack, or NULL when the SPF left
 	//!                the stack unchanged (the common case: every non-
@@ -253,8 +271,10 @@ namespace RISE
 	//!                leaving this null, which is why the test below
 	//!                compares the top IORs and does not just check for
 	//!                non-null.
-	//! @return        (eta_before / eta_after)^2, or exactly 1 when the
-	//!                medium did not change.
+	//! @return        (eta_before / eta_after)^2 computed from
+	//!                `before.top()` and `after->top()` (see above for
+	//!                what that does and does not guarantee), or exactly
+	//!                1 when the two agree or the medium did not change.
 	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after )
 	{
 		if( !after ) {

@@ -265,7 +265,7 @@ that the excess is a constant ≈π in the merge normalization.
    The factor varies with ior **and** geometry (flat 18× vs pool 3.3× at the same
    η=1.33), so it is **not a single constant** — a blind `÷π` / `÷3.3` would be WRONG.
 
-3. **RISE applies no η² radiance scaling in transport** (`DielectricSPF` kray =
+3. **RISE applies no η² radiance scaling in transport** [SUPERSEDED 2026-09-12 — see §13] (`DielectricSPF` kray =
    (1−Fresnel)·tau^dist, no η² — [DielectricSPF.cpp:201-224](../src/Library/Materials/DielectricSPF.cpp);
    BDPT throughput `beta *= kray` — [BDPTIntegrator.cpp:1269-1273](../src/Library/Shaders/BDPTIntegrator.cpp)).
    → **not** a missing/double-η² (Veach non-symmetry) bug.

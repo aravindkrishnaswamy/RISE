@@ -2720,6 +2720,23 @@ namespace {
 				beta = beta * localScatteringWeight;
 				if constexpr( Traits::is_nm ) {
 					if( pSwlHWSS ) {
+						// HERO-ONLY delta convention, predating the debt-30
+						// eta^2 factor below: at a delta lobe every
+						// companion wavelength is scaled by the HERO's
+						// krayNM (`deltaScale`), not by its own per-
+						// wavelength krayNM the way the non-delta branch
+						// below evaluates a per-wavelength `fw`.  Unlike
+						// PathTracingIntegrator.cpp's PT site, there is no
+						// swl.TerminateSecondary() gate here -- this
+						// hero-only pricing is applied unconditionally at
+						// every delta eye-subpath vertex, dispersive or
+						// not.  The eta^2 scale computed just below this
+						// block is a SEPARATE per-vertex medium-change
+						// factor and is likewise applied as one scalar to
+						// hero and every live companion (see its own
+						// comment): the two hero-only choices are
+						// independent conventions that happen to compose
+						// the same way.
 						const Scalar deltaScale = pScat->krayNM * bssrdfReflectCompensation / selectProb;
 						hwssBetaNM[0] = beta;
 						for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {

@@ -5385,11 +5385,25 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		}
 
 		// eta^2 basic-radiance factor (debt 30), hero and companions alike.
-		// ONE scalar for the whole bundle is correct here: the per-vertex
-		// IOR on `pS->ior_stack` is the HERO's, and a DISPERSIVE delta
-		// refraction has already called swl.TerminateSecondary() in the
-		// block above, so any wavelength still active at this point shares
-		// the hero's index.  Applied before RR so the survival probability
+		// ONE scalar for the whole bundle is correct here ONLY WHEN the
+		// block above actually terminated secondary wavelengths on a
+		// dispersive delta refraction: that block calls
+		// pSPF->GetSpecularInfoNM(), whose base-class default is
+		// `SpecularInfo()` (non-specular/invalid) -- an SPF that doesn't
+		// override it (e.g. CompositeSPF) never reports `canRefract`, so
+		// swl.TerminateSecondary() is never reached through this path for
+		// it, and any wavelength still active here need NOT share the
+		// hero's index.  For an SPF that DOES implement GetSpecularInfoNM
+		// (DielectricSPF, PerfectRefractorSPF, PolishedSPF), a dispersive
+		// delta refraction has already terminated the rest of the bundle
+		// by this point, so the per-vertex IOR on `pS->ior_stack` (the
+		// HERO's) is the only one still live and one scalar is exact.
+		// This is a property of THIS PT site's termination check, not a
+		// general guarantee about GetSpecularInfoNM implementers -- see
+		// the BDPT/VCM/MLT HWSS eye subpath in BDPTIntegrator.cpp, which
+		// has no equivalent termination and instead applies the hero's
+		// krayNM to every companion at delta lobes by convention (predating
+		// this factor).  Applied before RR so the survival probability
 		// sees the throughput the path actually carries.
 		{
 			const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );

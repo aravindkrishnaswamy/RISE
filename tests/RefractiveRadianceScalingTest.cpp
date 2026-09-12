@@ -428,8 +428,11 @@ static std::string RasterizerVCMEnv( const char* samples )
 // carries a 0.001 z offset so `lookat` and `up` are not parallel).  At
 // fov 15 the largest incidence angle on the interface is ~10.6 deg
 // (image diagonal), where the Fresnel transmittance differs from its
-// normal-incidence value by under 4e-4 -- three orders below the 2%
-// band -- so T(0) is the right closed form for the whole frame.
+// normal-incidence value by R(10.6)-R(0) = 1.31e-5 at ior 1.33 and
+// 1.96e-5 at ior 1.5 (exact unpolarized Fresnel, the same formula as
+// Optics::CalculateDielectricReflectance) -- roughly three orders of
+// magnitude (1020x-1522x) below the 2% band -- so T(0) is the right
+// closed form for the whole frame.
 //
 // The camera sees ONLY the emitter through the top face: the quad's
 // +-1 extent subtends far more than the +-0.33 the fov reaches at
@@ -507,13 +510,15 @@ static void RunRowA( const char* ior, double n )
 // and must stay bit-exact); this row is its refracting sibling and
 // pins the EXIT direction of the factor, which row A cannot reach.
 //
-// CLOSED FORM n^2 = 2.25, NOT n^2*T -- see the file header.  In
-// practice the tail of the internal series is truncated by the
-// integrator's depth/RR limits, and the third internal bounce also
-// escapes laterally out of a 4x4x4 box at these angles, so the
-// measured value sits a few tenths of a percent under n^2.  The 3%
-// band covers that; it is still 20x tighter than the 2.25x error the
-// missing factor produces.
+// CLOSED FORM n^2 = 2.25, NOT n^2*T -- see the file header.  Measured
+// (re-run for this round): PT mean=2.25 (ratio 1.00000), BDPT
+// mean=2.25 (ratio 1.00000), VCM mean=2.25002 (ratio 1.00001) -- all
+// three read n^2 to within 0.001%, not "a few tenths of a percent
+// under" as an earlier draft of this comment claimed.  The 3% band is
+// generous headroom for the integrator's depth/RR truncation of the
+// internal series and lateral escape from a 4x4x4 box at these angles,
+// not a correction the measurement is actually using; it is still 20x
+// tighter than the 2.25x error the missing factor produces.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSubmergedCameraIor15 =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -677,7 +682,12 @@ static void RunRowD()
 	// ((h+d)/(h+d/n))^2 = 1.05.  VCM's merges carry the real refracted
 	// geometry.  The band is sized around that 5% modelling gap plus MC
 	// noise, and is 12x tighter than the n^2 = 1.77 error the missing
-	// factor would introduce on ONE side of the comparison.
+	// factor introduced (docs/REFRACTIVE_RADIANCE_SCALING.md section 4:
+	// both estimators moved, PTts/VCM 0.929 -> 0.949, not just one of
+	// them) -- this band is a forward-looking guard against an
+	// ASYMMETRIC regression (e.g. a future change that re-applies the
+	// factor to only one of the two flux-side estimators), not a record
+	// of the historical bug having hit only one side.
 	Check( std::fabs( mTs - mVCM ) <= 0.15 * mVCM, "row D: transparent-shadow PT within 15% of VCM" );
 }
 
