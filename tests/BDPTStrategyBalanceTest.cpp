@@ -300,13 +300,17 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 
 	// Drop the scene's file_rasterizeroutput so we don't pollute the
 	// rendered/ directory during a test run, and so the test reads the
-	// raw radiance buffer instead of an LDR-encoded PNG.
+	// raw radiance buffer directly.
 	pJob->RemoveRasterizerOutputs();
 
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	// Fresh libc seed per render; worker scheduling still makes repeats
+	// non-bit-reproducible. Repeat averages must not reuse one seed.
+	static unsigned renderIndex = 0;
+	std::srand(1729u + renderIndex++);
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -522,10 +526,10 @@ static const char* kRasterizerPT =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 // `oidn_denoise FALSE` on BOTH rasterizer strings (2026-09-05).  The
@@ -554,10 +558,10 @@ static const char* kRasterizerBDPT =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kLightOmni =
@@ -1205,10 +1209,10 @@ static const char* kRasterizerPT512 =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPT512 =
@@ -1229,10 +1233,10 @@ static const char* kRasterizerBDPT512 =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static void TestThinLensStoppedDown()
@@ -1439,10 +1443,10 @@ static const char* kRasterizerPTSubmergedJ =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_pt_submerged_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_pt_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPTSubmergedJ =
@@ -1463,10 +1467,10 @@ static const char* kRasterizerBDPTSubmergedJ =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_bdpt_submerged_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_bdpt_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
@@ -1733,10 +1737,10 @@ static const char* kRasterizerPTCeilingK =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_pt_ceiling_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_pt_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPTCeilingK =
@@ -1757,10 +1761,10 @@ static const char* kRasterizerBDPTCeilingK =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_bdpt_ceiling_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_bdpt_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const Tolerances kCeilingTolerancesK{ 0.08, 0.30, 1.00 };

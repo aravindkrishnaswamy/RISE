@@ -381,7 +381,11 @@ void TranslucentSPF::ScatterNM(
 	{
 		// Coming out the other side
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
-		front.krayNM = GuardedGetColorNM( *pTrans, ri, nm ) * exp(-(pExtinction->GetValueAtNM(ri,nm)*distance));
+		// The primary-layer transmittance was paid on entry, just as in
+		// Scatter(). Each interior segment pays only Beer extinction before
+		// splitting into exit and backscatter; multiplying pTrans here again
+		// attenuates both children a second time (DL-01).
+		front.krayNM = exp(-(pExtinction->GetValueAtNM(ri,nm)*distance));
 
 		front.type = ScatteredRay::eRayDiffuse;
 

@@ -213,10 +213,13 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	std::vector<double> ch[3];
 	for( int c = 0; c < 3; c++ ) ch[c].reserve( cap.pixels.size() );
 
+	// Compare radiance composited over black, matching the BDPT harness.
+	// The legacy PT stores surface RGB plus coverage alpha; VCM may
+	// already include coverage in RGB. Raw RGB differs at silhouettes.
 	for( const RISEColor& c : cap.pixels ) {
-		ch[0].push_back( c.base.r );
-		ch[1].push_back( c.base.g );
-		ch[2].push_back( c.base.b );
+		ch[0].push_back( c.base.r * c.a );
+		ch[1].push_back( c.base.g * c.a );
+		ch[2].push_back( c.base.b * c.a );
 	}
 
 	for( int c = 0; c < 3; c++ ) {
@@ -229,6 +232,34 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	}
 	s.valid = true;
 	return s;
+}
+
+// Exact measurement oracle: surface RGB with coverage and already
+// composited RGB with alpha one describe the same sensor radiance.
+static bool TestCompositedStats()
+{
+	CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+	cap->width = 2;
+	cap->height = 1;
+	cap->pixels = { RISEColor(RISEPel(0.8, 0.4, 0.2), 0.25),
+	                RISEColor(RISEPel(0.0, 0.0, 0.0), 0.0) };
+	const ImageStats surface = ComputeStats(*cap);
+	cap->pixels[0] = RISEColor(RISEPel(0.2, 0.1, 0.05), 1.0);
+	const ImageStats composite = ComputeStats(*cap);
+	const double expected[] = {0.1, 0.05, 0.025};
+	bool valid = surface.valid && composite.valid;
+	for (unsigned c = 0; c < 3; ++c) {
+		valid = valid && std::fabs(surface.mean[c] - expected[c]) < 1e-12
+		              && std::fabs(surface.mean[c] - composite.mean[c]) < 1e-12;
+	}
+	Check(valid, "capture statistics compose coverage alpha over black");
+	if (!valid) {
+		std::cout << "  surface mean R=" << surface.mean[0]
+		          << " composited mean R=" << composite.mean[0]
+		          << " expected R=" << expected[0] << std::endl;
+	}
+	cap->release();
+	return valid;
 }
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
@@ -262,6 +293,10 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	// Fresh libc seed per render; worker scheduling still makes repeats
+	// non-bit-reproducible. Repeat averages must not reuse one seed.
+	static unsigned renderIndex = 0;
+	std::srand(1729u + renderIndex++);
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -379,15 +414,16 @@ static const char* kRasterizerPT =
 	"\tmax_recursion 2\n"
 	"\tsamples 32\n"
 	"\tlum_samples 1\n"
+	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 // VCM with both VC and VM enabled and merge_radius=0 (auto).  This is
@@ -415,10 +451,10 @@ static const char* kRasterizerVCM =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kLightOmni =
@@ -775,15 +811,16 @@ static const char* kRasterizerPT512 =
 	"\tmax_recursion 2\n"
 	"\tsamples 512\n"
 	"\tlum_samples 1\n"
+	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCM512 =
@@ -807,10 +844,10 @@ static const char* kRasterizerVCM512 =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static void TestThinLensStoppedDown()
@@ -877,45 +914,17 @@ static void TestThinLensBladedAperture()
 //     for a delta light, and the mirror of the `isDelta` flag BDPT
 //     already sets on this same vertex).
 //
-// Measured on this row, VCM mean / PT mean:
-//   both defects present (master):        0.00283 / 0.03661 = 0.077
-//   guard only, dVCM untouched:         2.51e-05 / 0.03662 = 0.0007
-//   dVCM = 0 only, splat unguarded:       0.03961 / 0.03662 = 1.082
-//   both fixed:                           0.03681 / 0.03662 = 1.005
-// (each of these is one draw from a run-to-run spread of a few
-// percentage points; the band, not the figure, is the contract -- see
-// the 5-run measurement below for this row's own quantified spread)
+// Historical orthographic measurements in the introducing commit used
+// raw capture RGB and the legacy PT's default filter. They do not specify
+// the current composited, box-filtered observable. DL-01's measurement
+// cleanup exposed this mismatch; TestCompositedStats red-proves the
+// coverage convention independently of any transport code.
 //
-// Note the second row: the guard ALONE makes it worse, because with
-// dVCM enormous the phantom splat was carrying almost all of what
-// little energy VCM produced.  That is why the two land together.  The
-// third row is the guard's own red-proof: the 8.2% excess is precisely
-// the phantom splat, now at full weight -- against `kStrictTolerances`'s
-// 8% mean band, that is only 0.2 PERCENTAGE POINTS outside the edge (A2
-// P2-1, debt 28 review round 2): a red-proof that close to its own gate
-// is barely a red-proof, since ordinary MC noise could push it back
-// inside.  Measured whether it actually is noise: re-running THIS
-// red-proof state (guard disabled, dVCM=0 fix kept) five times gave
-// mean-relative-diff readings of 8.098%, 8.176%, 8.075%, 8.155%,
-// 8.238% -- mean 8.148%, sample stddev ~0.065 pp (relative spread
-// ~0.8%, i.e. comfortably < 1%).  The red-proof state is NOT noisy
-// enough to occasionally read below 8% by chance; the 0.2 pp margin
-// against `kStrictTolerances` was a real coincidence of where the
-// bug's magnitude happened to land relative to the file's one shared
-// band, not evidence the band itself is well-sized for this topology.
-// Per that measurement this row gets its OWN tighter band,
-// `kOrthoTolerances` (4% mean, same p99/max as strict): the shipped
-// "both fixed" state (0.5% off) sits comfortably inside it, while the
-// red-proof's ~8.1% now fails by roughly 4 percentage points instead
-// of 0.2 -- an actual regression guard instead of an edge case.
-//
-// PT is unaffected by any of this, so PT-vs-VCM agreement is the
-// invariant.
+// Preserve the established 4% mean band (p99/max retain strict values).
+// The two transport safeguards above remain required; this harness change
+// affects only what is measured at partial-coverage silhouette pixels.
 //////////////////////////////////////////////////////////////////////
 
-// (A2 P2-1, debt 28 review round 2) Row-specific tighter band -- see the
-// 5-run red-proof measurement above for the derivation.  p99/max stay at
-// the strict values; only the mean band tightens from 8% to 4%.
 static const Tolerances kOrthoTolerances{ 0.04, 0.25, 1.00 };
 
 static void TestOrthographicCamera()
@@ -1086,10 +1095,10 @@ static const char* kRasterizerPTSubmerged =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_submerged_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCMSubmerged =
@@ -1113,10 +1122,10 @@ static const char* kRasterizerVCMSubmerged =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_submerged_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
@@ -1373,10 +1382,10 @@ static const char* kRasterizerPTCeiling =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_ceiling_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCMCeiling =
@@ -1400,10 +1409,10 @@ static const char* kRasterizerVCMCeiling =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_ceiling_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const Tolerances kCeilingTolerances{ 0.08, 0.30, 1.00 };
@@ -1418,6 +1427,8 @@ static void TestSubmergedCeilingMISCombination()
 int main()
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
+
+	if (!TestCompositedStats()) return 1;
 
 	TestDeltaOmniLight();
 	TestMeshEmitterOnly();

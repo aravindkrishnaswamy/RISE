@@ -743,24 +743,31 @@ never had either shape: it never assigns `ior_stack` inside its
 per-channel loop at all (its only stack-bearing allocation, `front`'s
 pop, is a single assignment made ONCE, outside and after both branches
 — see `TranslucentSPF.cpp` ~line 257). Debt 31 in
-[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) keeps only item
-(a) (the guided-direction leak above); the former item (b) is removed,
-not merely marked fixed, since both of its sub-shapes are now closed by
-code, not by documentation.  (The overflow-carryover fix commit's
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) retains the guided-direction leak as item 1 and the closed ownership
+fix as item 2; later weight/density findings are items 3 and 4. Both
+ownership sub-shapes are closed by code, not by documentation.  (The overflow-carryover fix commit's
 message refers to a "four-way case table above" that was never written
 into the message; the ownership trace it means is the comment block
 above the entry per-channel loop in `TranslucentSPF.cpp`, ~lines
 169-203.)
 
-Two further PRE-EXISTING `TranslucentSPF` defects surfaced in review
-round 4 and are recorded as debt 31 items 3 and 4 in
-[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md), untouched here:
-the RGB exit lobe weights by extinction alone (`TranslucentSPF.cpp`
-~line 225) while the spectral exit lobe also multiplies by the
-transmittance painter (~line 384) — a 2.5× RGB/NM disagreement at
-`transmittance 0.4`; and the spectral exit lobe samples a Phong
-distribution (~lines 426-434) while `PdfNM` reports the cosine density
-that the RGB exit lobe actually uses.
+**~~RGB/spectral exit-lobe weight divergence (debt 31 item 3 / DL-01).~~
+CLOSED 2026-09-12 — `1239edf2`, `TranslucentSpectralParityTest: 676 checks,
+0 failures`.** The primary-layer `tau` is paid once at entry. The spectral
+exit previously charged it again before the Beer-attenuated weight split
+into exit and backscatter. Removing that second factor aligns the local
+weights with RGB. The unfixed-library run on `6486656e`, with test commit
+`fc371041`, reported 174 failures. See
+[DL-01 closure and independent residuals](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
+
+**RGB/NM exit-lobe density (debt 31 item 4 / DL-02) remains OPEN.**
+DL-01's transport review clarified that inside-state `Pdf` evaluates the
+opposite hemisphere from the sampled exit direction in BOTH pipes,
+returning zero even at N=1. NM also samples a Phong shape while `PdfNM`
+forwards to the cosine-shaped `Pdf`. DL-01 changes neither support nor
+sampling distribution. Stateful
+BSDF reevaluation/HWSS companion pricing is separately tracked as DL-38;
+local RGB/NM lobe-weight parity does not establish full renderer parity.
 
 ## 11. Cross-references
 
