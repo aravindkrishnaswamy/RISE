@@ -59,8 +59,25 @@
 //      across the three emitted rays, kray channels 1 and 2 were always
 //      zero.  The fix mirrors the exit-side loop's `trans.kray[i] = p[i]`
 //      (~line 222), which never had this bug.
+//
+//      Round 2 (review) found the EXIT side's sibling of that same bug:
+//      the exit branch's per-channel loop (~line 230-231) did
+//      `front.kray = 0; front.kray[i] = f[i]*(1-scat[i]);` INSIDE the
+//      loop, but unlike `trans` (added to `scattered` once per iteration,
+//      correctly), `front` -- the diffuse ray that actually leaves the
+//      object -- is added ONCE, after the whole loop.  So every
+//      iteration's `front.kray = 0` reset wiped out the previous
+//      iteration's channel, leaving only the LAST channel (B, i=2)
+//      non-zero on the ray that exits.  This sub-test's `scatFactor`
+//      (0.3, uniform) and anisotropic `phongN` together force the exit
+//      branch into the same per-channel loop, and assert the exit ray's
+//      `kray` has all three channels equal to `f*(1-scat)` -- pre-fix,
+//      channels 0 and 1 read exactly 0 (see the fix commit message for
+//      the verbatim failing lines from this round's red-proof run).
 //    Sub-test 3 -- ScatterNM: exercises the NM twin's single entry
-//      push (~line 304) and its exit pop (~line 368).
+//      push (~line 304) and its exit pop (~line 368).  ScatterNM has no
+//      per-channel loop (it operates on one wavelength at a time), so
+//      it carries no sibling of either RGB-side bug above.
 //
 //    In every sub-test, EVERY scattered ray with a non-null ior_stack
 //    (entry: the eRayTranslucent lobe; exit: the eRayDiffuse lobe that
@@ -327,15 +344,49 @@ static void TestAnisotropicRGB()
 	ScatteredRayContainer exitRays;
 	spf->Scatter( ri, sampler, exitRays, *exitInput );
 
+	// RED-PROOF for the sibling exit-side `kray` bug (TranslucentSPF.cpp
+	// ~line 230-231, the exit branch's per-channel loop; fixed alongside
+	// entry-side sub-test 2's bug in this round).  `scatFactor` (0.3,
+	// uniform) makes the exit branch's "multiple scatter back" arm run,
+	// and the anisotropic `phongN` (5, 10, 15) forces its per-channel
+	// loop -- same gate as the entry side, mirrored on the exit path.
+	// That loop does `front.kray = 0; front.kray[i] = f[i]*(1-scat[i]);`
+	// INSIDE the per-channel iteration, but `front` (the exit diffuse
+	// ray) is added to `scattered` only ONCE, after the loop -- so the
+	// reset on every iteration except the last (i=2) wiped channels 0
+	// and 1 back to zero on the ray that actually leaves the object.
+	// Fixed: zero `front.kray` once, before the loop, and only assign
+	// (never re-zero) the i'th channel inside it.
+	//
+	// Expected value: extinction 0.1 over distance 1 (ray origin (0,0,1)
+	// to hit point origin) gives `front.kray` (before scattering) =
+	// exp(-0.1) on every channel; the multi-scatter arm's `scat` is the
+	// uniform 0.3 painter (channel-flat even though N is not), so the
+	// exit ray's expected kray is exp(-0.1)*(1-0.3) on ALL THREE
+	// channels equally -- the buggy code left channels 0 and 1 at
+	// exactly 0 instead.
+	const Scalar expectedExitKray = std::exp( -1.0 * 0.1 ) * ( 1.0 - 0.3 );
+	RISEPel exitFrontKray(0,0,0);
+	int exitFrontKrayCaptured = 0;
+
 	int exitStackedChecked = 0;
 	for( unsigned int i = 0; i < exitRays.Count(); i++ ) {
 		if( exitRays[i].ior_stack != 0 ) {
 			const Scalar scale = RadianceEtaScale( *exitInput, exitRays[i].ior_stack );
 			EXPECT_NEAR( scale, 1.0, 1e-9, "aniso RGB exit RadianceEtaScale" );
 			exitStackedChecked++;
+			exitFrontKray = exitRays[i].kray;
+			exitFrontKrayCaptured++;
 		}
 	}
 	EXPECT( exitStackedChecked == 1, "aniso: exactly one exit lobe (the diffuse exit ray) carried a stack" );
+	EXPECT( exitFrontKrayCaptured == 1, "aniso: captured the exit diffuse ray's kray" );
+	EXPECT( exitFrontKray[0] > 0, "aniso: exit front kray channel 0 (R) is non-zero -- catches the per-iteration front.kray=0 reset bug" );
+	EXPECT( exitFrontKray[1] > 0, "aniso: exit front kray channel 1 (G) is non-zero -- catches the per-iteration front.kray=0 reset bug" );
+	EXPECT( exitFrontKray[2] > 0, "aniso: exit front kray channel 2 (B) is non-zero -- catches the per-iteration front.kray=0 reset bug" );
+	EXPECT_NEAR( exitFrontKray[0], expectedExitKray, 1e-9, "aniso: exit front kray channel 0 (R) matches f*(1-scat)" );
+	EXPECT_NEAR( exitFrontKray[1], expectedExitKray, 1e-9, "aniso: exit front kray channel 1 (G) matches f*(1-scat)" );
+	EXPECT_NEAR( exitFrontKray[2], expectedExitKray, 1e-9, "aniso: exit front kray channel 2 (B) matches f*(1-scat)" );
 
 	delete exitInput;
 	spf->release();
