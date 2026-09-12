@@ -16,7 +16,13 @@
 // Run from the repository root with RISE_MEDIA_PATH="$PWD/". Defaults:
 // 16x16, 1024 spp, 4 trials, ior 1.5, sigma_a=0, sigma_s=2, g=0.
 // --probe labels a diagnostic run; --samples N (perfect square), --trials K,
-// --seed N, --ior N, --outer-fresnel are optional. Both invocations currently
+// --seed N, --ior N, --outer-fresnel, --curved, --slab-radius R are optional.
+// --curved uses an ellipsoid (R,R,10) centered at z=-10, R=40 by default.
+// The flat box remains a diagnostic for the DL-52 planar probe-origin hole.
+// An actual SampleEntryPoint probe records valid and near-top samples; curved
+// diffusion requires near-top coverage so it cannot pass on surface Fresnel
+// alone. This coverage guard does not establish energy normalization.
+// Both invocations currently
 // execute the same provisional three-model matrix. No physics closure claim.
 
 #include <array>
@@ -50,6 +56,8 @@
 #include "../src/Library/Rendering/PathTracingPelRasterizer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/BSSRDFSampling.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -80,8 +88,8 @@ const char* TopologyName( Topology t )
 }
 struct Config {
 	unsigned int samples = 1024, trials = 4, seedBase = 1000;
-	double surfaceIOR = 1.5;
-	bool probe = false, outerFresnel = false;
+	double surfaceIOR = 1.5, slabRadius = 40;
+	bool probe = false, outerFresnel = false, curved = false;
 };
 unsigned int passCount = 0, failCount = 0, renderIndex = 0;
 bool Check( bool condition, const std::string& label )
@@ -110,16 +118,18 @@ bool ParseArgs( int argc, char** argv, Config& cfg )
 		const std::string arg( argv[i] );
 		if( arg == "--probe" ) cfg.probe = true;
 		else if( arg == "--outer-fresnel" ) cfg.outerFresnel = true;
+		else if( arg == "--curved" ) cfg.curved = true;
 		else if( arg == "--samples" || arg == "--trials" || arg == "--seed" ) {
 			if( ++i == argc ) return false;
 			unsigned int& value = arg == "--samples" ? cfg.samples : (arg == "--trials" ? cfg.trials : cfg.seedBase);
 			if( !ParseUInt( argv[i], value ) ) return false;
-		} else if( arg == "--ior" ) {
+		} else if( arg == "--ior" || arg == "--slab-radius" ) {
 			if( ++i == argc ) return false;
 			errno = 0;
 			char* end = nullptr;
-			cfg.surfaceIOR = std::strtod( argv[i], &end );
-			if( errno || end == argv[i] || *end || !std::isfinite( cfg.surfaceIOR ) || cfg.surfaceIOR <= 0 ) return false;
+			double& value = arg == "--ior" ? cfg.surfaceIOR : cfg.slabRadius;
+			value = std::strtod( argv[i], &end );
+			if( errno || end == argv[i] || *end || !std::isfinite(value) || value <= 0 ) return false;
 		} else return false;
 	}
 	const auto side = static_cast<unsigned int>( std::sqrt( static_cast<double>( cfg.samples ) ) );
@@ -151,6 +161,7 @@ std::string BuildScene( Model model, Topology topology, const Config& cfg, bool 
 	// Shared geometry: x/y +/-40, z [-20,0]. The camera is never inside
 	// the SSS solid (ordinary SSS absorbs a primary back-face hit).
 	if( lightingControl ) s << "sphere_geometry\n{\n name slab_geometry\n radius 1\n}\n";
+	else if( cfg.curved ) s << "ellipsoid_geometry\n{\n name slab_geometry\n radii " << cfg.slabRadius << ' ' << cfg.slabRadius << " 10\n}\n";
 	else s << "box_geometry\n{\n name slab_geometry\n width 80\n height 80\n depth 20\n}\n";
 	s << "standard_object\n{\n name slab\n geometry slab_geometry\n material slab_material\n position 0 0 " << (lightingControl ? 0 : -10) << "\n";
 	if( model == Model::ExplicitDielectricVolume && !lightingControl ) s << " interior_medium slab_medium\n";
@@ -181,7 +192,7 @@ std::string BuildScene( Model model, Topology topology, const Config& cfg, bool 
 }
 
 // Guards inspect the loaded production objects and camera, not just strings.
-bool CheckGeometry( IJobPriv& job, Model model, Topology topology, const std::string& label, bool lightingControl )
+bool CheckGeometry( IJobPriv& job, Model model, Topology topology, const Config& cfg, const std::string& label, bool lightingControl )
 {
 	const ICamera* camera = job.GetScene() ? job.GetScene()->GetCamera() : nullptr;
 	const IObjectManager* objects = job.GetObjects();
@@ -208,14 +219,30 @@ bool CheckGeometry( IJobPriv& job, Model model, Topology topology, const std::st
 			if( !Check( Near( ray.origin.x, expectedX ) && Near( ray.origin.y, expectedY ) &&
 				Near( ray.origin.z, topology == Topology::WaterOutside ? 120 : 4 ) &&
 				Near( ray.Dir().x, 0 ) && Near( ray.Dir().y, 0 ) && Near( ray.Dir().z, -1 ),
-				label + ": matched orthographic footprint and normal incidence" ) ) return false;
+				label + ": matched orthographic footprint and parallel -Z rays" ) ) return false;
 			const RasterizerState rast = { x, y };
 			RayIntersection hit( ray, rast );
 			slab->IntersectRay( hit, 1000, true, false, false );
-			const double expectedZ = lightingControl ? std::sqrt(1 - expectedX * expectedX - expectedY * expectedY) : 0;
+			double expectedZ = 0;
+			Vector3 expectedNormal( 0, 0, 1 );
+			if( lightingControl ) {
+				expectedZ = std::sqrt(1 - expectedX * expectedX - expectedY * expectedY);
+				expectedNormal = Vector3(expectedX, expectedY, expectedZ);
+			} else if( cfg.curved ) {
+				const double scaledX = expectedX / cfg.slabRadius;
+				const double scaledY = expectedY / cfg.slabRadius;
+				const double radicand = 1 - scaledX * scaledX - scaledY * scaledY;
+				if( !Check( std::isfinite(radicand) && radicand > 0,
+					label + ": curved slab covers entire film footprint" ) ) return false;
+				expectedZ = -10 + 10 * std::sqrt(radicand);
+				// Gradient of x^2/R^2 + y^2/R^2 + (z+10)^2/100 = 1.
+				expectedNormal = Vector3Ops::Normalize(Vector3(
+					scaledX / cfg.slabRadius, scaledY / cfg.slabRadius, (expectedZ + 10) / 100));
+			}
 			if( !Check( hit.geometric.bHit && Near( hit.geometric.ptIntersection.x, expectedX ) &&
 				Near( hit.geometric.ptIntersection.y, expectedY ) && Near( hit.geometric.ptIntersection.z, expectedZ ) &&
-				Near( hit.geometric.vNormal.z, lightingControl ? expectedZ : 1 ),
+				Near( hit.geometric.vNormal.x, expectedNormal.x ) && Near( hit.geometric.vNormal.y, expectedNormal.y ) &&
+				Near( hit.geometric.vNormal.z, expectedNormal.z ),
 				label + ": exact front-face geometry hit" ) ) return false;
 			if( water ) {
 				RayIntersection enclosureHit( ray, rast );
@@ -225,6 +252,45 @@ bool CheckGeometry( IJobPriv& job, Model model, Topology topology, const std::st
 			}
 		}
 	}
+	return true;
+}
+
+// This invokes the real helper on the loaded central camera hit. A profile
+// pointer proves binding only; it does not prove that BSSRDF continuation
+// reaches the illuminated near surface (the flat-box failure in DL-52).
+bool DiagnoseBSSRDFCoverage( IJobPriv& job, const Config& cfg, const std::string& label )
+{
+	const IObject* slab = job.GetObjects()->GetItem("slab");
+	const ICamera* camera = job.GetScene()->GetCamera();
+	RandomNumberGenerator rng( cfg.seedBase + renderIndex );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+	IndependentSampler sampler( rng );
+	Ray ray;
+	if( !Check(camera->GenerateRay(rc, ray, Point2(kFilmSize / 2, kFilmSize / 2)),
+		label + ": central camera ray for BSSRDF coverage") ) return false;
+	const RasterizerState rast = { kFilmSize / 2, kFilmSize / 2 };
+	RayIntersection hit( ray, rast );
+	slab->IntersectRay(hit, 1000, true, false, false);
+	if( !Check(hit.geometric.bHit && Near(hit.geometric.ptIntersection.z, 0),
+		label + ": central primary slab hit for BSSRDF coverage") ) return false;
+	constexpr unsigned int attempts = 256;
+	unsigned int valid = 0, nearTop = 0;
+	for( unsigned int attempt = 0; attempt < attempts; ++attempt ) {
+		const BSSRDFSampling::SampleResult result = BSSRDFSampling::SampleEntryPoint(
+			hit.geometric, slab, slab->GetMaterial(), sampler, 0);
+		if( !result.valid ) continue;
+		if( !Check(std::isfinite(result.entryPoint.x) && std::isfinite(result.entryPoint.y) &&
+			std::isfinite(result.entryPoint.z) && std::isfinite(result.pdfSurface) && result.pdfSurface > 0 &&
+			std::isfinite(result.weight.r) && std::isfinite(result.weight.g) && std::isfinite(result.weight.b),
+			label + ": successful BSSRDF helper sample has finite point, weight and positive PDF") ) return false;
+		++valid;
+		if( result.entryPoint.z > -1 ) ++nearTop;
+	}
+	std::cout << "BSSRDF_COVERAGE " << label << " attempts=" << attempts << " valid=" << valid <<
+		" nearTop=" << nearTop << " (entryPoint.z>-1; actual helper diagnostic)" << std::endl;
+	if( cfg.curved ) return Check(nearTop > 0, label + ": curved BSSRDF helper reaches near top");
+	// Known flat probe-origin failure remains visible; do not turn a binding
+	// check or the finite reflected-surface signal into an SSS-activity claim.
 	return true;
 }
 
@@ -287,7 +353,10 @@ bool Render( Model model, Topology topology, const Config& cfg, RGBChannels& mea
 	IJobPriv* job = nullptr;
 	if( !Check( RISE_CreateJobPriv( &job ) && job, label + ": create job" ) ) { safe_release(job); return false; }
 	if( !Check( job->LoadAsciiSceneViaCst( input.path.string().c_str() ), label + ": parse native v7 scene" ) ||
-		!CheckGeometry( *job, model, topology, label, lightingControl ) ) { safe_release(job); return false; }
+		!CheckGeometry( *job, model, topology, cfg, label, lightingControl ) ) { safe_release(job); return false; }
+	if( model == Model::DiffusionSSS && !lightingControl && !DiagnoseBSSRDFCoverage(*job, cfg, label) ) {
+		safe_release(job); return false;
+	}
 	PathTracingPelRasterizer* pt = dynamic_cast<PathTracingPelRasterizer*>( job->GetRasterizer() );
 	if( !Check( pt != nullptr, label + ": pure RGB PT rasterizer" ) ) { safe_release(job); return false; }
 	pt->SetMaxPathDepth( 1024 );
@@ -352,13 +421,15 @@ int main( int argc, char** argv )
 {
 	Config cfg;
 	if( !ParseArgs( argc, argv, cfg ) ) {
-		std::cerr << "Usage: SSSRadianceScalingTest [--probe] [--samples square_N] [--trials K] [--seed N] [--ior N] [--outer-fresnel]\n";
+		std::cerr << "Usage: SSSRadianceScalingTest [--probe] [--samples square_N] [--trials K] [--seed N] [--ior N] [--outer-fresnel] [--curved] [--slab-radius R]\n";
 		return 2;
 	}
 	std::cout << std::setprecision(10) << "SSSRadianceScalingTest: PROVISIONAL " << (cfg.probe ? "PROBE" : "MEASUREMENT") <<
 		"; no eta-normalization assertion\nsamples=" << cfg.samples << " trials=" << cfg.trials <<
 		" seed_base=" << cfg.seedBase << " surface_ior=" << cfg.surfaceIOR <<
-		" sigma_a=0 sigma_s=2 g=0 film=16x16 max_path_depth=1024 volume_cap=256 rw_cap=512\nouter=" <<
+		" sigma_a=0 sigma_s=2 g=0 film=16x16 max_path_depth=1024 volume_cap=256 rw_cap=512\nshape=" <<
+		(cfg.curved ? "ellipsoid" : "flat_box") << " slab_radius=" << cfg.slabRadius <<
+		(cfg.curved ? " radii=(R,R,10), center_z=-10\nouter=" : " (unused for flat box: dimensions=80x80x20, center_z=-10)\nouter=") <<
 		(cfg.outerFresnel ? "Fresnel dielectric water (additive reflected environment affects outside camera)" :
 		"ideal nonreflecting IOR enclosure, n=1.33") <<
 		"\nSeeds vary per render; worker scheduling still prevents bitwise reproducibility.\n" << std::flush;
