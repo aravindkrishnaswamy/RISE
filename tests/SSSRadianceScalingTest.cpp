@@ -3,8 +3,10 @@
 // Exact guards: the loaded camera samples the same slab top in every model,
 // the requested modern material/medium is bound, and every captured RGB and
 // alpha value is finite. Nonzero image means are only smoke guards.
-// Measurements: independent serial renders, whole-film RGB means, their
-// sample standard deviation and standard error, and channelwise ratios.
+// Measurements: serial repeated renders, whole-film RGB means, their
+// repeat standard deviation and descriptive stdev/sqrt(K), and channelwise ratios.
+// PT reuses its fixed pixel Sobol scramble: these repeats are NOT independent
+// QMC replicates and their dispersion is NOT an integration-error estimate.
 // No invalid render may enter an aggregate or be replaced with zero.
 //
 // A full BSSRDF event can cancel entry 1/eta^2 against exit eta^2. An outer
@@ -412,8 +414,8 @@ bool Aggregate( const std::vector<RGBChannels>& values, RGBChannels& mean, const
 	}
 	std::cout << "AGGREGATE " << label << " K=" << n << " mean=";
 	PrintRGB(mean);
-	if( n > 1 ) { std::cout << " stdev="; PrintRGB(stdev); std::cout << " stderr="; PrintRGB(stderrMean); }
-	else std::cout << " stdev=unavailable stderr=unavailable (K=1)";
+	if( n > 1 ) { std::cout << " repeat_stdev="; PrintRGB(stdev); std::cout << " descriptive_stdev_over_sqrtK="; PrintRGB(stderrMean); }
+	else std::cout << " repeat_stdev=unavailable descriptive_stdev_over_sqrtK=unavailable (K=1)";
 	std::cout << std::endl;
 	return true;
 }
@@ -447,7 +449,7 @@ int main( int argc, char** argv )
 		(cfg.curved ? " radii=(R,R,10), center_z=-10\nouter=" : " (unused for flat box: dimensions=80x80x20, center_z=-10)\nouter=") <<
 		(cfg.outerFresnel ? "Fresnel dielectric water (additive reflected environment affects outside camera)" :
 		"ideal nonreflecting IOR enclosure, n=1.33") <<
-		"\nSeeds vary per render; worker scheduling still prevents bitwise reproducibility.\n" << std::flush;
+		"\nLibc seeds vary per render; fixed pixel Sobol scrambles repeat. Dispersion is descriptive only, not QMC uncertainty; worker scheduling prevents bitwise reproducibility.\n" << std::flush;
 	// Cheap air-furnace lighting/capture control before the expensive matrix.
 	Config controlConfig = cfg;
 	controlConfig.samples = 4;

@@ -125,3 +125,12 @@ case, and passed 24052 guards with zero failures. It remains a diagnostic:
 curvature, finite support and small probe advances still need bounds.
 The original flat failure stays recorded in DL-52; curved activity does
 not close that defect or prove exact material equality.
+
+## Repeat dispersion is not QMC uncertainty
+
+PathTracingPelRasterizer derives its Sobol scramble from pixel coordinates,
+independently of the libc seed set before each render. Repeated renders
+therefore reuse those QMC samples; incidental jitter and fallback random
+choices can vary. The fixture labels repeat dispersion descriptively and
+does not use it as a confidence interval for the integral. Sample-count,
+geometry and cap comparisons supplement the absolute convention check.
