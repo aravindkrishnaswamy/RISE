@@ -680,9 +680,53 @@
 //  signals-vs-integrator finding, not a bug in the test.  Root-causing
 //  the underlying BDPT-vs-VCM gap on tidal's masked pixels (and the
 //  wildly different VCM-vs-BDPT reference-incompleteness magnitudes,
-//  57x vs 2.8x) is open work, tracked as its own item -- debt 30 -- in
+//  57x vs 2.8x) was open work, tracked as its own item -- debt 30 -- in
 //  docs/RENDERING_INTEGRATORS.md (round 3 below; debt 27 keeps only the
 //  PT-strategy-gap data).
+//
+//  DEBT 30 IS NOW RESOLVED (2026-09-12) AND THE ROOT CAUSE IS TWO
+//  THINGS.  The classification of tidal's masked row does NOT change --
+//  it is still a counted NO-COMPLETE-REFERENCE skip, and no logic here
+//  moved -- but the reason is now known rather than suspected, so the
+//  "which of BDPT and VCM is right" question this block leaves open
+//  should be read as answered:
+//
+//  (1) THE 20x IS STRUCTURAL, NOT A WEIGHTING ERROR.  Every caustic-lit
+//      stone pixel is E -> water top (S, delta) -> stone (D) -> water
+//      top (S, delta) -> L (delta).  BDPT has NO strategy for it: s=1
+//      NEE from the stone is blocked by the water surface, t=1
+//      (stone -> camera) is blocked the same way, and every other split
+//      lands on a delta vertex.  VCM reaches it by merging at the stone.
+//      Measured on the pinhole variant at 160x120 / 64 spp, BDPT is
+//      numerically "PT without transparent shadows" (whole-image 0.0645
+//      vs 0.0639) while VCM tracks transparent-shadow PT.  So BDPT and
+//      VCM "recovering different amounts of the unreachable transport"
+//      is right, and the amount BDPT recovers is approximately none.
+//      Neither integrator is mis-weighted; this is exactly the
+//      transport-coverage case docs/skills/bdpt-vcm-mis-balance.md warns
+//      not to mistake for an MIS bug.
+//
+//  (2) UNDERNEATH IT SAT A REAL, SEPARATE DEFECT affecting every
+//      integrator and every refractive scene: RISE applied no eta^2
+//      basic-radiance factor at any dielectric interface (radiance is
+//      not invariant across one; L/n^2 is).  Fixed 2026-09-12 --
+//      docs/REFRACTIVE_RADIANCE_SCALING.md, guard
+//      tests/RefractiveRadianceScalingTest.cpp.  It CANCELS for PT and
+//      BDPT on an in-and-out eye path and does NOT cancel for merges,
+//      photons, light-tracing splats or transparent-shadow NEE, which is
+//      why it moved tidal's VCM and left its PT and BDPT alone.
+//
+//  THE FIGURES IN THIS BLOCK AND THE ONE BELOW (2.8-3.0x, 57.5-58x)
+//  PREDATE THAT FIX.  Re-measured on the fixed tree, this test's own
+//  tidal row reports neutral-variant masked means
+//  PT : BDPT : VCM = 1 : 2.012 : 33.55 (PT/BDPT 0.496983,
+//  PT/VCM 0.0298033, BDPT/VCM 0.0599685).  VCM's multiple fell by
+//  roughly n^2 = 1.77 -- its merges now pair a flux-carrying photon with
+//  an eye vertex that finally carries 1/n^2 -- while PT's masked mean,
+//  which carries no under-water transport either way, barely moved.
+//  Both ratios remain far past the reference-completeness gate, so the
+//  row skips exactly as before: 2968 passed, 0 failed, 1
+//  no-complete-reference skip on the post-fix tree.
 //
 //  WHAT CHANGED THIS ROUND (supervisor ruling, debt 28 round 3): the
 //  PT-independent BDPT<->VCM cross-check above is only meaningful if
@@ -1987,9 +2031,13 @@ static int g_referenceIncompleteCount = 0;
 //! disagreement on the whole image) and `g_referenceIncompleteCount`
 //! (PT unusable as a reference for one integrator's masked row): here PT
 //! is not even in the asserted quantity, but the two referees disagree
-//! with each other too much to referee.  Tracked as a real, open
-//! integrator disagreement under docs/RENDERING_INTEGRATORS.md debt 30 --
-//! not a test-harness gap.
+//! with each other too much to referee.  The disagreement is real and is
+//! now root-caused (docs/RENDERING_INTEGRATORS.md debt 30, RESOLVED
+//! 2026-09-12: BDPT has no strategy for tidal's S-D-S caustic at all, so
+//! there is nothing for the two referees to agree ON) -- it was never a
+//! test-harness gap, and the skip stays because a scene one integrator
+//! cannot reach is genuinely unrefereeable here, not because the gate is
+//! papering over anything.
 static const double kNoCompleteReferenceThreshold = kReferenceIncompleteThreshold;
 
 //! Cross-checks skipped by `kNoCompleteReferenceThreshold` above.

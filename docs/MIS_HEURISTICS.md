@@ -247,6 +247,14 @@ On diffuse scenes the two integrators agree to within ~1% at 256 spp.
 On caustic-heavy scenes they can differ by more, because BDPT cannot
 reach S-D-S-E paths that VCM's merging strategy catches — that's a
 **transport-coverage** difference, not an MIS-weighting difference.
+Worked example with numbers: debt 30 in
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md), where a ~20×
+BDPT-vs-VCM gap on `tidal_stones` turned out to be exactly this (BDPT
+reads PT-without-transparent-shadows on those pixels), sitting on top of
+a genuinely separate defect — the missing η² basic-radiance factor,
+[REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md), whose
+symptom is a FIXED n² ratio between the merge/splat/photon strategies
+and PT whenever the camera is outside the medium a vertex is in.
 If you see VCM and BDPT disagreeing in a region BDPT *should* be able
 to reach, walk through
 [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)

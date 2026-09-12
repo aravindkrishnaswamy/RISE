@@ -622,3 +622,55 @@ ratio 0.533 with the normalization disabled and passes at 1.004 with the fix.
 **Status:** FIXED. Code change: [`PhotonMap.h`](../src/Library/PhotonMapping/PhotonMap.h)
 `RadianceEstimateFromSearch` only. VCM/MIS untouched (§11 still stands). Left
 uncommitted for review.
+
+---
+
+## 13. Addendum (2026-09-12, debt 30) — the EYE-SIDE eta^2 factor landed; §11.6's prohibition is about something else and stands
+
+§9.3 recorded, correctly, that *"RISE applies no eta^2 radiance scaling
+in transport"*.  On 2026-09-12 that was fixed.  This addendum exists so
+the two things are not confused, because §11.6 says in as many words
+**"do not implement the §9–§10 eta^2 fix"**.
+
+**What §11.6 prohibits, and still prohibits.**  A **MERGE-SIDE measure
+rescale** — changing what the VM estimator does with a
+refraction-crossing photon's density, or dividing the merge by a
+constant.  §11 proved the merge is unbiased (VCM matches PT and BDPT to
+<= 3 %, 0.1 % on the pool-regime caustic) and that every "over-count" in
+§1–§10 came from a reference that could not reach, or contaminated, the
+caustic.  Nothing about that has changed.  The merge estimator was not
+touched, and must not be.
+
+**What actually landed.**  The **EYE-SIDE** basic-radiance factor:
+a radiance-mode walk multiplies its throughput by
+`(eta_before / eta_after)^2` whenever a scattered ray's medium changes.
+It lives at the kray consumer (`RISE::RadianceEtaScale` in
+`Utilities/IORStack.h`), applies to PT / BDPT-eye / VCM-eye / MLT-eye,
+the legacy shader-op chain and the final gather, and applies to NO
+light-side or photon-side walk.  Full write-up:
+[REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md).
+
+**Why §11's measurements were blind to it, and why they remain valid.**
+§11.2's whole method — the one this document recommends in its process
+note — is to *put the camera UNDER the water* so that no air/water
+interface sits on the eye side.  With no interface on the eye path there
+is no eta^2 factor to apply, so every number in §11.2, §11.3 and the
+actual-`pool_caustics_vcm` table is unaffected by the fix, and the
+VCM ≈ BDPT ≈ PT agreements they report still hold.  The factor only
+shows up when the camera is OUTSIDE the medium the vertex is in — which
+is exactly the configuration §11 avoided on purpose, and exactly the
+configuration §1–§10's broken references used.
+
+Confirmed rather than assumed: `CausticPhotonMapNormalizationTest`
+(4 checks, camera under a single dielectric plane) is **unchanged and
+green** after the fix, as predicted from the geometry.
+
+**One sentence of §9.3 is now stale** and is flagged rather than edited
+(§9–§11 are a historical record): the parenthetical
+"`DielectricSPF` kray = (1-Fresnel)*tau^dist, no eta^2 ... BDPT
+throughput `beta *= kray`" still describes the SPF accurately -- kray
+still carries no eta term, deliberately, per the contract on
+`ScatteredRay::kray` in `Interfaces/ISPF.h` -- but `beta *= kray` in
+`GenerateEyeSubpathImpl` is now `beta *= kray * RadianceEtaScale(...)`.
+The inference §9.3 draws from it ("not a missing/double-eta^2 (Veach
+non-symmetry) bug" *for the merge*) was right and is unaffected.

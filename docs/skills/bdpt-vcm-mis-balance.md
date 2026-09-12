@@ -57,15 +57,16 @@ description: |
 
 ## Procedure
 
-### 0. Rule out the eight known non-MIS causes first
+### 0. Rule out the nine known non-MIS causes first
 
-Eight failure modes produce exactly the "bidirectional render
+Nine failure modes produce exactly the "bidirectional render
 disagrees with PT" symptom (or, in cause 3's case, "PT itself
 disagrees with its own material's proven-linear response"; or, in
 cause 4's case, "BDPT/VCM looks like it's over-counting when PT is
 actually the one under-counting"; or, in cause 7's case, "a closed
 solid reads differently than the same faces built as separate
-planes") while the MIS arithmetic is perfectly healthy.  All are
+planes"; or, in cause 8's case, "VCM reads a fixed n^2 over PT on
+anything submerged") while the MIS arithmetic is perfectly healthy.  All are
 minutes to check; do them before any integrator instrumentation:
 
 0. **PT may be the broken one — check IOR-stack seeding when the
@@ -424,6 +425,36 @@ minutes to check; do them before any integrator instrumentation:
    fault; and a `clippedplane_geometry` / `box_geometry` control at the
    same scene scale tells you whether the primitive under suspicion or
    the scene itself is the variable.
+
+8. **A surface or an emitter INSIDE a dielectric with the camera
+   OUTSIDE it — render an in-medium luminaire and compare against
+   `T * L / n^2` before touching any weight.** (Found 2026-09-12, debt
+   30: RISE applied no eta^2 basic-radiance factor anywhere, and VCM
+   read 1.554x PT on a submerged Lambertian floor.) Radiance is not
+   invariant across a refractive interface -- `L / n^2` is -- so a
+   RADIANCE-mode walk owes `(eta_before / eta_after)^2` at every medium
+   change. **The reason this masquerades as an MIS bug is that it
+   cancels for PT and BDPT and does not cancel for merges, photon maps,
+   light-tracing splats or transparent-shadow NEE**: an eye path that
+   enters the medium (x 1/n^2) and exits it again toward the emitter
+   (x n^2) nets x1, so PT and BDPT agree with each other and with
+   themselves whether or not the factor is applied, while any strategy
+   whose light side carries FLUX crosses the interface only once on the
+   radiance side and comes out n^2 bright. The ratio you measure sits
+   somewhere between 1 and n^2 depending on how much MIS mass the
+   flux-side strategy carries, which looks exactly like a partial
+   weighting error.
+   **The one-minute check, and it is reference-free:** put a
+   `lambertian_luminaire_material` quad (`exitance` 1, `scale` 1, so
+   `L = 1/pi`) inside a `dielectric_material` box (`scattering 1000000`)
+   and point a pinhole camera at it from outside at near-normal
+   incidence. Every integrator must read `T(0) * L / n^2`, e.g.
+   0.176 at ior 1.33 and 0.136 at ior 1.5. Reading `T * L` instead
+   (0.312 / 0.306) means the factor is missing; reading `n^2 * T * L`
+   means it was applied in the wrong direction. Run it at TWO iors --
+   a wrong-direction or hard-coded factor passes one and fails the
+   other. Mechanism, site table and the scene classes whose look
+   changes: [REFRACTIVE_RADIANCE_SCALING.md](../REFRACTIVE_RADIANCE_SCALING.md).
 
 A useful invariant for separating these from real MIS bugs: when you
 instrument per-strategy totals (step 3), compare the per-strategy
