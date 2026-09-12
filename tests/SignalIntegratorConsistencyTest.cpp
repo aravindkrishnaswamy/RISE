@@ -680,8 +680,9 @@
 //  signals-vs-integrator finding, not a bug in the test.  Root-causing
 //  the underlying BDPT-vs-VCM gap on tidal's masked pixels (and the
 //  wildly different VCM-vs-BDPT reference-incompleteness magnitudes,
-//  57x vs 2.8x) is open work, tracked under debt 27 in
-//  docs/RENDERING_INTEGRATORS.md.
+//  57x vs 2.8x) is open work, tracked as its own item -- debt 30 -- in
+//  docs/RENDERING_INTEGRATORS.md (round 3 below; debt 27 keeps only the
+//  PT-strategy-gap data).
 //
 //  WHAT CHANGED THIS ROUND (supervisor ruling, debt 28 round 3): the
 //  PT-independent BDPT<->VCM cross-check above is only meaningful if

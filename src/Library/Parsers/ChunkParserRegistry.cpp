@@ -5159,17 +5159,18 @@ namespace RISE
 					unsigned int blades = bag.GetUInt(   "aperture_blades",   0 );
 					double rotation     = bag.GetDouble( "aperture_rotation", 0 );
 					double squeeze      = bag.GetDouble( "anamorphic_squeeze", 1.0 );
-					// The squeeze scales the aperture's x half-axis, so
-					// `squeeze <= 0` collapses the aperture to a line
-					// segment (0) or reflects it (negative).  That makes
-					// `GetApertureWorldArea()` zero or negative, which
-					// makes `BDPTCameraUtilities::HasFiniteAperture`
-					// FALSE -- so BDPT/VCM would connect t==1 to the lens
-					// CENTRE while `GenerateRay` kept sampling the
-					// degenerate segment, i.e. the eye and light layers
-					// would image through different camera vertices
-					// (debt 28 review, A P2-3).  Reject it here rather
-					// than let the integrators disagree silently.
+					// The squeeze scales the aperture's x half-axis.
+					// `squeeze == 0` collapses the aperture to a line
+					// segment: `GetApertureWorldArea()` reads 0, so
+					// `BDPTCameraUtilities::HasFiniteAperture` is FALSE
+					// and BDPT/VCM would connect t==1 to the lens CENTRE
+					// while `GenerateRay` kept sampling the degenerate
+					// segment -- the eye and light layers imaging through
+					// different camera vertices (debt 28 review, A P2-3).
+					// A NEGATIVE squeeze is not that hazard (the area takes
+					// `fabs`, and both samplers mirror identically); it is
+					// rejected as nonsense authoring.  Reject both here
+					// rather than let a scene carry either.
 					if( squeeze <= 0.0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
 							"thinlens_camera:: `anamorphic_squeeze` must be > 0 (got %f) — it scales the aperture's "
