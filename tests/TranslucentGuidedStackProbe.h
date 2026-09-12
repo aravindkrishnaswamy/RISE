@@ -21,7 +21,7 @@
 #ifdef RISE_ENABLE_OPENPGL
 namespace GuidedStackProbe {
 struct Observation {
-	unsigned int scatters = 0, pdfQueries = 0, exitGuideQueries = 0;
+	unsigned int scatters = 0, pdfQueries = 0, exitPdfQueries = 0;
 	bool initialExit = false, poppedSPFStack = false, arrived = false;
 	bool containsOnArrival = false, entryLobeOnArrival = false;
 	Scalar mediumOnArrival = 0;
@@ -73,13 +73,13 @@ public:
 	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo,
 		const IORStack& stack ) const override {
 		++observed.pdfQueries;
-		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitGuideQueries;
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitPdfQueries;
 		return real.Pdf(ri, wo, stack);
 	}
 	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, Scalar nm,
 		const IORStack& stack ) const override {
 		++observed.pdfQueries;
-		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitGuideQueries;
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitPdfQueries;
 		return real.PdfNM(ri, wo, nm, stack);
 	}
 };
@@ -162,8 +162,9 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 	point->release();
 	for(unsigned int side=0; side<2; ++side) {
 		for(unsigned int spectral=0; spectral<2; ++spectral) {
+			unsigned int baselineExitQueries = 0;
 			for(unsigned int mode=0; mode<3; ++mode) {
-				unsigned int reached=0,outwardSub=0,inwardSub=0,retained=0,badOut=0,badIn=0,badInitial=0,badMedium=0,guideQueries=0;
+				unsigned int reached=0,outwardSub=0,inwardSub=0,retained=0,badOut=0,badIn=0,badInitial=0,badMedium=0,exitQueries=0;
 				for(unsigned int trial=0; trial<512; ++trial) {
 					Observation observation;
 					observation.hasEntryPrefix = true;
@@ -190,7 +191,7 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 						if(spectral) integrator->GenerateEyeSubpathNM(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts,550,0);
 						else integrator->GenerateEyeSubpath(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts);
 					}
-					guideQueries += observation.exitGuideQueries;
+					exitQueries += observation.exitPdfQueries;
 					if(!observation.initialExit || !observation.poppedSPFStack) ++badInitial;
 					if(observation.arrived) {
 						++reached;
@@ -211,7 +212,7 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 				std::cout << "  BDPT " << (side ? "light" : "eye") << " " << (spectral ? "NM" : "RGB")
 					<< " mode=" << mode << " reached=" << reached << " substituted_out=" << outwardSub
 					<< " substituted_in=" << inwardSub << " retained_spf=" << retained
-					<< " exit_guide_queries=" << guideQueries << " bad_initial=" << badInitial << " bad_out=" << badOut << " bad_in=" << badIn
+					<< " exit_pdf_queries=" << exitQueries << " bad_initial=" << badInitial << " bad_out=" << badOut << " bad_in=" << badIn
 					<< " bad_medium=" << badMedium << std::endl;
 				EXPECT(badInitial==0,"DL-03 BDPT real entry leads to real exit with a popped SPF stack");
 				EXPECT(reached>0,"DL-03 BDPT continuation reached same-object observer");
@@ -220,8 +221,10 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 				EXPECT(badMedium==0,"DL-03 BDPT surrounding air IOR remains unchanged");
 				// DL-43 currently rejects every eye RIS guide candidate because
 				// its Pdf arguments are reversed. Still require its live guide
-				// query and retained SPF candidate, without claiming substitution.
-				if(mode) EXPECT(guideQueries>0,"DL-03 BDPT guide candidate evaluated at exit");
+				// query in excess of the unguided baseline and retained SPF
+				// candidate, without claiming substitution.
+				if(mode == 0) baselineExitQueries = exitQueries;
+				else EXPECT(exitQueries > baselineExitQueries,"DL-03 BDPT exit PDF query count exceeds unguided baseline (live guide candidate)");
 				if(mode && (side || mode!=2)) EXPECT(outwardSub>0,"DL-03 BDPT actual outward guided exit substitution count is positive");
 				if(mode==1) EXPECT(inwardSub>0,"DL-03 BDPT inward guided substitution control is positive");
 				if(mode==2) EXPECT(retained>0,"DL-03 BDPT RIS retained SPF candidate control is positive");
