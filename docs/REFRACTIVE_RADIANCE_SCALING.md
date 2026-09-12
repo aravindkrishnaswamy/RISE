@@ -760,9 +760,12 @@ weights with RGB. The unfixed-library run on `6486656e`, with test commit
 `fc371041`, reported 174 failures. See
 [DL-01 closure and independent residuals](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
 
-**Spectral exit-lobe density (debt 31 item 4 / DL-02) remains OPEN.**
-`ScatterNM` samples a Phong distribution while `PdfNM` forwards to the
-cosine-density `Pdf`. DL-01 does not change that distribution. Stateful
+**RGB/NM exit-lobe density (debt 31 item 4 / DL-02) remains OPEN.**
+DL-01's transport review clarified that inside-state `Pdf` evaluates the
+opposite hemisphere from the sampled exit direction in BOTH pipes,
+returning zero even at N=1. NM also samples a Phong shape while `PdfNM`
+forwards to the cosine-shaped `Pdf`. DL-01 changes neither support nor
+sampling distribution. Stateful
 BSDF reevaluation/HWSS companion pricing is separately tracked as DL-38;
 local RGB/NM lobe-weight parity does not establish full renderer parity.
 

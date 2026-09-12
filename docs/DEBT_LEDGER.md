@@ -7,12 +7,12 @@ produced by re-checking every heading in `CLOTH_FABRIC_DESIGN.md` §15,
 `CROSS_OBJECT_PROXIMITY_DESIGN.md` §10, `RENDERING_INTEGRATORS.md` §7 (debts
 27-31), `REFRACTIVE_RADIANCE_SCALING.md` §10, and `IMPROVEMENTS.md` against
 the code and tests in this tree. Original sweep: debt-sweep worktree, HEAD
-`14bc2cb6`, dated 2026-09-12. **Gap-closure pass** (previous revision): same
+`14bc2cb6`, dated 2026-09-12. **Gap-closure pass** (historical sweep): same
 worktree, starting HEAD `c287f5fb`, also dated 2026-09-12 — an independent
 verifier found coverage gaps in the first pass (missing items across all
 five design-doc ledgers, stale line-number citations, and one row,
 DL-14, that was wrong on the facts) and that pass closed them. **Final
-completion pass** (this revision): same worktree, starting HEAD
+completion pass** (historical sweep): same worktree, starting HEAD
 `56992663`, also dated 2026-09-12 — a second independent verifier found
 the tree otherwise accurate and two remaining gaps: one IMPROVEMENTS.md
 heading (the GGX low-F0 grazing gain) not yet carried into the table as
@@ -37,7 +37,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | id | source doc:item | one-line claim | verdict | evidence | size | class | visibility |
 |----|------------------|-----------------|---------|----------|------|-------|------------|
 | ~~DL-01~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 3 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF RGB/NM exit-weight divergence~~ | CLOSED 2026-09-12 | `1239edf2`: `TranslucentSpectralParityTest: 676 checks, 0 failures` (red: 174 failures); primary-layer tau paid once at entry, Beer-only exit/backscatter parent in both pipes. See [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md). | S | physics-bias | user-visible |
-| DL-02 | RENDERING_INTEGRATORS.md debt 31 item 4 / REFRACTIVE_RADIANCE_SCALING.md §10.3 | `TranslucentSPF::ScatterNM`'s exit ray samples/prices a Phong lobe while `PdfNM` forwards to the cosine-density `Pdf` — MIS-inconsistent | OPEN-confirmed | `TranslucentSPF.cpp` ~lines 426-434 (`Nval_front`) vs `PdfNM` forwarding to `Pdf`, read directly this sweep | S | physics-bias | user-visible |
+| DL-02 | RENDERING_INTEGRATORS.md debt 31 item 4 / REFRACTIVE_RADIANCE_SCALING.md §10.3 | TranslucentSPF exit density uses the opposite hemisphere in both RGB/NM; NM also samples a Phong shape while PdfNM forwards to the cosine-shaped Pdf | OPEN-confirmed | `TranslucentSPF::Scatter` / `ScatterNM` sample exit rays around `+ri.onb.w()`, but inside-state `Pdf` uses `-dot(wo,ri.onb.w())`, returning zero there even at N=1. NM additionally uses `Nval_front` instead of RGB cosine sampling. Scope clarified by the DL-01 transport review. | S | physics-bias | user-visible |
 | DL-36 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | One residual is not neutral but a bounded neighbour read: a second surface of the SAME luminary inside the emitter probe's standoff band, within 0.01x its diagonal, is accepted with that neighbour's live channel instead of refusing | OPEN-confirmed | Doc's own §10 disclosure (a louvred single-object fixture, blade pitch under ~0.5% of its diagonal); bounded to another point of the same luminary at most `standoff` away; no dedicated red-proof found in `tests/SignalEmitterRecordTest.cpp` this sweep | S | physics-bias | user-visible (narrow: louvred/finely-corrugated single-luminary fixtures only) |
 | DL-03 | RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3 | Path-guiding substitutes a direction at `TranslucentSPF`'s exit lobe without carrying its popped `ior_stack`; the translucent object silently stays on the IOR stack, later hits misclassify entering/exiting | OPEN-confirmed | `TranslucentSPF.cpp` ~line 305-307/438-440 (`front.ior_stack->pop()`); `PathTracingIntegrator.cpp` ~3205/3260 sets `traceIorStack = &iorStack` (pre-scatter stack); `BDPTIntegrator.cpp:161`/`PathTracingIntegrator.cpp:553` `GuidingSupportsSurfaceSampling` admits `eRayDiffuse` unconditionally, confirmed by reading all four sites this sweep | M | physics-bias | user-visible (path guiding + `translucent_material` only) |
 | DL-04 | REFRACTIVE_RADIANCE_SCALING.md §10.1 | Whether `SubSurfaceScatteringSPF`/`RandomWalkSSS`/`BSSRDFSampling::Sw` correctly omit the debt-30 eta^2 factor (telescoping argument) or need it (PBRT-style eta^2 divide) is undecided; direction not pinned down | OPEN-confirmed | Doc's own two-reading analysis (§10.1(a)/(b)); the disambiguating render (matched dielectric-shell-with-medium vs `subsurfacescattering_material`, submerged vs air camera) has not been produced — confirmed absent from `tests/` this sweep | M | physics-bias | user-visible (SSS in non-air medium only) |
@@ -70,6 +70,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-19 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | Two S3 conversion sites (BDPT's NM-hero `Le` rebuild, the HWSS companion `rigW` rebuild) share the signals-replay helper but have no dedicated red-proof — their contribution is MIS-weighted to a few percent on the money test's scenes, so skipping them moves the suite by <= 5.7% / 0% | OPEN-confirmed (test gap) | Doc's own §10 disclosure, confirmed current (no new red-proof test added for these two sites since — `tests/SignalEmitterRecordTest.cpp` unchanged in this tree per `git log` this sweep) | S | coverage/test gap | internal (test-suite blind spot) |
 | DL-27 | WETNESS_COAT_DESIGN.md §12 item 7 | The wet-highlight variance cost is unmeasured | OPEN-confirmed | No test or scene mentioning "wet_highlight"/"WetHighlight" found in `tests/` or `docs/*.md` this sweep other than the design doc itself | S | coverage/test gap | internal (measurement gap, not a known defect) |
 | DL-30 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces | OPEN-confirmed, untested | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29); no nested-CSG `dndu`-pairing test found in `tests/CsgSurfacePayloadTest.cpp` or elsewhere this sweep | S | coverage/test gap | internal (no scene exercises it yet) |
+| DL-40 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual | BDPT/VCM balance-test comparisons can accept NaN candidate statistics as agreeing with a finite reference | OPEN-confirmed (static evidence; red-proof pending) | Both harnesses' `ComputeStats` sort nonfinite captured channels without rejection and mark nonempty data valid; `ChannelsAgree` rejects only `fabs(a-b)/denom > tolerance`, which is false for NaN. Brightness checks constrain the PT reference, not the candidate. | S | coverage/test gap | internal (false-green risk; recorded DL-01 statistics are finite) |
 | DL-20 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 2 | Patch geometries report flat curvature (`valid=false`) while genuinely curved; deferred to Phase 4, no Phase-4 work has landed | OPEN-confirmed | No patch-geometry curvature override exists (only `EllipsoidGeometry`/`DisplacedGeometry` override `ComputeAnalyticalDerivatives`, confirmed this sweep alongside DL-13) | M | coverage/test gap | user-visible (curvature-driven wear on patch geometry reads absent, not wrong) |
 | DL-21 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 5 | CSG boundary curvature behaviour is unspecified/undecided (forward the contributing surface's curvature, or invalidate at the seam) | OPEN-confirmed | `tests/CsgSurfacePayloadTest.cpp:833-834` exercises the derivative fields there but does not pin a curvature convention at the boundary — confirmed by reading the referenced lines this sweep | M | coverage/test gap | user-visible (CSG seam wear masks) |
 | DL-22 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | BSSRDF entry vertices read default (neutral) `derivatives`/`signals` under both PT and BDPT — integrator-consistent, but a signal-keyed IOR/Fresnel painter at a subsurface entry point is neutral rather than live | OPEN-confirmed | Doc's own §10 first bullet; closing it needs a probe record in `BSSRDFSampling::SampleResult`, confirmed absent this sweep | M | coverage/test gap | user-visible (signal-keyed SSS entry only) |
@@ -157,8 +158,8 @@ reflowed otherwise.
 Updated by the 2026-09-12 DL-01 cleanup. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **37** (the original 36 minus DL-01, plus independent
-  residuals DL-38 and DL-39; DL-35 remains deliberately absent)
+- OPEN-confirmed: **38** (the original 36 minus DL-01, plus independent
+  residuals DL-38, DL-39 and DL-40; DL-35 remains deliberately absent)
 - CLOSED-by-cleanup: **1** (DL-01, `1239edf2`)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
@@ -193,13 +194,20 @@ The scene parameter is `tau`, not the old recipe's `transmittance`.
 Direction/Pdf consistency remains DL-02; full integrator/HWSS agreement
 is not claimed (DL-38). See [closure and audit](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
 
-**DL-02 (TranslucentSPF spectral exit MIS inconsistency).** In the same
-test file, sample `ScatterNM`'s exit lobe N times, and independently compute
-`PdfNM` for each sampled direction. Expected today: `PdfNM` returns the
-cosine density while the Phong-lobe density the sample was actually drawn
-from differs measurably at grazing directions. Fixed when a pointwise
-`kray*pdf == value*|cos|`-style check (the existing `SPFBSDFConsistencyTest`
-convention) passes for the exit lobe at the shared `CROSS_VAL_TOL`.
+**DL-02 (TranslucentSPF exit-density support and spectral shape).**
+Extend `tests/TranslucentSpectralParityTest.cpp` or
+`tests/TranslucentIORStackTest.cpp` with an inside stack, scattering zero,
+and uniform N=1. Sample both RGB and NM exit rays and compare the stored
+positive `ray.pdf` with `Pdf`/`PdfNM` using the same intersection and
+pre-scatter stack. Expected today: both evaluators return zero on the
+sampled `+onb.w()` hemisphere because inside-state `Pdf` flips the sign.
+Then test N != 1 to expose the additional NM Phong-versus-cosine shape
+difference. Fixed when both support and normalized shape agree between
+sampling and evaluation in both pipes. The original recipe's pointwise
+`kray*pdf == value*|cos|` closure also depends on the separate stateful
+BSDF-weight gap now tracked as DL-38; do not confuse that with this
+density-only row or call a zero-versus-positive support error merely a
+small grazing-angle shape mismatch.
 
 **DL-03 (TranslucentSPF guided-direction IOR-stack leak).** Add a scene with
 path guiding enabled (`use_path_guiding true`, enough samples to train the
@@ -537,3 +545,14 @@ for the diffuse exit, not all incoming power. Extend to nonzero
 backscatter to assert absorption + outgoing + deposited energy balances.
 Fixed when deposited power follows the emitted diffuse lobe and absorbed
 energy is never added to the map. Static finding; not yet red-proven.
+
+**DL-40 (nonfinite balance-test statistics accepted).** Add exact
+invalid-input checks to the BDPT/VCM balance harnesses: finite reference
+statistics versus NaN candidate mean/p99/max must disagree, and a capture
+containing a nonfinite component must be rejected before sorting. Use
+explicit malformed-input fixtures, not a NaN not-found sentinel. Fixed
+when `ComputeStats` rejects nonfinite captured/composited values and
+`ChannelsAgree` rejects nonfinite operands, with the new cases red-proven
+against the current harness and the existing finite render gates intact.
+This is a separate pre-existing harness robustness defect; the DL-01
+runs reported finite statistics and do not exercise it.

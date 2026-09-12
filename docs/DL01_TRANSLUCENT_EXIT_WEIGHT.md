@@ -169,3 +169,26 @@ wrong layer for tau, missing the backscatter sibling, mistaking spectral
 uplift for a transport oracle, and claiming whole-integrator parity from
 local weights. The contract evidence, parent-weight fix, wavelength-aware
 entry expectation, and explicit DL-02/DL-38 residuals address those risks.
+
+## Review residual and clarified scope
+
+The transport review found DL-02's description too narrow: inside-state
+`Pdf` flips the exit hemisphere, returning zero on the directions sampled
+by BOTH RGB and NM, even at N=1. NM additionally has the documented Phong
+shape difference. The DL-02 row, recipe, and both source documents now
+state this wider density scope; no next-row implementation was started.
+
+**DL-40 — balance-harness nonfinite false-green risk.** The test-integrity
+review found both BDPT/VCM `ComputeStats` functions accept nonfinite
+captured values and mark nonempty statistics valid. `ChannelsAgree`
+rejects only a relative difference greater than tolerance, so a NaN
+candidate can pass against a finite reference. This is independently
+confirmed by reading both comparators and the capture loop. The recorded
+DL-01 summary statistics are finite; no observed gate result is explained
+by this defect. Per the one-row scope rule, this separate malformed-input
+robustness pattern is recorded as DL-40 with an exact red-proof recipe,
+rather than expanded into the translucent weight fix.
+
+The documentation review also identified historical sweep header labels
+that still said "this revision" / "previous revision". Those labels now
+explicitly identify the historical sweeps.
