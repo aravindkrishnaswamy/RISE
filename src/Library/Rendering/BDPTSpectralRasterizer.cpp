@@ -26,6 +26,7 @@
 #include "AOVBuffers.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Cameras/CameraUtilities.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
@@ -143,6 +144,15 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 		sampler, eyeVerts, eyeSubpathStarts, nm, nullptr, pAOV );
 
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels and, under PSSMLT, moves
+	// continuously under a small mutation.  Ignored by every camera
+	// whose aperture is a point; for a thin lens it is what gives the
+	// splat layer the depth of field the eye layer has.
+	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+	const Point2 cameraLensSample = sampler.Get2D();
+
 	// The generator captures both Fast and Accurate guides against the real
 	// trace-time intersection; no camera-to-vertex reconstruction is needed.
 
@@ -152,7 +162,7 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	if( !eyeVerts.empty() )
 	{
 		std::vector<BDPTIntegrator::ConnectionResultNM> results =
-			pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, nm );
+			pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, nm );
 
 		for( unsigned int r = 0; r < results.size(); r++ )
 		{
@@ -289,6 +299,15 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 				sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl, ss == 0 ? pAOV : 0 );
 
+			// Debt 28: the point on the camera's entrance APERTURE that the
+			// t==1 light-tracing connections land on.  Its own sampler stream
+			// so it stays stratified across pixels and, under PSSMLT, moves
+			// continuously under a small mutation.  Ignored by every camera
+			// whose aperture is a point; for a thin lens it is what gives the
+			// splat layer the depth of field the eye layer has.
+			sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+			const Point2 cameraLensSample = sampler.Get2D();
+
 				// The first hero bundle receives the same trace-time AOV capture
 				// inside GenerateEyeSubpathNM.
 
@@ -300,7 +319,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				if( !eyeVerts.empty() )
 				{
 					std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
-						pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, heroNM );
+						pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, heroNM );
 
 					for( unsigned int r = 0; r < heroResults.size(); r++ ) {
 						const BDPTIntegrator::ConnectionResultNM& cr = heroResults[r];
@@ -388,7 +407,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 					std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
 						pIntegrator->EvaluateAllStrategiesNM(
-							compLight, compEye, pScene, *pCaster, camera, companionNM );
+							compLight, compEye, pScene, *pCaster, camera, cameraLensSample, companionNM );
 
 					for( unsigned int r = 0; r < compResults.size(); r++ ) {
 						const BDPTIntegrator::ConnectionResultNM& cr = compResults[r];

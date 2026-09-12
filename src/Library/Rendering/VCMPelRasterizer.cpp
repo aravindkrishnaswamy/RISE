@@ -31,6 +31,7 @@
 #include "../Shaders/BDPTVertex.h"
 
 #include <vector>
+#include "../Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -350,6 +351,14 @@ void VCMPelRasterizer::IntegratePixel(
 				continue;
 			}
 
+			// Debt 28: the point on the camera's entrance APERTURE that the t=1
+			// splats from this light subpath land on.  Its own sampler stream so
+			// it stays stratified across pixels.  Ignored by every camera whose
+			// aperture is a point; for a thin lens it is what gives the splat
+			// layer the depth of field the eye layer has.
+			sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+			const Point2 cameraLensSample = sampler.Get2D();
+
 			RISEPel sampleColor( 0, 0, 0 );
 
 			// Strategy (t=1): splat every connectible light-subpath
@@ -364,7 +373,7 @@ void VCMPelRasterizer::IntegratePixel(
 				if( pSplatFilm && !localLightVerts.empty() && !lightMis.empty() ) {
 					pIntegrator->SplatLightSubpathToCamera(
 						localLightVerts, lightMis,
-						pScene, *pCaster, *pCamera, *pSplatFilm,
+						pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
 						mVCMNormalization, pPixelFilter );
 				}
 			}

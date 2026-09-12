@@ -106,6 +106,7 @@
 #include "OIDNDenoiser.h"
 #endif
 #include <memory>
+#include "../Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -346,6 +347,15 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts );
 
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels and, under PSSMLT, moves
+	// continuously under a small mutation.  Ignored by every camera
+	// whose aperture is a point; for a thin lens it is what gives the
+	// splat layer the depth of field the eye layer has.
+	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+	const Point2 cameraLensSample = sampler.Get2D();
+
 	// Evaluate all (s,t) connection strategies via MIS
 	std::vector<BDPTIntegrator::ConnectionResult> results =
 		pIntegrator->EvaluateAllStrategies(
@@ -354,6 +364,7 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 			scene,
 			*pCaster,
 			camera,
+			cameraLensSample,
 			&sampler );
 
 	// Collect per-strategy contributions, each with its correct pixel

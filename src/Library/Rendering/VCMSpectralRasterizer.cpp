@@ -35,6 +35,7 @@
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Cameras/CameraUtilities.h"
 #include "../Utilities/MortonCode.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Shaders/BDPTIntegrator.h"
@@ -348,6 +349,14 @@ void VCMSpectralRasterizer::IntegratePixel(
 						pScene, *pCaster, sampler, localLightVerts, localLightSubpathStartsNM, heroNM, rc.random, pSwlHWSSPass );
 				}
 
+				// Debt 28: the point on the camera's entrance APERTURE that the t=1
+				// splats from this light subpath land on.  Its own sampler stream so
+				// it stays stratified across pixels.  Ignored by every camera whose
+				// aperture is a point; for a thin lens it is what gives the splat
+				// layer the depth of field the eye layer has.
+				sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+				const Point2 cameraLensSample = sampler.Get2D();
+
 				eyeVerts.clear();
 				static thread_local std::vector<uint32_t> eyeSubpathStartsNM;
 				PixelAOV primaryAOV;
@@ -391,7 +400,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 					if( pSplatFilm && !localLightVerts.empty() && !lightMisSp.empty() ) {
 						pIntegrator->SplatLightSubpathToCameraNM(
 							localLightVerts, lightMisSp,
-							pScene, *pCaster, *pCamera, *pSplatFilm,
+							pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
 							mVCMNormalization, heroNM, pPixelFilter );
 					}
 				}
@@ -500,7 +509,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 						if( pSplatFilm && !compLight.empty() && !compLightMis.empty() ) {
 							pIntegrator->SplatLightSubpathToCameraNM(
 								compLight, compLightMis,
-								pScene, *pCaster, *pCamera, *pSplatFilm,
+								pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
 								mVCMNormalization, companionNM, pPixelFilter );
 						}
 					}

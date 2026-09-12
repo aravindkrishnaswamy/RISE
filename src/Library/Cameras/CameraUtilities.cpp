@@ -34,15 +34,6 @@ struct PinholeAccessor : public PinholeCamera {
 	}
 };
 
-struct ThinLensAccessor : public ThinLensCamera {
-	static Scalar GetFov( const ThinLensCamera& c ) {
-		return static_cast<const ThinLensAccessor&>(c).fov;
-	}
-	static Scalar GetHalfAperture( const ThinLensCamera& c ) {
-		return static_cast<const ThinLensAccessor&>(c).halfAperture;
-	}
-};
-
 struct FisheyeAccessor : public FisheyeCamera {
 	static Scalar GetScale( const FisheyeCamera& c ) {
 		return static_cast<const FisheyeAccessor&>(c).scale;
@@ -145,16 +136,6 @@ namespace {
 	}
 
 	//
-	// Helper: compute the image plane distance (in pixel units) for a
-	// pinhole-style camera with given FOV and image height.
-	// Returns height / (2 * tan(fov/2)).
-	//
-	static inline Scalar ComputeImagePlaneDistance( Scalar fov, Scalar height )
-	{
-		return height / (2.0 * tan( fov * 0.5 ));
-	}
-
-	//
 	// Helper: compute the world-space area of a single pixel on the
 	// image plane, and the distance from camera to image plane center.
 	// Works for any camera with a standard pinhole-like mxTrans.
@@ -243,96 +224,106 @@ namespace {
 		const Point3& worldPoint,
 		Point2& rasterPoint )
 	{
-		// A thin lens camera projects through the lens center identically
-		// to a pinhole with the same FOV.  The pixel assignment for a world
-		// point depends only on the direction from lens center to the point.
+		// Lens-CENTRE projection: what a pinhole of the same field of
+		// view would report.  Delegated to the camera's own inverse of
+		// its ray generation rather than re-derived here, so lens
+		// SHIFT and focal-plane TILT are inverted instead of silently
+		// ignored -- the hand-rolled `px = w/2 - k*x/z` this used to
+		// carry knew about neither, and disagreed with GenerateRay for
+		// any camera that set them.
 		//
-		// In the thin lens's local space (via mxInv), localP.x/localP.z
-		// and localP.y/localP.z encode the angular tangent of the direction.
-		// The pixel mapping is:
-		//   px = w/2 - k * localP.x / localP.z
-		//   py = h/2 + k * localP.y / localP.z
-		// where k = height / (2 * tan(fov/2)).
-		//
-		// mxTrans for thin lens = Trans(origin) * BasisToCanonical * Stretch(ar,1,1)
-		// mxInv = Stretch(1/ar,1,1) * BasisTranspose * Trans(-origin)
-
-		const Matrix4 mx = cam.GetMatrix();
-		const Matrix4 mxInv = Matrix4Ops::Inverse( mx );
-
-		const Point3 localP = Point3Ops::Transform( mxInv, worldPoint );
-		// Camera origin maps to (0,0,0) in local space, so localP IS the
-		// local-space direction from lens center to world point.
-
-		if( localP.z < NEARZERO ) {
-			return false;	// Behind camera
-		}
-
-		const Scalar fov = ThinLensAccessor::GetFov( cam );
-		const Scalar width = Scalar( cam.GetWidth() );
-		const Scalar height = Scalar( cam.GetHeight() );
-		const Scalar k = ComputeImagePlaneDistance( fov, height );
-
-		const Scalar px = width * 0.5 - k * localP.x / localP.z;
-		const Scalar py = height * 0.5 + k * localP.y / localP.z;
-
-		if( px < 0.0 || px >= width || py < 0.0 || py >= height ) {
-			return false;
-		}
-
-		rasterPoint = Point2( px, py );
-		return true;
+		// `BDPTCameraUtilities::RasterizeThrough` is the entry point
+		// that passes a SAMPLED aperture point instead of the centre;
+		// this one remains the answer for callers that only want the
+		// chief-ray pixel (AOV probes, the degenerate-aperture limit).
+		return cam.RasterFromLensPoint( worldPoint, Point3( 0, 0, 0 ), rasterPoint );
 	}
 
 	static Scalar ImportanceThinLens(
 		const ThinLensCamera& cam,
 		const Ray& ray )
 	{
-		// We = d^2 / (A_lens * W * H * cos^4(theta))
-		// A_lens = PI * halfAperture^2
-
+		// PBRT-v4's thin-lens importance is
+		//     We = d^2 / (A_lens * W * H * cos^4(theta)),
+		// and its light-tracing estimator divides by the solid-angle
+		// density of the sampled lens point, p_w = dist^2 / (A_lens *
+		// cos(theta)).  Per the contract on BDPTCameraUtilities::
+		// Importance this function returns the PRODUCT of `We` with the
+		// aperture cosine and the aperture area -- i.e. what is left
+		// once the caller's 1/p_w has cancelled the 1/A_lens:
+		//
+		//     We * cos(theta) * A_lens = d^2 / (W * H * cos^3(theta))
+		//
+		// A_lens is GONE.  That is the whole of debt 28: a thin lens
+		// gathers exactly as much radiance per unit film area as a
+		// pinhole of the same field of view (opening up trades depth of
+		// field for noise, not exposure), so the t==1 contribution is
+		// the pinhole's and only the RASTER POSITION knows about the
+		// aperture.  Keeping the 1/A_lens while connecting to the lens
+		// centre inflated every splat by 1/(cos(theta) * A_lens) --
+		// 2.7e6 for a 15.1 mm f/22 lens in a metres scene.
+		//
+		// The pinhole limit is therefore continuous and needs no
+		// special case: as fstop -> infinity this expression is
+		// unchanged, which is exactly the behaviour the f/1e5
+		// continuity check in tests/CameraImportanceTest.cpp pins.
+		// (It also retires the `reinterpret_cast<const PinholeCamera*>`
+		// this branch used to take for a degenerate aperture, which was
+		// undefined behaviour AND read a pinhole's fov-baked mxTrans
+		// off a thin lens's scene-unit one.)
 		const Scalar cosTheta = ComputeCosTheta( cam.GetMatrix(), ray );
 		if( cosTheta < NEARZERO ) {
 			return 0.0;
 		}
 
-		const Scalar halfAperture = ThinLensAccessor::GetHalfAperture( cam );
-		const Scalar lensArea = PI * halfAperture * halfAperture;
-		const Scalar fov = ThinLensAccessor::GetFov( cam );
-		const Scalar height = Scalar( cam.GetHeight() );
-		const Scalar width = Scalar( cam.GetWidth() );
-
-		if( lensArea < NEARZERO ) {
-			// Degenerate: zero aperture, treat as pinhole
-			const PinholeCamera* ph = reinterpret_cast<const PinholeCamera*>( &cam );
-			return ImportancePinhole( *ph, ray );
+		const Scalar k = cam.GetImagePlanePixelDensity();
+		if( k <= 0 ) {
+			return 0.0;
 		}
 
-		const Scalar d = ComputeImagePlaneDistance( fov, height );
-		const Scalar cos4 = cosTheta * cosTheta * cosTheta * cosTheta;
+		const Scalar width = Scalar( cam.GetWidth() );
+		const Scalar height = Scalar( cam.GetHeight() );
+		const Scalar cos3 = cosTheta * cosTheta * cosTheta;
 
-		return (d * d) / (lensArea * width * height * cos4);
+		return k / (width * height * cos3);
 	}
 
 	static Scalar PdfDirectionThinLens(
 		const ThinLensCamera& cam,
 		const Ray& ray )
 	{
-		// Conditional PDF of this direction given a lens point:
-		// p(omega | lens_pt) = d^2 / cos^3(theta)
-		// (normalized over the solid angle subtended by the image)
-
+		// Solid-angle density of one pixel's direction GIVEN a point on
+		// the lens:  p(omega | lens point) = k / cos^3(theta).
+		//
+		// It does not depend on WHICH lens point, for zero focal-plane
+		// tilt: the film-sample -> focus-point map is then a uniform
+		// magnification (oneMinusT is constant across the sensor), so
+		// the area Jacobian, and with it the density, is the same from
+		// every point on the aperture -- which is what lets the t==1
+		// sites keep a `PdfDirection( cam, ray )` signature.  With tilt
+		// the magnification varies across the sensor and this is an
+		// approximation; that is unchanged from before debt 28, tilt
+		// defaults to 0, and it perturbs MIS weights only (never the
+		// contribution).
+		//
+		// `k` carries the 1/pixelAR that the previous `d^2 / cos^3`
+		// form dropped: `mxTrans` stretches camera-space x by pixelAR,
+		// so the world-space pixel on the image plane is pixelAR times
+		// wider than the sensor-local one.  PdfDirectionPinhole, which
+		// measures the pixel off the matrix, always had it -- the two
+		// cameras now agree exactly at matched field of view.
 		const Scalar cosTheta = ComputeCosTheta( cam.GetMatrix(), ray );
 		if( cosTheta < NEARZERO ) {
 			return 0.0;
 		}
 
-		const Scalar fov = ThinLensAccessor::GetFov( cam );
-		const Scalar height = Scalar( cam.GetHeight() );
-		const Scalar d = ComputeImagePlaneDistance( fov, height );
-		const Scalar cos3 = cosTheta * cosTheta * cosTheta;
+		const Scalar k = cam.GetImagePlanePixelDensity();
+		if( k <= 0 ) {
+			return 0.0;
+		}
 
-		return (d * d) / cos3;
+		const Scalar cos3 = cosTheta * cosTheta * cosTheta;
+		return k / cos3;
 	}
 
 	//////////////////////////////////////////////////////////////////////////
@@ -661,6 +652,51 @@ Scalar BDPTCameraUtilities::PdfDirection(
 	}
 
 	return 0.0;
+}
+
+BDPTCameraUtilities::ApertureSample BDPTCameraUtilities::SampleAperture(
+	const ICamera& cam,
+	const Point2& uv )
+{
+	ApertureSample ap;
+
+	const ThinLensCamera* thinLens = dynamic_cast<const ThinLensCamera*>( &cam );
+	if( thinLens && thinLens->GetApertureWorldArea() > 0 ) {
+		ap.local = thinLens->SampleLensPoint( uv );
+		ap.point = thinLens->LensPointToWorld( ap.local );
+		ap.isFinite = true;
+		return ap;
+	}
+
+	// Every other camera -- and a thin lens stopped all the way down --
+	// emits from a single point.  `local` stays (0,0,0), which is the
+	// lens centre for the degenerate thin lens and unused otherwise.
+	ap.point = cam.GetLocation();
+	ap.isFinite = false;
+	return ap;
+}
+
+bool BDPTCameraUtilities::RasterizeThrough(
+	const ICamera& cam,
+	const Point3& worldPoint,
+	const ApertureSample& ap,
+	Point2& rasterPoint )
+{
+	if( ap.isFinite ) {
+		const ThinLensCamera* thinLens = dynamic_cast<const ThinLensCamera*>( &cam );
+		if( thinLens ) {
+			return thinLens->RasterFromLensPoint( worldPoint, ap.local, rasterPoint );
+		}
+	}
+
+	return Rasterize( cam, worldPoint, rasterPoint );
+}
+
+bool BDPTCameraUtilities::HasFiniteAperture(
+	const ICamera& cam )
+{
+	const ThinLensCamera* thinLens = dynamic_cast<const ThinLensCamera*>( &cam );
+	return thinLens != 0 && thinLens->GetApertureWorldArea() > 0;
 }
 
 bool BDPTCameraUtilities::IsDeltaDirection(

@@ -69,6 +69,7 @@
 #include "OIDNDenoiser.h"
 #endif
 #include <memory>
+#include "../Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -303,7 +304,16 @@ void MLTSpectralRasterizer::EvaluateSingleWavelength(
 	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
-	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels and, under PSSMLT, moves
+	// continuously under a small mutation.  Ignored by every camera
+	// whose aperture is a point; for a thin lens it is what gives the
+	// splat layer the depth of field the eye layer has.
+	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+	const Point2 cameraLensSample = sampler.Get2D();
+
+	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, nm );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -383,6 +393,15 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	for( unsigned int ss = 0; ss < nSpectralSamples; ss++ ) {
 		wavelengthSamples.push_back( sampler.Get1D() );
 	}
+
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels and, under PSSMLT, moves
+	// continuously under a small mutation.  Ignored by every camera
+	// whose aperture is a point; for a thin lens it is what gives the
+	// splat layer the depth of field the eye layer has.
+	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+	const Point2 cameraLensSample = sampler.Get2D();
 
 	// Spectral range
 	const Scalar range = lambda_end - lambda_begin;
@@ -471,7 +490,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			// Evaluate hero wavelength
 			{
 				std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
-					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, heroNM );
+					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, heroNM );
 				accumulateResults( heroResults, heroNM );
 			}
 
@@ -505,7 +524,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 				std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
 					pIntegrator->EvaluateAllStrategiesNM(
-						compLight, compEye, scene, *pCaster, camera, companionNM );
+						compLight, compEye, scene, *pCaster, camera, cameraLensSample, companionNM );
 				accumulateResults( compResults, companionNM );
 			}
 		}
@@ -533,7 +552,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
-			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
+			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, nm );
 
 			for( unsigned int r = 0; r < results.size(); r++ )
 			{

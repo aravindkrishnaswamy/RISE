@@ -97,6 +97,13 @@ namespace RISE
 			// of truth (editor reads them in mm directly).
 			Scalar		shiftX_sceneUnits;
 			Scalar		shiftY_sceneUnits;
+			// Inverse of `mxTrans`, cached by Recompute (the only place
+			// `mxTrans` is assigned for this camera).  The light-tracing
+			// inverse projection -- `RasterFromLensPoint`, on the hot
+			// t==1 connection path of BDPT and VCM -- needs it once per
+			// splat, and a 4x4 inverse per splat is not a per-frame cost
+			// worth paying when the matrix only changes on Recompute.
+			Matrix4		mxTransInv;
 			// Cached 1/pixelAR for the aperture-sample X compensation.
 			// `mxTrans` includes a Stretch(pixelAR, 1, 1) — see
 			// ComputeScaleFromAR.  The image-plane math already
@@ -234,6 +241,90 @@ namespace RISE
 			inline void SetAnamorphicSqueeze( Scalar v )       { anamorphicSqueeze = v; }
 
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
+
+			//===============================================================
+			// Finite-aperture surface for bidirectional transport (debt 28).
+			//
+			// A thin lens is the only RISE camera whose importance is
+			// emitted from a region of non-zero AREA, so the t==1
+			// light-tracing strategy in BDPT / VCM cannot just connect to
+			// `GetLocation()`: it has to SAMPLE a point on the aperture
+			// with the same shape and density the primary rays use, divide
+			// by that density, and work out which film sample images the
+			// light vertex THROUGH that point.  These four methods are the
+			// whole surface `BDPTCameraUtilities` needs for that; they are
+			// deliberately concrete (not ICamera virtuals) for the same
+			// reason `GenerateRayWithLensSample` is -- see its comment.
+			//===============================================================
+
+			//! WORLD-space area of the entrance aperture.  Polygonal
+			//! blades and the anamorphic squeeze are included; the
+			//! `pixelAR` pre-stretch is NOT, because it cancels
+			//! (`SampleLensPoint` divides x by pixelAR and `mxTrans`
+			//! multiplies it back, which is exactly what keeps the lens
+			//! axisymmetric in world space).  Zero for a degenerate
+			//! aperture (fstop -> infinity, squeeze 0), which callers must
+			//! treat as the pinhole limit rather than dividing by it.
+			//!
+			//! `SampleLensPoint` is UNIFORM over this area -- the disk
+			//! path is uniform by construction and the n-gon path's
+			//! sec^2 inverse-CDF was derived to be (see SampleAperture in
+			//! the .cpp) -- so the area density of a sampled point is
+			//! exactly 1 / GetApertureWorldArea().
+			Scalar GetApertureWorldArea() const;
+
+			//! Sample a point on the entrance aperture with the SAME
+			//! shape and density `GenerateRay` uses, from two canonical
+			//! randoms.  Returns the CAMERA-LOCAL point (z == 0, x
+			//! already pixelAR-compensated) -- the coordinates
+			//! `RasterFromLensPoint` expects.  Push it through
+			//! `LensPointToWorld` for the connection geometry.
+			Point3 SampleLensPoint( const Point2& uv ) const;
+
+			//! Camera-local aperture point -> world space.
+			Point3 LensPointToWorld( const Point3& ptOnLens ) const;
+
+			//! Inverse of the ray generation THROUGH A GIVEN APERTURE
+			//! POINT: the raster coordinates of the film sample whose
+			//! generated ray leaves `ptOnLens` in the direction of
+			//! `worldPoint`.  FALSE when the point is behind the lens or
+			//! lands outside the film.
+			//!
+			//! Mechanically the exact inverse of `ComputeWorldDirection`:
+			//! intersect the (lens point -> world point) ray with the
+			//! plane of focus, then project that focus-plane point back
+			//! through the lens CENTRE onto the sensor.  Every constant it
+			//! uses (dx/dy, sx/sy, the shift cache, the focal-plane
+			//! equation, filmDistance) is the one ray generation uses, so
+			//! lens shift and focal-plane tilt are inverted rather than
+			//! ignored.
+			//!
+			//! Passing `ptOnLens = (0,0,0)` gives the lens-CENTRE
+			//! projection -- what a pinhole of the same field of view
+			//! would report, and what `BDPTCameraUtilities::Rasterize`
+			//! returns for this camera.  Passing a SAMPLED point is what
+			//! gives light-traced contributions the same depth of field
+			//! the eye rays have: two lens points image an off-focus world
+			//! point to raster positions a circle-of-confusion apart, and
+			//! an ON-focus point to the same raster position for every
+			//! lens point.
+			bool RasterFromLensPoint(
+				const Point3& worldPoint,		///< [in] World-space point to image
+				const Point3& ptOnLens,			///< [in] Camera-local aperture point (z == 0)
+				Point2& rasterOut				///< [out] Raster coordinates
+				) const;
+
+			//! The image-plane normalisation the camera's importance and
+			//! directional pdf are both built from:
+			//!     k = filmDistance^2 / (|sx * sy| * pixelAR)
+			//! i.e. (image-plane distance)^2 divided by the WORLD-space
+			//! area of one pixel on that plane.  Algebraically identical
+			//! to `height^2 / (4 tan^2(fov/2) * pixelAR)`; expressed in
+			//! the cached ray-generation constants so it cannot drift
+			//! from them.  Callers form `k / cos^3(theta)` for the
+			//! solid-angle pdf of one pixel and `k / (W*H*cos^3(theta))`
+			//! for the importance.
+			Scalar GetImagePlanePixelDensity() const;
 
 			//! Landing 5: photographic exposure compensation in EV stops.
 			//! Returns 0 when iso == 0 (physical exposure disabled);

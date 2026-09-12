@@ -1617,6 +1617,7 @@ namespace
 		const IRayCaster& caster,
 		const BDPTIntegrator& bdpt,
 		const ICamera& camera,
+		const Point2& cameraLensSample,
 		const unsigned int filmWidth,
 		const unsigned int filmHeight,
 		SplatFilm& splatFilm,
@@ -1634,7 +1635,28 @@ namespace
 			return;
 		}
 
-		const Point3 camPos = camera.GetLocation();
+		// Debt 28 -- FINITE-APERTURE cameras.  The camera end of every
+		// t=1 splat on this subpath is a point drawn from the entrance
+		// APERTURE with the primary rays' own shape and density, not
+		// the lens centre.  For a pinhole / fisheye it IS the lens
+		// centre and nothing below changes; for a thin lens it is a
+		// sampled lens point, which is what gives the splat layer the
+		// same depth of field the eye layer has.  `Importance` folds in
+		// 1 / (its area density) and the aperture cosine, so the
+		// contribution needs no extra factor; `cameraPdfA` below is
+		// unchanged because the aperture-positional density is common
+		// to every strategy and cancels out of the SmallVCM weight
+		// ratio (see CameraUtilities.h).
+		//
+		// ONE sample for the whole subpath, not one per vertex: the
+		// splats from a single light subpath are already correlated
+		// through their shared vertices, there are W*H subpaths per
+		// iteration so the aperture is densely covered across the
+		// film, and re-drawing per vertex would need a sampler this
+		// function does not take.
+		const BDPTCameraUtilities::ApertureSample apertureSample =
+			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
+		const Point3 camPos = apertureSample.point;
 
 		for( std::size_t i = 0; i < lightVerts.size(); i++ )
 		{
@@ -1660,7 +1682,8 @@ namespace
 			}
 
 			Point2 rasterPos;
-			if( !BDPTCameraUtilities::Rasterize( camera, v.position, rasterPos ) ) {
+			if( !BDPTCameraUtilities::RasterizeThrough(
+					camera, v.position, apertureSample, rasterPos ) ) {
 				continue;
 			}
 
@@ -1813,6 +1836,7 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
 	const IPixelFilter* pixelFilter
@@ -1820,7 +1844,7 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 {
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<PelTag>(
-		lightVerts, lightMis, scene, caster, *pGenerator, camera,
+		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
 		splatFilm, norm, pixelFilter, PelTag{} );
 }
@@ -2390,6 +2414,7 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
 	const Scalar nm,
@@ -2398,7 +2423,7 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 {
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
-		lightVerts, lightMis, scene, caster, *pGenerator, camera,
+		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
 		splatFilm, norm, pixelFilter, NMTag( nm ) );
 }

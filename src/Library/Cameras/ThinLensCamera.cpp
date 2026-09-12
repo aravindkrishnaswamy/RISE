@@ -272,6 +272,10 @@ void ThinLensCamera::Recompute( const unsigned int width, const unsigned int hei
 	}
 
 	mxTrans = frame.GetTransformationMatrix( ) * ComputeScaleFromAR( );
+	// Cached for RasterFromLensPoint (the t==1 light-tracing inverse
+	// projection), which would otherwise invert a 4x4 per splat.
+	// This is the ONLY site that assigns mxTrans for this camera.
+	mxTransInv = Matrix4Ops::Inverse( mxTrans );
 }
 
 ThinLensCamera::ThinLensCamera(
@@ -477,6 +481,125 @@ bool ThinLensCamera::GenerateRayWithLensSample(
 	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
 
 	EmitRayThroughLens( r, ptOnLens, ptOnScreen );
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Finite-aperture surface for bidirectional transport (debt 28).
+// Contracts and rationale are on the declarations in ThinLensCamera.h.
+//////////////////////////////////////////////////////////////////////
+
+Scalar ThinLensCamera::GetApertureWorldArea() const
+{
+	if( halfAperture <= 0 ) {
+		return 0;
+	}
+
+	// Area of the shape SampleAperture draws uniformly over.  The disk
+	// path is the inscribing circle; the n-gon path is the inscribed
+	// regular polygon, whose area is (n/2) * sin(2*pi/n) * r^2 -- the
+	// same constant the sec^2 inverse-CDF derivation in SampleAperture
+	// normalises against.
+	Scalar shapeArea;
+	if( apertureBlades < 3 ) {
+		shapeArea = PI * halfAperture * halfAperture;
+	} else {
+		const Scalar n = Scalar( apertureBlades );
+		shapeArea = Scalar( 0.5 ) * n * sin( Scalar( 2 ) * PI / n ) * halfAperture * halfAperture;
+	}
+
+	// The squeeze scales x on the lens plane, so it scales the area.
+	// pixelARInv (applied by SampleLensPoint) and mxTrans's
+	// Stretch(pixelAR,1,1) cancel, so neither appears here.
+	return shapeArea * fabs( anamorphicSqueeze );
+}
+
+Point3 ThinLensCamera::SampleLensPoint( const Point2& uv ) const
+{
+	// Must stay byte-for-byte the same construction GenerateRay /
+	// GenerateRayWithLensSample use, or the light-traced bokeh would
+	// not be the eye-traced one.
+	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, uv );
+	return Point3( xy.x * pixelARInv, xy.y, 0.0 );
+}
+
+Point3 ThinLensCamera::LensPointToWorld( const Point3& ptOnLens ) const
+{
+	return Point3Ops::Transform( mxTrans, ptOnLens );
+}
+
+Scalar ThinLensCamera::GetImagePlanePixelDensity() const
+{
+	const Scalar pixelAreaLocal = fabs( sx * sy );
+	const Scalar pixelAR_safe = ( pixelAR > 0 ) ? pixelAR : Scalar( 1 );
+	if( pixelAreaLocal < NEARZERO ) {
+		return 0;
+	}
+	return ( filmDistance * filmDistance ) / ( pixelAreaLocal * pixelAR_safe );
+}
+
+bool ThinLensCamera::RasterFromLensPoint(
+	const Point3& worldPoint,
+	const Point3& ptOnLens,
+	Point2& rasterOut ) const
+{
+	// Camera-local coordinates.  `mxTransInv` undoes both the frame
+	// rotation/translation and the Stretch(pixelAR,1,1), landing in the
+	// same space `ptOnLens` and `ComputeWorldDirection`'s `focus` live in.
+	const Point3 q = Point3Ops::Transform( mxTransInv, worldPoint );
+
+	// Ray from the aperture point toward the world point.  ptOnLens.z
+	// is 0 by construction, so d.z is the world point's axial depth.
+	const Vector3 d = Vector3Ops::mkVector3( q, ptOnLens );
+	if( d.z < NEARZERO ) {
+		return false;	// behind the lens plane
+	}
+
+	// Intersect with the (possibly tilted) plane of focus n.P = kFocus.
+	const Scalar nDotD = nFocusX * d.x + nFocusY * d.y + nFocusZ * d.z;
+	if( fabs( nDotD ) < NEARZERO ) {
+		return false;	// ray parallel to the focal plane
+	}
+	const Scalar nDotL = nFocusX * ptOnLens.x + nFocusY * ptOnLens.y;	// ptOnLens.z == 0
+	const Scalar tFocus = ( kFocus - nDotL ) / nDotD;
+	if( tFocus <= 0 ) {
+		return false;	// focal plane is behind the lens along this ray
+	}
+
+	const Point3 focus(
+		ptOnLens.x + tFocus * d.x,
+		ptOnLens.y + tFocus * d.y,
+		tFocus * d.z );
+
+	// Project the focus-plane point back through the lens CENTRE onto
+	// the sensor at z = -filmDistance.  ComputeWorldDirection builds
+	// `focus` as oneMinusT * p_sensor, so the sensor point is
+	// focus / oneMinusT with oneMinusT recovered from the z components.
+	if( filmDistance < NEARZERO ) {
+		return false;
+	}
+	const Scalar oneMinusT = focus.z / ( -filmDistance );
+	if( fabs( oneMinusT ) < NEARZERO ) {
+		return false;
+	}
+	const Scalar x_img = focus.x / oneMinusT;
+	const Scalar y_img = focus.y / oneMinusT;
+
+	if( fabs( sx ) < NEARZERO || fabs( sy ) < NEARZERO ) {
+		return false;
+	}
+
+	// Invert  x_img = (screenX + dx) * sx - shiftX_sceneUnits.
+	const Scalar screenX = ( x_img + shiftX_sceneUnits ) / sx - dx;
+	const Scalar screenY = ( y_img + shiftY_sceneUnits ) / sy - dy;
+
+	const Scalar width  = Scalar( frame.GetWidth() );
+	const Scalar height = Scalar( frame.GetHeight() );
+	if( screenX < 0.0 || screenX >= width || screenY < 0.0 || screenY >= height ) {
+		return false;
+	}
+
+	rasterOut = Point2( screenX, screenY );
 	return true;
 }
 

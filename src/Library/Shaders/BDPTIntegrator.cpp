@@ -1584,8 +1584,21 @@ namespace {
 			BDPTVertex v;
 			v.type = BDPTVertex::CAMERA;
 
+			// Debt 28: on a FINITE-APERTURE camera the eye ray does not
+			// leave the lens centre -- `ThinLensCamera::GenerateRay`
+			// already sampled a point on the aperture and put it in
+			// `cameraRay.origin`.  The camera path vertex has to BE
+			// that point, or the path whose MIS weight is computed is
+			// not the path that was sampled (the first edge's direction
+			// and dist^2 would be measured from a point the ray never
+			// touched).  Identical to `GetLocation()` for pinhole and
+			// fisheye; orthographic keeps `GetLocation()` because its
+			// per-pixel ray origin offset is deliberately out of scope
+			// here (it is a delta-DIRECTION camera and its t==1
+			// strategy is skipped outright).
 			if( pCamera ) {
-				v.position = pCamera->GetLocation();
+				v.position = BDPTCameraUtilities::HasFiniteAperture( *pCamera ) ?
+					cameraRay.origin : pCamera->GetLocation();
 			}
 
 			v.normal = cameraRay.Dir();
@@ -1644,7 +1657,10 @@ namespace {
 		// For cameras in free space this is a no-op — the probe finds no
 		// enclosing objects and leaves the stack as-is.
 		if( pCamera ) {
-			IORStackSeeding::SeedFromPoint( iorStack, pCamera->GetLocation(), scene );
+			// Seed from the CAMERA VERTEX, which on a finite-aperture
+			// camera is the sampled lens point rather than the lens
+			// centre (debt 28) -- the walk physically starts there.
+			IORStackSeeding::SeedFromPoint( iorStack, vertices[0].position, scene );
 		}
 
 	#ifdef RISE_ENABLE_OPENPGL
@@ -3082,6 +3098,10 @@ ConnectAndEvaluateImpl(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	// Debt 28: two canonical randoms picking the point on the camera's
+	// entrance APERTURE that a t==1 connection lands on.  Ignored by
+	// every camera whose aperture is a point.
+	const Point2& cameraLensSample,
 	Tag tag )
 {
 	typedef SpectralValueTraits<Tag> Traits;
@@ -3475,14 +3495,21 @@ ConnectAndEvaluateImpl(
 			return result;
 		}
 
-		// Project the light vertex position onto the camera
+		// Project the light vertex position onto the camera.  Aperture-
+		// aware for the same reason the live t==1 site is (debt 28),
+		// even though this branch is unreachable -- leaving one of the
+		// two spellings of the same connection behind would be a trap
+		// for whoever revives it.
+		const BDPTCameraUtilities::ApertureSample apertureSample_t0 =
+			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
 		Point2 rasterPos;
-		if( !BDPTCameraUtilities::Rasterize( camera, lightEnd.position, rasterPos ) ) {
+		if( !BDPTCameraUtilities::RasterizeThrough(
+				camera, lightEnd.position, apertureSample_t0, rasterPos ) ) {
 			return result;
 		}
 
 		// Check visibility from camera to light vertex using standard shadow ray.
-		const Point3 camPos = camera.GetLocation();
+		const Point3 camPos = apertureSample_t0.point;
 		if( !ConnectionIsVisible( caster, camPos, lightEnd.position ) ) {
 			return result;
 		}
@@ -3593,12 +3620,15 @@ ConnectAndEvaluateImpl(
 			return result;
 		}
 
+		const BDPTCameraUtilities::ApertureSample apertureSample_t0 =
+			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
 		Point2 rasterPos;
-		if( !BDPTCameraUtilities::Rasterize( camera, lightEnd.position, rasterPos ) ) {
+		if( !BDPTCameraUtilities::RasterizeThrough(
+				camera, lightEnd.position, apertureSample_t0, rasterPos ) ) {
 			return result;
 		}
 
-		const Point3 camPos = camera.GetLocation();
+		const Point3 camPos = apertureSample_t0.point;
 		if( !ConnectionIsVisible( caster, camPos, lightEnd.position ) ) {
 			return result;
 		}
@@ -4062,9 +4092,29 @@ ConnectAndEvaluateImpl(
 			return result;
 		}
 
+		// Debt 28 -- FINITE-APERTURE cameras.  The camera path vertex
+		// for this strategy is a point on the entrance APERTURE, drawn
+		// with the same shape and density the primary rays use.  For a
+		// pinhole / fisheye that point IS `camera.GetLocation()` and
+		// everything below is unchanged; for a thin lens it is a
+		// sampled lens point, and:
+		//   - the light vertex is rasterized THROUGH it (which is what
+		//     gives the splat layer the eye layer's depth of field),
+		//   - the shadow ray, `dirToCam` and `dist` all use it,
+		//   - `Importance` below already folds in 1 / (its area
+		//     density) and the aperture cosine, so the contribution
+		//     formula needs no extra factor (see CameraUtilities.h).
+		// MIS is untouched: the aperture-positional density is the same
+		// under every strategy, so it cancels out of every pdf ratio --
+		// PBRT-v4's MISWeight likewise never reads the camera vertex's
+		// own pdfFwd.
+		const BDPTCameraUtilities::ApertureSample apertureSample =
+			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
+
 		// Project light vertex onto camera
 		Point2 rasterPos;
-		if( !BDPTCameraUtilities::Rasterize( camera, lightEnd.position, rasterPos ) ) {
+		if( !BDPTCameraUtilities::RasterizeThrough(
+				camera, lightEnd.position, apertureSample, rasterPos ) ) {
 			return result;
 		}
 
@@ -4072,7 +4122,7 @@ ConnectAndEvaluateImpl(
 		// Refractive blockers must be sampled as explicit specular eye
 		// vertices; treating them as transparent here produces invalid
 		// splats and severe caustic fireflies.
-		const Point3 camPos = camera.GetLocation();
+		const Point3 camPos = apertureSample.point;
 		if( !ConnectionIsVisible( caster, lightEnd.position, camPos ) ) {
 			return result;
 		}
@@ -4527,11 +4577,13 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 	unsigned int t,
 	const IScene& scene,
 	const IRayCaster& caster,
-	const ICamera& camera
+	const ICamera& camera,
+	const Point2& cameraLensSample
 	) const
 {
 	return ConnectAndEvaluateImpl<PelTag>(
-		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera, PelTag{} );
+		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
+		cameraLensSample, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -4562,13 +4614,14 @@ DispatchConnectAndEvaluate(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	Tag tag )
 {
 	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
 		(void)tag;
-		return self.ConnectAndEvaluate( lightVerts, eyeVerts, s, t, scene, caster, camera );
+		return self.ConnectAndEvaluate( lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample );
 	} else {
-		return self.ConnectAndEvaluateNM( lightVerts, eyeVerts, s, t, scene, caster, camera, tag.nm );
+		return self.ConnectAndEvaluateNM( lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag.nm );
 	}
 }
 
@@ -4581,6 +4634,7 @@ EvaluateAllStrategiesImpl(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	ISampler* pSampler,
 #ifdef RISE_ENABLE_OPENPGL
 	CompletePathGuide* pCompletePathGuide,
@@ -4719,7 +4773,8 @@ EvaluateAllStrategiesImpl(
 					candidate.t,
 					scene,
 					caster,
-					camera );
+					camera,
+					cameraLensSample );
 
 				cr.s = candidate.s;
 				cr.t = candidate.t;
@@ -4747,7 +4802,7 @@ EvaluateAllStrategiesImpl(
 				}
 
 				CR cr = DispatchConnectAndEvaluate<Tag>(
-					self, lightVerts, eyeVerts, s, t, scene, caster, camera, tag );
+					self, lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag );
 				if constexpr( Traits::is_pel ) {
 					cr.s = s;
 					cr.t = t;
@@ -4917,11 +4972,12 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	ISampler* pSampler
 	) const
 {
 	return EvaluateAllStrategiesImpl<PelTag>(
-		*this, lightVerts, eyeVerts, scene, caster, camera, pSampler,
+		*this, lightVerts, eyeVerts, scene, caster, camera, cameraLensSample, pSampler,
 #ifdef RISE_ENABLE_OPENPGL
 		pCompletePathGuide, completePathStrategySelectionEnabled, completePathStrategySampleCount,
 		&strategySelectionPathCount, &strategySelectionCandidateCount, &strategySelectionEvaluatedCount,
@@ -6549,11 +6605,13 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	const Scalar nm
 	) const
 {
 	return ConnectAndEvaluateImpl<NMTag>(
-		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera, NMTag( nm ) );
+		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
+		cameraLensSample, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -6566,11 +6624,12 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	const Scalar nm
 	) const
 {
 	return EvaluateAllStrategiesImpl<NMTag>(
-		*this, lightVerts, eyeVerts, scene, caster, camera, nullptr,
+		*this, lightVerts, eyeVerts, scene, caster, camera, cameraLensSample, nullptr,
 #ifdef RISE_ENABLE_OPENPGL
 		pCompletePathGuide, completePathStrategySelectionEnabled, completePathStrategySampleCount,
 		&strategySelectionPathCount, &strategySelectionCandidateCount, &strategySelectionEvaluatedCount,

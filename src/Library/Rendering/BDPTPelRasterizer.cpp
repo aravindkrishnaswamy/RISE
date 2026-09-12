@@ -20,6 +20,7 @@
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "ProgressiveFilm.h"
+#include "../Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -128,6 +129,15 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// Accurate guides at the first selected non-delta surface while the real
 	// trace-time intersection and incoming ray are still available.
 
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels and, under PSSMLT, moves
+	// continuously under a small mutation.  Ignored by every camera
+	// whose aperture is a point; for a thin lens it is what gives the
+	// splat layer the depth of field the eye layer has.
+	sampler.StartStream( BDPTCameraUtilities::kApertureSamplerStream );
+	const Point2 cameraLensSample = sampler.Get2D();
+
 	RISEPel sampleColor( 0, 0, 0 );
 
 	// Single-subpath EvaluateAllStrategies call.  No per-branch loop —
@@ -144,6 +154,7 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 				pScene,
 				*pCaster,
 				camera,
+				cameraLensSample,
 				&sampler );
 
 		for( unsigned int r=0; r<results.size(); r++ )

@@ -592,8 +592,8 @@ static void TestMixedLights()
 //   D (f/22,  focused):   18666.3 / 0.0461453 = 404511x over
 //   E (f/2.8, defocused):   302.401 / 0.0451259 =  6701x over
 // and POST-FIX (same run configuration):
-//   D: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
-//   E: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
+//   D: 0.0450732 / 0.0460411 = 0.979
+//   E: 0.0450605 / 0.0455397 = 0.989
 //////////////////////////////////////////////////////////////////////
 static std::string SceneCommonThinLens( const char* fstop, const char* focusDistance )
 {

@@ -238,12 +238,22 @@ namespace RISE
 			/// ConvertLightSubpath rather than re-walking the
 			/// recurrence.  ConvertLightSubpath's overload emits
 			/// this array via 'outMis'.
+			///
+			/// `cameraLensSample` is two canonical randoms used to pick
+			/// the point on the camera's entrance APERTURE the splat
+			/// connects to (debt 28).  Consumed only by a camera with a
+			/// finite aperture (`thinlens_camera`); every other camera
+			/// ignores it and connects to `camera.GetLocation()`.  No
+			/// default on purpose -- a fixed value would give a thin
+			/// lens the right splat energy with no depth of field, a
+			/// sharp light-traced layer over a defocused eye-traced one.
 			void SplatLightSubpathToCamera(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<VCMMisQuantities>& lightMis,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				SplatFilm& splatFilm,
 				const VCMNormalization& norm,
 				const IPixelFilter* pixelFilter	///< [in] Reconstruction kernel; null = round-to-nearest point splat
@@ -320,12 +330,14 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+			/// `cameraLensSample`: see SplatLightSubpathToCamera above.
 			void SplatLightSubpathToCameraNM(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<VCMMisQuantities>& lightMis,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				SplatFilm& splatFilm,
 				const VCMNormalization& norm,
 				const Scalar nm,

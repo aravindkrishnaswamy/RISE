@@ -1052,8 +1052,9 @@ static void TestGappedCurtainAreaLight()
 //   G (f/22,  focused):   65.5184  / 0.0452077 = 1449x     over
 //   H (f/2.8, defocused):  1.10416 / 0.0448614 =   24.6x   over
 // and POST-FIX (same run configuration):
-//   G: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
-//   H: RECORDED IN THE FIX COMMIT / docs/RENDERING_INTEGRATORS.md debt 28
+//   G: 0.0441068 / 0.0452868 = 0.974
+//   H: 0.0444746 / 0.0450516 = 0.987
+// with p99 and max agreeing to within 1% and 3% respectively.
 // The f/22 row is the harsher of the two precisely because the defect
 // scales as 1/A_lens: stopping down 3 stops from f/2.8 to f/22 shrinks
 // the aperture area 62x and the pinhole-centre splat grows to match.

@@ -270,6 +270,19 @@ namespace RISE
 			/// contract holds; the `const` qualifier is preserved
 			/// because the BDPTIntegrator instance itself has no
 			/// observable state mutation.
+			/// `cameraLensSample` is two canonical randoms used by the
+			/// t==1 strategy to pick the point on the camera's entrance
+			/// APERTURE that the light vertex connects to (debt 28).
+			/// It is consumed only by cameras with a finite aperture
+			/// (`thinlens_camera`); every other camera ignores it and
+			/// connects to `camera.GetLocation()`.  There is
+			/// deliberately no default: a fixed value would silently
+			/// give a thin lens the right splat ENERGY with no depth of
+			/// field, i.e. a sharp light-traced layer over a defocused
+			/// eye-traced one, which is exactly the failure mode this
+			/// parameter exists to prevent.  Callers should draw it
+			/// from a dedicated sampler stream so a PSSMLT mutation
+			/// moves the aperture point continuously.
 			ConnectionResult ConnectAndEvaluate(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<BDPTVertex>& eyeVerts,
@@ -277,16 +290,19 @@ namespace RISE
 				unsigned int t,		///< Number of eye subpath vertices used
 				const IScene& scene,
 				const IRayCaster& caster,
-				const ICamera& camera
+				const ICamera& camera,
+				const Point2& cameraLensSample
 				) const;
 
 			/// Evaluates all valid (s,t) strategies and returns results.
+			/// `cameraLensSample`: see ConnectAndEvaluate above.
 			std::vector<ConnectionResult> EvaluateAllStrategies(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<BDPTVertex>& eyeVerts,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				ISampler* pSampler
 				) const;
 
@@ -368,6 +384,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				const Scalar nm
 				) const;
 
@@ -377,6 +394,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				const Scalar nm
 				) const;
 
