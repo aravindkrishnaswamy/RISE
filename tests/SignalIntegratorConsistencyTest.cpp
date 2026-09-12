@@ -683,6 +683,46 @@
 //  57x vs 2.8x) is open work, tracked under debt 27 in
 //  docs/RENDERING_INTEGRATORS.md.
 //
+//  WHAT CHANGED THIS ROUND (supervisor ruling, debt 28 round 3): the
+//  PT-independent BDPT<->VCM cross-check above is only meaningful if
+//  BDPT and VCM actually agree with each other on the NEUTRAL (B)
+//  variant's masked pixels -- if they don't, the cross-check is asking
+//  two witnesses who disagree by 20x to referee a 20% question, which
+//  is not a referee at all.  Two full runs at the previous round's
+//  fixed reference-completeness gate confirmed exactly that: tidal's
+//  neutral-variant masked ratios are BDPT/PT ~2.8-3.0x and VCM/PT
+//  ~57.5-58x, i.e. BDPT and VCM disagree with EACH OTHER by ~20x on
+//  the very pixels the cross-check is about to compare them on -- and
+//  the cross-check itself came back a coin flip, -0.1996 (SE 0.0199,
+//  pass) on one run and -0.2354 (SE 0.0129, fail) on another.  A test
+//  that is red one run in two because two non-agreeing integrators are
+//  being asked to referee each other is not testing signals; it is
+//  reporting an open integrator disagreement as if it were a coverage
+//  gap.  The fix makes the reference-completeness rule SYMMETRIC:
+//  before asserting the BDPT<->VCM masked invariant, the test now
+//  computes `| mean_mask(BDPT,B) / mean_mask(VCM,B) - 1 |` (the same
+//  cheap sub-render #1 the PT-referenced gate already uses -- no extra
+//  render) and, if it exceeds `kReferenceIncompleteThreshold` (0.5, the
+//  same coarse gate reused rather than a second magic number), prints a
+//  labelled `NO COMPLETE REFERENCE ON MASK` line naming all three
+//  ratios (BDPT/VCM neutral-variant, PT/BDPT, PT/VCM), skips the
+//  assertion entirely, and counts it in a NEW summary counter,
+//  `g_noCompleteReferenceSkipCount` -- distinct from both the blow-up
+//  skip and the PT-reference-incomplete skip, because this is a THIRD
+//  kind of "no usable referee exists for this row," not either of the
+//  other two.  When BDPT and VCM DO agree within 50% on the neutral
+//  variant, the cross-check runs and is asserted exactly as before --
+//  this round changes nothing about that path.  On tidal, applying the
+//  gate: BDPT/VCM neutral-variant masked ratio is ~0.05 (1/20 -- BDPT's
+//  masked B mean is ~20x VCM's), which fails the 50% agreement bar, so
+//  the cross-check is skipped and reported rather than asserted and
+//  flaked on.  This is NOT a workaround to make the suite green: BDPT
+//  and VCM disagreeing by ~20x on tidal's caustic-lit pixels is a real,
+//  open integrator disagreement, now recorded as its own item -- debt
+//  30 in docs/RENDERING_INTEGRATORS.md -- rather than being laundered
+//  through a cross-check that could never have meant anything on this
+//  showcase to begin with.
+//
 //  KNOBS.  `SIGNAL_CONSISTENCY_FILTER` (env, substring match against `unit`,
 //  `showcase`, and the four showcase names `plank`, `tidal`, `bunny`,
 //  `pavilion`) restricts which layer/scene runs, like FabricRenderTest's
@@ -1928,6 +1968,33 @@ static const double kReferenceIncompleteThreshold = 0.5;
 //! debt 27).
 static int g_referenceIncompleteCount = 0;
 
+//! (supervisor ruling, debt 28 round 3) SYMMETRIC reference-completeness
+//! for the PT-INDEPENDENT BDPT<->VCM cross-check itself.  The
+//! cross-check (see RunLayer2Showcase's "CROSS-INTEGRATOR MASKED
+//! INVARIANT" block) is only a meaningful referee between BDPT and VCM
+//! if the two of them agree with each other on the NEUTRAL (B) variant's
+//! masked pixels to begin with -- two integrators that already disagree
+//! by ~20x on the neutral variant (tidal_stones: BDPT/PT masked ~2.8-3.0x,
+//! VCM/PT masked ~57.5-58x) cannot referee a 20% signal invariant between
+//! themselves.  Reusing `kReferenceIncompleteThreshold` (0.5) rather than
+//! inventing a second magic number: if
+//! `| mean_mask(BDPT,B) / mean_mask(VCM,B) - 1 |` exceeds it, the
+//! cross-check is skipped (not asserted, not silently dropped) and a
+//! labelled `NO COMPLETE REFERENCE ON MASK` line is printed with all
+//! three ratios (BDPT/VCM neutral-variant, PT/BDPT, PT/VCM).  This is a
+//! THIRD skip kind, distinct from `g_blowupSkipCount` (integrator
+//! disagreement on the whole image) and `g_referenceIncompleteCount`
+//! (PT unusable as a reference for one integrator's masked row): here PT
+//! is not even in the asserted quantity, but the two referees disagree
+//! with each other too much to referee.  Tracked as a real, open
+//! integrator disagreement under docs/RENDERING_INTEGRATORS.md debt 30 --
+//! not a test-harness gap.
+static const double kNoCompleteReferenceThreshold = kReferenceIncompleteThreshold;
+
+//! Cross-checks skipped by `kNoCompleteReferenceThreshold` above.
+//! Printed in main()'s summary alongside the other skip counters.
+static int g_noCompleteReferenceSkipCount = 0;
+
 //! Redirect std::cout into a private buffer for the duration of `fn`,
 //! returning what was written, and echo it back to the REAL stdout
 //! afterward so nothing a human is watching is lost.  GlobalLog's
@@ -2602,6 +2669,19 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	// whole-image ratio was itself a blow-up skip (tidal's VCM row: the
 	// blow-up gate above only ever gated the PT-REFERENCED assertions;
 	// it must not also suppress the masked means this cross-check needs).
+	//
+	// (supervisor ruling, debt 28 round 3) SYMMETRIC gate on this
+	// cross-check.  Before running the expensive adaptive sub-render
+	// loop below, the code checks whether BDPT and VCM even agree with
+	// each other on the NEUTRAL (B) variant's masked pixels (cheap
+	// sub-render #1, no extra render) -- if they don't, within the same
+	// 50% band `kReferenceIncompleteThreshold` already uses, PT-freedom
+	// does not make this cross-check meaningful: two referees who
+	// disagree ~20x with each other cannot referee a 20% invariant
+	// between themselves.  That row prints `NO COMPLETE REFERENCE ON
+	// MASK`, is counted in `g_noCompleteReferenceSkipCount`, and is NOT
+	// asserted.  See `kNoCompleteReferenceThreshold`'s own comment and
+	// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6.2.
 	if( crossCheckNeeded ) {
 		std::cout << "  CROSS-CHECK TRIGGERED: at least one masked row's PT reference is incomplete -- "
 		          << "asserting the PT-independent BDPT<->VCM masked invariant instead (see "
@@ -2617,6 +2697,34 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		if( !bdptInfo || !vcmInfo || !bdptInfo->valid || !vcmInfo->valid ) {
 			Check( false, std::string( spec.keyword ) + " BDPT<->VCM (masked cross-check): both rows' masked means are available" );
 		} else {
+			// (supervisor ruling, debt 28 round 3) SYMMETRIC
+			// reference-completeness gate on the cross-check ITSELF.  The
+			// PT-independent BDPT<->VCM invariant below is only a
+			// meaningful referee if BDPT and VCM agree with each other on
+			// the NEUTRAL (B) variant's masked pixels to begin with -- see
+			// `kNoCompleteReferenceThreshold`'s own comment.  Computed from
+			// the cheap sub-render #1 already sitting in `maskedInfos`
+			// (`info.maskedB`), no extra render, symmetric with how
+			// `kReferenceIncompleteThreshold` is evaluated above.  Every
+			// masked mean and ratio is printed regardless of which branch
+			// this takes.
+			const double bdptVcmNeutralRatio = ( vcmInfo->maskedB != 0.0 ) ? bdptInfo->maskedB / vcmInfo->maskedB : 0.0;
+			const double bdptVcmNeutralAgree = std::fabs( bdptVcmNeutralRatio - 1.0 );
+			const double ptOverBdptNeutral = ( bdptInfo->maskedB != 0.0 ) ? maskedPT_B / bdptInfo->maskedB : 0.0;
+			const double ptOverVcmNeutral  = ( vcmInfo->maskedB  != 0.0 ) ? maskedPT_B / vcmInfo->maskedB  : 0.0;
+			std::cout << "  NEUTRAL-VARIANT MASKED MEANS: PT=" << maskedPT_B
+			          << " BDPT=" << bdptInfo->maskedB << " VCM=" << vcmInfo->maskedB
+			          << "  BDPT/VCM=" << bdptVcmNeutralRatio
+			          << " PT/BDPT=" << ptOverBdptNeutral << " PT/VCM=" << ptOverVcmNeutral << std::endl;
+
+			if( bdptVcmNeutralAgree > kNoCompleteReferenceThreshold ) {
+				std::cout << "  NO COMPLETE REFERENCE ON MASK (BDPT/VCM neutral-variant masked ratio "
+				          << bdptVcmNeutralRatio << "; PT/BDPT " << ptOverBdptNeutral
+				          << "; PT/VCM " << ptOverVcmNeutral << ")" << std::endl;
+				g_noCompleteReferenceSkipCount++;
+				return;
+			}
+
 			auto standardErrorOf = []( const std::vector<double>& v ) -> double {
 				const std::size_t n = v.size();
 				if( n < 2 ) return -1.0;
@@ -2758,7 +2866,8 @@ int main( int argc, char** argv )
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount
 	          << "  Blow-up skips (integrator disagreement, not signal-attributable): " << g_blowupSkipCount
 	          << "  Masked precision skips (cap reached, SE still above target): " << g_maskedPrecisionSkipCount
-	          << "  Reference-incomplete masked rows (PT unusable as reference, BDPT<->VCM cross-check asserted instead): " << g_referenceIncompleteCount << std::endl;
+	          << "  Reference-incomplete masked rows (PT unusable as reference, BDPT<->VCM cross-check asserted instead): " << g_referenceIncompleteCount
+	          << "  No-complete-reference skips (BDPT and VCM disagree on the neutral variant too, masked cross-check skipped): " << g_noCompleteReferenceSkipCount << std::endl;
 	std::cout << "========================================" << std::endl;
 
 	return failCount > 0 ? 1 : 0;

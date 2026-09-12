@@ -545,7 +545,9 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   57×-vs-2.7× reference-incompleteness gap is not just "PT is missing
   energy uniformly," but that BDPT and VCM recover DIFFERENT amounts of
   that unreachable transport from each other, an open question this
-  entry does not resolve.  Debt 26
+  entry does not resolve — tracked as its own item, **debt 30** below,
+  since it is a BDPT-vs-VCM disagreement rather than a PT strategy gap.
+  Debt 26
   — the legacy `pixelpel_rasterizer` reading **0.0416** on a gapped weave
   in front of an area light where the modern `pathtracing_pel_rasterizer`
   reads **0.1024** at equal spp (BDPT 0.1026, VCM 0.1024) — is
@@ -879,6 +881,42 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   `tests/PSSMLTStreamAliasingTest.cpp`'s C2/C4 for where this was
   found; neither test currently probes depth >= 32 under PSSMLT, so
   this overrun has no red-proof guard yet.
+
+- **Debt 30 (OPEN, debt 28 round 3 ruling on
+  `SignalIntegratorConsistencyTest`'s masked layer): BDPT and VCM
+  disagree ≈ 20× on `tidal_stones`' caustic-lit pixels (a delta
+  `omni_light` refracted through the dielectric water onto the
+  stones): neutral-variant masked means PT : BDPT : VCM ≈ 1 : 2.8 : 58;
+  whole-image BDPT 1.02× PT, VCM 2.05× PT.** PT cannot sample these
+  paths at all (delta light behind a dielectric — a debt 27-class
+  strategy gap: PT's NEE can only reach a delta light via a straight,
+  unoccluded shadow ray); BDPT reaches them only through light tracing
+  (s≥2, t=1 strategies); VCM through merging. Which of BDPT and VCM is
+  right is undetermined: candidates are a VCM merge over-count on
+  S-D-S paths from a delta light (compare
+  [docs/skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)'s
+  "delta-light NEE took weight 1 while light tracing splatted the same
+  path" example — a structurally similar double-count would explain
+  VCM's much larger 58× multiplier next to BDPT's 2.8×) or a BDPT
+  under-count (its S-D-S coverage below a merging radius could simply
+  be missing part of the transport that VCM's merges recover). A
+  reference-free check is needed — a closed-form solution for this
+  specific caustic-through-refraction geometry, or an independent
+  renderer (PBRT/Mitsuba) on the equivalent scene — since neither RISE
+  integrator can referee the other here. This is NOT signal-attributable
+  (BDPT's and VCM's own E/B self-ratios — the quantity signals actually
+  move — agree with each other outside the masked pixels, and the
+  discovery mechanism was `SignalIntegratorConsistencyTest`'s
+  reference-completeness gate, not a signals regression). Not
+  root-caused. Surfaced by, and now gated symmetrically in,
+  `tests/SignalIntegratorConsistencyTest.cpp`'s masked layer (see that
+  file's "CROSS-INTEGRATOR MASKED INVARIANT" block and
+  `kNoCompleteReferenceThreshold`): the PT-independent BDPT<->VCM
+  cross-check the reference-completeness gate falls back to is itself
+  skipped on `tidal_stones` now, rather than asserted and left to flake
+  between -0.1996 (pass) and -0.2354 (fail) against its own 20% band —
+  see docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 6.2 for the
+  symmetric-gate rule this debt motivated.
 
 ## 8. Cross-references
 

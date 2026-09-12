@@ -394,6 +394,38 @@ masked transport, not a measurement artifact, tracked as new data under
 debt 27 in RENDERING_INTEGRATORS.md. Per the ruling, a cross-check that
 fails is reported, not loosened.
 
+**The reference-completeness rule is SYMMETRIC (supervisor ruling, debt
+28 round 3).** The PT-independent BDPT↔VCM cross-check above assumes
+BDPT and VCM are a usable referee pair for each other — that assumption
+itself fails when the two disagree with each other on the NEUTRAL (B)
+variant's masked pixels by more than the same coarse margin. On
+`tidal_stones` they do: BDPT's and VCM's own masked neutral-variant
+means differ from PT by ≈ 2.8–3.0× and ≈ 57.5–58× respectively, i.e.
+BDPT and VCM disagree with EACH OTHER by roughly 20× on the pixels the
+cross-check is about to compare them on — exactly why the cross-check
+itself was landing on either side of its 20 % band from run to run
+(−0.1996 pass, −0.2354 fail) rather than settling. `RunLayer2Showcase`
+now checks `| mean_mask(BDPT,B) / mean_mask(VCM,B) − 1 | > 0.5` (reusing
+`kReferenceIncompleteThreshold` rather than adding a second threshold,
+evaluated on the same cheap sub-render #1, no extra render) before
+running the cross-check's adaptive sub-render loop at all. A row that
+trips it prints a labelled `NO COMPLETE REFERENCE ON MASK` line naming
+the BDPT/VCM neutral-variant ratio and both PT ratios, is NOT asserted,
+and is counted in its own summary counter, `g_noCompleteReferenceSkipCount`
+— a third skip kind, distinct from the blow-up skip and the
+PT-reference-incomplete skip, because here PT is not even in the
+asserted quantity but the two referees disagree too much with each
+other to referee. When BDPT and VCM DO agree within 50 % on the neutral
+variant, the cross-check runs and is asserted exactly as before. On
+`tidal_stones` the BDPT/VCM neutral-variant masked ratio is ≈ 0.05, so
+the gate trips and the cross-check is skipped rather than asserted and
+flaked on; two full runs after this fix land `0 failed`, `1` blow-up
+skip, `2` reference-incomplete rows, and `1` no-complete-reference skip,
+both green. This is not a loosened band — BDPT and VCM disagreeing
+≈ 20× on `tidal_stones`' caustic-lit pixels is a real, open integrator
+disagreement, tracked as its own item, debt 30, in
+RENDERING_INTEGRATORS.md.
+
 ## 7. Cost gate (§ performance-work-with-baselines)
 
 Scene: `plank_closeup` (signals drive colour, roughness and relief; the
