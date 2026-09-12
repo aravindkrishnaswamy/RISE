@@ -1960,28 +1960,27 @@ is the comparison to beat.
    exercised there (`tests/CsgSurfacePayloadTest.cpp:833-834`). Decide whether
    the composite forwards the contributing surface's curvature (likely) or
    invalidates at the seam.
-6. **Modifier and bump-map interaction — an implementation requirement, not a
-   preference.** Modifiers assign into `ri.vNormal` **in place, before material
-   shading** (`BumpMap.cpp:65`, `NormalMap.cpp:169`), so by `BuildContext` time
-   the shading normal is already perturbed. **The curvature computation must
-   therefore orient off `ri.vGeomNormal`, not `ri.vNormal`** (§5.1), copying
-   `GlintModifier.cpp:224-225`'s degenerate-`vGeomNormal` fallback. `curv` and
-   `N` in the same expression will then legitimately disagree on a bump-mapped
-   surface — that is correct and must be stated in the descriptor: a wear mask
-   wants the form, not the texture, and a bump-perturbed curvature would
-   double-count detail the bump map already shades. Pinned by a Phase-1 test
-   (`curv` invariant under an applied normal map).
+6. ~~**Modifier and bump-map interaction — an implementation requirement, not
+   a preference.**~~ **CLOSED (debt-ledger sweep) — implemented as
+   specified.** `SurfaceCurvature.h:68` documents the requirement in force
+   ("without an explicit `vGeomNormal` orientation check. Do NOT ...") and
+   `RayIntersectionGeometric.h:280-296` carries the `vGeomNormal` orientation
+   contract this item calls for; `curv` and `N` legitimately disagree on a
+   bump-mapped surface by design, as this item specifies.
 7. **`expression_function2d` stays frozen.** It is a UV-only contract by design
    (`ExpressionEval.h:403-414`, `ExpressionPainter.h:68-86`) and must **not**
    gain 3D context variables. Only `expression_painter` and
    `scalar_painter { expression }` opt into `EnableContextVars(true)`.
 8. **`ScalarToPainterAdapter` does not exist** (§10). A convenience gap, not a
    blocker; note it, do not build it speculatively.
-9. **Attach-order trap.** `RayCaster::AttachScene` calls `Prepare()` **before**
-   `SetEnvironmentSampler()` — the env-IBL lesson. Any cache derived from
-   late-set state must recompute in its setter. The signals proposed here are
-   geometry-derived and should not depend on late-set state; verify that
-   assumption rather than assume it.
+9. ~~**Attach-order trap.**~~ **CLOSED (debt-ledger sweep) — assumption
+   verified, holds.** `RayCaster::AttachScene` calls `Prepare()` **before**
+   `SetEnvironmentSampler()` — the env-IBL lesson. A repo-wide grep for a
+   signal-demand cache (`SurfaceSignalDemand`, `ProximityDemand`) coupled to
+   `Prepare()` or `SetEnvironmentSampler()` finds no hits: the geometry
+   signals proposed here are computed per-hit from live geometry state, not
+   cached at attach time, so they do not depend on late-set env-sampler
+   state the way the historical env-IBL bug did.
 10. **Deforming geometry would stale a bake — RESOLVED 2026-08-29, and the
    assumption below was WRONG.** `TriangleMeshGeometryIndexed::UpdateVertices`
    (the keyframed-painter `DisplacedGeometry::RefreshMeshVertices` path)

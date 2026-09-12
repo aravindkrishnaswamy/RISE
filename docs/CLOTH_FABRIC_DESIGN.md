@@ -4609,23 +4609,21 @@ yet known (§10.1).
 
 ## 15. Correctness debts and open items
 
-1. **Sheen has no reciprocity or consistency coverage.** Pre-existing.
-   [SPFBSDFConsistencyTest.cpp:1140-1146](../tests/SPFBSDFConsistencyTest.cpp)
-   lists Lambertian, isotropic GGX and three Coated configurations. Phase 1
-   closes it (§9.9 gate 5). **No anisotropic material of any kind is in that
-   sweep either** — Ward and Ashikhmin-Shirley are equally uncovered, and the
-   tangent change of §9.1 alters their basis. Adding at least anisotropic GGX
-   alongside is strongly advised.
-2. **The "Charlie / Neubelt" name is stale in two places, and the rename must
-   include the descriptor.** [SheenBRDF.h:9,18](../src/Library/Materials/SheenBRDF.h)
-   is a comment; **[ChunkParserRegistry.cpp:4358](../src/Library/Parsers/ChunkParserRegistry.cpp)
-   is not** — `cd.description` is the authoring surface, read verbatim by the
-   agent-facing schema generator, the right-click context menu and inline
-   autocomplete in both GUI scene editors, and the properties panel. Leaving it
-   would keep publishing a wrong model attribution into auto-generated schemas
-   long after the header comment was fixed, so **the descriptor text is part of
-   the rename, not a follow-up to it** — and the same applies to the new
-   `fabric_material` descriptor, which must not repeat the error.
+1. ~~**Sheen has no reciprocity or consistency coverage.**~~ **CLOSED
+   2026-09-03 (debt-ledger sweep, commit `f458f4f3`)** —
+   [SPFBSDFConsistencyTest.cpp:1174](../tests/SPFBSDFConsistencyTest.cpp)
+   now carries a `Fabric_GGXaniso_weave45` row (anisotropic GGX substrate
+   through `fabric_material`), alongside `WardIsotropicGaussian` and
+   `WardAnisotropicEllipticalGaussian`, which the same commit's test file
+   already lists. The advised anisotropic-GGX coverage gap is closed.
+2. ~~**The "Charlie / Neubelt" name is stale in two places, and the rename
+   must include the descriptor.**~~ **CLOSED 2026-09-03 (debt-ledger sweep,
+   commit `f458f4f3`)** — `SheenBRDF.h`'s banner now explicitly disclaims
+   "Charlie / Neubelt" (lines 9-20) and `ChunkParserRegistry.cpp:4665`'s
+   `cd.description` reads "Charlie sheen BRDF (Estevez & Kulla 2017, with
+   the full Lambda-polynomial visibility)"; the new `fabric_material`
+   descriptor (`ChunkParserRegistry.cpp:3594`) does not repeat the error
+   either.
 3. **CLOSED 2026-09-02 (round 5) — furnace config 6 IS config 7's defect, now
    measured.** The debt was that config 6 carried a note about "inherited
    dissipation" rather than config 7's measured "substrate never reached", and
@@ -4677,7 +4675,11 @@ yet known (§10.1).
 6. **The Ashikhmin-Premoze-Shirley velvet normalisation is unverified.** §3.4's
    closed form is [from memory]. Not implemented here, so not blocking — but
    recorded so nobody hard-codes the constant from this document.
-7. **Zhu 2023 and Jin 2022 parameter sets are unobtained.** Phase 2's first gate.
+7. ~~**Zhu 2023 and Jin 2022 parameter sets are unobtained.**~~ **CLOSED —
+   Phase 2 shipped** (commit `8378266b`, "feat(materials): weave_material --
+   a structured two-family cloth BSDF (Phase 2, P2-A)"); §9.5's survey of
+   Zhu 2023 (Finding 1 onward) and the shipped `weave_material` triad are
+   the gate's resolution.
 8. ~~**BDPT/VCM/MLT read the geometry signals as neutral** in parts of their
    transport, because those integrators hand-build `RayIntersectionGeometric`
    records omitting `derivatives` and `signals`. Inherited, not created, by this
@@ -4692,11 +4694,15 @@ yet known (§10.1).
    vertex; `LightSampler`'s NEE record and light-subpath root read a real
    intersection on the luminary too, under PT as well, so a `curv`-driven
    seam-wear fabric now matches across PT, BDPT and VCM.
-9. **`ScatteredRayContainer::kCapacity = 12` drops silently**
-   ([ISPF.h:116](../src/Library/Interfaces/ISPF.h)). A `fabric_material` nested
-   under a deep composite could lose energy invisibly. An argument for the
-   single-triad design, and a reason not to document composite nesting as a
-   fabric idiom.
+9. ~~**`ScatteredRayContainer::kCapacity = 12` drops silently**~~ **CLOSED
+   (debt-ledger sweep, commit `f4336aba`)** — `kCapacity` is named and its
+   overflow behaviour documented at
+   [ISPF.h:110-132](../src/Library/Interfaces/ISPF.h), and
+   `CompositeSPF.cpp:45-51` now warns once per process
+   (`warnedExitRayDropped`, a `std::atomic<bool>`) the first time
+   `AddScatteredRay` reports a drop. Not silent any more; the single-triad
+   design and the composite-nesting caution still stand as authoring
+   advice.
 10. **Weave aliasing has no automatic mitigation.** §5.5's `fw` fade is an
     authoring idiom, not a mechanism; the plain procedural painters remain
     unfiltered. If weave fields become common, a footprint-aware `checker` or a
