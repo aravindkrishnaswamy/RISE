@@ -268,11 +268,13 @@ static void Run()
 	integrator->SetMaxPathDepth(2);
 	const RasterizerState rast{};
 
+	for( unsigned int tilted = 0; tilted < 2; ++tilted ) {
 	for( unsigned int spectral = 0; spectral < 2; ++spectral ) {
 		for( unsigned int mode = 0; mode < 3; ++mode ) {
 			unsigned int intercepted = 0, substitutedOut = 0, substitutedIn = 0, retainedSPF = 0;
 			unsigned int badOut = 0, badIn = 0, badMedium = 0, badInitial = 0;
-			for( unsigned int trial = 0; trial < 512; ++trial ) {
+			unsigned int oldInNewOut = 0, oldInNewIn = 0, unchangedIn = 0;
+			for( unsigned int trial = 0; trial < (tilted ? 4096u : 512u); ++trial ) {
 				Observation observation;
 				ObservedMaterial* material = new ObservedMaterial(*front,*trans,*extinction,*exponent,*scattering,observation);
 				NextHitManager* manager = new NextHitManager(*object,*material);
@@ -290,9 +292,9 @@ static void Run()
 				hit.geometric.bHit = true;
 				hit.geometric.range = 1;
 				hit.geometric.ptIntersection = Point3(0,0,0);
-				hit.geometric.vNormal = Vector3(0,0,1);
+				hit.geometric.vNormal = tilted ? Vector3(std::sqrt(3.0)/2,0,.5) : Vector3(0,0,1);
 				hit.geometric.vGeomNormal = Vector3(0,0,1);
-				hit.geometric.onb.CreateFromW(Vector3(0,0,1));
+				hit.geometric.onb.CreateFromW(hit.geometric.vNormal);
 				hit.pObject = object;
 				hit.pMaterial = material;
 				IORStack stack = MakeEnteringStack(water,object,kWaterIOR);
@@ -313,20 +315,30 @@ static void Run()
 					++intercepted;
 					const bool outward = Vector3Ops::Dot(observation.tracedDirection,observation.exitNormal) > 0;
 					const bool substituted = Vector3Ops::Magnitude(observation.tracedDirection-observation.spfDirection) > 1e-8;
+					const bool oldInward = Vector3Ops::Dot(observation.spfDirection,observation.exitNormal) < 0;
+					if( !substituted && oldInward ) ++unchangedIn;
 					if( !substituted && observation.pdfQueries > 0 ) ++retainedSPF;
 					if( substituted && observation.pdfQueries > 0 ) {
 						if( outward ) ++substitutedOut; else ++substitutedIn;
+						if( oldInward ) {
+							if( outward ) ++oldInNewOut; else ++oldInNewIn;
+						}
 					}
-					if( outward && (observation.containsOnArrival || !observation.entryLobeOnArrival) ) ++badOut;
-					if( !outward && (!observation.containsOnArrival || observation.entryLobeOnArrival) ) ++badIn;
+					// Tilted shading can make the original SPF exit geometrically
+					// inward. Preserve that legacy unchanged-SPF behavior; this
+					// regression judges only actual guide replacements there.
+					if( (substituted || !tilted) && outward && (observation.containsOnArrival || !observation.entryLobeOnArrival) ) ++badOut;
+					if( (substituted || !tilted) && !outward && (!observation.containsOnArrival || observation.entryLobeOnArrival) ) ++badIn;
 					if( std::fabs(observation.mediumOnArrival-kWaterIOR) > 1e-12 ) ++badMedium;
 				}
 				scene->release(); manager->release(); material->release();
 			}
-			std::cout << "  " << (spectral ? "NM" : "RGB") << " mode=" << mode
+			std::cout << "  " << (spectral ? "NM" : "RGB") << " mode=" << mode << " tilted=" << tilted
 				<< " intercepted=" << intercepted << " substituted_out=" << substitutedOut
 				<< " substituted_in=" << substitutedIn << " retained_spf=" << retainedSPF << " bad_out=" << badOut
-				<< " bad_in=" << badIn << " bad_medium=" << badMedium << std::endl;
+				<< " bad_in=" << badIn << " bad_medium=" << badMedium
+				<< " old_in_new_out=" << oldInNewOut << " old_in_new_in=" << oldInNewIn
+				<< " unchanged_in=" << unchangedIn << std::endl;
 			EXPECT(badInitial == 0, "DL-03 real SPF produced an exit with a popped stack on every trial");
 			EXPECT(intercepted > 0, "DL-03 continuation reached the same-object stack observer");
 			EXPECT(badOut == 0, "DL-03 outward exit carries popped stack and next same-object Scatter enters");
@@ -335,7 +347,12 @@ static void Run()
 			if( mode ) EXPECT(substitutedOut > 0, "DL-03 non-vacuous outward guided exit substitution count is positive");
 			if( mode == 2 ) EXPECT(retainedSPF > 0, "DL-03 RIS retained SPF candidate control is positive");
 			if( mode == 1 ) EXPECT(substitutedIn > 0, "DL-03 one-sample inward substitution control is positive");
+			if( tilted && mode ) {
+				EXPECT(oldInNewOut > 0, "DL-03 tilted SPF inward candidate replaced by actual outward guide");
+				EXPECT(oldInNewIn > 0, "DL-03 tilted SPF inward candidate replaced by different inward guide");
+			}
 		}
+	}
 	}
 	RunBDPT(*guide,*front,*trans,*extinction,*exponent,*scattering,*object,*caster);
 	integrator->release(); caster->release(); shader->release();
