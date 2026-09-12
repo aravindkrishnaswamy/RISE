@@ -208,6 +208,39 @@ power-vs-balance debate becomes moot under optimal MIS because the
 weight is learned per-pixel from second-moment statistics and
 adapts to whichever strategy is locally best.
 
+## The camera vertex: delta position, finite aperture, delta direction
+
+A recurring question, and the one debt 28 turned into a bug: does the
+MIS weight need to know that a `thinlens_camera` emits importance from
+a region of AREA rather than from a point?
+
+**No.**  The camera vertex's positional density is the same under
+every strategy — each samples that vertex from the same aperture with
+the same density `1/A_lens` — so it cancels out of every pdf RATIO the
+weight is built from.  BDPT's `MISWeight` never reads `eyeVerts[0]`'s
+`pdfFwd`/`pdfRev` (its eye-side walk is `for j = t-1; j > 0`), exactly
+as PBRT-v4's `MISWeight` never reads `cameraVertices[0].pdfFwd`; VCM's
+`cameraPdfA` is already the relative quantity.  Neither PBRT nor RISE
+branches on the aperture radius anywhere in its MIS.
+
+What the camera vertex's flags DO decide:
+
+- `isDelta` on the camera vertex means **delta DIRECTION**, not delta
+  position — it is set only for the orthographic camera, the
+  importance-side analogue of a directional light, whose t==1
+  light-tracing strategy has zero density and must be skipped AND
+  excluded from every other strategy's denominator.  Pinhole, thin
+  lens and fisheye are all finite-direction and keep `isDelta` false.
+- A finite aperture changes the CONTRIBUTION and the SPLAT POSITION
+  (the connection endpoint is a sampled aperture point, and the raster
+  position is computed through it, which is what gives light-traced
+  contributions depth of field) — never the weight.
+
+Full treatment, including why RISE's pinhole importance carries `cos³`
+where PBRT-v4's raw `We` carries `cos⁴`, is in
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §7.1; the defect
+that made it matter is debt 28 in the same file's §7.
+
 ## When BDPT and VCM disagree on the same scene
 
 On diffuse scenes the two integrators agree to within ~1% at 256 spp.

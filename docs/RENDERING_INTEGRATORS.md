@@ -333,6 +333,88 @@ Two practical considerations:
   `pathtracing_spectral_rasterizer` for new scenes; the legacy
   chunk stays around for custom spectral shader-op chains.
 
+## 7.1 The camera path vertex under a finite aperture
+
+How BDPT and VCM treat the camera end of a path when the camera is a
+`thinlens_camera` rather than a pinhole.  Written up because debt 28
+(below) made it a live question and the answer is easy to get wrong in
+the "obvious" direction.
+
+**Three kinds of camera vertex, and only two of them matter to MIS.**
+
+| camera | position | direction | t==1 strategy |
+|--------|----------|-----------|---------------|
+| `pinhole_camera`, `fisheye_camera` | a point | finite density | valid |
+| `thinlens_camera` | a region of AREA | finite density | valid |
+| `orthographic_camera` | a point per pixel | **Dirac delta** | **skipped** |
+
+Only the orthographic camera is special-cased.  It is the
+importance-side analogue of a directional light: a non-specular light
+vertex has zero density of scattering into its single parallel
+direction, so `BDPTCameraUtilities::IsDeltaDirection` returns true for
+it, `GenerateEyeSubpath` marks the camera vertex `isDelta`, the t==1
+sites skip, and `MISWeight`'s eye-side walk excludes the (phantom)
+strategy from every other strategy's denominator.
+
+**A finite aperture is NOT a special case.**  The camera vertex stays
+non-delta, its `pdfFwd` stays 1, and nothing in `MISWeight` or in
+VCM's `wLight` / `cameraPdfA` changes.  The reason is that the camera
+vertex's POSITIONAL density is the same under every strategy — each
+one samples that vertex from the same aperture with the same density
+`1/A_lens` — so it cancels out of every pdf ratio the MIS weight is
+built from.  Concretely:
+
+- **BDPT.**  `MISWeight`'s eye-side walk runs `for j = t-1; j > 0`, so
+  `eyeVerts[0]`'s own `pdfFwd`/`pdfRev` are never read; vertex 0
+  enters only through the `eyeVerts[j-1].isDelta` gate at `j == 1`,
+  which decides whether the t==1 strategy is counted at all.  This is
+  PBRT-v4's structure exactly (`bdpt.cpp`'s `MISWeight` loops
+  `for (int i = t - 1; i > 0; --i)` and never touches
+  `cameraVertices[0].pdfFwd`), and PBRT likewise does not branch on
+  `lensRadius == 0` anywhere in its BDPT MIS.
+- **VCM.**  `cameraPdfA = camPdfDirSA · cosAtLight / dist²` is the
+  ratio quantity, i.e. the camera-side density of the light vertex
+  RELATIVE to the t==1 strategy's own — the shared `1/A_lens` has
+  already divided out.  `InitCamera`'s `dVCM = N / cameraPdfW` uses
+  the conditional directional pdf, which for a thin lens with no
+  focal-plane tilt does not depend on which aperture point the ray
+  left from (the film-sample → focus-point map is a uniform
+  magnification, so the area Jacobian is the same from every point on
+  the aperture).
+
+PBRT's own way of putting this is worth knowing because it explains
+RISE's `cos³` vs PBRT's `cos⁴`: PBRT treats a pinhole as a lens of
+area **1** (`lensArea = lensRadius != 0 ? πr² : 1`), so the same
+`SampleWi` code path and the same MIS structure serve both cameras.
+RISE instead folds the aperture cosine and `1/p_A` into
+`BDPTCameraUtilities::Importance` (see its contract in
+`CameraUtilities.h`), which makes the pinhole's importance
+`d²/(pixelAR·W·H·cos³θ)` where PBRT's raw `We` is
+`1/(A·A_lens·cos⁴θ)` — the same number, with the cosine absorbed.
+After debt 28 the thin lens's folded importance is that SAME
+expression, aperture area and all having cancelled.
+
+**What DOES change for a finite aperture:**
+
+1. The t==1 connection endpoint is a sampled aperture point, not
+   `camera.GetLocation()` — shadow ray, direction, distance and
+   connection transmittance all use it.
+2. The splat's raster position is computed THROUGH that point
+   (`RasterizeThrough` → `ThinLensCamera::RasterFromLensPoint`), which
+   is what gives light-traced contributions the eye rays' depth of
+   field.
+3. BDPT's eye-subpath camera vertex 0 sits at `cameraRay.origin` —
+   the aperture point `GenerateRay` actually sampled — rather than at
+   the lens centre.  Weighting a path whose first vertex is somewhere
+   the ray never touched is wrong by the aperture radius; it is a
+   ~1e-3 relative perturbation of the first edge's `dist²`, small but
+   not principled.  `IORStackSeeding::SeedFromPoint` follows the same
+   point.
+
+No MIS heuristic changed: BDPT is still power-2, VCM still balance
+(see [MIS_HEURISTICS.md](MIS_HEURISTICS.md), and do not propose
+"fixing" that asymmetry).
+
 ## 7. Known limitations
 
 - **RESOLVED 2026-09-04 (chip 4 / task_93ff4a8a).** This entry used to
@@ -472,48 +554,173 @@ Two practical considerations:
   the old reference could not host; every pre-existing topology agrees
   more tightly than before and no tolerance was loosened.
 
-- **Debt 28 (OPEN, recorded 2026-09-11) — BDPT/VCM blow-ups on three
-  shipped signal showcases, NOT signal-attributable.**  Found by the
-  showcase layer of `tests/SignalIntegratorConsistencyTest.cpp` (the
-  money test of [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
-  §6.2) and reproduced through the CLI on master `185b0d5f` with the
-  scene's rasterizer chunk swapped, `oidn_denoise FALSE`, `pixel_filter
-  box`, EXR `Rec709RGB_Linear`, everything else as shipped (the BDPT/VCM
-  chunks do not accept `transparent_shadows`, so tidal's was dropped):
+- **Debt 28 (RESOLVED 2026-09-11) — BDPT/VCM blow-ups on three shipped
+  signal showcases.  Root cause: the t==1 light-tracing connection
+  never sampled the camera's entrance APERTURE.  NOT
+  signal-attributable.**
 
-  | scene | res / spp | PT mean R | BDPT / PT | VCM / PT |
-  |-------|-----------|-----------|-----------|----------|
-  | `Textures/tidal_stones` | 160×120 / 16 | 0.134 | **338×** | **1656×** |
-  | `Textures/tidal_stones` | 400×300 / 8 | 0.135 | **157×** | **1012×** |
-  | `Textures/tidal_stones` | 800×600 / 8 | 0.135 | **171×** | **433×** |
-  | `Textures/shelf_bunny` | 800×600 / 8 | 0.931 | 1.02× | **4558×** |
-  | `Combined/pavilion_colonnade` | 160×120 / 16 (in-process) | — | ≈1.0× | **≈750×** |
-  | `Textures/plank_closeup` | 640×480 / 48 | 0.271 | 1.03× | **0.55×** |
+  Found by the showcase layer of
+  `tests/SignalIntegratorConsistencyTest.cpp` (the money test of
+  [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
+  §6.2) and reproduced through the CLI on master `185b0d5f`.
 
-  The E-vs-B control of that test (signals live vs. every signal call
-  replaced by its neutral constant) moves the whole-image mean by only
-  0.03 %–1.9 % under PT (plank ~0.3 %, tidal ~0.03 %, bunny ~1.8 %,
-  pavilion ~1.0 %) and by a similar 0.05 %–1.9 % under BDPT/VCM (the
-  test's own header carries the per-run values), while the blow-ups are
-  2–3 orders of magnitude and identical for E and B — so
-  none of this is the neutral-signal gap that document closes.  Not root-caused; step 0 of
-  [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md) has
-  NOT been run on these scenes.  Observations that narrow it: the VCM
-  ratio on tidal DECREASES with resolution, sub-linearly in pixel count
-  (1656× → 1012× → 433× from 19 200 to 120 000 to 480 000 pixels; a
-  1/N law would give 265× and 66×), which still points at a pixel-count-
-  dependent normalisation (splat / merge radius) rather than at transport; shelf_bunny's BDPT tracks
-  PT while its VCM does not, so the two families do not share one cause;
-  the three blown-up scenes are omni-lit with SDF or mesh receivers and
-  no radiance map, while the env-lit plank shows only the known VCM env
-  bias class (0.55×).  The consistency test prints a labelled
-  `INTEGRATOR DISAGREEMENT` line and skips its ratio-of-ratios
-  assertion only when BOTH the live (E) and the neutral-baked (B)
-  variants of a (showcase, integrator) fall outside [0.5×, 2×] of PT
-  AND agree with each other within 10 %; a one-sided or disagreeing
-  blow-up is the signature of a signal-attributable regression and
-  FAILS instead.  Skips are counted in the summary, so this debt cannot
-  hide inside that test's green.
+  **Root cause.**  `BDPTCameraUtilities::ImportanceThinLens` returned
+  PBRT-v4's thin-lens importance
+
+      We = d² / (A_lens · W · H · cos⁴θ)
+
+  and the `1/A_lens` in it exists for exactly one reason: the t==1
+  connection is supposed to SAMPLE a point on the aperture with
+  density `1/A_lens`, and the estimator's `1/pdf` cancels it (PBRT-v4
+  §16.1, `PerspectiveCamera::SampleWi`, whose pdf is
+  `dist²/(cosθ·A_lens)`).  No caller sampled.  `RasterizeThinLens`
+  projected through the lens CENTRE, and every t==1 site —
+  `BDPTIntegrator.cpp`'s live `t == 1` branch and the dead `t == 0`
+  one, plus `VCMIntegrator.cpp`'s `SplatLightSubpathToCameraImpl` —
+  connected to `camera.GetLocation()` and multiplied by that
+  importance anyway.  Each splat therefore came out
+
+      1 / (cosθ · A_lens)
+
+  too bright: **2.5 × 10⁵** for tidal_stones' 50 mm f/22 lens in a
+  metres scene, 2.7 × 10⁶ for a 15.1 mm f/22 one.  What reached the
+  image was that factor times the strategy's MIS weight, which is why
+  the symptom ranged from 1.02× (shelf_bunny BDPT) to 4558×
+  (shelf_bunny VCM), and why raising `fstop` to 1e5 or swapping in a
+  `pinhole_camera` made it vanish.  The correlation is exact: the
+  three blown-up showcases are precisely the three that carry a
+  `thinlens_camera`; `plank_closeup`, the one that did not blow up,
+  is the one with a `pinhole_camera`.
+
+  **The fix** (PBRT-v4 §16.1, adapted to RISE's convention that
+  `Importance` folds in the aperture cosine and `1/p_A`):
+
+  1. `ThinLensCamera` grew the finite-aperture surface the integrators
+     need — `GetApertureWorldArea` (blade shape and anamorphic squeeze
+     included; the `pixelAR` pre-stretch cancels), `SampleLensPoint`
+     (the SAME `SampleAperture` call `GenerateRay` makes, so
+     light-traced bokeh is eye-traced bokeh), `LensPointToWorld`,
+     `GetImagePlanePixelDensity`, and `RasterFromLensPoint`, the exact
+     inverse of `ComputeWorldDirection`: intersect the (lens point →
+     world point) ray with the plane of focus, then project that
+     focus-plane point back through the lens CENTRE onto the sensor.
+  2. Every t==1 site draws an aperture point
+     (`BDPTCameraUtilities::SampleAperture`), connects the light vertex
+     to THAT point (shadow ray, direction, distance, transmittance),
+     and rasterizes THROUGH it (`RasterizeThrough`).  That is what
+     gives the light-traced layer the depth of field the eye-traced
+     layer has.
+  3. `ImportanceThinLens` becomes `We · cosθ · A_lens =
+     d²/(pixelAR · W · H · cos³θ)` — **the aperture area cancels
+     completely**, and the result is algebraically the pinhole's, as
+     it must be: a lens trades depth of field for noise, not exposure.
+     The pinhole limit is therefore continuous with no special case,
+     which retired a `reinterpret_cast<const PinholeCamera*>` on a
+     `ThinLensCamera` (undefined behaviour that also read a pinhole's
+     fov-baked `mxTrans` off a thin lens's scene-unit one).
+     `PdfDirectionThinLens` picked up the same missing `1/pixelAR`.
+  4. `RasterizeThinLens` is re-expressed as `RasterFromLensPoint` at
+     the origin, so the lens-centre projection now inverts lens SHIFT
+     and focal-plane TILT instead of ignoring them.
+  5. BDPT's eye-subpath camera vertex 0 sits at `cameraRay.origin`
+     when the aperture is finite (see §7.1 below), not at
+     `GetLocation()`.
+
+  **Before / after**, 160×120 / 16 spp, `oidn_denoise FALSE`,
+  `pixel_filter box`, EXR `Rec709RGB_Linear`, the scene's rasterizer
+  chunk swapped and everything else as shipped.  Means are the R
+  channel.  Rows marked `ts` keep tidal's `transparent_shadows TRUE`,
+  which only the PT chunk accepts — see the residual note below.
+
+  | scene | integrator | pre-fix | post-fix | PT | post-fix ratio |
+  |-------|-----------|---------|----------|-----|----------------|
+  | `tidal_stones` f/22, ts | BDPT | 45.4603 | 0.0689 | 0.1344 | 0.51× |
+  | `tidal_stones` f/22, ts | VCM  | 222.4264 | 0.1422 | 0.1344 | 1.06× |
+  | `tidal_stones` f/2.8, ts | BDPT | 1.2359 | 0.0688 | 0.1345 | 0.51× |
+  | `tidal_stones` f/2.8, ts | VCM  | 3.7425 | 0.1420 | 0.1345 | 1.06× |
+  | `tidal_stones` f/22, no ts | BDPT | — | 0.0687 | 0.0675 | **1.02×** |
+  | `tidal_stones` f/22, no ts | VCM  | — | 0.1425 | 0.0675 | 2.11× |
+  | `shelf_bunny` f/16 | BDPT | 0.9334 | 0.9336 | 0.9347 | **1.00×** |
+  | `shelf_bunny` f/16 | VCM  | 4193.37 | 0.9332 | 0.9347 | **1.00×** |
+  | `pavilion_colonnade` f/16 | BDPT | 0.2770 | 0.2770 | 0.2725 | 1.02× |
+  | `pavilion_colonnade` f/16 | VCM  | 217.24 | 0.2772 | 0.2725 | 1.02× |
+
+  A `pinhole_camera` control at tidal's framing is unmoved by the fix
+  (PT 0.0456 / BDPT 0.0443 / VCM 0.0468 before and after, all inside
+  run-to-run noise), and the f/2.8 rows now give the same ratios as
+  the f/22 ones — the defect's `1/A_lens` signature is gone.
+
+  **Tidal's remaining BDPT 0.51× is `transparent_shadows`, not an
+  integrator disagreement.**  That parameter is accepted only by
+  `pathtracing_pel_rasterizer`; tidal's water surface needs it (the
+  scene's own header calls it MANDATORY) and the BDPT/VCM chunks have
+  no equivalent, so the swapped-rasterizer comparison is not
+  apples-to-apples.  Turn it off on the PT side and PT reads 0.0675
+  against BDPT's 0.0687 — **1.02×**.  VCM reads 1.06× of the
+  transparent-shadows PT because its merges recover the refracted
+  light through the water that a PT without transparent shadows misses
+  (2.11× against that weaker reference).  Nothing here is a camera or
+  MIS defect; do not "fix" it.
+
+  **`plank_closeup`'s VCM 0.55× is unrelated and still OPEN.**  That
+  scene uses a `pinhole_camera`, so debt 28 never touched it; the
+  deficit is the known env-IBL VCM bias class (CLAUDE.md's env-IBL
+  entry, IMPROVEMENTS.md §12).
+
+  **Depth of field really is consistent now, not just the mean.**  On
+  a synthetic scene built to isolate it (a 100° thin lens at 6 m, the
+  plane of focus 5.97 m in front of the receiver, a 4.8-pixel circle
+  of confusion), the per-pixel distance between the defocused and the
+  FOCUSED render of the same integrator is 5.2e-3 (PT), 5.5e-3 (BDPT)
+  and 6.0e-3 (VCM), while the distance between integrators at the same
+  focus is 2.9e-4 (defocused) and 5.9e-5 (focused) — focus state
+  dominates integrator identity by 18–100×, and each integrator's blur
+  signature is the same size as PT's.  A centre-rasterized splat layer
+  would show up as BDPT/VCM sitting much closer to the FOCUSED image.
+
+  **Other cameras audited.**  Pinhole: unchanged (`SampleAperture`
+  reports a point aperture at `GetLocation()`, `RasterizeThrough`
+  falls through to `Rasterize`, neither importance branch was
+  touched).  Orthographic: it is a delta-DIRECTION camera, so its t==1
+  strategy is skipped outright and none of this reaches it; its
+  per-pixel ray-origin offset is deliberately still not reflected in
+  the camera path vertex.  Fisheye: **clean** — no aperture of
+  non-zero area, `Rasterize` and `Importance` read the same direction
+  through the same inverse matrix, and its importance is per SOLID
+  ANGLE rather than per unit lens area, so there is no `cosθ · A_lens`
+  fold to get wrong.  Pinned by
+  `tests/CameraImportanceTest.cpp::TestFisheyeFilmResponse`, which
+  integrates a unit-radiance sphere to 1.000166 against the closed
+  form 1.  One narrower, PRE-EXISTING and UNFIXED issue was found
+  there: the fisheye's pixel solid angle `scale²/(W·H·cosAngle)` is
+  measured in the camera's pre-stretch local frame while `mxTrans`
+  applies `Stretch(pixelAR,1,1)` to the direction, so at
+  `pixelAR != 1` the world-space solid angle per pixel differs by a
+  direction-dependent Jacobian.  It is not debt 28's missing aperture
+  sample (the thin lens carried the constant-factor version of the
+  same thing, which this arc did fix); no in-tree scene pairs a
+  fisheye with non-square pixels, and a correct fix needs the full
+  Jacobian of `normalize ∘ Stretch`, not a constant.
+
+  **Guards.**  `tests/CameraImportanceTest.cpp` (new, 956 closed-form
+  checks, no renders, ~1 s) pins the camera-side algebra: the aperture
+  area IS one over the sampling density, the inverse projection
+  round-trips ray generation to 6e-14 px, the circle of confusion is
+  exactly zero on the plane of focus and exactly the analytic radius
+  off it, importance and pdf equal the matched pinhole's at every
+  f-stop, and a uniformly radiating plane filling the frustum
+  integrates to a film response of exactly 1.  End to end,
+  `BDPTStrategyBalanceTest` topologies G/H and
+  `VCMStrategyBalanceTest` topologies D/E add f/22-focused and
+  f/2.8-defocused thin-lens rows; red-proofed on the pre-fix tree at
+  BDPT 1449× / 24.6× and VCM 404 511× / 6701× over PT, now 0.974 /
+  0.987 and 0.979 / 0.989.  Those topologies are deliberately NOT a
+  copy of the suites' pinhole ones: BDPT's t==1 MIS weight is set by
+  `π·d²·r²/D²` (camera-side over light-side area density at the light
+  vertex), which the pinhole topologies' 30°/3.5 m/4 m geometry puts
+  near 1.5 × 10⁴ — t==1 weight ~5e-9, at which a 2.5 × 10⁵× inflated
+  splat moves the mean by 1e-3 and the bug hides completely (measured
+  BDPT/PT = 1.0010).
 
 ## 8. Cross-references
 
