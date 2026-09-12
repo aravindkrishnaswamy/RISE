@@ -1,6 +1,6 @@
 // DL-01: tau is paid at entry; each interior segment pays Beer extinction
 // once, then splits between exit and backscatter. These are lobe-weight
-// checks, not directional/Pdf consistency checks (DL-02 is separate).
+// checks. DL-02 below independently pins exit-direction/Pdf consistency.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -146,6 +146,122 @@ static void RunCase(Scalar tau, Scalar extinction, Scalar distance, Scalar scatt
     object->release();
 }
 
+// Fixed variates make the exit inverse CDF test independent of rand() and
+// argument evaluation order: every Get1D in one scatter returns the same u.
+class FixedSampler : public ISampler
+{
+    Scalar u;
+public:
+    explicit FixedSampler(Scalar value) : u(value) {}
+    Scalar Get1D() override { return u; }
+    Point2 Get2D() override { return Point2(u, u); }
+};
+
+static bool DensityNear(Scalar actual, Scalar expected)
+{
+    return std::isfinite(actual) && std::fabs(actual - expected) <= 1e-10;
+}
+
+static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
+{
+    std::printf("density N=%g scatter=%g tilted=%d\n", exponent, scatter, int(tilted));
+    auto* ref = new UniformColorPainter(RISEPel(0.5));
+    auto* trans = new UniformColorPainter(RISEPel(0.4));
+    auto* ext = new UniformScalarPainter(0.1);
+    IScalarPainter* n = exponent < 0
+        ? static_cast<IScalarPainter*>(new RGBScalarPainter(5, 10, 15))
+        : static_cast<IScalarPainter*>(new UniformScalarPainter(exponent));
+    auto* scat = new UniformScalarPainter(scatter);
+    auto* spf = new TranslucentSPF(*ref, *trans, *ext, *n, *scat);
+    auto* object = new StubObject();
+    auto ri = Hit(1, true);
+    if (tilted) {
+        ri.vNormal = Vector3Ops::Normalize(Vector3(1, 2, -3));
+        ri.onb.CreateFromW(ri.vNormal);
+        // Retain the true geometric normal: exit transmission must not
+        // inherit the entering reflection lobe's geometric-horizon gate.
+    }
+    IORStack inside = MakeTestIORStack(object, 1.33);
+    inside.push(inside.top());
+    Check(inside.containsCurrent(), "density fixture starts inside");
+    for (int pipe = 0; pipe < 4; ++pipe) {
+        const Scalar nm = 450 + 100 * (pipe - 1);
+        bool support = true, stored = true, evaluated = true, cdf = true, popped = true;
+        Scalar secondMoment = 0;
+        for (int i = 0; i < 8; ++i) {
+            const Scalar u = (i + 0.5) / 8;
+            FixedSampler sampler(u);
+            ScatteredRayContainer rays;
+            if (pipe == 0) spf->Scatter(ri, sampler, rays, inside);
+            else spf->ScatterNM(ri, sampler, nm, rays, inside);
+            unsigned exits = 0;
+            for (unsigned j = 0; j < rays.Count(); ++j) {
+                const auto& ray = rays[j];
+                if (ray.type != ScatteredRay::eRayDiffuse) continue;
+                ++exits;
+                const Scalar mu = Vector3Ops::Dot(ray.ray.Dir(), ri.onb.w());
+                const Scalar expected = mu * INV_PI;
+                const Scalar pdf = pipe == 0 ? spf->Pdf(ri, ray.ray.Dir(), inside)
+                    : spf->PdfNM(ri, ray.ray.Dir(), nm, inside);
+                support &= mu > 0 && ray.pdf > 0 && !ray.isDelta;
+                stored &= DensityNear(ray.pdf, expected);
+                evaluated &= DensityNear(pdf, ray.pdf);
+                cdf &= DensityNear(mu * mu, u);
+                popped &= ray.ior_stack && !ray.ior_stack->containsCurrent();
+                secondMoment += mu * mu / 8;
+            }
+            Check(exits == 1, "density sample has exactly one exit");
+        }
+        std::printf("  %s nm=%g\n", pipe == 0 ? "RGB" : "NM", pipe == 0 ? 0.0 : nm);
+        Check(support, "exit support is positive shading hemisphere");
+        Check(stored, "stored exit density is cosine, independent of N");
+        Check(evaluated, "exit evaluated density equals stored density");
+        Check(cdf, "exit sample inverse CDF is cosine, independent of N");
+        Check(DensityNear(secondMoment, 0.5), "exit sampled cosine second moment is 1/2");
+        Check(popped, "density samples carry popped exit stack");
+
+        // Integrate in mu/phi, where dOmega = dmu dphi. A midpoint rule
+        // integrates the cosine density exactly; sample both hemispheres
+        // to distinguish normalization from support (a flipped PDF also
+        // integrates to one over the full sphere).
+        Scalar positive = 0, negative = 0;
+        for (int m = 0; m < 32; ++m) {
+            const Scalar mu = (m + 0.5) / 32;
+            for (int a = 0; a < 8; ++a) {
+                const Scalar phi = TWO_PI * (a + 0.5) / 8;
+                const Scalar r = std::sqrt(1 - mu * mu);
+                const Vector3 tangent = ri.onb.u() * (r * std::cos(phi))
+                    + ri.onb.v() * (r * std::sin(phi));
+                const Vector3 wo = tangent + ri.onb.w() * mu;
+                const Vector3 back = tangent - ri.onb.w() * mu;
+                positive += (pipe == 0 ? spf->Pdf(ri, wo, inside)
+                    : spf->PdfNM(ri, wo, nm, inside)) * TWO_PI / (32 * 8);
+                negative += (pipe == 0 ? spf->Pdf(ri, back, inside)
+                    : spf->PdfNM(ri, back, nm, inside)) * TWO_PI / (32 * 8);
+            }
+        }
+        Check(DensityNear(positive, 1), "exit PDF integrates to one on exit hemisphere");
+        // This API describes the diffuse lobe only; backscatter has a
+        // separate stored Phong density, not a complete Pdf/PdfNM mixture.
+        Check(DensityNear(negative, 0), "diffuse PDF excludes backscatter hemisphere");
+    }
+    auto entry = Hit(1, false);
+    IORStack outside = MakeTestIORStack(object, 1.33);
+    Check(DensityNear(spf->Pdf(entry, entry.onb.w(), outside), INV_PI),
+          "entry reflection PDF retains front hemisphere");
+    Check(DensityNear(spf->Pdf(entry, -entry.onb.w(), outside), 0),
+          "entry reflection PDF excludes back hemisphere");
+    entry.vGeomNormal = Vector3Ops::Normalize(Vector3(1, 0, 1));
+    const Vector3 belowGeometry = Vector3Ops::Normalize(Vector3(-1, 0, 0.1));
+    Check(DensityNear(spf->Pdf(entry, belowGeometry, outside), 0),
+          "entry geometric-horizon rejection remains active");
+    Check(DensityNear(spf->PdfNM(entry, belowGeometry, 550, outside), 0),
+          "spectral entry geometric-horizon rejection remains active");
+    spf->release();
+    scat->release(); n->release(); ext->release(); trans->release(); ref->release();
+    object->release();
+}
+
 int main()
 {
     GlobalLog();
@@ -160,6 +276,9 @@ int main()
         RunCase(0.4, 3, 2, 0.3, splitN);
         RunCase(0.4, 0.1, 0, 0.3, splitN);
     }
+    for (Scalar exponent : {1.0, 8.0, -1.0})
+        for (Scalar scatter : {0.0, 0.3, 1.0})
+            for (bool tilted : {false, true}) RunExitDensity(exponent, scatter, tilted);
     std::printf("TranslucentSpectralParityTest: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
