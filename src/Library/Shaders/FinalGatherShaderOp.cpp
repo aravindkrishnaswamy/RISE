@@ -355,8 +355,16 @@ void FinalGatherShaderOp::PerformOperation(
 				rs2.considerEmission = false;
 				rs2.type = IRayCaster::RAY_STATE::eRayFinalGather;
 
+				// eta^2 basic-radiance factor (debt 30).  A final-gather ray
+				// is cast FROM the shading point and returns radiance, so
+				// this continuation is radiance mode like any other eye-side
+				// walk.  This branch runs when the hit surface has no BSDF,
+				// i.e. a pure specular / dielectric one, which is exactly
+				// where the factor is not 1.
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+
 				caster.CastRay( rc, ri.geometric.rast, scat.ray, reflectedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
-				c = c + (reflectedPixel * scat.kray);
+				c = c + (reflectedPixel * scat.kray * etaScale);
 			}
 		}
 	}
@@ -668,11 +676,17 @@ void FinalGatherShaderOp::PerformOperation(
 							Scalar t = 0;
 							scat->ray.Advance( kRayBias );
 
+							// Identically 1 in practice -- RandomlySelectDiffuse
+							// returns a DIFFUSE lobe, which never changes
+							// medium -- but written the same way as every
+							// other radiance-mode consumer so the rule is one
+							// rule rather than a case analysis (debt 30).
+							const Scalar etaScale = RadianceEtaScale( ior_stack, scat->ior_stack );
 							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack ? *scat->ior_stack : ior_stack ) ) {
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = cthis * scat->kray;
+									sampleIrradiance = cthis * scat->kray * etaScale;
 									c = c + sampleIrradiance;
 								}
 							}

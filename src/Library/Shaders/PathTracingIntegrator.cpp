@@ -2811,7 +2811,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 				IRayCaster::RAY_STATE rs2 = rs;
 				rs2.depth = depth + 1;
-				rs2.importance = importance * PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) ) / selectProb;
+				// Russian roulette / importance must track the throughput it
+				// is predicting, eta^2 included -- an eye ray entering water
+				// really does carry 1/n^2 less, and a stale importance only
+				// makes RR less efficient, never wrong.
+				rs2.importance = importance
+					* PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) )
+					* RadianceEtaScale( iorStack, pS->ior_stack ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
 				// Accurate guides describe the first non-delta interaction the
@@ -2845,13 +2851,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					break;
 				}
 
+				// eta^2 basic-radiance factor (debt 30).  PT is a
+				// RADIANCE-mode walk, so a lobe that moves the ray into a
+				// different medium scales the throughput by
+				// (eta_before/eta_after)^2; kray carries only Fresnel and
+				// Beer's law (ISPF.h contract).  Applied AFTER lobe
+				// selection on purpose: the selection CDF inside
+				// PTRandomlySelect reads raw kray, so selectProb must stay
+				// in that same domain, and E[kray_I * eta_I / p_I] =
+				// sum_i kray_i * eta_i regardless.  Identically 1 for every
+				// reflection and every non-transmissive lobe.
+				const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );
+
 				// Pel multiplies (throughput * kray) * (1/selectProb); NM
 				// multiplies throughput * (krayNM * (1/selectProb)).  The two
 				// associativities differ at the ULP level, so preserve each.
 				if constexpr ( Traits::is_pel ) {
-					throughput = throughput * PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb );
+					throughput = throughput * PTScatterKray<Tag>( *pS ) * ( etaScale / selectProb );
 				} else {
-					throughput = throughput * ( PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb ) );
+					throughput = throughput * ( PTScatterKray<Tag>( *pS ) * ( etaScale / selectProb ) );
 				}
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
@@ -3300,6 +3318,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			(void)useGuidingPathSegments;  // Used in full guiding implementation
 #endif // RISE_ENABLE_OPENPGL
+
+			// eta^2 basic-radiance factor (debt 30), applied once the
+			// guiding block above has settled BOTH `scatterThroughput` and
+			// `traceIorStack`: a guided direction replaces the SPF's
+			// direction and resets traceIorStack to the unchanged walk
+			// stack, so it must NOT pick up a factor, while the
+			// BSDF-sampled-with-guiding-MIS branch keeps pS->ior_stack and
+			// must.  Reading `traceIorStack` rather than `pS->ior_stack`
+			// gets both cases right by construction.  Identically 1 unless
+			// the medium actually changed.
+			{
+				const Scalar etaScale = ( traceIorStack != &iorStack )
+					? RadianceEtaScale( iorStack, traceIorStack )
+					: Scalar( 1 );
+				if( etaScale != Scalar( 1 ) ) {
+					scatterThroughput = scatterThroughput * etaScale;
+				}
+			}
 
 			// Guide capture is a property of the selected interaction, not of
 			// Russian-roulette or bounce-limit survival. Keeping it before both
@@ -5346,6 +5382,25 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			// Companions inherit hero's selection probability — divide by
 			// the same selectProb for an unbiased per-wavelength estimator.
 			compScatterNM[w] = compWeight > 0 ? compWeight * invSelectProb : 0;
+		}
+
+		// eta^2 basic-radiance factor (debt 30), hero and companions alike.
+		// ONE scalar for the whole bundle is correct here: the per-vertex
+		// IOR on `pS->ior_stack` is the HERO's, and a DISPERSIVE delta
+		// refraction has already called swl.TerminateSecondary() in the
+		// block above, so any wavelength still active at this point shares
+		// the hero's index.  Applied before RR so the survival probability
+		// sees the throughput the path actually carries.
+		{
+			const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );
+			if( etaScale != Scalar( 1 ) ) {
+				heroScatterNM *= etaScale;
+				compScatterNM[0] = heroScatterNM;
+				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+					if( swl.terminated[w] ) continue;
+					compScatterNM[w] *= etaScale;
+				}
+			}
 		}
 
 		// Russian roulette — use MAX over wavelengths for the survival

@@ -223,6 +223,59 @@ namespace RISE
 			}
 		}
 	};
+
+	//! Basic-radiance scale for one interface crossing, RADIANCE mode only.
+	//!
+	//! Radiance is NOT invariant across a smooth interface between media of
+	//! different refractive index -- L / n^2 is (the "basic radiance";
+	//! Preisendorfer 1965, Veach 1997 5.2, PBRT-v4 9.5.2).  A walk that
+	//! gathers RADIANCE (anything rooted at a camera: the PT / BDPT-eye /
+	//! VCM-eye / MLT-eye subpaths, the legacy shader-op chain, a final
+	//! gather) must therefore multiply its throughput by
+	//! (eta_before / eta_after)^2 every time the scattered ray's medium
+	//! changes.  A walk that carries IMPORTANCE or FLUX (a BDPT/VCM light
+	//! subpath, any photon tracer, an SMS photon seed, a detector-sphere
+	//! measurement rig) gets NO factor: that asymmetry IS the non-symmetry
+	//! of refractive scattering, and applying the factor on both sides
+	//! would cancel it back out.
+	//!
+	//! `ScatteredRay::kray` / `krayNM` deliberately EXCLUDE this factor
+	//! (see the contract on those fields in ISPF.h) -- ~60 SPF
+	//! implementations would otherwise each need a TransportMode
+	//! parameter.  It is applied at the CONSUMER instead, from the two
+	//! stacks the consumer already holds.
+	//!
+	//! @param before  the walk's current IOR stack at the scattering vertex
+	//! @param after   the scattered ray's stack, or NULL when the SPF left
+	//!                the stack unchanged (the common case: every non-
+	//!                transmissive lobe).  A reflection lobe from inside a
+	//!                dielectric allocates an unchanged COPY rather than
+	//!                leaving this null, which is why the test below
+	//!                compares the top IORs and does not just check for
+	//!                non-null.
+	//! @return        (eta_before / eta_after)^2, or exactly 1 when the
+	//!                medium did not change.
+	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after )
+	{
+		if( !after ) {
+			return Scalar( 1 );
+		}
+		const Scalar etaBefore = before.top();
+		const Scalar etaAfter  = after->top();
+		// Equal IORs -> exact 1 with no division, which keeps the
+		// overwhelmingly common reflection / same-index case bit-identical
+		// to the pre-2026-09 behaviour.  Non-positive IORs cannot arise
+		// from a well-formed stack (IORStack's ctor is explicit precisely
+		// to stop a bare `0` becoming an environment IOR of 0), but a
+		// scene can author `ior 0` on a dielectric, and a 0 here would
+		// otherwise produce an infinite or zero throughput rather than a
+		// dark-but-finite material.
+		if( etaBefore == etaAfter || etaBefore <= Scalar( 0 ) || etaAfter <= Scalar( 0 ) ) {
+			return Scalar( 1 );
+		}
+		const Scalar ratio = etaBefore / etaAfter;
+		return ratio * ratio;
+	}
 }
 
 #endif

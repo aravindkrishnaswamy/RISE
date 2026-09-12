@@ -185,6 +185,14 @@ void CoatedSPF::ScatterImpl(
 		//     single-sample estimator below well-posed.  The loop still
 		//     rewrites every ray the base added so no stale base-weight
 		//     ray can escape if that ever changes.
+		// CLOSED LAYER -- no debt-30 eta^2 factor here, and none owed.
+		// The coat is entered and left in the SAME medium, so the ray this
+		// SPF hands back carries no net stack change and
+		// RISE::RadianceEtaScale returns exactly 1 at whatever radiance-mode
+		// consumer reads it.  The coat's own exit-side radiance compression
+		// is already inside the layered BRDF as the 1/eta^2 of
+		// CoatedLayer.h's closed form (Mitsuba plastic's m_invEta2) -- adding
+		// the consumer-side factor on top would double it.
 		if( nm < 0 ) {
 			pBaseSPF->Scatter( ri, sampler, scattered, ior_stack );
 		} else {

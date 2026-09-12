@@ -359,6 +359,15 @@ void CompositeSPF::ProcessTopLayer(
 		return;
 	}
 
+	// NO per-hop debt-30 eta^2 factor inside this walk, and none is
+	// missing.  Each exit ray keeps the IOR stack the inner SPF gave it,
+	// so a radiance-mode consumer's RISE::RadianceEtaScale( entryStack,
+	// exitRay.ior_stack ) sees the NET change across the whole layer
+	// stack -- and the per-hop factors telescope exactly:
+	// (n_out/n_gap)^2 * (n_gap/n_below)^2 == (n_out/n_below)^2.  An
+	// up-exit therefore gets exactly 1 (entered and left the same medium)
+	// and a down-exit gets the right single factor, with no bookkeeping
+	// here.
 	ScatteredRayContainer scat_top;
 	top.Scatter( ri, sampler, scat_top, EvalStack( ri, outside_stack, gap_stack ) );
 

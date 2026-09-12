@@ -2758,6 +2758,46 @@ namespace {
 				}
 			}
 
+			// eta^2 basic-radiance factor (debt 30) -- EYE SUBPATH ONLY.
+			// This generator is the eye side of BDPT, VCM and MLT alike, and
+			// all three gather RADIANCE here, so a lobe that moves the ray
+			// into another medium scales beta by (eta_before/eta_after)^2.
+			// Its light-side twin `GenerateLightSubpathImpl` carries
+			// IMPORTANCE and deliberately gets NO factor -- that asymmetry
+			// is what makes a VCM merge (flux-side photon x radiance-side
+			// eye vertex) come out right.  Gated on `!usedGuidedDirection`
+			// for the same reason the iorStack copy at the bottom of this
+			// loop is: a guided direction is not the SPF's, so it does not
+			// take the SPF's stack transition.  `beta` is what gets stored
+			// on the NEXT vertex (StoreThroughput), so every downstream
+			// consumer -- connections, splats, VCM merges, the MLT
+			// re-evaluation -- reads the scaled value and none of them
+			// re-derive it.
+			{
+	#ifdef RISE_ENABLE_OPENPGL
+				const Scalar etaScale = usedGuidedDirection ? Scalar( 1 )
+					: RadianceEtaScale( iorStack, pScat->ior_stack );
+	#else
+				const Scalar etaScale = RadianceEtaScale( iorStack, pScat->ior_stack );
+	#endif
+				if( etaScale != Scalar( 1 ) ) {
+					localScatteringWeight = localScatteringWeight * etaScale;
+					beta = beta * etaScale;
+					if constexpr( Traits::is_nm ) {
+						if( pSwlHWSS ) {
+							// hwssBetaNM[0] mirrors beta by construction at
+							// both throughput-update branches above; re-mirror
+							// it rather than scaling it a second time.
+							hwssBetaNM[0] = beta;
+							for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+								if( pSwlHWSS->terminated[w] ) continue;
+								hwssBetaNM[w] = hwssBetaNM[w] * etaScale;
+							}
+						}
+					}
+				}
+			}
+
 			// Russian Roulette after a few bounces -- depth threshold and
 			// throughput floor are configurable.  HWSS uses MAX throughput
 			// over active wavelengths (prevents hero-driven RR from amplifying
@@ -5908,6 +5948,13 @@ unsigned int GenerateLightSubpathImpl(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
+		// IMPORTANCE mode: no eta^2 factor anywhere in this generator
+		// (debt 30).  A light subpath transports importance / flux, and
+		// applying the basic-radiance factor on both subpath sides would
+		// cancel the very non-symmetry that makes refraction non-symmetric.
+		// Its eye-side twin GenerateEyeSubpathImpl applies it; see the
+		// block above that function's Russian roulette and
+		// docs/REFRACTIVE_RADIANCE_SCALING.md.
 		ScatterSPF<Tag>( *pSPF, ri.geometric, sampler, scattered, iorStack, tag );
 
 		if( scattered.Count() == 0 ) {

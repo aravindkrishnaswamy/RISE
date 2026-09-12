@@ -242,8 +242,10 @@ void IsotropicRGBDetectorSphere::PerformMeasurement(
 			IORStack iorStack( 1.0 );
 			if( bSpectral ) {
 				nm = nmdiff*random.CanonicalRandom() + nmbegin;
+				// NO eta^2 factor -- flux measurement rig, see DetectorSphere.cpp.
 				pSPF->ScatterNM( ri, samplerWrapper, nm, scattered, iorStack );
 			} else {
+				// NO eta^2 factor -- flux measurement rig, see DetectorSphere.cpp.
 				pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
 			}
 

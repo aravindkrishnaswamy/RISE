@@ -194,6 +194,7 @@ void CircularDiskDetector::PerformMeasurement(
 			ScatteredRayContainer scattered;
 
 			IndependentSampler samplerWrapper( random );
+			// NO eta^2 factor -- flux measurement rig, see DetectorSphere.cpp.
 			pSPF->Scatter( ri, samplerWrapper, scattered, ior_stack );
 
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );

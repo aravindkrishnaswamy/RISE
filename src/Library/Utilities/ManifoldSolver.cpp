@@ -4455,10 +4455,24 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			//
 			// This (n_r/n_s)^2 factor is the standard radiance rescaling
 			// across a dielectric boundary (radiance is NOT preserved;
-			// L/n^2 is).  RISE's PerfectRefractorSPF omits this factor
-			// in the forward path tracer; including it here only in SMS
-			// gives SMS physically correct radiance while leaving
-			// PT/VCM's "all air" convention intact.
+			// L/n^2 is).
+			//
+			// UPDATED 2026-09-12 (debt 30).  This used to read "RISE's
+			// PerfectRefractorSPF omits this factor in the forward path
+			// tracer; including it here only in SMS gives SMS physically
+			// correct radiance while leaving PT/VCM's 'all air' convention
+			// intact."  That is no longer true and the asymmetry it
+			// described is gone: every radiance-mode walk now applies the
+			// factor at its kray consumer via RISE::RadianceEtaScale, and
+			// this SMS site already used the SAME convention (eta_i on the
+			// receiver side / eta_t on the source side is exactly
+			// eta_before / eta_after for a walk running eye -> light), so
+			// SMS was ahead of the rest of the tree rather than special.
+			//
+			// NOT A DOUBLE COUNT.  This loop prices the specular chain
+			// between the shading point and the light; the PT walk that
+			// delivered the eye ray TO the shading point prices its own
+			// crossings.  The two cover disjoint segments.
 			//
 			// eta_i is the index on the x-receiver side, eta_t on the
 			// y-source side, in the photon's FORWARD direction.  The

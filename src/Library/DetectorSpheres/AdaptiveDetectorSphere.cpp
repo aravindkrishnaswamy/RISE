@@ -480,6 +480,7 @@ void AdaptiveDetectorSphere::PerformMeasurement(
 
 			IndependentSampler samplerWrapper( random );
 			IORStack iorStack( 1.0 );
+			// NO eta^2 factor -- flux measurement rig, see DetectorSphere.cpp.
 			pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 

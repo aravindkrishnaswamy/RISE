@@ -58,13 +58,23 @@ void RefractionShaderOp::PerformOperation(
 
 				IRayCaster::RAY_STATE rs2;
 
+				// eta^2 basic-radiance factor (debt 30).  The legacy
+				// shader-op chain is a RADIANCE-mode walk exactly like the
+				// integrators, and a refraction lobe is the one lobe that
+				// always changes medium, so this is the site where the
+				// factor bites hardest: before 2026-09-12 a luminaire seen
+				// through glass under `pixelpel_rasterizer` read n^2 too
+				// bright.  kray carries Fresnel and Beer's law only --
+				// Interfaces/ISPF.h.
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+
 				rs2.depth = rs.depth+1;
-				rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray);
+				rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray) * etaScale;
 				rs2.considerEmission = true;
 				rs2.type = IRayCaster::RAY_STATE::eRaySpecular;
 
 				caster.CastRay( rc, ri.geometric.rast, ray, refractedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
-				c = c + (refractedPixel * scat.kray);
+				c = c + (refractedPixel * scat.kray * etaScale);
 			}
 		}
 	}
@@ -103,13 +113,19 @@ Scalar RefractionShaderOp::PerformOperationNM(
 
 				IRayCaster::RAY_STATE rs2;
 
+				// Same eta^2 factor as the Pel twin above.  The stack this
+				// ray carries was pushed with the WAVELENGTH's IOR by
+				// DielectricSPF::ScatterNM, so a dispersive medium gets a
+				// per-wavelength factor here for free.
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+
 				rs2.depth = rs.depth+1;
-				rs2.importance = rs.importance * scat.krayNM;
+				rs2.importance = rs.importance * scat.krayNM * etaScale;
 				rs2.considerEmission = true;
 				rs2.type = IRayCaster::RAY_STATE::eRaySpecular;
 
 				caster.CastRayNM( rc, ri.geometric.rast, ray, refracted, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
-				c = c + (refracted * scat.krayNM);
+				c = c + (refracted * scat.krayNM * etaScale);
 			}
 		}
 	}
