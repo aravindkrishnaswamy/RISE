@@ -59,6 +59,14 @@
 //      G. Orthographic (delta-DIRECTION) camera + mesh emitter
 //         — VCM's splat pass must SKIP a delta-direction camera the
 //         way BDPT's t==1 branch does.  Debt 28 review A P2-6.
+//      H. SUBMERGED Lambertian floor under a delta water box, small
+//         sphere emitter and camera both in air
+//         — the eta^2 basic-radiance factor at a dielectric interface.
+//         VCM's MERGE carries flux from the light side (no factor) and
+//         must be paired with an eye subpath that DOES carry 1/n^2;
+//         until 2026-09-12 neither side had it and VCM read 1.149x PT
+//         here.  Debt 30; see the row and
+//         docs/REFRACTIVE_RADIANCE_SCALING.md.
 //
 //    Caustic-required scenes are out of scope here for the same
 //    reason as in BDPTStrategyBalanceTest: PT under-samples
@@ -899,6 +907,195 @@ static void TestOrthographicCamera()
 		std::string( kSceneCommonOrtho ) + kLightMesh, kOrthoTolerances );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology H: SUBMERGED Lambertian floor, small sphere emitter in air,
+// camera in air (debt 30).
+//
+// The eye path crosses a delta dielectric interface before it reaches
+// the shading point, and the light side reaches that same point two
+// different ways: as a BSDF-sampled connection to the emitter (which
+// re-crosses the interface, so the eye walk's eta factors cancel) and
+// as a MERGE against photons that crossed it in the importance
+// direction (where nothing cancels).  Until 2026-09-12 RISE applied no
+// eta^2 basic-radiance factor anywhere, so the merge read n^2 = 1.77x
+// too bright relative to the connection, and VCM's MIS mixture landed
+// between the two.
+//
+// RED-PROOF on the unfixed library (b6c12301), this row's own run:
+//   PT  mean (0.00462878, 0.00462888, 0.00462842)
+//   VCM mean (0.00539856, 0.00540048, 0.00539207)
+//   mean relative diff (16.63%, 16.67%, 16.50%)   FAIL
+// p99 and max were inside the loosened bands even unfixed, so the
+// mean is the assertion doing the work.  Green after the fix.
+//
+// REFERENCE.  `kRasterizerPTSubmerged` below, NOT the file's shared
+// `kRasterizerPT`: this is the exact topology the caveat above
+// kRasterizerPT warns about (a transmissive material in the scene), so
+// the legacy pixelpel + DefaultDirectLighting reference is invalid
+// here and a real path tracer is required.
+//
+// TOLERANCES.  The mean stays at the strict 8%.  p99 and max are
+// loosened to 60% / 4x: with only BSDF sampling able to find a
+// 0.08-radius emitter through a delta interface, both integrators
+// carry genuine specular fireflies whose per-pixel tails do not agree
+// at any practical sample count -- measured p99 spread across runs is
+// tens of percent while the MEAN, which is the quantity the eta^2 bug
+// moves, is stable to ~1%.  Loosening the tail bands rather than
+// dropping them keeps a catastrophic tail regression visible.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedFloor =
+	"film\n"
+	"{\n"
+	"\twidth 64\n"
+	"\theight 64\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 2.0 2.5 0\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad\n"
+	"\tpta -1 0.05 1\n"
+	"\tptb 1 0.05 1\n"
+	"\tptc 1 0.05 -1\n"
+	"\tptd -1 0.05 -1\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_quad\n"
+	"\tgeometry quad\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_water\n"
+	"\tior 1.33\n"
+	"\ttau 1.0\n"
+	"\tscattering 1000000\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname geo_water\n"
+	"\twidth 2.2\n"
+	"\theight 0.3\n"
+	"\tdepth 2.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname water\n"
+	"\tgeometry geo_water\n"
+	"\tmaterial mat_water\n"
+	"\tposition 0 0.15 0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_sph\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_sph\n"
+	"\texitance pnt_emit_sph\n"
+	"\tscale 42.2\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"sphere_geometry\n"
+	"{\n"
+	"\tname geo_emit_sph\n"
+	"\tradius 0.08\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_sph\n"
+	"\tgeometry geo_emit_sph\n"
+	"\tmaterial mat_emit_sph\n"
+	"\tposition 0 2.5 0\n"
+	"}\n";
+
+static const char* kRasterizerPTSubmerged =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 4096\n"
+	"\toidn_denoise FALSE\n"
+	"\tpixel_filter box\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_pt_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerVCMSubmerged =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 2048\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/vcm_balance_vcm_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
+
+static void TestSubmergedFloorAreaLight()
+{
+	RunTopologyTest( "submerged Lambertian floor, sphere emitter in air (eta^2, debt 30)",
+		std::string( kSceneSubmergedFloor ), kSubmergedTolerances,
+		kRasterizerPTSubmerged, kRasterizerVCMSubmerged );
+}
+
 int main()
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
@@ -910,6 +1107,7 @@ int main()
 	TestThinLensWideOpenDefocused();
 	TestThinLensBladedAperture();
 	TestOrthographicCamera();
+	TestSubmergedFloorAreaLight();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

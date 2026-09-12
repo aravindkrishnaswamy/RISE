@@ -58,6 +58,11 @@
 //         the aperture, connect to THAT point, and divide by its area
 //         density, which is what cancels the 1/A_lens inside the
 //         thin-lens importance.  Debt 28.
+//      J. Submerged Lambertian floor under a delta water box, sphere
+//         emitter and camera both in air
+//         — pins the eta^2 CANCELLATION on an in-and-out eye path.
+//         Green before and after the debt-30 fix, by construction; its
+//         VCM twin (VCMStrategyBalanceTest topology H) is the red one.
 //
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
@@ -1275,6 +1280,190 @@ static void TestThinLensBladedAperture()
 		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology J: SUBMERGED Lambertian floor under a delta water box, with
+// a small sphere emitter and the camera both in AIR (debt 30).
+//
+// GREEN BEFORE THE FIX AND GREEN AFTER IT -- that is the whole point of
+// this row.  It pins the CANCELLATION that hid the missing eta^2
+// basic-radiance factor for years, so a future "fix" that adds the
+// factor only on one crossing of an in-and-out eye path is caught here
+// rather than in a scene.
+//
+// Both PT and BDPT reach this floor by the SAME family of paths: the
+// eye path enters the water (a factor of 1/n^2 that RISE now applies),
+// scatters off the floor, and the continuation exits the water toward
+// the emitter (a factor of n^2).  The two cancel, so the measured value
+// is identical before and after the factor landed:
+//
+//   unfixed b6c12301:  PT 0.00462597   BDPT 0.00467030   BDPT/PT 1.0096
+//
+// Its VCM twin -- tests/VCMStrategyBalanceTest.cpp topology H, the same
+// scene -- is the one that was RED (VCM +16.6%), because a MERGE pairs
+// the eye path's single inward crossing with photons that crossed in
+// the importance direction and cancel nothing.
+//
+// REFERENCE.  BDPT's connection strategies cannot help here: a
+// connecting segment from the floor to a light vertex in air is blocked
+// by the water surface (a delta interface is opaque to a straight
+// connection).  So BDPT reaches the emitter through s=0 only, the same
+// BSDF-sampled chain PT uses, and agreement is tight.
+//
+// TOLERANCES.  4096 / 2048 spp and the loosened 60% / 4x tail bands:
+// with a 0.08-radius emitter reachable only by BSDF sampling through a
+// delta interface, both integrators carry real specular fireflies.  The
+// mean stays at the strict 8%.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedFloorJ =
+	"film\n"
+	"{\n"
+	"\twidth 64\n"
+	"\theight 64\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 2.0 2.5 0\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad\n"
+	"\tpta -1 0.05 1\n"
+	"\tptb 1 0.05 1\n"
+	"\tptc 1 0.05 -1\n"
+	"\tptd -1 0.05 -1\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_quad\n"
+	"\tgeometry quad\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_water\n"
+	"\tior 1.33\n"
+	"\ttau 1.0\n"
+	"\tscattering 1000000\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname geo_water\n"
+	"\twidth 2.2\n"
+	"\theight 0.3\n"
+	"\tdepth 2.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname water\n"
+	"\tgeometry geo_water\n"
+	"\tmaterial mat_water\n"
+	"\tposition 0 0.15 0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_sph\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_sph\n"
+	"\texitance pnt_emit_sph\n"
+	"\tscale 42.2\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"sphere_geometry\n"
+	"{\n"
+	"\tname geo_emit_sph\n"
+	"\tradius 0.08\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_sph\n"
+	"\tgeometry geo_emit_sph\n"
+	"\tmaterial mat_emit_sph\n"
+	"\tposition 0 2.5 0\n"
+	"}\n";
+
+static const char* kRasterizerPTSubmergedJ =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 4096\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/bdpt_balance_pt_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSubmergedJ =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 2048\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/bdpt_balance_bdpt_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
+
+static void TestSubmergedFloorCancellation()
+{
+	RunTopologyTest( "submerged Lambertian floor, sphere emitter in air (eta^2 cancellation, debt 30)",
+		std::string( kSceneSubmergedFloorJ ), kSubmergedTolerances,
+		kRasterizerPTSubmergedJ, kRasterizerBDPTSubmergedJ );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -1288,6 +1477,7 @@ int main()
 	TestThinLensStoppedDown();
 	TestThinLensWideOpenDefocused();
 	TestThinLensBladedAperture();
+	TestSubmergedFloorCancellation();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
