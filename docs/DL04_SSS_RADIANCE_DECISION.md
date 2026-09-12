@@ -106,3 +106,22 @@ The fresh base make build succeeded without compiler warnings. The new
 measurement fixture is being authored and must be committed before its
 first execution. A baseline-green observable will be called a consistency
 pin, never an unfixed red proof. No transport fix is assumed in advance.
+
+## Planar probe origin (DL-52)
+
+The first four-spp flat-box smoke returned diffusion air RGB mean
+(0.04000010123, 0.04000011512, 0.04000005414), near the surface reflection
+alone. This is a low-sample diagnostic, not an energy estimate. Source
+inspection identifies a separate support omission: SampleEntryPoint
+advances each probe from the exit tangent plane before finding its first
+hit. Normal probes therefore skip the nearby coplanar face. The bottom is
+within Burley's hardcoded effective range, but its distant profile value
+does not replace the missing near-face contribution.
+
+A matched ellipsoid with radii (40,40,10), centered at z=-10, activates
+nearby sampling while retaining the box bounds. The first curved smoke
+recorded 113 near-top hits among 256 actual helper attempts in the air
+case, and passed 24052 guards with zero failures. It remains a diagnostic:
+curvature, finite support and small probe advances still need bounds.
+The original flat failure stays recorded in DL-52; curved activity does
+not close that defect or prove exact material equality.
