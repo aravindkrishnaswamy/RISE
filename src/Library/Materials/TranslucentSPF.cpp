@@ -212,6 +212,17 @@ void TranslucentSPF::Scatter(
 					RISEPel p = trans.kray;
 					RISEPel f = front.kray;
 					trans.kray = 0;
+					// `front` is added to `scattered` ONCE, after this whole
+					// if/else block (the exit-ray site below) -- unlike
+					// `trans`, which is (correctly) added once per channel
+					// inside this loop.  So `front.kray` must ACCUMULATE all
+					// three channels here, not get reset to 0 each iteration:
+					// zero it once, before the loop, and only ever assign
+					// (never re-zero) the i'th component inside it.  The
+					// previous per-iteration `front.kray = 0;` left every
+					// channel but the last (i=2) at zero on the exit ray --
+					// the sibling of the entry-loop bug fixed in 74cd56f4.
+					front.kray = 0;
 					Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 					for( int i=0; i<3; i++ ) {
 						rv = GeometricUtilities::Perturb( myonb.w(),
@@ -227,7 +238,6 @@ void TranslucentSPF::Scatter(
 							trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
 							trans.isDelta = false;
 						}
-						front.kray = 0;
 						front.kray[i] = f[i] * (1.0-scat[i]);
 						// Back-scattered ray stays inside this object, no stack change
 						scattered.AddScatteredRay( trans );
