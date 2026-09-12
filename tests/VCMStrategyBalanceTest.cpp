@@ -262,6 +262,10 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	// Fresh libc seed per render; worker scheduling still makes repeats
+	// non-bit-reproducible. Repeat averages must not reuse one seed.
+	static unsigned renderIndex = 0;
+	std::srand(1729u + renderIndex++);
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -379,15 +383,16 @@ static const char* kRasterizerPT =
 	"\tmax_recursion 2\n"
 	"\tsamples 32\n"
 	"\tlum_samples 1\n"
+	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 // VCM with both VC and VM enabled and merge_radius=0 (auto).  This is
@@ -415,10 +420,10 @@ static const char* kRasterizerVCM =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kLightOmni =
@@ -775,15 +780,16 @@ static const char* kRasterizerPT512 =
 	"\tmax_recursion 2\n"
 	"\tsamples 512\n"
 	"\tlum_samples 1\n"
+	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCM512 =
@@ -807,10 +813,10 @@ static const char* kRasterizerVCM512 =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static void TestThinLensStoppedDown()
@@ -1086,10 +1092,10 @@ static const char* kRasterizerPTSubmerged =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_submerged_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCMSubmerged =
@@ -1113,10 +1119,10 @@ static const char* kRasterizerVCMSubmerged =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_submerged_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
@@ -1373,10 +1379,10 @@ static const char* kRasterizerPTCeiling =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_pt_ceiling_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_pt_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerVCMCeiling =
@@ -1400,10 +1406,10 @@ static const char* kRasterizerVCMCeiling =
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/vcm_balance_vcm_ceiling_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/vcm_balance_vcm_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const Tolerances kCeilingTolerances{ 0.08, 0.30, 1.00 };
