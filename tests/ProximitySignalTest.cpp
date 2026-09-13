@@ -3060,6 +3060,95 @@ static void TestInterior( const Fixture& f )
 		Check( !eNested, "(k) DL-34 nested union keeps exactness FALSE" );
 		nested->release();
 
+		// SUPPLEMENTAL POST-FIX COVERAGE (not part of a9f09ff5's red proof).
+		// Unequal radii put the intersection circle away from the midpoint.
+		// The oracle is derived independently from the two sphere equations.
+		Object* unequalA = MakeOperand( new SphereGeometry( Scalar( 3 ) ), Point3( 0, 0, 0 ) );
+		Object* unequalB = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 3, 0, 0 ) );
+		CSGObject* unequal = MakeCsg( CSG_UNION, unequalA, unequalB, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		const Point3 unequalProbe( Scalar( 1.5 ), Scalar( 0 ), Scalar( 0 ) );
+		const Scalar unequalSeamX = ( Scalar( 3 )*Scalar( 3 ) + Scalar( 3 )*Scalar( 3 )
+			- Scalar( 2 )*Scalar( 2 ) ) / ( Scalar( 2 ) * Scalar( 3 ) );
+		const Scalar unequalSeamRho = (Scalar)std::sqrt( Scalar( 3 )*Scalar( 3 ) - unequalSeamX*unequalSeamX );
+		const Scalar unequalDepth = (Scalar)std::sqrt(
+			( unequalSeamX - unequalProbe.x ) * ( unequalSeamX - unequalProbe.x )
+			+ unequalSeamRho * unequalSeamRho );
+		Scalar fUnequal = 0; bool eUnequal = true;
+		const bool gotUnequal = unequal->SignedDistanceLower( unequalProbe, Scalar( 10 ), fUnequal, eUnequal );
+		Check( gotUnequal, "(k) DL-34 supplemental unequal-sphere overlap answers" );
+		const bool finiteUnequal = RISE::IsFiniteDouble( (double)fUnequal );
+		Check( finiteUnequal, "(k) DL-34 supplemental unequal-sphere depth is finite before comparison" );
+		if( gotUnequal && finiteUnequal ) {
+			CheckClose( -fUnequal, unequalDepth, unequalDepth * Scalar( 1e-9 ),
+				"(k) DL-34 supplemental unequal-sphere seam uses its analytic circle" );
+		}
+		Check( !eUnequal, "(k) DL-34 supplemental unequal union keeps exactness FALSE" );
+
+		// The same partial-overlap union at A's centre has an exposed A cap
+		// at radius 3; B does not contain that point.
+		Scalar fUnequalCenter = 0; bool eUnequalCenter = true;
+		const bool gotUnequalCenter = unequal->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 10 ), fUnequalCenter, eUnequalCenter );
+		Check( gotUnequalCenter, "(k) DL-34 supplemental partial-overlap centre answers" );
+		const bool finiteUnequalCenter = RISE::IsFiniteDouble( (double)fUnequalCenter );
+		Check( finiteUnequalCenter, "(k) DL-34 supplemental partial-overlap centre depth is finite before comparison" );
+		if( gotUnequalCenter && finiteUnequalCenter ) {
+			CheckClose( -fUnequalCenter, Scalar( 3 ), Scalar( 3e-9 ),
+				"(k) DL-34 supplemental partial-overlap centre reaches A's exposed cap" );
+		}
+		Check( !eUnequalCenter, "(k) DL-34 supplemental partial-overlap centre keeps exactness FALSE" );
+		unequal->release();
+
+		// External tangency has no overlap volume and retains a zero signed
+		// value at contact, while the internal tangent's union is the large
+		// sphere and has its ordinary centre depth.
+		Object* externalA = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* externalB = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 4, 0, 0 ) );
+		CSGObject* external = MakeCsg( CSG_UNION, externalA, externalB, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fExternal = 0; bool eExternal = true;
+		const bool gotExternal = external->SignedDistanceLower( Point3( 2, 0, 0 ), Scalar( 10 ), fExternal, eExternal );
+		Check( gotExternal, "(k) DL-34 supplemental external tangent answers" );
+		const bool finiteExternal = RISE::IsFiniteDouble( (double)fExternal );
+		Check( finiteExternal, "(k) DL-34 supplemental external tangent is finite before comparison" );
+		if( gotExternal && finiteExternal ) {
+			CheckClose( fExternal, Scalar( 0 ), Scalar( 0 ),
+				"(k) DL-34 supplemental external tangent remains exactly on the union boundary" );
+		}
+		Check( !eExternal, "(k) DL-34 supplemental external tangent keeps exactness FALSE" );
+		external->release();
+
+		Object* internalA = MakeOperand( new SphereGeometry( Scalar( 3 ) ), Point3( 0, 0, 0 ) );
+		Object* internalB = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 2, 0, 0 ) );
+		CSGObject* internal = MakeCsg( CSG_UNION, internalA, internalB, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fInternal = 0; bool eInternal = true;
+		const bool gotInternal = internal->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 10 ), fInternal, eInternal );
+		Check( gotInternal, "(k) DL-34 supplemental internal tangent answers" );
+		const bool finiteInternal = RISE::IsFiniteDouble( (double)fInternal );
+		Check( finiteInternal, "(k) DL-34 supplemental internal tangent is finite before comparison" );
+		if( gotInternal && finiteInternal ) {
+			CheckClose( -fInternal, Scalar( 3 ), Scalar( 3e-9 ),
+				"(k) DL-34 supplemental internal tangent retains the enclosing sphere depth" );
+		}
+		Check( !eInternal, "(k) DL-34 supplemental internal tangent keeps exactness FALSE" );
+		internal->release();
+
+		// A torus is exact but concave: its bounding-box centre lies in the
+		// hole, so it cannot certify an inscribed ball.  A far sphere leaves
+		// the tube-centre oracle entirely to the torus.
+		Object* torus = MakeOperand( new TorusGeometry( Scalar( 1.5 ), Scalar( 0.5 ) ), Point3( 0, 0, 0 ) );
+		Object* farSphere = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 10, 0, 0 ) );
+		CSGObject* concave = MakeCsg( CSG_UNION, torus, farSphere, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fConcave = 0; bool eConcave = true;
+		const bool gotConcave = concave->SignedDistanceLower( Point3( 1.5, 0, 0 ), Scalar( 10 ), fConcave, eConcave );
+		Check( gotConcave, "(k) DL-34 supplemental concave-child union answers" );
+		const bool finiteConcave = RISE::IsFiniteDouble( (double)fConcave );
+		Check( finiteConcave, "(k) DL-34 supplemental concave-child depth is finite before comparison" );
+		if( gotConcave && finiteConcave ) {
+			CheckClose( -fConcave, Scalar( 0.5 ), Scalar( 0.5e-9 ),
+				"(k) DL-34 supplemental non-certifiable torus centre falls back to its tube depth" );
+		}
+		Check( !eConcave, "(k) DL-34 supplemental concave-child union keeps exactness FALSE" );
+		concave->release();
+
 		aRef->release(); bRef->release();
 		u->release();
 	}
