@@ -27,6 +27,9 @@
 //           9.9 gate 3, round 5) — Charlie sheen + Kulla-Conty
 //           product-form base compensation over four substrate shapes
 //           x four sheen roughnesses
+//    54-56. GGX conductor and thin-film conductor controls — the
+//           spec-only physical conductor plus diffuse/specular mixtures
+//           that must remain energy-bounded at every furnace angle
 //
 //  Build (matches existing GGXWhiteFurnaceTest / SPFBSDFConsistencyTest
 //  patterns):
@@ -166,7 +169,8 @@ static RayIntersectionGeometric MakeIntersection( double incomingThetaRad )
 static double DirectionalAlbedo(
 	ISPF& spf,
 	double incomingThetaRad,
-	double* outRejectionRate = 0 )
+	double* outRejectionRate = 0,
+	unsigned int* outInvalidContributions = 0 )
 {
 	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
 	RandomNumberGenerator rng;
@@ -174,8 +178,9 @@ static double DirectionalAlbedo(
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
 
 	const Vector3 normal = ri.onb.w();
-	double sum = 0;
+	RISEPel sum( 0, 0, 0 );
 	int    validSamples = 0;		// samples that produced at least one usable ray
+	unsigned int invalidContributions = 0;
 
 	for( int i = 0; i < FURNACE_SAMPLES; ++i )
 	{
@@ -184,7 +189,7 @@ static double DirectionalAlbedo(
 
 		if( scattered.Count() == 0 ) continue;
 
-		double sampleContrib = 0;
+		RISEPel sampleContrib( 0, 0, 0 );
 		bool   any = false;
 
 		for( unsigned int j = 0; j < scattered.Count(); ++j )
@@ -209,20 +214,27 @@ static double DirectionalAlbedo(
 			// Skip only the reflected-into-substrate hemisphere
 			// (cosWo ≤ 0): those are below-surface paths the
 			// integrator wouldn't propagate.
-			const Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
+			const Vector3 rayDir = scat.ray.Dir();
+			const double dirLength2 = Vector3Ops::Dot( rayDir, rayDir );
+			if( !std::isfinite( rayDir.x ) || !std::isfinite( rayDir.y ) || !std::isfinite( rayDir.z ) ||
+				!std::isfinite( dirLength2 ) || dirLength2 <= 0 ||
+				!std::isfinite( scat.kray[0] ) || !std::isfinite( scat.kray[1] ) || !std::isfinite( scat.kray[2] ) ||
+				scat.kray[0] < 0 || scat.kray[1] < 0 || scat.kray[2] < 0 ) {
+				++invalidContributions;
+				continue;
+			}
+			const Vector3 wo = Vector3Ops::Normalize( rayDir );
 			const double cosO = Vector3Ops::Dot( wo, normal );
 			if( cosO <= 0 ) continue;
 
-			// Max-channel albedo so a per-channel gain stands out
-			// even when the average across channels is OK.  All
-			// inputs in this test are grayscale (R=G=B) so this
-			// equals any single channel.
-			const double kMax = ColorMath::MaxValue( scat.kray );
-			if( kMax >= 0 && kMax < 1e6 )	// guard against NaN / inf
-			{
-				sampleContrib += kMax;
-				any = true;
-			}
+			// Keep every RGB channel through the expectation, then take
+			// max(mean(R), mean(G), mean(B)) below.  Taking max per sample
+			// estimates E[max(R,G,B)] instead, which overstates a coloured
+			// thin-film conductor even when each channel's directional
+			// albedo is bounded.  Finite large values are deliberately NOT
+			// capped: they must drive the energy assertion red, not vanish.
+			sampleContrib += scat.kray;
+			any = true;
 		}
 
 		if( any )
@@ -250,7 +262,11 @@ static double DirectionalAlbedo(
 		*outRejectionRate = ( FURNACE_SAMPLES > 0 )
 			? ( 1.0 - (double)validSamples / (double)FURNACE_SAMPLES ) : 0.0;
 	}
-	return sum / (double)FURNACE_SAMPLES;
+	if( outInvalidContributions ) {
+		*outInvalidContributions = invalidContributions;
+	}
+	const RISEPel mean = sum / (double)FURNACE_SAMPLES;
+	return ColorMath::MaxValue( mean );
 }
 
 // ============================================================
@@ -630,7 +646,8 @@ struct ConfigReport
 	double       tolerance;			// 1.0 ± tolerance is the pass band (kPosturePass only)
 	double       albedo[NUM_THETA];	// per-incident-angle directional albedo
 	double       reject[NUM_THETA] = { 0.0, 0.0, 0.0, 0.0 };	// fraction of Scatter draws that yielded no usable ray
-	bool         passed;			// only meaningful when posture == kPosturePass
+	unsigned int invalid[NUM_THETA] = { 0, 0, 0, 0 };	// rejected before aggregation; any count is a test failure
+	bool         passed;			// energy posture plus mandatory sample-validity guard
 	std::string  note;
 	// kPostureMatchesPrediction only: the analytic prediction to check
 	// r.albedo[i] against, and the absolute tolerance around it.  Left at
@@ -646,7 +663,21 @@ static void Run( ConfigReport& r, ISPF& spf )
 	for( int i = 0; i < NUM_THETA; ++i )
 	{
 		const double rad = THETA_DEG[i] * PI / 180.0;
-		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i] );
+		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i], &r.invalid[i] );
+
+		// An invalid sample must never be silently omitted and then let a
+		// bounded mean look healthy.  Keep the remaining contributions printed
+		// for diagnosis, but fail every posture (including known-energy-loss
+		// measurement rows) before its aggregate can be treated as evidence.
+		// Individual finite contributions can still overflow an RGB sum.
+		// Treat a non-finite aggregate exactly like an invalid sample;
+		// otherwise a comparison with infinity or NaN could become a
+		// vacuous pass under an aggressive floating-point build.
+		if( !std::isfinite( r.albedo[i] ) ) ++r.invalid[i];
+		if( r.invalid[i] != 0 ) {
+			r.passed = false;
+			continue;
+		}
 
 		if( r.posture == kPosturePass )
 		{
@@ -693,10 +724,9 @@ static void Run( ConfigReport& r, ISPF& spf )
 				}
 			}
 		}
-		else	// kPostureKnownFailure: record numbers, don't fail
-		{
-			r.passed = true;
-		}
+		// kPostureKnownFailure records its valid energy numbers without an
+		// energy gate.  It still fails through the mandatory sample-validity
+		// guard above.
 	}
 }
 
@@ -736,11 +766,20 @@ static void PrintReport( const std::vector<ConfigReport>& rs )
 				std::cout << "          ";
 			}
 		}
-		if( r.posture == kPosturePass || r.posture == kPostureBounded || r.posture == kPostureMatchesPrediction ) {
-			std::cout << "  " << ( r.passed ? "PASS" : "FAIL" );
+		{
+			unsigned int invalid = 0;
+			for( int i = 0; i < NUM_THETA; ++i ) invalid += r.invalid[i];
+			if( invalid != 0 ) {
+				std::cout << "  invalid=" << invalid;
+			} else {
+				std::cout << "              ";
+			}
+		}
+		if( r.posture == kPostureKnownFailure && r.passed ) {
+			std::cout << "  KNOWN-FAIL";
 			if( !r.note.empty() ) std::cout << " (" << r.note << ")";
 		} else {
-			std::cout << "  KNOWN-FAIL";
+			std::cout << "  " << ( r.passed ? "PASS" : "FAIL" );
 			if( !r.note.empty() ) std::cout << " (" << r.note << ")";
 		}
 		std::cout << "\n";
@@ -1045,6 +1084,15 @@ int main()
 	// single-material baseline.
 	UniformColorPainter* alpha    = new UniformColorPainter( RISEPel( 0.16, 0.16, 0.16 ) );  alpha->addref();
 	UniformScalarPainter* alphaSc = new UniformScalarPainter( 0.16 );  alphaSc->addref();
+	// A physically valid bare-conductor control: eta=2.5, k=3.0 and no
+	// diffuse lobe.  This exercises eFresnelConductor itself without
+	// inventing a diffuse/specular mixture that cannot conserve energy at
+	// grazing unless the model explicitly composes those lobes.
+	UniformScalarPainter* conductorIor = new UniformScalarPainter( 2.5 );
+	UniformScalarPainter* conductorExt = new UniformScalarPainter( 3.0 );
+	UniformScalarPainter* filmIor = new UniformScalarPainter( 1.5 );
+	UniformScalarPainter* filmExt = new UniformScalarPainter( 0.0 );
+	UniformScalarPainter* filmThickness = new UniformScalarPainter( 350.0 );
 
 	// Sheen roughness in the middle of the legal [0, 1] range.
 	// Charlie distribution's energy loss at grazing depends on
@@ -1219,6 +1267,13 @@ int main()
 	GGXMaterial* redGgxMat = new GGXMaterial(
 		*redDiff, *dielF0, *alphaSc, *alphaSc, *iorSc, *zeroSc, eFresnelSchlickF0 );
 	redGgxMat->addref();
+	GGXMaterial* bareConductorMat = new GGXMaterial(
+		*zero, *one, *alphaSc, *alphaSc, *conductorIor, *conductorExt, eFresnelConductor );
+	GGXMaterial* mixedConductorMat = new GGXMaterial(
+		*one, *one, *alphaSc, *alphaSc, *conductorIor, *conductorExt, eFresnelConductor );
+	GGXMaterial* mixedThinFilmConductorMat = new GGXMaterial(
+		*one, *one, *alphaSc, *alphaSc, *conductorIor, *conductorExt,
+		eFresnelThinFilmConductor, nullptr, filmIor, filmExt, filmThickness );
 
 	// Coat parameter painters.  Water is 7.2's 1.33 / roughness
 	// 0.01-0.05; the varnish/clearcoat case is 1.5.  Coat absorption and
@@ -1775,18 +1830,17 @@ int main()
 	//
 	// A_base is the energy that actually comes back off the substrate;
 	// R_hemi is what the recycling series geometrically amplifies.
-	// kPostureKnownFailure, not Bounded: this row goes OVER UNITY at
-	// grazing (1.1573 at 80 deg).  That is GGX's own pre-existing
-	// behaviour with a low F0 -- Schlick's grazing Fresnel rising to
-	// ~1 on top of a diffuse weight of (1 - maxF0) = 0.96, plus the
-	// Kulla-Conty multiscatter tail -- and it is visible here only
-	// because this reference row measures the BARE substrate.  It is
-	// not introduced by, and not fixable from, `coated_material`; the
-	// coated row above it (config 14) does not inherit the gain.
-	// Recorded rather than gated so the number stays in front of
-	// whoever next looks at GGX energy at grazing.
-	{ ConfigReport& r = add( "17. White GGX-PBR base alone (ref for #14)", kPostureKnownFailure, 0.0,
-	    "reference row: A_base(theta) for config 14's analytic check; over-unity at grazing is GGX's own low-F0 behaviour" );
+	// DL-37's direct regression gate.  This used to record a low-F0
+	// Schlick gain at grazing as kPostureKnownFailure.  It now requires
+	// only the physical conservation bound at EVERY angle: loss remains
+	// observable in the printed reference curve, while rho > 1 + 0.05
+	// fails.  The 5% allowance is the pre-existing GGX furnace band
+	// (config 1), not a tolerance added for this repair; it exceeds the
+	// 100k-sample uncertainty while still rejects the recorded grazing
+	// gain.  Do not replace this with rho == 1: the row is a bare GGX
+	// reference whose legitimate single-scattering loss is not a defect.
+	{ ConfigReport& r = add( "17. White GGX-PBR base alone (ref for #14)", kPostureBounded, 0.05,
+	    "DL-37: bare low-F0 Schlick GGX must satisfy rho <= 1.05 at every furnace angle; its measured loss remains a reference for #14" );
 	  Run( r, *whiteGgxMat->GetSPF() ); }
 
 	{ ConfigReport& r = add( "18. Red GGX-PBR base alone (ref for #15)", kPostureBounded, 0.06,
@@ -1848,10 +1902,9 @@ int main()
 	//    same Monte-Carlo driver, and the fabric row is then required to
 	//    equal an analytic function of it.  It is the honest statement
 	//    of "the fabric layer neither adds nor removes energy over the
-	//    substrate's own posture" -- Oren-Nayar loses energy by its own
-	//    design and GGX-PBR gains at grazing pre-existingly (config 17
-	//    records the bare white GGX-PBR at 1.1555 at theta = 80), and
-	//    this form inherits exactly those and nothing more.
+	//    substrate's own posture" -- Oren-Nayar can lose energy by its
+	//    own design, and this form inherits exactly that measured
+	//    substrate posture and nothing more.
 	//
 	//    eps is 0.01, set from the combined MC noise of the two
 	//    independent 100k-sample estimates this check compares (the
@@ -1895,9 +1948,8 @@ int main()
 	    "high at roughness 1), which is why this is Bounded and not Pass" );
 	  Run( r, *whiteOnMat->GetSPF() ); }
 
-	{ ConfigReport& r = add( "20. White aniso GGX + F0=0.04 alone (ref for 33-36)", kPostureKnownFailure, 0.0,
-	    "reference row: rho_substrate(theta) for the anisotropic fabric rows.  Over-unity at "
-	    "grazing is GGX's own low-F0 behaviour -- same disposition as config 17" );
+	{ ConfigReport& r = add( "20. White aniso GGX + F0=0.04 alone (ref for 33-36)", kPostureBounded, 0.05,
+	    "DL-37 anisotropic twin: rho_substrate(theta) must satisfy rho <= 1.05 at every angle before the fabric rows may use it as their reference" );
 	  Run( r, *anisoGgxMat->GetSPF() ); }
 
 	struct FabricShape { const char* label; IMaterial* base; IScalarPainter* weave; bool lambertian; };
@@ -2848,6 +2900,42 @@ int main()
 		safe_release( sheerAlpha );
 	}
 
+	// ================================================================
+	// 54-56. Bare GGX conductor-family energy controls -- DL-37 scope.
+	//
+	// Config 54 is the physically ordinary conductor: a white-tinted
+	// metallic lobe with eta=2.5, k=3.0 and no diffuse base.  Configs 55
+	// and 56 exercise the exposed additive diffuse+specular combinations
+	// in conductor and thin-film-conductor modes.  Their inputs are white;
+	// the film makes row 56 chromatic, so the estimator takes the maximum
+	// only AFTER averaging channels and each channel's gain remains visible.
+	// Each must be energy-bounded just like the low-F0 Schlick rows above.
+	// The thin film is a valid transparent n=1.5, 350 nm oxide over the
+	// same absorbing substrate, not an air-film equivalence trick.
+	//
+	// These are intentionally bounds, not equality-to-one checks.  A
+	// rough conductor can lose energy in its single-scattering lobe; the
+	// contract is that no public Fresnel mode can create energy.  The
+	// intended mixed-lobe law is the reciprocal single-pass diffuse term
+	// c/pi * (1-A_i) * (1-A_o), where A is the active mode's tinted macro
+	// interface Fresnel (componentwise in RGB); it integrates to
+	// c*(1-A_o)*(1-A_avg).  The rough-GGX specular term remains separate,
+	// and no diffuse recycling is implied.  This furnace only guards the
+	// resulting energy bound, not an unproved exact-energy theorem.  The
+	// 5% band is the existing GGX furnace allowance used by configs 1, 17,
+	// and 20, and all four angle columns are checked.
+	{ ConfigReport& r = add( "54. Bare GGX conductor -- zero diffuse, white specular", kPostureBounded, 0.05,
+	    "DL-37 conductor control: physical specular-only eta=2.5, k=3.0 surface must satisfy rho <= 1.05 at every angle" );
+	  Run( r, *bareConductorMat->GetSPF() ); }
+
+	{ ConfigReport& r = add( "55. GGX conductor -- white diffuse + white specular", kPostureBounded, 0.05,
+	    "DL-37 conductor mixed-lobe regression: exposed diffuse+specular composition must satisfy rho <= 1.05 at every angle" );
+	  Run( r, *mixedConductorMat->GetSPF() ); }
+
+	{ ConfigReport& r = add( "56. GGX thin-film conductor -- white diffuse + white specular", kPostureBounded, 0.05,
+	    "DL-37 thin-film mixed-lobe regression: transparent oxide over the same conductor must satisfy rho <= 1.05 at every angle" );
+	  Run( r, *mixedThinFilmConductorMat->GetSPF() ); }
+
 	PrintReport( reports );
 
 	// Tally pass/fail across the suite.
@@ -2884,6 +2972,9 @@ int main()
 	safe_release( sCoatRough );
 	safe_release( sCoatHalf );
 	safe_release( sCoatFull );
+	safe_release( mixedThinFilmConductorMat );
+	safe_release( mixedConductorMat );
+	safe_release( bareConductorMat );
 	safe_release( redGgxMat );
 	safe_release( whiteGgxMat );
 	safe_release( whiteLambMat );
@@ -2903,6 +2994,11 @@ int main()
 	safe_release( ggxPBR );
 	safe_release( lambertian );
 	safe_release( sheenR );
+	safe_release( filmThickness );
+	safe_release( filmExt );
+	safe_release( filmIor );
+	safe_release( conductorExt );
+	safe_release( conductorIor );
 	safe_release( alpha );
 	safe_release( dielF0 );
 	safe_release( redDiff );

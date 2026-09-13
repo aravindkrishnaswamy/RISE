@@ -77,6 +77,22 @@ Useful filename families:
 CLI diagnostics and data-processing programs that require file arguments live
 under `tools/`; they are not assertion-based `run_all_tests` executables.
 
+## Layered Material White Furnace
+
+`LayeredWhiteFurnaceTest` samples each direct directional-albedo row at 100,000
+draws for every incident angle (0°, 30°, 60°, and 80°). These rows use the
+whole sample count, report rejected draws, average each RGB channel before
+taking the maximum channel mean, and fail when a scattered ray has an invalid
+(non-finite, zero-length, or negative-throughput) contribution, or its
+aggregate overflows, before the mean is used as evidence.
+
+DL-37 makes the low-F0 Schlick rows 17 and 20 energy-bounded at all four
+angles (`rho <= 1.05`; loss is allowed), retaining their measured curves as
+inputs to the coated and fabric reference checks. Rows 54–56 extend that
+bound to a specular-only physical conductor, a white diffuse-plus-specular
+conductor, and the corresponding transparent-oxide thin-film conductor. The
+last two are public mixed-lobe regressions, not known-failure exemptions.
+
 ## Style Of Test Used Here
 
 - Each file is an executable with its own `main`.
