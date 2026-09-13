@@ -143,8 +143,8 @@ do not execute old phase lists blindly.
   (closes the BDPT/VCM/MLT geometry-signal neutral-read gap,
   GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 11)
 - correctness-debt closures: [DL56_GRAZING_FRESNEL.md](DL56_GRAZING_FRESNEL.md)
-  records the shared grazing dielectric-Fresnel repair and its remaining
-  separate extreme-grazing classification scope; [DL57_RANDOM_WALK_DENSITY_CUTOFF.md](DL57_RANDOM_WALK_DENSITY_CUTOFF.md)
+  records the shared grazing dielectric-Fresnel repair and the distinct
+  classification scope subsequently closed by DL-58; [DL57_RANDOM_WALK_DENSITY_CUTOFF.md](DL57_RANDOM_WALK_DENSITY_CUTOFF.md)
   records the finite-positive random-walk collision-density guard repair;
   [DL58_MATCHED_INDEX_GRAZING.md](DL58_MATCHED_INDEX_GRAZING.md) records the
   subsequent matched-index Snell/Fresnel and SMS derivative repair

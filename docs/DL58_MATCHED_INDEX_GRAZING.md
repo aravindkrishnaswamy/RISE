@@ -134,5 +134,26 @@ closure edits retain the compiled source and executable test inputs.
 | `tests/README.md` | Modified in this slice. |
 
 No Library source files were added or removed; the five explicit build-project
-source lists require no change. No new residual was opened. Ledger at closure:
-57 main rows, 44 open and 13 closed by cleanup.
+source lists require no change. One independent residual, DL-59, was opened during review. Ledger at closure:
+58 main rows, 45 open and 13 closed by cleanup.
+
+## Remaining unequal-index derivative convention (DL-59)
+
+OPEN-confirmed by source and scalar recomputation; executed red-proof pending.
+`ManifoldSolver::ComputeSpecularDirectionDerivativeWrtNormal` still uses `eta`
+directly for unequal indices, whereas `ComputeSpecularDirection` uses `1/eta`
+on entry and flips the normal on exit. At `wi=n=(0,0,1)`, `eta=1.5`, the
+raw tangential derivative `dwo.x/dn.x` is `0.5`; the direction formula gives
+`1/1.5-1 = -0.33333333333333337`. Output normalization does not remove this
+tangential discrepancy.
+
+This convention defect is independent of the matched-index cancellation
+repaired here. `BuildJacobianAngleDiff` consumes the derivative, but that
+angle-difference family is test-only; production `Solve` uses the half-vector
+Jacobian. Existing normal-derivative finite-difference tests are disabled.
+DL-59 is S / physics-bias / latent (test-only analytical Jacobian). Its recipe
+requires entering/exiting normal and oblique cases, unit-normal tangent
+perturbations, the normalized-output derivative correction, and curved
+angle-difference analytical/numerical Jacobian checks. It must also correct
+the stale helper comment that says it is entirely unused. No production
+render effect has been demonstrated.
