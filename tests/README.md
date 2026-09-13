@@ -248,3 +248,4 @@ The guiding alpha is adaptively scaled using a variance-aware approach inspired 
 - If a feature is user-visible and deterministically testable, it usually deserves both.
 
 - `MatchedIndexGrazingConsumerTest`: matched-index grazing SSS RGB/NM smooth exit and rough BSDF/SPF consumers (DL-58).
+- `GrazingFresnelThroughputTest`: matched-index SMS throughput/direction and weave surface albedo consumers (DL-58).
