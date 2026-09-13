@@ -893,11 +893,9 @@ bool ManifoldSolver::ComputeSpecularDirection(
 //
 //   Computes the 3x3 Jacobian d(wo)/d(n), stored row-major.
 //
-//   Currently unused: the half-vector Jacobian (BuildJacobian)
-//   captures surface curvature via the Weingarten map (ds/du from
-//   dndu/dndv) without needing this derivative.  It would be needed
-//   for an analytical Jacobian of the angle-difference constraint,
-//   which explicitly computes d(wo_specular)/d(n) in its chain rule.
+//   Used by the test-only angle-difference Jacobian. The production
+//   half-vector Jacobian (BuildJacobian) captures surface curvature
+//   via the Weingarten map without calling this derivative.
 //
 //   NOTE: this derivative assumes unnormalized wo (the raw output
 //   of ComputeSpecularDirection before normalization).  If used with
@@ -939,26 +937,23 @@ void ManifoldSolver::ComputeSpecularDirectionDerivativeWrtNormal(
 			for( unsigned int i=0; i<9; ++i ) dwo_dn[i] = 0.0;
 			return;
 		}
-		// Refraction: wo = -eta*wi + mu*n  where mu = eta*cos_i - cos_t
-		// cos_i = dot(wi, n), cos_t = sqrt(1 - eta^2*(1-cos_i^2))
-		const Scalar cos_i = Vector3Ops::Dot( wi, normal );
-		const Scalar sin2_t = eta * eta * (1.0 - cos_i * cos_i);
-
+		// Match ComputeSpecularDirection: orient the normal toward wi and
+		// use the incoming/transmitted ratio for that side of the interface.
+		const Scalar signedCos = Vector3Ops::Dot( wi, normal );
+		const Scalar side = signedCos < 0.0 ? -1.0 : 1.0;
+		const Scalar ratio = side < 0.0 ? eta : 1.0 / eta;
+		const Scalar cos_i = fabs(signedCos);
 		Scalar cos_t = 0.0;
-		if( sin2_t < 1.0 ) {
-			cos_t = sqrt( 1.0 - sin2_t );
-		}
-		if( cos_t < NEARZERO ) {
-			cos_t = NEARZERO;
-		}
+		Optics::CalculateRefractedCosine( cos_i, ratio, 1.0, cos_t );
+		// Retain the existing finite regularization at the critical boundary.
+		// Callers classify TIR using the direction function before using this.
+		if( cos_t < NEARZERO ) cos_t = NEARZERO;
 
-		const Scalar mu = eta * cos_i - cos_t;
-
-		// d(mu)/d(n_j) = eta * wi_j * (1 - eta * cos_i / cos_t)
-		// d(wo_i)/d(n_j) = d(mu)/d(n_j) * n_i + mu * delta_ij
-		// = eta * wi_j * (1 - eta*cos_i/cos_t) * n_i + mu * delta_ij
-
-		const Scalar factor = eta * (1.0 - eta * cos_i / cos_t);
+		// rawWo = -ratio*wi + (ratio*cos_i-cos_t)*(side*normal).
+		// Differentiating with respect to the ORIGINAL normal puts side
+		// on the identity term; its two factors cancel in the outer product.
+		const Scalar mu = side * (ratio * cos_i - cos_t);
+		const Scalar factor = ratio * (1.0 - ratio * cos_i / cos_t);
 
 		// Row 0
 		dwo_dn[0] = factor * wi.x * normal.x + mu;
