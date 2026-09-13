@@ -35,8 +35,6 @@ namespace
 		explicit TestableSolver( const ManifoldSolverConfig& config ) : ManifoldSolver(config) {}
 		using ManifoldSolver::ComputeSpecularDirection;
 		using ManifoldSolver::ComputeSpecularDirectionDerivativeWrtNormal;
-		using ManifoldSolver::ComputeSpecularDirection;
-		using ManifoldSolver::ComputeSpecularDirectionDerivativeWrtNormal;
 	};
 
 	void Check( const bool condition, const char* const label )
