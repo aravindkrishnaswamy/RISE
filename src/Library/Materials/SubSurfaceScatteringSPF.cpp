@@ -240,13 +240,16 @@ void SubSurfaceScatteringSPF::Scatter(
 		}
 
 		//
-		// Back face hit (from inside): should not normally occur
-		// with BSSRDF (no volumetric random walk), but handle
-		// gracefully for BDPT light subpaths that may enter the
-		// medium from behind.  Emit delta Fresnel reflection.
+		// Standalone non-absorbing fallback: emit delta reflection and
+		// exit refraction. Shipped SSS materials return above instead;
+		// their subsurface transport is handled by the integrator.
 		//
 
-		const Scalar Nt = ior_stack.top();
+		// Exit optics and the transmitted ray must describe the same
+		// post-pop medium. Reflection retains the original stack.
+		IORStack exitStack( ior_stack );
+		exitStack.pop();
+		const Scalar Nt = exitStack.top();
 
 		Vector3 refracted = ri.ray.Dir();
 		Scalar R;
@@ -309,8 +312,7 @@ void SubSurfaceScatteringSPF::Scatter(
 			exitRay.ray = Ray( ri.ptIntersection, refracted );
 			exitRay.kray = RISEPel( 1.0-R, 1.0-R, 1.0-R );
 
-			exitRay.ior_stack = new IORStack( ior_stack );
-			exitRay.ior_stack->pop();
+			exitRay.ior_stack = new IORStack( exitStack );
 			GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 			scattered.AddScatteredRay( exitRay );
@@ -454,7 +456,11 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		// Back face hit (from inside): delta reflection + exit refraction
 		//
 
-		const Scalar Nt = ior_stack.top();
+		// Exit optics and the transmitted ray must describe the same
+		// post-pop medium. Reflection retains the original stack.
+		IORStack exitStack( ior_stack );
+		exitStack.pop();
+		const Scalar Nt = exitStack.top();
 
 		Vector3 refracted = ri.ray.Dir();
 		Scalar R;
@@ -509,8 +515,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			exitRay.ray = Ray( ri.ptIntersection, refracted );
 			exitRay.krayNM = 1.0 - R;
 
-			exitRay.ior_stack = new IORStack( ior_stack );
-			exitRay.ior_stack->pop();
+			exitRay.ior_stack = new IORStack( exitStack );
 			GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 			scattered.AddScatteredRay( exitRay );
