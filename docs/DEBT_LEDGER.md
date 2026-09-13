@@ -53,7 +53,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | ~~DL-34~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~Published two-sphere union overlap exports only the deeper operand depth~~ | CLOSED 2026-09-12 (recorded regression; conservative contract retained) | `cffa254f`: unchanged ProximitySignalTest red `Passed: 465   Failed: 6`, fixed `Passed: 471   Failed: 0`; supplemental final `Passed: 491   Failed: 0`. Certified inscribed-ball union recovers `sqrt(3.56)` through signed field, manager and interior signal. The original proposed max-depth edit was already the existing signed-min magnitude; arbitrary unions remain non-exact. See [closure and limits](DL34_UNION_INTERIOR_DEPTH.md). | M | physics-bias | user-visible (published union seam regression) |
-| DL-37 | IMPROVEMENTS.md "GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned" | `ggx_material` in `eFresnelSchlickF0` mode goes over unity at grazing incidence (ρ = 1.1573 at 80°) because the glTF diffuse-energy split weights the diffuse lobe by the angle-flat `1 − max(F0)` while the Schlick specular term it is meant to complement rises toward 1 as `cos θ → 0` | OPEN-confirmed | `tests/LayeredWhiteFurnaceTest.cpp:1788-1789` (config 17, "White GGX-PBR base alone", `kPostureKnownFailure`) measures ρ = {0.9988, 0.9994, 1.0251, 1.1573} at θ = {0°,30°,60°,80°}; mechanism read directly in `GGXBRDF::albedo` (`GGXBRDF.cpp:514-520`: `diffColor * max(0, 1 − maxF0) + F(θ)`, doc comment at 508-513 stating the Schlick branch evaluates Fresnel at the actual outgoing cosine while diffuse keeps the constant glTF split) and reproduced at sample time in `GGXSPF::Scatter`/`ScatterNM` (`GGXSPF.cpp:216-219`, six analogous sites at 214/260/364/500/545/638) and `GGXBRDF::value`/`valueNM` (nine analogous sites at 209/276/330/399/451/490/514/595/638) — same `1 − maxF0` constant used at every one, confirmed this sweep | M | physics-bias | user-visible (low-F0 GGX at grazing incidence) |
+| ~~DL-37~~ | ~~IMPROVEMENTS.md: GGX low-F0 grazing gain~~ | ~~Angle-flat diffuse split creates grazing gain~~ | CLOSED 2026-09-12 | `000df0b4`: LayeredWhiteFurnaceTest reports `0 of 57 configurations failed` (red: four failed configs). Reciprocal entry/exit transmission covers RGB/NM Schlick, conductor and film. Independent sweep: 150/46 before, 150/3 after; retained specular-only failures are DL-63. See [scope](DL37_GGX_DIFFUSE_TRANSMISSION.md). | M | physics-bias | user-visible |
 | DL-42 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation | OPEN-confirmed (static evidence; red-proof pending) | `PathTracingIntegrator.cpp` initializes `scatterThroughput = kray/selectProb`, then the trained-guiding BSDF branch replaces it with `kray*pdf/combinedPdf` without selectProb. Shared RGB/NM loop; ordinary mixed-lobe entry reflection is reachable. | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
 | DL-43 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | BDPT eye guiding swaps incoming/outgoing directions when evaluating forward candidate PDFs | OPEN-confirmed (static evidence; red-proof pending) | `BDPTIntegrator.cpp` eye RIS and one-sample guide candidates pass `(gDir,-currentRay.Dir())` to `PathValueOps::EvalPdfAtVertex`; its contract is Pdf(outgoing given incoming). Light twins pass `(-currentRay.Dir(),gDir)`. Both RGB/NM instantiate the eye code. | M | physics-bias | user-visible (BDPT eye path guiding) |
 | DL-39 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: independent residuals | Dedicated translucent photon deposition counts absorbed power as deposited power | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentPelPhotonTracer::TracePhoton` sums only propagated non-diffuse `kray`, then stores `power*(1-accum_scattered)`; at an inside exit with scattering zero it stores all power regardless of extinction. `TranslucentPelPhotonMap::RadianceEstimate` does not restore the missing Beer attenuation. | M | physics-bias | user-visible (translucent photon maps) |
@@ -180,18 +180,19 @@ reflowed otherwise.
 ## Counts
 
 Updated for the 2026-09-12 DL-34 recorded-overlap closure and independent
-DL-60/DL-61 gate residuals, plus the DL-37 audit's independent DL-62/DL-63/DL-64 residuals. Original sweep counts remain historical.
+DL-60/DL-61 gate residuals, plus the DL-37 diffuse-composition closure and independent DL-62/DL-63/DL-64 residuals. Original sweep counts remain historical.
 
-- Main rows: **63** — **48 open**, **15 closed**.
-- OPEN-confirmed: **48**, including the two reproduced baseline gate residuals
+- Main rows: **63** — **47 open**, **16 closed**.
+- OPEN-confirmed: **47**, including the two reproduced baseline gate residuals
   DL-60/DL-61. DL-35 remains deliberately absent.
-- CLOSED-by-cleanup: **15** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+- CLOSED-by-cleanup: **16** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin; DL-03, `8a9bdb18`;
   DL-04, `1b705ce1`, convention pin; DL-48, `12a7ef3e`;
   DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`;
   DL-55, `cba4e88c`; DL-56, `df7e3dad`; DL-57, `c187f2cc`;
   DL-58, `1b1909c0` / `ed8d9c94`; DL-59, `a0c4a808`;
-  DL-34, `cffa254f`, published overlap regression with conservative bounds retained).
+  DL-34, `cffa254f`, published overlap regression with conservative bounds retained;
+  DL-37, `000df0b4`, diffuse composition with DL-63 specular failures retained).
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -554,28 +555,7 @@ retain-and-pin option; the unchanged implementation passed, so no red
 physics failure or corrected signal discontinuity is claimed. See
 [fixture, limits and audit](DL36_EMITTER_NEIGHBOUR_PIN.md).
 
-**DL-37 (GGX low-F0 grazing gain).** Flip `tests/LayeredWhiteFurnaceTest.cpp`
-config 17's posture from `kPostureKnownFailure` (1788) to an expected-pass
-posture (`kPosturePass` or `kPostureMatchesPrediction`) asserting ρ <= 1 +
-tolerance at every one of the four angles, not just the three that already
-pass. State the physically right weighting before flipping it — two
-candidates, both already precedented elsewhere in this file: (a) a
-per-angle Fresnel-weighted diffuse term `1 − F(θ)` in place of the
-angle-flat `1 − max(F0)`, applied at every one of the fifteen call sites
-DL-37's evidence lists (six in `GGXSPF.cpp`, nine in `GGXBRDF.cpp`); or (b)
-a Kulla-Conty-style product-law compensation, matching the pattern
-`FabricBRDF.h:204-206` already uses to blend a reflect and a transmit arm
-by directional albedo (`scale(l,v) = (1 − m·Ehat(a,|n·v|))·(1 −
-m·Ehat(a,|n·l|)) / (1 − m·EhatMean(a))`) rather than a constant subtraction
-— the same shape would make the diffuse weight fall off toward grazing
-instead of staying pinned at 0.96 while the specular term rises under it.
-Either fix must be extended to the conductor-mode bare row IMPROVEMENTS.md's
-"Scope note" flags as unmeasured (add a config 17-shaped conductor case to
-the same test) before this row closes, since a fix scoped to
-`eFresnelSchlickF0` alone would leave that row unverified. Re-measure
-config 20 (the anisotropic GGX twin, which shares the same disposition per
-its own comment at 1898-1900) at the same time — a fix that doesn't move it
-too is incomplete.
+**DL-37 (GGX low-F0 grazing gain).** Closed by the reciprocal single-pass entry/exit model in [DL-37 evidence](DL37_GGX_DIFFUSE_TRANSMISSION.md). Configs 17/20 now bound all four angles, and mixed conductor/film siblings are bounded too. The original fifteen-site inventory was wrong: seven constant-split formulas existed. One-angle attenuation would violate reciprocity; normalized macro-interface recycling would not prove rough-GGX conservation. The chosen model permits loss. Separate specular-only controls exposed DL-63; their original bound and nonzero exit remain.
 
 **DL-38 (translucent stateful BSDF/HWSS repricing).** Add
 `tests/TranslucentTransportWeightTest.cpp` with an inside exit at uniform
