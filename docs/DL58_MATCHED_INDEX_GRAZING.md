@@ -1,8 +1,9 @@
 # DL-58: matched-index extreme-grazing classification
 
 CLOSED 2026-09-12 — repair `1b1909c0`, fibre compatibility refinement `ed8d9c94`.
-The standalone completion report will record independent final review and
-isolated merged-master verification after integration.
+Outstanding integration requirements: finish independent final review, merge,
+verify the merged tree in an isolated worktree, and export the standalone
+completion report with the retained evidence.
 
 DL-58 covers a false total-internal-reflection family at extreme grazing
 incidence. At equal indices, transmission remains physically valid at every
@@ -108,9 +109,10 @@ The three new suites report:
 Clean Xcode validation also passed at that source state with zero compiler
 warnings; four environment notices (three local OIDN paths and one AppIntents
 metadata notice) are retained in the evidence. No full-suite runner was used.
-The standalone completion report will include all gate output verbatim, final
-review rounds and isolated merged-master verification. Documentation-only
-closure edits retain the compiled source and executable test inputs.
+The remaining integration/report requirements above include retaining all
+gate output verbatim, review rounds and isolated merged-master verification.
+Documentation-only closure edits retain compiled source and executable test
+inputs.
 
 | File | Status |
 |---|---|

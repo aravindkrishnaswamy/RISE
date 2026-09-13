@@ -63,7 +63,11 @@ the corrected weave fixture and the preserved fibre golden contract.
 The retained audit selects 26 gates across 54 clean-build/link/run stages.
 At source repair `df7e3dad`, the clean Xcode audit succeeded with zero
 compiler warnings. Its four notices were three missing local OIDN search-path
-lines and one AppIntents metadata notice. The branch completed all 54 selected stages at `df7e3dad`; subsequent changes are documentation only. The standalone completion report will also record the isolated merged-master validation.
+lines and one AppIntents metadata notice. The historical DL-56 branch completed all 54 selected stages at `df7e3dad`;
+subsequent edits within that DL-56 closure pass were documentation only.
+Later debt slices, including DL-58, modify production code independently.
+The DL-56 standalone completion report records its isolated merged-master
+validation.
 
 | File | Status |
 |---|---|
