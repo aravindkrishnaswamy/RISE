@@ -246,3 +246,5 @@ The guiding alpha is adaptively scaled using a variance-aware approach inspired 
 - Use `scenes/FeatureBased/` for curated showcase and torture scenes.
 - Use `scenes/Tests/` for isolated regression, comparison, and image-validation scenes.
 - If a feature is user-visible and deterministically testable, it usually deserves both.
+
+- `MatchedIndexGrazingConsumerTest`: matched-index grazing SSS RGB/NM smooth exit and rough BSDF/SPF consumers (DL-58).
