@@ -206,6 +206,10 @@ namespace RISE
 				eta = 1 / eta;
 				cosThetaI = -cosThetaI;
 			}
+			// Equal media have no boundary, including at exact grazing. Keep
+			// the unequal-index arithmetic below bit-identical for the fibre
+			// golden contract (HairBSDFTest group 15a).
+			if( eta == 1.0 ) return 0.0;
 			const Scalar sin2ThetaT = ( 1 - Sqr( cosThetaI ) ) / Sqr( eta );
 			if( sin2ThetaT >= 1 ) {
 				return 1;			// total internal reflection

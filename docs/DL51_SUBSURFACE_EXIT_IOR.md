@@ -110,6 +110,6 @@ changed from `Checks: 128  Failures: 20` on the unfixed library to `Checks:
 338  Failures: 0`. It is independent of this record's post-pop destination
 repair. See [the DL-56 closure](DL56_GRAZING_FRESNEL.md).
 
-The still-separate DL-58 group concerns pre-Fresnel Snell/TIR classification
-under extreme matched-index grazing cancellation; DL-56 did not modify Snell
-classification.
+The separate DL-58 pre-Fresnel Snell/TIR classification group was subsequently
+closed by `1b1909c0` / `ed8d9c94`; see [DL-58 closure](DL58_MATCHED_INDEX_GRAZING.md).
+DL-56 itself did not modify Snell classification.

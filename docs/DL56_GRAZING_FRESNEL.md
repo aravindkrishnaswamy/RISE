@@ -38,7 +38,7 @@ real RGB/NM `DielectricSPF` paths and real RGB/NM standalone non-absorbing
 `SubSurfaceScatteringSPF` exits from a synthetic intersection. This proves
 the shared helper retains transmission without adding a rendered fixture.
 
-## Scope and remaining classification work
+## Scope
 
 The shared helper serves DielectricSPF, PerfectRefractorSPF,
 SubSurfaceScatteringSPF, PolishedSPF, BioSpecSkinSPFHelpers, RandomWalkSSS,
@@ -47,22 +47,27 @@ forward their base SPF results; SMS photon paths consume SPF lobes. CoatedLayer 
 optics. No interfaces, stack behavior, eta scaling, or integrator MIS formula
 changed.
 
-DL-58 remains a distinct false-TIR/cancellation group, before Fresnel is
-evaluated: `Optics::CalculateRefractedRay`, `FibreLobeMath::FrDielectric`,
-the `SubSurfaceScatteringBSDF` and `SubSurfaceScatteringSPF` cosine helpers,
-and `ManifoldSolver::ComputeDielectricFresnel`. The static recomputation
-records matched-index cosI=`1e-7` with
-`k=9.992007221626409e-15`, rejected by the `<1e-12` cutoff, and cosI=`1e-9`
-where sinT2 rounds to `1` and reports TIR although physical reflectance is
-`0`. Those are Snell/TIR classification failures, not the DL-56 Fresnel
-quotient bug, and this closure does not claim them fixed.
+### ~~Remaining classification work (DL-58)~~
+
+CLOSED 2026-09-12 — `1b1909c0` / `ed8d9c94`.
+`GrazingSnellFresnelTest` reports `Checks: 38  Failures: 0`,
+`MatchedIndexGrazingConsumerTest` reports `Checks: 60  Failures: 0`, and
+`GrazingFresnelThroughputTest` reports `Checks: 44  Failures: 0`.
+This later repair covers the pre-Fresnel matched-index Snell/cosine-helper
+classification and SMS derivative identities. The DL-56 quotient repair above
+remains unchanged. See [DL-58 closure](DL58_MATCHED_INDEX_GRAZING.md), including
+the corrected weave fixture and the preserved fibre golden contract.
 
 ## Validation and file status
 
 The retained audit selects 26 gates across 54 clean-build/link/run stages.
 At source repair `df7e3dad`, the clean Xcode audit succeeded with zero
 compiler warnings. Its four notices were three missing local OIDN search-path
-lines and one AppIntents metadata notice. The branch completed all 54 selected stages at `df7e3dad`; subsequent changes are documentation only. The standalone completion report will also record the isolated merged-master validation.
+lines and one AppIntents metadata notice. The historical DL-56 branch completed all 54 selected stages at `df7e3dad`;
+subsequent edits within that DL-56 closure pass were documentation only.
+Later debt slices, including DL-58, modify production code independently.
+The DL-56 standalone completion report records its isolated merged-master
+validation.
 
 | File | Status |
 |---|---|

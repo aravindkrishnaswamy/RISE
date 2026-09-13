@@ -873,15 +873,8 @@ bool ManifoldSolver::ComputeSpecularDirection(
 			eta_ratio = eta;  // glass → air: n_glass / n_air
 		}
 
-		const Scalar sin2_t = eta_ratio * eta_ratio * (1.0 - ci * ci);
-
-		if( sin2_t > 1.0 )
-		{
-			// Total internal reflection
-			return false;
-		}
-
-		const Scalar cos_t = sqrt( 1.0 - sin2_t );
+		Scalar cos_t;
+		if( !Optics::CalculateRefractedCosine( ci, eta_ratio, 1.0, cos_t ) ) return false;
 
 		// Refracted direction: wt = -eta_ratio * wi + (eta_ratio * ci - cos_t) * n
 		// This gives a direction pointing away from the surface on the transmitted side
@@ -941,6 +934,11 @@ void ManifoldSolver::ComputeSpecularDirectionDerivativeWrtNormal(
 	}
 	else
 	{
+		// With no index boundary, transmission is independent of the normal.
+		if( eta == 1.0 ) {
+			for( unsigned int i=0; i<9; ++i ) dwo_dn[i] = 0.0;
+			return;
+		}
 		// Refraction: wo = -eta*wi + mu*n  where mu = eta*cos_i - cos_t
 		// cos_i = dot(wi, n), cos_t = sqrt(1 - eta^2*(1-cos_i^2))
 		const Scalar cos_i = Vector3Ops::Dot( wi, normal );
@@ -1732,20 +1730,7 @@ Scalar ManifoldSolver::ComputeDielectricFresnel(
 	Scalar eta_t
 	)
 {
-	if( cosI < 0 ) cosI = -cosI;
-
-	const Scalar sinI2 = 1.0 - cosI * cosI;
-	const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
-
-	if( sinT2 >= 1.0 )
-	{
-		return 1.0;  // Total internal reflection
-	}
-
-	const Scalar cosT = sqrt( 1.0 - sinT2 );
-	const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
-	const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
-	return (rs * rs + rp * rp) * 0.5;
+	return Optics::CalculateDielectricReflectanceCosine( cosI, eta_i, eta_t );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1830,6 +1815,11 @@ void ManifoldSolver::ComputeSpecularDirectionDerivativeWrtWi(
 	}
 	else
 	{
+		// Matched media give wo=-wi without a critical-angle singularity.
+		if( eta == 1.0 ) {
+			for( unsigned int i=0; i<9; ++i ) dwo_dwi[i] = i%4 == 0 ? -1.0 : 0.0;
+			return;
+		}
 		// wo = -eta_ratio*wi + (eta_ratio*cos_i - cos_t)*n
 		// For entering (cos_i > 0): eta_ratio = 1/eta
 		// For exiting (cos_i < 0): eta_ratio = eta
@@ -4096,12 +4086,11 @@ unsigned int ManifoldSolver::SnellContinueChain(
 
 			// Compute refracted direction using Snell's law
 			const Scalar cosI2 = -Vector3Ops::Dot( dir, n );
-			const Scalar sin2T = etaRatio * etaRatio * (1.0 - cosI2 * cosI2);
+			Scalar cosT;
 
-			if( sin2T <= 1.0 )
+			if( Optics::CalculateRefractedCosine( cosI2, etaRatio, 1.0, cosT ) )
 			{
 				// Refraction succeeds
-				const Scalar cosT = sqrt( 1.0 - sin2T );
 				dir = dir * etaRatio + n * (etaRatio * cosI2 - cosT);
 				dir = Vector3Ops::Normalize( dir );
 

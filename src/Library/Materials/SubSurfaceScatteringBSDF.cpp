@@ -19,6 +19,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Optics.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "../Utilities/MicrofacetUtils.h"
 
@@ -54,14 +55,7 @@ void SubSurfaceScatteringBSDF::SetIOR( const IScalarPainter& v )
 /// Matches Optics::CalculateDielectricReflectance used in the SPF.
 static Scalar DielectricFresnel( const Scalar cosI, const Scalar eta_i, const Scalar eta_t )
 {
-	const Scalar sinI2 = 1.0 - cosI * cosI;
-	const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
-	if( sinT2 >= 1.0 ) return 1.0;  // total internal reflection
-	const Scalar cosT = sqrt(1.0 - sinT2);
-
-	const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
-	const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
-	return (rs * rs + rp * rp) * 0.5;
+	return Optics::CalculateDielectricReflectanceCosine( cosI, eta_i, eta_t );
 }
 
 RISEPel SubSurfaceScatteringBSDF::value(

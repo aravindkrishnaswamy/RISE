@@ -92,8 +92,9 @@ scale pair preserves unit normalized spatial weight, with NM and absorption
 controls. See [DL-57 closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md) for measured
 ranges, weights, committed red-proof and the sibling audit.
 
-DL-49/DL-52 and the separate DL-58 grazing-classification group remain open;
-DL-56 was closed by `df7e3dad`.
+DL-49/DL-52 remain open. DL-56 was closed by `df7e3dad`; the separate
+DL-58 grazing-classification group was subsequently closed by `1b1909c0` /
+`ed8d9c94` (see [closure](DL58_MATCHED_INDEX_GRAZING.md)).
 
 At this closure the main ledger had 56 rows: 46 open and 10 closed by cleanup.
 
