@@ -14,6 +14,9 @@
 #include <iomanip>
 #include <iostream>
 
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/IRasterImageAccessor.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"
 #include "../src/Library/Utilities/Ray.h"
@@ -218,6 +221,84 @@ static void RequireRatio( const char* label, const Scalar actual,
 	}
 }
 
+// A real two-by-two texture makes the original and entry IOR differ.
+// Both complete records are supplied: missing entry UV/signals is not needed
+// to trigger the original-hit denominator / entry-hit numerator mismatch.
+static void TestTexturedIORAdapter()
+{
+	std::cout << "Test D: textured IOR uses one record for Ft and normalization" << std::endl;
+	IRasterImage* image = nullptr;
+	RISE_API_CreateRISEColorRasterImage( &image, 2, 2, RISEColor(RISEPel(0,0,0),1) );
+	image->SetPEL( 0, 0, RISEColor(RISEPel(1,1,1),1) );
+	IRasterImageAccessor* accessor = nullptr;
+	RISE_API_CreateNNBRasterImageAccessor( &accessor, *image );
+	IScalarPainter* ior = nullptr;
+	RISE_API_CreateTextureScalarPainterAffine( &ior, accessor, 0, 0.5, 1.5 );
+	accessor->release(); image->release();
+	RGBScalarPainter* absorption = new RGBScalarPainter(0.05,0.10,0.20); absorption->addref();
+	RGBScalarPainter* scattering = new RGBScalarPainter(1,1,1); scattering->addref();
+	SubSurfaceScatteringMaterial* material = new SubSurfaceScatteringMaterial(
+		*ior, *absorption, *scattering, 0.0, 0.2 ); material->addref();
+	ISubSurfaceDiffusionProfile* profile = material->GetDiffusionProfile();
+	Object* sphere = MakeUnitSphere();
+	for( int reverse = 0; reverse < 2; ++reverse ) {
+		RayIntersectionGeometric original = MakeSurfaceRI();
+		RayIntersectionGeometric entry = MakeSurfaceRI();
+		original.ptCoord = reverse ? Point2(0.1,0.1) : Point2(0.75,0.75);
+		entry.ptCoord = reverse ? Point2(0.75,0.75) : Point2(0.1,0.1);
+		const Scalar originalEta = profile->GetIOR(original);
+		const Scalar entryEta = profile->GetIOR(entry);
+		const Scalar expectedOriginal = reverse ? 2.0 : 1.5;
+		const Scalar expectedEntry = reverse ? 1.5 : 2.0;
+		if( !Close(originalEta,expectedOriginal) || !Close(entryEta,expectedEntry) ) {
+			std::cerr << "FAIL: real IOR texture must select distinct known texels" << std::endl;
+			++gFailures;
+		}
+		std::cout << "  original IOR=" << originalEta << " entry IOR=" << entryEta << std::endl;
+		BSSRDFAdapters::BSSRDFEntryBSDF adapter(profile, originalEta);
+		RequireUnitIntegral("textured same-record RGB control", originalEta,
+			IntegrateActual([&](Scalar mu) { return adapter.value(DirectionForCosine(mu),original)[0]; }, "textured control"));
+		RequireUnitIntegral("textured entry RGB", entryEta,
+			IntegrateActual([&](Scalar mu) { return adapter.value(DirectionForCosine(mu),entry)[0]; }, "textured RGB"));
+		RequireUnitIntegral("textured entry NM", entryEta,
+			IntegrateActual([&](Scalar mu) { return adapter.valueNM(DirectionForCosine(mu),entry,550); }, "textured NM"));
+		for( int spectral = 0; spectral < 2; ++spectral ) {
+			TestSampler sampler(3000 + reverse*2 + spectral);
+			int active = 0;
+			bool reportedMismatch = false;
+			for( int attempt = 0; attempt < 256; ++attempt ) {
+				const auto sample = BSSRDFSampling::SampleEntryPoint(
+					original,sphere,material,sampler,spectral ? 550.0 : 0.0);
+				if( !sample.valid ) continue;
+				++active;
+				RayIntersectionGeometric evaluated = entry;
+				evaluated.vNormal = sample.entryNormal;
+				const Vector3 direction = sample.scatteredRay.Dir();
+				if( spectral ) {
+					RequireFinitePositive(sample.weightSpatialNM,"textured NM spatial weight");
+					const Scalar continuation = sample.weightNM / sample.weightSpatialNM;
+					RequireFinitePositive(continuation,"textured NM continuation");
+					RequireRatio("textured NM adapter/continuation", adapter.valueNM(direction,evaluated,550)*PI,
+						continuation,entryEta,reportedMismatch);
+				} else {
+					const RISEPel sw = adapter.value(direction,evaluated);
+					for( int channel = 0; channel < 3; ++channel ) {
+						RequireFinitePositive(sample.weightSpatial[channel],"textured RGB spatial weight");
+						const Scalar continuation = sample.weight[channel] / sample.weightSpatial[channel];
+						RequireFinitePositive(continuation,"textured RGB continuation");
+						RequireRatio("textured RGB adapter/continuation",sw[channel]*PI,
+							continuation,entryEta,reportedMismatch);
+					}
+				}
+			}
+			std::cout << "  textured " << (spectral ? "NM" : "RGB") << " original=" << originalEta
+				<< " entry=" << entryEta << " active=" << active << "/256" << std::endl;
+			if( active < 16 ) { ++gFailures; std::cerr << "FAIL: textured sample activity" << std::endl; }
+		}
+	}
+	sphere->release(); material->release(); ior->release(); absorption->release(); scattering->release();
+}
+
 static void TestDiffusionSampleRatios()
 {
 	std::cout << "Test B: BSSRDF samples full/spatial ratio is normalized Sw" << std::endl;
@@ -352,6 +433,7 @@ int main()
 	TestDirectionalEvaluators();
 	TestDiffusionSampleRatios();
 	TestRandomWalkSampleRatios();
+	TestTexturedIORAdapter();
 	if( gFailures ) {
 		std::cerr << "=== DL-48 normalization failures: " << gFailures << " ==="
 			<< std::endl;
