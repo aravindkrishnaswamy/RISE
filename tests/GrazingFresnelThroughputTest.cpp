@@ -157,6 +157,13 @@ namespace
 		// This raw derivative has a pre-existing critical-angle safeguard for
 		// unequal IORs.  The matched-IOR identity is distinct: transmission
 		// cannot depend on the normal at all, so every raw derivative is zero.
+		Scalar incomingDerivative[9];
+		solver.ComputeSpecularDirectionDerivativeWrtWi(
+			wi, normal, Scalar(1), false, incomingDerivative );
+		for( unsigned int i = 0; i < 9; ++i ) {
+			CheckNear( incomingDerivative[i], i%4 == 0 ? -1.0L : 0.0L,
+				"matched incoming-direction derivative is negative identity", 1e-12 );
+		}
 		Scalar derivative[9];
 		solver.ComputeSpecularDirectionDerivativeWrtNormal(
 			wi, normal, Scalar(1), false, derivative );
