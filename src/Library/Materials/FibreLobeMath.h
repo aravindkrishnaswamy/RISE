@@ -195,11 +195,9 @@ namespace RISE
 		}
 
 		//! Unpolarised Fresnel reflectance at a smooth dielectric boundary.
-		//! Local to the fibre models rather than routed through Optics::
-		//! because the Chiang formulation is expressed in terms of a
-		//! relative eta and a signed cosine, and re-deriving a direction
-		//! pair just to call the vector helper would lose precision at
-		//! grazing angles.
+		//! Preserve the fibre convention (relative eta and signed cosine),
+		//! then use the shared scalar Fresnel helper without reconstructing
+		//! a direction pair that could lose precision at grazing angles.
 		inline Scalar FrDielectric( Scalar cosThetaI, Scalar eta )
 		{
 			cosThetaI = Clamp( cosThetaI, -1.0, 1.0 );
