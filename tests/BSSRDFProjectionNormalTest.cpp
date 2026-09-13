@@ -207,11 +207,11 @@ static bool SelectedProbeHit(
 	for( int sign = 0; sign < 2; ++sign ) {
 		const Vector3 direction = sign == 0 ? probeAxis : -probeAxis;
 		Ray probeRay( probeCenter, direction );
-		probeRay.Advance( BSSRDF_RAY_EPSILON );
+		probeRay.Advance( BSSRDFSampling::BSSRDF_RAY_EPSILON );
 		Scalar traveled = 0;
 		for( int bounce = 0; bounce < 64; ++bounce ) {
 			const Scalar remaining = maxDistance - traveled;
-			if( remaining < BSSRDF_RAY_EPSILON ) break;
+			if( remaining < BSSRDFSampling::BSSRDF_RAY_EPSILON ) break;
 			RayIntersection probeRI( probeRay, nullRasterizerState );
 			sphere->IntersectRay( probeRI, remaining, true, true, false );
 			if( !probeRI.geometric.bHit ) break;
@@ -219,8 +219,8 @@ static bool SelectedProbeHit(
 				probeRI.geometric.vGeomNormal } );
 			traveled += probeRI.geometric.range;
 			probeRay = Ray( probeRI.geometric.ptIntersection, direction );
-			probeRay.Advance( BSSRDF_RAY_EPSILON );
-			traveled += BSSRDF_RAY_EPSILON;
+			probeRay.Advance( BSSRDFSampling::BSSRDF_RAY_EPSILON );
+			traveled += BSSRDFSampling::BSSRDF_RAY_EPSILON;
 		}
 	}
 
@@ -319,13 +319,14 @@ static void TestGeometricProjectionPdf( const Scalar nm, const char* const label
 		if( !plain.valid ) continue;
 		if( plainSampler.Draws().size() != 7 || tiltedSampler.Draws().size() != 7 ) {
 			Fail( "valid BSSRDF sample must use the fixed seven-draw sequence" );
+			continue;
 		}
 		++active;
 
 		const Point3 plainSurface = Point3Ops::mkPoint3( plain.entryPoint,
-			-plain.entryNormal * BSSRDF_RAY_EPSILON );
+			-plain.entryNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
 		const Point3 tiltedSurface = Point3Ops::mkPoint3( tilted.entryPoint,
-			-tilted.entryNormal * BSSRDF_RAY_EPSILON );
+			-tilted.entryNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
 		if( RequireDistanceAtMost(plainSurface,tiltedSurface,2e-8,
 			"paired modifier samples selected different geometric surface points") ) {
 			++matchingActivity;
