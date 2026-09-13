@@ -43,10 +43,17 @@ The original source document conflated initial membership with reachability.
 Without membership the SPF takes its outside branch; it does not reach an
 ordinary no-op pop either.
 
-A standalone SPF constructed with the flag false can reach the fallback.
-That is separate API behavior, not production BSSRDF coverage. Its current
-pre-pop destination-IOR read is tracked separately as DL-51. The
-camera in the main rendered comparison stays outside the SSS solid.
+### ~~DL-51: dormant exit fallback~~
+
+CLOSED 2026-09-12 — `34434610`, SubSurfaceExitIORTest:
+`Checks: 301  Failures: 0` (unfixed: 36 failures).
+A standalone SPF constructed with the flag false can reach this fallback.
+Its RGB/NM exit optics now read the same post-pop stack carried by the
+transmitted ray; reflection keeps the original state. The test also checks
+absorbing diffusion/random-walk material SPFs. This remains separate API
+behavior, not production BSSRDF exit coverage. See
+[closure](DL51_SUBSURFACE_EXIT_IOR.md). The camera in the main rendered
+comparison stays outside the SSS solid.
 
 ## Why the camera ratio is insufficient alone
 
@@ -338,7 +345,7 @@ exterior medium. No production site was changed in this row.
 
 | Consumer or material | Status in this row |
 | --- | --- |
-| SubSurfaceScatteringSPF RGB/NM | Shipped front side supplies reflection; complete subsurface transport is sampled by the integrator. Shipped materials absorb membership-selected inside hits. Standalone non-absorbing fallback is DL-51. |
+| SubSurfaceScatteringSPF RGB/NM | Shipped front side supplies reflection; complete subsurface transport is sampled by the integrator. Shipped materials absorb membership-selected inside hits. Standalone non-absorbing fallback destination was corrected by DL-51. |
 | BSSRDFSampling RGB/NM full and spatial weights | Complete exterior-to-exterior event; no separate preceding surface transmission. Actual helper and RGB PT measurements pin the absence of an unmatched square. Sw and candidate support remain DL-48/DL-52. |
 | RandomWalkSSS RGB/NM | Samples internal transport and exit; callers handle entry Fresnel probability/weight. The exterior stack is preserved. Relative IOR remains DL-49; spectral survival was closed by DL-50. |
 | BSSRDFEntryAdapters and PathVertexEval | Reevaluate directional factors of the same complete event. They do not add an independent surface-transmission stage. Sw and relative-index issues remain open; adapters are covered by source audit, not a new spectral renderer oracle. |
