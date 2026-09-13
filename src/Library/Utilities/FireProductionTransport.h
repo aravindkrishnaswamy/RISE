@@ -1354,6 +1354,9 @@ namespace RISE
 		std::array<std::vector<float>,3> sharedFaceAlpha;
 		std::vector<float> temperatureK;
 		std::vector<float> representedPressureRatio;
+		//! r225 discrete successor: identical to selected on unambiguous cells.
+		std::vector<float> alternateTemperatureK;
+		std::vector<float> alternateRepresentedPressureRatio;
 		std::vector<float> absoluteEOSDeviation;
 		std::uint32_t commandCommitCount;
 		std::uint32_t interstageFullGridTransferCount;
@@ -1611,11 +1614,17 @@ namespace RISE
 		std::string& shaderSHA256,std::string* error=0 );
 	//! Qualification-only cold inversion and rounding-bin witness. No candidate
 	//! authority. Mutant 1 restores old lattice refusal; 2/3 corrupt one bin
-	//! boundary to the ambiguous lattice point (each must fail closed).
+	//! boundary to the ambiguous lattice point (each must fail closed). Mutant 4
+	//! removes the two-path consumer; 5 discards the alternate hull radius.
+	//! alternateTemperature is zero for a unique
+	//! bin, otherwise the other bin; without this output ambiguity still refuses.
+	//! tangentPaths optionally returns {selected,hull} DD expansions for a unit
+	//! sensible-energy rate, in s^-1; it is diagnostic, never production authority.
 	bool EvaluateFireProductionEOSTemperatureMetalDiagnostic(
 		const std::array<float,9>& state,unsigned int mutant,
 		float& temperature,bool& accepted,std::string& shaderSHA256,
-		std::string* error=0 );
+		std::string* error=0,float* alternateTemperature=0,
+		std::array<std::array<float,4>,2>* tangentPaths=0 );
 	//! Pinned r217 reproduction witness, not a production acceptance predicate.
 	inline bool FireProductionR217RefusalPhasesValid(const std::array<std::uint32_t,4>& phases,
 		const std::uint32_t finalBitmap)

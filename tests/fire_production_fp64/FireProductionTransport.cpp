@@ -1171,8 +1171,9 @@ namespace RISEFireProductionFP64
 			AddMetalValueBuffer(870u,sizeof(double),bytes)&&
 			// Device-produced Tmin/Tmax enthalpies: seven species, four words each.
 			AddMetalValueBuffer(14u*4u,sizeof(double),bytes)&&
-			AddMetalValueBuffer(cells,sizeof(double),bytes)&&
-			AddMetalValueBuffer(cells,sizeof(double),bytes)&&
+			// Selected/alternate temperature and pressure; one diagnostic deviation.
+			AddMetalValueBuffer(2u*cells,sizeof(double),bytes)&&
+			AddMetalValueBuffer(2u*cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
 			// Device-side first-failure witness: minimum cell plus per-cell EOS subterm map.

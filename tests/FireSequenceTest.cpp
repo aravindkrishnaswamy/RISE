@@ -910,7 +910,7 @@ namespace
 		double cellWidthM=0.5;
 		std::string caseRecordId;
 		float temperatureK=900.0f,reactionWPerM3=0.0f;
-		std::vector<float> temperature, reaction, carbon;
+		std::vector<float> temperature, reaction, carbon; // K, W/m3, kg/m3 (carbon converts at VDB export)
 		std::vector<std::array<float,3> > velocity;
 		double realizedHeatReleaseW=0.0, fuelConsumptionKGPerS=0.0;
 		double realizedRadiativeFraction=0.0, acceptedEscapeFactor=0.0;
@@ -1123,6 +1123,7 @@ namespace
 		bool tier10RetainedContinuation=false;
 		bool r217RefusalDiagnostic=false;
 		bool r222RefusalDiagnostic=false;
+		bool r225RefusalDiagnostic=false;
 		bool r220ResumeProbe=false;
 		bool r221Retained=false;
 		bool hostMemoryResumeStopRED=false;
@@ -3318,6 +3319,22 @@ namespace
 	constexpr const char* R217CheckpointSHA="7eefb57bfd01f27817d0e245da8293c5ec85c770f0bf157556f20f906865e966";
 	constexpr const char* R216ProducerBuild="81cf8340374423e2c5ae209062c35ed2e7d8a915535051324060c48a1d7cb5a9";
 	constexpr const char* R222CheckpointSHA="e43cd54d2641190d7075738b2b74171da1ed718a1a892dd8c23530d1f702854c";
+	constexpr const char* R225CheckpointSHA="98a8c138cdc644bfcbab12c223b2dcf9780b30c9c0218d7c53ff57ee1bb314de";
+	constexpr const char* R225ProducerBuild="05bc1ed1635e977d3202e01b9ae81595ccf4cd8942065ce282ad758b94e1345d";
+	constexpr const char* R226CheckpointSHA="d7c0632c7fccf71012f1bc618e9cc352d068068c7979cc3622eb17c47c5a9e9f";
+	constexpr const char* R226ProducerBuild="461cd6c90adab0ded52c70175ff148ef31bc7ff55ac03762c875b8282cee76a9";
+	constexpr double R226RefusalBeginningS=10.653518881154014;
+	constexpr double R226RefusalStepS=2.1246003598207608e-5;
+	bool R226RecoveryEndpointAccepted(const std::size_t steps,const double dt,const double end)
+	{
+		return steps==6532u&&dt==R226RefusalStepS&&end==R226RefusalBeginningS+R226RefusalStepS;
+	}
+	bool WindowRefusalDiagnosticInput(const std::string& digest,const std::string& build)
+	{
+		return (digest==R225CheckpointSHA&&build==R225ProducerBuild)||
+			(digest==R226CheckpointSHA&&build==R226ProducerBuild);
+	}
+	constexpr double R225CaseDurationS=25.091040127156969;
 	constexpr const char* R221ProducerBuild="bcd03e089a49d1117b693fcc165869e7cfbac32baf66d80a461a5b491028d4c6";
 	constexpr const char* R220CheckpointSHA="4b5bfcbd02ec7c5f472352f739b1b39ee7157b871896efb8b2dc35e708bd8d64";
 	constexpr const char* R220OldBuild="f2ee8ec4cdf43ed7c527dce95718439888561cb70861f99c22f3f5fd4a311609";
@@ -3369,7 +3386,7 @@ namespace
 			24.0*static_cast<double>(static_cast<float>(0.0016462659696117043)))){
 			values.structuredError="host_memory_retention_red_scope_refused";return values;}
 		const char* refusalOption=std::getenv("RISE_FIRE_REFUSAL_CLAUSES");
-		if((refusalOption&&!persistence.r217RefusalDiagnostic&&!persistence.r222RefusalDiagnostic)||
+		if((refusalOption&&!persistence.r217RefusalDiagnostic&&!persistence.r222RefusalDiagnostic&&!persistence.r225RefusalDiagnostic)||
 			(persistence.r217RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
 			!persistence.projectedHeunCertificateDiagnostic||!persistence.projectedHeunEOSDiagnostic||
 			persistence.tier10RetainedContinuation||persistence.sealedProjectedHeunContinuation||
@@ -3384,6 +3401,14 @@ namespace
 			resolutionTier!=10.0||DigestFile(persistence.checkpointPath)!=R222CheckpointSHA||
 			persistence.isolatedExpectedCheckpointBuildId!=R221ProducerBuild)){
 			values.structuredError="r222_refusal_diagnostic_scope_conflict";return values;
+		}
+		if(persistence.r225RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
+			!persistence.projectedHeunCertificateDiagnostic||!persistence.projectedHeunEOSDiagnostic||
+			persistence.r217RefusalDiagnostic||persistence.r222RefusalDiagnostic||persistence.r220ResumeProbe||
+			persistence.r221Retained||persistence.tier10RetainedContinuation||persistence.sealedProjectedHeunContinuation||
+			resolutionTier!=8.0||!WindowRefusalDiagnosticInput(DigestFile(persistence.checkpointPath),
+			persistence.isolatedExpectedCheckpointBuildId))){
+			values.structuredError="r225_refusal_diagnostic_scope_conflict";return values;
 		}
 		const bool oracleComposition=!persistence.oracleCompositionDirectory.empty();
 		if(oracleComposition&&(persistence.productionMetal||persistence.UsesProjectedHeunOwner()||
@@ -3445,7 +3470,9 @@ namespace
 			!persistence.resume||!persistence.isolatedEquivalenceProbe||
 			persistence.isolatedExpectedCheckpointBuildId.size()!=64u||
 			persistence.isolatedExpectedCheckpointDigest.size()!=64u||
-			persistence.stopAfterAdditionalAcceptedSteps!=(persistence.r221Retained?9u:8u)||persistence.checkpointPath.empty()||
+			persistence.stopAfterAdditionalAcceptedSteps!=(persistence.r225RefusalDiagnostic?
+				(persistence.isolatedExpectedCheckpointDigest==R226CheckpointSHA?38u:20u):
+				(persistence.r221Retained?9u:8u))||persistence.checkpointPath.empty()||
 			persistence.checkpointCadenceWallS!=std::numeric_limits<double>::max()||
 			persistence.killAfterFirstCheckpoint||
 			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
@@ -3453,7 +3480,7 @@ namespace
 			persistence.sealedProjectedHeunReplay||persistence.sealedLegacyMomentumReplay||
 			persistence.projectedHeunCostDiagnostic||persistence.singleStageFCTDiagnostic||
 			persistence.compatibleMomentumDiagnostic||persistence.forceZeroSourceForTest||
-			resolutionTier!=((persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic||persistence.r222RefusalDiagnostic||persistence.r220ResumeProbe||persistence.r221Retained)?10.0:8.0)||caseDurationS!=3.0||caseFramesPerS!=1.0)){
+			resolutionTier!=((persistence.tier10RetainedContinuation||persistence.r217RefusalDiagnostic||persistence.r222RefusalDiagnostic||persistence.r220ResumeProbe||persistence.r221Retained)?10.0:8.0)||caseDurationS!=(persistence.r225RefusalDiagnostic?R225CaseDurationS:3.0)||caseFramesPerS!=(persistence.r225RefusalDiagnostic?16.0:1.0))){
 			values.structuredError="owner_eos_diagnostic_scope_conflict";return values;
 		}
 		if(persistence.projectedHeunCostDiagnostic&&(!persistence.productionMetal||
@@ -4097,7 +4124,9 @@ namespace
 			};
 			limitToEvent(pilotEndS);
 			limitToEvent(values.statisticsStartS);
-			if(!persistence.temporalSnapshotDirectory.empty()&&
+			if((!persistence.temporalSnapshotDirectory.empty()||
+				(persistence.r225RefusalDiagnostic&&
+				 persistence.isolatedExpectedCheckpointDigest==R226CheckpointSHA))&&
 				persistence.temporalSnapshotCadenceS>0.0)
 				limitToEvent(nextTemporalSnapshotS);
 			limitToEvent(targetTimeS);
@@ -6032,7 +6061,8 @@ namespace
 		const bool caseHasRadiativeFractionOverride=false,
 		const double caseRadiativeFractionOverride=0.0,
 		const double caseResolutionTier=6.0,const bool casePlumeLaw=false,
-		const std::vector<std::pair<std::string,std::string> >& sequenceFrames={} )
+		const std::vector<std::pair<std::string,std::string> >& sequenceFrames={},
+		const double authoredCaseDurationS=0.0,const double authoredCaseFramesPerS=0.0 )
 	{
 		using RISECBOR64::Value;
 		std::string error;
@@ -6055,10 +6085,11 @@ namespace
 		caseAuthored.fuelRecordId=FireSimulationMethaneRecord::PhysicalV1().RecordId();
 		caseAuthored.poolDiameterM=casePoolDiameterM;
 		caseAuthored.heatReleaseRateKW=caseHeatReleaseRateKW;
-		caseAuthored.envelope={{0.0,1.0}}; caseAuthored.durationS=std::max(1.0,frameStepSeconds);
+		caseAuthored.envelope={{0.0,1.0}};
+		caseAuthored.durationS=authoredCaseDurationS>0.0?authoredCaseDurationS:std::max(1.0,frameStepSeconds);
 		caseAuthored.quality=caseGridBound?"dstar":"standard";
 		caseAuthored.numericDStarTier=caseGridBound?caseResolutionTier:0.0; caseAuthored.seed=1234;
-		caseAuthored.outputFramesPerS=1.0/frameStepSeconds;
+		caseAuthored.outputFramesPerS=authoredCaseFramesPerS>0.0?authoredCaseFramesPerS:1.0/frameStepSeconds;
 		caseAuthored.plumeLaw=casePlumeLaw;
 		caseAuthored.hasRadiativeFractionOverride=caseHasRadiativeFractionOverride;
 		caseAuthored.radiativeFractionOverride=caseRadiativeFractionOverride;
@@ -6750,7 +6781,9 @@ namespace
 					const std::size_t index=(z*solver.dimensions[1]+y)*solver.dimensions[0]+x;
 					const openvdb::Coord scalar(static_cast<int>(x),static_cast<int>(y),
 						static_cast<int>(z));
-					carbon->tree().setValueOn(scalar,solver.carbon[index]);
+					// Solver/checkpoint density is kg/m3; the canonical optical
+					// sequence channel is g/m3. Convert once, only at export.
+					carbon->tree().setValueOn(scalar,1000.0f*solver.carbon[index]);
 					temperature->tree().setValueOn(scalar,solver.temperature[index]);
 					reaction->tree().setValueOn(scalar,solver.reaction[index]);
 					const std::array<float,3>& v=solver.velocity[index];
@@ -7606,22 +7639,145 @@ namespace
 		return resolutionTier==6.0||resolutionTier==8.0||resolutionTier==10.0;
 	}
 
+#if defined(RISE_ENABLE_OPENVDB)
+	bool OwnerCostPrefixEnvironmentAccepted();
+	bool ProductionTemporalEnvironmentAccepted()
+	{
+		return !std::getenv("RISE_FIRE_TEMPORAL_RESUME")&&
+			!std::getenv("RISE_FIRE_TEMPORAL_TARGET_S")&&
+			!std::getenv("RISE_FIRE_REFUSAL_CLAUSES")&&OwnerCostPrefixEnvironmentAccepted();
+	}
+	bool ProductionTemporalHistoriesComplete(const SolverFrameValues& result)
+	{
+		const std::size_t count=result.acceptedTimeStepHistoryS.size();
+		return count>0u&&result.monitoredManifoldMaximumHistory.size()==count&&
+			result.monitoredManifoldP95History.size()==count&&
+			result.monitoredManifoldP50History.size()==count&&
+			result.monitoredTailCellHistory.size()==count&&
+			result.monitoredTailDrainedVolumeHistoryM3.size()==count&&
+			result.productionDeviceHistoryMS.size()==count&&result.productionWallHistoryMS.size()==count;
+	}
+	bool ProductionTemporalFramesComplete(const std::vector<double>& times,
+		const std::uint64_t streamed,const double start,const double duration,const double cadence)
+	{
+		if(times.size()<2u||times.size()!=streamed||
+			times.size()!=static_cast<std::size_t>(duration/cadence)+1u||
+			times.front()<start||times.back()<start+duration)return false;
+		for(std::size_t frame=0u;frame<times.size();++frame){
+			const double offset=static_cast<double>(frame)*cadence;
+			// Same pre-existing snapshot cadence enclosure, now anchored to the
+			// statistics boundary rather than an arbitrary surviving first frame.
+			const double tolerance=8.0*std::numeric_limits<float>::epsilon()*std::max(cadence,std::fabs(offset));
+			if(!std::isfinite(times[frame])||std::fabs(times[frame]-(start+offset))>tolerance)return false;
+		}
+		return true;
+	}
+	int SealProductionTemporalStop(const std::filesystem::path& outputDirectory,
+		const SolverFrameValues& result,const double targetTimeS)
+	{
+		std::string publicationError;
+		std::ofstream stop(outputDirectory/"window_stop.v1");
+		const bool resourceStop=result.structuredError=="solver_failure:host_memory_ceiling_checkpoint_sealed";
+		const int exitCode=resourceStop?FireRunHostMemory::GracefulStopExitCode:94;
+		stop<<std::setprecision(17)<<"schema rise.fire.full-window-stop.v1\n"
+			<<"reason "<<result.structuredError<<"\nexit_code "<<exitCode<<'\n'
+			<<"accepted_time_s "<<result.simulatedTimeS<<"\ntarget_time_s "<<targetTimeS<<'\n'
+			<<"verdict incomplete\n";
+		if(!ClosePublishedStream(stop)||!SealPublishedRunDirectory(outputDirectory,
+			result.caseRecordId,publicationError))return 98;
+		return exitCode;
+	}
+	int RunProductionTemporalPublicationREDs()
+	{
+		const double cadence=0.0625,start=1.0,duration=0.125;
+		if(!ProductionTemporalFramesComplete({start,start+cadence,start+duration},3u,start,duration,cadence)||
+			ProductionTemporalFramesComplete({},3u,start,duration,cadence)||
+			ProductionTemporalFramesComplete({start},3u,start,duration,cadence)||
+			ProductionTemporalFramesComplete({start,start+cadence},3u,start,duration,cadence)||
+			ProductionTemporalFramesComplete({start,start+cadence},2u,start,duration,cadence)||
+			ProductionTemporalFramesComplete({start,start+cadence,start+duration},2u,start,duration,cadence)||
+			ProductionTemporalFramesComplete({start+cadence,start+duration,start+duration+cadence},3u,start,duration,cadence))return 98;
+		// Synthetic metadata only: no simulated trajectory or production frames.
+		const double target=25.25;
+		const auto probe=RunMethaneFrameProbe(1u,0u,0.0,target,1.0/cadence,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
+		if(!probe.succeeded)return 98;
+		const std::array<std::uint64_t,3> dimensions={{probe.dimensions[0],probe.dimensions[1],probe.dimensions[2]}};
+		const std::vector<std::pair<std::string,std::string> > frames={
+			{"frames/frame_00000.vdb",std::string(64u,'a')},{"frames/frame_00001.vdb",std::string(64u,'b')}};
+		std::string error;
+		for(const unsigned int variant:{0u,1u,2u}){
+			const bool legacy=variant==1u,wrongFPS=variant==2u;
+			const auto manifest=ManifestBytes("","","hold",true,true,dimensions,probe.cellWidthM,
+				start,cadence,1.0,0.0,true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
+				8.0,true,frames,legacy?0.0:target,wrongFPS?1.0:1.0/cadence);
+			FireSequenceManifest verified;
+			const bool loaded=verified.LoadCanonicalEnvelope(manifest,".",error);
+			if(wrongFPS){if(loaded)return 98;continue;}
+			if(!loaded||(verified.CaseRecordId()==probe.caseRecordId)==legacy){
+				std::fprintf(stderr,"R224_MANIFEST_RED legacy=%d loaded=%d case=%s expected=%s error=%s\n",
+					legacy?1:0,loaded?1:0,verified.CaseRecordId().c_str(),probe.caseRecordId.c_str(),error.c_str());return 98;}
+		}
+		const auto fixture=std::filesystem::temp_directory_path()/("rise-r224-stop-fixture-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		std::filesystem::create_directories(fixture);
+		SolverFrameValues stopped;stopped.caseRecordId=probe.caseRecordId;
+		stopped.structuredError="solver_failure:host_memory_ceiling_checkpoint_sealed";
+		stopped.simulatedTimeS=0.5;
+		// Exercise only the launcher's publication boundary. r220 separately
+		// qualifies actual memory-stop checkpoint creation on the resident owner.
+		if(SealProductionTemporalStop(fixture,stopped,target)!=FireRunHostMemory::GracefulStopExitCode||
+			std::filesystem::exists(fixture/"production_capstone_summary.txt")||
+			!std::filesystem::is_regular_file(fixture/"window_stop.v1.payload-v2.json")||
+			!ExistingPayloadCertificateValid(fixture/"window_stop.v1",probe.caseRecordId,error))return 98;
+		const auto stopBytes=ReadFileBytes(fixture/"window_stop.v1");
+		const std::string stopText(stopBytes.begin(),stopBytes.end());
+		if(stopText.find("verdict incomplete\n")==std::string::npos||
+			stopText.find("exit_code 97\n")==std::string::npos)return 98;
+		const auto incomplete=fixture/"incomplete";std::filesystem::create_directories(incomplete);
+		{std::ofstream pending(incomplete/"publication.pending");pending<<"synthetic incomplete pair";}
+		if(SealProductionTemporalStop(incomplete,stopped,target)!=98)return 98;
+		// Nonzero-carbon synthetic checkpoint: exercise the same extraction and
+		// common writer used by retained checkpoints and temporal scalar frames.
+		MethaneRunCheckpoint carbonCheckpoint;carbonCheckpoint.dimensions={{2u,2u,2u}};
+		carbonCheckpoint.cellWidthM=0.125;carbonCheckpoint.caseRecordId=std::string(64u,'a');
+		carbonCheckpoint.states.resize(8u);
+		for(auto& state:carbonCheckpoint.states)state.temperatureK=300.0;
+		carbonCheckpoint.states[0].constituent[MethaneCarbon]=0x1p-10;
+		PeriodicMACShape carbonShape;carbonShape.nx=2u;carbonShape.ny=2u;carbonShape.nz=2u;
+		carbonShape.cellWidthM=0.125;
+		for(unsigned int axis=0u;axis<3u;++axis)
+			carbonCheckpoint.velocity.component[axis].assign(OpenMACFaceCount3D(carbonShape,axis),0.0);
+		const auto carbonFrame=CheckpointDiagnosticFrame(carbonCheckpoint);
+		const auto carbonPath=fixture/"synthetic_carbon_units.vdb";
+		if(carbonFrame.carbon[0]!=0x1p-10f||!WriteProductionTemporalFrame(carbonPath,carbonFrame))return 98;
+		openvdb::io::File carbonFile(carbonPath.string());carbonFile.open();
+		const auto carbonGrid=openvdb::gridPtrCast<openvdb::FloatGrid>(carbonFile.readGrid("carbon"));
+		const bool unitsMatch=carbonGrid&&carbonGrid->tree().getValue(openvdb::Coord(0,0,0))==0.9765625f&&
+			carbonGrid->tree().getValue(openvdb::Coord(1,0,0))==0.0f;
+		carbonFile.close();if(!unitsMatch)return 98;
+		std::fprintf(stderr,"R224_WINDOW_PUBLICATION_RED synthetic_inputs_only=1 full_coverage=1 "
+			"truncated_shifted_empty_refused=1 foreign_case_refused=1 resource_exit97_sealed=1 "
+			"incomplete_pair_refused=1 synthetic_carbon_kg_to_g_exact=1\n");
+		return 0;
+	}
+#endif
+
 	int RunProductionTemporalCapstoneChild(const double resolutionTier,
 		const double frameCadenceS,const std::filesystem::path& outputDirectory)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;return 90;
 #else
-		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||!(frameCadenceS>0.0)||
+		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||frameCadenceS!=0.0625||
 			!std::isfinite(frameCadenceS)||
 			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS)return 91;
-		const char* resumeRequested=std::getenv("RISE_FIRE_TEMPORAL_RESUME");
-		if(std::filesystem::exists(outputDirectory)&&(!resumeRequested||
-			std::strcmp(resumeRequested,"1")!=0||
-			std::filesystem::exists(outputDirectory/"production_capstone_summary.txt")))return 91;
+		if(!ProductionTemporalEnvironmentAccepted()||std::filesystem::exists(outputDirectory)||
+			std::filesystem::is_symlink(outputDirectory))return 91;
 		std::error_code directoryError;
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"frames",directoryError);
+		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
 		if(directoryError)return 92;
 		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
@@ -7630,23 +7786,20 @@ namespace
 		const double statisticsStartS=5.0*beginning.flowThroughTimeS;
 		const double statisticsDurationS=std::ceil((40.0/expectedPuffingHz)/
 			frameCadenceS)*frameCadenceS;
-		double targetTimeS=statisticsStartS+statisticsDurationS;
-		if(const char* diagnosticTarget=std::getenv("RISE_FIRE_TEMPORAL_TARGET_S")){
-			char* end=nullptr;const double parsed=std::strtod(diagnosticTarget,&end);
-			if(!end||*end!='\0'||!std::isfinite(parsed)||parsed<=0.0)return 91;
-			targetTimeS=parsed;
-		}
+		const double targetTimeS=statisticsStartS+statisticsDurationS;
+		// Duration is identity-bearing; the geometry probe above used a one-second
+		// case solely to obtain t_ft, not the window's publication authority.
+		const SolverFrameValues launchCase=RunMethaneFrameProbe(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
+			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
+		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS)return 93;
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
 		persistence.portedProductionTransport=true;
 		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";
-		persistence.checkpointCadenceWallS=300.0;
-		if(resumeRequested&&std::strcmp(resumeRequested,"1")==0){
-			if(!std::filesystem::exists(persistence.checkpointPath))return 92;
-			persistence.resume=true;
-		}
+		persistence.checkpointCadenceWallS=900.0;
+		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.temporalSnapshotDirectory=outputDirectory/"checkpoints";
 		persistence.temporalSnapshotCadenceS=frameCadenceS;
 		// r175 certifies the nonzero Binary32 source producer and burning-tail
@@ -7658,14 +7811,35 @@ namespace
 		// The capstone's CPU-side source/target reductions retain their sealed
 		// eight-worker owner; Metal still owns the resident full-grid work.
 		const unsigned int workers=8u;
+		RISECBOR64::Bytes buildRecord;
+		std::string buildId,executableDigest,publicationError;
+		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
+			!CurrentExecutableDigest(buildRecord,executableDigest,publicationError))return 92;
+		std::ofstream receipt(outputDirectory/"window_launch.v1");
+		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
+			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
+			<<"case_record_id "<<launchCase.caseRecordId<<"\nresolution_tier "<<resolutionTier<<'\n'
+			<<"from_zero true\nstatistics_start_s "<<statisticsStartS<<'\n'
+			<<"statistics_duration_s "<<statisticsDurationS<<"\ntarget_time_s "<<targetTimeS<<'\n'
+			<<"frame_cadence_s "<<frameCadenceS<<"\ncheckpoint_cadence_wall_s "<<persistence.checkpointCadenceWallS<<'\n'
+			<<"authored_case_frames_per_s "<<1.0/frameCadenceS<<'\n'
+			<<"crossing_stop_enabled false\nempirical_claim_tier 10\n"
+			<<"exclusive_host_rule no_builds_no_qualification_no_oracle_no_render\n";
+		if(!ClosePublishedStream(receipt)||!PublishPayloadMerkleSidecar(
+			outputDirectory/"window_launch.v1",launchCase.caseRecordId,publicationError))return 92;
 		const auto wallStart=std::chrono::steady_clock::now();
 		const SolverFrameValues result=RunMethaneFrameProbe(workers,1u,targetTimeS,
-			targetTimeS,1.0,resolutionTier,CapstonePoolDiameterM,
+			targetTimeS,1.0/frameCadenceS,resolutionTier,CapstonePoolDiameterM,
 			CapstoneHeatReleaseRateKW,false,persistence);
 		const double wallS=std::chrono::duration<double>(
 			std::chrono::steady_clock::now()-wallStart).count();
 		if(!result.succeeded){std::fprintf(stderr,"production temporal capstone failed: %s\n",
-			result.structuredError.c_str());return 94;}
+			result.structuredError.c_str());
+			return SealProductionTemporalStop(outputDirectory,result,targetTimeS);}
+		// The standing binary32 event selector rounds outward. Record that actual
+		// endpoint; never relabel it as an exact-time composition or shorten it.
+		if(!std::isfinite(result.simulatedTimeS)||result.simulatedTimeS<targetTimeS||
+			result.caseRecordId!=launchCase.caseRecordId||!ProductionTemporalHistoriesComplete(result))return 98;
 		std::vector<std::filesystem::path> temporalFrames;
 		for(const std::filesystem::directory_entry& entry:
 			std::filesystem::directory_iterator(outputDirectory/"checkpoints"))
@@ -7690,13 +7864,8 @@ namespace
 				!std::isfinite(timeS))return 95;
 			frameTimesS.push_back(timeS);
 		}
-		if(frameTimesS.size()>1u)for(std::size_t frame=1u;frame<frameTimesS.size();++frame){
-			const double expected=static_cast<double>(frame)*frameCadenceS;
-			const double observed=frameTimesS[frame]-frameTimesS.front();
-			const double tolerance=8.0*std::numeric_limits<float>::epsilon()*
-				std::max(frameCadenceS,std::fabs(expected));
-			if(std::fabs(observed-expected)>tolerance)return 97;
-		}
+		if(!ProductionTemporalFramesComplete(frameTimesS,result.streamedFrameCount,
+			statisticsStartS,statisticsDurationS,frameCadenceS))return 95;
 		std::ofstream frameTimes(outputDirectory/"frame_times.csv");
 		frameTimes<<"frame,simulation_time_s,vdb_sha256\n";
 		std::vector<std::pair<std::string,std::string> > manifestFrames;
@@ -7715,7 +7884,7 @@ namespace
 			const RISECBOR64::Bytes manifest=ManifestBytes("","","hold",true,true,
 				dimensions,result.cellWidthM,frameTimesS.front(),frameCadenceS,1.0,0.0,
 				true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
-				resolutionTier,true,manifestFrames);
+				resolutionTier,true,manifestFrames,targetTimeS,1.0/frameCadenceS);
 			const std::filesystem::path manifestPath=
 				outputDirectory/"sequence_manifest.rise-fire.cbor";
 			std::ofstream manifestOutput(manifestPath,std::ios::binary|std::ios::trunc);
@@ -7725,17 +7894,14 @@ namespace
 			if(!manifestOutput||DigestFile(manifestPath).empty())return 98;
 			FireSequenceManifest verified;
 			if(!verified.LoadCanonicalEnvelope(manifest,outputDirectory.string(),error)||
+				verified.CaseRecordId()!=result.caseRecordId||
 				!verified.PreflightAllFrames(error))return 98;
 			manifestDigest=DigestFile(manifestPath);
 		}
 		std::ofstream diagnostics(outputDirectory/"monitored_diagnostics.csv");
 		diagnostics<<"step,dt_s,deviation_max,deviation_p95,deviation_p50,tail_cells,"
 			"tail_drained_m3,device_ms,wall_ms\n";
-		const std::size_t samples=std::min({result.acceptedTimeStepHistoryS.size(),
-			result.monitoredManifoldMaximumHistory.size(),result.monitoredManifoldP95History.size(),
-			result.monitoredManifoldP50History.size(),result.monitoredTailCellHistory.size(),
-			result.monitoredTailDrainedVolumeHistoryM3.size(),result.productionDeviceHistoryMS.size(),
-			result.productionWallHistoryMS.size()});
+		const std::size_t samples=result.acceptedTimeStepHistoryS.size();
 		for(std::size_t sample=0u;sample<samples;++sample)diagnostics<<sample+1u<<','<<
 			std::setprecision(17)<<result.acceptedTimeStepHistoryS[sample]<<','<<
 			result.monitoredManifoldMaximumHistory[sample]<<','<<
@@ -7752,6 +7918,7 @@ namespace
 			<<"resolution_tier="<<resolutionTier<<"\n"
 			<<"maximum_source_step_s="<<persistence.maximumProductionSourceStepS<<"\n"
 			<<"target_time_s="<<targetTimeS<<"\n"
+			<<"accepted_time_s="<<result.simulatedTimeS<<"\n"
 			<<"statistics_start_s="<<result.statisticsStartS<<"\n"
 			<<"accepted_steps="<<result.acceptedTimeStepHistoryS.size()<<"\n"
 			<<"snapshot_cadence_s="<<frameCadenceS<<"\n"
@@ -7808,7 +7975,8 @@ namespace
 	int RunProductionOwnerEOSRefusalChild(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& outputDirectory,const bool certificateDiagnostic=false,
 		const bool tier10Retained=false,const bool r217Diagnostic=false,const bool r220Probe=false,
-		const bool resourceStopRED=false,const bool r221Probe=false,const bool r222Diagnostic=false)
+		const bool resourceStopRED=false,const bool r221Probe=false,const bool r222Diagnostic=false,
+		const bool r225Diagnostic=false)
 	{
 		if(resourceStopRED&&!r220Probe)return 91;
 		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 91;
@@ -7832,7 +8000,10 @@ namespace
 			checkpoint.acceptedSteps!=1165u||checkpoint.producerBuildId!=R216ProducerBuild))return 92;
 		if(r222Diagnostic&&(!certificateDiagnostic||tier10Retained||r217Diagnostic||r220Probe||r221Probe||resourceStopRED||
 			digest!=R222CheckpointSHA||checkpoint.acceptedSteps!=1952u||checkpoint.producerBuildId!=R221ProducerBuild))return 92;
-		if(certificateDiagnostic&&!tier10Retained&&!r217Diagnostic&&!r220Probe&&!r221Probe&&!r222Diagnostic&&(digest!=
+		if(r225Diagnostic&&(!certificateDiagnostic||tier10Retained||r217Diagnostic||r220Probe||r221Probe||resourceStopRED||r222Diagnostic||
+			!WindowRefusalDiagnosticInput(digest,checkpoint.producerBuildId)||
+			checkpoint.acceptedSteps!=(digest==R226CheckpointSHA?6494u:2454u)))return 92;
+		if(certificateDiagnostic&&!tier10Retained&&!r217Diagnostic&&!r220Probe&&!r221Probe&&!r222Diagnostic&&!r225Diagnostic&&(digest!=
 			"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"||
 			checkpoint.acceptedSteps!=1300u))return 92;
 		if(certificateDiagnostic){
@@ -7854,6 +8025,9 @@ namespace
 		persistence.tier10RetainedContinuation=tier10Retained;
 		persistence.r217RefusalDiagnostic=r217Diagnostic;
 		persistence.r222RefusalDiagnostic=r222Diagnostic;
+		persistence.r225RefusalDiagnostic=r225Diagnostic;
+		// Reproduce the production frame event without emitting diagnostic frames.
+		if(r225Diagnostic&&digest==R226CheckpointSHA)persistence.temporalSnapshotCadenceS=1.0/16.0;
 		persistence.r220ResumeProbe=r220Probe;
 		persistence.r221Retained=r221Probe;
 		persistence.hostMemoryResumeStopRED=resourceStopRED;
@@ -7865,7 +8039,9 @@ namespace
 		}
 		persistence.isolatedEquivalenceProbe=true;persistence.checkpointPath=checkpointPath;
 		persistence.isolatedExpectedCheckpointBuildId=checkpoint.producerBuildId;
-		persistence.isolatedExpectedCheckpointDigest=digest;persistence.stopAfterAdditionalAcceptedSteps=r221Probe?9u:8u;
+		persistence.isolatedExpectedCheckpointDigest=digest;
+		persistence.stopAfterAdditionalAcceptedSteps=r225Diagnostic?
+			(digest==R226CheckpointSHA?38u:20u):(r221Probe?9u:8u);
 		persistence.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
@@ -7894,12 +8070,12 @@ namespace
 				build.c_str(),executable.c_str(),digest.c_str());
 		}
 		if(!certificateDiagnostic&&setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0)return 92;
-		if((r217Diagnostic||r222Diagnostic)&&(setenv("RISE_FIRE_REFUSAL_CLAUSES","1",1)!=0||
+		if((r217Diagnostic||r222Diagnostic||r225Diagnostic)&&(setenv("RISE_FIRE_REFUSAL_CLAUSES","1",1)!=0||
 			setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0))return 92;
-		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,(tier10Retained||r217Diagnostic||r220Probe||r221Probe||r222Diagnostic)?10.0:8.0,
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,r225Diagnostic?R225CaseDurationS:3.0,r225Diagnostic?16.0:1.0,(tier10Retained||r217Diagnostic||r220Probe||r221Probe||r222Diagnostic)?10.0:8.0,
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		if(!certificateDiagnostic)unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
-		if(r217Diagnostic||r222Diagnostic){unsetenv("RISE_FIRE_REFUSAL_CLAUSES");unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");}
+		if(r217Diagnostic||r222Diagnostic||r225Diagnostic){unsetenv("RISE_FIRE_REFUSAL_CLAUSES");unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");}
 		const bool unchanged=DigestFile(checkpointPath)==digest&&DigestFile(inputSidecar)==sidecarDigest;
 		std::fprintf(stderr,"%s_END solver_accepted=%d checkpoint_unchanged=%d "
 			"migration_authority=false error=%s\n",diagnosticName,result.succeeded?1:0,unchanged?1:0,
@@ -7921,6 +8097,20 @@ namespace
 				unchanged?1:0,pass?1:0,pass?1:0);
 			return pass?FireRunHostMemory::GracefulStopExitCode:93;
 		}
+		if(r225Diagnostic&&digest==R226CheckpointSHA){
+			const double cflStep=static_cast<double>(static_cast<float>(0.0016462659696117043));
+			const bool omittedEventRefused=!R226RecoveryEndpointAccepted(6532u,cflStep,
+				R226RefusalBeginningS+cflStep);
+			const bool passed=unchanged&&result.succeeded&&!result.acceptedTimeStepHistoryS.empty()&&
+				R226RecoveryEndpointAccepted(result.acceptedTimeStepHistoryS.size(),
+					result.acceptedTimeStepHistoryS.back(),result.simulatedTimeS);
+			std::fprintf(stderr,"R226_RECOVERY_ENDPOINT exact_event=%d omitted_frame_event_refused=%d\n",
+				passed?1:0,omittedEventRefused?1:0);
+			return passed&&omittedEventRefused?0:93;
+		}
+		if(r225Diagnostic)return unchanged&&!result.succeeded&&
+			result.acceptedTimeStepHistoryS.size()==2473u&&result.structuredError.find(
+			"stage=1 bitmap=33564800 phase_witness=verified full_witness=verified")!=std::string::npos?0:93;
 		if(r217Diagnostic)return unchanged&&!result.succeeded&&result.structuredError.find(
 			"stage=0 bitmap=33564800 phase_witness=verified full_witness=verified")!=std::string::npos?0:93;
 		if(r222Diagnostic)return unchanged&&!result.succeeded&&
@@ -11454,7 +11644,7 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 	return passed?0:203;
 }
 
-int RunProductionResidentEOSCandidateMetalFP64Fixture()
+int RunProductionResidentEOSCandidateMetalFP64Fixture(const bool boundaryOnly=false)
 {
 	static_assert(!std::is_convertible<FireProductionResidentEOSCandidateComparatorResult,
 		FireProductionScalarEOSAcceptanceResult>::value,
@@ -11560,6 +11750,44 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		request.physicalFlux.nullity,0.0f);
 	for(std::size_t index=0u;index<request.physicalFlux.nullity;++index)
 		request.physicalFlux.coordinateProjector[index*request.physicalFlux.nullity+index]=1.0f;
+	if(boundaryOnly){
+		const std::array<float,9> historical={{0.0012011607177555561f,0.00051535427337512374f,
+			0.25547337532043457f,0.85037857294082642f,0.0018813794013112783f,
+			0.0015402882127091289f,5.8888818266211729e-09f,-1.3541999743793554e-09f,18596.408203125f}};
+		bool passed=true;
+		for(unsigned int sample=0u;sample<2u;++sample){auto input=historical;
+			if(sample)input[7]=std::nextafter(input[7],0.0f);
+			FireProductionResidentEOSCandidateComparatorRequest boundary;
+			if(!uniformRequest(316.53204345703125,1.0f,boundary))return 207;
+			for(std::size_t component=0u;component<9u;++component){
+				boundary.physicalFlux.ambient[component]=input[component];
+				for(std::size_t cell=0u;cell<cells;++cell)
+					boundary.physicalFlux.transport.conservativeValues[component*cells+cell]=input[component];}
+			FireProductionResidentEOSCandidateComparatorResult result;
+			if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(boundary,result,&error)){
+				std::fprintf(stderr,"R225_CONSUMER_ERROR bitmap=%u error=%s\n",result.deviceFailureBitmap,error.c_str());return 207;}
+			if(result.alternateTemperatureK.size()!=cells||result.alternateRepresentedPressureRatio.size()!=cells)return 207;
+			for(std::size_t cell=0u;cell<cells;++cell){std::array<double,9> q;
+				for(std::size_t component=0u;component<9u;++component){q[component]=input[component];
+					passed=passed&&result.candidateConservativeValues[component*cells+cell]==input[component];}
+				const float T=result.temperatureK[cell],alternate=result.alternateTemperatureK[cell];
+				passed=passed&&std::min(T,alternate)==316.53204345703125f&&std::max(T,alternate)==316.532073974609375f;
+				for(unsigned int path=0u;path<2u;++path){const float pathT=path?alternate:T,
+					observed=path?result.alternateRepresentedPressureRatio[cell]:result.representedPressureRatio[cell];
+					double expected=0.0;if(!fuel.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
+						q.data(),q.size(),pathT,FireStateProducerPrecision::Binary32,expected,&error))return 207;
+					const float projected=static_cast<float>(expected);const double residual=std::fabs(double(observed)-expected),
+						bound=0.5*std::fabs(double(std::nextafter(projected,std::numeric_limits<float>::infinity()))-projected);
+					const bool match=observed==projected&&residual<=bound;passed=passed&&match;
+					std::fprintf(stderr,"R225_PRESSURE_CONSUMER sample=%u cell=%zu path=%u T_K=%.17g "
+						"observed_ratio=%.17g fp64_ratio=%.17g residual_ratio=%.17g bound_ratio=%.17g passed=%d\n",
+						sample,cell,path,double(pathT),double(observed),expected,residual,bound,match?1:0);}
+			}
+			passed=passed&&result.interstageFullGridTransferCount==0u&&result.EOSPublicationIdentity!=0u&&
+				result.actualMetalAllocationBytes<=result.certifiedWorkingSetBytes;
+		}
+		std::fprintf(stderr,"R225_RESIDENT_BOUNDARY_GATE passed=%d\n",passed?1:0);return passed?0:210;
+	}
 	FireProductionResidentPhysicalFluxComparatorResult candidateFluxMirror;
 	if(!EvaluateFireProductionResidentPhysicalFluxMetalComparator(request.physicalFlux,
 		candidateFluxMirror,&error))return 207;
@@ -13486,12 +13714,23 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		"combined_owner_working_set_preflight",[&](auto& value){
 			value.qualificationWorkingSetLimitBytes=ownerCertifiedPreflightBytes-1u;});
 	std::uint64_t observerCertifiedBytes=0u,tier8ObserverBytes=0u;
+	const auto allocationQuantum=[](const std::uint64_t bytes){return
+		(bytes+UINT64_C(16383))&~UINT64_C(16383);};
+	// r225 adds two private successor planes and two terminal tap planes per
+	// retained target set (four sets). Preserve the r210 census as the base;
+	// account for allocations, not an empirically enlarged memory allowance.
+	const std::uint64_t tier8CellBytes=UINT64_C(504666)*sizeof(float),
+		tier8OldEOSTerminal=(12u*UINT64_C(504666)+UINT64_C(1533387))*sizeof(float)+
+			tier8CellBytes+4u*sizeof(std::uint64_t)+3u*sizeof(std::uint32_t)+64u,
+		tier8SuccessorIncrement=4u*(2u*(allocationQuantum(2u*tier8CellBytes)-
+			allocationQuantum(tier8CellBytes))+allocationQuantum(tier8OldEOSTerminal+2u*tier8CellBytes)-
+			allocationQuantum(tier8OldEOSTerminal));
 	const bool observerCertificateDerived=FireProductionProjectedHeunMetalObserverWorkingSetBytes(
 		shape,observerCertifiedBytes)&&FireProductionProjectedHeunMetalObserverWorkingSetBytes(
 		tier8OwnerShape,tier8ObserverBytes)&&observerCertifiedBytes>ownerCertifiedPreflightBytes&&
 		ownerObserved.certifiedWorkingSetBytes==observerCertifiedBytes&&
 		ownerResidentDiagnostics.certifiedWorkingSetBytes==ownerCertifiedPreflightBytes&&
-		tier8OwnerCertifiedBytes==UINT64_C(5584011264)&&
+		tier8OwnerCertifiedBytes==UINT64_C(5584011264)+tier8SuccessorIncrement&&
 		tier8ObserverBytes-tier8OwnerCertifiedBytes==
 			(((27u*UINT64_C(504666)+36u*UINT64_C(1533387)+UINT64_C(38778))*4u+
 			2u*UINT64_C(38778)+16u+16383u)&~UINT64_C(16383));
@@ -16730,6 +16969,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&
 		openObserved.terminalStagingCount==1u&&openObserved.interstageFullGridTransferCount==0u;
+	std::fprintf(stderr,"RESIDENT_TARGET_CLAUSES threshold=%d exact=%d policy=%d positive=%d negative=%d "
+		"fixture=%d live=%d live_extent=%d understated=%d transfer=%d owner=%d continuous=%d out=%d "
+		"working_set_preflight=%d\n",thresholdCoverage?1:0,exactThresholdNoDrain?1:0,policyOwnersIdentical?1:0,
+		deviceExactPositiveNoDrain?1:0,deviceExactNegativeNoDrain?1:0,fixtureCertified?1:0,liveCertified?1:0,
+		observed.liveAuthorityAllocationBytes<=liveBytes?1:0,understatedRefused?1:0,transferLedgerRefused?1:0,
+		ownerSmokePassed?1:0,continuousEnclosureRED?1:0,outOfEnclosureRED?1:0,ownerWorkingSetPreflightRefused?1:0);
 	std::fprintf(stderr,"RESIDENT_TARGET passed=%d tangent_bit_equal=%d source_bit_equal=%d "
 		"absolute_diagnostic_bit_equal=%d tail_bit_equal=%d assembled_bit_equal=%d "
 		"unsealed_transport=%d unsealed_physical=%d unsealed_candidate=%d unsealed_eos=%d "
@@ -16942,6 +17187,8 @@ int main(int argc,char** argv)
 		return RunProductionScalarFCTMetalStageFixture();
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-resident-eos-metal")==0)
 		return RunProductionResidentEOSCandidateMetalFP64Fixture();
+	if(argc==2&&std::strcmp(argv[1],"--fire-r225-resident-boundary-gate")==0)
+		return RunProductionResidentEOSCandidateMetalFP64Fixture(true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-resident-target-metal")==0)
 		return RunProductionResidentTargetLineageMetalFP64Fixture();
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-owner-convergence-fixture")==0)
@@ -16987,6 +17234,77 @@ int main(int argc,char** argv)
 		return passed?0:98;
 	}
 #if defined(RISE_ENABLE_OPENVDB)
+	if(argc==2&&std::strcmp(argv[1],"--fire-r225-temperature-envelope-gate")==0){
+#if defined(__APPLE__)
+		const std::array<std::array<float,9>,3> states={{
+			{{0.0013599047670140862f,0.00056044658413156867f,0.23823611438274384f,
+			 0.79510211944580078f,0.0021931671071797609f,0.0017955414950847626f,
+			 -4.3738035415685772e-9f,9.0837237731733467e-10f,40438.5f}},
+			{{0.0020597076509147882f,0.00056520733051002026f,0.21386758983135223f,
+			 0.72398018836975098f,0.0040998812764883041f,0.0033565745688974857f,
+			 2.3982080765705405e-09f,-3.3692598710999278e-10f,68401.2734375f}},
+			{{0.0012011607177555561f,0.00051535427337512374f,0.25547337532043457f,
+			 0.85037857294082642f,0.0018813794013112783f,0.0015402882127091289f,
+			 5.8888818266211729e-09f,-1.3541999743793554e-09f,18596.408203125f}}
+		}};
+		bool passed=true;const auto& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		for(std::size_t sample=0u;sample<=states.size();++sample){
+			auto input=states[std::min(sample,states.size()-1u)];
+			// A distinct binary32 input, one soot-density lattice step from the
+			// historical boundary state. This is not a forced acceptance flag.
+			if(sample==states.size())input[7]=std::nextafter(input[7],0.0f);
+			float T=0.0f,alternate=0.0f;bool accepted=false;std::string shader,error;
+			std::array<std::array<float,4>,2> tangentPaths;
+			if(!EvaluateFireProductionEOSTemperatureMetalDiagnostic(input,0u,T,accepted,
+				shader,&error,&alternate,&tangentPaths)){std::fprintf(stderr,"R225_ERROR %s\n",error.c_str());return 92;}
+			std::array<double,9> q;for(std::size_t i=0u;i<q.size();++i)q[i]=input[i];
+			double referenceT=0.0,referenceRatio=0.0;
+			const bool reference=fuel.InvertAcceptedConservativeStateByComponentOrder(q.data(),q.size(),
+				300.0,2300.0,FireStateProducerPrecision::Binary32,referenceT,referenceRatio,&error);
+			const float projected=static_cast<float>(referenceT);
+			const bool match=accepted&&reference&&(projected==T||projected==alternate)&&
+				(sample>=2u?(std::min(T,alternate)==316.53204345703125f&&
+				std::max(T,alternate)==316.532073974609375f):alternate==0.0f);
+			passed=passed&&match;
+			std::array<double,9> rate={{}};rate[8]=1.0;
+			for(unsigned int path=0u;path<(alternate!=0.0f?2u:1u);++path){double reference=0.0;
+				if(!fuel.DivergenceFromDiscreteRateByComponentOrder(q.data(),q.size(),rate.data(),rate.size(),
+					path?alternate:T,FireStateProducerPrecision::Binary32,reference,&error))return 92;
+				const auto& hull=tangentPaths[1];const double center=double(hull[0])+double(hull[1])+double(hull[2]),
+					residual=std::fabs(center-reference),bound=hull[3];
+				const bool enclosed=std::isfinite(bound)&&bound>=0.0&&residual<=bound;passed=passed&&enclosed;
+				std::fprintf(stderr,"R225_TANGENT sample=%zu path=%u residual_s^-1=%.17g bound_s^-1=%.17g enclosed=%d\n",
+					sample,path,residual,bound,enclosed?1:0);
+				if(path==1u){const auto& single=tangentPaths[0];const double singleCenter=
+					double(single[0])+double(single[1])+double(single[2]);
+					const bool omissionRED=std::fabs(singleCenter-reference)>single[3];passed=passed&&omissionRED;
+					std::fprintf(stderr,"R225_TANGENT_ALTERNATE_OMISSION_RED detected=%d\n",omissionRED?1:0);}
+			}
+			std::fprintf(stderr,"R225_TEMPERATURE sample=%zu selected_K=%.17g alternate_K=%.17g "
+				"fp64_K=%.17g projected_K=%.17g accepted=%d contained=%d shader_sha256=%s\n",
+				sample,double(T),double(alternate),referenceT,double(projected),accepted?1:0,match?1:0,shader.c_str());
+			if(sample>=2u){bool mutantAccepted=false;float mutantT=0.0f,mutantAlternate=0.0f;
+				if(!EvaluateFireProductionEOSTemperatureMetalDiagnostic(input,4u,mutantT,
+					mutantAccepted,shader,&error,&mutantAlternate))return 92;
+				passed=passed&&!mutantAccepted;
+				std::fprintf(stderr,"R225_SCALAR_ONLY_MUTANT refused=%d\n",mutantAccepted?0:1);
+				std::array<std::array<float,4>,2> mutantPaths;
+				if(!EvaluateFireProductionEOSTemperatureMetalDiagnostic(input,5u,mutantT,
+					mutantAccepted,shader,&error,&mutantAlternate,&mutantPaths))return 92;
+				double expected=0.0;if(!fuel.DivergenceFromDiscreteRateByComponentOrder(q.data(),q.size(),
+					rate.data(),rate.size(),alternate,FireStateProducerPrecision::Binary32,expected,&error))return 92;
+				const auto& hull=mutantPaths[1];const double residual=std::fabs(double(hull[0])+double(hull[1])+double(hull[2])-expected);
+				const bool detected=mutantAccepted&&mutantAlternate==alternate&&std::isfinite(hull[3])&&
+					hull[3]>=0.0f&&residual>hull[3];passed=passed&&detected;
+				std::fprintf(stderr,"R225_SHARED_HULL_MUTANT residual_s^-1=%.17g bound_s^-1=%.17g detected=%d\n",
+					residual,double(hull[3]),detected?1:0);}
+		}
+		std::fprintf(stderr,"R225_TEMPERATURE_ENVELOPE_GATE passed=%d scope=temperature_only no_authority=1\n",passed?1:0);
+		return passed?0:93;
+#else
+		return 91;
+#endif
+	}
 	if(argc==2&&std::strcmp(argv[1],"--fire-r222-temperature-gate")==0){
 #if defined(__APPLE__)
 		const std::array<std::uint32_t,9> bits={{990313513u,974400108u,1046151195u,1060722372u,
@@ -17182,6 +17500,8 @@ int main(int argc,char** argv)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-r222-refusal-diagnostic")==0)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,false,false,false,true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r225-refusal-diagnostic")==0)
+		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,false,false,false,false,true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-r220-resume-probe")==0)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true,false,false,true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-r220-resume-stop-red")==0)
@@ -17215,6 +17535,10 @@ int main(int argc,char** argv)
 			!ParsePositiveDoubleArgument(argv[3],cadence))return 91;
 		return RunProductionTemporalCapstoneChild(tier,cadence,argv[4]);
 	}
+#if defined(RISE_ENABLE_OPENVDB)
+	if(argc==2&&std::strcmp(argv[1],"--fire-r224-window-publication-gate")==0)
+		return RunProductionTemporalPublicationREDs();
+#endif
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-onset")==0){
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionOnsetCampaignChild(tier,argv[3]);

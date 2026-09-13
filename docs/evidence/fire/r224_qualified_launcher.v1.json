@@ -1,0 +1,41 @@
+{
+  "schema": "rise.fire.r224.qualified-launcher.v1",
+  "source_commit": "fec97e3a93c1b9edbd742016b9d42fc8b12af857",
+  "source_state": "clean",
+  "build_id": "05bc1ed1635e977d3202e01b9ae81595ccf4cd8942065ce282ad758b94e1345d",
+  "kernel_set_sha256": "e246730c19b96cbb3e1db7abe072fa271541efe1594a990f4189e71bc6d0e8ea",
+  "executable": {
+    "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r224_full_window/executables/FireSequenceTest_fec97e3a",
+    "sha256": "d847978f8ec0eac9a08d05485aa9d0c26c0b1b83aea85ee53acc298da65b01a2"
+  },
+  "scope": "Launcher/export qualification; not a completed window, migration, empirical row or filtered-field fidelity verdict",
+  "gates": [
+    {"name":"native_launcher_and_history_mutants","exit_code":0,"path":"rendered/fire_production_calibration/r224_full_window/launcher_reds.v4.log","sha256":"4cd920c3d01c9cff71c2a371e26cb77d4b4940a46d5d6479c4bedd82482f5594"},
+    {"name":"full_cpu_suite","exit_code":0,"path":"rendered/fire_production_calibration/r224_full_window/cpu_suite.v4.log","sha256":"314013281f902eb2833fc3c4729eedb6a634b3978b1b352d11d0cf0357d52be8"},
+    {"name":"metal_fp64_and_r190_owner","exit_code":0,"path":"rendered/fire_production_calibration/r224_full_window/kernel_sweep.v4.log","sha256":"943fd7c97bfc4fd5dcd55d008f29fab7decb94ae93782f270600f04b6e7e034f"},
+    {"name":"native_publication_reds","exit_code":0,"path":"rendered/fire_production_calibration/r224_full_window/publication_native.v1.log","sha256":"2ff0265f8c99eec486b3fc3cffa6d575fec64b0672b0dac8c9d009ddd59c924e"},
+    {"name":"final_serial_strict_build","exit_code":0,"path":"rendered/fire_production_calibration/r224_full_window/final_build.v1.log","sha256":"7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"},
+    {"name":"clean_make","exit_code":0,"path":"rendered/fire_production_calibration/r222_stage_one/r224_make_clean_build.log","sha256":"60db7678ceea6faaa3b89e9f5d21fd9f27bdddfc42e375e17f48c97b62ee4b95"},
+    {"name":"clean_xcode_deployment","exit_code":0,"path":"rendered/fire_production_calibration/r224_full_window/xcode_deployment.v1.log","sha256":"b8883a6ce523073b42841f7271f9f9e7932e2fa47442ada273039adec1b57a52"},
+    {"name":"clean_xcode_opto","exit_code":0,"path":"rendered/fire_production_calibration/r224_full_window/xcode_opto.v1.log","sha256":"c397be46f2f3690f22c348f0036ef29c5486c069915def6effe392ba03c19e38"}
+  ],
+  "build_scope_note": "Shared-library and Xcode sources unchanged since clean shipping builds; final standalone launcher rebuilt warning-free and gated at the pinned executable.",
+  "reviews": [
+    {"reviewer":"r224_release_identity_review","source_commit":"fec97e3a","P1":0,"P2":0},
+    {"reviewer":"r224_release_test_review","source_commit":"fec97e3a","P1":0,"P2":0}
+  ],
+  "run_policy": {
+    "from_zero": true,
+    "tier": 8,
+    "seed": 1234,
+    "frame_cadence_s": 0.0625,
+    "case_frames_per_s": 16,
+    "discard_flow_through_times": 5,
+    "statistics_expected_puffing_periods_minimum": 40,
+    "crossings_stop_the_window": false,
+    "empirical_claim_tier": 10,
+    "host_serialization": "No builds, qualifications, oracle regeneration, competing simulation or render alongside the sealed window",
+    "native_rss_stop": "checkpoint, seal incomplete evidence, exit97",
+    "disk_policy": "At 16GiB free or threatening projected growth, verify worker identity and reversibly SIGSTOP; preserve bytes/state and resume only after capacity is secured. No native disk-triggered exit is claimed."
+  }
+}
