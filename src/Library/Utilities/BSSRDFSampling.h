@@ -5,7 +5,7 @@
 //  Implements the disk projection method (Christensen & Burley 2015)
 //  for sampling entry points on translucent surfaces.  The algorithm
 //  is used by both the bidirectional path tracer (BDPTIntegrator) and
-//  the unidirectional path tracer (PathTracingShaderOp).
+//  the unidirectional path tracer (PathTracingIntegrator).
 //
 //  ALGORITHM OVERVIEW:
 //    Given a ray exit point on a material with a diffusion profile,
@@ -68,12 +68,10 @@ namespace RISE
 			Point3				entryPoint;		///< Entry point on the surface
 			Vector3				entryNormal;	///< Shading normal at entry point — drives the cosine-sampled
 												///< continuation frame and Sw Fresnel angular dependence.
-			Vector3				entryGeomNormal;///< Geometric (flat-face) normal at entry point — drives the
-												///< front/back-face gate when the integrator rebuilds an entry
-												///< RayIntersectionGeometric (PT 1508/etc., BDPT 1923/etc.).
-												///< On analytical primitives equals entryNormal; on triangle
-												///< meshes carries the actual face orientation independent of
-												///< Phong / bump perturbation.
+			Vector3				entryGeomNormal;///< Geometric normal at entry point — drives the disk-to-surface
+												///< area Jacobian and the rebuilt entry front/back-face gate.
+												///< Independent of smooth interpolation and shading modifiers,
+												///< including normal maps on analytical primitives.
 			OrthonormalBasis3D	entryONB;		///< ONB at entry point
 			Ray					scatteredRay;	///< Cosine-weighted ray from entry point
 			RISEPel				weight;			///< Full BSSRDF weight: Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
