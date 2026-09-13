@@ -114,9 +114,15 @@ The then-implemented Schlick transmission had cosine-hemisphere integral
 
 ### Other confounds
 
-- DL-50: NM random-walk exit multiplies by survival transmittance after a sampled
-  survival outcome; RGB divides by its event probability. Do not assume
-  spectral agreement as an independent reference for this row.
+### ~~DL-50: spectral survival~~
+
+CLOSED 2026-09-12 — `29ce61c7`, RandomWalkSurvivalTest:
+`All DL-50 survival tests passed`; the committed unfixed regression fails
+13 weight checks with activity and control checks passing. NM boundary
+survival now divides by its actual sampled probability, including the
+tiny-extinction proposal. See [closure](DL50_RANDOM_WALK_SURVIVAL.md).
+The DL-04 measurements above remain historical and predate this repair.
+
 - Random-walk exits use a diffuse angular approximation; ballistic and
   low-scatter transmission are not exact dielectric-volume equivalents.
 
@@ -334,7 +340,7 @@ exterior medium. No production site was changed in this row.
 | --- | --- |
 | SubSurfaceScatteringSPF RGB/NM | Shipped front side supplies reflection; complete subsurface transport is sampled by the integrator. Shipped materials absorb membership-selected inside hits. Standalone non-absorbing fallback is DL-51. |
 | BSSRDFSampling RGB/NM full and spatial weights | Complete exterior-to-exterior event; no separate preceding surface transmission. Actual helper and RGB PT measurements pin the absence of an unmatched square. Sw and candidate support remain DL-48/DL-52. |
-| RandomWalkSSS RGB/NM | Samples internal transport and exit; callers handle entry Fresnel probability/weight. The exterior stack is preserved. Relative IOR and spectral survival remain DL-49/DL-50. |
+| RandomWalkSSS RGB/NM | Samples internal transport and exit; callers handle entry Fresnel probability/weight. The exterior stack is preserved. Relative IOR remains DL-49; spectral survival was closed by DL-50. |
 | BSSRDFEntryAdapters and PathVertexEval | Reevaluate directional factors of the same complete event. They do not add an independent surface-transmission stage. Sw and relative-index issues remain open; adapters are covered by source audit, not a new spectral renderer oracle. |
 | PT RGB/NM and HWSS | RGB/NM share the templated complete-event branches. HWSS SSS routes through NM. New rendered measurements are RGB only; they do not certify spectral equivalence. Recursive environment MIS remains DL-53. |
 | BDPT eye/light RGB/NM; VCM and MLT | BDPT invokes the same helpers, with entry Fresnel selection compensation; it preserves exterior state. VCM/MLT share those subpath generators. Source audit establishes the convention scope; no new complete BDPT/VCM/MLT SSS render matrix is claimed. |
