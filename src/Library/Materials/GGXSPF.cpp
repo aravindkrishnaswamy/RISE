@@ -210,14 +210,9 @@ void GGXSPF::Scatter(
 			const Scalar mixPdf = (total > 1e-10) ?
 				(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-			RISEPel kray = pDiffuse->GetColor(ri) * (1.0 / pDiffuseSelect);
-			if( fresnelMode == eFresnelSchlickF0 )
-			{
-				// (1 - max(F0)) energy split per glTF spec
-				const RISEPel specColor = pSpecular->GetColor(ri);
-				const Scalar maxF0 = ColorMath::MaxValue( specColor );
-				kray = kray * r_max( Scalar(0), Scalar(1.0) - maxF0 );
-			}
+			const GGXInterfaceFresnel interface { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+			const RISEPel kray = pDiffuse->GetColor(ri) * (1.0 / pDiffuseSelect) *
+				GGXInterfaceFresnel::Transmission( interface.Directional(cosWi), interface.Directional(cosTheta) );
 
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
@@ -496,12 +491,9 @@ void GGXSPF::ScatterNM(
 
 			// wd/ws already hold the guarded samples for this call (fetched
 			// once above); reuse rather than re-sampling the same slot.
-			Scalar krayNM = wd / pDiffuseSelect;
-			if( fresnelMode == eFresnelSchlickF0 )
-			{
-				const Scalar F0 = ws;
-				krayNM = krayNM * r_max( Scalar(0), Scalar(1.0) - F0 );
-			}
+			const GGXInterfaceFresnel interface { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+			const Scalar krayNM = (wd / pDiffuseSelect) *
+				GGXInterfaceFresnel::Transmission( interface.DirectionalNM(cosWi,nm), interface.DirectionalNM(cosTheta,nm) );
 
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
