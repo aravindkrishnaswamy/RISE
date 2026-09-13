@@ -86,17 +86,17 @@ bool Finite( const Scalar value )
 	return std::isfinite( value );
 }
 
-Object* MakeClosedUnitSphere()
+Object* MakeClosedUnitSphere( const Scalar radius = 1.0 )
 {
-	SphereGeometry* geometry = new SphereGeometry( 1.0 );
+	SphereGeometry* geometry = new SphereGeometry( radius );
 	Object* object = new Object( geometry );
 	geometry->release();
 	return object;
 }
 
-RayIntersectionGeometric MakeSurfaceHit()
+RayIntersectionGeometric MakeSurfaceHit( const Scalar radius = 1.0 )
 {
-	const Point3 point( 0, -1, 0 );
+	const Point3 point( 0, -radius, 0 );
 	const Vector3 normal( 0, -1, 0 );
 	const Vector3 incoming( 0, 1, 0 );
 	RayIntersectionGeometric ri(
@@ -254,6 +254,102 @@ void TestStratifiedUnconditionalBeerAttenuation()
 	sphere->release();
 }
 
+// A collision pays albedo once; an internally reflected boundary pays no
+// additional conditional survival factor. Draw counts and exit hemisphere
+// distinguish these histories from an accidental direct exit.
+void TestPriorCollisionAndReflection()
+{
+	std::cout << "Test C: survival after a collision and internal reflection" << std::endl;
+	Object* sphere = MakeClosedUnitSphere();
+	const RayIntersectionGeometric entry = MakeSurfaceHit();
+	const Scalar wavelengths[] = { 0.0, 450.0, 550.0, 650.0 };
+	for( int reflected = 0; reflected < 2; ++reflected ) {
+		for( const Scalar wavelength : wavelengths ) {
+			std::vector<Scalar> draws;
+			if( wavelength == 0 ) draws.push_back( 0.5 );
+			if( reflected ) {
+				draws.push_back( 0.99 ); // first boundary
+				draws.push_back( 0.0 );  // Fresnel reflection, F0 = 0.04
+			} else {
+				draws.push_back( 1.0 - std::exp( -0.25 ) );
+				draws.push_back( 0.0 );  // forward isotropic phase direction
+				draws.push_back( 0.25 ); // azimuth
+			}
+			if( wavelength == 0 ) draws.push_back( 0.5 );
+			draws.insert( draws.end(), { 0.99, 0.9, 0.25, 0.75 } );
+			SequenceSampler sampler( draws );
+			const Scalar scattering = reflected ? 0.0 : 0.8;
+			const BSSRDFSampling::SampleResult sample = RandomWalkSSS::SampleExit(
+				entry, sphere, RISEPel(1.0-scattering), RISEPel(scattering),
+				RISEPel(1.0), 0.0, reflected ? 1.5 : 1.0, 2, sampler, wavelength );
+			RequireFiniteSample( sample, "two-segment history must exit" );
+			Require( !sampler.Exhausted() && sampler.Consumed() == draws.size(),
+				"two-segment history must consume every prescribed draw exactly" );
+			Require( reflected ? sample.entryPoint.y < -0.99 : sample.entryPoint.y > 0.99,
+				"exit hemisphere must identify the intended history" );
+			const Scalar expected = reflected ? 1.0 : scattering;
+			const Scalar actual = wavelength > 0 ? sample.weightSpatialNM : sample.weightSpatial[0];
+			Require( Close(actual,expected),
+				"survival after collision/reflection must retain only prior albedo" );
+			if( wavelength == 0 ) {
+				Require( Close(sample.weightSpatial[1],expected) &&
+					Close(sample.weightSpatial[2],expected), "all neutral RGB channels must agree" );
+			}
+			std::cout << "  reflected=" << reflected << " wavelength=" << wavelength
+				<< " spatial=" << actual << " expected=" << expected << std::endl;
+		}
+	}
+	sphere->release();
+}
+
+// The tiny-extinction proposal uses the largest RGB rate, even in NM.
+// A large physical chord makes that otherwise invisible difference testable.
+// At this coordinate scale the inward epsilon rounds away; verify the real
+// sphere's far hit through the same documented front-face fallback before
+// accepting any estimator observation. No geometry precision fix is assumed.
+void TestFallbackSurvivalProbability()
+{
+	std::cout << "Test D: NM fallback uses its actual survival probability" << std::endl;
+	const Scalar radius = 1e19;
+	Object* sphere = MakeClosedUnitSphere( radius );
+	const RayIntersectionGeometric entry = MakeSurfaceHit( radius );
+	const Ray ray( entry.ptIntersection, Vector3(0,1,0) );
+	RayIntersection measured( ray, nullRasterizerState );
+	sphere->IntersectRay( measured, RISE_INFINITY, false, true, false );
+	if( !measured.geometric.bHit ) {
+		RayIntersection fallback( ray, nullRasterizerState );
+		sphere->IntersectRay( fallback, RISE_INFINITY, true, false, false );
+		measured = fallback;
+	}
+	const Scalar distance = measured.geometric.range;
+	Require( measured.geometric.bHit && Finite(distance) && Close(distance/(2*radius),1.0),
+		"large sphere must yield its finite far boundary, not a self-hit" );
+	const Scalar proposalRate = 1e-19;
+	const Scalar physicalRate = 0.0722 * proposalRate;
+	const Scalar physicalTr = std::exp( -physicalRate * distance );
+	const Scalar survivalProbability = std::exp( -proposalRate * distance );
+	const Scalar expected = physicalTr / survivalProbability;
+	Require( physicalRate < 1e-20 && proposalRate > 1e-20 &&
+		0.99 > 1.0-survivalProbability && expected > 2.0,
+		"fallback fixture must exercise a distinct surviving proposal" );
+	const Scalar wavelengths[] = { 450.0, 550.0, 650.0 };
+	for( const Scalar wavelength : wavelengths ) {
+		SequenceSampler sampler( {0.99,0.5,0.25,0.75} );
+		const BSSRDFSampling::SampleResult sample = RandomWalkSSS::SampleExit(
+			entry, sphere, RISEPel(0,0,proposalRate), RISEPel(0.0),
+			RISEPel(0,0,proposalRate), 0.0, 1.0, 1, sampler, wavelength );
+		RequireFiniteSample( sample, "fallback survival must produce an actual exit" );
+		Require( !sampler.Exhausted() && sampler.Consumed() == 4 &&
+			Close(sample.entryPoint.y/radius,1.0),
+			"fallback survival must reach the far boundary with the intended draws" );
+		Require( Close(sample.weightSpatialNM,expected),
+			"NM fallback survival weight must divide by actual proposal probability" );
+		std::cout << "  wavelength=" << wavelength << " spatial=" << sample.weightSpatialNM
+			<< " expected=" << expected << " distance=" << distance << std::endl;
+	}
+	sphere->release();
+}
+
 } // namespace
 
 int main()
@@ -261,6 +357,8 @@ int main()
 	std::cout << "=== DL-50 random-walk survival tests ===" << std::endl;
 	TestNeutralConditionalSurvival();
 	TestStratifiedUnconditionalBeerAttenuation();
+	TestPriorCollisionAndReflection();
+	TestFallbackSurvivalProbability();
 	if( gFailures ) {
 		std::cerr << "=== DL-50 survival failures: " << gFailures << " ===" << std::endl;
 		return 1;
