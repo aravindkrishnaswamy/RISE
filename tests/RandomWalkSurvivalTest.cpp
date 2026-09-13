@@ -345,7 +345,9 @@ void TestFallbackSurvivalProbability()
 		Require( Close(sample.weightSpatialNM,expected),
 			"NM fallback survival weight must divide by actual proposal probability" );
 		std::cout << "  wavelength=" << wavelength << " spatial=" << sample.weightSpatialNM
-			<< " expected=" << expected << " distance=" << distance << std::endl;
+			<< " expected=" << expected << " distance=" << distance
+			<< " consumed=" << sampler.Consumed() << " valid=" << sample.valid
+			<< " measuredNormalY=" << measured.geometric.vNormal.y << std::endl;
 	}
 	sphere->release();
 }
