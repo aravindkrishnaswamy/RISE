@@ -263,9 +263,11 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// scattering before exitDist): mean of Tr[c] over channels.
 			if( nm > 0 )
 			{
-				// Use the same luminance-derived sigma_t for exit
-				// transmittance, consistent with distance sampling.
-				throughputNM *= exp( -sigma_t_nm * exitDist );
+				// Divide physical transmittance by the probability of this
+				// sampled survival event. Normally sigma_t_ch == sigma_t_nm,
+				// so the conditional weight is one. Retain the ratio when
+				// the tiny-extinction fallback uses a different proposal.
+				throughputNM *= exp( (sigma_t_ch - sigma_t_nm) * exitDist );
 			}
 			else
 			{
