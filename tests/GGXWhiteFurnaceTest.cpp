@@ -687,7 +687,7 @@ int main()
 	}
 
 	// Test 7: Same battery, schlick_f0 mode.  Validates that PDF / kray
-	// derivation, multiscatter compensation, and the (1 - max(F0)) diffuse
+	// derivation, multiscatter compensation, and the reciprocal interface diffuse
 	// split all preserve PDF-self-consistency, SPF/BRDF agreement, and
 	// energy conservation when the BRDF uses Schlick-from-F0 instead of
 	// conductor Fresnel.

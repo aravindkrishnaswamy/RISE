@@ -30,6 +30,31 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		// Borrowed per-hit interface inputs shared by GGX evaluation and sampling.
+		// This is macro-interface Fresnel, not integrated rough-GGX reflectance.
+		struct GGXInterfaceFresnel
+		{
+			const RayIntersectionGeometric& ri;
+			FresnelMode mode;
+			const IPainter& specular;
+			const IScalarPainter& ior;
+			const IScalarPainter& extinction;
+			const IScalarPainter* filmIOR;
+			const IScalarPainter* filmExtinction;
+			const IScalarPainter* filmThickness;
+
+			RISEPel Directional( Scalar cosine ) const;
+			Scalar DirectionalNM( Scalar cosine, Scalar nm ) const;
+			RISEPel Mean() const;
+			Scalar MeanNM( Scalar nm ) const;
+
+			template<class T> static T Transmission( const T& incoming, const T& outgoing )
+			{
+				// Single entry and exit; deliberately no diffuse recycling.
+				return (T(1.0) - incoming) * (T(1.0) - outgoing);
+			}
+		};
+
 		class GGXBRDF :
 			public virtual IBSDF,
 			public virtual Reference

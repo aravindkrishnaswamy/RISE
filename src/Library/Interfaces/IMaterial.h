@@ -42,10 +42,13 @@ namespace RISE
 	//!     Treats `specular` painter as F0 directly; uses Schlick's
 	//!     approximation `F = F0 + (1-F0)(1-cosθ_h)^5`.  Required by
 	//!     glTF metallicRoughness PBR mapping.  In this mode `ior` /
-	//!     `ext` painters are ignored, the diffuse lobe is modulated by
-	//!     `(1 - max(F0))` per glTF spec, and the multiscatter lobe uses
-	//!     the closed-form Schlick hemispherical Fresnel average
-	//!     `F_avg = F0 + (1-F0)/21`.
+	//!     `ext` painters are ignored.  GGX applies the reciprocal
+	//!     single-pass diffuse interface transmission `(1-Ai)*(1-Ao)`
+	//!     in evaluation and selected diffuse throughput, with A from
+	//!     the active interface Fresnel model; it does not use the old
+	//!     constant `(1-max(F0))` split or recycle diffuse returns.  The
+	//!     multiscatter lobe uses the closed-form Schlick hemispherical
+	//!     Fresnel average `F_avg = F0 + (1-F0)/21`.
 	//!
 	//!   eFresnelThinFilmConductor:
 	//!     Thin-film interference (heat-tint / anodization color) on the

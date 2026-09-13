@@ -585,24 +585,24 @@ a coverage weight distinct from `tau`; and — the serious one —
 > whose grazing energy split is the point. It bounds what Phase 1 can honestly
 > claim (§6.2, §6.9) and is the third independent justification for Phase 2 (§7).
 
-### 3.4 `ggx_material` — no coat concept, and its diffuse deduction is angle-flat
+### 3.4 `ggx_material` — reciprocal interface transmission, with no coat concept
 
 A single microfacet layer with a three-lobe mixture (diffuse, anisotropic VNDF
 specular, Kulla-Conty multiscatter). **There is no clearcoat concept anywhere in
 it** — a grep for `coat_weight` / `coat_ior` / `coat_roughness` across
 `src/Library/` finds nothing but the dead glTF field names. `fresnel_mode
 thinfilm` changes how the *existing* specular lobe's reflectance is computed; it
-does not add a lobe. Three details matter for wetness:
+does not add a lobe. The following details matter for wetness:
 
-- **In `schlick_f0` mode the diffuse lobe's deduction is `(1 − max F0)`**, a flat
-  scalar ([GGXSPF.cpp:210-220](../src/Library/Materials/GGXSPF.cpp), spectral twin
-  at `:496-504`). **Be precise about what is and is not flat here:** GGX's
-  *specular* lobe has a real per-direction Fresnel, so its highlight does brighten
-  toward grazing. What is angle-independent is the **energy the diffuse lobe gives
-  up** — a constant deduction, applied only in `schlick_f0` mode. The true
-  complaint is therefore energy conservation, not "no grazing response": as the
-  specular takes more at grazing, the diffuse does not correspondingly give more
-  back, so the pair does not trade energy the way §2.2's film does.
+- **Historical (before DL-37):** `schlick_f0` used a flat `(1 − max F0)` diffuse
+  deduction; this historical behavior explains the earlier wetness analysis.
+- **Current:** GGX uses reciprocal single-pass interface transmission for the
+  diffuse lobe, `(1 − Ai) * (1 − Ao)`, in both BRDF evaluation and selected
+  diffuse throughput.  A is the active Schlick, conductor, or thin-film
+  interface Fresnel.  The model deliberately omits diffuse recycling.  Its
+  albedo guides use a macro-interface approximation; the directional diffuse
+  integral is `c * (1 − Ao) * (1 − Amean)` and the cosine-weighted mean is
+  `c * (1 − Amean)^2`, rather than an exact integrated rough-GGX energy model.
 - **`rs` (the F0 slot) is an `IPainter`** — colour pipe, so a spatially varying F0
   mask would be JH-uplifted. Roughness (`alphax`/`alphay`) is `IScalarPainter` and
   is safely mask-drivable.
@@ -999,17 +999,20 @@ rewrite GGX/PBR bases at all — modulate their existing params in place.**
    direction ([PolishedSPF.cpp:242](../src/Library/Materials/PolishedSPF.cpp),
    `Rs` at `:90-96`), so **indirect and BSDF-sampled transport** reproduces §2.2's
    grazing rise: the substrate gives up energy toward grazing as the coat takes
-   more. GGX in `schlick_f0` mode instead deducts a constant `(1 − max F0)` from
-   its diffuse lobe ([GGXSPF.cpp:210-220](../src/Library/Materials/GGXSPF.cpp)),
-   so the pair never trades energy with angle at all.
-   **This claim is explicitly scoped and is *not* decisive on its own**: it holds
-   for the sampled path only. Direct lighting through `GetBSDF()` sees a bare
+   more. Current GGX in `schlick_f0` mode uses the same reciprocal single-pass
+   interface transmission in its BRDF and SPF, so direct and sampled paths share
+   the directional interface factors.  It still has no coat lobe and deliberately
+   performs no diffuse recycling, so it is not a replacement for the wet-film
+   layer model described here.
+   **The polished-material claim is scoped to its sampled path.** Its direct
+   lighting through `GetBSDF()` sees a bare
    `LambertianBRDF(Rd)` with no `(1−Rs)` factor
    ([PolishedMaterial.h:49,57](../src/Library/Materials/PolishedMaterial.h)),
-   so NEE gets no grazing rise from either candidate. The honest form of the
-   argument is: polished gets the angular behaviour right on the half of transport
-   where any existing RISE material could, and Phase 2 is what gets it right on
-   the other half.
+   so that polished path has no corresponding diffuse attenuation. GGX now
+   agrees between direct and
+   sampled paths on its interface transmission, but its single-pass model is
+   still distinct from `polished_material`'s wet-film transport and does not
+   recycle diffuse returns.
 3. **Every wetness knob is already on the scalar pipe.** `tau`, `ior`,
    `scattering` are all `IScalarPainter`
    ([ChunkParserRegistry.cpp:3348-3356](../src/Library/Parsers/ChunkParserRegistry.cpp)),

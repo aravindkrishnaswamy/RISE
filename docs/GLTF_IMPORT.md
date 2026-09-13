@@ -20,7 +20,7 @@ end-to-end immediately.  Full scene import (`gltf_import`), PBR material
 wrappers, and the rest of Phase 2 stay deferred.  Phase 3+ (animation,
 skinning, KHR extensions) stays deferred.
 
-**Phase 2 status (2026-04-30, this branch, uncommitted):** the bulk of
+**Phase 2 status (historical landing note, superseded by current status below):** the bulk of
 Phase 2 has shipped — `gltf_import`, `pbr_metallic_roughness_material`,
 `channel_painter`, optional `emissive` on `ggx_material`, and embedded-
 texture extraction (sidecar-cache form).  Two items were deferred to
@@ -33,16 +33,18 @@ Fresnel double-counts F0 when the PBR mapping plugs `rs = lerp(0.04,
 baseColor, metallic)` on top of it, which makes metals render ~25× too
 dim.
 
-**Phase 3 status (2026-04-30, this branch, uncommitted):** all
-Phase-2-deferred work has been delivered.  Concretely:
+**Phase 3 status (historical landing note; current GGX diffuse semantics are
+described below):** all Phase-2-deferred work has been delivered.  Concretely:
 
   - **Schlick-from-F0 Fresnel mode on `GGXBRDF` / `GGXSPF`** (fixes
     P1-1 / P1-2 / P1-3) — new `fresnel_mode` parameter on
-    `ggx_material` (default `conductor`, preserves existing scenes
-    byte-identical).  `pbr_metallic_roughness_material` now flips this
+    `ggx_material` (default `conductor`; preserved existing scenes
+    at that historical landing).  `pbr_metallic_roughness_material` now flips this
     to `schlick_f0`, which treats the `specular` painter as F0
-    directly, evaluates `F = F0 + (1-F0)(1-cosθ_h)^5`, and modulates
-    diffuse by `(1 - max(F0))` per glTF spec.  Three test programs
+    directly and evaluates `F = F0 + (1-F0)(1-cosθ_h)^5`.  GGX now
+    applies reciprocal single-pass interface transmission to diffuse,
+    `(1-Ai)*(1-Ao)`, in both BRDF evaluation and selected diffuse
+    throughput; it intentionally omits diffuse recycling.  Three test programs
     cover it: `tests/GGXFresnelModeTest.cpp` (analytical oracles),
     `tests/GGXMetalRoughGridTest.cpp` (4-corner grid), and Test 7 of
     `tests/GGXWhiteFurnaceTest.cpp` (energy / PDF / SPF–BRDF
@@ -152,12 +154,12 @@ blocks for the implementation.
 | **Test corpus** | Box (db65457) | 9 Khronos Sample-Assets `.glb` files committed under `scenes/Tests/Geometry/assets/`: BoxTextured, Duck, Avocado, NormalTangentTest, NormalTangentMirrorTest, VertexColorTest, MultiUVTest, OrientationTest, AlphaBlendModeTest | — |
 | **Test program** | `tests/GLTFLoaderTest.cpp` with 5 cases (db65457) | Extended to 14 cases — adversarial coverage of every Phase 1 attribute path (TANGENT, TEXCOORD_1, COLOR_0 v2 cast, multi-mesh boundary, alpha-mode metadata ignore) | — |
 | **Tangent-space normal mapping** | — | `Modifiers/NormalMap.{h,cpp}` + `normal_map_modifier` chunk + `Job::AddNormalMapModifier` + `RISE_API_CreateNormalMapModifier`; visual-regression scene `gltf_normal_mapped.RISEscene`; sidecar normal-map PNG + extraction helper script | — |
-| **PBR material wrapper** (`pbr_metallic_roughness_material`) | — | `Job::AddPBRMetallicRoughnessMaterial` constructs a GGX + painter graph; chunk parser registered. **Phase 3 update**: switched to Schlick-from-F0 mode in the BSDF, removed the `0.96 * baseColor` retention pre-multiplier (the (1−max(F0)) factor is now applied at evaluation time per the glTF spec).  Metals render at full F0 reflectance.  See §13. | — |
-| **Schlick-from-F0 Fresnel mode on GGX BSDF** | — | `enum FresnelMode { eFresnelConductor, eFresnelSchlickF0 }` in `Interfaces/IMaterial.h`; new `fresnel_mode` parameter on `ggx_material` chunk (default `conductor`, byte-identical to pre-Phase-3 behaviour); `pbr_metallic_roughness_material` flips it to `schlick_f0`. Multiscatter uses closed-form Schlick hemisphere average `F0 + (1-F0)/21`. | — |
+| **PBR material wrapper** (`pbr_metallic_roughness_material`) | — | `Job::AddPBRMetallicRoughnessMaterial` constructs a GGX + painter graph; chunk parser registered. **Current GGX semantics**: the wrapper supplies `rd = baseColor * (1−metallic)` and F0, while GGX applies reciprocal single-pass `(1−Ai)*(1−Ao)` interface transmission in evaluation and selected diffuse throughput. The old `0.96 * baseColor` retention pre-multiplier is removed; diffuse recycling is intentionally omitted. Metals render at full F0 reflectance. See §4. | — |
+| **Schlick-from-F0 Fresnel mode on GGX BSDF** | — | `enum FresnelMode { eFresnelConductor, eFresnelSchlickF0 }` in `Interfaces/IMaterial.h`; new `fresnel_mode` parameter on `ggx_material` chunk (default `conductor`; the mode addition preserved pre-Phase-3 conductor behavior at that landing); `pbr_metallic_roughness_material` flips it to `schlick_f0`. Multiscatter uses closed-form Schlick hemisphere average `F0 + (1-F0)/21`. | — |
 | **`channel_painter`** for MR-texture extraction | — | Single-header `Painters/ChannelPainter.h` (R/G/B selector + scale + bias); chunk parser registered | — |
 | **Bulk scene import** (`gltf_import`) | — | `Importers/GLTFSceneImporter.{h,cpp}` walks scene tree, emits per-primitive geometries, materials, lights, cameras; `Job::ImportGLTFScene` + `RISE_API_ImportGLTFScene`; chunk parser registered. **Phase 3 update**: embedded `.glb` images go directly through `Job::AddInMemoryPNG/JPEGTexturePainter` (no disk round-trip); `.gltf_cache/` sidecar retired; node-world matrices flow through `Job::AddObjectMatrix` verbatim (no Euler decomposition); skinning / animation / morph targets warn-and-skip; alphaMode = MASK auto-wires per-material alpha-test shader. | — |
 | **In-memory PNG / JPEG painters** | — | `Job::AddInMemoryPNGTexturePainter` / `AddInMemoryJPEGTexturePainter` consume a byte buffer (no disk path) and reuse the existing painter pipeline.  Used by `gltf_import` for embedded-image bytes. | — |
-| **Alpha modes** (`alpha_test_shaderop` for MASK) | — | `Shaders/AlphaTestShaderOp.{h,cpp}` + `alpha_test_shaderop` chunk + `Job::AddAlphaTestShaderOp` + `RISE_API_CreateAlphaTestShaderOp`.  glTF importer auto-wires per-material when `alphaMode = MASK`.  **Caveat**: shader-op is honoured only by integrators that route through `IShader::Shade()` — PT and legacy direct shaders.  BDPT, VCM, MLT, and photon tracers bypass the shader-op pipeline and treat MASK as opaque (no runtime warning). Per-pixel alpha currently uses `max(R,G,B)` of baseColor as a proxy because `IPainter` does not expose the A channel. | Phase 4: alpha-aware painter, alpha mask under BDPT/VCM/MLT, `alphaMode = BLEND` |
+| **Alpha modes** (`alpha_test_shaderop` for MASK) | — | `Shaders/AlphaTestShaderOp.{h,cpp}` + `alpha_test_shaderop` chunk + `Job::AddAlphaTestShaderOp` + `RISE_API_CreateAlphaTestShaderOp`.  glTF importer auto-wires per-material when `alphaMode = MASK`.  **Caveat**: shader-op is honoured only by integrators that route through `IShader::Shade()` — PT and legacy direct shaders.  BDPT, VCM, MLT, and photon tracers bypass the shader-op pipeline and treat MASK as opaque (no runtime warning). Per-pixel alpha uses `IPainter::GetAlpha()` and the alpha-aware painter support recorded below; the former `max(R,G,B)` proxy is retired. | Historical remaining pipeline work: alpha mask under BDPT/VCM/MLT and `alphaMode = BLEND`; see later Phase-4 status. |
 | **Quaternion / matrix on `standard_object`** | — | New optional `quaternion` (xyzw) and `matrix` (16 doubles, column-major) parameters on `standard_object`; `Job::AddObjectMatrix` consumes a 4×4 directly.  Mutual-exclusion warnings if multiple are set; precedence is `matrix` > `quaternion` > `orientation` (Euler).  glTF importer uses the matrix path; `DecomposeAffine` deleted. | — |
 | **`mkFromQuaternion` bug** | — | `Math3D/MatricesOps.h:215-217` — `_2y` and `_2z` were both computing `2 * a.v.x` instead of `a.v.y` / `a.v.z`.  Fixed; needed by the new `standard_object { quaternion ... }` path. | — |
 | **Emissive on `ggx_material`** | — | Second `GGXMaterial` ctor takes optional `emissive` painter + `emissive_scale`, builds a `LambertianEmitter` and exposes it via `GetEmitter()`; `Job::AddGGXEmissiveMaterial`; parser params `emissive` / `emissive_scale` on `ggx_material` chunk | — |
@@ -377,7 +379,9 @@ Chunk parameters ([AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegis
 - `ior` — Fresnel IOR (painter)
 - `extinction` — Fresnel extinction (painter)
 
-That is **already the metallic-roughness BRDF** — diffuse lobe + GGX specular lobe with painter-driven F0 and roughness, with proper multiscattering compensation. The glTF spec prescribes:
+That is **already the metallic-roughness input mapping** — diffuse lobe + GGX
+specular lobe with painter-driven F0 and roughness, with proper multiscattering
+compensation.  The glTF source mapping prescribes:
 
 ```
 c_diff = lerp(baseColor.rgb * (1 - 0.04), 0, metallic)        // diffuse color
@@ -385,8 +389,14 @@ f0     = lerp(0.04, baseColor.rgb, metallic)                  // F0
 α      = roughness * roughness                                 // GGX α
 ```
 
-then `BRDF = c_diff/π + GGX_specular(f0, α)`. RISE's GGX evaluates exactly that
-shape. We just need to construct the right `rd`, `rs`, `alpha` painters.
+then `BRDF = c_diff/π + GGX_specular(f0, α)`.  RISE constructs the corresponding
+`rd`, `rs`, and `alpha` painters, while its GGX runtime composes the diffuse
+term with reciprocal single-pass interface transmission
+`c/π * (1-Ai) * (1-Ao)`.  A is the active Schlick, conductor, or thin-film
+interface Fresnel.  This deliberately omits diffuse recycling; its albedo
+guides use a macro-interface approximation, and the directional diffuse
+integral is `c*(1-Ao)*(1-Amean)` with cosine-weighted mean
+`c*(1-Amean)^2`.  It is not an exact integrated rough-GGX energy model.
 
 ### `blend_painter` does the lerp
 
@@ -414,13 +424,14 @@ channel_painter metal_p   { source mr_tex  channel B  scale $metallicFactor }
 channel_painter rough_p   { source mr_tex  channel G  scale $roughnessFactor }
 
 # Constants
-uniformcolor_painter zero  { color 0   0   0 }
-uniformcolor_painter f0    { color 0.04 0.04 0.04 }
-uniformcolor_painter bc096 { color 0.96 0.96 0.96 }   # (1 - 0.04)
-blend_painter bc_diffuse  { colora bc_tex  colorb zero  mask bc096 }   # bc * 0.96
+uniformcolor_painter zero   { color 0   0   0 }
+uniformcolor_painter white  { color 1   1   1 }
+uniformcolor_painter f0     { color 0.04 0.04 0.04 }
 
-# diffuse: 0 for metals, baseColor*0.96 for non-metals
-blend_painter rd_painter  { colora zero    colorb bc_diffuse  mask metal_p }
+# diffuse colour: 0 for metals, baseColor for non-metals;
+# GGX applies the directional interface transmission at runtime.
+blend_painter one_minus_met { colora zero colorb white mask metal_p }
+blend_painter rd_painter  { colora bc_tex  colorb zero  mask one_minus_met }
 
 # F0: baseColor for metals, 0.04 for non-metals
 blend_painter rs_painter  { colora bc_tex  colorb f0          mask metal_p }
@@ -433,10 +444,13 @@ ggx_material gltf_pbr {
     alphay     rough_p
     ior        f0           # any constant works; F0 dominates the Fresnel
     extinction zero
+    fresnel_mode schlick_f0
 }
 ```
 
-That's the entire mapping. **No new BSDF.** The required additions are:
+That's the entire painter mapping.  The BSDF applies the reciprocal interface
+transmission described above; no parser-side diffuse retention factor is
+needed.  The required additions are:
 
 1. **`channel_painter` chunk** — extract a single R/G/B/A channel from another painter, optionally scaled. Small new painter class (~50 lines) + chunk parser. Or: add a `channel` parameter to the existing image painters.
 2. **Convenience: `pbr_metallic_roughness_material` chunk** — single-chunk authoring sugar. Takes `base_color`, `metallic`, `roughness`, `normal_map`, `emissive`, `ior` painters (with sensible defaults) and constructs all of the above internally. Pure parser-side decomposition; the runtime is still a `ggx_material`. ~100 lines of parser code + a small `Job::AddPBRMetallicRoughnessMaterial` API method that wires up the painters.
@@ -570,7 +584,7 @@ non-conformant assets that ship with V already baked in upside-down
 mesh formats (PLY, 3DS, RAW2) keep their native V conventions; nothing
 in the painter or image-reader chain needed to change.
 
-### Material story summary
+### Material story summary (historical plan snapshot)
 
 | RISE addition | Status | Lines | Purpose |
 |---|---|---|---|
@@ -580,8 +594,10 @@ in the painter or image-reader chain needed to change.
 | `alpha_test_modifier` chunk + class | pending (Phase 2) | ~100 | glTF alphaMode = MASK |
 | `normal_map_modifier` chunk + class | **delivered (this branch)** | ~120 | glTF normalTexture |
 
-No new BSDF. No new SPF. No new Material class. The remaining Phase 2
-material work is parser-side composition of pieces RISE already has.
+This was the original Phase-2 plan: no new BSDF, SPF, or Material class was
+expected at that point.  The current GGX implementation does contain the
+shared interface-transmission helper described in §4; the painter graph still
+handles only input mapping.
 
 ---
 
@@ -852,7 +868,7 @@ Negligible. No template-heavy C++ overhead like fastgltf would impose.
 
 ---
 
-## 10. RISE enhancements summary
+## 10. Historical snapshot: RISE enhancements summary
 
 Net new chunks / interfaces / runtime hooks this work introduces.  "Phase"
 records original-plan phase; "Status" records what has actually shipped.
@@ -878,9 +894,9 @@ records original-plan phase; "Status" records what has actually shipped.
 | `channel_painter` chunk + class | `Painters/` | 2 | **this branch** | Extract MR-texture channels |
 | `GLTFSceneImporter` class + `ImportGLTFScene` API | `Importers/` | 2 | **this branch** | Orchestrates full scene import |
 | `alpha_test_modifier` chunk + class | `Modifiers/` | 2 → 3 | **deferred to Phase 3** | RISE modifiers run post-hit-commit; alpha mask needs pre-commit hook |
-| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 → 3 | **deferred to Phase 3** | Empirical Euler XYZ adequate; revisit on gimbal-lock failure |
+| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 → 3 | **delivered in Phase 3** | Quaternion/matrix parameters preserve imported transforms; see the later delivery table. |
 | Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | **this branch** | Avoid double-chunk for PBR + emissive |
-| Schlick-from-F0 mode in GGX BSDF | `Materials/GGXSPF` | — → 3 | **pending — Phase 3 (P1-1)** | Required to fix metals rendering 25× too dim under PBR mapping |
+| Schlick-from-F0 mode in GGX BSDF | `Materials/GGXSPF` | — → 3 | **delivered in Phase 3** | Schlick-from-F0 supplies PBR reflectance; DL-37 later changed diffuse transmission. |
 
 ---
 
@@ -970,7 +986,7 @@ Test scenes need predictable asset paths.  Proposed layout:
   header comment with the fetch URL and SHA-256, and `scenes/README.md` lists
   the optional download.
 
-## 13. Phase 2 adversarial review — what got fixed, what's deferred
+## 13. Historical Phase 2 adversarial review — what got fixed, what's deferred
 
 A round of three orthogonal adversarial reviewers (correctness / API
 robustness / fit-and-finish) hammered the Phase 2 work before this
@@ -1004,7 +1020,11 @@ Same root cause as P1-1 — the multiscatter compensation path also
 evaluates conductor Fresnel.  Will be fixed by the same Schlick-from-F0
 mode.
 
-**P1-3: PBR mapping ignores the (1−F) energy split between diffuse and specular (NOT FIXED — Phase 3).**
+**Historical Phase-2 review snapshot — P1-3: PBR mapping and the (1−F) energy split.**
+
+The following paragraph records the earlier review diagnosis and proposed
+Phase-3 work.  It is retained as history; current GGX diffuse semantics use
+the reciprocal single-pass interface model documented in §4 above.
 The glTF spec mathematically writes `diffuse = (1 − F(cosθ)) ·
 baseColor·(1−metallic) / π`, so diffuse energy is dynamically modulated
 by Fresnel.  The current mapping uses a static `c_diff = baseColor *
@@ -1077,7 +1097,7 @@ without proportional value.
 | Item | Phase | Resolution |
 |---|---|---|
 | Schlick-from-F0 mode on `GGXBRDF` | 3 | **Delivered.**  New `fresnel_mode` param on `ggx_material` (default `conductor`); `pbr_metallic_roughness_material` flips it to `schlick_f0`.  Fixes P1-1 / P1-2 / P1-3.  Three new test programs cover it (see §14). |
-| Direct (1−F) modulation of diffuse | 3 | **Delivered.**  Diffuse is multiplied by `(1 − max(F0))` per glTF spec inside the BRDF/SPF Schlick branch. |
+| Direct diffuse interface transmission | 3 | **Current implementation.**  GGX uses reciprocal single-pass `(1-Ai)*(1-Ao)` transmission in BRDF evaluation and selected diffuse throughput; diffuse recycling is intentionally omitted. |
 | `alpha_test_modifier` for glTF MASK | 3 | **Delivered as `alpha_test_shaderop`** (renamed from the Phase 2 plan after review of `IModifier`'s lifecycle confirmed shader-ops are the right hook).  Caveat: works only under integrators that route through `IShader::Shade()` (PT + legacy direct shaders); BDPT, VCM, MLT, and photon tracers bypass and treat MASK as opaque.  Phase 4 candidate to promote into a hit-time concern. |
 | `quaternion` / `matrix` parameter on `standard_object` | 3 | **Delivered.**  Both supported, with documented precedence (`matrix` > `quaternion` > `orientation`).  `Job::AddObjectMatrix` consumes a column-major 4×4 directly; the importer feeds the cgltf node-world matrix verbatim. |
 | In-memory `IRasterImage` path for embedded textures | 3 | **Delivered.**  `Job::AddInMemoryPNGTexturePainter` / `AddInMemoryJPEGTexturePainter` accept byte buffers; importer feeds them with the cgltf bufferView directly.  `.gltf_cache/` sidecar is retired. |

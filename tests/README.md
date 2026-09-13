@@ -77,6 +77,35 @@ Useful filename families:
 CLI diagnostics and data-processing programs that require file arguments live
 under `tools/`; they are not assertion-based `run_all_tests` executables.
 
+## Layered Material White Furnace
+
+`LayeredWhiteFurnaceTest` samples each direct directional-albedo row at 100,000
+draws for every incident angle (0°, 30°, 60°, and 80°). These rows use the
+whole sample count, report rejected draws, average each RGB channel before
+taking the maximum channel mean, and fail when a scattered ray has an invalid
+(non-finite, zero-length, or negative-throughput) contribution, or its
+aggregate overflows, before the mean is used as evidence.
+
+DL-37 makes the low-F0 Schlick rows 17 and 20 energy-bounded at all four
+angles (`rho <= 1.05`; loss is allowed), retaining their measured curves as
+inputs to the coated and fabric reference checks. Rows 54–56 extend that
+bound to a specular-only physical conductor, a white diffuse-plus-specular
+conductor, and the corresponding transparent-oxide thin-film conductor. The
+last two are public mixed-lobe regressions, not known-failure exemptions.
+
+`GGXDiffuseTransmissionTest` independently integrates the full RGB/NM BRDF
+with a cosine/VNDF proposal mixture and checks front/back reciprocity. Its
+energy band is `mean <= 1 + 6*SE + 0.005`, with invalid samples and moments
+failing explicitly. Three specular-only baseline failures remain visible with
+a nonzero exit and are tracked separately as DL-63; no energy assertion is
+skipped. This test is not an all-green gate until DL-63 is resolved.
+
+`GGXDiffuseRenderTest` loads `ggx_diffuse_transmission.RISEscene` and seeds each
+render immediately before rasterization. Its 384×128, 64-sample direct-light
+fixture writes `rendered/DL37_pbr.exr` in linear Rec.709, with box filtering and
+OIDN disabled. It checks scene loading/render completion; the direct material
+tests supply energy assertions, and artifact validation checks pixel finiteness.
+
 ## Style Of Test Used Here
 
 - Each file is an executable with its own `main`.
@@ -250,3 +279,10 @@ The guiding alpha is adaptively scaled using a variance-aware approach inspired 
 - Use `scenes/FeatureBased/` for curated showcase and torture scenes.
 - Use `scenes/Tests/` for isolated regression, comparison, and image-validation scenes.
 - If a feature is user-visible and deterministically testable, it usually deserves both.
+
+`GGXFilmTransmissionRangeTest` forces a diffuse sample for a passive dispersive
+zero-thickness film whose RGB preview exceeds one in a channel. It requires
+finite nonnegative diffuse throughput and checks BRDF/NM siblings plus the
+public directional/hemispherical guide agreement under independent quadrature.
+The forced-sample failure was committed before the range fix; the guide and NM
+controls are supplemental consistency coverage.

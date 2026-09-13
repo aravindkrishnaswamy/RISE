@@ -80,6 +80,86 @@ namespace
 	}
 }
 
+RISEPel GGXInterfaceFresnel::Directional( const Scalar cosine ) const
+{
+	const RISEPel tint = specular.GetColor( ri );
+	if( mode == eFresnelSchlickF0 ) {
+		return Optics::CalculateFresnelReflectanceSchlick<RISEPel>( tint, cosine );
+	}
+	if( mode == eFresnelThinFilmConductor ) {
+		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+			n0 = ri.ambientIOR; k0 = 0;
+			n1 = filmIOR->GetValueAtNM( ri, nm );
+			k1 = filmExtinction ? filmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+			n2 = ior.GetValueAtNM( ri, nm ); k2 = extinction.GetValueAtNM( ri, nm );
+		};
+		const RISEPel preview = tint * ThinFilm::ReflectanceConductorRGBSpectral(
+			cosine, filmThickness->GetValueAtNM( ri, Scalar(550) ), stackAt );
+		// A passive spectrum can have an RGB preview component above one.
+		// Interface transmission needs a reflectance in [0,1], unlike an
+		// RGB radiance proxy. Project at this boundary, before complements;
+		// do not clamp the resulting transported energy. NM stays physical.
+		return RISEPel(
+			r_min(Scalar(1), r_max(Scalar(0), preview[0])),
+			r_min(Scalar(1), r_max(Scalar(0), preview[1])),
+			r_min(Scalar(1), r_max(Scalar(0), preview[2])) );
+	}
+	const ScalarTriple eta = ior.GetValuesAt( ri );
+	const ScalarTriple k = extinction.GetValuesAt( ri );
+	const Vector3 direction( sqrt( r_max( Scalar(0), Scalar(1)-cosine*cosine ) ), 0, -cosine );
+	return tint * Optics::CalculateConductorReflectance<RISEPel>( direction, Vector3(0,0,1),
+		RISEPel(ri.ambientIOR), RISEPel(eta.v[0],eta.v[1],eta.v[2]), RISEPel(k.v[0],k.v[1],k.v[2]) );
+}
+
+Scalar GGXInterfaceFresnel::DirectionalNM( const Scalar cosine, const Scalar nm ) const
+{
+	const Scalar tint = GuardedGetColorNM( specular, ri, nm );
+	if( mode == eFresnelSchlickF0 ) {
+		return Optics::CalculateFresnelReflectanceSchlick<Scalar>( tint, cosine );
+	}
+	if( mode == eFresnelThinFilmConductor ) {
+		return tint * ThinFilm::ReflectanceConductor( cosine, nm, ri.ambientIOR, Scalar(0),
+			filmIOR->GetValueAtNM( ri, nm ), filmExtinction ? filmExtinction->GetValueAtNM( ri, nm ) : Scalar(0),
+			filmThickness->GetValueAtNM( ri, nm ), ior.GetValueAtNM( ri, nm ), extinction.GetValueAtNM( ri, nm ) );
+	}
+	const Vector3 direction( sqrt( r_max( Scalar(0), Scalar(1)-cosine*cosine ) ), 0, -cosine );
+	return tint * Optics::CalculateConductorReflectance<Scalar>( direction, Vector3(0,0,1),
+		ri.ambientIOR, ior.GetValueAtNM( ri, nm ), extinction.GetValueAtNM( ri, nm ) );
+}
+
+RISEPel GGXInterfaceFresnel::Mean() const
+{
+	const RISEPel tint = specular.GetColor( ri );
+	if( mode == eFresnelSchlickF0 ) return SchlickFresnelAvg<RISEPel>( tint );
+	if( mode == eFresnelThinFilmConductor ) {
+		// Integrate the same projected directional function. Projecting an
+		// already averaged preview would define a different diffuse model.
+		RISEPel mean(Scalar(0));
+		for( int i=0; i<MicrofacetEnergyLUT::GL_N; ++i ) {
+			const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+			mean = mean + Directional(mu) * (Scalar(2)*mu*MicrofacetEnergyLUT::GL_weights[i]);
+		}
+		return mean;
+	}
+	const ScalarTriple eta = ior.GetValuesAt( ri );
+	const ScalarTriple k = extinction.GetValuesAt( ri );
+	return tint * MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( Vector3(0,0,1),
+		RISEPel(ri.ambientIOR), RISEPel(eta.v[0],eta.v[1],eta.v[2]), RISEPel(k.v[0],k.v[1],k.v[2]) );
+}
+
+Scalar GGXInterfaceFresnel::MeanNM( const Scalar nm ) const
+{
+	const Scalar tint = GuardedGetColorNM( specular, ri, nm );
+	if( mode == eFresnelSchlickF0 ) return SchlickFresnelAvg<Scalar>( tint );
+	if( mode == eFresnelThinFilmConductor ) {
+		return tint * ThinFilm::FresnelAvgConductor( nm, ri.ambientIOR, Scalar(0),
+			filmIOR->GetValueAtNM( ri, nm ), filmExtinction ? filmExtinction->GetValueAtNM( ri, nm ) : Scalar(0),
+			filmThickness->GetValueAtNM( ri, nm ), ior.GetValueAtNM( ri, nm ), extinction.GetValueAtNM( ri, nm ) );
+	}
+	return tint * MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( Vector3(0,0,1), ri.ambientIOR,
+		ior.GetValueAtNM( ri, nm ), extinction.GetValueAtNM( ri, nm ) );
+}
+
 GGXBRDF::~GGXBRDF()
 {
 	safe_release( pDiffuse );
@@ -324,14 +404,11 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		}
 	}
 
-	// Diffuse lobe.  In Schlick mode, modulate by (1 - max(F0)) per glTF spec
-	// to enforce the (1-F) energy split between diffuse and specular.
-	RISEPel diffuse = pDiffuse->GetColor(ri) * INV_PI;
-	if( fresnelMode == eFresnelSchlickF0 )
-	{
-		const Scalar maxF0 = ColorMath::MaxValue( specColor );
-		diffuse = diffuse * r_max( Scalar(0), Scalar(1.0) - maxF0 );
-	}
+	// Diffuse interface transmission on entry and exit, shared with the
+	// selected cosine lobe in GGXSPF. No diffuse recycling is added.
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const RISEPel diffuse = pDiffuse->GetColor(ri) * INV_PI *
+		GGXInterfaceFresnel::Transmission( interfaceFresnel.Directional(nv), interfaceFresnel.Directional(nr) );
 
 	return diffuse + specular;
 }
@@ -486,178 +563,38 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 	}
 
-	Scalar diffuse = GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI;
-	if( fresnelMode == eFresnelSchlickF0 )
-	{
-		// In NM, F0 is scalar; same (1-F0) split applies.
-		diffuse = diffuse * r_max( Scalar(0), Scalar(1.0) - specColor );
-	}
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar diffuse = GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI *
+		GGXInterfaceFresnel::Transmission( interfaceFresnel.DirectionalNM(nv,nm), interfaceFresnel.DirectionalNM(nr,nm) );
 
 	return diffuse + specular;
 }
 
+// Albedo guides retain a macro-interface approximation for specular energy.
+// Unlike the diffuse integrals below, this is not the integrated rough-GGX
+// lobe. The exact diffuse integral is c*(1-Ao)*(1-Amean), with no recycling.
 RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// Diffuse + Fresnel(cos θo) · spec, matching whichever Fresnel model
-	// `value()` uses.  D / G microfacet terms shape the lobe but don't
-	// change total integrated reflectance to first order.
-	//
-	// The Schlick branch evaluates Fresnel at the actual outgoing-cosine,
-	// matching the conductor branch's intent.  Diffuse gets the
-	// (1 - max(F0)) glTF-spec split.  Earlier revisions used the
-	// hemispherical Schlick average here; review found it
-	// overestimates near-normal and underestimates at grazing.
-	const Vector3 n = ri.onb.w();
-	const RISEPel specColor = pSpecular->GetColor( ri );
-	const RISEPel diffColor = pDiffuse->GetColor( ri );
-
-	if( fresnelMode == eFresnelSchlickF0 )
-	{
-		const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
-		const Scalar cosThetaO = r_max( Scalar(0), Vector3Ops::Dot( wo, n ) );
-		const RISEPel F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosThetaO );
-		const Scalar maxF0 = ColorMath::MaxValue( specColor );
-		return diffColor * r_max( Scalar(0), Scalar(1.0) - maxF0 ) + F;
-	}
-	else if( fresnelMode == eFresnelThinFilmConductor )
-	{
-		// OIDN AOV: a representative thin-film RGB albedo (albedo-basis
-		// reflectance at the outgoing-cosine), NOT the bare-conductor
-		// Fresnel — so the denoiser's guide buffer carries the actual
-		// iridescent tint.  Uses the geometric-normal cosine here (this is
-		// a cheap per-hit guide, not a shading evaluation), matching the
-		// conductor branch which feeds CalculateConductorReflectance the
-		// dot(ray.Dir(), n) cosine.
-		// Dispersion-correct OIDN albedo: per-lambda film/substrate n,k so the
-		// denoiser guide carries the true iridescent tint for a file-based
-		// (dispersive) Ti/TiO2 stack; thickness is wavelength-independent.
-		const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
-		const Scalar cosThetaO = r_max( Scalar(0), Vector3Ops::Dot( wo, n ) );
-		const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
-		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-			n0 = ri.ambientIOR; k0 = Scalar(0); // G6 ambient medium IOR (default 1.0 = air)
-			n1 = pFilmIOR->GetValueAtNM( ri, nm );
-			k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
-			n2 = pIOR->GetValueAtNM( ri, nm );
-			k2 = pExtinction->GetValueAtNM( ri, nm );
-		};
-		const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGBSpectral(
-			cosThetaO, thickness, stackAt );
-		return diffColor + specColor * Rfilm;
-	}
-	else
-	{
-		const ScalarTriple iorT = pIOR->GetValuesAt( ri );
-		const ScalarTriple extT = pExtinction->GetValuesAt( ri );
-		const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
-		const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
-		// G6: ambient medium IOR from the hit context (default 1.0 = air).
-		const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
-		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-			ri.ray.Dir(), n, niPel, ior, ext );
-		return diffColor + specColor * fresnel;
-	}
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar cosine = fabs( Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), ri.onb.w() ) );
+	const RISEPel outgoing = interfaceFresnel.Directional( cosine );
+	return outgoing + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( outgoing, interfaceFresnel.Mean() );
 }
 
-//////////////////////////////////////////////////////////////////////
-// hemisphericalAlbedo / hemisphericalAlbedoNM -- IBSDF's VIEW-
-// INDEPENDENT reflectance.  See IBSDF.h for why it exists separately
-// from `albedo` above.
-//
-// Same "diffuse + Fresnel-weighted specular; D and G shape the lobe but
-// do not move the integrated reflectance to first order" structure as
-// `albedo`, with ONE deliberate difference that is the entire reason
-// this is a separate method: every Fresnel term here is the
-// HEMISPHERICAL AVERAGE, never an outgoing-cosine evaluation.
-//
-// That is both required and correct.  REQUIRED, because a view-
-// dependent reflectance fed into a layered material's shared recycling
-// term makes that material's BRDF non-reciprocal -- f(a->b) would carry
-// R(b) while f(b->a) carried R(a).  CORRECT, because the field this
-// quantity answers for -- light a coat has totally-internally-reflected
-// back down onto the substrate -- IS diffuse, so the hemispherical
-// average is the physically right Fresnel weight and not merely a
-// convenient view-free stand-in.
-//
-// All three averages are already in the tree for Kulla-Conty, which
-// needs the same quantity for the same reason: SchlickFresnelAvg
-// (closed form), MicrofacetEnergyLUT::ComputeFresnelAvg (21-point
-// Gauss-Legendre), ThinFilm::FresnelAvgConductor{,RGBSpectral}.
-// `ri.onb.w()` is a shading-point property, not a view direction, so
-// handing it to ComputeFresnelAvg keeps the result view-independent.
-//////////////////////////////////////////////////////////////////////
+// Coat recycling requires a view-independent hemispherical estimate.
+// The diffuse mean is c*(1-Amean)^2; specular retains its interface estimate.
 bool GGXBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
 {
-	const Vector3 n = ri.onb.w();
-	const RISEPel specColor = pSpecular->GetColor( ri );
-	const RISEPel diffColor = pDiffuse->GetColor( ri );
-
-	if( fresnelMode == eFresnelSchlickF0 )
-	{
-		const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
-		const Scalar maxF0 = ColorMath::MaxValue( specColor );
-		out = diffColor * r_max( Scalar(0), Scalar(1.0) - maxF0 ) + F_avg;
-	}
-	else if( fresnelMode == eFresnelThinFilmConductor )
-	{
-		const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
-		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-			n0 = ri.ambientIOR; k0 = Scalar(0);	// G6 ambient medium IOR (default 1.0 = air)
-			n1 = pFilmIOR->GetValueAtNM( ri, nm );
-			k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
-			n2 = pIOR->GetValueAtNM( ri, nm );
-			k2 = pExtinction->GetValueAtNM( ri, nm );
-		};
-		const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGBSpectral( thickness, stackAt );
-		out = diffColor + specColor * F_avg;
-	}
-	else
-	{
-		const ScalarTriple iorT = pIOR->GetValuesAt( ri );
-		const ScalarTriple extT = pExtinction->GetValuesAt( ri );
-		const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
-		const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
-		const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
-		const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, niPel, ior, ext );
-		out = diffColor + specColor * F_avg;
-	}
-
-	out = RISEPel(
-		r_min( r_max( out[0], Scalar(0) ), Scalar(1) ),
-		r_min( r_max( out[1], Scalar(0) ), Scalar(1) ),
-		r_min( r_max( out[2], Scalar(0) ), Scalar(1) ) );
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const RISEPel mean = interfaceFresnel.Mean();
+	out = mean + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }
 
 bool GGXBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
 {
-	const Vector3 n = ri.onb.w();
-	const Scalar specNM = GuardedGetColorNM( *pSpecular, ri, nm );
-	const Scalar diffNM = GuardedGetColorNM( *pDiffuse, ri, nm );
-
-	if( fresnelMode == eFresnelSchlickF0 )
-	{
-		// The diffuse split uses the PER-WAVELENGTH F0 rather than the
-		// RGB path's max-over-channels: at a single wavelength there
-		// are no other channels to take a maximum over.
-		const Scalar F_avg = SchlickFresnelAvg<Scalar>( specNM );
-		out = diffNM * r_max( Scalar(0), Scalar(1.0) - specNM ) + F_avg;
-	}
-	else if( fresnelMode == eFresnelThinFilmConductor )
-	{
-		out = diffNM + specNM * ThinFilm::FresnelAvgConductor(
-			nm, ri.ambientIOR, Scalar(0),
-			pFilmIOR->GetValueAtNM( ri, nm ), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0) ),
-			pFilmThickness->GetValueAtNM( ri, nm ),
-			pIOR->GetValueAtNM( ri, nm ), pExtinction->GetValueAtNM( ri, nm ) );
-	}
-	else
-	{
-		const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>(
-			n, ri.ambientIOR, pIOR->GetValueAtNM( ri, nm ), pExtinction->GetValueAtNM( ri, nm ) );
-		out = diffNM + specNM * F_avg;
-	}
-
-	out = r_min( r_max( out, Scalar(0) ), Scalar(1) );
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar mean = interfaceFresnel.MeanNM( nm );
+	out = mean + GuardedGetColorNM( *pDiffuse, ri, nm ) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }
