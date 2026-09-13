@@ -1106,8 +1106,8 @@ int main()
 
 	// GGX-PBR (white inputs, schlick_f0 — glTF-MR convention).
 	// rd = baseColor (unity here) acts as albedo; rs = baseColor
-	// acts as F0 directly under schlick_f0; (1 - max(F0)) is
-	// applied inside the BSDF for the diffuse weight.
+	// acts as F0 directly under schlick_f0; reciprocal entry/exit
+	// interface transmission weights the diffuse lobe.
 	GGXSPF* ggxPBR = new GGXSPF(
 		*one, *one, *alphaSc, *alphaSc, *iorSc, *zeroSc, eFresnelSchlickF0 );
 	ggxPBR->addref();
@@ -1651,104 +1651,31 @@ int main()
 	    "7.3 coverage is a mixture, not a gloss knob: rho=1 at every c (cf. #9)" );
 	  Run( r, *coatedWaterHalfCover->GetSPF() ); }
 
-	// 14. Coated: clearcoat (ior 1.5 == F0 0.04, alpha 0.16) over the
-	//     WHITE twin of config 7's diffuse-dominant GGX-PBR base.
-	//     CONFIG 7's SHAPE at the furnace's white-input discipline.
-	//
-	//     ANALYTIC CROSS-CHECK against config 17 (the same substrate,
-	//     bare).  The layer's hemispherical form predicts
-	//        rho = F + (1-F) * A_base * (1 - r_i)/(1 - r_i * R_hemi)
-	//     with r_i(1.5) = 0.596346 and R_hemi = 1.0 (this substrate's
-	//     diffuse 1.0*(1-0.04) plus its Schlick hemispherical average
-	//     0.04 + 0.96/21 = 0.0857 exceeds 1 and clamps), so the
-	//     recycling factor is exactly 1.0 here:
-	//        theta=0 : A_base 0.9988 -> pred 0.9988 vs meas 0.9997  (+0.0009)
-	//        theta=30: A_base 0.9994 -> pred 0.9994 vs meas 1.0010  (+0.0016)
-	//        theta=60: A_base 1.0251 -> pred 1.0229 vs meas 1.0104  (-0.0125)
-	//        theta=80: A_base 1.1573 -> pred 1.0963 vs meas 0.8776  (-0.2187)
-	//
-	//     So the layer arithmetic is CONFIRMED analytically at 0 and
-	//     30 deg (agreement ~0.001), drifts ~0.013 at 60, and diverges
-	//     at 80 -- and config 15 shows the SAME +0.001 / +0.001 /
-	//     -0.014 / -0.214 profile on a completely different (coloured,
-	//     absorbing) substrate.  Identical magnitudes on two different
-	//     substrates is what makes the diagnosis attributable: it is
-	//     not about the substrate at all.
-	//
-	//     The mechanism, precisely, and it is the limitation 7.4 names
-	//     IN ADVANCE ("reach for [Belcour] if the furnace
-	//     configurations show WW-plus-compensation failing at high
-	//     albedo or high coat IOR, where the single-scatter
-	//     approximation is weakest"): the layer's exit factor is
-	//     DIRECTIONAL (T(theta_o) = 1 - F(theta_o)) while its
-	//     recycling coefficient is the DIFFUSE average r_i.  Those two
-	//     are consistent for a Lambertian substrate -- that
-	//     consistency is the identity that puts configs 11-13 on 1.0
-	//     exactly -- but a microfacet substrate returns light near its
-	//     own mirror direction, which at 80 deg incidence is also
-	//     grazing, where T(theta_o) is only 0.61 while r_i still says
-	//     0.60.  The model therefore under-recycles precisely where a
-	//     specular substrate returns its light.  Fixing it needs
-	//     Belcour's operators (which carry the recycling natively,
-	//     per-lobe); 7.4 declines that for v1 on scope.  Configs 11-13
-	//     carry the exit gate's kPosturePass claim; this row and 15
-	//     carry the MEASURED BOUNDARY of the model.
-	//
-	//     kPostureMatchesPrediction against the measured curve, eps
-	//     0.005.  The harness is deterministically seeded (repeated
-	//     runs agree to every printed digit), so this gates a
-	//     regression in EITHER direction: a collapse toward config 7's
-	//     0.04 and an unphysical gain both move off it.  Expect to
-	//     re-pin on a toolchain change -- see the note on config 15.
+	// 14. Clearcoat over white GGX. These are measured regression pins,
+	// not first-principles predictions: the coating's directional escape
+	// and approximate recycling do not have a closed-form GGX integral.
+	// DL-37 changed both the substrate's diffuse transport and its shared
+	// hemispherical estimate. Re-measured with the same 100k-draw driver;
+	// the existing 0.005 comparison tolerance is unchanged. See the DL-37
+	// evidence for old/new curves and the independent bare-substrate gates.
+
 	{
-		static const double kPredicted14[NUM_THETA] = { 0.9997, 1.0010, 1.0104, 0.8776 };
+		static const double kPredicted14[NUM_THETA] = { 0.8398, 0.8409, 0.8328, 0.5791 };
 		ConfigReport& r = addPredicted( "14. Coated clearcoat / white GGX-PBR",
-		    "config-7 shape, white inputs; analytic vs #17 confirms the layer to ~0.001 at 0-30 deg, -0.219 at 80 deg = 7.4's named WW/Belcour limit",
+		    "measured coated-white regression after DL-37 transmission change; unchanged 0.005 pin tolerance",
 		    kPredicted14, 0.005 );
 		Run( r, *coatedClearcoatWhiteGgx->GetSPF() );
 	}
 
-	// 15. Coated: clearcoat over the SAME coloured, diffuse-dominant
-	//     GGX-PBR base as config 7 (red baseColor 0.8/0.2/0.2,
-	//     metallic 0, F0 = 0.04).  THE APPLES-TO-APPLES IMPROVEMENT
-	//     CLAIM: composite reports rho = {0.0390, 0.0391, 0.0652,
-	//     0.1970}; this reports {0.6777, 0.6789, 0.7002, 0.6589} --
-	//     17x the energy at normal incidence.
-	//
-	//     rho CANNOT be 1 here and is deliberately not asserted to be:
-	//     the substrate absorbs, so the ceiling is its own reflectance
-	//     (config 18 measures it: 0.8069 at normal).
-	//
-	//     ANALYTIC CROSS-CHECK against config 18, same form as #14,
-	//     with r_i(1.5) = 0.596346 and R_hemi = 0.8*(1-0.04) + 0.0857
-	//     = 0.8537143 -> recycling factor 0.822289:
-	//        theta=0 : A_base 0.8069 -> pred 0.6770 vs meas 0.6777  (+0.0007)
-	//        theta=30: A_base 0.8074 -> pred 0.6779 vs meas 0.6789  (+0.0010)
-	//        theta=60: A_base 0.8344 -> pred 0.7141 vs meas 0.7002  (-0.0139)
-	//        theta=80: A_base 0.9631 -> pred 0.8726 vs meas 0.6589  (-0.2137)
-	//
-	//     i.e. the Saunderson recycling is doing exactly the right
-	//     arithmetic on a COLOURED, ABSORBING, MICROFACET substrate --
-	//     not merely on the white Lambertian one -- for the angles
-	//     where the model's own assumptions hold.  (Composite's 0.0390
-	//     at normal is 0.64 BELOW that analytic value.)
-	//
-	//     Note the two substrate quantities are DIFFERENT and must not
-	//     be conflated: A_base(theta) = 0.8069 is what the substrate
-	//     actually returns at this angle, R_hemi = 0.8537 is what the
-	//     recycling series amplifies.  See configs 17-18's header.
-	//
-	//     kPostureMatchesPrediction against the measured curve, eps
-	//     0.005.  MEASURED PINS, not first-principles values, at 60
-	//     and 80 deg -- they encode the documented WW divergence, and
-	//     a toolchain whose FP differs (MSVC, or the release `Opto`
-	//     configuration's -ffast-math) may need them re-pinned.  The
-	//     0 and 30 deg entries are within 0.001 of the analytic value
-	//     above and should be portable.
+	// 15. The corresponding red GGX substrate. As in row 14 these are
+	// measured pins after the intentional DL-37 substrate-model change,
+	// not an exact recycling oracle. The absorbed energy remains visible;
+	// row 18 separately measures the bare coloured substrate.
+
 	{
-		static const double kPredicted15[NUM_THETA] = { 0.6777, 0.6789, 0.7002, 0.6589 };
+		static const double kPredicted15[NUM_THETA] = { 0.5695, 0.5704, 0.5812, 0.4611 };
 		ConfigReport& r = addPredicted( "15. Coated clearcoat / red GGX-PBR",
-		    "coloured mirror of #7 (composite: {0.0390,0.0391,0.0652,0.1970}); analytic vs #18: +0.0007 at 0 deg, +0.0010 at 30 deg, -0.214 at 80 deg (7.4's WW limit)",
+		    "measured coated-red regression after DL-37 transmission change; unchanged 0.005 pin tolerance",
 		    kPredicted15, 0.005 );
 		Run( r, *coatedClearcoatRedGgx->GetSPF() );
 	}
@@ -1825,8 +1752,9 @@ int main()
 	//     (IBSDF::hemisphericalAlbedo).  Closed-form for a schlick_f0
 	//     GGX: diffuse*(1 - maxF0) + SchlickFresnelAvg(F0), with
 	//     SchlickFresnelAvg(F0) = F0 + (1-F0)/21.
-	//       white base: 1.0*0.96 + 0.0857143 = 1.0 (clamped)
-	//       red base:   0.8*0.96 + 0.0857143 = 0.8537143
+	//       DL-37: Amean + c*(1-Amean)^2, componentwise, where
+	//       Amean = F0 + (1-F0)/21. This is an interface estimate,
+	//       not the integrated rough-GGX specular reflectance.
 	//
 	// A_base is the energy that actually comes back off the substrate;
 	// R_hemi is what the recycling series geometrically amplifies.
