@@ -178,7 +178,7 @@ remain historical in the header; the current table counts are below.
 
 - Main rows: **57** — **45 open**, **12 closed**.
 - OPEN-confirmed: **45** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-58 minus closed DL-48/DL-50/DL-51/DL-54/DL-55/DL-56; DL-35 remains deliberately absent)
+  residuals DL-38 through DL-58 minus closed DL-48/DL-50/DL-51/DL-54/DL-55/DL-56/DL-57; DL-35 remains deliberately absent)
 - CLOSED-by-cleanup: **12** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;

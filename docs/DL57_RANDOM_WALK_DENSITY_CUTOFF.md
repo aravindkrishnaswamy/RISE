@@ -10,7 +10,9 @@ mixture densities. It changes no denominator, weight, proposal-rate,
 boundary-survival, or throughput-pruning formula.
 
 The committed-before-execution regression (`b86925e5`, `a6b6622f`,
-`0226242d`) uses a real closed sphere. The unfixed run had one failure: the
+`0226242d`) traces real closed-sphere intersections from a synthetic
+south-pole entry. Every oracle uses the actual sampled distance after
+inverse-CDF quantization. The unfixed run had one failure: the
 large RGB collision followed by an exit was missing; the scaled RGB, NM and
 pure-absorption controls passed. After `c187f2cc`, fixed output was:
 `All DL-57 density cutoff tests passed`.
@@ -26,8 +28,8 @@ channel. The NM control was spatial `1`, full `1.0171875000000001`.
 
 The sampler-contract calculation is static bound evidence, not a renderer
 measurement. With legal `xi` in `[0,1)`, the maximum optical distance is
-`36.7368005696771`, selected survival is at least
-`1.1102230246251573e-16`, and the three-way mixture survival lower bound is
+`36.7368005696771`, the approximate selected-survival lower bound is
+`1.1102230246251573e-16`, and the approximate three-way mixture survival lower bound is
 `3.700743415417191e-17`; at effective rate `1e-20`, the corresponding
 collision-density bound is `3.7007434154171905e-37`. This supports removing
 the dimensional cutoff. The separate `pdfExit < 1e-20` guard remains because
@@ -46,9 +48,13 @@ different post-normalization policy and remains unchanged.
 | `docs/DL57_RANDOM_WALK_DENSITY_CUTOFF.md` | This closure record. |
 | `docs/README.md` | Added index link. |
 
-The ten individual gates (22 stages) remain `RUNNING` in the broader
-validation process; this record does not claim complete-gate, final-branch or
-merged-master validation. No new render measurement was made. Clean Xcode
+Validation selects ten individual gates (22 stages). The standalone
+completion report will record the final branch and isolated merged-master
+results. No new render measurement was made. Clean Xcode
 source audit at `c187f2cc` had zero compiler warnings; its four notices were
 three missing local OIDN search-path notices and one AppIntents metadata
 notice.
+
+This slice opens no new residual. Invalid coefficient inputs and
+overflow from summing enormous rates are not asserted solved; the sampler
+support bounds assume valid positive finite effective proposal rates.
