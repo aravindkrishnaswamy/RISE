@@ -43,8 +43,9 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-50~~ | ~~DL04_SSS_RADIANCE_DECISION.md: spectral survival~~ | ~~RandomWalkSSS NM exit pays free-flight survival transmittance twice~~ | CLOSED 2026-09-12 | `29ce61c7`: RandomWalkSurvivalTest, `All DL-50 survival tests passed`; unfixed regression fails 13 weight checks with activity/finite/RGB/angular controls passing. Conditional survival, unconditional Beer attenuation, prior collision/reflection, and the NM fallback proposal are covered. See [closure](DL50_RANDOM_WALK_SURVIVAL.md). | S | physics-bias | user-visible (spectral random-walk SSS) |
 | ~~DL-51~~ | ~~DL04_SSS_RADIANCE_DECISION.md: dormant exit fallback~~ | ~~Non-absorbing SubSurfaceScatteringSPF inside exit reads the current interior IOR as its destination before popping~~ | CLOSED 2026-09-12 | `34434610`: SubSurfaceExitIORTest, `Checks: 301  Failures: 0` (unfixed: 36 failures). RGB/NM exit optics and transmission now share a popped stack snapshot; reflection retains the input state. Actual absorbing diffusion/random-walk material controls pass. See [closure](DL51_SUBSURFACE_EXIT_IOR.md). | S | physics-bias | latent (standalone non-absorbing SPF; shipped absorption preserved) |
 | ~~DL-54~~ | ~~DL48_SSS_NORMALIZATION.md: geometric projection density~~ | ~~BSSRDF disk-to-surface density uses the modified shading normal instead of the geometric normal~~ | CLOSED 2026-09-12 | `ab85092d`: BSSRDFProjectionNormalTest, `All DL-54 projection-normal tests passed` (unfixed: 960 PDF/weight failures). RGB and NM each retain 48/128 matching active sphere hits, with axis activity 33/10/5. All three Jacobians now use entryGeomNormal; the shading frame remains angular. See [closure](DL54_BSSRDF_PROJECTION_NORMAL.md). | S | physics-bias | user-visible (normal-mapped diffusion SSS) |
-| DL-55 | DL50_RANDOM_WALK_SURVIVAL.md: fallback proposal density | RandomWalkSSS tiny-channel fallback weights do not use the actual collision/RGB survival proposal density | OPEN-confirmed (static evidence; red-proof pending) | RGB replaces low channel rates with sigma_t_max while pdfMixture/pdfExit still use original rates; NM fallback collision omits exp((sigma_t_ch-sigma_t_nm)*t). DL-50 corrects NM boundary survival only. | S | physics-bias | user-visible (RGB zero-channel extinction); latent (tiny NM collision coefficients) |
+| ~~DL-55~~ | ~~DL50_RANDOM_WALK_SURVIVAL.md: fallback proposal density~~ | ~~RandomWalkSSS tiny-channel fallback weights do not use the actual collision/RGB survival proposal density~~ | CLOSED 2026-09-12 | `cba4e88c`: RandomWalkFallbackProposalTest, `All DL-55 fallback proposal tests passed` (unfixed: 17 weight failures). RGB effective-rate mixtures and NM physical/proposal collision ratios agree with independent oracles; Beer quadrature has 2948/12288 active exits. Exact NM fallback threshold is covered. See [closure](DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md). | S | physics-bias | user-visible (RGB zero-channel extinction); latent (tiny NM collision coefficients) |
 | DL-56 | DL51_SUBSURFACE_EXIT_IOR.md: grazing Fresnel residual | Shared dielectric Fresnel helper forces reflection at valid equal-index grazing interfaces | OPEN-confirmed (static evidence; red-proof pending) | Optics::CalculateDielectricReflectance returns 1 when numerator and denominator are both below 1e-6. At Ni=Nt=1.5 and cosI=cosT=0.01, numerator=0 and denominator=8.1e-7, so a transmissive equal-index interface becomes fully reflective. | S | physics-bias | user-visible (grazing dielectric and standalone SSS exits) |
+| DL-57 | DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md: collision density cutoff | RGB random-walk collision guard rejects small positive dimensional densities with non-negligible normalized weights | OPEN-confirmed (static evidence; red-proof pending) | RandomWalkSSS::SampleExit returns when pdfMixture < 1e-20. For neutral sigma_s=sigma_t=1e-20 and t=5e7, density is 9.999999999995e-21 but the correct conditional collision weight is 1. | S | physics-bias | latent (tiny extinction coefficients / scene scale) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
@@ -171,15 +172,15 @@ reflowed otherwise.
 
 ## Counts
 
-Updated for the 2026-09-12 DL-54 geometric-projection closure. The original sweep counts
+Updated for the 2026-09-12 DL-55 fallback-proposal closure. The original sweep counts
 remain historical in the header; the current table counts are below.
 
 - OPEN-confirmed: **46** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-56 minus closed DL-48/DL-50/DL-51/DL-54; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **9** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+  residuals DL-38 through DL-57 minus closed DL-48/DL-50/DL-51/DL-54/DL-55; DL-35 remains deliberately absent)
+- CLOSED-by-cleanup: **10** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;
-  DL-48, `12a7ef3e`; DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`)
+  DL-48, `12a7ef3e`; DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`; DL-55, `cba4e88c`)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -755,3 +756,15 @@ prove transmission is retained. Replace the small-numerator/denominator
 heuristic with a stable physical formulation, audit sibling helpers and all
 consumers, and retain DL-51 destination/stack regression. Current evidence is
 a supervisor-recomputed source formula, not an executed renderer red-proof.
+
+**DL-57 (RGB dimensional collision-density cutoff).** Commit an actual
+closed-object regression with neutral sigma_s=sigma_t=1e-20, a finite
+positive sampled collision density just below 1e-20 and a subsequent exit.
+Prove the real geometry distances and branch activity before comparing the
+conditional collision weight to one. Pair it with a scaled scene/coefficient
+case having the same optical depth but an ordinary numeric density; the
+normalized result should agree. Cover RGB full/spatial weights, NM control,
+zero-scatter behavior and the DL-55 fallback proposals. Replace rejection
+based solely on an arbitrary positive dimensional density with principled
+zero/nonfinite handling or a stable ratio formulation; audit sibling guards.
+Current evidence is a supervisor scalar recomputation, not an executed red-proof.
