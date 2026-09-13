@@ -32,24 +32,24 @@ Pel/NM walks consume this shared sampler. VCM and MLT reuse the BDPT
 subpath generators. Their consumers do not undo or reapply interior
 free-flight survival, so the correction belongs in the sampler.
 
-## Independent residual DL-55: fallback proposal density
+## ~~Independent residual DL-55: fallback proposal density~~
 
-When an RGB channel has extinction below 1e-20, distance sampling replaces
-its rate with the maximum channel extinction, but the collision mixture
-PDF and boundary survival PDF are still evaluated from the original rates.
-For example, with extinction (0,0,1), all three selected proposals have
-rate one, while the evaluated boundary probability is
-(2+exp(-d))/3 instead of exp(-d).
+CLOSED 2026-09-12 — `cba4e88c`, RandomWalkFallbackProposalTest:
+`All DL-55 fallback proposal tests passed` (unfixed: 17 weight failures).
 
-The NM fallback collision weight likewise uses only sigma_s/q and omits
-exp((q-s)t). These are proposal-density mismatches, separate from omitting
-the survival denominator altogether. A dedicated regression should use
-zero-channel RGB coefficients and an actual closed object, check sampled
-collision and boundary event probabilities against independent densities,
-and compare unconditional Beer attenuation. Tiny NM fallback tests must
-also verify the actual geometry range and branch activity. Static evidence
-is in `RandomWalkSSS::SampleExit`; no repair of these collision/RGB fallback
-paths is claimed here.
+RGB sampling replaced tiny channel rates with the maximum extinction,
+but collision and survival denominators still used the original rates.
+DL-55 now shares the effective proposal rates between sampling and both
+denominators, retaining physical extinction in the numerators. NM collision
+now includes exp((q-s)t) and applies its weight at the exact positive
+fallback threshold; DL-50's NM boundary survival ratio is preserved.
+
+The new regression uses actual closed spheres, a nonuniform RGB rate
+mixture, conditional collision/boundary oracles and unconditional Beer
+quadrature (2948/12288 active exits). The tiny NM cases verify geometry
+range, activity and full/spatial ratios. The discovery here was static;
+DL-55 supplies the committed executed red-proof. The independent RGB
+collision-density cutoff remains DL-57. See [DL-55 closure](DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md).
 
 ## Regression evidence
 

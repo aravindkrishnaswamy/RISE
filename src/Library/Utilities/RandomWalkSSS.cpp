@@ -49,11 +49,22 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 		return result;
 	}
 
+	// Preserve the actual RGB proposal rates for both sampling and density
+	// evaluation. Physical extinction stays separate in each numerator.
+	RISEPel proposalRates = sigma_t;
+	bool rgbUsesFallback = false;
+	for( int c = 0; c < 3; ++c ) {
+		if( proposalRates[c] < 1e-20 ) {
+			proposalRates[c] = sigma_t_max;
+			rgbUsesFallback = true;
+		}
+	}
+
 	// Luminance-derived scalar coefficients for the NM (spectral) path.
 	// The material stores RGB coefficients; for single-wavelength tracing
 	// we collapse to a scalar using Rec. 709 luminance weights.  This
-	// ensures distance sampling, scatter weight, and exit transmittance
-	// all use the same consistent extinction value.
+	// defines physical collision and survival transmittance. A fallback
+	// proposal may use another rate, which event weights must divide out.
 	const Scalar sigma_a_nm = 0.2126 * sigma_a[0] + 0.7152 * sigma_a[1] + 0.0722 * sigma_a[2];
 	const Scalar sigma_s_nm = 0.2126 * sigma_s[0] + 0.7152 * sigma_s[1] + 0.0722 * sigma_s[2];
 	const Scalar sigma_t_nm = sigma_a_nm + sigma_s_nm;
@@ -158,11 +169,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// RGB mode: uniform channel selection
 			ch = static_cast<int>( sampler.Get1D() * 3.0 );
 			if( ch >= 3 ) ch = 2;
-			sigma_t_ch = sigma_t[ch];
-
-			if( sigma_t_ch < 1e-20 ) {
-				sigma_t_ch = sigma_t_max;
-			}
+			sigma_t_ch = proposalRates[ch];
 		}
 
 		//
@@ -195,9 +202,10 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 
 			// Update throughput using mixture PDF formulation.
 			//
-			// The distance t was sampled from sigma_t[ch] * exp(-sigma_t[ch]*t).
+			// The distance t was sampled from q[ch] * exp(-q[ch]*t),
+			// where q is the effective proposal rate after fallback.
 			// The mixture PDF over all channels (uniform 1/3 selection) is:
-			//   p(t) = (1/3) * sum_c sigma_t[c] * exp(-sigma_t[c] * t)
+			//   p(t) = (1/3) * sum_c q[c] * exp(-q[c] * t)
 			//
 			// The scatter contribution for channel c at distance t is:
 			//   f[c] = sigma_s[c] * exp(-sigma_t[c] * t)
@@ -209,12 +217,12 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			//
 			if( nm > 0 )
 			{
-				// Spectral: single-channel, weight = albedo per step.
-				// Uses luminance-derived coefficients for consistency
-				// with the distance sampling distribution.
-				if( sigma_t_ch > 1e-20 ) {
-					throughputNM *= sigma_s_nm / sigma_t_ch;
-				}
+				// Physical collision density divided by the sampled exponential
+				// density. This is albedo when the rates match. The initial
+				// maximum-extinction gate guarantees a positive proposal rate,
+				// including the exact fallback threshold.
+				throughputNM *= (sigma_s_nm / sigma_t_ch) *
+					exp( (sigma_t_ch - sigma_t_nm) * t );
 			}
 			else
 			{
@@ -223,9 +231,13 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 				const Scalar Tr1 = exp( -sigma_t[1] * t );
 				const Scalar Tr2 = exp( -sigma_t[2] * t );
 
-				// Mixture PDF: mean of sigma_t[c] * Tr[c] over channels
-				const Scalar pdfMixture = (sigma_t[0] * Tr0
-					+ sigma_t[1] * Tr1 + sigma_t[2] * Tr2) / 3.0;
+				// Use the actual rate mixture. Reuse physical transmittance
+				// in the ordinary case, where proposal and physical rates match.
+				const Scalar pdfMixture = rgbUsesFallback
+					? (proposalRates[0] * exp( -proposalRates[0] * t )
+						+ proposalRates[1] * exp( -proposalRates[1] * t )
+						+ proposalRates[2] * exp( -proposalRates[2] * t )) / 3.0
+					: (sigma_t[0] * Tr0 + sigma_t[1] * Tr1 + sigma_t[2] * Tr2) / 3.0;
 
 				if( pdfMixture < 1e-20 ) {
 					return result;
@@ -258,9 +270,9 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 		{
 			// --- Exit event: walk reaches the surface ---
 
-			// Apply transmittance for the partial step to the exit.
-			// Mixture PDF for the exit event (probability of not
-			// scattering before exitDist): mean of Tr[c] over channels.
+			// Divide physical transmittance by proposal survival probability.
+			// For RGB this is the mean of exp(-q[c]*exitDist) over the
+			// effective channel rates, including any fallback substitutions.
 			if( nm > 0 )
 			{
 				// Divide physical transmittance by the probability of this
@@ -274,7 +286,11 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 				const Scalar Tr0 = exp( -sigma_t[0] * exitDist );
 				const Scalar Tr1 = exp( -sigma_t[1] * exitDist );
 				const Scalar Tr2 = exp( -sigma_t[2] * exitDist );
-				const Scalar pdfExit = (Tr0 + Tr1 + Tr2) / 3.0;
+				const Scalar pdfExit = rgbUsesFallback
+					? (exp( -proposalRates[0] * exitDist )
+						+ exp( -proposalRates[1] * exitDist )
+						+ exp( -proposalRates[2] * exitDist )) / 3.0
+					: (Tr0 + Tr1 + Tr2) / 3.0;
 
 				if( pdfExit < 1e-20 ) {
 					return result;
