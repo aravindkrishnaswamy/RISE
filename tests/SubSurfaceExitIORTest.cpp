@@ -44,14 +44,16 @@ using namespace RISE::Implementation;
 
 namespace
 {
+    int gChecks = 0;
     int gFailures = 0;
     const Scalar kAmbientIOR = 1.0;
     const Scalar kEnclosingIOR = 1.33;
     const Scalar kInteriorIOR = 1.50;
-    const Scalar kTol = 2e-6;
+    const Scalar kTol = 1e-10;
 
     void Check( const bool condition, const char* const message )
     {
+        ++gChecks;
         if( !condition ) {
             ++gFailures;
             std::cerr << "FAIL: " << message << std::endl;
@@ -61,7 +63,10 @@ namespace
     void CheckNear( const Scalar actual, const Scalar expected,
         const char* const message, const Scalar tolerance = kTol )
     {
-        if( std::fabs( actual - expected ) > tolerance ) {
+        ++gChecks;
+        const bool matches = std::isfinite( actual ) && std::isfinite( expected ) &&
+            std::fabs( actual - expected ) <= tolerance;
+        if( !matches ) {
             ++gFailures;
             std::cerr << "FAIL: " << message << " (got " << actual
                 << ", expected " << expected << ")" << std::endl;
@@ -71,7 +76,10 @@ namespace
     void CheckVector( const Vector3& actual, const Vector3& expected,
         const char* const message )
     {
-        const bool matches = std::fabs( actual.x - expected.x ) <= kTol &&
+        const bool matches = std::isfinite( actual.x ) && std::isfinite( actual.y ) &&
+            std::isfinite( actual.z ) && std::isfinite( expected.x ) &&
+            std::isfinite( expected.y ) && std::isfinite( expected.z ) &&
+            std::fabs( actual.x - expected.x ) <= kTol &&
             std::fabs( actual.y - expected.y ) <= kTol &&
             std::fabs( actual.z - expected.z ) <= kTol;
         Check( matches, message );
@@ -94,7 +102,13 @@ namespace
             return m_samples[m_next++];
         }
 
-        Point2 Get2D() override { return Point2( Get1D(), Get1D() ); }
+        Point2 Get2D() override
+        {
+            // Preserve the prescribed vector order for a 2D request too.
+            const Scalar first = Get1D();
+            const Scalar second = Get1D();
+            return Point2( first, second );
+        }
         void StartStream( int ) override {}
 
         size_t DrawCount() const { return m_next; }
@@ -124,21 +138,22 @@ namespace
     // The stack has actual distinct object identities: a nested outer medium
     // and the current SSS object.  Root is the ambient (1.0) stack entry.
     IORStack MakeNestedInsideStack( const IObject* const outer,
-        const IObject* const current )
+        const IObject* const current, const Scalar interiorIOR = kInteriorIOR )
     {
         IORStack stack( kAmbientIOR );
         stack.SetCurrentObject( outer );
         stack.push( kEnclosingIOR );
         stack.SetCurrentObject( current );
-        stack.push( kInteriorIOR );
+        stack.push( interiorIOR );
         return stack;
     }
 
-    IORStack MakeAirInsideStack( const IObject* const current )
+    IORStack MakeAirInsideStack( const IObject* const current,
+        const Scalar interiorIOR = kInteriorIOR )
     {
         IORStack stack( kAmbientIOR );
         stack.SetCurrentObject( current );
-        stack.push( kInteriorIOR );
+        stack.push( interiorIOR );
         return stack;
     }
 
@@ -163,16 +178,16 @@ namespace
     }
 
     void CheckInputUnchanged( const IORStack& input, const IObject* const current,
-        const char* const label )
+        const char* const label, const Scalar expectedInterior = kInteriorIOR )
     {
         Check( input.containsCurrent(), label );
         Check( input.topObject() == current, "input stack top object remains current SSS object" );
-        CheckNear( input.top(), kInteriorIOR, "input stack top IOR remains interior" );
+        CheckNear( input.top(), expectedInterior, "input stack top IOR remains interior" );
     }
 
     void CheckNestedStackOutputs( const ScatteredRay& reflection,
         const ScatteredRay& transmission, const IObject* const outer,
-        const IObject* const current )
+        const IObject* const current, const Scalar expectedInterior = kInteriorIOR )
     {
         Check( reflection.ior_stack != 0, "reflection carries an IOR stack" );
         Check( transmission.ior_stack != 0, "transmission carries an IOR stack" );
@@ -181,7 +196,7 @@ namespace
             Check( reflection.ior_stack->containsCurrent(), "reflection remains inside current object" );
             Check( reflection.ior_stack->topObject() == current,
                 "reflection stack top remains current SSS object" );
-            CheckNear( reflection.ior_stack->top(), kInteriorIOR,
+            CheckNear( reflection.ior_stack->top(), expectedInterior,
                 "reflection stack top IOR remains interior" );
         }
         if( transmission.ior_stack ) {
@@ -322,37 +337,112 @@ namespace
         SubSurfaceScatteringSPF* const spf = new SubSurfaceScatteringSPF( *ior, 0.0, 0.0, false );
         const Scalar wavelengths[] = { 450.0, 550.0, 650.0 };
         const Scalar interiorIndices[] = { 1.52, 1.50, 1.48 };
-        const Scalar sinI = 0.60;
-        const Scalar cosI = std::sqrt( 1.0 - sinI*sinI );
-
         for( unsigned int i = 0; i < 3; ++i ) {
-            const RayIntersectionGeometric ri = MakeInsideIntersection( sinI );
-            IORStack input = MakeNestedInsideStack( outer, current );
-            const std::vector<Scalar> noDraws;
-            VectorSampler sampler( noDraws );
-            ScatteredRayContainer rays;
-            spf->ScatterNM( ri, sampler, wavelengths[i], rays, input );
+            const Scalar nI = interiorIndices[i];
 
-            const ScatteredRay* const reflection = FindRay( rays, ScatteredRay::eRayReflection );
-            const ScatteredRay* const transmission = FindRay( rays, ScatteredRay::eRayRefraction );
-            Check( reflection != 0 && transmission != 0, "NM oblique exit has reflection and transmission" );
-            Check( sampler.DrawCount() == 0 && sampler.OverdrawCount() == 0,
-                "NM smooth inside delta path consumes no sampler draws" );
-            CheckInputUnchanged( input, current, "NM input remains unchanged" );
-            if( reflection && transmission ) {
-                const Scalar nI = interiorIndices[i];
-                const Scalar sinT = nI / kEnclosingIOR * sinI;
-                const Scalar r = Fresnel( nI, kEnclosingIOR, sinI, cosI );
-                CheckDeltaMetadata( *reflection, "NM reflection is delta" );
-                CheckDeltaMetadata( *transmission, "NM transmission is delta" );
-                CheckNear( reflection->krayNM, r, "NM Fresnel uses wavelength interior-to-enclosing indices" );
-                CheckNear( transmission->krayNM, 1.0-r, "NM transmission is wavelength Fresnel complement" );
-                CheckNear( reflection->krayNM + transmission->krayNM, 1.0,
-                    "NM Fresnel lobes conserve surface weight" );
-                CheckVector( transmission->ray.Dir(),
-                    Vector3( sinT, 0, std::sqrt( 1.0-sinT*sinT ) ),
-                    "NM transmitted direction obeys wavelength Snell law" );
-                CheckNestedStackOutputs( *reflection, *transmission, outer, current );
+            // Match the seeded current-stack IOR to this wavelength's painter
+            // value.  The test then isolates DL-51's destination lookup from
+            // any separate entry-time versus exit-time IOR issue.
+            {
+                const RayIntersectionGeometric ri = MakeInsideIntersection( 0.0 );
+                IORStack input = MakeNestedInsideStack( outer, current, nI );
+                const std::vector<Scalar> noDraws;
+                VectorSampler sampler( noDraws );
+                ScatteredRayContainer rays;
+                spf->ScatterNM( ri, sampler, wavelengths[i], rays, input );
+                const ScatteredRay* const reflection = FindRay( rays, ScatteredRay::eRayReflection );
+                const ScatteredRay* const transmission = FindRay( rays, ScatteredRay::eRayRefraction );
+                Check( reflection != 0 && transmission != 0,
+                    "NM normal exit has reflection and transmission" );
+                Check( sampler.DrawCount() == 0 && sampler.OverdrawCount() == 0,
+                    "NM normal smooth delta path consumes no sampler draws" );
+                CheckInputUnchanged( input, current, "NM normal input remains unchanged", nI );
+                if( reflection && transmission ) {
+                    const Scalar r = Fresnel( nI, kEnclosingIOR, 0.0, 1.0 );
+                    CheckDeltaMetadata( *reflection, "NM normal reflection is delta" );
+                    CheckDeltaMetadata( *transmission, "NM normal transmission is delta" );
+                    CheckNear( reflection->krayNM, r,
+                        "NM normal Fresnel uses wavelength interior-to-enclosing indices" );
+                    CheckNear( transmission->krayNM, 1.0-r,
+                        "NM normal transmission is wavelength Fresnel complement" );
+                    CheckNear( reflection->krayNM + transmission->krayNM, 1.0,
+                        "NM normal Fresnel lobes conserve surface weight" );
+                    CheckVector( reflection->ray.Dir(), Vector3( 0, 0, -1 ),
+                        "NM normal reflection points back into the interior" );
+                    CheckVector( transmission->ray.Dir(), Vector3( 0, 0, 1 ),
+                        "NM normal transmission points into the enclosing medium" );
+                    CheckNestedStackOutputs( *reflection, *transmission, outer, current, nI );
+                }
+            }
+
+            {
+                const Scalar sinI = 0.60;
+                const Scalar cosI = std::sqrt( 1.0 - sinI*sinI );
+                const RayIntersectionGeometric ri = MakeInsideIntersection( sinI );
+                IORStack input = MakeNestedInsideStack( outer, current, nI );
+                const std::vector<Scalar> noDraws;
+                VectorSampler sampler( noDraws );
+                ScatteredRayContainer rays;
+                spf->ScatterNM( ri, sampler, wavelengths[i], rays, input );
+
+                const ScatteredRay* const reflection = FindRay( rays, ScatteredRay::eRayReflection );
+                const ScatteredRay* const transmission = FindRay( rays, ScatteredRay::eRayRefraction );
+                Check( reflection != 0 && transmission != 0, "NM oblique exit has reflection and transmission" );
+                Check( sampler.DrawCount() == 0 && sampler.OverdrawCount() == 0,
+                    "NM oblique smooth delta path consumes no sampler draws" );
+                CheckInputUnchanged( input, current, "NM oblique input remains unchanged", nI );
+                if( reflection && transmission ) {
+                    const Scalar sinT = nI / kEnclosingIOR * sinI;
+                    const Scalar r = Fresnel( nI, kEnclosingIOR, sinI, cosI );
+                    CheckDeltaMetadata( *reflection, "NM oblique reflection is delta" );
+                    CheckDeltaMetadata( *transmission, "NM oblique transmission is delta" );
+                    CheckNear( reflection->krayNM, r, "NM oblique Fresnel uses wavelength interior-to-enclosing indices" );
+                    CheckNear( transmission->krayNM, 1.0-r, "NM oblique transmission is wavelength Fresnel complement" );
+                    CheckNear( reflection->krayNM + transmission->krayNM, 1.0,
+                        "NM oblique Fresnel lobes conserve surface weight" );
+                    CheckVector( reflection->ray.Dir(), Vector3( sinI, 0, -cosI ),
+                        "NM oblique reflected direction is analytic mirror direction" );
+                    CheckVector( transmission->ray.Dir(),
+                        Vector3( sinT, 0, std::sqrt( 1.0-sinT*sinT ) ),
+                        "NM oblique transmitted direction obeys wavelength Snell law" );
+                    CheckNestedStackOutputs( *reflection, *transmission, outer, current, nI );
+                }
+            }
+
+            {
+                const Scalar sinI = std::sin( Scalar(70.0) * std::acos( Scalar(-1.0) ) / Scalar(180.0) );
+                const Scalar cosI = std::sqrt( 1.0 - sinI*sinI );
+                const RayIntersectionGeometric ri = MakeInsideIntersection( sinI );
+                IORStack input = MakeNestedInsideStack( outer, current, nI );
+                const std::vector<Scalar> noDraws;
+                VectorSampler sampler( noDraws );
+                ScatteredRayContainer rays;
+                spf->ScatterNM( ri, sampler, wavelengths[i], rays, input );
+                const ScatteredRay* const reflection = FindRay( rays, ScatteredRay::eRayReflection );
+                const ScatteredRay* const transmission = FindRay( rays, ScatteredRay::eRayRefraction );
+                Check( nI / kEnclosingIOR * sinI > 1.0,
+                    "NM TIR fixture is above the wavelength critical angle" );
+                Check( rays.Count() == 1 && reflection != 0 && transmission == 0,
+                    "NM TIR emits only the reflected delta lobe" );
+                Check( sampler.DrawCount() == 0 && sampler.OverdrawCount() == 0,
+                    "NM TIR delta path consumes no sampler draws" );
+                CheckInputUnchanged( input, current, "NM TIR input remains unchanged", nI );
+                if( reflection ) {
+                    CheckDeltaMetadata( *reflection, "NM TIR reflection is delta" );
+                    CheckNear( reflection->krayNM, 1.0, "NM TIR has unit Fresnel weight" );
+                    CheckVector( reflection->ray.Dir(), Vector3( sinI, 0, -cosI ),
+                        "NM TIR reflection points back into the interior" );
+                    Check( reflection->ior_stack != 0 && reflection->ior_stack->containsCurrent(),
+                        "NM TIR reflection retains the interior stack" );
+                    if( reflection->ior_stack ) {
+                        Check( reflection->delete_stack,
+                            "NM TIR stored reflection owns its stack" );
+                        Check( reflection->ior_stack->topObject() == current,
+                            "NM TIR reflection stack top remains current object" );
+                        CheckNear( reflection->ior_stack->top(), nI,
+                            "NM TIR reflection stack top remains wavelength interior IOR" );
+                    }
+                }
             }
         }
 
@@ -473,9 +563,9 @@ int main()
     current->release();
 
     if( gFailures ) {
-        std::cerr << gFailures << " SubSurfaceExitIORTest check(s) failed" << std::endl;
+        std::cerr << "Checks: " << gChecks << "  Failures: " << gFailures << std::endl;
         return EXIT_FAILURE;
     }
-    std::cout << "All SubSurfaceExitIORTest checks passed" << std::endl;
+    std::cout << "Checks: " << gChecks << "  Failures: 0" << std::endl;
     return EXIT_SUCCESS;
 }
