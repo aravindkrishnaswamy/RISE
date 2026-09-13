@@ -145,8 +145,9 @@ coarse bounds retain the distinct spatial-support, environment-MIS,
 relative-index, and spectral-survival limitations found in DL-04. A pass
 there is not a new exact-energy or independent-QMC claim. Exact directional
 normalization and the coarse complete-render convention are different
-assertions. DL-49 through DL-54 remain open. The independent geometric projection
-density issue discovered in review is tracked below as DL-54. Final clean-build/gate and review results belong to the
+assertions. Of the DL-49 through DL-54 follow-ups, DL-49/DL-52/DL-53 remain open;
+DL-50/DL-51/DL-54 are closed. The geometric projection issue discovered
+in review is closed below as DL-54. Final clean-build/gate and review results belong to the
 standalone completion report.
 
 Self-audit focused on the missing pi distinction, disagreement between
@@ -157,23 +158,27 @@ as proof of unbiased spectral survival. The independent quadrature, real
 sample ratios, unchanged spatial/PDF expressions and explicit scope above
 address those risks.
 
-## Independent residual: geometric projection density (DL-54)
+## ~~Independent residual: geometric projection density (DL-54)~~
 
-The second transport review found a separate spatial-density error in
-BSSRDFSampling::SampleEntryPoint. The three disk-to-surface projection
-cosines use the post-modifier entryNormal, although entryGeomNormal is
-stored alongside it. A shading-normal modifier changes no physical
-probe-hit probability, but currently changes the reported surface PDF
-and both full and spatial weights. The geometric normal must define this
-area Jacobian; the shading normal still defines the angular frame.
+CLOSED 2026-09-12 — `ab85092d`, BSSRDFProjectionNormalTest:
+`All DL-54 projection-normal tests passed`. Unfixed: 960 PDF/weight
+failures; RGB and NM each retain 48/128 matched active hits with axis
+activity 33/10/5.
 
-This is independent of the Schlick directional normalization and of
-DL-52's skipped coplanar support. PT and BDPT RGB/NM share the sampler;
-HWSS and VCM/MLT inherit those paths. Current unmodified-sphere fixtures
-have matching normals, and a full/spatial ratio cancels this density, so
-neither is claimed as coverage. DL-54 has a curved-object, normal-modifier
-regression recipe. Evidence is static; no red test or rendered bias
-measurement is claimed in DL-48.
+The second DL-48 transport review found a separate spatial-density error:
+BSSRDFSampling::SampleEntryPoint used post-modifier entryNormal in all
+three disk-to-surface projection cosines. DL-54 now uses entryGeomNormal
+for this physical area Jacobian while preserving the shading frame for
+angular continuation and Sw.
+
+The DL-48 unmodified-sphere and full/spatial-ratio fixtures did not detect
+this defect. DL-54 adds paired real sphere entry probes with the production
+NormalMap modifier and a fixed synthetic exit record. The geometric PDF
+and spatial weights remain invariant while shading normals and continuation
+directions rotate. RGB and NM 550 are exercised directly; shared integrator
+consumers are source-audited, not claimed as additional rendered coverage.
+The initial discovery was static evidence; the committed DL-54 regression
+now supplies an executed red-proof. See [DL-54 closure](DL54_BSSRDF_PROJECTION_NORMAL.md).
 
 The second test review also questioned whether missing entry UV made the
 normalization correction unreachable. That finding was withdrawn after
