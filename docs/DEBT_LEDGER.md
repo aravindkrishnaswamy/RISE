@@ -21,11 +21,18 @@ source doc that had not yet been independently re-verified against code
 and tests the way `## Already resolved` requires (now DL-R18..DL-R23, one
 of which — DL-R20 — turned out to be resolved-in-code but only indirectly
 tested, noted as such rather than silently closed); see `## Counts` for
-the delta. Every verdict below is cited to a file:symbol, test, or commit
-— no verdict is taken on the source document's word alone for anything
-marked OPEN, and every item enumerated in any of the seven source ledgers
-now appears in exactly one section below (OPEN, Already resolved,
-Doc-rot, or Not-a-debt).
+the delta. **Re-sweep** (this pass): debt-resweep worktree, HEAD
+`876c9a26`, dated 2026-09-12 — run after a separate cleanup session closed
+16 rows (DL-01/02/03/04/34/36/37/48/50/51/54/55/56/57/58/59) and added
+DL-38..DL-62 without a further independent check. This pass re-verified
+all 47 rows left OPEN against `876c9a26`'s actual source, cross-checked
+against the cleanup session's touched-file list, and found the ledger's
+OPEN/CLOSED partition already correct (0 rows reclassified); one stale
+citation on DL-19 was corrected in place (see `## Counts`). Every verdict
+below is cited to a file:symbol, test, or commit — no verdict is taken on
+the source document's word alone for anything marked OPEN, and every item
+enumerated in any of the seven source ledgers now appears in exactly one
+section below (OPEN, Already resolved, Doc-rot, or Not-a-debt).
 
 Sorted by class (physics-bias/energy-loss, precision, API/bridge gap,
 coverage/test gap, perf, doc-rot), S before M before L within a class (the
@@ -82,14 +89,14 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-15 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | An eccentric ellipsoid neighbour's distance bound is loose by its semi-axis ratio (4:1 measured: true distance 2.75 reported as 11.0), so `proximity(r)` silently paints nothing unless the author inflates the radius by the ratio | OPEN-confirmed | Doc's own measured example; Phase 3 (shipped 2026-09-09) makes σ exact but "`x sigma_max` remains a bound attained only along the top singular vector" — confirmed the bound, not exactness, is what Phase 3 delivered, by re-reading §10's Phase-3 paragraph this sweep | M | precision | user-visible (unpainted seam near eccentric ellipsoids) |
 | DL-31 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | A mesh neighbour is a SHEET (no inside test), unlike every solid family which clamps its signed field at zero; `interior(r)` did not close this either, since a mesh contributes 0 to it too | OPEN-confirmed | Doc's own §10 analysis; no closed-mesh containment test exists on `Object.cpp`'s `DistanceToSurface`/`ObjectManager::DeepestOtherContainment` paths, confirmed this sweep | M | precision | user-visible (a receiver buried inside a closed mesh neighbour reads no contact) |
 | DL-16 | CLOTH_FABRIC_DESIGN.md §15 item 4 | `ggx_material.tangent_rotation` stays Color-pipe only; the promised Scalar-pipe alias (so a `fabric_material`'s `weave_rotation` and its substrate's own rotation can share one painter) was never added | OPEN-confirmed | `ChunkParserRegistry.cpp:4495` — `tangent_rotation`'s only descriptor entry is `ParameterPipe::Color`, `p.description` states "a scalar_painter does NOT bind here"; no second `tangent_rotation`-family scalar parameter exists (grepped this sweep) | S | API/bridge gap | user-visible (authoring: can't drive both rotations from one field) |
-| DL-17 | CLOTH_FABRIC_DESIGN.md §15 item 12 | glTF `anisotropy_rotation` is still dropped at import, even though the expression VM's `atan2` (confirmed present) makes the sketched fix executable today | OPEN-confirmed | `GLTFSceneImporter.cpp:1300-1307`'s comment stands; `ChunkParserRegistry.cpp:4560`'s `anisotropy_rotation` descriptor still reads "Phase 1 reads but does not yet APPLY the rotation" — read directly this sweep | S | API/bridge gap | user-visible (glTF import only) |
+| DL-17 | CLOTH_FABRIC_DESIGN.md §15 item 12 | glTF PER-TEXEL `anisotropy_rotation` (the direction encoded in the anisotropy texture's R/G channels) is still dropped at import and falls back to the scalar rotation, even though the expression VM's `atan2` (confirmed present) makes the sketched fix executable today; the SCALAR `anisotropy_rotation` IS wired through (`Job::AddPBRMetallicRoughnessMaterial`, `tests/PBRMaterialAPITest.cpp` Test 3) | OPEN-confirmed | `GLTFSceneImporter.cpp:1300-1307`'s comment stands; `ChunkParserRegistry.cpp:4560`'s `anisotropy_rotation` descriptor still reads "Phase 1 reads but does not yet APPLY the rotation" — read directly this sweep | S | API/bridge gap | user-visible (glTF import only) |
 | DL-23 | CLOTH_FABRIC_DESIGN.md §15 item 16 (tail) / IMPROVEMENTS.md "Clearcoat over `fabric_material` — not composable, unowned" | `coated_material`'s substrate allowlist does not admit `fabric_material`/`weave_material`, so a coat-over-fabric composition (e.g. waxed canvas) is unreachable | OPEN-confirmed | `CoatedMaterial.h:112-113` (`SubstrateAllowlistText()`: "lambertian_material, orennayar_material, ggx_material, pbr_metallic_roughness_material") and `IsSupportedSubstrate` `:120-134` (the `dynamic_cast` allowlist) — `fabric_material`/`weave_material` absent from both, confirmed this sweep; IMPROVEMENTS.md's entry adds that this is a named glTF-import consequence (`KHR_materials_sheen` + `KHR_materials_clearcoat` together lose the clearcoat layer, warn-and-skip named in `GLTFSceneImporter.cpp`) | S | API/bridge gap | user-visible (authoring: can't compose a coat over fabric) |
 | DL-26 | WETNESS_COAT_DESIGN.md §12 item 6c | `add_wetness` and `add_wear` mutually exclude on one material; worn-and-wet, the flagship subject, is unreachable | OPEN-confirmed | `src/Library/Agent/AgentSession.cpp` ~8021/8092/8328 ("add_wear / add_wetness cannot currently be combined on one..."), confirmed present this sweep | S | API/bridge gap | user-visible (agent-authored worn-and-wet materials) |
 | DL-28 | WETNESS_COAT_DESIGN.md §12 item 9 | Water-absorption spectral files must be pre-converted to a transmittance base because `dielectric_material`'s `tau` is `pow(tau,distance)`, not `exp(-sigma*distance)`; a pasted-in published sigma_a table is silently wrong | OPEN-confirmed | `DielectricSPF.cpp:318-323` (`pow(tauVals.v[i], distance)`), confirmed unchanged this sweep; no runtime validation or warning exists for a mismatched-convention input file | S | API/bridge gap | user-visible (authoring trap only, silent) |
 | DL-32 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `standard_object`'s `scale` written with ONE number (e.g. `scale 0.35`) derives to a degenerate transform silently — no diagnostic, the object vanishes from the render, and `DistanceToSurface`'s `sigma_min<=0` gate then refuses every proximity query against it | OPEN-confirmed | `ChunkParserRegistry.cpp`'s `standard_object` `scale` descriptor (`DoubleVec3`, no partial-fill diagnostic); `Object.cpp:1708` warns only for an ANISOTROPIC transform's `proximity()`, not a degenerate one — confirmed no parser-side warning for a partially-specified `DoubleVec3` this sweep | S | API/bridge gap | user-visible (silent scene-authoring trap) |
 | DL-18 | CLOTH_FABRIC_DESIGN.md §15 item 13 | The Blender bridge has no sheen, anisotropic, or velvet mapping at all — Principled's Sheen sockets have no `fabric_material` target | OPEN-confirmed | No `fabric_material`/`sheen` reference found in the Blender bridge sources this sweep (`grep -rl fabric_material` under the Blender add-on tree returns nothing) | M | API/bridge gap | user-visible (Blender-authored scenes only) |
 | DL-25 | WETNESS_COAT_DESIGN.md §12 item 6b | Phase 1 cannot darken a textured substrate: the expression VM has no painter-sampling builtin | OPEN-confirmed | `src/Library/Painters/ExpressionEval.h` function table (~lines 1166-1171) has no painter-sample builtin alongside `sin`/`cos`/`atan2`/etc.; confirmed absent this sweep by grep | M | API/bridge gap | user-visible (wet textured substrates can't darken) |
-| DL-19 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | Two S3 conversion sites (BDPT's NM-hero `Le` rebuild, the HWSS companion `rigW` rebuild) share the signals-replay helper but have no dedicated red-proof — their contribution is MIS-weighted to a few percent on the money test's scenes, so skipping them moves the suite by <= 5.7% / 0% | OPEN-confirmed (test gap) | Doc's own §10 disclosure, confirmed current (no new red-proof test added for these two sites since — `tests/SignalEmitterRecordTest.cpp` unchanged in this tree per `git log` this sweep) | S | coverage/test gap | internal (test-suite blind spot) |
+| DL-19 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | Two S3 conversion sites (BDPT's NM-hero `Le` rebuild, the HWSS companion `rigW` rebuild) share the signals-replay helper but have no dedicated red-proof — their contribution is MIS-weighted to a few percent on the money test's scenes, so skipping them moves the suite by <= 5.7% / 0% | OPEN-confirmed (test gap) | Doc's own §10 disclosure; corrected this sweep — the previous citation ("`tests/SignalEmitterRecordTest.cpp` unchanged in this tree") is now stale: `ac9891f3` added `RunBoundedNeighbourRead()` (the DL-36 two-blade fixture, now called unconditionally from `main()`) to that file, but a diff of the change shows it adds no coverage for the BDPT NM-hero `Le` rebuild or HWSS `rigW` rebuild sites this row names — the gap is unchanged, only the file is not | S | coverage/test gap | internal (test-suite blind spot) |
 | DL-27 | WETNESS_COAT_DESIGN.md §12 item 7 | The wet-highlight variance cost is unmeasured | OPEN-confirmed | No test or scene mentioning "wet_highlight"/"WetHighlight" found in `tests/` or `docs/*.md` this sweep other than the design doc itself | S | coverage/test gap | internal (measurement gap, not a known defect) |
 | DL-30 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces | OPEN-confirmed, untested | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29); no nested-CSG `dndu`-pairing test found in `tests/CsgSurfacePayloadTest.cpp` or elsewhere this sweep | S | coverage/test gap | internal (no scene exercises it yet) |
 | DL-40 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics | OPEN-confirmed (static evidence; red-proof pending) | BDPT/VCM `ComputeStats` accepts nonfinite capture values and `ChannelsAgree` rejects only `fabs(a-b)/denom > tolerance` (false for NaN). SignalEmitterRecordTest similarly marks nonempty captures valid and `WorstRelDiff` uses fmax, which can discard NaN differences. Recorded DL-01/DL-02/DL-36 results are finite. | S | coverage/test gap | internal (false-green risk) |
@@ -182,9 +189,47 @@ reflowed otherwise.
 Updated for the 2026-09-12 DL-34 recorded-overlap closure and independent
 DL-60/DL-61 gate residuals, plus the DL-37 diffuse-composition closure and independent DL-62/DL-63/DL-64 residuals. Original sweep counts remain historical.
 
+**Re-sweep** (this pass): debt-resweep worktree, HEAD `876c9a26`, dated
+2026-09-12 — an independent verifier re-opened the code (not the doc text)
+for all 47 OPEN rows against this HEAD, cross-checked against
+`git diff --stat 6486656e..HEAD` (the cleanup session's touched-file list:
+`GGXBRDF.{cpp,h}`, `GGXSPF.cpp`, `SubSurfaceScatteringBSDF.cpp`,
+`SubSurfaceScatteringSPF.{cpp,h}`, `TranslucentSPF.cpp`, `CSGObject.{cpp,h}`,
+`ChunkParserRegistry.cpp`, `BDPTIntegrator.cpp`, `BSSRDFEntryAdapters.h`,
+`PathTracingIntegrator.cpp`, `BSSRDFSampling.{cpp,h}`, `ManifoldSolver.cpp`,
+`Optics.{cpp,h}`, `PathTransportUtilities.h`, `RandomWalkSSS.{cpp,h}`,
+`IJob.h`, `IMaterial.h`, `FibreLobeMath.h`, plus `tests/*`), to find any row
+that had actually closed as a side effect of the 16 cleanup fixes without
+the ledger being updated. **Verdict: none.** All 47 OPEN rows were directly
+re-verified against source at `876c9a26` (symbol/line still present, defect
+mechanism still reachable) — none of the 16 cleanup commits touch the
+mechanism any OPEN row names, including the ones sharing a source file with
+a closed row (DL-38/41/42/43/44/45/46/47/49/52/53 vs the TranslucentSPF/SSS/
+BDPT-guiding/RayCaster fixes; DL-21/30/31 vs the CSGObject union-depth fix;
+DL-62/63/64 vs the GGX diffuse-transmission fix). One stale citation was
+found and fixed: DL-19's evidence claimed `tests/SignalEmitterRecordTest.cpp`
+was "unchanged in this tree" — `ac9891f3` (DL-36) had in fact added
+`RunBoundedNeighbourRead()` to that file, but it adds no coverage for the
+two S3 sites DL-19 names, so the verdict is unchanged and only the citation
+text was corrected. All 16 CLOSED-by-cleanup rows were confirmed struck in
+both the ledger and their named source-doc heading (§10.1/§10.3 of
+REFRACTIVE_RADIANCE_SCALING.md, debt 31 items 1/3/4 of RENDERING_INTEGRATORS.md,
+§10 of CROSS_OBJECT_PROXIMITY_DESIGN.md, §10 of
+SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md, IMPROVEMENTS.md's GGX low-F0
+entry — the other nine, DL-48/50/51/54/55/56/57/58/59, were discovered
+mid-sweep rather than sourced from one of the eight original design-doc
+ledgers, so they have no separate design-doc heading to strike and are
+correctly cited only to their own `DLxx_*.md` closure doc). Ledger ordering
+(class, then S<M<L within class), the OPEN/CLOSED/RESOLVED/NOT-A-DEBT/DOC-ROT
+partition (every DL-xx id in exactly one section, no duplicates, DL-35
+deliberately absent), and every internal `DL-xx` cross-reference were
+independently re-derived from the table text this pass and found consistent
+— no count below changed.
+
 - Main rows: **63** — **47 open**, **16 closed**.
 - OPEN-confirmed: **47**, including the two reproduced baseline gate residuals
-  DL-60/DL-61. DL-35 remains deliberately absent.
+  DL-60/DL-61. DL-35 remains deliberately absent. Re-sweep 2026-09-12: all
+  47 independently re-verified against `876c9a26`; 0 reclassified.
 - CLOSED-by-cleanup: **16** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin; DL-03, `8a9bdb18`;
   DL-04, `1b705ce1`, convention pin; DL-48, `12a7ef3e`;
@@ -202,6 +247,8 @@ DL-60/DL-61 gate residuals, plus the DL-37 diffuse-composition closure and indep
   tested only indirectly rather than by a dedicated regression)
 - NOT-A-DEBT: **27** (unchanged this pass)
 - UNVERIFIABLE: **0**
+- CLOSED-by-this-resweep: **0** (see "Re-sweep" note above; one stale
+  citation on DL-19 corrected in place, verdict unchanged)
 
 Total items re-verified or newly placed by the final completion pass: 1 new
 OPEN row (DL-37) + 6 new Already-resolved rows (DL-R18..DL-R23) + 1 second
