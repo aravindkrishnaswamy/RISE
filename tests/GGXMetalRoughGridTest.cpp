@@ -4,7 +4,7 @@
 //    a (metallic × roughness) grid against analytical predictions.
 //
 //    Top-left  (m=0, r=0):    smooth dielectric — F0 = 0.04 at normal,
-//                              high diffuse retention (1 - 0.04 = 0.96)
+//                              diffuse entry/exit interface transmission
 //    Top-right (m=0, r=1):    rough dielectric — diffuse-dominant Lambert,
 //                              specular peak smeared
 //    Bot-left  (m=1, r=0):    smooth metal — F0 = baseColor at normal,
@@ -104,7 +104,7 @@ static RayIntersectionGeometric MakeRI( double incomingTheta )
 
 // ============================================================
 //  Corner 1: Smooth dielectric (m=0, r=0).
-//    Diffuse ≈ baseColor * (1 - max(0.04)) / π = baseColor * 0.96/π.
+//    Diffuse = baseColor * (1-F(view)) * (1-F(light)) / π.
 //    Specular peak: at the half-vector (mirror direction) the spec lobe
 //    contributes, but at any other direction it's negligible because
 //    the NDF is sharp.  The diffuse term dominates everywhere except
@@ -120,12 +120,16 @@ static bool TestSmoothDielectric()
 	GGXBRDF* brdf = MakePBRBrdf( baseColor, 0.0, 0.0 );
 
 	// Sample at oblique angle, light direction far from mirror.  The
-	// diffuse term dominates: BRDF ≈ baseColor * (1 - 0.04) / π.
+	// diffuse term dominates: use the analytic single-pass Schlick transmissions.
 	RayIntersectionGeometric ri = MakeRI( 0.3 );	// view from ~17°
 	const Vector3 lightDir = Vector3Ops::Normalize( Vector3(-0.6, 0.6, 0.5) );
 	const RISEPel f = brdf->value( lightDir, ri );
 
-	const RISEPel expectedDiffuse = baseColor * ((1.0 - 0.04) * INV_PI);
+	const Scalar muV = std::cos(0.3);
+	const Scalar muL = lightDir.z;
+	const Scalar transmission = (1.0-0.04)*(1.0-std::pow(1.0-muV,5)) *
+		(1.0-0.04)*(1.0-std::pow(1.0-muL,5));
+	const RISEPel expectedDiffuse = baseColor * (transmission * INV_PI);
 	const Scalar errR = fabs(f.r - expectedDiffuse.r);
 	const Scalar errG = fabs(f.g - expectedDiffuse.g);
 	const Scalar errB = fabs(f.b - expectedDiffuse.b);
@@ -133,7 +137,7 @@ static bool TestSmoothDielectric()
 	std::cout << "  BRDF = (" << std::fixed << std::setprecision(4)
 			  << f.r << "," << f.g << "," << f.b << ")"
 			  << "  expected ≈ (" << expectedDiffuse.r << "," << expectedDiffuse.g << "," << expectedDiffuse.b << ")";
-	// Allow 1% slack — at smooth dielectric, off-mirror dirs have
+	// Allow the existing 5% slack — at smooth dielectric, off-mirror dirs have
 	// effectively zero specular but multiscatter at α≈0 is small but
 	// not exactly zero.
 	if( errR > expectedDiffuse.r * 0.05 || errG > expectedDiffuse.g * 0.05 || errB > expectedDiffuse.b * 0.05 ) {
@@ -147,9 +151,8 @@ static bool TestSmoothDielectric()
 
 // ============================================================
 //  Corner 2: Rough dielectric (m=0, r=1).
-//    Pure Lambertian diffuse plus a wide specular lobe + multiscatter.
-//    BRDF should be roughly baseColor / π ± a correction for (1-F0)
-//    diffuse split + the broad specular peak.  At an off-mirror sample
+//    A Lambertian substrate behind entry/exit transmission, plus a wide
+//    specular lobe and multiscatter. The substrate gives a lower bound.  At an off-mirror sample
 //    the diffuse dominates.
 // ============================================================
 
@@ -165,9 +168,12 @@ static bool TestRoughDielectric()
 	const Vector3 lightDir = Vector3Ops::Normalize( Vector3(-0.6, 0.6, 0.5) );
 	const RISEPel f = brdf->value( lightDir, ri );
 
-	// Lower bound: at minimum we should see (1 - 0.04) * baseColor / π
-	// (the diffuse term alone, ignoring specular and multiscatter).
-	const RISEPel diffuseLB = baseColor * ((1.0 - 0.04) * INV_PI);
+	// Analytic diffuse-only lower bound; specular and MS are nonnegative.
+	const Scalar muV = std::cos(0.3);
+	const Scalar muL = lightDir.z;
+	const Scalar transmission = (1.0-0.04)*(1.0-std::pow(1.0-muV,5)) *
+		(1.0-0.04)*(1.0-std::pow(1.0-muL,5));
+	const RISEPel diffuseLB = baseColor * (transmission * INV_PI);
 
 	std::cout << "  BRDF = (" << std::fixed << std::setprecision(4)
 			  << f.r << "," << f.g << "," << f.b << ")"
@@ -256,7 +262,7 @@ static bool TestRoughMetal()
 }
 
 // ============================================================
-//  Confirms that the (1 - max(F0)) diffuse split is visible:
+//  Confirms positive diffuse response under interface transmission:
 //  for the same metallic=0 dielectric, increasing baseColor brightness
 //  must produce non-decreasing diffuse output (no sign-flip from a
 //  Schlick-mode bug).

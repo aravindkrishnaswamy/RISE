@@ -163,12 +163,12 @@ int main()
 			Check( mat->GetSPF()  != nullptr, "material has an SPF" );
 
 			// Sanity: directional albedo at θ=30°.  baseColor = 0.8 (gray),
-			// metallic = 0 → ρ ≈ baseColor × (1 - max(F0)) + Fresnel(at-cos)
-			//                ≈ 0.8 × 0.96 + small ≈ 0.81.  Loose bounds to
-			//                catch "blew up" or "went to zero" regressions.
+			// metallic = 0 retains diffuse after entry/exit interface transmission.
+			// Loose bounds catch gross gain or disappearance; the focused GGX
+			// tests independently measure the energy bound.
 			ISPF* spf = mat->GetSPF();
 			const double rho = DirectionalAlbedo( *spf, 30.0 * 3.14159265358979 / 180.0 );
-			Check( rho > 0.70 && rho < 1.10, "default-config directional albedo plausible (≈ baseColor × 0.96)" );
+			Check( rho > 0.70 && rho < 1.10, "default-config directional albedo plausible" );
 			std::cout << "        ρ = " << std::fixed << std::setprecision( 4 ) << rho << "\n";
 
 			safe_release( mat );

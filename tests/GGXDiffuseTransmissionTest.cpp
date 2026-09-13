@@ -34,7 +34,6 @@
 #include <string>
 #include <cmath>
 #include <algorithm>
-#include <limits>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Ray.h"
@@ -347,7 +346,7 @@ namespace
 	static double StandardError( const ChannelMoments& moments, const int channel, const int samples )
 	{
 		if( !std::isfinite(moments.sum[channel]) || !std::isfinite(moments.sumSq[channel]) )
-			return std::numeric_limits<double>::infinity();
+			return 0; // The reporting checks reject non-finite moments explicitly.
 		if( samples < 2 ) return 0;
 		const double mean = Mean( moments, channel, samples );
 		const double centered = moments.sumSq[channel] - samples * mean * mean;
@@ -368,7 +367,7 @@ namespace
 			const double limit = 1.0 + kEnergySigma * se + kEnergyFloor;
 			std::cout << "  " << std::fixed << std::setprecision( 4 ) << mean
 				<< "+/-" << std::setprecision( 4 ) << se;
-			if( !std::isfinite( mean ) || !std::isfinite( se ) || mean > limit ) passed = false;
+			if( !std::isfinite(moments.sumSq[c]) || !std::isfinite( mean ) || !std::isfinite( se ) || mean > limit ) passed = false;
 		}
 		std::cout << "  invalid=" << moments.invalid << " below=" << moments.belowHorizon
 			<< ( passed ? "  PASS" : "  FAIL" ) << "\n";
@@ -386,7 +385,7 @@ namespace
 		const double mean = Mean( moments, 0, samples );
 		const double se = StandardError( moments, 0, samples );
 		const double limit = 1.0 + kEnergySigma * se + kEnergyFloor;
-		const bool passed = moments.invalid == 0 && std::isfinite( mean ) &&
+		const bool passed = moments.invalid == 0 && std::isfinite(moments.sumSq[0]) && std::isfinite( mean ) &&
 			std::isfinite( se ) && mean <= limit;
 		std::cout << "  " << std::left << std::setw( 52 ) << label
 			<< "  nm=" << std::setw( 3 ) << static_cast<int>( nm )
