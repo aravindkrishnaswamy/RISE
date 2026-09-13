@@ -56,7 +56,9 @@ public:
 
 	Point2 Get2D() override
 	{
-		return Point2( Get1D(), Get1D() );
+		const Scalar first = Get1D();
+		const Scalar second = Get1D();
+		return Point2( first, second );
 	}
 
 	bool Exhausted() const { return m_exhausted; }
@@ -158,6 +160,9 @@ bool PrepareCase( const Object& sphere, const RayIntersectionGeometric& entry,
 	const Vector3 direction = Vector3Ops::Normalize( entry.ray.Dir() );
 	const Point3 initial = Point3Ops::mkPoint3(entry.ptIntersection,
 		direction * BSSRDFSampling::BSSRDF_RAY_EPSILON);
+	// Subtracting xi from one quantizes this tiny optical depth. Verify
+	// the resulting physical scale, and use the actual sampled distance
+	// (not the requested distance) in every density and geometry oracle.
 	testCase.collisionDistance = CollisionDistance(testCase.rate,testCase.xi);
 	const Point3 collision = Point3Ops::mkPoint3(initial,
 		direction * testCase.collisionDistance);
@@ -167,8 +172,8 @@ bool PrepareCase( const Object& sphere, const RayIntersectionGeometric& entry,
 			testCase.collisionDistance < testCase.initialDistance,
 			"sampled collision must lie strictly inside the measured closed sphere") &&
 		MeasureBackFaceDistance(sphere,collision,direction,testCase.remainingDistance) &&
-		Require(Close(testCase.collisionDistance,testCase.wantedCollisionDistance,2e-10),
-			"inverse-CDF collision must reach the requested physical distance");
+		Require(std::fabs(testCase.collisionDistance / testCase.wantedCollisionDistance - 1.0) < 2e-4,
+			"quantized inverse-CDF collision must reach the intended physical scale");
 }
 
 bool RequireActiveAndFinite( const BSSRDFSampling::SampleResult& sample,
@@ -215,7 +220,7 @@ bool RequireNeutralRGBWeights( const BSSRDFSampling::SampleResult& sample,
 void TestRGBDensityCutoffAndScaleInvariance()
 {
 	std::cout << "Test A: RGB collision density cutoff has a unit conditional weight" << std::endl;
-	const Scalar xi = 1.0 - std::exp( -0.5 );
+	const Scalar xi = -std::expm1( -5e-13 );
 	DensityCase large = { 1e8, 1e-20, 5e7, xi, 0.0, 0.0, 0.0 };
 	DensityCase scaled = { 1.0, 1e-12, 0.5, xi, 0.0, 0.0, 0.0 };
 	Object* largeSphere = MakeClosedSphere( large.radius );
@@ -244,6 +249,13 @@ void TestRGBDensityCutoffAndScaleInvariance()
 		const DensityCase& testCase = caseIndex ? scaled : large;
 		const Object* sphere = caseIndex ? scaledSphere : largeSphere;
 		const RayIntersectionGeometric& entry = caseIndex ? scaledEntry : largeEntry;
+		const Scalar density = testCase.rate * std::exp(-testCase.rate * testCase.collisionDistance);
+		Require(Finite(density) && density > 0.0 &&
+			(caseIndex ? density > 1e-20 : density < 1e-20),
+			"measured collision density must straddle the old cutoff across scales");
+		std::cout << "  radius=" << testCase.radius << " rate=" << testCase.rate
+			<< " collision=" << testCase.collisionDistance << " initial=" << testCase.initialDistance
+			<< " remaining=" << testCase.remainingDistance << " density=" << density << std::endl;
 		const RISEPel zero( 0.0 );
 		const RISEPel neutral( testCase.rate );
 		// RGB channel, collision distance, HG forward polar/azimuth, next
@@ -281,7 +293,7 @@ void TestNMNeutralControlAndPureAbsorption()
 	std::cout << "Test B: NM neutral control and pure-absorption collision control" << std::endl;
 	const Scalar radius = 1e8;
 	const Scalar rate = 1e-20;
-	const Scalar xi = 1.0 - std::exp( -0.5 );
+	const Scalar xi = -std::expm1( -5e-13 );
 	DensityCase testCase = { radius, rate, 5e7, xi, 0.0, 0.0, 0.0 };
 	Object* sphere = MakeClosedSphere( radius );
 	const RayIntersectionGeometric entry = MakeSouthPoleEntry(radius);
