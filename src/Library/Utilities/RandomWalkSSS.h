@@ -17,7 +17,9 @@
 //          back-face-only hits to find the exit distance.
 //       b. Sample a spectral channel uniformly (RGB) or use the
 //          single channel (NM mode).
-//       c. Sample free-flight distance: t = -log(1-xi) / sigma_t[ch].
+//       c. Sample distance: t = -log(1-xi) / q, where q is the chosen
+//          effective rate (with tiny-extinction fallback). Event weights
+//          divide physical collision/survival density by that proposal.
 //       d. If t < exitDist: scatter inside.  Advance position, update
 //          throughput, sample new direction from HG phase function.
 //       e. If t >= exitDist: exit the mesh.  Compute Fresnel at exit.
