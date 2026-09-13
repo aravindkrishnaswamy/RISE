@@ -62,7 +62,7 @@ quotient bug, and this closure does not claim them fixed.
 The retained audit selects 26 gates across 54 clean-build/link/run stages.
 At source repair `df7e3dad`, the clean Xcode audit succeeded with zero
 compiler warnings. Its four notices were three missing local OIDN search-path
-lines and one AppIntents metadata notice. The standalone completion report records the full final branch and merged-master gate results.
+lines and one AppIntents metadata notice. The branch completed all 54 selected stages at `df7e3dad`; subsequent changes are documentation only. The standalone completion report will also record the isolated merged-master validation.
 
 | File | Status |
 |---|---|
@@ -76,5 +76,5 @@ lines and one AppIntents metadata notice. The standalone completion report recor
 | `docs/README.md` | Adds a link to this closure record. |
 | `docs/DL56_GRAZING_FRESNEL.md` | This closure record. |
 
-No source files were added or removed, so no build-project source-list update
+No production files under `src/Library` were added or removed, so no build-project source-list update
 is required.
