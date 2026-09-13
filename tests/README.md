@@ -93,6 +93,19 @@ bound to a specular-only physical conductor, a white diffuse-plus-specular
 conductor, and the corresponding transparent-oxide thin-film conductor. The
 last two are public mixed-lobe regressions, not known-failure exemptions.
 
+`GGXDiffuseTransmissionTest` independently integrates the full RGB/NM BRDF
+with a cosine/VNDF proposal mixture and checks front/back reciprocity. Its
+energy band is `mean <= 1 + 6*SE + 0.005`, with invalid samples and moments
+failing explicitly. Three specular-only baseline failures remain visible with
+a nonzero exit and are tracked separately as DL-63; no energy assertion is
+skipped. This test is not an all-green gate until DL-63 is resolved.
+
+`GGXDiffuseRenderTest` loads `ggx_diffuse_transmission.RISEscene` and seeds each
+render immediately before rasterization. Its 384×128, 64-sample direct-light
+fixture writes `rendered/DL37_pbr.exr` in linear Rec.709, with box filtering and
+OIDN disabled. It checks scene loading/render completion; the direct material
+tests supply energy assertions, and artifact validation checks pixel finiteness.
+
 ## Style Of Test Used Here
 
 - Each file is an executable with its own `main`.
