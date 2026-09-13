@@ -65,7 +65,7 @@ namespace RISE
 				FireProductionProjectionFaceCount(shape,0u)+FireProductionProjectionFaceCount(shape,1u)+
 				FireProductionProjectionFaceCount(shape,2u),boundary=2u*(shape.nx*shape.ny+
 				shape.nx*shape.nz+shape.ny*shape.nz);
-			return (27u*cells+36u*faces+boundary)*sizeof(float)+
+			return (27u*cells+38u*faces+boundary)*sizeof(float)+
 				2u*boundary+2u*sizeof(std::uint64_t);
 		}
 		id<MTLDevice> DiscoverProductionMetalDevice(const char* operation,
@@ -2906,7 +2906,7 @@ inline bool eos_select_dd_segment(device const float* thermo,uint species,EOSDD 
   int lowerOrder=eos_order(temperature,lower),upperOrder=eos_order(temperature,upper);
   if(lowerOrder==2||upperOrder==2){valid=false;return false;}
   bool above=lowerOrder>=0,below=upperOrder<0||(segment+1u==segments&&upperOrder==0);
-  if(above&&below){offset=candidate;atomic_fetch_or_explicit(obligations,
+  if(above&&below){offset=candidate;if(obligations)atomic_fetch_or_explicit(obligations,
     1u<<(7u+min(segment,2u)),memory_order_relaxed);return true;}}
  return false;}
 inline EOSDD eos_enthalpy_dd(device const float* thermo,uint species,EOSDD temperature,
@@ -2938,15 +2938,16 @@ inline EOSDD eos_energy_dd(device const float* state,device const float* thermo,
  EOSDD inverse=eos_div(eos_dd(1.0f),temperature),logT=eos_log_dd(temperature);
  EOSDD t2=eos_mul(temperature,temperature),t3=eos_mul(t2,temperature),t4=eos_mul(t3,temperature),
   t5=eos_mul(t4,temperature),energy=eos_dd(0.0f);
+ EOSDD thirdT3=eos_div(t3,eos_dd(3.0f)),fifthT5=eos_div(t5,eos_dd(5.0f));
  for(uint species=0u;species<7u;++species){uint offset=0u;EOSDD enthalpy=eos_dd(0.0f);
   if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations,valid))valid=false;
   else{EOSDD primitive=eos_neg(eos_mul(eos_load_dd(thermo,offset+6u),inverse));
    primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+9u),logT));
    primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+12u),temperature));
    primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+15u),eos_mul(t2,eos_dd(0.5f))));
-   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+18u),eos_div(t3,eos_dd(3.0f))));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+18u),thirdT3));
    primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+21u),eos_mul(t4,eos_dd(0.25f))));
-   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+24u),eos_div(t5,eos_dd(5.0f))));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+24u),fifthT5));
    EOSDD gasConstant=eos_load_dd(thermo,7u*96u),weight=eos_load_dd(thermo,96u*species);
    enthalpy=eos_add(eos_mul(eos_div(gasConstant,weight),primitive),eos_load_dd(thermo,offset+27u));}
   energy=eos_add(energy,eos_mul(eos_dd(state[(species+1u)*p.cells+cell]),enthalpy));}
@@ -2966,12 +2967,50 @@ inline bool eos_within_positive_envelope(EOSDD residual,EOSDD scale,float feasib
 kernel void build_eos_endpoint_table(device const float* thermo [[buffer(0)]],
  constant EOSParams& p [[buffer(1)]],device EOSDD* endpoints [[buffer(2)]],
  device atomic_uint* obligations [[buffer(3)]],device atomic_uint* failure [[buffer(4)]],
- uint gid [[thread_position_in_grid]]){if(gid>=14u)return;bool valid=true;
+ uint gid [[thread_position_in_grid]]){if(gid>=14u+1023u)return;bool valid=true;
+ if(gid>=14u){
+  // Heap node n has path bits in n+1 below its leading one. Reconstruct the
+  // unchanged integer-midpoint trajectory; no cell or mixture enters this table.
+  uint node=gid-14u,path=node+1u,bit=1u;
+  while(bit<=path/2u)bit*=2u;
+  uint lower=as_type<uint>(p.Tmin),upper=as_type<uint>(p.Tmax);
+  for(bit/=2u;bit!=0u;bit/=2u){uint middle=lower+(upper-lower)/2u;
+   if(path&bit)lower=middle;else upper=middle;}
+  uint middle=lower+(upper-lower)/2u,mask=0u,base=14u+8u*node;
+  EOSDD T=eos_dd(as_type<float>(middle));
+  for(uint species=0u;species<7u;++species){uint offset=0u;bool selected=true;
+   if(eos_select_dd_segment(thermo,species,T,offset,nullptr,selected))
+    mask|=1u<<(7u+min((offset-96u*species-4u)/30u,2u));
+   endpoints[base+species]=eos_enthalpy_dd(thermo,species,T,nullptr,valid);}
+  endpoints[base+7u]={valid&&upper-lower>1u?1.0f:0.0f,as_type<float>(mask),T.hi,0.0f};
+  // Unvisited prefix nodes have no authority to add obligations or refuse.
+  return;}
  endpoints[gid]=eos_enthalpy_dd(thermo,gid/2u,eos_dd((gid&1u)?p.Tmax:p.Tmin),obligations,valid);
  if(!valid)atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);
  // Qualification-only mutation: the direct-arithmetic comparator below must
  // refuse an altered table. Production never authors this metadata bit.
  if((p.pad1&2u)!=0u&&gid==0u)endpoints[gid].bound=nextafter(endpoints[gid].bound,INFINITY);}
+inline EOSDD eos_prefix_energy(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,uint node,uint midpointBits,device atomic_uint* obligations,
+ thread bool& valid,device const EOSDD* endpoints){
+ if(!endpoints||node>=1023u)return eos_energy_dd(state,thermo,p,cell,
+  eos_dd(as_type<float>(midpointBits)),obligations,valid);
+ uint base=14u+8u*node;EOSDD status=endpoints[base+7u],energy=eos_dd(0.0f);
+ valid=valid&&status.hi==1.0f&&as_type<uint>(status.tail)==midpointBits;
+ atomic_fetch_or_explicit(obligations,as_type<uint>(status.lo),memory_order_relaxed);
+ for(uint species=0u;species<7u;++species)energy=eos_add(energy,
+  eos_mul(eos_dd(state[(species+1u)*p.cells+cell]),endpoints[base+species]));
+ if(resident_full_payload_seals){bool directValid=true;uint mask=0u;
+  EOSDD T=eos_dd(as_type<float>(midpointBits));
+  EOSDD direct=eos_energy_dd_direct(state,thermo,p,cell,T,nullptr,directValid);
+  for(uint species=0u;species<7u;++species){uint offset=0u;bool selected=true;
+   if(eos_select_dd_segment(thermo,species,T,offset,nullptr,selected))
+    mask|=1u<<(7u+min((offset-96u*species-4u)/30u,2u));}
+  if(valid!=directValid||mask!=as_type<uint>(status.lo)||
+   as_type<uint>(energy.hi)!=as_type<uint>(direct.hi)||
+   as_type<uint>(energy.lo)!=as_type<uint>(direct.lo)||as_type<uint>(energy.tail)!=as_type<uint>(direct.tail)||
+   as_type<uint>(energy.bound)!=as_type<uint>(direct.bound))valid=false;}
+ return energy;}
 inline EOSDD eos_endpoint_enthalpy(device const float* thermo,uint species,uint endpoint,
  constant EOSParams& p,device atomic_uint* obligations,thread bool& valid,
  device const EOSDD* endpoints){return endpoints?endpoints[2u*species+endpoint]:
@@ -2983,9 +3022,10 @@ inline EOSDD eos_endpoint_energy(device const float* state,device const float* t
   eos_mul(eos_dd(state[(species+1u)*p.cells+cell]),
    eos_endpoint_enthalpy(thermo,species,endpoint,p,obligations,valid,endpoints)));
  return energy;}
+struct EOSEndpointAggregates { EOSDD lowerEnergy,upperEnergy,scale; };
 inline bool eos_state_admissible(device const float* state,device const float* thermo,
  constant EOSParams& p,uint cell,device atomic_uint* obligations,
- device const EOSDD* endpoints=nullptr){
+ device const EOSDD* endpoints=nullptr,thread EOSEndpointAggregates* aggregates=nullptr){
  float values[9];for(uint component=0u;component<9u;++component){values[component]=
   state[component*p.cells+cell];if(!isfinite(values[component]))return false;}
  EOSDD total=eos_dd(0.0f),massScale=eos_abs(eos_dd(values[0])),closure=eos_dd(values[0]);
@@ -3010,6 +3050,7 @@ inline bool eos_state_admissible(device const float* state,device const float* t
    eos_load_dd(thermo,matrixOffset+3u*(row*8u+column)),eos_dd(values[column]));
    residual=eos_add(residual,term);scale=eos_add(scale,eos_abs(term));}
   if(!eos_within_positive_envelope(eos_abs(residual),scale,p.feasibility))return false;}
+ if(aggregates)*aggregates={lowerEnergy,upperEnergy,energyScale};
  return true;}
 // A lattice-point order is not needed when both rounding-boundary orders are
 // proved. Unresolved boundaries still refuse; no enclosure is enlarged.
@@ -3023,18 +3064,35 @@ inline bool eos_certify_temperature_bin(device const float* state,device const f
   upperEnergy=eos_energy_dd(state,thermo,p,cell,upper,obligations,valid);
  return valid&&eos_order(lowerEnergy,sensible)==-1&&eos_order(upperEnergy,sensible)==1;
 }
-inline bool eos_temperature(device const float* state,device const float* thermo,
- constant EOSParams& p,uint cell,device atomic_uint* obligations,thread float& temperature,
- device const EOSDD* endpoints=nullptr,thread float* alternateTemperature=nullptr){
- if(alternateTemperature!=nullptr)*alternateTemperature=0.0f;
+inline bool eos_uncached_endpoint_aggregates(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,device atomic_uint* obligations,device const EOSDD* endpoints,
+ thread EOSEndpointAggregates& result){
  EOSDD sensible=eos_dd(state[8u*p.cells+cell]);bool valid=true;
  EOSDD lowerEnergy=eos_endpoint_energy(state,thermo,p,cell,0u,obligations,valid,endpoints),
-  upperEnergy=eos_endpoint_energy(state,thermo,p,cell,1u,obligations,valid,endpoints);temperature=0.0f;if(!valid)return false;
+  upperEnergy=eos_endpoint_energy(state,thermo,p,cell,1u,obligations,valid,endpoints);if(!valid)return false;
  EOSDD scale=eos_abs(sensible);for(uint species=0u;species<7u;++species){EOSDD density=eos_dd(
   state[(species+1u)*p.cells+cell]),lowerTerm=eos_mul(density,eos_endpoint_enthalpy(thermo,species,
    0u,p,obligations,valid,endpoints)),upperTerm=eos_mul(density,eos_endpoint_enthalpy(thermo,species,
    1u,p,obligations,valid,endpoints));scale=eos_add(scale,eos_add(eos_abs(lowerTerm),eos_abs(upperTerm)));}
- if(!valid)return false;int scaleOrder=eos_order(scale,eos_dd(1.0f));
+ if(!valid)return false;result={lowerEnergy,upperEnergy,scale};return true;}
+inline bool eos_temperature(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,device atomic_uint* obligations,thread float& temperature,
+ device const EOSDD* endpoints=nullptr,thread float* alternateTemperature=nullptr,
+ thread const EOSEndpointAggregates* aggregates=nullptr){
+ if(alternateTemperature!=nullptr)*alternateTemperature=0.0f;temperature=0.0f;
+ EOSEndpointAggregates bounds;
+ if(aggregates)bounds=*aggregates;
+ else if(!eos_uncached_endpoint_aggregates(state,thermo,p,cell,obligations,endpoints,bounds))return false;
+ if(resident_full_payload_seals&&aggregates){EOSEndpointAggregates direct;
+  if(!eos_uncached_endpoint_aggregates(state,thermo,p,cell,obligations,endpoints,direct))return false;
+  EOSDD actualFields[3]={bounds.lowerEnergy,bounds.upperEnergy,bounds.scale},
+   directFields[3]={direct.lowerEnergy,direct.upperEnergy,direct.scale};
+  for(uint field=0u;field<3u;++field){EOSDD a=actualFields[field],b=directFields[field];
+   if(as_type<uint>(a.hi)!=as_type<uint>(b.hi)||as_type<uint>(a.lo)!=as_type<uint>(b.lo)||
+    as_type<uint>(a.tail)!=as_type<uint>(b.tail)||as_type<uint>(a.bound)!=as_type<uint>(b.bound))return false;}}
+ EOSDD sensible=eos_dd(state[8u*p.cells+cell]),lowerEnergy=bounds.lowerEnergy,
+  upperEnergy=bounds.upperEnergy,scale=bounds.scale;bool valid=true;
+ int scaleOrder=eos_order(scale,eos_dd(1.0f));
  if(scaleOrder==-1||scaleOrder==2)scale=eos_dd(1.0f);
  EOSDD tolerance=eos_mul(eos_dd(p.feasibility),scale);
  int lowerOrder=eos_order(eos_add(lowerEnergy,tolerance),sensible);
@@ -3043,13 +3101,14 @@ inline bool eos_temperature(device const float* state,device const float* thermo
  else{int upperOrder=eos_order(sensible,eos_sub(upperEnergy,tolerance));
  if(upperOrder==2||upperOrder>=0)return false;
  atomic_fetch_or_explicit(obligations,1u<<4u,memory_order_relaxed);
- uint lowerBits=as_type<uint>(p.Tmin),upperBits=as_type<uint>(p.Tmax);
+ uint lowerBits=as_type<uint>(p.Tmin),upperBits=as_type<uint>(p.Tmax),prefixNode=0u;
  while(upperBits-lowerBits>1u){uint midpointBits=lowerBits+(upperBits-lowerBits)/2u;
-  EOSDD energy=eos_energy_dd(state,thermo,p,cell,eos_dd(as_type<float>(midpointBits)),obligations,valid);
+  EOSDD energy=eos_prefix_energy(state,thermo,p,cell,prefixNode,midpointBits,obligations,valid,endpoints);
   if(!valid)return false;int order=eos_order(energy,sensible);if(order==2){
    float T=as_type<float>(midpointBits);
    if(!eos_certify_temperature_bin(state,thermo,p,cell,T,obligations))return false;
    temperature=T;return true;}
+  if(prefixNode<1023u)prefixNode=2u*prefixNode+(order<0?2u:1u);
   if(order<0)lowerBits=midpointBits;else upperBits=midpointBits;}
  float lower=as_type<float>(lowerBits),upper=as_type<float>(upperBits);
  EOSDD midpoint=eos_add(eos_dd(lower),eos_dd((upper-lower)*0.5f));
@@ -3070,6 +3129,20 @@ inline bool eos_temperature(device const float* state,device const float* thermo
  else if(midpointOrder>0)temperature=lower;
  else temperature=(lowerBits&1u)==0u?lower:upper;}
  return isfinite(temperature)&&temperature>=p.Tmin&&temperature<p.Tmax;}
+// A cache hit requires exact conservative and parameter bytes. The private
+// encoder authenticates the cached result's original candidate and thermo.
+inline bool eos_exact_cached_input(device const float* candidate,
+ device const float* cachedState,constant EOSParams& p,
+ constant EOSParams* cachedParameters,uint gid){
+ if(cachedState==nullptr||cachedParameters==nullptr)return false;
+ constant uchar* currentBytes=reinterpret_cast<constant uchar*>(&p);
+ constant uchar* cachedBytes=reinterpret_cast<constant uchar*>(cachedParameters);
+ for(uint byte=0u;byte<sizeof(EOSParams);++byte)
+  if(currentBytes[byte]!=cachedBytes[byte])return false;
+ for(uint field=0u;field<9u;++field)
+  if(as_type<uint>(candidate[field*p.cells+gid])!=
+   as_type<uint>(cachedState[field*p.cells+gid]))return false;
+ return true;}
 kernel void evaluate_resident_eos_candidate(device const float* candidate [[buffer(0)]],
  device const float* thermo [[buffer(1)]],device const float* eosThermo [[buffer(2)]],
  device const ulong* candidateIdentity [[buffer(3)]],device float* temperature [[buffer(4)]],
@@ -3077,6 +3150,8 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
  device atomic_uint* failure [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
  constant EOSParams& p [[buffer(9)]],device atomic_uint* firstFailureCell [[buffer(10)]],
  device uint* failureTerm [[buffer(11)]],device const EOSDD* endpoints [[buffer(12)]],
+ device const float* cachedState [[buffer(13)]],device const float* cachedTemperature [[buffer(14)]],
+ constant EOSParams* cachedParameters [[buffer(15)]],device const ulong* cachedIdentity [[buffer(16)]],
  uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;
  if(resident_full_payload_seals&&gid<14u){bool valid=true;
   EOSDD direct=eos_enthalpy_dd(eosThermo,gid/2u,eos_dd((gid&1u)?p.Tmax:p.Tmin),obligations,valid);
@@ -3084,10 +3159,17 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
    as_type<uint>(cached.lo)!=as_type<uint>(direct.lo)||as_type<uint>(cached.tail)!=as_type<uint>(direct.tail)||
    as_type<uint>(cached.bound)!=as_type<uint>(direct.bound)){
    atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);return;}}
- if(candidateIdentity[0]==0ul||!eos_state_admissible(candidate,eosThermo,p,gid,obligations,endpoints)){
+ EOSEndpointAggregates endpointAggregates;
+ if(candidateIdentity[0]==0ul||!eos_state_admissible(candidate,eosThermo,p,gid,obligations,endpoints,&endpointAggregates)){
   atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);return;}
  atomic_fetch_or_explicit(obligations,1u<<2u,memory_order_relaxed);float T=0.0f,alternateT=0.0f;
- if(!eos_temperature(candidate,eosThermo,p,gid,obligations,T,endpoints,&alternateT)){
+ if(cachedIdentity!=nullptr&&cachedIdentity[0]==0ul){
+  atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);return;}
+ bool cached=cachedTemperature!=nullptr&&cachedIdentity!=nullptr&&cachedIdentity[0]!=0ul&&
+  eos_exact_cached_input(candidate,cachedState,p,cachedParameters,gid);
+ if(cached){T=cachedTemperature[gid];alternateT=cachedTemperature[p.cells+gid];
+  if(as_type<uint>(alternateT)==as_type<uint>(T))alternateT=0.0f;}
+ if(!cached&&!eos_temperature(candidate,eosThermo,p,gid,obligations,T,endpoints,&alternateT,&endpointAggregates)){
   atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);return;}
  if(resident_full_payload_seals){float directT=0.0f,directAlternate=0.0f;
   if(!eos_state_admissible(candidate,eosThermo,p,gid,obligations)||
@@ -3224,15 +3306,63 @@ inline EOSDD eos_two_path_hull(EOSDD selected,EOSDD alternate){
  float radius=eos_up_add(eos_up_add(abs(difference.hi),abs(difference.lo)),
   eos_up_add(abs(difference.tail),difference.bound));
  selected.bound=max(selected.bound,radius);return selected;}
+struct TargetTemperatureBasis {
+ EOSDD inverse,inverse2,logT,t2,t3,t4,thirdT3,fifthT5;
+};
+inline TargetTemperatureBasis target_temperature_basis(EOSDD temperature){
+ TargetTemperatureBasis basis;basis.inverse=eos_div(eos_dd(1.0f),temperature);
+ basis.inverse2=eos_mul(basis.inverse,basis.inverse);basis.logT=eos_log_dd(temperature);
+ basis.t2=eos_mul(temperature,temperature);basis.t3=eos_mul(basis.t2,temperature);
+ basis.t4=eos_mul(basis.t3,temperature);
+ basis.thirdT3=eos_div(basis.t3,eos_dd(3.0f));
+ basis.fifthT5=eos_div(eos_mul(basis.t4,temperature),eos_dd(5.0f));return basis;}
+inline EOSDD target_enthalpy_basis_dd(device const float* thermo,uint species,EOSDD temperature,
+ TargetTemperatureBasis basis,device atomic_uint* obligations,thread bool& valid){uint offset=0u;
+ if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations,valid)){
+  valid=false;return eos_dd(0.0f);}
+ EOSDD primitive=eos_neg(eos_mul(eos_load_dd(thermo,offset+6u),basis.inverse));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+9u),basis.logT));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+12u),temperature));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+15u),eos_mul(basis.t2,eos_dd(0.5f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+18u),basis.thirdT3));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+21u),eos_mul(basis.t4,eos_dd(0.25f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+24u),basis.fifthT5));
+ EOSDD gasConstant=eos_load_dd(thermo,7u*96u),weight=eos_load_dd(thermo,96u*species);
+ return eos_add(eos_mul(eos_div(gasConstant,weight),primitive),eos_load_dd(thermo,offset+27u));}
+inline EOSDD target_cp_basis_dd(device const float* thermo,uint species,EOSDD temperature,
+ TargetTemperatureBasis basis,device atomic_uint* obligations,thread bool& valid){uint offset=0u;
+ if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations,valid)){
+  valid=false;return eos_dd(0.0f);}
+ EOSDD value=eos_mul(eos_load_dd(thermo,offset+6u),basis.inverse2);
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+9u),basis.inverse));
+ value=eos_add(value,eos_load_dd(thermo,offset+12u));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+15u),temperature));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+18u),basis.t2));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+21u),basis.t3));
+ value=eos_add(value,eos_mul(eos_load_dd(thermo,offset+24u),basis.t4));
+ return eos_mul(eos_div(eos_load_dd(thermo,7u*96u),
+  eos_load_dd(thermo,96u*species)),value);}
+inline bool target_dd_words_match(EOSDD a,EOSDD b){
+ return as_type<uint>(a.hi)==as_type<uint>(b.hi)&&as_type<uint>(a.lo)==as_type<uint>(b.lo)&&
+  as_type<uint>(a.tail)==as_type<uint>(b.tail)&&as_type<uint>(a.bound)==as_type<uint>(b.bound);}
 inline EOSDD target_tangent_at_temperature(device const float* state,
  device const float* eosThermo,uint cells,uint gid,float temperature,
  thread const EOSDD* rate,device atomic_uint* obligations,thread bool& valid){
  EOSDD gas=eos_dd(0.0f),inverseWeight=eos_dd(0.0f),heatCapacity=eos_dd(0.0f);
- EOSDD enthalpy[7];EOSDD T=eos_dd(temperature);for(uint species=0u;species<7u;++species){
+ // Reuse pure temperature primitives, separately for each adjacent-bin path.
+ // Polynomial order, exact division by five, and segment predicates stay unchanged.
+ EOSDD enthalpy[7];EOSDD T=eos_dd(temperature);
+ TargetTemperatureBasis temperatureBasis=target_temperature_basis(T);
+ for(uint species=0u;species<7u;++species){
   EOSDD density=eos_dd(max(0.0f,state[(species+1u)*cells+gid]));
-  enthalpy[species]=eos_enthalpy_dd(eosThermo,species,T,obligations,valid);
-  heatCapacity=eos_add(heatCapacity,eos_mul(density,
-   target_cp_dd(eosThermo,species,T,obligations,valid)));
+  bool directValid=valid;
+  enthalpy[species]=target_enthalpy_basis_dd(eosThermo,species,T,temperatureBasis,obligations,valid);
+  EOSDD cp=target_cp_basis_dd(eosThermo,species,T,temperatureBasis,obligations,valid);
+  if(resident_full_payload_seals){EOSDD directEnthalpy=eos_enthalpy_dd(eosThermo,species,T,
+    obligations,directValid),directCP=target_cp_dd(eosThermo,species,T,obligations,directValid);
+   if(valid!=directValid||!target_dd_words_match(enthalpy[species],directEnthalpy)||
+    !target_dd_words_match(cp,directCP))valid=false;}
+  heatCapacity=eos_add(heatCapacity,eos_mul(density,cp));
   if(species<6u){gas=eos_add(gas,density);inverseWeight=eos_add(inverseWeight,
     eos_div(density,eos_load_dd(eosThermo,96u*species)));}}
  EOSDD capacityTemperature=eos_mul(heatCapacity,T),meanWeight=eos_div(gas,inverseWeight);
@@ -7225,6 +7355,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const ResidentEOSMetalAuthority&,const ResidentFrozenSourceMetalAuthority&,
 				const MetalResidentTargetParameters&,
 				ResidentProjectionTargetMetalAuthority&,std::string*);
+			// Optional private memoization input, never an externally authored surface.
+			const ResidentEOSMetalAuthority* reuseParent=nullptr;
+			const ResidentEOSCandidateMetalAuthority* reuseCandidate=nullptr;
 			id<MTLBuffer> temperature;
 			id<MTLBuffer> endpointEnthalpies;
 			id<MTLBuffer> representedPressureRatio;
@@ -7554,6 +7687,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			};
 
 			const FireProductionProjectedHeunMetalOwnerRequest& request_;
+			// Owned, immutable snapshot: validate its full seal once in Prepare.
+			const FireProductionFrozenSourcePacketSeal sourceSnapshot_;
 			ResidentTransportMetalContext& context_;
 			id<MTLBuffer> inputPayloadDigest_=nil;
 			std::string qualifiedKernelSetSHA256_;
@@ -7576,6 +7711,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				targetObligations_,zeroTarget_,zeroTargetIdentity_,zeroTargetConsumerIdentity_,rootCandidateIdentity_,
 				integratedOpenHead_;
 			std::unique_ptr<ResidentProjectionTargetMetalAuthority> bootstrapTarget_;
+			const Stage* eosReuseParent_=nullptr;
 			std::vector<std::shared_ptr<unsigned char> > issuedTargetCapabilities_;
 			std::array<std::vector<FireProductionProjectedHeunIterationTrace>,3>
 				qualificationTrace_;
@@ -7773,7 +7909,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						const std::string base=ResidentTransportMetalContext::Source();
 						const std::string begin="inline bool eos_temperature(";
 						const std::size_t first=base.find(begin),last=base.find(
-							"\nkernel void evaluate_resident_eos_candidate(",first);
+							"\ninline bool eos_exact_cached_input(",first);
 						if(first==std::string::npos||last==std::string::npos)return;
 						std::string counted=base.substr(first,last-first);
 						auto replaceOnce=[&](const std::string& old,const std::string& replacement){
@@ -7782,7 +7918,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 							counted.replace(at,old.size(),replacement);return true;};
 						if(!replaceOnce("eos_temperature(","eos_temperature_counted(")||
 							!replaceOnce("thread float& temperature,","thread float& temperature,thread uint& steps,")||
-							!replaceOnce("thread float* alternateTemperature=nullptr){","thread float* alternateTemperature=nullptr){steps=0u;")||
+							!replaceOnce("thread const EOSEndpointAggregates* aggregates=nullptr){","thread const EOSEndpointAggregates* aggregates=nullptr){steps=0u;")||
 							!replaceOnce("while(upperBits-lowerBits>1u){","while(upperBits-lowerBits>1u){++steps;"))return;
 						const std::string source=base+counted+R"METAL(
 kernel void eos_iteration_histogram(device const float* candidate [[buffer(0)]],
@@ -8474,6 +8610,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					*output.candidate,error))return false;
 				if(!captureClause(1u))return false;
 				output.eos.reset(new ResidentEOSMetalAuthority);
+				if(stage==2u&&eosReuseParent_){
+					output.eos->reuseParent=eosReuseParent_->eos.get();
+					output.eos->reuseCandidate=eosReuseParent_->candidate.get();}
 				if(!EncodeResidentEOSAuthority(context_,command,thermo_,eosThermo_,eosParameters_[stage],
 					failure_,eosObligations_,*output.transport,candidatePhysical,*output.candidate,
 					eosMetadata_,*output.eos,error))return false;
@@ -8482,7 +8621,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				const bool injectDirectSourceUpload=request_.qualificationInjectInterstageTransfer&&
 					stage==1u&&!qualificationInterstageSourceUploadInjected_;
 				if(!EncodeResidentFrozenSourceAuthority(context_,command,failure_,targetObligations_,
-					request_.lineage.frozenSource,*output.candidate,targetMetadata_,
+					sourceSnapshot_,*output.candidate,targetMetadata_,
 					injectDirectSourceUpload?nil:frozenSource_,
 					injectDirectSourceUpload?nil:targetParameters_[stage],*output.source,error))
 					return false;
@@ -8756,6 +8895,17 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				copy(projectionTarget.correctionIteration==0u?zeroTarget_:
 					projectionTarget.monitoredAbsolute,cells_*sizeof(float));
 				copy(projectionTarget.publicationIdentity,sizeof(std::uint64_t));
+				// Observer v2 appends two exact device-produced face planes. Absent
+				// surfaces are zero padding on the wire, never private scratch reads.
+				const bool producerTrace=stage<2u&&iteration!=std::numeric_limits<std::uint32_t>::max();
+				for(id<MTLBuffer> field:{producerTrace?value.nextMomentum:nil,
+					producerTrace&&stage==1u?value.heunR0AdvectionRate:nil}){
+					if(field)copy(field,allFaces_*sizeof(float));
+					else{[blit fillBuffer:staging range:NSMakeRange(offset,
+						allFaces_*sizeof(float)) value:0u];offset+=allFaces_*sizeof(float);}}
+				if(offset!=byteCount){[blit endEncoding];
+					if(error)*error="qualification observer packet byte certificate mismatch";
+					return false;}
 				[blit endEncoding];if(!Commit(command,error))return false;
 				const unsigned char* bytes=static_cast<const unsigned char*>(
 					Read(staging,TransferKind::Terminal));if(!bytes)return false;
@@ -8799,6 +8949,12 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				std::memcpy(&trace.consumedProjectionTargetIdentity,bytes+offset,sizeof(std::uint64_t));
 				offset+=sizeof(std::uint64_t);
 				trace.consumedTargetCorrectionIteration=projectionTarget.correctionIteration;
+				faces(trace.nextCandidateMomentumKGPerM2S);
+				faces(trace.heunR0AdvectionRateKGPerM2S2);
+				if(!producerTrace)for(auto& axis:trace.nextCandidateMomentumKGPerM2S)axis.clear();
+				if(!producerTrace||stage!=1u)
+					for(auto& axis:trace.heunR0AdvectionRateKGPerM2S2)axis.clear();
+				if(offset!=byteCount){if(error)*error="qualification observer decode byte mismatch";return false;}
 				// R0/R1 bootstrap has no accepted shared limiter yet; R2 projects a
 				// frozen accepted state and owns neither a new alpha nor a force RHS.
 				// Keep those non-applicable surfaces empty in both owners so trace
@@ -8830,6 +8986,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		public:
 			explicit ResidentProjectedHeunMetalOwner(
 				const FireProductionProjectedHeunMetalOwnerRequest& request,bool productionStageTokens=false) : request_(request),
+				sourceSnapshot_(request.lineage.frozenSource),
 				context_(ResidentTransportContext(productionStageTokens)),fct_(SingleStageFCTContext()),cells_(0u),
 				allFaces_(0u),boundaryFaces_(0u),q0_(nil),t0_(nil),m0_(nil),sourceDelta_(nil),
 				frozenSource_(nil),
@@ -8872,9 +9029,25 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				physicalBasis,error))return false;
 			shape_=request_.lineage.eos.physicalFlux.transport.shape;cells_=shape_.CellCount();
 			boundaryFaces_=packedFuel.size();
-			if(request_.lineage.frozenSource.Shape().nx!=shape_.nx||
-				!FireProductionFrozenSourcePacketSealMatches(request_.lineage.frozenSource,error)||
-				request_.beginningMomentumKGPerM2S[0].size()!=
+			const auto& eosRequest=request_.lineage.eos;
+			const auto& methane=FireSimulationMethaneRecord::PhysicalV1();
+			FireCase::RecordV1 sourceCase;std::string sourceCaseError;
+			if(!FireProductionFrozenSourcePacketSealMatchesBeginningState(sourceSnapshot_,shape_,
+				eosRequest.physicalFlux.transport.conservativeValues,
+				eosRequest.physicalFlux.transport.temperatureK,error)||
+				!FireCase::ValidateMethaneEnvelopeV1(eosRequest.caseRecordEnvelope,methane,
+					sourceCase,sourceCaseError)||sourceSnapshot_.CaseRecordId()!=sourceCase.caseRecordId||
+				sourceSnapshot_.MethaneRecordId()!=methane.RecordId()||
+				sourceSnapshot_.TimeStepS()!=eosRequest.candidateTimeStepS||
+				sourceSnapshot_.AttemptIdentity()!=eosRequest.physicalFlux.transport.attemptIdentity||
+				sourceSnapshot_.DivergenceTargetPerS().size()!=cells_||
+				sourceSnapshot_.SourceDelta().size()!=eosRequest.sourceDelta.size()||
+				std::memcmp(sourceSnapshot_.SourceDelta().data(),eosRequest.sourceDelta.data(),
+					eosRequest.sourceDelta.size()*sizeof(float))!=0){
+				if(error)*error="projected-Heun frozen source admission differs from canonical inputs";
+				return false;
+			}
+			if(request_.beginningMomentumKGPerM2S[0].size()!=
 					FireProductionProjectionFaceCount(shape_,0u)||
 				request_.beginningMomentumKGPerM2S[1].size()!=
 					FireProductionProjectionFaceCount(shape_,1u)||
@@ -8910,7 +9083,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				shape_.cellWidthM,request_.lineage.eos.candidateTimeStepS,
 				static_cast<float>(FireProductionMonitoredManifoldPolicy::EngagementThreshold),0u,
 				FireProductionMonitoredManifoldPolicy::IdentityVersion,{0u,0u},
-				flux.transport.attemptIdentity,request_.lineage.frozenSource.PacketIdentity()};
+				flux.transport.attemptIdentity,sourceSnapshot_.PacketIdentity()};
 			if(request_.qualificationDivergentManifoldPolicy)targetMetadata_.tailThreshold=
 				std::nextafter(targetMetadata_.tailThreshold,std::numeric_limits<float>::infinity());
 			const float qualifiedTailThreshold=static_cast<float>(
@@ -8948,7 +9121,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			t0_=copyIn(flux.transport.temperatureK.data(),fieldBytes);
 			m0_=copyIn(packedMomentum.data(),allFaces_*sizeof(float));
 			sourceDelta_=copyIn(request_.lineage.eos.sourceDelta.data(),stateBytes);
-			frozenSource_=copyIn(request_.lineage.frozenSource.DivergenceTargetPerS().data(),
+			frozenSource_=copyIn(sourceSnapshot_.DivergenceTargetPerS().data(),
 				fieldBytes);
 			fuel_=copyIn(packedFuel.data(),packedFuel.size());
 			initialInflow_=copyIn(packedInflow.data(),packedInflow.size());
@@ -9344,12 +9517,17 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				r0->projection.pressureOpenInflow,r1->projection.pressureOpenInflow,
 				integratedOpenHead_,transportParameters_[0],ambientDensity},boundaryFaces_)||
 				!Commit(headCommand,error))return false;
-			if(!SolveStage(2u,r1->candidate->conservative,r1->eos->temperature,r1->nextMomentum,
+			eosReuseParent_=r1.get();
+			const bool r2Accepted=SolveStage(2u,r1->candidate->conservative,r1->eos->temperature,r1->nextMomentum,
 				r1->candidate->publicationIdentity,r1->candidate.get(),r0.get(),
 				r1->projection.pressureOpenInflow,
-				integratedOpenHead_,r2,error))return false;
+				integratedOpenHead_,r2,error);
+			eosReuseParent_=nullptr;if(!r2Accepted)return false;
 			profileStage_=UINT32_MAX;profileIteration_=UINT32_MAX;
 			ProfileScope publicationProfile(*this,"TerminalPublication");
+			if(!FireProductionFrozenSourcePacketSealMatches(request_.lineage.frozenSource,error)||
+				request_.lineage.frozenSource.PacketIdentity()!=sourceSnapshot_.PacketIdentity()){
+				if(error)*error="projected-Heun source changed after admission";return false;}
 			if(!r0->terminalReprojectionVerified||!r1->terminalReprojectionVerified||
 				!r2->terminalReprojectionVerified){
 				if(error)*error="projected-Heun publication requires current-target terminal projection";
@@ -10169,13 +10347,36 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				[candidateAuthority.producerIdentity length]!=sizeof(std::uint64_t)||
 				[candidateAuthority.publicationIdentity length]!=sizeof(std::uint64_t)){
 				if(error)*error="production resident EOS authority extent is invalid";return false;}
+			const auto* reuse=authority.reuseParent;
+			const auto* reuseCandidate=authority.reuseCandidate;
+			if((reuse==nullptr)!=(reuseCandidate==nullptr)){
+				if(error)*error="EOS reuse requires complete private parent";return false;}
+			if(reuse){
+				if(!reuseCandidate->capability||candidateAuthority.parentCandidateCapability!=reuseCandidate->capability||
+					reuse->parentCommand!=reuseCandidate->parentCommand||
+					reuse->parentCandidatePublicationIdentity!=reuseCandidate->publicationIdentity||
+					reuse->parentPhysicalPublicationIdentity!=reuseCandidate->parentPhysicalPublicationIdentity||
+					reuse->parentTransportPublicationIdentity!=reuseCandidate->parentTransportPublicationIdentity||
+					reuseCandidate->parentEOSThermochemistry!=eosThermochemistry||
+					reuseCandidate->cells!=metadata.cells){
+					if(error)*error="EOS reuse parent lineage mismatch";return false;}
+				for(id<MTLBuffer> buffer:{reuseCandidate->conservative,reuseCandidate->parentEOSParameters,
+					reuse->temperature,reuse->publicationIdentity})
+					if(!buffer||[buffer device]!=context.device||[buffer storageMode]!=MTLStorageModePrivate){
+						if(error)*error="EOS reuse refuses non-private parent";return false;}
+				if([reuseCandidate->conservative length]!=9u*metadata.cells*sizeof(float)||
+					[reuse->temperature length]!=2u*metadata.cells*sizeof(float)||
+					[reuseCandidate->parentEOSParameters length]!=sizeof(MetalResidentEOSParameters)||
+					[reuse->publicationIdentity length]!=sizeof(std::uint64_t)){
+					if(error)*error="EOS reuse parent extent mismatch";return false;}
+			}
 			auto make=[&](const std::size_t bytes){return [context.device newBufferWithLength:bytes
 				options:MTLResourceStorageModePrivate];};const std::size_t fieldBytes=metadata.cells*sizeof(float);
 			authority.temperature=make(2u*fieldBytes);authority.representedPressureRatio=make(2u*fieldBytes);
 			authority.absoluteDeviation=make(fieldBytes);authority.publicationIdentity=make(sizeof(std::uint64_t));
 			authority.firstFailureCell=make(sizeof(std::uint32_t));
 			authority.failureTerm=make(fieldBytes);
-			authority.endpointEnthalpies=make(14u*4u*sizeof(float));
+			authority.endpointEnthalpies=make((14u+1023u*8u)*4u*sizeof(float));
 			authority.parentCommand=command;
 			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
 			authority.parentPhysicalPublicationIdentity=physicalAuthority.publicationIdentity;
@@ -10206,7 +10407,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			[encoder setBuffer:authority.endpointEnthalpies offset:0 atIndex:2];
 			[encoder setBuffer:obligations offset:0 atIndex:3];
 			[encoder setBuffer:failure offset:0 atIndex:4];
-			Dispatch(encoder,context.buildEOSEndpoints,14u);[encoder endEncoding];
+			Dispatch(encoder,context.buildEOSEndpoints,14u+1023u);[encoder endEncoding];
 			encoder=ProducerProfileEncoder(command);
 			if(!encoder){if(error)*error="production resident EOS endpoint consumer encoder failed";return false;}
 			[encoder setComputePipelineState:context.evaluateEOSCandidate];
@@ -10223,6 +10424,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			[encoder setBuffer:authority.firstFailureCell offset:0 atIndex:10];
 			[encoder setBuffer:authority.failureTerm offset:0 atIndex:11];
 			[encoder setBuffer:authority.endpointEnthalpies offset:0 atIndex:12];
+			[encoder setBuffer:reuse?reuseCandidate->conservative:nil offset:0 atIndex:13];
+			[encoder setBuffer:reuse?reuse->temperature:nil offset:0 atIndex:14];
+			[encoder setBuffer:reuse?reuseCandidate->parentEOSParameters:nil offset:0 atIndex:15];
+			[encoder setBuffer:reuse?reuse->publicationIdentity:nil offset:0 atIndex:16];
 			Dispatch(encoder,context.evaluateEOSCandidate,metadata.cells);[encoder endEncoding];
 			encoder=ProducerProfileEncoder(command);
 			if(!encoder){
@@ -10266,7 +10471,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			if(!command||!failure||!obligations||metadata.cells==0u||
 				metadata.attemptIdentity==0u||metadata.sourcePacketIdentity==0u){
 				if(error)*error="production resident frozen source authority input is absent";return false;}
-			if(!FireProductionFrozenSourcePacketSealMatches(source,error))return false;
+			// Private call sites validate the complete source before entering here:
+			// owner Prepare seals its immutable owned snapshot; standalone qualification
+			// revalidates immediately at the call. Per-candidate metadata and device
+			// lineage checks below remain mandatory, not a caller-supplied skip flag.
 			if(sourceShape.nx!=metadata.nx||sourceShape.ny!=metadata.ny||
 				sourceShape.nz!=metadata.nz||sourceShape.cellWidthM!=metadata.cellWidthM){
 				if(error)*error="production resident frozen source shape metadata differs";return false;}
@@ -11002,10 +11210,12 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
 	{
 		if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,bytes))return false;
-		// CaptureIterationTrace's wire layout: 27 cell float fields, 36 face
+		// CaptureIterationTrace v2 wire layout: 27 cell float fields, 38 face
 		// float fields, one boundary float and two boundary class bytes,
 		// plus two uint64 identities. The local autorelease pool bounds its
 		// lifetime to one capture, not (iteration count * capture size).
+		// The two added planes are next-candidate momentum and R1's R0 advection
+		// under R1 alpha: exactly 8*allFaces bytes before allocation rounding.
 		const std::uint64_t packet=ProjectedHeunObserverPacketBytes(shape);
 		const std::uint64_t rounded=(packet+UINT64_C(16383))&~UINT64_C(16383);
 		if(rounded<packet||bytes>std::numeric_limits<std::uint64_t>::max()-rounded){
@@ -11324,7 +11534,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		// copy, compensated EOS-record upload/private copy, complete FCT working
 		// fields, device-produced candidate and its producer/accepted identities,
 		// three EOS fields and identity, isolated EOS obligation
-		// word, a device-produced 14-entry compensated endpoint table, and one
+		// word, device-produced endpoint + 1023-node bisection-prefix table, and one
 		// terminal staging allocation. The full owner includes four such live sets.
 		return add(9u*cells*sizeof(float))&&add(9u*cells*sizeof(float))&&
 			add(14u*sizeof(float))&&add(14u*sizeof(float))&&add(64u*sizeof(float))&&
@@ -11338,7 +11548,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			add(9u*cells*sizeof(float))&&add(sizeof(std::uint64_t))&&add(sizeof(std::uint64_t))&&
 			add(2u*cells*sizeof(float))&&add(2u*cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint32_t))&&
-			add(sizeof(std::uint32_t))&&add(cells*sizeof(std::uint32_t))&&add(14u*4u*sizeof(float))&&
+			add(sizeof(std::uint32_t))&&add(cells*sizeof(std::uint32_t))&&add((14u+1023u*8u)*4u*sizeof(float))&&
 			add((14u*cells+faces)*sizeof(float)+cells*sizeof(std::uint32_t)+
 				4u*sizeof(std::uint64_t)+3u*sizeof(std::uint32_t)+64u)&&
 			bytes<=(UINT64_C(1)<<31u);
@@ -12487,7 +12697,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					eosObligations,transportAuthority,physicalAuthority,candidateAuthority,eosParameters,
 					eosAuthority,error))return false;
 				ResidentFrozenSourceMetalAuthority sourceAuthority;
-				if(!EncodeResidentFrozenSourceAuthority(context,command,failure,targetObligations,
+				if(!FireProductionFrozenSourcePacketSealMatches(frozenSource,error)||
+					!EncodeResidentFrozenSourceAuthority(context,command,failure,targetObligations,
 					frozenSource,candidateAuthority,sourceParameters,nil,nil,sourceAuthority,error))
 					return false;
 				if(request.qualificationCPUProducedFrozenSource)

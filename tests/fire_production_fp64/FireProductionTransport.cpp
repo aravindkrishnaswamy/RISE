@@ -1169,8 +1169,8 @@ namespace RISEFireProductionFP64
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
 			// Device-private compensated copy of the sealed binary64 EOS record.
 			AddMetalValueBuffer(870u,sizeof(double),bytes)&&
-			// Device-produced Tmin/Tmax enthalpies: seven species, four words each.
-			AddMetalValueBuffer(14u*4u,sizeof(double),bytes)&&
+			// Device-produced endpoints plus 1023 exact bisection-prefix nodes.
+			AddMetalValueBuffer((14u+1023u*8u)*4u,sizeof(double),bytes)&&
 			// Selected/alternate temperature and pressure; one diagnostic deviation.
 			AddMetalValueBuffer(2u*cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(2u*cells,sizeof(double),bytes)&&

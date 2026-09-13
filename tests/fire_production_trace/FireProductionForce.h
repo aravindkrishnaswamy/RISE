@@ -281,6 +281,13 @@ namespace RISEFireProductionTrace
 		//! Qualification captures it so the projection enclosure walks the actual
 		//! resident DAG instead of substituting an output-derived norm estimate.
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> provisionalMomentumKGPerM2S;
+		//! Qualification v2: producer output for the next stage, not the frozen
+		//! projection input above. Present after R0/R1 Picard producers, including
+		//! terminal re-projection; absent at bootstrap and throughout R2.
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> nextCandidateMomentumKGPerM2S;
+		//! R0 advection re-evaluated under this R1 candidate's shared alpha.
+		//! Present only after R1 producers; never the R0-alpha advection cache.
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunR0AdvectionRateKGPerM2S2;
 		//! R2's sealed physical-open head; empty on R0/R1 where the projection
 		//! derives its current open head from the same provisional state.
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,6> sealedPressureOpenDynamicPressurePa;

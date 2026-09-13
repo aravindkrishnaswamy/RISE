@@ -2629,7 +2629,7 @@ namespace RISE
 				const FireProductionNonpressureMomentumRHSResult& nonpressure,
 				const std::array<std::vector<float>,3>& provisionalMomentum,
 				const std::uint64_t candidateIdentity){
-				if(!request_.qualificationCaptureIterationTrace)return;
+				if(!request_.qualificationCaptureIterationTrace)return true;
 				FireProductionProjectedHeunIterationTrace trace;trace.iteration=iteration;
 				trace.projectionTargetPerS=projectionTarget.TargetPerS();
 				trace.producedTargetPerS=producedTarget.TargetPerS();
@@ -2661,9 +2661,33 @@ namespace RISE
 				trace.faceDensityKGPerM3=projection.faceDensityKGPerM3;
 				trace.projectedMomentumKGPerM2S=projection.momentumKGPerM2S;
 				FireProductionCompatibleFCTMomentumResult compatible;
-				if(OwnerCompatibleMomentum(stageFlux,scalarAcceptance,projection.velocityMPerS,
-					compatible,0))trace.advectionMomentumRateKGPerM2S2=
-						compatible.advectionRateKGPerM2S2;
+				if(!OwnerCompatibleMomentum(stageFlux,scalarAcceptance,projection.velocityMPerS,
+					compatible,error))return false;
+				trace.advectionMomentumRateKGPerM2S2=compatible.advectionRateKGPerM2S2;
+				// Observer-only reconstruction of each CPU owner's own next-stage
+				// output, retaining SolveR0/SolveR1 expression order. The Metal trace
+				// copies its actual nextMomentum buffer instead; this is not a host
+				// replacement for that device authority.
+				if(!r0){FireProductionCompatibleFCTMomentumResult firstCompatible;
+					if(!OwnerCompatibleMomentum(*firstStage,scalarAcceptance,
+						work_.r0.projection.velocityMPerS,firstCompatible,error))return false;
+					trace.heunR0AdvectionRateKGPerM2S2=firstCompatible.advectionRateKGPerM2S2;}
+				const float diagnosticDt=request_.source.TimeStepS();
+				const float diagnosticHalfDt=0.5f*diagnosticDt;
+				for(unsigned int axis=0u;axis<3u;++axis){
+					trace.nextCandidateMomentumKGPerM2S[axis].resize(
+						request_.beginningMomentumKGPerM2S[axis].size());
+					for(std::size_t face=0u;face<trace.nextCandidateMomentumKGPerM2S[axis].size();++face){
+						const float value=r0?request_.beginningMomentumKGPerM2S[axis][face]+diagnosticDt*(
+							nonpressure.combinedMomentumRateKGPerM2S2[axis][face]-
+							compatible.advectionRateKGPerM2S2[axis][face]):
+							request_.beginningMomentumKGPerM2S[axis][face]+diagnosticHalfDt*(
+							work_.r0.nonpressure.combinedMomentumRateKGPerM2S2[axis][face]+
+							nonpressure.combinedMomentumRateKGPerM2S2[axis][face]-
+							trace.heunR0AdvectionRateKGPerM2S2[axis][face]-
+							compatible.advectionRateKGPerM2S2[axis][face]);
+						if(!std::isfinite(value))return Fail(error,"qualification next momentum overflowed");
+						trace.nextCandidateMomentumKGPerM2S[axis][face]=value;}}
 				trace.buoyancyMomentumRateKGPerM2S2=
 					nonpressure.buoyancyMomentumRateKGPerM2S2;
 				trace.stressMomentumRateKGPerM2S2=nonpressure.stressMomentumRateKGPerM2S2;
@@ -2671,7 +2695,7 @@ namespace RISE
 					nonpressure.phaseSourceMomentumRateKGPerM2S2;
 				trace.maximumPostProjectionResidualPerS=
 					projection.maximumPostProjectionResidualPerS;
-				result.qualificationIterationTrace.push_back(std::move(trace));
+				result.qualificationIterationTrace.push_back(std::move(trace));return true;
 			};
 			if(request_.qualificationCaptureIterationTrace){
 				FireProductionProjectedHeunIterationTrace trace;
@@ -2806,9 +2830,9 @@ namespace RISE
 					candidate,correctionCandidateIdentity,static_cast<std::uint8_t>(stage),
 					parentCandidateIdentity,fluxIdentity,scalarAcceptance.sharedFaceAlpha,
 					corrected,error))return false;
-				captureIterationTrace(iteration,target,corrected,projected,nextClass,
+				if(!captureIterationTrace(iteration,target,corrected,projected,nextClass,
 					coefficients,scalarAcceptance,flux,r0?flux:averaged,nonpressure,provisionalMomentum,
-					candidateIdentity);
+					candidateIdentity))return false;
 				float targetResidual=0.0f,momentumResidual=0.0f,coefficientResidual=0.0f;
 				for(std::size_t cell=0u;cell<cells;++cell)targetResidual=std::max(
 					targetResidual,std::fabs(corrected.TargetPerS()[cell]-target.TargetPerS()[cell]));
@@ -2981,11 +3005,11 @@ namespace RISE
 						certifiedScalar.accepted,certifiedIdentity,
 						static_cast<std::uint8_t>(stage),parentCandidateIdentity,
 						verifiedFluxIdentity,selectedAlpha,certifiedTarget,error))return false;
-					captureIterationTrace(iteration|UINT32_C(0x80000000),corrected,
+					if(!captureIterationTrace(iteration|UINT32_C(0x80000000),corrected,
 						certifiedTarget,verifiedProjection,terminalNextClass,verifiedCoefficients,
 						certifiedScalar,verifiedFlux,r0?verifiedFlux:verifiedAverage,
 						verifiedNonpressure,provisionalMomentum,
-						certifiedIdentity);
+						certifiedIdentity))return false;
 					float verificationResidual=0.0f;
 					for(std::size_t cell=0u;cell<cells;++cell)verificationResidual=std::max(
 						verificationResidual,std::fabs(certifiedTarget.TargetPerS()[cell]-
