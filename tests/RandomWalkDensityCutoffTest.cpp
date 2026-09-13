@@ -229,10 +229,10 @@ void TestRGBDensityCutoffAndScaleInvariance()
 	const RayIntersectionGeometric scaledEntry = MakeSouthPoleEntry(scaled.radius);
 	if( !PrepareCase(*largeSphere,largeEntry,large) ||
 		!PrepareCase(*scaledSphere,scaledEntry,scaled) ||
-		!Require(Close(large.xi,scaled.xi),
+		!Require(large.xi == scaled.xi,
 			"scale-paired cases must use the same inverse-CDF variate") ||
-		!Require(Close(large.rate * large.collisionDistance,
-			scaled.rate * scaled.collisionDistance),
+		!Require(std::fabs((large.rate * large.collisionDistance) /
+			(scaled.rate * scaled.collisionDistance) - 1.0) < 1e-12,
 			"scale-paired sampled collisions must have the same optical depth") ||
 		!Require(large.initialDistance > 1e8 && large.remainingDistance > 1e8,
 			"large case must prove real initial and post-collision continuation ranges") ||
