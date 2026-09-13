@@ -50,7 +50,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-59~~ | ~~DL58_MATCHED_INDEX_GRAZING.md: remaining unequal-index derivative convention~~ | ~~SMS normal derivative uses the wrong unequal-index ratio/sign convention~~ | CLOSED 2026-09-12 | `a0c4a808`: ManifoldNormalDerivativeTest, `Checks: 141 Failures: 0` (unfixed: `Checks: 141 Failures: 12`). Entering/exiting tangent finite differences and curved analytical/numerical angle-difference Jacobians agree with the unchanged regression. Matched/reflection/TIR controls pass. See [closure](DL59_SMS_NORMAL_DERIVATIVE.md). | S | physics-bias | latent (test-only analytical Jacobian) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
-| DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
+| ~~DL-34~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~Published two-sphere union overlap exports only the deeper operand depth~~ | CLOSED 2026-09-12 (recorded regression; conservative contract retained) | `cffa254f`: unchanged ProximitySignalTest red `Passed: 465   Failed: 6`, fixed `Passed: 471   Failed: 0`; supplemental final `Passed: 491   Failed: 0`. Certified inscribed-ball union recovers `sqrt(3.56)` through signed field, manager and interior signal. The original proposed max-depth edit was already the existing signed-min magnitude; arbitrary unions remain non-exact. See [closure and limits](DL34_UNION_INTERIOR_DEPTH.md). | M | physics-bias | user-visible (published union seam regression) |
 | DL-37 | IMPROVEMENTS.md "GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned" | `ggx_material` in `eFresnelSchlickF0` mode goes over unity at grazing incidence (ρ = 1.1573 at 80°) because the glTF diffuse-energy split weights the diffuse lobe by the angle-flat `1 − max(F0)` while the Schlick specular term it is meant to complement rises toward 1 as `cos θ → 0` | OPEN-confirmed | `tests/LayeredWhiteFurnaceTest.cpp:1788-1789` (config 17, "White GGX-PBR base alone", `kPostureKnownFailure`) measures ρ = {0.9988, 0.9994, 1.0251, 1.1573} at θ = {0°,30°,60°,80°}; mechanism read directly in `GGXBRDF::albedo` (`GGXBRDF.cpp:514-520`: `diffColor * max(0, 1 − maxF0) + F(θ)`, doc comment at 508-513 stating the Schlick branch evaluates Fresnel at the actual outgoing cosine while diffuse keeps the constant glTF split) and reproduced at sample time in `GGXSPF::Scatter`/`ScatterNM` (`GGXSPF.cpp:216-219`, six analogous sites at 214/260/364/500/545/638) and `GGXBRDF::value`/`valueNM` (nine analogous sites at 209/276/330/399/451/490/514/595/638) — same `1 − maxF0` constant used at every one, confirmed this sweep | M | physics-bias | user-visible (low-F0 GGX at grazing incidence) |
 | DL-42 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation | OPEN-confirmed (static evidence; red-proof pending) | `PathTracingIntegrator.cpp` initializes `scatterThroughput = kray/selectProb`, then the trained-guiding BSDF branch replaces it with `kray*pdf/combinedPdf` without selectProb. Shared RGB/NM loop; ordinary mixed-lobe entry reflection is reachable. | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
 | DL-43 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | BDPT eye guiding swaps incoming/outgoing directions when evaluating forward candidate PDFs | OPEN-confirmed (static evidence; red-proof pending) | `BDPTIntegrator.cpp` eye RIS and one-sample guide candidates pass `(gDir,-currentRay.Dir())` to `PathValueOps::EvalPdfAtVertex`; its contract is Pdf(outgoing given incoming). Light twins pass `(-currentRay.Dir(),gDir)`. Both RGB/NM instantiate the eye code. | M | physics-bias | user-visible (BDPT eye path guiding) |
@@ -90,9 +90,11 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-27 | WETNESS_COAT_DESIGN.md §12 item 7 | The wet-highlight variance cost is unmeasured | OPEN-confirmed | No test or scene mentioning "wet_highlight"/"WetHighlight" found in `tests/` or `docs/*.md` this sweep other than the design doc itself | S | coverage/test gap | internal (measurement gap, not a known defect) |
 | DL-30 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces | OPEN-confirmed, untested | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29); no nested-CSG `dndu`-pairing test found in `tests/CsgSurfacePayloadTest.cpp` or elsewhere this sweep | S | coverage/test gap | internal (no scene exercises it yet) |
 | DL-40 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics | OPEN-confirmed (static evidence; red-proof pending) | BDPT/VCM `ComputeStats` accepts nonfinite capture values and `ChannelsAgree` rejects only `fabs(a-b)/denom > tolerance` (false for NaN). SignalEmitterRecordTest similarly marks nonempty captures valid and `WorstRelDiff` uses fmax, which can discard NaN differences. Recorded DL-01/DL-02/DL-36 results are finite. | S | coverage/test gap | internal (false-green risk) |
+| DL-60 | DL34_UNION_INTERIOR_DEPTH.md: committed scenarios without replay fixtures | Two committed scenarios lack replay fixtures and fail the dynamically enumerated checkpoint suite before scene execution | OPEN-confirmed (reproduced baseline) | `altar_stress.json` and `rainwet_closeup.json` omit replay fixtures; `AgentEvalRunner::RunScenario` returns load_error. AgentEvalCheckTest reproduces 11 and 12 cascading assertions at pre-DL-34 e858b4c9 and compiled 3927ec9c. | S | coverage/test gap | internal (missing replay coverage) |
 | DL-20 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 2 | Patch geometries report flat curvature (`valid=false`) while genuinely curved; deferred to Phase 4, no Phase-4 work has landed | OPEN-confirmed | No patch-geometry curvature override exists (only `EllipsoidGeometry`/`DisplacedGeometry` override `ComputeAnalyticalDerivatives`, confirmed this sweep alongside DL-13) | M | coverage/test gap | user-visible (curvature-driven wear on patch geometry reads absent, not wrong) |
 | DL-21 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 5 | CSG boundary curvature behaviour is unspecified/undecided (forward the contributing surface's curvature, or invalidate at the seam) | OPEN-confirmed | `tests/CsgSurfacePayloadTest.cpp:833-834` exercises the derivative fields there but does not pin a curvature convention at the boundary — confirmed by reading the referenced lines this sweep | M | coverage/test gap | user-visible (CSG seam wear masks) |
 | DL-22 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | BSSRDF entry vertices read default (neutral) `derivatives`/`signals` under both PT and BDPT — integrator-consistent, but a signal-keyed IOR/Fresnel painter at a subsurface entry point is neutral rather than live | OPEN-confirmed | Doc's own §10 first bullet; closing it needs a probe record in `BSSRDFSampling::SampleResult`, confirmed absent this sweep | M | coverage/test gap | user-visible (signal-keyed SSS entry only) |
+| DL-61 | DL34_UNION_INTERIOR_DEPTH.md: committed render oracles disagree with replay | Constant-material and SDF reconstruction replay fixtures violate their committed render checkpoints | OPEN-confirmed (baseline mismatch; root cause unresolved) | AgentEvalCheckTest at e858b4c9 and 3927ec9c reproduces three constant_materials_polish mean-luma/aggregate assertions and six image_reconstruct_multi RMSE/aggregate assertions. These scenes have no CSG or cross-object signals. Investigate intended output before changing renderer or bands. | M | coverage/test gap | internal (render oracle disagreement) |
 | DL-33 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)`'s TLAS-backed candidate walk (`BVH::ForEachContainingPoint`) has a genuinely different cost shape from `proximity(r)`'s `NearestOtherSurface` (no shrinking-radius prune; visits every node whose box contains the query point) — NOT YET MEASURED | OPEN-confirmed, unmeasured | `BVH.h:2018` (`ForEachContainingPoint`); no distance-call-count or wall-clock measurement of it exists in `tests/` (the doc's own `NearestOtherSurface` figures, e.g. "11.08 distance calls per query on Sponza", have no `interior(r)` counterpart), confirmed this sweep | S | perf | internal (cost-shape unmeasured, not a correctness bug) |
 
 ## Already resolved — verified this sweep, cited for completeness
@@ -174,16 +176,19 @@ reflowed otherwise.
 
 ## Counts
 
-Updated for the 2026-09-12 DL-59 SMS normal-derivative closure. The original sweep counts
-remain historical in the header; the current table counts are below.
+Updated for the 2026-09-12 DL-34 recorded-overlap closure and independent
+DL-60/DL-61 gate residuals. Original sweep counts remain historical.
 
-- Main rows: **58** — **44 open**, **14 closed**.
-- OPEN-confirmed: **44** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-59 minus closed DL-48/DL-50/DL-51/DL-54/DL-55/DL-56/DL-57/DL-58/DL-59; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **14** (DL-01, `1239edf2`; DL-02, `a041e51d`;
-  DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
-  DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;
-  DL-48, `12a7ef3e`; DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`; DL-55, `cba4e88c`; DL-56, `df7e3dad`; DL-57, `c187f2cc`; DL-58, `1b1909c0` / `ed8d9c94`; DL-59, `a0c4a808`)
+- Main rows: **60** — **45 open**, **15 closed**.
+- OPEN-confirmed: **45**, including the two reproduced baseline gate residuals
+  DL-60/DL-61. DL-35 remains deliberately absent.
+- CLOSED-by-cleanup: **15** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+  DL-36, `ac9891f3`, consistency pin; DL-03, `8a9bdb18`;
+  DL-04, `1b705ce1`, convention pin; DL-48, `12a7ef3e`;
+  DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`;
+  DL-55, `cba4e88c`; DL-56, `df7e3dad`; DL-57, `c187f2cc`;
+  DL-58, `1b1909c0` / `ed8d9c94`; DL-59, `a0c4a808`;
+  DL-34, `cffa254f`, published overlap regression with conservative bounds retained).
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -512,13 +517,29 @@ comparable number exists and, if it regresses badly on a pathological
 scene (e.g. deeply nested containing volumes), a prune or early-out is
 added.
 
-**DL-34 (interior under-reads inside a union overlap).** Change the union
-composite's interior/depth export inside the zero-set overlap from
-`min(f_A,f_B)` to `max(depth_A,depth_B)` (matching the doc's own worked
-example), guarded by a `CrossObjectProximityTest`/`ProximitySignalTest`
-case at the doc's exact two-sphere configuration asserting the exported
-depth is within measurement tolerance of the analytically-derived
-1.886796, not the under-reading 1.6.
+**~~DL-34 (interior under-reads inside a union overlap).~~ CLOSED
+2026-09-12 for the published regression — `cffa254f`.** The proposed
+`min(f_A,f_B)` to `max(depth_A,depth_B)` edit was a no-op: those already
+have the same magnitude, 1.6 in the named example. Certified inscribed-ball
+union geometry now supplies the stronger bound, and ProximitySignalTest
+pins the analytic `sqrt(3.56)` through direct, manager and interior queries.
+The unchanged committed red test goes from 465 passed / 6 failed to
+471 passed / 0 failed; supplemental edges bring the final count to
+491 passed / 0 failed. Arbitrary union distances remain conservative and
+non-exact; see [scope](DL34_UNION_INTERIOR_DEPTH.md).
+
+**DL-60 (missing committed replay fixtures).** Add valid replay fixtures
+for altar_stress and rainwet_closeup. Run their real scenario/checkpoint
+paths with scene and trajectory activity controls, then AgentEvalCheckTest;
+the 23 reproduced load-error assertions must disappear. Do not exclude the
+scenarios or weaken their checkpoints to manufacture a pass.
+
+**DL-61 (render checkpoint disagreement).** Reproduce the nine assertions
+from constant_materials_polish and image_reconstruct_multi with seeded,
+finite, linear measurements. Establish an independent intended-output
+reference and fix the renderer or fixture/oracle according to the observed
+cause. Rerun AgentEvalCheckTest; preserve lighting/image activity and
+reference-shape controls rather than merely widening the current bands.
 
 **~~DL-36 (bounded-neighbour-read residual on a luminary probe).~~ CLOSED
 2026-09-12 as a consistency pin — `ac9891f3`, `Passed: 16  Failed: 0`.**

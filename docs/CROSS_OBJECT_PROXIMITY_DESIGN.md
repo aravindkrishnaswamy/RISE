@@ -3222,7 +3222,18 @@ measured by a harness test against the tracked scene.
   and NOT YET MEASURED shape rather than the flat scan's honest `O(n)`.
   The flat-scan fallback for a ≤4-object scene (or `bUseBSPtree` off) is
   unchanged and linear, as it always was.
-- **`interior` UNDER-READS inside a UNION composite's overlap.** A union
+- ~~**`interior` UNDER-READS inside a UNION composite's overlap.**~~
+  **CLOSED 2026-09-12 for the published DL-34 regression — `cffa254f`,
+  `ProximitySignalTest`: `Passed: 491   Failed: 0` (original unchanged red
+  test: 465 passed, 6 failed; first fixed: 471 passed, 0 failed).**
+  The union now combines the original composed field with the exact signed
+  field of two certified bounding-box-center inscribed balls. It recovers
+  the published sphere example's `sqrt(3.56)` depth and keeps composite
+  exactness false. Arbitrary overlaps can still under-read when these
+  certificates are unavailable or loose; this is not a general exact CSG
+  distance claim. See [mechanism, corrected recipe and limits](DL34_UNION_INTERIOR_DEPTH.md).
+  The following describes the historical pre-DL-34 field and measurements.
+  A union
   exports `min(f_A, f_B)` as its signed lower bound. **It is a LOWER BOUND
   EVERYWHERE, exact nowhere that this arc relies on** — review round 1
   retired this bullet's original "exact ON and OUTSIDE the zero set" claim
