@@ -7,10 +7,10 @@
 //  the geometric normal.  A normal map changes the scattering frame but
 //  cannot change how likely the unmodified sphere was to be probed.
 //
-//  This deliberately uses a real SphereGeometry and NormalMap rather than
-//  hand-written hit records.  Paired samplers make the selected probe hit
-//  and local cosine sample identical, while an independent reconstruction
-//  of the disk-to-area Jacobian checks the reported PDF itself.
+//  The fixed exit record is synthetic, but the entry probe hits are produced
+//  by a real SphereGeometry and NormalMap.  Paired samplers make the selected
+//  probe hit and local cosine sample identical, while a retraced geometric
+//  disk-to-area oracle checks the reported PDF itself.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -58,7 +58,12 @@ public:
 		return value;
 	}
 
-	Point2 Get2D() { return Point2( Get1D(), Get1D() ); }
+	Point2 Get2D()
+	{
+		const Scalar u = Get1D();
+		const Scalar v = Get1D();
+		return Point2( u, v );
+	}
 	const std::vector<Scalar>& Draws() const { return draws; }
 };
 
@@ -104,12 +109,36 @@ static Scalar Distance( const Vector3& a, const Vector3& b )
 	return Vector3Ops::Magnitude( a - b );
 }
 
+static bool RequireDistanceAtMost( const Point3& actual, const Point3& expected,
+	const Scalar tolerance, const char* const label )
+{
+	const Scalar distance = Distance( actual, expected );
+	if( !std::isfinite(distance) || distance > tolerance ) {
+		std::cerr << "FAIL: " << label << " distance=" << distance
+			<< " tolerance=" << tolerance << std::endl;
+		++gFailures;
+		return false;
+	}
+	return true;
+}
+
+static bool RequireDistanceAtMost( const Vector3& actual, const Vector3& expected,
+	const Scalar tolerance, const char* const label )
+{
+	const Scalar distance = Distance( actual, expected );
+	if( !std::isfinite(distance) || distance > tolerance ) {
+		std::cerr << "FAIL: " << label << " distance=" << distance
+			<< " tolerance=" << tolerance << std::endl;
+		++gFailures;
+		return false;
+	}
+	return true;
+}
+
 static Object* MakeUnitSphere()
 {
 	SphereGeometry* geometry = new SphereGeometry( 1.0 );
-	geometry->addref();
 	Object* object = new Object( geometry );
-	object->addref();
 	geometry->release();
 	return object;
 }
@@ -138,8 +167,8 @@ struct ProbeReference
 };
 
 // Reconstruct the probe traversal from the fixed sampler prefix.  It does
-// not read SampleResult::pdfSurface: the density below is calculated from
-// the selected geometric normal and the independently retraced hit chain.
+// not read SampleResult::pdfSurface: the geometric PDF oracle below is
+// calculated from the selected geometric normal and retraced hit chain.
 static bool SelectedProbeHit(
 	const RayIntersectionGeometric& ri,
 	const IObject* const sphere,
@@ -256,19 +285,16 @@ static void TestGeometricProjectionPdf( const Scalar nm, const char* const label
 	Object* plainSphere = MakeUnitSphere();
 	Object* tiltedSphere = MakeUnitSphere();
 	UniformColorPainter* normalMap = new UniformColorPainter( RISEPel(0.8,0.5,1.0) );
-	normalMap->addref();
 	NormalMap* modifier = new NormalMap( *normalMap, 1.0 );
-	modifier->addref();
 	tiltedSphere->AssignModifier( *modifier );
 	modifier->release();
 	normalMap->release();
 
-	UniformScalarPainter* ior = new UniformScalarPainter( 1.3 ); ior->addref();
-	RGBScalarPainter* absorption = new RGBScalarPainter(0.05,0.10,0.20); absorption->addref();
-	RGBScalarPainter* scattering = new RGBScalarPainter(1.0,1.0,1.0); scattering->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter( 1.3 );
+	RGBScalarPainter* absorption = new RGBScalarPainter(0.05,0.10,0.20);
+	RGBScalarPainter* scattering = new RGBScalarPainter(1.0,1.0,1.0);
 	SubSurfaceScatteringMaterial* material = new SubSurfaceScatteringMaterial(
 		*ior, *absorption, *scattering, 0.0, 0.2 );
-	material->addref();
 	ISubSurfaceDiffusionProfile* profile = material->GetDiffusionProfile();
 	const RayIntersectionGeometric exit = MakeExitRecord();
 
@@ -276,6 +302,7 @@ static void TestGeometricProjectionPdf( const Scalar nm, const char* const label
 	int matchingActivity = 0;
 	int tiltedNormals = 0;
 	int changedDirections = 0;
+	int axisActivity[3] = { 0, 0, 0 };
 	for( unsigned int attempt = 0; attempt < 128; ++attempt ) {
 		RecordingSampler plainSampler( 5400u + attempt );
 		RecordingSampler tiltedSampler( 5400u + attempt );
@@ -299,39 +326,43 @@ static void TestGeometricProjectionPdf( const Scalar nm, const char* const label
 			-plain.entryNormal * BSSRDF_RAY_EPSILON );
 		const Point3 tiltedSurface = Point3Ops::mkPoint3( tilted.entryPoint,
 			-tilted.entryNormal * BSSRDF_RAY_EPSILON );
-		if( Distance(plainSurface,tiltedSurface) > 2e-8 ) {
-			Fail( "paired modifier samples selected different geometric surface points" );
-		} else {
+		if( RequireDistanceAtMost(plainSurface,tiltedSurface,2e-8,
+			"paired modifier samples selected different geometric surface points") ) {
 			++matchingActivity;
 		}
+		const Scalar axisDraw = plainSampler.Draws()[1];
+		const int axis = axisDraw < 0.5 ? 0 : (axisDraw < 0.75 ? 1 : 2);
+		++axisActivity[axis];
 
 		ProbeReference reference;
 		if( !SelectedProbeHit(exit,plainSphere,profile,plainSampler.Draws(),reference) ) {
-			Fail( "independent probe retrace did not recover selected hit" );
+			Fail( "retraced probe chain did not recover selected hit" );
 			continue;
 		}
-		if( Distance(plainSurface,reference.point) > 2e-8 ||
-			Distance(tiltedSurface,reference.point) > 2e-8 ) {
-			Fail( "reported entry point disagrees with independently retraced sphere hit" );
-		}
-		if( Distance(plain.entryGeomNormal,reference.geometricNormal) > 2e-10 ||
-			Distance(tilted.entryGeomNormal,reference.geometricNormal) > 2e-10 ) {
-			Fail( "entry geometric normal must remain the sphere normal" );
-		}
-		if( Vector3Ops::Dot(tilted.entryNormal,tilted.entryGeomNormal) < 0.90 ) {
+		RequireDistanceAtMost(plainSurface,reference.point,2e-8,
+			"plain reported entry point disagrees with retraced sphere hit");
+		RequireDistanceAtMost(tiltedSurface,reference.point,2e-8,
+			"tilted reported entry point disagrees with retraced sphere hit");
+		RequireDistanceAtMost(plain.entryGeomNormal,reference.geometricNormal,2e-10,
+			"plain entry geometric normal must remain the sphere normal");
+		RequireDistanceAtMost(tilted.entryGeomNormal,reference.geometricNormal,2e-10,
+			"tilted entry geometric normal must remain the sphere normal");
+		const Scalar tiltedGeomDot = Vector3Ops::Dot(
+			tilted.entryNormal,tilted.entryGeomNormal);
+		if( std::isfinite(tiltedGeomDot) && tiltedGeomDot < 0.90 ) {
 			++tiltedNormals;
 		} else {
 			Fail( "normal-map modifier did not tilt the shading normal" );
 		}
 
 		const Scalar referencePdf = GeometricSurfacePdf( exit, reference, profile );
-		RequireFinitePositive( referencePdf, "independent geometric surface PDF" );
+		RequireFinitePositive( referencePdf, "retraced geometric surface PDF" );
 		RequireFinitePositive( plain.pdfSurface, "plain reported surface PDF" );
 		RequireFinitePositive( tilted.pdfSurface, "tilted reported surface PDF" );
 		RequireClose( plain.pdfSurface, referencePdf,
-			"plain PDF must equal independent geometric Jacobian" );
+			"plain PDF must equal retraced geometric Jacobian" );
 		RequireClose( tilted.pdfSurface, referencePdf,
-			"tilted PDF must equal independent geometric Jacobian" );
+			"tilted PDF must equal retraced geometric Jacobian" );
 		RequireClose( tilted.pdfSurface, plain.pdfSurface,
 			"shading-normal tilt must not change surface PDF" );
 
@@ -341,7 +372,9 @@ static void TestGeometricProjectionPdf( const Scalar nm, const char* const label
 		RequireFinitePositive( localTilted, "tilted local continuation cosine" );
 		RequireClose( localPlain, localTilted,
 			"paired samples retain the same local cosine draw" );
-		if( Distance(plain.scatteredRay.Dir(),tilted.scatteredRay.Dir()) > 1e-5 ) {
+		const Scalar directionDistance = Distance(
+			plain.scatteredRay.Dir(),tilted.scatteredRay.Dir());
+		if( std::isfinite(directionDistance) && directionDistance > 1e-5 ) {
 			++changedDirections;
 		} else {
 			Fail( "normal-map modifier did not rotate the continuation direction" );
@@ -373,11 +406,16 @@ static void TestGeometricProjectionPdf( const Scalar nm, const char* const label
 
 	std::cout << "  active=" << active << "/128 matched=" << matchingActivity
 		<< " tilted-normals=" << tiltedNormals
-		<< " rotated-directions=" << changedDirections << std::endl;
+		<< " rotated-directions=" << changedDirections
+		<< " axes=" << axisActivity[0] << "/" << axisActivity[1]
+		<< "/" << axisActivity[2] << std::endl;
 	if( active < 16 ) Fail( "curved BSSRDF fixture produced too few valid samples" );
 	if( matchingActivity != active ) Fail( "valid samples must have matching geometric activity" );
 	if( tiltedNormals != active ) Fail( "every valid tilted sample must carry the modifier normal" );
 	if( changedDirections != active ) Fail( "every valid tilted sample must use its shading frame" );
+	for( int axis = 0; axis < 3; ++axis ) {
+		if( axisActivity[axis] == 0 ) Fail( "all three disk-projection axes need valid activity" );
+	}
 
 	material->release();
 	ior->release();
