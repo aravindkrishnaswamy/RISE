@@ -93,8 +93,16 @@ RISEPel GGXInterfaceFresnel::Directional( const Scalar cosine ) const
 			k1 = filmExtinction ? filmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
 			n2 = ior.GetValueAtNM( ri, nm ); k2 = extinction.GetValueAtNM( ri, nm );
 		};
-		return tint * ThinFilm::ReflectanceConductorRGBSpectral(
+		const RISEPel preview = tint * ThinFilm::ReflectanceConductorRGBSpectral(
 			cosine, filmThickness->GetValueAtNM( ri, Scalar(550) ), stackAt );
+		// A passive spectrum can have an RGB preview component above one.
+		// Interface transmission needs a reflectance in [0,1], unlike an
+		// RGB radiance proxy. Project at this boundary, before complements;
+		// do not clamp the resulting transported energy. NM stays physical.
+		return RISEPel(
+			r_min(Scalar(1), r_max(Scalar(0), preview[0])),
+			r_min(Scalar(1), r_max(Scalar(0), preview[1])),
+			r_min(Scalar(1), r_max(Scalar(0), preview[2])) );
 	}
 	const ScalarTriple eta = ior.GetValuesAt( ri );
 	const ScalarTriple k = extinction.GetValuesAt( ri );
@@ -124,14 +132,14 @@ RISEPel GGXInterfaceFresnel::Mean() const
 	const RISEPel tint = specular.GetColor( ri );
 	if( mode == eFresnelSchlickF0 ) return SchlickFresnelAvg<RISEPel>( tint );
 	if( mode == eFresnelThinFilmConductor ) {
-		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-			n0 = ri.ambientIOR; k0 = 0;
-			n1 = filmIOR->GetValueAtNM( ri, nm );
-			k1 = filmExtinction ? filmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
-			n2 = ior.GetValueAtNM( ri, nm ); k2 = extinction.GetValueAtNM( ri, nm );
-		};
-		return tint * ThinFilm::FresnelAvgConductorRGBSpectral(
-			filmThickness->GetValueAtNM( ri, Scalar(550) ), stackAt );
+		// Integrate the same projected directional function. Projecting an
+		// already averaged preview would define a different diffuse model.
+		RISEPel mean(0);
+		for( int i=0; i<MicrofacetEnergyLUT::GL_N; ++i ) {
+			const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+			mean = mean + Directional(mu) * (Scalar(2)*mu*MicrofacetEnergyLUT::GL_weights[i]);
+		}
+		return mean;
 	}
 	const ScalarTriple eta = ior.GetValuesAt( ri );
 	const ScalarTriple k = extinction.GetValuesAt( ri );

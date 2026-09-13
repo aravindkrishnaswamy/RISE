@@ -2,9 +2,10 @@
 //
 //  GGXDiffuseRenderTest.cpp - DL-37 render-fixture smoke test.
 //
-//  The committed scene is the reproducible before/after image fixture for
+//  The committed scene is the before/after image fixture for
 //  GGX diffuse interface transmission.  This test deliberately verifies
-//  only that its native-v7 CST path loads and its seeded render completes;
+//  only that its native-v7 CST path loads and its seeded render completes.
+//  The default multithreaded renderer is used; noise is not bit-reproducible;
 //  transport correctness is covered by the focused GGX tests.
 //
 //////////////////////////////////////////////////////////////////////
