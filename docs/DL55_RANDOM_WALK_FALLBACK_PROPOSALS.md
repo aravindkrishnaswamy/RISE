@@ -90,9 +90,11 @@ t=5e7: the density is 9.999999999995e-21 but the conditional collision weight
 is exactly one. This is a dimensionful-density cutoff defect, independent
 of the proposal mismatch repaired here. DL-57 records a real-geometry and
 scale-invariance red-proof recipe. Current DL-57 evidence is scalar/static,
-not an executed renderer test. DL-49/DL-52/DL-56 remain separate work too.
+not an executed renderer test. DL-49/DL-52 and the separate DL-58
+matched-index grazing-classification group remain open work; DL-56 is closed
+by `df7e3dad`.
 
-At this closure the main ledger has 56 rows: 46 open and 10 closed by cleanup.
+At this closure the main ledger had 56 rows: 46 open and 10 closed by cleanup.
 
 ## File status and gates
 
