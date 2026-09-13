@@ -233,13 +233,13 @@ static double DirectionalAlbedo(
 			// thin-film conductor even when each channel's directional
 			// albedo is bounded.  Finite large values are deliberately NOT
 			// capped: they must drive the energy assertion red, not vanish.
-			sampleContrib += scat.kray;
+			sampleContrib = sampleContrib + scat.kray;
 			any = true;
 		}
 
 		if( any )
 		{
-			sum += sampleContrib;
+			sum = sum + sampleContrib;
 			validSamples++;
 		}
 	}
