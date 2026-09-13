@@ -763,18 +763,17 @@ Snell classification, IOR-stack handling, nor eta conventions. See
 [closure](DL56_GRAZING_FRESNEL.md). The distinct extremely-grazing
 pre-Fresnel Snell/TIR cancellation group is DL-58.
 
-**DL-57 (RGB dimensional collision-density cutoff).** Commit an actual
-closed-object regression with neutral sigma_s=sigma_t=1e-20, a finite
-positive sampled collision density just below 1e-20 and a subsequent exit.
-Prove the real geometry distances and branch activity before comparing the
-conditional collision weight to one. Pair it with a scaled scene/coefficient
-case having the same optical depth but an ordinary numeric density; the
-normalized result should agree. Cover RGB full/spatial weights, NM control,
-zero-scatter behavior and the DL-55 fallback proposals. Replace rejection
-based solely on an arbitrary positive dimensional density with principled
-zero/nonfinite handling or a stable ratio formulation; audit sibling guards.
-Current evidence is a supervisor scalar recomputation, not an executed red-proof.
-
+**~~DL-57 (RGB dimensional collision-density cutoff).~~ CLOSED 2026-09-12 —
+`c187f2cc`, RandomWalkDensityCutoffTest: `All DL-57 density cutoff tests
+passed` (unfixed: one required large-RGB exit activity failure).** Tests were
+committed before execution; real closed-sphere geometry proves the collision
+and continuation ranges. Scaled RGB, NM and absorption controls passed before
+the repair, while normalized weights and the scale-pair comparisons pass on
+the unchanged test after the finite-positive density guard. Weight checks
+behind the failed activity assertion are not claimed as separate red failures.
+The legal sampler support excludes the boundary-survival cutoff as a reachable
+sibling. Proposal rates, weighting formulae and throughput pruning are unchanged.
+See [closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md).
 
 **DL-58 (extreme-grazing false TIR).** Commit direct regressions before
 execution for Optics::CalculateRefractedRay, FibreLobeMath::FrDielectric,

@@ -49,7 +49,9 @@ mixture, conditional collision/boundary oracles and unconditional Beer
 quadrature (2948/12288 active exits). The tiny NM cases verify geometry
 range, activity and full/spatial ratios. The discovery here was static;
 DL-55 supplies the committed executed red-proof. The independent RGB
-collision-density cutoff remains DL-57. See [DL-55 closure](DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md).
+collision-density cutoff was subsequently closed by `c187f2cc`; see
+[DL-57 closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md). See also
+[DL-55 closure](DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md).
 
 ## Regression evidence
 

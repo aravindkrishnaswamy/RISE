@@ -44,7 +44,8 @@ different post-normalization policy and remains unchanged.
 | `tests/RandomWalkDensityCutoffTest.cpp` | Added before first execution; real RGB/NM regression and controls. |
 | `tests/README.md` | Updated test coverage and evidence. |
 | `docs/DEBT_LEDGER.md` | Updated DL-57 closure and counts. |
-| `docs/DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md` | Closed the residual heading and linked evidence. |
+| `docs/DL50_RANDOM_WALK_SURVIVAL.md` | Updates the later DL-57 closure cross-reference. |
+| `docs/DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md` | Closed the residual heading and linked evidence while preserving DL-55 historical status. |
 | `docs/DL57_RANDOM_WALK_DENSITY_CUTOFF.md` | This closure record. |
 | `docs/README.md` | Added index link. |
 
