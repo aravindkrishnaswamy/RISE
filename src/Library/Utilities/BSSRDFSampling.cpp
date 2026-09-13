@@ -114,7 +114,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	struct ProbeHit {
 		Point3 point;
 		Vector3 normal;		///< Shading normal at probe-ray hit (post-modifier)
-		Vector3 geomNormal;	///< Geometric face normal — needed by the integrator's entry front-face gate
+		Vector3 geomNormal;	///< Geometric normal — area Jacobian and entry front-face gate
 		OrthonormalBasis3D onb;
 	};
 	std::vector<ProbeHit> hits;
@@ -210,11 +210,11 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	const Scalar rProjT = sqrt( dN*dN + dB*dB );
 	const Scalar rProjB = sqrt( dN*dN + dT*dT );
 
-	// cosProjection for each axis: |dot(entryNormal, axisDir)|
-	// This is the Jacobian converting disk area to surface area.
-	const Scalar cosN = fabs( Vector3Ops::Dot( entryNormal, exitNormal ) );
-	const Scalar cosT = fabs( Vector3Ops::Dot( entryNormal, exitTangent ) );
-	const Scalar cosB = fabs( Vector3Ops::Dot( entryNormal, exitBitangent ) );
+	// The disk-to-surface area Jacobian uses the geometric normal.
+	// Shading-normal modifiers change the angular frame, not probe-hit density.
+	const Scalar cosN = fabs( Vector3Ops::Dot( entryGeomNormal, exitNormal ) );
+	const Scalar cosT = fabs( Vector3Ops::Dot( entryGeomNormal, exitTangent ) );
+	const Scalar cosB = fabs( Vector3Ops::Dot( entryGeomNormal, exitBitangent ) );
 
 	// Sum PDF over all 3 axes x 3 channels (PBRT Pdf_Sp convention).
 	// For each axis a with probability pdfAxis[a]:
