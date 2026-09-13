@@ -221,9 +221,20 @@ namespace
 		const Scalar grazing = Scalar(1e-9);
 		Check( Scalar(1) - grazing*grazing == Scalar(1),
 			"weave albedo passes a rounded-band grazing cosine to FrDielectric" );
-		const RISEPel matched = WeaveSurfaceAlbedo( Scalar(1), grazing );
+		// ResolveWeave clamps authored IOR=1 to 1.001.  This consumer cannot
+		// reach the matched-medium helper case; pin its actual unequal boundary.
+		const long double eta = 1.001L;
+		const long double ci = (long double)grazing;
+		const long double ct = std::sqrt(1.0L-(1.0L-ci*ci)/(eta*eta));
+		const long double rs = (ci-eta*ct)/(ci+eta*ct);
+		const long double rp = (eta*ci-ct)/(eta*ci+ct);
+		const long double clampF = (rs*rs+rp*rp)/2;
+		const RISEPel clamped = WeaveSurfaceAlbedo( Scalar(1), grazing );
+		const RISEPel clampedNormal = WeaveSurfaceAlbedo( Scalar(1), Scalar(1) );
 		for( unsigned int channel = 0; channel < 3; ++channel ) {
-			CheckNear( matched[channel], 0.0L, "matched weave surface reflection is zero" );
+			CheckNear( clamped[channel], clampF, "weave grazing reflection uses clamped unequal IOR" );
+			CheckNear( clampedNormal[channel], PhysicalNormalFresnel(1.0L,eta),
+				"weave authored unity IOR reaches the documented clamp" );
 		}
 
 		const RISEPel unequal = WeaveSurfaceAlbedo( Scalar(1.5), Scalar(1) );
