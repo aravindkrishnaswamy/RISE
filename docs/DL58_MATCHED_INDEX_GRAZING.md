@@ -1,6 +1,8 @@
 # DL-58: matched-index extreme-grazing classification
 
-STATUS: PENDING final execution, review, merge, and ledger closure.
+CLOSED 2026-09-12 — repair `1b1909c0`, fibre compatibility refinement `ed8d9c94`.
+The standalone completion report will record independent final review and
+isolated merged-master verification after integration.
 
 DL-58 covers a false total-internal-reflection family at extreme grazing
 incidence. At equal indices, transmission remains physically valid at every
@@ -93,28 +95,44 @@ in `tests/OpticsTest.cpp`; the three new regression tests are
 `tests/GrazingFresnelThroughputTest.cpp`. `tests/README.md` records their
 scope.
 
-## Validation status
+## Validation and file status
 
-The three original red runs above are from the unfixed library; the supplemental
-derivative run used the documented partial fix. The fixed-run check totals,
-clean rebuild status, consumer activity measurements, derivative confirmation,
-and any merged-master validation remain PENDING. No compiled gate is claimed
-here, and this document does not claim final review or merge approval.
+The branch completed 30 selected individual gates across 62 stages (clean,
+Make build, 30 test links, 30 serial executions) at `ed8d9c940771bdb06ceb41dd44404bafa5b1a293`.
+The three new suites report:
+
+- `GrazingSnellFresnelTest`: `Checks: 38  Failures: 0`.
+- `MatchedIndexGrazingConsumerTest`: `Checks: 60  Failures: 0`.
+- `GrazingFresnelThroughputTest`: `Checks: 44  Failures: 0`.
+
+Clean Xcode validation also passed at that source state with zero compiler
+warnings; four environment notices (three local OIDN paths and one AppIntents
+metadata notice) are retained in the evidence. No full-suite runner was used.
+The standalone completion report will include all gate output verbatim, final
+review rounds and isolated merged-master verification. Documentation-only
+closure edits retain the compiled source and executable test inputs.
 
 | File | Status |
 |---|---|
-| `src/Library/Utilities/Optics.cpp` | Modified by `1b1909c0`. |
-| `src/Library/Utilities/Optics.h` | Modified by `1b1909c0`. |
-| `src/Library/Materials/FibreLobeMath.h` | Modified by `1b1909c0`. |
-| `src/Library/Materials/SubSurfaceScatteringBSDF.cpp` | Modified by `1b1909c0`. |
-| `src/Library/Materials/SubSurfaceScatteringSPF.cpp` | Modified by `1b1909c0`. |
-| `src/Library/Utilities/ManifoldSolver.cpp` | Modified by `1b1909c0`. |
-| `tests/OpticsTest.cpp` | Adjusted by `1b1909c0`. |
-| `tests/GrazingSnellFresnelTest.cpp` | Added before execution. |
-| `tests/MatchedIndexGrazingConsumerTest.cpp` | Added before execution. |
-| `tests/GrazingFresnelThroughputTest.cpp` | Added before execution. |
-| `tests/README.md` | Updated test-scope entry. |
-| `docs/DL58_MATCHED_INDEX_GRAZING.md` | This pending closure document. |
-| `docs/DEBT_LEDGER.md` | Future DL-58 closure/count update. |
-| `docs/DL56_GRAZING_FRESNEL.md` | Future DL-58 source-residual update. |
+| `docs/DEBT_LEDGER.md` | Modified in this slice. |
+| `docs/DL51_SUBSURFACE_EXIT_IOR.md` | Modified in this slice. |
+| `docs/DL54_BSSRDF_PROJECTION_NORMAL.md` | Modified in this slice. |
+| `docs/DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md` | Modified in this slice. |
+| `docs/DL56_GRAZING_FRESNEL.md` | Modified in this slice. |
+| `docs/DL58_MATCHED_INDEX_GRAZING.md` | Added in this slice. |
+| `docs/README.md` | Modified in this slice. |
+| `src/Library/Materials/FibreLobeMath.h` | Modified in this slice. |
+| `src/Library/Materials/SubSurfaceScatteringBSDF.cpp` | Modified in this slice. |
+| `src/Library/Materials/SubSurfaceScatteringSPF.cpp` | Modified in this slice. |
+| `src/Library/Utilities/ManifoldSolver.cpp` | Modified in this slice. |
+| `src/Library/Utilities/Optics.cpp` | Modified in this slice. |
+| `src/Library/Utilities/Optics.h` | Modified in this slice. |
+| `tests/GrazingFresnelThroughputTest.cpp` | Added in this slice. |
+| `tests/GrazingSnellFresnelTest.cpp` | Added in this slice. |
+| `tests/MatchedIndexGrazingConsumerTest.cpp` | Added in this slice. |
+| `tests/OpticsTest.cpp` | Modified in this slice. |
+| `tests/README.md` | Modified in this slice. |
 
+No Library source files were added or removed; the five explicit build-project
+source lists require no change. No new residual was opened. Ledger at closure:
+57 main rows, 44 open and 13 closed by cleanup.
