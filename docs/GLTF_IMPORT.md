@@ -159,7 +159,7 @@ blocks for the implementation.
 | **`channel_painter`** for MR-texture extraction | — | Single-header `Painters/ChannelPainter.h` (R/G/B selector + scale + bias); chunk parser registered | — |
 | **Bulk scene import** (`gltf_import`) | — | `Importers/GLTFSceneImporter.{h,cpp}` walks scene tree, emits per-primitive geometries, materials, lights, cameras; `Job::ImportGLTFScene` + `RISE_API_ImportGLTFScene`; chunk parser registered. **Phase 3 update**: embedded `.glb` images go directly through `Job::AddInMemoryPNG/JPEGTexturePainter` (no disk round-trip); `.gltf_cache/` sidecar retired; node-world matrices flow through `Job::AddObjectMatrix` verbatim (no Euler decomposition); skinning / animation / morph targets warn-and-skip; alphaMode = MASK auto-wires per-material alpha-test shader. | — |
 | **In-memory PNG / JPEG painters** | — | `Job::AddInMemoryPNGTexturePainter` / `AddInMemoryJPEGTexturePainter` consume a byte buffer (no disk path) and reuse the existing painter pipeline.  Used by `gltf_import` for embedded-image bytes. | — |
-| **Alpha modes** (`alpha_test_shaderop` for MASK) | — | `Shaders/AlphaTestShaderOp.{h,cpp}` + `alpha_test_shaderop` chunk + `Job::AddAlphaTestShaderOp` + `RISE_API_CreateAlphaTestShaderOp`.  glTF importer auto-wires per-material when `alphaMode = MASK`.  **Caveat**: shader-op is honoured only by integrators that route through `IShader::Shade()` — PT and legacy direct shaders.  BDPT, VCM, MLT, and photon tracers bypass the shader-op pipeline and treat MASK as opaque (no runtime warning). Per-pixel alpha currently uses `max(R,G,B)` of baseColor as a proxy because `IPainter` does not expose the A channel. | Phase 4: alpha-aware painter, alpha mask under BDPT/VCM/MLT, `alphaMode = BLEND` |
+| **Alpha modes** (`alpha_test_shaderop` for MASK) | — | `Shaders/AlphaTestShaderOp.{h,cpp}` + `alpha_test_shaderop` chunk + `Job::AddAlphaTestShaderOp` + `RISE_API_CreateAlphaTestShaderOp`.  glTF importer auto-wires per-material when `alphaMode = MASK`.  **Caveat**: shader-op is honoured only by integrators that route through `IShader::Shade()` — PT and legacy direct shaders.  BDPT, VCM, MLT, and photon tracers bypass the shader-op pipeline and treat MASK as opaque (no runtime warning). Per-pixel alpha uses `IPainter::GetAlpha()` and the alpha-aware painter support recorded below; the former `max(R,G,B)` proxy is retired. | Historical remaining pipeline work: alpha mask under BDPT/VCM/MLT and `alphaMode = BLEND`; see later Phase-4 status. |
 | **Quaternion / matrix on `standard_object`** | — | New optional `quaternion` (xyzw) and `matrix` (16 doubles, column-major) parameters on `standard_object`; `Job::AddObjectMatrix` consumes a 4×4 directly.  Mutual-exclusion warnings if multiple are set; precedence is `matrix` > `quaternion` > `orientation` (Euler).  glTF importer uses the matrix path; `DecomposeAffine` deleted. | — |
 | **`mkFromQuaternion` bug** | — | `Math3D/MatricesOps.h:215-217` — `_2y` and `_2z` were both computing `2 * a.v.x` instead of `a.v.y` / `a.v.z`.  Fixed; needed by the new `standard_object { quaternion ... }` path. | — |
 | **Emissive on `ggx_material`** | — | Second `GGXMaterial` ctor takes optional `emissive` painter + `emissive_scale`, builds a `LambertianEmitter` and exposes it via `GetEmitter()`; `Job::AddGGXEmissiveMaterial`; parser params `emissive` / `emissive_scale` on `ggx_material` chunk | — |
@@ -868,7 +868,7 @@ Negligible. No template-heavy C++ overhead like fastgltf would impose.
 
 ---
 
-## 10. RISE enhancements summary
+## 10. Historical snapshot: RISE enhancements summary
 
 Net new chunks / interfaces / runtime hooks this work introduces.  "Phase"
 records original-plan phase; "Status" records what has actually shipped.
@@ -894,9 +894,9 @@ records original-plan phase; "Status" records what has actually shipped.
 | `channel_painter` chunk + class | `Painters/` | 2 | **this branch** | Extract MR-texture channels |
 | `GLTFSceneImporter` class + `ImportGLTFScene` API | `Importers/` | 2 | **this branch** | Orchestrates full scene import |
 | `alpha_test_modifier` chunk + class | `Modifiers/` | 2 → 3 | **deferred to Phase 3** | RISE modifiers run post-hit-commit; alpha mask needs pre-commit hook |
-| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 → 3 | **deferred to Phase 3** | Empirical Euler XYZ adequate; revisit on gimbal-lock failure |
+| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 → 3 | **delivered in Phase 3** | Quaternion/matrix parameters preserve imported transforms; see the later delivery table. |
 | Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | **this branch** | Avoid double-chunk for PBR + emissive |
-| Schlick-from-F0 mode in GGX BSDF | `Materials/GGXSPF` | — → 3 | **pending — Phase 3 (P1-1)** | Required to fix metals rendering 25× too dim under PBR mapping |
+| Schlick-from-F0 mode in GGX BSDF | `Materials/GGXSPF` | — → 3 | **delivered in Phase 3** | Schlick-from-F0 supplies PBR reflectance; DL-37 later changed diffuse transmission. |
 
 ---
 
