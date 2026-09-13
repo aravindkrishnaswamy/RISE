@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Optics.h"
+#include "FiniteMath.h"
 #include "../Interfaces/ILog.h"
 
 using namespace RISE;
@@ -38,7 +39,7 @@ Vector3 Optics::CalculateReflectedRay( const Vector3& vIn, const Vector3& vNorma
 
 bool Optics::CalculateRefractedRay( const Vector3& vNormal, const Scalar Ni, const Scalar Nt, Vector3& vIn )
 {
-	if( Ni <= NEARZERO || Nt <= NEARZERO ) {
+	if( !IsFiniteDouble(Ni) || !IsFiniteDouble(Nt) || Ni <= NEARZERO || Nt <= NEARZERO ) {
 		GlobalLog()->PrintEx( eLog_Error, "Optics::CalculateRefractedRay: Invalid IOR (Ni=%f, Nt=%f). IOR must be > 0", Ni, Nt );
 		return false;
 	}
@@ -85,17 +86,53 @@ bool Optics::CalculateRefractedRay( const Vector3& vNormal, const Scalar Ni, con
 		useNormal = -useNormal;
 	}
 
-	// Use Snell's law
-	Scalar		k = Vector3Ops::Dot( useNormal, useIn );
-	Vector3	s = (Ni/Nt) * (useIn-k*useNormal);
-	k = 1.0 - Vector3Ops::SquaredModulus(s);
-
-	if( k < NEARZERO ) {
-		return false;
-	} else {
-		vIn = s - sqrt(k) * useNormal;
+	// Equal media have no boundary, even when the incidence cosine is zero.
+	if( Ni == Nt ) {
+		vIn = useIn;
 		return true;
 	}
+	const Scalar k = Vector3Ops::Dot( useNormal, useIn );
+	Scalar cosT;
+	if( !CalculateRefractedCosine( -k, Ni, Nt, cosT ) ) return false;
+	const Vector3 tangent = (Ni/Nt) * (useIn-k*useNormal);
+	vIn = tangent - cosT * useNormal;
+	return true;
+}
+
+bool Optics::CalculateRefractedCosine( Scalar cosI, Scalar Ni, Scalar Nt, Scalar& cosT )
+{
+	if( !IsFiniteDouble(cosI) || !IsFiniteDouble(Ni) || !IsFiniteDouble(Nt) || Ni <= 0 || Nt <= 0 ) return false;
+	cosI = fmin( 1.0, fabs(cosI) );
+	if( Ni == Nt ) { cosT = cosI; return true; }
+	if( cosI == 1.0 ) { cosT = 1.0; return true; }
+	if( Ni < Nt ) {
+		// Keep the small grazing cosine instead of subtracting it from one.
+		const Scalar r = Ni/Nt;
+		const Scalar rc = r*cosI;
+		cosT = sqrt( (1-r)*(1+r) + rc*rc );
+	} else {
+		const Scalar sinI = sqrt( (1-cosI)*(1+cosI) );
+		const Scalar sinT = sinI / (Nt/Ni);
+		if( sinT > 1.0 ) return false;
+		cosT = sqrt( (1-sinT)*(1+sinT) );
+	}
+	return true;
+}
+
+Scalar Optics::CalculateDielectricReflectanceCosine( Scalar cosI, Scalar Ni, Scalar Nt )
+{
+	Scalar cosT;
+	if( !CalculateRefractedCosine(cosI,Ni,Nt,cosT) ) return 1.0;
+	if( Ni == Nt ) return 0.0;
+	cosI = fmin( 1.0, fabs(cosI) );
+	const Scalar cosScale = fmax(cosI,cosT);
+	if( cosScale == 0.0 ) return 1.0;
+	const Scalar indexScale = fmax(Ni,Nt);
+	const Scalar ni = Ni/indexScale, nt = Nt/indexScale;
+	const Scalar ci = cosI/cosScale, ct = cosT/cosScale;
+	const Scalar rs = (ni*ci-nt*ct)/(ni*ci+nt*ct);
+	const Scalar rp = (nt*ci-ni*ct)/(nt*ci+ni*ct);
+	return fmin( 1.0, 0.5*(rs*rs+rp*rp) );
 }
 
 Scalar Optics::CalculateDielectricReflectance( const Vector3& v, const Vector3& tv, const Vector3& n, const Scalar Ni, const Scalar Nt )
