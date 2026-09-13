@@ -279,3 +279,10 @@ The guiding alpha is adaptively scaled using a variance-aware approach inspired 
 - Use `scenes/FeatureBased/` for curated showcase and torture scenes.
 - Use `scenes/Tests/` for isolated regression, comparison, and image-validation scenes.
 - If a feature is user-visible and deterministically testable, it usually deserves both.
+
+`GGXFilmTransmissionRangeTest` forces a diffuse sample for a passive dispersive
+zero-thickness film whose RGB preview exceeds one in a channel. It requires
+finite nonnegative diffuse throughput and checks BRDF/NM siblings plus the
+public directional/hemispherical guide agreement under independent quadrature.
+The forced-sample failure was committed before the range fix; the guide and NM
+controls are supplemental consistency coverage.
