@@ -20,13 +20,16 @@ before the DL-56 Fresnel quotient is evaluated. The unfixed red logs record:
 - reachable consumers: `Checks: 36  Failures: 10`;
 - throughput and sibling consumers: `Checks: 32  Failures: 11`.
 
-The supplemental derivative run after the partial fix reports `Checks: 41
-Failures: 4`: one incoming-direction derivative failure and three stale weave
-header-consumer failures from an incremental build. SMS direction preservation
-was baseline-green. Because the weave failures require a clean header rebuild,
-and the incoming derivative remained red, this document does not claim that all
-four supplemental derivative failures were independently reproduced as valid
-production failures.
+The original throughput run's 11 failures contain eight valid SMS failures
+and three invalid weave expectations. Weave clamps authored IOR 1 to 1.001,
+so that fixture never reached matched media. The supplemental derivative run
+reports `Checks: 41  Failures: 4`: one valid failure in the still-unfixed
+incoming-direction derivative and the same three invalid weave expectations.
+The early stale-header explanation in commit `1b1909c0` was disproved by the
+clean rebuild. Commit `e74aa6f5` corrects the weave test to verify the existing
+clamp. Those weave controls are not a regression red-proof. The direct fibre
+helper's matched-index failures remain valid. SMS direction preservation was
+baseline-green.
 
 ## Repair shape
 
@@ -67,7 +70,12 @@ the API supports it.
 
 Source inspection of the repair and its call sites covers RGB and NM SSS,
 fibre and hair lobe Fresnel, SMS/manifold direction and derivative paths,
-weave surface Fresnel, and the RGB/NM/HWSS twins that forward these helpers.
+weave surface Fresnel, and shared RGB/NM consumers. Weave's `ResolveWeave`
+clamps eta to at least 1.001; hair's `Resolve` and spectral `EvalFsum` accept
+eta only above 1+1e-6 (otherwise retaining the default/reference index).
+Consequently the recipe's real matched-index fibre consumer case is not
+reachable through those material guards. Direct `FrDielectric` tests own that
+identity; the weave consumer verifies its actual clamped unequal index.
 Composite and fabric paths forward their base SPF results. CoatedLayer retains
 its own equal-index identity guard; AR thin-film uses complex-stack optics and
 is outside this helper family. The audit also retains DL-51 IOR-stack behavior,
