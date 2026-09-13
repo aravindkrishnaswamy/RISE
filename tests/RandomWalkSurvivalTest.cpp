@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <iomanip>
 #include <vector>
 
 #include "../src/Library/Utilities/BSSRDFSampling.h"
@@ -304,16 +305,17 @@ void TestPriorCollisionAndReflection()
 
 // The tiny-extinction proposal uses the largest RGB rate, even in NM.
 // A large physical chord makes that otherwise invisible difference testable.
-// At this coordinate scale the inward epsilon rounds away; verify the real
-// sphere's far hit through the same documented front-face fallback before
-// accepting any estimator observation. No geometry precision fix is assumed.
+// Keep the inward epsilon representable at this scale, and verify the real
+// sphere's far hit before accepting any estimator observation. The expected
+// deviation from one is still many thousands of double-precision ULPs.
 void TestFallbackSurvivalProbability()
 {
 	std::cout << "Test D: NM fallback uses its actual survival probability" << std::endl;
-	const Scalar radius = 1e19;
+	const Scalar radius = 1e8;
 	Object* sphere = MakeClosedUnitSphere( radius );
 	const RayIntersectionGeometric entry = MakeSurfaceHit( radius );
-	const Ray ray( entry.ptIntersection, Vector3(0,1,0) );
+	const Ray ray( Point3Ops::mkPoint3( entry.ptIntersection,
+		Vector3(0,BSSRDFSampling::BSSRDF_RAY_EPSILON,0) ), Vector3(0,1,0) );
 	RayIntersection measured( ray, nullRasterizerState );
 	sphere->IntersectRay( measured, RISE_INFINITY, false, true, false );
 	if( !measured.geometric.bHit ) {
@@ -330,7 +332,7 @@ void TestFallbackSurvivalProbability()
 	const Scalar survivalProbability = std::exp( -proposalRate * distance );
 	const Scalar expected = physicalTr / survivalProbability;
 	Require( physicalRate < 1e-20 && proposalRate > 1e-20 &&
-		0.99 > 1.0-survivalProbability && expected > 2.0,
+		0.99 > 1.0-survivalProbability && expected > 1.0 + 1e-11,
 		"fallback fixture must exercise a distinct surviving proposal" );
 	const Scalar wavelengths[] = { 450.0, 550.0, 650.0 };
 	for( const Scalar wavelength : wavelengths ) {
@@ -342,7 +344,7 @@ void TestFallbackSurvivalProbability()
 		Require( !sampler.Exhausted() && sampler.Consumed() == 4 &&
 			Close(sample.entryPoint.y/radius,1.0),
 			"fallback survival must reach the far boundary with the intended draws" );
-		Require( Close(sample.weightSpatialNM,expected),
+		Require( Close(sample.weightSpatialNM,expected,1e-12),
 			"NM fallback survival weight must divide by actual proposal probability" );
 		std::cout << "  wavelength=" << wavelength << " spatial=" << sample.weightSpatialNM
 			<< " expected=" << expected << " distance=" << distance
@@ -356,6 +358,7 @@ void TestFallbackSurvivalProbability()
 
 int main()
 {
+	std::cout << std::setprecision(17);
 	std::cout << "=== DL-50 random-walk survival tests ===" << std::endl;
 	TestNeutralConditionalSurvival();
 	TestStratifiedUnconditionalBeerAttenuation();
