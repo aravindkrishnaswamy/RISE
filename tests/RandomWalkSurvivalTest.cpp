@@ -336,7 +336,8 @@ void TestFallbackSurvivalProbability()
 		"fallback fixture must exercise a distinct surviving proposal" );
 	const Scalar wavelengths[] = { 450.0, 550.0, 650.0 };
 	for( const Scalar wavelength : wavelengths ) {
-		SequenceSampler sampler( {0.99,0.5,0.25,0.75} );
+		const std::vector<Scalar> draws = {0.99,0.5,0.25,0.75};
+		SequenceSampler sampler( draws );
 		const BSSRDFSampling::SampleResult sample = RandomWalkSSS::SampleExit(
 			entry, sphere, RISEPel(0,0,proposalRate), RISEPel(0.0),
 			RISEPel(0,0,proposalRate), 0.0, 1.0, 1, sampler, wavelength );
