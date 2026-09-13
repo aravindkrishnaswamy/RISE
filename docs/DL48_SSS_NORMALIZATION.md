@@ -145,8 +145,8 @@ coarse bounds retain the distinct spatial-support, environment-MIS,
 relative-index, and spectral-survival limitations found in DL-04. A pass
 there is not a new exact-energy or independent-QMC claim. Exact directional
 normalization and the coarse complete-render convention are different
-assertions. DL-49 through DL-53 remain open; this slice discovers no new
-independent debt. Final clean-build/gate and review results belong to the
+assertions. DL-49 through DL-54 remain open. The independent geometric projection
+density issue discovered in review is tracked below as DL-54. Final clean-build/gate and review results belong to the
 standalone completion report.
 
 Self-audit focused on the missing pi distinction, disagreement between
@@ -156,3 +156,31 @@ wrong constant into the oracle, and claiming NM ratio coverage
 as proof of unbiased spectral survival. The independent quadrature, real
 sample ratios, unchanged spatial/PDF expressions and explicit scope above
 address those risks.
+
+## Independent residual: geometric projection density (DL-54)
+
+The second transport review found a separate spatial-density error in
+BSSRDFSampling::SampleEntryPoint. The three disk-to-surface projection
+cosines use the post-modifier entryNormal, although entryGeomNormal is
+stored alongside it. A shading-normal modifier changes no physical
+probe-hit probability, but currently changes the reported surface PDF
+and both full and spatial weights. The geometric normal must define this
+area Jacobian; the shading normal still defines the angular frame.
+
+This is independent of the Schlick directional normalization and of
+DL-52's skipped coplanar support. PT and BDPT RGB/NM share the sampler;
+HWSS and VCM/MLT inherit those paths. Current unmodified-sphere fixtures
+have matching normals, and a full/spatial ratio cancels this density, so
+neither is claimed as coverage. DL-54 has a curved-object, normal-modifier
+regression recipe. Evidence is static; no red test or rendered bias
+measurement is claimed in DL-48.
+
+The second test review also questioned whether missing entry UV made the
+normalization correction unreachable. That finding was withdrawn after
+checking the actual default record and sampler: default UV (0,0) selects
+the same texel as the forward fixture's (0.1,0.1), so the cached-index
+mismatch is reachable without UV propagation. Moreover, matched Schlick
+`Ft/c = (21/20)*(1-(1-mu)^5)` is independent of IOR. Repairing its
+normalization therefore does not require resolving the separate entry
+payload question tracked by DL-22. The reverse fixture remains an
+adversarial direct-adapter case; no full PT payload regression is claimed.

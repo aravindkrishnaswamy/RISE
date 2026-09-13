@@ -42,6 +42,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-48~~ | ~~DL04_SSS_RADIANCE_DECISION.md: Sw normalization~~ | ~~Wrong SSS cosine-hemisphere normalization~~ Shared Schlick normalization now integrates to one | CLOSED 2026-09-12 | `12a7ef3e`: BSSRDFNormalizationTest, `All DL-48 normalization tests passed`; unfixed constant fails 37 checks; the textured-IOR follow-up fails 8 before correction. Actual helper/adapters and RGB/NM sampled ratios cover all five sites. See [closure](DL48_SSS_NORMALIZATION.md). | S | physics-bias | user-visible (diffusion/random-walk subsurface transport) |
 | DL-50 | DL04_SSS_RADIANCE_DECISION.md: spectral survival | RandomWalkSSS NM exit pays free-flight survival transmittance twice | OPEN-confirmed (static evidence; red-proof pending) | RandomWalkSSS::SampleExit samples the distance-survival event, then multiplies throughputNM by exp(-sigma_t_nm*exitDist); RGB divides Tr by its exit-event probability. Neutral coefficients still diverge. | S | physics-bias | user-visible (spectral random-walk SSS) |
 | DL-51 | DL04_SSS_RADIANCE_DECISION.md: dormant exit fallback | Non-absorbing SubSurfaceScatteringSPF inside exit reads the current interior IOR as its destination before popping | OPEN-confirmed (static evidence; red-proof pending) | Scatter/ScatterNM use Nt=ior_stack.top() on the containsCurrent branch, so a seeded stack computes n_s to n_s Fresnel/Snell before attaching a popped stack. Shipped materials set bAbsorbBackFace=true and do not reach it; the default standalone SPF constructor permits it. | S | physics-bias | latent (standalone non-absorbing SPF; not shipped material behavior) |
+| DL-54 | DL48_SSS_NORMALIZATION.md: geometric projection density | BSSRDF disk-to-surface density uses the modified shading normal instead of the geometric normal | OPEN-confirmed (static evidence; red-proof pending) | BSSRDFSampling::SampleEntryPoint computes all three projection cosines from entryNormal after the probe modifier, although entryGeomNormal is retained. A normal map changes the reported surface PDF without changing the probe-hit distribution. | S | physics-bias | user-visible (normal-mapped diffusion SSS) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
@@ -171,8 +172,8 @@ reflowed otherwise.
 Updated for the 2026-09-12 DL-48 normalization closure. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **46** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-53 minus closed DL-48; DL-35 remains deliberately absent)
+- OPEN-confirmed: **47** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
+  residuals DL-38 through DL-54 minus closed DL-48; DL-35 remains deliberately absent)
 - CLOSED-by-cleanup: **6** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;
@@ -714,3 +715,15 @@ weighting to a layer shared by both map-selection paths, then audit every
 recursive consumer carrying bsdfPdf and medium survival. Validate complete
 SSS environment NEE plus continuation against an independently integrated
 angular oracle; do not change Sw or eta convention to hide the extra term.
+
+**DL-54 (BSSRDF geometric projection density).** Commit a regression using
+an actual curved object and a shading-normal-only entry modifier. Hold the
+original exit record, profile and sampler sequence fixed; prove positive
+matching probe-hit activity, then compare the reported surface PDF against
+an independent geometric-normal disk-to-area Jacobian. Require the density
+to remain unchanged when only entry shading normals tilt. Cover RGB/NM
+sample paths and their shared PT/BDPT/VCM/MLT consumers. Fix the geometric
+projection factor while retaining the shading frame for angular Sw;
+audit other uses of entryNormal and entryGeomNormal without folding in
+DL-52's separate coplanar-support defect. This is static evidence, not an
+executed image-bias measurement.
