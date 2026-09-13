@@ -50,7 +50,12 @@ public:
 		return m_values[m_next++];
 	}
 
-	Point2 Get2D() override { return Point2( Get1D(), Get1D() ); }
+	Point2 Get2D() override
+	{
+		const Scalar u = Get1D();
+		const Scalar v = Get1D();
+		return Point2( u, v );
+	}
 
 	bool Exhausted() const { return m_exhausted; }
 	std::size_t Consumed() const { return m_next; }
@@ -84,9 +89,7 @@ bool Finite( const Scalar value )
 Object* MakeClosedUnitSphere()
 {
 	SphereGeometry* geometry = new SphereGeometry( 1.0 );
-	geometry->addref();
 	Object* object = new Object( geometry );
-	object->addref();
 	geometry->release();
 	return object;
 }
