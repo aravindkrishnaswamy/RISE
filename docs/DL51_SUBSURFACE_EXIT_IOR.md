@@ -86,9 +86,10 @@ and do not call the production Optics helpers.
 | File | Status |
 |---|---|
 | `src/Library/Materials/SubSurfaceScatteringSPF.cpp` | Modified: both inside branches share post-pop optics/output state (`34434610`). |
+| `src/Library/Materials/SubSurfaceScatteringSPF.h` | Modified: correct the inside/entry contract overview. |
 | `tests/SubSurfaceExitIORTest.cpp` | Added: committed-before-execution regression and absorbing controls (Terra). |
 | `tests/README.md` | Modified: test scope and measured red/fixed counters. |
-| `docs/DEBT_LEDGER.md` | Modified: closure and counts; no new residual row from this slice. |
+| `docs/DEBT_LEDGER.md` | Modified: closure, counts and independent DL-56 residual. |
 | `docs/DL04_SSS_RADIANCE_DECISION.md` | Modified: close the standalone exit confound while retaining reachability limits. |
 | `docs/DL51_SUBSURFACE_EXIT_IOR.md` | Added: mechanism, reachability, regression and scope. |
 
@@ -98,3 +99,14 @@ SPFPdfConsistencyTest, SPFBSDFConsistencyTest, BSSRDFNormalizationTest,
 IORStackBehaviorTest, SSSRadianceScalingTest and SourceHygieneTest. The
 standalone completion report records exact gate output, clean make/Xcode
 validation, independent reviewer findings and merged-master validation.
+
+## Grazing Fresnel residual (DL-56)
+
+Review identified a separate shared Optics::CalculateDielectricReflectance
+heuristic that returns one whenever its numerator and denominator are both
+below 1e-6. The supervisor independently recomputed the source formula for
+Ni=Nt=1.5 and cosI=cosT=0.01: numerator zero and denominator 8.1e-7 cause
+full reflection, although equal-index Fresnel reflectance is zero. This is
+static analytical evidence, not an executed red-proof. DL-56 records a
+dedicated helper/consumer recipe; it is independent of the post-pop
+destination repair and remains open.

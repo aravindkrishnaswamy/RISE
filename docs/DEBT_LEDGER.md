@@ -44,6 +44,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-51~~ | ~~DL04_SSS_RADIANCE_DECISION.md: dormant exit fallback~~ | ~~Non-absorbing SubSurfaceScatteringSPF inside exit reads the current interior IOR as its destination before popping~~ | CLOSED 2026-09-12 | `34434610`: SubSurfaceExitIORTest, `Checks: 301  Failures: 0` (unfixed: 36 failures). RGB/NM exit optics and transmission now share a popped stack snapshot; reflection retains the input state. Actual absorbing diffusion/random-walk material controls pass. See [closure](DL51_SUBSURFACE_EXIT_IOR.md). | S | physics-bias | latent (standalone non-absorbing SPF; shipped absorption preserved) |
 | DL-54 | DL48_SSS_NORMALIZATION.md: geometric projection density | BSSRDF disk-to-surface density uses the modified shading normal instead of the geometric normal | OPEN-confirmed (static evidence; red-proof pending) | BSSRDFSampling::SampleEntryPoint computes all three projection cosines from entryNormal after the probe modifier, although entryGeomNormal is retained. A normal map changes the reported surface PDF without changing the probe-hit distribution. | S | physics-bias | user-visible (normal-mapped diffusion SSS) |
 | DL-55 | DL50_RANDOM_WALK_SURVIVAL.md: fallback proposal density | RandomWalkSSS tiny-channel fallback weights do not use the actual collision/RGB survival proposal density | OPEN-confirmed (static evidence; red-proof pending) | RGB replaces low channel rates with sigma_t_max while pdfMixture/pdfExit still use original rates; NM fallback collision omits exp((sigma_t_ch-sigma_t_nm)*t). DL-50 corrects NM boundary survival only. | S | physics-bias | user-visible (RGB zero-channel extinction); latent (tiny NM collision coefficients) |
+| DL-56 | DL51_SUBSURFACE_EXIT_IOR.md: grazing Fresnel residual | Shared dielectric Fresnel helper forces reflection at valid equal-index grazing interfaces | OPEN-confirmed (static evidence; red-proof pending) | Optics::CalculateDielectricReflectance returns 1 when numerator and denominator are both below 1e-6. At Ni=Nt=1.5 and cosI=cosT=0.01, numerator=0 and denominator=8.1e-7, so a transmissive equal-index interface becomes fully reflective. | S | physics-bias | user-visible (grazing dielectric and standalone SSS exits) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
@@ -173,8 +174,8 @@ reflowed otherwise.
 Updated for the 2026-09-12 DL-51 standalone-exit closure. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- OPEN-confirmed: **46** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-55 minus closed DL-48/DL-50/DL-51; DL-35 remains deliberately absent)
+- OPEN-confirmed: **47** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
+  residuals DL-38 through DL-56 minus closed DL-48/DL-50/DL-51; DL-35 remains deliberately absent)
 - CLOSED-by-cleanup: **8** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;
@@ -739,3 +740,14 @@ NM tiny-extinction fallback, verify geometry range and positive activity
 before checking the collision transmittance/proposal ratio. Cover full and
 spatial weights and all shared consumers; preserve the DL-50 NM boundary
 survival regression. Do not hide a proposal mismatch with a threshold.
+
+**DL-56 (grazing dielectric Fresnel guard).** Commit a direct Optics regression
+before execution using finite unit incident/transmitted directions and equal
+positive indices at grazing incidence (for example cosI=0.01). Require zero
+Fresnel reflectance and successful Snell transmission; include nearby unequal
+indices, normal incidence and TIR controls against independent scalar Fresnel
+formulae. Exercise real RGB/NM DielectricSPF and standalone SSS consumers to
+prove transmission is retained. Replace the small-numerator/denominator
+heuristic with a stable physical formulation, audit sibling helpers and all
+consumers, and retain DL-51 destination/stack regression. Current evidence is
+a supervisor-recomputed source formula, not an executed renderer red-proof.

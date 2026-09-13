@@ -7,7 +7,9 @@
 //    - From outside: GGX VNDF reflection (rough) or perfect specular
 //      reflection (smooth).  No refraction ray is emitted; the
 //      integrator handles subsurface entry via BSSRDF sampling.
-//    - From inside: delta Fresnel reflection (rare with BSSRDF).
+//    - From inside: shipped absorbing materials emit no rays. The
+//      standalone non-absorbing fallback emits delta Fresnel reflection
+//      and exit refraction, or reflection alone under total internal reflection.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 21, 2026
