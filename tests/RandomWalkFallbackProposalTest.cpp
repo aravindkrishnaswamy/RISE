@@ -54,7 +54,9 @@ public:
 
 	Point2 Get2D() override
 	{
-		return Point2( Get1D(), Get1D() );
+		const Scalar first = Get1D();
+		const Scalar second = Get1D();
+		return Point2( first, second );
 	}
 
 	bool Exhausted() const { return m_exhausted; }
@@ -196,25 +198,37 @@ bool RequireRGBFields( const BSSRDFSampling::SampleResult& sample,
 	if( !Require(Finite(angular), "independent angular continuation factor must be finite") ) {
 		return false;
 	}
+	bool matches = true;
 	for( int channel = 0; channel < 3; ++channel ) {
-		if( !Require(Close(sample.weightSpatial[channel],expectedSpatial[channel],tolerance),
-			label) || !Require(Close(sample.weight[channel],
+		std::cout << "  RGB channel=" << channel
+			<< " spatial=" << sample.weightSpatial[channel]
+			<< " expected=" << expectedSpatial[channel]
+			<< " full=" << sample.weight[channel]
+			<< " expected-full=" << expectedSpatial[channel] * angular << std::endl;
+		const bool spatialOK = Require(Close(sample.weightSpatial[channel],
+			expectedSpatial[channel],tolerance), label);
+		const bool fullOK = Require(Close(sample.weight[channel],
 			expectedSpatial[channel] * angular,tolerance),
-			"RGB full field must equal independent spatial proposal weight times Sw") ) {
-			return false;
-		}
+			"RGB full field must equal independent spatial proposal weight times Sw");
+		matches = spatialOK && fullOK && matches;
 	}
-	return true;
+	return matches;
 }
 
 bool RequireNMFields( const BSSRDFSampling::SampleResult& sample,
 	const Scalar expectedSpatial, const Scalar tolerance, const char* label )
 {
 	const Scalar angular = IndependentAngularWeight( sample );
-	return Require(Finite(angular), "independent angular continuation factor must be finite") &&
-		Require(Close(sample.weightSpatialNM,expectedSpatial,tolerance), label) &&
-		Require(Close(sample.weightNM,expectedSpatial * angular,tolerance),
-			"NM full field must equal independent spatial proposal weight times Sw");
+	if( !Require(Finite(angular), "independent angular continuation factor must be finite") ) {
+		return false;
+	}
+	std::cout << "  NM spatial=" << sample.weightSpatialNM
+		<< " expected=" << expectedSpatial << " full=" << sample.weightNM
+		<< " expected-full=" << expectedSpatial * angular << std::endl;
+	const bool spatialOK = Require(Close(sample.weightSpatialNM,expectedSpatial,tolerance), label);
+	const bool fullOK = Require(Close(sample.weightNM,expectedSpatial * angular,tolerance),
+		"NM full field must equal independent spatial proposal weight times Sw");
+	return spatialOK && fullOK;
 }
 
 // The zero red channel is sampled for the boundary and falls back to rate 1.
@@ -363,12 +377,15 @@ void TestRGBFallbackUnconditionalBeer()
 	}
 
 	const int total = strata * 3;
+	std::cout << "  Beer active=" << active << "/" << total << std::endl;
 	Require(active > 0 && active < total,
 		"pure-absorption quadrature must exercise both collision and survival events");
 	const Scalar tolerance = 2.0 / strata;
 	for( int channel = 0; channel < 3; ++channel ) {
 		const Scalar expectedBeer = std::exp( -sigmaT[channel] * distance );
 		const Scalar observed = sum[channel] / total;
+		std::cout << "  Beer channel=" << channel << " observed=" << observed
+			<< " expected=" << expectedBeer << " tolerance=" << tolerance << std::endl;
 		Require(Finite(expectedBeer) && Finite(observed),
 			"independent RGB Beer values must be finite before comparison");
 		Require(Close(observed,expectedBeer,tolerance),
@@ -440,6 +457,9 @@ void TestNMFallbackCollision( const Scalar proposalRate, const char* label )
 		return;
 	}
 
+	std::cout << "  NM q=" << proposalRate << " collision-distance=" << collisionDistance
+		<< " initial-distance=" << initialDistance << " remaining-distance=" << remainingDistance
+		<< " missing-collision-factor=" << std::exp((proposalRate - 0.0722 * proposalRate) * collisionDistance) << std::endl;
 	const RISEPel sigmaA( 0.0 );
 	const RISEPel sigmaS( 0.0, 0.0, proposalRate );
 	const RISEPel sigmaT( 0.0, 0.0, proposalRate );
