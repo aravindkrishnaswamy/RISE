@@ -149,7 +149,9 @@ do not execute old phase lists blindly.
   [DL58_MATCHED_INDEX_GRAZING.md](DL58_MATCHED_INDEX_GRAZING.md) records the
   subsequent matched-index Snell/Fresnel and SMS derivative repair;
   [DL59_SMS_NORMAL_DERIVATIVE.md](DL59_SMS_NORMAL_DERIVATIVE.md) records the
-  separate unequal-index normal-derivative convention correction
+  separate unequal-index normal-derivative convention correction;
+  [DL34_UNION_INTERIOR_DEPTH.md](DL34_UNION_INTERIOR_DEPTH.md) records the
+  published union-overlap repair, conservative scope, and baseline gate residuals.
 
 The SMS, guilloché, physical-pipeline, pre-Phase-1, GUI, and agentic-redesign
 clusters contain additional detailed execution records. The audit identifies

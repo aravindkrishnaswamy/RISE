@@ -2862,14 +2862,11 @@ static void TestInterior( const Fixture& f )
 		big->release();
 	}
 
-	// --- INSIDE A UNION COMPOSITE'S OVERLAP the exported depth UNDER-READS.
-	// A union exports `min(f_A, f_B)` as its signed lower bound -- whose
-	// MAGNITUDE is `max(depth_A, depth_B)`, the DEEPER of the two, which is
-	// the right lower bound because leaving the union means leaving both.
-	// It is still only a lower bound: at a point deeper in the UNION than
-	// either operand alone, the union's true depth exceeds both.  §10
-	// records this as a residual; here it is asserted, both as an
-	// inequality and as a STRICT one.
+	// --- DL-34: INSIDE THIS TWO-SPHERE UNION the exported depth is
+	// the union's true depth, not `|min(f_A, f_B)|`.  The latter is merely
+	// the deeper operand depth and under-reads at a seam.  The composite
+	// remains a non-exact signed-distance provider: that flag is about a
+	// parent CSG landing on a zero set, not about this interior oracle.
 	{
 		Object* a = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
 		Object* b = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 1.5, 0, 0 ) );
@@ -2884,10 +2881,15 @@ static void TestInterior( const Fixture& f )
 		// 1.6 and 0.9, which discriminates.
 		const Point3 p( 0.4, 0, 0 );
 		Scalar fA = 0, fB = 0, fU = 0; bool eA = false, eB = false, eU = false;
-		Check( aRef->SignedDistanceLower( p, Scalar( 10 ), fA, eA )
-		    && bRef->SignedDistanceLower( p, Scalar( 10 ), fB, eB )
-		    && u->SignedDistanceLower( p, Scalar( 10 ), fU, eU ),
-			"(k) both operands and the union answer at the overlap probe" );
+		const bool gotA = aRef->SignedDistanceLower( p, Scalar( 10 ), fA, eA );
+		const bool gotB = bRef->SignedDistanceLower( p, Scalar( 10 ), fB, eB );
+		const bool gotU = u->SignedDistanceLower( p, Scalar( 10 ), fU, eU );
+		Check( gotA, "(k) DL-34 operand A answers at the overlap probe" );
+		Check( gotB, "(k) DL-34 operand B answers at the overlap probe" );
+		Check( gotU, "(k) DL-34 union answers at the overlap probe" );
+		const bool finitePrimary = RISE::IsFiniteDouble( (double)fA )
+			&& RISE::IsFiniteDouble( (double)fB ) && RISE::IsFiniteDouble( (double)fU );
+		Check( finitePrimary, "(k) DL-34 overlap signed depths are finite before comparison" );
 
 		// THE TRUE DEPTH OF THE UNION, and it is the CREASE -- not either
 		// sphere's wall.  The probe is 0.4 from A's centre and 1.1 from
@@ -2907,30 +2909,245 @@ static void TestInterior( const Fixture& f )
 		// the boundary, not a convenient point on it.
 		const Scalar trueDepth = (Scalar)std::sqrt(
 			( 0.75 - 0.4 ) * ( 0.75 - 0.4 ) + ( 4.0 - 0.75 * 0.75 ) );
-		CheckClose( -fA, Scalar( 1.6 ), Scalar( 1e-9 ), "(k) operand A's depth is 1.6" );
-		CheckClose( -fB, Scalar( 0.9 ), Scalar( 1e-9 ), "(k) ...and operand B's is 0.9" );
-		// `min` is taken on the SIGNED values, so it picks the most
-		// NEGATIVE -- i.e. `|min(f_A, f_B)| = max(depth_A, depth_B)`, the
-		// DEEPER of the two.  That is the right lower bound: leaving the
-		// union means leaving BOTH operands, so the union's depth is at
-		// least the larger of the individual depths.  A probe on the
-		// mid-plane, where the two depths are equal, cannot tell that from
-		// the shallower one -- and this check asserted the shallower until
-		// the probe was moved off it.
-		CheckClose( -fU, Scalar( 1.6 ), Scalar( 1e-9 ),
-			"(k) MONEY -- the union exports the DEEPER of the two depths (1.6), which is "
-			"`|min(f_A, f_B)| = max(depth_A, depth_B)` -- and a mid-plane probe, where both are "
-			"1.25, could not have told that from the shallower" );
-		CheckClose( -fU, std::max( -fA, -fB ), Scalar( 1e-12 ),
-			"(k) ...i.e. exactly max(depth_A, depth_B), the magnitude of min(f_A, f_B)" );
-		Check( -fU <= trueDepth + Scalar( 1e-9 ),
-			"(k) MONEY -- the exported depth is a LOWER bound on the union's true depth" );
-		Check( -fU < trueDepth - Scalar( 1e-6 ),
-			"(k) MONEY -- and STRICTLY under-reads at a point deeper in the union than either "
-			"operand alone: the residual §10 records, asserted rather than claimed" );
-		std::cout << "    union overlap at (0.4,0,0): operand depths " << (double)(-fA)
-			<< " / " << (double)(-fB) << ", exported " << (double)(-fU)
-			<< ", true union depth " << (double)trueDepth << std::endl;
+		const Scalar primaryTol = trueDepth * Scalar( 1e-9 );
+		if( gotA && gotB && gotU && finitePrimary ) {
+			CheckClose( -fA, Scalar( 1.6 ), Scalar( 1.6e-9 ), "(k) DL-34 operand A's depth is 1.6" );
+			CheckClose( -fB, Scalar( 0.9 ), Scalar( 0.9e-9 ), "(k) DL-34 operand B's depth is 0.9" );
+			Check( -fU <= trueDepth + primaryTol,
+				"(k) DL-34 union depth remains a lower bound on the analytic union depth" );
+			CheckClose( -fU, trueDepth, primaryTol,
+				"(k) MONEY -- DL-34 overlap depth is the analytic crease distance sqrt(3.56), not 1.6" );
+		}
+		Check( !eU, "(k) DL-34 union keeps SignedDistanceLower exactness FALSE" );
+
+		// Swapping operands must not change the union depth.
+		Object* bSwap = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 1.5, 0, 0 ) );
+		Object* aSwap = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		CSGObject* swapped = MakeCsg( CSG_UNION, bSwap, aSwap, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fSwap = 0; bool eSwap = true;
+		const bool gotSwap = swapped->SignedDistanceLower( p, Scalar( 10 ), fSwap, eSwap );
+		Check( gotSwap, "(k) DL-34 swapped union answers at the overlap probe" );
+		const bool finiteSwap = RISE::IsFiniteDouble( (double)fSwap );
+		Check( finiteSwap, "(k) DL-34 swapped union depth is finite before comparison" );
+		if( gotSwap && finiteSwap ) {
+			CheckClose( -fSwap, trueDepth, primaryTol,
+				"(k) DL-34 swapped operands retain the analytic crease depth" );
+		}
+		Check( !eSwap, "(k) DL-34 swapped union also exports exactness FALSE" );
+		swapped->release();
+
+		// Off the centreline, the nearest boundary is still the exposed
+		// crease circle; in the A-only cap it is A's radial sphere surface.
+		const Scalar creaseRho = (Scalar)std::sqrt( Scalar( 4 ) - Scalar( 0.75 ) * Scalar( 0.75 ) );
+		const Point3 creaseProbe( Scalar( 0.4 ), Scalar( 0.3 ), Scalar( 0 ) );
+		const Scalar creaseDepth = (Scalar)std::sqrt( Scalar( 0.35 ) * Scalar( 0.35 )
+			+ ( creaseRho - Scalar( 0.3 ) ) * ( creaseRho - Scalar( 0.3 ) ) );
+		Scalar fCrease = 0; bool eCrease = true;
+		const bool gotCrease = u->SignedDistanceLower( creaseProbe, Scalar( 10 ), fCrease, eCrease );
+		Check( gotCrease, "(k) DL-34 off-axis crease probe answers" );
+		const bool finiteCrease = RISE::IsFiniteDouble( (double)fCrease );
+		Check( finiteCrease, "(k) DL-34 off-axis crease depth is finite before comparison" );
+		if( gotCrease && finiteCrease ) {
+			CheckClose( -fCrease, creaseDepth, creaseDepth * Scalar( 1e-9 ),
+				"(k) DL-34 off-axis union depth reaches the analytic crease circle" );
+		}
+		Check( !eCrease, "(k) DL-34 off-axis crease query keeps exactness FALSE" );
+
+		const Point3 capProbe( Scalar( -1.5 ), Scalar( 0.2 ), Scalar( 0 ) );
+		const Scalar capDepth = Scalar( 2 ) - (Scalar)std::sqrt( Scalar( 1.5 ) * Scalar( 1.5 )
+			+ Scalar( 0.2 ) * Scalar( 0.2 ) );
+		Scalar fCap = 0; bool eCap = true;
+		const bool gotCap = u->SignedDistanceLower( capProbe, Scalar( 10 ), fCap, eCap );
+		Check( gotCap, "(k) DL-34 off-axis exposed-cap probe answers" );
+		const bool finiteCap = RISE::IsFiniteDouble( (double)fCap );
+		Check( finiteCap, "(k) DL-34 exposed-cap depth is finite before comparison" );
+		if( gotCap && finiteCap ) {
+			CheckClose( -fCap, capDepth, capDepth * Scalar( 1e-9 ),
+				"(k) DL-34 A-only exposed cap remains its analytic sphere depth" );
+		}
+		Check( !eCap, "(k) DL-34 exposed-cap query keeps exactness FALSE" );
+
+		// Through the real manager, `interior(r)` maps the same depth as
+		// clamp(depth/r): use twice the depth so neither clamp endpoint masks
+		// an under-read.
+		SphereGeometry* receiverGeom = new SphereGeometry( Scalar( 0.1 ) );
+		Object* receiver = new Object( receiverGeom );
+		receiverGeom->release();
+		receiver->SetPosition( Point3( 20, 0, 0 ) );
+		receiver->FinalizeTransformations();
+		IObjectManager* mgr = 0;
+		Check( RISE_API_CreateObjectManager( &mgr, true, false, 4, 32 ), "(k) DL-34 creates a manager" );
+		if( mgr ) {
+			mgr->AddItem( u, "overlap_union" );
+			mgr->AddItem( receiver, "receiver" );
+			mgr->PrepareForRendering();
+
+			Scalar managerDepth = 0;
+			const bool gotManager = mgr->DeepestOtherContainment( p, receiver, Scalar( 10 ), managerDepth );
+			Check( gotManager, "(k) DL-34 ObjectManager finds the union containment" );
+			const bool finiteManager = RISE::IsFiniteDouble( (double)managerDepth );
+			Check( finiteManager, "(k) DL-34 ObjectManager depth is finite before comparison" );
+			if( gotManager && finiteManager ) {
+				CheckClose( managerDepth, trueDepth, primaryTol,
+					"(k) MONEY -- DL-34 ObjectManager reports the analytic union depth" );
+			}
+
+			SurfaceSignalInfo signal;
+			signal.pScene = mgr;
+			signal.pSelf = receiver;
+			signal.ptWorld = p;
+			ExpressionMemo::Invalidate();
+			const Scalar interior = signal.Interior( Scalar( 2 ) * trueDepth );
+			const bool finiteInterior = RISE::IsFiniteDouble( (double)interior );
+			Check( finiteInterior, "(k) DL-34 interior mapping is finite before comparison" );
+			if( finiteInterior ) {
+				CheckClose( interior, Scalar( 0.5 ), Scalar( 0.5e-9 ),
+					"(k) MONEY -- DL-34 interior maps the true union depth at half-radius" );
+			}
+			mgr->release();
+		}
+		receiver->release();
+
+		// Similarity transforms preserve the shape and scale every analytic
+		// depth by the uniform factor.
+		Object* aScaled = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* bScaled = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 1.5, 0, 0 ) );
+		CSGObject* scaled = MakeCsg( CSG_UNION, aScaled, bScaled, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		const Scalar similarity = Scalar( 3 );
+		scaled->SetScale( similarity );
+		scaled->FinalizeTransformations();
+		Scalar fScaled = 0; bool eScaled = true;
+		const bool gotScaled = scaled->SignedDistanceLower( Point3( similarity * p.x, 0, 0 ), Scalar( 30 ), fScaled, eScaled );
+		Check( gotScaled, "(k) DL-34 similarity-scaled union answers" );
+		const bool finiteScaled = RISE::IsFiniteDouble( (double)fScaled );
+		Check( finiteScaled, "(k) DL-34 similarity-scaled depth is finite before comparison" );
+		if( gotScaled && finiteScaled ) {
+			CheckClose( -fScaled, similarity * trueDepth, similarity * primaryTol,
+				"(k) DL-34 similarity scale multiplies the analytic union depth" );
+		}
+		Check( !eScaled, "(k) DL-34 similarity-scaled union keeps exactness FALSE" );
+		scaled->release();
+
+		// Disjoint and nested unions are controls: their true depth is an
+		// operand depth, but the composite still never exports exactness.
+		Object* disjointA = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* disjointB = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 5, 0, 0 ) );
+		CSGObject* disjoint = MakeCsg( CSG_UNION, disjointA, disjointB, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fDisjoint = 0; bool eDisjoint = true;
+		const bool gotDisjoint = disjoint->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 10 ), fDisjoint, eDisjoint );
+		Check( gotDisjoint, "(k) DL-34 disjoint-union control answers" );
+		const bool finiteDisjoint = RISE::IsFiniteDouble( (double)fDisjoint );
+		Check( finiteDisjoint, "(k) DL-34 disjoint-union depth is finite before comparison" );
+		if( gotDisjoint && finiteDisjoint ) {
+			CheckClose( -fDisjoint, Scalar( 2 ), Scalar( 2e-9 ),
+				"(k) DL-34 disjoint union retains the containing sphere's depth" );
+		}
+		Check( !eDisjoint, "(k) DL-34 disjoint union keeps exactness FALSE" );
+		disjoint->release();
+
+		Object* nestedSmall = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 0, 0, 0 ) );
+		Object* nestedBig = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		CSGObject* nested = MakeCsg( CSG_UNION, nestedSmall, nestedBig, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fNested = 0; bool eNested = true;
+		const bool gotNested = nested->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 10 ), fNested, eNested );
+		Check( gotNested, "(k) DL-34 nested-union control answers" );
+		const bool finiteNested = RISE::IsFiniteDouble( (double)fNested );
+		Check( finiteNested, "(k) DL-34 nested-union depth is finite before comparison" );
+		if( gotNested && finiteNested ) {
+			CheckClose( -fNested, Scalar( 2 ), Scalar( 2e-9 ),
+				"(k) DL-34 nested union retains the enclosing sphere's depth" );
+		}
+		Check( !eNested, "(k) DL-34 nested union keeps exactness FALSE" );
+		nested->release();
+
+		// SUPPLEMENTAL POST-FIX COVERAGE (not part of a9f09ff5's red proof).
+		// Unequal radii put the intersection circle away from the midpoint.
+		// The oracle is derived independently from the two sphere equations.
+		Object* unequalA = MakeOperand( new SphereGeometry( Scalar( 3 ) ), Point3( 0, 0, 0 ) );
+		Object* unequalB = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 3, 0, 0 ) );
+		CSGObject* unequal = MakeCsg( CSG_UNION, unequalA, unequalB, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		const Point3 unequalProbe( Scalar( 1.5 ), Scalar( 0 ), Scalar( 0 ) );
+		const Scalar unequalSeamX = ( Scalar( 3 )*Scalar( 3 ) + Scalar( 3 )*Scalar( 3 )
+			- Scalar( 2 )*Scalar( 2 ) ) / ( Scalar( 2 ) * Scalar( 3 ) );
+		const Scalar unequalSeamRho = (Scalar)std::sqrt( Scalar( 3 )*Scalar( 3 ) - unequalSeamX*unequalSeamX );
+		const Scalar unequalDepth = (Scalar)std::sqrt(
+			( unequalSeamX - unequalProbe.x ) * ( unequalSeamX - unequalProbe.x )
+			+ unequalSeamRho * unequalSeamRho );
+		Scalar fUnequal = 0; bool eUnequal = true;
+		const bool gotUnequal = unequal->SignedDistanceLower( unequalProbe, Scalar( 10 ), fUnequal, eUnequal );
+		Check( gotUnequal, "(k) DL-34 supplemental unequal-sphere overlap answers" );
+		const bool finiteUnequal = RISE::IsFiniteDouble( (double)fUnequal );
+		Check( finiteUnequal, "(k) DL-34 supplemental unequal-sphere depth is finite before comparison" );
+		if( gotUnequal && finiteUnequal ) {
+			CheckClose( -fUnequal, unequalDepth, unequalDepth * Scalar( 1e-9 ),
+				"(k) DL-34 supplemental unequal-sphere seam uses its analytic circle" );
+		}
+		Check( !eUnequal, "(k) DL-34 supplemental unequal union keeps exactness FALSE" );
+
+		// The same partial-overlap union at A's centre has an exposed A cap
+		// at radius 3; B does not contain that point.
+		Scalar fUnequalCenter = 0; bool eUnequalCenter = true;
+		const bool gotUnequalCenter = unequal->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 10 ), fUnequalCenter, eUnequalCenter );
+		Check( gotUnequalCenter, "(k) DL-34 supplemental partial-overlap centre answers" );
+		const bool finiteUnequalCenter = RISE::IsFiniteDouble( (double)fUnequalCenter );
+		Check( finiteUnequalCenter, "(k) DL-34 supplemental partial-overlap centre depth is finite before comparison" );
+		if( gotUnequalCenter && finiteUnequalCenter ) {
+			CheckClose( -fUnequalCenter, Scalar( 3 ), Scalar( 3e-9 ),
+				"(k) DL-34 supplemental partial-overlap centre reaches A's exposed cap" );
+		}
+		Check( !eUnequalCenter, "(k) DL-34 supplemental partial-overlap centre keeps exactness FALSE" );
+		unequal->release();
+
+		// External tangency has no overlap volume and retains a zero signed
+		// value at contact, while the internal tangent's union is the large
+		// sphere and has its ordinary centre depth.
+		Object* externalA = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 0, 0, 0 ) );
+		Object* externalB = MakeOperand( new SphereGeometry( Scalar( 2 ) ), Point3( 4, 0, 0 ) );
+		CSGObject* external = MakeCsg( CSG_UNION, externalA, externalB, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fExternal = 0; bool eExternal = true;
+		const bool gotExternal = external->SignedDistanceLower( Point3( 2, 0, 0 ), Scalar( 10 ), fExternal, eExternal );
+		Check( gotExternal, "(k) DL-34 supplemental external tangent answers" );
+		const bool finiteExternal = RISE::IsFiniteDouble( (double)fExternal );
+		Check( finiteExternal, "(k) DL-34 supplemental external tangent is finite before comparison" );
+		if( gotExternal && finiteExternal ) {
+			CheckClose( fExternal, Scalar( 0 ), Scalar( 0 ),
+				"(k) DL-34 supplemental external tangent remains exactly on the union boundary" );
+		}
+		Check( !eExternal, "(k) DL-34 supplemental external tangent keeps exactness FALSE" );
+		external->release();
+
+		Object* internalA = MakeOperand( new SphereGeometry( Scalar( 3 ) ), Point3( 0, 0, 0 ) );
+		Object* internalB = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 2, 0, 0 ) );
+		CSGObject* internal = MakeCsg( CSG_UNION, internalA, internalB, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fInternal = 0; bool eInternal = true;
+		const bool gotInternal = internal->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 10 ), fInternal, eInternal );
+		Check( gotInternal, "(k) DL-34 supplemental internal tangent answers" );
+		const bool finiteInternal = RISE::IsFiniteDouble( (double)fInternal );
+		Check( finiteInternal, "(k) DL-34 supplemental internal tangent is finite before comparison" );
+		if( gotInternal && finiteInternal ) {
+			CheckClose( -fInternal, Scalar( 3 ), Scalar( 3e-9 ),
+				"(k) DL-34 supplemental internal tangent retains the enclosing sphere depth" );
+		}
+		Check( !eInternal, "(k) DL-34 supplemental internal tangent keeps exactness FALSE" );
+		internal->release();
+
+		// A torus is exact but concave: its bounding-box centre lies in the
+		// hole, so it cannot certify an inscribed ball.  A far sphere leaves
+		// the tube-centre oracle entirely to the torus.
+		Object* torus = MakeOperand( new TorusGeometry( Scalar( 1.5 ), Scalar( 0.5 ) ), Point3( 0, 0, 0 ) );
+		Object* farSphere = MakeOperand( new SphereGeometry( Scalar( 1 ) ), Point3( 10, 0, 0 ) );
+		CSGObject* concave = MakeCsg( CSG_UNION, torus, farSphere, Point3( 0, 0, 0 ), Vector3( 0, 0, 0 ) );
+		Scalar fConcave = 0; bool eConcave = true;
+		const bool gotConcave = concave->SignedDistanceLower( Point3( 1.5, 0, 0 ), Scalar( 10 ), fConcave, eConcave );
+		Check( gotConcave, "(k) DL-34 supplemental concave-child union answers" );
+		const bool finiteConcave = RISE::IsFiniteDouble( (double)fConcave );
+		Check( finiteConcave, "(k) DL-34 supplemental concave-child depth is finite before comparison" );
+		if( gotConcave && finiteConcave ) {
+			CheckClose( -fConcave, Scalar( 0.5 ), Scalar( 0.5e-9 ),
+				"(k) DL-34 supplemental non-certifiable torus centre falls back to its tube depth" );
+		}
+		Check( !eConcave, "(k) DL-34 supplemental concave-child union keeps exactness FALSE" );
+		concave->release();
 
 		aRef->release(); bRef->release();
 		u->release();

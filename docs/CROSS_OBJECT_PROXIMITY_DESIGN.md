@@ -822,10 +822,13 @@ parent composite and to `interior`, with the composite's `×σ_min` applied —
 and it NEVER sets the exactness flag: `max(a, b)` under-reads near a seam
 even over exact operands, and its zero set is the phantom touching set, so a
 parent's boundary arm must not land on it (the round-3 bug one level up).
-A union exports `min(f_A, f_B)`; INSIDE, that is
-only a lower bound on the union's depth (two overlapping unit-deep
-slabs read depth 0.5 at a point 1.5 deep in their union), so `interior(r)`
-under-reads inside a union's overlap — a §10 residual.
+After DL-34, a union exports `min(f_A, f_B, f_C)`, where `f_C` is the
+exact signed field of two certified operand-center inscribed balls when
+both certificates exist; otherwise it retains `min(f_A, f_B)`. This fixes
+the published two-sphere overlap regression while remaining a conservative
+bound for arbitrary shapes. Loose or absent certificates can still leave
+`interior(r)` under-reading; see [DL-34's scope](DL34_UNION_INTERIOR_DEPTH.md).
+The composite exactness flag remains false.
 **~~and sets the flag only when both operands set it AND its own σ is
 exact~~ — CORRECTED AT IMPLEMENTATION (§8.4 S3): NO COMPOSITE exports the
 exactness flag, a union included.** The rule above is unsound, and the
@@ -1367,9 +1370,10 @@ with the query forced at every hit ≤ 1.25 × its baseline and the floor within
   probe stays at the centre (the bound is tight along the whole minor axis,
   the centre is simply the point the fixture has) and the test says so;
   inside two overlapping spheres the
-  larger depth; inside the overlap of a UNION composite the exported `min`
-  under-reads (asserted ≤ the true depth, and < it at a point deeper than
-  either operand's depth).  **NOT the same pair** — the union check is its
+  larger depth; the UNION composite overlap regression now asserts the
+  analytic crease depth `sqrt(3.56)` after DL-34. The original Phase-3
+  regression asserted strict under-read and is preserved as historical
+  evidence in §8.4. **NOT the same pair** — the union check is its
   own fixture (two R = 2 spheres 1.5 apart, probed at `(0.4, 0, 0)` where the
   operand depths are 1.6 and 0.9 and so distinguishable) rather than the
   1.0 / 0.5 pair the two-neighbour row uses, because on the mid-plane of a
@@ -2411,6 +2415,11 @@ three exclusions factored into `ObjectManager::ProximityCandidateCounts` so the
 two queries cannot drift on them). `ExpressionProgram::UsesProximity()` becomes
 `UsesCrossObject()`; `kL1Ways` goes 4 → 8.
 
+The following table records the original Phase-3 S4 measurements, before
+DL-34. Its strict-underread union row is historical; the current test instead
+pins the analytic crease depth and reports 491 passed, 0 failed with the
+supplemental cases. See [DL-34](DL34_UNION_INTERIOR_DEPTH.md).
+
 | Phase-3 S4 gate | verdict |
 |---|---|
 | warning-free `make -C build/make/rise -j8 all` | PASS |
@@ -2662,7 +2671,7 @@ Also fixed in the same round:
 |---|---|
 | the `interior` computed-radius check was a **tautology** — on a provider-less plane a mis-compiled `convexity` reads its neutral 0 and `interior` reads 0 too, so `0 == 0` passed with the DynR guard removed | moved to the **SDF** receiver, which publishes a provider: `convexity(0.5)` reads a real non-zero there (asserted, as the third probe) while `interior` reads 0, so the two are no longer confusable |
 | the grid gate asserted only `gap_max` — the **harmless** side. A composite that under-reported at every station (contact painted where there is none) passed | added the LOWER-side guard `reported ≥ ref − cellDiagonal` per station and a `gap_min` summary, plus `ref < RISE_INFINITY` so an all-refusing operand cannot make the check vacuous. This would have caught P1-A |
-| the union-overlap probe sat on the mid-plane, where both operand depths are 1.25 — `min` and `max` are indistinguishable | moved to `(0.4, 0, 0)`: depths 1.6 and 0.9. **The move immediately failed the check and showed the claim was inverted**: `min` is taken on the SIGNED values, so `|min(f_A, f_B)|` is `max(depth_A, depth_B)` — the DEEPER of the two (1.6), which is also the CORRECT lower bound, since leaving the union means leaving both. The assertion and the surrounding prose now say the deeper |
+| the union-overlap probe sat on the mid-plane, where both operand depths are 1.25 — `min` and `max` are indistinguishable | moved to `(0.4, 0, 0)`: depths 1.6 and 0.9. **The move immediately failed the check and showed the claim was inverted**: `min` is taken on the SIGNED values, so `|min(f_A, f_B)|` is `max(depth_A, depth_B)` — the DEEPER of the two (1.6), which is also the CORRECT lower bound, since leaving the union means leaving both. The assertion and prose at that time were changed to say the deeper; DL-34 later replaced this under-read pin with the analytic union-depth regression |
 | the phantom sweep had **no positive control** — "the guard refuses the phantom" was not separated from "this composite refuses everything near that face" | added a station one slot-width further out in x, where the same composite at the same radius must ANSWER at its closed form |
 | `SignedAt` pre-cleared `outExact`, defeating the `true` sentinel the sheet loop sets and reducing nine "the refusal CLEARS the flag" checks to "does not SET it" | the helper no longer pre-clears |
 | `ParamValueInChunk` (pre-existing) carried the same prefix bug `ChunkTextOf` was hardened against — asked for `X_wear` it matched inside `X_wearrough`, so the colour chunk's contact params were never actually asserted | word-boundary match |
@@ -3079,8 +3088,11 @@ measured by a harness test against the tracked scene.
   term) when a bound operand is reached, scaled by the composite's σ_max in
   world space; a point exactly on its surface reads 0 in the first case and
   within the measured gap otherwise; an intersection/subtraction
-  is never an exact operand to a parent; `interior` under-reads inside a
-  union's overlap (the exported `min` is a depth lower bound there).
+  is never an exact operand to a parent. After DL-34, the union exports
+  the minimum of the base field and a certified inscribed-ball union field.
+  `interior` may still under-read for arbitrary unions with absent or loose
+  certificates; the published two-sphere overlap is now pinned to its
+  analytic depth. See [the retained scope](DL34_UNION_INTERIOR_DEPTH.md).
 - SDF neighbours are an upper bound on distance (never over-read contact),
   bounded by the last probe step; the gap is measured on C, not bounded
   analytically. A candidate whose crossing is not found within budget reads far.
@@ -3222,7 +3234,18 @@ measured by a harness test against the tracked scene.
   and NOT YET MEASURED shape rather than the flat scan's honest `O(n)`.
   The flat-scan fallback for a ≤4-object scene (or `bUseBSPtree` off) is
   unchanged and linear, as it always was.
-- **`interior` UNDER-READS inside a UNION composite's overlap.** A union
+- ~~**`interior` UNDER-READS inside a UNION composite's overlap.**~~
+  **CLOSED 2026-09-12 for the published DL-34 regression — `cffa254f`,
+  `ProximitySignalTest`: `Passed: 491   Failed: 0` (original unchanged red
+  test: 465 passed, 6 failed; first fixed: 471 passed, 0 failed).**
+  The union now combines the original composed field with the exact signed
+  field of two certified bounding-box-center inscribed balls. It recovers
+  the published sphere example's `sqrt(3.56)` depth and keeps composite
+  exactness false. Arbitrary overlaps can still under-read when these
+  certificates are unavailable or loose; this is not a general exact CSG
+  distance claim. See [mechanism, corrected recipe and limits](DL34_UNION_INTERIOR_DEPTH.md).
+  The following describes the historical pre-DL-34 field and measurements.
+  A union
   exports `min(f_A, f_B)` as its signed lower bound. **It is a LOWER BOUND
   EVERYWHERE, exact nowhere that this arc relies on** — review round 1
   retired this bullet's original "exact ON and OUTSIDE the zero set" claim

@@ -2345,9 +2345,68 @@ bool CSGObject::LocalBoxDiagonal( Scalar& outDiag ) const
 	return true;
 }
 
+namespace
+{
+	// Exact signed distance of two balls. Their exposed sphere caps and
+	// intersection circle exhaust the boundary. All lengths are normalized
+	// before products; the circle radius uses the factored triangle area.
+	bool BallUnionSigned( const Point3& p, const Point3& a, const Scalar raWorld,
+		const Point3& b, const Scalar rbWorld, Scalar& out )
+	{
+		const Vector3 ab = Vector3Ops::mkVector3( b, a );
+		const Vector3 ap = Vector3Ops::mkVector3( p, a );
+		const Vector3 bp = Vector3Ops::mkVector3( p, b );
+		const Scalar dWorld = std::hypot( std::hypot( ab.x, ab.y ), ab.z );
+		const Scalar daWorld = std::hypot( std::hypot( ap.x, ap.y ), ap.z );
+		const Scalar dbWorld = std::hypot( std::hypot( bp.x, bp.y ), bp.z );
+		if( !std::isfinite( dWorld ) || !std::isfinite( daWorld ) || !std::isfinite( dbWorld ) ) return false;
+		const Scalar scale = std::max( dWorld, std::max( raWorld, rbWorld ) );
+		if( !( scale > Scalar( 0 ) ) || !std::isfinite( scale ) ) return false;
+		const Scalar ra = raWorld / scale, rb = rbWorld / scale;
+		const Scalar d = dWorld / scale, da = daWorld / scale, db = dbWorld / scale;
+		Scalar f = std::min( da - ra, db - rb );
+		if( f >= Scalar( 0 ) || d >= ra + rb ) {
+			out = f * scale;
+			return std::isfinite( out );
+		}
+		if( d + ra <= rb ) f = db - rb;
+		else if( d + rb <= ra ) f = da - ra;
+		else {
+			// Strict partial overlap: d>0 and all four triangle factors
+			// are positive. Coincidence and both tangencies were handled above.
+			const Vector3 axis( ab.x / dWorld, ab.y / dWorld, ab.z / dWorld );
+			const Vector3 q( ap.x / scale, ap.y / scale, ap.z / scale );
+			const Scalar x = Vector3Ops::Dot( q, axis );
+			const Vector3 radial = q - axis * x;
+			const Scalar rho = std::hypot( std::hypot( radial.x, radial.y ), radial.z );
+			const Scalar plane = ( d*d + (ra-rb)*(ra+rb) ) / ( Scalar(2)*d );
+			const Scalar h = std::sqrt( (ra+rb+d)*(ra+rb-d)*(d+ra-rb)*(d-ra+rb) ) / ( Scalar(2)*d );
+			Scalar depth = std::hypot( x-plane, rho-h );
+			if( da == Scalar(0) ) depth = std::min( depth, ra );
+			else if( std::hypot( ra*x/da-d, ra*rho/da ) >= rb )
+				depth = std::min( depth, std::fabs( da-ra ) );
+			if( db == Scalar(0) ) depth = std::min( depth, rb );
+			else if( std::hypot( d+rb*(x-d)/db, rb*rho/db ) >= ra )
+				depth = std::min( depth, std::fabs( db-rb ) );
+			f = -depth;
+		}
+		out = f * scale;
+		return std::isfinite( out );
+	}
+}
+
+bool CSGObject::OperandSignedLower( const IObjectPriv* child, const Point3& pt,
+	const Scalar maxDist, Scalar& outSigned, bool& outExact, const bool includeBallCertificates )
+{
+	const CSGObject* composite = dynamic_cast<const CSGObject*>( child );
+	if( composite ) return composite->SignedDistanceLowerImpl( pt, maxDist, outSigned, outExact, includeBallCertificates );
+	return child->SignedDistanceLower( pt, maxDist, outSigned, outExact );
+}
+
 bool CSGObject::ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDistLocal,
 	Scalar& outF, bool& outExact,
-	Scalar& outFA, bool& outExactA, Scalar& outFB, bool& outExactB ) const
+	Scalar& outFA, bool& outExactA, Scalar& outFB, bool& outExactB,
+	const bool includeBallCertificates ) const
 {
 	outF = Scalar( 0 );
 	outExact = outExactA = outExactB = false;
@@ -2360,10 +2419,10 @@ bool CSGObject::ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDist
 	// disk, open cylinder, mesh, patch or hair) refuses the signed query
 	// outright -- not merely "lacks the exactness flag", which a BOUND
 	// operand also does without forcing a refusal.
-	if( !pObjectA->SignedDistanceLower( ptLocal, maxDistLocal, outFA, outExactA ) ) {
+	if( !OperandSignedLower( pObjectA, ptLocal, maxDistLocal, outFA, outExactA, includeBallCertificates ) ) {
 		return false;
 	}
-	if( !pObjectB->SignedDistanceLower( ptLocal, maxDistLocal, outFB, outExactB ) ) {
+	if( !OperandSignedLower( pObjectB, ptLocal, maxDistLocal, outFB, outExactB, includeBallCertificates ) ) {
 		return false;
 	}
 	if( !RISE::IsFiniteDouble( (double)outFA ) || !RISE::IsFiniteDouble( (double)outFB ) ) {
@@ -2406,6 +2465,36 @@ bool CSGObject::ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDist
 		// already names as the safe direction for a missed boundary
 		// landing.
 		outF = std::min( outFA, outFB );
+		if( includeBallCertificates ) {
+			Point3 centers[2];
+			Scalar radii[2] = { 0, 0 };
+			bool certified = true;
+			for( int i = 0; i < 2; ++i ) {
+				const IObjectPriv* child = i == 0 ? pObjectA : pObjectB;
+				const BoundingBox box = child->getBoundingBox();
+				// Half each endpoint before adding, avoiding overflow in
+				// both (lo+hi)/2 and lo+(hi-lo)/2 at extreme coordinates.
+				centers[i] = Point3( box.ll.x*Scalar(.5)+box.ur.x*Scalar(.5),
+					box.ll.y*Scalar(.5)+box.ur.y*Scalar(.5), box.ll.z*Scalar(.5)+box.ur.z*Scalar(.5) );
+				Scalar fCenter = 0; bool exactCenter = false;
+				if( !(box.ll.x <= box.ur.x && box.ll.y <= box.ur.y && box.ll.z <= box.ur.z)
+				 || !std::isfinite(centers[i].x) || !std::isfinite(centers[i].y) || !std::isfinite(centers[i].z)
+				 || !OperandSignedLower( child, centers[i], maxDistLocal, fCenter, exactCenter, false )
+				 || !std::isfinite(fCenter) || !(fCenter < Scalar(0)) ) {
+					certified = false;
+					break;
+				}
+				radii[i] = -fCenter;
+			}
+			Scalar ballField = 0;
+			if( certified && BallUnionSigned( ptLocal, centers[0], radii[0], centers[1], radii[1], ballField ) ) {
+				// Each ball is contained in its operand: the union's depth
+				// is a lower bound on the actual solid's depth. The minimum
+				// of these fixed 1-Lipschitz fields retains the descent bound.
+				// Outside, the smaller base field wins. Never export exactness.
+				outF = std::min( outF, ballField );
+			}
+		}
 		break;
 	case CSG_INTERSECTION:
 		outF = std::max( outFA, outFB );
@@ -2764,6 +2853,12 @@ bool CSGObject::DistanceToSurface( const Point3& ptWorld, const Scalar maxDistWo
 bool CSGObject::SignedDistanceLower( const Point3& ptWorld, const Scalar maxDistWorld,
 	Scalar& outSigned, bool& outExact ) const
 {
+	return SignedDistanceLowerImpl( ptWorld, maxDistWorld, outSigned, outExact, true );
+}
+
+bool CSGObject::SignedDistanceLowerImpl( const Point3& ptWorld, const Scalar maxDistWorld,
+	Scalar& outSigned, bool& outExact, const bool includeBallCertificates ) const
+{
 	outExact = false;
 	if( !pObjectA || !pObjectB ) {
 		return false;
@@ -2780,7 +2875,7 @@ bool CSGObject::SignedDistanceLower( const Point3& ptWorld, const Scalar maxDist
 
 	Scalar f = 0, fA = 0, fB = 0;
 	bool ex = false, exA = false, exB = false;
-	if( !ComposedSignedLocal( ptLocal, maxDistLocal, f, ex, fA, exA, fB, exB ) ) {
+	if( !ComposedSignedLocal( ptLocal, maxDistLocal, f, ex, fA, exA, fB, exB, includeBallCertificates ) ) {
 		return false;
 	}
 
