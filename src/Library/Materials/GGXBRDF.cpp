@@ -134,7 +134,7 @@ RISEPel GGXInterfaceFresnel::Mean() const
 	if( mode == eFresnelThinFilmConductor ) {
 		// Integrate the same projected directional function. Projecting an
 		// already averaged preview would define a different diffuse model.
-		RISEPel mean(0);
+		RISEPel mean(Scalar(0));
 		for( int i=0; i<MicrofacetEnergyLUT::GL_N; ++i ) {
 			const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
 			mean = mean + Directional(mu) * (Scalar(2)*mu*MicrofacetEnergyLUT::GL_weights[i]);

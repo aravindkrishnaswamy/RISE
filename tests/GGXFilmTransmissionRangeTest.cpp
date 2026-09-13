@@ -48,10 +48,10 @@ int main() {
     }
     // The public zero-diffuse albedo guide exposes the directional interface
     // estimate; integrate it independently and compare its hemispherical guide.
-    auto* black = new UniformColorPainter(RISEPel(0));
+    auto* black = new UniformColorPainter(RISEPel(0.0));
     auto* bare = new GGXBRDF(*black,*white,*alpha,*alpha,*eta,*zero,eFresnelThinFilmConductor,nullptr,film,zero,zero);
     auto* mixed = new GGXBRDF(*white,*white,*alpha,*alpha,*eta,*zero,eFresnelThinFilmConductor,nullptr,film,zero,zero);
-    RISEPel integrated(0), mean(0);
+    RISEPel integrated(0.0), mean(0.0);
     const int quadrature = 4096;
     for(int i=0;i<quadrature;++i) {
         const Scalar cosine=(i+.5)/quadrature;
