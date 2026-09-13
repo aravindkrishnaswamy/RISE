@@ -375,7 +375,7 @@ is exact even across a layered SPF's internal chain:
 | `Materials/WeaveSPF.cpp` | 0 | — | no | pure pass-through to its own `ScatterImpl`, same "thin transmission, no stack change" shape as `FabricSPF` above. |
 | `DetectorSpheres/*` | 5 | FLUX | no | measurement rigs; comment only |
 | `Materials/SubSurfaceScatteringSPF.cpp` (front-face), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.{h,cpp}` | 0 stack transitions in complete-event helpers | exterior to same exterior | no transport change | RISE samples both boundaries together; their basic-radiance factors telescope to one. PBRT applies complementary factors in its surface and BSSRDF stages. DL-04 measures the convention; normalization was subsequently fixed in DL-48; index/support residuals remain DL-49/DL-52. See §10.1. |
-| `Materials/SubSurfaceScatteringSPF.cpp` inside fallback (`Scatter` / `ScatterNM`) | 2 pop sites | standalone non-absorbing SPF | no transport change | Shipped SSS materials set `bAbsorbBackFace=true`, so membership-selected inside hits return before these sites. The default standalone SPF allows this branch; its destination-IOR read before popping is DL-51. Initial seeding alone does not make it reachable in shipped materials. See §10.1. |
+| `Materials/SubSurfaceScatteringSPF.cpp` inside fallback (`Scatter` / `ScatterNM`) | 2 pop sites | standalone non-absorbing SPF | no transport change | Shipped SSS materials set `bAbsorbBackFace=true`, so membership-selected inside hits return before these sites. The default standalone SPF allows this branch; DL-51 (`34434610`) corrected its destination-IOR read to use the popped stack. Initial seeding alone does not make it reachable in shipped materials. See §10.1. |
 
 **Is this table exhaustive over `src/Library/Materials`?** (review round
 2, 2026-09-12; recount verified review round 3, 2026-09-12 — the earlier
@@ -592,7 +592,7 @@ returns before exit refraction. Seeding a camera inside the SSS solid does
 not make that fallback reachable. Without membership it takes the outside
 branch, rather than an ordinary no-op pop. Standalone construction with
 the flag false permits the fallback, whose pre-pop destination-IOR error
-is separately tracked in DL-51.
+was closed by DL-51 (`34434610`, SubSurfaceExitIORTest: 301 checks, 0 failures).
 
 The camera remains outside the solid in the revised rendered comparison.
 It moves across an enclosing IOR interface while all three models share

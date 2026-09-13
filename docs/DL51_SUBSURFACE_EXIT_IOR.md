@@ -91,6 +91,7 @@ and do not call the production Optics helpers.
 | `tests/README.md` | Modified: test scope and measured red/fixed counters. |
 | `docs/DEBT_LEDGER.md` | Modified: closure, counts and independent DL-56 residual. |
 | `docs/DL04_SSS_RADIANCE_DECISION.md` | Modified: close the standalone exit confound while retaining reachability limits. |
+| `docs/REFRACTIVE_RADIANCE_SCALING.md` | Modified: replace stale open-debt references with the DL-51 closure. |
 | `docs/DL51_SUBSURFACE_EXIT_IOR.md` | Added: mechanism, reachability, regression and scope. |
 
 No library source files were added or removed, so no build-project source
