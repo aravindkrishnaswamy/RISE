@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "RandomWalkSSS.h"
+#include "FiniteMath.h"
 #include "Optics.h"
 #include "GeometricUtilities.h"
 #include "../Materials/HenyeyGreensteinPhaseFunction.h"
@@ -239,7 +240,10 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 						+ proposalRates[2] * exp( -proposalRates[2] * t )) / 3.0
 					: (sigma_t[0] * Tr0 + sigma_t[1] * Tr1 + sigma_t[2] * Tr2) / 3.0;
 
-				if( pdfMixture < 1e-20 ) {
+				// A density carries inverse-distance units: its magnitude cannot
+				// decide whether the normalized collision weight is significant.
+				// Reject only invalid densities before dividing physical density.
+				if( !IsFiniteDouble( pdfMixture ) || pdfMixture <= 0.0 ) {
 					return result;
 				}
 

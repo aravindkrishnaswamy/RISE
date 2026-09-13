@@ -82,17 +82,18 @@ exponential fallback distances. Coated/Fabric exclude SSS substrates and
 CompositeMaterial does not forward random-walk parameters. These are
 source-audit conclusions, not additional integration renders of this fixture.
 
-## Independent residual DL-57: collision density cutoff
+## ~~Independent residual DL-57: collision density cutoff~~ CLOSED 2026-09-12
 
-The existing RGB guard still rejects pdfMixture < 1e-20 even with matching
-physical/proposal rates. Root recomputed neutral sigma_s=sigma_t=1e-20 at
-t=5e7: the density is 9.999999999995e-21 but the conditional collision weight
-is exactly one. This is a dimensionful-density cutoff defect, independent
-of the proposal mismatch repaired here. DL-57 records a real-geometry and
-scale-invariance red-proof recipe. Current DL-57 evidence is scalar/static,
-not an executed renderer test. DL-49/DL-52 and the separate DL-58
-matched-index grazing-classification group remain open work; DL-56 is closed
-by `df7e3dad`.
+`c187f2cc`, `RandomWalkDensityCutoffTest`: `All DL-57 density cutoff tests passed`
+(unfixed: one missing-large-RGB-exit activity failure). The finite-positive
+collision-density guard replaces the dimensional cutoff; proposal densities,
+physical weights and throughput pruning are unchanged. A real closed-sphere
+scale pair preserves unit normalized spatial weight, with NM and absorption
+controls. See [DL-57 closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md) for measured
+ranges, weights, committed red-proof and the sibling audit.
+
+DL-49/DL-52 and the separate DL-58 grazing-classification group remain open;
+DL-56 was closed by `df7e3dad`.
 
 At this closure the main ledger had 56 rows: 46 open and 10 closed by cleanup.
 

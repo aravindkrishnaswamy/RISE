@@ -45,7 +45,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-54~~ | ~~DL48_SSS_NORMALIZATION.md: geometric projection density~~ | ~~BSSRDF disk-to-surface density uses the modified shading normal instead of the geometric normal~~ | CLOSED 2026-09-12 | `ab85092d`: BSSRDFProjectionNormalTest, `All DL-54 projection-normal tests passed` (unfixed: 960 PDF/weight failures). RGB and NM each retain 48/128 matching active sphere hits, with axis activity 33/10/5. All three Jacobians now use entryGeomNormal; the shading frame remains angular. See [closure](DL54_BSSRDF_PROJECTION_NORMAL.md). | S | physics-bias | user-visible (normal-mapped diffusion SSS) |
 | ~~DL-55~~ | ~~DL50_RANDOM_WALK_SURVIVAL.md: fallback proposal density~~ | ~~RandomWalkSSS tiny-channel fallback weights do not use the actual collision/RGB survival proposal density~~ | CLOSED 2026-09-12 | `cba4e88c`: RandomWalkFallbackProposalTest, `All DL-55 fallback proposal tests passed` (unfixed: 17 weight failures). RGB effective-rate mixtures and NM physical/proposal collision ratios agree with independent oracles; Beer quadrature has 2948/12288 active exits. Exact NM fallback threshold is covered. See [closure](DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md). | S | physics-bias | user-visible (RGB zero-channel extinction); latent (tiny NM collision coefficients) |
 | ~~DL-56~~ | ~~DL51_SUBSURFACE_EXIT_IOR.md: grazing Fresnel residual~~ | ~~Shared dielectric Fresnel helper forces reflection at valid equal-index grazing interfaces~~ | CLOSED 2026-09-12 | `df7e3dad`: DielectricGrazingFresnelTest, `Checks: 338  Failures: 0` (unfixed: `Checks: 128  Failures: 20`). Scaled s/p amplitude ratios preserve matched-index zero reflectance without changing Snell, stack, or eta conventions. See [closure](DL56_GRAZING_FRESNEL.md). | S | physics-bias | user-visible (grazing dielectric and standalone SSS exits) |
-| DL-57 | DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md: collision density cutoff | RGB random-walk collision guard rejects small positive dimensional densities with non-negligible normalized weights | OPEN-confirmed (static evidence; red-proof pending) | RandomWalkSSS::SampleExit returns when pdfMixture < 1e-20. For neutral sigma_s=sigma_t=1e-20 and t=5e7, density is 9.999999999995e-21 but the correct conditional collision weight is 1. | S | physics-bias | latent (tiny extinction coefficients / scene scale) |
+| ~~DL-57~~ | ~~DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md: collision density cutoff~~ | ~~RGB random-walk collision guard rejects small positive dimensional densities with non-negligible normalized weights~~ | **CLOSED 2026-09-12** | `c187f2cc`: `RandomWalkDensityCutoffTest`, fixed output `All DL-57 density cutoff tests passed` (red: one missing-large-RGB-exit activity failure). Real closed-sphere RGB scale pair reports spatial weight `1` in every channel and full weight `1.0171875000000001` for the large case; scaled case spatial `1.0000000000000002`, full `1.0171875000000004`; NM spatial `1`, full `1.0171875000000001`. See [DL57 closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md). | S | physics-bias | latent (tiny extinction coefficients / scene scale) |
 | DL-58 | DL56_GRAZING_FRESNEL.md: remaining classification work | Snell and cosine-only Fresnel helpers misclassify matched-index extreme-grazing transmission as TIR | OPEN-confirmed (static evidence; red-proof pending) | Optics::CalculateRefractedRay rejects positive k=9.992007221626409e-15 at matched indices and cosI=1e-7. FibreLobeMath::FrDielectric, local SSS BSDF/SPF Fresnel helpers, and ManifoldSolver::ComputeDielectricFresnel classify sinT2 rounded to 1 at cosI=1e-9 as TIR despite matched-index R=0. | S | physics-bias | latent (extreme-grazing matched-index paths) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
@@ -173,16 +173,16 @@ reflowed otherwise.
 
 ## Counts
 
-Updated for the 2026-09-12 DL-56 grazing-Fresnel closure. The original sweep counts
+Updated for the 2026-09-12 DL-57 collision-density closure. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- Main rows: **57** — **46 open**, **11 closed**.
-- OPEN-confirmed: **46** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-58 minus closed DL-48/DL-50/DL-51/DL-54/DL-55/DL-56; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **11** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+- Main rows: **57** — **45 open**, **12 closed**.
+- OPEN-confirmed: **45** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
+  residuals DL-38 through DL-58 minus closed DL-48/DL-50/DL-51/DL-54/DL-55/DL-56/DL-57; DL-35 remains deliberately absent)
+- CLOSED-by-cleanup: **12** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;
-  DL-48, `12a7ef3e`; DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`; DL-55, `cba4e88c`; DL-56, `df7e3dad`)
+  DL-48, `12a7ef3e`; DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`; DL-55, `cba4e88c`; DL-56, `df7e3dad`; DL-57, `c187f2cc`)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -763,18 +763,17 @@ Snell classification, IOR-stack handling, nor eta conventions. See
 [closure](DL56_GRAZING_FRESNEL.md). The distinct extremely-grazing
 pre-Fresnel Snell/TIR cancellation group is DL-58.
 
-**DL-57 (RGB dimensional collision-density cutoff).** Commit an actual
-closed-object regression with neutral sigma_s=sigma_t=1e-20, a finite
-positive sampled collision density just below 1e-20 and a subsequent exit.
-Prove the real geometry distances and branch activity before comparing the
-conditional collision weight to one. Pair it with a scaled scene/coefficient
-case having the same optical depth but an ordinary numeric density; the
-normalized result should agree. Cover RGB full/spatial weights, NM control,
-zero-scatter behavior and the DL-55 fallback proposals. Replace rejection
-based solely on an arbitrary positive dimensional density with principled
-zero/nonfinite handling or a stable ratio formulation; audit sibling guards.
-Current evidence is a supervisor scalar recomputation, not an executed red-proof.
-
+**~~DL-57 (RGB dimensional collision-density cutoff).~~ CLOSED 2026-09-12 —
+`c187f2cc`, RandomWalkDensityCutoffTest: `All DL-57 density cutoff tests
+passed` (unfixed: one required large-RGB exit activity failure).** Tests were
+committed before execution; real closed-sphere geometry proves the collision
+and continuation ranges. Scaled RGB, NM and absorption controls passed before
+the repair, while normalized weights and the scale-pair comparisons pass on
+the unchanged test after the finite-positive density guard. Weight checks
+behind the failed activity assertion are not claimed as separate red failures.
+The legal sampler support excludes the boundary-survival cutoff as a reachable
+sibling. Proposal rates, weighting formulae and throughput pruning are unchanged.
+See [closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md).
 
 **DL-58 (extreme-grazing false TIR).** Commit direct regressions before
 execution for Optics::CalculateRefractedRay, FibreLobeMath::FrDielectric,
