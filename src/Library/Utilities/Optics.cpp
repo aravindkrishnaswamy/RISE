@@ -129,26 +129,31 @@ Scalar Optics::CalculateDielectricReflectance( const Vector3& v, const Vector3& 
 		useTv = Vector3Ops::Normalize( useTv );
 	}
 
+	// Identical media have no interface, including at exact grazing.
+	// Keep this identity explicit rather than evaluating its 0/0 limit.
+	if( Ni == Nt ) {
+		return 0.0;
+	}
+
 	const Scalar cosAi = fabs(Vector3Ops::Dot(useV, useN));
 	const Scalar cosAt = fabs(Vector3Ops::Dot(useTv, useN));
-	const Scalar nn = Ni * Nt;
-	const Scalar cc = cosAt * cosAi;
-	const Scalar Ni2 = Ni * Ni;
-	const Scalar Nt2 = Nt * Nt;
-	const Scalar ci2 = cosAi * cosAi;
-	const Scalar ct2 = cosAt * cosAt;
-	const Scalar Nit = Ni2 - Nt2;
-	const Scalar cit = ci2 - ct2;
-	const Scalar num = Nit*Nit*cc*cc +  cit*cit*nn*nn;
-	Scalar denom = cc*(Ni2 + Nt2) + nn*(ci2 + ct2);
-	denom = denom*denom;
-
-	Scalar answer;
-	if ((denom < 0.000001) && (num < 0.000001)) {
-		answer = 1.0;
-	} else {
-		answer = num/denom;
+	const Scalar cosScale = fmax( cosAi, cosAt );
+	if( cosScale == 0.0 ) {
+		return 1.0;  // Grazing limit for distinct media.
 	}
+
+	// Average the squared s/p amplitude ratios. Common index and cosine
+	// scales cancel from each ratio; remove them before multiplication so
+	// a small valid denominator is never mistaken for total reflection.
+	// This also avoids the fourth powers in the combined quotient.
+	const Scalar indexScale = fmax( Ni, Nt );
+	const Scalar ni = Ni / indexScale;
+	const Scalar nt = Nt / indexScale;
+	const Scalar ci = cosAi / cosScale;
+	const Scalar ct = cosAt / cosScale;
+	const Scalar rs = (ni*ci - nt*ct) / (ni*ci + nt*ct);
+	const Scalar rp = (nt*ci - ni*ct) / (nt*ci + ni*ct);
+	const Scalar answer = 0.5 * (rs*rs + rp*rp);
 
 	if (answer < 1.0) {
 		return answer;

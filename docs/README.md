@@ -142,6 +142,9 @@ do not execute old phase lists blindly.
   [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
   (closes the BDPT/VCM/MLT geometry-signal neutral-read gap,
   GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 11)
+- correctness-debt closures: [DL56_GRAZING_FRESNEL.md](DL56_GRAZING_FRESNEL.md)
+  records the shared grazing dielectric-Fresnel repair and its remaining
+  separate extreme-grazing classification scope
 
 The SMS, guilloché, physical-pipeline, pre-Phase-1, GUI, and agentic-redesign
 clusters contain additional detailed execution records. The audit identifies

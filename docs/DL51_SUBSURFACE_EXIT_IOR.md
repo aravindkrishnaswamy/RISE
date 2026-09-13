@@ -101,13 +101,15 @@ IORStackBehaviorTest, SSSRadianceScalingTest and SourceHygieneTest. The
 standalone completion report records exact gate output, clean make/Xcode
 validation, independent reviewer findings and merged-master validation.
 
-## Grazing Fresnel residual (DL-56)
+## Grazing Fresnel closure (DL-56)
 
-Review identified a separate shared Optics::CalculateDielectricReflectance
-heuristic that returns one whenever its numerator and denominator are both
-below 1e-6. The supervisor independently recomputed the source formula for
-Ni=Nt=1.5 and cosI=cosT=0.01: numerator zero and denominator 8.1e-7 cause
-full reflection, although equal-index Fresnel reflectance is zero. This is
-static analytical evidence, not an executed red-proof. DL-56 records a
-dedicated helper/consumer recipe; it is independent of the post-pop
-destination repair and remains open.
+The separate shared `Optics::CalculateDielectricReflectance` quotient defect
+is closed by `df7e3dad`. The direct helper and real DielectricSPF/standalone
+non-absorbing SSS consumer regression was committed before execution and
+changed from `Checks: 128  Failures: 20` on the unfixed library to `Checks:
+338  Failures: 0`. It is independent of this record's post-pop destination
+repair. See [the DL-56 closure](DL56_GRAZING_FRESNEL.md).
+
+The still-separate DL-58 group concerns pre-Fresnel Snell/TIR classification
+under extreme matched-index grazing cancellation; DL-56 did not modify Snell
+classification.
