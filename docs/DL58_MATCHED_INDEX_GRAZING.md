@@ -1,9 +1,9 @@
 # DL-58: matched-index extreme-grazing classification
 
 CLOSED 2026-09-12 — repair `1b1909c0`, fibre compatibility refinement `ed8d9c94`.
-Outstanding integration requirements: finish independent final review, merge,
-verify the merged tree in an isolated worktree, and export the standalone
-completion report with the retained evidence.
+DL-58 was independently reviewed, merged at `b8ffc946`, and verified with
+the same 30 gates from an isolated merged-tree checkout. Its standalone
+completion report and verified evidence archive were exported before cleanup.
 
 DL-58 covers a false total-internal-reflection family at extreme grazing
 incidence. At equal indices, transmission remains physically valid at every
@@ -109,8 +109,8 @@ The three new suites report:
 Clean Xcode validation also passed at that source state with zero compiler
 warnings; four environment notices (three local OIDN paths and one AppIntents
 metadata notice) are retained in the evidence. No full-suite runner was used.
-The remaining integration/report requirements above include retaining all
-gate output verbatim, review rounds and isolated merged-master verification.
+The DL-58 completion report retains all gate output verbatim, review rounds
+and isolated merged-master verification.
 Documentation-only closure edits retain compiled source and executable test
 inputs.
 
@@ -136,26 +136,14 @@ inputs.
 | `tests/README.md` | Modified in this slice. |
 
 No Library source files were added or removed; the five explicit build-project
-source lists require no change. One independent residual, DL-59, was opened during review. Ledger at closure:
+source lists require no change. One independent residual, DL-59, was opened during review. At the historical DL-58 closure, the ledger had
 58 main rows, 45 open and 13 closed by cleanup.
 
-## Remaining unequal-index derivative convention (DL-59)
+## ~~Remaining unequal-index derivative convention (DL-59)~~
 
-OPEN-confirmed by source and scalar recomputation; executed red-proof pending.
-`ManifoldSolver::ComputeSpecularDirectionDerivativeWrtNormal` still uses `eta`
-directly for unequal indices, whereas `ComputeSpecularDirection` uses `1/eta`
-on entry and flips the normal on exit. At `wi=n=(0,0,1)`, `eta=1.5`, the
-raw tangential derivative `dwo.x/dn.x` is `0.5`; the direction formula gives
-`1/1.5-1 = -0.33333333333333337`. Output normalization does not remove this
-tangential discrepancy.
-
-This convention defect is independent of the matched-index cancellation
-repaired here. `BuildJacobianAngleDiff` consumes the derivative, but that
-angle-difference family is test-only; production `Solve` uses the half-vector
-Jacobian. Existing normal-derivative finite-difference tests are disabled.
-DL-59 is S / physics-bias / latent (test-only analytical Jacobian). Its recipe
-requires entering/exiting normal and oblique cases, unit-normal tangent
-perturbations, the normalized-output derivative correction, and curved
-angle-difference analytical/numerical Jacobian checks. It must also correct
-the stale helper comment that says it is entirely unused. No production
-render effect has been demonstrated.
+CLOSED 2026-09-12 — `a0c4a808`, `ManifoldNormalDerivativeTest`,
+`Checks: 141 Failures: 0` (unfixed: 12 failures). The later repair aligns the
+normal derivative's entering/exiting ratio and sign with the direction
+function, using normalized-output finite differences and curved test-only
+angle-difference Jacobian controls. The matched-index identities in this
+DL-58 record remain unchanged. See [DL-59 closure](DL59_SMS_NORMAL_DERIVATIVE.md).

@@ -147,7 +147,9 @@ do not execute old phase lists blindly.
   classification scope subsequently closed by DL-58; [DL57_RANDOM_WALK_DENSITY_CUTOFF.md](DL57_RANDOM_WALK_DENSITY_CUTOFF.md)
   records the finite-positive random-walk collision-density guard repair;
   [DL58_MATCHED_INDEX_GRAZING.md](DL58_MATCHED_INDEX_GRAZING.md) records the
-  subsequent matched-index Snell/Fresnel and SMS derivative repair
+  subsequent matched-index Snell/Fresnel and SMS derivative repair;
+  [DL59_SMS_NORMAL_DERIVATIVE.md](DL59_SMS_NORMAL_DERIVATIVE.md) records the
+  separate unequal-index normal-derivative convention correction
 
 The SMS, guilloché, physical-pipeline, pre-Phase-1, GUI, and agentic-redesign
 clusters contain additional detailed execution records. The audit identifies

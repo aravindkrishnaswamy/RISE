@@ -47,7 +47,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-56~~ | ~~DL51_SUBSURFACE_EXIT_IOR.md: grazing Fresnel residual~~ | ~~Shared dielectric Fresnel helper forces reflection at valid equal-index grazing interfaces~~ | CLOSED 2026-09-12 | `df7e3dad`: DielectricGrazingFresnelTest, `Checks: 338  Failures: 0` (unfixed: `Checks: 128  Failures: 20`). Scaled s/p amplitude ratios preserve matched-index zero reflectance without changing Snell, stack, or eta conventions. See [closure](DL56_GRAZING_FRESNEL.md). | S | physics-bias | user-visible (grazing dielectric and standalone SSS exits) |
 | ~~DL-57~~ | ~~DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md: collision density cutoff~~ | ~~RGB random-walk collision guard rejects small positive dimensional densities with non-negligible normalized weights~~ | **CLOSED 2026-09-12** | `c187f2cc`: `RandomWalkDensityCutoffTest`, fixed output `All DL-57 density cutoff tests passed` (red: one missing-large-RGB-exit activity failure). Real closed-sphere RGB scale pair reports spatial weight `1` in every channel and full weight `1.0171875000000001` for the large case; scaled case spatial `1.0000000000000002`, full `1.0171875000000004`; NM spatial `1`, full `1.0171875000000001`. See [DL57 closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md). | S | physics-bias | latent (tiny extinction coefficients / scene scale) |
 | ~~DL-58~~ | ~~DL56_GRAZING_FRESNEL.md: remaining classification work~~ | ~~Snell and cosine-only Fresnel helpers misclassify matched-index extreme-grazing transmission as TIR~~ | CLOSED 2026-09-12 | `1b1909c0`, narrowed fibre compatibility repair `ed8d9c94`: GrazingSnellFresnelTest `Checks: 38  Failures: 0`; MatchedIndexGrazingConsumerTest `Checks: 60  Failures: 0`; GrazingFresnelThroughputTest `Checks: 44  Failures: 0`. Direct red 9 failures, SSS red 10; original throughput red contains 8 valid SMS failures and 3 invalid weave expectations, corrected after its IOR clamp was identified. Supplemental incoming derivative red is 1 valid failure. See [closure](DL58_MATCHED_INDEX_GRAZING.md). | S | physics-bias | latent (extreme-grazing matched-index paths) |
-| DL-59 | DL58_MATCHED_INDEX_GRAZING.md: remaining unequal-index derivative convention | SMS normal derivative uses the wrong unequal-index ratio/sign convention | OPEN-confirmed (static evidence; red-proof pending) | ManifoldSolver::ComputeSpecularDirectionDerivativeWrtNormal uses eta instead of entering 1/eta and omits the exiting normal convention. At wi=n=(0,0,1), eta=1.5, dwo.x/dn.x is 0.5 instead of -0.33333333333333337. BuildJacobianAngleDiff consumes it in the test-only angle-difference family; production Solve uses half-vector Jacobian and existing normal-derivative FD tests are disabled. | S | physics-bias | latent (test-only analytical Jacobian) |
+| ~~DL-59~~ | ~~DL58_MATCHED_INDEX_GRAZING.md: remaining unequal-index derivative convention~~ | ~~SMS normal derivative uses the wrong unequal-index ratio/sign convention~~ | CLOSED 2026-09-12 | `a0c4a808`: ManifoldNormalDerivativeTest, `Checks: 141 Failures: 0` (unfixed: `Checks: 141 Failures: 12`). Entering/exiting tangent finite differences and curved analytical/numerical angle-difference Jacobians agree with the unchanged regression. Matched/reflection/TIR controls pass. See [closure](DL59_SMS_NORMAL_DERIVATIVE.md). | S | physics-bias | latent (test-only analytical Jacobian) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
@@ -174,16 +174,16 @@ reflowed otherwise.
 
 ## Counts
 
-Updated for the 2026-09-12 DL-58 matched-index grazing closure. The original sweep counts
+Updated for the 2026-09-12 DL-59 SMS normal-derivative closure. The original sweep counts
 remain historical in the header; the current table counts are below.
 
-- Main rows: **58** — **45 open**, **13 closed**.
-- OPEN-confirmed: **45** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-59 minus closed DL-48/DL-50/DL-51/DL-54/DL-55/DL-56/DL-57/DL-58; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **13** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+- Main rows: **58** — **44 open**, **14 closed**.
+- OPEN-confirmed: **44** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
+  residuals DL-38 through DL-59 minus closed DL-48/DL-50/DL-51/DL-54/DL-55/DL-56/DL-57/DL-58/DL-59; DL-35 remains deliberately absent)
+- CLOSED-by-cleanup: **14** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
   DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;
-  DL-48, `12a7ef3e`; DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`; DL-55, `cba4e88c`; DL-56, `df7e3dad`; DL-57, `c187f2cc`; DL-58, `1b1909c0` / `ed8d9c94`)
+  DL-48, `12a7ef3e`; DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`; DL-55, `cba4e88c`; DL-56, `df7e3dad`; DL-57, `c187f2cc`; DL-58, `1b1909c0` / `ed8d9c94`; DL-59, `a0c4a808`)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -793,17 +793,14 @@ strict hair golden. Nearby unequal indices, signed cosine, normal incidence,
 critical-angle controls and earlier IOR/Fresnel consumer gates are retained.
 See [closure](DL58_MATCHED_INDEX_GRAZING.md) for the full evidence and caveats.
 
-**DL-59 (unequal-index SMS normal derivative).** Commit a regression before
-execution that compares `ComputeSpecularDirectionDerivativeWrtNormal` with
-finite differences through the actual direction function for entering/exiting
-normal and oblique incidence. Use tangent perturbations of unit normals and
-apply `(I-wo*wo^T)/|rawWo|` to the raw analytical derivative before comparing
-normalized outputs. Include the normal-incidence tangential `eta=1.5` case
-(expected entry derivative `-1/3`, existing `+1/2`) and curved angle-difference
-analytical/numerical Jacobian coverage. Preserve the DL-58 matched identities,
-reflection behavior and physical TIR/critical controls; audit the incoming
-and normal derivative ratio/sign conventions together. Correct the stale
-unused-method comment. Run ManifoldSolverTest and GrazingFresnelThroughputTest
-individually plus suites found by the touched-class sweep. The angle-difference
-family is test-only, so do not claim a production-render correction without
-observing a production consumer. Current evidence is static/scalar, not red.
+**DL-59 (unequal-index SMS normal derivative). CLOSED 2026-09-12.**
+`fcbc69da` committed the regression before execution; the unfixed library
+reported `Checks: 141 Failures: 12` (eight direct tangent-derivative errors,
+four curved Jacobian entries). `a0c4a808` corrects the entering/exiting ratio
+and original-normal sign; the unchanged test reports `Checks: 141 Failures: 0`.
+Finite differences use tangent perturbations of unit normals and normalized
+output correction; closed-form normal, matched, reflection and TIR controls
+pass. The angle-difference consumer is test-only, so no production-render
+correction is claimed. Five individual gates and clean Make/Xcode passed;
+the source-hygiene environment retry is documented in
+[the closure](DL59_SMS_NORMAL_DERIVATIVE.md).
