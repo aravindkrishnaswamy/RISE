@@ -39,11 +39,12 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-01~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 3 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF RGB/NM exit-weight divergence~~ | CLOSED 2026-09-12 | `1239edf2`: `TranslucentSpectralParityTest: 676 checks, 0 failures` (red: 174 failures); primary-layer tau paid once at entry, Beer-only exit/backscatter parent in both pipes. See [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md). | S | physics-bias | user-visible |
 | ~~DL-02~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 4 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ | ~~TranslucentSPF exit-density support and spectral shape mismatch~~ | CLOSED 2026-09-12 | `a041e51d`: `TranslucentSpectralParityTest: 1918 checks, 0 failures` (red: 324 failures). RGB/NM diffuse exits now share positive-shading-hemisphere cosine sampling/evaluation. Full mixture/reverse density remains DL-41. See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). | S | physics-bias | user-visible |
 | ~~DL-36~~ | ~~SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10~~ | ~~Bounded same-luminary neighbour read lacked a regression~~ | CLOSED 2026-09-12 (consistency pin) | `ac9891f3`: SignalEmitterRecordTest --louvres-only reports `Passed: 16  Failed: 0` against the unchanged library. A real two-blade luminary proves accepted upper-blade proximity=0.5 versus sampled lower-blade proximity=0, with sample geometry preserved. Bounded approximation retained as permitted by recipe. See [DL-36 closure](DL36_EMITTER_NEIGHBOUR_PIN.md). | S | physics-bias | user-visible (bounded approximation retained) |
-| DL-48 | DL04_SSS_RADIANCE_DECISION.md: Sw normalization | SSS directional transmission uses the wrong cosine-hemisphere normalization | OPEN-confirmed (analytic/static evidence; red-proof pending) | BSSRDFSampling, RandomWalkSSS and BSSRDFEntryAdapters use c=(41-20*F0)/42 for Schlick transmission, whose actual cosine-hemisphere integral is 20*(1-F0)/21. The normalized directional integral is therefore not one. | S | physics-bias | user-visible (diffusion/random-walk subsurface transport) |
+| ~~DL-48~~ | ~~DL04_SSS_RADIANCE_DECISION.md: Sw normalization~~ | ~~Wrong SSS cosine-hemisphere normalization~~ Shared Schlick normalization now integrates to one | CLOSED 2026-09-12 | `12a7ef3e`: BSSRDFNormalizationTest, `All DL-48 normalization tests passed`; unfixed constant fails 37 checks; the textured-IOR follow-up fails 8 before correction. Actual helper/adapters and RGB/NM sampled ratios cover all five sites. See [closure](DL48_SSS_NORMALIZATION.md). | S | physics-bias | user-visible (diffusion/random-walk subsurface transport) |
 | DL-50 | DL04_SSS_RADIANCE_DECISION.md: spectral survival | RandomWalkSSS NM exit pays free-flight survival transmittance twice | OPEN-confirmed (static evidence; red-proof pending) | RandomWalkSSS::SampleExit samples the distance-survival event, then multiplies throughputNM by exp(-sigma_t_nm*exitDist); RGB divides Tr by its exit-event probability. Neutral coefficients still diverge. | S | physics-bias | user-visible (spectral random-walk SSS) |
 | DL-51 | DL04_SSS_RADIANCE_DECISION.md: dormant exit fallback | Non-absorbing SubSurfaceScatteringSPF inside exit reads the current interior IOR as its destination before popping | OPEN-confirmed (static evidence; red-proof pending) | Scatter/ScatterNM use Nt=ior_stack.top() on the containsCurrent branch, so a seeded stack computes n_s to n_s Fresnel/Snell before attaching a popped stack. Shipped materials set bAbsorbBackFace=true and do not reach it; the default standalone SPF constructor permits it. | S | physics-bias | latent (standalone non-absorbing SPF; not shipped material behavior) |
+| DL-54 | DL48_SSS_NORMALIZATION.md: geometric projection density | BSSRDF disk-to-surface density uses the modified shading normal instead of the geometric normal | OPEN-confirmed (static evidence; red-proof pending) | BSSRDFSampling::SampleEntryPoint computes all three projection cosines from entryNormal after the probe modifier, although entryGeomNormal is retained. A normal map changes the reported surface PDF without changing the probe-hit distribution. | S | physics-bias | user-visible (normal-mapped diffusion SSS) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
-| ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; exact normalization/non-air support/MIS defects remain DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
+| ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | DL-34 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `interior(r)` UNDER-READS inside a UNION composite's overlap: the exported `min(f_A,f_B)` is a lower bound everywhere but exact nowhere inside the seam, where the true depth is `max(depth_A,depth_B)` | OPEN-confirmed | Doc's own measured example (two R=2 spheres 1.5 apart, point (0.4,0,0): operand depths 1.6/0.9, exported 1.6, true union depth 1.886796); `ObjectManager::DeepestOtherContainment` (`ObjectManager.cpp:861`) and `CSGObject`'s union path confirmed this sweep to still export the operand min, not the deeper operand, inside an overlap | M | physics-bias | user-visible (under-painted contact inside a union seam) |
 | DL-37 | IMPROVEMENTS.md "GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned" | `ggx_material` in `eFresnelSchlickF0` mode goes over unity at grazing incidence (ρ = 1.1573 at 80°) because the glTF diffuse-energy split weights the diffuse lobe by the angle-flat `1 − max(F0)` while the Schlick specular term it is meant to complement rises toward 1 as `cos θ → 0` | OPEN-confirmed | `tests/LayeredWhiteFurnaceTest.cpp:1788-1789` (config 17, "White GGX-PBR base alone", `kPostureKnownFailure`) measures ρ = {0.9988, 0.9994, 1.0251, 1.1573} at θ = {0°,30°,60°,80°}; mechanism read directly in `GGXBRDF::albedo` (`GGXBRDF.cpp:514-520`: `diffColor * max(0, 1 − maxF0) + F(θ)`, doc comment at 508-513 stating the Schlick branch evaluates Fresnel at the actual outgoing cosine while diffuse keeps the constant glTF split) and reproduced at sample time in `GGXSPF::Scatter`/`ScatterNM` (`GGXSPF.cpp:216-219`, six analogous sites at 214/260/364/500/545/638) and `GGXBRDF::value`/`valueNM` (nine analogous sites at 209/276/330/399/451/490/514/595/638) — same `1 − maxF0` constant used at every one, confirmed this sweep | M | physics-bias | user-visible (low-F0 GGX at grazing incidence) |
 | DL-42 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation | OPEN-confirmed (static evidence; red-proof pending) | `PathTracingIntegrator.cpp` initializes `scatterThroughput = kray/selectProb`, then the trained-guiding BSDF branch replaces it with `kray*pdf/combinedPdf` without selectProb. Shared RGB/NM loop; ordinary mixed-lobe entry reflection is reachable. | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
@@ -168,14 +169,15 @@ reflowed otherwise.
 
 ## Counts
 
-Updated for the 2026-09-12 DL-04 convention closure. The original sweep counts
+Updated for the 2026-09-12 DL-48 normalization closure. The original sweep counts
 remain historical in the header; the current table counts are below.
 
 - OPEN-confirmed: **47** (the original 36 minus DL-01/DL-02/DL-36/DL-03/DL-04, plus independent
-  residuals DL-38 through DL-53; DL-35 remains deliberately absent)
-- CLOSED-by-cleanup: **5** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+  residuals DL-38 through DL-54 minus closed DL-48; DL-35 remains deliberately absent)
+- CLOSED-by-cleanup: **6** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin retaining the bounded approximation;
-  DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin)
+  DL-03, `8a9bdb18`; DL-04, `1b705ce1`, convention consistency pin;
+  DL-48, `12a7ef3e`)
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -652,13 +654,19 @@ This is static evidence with an executable red proof pending; it is not
 DL-46's initial-containment seeding failure.
 
 
-**DL-48 (SSS Sw cosine normalization).** Commit a numerical hemisphere
+**~~DL-48 (SSS Sw cosine normalization).~~ CLOSED 2026-09-12 —
+`12a7ef3e`, BSSRDFNormalizationTest passes after 37 constant-normalization
+failures and 8 textured-IOR follow-up failures.**
+The completed recipe was: commit a numerical hemisphere
 integral test of the actual adapters and BSSRDFSampling directional helper
 across relative indices and require integral one; demonstrate the current
 non-unit result before changing c. Derive normalization from the same
 Fresnel law being evaluated, then update all sampled and reevaluated
 weights together (diffusion/RW, RGB/NM, PT/BDPT/VCM/MLT consumers). Confirm
 a conservative furnace without adding a separate eta-square multiplier.
+See [the closure and audit](DL48_SSS_NORMALIZATION.md); the rendered
+furnace remains a coarse convention guard because DL-49 through DL-53
+are separate open defects.
 
 **DL-49 (SSS exterior IOR).** Write a design note for carrying the actual
 exterior index through profile, random-walk and directional evaluation
@@ -707,3 +715,15 @@ weighting to a layer shared by both map-selection paths, then audit every
 recursive consumer carrying bsdfPdf and medium survival. Validate complete
 SSS environment NEE plus continuation against an independently integrated
 angular oracle; do not change Sw or eta convention to hide the extra term.
+
+**DL-54 (BSSRDF geometric projection density).** Commit a regression using
+an actual curved object and a shading-normal-only entry modifier. Hold the
+original exit record, profile and sampler sequence fixed; prove positive
+matching probe-hit activity, then compare the reported surface PDF against
+an independent geometric-normal disk-to-area Jacobian. Require the density
+to remain unchanged when only entry shading normals tilt. Cover RGB/NM
+sample paths and their shared PT/BDPT/VCM/MLT consumers. Fix the geometric
+projection factor while retaining the shading frame for angular Sw;
+audit other uses of entryNormal and entryGeomNormal without folding in
+DL-52's separate coplanar-support defect. This is static evidence, not an
+executed image-bias measurement.

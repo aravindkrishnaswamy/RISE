@@ -1,6 +1,11 @@
 # DL-04: subsurface radiance convention and discriminating measurements
 
 Base master: `df5e17f996967a5a7a5ed379bae4b6b3a2efe3ac`.
+Historical DL-04 measurements and open-residual statements below describe
+that audit. Follow-up DL-48 fixed the directional normalization at
+`9e48b225`, followed by the evaluated-record correction `12a7ef3e`;
+see [its current closure record](DL48_SSS_NORMALIZATION.md).
+Other residual status is maintained in the debt ledger.
 This records the source audit, measured probes, and the coarse convention gate
 introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.
 Production transport is unchanged. DL-04 is recorded as a convention
@@ -89,13 +94,26 @@ bitwise repeatability under worker-side random scheduling.
 - DL-49: exterior IOR is hardcoded as air in profile Fresnel and random-walk
   refraction/entry factors, while surface SPF reflection reads the stack.
   Changing the surrounding medium is different from moving only the camera.
-- DL-48: the implemented Schlick transmission has cosine-hemisphere integral
-  `20*(1-F0)/21`, while Sw uses `(41-20*F0)/42`. Those are different
+
+### ~~DL-48: Sw normalization~~
+
+CLOSED 2026-09-12 — `12a7ef3e`, BSSRDFNormalizationTest:
+`All DL-48 normalization tests passed`; the constant regression failed
+37 checks before repair, and the textured-IOR follow-up failed 8.
+The shared denominator now derives from the evaluated Schlick law.
+The following analytical diagnosis and subsequent measurements remain
+historical DL-04 evidence from before this correction.
+
+The then-implemented Schlick transmission had cosine-hemisphere integral
+  `20*(1-F0)/21`, while Sw used `(41-20*F0)/42`. Those are different
   normalizations. This is not an eta-square omission. Independent exact
   arithmetic at eta=1.5 gives a normal conservative prediction of
   `1603/1675 = 0.957014925373` under an ideal unit-integral spatial profile. This
   is an analytical prediction, not a measured render; the exact arithmetic
   is retained with the evidence.
+
+### Other confounds
+
 - DL-50: NM random-walk exit multiplies by survival transmittance after a sampled
   survival outcome; RGB divides by its event probability. Do not assume
   spectral agreement as an independent reference for this row.

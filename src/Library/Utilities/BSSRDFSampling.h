@@ -27,10 +27,10 @@
 //  FACTORIZATION:
 //    The BSSRDF is factored as (Christensen & Burley 2015):
 //      S(wo, xo, wi, xi) = C * Ft(wo) * Rd(||xo - xi||) * Ft(wi)
-//    where C = 1 / (c * PI), c = (41 - 20*F0) / 42, and
+//    where C = 1 / (c * PI), c = 20*(1-F0) / 21, and
 //    F0 = ((eta-1)/(eta+1))^2.  SampleEntryPoint returns two weights:
-//      weight        = Rd * Ft(exit) * Sw(cosine_dir) / pdfSurface
-//                      (for continuation along the cosine-sampled ray)
+//      weight        = Rd * Ft(exit) * Ft(cosine_dir) / (c * pdfSurface)
+//                      (Sw * cosine / cosinePdf = Ft/c for this continuation)
 //      weightSpatial = Rd * Ft(exit) / pdfSurface
 //                      (for NEE/connections, which evaluate Sw independently)
 //
@@ -90,6 +90,16 @@ namespace RISE
 			cosinePdf(0), pdfSurface(0), valid(false) {}
 		};
 
+		/// Normalization for the in-tree profiles' Schlick transmission law.
+		/// Ft(mu) = (1-F0) * (1-(1-mu)^5), so
+		/// c = 2 * integral_0^1 Ft(mu)*mu dmu = 20*(1-F0)/21.
+		/// Consequently Sw = Ft/(c*PI) has unit cosine-hemisphere integral.
+		inline Scalar SchlickTransmissionNormalization( const Scalar eta )
+		{
+			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
+			return (20.0 / 21.0) * (1.0 - F0);
+		}
+
 		/// Computes the Sw directional scattering factor at a BSSRDF
 		/// entry point, given the Fresnel transmission at that point.
 		///
@@ -104,8 +114,7 @@ namespace RISE
 			const Scalar eta						///< [in] Index of refraction (eta_t / eta_i)
 			)
 		{
-			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-			const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+			const Scalar c = SchlickTransmissionNormalization( eta );
 
 			if( c > 1e-20 ) {
 				return FtEntry / (c * PI);

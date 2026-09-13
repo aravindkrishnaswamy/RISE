@@ -270,14 +270,13 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	// Step 9: Compute entry Fresnel and Sw normalization
 	//
 	const Scalar eta = pProfile->GetIOR( ri );
-	const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-	const Scalar SwNorm = (41.0 - 20.0 * F0) / 42.0;
+	const Scalar SwNorm = SchlickTransmissionNormalization( eta );
 	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, ri );
 
 	// Full BSSRDF weight (for continuation path):
-	//   Rd(r) * Ft(exit) * Sw(cosine_dir) / pdfSurface
-	// where Sw = Ft(entry) / c is the directional scattering factor
-	// for the cosine-sampled continuation direction.
+	//   Rd(r) * Ft(exit) * Ft(entry) / (c * pdfSurface)
+	// Sw = Ft(entry)/(c*PI); multiplying by cosine and dividing by
+	// the cosine-sampling PDF leaves the directional weight Ft(entry)/c.
 	const Scalar SwFactor = (SwNorm > 1e-20) ? FtEntry / SwNorm : FtEntry;
 	result.weight = Rd * (FtExit * SwFactor / pdfSurface);
 

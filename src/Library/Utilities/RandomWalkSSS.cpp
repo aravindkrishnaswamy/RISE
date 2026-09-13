@@ -371,7 +371,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// Sw(wi) = Ft(cos_theta_i) / (c * PI)
 			// For the cosine-weighted direction, compute entry Fresnel.
 			const Scalar F0 = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
-			const Scalar c_norm = (41.0 - 20.0 * F0) / 42.0;
+			const Scalar c_norm = BSSRDFSampling::SchlickTransmissionNormalization( ior );
 			const Scalar FtEntry = 1.0 - (F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 ));
 			const Scalar SwFactor = (c_norm > 1e-20) ? FtEntry / c_norm : FtEntry;
 
