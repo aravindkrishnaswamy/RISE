@@ -33,16 +33,16 @@ namespace BSSRDFAdapters
 	class BSSRDFEntryBSDF : public IBSDF
 	{
 		ISubSurfaceDiffusionProfile* pProfile;
-		Scalar swScale;
 
 	public:
 		BSSRDFEntryBSDF(
 			ISubSurfaceDiffusionProfile* profile,
-			const Scalar eta
+			const Scalar /*originalHitEta*/
 			) : pProfile( profile )
 		{
-			const Scalar c = BSSRDFSampling::SchlickTransmissionNormalization( eta );
-			swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
+			// Keep the constructor signature for source compatibility, but do not
+			// cache their original-hit IOR. A textured profile can evaluate a
+			// different IOR at the entry record supplied to value/valueNM.
 		}
 
 		void addref() const {}
@@ -59,7 +59,7 @@ namespace BSSRDFAdapters
 				return RISEPel( 0, 0, 0 );
 			}
 			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
-			const Scalar Sw = Ft * swScale;
+			const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( Ft, pProfile->GetIOR(ri) );
 			return RISEPel( Sw, Sw, Sw );
 		}
 
@@ -74,7 +74,7 @@ namespace BSSRDFAdapters
 				return 0;
 			}
 			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
-			return Ft * swScale;
+			return BSSRDFSampling::EvaluateSwWithFresnel( Ft, pProfile->GetIOR(ri) );
 		}
 	};
 
