@@ -196,7 +196,11 @@ source pointer added (DL-23) + 1 recipe rewritten with a named scene,
 protocol, metric and a stated-proposed threshold (DL-27) = **8 items
 classified or substantively rewritten**, this pass.
 
-## Verification recipes for OPEN items
+## Verification recipes
+
+Recipes are retained after closure as regression specifications. The main
+table and Counts section above define current status; a retained recipe
+does not reopen a closed item.
 
 Concrete "how to know it's fixed" for each DL-xx row above.
 
