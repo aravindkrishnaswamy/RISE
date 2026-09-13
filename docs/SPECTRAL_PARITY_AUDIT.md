@@ -288,7 +288,18 @@ introduced by that change**.
     `skipCrossVal=true` rows, with the comment "the actual selection
     probability in RandomlySelect is proportional to kray magnitude computed
     at shading time, may differ from static painter weights"). Out of scope
-    for this fix; a different defect class.
+    for this fix; a different defect class. **`TranslucentSPF` update
+    (2026-09-12):** this multi-lobe-selection approximation is still
+    unfixed and still applies, but a DIFFERENT, narrower bug in the same
+    material was found and closed afterward: the diffuse EXIT lobe's own
+    stored/evaluated density negated its cosine on an inside hit, and NM
+    sampled that exit with a Phong-N lobe while RGB already used cosine — a
+    genuine RGB/NM twin-drift bug in one lobe's shape, not the cross-lobe
+    selection-weight approximation described above. Fixed by `a041e51d`
+    (`TranslucentSpectralParityTest` 1918/0 checks/failures, was 324); see
+    [DL-02](DL02_TRANSLUCENT_EXIT_DENSITY.md). A separate double-charged-tau
+    bug in the same material's NM exit weight was fixed by `1239edf2`
+    ([DL-01](DL01_TRANSLUCENT_EXIT_WEIGHT.md)).
 
 #### Follow-up (2026-09-04, REVIEW_CHIP3): `CookTorranceSPF` — achromatic selection floor
 

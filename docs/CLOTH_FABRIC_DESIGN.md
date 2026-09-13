@@ -3135,7 +3135,16 @@ both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
      statement of *the fabric layer neither adds nor removes energy over
      the substrate's own posture*: Oren-Nayar dissipates by its own
      design, and bare white GGX-PBR is already over unity at grazing
-     (config 17 records 1.1555 at θ = 80). `eps` is 0.02 rather than the
+     (config 17 records 1.1555 at θ = 80) `[SUPERSEDED 2026-09-12 — DL-37
+     changed the GGX substrate's own diffuse/specular composition;
+     config 17 now reads 0.7345 at θ = 80 and is bounded `rho <= 1.05` at
+     every angle, no longer over unity — see
+     docs/DL37_GGX_DIFFUSE_TRANSMISSION.md. The over-unity number is kept
+     here as the historical basis for this round-5 gate design; the
+     `ρ_fabric(v) = E(α, cos v) + ρ_substrate(v)·(1 − E(α, cos v))`
+     closed-form-against-measured-substrate mechanism itself is
+     unaffected — it still measures the bare substrate at run time, so it
+     tracks whatever the substrate now reads.]`. `eps` is 0.02 rather than the
      Lambertian rows' 0.002, covering route 1's uncorrelated-response
      residual, which gate 5b measures directly and at full precision.
 

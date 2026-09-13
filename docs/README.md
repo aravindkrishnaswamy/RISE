@@ -142,16 +142,44 @@ do not execute old phase lists blindly.
   [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md)
   (closes the BDPT/VCM/MLT geometry-signal neutral-read gap,
   GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 11)
-- correctness-debt closures: [DL56_GRAZING_FRESNEL.md](DL56_GRAZING_FRESNEL.md)
-  records the shared grazing dielectric-Fresnel repair and the distinct
-  classification scope subsequently closed by DL-58; [DL57_RANDOM_WALK_DENSITY_CUTOFF.md](DL57_RANDOM_WALK_DENSITY_CUTOFF.md)
-  records the finite-positive random-walk collision-density guard repair;
-  [DL58_MATCHED_INDEX_GRAZING.md](DL58_MATCHED_INDEX_GRAZING.md) records the
-  subsequent matched-index Snell/Fresnel and SMS derivative repair;
-  [DL59_SMS_NORMAL_DERIVATIVE.md](DL59_SMS_NORMAL_DERIVATIVE.md) records the
-  separate unequal-index normal-derivative convention correction;
-  [DL34_UNION_INTERIOR_DEPTH.md](DL34_UNION_INTERIOR_DEPTH.md) records the
-  published union-overlap repair, conservative scope, and baseline gate residuals.
+- correctness-debt closures (all 16 landed 2026-09-12, `fc371041..fe826872`;
+  each struck its own row in [DEBT_LEDGER.md](DEBT_LEDGER.md)):
+  - Translucent material: [DL01_TRANSLUCENT_EXIT_WEIGHT.md](DL01_TRANSLUCENT_EXIT_WEIGHT.md)
+    records the NM exit/backscatter lobe double-tau repair; [DL02_TRANSLUCENT_EXIT_DENSITY.md](DL02_TRANSLUCENT_EXIT_DENSITY.md)
+    records the diffuse-exit Pdf sign-flip and NM/RGB shape-parity repair;
+    [DL03_GUIDED_IOR_CONTINUATION.md](DL03_GUIDED_IOR_CONTINUATION.md) records
+    the guided-continuation IOR-stack state repair.
+  - Subsurface scattering: [DL04_SSS_RADIANCE_DECISION.md](DL04_SSS_RADIANCE_DECISION.md)
+    records the complete-event eta² convention pin and discriminating
+    measurements; [DL48_SSS_NORMALIZATION.md](DL48_SSS_NORMALIZATION.md)
+    records the Schlick-transmission `Sw` cosine-hemisphere normalization
+    repair; [DL50_RANDOM_WALK_SURVIVAL.md](DL50_RANDOM_WALK_SURVIVAL.md)
+    records the random-walk NM spectral free-flight survival double-count
+    repair; [DL51_SUBSURFACE_EXIT_IOR.md](DL51_SUBSURFACE_EXIT_IOR.md)
+    records the standalone non-absorbing SSS exit destination-IOR repair;
+    [DL54_BSSRDF_PROJECTION_NORMAL.md](DL54_BSSRDF_PROJECTION_NORMAL.md)
+    records the BSSRDF disk-projection geometric-normal repair;
+    [DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md](DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md)
+    records the RGB tiny-extinction fallback proposal-density repair;
+    [DL57_RANDOM_WALK_DENSITY_CUTOFF.md](DL57_RANDOM_WALK_DENSITY_CUTOFF.md)
+    records the finite-positive random-walk collision-density guard repair.
+  - GGX / grazing dielectric Fresnel: [DL37_GGX_DIFFUSE_TRANSMISSION.md](DL37_GGX_DIFFUSE_TRANSMISSION.md)
+    records the reciprocal interface-attenuated diffuse composition repair;
+    [DL56_GRAZING_FRESNEL.md](DL56_GRAZING_FRESNEL.md) records the shared
+    grazing dielectric-Fresnel repair and the distinct classification scope
+    subsequently closed by DL-58; [DL58_MATCHED_INDEX_GRAZING.md](DL58_MATCHED_INDEX_GRAZING.md)
+    records the subsequent matched-index Snell/Fresnel classification repair;
+    [DL59_SMS_NORMAL_DERIVATIVE.md](DL59_SMS_NORMAL_DERIVATIVE.md) records
+    the separate, test-only unequal-index normal-derivative convention
+    correction found during DL-58 review.
+  - CSG / signals: [DL34_UNION_INTERIOR_DEPTH.md](DL34_UNION_INTERIOR_DEPTH.md)
+    records the published union-overlap interior-depth repair, conservative
+    scope, and baseline gate residuals; [DL36_EMITTER_NEIGHBOUR_PIN.md](DL36_EMITTER_NEIGHBOUR_PIN.md)
+    records the bounded same-luminary emitter-neighbour consistency pin
+    (a regression added for existing, intentionally retained, behavior).
+  - Propagation of these 16 models into CLAUDE.md, ARCHITECTURE.md,
+    SPECTRAL_PARITY_AUDIT.md and the rest of the canonical docs/skills tree
+    is tracked separately from each slice's own DLxx record.
 
 The SMS, guilloché, physical-pipeline, pre-Phase-1, GUI, and agentic-redesign
 clusters contain additional detailed execution records. The audit identifies
