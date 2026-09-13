@@ -3,7 +3,8 @@
 Base master: `df5e17f996967a5a7a5ed379bae4b6b3a2efe3ac`.
 Historical DL-04 measurements and open-residual statements below describe
 that audit. Follow-up DL-48 fixed the directional normalization at
-`9e48b225`; see [its current closure record](DL48_SSS_NORMALIZATION.md).
+`9e48b225`, followed by the evaluated-record correction `12a7ef3e`;
+see [its current closure record](DL48_SSS_NORMALIZATION.md).
 Other residual status is maintained in the debt ledger.
 This records the source audit, measured probes, and the coarse convention gate
 introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.
@@ -96,8 +97,9 @@ bitwise repeatability under worker-side random scheduling.
 
 ### ~~DL-48: Sw normalization~~
 
-CLOSED 2026-09-12 — `9e48b225`, BSSRDFNormalizationTest:
-`All DL-48 normalization tests passed`; unfixed test failed 37 checks.
+CLOSED 2026-09-12 — `12a7ef3e`, BSSRDFNormalizationTest:
+`All DL-48 normalization tests passed`; the constant regression failed
+37 checks before repair, and the textured-IOR follow-up failed 8.
 The shared denominator now derives from the evaluated Schlick law.
 The following analytical diagnosis and subsequent measurements remain
 historical DL-04 evidence from before this correction.

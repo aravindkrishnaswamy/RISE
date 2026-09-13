@@ -1,7 +1,8 @@
 # DL-48: normalize the actual SSS directional transmission law
 
 Base master: `c270836be5bea7433149f31933f697900d9b91c3`.
-Fix: `9e48b225`. Final independent review and the full selected gate govern
+Formula fix: `9e48b225`; evaluated-record follow-up: `12a7ef3e`.
+Final independent review and the full selected gate govern
 merge readiness; their receipts are exported with the standalone report.
 
 The five SSS normalization sites divided Schlick transmission by
@@ -69,6 +70,44 @@ Real samples at IOR 1.1/1.3/1.5 separately exercise diffusion and random-walk
 full/spatial ratios in RGB and NM. Cancelling spatial throughput isolates
 this directional contract from the separately open NM survival defect.
 
+## Review follow-up: spatially varying IOR
+
+The first fresh transport review found one P1 in the same normalization
+pattern. The diffusion adapter cached its denominator from the original
+hit's IOR while evaluating the numerator at the entry record. A textured
+IOR could therefore give different Fresnel laws to the two terms even
+after the constant was corrected. This is distinct from DL-22's missing
+entry signals: explicitly supplying both records' UVs still reproduces it.
+
+Regression `97fda542` was committed before execution against the first
+repair. It uses an actual affine TextureScalarPainter over a two-by-two
+in-memory raster, selects IOR 1.5 and 2 at distinct UVs, and checks both
+index directions. The same-record controls pass; entry RGB/NM integrals
+are `0.9259259256` and `1.08`. Actual diffusion continuation samples also
+disagree with the adapter in each direction and wavelength mode. The
+process exits one with:
+
+```text
+=== DL-48 normalization failures: 8 ===
+```
+
+The mathematical mismatches are `25/27` and `27/25`, independently
+recomputed from the two Fresnel normal-incidence factors. Fix `12a7ef3e`
+gets the denominator from the same profile/record as the numerator in
+both value and valueNM. The constructor signature remains source-compatible;
+its original-hit IOR argument no longer supplies a cached normalization.
+Random-walk adapters already evaluate both terms from one stored index.
+BDPT's shared evaluator already reads both terms from the same record.
+
+This follow-up is part of DL-48, not a new residual. The freshly linked
+expanded regression returned zero and printed
+`=== All DL-48 normalization tests passed ===`. Both index directions and
+RGB/NM integrals measured `0.9999999997`; all continuation comparisons
+passed. Final gate and fresh review receipts in the report supersede the
+first round's readiness status. The constant-only
+regression did not exercise different original/entry IORs, explaining why
+that first green gate could not expose the mismatch.
+
 ## Consumed-field and sibling audit
 
 Pattern: sampled continuation and reevaluated connection weights used a
@@ -79,7 +118,7 @@ normalization integral that did not match the evaluated Fresnel law.
 | BSSRDFSampling.h, EvaluateSwWithFresnel | FIXED: uses shared inline SchlickTransmissionNormalization. Actual evaluator integral is red-proven. |
 | BSSRDFSampling.cpp, SampleEntryPoint | FIXED: full RGB/NM weights use the shared denominator; spatial weights and surface/cosine PDFs are unchanged. Actual sampled ratios are red-proven. |
 | RandomWalkSSS.cpp, SampleExit | FIXED: same shared denominator for full RGB/NM weights; spatial survival throughput is unchanged. Actual sampled ratios are red-proven. |
-| BSSRDFEntryAdapters.h, both BSDF constructors | FIXED: cached Sw scale uses the same denominator. Both adapters' RGB/NM integrals are red-proven. |
+| BSSRDFEntryAdapters.h, both BSDFs | FIXED: random-walk scale uses the shared denominator; diffusion reevaluates it from the same entry record as Fresnel. Both adapters' RGB/NM integrals and diffusion textured-IOR cases are red-proven. |
 | Burley and Donner-Jensen profile FresnelTransmission | VERIFIED: both concrete implementations evaluate Schlick transmission. No profile code changed. Burley has the direct adapter fixture; Donner-Jensen's multipole construction is source-audited, not a separate executed fixture. |
 | PT RGB/NM | VERIFIED shared consumption: continuation reads full weights; NEE reads spatial weights and evaluates the appropriate adapter. |
 | PT HWSS | VERIFIED delegated: initial and midpath SSS fall back to per-wavelength NM integration. No independent normalization site. |
@@ -112,7 +151,8 @@ standalone completion report.
 
 Self-audit focused on the missing pi distinction, disagreement between
 sampled and reevaluated weights, accidentally scaling spatial throughput,
-copying a wrong constant into the oracle, and claiming NM ratio coverage
+using different IOR records for numerator and denominator, copying a
+wrong constant into the oracle, and claiming NM ratio coverage
 as proof of unbiased spectral survival. The independent quadrature, real
 sample ratios, unchanged spatial/PDF expressions and explicit scope above
 address those risks.

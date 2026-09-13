@@ -222,7 +222,7 @@ static void RequireRatio( const char* label, const Scalar actual,
 }
 
 // A real two-by-two texture makes the original and entry IOR differ.
-// Both complete records are supplied: missing entry UV/signals is not needed
+// Both UV records are explicitly supplied: missing entry UV/signals is not needed
 // to trigger the original-hit denominator / entry-hit numerator mismatch.
 static void TestTexturedIORAdapter()
 {
