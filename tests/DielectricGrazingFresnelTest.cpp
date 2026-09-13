@@ -177,6 +177,21 @@ namespace
 			}
 		}
 
+		// The matched-index identity also defines the exact tangent limit.
+		const Vector3 tangent(1,0,0);
+		CheckNear(Optics::CalculateDielectricReflectance(tangent,tangent,Vector3(0,0,1),kIOR,kIOR),
+			0,"matched-index exact tangent reflectance is zero");
+
+		// Common IOR scaling cancels from Fresnel. These finite positive
+		// normal-incidence cases expose the same absolute quotient cutoff
+		// and the overflow risk of squaring the combined numerator.
+		const Scalar scales[] = { 1e-4, 1, 1e100 };
+		for( const Scalar scale : scales ) {
+			CheckNear(Optics::CalculateDielectricReflectance(Incident(1,false),Incident(1,false),
+				Vector3(0,0,1),scale,1.5*scale),0.04,
+				"normal-incidence Fresnel is invariant under common IOR scaling");
+		}
+
 		Vector3 normal = Incident(1,false);
 		const bool normalRefracts = Optics::CalculateRefractedRay(Vector3(0,0,1),1,kIOR,normal);
 		Check(normalRefracts,"normal-incidence Snell control must refract");
@@ -260,7 +275,7 @@ namespace
 	}
 
 	void CheckExitState( const IORStack& input, const ScatteredRay& reflection,
-		const ScatteredRay& transmission, const IObject* const object )
+		const ScatteredRay& transmission )
 	{
 		Check(input.containsCurrent(),"subsurface input remains inside current object");
 		CheckNear(input.top(),kIOR,"subsurface input IOR remains matched");
@@ -314,7 +329,7 @@ namespace
 					}
 					CheckVector(r->ray.Dir(),reflected,"subsurface reflection follows analytic mirror direction");
 					CheckVector(t->ray.Dir(),transmitted,"subsurface transmission follows analytic Snell direction");
-					CheckExitState(input,*r,*t,object);
+					CheckExitState(input,*r,*t);
 				}
 			}
 		}
