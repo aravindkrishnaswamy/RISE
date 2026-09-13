@@ -145,7 +145,7 @@ namespace RISE
 
 			//! IObject::SignedDistanceLower for a COMPOSITE -- what a PARENT
 			//! composite and `interior(r)` both read.  A union exports
-			//! `min(f_A, f_B)`; an intersection `max(f_A, f_B)`; a
+			//! `min(f_A, f_B, f_inscribedBalls)`; an intersection `max(f_A, f_B)`; a
 			//! subtraction `max(f_A, -f_B)`.  NO COMPOSITE CARRIES THE
 			//! EXACTNESS FLAG -- a CORRECTION to §5.6, which allows a union
 			//! to when both operands do.  `max(a, b)` under-reads near a
@@ -208,7 +208,16 @@ namespace RISE
 			//! composite removes nothing at.
 			bool ComposedSignedLocal( const Point3& ptLocal, const Scalar maxDistLocal,
 				Scalar& outF, bool& outExact,
-				Scalar& outFA, bool& outExactA, Scalar& outFB, bool& outExactB ) const;
+				Scalar& outFA, bool& outExactA, Scalar& outFB, bool& outExactB,
+				const bool includeBallCertificates = true ) const;
+
+			// Center certificates use only the base field, preventing recursive
+			// center refinement from multiplying the work at every level.
+			bool SignedDistanceLowerImpl( const Point3& ptWorld, const Scalar maxDistWorld,
+				Scalar& outSigned, bool& outExact, const bool includeBallCertificates ) const;
+			static bool OperandSignedLower( const IObjectPriv* child, const Point3& pt,
+				const Scalar maxDist, Scalar& outSigned, bool& outExact,
+				const bool includeBallCertificates );
 
 			//! Does `qLocal` lie in the CLOSURE OF THE REAL SOLID, proved
 			//! by the operands' own signs?  See `CsgLandingArm`.  Sets
