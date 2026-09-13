@@ -82,32 +82,50 @@ exponential fallback distances. Coated/Fabric exclude SSS substrates and
 CompositeMaterial does not forward random-walk parameters. These are
 source-audit conclusions, not additional integration renders of this fixture.
 
-## Independent residual DL-57: collision density cutoff
+## ~~Independent residual DL-57: collision density cutoff~~ CLOSED 2026-09-12
 
-The existing RGB guard still rejects pdfMixture < 1e-20 even with matching
+`c187f2cc`, `RandomWalkDensityCutoffTest`: `All DL-57 density cutoff tests passed`.
+The pre-fix run had one failure: the large RGB collision was missing because the
+old density cutoff rejected a valid exit; scaled RGB, NM and pure-absorption
+controls passed. The repair retains finite positive densities using the existing
+`FiniteMath` predicate and changes no denominator, weight, proposal-rate or
+throughput-pruning formula.
+
+The former RGB guard rejected pdfMixture < 1e-20 even with matching
 physical/proposal rates. Root recomputed neutral sigma_s=sigma_t=1e-20 at
 t=5e7: the density is 9.999999999995e-21 but the conditional collision weight
-is exactly one. This is a dimensionful-density cutoff defect, independent
-of the proposal mismatch repaired here. DL-57 records a real-geometry and
-scale-invariance red-proof recipe. Current DL-57 evidence is scalar/static,
-not an executed renderer test. DL-49/DL-52 and the separate DL-58
-matched-index grazing-classification group remain open work; DL-56 is closed
-by `df7e3dad`.
+is exactly one. The real closed-sphere regression measured initial and
+post-collision ranges of `199999999.99999899` and `149995554.97086945` for the
+large sphere, and `1.9999989999989998` and `1.4999545497077045` for the scaled
+pair. Large RGB spatial weights were `1` in every channel and full weights
+`1.0171875000000001`; the scaled pair was spatial
+`1.0000000000000002` and full `1.0171875000000004` in every channel. NM was
+spatial `1`, full `1.0171875000000001`; pure-absorption collision controls
+remained inactive.
 
-At this closure the main ledger had 56 rows: 46 open and 10 closed by cleanup.
+The legal sampler bound is static evidence, not a renderer measurement:
+`xi < 1` gives maximum optical distance `36.7368005696771`, selected survival
+`1.1102230246251573e-16`, mixture survival lower bound
+`3.700743415417191e-17`, and collision-density lower bound
+`3.7007434154171905e-37` at minimum effective rate `1e-20`. The sibling
+`pdfExit < 1e-20` guard remains unchanged because sampled exit distance cannot
+exceed the sampled distance; throughput pruning remains a separate policy.
+DL-49/DL-52 and the separate DL-58 matched-index grazing-classification group
+remain open work; DL-56 is closed by `df7e3dad`.
+
+At this closure the main ledger has 57 rows: 45 open and 12 closed by cleanup.
 
 ## File status and gates
 
 | File | Status |
 |---|---|
-| `src/Library/Utilities/RandomWalkSSS.cpp` | Modified: effective RGB proposal densities and NM collision ratio (`cba4e88c`). |
-| `src/Library/Utilities/RandomWalkSSS.h` | Modified: describe effective proposal sampling/weighting. |
-| `tests/RandomWalkFallbackProposalTest.cpp` | Added: committed-before-execution regression and numerical observations. |
-| `tests/README.md` | Modified: coverage and red/fixed evidence. |
-| `docs/DEBT_LEDGER.md` | Modified: DL-55 closure, DL-57 residual and counts. |
-| `docs/DL50_RANDOM_WALK_SURVIVAL.md` | Modified: close the discovered fallback residual. |
-| `docs/DL54_BSSRDF_PROJECTION_NORMAL.md` | Modified: update the related DL-55 open-status reference. |
-| `docs/DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md` | Added: mechanism, evidence, scope and residual. |
+| `src/Library/Utilities/RandomWalkSSS.cpp` | Modified: finite-positive RGB collision-density guard (`c187f2cc`); no production `src/Library` files added or removed. |
+| `tests/RandomWalkDensityCutoffTest.cpp` | Added before first execution (`b86925e5`, `a6b6622f`, `0226242d`): real closed-sphere RGB/NM regression and controls. |
+| `tests/README.md` | Updated with DL-57 coverage and red/fixed evidence. |
+| `docs/DEBT_LEDGER.md` | Updated DL-57 status and counts. |
+| `docs/DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md` | Struck residual heading and recorded closure evidence. |
+| `docs/DL57_RANDOM_WALK_DENSITY_CUTOFF.md` | Added bounded closure record. |
+| `docs/README.md` | Added closure index link. |
 
 No library files were added or removed; build-project source lists need no
 changes. Selected gates: RandomWalkFallbackProposalTest,
