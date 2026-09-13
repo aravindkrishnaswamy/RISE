@@ -64,7 +64,6 @@
 #ifndef FIBRE_LOBE_MATH_
 #define FIBRE_LOBE_MATH_
 
-#include "../Utilities/Optics.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/FiniteMath.h"
 #include <cmath>
@@ -195,9 +194,11 @@ namespace RISE
 		}
 
 		//! Unpolarised Fresnel reflectance at a smooth dielectric boundary.
-		//! Preserve the fibre convention (relative eta and signed cosine),
-		//! then use the shared scalar Fresnel helper without reconstructing
-		//! a direction pair that could lose precision at grazing angles.
+		//! Local to the fibre models rather than routed through Optics::
+		//! because the Chiang formulation is expressed in terms of a
+		//! relative eta and a signed cosine, and re-deriving a direction
+		//! pair just to call the shared helper would lose precision at
+		//! grazing angles.
 		inline Scalar FrDielectric( Scalar cosThetaI, Scalar eta )
 		{
 			cosThetaI = Clamp( cosThetaI, -1.0, 1.0 );
@@ -205,7 +206,18 @@ namespace RISE
 				eta = 1 / eta;
 				cosThetaI = -cosThetaI;
 			}
-			return Optics::CalculateDielectricReflectanceCosine( cosThetaI, 1.0, eta );
+			// Equal media have no boundary, including at exact grazing. Keep
+			// the unequal-index arithmetic below bit-identical for the fibre
+			// golden contract (HairBSDFTest group 15a).
+			if( eta == 1.0 ) return 0.0;
+			const Scalar sin2ThetaT = ( 1 - Sqr( cosThetaI ) ) / Sqr( eta );
+			if( sin2ThetaT >= 1 ) {
+				return 1;			// total internal reflection
+			}
+			const Scalar cosThetaT = SafeSqrt( 1 - sin2ThetaT );
+			const Scalar rParl = ( eta * cosThetaI - cosThetaT ) / ( eta * cosThetaI + cosThetaT );
+			const Scalar rPerp = ( cosThetaI - eta * cosThetaT ) / ( cosThetaI + eta * cosThetaT );
+			return ( Sqr( rParl ) + Sqr( rPerp ) ) * 0.5;
 		}
 	}
 }

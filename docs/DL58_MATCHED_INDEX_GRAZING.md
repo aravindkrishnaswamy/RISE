@@ -49,8 +49,11 @@ introduced; a result above the physical boundary remains TIR.
 
 `CalculateDielectricReflectanceCosine` uses the same Snell classification,
 returns zero for equal indices, and evaluates scaled s and p amplitude ratios
-for unequal indices. The scaling factors are common to each ratio, which removes avoidable common-scale overflow and underflow. Fibre and
-both standalone SSS cosine helpers now call this shared implementation.
+for unequal indices. The scaling factors are common to each ratio, which removes avoidable common-scale overflow and underflow. Both standalone SSS cosine helpers now call this shared implementation.
+Fibre retains its existing unequal-index arithmetic and adds the missing exact
+matched-index zero. A trial shared rewrite moved 82 of 204 hair golden values
+by at most 4.48387e-15 relative; preserving the existing arithmetic keeps the
+strict group-15a golden contract without recapturing or relaxing it.
 
 For equal indices, the exact identities expected by the repair are:
 
