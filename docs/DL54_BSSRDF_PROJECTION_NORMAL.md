@@ -79,7 +79,7 @@ not forward a diffusion profile. No sibling projection site remains.
 
 DL-52's coplanar probe omission and DL-49/DL-56 remain distinct open
 work. The separate fallback-proposal defect DL-55 was subsequently closed
-by `cba4e88c`. This slice found no new residual. The ledger has 55 main rows: 46 open
+by `cba4e88c`. This slice found no new residual. At the DL-54 closure, the ledger had 55 main rows: 46 open
 and 9 closed by this cleanup.
 
 ## File status and validation scope
