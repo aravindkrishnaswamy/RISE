@@ -398,9 +398,9 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 
 	// Diffuse interface transmission on entry and exit, shared with the
 	// selected cosine lobe in GGXSPF. No diffuse recycling is added.
-	const GGXInterfaceFresnel interface { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const RISEPel diffuse = pDiffuse->GetColor(ri) * INV_PI *
-		GGXInterfaceFresnel::Transmission( interface.Directional(nv), interface.Directional(nr) );
+		GGXInterfaceFresnel::Transmission( interfaceFresnel.Directional(nv), interfaceFresnel.Directional(nr) );
 
 	return diffuse + specular;
 }
@@ -555,9 +555,9 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 	}
 
-	const GGXInterfaceFresnel interface { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar diffuse = GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI *
-		GGXInterfaceFresnel::Transmission( interface.DirectionalNM(nv,nm), interface.DirectionalNM(nr,nm) );
+		GGXInterfaceFresnel::Transmission( interfaceFresnel.DirectionalNM(nv,nm), interfaceFresnel.DirectionalNM(nr,nm) );
 
 	return diffuse + specular;
 }
@@ -567,26 +567,26 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 // lobe. The exact diffuse integral is c*(1-Ao)*(1-Amean), with no recycling.
 RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	const GGXInterfaceFresnel interface { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar cosine = fabs( Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), ri.onb.w() ) );
-	const RISEPel outgoing = interface.Directional( cosine );
-	return outgoing + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( outgoing, interface.Mean() );
+	const RISEPel outgoing = interfaceFresnel.Directional( cosine );
+	return outgoing + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( outgoing, interfaceFresnel.Mean() );
 }
 
 // Coat recycling requires a view-independent hemispherical estimate.
 // The diffuse mean is c*(1-Amean)^2; specular retains its interface estimate.
 bool GGXBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
 {
-	const GGXInterfaceFresnel interface { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const RISEPel mean = interface.Mean();
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const RISEPel mean = interfaceFresnel.Mean();
 	out = mean + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }
 
 bool GGXBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
 {
-	const GGXInterfaceFresnel interface { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const Scalar mean = interface.MeanNM( nm );
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar mean = interfaceFresnel.MeanNM( nm );
 	out = mean + GuardedGetColorNM( *pDiffuse, ri, nm ) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }
