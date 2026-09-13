@@ -43,8 +43,7 @@ the shared helper retains transmission without adding a rendered fixture.
 The shared helper serves DielectricSPF, PerfectRefractorSPF,
 SubSurfaceScatteringSPF, PolishedSPF, BioSpecSkinSPFHelpers, RandomWalkSSS,
 and transparent-shadow handling in RayCaster. Composite and fabric paths
-forward their base SPF results; SMS photon paths consume SPF lobes. Coated
-Layer has its own matched-index identity, and AR thin-film uses complex-stack
+forward their base SPF results; SMS photon paths consume SPF lobes. CoatedLayer has its own matched-index identity, and AR thin-film uses complex-stack
 optics. No interfaces, stack behavior, eta scaling, or integrator MIS formula
 changed.
 
@@ -63,8 +62,7 @@ quotient bug, and this closure does not claim them fixed.
 The retained audit selects 26 gates across 54 clean-build/link/run stages.
 At source repair `df7e3dad`, the clean Xcode audit succeeded with zero
 compiler warnings. Its four notices were three missing local OIDN search-path
-lines and one AppIntents metadata notice. The final clean log records exit
-`0` and diagnostics `0`.
+lines and one AppIntents metadata notice. The standalone completion report records the full final branch and merged-master gate results.
 
 | File | Status |
 |---|---|
@@ -73,6 +71,9 @@ lines and one AppIntents metadata notice. The final clean log records exit
 | `tests/README.md` | Updated test-scope entry. |
 | `docs/DEBT_LEDGER.md` | DL-56 closure, regression recipe, counts, and DL-58 separation. |
 | `docs/DL51_SUBSURFACE_EXIT_IOR.md` | Replaces the stale DL-56-open residual with this closure. |
+| `docs/DL54_BSSRDF_PROJECTION_NORMAL.md` | Updates the later DL-56 closure and distinct DL-58 residual. |
+| `docs/DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md` | Updates the later DL-56 closure and labels its own counts historical. |
+| `docs/README.md` | Adds a link to this closure record. |
 | `docs/DL56_GRAZING_FRESNEL.md` | This closure record. |
 
 No source files were added or removed, so no build-project source-list update
