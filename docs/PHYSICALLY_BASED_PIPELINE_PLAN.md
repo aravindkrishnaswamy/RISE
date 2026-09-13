@@ -80,11 +80,16 @@ attributes.  No material binds `texCoord = 1`, so the imported
 What the engine already does correctly for this asset:
 
 - BSDF: GGX (anisotropic alpha_x / alpha_y), Smith joint G2,
-  Schlick Fresnel, Kulla-Conty multiscattering compensation —
-  faithful to glTF 2.0 §B.  See `src/Library/Materials/GGXBRDF.cpp`.
-- Metallic interpolation between dielectric F0 = 0.04 and conductor
-  F0 = baseColor; diffuse term Lambertian, energy-conserved by
-  `(1 - max(F0))` modulation.
+  Schlick Fresnel, Kulla-Conty multiscattering compensation, and the
+  reciprocal single-pass interface-transmission model documented in
+  `docs/DL37_GGX_DIFFUSE_TRANSMISSION.md`.  See
+  `src/Library/Materials/GGXBRDF.cpp`.
+- Metallic interpolation still supplies dielectric F0 = 0.04 and conductor
+  F0 = baseColor, with diffuse colour `baseColor * (1 - metallic)`.  GGX
+  applies directional `(1-Ai)*(1-Ao)` transmission in evaluation and selected
+  diffuse throughput.  This intentionally omits diffuse recycling and is a
+  rough-interface approximation, not an exact integrated rough-GGX energy
+  model or a claim that the old constant glTF split remains active.
 - Normal-map TBN with imported per-vertex `TANGENT` and
   spec-correct `B = cross(N, T) * tangent.w`.  Falls back to
   `dpdu/dpdv` from triangle UV derivatives when no `TANGENT` is
@@ -709,7 +714,11 @@ clearcoat-over-paint scenes; its own landing.
 > emitter's clamp guard.  Every RGB number in this document is unmoved
 > (the scalar painter returns the same triple the colour painter did).
 
-### Audit results (FURNACE_SAMPLES = 100,000 per (config, angle))
+### Historical audit results (FURNACE_SAMPLES = 100,000 per (config, angle))
+
+The table below preserves the pre-DL-37 measurements and dispositions.  Its
+GGX rows describe the former constant diffuse split; they are historical
+references, not the current reciprocal interface-transmission semantics.
 
 | # | Configuration | ρ(0°) | ρ(30°) | ρ(60°) | ρ(80°) | Disposition |
 |---|---|---|---|---|---|---|

@@ -1024,9 +1024,12 @@ namespace RISE
 		//!   "schlick_f0" — Schlick approximation `F = F0 + (1-F0)(1-cosθ_h)^5`
 		//!                  treating the `specular` painter as F0 directly; ior
 		//!                  and ext painters are unused.  Required by glTF
-		//!                  metallicRoughness PBR mapping.  Diffuse is modulated
-		//!                  by (1 - max(F0)) per the glTF spec, multiscatter
-		//!                  uses the closed-form Schlick hemispherical average.
+		//!                  metallicRoughness PBR mapping.  GGX applies reciprocal
+		//!                  single-pass diffuse interface transmission `(1-Ai)*(1-Ao)`
+		//!                  in evaluation and selected diffuse throughput, without
+		//!                  the historical constant `(1-max(F0))` split or diffuse
+		//!                  recycling; multiscatter uses the closed-form Schlick
+		//!                  hemispherical average.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddGGXMaterial(
 			const char* name,											///< [in] Name of the material
@@ -1085,10 +1088,12 @@ namespace RISE
 		//!              it has no effect on rendering.
 		//!
 		//! The (1 - 0.04) "diffuse retention factor" used in earlier
-		//! revisions is now gone — the GGX BRDF's schlick_f0 mode applies
-		//! the (1 - max(F0)) factor at evaluation time per the glTF spec,
-		//! so pre-multiplying it into the diffuse painter would
-		//! double-apply.
+		//! revisions is now gone.  The PBR diffuse painter carries
+		//! `baseColor * (1 - metallic)`; GGX applies its reciprocal
+		//! single-pass interface transmission at evaluation and selected
+		//! sample throughput.  This deliberately omits diffuse recycling
+		//! and is a rough-interface approximation rather than an exact
+		//! integrated rough-GGX energy model.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPBRMetallicRoughnessMaterial(
 			const char* name,											///< [in] Name of the material
