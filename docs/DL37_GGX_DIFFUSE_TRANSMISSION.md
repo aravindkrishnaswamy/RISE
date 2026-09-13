@@ -16,3 +16,7 @@ This is a rough-interface approximation, not a theorem that every possible thin-
 Commit the tests before running them against the unfixed library. Save their failing output. Then implement, run each suite referencing changed classes, clean Make and Xcode builds, capture serial before/after linear renders, and obtain fresh independent transport, test, and documentation reviews before closure.
 
 Independent audit residual: DL-62 records the reachable glossy-filter roughness disagreement between GGX sample/density and evaluation. It is a different bug pattern and is not repaired in this slice.
+
+Independent observed residual DL-63: the broader committed test reports the same three specular-only F0=1 failures on the unfixed and repaired libraries, with diffuse exactly zero. The LUT generator integrates the separable VNDF weight G1(wo), whereas GGXBRDF evaluates height-correlated G2. Correcting that specular compensation model is a separate slice. The current test retains a nonzero exit for those failures.
+
+Independent static residual DL-64: Schlick F0=0 still has nonzero oblique reflection, but GGXSPF selects specular and MS lobes using weights proportional to F0. Selected-lobe throughput therefore omits those lobes. The new row requires its own committed sampling red proof; it is not fixed by diffuse attenuation.
