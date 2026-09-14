@@ -165,11 +165,13 @@ namespace RISE
 	//!    `Function1DScalarPainter`, `RGBScalarPainter`):
 	//!    `GetValueAtNM(ri, nm)` varies with `nm`, while
 	//!    `GetValuesAt(ri)` reports a per-implementation representative
-	//!    value — the curve sampled at `ScalarPainterRGB::kChannelNM`
-	//!    for `PiecewiseLinearScalarPainter`, a single representative
-	//!    wavelength broadcast to all three channels for
-	//!    `Function1DScalarPainter` and for the Sellmeier / polynomial
-	//!    dispersion formulas, the authored `(r, g, b)` triple for
+	//!    value — the curve (or wrapped function, or dispersion formula)
+	//!    sampled at `ScalarPainterRGB::kChannelNM` for
+	//!    `PiecewiseLinearScalarPainter`, `SellmeierScalarPainter`,
+	//!    `PolynomialScalarPainter`, and `Function1DScalarPainter` alike
+	//!    (DL-29 established the convention on the first of these;
+	//!    DL-82 brought the other three into line — see each class's own
+	//!    header comment), the authored `(r, g, b)` triple for
 	//!    `RGBScalarPainter`.
 	class IScalarPainter :
 		public virtual IReference
