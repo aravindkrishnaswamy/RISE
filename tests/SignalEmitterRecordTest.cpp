@@ -393,6 +393,7 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -521,11 +522,19 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 		return s;
 	}
 	double sum[3] = { 0, 0, 0 };
+	// DL-40: a nonfinite (NaN/Inf) captured component is a broken render,
+	// not a statistic -- reject the whole capture (return invalid) before
+	// it poisons the mean.  See the matching fix/comment in
+	// BDPTStrategyBalanceTest.cpp's ComputeStats (same sibling pattern).
 	for( const RISEColor& c : cap.pixels ) {
 		const double cov = c.a;
-		sum[0] += c.base.r * cov;
-		sum[1] += c.base.g * cov;
-		sum[2] += c.base.b * cov;
+		const double r = c.base.r * cov, g = c.base.g * cov, b = c.base.b * cov;
+		if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) {
+			return ImageStats{};   // valid stays false
+		}
+		sum[0] += r;
+		sum[1] += g;
+		sum[2] += b;
 	}
 	const double n = double( cap.pixels.size() );
 	for( int c = 0; c < 3; c++ ) {
@@ -1136,8 +1145,26 @@ static ImageStats Render(
 //! Worst per-channel |a/b - 1|, with an absolute floor so a black
 //! render cannot divide by zero (a black render fails the `valid` /
 //! brightness checks separately).
+//!
+//! DL-40: a nonfinite operand on EITHER side must make the WHOLE
+//! comparison read as maximally disagreeing (+Inf), not merely be
+//! ignored.  std::fmax(a,b) is defined to return the OTHER operand when
+//! one argument is NaN -- so accumulating "worst" via fmax across
+//! channels let a NaN channel's diff vanish entirely if any other
+//! channel had a larger finite value, or read as 0 (a perfect match!)
+//! if every channel was NaN, since `worst` starts at 0 and
+//! fmax(0,NaN)==0.  Every caller compares this return value against a
+//! band with `<`/`>`, and HUGE_VAL correctly fails a `< kBand`
+//! agreement check on the money test while remaining moot for a
+//! `> kMinSensitivity` check reached only through an already-valid
+//! (finite) ImageStats -- see ComputeStats above, which now rejects a
+//! nonfinite capture before an ImageStats carrying one ever reaches
+//! WorstRelDiff in production.
 static double WorstRelDiff( const ImageStats& a, const ImageStats& b )
 {
+	for( int c = 0; c < 3; c++ ) {
+		if( !std::isfinite( a.mean[c] ) || !std::isfinite( b.mean[c] ) ) return HUGE_VAL;
+	}
 	double worst = 0;
 	for( int c = 0; c < 3; c++ ) {
 		const double denom = std::fmax( std::fabs( b.mean[c] ), 1e-6 );
@@ -1243,6 +1270,73 @@ static void RunFamily( const Family& f )
 			       ( lbl + ": the signal moves the mean far outside the band, so a "
 			               "neutral read cannot hide inside it" ).c_str() );
 		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: nonfinite candidate statistics must be REJECTED, not
+// silently accepted (ComputeStats) or silently discarded by fmax
+// (WorstRelDiff).  Sibling of BDPTStrategyBalanceTest.cpp's identically
+// named test -- explicit malformed fixtures, not a live render.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	// (1) ComputeStats.
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+
+	// (2) WorstRelDiff: a NaN mean on EITHER side must read as a huge
+	// (band-failing) diff -- the specific defect named by the ledger
+	// row is std::fmax silently discarding the NaN and returning a
+	// small (or zero) "worst" value instead.
+	{
+		ImageStats a{}; a.valid = true; a.mean[0] = 0.5; a.mean[1] = 0.5; a.mean[2] = 0.5;
+		ImageStats b{}; b.valid = true; b.mean[0] = std::nan(""); b.mean[1] = 0.5; b.mean[2] = 0.5;
+		const double d = WorstRelDiff( a, b );
+		Check( d > kBand, "DL-40: WorstRelDiff reads a NaN candidate mean[0] as a huge (band-failing) diff, not 0" );
+		Check( std::isinf( d ), "DL-40: WorstRelDiff returns +Inf (not a discarded/zeroed diff) for a NaN operand" );
+	}
+	{
+		// The pathological case the row's own evidence calls out: EVERY
+		// channel nonfinite.  worst starts at 0, and fmax(0,NaN)==0 on
+		// every channel, so the unguarded implementation returned
+		// exactly 0.0 -- a "perfect match" for a totally broken render.
+		ImageStats a{}; a.valid = true; a.mean[0] = 0.5; a.mean[1] = 0.5; a.mean[2] = 0.5;
+		ImageStats b{}; b.valid = true;
+		b.mean[0] = std::nan(""); b.mean[1] = std::nan(""); b.mean[2] = std::nan("");
+		const double d = WorstRelDiff( a, b );
+		Check( d > kBand, "DL-40: WorstRelDiff with EVERY channel NaN still reads as a huge diff, not the un-guarded 0.0" );
+	}
+	{
+		ImageStats a{}; a.valid = true; a.mean[0] = 0.5; a.mean[1] = 0.5; a.mean[2] = 0.5;
+		ImageStats b{}; b.valid = true; b.mean[0] = 0.5; b.mean[1] = 0.5; b.mean[2] = 0.5;
+		const double d = WorstRelDiff( a, b );
+		Check( d < kBand, "DL-40: WorstRelDiff control -- identical finite means still agree" );
 	}
 }
 
@@ -1569,6 +1663,7 @@ int main( int argc, char** argv )
 	RunGateInvariance( kObjectPoint );
 	RunFamily( kShrunkSdfCurv );
 	RunFamily( kTwoLobe );
+	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl
 	          << "Passed: " << passCount << "  Failed: " << failCount << std::endl;

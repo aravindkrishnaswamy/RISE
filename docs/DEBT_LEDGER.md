@@ -120,7 +120,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-19 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | Two S3 conversion sites (BDPT's NM-hero `Le` rebuild, the HWSS companion `rigW` rebuild) share the signals-replay helper but have no dedicated red-proof — their contribution is MIS-weighted to a few percent on the money test's scenes, so skipping them moves the suite by <= 5.7% / 0% | OPEN-confirmed (test gap) | Doc's own §10 disclosure; corrected this sweep — the previous citation ("`tests/SignalEmitterRecordTest.cpp` unchanged in this tree") is now stale: `ac9891f3` added `RunBoundedNeighbourRead()` (the DL-36 two-blade fixture, now called unconditionally from `main()`) to that file, but a diff of the change shows it adds no coverage for the BDPT NM-hero `Le` rebuild or HWSS `rigW` rebuild sites this row names — the gap is unchanged, only the file is not | S | coverage/test gap | internal (test-suite blind spot) |
 | DL-27 | WETNESS_COAT_DESIGN.md §12 item 7 | The wet-highlight variance cost is unmeasured | OPEN-confirmed | No test or scene mentioning "wet_highlight"/"WetHighlight" found in `tests/` or `docs/*.md` this sweep other than the design doc itself | S | coverage/test gap | internal (measurement gap, not a known defect) |
 | DL-30 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces | OPEN-confirmed, untested | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29); no nested-CSG `dndu`-pairing test found in `tests/CsgSurfacePayloadTest.cpp` or elsewhere this sweep | S | coverage/test gap | internal (no scene exercises it yet) |
-| DL-40 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics | OPEN-confirmed (static evidence; red-proof pending) | BDPT/VCM `ComputeStats` accepts nonfinite capture values and `ChannelsAgree` rejects only `fabs(a-b)/denom > tolerance` (false for NaN). SignalEmitterRecordTest similarly marks nonempty captures valid and `WorstRelDiff` uses fmax, which can discard NaN differences. Recorded DL-01/DL-02/DL-36 results are finite. | S | coverage/test gap | internal (false-green risk) |
+| ~~DL-40~~ | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | ~~Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics~~ CLOSED 2026-09-14 (debt-cov slice) | CLOSED — see recipe entry for commit/counters | `ComputeStats` in `BDPTStrategyBalanceTest.cpp`/`VCMStrategyBalanceTest.cpp`/`EnvLightBalanceTest.cpp`/`SignalEmitterRecordTest.cpp` now rejects a nonfinite composited component; `ChannelsAgree`/`AbsWithin`/`RatioWithinBand`/`WorstRelDiff` now reject a nonfinite operand explicitly rather than relying on IEEE-NaN-comparison fallthrough or `std::fmax`'s NaN-discarding contract. | S | coverage/test gap | internal (false-green risk) |
 | DL-60 | DL34_UNION_INTERIOR_DEPTH.md: committed scenarios without replay fixtures | Two committed scenarios lack replay fixtures and fail the dynamically enumerated checkpoint suite before scene execution | OPEN-confirmed (reproduced baseline) | `altar_stress.json` and `rainwet_closeup.json` omit replay fixtures; `AgentEvalRunner::RunScenario` returns load_error. AgentEvalCheckTest reproduces 11 and 12 cascading assertions at pre-DL-34 e858b4c9 and compiled 3927ec9c. | S | coverage/test gap | internal (missing replay coverage) |
 | DL-20 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 2 | Patch geometries report flat curvature (`valid=false`) while genuinely curved; deferred to Phase 4, no Phase-4 work has landed | OPEN-confirmed | No patch-geometry curvature override exists (only `EllipsoidGeometry`/`DisplacedGeometry` override `ComputeAnalyticalDerivatives`, confirmed this sweep alongside DL-13) | M | coverage/test gap | user-visible (curvature-driven wear on patch geometry reads absent, not wrong) |
 | DL-21 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 5 | CSG boundary curvature behaviour is unspecified/undecided (forward the contributing surface's curvature, or invalidate at the seam) | OPEN-confirmed | `tests/CsgSurfacePayloadTest.cpp:833-834` exercises the derivative fields there but does not pin a curvature convention at the boundary — confirmed by reading the referenced lines this sweep | M | coverage/test gap | user-visible (CSG seam wear masks) |
@@ -207,6 +207,13 @@ reflowed otherwise.
 - ~~DL-73~~ (DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md: volume-guiding bsdfPdf composition) — STRUCK 2026-09-13, ruled consistent by derivation (P2-C, debt-sssenv round-2): the row proposed replacing `RayCaster.cpp`'s `rs2.bsdfPdf = phasePdf` (raw, un-combined) with the guided-mixture `combinedPdf`, on the theory that it should match the main surface continuation's `effectiveBsdfPdf` convention. Derivation shows this is backwards: env-NEE at a volume vertex weights via `MediumScatterMaterial::Pdf` (`MediumTransport.cpp`'s `EvaluateInScattering` -> `LightSampler::EvaluateDirectLighting`'s env arm, `LightSampler.cpp` ~:2652), which returns the RAW, un-guided `m_pPhase->Pdf(...)` — the SAME raw `phasePdf` the escape side already uses. Both sides feed `PowerHeuristic` the identical `(phasePdf, envPdf)` pair (opposite argument order), which is `PowerHeuristic(a,b) + PowerHeuristic(b,a) == 1` by construction — UNBIASED as written. `guidingMISWeight = phasePdf / combinedPdf` (folded into `rs2.importance`) already applies the full guiding correction to the sample's contribution; substituting `combinedPdf` into the MIS weight too, as this row prescribed, would double-apply that correction and BREAK the partition. Not a debt; the real, opposite-signed asymmetry is on the surface path, filed separately as DL-74. See [DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) "Residual: volume-guiding bsdfPdf composition — DL-73 RULED NOT A DEBT".
 
 ## Counts
+
+**2026-09-14 (debt-cov slice, branched from `master` `d471d5d1`):** DL-40
+CLOSED (see the table row and its "Verification recipes" entry above).
+No new rows opened by this row's fix. This slice's own snapshot: 1 row
+closed (DL-40), 0 opened. This slice's branch HEAD does not itself
+update the "Authoritative totals on `master`" line below; that recount
+happens at merge.
 
 **2026-09-14 (debt-precision slice):** DL-10 and DL-29 CLOSED (see the
 table rows and their "Verification recipes" entries above). **DL-09 is
@@ -1105,17 +1112,35 @@ backscatter to assert absorption + outgoing + deposited energy balances.
 Fixed when deposited power follows the emitted diffuse lobe and absorbed
 energy is never added to the map. Static finding; not yet red-proven.
 
-**DL-40 (nonfinite balance-test statistics accepted).** Add exact
-invalid-input checks to the BDPT/VCM balance and SignalEmitterRecordTest
-harnesses: finite reference
-statistics versus NaN candidate mean/p99/max must disagree, and a capture
-containing a nonfinite component must be rejected before statistics or sorting. Use
-explicit malformed-input fixtures, not a NaN not-found sentinel. Fixed
-when `ComputeStats` rejects nonfinite captured/composited values and
-`ChannelsAgree`/`WorstRelDiff` reject nonfinite operands, with the new cases red-proven
-against the current harness and the existing finite render gates intact.
-This is a separate pre-existing harness robustness defect; the DL-01
-runs reported finite statistics and do not exercise it.
+**~~DL-40 (nonfinite balance-test statistics accepted).~~ CLOSED
+2026-09-14 (debt-cov slice) — `BDPTStrategyBalanceTest.cpp`,
+`VCMStrategyBalanceTest.cpp`, `EnvLightBalanceTest.cpp`,
+`SignalEmitterRecordTest.cpp`.** `ComputeStats` in all four files now
+rejects a capture whose composited component (`BDPTStrategyBalanceTest`/
+`VCMStrategyBalanceTest`/`SignalEmitterRecordTest`: `base*alpha`;
+`EnvLightBalanceTest`: `base`) is nonfinite, returning `ImageStats{}`
+(`valid==false`) before sort/sum ever runs over the poisoned vector.
+`ChannelsAgree` (BDPT/VCM) and `AbsWithin`/`RatioWithinBand`
+(EnvLightBalanceTest) now explicitly reject a nonfinite operand on
+either side instead of relying on `fabs(x-NaN) > tol` being `false`
+under IEEE comparison and falling through to "agrees".
+`SignalEmitterRecordTest.cpp`'s `WorstRelDiff` now returns `HUGE_VAL`
+for a nonfinite mean instead of letting `std::fmax`'s "ignore the NaN
+operand" contract silently discard the worst channel's diff (or, when
+every channel is NaN, return the unguarded implementation's literal
+`0.0` — a "perfect match" for a totally broken render). Each file gained
+a `TestNonfiniteCandidateRejected` red-proof using explicit malformed
+`CapturingRasterizerOutput`/`ImageStats` fixtures (a `std::nan("")` or
+`std::numeric_limits<double>::infinity()` component), not a live render
+or a "NaN not found" sentinel. Red-proofed by temporarily reverting each
+guard and rebuilding/running: `BDPTStrategyBalanceTest` 4 failures (73
+total, was 69), `VCMStrategyBalanceTest` 4 failures (62 total, was 58),
+`EnvLightBalanceTest` 3 failures (123 total, was 120),
+`SignalEmitterRecordTest` 5 failures (100 total, was 95) — each restored
+to 0 failures with the guard back in place. Zero compiler warnings on
+all four rebuilds. This was a pre-existing harness robustness defect
+only; the DL-01/DL-02/DL-36 runs this row's evidence cites reported
+finite statistics throughout and were never actually mis-graded by it.
 
 **DL-41 (translucent complete mixed-lobe/reverse density).** Add a focused
 translucent mixture-density test with nonzero entry reflection/transmission

@@ -111,6 +111,7 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -216,10 +217,24 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	// Compare radiance composited over black, matching the BDPT harness.
 	// The legacy PT stores surface RGB plus coverage alpha; VCM may
 	// already include coverage in RGB. Raw RGB differs at silhouettes.
+	//
+	// DL-40: a nonfinite (NaN/Inf) captured component is a broken render,
+	// not a statistic -- reject the whole capture (return invalid) before
+	// sort/sum ever touches it.  See the matching comment/fix in
+	// BDPTStrategyBalanceTest.cpp's ComputeStats (same sibling pattern).
+	bool allFinite = true;
 	for( const RISEColor& c : cap.pixels ) {
-		ch[0].push_back( c.base.r * c.a );
-		ch[1].push_back( c.base.g * c.a );
-		ch[2].push_back( c.base.b * c.a );
+		const double r = c.base.r * c.a, g = c.base.g * c.a, b = c.base.b * c.a;
+		if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) {
+			allFinite = false;
+			break;
+		}
+		ch[0].push_back( r );
+		ch[1].push_back( g );
+		ch[2].push_back( b );
+	}
+	if( !allFinite ) {
+		return ImageStats{};   // valid stays false
 	}
 
 	for( int c = 0; c < 3; c++ ) {
@@ -315,6 +330,9 @@ static bool ChannelsAgree(
 	const double a[3], const double b[3], double relTol, double absFloor )
 {
 	for( int c = 0; c < 3; c++ ) {
+		// DL-40: a nonfinite operand on either side must disagree -- see
+		// the matching fix/comment in BDPTStrategyBalanceTest.cpp.
+		if( !std::isfinite( a[c] ) || !std::isfinite( b[c] ) ) return false;
 		const double denom = std::fmax( std::fabs(a[c]), absFloor );
 		if( std::fabs(a[c] - b[c]) / denom > relTol ) return false;
 	}
@@ -344,6 +362,69 @@ static void PrintRelDiff( const char* label, const double a[3], const double b[3
 	}
 	std::cout << "    " << label << " relative diff: ("
 	          << d[0] << "%, " << d[1] << "%, " << d[2] << "%)" << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: nonfinite candidate statistics must be REJECTED, not
+// silently agree.  Sibling of BDPTStrategyBalanceTest.cpp's identically
+// named test -- see that file's header comment for the two-layer
+// rationale (ComputeStats rejects a poisoned capture; ChannelsAgree
+// rejects a poisoned stat directly).
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double cand[3] = { std::nan(""), 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, cand, /*relTol=*/1000.0, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree rejects a NaN candidate[0] even at relTol=1000" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double cand[3] = { 0.5, 0.5, std::numeric_limits<double>::infinity() };
+		Check( !ChannelsAgree( ref, cand, /*relTol=*/1000.0, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree rejects an Inf candidate[2] even at relTol=1000" );
+	}
+	{
+		const double ref[3]  = { std::nan(""), 0.5, 0.5 };
+		const double cand[3] = { 0.5, 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, cand, /*relTol=*/1000.0, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree rejects a NaN REFERENCE too, not just a NaN candidate" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double cand[3] = { 0.5, 0.5, 0.5 };
+		Check( ChannelsAgree( ref, cand, /*relTol=*/0.01, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree control -- identical finite stats still agree" );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1439,6 +1520,7 @@ int main()
 	TestOrthographicCamera();
 	TestSubmergedFloorAreaLight();
 	TestSubmergedCeilingMISCombination();
+	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
