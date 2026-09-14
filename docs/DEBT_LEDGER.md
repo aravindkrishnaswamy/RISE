@@ -1093,7 +1093,20 @@ mildly-concave shapes — a highly-folded closed mesh could see more
 crossings along the fixed probe direction, an unmeasured cost tail noted
 but not characterized in this pass). A non-watertight mesh remains a
 residual: `interior(r)` still reads 0 there, same as before this fix, and
-still safe (never a false claim of containment).
+still safe (never a false claim of containment). **Sibling audit found
+and closed one gap in the same pattern**: `DisplacedGeometry` already
+delegated `DistanceToSurface` to its baked mesh but never delegated
+`SignedDistanceLower` — fixed identically (`6793943b`). That forwarder
+cannot be black-box red-proved today, and is honestly labelled a
+consistency pin rather than a red-proof in `tests/DisplacedGeometryTest.cpp`'s
+new Test 21: `TriangleMeshGeometryIndexed::TessellateToMesh` deliberately
+flattens every triangle corner to an independent vertex (documented, for
+per-corner UV/normal independence during the height-field step), so even
+a hand-welded watertight mesh fed to `DisplacedGeometry` bakes into a
+non-watertight result and the new forwarder's `false`/`outExact`-cleared
+output is indistinguishable from the pre-fix base-class default. Not a
+new debt row — a documented architectural scope boundary on how far this
+row's fix reaches, not a bug in it.
 
 **DL-32 (standard_object single-number scale degenerates silently).**
 Add a parser-time diagnostic when a `DoubleVec3`-typed `scale` is given a

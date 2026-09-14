@@ -3216,7 +3216,15 @@ measured by a harness test against the tracked scene.
   highly-folded closed mesh could see more ray-mesh crossings along the
   fixed probe direction than this measurement's roughly-convex fixture
   did. See `tests/MeshInteriorSignalTest.cpp` and `docs/DEBT_LEDGER.md`'s
-  DL-31 entry for the full mechanism and numbers.
+  DL-31 entry for the full mechanism and numbers. `DisplacedGeometry` now
+  forwards `SignedDistanceLower` to its baked mesh too, matching its
+  pre-existing `DistanceToSurface` forward — but `TriangleMeshGeometryIndexed
+  ::TessellateToMesh`'s own per-corner vertex flattening (needed for
+  per-corner UV/normal independence during the height-field step) means
+  a `displaced_geometry`'s baked mesh is never watertight by this check,
+  even over an already-welded closed base, so `interior(r)` on a
+  displaced surface still reads 0 today — a documented scope boundary,
+  not a bug in the forwarder itself (`docs/DEBT_LEDGER.md`'s DL-31 entry).
 - **`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
   produces no diagnostic, makes the object vanish from the render, and
