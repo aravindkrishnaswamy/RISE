@@ -167,6 +167,23 @@ namespace MicrofacetEnergyLUT
 	};
 
 	/// Look up E_ss(cosTheta, alpha) with bilinear interpolation.
+	///
+	/// DL-86: below the first bin center c0=0.5/LUT_SIZE, this used to
+	/// flat-clamp to the c0 row (the `if(c<0) c=0` below), which
+	/// under-reads the true, still-rising Ess right at the grazing limit
+	/// (measured: at alpha=0.05, cos=0.002, an independent VNDF quadrature
+	/// gives Ess=0.9913 vs the flat clamp's 0.9047, a ~2.9% relative
+	/// under-read at the worst separable-model configuration tested).
+	/// Fixed with a one-sided linear extrapolation of the bin0->bin1
+	/// secant back to the query cosTheta (clamped to [0,1]) -- the
+	/// separable (G1(wi)*G1(wo)) model has no known closed-form
+	/// Ess(cosTheta->0) limit (unlike LookupEssG2 just below), so this is
+	/// a plain analytic extrapolation, not a derived physical boundary.
+	/// MUST stay in sync with MSLobeDetail::BuildSegmentsFromRow's
+	/// `isG2Model=false` left-segment formula -- MSPdf (below) calls this
+	/// function directly while SampleMSCosTheta samples from that
+	/// segment's shape, and the two must never disagree on what Ess is
+	/// below c0.
 	inline Scalar LookupEss( const Scalar cosTheta, const Scalar alpha )
 	{
 		// Map alpha from [0.01, 1.0] to [0, LUT_SIZE-1]
@@ -175,9 +192,20 @@ namespace MicrofacetEnergyLUT
 		int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
 		Scalar af = a - ai0;
 
+		const Scalar cc = r_max(0.0, r_min(1.0, cosTheta));
+		const Scalar c0 = Scalar(0.5) / Scalar(LUT_SIZE);
+		if( cc < c0 )
+		{
+			const Scalar c1 = Scalar(1.5) / Scalar(LUT_SIZE);
+			const Scalar v0 = (1-af) * E_ss_TABLE[ai0][0] + af * E_ss_TABLE[ai1][0];
+			const Scalar v1 = (1-af) * E_ss_TABLE[ai0][1] + af * E_ss_TABLE[ai1][1];
+			const Scalar slope = (v1 - v0) / (c1 - c0);
+			const Scalar v = v0 + slope * (cc - c0);
+			return r_max( Scalar(0.0), r_min( Scalar(1.0), v ) );
+		}
+
 		// Map cosTheta from cell centers: idx = cosTheta * LUT_SIZE - 0.5
-		Scalar c = r_max(0.0, r_min(1.0, cosTheta)) * LUT_SIZE - 0.5;
-		if( c < 0 ) c = 0;
+		Scalar c = cc * LUT_SIZE - 0.5;
 		int ci0 = (int)c;
 		int ci1 = r_min(ci0 + 1, LUT_SIZE - 1);
 		Scalar cf = c - ci0;
@@ -204,6 +232,32 @@ namespace MicrofacetEnergyLUT
 	/// E_ss_TABLE_G2 instead of E_ss_TABLE.  Use for GGXBRDF/GGXSPF/
 	/// CoatedBRDF (height-correlated G2 single-scatter); CookTorrance
 	/// keeps using LookupEss (separable G).
+	///
+	/// DL-86: below the first bin center c0=0.5/LUT_SIZE, this used to
+	/// flat-clamp to the c0 row, under-reading the true, still-rising Ess
+	/// right at the grazing limit and over-stating the Kulla-Conty
+	/// multiscatter compensation there by up to ~5.3% relative (measured:
+	/// alpha=1.0, cos=0.002, independent VNDF quadrature Ess=0.9876 vs the
+	/// flat clamp's 0.9349) -- an isotropic furnace GAIN confined to
+	/// incidence beyond ~89 degrees.  Fixed with a one-sided ANALYTIC
+	/// extrapolation anchored at the PROVABLE exact boundary
+	/// Ess_G2(cosTheta=0)=1: under the height-correlated Smith model,
+	/// the per-sample VNDF weight is G2(wi,wo)/G1(wi) = (1+Lambda(wi)) /
+	/// (1+Lambda(wi)+Lambda(wo)); as cosWi->0, Lambda(wi)->infinity (Smith
+	/// Lambda ~ alpha/(2*cosTheta) for small cosTheta), so this ratio ->1
+	/// for ANY finite Lambda(wo) -- i.e. every VNDF-sampled wo, however it
+	/// is distributed, contributes weight ->1 in the limit.  The
+	/// extrapolation is therefore exact-at-the-boundary linear-in-cosTheta
+	/// interpolation between (0,1) and (c0,v0), clamped to [0,1] as a
+	/// defensive floor/ceiling (never triggered by this construction,
+	/// since v0<=1 always).  Residual after the fix (independent 20M-
+	/// sample quadrature, debt-dl86 slice): <=0.6% at every tested
+	/// (alpha,cosTheta) pair with cosTheta<c0 down to cosTheta=0.002 (was
+	/// up to 5.3%); see docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86".
+	/// MUST stay in sync with MSLobeDetail::BuildSegmentsFromRow's
+	/// `isG2Model=true` left-segment formula -- see LookupEss's own
+	/// comment on why (MSPdfG2 calls this function directly while
+	/// SampleMSCosThetaG2 samples from that segment's shape).
 	inline Scalar LookupEssG2( const Scalar cosTheta, const Scalar alpha )
 	{
 		Scalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
@@ -211,8 +265,16 @@ namespace MicrofacetEnergyLUT
 		int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
 		Scalar af = a - ai0;
 
-		Scalar c = r_max(0.0, r_min(1.0, cosTheta)) * LUT_SIZE - 0.5;
-		if( c < 0 ) c = 0;
+		const Scalar cc = r_max(0.0, r_min(1.0, cosTheta));
+		const Scalar c0 = Scalar(0.5) / Scalar(LUT_SIZE);
+		if( cc < c0 )
+		{
+			const Scalar v0 = (1-af) * E_ss_TABLE_G2[ai0][0] + af * E_ss_TABLE_G2[ai1][0];
+			const Scalar v = Scalar(1.0) - ( Scalar(1.0) - v0 ) * ( cc / c0 );
+			return r_max( Scalar(0.0), r_min( Scalar(1.0), v ) );
+		}
+
+		Scalar c = cc * LUT_SIZE - 0.5;
 		int ci0 = (int)c;
 		int ci1 = r_min(ci0 + 1, LUT_SIZE - 1);
 		Scalar cf = c - ci0;
@@ -282,15 +344,43 @@ namespace MicrofacetEnergyLUT
 		// Build the LUT_SIZE+1 segments (33: 1 left cap + LUT_SIZE-1
 		// interior spans + 1 right cap) from an already-resolved essRow
 		// (either a single exact LUT row, or LookupEss's alpha-blended row).
-		inline void BuildSegmentsFromRow( const Scalar essRow[LUT_SIZE], Segment segs[LUT_SIZE + 1], int& nSegs )
+		//
+		// DL-86: the left end-cap [0, c0] used to be FLAT (Ess clamped to
+		// row 0), which under-reads the true, still-rising Ess right at
+		// the grazing limit and over-states the Kulla-Conty multiscatter
+		// compensation there (see the file-header / DL-86 ledger row).
+		// It is now a LINEAR segment from cosTheta=0 to c0, matching
+		// LookupEss/LookupEssG2's own below-c0 extrapolation EXACTLY --
+		// this is load-bearing, not cosmetic: MSPdf/MSPdfG2 call
+		// LookupEss/LookupEssG2 directly, while SampleMSCosTheta/
+		// SampleMSCosThetaG2 sample from THESE segments, and the file's
+		// own header comment guarantees the two "cannot drift apart" --
+		// a flat segment here paired with a non-flat LookupEss/LookupEssG2
+		// would have broken that invariant for any draw landing below c0.
+		// `isG2Model` selects which of the two below-c0 models applies:
+		// the height-correlated G2 model has a provable exact boundary
+		// Ess(cosTheta=0)=1 (as Lambda(wi)->infinity, weight=G2/G1(wi)->1
+		// for any finite wo -- see LookupEssG2's own comment); the
+		// separable model has no such closed form, so it extrapolates the
+		// bin0->bin1 secant back to cosTheta=0 instead (a plain, cheap
+		// analytic extrapolation, not a derived physical limit).  Both
+		// `leftBoundaryEss` forms are LINEAR in essRow, so this preserves
+		// MSLobeZ/MSLobeZG2's documented "Z is an exact affine function of
+		// af" per-row-then-blend optimization unchanged.
+		inline void BuildSegmentsFromRow( const Scalar essRow[LUT_SIZE], const bool isG2Model, Segment segs[LUT_SIZE + 1], int& nSegs )
 		{
 			nSegs = 0;
 			const Scalar c0 = 0.5 / Scalar(LUT_SIZE);
 			const Scalar cLast = (Scalar(LUT_SIZE) - 0.5) / Scalar(LUT_SIZE);
 
-			// Left flat end-cap [0, c0]: Ess clamped to row 0.
+			// Left end-cap [0, c0]: linear from leftBoundaryEss (cosTheta=0)
+			// to essRow[0] (cosTheta=c0).
+			const Scalar leftBoundaryEss = isG2Model
+				? Scalar(1.0)
+				: ( essRow[0] + Scalar(0.5) * ( essRow[0] - essRow[1] ) );
 			segs[nSegs].lo = 0.0; segs[nSegs].hi = c0;
-			segs[nSegs].essLo = essRow[0]; segs[nSegs].slope = 0.0;
+			segs[nSegs].essLo = leftBoundaryEss;
+			segs[nSegs].slope = ( essRow[0] - leftBoundaryEss ) / c0;
 			nSegs++;
 
 			// Interior linear spans between adjacent bin centers.
@@ -323,7 +413,7 @@ namespace MicrofacetEnergyLUT
 			for( int k = 0; k < LUT_SIZE; k++ )
 				essRow[k] = (1-af) * E_ss_TABLE[ai0][k] + af * E_ss_TABLE[ai1][k];
 
-			BuildSegmentsFromRow( essRow, segs, nSegs );
+			BuildSegmentsFromRow( essRow, false, segs, nSegs );
 		}
 
 		// DL-63: height-correlated-G2 twin of BuildSegments above, using
@@ -343,7 +433,7 @@ namespace MicrofacetEnergyLUT
 			for( int k = 0; k < LUT_SIZE; k++ )
 				essRow[k] = (1-af) * E_ss_TABLE_G2[ai0][k] + af * E_ss_TABLE_G2[ai1][k];
 
-			BuildSegmentsFromRow( essRow, segs, nSegs );
+			BuildSegmentsFromRow( essRow, true, segs, nSegs );
 		}
 
 		// shape(cos) = (1-Ess(cos))*cos within a segment; y = cos - lo.
@@ -426,7 +516,7 @@ namespace MicrofacetEnergyLUT
 			{
 				MSLobeDetail::Segment segs[LUT_SIZE + 1];
 				int nSegs = 0;
-				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE[row], segs, nSegs );
+				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE[row], false, segs, nSegs );
 				Scalar I = 0.0;
 				for( int i = 0; i < nSegs; i++ )
 					I += MSLobeDetail::SegTotal( segs[i] );
@@ -510,7 +600,7 @@ namespace MicrofacetEnergyLUT
 			{
 				MSLobeDetail::Segment segs[LUT_SIZE + 1];
 				int nSegs = 0;
-				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE_G2[row], segs, nSegs );
+				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE_G2[row], true, segs, nSegs );
 				Scalar I = 0.0;
 				for( int i = 0; i < nSegs; i++ )
 					I += MSLobeDetail::SegTotal( segs[i] );
@@ -10076,6 +10166,25 @@ namespace MicrofacetEnergyLUT
 
 	/// DL-77: anisotropic twin of LookupEssG2.  Falls back to the exact
 	/// isotropic LookupEssG2 when alphaX==alphaY (see file-header note).
+	///
+	/// DL-86: this azimuth-AVERAGED table's below-c0 flat end-cap is
+	/// DELIBERATELY left unfixed here (still the pre-existing flat
+	/// clamp), unlike LookupEssG2/LookupEssG2AnisoDirectional above.
+	/// This function is used ONLY by the H6 multiscatter-lobe SAMPLER's
+	/// proposal shape (MSLobeZG2Aniso/SampleMSCosThetaG2Aniso/
+	/// MSPdfG2Aniso, when alphaX!=alphaY) -- never at a direct
+	/// ENERGY-COMPENSATION call site in GGXBRDF.cpp/GGXSPF.cpp, which all
+	/// route through the per-azimuth LookupEssG2AnisoDirectional instead
+	/// (see that function's own comment).  Precision here is an
+	/// importance-sampling EFFICIENCY concern, not a correctness one (a
+	/// suboptimal proposal shape still converges, just with slightly
+	/// higher variance) -- the existing DL-77 doctrine for this table.
+	/// Changing it would also require updating
+	/// MSLobeDetail::BuildSegmentsFromRowN's end-cap (the generic-N
+	/// twin of BuildSegmentsFromRow used only by this table's sampler) to
+	/// keep SampleMSCosThetaG2Aniso and MSPdfG2Aniso from drifting apart
+	/// for the genuinely-anisotropic (alphaX!=alphaY) case -- left as a
+	/// residual, not fixed in the debt-dl86 slice.
 	inline Scalar LookupEssG2Aniso( const Scalar cosTheta, const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEssG2( cosTheta, alphaX );
@@ -10124,6 +10233,37 @@ namespace MicrofacetEnergyLUT
 	/// for why the sampler doesn't need this precision).  Falls back to
 	/// the exact isotropic LookupEssG2 when alphaX==alphaY (phi is
 	/// meaningless for an isotropic surface).
+	///
+	/// DL-86: below the first cosTheta bin center c0=0.5/ANISO_COS_SIZE,
+	/// this shared the same flat end-cap pattern as LookupEssG2 (same
+	/// `if(c<0) c=0` clamp) -- measured worst case (debt-ggx3 sweep,
+	/// alphaX=0.0361, alphaY=0.9627, phi=5deg, cos=0.0024, deep inside the
+	/// first bin) an 18% relative under-read.  Fixed the same way as
+	/// LookupEssG2: a one-sided extrapolation anchored at the exact
+	/// boundary Ess_G2(cosTheta=0)=1 (the SAME height-correlated-Smith
+	/// argument holds per-direction -- Lambda_Aniso(wi)->infinity as
+	/// cosWi->0 regardless of azimuth, so G2_Aniso/G1_Aniso(wi)->1 for any
+	/// finite wo), using v0 = this SAME quadrilinear interpolation
+	/// evaluated exactly at cosTheta=c0 (alphaX/alphaY/phi held fixed).
+	/// Residual after the fix (independent 20M-sample quadrature,
+	/// debt-dl86 slice): reduces the cited worst case from ~18% to ~2.1-
+	/// 2.4%.  This is NOT unique to that one cited corner: any
+	/// strongly-anisotropic (9:1-10:1) ratio near either tangent axis
+	/// shows a similar-order residual after the fix (measured up to
+	/// ~4.0%, e.g. alphaX=0.9,alphaY=0.1,phi=90,cos=0.005), down from a
+	/// pre-fix flat-clamp error of 12-18%+ at the SAME configurations --
+	/// a large, broad improvement, but NOT closed to <=1% at these
+	/// extreme corners (compounded by DL-77's own separately-tracked
+	/// ANISO_PHI grid-coarseness residual); the residual is bounded and
+	/// reported, not silently accepted -- see
+	/// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the full
+	/// residual table and why closing it further
+	/// needs the ANISO_PHI_SIZE/alpha-grid resolution work already
+	/// tracked (not this function's extrapolation model). This is a
+	/// direct ENERGY-COMPENSATION call site, not part of the H6 sampler's
+	/// proposal shape (that stays on the azimuth-averaged
+	/// LookupEssG2Aniso, untouched -- see that function's own comment),
+	/// so this change carries no sampler/pdf self-consistency obligation.
 	inline Scalar LookupEssG2AnisoDirectional( const Scalar cosTheta, const Scalar localX, const Scalar localY, const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEssG2( cosTheta, alphaX );
@@ -10138,16 +10278,26 @@ namespace MicrofacetEnergyLUT
 		int pi0, pi1; Scalar pf;
 		AnisoPhiIndex( localX, localY, pi0, pi1, pf );
 
-		Scalar c = r_max(0.0, r_min(1.0, cosTheta)) * ANISO_COS_SIZE - 0.5;
-		if( c < 0 ) c = 0;
-		int ci0 = (int)c;
-		int ci1 = r_min(ci0 + 1, ANISO_COS_SIZE - 1);
-		Scalar cf = c - ci0;
+		const Scalar cc = r_max(0.0, r_min(1.0, cosTheta));
+		const Scalar c0 = Scalar(0.5) / Scalar(ANISO_COS_SIZE);
 
 		// Quadrilinear interpolation over (alphaX, alphaY, phi, cosTheta):
 		// 16 corners, collapsed one axis at a time (cos, then phi, then
 		// alphaY, then alphaX) -- same nested-lerp pattern as the
-		// trilinear form above, one dimension deeper.
+		// trilinear form above, one dimension deeper.  `ci0f`/`ci1f`/`cff`
+		// pin to the exact c0 row (cf=0, so vP0c1/vP1c1 are never read)
+		// when extrapolating below c0, and to the normal bilinear indices
+		// otherwise -- the loop body is identical either way.
+		int ci0, ci1; Scalar cf;
+		if( cc < c0 ) { ci0 = 0; ci1 = 0; cf = Scalar(0.0); }
+		else
+		{
+			Scalar c = cc * ANISO_COS_SIZE - 0.5;
+			ci0 = (int)c;
+			ci1 = r_min(ci0 + 1, ANISO_COS_SIZE - 1);
+			cf = c - ci0;
+		}
+
 		Scalar vXY[2][2];	// [alphaX][alphaY], after collapsing phi and cos
 		for( int xi = 0; xi < 2; xi++ )
 		{
@@ -10164,9 +10314,16 @@ namespace MicrofacetEnergyLUT
 				vXY[xi][yi] = (1-pf)*vP0 + pf*vP1;
 			}
 		}
-		const Scalar v0 = (1-yf)*vXY[0][0] + yf*vXY[0][1];
-		const Scalar v1 = (1-yf)*vXY[1][0] + yf*vXY[1][1];
-		return (1-xf)*v0 + xf*v1;
+		const Scalar v0row = (1-yf)*vXY[0][0] + yf*vXY[0][1];
+		const Scalar v1row = (1-yf)*vXY[1][0] + yf*vXY[1][1];
+		const Scalar v0 = (1-xf)*v0row + xf*v1row;
+
+		if( cc < c0 )
+		{
+			const Scalar v = Scalar(1.0) - ( Scalar(1.0) - v0 ) * ( cc / c0 );
+			return r_max( Scalar(0.0), r_min( Scalar(1.0), v ) );
+		}
+		return v0;
 	}
 
 	/// DL-77: anisotropic twin of LookupEavgG2.

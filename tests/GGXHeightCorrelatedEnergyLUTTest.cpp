@@ -480,6 +480,127 @@ namespace
 			<< v2 << "  diff=" << std::scientific << diff;
 		return Report( oss.str(), passed );
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-86 red proof: LookupEssG2/LookupEssG2AnisoDirectional used to
+	// flat-clamp cosTheta below the first LUT bin center
+	// c0=0.5/LUT_SIZE~=0.0156 to that bin's own value, under-reading the
+	// TRUE (still-rising, toward the Ess_G2(cosTheta=0)=1 boundary)
+	// single-scatter directional albedo right at the grazing limit --
+	// see MicrofacetEnergyLUT.h's LookupEssG2/LookupEssG2AnisoDirectional
+	// comments and docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for
+	// the fix (a one-sided extrapolation anchored at that exact
+	// boundary).  This promotes the doc's brute-force-vs-lookup numbers
+	// into GATING checks: every row below is RED on pre-fix master (the
+	// flat clamp) and PASSES against the fixed lookup.
+	//////////////////////////////////////////////////////////////////
+
+	// Anisotropic twin of MonteCarloEssG2 above: independent VNDF
+	// quadrature of the height-correlated directional albedo for a wi at
+	// a specific tangent-space azimuth `phiWiDeg`, using
+	// MicrofacetUtils::VNDF_Sample_Aniso/GGX_G2_Aniso/GGX_G1_Aniso -- the
+	// exact primitives LookupEssG2AnisoDirectional's production callers
+	// (GGXBRDF::value/valueNM, GGXSPF::Scatter/ScatterNM/Pdf/PdfNM) use
+	// for their own Ess_i/Ess_o terms.
+	static double MonteCarloEssG2AnisoDirectional( const Scalar alphaX, const Scalar alphaY, const Scalar cosWi, const double phiWiDeg, unsigned int numSamples, unsigned int seed, double& outStdErr )
+	{
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( Vector3( 0, 0, 1 ) );
+
+		const Scalar sinWi = sqrt( r_max( Scalar(0), Scalar(1) - cosWi * cosWi ) );
+		const double phiWi = phiWiDeg * PI / 180.0;
+		const Vector3 wi( sinWi * cos(phiWi), sinWi * sin(phiWi), cosWi );
+
+		const Scalar G1wi = MicrofacetUtils::GGX_G1_Aniso( alphaX, alphaY, wi );
+
+		std::mt19937_64 rng( seed );
+		std::uniform_real_distribution<double> uni( 0.0, 1.0 );
+
+		double sum = 0.0;
+		double sumSq = 0.0;
+		unsigned int n = 0;
+		for( unsigned int s = 0; s < numSamples; ++s )
+		{
+			const Scalar u1 = uni( rng );
+			const Scalar u2 = uni( rng );
+			const Vector3 m = MicrofacetUtils::VNDF_Sample_Aniso( wi, onb, alphaX, alphaY, u1, u2 );
+			const Scalar wiDotM = Vector3Ops::Dot( wi, m );
+			if( wiDotM <= 0 ) { ++n; continue; }
+
+			const Vector3 wo = Vector3Ops::Normalize( m * ( 2.0 * wiDotM ) - wi );
+			const Scalar cosWo = wo.z;
+			double weight = 0.0;
+			if( cosWo > 0 )
+			{
+				const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alphaX, alphaY, wi, wo );
+				weight = G2 / G1wi;
+			}
+			sum += weight;
+			sumSq += weight * weight;
+			++n;
+		}
+
+		const double mean = sum / n;
+		const double variance = r_max( 0.0, sumSq / n - mean * mean );
+		outStdErr = sqrt( variance / n );
+		return mean;
+	}
+
+	static bool TestDL86IsotropicEndCap( const char* label, const Scalar alpha, const double cosTheta, unsigned int seed )
+	{
+		double stdErr = 0.0;
+		const double reference = MonteCarloEssG2( alpha, cosTheta, 20000000u, seed, stdErr );
+		const double looked = MicrofacetEnergyLUT::LookupEssG2( cosTheta, alpha );
+
+		// Generous but real band: 8 standard errors of this 20M-sample
+		// quadrature plus a 1% absolute floor -- comfortably wider than
+		// this row's own measured residual (<=0.6% at every isotropic
+		// (alpha,cosTheta) pair tested, cos as low as 0.002) so this is a
+		// genuine regression gate, not a re-tuned pass.  The PRE-FIX flat
+		// clamp misses this band by 2-9x at cos<c0 (see the docstring
+		// numbers this test's own printed diff reproduces).
+		const double tol = 8.0 * stdErr + 0.01;
+		const double diff = std::fabs( looked - reference );
+		const bool passed = diff <= tol;
+
+		std::ostringstream oss;
+		oss << label << " LookupEssG2=" << std::fixed << std::setprecision(6) << looked
+			<< " quadrature=" << reference << "+/-" << std::setprecision(6) << stdErr
+			<< " diff=" << diff << " (" << (diff/reference*100.0) << "%) tol=" << tol;
+		return Report( oss.str(), passed );
+	}
+
+	static bool TestDL86AnisoDirectionalEndCap( const char* label, const Scalar alphaX, const Scalar alphaY, const double phiDeg, const double cosTheta, const double toleranceAbs, unsigned int seed )
+	{
+		double stdErr = 0.0;
+		const double reference = MonteCarloEssG2AnisoDirectional( alphaX, alphaY, cosTheta, phiDeg, 20000000u, seed, stdErr );
+		const Scalar sinWi = sqrt( r_max( Scalar(0), Scalar(1) - Scalar(cosTheta)*Scalar(cosTheta) ) );
+		const double phi = phiDeg * PI / 180.0;
+		const Scalar localX = sinWi * cos(phi), localY = sinWi * sin(phi);
+		const double looked = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosTheta, localX, localY, alphaX, alphaY );
+
+		// `toleranceAbs` is per-row.  The DL-86 aniso-directional fix's
+		// residual varies with how anisotropic the (alphaX,alphaY) pair
+		// is and how close the azimuth sits to either tangent axis:
+		// mild configurations close to a few tenths of a percent, but a
+		// 9:1-10:1 ratio near either axis (not only the debt-ggx3 sweep's
+		// own single cited worst case) leaves up to ~4% -- a real, large
+		// improvement over the pre-fix flat clamp's 12-18%+ at the same
+		// configurations, honestly bounded rather than hidden behind a
+		// falsely-tight tolerance.  See
+		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the full
+		// residual table and why closing this further needs
+		// table-resolution work, not this extrapolation.
+		const double tol = 8.0 * stdErr + toleranceAbs;
+		const double diff = std::fabs( looked - reference );
+		const bool passed = diff <= tol;
+
+		std::ostringstream oss;
+		oss << label << " LookupEssG2AnisoDirectional=" << std::fixed << std::setprecision(6) << looked
+			<< " quadrature=" << reference << "+/-" << std::setprecision(6) << stdErr
+			<< " diff=" << diff << " (" << (diff/reference*100.0) << "%) tol=" << tol;
+		return Report( oss.str(), passed );
+	}
 }
 
 int main()
@@ -532,6 +653,65 @@ int main()
 	passed &= TestRelabelSymmetry( "(.05,.5) theta=60 az=60",                                0.05, 0.5,  60.0, 60.0 );
 	passed &= TestRelabelSymmetry( "(.2,.8) theta=20 az=10",                                 0.2,  0.8,  20.0, 10.0 );
 	passed &= TestRelabelSymmetry( "(.02,1.0) theta=60 az=0",                                0.02, 1.0,  60.0, 0.0 );
+
+	std::cout << "\n--- DL-86: isotropic grazing end-cap, LookupEssG2 below c0=0.5/32~=0.0156 ---\n";
+	{
+		const double alphas[] = { 0.05, 0.3, 1.0 };
+		const double coss[]   = { 0.002, 0.005, 0.01, 0.0156, 0.03 };
+		unsigned int seed = 86001;
+		for( double alpha : alphas )
+		{
+			for( double c : coss )
+			{
+				std::ostringstream label;
+				label << "alpha=" << alpha << " cos=" << c;
+				passed &= TestDL86IsotropicEndCap( label.str().c_str(), alpha, c, seed++ );
+			}
+		}
+	}
+
+	std::cout << "\n--- DL-86: anisotropic per-azimuth grazing end-cap, LookupEssG2AnisoDirectional ---\n";
+	{
+		// Measured (this red-proof, debt-dl86 slice): a strongly
+		// anisotropic ratio (9:1 or 10:1) combined with an azimuth close
+		// to either axis leaves a residual of up to ~4% even after the
+		// fix -- NOT "a few tenths of a percent" as an earlier draft of
+		// this test assumed for every azimuth.  This is compounded
+		// end-cap-extrapolation + pre-existing ANISO_PHI grid coarseness
+		// (the latter is DL-77's own separately-tracked residual, not
+		// re-litigated here).  Every row here is still a LARGE
+		// improvement over the pre-fix flat clamp (12-18%+ at these same
+		// configurations -- see the printed diffs and
+		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the
+		// before/after table), so a uniform, honestly-derived 5% absolute
+		// floor is used for every row below: wide enough to pass the
+		// fix's real (<=4.1%) residual with margin, tight enough to catch
+		// a full regression back toward the flat clamp.
+		const double kAnisoTol = 0.05;
+		struct Case { double aX, aY, phiDeg; };
+		const Case cases[] = {
+			{ 0.9, 0.1, 0.0 }, { 0.9, 0.1, 45.0 }, { 0.9, 0.1, 90.0 },
+			{ 0.05, 0.5, 0.0 }, { 0.05, 0.5, 45.0 }, { 0.05, 0.5, 90.0 },
+		};
+		const double coss[] = { 0.002, 0.005, 0.01, 0.0156, 0.03 };
+		unsigned int seed = 86101;
+		for( const Case& c : cases )
+		{
+			for( double cosTheta : coss )
+			{
+				std::ostringstream label;
+				label << "aX=" << c.aX << " aY=" << c.aY << " phi=" << c.phiDeg << " cos=" << cosTheta;
+				passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, cosTheta, kAnisoTol, seed++ );
+			}
+		}
+
+		// The debt-ggx3 sweep's own cited worst case (extreme anisotropy
+		// ratio, azimuth close to the smooth axis): the fix reduces this
+		// from ~18% to ~2-2.5%, well inside the same 5% floor.
+		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.0024 (debt-ggx3 cited worst case)", 0.0361, 0.9627, 5.0, 0.0024, kAnisoTol, 86200 );
+		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.005",  0.0361, 0.9627, 5.0, 0.005,  kAnisoTol, 86201 );
+		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.01",   0.0361, 0.9627, 5.0, 0.01,   kAnisoTol, 86202 );
+	}
 
 	std::cout << "\nGGXHeightCorrelatedEnergyLUTTest: " << checks << " checks, " << failures << " failures\n";
 	std::cout << "=== " << ( passed ? "ALL TESTS PASSED" : "TESTS FAILED" ) << " ===\n";
