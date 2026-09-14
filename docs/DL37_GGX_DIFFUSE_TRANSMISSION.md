@@ -1,6 +1,6 @@
 # DL-37: GGX diffuse interface transmission
 
-Status: CLOSED 2026-09-12 — diffuse composition repaired by `000df0b4`; transport naming correction `d0a8ece0` and film interface range correction `5b69f192`. Independent specular-only failures remain DL-63 with their test exit preserved.
+Status: CLOSED 2026-09-12 — diffuse composition repaired by `000df0b4`; transport naming correction `d0a8ece0` and film interface range correction `5b69f192`. Independent specular-only failures remain DL-63 with their test exit preserved. DL-62 and DL-64 (both flagged as independent residuals below) were subsequently CLOSED 2026-09-13 — see [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md).
 Base master: `35a6f45dff7b415ece9b23d3a242ffbeb20514e8`.
 
 The existing Schlick diffuse lobe subtracts constant maximum RGB F0 while rough specular Fresnel increases toward grazing. Conductor and thin-film modes add diffuse without interface attenuation. The same additive composition must be corrected in BRDF evaluation and selected diffuse sample throughput.

@@ -55,8 +55,8 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-57~~ | ~~DL55_RANDOM_WALK_FALLBACK_PROPOSALS.md: collision density cutoff~~ | ~~RGB random-walk collision guard rejects small positive dimensional densities with non-negligible normalized weights~~ | **CLOSED 2026-09-12** | `c187f2cc`: `RandomWalkDensityCutoffTest`, fixed output `All DL-57 density cutoff tests passed` (red: one missing-large-RGB-exit activity failure). Real closed-sphere RGB scale pair reports spatial weight `1` in every channel and full weight `1.0171875000000001` for the large case; scaled case spatial `1.0000000000000002`, full `1.0171875000000004`; NM spatial `1`, full `1.0171875000000001`. See [DL57 closure](DL57_RANDOM_WALK_DENSITY_CUTOFF.md). | S | physics-bias | latent (tiny extinction coefficients / scene scale) |
 | ~~DL-58~~ | ~~DL56_GRAZING_FRESNEL.md: remaining classification work~~ | ~~Snell and cosine-only Fresnel helpers misclassify matched-index extreme-grazing transmission as TIR~~ | CLOSED 2026-09-12 | `1b1909c0`, narrowed fibre compatibility repair `ed8d9c94`: GrazingSnellFresnelTest `Checks: 38  Failures: 0`; MatchedIndexGrazingConsumerTest `Checks: 60  Failures: 0`; GrazingFresnelThroughputTest `Checks: 44  Failures: 0`. Direct red 9 failures, SSS red 10; original throughput red contains 8 valid SMS failures and 3 invalid weave expectations, corrected after its IOR clamp was identified. Supplemental incoming derivative red is 1 valid failure. See [closure](DL58_MATCHED_INDEX_GRAZING.md). | S | physics-bias | latent (extreme-grazing matched-index paths) |
 | ~~DL-59~~ | ~~DL58_MATCHED_INDEX_GRAZING.md: remaining unequal-index derivative convention~~ | ~~SMS normal derivative uses the wrong unequal-index ratio/sign convention~~ | CLOSED 2026-09-12 | `a0c4a808`: ManifoldNormalDerivativeTest, `Checks: 141 Failures: 0` (unfixed: `Checks: 141 Failures: 12`). Entering/exiting tangent finite differences and curved analytical/numerical angle-difference Jacobians agree with the unchanged regression. Matched/reflection/TIR controls pass. See [closure](DL59_SMS_NORMAL_DERIVATIVE.md). | S | physics-bias | latent (test-only analytical Jacobian) |
-| DL-62 | DL37_GGX_DIFFUSE_TRANSMISSION.md: independent glossy-filter audit | GGX sampling and density use increased roughness under glossy filtering while BRDF evaluation uses the unfiltered roughness | OPEN-confirmed (static evidence; red-proof pending) | `GGXSPF::Scatter`, `ScatterNM`, `Pdf`, and `PdfNM` add `ri.glossyFilterWidth` to both roughness axes; `GGXBRDF::value` and `valueNM` only floor authored roughness. `PathTracingIntegrator.cpp` propagates the field into hit contexts. | S | physics-bias | user-visible (filtered GGX continuation versus direct evaluation) |
-| DL-64 | DL37_GGX_DIFFUSE_TRANSMISSION.md: zero-F0 support audit | GGX Schlick sampling assigns zero specular and multiscatter probability at F0=0 although both evaluated lobes can be nonzero | OPEN-confirmed (static evidence; red-proof pending) | `GGXSPF::Scatter`/`ScatterNM` set ws from authored specular F0 and wms from ws; selected-lobe throughput omits unselected specular energy. `GGXBRDF::value`/`valueNM` retain Schlick fifth-power Fresnel and its positive hemispherical average when F0=0. | S | physics-bias | user-visible (zero-F0 GGX continuation loses grazing reflection) |
+| ~~DL-62~~ | ~~DL37_GGX_DIFFUSE_TRANSMISSION.md: independent glossy-filter audit~~ | ~~GGX sampling and density use increased roughness under glossy filtering while BRDF evaluation uses the unfiltered roughness~~ | CLOSED 2026-09-13 | `dfdd5ee1`: `GGXSampleEvaluationConsistencyTest: 29 checks, 0 failures` (red on `a1db468d`: 23 failures, e.g. "asymmetric saturation W=0.7 maxRelErr=1.910e+01"). `GGXBRDF::value`/`valueNM` now widen alphaX/alphaY by `ri.glossyFilterWidth` identically to `GGXSPF`'s four sample/density paths. Zero-filter control and a same-mechanism `GGXSPF::Pdf` control both matched their reference exactly before and after (relErr=0), isolating the bug to `GGXBRDF` specifically. See [DL-62/DL-64 closure](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md). | S | physics-bias | user-visible (filtered GGX continuation versus direct evaluation) |
+| ~~DL-64~~ | ~~DL37_GGX_DIFFUSE_TRANSMISSION.md: zero-F0 support audit~~ | ~~GGX Schlick sampling assigns zero specular and multiscatter probability at F0=0 although both evaluated lobes can be nonzero~~ | CLOSED 2026-09-13 | `dfdd5ee1`: same `GGXSampleEvaluationConsistencyTest` run. `GGXSPF::Scatter`/`ScatterNM`/`Pdf`/`PdfNM` now derive the specular/MS selection weight, in `eFresnelSchlickF0` mode only, from `GGXInterfaceFresnel::Mean()`/`MeanNM()` (conductor/thin-film keep the tint-based weight; `a495a357`) (nonzero at F0=0: `SchlickFresnelAvg(0)=1/21`) instead of raw F0; a deterministic Pdf-at-peak reference (immune to the separate ~2.5e-5 JH-black-uplift epsilon a naive ">cosine" threshold would have been fooled by) went from relErr 0.87-0.99 to exactly 0. Per-direction Fresnel evaluation (the actual sampled throughput) is untouched. See [DL-62/DL-64 closure](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md). | S | physics-bias | user-visible (zero-F0 GGX continuation loses grazing reflection) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | ~~DL-34~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~Published two-sphere union overlap exports only the deeper operand depth~~ | CLOSED 2026-09-12 (recorded regression; conservative contract retained) | `cffa254f`: unchanged ProximitySignalTest red `Passed: 465   Failed: 6`, fixed `Passed: 471   Failed: 0`; supplemental final `Passed: 491   Failed: 0`. Certified inscribed-ball union recovers `sqrt(3.56)` through signed field, manager and interior signal. The original proposed max-depth edit was already the existing signed-min magnitude; arbitrary unions remain non-exact. See [closure and limits](DL34_UNION_INTERIOR_DEPTH.md). | M | physics-bias | user-visible (published union seam regression) |
@@ -69,7 +69,8 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-46 | DL03_GUIDED_IOR_CONTINUATION.md: initial-containment residual | Camera/light origins inside closed translucent objects lack initial IOR-stack membership and misclassify their first exit as entry | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentMaterial` inherits invalid/non-refracting default `GetSpecularInfo`; `IORStackSeeding::SeedFromPoint` accepts only valid canRefract materials. Both TranslucentSPF scatter variants classify exclusively by containsCurrent. Shared PT camera and BDPT eye/light seeds skip this stateful non-refracting material. | M | physics-bias | user-visible (origins inside closed translucent objects) |
 | DL-52 | DL04_SSS_RADIANCE_DECISION.md: planar probe origin | BSSRDF entry probes skip nearby points on a flat surface by advancing from the projection plane before intersecting | OPEN-confirmed (rendered symptom and static mechanism; correctness red-proof pending) | BSSRDFSampling::SampleEntryPoint starts both probe directions on the exit tangent plane and advances by 1e-6 before tracing. A normal probe skips the coplanar near face; distant bottom/side hits do not restore its profile mass. PT and BDPT eye/light RGB/NM share the helper. | M | physics-bias | user-visible (diffusion SSS on planar or nearly planar geometry) |
 | DL-53 | DL04_SSS_RADIANCE_DECISION.md: recursive environment MIS | Recursive RayCaster misses bypass environment MIS when passed the global map explicitly | OPEN-confirmed (static evidence; red-proof pending) | RayCaster RGB/NM/HWSS explicit pRadianceMap branches return raw radiance before their global-map MIS blocks. Complete PT diffusion/RW continuations pass the global map and a positive cosine PDF after adding weighted environment NEE, producing an extra contribution. Iterative PT already checks map identity correctly. | M | physics-bias | user-visible (SSS and eligible recursive environment continuations) |
-| DL-63 | DL37_GGX_DIFFUSE_TRANSMISSION.md: independent specular-only sweep | GGX height-correlated single scattering receives compensation from a separable-masking energy LUT, producing specular-only furnace gain | OPEN-confirmed (reproduced baseline) | `GGXDiffuseTransmissionTest`: identical three specular-only failures before/after DL-37; F0=1 at alpha/theta {.6/80, 1/60, 1/80}. `GenerateMicrofacetEnergyLUT.cpp` integrates G1(wo), while GGXBRDF uses height-correlated G2; these are different single-scatter models. | M | physics-bias | user-visible (rough GGX specular over-energy) |
+| DL-63 | DL37_GGX_DIFFUSE_TRANSMISSION.md: independent specular-only sweep | GGX height-correlated single scattering receives compensation from a separable-masking energy LUT, producing specular-only furnace gain | OPEN-confirmed (reproduced baseline; unchanged by the DL-62/DL-64 fix) | `GGXDiffuseTransmissionTest`: identical three specular-only failures before/after DL-37 AND before/after DL-62/DL-64 (`dfdd5ee1`, bit-for-bit re-verified against a stashed pre-fix tree): `150 checks, 3 failures` -- Schlick iso F0=1 alpha=0.6 theta=80 (1.0772), alpha=1 theta=60 (1.0432), alpha=1 theta=80 (1.1467). These are F0=1 (pure specular) configs, outside DL-62's filter-width scope and DL-64's F0=0 scope. `GenerateMicrofacetEnergyLUT.cpp` integrates G1(wo), while GGXBRDF uses height-correlated G2; these are different single-scatter models. | M | physics-bias | user-visible (rough GGX specular over-energy) |
+| DL-65 | debt-ggx slice sibling audit (docs/skills/audit-by-bug-pattern.md), found while closing DL-62 | The DL-62 pattern (SPF widens sampling/density roughness by `ri.glossyFilterWidth`; the paired BRDF's `value`/`valueNM` evaluation does not) is structurally present, unfixed, in two more material families | OPEN-confirmed (static evidence; red-proof pending) | `CookTorranceSPF::Scatter`/`ScatterNM`/(implicit `Pdf`/`PdfNM` alpha reads) add `ri.glossyFilterWidth` at `CookTorranceSPF.cpp:152-153,365-366,549-550`; `CookTorranceBRDF.cpp` never references `glossyFilterWidth`. `SchlickSPF::Scatter`/`ScatterNM`/`Pdf`/`PdfNM` add it at `SchlickSPF.cpp:296-298,368-369,427-429,483-484`; `SchlickBRDF.cpp` never references it either. Each is its own roughness/Fresnel parameterization (`CookTorranceBRDF.cpp`'s `ToScalarAlpha`, `SchlickBRDF.cpp`'s single roughness scalar) needing its own red-proof, out of the GGX-scoped debt-ggx slice. The DL-64 pattern (raw-F0 lobe-selection weight losing grazing energy at F0=0) was checked against both and does NOT clearly replicate: `CookTorranceSPF` has no Schlick-F0 branch (its `pSpecular` tint directly scales a physically-computed conductor Fresnel, so tint=0 is a deliberate zero-specular material, not lost grazing energy); `SchlickSPF::Scatter`/`ScatterNM` sample their Schlick half-vector lobe unconditionally (`s.kray = rho + (1-rho)*fresnel`) rather than through a raw-F0-weighted lobe-selection probability. | M | physics-bias | user-visible (filtered CookTorrance/Schlick continuation versus direct evaluation) |
 | DL-05 | CLOTH_FABRIC_DESIGN.md §15 item 27 | Two-layer gapped weave with the light outside: PT under-reads BDPT/VCM by 1.28-1.55x because PT's binary NEE cannot see through the far layer's delta gap lobe; single layer or light inside is exact | OPEN-confirmed | Doc's own measured table (box/planes, gap 0.1/0.3); mechanism traced to `RayCaster::CastShadowRayTransmittance` (definition starts `RayCaster.cpp:2062`, re-derived this sweep — the previously cited ~1980 was drift) being gated to perfect-specular dielectrics only, confirmed present as described this sweep | L | physics-bias | user-visible |
 | DL-06 | IMPROVEMENTS.md §"VCM env-IBL" (Session 9-13) / CLAUDE.md "Env-IBL deficit" entry | VCM env+mesh strict-tolerance residual (env-S0 <-> env-NEE MIS partition violation) — Session 13 explicitly decided to STOP and accept the disc-area baseline rather than fix it; `plank_closeup`'s VCM 0.55x (RENDERING_INTEGRATORS.md debt 28) is the same known bias class, not a new bug | OPEN-confirmed (deprioritized, not fixed) | `docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md` "Session 13 outcome"; `IMPROVEMENTS.md` lines ~1030-1046; still true in this tree — no VCM env-branch SA-MIS migration commit exists (`git log --oneline -- src/Library/Shaders/VCMIntegrator.cpp` shows no such commit after Session 13) | L | physics-bias | user-visible |
 | DL-07 | CLOTH_FABRIC_DESIGN.md §15 item 17 / WETNESS_COAT_DESIGN.md §12 item 13 | `OrenNayarBRDF::hemisphericalAlbedo` over-estimates (measured ~12.6% high at roughness 0.5, ~25.6% at 1.0), which over-amplifies `fabric_material`'s energy-subtraction and `coated_material`'s Saunderson recycling denominator; not fixable in either wrapper, needs its own bake | OPEN-confirmed | `OrenNayarBRDF.cpp:148-190`'s own doc comment states the bias and that "no clean closed form exists to correct it with"; unchanged this sweep | L | physics-bias | user-visible (rough Oren-Nayar under fabric/coat) |
@@ -255,6 +256,34 @@ OPEN row (DL-37) + 6 new Already-resolved rows (DL-R18..DL-R23) + 1 second
 source pointer added (DL-23) + 1 recipe rewritten with a named scene,
 protocol, metric and a stated-proposed threshold (DL-27) = **8 items
 classified or substantively rewritten**, this pass.
+
+**debt-ggx slice (this pass, 2026-09-13, HEAD `662b976c`; fix `dfdd5ee1`, mode-gated for cost in `a495a357`):** closed DL-62
+and DL-64 (`GGXSampleEvaluationConsistencyTest: 48 checks, 0 failures` (29 at `dfdd5ee1`),
+red on `a1db468d`: 23 failures); re-verified DL-63 unchanged (bit-for-bit
+identical `150 checks, 3 failures` against a stashed pre-fix rebuild) and
+recorded its exact per-config numbers in the ledger row for the first
+time. Opened DL-65 (M, physics-bias): a sibling-audit pass (per
+docs/skills/audit-by-bug-pattern.md) confirmed the DL-62 pattern (SPF
+widens roughness by `ri.glossyFilterWidth`; the paired BRDF's `value`/
+`valueNM` does not) is structurally present, unfixed, in both
+`CookTorranceSPF`/`CookTorranceBRDF` and `SchlickSPF`/`SchlickBRDF` — a
+different material family with its own roughness/Fresnel parameterization,
+out of this slice's GGX scope, so it was recorded rather than fixed here.
+The DL-64 pattern (raw-F0 lobe-selection weight losing grazing energy at
+F0=0) was checked against the same two classes and does **not** clearly
+replicate: `CookTorranceSPF` has no Schlick-F0 branch (its specular tint
+IS the desired multiplier, so tint=0 legitimately means zero specular,
+not lost grazing energy), and `SchlickSPF::Scatter`/`ScatterNM` sample
+their Schlick half-vector lobe unconditionally rather than through a
+raw-F0-weighted lobe-selection probability — no separate DL-65-adjacent
+row was opened for DL-64's pattern.
+
+- Main rows after this slice: **64** — **46 open**, **18 closed**.
+- CLOSED-by-cleanup: **18** (adds DL-62 `dfdd5ee1` and DL-64 `dfdd5ee1`
+  to the 16 listed above).
+- New OPEN row this slice: **DL-65** (CookTorrance/Schlick glossy-filter
+  sample/evaluation mismatch, M, physics-bias) — see the Table and its
+  Verification recipe below.
 
 ## Verification recipes
 
@@ -856,8 +885,58 @@ correction is claimed. Five individual gates and clean Make/Xcode passed;
 the source-hygiene environment retry is documented in
 [the closure](DL59_SMS_NORMAL_DERIVATIVE.md).
 
-**DL-62 (GGX glossy-filter sample/evaluation mismatch).** Add RGB/NM sample-versus-BRDF integration checks with nonzero `glossyFilterWidth`, anisotropic authored roughness, and a zero-filter control. Commit and run against the unfixed library. Resolve effective roughness consistently in `GGXBRDF::value`/`valueNM` and all four GGXSPF sample/density paths, preserving the existing filtering convention. Exercise both axes and upper saturation at one. Run GGX sample/BSDF and PDF consistency suites and touched-class gates. This is independent of DL-37's diffuse energy composition.
+**~~DL-62 (GGX glossy-filter sample/evaluation mismatch).~~ CLOSED
+2026-09-13 — `dfdd5ee1` + `a495a357` (Schlick-mode-only weight), `GGXSampleEvaluationConsistencyTest: 48 checks,
+0 failures` (29 at `dfdd5ee1`).** Test `a1db468d` failed 23 of 29 checks against the
+unfixed library (e.g. "asymmetric saturation W=0.7 (Y saturates)
+maxRelErr=1.910e+01"). `GGXBRDF::value`/`valueNM` now widen alphaX/
+alphaY by `ri.glossyFilterWidth` (`min(alpha+width,1)`) exactly like
+GGXSPF's four sample/density paths. Every RGB/NM probe (isotropic,
+anisotropic, spec-only, single- and double-axis saturation) now matches
+an independently constructed pre-widened-reference `GGXBRDF` to
+relErr=0.000e+00; the zero-filter control and a `GGXSPF::Pdf`
+already-consistent control matched both before and after, isolating the
+bug to `GGXBRDF` specifically. See [closure and audit](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md).
 
-**DL-63 (GGX specular compensation uses a different masking model).** Retain the three committed `GGXDiffuseTransmissionTest` specular-only red controls and add independent single-scatter integral versus LUT checks. Rebuild the compensation data for the actual height-correlated GGX model, with an explicit decision for anisotropic compensation and any separable-model consumers sharing the current table. Preserve sampled/evaluated MS normalization and generator provenance. Require zero specular-only energy failures without changing the committed statistical bound; gate GGX and every other affected LUT consumer separately.
+**DL-63 (GGX specular compensation uses a different masking model).** Retain the three committed `GGXDiffuseTransmissionTest` specular-only red controls and add independent single-scatter integral versus LUT checks. Rebuild the compensation data for the actual height-correlated GGX model, with an explicit decision for anisotropic compensation and any separable-model consumers sharing the current table. Preserve sampled/evaluated MS normalization and generator provenance. Require zero specular-only energy failures without changing the committed statistical bound; gate GGX and every other affected LUT consumer separately. **Re-verified unchanged by the DL-62/DL-64 fix (2026-09-13, `dfdd5ee1`):** `GGXDiffuseTransmissionTest` still reports `150 checks, 3 failures` at the identical F0=1 configs (alpha=0.6 theta=80 -> 1.0772; alpha=1 theta=60 -> 1.0432; alpha=1 theta=80 -> 1.1467), bit-for-bit matching a stashed pre-fix rebuild — these are pure-specular (F0=1) controls, outside both DL-62's filter-width scope and DL-64's F0=0 scope.
 
-**DL-64 (zero-F0 Schlick sampling support).** Commit RGB/NM sample-integral versus independently integrated BRDF tests at F0=0 with both zero and nonzero diffuse, grazing and normal incidence. A nonzero Schlick fifth-power reflection must remain sampled even when normal-incidence F0 vanishes. Match all sample-selection and Pdf/PdfNM mixture weights, including HWSS companion evaluation, without adding a magic F0 floor. Retain nonzero-F0 and conductor controls.
+**~~DL-64 (zero-F0 Schlick sampling support).~~ CLOSED 2026-09-13 —
+`dfdd5ee1`, same `GGXSampleEvaluationConsistencyTest` run.**
+`GGXSPF::Scatter`/`ScatterNM`/`Pdf`/`PdfNM` now derive the specular/MS
+lobe-selection weight from `GGXInterfaceFresnel::Mean()`/`MeanNM()` (the
+lobe's actual hemispherical Fresnel-weighted albedo — nonzero at F0=0,
+`SchlickFresnelAvg(0)=1/21`) instead of raw authored F0; per-direction
+Fresnel evaluation for the sampled lobe (the true per-wavelength F0,
+`wsF0` in `ScatterNM`) is unaffected — no magic F0 floor was added. A
+deterministic Pdf-at-the-specular-peak reference (immune to the
+unrelated ~2.5e-5 JH-black-uplift epsilon that would have made a naive
+">cosine" threshold pass even pre-fix) moved from relErr 0.87-0.99 to
+0.000e+00, at both grazing and normal incidence and both zero- and
+nonzero-diffuse configurations, RGB and NM. A companion control confirms
+`GGXBRDF::valueNM`'s Schlick term (the HWSS-companion path, since
+`GGXSPF` does not override `EvaluateKrayNM`) was never affected. Fixing
+this exposed a pre-existing test-design assumption in
+`tests/ThinFilmBRDFTest.cpp` Test B (pSpecSelect no longer cancels
+between thin-film and bare-conductor GGX twins at the same tint, since
+their hemispherical Fresnel averages now legitimately differ) — repaired
+by explicitly dividing each fixture's own pSpecSelect back out before
+ratioing, restoring the original ~1e-16 single-scatter pin (measured
+9.821e-16 post-fix). See [closure and audit](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md).
+
+**DL-65 (CookTorrance/Schlick glossy-filter sample/evaluation mismatch).**
+For each of `CookTorranceSPF`/`CookTorranceBRDF` and `SchlickSPF`/
+`SchlickBRDF`: commit RGB/NM sample-versus-BRDF-evaluation checks with
+nonzero `ri.glossyFilterWidth` and a zero-filter control (mirroring
+`GGXSampleEvaluationConsistencyTest`'s pre-widened-reference technique —
+construct a second fixture whose roughness painter already holds
+`min(roughness+width,1)` with `glossyFilterWidth=0`, and assert the
+production object's evaluation matches it exactly). Run against the
+unfixed library first and paste the failing output into the fix commit.
+Add the same widening to `CookTorranceBRDF::value`/`valueNM` and
+`SchlickBRDF::value`/`valueNM` that their SPF twins already apply,
+preserving each class's own existing roughness convention (do not import
+GGX's `alphaX`/`alphaY` split or its `min(x+width,1)` formula verbatim
+without checking each class's own parameterization first). Gate
+`CookTorranceMultiscatterTest`, `SPFPdfConsistencyTest`,
+`SPFBSDFConsistencyTest`, and any suite `grep -l 'CookTorranceSPF\|
+CookTorranceBRDF\|SchlickSPF\|SchlickBRDF' tests/*.cpp` returns.
