@@ -325,14 +325,36 @@ Two design notes about the fixture:
   `GetBSDF()` is null, so NEE evaluates nothing.  Invariant to keep: a
   material with a non-null BSDF must expose at least one selectable
   non-delta diffuse/reflection lobe.
-- **Optimal-MIS training sites disagree on Russian roulette (round 5).**
-  The BSSRDF exit/entry pair trains PRE-RR quantities (`bssrdfWeight *
-  cosinePdf`, `neeTrainingScale`), while the main surface continuation
-  trains from `scatterThroughput` AFTER the `rr.survivalProb` division.
-  Two estimators' second moments feed one tile's alpha.  Variance-only,
-  never bias; the BSSRDF pair is internally consistent.  Pick one
-  convention when DL-84 (the still-untrained in-loop volume site) is
-  wired.
+- ~~**Optimal-MIS training sites disagree on Russian roulette (round 5).**~~
+  **RULED 2026-09-14 (DL-84 closure, debt-dl84 slice): PRE-RR, for
+  every site.**  `OptimalMISAccumulator.h`'s own contract trains the
+  moment of THE INTEGRAND `f` at a vertex, drawn from density `p_i`;
+  Russian roulette is a separate, later, unbiased estimator layered on
+  top of a vertex's contribution, not part of it -- NEE's own moment
+  is never RR-inflated (NEE takes no continuation and undergoes no RR
+  at its own vertex), and the two BSSRDF sites were already correct on
+  this point (`bssrdfWeight` is captured before `sssThroughput`'s RR
+  division, so their moment is PRE-RR).  The main surface continuation
+  was the one holdout, training from the POST-RR-divided
+  `scatterThroughput` -- RR's own compensation identity
+  (`throughput_post = throughput_pre / survivalProb`) inflated its
+  moment by an RR-outcome-dependent factor its NEE partner's moment
+  never carries.  Fixed by capturing `preRRScatterThroughput`
+  unconditionally (previously `RISE_ENABLE_OPENPGL`-only, feeding only
+  the guiding-segment recorder) and training from it instead;
+  variance-only, as this bullet already noted -- `alpha` cannot bias
+  the rendered radiance, only how the training budget is apportioned
+  between techniques.  Red-proofed with a closed-form discriminator (a
+  Lambertian floor at `startDepth=rrMinDepth` with `importance=1`
+  makes RR's survival probability an exact deterministic 0.5, so a
+  PRE-RR-inflation bug reads a closed-form `1/rho^2=4x` too large):
+  `sum/(attempts*(L_env*rho)^2)` read `2.006` pre-fix, `0.5015`
+  post-fix, against a `0.5` target.  DL-84's own in-loop volume site
+  was wired in the SAME pass, using the already-PRE-RR-by-construction
+  phase value (a phase function's throughput has no RR applied to it
+  in that loop at the point the moment is formed).  See
+  [DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md)
+  "Round 6" for the full derivation and numbers.
 
 - ~~**The IOR stack passed to the aggregate pdf differs by side.**~~
   **WRONG, and fixed in round 3 (§8.2).** This entry claimed the
