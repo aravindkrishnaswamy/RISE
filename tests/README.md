@@ -189,16 +189,22 @@ Also added: one tight two-sided regression guard row (seed 9006, 400k
 local samples to get SE small enough to discriminate a ~0.005 furnace-mean
 shift) pinned to the exact cited residual point
 (`alphaX=0.9353,alphaY=0.0752,theta=83.0441,az=85.5`) -- reads
-`0.98434+/-0.00087` post-fix, red-proofed FAIL against the pre-fix
-(`ANISO_PHI_SIZE=7`) header at the same seed/samples
-(`0.97933+/-0.00088`, a ~5.7*SE separation) -- so any future
+`0.98434+/-0.00087` post-fix. **Round 3 correction (debt-ggx3 review
+round 3)**: the row as first written used a `6*SE` band, which does NOT
+red-proof -- the pre-fix (`ANISO_PHI_SIZE=7`) header, rebuilt in
+isolation at the same seed/samples, reads `0.97933+/-0.00088`, which
+falls INSIDE a `6*SE` band (`[0.97912,0.98956]`) even though it is only
+a ~5.7*SE separation from this run's mean. Tightened to a `4*SE` band
+computed from the test's own runtime `se` (not a copied-in literal):
+band `[0.98086,0.98782]`, and the pre-fix `0.97933` now falls `~1.75*SE`
+below the lower bound -- a genuine, verified FAIL -- so any future
 re-coarsening of `ANISO_PHI_SIZE` fails this row specifically, not just
 the loose `kAnisoFloor` guard. `156 checks, 0 failures` (was `155/0`).
 The 7 large `Scalar` tables in `MicrofacetEnergyLUT.h` were also changed
 from `inline constexpr` to `inline const` (identical C++17
 external-linkage dedupe, but no compile-time-evaluation obligation --
 avoids MSVC's default `/constexpr:steps 100000` limit on the largest
-table, 129,024 elements).
+table, `E_ss_TABLE_G2_ANISO_PHI` at 24*24*13*32 = 239,616 elements).
 
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables

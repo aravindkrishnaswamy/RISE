@@ -800,3 +800,39 @@ sphere with a strong directional key light, so azimuth-mirrored energy
 would show up as a left/right asymmetry) was not built this slice; this
 is recorded as the honest scope limitation rather than an unbuilt
 diagnostic.
+
+**Review round 2 (debt-ggx3, same day): `inline constexpr` -> `inline
+const`, and a table-size correction**: the 7 large `Scalar` tables in
+`MicrofacetEnergyLUT.h` (previously converted from `static const` to
+`inline constexpr` earlier this slice) were changed again to `inline
+const` — identical C++17 external-linkage/one-definition-rule dedupe,
+but without obligating compile-time constant evaluation, which avoids
+MSVC's default `/constexpr:steps 100000` budget failing on the largest
+table (`E_ss_TABLE_G2_ANISO_PHI`, `24*24*13*32 = 239,616` elements at the
+final `ANISO_PHI_SIZE=13` grid — an earlier note in this codebase cited
+`129,024`, the count at the pre-bump `ANISO_PHI_SIZE=7`; corrected
+debt-ggx3 review round 3). `GGXDiffuseTransmissionTest`: `155 checks, 0
+failures` (was `153/0`); `GGXHeightCorrelatedEnergyLUTTest`: `30 checks,
+0 failures` (was `23/0`).
+
+**Review round 2 fix-pass (debt-ggx3, same day): phi-grid regression
+guard**: added one tight two-sided regression-guard row to
+`GGXDiffuseTransmissionTest.cpp` at the exact cited residual point
+(`alphaX=0.9353,alphaY=0.0752,theta=83.0441,az=85.5`), using a 400k-sample
+local measurement to get the standard error small enough to discriminate:
+this tree (post `ANISO_PHI_SIZE=13`) reads `mean=0.98434, se=0.00087`.
+The row's band is `[mean - 4*se, mean + 4*se]` computed from the RUN'S
+OWN runtime `se` (not a copied-in literal), so it tracks its own
+statistics if the sample count or RNG ever changes. **Round 3
+correction**: the row originally shipped with a `6*se` band, which does
+NOT red-proof — an isolated rebuild with the pre-fix (`ANISO_PHI_SIZE=7`)
+header, at the SAME seed/sample count, measures `0.97933+/-0.00088`,
+which lies INSIDE a `6*se` band (`[0.97912,0.98956]`) built from this
+run's `se`. Tightened to `4*se` (band `[0.98086,0.98782]` at this run's
+`mean`/`se`): the pre-fix `0.97933` now falls `~1.75*se` below the lower
+bound, a genuine, verified FAIL — see the isolated pre-fix-header
+rebuild's console line in the fix commit message.
+Also added one `alphaX>alphaY` material-level row (`ax=0.8,ay=0.1`) to
+`GGXWhiteFurnaceTest.cpp`'s Test 6/Test 7 (`TestMaterialPointwiseConsistency`,
+conductor and schlick_f0) — every prior row there had `alphaX<=alphaY`,
+the exact P1 blind spot; both new rows pass.

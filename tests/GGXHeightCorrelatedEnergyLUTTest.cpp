@@ -463,7 +463,15 @@ namespace
 		const Scalar v2 = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosTheta, localX2, localY2, alphaY, alphaX );
 
 		const double diff = std::fabs( (double)v1 - (double)v2 );
-		const bool passed = diff < 1e-6;
+		// P3 (debt-ggx3 review round 3): the fix mirrors the canonical
+		// alphaX<=alphaY half into the alphaX>alphaY half using the SAME
+		// Monte-Carlo samples (see the DL-77 ledger row), so this identity
+		// is exact by construction, not approximate -- measured diffs are
+		// <=1.11e-16 (double-precision ULP noise) across all 7 rows below,
+		// four orders of magnitude under the old 1e-6 tolerance. Tightened
+		// to 1e-12 so a real regression (e.g. a re-introduced non-mirrored
+		// bake) can't hide inside the gap.
+		const bool passed = diff < 1e-12;
 
 		std::ostringstream oss;
 		oss << label << " Ess(aX=" << alphaX << ",aY=" << alphaY << ",phi=" << phiDeg << ")="

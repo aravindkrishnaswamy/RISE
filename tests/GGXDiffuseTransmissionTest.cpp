@@ -712,26 +712,38 @@ namespace
 			const double mean = Mean( moments, 0, kTightSamples );
 			const double se = StandardError( moments, 0, kTightSamples );
 			// Measured on this tree post-fix at kTightSamples:
-			// mean=0.98434, se=0.00087.  Red-proof: swapping in the
-			// pre-fix (ANISO_PHI_SIZE=7) header and rebuilding just this
-			// test measures 0.97933+/-0.00088 at the SAME seed/sample
-			// count -- a ~5.7*se separation, comfortably red-proofed
-			// (this row FAILS its own band against the pre-fix header).
-			// Tolerance
-			// = 3*se (statistical margin) + 0.0258 (the raw table-level
-			// residual measured at this exact point via an independent
-			// 4e6-sample scratch program, converted from 2.58% relative
-			// to absolute since the expected value is ~1.0) would be far
-			// too loose to red-proof (it would swallow the 0.006 shift
-			// entirely), so this row instead uses a tight
-			// statistics-only tolerance (6*se) -- appropriate because,
-			// unlike the generic CheckAnisotropicFurnaceBound rows above
-			// (which must tolerate a much larger regression all the way
-			// back to the isotropized lookup, ~0.57-0.93), this row's
-			// whole purpose is catching a SMALL re-coarsening of
-			// ANISO_PHI_SIZE specifically.
+			// mean=0.98434, se=0.00087.  Red-proof (debt-ggx3 review
+			// round 3): swapping in the pre-fix (ANISO_PHI_SIZE=7)
+			// header and rebuilding an isolated copy of just this test
+			// measures 0.97933+/-0.00088 at the SAME seed/sample count.
+			// That is only a ~5.7*se separation from THIS run's mean --
+			// a *6*se* band (as this row originally used) is therefore
+			// [0.97912, 0.98956], which the pre-fix value 0.97933 falls
+			// INSIDE of: the original 6*se band did not actually
+			// red-proof (verified: it reads PASS, not FAIL, against the
+			// pre-fix header).  Fixed by tightening to a *4*se* band and
+			// computing the multiplier against THIS run's own runtime
+			// `se` (not a copied-in literal), so the row tracks its own
+			// statistics if the sample count or RNG ever changes: lower
+			// bound = mean - 4*se = 0.98434 - 4*0.00087 = 0.98086, a
+			// 1.75*se margin above the pre-fix 0.97933 -- comfortably
+			// red-proofed (see the isolated pre-fix-header rebuild's
+			// FAIL line in the DL-77 ledger row / fix commit message).
+			// A looser band built from the raw table-level residual
+			// (3*se + 0.0258, the 2.58% relative residual measured at
+			// this exact point via an independent 4e6-sample scratch
+			// program, converted to absolute since the expected value
+			// is ~1.0) would swallow the 0.006 shift entirely, so this
+			// row uses the tight statistics-only band instead --
+			// appropriate because, unlike the generic
+			// CheckAnisotropicFurnaceBound rows above (which must
+			// tolerate a much larger regression all the way back to the
+			// isotropized lookup, ~0.57-0.93), this row's whole purpose
+			// is catching a SMALL re-coarsening of ANISO_PHI_SIZE
+			// specifically.
 			const double kExpectedMean = 0.98434;
-			const double kPhiGridTightTol = 6.0 * 0.00087;
+			const double kPhiGridTightSigma = 4.0;
+			const double kPhiGridTightTol = kPhiGridTightSigma * se;
 			const double lowerLimit = kExpectedMean - kPhiGridTightTol;
 			const double upperLimit = kExpectedMean + kPhiGridTightTol;
 			const bool validSamples = moments.invalid == 0 && std::isfinite( moments.sumSq[0] ) &&

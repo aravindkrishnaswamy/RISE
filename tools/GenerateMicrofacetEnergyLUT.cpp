@@ -1324,7 +1324,8 @@ int main() {
 	// regardless of the `const`/`constexpr` qualifier), but `constexpr`
 	// additionally obligates the compiler to constant-evaluate the
 	// initializer, and MSVC's default `/constexpr:steps 100000` step
-	// budget cannot evaluate the largest table here (129,024 elements)
+	// budget cannot evaluate the largest table here (E_ss_TABLE_G2_ANISO_PHI,
+	// 24*24*13*32 = 239,616 elements at the current ANISO_PHI_SIZE=13)
 	// at compile time -- `inline const` keeps the same runtime data and
 	// linkage without asking for compile-time evaluation at all.  Each
 	// table below carries a one-line printed reminder of this.
