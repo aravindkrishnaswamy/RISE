@@ -38,6 +38,7 @@ returning to `Object::IntersectRay`:
 | `GeometryUtilities`'s bake-time synthetic hit (mesh displacement bake, not a live ray) | yes | yes |
 | `TriangleMeshGeometry` | **no** | **no** |
 | `TriangleMeshGeometryIndexed` | **no** | **no** |
+| `InfinitePlaneGeometry` | **no** | **no** (review addendum: its hit point is a local used only for its own planar `ptCoord`; the DL-95 fix is geometry-agnostic so it is covered, but it was NOT in the original table) |
 
 For every geometry in the first block, the pre-fix code accidentally
 worked: at the moment the UV-generator call ran, `ri.geometric.ptIntersection`
@@ -45,9 +46,10 @@ already held that geometry's own just-computed object-space hit point
 (nothing between the geometry's `IntersectRay` call and the UV-generator
 call touches `ptIntersection` unless `ray.hasDifferentials` is set, and
 even then the footprint block only touches `txFootprint`, not
-`ptIntersection`). Only `TriangleMeshGeometry{,Indexed}` -- which
-reconstruct their hit position generically, later, from `ray.PointAtLength(range)`
-in `Object::IntersectRay`'s own general path -- exposed the bug: the
+`ptIntersection`). `TriangleMeshGeometry{,Indexed}` and (review
+addendum, 2026-09-14) `InfinitePlaneGeometry` -- which reconstruct their
+hit position generically, later, from `ray.PointAtLength(range)` in
+`Object::IntersectRay`'s own general path -- exposed the bug: the
 UV-generator call read whatever stale point already happened to sit in
 the shared `RayIntersection` record.
 
