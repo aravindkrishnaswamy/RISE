@@ -286,19 +286,61 @@ namespace
 	//
 	// Callers must orient the lobe axis into the half-space first
 	// (OrientedLobeAxis), so cos(phi) = |dot(n, clipN)| >= 0 and the arc
-	// is never empty: halfArc >= PI/2 always.
+	// is never empty: halfArc >= PI/2 always.  (P3-f, review round 2: at
+	// the arc's own extreme -- theta -> 0, i.e. u1 -> 1 -- `uAxis` is
+	// evaluated but its direction is immaterial, since sin(theta) -> 0
+	// multiplies it away in `outDir`; this is the ordinary pole of any
+	// spherical parameterization, not a distinct failure mode, and no
+	// caller needs to special-case it.  Separately, `psi`'s own
+	// endpoints `u2 -> 0` and `u2 -> 1` both land exactly on the arc
+	// boundary `Dot(w,clipN) = 0` -- a measure-zero tangent-plane
+	// direction that is a valid sample of the closed interval
+	// `[-half,half]` and carries the ordinary density `q` computed
+	// below, not a degenerate case.)
 	inline Vector3 OrientedLobeAxis( const Vector3& n, const Vector3& halfSpace )
 	{
 		return ( Vector3Ops::Dot( n, halfSpace ) >= Scalar(0) ) ? n : -n;
 	}
+}
 
-	void SampleClippedPhong(
+namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
+{
+	// P3-b (review round 2): this function used to live in the anonymous
+	// namespace above and masked a violated precondition
+	// (`Dot(axis,clipN) < 0`, i.e. a caller that skipped
+	// `OrientedLobeAxis`) by clamping `cosPhi` to 0 with `r_max(0,...)`.
+	// That clamp did not just under-report -- it corrupted the
+	// (axis,uAxis,vAxis) frame: `uAxis = clipN - cosPhi*axis` was built
+	// from the WRONG cosPhi, so `uAxis` was no longer orthogonal to
+	// `axis`, and the resulting `outDir` was not even a unit vector
+	// (reviewer-measured |outDir|=0.722, reported pdf=0.4502, at
+	// Dot(axis,clipN)=-0.5) -- a silently WRONG sample a caller could go
+	// on to trace, not merely an unnormalized density.  Every production
+	// call site in this file orients `axis` via `OrientedLobeAxis`
+	// first, so this path is unreachable today; failing loudly (return
+	// false, emit nothing) is the `SampleValidDiffuseExit` precedent
+	// above -- fail the call, don't manufacture a bad direction -- and
+	// is exercised directly by `TranslucentClippedPhongContractTest` /
+	// `TranslucentEntryHorizonTest` sub-test 9 (this function is declared
+	// in TranslucentSPF.h precisely so those tests can drive it without
+	// going through a caller that would never violate the precondition).
+	bool SampleClippedPhong(
 		const Vector3& axis, const Vector3& clipN, const Scalar N,
 		const Scalar u1, const Scalar u2,
 		Vector3& outDir, Scalar& outPdf )
 	{
+		const Scalar cosPhiRaw = Vector3Ops::Dot(axis,clipN);
+		if( cosPhiRaw < Scalar(0) ) {
+			GlobalLog()->PrintEasyError(
+				"TranslucentSPF::SampleClippedPhong:: precondition violated -- "
+				"axis is not oriented into the clip half-space (Dot(axis,clipN) < 0); "
+				"refusing to sample rather than emit a non-unit direction." );
+			outDir = axis;
+			outPdf = 0;
+			return false;
+		}
+		const Scalar cosPhi = r_min( Scalar(1), cosPhiRaw );
 		const Scalar cosTheta = pow( u1, Scalar(1)/(N+Scalar(1)) );
-		const Scalar cosPhi = r_max( Scalar(0), r_min( Scalar(1), Vector3Ops::Dot(axis,clipN) ) );
 
 		// Tangential component of the clip normal in the lobe's frame.
 		Vector3 uAxis = clipN - cosPhi*axis;
@@ -313,7 +355,7 @@ namespace
 			outDir = GeometricUtilities::Perturb( axis, acos(cosTheta), TWO_PI * u2 );
 			outPdf = (N + Scalar(1)) * Scalar(0.5) * INV_PI
 				* pow( fabs( Vector3Ops::Dot( outDir, axis ) ), N );
-			return;
+			return true;
 		}
 		uAxis = uAxis * ( Scalar(1) / sqrt(uLen2) );
 		const Vector3 vAxis = Vector3Ops::Cross( axis, uAxis );
@@ -335,8 +377,11 @@ namespace
 		const Scalar psi = ( Scalar(2)*u2 - Scalar(1) ) * half;
 		outDir = uAxis*(sinTheta*cos(psi)) + vAxis*(sinTheta*sin(psi)) + axis*cosTheta;
 		outPdf = (N + Scalar(1)) * pow( cosTheta, N ) / ( Scalar(2) * half );
+		return true;
 	}
-}
+} } }
+
+using namespace RISE::Implementation::TranslucentSPFDetail;
 
 TranslucentSPF::TranslucentSPF(
 	const IPainter& rF,
@@ -496,21 +541,25 @@ void TranslucentSPF::Scatter(
 				const Scalar u1 = sampler.Get1D();
 				const Scalar u2 = sampler.Get1D();
 				Scalar transPdf = 0;
-				SampleClippedPhong( nEnter, intoSolid, Nfactor[0], u1, u2, rv, transPdf );
-
-				trans.ray.Set( ri.ptIntersection, rv );
-				trans.pdf = transPdf;
-				trans.isDelta = false;
-				trans.ior_stack = new IORStack( ior_stack );
-				// translucent_material has no ior parameter -- there is no
-				// second medium to enter, so re-push the enclosing medium's
-				// own IOR (RadianceEtaScale then sees before==after and
-				// returns exactly 1) rather than fabricating a jump to
-				// air's 1.0, which would misprice a translucent object
-				// nested inside water or glass.
-				trans.ior_stack->push( ior_stack.top() );
-				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
-				scattered.AddScatteredRay( trans );
+				// P3-b: SampleClippedPhong now fails loudly (returns false)
+				// on a violated precondition instead of masking it -- never
+				// true here since `nEnter` is already oriented, but skip the
+				// emit rather than trust an unpopulated rv/transPdf.
+				if( SampleClippedPhong( nEnter, intoSolid, Nfactor[0], u1, u2, rv, transPdf ) ) {
+					trans.ray.Set( ri.ptIntersection, rv );
+					trans.pdf = transPdf;
+					trans.isDelta = false;
+					trans.ior_stack = new IORStack( ior_stack );
+					// translucent_material has no ior parameter -- there is no
+					// second medium to enter, so re-push the enclosing medium's
+					// own IOR (RadianceEtaScale then sees before==after and
+					// returns exactly 1) rather than fabricating a jump to
+					// air's 1.0, which would misprice a translucent object
+					// nested inside water or glass.
+					trans.ior_stack->push( ior_stack.top() );
+					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
+					scattered.AddScatteredRay( trans );
+				}
 			} else {
 				// Add a new ray for each color component
 				RISEPel p = trans.kray;
@@ -521,7 +570,11 @@ void TranslucentSPF::Scatter(
 					// channel; the two canonical numbers stay SHARED across
 					// the three channels, so the draw count is unchanged.
 					Scalar transPdf = 0;
-					SampleClippedPhong( nEnter, intoSolid, Nfactor[i], ptrand.x, ptrand.y, rv, transPdf );
+					// P3-b: fail-loud precondition guard, see above; skip
+					// this channel's emit rather than trust a bad sample.
+					if( !SampleClippedPhong( nEnter, intoSolid, Nfactor[i], ptrand.x, ptrand.y, rv, transPdf ) ) {
+						continue;
+					}
 
 					trans.kray = 0;
 					trans.kray[i] = p[i];
@@ -620,14 +673,16 @@ void TranslucentSPF::Scatter(
 					const Scalar u1 = sampler.Get1D();
 					const Scalar u2 = sampler.Get1D();
 					Scalar backPdf = 0;
-					SampleClippedPhong( nBack, stayInside, Nfactor[0], u1, u2, rv, backPdf );
-
-					trans.ray.Set( ri.ptIntersection, rv );
-					trans.pdf = backPdf;
-					trans.isDelta = false;
-					front.kray = front.kray * (RISEPel(1.0,1.0,1.0)-scat);
-					// Back-scattered ray stays inside this object, no stack change
-					scattered.AddScatteredRay( trans );
+					// P3-b: fail-loud precondition guard, see above; never
+					// true here since `nBack` is already oriented.
+					if( SampleClippedPhong( nBack, stayInside, Nfactor[0], u1, u2, rv, backPdf ) ) {
+						trans.ray.Set( ri.ptIntersection, rv );
+						trans.pdf = backPdf;
+						trans.isDelta = false;
+						front.kray = front.kray * (RISEPel(1.0,1.0,1.0)-scat);
+						// Back-scattered ray stays inside this object, no stack change
+						scattered.AddScatteredRay( trans );
+					}
 				} else {
 					// Add a new ray for each color component
 					RISEPel p = trans.kray;
@@ -649,16 +704,23 @@ void TranslucentSPF::Scatter(
 						// DL-68: same exact two-draw clipped construction
 						// per channel, on the shared canonical pair.
 						Scalar backPdf = 0;
-						SampleClippedPhong( nBack, stayInside, Nfactor[i], ptrand.x, ptrand.y, rv, backPdf );
-
-						trans.kray = 0;
-						trans.kray[i] = p[i];
-						trans.ray.Set( ri.ptIntersection, rv );
-						trans.pdf = backPdf;
-						trans.isDelta = false;
-						front.kray[i] = f[i] * (1.0-scat[i]);
-						// Back-scattered ray stays inside this object, no stack change
-						scattered.AddScatteredRay( trans );
+						// P3-b: fail-loud precondition guard, see above;
+						// never true here since `nBack` is already oriented.
+						// On the (unreachable) failure path, keep this
+						// channel's full pre-scatter flux on the exit ray
+						// rather than silently discarding it.
+						if( SampleClippedPhong( nBack, stayInside, Nfactor[i], ptrand.x, ptrand.y, rv, backPdf ) ) {
+							trans.kray = 0;
+							trans.kray[i] = p[i];
+							trans.ray.Set( ri.ptIntersection, rv );
+							trans.pdf = backPdf;
+							trans.isDelta = false;
+							front.kray[i] = f[i] * (1.0-scat[i]);
+							// Back-scattered ray stays inside this object, no stack change
+							scattered.AddScatteredRay( trans );
+						} else {
+							front.kray[i] = f[i];
+						}
 					}
 				}
 			}
@@ -759,18 +821,20 @@ void TranslucentSPF::ScatterNM(
 			const Scalar u1 = sampler.Get1D();
 			const Scalar u2 = sampler.Get1D();
 			Scalar transPdf = 0;
-			SampleClippedPhong( nEnter, intoSolid, Nval, u1, u2, rv, transPdf );
-
-			trans.ray.Set( ri.ptIntersection, rv );
-			trans.pdf = transPdf;
-			trans.isDelta = false;
-			trans.ior_stack = new IORStack( ior_stack );
-			// NM twin of the RGB entry lobe above: translucent_material has
-			// no ior parameter, so re-push the enclosing medium's own IOR
-			// rather than fabricating a jump to air's 1.0.
-			trans.ior_stack->push( ior_stack.top() );
-			GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
-			scattered.AddScatteredRay( trans );
+			// P3-b: fail-loud precondition guard (RGB twin above); never
+			// true here since `nEnter` is already oriented.
+			if( SampleClippedPhong( nEnter, intoSolid, Nval, u1, u2, rv, transPdf ) ) {
+				trans.ray.Set( ri.ptIntersection, rv );
+				trans.pdf = transPdf;
+				trans.isDelta = false;
+				trans.ior_stack = new IORStack( ior_stack );
+				// NM twin of the RGB entry lobe above: translucent_material has
+				// no ior parameter, so re-push the enclosing medium's own IOR
+				// rather than fabricating a jump to air's 1.0.
+				trans.ior_stack->push( ior_stack.top() );
+				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
+				scattered.AddScatteredRay( trans );
+			}
 		}
 	}
 	else
@@ -806,24 +870,28 @@ void TranslucentSPF::ScatterNM(
 				const Scalar u1 = sampler.Get1D();
 				const Scalar u2 = sampler.Get1D();
 				Scalar backPdf = 0;
-				SampleClippedPhong( nBack, stayInside, Nval_scat, u1, u2, rv, backPdf );
+				// P3-b: fail-loud precondition guard (RGB twin above); never
+				// true here since `nBack` is already oriented.  On the
+				// (unreachable) failure path, leave `front.krayNM` at its
+				// pre-scatter value rather than silently discarding it.
+				if( SampleClippedPhong( nBack, stayInside, Nval_scat, u1, u2, rv, backPdf ) ) {
+					trans.type = ScatteredRay::eRayTranslucent;
+					// RGB twin (Scatter(), ~line 182) assigns
+					// `trans.kray = front.kray * scat;` -- trans.krayNM was never
+					// assigned before this point (ScatteredRay's ctor defaults
+					// krayNM to 0), so `*= scat` left this lobe at 0 (dead) in
+					// every spectral render.  Mirror the RGB twin: derive it from
+					// front.krayNM (the extinction-attenuated pass-through, set
+					// just above).
+					trans.krayNM = front.krayNM * scat;
+					trans.ray.Set( ri.ptIntersection, rv );
+					trans.pdf = backPdf;
+					trans.isDelta = false;
+					// Back-scattered ray stays inside this object, no stack change
+					scattered.AddScatteredRay( trans );
 
-				trans.type = ScatteredRay::eRayTranslucent;
-				// RGB twin (Scatter(), ~line 182) assigns
-				// `trans.kray = front.kray * scat;` -- trans.krayNM was never
-				// assigned before this point (ScatteredRay's ctor defaults
-				// krayNM to 0), so `*= scat` left this lobe at 0 (dead) in
-				// every spectral render.  Mirror the RGB twin: derive it from
-				// front.krayNM (the extinction-attenuated pass-through, set
-				// just above).
-				trans.krayNM = front.krayNM * scat;
-				trans.ray.Set( ri.ptIntersection, rv );
-				trans.pdf = backPdf;
-				trans.isDelta = false;
-				// Back-scattered ray stays inside this object, no stack change
-				scattered.AddScatteredRay( trans );
-
-				front.krayNM *= (1.0-scat);
+					front.krayNM *= (1.0-scat);
+				}
 			}
 		}
 

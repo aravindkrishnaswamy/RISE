@@ -24,6 +24,37 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		//! DL-68 review P3-b: `SampleClippedPhong` is TranslucentSPF.cpp's
+		//! internal exact clipped-cos^N-lobe sampler (see the long
+		//! derivation comment there).  Every production call site orients
+		//! `axis` into the `clipN` half-space first (`OrientedLobeAxis`),
+		//! so the `Dot(axis,clipN) < 0` failure path below is UNREACHABLE
+		//! from `TranslucentSPF::Scatter`/`ScatterNM`.  This declaration
+		//! exists solely so `TranslucentClippedPhongContractTest` (and
+		//! `TranslucentEntryHorizonTest`'s sub-test 9) can drive that
+		//! precondition-violation path directly -- the function itself
+		//! stays defined in TranslucentSPF.cpp (already compiled into the
+		//! library), so exposing it here costs nothing on the production
+		//! call path.
+		namespace TranslucentSPFDetail
+		{
+			//! Exact, unconditional two-draw sample of a `cos^N` Phong
+			//! lobe about `axis`, clipped to the half-space
+			//! `Dot(w,clipN) > 0`.  PRECONDITION: `Dot(axis,clipN) >= 0`
+			//! (the caller must orient `axis` into the half-space first,
+			//! e.g. via `OrientedLobeAxis`).  Returns false -- without
+			//! writing a meaningful `outDir`/`outPdf` -- when that
+			//! precondition is violated, rather than silently masking
+			//! `cosPhi` to 0 (the pre-P3-b behaviour, which built the
+			//! (axis,uAxis,vAxis) frame from the WRONG cosPhi and emitted
+			//! a NON-UNIT `outDir`: reviewer-measured |outDir|=0.722,
+			//! reported pdf=0.4502, at Dot(axis,clipN)=-0.5).
+			bool SampleClippedPhong(
+				const Vector3& axis, const Vector3& clipN, const Scalar N,
+				const Scalar u1, const Scalar u2,
+				Vector3& outDir, Scalar& outPdf );
+		}
+
 		class TranslucentSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:

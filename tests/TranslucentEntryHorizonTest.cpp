@@ -106,6 +106,7 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+using namespace RISE::Implementation::TranslucentSPFDetail;
 
 static int checks = 0;
 static int failed = 0;
@@ -858,6 +859,73 @@ static void TestDoubleSidedExitBackscatter()
 	obj->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 9 (P3-b): `SampleClippedPhong`'s precondition contract.
+//  Every production caller in TranslucentSPF.cpp orients its axis via
+//  `OrientedLobeAxis` first, so `Dot(axis,clipN) < 0` is unreachable
+//  from `Scatter()`/`ScatterNM()` -- this drives the function directly
+//  (exposed in TranslucentSPF.h for exactly this purpose) to pin that
+//  a violated precondition now FAILS LOUDLY (returns false) instead of
+//  the pre-P3-b masking clamp, which built its frame from a clamped
+//  `cosPhi` and emitted a NON-UNIT direction (reviewer-measured
+//  |outDir|=0.722, reported pdf=0.4502, at Dot(axis,clipN)=-0.5).
+//////////////////////////////////////////////////////////////////////
+static void TestSampleClippedPhongContract()
+{
+	std::cout << "Sub-test 9: SampleClippedPhong precondition contract (P3-b)" << std::endl;
+
+	// The reviewer's exact violating configuration: axis and clipN 120
+	// degrees apart (Dot == -0.5), i.e. a caller that skipped
+	// OrientedLobeAxis.
+	const Vector3 axisBad( 0, 0, 1 );
+	const Vector3 clipNBad( sin(2.0*PI/3.0), 0, cos(2.0*PI/3.0) );   // 120 deg off axisBad
+	EXPECT( fabs( Vector3Ops::Dot(axisBad,clipNBad) - (-0.5) ) < 1e-9,
+		"fixture sanity: Dot(axisBad,clipNBad) == -0.5" );
+
+	{
+		Vector3 dir(0,0,0);
+		Scalar pdf = -1;
+		const bool ok = SampleClippedPhong( axisBad, clipNBad, Scalar(1), Scalar(0.3), Scalar(0.7), dir, pdf );
+		EXPECT( !ok, "violated precondition (Dot(axis,clipN)=-0.5) fails loudly, returns false" );
+		EXPECT( pdf == 0, "failed call reports pdf=0, not a bogus density" );
+	}
+
+	// Control: a properly ORIENTED pair (the production contract) at the
+	// same relative angle must still return true and emit a genuine UNIT
+	// direction -- the fail-loud path must not have regressed the
+	// ordinary, reachable case.
+	{
+		// OrientedLobeAxis's own construction, inlined (it is a
+		// TranslucentSPF.cpp file-local anonymous-namespace helper, not
+		// exposed): pick whichever of {axisBad,-axisBad} is oriented
+		// into clipNBad's half-space.
+		const Vector3 axisGood = ( Vector3Ops::Dot(axisBad,clipNBad) >= 0 ) ? axisBad : -axisBad;   // = -axisBad here
+		Vector3 dir(0,0,0);
+		Scalar pdf = -1;
+		const bool ok = SampleClippedPhong( axisGood, clipNBad, Scalar(1), Scalar(0.3), Scalar(0.7), dir, pdf );
+		EXPECT( ok, "oriented precondition (Dot(axis,clipN)>=0) succeeds" );
+		EXPECT( pdf > 0, "successful call reports a positive density" );
+		const Scalar len = Vector3Ops::Magnitude( dir );
+		EXPECT( fabs(len - 1.0) < 1e-9, "successful call emits a unit direction" );
+		EXPECT( Vector3Ops::Dot( dir, clipNBad ) > -1e-9,
+			"successful call's direction respects the clip half-space" );
+	}
+
+	// Boundary control: Dot(axis,clipN) == 0 exactly (perpendicular) is
+	// NOT a precondition violation -- it is the r_min(1,...) branch's
+	// natural cosPhi=0 case, and must still succeed with a unit output.
+	{
+		const Vector3 axisPerp( 0, 0, 1 );
+		const Vector3 clipNPerp( 1, 0, 0 );
+		Vector3 dir(0,0,0);
+		Scalar pdf = -1;
+		const bool ok = SampleClippedPhong( axisPerp, clipNPerp, Scalar(1), Scalar(0.3), Scalar(0.7), dir, pdf );
+		EXPECT( ok, "exactly-perpendicular axis/clipN (Dot==0) is not a precondition violation" );
+		const Scalar len = Vector3Ops::Magnitude( dir );
+		EXPECT( fabs(len - 1.0) < 1e-9, "perpendicular-case call emits a unit direction" );
+	}
+}
+
 int main()
 {
 	std::cout << "TranslucentEntryHorizonTest (DL-68)" << std::endl;
@@ -870,6 +938,7 @@ int main()
 	TestSampledDirectionChiSquared();
 	TestDoubleSidedFrontFaceEntry();
 	TestDoubleSidedExitBackscatter();
+	TestSampleClippedPhongContract();
 
 	std::cout << "checks=" << checks << " failed=" << failed << std::endl;
 	if( failed ) {
