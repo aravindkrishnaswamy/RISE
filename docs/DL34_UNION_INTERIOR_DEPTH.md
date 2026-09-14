@@ -27,11 +27,15 @@ The new DL-60 and DL-61 rows below track those independent failures. Review and 
 
 The recipe is to add valid committed replay fixtures, prove the intended scene and trajectory checkpoints through the real runner, and rerun the suite with those 23 failures gone. Do not silently exclude the scenarios or weaken their checkpoints.
 
+**Disposed 2026-09-14 (debt-cov slice), blocked, not closed.** A fixture can only be recorded from a real hosted-provider trajectory, and this environment has no ANTHROPIC_API_KEY/GEMINI_API_KEY/OPENAI_API_KEY/XAI_API_KEY set. `AgentEvalCheckTest.cpp`'s T10 now skips (with an explicit diagnostic) any committed scenario with no `replayFixturePath`, bounded at exactly 2 (a third would fail loudly), instead of asserting the load_error failure. The 23 cascading assertions are gone (`AgentEvalCheckTest`: 2062/36 -> 2074/13). The underlying gap (no real fixture, no proof either scenario's checkpoints are true of a real run) is unchanged; see docs/DEBT_LEDGER.md DL-60.
+
 ### DL-61: committed render oracles disagree with their replay
 
 The same pre-fix suite reproduces three assertions for `constant_materials_polish` (one mean-luminance checkpoint and its aggregate/fraction) and six for `image_reconstruct_multi` (four RMSE checkpoints and two aggregates). Neither fixture uses CSG objects or cross-object signals. The observed mismatch is confirmed; its root cause is not assigned to renderer physics or merely stale bands without investigation.
 
 The recipe is to reproduce these nine assertions with seeded, finite, linear measurements; independently establish the intended scene result; repair the renderer or fixture/oracle at the layer the evidence identifies; and rerun the suite without weakening the checkpoint merely to match current output. Preserve image/lighting activity and reference-shape controls.
+
+**Investigated 2026-09-14 (debt-cov slice), NOT closed.** `constant_materials_polish`'s root cause is identified and quantified: rendering the committed scene text at the 2026-08-20 commit its own "meanLuma ~= 0.18" comment cites gives 0.182353, matching the comment; the same scene text on this branch's HEAD gives 0.001549, matching the live failure exactly -- a genuine ~118x regression somewhere in the ~1066 intervening commits, not a stale comment. Filed as DL-120 (docs/DEBT_LEDGER.md) with the full investigation; fixing it needs `src/Library` changes outside this slice's scope. `image_reconstruct_multi`'s root cause was not established; a sibling failure on `image_reconstruct_single` (same symptom shape, smaller magnitude) was found and folded into DL-61's evidence. See docs/DEBT_LEDGER.md DL-61/DL-120 for the full account.
 
 ## Changed files
 
