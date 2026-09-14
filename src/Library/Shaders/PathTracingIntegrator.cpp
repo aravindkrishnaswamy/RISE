@@ -2053,6 +2053,27 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						break;
 					}
 
+					// DL-84: pair the training moment below (recorded once this
+					// vertex's continuation either re-scatters again or escapes
+					// to the environment, whichever happens first) with one
+					// `AccumulateCount` HERE -- at the same "one call per sample
+					// attempt" granularity the main surface continuation
+					// (`AccumulateCount` a few hundred lines below, gated on
+					// `!skipContinuation`) and the BSSRDF exit continuation both
+					// use.  Placed BEFORE Russian roulette, so an RR-terminated
+					// attempt (the `break` a few lines down) is still counted --
+					// `OptimalMISAccumulator.h`'s `AccumulateCount` doc: "regardless
+					// of whether the sample contributed non-zero radiance".  This
+					// mirrors `RayCaster.cpp`'s own two volume sites, which gate
+					// the identical call on `effectivePdf > 0` (true here by the
+					// check just above; kept explicit for the same reason those
+					// sites keep it explicit -- symmetry under future edits).
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
+					{
+						const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+							rast.x, rast.y, kTechniqueBSDF );
+					}
+
 					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
 					const Scalar volScatterScalar = phaseVal / effectivePdf;
 					// Pel multiplies channel-wise by RISEPel(s,s,s); NM
@@ -2135,16 +2156,30 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// VolumeEnvFurnaceTest's floor-in-fog furnace.
 					bsdfPdf = effectivePdf;
 					bsdfMisPdf = phasePdf;
-					// The optimal-MIS moment's numerator must come from the SAME
-					// vertex as its denominator.  The surface `bsdfTimesCos` left
-					// standing here belongs to the previous vertex, so it is
-					// cleared rather than reused: a zero numerator simply does
-					// not train (the `f2 > 0` gate), which is the conservative
-					// state DL-72 round 2 established for sites whose correct
-					// quantity is not yet wired.  Wiring it properly needs a
-					// paired `AccumulateCount` at this site as well -- filed as
-					// DL-84, deliberately not done here.
-					bsdfTimesCos = Traits::zero();
+					// DL-84 (fixed): the optimal-MIS moment's numerator must be
+					// the FULL vertex-local integrand at THIS vertex, matching
+					// its own denominator (`bsdfPdf` above).  A phase function
+					// has no separate cosine term (there is no surface normal in
+					// free space -- DL-72 round 3's derivation for RayCaster.cpp's
+					// sibling sites), so the volume analogue of "BSDF*cos at the
+					// scatter point" is just the phase VALUE at the sampled
+					// direction.  This loop already computes that value
+					// explicitly a few lines above (`phaseVal = pPhase->Evaluate(
+					// wo, wi)`, used for `volScatterScalar`), so it is used
+					// directly here rather than leaning on "for a normalized
+					// phase function this equals Pdf()" the way RayCaster.cpp's
+					// sites do (they have no separate Evaluate() call at hand).
+					// The surface `bsdfTimesCos` left standing here belonged to
+					// the PREVIOUS vertex -- a numerator from one vertex over a
+					// denominator from another -- which is why round 2
+					// conservatively cleared it to zero (the `f2 > 0` gate then
+					// simply skips training) rather than reuse it.  Paired with
+					// the `AccumulateCount` added above.
+					if constexpr ( Traits::is_pel ) {
+						bsdfTimesCos = RISEPel( phaseVal, phaseVal, phaseVal );
+					} else {
+						bsdfTimesCos = phaseVal;
+					}
 					considerEmission = true;
 					volumeBounces++;
 					continue;  // Re-enter loop: needsIntersection is still true
@@ -3864,11 +3899,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					rast.x, rast.y, kTechniqueBSDF );
 			}
 
-#ifdef RISE_ENABLE_OPENPGL
-			// Capture pre-RR throughput so the guiding segment records
-			// scatteringWeight = bsdf*cos/pdf (without RR amplification).
-			// OpenPGL applies RR separately via russianRouletteSurvivalProbability.
+			// DL-84 (RR-convention ruling): captured UNCONDITIONALLY, not just
+			// under OpenPGL -- see the ruling at the `bsdfTimesCosVal`
+			// assignment below for why the optimal-MIS moment must be trained
+			// from this PRE-RR value rather than the post-RR-divided
+			// `scatterThroughput`.
 			const Value preRRScatterThroughput = scatterThroughput;
+#ifdef RISE_ENABLE_OPENPGL
+			// So the guiding segment records scatteringWeight = bsdf*cos/pdf
+			// (without RR amplification).  OpenPGL applies RR separately via
+			// russianRouletteSurvivalProbability.
 			Scalar rrSurvivalProb = 1.0;
 #endif
 
@@ -3891,8 +3931,26 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 			}
 
+			// DL-84 (RR-convention ruling, docs/DL72_RAYCASTER_BSDFTIMESCOS_
+			// TRAINING.md "Round 6"): `OptimalMISAccumulator`'s moment is of
+			// the INTEGRAND `f` at this vertex (Kondapaneni 2019 -- see
+			// OptimalMISAccumulator.h's own derivation), and Russian roulette
+			// is a SEPARATE, later unbiased estimator layered on top of that
+			// vertex's contribution, not part of it: NEE's own moment is
+			// never RR-inflated (NEE takes no continuation and undergoes no
+			// RR at this vertex), and the two BSSRDF sites already train from
+			// their PRE-RR quantity (`bssrdfWeight`, captured before
+			// `sssThroughput` is RR-divided).  Training from the POST-RR
+			// `scatterThroughput` here -- as this site did before this fix --
+			// therefore injected an RR-survival-dependent factor into ONE
+			// technique's moment that its NEE partner's moment never carries,
+			// which is a real inconsistency in what the two moments estimate
+			// (variance-only: `alpha` cannot bias the rendered radiance, only
+			// how the fixed budget is split between techniques).  Use the
+			// PRE-RR `preRRScatterThroughput` captured above instead, matching
+			// the BSSRDF sites' convention.
 			const Value bsdfTimesCosVal = pS->isDelta ? Traits::zero() :
-				PTBsdfTimesCos( scatterThroughput, effectiveBsdfPdf );
+				PTBsdfTimesCos( preRRScatterThroughput, effectiveBsdfPdf );
 
 			// DL-74: the nominal MIS-partner density for the direction
 			// actually being traced.  Identical to `effectiveBsdfPdf`
