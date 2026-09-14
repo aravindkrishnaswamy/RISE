@@ -1382,24 +1382,51 @@ change). Every refusal path is
 `add_wear`'s tool description already teaches
 ([AgentMcpAdapter.cpp:1848-1901](../src/Library/Agent/AgentMcpAdapter.cpp)).
 
-> **Collision: `add_wetness` and `add_wear` mutually exclude each other, both
-> ways — and worn-and-wet is the flagship subject.** `add_wear`'s qualifying
-> predicate refuses a material whose slots already reference the geometry signals
-> ([AgentSession.cpp:3331](../src/Library/Agent/AgentSession.cpp) clause (d)), so
-> a wet material cannot subsequently be worn. And `add_wetness`'s clause 2 above
-> requires a plain `uniformcolor_painter` albedo, which a *worn* material no longer
-> has — `add_wear` has already rebound it to an `expression_painter`. **Whichever
-> verb runs first locks the other out**, and "a weathered bronze door in the rain"
-> is precisely the thing an author asks for.
+> ~~**Collision: `add_wetness` and `add_wear` mutually exclude each other, both
+> ways — and worn-and-wet is the flagship subject.**~~ **PARTIALLY CLOSED
+> 2026-09-14 (DL-26, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md)): one direction,
+> on one substrate kind, now composes for free.** `add_wear`'s qualifying
+> predicate still refuses a material whose slots already reference the geometry
+> signals ([AgentSession.cpp:3331](../src/Library/Agent/AgentSession.cpp)
+> clause (d)) — unchanged, so a WET material still cannot subsequently be
+> worn, in either direction and for every substrate kind. But the FORWARD
+> direction — `add_wear` first, then `add_wetness` on the SAME material —
+> turns out not to need the prelude-extension mechanic sketched below at
+> all, for a `lambertian_material` specifically: since item 8 (2026-08-31)
+> retargeted its wetness branch to a `coated_material` WRAP that leaves the
+> substrate's own chunk byte-for-byte untouched and mints `coat_weight`/
+> `coat_roughness` fresh rather than reading (let alone rewriting) the
+> colour slot at all, WHATEVER `add_wear` bound that slot to is simply
+> irrelevant to what the wrap builds. `add_wetness`'s clause 2 and its
+> early add_wear-collision check were both narrowed to recognise this one
+> case (a `lambertian_material` whose only reason for an unreadable primary
+> slot is a wear expression) and let it through with `hasReadableColor`
+> left false, which the coat-WRAP emission site already guards on
+> (`if( pick->hasReadableColor && !lambertianBranch )` — the branch never
+> reads it regardless). **GGX/PBR/Oren-Nayar keep refusing**: their
+> in-place darkening genuinely needs to read-and-rewrite the SAME colour
+> slot `add_wear` already claimed, which is exactly the "each verb
+> refuses what the other has already rewritten" case. **The REVERSE
+> direction — `add_wetness` first, then `add_wear` — also keeps refusing,
+> for every kind**, including Lambertian: the coat WRAP rebinds the bound
+> object's own `material` param to the new `coated_material` chunk, so a
+> subsequent `add_wear` naming the original substrate finds no bound
+> object left to satisfy its own clause (c) — a different, larger gap
+> (following a `base` reference through object-binding resolution) that
+> this row does not close. "A weathered bronze door in the rain" (a
+> non-Lambertian target) and "wet first, worn second" (either kind) both
+> still need the prelude-extension mechanic below, unscheduled.
 >
-> **v1 resolution: accept the exclusion, but make it loud.** Each verb's refusal
-> message must **name the other verb** and state that the two cannot currently be
-> combined on one material, so the agent gets a real explanation instead of an
-> opaque decline — and both verbs' refusal text has to be written and guarded
-> together, since the text is duplicated across `AgentMcpAdapter.cpp` and
-> `AgentChatCodecs.cpp` by discipline rather than code sharing. The census (§10.3)
-> then **counts how often both are wanted on one material**, which is the observed
-> need that would justify the follow-up.
+> **v1 resolution, updated:** each verb's refusal message still **names the
+> other verb** for every case it still refuses, so the agent gets a real
+> explanation instead of an opaque decline — the wording was updated
+> (`AgentSession.cpp`, `AgentMcpAdapter.cpp`, `AgentChatCodecs.cpp`) to say
+> "on a non-Lambertian material" / "in the reverse order" rather than
+> claiming blanket exclusion, since that claim is now false for the one
+> case DL-26 closes. `tests/AgentAddWetnessTest.cpp`'s F6b is the dedicated
+> regression: `add_wear` then `add_wetness` on a Lambertian succeeds,
+> yielding a document with BOTH the wear expression (still referenced) and
+> a new `coated_material` naming the worn material as `base`.
 >
 > **The follow-up, sketched not scheduled: prelude extension in place.** Both
 > verbs write the same shape — a `param`/`def` prelude plus a final expression —
@@ -1407,7 +1434,9 @@ change). Every refusal path is
 > `def`s, wrap the existing final expression in its own `mix`) rather than refuse.
 > That is a genuinely different and larger mechanic than either verb has today
 > (it must parse and re-emit an expression body it did not write), which is why it
-> is a follow-up and not v1.
+> is a follow-up and not v1 — and DL-26's closure shows it is needed only for the
+> GGX/PBR/Oren-Nayar in-place branches and the reverse order now, a narrower
+> remaining scope than "the whole collision".
 
 **Paired design-note condition.** One new condition in
 [AgentDiagnostic.h](../src/Library/Agent/AgentDiagnostic.h) alongside
@@ -2350,9 +2379,16 @@ timing exists because no implementation exists.
    ([ExpressionEval.h:728-757](../src/Library/Painters/ExpressionEval.h)), so
    §6.4 clause 2 refuses rather than half-delivering. **Open**; §4(g) is the
    scoped candidate fix.
-6c. **`add_wetness` and `add_wear` mutually exclude each other on one material**
+6c. ~~**`add_wetness` and `add_wear` mutually exclude each other on one material**
    (§6.4), and worn-and-wet is the flagship subject. v1 accepts the exclusion with
-   cross-naming refusal messages; the census counts the demand. **Open.**
+   cross-naming refusal messages; the census counts the demand.~~ **PARTIALLY
+   CLOSED 2026-09-14 (DL-26, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))**: `add_wear`
+   then `add_wetness` on the SAME `lambertian_material` now composes (the
+   coat-WRAP branch never touches the colour slot `add_wear` rewrote). GGX/
+   PBR/Oren-Nayar (whose wetness branch needs that same slot) and the
+   reverse order (wet-then-wear, any kind) still refuse — see §6.4's
+   updated collision note for the full account. **Residual open**, narrower
+   than before: the prelude-extension mechanic for those remaining cases.
 7. **The wet-highlight variance cost is unmeasured** (§11.1). Measure with
    `oidn_denoise FALSE` before fixing the recipe's `scattering` ceiling.
 8. **Heightfield-mode SDF returns neutral occlusion silently** — the pooling

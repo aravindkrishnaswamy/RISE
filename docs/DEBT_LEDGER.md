@@ -111,7 +111,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-16 | CLOTH_FABRIC_DESIGN.md §15 item 4 | `ggx_material.tangent_rotation` stays Color-pipe only; the promised Scalar-pipe alias (so a `fabric_material`'s `weave_rotation` and its substrate's own rotation can share one painter) was never added | OPEN-confirmed | `ChunkParserRegistry.cpp:4495` — `tangent_rotation`'s only descriptor entry is `ParameterPipe::Color`, `p.description` states "a scalar_painter does NOT bind here"; no second `tangent_rotation`-family scalar parameter exists (grepped this sweep) | S | API/bridge gap | user-visible (authoring: can't drive both rotations from one field) |
 | DL-17 | CLOTH_FABRIC_DESIGN.md §15 item 12 | glTF PER-TEXEL `anisotropy_rotation` (the direction encoded in the anisotropy texture's R/G channels) is still dropped at import and falls back to the scalar rotation, even though the expression VM's `atan2` (confirmed present) makes the sketched fix executable today; the SCALAR `anisotropy_rotation` IS wired through (`Job::AddPBRMetallicRoughnessMaterial`, `tests/PBRMaterialAPITest.cpp` Test 3) | OPEN-confirmed | `GLTFSceneImporter.cpp:1300-1307`'s comment stands; `ChunkParserRegistry.cpp:4560`'s `anisotropy_rotation` descriptor still reads "Phase 1 reads but does not yet APPLY the rotation" — read directly this sweep | S | API/bridge gap | user-visible (glTF import only) |
 | ~~DL-23~~ | ~~CLOTH_FABRIC_DESIGN.md §15 item 16 (tail) / IMPROVEMENTS.md "Clearcoat over `fabric_material` — not composable, unowned"~~ | ~~`coated_material`'s substrate allowlist does not admit `fabric_material`/`weave_material`~~ | CLOSED 2026-09-14 | `CoatedMaterial.h`'s allowlist and `IsSupportedSubstrate` now admit both classes; `CoatedBRDF`/`CoatedSPF` forward and modulate a `transmission thin` weave's below-horizon transport, mirroring `FabricBRDF`/`FabricSPF`'s R8 P1.1 fix (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22) almost exactly -- same continuum forward-and-modulate with the coat's OWN recycling factor reused, same bare (non-recycled) two-crossing reprice for the substrate's delta gap ray. `tests/CoatedMaterialChunkTest.cpp`'s new `TestTransmissiveSubstrateForwarding`: 85/0 (red pre-fix: 11 failed -- the allowlist predicate, both forwarded flags, the below-horizon MONEY check, the closed-form match, and the real-transmitted-share energy check). Full narrative in this file's "Verification recipes" section, DL-23 entry. | S | API/bridge gap | user-visible (authoring: can't compose a coat over fabric) |
-| DL-26 | WETNESS_COAT_DESIGN.md §12 item 6c | `add_wetness` and `add_wear` mutually exclude on one material; worn-and-wet, the flagship subject, is unreachable | OPEN-confirmed | `src/Library/Agent/AgentSession.cpp` ~8021/8092/8328 ("add_wear / add_wetness cannot currently be combined on one..."), confirmed present this sweep | S | API/bridge gap | user-visible (agent-authored worn-and-wet materials) |
+| ~~DL-26~~ | ~~WETNESS_COAT_DESIGN.md §12 item 6c~~ | ~~`add_wetness` and `add_wear` mutually exclude on one material; worn-and-wet, the flagship subject, is unreachable~~ | PARTIALLY CLOSED 2026-09-14 | `add_wear` then `add_wetness` on the SAME `lambertian_material` now composes -- the coat-WRAP branch never reads or rewrites the colour slot `add_wear` rebound (item 8's own design), so `add_wetness`'s clause 2 and its early collision check were narrowed to admit exactly that case. GGX/PBR/Oren-Nayar (in-place darkening needs the same slot) and the reverse order (wet-then-wear, any kind -- the coat wrap rebinds the object's `material` param, so `add_wear` finds no bound object left) still refuse; the doc's own "prelude extension in place" follow-up remains open for those, narrower in scope than before. `tests/AgentAddWetnessTest.cpp`'s new F6b: red pre-fix (3 of 225 checks failed -- the refusal, the missing coat wrap), green post-fix (225/225). Full narrative in this file's "Verification recipes" section, DL-26 entry. | S | API/bridge gap | user-visible (agent-authored worn-and-wet materials) |
 | DL-28 | WETNESS_COAT_DESIGN.md §12 item 9 | Water-absorption spectral files must be pre-converted to a transmittance base because `dielectric_material`'s `tau` is `pow(tau,distance)`, not `exp(-sigma*distance)`; a pasted-in published sigma_a table is silently wrong | OPEN-confirmed | `DielectricSPF.cpp:318-323` (`pow(tauVals.v[i], distance)`), confirmed unchanged this sweep; no runtime validation or warning exists for a mismatched-convention input file | S | API/bridge gap | user-visible (authoring trap only, silent) |
 | ~~DL-32~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~`standard_object`'s `scale` written with ONE number (e.g. `scale 0.35`) derives to a degenerate transform silently~~ | CLOSED 2026-09-14 | `ChunkParserRegistry.cpp`'s shared `ResolveScaleVec3` helper: one finite number is now an explicit UNIFORM-scale broadcast (logged warning); anything else short of exactly three finite numbers is a hard parse error naming DL-32, applied identically to `standard_object` and `override_object` (whose own `scale` used to hard-refuse the single-number shorthand outright, despite its descriptor's "matches standard_object semantics" claim). `tests/StandardObjectScaleTest.cpp`: 23/0 (red pre-fix: 8 failed — the degenerate-zero-fill diagonal and the override_object hard-refusal). `CstDeriveGoldenTest`: 452/452, 0 drift. `ProximitySignalTest`: 491/0. Full narrative in this file's "Verification recipes" section, DL-32 entry. | S | API/bridge gap | user-visible (silent scene-authoring trap) |
 | ~~DL-80~~ | ~~Utilities/Color/ColorUtils.h:17 / Color.h:71 / SpectralPacket.h:20~~ | ~~`Color.h` and `ColorUtils.h` are mutually circular via `SpectralPacket.h`'s own `#include "ColorUtils.h"`, so whichever of the two a translation unit includes FIRST wins the include-guard race and the other's declarations (`ColorUtils::XYZFromNM`, transitively `IFunction1D`) are invisible to `SpectralPacket.h` when entered the losing way~~ Cycle broken at the root: `SpectralPacket.h`/`SpectralPacket_Template.h` no longer `#include "ColorUtils.h"` at all | CLOSED 2026-09-14 (debt-misc slice) | Row filed by the `precision` slice (`11393740`, uncommitted to master at the time this slice started); its own fix commit originally worked around the landmine at its two discovered call sites (`PiecewiseLinearScalarPainter.cpp`, `tests/IScalarPainterTest.cpp`) by including `Color.h` first, not at the root.  **Superseded**: per the `precision` slice's own re-verification, its DL-29 redesign subsequently removed the code paths that needed that workaround, so those two include-order workaround sites no longer exist in its branch either way.  This row's root fix (breaking the `Color.h`/`ColorUtils.h` cycle at `SpectralPacket.h`) supersedes any such workaround regardless of whether the sites survive — the include-order hazard it worked around is gone for every caller, not just those two.  The `precision` branch's own copy of this DL-80 row is reconciled against this one at merge time to avoid a double-filing under the same id. Re-derived independently on current master (`a3aa5b8d`) by reading the three cited lines directly: `ColorUtils.h:17` `#include "Color.h"`; `Color.h:71` `#include "SpectralPacket.h"`; `SpectralPacket.h:20` (pre-fix) `#include "ColorUtils.h"`. Red-proved with two new standalone tests exercising both entry orders directly against `git rev-parse a3aa5b8d`'s unfixed headers: `tests/ColorUtilsBeforeColorIncludeOrderTest.cpp` (includes `ColorUtils.h` then `Color.h`) reproduces the EXACT reported errors — `error: unknown type name 'IFunction1D'` and `error: no member named 'XYZFromNM' in namespace 'RISE::ColorUtils'` at `SpectralPacket.h:109,246` and `SpectralPacket_Template.h:222` — while its sibling `tests/ColorBeforeColorUtilsIncludeOrderTest.cpp` (the order every existing production file happened to use) compiled clean throughout, confirming the race is real and order-dependent, not a general breakage. **Fix**: `SpectralPacket.h` and `SpectralPacket_Template.h` no longer include `ColorUtils.h` — each forward-declares the single function it actually calls (`bool ColorUtils::XYZFromNM(XYZPel&, const Scalar)`) plus `struct XYZPel;`, and `SpectralPacket.h` gained a direct `#include "../../Interfaces/IFunction1D.h"` (previously reached only transitively through the now-removed `ColorUtils.h` edge) for the `IFunction1D*`-constructor overload it defines inline. `ColorUtils.h`'s own `#include "Color.h"` is UNCHANGED (many existing files rely on it transitively) — only the back-edge that closed the cycle was cut, so the fix needs no caller to change its own include order. **Second-order breakage found and fixed in the same pass**: cutting that back-edge also removed a HIDDEN transitive path 9 other files relied on to reach `ColorUtils.h`'s declarations without including it directly (`Color.h` used to reach `ColorUtils.h` via `SpectralPacket.h`, so anything that included `Color.h` got `ColorUtils.h` for free) — a full library rebuild after the header fix failed with `no member named 'SerializeRGBPel'/'DeserializeRGBPel' in namespace 'RISE::ColorUtils'` in `CausticPelPhotonMap.cpp`/`GlobalPelPhotonMap.cpp`; a symbol-level audit (grepping every real, non-comment `ColorUtils::<exact-symbol>` call site against every file that already includes `ColorUtils.h` directly) found 9 total: `DetectorSpheres/IsotropicRGBDetectorSphere.cpp`, `Job.cpp`, `PhotonMapping/{Caustic,Global}{Pel,Spectral}PhotonMap.cpp` (4 files), `PhotonMapping/TranslucentPelPhotonMap.cpp`, `RasterImages/PPMWriter.cpp`, `Shaders/VCMIntegrator.cpp` — each given its own direct `#include ".../Color/ColorUtils.h"` rather than relying on transitive luck (two further textual hits, `Rendering/FrameStoreColorSpace.h` and `Shaders/VCMIntegrator.h`, were confirmed to be COMMENT-only references and needed no fix; `FrameStoreColorSpace.h` got a documentation-anchoring include anyway, harmlessly). Full library rebuild clean (zero warnings) after both the header fix and the 9 call-site fixes. Gate: both include-order tests green; `ColorUtilsTest` (all passed), `FrameStoreColorMathTest` (324/0), `JakobHanikaRoundTripTest` (14/0), `RGBPainterSpectralRoundTripTest` (18/0), `TexCoord1PainterTest` (33/0), `ThinFilmAnodizeSwatchTest` (24/0), `TextureExpressionVMTest` (846/0), `ThinFilmRGBSpectralTest` (7/0), `AgentObjectMapTest` (254/0), `PainterVolumeAccessorTest` (all passed) — every test file matching `grep -l 'SpectralPacket\|ColorUtils' tests/*.cpp`. **Not fixed, and not a new debt**: `SpectralPacket.h`'s own `#if 0 ... #endif` dead-code block (a `GetRGB()` overload calling `ColorUtils::RGBFromNM`, a name that has never existed — the closest real function, `ArbritaryRGBFromNM`, is itself commented out in `ColorUtils.cpp`'s explicitly-labeled "DEAD CODE section") is pre-existing, already self-labeled dead code on both ends, not a hidden landmine, and out of scope. | S | API/bridge gap | internal (fixed before any in-tree file tripped the losing order in production; the `precision` slice's DL-29 fix, if merged as-is, keeps working — its own include-order workaround is now simply redundant, not broken) |
@@ -207,6 +207,15 @@ reflowed otherwise.
 - ~~DL-73~~ (DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md: volume-guiding bsdfPdf composition) — STRUCK 2026-09-13, ruled consistent by derivation (P2-C, debt-sssenv round-2): the row proposed replacing `RayCaster.cpp`'s `rs2.bsdfPdf = phasePdf` (raw, un-combined) with the guided-mixture `combinedPdf`, on the theory that it should match the main surface continuation's `effectiveBsdfPdf` convention. Derivation shows this is backwards: env-NEE at a volume vertex weights via `MediumScatterMaterial::Pdf` (`MediumTransport.cpp`'s `EvaluateInScattering` -> `LightSampler::EvaluateDirectLighting`'s env arm, `LightSampler.cpp` ~:2652), which returns the RAW, un-guided `m_pPhase->Pdf(...)` — the SAME raw `phasePdf` the escape side already uses. Both sides feed `PowerHeuristic` the identical `(phasePdf, envPdf)` pair (opposite argument order), which is `PowerHeuristic(a,b) + PowerHeuristic(b,a) == 1` by construction — UNBIASED as written. `guidingMISWeight = phasePdf / combinedPdf` (folded into `rs2.importance`) already applies the full guiding correction to the sample's contribution; substituting `combinedPdf` into the MIS weight too, as this row prescribed, would double-apply that correction and BREAK the partition. Not a debt; the real, opposite-signed asymmetry is on the surface path, filed separately as DL-74. See [DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) "Residual: volume-guiding bsdfPdf composition — DL-73 RULED NOT A DEBT".
 
 ## Counts
+
+**2026-09-14 (debt-api1 slice, DL-26):** DL-26 PARTIALLY CLOSED — `add_wear`
+then `add_wetness` on the SAME `lambertian_material` now composes (the
+coat-WRAP branch never reads or rewrites the colour slot `add_wear`
+rewrote); GGX/PBR/Oren-Nayar and the reverse order (any kind) still refuse,
+correctly left open rather than forced past a genuine structural gap (the
+coat wrap's object-rebinding leaves `add_wear` with no bound object to
+find on the original substrate in the reverse order). See the table row
+and its "Verification recipes" entry above. No new debt rows filed.
 
 **2026-09-14 (debt-api1 slice, DL-23):** DL-23 CLOSED — `coated_material`'s
 substrate allowlist now admits `fabric_material`/`weave_material`, and
@@ -1053,13 +1062,91 @@ through `add_wetness`'s recipe and a render regression shows the texture
 detail surviving under the wet recipe, closing WETNESS_COAT_DESIGN.md §6.4
 clause 2's refusal.
 
-**DL-26 (add_wetness / add_wear mutual exclusion).** Design the composable
-representation (WETNESS_COAT_DESIGN.md doesn't sketch one) and extend
-`AgentSession.cpp`'s qualifying predicates so both verbs can commit to the
-same material. Fixed when `tests/AgentAddWetnessTest.cpp` and its `add_wear`
-counterpart both gain a case that applies one verb after the other on the
-same target and asserts non-refusal plus both effects visible in the
-emitted CST.
+**~~DL-26 (add_wetness / add_wear mutual exclusion).~~ PARTIALLY CLOSED
+2026-09-14 (debt-api1 slice).** Root cause of the exclusion, once traced
+past WETNESS_COAT_DESIGN.md's own §6.4 account: it is NOT a fundamental
+representation conflict on every substrate. `add_wear` rebinds a
+material's colour slot to an expression reading `curv`/`occlusion`;
+`add_wetness`'s clause 2 (a readable constant colour) and its early
+add_wear-collision check both refuse ANY material whose colour slot is
+already such an expression, regardless of material kind. But item 8
+(2026-08-31, pre-existing) had already retargeted `add_wetness`'s
+Lambertian branch to a `coated_material` WRAP that leaves the substrate
+chunk untouched and mints `coat_weight`/`coat_roughness` fresh, NEVER
+reading (let alone rewriting) the colour slot at all -- confirmed by
+reading `BuildWetnessCoatedMaterialText_`'s own doc comment and the
+`if( pick->hasReadableColor && !lambertianBranch )` emission-site guard,
+which already excludes the Lambertian branch from consuming
+`hasReadableColor` for any reason. So for a `lambertian_material`
+specifically, the "readable constant" requirement was pure superstition
+inherited from the shared clause structure -- WHATEVER `add_wear` bound
+the slot to is irrelevant to what the wrap builds.
+
+Fix: `AgentSession.cpp`'s early add_wear-collision check (the `wornByWear`
+block) and clause 2's `!hasReadableColor` refusal both gained a narrow
+bypass -- `pm.kind == "lambertian_material"` AND the primary slot's
+non-constant binding traces specifically to a wear expression
+(`WearBodyReadsGeometrySignals_`) -- that lets the material through with
+`hasReadableColor` left `false` (safe, since the guarded emission site
+never reads it for this branch either way). Every OTHER unreadable-colour
+reason (blackbody / spectral / non-default colorspace) keeps refusing
+exactly as before, matching `tests/AgentAddWetnessTest.cpp`'s pre-existing
+F8 negative controls. GGX/PBR/Oren-Nayar are UNCHANGED: their in-place
+darkening genuinely needs to read-and-rewrite the same colour slot
+`add_wear` already claimed, so `add_wetness` on an already-worn GGX/PBR/
+Oren-Nayar target still refuses (`tests/AgentAddWetnessTest.cpp`'s
+pre-existing F6, still green). The REVERSE order (`add_wetness` first,
+then `add_wear`) was investigated and left refused for every kind,
+DELIBERATELY -- the coat WRAP rebinds the bound object's own `material`
+param to the new `coated_material` chunk, so `add_wear`'s own clause (c)
+("at least one bound object") would find none left for the original
+substrate; composing that direction needs `add_wear` to follow a
+`coated_material.base` reference for object-binding resolution, a
+different and larger gap than this row's evidence or recipe scoped (the
+pre-existing F7/F7b regressions confirm this direction is untouched and
+still refuses, exactly as before).
+
+Red-proof: `tests/AgentAddWetnessTest.cpp`'s new F6b (`add_wear` then
+`add_wetness` on a Lambertian), built and run against the library
+reverted via a saved patch (not `git stash`) -- 3 of 225 checks failed:
+the refusal itself, the missing `wrappedInCoat` flag, and the missing
+`coated_material` chunk. 225/225 pass post-fix. The composed document
+carries BOTH effects: the wear `expression_painter` is still referenced,
+and the new `coated_material` names the WORN material as `base`; it
+validates with zero error diagnostics and re-derives. A render of the
+final worn-and-wet result differs from the original bare/dry material by
+>1% (a deliberately coarse, high-sample-count check -- the worn-vs-
+worn+wet delta specifically was measured and found too small relative to
+this scene's unseeded per-render MC noise floor at any affordable sample
+count to use as a reliable numeric gate; the deterministic structural
+checks are the real proof here, not the render).
+
+Gate: `AgentAddWetnessTest` 225/225 (was 210/0 before F6b was added --
+the count grew, not merely stayed clean), `AgentAddWearTest` 362/0
+(unaffected -- add_wear's own code was not touched), `AgentChunkCrudTest`
+3809/0, `AgentLiveCommitTest` 884/0, `CstDeriveGoldenTest` 452/452 (0
+drift), `SourceHygieneTest` 165/0. Clean rebuild, zero warnings.
+
+Docs: `AgentMcpAdapter.cpp`'s and `AgentChatCodecs.cpp`'s `add_wetness`
+tool descriptions, and `AgentSession.cpp`'s `FormatDryRainSceneClause_`
+design-note text, all updated from a blanket "cannot currently be
+combined" claim to the precise, narrower statement (Lambertian
+wear-then-wet composes; everything else still refuses) -- `add_wear`'s own
+tool descriptions needed no change, since its refusal-when-already-wet
+behaviour is genuinely unchanged in every direction and for every kind.
+`WETNESS_COAT_DESIGN.md` §6.4's collision note and §12 item 6c both
+updated to PARTIALLY CLOSED with the same account.
+
+This row's OWN evidence and recipe were reasonable but overstated the
+fix's necessary scope: "design the composable representation... so both
+verbs can commit to the same material" reads as if a general mechanism
+were required for ANY combination; the tractable fix turned out to need
+no new representation and no expression-parsing at all for the one
+direction-and-kind pair that was actually free to unblock. The
+prelude-extension mechanic WETNESS_COAT_DESIGN.md §6.4 sketches remains
+the right answer for the residual (GGX/PBR/Oren-Nayar forward, and the
+reverse order for every kind) -- not attempted here, and correctly left
+open rather than forced.
 
 **DL-27 (wet-highlight variance unmeasured).** WETNESS_COAT_DESIGN.md §11.1
 states no pass threshold of its own — its exact words are: "Unmeasured. It

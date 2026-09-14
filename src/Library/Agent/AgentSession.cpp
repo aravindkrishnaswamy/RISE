@@ -8321,12 +8321,47 @@ namespace RISE
 									break;
 								}
 							}
-							if( wornByWear ) {
+							// DL-26 (docs/DEBT_LEDGER.md, WETNESS_COAT_DESIGN.md sec
+							// 6.4/12 item 6c): a `lambertian_material` target is
+							// the ONE case where "worn, then wet" composes for
+							// free, and this early collision check must not
+							// refuse it before clause (2) below gets a chance to
+							// say so precisely.  Since item 8 (2026-08-31) the
+							// Lambertian branch WRAPS the untouched original in a
+							// new `coated_material` chunk rather than rewriting
+							// its colour slot in place (`BuildWetnessCoatedMaterialText_`'s
+							// own doc: "the author's original lambertian_material
+							// chunk is never edited"), and mints its
+							// `coat_weight`/`coat_roughness` fresh rather than
+							// reading the base colour at all (`hasReadableColor`
+							// is explicitly "guarded off for this branch", see the
+							// `lambertianBranch` emission site) -- so WHATEVER
+							// `add_wear` rebound the `reflectance` slot to is
+							// simply irrelevant to what this verb is about to
+							// build.  Physically: wet grime settles OVER a worn
+							// substrate, which is why this is the direction that
+							// composes and the reverse (`add_wetness` first, then
+							// `add_wear` on the coat wrapper's `base`) is not
+							// attempted here -- the coat WRAP also rebinds the
+							// bound object's own `material` param to the new
+							// coated_material chunk, so a subsequent `add_wear`
+							// naming the original substrate would find no bound
+							// object left to satisfy its own clause (c), a
+							// different and larger gap than this row closes.
+							// GGX / PBR / Oren-Nayar keep the existing refusal:
+							// their in-place darkening branches genuinely need to
+							// read-and-rewrite the SAME colour slot `add_wear`
+							// already claimed, which is the "each verb refuses
+							// what the other has already rewritten" case this
+							// message still names correctly for them.
+							if( wornByWear && pm.kind != "lambertian_material" ) {
 								c.wetDeclineReasons[pm.name] =
 									"it already binds an expression (`" + wearPainterName + "`) reading the "
 									"geometry wear signals -- this material has likely already been worn by "
 									"`add_wear`, and add_wetness / add_wear cannot currently be combined on one "
-									"material (each verb refuses what the other has already rewritten)";
+									"material of this kind (each verb refuses what the other has already "
+									"rewritten) -- a `lambertian_material` is the one exception: re-run add_wetness "
+									"naming it and the coat wraps the worn result";
 								continue;
 							}
 						}
@@ -8378,6 +8413,16 @@ namespace RISE
 						std::string bestSlot, bestPainter;
 						double baseR = 0.0, baseG = 0.0, baseB = 0.0;
 						bool hasReadableColor = false;
+						// DL-26: does the primary slot's non-constant binding
+						// (if any) trace to `add_wear`'s own rewrite?  Tracked
+						// separately from `sawUnreadableBase` so a
+						// `lambertian_material` target can compose past it
+						// below while every other unreadable-base reason
+						// (blackbody / spectral / non-default colorspace) keeps
+						// refusing exactly as before -- see the bypass's own
+						// comment for why this is sound only for Lambertian's
+						// coat-WRAP branch.
+						bool primaryWornByWear = false;
 						if( !isMetallic ) {
 							const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
 								ColorMaterialSlotsByKind_().find( pm.kind );
@@ -8395,6 +8440,11 @@ namespace RISE
 								const std::string& value = pm.params.find( primarySlot )->second;
 								if( ClassifyColorBinding_( value, painterKinds, painterForms ) != MicrosurfaceBinding_::Constant ) {
 									sawUnreadableBase = true;
+									const std::map<std::string, std::string>::const_iterator b =
+										expressionBodies.find( value );
+									if( b != expressionBodies.end() && WearBodyReadsGeometrySignals_( b->second ) ) {
+										primaryWornByWear = true;
+									}
 								}
 								else {
 									const std::map<std::string, std::array<double, 3> >::const_iterator u =
@@ -8413,7 +8463,23 @@ namespace RISE
 									}
 								}
 							}
-							if( !hasReadableColor ) {
+							// DL-26: a `lambertian_material` whose primary slot is
+							// unreadable ONLY because `add_wear` rewrote it is let
+							// through here with `hasReadableColor` left FALSE --
+							// safe because the coat-WRAP emission site below
+							// (`if( pick->hasReadableColor && !lambertianBranch )`)
+							// already never reads `baseR`/`baseG`/`baseB` for this
+							// branch (item 8: it mints `coat_weight`/
+							// `coat_roughness` fresh and never touches the
+							// substrate's own colour slot at all), so there is
+							// nothing here for a worn expression to corrupt.
+							// Every other unreadable-base reason -- including a
+							// worn expression on a NON-Lambertian kind, whose
+							// in-place darkening branch genuinely does need to
+							// read-and-rewrite this same slot -- keeps refusing.
+							const bool lambertianWornBypass =
+								( pm.kind == "lambertian_material" ) && primaryWornByWear;
+							if( !hasReadableColor && !lambertianWornBypass ) {
 								c.wetDeclineReasons[pm.name] = sawUnreadableBase
 									? std::string( "its colour slot binds a painter whose RGB this cannot read "
 									               "as a plain Rec.709-linear triple (a blackbody_painter, a "
@@ -9398,8 +9464,11 @@ namespace RISE
 					"-- changing nothing, costing one call -- when nothing qualifies, when the material is "
 					"already wet, or when its colour is not a plain, readable flat constant (a textured "
 					"albedo gets no darkening in Phase 1 and this verb declines rather than half-deliver "
-					"it). It cannot currently be combined with `add_wear` on one material. For the hand-"
-					"authored form of the same idiom read_skill {\"name\":\"materials-and-media-basics\"}. If "
+					"it). It cannot currently be combined with `add_wear` on a NON-Lambertian material, or in "
+					"the reverse order on any material -- but `add_wear` THEN `add_wetness` on the SAME "
+					"`lambertian_material` composes (the coat wrap never touches the worn colour slot). For "
+					"the hand-authored form of the same idiom read_skill "
+					"{\"name\":\"materials-and-media-basics\"}. If "
 					"a deliberately dry look is the point, this is fine -- ignore and do not churn.";
 			}
 
