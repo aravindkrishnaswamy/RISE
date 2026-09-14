@@ -141,6 +141,29 @@ void OptimalMISAccumulator::Accumulate(
 	}
 }
 
+void OptimalMISAccumulator::GetTileTraining(
+	unsigned int px,
+	unsigned int py,
+	double& sumNee,
+	double& sumBsdf,
+	unsigned int& countNee_,
+	unsigned int& countBsdf_
+	) const
+{
+	sumNee = 0;
+	sumBsdf = 0;
+	countNee_ = 0;
+	countBsdf_ = 0;
+	if( px >= imageWidth || py >= imageHeight ) {
+		return;
+	}
+	const unsigned int idx = TileIndex( px, py );
+	sumNee = tiles[idx].sumMomentNee.load();
+	sumBsdf = tiles[idx].sumMomentBsdf.load();
+	countNee_ = tiles[idx].countNee.load();
+	countBsdf_ = tiles[idx].countBsdf.load();
+}
+
 void OptimalMISAccumulator::Solve()
 {
 	unsigned int validTiles = 0;

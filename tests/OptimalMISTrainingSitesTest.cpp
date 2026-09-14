@@ -226,12 +226,14 @@ static void CheckTrainedInterior( const OptimalMISAccumulator& acc, const char* 
 // bounce limit kills it -- the escape is the arm whose training this
 // guards, and a thick fog never reaches it.
 //////////////////////////////////////////////////////////////////////
-static std::string VolumeScene()
+static std::string VolumeScene( double envLevel = 1.0 )
 {
+	std::ostringstream envss;
+	envss << envLevel << " " << envLevel << " " << envLevel;
 	return std::string(
 		"RISE ASCII SCENE 7\n"
 		"\n"
-		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor " + envss.str() + "\n}\n"
 		"uniformcolor_painter\n{\n\tname pnt_density\n\tcolor 1.0 1.0 1.0\n}\n"
 		"\n"
 		"painter_heterogeneous_medium\n{\n"
@@ -259,25 +261,19 @@ static std::string VolumeScene()
 		"\n" );
 }
 
-static void RunVolumeSite()
+//! Drives the volume site against a fixture whose environment radiance is
+//! `envLevel`, and hands back the RAW per-tile training state.  The path
+//! decisions are a function of the per-sample seeds alone (the medium's
+//! distance sampling, the phase sample and the Russian roulette all read
+//! `throughput`, never radiance), so two calls at different `envLevel`
+//! visit the SAME vertices in the same order -- which is what makes the
+//! radiance-scaling law below an exact identity rather than an average.
+static void DriveVolumeSite(
+	const Fixture& fx,
+	OptimalMISAccumulator& acc,
+	double& sumBsdf,
+	unsigned int& countBsdf )
 {
-	std::cout << "DL-72 site 1: RayCaster volume phase-scatter continuation" << std::endl;
-
-	Fixture fx;
-	Check( fx.Build( VolumeScene(), "volume" ), "volume fixture builds" );
-	if( !fx.pCaster || !fx.pScene ) return;
-	Check( fx.pCaster->GetLightSampler() != 0, "volume fixture has a LightSampler" );
-
-	{
-		OptimalMISAccumulator fresh;
-		fresh.Initialize( 64, 64, MakeConfig() );
-		fresh.Solve();
-		Check( std::fabs( (double)fresh.GetAlpha( 0, 0 ) - 0.5 ) < 1e-9,
-			"reference: an accumulator nothing ever trained solves to the 0.5 fallback" );
-	}
-
-	OptimalMISAccumulator acc;
-	acc.Initialize( 64, 64, MakeConfig() );
 	const RasterizerState rast{};
 	for( unsigned int s = 0; s < 1200; ++s ) {
 		RandomNumberGenerator rng( 31000 + s );
@@ -299,6 +295,100 @@ static void RunVolumeSite()
 		Scalar dist = 0;
 		fx.pCaster->CastRay( rc, rast, ray, c, rs, &dist, 0 );
 	}
+	double sumNee = 0;
+	unsigned int countNee = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+}
+
+static void RunVolumeSite()
+{
+	std::cout << "DL-72 site 1: RayCaster volume phase-scatter continuation" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( VolumeScene(), "volume" ), "volume fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	Check( fx.pCaster->GetLightSampler() != 0, "volume fixture has a LightSampler" );
+
+	{
+		OptimalMISAccumulator fresh;
+		fresh.Initialize( 64, 64, MakeConfig() );
+		fresh.Solve();
+		Check( std::fabs( (double)fresh.GetAlpha( 0, 0 ) - 0.5 ) < 1e-9,
+			"reference: an accumulator nothing ever trained solves to the 0.5 fallback" );
+	}
+
+	// The environment's OWN radiance, read back through the interface the
+	// escape arm reads it through -- never an assumed formula.
+	const RasterizerState rast{};
+	const IRadianceMap* pEnv = fx.pScene->GetGlobalRadianceMap();
+	Check( pEnv != 0, "volume fixture has a global radiance map" );
+	if( !pEnv ) return;
+	const Scalar Lenv = ColorMath::MaxValue(
+		pEnv->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+	Check( Lenv > 0, "volume fixture env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	DriveVolumeSite( fx, acc, sumBsdf, countBsdf );
+
+	// ------------------------------------------------------------------
+	// THE TRAINED QUANTITY, not just its ratio.
+	//
+	// At a volume vertex the contract is `bsdfTimesCos = phasePdf`
+	// (broadcast to all three channels -- a phase function's "BSDF times
+	// cos" IS its value, and for an isotropic phase that value equals its
+	// own pdf) paired with `bsdfPdf = effectivePdf`, which with guiding OFF
+	// is that same `phasePdf`.  The escape arm forms
+	//
+	//     f^2 / p^2 = (L_env * phasePdf)^2 / phasePdf^2 = L_env^2
+	//
+	// for EVERY accumulation, at every scatter depth, with no dependence on
+	// the direction or on how deep the walk got.  So the accumulated sum
+	// is an exact whole multiple of L_env^2, and that multiple (the number
+	// of continuations that reached the environment) cannot exceed the
+	// attempt count.  Solve()'s alpha is a RATIO and would be unmoved by a
+	// `bsdfTimesCos` scaled by any constant; these two assertions are not.
+	// The classic mis-shaping -- `bsdfTimesCos = 1` for a phase function --
+	// inflates every term by 1/phasePdf^2 = (4*PI)^2 ~ 158 and breaks both.
+	// ------------------------------------------------------------------
+	const double accPerLenv2 = sumBsdf / ( (double)Lenv * (double)Lenv );
+	const double nearestWhole = std::floor( accPerLenv2 + 0.5 );
+	std::cout << "    volume site: sum(f/p)^2 = " << sumBsdf
+		<< " = " << accPerLenv2 << " x L_env^2 (L_env = " << Lenv
+		<< "), over " << countBsdf << " attempts" << std::endl;
+	Check( sumBsdf > 0, "volume site: the BSDF technique accumulated a positive moment" );
+	Check( accPerLenv2 > 0 && std::fabs( accPerLenv2 - nearestWhole ) < 1e-6,
+		"volume site: the accumulated moment is a WHOLE multiple of L_env^2 "
+		"(every escape contributes exactly (L_env*phasePdf)^2/phasePdf^2)" );
+	Check( accPerLenv2 <= (double)countBsdf + 1e-6,
+		"volume site: the number of L_env^2 contributions does not exceed the attempt count" );
+
+	// Radiance-scaling law: the same fixture with a 3x brighter, still
+	// uniform environment must accumulate exactly 9x the moment -- same
+	// seeds, same paths, and the only thing that changed is the integrand's
+	// radiance factor.  This is what pins the moment to the FULL integrand
+	// (radiance * bsdfTimesCos) rather than to bsdfTimesCos alone.
+	{
+		Fixture fxBright;
+		Check( fxBright.Build( VolumeScene( 3.0 ), "volume3" ), "bright volume fixture builds" );
+		if( fxBright.pCaster && fxBright.pScene ) {
+			OptimalMISAccumulator accBright;
+			accBright.Initialize( 64, 64, MakeConfig() );
+			double sumBright = 0;
+			unsigned int countBright = 0;
+			DriveVolumeSite( fxBright, accBright, sumBright, countBright );
+			const double ratio = sumBsdf > 0 ? sumBright / sumBsdf : 0;
+			std::cout << "    volume site: moment ratio at 3x radiance = " << ratio
+				<< " (exact target 9)" << std::endl;
+			Check( countBright == countBsdf,
+				"volume site: the brighter fixture visited the same number of continuations" );
+			Check( std::fabs( ratio - 9.0 ) < 1e-6,
+				"volume site: the accumulated moment scales exactly as L_env^2" );
+		}
+	}
 
 	FeedSyntheticNee( acc );
 	acc.Solve();
@@ -316,12 +406,14 @@ static void RunVolumeSite()
 // scene: the BSSRDF exit continuation therefore always escapes to the
 // environment, which is the arm whose training this guards.
 //////////////////////////////////////////////////////////////////////
-static std::string EnvOnlyScene()
+static std::string EnvOnlyScene( double envLevel = 1.0 )
 {
+	std::ostringstream envss;
+	envss << envLevel << " " << envLevel << " " << envLevel;
 	return std::string(
 		"RISE ASCII SCENE 7\n"
 		"\n"
-		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor " + envss.str() + "\n}\n"
 		"\n"
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
 		"\n"
@@ -332,6 +424,51 @@ static std::string EnvOnlyScene()
 		"\n"
 		"pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 10.0\n}\n"
 		"\n" );
+}
+
+//! Drives the BSSRDF site and hands back the RAW per-tile training state.
+//! Seeded per sample, so two calls against fixtures that differ ONLY in
+//! environment brightness walk identical paths.
+static void DriveBssrdfSite(
+	const Fixture& fx,
+	const PathTracingIntegrator& integrator,
+	Object& object,
+	SubSurfaceScatteringMaterial& material,
+	OptimalMISAccumulator& acc,
+	double& sumBsdf,
+	unsigned int& countBsdf )
+{
+	const RasterizerState rast{};
+	// Exit point on the sphere's +Z pole, ray arriving from outside.
+	for( unsigned int s = 0; s < 600; ++s ) {
+		RandomNumberGenerator rng( 52000 + s );
+		IndependentSampler sampler( rng );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		rc.pOptimalMIS = &acc;
+
+		RayIntersection hit( Ray( Point3( 0, 0, 12 ), Vector3( 0, 0, -1 ) ), rast );
+		hit.geometric.bHit = true;
+		hit.geometric.range = 2;
+		hit.geometric.ptIntersection = Point3( 0, 0, 10 );
+		hit.geometric.vNormal = Vector3( 0, 0, 1 );
+		hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
+		hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+		hit.pObject = &object;
+		hit.pMaterial = &material;
+
+		IORStack stack( 1.0 );
+
+		integrator.IntegrateFromHit(
+			rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
+			/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
+			/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
+			/*considerEmission_*/ true, /*importance_*/ 1,
+			IRayCaster::RAY_STATE::eRayDiffuse,
+			0, 0, 0, 0, 0, 0, false, false );
+	}
+	double sumNee = 0;
+	unsigned int countNee = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
 }
 
 static void RunBssrdfSite()
@@ -367,33 +504,45 @@ static void RunBssrdfSite()
 	OptimalMISAccumulator acc;
 	acc.Initialize( 64, 64, MakeConfig() );
 
-	const RasterizerState rast{};
-	// Exit point on the sphere's +Z pole, ray arriving from outside.
-	for( unsigned int s = 0; s < 600; ++s ) {
-		RandomNumberGenerator rng( 52000 + s );
-		IndependentSampler sampler( rng );
-		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
-		rc.pOptimalMIS = &acc;
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	DriveBssrdfSite( fx, *integrator, *object, *material, acc, sumBsdf, countBsdf );
 
-		RayIntersection hit( Ray( Point3( 0, 0, 12 ), Vector3( 0, 0, -1 ) ), rast );
-		hit.geometric.bHit = true;
-		hit.geometric.range = 2;
-		hit.geometric.ptIntersection = Point3( 0, 0, 10 );
-		hit.geometric.vNormal = Vector3( 0, 0, 1 );
-		hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
-		hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
-		hit.pObject = object;
-		hit.pMaterial = material;
-
-		IORStack stack( 1.0 );
-
-		integrator->IntegrateFromHit(
-			rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
-			/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
-			/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
-			/*considerEmission_*/ true, /*importance_*/ 1,
-			IRayCaster::RAY_STATE::eRayDiffuse,
-			0, 0, 0, 0, 0, 0, false, false );
+	// ------------------------------------------------------------------
+	// THE TRAINED QUANTITY.
+	//
+	// Unlike the volume site, this one has no constant per-sample moment:
+	// the BSSRDF exit's `bsdfTimesCos` is the Sw-times-cosine quantity
+	// recovered from the profile's own weight split, so `(f/p)^2` differs
+	// from probe to probe.  What IS closed-form is its dependence on the
+	// environment: the moment is formed from the FULL integrand
+	// `L_env * bsdfTimesCos` divided by a radiance-INDEPENDENT density, so
+	// re-running the identical seeds under a 3x brighter uniform
+	// environment must give exactly 9x the sum.  A moment that dropped the
+	// radiance factor (or that accumulated a bare throughput) would be
+	// invariant instead, and Solve()'s alpha -- a ratio -- cannot see the
+	// difference either way.
+	// ------------------------------------------------------------------
+	Check( sumBsdf > 0, "BSSRDF site: the BSDF technique accumulated a positive moment" );
+	{
+		Fixture fxBright;
+		Check( fxBright.Build( EnvOnlyScene( 3.0 ), "bssrdf3" ), "bright BSSRDF fixture builds" );
+		if( fxBright.pCaster && fxBright.pScene ) {
+			OptimalMISAccumulator accBright;
+			accBright.Initialize( 64, 64, MakeConfig() );
+			double sumBright = 0;
+			unsigned int countBright = 0;
+			DriveBssrdfSite( fxBright, *integrator, *object, *material,
+				accBright, sumBright, countBright );
+			const double ratio = sumBsdf > 0 ? sumBright / sumBsdf : 0;
+			std::cout << "    BSSRDF site: sum(f/p)^2 = " << sumBsdf
+				<< " over " << countBsdf << " attempts; ratio at 3x radiance = "
+				<< ratio << " (exact target 9)" << std::endl;
+			Check( countBright == countBsdf,
+				"BSSRDF site: the brighter fixture visited the same number of continuations" );
+			Check( std::fabs( ratio - 9.0 ) < 1e-6,
+				"BSSRDF site: the accumulated moment scales exactly as L_env^2" );
+		}
 	}
 
 	FeedSyntheticNee( acc );
