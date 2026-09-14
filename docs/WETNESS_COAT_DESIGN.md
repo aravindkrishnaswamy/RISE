@@ -1606,8 +1606,11 @@ dielectric_material { name deep_water  tau water_tau  ior 1.333  scattering 1000
 > **CLOSED 2026-09-14 (DL-29, docs/DEBT_LEDGER.md).** Per §2.5,
 > `PiecewiseLinearScalarPainter::GetValuesAt` used to broadcast one 555 nm
 > sample, so under `pathtracing_pel_rasterizer` the measured file yielded
-> grey water with no depth tint at all. It now integrates the curve
-> against the CIE CMFs under the D65-normalised reference illuminant, so
+> grey water with no depth tint at all. It now samples the curve at the
+> three representative channel wavelengths `ScalarPainterRGB::kChannelNM`
+> = {611, 549, 465} nm (the same convention `DielectricSPF` already used;
+> NOT a CMF integral — an earlier draft of this fix integrated against the
+> CIE CMFs and was replaced by the `dfe4a537` redesign), so
 > `colors/water_absorption.spectra` (or any measured file) tints correctly
 > under RGB rendering without the three-number idiom below. The idiom
 > remains available for an author who wants to hand-tune the RGB
