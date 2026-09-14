@@ -937,15 +937,26 @@ static void RealMaterialStackPremise()
 	}
 
 	// TranslucentSPF: `!ior_stack.containsCurrent()` selects whether the
-	// entry-only geometric-horizon gate runs.  The gate is only
-	// observable where the shading normal and the geometric normal
-	// disagree, so this probe tilts them apart -- exactly the horizon
-	// band the DL-74 review named.
+	// entry (front-face) formula or DL-45's exit re-emission formula
+	// runs.  Both formulas now share the SAME geometric-horizon gate
+	// against the object's true, unflipped outward normal `geomNRaw`
+	// (== `ri.vGeomNormal` == (0,0,1) here, since neither `ri` nor
+	// `tilted` sets `bGeomNormalOrientedToRay`/`bGeomNormalRayDerived`) --
+	// see the long comment on `geomN`/`geomNRaw` in TranslucentSPF.cpp's
+	// Scatter()/Pdf(). `band` has to clear that gate (positive z) to be
+	// a genuine in-production direction for EITHER membership state; a
+	// direction with negative z (as this probe originally had) is
+	// geometrically below the surface and DL-45 correctly reports zero
+	// density for it on both sides, which the premise below misread as
+	// "the two formulas coincide." The probe still tilts the SHADING
+	// normal `n` well away from `geomNRaw` (0,0.6,0.8) vs (0,0,1)) so the
+	// two formulas' extra pValid division (exit-only) is the thing being
+	// observed, not the shared horizon gate.
 	{
 		RayIntersectionGeometric tilted( ri );
 		tilted.vNormal = Vector3Ops::Normalize( Vector3( 0.0, 0.6, 0.8 ) );
 		tilted.onb.CreateFromW( tilted.vNormal );
-		const Vector3 band = Vector3Ops::Normalize( Vector3( 0.0, 0.92, -0.02 ) );
+		const Vector3 band = Vector3Ops::Normalize( Vector3( 0.0, 0.92, 0.02 ) );
 
 		UniformColorPainter* rf = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
 		UniformColorPainter* tr = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
