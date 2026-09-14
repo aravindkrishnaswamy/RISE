@@ -266,28 +266,33 @@ namespace RISE
 	//!   change DielectricSPF priced between two other indices.  Scenes
 	//!   that avoid that pathology (see the file header's guidance) are
 	//!   unaffected.
-	//! - **Spatially varying `ior`.**  At an EXIT hit, the SPF prices its
-	//!   own Snell/Fresnel calculation with the `ior` painter's value AT
-	//!   THAT EXIT HIT (`DielectricSPF.cpp` ~line 384's
+	//! - **Spatially varying `ior` -- CLOSED 2026-09-14, DL-09
+	//!   (docs/DEBT_LEDGER.md).**  At an EXIT hit, the SPF prices its own
+	//!   Snell/Fresnel calculation with the `ior` painter's value AT THAT
+	//!   EXIT HIT (`DielectricSPF.cpp` ~line 384's
 	//!   `pRIndex->GetValuesAt(ri)`, re-fetched fresh on every `Scatter`/
 	//!   `ScatterNM` call; the same shape recurs in
 	//!   `PerfectRefractorSPF.cpp`'s `newIOR` parameter), while
-	//!   `before.top()` here is whatever value was PUSHED at the object's
-	//!   ENTRY hit and has sat on the stack ever since. For a uniform
-	//!   `ior` those are the same number. For an `ior` bound to a
-	//!   spatially-varying `IScalarPainter` (e.g. a graded-index object,
-	//!   `ior` 1.4 at the entry point and 1.6 at the exit point), they
-	//!   differ: this helper's `(1.4/eta_after)^2` does not match the
-	//!   `(1.6/eta_after)^2` the SPF actually priced its Fresnel
-	//!   transmittance against. A full entry-to-exit trip still
-	//!   telescopes to the correct net factor regardless (the SAME
-	//!   mismatched entry value cancels against itself at the matching
-	//!   exit, by the identity in §6 of
-	//!   docs/REFRACTIVE_RADIANCE_SCALING.md), so only contributions
-	//!   GATHERED AT AN INTERIOR VERTEX (a bounce or NEE connection while
-	//!   still inside the graded-index object, before it exits) carry the
-	//!   mismatch between the priced Fresnel value and this helper's
-	//!   throughput factor.
+	//!   `before.top()` alone would be whatever value was PUSHED at the
+	//!   object's ENTRY hit and has sat on the stack ever since. For a
+	//!   uniform `ior` those are the same number and `etaBeforeOverride`
+	//!   is left at its -1 sentinel (no behaviour change). For an `ior`
+	//!   bound to a spatially-varying `IScalarPainter` (e.g. a graded-
+	//!   index object, `ior` 1.4 at the entry point and 1.6 at the exit
+	//!   point), `DielectricSPF`/`PerfectRefractorSPF` now populate
+	//!   `etaBeforeOverride` with the fresh exit-hit value (1.6 in this
+	//!   example) on their exit branches, and this function prefers it
+	//!   over `before.top()` -- see `ScatteredRay::etaBeforeOverride`'s
+	//!   doc comment in ISPF.h. The ENTRY-side telescoping argument (a
+	//!   full entry-to-exit trip nets the physically correct factor
+	//!   regardless of any mismatch, since the same value would otherwise
+	//!   cancel against itself at the matching exit, by the identity in
+	//!   §6 of docs/REFRACTIVE_RADIANCE_SCALING.md) is unaffected by this
+	//!   fix -- it was already correct; the fix changes what an
+	//!   INTERMEDIATE gather (an NEE connection or a bounce while still
+	//!   inside the graded-index object, before it exits, or any other
+	//!   consumer of the exit event's throughput with no further exit to
+	//!   cancel against) sees.
 	//!
 	//! @param before  the walk's current IOR stack at the scattering vertex
 	//! @param after   the scattered ray's stack, or NULL when the SPF left

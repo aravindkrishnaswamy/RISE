@@ -620,32 +620,32 @@ for source evidence, geometry controls, executed eta mutations and gate
 counters. The closure pins the absence of an unmatched factor; it does not
 claim exact SSS energy conservation or spectral/non-air material equality.
 
-### 10.2 Named residual: spatially-varying `ior` mismatch (review round 2)
+### ~~10.2 Named residual: spatially-varying `ior` mismatch (review round 2)~~ CLOSED 2026-09-14 — DL-09, `ae475295`, `RadianceEtaScaleGradedIndexTest: 10/0` (red: 6/4)
 
-`RadianceEtaScale` (`Utilities/IORStack.h`) reads only `before.top()` and
-`after->top()` — the values recorded on the IOR stack at push/pop time.
-`DielectricSPF` and `PerfectRefractorSPF` instead price their own
-Fresnel/Snell calculation with the `ior` painter's value FRESHLY
-RE-FETCHED at the current hit (`DielectricSPF.cpp` ~line 384
+`RadianceEtaScale` (`Utilities/IORStack.h`) used to read only
+`before.top()` and `after->top()` — the values recorded on the IOR stack
+at push/pop time — while `DielectricSPF` and `PerfectRefractorSPF` price
+their own Fresnel/Snell calculation with the `ior` painter's value
+FRESHLY RE-FETCHED at the current hit (`DielectricSPF.cpp` ~line 384
 `pRIndex->GetValuesAt(ri)`; the equivalent `newIOR` parameter shape in
-`PerfectRefractorSPF.cpp`). For a spatially UNIFORM `ior` painter (every
-scene in this document's measurements, and every canonical SMS/dielectric
-test scene in the tree) those two reads are the same number and the
-distinction is invisible. For an `ior` bound to a spatially-varying
-`IScalarPainter` — a graded-index object, or any procedural `ior` texture
-— the ENTRY hit's pushed value and the EXIT (or an interior bounce's)
-freshly-fetched value can differ, and this helper's throughput factor
-would then be computed from a different index than the one the SPF's own
-Fresnel transmittance was priced against. A full entry-to-exit trip
-still telescopes to the physically correct net factor (the same
-mismatched entry value cancels against itself at the matching exit), so
-this is NOT a bug for the ordinary "object seen from outside, light
-outside too" case documented as CORRECT above — it is a residual only for
-contributions gathered at a vertex INSIDE such an object (an NEE
-connection or a bounce before the walk exits). No scene or test in the
-tree currently uses a spatially-varying `ior` painter, so this is
-unexercised, not measured to be wrong. Full detail in the
-`RadianceEtaScale` doc comment (`IORStack.h`).
+`PerfectRefractorSPF.cpp`). For a spatially UNIFORM `ior` painter those
+two reads are the same number and the distinction is invisible; for an
+`ior` bound to a spatially-varying `IScalarPainter` (a graded-index
+object, or any procedural `ior` texture), the EXIT hit's fresh value
+(what the SPF's own Fresnel transmittance was actually priced against)
+could differ from the stack's stale entry-time value `before.top()` read
+instead. Red-proved and fixed 2026-09-14 as DL-09
+(`tests/RadianceEtaScaleGradedIndexTest.cpp`): `ScatteredRay::
+etaBeforeOverride` (`Interfaces/ISPF.h`) now carries the SPF's fresh
+exit-hit ior, and `RadianceEtaScale` consumes it in place of the stale
+stack top when set. The ENTRY-side telescoping argument (a full entry-
+to-exit trip nets the physically correct factor regardless, since the
+same value would otherwise cancel against itself) is unaffected by this
+fix — the fix only changes what an intermediate gather (an NEE
+connection or a bounce before the walk exits, or a downstream event that
+consumes the exit event's throughput without a further exit to cancel
+against) sees. See `IORStack.h`'s `RadianceEtaScale` doc comment for the
+full mechanism.
 
 ### ~~10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED`
 

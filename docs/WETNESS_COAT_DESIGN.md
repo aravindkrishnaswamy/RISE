@@ -344,16 +344,23 @@ colourless while a metre of it is not. In RISE this is Beer–Lambert through a
 dielectric's `tau`, an `IScalarPainter` bindable to a measured curve without JH
 uplift (§3.5, §6.7).
 
-> **Honest caveat — this is spectral only under a spectral rasterizer.**
+> **CLOSED 2026-09-14 (DL-09 item 10, docs/DEBT_LEDGER.md DL-29).**
 > `PiecewiseLinearScalarPainter` (the class a `scalar_painter { file … }`
 > produces) serves the spectral path through `GetValueAtNM(nm)` → `EvalAtNM(nm)`,
-> but its RGB entry point `GetValuesAt` **broadcasts a single representative
-> sample** — `EvalAtNM(kRepresentativeNm)` with `kRepresentativeNm = 555.0`
-> ([PiecewiseLinearScalarPainter.h:52,89-93](../src/Library/Painters/PiecewiseLinearScalarPainter.h)),
-> and reports `HasPerChannelVariation() = false` (`:105`). So under
-> `pathtracing_pel_rasterizer` — the default, and the one the worked example and
-> the census use — a measured water curve collapses to **one grey number** and the
-> depth tint vanishes entirely. §6.7 gives the honest RGB idiom.
+> unchanged by this fix.  Its RGB entry point `GetValuesAt` used to
+> **broadcast a single representative sample** — `EvalAtNM(kRepresentativeNm)`
+> with `kRepresentativeNm = 555.0` — reporting `HasPerChannelVariation() =
+> false` unconditionally, so under `pathtracing_pel_rasterizer` a measured
+> water curve collapsed to **one grey number** and the depth tint vanished
+> entirely.  `GetValuesAt` now caches a genuine Rec.709 triple computed by
+> integrating the curve against the CIE CMFs under the D65-normalised
+> reference illuminant at construction time
+> (`PiecewiseLinearScalarPainter::ComputeCachedRGB`,
+> [PiecewiseLinearScalarPainter.cpp](../src/Library/Painters/PiecewiseLinearScalarPainter.cpp)),
+> and `HasPerChannelVariation` reports genuine variation (a flat curve still
+> reads grey via a 1e-3 relative-spread snap-to-uniform).  §6.7's RGB idiom
+> remains valid for hand-tuning independent of a measured curve, but is no
+> longer required to avoid a grey depth tint.
 
 ### 2.6 Dust
 
@@ -1567,19 +1574,21 @@ dielectric_material { name deep_water  tau water_tau  ior 1.333  scattering 1000
    directory, same two-column format, `.spectra` extension, source named in the
    header.
 
-> **And the honest RGB idiom, because the default renderer is RGB.** Per §2.5,
-> `PiecewiseLinearScalarPainter::GetValuesAt` broadcasts one 555 nm sample
-> ([PiecewiseLinearScalarPainter.h:52,89-93](../src/Library/Painters/PiecewiseLinearScalarPainter.h)),
-> so under `pathtracing_pel_rasterizer` the measured file yields **grey water with
-> no depth tint at all**. The RGB idiom is three explicit per-channel numbers —
-> exactly what the shipped scene already does:
-> `tau 0.85 0.92 0.95` (`tidepools.RISEscene:395`), red attenuating fastest. The
-> documentation must give **both** forms and say which rasterizer each is for;
-> shipping only the spectral file would hand every RGB author a silently
-> colourless pool.
+> **CLOSED 2026-09-14 (DL-29, docs/DEBT_LEDGER.md).** Per §2.5,
+> `PiecewiseLinearScalarPainter::GetValuesAt` used to broadcast one 555 nm
+> sample, so under `pathtracing_pel_rasterizer` the measured file yielded
+> grey water with no depth tint at all. It now integrates the curve
+> against the CIE CMFs under the D65-normalised reference illuminant, so
+> `colors/water_absorption.spectra` (or any measured file) tints correctly
+> under RGB rendering without the three-number idiom below. The idiom
+> remains available for an author who wants to hand-tune the RGB
+> independent of the measured file — exactly what the shipped scene
+> already does: `tau 0.85 0.92 0.95` (`tidepools.RISEscene:395`), red
+> attenuating fastest.
 
-So: spectrally correct depth tint is free *under a spectral rasterizer*, and a
-three-number approximation otherwise.
+So: spectrally correct depth tint is available under BOTH a spectral
+rasterizer and, since the DL-29 fix, `pathtracing_pel_rasterizer`; the
+three-number idiom remains a valid hand-authored alternative.
 
 ### 6.8 The geometry-level pooling recipe
 
@@ -1667,8 +1676,10 @@ geometry problem, and this recipe is the answer.
     bound mesh pays its own `occlusion` bake** at first production shading. The
     verb's result message must report the bound-object count so the blast radius
     is visible before the render.
-15. **Water depth tint is grey under an RGB rasterizer** unless authored as three
-    explicit per-channel `tau` values (§2.5, §6.7).
+15. ~~**Water depth tint is grey under an RGB rasterizer** unless authored as three
+    explicit per-channel `tau` values (§2.5, §6.7).~~ **CLOSED 2026-09-14**
+    (DL-29): a measured `tau` curve now tints correctly under RGB rendering
+    too (§2.5, §6.7).
 
 ---
 
@@ -2322,15 +2333,23 @@ timing exists because no implementation exists.
    `exp(−σ·distance)` ([DielectricSPF.cpp:311-324](../src/Library/Materials/DielectricSPF.cpp)).
    A published σ_a table pasted in directly will be wrong, and "unit distance"
    additionally bakes **1 world unit = 1 metre** into the file. §6.7.
-10. **A measured `tau` curve is grey under an RGB rasterizer.**
+10. ~~**A measured `tau` curve is grey under an RGB rasterizer.**
    `PiecewiseLinearScalarPainter::GetValuesAt` broadcasts one 555 nm sample and
    reports `HasPerChannelVariation() = false`
    ([PiecewiseLinearScalarPainter.h:52,89-93,105](../src/Library/Painters/PiecewiseLinearScalarPainter.h)),
-   so the depth tint vanishes under the default `pathtracing_pel_rasterizer`.
-   Mitigated by documenting the three-number RGB idiom alongside the file (§6.7);
-   a real fix would be an RGB-aware evaluation of piecewise-linear scalar curves
-   (integrate against the CMFs rather than point-sample), which is **open and out
-   of scope**.
+   so the depth tint vanishes under the default `pathtracing_pel_rasterizer`.~~
+   **CLOSED 2026-09-14** (DL-29, docs/DEBT_LEDGER.md): `GetValuesAt` now
+   integrates the curve against the CIE CMFs under the D65-normalised
+   reference illuminant (`PiecewiseLinearScalarPainter::ComputeCachedRGB`,
+   new `PiecewiseLinearScalarPainter.cpp`), and `HasPerChannelVariation`
+   reflects genuine per-channel variation (a 1e-3 relative-spread
+   snap-to-uniform keeps a flat curve reporting grey). `GetValueAtNM` /
+   the spectral path is unchanged. `PiecewiseLinearScalarPainterRGBTintTest`
+   pins a dielectric slab's `tau` curve now transmitting a genuinely
+   tinted colour (R/B=12.4831) under `pathtracing_pel_rasterizer`; the
+   three-number RGB authoring idiom from §6.7 is no longer the only way
+   to get a tinted depth colour, though it remains valid for an author
+   who wants to hand-tune the RGB independent of a measured curve.
 11. **A single per-channel darkening exponent is a fit whose implied `k` varies
    with base albedo** (§2.1), so it over-boosts saturation on already-saturated
    substrates. Inherent to the exponent form; **closed by Phase 2's transport**,
