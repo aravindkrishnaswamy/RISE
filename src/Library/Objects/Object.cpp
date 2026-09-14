@@ -1036,8 +1036,41 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// was charted onto the opposite box side depending on which side
 		// the ray came from -- a view-dependent texture chart, which a
 		// surface parameterisation must never be.
+		//
+		// DL-95: and the POSITION MUST BE `ptObjIntersec`, computed HERE,
+		// not `ptIntersection` read at this point in the function.  The
+		// generator is authored in and must chart OBJECT space (the frame
+		// every analytic primitive's own IntersectRay stamps into
+		// `ptIntersection` before returning, and the frame `BoxUVGenerator`'s
+		// literal width/height/depth are expressed in) -- so pulling
+		// `ptObjIntersec`'s canonical computation (object-space ray,
+		// PointAtLength at the object-space range -- identical to the
+		// expression the general path below still performs, a few hundred
+		// lines further down, into `ptIntersection`'s WORLD-space stamp)
+		// up to here is a frame-preserving reordering for every geometry
+		// that already stamped its own `ptIntersection` in this block: for
+		// them `ptObjIntersec` computed this way agrees with the
+		// `ptIntersection` this call used to read to within the
+		// pre-existing `SURFACE_INTERSEC_ERROR` back-off (1e-12 by
+		// default -- the self-stamp uses the raw range, this expression
+		// backs off by that amount along the ray, exactly as the
+		// general-path stamp below always has), far below any UV
+		// generator's output resolution (see
+		// docs/DL95_OBJECT_UV_GENERATOR_INPUT.md for the per-geometry
+		// verification table).  For `TriangleMeshGeometry{,Indexed}`, which
+		// stamp NEITHER field themselves, it is the fix: previously this
+		// call read whatever stale point happened to sit in the shared
+		// `ri` record (the caller's un-initialized record, or -- in a real
+		// render loop -- the PREVIOUS object's hit point), because meshes
+		// only get a `ptIntersection` from the general-path stamp far
+		// below, which had not run yet.  `ptObjIntersec` is written a
+		// second, identical time at that general-path stamp (harmless --
+		// same ray, same range, both held fixed across this whole block) so
+		// every other reader downstream keeps seeing exactly what it saw
+		// before this change.
+		ri.geometric.ptObjIntersec = ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR );
 		if( pUVGenerator ) {
-			pUVGenerator->GenerateUV( ri.geometric.ptIntersection, ri.geometric.UnflippedGeomNormal(), ri.geometric.ptCoord );
+			pUVGenerator->GenerateUV( ri.geometric.ptObjIntersec, ri.geometric.UnflippedGeomNormal(), ri.geometric.ptCoord );
 		}
 
 		// Transform the normals back
