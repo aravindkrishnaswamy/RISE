@@ -1027,6 +1027,15 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 	ri.vNormal      = Ncyl;
 	ri.vGeomNormal  = Nflat;
 	ri.bGeomNormalOrientedToRay = true;
+	// ...and `Nflat` is DERIVED FROM THE RAY, not a static surface
+	// property, so the un-flip recovery documented on
+	// bGeomNormalOrientedToRay does NOT recover a meaningful surface
+	// facing here -- it just yields "always away from the ray", i.e.
+	// "always an exit" to any containment/entry-exit classifier.  Say so
+	// explicitly so those consumers can skip the hit instead of trusting
+	// a recovery that cannot work (see RayIntersectionGeometric.h's
+	// contract for this flag).
+	ri.bGeomNormalRayDerived = true;
 
 	// (s, t): s = arc-length fraction root->tip, t = across-width in
 	// [0,1] so the BSDF's near-field offset is h = 2t - 1.

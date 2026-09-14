@@ -272,6 +272,10 @@ namespace
 		// item 4).  See RayIntersectionGeometric::bGeomNormalOrientedToRay's
 		// doc comment.
 		dst.bGeomNormalOrientedToRay = src.bGeomNormalOrientedToRay;
+		// Same category, same reason: whether the reported vGeomNormal is
+		// ray-derived (HairGeometry) is a property of the operand SURFACE
+		// being reported, so it travels with it.
+		dst.bGeomNormalRayDerived = src.bGeomNormalRayDerived;
 
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;

@@ -37,8 +37,15 @@
 //        oriented ? -vGeomNormal : vGeomNormal
 //
 //    (RayIntersectionGeometric.h's `bGeomNormalOrientedToRay` doc
-//    comment).  Single-sided meshes and every analytical primitive
-//    leave the flag false, so the recovery is a no-op for them.
+//    comment, which carries the authoritative list of which geometries
+//    set the flag -- double-sided triangle meshes, BezierPatchGeometry
+//    and ClippedPlaneGeometry on a back-face hit, and HairGeometry
+//    unconditionally).  Single-sided triangle meshes and the analytical
+//    primitives leave it false, so the recovery is a no-op for them.
+//    HairGeometry is the exception the recovery does NOT serve: its
+//    normal is ray-derived, and it says so via `bGeomNormalRayDerived`,
+//    which both this gate and the seeding probe honour by falling back
+//    / skipping (P2-4).
 //
 //  COVERAGE
 //

@@ -300,7 +300,51 @@ namespace RISE
 		//! genuine exit both face the ray under the flip, which collapses
 		//! the raw dot-product facing test to the same sign on both --
 		//! this flag lets the caster undo the flip losslessly instead.)
+		//!
+		//! WHICH GEOMETRIES SET IT (keep this list current -- an earlier
+		//! version of this comment, and copies of it in TranslucentSPF.cpp
+		//! and IORStackSeeding.h, claimed "single-sided meshes and every
+		//! analytical primitive leave the flag false", which is only half
+		//! the story):
+		//!   * `TriangleMeshGeometry` / `TriangleMeshGeometryIndexed` --
+		//!     only when `bDoubleSided`, and only when the flip actually
+		//!     happened.
+		//!   * `BezierPatchGeometry`, `ClippedPlaneGeometry` -- on a
+		//!     BACK-FACE hit (they flip the normal toward the ray there,
+		//!     exactly like the double-sided mesh path).
+		//!   * `HairGeometry` -- UNCONDITIONALLY; see
+		//!     `bGeomNormalRayDerived` below, because the recovery formula
+		//!     above does NOT apply there.
+		//!   * `CSGObject` propagates whichever operand's surface it is
+		//!     actually reporting.
+		//! Single-sided triangle meshes and the analytical primitives
+		//! (sphere, box, ellipsoid, torus, cylinder, plane, disk, bilinear
+		//! patch) do leave it false.
 		bool						bGeomNormalOrientedToRay;
+
+		//! OUTPUT: set by geometries whose `vGeomNormal` is DERIVED FROM
+		//! THE RAY rather than being a static property of the surface.
+		//! `HairGeometry` is the only such geometry today: a hair strand is
+		//! a 1-D curve with no two-sided surface, so it fabricates a flat
+		//! normal `Nflat = normalize(-(D - (D.T)T))` from the ray direction
+		//! `D` and the strand tangent `T` -- by construction always facing
+		//! the ray -- and reports `bGeomNormalOrientedToRay = true`
+		//! unconditionally.
+		//!
+		//! CONTRACT: when this is true, `bGeomNormalOrientedToRay`'s
+		//! recovery formula above is MEANINGLESS.  Un-flipping a
+		//! ray-derived normal yields a direction that always faces AWAY
+		//! from the ray, so a "true entry vs. true exit" classifier built
+		//! on it reads EXIT at every single crossing.  A consumer asking a
+		//! which-side-of-the-real-surface question must therefore SKIP such
+		//! a hit (there is no real side to be on) rather than trust the
+		//! recovery -- `IORStackSeeding::SeedFromPoint`'s containment probe
+		//! skips it, and `TranslucentSPF`'s exit gate falls back to the
+		//! shading normal (making the gate a no-op).  A consumer that only
+		//! needs "which way does the surface face the ray" may keep reading
+		//! `vGeomNormal` directly; `bGeomNormalOrientedToRay` stays
+		//! truthful about the reported orientation either way.
+		bool						bGeomNormalRayDerived;
 
 		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)
 
@@ -560,6 +604,7 @@ namespace RISE
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
 		  bGeomNormalOrientedToRay( false ),
+		  bGeomNormalRayDerived( false ),
 		  bHasTexCoord1( false ),
 		  pmxWorldToObject( 0 ),
 		  pCustom( 0 ),
@@ -590,6 +635,7 @@ namespace RISE
 		  vGeomNormal( r.vGeomNormal ),
 		  vGeomNormal2( r.vGeomNormal2 ),
 		  bGeomNormalOrientedToRay( r.bGeomNormalOrientedToRay ),
+		  bGeomNormalRayDerived( r.bGeomNormalRayDerived ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
@@ -634,6 +680,7 @@ namespace RISE
 			vGeomNormal = r.vGeomNormal;
 			vGeomNormal2 = r.vGeomNormal2;
 			bGeomNormalOrientedToRay = r.bGeomNormalOrientedToRay;
+			bGeomNormalRayDerived = r.bGeomNormalRayDerived;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;

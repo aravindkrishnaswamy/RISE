@@ -262,16 +262,20 @@ void TranslucentSPF::Scatter(
 	// an exit ray must travel to the OPPOSITE side from where the incoming
 	// (interior) ray arrived, i.e. the object's actual outward direction.
 	// `ri.vGeomNormal` is NOT unconditionally that direction: a double-
-	// sided triangle mesh (TriangleMeshGeometry{,Indexed}::IntersectRay)
-	// flips it to face whichever side the ray struck, recording that in
-	// `ri.bGeomNormalOrientedToRay`, so on such a mesh the raw field
+	// sided triangle mesh (TriangleMeshGeometry{,Indexed}::IntersectRay),
+	// and BezierPatchGeometry / ClippedPlaneGeometry on a back-face hit,
+	// flip it to face whichever side the ray struck, recording that in
+	// `ri.bGeomNormalOrientedToRay`, so on such a surface the raw field
 	// always faces the ray -- using it as-is would make this gate a
 	// no-op on exactly the meshes it exists to catch (P2-1 sibling
 	// audit).  Recover the TRUE, author-authored geometric normal with
 	// the documented un-flip (RayIntersectionGeometric.h) before using it
-	// as the unflipped reference; single-sided meshes and every
-	// analytical primitive leave the flag false, so this recovery is a
-	// no-op for them.  Reusing the ray-anchored `geomN` for the exit gate
+	// as the unflipped reference; the geometries that never flip
+	// (single-sided triangle meshes and the analytical primitives --
+	// sphere, box, ellipsoid, torus, cylinder, plane, disk, bilinear
+	// patch) leave the flag false, so this recovery is a no-op for them,
+	// and `RayIntersectionGeometric.h` carries the authoritative list.
+	// Reusing the ray-anchored `geomN` for the exit gate
 	// would validate the WRONG hemisphere -- for a ray already travelling
 	// outward (dot(geomNRaw, ri.ray.Dir()) > 0, the characteristic exit
 	// signature), the flip below produces `geomN` pointing back INTO the
@@ -279,7 +283,15 @@ void TranslucentSPF::Scatter(
 	// GlintModifier.cpp) falls back to the shading normal for both gates,
 	// making each a no-op when no independent geometric truth is
 	// available.
-	const Vector3 trueGeomNormal = ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal;
+	// P2-4 (review round 3): the un-flip only recovers a real surface
+	// facing when the reported normal IS a surface property.  A hair
+	// strand's is derived from the ray itself (HairGeometry sets
+	// `bGeomNormalRayDerived`), so un-flipping yields "always away from
+	// the ray" -- no geometric truth to gate against.  Fall back to the
+	// shading normal there, which makes both gates no-ops, exactly like
+	// the degenerate-normal fallback below.
+	const Vector3 trueGeomNormal = ri.bGeomNormalRayDerived ? n
+		: ( ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal );
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
@@ -556,7 +568,15 @@ void TranslucentSPF::ScatterNM(
 	// UNFLIPPED reference, and for why `ri.vGeomNormal` must first be
 	// un-flipped via `ri.bGeomNormalOrientedToRay` on a double-sided
 	// mesh).
-	const Vector3 trueGeomNormal = ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal;
+	// P2-4 (review round 3): the un-flip only recovers a real surface
+	// facing when the reported normal IS a surface property.  A hair
+	// strand's is derived from the ray itself (HairGeometry sets
+	// `bGeomNormalRayDerived`), so un-flipping yields "always away from
+	// the ray" -- no geometric truth to gate against.  Fall back to the
+	// shading normal there, which makes both gates no-ops, exactly like
+	// the degenerate-normal fallback below.
+	const Vector3 trueGeomNormal = ri.bGeomNormalRayDerived ? n
+		: ( ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal );
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
@@ -714,7 +734,15 @@ Scalar TranslucentSPF::Pdf(
 	// which side the evaluated ray happens to approach from -- P2-1:
 	// `ri.vGeomNormal` itself is NOT unconditionally that direction
 	// on a double-sided triangle mesh, see Scatter()'s long comment).
-	const Vector3 trueGeomNormal = ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal;
+	// P2-4 (review round 3): the un-flip only recovers a real surface
+	// facing when the reported normal IS a surface property.  A hair
+	// strand's is derived from the ray itself (HairGeometry sets
+	// `bGeomNormalRayDerived`), so un-flipping yields "always away from
+	// the ray" -- no geometric truth to gate against.  Fall back to the
+	// shading normal there, which makes both gates no-ops, exactly like
+	// the degenerate-normal fallback below.
+	const Vector3 trueGeomNormal = ri.bGeomNormalRayDerived ? n
+		: ( ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal );
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 

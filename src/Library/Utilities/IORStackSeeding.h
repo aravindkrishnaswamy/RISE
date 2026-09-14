@@ -52,7 +52,24 @@
 //      - cosN > 0 (probe aligned with outward normal): EXIT, parity++.
 //      - cosN < 0 (probe opposite to outward normal):  ENTRY, parity--.
 //
-//    Objects with parity > 0 at the end are pushed in OUTERMOST-FIRST
+//    A single probe only decides containment for a CLOSED surface,
+//    so an object is seeded only when BOTH the probe and its REVERSE
+//    report positive parity (P2-4).  A closed manifold agrees in both
+//    directions by construction; an OPEN sheet (a translucent leaf,
+//    curtain or card -- every `translucent_material` object is a probe
+//    participant since DL-46) is met by only one of the two and is
+//    rejected.  The reverse probe runs only when the forward one found
+//    a candidate at all.  See the rule's documented limit at its
+//    implementation in `SeedFromPoint`.
+//
+//    Hits whose geometric normal is RAY-DERIVED rather than a static
+//    surface property (`RayIntersectionGeometric::bGeomNormalRayDerived`
+//    -- `HairGeometry`) are skipped outright: un-flipping such a normal
+//    reads "exit" at every crossing, so a hair curtain between the seed
+//    and infinity would tally unbounded positive parity.  A 1-D curve
+//    has no interior to be inside.
+//
+//    Objects confirmed in both directions are pushed in OUTERMOST-FIRST
 //    order (stack convention: bottom = outermost, top = innermost).
 //    Order is determined by each containing object's FIRST exit's
 //    probe-step index: smaller index = closer to seed = innermost.
@@ -107,6 +124,162 @@ namespace RISE
 {
 	namespace IORStackSeeding
 	{
+		// Per-object containment is determined by per-object PARITY of
+		// exits-vs-entries along a probe ray.  An object contains the
+		// seed point iff the probe sees one more exit than entry (i.e.
+		// it must cross the boundary one more time outward than inward
+		// to leave the object).
+		//
+		// Counting exits only (or deduping per object) is INCORRECT
+		// because a probe that simply *passes through* an object —
+		// camera in front of a glass sphere with probe direction
+		// going through it — sees one entry and one exit.  Without
+		// parity tracking, that probe would record the sphere as
+		// "containing" the camera and pre-seed the stack with it,
+		// causing the first eye-ray hit on the sphere to be treated
+		// as an exit (refraction direction computed glass→air
+		// instead of air→glass).
+		//
+		// The `parity` field is +1 per exit, -1 per entry.  A net
+		// positive value means the seed is inside that object along
+		// this probe.
+		struct ProbeEntry {
+			const IObject* pObj;
+			Scalar ior;
+			int parity;
+			int firstExitStep;  // probe step of FIRST exit, for stack-order sort
+			// DL-46: true for a `hasInterior`-only (non-refracting,
+			// stateful) material -- push re-pushes the stack's CURRENT
+			// top instead of this entry's captured `ior`, matching
+			// TranslucentSPF::Scatter's own `push(ior_stack.top())`.
+			// False for an ordinary `canRefract` medium, which pushes
+			// its own distinct `ior` as before.
+			bool repushParentIor;
+		};
+
+		// Stack-allocated small buffer; real scenes rarely nest more
+		// than 2-3 refractive volumes so the fixed cap is generous.
+		static const std::size_t kMaxNestingDepth = 8;
+
+		/// Walks one probe ray from `pos` along `dir` and fills `out`
+		/// with the per-object exit/entry parity tally.  Returns the
+		/// number of entries written.
+		inline std::size_t TallyProbe(
+			const IObjectManager* pObjects,
+			const Point3& pos,
+			const Vector3& dir,
+			ProbeEntry* out
+			)
+		{
+			std::size_t count = 0;
+			const Scalar kSeedEps = Scalar( 1e-4 );
+			Ray probe( pos, dir );
+
+			// Safety cap: guards against pathological geometry (coincident
+			// faces, self-intersections) that could loop indefinitely.
+			const int kMaxSteps = 32;
+			for( int step = 0; step < kMaxSteps; step++ )
+			{
+				RayIntersection ri( probe, nullRasterizerState );
+				pObjects->IntersectRay( ri, true, true, false );
+				if( !ri.geometric.bHit ) {
+					break;
+				}
+
+				// Side-of-surface decision: use the GEOMETRIC normal,
+				// not the shading normal — the question is "is the seed
+				// point physically inside this object", which is a
+				// topology query about the actual surface.  A bump-mapped
+				// or normal-mapped enclosure boundary at a grazing probe
+				// angle can flip the shading-normal cosN sign while the
+				// geometric crossing is unambiguous; using shading there
+				// silently leaves the seed stack empty (PBRT 4e §10.1.1).
+				//
+				// DL-46 double-sided-mesh follow-up: `vGeomNormal` is NOT
+				// unconditionally the true surface-facing normal.  A
+				// double-sided triangle mesh (TriangleMeshGeometry{,
+				// Indexed}::IntersectRay), and BezierPatchGeometry /
+				// ClippedPlaneGeometry on a back-face hit, flip it to face
+				// whichever side the probe struck, recording that in
+				// `bGeomNormalOrientedToRay`; on such a surface
+				// `Dot(vGeomNormal, probe.Dir())` is ALWAYS negative, on
+				// both a true entry and a true exit — `cosN > 0` (exit)
+				// never fires, parity only ever decrements, and the object
+				// is never seeded.  Recover the TRUE geometric normal with
+				// the documented un-flip (RayIntersectionGeometric.h)
+				// before dotting.
+				//
+				// P2-4 (review round 3): that recovery is only meaningful
+				// when the reported normal is a static property of the
+				// surface.  `HairGeometry` reports a RAY-DERIVED normal
+				// (and sets `bGeomNormalOrientedToRay` unconditionally),
+				// so un-flipping it gives "always away from the ray" =
+				// "always an exit" at every strand the probe crosses — a
+				// hair curtain between the seed and infinity would tally
+				// arbitrarily large positive parity.  A 1-D curve has no
+				// interior to be inside, so skip such a hit entirely
+				// rather than tally a meaningless crossing.  (Harmless
+				// today only because HairMaterial reports no
+				// SpecularInfo; this guard makes it structural.)
+				const Vector3 trueGeomNormal = ri.geometric.bGeomNormalOrientedToRay
+					? -ri.geometric.vGeomNormal : ri.geometric.vGeomNormal;
+				const Scalar cosN = Vector3Ops::Dot(
+					trueGeomNormal, probe.Dir() );
+
+				if( ri.pObject && ri.pMaterial && !ri.geometric.bGeomNormalRayDerived )
+				{
+					// Track refractive materials (own numeric IOR) AND
+					// hasInterior-only stateful materials (DL-46, no
+					// distinct IOR, just membership tracking) — pure
+					// reflectors (mirrors) and Lambertian surfaces report
+					// neither and have no "interior" the ray travels
+					// through.
+					IORStack queryStack( Scalar( 1.0 ) );
+					const SpecularInfo info =
+						ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
+					const bool bTrackable = info.canRefract ? (info.ior > 0) : info.hasInterior;
+					if( info.valid && bTrackable )
+					{
+						// Find or create per-object entry.  Linear scan is
+						// fine — kMaxNestingDepth is 8.
+						ProbeEntry* e = 0;
+						for( std::size_t d = 0; d < count; d++ ) {
+							if( out[d].pObj == ri.pObject ) {
+								e = &out[d];
+								break;
+							}
+						}
+						if( !e && count < kMaxNestingDepth ) {
+							e = &out[count++];
+							e->pObj = ri.pObject;
+							e->ior = info.ior;
+							e->parity = 0;
+							e->firstExitStep = -1;
+							e->repushParentIor = !info.canRefract;
+						}
+						if( e )
+						{
+							// +1 per exit, -1 per entry.  Positive net =
+							// seed is inside this object.
+							if( cosN > 0 ) {
+								e->parity++;
+								if( e->firstExitStep < 0 ) {
+									e->firstExitStep = step;
+								}
+							} else {
+								e->parity--;
+							}
+						}
+					}
+				}
+
+				// Step past the hit to find the next one.
+				probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
+				probe.Advance( kSeedEps );
+			}
+			return count;
+		}
+
 		/// Populate `stack` with the dielectric objects that physically
 		/// contain `pos`, so that subsequent scatters at the first
 		/// enclosing boundary see bFromInside==true.
@@ -136,139 +309,51 @@ namespace RISE
 				return;
 			}
 
-			// Per-object containment is determined by per-object PARITY of
-			// exits-vs-entries along the probe ray.  An object contains
-			// the seed point iff the probe sees one more exit than entry
-			// (i.e. it must cross the boundary one more time outward
-			// than inward to leave the object).
-			//
-			// Counting exits only (or deduping per object) is INCORRECT
-			// because a probe that simply *passes through* an object —
-			// camera in front of a glass sphere with probe direction
-			// going through it — sees one entry and one exit.  Without
-			// parity tracking, that probe would record the sphere as
-			// "containing" the camera and pre-seed the stack with it,
-			// causing the first eye-ray hit on the sphere to be treated
-			// as an exit (refraction direction computed glass→air
-			// instead of air→glass).
-			//
-			// The `parity` field is +1 per exit, -1 per entry.  A net
-			// positive value means the seed is inside that object.
-			struct Entry {
-				const IObject* pObj;
-				Scalar ior;
-				int parity;
-				int firstExitStep;  // probe step of FIRST exit, for stack-order sort
-				// DL-46: true for a `hasInterior`-only (non-refracting,
-				// stateful) material -- push re-pushes the stack's CURRENT
-				// top instead of this entry's captured `ior`, matching
-				// TranslucentSPF::Scatter's own `push(ior_stack.top())`.
-				// False for an ordinary `canRefract` medium, which pushes
-				// its own distinct `ior` as before.
-				bool repushParentIor;
-			};
-			// Stack-allocated small buffer; real scenes rarely nest more
-			// than 2-3 refractive volumes so the fixed cap is generous.
-			static const std::size_t kMaxNestingDepth = 8;
-			Entry containing[kMaxNestingDepth];
-			std::size_t containingCount = 0;
-
-			const Scalar kSeedEps = Scalar( 1e-4 );
 			// +Z is arbitrary; any fixed direction avoids per-seed RNG
 			// and keeps results deterministic across threads.
-			Vector3 dir( 0, 0, 1 );
-			Ray probe( pos, dir );
+			ProbeEntry containing[kMaxNestingDepth];
+			const std::size_t containingCount =
+				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing );
 
-			// Safety cap: guards against pathological geometry (coincident
-			// faces, self-intersections) that could loop indefinitely.
-			const int kMaxSteps = 32;
-			for( int step = 0; step < kMaxSteps; step++ )
-			{
-				RayIntersection ri( probe, nullRasterizerState );
-				pObjects->IntersectRay( ri, true, true, false );
-				if( !ri.geometric.bHit ) {
-					break;
-				}
-
-				// Side-of-surface decision: use the GEOMETRIC normal,
-				// not the shading normal — the question is "is the seed
-				// point physically inside this object", which is a
-				// topology query about the actual surface.  A bump-mapped
-				// or normal-mapped enclosure boundary at a grazing probe
-				// angle can flip the shading-normal cosN sign while the
-				// geometric crossing is unambiguous; using shading there
-				// silently leaves the seed stack empty (PBRT 4e §10.1.1).
-				//
-				// P2-2 (DL-46 double-sided-mesh follow-up): `ri.geometric.vGeomNormal` is NOT
-				// unconditionally the true surface-facing normal -- a
-				// double-sided triangle mesh (TriangleMeshGeometry{,
-				// Indexed}::IntersectRay) flips it to face whichever side
-				// the probe struck (`ri.geometric.bGeomNormalOrientedToRay`),
-				// so on such a mesh `Dot(vGeomNormal, probe.Dir())` is
-				// ALWAYS negative, on both a true entry and a true exit —
-				// `cosN > 0` (exit) never fires, parity only ever
-				// decrements, and the object is never seeded (the
-				// DL-46 fix does not hold for a double-sided translucent
-				// enclosure).  Recover the TRUE geometric normal with the
-				// documented un-flip (RayIntersectionGeometric.h) before
-				// dotting; single-sided meshes and every analytical
-				// primitive leave the flag false, so this recovery is a
-				// no-op for them.
-				const Vector3 trueGeomNormal = ri.geometric.bGeomNormalOrientedToRay
-					? -ri.geometric.vGeomNormal : ri.geometric.vGeomNormal;
-				const Scalar cosN = Vector3Ops::Dot(
-					trueGeomNormal, probe.Dir() );
-
-				if( ri.pObject && ri.pMaterial )
-				{
-					// Track refractive materials (own numeric IOR) AND
-					// hasInterior-only stateful materials (DL-46, no
-					// distinct IOR, just membership tracking) — pure
-					// reflectors (mirrors) and Lambertian surfaces report
-					// neither and have no "interior" the ray travels
-					// through.
-					IORStack queryStack( Scalar( 1.0 ) );
-					const SpecularInfo info =
-						ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
-					const bool bTrackable = info.canRefract ? (info.ior > 0) : info.hasInterior;
-					if( info.valid && bTrackable )
-					{
-						// Find or create per-object entry.  Linear scan is
-						// fine — kMaxNestingDepth is 8.
-						Entry* e = 0;
-						for( std::size_t d = 0; d < containingCount; d++ ) {
-							if( containing[d].pObj == ri.pObject ) {
-								e = &containing[d];
-								break;
-							}
-						}
-						if( !e && containingCount < kMaxNestingDepth ) {
-							e = &containing[containingCount++];
-							e->pObj = ri.pObject;
-							e->ior = info.ior;
-							e->parity = 0;
-							e->firstExitStep = -1;
-							e->repushParentIor = !info.canRefract;
-						}
-						if( e )
-						{
-							// +1 per exit, -1 per entry.  Positive net =
-							// seed is inside this object.
-							if( cosN > 0 ) {
-								e->parity++;
-								if( e->firstExitStep < 0 ) {
-									e->firstExitStep = step;
-								}
-							} else {
-								e->parity--;
-							}
-						}
-					}
-				}
-
-				// Step past the hit to find the next one.
-				probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
-				probe.Advance( kSeedEps );
+			// P2-4 (review round 3): a single probe's parity is only a
+			// containment test for a CLOSED surface.  Every
+			// `translucent_material` object is now a probe participant
+			// (DL-46), and translucent is exactly the material authors put
+			// on OPEN sheets -- a leaf, a curtain, a lampshade panel, a
+			// paper card.  An open single-sided card sitting above the
+			// seed with its normal pointing up registers one "exit" and no
+			// entry, so parity reads +1 and the seed is falsely declared
+			// inside it: the camera's very first hit then runs
+			// TranslucentSPF's EXIT branch (Beer extinction + a pop of an
+			// IOR that was never pushed) instead of the entry branch.
+			//
+			// Rule: require positive parity along the probe AND along its
+			// REVERSE.  For a closed manifold both directions agree by
+			// construction (the seed is inside or it is not), so this is a
+			// no-op for every case the mechanism was built for; for an
+			// open surface the two disagree (the reverse probe never meets
+			// it) and the object is rejected.  The reverse probe only runs
+			// when the forward one actually found a candidate, so the
+			// overwhelmingly common "not inside anything" call costs
+			// exactly what it did before.
+			//
+			// LIMIT, documented rather than papered over: a configuration
+			// of SEVERAL open surfaces that happens to present an
+			// away-facing sheet in BOTH directions (e.g. two parallel
+			// cards straddling the seed, normals pointing outward) still
+			// reads as containment.  Deciding that correctly needs real
+			// solid-angle / winding-number containment, not a pair of
+			// probes; this rule removes the single-open-surface false
+			// positive, which is the one open-geometry authors actually
+			// build.
+			ProbeEntry reverse[kMaxNestingDepth];
+			std::size_t reverseCount = 0;
+			bool anyCandidate = false;
+			for( std::size_t i = 0; i < containingCount; i++ ) {
+				if( containing[i].parity > 0 ) { anyCandidate = true; break; }
+			}
+			if( anyCandidate ) {
+				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse );
 			}
 
 			// Push containing objects (parity > 0) onto the stack.
@@ -283,10 +368,21 @@ namespace RISE
 			// Objects with parity == 0 (probe passed through) and
 			// parity < 0 (unbalanced entries — only possible from
 			// pathological geometry hitting the step cap) are skipped.
-			Entry* ordered[kMaxNestingDepth];
+			ProbeEntry* ordered[kMaxNestingDepth];
 			std::size_t orderedCount = 0;
 			for( std::size_t i = 0; i < containingCount; i++ ) {
 				if( containing[i].parity <= 0 ) {
+					continue;
+				}
+				// P2-4: confirm against the reverse probe (see above).
+				bool confirmed = false;
+				for( std::size_t r = 0; r < reverseCount; r++ ) {
+					if( reverse[r].pObj == containing[i].pObj && reverse[r].parity > 0 ) {
+						confirmed = true;
+						break;
+					}
+				}
+				if( !confirmed ) {
 					continue;
 				}
 				// Insert into ordered[] keeping descending firstExitStep.
