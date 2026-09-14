@@ -50,7 +50,29 @@
 //      power must equal incoming power * exp(-extinction*distance) *
 //      (1-scattering); and absorbed_frac + deposited_frac + traced_frac
 //      (all closed-form except deposited_frac, which is MEASURED from
-//      the real map) must sum to exactly 1 per channel.
+//      the real map) must sum to exactly 1 per channel.  NOTE: this
+//      balance check is not independent evidence of a second, distinct
+//      property -- deposited_frac IS beer*(1-scattering) by the SAME
+//      construction Sub-test 1 already checks (Beer term), so the sum
+//      is algebraically implied once Sub-test 1's per-channel formula
+//      is confirmed; it is included as a redundant cross-check of the
+//      arithmetic, not as coverage of a code path Sub-test 1 misses.
+//    Sub-test 3 (DL-39 P3 follow-up) -- the deposit fix is not specific
+//      to TranslucentSPF's own diffuse lobe: TracePhoton re-fetches
+//      `pMaterial->GetSPF()` at every hit, so an eRayTranslucent-typed
+//      backscatter ray that goes on to hit a DIFFERENT, non-translucent
+//      surface now has that surface's own SPF govern the deposit there.
+//      A Lambertian wall's Scatter() emits kray==its own albedo for its
+//      one eRayDiffuse ray, so the deposit becomes incoming*albedo
+//      (previously the unattenuated full incoming power, independent of
+//      the wall's color -- a real accuracy improvement, not just a
+//      formula swap).  A pure reflector hit with tracing disabled for
+//      that ray type emits only an untraced, non-diffuse ray that now
+//      matches neither the trace filter nor the diffuse-deposit branch,
+//      so it deposits 0 there instead of the pre-fix full power --
+//      documented in this file's TestLambertianWallDeposit() but not
+//      independently asserted (the Lambertian case is the
+//      representative, lower-risk one).
 //
 //  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `translucent`)
 //  Tabs: 4
@@ -71,6 +93,7 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/PhotonMapping/TranslucentPelPhotonTracer.h"
 #include "../src/Library/PhotonMapping/TranslucentPelPhotonMap.h"
 #include "../src/Library/Managers/ObjectManager.h"
@@ -82,8 +105,10 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 static int failed = 0;
+static int checks = 0;
 
 #define EXPECT( cond, msg ) do { \
+	checks++; \
 	if( !(cond) ) { \
 		std::cout << "FAIL: " << __FILE__ << ":" << __LINE__ << " " << msg << std::endl; \
 		failed++; \
@@ -91,6 +116,7 @@ static int failed = 0;
 } while(0)
 
 #define EXPECT_NEAR_PEL( a, b, tol, msg ) do { \
+	checks++; \
 	const RISEPel _a = (a), _b = (b); \
 	const Scalar _d = r_max( r_max(fabs(_a[0]-_b[0]),fabs(_a[1]-_b[1])), fabs(_a[2]-_b[2]) ); \
 	if( _d > (tol) ) { \
@@ -187,6 +213,50 @@ namespace
 		RISEPel StoredPower( unsigned int i ) const { return vphotons[i].power; }
 	};
 
+	// DL-39 P3 follow-up: reports TWO hits -- the translucent interior
+	// segment first (matching SingleHitThenMissManager), then whatever
+	// SECOND object/material the caller supplies (the recursive
+	// TracePhoton call driven by the translucent object's own
+	// eRayTranslucent backscatter ray) -- then misses forever, exactly
+	// like the single-hit manager.  Both hits report the same aligned,
+	// untilted normal so neither DL-45's exit gate nor the Lambertian
+	// SPF's own geometric-horizon gate is in play here; this fixture is
+	// purely about what TracePhoton deposits at a NON-translucent
+	// surface reached through an eRayTranslucent-typed ray, not about
+	// direction validity.
+	class TwoHitThenMissManager : public ObjectManager
+	{
+		const IObject& object1;
+		const IMaterial& material1;
+		const IObject& object2;
+		const IMaterial& material2;
+		mutable int callCount;
+	public:
+		TwoHitThenMissManager( const IObject& obj1, const IMaterial& mat1,
+			const IObject& obj2, const IMaterial& mat2 ) :
+			ObjectManager( false, false, 4, 8 ),
+			object1( obj1 ), material1( mat1 ), object2( obj2 ), material2( mat2 ),
+			callCount( 0 )
+		{}
+		void IntersectRay( RayIntersection& ri, bool, bool, bool ) const override
+		{
+			const int call = callCount++;
+			if( call > 1 ) {
+				ri.geometric.bHit = false;
+				return;
+			}
+			const Vector3 normal( 0, 0, 1 );
+			ri.geometric.bHit = true;
+			ri.geometric.range = 1;
+			ri.geometric.ptIntersection = ri.geometric.ray.PointAtLength( 1 );
+			ri.geometric.vNormal = normal;
+			ri.geometric.vGeomNormal = normal;
+			ri.geometric.onb.CreateFromW( normal );
+			ri.pObject = ( call == 0 ) ? &object1 : &object2;
+			ri.pMaterial = ( call == 0 ) ? &material1 : &material2;
+		}
+	};
+
 	// Builds an IORStack whose current object (transObj) is ALREADY on
 	// the stack -- i.e. the state a real photon has after having already
 	// entered the translucent object, about to hit its exit boundary.
@@ -251,6 +321,107 @@ namespace
 
 		return stored;
 	}
+
+	// DL-39 P3 follow-up: the deposit fix's "sum the diffuse lobe's own
+	// kray" rule is not specific to TranslucentSPF's own diffuse exit --
+	// TracePhoton fetches `ri.pMaterial->GetSPF()` at EVERY hit, so when
+	// the translucent object's own eRayTranslucent-typed backscatter ray
+	// (which carries `bFromTranslucent=true` into its recursive call)
+	// goes on to hit a completely different, non-translucent surface,
+	// THAT surface's own SPF now governs what gets deposited there:
+	//   - a Lambertian wall's Scatter() emits exactly one eRayDiffuse
+	//     ray with kray == its own reflectance/albedo (LambertianSPF.cpp),
+	//     so the deposit there is (arriving power) * albedo -- power was
+	//     previously read back as the FULL arriving power regardless of
+	//     the wall's color (the pre-fix formula's `accum_scattered`
+	//     never included eRayDiffuse rays either), so this is also a
+	//     real accuracy improvement, not merely a formula swap.
+	//   - a pure reflector hit with `bTraceReflections==false` emits
+	//     only an eRayReflection ray, which now matches NEITHER the
+	//     traced-type filter (tracing is disabled) NOR the eRayDiffuse
+	//     deposit branch, so nothing is deposited there at all (power ->
+	//     0) -- pre-fix, `accum_scattered` also excluded it (never
+	//     traced), so `power*(1-accum_scattered)` deposited the FULL
+	//     power there instead.  Not covered by a dedicated assertion
+	//     here (LambertianSPF's kray==albedo trace above is the
+	//     representative, and lower-risk, case), but documented so a
+	//     future reader isn't surprised by the asymmetry.
+	//
+	// This sub-test exercises the Lambertian-wall case directly: a
+	// fully-backscattering (scattering=1, extinction=0) translucent
+	// object hands its ENTIRE incoming power to the backscatter ray,
+	// which then hits a real LambertianMaterial; the single photon
+	// stored at THAT hit must equal incoming power times the wall's own
+	// reflectance, not the unattenuated incoming power.
+	RISEPel RunLambertianWallDeposit( const RISEPel& wallAlbedo )
+	{
+		UniformColorPainter* front = new UniformColorPainter( RISEPel( 0.2, 0.2, 0.2 ) );  front->addref();
+		UniformColorPainter* trans = new UniformColorPainter( RISEPel( 0.4, 0.4, 0.4 ) );  trans->addref();
+		UniformScalarPainter* ext = new UniformScalarPainter( 0.0 );  ext->addref();
+		UniformScalarPainter* phongN = new UniformScalarPainter( 1.0 );  phongN->addref();
+		UniformScalarPainter* scat = new UniformScalarPainter( 1.0 );  scat->addref();
+
+		TranslucentMaterial* transMaterial = new TranslucentMaterial( *front, *trans, *ext, *phongN, *scat );
+		transMaterial->addref();
+
+		UniformColorPainter* wallReflectance = new UniformColorPainter( wallAlbedo );  wallReflectance->addref();
+		LambertianMaterial* wallMaterial = new LambertianMaterial( *wallReflectance );
+		wallMaterial->addref();
+
+		StubObject* transObj = new StubObject();  transObj->addref();
+		StubObject* wallObj = new StubObject();  wallObj->addref();
+
+		TwoHitThenMissManager* manager = new TwoHitThenMissManager(
+			*transObj, *transMaterial, *wallObj, *wallMaterial );
+		manager->addref();
+		Scene* scene = new Scene();
+		scene->addref();
+		scene->SetObjectManager( manager );
+
+		TestTranslucentPelPhotonTracer* tracer = new TestTranslucentPelPhotonTracer();
+		tracer->addref();
+		tracer->AttachScene( scene );
+
+		InspectableTranslucentPelPhotonMap map( 16 );
+
+		const Ray primaryRay( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) );
+		const RISEPel incomingPower( 1, 1, 1 );
+		IORStack stack = MakeInsideStack( transObj );
+
+		tracer->TestTrace( primaryRay, incomingPower, /*bFromTranslucent*/ true, map, stack, /*depth*/ 1 );
+
+		// Two hits happen (translucent interior segment, then the
+		// Lambertian wall through its backscatter ray), but only ONE
+		// deposit call stores a photon: `TranslucentPelPhotonMap::Store`
+		// silently drops a zero-power deposit (`MaxValue(power)<=0`,
+		// TranslucentPelPhotonMap.cpp), and the interior segment's OWN
+		// deposit is exactly zero here (scattering=1 leaves nothing for
+		// its own exit lobe -- see the header comment).  So the map's
+		// one stored photon is the Lambertian wall's.
+		EXPECT( map.StoredCount() == 1,
+			"exactly one non-zero photon deposited (the Lambertian-wall hit; the interior segment's own deposit is zero and silently dropped)" );
+
+		RISEPel wallStored( 0, 0, 0 );
+		if( map.StoredCount() >= 1 ) {
+			wallStored = map.StoredPower( 0 );
+		}
+
+		manager->release();
+		scene->release();
+		tracer->release();
+		transMaterial->release();
+		wallMaterial->release();
+		transObj->release();
+		wallObj->release();
+		scat->release();
+		phongN->release();
+		ext->release();
+		trans->release();
+		front->release();
+		wallReflectance->release();
+
+		return wallStored;
+	}
 }
 
 static void TestExtinctionSweep()
@@ -306,14 +477,35 @@ static void TestBackscatterBalance()
 		"absorbed_frac + deposited_frac(measured) + traced_frac == 1 (energy balance)" );
 }
 
+static void TestLambertianWallDeposit()
+{
+	std::cout << "Sub-test 3: deposit at a non-translucent surface reached via eRayTranslucent (DL-39 P3)" << std::endl;
+
+	const RISEPel wallAlbedo( 0.7, 0.5, 0.3 );
+	const RISEPel deposited = RunLambertianWallDeposit( wallAlbedo );
+
+	EXPECT_NEAR_PEL( deposited, wallAlbedo, 1e-9,
+		"Lambertian wall reached via the translucent object's own backscatter ray deposits incoming_power * albedo" );
+	// Red-proof-shape guard, mirroring TestExtinctionSweep's: the pre-fix
+	// formula would have deposited the FULL unattenuated incoming power
+	// (1,1,1) at this hit too (accum_scattered never included eRayDiffuse
+	// rays), independent of the wall's own color.
+	{
+		const Scalar d = r_max( r_max(fabs(deposited[0]-1.0),fabs(deposited[1]-1.0)), fabs(deposited[2]-1.0) );
+		EXPECT( d > 1e-6, "deposited power is NOT the unattenuated full incoming power (DL-39 red-proof shape)" );
+	}
+}
+
 int main()
 {
 	GlobalLog();
 
 	TestExtinctionSweep();
 	TestBackscatterBalance();
+	TestLambertianWallDeposit();
 
 	std::cout << std::endl;
+	std::cout << "TranslucentPhotonEnergyTest: " << checks << " checks, " << failed << " failures" << std::endl;
 	if( failed == 0 ) {
 		std::cout << "ALL TESTS PASSED" << std::endl;
 		return 0;
