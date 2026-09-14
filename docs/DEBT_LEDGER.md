@@ -118,8 +118,8 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-18 | CLOTH_FABRIC_DESIGN.md §15 item 13 | The Blender bridge has no sheen, anisotropic, or velvet mapping at all — Principled's Sheen sockets have no `fabric_material` target | OPEN-confirmed | No `fabric_material`/`sheen` reference found in the Blender bridge sources this sweep (`grep -rl fabric_material` under the Blender add-on tree returns nothing) | M | API/bridge gap | user-visible (Blender-authored scenes only) |
 | DL-25 | WETNESS_COAT_DESIGN.md §12 item 6b | Phase 1 cannot darken a textured substrate: the expression VM has no painter-sampling builtin | OPEN-confirmed | `src/Library/Painters/ExpressionEval.h` function table (~lines 1166-1171) has no painter-sample builtin alongside `sin`/`cos`/`atan2`/etc.; confirmed absent this sweep by grep | M | API/bridge gap | user-visible (wet textured substrates can't darken) |
 | DL-19 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | Two S3 conversion sites (BDPT's NM-hero `Le` rebuild, the HWSS companion `rigW` rebuild) share the signals-replay helper but have no dedicated red-proof — their contribution is MIS-weighted to a few percent on the money test's scenes, so skipping them moves the suite by <= 5.7% / 0% | OPEN-confirmed (test gap) | Doc's own §10 disclosure; corrected this sweep — the previous citation ("`tests/SignalEmitterRecordTest.cpp` unchanged in this tree") is now stale: `ac9891f3` added `RunBoundedNeighbourRead()` (the DL-36 two-blade fixture, now called unconditionally from `main()`) to that file, but a diff of the change shows it adds no coverage for the BDPT NM-hero `Le` rebuild or HWSS `rigW` rebuild sites this row names — the gap is unchanged, only the file is not | S | coverage/test gap | internal (test-suite blind spot) |
-| DL-27 | WETNESS_COAT_DESIGN.md §12 item 7 | The wet-highlight variance cost is unmeasured | OPEN-confirmed | No test or scene mentioning "wet_highlight"/"WetHighlight" found in `tests/` or `docs/*.md` this sweep other than the design doc itself | S | coverage/test gap | internal (measurement gap, not a known defect) |
-| DL-30 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces | OPEN-confirmed, untested | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29); no nested-CSG `dndu`-pairing test found in `tests/CsgSurfacePayloadTest.cpp` or elsewhere this sweep | S | coverage/test gap | internal (no scene exercises it yet) |
+| ~~DL-27~~ | WETNESS_COAT_DESIGN.md §12 item 7 | ~~The wet-highlight variance cost is unmeasured~~ CLOSED 2026-09-14 (debt-cov slice) | CLOSED — measured, mean-based σ²·T ratio 1.145× (< 1.5× threshold); see recipe entry | K=16 EXR trials, `scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene`, WET (as-authored) vs DRY (`tau 0`, coat lobe stripped) via `bin/tools/HDRVarianceTest`: mean σ² 1.8796e-05 vs 1.8024e-05 (1.043×), mean wall time 2171.75ms vs 1977.88ms (1.098×) → mean σ²·T 1.145×. Max-based σ²·T ~3.3× (tail firefly risk, informational). | S | coverage/test gap | internal (measurement gap, not a known defect) |
+| ~~DL-30~~ | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | ~~A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces~~ CLOSED 2026-09-14 (debt-cov slice) | CLOSED — `tests/CsgSurfacePayloadTest.cpp` Test29, 369/0; see recipe entry | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29) named the gap; Test29 closes it with a sphere-operand exit-designated construction, mutation-red-proofed against the dot-product repair. | S | coverage/test gap | internal (no scene exercised it before) |
 | ~~DL-40~~ | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | ~~Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics~~ CLOSED 2026-09-14 (debt-cov slice) | CLOSED — see recipe entry for commit/counters | `ComputeStats` in `BDPTStrategyBalanceTest.cpp`/`VCMStrategyBalanceTest.cpp`/`EnvLightBalanceTest.cpp`/`SignalEmitterRecordTest.cpp` now rejects a nonfinite composited component; `ChannelsAgree`/`AbsWithin`/`RatioWithinBand`/`WorstRelDiff` now reject a nonfinite operand explicitly rather than relying on IEEE-NaN-comparison fallthrough or `std::fmax`'s NaN-discarding contract. | S | coverage/test gap | internal (false-green risk) |
 | DL-60 | DL34_UNION_INTERIOR_DEPTH.md: committed scenarios without replay fixtures | Two committed scenarios lack replay fixtures and fail the dynamically enumerated checkpoint suite before scene execution | OPEN-confirmed (reproduced baseline) | `altar_stress.json` and `rainwet_closeup.json` omit replay fixtures; `AgentEvalRunner::RunScenario` returns load_error. AgentEvalCheckTest reproduces 11 and 12 cascading assertions at pre-DL-34 e858b4c9 and compiled 3927ec9c. | S | coverage/test gap | internal (missing replay coverage) |
 | DL-20 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 2 | Patch geometries report flat curvature (`valid=false`) while genuinely curved; deferred to Phase 4, no Phase-4 work has landed | OPEN-confirmed | No patch-geometry curvature override exists (only `EllipsoidGeometry`/`DisplacedGeometry` override `ComputeAnalyticalDerivatives`, confirmed this sweep alongside DL-13) | M | coverage/test gap | user-visible (curvature-driven wear on patch geometry reads absent, not wrong) |
@@ -969,31 +969,39 @@ counterpart both gain a case that applies one verb after the other on the
 same target and asserts non-refusal plus both effects visible in the
 emitted CST.
 
-**DL-27 (wet-highlight variance unmeasured).** WETNESS_COAT_DESIGN.md §11.1
-states no pass threshold of its own — its exact words are: "Unmeasured. It
-should be measured on the worked example, with `oidn_denoise FALSE` (§9),
-before the recipe's default `scattering` ceiling is fixed." So the recipe
-below both names the measurement and **proposes** the threshold the doc
-omits. Scene: `scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene`
-(§6.5's worked example, the same one the Phase-1 exit gate renders at mean
-luma 0.195). Protocol: `docs/skills/variance-measurement.md`'s K-trial
-procedure (K >= 16, `samples 32`, `oidn_denoise FALSE`, `adaptive_max_samples
-0`, EXR output) run twice — once on the scene as authored (`add_wetness`
-applied, `scattering` at its shipped ceiling) and once on a "dry" variant
-with the wetness recipe's coat lobe stripped back to the bare substrate
-(`coat_weight 0`, or the pre-verb material) — both otherwise identical
-(camera, lights, sample count, seed sequence). Metric: `σ²·T`, the
-wall-clock-normalized variance CLAUDE.md's integrator-selection work already
-uses for exactly this kind of cost comparison — `σ²` from
-`bin/tools/HDRVarianceTest.exe` on each K-trial set, `T` the measured
-per-trial wall time, reported as the ratio (wet `σ²·T`) / (dry `σ²·T`).
-Pass threshold (**proposed, not stated in the design doc**): ratio <= 1.5x
-(a near-delta coat lobe may legitimately cost more per unit variance
-reduction than a matte Lambertian one, but a cost more than 50% higher
-should trip a review of the `scattering` ceiling, not ship silently).
-Fixed when that number exists and, if it exceeds the proposed (or a
-user-ratified) threshold, the recipe's `scattering` ceiling is lowered with
-the measured ratio cited in its place.
+**~~DL-27 (wet-highlight variance unmeasured).~~ CLOSED 2026-09-14
+(debt-cov slice).** WETNESS_COAT_DESIGN.md §11.1 stated no pass threshold
+of its own — its exact words were: "Unmeasured. It should be measured on
+the worked example, with `oidn_denoise FALSE` (§9), before the recipe's
+default `scattering` ceiling is fixed." Measured on
+`scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene` (§6.5's worked
+example) per `docs/skills/variance-measurement.md`'s K-trial procedure:
+K=16, `samples 32` (the scene's authored `128` reduced to fit K trials in
+reasonable time, per the protocol's own guidance), `oidn_denoise FALSE`
+(already the scene's setting), EXR output only (the scene's PNG
+`file_rasterizeroutput` block dropped). WET = the scene as authored. DRY =
+the same scene with `polished_material cobble_wet_stone`'s `tau` rebound
+from `cobble_wet` to the literal `0` — `tau`'s own chunk-parser description
+states `0.0` "reproduces the pre-refactor 'none' IPainter default (black)
+— the dielectric coat contributes no specular lobe until this is set,"
+which is exactly "the coat lobe stripped back to the bare substrate";
+`reflectance`/`cobble_albedo` (the separate wetness-darkening effect) was
+left unchanged in both conditions to isolate the highlight's own cost.
+Metric: `σ²·T` (wall-clock-normalized variance) via
+`bin/tools/HDRVarianceTest`, reported as the ratio (wet `σ²·T`) / (dry
+`σ²·T`). **Result: mean σ² 1.879577e-05 (wet) vs 1.802359e-05 (dry) =
+1.043x; mean wall time 2171.75ms (wet) vs 1977.88ms (dry) = 1.098x; mean
+σ²·T ratio = 1.145x — under the proposed 1.5x threshold, so the
+`scattering` ceiling is NOT lowered.** Max-based σ² (the tail statistic)
+is 3.0x higher for wet (5.969176e-04 vs 1.990038e-04), giving a max-based
+σ²·T ratio of ~3.3x — a real but narrow firefly risk confined to a few
+pooled-highlight pixels (median/p99 σ² track closely between conditions),
+recorded for a future ceiling-tightening decision but not itself a
+threshold violation under this row's own mean-based metric. No automated
+regression-guard test was added: the measurement is a non-deterministic,
+~35-second K=16 render protocol, not a fast deterministic correctness
+check — see docs/WETNESS_COAT_DESIGN.md §11.1 for the full table and
+rationale.
 
 **DL-28 (water-absorption file pre-conversion trap).** Add a parse-time or
 load-time sanity check on `colors/water_absorption.spectra`-shaped files
@@ -1023,12 +1031,32 @@ three-number RGB authoring idiom (red: `IScalarPainterTest` 9 failed,
 pre-fix 555 nm broadcast — the `tau` row read R=G=B=0.0771581 where the
 per-channel closed form is 0.128355/0.0725641/0.0221849).
 
-**DL-30 (CSG exit-designated subtraction dndu pairing, untested).** Author
-a nested-CSG scene that reaches a subtraction's exit-designated branch
-(the doc names it as the one construction that can) and add it to
-`tests/CsgSurfacePayloadTest.cpp`, asserting `dndu`/`dndv` stay sign-paired
-with `vNormal` there the way the 2026-08-29 sign-pairing family already
-covers the other CSG branches. Fixed when that case exists and passes.
+**~~DL-30 (CSG exit-designated subtraction dndu pairing, untested).~~
+CLOSED 2026-09-14 (debt-cov slice) — `tests/CsgSurfacePayloadTest.cpp`
+Test29 (`TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing`),
+`369 passed, 0 failed`.** Every existing exit-designated-branch test
+(Test4 and every `ExitProbe_*` test) probed a `BoxGeometry` operand,
+whose flat faces give `dndu == dndv == (0,0,0)` — a sign flip of zero is
+still zero, so the `AdoptCsgExitFacePayloadViaProbe` dot-product
+re-pairing (CSGObject.cpp ~line 743) was reachable but never verified
+with a nonzero derivative. Test29 is Test4's exact construction (box A,
+sphere-at-z=-4 B, same offset ray) with B swapped from `BoxGeometry` to
+`SphereGeometry` (radius 2) — an analytic primitive whose closed-form
+Weingarten map (design doc 5.4) gives genuinely nonzero `dndu`/`dndv`.
+The composite's payload is compared against an INDEPENDENT oracle probe
+of B's exit face (a hand-built reverse ray, not a call into the code
+under test, mirroring Test4's own `probeRef` technique): MONEY
+assertions are `dndu`/`dndv` negated in step with `vNormal` (the
+oracle's own normal, negated) while `dpdu`/`dpdv` stay UNnegated, plus a
+curvature-sign check (composite reads concave, the oracle's own outward
+face reads convex). Red-proofed by temporarily disabling the dot-product
+repair (`if( /*TEMP-RED-PROOF*/ false && Dot(...) < 0 )`) in a scratch
+rebuild — exactly the three derivative/curvature MONEY assertions fail
+(`366 passed, 3 failed`) with the repair off, all other 366 checks
+(including every existing box-only exit-designated test) stay green;
+reverted before commit, `git diff` on `CSGObject.cpp` empty. No
+production code changed — this closes a coverage gap in an
+ALREADY-CORRECT fix (the 2026-08-29 sign-pairing family), not a new bug.
 
 **DL-31 (mesh neighbour is a sheet).** Add a robust closed-mesh
 containment test (e.g. parity ray-cast or a precomputed winding number)

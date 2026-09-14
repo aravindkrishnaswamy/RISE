@@ -2273,9 +2273,60 @@ neither adds to it nor avoids it.
 **The one real new cost is variance, not time.** Driving `scattering` toward
 200 000 makes the coat lobe near-delta in the pooled regions; a near-delta lobe
 over a diffuse substrate is a higher-variance configuration than the matte
-surface it replaced. Unmeasured. It should be measured on the worked example,
-with `oidn_denoise FALSE` (§9), before the recipe's default `scattering` ceiling
-is fixed.
+surface it replaced.
+
+**Measured 2026-09-14 (DL-27, debt-cov slice)**, on this section's own worked
+example, `scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene`, following
+[docs/skills/variance-measurement.md](skills/variance-measurement.md)'s K-trial
+protocol: K=16 EXR trials per condition, `samples 32` (down from the scene's
+authored 128, to fit the trial count), `oidn_denoise FALSE` (already the
+scene's own setting), `pixel_filter` untouched (the scene sets none), the
+scene's PNG `file_rasterizeroutput` block dropped (EXR only). WET is the scene
+exactly as authored (`cobble_wet_stone`'s `tau cobble_wet` — the spatially-
+varying wetness field, `scattering` riding up to 200 000 in pooled regions via
+`cobble_gloss`). DRY is the same scene with `tau 0` on `cobble_wet_stone` —
+`tau`'s own descriptor states `0.0` "reproduces the pre-refactor 'none'
+IPainter default (black) — the dielectric coat contributes no specular lobe
+until this is set," so this is exactly "the coat lobe stripped back to the
+bare substrate" this section calls for, isolating the coat/highlight's own
+cost without touching `reflectance`'s separate wetness-darkening effect
+(`cobble_albedo`, unchanged in both conditions — a static per-pixel
+colour shift, not a variance source). `HDRVarianceTest` (`bin/tools/`) on
+each K=16 set, wall time from each trial's own "Total Rasterization Time":
+
+| | mean σ² | max σ² (per-pixel, max channel) | mean wall time T |
+|---|---|---|---|
+| WET | 1.879577e-05 | 5.969176e-04 | 2171.75 ms (σ 98.6 ms) |
+| DRY | 1.802359e-05 | 1.990038e-04 | 1977.88 ms (σ 385.9 ms) |
+
+**σ²·T ratio (wet / dry), mean-based — the metric this section's own recipe
+names: 1.0428 × 1.0980 = 1.145×.** Comfortably under the proposed 1.5× ceiling
+(DL-27's ledger recipe), so **the `scattering` ceiling is NOT lowered** — the
+near-delta coat lobe's cost on the *typical* pixel is real but modest (mean σ²
+itself is only 4.3% higher; almost all of the ratio is the coat lobe's own
+~10% extra per-sample cost, not variance).
+
+**The tail is a different story.** Max per-pixel σ² is **3.0× higher** for WET
+(5.97e-04 vs 1.99e-04); the σ²·T ratio on the MAX statistic is **~3.3×** —
+this section's own prediction ("a near-delta lobe … is a higher-variance
+configuration") is real, it just concentrates in the few pixels sitting in a
+pooled, high-`pooling*wet` joint where `cobble_gloss` pushes `scattering`
+closest to its ceiling, rather than spreading across the image. Median and
+p99 σ² sit close together for both conditions (WET 1.824e-05 / 8.140e-05,
+DRY 1.759e-05 / 7.476e-05 at median/p99) — the firefly risk is real but
+narrow, consistent with "a few bright pooled joints," not a general
+sampling-difficulty regression. No regression-guard test was added: the K=16
+render measurement is inherently non-deterministic (RISE renders are not
+seeded from the wall clock, but `BlockRasterizeSequence` shuffles from
+`std::random_device` and nothing calls `srand`, so two renders of the same
+scene genuinely differ run to run) and expensive (~35 s per K=16 set at
+these settings) —
+folding it into the fast unit-test gate would trade a measurement for a flaky,
+slow test without a correctness invariant to pin; the number is recorded here
+and in [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) instead. If a future ceiling
+tightening (e.g. lowering the 200 000 cap on `cobble_gloss`'s `expression`) is
+proposed for firefly reasons, re-run this exact protocol and compare the max-
+based ratio, not just the mean.
 
 ### 11.2 Phase 2 — structural counts
 
@@ -2353,8 +2404,13 @@ timing exists because no implementation exists.
 6c. **`add_wetness` and `add_wear` mutually exclude each other on one material**
    (§6.4), and worn-and-wet is the flagship subject. v1 accepts the exclusion with
    cross-naming refusal messages; the census counts the demand. **Open.**
-7. **The wet-highlight variance cost is unmeasured** (§11.1). Measure with
-   `oidn_denoise FALSE` before fixing the recipe's `scattering` ceiling.
+7. ~~**The wet-highlight variance cost is unmeasured**~~ **MEASURED 2026-09-14
+   (DL-27, debt-cov slice) — see §11.1.** Mean-based σ²·T ratio (wet/dry)
+   1.145×, well under the proposed 1.5× ceiling; the `scattering` ceiling is
+   unchanged. Max-based σ²·T ratio is ~3.3× (a narrow firefly risk confined
+   to pooled highlight pixels) — recorded for a future ceiling-tightening
+   decision, not itself a threshold violation under this section's own
+   mean-based metric.
 8. **Heightfield-mode SDF returns neutral occlusion silently** — the pooling
    recipe's sharpest trap (§6.8). Not a bug (the fallback is deliberately
    do-nothing), but it produces a wrong-looking render with no diagnostic.
