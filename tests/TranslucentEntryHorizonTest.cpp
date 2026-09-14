@@ -125,8 +125,20 @@ namespace
 	const int kNumTilts = 7;
 
 	//! Closed-form solid-angle density of the clipped Phong lobe the fix
-	//! samples -- implemented here INDEPENDENTLY of TranslucentSPF.cpp so
-	//! that "stored pdf == this" is a cross-check, not a tautology.
+	//! samples, transcribed here from the same closed form derived in
+	//! TranslucentSPF.cpp (NOT an independent derivation -- P3-e, review
+	//! round 2).  Sub-test 1's per-sample "stored pdf == this" comparison
+	//! is therefore only a self-consistency check that the transcription
+	//! matches the library's own arithmetic; it cannot catch a shared
+	//! mistake in the formula itself, or the sampler quietly drawing from
+	//! a DIFFERENT distribution than the one it reports.  The genuine
+	//! verification is the combination of sub-test 5 (an independent
+	//! spherical quadrature of this same expression, confirming it is a
+	//! properly normalized density in its own right) and sub-test 6 (a
+	//! chi-squared of directions the SAMPLER actually produced against
+	//! it) -- together they catch a wrong formula (5) and a sampler that
+	//! does not match its own reported formula (6), neither of which the
+	//! per-sample comparison here can.
 	Scalar ClippedPhongDensity( const Vector3& axis, const Vector3& clipN,
 		const Scalar N, const Vector3& w )
 	{

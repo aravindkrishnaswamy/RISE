@@ -1,7 +1,10 @@
 # DL-68 — TranslucentSPF's stack-transitioning Phong lobes and the geometric horizon
 
 **Status: CLOSED 2026-09-14** (`903b8878`, red-proof `c9d751e4`).
-Regression: `tests/TranslucentEntryHorizonTest.cpp` — 212 checks, 0 failures.
+Regression: `tests/TranslucentEntryHorizonTest.cpp` — 212 checks, 0 failures
+at original closure; **251 checks, 0 failures after review round 2**
+(2026-09-14, same day: P2-b sub-tests 7/8 + P3-b sub-test 9, see §6 and
+the Counts note in `docs/DEBT_LEDGER.md`'s DL-68 row).
 
 Companion reading: [DL01_TRANSLUCENT_EXIT_WEIGHT.md](DL01_TRANSLUCENT_EXIT_WEIGHT.md),
 [DL02_TRANSLUCENT_EXIT_DENSITY.md](DL02_TRANSLUCENT_EXIT_DENSITY.md),
@@ -40,6 +43,31 @@ This is the entry-push mirror of the exit-pop defect DL-45 closed
 re-emission's gate/renormalization and left both Phong lobes explicitly
 exempt (the pre-DL-68 comment in `Scatter()` said so in as many words).
 
+**Render-level effect (P3-c, review round 2): honestly, below MC noise on
+every fixture tested.** This is a STATE-MISCLASSIFICATION fix, not
+primarily a radiance-magnitude one, and its render-visible consequence is
+correspondingly indirect: a mesh-shape convex object's wrong-side entry ray
+re-emits diffusely from the point where it entered (the near side of the
+surface, since the mislabeled "entry" ray never actually crossed anything),
+while the corrected ray re-emits from wherever the corrected transmission
+direction actually lands (typically the far side). On a mesh whose local
+curvature is mild relative to the mean free path, both points see nearly
+the same incident illumination, so the two give nearly the same expected
+outgoing radiance -- the bug is a bookkeeping error whose downstream
+symptom (a LATER hit on the same object misclassified as an exit that
+never legitimately entered) requires a specific multi-bounce configuration
+to become visible at all, not a per-pixel radiance error at the site of
+the mistake itself. Review-round-2 measurement: four production PT
+fixtures (tilted translucent spheres/meshes, `oidn_denoise FALSE`,
+`pixel_filter box`) where the clip fires on 100% of entry lobes (heavy
+tilt) showed mean deltas <= 0.1% pre- vs post-fix, per-pixel
+indistinguishable from Monte Carlo noise at the sample counts tested.
+**Visibility, stated honestly: a state-misclassification fix whose
+render-level effect was below MC noise on every fixture reviewed this
+round** -- not the blanket "user-visible" the row's own original filing
+implied; see the `docs/DEBT_LEDGER.md` row's Visibility column, updated
+to match.
+
 ### Measured (pre-fix)
 
 `tests/TranslucentEntryHorizonTest.cpp` against the unfixed library at
@@ -72,7 +100,13 @@ Other fixtures, pre-fix:
   73 / 271 / 605 / 1069 / 1564 / 2049 rays per 4096 escaping without a pop at
   15 / 30 / 45 / 60 / 75 / 89° (0 at tilt 0).
 * **chi-squared** of 400k sampled directions against the density the fix
-  reports: `chi2/dof` = 46.8 (30°, N=1), 272.2 (60°, N=1), 75.1 (60°, N=7).
+  reports: `chi2/dof` = 46.8 (30°, N=1), 272.2 (60°, N=1), 75.1 (60°, N=7) --
+  and, for completeness (P3-d, review round 2 -- the original write-up
+  elided this cell), 0.993 (30°, N=7): NOT a red signal, because a narrow
+  lobe at a mild tilt puts almost none of its (unclipped, pre-fix) mass
+  near the horizon bins this diagnostic has to exclude; see §3 for why
+  that is a diagnostic blind spot at this one cell, not evidence of
+  correctness there.
 
 ---
 
@@ -206,6 +240,17 @@ Properties:
 * **The clipped-away energy is renormalized into the valid region** (DL-45's
   choice), not dropped: every trial still emits exactly one lobe, and the
   reported density is the density of that renormalized procedure.
+* **P3-f (review round 2):** the parameterization has one measure-zero
+  special case worth naming rather than leaving implicit: `u2 -> 0` and
+  `u2 -> 1` both land `psi` exactly on the arc boundary
+  `Dot(w,clipN) = 0` (the tangent plane to the clip). That is an ordinary,
+  valid sample of the closed interval `[-halfArc,halfArc]` carrying the
+  same density `q` above, not a degenerate or excluded case -- unlike the
+  horizon-straddling BINS the regression's chi-squared excludes (those are
+  a quadrature artifact of finite bin width, not a property of the sampler
+  itself). Separately, `theta -> 0` (`u1 -> 1`) makes `uAxis`'s specific
+  direction immaterial since `sin(theta) -> 0` multiplies it out of
+  `outDir` -- the ordinary pole of any spherical parameterization.
 
 ### Difference from DL-45's shape, stated plainly
 
@@ -220,21 +265,60 @@ that extends to `N != 1`. Verified two ways in the regression:
   the test, recovers `1.00000`–`1.00013` at every tilt 0…89° × `N ∈ {1,7,30}`;
 * a chi-squared of 400k **sampled** directions against `q` (horizon-straddling
   bins excluded) reads `chi2/dof` = 1.013 / 0.800 / 0.867 / 0.875 post-fix
-  (46.8 / — / 272.2 / 75.1 pre-fix).
+  (46.8 / 0.993 / 272.2 / 75.1 pre-fix, for (30°,N=1) / (30°,N=7) / (60°,N=1)
+  / (60°,N=7) respectively -- re-measured against `12027967`, review round
+  2, P3-d: the original write-up elided the (30°,N=7) figure as `—`).
+  **The (30°,N=7) cell is NOT a red signal pre-fix** -- unlike the other
+  three, which fail this suite's own `< 1.6` gate outright. At `N=7` the
+  lobe is narrow enough, and 30° tilt mild enough, that almost none of the
+  UNCLIPPED pre-fix lobe's mass reaches the horizon at all, so the
+  horizon-straddling-bin exclusion (needed because a bin the horizon cuts
+  through has a discontinuous integrand, see sub-test 6's own comment)
+  removes essentially the only bins where pre-fix and post-fix differ,
+  leaving a chi-squared over bins that were never wrong. This is a real
+  limitation of THIS diagnostic at this particular (tilt, N) cell, not
+  evidence the pre-fix sampler was correct there: the defect is a
+  geometric fact about which HALF-SPACE a sampled direction lands in, and
+  a narrow, mildly-tilted lobe simply puts little of its mass near that
+  boundary in the first place, whether or not it is being clipped
+  correctly. Sub-test 1's own side-of-horizon census (which has no
+  bin-exclusion blind spot) is the diagnostic that does not go blind this
+  way -- it is what actually establishes the defect at every `N` and
+  tilt, including through the per-channel `N=1/7/30` row.
 
 ---
 
 ## 4. What was *not* changed
 
-* **`Pdf` / `PdfNM` are untouched.** They cover the entry reflection lobe and
-  DL-45's diffuse exit re-emission only; neither Phong lobe has ever had a
-  `Pdf` entry (`SPFPdfConsistencyTest` carries the row comment "Pdf() only
-  covers diffuse lobe, not translucent"). Bringing the Phong lobes and their
-  selection probabilities into `Pdf` is **DL-41**, an open row with its own
-  MIS-partner consequences; adding a bare per-lobe density without the
-  selection weight would be a new half-correct thing. The density contract
-  this row owes is the one the emitted `ScatteredRay` carries, and that is
-  now exact.
+* **`Pdf` / `PdfNM` are untouched -- but the density this row's own emitted
+  ray CARRIES did move, and that density is not a purely local quantity.**
+  `Scatter`/`ScatterNM` are the only source of `rs2.bsdfPdf` / `c.bsdfPdf`
+  for these two lobes, and PT/BDPT/VCM feed that value into their MIS
+  weight as the BSDF-side density against an NEE partner --
+  `TranslucentSPF::Pdf`/`PdfNM`, which has never covered either Phong lobe
+  (`SPFPdfConsistencyTest`'s row comment: "Pdf() only covers diffuse lobe,
+  not translucent") and returns 0 for these directions regardless. That
+  MIS partition was therefore ALREADY broken before this row (DL-41, an
+  open row with its own consequences) -- this fix does not create the
+  break, and does not need to fix it to be correct on its own terms, but
+  it does move the number that partition sees: `q`'s theta marginal is
+  unchanged, so the movement is bounded by the SAME `pi/halfArc` factor
+  that scales the whole clipped density relative to the unclipped one --
+  at most 2x (`halfArc >= PI/2` always, post-orientation), and only under
+  tilt (identity at tilt 0). Review-round-2 measurement on a tilted
+  translucent fixture found the render-level movement from this bounded
+  BSDF-side density change to be < 0.03% -- consistent with the bound: an
+  already-degenerate partition (weight effectively 1 on the
+  BSDF side, since the NEE partner is uniformly 0 here) does not become
+  MORE broken merely because the BSDF-side density it already fully owns
+  changed shape. Bringing the Phong lobes and their selection
+  probabilities into `Pdf` in a principled way remains **DL-41**'s scope,
+  not this row's; adding a bare per-lobe density without the selection
+  weight would be a new half-correct thing. The density contract this row
+  OWES -- the one the emitted `ScatteredRay` carries, consumed as an
+  opaque throughput denominator -- is now exact; the density contract
+  DL-41 owes -- a `Pdf()` that actually answers for these lobes -- remains
+  open.
 * **The entry front (reflection) lobe.** It already *has* the geometric gate;
   what it lacks is renormalization (it drops a below-horizon sample) and axis
   orientation. That is a different defect — energy loss, not a false state
@@ -283,14 +367,14 @@ Clean library rebuild, zero warnings. Per-test builds, all green:
 
 | suite | result |
 |---|---|
-| `TranslucentEntryHorizonTest` (new) | 212 checks / 0 failures (red: 83) |
+| `TranslucentEntryHorizonTest` (new) | 251 checks / 0 failures (red: 83 at original closure; sub-tests 7/8 independently red-proved at ~49% wrong-side/escaped @89deg against `12027967` in review round 2) |
 | `TranslucentTiltedExitTest` | ALL TESTS PASSED |
 | `TranslucentDoubleSidedTest` | Passed 44 / Failed 0 |
 | `TranslucentInitialContainmentTest` | Passed 43 / Failed 0 |
 | `TranslucentIORStackTest` | ALL TESTS PASSED (real trained OpenPGL + production PT/BDPT, RGB and NM) |
 | `TranslucentSpectralParityTest` | 1846 checks / 0 failures |
 | `TranslucentPhotonEnergyTest` | 14 checks / 0 failures |
-| `TranslucentSamplerDimensionCountTest` | 65544 checks / 0 failures |
+| `TranslucentSamplerDimensionCountTest` | 65589 checks / 0 failures (was 65544 at original closure; +45 P2-a rows covering the entering/backscatter `trans` lobes directly) |
 | `SPFPdfConsistencyTest` | all passed |
 | `SPFBSDFConsistencyTest` | all passed |
 | `PTGuidingMISPartitionTest` | 63 checks |
