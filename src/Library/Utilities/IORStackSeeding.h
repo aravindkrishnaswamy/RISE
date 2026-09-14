@@ -198,8 +198,26 @@ namespace RISE
 				// angle can flip the shading-normal cosN sign while the
 				// geometric crossing is unambiguous; using shading there
 				// silently leaves the seed stack empty (PBRT 4e §10.1.1).
+				//
+				// P2-2 (DL-46 double-sided-mesh follow-up): `ri.geometric.vGeomNormal` is NOT
+				// unconditionally the true surface-facing normal -- a
+				// double-sided triangle mesh (TriangleMeshGeometry{,
+				// Indexed}::IntersectRay) flips it to face whichever side
+				// the probe struck (`ri.geometric.bGeomNormalOrientedToRay`),
+				// so on such a mesh `Dot(vGeomNormal, probe.Dir())` is
+				// ALWAYS negative, on both a true entry and a true exit —
+				// `cosN > 0` (exit) never fires, parity only ever
+				// decrements, and the object is never seeded (the
+				// DL-46 fix does not hold for a double-sided translucent
+				// enclosure).  Recover the TRUE geometric normal with the
+				// documented un-flip (RayIntersectionGeometric.h) before
+				// dotting; single-sided meshes and every analytical
+				// primitive leave the flag false, so this recovery is a
+				// no-op for them.
+				const Vector3 trueGeomNormal = ri.geometric.bGeomNormalOrientedToRay
+					? -ri.geometric.vGeomNormal : ri.geometric.vGeomNormal;
 				const Scalar cosN = Vector3Ops::Dot(
-					ri.geometric.vGeomNormal, probe.Dir() );
+					trueGeomNormal, probe.Dir() );
 
 				if( ri.pObject && ri.pMaterial )
 				{

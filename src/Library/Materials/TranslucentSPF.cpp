@@ -23,22 +23,18 @@ using namespace RISE::Implementation;
 
 namespace
 {
-	// DL-45: the diffuse exit re-emission must actually leave the object
-	// GEOMETRICALLY, not merely according to the (possibly bump/glint-
-	// tilted) shading normal `n` used to build the cosine sample.  Sampling
-	// unconditionally around `n` and unconditionally popping the IOR stack
-	// lets a fraction of "exit" rays point back INTO the solid while the
-	// stack now says outside (DL-03's tilted fixture measured 1021/4096
-	// such inward exits per 4096 trials at a 60-degree shading-normal
-	// tilt).  A later hit on the same object then gets misclassified.
+	// DL-45 (P1 exact-remap follow-up, 2026-09-13): the diffuse exit re-emission must actually leave the
+	// object GEOMETRICALLY, not merely according to the (possibly bump/
+	// glint-tilted) shading normal `n` used to build the cosine sample.
+	// Sampling unconditionally around `n` and unconditionally popping the
+	// IOR stack lets a fraction of "exit" rays point back INTO the solid
+	// while the stack now says outside (DL-03's tilted fixture measured
+	// 1021/4096 such inward exits per 4096 trials at a 60-degree shading-
+	// normal tilt).  A later hit on the same object then gets
+	// misclassified.
 	//
-	// Fix: resample (rejection sampling against the SAME cosine
-	// distribution) until the direction also satisfies the true geometric
-	// horizon `dot(wo,geomN)>0`, and report the density of THAT actual,
-	// restricted sampling procedure -- not the unclipped cosine density,
-	// and not an unrenormalized "reject and lose the energy" density
-	// either.  Malley's-method disk projection gives this restricted
-	// density a closed form:
+	// Malley's-method disk projection gives the geometrically-valid
+	// fraction of the cosine-weighted hemisphere a closed form:
 	//
 	//   cosine-around-n sampling <=> uniform sampling on the unit disk via
 	//   (x,y) -> (x,y,sqrt(1-x^2-y^2)) in the (u,v,n) frame.  Writing
@@ -52,50 +48,124 @@ namespace
 	//
 	//     P(valid) = (1 + cos(phi)) / 2
 	//
-	// Rejection sampling against the ORIGINAL (unclipped) cosine
-	// distribution, keeping only accepted directions, therefore draws
-	// EXACTLY the conditional density cos(theta)/pi / P(valid) on the
-	// valid region -- a properly normalized (integrates to 1 over its own
-	// support) PDF, unlike silently dropping the sample and reporting the
-	// unclipped density (which would integrate to only P(valid) < 1, and
-	// which is the rejected policy this fix replaces).
-	const int kMaxExitResamples = 32;
-	// Floor on P(valid): only engaged when n and geomN are nearly opposed
-	// (phi -> 180 deg), a configuration well outside GlintModifier's
-	// documented <=60 deg tilt.  Bounds the reported pdf's magnitude
-	// instead of dividing by (near) zero; the resample loop below almost
-	// certainly exhausts its budget and emits nothing in that regime
-	// anyway, so this floor is reached only by an externally-supplied wo
-	// in Pdf()/PdfNM(), never by Scatter()/ScatterNM()'s own samples.
-	const Scalar kMinExitValidFraction = Scalar(1e-4);
+	// DL-45's original fix rejection-sampled against the unclipped cosine
+	// distribution until a valid direction turned up (up to 32 attempts),
+	// drawing 2 sampler dimensions per attempt.  PT's `ISampler` may
+	// be a `SobolSampler`, which partitions dimensions into fixed-size
+	// phases (`ISampler::HasFixedDimensionBudget()`, `ISampler.h`) so that
+	// every bounce starts its RR / light-selection draws at the same
+	// dimension offset regardless of what earlier draws in the bounce
+	// consumed.  A variable-length rejection loop breaks that invariant:
+	// at 60-degree tilt ~25% of exit scatters drew >=4 dimensions instead
+	// of 2, shifting every later Get1D() in the bounce's phase in a
+	// tilt-correlated way, and >=16 rejections in a row crossed into the
+	// NEXT bounce's phase entirely.
+	//
+	// Fix: an EXACT, unconditional two-draw remap -- no rejection, no
+	// second sampler.  Build a local orthonormal frame (u, v, n) with u
+	// the (normalized) component of geomN perpendicular to n, so that
+	// geomN = cos(phi)*n + sin(phi)*u by construction (v = n x u is then
+	// the frame's third axis).  Malley's-method draws a disk point
+	// (x,y) with r=sqrt(1-u1) [NOT sqrt(u1) -- see the comment on `r`'s
+	// computation below for why: this is the convention that matches
+	// GeometricUtilities::Perturb's existing cos(theta)=sqrt(u) sampler,
+	// which TranslucentSpectralParityTest's deterministic inverse-CDF
+	// check pins for the untilted (identity-remap) case], psi=2*pi*u2,
+	// x=r*cos(psi), y=r*sin(psi).  For FIXED y, the disk's x-chord is
+	// x in [-R,R] with R=sqrt(1-y^2)
+	// (length 2R); the geometrically-valid sub-chord derived above is
+	// x in [-cos(phi)*R, R] (length R*(1+cos(phi))), independent of y.
+	// Remapping the already-drawn x into that sub-chord via the constant-
+	// Jacobian affine map
+	//
+	//   x' = (x+R)*(1+cos(phi))/2 - cos(phi)*R
+	//
+	// turns the unconditional cosine draw into an EXACT, unconditional
+	// draw from the valid region using the SAME 2 canonical numbers --
+	// same normalized density `cos(theta)/pi / P(valid)` DL-45 derived
+	// (z' = sqrt(1-x'^2-y^2) is exactly cos(theta) for the emitted
+	// direction), just without the rejection loop or its dimension-count
+	// variability.
+	//
+	// Below `kExitVanishThreshold`, P(valid) has vanished (n and geomN
+	// nearly opposed, phi -> 180 deg, well outside GlintModifier's
+	// documented <=60 deg tilt) -- both the sampler and Pdf()/PdfNM() gate
+	// on this SAME threshold and report "no lobe" / 0 density together,
+	// rather than one side dividing by near-zero while the other still
+	// claims support.
+	const Scalar kExitVanishThreshold = Scalar(1e-4);
 
 	inline Scalar ExitValidFraction( const Vector3& n, const Vector3& geomN )
 	{
 		const Scalar cosPhi = r_max( Scalar(-1), r_min( Scalar(1), Vector3Ops::Dot(n,geomN) ) );
-		return r_max( kMinExitValidFraction, (Scalar(1)+cosPhi) * Scalar(0.5) );
+		return (Scalar(1)+cosPhi) * Scalar(0.5);
 	}
 
-	// Draws a cosine-around-`n` direction that is ALSO geometrically valid
-	// (dot(wo,geomN)>0), returning it and its normalized conditional
-	// density.  Returns false (only when n and geomN are nearly opposed --
-	// see kMinExitValidFraction above) if no valid direction was found
-	// within the resample budget; the caller must then not emit this lobe,
-	// matching Pdf()/PdfNM()'s own return of 0 for the same configuration
-	// so sampler and evaluator stay honest about their shared support.
+	// Draws a cosine-around-`n` direction that is EXACTLY conditioned on
+	// the true geometric horizon `dot(wo,geomN)>0`, using precisely 2
+	// canonical sampler draws every call (see the derivation above) --
+	// never more, regardless of geometry.  Returns false only when the
+	// valid region has vanished (see kExitVanishThreshold); the caller
+	// must then not emit this lobe, matching Pdf()/PdfNM()'s own return
+	// of 0 for the same configuration so sampler and evaluator stay
+	// honest about their shared support.
 	bool SampleValidDiffuseExit( const Vector3& n, const Vector3& geomN,
 		ISampler& sampler, Vector3& outDir, Scalar& outPdf )
 	{
-		const Scalar pValid = ExitValidFraction( n, geomN );
-		for( int attempt = 0; attempt < kMaxExitResamples; attempt++ ) {
-			const Vector3 rv = GeometricUtilities::Perturb( n,
-				acos( sqrt(sampler.Get1D()) ), TWO_PI * sampler.Get1D() );
-			if( Vector3Ops::Dot( rv, geomN ) > 0 ) {
-				outDir = rv;
-				outPdf = ( fabs( Vector3Ops::Dot( rv, n ) ) * INV_PI ) / pValid;
-				return true;
-			}
+		const Scalar cosPhi = r_max( Scalar(-1), r_min( Scalar(1), Vector3Ops::Dot(n,geomN) ) );
+		const Scalar pValid = (Scalar(1)+cosPhi) * Scalar(0.5);
+
+		// Exactly 2 draws, unconditionally -- drawn even when the region
+		// below turns out to have vanished, so the sampler's dimension
+		// counter advances identically regardless of geometry (no branch-
+		// dependent consumption; see the fixed-dimension-budget rationale
+		// above).
+		const Scalar u1 = sampler.Get1D();
+		const Scalar u2 = sampler.Get1D();
+
+		if( pValid < kExitVanishThreshold ) {
+			return false;
 		}
-		return false;
+
+		// Local frame (u, v, n) with geomN in the n-u plane.
+		Vector3 u = geomN - cosPhi * n;
+		const Scalar uLen2 = Vector3Ops::SquaredModulus( u );
+		if( uLen2 > Scalar(1e-12) ) {
+			u = u * ( Scalar(1) / sqrt(uLen2) );
+		} else {
+			// geomN parallel to n (phi ~ 0 or ~180 deg): no preferred tilt
+			// direction -- the remap below is either the identity
+			// (phi~0, pValid~1) or already rejected above (phi~180,
+			// pValid~0).  Any tangent axis works.
+			OrthonormalBasis3D arbitrary;
+			arbitrary.CreateFromW( n );
+			u = arbitrary.u();
+		}
+		const Vector3 v = Vector3Ops::Cross( n, u );
+
+		// Malley's-method disk sample, then the constant-Jacobian affine
+		// remap of the x-chord into the geometrically-valid sub-chord.
+		// r = sqrt(1-u1), NOT sqrt(u1): matches the existing plain-cosine
+		// convention (GeometricUtilities::Perturb's `cos(theta)=sqrt(u)`,
+		// i.e. z=sqrt(u1) before any clipping) that TranslucentSpectralParityTest's
+		// deterministic inverse-CDF check pins -- the classic Malley's-
+		// method disk radius r=sqrt(u1) gives the complementary (though
+		// equally valid, since u1 and 1-u1 are identically distributed
+		// for a truly random draw) z=sqrt(1-u1) convention instead, which
+		// would silently swap that pinned mapping for a FIXED canonical
+		// input without changing the sampled distribution's statistics.
+		const Scalar r = sqrt( r_max( Scalar(0), Scalar(1) - u1 ) );
+		const Scalar psi = TWO_PI * u2;
+		const Scalar x = r * cos(psi);
+		const Scalar y = r * sin(psi);
+		const Scalar R = sqrt( r_max( Scalar(0), Scalar(1) - y*y ) );
+
+		const Scalar xPrime = (x + R) * (Scalar(1)+cosPhi) * Scalar(0.5) - cosPhi * R;
+		const Scalar zPrime = sqrt( r_max( Scalar(0), Scalar(1) - xPrime*xPrime - y*y ) );
+
+		outDir = u*xPrime + v*y + n*zPrime;
+		outPdf = ( zPrime * INV_PI ) / pValid;
+		return true;
 	}
 }
 
@@ -155,26 +225,34 @@ void TranslucentSPF::Scatter(
 	// to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot
 	// flip the gate to the wrong side -- this is the correct reference for
 	// a REFLECTION, which must stay on the same side the incoming ray
-	// arrived from).  `trans` entry/backscatter lobes remain exempt (DL-46
+	// arrived from).  `trans` entry/backscatter lobes remain exempt (DL-68
 	// sibling audit: distinct site, own recipe, not this row's pattern).
 	//
 	// The exit-face re-emission (DL-45) is gated separately, against
 	// `geomNRaw` WITHOUT the ray-anchor flip: unlike the entry reflection,
 	// an exit ray must travel to the OPPOSITE side from where the incoming
-	// (interior) ray arrived, i.e. the object's actual outward direction,
-	// which for real geometry (SphereGeometry etc.) `ri.vGeomNormal`
-	// already reports unconditionally regardless of which side a ray hit
-	// it from (IORStackSeeding.h's probe relies on the exact same
-	// unflipped convention).  Reusing the ray-anchored `geomN` for the
-	// exit gate would validate the WRONG hemisphere -- for a ray already
-	// travelling outward (dot(geomNRaw, ri.ray.Dir()) > 0, the
-	// characteristic exit signature), the flip below produces `geomN`
-	// pointing back INTO the solid.  Degenerate vGeomNormal (SquaredModulus
-	// guard, matches GlintModifier.cpp) falls back to the shading normal
-	// for both gates, making each a no-op when no independent geometric
-	// truth is available.
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : n;
+	// (interior) ray arrived, i.e. the object's actual outward direction.
+	// `ri.vGeomNormal` is NOT unconditionally that direction: a double-
+	// sided triangle mesh (TriangleMeshGeometry{,Indexed}::IntersectRay)
+	// flips it to face whichever side the ray struck, recording that in
+	// `ri.bGeomNormalOrientedToRay`, so on such a mesh the raw field
+	// always faces the ray -- using it as-is would make this gate a
+	// no-op on exactly the meshes it exists to catch (P2-1 sibling
+	// audit).  Recover the TRUE, author-authored geometric normal with
+	// the documented un-flip (RayIntersectionGeometric.h) before using it
+	// as the unflipped reference; single-sided meshes and every
+	// analytical primitive leave the flag false, so this recovery is a
+	// no-op for them.  Reusing the ray-anchored `geomN` for the exit gate
+	// would validate the WRONG hemisphere -- for a ray already travelling
+	// outward (dot(geomNRaw, ri.ray.Dir()) > 0, the characteristic exit
+	// signature), the flip below produces `geomN` pointing back INTO the
+	// solid.  Degenerate vGeomNormal (SquaredModulus guard, matches
+	// GlintModifier.cpp) falls back to the shading normal for both gates,
+	// making each a no-op when no independent geometric truth is
+	// available.
+	const Vector3 trueGeomNormal = ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
@@ -393,11 +471,12 @@ void TranslucentSPF::Scatter(
 		// DL-45: the direction must actually be geometrically outward
 		// (dot(rv,geomN)>0), not just above the (possibly tilted) shading
 		// horizon -- otherwise we'd pop the stack while the ray still
-		// travels into the solid.  See SampleValidDiffuseExit above; if no
-		// valid direction turns up within its resample budget (only when
-		// n and geomN are nearly opposed), this lobe is simply not
-		// emitted this trial, exactly like the entry front-lobe's existing
-		// geometric gate above.
+		// travels into the solid.  See SampleValidDiffuseExit above (P1:
+		// an exact 2-draw remap, not a rejection loop); it returns false
+		// only when the valid region has vanished (n and geomN nearly
+		// opposed), in which case this lobe is simply not emitted this
+		// trial, exactly like the entry front-lobe's existing geometric
+		// gate above.
 		Scalar exitPdf = 0;
 		if( SampleValidDiffuseExit( n, geomNRaw, sampler, rv, exitPdf ) ) {
 			front.ray.Set( ri.ptIntersection, rv );
@@ -425,11 +504,15 @@ void TranslucentSPF::ScatterNM(
 	const Vector3& n = ri.onb.w();
 
 	// Geometric-horizon gates: `geomN` (ray-anchored, mirrors Scatter()'s
-	// entry front-lobe gate) and `geomNRaw` (unflipped, DL-45's exit gate
-	// -- see the long comment in Scatter() above for why the exit case
-	// needs the UNFLIPPED reference).
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : n;
+	// entry front-lobe gate) and `geomNRaw` (the recovered TRUE, unflipped
+	// geometric normal -- DL-45's exit gate; P2-1: see the long
+	// comment in Scatter() above for why the exit case needs the
+	// UNFLIPPED reference, and for why `ri.vGeomNormal` must first be
+	// un-flipped via `ri.bGeomNormalOrientedToRay` on a double-sided
+	// mesh).
+	const Vector3 trueGeomNormal = ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
@@ -570,11 +653,14 @@ Scalar TranslucentSPF::Pdf(
 	// reflection and DL-45's exit re-emission both need this, but against
 	// DIFFERENT references -- see the long comment in Scatter() for why:
 	// the entry reflection needs `geomN` (ray-anchored, the incident
-	// side); the exit re-emission needs the UNFLIPPED `geomNRaw` (the
-	// object's actual outward direction, independent of which side the
-	// evaluated ray happens to approach from).
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : n;
+	// side); the exit re-emission needs the recovered TRUE, UNFLIPPED
+	// `geomNRaw` (the object's actual outward direction, independent of
+	// which side the evaluated ray happens to approach from -- P2-1:
+	// `ri.vGeomNormal` itself is NOT unconditionally that direction
+	// on a double-sided triangle mesh, see Scatter()'s long comment).
+	const Vector3 trueGeomNormal = ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : n;
 
 	if( bFrontFace )
 	{
@@ -590,10 +676,12 @@ Scalar TranslucentSPF::Pdf(
 		return cosTheta * INV_PI;
 	}
 
-	// Inside-state diffuse exit re-emission (DL-45): Scatter()/ScatterNM()
-	// now RESAMPLE until valid rather than dropping the trial, so this
-	// must report the matching NORMALIZED conditional density -- see
-	// ExitValidFraction's derivation above.  Gate against the UNFLIPPED
+	// Inside-state diffuse exit re-emission (DL-45, P1 exact-remap follow-up): Scatter()/
+	// ScatterNM() draw an exact closed-form remap onto the geometrically-
+	// valid region rather than dropping (or, historically, rejection-
+	// sampling) an invalid trial, so this must report the matching
+	// NORMALIZED conditional density -- see ExitValidFraction's
+	// derivation above.  Gate against the (recovered, TRUE) UNFLIPPED
 	// `geomNRaw`, matching SampleValidDiffuseExit's own call sites.
 	if( Vector3Ops::Dot( wo, geomNRaw ) <= 0 ) return 0;
 	return ( cosTheta * INV_PI ) / ExitValidFraction( n, geomNRaw );

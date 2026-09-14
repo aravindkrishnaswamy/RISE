@@ -14,19 +14,25 @@
 //
 //  THE FIX (TranslucentSPF.cpp)
 //
-//    Resample (rejection sampling against the SAME cosine-around-n
-//    distribution) until the direction is ALSO geometrically valid
-//    (dot(wo,geomNRaw)>0, using the object's actual unflipped outward
-//    direction -- see the long comment in Scatter()), and report the
-//    density of that ACTUAL restricted procedure: a properly
-//    NORMALIZED (integrates to 1 over its own support) conditional PDF
-//    cos(theta)/pi / P(valid), where P(valid) = (1+cos(phi))/2 and phi
-//    is the angle between the shading normal and the true outward
-//    direction (`ExitValidFraction`'s closed-form derivation).  This is
-//    explicitly NOT the "reject and silently lose the energy" policy
-//    the row's recipe rules out -- every emitted exit sample is valid
-//    by construction, and Pdf()/PdfNM() report the matching normalized
-//    density rather than the unclipped one.
+//    Restrict the sampled direction to the region that is ALSO
+//    geometrically valid (dot(wo,geomNRaw)>0, using the object's actual
+//    unflipped outward direction -- see the long comment in Scatter()),
+//    and report the density of that ACTUAL restricted procedure: a
+//    properly NORMALIZED (integrates to 1 over its own support)
+//    conditional PDF cos(theta)/pi / P(valid), where
+//    P(valid) = (1+cos(phi))/2 and phi is the angle between the shading
+//    normal and the true outward direction (`ExitValidFraction`'s
+//    closed-form derivation).  This is explicitly NOT the "reject and
+//    silently lose the energy" policy the row's recipe rules out --
+//    every emitted exit sample is valid by construction, and
+//    Pdf()/PdfNM() report the matching normalized density rather than
+//    the unclipped one.  (Originally implemented as rejection sampling
+//    against the unclipped cosine distribution; DL-68 replaced that
+//    with an exact, unconditional two-draw closed-form remap -- same
+//    density, no rejection loop, no dimension-count variability -- see
+//    `SampleValidDiffuseExit` in TranslucentSPF.cpp.  This test's
+//    assertions are about the resulting DIRECTION/DENSITY, not the
+//    sampling mechanism, so they are unaffected either way.)
 //
 //  COVERAGE (recipe: "aaligned and tilted shading normals... enclosing
 //    IOR, scattering endpoints... a unit-energy directional integral")

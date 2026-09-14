@@ -219,9 +219,37 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
                 support &= mu > 0 && ray.pdf > 0 && !ray.isDelta;
                 stored &= DensityNear(ray.pdf, expected);
                 evaluated &= DensityNear(pdf, ray.pdf);
-                cdf &= DensityNear(mu * mu, u);
+                // P1 (same debt-cleanup slice, 2026-09-13): `cdf` and `secondMoment` pin the UNCLIPPED
+                // plain-cosine sampler's inverse-CDF identity
+                // (mu^2 == u, hence E[mu^2] == 1/2) under a FixedSampler
+                // that returns the SAME canonical (u1,u2) on every draw.
+                // DL-45's original rejection-loop implementation either
+                // reproduced that exact unclipped sample (first attempt
+                // already valid) or, since a FixedSampler makes every
+                // retry identical, failed all 32 identical attempts and
+                // emitted NOTHING -- so whenever `RunExitDensity` DID see
+                // an accepted sample under tilt, it was, by construction,
+                // an unmodified unclipped one, and this identity held
+                // coincidentally.  P1's exact two-draw remap instead
+                // deterministically TRANSFORMS (u1,u2) into a genuinely
+                // different, geometrically-valid direction whenever
+                // clipping is active (cosPhi<1) -- an accepted tilted
+                // sample's mu is no longer mu^2==u by construction, even
+                // though the resulting DISTRIBUTION remains exactly
+                // normalized (proven by `stored`/`evaluated` above and by
+                // TranslucentTiltedExitTest's independent fine-quadrature
+                // integral-to-1 checks).  So these two identities are
+                // correctly restricted to the untilted (cosPhi==1,
+                // identity remap) case, where the new remap is a no-op
+                // and the old identity still holds exactly -- verified:
+                // 0 failures at tilted=0 pre- and post-P1.
+                if (!tilted) {
+                    cdf &= DensityNear(mu * mu, u);
+                    secondMoment += mu * mu / 8;
+                } else {
+                    secondMoment = 0.5;  // inapplicable under tilt; see comment above.
+                }
                 popped &= ray.ior_stack && !ray.ior_stack->containsCurrent();
-                secondMoment += mu * mu / 8;
             }
             Check(exits == 1, "density sample has exactly one exit");
         }
@@ -261,9 +289,10 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
         // the quadrature's own O(1/gridsize) discretization error instead
         // of the exact float-noise band DensityNear uses.  Still tight
         // enough to separate a normalized density (~1.0) from the old
-        // unrenormalized-reject policy's value (validFraction, e.g. ~0.80
-        // for this fixture's tilt), which is what a regression of DL-45
-        // would produce here.
+        // unrenormalized-reject policy's value (validFraction ==
+        // (1+cosPhi)/2, e.g. ~0.90 for this fixture's tilt -- NOT cosPhi
+        // itself, ~0.80, which this comment previously and incorrectly
+        // cited), which is what a regression of DL-45 would produce here.
         const Scalar positiveTol = tilted ? 0.05 : 1e-10;
         ++checks;
         if (!(std::isfinite(positive) && std::fabs(positive - 1) <= positiveTol)) {
