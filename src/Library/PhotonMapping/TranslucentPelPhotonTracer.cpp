@@ -120,7 +120,25 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
 		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 
-			RISEPel accum_scattered;
+			// DL-39: the deposited flux must be the DIFFUSE lobe's own
+			// (Beer-attenuated) kray, not "incoming power minus whatever
+			// got traced further".  The old `power*(1-accum_scattered)`
+			// formula assumed the SPF's non-diffuse (traced) kray plus its
+			// diffuse kray always summed to exactly 1 -- true only when
+			// nothing is absorbed.  TranslucentSPF's diffuse exit/entry
+			// lobe is type eRayDiffuse, which the trace-selection `if`
+			// below never matches, so `accum_scattered` never contained it
+			// in the first place: at an interior exit with scattering=0
+			// (no backscatter `trans` ray either) accum_scattered stayed
+			// exactly 0 and the old code deposited the FULL incoming
+			// power, discarding the Beer extinction the SPF had already
+			// folded into the diffuse ray's own kray.  Sum the diffuse
+			// lobe's kray directly instead; TranslucentSPF emits at most
+			// one eRayDiffuse ray per Scatter()/ScatterNM() call, so this
+			// also correctly reduces to 0 when DL-45's geometric gate
+			// rejects every resample attempt (nothing to deposit, and no
+			// absorption double-counted either).
+			RISEPel diffuse_deposit;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
 				ScatteredRay& scat = scattered[i];
 				// Trace all rays
@@ -134,15 +152,14 @@ void TranslucentPelPhotonTracer::TracePhoton(
 					(scat.type==ScatteredRay::eRayReflection && bTraceReflections) ||
 					(scat.type==ScatteredRay::eRayRefraction && bTraceRefractions) ) {
 					TracePhoton( scat.ray, power*scat.kray, scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
-					if( bFromTranslucent ) {
-						accum_scattered = accum_scattered + scat.kray;
-					}
+				} else if( scat.type==ScatteredRay::eRayDiffuse ) {
+					diffuse_deposit = diffuse_deposit + scat.kray;
 				}
 			}
 
 			// Only deposit if the photon came from a translucent surface, 
 			if( bFromTranslucent ) {
-				pPhotonMap.Store( power*(RISEPel(1,1,1)-accum_scattered), ri.geometric.ptIntersection );
+				pPhotonMap.Store( power*diffuse_deposit, ri.geometric.ptIntersection );
 			}
 		}
 	}
