@@ -299,10 +299,33 @@ namespace RISE
 	//!   inside the graded object, before it exits): the throughput there
 	//!   carries `(1/n_A)^2` from the entry crossing when physics wants
 	//!   `(1/n_C)^2`, an error of `(n_C/n_A)^2`, because the interior
-	//!   segment from the entry point to C paid no factor. The principled
-	//!   fix is that missing interior-segment factor `(n_prev/n_C)^2`
-	//!   applied along the walk inside a graded medium -- NOT a
-	//!   substitution at the exit read.
+	//!   segment from the entry point to C paid no factor.
+	//!   THE FIX NEEDS TWO CHANGES THAT MUST LAND TOGETHER, not one:
+	//!   (a) the missing interior-segment factor `(n_prev/n_C)^2` applied
+	//!   along the walk, AND (b) switching the EXIT crossing's own read
+	//!   here from the stale `before.top()` to the SPF's freshly
+	//!   re-fetched exit value. Read ONLY (a) as "the fix" -- i.e. add
+	//!   the interior factor but leave this function's stale-`before.top()`
+	//!   exit read untouched, on the theory that "not a substitution at
+	//!   the exit read" means don't touch it at all -- and a through-trip
+	//!   becomes `(1/n_A)^2 * (n_A/n_B)^2 * (n_A/1)^2 = (n_A/n_B)^2`: the
+	//!   MIRROR IMAGE of the reverted 2026-09-14 bug (that one was
+	//!   `(n_B/n_A)^2`; this one is its reciprocal), still wrong, and
+	//!   still invisible to this file's own through-slab pin only by
+	//!   coincidence at a 1:1 ratio -- it is NOT invisible in general.
+	//!   (a) and (b) together reproduce the correct net exactly:
+	//!   `(1/n_A)^2 * (n_A/n_B)^2 * (n_B/1)^2 = 1` on any completed
+	//!   through-trip, which is why the through-slab pin cannot
+	//!   distinguish "fixed" from "unfixed" -- only an INTERIOR gather
+	//!   can, because it never reaches the exit read at all. See
+	//!   docs/REFRACTIVE_RADIANCE_SCALING.md sect 10.2 for the full
+	//!   derivation, the prerequisite that `n_C` is undefined for most
+	//!   `IScalarPainter` forms (GetValuesAt takes a SURFACE hit; an
+	//!   interior point never generated one), and a second, independent
+	//!   inconsistency this same investigation found at DielectricSPF's
+	//!   exit-hit Snell trace (direction + TIR classification computed
+	//!   against the fresh `n_B` while the walk's own tracked medium is
+	//!   still `n_A`) that widens this row from size M to L.
 	//!
 	//! @param before  the walk's current IOR stack at the scattering vertex
 	//! @param after   the scattered ray's stack, or NULL when the SPF left

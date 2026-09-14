@@ -58,13 +58,33 @@
 //    -- never reaches the cancelling exit event.  Its throughput
 //    carries `(1/n_A)^2` from the entry crossing where physics wants
 //    `(1/n_C)^2`, an error of `(n_C/n_A)^2`.  The same gap applies to a
-//    camera seeded INSIDE a graded medium (`IORStackSeeding::
-//    SeedFromPoint` records the index at the camera position; the first
-//    segment to a hit at a different index pays no factor).  The
-//    principled fix is the missing interior-segment factor
-//    `(n_prev/n_C)^2` applied along the walk, NOT a substitution at the
-//    exit read.  This file does not exercise that case: both rows here
-//    are pure through-transmission with a diffuse-free slab, so every
+//    walk seeded INSIDE a graded medium: `IORStackSeeding::
+//    SeedFromPoint` does NOT record the index AT THE SEED POINT itself
+//    (e.g. the camera position) -- it fires a probe ray FROM the seed
+//    point and records the index at the probe's FIRST SURFACE HIT on
+//    the containing object (`ri.pMaterial->GetSpecularInfo(ri.geometric,
+//    ...)`, IORStackSeeding.h), a point on the object's boundary that
+//    can be arbitrarily far from the seed point for a graded `ior`.
+//    Either way, the first segment out from the seed pays no
+//    interior-segment factor of its own.
+//
+//    THE FIX NEEDS TWO CHANGES THAT MUST LAND TOGETHER, not one: the
+//    missing interior-segment factor `(n_prev/n_C)^2` applied along the
+//    walk, AND switching the EXIT crossing's own `RadianceEtaScale` read
+//    from the stale `before.top()` to the SPF's freshly re-fetched exit
+//    value.  Implementing only the interior factor, while leaving that
+//    exit read untouched on the theory that "don't touch the exit read"
+//    means "add nothing there", turns a through-trip into
+//    `(1/n_A)^2 * (n_A/n_B)^2 * (n_A/1)^2 = (n_A/n_B)^2` -- the MIRROR
+//    IMAGE of the regression this file guards against (that one is
+//    `(n_B/n_A)^2`; this one is its reciprocal) -- and this file's own
+//    rows cannot distinguish that half-applied state from a real fix,
+//    because both rows are pure through-transmission (see below): only
+//    an INTERIOR gather, which never reaches the exit read, can tell
+//    them apart.  Full derivation:
+//    docs/REFRACTIVE_RADIANCE_SCALING.md sect 10.2.  This file does not
+//    exercise the interior-gather case: both rows here are pure
+//    through-transmission with a diffuse-free slab, so every
 //    contribution completes the round trip.
 //
 //    THE SCENE.  A single `box_geometry` dielectric slab, `ior` bound
