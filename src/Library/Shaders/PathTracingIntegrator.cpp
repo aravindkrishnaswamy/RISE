@@ -1587,20 +1587,35 @@ namespace
 
 		bool IsActive() const { return bActive; }
 
-		//! The nominal MIS-partner density at `wo`.  `aggregatePdf <= 0`
-		//! means the BSDF-sampling technique cannot reach `wo` at all, so
-		//! it has no MIS share to claim: return it unchanged (0) and let
-		//! both sides fall back to an unweighted sample.  That gate is the
-		//! only thing keeping a nonzero guide term from shrinking an NEE
-		//! sample whose complement nothing ever supplies.
+		//! The nominal MIS-partner density at `wo`.
+		//!
+		//! `aggregatePdf <= 0` is NOT a special case while guiding is
+		//! active (DL-74 P2-2, round-4 review).  The mixture the
+		//! BSDF-sampling technique actually draws from is
+		//! `alpha_nom*guide + (1-alpha_nom)*p_aggregate`, and its first
+		//! term does not vanish just because the material's own pdf
+		//! does: the guide can and does propose a direction outside the
+		//! material's sampling support (the tilted-lobe wedge of
+		//! `PTGuidingMISPartitionTest` row (h) is exactly that region).
+		//! Returning 0 there told BOTH sides "the BSDF technique never
+		//! generates this direction", so both took weight 1 and the
+		//! wedge's energy was counted twice.  The mixture density is
+		//! returned instead, which is one function of direction on both
+		//! sides and partitions exactly.
+		//!
+		//! With guiding INACTIVE the aggregate pdf is passed straight
+		//! through, so `aggregatePdf == 0` still means "no MIS partner
+		//! exists" -- which is then the true statement, because the only
+		//! sampler is the material itself.
 		Scalar Eval( const Vector3& wo, Scalar aggregatePdf ) const
 		{
-			if( !bActive || aggregatePdf <= 0 ) {
+			if( !bActive ) {
 				return aggregatePdf;
 			}
+			const Scalar agg = aggregatePdf > 0 ? aggregatePdf : Scalar( 0 );
 			const Scalar guidePdf = pField->Pdf( *pDist, wo );
 			return PathTransportUtilities::GuidingCombinedPdf(
-				alphaNominal, guidePdf, aggregatePdf );
+				alphaNominal, guidePdf, agg );
 		}
 
 		Scalar Blend( const Vector3& wo, Scalar rawPdf ) const override

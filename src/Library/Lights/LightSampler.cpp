@@ -2535,10 +2535,14 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						// guided nominal density, so this arm has to use
 						// the same function of direction or the pair stops
 						// summing to one -- exactly the asymmetry the env
-						// arm below had.  Blend inside the `> 0` gate for
-						// the reason documented there.
+						// arm below had.  DL-74 P2-2: the blend runs
+						// OUTSIDE the `> 0` gate -- a direction the
+						// material's own pdf cannot reach is still a
+						// direction the GUIDED MIXTURE reaches, and the
+						// hook is what knows that (see
+						// IGuidedNEEPdfBlend's contract).
 						Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, misIOR );
-						if( p_bsdf > 0 && pGuidedBlend && !isVolumeScatter ) {
+						if( pGuidedBlend && !isVolumeScatter ) {
 							p_bsdf = pGuidedBlend->Blend( vToLight, p_bsdf );
 						}
 
@@ -2694,20 +2698,25 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// area-light arm above for the derivation.
 					const IORStack& misIOR = pMisIorStack ? *pMisIorStack : defaultIOR;
 					Scalar pBsdf = pMaterial->Pdf( envDir, ri, misIOR );
-					// The blend runs INSIDE the `pBsdf > 0` gate on
-					// purpose (DL-74 P2-1): a direction the material's
-					// aggregate pdf cannot reach is a direction the
-					// BSDF-sampling technique never generates, so it has
-					// no MIS share and NEE must take the whole sample.
-					// Blending a nonzero guide term in there instead
-					// would scale this sample down with nothing to
-					// restore the remainder.
+					// DL-74 P2-2 (round-4 review): the blend runs OUTSIDE
+					// the `pBsdf > 0` gate.  Round 3 kept it inside on the
+					// rationale that a zero aggregate pdf means "the
+					// BSDF-sampling technique never generates this
+					// direction" -- true with guiding OFF, FALSE with it
+					// on, because the mixture's guide term still does.
+					// Leaving it inside gave weight 1 to BOTH sides for
+					// every such direction (reachable wherever the
+					// material's sampling support is narrower than its
+					// BSDF's: the full-sphere BSDFs whose hemisphere
+					// rejection is disabled, and any partial-support lobe
+					// -- row (h)).  The hook itself decides what a zero
+					// aggregate pdf means; see IGuidedNEEPdfBlend.
+					if( pGuidedBlend && !isVolumeScatter )
+					{
+						pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
+					}
 					if( pBsdf > 0 )
 					{
-						if( pGuidedBlend && !isVolumeScatter )
-						{
-							pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
-						}
 						Scalar w;
 						if( pOptimalMIS && pOptimalMIS->IsReady() )
 						{
@@ -3101,7 +3110,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			// live-IOR-stack rule, for the same reason.
 			const IORStack& misIOR = pMisIorStack ? *pMisIorStack : defaultIOR;
 			Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, misIOR );
-			if( p_bsdf > 0 && pGuidedBlend && !isVolumeScatter ) {
+			// DL-74 P2-2: outside the `> 0` gate -- see the RGB copy.
+			if( pGuidedBlend && !isVolumeScatter ) {
 				p_bsdf = pGuidedBlend->Blend( vToLight, p_bsdf );
 			}
 
@@ -3220,13 +3230,14 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 					// DL-74 P2: live stack, not the 1.0 sentinel.
 					const IORStack& misIOR = pMisIorStack ? *pMisIorStack : defaultIOR;
 					Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, misIOR );
-					// Blend inside the `> 0` gate -- see the RGB copy.
+					// DL-74 P2-2: blend OUTSIDE the `> 0` gate -- see the
+					// RGB copy for the derivation.
+					if( pGuidedBlend && !isVolumeScatter )
+					{
+						pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
+					}
 					if( pBsdf > 0 )
 					{
-						if( pGuidedBlend && !isVolumeScatter )
-						{
-							pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
-						}
 						Scalar w;
 						if( pOptimalMIS && pOptimalMIS->IsReady() )
 						{

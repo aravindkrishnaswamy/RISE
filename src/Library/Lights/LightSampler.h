@@ -131,15 +131,26 @@ namespace RISE
 
 		/// \param wo      The NEE-sampled direction being weighted.
 		/// \param rawPdf  The material's own AGGREGATE pdf for `wo`, which
-		///                the caller has already computed.  Guaranteed
-		///                > 0 by both call sites: where the aggregate pdf
-		///                is zero the BSDF-sampling technique cannot reach
-		///                `wo` at all, so it has no MIS share to claim and
-		///                the raw value is used unchanged (blending a
-		///                nonzero guide term in there would silently
-		///                discard the NEE sample's missing complement).
+		///                the caller has already computed.  MAY BE ZERO,
+		///                and the implementation -- not the caller --
+		///                decides what that means (DL-74 P2-2, round-4
+		///                review; the earlier contract wrongly declared
+		///                a `> 0` precondition and the four NEE arms
+		///                enforced it).  A zero aggregate pdf does NOT
+		///                imply "the BSDF-sampling technique never
+		///                generates `wo`" while guiding is active: the
+		///                continuation is drawn from a MIXTURE, and the
+		///                guide term reaches directions the material's
+		///                own sampling support does not.  Skipping the
+		///                hook there gave weight 1 to this arm AND to the
+		///                escape/emitter-hit arm for the same direction,
+		///                so its energy was counted twice.
 		/// \return The nominal density to use in place of `rawPdf` as the
-		///         BSDF-sampling technique's MIS partner for `wo`.
+		///         BSDF-sampling technique's MIS partner for `wo`.  An
+		///         implementation that is not guiding this vertex returns
+		///         `rawPdf` unchanged, zero included -- which is then the
+		///         true "no partner exists" statement, since the material
+		///         is the only sampler.
 		virtual Scalar Blend(
 			const Vector3& wo,
 			Scalar rawPdf
