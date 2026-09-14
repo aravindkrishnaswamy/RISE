@@ -17,6 +17,30 @@
 //       matches PathVertexEval::EvalBSDFAtVertex / EvalBSDFAtVertexNM.
 //    D. EvalPdfAtVertex<PelTag>/<NMTag> on a synthetic medium vertex
 //       matches PathVertexEval::EvalPdfAtVertex / EvalPdfAtVertexNM.
+//    G. DL-43 red-proof: EvalPdfAtVertex(vertex, wi, wo) computes
+//       Pdf(outgoing=wo | incoming=wi) -- PathVertexEval.h's own
+//       documented contract, and Test E already pins the closed form
+//       (fabs(Dot(wo,normal))*INV_PI for a Lambertian SPF).  BDPT's
+//       light-subpath guiding candidates call this with
+//       (wi=-currentRay.Dir(), wo=candidateDirection) -- correct.  Its
+//       eye-subpath twin (BDPTIntegrator.cpp GenerateEyeSubpathImpl,
+//       both the RIS candidate-1 and one-sample branches) instead
+//       called it as (wi=candidateDirection, wo=-currentRay.Dir()) --
+//       arguments swapped, so it silently evaluated the density of
+//       scattering BACK toward the previous vertex instead of the
+//       density of the guided candidate direction actually being
+//       proposed.  This test reproduces both call shapes verbatim at a
+//       Lambertian vertex with a non-normal candidate direction (60
+//       degrees off the shading normal, distinctly different cosine
+//       from the incoming direction) and asserts: the light-subpath
+//       shape matches the OUTGOING candidate's cosine/pi (physically
+//       correct); the eye-subpath (pre-fix) shape instead matches the
+//       INCOMING direction's cosine/pi, independent of what candidate
+//       was actually proposed -- exactly the bug BDPTIntegrator.cpp's
+//       DL-43 fix (swapping the two arguments at the four eye-subpath
+//       call sites) corrects.  See docs/DEBT_LEDGER.md DL-43 and
+//       docs/DL03_GUIDED_IOR_CONTINUATION.md's "eye RIS actual-guide
+//       limitation" note.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -354,6 +378,101 @@ static void TestEvalAtMediumVertex()
 	std::cout << "  PASS" << std::endl;
 }
 
+// DL-43 red-proof.  See the file-header comment for the full derivation.
+// `incomingAway` mirrors what every call site builds as -currentRay.Dir()
+// (the physical incoming ray, expressed away-from-surface); `candidate`
+// mirrors a guided/RIS candidate direction (c.direction / gDir) chosen at
+// a distinctly different angle off the normal so the two orderings cannot
+// coincidentally agree.
+static void TestDL43EyeVsLightGuidedPdfArgumentOrder()
+{
+	std::cout << "Test G: DL-43 eye-subpath vs light-subpath guided-candidate PDF argument order" << std::endl;
+
+	UniformColorPainter* painter = new UniformColorPainter( RISEPel( 0.5, 0.7, 0.9 ) );
+	painter->addref();
+	LambertianMaterial* material = new LambertianMaterial( *painter );
+	material->addref();
+
+	BDPTVertex v;
+	v.type = BDPTVertex::SURFACE;
+	v.position = Point3( 0, 0, 0 );
+	v.normal = Vector3( 0, 0, 1 );
+	v.onb.CreateFromW( v.normal );
+	v.pMaterial = material;
+	v.isBSSRDFEntry = false;
+	v.mediumIOR = 1.0;
+	v.insideObject = false;
+
+	// The physical ray arrives travelling in -Z (into the surface from
+	// above); -currentRay.Dir() (the wrapper's "wi") is therefore +Z --
+	// squarely along the normal, cosine 1.
+	const Vector3 incomingAway = Vector3Ops::Normalize( Vector3( 0, 0, 1 ) );
+	// A candidate continuation direction 60 degrees off the normal --
+	// cosine 0.5, distinctly different from the incoming direction's
+	// cosine of 1 so the two orderings cannot agree by coincidence.
+	const Vector3 candidate = Vector3Ops::Normalize(
+		Vector3( std::sqrt( 3.0 ) / 2.0, 0, 0.5 ) );
+
+	PelTag pt;
+	NMTag nt( 550.0 );
+
+	const Scalar expectedOutgoingCosinePdf =
+		std::fabs( Vector3Ops::Dot( candidate, v.normal ) ) * INV_PI;			// cos(60deg)/pi
+	const Scalar expectedIncomingCosinePdf =
+		std::fabs( Vector3Ops::Dot( incomingAway, v.normal ) ) * INV_PI;		// cos(0deg)/pi == 1/pi
+
+	// Sanity: the two closed forms must actually differ, or this test
+	// would not be able to distinguish the orderings.
+	EXPECT_NEAR( expectedOutgoingCosinePdf, 0.5 * INV_PI, 1e-12 );
+	EXPECT_NEAR( expectedIncomingCosinePdf, INV_PI, 1e-12 );
+
+	// Light-subpath order (BDPTIntegrator.cpp GenerateLightSubpathImpl,
+	// e.g. lines ~6291-6294/6346-6349): EvalPdfAtVertex(v, -currentRay.Dir(),
+	// candidateDirection) -- wi=incoming, wo=candidate.  Already correct.
+	const Scalar lightSubpathOrder_pel =
+		PathValueOps::EvalPdfAtVertex<PelTag>( v, incomingAway, candidate, pt );
+	const Scalar lightSubpathOrder_nm =
+		PathValueOps::EvalPdfAtVertex<NMTag>( v, incomingAway, candidate, nt );
+
+	// Eye-subpath order as it stood pre-DL-43-fix (BDPTIntegrator.cpp
+	// GenerateEyeSubpathImpl lines ~2565-2566/2620-2621):
+	// EvalPdfAtVertex(v, candidateDirection, -currentRay.Dir()) -- wi and
+	// wo swapped relative to the light-subpath twin above.
+	const Scalar eyeSubpathOrderPreFix_pel =
+		PathValueOps::EvalPdfAtVertex<PelTag>( v, candidate, incomingAway, pt );
+	const Scalar eyeSubpathOrderPreFix_nm =
+		PathValueOps::EvalPdfAtVertex<NMTag>( v, candidate, incomingAway, nt );
+
+	// The correct (light-subpath) order matches the OUTGOING candidate's
+	// cosine/pi -- the physically meaningful density of the direction
+	// actually being proposed.
+	EXPECT_NEAR( lightSubpathOrder_pel, expectedOutgoingCosinePdf, 1e-14 );
+	EXPECT_NEAR( lightSubpathOrder_nm, expectedOutgoingCosinePdf, 1e-14 );
+
+	// The pre-fix eye-subpath order instead reproduces the INCOMING
+	// direction's cosine/pi -- a value that does not depend on the
+	// candidate at all.  This is the DL-43 bug's exact numerical shape:
+	// every guided candidate at this vertex would evaluate to the same
+	// wrong density regardless of which direction the guide proposed.
+	EXPECT_NEAR( eyeSubpathOrderPreFix_pel, expectedIncomingCosinePdf, 1e-14 );
+	EXPECT_NEAR( eyeSubpathOrderPreFix_nm, expectedIncomingCosinePdf, 1e-14 );
+
+	// And the two orderings must disagree at this vertex -- if they ever
+	// agreed, the eye-subpath call site could not be distinguished from
+	// the (correct) light-subpath one by this fixture.
+	if( std::fabs( eyeSubpathOrderPreFix_pel - lightSubpathOrder_pel ) < 1e-9 ) {
+		std::cout << "FAIL: " << __FILE__ << ":" << __LINE__
+			<< " eye/light orderings unexpectedly agree -- fixture cannot discriminate DL-43" << std::endl;
+		failed++;
+	}
+
+	v.pMaterial = 0;
+	material->release();
+	painter->release();
+
+	std::cout << "  PASS" << std::endl;
+}
+
 int main()
 {
 	std::cout << "=== PathValueOpsTest ===" << std::endl;
@@ -364,6 +483,7 @@ int main()
 	TestEvalPdfAtVertex_Dispatch();
 	TestEvalAtSurfaceVertexWithRealSPF();
 	TestEvalAtMediumVertex();
+	TestDL43EyeVsLightGuidedPdfArgumentOrder();
 
 	std::cout << std::endl;
 	if( failed == 0 ) {

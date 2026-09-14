@@ -27,6 +27,24 @@ struct Observation {
 	Scalar mediumOnArrival = 0;
 	bool hasEntryPrefix = false, forceEntryChoice = false, transportStarted = false;
 	Vector3 spfDirection, tracedDirection, exitNormal;
+	// DL-43: the last guiding-candidate density query's (wo, return value)
+	// during the exit vertex's guiding phase.  TranslucentSPF's diffuse
+	// exit lobe is cosine-weighted (DL-02): Pdf(wo) == fabs(Dot(wo,n))/pi,
+	// independent of which physical ray produced the evaluation context.
+	// A caller that passes the candidate direction as `wo` (correct) gets
+	// that candidate's own cosine; a caller that swaps wi/wo (DL-43's bug)
+	// gets some OTHER fixed direction's cosine instead, uncorrelated with
+	// whichever candidate the guide actually proposed.
+	Vector3 lastQueriedPdfWo;
+	Scalar lastQueriedPdfReturn = -1;
+	// Guards lastQueriedPdfWo/lastQueriedPdfReturn to the FIRST exit-window
+	// Pdf() query per trial -- the guiding candidate's own density check.
+	// A SECOND, unrelated Pdf() query hits the same exit vertex later in
+	// the same integrator step for MIS reverse-density bookkeeping
+	// (BDPTIntegrator.cpp's "Update the previous vertex's pdfRev", which
+	// deliberately queries wo=-currentRay.Dir() regardless of guiding);
+	// capturing that one instead would silently test the wrong call.
+	bool capturedExitQuery = false;
 };
 
 class ObservedSPF : public virtual ISPF, public virtual Reference {
@@ -73,14 +91,30 @@ public:
 	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo,
 		const IORStack& stack ) const override {
 		++observed.pdfQueries;
-		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitPdfQueries;
-		return real.Pdf(ri, wo, stack);
+		const Scalar ret = real.Pdf(ri, wo, stack);
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) {
+			++observed.exitPdfQueries;
+			if(!observed.capturedExitQuery) {
+				observed.capturedExitQuery = true;
+				observed.lastQueriedPdfWo = wo;
+				observed.lastQueriedPdfReturn = ret;
+			}
+		}
+		return ret;
 	}
 	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, Scalar nm,
 		const IORStack& stack ) const override {
 		++observed.pdfQueries;
-		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) ++observed.exitPdfQueries;
-		return real.PdfNM(ri, wo, nm, stack);
+		const Scalar ret = real.PdfNM(ri, wo, nm, stack);
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) {
+			++observed.exitPdfQueries;
+			if(!observed.capturedExitQuery) {
+				observed.capturedExitQuery = true;
+				observed.lastQueriedPdfWo = wo;
+				observed.lastQueriedPdfReturn = ret;
+			}
+		}
+		return ret;
 	}
 };
 
@@ -164,7 +198,7 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 		for(unsigned int spectral=0; spectral<2; ++spectral) {
 			unsigned int baselineExitQueries = 0;
 			for(unsigned int mode=0; mode<3; ++mode) {
-				unsigned int reached=0,outwardSub=0,inwardSub=0,retained=0,badOut=0,badIn=0,badInitial=0,badMedium=0,exitQueries=0;
+				unsigned int reached=0,outwardSub=0,inwardSub=0,retained=0,badOut=0,badIn=0,badInitial=0,badMedium=0,exitQueries=0,badPdfValue=0;
 				for(unsigned int trial=0; trial<512; ++trial) {
 					Observation observation;
 					observation.hasEntryPrefix = true;
@@ -205,6 +239,22 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 						if(outward && (observation.containsOnArrival || !observation.entryLobeOnArrival)) ++badOut;
 						if(!outward && (!observation.containsOnArrival || observation.entryLobeOnArrival)) ++badIn;
 						if(!std::isfinite(observation.mediumOnArrival) || std::fabs(observation.mediumOnArrival-1)>1e-12) ++badMedium;
+						// DL-43: when the guide's own queried candidate was the
+						// one substituted in (this trial's Pdf() query and its
+						// eventual continuation direction are the same
+						// candidate -- see the Observation comment), the
+						// density that was evaluated for it must equal ITS OWN
+						// outgoing cosine/pi, not some other fixed direction's.
+						// Restricted to OUTWARD substitutions: TranslucentSPF's
+						// diffuse-exit Pdf is the positive-hemisphere lobe
+						// (DL-02) and is not claimed to follow this closed form
+						// for an inward candidate (a distinct lobe/gate), so
+						// inward substitutions are out of scope for this check.
+						if(substituted && outward && observation.pdfQueries>0 && observation.lastQueriedPdfReturn >= 0) {
+							const Scalar expected = std::fabs(Vector3Ops::Dot(
+								observation.tracedDirection, observation.exitNormal)) * INV_PI;
+							if(std::fabs(observation.lastQueriedPdfReturn - expected) > 1e-9) ++badPdfValue;
+						}
 					}
 					integrator->SetLightSampler(0);
 					lightSampler->release(); scene->release(); manager->release(); material->release();
@@ -213,19 +263,24 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 					<< " mode=" << mode << " reached=" << reached << " substituted_out=" << outwardSub
 					<< " substituted_in=" << inwardSub << " retained_spf=" << retained
 					<< " exit_pdf_queries=" << exitQueries << " bad_initial=" << badInitial << " bad_out=" << badOut << " bad_in=" << badIn
-					<< " bad_medium=" << badMedium << std::endl;
+					<< " bad_medium=" << badMedium << " bad_pdf_value=" << badPdfValue << std::endl;
 				EXPECT(badInitial==0,"DL-03 BDPT real entry leads to real exit with a popped SPF stack");
 				EXPECT(reached>0,"DL-03 BDPT continuation reached same-object observer");
 				EXPECT(badOut==0,"DL-03 BDPT outward exit carries popped stack and next same-object Scatter enters");
 				EXPECT(badIn==0,"DL-03 BDPT inward substitution preserves inside stack");
 				EXPECT(badMedium==0,"DL-03 BDPT surrounding air IOR remains unchanged");
-				// DL-43 currently rejects every eye RIS guide candidate because
-				// its Pdf arguments are reversed. Still require its live guide
-				// query in excess of the unguided baseline and retained SPF
-				// candidate, without claiming substitution.
 				if(mode == 0) baselineExitQueries = exitQueries;
 				else EXPECT(exitQueries > baselineExitQueries,"DL-03 BDPT exit PDF query count exceeds unguided baseline (live guide candidate)");
-				if(mode && (side || mode!=2)) EXPECT(outwardSub>0,"DL-03 BDPT actual outward guided exit substitution count is positive");
+				// DL-43: eye-subpath guide candidates (side==0) used to have their
+				// Pdf arguments reversed (BDPTIntegrator.cpp GenerateEyeSubpathImpl's
+				// RIS candidate-1 and one-sample branches), so eye+RIS in particular
+				// rejected every guide candidate outright (a swapped-argument density
+				// landed on the wrong side of the geometric-horizon gate and read
+				// zero). Fixed, both subpath sides and both sampling modes must show
+				// actual outward substitutions and a correctly-valued density for
+				// whichever candidate got substituted in.
+				if(mode) EXPECT(outwardSub>0,"DL-43/DL-03 BDPT actual outward guided exit substitution count is positive");
+				if(mode) EXPECT(badPdfValue==0,"DL-43 BDPT substituted candidate's evaluated PDF equals ITS OWN outgoing cosine/pi");
 				if(mode==1) EXPECT(inwardSub>0,"DL-03 BDPT inward guided substitution control is positive");
 				if(mode==2) EXPECT(retained>0,"DL-03 BDPT RIS retained SPF candidate control is positive");
 			}
