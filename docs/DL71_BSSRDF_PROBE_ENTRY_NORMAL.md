@@ -1,4 +1,4 @@
-# DL-68: BSSRDF probe entry-normal inversion on near-half chord hits
+# DL-71: BSSRDF probe entry-normal inversion on near-half chord hits
 
 Status: **CLOSED 2026-09-13** — source repair `e416d3bd`.
 
@@ -69,7 +69,7 @@ formula is a no-op.
 
 ## Red-proof
 
-`tests/BSSRDFPlanarProbeReachTest.cpp`'s DL-68 rows add a coplanar
+`tests/BSSRDFPlanarProbeReachTest.cpp`'s DL-71 rows add a coplanar
 DOUBLE-SIDED `TriangleMeshGeometry` quad and a coplanar DOUBLE-SIDED
 `ClippedPlaneGeometry`, both authored with a winding whose raw normal
 matches the exit point's own outward normal (the common, realistic
@@ -82,11 +82,11 @@ record shape production wires up at a BSSRDF entry point.
 
 ```
 Double-sided quad mesh (normal-axis forced): valid 500/500  coplanar 500/500  outward 0/500  neePositive 0/500
-FAIL: double-sided quad mesh: entry normal must face outward (agree with the exit point's own normal) -- DL-68: the single-direction chord reports an INVERTED normal for near-half hits on geometry that orients normals toward the incoming ray
-FAIL: double-sided quad mesh: BSSRDFEntryBSDF must give a positive value for an exterior light -- DL-68: an inverted entry normal zeroes NEE at every entry point
+FAIL: double-sided quad mesh: entry normal must face outward (agree with the exit point's own normal) -- DL-71: the single-direction chord reports an INVERTED normal for near-half hits on geometry that orients normals toward the incoming ray
+FAIL: double-sided quad mesh: BSSRDFEntryBSDF must give a positive value for an exterior light -- DL-71: an inverted entry normal zeroes NEE at every entry point
 Double-sided clipped plane (normal-axis forced): valid 500/500  coplanar 500/500  outward 0/500  neePositive 0/500
-FAIL: double-sided clipped plane: entry normal must face outward (agree with the exit point's own normal) -- DL-68 inverted-normal regression
-FAIL: double-sided clipped plane: BSSRDFEntryBSDF must give a positive value for an exterior light -- DL-68 inverted-normal regression zeroes NEE
+FAIL: double-sided clipped plane: entry normal must face outward (agree with the exit point's own normal) -- DL-71 inverted-normal regression
+FAIL: double-sided clipped plane: BSSRDFEntryBSDF must give a positive value for an exterior light -- DL-71 inverted-normal regression zeroes NEE
 Failures: 4
 ```
 
@@ -128,12 +128,12 @@ disk-projection chord — so it is not a sibling of this bug pattern.
 | File | Status |
 |---|---|
 | `src/Library/Utilities/BSSRDFSampling.cpp` | Modified: near-half orientation correction in the probe loop (`e416d3bd`). |
-| `src/Library/Utilities/BSSRDFSampling.h` | Modified: Step 6 comment documents the DL-68 rule. |
-| `tests/BSSRDFPlanarProbeReachTest.cpp` | Modified: DL-68 red-proof rows (double-sided mesh + clipped plane, `a28c7a67` before the fix, `e416d3bd` reference). |
-| `tests/README.md` | Modified: DL-68 note on the existing row. |
-| `docs/DEBT_LEDGER.md` | Modified: new DL-68 row, closed. |
-| `docs/DL04_SSS_RADIANCE_DECISION.md` | Modified: forward-pointer noting the `SSSRadianceScalingTest` guard-count baseline moved with DL-52 and is unaffected by DL-68. |
-| `docs/DL68_BSSRDF_PROBE_ENTRY_NORMAL.md` | Added: this file. |
+| `src/Library/Utilities/BSSRDFSampling.h` | Modified: Step 6 comment documents the DL-71 rule. |
+| `tests/BSSRDFPlanarProbeReachTest.cpp` | Modified: DL-71 red-proof rows (double-sided mesh + clipped plane, `a28c7a67` before the fix, `e416d3bd` reference). |
+| `tests/README.md` | Modified: DL-71 note on the existing row. |
+| `docs/DEBT_LEDGER.md` | Modified: new DL-71 row, closed. |
+| `docs/DL04_SSS_RADIANCE_DECISION.md` | Modified: forward-pointer noting the `SSSRadianceScalingTest` guard-count baseline moved with DL-52 and is unaffected by DL-71. |
+| `docs/DL71_BSSRDF_PROBE_ENTRY_NORMAL.md` | Added: this file. |
 
 Gate: `BSSRDFPlanarProbeReachTest` (0 failures), `BSSRDFProjectionNormalTest`,
 `BSSRDFNormalizationTest`, `BSSRDFSamplingTest`, `SSSRadianceScalingTest`

@@ -565,10 +565,10 @@ CLOSED 2026-09-12 — DL-04 convention consistency pin, `1b705ce1`;
 SSSRadianceScalingTest: 572093 checks, 0 failures on unchanged transport
 at the time. The baseline has since moved to **574017** checks, 0
 failures (DL-52's probe fix, `00cd6723`, 2026-09-13, reaches additional
-entry points on flat/near-flat surfaces; the DL-68 follow-up fix does
+entry points on flat/near-flat surfaces; the DL-71 follow-up fix does
 not move it further) — see
 [DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)
-and [DL68_BSSRDF_PROBE_ENTRY_NORMAL.md](DL68_BSSRDF_PROBE_ENTRY_NORMAL.md).
+and [DL71_BSSRDF_PROBE_ENTRY_NORMAL.md](DL71_BSSRDF_PROBE_ENTRY_NORMAL.md).
 
 **DL-04 audit correction, 2026-09-12.** The
 previous account conflated a complete subsurface event with one boundary,

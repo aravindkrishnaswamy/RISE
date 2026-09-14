@@ -10,10 +10,10 @@ see [its current closure record](DL48_SSS_NORMALIZATION.md).
 current count** — DL-52's probe fix (`00cd6723`, 2026-09-13) made the
 BSSRDF disk-projection probe reach entry points it previously missed on
 flat/near-flat surfaces, which changed how many guard checks the same
-test executes; the follow-up DL-68 orientation fix (`e416d3bd`,
+test executes; the follow-up DL-71 orientation fix (`e416d3bd`,
 2026-09-13) does not move it further. The current baseline is
 **574017 checks, 0 failures** — see [DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)
-and [DL68_BSSRDF_PROBE_ENTRY_NORMAL.md](DL68_BSSRDF_PROBE_ENTRY_NORMAL.md).
+and [DL71_BSSRDF_PROBE_ENTRY_NORMAL.md](DL71_BSSRDF_PROBE_ENTRY_NORMAL.md).
 Other residual status is maintained in the debt ledger.
 This records the source audit, measured probes, and the coarse convention gate
 introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.

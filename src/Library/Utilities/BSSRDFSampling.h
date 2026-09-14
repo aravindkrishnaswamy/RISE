@@ -23,7 +23,7 @@
 //       starting before and passing through the projection plane
 //       (DL-52: NOT two half-lines starting AT the plane -- that
 //       skips a coplanar near surface, see BSSRDFSampling.cpp).
-//       DL-68: because the chord travels in one fixed direction, a
+//       DL-71: because the chord travels in one fixed direction, a
 //       hit on the near (-axis) side of the projection plane must
 //       have its reported normal re-negated when the underlying
 //       geometry orients normals to face the incoming ray

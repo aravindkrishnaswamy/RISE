@@ -180,7 +180,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			h.geomNormal = probeRI.geometric.vGeomNormal;
 			h.onb = probeRI.geometric.onb;
 
-			// DL-68 (P1): the chord travels in ONE fixed direction
+			// DL-71 (P1): the chord travels in ONE fixed direction
 			// (+probeAxis) for its entire length.  A hit on the near
 			// (-axis) side of probeCenter -- i.e. before the chord has
 			// travelled probeMaxDist from chordStart -- is the analogue

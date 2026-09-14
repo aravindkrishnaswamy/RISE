@@ -50,7 +50,7 @@ dropped from 128 to 64. This is not expected to matter in practice
 effective range is already far more than any realistic scene's local
 geometry produces), but is a real behavior change worth naming for
 anyone tuning dense/thin-shell scenes against this cap. See also
-[DL68_BSSRDF_PROBE_ENTRY_NORMAL.md](DL68_BSSRDF_PROBE_ENTRY_NORMAL.md)
+[DL71_BSSRDF_PROBE_ENTRY_NORMAL.md](DL71_BSSRDF_PROBE_ENTRY_NORMAL.md)
 for a follow-on defect this single-chord repair introduced (entry-normal
 orientation on near-half hits), found gating this row's own closure.
 

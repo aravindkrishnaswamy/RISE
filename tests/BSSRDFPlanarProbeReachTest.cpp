@@ -35,7 +35,7 @@
 //      reach it (valid == true, with an entry point coplanar with the
 //      exit point) on essentially every attempt.
 //
-//    DL-68 red-proof (added in the same slice that closed DL-52):
+//    DL-71 red-proof (added in the same slice that closed DL-52):
 //      the single-chord fix above travels in ONE fixed direction
 //      (+probeAxis) for its whole length.  On a geometry that
 //      re-orients its reported normal to face the incoming ray
@@ -127,7 +127,7 @@ public:
 	}
 };
 
-// DL-68: a broad DOUBLE-SIDED quad, authored coplanar with the exit
+// DL-71: a broad DOUBLE-SIDED quad, authored coplanar with the exit
 // point exactly like MakeInfinitePlane() above, but through a
 // geometry type that sets bGeomNormalOrientedToRay -- the disk
 // probe's coplanar near-hit is now REACHABLE (DL-52 fixed that), but
@@ -165,9 +165,9 @@ static Object* MakeDoubleSidedQuadMesh()
 	return pObj;
 }
 
-// DL-68: same coplanar broad-quad scenario through ClippedPlaneGeometry
+// DL-71: same coplanar broad-quad scenario through ClippedPlaneGeometry
 // (analytic bilinear normal, double-sided by construction here) --
-// the sibling flip site named in the DL-68 recipe alongside the mesh.
+// the sibling flip site named in the DL-71 recipe alongside the mesh.
 static Object* MakeDoubleSidedClippedPlane()
 {
 	const Scalar half = 100.0;
@@ -300,7 +300,7 @@ struct OrientationStats
 	int neePositive;		// real BSSRDFEntryBSDF::value() is nonzero for an exterior light
 };
 
-// DL-68: exercises the SAME reach path as RunReachTrial, but on a
+// DL-71: exercises the SAME reach path as RunReachTrial, but on a
 // coplanar DOUBLE-SIDED surface, and additionally checks that the
 // recovered entry normal is outward-oriented (matches the exit
 // point's own +Z normal -- this is a single flat, coplanar surface,
@@ -308,7 +308,7 @@ struct OrientationStats
 // and that the real production NEE adapter used at BSSRDF entry
 // points (BSSRDFAdapters::BSSRDFEntryBSDF, BSSRDFEntryAdapters.h)
 // gives a positive value for a light straight above the surface --
-// exactly the site the DL-68 recipe names as broken by an inverted
+// exactly the site the DL-71 recipe names as broken by an inverted
 // entry normal (`cosTheta = Dot(vLightIn, vNormal) <= 0` zeroing NEE
 // for every exterior light).
 static OrientationStats RunOrientationTrial(
@@ -364,7 +364,7 @@ static OrientationStats RunOrientationTrial(
 
 int main()
 {
-	std::cout << "=== BSSRDFPlanarProbeReachTest (DL-52 / DL-68) ===" << std::endl;
+	std::cout << "=== BSSRDFPlanarProbeReachTest (DL-52 / DL-71) ===" << std::endl;
 
 	UniformScalarPainter* ior = new UniformScalarPainter( 1.3 );
 	RGBScalarPainter* absorption = new RGBScalarPainter( 0.05, 0.10, 0.20 );
@@ -406,7 +406,7 @@ int main()
 		pPlane->release();
 	}
 
-	// --- DL-68: coplanar DOUBLE-SIDED mesh, entry normal must be outward ---
+	// --- DL-71: coplanar DOUBLE-SIDED mesh, entry normal must be outward ---
 	{
 		Object* pMesh = MakeDoubleSidedQuadMesh();
 		const RayIntersectionGeometric exit = MakeExitRecordOnPlane();
@@ -421,17 +421,17 @@ int main()
 		}
 		if( stats.valid > 0 && stats.outwardOriented < stats.valid * 9 / 10 ) {
 			Fail( "double-sided quad mesh: entry normal must face outward (agree with the exit "
-				"point's own normal) -- DL-68: the single-direction chord reports an INVERTED "
+				"point's own normal) -- DL-71: the single-direction chord reports an INVERTED "
 				"normal for near-half hits on geometry that orients normals toward the incoming ray" );
 		}
 		if( stats.valid > 0 && stats.neePositive < stats.valid * 9 / 10 ) {
 			Fail( "double-sided quad mesh: BSSRDFEntryBSDF must give a positive value for an "
-				"exterior light -- DL-68: an inverted entry normal zeroes NEE at every entry point" );
+				"exterior light -- DL-71: an inverted entry normal zeroes NEE at every entry point" );
 		}
 		pMesh->release();
 	}
 
-	// --- DL-68: coplanar DOUBLE-SIDED clipped plane, same check ---
+	// --- DL-71: coplanar DOUBLE-SIDED clipped plane, same check ---
 	{
 		Object* pPlane = MakeDoubleSidedClippedPlane();
 		const RayIntersectionGeometric exit = MakeExitRecordOnPlane();
@@ -446,11 +446,11 @@ int main()
 		}
 		if( stats.valid > 0 && stats.outwardOriented < stats.valid * 9 / 10 ) {
 			Fail( "double-sided clipped plane: entry normal must face outward (agree with the exit "
-				"point's own normal) -- DL-68 inverted-normal regression" );
+				"point's own normal) -- DL-71 inverted-normal regression" );
 		}
 		if( stats.valid > 0 && stats.neePositive < stats.valid * 9 / 10 ) {
 			Fail( "double-sided clipped plane: BSSRDFEntryBSDF must give a positive value for an "
-				"exterior light -- DL-68 inverted-normal regression zeroes NEE" );
+				"exterior light -- DL-71 inverted-normal regression zeroes NEE" );
 		}
 		pPlane->release();
 	}

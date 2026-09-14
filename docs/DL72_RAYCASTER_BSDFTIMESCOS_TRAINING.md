@@ -1,4 +1,4 @@
-# DL-69: BSSRDF/volume continuations never trained RayCasterEnvEscapeMISWeight's optimal-MIS arm
+# DL-72: BSSRDF/volume continuations never trained RayCasterEnvEscapeMISWeight's optimal-MIS arm
 
 Status: **CLOSED 2026-09-13** — source repair `0c9eccc4`.
 
@@ -81,7 +81,7 @@ does not — `trainOptimalMIS` is not asked for at the HWSS call site.
   `bsdfTimesCos` wiring (if any) is unrelated to the two sites fixed
   here.
 
-## Residual: volume-guiding bsdfPdf composition (DL-70, open)
+## Residual: volume-guiding bsdfPdf composition (DL-73, open)
 
 Auditing the two fixed volume sites surfaced a separate, pre-existing
 question this fix does not touch: when OpenPGL volume guiding fires,
@@ -98,7 +98,7 @@ PowerHeuristic(rs.bsdfPdf, envPdf)` therefore uses an understated pdf
 relative to the true sampling density. This is a ruling, not a
 red-proved defect (no render-level measurement was taken, and the
 composite condition — trained+active volume guiding AND the guided
-ray escaping to the global env map — is narrow); filed as **DL-70**,
+ray escaping to the global env map — is narrow); filed as **DL-73**,
 left OPEN.
 
 ## File status
@@ -107,8 +107,8 @@ left OPEN.
 |---|---|
 | `src/Library/Shaders/PathTracingIntegrator.cpp` | Modified: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). |
 | `src/Library/Rendering/RayCaster.cpp` | Modified: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). |
-| `docs/DEBT_LEDGER.md` | Modified: new DL-69 row, closed. |
-| `docs/DL69_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added: this file. |
+| `docs/DEBT_LEDGER.md` | Modified: new DL-72 row, closed. |
+| `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added: this file. |
 
 Gate: `MISWeightsTest`, `OptimalMISAccumulatorTest`,
 `RasterizerDefaultsConsistencyTest`, `RayCasterEnvEscapeMISTest` (79/79),
