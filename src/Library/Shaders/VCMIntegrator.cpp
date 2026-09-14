@@ -1308,6 +1308,13 @@ namespace
 					// Phong/bump modifier runs on an emitter record, so
 					// mirroring it keeps the record self-consistent.
 					rig.vGeomNormal = ls.normal;
+					// DL-44: the sampled emitter UV, so a UV-keyed emission
+					// painter reads the same texel `SampleLight`'s own RGB
+					// evaluation (and, for NM, BDPTIntegrator's light-
+					// subpath rebuilds) did, not the default (0,0).  This
+					// function is templated over `Tag`, so this one line
+					// fixes both `EvaluateNEE` (Pel) and `EvaluateNEENM`.
+					rig.ptCoord = ls.ptCoord;
 					// THE FOURTH `ApplyEmitterSurface` consumer of
 					// `SampleLight`'s one probed payload (slice S3,
 					// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5): VCM's
