@@ -213,11 +213,17 @@ namespace
 			spec = F * single;
 		}
 
-		const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
+		// DL-63: the coat lobe's single-scatter term above uses
+		// height-correlated G2 (GGX_G2_Aniso), so its Kulla-Conty
+		// compensation must be calibrated to the SAME model --
+		// LookupEavgG2/LookupEssG2, not LookupEavg/LookupEss (which are
+		// calibrated to the separable G1(wi)*G1(wo) model CookTorrance
+		// renders with instead).  Sibling of GGXBRDF's own DL-63 fix.
+		const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 		if( ( Scalar(1) - Eavg ) > Scalar(1e-10) )
 		{
-			const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( nr, alpha );
-			const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( nv, alpha );
+			const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( nr, alpha );
+			const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( nv, alpha );
 			const Scalar f_ms  = ( Scalar(1) - Ess_o ) * ( Scalar(1) - Ess_i ) * INV_PI / ( Scalar(1) - Eavg );
 			const Scalar F_ms  = MicrofacetEnergyLUT::ComputeFms<Scalar>( re, Eavg );
 			spec += F_ms * f_ms;

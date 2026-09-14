@@ -41,12 +41,29 @@ static double dot(const Vec3& a, const Vec3& b) {
 	return a.x*b.x + a.y*b.y + a.z*b.z;
 }
 
-// GGX G1 masking
+// GGX G1 masking (Smith, separable-model form)
 static double GGX_G1(double alpha, double cosTheta) {
 	if(cosTheta < 1e-10) return 0;
 	double a2 = alpha * alpha;
 	double cos2 = cosTheta * cosTheta;
 	return 2.0 * cosTheta / (cosTheta + sqrt(a2 + (1.0 - a2) * cos2));
+}
+
+// DL-63: height-correlated Smith masking-shadowing (Heitz 2014 JCGT
+// 3(2) Sec. 5.2), matching MicrofacetUtils::GGX_Lambda/GGX_G2 -- the
+// model GGXBRDF/GGXSPF/CoatedBRDF actually render with, as opposed to
+// the separable G1(wi)*G1(wo) model CookTorranceBRDF renders with (see
+// MicrofacetUtils::GGX_G's own doc comment).  Lambda(v) = (-1 +
+// sqrt(1 + alpha^2*tan^2(theta))) / 2; G2 = 1/(1 + Lambda(wi) + Lambda(wo)).
+static double GGX_Lambda(double alpha, double cosTheta) {
+	if(cosTheta >= 1.0 - 1e-10) return 0.0;
+	if(cosTheta < 1e-10) return 1e10;
+	double cos2 = cosTheta * cosTheta;
+	double tan2 = (1.0 - cos2) / cos2;
+	return (-1.0 + sqrt(1.0 + alpha * alpha * tan2)) * 0.5;
+}
+static double GGX_G2_HeightCorrelated(double alpha, double cosWi, double cosWo) {
+	return 1.0 / (1.0 + GGX_Lambda(alpha, cosWi) + GGX_Lambda(alpha, cosWo));
 }
 
 // VNDF sampling (Dupuy-Benyoub spherical cap)
@@ -85,6 +102,11 @@ static const int NUM_SAMPLES = 1000000;
 int main() {
 	double E_ss[LUT_SIZE][LUT_SIZE]; // [alphaIdx][cosThetaIdx]
 	double E_avg[LUT_SIZE];
+	// DL-63: height-correlated-G2 twin of E_ss/E_avg above, for the
+	// height-correlated single-scatter consumers (GGXBRDF/GGXSPF,
+	// CoatedBRDF) -- see GGX_G2_HeightCorrelated's doc comment.
+	double E_ss_G2[LUT_SIZE][LUT_SIZE];
+	double E_avg_G2[LUT_SIZE];
 
 	// Compute E_ss for each (alpha, cosTheta) pair
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
@@ -102,6 +124,11 @@ int main() {
 			Vec3 wi(sinTheta, 0.0, cosTheta);
 
 			double sum = 0.0;
+			double sumG2 = 0.0;
+			// cosWi is fixed for this row (= cosTheta); G1(wi) under the
+			// height-correlated model is 1/(1+Lambda(wi)), needed by the
+			// VNDF-sampling weight identity below.
+			const double G1wi = 1.0 / (1.0 + GGX_Lambda(alpha, cosTheta));
 
 			for(int s = 0; s < NUM_SAMPLES; s++) {
 				double u1 = rand01();
@@ -121,26 +148,40 @@ int main() {
 
 				double cosWo = wo.z; // dot(wo, normal)
 				if(cosWo > 0) {
-					// With VNDF sampling and F=1, the estimator for E_ss is:
-					// E_ss = (1/N) * sum G1(wo)
+					// With VNDF sampling and F=1, the estimator for E_ss
+					// under the SEPARABLE model (G = G1(wi)*G1(wo)) is:
+					// E_ss = (1/N) * sum G1(wo)   [G1(wi) cancels against
+					// the VNDF pdf's own G1(wi) factor].
 					sum += GGX_G1(alpha, cosWo);
+
+					// DL-63: under the HEIGHT-CORRELATED model (Heitz
+					// 2018, "Sampling the GGX Distribution of Visible
+					// Normals", eq. for f*cosWo/pdf(wo) with VNDF
+					// sampling), the analogous per-sample weight is
+					// G2(wi,wo)/G1(wi) -- NOT G1(wo) -- because G2 does
+					// not factor into G1(wi)*G1(wo).
+					sumG2 += GGX_G2_HeightCorrelated(alpha, cosTheta, cosWo) / G1wi;
 				}
 			}
 
 			E_ss[ai][ci] = sum / (double)NUM_SAMPLES;
+			E_ss_G2[ai][ci] = sumG2 / (double)NUM_SAMPLES;
 		}
 
 		// Compute E_avg for this alpha using trapezoidal integration
 		// E_avg = 2 * integral_0^1 E_ss(mu) * mu d_mu
 		double integral = 0.0;
+		double integralG2 = 0.0;
 		for(int ci = 0; ci < LUT_SIZE; ci++) {
 			double mu = (double)(ci + 0.5) / LUT_SIZE;
 			double dmu = 1.0 / LUT_SIZE;
 			integral += E_ss[ai][ci] * mu * dmu;
+			integralG2 += E_ss_G2[ai][ci] * mu * dmu;
 		}
 		E_avg[ai] = 2.0 * integral;
+		E_avg_G2[ai] = 2.0 * integralG2;
 
-		fprintf(stderr, "alpha=%.4f  E_avg=%.6f\n", alpha, E_avg[ai]);
+		fprintf(stderr, "alpha=%.4f  E_avg=%.6f  E_avg_G2=%.6f\n", alpha, E_avg[ai], E_avg_G2[ai]);
 	}
 
 	// Emit the header
@@ -211,6 +252,48 @@ int main() {
 	}
 	printf("\n\t};\n\n");
 
+	// DL-63: height-correlated-G2 twin tables.  E_ss_TABLE/E_avg_TABLE
+	// above are calibrated to the SEPARABLE Smith model
+	// (MicrofacetUtils::GGX_G, G1(wi)*G1(wo)) that CookTorranceBRDF/SPF
+	// actually render with, and stay exactly as they are for that
+	// consumer.  E_ss_TABLE_G2/E_avg_TABLE_G2 are calibrated to the
+	// HEIGHT-CORRELATED Smith G2 model (MicrofacetUtils::GGX_G2/
+	// GGX_G2_Aniso) that GGXBRDF/GGXSPF/CoatedBRDF actually render
+	// with -- using a DIFFERENT compensation table for a DIFFERENT
+	// masking-shadowing model is what the Kulla-Conty multiscatter
+	// energy-conservation identity requires; see docs/DL62_DL64_GGX_
+	// SAMPLE_EVAL_MISMATCH.md and the DL-63 ledger row.
+	printf("\t/// DL-63: height-correlated-G2 twin of E_ss_TABLE above --\n");
+	printf("\t/// directional albedo of GGX single-scatter BRDF with F=1,\n");
+	printf("\t/// under Smith HEIGHT-CORRELATED G2 masking-shadowing\n");
+	printf("\t/// (MicrofacetUtils::GGX_G2/GGX_G2_Aniso), NOT the separable\n");
+	printf("\t/// G1(wi)*G1(wo) model E_ss_TABLE calibrates to.  Consumed by\n");
+	printf("\t/// GGXBRDF/GGXSPF/CoatedBRDF, which render with height-\n");
+	printf("\t/// correlated G2; CookTorranceBRDF/SPF (separable G) keep\n");
+	printf("\t/// using E_ss_TABLE/LookupEss, unchanged.  Same indexing,\n");
+	printf("\t/// resolution and sample count as E_ss_TABLE.\n");
+	printf("\tstatic const Scalar E_ss_TABLE_G2[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
+	for(int ai = 0; ai < LUT_SIZE; ai++) {
+		printf("\t\t{ ");
+		for(int ci = 0; ci < LUT_SIZE; ci++) {
+			printf("%.8f", E_ss_G2[ai][ci]);
+			if(ci < LUT_SIZE - 1) printf(", ");
+		}
+		printf(" }");
+		if(ai < LUT_SIZE - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-63: height-correlated-G2 twin of E_avg_TABLE above.\n");
+	printf("\tstatic const Scalar E_avg_TABLE_G2[%d] = {\n\t\t", LUT_SIZE);
+	for(int ai = 0; ai < LUT_SIZE; ai++) {
+		printf("%.8f", E_avg_G2[ai]);
+		if(ai < LUT_SIZE - 1) printf(", ");
+		if((ai + 1) % 8 == 0 && ai < LUT_SIZE - 1) printf("\n\t\t");
+	}
+	printf("\n\t};\n\n");
+
 	// Emit lookup functions
 	printf("\t/// Look up E_ss(cosTheta, alpha) with bilinear interpolation.\n");
 	printf("\tinline Scalar LookupEss( const Scalar cosTheta, const Scalar alpha )\n");
@@ -242,6 +325,39 @@ int main() {
 	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");
 	printf("\t\tScalar af = a - ai0;\n");
 	printf("\t\treturn (1-af) * E_avg_TABLE[ai0] + af * E_avg_TABLE[ai1];\n");
+	printf("\t}\n\n");
+
+	// DL-63: height-correlated-G2 twins of LookupEss/LookupEavg above.
+	printf("\t/// DL-63: height-correlated-G2 twin of LookupEss above -- reads\n");
+	printf("\t/// E_ss_TABLE_G2 instead of E_ss_TABLE.  Use for GGXBRDF/GGXSPF/\n");
+	printf("\t/// CoatedBRDF (height-correlated G2 single-scatter); CookTorrance\n");
+	printf("\t/// keeps using LookupEss (separable G).\n");
+	printf("\tinline Scalar LookupEssG2( const Scalar cosTheta, const Scalar alpha )\n");
+	printf("\t{\n");
+	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
+	printf("\t\tint ai0 = (int)a;\n");
+	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");
+	printf("\t\tScalar af = a - ai0;\n\n");
+	printf("\t\tScalar c = r_max(0.0, r_min(1.0, cosTheta)) * LUT_SIZE - 0.5;\n");
+	printf("\t\tif( c < 0 ) c = 0;\n");
+	printf("\t\tint ci0 = (int)c;\n");
+	printf("\t\tint ci1 = r_min(ci0 + 1, LUT_SIZE - 1);\n");
+	printf("\t\tScalar cf = c - ci0;\n\n");
+	printf("\t\tScalar v00 = E_ss_TABLE_G2[ai0][ci0];\n");
+	printf("\t\tScalar v01 = E_ss_TABLE_G2[ai0][ci1];\n");
+	printf("\t\tScalar v10 = E_ss_TABLE_G2[ai1][ci0];\n");
+	printf("\t\tScalar v11 = E_ss_TABLE_G2[ai1][ci1];\n");
+	printf("\t\treturn (1-af) * ((1-cf)*v00 + cf*v01) + af * ((1-cf)*v10 + cf*v11);\n");
+	printf("\t}\n\n");
+
+	printf("\t/// DL-63: height-correlated-G2 twin of LookupEavg above.\n");
+	printf("\tinline Scalar LookupEavgG2( const Scalar alpha )\n");
+	printf("\t{\n");
+	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
+	printf("\t\tint ai0 = (int)a;\n");
+	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");
+	printf("\t\tScalar af = a - ai0;\n");
+	printf("\t\treturn (1-af) * E_avg_TABLE_G2[ai0] + af * E_avg_TABLE_G2[ai1];\n");
 	printf("\t}\n\n");
 
 	// Fresnel averaging via Gauss-Legendre quadrature

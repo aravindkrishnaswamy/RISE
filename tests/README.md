@@ -96,9 +96,23 @@ last two are public mixed-lobe regressions, not known-failure exemptions.
 `GGXDiffuseTransmissionTest` independently integrates the full RGB/NM BRDF
 with a cosine/VNDF proposal mixture and checks front/back reciprocity. Its
 energy band is `mean <= 1 + 6*SE + 0.005`, with invalid samples and moments
-failing explicitly. Three specular-only baseline failures remain visible with
-a nonzero exit and are tracked separately as DL-63; no energy assertion is
-skipped. This test is not an all-green gate until DL-63 is resolved.
+failing explicitly. `150 checks, 0 failures` since DL-63's fix (2026-09-14):
+the three previously-visible specular-only baseline failures (Schlick iso
+F0=1, alpha=0.6/1.0, theta=60/80) are gone -- see `GGXHeightCorrelatedEnergyLUTTest`
+below.
+
+`GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
+verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
+(`E_ss_TABLE_G2`/`E_avg_TABLE_G2`, `LookupEssG2`/`LookupEavgG2`) against a
+fresh Monte-Carlo quadrature of the actual `MicrofacetUtils::GGX_Lambda`/
+`GGX_G2` primitives (independent RNG, 4M samples/config, no shared code with
+either the offline LUT generator or the LUT header) at the three
+previously-failing (alpha,theta) configurations plus additional spot checks;
+confirms `LookupEss`/`LookupEavg` (the pre-existing, UNCHANGED separable-
+model table CookTorranceSPF/BRDF still use) measurably diverge from the
+height-correlated quadrature at those same points; and pins the Kulla-Conty
+identity `Ess_G2 + (1-Ess_G2)*F_ms == 1` at Schlick F0=1 in closed form.
+`14 checks, 0 failures`.
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's
@@ -127,6 +141,21 @@ reintroducing the unconditional `Mean()`/`MeanNM()` call P2-1 removed for
 performance. 48 checks, 0 failures (29/0 at the original `dfdd5ee1`
 close; 23 failures pre-fix, `a1db468d`). See
 [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md).
+Its DL-64 Pdf-at-peak / P2-2 conductor/thin-film reference formulas were
+updated 2026-09-14 for DL-63 (`LookupEss`/`MSLobeZ`/`MSPdf` → `LookupEssG2`/
+`MSLobeZG2`/`MSPdfG2`), since production `GGXSPF::Pdf`/`PdfNM` switched to
+the height-correlated-G2 LUT and the test's independent reference must
+track whichever model production actually renders with.
+
+`CookTorranceSchlickGlossyFilterConsistencyTest` (DL-65, CLOSED 2026-09-13)
+is the sibling of `GGXSampleEvaluationConsistencyTest`'s DL-62 section for
+two more material families: `CookTorranceSPF::Scatter`/`ScatterNM`/`Pdf`
+and `SchlickSPF::Scatter`/`ScatterNM`/`Pdf`/`PdfNM` widen their sampling/
+density roughness by `ri.glossyFilterWidth`, but `CookTorranceBRDF::value`/
+`valueNM` and `SchlickBRDF::value`/`valueNM` did not read it at all. Same
+methodology: production (raw roughness + nonzero filter width) vs. an
+independently constructed reference (pre-widened roughness painter, filter
+width 0) must match EXACTLY. 22 checks, 0 failures (20 failures pre-fix).
 
 `GGXDiffuseRenderTest` loads `ggx_diffuse_transmission.RISEscene` and seeds each
 render immediately before rasterization. Its 384×128, 64-sample direct-light
