@@ -87,12 +87,16 @@ namespace
 	// direction), just without the rejection loop or its dimension-count
 	// variability.
 	//
-	// Below `kExitVanishThreshold`, P(valid) has vanished (n and geomN
-	// nearly opposed, phi -> 180 deg, well outside GlintModifier's
-	// documented <=60 deg tilt) -- both the sampler and Pdf()/PdfNM() gate
-	// on this SAME threshold and report "no lobe" / 0 density together,
-	// rather than one side dividing by near-zero while the other still
-	// claims support.
+	// `kExitVanishThreshold` is a defensive guard that is UNREACHABLE from
+	// production calls since round 3: every caller first orients the exit
+	// frame with OrientedExitNormal(), so cosPhi = |Dot(n, geomN)| >= 0 and
+	// P(valid) = (1 + cosPhi)/2 >= 0.5 (pinned by
+	// TranslucentSamplerDimensionCountTest at 179/180 deg tilt).  It is
+	// kept so that an externally supplied, un-oriented (n, geomN) pair --
+	// e.g. a future Pdf() caller passing a raw inward shading normal --
+	// makes both the sampler and Pdf()/PdfNM() report "no lobe" / 0 density
+	// TOGETHER rather than one side dividing by near-zero while the other
+	// still claims support.
 	const Scalar kExitVanishThreshold = Scalar(1e-4);
 
 	inline Scalar ExitValidFraction( const Vector3& n, const Vector3& geomN )
