@@ -1,68 +1,94 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  RadianceEtaScaleGradedIndexTest.cpp - closed-form guard on DL-09
-//    (docs/DEBT_LEDGER.md): `RadianceEtaScale` reads the IOR stack's
-//    push/pop-time (ENTRY) value for `before`, while `DielectricSPF`
-//    (and `PerfectRefractorSPF`) re-fetch the `ior` painter FRESH at
-//    every hit, entry or exit.  For a spatially-VARYING `ior` (bound to
-//    a `scalar_painter` that depends on the hit position), the value
-//    fetched at an EXIT hit can differ from the value pushed at the
-//    matching ENTRY hit -- and it is the EXIT-hit value that the SPF's
-//    own Fresnel/Snell computation actually used.
+//  RadianceEtaScaleGradedIndexTest.cpp - closed-form guard on the
+//    through-slab eta^2 invariant for a SPATIALLY-VARYING `ior`
+//    (docs/DEBT_LEDGER.md DL-09; docs/REFRACTIVE_RADIANCE_SCALING.md
+//    §10.2).
+//
+//    WHAT THIS FILE PINS.  An emitter seen through a passive, lossless
+//    graded-index slab must read `L * T1 * T2` -- the two interfaces'
+//    Fresnel transmittances and NOTHING else.  No net eta^2 factor
+//    survives the round trip, no matter how strongly the slab's `ior`
+//    varies between the entry face and the exit face.
+//
+//    WHY, IN FULL.  The invariant along a ray is the BASIC radiance
+//    `L / n^2`, and it is conserved in TWO places, not one:
+//      (a) ACROSS an interface (the textbook statement,
+//          docs/REFRACTIVE_RADIANCE_SCALING.md §1), and
+//      (b) ALONG the ray INSIDE a medium whose index varies with
+//          position -- the part that is easy to forget, and the part
+//          this file exists to keep someone from forgetting again.
+//    Following the physical light from the emitter (air, radiance `L`)
+//    up through a slab of index `n_B` at the bottom face and `n_A` at
+//    the top face:
+//      bottom interface  : L_in        = T2 * n_B^2 * L
+//      interior segment  : L_at_top    = L_in * (n_A/n_B)^2 = T2*n_A^2*L
+//      top interface     : L_out       = T1 * L_at_top / n_A^2
+//                                      = L * T1 * T2.
+//    The `n_A^2` and `n_B^2` cancel completely.  Physically obvious in
+//    hindsight: a slab that neither emits nor absorbs cannot amplify.
+//
+//    WHAT RISE DOES, AND WHY IT IS RIGHT TODAY.  RISE applies the
+//    walk-order factor `(eta_before/eta_after)^2` only at SCATTER
+//    events (`RISE::RadianceEtaScale`, Utilities/IORStack.h) and has NO
+//    interior-segment factor at all.  A camera-rooted eye walk through
+//    this slab therefore multiplies:
+//      entry hit (top face, air -> slab):  (1 / n_A)^2
+//      exit  hit (bottom face, slab -> air): (n_A / 1)^2
+//    -- because `RadianceEtaScale`'s `before.top()` reads the value
+//    PUSHED at the ENTRY hit (`n_A`), not the exit hit's freshly
+//    re-fetched `n_B`.  The product is exactly 1, which is exactly
+//    right: that stale `n_A` is silently standing in for the product of
+//    the missing interior-segment factor `(n_A/n_B)^2` and the true
+//    exit factor `(n_B/1)^2`.  The mismatch and the omission cancel.
+//
+//    THE REGRESSION THIS GUARDS AGAINST (tried and reverted
+//    2026-09-14).  Substituting the SPF's fresh exit-hit `n_B` for the
+//    stack's `n_A` at the exit read -- on the reasonable-sounding
+//    grounds that `n_B` is what the SPF's own Snell/Fresnel math used
+//    -- WITHOUT also adding the interior-segment factor turns the net
+//    1 into `(n_B/n_A)^2`.  At this file's geometry that is 2.25: the
+//    emitter behind a passive lossless slab would read 2.25x BRIGHTER
+//    than the emitter.  The `overbright` closed form below is that
+//    wrong answer, asserted to be far from what we read.
+//
+//    WHAT IS STILL OPEN (DL-09, re-opened 2026-09-14).  A contribution
+//    GATHERED AT AN INTERIOR VERTEX C -- an NEE connection or a bounce
+//    while the walk is still inside the graded object, before it exits
+//    -- never reaches the cancelling exit event.  Its throughput
+//    carries `(1/n_A)^2` from the entry crossing where physics wants
+//    `(1/n_C)^2`, an error of `(n_C/n_A)^2`.  The same gap applies to a
+//    camera seeded INSIDE a graded medium (`IORStackSeeding::
+//    SeedFromPoint` records the index at the camera position; the first
+//    segment to a hit at a different index pays no factor).  The
+//    principled fix is the missing interior-segment factor
+//    `(n_prev/n_C)^2` applied along the walk, NOT a substitution at the
+//    exit read.  This file does not exercise that case: both rows here
+//    are pure through-transmission with a diffuse-free slab, so every
+//    contribution completes the round trip.
 //
 //    THE SCENE.  A single `box_geometry` dielectric slab, `ior` bound
-//    to a `scalar_painter { expression "1.8 - 2.0*P.y" }`.  Box height
-//    0.3, centred so the top face sits at world Y = 0.3 (ior 1.2, the
-//    ENTRY hit for a camera looking straight down) and the bottom face
-//    at Y = 0.0 (ior 1.8, the EXIT hit).  A Lambertian luminaire quad
+//    to a `scalar_painter { expression 1.8-2.0*P.y }`.  Box height 0.3,
+//    centred so the top face sits at world Y = 0.3 (ior 1.2, the ENTRY
+//    hit for a camera looking straight down) and the bottom face at
+//    Y = 0.0 (ior 1.8, the EXIT hit).  A Lambertian luminaire quad
 //    (exitance 1, L = 1/pi) sits just below the box; a pinhole camera
 //    looks straight down through the slab from above at a narrow FOV
 //    (5 degrees) so every ray is within ~1.7 degrees of normal
 //    incidence -- Snell bending and the angular Fresnel departure from
-//    the closed form are negligible (matches the same convention
+//    the closed form are negligible (the same convention
 //    tests/RefractiveRadianceScalingTest.cpp Row A uses at 15 degrees,
-//    here tightened further since this row does not have that row's
-//    margin to spare).
-//
-//    THE CLOSED FORM.  With T1 = 1 - R0(1.2), T2 = 1 - R0(1.8) the two
-//    interfaces' normal-incidence Fresnel transmittances (R0(n) =
-//    ((n-1)/(n+1))^2, UNCHANGED by this fix -- both DielectricSPF
-//    branches already price their OWN Fresnel with the fresh per-hit
-//    ior; only the SEPARATE eta^2 throughput multiplier is at stake),
-//    and etaScale the net (eta_before/eta_after)^2 factor the two
-//    crossings contribute:
-//
-//      BUGGY   (before this fix): etaScale = 1 EXACTLY.  The entry
-//        event's (air/1.2)^2 and the exit event's (1.2/air)^2 --
-//        using the STALE entry value, not the fresh 1.8 the SPF's own
-//        Optics::CalculateRefractedRay/CalculateDielectricReflectance
-//        calls used at exit -- telescope to 1 regardless of how the
-//        ior actually varies between the two hits.
-//
-//      CORRECT (after this fix): etaScale = (1.8/1.2)^2 = 2.25.  The
-//        exit event's eta_before is now the SAME fresh value (1.8)
-//        the SPF's own exit Fresnel calculation used, not the stale
-//        entry-time stack top.
-//
-//    L_expected = (1/pi) * T1 * T2 * etaScale.  The two predictions
-//    differ by exactly 2.25x -- unmistakable against any plausible MC
-//    noise or angular-incidence correction at this geometry.  A second-
-//    order internal-bounce correction (the ray reflecting once inside
-//    the slab before re-exiting) is bounded by R0(1.2)*R0(1.8) =
-//    0.00068 (0.068%), three orders of magnitude below the signal.
+//    tightened further here).  A second-order internal-bounce
+//    correction (the ray reflecting once inside the slab before
+//    re-exiting) is bounded by R0(1.2)*R0(1.8) = 0.00067 (0.067%),
+//    three orders of magnitude below the 5% assertion band.
 //
 //    CONTROL ROW.  The same scene with `ior` a plain uniform 1.5 (no
-//    spatial variation, entry == exit == 1.5): etaScale telescopes to
-//    1 exactly regardless of the fix (before.top() and the fresh value
-//    agree everywhere), so this row must be UNCHANGED before and after
-//    -- the fix's "keep the uniform-ior behaviour byte-identical"
-//    requirement, independent of tests/RefractiveRadianceScalingTest.cpp
-//    (which this file does not re-run; see the gate list in this row's
-//    commit message instead).
-//
-//    RED-PROOF -- this file's own run on the UNFIXED library (before
-//    the etaBeforeOverride fix), seed base 1000: see the fix commit
-//    message for the captured numbers.
+//    spatial variation, entry == exit == 1.5): `before.top()` and the
+//    fresh value agree everywhere, so this row is insensitive to the
+//    whole question and reads `L * T^2`.  It is here so a failure on
+//    the graded row can be attributed to the graded-ness rather than to
+//    the scene, the rasterizer, or the harness.
 //
 //  Author: Claude (debt-precision slice, DL-09)
 //  Tabs: 4
@@ -323,13 +349,20 @@ static void RunGradedRow()
 	const double T1 = 1.0 - R0( iorEntry );
 	const double T2 = 1.0 - R0( iorExit );
 
-	const double expectedBuggy   = L * T1 * T2 * 1.0;
-	const double expectedCorrect = L * T1 * T2 * ( iorExit / iorEntry ) * ( iorExit / iorEntry );
+	// The physics (see this file's header): a passive lossless slab
+	// contributes its two Fresnel transmittances and no net eta^2
+	// factor, however strongly its `ior` varies inside.
+	const double expectedPhysics = L * T1 * T2;
+	// The reverted-regression answer: reading the exit hit's FRESH ior
+	// as `eta_before` without adding the missing interior-segment
+	// factor.  2.25x brighter than the emitter behind a slab that
+	// neither emits nor absorbs.
+	const double overbright = expectedPhysics * ( iorExit / iorEntry ) * ( iorExit / iorEntry );
 
 	std::cout << "Graded slab: ior_graded = 1.8 - 2.0*P.y  (entry " << iorEntry
 	          << " -> exit " << iorExit << ")" << std::endl;
-	std::cout << "    closed form BUGGY   (etaScale=1)    = " << expectedBuggy << std::endl;
-	std::cout << "    closed form CORRECT (etaScale=2.25) = " << expectedCorrect << std::endl;
+	std::cout << "    closed form PHYSICS     (L*T1*T2, net etaScale 1) = " << expectedPhysics << std::endl;
+	std::cout << "    reverted-regression value ((iorExit/iorEntry)^2)  = " << overbright << std::endl;
 
 	const std::string scene = SceneGradedSlab( "ior_graded", true, "1.8-2.0*P.y" );
 	const std::string head( "RISE ASCII SCENE 7\n" );
@@ -347,40 +380,43 @@ static void RunGradedRow()
 		if( !s.valid ) continue;
 		const double m = GreyMean( s );
 		std::cout << "    " << r.name << "  mean=" << m
-		          << "  ratio-to-buggy=" << ( m / expectedBuggy )
-		          << "  ratio-to-correct=" << ( m / expectedCorrect ) << std::endl;
-		// The asserted expectation: mean matches the CORRECT closed form
-		// (post-fix behaviour).  On the unfixed library this fails --
-		// see the fix commit message for the captured red-proof numbers,
-		// where mean instead matches expectedBuggy.
-		Check( std::fabs( m - expectedCorrect ) <= 0.05 * expectedCorrect,
-			label + ": mean == L*T1*T2*(iorExit/iorEntry)^2 within 5%" );
-		// Companion assertion, framed the other way: the buggy
-		// (etaScale==1) prediction must NOT match once the fix is in --
-		// the two closed forms are 2.25x apart, so "within 5%" of one
-		// excludes the other by construction; this check exists to make
-		// that exclusion explicit in the failure output rather than
-		// relying on a reader to notice.
-		Check( std::fabs( m - expectedBuggy ) > 0.30 * expectedBuggy,
-			label + ": mean is NOT the buggy etaScale==1 prediction" );
+		          << "  ratio-to-physics=" << ( m / expectedPhysics )
+		          << "  ratio-to-overbright=" << ( m / overbright ) << std::endl;
+		// The asserted expectation: the through-slab trip carries the
+		// two Fresnel transmittances and NO net eta^2 factor.
+		Check( std::fabs( m - expectedPhysics ) <= 0.05 * expectedPhysics,
+			label + ": mean == L*T1*T2 within 5% (no net eta^2 through a passive slab)" );
+		// Companion assertion, framed the other way: the reverted
+		// regression's value must NOT match.  The two closed forms are
+		// 2.25x apart, so "within 5%" of one excludes the other by
+		// construction; this check exists to make that exclusion
+		// explicit in the failure output -- a failure on THIS line, with
+		// the row above also failing high, is the specific signature of
+		// re-introducing a fresh-exit-ior substitution at
+		// `RadianceEtaScale`'s `eta_before` without an interior-segment
+		// factor to pay for it.
+		Check( std::fabs( m - overbright ) > 0.30 * overbright,
+			label + ": mean is NOT the (iorExit/iorEntry)^2 over-bright value" );
 	}
 }
 
 //////////////////////////////////////////////////////////////////////
-// Control row: uniform ior 1.5 (entry == exit).  etaScale telescopes
-// to 1 exactly regardless of the fix -- this row must read the SAME
-// closed form (T1*T2*L, etaScale omitted since it is exactly 1) both
-// before and after, pinning "keep the uniform-ior behaviour
-// byte-identical" independently of RefractiveRadianceScalingTest.cpp.
+// Control row: uniform ior 1.5 (entry == exit).  `before.top()` and
+// the SPF's freshly re-fetched value agree everywhere here, so this row
+// is insensitive to the graded-index question entirely and reads
+// `L * T^2`.  It attributes a graded-row failure to the graded-ness
+// rather than to the scene, the rasterizer or the harness, and does so
+// independently of RefractiveRadianceScalingTest.cpp (which this file
+// does not re-run; see this row's gate list instead).
 //////////////////////////////////////////////////////////////////////
 static void RunUniformControlRow()
 {
 	const double ior = 1.5;
 	const double L = 1.0 / 3.14159265358979323846;
 	const double T = 1.0 - R0( ior );
-	const double expected = L * T * T;		// etaScale == 1, entry == exit
+	const double expected = L * T * T;		// net etaScale == 1, entry == exit
 
-	std::cout << "Uniform control: ior = 1.5 (entry == exit, etaScale == 1 always)" << std::endl;
+	std::cout << "Uniform control: ior = 1.5 (entry == exit, net etaScale == 1 always)" << std::endl;
 	std::cout << "    closed form = " << expected << std::endl;
 
 	const std::string scene = SceneGradedSlab( "1.5", false, "" );
@@ -401,7 +437,7 @@ static void RunUniformControlRow()
 		std::cout << "    " << r.name << "  mean=" << m
 		          << "  ratio=" << ( m / expected ) << std::endl;
 		Check( std::fabs( m - expected ) <= 0.05 * expected,
-			label + ": mean == L*T^2 within 5%, unaffected by the fix" );
+			label + ": mean == L*T^2 within 5% (uniform ior, no graded-index question)" );
 	}
 }
 

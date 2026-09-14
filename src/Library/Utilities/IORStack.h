@@ -266,33 +266,43 @@ namespace RISE
 	//!   change DielectricSPF priced between two other indices.  Scenes
 	//!   that avoid that pathology (see the file header's guidance) are
 	//!   unaffected.
-	//! - **Spatially varying `ior` -- CLOSED 2026-09-14, DL-09
-	//!   (docs/DEBT_LEDGER.md).**  At an EXIT hit, the SPF prices its own
-	//!   Snell/Fresnel calculation with the `ior` painter's value AT THAT
-	//!   EXIT HIT (`DielectricSPF.cpp` ~line 384's
+	//! - **Spatially varying `ior` -- OPEN, DL-09 (docs/DEBT_LEDGER.md).
+	//!   READ THIS BEFORE "FIXING" THE EXIT-HIT READ.**  At an EXIT hit,
+	//!   the SPF prices its own Snell/Fresnel calculation with the `ior`
+	//!   painter's value AT THAT EXIT HIT (`DielectricSPF.cpp` ~line 384's
 	//!   `pRIndex->GetValuesAt(ri)`, re-fetched fresh on every `Scatter`/
 	//!   `ScatterNM` call; the same shape recurs in
 	//!   `PerfectRefractorSPF.cpp`'s `newIOR` parameter), while
-	//!   `before.top()` alone would be whatever value was PUSHED at the
-	//!   object's ENTRY hit and has sat on the stack ever since. For a
-	//!   uniform `ior` those are the same number and `etaBeforeOverride`
-	//!   is left at its -1 sentinel (no behaviour change). For an `ior`
-	//!   bound to a spatially-varying `IScalarPainter` (e.g. a graded-
-	//!   index object, `ior` 1.4 at the entry point and 1.6 at the exit
-	//!   point), `DielectricSPF`/`PerfectRefractorSPF` now populate
-	//!   `etaBeforeOverride` with the fresh exit-hit value (1.6 in this
-	//!   example) on their exit branches, and this function prefers it
-	//!   over `before.top()` -- see `ScatteredRay::etaBeforeOverride`'s
-	//!   doc comment in ISPF.h. The ENTRY-side telescoping argument (a
-	//!   full entry-to-exit trip nets the physically correct factor
-	//!   regardless of any mismatch, since the same value would otherwise
-	//!   cancel against itself at the matching exit, by the identity in
-	//!   §6 of docs/REFRACTIVE_RADIANCE_SCALING.md) is unaffected by this
-	//!   fix -- it was already correct; the fix changes what an
-	//!   INTERMEDIATE gather (an NEE connection or a bounce while still
-	//!   inside the graded-index object, before it exits, or any other
-	//!   consumer of the exit event's throughput with no further exit to
-	//!   cancel against) sees.
+	//!   `before.top()` here is whatever value was PUSHED at the object's
+	//!   ENTRY hit and has sat on the stack ever since. For a uniform
+	//!   `ior` those are the same number. For an `ior` bound to a
+	//!   spatially-varying `IScalarPainter` (a graded-index object, `ior`
+	//!   `n_A` at the entry point and `n_B` at the exit point) they
+	//!   differ -- but substituting the fresh exit value here is WRONG,
+	//!   and was tried and reverted on 2026-09-14. The basic radiance
+	//!   `L / n^2` is conserved BOTH across an interface AND along the
+	//!   ray INSIDE a graded medium (the second half is the part that is
+	//!   easy to forget). RISE applies no interior-segment factor at all,
+	//!   so a full camera(air) -> A(`n_A`) -> B(`n_B`) -> air trip has to
+	//!   net exactly 1, and today it does:
+	//!   `(1/n_A)^2 * (n_A/1)^2 = 1`, where the second term's STALE
+	//!   `n_A` is silently standing in for the product of the missing
+	//!   interior-segment factor `(n_A/n_B)^2` and the true exit factor
+	//!   `(n_B/1)^2`. Reading the fresh `n_B` at the exit without ALSO
+	//!   adding the interior-segment factor turns that net 1 into
+	//!   `(n_B/n_A)^2` -- i.e. it makes an emitter seen through a
+	//!   passive, lossless graded slab BRIGHTER than the emitter.
+	//!   `tests/RadianceEtaScaleGradedIndexTest.cpp` pins the correct net
+	//!   (`L * T1 * T2`, no eta factor) against exactly that regression.
+	//!   The genuine, still-OPEN residual is the contribution GATHERED AT
+	//!   AN INTERIOR VERTEX C (an NEE connection or a bounce while still
+	//!   inside the graded object, before it exits): the throughput there
+	//!   carries `(1/n_A)^2` from the entry crossing when physics wants
+	//!   `(1/n_C)^2`, an error of `(n_C/n_A)^2`, because the interior
+	//!   segment from the entry point to C paid no factor. The principled
+	//!   fix is that missing interior-segment factor `(n_prev/n_C)^2`
+	//!   applied along the walk inside a graded medium -- NOT a
+	//!   substitution at the exit read.
 	//!
 	//! @param before  the walk's current IOR stack at the scattering vertex
 	//! @param after   the scattered ray's stack, or NULL when the SPF left
@@ -302,23 +312,16 @@ namespace RISE
 	//!                leaving this null, which is why the test below
 	//!                compares the top IORs and does not just check for
 	//!                non-null.
-	//! @param etaBeforeOverride  DL-09: the chosen `ScatteredRay::
-	//!                etaBeforeOverride`, or the default -1 ("no
-	//!                override").  When positive, used in place of
-	//!                `before.top()` -- see the field's doc comment in
-	//!                ISPF.h for why `before.top()` can be stale at an
-	//!                EXIT hit under a spatially-varying `ior`.
 	//! @return        (eta_before / eta_after)^2 computed from
-	//!                `before.top()` (or the override) and `after->top()`
-	//!                (see above for what that does and does not
-	//!                guarantee), or exactly 1 when the two agree or the
-	//!                medium did not change.
-	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after, const Scalar etaBeforeOverride = Scalar( -1 ) )
+	//!                `before.top()` and `after->top()` (see above for
+	//!                what that does and does not guarantee), or exactly
+	//!                1 when the two agree or the medium did not change.
+	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after )
 	{
 		if( !after ) {
 			return Scalar( 1 );
 		}
-		const Scalar etaBefore = ( etaBeforeOverride > Scalar( 0 ) ) ? etaBeforeOverride : before.top();
+		const Scalar etaBefore = before.top();
 		const Scalar etaAfter  = after->top();
 		// Equal IORs -> exact 1 with no division, which keeps the
 		// overwhelmingly common reflection / same-index case bit-identical

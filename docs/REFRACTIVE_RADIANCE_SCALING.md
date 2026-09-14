@@ -8,7 +8,10 @@ IMPORTANCE-mode walks (light subpaths, photon tracers, SMS photon seeds,
 detector-sphere rigs) deliberately do not.
 
 Guard: [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp)
-(38 checks, ~27 s), plus `VCMStrategyBalanceTest` topology H (the red row)
+(38 checks, ~27 s),
+[`tests/RadianceEtaScaleGradedIndexTest.cpp`](../tests/RadianceEtaScaleGradedIndexTest.cpp)
+(10 checks — the spatially-varying-`ior` invariant, §10.2), plus
+`VCMStrategyBalanceTest` topology H (the red row)
 and `BDPTStrategyBalanceTest` topology J (the cancellation pin). Review
 round 2 (2026-09-12) added `VCMStrategyBalanceTest` topology I and
 `BDPTStrategyBalanceTest` topology K, a consistency pin on the same
@@ -620,32 +623,84 @@ for source evidence, geometry controls, executed eta mutations and gate
 counters. The closure pins the absence of an unmatched factor; it does not
 claim exact SSS energy conservation or spectral/non-air material equality.
 
-### ~~10.2 Named residual: spatially-varying `ior` mismatch (review round 2)~~ CLOSED 2026-09-14 — DL-09, `ae475295`, `RadianceEtaScaleGradedIndexTest: 10/0` (red: 6/4)
+### 10.2 Named residual: spatially-varying `ior` — only the INTERIOR-VERTEX gather (review round 2; re-scoped 2026-09-14, DL-09)
 
-`RadianceEtaScale` (`Utilities/IORStack.h`) used to read only
-`before.top()` and `after->top()` — the values recorded on the IOR stack
-at push/pop time — while `DielectricSPF` and `PerfectRefractorSPF` price
-their own Fresnel/Snell calculation with the `ior` painter's value
-FRESHLY RE-FETCHED at the current hit (`DielectricSPF.cpp` ~line 384
+`RadianceEtaScale` (`Utilities/IORStack.h`) reads only `before.top()`
+and `after->top()` — the values recorded on the IOR stack at push/pop
+time — while `DielectricSPF` and `PerfectRefractorSPF` price their own
+Fresnel/Snell calculation with the `ior` painter's value FRESHLY
+RE-FETCHED at the current hit (`DielectricSPF.cpp` ~line 384
 `pRIndex->GetValuesAt(ri)`; the equivalent `newIOR` parameter shape in
 `PerfectRefractorSPF.cpp`). For a spatially UNIFORM `ior` painter those
 two reads are the same number and the distinction is invisible; for an
 `ior` bound to a spatially-varying `IScalarPainter` (a graded-index
 object, or any procedural `ior` texture), the EXIT hit's fresh value
-(what the SPF's own Fresnel transmittance was actually priced against)
-could differ from the stack's stale entry-time value `before.top()` read
-instead. Red-proved and fixed 2026-09-14 as DL-09
-(`tests/RadianceEtaScaleGradedIndexTest.cpp`): `ScatteredRay::
-etaBeforeOverride` (`Interfaces/ISPF.h`) now carries the SPF's fresh
-exit-hit ior, and `RadianceEtaScale` consumes it in place of the stale
-stack top when set. The ENTRY-side telescoping argument (a full entry-
-to-exit trip nets the physically correct factor regardless, since the
-same value would otherwise cancel against itself) is unaffected by this
-fix — the fix only changes what an intermediate gather (an NEE
-connection or a bounce before the walk exits, or a downstream event that
-consumes the exit event's throughput without a further exit to cancel
-against) sees. See `IORStack.h`'s `RadianceEtaScale` doc comment for the
-full mechanism.
+differs from the stack's entry-time value `before.top()` read instead.
+
+**Substituting the fresh exit value is NOT the fix.** That was
+implemented on 2026-09-14 and reverted the same day. §1's basic radiance
+`L / n²` is conserved in TWO places — across an interface AND *along the
+ray inside a medium whose index varies with position* — and RISE applies
+no interior-segment factor at all. Write `n_A` for the index at the
+entry point and `n_B` for the index at the exit point of one graded
+object. The physical account of a camera(air) → A → B → air trip is
+
+```
+entry crossing      (1 / n_A)²
+interior segment    (n_A / n_B)²      <-- RISE never applies this
+exit crossing       (n_B / 1)²
+                    -------------
+net                  1
+```
+
+and RISE's actual account is `(1/n_A)² · (n_A/1)² = 1` — the same net,
+because the "stale" `n_A` at the exit read is exactly the product of the
+missing interior-segment factor and the true exit factor. The mismatch
+and the omission cancel. Reading the fresh `n_B` at the exit *without*
+adding the interior-segment factor turns that net 1 into `(n_B/n_A)²`:
+on the reverted slice's own fixture (a passive, lossless slab, `ior`
+1.2 at the entry face and 1.8 at the exit face) it read 0.652746 where
+the physics is `L·T1·T2 = 0.289909` — an emitter behind a slab that
+neither emits nor absorbs, 2.25× brighter than the emitter.
+`tests/RadianceEtaScaleGradedIndexTest.cpp` now pins the correct net
+(PT and BDPT both 0.290109, ratio 1.00069) and asserts explicitly
+against the 2.25× value.
+
+**What remains open (DL-09, re-opened 2026-09-14).** The genuine defect
+is the *missing interior-segment factor*, which is invisible only
+because the trips this document measures all complete. A contribution
+GATHERED AT AN INTERIOR VERTEX C — an NEE connection, or a bounce while
+the walk is still inside the graded object, before it exits — never
+reaches the cancelling exit event. Its throughput carries `(1/n_A)²`
+from the entry crossing where physics wants `(1/n_C)²`: an error of
+`(n_C/n_A)²`, i.e. too bright wherever the index at C exceeds the index
+at the entry point. The same gap applies to a walk seeded INSIDE a
+graded medium (`IORStackSeeding::SeedFromPoint` records the index at the
+camera position; the first segment to a hit at a different index pays no
+factor).
+
+The principled fix is an interior-segment factor `(n_prev / n_C)²`
+applied along the walk whenever it is inside a medium whose `ior`
+painter is spatially varying — size M, because it needs a place to live
+(the walk, not the SPF), needs the painter queried at the *new* point
+without a scatter event to hang it on, and must stay exactly 1 for every
+uniform-`ior` scene so nothing in §6.1's site table moves.
+
+**Not user-visible today.** No in-tree scene binds a position-dependent
+`ior`: the only `scalar_painter` bound to an `ior`
+(`scenes/Tests/GUI/panel_stress_params.RISEscene:232`) is three
+per-channel constants combined algebraically, with no `P` term.
+
+**Recipe.** Build the graded slab of
+`tests/RadianceEtaScaleGradedIndexTest.cpp` but place a diffuse gather
+target INSIDE it (or turn the slab's `scattering` down so the walk
+scatters non-deltaically at an interior vertex), and compare against a
+piecewise-uniform reference: the same object modelled as N concentric
+shells of CONSTANT `ior` stepping between `n_A` and `n_B`, where every
+shell boundary is a real interface and RISE's per-crossing factor is
+therefore already correct by construction. The graded render must
+converge to the multi-shell render as N grows; today it will not, by
+`(n_C/n_A)²` at the gather vertex.
 
 ### ~~10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED`
 

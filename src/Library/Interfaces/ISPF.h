@@ -71,38 +71,6 @@ namespace RISE
 		bool		delete_stack;				///< Should the IOR stack be deleted ?
 		IORStack	*ior_stack;					///< Index of refraction stack for this ray
 
-		//! DL-09: the "before" eta a RADIANCE-mode consumer should use for
-		//! RISE::RadianceEtaScale, when it differs from `ior_stack.top()`
-		//! of the walk's INPUT stack.  Sentinel -1 (default) means "no
-		//! override -- use the input stack's top() as before this ray
-		//! existed" (every non-exit lobe: reflection, entry/push, and
-		//! every SPF that never touches this field).
-		//!
-		//! WHY THIS EXISTS.  `DielectricSPF`/`PerfectRefractorSPF` re-fetch
-		//! their `ior` painter FRESH at every hit (entry AND exit) since a
-		//! spatially-varying ior can differ between the two surface
-		//! points.  At ENTRY this is a non-issue: the walk's current
-		//! IOR-stack top (the medium being left) and the freshly-pushed
-		//! value (the medium being entered) are exactly what the SPF's
-		//! own Fresnel/Snell math used.  At EXIT, the SPF's own math uses
-		//! the FRESH exit-hit ior as "the medium being left" -- but
-		//! `RadianceEtaScale`'s `before.top()` reads the STACK's top,
-		//! which is whatever was PUSHED at the object's ENTRY hit and has
-		//! sat there unchanged.  For a spatially-varying ior those two
-		//! differ, and the stack-based eta^2 factor silently uses the
-		//! wrong (stale) "before" index.  Setting this field to the SPF's
-		//! own fresh exit-hit ior lets the consumer use the value that is
-		//! actually self-consistent with the Fresnel/refraction the SPF
-		//! computed, instead of re-deriving it from the (const, and
-		//! therefore uncorrectable in place) input IORStack.  See
-		//! docs/DEBT_LEDGER.md DL-09 and
-		//! tests/RadianceEtaScaleGradedIndexTest.cpp.
-		//!
-		//! Left unset (-1) for a uniform ior (harmless: entry == exit, so
-		//! before.top() already equals the fresh value) and for every SPF
-		//! that isn't a dielectric-style boundary crossing.
-		Scalar		etaBeforeOverride;
-
 		ScatteredRay() :
 		  kray( RISEPel(0,0,0) ),
 		  krayNM( 0 ),
@@ -110,8 +78,7 @@ namespace RISE
 		  pdf( 0 ),
 		  isDelta( false ),
 		  delete_stack( true ),
-		  ior_stack( 0 ),
-		  etaBeforeOverride( Scalar(-1) )
+		  ior_stack( 0 )
 		{}
 
 		virtual ~ScatteredRay()
