@@ -329,8 +329,76 @@ hair, not interior media).
 | `src/Library/Utilities/ManifoldSolver.{h,cpp}` | the `geomNormal` invariant + 5 captures |
 | `src/Library/Materials/TranslucentSPF.cpp`, `src/Library/Utilities/IORStackSeeding.h` | migrated to the shared helper (pure refactor) |
 | `tests/GeomNormalOrientationSitesTest.cpp` | new |
+| `src/Library/Utilities/SMSPhoton.h` | P2-3: `SMSPhotonChainVertex::geomNormal`'s doc comment now states the same TRUE-outward invariant, including the legacy zero-sentinel fallback exception |
+| `src/Library/Geometry/BezierPatchGeometry.cpp` | P3-f: fixed a real producer-side edge-case bug (`bGeomNormalOrientedToRay` no longer disagreed with whether the negation actually happened at `dotND == 0`) |
+| `src/Library/Shaders/PathTracingIntegrator.cpp`, `src/Library/Shaders/BDPTIntegrator.cpp` | P2-2: named the CLOSED-SOLID-semantics decision at all six site-6 call sites, filed DL-96 |
+| `src/Library/Rendering/RayCaster.cpp` | P3-g: documented the decision NOT to add a `HasTrueGeomSide()` skip at `CastShadowRayTransmittance` |
+| `tests/ManifoldSolverTest.cpp` | P2-1: new Group 15 -- an end-to-end `BuildSeedChain` chain-level pin for the `sms_slab_close_pt_sms_hispp.RISEscene` mechanism |
 
 `src/Library/Utilities/BSSRDFSampling.cpp` was **not** migrated: its
 recovery is entangled with the P2-A shading-normal re-orientation inside
 the same branch, so forwarding to the helper would not be a pure
 refactor.
+
+
+## 8. Render-level confirmation (P2-1, review fix-pass)
+
+The site-3 fix (`ManifoldSolver::SnellContinueChain`'s `mv.geomNormal`,
+which the Group-15 chain-level pin in `tests/ManifoldSolverTest.cpp`
+red-proves directly) is exactly the mechanism
+`scenes/Tests/SMS/sms_slab_close_pt_sms_hispp.RISEscene` exercises: a
+`double_sided` dielectric slab (`slab_geom`, a `rawmesh2_geometry`) used
+as an SMS caustic caster.  A first review pass measured a `+0.79%` mean
+shift on that scene at production settings (`400×300`, `16` spp, `20000`
+SMS photons, 12 renders per build) that moves the render CLOSER to a
+4×256-spp VCM reference (ratio `0.7431→0.7490`, RMSE `0.09935→0.09748`,
+MAE `0.05019→0.04924`, `t=4.98`).  Those figures are cited here as
+**review-measured** (not independently re-derived at that exact
+resolution/spp/photon-count/N).
+
+This fix-pass independently reproduced the SAME direction at a reduced,
+cheap scale, to avoid re-deriving the review's exact numbers from
+scratch: an isolated checkout of `master` `32824325` (the DL-70 slice's
+own parent commit, built in a separate scratch worktree — never the
+shared checkout or the `debt-dl70` worktree) vs. this branch's own HEAD,
+both rendering the SAME scene at `160×120`, the scene's PRODUCTION
+`samples 64` / `sms_photon_count 100000` (only resolution was cut for
+speed — ~29s/render at this size), `oidn_denoise FALSE`, EXR-only
+output, 6 renders per build (`std::srand`-unseeded — each RISE process
+gets a fresh unsynchronized-libc-`rand()` seed per the project's
+documented render-seeding convention, so 6 independent renders per
+build is a real trial count, not 6 copies of one seed):
+
+```
+whole-image mean (avg of R,G,B channel means, 6 renders/build):
+  base (32824325):     0.27983 (sd 0.00222)
+  branch (debt-dl70):  0.28041 (sd 0.00118)
+  shift: +0.207%  (t = 0.56 -- NOT significant at this N=6/whole-image
+                    scale; the review's own +0.79%/t=4.98 was measured
+                    at higher N=12 and, per its own numbers below,
+                    against a resolution/spp/photon-count this pass did
+                    not reproduce)
+
+RMSE vs. a 1024-spp VCM reference rendered on this same reduced scene
+(HDRVarianceTest --ref, mean across the 6 renders per build):
+  base:    RMSE 0.33588
+  branch:  RMSE 0.31244   (-6.98%, i.e. CLOSER to the VCM reference)
+```
+
+The whole-image mean shift is the same SIGN as the review's finding but
+too small relative to its own noise at this reduced N/resolution to
+call significant on its own; the RMSE-vs-VCM-reference metric is a
+clean, unambiguous confirmation of the review's qualitative claim
+("moves closer to the VCM reference") on an independently rendered
+reference and an independently built pre-fix binary.  Root cause is the
+same one this doc's site 3 table entry and the Group-15 pin already
+establish deterministically: pre-fix, `SnellContinueChain`'s two
+crossings of the double-sided slab (front face entering, back face
+exiting) BOTH read `bEntering = true` (the back face's `cosI` sign test
+was corrupted by the reported, always-ray-opposing `vGeomNormal`), so
+the seed chain's second vertex carried the wrong `isReflection`/`etaI`/
+`etaT` classification into `ValidateChainPhysics` and the Newton solve;
+post-fix the two crossings correctly alternate.  A wrong classification
+at a caustic-caster vertex changes which chains pass `ValidateChainPhysics`
+and how their throughput is computed, which is consistent with a small
+but real mean shift on a caustic-dominated scene.
