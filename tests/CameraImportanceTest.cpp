@@ -879,25 +879,50 @@ static void TestDeltaPositionCamerasUnchanged()
 //   for scale <= sqrt(2)).  So the total film response is 1, exactly
 //   as it is for the pinhole and the thin lens.
 //
-// KNOWN, NOT FIXED (reported with debt 28): the fisheye's pixel solid
-// angle scale^2/(W H cosAngle) is measured in the camera's PRE-STRETCH
-// local frame, while `mxTrans` applies Stretch(pixelAR,1,1) to the
-// direction.  At pixelAR != 1 the world-space solid angle per pixel
-// therefore differs from the formula by a direction-dependent
-// Jacobian.  That is a separate, pre-existing measure inconsistency,
-// not debt 28's missing aperture sample; no in-tree scene pairs a
-// fisheye with non-square pixels, and a correct fix needs the full
-// Jacobian of normalize . Stretch rather than a constant.  The row
-// below is therefore pixelAR == 1 only.
+// DL-10 (docs/DEBT_LEDGER.md): at pixelAR == 1 the closed form above is
+// exact because the local hemisphere point v IS the world direction (up
+// to a solid-angle-preserving rotation) -- `mxTrans`'s 3x3 part is
+// R * Stretch(pixelAR,1,1), and Stretch collapses to the identity.  At
+// pixelAR != 1 the per-pixel WORLD solid angle differs from the local
+// `scale^2/(W H cosAngle)` formula by the Jacobian of
+// `v -> normalize(Stretch(pixelAR,1,1) * v)`, which is
+// `pixelAR / |Stretch(pixelAR,1,1)*v|^3` (the general result for a
+// linear map applied to a unit vector and renormalized).  Folding that
+// Jacobian into `ImportanceFisheye` / `PdfDirectionFisheye`
+// (CameraUtilities.cpp) makes the CLOSED FORM BELOW INVARIANT TO
+// pixelAR: the Jacobian appears once in `We` (dividing it out) and once
+// in the world solid-angle element the integral below sums over
+// (multiplying it back in), so the two cancel and the total film
+// response is 1 at every pixelAR, exactly as it is at pixelAR == 1.
+// Pre-fix, `We` carried NO Jacobian while the true world solid angle
+// still had it, so the totals below diverge from 1 in proportion to how
+// hard `Stretch` distorts the direction distribution.
+//
+// Audited alongside pinhole / thin lens / orthographic for the same
+// defect (debt 28's "does any other camera have the same defect?"
+// question, re-asked for DL-10): none of the three carry it.
+// `ComputePixelAreaAndDistance` (pinhole's pixel-area helper, shared by
+// the thin lens via `GetImagePlanePixelDensity`) measures the world-
+// space pixel footprint by literally transforming pixel CORNERS through
+// the camera's affine matrix and taking the cross product -- an affine
+// map has no per-direction renormalization step, so whatever `pixelAR`
+// stretch is baked into the matrix is already exactly represented with
+// no separate Jacobian to derive.  Orthographic has no per-ray
+// projection at all (every ray is parallel; `viewportScale` already
+// carries the world-space extent).  The fisheye is the only camera that
+// projects onto a CURVED (hemispherical) film via a per-ray
+// normalize-after-stretch step, which is what makes the Jacobian
+// direction-dependent rather than a constant the way it is for a flat
+// film.
 //////////////////////////////////////////////////////////////////////
-static void TestFisheyeFilmResponse()
+static void TestFisheyeFilmResponse( double pixelAR )
 {
-	std::cout << "TestFisheyeFilmResponse" << std::endl;
+	std::cout << "TestFisheyeFilmResponse  pixelAR=" << pixelAR << std::endl;
 
 	const double scale = 1.0;
 	FisheyeCamera* cam = new FisheyeCamera(
 		Point3( 0, 0, kCamZ ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
-		kWidth, kHeight, kPixelAR,
+		kWidth, kHeight, pixelAR,
 		0.0, 0.0, 0.0,
 		Vector3( 0, 0, 0 ), Vector2( 0, 0 ),
 		scale );
@@ -947,10 +972,12 @@ static void TestFisheyeFilmResponse()
 	}
 
 	// Grid error is the discretisation of the imaged square's boundary
-	// in (theta, phi), O(1/N).
+	// in (theta, phi), O(1/N) -- unchanged by pixelAR, since the accept/
+	// reject boundary (`radius > 1` in the PRE-stretch local frame) does
+	// not depend on it.
 	EXPECT_REL( total, 1.0, 0.01 );
-	std::printf( "    fisheye scale %.1f  full-field response %.6f (closed form 1)\n",
-		scale, total );
+	std::printf( "    fisheye scale %.1f pixelAR %.1f  full-field response %.6f (closed form 1)\n",
+		scale, pixelAR, total );
 
 	release( cam );
 }
@@ -966,7 +993,9 @@ int main()
 	TestImportanceMatchesPinholeClosedForm();
 	TestEmittingPlaneFilmResponse();
 	TestDeltaPositionCamerasUnchanged();
-	TestFisheyeFilmResponse();
+	TestFisheyeFilmResponse( 0.5 );
+	TestFisheyeFilmResponse( 1.0 );
+	TestFisheyeFilmResponse( 2.0 );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << g_pass << std::endl;
