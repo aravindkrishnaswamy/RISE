@@ -206,6 +206,17 @@ external-linkage dedupe, but no compile-time-evaluation obligation --
 avoids MSVC's default `/constexpr:steps 100000` limit on the largest
 table, `E_ss_TABLE_G2_ANISO_PHI` at 24*24*13*32 = 239,616 elements).
 
+**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained `TestGrazingFurnaceDL86`,
+five real-`GGXBRDF` (not just LUT-lookup) Schlick F0=1 spec-only furnace
+rows at `theta=89.40/89.70/89.89` degrees (cosView strictly below the LUT's
+first bin center `c0=0.5/32~=0.0156`), driving the SAME `LookupEssG2`
+end-cap fix through the production BRDF. On the unfixed header 3 of 5
+FAILED (e.g. `theta=89.89 alpha=1.0`: `mean=1.0538+/-0.0016`, a real
+furnace GAIN, not just a LUT artifact); all 5 pass post-fix
+(`0.9952-0.9998`). `161 checks, 0 failures` (was `156/0`). See
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-86" section.
+
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
 (`E_ss_TABLE_G2`/`E_avg_TABLE_G2`, `LookupEssG2`/`LookupEavgG2`) against a
@@ -245,6 +256,27 @@ epsilon -- the re-parametrized table mirrors the canonical
 `alphaX<=alphaY` half into the `alphaX>alphaY` half using the SAME
 Monte-Carlo samples, so the symmetry is exact, not merely close). `30
 checks, 0 failures` (was `23 checks, 0 failures`).
+
+**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained two new gating
+sections promoting the doc's brute-force-vs-lookup end-cap numbers into
+real checks. (1) Isotropic: `LookupEssG2` at 3 alphas x 5 cosTheta values
+(`0.002` to `0.03`, spanning the first LUT bin's `c0=0.5/32~=0.0156`
+boundary) against a fresh 20M-sample VNDF quadrature -- on the unfixed
+flat-clamp lookup, 12 of 15 rows FAILED (e.g. `alpha=1 cos=0.002`:
+`LookupEssG2=0.934940` vs quadrature `0.987561+/-0.000014`, 5.33%); all
+15 pass post-fix (residual `<=0.6%`). (2) Anisotropic: `LookupEssG2AnisoDirectional`
+at 6 `(alphaX,alphaY,phi)` configurations x 5 cosTheta values, plus the
+debt-ggx3-cited worst case (`alphaX=0.0361,alphaY=0.9627,phi=5,cos=0.0024`)
+-- on the unfixed lookup that worst case read `17.99%` off (reproducing
+the ledger's `17.89%`); post-fix the SAME point reads `~2.14%`, and the
+fix genuinely helps every row (12-18%+ pre-fix down to at most `~4.0%`
+post-fix across the whole sweep, not only the one cited corner) --
+gated at an honest 5% floor rather than a falsely tight one. `78 checks,
+0 failures` (was `30 checks, 0 failures`). See
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-86" section for the fix (a one-sided extrapolation anchored at the
+provable exact boundary `Ess_G2(cosTheta=0)=1`) and the full residual
+table.
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's

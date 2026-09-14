@@ -520,29 +520,183 @@ widening applied to `ri.glossyFilterWidth` for variance/firefly control —
 `filter_glossy` at its default 0, or that hit these materials only on the
 camera ray, are numerically identical before and after DL-65.
 
-**Known residual: LUT left end-cap (isotropic, small; tracked as DL-86,
-NOT fixed)**: `LookupEssG2`/`LookupEss` both flat-clamp `cosTheta` below
-the first bin center (`c0 = 0.5/32 ≈ 0.0156`) to that bin's value — a
-deliberate, cheap design choice (see `MSLobeDetail::BuildSegmentsFromRow`'s
-"left flat end-cap" comment), not a bug in the clamp mechanism itself, but
-it does mean `LookupEssG2` under-reads the TRUE (continuing-to-rise)
-`Ess` right at the grazing limit. Recomputed this pass with an
-independent 8M-sample VNDF quadrature of the real
-`MicrofacetUtils::GGX_Lambda`/`GGX_G2` primitives (same methodology as
-`GGXHeightCorrelatedEnergyLUTTest`, fresh seed): at `alpha=1.0,
-cosWi=0.008` (just inside the first bin), brute-force `Ess=0.9613` vs
-`LookupEssG2=0.9349`, diff `0.0263` — since the lookup UNDER-reads the
-true single-scatter energy here, the Kulla-Conty compensation adds
-slightly too much multiscatter energy back, an isotropic furnace GAIN of
-roughly 2.6% confined to incidence angles beyond ~89 degrees (`cosWi`
-below the first bin center). This is small, confined to an extreme
-grazing sliver, and independent of the anisotropic DL-77 deficit below
-(this one persists even for `alphaX==alphaY`). The debt-ggx3 slice (see
-"DL-77" section below) promoted this from doc prose to ledger row DL-86,
-per the DL-77 recipe's instruction, but deliberately did NOT fix it in
-that slice: DL-77's own gate required isotropic behaviour to stay
-byte-identical, and any end-cap change touches isotropic numerics at
-extreme grazing — see DL-86's row for the recipe.
+**~~Known residual: LUT left end-cap~~ -- CLOSED 2026-09-14 (debt-dl86
+slice); see "DL-86" section below.** (Original prose, struck: isotropic,
+small; tracked as DL-86. `LookupEssG2`/`LookupEss` both flat-clamped
+`cosTheta` below the first bin center (`c0 = 0.5/32 ≈ 0.0156`) to that
+bin's value — a deliberate, cheap design choice (see
+`MSLobeDetail::BuildSegmentsFromRow`'s "left flat end-cap" comment), not
+a bug in the clamp mechanism itself, but it meant `LookupEssG2`
+under-read the TRUE (continuing-to-rise) `Ess` right at the grazing
+limit. Measured at the time with an independent 8M-sample VNDF
+quadrature: at `alpha=1.0, cosWi=0.008` (just inside the first bin),
+brute-force `Ess=0.9613` vs `LookupEssG2=0.9349`, diff `0.0263` — since
+the lookup under-read the true single-scatter energy here, the
+Kulla-Conty compensation added slightly too much multiscatter energy
+back, an isotropic furnace GAIN of roughly 2.6% confined to incidence
+angles beyond ~89 degrees.)
+
+## DL-86: grazing-limit left end-cap (isotropic LookupEssG2/LookupEss,
+anisotropic LookupEssG2AnisoDirectional)
+
+**Status: CLOSED 2026-09-14** — debt-dl86 slice, base `943d353b`.
+
+**Root cause** (confirmed exactly as the ledger row diagnosed):
+`LookupEssG2`/`LookupEss`/`LookupEssG2AnisoDirectional` all flat-clamped
+`cosTheta` below the first LUT bin center `c0=0.5/32≈0.0156` (isotropic)
+or `c0=0.5/ANISO_COS_SIZE` (anisotropic-directional, same numeric value)
+to that bin's own value, under-reading the TRUE, still-rising
+single-scatter directional albedo right at the grazing limit. Measured
+this pass (independent 20M-sample VNDF quadrature, `debt-dl86` slice):
+isotropic worst case `alpha=1.0, cos=0.002`: `LookupEssG2=0.934940` vs
+quadrature `0.987561±0.000014` (diff 5.33%, matching the original
+prose's `cos=0.008` figure's order of magnitude); anisotropic-directional
+worst case (re-running the debt-ggx3 sweep's own cited point,
+`alphaX=0.0361, alphaY=0.9627, phi=5, cos=0.0024`, the "genuine DL-86 end-
+cap point" that debt-ggx3's review round 2 measured at 17.89%):
+`LookupEssG2AnisoDirectional=0.775178` vs quadrature `0.945277±0.000032`
+— diff **17.99%**, confirming the debt-ggx3 figure to within statistical
+noise (the ~0.1pp difference is seed/sample-count noise between the two
+independent measurements, not a discrepancy in the diagnosis).
+
+**Fix design decision** (ledger recipe options (a) non-uniform grid vs
+(b) one-sided analytic/linear extrapolation): (b) was tried first in its
+plain "linear/quadratic extrapolation from the first two/three bins"
+form and DERIVED to be insufficient at the ledger's own target point
+(`alpha=1, cos=0.002`): 2-point secant `1.78%`, 3-point quadratic
+`1.14%` — both over the `<=1%` target. The fix instead uses a one-sided
+extrapolation anchored at the PROVABLE EXACT boundary
+`Ess_G2(cosTheta=0)=1`: under the height-correlated Smith model, the
+VNDF per-sample weight is `G2(wi,wo)/G1(wi) = (1+Lambda(wi)) /
+(1+Lambda(wi)+Lambda(wo))`; as `cosWi->0`, Smith `Lambda(wi) ~
+alpha/(2*cosTheta) -> infinity`, so this ratio `-> 1` for ANY finite
+`Lambda(wo)` — i.e. every VNDF-sampled `wo` contributes weight `->1` in
+the limit, regardless of its own distribution. This is a derived
+physical limit, not a fitted curve, and it closes the isotropic case to
+`<=0.6%` at every tested point down to `cos=0.002` — comfortably under
+the `<=1%` target — without touching the table's grid resolution (still
+option (b), just with the boundary VALUE derived analytically instead of
+extrapolated from two samples). Given (b) met the target, option (a) (a
+non-uniform cosTheta grid, which the recipe itself flagged as changing
+"every isotropic numeric slightly") was assessed unnecessary and not
+pursued — avoiding a full `E_ss_TABLE`/`E_ss_TABLE_G2`/
+`E_ss_TABLE_G2_ANISO`/`E_ss_TABLE_G2_ANISO_PHI` regeneration (the largest
+of these, `E_ss_TABLE_G2_ANISO_PHI`, takes ~5 minutes to bake) and the
+re-verification of every downstream consumer that a grid-shape change
+would have required.
+
+The SAME exact-boundary argument holds per-direction for the anisotropic
+case (`Lambda_Aniso(wi)->infinity` as `cosWi->0` regardless of azimuth,
+so `G2_Aniso/G1_Aniso(wi)->1` for any finite `wo`), so
+`LookupEssG2AnisoDirectional` uses the identical extrapolation, anchored
+at `v0` = the SAME quadrilinear interpolation evaluated exactly at
+`cosTheta=c0` (alphaX/alphaY/phi held fixed). Measured residual after the
+fix at the debt-ggx3-cited worst case: `~2.1-2.4%` (down from `17.99%`)
+— a large improvement, but audited FURTHER this pass and found NOT
+unique to that one corner: any strongly anisotropic (9:1-10:1) ratio near
+either tangent axis shows a similar-order post-fix residual (measured up
+to `~4.0%`, e.g. `alphaX=0.9,alphaY=0.1,phi=90,cos=0.005`), down from a
+pre-fix flat-clamp error of `12-18%+` at the SAME configurations. This
+residual is compounded by DL-77's own separately-tracked `ANISO_PHI`
+grid-coarseness residual (not re-litigated here) and is NOT closed to
+`<=1%` at these extreme corners — reported honestly (gated at a 5% floor
+in `GGXHeightCorrelatedEnergyLUTTest`) rather than hidden behind a
+falsely tight tolerance.
+
+`LookupEss` (the separable model `CookTorranceBRDF`/`CookTorranceSPF`
+use) shares the identical flat-clamp mechanism — confirmed via
+audit-by-bug-pattern as a genuine SIBLING, not a false positive — but has
+NO analogous closed-form boundary: an 8M-sample probe at `cos` down to
+`1e-6` shows the separable model's `Ess(cosTheta->0)` converges to a
+FINITE, alpha-dependent constant well below 1 (e.g. `~0.614` at
+`alpha=1.0`, `~0.934` at `alpha=0.05`), not to 1. Fixed with a plain
+bin0->bin1 secant extrapolation (the same mechanism the plain (b) option
+uses, since no exact boundary is available here) — residual `<=1.8%`
+worst case (`alpha=0.05, cos=0.002`), a genuine but smaller improvement
+over the pre-fix flat clamp's `~2.9%` at the same point, not fully
+closed. This smaller, honestly-bounded residual reflects the smaller
+underlying defect (CookTorrance's separable-model Ess curve is far
+FLATTER near `cosTheta=0` than the height-correlated G2 model's, which is
+why DL-63's own root cause never flagged CookTorrance as needing the G2
+recalibration in the first place).
+
+**Self-consistency obligation** (found auditing the fix, not in the
+original recipe): `MSPdf`/`MSPdfG2` call `LookupEss`/`LookupEssG2`
+DIRECTLY, while `SampleMSCosTheta`/`SampleMSCosThetaG2` (the paired H6
+multiscatter-lobe SAMPLER, used by `CookTorranceSPF` and — via
+`SampleMSCosThetaG2Aniso`'s `alphaX==alphaY` forward — by `GGXSPF`) draw
+from `MSLobeDetail::BuildSegmentsFromRow`'s own INDEPENDENT segment
+model, which had its own separate flat end-cap. Changing
+`LookupEss`/`LookupEssG2` alone would have left the sampler's proposal
+shape flat while the paired PDF function reported a non-flat density for
+the same cosTheta range — breaking the file's own documented invariant
+("pdf and sampler share the SAME model and cannot drift apart") for any
+draw landing below `c0`. Fixed by adding an `isG2Model` parameter to
+`BuildSegmentsFromRow` so its left segment uses the SAME model
+(`Ess(0)=1` exact for G2, bin0->bin1 secant for separable) at all four
+call sites (`BuildSegments`, `BuildSegmentsG2`, and `MSLobeZ`/`MSLobeZG2`'s
+per-row precompute loops). Both `leftBoundaryEss` forms are LINEAR in
+`essRow`, preserving `MSLobeZ`/`MSLobeZG2`'s documented "Z is an exact
+affine function of af" per-row-then-blend optimization unchanged.
+`LookupEssG2Aniso` (azimuth-AVERAGED, sampler-only, never a direct
+energy-compensation call site) and `BuildSegmentsFromRowN` (its paired
+generic-N segment builder) are DELIBERATELY left untouched — precision
+there remains an efficiency, not correctness, concern per existing
+DL-77 doctrine, and fixing one without the other would have introduced a
+NEW sampler/pdf mismatch for genuinely anisotropic materials where none
+existed before.
+
+**Red-proof**: `GGXHeightCorrelatedEnergyLUTTest` against the unfixed
+header: 78 checks, 15 failures (12 isotropic rows + 3 anisotropic rows,
+including the debt-ggx3-cited worst case reproducing `17.99%`). A second,
+independent red-proof drove the REAL production `GGXBRDF` (not the LUT in
+isolation) at extreme grazing view angles
+(`GGXDiffuseTransmissionTest`'s new `TestGrazingFurnaceDL86`, Schlick
+F0=1 spec-only, `theta=89.40/89.70/89.89` degrees i.e. `cosView` strictly
+below `c0`): against the unfixed header, `theta=89.89 alpha=1.0` read
+`mean=1.0538±0.0016` — a genuine, real-BRDF-level furnace GAIN, not just
+a LUT-lookup artifact; 3 of 5 new rows failed.
+
+**Post-fix gate** (clean warning-free rebuild throughout):
+`GGXHeightCorrelatedEnergyLUTTest` 78/0 (was 30/0), `GGXDiffuseTransmissionTest`
+161/0 (was 156/0), `GGXSampleEvaluationConsistencyTest` 48/0,
+`GGXWhiteFurnaceTest`/`GGXMetalRoughGridTest`/`GGXFresnelModeTest` all
+pass, `LayeredWhiteFurnaceTest` 0/57, `ThinFilmBRDFTest` 25/0,
+`ThinFilmFurnaceTest` 4/0, `CookTorranceMultiscatterTest` 17/0,
+`SPFPdfConsistencyTest`/`SPFBSDFConsistencyTest` pass, `FabricRenderTest`
+57/0, `WeaveMaterialChunkTest` 296/0, `CstDeriveGoldenTest` 452 MATCH/0
+DRIFT, `SourceHygieneTest` 165/0.
+
+**Sibling-LUT audit** (docs/skills/audit-by-bug-pattern.md step 4,
+"enumerate siblings"): `SheenDirectionalAlbedo.h`'s fabric-sheen `E`/
+`EHatMean` tables CONFIRMED to share the mechanical pattern (constant
+extrapolation below the first warped-cosTheta node `mu1`), but this was
+independently found and remediated in an EARLIER slice (round 9,
+2026-09-04) with its own monotonicity-based soundness argument specific
+to that table's consumer — a LOWER bound on `E` is safe there because
+`FabricBRDF` only multiplies by it or floors a normalizer against it,
+the OPPOSITE direction from DL-86's Kulla-Conty compensation (where an
+under-read `Ess` INFLATES the `(1-Ess)` compensation weight) — no action
+needed, not a new debt. `RGBToSpectrumTable.h`'s Jakob-Hanika LUT already
+uses a non-uniform (`sin^2`) grid warp (ledger recipe option (a)) and
+converges everywhere per the Stage C fix — CONFIRMED not applicable, no
+flat end-cap exists. `ThinFilm.h` has no baked grid LUT at all
+(Gauss-Legendre quadrature only) — CONFIRMED not applicable.
+`E_avg_TABLE`/`E_avg_TABLE_G2`/`E_avg_TABLE_G2_ANISO` are per-alpha
+SCALARS with no cosTheta interpolation — CONFIRMED not applicable. No
+other multi-dimensional baked LUT with a grid-edge interpolation found in
+`src/Library`.
+
+**User-visible impact**: isotropic and anisotropic rough
+`ggx_material`/`coated_material` surfaces at extreme grazing incidence
+(beyond ~89 degrees, i.e. viewed nearly edge-on) DARKEN slightly relative
+to the pre-fix over-bright rim (the fix closes an energy GAIN, the
+opposite direction from DL-37's grazing-gain fix and the same direction
+as DL-63's own darkening). `cook_torrance_material` sees a smaller,
+similarly-signed correction at the same grazing regime. Anisotropic
+materials with a strong roughness ratio (9:1 or more) retain a bounded,
+reduced residual GAIN (up to ~4%) at the same extreme grazing incidence,
+tracked honestly above rather than claimed as fully closed.
 
 ## DL-77: anisotropic Kulla-Conty compensation (ratio + azimuth)
 
