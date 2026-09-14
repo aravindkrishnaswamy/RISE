@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  SobolSampler.h - ISampler implementation backed by Owen-scrambled
-//    padded Sobol (0,2)-sequences.
+//    Sobol' sequences.
 //
 //    Replaces IndependentSampler in BDPT (and any future integrator
 //    that consumes ISampler).  Each call to Get1D() / Get2D() draws
@@ -15,6 +15,20 @@
 //    StartStream() advances the dimension counter so that different
 //    sub-path generators (light, eye, connection) draw from
 //    independent dimension ranges — same mechanism as PSSMLTSampler.
+//
+//    NOTE (DL-81, 2026-09-14): `kStreamStride` being EVEN used to be
+//    fatal, because `SobolSequence::Sample` reduced the dimension to
+//    `dimension & 1` -- every bounce's k-th draw then had the parity of
+//    every other bounce's k-th draw, and two same-parity dimensions
+//    were two Owen-scrambled copies of ONE base value.  Distinct
+//    dimensions are now distinct SEQUENCES, so an even stride is
+//    harmless; see SobolSequence.h's header for the mechanism and
+//    docs/DL81_SOBOL_DIMENSION_PARITY.md for the measurements.  There
+//    is now a finite dimension supply (`SobolSequence::kNumDimensions`
+//    = 2311) and a stream index past it wraps -- a consumer that picks
+//    a deliberately large stream index must reason about where it
+//    lands after the wrap, as `BDPTCameraUtilities::kApertureSamplerStream`
+//    now does.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 27, 2026
