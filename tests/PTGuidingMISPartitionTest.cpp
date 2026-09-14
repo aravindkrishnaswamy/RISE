@@ -1108,7 +1108,9 @@ static void RunIorStackRow()
 // MEASURED on the pre-fix library (commit 0860f78f): row (i) reads
 // +100.354 %, dead on its closed form.  Row (h) reads +10.57 % at this
 // row's 160k samples and +12.23 % at 640k -- an under-converged
-// estimate of the 14.6 %, because the guide is a narrow cos^64 lobe
+// estimate of the ~13.7 % the guided branch's `combinedPdf > NEARZERO`
+// gate leaves reachable (14.6 % is the untruncated closed form; review
+// round 5 measured 0.1369 by quadrature), because the guide is a narrow cos^64 lobe
 // sitting INSIDE a 45-degree-wide lune, so the pre-fix escape side's
 // own estimate of `INTEGRAL_W f L` is heavy-tailed.  The assertions
 // below are against the CLOSED FORMS, never against those figures.

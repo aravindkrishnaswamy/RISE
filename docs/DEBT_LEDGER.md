@@ -237,8 +237,8 @@ recount of the table this pass: 72 non-divider `| DL-` / `| ~~DL-` rows,
 45 containing "OPEN-confirmed", 27 starting `| ~~DL-` (struck/closed) —
 45 + 27 = 72, consistent.
 
-**Review round 3 (same slice, same day) changed no count.**  It opened no
-row and closed none: both findings were defects IN this slice's own
+**Review round 3 (same slice, same day) closed no row; it opened DL-84 (see
+below, main rows 72 -> 73).**  Its two other findings were defects IN this slice's own
 round-2 work on rows that were already struck, so they were fixed under
 those rows rather than filed.  (1) A REGRESSION round 2 introduced — the
 `bsdfPdf`/`bsdfMisPdf` split was not carried across the shader-op

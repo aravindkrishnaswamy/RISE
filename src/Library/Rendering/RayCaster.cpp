@@ -152,8 +152,10 @@ namespace
 		// differ only where path guiding is active (and at the volume
 		// continuation below, whose NEE partner is the raw phase pdf by
 		// DL-73).  A zero partner density means "no MIS partner exists"
-		// (delta lobe, or a direction outside the material's aggregate
-		// support) and keeps the historical unweighted result.
+		// (a delta lobe, or an unguided vertex whose aggregate pdf is
+		// zero here -- under active guiding the producer already folded
+		// `alpha_nom * guide` in, so a zero-aggregate direction does NOT
+		// arrive as zero) and keeps the historical unweighted result.
 		const Scalar misPartnerPdf = rs.MisPartnerPdf();
 		if( !pLightSampler || ( rs.bsdfPdf <= 0 && misPartnerPdf <= 0 ) ) {
 			return w_bsdf;

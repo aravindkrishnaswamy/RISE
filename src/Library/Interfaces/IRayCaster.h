@@ -76,9 +76,14 @@ namespace RISE
 			//!        DEFAULT, so a producer that predates this field (or
 			//!        simply has no guiding to describe) keeps its exact
 			//!        pre-DL-74 weight instead of silently losing it.
-			//!   0    no MIS partner exists: a delta lobe, or a direction
-			//!        outside the material's aggregate support.  The
-			//!        weight is 1 and the sample is taken whole.
+			//!   0    no MIS partner exists: a delta lobe, or a vertex
+			//!        with no guiding at all whose aggregate pdf is zero
+			//!        in this direction.  With guiding ACTIVE a zero
+			//!        aggregate pdf is NOT a zero partner: the mixture
+			//!        still reaches the direction through the guide, so
+			//!        the partner is `alpha_nom * guide` there (review
+			//!        round 4 of DL-74, rows (h)/(i)).  The weight is 1
+			//!        and the sample is taken whole.
 			//!   > 0  the nominal partner density.
 			Scalar bsdfMisPdf;
 			RISEPel bsdfTimesCos;				///< BSDF * cos at scatter point (RGB), for optimal MIS full-integrand training

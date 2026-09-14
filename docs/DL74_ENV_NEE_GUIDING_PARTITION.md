@@ -312,6 +312,28 @@ Two design notes about the fixture:
 
 ## 5. Known residuals (not filed as new rows)
 
+- **Coverage invariant the nominal partner relies on (review round 5).**
+  `p_mis` is lobe-independent (configured from vertex gates) while the
+  true continuation density is lobe-dependent (only non-delta
+  diffuse/reflection lobes are guiding-eligible).  At a vertex where NO
+  scattered lobe is eligible, `p_mis = alpha_nom * guide > 0` in the
+  zero-aggregate region while the true density there is 0, so the
+  BSDF-side weight claims mass the technique cannot deliver -- the mirror
+  image of the round-4 double count.  Unreachable in-tree: the only SPFs
+  emitting exclusively ineligible lobes (`GenericHumanTissueSPF`,
+  `PerfectRefractorSPF`, `DielectricSPF`) belong to materials whose
+  `GetBSDF()` is null, so NEE evaluates nothing.  Invariant to keep: a
+  material with a non-null BSDF must expose at least one selectable
+  non-delta diffuse/reflection lobe.
+- **Optimal-MIS training sites disagree on Russian roulette (round 5).**
+  The BSSRDF exit/entry pair trains PRE-RR quantities (`bssrdfWeight *
+  cosinePdf`, `neeTrainingScale`), while the main surface continuation
+  trains from `scatterThroughput` AFTER the `rr.survivalProb` division.
+  Two estimators' second moments feed one tile's alpha.  Variance-only,
+  never bias; the BSSRDF pair is internally consistent.  Pick one
+  convention when DL-84 (the still-untrained in-loop volume site) is
+  wired.
+
 - ~~**The IOR stack passed to the aggregate pdf differs by side.**~~
   **WRONG, and fixed in round 3 (§8.2).** This entry claimed the
   divergence was "pre-existing, orthogonal to guiding, and not made worse
@@ -643,7 +665,10 @@ hemisphere, `(1 - cos 45)/2 = 14.6 %` for (h) and 100 % for (i) (the
 emitter lies entirely inside `W`, so its whole contribution is the
 doubled part).  Row (i) lands on that to 0.35 %.  Row (h) reads +10.57 %
 at its 160k samples and +12.23 % at 640k — an under-converged estimate of
-the 14.6 %, because the guide is a narrow `cos^64` lobe inside a
+the ≈13.7 % that the guided branch's `combinedPdf > NEARZERO` gate leaves
+reachable (14.6 % is the closed form BEFORE that truncation; review round 5
+measured the reachable share at 0.1369 by quadrature), because the guide
+is a narrow `cos^64` lobe inside a
 45-degree-wide lune, so the pre-fix escape side's own estimate of the
 wedge integral is heavy-tailed.  Both CONTROL rows — same material, same
 geometry, guiding OFF, where the wedge really is unreachable by the BSDF
