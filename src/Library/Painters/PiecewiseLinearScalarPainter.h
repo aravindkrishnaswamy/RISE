@@ -41,6 +41,40 @@ namespace RISE
 			//! Samples sorted by ascending `nm`.  Loaded from a file by
 			//! the parser; we copy in (no shared mutable state).
 			std::vector<Sample> samples;
+
+			//! DL-29: RGB-aware evaluation, computed ONCE at construction
+			//! (the curve is immutable afterward) by integrating the curve
+			//! against the CIE 1931 CMFs under the shared D65-normalised
+			//! reference illuminant (`RGBIlluminantSpectrum::
+			//! ReferenceIlluminant`) -- the same forward model
+			//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md documents for going
+			//! from an authored spectrum to RGB:
+			//!   rgb = M_XYZ->709 . (int S.D65.cmf dλ) / (int D65.ȳ dλ)
+			//! Computed out-of-line in the .cpp (DL-80: ColorUtils.h ->
+			//! Color.h -> SpectralPacket.h needs IFunction1D/XYZFromNM
+			//! declared in an order only `pch.h` guarantees; keeping this
+			//! header free of that chain keeps it safely includable by a
+			//! standalone translation unit).  Before this fix `GetValuesAt`
+			//! broadcast one 555 nm sample into all three channels --
+			//! correct for a constant curve, but silently grey for a curve
+			//! (e.g. a measured `tau` absorption/transmission spectrum)
+			//! that genuinely varies red-to-blue.
+			ScalarTriple cachedRGB;
+
+			//! True when `cachedRGB`'s three channels differ by more than
+			//! floating-point noise.  A CMF integration of an EXACTLY flat
+			//! curve does not, in general, land on bit-identical R/G/B
+			//! (the XYZ->Rec709 matrix multiply and the D65 weighting are
+			//! not symmetric under a constant integrand at the ULP level)
+			//! -- snapping both `cachedRGB` and this flag to exact-uniform
+			//! in that case keeps `ScalarTriple::IsUniform()`'s STRICT `==`
+			//! contract intact for a flat curve (the parser's single-
+			//! scalar-slot validation and any other exact-equality
+			//! consumer), while still reporting genuine variation for a
+			//! curve that actually has some (e.g. `colors/linear.ior`,
+			//! whose 380nm/720nm samples differ).
+			bool bHasPerChannelVariation;
+
 			virtual ~PiecewiseLinearScalarPainter() {}
 
 			//! Wavelength at which `GetValuesAt` reports the value for
@@ -74,9 +108,15 @@ namespace RISE
 				return lo.value + t * ( hi.value - lo.value );
 			}
 
+			//! DL-29 forward model, run once at construction.  Defined in
+			//! PiecewiseLinearScalarPainter.cpp (see cachedRGB's doc
+			//! comment for why this is out-of-line).
+			void ComputeCachedRGB();
+
 		public:
 			explicit PiecewiseLinearScalarPainter( std::vector<Sample> s )
-				: samples( std::move( s ) )
+				: samples( std::move( s ) ),
+				  bHasPerChannelVariation( false )
 			{
 				// Defensive sort — the parser already supplies sorted
 				// samples but a programmatic construction site might not.
@@ -84,6 +124,8 @@ namespace RISE
 					[]( const Sample& a, const Sample& b ) {
 						return a.nm < b.nm;
 					} );
+
+				ComputeCachedRGB();
 			}
 
 			//! Structural introspection: the parsed (nm, value) samples.
@@ -93,8 +135,7 @@ namespace RISE
 				const RayIntersectionGeometric& /*ri*/
 				) const override
 			{
-				const Scalar v = EvalAtNM( kRepresentativeNm );
-				return ScalarTriple( v );
+				return cachedRGB;
 			}
 
 			Scalar GetValueAtNM(
@@ -105,7 +146,7 @@ namespace RISE
 				return EvalAtNM( nm );
 			}
 
-			bool HasPerChannelVariation() const override { return false; }
+			bool HasPerChannelVariation() const override { return bHasPerChannelVariation; }
 		};
 	}
 }
