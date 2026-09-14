@@ -2341,6 +2341,20 @@ namespace {
 				// well-defined output.  `TrueGeomFacing` is the identity
 				// on a ray-derived normal, so hair keeps exactly its
 				// pre-DL-70 behaviour here.
+				//
+				// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+				// semantics -- "outside" is the single, fixed, TRUE
+				// outward normal, so exactly one face of a double-sided
+				// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+				// with a diffusion profile (a leaf, a cloth card) is
+				// legitimately front on BOTH faces, and this gate now
+				// silently drops SSS entry from whichever face disagrees
+				// with the TRUE normal (pre-DL-70 it admitted both faces,
+				// but fed the WRONG-hemisphere normal into
+				// `SampleEntryPoint` on the disagreeing face -- DL-71's
+				// fix already made that an away-facing frame, so the
+				// pre-fix "both faces admitted" behaviour was not
+				// correct SSS on the second face either).  See DL-96.
 				const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 				// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
 				// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
@@ -2447,6 +2461,20 @@ namespace {
 						// well-defined output.  `TrueGeomFacing` is the identity
 						// on a ray-derived normal, so hair keeps exactly its
 						// pre-DL-70 behaviour here.
+						//
+						// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+						// semantics -- "outside" is the single, fixed, TRUE
+						// outward normal, so exactly one face of a double-sided
+						// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+						// with a diffusion profile (a leaf, a cloth card) is
+						// legitimately front on BOTH faces, and this gate now
+						// silently drops SSS entry from whichever face disagrees
+						// with the TRUE normal (pre-DL-70 it admitted both faces,
+						// but fed the WRONG-hemisphere normal into
+						// `SampleEntryPoint` on the disagreeing face -- DL-71's
+						// fix already made that an away-facing frame, so the
+						// pre-fix "both faces admitted" behaviour was not
+						// correct SSS on the second face either).  See DL-96.
 						const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 						// Fresnel cosine clamped via fabs+NEARZERO -- see PT site.
 						const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
@@ -6103,6 +6131,20 @@ unsigned int GenerateLightSubpathImpl(
 			// well-defined output.  `TrueGeomFacing` is the identity
 			// on a ray-derived normal, so hair keeps exactly its
 			// pre-DL-70 behaviour here.
+			//
+			// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+			// semantics -- "outside" is the single, fixed, TRUE
+			// outward normal, so exactly one face of a double-sided
+			// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+			// with a diffusion profile (a leaf, a cloth card) is
+			// legitimately front on BOTH faces, and this gate now
+			// silently drops SSS entry from whichever face disagrees
+			// with the TRUE normal (pre-DL-70 it admitted both faces,
+			// but fed the WRONG-hemisphere normal into
+			// `SampleEntryPoint` on the disagreeing face -- DL-71's
+			// fix already made that an away-facing frame, so the
+			// pre-fix "both faces admitted" behaviour was not
+			// correct SSS on the second face either).  See DL-96.
 			const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
 			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
@@ -6208,6 +6250,20 @@ unsigned int GenerateLightSubpathImpl(
 					// well-defined output.  `TrueGeomFacing` is the identity
 					// on a ray-derived normal, so hair keeps exactly its
 					// pre-DL-70 behaviour here.
+					//
+					// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+					// semantics -- "outside" is the single, fixed, TRUE
+					// outward normal, so exactly one face of a double-sided
+					// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+					// with a diffusion profile (a leaf, a cloth card) is
+					// legitimately front on BOTH faces, and this gate now
+					// silently drops SSS entry from whichever face disagrees
+					// with the TRUE normal (pre-DL-70 it admitted both faces,
+					// but fed the WRONG-hemisphere normal into
+					// `SampleEntryPoint` on the disagreeing face -- DL-71's
+					// fix already made that an away-facing frame, so the
+					// pre-fix "both faces admitted" behaviour was not
+					// correct SSS on the second face either).  See DL-96.
 					const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
 					cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );

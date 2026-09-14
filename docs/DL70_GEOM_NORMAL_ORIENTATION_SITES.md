@@ -71,7 +71,7 @@ classes for which the change is bit-identical.
 | 3b | `RayCaster.cpp` `ResolveXrayView_`'s local `trueGeomFacing` lambda | hand-spelled `oriented ? -raw : raw` | forwards to `g.TrueGeomFacing(d)` | No behaviour change on any reachable input (hair cannot reach this walk — `HairMaterial` does not report `CouldLightPassThrough`); the helper makes the hair exclusion structural rather than incidental. |
 | 4 | `DirectVolumeRenderingShader.cpp` `Shade` and `ShadeNM` — the entering-vs-leaving test | `-Dot(ri.geometric.vGeomNormal, ray.Dir())` | `-ri.geometric.TrueGeomFacing(ray.Dir())` | `cosine` was unconditionally positive, the "we are leaving" branch never fired, and **the volume was never shaded at all** through a double-sided container mesh. |
 | 5 | `SMSPhotonMap.cpp` `TraceSMSPhoton` — the `bEntering` stamp on a reflection vertex | `Dot(ray.Dir(), ri.geometric.vGeomNormal)` | `ri.geometric.TrueGeomFacing(ray.Dir())` | A back-face reflection vertex on a double-sided specular caster was stamped "entering", propagating a wrong side bit and therefore a wrong Fresnel `etaI`/`etaT` pair into the photon record. |
-| 6 | The BSSRDF front-face gate `cosInGeom > NEARZERO`: `PathTracingIntegrator.cpp` ×2, `BDPTIntegrator.cpp` ×4 | `Dot(ri.geometric.vGeomNormal, wo)` | `ri.geometric.TrueGeomFacing(wo)` | An unconditional PASS: a BACK-face (interior) hit was admitted into BSSRDF entry sampling, handing `BSSRDFSampling::SampleEntryPoint` — whose own DL-71 correction already works in true-normal space — a shading point on the wrong side of the surface.  **Deliberately not a hair skip**: rejecting there would silently remove SSS from hair, a combination DL-75 left undefined-but-permitted and `HairSSSEntryNormalTest` characterises as producing well-defined output. |
+| 6 | The BSSRDF front-face gate `cosInGeom > NEARZERO`: `PathTracingIntegrator.cpp` ×2, `BDPTIntegrator.cpp` ×4 | `Dot(ri.geometric.vGeomNormal, wo)` | `ri.geometric.TrueGeomFacing(wo)` | An unconditional PASS: a BACK-face (interior) hit was admitted into BSSRDF entry sampling, handing `BSSRDFSampling::SampleEntryPoint` — whose own DL-71 correction already works in true-normal space — a shading point on the wrong side of the surface.  **Deliberately not a hair skip**: rejecting there would silently remove SSS from hair, a combination DL-75 left undefined-but-permitted and `HairSSSEntryNormalTest` characterises as producing well-defined output.  **CLOSED-SOLID semantics, named explicitly (P2-2 review round)**: this gate answers "is this the outside", which presumes a single fixed outside — correct for a closed diffusing solid (a bar of soap, a candle), but an OPEN double-sided sheet with a diffusion profile (a leaf, a cloth card) is legitimately front on BOTH faces.  The TRUE, fixed outward normal this gate now uses admits only the face that agrees with it and silently drops SSS entry from the other.  Mitigating context: pre-DL-70 this gate PASSED both faces, but on the disagreeing face it fed `SampleEntryPoint` a wrong-hemisphere normal that DL-71's own fix already turns into an away-facing frame — so the pre-fix "admits both faces" behaviour was not correct second-face SSS either, just a different wrong answer. Filed as **DL-96** (judged user-visible: RISE's own cloth/fabric and thin-material workstreams author double-sided thin diffusing surfaces). |
 | 7 | `TransparencyShaderOp.cpp` `PerformOperation` / `PerformOperationNM` — the `bOneSided` cull | `Dot(ray.Dir(), ri.geometric.vGeomNormal) > 0` | `ri.geometric.TrueGeomFacing(ray.Dir()) > 0` | The cull never fired on exactly the geometry classes alpha cards use.  **Intent** (since "double-sided geometry + a one-sided shader op" is a contradiction someone has to resolve): `bOneSided` is an explicit, per-shader-op author request to discard the back face and is the more specific of the two statements; honouring it is also what makes the op mean the same thing on a single-sided card, a double-sided card and a Bezier patch. |
 | 8 | `Object.cpp::IntersectRay` — the override UV generator's normal argument (**sibling audit, not in the original row**) | `ri.geometric.vGeomNormal` | `ri.geometric.UnflippedGeomNormal()` | `BoxUVGenerator` picks its box side from the **sign** of the normal's dominant component, so the same surface point charted onto the opposite box side depending on which side the ray arrived from — a **view-dependent texture chart**.  Measured on a double-sided clipped plane: `u = 0.65` from the front, `u = 0.35` from the back. |
 
@@ -282,6 +282,36 @@ fixture was switched to `ClippedPlaneGeometry` (which does stamp the
 point) so that the DL-70 assertion is not confounded by it.  Not fixed
 here: it is an independent, pre-existing ordering defect, not the DL-70
 pattern.
+
+**DL-96** — the BSSRDF front-face gate's CLOSED-SOLID semantics (site 6,
+§3) silently drop subsurface-scattering entry from the second face of
+an OPEN double-sided diffusing sheet (a leaf, a cloth card): the gate
+answers "is this the fixed TRUE outside", which has only one correct
+answer for a closed solid but two for an open sheet meant to scatter
+light entering either face.  Not the DL-70 pattern (this is the correct,
+intentional consequence of fixing DL-70's actual bug, not a leftover
+raw-normal read) — filed as its own row because it is a real, judged
+user-visible behavioural change from the pre-DL-70 state on a
+combination RISE's own cloth/fabric/thin-material authoring encourages.
+
+**DL-97** — the medium-stack walks' `HasTrueGeomSide()` skip (sites 1/2,
+§3) makes a `HairGeometry` crossing that carries a non-null
+`IObject::GetInteriorMedium()` invisible to shadow-ray/connection-ray
+medium transmittance: `pObjMedium` is read but the object is never
+pushed onto (or removed from) the medium stack, so its absorption is
+never applied.  Currently judged benign because `HairGeometry` always
+sets `ri.range2 = ri.range` (`HairGeometry.cpp` ~:1024, "no volume: exit
+== entry") — the intersection has no positive-length chord for the
+medium to attenuate over, so skipping is consistent with what a correct
+recovery would compute anyway (a zero-length segment integrates to
+`Tr *= 1`).  Recorded here because that consistency is ASSERTED, not
+enforced: nothing prevents a future `HairGeometry` change (e.g. a
+tube/cylinder hair model with real cross-sectional thickness) from
+pairing a positive-length chord with `bGeomNormalRayDerived == true`,
+at which point the skip would silently and permanently drop a real
+medium's absorption on every hair-interior shadow segment. Related to,
+but distinct from, DL-75 (which is about the BSSRDF entry normal on
+hair, not interior media).
 
 ## 7. Files touched
 
