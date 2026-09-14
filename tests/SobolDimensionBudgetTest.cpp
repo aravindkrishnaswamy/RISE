@@ -49,6 +49,7 @@
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Utilities/ISampler.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Sampling/SobolSequence.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
@@ -792,6 +793,38 @@ static void TestApertureDrawConsumption()
 				<< " clears the worst-case walk stream " << worst
 				<< " (dimension " << ( BDPTCameraUtilities::kApertureSamplerStream * 32 )
 				<< " vs " << ( worst * 32 ) << "): OK\n";
+		}
+
+		// Being above the walk streams stopped being sufficient at
+		// DL-81.  SobolSequence now has a FINITE supply of real Sobol'
+		// dimensions and wraps past the end, so what matters is where
+		// the aperture's dimensions land AFTER the wrap: the old 8192
+		// wrapped onto dimension 1001, which is stream 31 slot 9 -- eye
+		// bounce 15.  The constant is chosen so the two aperture
+		// dimensions are the LAST two of the table, which no stream
+		// below 72 (eye bounce 56) can reach.
+		{
+			const unsigned int P = SobolSequence::kNumDimensions;
+			const unsigned int d0 =
+				( (unsigned int)BDPTCameraUtilities::kApertureSamplerStream * 32u ) % P;
+			const unsigned int d1 =
+				( (unsigned int)BDPTCameraUtilities::kApertureSamplerStream * 32u + 1u ) % P;
+			const unsigned int firstOfLastRow = P - ( P % 32u ? P % 32u : 32u );
+			if( d0 < firstOfLastRow || d1 < firstOfLastRow || d1 != d0 + 1u )
+			{
+				std::cerr << "  FAIL: the aperture's Sobol dimensions after the wrap are "
+					<< d0 << " and " << d1 << "; they must be consecutive and in the "
+					<< "table's last row (>= " << firstOfLastRow << " of "
+					<< P << ").  As placed they collide with stream "
+					<< ( d0 / 32u ) << " slot " << ( d0 % 32u ) << ".\n";
+				ok = false;
+			}
+			else
+			{
+				std::cout << "  aperture dimensions after the wrap: " << d0 << ", " << d1
+					<< " of " << P << " (table's last row, first reachable stream "
+					<< ( d0 / 32u ) << "): OK\n";
+			}
 		}
 	}
 

@@ -24,7 +24,7 @@ namespace RISE
 	namespace BDPTCameraUtilities
 	{
 		/// Sampler stream reserved for the t==1 camera-aperture sample
-		/// (debt 28) -- for DIMENSION-PADDED samplers only (Sobol,
+		/// (debt 28) -- for samplers whose streams are unbounded (Sobol,
 		/// Independent).  NOT usable with `PSSMLTSampler`: see the
 		/// `APERTURE_CURRENT_STREAM` policy below and
 		/// `DrawApertureSample`'s contract.
@@ -57,27 +57,47 @@ namespace RISE
 		/// consumer can reach is bounded by
 		///     48 + (3 * 1024 + 1)  =  3121.
 		/// With `max_volume_bounce` at its 64 default and a typical
-		/// depth of 20 the real maximum is ~116; 8192 clears the
-		/// worst case by 2.6x and costs nothing, because
-		/// `SobolSequence::Sample` is PADDED (a per-dimension hash of
-		/// dimensions 0/1) and therefore has no dimension capacity to
-		/// exhaust.  `SobolSampler::StartStream` maps this to
-		/// dimension 8192*32 = 262144, which is just another hash seed.
+		/// depth of 20 the real maximum is ~116.
+		///
+		/// 3322 is NOT just "comfortably above 3121".  Being above the
+		/// walk streams was the whole argument while
+		/// `SobolSequence::Sample` was padded -- it hashed the dimension
+		/// index, so any distinct stream was a distinct hash seed and
+		/// the constant could be anything large (it was 8192).  Since
+		/// DL-81 the sampler has a finite supply of real Sobol'
+		/// dimensions, `SobolSequence::kNumDimensions` = 2311, and a
+		/// dimension past the end WRAPS.  8192 would wrap to dimension
+		/// 262144 mod 2311 = 1001, which is stream 31 slot 9 -- eye
+		/// bounce 15, well inside what a normal render reaches, so the
+		/// aperture sample would be the SAME dimension as that bounce's.
+		///
+		/// 3322 is the smallest stream above 3121 whose dimension wraps
+		/// to the very END of the table: 3322*32 mod 2311 = 2309, so the
+		/// aperture's two dimensions are 2309 and 2310, the last two.
+		/// Nothing below stream 72 can reach them, and stream 72 is eye
+		/// bounce 56 -- past any production `max_recursion`.  A finite
+		/// dimension supply cannot give a collision-free guarantee at
+		/// every depth (that would need 3121*32 dimensions), so this is
+		/// the best available placement, and `SobolDimensionBudgetTest`
+		/// asserts BOTH properties: above the walk streams, and wrapping
+		/// into the table's last row.
 		///
 		/// Drawing the aperture point from a dedicated stream keeps it
 		/// stratified across pixels under Sobol and, under PSSMLT,
 		/// makes a small mutation move the aperture point continuously
 		/// instead of teleporting it (the same property
 		/// `GenerateRayWithLensSample` exists to give the primary ray).
-		static const int kApertureSamplerStream = 8192;
+		static const int kApertureSamplerStream = 3322;
 
 		/// Where `DrawApertureSample` takes its two canonical randoms.
 		enum ApertureStreamPolicy
 		{
 			/// `StartStream( kApertureSamplerStream )` first.  Correct
 			/// for `SobolSampler` / `IndependentSampler`, whose streams
-			/// are unbounded (Sobol pads by hashing the dimension
-			/// index, Independent ignores the stream entirely).
+			/// are unbounded (Sobol wraps a too-large dimension into its
+			/// table -- see `kApertureSamplerStream` for why the
+			/// constant's value is chosen around that wrap -- and
+			/// Independent ignores the stream entirely).
 			APERTURE_DEDICATED_STREAM,
 
 			/// Draw from whatever stream is already active.  This is
