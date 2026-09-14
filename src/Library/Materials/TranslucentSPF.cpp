@@ -101,6 +101,35 @@ namespace
 		return (Scalar(1)+cosPhi) * Scalar(0.5);
 	}
 
+	// P1 (review round 3, 2026-09-13): the exit lobe's SAMPLING FRAME has
+	// to be oriented outward before any of the above applies.
+	//
+	// `ri.onb` is built by Object::IntersectRay from `ri.vNormal`, and on
+	// a DOUBLE-SIDED triangle mesh the geometry flips BOTH `vNormal` and
+	// `vGeomNormal` to face the incoming ray
+	// (TriangleMeshGeometry{,Indexed}::IntersectRay).  At a genuine EXIT
+	// hit the ray is already travelling outward, so the flipped
+	// `ri.onb.w()` points INTO the solid -- while `geomNRaw` (the
+	// recovered, un-flipped geometric normal) correctly points out.  With
+	// the raw `n`, cos(phi) = dot(n, geomNRaw) is then ~ -1: exactly -1 on
+	// a flat-shaded face, so P(valid) = 0 and NO exit lobe is emitted at
+	// all (silent total energy loss; the interior ray just ping-pongs on
+	// backscatter to the depth cap), and ~ -0.998 on a smooth-shaded one,
+	// collapsing the whole lobe into a degrees-wide wedge at the horizon
+	// with the density inflated by 1/P(valid).
+	//
+	// The exit lobe is re-emission into the OUTSIDE, so its axis is the
+	// outward-facing shading normal.  Re-orient `n` against the object's
+	// own outward direction first; the horizon clip above is then the
+	// small correction DL-45 intended (a shading tilt of phi degrees),
+	// not a near-total suppression.  On every geometry that does not flip
+	// (single-sided meshes, analytical primitives) `dot(n, geomNRaw)` is
+	// already positive and this is the identity.
+	inline Vector3 OrientedExitNormal( const Vector3& n, const Vector3& geomNRaw )
+	{
+		return ( Vector3Ops::Dot( n, geomNRaw ) < Scalar(0) ) ? -n : n;
+	}
+
 	// Draws a cosine-around-`n` direction that is EXACTLY conditioned on
 	// the true geometric horizon `dot(wo,geomN)>0`, using precisely 2
 	// canonical sampler draws every call (see the derivation above) --
@@ -391,7 +420,12 @@ void TranslucentSPF::Scatter(
 	}
 	else
 	{
-		// Coming out the other side
+		// Coming out the other side.  Orient the exit frame outward
+		// BEFORE sampling either child (P1, review round 3) -- see
+		// OrientedExitNormal above.
+		const bool bExitFrameFlipped = ( Vector3Ops::Dot( n, geomNRaw ) < Scalar(0) );
+		const Vector3 nExit = OrientedExitNormal( n, geomNRaw );
+
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		const ScalarTriple abt = pExtinction->GetValuesAt(ri);
 		const RISEPel ab( abt.v[0], abt.v[1], abt.v[2] );
@@ -406,8 +440,18 @@ void TranslucentSPF::Scatter(
 			const RISEPel scat( scat_t.v[0], scat_t.v[1], scat_t.v[2] );
 
 			if( ColorMath::MaxValue(scat) > 0 ) {
-				// Multiple scatter back
-				myonb.FlipW();
+				// Multiple scatter back.  The backscattered ray must stay
+				// INSIDE the object (this branch's own "no stack change"
+				// contract), i.e. be sampled around the INWARD normal
+				// -`nExit` -- P1 (review round 3): on a double-sided mesh
+				// `n` is itself the inward one at an exit hit, so an
+				// unconditional FlipW() here produced +outward and sent
+				// the "interior" ray out of the solid with the stack
+				// untouched.  Flip only when the shading frame is not
+				// already inward-facing.
+				if( !bExitFrameFlipped ) {
+					myonb.FlipW();
+				}
 
 				trans.type = ScatteredRay::eRayTranslucent;
 				trans.kray = front.kray * scat;
@@ -476,9 +520,11 @@ void TranslucentSPF::Scatter(
 		// only when the valid region has vanished (n and geomN nearly
 		// opposed), in which case this lobe is simply not emitted this
 		// trial, exactly like the entry front-lobe's existing geometric
-		// gate above.
+		// gate above.  The lobe's axis is the OUTWARD-oriented shading
+		// normal `nExit`, not the raw (possibly double-sided-flipped)
+		// `n` -- P1, review round 3.
 		Scalar exitPdf = 0;
-		if( SampleValidDiffuseExit( n, geomNRaw, sampler, rv, exitPdf ) ) {
+		if( SampleValidDiffuseExit( nExit, geomNRaw, sampler, rv, exitPdf ) ) {
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = exitPdf;
 			front.isDelta = false;
@@ -567,7 +613,12 @@ void TranslucentSPF::ScatterNM(
 	}
 	else
 	{
-		// Coming out the other side
+		// Coming out the other side.  Orient the exit frame outward
+		// BEFORE sampling either child -- RGB twin's P1 (review round 3);
+		// see OrientedExitNormal above.
+		const bool bExitFrameFlipped = ( Vector3Ops::Dot( n, geomNRaw ) < Scalar(0) );
+		const Vector3 nExit = OrientedExitNormal( n, geomNRaw );
+
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		// The primary-layer transmittance was paid on entry, just as in
 		// Scatter(). Each interior segment pays only Beer extinction before
@@ -583,8 +634,14 @@ void TranslucentSPF::ScatterNM(
 			const Scalar scat = pScat->GetValueAtNM(ri,nm);
 
 			if( scat > 0 ) {
-				// Multiple scatter back
-				myonb.FlipW();
+				// Multiple scatter back.  RGB twin's P1 (review round 3):
+				// the backscattered ray must stay INSIDE, i.e. be sampled
+				// around -`nExit`; flip only when the shading frame is not
+				// already inward-facing (it IS on a double-sided mesh's
+				// exit hit).
+				if( !bExitFrameFlipped ) {
+					myonb.FlipW();
+				}
 				const Scalar Nval_scat = pN->GetValueAtNM(ri,nm);
 				rv = GeometricUtilities::Perturb( myonb.w(),
 					acos( pow(sampler.Get1D(), 1.0 / (Nval_scat + 1.0)) ),
@@ -615,9 +672,10 @@ void TranslucentSPF::ScatterNM(
 
 		// Exit re-emission is diffuse in both RGB and NM. N controls
 		// entry transmission and internal backscatter, not this exit lobe.
-		// DL-45: same geometric-horizon requirement as the RGB twin above.
+		// DL-45: same geometric-horizon requirement as the RGB twin above,
+		// and the same outward-oriented lobe axis (P1, review round 3).
 		Scalar exitPdf = 0;
-		if( SampleValidDiffuseExit( n, geomNRaw, sampler, rv, exitPdf ) ) {
+		if( SampleValidDiffuseExit( nExit, geomNRaw, sampler, rv, exitPdf ) ) {
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = exitPdf;
 			front.isDelta = false;
@@ -645,8 +703,6 @@ Scalar TranslucentSPF::Pdf(
 	// evaluated; it must not reverse which hemisphere has support.
 	const bool bFrontFace = !ior_stack.containsCurrent();
 	const Vector3& n = ri.onb.w();
-	const Scalar cosTheta = Vector3Ops::Dot( wo, n );
-	if( cosTheta <= 0 ) return 0;
 
 	// Geometric-horizon gate: a wo the sampler could not have geometrically
 	// emitted contributes zero density, in EITHER membership state.  Entry
@@ -664,6 +720,8 @@ Scalar TranslucentSPF::Pdf(
 
 	if( bFrontFace )
 	{
+		const Scalar cosTheta = Vector3Ops::Dot( wo, n );
+		if( cosTheta <= 0 ) return 0;
 		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return 0;
 		// Entry reflection lobe: existing accepted (DL-01/DL-02 unchanged)
@@ -682,9 +740,23 @@ Scalar TranslucentSPF::Pdf(
 	// sampling) an invalid trial, so this must report the matching
 	// NORMALIZED conditional density -- see ExitValidFraction's
 	// derivation above.  Gate against the (recovered, TRUE) UNFLIPPED
-	// `geomNRaw`, matching SampleValidDiffuseExit's own call sites.
+	// `geomNRaw`, matching SampleValidDiffuseExit's own call sites, and
+	// evaluate the cosine against the same OUTWARD-oriented lobe axis the
+	// sampler used (P1, review round 3 -- `ri.onb.w()` is the INWARD
+	// normal at a double-sided mesh's exit hit).
+	const Vector3 nExit = OrientedExitNormal( n, geomNRaw );
+	const Scalar pValid = ExitValidFraction( nExit, geomNRaw );
+	// Sampler support == density support: `SampleValidDiffuseExit`
+	// emits NO lobe below this same threshold, so the density must report
+	// no support there either rather than dividing by a near-zero
+	// fraction (P2-1, review round 3 -- the previous code divided by an
+	// unclamped ExitValidFraction and claimed support the sampler did not
+	// have).
+	if( pValid < kExitVanishThreshold ) return 0;
+	const Scalar cosTheta = Vector3Ops::Dot( wo, nExit );
+	if( cosTheta <= 0 ) return 0;
 	if( Vector3Ops::Dot( wo, geomNRaw ) <= 0 ) return 0;
-	return ( cosTheta * INV_PI ) / ExitValidFraction( n, geomNRaw );
+	return ( cosTheta * INV_PI ) / pValid;
 }
 
 Scalar TranslucentSPF::PdfNM(
