@@ -1,6 +1,6 @@
 # DL-37: GGX diffuse interface transmission
 
-Status: CLOSED 2026-09-12 — diffuse composition repaired by `000df0b4`; transport naming correction `d0a8ece0` and film interface range correction `5b69f192`. Independent specular-only failures remain DL-63 with their test exit preserved. DL-62 and DL-64 (both flagged as independent residuals below) were subsequently CLOSED 2026-09-13 — see [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md).
+Status: CLOSED 2026-09-12 — diffuse composition repaired by `000df0b4`; transport naming correction `d0a8ece0` and film interface range correction `5b69f192`. DL-62 and DL-64 (both flagged as independent residuals below) were CLOSED 2026-09-13 — see [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md). **The independent specular-only residual DL-63 was also CLOSED, 2026-09-14, `052ec469`** — see that same doc's "DL-63" section; `GGXDiffuseTransmissionTest` is now `150 checks, 0 failures`.
 Base master: `35a6f45dff7b415ece9b23d3a242ffbeb20514e8`.
 
 The existing Schlick diffuse lobe subtracts constant maximum RGB F0 while rough specular Fresnel increases toward grazing. Conductor and thin-film modes add diffuse without interface attenuation. The same additive composition must be corrected in BRDF evaluation and selected diffuse sample throughput.
@@ -17,7 +17,7 @@ Commit the tests before running them against the unfixed library. Save their fai
 
 Independent audit residual: DL-62 records the reachable glossy-filter roughness disagreement between GGX sample/density and evaluation. It is a different bug pattern and is not repaired in this slice.
 
-Independent observed residual DL-63: the broader committed test reports the same three specular-only F0=1 failures on the unfixed and repaired libraries, with diffuse exactly zero. The LUT generator integrates the separable VNDF weight G1(wo), whereas GGXBRDF evaluates height-correlated G2. Correcting that specular compensation model is a separate slice. The current test retains a nonzero exit for those failures.
+~~Independent observed residual DL-63: the broader committed test reports the same three specular-only F0=1 failures on the unfixed and repaired libraries, with diffuse exactly zero. The LUT generator integrates the separable VNDF weight G1(wo), whereas GGXBRDF evaluates height-correlated G2. Correcting that specular compensation model is a separate slice. The current test retains a nonzero exit for those failures.~~ **CLOSED 2026-09-14, `052ec469`**: the diagnosis in this paragraph was exactly right — see [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md) "DL-63" section for the fix (a height-correlated-G2 twin LUT) and its independent verification.
 
 Independent static residual DL-64: Schlick F0=0 still has nonzero oblique reflection, but GGXSPF selects specular and MS lobes using weights proportional to F0. Selected-lobe throughput therefore omits those lobes. The new row requires its own committed sampling red proof; it is not fixed by diffuse attenuation.
 

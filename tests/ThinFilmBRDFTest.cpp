@@ -299,7 +299,7 @@ static bool TestSpectralExactness()
 
 	// Eavg for the isotropic LUT (alphaEff = sqrt(alphaX*alphaY) = alpha here),
 	// matching GGXBRDF::valueNM's multiscatter tail exactly.
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 
 	const Scalar wavelengths[] = { 430.0, 500.0, 560.0, 620.0, 670.0 };
 	const Scalar thetaIs[] = { 0.0, 0.4, 0.8 };
@@ -414,7 +414,7 @@ static Scalar ComputeGGXPSpecSelectNM(
 		? interfaceFresnel.MeanNM( nm )
 		: GuardedGetColorNM( specularPainter, ri, nm );
 	const Scalar cosWi = Vector3Ops::Dot( wi, ri.onb.w() );
-	const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ) );
+	const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEssG2( cosWi, alphaEff ) );
 	const Scalar total = wd + ws + wms;
 	return (total > Scalar(1e-10)) ? ws / total : Scalar(0);
 }
@@ -839,7 +839,7 @@ static bool TestSpecColorInsideMultiscatter()
 	const Scalar alpha = 0.50;	// rough — the multiscatter tail carries real weight
 	const Scalar thk   = 180.0;
 	const Scalar nm    = 560.0;
-	const Scalar Eavg  = MicrofacetEnergyLUT::LookupEavg( alpha );
+	const Scalar Eavg  = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 
 	// Fixed geometry (same family as Test A: a small-angle view, moderate wi).
 	const Vector3 v( sin( Scalar( 0.4 ) ), 0, cos( Scalar( 0.4 ) ) );	// wi (light)
@@ -870,8 +870,8 @@ static bool TestSpecColorInsideMultiscatter()
 	const Scalar Favg = ThinFilm::FresnelAvgConductor( nm, 1.0, 0.0, kFilmN, kFilmK, thk, kSubN, kSubK );
 
 	// f_ms = (1-Ess_o)(1-Ess_i)/(PI(1-Eavg)); valueNM ADDS F_ms * f_ms.
-	const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( nr, alpha );
-	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( nv, alpha );
+	const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( nr, alpha );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( nv, alpha );
 	const Scalar f_ms  = ( 1.0 - Ess_o ) * ( 1.0 - Ess_i ) / ( PI * ( 1.0 - Eavg ) );
 
 	const Scalar rsList[] = { 0.25, 0.5, 1.0 };

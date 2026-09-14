@@ -41,12 +41,29 @@ static double dot(const Vec3& a, const Vec3& b) {
 	return a.x*b.x + a.y*b.y + a.z*b.z;
 }
 
-// GGX G1 masking
+// GGX G1 masking (Smith, separable-model form)
 static double GGX_G1(double alpha, double cosTheta) {
 	if(cosTheta < 1e-10) return 0;
 	double a2 = alpha * alpha;
 	double cos2 = cosTheta * cosTheta;
 	return 2.0 * cosTheta / (cosTheta + sqrt(a2 + (1.0 - a2) * cos2));
+}
+
+// DL-63: height-correlated Smith masking-shadowing (Heitz 2014 JCGT
+// 3(2) Sec. 5.2), matching MicrofacetUtils::GGX_Lambda/GGX_G2 -- the
+// model GGXBRDF/GGXSPF/CoatedBRDF actually render with, as opposed to
+// the separable G1(wi)*G1(wo) model CookTorranceBRDF renders with (see
+// MicrofacetUtils::GGX_G's own doc comment).  Lambda(v) = (-1 +
+// sqrt(1 + alpha^2*tan^2(theta))) / 2; G2 = 1/(1 + Lambda(wi) + Lambda(wo)).
+static double GGX_Lambda(double alpha, double cosTheta) {
+	if(cosTheta >= 1.0 - 1e-10) return 0.0;
+	if(cosTheta < 1e-10) return 1e10;
+	double cos2 = cosTheta * cosTheta;
+	double tan2 = (1.0 - cos2) / cos2;
+	return (-1.0 + sqrt(1.0 + alpha * alpha * tan2)) * 0.5;
+}
+static double GGX_G2_HeightCorrelated(double alpha, double cosWi, double cosWo) {
+	return 1.0 / (1.0 + GGX_Lambda(alpha, cosWi) + GGX_Lambda(alpha, cosWo));
 }
 
 // VNDF sampling (Dupuy-Benyoub spherical cap)
@@ -82,9 +99,356 @@ static double rand01() {
 static const int LUT_SIZE = 32;
 static const int NUM_SAMPLES = 1000000;
 
+// H6 + DL-63: verbatim, hand-maintained multiscatter-lobe sampler/pdf
+// machinery (the MSLobeDetail namespace, MSLobeZ/SampleMSCosTheta/MSPdf,
+// and their DL-63 G2 twins).  Unlike the tables above, this code is not
+// produced by the Monte-Carlo bake in main() below -- it is exact,
+// closed-form machinery built analytically on top of the piecewise-
+// linear Ess model the baked tables define.  It is embedded here
+// verbatim (byte-for-byte, carried over from the hand-authored
+// original) so that regenerating MicrofacetEnergyLUT.h reproduces it
+// exactly instead of silently dropping it -- GGXSPF/CookTorranceSPF
+// call MSLobeZ/SampleMSCosTheta/MSPdf and the G2 twins directly, so a
+// generator that only emitted the tables would break the build.
+static const char* const kHandMaintainedH6Block =
+R"GGXH6BLOCK(	//////////////////////////////////////////////////////////////////
+	// H6: multiscatter-lobe outgoing-direction sampler + matching pdf.
+	//
+	// The MS lobe's true energy in outgoing direction wo is proportional
+	// to (1-Ess(cosWo,alpha))*cosWo -- the definition of E_avg above is
+	// exactly its cosine-weighted hemisphere average:
+	//   2 * integral_0^1 (1-Ess(alpha,mu)) * mu dmu == 1 - E_avg(alpha)
+	// Sampling wo from THIS shape (instead of plain cosine-hemisphere)
+	// makes the MS-lobe's importance-sampling weight collapse to a
+	// bounded per-shading-point constant instead of blowing up at
+	// grazing incidence (docs/... H6 design note; the old
+	// ws*(1-Eavg) selection weight + cosine-sampled wo assumed
+	// (1-Ess)=(1-Eavg) everywhere, which fails badly near cosTheta->0
+	// on smooth surfaces).
+	//
+	// LookupEss(cosTheta,alpha) is PIECEWISE-LINEAR in cosTheta between
+	// adjacent LUT bin centers (with flat clamping outside the first/
+	// last centers) -- exactly what its bilinear-interpolation code
+	// computes, and bilinear interpolation is separable, so blending the
+	// two alpha rows first and then interpolating cosTheta (as done
+	// below) is algebraically IDENTICAL to LookupEss's simultaneous
+	// bilinear form for any (cosTheta, alpha).  That makes
+	// shape(cos) = (1-LookupEss(cos,alpha))*cos a piecewise-QUADRATIC
+	// function of cos with an EXACT closed-form integral and an exactly
+	// invertible per-segment CDF (monotone; solved with a bracketed
+	// Newton-bisection hybrid -- no numerical-quadrature approximation
+	// anywhere).  MSPdf() below evaluates LookupEss directly, so the
+	// density it reports for ANY cosWo is algebraically identical to the
+	// shape MSLobeZ/SampleMSCosTheta integrate and sample: pdf and
+	// sampler share the SAME LookupEss piecewise-linear model and cannot
+	// drift apart.
+	//////////////////////////////////////////////////////////////////
+
+	namespace MSLobeDetail
+	{
+		// One [lo,hi] segment of the piecewise-linear-in-cosTheta Ess
+		// model: either a flat end-cap (below the first / above the
+		// last bin center) or the linear span between two adjacent bin
+		// centers.  Ess(cos) = essLo + slope*(cos-lo) for cos in [lo,hi].
+		struct Segment
+		{
+			Scalar lo, hi;
+			Scalar essLo, slope;
+		};
+
+		// Build the LUT_SIZE+1 segments (33: 1 left cap + LUT_SIZE-1
+		// interior spans + 1 right cap) from an already-resolved essRow
+		// (either a single exact LUT row, or LookupEss's alpha-blended row).
+		inline void BuildSegmentsFromRow( const Scalar essRow[LUT_SIZE], Segment segs[LUT_SIZE + 1], int& nSegs )
+		{
+			nSegs = 0;
+			const Scalar c0 = 0.5 / Scalar(LUT_SIZE);
+			const Scalar cLast = (Scalar(LUT_SIZE) - 0.5) / Scalar(LUT_SIZE);
+
+			// Left flat end-cap [0, c0]: Ess clamped to row 0.
+			segs[nSegs].lo = 0.0; segs[nSegs].hi = c0;
+			segs[nSegs].essLo = essRow[0]; segs[nSegs].slope = 0.0;
+			nSegs++;
+
+			// Interior linear spans between adjacent bin centers.
+			for( int k = 0; k < LUT_SIZE - 1; k++ )
+			{
+				const Scalar ck  = (k + 0.5) / Scalar(LUT_SIZE);
+				const Scalar ck1 = (k + 1.5) / Scalar(LUT_SIZE);
+				segs[nSegs].lo = ck; segs[nSegs].hi = ck1;
+				segs[nSegs].essLo = essRow[k];
+				segs[nSegs].slope = (essRow[k+1] - essRow[k]) / (ck1 - ck);
+				nSegs++;
+			}
+
+			// Right flat end-cap [cLast, 1]: Ess clamped to row LUT_SIZE-1.
+			segs[nSegs].lo = cLast; segs[nSegs].hi = 1.0;
+			segs[nSegs].essLo = essRow[LUT_SIZE-1]; segs[nSegs].slope = 0.0;
+			nSegs++;
+		}
+
+		// Build the segments for a fixed alphaEff, using EXACTLY LookupEss's
+		// alpha-row blend.
+		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + 1], int& nSegs )
+		{
+			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+			int ai0 = (int)a;
+			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
+			Scalar af = a - ai0;
+
+			Scalar essRow[LUT_SIZE];
+			for( int k = 0; k < LUT_SIZE; k++ )
+				essRow[k] = (1-af) * E_ss_TABLE[ai0][k] + af * E_ss_TABLE[ai1][k];
+
+			BuildSegmentsFromRow( essRow, segs, nSegs );
+		}
+
+		// DL-63: height-correlated-G2 twin of BuildSegments above, using
+		// EXACTLY LookupEssG2's alpha-row blend (E_ss_TABLE_G2 instead of
+		// E_ss_TABLE).  Segment/SegShape/SegCDF/SegTotal/SegInvert and
+		// BuildSegmentsFromRow are already table-agnostic (they only see
+		// an already-resolved essRow), so only the alpha-row blend needs
+		// a G2-specific twin.
+		inline void BuildSegmentsG2( const Scalar alphaEff, Segment segs[LUT_SIZE + 1], int& nSegs )
+		{
+			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+			int ai0 = (int)a;
+			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
+			Scalar af = a - ai0;
+
+			Scalar essRow[LUT_SIZE];
+			for( int k = 0; k < LUT_SIZE; k++ )
+				essRow[k] = (1-af) * E_ss_TABLE_G2[ai0][k] + af * E_ss_TABLE_G2[ai1][k];
+
+			BuildSegmentsFromRow( essRow, segs, nSegs );
+		}
+
+		// shape(cos) = (1-Ess(cos))*cos within a segment; y = cos - lo.
+		inline Scalar SegShape( const Segment& s, const Scalar y )
+		{
+			const Scalar ess = s.essLo + s.slope * y;
+			return r_max( 0.0, (1.0 - ess) * (s.lo + y) );
+		}
+
+		// Exact antiderivative F(y) = integral_0^y SegShape(t) dt.
+		// shape(y) = P + Q*y + R*y^2 with P=(1-essLo)*lo, Q=(1-essLo)-slope*lo,
+		// R=-slope (obtained by expanding (1-essLo-slope*y)*(lo+y)).
+		inline Scalar SegCDF( const Segment& s, const Scalar y )
+		{
+			const Scalar P = (1.0 - s.essLo) * s.lo;
+			const Scalar Q = (1.0 - s.essLo) - s.slope * s.lo;
+			const Scalar R = -s.slope;
+			return P * y + Q * y * y * 0.5 + R * y * y * y * (1.0 / 3.0);
+		}
+
+		inline Scalar SegTotal( const Segment& s )
+		{
+			return SegCDF( s, s.hi - s.lo );
+		}
+
+		// Invert F(y) = target for y in [0,w] via Newton-bisection (F is
+		// monotone non-decreasing since SegShape >= 0 everywhere shape is
+		// physical).  30 iterations is comfortably converged for a cubic
+		// on a bounded interval; the bisection fallback guarantees
+		// convergence even if a Newton step would leave the bracket.
+		inline Scalar SegInvert( const Segment& s, const Scalar target, const Scalar w )
+		{
+			Scalar ylo = 0.0, yhi = w;
+			Scalar y = w * 0.5;
+			for( int it = 0; it < 30; it++ )
+			{
+				const Scalar Fy = SegCDF( s, y );
+				const Scalar diff = Fy - target;
+				if( fabs(diff) < 1e-13 ) break;
+				if( diff > 0 ) yhi = y; else ylo = y;
+
+				const Scalar deriv = SegShape( s, y );
+				Scalar yNext = (deriv > 1e-12) ? (y - diff / deriv) : (0.5 * (ylo + yhi));
+				if( !(yNext > ylo && yNext < yhi) ) yNext = 0.5 * (ylo + yhi);
+				y = yNext;
+			}
+			return y;
+		}
+	}
+
+	/// Exact normalization for the MS-lobe outgoing-direction shape:
+	///   I(alpha) = integral_0^1 (1-Ess(alpha,mu))*mu dmu   (segment-exact)
+	///   Z(alpha) = 2 * I(alpha)  (== 1-E_avg(alpha) in the continuum
+	///   limit; computed here from the SAME piecewise-linear Ess model
+	///   that LookupEss / SampleMSCosTheta use, so it cannot drift out of
+	///   sync with either).
+	///
+	/// H6 perf note: this used to call BuildSegments() (O(LUT_SIZE) to
+	/// build the blended row + O(LUT_SIZE) segment integrals) on EVERY
+	/// call, and it is evaluated per-NEE-light-sample from GGXSPF /
+	/// CookTorranceSPF's Pdf/PdfNM.  Per LookupEss's own alpha blend,
+	/// essRow(af) = (1-af)*E_ss_TABLE[ai0] + af*E_ss_TABLE[ai1] is LINEAR
+	/// in af for a fixed (ai0,ai1) pair; SegCDF/SegTotal are themselves
+	/// linear in (essLo, slope) (see their definitions above), and
+	/// (essLo, slope) are each linear in essRow -- so I(alpha), and hence
+	/// Z(alpha) = 2*I(alpha), is an EXACT affine (linear) function of af
+	/// within one alpha bin.  That means Z(alphaEff) can be obtained by
+	/// precomputing the exact per-row Z (Z evaluated with essRow pinned
+	/// to a single LUT row, i.e. af=0) ONCE per row and then doing the
+	/// SAME (1-af)/af blend LookupEss uses for Ess itself -- an O(1)
+	/// lookup that is algebraically IDENTICAL to re-running
+	/// BuildSegments+SegTotal every call, not an approximation.
+	inline Scalar MSLobeZ( const Scalar alphaEff )
+	{
+		// Per-alpha-row Z, computed once (C++11 magic-statics: thread-safe
+		// initialization, no locking on the steady-state read path).
+		static const std::array<Scalar, LUT_SIZE> rowZ = []() {
+			std::array<Scalar, LUT_SIZE> z{};
+			for( int row = 0; row < LUT_SIZE; row++ )
+			{
+				MSLobeDetail::Segment segs[LUT_SIZE + 1];
+				int nSegs = 0;
+				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE[row], segs, nSegs );
+				Scalar I = 0.0;
+				for( int i = 0; i < nSegs; i++ )
+					I += MSLobeDetail::SegTotal( segs[i] );
+				z[row] = 2.0 * I;
+			}
+			return z;
+		}();
+
+		// Same alpha -> (ai0, ai1, af) mapping as LookupEss/BuildSegments.
+		const Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+		const int ai0 = (int)a;
+		const int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
+		const Scalar af = a - ai0;
+		return (1.0 - af) * rowZ[ai0] + af * rowZ[ai1];
+	}
+
+	/// Sample cosWo ~ (1-Ess(alpha,cosWo))*cosWo / I(alpha) via exact
+	/// per-segment CDF inversion.  u1 in [0,1). Returns cosWo in [0,1].
+	/// Azimuth is NOT handled here (uniform; caller draws it separately).
+	inline Scalar SampleMSCosTheta( const Scalar alphaEff, const Scalar u1 )
+	{
+		MSLobeDetail::Segment segs[LUT_SIZE + 1];
+		int nSegs = 0;
+		MSLobeDetail::BuildSegments( alphaEff, segs, nSegs );
+
+		Scalar totals[LUT_SIZE + 1];
+		Scalar I = 0.0;
+		for( int i = 0; i < nSegs; i++ )
+		{
+			totals[i] = MSLobeDetail::SegTotal( segs[i] );
+			I += totals[i];
+		}
+		if( I <= 1e-15 ) return r_max( 0.0, r_min( 1.0, u1 ) );	// degenerate fallback
+
+		const Scalar target = r_max( 0.0, r_min( I, u1 * I ) );
+		int seg = 0;
+		Scalar running = 0.0;
+		while( seg < nSegs - 1 && running + totals[seg] < target )
+		{
+			running += totals[seg];
+			seg++;
+		}
+		const Scalar localTarget = r_max( 0.0, r_min( totals[seg], target - running ) );
+		const Scalar y = MSLobeDetail::SegInvert( segs[seg], localTarget, segs[seg].hi - segs[seg].lo );
+		return r_max( 0.0, r_min( 1.0, segs[seg].lo + y ) );
+	}
+
+	/// Solid-angle density of SampleMSCosTheta's output, expressed the
+	/// same way as this codebase's other cosine-hemisphere pdfs (a
+	/// function of cosTheta alone; azimuth is uniform and already folded
+	/// in).  Uses LookupEss directly -- the SAME piecewise-linear model
+	/// the sampler above is built from -- so this can never drift out of
+	/// sync with what was actually sampled (see file-header comment).
+	/// `Z` must be MSLobeZ(alphaEff) (callers compute it once per shading
+	/// point and reuse it across the diffuse/specular/MS mixPdf sites).
+	inline Scalar MSPdf( const Scalar cosTheta, const Scalar alphaEff, const Scalar Z )
+	{
+		if( Z <= 1e-15 ) return 0.0;
+		const Scalar c = r_max( 0.0, r_min( 1.0, cosTheta ) );
+		return r_max( 0.0, (1.0 - LookupEss( c, alphaEff )) * c / (RISE::PI * Z) );
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-63: height-correlated-G2 twins of MSLobeZ/SampleMSCosTheta/
+	// MSPdf above -- same H6 outgoing-direction shape/sampler/pdf
+	// machinery, sourced from E_ss_TABLE_G2/LookupEssG2 instead of
+	// E_ss_TABLE/LookupEss.  GGXSPF's multiscatter lobe (which renders
+	// with height-correlated G2) uses these so its sampled direction,
+	// reported density, and the F_ms/f_ms energy terms (LookupEavgG2/
+	// LookupEssG2) all stay calibrated to the SAME masking-shadowing
+	// model; CookTorranceSPF keeps using the separable-model MSLobeZ/
+	// SampleMSCosTheta/MSPdf above, unchanged.
+	//////////////////////////////////////////////////////////////////
+
+	/// DL-63: height-correlated-G2 twin of MSLobeZ above.
+	inline Scalar MSLobeZG2( const Scalar alphaEff )
+	{
+		static const std::array<Scalar, LUT_SIZE> rowZ = []() {
+			std::array<Scalar, LUT_SIZE> z{};
+			for( int row = 0; row < LUT_SIZE; row++ )
+			{
+				MSLobeDetail::Segment segs[LUT_SIZE + 1];
+				int nSegs = 0;
+				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE_G2[row], segs, nSegs );
+				Scalar I = 0.0;
+				for( int i = 0; i < nSegs; i++ )
+					I += MSLobeDetail::SegTotal( segs[i] );
+				z[row] = 2.0 * I;
+			}
+			return z;
+		}();
+
+		const Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+		const int ai0 = (int)a;
+		const int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
+		const Scalar af = a - ai0;
+		return (1.0 - af) * rowZ[ai0] + af * rowZ[ai1];
+	}
+
+	/// DL-63: height-correlated-G2 twin of SampleMSCosTheta above.
+	inline Scalar SampleMSCosThetaG2( const Scalar alphaEff, const Scalar u1 )
+	{
+		MSLobeDetail::Segment segs[LUT_SIZE + 1];
+		int nSegs = 0;
+		MSLobeDetail::BuildSegmentsG2( alphaEff, segs, nSegs );
+
+		Scalar totals[LUT_SIZE + 1];
+		Scalar I = 0.0;
+		for( int i = 0; i < nSegs; i++ )
+		{
+			totals[i] = MSLobeDetail::SegTotal( segs[i] );
+			I += totals[i];
+		}
+		if( I <= 1e-15 ) return r_max( 0.0, r_min( 1.0, u1 ) );	// degenerate fallback
+
+		const Scalar target = r_max( 0.0, r_min( I, u1 * I ) );
+		int seg = 0;
+		Scalar running = 0.0;
+		while( seg < nSegs - 1 && running + totals[seg] < target )
+		{
+			running += totals[seg];
+			seg++;
+		}
+		const Scalar localTarget = r_max( 0.0, r_min( totals[seg], target - running ) );
+		const Scalar y = MSLobeDetail::SegInvert( segs[seg], localTarget, segs[seg].hi - segs[seg].lo );
+		return r_max( 0.0, r_min( 1.0, segs[seg].lo + y ) );
+	}
+
+	/// DL-63: height-correlated-G2 twin of MSPdf above.
+	inline Scalar MSPdfG2( const Scalar cosTheta, const Scalar alphaEff, const Scalar Z )
+	{
+		if( Z <= 1e-15 ) return 0.0;
+		const Scalar c = r_max( 0.0, r_min( 1.0, cosTheta ) );
+		return r_max( 0.0, (1.0 - LookupEssG2( c, alphaEff )) * c / (RISE::PI * Z) );
+	}
+)GGXH6BLOCK";
+
 int main() {
 	double E_ss[LUT_SIZE][LUT_SIZE]; // [alphaIdx][cosThetaIdx]
 	double E_avg[LUT_SIZE];
+	// DL-63: height-correlated-G2 twin of E_ss/E_avg above, for the
+	// height-correlated single-scatter consumers (GGXBRDF/GGXSPF,
+	// CoatedBRDF) -- see GGX_G2_HeightCorrelated's doc comment.
+	double E_ss_G2[LUT_SIZE][LUT_SIZE];
+	double E_avg_G2[LUT_SIZE];
 
 	// Compute E_ss for each (alpha, cosTheta) pair
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
@@ -102,6 +466,11 @@ int main() {
 			Vec3 wi(sinTheta, 0.0, cosTheta);
 
 			double sum = 0.0;
+			double sumG2 = 0.0;
+			// cosWi is fixed for this row (= cosTheta); G1(wi) under the
+			// height-correlated model is 1/(1+Lambda(wi)), needed by the
+			// VNDF-sampling weight identity below.
+			const double G1wi = 1.0 / (1.0 + GGX_Lambda(alpha, cosTheta));
 
 			for(int s = 0; s < NUM_SAMPLES; s++) {
 				double u1 = rand01();
@@ -121,26 +490,40 @@ int main() {
 
 				double cosWo = wo.z; // dot(wo, normal)
 				if(cosWo > 0) {
-					// With VNDF sampling and F=1, the estimator for E_ss is:
-					// E_ss = (1/N) * sum G1(wo)
+					// With VNDF sampling and F=1, the estimator for E_ss
+					// under the SEPARABLE model (G = G1(wi)*G1(wo)) is:
+					// E_ss = (1/N) * sum G1(wo)   [G1(wi) cancels against
+					// the VNDF pdf's own G1(wi) factor].
 					sum += GGX_G1(alpha, cosWo);
+
+					// DL-63: under the HEIGHT-CORRELATED model (Heitz
+					// 2018, "Sampling the GGX Distribution of Visible
+					// Normals", eq. for f*cosWo/pdf(wo) with VNDF
+					// sampling), the analogous per-sample weight is
+					// G2(wi,wo)/G1(wi) -- NOT G1(wo) -- because G2 does
+					// not factor into G1(wi)*G1(wo).
+					sumG2 += GGX_G2_HeightCorrelated(alpha, cosTheta, cosWo) / G1wi;
 				}
 			}
 
 			E_ss[ai][ci] = sum / (double)NUM_SAMPLES;
+			E_ss_G2[ai][ci] = sumG2 / (double)NUM_SAMPLES;
 		}
 
 		// Compute E_avg for this alpha using trapezoidal integration
 		// E_avg = 2 * integral_0^1 E_ss(mu) * mu d_mu
 		double integral = 0.0;
+		double integralG2 = 0.0;
 		for(int ci = 0; ci < LUT_SIZE; ci++) {
 			double mu = (double)(ci + 0.5) / LUT_SIZE;
 			double dmu = 1.0 / LUT_SIZE;
 			integral += E_ss[ai][ci] * mu * dmu;
+			integralG2 += E_ss_G2[ai][ci] * mu * dmu;
 		}
 		E_avg[ai] = 2.0 * integral;
+		E_avg_G2[ai] = 2.0 * integralG2;
 
-		fprintf(stderr, "alpha=%.4f  E_avg=%.6f\n", alpha, E_avg[ai]);
+		fprintf(stderr, "alpha=%.4f  E_avg=%.6f  E_avg_G2=%.6f\n", alpha, E_avg[ai], E_avg_G2[ai]);
 	}
 
 	// Emit the header
@@ -163,6 +546,19 @@ int main() {
 	printf("//  Alpha range: [0.01, 1.0] (uniform %d steps)\n", LUT_SIZE);
 	printf("//  CosTheta range: [0.5/%d, (%.1f)/%d] (cell centers)\n", LUT_SIZE, LUT_SIZE - 0.5, LUT_SIZE);
 	printf("//\n");
+	printf("//  Provenance (P2-4, debt-ggx2): this exact file reproduces\n");
+	printf("//  byte-for-byte via the fixed RNG seed baked into this\n");
+	printf("//  generator's rng_state initializer (%lluULL) with %d\n", (unsigned long long)1234567890123456789ULL, NUM_SAMPLES);
+	printf("//  samples/entry.  Regenerate + verify with:\n");
+	printf("//    c++ -O2 -Isrc/Library -std=c++11 -o tools/gen_lut \\\n");
+	printf("//        tools/GenerateMicrofacetEnergyLUT.cpp -lm\n");
+	printf("//    tools/gen_lut > /tmp/regen_MicrofacetEnergyLUT.h\n");
+	printf("//    diff src/Library/Utilities/MicrofacetEnergyLUT.h /tmp/regen_MicrofacetEnergyLUT.h\n");
+	printf("//  The hand-derived H6/DL-63 multiscatter-lobe sampler/pdf\n");
+	printf("//  machinery (MSLobeDetail, MSLobeZ*, SampleMSCosTheta*, MSPdf*)\n");
+	printf("//  is embedded verbatim in this generator (kHandMaintainedH6Block)\n");
+	printf("//  and is NOT re-derived by the Monte-Carlo bake above.\n");
+	printf("//\n");
 	printf("//  Author: Aravind Krishnaswamy\n");
 	printf("//  Date of Birth: March 28, 2026\n");
 	printf("//  Tabs: 4\n");
@@ -175,7 +571,8 @@ int main() {
 	printf("#define MICROFACET_ENERGY_LUT_\n\n");
 	printf("#include \"Math3D/Math3D.h\"\n");
 	printf("#include \"Optics.h\"\n");
-	printf("#include \"math_utils.h\"\n\n");
+	printf("#include \"math_utils.h\"\n");
+	printf("#include <array>\n\n");
 
 	printf("namespace RISE\n{\n");
 	printf("namespace MicrofacetEnergyLUT\n{\n");
@@ -206,6 +603,48 @@ int main() {
 	printf("\tstatic const Scalar E_avg_TABLE[%d] = {\n\t\t", LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("%.8f", E_avg[ai]);
+		if(ai < LUT_SIZE - 1) printf(", ");
+		if((ai + 1) % 8 == 0 && ai < LUT_SIZE - 1) printf("\n\t\t");
+	}
+	printf("\n\t};\n\n");
+
+	// DL-63: height-correlated-G2 twin tables.  E_ss_TABLE/E_avg_TABLE
+	// above are calibrated to the SEPARABLE Smith model
+	// (MicrofacetUtils::GGX_G, G1(wi)*G1(wo)) that CookTorranceBRDF/SPF
+	// actually render with, and stay exactly as they are for that
+	// consumer.  E_ss_TABLE_G2/E_avg_TABLE_G2 are calibrated to the
+	// HEIGHT-CORRELATED Smith G2 model (MicrofacetUtils::GGX_G2/
+	// GGX_G2_Aniso) that GGXBRDF/GGXSPF/CoatedBRDF actually render
+	// with -- using a DIFFERENT compensation table for a DIFFERENT
+	// masking-shadowing model is what the Kulla-Conty multiscatter
+	// energy-conservation identity requires; see docs/DL62_DL64_GGX_
+	// SAMPLE_EVAL_MISMATCH.md and the DL-63 ledger row.
+	printf("\t/// DL-63: height-correlated-G2 twin of E_ss_TABLE above --\n");
+	printf("\t/// directional albedo of GGX single-scatter BRDF with F=1,\n");
+	printf("\t/// under Smith HEIGHT-CORRELATED G2 masking-shadowing\n");
+	printf("\t/// (MicrofacetUtils::GGX_G2/GGX_G2_Aniso), NOT the separable\n");
+	printf("\t/// G1(wi)*G1(wo) model E_ss_TABLE calibrates to.  Consumed by\n");
+	printf("\t/// GGXBRDF/GGXSPF/CoatedBRDF, which render with height-\n");
+	printf("\t/// correlated G2; CookTorranceBRDF/SPF (separable G) keep\n");
+	printf("\t/// using E_ss_TABLE/LookupEss, unchanged.  Same indexing,\n");
+	printf("\t/// resolution and sample count as E_ss_TABLE.\n");
+	printf("\tstatic const Scalar E_ss_TABLE_G2[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
+	for(int ai = 0; ai < LUT_SIZE; ai++) {
+		printf("\t\t{ ");
+		for(int ci = 0; ci < LUT_SIZE; ci++) {
+			printf("%.8f", E_ss_G2[ai][ci]);
+			if(ci < LUT_SIZE - 1) printf(", ");
+		}
+		printf(" }");
+		if(ai < LUT_SIZE - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-63: height-correlated-G2 twin of E_avg_TABLE above.\n");
+	printf("\tstatic const Scalar E_avg_TABLE_G2[%d] = {\n\t\t", LUT_SIZE);
+	for(int ai = 0; ai < LUT_SIZE; ai++) {
+		printf("%.8f", E_avg_G2[ai]);
 		if(ai < LUT_SIZE - 1) printf(", ");
 		if((ai + 1) % 8 == 0 && ai < LUT_SIZE - 1) printf("\n\t\t");
 	}
@@ -243,6 +682,42 @@ int main() {
 	printf("\t\tScalar af = a - ai0;\n");
 	printf("\t\treturn (1-af) * E_avg_TABLE[ai0] + af * E_avg_TABLE[ai1];\n");
 	printf("\t}\n\n");
+
+	// DL-63: height-correlated-G2 twins of LookupEss/LookupEavg above.
+	printf("\t/// DL-63: height-correlated-G2 twin of LookupEss above -- reads\n");
+	printf("\t/// E_ss_TABLE_G2 instead of E_ss_TABLE.  Use for GGXBRDF/GGXSPF/\n");
+	printf("\t/// CoatedBRDF (height-correlated G2 single-scatter); CookTorrance\n");
+	printf("\t/// keeps using LookupEss (separable G).\n");
+	printf("\tinline Scalar LookupEssG2( const Scalar cosTheta, const Scalar alpha )\n");
+	printf("\t{\n");
+	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
+	printf("\t\tint ai0 = (int)a;\n");
+	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");
+	printf("\t\tScalar af = a - ai0;\n\n");
+	printf("\t\tScalar c = r_max(0.0, r_min(1.0, cosTheta)) * LUT_SIZE - 0.5;\n");
+	printf("\t\tif( c < 0 ) c = 0;\n");
+	printf("\t\tint ci0 = (int)c;\n");
+	printf("\t\tint ci1 = r_min(ci0 + 1, LUT_SIZE - 1);\n");
+	printf("\t\tScalar cf = c - ci0;\n\n");
+	printf("\t\tScalar v00 = E_ss_TABLE_G2[ai0][ci0];\n");
+	printf("\t\tScalar v01 = E_ss_TABLE_G2[ai0][ci1];\n");
+	printf("\t\tScalar v10 = E_ss_TABLE_G2[ai1][ci0];\n");
+	printf("\t\tScalar v11 = E_ss_TABLE_G2[ai1][ci1];\n");
+	printf("\t\treturn (1-af) * ((1-cf)*v00 + cf*v01) + af * ((1-cf)*v10 + cf*v11);\n");
+	printf("\t}\n\n");
+
+	printf("\t/// DL-63: height-correlated-G2 twin of LookupEavg above.\n");
+	printf("\tinline Scalar LookupEavgG2( const Scalar alpha )\n");
+	printf("\t{\n");
+	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
+	printf("\t\tint ai0 = (int)a;\n");
+	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");
+	printf("\t\tScalar af = a - ai0;\n");
+	printf("\t\treturn (1-af) * E_avg_TABLE_G2[ai0] + af * E_avg_TABLE_G2[ai1];\n");
+	printf("\t}\n\n");
+
+	fputs( kHandMaintainedH6Block, stdout );
+	printf("\n");
 
 	// Fresnel averaging via Gauss-Legendre quadrature
 	printf("\t/// 21-point Gauss-Legendre quadrature nodes on [0,1].\n");

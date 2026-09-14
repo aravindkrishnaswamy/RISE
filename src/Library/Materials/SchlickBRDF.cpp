@@ -111,8 +111,20 @@ static T ComputeFactor(
 RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel fresnel;
-	const ScalarTriple rt = pRoughness->GetValuesAt(ri);
+	ScalarTriple rt = pRoughness->GetValuesAt(ri);
 	const ScalarTriple it = pIsotropy->GetValuesAt(ri);
+
+	// DL-65 (sibling of DL-62): widen by the same glossy-filter amount
+	// SchlickSPF::Scatter/ScatterNM/Pdf/PdfNM already apply to their
+	// sampling/density roughness -- NEE evaluation and BSDF-sampled
+	// continuation must agree on which surface roughness is being
+	// rendered at this hit.
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			rt.v[ch] = r_min( rt.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
+
 	const RISEPel rPel( rt.v[0], rt.v[1], rt.v[2] );
 	const RISEPel iPel( it.v[0], it.v[1], it.v[2] );
 
@@ -140,7 +152,12 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, myonb.w(), myonb.v(), pRoughness->GetValueAtNM(ri,nm), pIsotropy->GetValueAtNM(ri,nm) );
+	// DL-65: same glossy-filter widening as value() above.
+	Scalar roughnessNM = pRoughness->GetValueAtNM(ri,nm);
+	if( ri.glossyFilterWidth > 0 ) {
+		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, myonb.w(), myonb.v(), roughnessNM, pIsotropy->GetValueAtNM(ri,nm) );
 	if( factor > 0 ) {
 		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
 		return (GuardedGetColorNM( *pDiffuse, ri, nm )*INV_PI) + (rho + (1.0-rho)*fresnel) * factor;

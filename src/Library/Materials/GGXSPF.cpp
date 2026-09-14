@@ -193,7 +193,20 @@ void GGXSPF::Scatter(
 	const Scalar ws = (fresnelMode == eFresnelSchlickF0)
 		? ColorMath::MaxValue( interfaceFresnel.Mean() )
 		: ColorMath::MaxValue( pSpecular->GetColor(ri) );
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
+	// DL-63: every LookupEavg/LookupEss/MSLobeZ/MSPdf/SampleMSCosTheta
+	// call in this file uses the "G2" (height-correlated) LUT variant,
+	// matching the Smith height-correlated G2 masking-shadowing GGXBRDF
+	// actually renders with (MicrofacetUtils::GGX_G2_Aniso) -- NOT the
+	// separable-G1(wi)*G1(wo) LUT CookTorranceSPF/BRDF use, which is
+	// calibrated to a different single-scatter model.  See
+	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md and the DL-63 ledger row.
+	// DL-77 (open): the G2 LUT itself is calibrated to the ISOTROPIC
+	// Smith model at alphaEff=sqrt(alphaX*alphaY) -- exact only when
+	// alphaX==alphaY.  Strongly anisotropic alphaX/alphaY pairs
+	// under-compensate (measured 11-44% energy deficit at F0=1); see
+	// the DL-77 ledger row and docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// "DL-77".
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
 	// H6: direction-aware MS selection weight -- the true MS albedo for
 	// THIS incident direction is F_ms*(1-Ess(cosWi)), not the
 	// hemisphere-averaged F_ms*(1-Eavg); using the averaged form let a
@@ -201,12 +214,12 @@ void GGXSPF::Scatter(
 	// docs/... H6).  Eavg itself is still used unchanged below in the
 	// MS lobe's BRDF-value term.
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( cosWi, alphaEff );
 	const Scalar wms = ws * (1.0 - Ess_i);
 	const Scalar total = wd + ws + wms;
 	// Exact MS-lobe outgoing-direction normalization, shared by every
 	// mixPdf site below and by the MS lobe's own sampler/kray.
-	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alphaEff );
+	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZG2( alphaEff );
 
 	const Scalar pDiffuseSelect = (total > 1e-10) ? wd / total : 1.0;
 	const Scalar pSpecSelect    = (total > 1e-10) ? ws / total : 0.0;
@@ -226,7 +239,7 @@ void GGXSPF::Scatter(
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alphaEff >= 1e-6) ?
 				MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, msZ );
 			const Scalar mixPdf = (total > 1e-10) ?
 				(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
@@ -267,7 +280,7 @@ void GGXSPF::Scatter(
 					if( vndfPdf > 1e-10 )
 					{
 						const Scalar diffPdf = cosTheta * INV_PI;
-						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, msZ );
 						const Scalar mixPdf = (total > 1e-10) ?
 							(wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
@@ -358,7 +371,7 @@ void GGXSPF::Scatter(
 		{
 			const Scalar u1ms = sampler.Get1D();
 			const Scalar u2ms = sampler.Get1D();
-			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosTheta( alphaEff, u1ms );
+			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosThetaG2( alphaEff, u1ms );
 			const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1.0) - cosTheta * cosTheta ) );
 			const Scalar phiMs = TWO_PI * u2ms;
 			const Vector3 wo = myonb.Transform( Vector3( sinTheta * cos(phiMs), sinTheta * sin(phiMs), cosTheta ) );
@@ -368,11 +381,11 @@ void GGXSPF::Scatter(
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alphaEff >= 1e-6) ?
 					MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, msZ );
 				const Scalar mixPdf = (total > 1e-10) ?
 					(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alphaEff );
+				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( cosTheta, alphaEff );
 				// Ess_i, cosWi computed once at the top of Scatter() (shared
 				// with the direction-aware wms selection weight).
 
@@ -494,13 +507,15 @@ void GGXSPF::ScatterNM(
 	const Scalar wsF0 = GuardedGetColorNM( *pSpecular, ri, nm );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : wsF0;
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
+	// DL-77 (open, see Scatter()'s twin comment): isotropized alphaEff
+	// lookup under-compensates strongly anisotropic alphaX/alphaY pairs.
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( cosWi, alphaEff );
 	const Scalar wms = ws * (1.0 - Ess_i);
 	const Scalar total = wd + ws + wms;
-	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alphaEff );
+	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZG2( alphaEff );
 
 	const Scalar pDiffuseSelect = (total > 1e-10) ? wd / total : 1.0;
 	const Scalar pSpecSelect    = (total > 1e-10) ? ws / total : 0.0;
@@ -519,7 +534,7 @@ void GGXSPF::ScatterNM(
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alphaEff >= 1e-6) ?
 				MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, msZ );
 			const Scalar mixPdf = (total > 1e-10) ?
 				(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
@@ -560,7 +575,7 @@ void GGXSPF::ScatterNM(
 					if( vndfPdf > 1e-10 )
 					{
 						const Scalar diffPdf = cosTheta * INV_PI;
-						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, msZ );
 						const Scalar mixPdf = (total > 1e-10) ?
 							(wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
@@ -645,7 +660,7 @@ void GGXSPF::ScatterNM(
 		{
 			const Scalar u1ms = sampler.Get1D();
 			const Scalar u2ms = sampler.Get1D();
-			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosTheta( alphaEff, u1ms );
+			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosThetaG2( alphaEff, u1ms );
 			const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1.0) - cosTheta * cosTheta ) );
 			const Scalar phiMs = TWO_PI * u2ms;
 			const Vector3 wo = myonb.Transform( Vector3( sinTheta * cos(phiMs), sinTheta * sin(phiMs), cosTheta ) );
@@ -655,11 +670,11 @@ void GGXSPF::ScatterNM(
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alphaEff >= 1e-6) ?
 					MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, msZ );
 				const Scalar mixPdf = (total > 1e-10) ?
 					(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alphaEff );
+				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( cosTheta, alphaEff );
 				// Ess_i, cosWi computed once at the top of ScatterNM().
 
 				Scalar F_ms;
@@ -769,14 +784,14 @@ Scalar GGXSPF::Pdf(
 		: ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ));
+	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEssG2( cosWi, alphaEff ));
 	const Scalar total = wd + ws + wms;
 	if( total < 1e-10 ) return cosTheta * INV_PI;
 
 	const Scalar diffPdf = cosTheta * INV_PI;
 	const Scalar specPdf = (alphaEff >= 1e-6) ?
 		MicrofacetUtils::VNDF_Pdf_Aniso( wi, woNorm, myonb, alphaX, alphaY ) : 0;
-	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZ( alphaEff ) );
+	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZG2( alphaEff ) );
 
 	return (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total;
 }
@@ -825,14 +840,14 @@ Scalar GGXSPF::PdfNM(
 	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : GuardedGetColorNM( *pSpecular, ri, nm );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ));
+	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEssG2( cosWi, alphaEff ));
 	const Scalar total = wd + ws + wms;
 	if( total < 1e-10 ) return cosTheta * INV_PI;
 
 	const Scalar diffPdf = cosTheta * INV_PI;
 	const Scalar specPdf = (alphaEff >= 1e-6) ?
 		MicrofacetUtils::VNDF_Pdf_Aniso( wi, woNorm, myonb, alphaX, alphaY ) : 0;
-	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZ( alphaEff ) );
+	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZG2( alphaEff ) );
 
 	return (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total;
 }

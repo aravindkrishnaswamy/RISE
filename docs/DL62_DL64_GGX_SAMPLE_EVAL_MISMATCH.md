@@ -2,9 +2,11 @@
 
 Status: **CLOSED 2026-09-13** — source repair `dfdd5ee1`, red proof
 `a1db468d`. Independent residual DL-63 (specular-only furnace gain, a
-separate G1-vs-G2 masking-model mismatch) is unaffected and stays open.
-New debt DL-65 (CookTorrance/Schlick glossy-filter sibling) opened, not
-fixed, out of this slice's GGX scope.
+separate G1-vs-G2 masking-model mismatch) was **CLOSED 2026-09-14** by a
+follow-up debt-ggx2 slice — see "DL-63" section below. DL-65
+(CookTorrance/Schlick glossy-filter sibling, opened by this doc's
+original sibling audit) was also **CLOSED 2026-09-13** by that slice
+(`0ad80d66`) — see the DL-65 ledger row.
 
 **Review follow-up (2026-09-13, `a495a357`, P2-1/P2-2/P3-x)**: the
 initial DL-64 fix called `GGXInterfaceFresnel::Mean()`/`MeanNM()`
@@ -336,3 +338,204 @@ identical to the documented DL-63 values (`1.0772`/`1.0432`/`1.1467`) both
 at the original `dfdd5ee1` close and after the `a495a357` P2-1/P2-2/P3-x
 follow-up. Clean `make -C build/make/rise -j8 all` (full `make clean`
 rebuild, both before and after the follow-up): zero compiler warnings.
+**These three failures were CLOSED 2026-09-14 by DL-63 below —
+`GGXDiffuseTransmissionTest` is now `150 checks, 0 failures`; the gate
+list above stayed green throughout DL-63's fix, plus two files needed
+their own reference-formula updates (see the DL-63 section's "Sibling-
+audit collateral" note).**
+
+## DL-63: height-correlated-G2 multiscatter compensation
+
+**Status: CLOSED 2026-09-14** — source repair `052ec469` (debt-ggx2
+slice, base `ddf05c6c`), red-prove baseline `150 checks, 3 failures`
+(unchanged since DL-37, confirmed bit-for-bit identical before this fix).
+
+**Root cause** (exactly as this doc's original "Independent residual
+DL-63" note and the ledger row's recipe diagnosed): GGXBRDF/GGXSPF's
+single-scatter specular term is `D * G2 / (4 cosWi cosWo)`, where `G2` is
+Smith HEIGHT-CORRELATED masking-shadowing
+(`MicrofacetUtils::GGX_G2`/`GGX_G2_Aniso`, Heitz 2014 JCGT 3(2) Sec. 5.2)
+— see `GGXBRDF.cpp`'s own file-header comment, which already documents
+this as deliberately MORE accurate than CookTorrance's separable
+`G1(wi)*G1(wo)`. But `tools/GenerateMicrofacetEnergyLUT.cpp`'s VNDF-
+sampling estimator for the Kulla-Conty compensation LUT computed the
+per-sample directional-albedo weight as plain `G1(wo)` — the textbook-
+correct estimator for the SEPARABLE model (the `G1(wi)` factor cancels
+against the VNDF pdf's own `G1(wi)` term), but the WRONG estimator for
+height-correlated `G2` (Heitz 2018, "Sampling the GGX Distribution of
+Visible Normals": the correct per-sample weight under `G2` is
+`G2(wi,wo)/G1(wi)`, which does not factor into `G1(wi)*G1(wo)` so no
+cancellation applies). Compensating a `G2` render with a table calibrated
+to the separable model under-states how much energy the single-scatter
+term already carries, so the added multiscatter term over-shoots — a
+specular-only furnace GAIN, visible only in the F0=1 (diffuse=0) rows
+because a mixed lobe's diffuse term dilutes the effect below the test's
+noise floor.
+
+**CookTorrance is NOT affected** — `CookTorranceBRDF::ComputeFactor` calls
+`MicrofacetUtils::GGX_G` (`= GGX_G1(wi)*GGX_G1(wo)`, that function's own
+doc comment says so explicitly), i.e. the SEPARABLE model the original
+LUT was always correctly calibrated for. This is why the fix ADDS a
+second table rather than correcting the existing one: `CoatedBRDF`'s coat
+lobe was found, during the required sibling audit, to share GGXBRDF's
+pattern (its own single-scatter term also calls `GGX_G2_Aniso`) and was
+fixed in the same commit; `CoatedSPF` does not sample a separate
+multiscatter lobe (`CoatedLayer.h`'s own header comment: the coat/
+substrate interreflection compensation is closed-form, not LUT-based) so
+needed no change; `SheenDirectionalAlbedo.h` has its own independent
+Charlie+Lambda-fit LUT (unrelated machinery); `ThinFilm.h` only reuses
+the shared Gauss-Legendre quadrature nodes/weights (unrelated to
+`E_ss`/`E_avg`).
+
+**Fix**: `tools/GenerateMicrofacetEnergyLUT.cpp` gained a
+`GGX_G2_HeightCorrelated`/`GGX_Lambda` pair mirroring
+`MicrofacetUtils`, and a second accumulator inside the SAME per-
+(alpha,cosTheta) sampling loop (same RNG draws, same `NUM_SAMPLES`)
+computing the height-correlated weight alongside the unchanged separable
+one. Regenerating with the tool reproduces `E_ss_TABLE`/`E_avg_TABLE`
+bit-for-bit identical to the checked-in values (independently verified —
+confirms the fix is purely additive, not a re-derivation of the existing
+table). New `E_ss_TABLE_G2`/`E_avg_TABLE_G2` tables and
+`LookupEssG2`/`LookupEavgG2` functions were spliced into
+`MicrofacetEnergyLUT.h`, plus hand-written `MSLobeZG2`/
+`SampleMSCosThetaG2`/`MSPdfG2` (reusing the already table-agnostic
+`Segment`/`SegCDF`/`SegTotal`/`SegInvert` helpers behind a new
+`BuildSegmentsG2` wrapper) so GGXSPF's multiscatter-lobe sampler, its
+reported density, and its energy terms all stay calibrated to the same
+model. `GGXBRDF.cpp`/`GGXSPF.cpp`/`CoatedBRDF.cpp` were repointed to the
+G2 twins; `CookTorranceBRDF.cpp`/`CookTorranceSPF.cpp` are byte-for-byte
+untouched.
+
+**Independent verification** (`tests/GGXHeightCorrelatedEnergyLUTTest.cpp`,
+new — shares no code with either the offline generator or the LUT
+header): Monte-Carlo quadrature of the actual production
+`MicrofacetUtils::GGX_Lambda`/`GGX_G2` primitives, with an independent
+`std::mt19937_64` RNG stream and 4M samples per configuration, at the
+three previously-failing (alpha,theta) pairs plus four spot checks:
+
+```
+GGXHeightCorrelatedEnergyLUTTest: 14 checks, 0 failures
+```
+
+`LookupEssG2` matches the independent quadrature within 8 standard errors
+at every configuration (e.g. alpha=1.0 theta=80: `LookupEssG2=0.66805` vs
+`quadrature=0.66802+/-0.00017`); `LookupEss` (the pre-existing, unchanged
+separable table) measurably diverges from the same quadrature at those
+same points (e.g. the same config: `LookupEss=0.52281` vs
+`quadrature=0.66839+/-0.00017`, diff `0.14558` — that is **~830 standard
+errors** (0.14558 / 0.00017 ≈ 834σ), not "~33 standard errors" as an
+earlier draft of this doc stated; 33 is instead the ratio of the diff to
+this check's PASS TOLERANCE (`8σ + 0.003 ≈ 0.0044`), i.e.
+0.14558 / 0.0044 ≈ 33×, a different number answering a different
+question (how far past the gate, not how many σ from the mean) — see
+`GGXHeightCorrelatedEnergyLUTTest`'s printed `(834.2 sigma, 33.1x tol=...)`
+for both figures side by side), confirming the two tables really are
+calibrated to different physical models.
+
+**P2-1 correction (2026-09-14, debt-ggx2 slice)**: the original closed-form
+"Kulla-Conty identity" check described in this paragraph (`Ess_G2 +
+(1-Ess_G2)*F_ms == 1` at Schlick F0=1, holding to `0.000000e+00` at all
+four spot alphas) was **tautological**, not a regression pin — a review
+caught that `ComputeFms(F_avg=1, Eavg)` collapses to exactly `1` by pure
+algebra for ANY `Eavg` (`denom = 1 - 1*(1-Eavg) = Eavg`, so
+`F_ms = 1*1*Eavg/Eavg = 1`), which forces the reported total to `1`
+regardless of what `E_ss_TABLE_G2`/`E_avg_TABLE_G2` actually contain — the
+`0.000000e+00` diff was the tell, not evidence of a correct table.  It was
+replaced by two checks with real content: (a) re-deriving each
+`E_avg_TABLE_G2` row from the checked-in `E_ss_TABLE_G2` values via the
+SAME midpoint-rule discretization the generator used, blended across
+alpha exactly as `LookupEavgG2` blends — matches to `~2-5e-9` (the
+tables' own 8-decimal print precision), and would diverge measurably if
+`E_avg_TABLE_G2` were stale or mis-baked; and (b) a furnace-style
+evaluation at Schlick F0=0.9 (where `ComputeFms` does NOT collapse to a
+fixed point) asserting the provable bound `0 <= total <= F0` and that
+`F_ms` is measurably below 1 — both genuinely depend on the table
+contents.  See `GGXHeightCorrelatedEnergyLUTTest.cpp`'s
+`TestEssEavgConsistencyG2`/`TestFurnaceStyleAtF0Point9`.  A separate
+review finding (P2-2) added `TestUniformHemisphereIndependentQuadrature`:
+a THIRD independent estimator (its own re-implementation of the GGX `D`/
+Smith `Lambda`/height-correlated `G2`, its own RNG stream, and uniform-
+hemisphere — not VNDF — sampling) that agrees with `LookupEssG2` at
+alpha=1.0/mu=0.0156, alpha=0.649/mu=0.1719, and alpha=0.808/mu=0.4844
+(e.g. `LookupEssG2=0.93494` vs `uniformHemisphere=0.93486+/-0.00002`),
+closing the gap that both `MonteCarloEssG2` above and the offline
+generator share the identical VNDF `weight = G2/G1(wi)` derivation and so
+could not, between them, catch a shared sign/identity error in it.
+`GGXHeightCorrelatedEnergyLUTTest`: `23 checks, 0 failures` (was `14
+checks, 0 failures` before this slice; the count grew from the P2-1/P2-2
+additions, not from any change to the DL-63 fix itself).
+
+`GGXDiffuseTransmissionTest` (the row's original evidence): `150 checks,
+0 failures` (was `150 checks, 3 failures`) — the three configs now read
+`{1.0013, 1.0015, 1.0013}` (Schlick iso F0=1, alpha=0.6 theta=80 / alpha=1
+theta=60 / alpha=1 theta=80), matching the F0<1 mixed configs' MC-noise-
+only deviation from 1.0.
+
+**Sibling-audit collateral**: `GGXSampleEvaluationConsistencyTest`'s
+DL-64 Pdf-at-peak and P2-2 conductor/thin-film sections, and
+`ThinFilmBRDFTest`'s Test G (specColor-inside-Fms), each independently
+RE-DERIVE what `GGXSPF::Pdf`/`PdfNM` and `GGXBRDF::valueNM` should
+compute, and both called `LookupEss`/`MSLobeZ`/`MSPdf` directly — the now-
+superseded functions for these two consumers. Both files were updated to
+call the G2 twins their production counterparts now use
+(`GGXSampleEvaluationConsistencyTest`: 24 failures introduced transiently
+by this fix, then `48/0` after the update; `ThinFilmBRDFTest`: 2 failures
+transiently, then `25/0`). `ThinFilmFurnaceTest`'s
+`MultiscatterAlbedoErrorBound` helper (an approximation-QUALITY
+measurement against the thin-film-vs-substrate F_avg question, not a
+correctness pin) was also switched to `LookupEavgG2` so its reported
+error bound reflects the model production actually renders with; its
+`4/0` pass count is unchanged since its assertions are about its own
+quadrature's internal self-consistency, not the absolute bound value.
+This is exactly the "reachable via a different code path" trap
+`docs/skills/audit-by-bug-pattern.md` step 5 (audit one hop deeper)
+warns about: a test file's OWN reimplementation of a production formula
+is a downstream consumer of that formula's identity, not just of its
+numeric output.
+
+**User-visible impact (plain statement, both review rounds)**: DL-63
+affects the `ggx_material` and `coated_material` scene chunks, in EVERY
+Fresnel mode (Schlick/conductor/thin-film), whenever their multiscatter
+compensation term is active (`(1-Eavg) > 1e-10`, i.e. any roughness above
+the LUT's `alpha=0.01` floor). Head-on incidence is essentially unchanged
+(the compensation term itself is small there). The user-visible effect is
+a DARKENING at the grazing rim of rough metals/coated surfaces (the
+opposite direction from DL-37's earlier grazing-gain fix): recomputed
+this pass, directly from the checked-in tables, for the isolated
+multiscatter-albedo term `(1-Ess_i)*F_ms` at Schlick F0=0.9 (i.e. how much
+of the total reflectance the compensation lobe alone contributes, before
+vs. after this fix) --
+`alpha=0.3 mu=0.20`: `0.1464 -> 0.1284` (-12.3%);
+`alpha=0.3 mu=0.05`: `0.1098 -> 0.0543` (-50.6%);
+`alpha=0.6 mu=0.05`: `0.1894 -> 0.0760` (-59.9%)
+(near-identical to, and confirming, the review's own independently cited
+figures of -12%/-51%/-60% at the same three configurations). DL-65 (the
+CookTorrance/Schlick glossy-filter parity fix, closed in the same slice)
+is unrelated to DL-63's Fresnel/roughness scope and affects a narrower
+surface: **only** renders that have the `filter_glossy` stability knob
+enabled (`StabilityConfig::filterGlossy > 0`, a per-bounce roughness
+widening applied to `ri.glossyFilterWidth` for variance/firefly control —
+`PathTransportUtilities.h` ~:190-192) on `cook_torrance_material` or
+`schlick_material` surfaces past their first bounce; scenes that leave
+`filter_glossy` at its default 0, or that hit these materials only on the
+camera ray, are numerically identical before and after DL-65.
+
+**Known residual: LUT left end-cap (isotropic, small, NOT closed by this
+fix)**: `LookupEssG2`/`LookupEss` both flat-clamp `cosTheta` below the
+first bin center (`c0 = 0.5/32 ≈ 0.0156`) to that bin's value — a
+deliberate, cheap design choice (see `MSLobeDetail::BuildSegmentsFromRow`'s
+"left flat end-cap" comment), not a bug in the clamp mechanism itself, but
+it does mean `LookupEssG2` under-reads the TRUE (continuing-to-rise)
+`Ess` right at the grazing limit. Recomputed this pass with an
+independent 8M-sample VNDF quadrature of the real
+`MicrofacetUtils::GGX_Lambda`/`GGX_G2` primitives (same methodology as
+`GGXHeightCorrelatedEnergyLUTTest`, fresh seed): at `alpha=1.0,
+cosWi=0.008` (just inside the first bin), brute-force `Ess=0.9613` vs
+`LookupEssG2=0.9349`, diff `0.0263` — since the lookup UNDER-reads the
+true single-scatter energy here, the Kulla-Conty compensation adds
+slightly too much multiscatter energy back, an isotropic furnace GAIN of
+roughly 2.6% confined to incidence angles beyond ~89 degrees (`cosWi`
+below the first bin center). This is small, confined to an extreme
+grazing sliver, and independent of the anisotropic DL-77 deficit above
+(this one persists even for `alphaX==alphaY`) — recorded here as a known,
+bounded residual rather than filed as its own ledger row.

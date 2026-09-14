@@ -494,7 +494,7 @@ namespace
 			? ColorMath::MaxValue( interfaceFresnel.Mean() )
 			: ColorMath::MaxValue( specularPainter.GetColor(ri) );
 		const Scalar cosWi = Vector3Ops::Dot( wi, n );
-		const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ) );
+		const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEssG2( cosWi, alphaEff ) );  // DL-63: production now uses the height-correlated-G2 LUT
 		const Scalar total = wd + ws + wms;
 		return (total > Scalar(1e-10)) ? ws / total : Scalar(0);
 	}
@@ -631,14 +631,14 @@ namespace
 			ws = spectral ? GuardedGetColorNM( specularPainter, ri, nm ) : ColorMath::MaxValue( specularPainter.GetColor(ri) );
 
 		const Scalar cosWi = Vector3Ops::Dot( wi, n );
-		const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ) );
+		const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEssG2( cosWi, alphaEff ) );  // DL-63: production now uses the height-correlated-G2 LUT
 		const Scalar total = wd + ws + wms;
 		if( total < Scalar(1e-10) ) return cosTheta * INV_PI;
 
 		const Scalar diffPdf = cosTheta * INV_PI;
 		const Scalar specPdf = (alphaEff >= Scalar(1e-6)) ?
 			MicrofacetUtils::VNDF_Pdf_Aniso( wi, woNorm, myonb, alphaX, alphaY ) : Scalar(0);
-		const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZ( alphaEff ) );
+		const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZG2( alphaEff ) );  // DL-63
 
 		return (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total;
 	}

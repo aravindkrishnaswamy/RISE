@@ -351,15 +351,29 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		}
 	}
 
-	// Kulla-Conty multiscattering energy compensation
-	// Use effective alpha = sqrt(alphaX * alphaY) for isotropic LUT lookup
+	// Kulla-Conty multiscattering energy compensation.  DL-63: uses the
+	// height-correlated-G2 LUT (LookupEavgG2/LookupEssG2), calibrated to
+	// the SAME Smith height-correlated G2 masking-shadowing model this
+	// function's own single-scatter specFactor renders with above --
+	// NOT LookupEavg/LookupEss, which are calibrated to the separable
+	// G1(wi)*G1(wo) model CookTorranceBRDF renders with instead.
+	// Use effective alpha = sqrt(alphaX * alphaY) for isotropic LUT lookup.
+	// DL-77 (open, NOT fixed by DL-63): this calibration is exact only for
+	// alphaX == alphaY.  The G2 LUT was baked from an ISOTROPIC Smith
+	// Lambda, but the single-scatter term above uses direction-dependent
+	// per-axis Lambda (MicrofacetUtils::GGX_G2_Aniso) -- isotropizing via
+	// alphaEff=sqrt(alphaX*alphaY) under-estimates the true energy deficit
+	// for strongly anisotropic configurations (measured 11-44% deficit at
+	// F0=1, e.g. alphaX=.02/alphaY=1.0).  See docs/DL62_DL64_GGX_SAMPLE_EVAL_
+	// MISMATCH.md "DL-77" and the DL-77 ledger row; GGXDiffuseTransmissionTest
+	// carries a KNOWN-FAILURE control that keeps the residual visible.
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
 
 	if( (1.0 - Eavg) > 1e-10 )
 	{
-		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( nr, alphaEff );
-		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( nv, alphaEff );
+		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( nr, alphaEff );
+		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( nv, alphaEff );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
 		if( fresnelMode == eFresnelSchlickF0 )
@@ -531,14 +545,16 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 	}
 
-	// Kulla-Conty multiscattering
+	// Kulla-Conty multiscattering.  DL-77 (open): see value()'s twin
+	// comment above -- this isotropized alphaEff lookup under-compensates
+	// strongly anisotropic configurations.
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
 
 	if( (1.0 - Eavg) > 1e-10 )
 	{
-		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( nr, alphaEff );
-		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( nv, alphaEff );
+		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( nr, alphaEff );
+		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( nv, alphaEff );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
 		if( fresnelMode == eFresnelSchlickF0 )
