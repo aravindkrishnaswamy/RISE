@@ -91,6 +91,24 @@ namespace RISE
 			//! `EvaluateChainGeometry` / `EvaluateChainCosineProduct` /
 			//! `cosV1atX` take `fabs` -- all four are invariant under a global
 			//! sign flip of this vector.
+			//!
+			//! EXCEPTION: the three photon-chain reconstruction producers in
+			//! `ManifoldSolver.cpp` (~:5587, ~:6444, ~:7978) cannot recover
+			//! `UnflippedGeomNormal()` from a serialized `SMSPhotonChainVertex`
+			//! -- the photon record's own `geomNormal` slot is a legacy-photon
+			//! zero SENTINEL for photons captured before that field existed --
+			//! and fall back to `pv.normal` (the photon's stored SHADING
+			//! normal, which IS ray-facing: `SMSPhotonMap.cpp` captures it as
+			//! `ri.geometric.vNormal`, and a double-sided/back-face geometry
+			//! flips its shading normal in lockstep with `vGeomNormal`).  On
+			//! such a legacy-sentinel photon this field therefore does NOT
+			//! carry the TRUE-outward invariant and can disagree in sign with
+			//! `normal` below -- which itself ALWAYS keeps the ray-facing
+			//! convention, unlike this field.  The two are read jointly only
+			//! by the `SMS_SOLVE_DIAG`-gated `dotGS` diagnostic
+			//! (`ManifoldSolver.cpp` ~:2244), which is instrumentation, not a
+			//! solve-path consumer -- no production consumer of this struct
+			//! compares `normal` against `geomNormal`'s sign.
 			Vector3				dpdu;			///< Position derivative w.r.t. first surface param (world space)
 			Vector3				dpdv;			///< Position derivative w.r.t. second surface param (world space)
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)

@@ -75,6 +75,31 @@ classes for which the change is bit-identical.
 | 7 | `TransparencyShaderOp.cpp` `PerformOperation` / `PerformOperationNM` — the `bOneSided` cull | `Dot(ray.Dir(), ri.geometric.vGeomNormal) > 0` | `ri.geometric.TrueGeomFacing(ray.Dir()) > 0` | The cull never fired on exactly the geometry classes alpha cards use.  **Intent** (since "double-sided geometry + a one-sided shader op" is a contradiction someone has to resolve): `bOneSided` is an explicit, per-shader-op author request to discard the back face and is the more specific of the two statements; honouring it is also what makes the op mean the same thing on a single-sided card, a double-sided card and a Bezier patch. |
 | 8 | `Object.cpp::IntersectRay` — the override UV generator's normal argument (**sibling audit, not in the original row**) | `ri.geometric.vGeomNormal` | `ri.geometric.UnflippedGeomNormal()` | `BoxUVGenerator` picks its box side from the **sign** of the normal's dominant component, so the same surface point charted onto the opposite box side depending on which side the ray arrived from — a **view-dependent texture chart**.  Measured on a double-sided clipped plane: `u = 0.65` from the front, `u = 0.35` from the back. |
 
+### A producer-side edge case (found in review, fixed same slice)
+
+`BezierPatchGeometry.cpp`'s back-face flip used TWO DIFFERENT predicates
+for "is this a back-face hit" (`bRawFront = dotND < 0.0`, used for the
+front/back-face cull) and "did the normal actually get negated"
+(`if( dotND > 0.0 ) N = -N`).  At the measure-zero grazing case
+`dotND == 0.0`, `bRawFront` is `false` (it only requires `< 0.0`) so the
+old `ri.bGeomNormalOrientedToRay = !bRawFront` read `true`, but the `if`
+above does not fire at `dotND == 0.0` — the normal was never negated.
+`UnflippedGeomNormal()` would then negate an already-correct normal at
+that single ray angle.  Fixed by tracking the actual negation in its own
+`bDidFlip` local and storing that, not `!bRawFront`.
+
+The other four `bGeomNormalOrientedToRay` producers were individually
+checked for the same shape and are clean: `TriangleMeshGeometry.cpp`
+and `TriangleMeshGeometryIndexed.cpp` compute one `bFlipGeomNormal`
+bool from `Dot(vGeomNormal, ray.Dir()) > 0`, use it for the flip AND the
+flag; `ClippedPlaneGeometry.cpp` uses the SAME `isBackFaceHit` bool
+(`cosI > 0.0`) for both the back-face cull and the flip/flag, so there
+is no predicate gap; `HairGeometry.cpp` sets the flag unconditionally
+`true`, which is moot — `HairGeometry` also sets
+`bGeomNormalRayDerived`, and every consumer's recovery formula checks
+that flag FIRST and short-circuits before ever looking at
+`bGeomNormalOrientedToRay`.
+
 ### The adjacent hazard: plumbing that dropped the flag
 
 The row recorded `ManifoldSolver.cpp` and `SMSPhotonMap.cpp` copying
@@ -96,10 +121,22 @@ Two corrections:
   `ManifoldVertex::geomNormal` is invariant under a global sign flip:
   `ValidateChainPhysics` and the two-stage `failIdx` scan test a sign
   **product** `(wi·n)(wo·n)`; `EvaluateChainGeometry`,
-  `EvaluateChainCosineProduct` and `cosV1atX` take `fabs`; and the
-  synthetic-rig consumers reach the field through the ray-anchored
-  `geomNRaw` idiom, which re-anchors to the rig's own (synthetic) ray and
-  is invariant in the stored sign.
+  `EvaluateChainCosineProduct` and `cosV1atX` take `fabs`.  The
+  synthetic-rig consumers are **not** the ray-anchored `geomNRaw` idiom —
+  that earlier characterisation was wrong.  They split into two
+  unrelated, independently-safe shapes: the four
+  `rigLocal.vGeomNormal = mv.geomNormal` sites (`ManifoldSolver.cpp`
+  ~:5604, ~:6464, ~:7425, ~:8005) feed the rig into
+  `GetSpecularInfo{,NM}` only, which no material implementation reads
+  `vGeomNormal` from at all (`grep -l GetSpecularInfo src/Library/Materials/*.cpp | xargs grep -l vGeomNormal` is empty) — safe because the
+  field is unread, not because of a ray-anchored re-derivation; and the
+  four `rig.vGeomNormal = geomNormal` sites (`ManifoldSolver.cpp`
+  ~:5681, ~:5795, ~:6621, ~:8082) assign from `geomNormal`, a
+  `const Vector3&` **function parameter** — the shading point's own
+  geometric normal, passed in by the caller — not `mv.geomNormal` and
+  not the `geomNRaw`/`ri.ray.Dir()` composite; these are safe because
+  they carry whatever sign their caller already resolved, independent of
+  this fix.
 
 `ManifoldVertex::geomNormal` therefore now carries the documented
 invariant **"the TRUE, ray-independent outward normal"**, and both
@@ -216,6 +253,7 @@ classified.
 | Not a which-side test — irradiance/AO cache key or continuity heuristic | 9 | `FinalGatherShaderOp` :396/:402/:422/:721 and :229 (`sample.vNormal`, a same-surface continuity test whose only failure mode is a conservative REJECT), `AmbientOcclusionShaderOp` ×3, `DistributionTracingShaderOp` ×3 | **NOT FIXED** — no wrong value is produced; a flipped normal can only make the cache decline to reuse a neighbour. |
 | Sign-invariant chain consumers | 7 | `ValidateChainPhysics` `nForTest`, `VCMIntegrator:521` `sideN`, `ManifoldSolver` `EvaluateChainGeometry` / `EvaluateChainCosineProduct` / `cosV1atX` / the two-stage `failIdx` scan | **IMMUNE** (sign product or `fabs`) — and re-verified against the new `ManifoldVertex::geomNormal` invariant. |
 | Comparison against ITSELF | 1 | `PathTransportUtilities.h:282` (DL-03's guided-continuation resolver compares two dots against the SAME normal) | **IMMUNE** |
+| SMS receiver-side shading-point probe (ray-facing BY INTENT — omitted from the original enumeration) | 4 | `PathTracingIntegrator.cpp` ~:3443/:5791, `SMSShaderOp.cpp` ~:74/:126 — all four pass raw `ri.geometric.vGeomNormal` as the `geomNormal` argument into `ManifoldSolver::EvaluateAtShadingPoint{,NM}`, alongside `vNormal` (shading) | **BENIGN, not a bug** — the callee (`ManifoldSolver.cpp` ~:5954/~:7783) only ever uses this parameter to build a `pos + geomNormal*100` probe-direction fallback target when the primary seed search comes back empty; that probe wants a vector on the SAME side as the outgoing/viewing direction (`woOutgoing`), which is exactly what the reported, ray-facing `vGeomNormal` gives on a double-sided/back-face hit — the TRUE unflipped normal would point into the solid on such a hit and aim the fallback probe the wrong way. Left un-migrated deliberately. |
 | Producers | 5 geometry types | `TriangleMeshGeometry{,Indexed}` (`bFlipGeomNormal`), `ClippedPlaneGeometry`, `BezierPatchGeometry`, `HairGeometry` | not consumers |
 | **IN PATTERN — fixed here** | 16 sites + 6 captures | the table in §3 (`LightSampler.cpp` ×2, `BDPTIntegrator.cpp` medium ×1 + BSSRDF ×4, `RayCaster.cpp` ×1, `DirectVolumeRenderingShader.cpp` ×2, `PathTracingIntegrator.cpp` BSSRDF ×2, `TransparencyShaderOp.cpp` ×2, `SMSPhotonMap.cpp` ×1, `Object.cpp` ×1), plus `ManifoldSolver` ×5 and `SMSPhotonMap` ×1 captures | fixed |
 
