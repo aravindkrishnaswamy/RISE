@@ -257,7 +257,14 @@ the single-technique estimator; the trained second moment reduces to
 `(envRadiance)^2`, independent of the actual `phasePdf` value (verified
 directly in `OptimalMISAccumulatorTest`'s new Test 12, see below).
 
-**BSSRDF continuations** (`PathTracingIntegrator.cpp`, both the diffusion-
+**BSSRDF continuations** — **SUPERSEDED BY ROUND 5 (§5 below).** The
+quantity this paragraph derives, `Sw * cos`, is the exit's integrand with
+the area-measure `weightSpatial` DROPPED; the accumulator's moment is of
+the integrand, so the numerator is `weight * cosinePdf` and the helper is
+now `PTBssrdfTrainedBsdfTimesCos`. The paragraph is kept for the record;
+its algebra is correct, its conclusion is not.
+
+(`PathTracingIntegrator.cpp`, both the diffusion-
 profile site and its `RandomWalkSSS` twin, both tags): recovered
 algebraically from the ALREADY-COMPUTED `bssrdfWeight`/`bssrdfWeightSpatial`
 split, no new BSSRDF-file code needed. `BSSRDFSampling.h`'s own header
@@ -381,15 +388,120 @@ it discards samples for no reason once the two roles are in two fields.
 See [DL74_ENV_NEE_GUIDING_PARTITION.md](DL74_ENV_NEE_GUIDING_PARTITION.md)
 §2.6 for the surface-side half of the same split.
 
+## Round 5 (2026-09-14, debt-guiding2 review round 4): the BSSRDF pair trains the FULL integrand (P2-3)
+
+Round 3 derived the BSSRDF exit's trained numerator as `Sw * cos` and
+argued it from `IRayCaster.h`'s "BSDF*cos at the scatter point" wording.
+That wording describes the SURFACE continuation, where `BSDF*cos` IS the
+whole vertex-local contribution.  At a BSSRDF exit it is not.
+
+### 5.1 The rule, restated from the accumulator's own derivation
+
+`OptimalMISAccumulator.h` ("CORRECT MOMENT ESTIMATION", Kondapaneni 2019):
+
+    M_i = E_{x~p_i}[ (f(x) / p_i(x))^2 ]
+
+with `f` **the integrand** — the entire vertex-local contribution of the
+sample — and `p_i` the density it was drawn from.  Every other site in
+the tree obeys that reading:
+
+| Site | trained numerator | is it the whole vertex-local contribution? |
+|---|---|---|
+| surface continuation | `scatterThroughput * effectiveBsdfPdf` | yes — the whole `BSDF*cos` |
+| volume continuation | `phaseValue` (`= phasePdf`) | yes — a phase function has no other local factor |
+| NEE (both arms) | `contrib` / `envContrib * envPdf` | yes — geometry factor included |
+| BSSRDF exit (round 3) | `Sw * cos` | **no** — `weightSpatial` dropped |
+| BSSRDF entry NEE (all rounds) | `contrib` | **no** — the caller applies `weightSpatial` afterwards |
+
+### 5.2 What the BSSRDF exit's integrand is
+
+From `BSSRDFSampling.h`'s own header:
+
+    weight        = Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
+    weightSpatial = Rd * Ft(exit) / pdfSurface
+    Sw            = Ft(entry) / (c * PI)
+
+so `weight = weightSpatial * Sw * PI`; the exit direction is cosine
+sampled, `cosinePdf = cos/PI`; and the contribution the continuation adds
+is `weightSpatial * Sw(w) * cos(w) * L(w) / cosinePdf`, which is why the
+code multiplies the escaped radiance by `weight`.  Therefore
+
+    f(w) = weightSpatial * Sw(w) * cos(w) = weight * cosinePdf     (exact)
+    f/p  = weight
+
+`weightSpatial = Rd * Ft(exit) / pdfSurface` is an **area-measure**
+quantity, not an O(1) directional factor, so dropping it scaled this
+site's moments by an arbitrary amount and skewed the solved alpha of
+every tile an SSS surface touches.  Alpha cannot bias a
+partition-of-unity weight, so the damage is variance only — but it is
+the same failure family this row keeps producing.
+
+### 5.3 Why not "leave it untrained"
+
+The review offered that alternative (as PT's in-loop volume site is left,
+DL-84).  Rejected: it silences the BSDF half while the NEE half goes on
+training the same mis-scaled moment UNPAIRED.  The NEE half lives inside
+`LightSampler` and is governed by a per-scene accumulator pointer, not a
+per-call flag, so there is no cheap way to silence it alongside.  Fixing
+both is both smaller and more correct than silencing one.
+
+### 5.4 Implementation
+
+* `PTBssrdfSwTimesCos` -> `PTBssrdfTrainedBsdfTimesCos( weight, cosinePdf )`,
+  a multiply rather than a ratio.  Consequences: the Rd==0 guard the
+  ratio form needed is gone, and the Pel form stays **per-channel**
+  instead of collapsing to `MaxValue()`.
+* `LightSampler::EvaluateDirectLighting{,NM}` take a trailing
+  `neeTrainingScale` (default 1).  It multiplies the TRAINING integrand
+  at all four `Accumulate` sites and **nothing else** — the returned
+  radiance is bit-identical at any value.  The two BSSRDF/random-walk
+  entry-NEE call sites in `PathTracingIntegrator.cpp` pass
+  `PTSurvivalMagnitude(bssrdfWeightSpatial)`; every other call site takes
+  the default.
+
+### 5.5 Red-proof: the spatial-weight scaling law
+
+`OptimalMISTrainingSitesTest`'s existing rows cannot see this defect: the
+`L_env^2` row scales the RADIANCE, which right and wrong numerators both
+carry, and `Solve()`'s alpha is a ratio that cannot see a constant scale
+at all.  The new row scales the diffusion profile's **`Rd`** by 2 through
+a decorator that forwards `SampleRadius` / `PdfRadius` /
+`FresnelTransmission` / `GetIOR` verbatim, so no sampling decision moves;
+it hands the walk a large path importance so `RayCaster`'s own
+`rs.importance < RC_RR_THRESHOLD` survival test (which reads the scaled
+BSSRDF throughput) cannot fire for either run; and it wires the
+accumulator into the `LightSampler` so the NEE half is measured too.
+Both runs then visit identical vertices and make identical attempts, and
+every trained integrand must scale by exactly 2, every moment by 4.  The
+tile also holds the SSS SURFACE vertex's own Rd-independent events, so
+the bound is `1 < S(2)/S(1) < 4`, approached from below.
+
+    before (145c9259)
+    BSSRDF site: Rd x2  BSDF sum 432.6 -> 432.6 (attempts 1028 / 1028) ,  NEE sum 1149.65 -> 1149.65 (attempts 1028 / 1028)
+    BSSRDF site: moment ratios  BSDF 1 , NEE 1  (bounded 1 < r < 4)
+      FAIL: BSSRDF site: the BSDF moment carries weightSpatial (scales as Rd^2)
+      FAIL: BSSRDF site: the entry-NEE moment carries the same weightSpatial (scales as Rd^2)
+        21 passed, 2 failed
+
+    after (e55308b9)
+    BSSRDF site: Rd x2  BSDF sum 1325.8 -> 5302.7 (attempts 1028 / 1028) ,  NEE sum 3565.15 -> 14245.1 (attempts 1028 / 1028)
+    BSSRDF site: moment ratios  BSDF 3.99962 , NEE 3.99567  (bounded 1 < r < 4)
+        23 passed, 0 failed
+
+Both pre-fix ratios are EXACTLY 1 — neither numerator depended on `Rd` at
+all — while the attempt counts confirm the two runs walked the same
+paths.  The `L_env^2` rows are unchanged at 9 (exact) on both sites.
+
 ## File status
 
 | File | Status |
 |---|---|
-| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3 (this pass): `PTBssrdfSwTimesCos` helper added; both sites wired to the correct directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). |
+| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3: `PTBssrdfSwTimesCos` helper added; both sites wired to a directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). Round 5: that quantity replaced by the FULL vertex-local integrand — `PTBssrdfTrainedBsdfTimesCos(weight, cosinePdf)` — and the two entry-NEE calls pass `neeTrainingScale` so the pair's other half carries the same factor (§5). |
 | `src/Library/Interfaces/IRayCaster.h` | Round 4: `RAY_STATE` gains `bsdfMisPdf` + `MisPartnerPdf()` (DL-74), which is what lets the volume sites carry the true sampling density and the MIS partner at the same time. |
 | `src/Library/Rendering/RayCaster.cpp` | Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. Round 3: `rs2.bsdfTimesCos = RISEPel(phasePdf,phasePdf,phasePdf)` at both sites, `AccumulateCount` added (paired, gated `phasePdf > 0`). Round 4: `rs2.bsdfPdf = effectivePdf` (the true sampling density) with the raw `phasePdf` moved to `rs2.bsdfMisPdf`; the count gate follows `effectivePdf > 0`. |
 | `tests/OptimalMISAccumulatorTest.cpp` | Round 3: new Test 12 (`TestDL72PairedTrainingFires`), 7 new checks. Round 4: header corrected — Test 12 pins the accumulator's arithmetic, not the production call sites. |
-| `tests/OptimalMISTrainingSitesTest.cpp` | Round 4: added. The row's actual red-proof; drives both production sites. |
+| `tests/OptimalMISTrainingSitesTest.cpp` | Round 4: added. The row's actual red-proof; drives both production sites. Round 5: the Rd-scaling-law row (`ScaledRdProfile` / `ScaledRdMaterial`), which pins the trained QUANTITY on both halves of the BSSRDF pair; 23 checks. |
+| `src/Library/Lights/LightSampler.{h,cpp}` | Round 5: `EvaluateDirectLighting{,NM}` take `neeTrainingScale` (default 1); all four `Accumulate` sites apply it. Training-only — the returned radiance is unaffected at any value. |
 | `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. Round 3: DL-72 CLOSED again, this time with correct wiring. |
 | `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added round 1; round-2 correction sections added same day; this "Round 3" section added 2026-09-14. |
 

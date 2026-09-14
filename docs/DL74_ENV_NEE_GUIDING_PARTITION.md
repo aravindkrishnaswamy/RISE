@@ -132,31 +132,45 @@ is that condition.
 
 ### 2.4 The `pdf > 0` gate, and delta lobes
 
-`p_mis` is evaluated **inside** each side's existing "the material pdf is
-positive" gate:
+> **Rewritten in round 4 (§9.2).** Rounds 2 and 3 gated the blend on
+> `p_aggregate > 0` and the paragraphs below argued for that gate. The
+> argument is sound only where the material is the ONLY sampler, which
+> is precisely what guiding stops being true. What follows is the
+> corrected rule; §9.2 has the measurement that overturned the old one.
 
-- **NEE arms** (`LightSampler.cpp`, both env arms and both area-light
-  arms, RGB and NM): the raw aggregate pdf is computed first; if it is
-  zero the blend is skipped entirely and the historical unweighted
-  behaviour stands.
-- **Escape / emitter hit** (`PathTracingIntegrator.cpp`): a delta lobe
-  keeps `bsdfMisPdf = 0`, and a non-delta lobe whose aggregate pdf
-  evaluates to zero at the traced direction also yields 0. `w_bsdf` is
-  then 1.
+Both sides agree on a single rule: **`p_mis(w) = 0` means no BSDF-side
+partner exists at `w`, and the light-sampling sample is taken whole.**
+What changed is *when that is true*.
 
-Both sides therefore agree on a single rule: **`p_mis(w) = 0` means no
-BSDF-side partner exists at `w`, and the light-sampling sample is taken
-whole.** That is correct for a delta lobe (NEE cannot sample through a
-Dirac, and the delta contribution is unreachable by NEE), and it is the
-only safe answer where `p_aggregate(w) = 0` — there, the BSDF strategy
-genuinely cannot generate `w`, so any weight below 1 on the NEE side
-would discard energy nothing restores.
+- **Delta lobes** — still exactly this case. `bsdfMisPdf` stays 0 for a
+  delta lobe on the escape side, NEE cannot sample through a Dirac, and
+  `w_bsdf = 1` for the delta direction is correct.
+- **Guiding inactive** — still exactly this case. `PTGuidingMisPdf::Eval`
+  passes `aggregatePdf` through untouched (zero included) when it is not
+  configured, so a vertex with no guiding keeps its pre-DL-74 weights
+  byte for byte.
+- **`p_aggregate(w) = 0` WITH guiding active** — **not** this case. The
+  continuation is drawn from `alpha_nom*guide + (1-alpha_nom)*p_agg`, and
+  `PathTracingIntegrator`'s one-sample branch traces the guided direction
+  whenever `combinedPdf > NEARZERO`, which `alpha*guide` alone satisfies.
+  The BSDF technique therefore DOES generate `w`, with density
+  `alpha_nom*guide(w)`, and that is the partner both sides must use.
 
-Without this gate the repair would have introduced a new defect of its
-own: a `polished_material` with a delta coat reaches PART 2, its
-aggregate pdf can be zero at the NEE direction, and a nonzero
-`alpha·guide(w)` would have scaled that NEE sample down while the escape,
-having selected the delta lobe, kept full weight.
+So `Eval` returns the full mixture unconditionally while guiding is
+active, and the four NEE arms call the hook OUTSIDE their `pdf > 0`
+gates, gating the weight on the BLENDED value. The hook — not the
+caller — decides what a zero aggregate pdf means; `IGuidedNEEPdfBlend`'s
+contract says so.
+
+The `polished_material` worry the old gate was built around does not
+survive contact with the code: with guiding active, a zero aggregate pdf
+now yields `alpha_nom*guide(w) > 0` on the NEE side AND on the escape
+side (`misBsdfPdf = guidingMis.Eval(traceRay.Dir(), PTEvalPdfAtSurface(...))`
+takes the same zero argument through the same function), so the two move
+together and the pair still sums to one. The case where the escape
+"kept full weight" — a SELECTED DELTA LOBE — is unaffected, because a
+delta lobe is excluded from the blend on the escape side by `!pS->isDelta`
+and its own direction is one NEE can never sample.
 
 ### 2.5 One distribution per shading point
 
@@ -282,8 +296,8 @@ Two design notes about the fixture:
 
 | Site | Verdict |
 |---|---|
-| **Env NEE, RGB + NM** (`LightSampler.cpp`) | Fixed. Blend inside the `pBsdf > 0` gate. |
-| **Area-light NEE, RGB + NM** (`LightSampler.cpp`) | Fixed — the same defect, unfiled before this round. Its BSDF-side partner (PT's emitter-hit weight) was already guided. |
+| **Env NEE, RGB + NM** (`LightSampler.cpp`) | Fixed. **Round 4**: the blend moved OUTSIDE the `pBsdf > 0` gate and the weight now gates on the blended value (§9.2). |
+| **Area-light NEE, RGB + NM** (`LightSampler.cpp`) | Fixed — the same defect, unfiled before this round. Its BSDF-side partner (PT's emitter-hit weight) was already guided. **Round 4**: same gate move as the env arms, red-proofed at +100 % by row (i). |
 | **Escape weight** (PT's own env-miss arm, and `RayCasterEnvEscapeMISWeight` for every `RayCaster` continuation) | Fixed: weight from the nominal density, training from the true one. |
 | **Emitter-hit weight** (PT PART 1) | Fixed, same split. |
 | **RIS mode** (DL-83) | Closed here. The nominal density is mode-independent; there is no RIS-specific quantity to reproduce. |
@@ -324,18 +338,19 @@ Two design notes about the fixture:
 | File | Status |
 |---|---|
 | `src/Library/Interfaces/IRayCaster.h` | `RAY_STATE` gains `bsdfMisPdf` (default -1) and `MisPartnerPdf()`; `bsdfPdf`'s doc now states its single remaining role. |
-| `src/Library/Lights/LightSampler.h` | `IGuidedNEEPdfBlend`'s contract rewritten around the nominal-density design; the `rawPdf > 0` precondition is part of it. **Round 3**: `EvaluateDirectLighting{,NM}` gain a trailing `const IORStack* pMisIorStack` (null = the historical sentinel). |
-| `src/Library/Lights/LightSampler.cpp` | All FOUR NEE arms (env and area-light, RGB and NM) blend through the hook, inside their `pdf > 0` gates, gated `!isVolumeScatter`. **Round 3**: the same four arms evaluate the aggregate pdf under the caller-supplied live IOR stack instead of the `IORStack(1.0)` sentinel. |
-| `src/Library/Shaders/PathTracingIntegrator.cpp` | **Round 3 also**: the in-loop volume-scatter continuation now sets `bsdfMisPdf = phasePdf` and clears its stale `bsdfTimesCos` (§8.3, DL-84). `PTGuidingMisPdf` (replaces `PTGuidedNEEPdfBlend`); the distribution is initialised once above PART 2 and shared; PART 3 no longer re-initialises, re-draws or re-applies the cosine product; `misBsdfPdf` computed at the continuation and carried to the emitter-hit and env-escape weights; BSSRDF, SPF-only and HWSS sites set both fields explicitly; three stale comments corrected. **Round 3**: the three `IntegrateFromHit*` entry points and the two templates behind them take a trailing `bsdfMisPdf_` (-1 = "same as `bsdfPdf`"); the env-escape and emitter-hit gates admit either density; the HWSS body carries an incoming partner through its weights and its NM fallbacks; PART 2's NEE and the HWSS NEE site pass the live `iorStack` as the MIS-partner evaluation context. |
+| `src/Library/Lights/LightSampler.h` | `IGuidedNEEPdfBlend`'s contract rewritten around the nominal-density design. **Round 3**: `EvaluateDirectLighting{,NM}` gain a trailing `const IORStack* pMisIorStack` (null = the historical sentinel). **Round 4**: the contract's `rawPdf > 0` PRECONDITION is gone -- `rawPdf` may be zero and the IMPLEMENTATION decides what that means (§9.2); and `EvaluateDirectLighting{,NM}` gain a trailing `neeTrainingScale` (default 1) that scales the optimal-MIS TRAINING integrand only, never the returned radiance (DL-72 P2-3). |
+| `src/Library/Lights/LightSampler.cpp` | All FOUR NEE arms (env and area-light, RGB and NM) blend through the hook, gated `!isVolumeScatter`. **Round 3**: the same four arms evaluate the aggregate pdf under the caller-supplied live IOR stack instead of the `IORStack(1.0)` sentinel. **Round 4**: the blend moved OUTSIDE each arm's `pdf > 0` gate, which now tests the BLENDED value (§9.2); and all four `Accumulate` sites apply `neeTrainingScale`. |
+| `src/Library/Shaders/PathTracingIntegrator.cpp` | **Round 4**: `PTGuidingMisPdf::Eval` returns the full mixture whenever guiding is active, zero aggregate pdf included (§9.2); the HWSS SSS mid-path fallback forwards `bsdfMisPdf` like its three siblings (§9.1); `PTBssrdfSwTimesCos` -> `PTBssrdfTrainedBsdfTimesCos` and the two BSSRDF entry-NEE calls pass `neeTrainingScale` (DL-72 §5). **Round 3 also**: the in-loop volume-scatter continuation now sets `bsdfMisPdf = phasePdf` and clears its stale `bsdfTimesCos` (§8.3, DL-84). `PTGuidingMisPdf` (replaces `PTGuidedNEEPdfBlend`); the distribution is initialised once above PART 2 and shared; PART 3 no longer re-initialises, re-draws or re-applies the cosine product; `misBsdfPdf` computed at the continuation and carried to the emitter-hit and env-escape weights; BSSRDF, SPF-only and HWSS sites set both fields explicitly; three stale comments corrected. **Round 3**: the three `IntegrateFromHit*` entry points and the two templates behind them take a trailing `bsdfMisPdf_` (-1 = "same as `bsdfPdf`"); the env-escape and emitter-hit gates admit either density; the HWSS body carries an incoming partner through its weights and its NM fallbacks; PART 2's NEE and the HWSS NEE site pass the live `iorStack` as the MIS-partner evaluation context. |
 | `src/Library/Shaders/PathTracingShaderOp.cpp` | **Round 3**: all three entry points forward `rs.MisPartnerPdf()` alongside `rs.bsdfPdf`. This file is the P1 defect's whole surface. |
 | `src/Library/Shaders/EmissionShaderOp.cpp` | **Round 3**: the RGB and NM emitter-hit weights read `MisPartnerPdf()` instead of `bsdfPdf` and gate on either density. |
-| `src/Library/Shaders/DirectLightingShaderOp.cpp` | **Round 3**: passes its own `ior_stack` as the MIS-partner evaluation context, so the legacy chain's NEE arm and `EmissionShaderOp`'s weight evaluate one function of direction. |
+| `src/Library/Shaders/DirectLightingShaderOp.cpp` | **Round 3**: passes its own `ior_stack` as the MIS-partner evaluation context, so its NEE arm evaluates `p_aggregate` under the stack the vertex is standing in rather than the `IORStack(1.0)` sentinel. **Round 4 correction**: the earlier wording here claimed this made "the legacy chain's NEE arm and `EmissionShaderOp`'s weight evaluate one function of direction". It does not, and that chain does not partition at all: `ReflectionShaderOp`, `RefractionShaderOp`, `DistributionTracingShaderOp` and `FinalGatherShaderOp` all continue with a DEFAULT-CONSTRUCTED `IRayCaster::RAY_STATE rs2;`, so `bsdfPdf = 0` and `bsdfMisPdf = -1`, `MisPartnerPdf()` is 0, and `EmissionShaderOp` weights every emitter hit reached through them at 1. What round 3 actually bought is that the legacy NEE arm is now self-consistent with the BSDF-sampling density its own vertex uses; making the legacy chain partition would mean teaching those four ops to populate a `RAY_STATE`, which is not in this slice's scope and is not claimed. |
 | `src/Library/Utilities/MediumTransport.cpp` | **Round 3**: `MediumScatterMaterial::Pdf`'s comment corrected -- it is `rs2.bsdfMisPdf`, not `rs2.bsdfPdf`, that carries the raw phase pdf since the round-2 split. |
 | `src/Library/Utilities/OptimalMISAccumulator.{h,cpp}` | **Round 3**: const `GetTileTraining()` accessor for the raw per-tile sums and counts, so a test can assert the trained QUANTITY and not only `Solve()`'s ratio (DL-72 P3-4). |
 | `src/Library/Rendering/RayCaster.cpp` | `RayCasterEnvEscapeMISWeight` weights from `MisPartnerPdf()` and trains from `bsdfPdf`; both volume continuations split the two roles (DL-72 P2-5). |
 | `src/Library/Shaders/BDPTIntegrator.cpp` | Its one `RAY_STATE` producer sets both fields. |
-| `tests/PTGuidingMISPartitionTest.cpp` | Added — the red-proof. **Round 3**: two measurement rows added (§8) plus two deterministic premise checks on the production `PolishedSPF` / `TranslucentSPF` pdfs. 37 checks. |
-| `tests/OptimalMISTrainingSitesTest.cpp` | **Round 3**: both sites now assert the trained moment itself (a whole multiple of `L_env^2` at the volume site; exact `L_env^2` scaling at both). 19 checks. |
+| `tests/PTGuidingMISPartitionTest.cpp` | Added — the red-proof. **Round 3**: two measurement rows added (§8) plus two deterministic premise checks on the production `PolishedSPF` / `TranslucentSPF` pdfs. **Round 4**: rows (h) and (i), the zero-aggregate-pdf wedge on each of the two MIS pairs, each with a guiding-OFF control and a deterministic wedge premise (§9.2). 63 checks. |
+| `tests/OptimalMISTrainingSitesTest.cpp` | **Round 3**: both sites now assert the trained moment itself (a whole multiple of `L_env^2` at the volume site; exact `L_env^2` scaling at both). **Round 4**: the spatial-weight scaling law on both halves of the BSSRDF pair (DL-72 §5). 23 checks. |
+| `tests/VolumeAbsorptionAttenuationTest.cpp` | **Round 4**: row [R] repeat-averaged over 4 independently seeded renders (`RenderCentralBlockAveraged`) — it was a 2.6-sigma gate on its own 3.13 % spread and failed ~1 % of runs. Not a transport change; §9.6 has the measurement. |
 | `docs/DEBT_LEDGER.md` | DL-74 and DL-83 struck CLOSED; Counts updated. |
 
 ## 7. Gate
@@ -368,7 +383,10 @@ Plus every suite that mentions `IntegrateFromHit` or `RAY_STATE`
 how the touched-class rule resolves for this change:
 `AgentViewModeRenderTest` 687/0 · `AreaLightShaderOpScalarNTest` 11/0 ·
 `AmbientOcclusionCastsShadowsTest` 10/0 · `HairRenderTest` 26/0 ·
-`VolumeAbsorptionAttenuationTest` 89/0.
+`VolumeAbsorptionAttenuationTest` 89/0 — **that last figure was quoted as
+if it were stable and it was not**: the suite fails ~1 % of runs on row
+[R], independently of this slice.  §9.6 has the measurement and the
+fixture fix.
 
 ## 8. Round 3 (2026-09-14, review round 3 of the same slice)
 
@@ -529,8 +547,216 @@ Lambertian BRDF and varies ONLY the stack-dependence of the sampling
 density — a uniform hemisphere about a TILTED axis when the stack top is
 1.5, the real cosine `LambertianSPF` otherwise.  Both are legitimate
 sampling densities, so the closed form is exact; and the wedge where the
-tilted hemisphere does not cover the upper hemisphere exercises §2.4's
-"`p_aggregate == 0` means NEE takes the whole sample" rule on both sides
-at once.  The production materials' stack-dependence is asserted
+tilted hemisphere does not cover the upper hemisphere is the
+`p_aggregate == 0` region — which round 3 believed was handled
+symmetrically by §2.4's old gate and round 4 measured as a double count
+(rows (h) and (i), §9.2).  The production materials' stack-dependence is asserted
 separately and deterministically (the premise block quoted above), so
 the decorator stands in for measured behaviour rather than for a guess.
+
+## 9. Round 4 (2026-09-14, review round 4 of the same slice)
+
+Round 4 found **no P1**.  What it found was one latent asymmetry, one
+live partition defect at the edge of the design (`p_aggregate == 0`), two
+documentation overclaims, and one flaky suite quoted as green.
+
+### 9.1 P2-1 — the fourth HWSS delegation did not forward the partner
+
+`IntegrateFromHitHWSS` hands off to `IntegrateFromHitNM` at four places:
+the two HWSS-ENTRY fallbacks (no BSDF at the first hit; SSS at the first
+hit), the mid-path "entered a dielectric" delegation, and the mid-path
+SSS delegation.  Round 3 gave the first three the incoming `bsdfMisPdf`;
+the fourth kept the default -1, i.e. "the partner equals `bsdfPdf`".
+
+Unreachable today WITH A DIFFERING VALUE: the only producer that splits
+the two densities is `RayCaster`'s volume phase-scatter continuation, and
+reaching this site from it needs a guided medium vertex whose
+continuation lands on a diffusion-profile / random-walk SSS surface in
+the MIDDLE of an HWSS walk.  Nothing in `scenes/` builds that, so there
+is no behaviour change and none is claimed.  Forwarded anyway
+(`0860f78f`) so the next producer that splits the fields inherits the
+right answer at all four sites instead of three.
+
+### 9.2 P2-2 — a zero AGGREGATE pdf is not a zero MIXTURE pdf
+
+The defect is §2.4's old gate, quoted in full there.  Rounds 2 and 3
+treated `p_aggregate(w) <= 0` as "the BSDF-sampling technique never
+generates `w`" and handed the whole sample to NEE.  Under guiding that is
+false: the continuation is drawn from a mixture whose guide term reaches
+directions the material's own sampler cannot, and
+`PathTracingIntegrator`'s one-sample branch evaluates `bsdfPdfGuided`
+purely as a mixture component and traces the guided direction whenever
+`combinedPdf > NEARZERO` — which `alpha*guide` alone satisfies.  Both
+halves of the partition then returned "no partner" and both took weight
+1, so that whole region's energy was counted **twice**.
+
+Reachable set in production: any direction with a nonzero BSDF value but
+zero aggregate SAMPLING density.  That includes the four full-sphere
+BSDFs (hair, fabric, weave, translucent), whose NEE hemisphere rejection
+is deliberately disabled (`bFullSphere` in `LightSampler.cpp`), and any
+partial-support lobe.
+
+Fix (`145c9259`): `PTGuidingMisPdf::Eval` returns the true mixture
+`alpha_nom*guide(w) + (1-alpha_nom)*max(p_agg,0)` whenever guiding is
+ACTIVE, and passes `aggregatePdf` through untouched when it is not — so
+"no partner exists" survives exactly where it is correct (delta lobes; no
+guiding).  The four NEE arms call the hook OUTSIDE their `pdf > 0` gates
+and gate the weight on the BLENDED value.  `IGuidedNEEPdfBlend`'s
+contract now states that `rawPdf` MAY be zero and that the
+implementation, not the caller, decides what that means.  With guiding
+off `pGuidedBlend` is null at every call site, so nothing changes.
+
+**Red-proof** — two new rows in `tests/PTGuidingMISPartitionTest.cpp`
+(`0beb7885`), one per MIS pair, built on the tilted-lobe `StackAwareSPF`
+row (f) already uses.  Inside the dielectric that SPF samples uniformly
+over a hemisphere tilted 45 degrees off `N` and its `Pdf` is EXACTLY zero
+outside it, while its BRDF stays the albedo-1 Lambertian over the whole
+upper hemisphere; the lune between the two is the wedge `W`.
+
+| row | pair | expected | pre-fix | post-fix |
+|---|---|---|---|---|
+| (h) | env-NEE vs the env ESCAPE weight, guide aimed into `W` | `L_env` = 0.6 | 0.66341 (**+10.57 %**) | 0.597905 (−0.35 %) |
+| (h) CONTROL | same, guiding OFF | 0.6 | 0.600058 | 0.600058 |
+| (i) | area-NEE vs the EMITTER-HIT weight, emitter entirely inside `W` | `L_e*(R/d)^2*cos(beta)` = 0.0254648 | 0.0510197 (**+100.35 %**) | 0.0254577 (−0.03 %) |
+| (i) CONTROL | same, guiding OFF | 0.0254648 | 0.0255986 | 0.0255986 |
+
+The predicted pre-fix excess is `W`'s cosine-weighted share of the upper
+hemisphere, `(1 - cos 45)/2 = 14.6 %` for (h) and 100 % for (i) (the
+emitter lies entirely inside `W`, so its whole contribution is the
+doubled part).  Row (i) lands on that to 0.35 %.  Row (h) reads +10.57 %
+at its 160k samples and +12.23 % at 640k — an under-converged estimate of
+the 14.6 %, because the guide is a narrow `cos^64` lobe inside a
+45-degree-wide lune, so the pre-fix escape side's own estimate of the
+wedge integral is heavy-tailed.  Both CONTROL rows — same material, same
+geometry, guiding OFF, where the wedge really is unreachable by the BSDF
+technique and weight 1 is correct — pass before and after, which is what
+shows the two failing rows measure the blend and not the harness.
+
+Row (i)'s geometry is chosen so the closed form survives: angular radius
+`asin(1/5) = 11.5 deg` at `beta = 60 deg` from the normal, which clears
+the surface horizon by 18.5 degrees and the wedge's own boundary by 15,
+so the projected solid angle is exactly `PI*sin^2(alpha)*cos(beta)`.
+
+### 9.3 P3(a) — `ApplyCosineProduct` moved the SAMPLING distribution too
+
+§2.5 hoisted `InitDistribution` + `ApplyCosineProduct` above PART 2 and
+applies the cosine product UNCONDITIONALLY, where PART 3 had applied it
+only for an `eRayDiffuse` lobe.  The stated motive was the shared nominal
+MIS density, but `guideDist` is ALSO the object PART 3 samples from —
+`rc.pGuidingField->Sample(guideDist, xi2d, guidePdf)` — so for a GLOSSY
+lobe under guiding this changes the proposal distribution, not only the
+weight.
+
+That is unbiased: the guided throughput divides by `combinedPdf`, which
+is built from `guidePdf` read back from the same product-applied
+distribution, so the estimator's denominator matches its proposal at
+every direction.  It is a VARIANCE change, in a direction that depends on
+the scene — guide-times-cosine is the physically motivated factorisation
+for surface reflection, but on a narrow glossy lobe the cosine factor
+does not describe where the BSDF's own mass is.  No measurement of that
+variance effect was taken in this slice, and none is claimed; the rows
+above measure only the expectation (row (c), whose lobe is tagged
+`eRayReflection`, is closed-form-green before and after).
+
+### 9.4 P3(b) — clay_lights: reviewed and REFUTED
+
+Round 4 raised: "PART 2 uses `pClayMaterial->Pdf` while PART 3's
+`misBsdfPdf` uses the real SPF, so DL-74's invariant does not hold in
+clay mode."  It does hold.  Read end to end:
+
+* PART 3's aggregate pdf is `PTEvalPdfAtSurface<Tag>(pSPF, ...)`, and
+  `pSPF` is acquired as
+  `EffectivePathTracingClayOverride(rc, mClayOverride) ? pClaySPF : ri.pMaterial->GetSPF()`
+  — under clay_lights it is **`pClaySPF`**, not the authored SPF.
+* `ClayNEEMaterial` deliberately does NOT override `Pdf`/`PdfNM`, and
+  `IMaterial::Pdf` (Materials/IMaterial.cpp) is
+  `GetSPF()->Pdf(ri, wo, ior_stack)`; `ClayNEEMaterial::GetSPF()` returns
+  the same `pClaySPF` instance.
+
+So both sides evaluate `pClaySPF::Pdf` on the same direction and the same
+IOR stack.  No change made; recorded here so the next reviewer does not
+re-raise it.
+
+### 9.5 P3(c) — the legacy shader chain still does not partition
+
+Corrected in §6's `DirectLightingShaderOp.cpp` row.  Round 3's wording
+there claimed its `ior_stack` fix made "the legacy chain's NEE arm and
+`EmissionShaderOp`'s weight evaluate one function of direction".
+`ReflectionShaderOp`, `RefractionShaderOp`, `DistributionTracingShaderOp`
+and `FinalGatherShaderOp` all continue with a DEFAULT-CONSTRUCTED
+`IRayCaster::RAY_STATE rs2;` — `bsdfPdf = 0`, `bsdfMisPdf = -1`,
+`MisPartnerPdf() == 0` — so `EmissionShaderOp` weights every emitter hit
+reached through them at 1.  What round 3 bought is that the legacy NEE
+arm is self-consistent with its own vertex's sampling density.  Making
+that chain partition means teaching those four ops to populate a
+`RAY_STATE`; not in this slice, and not claimed.
+
+### 9.6 P2-4 — `VolumeAbsorptionAttenuationTest` was quoted as 89/0 and is flaky
+
+§7's round-3 gate quotes `VolumeAbsorptionAttenuationTest` 89/0.  A
+reviewer saw 86/3 once in twelve runs: row **[R]** (RGB coloured absorber
+with an omni light, equiangular-MIS regime, 1024 spp) over by ~9.4 % in
+every channel, observed optical depth 0.310 against the authored 0.400.
+
+By derivation this slice cannot touch that row — guiding off, a delta
+refractor, `scattering 0`, `pathtracing_pel_rasterizer` — and the
+measurement below confirms the row is unbiased.  What it is, is
+**under-averaged for the tolerance it asserts**.
+
+Reproduction on this HEAD: 48 serial runs, all 89/0.  Under CPU
+contention (four concurrent instances), **2 failures in 41 runs**, both
+with the reviewer's exact signature:
+
+    R.r  measured=0.729078  expected=0.67032  rel=0.0876572  (observed optical depth=0.315974 vs authored=0.4)
+    R.g  measured=0.327553  expected=0.301194  rel=0.087515   (observed optical depth=1.1161  vs authored=1.2)
+    R.b  measured=0.0986316 expected=0.090718  rel=0.0872332  (observed optical depth=2.31636 vs authored=2.4)
+
+    R.r  measured=0.735396  expected=0.67032  rel=0.0970822  (observed optical depth=0.307346 vs authored=0.4)
+
+Then 40 renders of that row alone, four-at-a-time:
+
+| | mean | vs closed form | sd (relative) | range |
+|---|---|---|---|---|
+| r | 0.674237 | +0.58 % | **3.13 %** | −5.91 % .. +7.96 % |
+| g | 0.302915 | +0.57 % | **3.13 %** | −5.92 % .. +7.94 % |
+| b | 0.091213 | +0.55 % | **3.13 %** | −5.94 % .. +7.92 % |
+
+The row's gate is `kRelTol = 0.08`, i.e. **2.6 sigma** on its own
+distribution — a ~1 % per-run failure rate, which is what 2-in-89 is.
+The mean is within 0.6 % of the closed form, so nothing is biased; and
+the per-channel sd agrees to four significant figures, i.e. the
+run-to-run variation is a pure MULTIPLICATIVE scale on the whole
+measurement rather than a coloured firefly.  That rules out the
+heavy-tail-estimator reading as much as it rules out a transport defect:
+**no ledger row is filed.**
+
+Why a test that calls `std::srand` varies between runs at all:
+`std::srand` fixes the SEQUENCE, not the ASSIGNMENT.  RISE's render
+workers draw their per-item seeds from the unsynchronized libc `rand()`,
+so which worker gets which seed is a function of thread scheduling —
+which is why contention is what surfaced it, and why the observed values
+cluster into a handful of repeated outcomes rather than spreading
+smoothly.
+
+Fix (fixture-level): row [R] is repeat-averaged over 4 renders through a
+new `RenderCentralBlockAveraged` helper; `RenderCentralBlock` already
+does `std::srand(g_renderSeed++)` per call, so the repeats are
+independently seeded — the `rise-render-seeding` convention.  Re-measured
+the same way (36 runs, four-at-a-time):
+
+| | mean | vs closed form | sd (relative) | range |
+|---|---|---|---|---|
+| r | 0.677147 | +1.02 % | **2.09 %** | −4.33 % .. +4.83 % |
+| g | 0.304223 | +1.01 % | **2.09 %** | −4.34 % .. +4.81 % |
+| b | 0.091607 | +0.98 % | **2.09 %** | −4.36 % .. +4.79 % |
+
+sd falls by 1.50x (not the ideal 2.0x — the four repeats share one
+process's `rand()` lineage and thread pool, so they are not fully
+independent), the gate becomes ~3.8 sigma, and the worst of 36 loaded
+runs sits at 60 % of the tolerance.  Runtime cost: 10.1 s -> 10.8 s for
+the whole suite.  Tolerance unchanged at 8 %.
+
+Not done, and deliberately: the neighbouring omni rows ([Q], and the
+heterogeneous-medium rows) are in the same regime and presumably carry a
+similar spread, but none has been observed to fail and none is quoted in
+a gate — observed-need gated, like any other speculative hardening.
