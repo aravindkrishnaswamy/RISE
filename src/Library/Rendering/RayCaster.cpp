@@ -1250,7 +1250,7 @@ bool RayCaster::CastRay(
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
 				rs2.bsdfPdf = phasePdf;
-				// DL-68 (P2-2): mirror the PT integrator's PTBsdfTimesCos
+				// DL-69 (P2-2): mirror the PT integrator's PTBsdfTimesCos
 				// convention (scatterThroughput * pdf) so a phase-scatter
 				// continuation that escapes to the env map can train
 				// RayCasterEnvEscapeMISWeight's optimal-MIS accumulator --
@@ -1857,7 +1857,7 @@ bool RayCaster::CastRayNM(
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
 				rs2.bsdfPdf = phasePdf;
-				// DL-68 (P2-2): NM sibling of the RGB volume-continuation
+				// DL-69 (P2-2): NM sibling of the RGB volume-continuation
 				// fix above -- mirrors PTBsdfTimesCos's Scalar overload
 				// (fabs(throughput) * pdf) so RAY_STATE.bsdfTimesCos
 				// (always RISEPel) carries a real value here too.

@@ -2553,7 +2553,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-68 (P2-2): compute bsdfTimesCos for BOTH tags via the
+										// DL-69 (P2-2): compute bsdfTimesCos for BOTH tags via the
 										// same PTBsdfTimesCos/PTRayStateBsdfTimesCos pair the main
 										// scatter continuation uses (~PTBsdfTimesCos( scatterThroughput,
 										// effectiveBsdfPdf ) a few hundred lines below), rather than
@@ -2728,7 +2728,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-68 (P2-2): compute bsdfTimesCos for BOTH tags via the
+										// DL-69 (P2-2): compute bsdfTimesCos for BOTH tags via the
 										// same PTBsdfTimesCos/PTRayStateBsdfTimesCos pair the main
 										// scatter continuation uses (~PTBsdfTimesCos( scatterThroughput,
 										// effectiveBsdfPdf ) a few hundred lines below), rather than
