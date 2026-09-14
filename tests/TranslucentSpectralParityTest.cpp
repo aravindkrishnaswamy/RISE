@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <initializer_list>
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
@@ -178,12 +179,24 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
     if (tilted) {
         ri.vNormal = Vector3Ops::Normalize(Vector3(1, 2, -3));
         ri.onb.CreateFromW(ri.vNormal);
-        // Retain the true geometric normal: exit transmission must not
-        // inherit the entering reflection lobe's geometric-horizon gate.
+        // Retain the true geometric normal (ri.vGeomNormal stays (0,0,-1)
+        // from Hit()): DL-45 -- the exit re-emission's geometric-horizon
+        // gate uses vGeomNormal directly (NOT the entering reflection
+        // lobe's ray-anchored `geomN`), so tilting only the SHADING
+        // normal here deliberately exercises that gate/renormalization,
+        // not the entry lobe's separate, unrenormalized one.
     }
     IORStack inside = MakeTestIORStack(object, 1.33);
     inside.push(inside.top());
     Check(inside.containsCurrent(), "density fixture starts inside");
+    // DL-45: the exit density is normalized to the geometrically-valid
+    // sub-hemisphere (dot(wo,vGeomNormal)>0), not the full shading
+    // hemisphere -- see TranslucentSPF.cpp's ExitValidFraction.  At
+    // tilt=0, onb.w() == vGeomNormal exactly (both (0,0,-1) from Hit()),
+    // so cosPhi=1 and validFraction=1: the untitled sub-test's original
+    // expectations are unaffected by this factor.
+    const Scalar cosPhi = Vector3Ops::Dot(ri.onb.w(), ri.vGeomNormal);
+    const Scalar validFraction = std::max(Scalar(1e-4), (Scalar(1) + cosPhi) * Scalar(0.5));
     for (int pipe = 0; pipe < 4; ++pipe) {
         const Scalar nm = 450 + 100 * (pipe - 1);
         bool support = true, stored = true, evaluated = true, cdf = true, popped = true;
@@ -200,7 +213,7 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
                 if (ray.type != ScatteredRay::eRayDiffuse) continue;
                 ++exits;
                 const Scalar mu = Vector3Ops::Dot(ray.ray.Dir(), ri.onb.w());
-                const Scalar expected = mu * INV_PI;
+                const Scalar expected = mu * INV_PI / validFraction;
                 const Scalar pdf = pipe == 0 ? spf->Pdf(ri, ray.ray.Dir(), inside)
                     : spf->PdfNM(ri, ray.ray.Dir(), nm, inside);
                 support &= mu > 0 && ray.pdf > 0 && !ray.isDelta;
@@ -240,7 +253,23 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
                     : spf->PdfNM(ri, back, nm, inside)) * TWO_PI / (32 * 8);
             }
         }
-        Check(DensityNear(positive, 1), "exit PDF integrates to one on exit hemisphere");
+        // A tilted shading normal makes the geometric-horizon cutoff fall
+        // inside a mu-cell rather than exactly at a grid line, so this
+        // coarse (32x8) midpoint-rule quadrature no longer integrates the
+        // (now genuinely discontinuous, DL-45) density EXACTLY the way it
+        // does the untilted plain-cosine case -- loosen the tolerance by
+        // the quadrature's own O(1/gridsize) discretization error instead
+        // of the exact float-noise band DensityNear uses.  Still tight
+        // enough to separate a normalized density (~1.0) from the old
+        // unrenormalized-reject policy's value (validFraction, e.g. ~0.80
+        // for this fixture's tilt), which is what a regression of DL-45
+        // would produce here.
+        const Scalar positiveTol = tilted ? 0.05 : 1e-10;
+        ++checks;
+        if (!(std::isfinite(positive) && std::fabs(positive - 1) <= positiveTol)) {
+            ++failures;
+            std::printf("FAIL: exit PDF integrates to one on exit hemisphere got %.9f\n", positive);
+        }
         // This API describes the diffuse lobe only; backscatter has a
         // separate stored Phong density, not a complete Pdf/PdfNM mixture.
         Check(DensityNear(negative, 0), "diffuse PDF excludes backscatter hemisphere");
