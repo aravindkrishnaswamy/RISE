@@ -200,6 +200,27 @@ namespace
 		pObj->IntersectRay( ri, RISE_INFINITY, true, true, true );
 	}
 
+	//! One straight, wide hair strand along X through the origin (the
+	//! `MakeWideHairStrand` pattern from tests/HairSSSEntryNormalTest.cpp),
+	//! so a +Z ray near the origin hits it squarely.  `HairGeometry`
+	//! fabricates its geometric normal FROM THE RAY and advertises that
+	//! via `bGeomNormalRayDerived`.
+	Object* BuildWideStrand()
+	{
+		std::vector<HairGeometry::StrandDesc> strands( 1 );
+		strands[0].controlPoints.push_back( Point3( -2, 0, 0 ) );
+		strands[0].controlPoints.push_back( Point3(  2, 0, 0 ) );
+		strands[0].rootWidth = 1.0;
+		strands[0].tipWidth  = 1.0;
+		strands[0].rootUV    = Point2( 0, 0 );
+
+		HairGeometry* hair = new HairGeometry( strands );
+		Object* o = new Object( hair );
+		safe_release( hair );
+		o->FinalizeTransformations();
+		return o;
+	}
+
 	//! The RayCaster factory takes an IShader by reference; a
 	//! shader with no ops is enough for the shadow / NEE paths under
 	//! test here (neither ever calls Shade).
@@ -409,20 +430,7 @@ static void TestHairIsSkipped()
 	std::cout << "Sub-test 1b: HairGeometry reports a RAY-DERIVED normal (recovery must be skipped)"
 		<< std::endl;
 
-	// One straight, wide strand along X through the origin (the
-	// `MakeWideHairStrand` pattern from tests/HairSSSEntryNormalTest.cpp),
-	// so a +Z ray through (0,0,-2) hits it squarely.
-	std::vector<HairGeometry::StrandDesc> strands( 1 );
-	strands[0].controlPoints.push_back( Point3( -2, 0, 0 ) );
-	strands[0].controlPoints.push_back( Point3(  2, 0, 0 ) );
-	strands[0].rootWidth = 1.0;
-	strands[0].tipWidth  = 1.0;
-	strands[0].rootUV    = Point2( 0, 0 );
-
-	HairGeometry* hair = new HairGeometry( strands );
-	Object* o = new Object( hair );
-	safe_release( hair );
-	o->FinalizeTransformations();
+	Object* o = BuildWideStrand();
 
 	RasterizerState rast = {0};
 	const Ray ray( Point3( 0, 0, -2 ), Vector3( 0, 0, 1 ) );
@@ -677,6 +685,126 @@ static void TestShadowWalkMediumStack()
 	}
 }
 
+
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 4 (sites 1/2, the RAY-DERIVED half): a hair strand
+//  carrying an interior medium must not leak that medium down the rest
+//  of the shadow ray.
+//
+//  `HairGeometry` fabricates its geometric normal from the ray, so BOTH
+//  the raw read AND the un-flip recovery report "entering" at every
+//  strand the shadow ray crosses: the medium is pushed once per strand
+//  and never removed, and is then applied over the whole remaining
+//  (here infinite) distance to the light.  A 1-D curve has no interior
+//  for a medium to occupy, so the walk skips such a hit outright --
+//  the same rule `IORStackSeeding::SeedFromPoint`'s containment probe
+//  follows (`bGeomNormalRayDerived`).
+//////////////////////////////////////////////////////////////////////
+static void TestShadowWalkSkipsRayDerivedNormals()
+{
+	std::cout << "Sub-test 4: the shadow walk skips a RAY-DERIVED (hair) crossing (sites 1/2)"
+		<< std::endl;
+
+	const Scalar eta = 1.5;
+	const Scalar sigma_a = 0.25;
+
+	Object* oHair = BuildWideStrand();
+	DielectricFixture fx( eta );
+	oHair->AssignMaterial( *fx.material );
+
+	IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
+	phase->addref();
+	HomogeneousMedium* medium = new HomogeneousMedium(
+		RISEPel( sigma_a, sigma_a, sigma_a ), RISEPel( 0, 0, 0 ), *phase );
+	medium->addref();
+	oHair->AssignInteriorMedium( *medium );
+
+	ObjectManager* manager = new ObjectManager( false, false, 4, 8 );
+	manager->addref();
+	manager->AddItem( oHair, "medium_strand" );
+
+	DirectionalLight* light = new DirectionalLight( 1.0, RISEPel( 1, 1, 1 ), Vector3( 0, 0, 1 ) );
+	light->addref();
+	LightManager* lights = new LightManager();
+	lights->addref();
+	lights->AddItem( light, "sun" );
+
+	Scene* scene = new Scene();
+	scene->addref();
+	scene->SetObjectManager( manager );
+	scene->SetLightManager( lights );
+
+	IShader* pShader = MakeTrivialShader();
+	IRayCaster* pICaster = 0;
+	RISE_API_CreateRayCaster( &pICaster, false, 10, *pShader, true );
+	RayCaster* pCaster = dynamic_cast<RayCaster*>( pICaster );
+	Check( pCaster != 0, "(hair medium) ray caster created" );
+
+	if( pCaster )
+	{
+		pCaster->AttachScene( scene );
+		pCaster->SetTransparentShadows( true );
+
+		LightSampler* sampler = new LightSampler();
+		sampler->addref();
+		LuminaryManager::LuminariesList noLuminaries;
+		sampler->Prepare( *scene, noLuminaries );
+
+		UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+		white->addref();
+		LambertianMaterial* lam = new LambertianMaterial( *white );
+		lam->addref();
+
+		RasterizerState rast = {0};
+		// Same receiver geometry as sub-test 3, moved below the strand
+		// (which lies along X in the z = 0 plane) so the shadow ray to
+		// the +Z light crosses it.
+		RayIntersectionGeometric ri( Ray( Point3( 0, 0, 5 ), Vector3( 0, 0, -1 ) ), rast );
+		ri.bHit = true;
+		ri.ptIntersection = Point3( 0, 0, -3 );
+		ri.vNormal = Vector3( 0, 0, 1 );
+		ri.vGeomNormal = Vector3( 0, 0, 1 );
+		ri.onb.CreateFromW( ri.vNormal );
+		ri.range = 8.0;
+
+		RandomNumberGenerator rng;
+		IndependentSampler isampler( rng );
+
+		const RISEPel L = sampler->EvaluateDirectLighting(
+			ri, *lam->GetBSDF(), lam, *pCaster, isampler,
+			0, 0, false, 0 );
+
+		// Fixture sanity: the strand really is crossed, and really does
+		// report a ray-derived normal.
+		RayIntersection probe( Ray( Point3( 0, 0, -3 ), Vector3( 0, 0, 1 ) ), rast );
+		Hit( oHair, probe.geometric.ray, probe );
+		Check( probe.geometric.bHit, "(hair medium) fixture: the shadow direction crosses the strand" );
+		Check( probe.geometric.bGeomNormalRayDerived,
+			"(hair medium) fixture: the strand reports bGeomNormalRayDerived" );
+
+		// MONEY: the light survives.  With the crossing tallied (either
+		// spelling -- raw or recovered), the medium is pushed and never
+		// removed, so it attenuates the remaining RISE_INFINITY distance
+		// to the light and `L` collapses to 0.
+		Check( L.r > 0.05,
+			"(hair medium) MONEY: a ray-derived crossing does not leak its interior medium down the rest of the shadow ray" );
+
+		lam->release();
+		white->release();
+		sampler->release();
+	}
+
+	safe_release( pICaster );
+	safe_release( pShader );
+	scene->release();
+	lights->release();
+	light->release();
+	manager->release();
+	medium->release();
+	phase->release();
+	oHair->release();
+}
+
 int main()
 {
 	std::cout << "GeomNormalOrientationSitesTest (DL-70)" << std::endl;
@@ -686,6 +814,7 @@ int main()
 	TestHairIsSkipped();
 	TestTransmissiveShadowFresnelPair();
 	TestShadowWalkMediumStack();
+	TestShadowWalkSkipsRayDerivedNormals();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;

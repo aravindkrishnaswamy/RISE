@@ -344,7 +344,15 @@ namespace
 			// exiting on a reflection vertex, propagating a wrong
 			// `isExiting` bit into the photon record and downstream
 			// Fresnel etaI/etaT pair.  PBRT 4e §10.1.1.
-			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vGeomNormal );
+			// DL-70: against the TRUE, ray-INDEPENDENT geometric normal.
+			// A double-sided specular caster reports a `vGeomNormal`
+			// opposing the photon at every vertex, so `cosI` was
+			// unconditionally negative and the reflection branch stamped
+			// `bEntering = true` on a back-face vertex too, propagating a
+			// wrong side bit (and therefore a wrong Fresnel etaI/etaT
+			// pair) into the photon record.  No-op on every geometry that
+			// does not flip.
+			const Scalar cosI = ri.geometric.TrueGeomFacing( ray.Dir() );
 			const bool bReflection = ( pScat->type == ScatteredRay::eRayReflection );
 			const bool bEntering = bReflection
 			    ? ( cosI < 0 )          // reflection: medium unchanged; keep

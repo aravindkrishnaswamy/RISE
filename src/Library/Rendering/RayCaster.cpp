@@ -570,10 +570,15 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	// Un-flip via the recorded per-hit flag before dotting; geometries
 	// that never flip (the flag stays false) get the raw dot back
 	// unchanged.
+	// (DL-70: now THE shared recovery on the record itself, which also
+	// honours `bGeomNormalRayDerived` -- a hair hit's fabricated normal
+	// has no flip to undo, so the raw facing is returned there.  Hair
+	// cannot reach this walk today, since `HairMaterial` does not report
+	// `CouldLightPassThrough`, but the helper makes that structural
+	// rather than incidental.)
 	auto trueGeomFacing = []( const RayIntersectionGeometric& g, const Vector3& d ) -> Scalar
 	{
-		const Scalar raw = Vector3Ops::Dot( g.vGeomNormal, d );
-		return g.bGeomNormalOrientedToRay ? -raw : raw;
+		return g.TrueGeomFacing( d );
 	};
 
 	while( skip < kMaxSkips )
@@ -2293,7 +2298,22 @@ bool RayCaster::CastShadowRayTransmittance(
 		//
 		// cosI is measured against the GEOMETRIC normal.  Entering when
 		// the ray travels into the surface (dot < 0), exiting otherwise.
-		const Vector3 geomN = ri.geometric.vGeomNormal;
+		//
+		// DL-70: against the TRUE, ray-INDEPENDENT geometric normal --
+		// `UnflippedGeomNormal()`, the same recovery this file's own
+		// `trueGeomFacing` self-hit classifier already used.  A
+		// double-sided mesh (and ClippedPlane / BezierPatch on a
+		// back-face hit) reports a `vGeomNormal` that opposes the ray at
+		// EVERY crossing, so the raw dot read "entering" on a genuine
+		// EXIT face too and the (Ni, Nt) pair below became glass->glass
+		// (matched indices, F = 0, T = 1) instead of glass->air: a
+		// double-sided pane transmitted ONE interface's Fresnel instead
+		// of two, and the IOR stack grew a second push instead of
+		// popping.  Note `fresnelNormal` below is unaffected either way
+		// (the two spellings agree on it by construction); only the
+		// (Ni, Nt) selection and the stack update were wrong.  The
+		// recovery is a no-op on every geometry that does not flip.
+		const Vector3 geomN = ri.geometric.UnflippedGeomNormal();
 		const Scalar cosRaw = Vector3Ops::Dot( dir, geomN );
 		const bool bEntering = ( cosRaw < 0.0 );
 

@@ -2700,7 +2700,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// through bumpy regions where the shading normal flips
 				// independently of the actual face orientation.
 				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
-				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
+				// DL-70: against the TRUE, ray-INDEPENDENT geometric
+				// normal.  A double-sided mesh reports a `vGeomNormal`
+				// that opposes the ray at every hit, so this gate was an
+				// unconditional PASS and a BACK-face (interior) hit was
+				// admitted into BSSRDF entry sampling -- feeding
+				// `BSSRDFSampling::SampleEntryPoint`, whose own DL-71
+				// correction already works in TRUE-normal space, a
+				// shading point on the wrong side of the surface.
+				// `TrueGeomFacing` restores the agreement; it is a no-op
+				// on single-sided meshes and analytic primitives.
+				// Deliberately NOT a `HasTrueGeomSide()` SKIP: a hair hit
+				// has no true side (DL-75), but rejecting it here would
+				// silently remove subsurface scattering from hair, a
+				// combination DL-75 left undefined-but-permitted and
+				// `HairSSSEntryNormalTest` characterises as producing
+				// well-defined output.  `TrueGeomFacing` is the identity
+				// on a ray-derived normal, so hair keeps exactly its
+				// pre-DL-70 behaviour here.
+				const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo );
 				if( cosInGeom > NEARZERO )
 				{
 					// Fresnel cosine uses the SHADING normal — the
@@ -2903,7 +2921,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// cosine uses SHADING.  See the BSSRDF site above for
 				// the rationale.
 				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
-				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
+				// DL-70: against the TRUE, ray-INDEPENDENT geometric
+				// normal.  A double-sided mesh reports a `vGeomNormal`
+				// that opposes the ray at every hit, so this gate was an
+				// unconditional PASS and a BACK-face (interior) hit was
+				// admitted into BSSRDF entry sampling -- feeding
+				// `BSSRDFSampling::SampleEntryPoint`, whose own DL-71
+				// correction already works in TRUE-normal space, a
+				// shading point on the wrong side of the surface.
+				// `TrueGeomFacing` restores the agreement; it is a no-op
+				// on single-sided meshes and analytic primitives.
+				// Deliberately NOT a `HasTrueGeomSide()` SKIP: a hair hit
+				// has no true side (DL-75), but rejecting it here would
+				// silently remove subsurface scattering from hair, a
+				// combination DL-75 left undefined-but-permitted and
+				// `HairSSSEntryNormalTest` characterises as producing
+				// well-defined output.  `TrueGeomFacing` is the identity
+				// on a ray-derived normal, so hair keeps exactly its
+				// pre-DL-70 behaviour here.
+				const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo );
 				if( cosInGeom > NEARZERO )
 				{
 					// Fresnel cosine clamped via fabs+NEARZERO to a safe
