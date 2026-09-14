@@ -35,11 +35,12 @@
 //
 //        scatterThroughput = kray * pS->pdf / (selectProb * combinedPdf)
 //
-//  WHY THE OTHER TWO PTMulDiv() SITES DO **NOT** NEED THIS FIX
+//  WHAT THIS FIX DOES **NOT** CLAIM ABOUT THE OTHER TWO PTMulDiv() SITES
 //  (documented here because a plain-English summary of this row can read
-//  as implicating all three trained-guiding overwrite sites; re-verified
-//  against the actual producer/consumer contracts before touching any
-//  code, per the debt-cleanup rules' "re-verify the row first" step):
+//  as implicating all three trained-guiding overwrite sites; corrected
+//  after a later derivation (DL-67) showed the original claim below was
+//  itself wrong -- see the debt-cleanup rules' "re-verify the row first"
+//  step, applied a second time to this comment):
 //
 //    The RIS-accepted-candidate branch (scatterThroughput =
 //    PTMulDiv(candidates[sel].bsdfEval, cosTheta, risEffectivePdf)) and
@@ -50,17 +51,30 @@
 //    all-lobes-summed response (confirmed against GGXBRDF::value(),
 //    "return diffuse + specular;", and GGXSPF::Pdf(), "3-lobe mixture
 //    PDF weighted by painter albedos"), evaluated FRESH at whatever
-//    direction is being priced. That is a complete, self-contained
-//    one-sample/RIS estimator for the WHOLE material at that direction;
-//    it does not go through the per-lobe kray/pdf decomposition at all,
-//    so selectProb (which exists ONLY to compensate for having
-//    stochastically picked one lobe's pre-divided kray/pdf pair) does not
-//    apply to it. Applying it there would be a double-count, not a fix.
-//    RIS's candidate-0 slot additionally sets c.bsdfPdf = pS->pdf (the
-//    single selected lobe's own density) rather than the material's
-//    aggregate PTEvalPdfAtSurface density like candidate 1 uses -- a
-//    real, distinct measure-mismatch, filed as a new debt row rather
-//    than folded into this fix (see the fix commit / standalone report).
+//    direction is being priced. THIS DOES NOT MAKE THEM COMPLETE,
+//    SELF-CONTAINED ESTIMATORS IMMUNE TO selectProb, as an earlier
+//    version of this comment (and the DL-42 ledger row / DL02 doc) wrongly
+//    claimed. GuidingSupportsSurfaceSampling (~line 552) admits only
+//    non-delta eRayDiffuse/eRayReflection lobes: at a multi-lobe surface
+//    where some lobes are guiding-INeligible (e.g. TranslucentSPF's
+//    eRayTranslucent backscatter), these two branches price the
+//    material's FULL aggregate value() -- which covers every lobe,
+//    eligible or not -- while the guiding machinery only ever
+//    proposed/weighted the eligible subset, and the ineligible lobes are
+//    then priced AGAIN whenever PTRandomlySelect happens to pick them
+//    (via the ordinary kray/selectProb path, unaffected by any of this).
+//    Separately, even restricted to an all-lobes-eligible material, this
+//    branch's own single-lobe proposal density (this file's fixed branch:
+//    pS->pdf) and the RIS-accepted/guided-accepted branches' aggregate
+//    proposal density do not partition to a consistent total probability
+//    across the three branches unless every lobe shares one pdf (i.e. a
+//    single-lobe SPF) -- see DL-67 for the numeric counterexample and the
+//    correct, consistent construction (one f and one denominator: the
+//    true mixture density actually being sampled from, in all three
+//    branches). RIS's candidate-0 slot additionally sets c.bsdfPdf =
+//    pS->pdf (the single selected lobe's own density) rather than the
+//    material's aggregate PTEvalPdfAtSurface density like candidate 1
+//    uses -- also part of DL-67, not a separate bug.
 //
 //  WHY TranslucentSPF, NOT ggx_material/coated_material
 //

@@ -100,13 +100,23 @@ reevaluation or substituted stack. Ordinary translucent exits are not a
 clean PT fixture because GuidingEffectiveAlpha disables specular arrivals
 -- the closing red-proof instead used TranslucentSPF's EXIT branch, whose
 diffuse-exit + translucent-backscatter lobes are a real, reachable
-guiding-eligible multi-lobe pair. Fixed to
-`kray*pS->pdf/(selectProb*combinedPdf)`; the other two trained-guiding
+multi-lobe pair with unequal weight via `scattering`. (Only the
+diffuse-exit lobe is itself guiding-ELIGIBLE --
+`GuidingSupportsSurfaceSampling` admits non-delta eRayDiffuse/eRayReflection
+only, not eRayTranslucent -- so the fixture's assertions are restricted to
+trials where `PTRandomlySelect` happens to pick that one lobe; the
+backscatter lobe is what makes `selectProb < 1` at this vertex, not a
+second guiding-eligible candidate.) Fixed to
+`kray*pS->pdf/(selectProb*combinedPdf)`. The other two trained-guiding
 overwrite sites in the same block re-evaluate the material's AGGREGATE
-BSDF/PDF and were confirmed NOT to need the same fix (dividing there would
-double-count). See [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-42 for the
-full derivation, red/green counters and sibling audit (including the new
-DL-65 finding).
+BSDF/PDF, but re-evaluating the aggregate does NOT make them complete,
+self-contained estimators immune to `selectProb` -- see DL-67 for the
+derivation of why all three branches (this one, RIS-accepted, and
+one-sample guided-direction-accepted) remain mutually inconsistent for a
+genuinely multi-lobe SPF, and why the "would double-count" claim in an
+earlier version of this paragraph was wrong. See
+[docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-42 for the full derivation,
+red/green counters and sibling audit (including the new DL-67 finding).
 
 **~~DL-43 — BDPT eye guided-candidate PDF arguments are reversed.~~ CLOSED
 2026-09-13 — `a69c9ce6`, `TranslucentIORStackTest: ALL TESTS PASSED`.**

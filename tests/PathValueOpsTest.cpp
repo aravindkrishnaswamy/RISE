@@ -63,7 +63,10 @@
 #include "../src/Library/Materials/LambertianBRDF.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/IsotropicPhaseFunction.h"
+#include "../src/Library/Materials/SchlickMaterial.h"
+#include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
 
 using namespace RISE;
@@ -473,6 +476,96 @@ static void TestDL43EyeVsLightGuidedPdfArgumentOrder()
 	std::cout << "  PASS" << std::endl;
 }
 
+// DL-67 coverage gap: Test G above (and TranslucentGuidedStackProbe.h's
+// `bad_pdf_value` counter, which makes the identical simplification for
+// the same reason) pin the DL-43 argument-order contract using a
+// LambertianMaterial / TranslucentSPF diffuse-exit vertex, whose Pdf is
+// COSINE-ONLY (fabs(Dot(wo,normal))*INV_PI) -- mathematically independent
+// of `wi`. Both checks therefore only ever exercise whether `wo` landed
+// in the right argument slot; a hypothetical future regression that gets
+// `wo` right but threads `wi` to some OTHER wrong direction internally
+// would pass both unnoticed, since neither formula reads `wi` at all.
+//
+// This test closes that gap with a real wi-DEPENDENT SPF: SchlickSPF's
+// specular lobe (`ComputeSchlickSpecularPdf`, SchlickSPF.cpp) builds a
+// half-vector from BOTH `wi` (read back out of `ri.ray.Dir()`) and `wo`,
+// so its Pdf genuinely depends on wi. It independently reconstructs
+// `PathValueOps::EvalPdfAtVertex`'s own documented contract
+// (PathVertexEval.h: "Negate wi to get toward-surface direction for
+// ri.ray.Dir()", then `pSPF->Pdf(ri, wo, stack)`) WITHOUT calling
+// `EvalPdfAtVertex`, and requires two different `wi`s at the same `wo` to
+// produce two different densities -- so a regression that silently drops
+// or misroutes `wi` while leaving `wo` correct fails this test even
+// though it would pass Test G / `bad_pdf_value`.
+static void TestWiDependentPdfArgumentOrder()
+{
+	std::cout << "Test H: DL-67 wi-dependent PDF argument-order discriminator (real SchlickMaterial)" << std::endl;
+
+	UniformColorPainter* diffusePainter = new UniformColorPainter( RISEPel( 0.2, 0.2, 0.2 ) );
+	diffusePainter->addref();
+	UniformColorPainter* specularPainter = new UniformColorPainter( RISEPel( 0.8, 0.8, 0.8 ) );
+	specularPainter->addref();
+	UniformScalarPainter* roughnessPainter = new UniformScalarPainter( 0.3 );
+	roughnessPainter->addref();
+	UniformScalarPainter* isotropyPainter = new UniformScalarPainter( 0.5 );
+	isotropyPainter->addref();
+	SchlickMaterial* material = new SchlickMaterial(
+		*diffusePainter, *specularPainter, *roughnessPainter, *isotropyPainter );
+	material->addref();
+
+	BDPTVertex v;
+	v.type = BDPTVertex::SURFACE;
+	v.position = Point3( 0, 0, 0 );
+	v.normal = Vector3( 0, 0, 1 );
+	v.onb.CreateFromW( v.normal );
+	v.pMaterial = material;
+	v.isBSSRDFEntry = false;
+	v.mediumIOR = 1.0;
+	v.insideObject = false;
+
+	const Vector3 wo = Vector3Ops::Normalize( Vector3( 0.3, 0, 1 ) );
+	// Two distinctly different incoming directions at the same wo -- if
+	// EvalPdfAtVertex's `wi` argument were silently ignored or misrouted
+	// (the class of regression Test G / `bad_pdf_value` cannot see for a
+	// cosine-only lobe), pdfA and pdfB below would come out identical.
+	const Vector3 wiA = Vector3Ops::Normalize( Vector3( -0.3, 0, 1 ) );
+	const Vector3 wiB = Vector3Ops::Normalize( Vector3( 0.7, 0.4, 1 ) );
+
+	PelTag pt;
+	const Scalar pdfA = PathValueOps::EvalPdfAtVertex<PelTag>( v, wiA, wo, pt );
+	const Scalar pdfB = PathValueOps::EvalPdfAtVertex<PelTag>( v, wiB, wo, pt );
+
+	if( std::fabs( pdfA - pdfB ) < 1e-9 ) {
+		std::cout << "FAIL: " << __FILE__ << ":" << __LINE__
+			<< " chosen wi/wo/roughness do not make SchlickSPF::Pdf wi-sensitive"
+			<< " -- test vertex needs adjusting (pdfA=" << pdfA << " pdfB=" << pdfB << ")" << std::endl;
+		failed++;
+	}
+
+	// Independently reconstruct EvalPdfAtVertex's documented contract at
+	// each wi, without calling EvalPdfAtVertex, and require agreement.
+	ISPF* pSPF = material->GetSPF();
+	const Vector3 wiChoices[2] = { wiA, wiB };
+	const Scalar viaWrapper[2] = { pdfA, pdfB };
+	for( int i = 0; i < 2; i++ ) {
+		Ray evalRay( v.position, -wiChoices[i] );
+		RayIntersectionGeometric ri( evalRay, nullRasterizerState );
+		PathVertexEval::PopulateRIGFromVertex( v, ri );
+		IORStack stack( 1.0 );
+		const Scalar direct = pSPF->Pdf( ri, wo, stack );
+		EXPECT_NEAR( viaWrapper[i], direct, 1e-14 );
+	}
+
+	v.pMaterial = 0;
+	material->release();
+	isotropyPainter->release();
+	roughnessPainter->release();
+	specularPainter->release();
+	diffusePainter->release();
+
+	std::cout << "  PASS" << std::endl;
+}
+
 int main()
 {
 	std::cout << "=== PathValueOpsTest ===" << std::endl;
@@ -484,6 +577,7 @@ int main()
 	TestEvalAtSurfaceVertexWithRealSPF();
 	TestEvalAtMediumVertex();
 	TestDL43EyeVsLightGuidedPdfArgumentOrder();
+	TestWiDependentPdfArgumentOrder();
 
 	std::cout << std::endl;
 	if( failed == 0 ) {

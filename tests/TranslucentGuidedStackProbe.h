@@ -250,6 +250,17 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 						// (DL-02) and is not claimed to follow this closed form
 						// for an inward candidate (a distinct lobe/gate), so
 						// inward substitutions are out of scope for this check.
+						//
+						// DL-67 SCOPE NOTE: `expected` here depends only on
+						// `tracedDirection` (the outgoing/wo side) -- the
+						// diffuse-exit lobe's cosine-hemisphere Pdf is
+						// mathematically wi-independent, so this check (like
+						// PathValueOpsTest.cpp's Test G, same reason) cannot
+						// by itself catch a regression that gets wo right but
+						// threads wi to some OTHER wrong direction internally.
+						// See PathValueOpsTest.cpp's Test H for a wi-DEPENDENT
+						// SPF (SchlickSPF's specular half-vector lobe)
+						// discriminator that closes that gap.
 						if(substituted && outward && observation.pdfQueries>0 && observation.lastQueriedPdfReturn >= 0) {
 							const Scalar expected = std::fabs(Vector3Ops::Dot(
 								observation.tracedDirection, observation.exitNormal)) * INV_PI;
