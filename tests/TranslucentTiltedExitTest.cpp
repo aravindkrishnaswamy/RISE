@@ -351,6 +351,253 @@ static void TestUnitEnergyIntegral()
 	obj->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 4 (P2-5, review round 3): chi-squared goodness-of-fit of
+//  the SAMPLED exit directions against Pdf().
+//
+//  Every other check in this file is either self-referential (the
+//  stored `front.pdf` vs. a re-evaluated `Pdf()` -- both computed by the
+//  same `zPrime`/`ExitValidFraction` expression) or a pure property of
+//  `Pdf()` alone (sub-test 3's unit integral).  Neither observes whether
+//  the SAMPLER actually produces the distribution `Pdf()` advertises: a
+//  non-uniform remap of the disk x-chord (say `x' = f(x)` with a
+//  non-constant Jacobian instead of the exact affine map) would keep
+//  every emitted direction geometrically valid, keep `Pdf()` integrating
+//  to 1, and keep stored == evaluated -- and still be biased.
+//
+//  This binned chi-squared test closes that gap directly: bin N sampled
+//  directions in the intersection's own shading frame (20 bins in
+//  cos(theta) x 12 in azimuth), compute each bin's expected probability
+//  by fine sub-quadrature of `Pdf()` over the bin, and compare.
+//////////////////////////////////////////////////////////////////////
+static void TestSampledDirectionChiSquared()
+{
+	std::cout << "Sub-test 4: chi-squared of sampled exit directions vs. Pdf (P2-5)" << std::endl;
+
+	const Scalar kTiltDeg = 60.0;
+
+	StubObject* obj = new StubObject();  obj->addref();
+	UniformColorPainter* front = new UniformColorPainter( RISEPel(0.3,0.3,0.3) );  front->addref();
+	UniformColorPainter* trans = new UniformColorPainter( RISEPel(0.3,0.3,0.3) );  trans->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter( 0.2 );  ext->addref();
+	UniformScalarPainter* phongN = new UniformScalarPainter( 1.0 );  phongN->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 0.0 );  scat->addref();
+	TranslucentSPF* spf = new TranslucentSPF( *front, *trans, *ext, *phongN, *scat );
+	spf->addref();
+
+	RayIntersectionGeometric ri = MakeTiltedExitIntersection( kTiltDeg );
+	IORStack stack = MakeInsideStack( obj );
+
+	const int kMuBins = 20;
+	const int kPhiBins = 12;
+	const int kBins = kMuBins * kPhiBins;
+	const int kSubMu = 32;
+	const int kSubPhi = 32;
+	const int kSamples = 400000;
+
+	// Direction from (mu, phi) in the shading frame.  dOmega = dmu dphi
+	// in this parameterisation, so a bin's probability is the plain
+	// (unweighted) average of Pdf over the bin times the bin's area.
+	struct Local {
+		static Vector3 Dir( const RayIntersectionGeometric& r, Scalar mu, Scalar phi )
+		{
+			const Scalar s = std::sqrt( r_max( Scalar(0), Scalar(1) - mu*mu ) );
+			return r.onb.u()*(s*cos(phi)) + r.onb.v()*(s*sin(phi)) + r.onb.w()*mu;
+		}
+	};
+
+	const Scalar dMu = Scalar(1) / kMuBins;
+	const Scalar dPhi = TWO_PI / kPhiBins;
+	const Scalar subArea = ( dMu / kSubMu ) * ( dPhi / kSubPhi );
+
+	Scalar expectedProb[kBins];
+	bool straddles[kBins];
+	for( int b = 0; b < kBins; b++ ) {
+		const int mi = b / kPhiBins;
+		const int pi_ = b % kPhiBins;
+		Scalar prob = 0;
+		bool anyZero = false, anyPositive = false;
+		for( int sm = 0; sm < kSubMu; sm++ ) {
+			const Scalar mu = ( mi + ( sm + Scalar(0.5) ) / kSubMu ) * dMu;
+			for( int sp = 0; sp < kSubPhi; sp++ ) {
+				const Scalar phi = ( pi_ + ( sp + Scalar(0.5) ) / kSubPhi ) * dPhi;
+				const Scalar p = spf->Pdf( ri, Local::Dir( ri, mu, phi ), stack );
+				if( p > 0 ) anyPositive = true; else anyZero = true;
+				prob += p * subArea;
+			}
+		}
+		expectedProb[b] = prob;
+		// A bin the geometric horizon cuts through cannot have its
+		// probability resolved to better than the sub-grid's own
+		// discretization error, which at these counts would dominate
+		// chi-squared -- exclude it and say how many were excluded,
+		// rather than quietly widening the band.
+		straddles[b] = anyZero && anyPositive;
+	}
+
+	int observed[kBins];
+	for( int b = 0; b < kBins; b++ ) observed[b] = 0;
+
+	RandomNumberGenerator rng( 20260913 );
+	IndependentSampler sampler( rng );
+	int emitted = 0;
+	for( int i = 0; i < kSamples; i++ ) {
+		ScatteredRayContainer scattered;
+		spf->Scatter( ri, sampler, scattered, stack );
+		for( unsigned int j = 0; j < scattered.Count(); j++ ) {
+			if( scattered[j].type != ScatteredRay::eRayDiffuse ) continue;
+			const Vector3 d = scattered[j].ray.Dir();
+			const Scalar mu = Vector3Ops::Dot( d, ri.onb.w() );
+			if( mu <= 0 || mu > 1 ) continue;
+			Scalar phi = atan2( Vector3Ops::Dot( d, ri.onb.v() ), Vector3Ops::Dot( d, ri.onb.u() ) );
+			if( phi < 0 ) phi += TWO_PI;
+			int mi = static_cast<int>( mu / dMu );      if( mi >= kMuBins ) mi = kMuBins - 1;
+			int pi_ = static_cast<int>( phi / dPhi );   if( pi_ >= kPhiBins ) pi_ = kPhiBins - 1;
+			observed[mi*kPhiBins + pi_]++;
+			emitted++;
+		}
+	}
+
+	// Zero-expectation bins (entirely outside the geometric horizon) must
+	// receive exactly zero samples -- a support check the chi-squared sum
+	// itself cannot express.
+	int emptyBins = 0, samplesInEmptyBins = 0;
+	for( int b = 0; b < kBins; b++ ) {
+		if( !straddles[b] && expectedProb[b] <= 0 ) {
+			emptyBins++;
+			samplesInEmptyBins += observed[b];
+		}
+	}
+
+	// Conditional chi-squared over the retained (non-straddling,
+	// positive-expectation) bins.
+	Scalar retainedProb = 0;
+	int retainedBins = 0, retainedSamples = 0;
+	for( int b = 0; b < kBins; b++ ) {
+		if( straddles[b] || expectedProb[b] <= 0 ) continue;
+		retainedBins++;
+		retainedProb += expectedProb[b];
+		retainedSamples += observed[b];
+	}
+
+	Scalar chiSq = 0;
+	int lowCountBins = 0;
+	for( int b = 0; b < kBins; b++ ) {
+		if( straddles[b] || expectedProb[b] <= 0 ) continue;
+		const Scalar e = retainedSamples * ( expectedProb[b] / retainedProb );
+		if( e < 5 ) { lowCountBins++; continue; }
+		const Scalar d = observed[b] - e;
+		chiSq += d*d/e;
+	}
+	const int dof = retainedBins - lowCountBins - 1;
+
+	// Band: under H0 the statistic is chi-squared with `dof` degrees of
+	// freedom, mean dof and variance 2*dof, and is close to normal at
+	// this dof.  A +/-5 sigma two-sided band is dof +/- 5*sqrt(2*dof) --
+	// measured here dof = 143, so the band is [58.4, 227.6] and the
+	// statistic reads 155.5.  Wide enough never to flake; tight enough to
+	// catch a biased remap: a systematic 3% per-bin relative error at the
+	// ~2700 samples/bin this fixture puts in each retained bin
+	// contributes (0.03*2700)^2/2700 = 2.4 per bin, ~350 over 144 bins --
+	// well outside.
+	const Scalar sigma = std::sqrt( Scalar(2) * dof );
+	const Scalar lo = dof - 5*sigma;
+	const Scalar hi = dof + 5*sigma;
+
+	std::cout << "  samples=" << emitted << " bins=" << kBins
+		<< " retained=" << retainedBins << " straddling=" << (kBins - retainedBins - emptyBins)
+		<< " empty=" << emptyBins << " low-count=" << lowCountBins << std::endl;
+	std::cout << "  chi2=" << chiSq << " dof=" << dof
+		<< " band=[" << lo << ", " << hi << "]" << std::endl;
+
+	EXPECT( emitted > kSamples - 100, "chi-squared fixture emits an exit lobe on (almost) every trial" );
+	EXPECT( samplesInEmptyBins == 0, "no sampled direction lands in a zero-density bin" );
+	// Measured at this fixture: 144 of 240 bins retained (58 lie entirely
+	// outside the geometric horizon, 38 straddle it).  120 leaves margin
+	// without letting the test go vacuous.
+	EXPECT( retainedBins >= 120, "chi-squared retains most bins (not a vacuous test)" );
+	EXPECT( chiSq > lo && chiSq < hi, "sampled exit directions match Pdf (chi-squared inside the 5-sigma band)" );
+
+	spf->release();
+	scat->release(); phongN->release(); ext->release(); trans->release(); front->release();
+	obj->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 5 (P2-1, review round 3): sampler support == density
+//  support, and the "vanished region" path is unreachable.
+//
+//  `SampleValidDiffuseExit` and `Pdf()` now gate on the SAME
+//  `kExitVanishThreshold`.  After P1's outward re-orientation of the
+//  exit frame, `dot(nExit, geomNRaw) = |dot(n, geomNRaw)| >= 0`, so
+//  `P(valid) = (1+cos(phi))/2 >= 0.5` by construction and neither gate
+//  can ever fire from a production call: the exit lobe is emitted at
+//  EVERY geometry, including a shading normal exactly opposed to the
+//  true outward one (the flat-shaded double-sided-mesh case that used to
+//  silently emit nothing -- see TranslucentDoubleSidedTest sub-test 3a).
+//  That unreachability is the property worth pinning; the threshold
+//  itself stays as a defensive guard on the shared helper.
+//////////////////////////////////////////////////////////////////////
+static void TestExitSupportIsNeverEmpty()
+{
+	std::cout << "Sub-test 5: exit lobe support is never empty; Pdf agrees with the sampler (P2-1)" << std::endl;
+
+	StubObject* obj = new StubObject();  obj->addref();
+	UniformColorPainter* front = new UniformColorPainter( RISEPel(0.3,0.3,0.3) );  front->addref();
+	UniformColorPainter* trans = new UniformColorPainter( RISEPel(0.3,0.3,0.3) );  trans->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter( 0.2 );  ext->addref();
+	UniformScalarPainter* phongN = new UniformScalarPainter( 1.0 );  phongN->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 0.0 );  scat->addref();
+	TranslucentSPF* spf = new TranslucentSPF( *front, *trans, *ext, *phongN, *scat );
+	spf->addref();
+
+	RandomNumberGenerator rng( 5150 );
+	IndependentSampler sampler( rng );
+
+	// Full 0..180 sweep of the angle between the shading normal and the
+	// true outward direction -- 180 is the flat-shaded double-sided-mesh
+	// configuration (shading frame exactly inverted).
+	const Scalar sweepDeg[] = { 0, 45, 90, 135, 179, 180 };
+	for( int t = 0; t < 6; t++ ) {
+		RayIntersectionGeometric ri = MakeTiltedExitIntersection( sweepDeg[t] );
+		IORStack stack = MakeInsideStack( obj );
+
+		int emitted = 0, zeroPdf = 0, mismatched = 0;
+		const int kTrials = 2048;
+		for( int i = 0; i < kTrials; i++ ) {
+			ScatteredRayContainer scattered;
+			spf->Scatter( ri, sampler, scattered, stack );
+			for( unsigned int j = 0; j < scattered.Count(); j++ ) {
+				if( scattered[j].type != ScatteredRay::eRayDiffuse ) continue;
+				emitted++;
+				const Scalar p = spf->Pdf( ri, scattered[j].ray.Dir(), stack );
+				if( !( p > 0 ) ) zeroPdf++;
+				if( fabs( p - scattered[j].pdf ) > 1e-9 * r_max( Scalar(1), p ) ) mismatched++;
+			}
+		}
+		char label[200];
+		std::snprintf( label, sizeof(label),
+			"shading-vs-outward angle=%g deg: exit lobe emitted on every trial (support never vanishes)",
+			(double)sweepDeg[t] );
+		std::cout << "  angle=" << sweepDeg[t] << " emitted=" << emitted
+			<< "/" << kTrials << " zeroPdf=" << zeroPdf << " mismatched=" << mismatched << std::endl;
+		EXPECT( emitted == kTrials, label );
+		char label2[200];
+		std::snprintf( label2, sizeof(label2),
+			"angle=%g deg: Pdf > 0 at every sampled direction (density support covers sampler support)",
+			(double)sweepDeg[t] );
+		EXPECT( zeroPdf == 0, label2 );
+		char label3[200];
+		std::snprintf( label3, sizeof(label3),
+			"angle=%g deg: re-evaluated Pdf equals the stored density", (double)sweepDeg[t] );
+		EXPECT( mismatched == 0, label3 );
+	}
+
+	spf->release();
+	scat->release(); phongN->release(); ext->release(); trans->release(); front->release();
+	obj->release();
+}
+
 int main()
 {
 	GlobalLog();
@@ -358,6 +605,8 @@ int main()
 	TestSampledDirectionsAreOutward();
 	TestPdfFormula();
 	TestUnitEnergyIntegral();
+	TestSampledDirectionChiSquared();
+	TestExitSupportIsNeverEmpty();
 
 	std::cout << std::endl;
 	if( failed == 0 ) {
