@@ -200,6 +200,142 @@ namespace
 		outPdf = ( zPrime * INV_PI ) / pValid;
 		return true;
 	}
+
+	// DL-68 (2026-09-14): the ENTRY-PUSH mirror of DL-45's exit-pop fix.
+	//
+	// Two of this SPF's Phong `cos^N` lobes make a SIDE-MEMBERSHIP claim
+	// that the sampler never checked:
+	//
+	//   * the ENTERING transmission lobe, which pushes the IOR stack --
+	//     it claims the continuation crossed to the far side of the
+	//     surface;
+	//   * the exit branch's interior BACKSCATTER lobe, which
+	//     deliberately leaves the stack alone -- it claims the
+	//     continuation stayed on the side the interior ray arrived from.
+	//
+	// Both were sampled about the (possibly bump/normal-map/glint-tilted,
+	// or merely smooth-shading-interpolated) shading normal with no
+	// geometric gate at all, so under tilt a real fraction of each lobe
+	// travels the WRONG way while the stack records the other: an entry
+	// ray that leaves the way it came in with the object pushed, or a
+	// "backscatter" ray that exits without the matching pop.  A later hit
+	// on the same object is then misclassified (the DL-03/DL-45 failure
+	// mode).  Measured pre-fix on a closed analytic fixture, isotropic
+	// N=1, 8192 trials: 548/8192 wrong-side entries at 30 deg tilt,
+	// 2039/8192 at 60 deg, 4049/8192 at 89 deg -- matching (1-cos(phi))/2.
+	//
+	// THE GEOMETRIC REFERENCE.  A transmission lobe's defining property
+	// is that it continues THROUGH the surface, i.e. it must leave on the
+	// opposite side from the one the incoming ray arrived on.  That is
+	// the RAY-ANCHORED `geomN` this file already computes for the entry
+	// front (reflection) lobe -- the transmission half-space is its exact
+	// complement, `-geomN`, and the interior backscatter's is `+geomN`
+	// (the interior ray arrived from the inside).  This is deliberately
+	// NOT DL-45's unflipped `geomNRaw`: on a closed object the two agree
+	// (a genuine entry travels inward, so `geomN == geomNRaw`), but on an
+	// OPEN double-sided sheet struck from its back face -- and translucent
+	// is the material authors put on open sheets, cf. DL-46 review round
+	// 3(c) / DL-76 -- the object has no "inside" while "through the sheet"
+	// is still perfectly well defined, and `-geomNRaw` would aim the
+	// transmission straight back at whatever the ray came from.  DL-45's
+	// exit lobe needs the opposite treatment for the symmetric reason:
+	// its ray is already travelling outward, so the ray-anchored flip
+	// lands on the inward direction there.
+	//
+	// THE SAMPLER.  Rejection is not available: `ISampler` may have a
+	// fixed per-bounce dimension budget (`HasFixedDimensionBudget()`,
+	// ISampler.h; TranslucentSamplerDimensionCountTest pins this), so the
+	// draw count must not depend on geometry.  DL-45's Malley's-method
+	// disk remap is not available either -- its disk-projection
+	// equivalence is specific to the plain cosine (N=1) case, and these
+	// lobes carry an author-controlled `N`.
+	//
+	// Instead, note that the clipped Phong density is CONSTANT IN AZIMUTH
+	// at fixed theta (the lobe is azimuthally symmetric and the clip is a
+	// plane through the origin).  So: draw theta from the UNCLIPPED
+	// marginal exactly as before, cos(theta) = u1^(1/(N+1)), and then draw
+	// the azimuth UNIFORMLY on the valid ARC at that theta.  In the frame
+	// (u, v, axis) whose +u carries clipN's tangential part -- so that
+	// clipN = cos(phi)*axis + sin(phi)*u -- the constraint
+	// dot(w,clipN) > 0 reads
+	//
+	//     sin(theta)cos(psi)sin(phi) + cos(theta)cos(phi) > 0
+	//   <=>  cos(psi) > -cot(theta)cot(phi),
+	//
+	// an arc of half-width
+	//
+	//     halfArc(theta) = PI                          if cot(theta)cot(phi) >= 1
+	//                    = acos(-cot(theta)cot(phi))   otherwise,
+	//
+	// centred on +u.  The resulting solid-angle density is closed form:
+	//
+	//     q(w) = (N+1) * cos^N(theta) / (2 * halfArc(theta)),
+	//
+	// which collapses to the pre-existing (N+1)cos^N(theta)/(2*PI)
+	// whenever the clip is inactive.  Exactly 2 canonical draws, every
+	// call, for every N -- and every emitted direction is valid by
+	// construction, so the clipped-away energy is RENORMALIZED into the
+	// valid region (DL-45's choice) rather than dropped.
+	//
+	// NOTE this renormalizes PER THETA RING rather than globally, so it
+	// is NOT DL-45's `cos/pi / P(valid)` shape; the theta marginal is
+	// deliberately left at the unclipped one, which is what makes the
+	// azimuth conditional exactly uniform and therefore exactly
+	// invertible.  Both are exact samplers of their own reported density;
+	// this one is the one that extends to N != 1.
+	//
+	// Callers must orient the lobe axis into the half-space first
+	// (OrientedLobeAxis), so cos(phi) = |dot(n, clipN)| >= 0 and the arc
+	// is never empty: halfArc >= PI/2 always.
+	inline Vector3 OrientedLobeAxis( const Vector3& n, const Vector3& halfSpace )
+	{
+		return ( Vector3Ops::Dot( n, halfSpace ) >= Scalar(0) ) ? n : -n;
+	}
+
+	void SampleClippedPhong(
+		const Vector3& axis, const Vector3& clipN, const Scalar N,
+		const Scalar u1, const Scalar u2,
+		Vector3& outDir, Scalar& outPdf )
+	{
+		const Scalar cosTheta = pow( u1, Scalar(1)/(N+Scalar(1)) );
+		const Scalar cosPhi = r_max( Scalar(0), r_min( Scalar(1), Vector3Ops::Dot(axis,clipN) ) );
+
+		// Tangential component of the clip normal in the lobe's frame.
+		Vector3 uAxis = clipN - cosPhi*axis;
+		const Scalar uLen2 = Vector3Ops::SquaredModulus( uAxis );
+		if( uLen2 <= Scalar(1e-12) ) {
+			// clipN parallel to the lobe axis: the clip is inactive and
+			// the whole lobe is already valid.  Reproduce the pre-DL-68
+			// draw EXACTLY -- same Perturb call, same azimuth convention,
+			// same pdf expression -- so every untilted surface (analytic
+			// primitives, flat-shaded faces: the overwhelming majority of
+			// production hits) is bit-for-bit unchanged.
+			outDir = GeometricUtilities::Perturb( axis, acos(cosTheta), TWO_PI * u2 );
+			outPdf = (N + Scalar(1)) * Scalar(0.5) * INV_PI
+				* pow( fabs( Vector3Ops::Dot( outDir, axis ) ), N );
+			return;
+		}
+		uAxis = uAxis * ( Scalar(1) / sqrt(uLen2) );
+		const Vector3 vAxis = Vector3Ops::Cross( axis, uAxis );
+
+		const Scalar sinPhi = sqrt( r_max( Scalar(0), Scalar(1) - cosPhi*cosPhi ) );
+		const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1) - cosTheta*cosTheta ) );
+
+		// Half-width of the valid azimuth arc at this theta, written as a
+		// ratio comparison rather than cot(theta)*cot(phi) so that
+		// theta -> 0 (cot -> infinity) needs no special case: the
+		// "whole circle" branch is exactly `num >= denom`.
+		Scalar half = PI;
+		const Scalar denom = sinTheta * sinPhi;
+		const Scalar num = cosTheta * cosPhi;
+		if( num < denom ) {
+			half = acos( -num/denom );
+		}
+
+		const Scalar psi = ( Scalar(2)*u2 - Scalar(1) ) * half;
+		outDir = uAxis*(sinTheta*cos(psi)) + vAxis*(sinTheta*sin(psi)) + axis*cosTheta;
+		outPdf = (N + Scalar(1)) * pow( cosTheta, N ) / ( Scalar(2) * half );
+	}
 }
 
 TranslucentSPF::TranslucentSPF(
@@ -258,8 +394,12 @@ void TranslucentSPF::Scatter(
 	// to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot
 	// flip the gate to the wrong side -- this is the correct reference for
 	// a REFLECTION, which must stay on the same side the incoming ray
-	// arrived from).  `trans` entry/backscatter lobes remain exempt (DL-68
-	// sibling audit: distinct site, own recipe, not this row's pattern).
+	// arrived from).  DL-68 (2026-09-14) gave the two `trans` Phong lobes
+	// -- the entering transmission and the exit branch's interior
+	// backscatter -- the SAME ray-anchored reference, with opposite signs
+	// (`-geomN` "through the surface" for the entry push; `+geomN` "stays
+	// inside" for the backscatter), clipped EXACTLY rather than gated, so
+	// neither drops a sample: see SampleClippedPhong above.
 	//
 	// The exit-face re-emission (DL-45) is gated separately, against
 	// `geomNRaw` WITHOUT the ray-anchor flip: unlike the entry reflection,
@@ -298,7 +438,6 @@ void TranslucentSPF::Scatter(
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
-	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
 	Vector3		rv;
@@ -343,18 +482,24 @@ void TranslucentSPF::Scatter(
 		// MaxValue, not channel 0 alone -- see the front-lobe gate above
 		// (C2, review round 3) for the rationale; same trap, same fix.
 		if( ColorMath::MaxValue(trans.kray) > 0 ) {
-			myonb.FlipW();
+			// DL-68: the transmission half-space is "through the surface",
+			// the exact complement of the front lobe's gate; the lobe axis
+			// is the shading normal oriented into it.  See
+			// SampleClippedPhong above for the exact two-draw construction
+			// and why the ray-anchored `geomN` (not `geomNRaw`) is the
+			// reference here.
+			const Vector3 intoSolid = -geomN;
+			const Vector3 nEnter = OrientedLobeAxis( n, intoSolid );
 
 			const ScalarTriple Nfactor_t = pN->GetValuesAt(ri); const RISEPel Nfactor( Nfactor_t.v[0], Nfactor_t.v[1], Nfactor_t.v[2] );
 			if( (Nfactor[0] == Nfactor[1]) && (Nfactor[1] == Nfactor[2]) ) {
-				rv = GeometricUtilities::Perturb( myonb.w(),
-					acos( pow(sampler.Get1D(), 1.0 / (Nfactor[0] + 1.0)) ),
-					TWO_PI * sampler.Get1D() );
+				const Scalar u1 = sampler.Get1D();
+				const Scalar u2 = sampler.Get1D();
+				Scalar transPdf = 0;
+				SampleClippedPhong( nEnter, intoSolid, Nfactor[0], u1, u2, rv, transPdf );
 
 				trans.ray.Set( ri.ptIntersection, rv );
-				// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
-				const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
-				trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
+				trans.pdf = transPdf;
 				trans.isDelta = false;
 				trans.ior_stack = new IORStack( ior_stack );
 				// translucent_material has no ior parameter -- there is no
@@ -372,16 +517,16 @@ void TranslucentSPF::Scatter(
 				trans.kray = 0;
 				Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 				for( int i=0; i<3; i++ ) {
-					rv = GeometricUtilities::Perturb( myonb.w(),
-						acos( pow(ptrand.x, 1.0 / (Nfactor[i] + 1.0)) ),
-						TWO_PI * ptrand.y );
+					// DL-68: same exact two-draw clipped construction per
+					// channel; the two canonical numbers stay SHARED across
+					// the three channels, so the draw count is unchanged.
+					Scalar transPdf = 0;
+					SampleClippedPhong( nEnter, intoSolid, Nfactor[i], ptrand.x, ptrand.y, rv, transPdf );
 
 					trans.kray = 0;
 					trans.kray[i] = p[i];
 					trans.ray.Set( ri.ptIntersection, rv );
-					// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
-					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
-					trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
+					trans.pdf = transPdf;
 					trans.isDelta = false;
 					// `trans` is ONE local reused across all three loop
 					// iterations.  `AddScatteredRay` only clears
@@ -438,7 +583,6 @@ void TranslucentSPF::Scatter(
 		// Coming out the other side.  Orient the exit frame outward
 		// BEFORE sampling either child (P1, review round 3) -- see
 		// OrientedExitNormal above.
-		const bool bExitFrameFlipped = ( Vector3Ops::Dot( n, geomNRaw ) < Scalar(0) );
 		const Vector3 nExit = OrientedExitNormal( n, geomNRaw );
 
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
@@ -457,33 +601,30 @@ void TranslucentSPF::Scatter(
 			if( ColorMath::MaxValue(scat) > 0 ) {
 				// Multiple scatter back.  The backscattered ray must stay
 				// INSIDE the object (this branch's own "no stack change"
-				// contract), i.e. be sampled around the INWARD normal
-				// -`nExit` -- P1 (review round 3): on a double-sided mesh
-				// `n` is itself the inward one at an exit hit, so an
-				// unconditional FlipW() here produced +outward and sent
-				// the "interior" ray out of the solid with the stack
-				// untouched.  Flip only when the shading frame is not
-				// already inward-facing.
-				if( !bExitFrameFlipped ) {
-					myonb.FlipW();
-				}
+				// contract).  P1 (review round 3) got the lobe's AXIS
+				// right by flipping the shading frame conditionally; DL-68
+				// closes the remaining gap -- the axis alone does not stop
+				// a tilted lobe from emitting past the geometric horizon
+				// and out of the solid with the stack untouched (measured:
+				// 605/4096 at 45 deg tilt).  "Inside" is the side the
+				// interior ray arrived from, i.e. the ray-anchored `geomN`;
+				// clip the lobe to it exactly (SampleClippedPhong).
+				const Vector3 stayInside = geomN;
+				const Vector3 nBack = OrientedLobeAxis( n, stayInside );
 
 				trans.type = ScatteredRay::eRayTranslucent;
 				trans.kray = front.kray * scat;
 
 				const ScalarTriple Nfactor_t = pN->GetValuesAt(ri); const RISEPel Nfactor( Nfactor_t.v[0], Nfactor_t.v[1], Nfactor_t.v[2] );
 				if( (Nfactor[0] == Nfactor[1]) && (Nfactor[1] == Nfactor[2]) ) {
-					rv = GeometricUtilities::Perturb( myonb.w(),
-						acos( pow(sampler.Get1D(), 1.0 / (Nfactor[0] + 1.0)) ),
-						TWO_PI * sampler.Get1D() );
+					const Scalar u1 = sampler.Get1D();
+					const Scalar u2 = sampler.Get1D();
+					Scalar backPdf = 0;
+					SampleClippedPhong( nBack, stayInside, Nfactor[0], u1, u2, rv, backPdf );
 
 					trans.ray.Set( ri.ptIntersection, rv );
-					// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
-					{
-						const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
-						trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
-						trans.isDelta = false;
-					}
+					trans.pdf = backPdf;
+					trans.isDelta = false;
 					front.kray = front.kray * (RISEPel(1.0,1.0,1.0)-scat);
 					// Back-scattered ray stays inside this object, no stack change
 					scattered.AddScatteredRay( trans );
@@ -505,19 +646,16 @@ void TranslucentSPF::Scatter(
 					front.kray = 0;
 					Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 					for( int i=0; i<3; i++ ) {
-						rv = GeometricUtilities::Perturb( myonb.w(),
-							acos( pow(ptrand.x, 1.0 / (Nfactor[i] + 1.0)) ),
-							TWO_PI * ptrand.y );
+						// DL-68: same exact two-draw clipped construction
+						// per channel, on the shared canonical pair.
+						Scalar backPdf = 0;
+						SampleClippedPhong( nBack, stayInside, Nfactor[i], ptrand.x, ptrand.y, rv, backPdf );
 
 						trans.kray = 0;
 						trans.kray[i] = p[i];
 						trans.ray.Set( ri.ptIntersection, rv );
-						// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
-						{
-							const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
-							trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
-							trans.isDelta = false;
-						}
+						trans.pdf = backPdf;
+						trans.isDelta = false;
 						front.kray[i] = f[i] * (1.0-scat[i]);
 						// Back-scattered ray stays inside this object, no stack change
 						scattered.AddScatteredRay( trans );
@@ -582,7 +720,6 @@ void TranslucentSPF::ScatterNM(
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
-	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
 	Vector3		rv;
@@ -612,17 +749,20 @@ void TranslucentSPF::ScatterNM(
 		trans.type = ScatteredRay::eRayTranslucent;
 
 		if( trans.krayNM > 0 ) {
-			myonb.FlipW();
+			// DL-68, RGB twin of Scatter()'s entering transmission lobe:
+			// clip the Phong lobe to the "through the surface" half-space
+			// exactly, using the same two canonical draws.
+			const Vector3 intoSolid = -geomN;
+			const Vector3 nEnter = OrientedLobeAxis( n, intoSolid );
 
 			const Scalar Nval = pN->GetValueAtNM(ri,nm);
-			rv = GeometricUtilities::Perturb( myonb.w(),
-				acos( pow(sampler.Get1D(), 1.0 / (Nval + 1.0)) ),
-				TWO_PI * sampler.Get1D() );
+			const Scalar u1 = sampler.Get1D();
+			const Scalar u2 = sampler.Get1D();
+			Scalar transPdf = 0;
+			SampleClippedPhong( nEnter, intoSolid, Nval, u1, u2, rv, transPdf );
 
 			trans.ray.Set( ri.ptIntersection, rv );
-			// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
-			const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
-			trans.pdf = (Nval + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval );
+			trans.pdf = transPdf;
 			trans.isDelta = false;
 			trans.ior_stack = new IORStack( ior_stack );
 			// NM twin of the RGB entry lobe above: translucent_material has
@@ -638,7 +778,6 @@ void TranslucentSPF::ScatterNM(
 		// Coming out the other side.  Orient the exit frame outward
 		// BEFORE sampling either child -- RGB twin's P1 (review round 3);
 		// see OrientedExitNormal above.
-		const bool bExitFrameFlipped = ( Vector3Ops::Dot( n, geomNRaw ) < Scalar(0) );
 		const Vector3 nExit = OrientedExitNormal( n, geomNRaw );
 
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
@@ -656,18 +795,18 @@ void TranslucentSPF::ScatterNM(
 			const Scalar scat = pScat->GetValueAtNM(ri,nm);
 
 			if( scat > 0 ) {
-				// Multiple scatter back.  RGB twin's P1 (review round 3):
-				// the backscattered ray must stay INSIDE, i.e. be sampled
-				// around -`nExit`; flip only when the shading frame is not
-				// already inward-facing (it IS on a double-sided mesh's
-				// exit hit).
-				if( !bExitFrameFlipped ) {
-					myonb.FlipW();
-				}
+				// Multiple scatter back.  RGB twin's P1 (review round 3)
+				// fixed the lobe AXIS; DL-68 fixes the missing horizon clip --
+				// the backscattered ray must stay INSIDE, i.e. on the side the
+				// interior ray arrived from (the ray-anchored `geomN`).
+				const Vector3 stayInside = geomN;
+				const Vector3 nBack = OrientedLobeAxis( n, stayInside );
+
 				const Scalar Nval_scat = pN->GetValueAtNM(ri,nm);
-				rv = GeometricUtilities::Perturb( myonb.w(),
-					acos( pow(sampler.Get1D(), 1.0 / (Nval_scat + 1.0)) ),
-					TWO_PI * sampler.Get1D() );
+				const Scalar u1 = sampler.Get1D();
+				const Scalar u2 = sampler.Get1D();
+				Scalar backPdf = 0;
+				SampleClippedPhong( nBack, stayInside, Nval_scat, u1, u2, rv, backPdf );
 
 				trans.type = ScatteredRay::eRayTranslucent;
 				// RGB twin (Scatter(), ~line 182) assigns
@@ -679,12 +818,8 @@ void TranslucentSPF::ScatterNM(
 				// just above).
 				trans.krayNM = front.krayNM * scat;
 				trans.ray.Set( ri.ptIntersection, rv );
-				// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
-				{
-					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
-					trans.pdf = (Nval_scat + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval_scat );
-					trans.isDelta = false;
-				}
+				trans.pdf = backPdf;
+				trans.isDelta = false;
 				// Back-scattered ray stays inside this object, no stack change
 				scattered.AddScatteredRay( trans );
 
