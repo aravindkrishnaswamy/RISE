@@ -2851,20 +2851,106 @@ namespace {
 				const Scalar cosTheta = fabs( Vector3Ops::Dot(
 					scatDir, ri.geometric.vNormal ) );
 
+				// Retained as a PATH-TERMINATION gate only.  DL-69 took
+				// `f` out of the ordinary throughput below, but a vertex
+				// whose aggregate BSDF is zero at the sampled direction
+				// yields zero through every connection strategy, and
+				// killing the walk there is pre-existing behaviour that
+				// this row deliberately does not change.
 				if( PositiveMagnitude<Tag>( f ) <= 0 ) {
 					break;
 				}
 				const Scalar invScale = bssrdfReflectCompensation * cosTheta / scatterPdf;
-				localScatteringWeight = f * invScale;
+
+				// DL-69.  This branch used to compute `f * invScale` --
+				// the material's AGGREGATE `IBSDF::value()` (every lobe
+				// summed) over `scatterPdf = selectProb * pScat->pdf`
+				// (the ONE stochastically-selected lobe's own
+				// conditional density).  Those are two different
+				// measures.  For N accepted non-delta lobes with
+				// overlapping support the expectation is N times the
+				// true integral: conditioned on one Scatter() draw, the
+				// expectation over the lobe choice of
+				// `f_agg(w_I) cos / (q_I p_I(w_I))` is
+				// `sum_I f_agg(w_I) cos / p_I(w_I)`, whose expectation
+				// over the draw is `N * integral f_agg cos dw`.
+				// tests/SchlickLobePairingTest.cpp measures exactly
+				// 2.00x on `schlick_material`'s diffuse+specular pair
+				// (up to 4x on its per-channel specular branch, which
+				// pushes three specular rays plus the diffuse one).
+				//
+				// The fix is the DELTA branch's own formula, two dozen
+				// lines above, and PT's ordinary initialization
+				// (`PathTracingIntegrator.cpp`,
+				// `PTScatterKray<Tag>(*pS) * (1/selectProb)`): pair the
+				// SELECTED lobe's own `kray_I` -- which the SPF defines
+				// as that lobe's `f_I cos / p_I` -- with the same lobe's
+				// selection probability.  `E[kray_I / q_I] =
+				// sum_I integral p_I kray_I dw`, the aggregate integral,
+				// and unlike the mixture pairing it needs no closed-form
+				// mixture density (RISE's `q_I` is realization-dependent,
+				// a function of the already-drawn `kray`s, so no fixed
+				// direction-only `q_I(w)` exists for it).
+				//
+				// GUIDING (DL-67's territory, deliberately untouched
+				// here): when OpenPGL SUBSTITUTED a direction, `scatDir`
+				// is not the lobe's direction at all and `kray_I` does
+				// not price it -- that branch keeps the aggregate
+				// `f * invScale`.  When guiding only BLENDED the density
+				// for the lobe's OWN direction (`bsdfCombinedPdf`), the
+				// per-lobe form still applies and takes PT's DL-42-fixed
+				// shape, `kray_I * pScat->pdf / (selectProb *
+				// combinedPdf)`.
+				Scalar krayScale = bssrdfReflectCompensation / selectProb;
+				bool useKray = true;
+	#ifdef RISE_ENABLE_OPENPGL
+				if( usedGuidedDirection ) {
+					useKray = false;
+				} else if( bsdfCombinedPdf > NEARZERO ) {
+					krayScale = bssrdfReflectCompensation * pScat->pdf / scatterPdf;
+				}
+	#endif
+				if( useKray ) {
+					localScatteringWeight = KrayValue<Tag>( *pScat ) * krayScale;
+				} else {
+					localScatteringWeight = f * invScale;
+				}
 				beta = beta * localScatteringWeight;
 				if constexpr( Traits::is_nm ) {
 					if( pSwlHWSS ) {
 						hwssBetaNM[0] = beta;
 						for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
 							if( pSwlHWSS->terminated[w] ) continue;
-							const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
-								vertices.back(), scatDir, -currentRay.Dir(), pSwlHWSS->lambda[w] );
-							hwssBetaNM[w] = hwssBetaNM[w] * fw * invScale;
+							// DL-69, HWSS companions.  Same pairing rule
+							// per wavelength, and the same fallback
+							// ladder PT's HWSS body uses: ask the SPF for
+							// the SELECTED lobe's kray at this companion
+							// wavelength (`ISPF::EvaluateKrayNM`), and
+							// only if the SPF declines (-1, the
+							// base-class default) fall back to the
+							// aggregate `fw * invScale`.  That fallback
+							// carries the DL-69 pattern for any SPF that
+							// does not implement `EvaluateKrayNM` --
+							// `SchlickSPF` among them -- and is tracked
+							// as DL-125 (PT's own HWSS companion path has
+							// the identical residual, same fallback, and
+							// is the reason this site mirrors rather than
+							// diverges from it).
+							Scalar compScale = -1;
+							if( useKray && pSPF ) {
+								const Scalar krayW = pSPF->EvaluateKrayNM(
+									ri.geometric, pScat->ray.Dir(), pScat->type,
+									pSwlHWSS->lambda[w], iorStack );
+								if( krayW >= 0 ) {
+									compScale = krayW * krayScale;
+								}
+							}
+							if( compScale < 0 ) {
+								const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
+									vertices.back(), scatDir, -currentRay.Dir(), pSwlHWSS->lambda[w] );
+								compScale = fw * invScale;
+							}
+							hwssBetaNM[w] = hwssBetaNM[w] * compScale;
 						}
 					}
 				}
@@ -2952,9 +3038,58 @@ namespace {
 			}
 	#endif
 
-			// Store the forward pdf for the next vertex,
-			// accounting for lobe selection probability.
+			// Store the forward pdf for the next vertex.
+			//
+			// DL-69, second half.  This used to store `scatterPdf =
+			// selectProb * pScat->pdf` -- the realization-dependent
+			// SAMPLING density of the one lobe that was drawn.  But
+			// `pdfFwd` is only ever read by the MIS ratio chain
+			// (`MISWeight`'s `ri *= pdfRev/pdfFwd`, and VCM's
+			// `bsdfDirPdfW = next.pdfFwd * distSq / cosAtGen`
+			// recurrence -- verified: no contribution-side consumer
+			// reads `pdfFwd` on a SURFACE vertex; the `pdfFwd` divides
+			// at `BDPTIntegrator.cpp` s=1 splat / s=1 connection and
+			// `VCMIntegrator.cpp`'s light-tracing branch are all on
+			// LIGHT-type vertices), and the reverse side of that same
+			// chain -- `pdfRev` here, and every connection strategy's
+			// `pdfRev` override -- evaluates the material's AGGREGATE,
+			// direction-only `ISPF::Pdf()` through
+			// `PathValueOps::EvalPdfAtVertex`.  Two different formulas
+			// for what Veach eq. 10.9 treats as ONE density.
+			//
+			// At a multi-lobe vertex with overlapping support,
+			// `selectProb * p_I(w)` is generically SMALLER than the
+			// aggregate density at the same `w` (the other lobes' mass
+			// there is missing), which inflates every `pdfRev/pdfFwd`
+			// ratio and so DEFLATES the balance/power weight of the
+			// strategy that generated this vertex.
+			// tests/SchlickLobePairingTest.cpp measures the two
+			// densities disagreeing across two orders of magnitude on
+			// real `schlick_material` draws.
+			//
+			// So `pdfFwd` now uses the SAME function the reverse walk
+			// does, evaluated at the forward direction.  A material
+			// that cannot evaluate its own density (`ISPF::Pdf`'s
+			// base-class default returns 0 -- `BioSpecSkinSPF`,
+			// `GenericHumanTissueSPF`) keeps the per-lobe value, which
+			// is what it had before this row: its `pdfRev` is zero
+			// there too and `MISWeight`'s remap0 already governs that
+			// case, so substituting a zero would be a behaviour change
+			// for no consistency gain.
+			//
+			// `guidingPdfDirectionIn`, set a few lines above, keeps
+			// `scatterPdf` deliberately: it is OpenPGL's
+			// `pdfDirectionIn` training input (see this file's
+			// `segment->pdfDirectionIn` store), which wants the true
+			// sampling density -- role 1, not role 2.
 			pdfFwdPrev = scatterPdf;
+			if( !pScat->isDelta ) {
+				const Scalar misFwdPdf = PathValueOps::EvalPdfAtVertex<Tag>(
+					vertices.back(), -currentRay.Dir(), scatDir, tag );
+				if( misFwdPdf > NEARZERO ) {
+					pdfFwdPrev = misFwdPdf;
+				}
+			}
 
 			// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
 			if( pScat->isDelta ) {
@@ -6627,24 +6762,60 @@ unsigned int GenerateLightSubpathImpl(
 				break;
 			}
 			const Scalar scatterPdf = selectProb * effectivePdf;
+
+			// DL-69, light-subpath twin of the eye generator's block --
+			// read its comment for the derivation.  Same defect
+			// (aggregate `EvalBSDFAtVertex` over a per-lobe
+			// `scatterPdf`), same fix (the selected lobe's own `kray_I`
+			// over the same lobe's selection probability, matching this
+			// file's delta branch immediately above and PT's ordinary
+			// initialization), same guiding carve-out for DL-67.
+			Scalar krayScale = bssrdfReflectCompensation / selectProb;
+			bool useKray = true;
+#ifdef RISE_ENABLE_OPENPGL
+			if( usedGuidedDirection ) {
+				useKray = false;
+			} else if( bsdfCombinedPdf > NEARZERO ) {
+				krayScale = bssrdfReflectCompensation * pScat->pdf / scatterPdf;
+			}
+#endif
 			if constexpr( Traits::is_pel ) {
-				localScatteringWeight =
-					f * (bssrdfReflectCompensation * cosTheta / scatterPdf);
+				localScatteringWeight = useKray ?
+					( KrayValue<Tag>( *pScat ) * krayScale ) :
+					( f * (bssrdfReflectCompensation * cosTheta / scatterPdf) );
 				beta = beta * localScatteringWeight;
 			} else {
-				localScatteringWeight = RISEPel(
-					f * bssrdfReflectCompensation * cosTheta / scatterPdf,
-					f * bssrdfReflectCompensation * cosTheta / scatterPdf,
-					f * bssrdfReflectCompensation * cosTheta / scatterPdf );
-				beta = beta * f * bssrdfReflectCompensation * cosTheta / scatterPdf;
+				// Pel/NM association divergence preserved: the guided
+				// fallback keeps the original left-to-right chain.
+				const Scalar wHero = useKray ?
+					( KrayValue<Tag>( *pScat ) * krayScale ) :
+					( f * bssrdfReflectCompensation * cosTheta / scatterPdf );
+				localScatteringWeight = RISEPel( wHero, wHero, wHero );
+				beta = beta * wHero;
 				if( pSwlHWSS ) {
 					const Scalar invScale = bssrdfReflectCompensation * cosTheta / scatterPdf;
 					hwssBetaNM[0] = beta;
 					for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
 						if( pSwlHWSS->terminated[w] ) continue;
-						const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
-							vertices.back(), -currentRay.Dir(), scatDir, pSwlHWSS->lambda[w] );
-						hwssBetaNM[w] = hwssBetaNM[w] * fw * invScale;
+						// DL-69 HWSS companions -- see the eye twin:
+						// per-lobe `ISPF::EvaluateKrayNM` first, the
+						// aggregate `fw * invScale` only where the SPF
+						// declines to answer (DL-125).
+						Scalar compScale = -1;
+						if( useKray && pSPF ) {
+							const Scalar krayW = pSPF->EvaluateKrayNM(
+								ri.geometric, pScat->ray.Dir(), pScat->type,
+								pSwlHWSS->lambda[w], iorStack );
+							if( krayW >= 0 ) {
+								compScale = krayW * krayScale;
+							}
+						}
+						if( compScale < 0 ) {
+							const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
+								vertices.back(), -currentRay.Dir(), scatDir, pSwlHWSS->lambda[w] );
+							compScale = fw * invScale;
+						}
+						hwssBetaNM[w] = hwssBetaNM[w] * compScale;
 					}
 				}
 			}
@@ -6735,9 +6906,24 @@ unsigned int GenerateLightSubpathImpl(
 		}
 #endif
 
-		// Store the forward pdf for the next vertex (solid angle measure),
-		// accounting for lobe selection probability.
+		// Store the forward pdf for the next vertex (solid angle measure).
+		//
+		// DL-69, second half -- light-subpath twin of the eye
+		// generator's `pdfFwdPrev` block; read its comment for the
+		// derivation.  `pdfFwd` is the MIS ratio chain's density, and
+		// the reverse side of that chain evaluates the aggregate,
+		// direction-only `ISPF::Pdf()`; `selectProb * pScat->pdf` is
+		// the realization-dependent sampling density and belongs only
+		// to `guidingPdfDirectionIn` (set above, unchanged -- OpenPGL
+		// training input).
 		pdfFwdPrev = selectProb * effectivePdf;
+		if( !pScat->isDelta ) {
+			const Scalar misFwdPdf = PathValueOps::EvalPdfAtVertex<Tag>(
+				vertices.back(), -currentRay.Dir(), scatDir, tag );
+			if( misFwdPdf > NEARZERO ) {
+				pdfFwdPrev = misFwdPdf;
+			}
+		}
 
 		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
 		if( pScat->isDelta ) {
