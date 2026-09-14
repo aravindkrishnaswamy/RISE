@@ -45,15 +45,24 @@
 //        boundary edges around the hole): refuses the signed query,
 //        unsigned answers as a sheet would -- exactly like (b), just a
 //        different way of failing the same check.
+//    (d) COST, reported not asserted (wall-clock is machine-dependent):
+//        ns/query for the parity ray-cast on a ~10k-triangle tessellated
+//        sphere, since `interior(r)` is a per-shading-point query and
+//        the design's own cost sections (docs/CROSS_OBJECT_PROXIMITY_
+//        DESIGN.md §5.3, §8.3) measure everything else on this signal
+//        in exactly this unit.
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <chrono>
 #include <cmath>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
 
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -306,6 +315,168 @@ static void TestNonWatertightCubeRefuses()
 	mesh->release();
 }
 
+//! A hand-built, WELDED UV-sphere: one shared vertex at each pole (a fan
+//! of triangles there), ordinary quads split into two triangles on the
+//! `n` interior latitude rings.  Deliberately NOT
+//! `SphereGeometry::TessellateToMesh` -- that tessellator gives each
+//! pole CELL its own distinct (but coincident-position) vertex, so the
+//! polar "quads" degenerate to zero-area triangles whose wedge edges are
+//! each used by only one triangle.  Measured while building this
+//! fixture: a 10082-triangle `TessellateToMesh` sphere reports 284
+//! boundary edges under DL-31's watertightness check -- a real, closed
+//! sphere reads as an open sheet purely because of how the tessellator
+//! indexes its poles.  Filed as DL-116 (see the ledger); worked around
+//! here by welding the poles instead, which is the standard fix and
+//! gives an unambiguously watertight ~10k-triangle fixture for this
+//! section's timing.
+static bool BuildWeldedUVSphere( const Scalar R, const unsigned int n, const unsigned int m,
+	IndexTriangleListType& tris, VerticesListType& vertices )
+{
+	tris.clear();
+	vertices.clear();
+	if( n < 1 || m < 3 ) { return false; }
+
+	const unsigned int northIdx = 0;
+	const unsigned int ringBase = 1;						// ring i (1..n), column j (0..m-1) -> ringBase + (i-1)*m + j
+	const unsigned int southIdx = ringBase + n * m;
+
+	vertices.resize( southIdx + 1 );
+	vertices[northIdx] = Point3( 0, R, 0 );
+	vertices[southIdx] = Point3( 0, -R, 0 );
+	for( unsigned int i = 1; i <= n; ++i ) {
+		const Scalar theta = PI * (Scalar)i / (Scalar)( n + 1 );	// strictly between 0 and PI: never at a pole
+		const Scalar y = R * std::cos( theta );
+		const Scalar ringR = R * std::sin( theta );
+		for( unsigned int j = 0; j < m; ++j ) {
+			const Scalar phi = TWO_PI * (Scalar)j / (Scalar)m;
+			vertices[ringBase + (i - 1) * m + j] = Point3( ringR * std::cos( phi ), y, ringR * std::sin( phi ) );
+		}
+	}
+
+	auto addTri = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+		IndexedTriangle t;
+		t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+		t.iNormals[0] = a;  t.iNormals[1] = b;  t.iNormals[2] = c;
+		t.iCoords[0] = a;   t.iCoords[1] = b;   t.iCoords[2] = c;
+		tris.push_back( t );
+	};
+	auto ring = [&]( unsigned int i, unsigned int j ) { return ringBase + (i - 1) * m + ( j % m ); };
+
+	// North cap: a fan from the pole to ring 1.
+	for( unsigned int j = 0; j < m; ++j ) {
+		addTri( northIdx, ring( 1, j ), ring( 1, j + 1 ) );
+	}
+	// Interior bands: ring i to ring i+1, one shared diagonal per quad.
+	for( unsigned int i = 1; i < n; ++i ) {
+		for( unsigned int j = 0; j < m; ++j ) {
+			const unsigned int a = ring( i, j ), b = ring( i, j + 1 );
+			const unsigned int c = ring( i + 1, j ), d = ring( i + 1, j + 1 );
+			addTri( a, c, d );
+			addTri( a, d, b );
+		}
+	}
+	// South cap: a fan from ring n to the pole.
+	for( unsigned int j = 0; j < m; ++j ) {
+		addTri( southIdx, ring( n, j + 1 ), ring( n, j ) );
+	}
+	return true;
+}
+
+//! (d) COST.  A ~10k-triangle watertight sphere, timed over many random
+//! interior/exterior queries.  Reported, not gated -- wall clock is
+//! machine-dependent -- but printed in the same ns/query unit the
+//! design doc's own cost sections use, so a reader can compare directly.
+static void TestParityCost()
+{
+	std::cout << "(d) cost -- parity ray-cast + closest-point on a ~10k-triangle watertight sphere" << std::endl;
+
+	// n=50 interior rings x m=100 columns: 2*100 (cap fans) +
+	// 2*100*49 (interior bands) = 200 + 9800 = 10000 triangles exactly.
+	const unsigned int n = 50, m = 100;
+	const Scalar R = 3.0;
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	const bool built = BuildWeldedUVSphere( R, n, m, tris, vertices );
+	Check( built, "(d) welded UV-sphere construction succeeds" );
+	if( !built ) { return; }
+	std::cout << "    " << tris.size() << " triangles, " << vertices.size() << " vertices" << std::endl;
+
+	NormalsListType normals( vertices.size(), Vector3( 0, 1, 0 ) );	// unused placeholder
+	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );		// unused placeholder
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	// A sanity check that this fixture actually exercises the fixed
+	// path, not a silent refusal: pin one interior depth against the
+	// sphere's own closed form before timing.
+	{
+		Scalar outSigned = 0.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(d) the tessellated sphere is certified watertight (SignedDistanceLower answers)" );
+		// Tessellation is a polyhedral approximation of the sphere, not
+		// the sphere itself, so this is a loose bound (1% of R), not the
+		// tight tolerances used on the exact cube fixtures above.
+		CheckClose( (double)outSigned, -(double)R, 0.01 * (double)R,
+			"(d) tessellated-sphere centre depth is close to the analytic sphere's -R" );
+	}
+
+	std::mt19937 rng( 12345 );
+	std::uniform_real_distribution<double> unit( -1.0, 1.0 );
+	const int N = 2000;
+	std::vector<Point3> points;
+	points.reserve( N );
+	for( int i = 0; i < N; ++i ) {
+		// A mix of interior and exterior points, spanning roughly [0, 2R]
+		// from the centre so both the parity cast and the closest-point
+		// traversal do real work either way.
+		const Scalar x = (Scalar)( unit( rng ) * 2.0 * (double)R );
+		const Scalar y = (Scalar)( unit( rng ) * 2.0 * (double)R );
+		const Scalar z = (Scalar)( unit( rng ) * 2.0 * (double)R );
+		points.push_back( Point3( x, y, z ) );
+	}
+
+	const auto t0 = std::chrono::steady_clock::now();
+	long long sink = 0;
+	for( int i = 0; i < N; ++i ) {
+		Scalar outSigned = 0.0; bool outExact = false;
+		if( mesh->SignedDistanceLower( points[i], Scalar( 1000 ), outSigned, outExact ) ) {
+			sink += outSigned < Scalar( 0 ) ? 1 : 0;
+		}
+	}
+	const auto t1 = std::chrono::steady_clock::now();
+	const double ns = std::chrono::duration<double, std::nano>( t1 - t0 ).count();
+	const double nsPerQuery = ns / (double)N;
+	std::cout << "    " << N << " SignedDistanceLower queries (parity + closest-point): "
+		<< nsPerQuery << " ns/query (interior hits counted: " << sink << " of " << N << ")" << std::endl;
+
+	// Decomposed: the unsigned closest-point half ALONE (the same
+	// traversal `proximity()` already paid before this row), so the
+	// parity ray-cast's own marginal cost is visible rather than folded
+	// into one number.
+	{
+		const auto u0 = std::chrono::steady_clock::now();
+		long long sink2 = 0;
+		for( int i = 0; i < N; ++i ) {
+			Scalar d = 0.0;
+			if( mesh->DistanceToSurface( points[i], Scalar( 1000 ), d ) ) { sink2 += 1; }
+		}
+		const auto u1 = std::chrono::steady_clock::now();
+		const double nsUnsigned = std::chrono::duration<double, std::nano>( u1 - u0 ).count() / (double)N;
+		std::cout << "    " << N << " DistanceToSurface (unsigned, pre-existing) queries: "
+			<< nsUnsigned << " ns/query (answered " << sink2 << " of " << N << "); "
+			<< "parity ray-cast's own marginal cost ~= " << ( nsPerQuery - nsUnsigned ) << " ns/query" << std::endl;
+	}
+
+	mesh->release();
+}
+
 int main()
 {
 	std::cout << "=== MeshInteriorSignalTest (DL-31) ===" << std::endl;
@@ -313,6 +484,7 @@ int main()
 	TestClosedWatertightCube();
 	TestOpenQuadRefuses();
 	TestNonWatertightCubeRefuses();
+	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
