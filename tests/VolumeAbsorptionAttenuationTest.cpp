@@ -1275,6 +1275,65 @@ static const char* kFlatAbsorberCps =
 	"\tcp 400 0.5\n\tcp 700 0.5\n";
 
 //////////////////////////////////////////////////////////////////////
+// REPEAT-AVERAGED RENDER (P2-4, 2026-09-14).
+//
+// Row [R] asserts `kRelTol` (8 %) on a SINGLE 1024-spp render.  Measured
+// on this HEAD -- 40 renders of that exact row, taken four-at-a-time so
+// the machine was loaded -- its run-to-run spread is
+//
+//     mean  0.674237 / 0.302915 / 0.091213   (+0.58 / +0.57 / +0.55 %
+//                                             against the closed form:
+//                                             unbiased)
+//     sd    3.13 % relative, IDENTICAL in all three channels
+//     range -5.91 % .. +7.96 %
+//
+// so the 8 % gate is only ~2.6 sigma and trips on the order of 1 % of
+// runs.  Two runs out of 89 on this HEAD did trip it (+8.77 % and
+// +9.70 %, every channel over by the SAME relative amount), reproducing a
+// reviewer's report of 86/3.  That is an ordinary tail of this row's own
+// distribution, not a heavy-tailed estimator and not a transport defect:
+// the per-channel sd is equal to four significant figures, i.e. the
+// run-to-run variation is a pure multiplicative scale on the whole
+// measurement, and the mean sits within 0.6 % of the closed form.
+//
+// WHY IT VARIES AT ALL between runs of a test that calls `std::srand`:
+// `std::srand` fixes the SEQUENCE, not the ASSIGNMENT.  RISE's render
+// workers draw their per-item seeds from the unsynchronized libc
+// `rand()`, so which worker gets which seed is a function of thread
+// scheduling (see the "RISE render seeding" note in the repo memory).
+//
+// The fix is the standard one: average independent repeats, each with its
+// own seed (`RenderCentralBlock` already does `std::srand(g_renderSeed++)`
+// per call), which divides the spread by `sqrt(kRepeats)`.
+//////////////////////////////////////////////////////////////////////
+static const unsigned int kRepeats = 4;
+
+static PixelRGB RenderCentralBlockAveraged(
+	const std::string& sceneText, const char* tag, unsigned int repeats = kRepeats )
+{
+	PixelRGB acc{ 0, 0, 0, false };
+	unsigned int n = 0;
+	for( unsigned int i = 0; i < repeats; ++i ) {
+		const PixelRGB one = RenderCentralBlock( sceneText, tag );
+		if( !one.valid ) {
+			return acc;			// invalid stays invalid -- the loud-failure rows rely on it
+		}
+		acc.r += one.r;
+		acc.g += one.g;
+		acc.b += one.b;
+		++n;
+	}
+	if( n == 0 ) {
+		return acc;
+	}
+	acc.r /= n;
+	acc.g /= n;
+	acc.b /= n;
+	acc.valid = true;
+	return acc;
+}
+
+//////////////////////////////////////////////////////////////////////
 // Tests
 //////////////////////////////////////////////////////////////////////
 
@@ -2037,7 +2096,10 @@ static void TestPositionalLightColored()
 		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
 		<< ") — selection-weight + desaturation discriminator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	const PixelRGB px = RenderCentralBlock(
+	// P2-4: repeat-averaged -- see RenderCentralBlockAveraged's note for
+	// the measured single-render spread (3.13 % sd) that made this row's
+	// 8 % gate a ~2.6-sigma test.
+	const PixelRGB px = RenderCentralBlockAveraged(
 		BuildRGBSceneWithOmni( 1024, sar, sag, sab ), "omni_col" );
 	Check( px.valid, "R: render produced a frame" );
 	if( !px.valid ) return;

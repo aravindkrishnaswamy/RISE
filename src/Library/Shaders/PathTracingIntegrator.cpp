@@ -1255,24 +1255,42 @@ namespace
 	// Direct-lighting (NEE) dispatch.  Covers PART2 surface NEE and the
 	// BSSRDF / RW-SSS entry-point NEE (which pass an entry-BSDF + entry-
 	// material).  NM inserts nm after pMaterial, matching the original.
+	// DL-74: the trailing `pGuidedBlend` and `pMisIorStack` default to null
+	// on the primary template's declaration only (explicit specializations
+	// may not re-declare a default; callers that write
+	// `PTEvaluateDirectLighting<Tag>(...)` resolve the defaults from this
+	// declaration regardless of which specialization's body ends up
+	// running).  `pMisIorStack` is the IOR stack the MIS-partner aggregate
+	// pdf is evaluated under -- it must be the SAME stack the BSDF-sampling
+	// side's `PTEvalPdfAtSurface` uses at that vertex (DL-74 P2).  The two
+	// BSSRDF/RW-SSS entry NEE sites pass neither: their continuation's
+	// density is the BSSRDF cosine pdf, which is neither guided nor
+	// stack-dependent, so both sides already agree.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type PTEvaluateDirectLighting(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag );
+		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag,
+		const IGuidedNEEPdfBlend* pGuidedBlend = 0,
+		const IORStack* pMisIorStack = 0,
+		Scalar neeTrainingScale = 1 );
 	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const PelTag& )
-	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject, const PelTag&,
+		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
+		Scalar neeTrainingScale )
+	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag )
-	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag,
+		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
+		Scalar neeTrainingScale )
+	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -1347,6 +1365,61 @@ namespace
 	inline typename SpectralValueTraits<Tag>::value_type PTBssrdfWeightSpatial( const BSSRDFSampling::SampleResult& b );
 	template<> inline RISEPel PTBssrdfWeightSpatial<PelTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatial; }
 	template<> inline Scalar  PTBssrdfWeightSpatial<NMTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatialNM; }
+
+	// DL-72 / DL-84 (round 4): the numerator `OptimalMISAccumulator` has to
+	// be trained with at a BSSRDF EXIT.
+	//
+	// THE ACCUMULATOR'S CONTRACT, from its own derivation (Kondapaneni 2019;
+	// OptimalMISAccumulator.h "CORRECT MOMENT ESTIMATION"): technique i's
+	// moment is `M_i = E_{x~p_i}[(f(x)/p_i(x))^2]`, where `f` is THE
+	// INTEGRAND -- the whole per-sample contribution of the vertex-local
+	// estimator, not some directional factor inside it -- and `p_i` is the
+	// density that sample was drawn from.  Every other training site obeys
+	// that: the surface continuation stores `scatterThroughput *
+	// effectiveBsdfPdf` (the entire vertex-local `BSDF*cos`), and NEE
+	// accumulates its `contrib` -- geometry factor included -- over its own
+	// pdf.
+	//
+	// WHAT THE BSSRDF EXIT'S INTEGRAND IS.  BSSRDFSampling.h's header gives
+	//   weight        = Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
+	//   weightSpatial = Rd * Ft(exit) / pdfSurface                (no entry Sw)
+	//   Sw            = Ft(entry) / (c * PI)      (EvaluateSwWithFresnel)
+	// so `weight = weightSpatial * Sw * PI`.  The exit direction is
+	// cosine-sampled, `cosinePdf = cos/PI`, and the contribution this
+	// continuation adds is `weightSpatial * Sw(w) * cos(w) * L(w)` divided
+	// by `cosinePdf` -- which is why the code multiplies the escaped
+	// radiance by `weight`.  So
+	//
+	//     f(w) = weightSpatial * Sw(w) * cos(w) = weight * cosinePdf
+	//
+	// exactly, with `Rd`, `pdfSurface` and PI all surviving in it, and
+	//     f / p = (weight * cosinePdf) / cosinePdf = weight
+	// -- the throughput this sample really carries.  No division is needed
+	// to form it, so unlike round 3's version there is no Rd==0 channel to
+	// guard and the Pel form stays PER-CHANNEL rather than collapsing to
+	// MaxValue().
+	//
+	// WHAT ROUND 3 TRAINED INSTEAD, and why it was wrong: `Sw * cos` alone,
+	// i.e. `f` with `weightSpatial` DROPPED.  `weightSpatial` is an
+	// area-measure quantity (`Rd / pdfSurface`), not an O(1) directional
+	// factor, so that scaled this site's moments by an arbitrary amount and
+	// skewed the alpha of every tile an SSS surface touches.  (Variance
+	// only -- alpha never biases a partition-of-unity weight.)  Its NEE
+	// partner at the same vertex had the identical defect, from the other
+	// side: `LightSampler` accumulates the `contrib` it computes, and
+	// `weightSpatial` is applied by the CALLER afterwards, so the NEE arm
+	// trained `f / weightSpatial` too.  That is what
+	// `EvaluateDirectLighting{,NM}`'s `neeTrainingScale` closes; the two
+	// halves of this pair are only comparable to each other, and to every
+	// other pair sharing the tile, when BOTH carry it.
+	inline RISEPel PTBssrdfTrainedBsdfTimesCos( const RISEPel& weight, Scalar cosinePdf )
+	{
+		return weight * cosinePdf;
+	}
+	inline Scalar PTBssrdfTrainedBsdfTimesCos( Scalar weight, Scalar cosinePdf )
+	{
+		return weight * cosinePdf;
+	}
 
 	// CastRay continuation (BSSRDF / RW-SSS sub-path), 8-arg form with
 	// IOR stack; distance is always passed null as in both originals.
@@ -1469,6 +1542,109 @@ namespace
 		IBSDF* pBRDF;
 		ISPF* pSPF;
 	};
+
+#ifdef RISE_ENABLE_OPENPGL
+	//! DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): the ONE nominal
+	//! MIS-partner density for a shading point under active path guiding.
+	//!
+	//! THE TWO ROLES OF A GUIDED PDF.  A guided continuation's throughput
+	//! must be divided by the density the direction was ACTUALLY drawn
+	//! from -- the per-lobe `GuidingEffectiveAlpha`, the per-lobe cosine
+	//! convention, `combinedPdf` or `risEffectivePdf`.  Getting that wrong
+	//! biases the estimator, so none of it is touched.  The MIS WEIGHT is a
+	//! different job: `sum_s w_s(w) == 1` is the only property the estimator
+	//! needs (see the unbiasedness note in
+	//! docs/DL74_ENV_NEE_GUIDING_PARTITION.md), so the weights may be built
+	//! from ANY common density, and the useful choice is one that both the
+	//! BSDF-sampling side and every NEE arm can evaluate for the same
+	//! direction without knowing which lobe was, or will be, selected:
+	//!
+	//!     p_mis(w) = alpha_nom * guide(w) + (1 - alpha_nom) * p_aggregate(w)
+	//!
+	//! Fixed conventions, and why each is the one that can be shared:
+	//!  - `alpha_nom` is the base `rc.guidingAlpha`, scaled by the learned
+	//!    per-cell sigmoid when `rc.guidingLearnedAlpha` is on (the
+	//!    default) exactly as PART 3 scales it, and NOT halved for a glossy
+	//!    lobe -- NEE runs before any lobe is chosen, so a per-lobe alpha is
+	//!    unavailable to it by construction.
+	//!  - the cosine product is applied UNCONDITIONALLY (PART 3 applied it
+	//!    only for `eRayDiffuse`).  `guide(w)` has to be one function of
+	//!    direction, and guide-times-cosine is the physically motivated
+	//!    factorisation for surface reflection in both lobe regimes; the
+	//!    guided estimator stays unbiased because its throughput divides by
+	//!    the same post-product density it sampled from.
+	//!  - `p_aggregate` is the material's all-lobes `Pdf()`, which is what
+	//!    every NEE arm already computes and is independent of the
+	//!    stochastic lobe choice.
+	//!  - the mode (one-sample MIS vs RIS) does not enter at all, which is
+	//!    why RIS's own residual (DL-83) closes with this row.
+	//!
+	//! Deliberately plain (no IReference/AddRef/Release): constructed fresh
+	//! on the stack per shading point, never shared across threads or
+	//! calls, unlike the heap-allocated, integrator-lifetime
+	//! ClayNEEMaterial above.  Default-constructed (unconfigured) it is a
+	//! pure pass-through, which is what every non-guided vertex uses.
+	class PTGuidingMisPdf : public IGuidedNEEPdfBlend
+	{
+	public:
+		PTGuidingMisPdf() : pField( 0 ), pDist( 0 ), alphaNominal( 0 ), bActive( false ) {}
+
+		void Configure(
+			Implementation::PathGuidingField* pF,
+			Implementation::GuidingDistributionHandle* pD,
+			Scalar aNominal )
+		{
+			pField = pF;
+			pDist = pD;
+			alphaNominal = aNominal;
+			bActive = ( pF != 0 && pD != 0 );
+		}
+
+		bool IsActive() const { return bActive; }
+
+		//! The nominal MIS-partner density at `wo`.
+		//!
+		//! `aggregatePdf <= 0` is NOT a special case while guiding is
+		//! active (DL-74 P2-2, round-4 review).  The mixture the
+		//! BSDF-sampling technique actually draws from is
+		//! `alpha_nom*guide + (1-alpha_nom)*p_aggregate`, and its first
+		//! term does not vanish just because the material's own pdf
+		//! does: the guide can and does propose a direction outside the
+		//! material's sampling support (the tilted-lobe wedge of
+		//! `PTGuidingMISPartitionTest` row (h) is exactly that region).
+		//! Returning 0 there told BOTH sides "the BSDF technique never
+		//! generates this direction", so both took weight 1 and the
+		//! wedge's energy was counted twice.  The mixture density is
+		//! returned instead, which is one function of direction on both
+		//! sides and partitions exactly.
+		//!
+		//! With guiding INACTIVE the aggregate pdf is passed straight
+		//! through, so `aggregatePdf == 0` still means "no MIS partner
+		//! exists" -- which is then the true statement, because the only
+		//! sampler is the material itself.
+		Scalar Eval( const Vector3& wo, Scalar aggregatePdf ) const
+		{
+			if( !bActive ) {
+				return aggregatePdf;
+			}
+			const Scalar agg = aggregatePdf > 0 ? aggregatePdf : Scalar( 0 );
+			const Scalar guidePdf = pField->Pdf( *pDist, wo );
+			return PathTransportUtilities::GuidingCombinedPdf(
+				alphaNominal, guidePdf, agg );
+		}
+
+		Scalar Blend( const Vector3& wo, Scalar rawPdf ) const override
+		{
+			return Eval( wo, rawPdf );
+		}
+
+	private:
+		Implementation::PathGuidingField* pField;
+		Implementation::GuidingDistributionHandle* pDist;
+		Scalar alphaNominal;
+		bool bActive;
+	};
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1605,7 +1781,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	bool smsHadNonSpecularShading_initial,
 	PixelAOV* pAOV,
 	typename SpectralValueTraits<Tag>::value_type* pDirectResult,
-	const Tag& tag
+	const Tag& tag,
+	Scalar bsdfMisPdf_
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -1614,6 +1791,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	Value result = Traits::zero();
 	Value throughput = PTValueOne<Tag>();
 	Value bsdfTimesCos = bsdfTimesCos_;
+	// DL-74: the incoming vertex's MIS-partner density, supplied by the
+	// caller (`RAY_STATE::MisPartnerPdf()` at the shader-op boundary) and
+	// defaulting to `bsdfPdf` when the caller has nothing else to say.
+	//
+	// It is NOT safe to assume every caller enters from a non-guided
+	// context -- an earlier round of this row did, and that assumption was
+	// false for exactly one producer: `RayCaster`'s volume phase-scatter
+	// continuation sets `bsdfPdf = effectivePdf` (the guided mixture) and
+	// `bsdfMisPdf = phasePdf` (the raw density volume NEE weights against).
+	// When that continuation hits an emissive surface it re-enters here
+	// through `PathTracingShaderOp`, and collapsing the two back together
+	// made the emitter-hit weight use the guided pdf against an NEE arm
+	// that had used the raw one -- measured +44 % on the row-(g) fixture.
+	Scalar bsdfMisPdf = bsdfMisPdf_ < 0 ? bsdfPdf : bsdfMisPdf_;
 
 	RayIntersection ri( firstHit );
 	Ray currentRay = ri.geometric.ray;
@@ -1920,7 +2111,40 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 					currentRay = Ray( scatterPt, wi );
+					// DL-74 (round-3 review): this loop's OWN volume vertex is
+					// a THIRD producer of the two densities, and it was the one
+					// the round-2 split missed.  It is reached only after a
+					// SURFACE bounce (a camera ray's first medium interaction
+					// is handled by `IntegrateRayTemplated`'s separate walk),
+					// which is why "fog box + white floor" caught it and "fog
+					// box" alone did not.
+					//
+					//  * `bsdfPdf` is the TRUE sampling density -- `effectivePdf`,
+					//    the guided mixture when volume guiding fires, since the
+					//    throughput above divided by exactly that.
+					//  * `bsdfMisPdf` is the MIS partner, and at a volume vertex
+					//    that is the RAW `phasePdf` (DL-73): the NEE call a few
+					//    lines above weights through `MediumScatterMaterial::Pdf`,
+					//    which forwards straight to `IPhaseFunction::Pdf`.
+					//
+					// Leaving `bsdfMisPdf` at the PREVIOUS vertex's value (what
+					// round 2 did) made the env escape after this scatter weight
+					// against the floor's BSDF pdf -- and after a camera ray,
+					// against 0, i.e. FULL weight on top of an already-weighted
+					// volume NEE sample.  Measured +9.6 % on
+					// VolumeEnvFurnaceTest's floor-in-fog furnace.
 					bsdfPdf = effectivePdf;
+					bsdfMisPdf = phasePdf;
+					// The optimal-MIS moment's numerator must come from the SAME
+					// vertex as its denominator.  The surface `bsdfTimesCos` left
+					// standing here belongs to the previous vertex, so it is
+					// cleared rather than reused: a zero numerator simply does
+					// not train (the `f2 > 0` gate), which is the conservative
+					// state DL-72 round 2 established for sites whose correct
+					// quantity is not yet wired.  Wiring it properly needs a
+					// paired `AccumulateCount` at this site as well -- filed as
+					// DL-84, deliberately not done here.
+					bsdfTimesCos = Traits::zero();
 					considerEmission = true;
 					volumeBounces++;
 					continue;  // Re-enter loop: needsIntersection is still true
@@ -2086,7 +2310,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					Scalar envMiWeight = 1.0;
 
 					// MIS weight for BSDF-sampled environment hit
-					if( pEnvForEscape == scene.GetGlobalRadianceMap() && pLS && bsdfPdf > 0 )
+					// DL-74 (round-3 review): the gate admits EITHER density
+					// being positive, because the block's two arms use two
+					// different ones -- the optimal-MIS training below reads
+					// `bsdfPdf` (the true sampling density) and the weight
+					// reads `bsdfMisPdf` (the nominal partner).  Gating on
+					// `bsdfPdf` alone could skip a live partner.  Same rule
+					// as `RayCasterEnvEscapeMISWeight`.
+					if( pEnvForEscape == scene.GetGlobalRadianceMap() && pLS &&
+						( bsdfPdf > 0 || bsdfMisPdf > 0 ) )
 					{
 						const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 						if( pES )
@@ -2107,15 +2339,27 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									}
 								}
 
-								Scalar w_bsdf;
-								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+								// DL-74: the WEIGHT uses the nominal
+								// MIS-partner density (the same function
+								// LightSampler's env-NEE arm evaluates for
+								// this direction); the TRAINING above uses
+								// the true sampling density.  A zero
+								// nominal density means no BSDF-side
+								// partner exists, so the escape keeps the
+								// full sample -- matching NEE's own
+								// `pBsdf > 0` fallback.
+								Scalar w_bsdf = 1.0;
+								if( bsdfMisPdf > 0 )
 								{
-									const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-									w_bsdf = MISWeights::OptimalMIS2Weight( bsdfPdf, envPdf, alpha );
-								}
-								else
-								{
-									w_bsdf = PowerHeuristic( bsdfPdf, envPdf );
+									if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+									{
+										const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+										w_bsdf = MISWeights::OptimalMIS2Weight( bsdfMisPdf, envPdf, alpha );
+									}
+									else
+									{
+										w_bsdf = PowerHeuristic( bsdfMisPdf, envPdf );
+									}
 								}
 								envMiWeight = w_bsdf;
 							}
@@ -2189,6 +2433,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		rs.depth = depth + 1;
 		rs.importance = importance;
 		rs.bsdfPdf = bsdfPdf;
+		rs.bsdfMisPdf = bsdfMisPdf;
 		rs.bsdfTimesCos = PTRayStateBsdfTimesCos( bsdfTimesCos );
 		rs.considerEmission = considerEmission;
 		rs.type = rayType;
@@ -2293,7 +2538,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
 				const bool emitterNeeSampleable = ( pEmitGeom && pEmitGeom->CanBeAreaLight() );
 
-				if( bsdfPdf > 0 && ri.pObject && emitterNeeSampleable )
+				// DL-74 (round-3 review): EITHER density -- see the env
+				// escape block above for why the gate cannot name just one.
+				if( ( bsdfPdf > 0 || bsdfMisPdf > 0 ) && ri.pObject && emitterNeeSampleable )
 				{
 					const Scalar area = ri.pObject->GetArea();
 					if( area > 0 )
@@ -2347,16 +2594,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									}
 								}
 
-								Scalar w_bsdf;
-								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+								// DL-74: weight from the nominal MIS-partner
+								// density -- `LightSampler`'s area-light NEE
+								// arm evaluates the same function for the
+								// same direction, which is what makes this
+								// pair sum to one under guiding.  Training
+								// above keeps the true sampling density.
+								Scalar w_bsdf = 1.0;
+								if( bsdfMisPdf > 0 )
 								{
-									const Scalar alpha = rc.pOptimalMIS->GetAlpha(
-										rast.x, rast.y );
-									w_bsdf = MISWeights::OptimalMIS2Weight( bsdfPdf, p_nee, alpha );
-								}
-								else
-								{
-									w_bsdf = PowerHeuristic( bsdfPdf, p_nee );
+									if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+									{
+										const Scalar alpha = rc.pOptimalMIS->GetAlpha(
+											rast.x, rast.y );
+										w_bsdf = MISWeights::OptimalMIS2Weight( bsdfMisPdf, p_nee, alpha );
+									}
+									else
+									{
+										w_bsdf = PowerHeuristic( bsdfMisPdf, p_nee );
+									}
 								}
 								emissionMiWeight = w_bsdf;
 								emission = emission * w_bsdf;
@@ -2503,9 +2759,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								// showing its direct SSS glow under `indirect`.
 								if( pLS )
 								{
+									// DL-72 P2-3: this arm's own result is scaled by
+									// `bssrdfWeightSpatial` on the next line, so the
+									// INTEGRAND it must train the optimal-MIS moment
+									// with carries that factor -- exactly as its MIS
+									// partner, the exit continuation below, now does
+									// (PTBssrdfTrainedBsdfTimesCos).  Training-only;
+									// `directSSS` itself is unchanged.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, tag,
+										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -2519,6 +2783,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								// BSSRDF continuation via CastRay sub-path
 								{
 									Value sssThroughput = bssrdfWeight;
+
+									// DL-72 (round 3, this pass): pair every Accumulate
+									// (inside RayCasterEnvEscapeMISWeight, if this
+									// continuation happens to escape to the global env
+									// map) with one AccumulateCount here, at the SAME
+									// "sample attempt" granularity the main surface
+									// continuation uses -- BEFORE Russian roulette, so
+									// a subsequently RR-killed attempt is still counted
+									// (OptimalMISAccumulator.h's AccumulateCount doc:
+									// "regardless of whether the sample contributed
+									// non-zero radiance").  Round 2 removed this call
+									// because the paired moment was wrong-shaped; round
+									// 3 derives the correct one below and reinstates it.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
+										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									{
+										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+											rast.x, rast.y, kTechniqueBSDF );
+									}
 
 									const PathTransportUtilities::RussianRouletteResult rr =
 										PathTransportUtilities::EvaluateRussianRoulette(
@@ -2540,6 +2823,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.considerEmission = true;
 										rs2.importance = importance * PTSurvivalMagnitude( sssThroughput );
 										rs2.bsdfPdf = bssrdf.cosinePdf;
+										// DL-74: the BSSRDF exit is sampled from its own
+										// cosine density with no guiding anywhere in the
+										// path, so the sampling density and the MIS-partner
+										// density coincide.
+										rs2.bsdfMisPdf = bssrdf.cosinePdf;
 										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
 										rs2.diffuseBounces = diffuseBounces;
 										rs2.glossyBounces = glossyBounces;
@@ -2553,29 +2841,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 REOPENED (P2-B, this pass): the round-1 fix computed
-										// `bsdfTimesCos` for BOTH tags via PTBsdfTimesCos(sssThroughput,
-										// bssrdf.cosinePdf) and paired it with an AccumulateCount call
-										// (fixing the previous if-constexpr(is_nm) backwards gate --
-										// that structural fix stands and is NOT reverted). Review this
-										// pass (P2-B) found the TRAINED QUANTITY itself does not match
-										// IRayCaster.h's documented contract for rs.bsdfTimesCos ("BSDF
-										// * cos at the SCATTER point"): `sssThroughput` is the SSS
-										// profile's spatial transport weight (Rd * FtExit / pdfSurface,
-										// a diffusion-profile quantity over the entry/exit DISK
-										// projection), not a directional BSDF value at the continuation
-										// ray's origin, and `bssrdf.cosinePdf` is the cosine-hemisphere
-										// sampling density there -- their product is not the integrand
-										// OptimalMISAccumulator::Accumulate's second-moment estimator
-										// assumes. Training the accumulator with the wrong-shaped
-										// quantity does not miscompute the RENDERED weight (`PowerHeuristic`
-										// is the correct, still-used fallback whenever the accumulator
-										// is not ready), but corrupts `Solve()`'s alpha once it IS ready.
-										// Conservative fix: leave this arm UNWIRED (zero, no count) at
-										// BOTH sites/tags until a future pass derives and wires the
-										// correct directional-only quantity with a matching count; see
-										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "P2-B ruling".
-										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( Traits::zero() );
+										// DL-72 / DL-84 (round 4): the FULL vertex-local
+										// integrand of this exit sample, `weight *
+										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
+										// derivation above.  Round 3 trained `Sw*cos`,
+										// which is the same quantity with the
+										// area-measure `weightSpatial` dropped; the
+										// accumulator's moment is of the INTEGRAND, so
+										// that scaled this site's moments arbitrarily.
+										// Paired with the AccumulateCount call above,
+										// with rs2.bsdfPdf = bssrdf.cosinePdf (unchanged)
+										// as the matching density, and with the same
+										// `weightSpatial` scale now given to the NEE arm
+										// at this vertex (its `neeTrainingScale`
+										// argument, a few lines above).
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
+											PTBssrdfTrainedBsdfTimesCos( bssrdfWeight, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -2680,9 +2961,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								// gate as the diffusion-profile site above.
 								if( pLS )
 								{
+									// DL-72 P2-3: this arm's own result is scaled by
+									// `bssrdfWeightSpatial` on the next line, so the
+									// INTEGRAND it must train the optimal-MIS moment
+									// with carries that factor -- exactly as its MIS
+									// partner, the exit continuation below, now does
+									// (PTBssrdfTrainedBsdfTimesCos).  Training-only;
+									// `directSSS` itself is unchanged.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, tag,
+										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -2696,6 +2985,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								// BSSRDF continuation via CastRay sub-path
 								{
 									Value sssThroughput = bssrdfWeight;
+
+									// DL-72 (round 3, this pass): pair every Accumulate
+									// (inside RayCasterEnvEscapeMISWeight, if this
+									// continuation happens to escape to the global env
+									// map) with one AccumulateCount here, at the SAME
+									// "sample attempt" granularity the main surface
+									// continuation uses -- BEFORE Russian roulette, so
+									// a subsequently RR-killed attempt is still counted
+									// (OptimalMISAccumulator.h's AccumulateCount doc:
+									// "regardless of whether the sample contributed
+									// non-zero radiance").  Round 2 removed this call
+									// because the paired moment was wrong-shaped; round
+									// 3 derives the correct one below and reinstates it.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
+										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									{
+										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+											rast.x, rast.y, kTechniqueBSDF );
+									}
 
 									const PathTransportUtilities::RussianRouletteResult rr =
 										PathTransportUtilities::EvaluateRussianRoulette(
@@ -2717,6 +3025,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.considerEmission = true;
 										rs2.importance = importance * PTSurvivalMagnitude( sssThroughput );
 										rs2.bsdfPdf = bssrdf.cosinePdf;
+										// DL-74: the BSSRDF exit is sampled from its own
+										// cosine density with no guiding anywhere in the
+										// path, so the sampling density and the MIS-partner
+										// density coincide.
+										rs2.bsdfMisPdf = bssrdf.cosinePdf;
 										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
 										rs2.diffuseBounces = diffuseBounces;
 										rs2.glossyBounces = glossyBounces;
@@ -2730,29 +3043,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 REOPENED (P2-B, this pass): the round-1 fix computed
-										// `bsdfTimesCos` for BOTH tags via PTBsdfTimesCos(sssThroughput,
-										// bssrdf.cosinePdf) and paired it with an AccumulateCount call
-										// (fixing the previous if-constexpr(is_nm) backwards gate --
-										// that structural fix stands and is NOT reverted). Review this
-										// pass (P2-B) found the TRAINED QUANTITY itself does not match
-										// IRayCaster.h's documented contract for rs.bsdfTimesCos ("BSDF
-										// * cos at the SCATTER point"): `sssThroughput` is the SSS
-										// profile's spatial transport weight (Rd * FtExit / pdfSurface,
-										// a diffusion-profile quantity over the entry/exit DISK
-										// projection), not a directional BSDF value at the continuation
-										// ray's origin, and `bssrdf.cosinePdf` is the cosine-hemisphere
-										// sampling density there -- their product is not the integrand
-										// OptimalMISAccumulator::Accumulate's second-moment estimator
-										// assumes. Training the accumulator with the wrong-shaped
-										// quantity does not miscompute the RENDERED weight (`PowerHeuristic`
-										// is the correct, still-used fallback whenever the accumulator
-										// is not ready), but corrupts `Solve()`'s alpha once it IS ready.
-										// Conservative fix: leave this arm UNWIRED (zero, no count) at
-										// BOTH sites/tags until a future pass derives and wires the
-										// correct directional-only quantity with a matching count; see
-										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "P2-B ruling".
-										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( Traits::zero() );
+										// DL-72 / DL-84 (round 4): the FULL vertex-local
+										// integrand of this exit sample, `weight *
+										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
+										// derivation above.  Round 3 trained `Sw*cos`,
+										// which is the same quantity with the
+										// area-measure `weightSpatial` dropped; the
+										// accumulator's moment is of the INTEGRAND, so
+										// that scaled this site's moments arbitrarily.
+										// Paired with the AccumulateCount call above,
+										// with rs2.bsdfPdf = bssrdf.cosinePdf (unchanged)
+										// as the matching density, and with the same
+										// `weightSpatial` scale now given to the NEE arm
+										// at this vertex (its `neeTrainingScale`
+										// argument, a few lines above).
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
+											PTBssrdfTrainedBsdfTimesCos( bssrdfWeight, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -2839,6 +3145,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					* PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) )
 					* RadianceEtaScale( iorStack, pS->ior_stack ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+				// DL-74: this is the no-BRDF (SPF-only) continuation --
+				// guiding never runs on it and NEE never fires at this
+				// vertex, so the sampling density and the MIS-partner
+				// density are the same value.
+				rs2.bsdfMisPdf = rs2.bsdfPdf;
 				rs2.type = PathTracingRayType( *pS );
 				// Accurate guides describe the first non-delta interaction the
 				// sampled path reached, whether or not transport is allowed to
@@ -2893,6 +3204,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
+				bsdfMisPdf = rs2.bsdfMisPdf;
 				bsdfTimesCos = Traits::zero();
 				considerEmission = nextConsiderEmissionSPF;
 				rayType = rs2.type;
@@ -2933,6 +3245,73 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 		}
 
+#ifdef RISE_ENABLE_OPENPGL
+		// ============================================================
+		// DL-74: ONE guiding distribution per shading point, shared by
+		// PART 2's NEE and PART 3's continuation.
+		// ============================================================
+		// Hoisted here, above PART 2, for three reasons that were three
+		// separate defects when this lived inside PART 3:
+		//  1. PARTITION.  PART 2's NEE and PART 3's escape/emitter-hit
+		//     weights are the two halves of the same MIS pair, so they
+		//     must evaluate ONE nominal density (`PTGuidingMisPdf`).
+		//  2. ONE STOCHASTIC LOOKUP.  `InitDistribution`'s 1D sample
+		//     picks the spatial region stochastically; drawing it twice
+		//     could resolve NEE and the continuation to DIFFERENT regions
+		//     at the same point.  One draw, one handle, both users.
+		//  3. ONE SAMPLER DIMENSION.  The NEE-side setup used to draw an
+		//     extra `Get1D()` off the NEE sampler, shifting every
+		//     downstream QMC dimension whenever it fired.  Nothing extra
+		//     is drawn now, and when guiding is inactive (the gate below
+		//     fails on its first clause) NOTHING is drawn at all, so a
+		//     guiding-off render's dimension budget is untouched.
+		// The gate carries only the VERTEX-level parts of
+		// GuidingEffectiveAlpha's eligibility -- a trained field, the
+		// configured guiding depth, a nonzero base alpha, and the same
+		// `eRaySpecular` incoming-state rejection.  The per-LOBE parts
+		// (`isDelta`, glossy half-damping, `GuidingSupportsSurfaceSampling`)
+		// stay in PART 3 where the lobe is known; they steer SAMPLING and
+		// must not steer the shared nominal density, which is
+		// lobe-independent by design.
+		// `static thread_local` (the same storage class PART 3 used before
+		// this hoist, and BDPTIntegrator's own guiding block uses) so the
+		// OpenPGL distribution object is allocated once per thread rather
+		// than per shading point.  INVARIANT it depends on: nothing between
+		// this initialisation and PART 3's use may re-enter
+		// IntegrateFromHit{,NM} on the same thread, or the inner call's
+		// distribution would overwrite the outer's.  Audited: PART 2's NEE
+		// reaches LightSampler and its shadow/transmittance queries, which
+		// dispatch no shader and start no new integrator walk, and the SMS
+		// block between them casts visibility rays only.  Re-audit before
+		// putting anything shader-dispatching in that window.
+		static thread_local GuidingDistributionHandle guideDist;
+		PTGuidingMisPdf guidingMis;
+		if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+			depth <= rc.maxGuidingDepth &&
+			rc.guidingAlpha > NEARZERO &&
+			rs.type != IRayCaster::RAY_STATE::eRaySpecular &&
+			rc.pGuidingField->InitDistribution( guideDist,
+				ri.geometric.ptIntersection, sampler.Get1D() ) )
+		{
+			// Unconditional, unlike PART 3's old `eRayDiffuse`-only
+			// application -- see PTGuidingMisPdf's doc.
+			rc.pGuidingField->ApplyCosineProduct( guideDist,
+				GuidingCosineNormal( ri.geometric ) );
+
+			// Same learned-alpha scaling PART 3 applies (Mueller 2017 v2's
+			// per-cell sigmoid, 2x so a neutral 0.5 reproduces the fixed-
+			// alpha behaviour), clamped to [0,1] for the MIS probability
+			// invariant.  No per-lobe damping: NEE cannot know the lobe.
+			Scalar alphaNominal = rc.guidingAlpha;
+			if( rc.guidingLearnedAlpha ) {
+				alphaNominal = rc.guidingAlpha * 2.0 *
+					rc.pGuidingField->GetCellAlpha( guideDist );
+				if( alphaNominal > 1.0 ) alphaNominal = 1.0;
+			}
+			guidingMis.Configure( rc.pGuidingField, &guideDist, alphaNominal );
+		}
+#endif
+
 		// ============================================================
 		// PART 2: NEE + SMS at diffuse/glossy surfaces
 		// ============================================================
@@ -2948,10 +3327,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// ri.pMaterial (whose Pdf() could be near-zero/delta for a
 			// mirror or dielectric, breaking MIS and making clay output
 			// depend on the hidden material).  See ClayNEEMaterial's doc.
+			const IMaterial* pNEEMaterial =
+				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial;
+
 			Value directAll = PTEvaluateDirectLighting<Tag>(
 				pLS, ri.geometric, *pBRDF,
-				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, caster, neeSampler,
-				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
+				pNEEMaterial, caster, neeSampler,
+				ri.pObject, pCurrentMedium, false, pMediumObject, tag,
+#ifdef RISE_ENABLE_OPENPGL
+				guidingMis.IsActive() ? &guidingMis : 0,
+#else
+				0,
+#endif
+				// DL-74 P2: the MIS-partner aggregate pdf must be evaluated
+				// under the stack this vertex is actually standing in -- the
+				// same `iorStack` PART 3's `PTEvalPdfAtSurface` uses a few
+				// lines below.  `iorStack` is not reassigned between here and
+				// that call (only at the very end of the iteration), so the
+				// two sides see the identical stack.
+				&iorStack );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
@@ -3128,22 +3522,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
 
 #ifdef RISE_ENABLE_OPENPGL
-			static thread_local GuidingDistributionHandle guideDist;
-
-			if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
-				depth <= rc.maxGuidingDepth && GuidingSupportsSurfaceSampling( *pS ) )
+			// DL-74: `guideDist` was initialised (and cosine-multiplied)
+			// ONCE above PART 2 and is shared with NEE -- no second
+			// InitDistribution, no second `Get1D()`, no second
+			// ApplyCosineProduct.  `guidingMis.IsActive()` already folds
+			// in the vertex-level gates (trained field, guiding depth,
+			// nonzero base alpha, non-specular arrival); what remains here
+			// is only the per-LOBE eligibility, which governs SAMPLING and
+			// deliberately does NOT govern the shared nominal MIS density.
+			if( guidingMis.IsActive() && GuidingSupportsSurfaceSampling( *pS ) )
 			{
 				const Scalar alpha = GuidingEffectiveAlpha(
 					rc.guidingAlpha, *pS, rs );
 
-				if( alpha > NEARZERO && rc.pGuidingField->InitDistribution( guideDist,
-					ri.geometric.ptIntersection,
-					sampler.Get1D() ) )
+				if( alpha > NEARZERO )
 				{
-					if( pS->type == ScatteredRay::eRayDiffuse ) {
-						rc.pGuidingField->ApplyCosineProduct( guideDist, GuidingCosineNormal( ri.geometric ) );
-					}
-
 					if( rc.guidingSamplingType == eGuidingRIS )
 					{
 						PathTransportUtilities::GuidingRISCandidate<Value> candidates[2];
@@ -3437,24 +3830,42 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			const Value bsdfTimesCosVal = pS->isDelta ? Traits::zero() :
 				PTBsdfTimesCos( scatterThroughput, effectiveBsdfPdf );
 
+			// DL-74: the nominal MIS-partner density for the direction
+			// actually being traced.  Identical to `effectiveBsdfPdf`
+			// whenever guiding is inactive.
+			Scalar misBsdfPdf = effectiveBsdfPdf;
+#ifdef RISE_ENABLE_OPENPGL
+			if( guidingMis.IsActive() && !pS->isDelta )
+			{
+				misBsdfPdf = guidingMis.Eval( traceRay.Dir(),
+					PTEvalPdfAtSurface<Tag>( pSPF, ri.geometric, traceRay.Dir(), iorStack, tag ) );
+			}
+#endif
+
 			// Per-type bounce limits
 			IRayCaster::RAY_STATE rs2 = rs;
 			rs2.depth = depth + 2;
 			rs2.importance = importance * PTSurvivalMagnitude( scatterThroughput );
-			// DL-74 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
-			// "DL-73 RULED NOT A DEBT" residual): `effectiveBsdfPdf` is the
-			// GUIDED COMBINED pdf whenever OpenPGL guiding/RIS fired above.
-			// Surface env-NEE at this SAME shading point
-			// (LightSampler.cpp's env arm, `pMaterial->Pdf(envDir, ri,
-			// defaultIOR)`) instead uses the RAW material pdf with no
-			// guiding term -- an unresolved MIS partition mismatch between
-			// this escape weight and that NEE weight whenever guiding is
-			// active. Filed OPEN as DL-74, not fixed here; do not "fix" by
-			// reverting THIS side to a raw pdf without first deriving the
-			// correct joint treatment (see the volume-vertex case, DL-73,
-			// which is unbiased for the OPPOSITE reason -- both its sides
-			// already agree on a raw pdf).
+			// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): the two roles
+			// of the guided pdf, kept in two fields.
+			//  * `bsdfPdf` stays `effectiveBsdfPdf` -- the density this
+			//    direction was really drawn from and the one
+			//    `scatterThroughput` (and therefore `bsdfTimesCosVal`
+			//    above) was divided by, so the optimal-MIS second moment
+			//    `(f/p)^2` is the true squared contribution.
+			//  * `bsdfMisPdf` is the lobe-independent nominal density
+			//    LightSampler's NEE arms evaluate for the same direction.
+			//    Under guiding that is `alpha_nom*guide + (1-alpha_nom)*
+			//    p_aggregate`; with guiding inactive it collapses to
+			//    `effectiveBsdfPdf`, reproducing the pre-DL-74 behaviour
+			//    byte for byte.
+			// A delta lobe keeps 0 in BOTH fields: it has no MIS partner
+			// (NEE cannot sample through it) and no density to train from.
+			// The aggregate pdf is evaluated at the FINAL `traceRay`
+			// direction, which is the guided/RIS direction when one
+			// replaced the lobe's own.
 			rs2.bsdfPdf = effectiveBsdfPdf;
+			rs2.bsdfMisPdf = misBsdfPdf;
 			rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( bsdfTimesCosVal );
 			rs2.type = PathTracingRayType( *pS );
 
@@ -3497,6 +3908,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			throughput = throughput * scatterThroughput;
 			importance = rs2.importance;
 			bsdfPdf = effectiveBsdfPdf;
+			bsdfMisPdf = misBsdfPdf;
 			bsdfTimesCos = bsdfTimesCosVal;
 			considerEmission = nextConsiderEmission;
 			rayType = rs2.type;
@@ -3611,7 +4023,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	Scalar glossyFilterWidth_,
 	bool smsPassedThroughSpecular_,
 	bool smsHadNonSpecularShading_,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	Scalar bsdfMisPdf_
 	) const
 {
 	return IntegrateFromHitTemplated<PelTag>(
@@ -3620,7 +4033,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		considerEmission_, importance_, rayType_, diffuseBounces_,
 		glossyBounces_, transmissionBounces_, translucentBounces_,
 		volumeBounces_, glossyFilterWidth_, smsPassedThroughSpecular_,
-		smsHadNonSpecularShading_, pAOV, nullptr, PelTag{} );
+		smsHadNonSpecularShading_, pAOV, nullptr, PelTag{}, bsdfMisPdf_ );
 }
 
 
@@ -3655,7 +4068,8 @@ PathTracingIntegrator::IntegrateFromHitForTag(
 	unsigned int volumeBounces,
 	Scalar glossyFilterWidth,
 	PixelAOV* pAOV,
-	const Tag& tag
+	const Tag& tag,
+	Scalar bsdfMisPdf
 	) const
 {
 	if constexpr ( SpectralValueTraits<Tag>::is_pel )
@@ -3664,7 +4078,7 @@ PathTracingIntegrator::IntegrateFromHitForTag(
 			pRadianceMap, startDepth, initialIorStack, bsdfPdf, bsdfTimesCos,
 			considerEmission, importance, rayType, diffuseBounces, glossyBounces,
 			transmissionBounces, translucentBounces, volumeBounces, glossyFilterWidth,
-			false, false, pAOV );
+			false, false, pAOV, bsdfMisPdf );
 	}
 	else
 	{
@@ -3672,7 +4086,7 @@ PathTracingIntegrator::IntegrateFromHitForTag(
 			pRadianceMap, startDepth, initialIorStack, bsdfPdf, bsdfTimesCos,
 			considerEmission, importance, rayType, diffuseBounces, glossyBounces,
 			transmissionBounces, translucentBounces, volumeBounces, glossyFilterWidth,
-			false, false, pAOV );
+			false, false, pAOV, bsdfMisPdf );
 	}
 }
 
@@ -4371,7 +4785,8 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	Scalar glossyFilterWidth,
 	bool smsPassedThroughSpecular_initial,
 	bool smsHadNonSpecularShading_initial,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	Scalar bsdfMisPdf_
 	) const
 {
 	// Thin forwarder to the shared templated body.  pAOV carries the
@@ -4386,7 +4801,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		considerEmission, importance, rayType, diffuseBounces,
 		glossyBounces, transmissionBounces, translucentBounces,
 		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
-		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm } );
+		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm }, bsdfMisPdf_ );
 }
 
 
@@ -4422,13 +4837,23 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	unsigned int volumeBounces,
 	Scalar glossyFilterWidth,
 	Scalar hwssResult[SampledWavelengths::N],
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	Scalar bsdfMisPdf_
 	) const
 {
 	// Initialize results
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		hwssResult[i] = 0;
 	}
+
+	// DL-74: this body has NO guiding block of its own, so every density it
+	// PRODUCES is both the true sampling density and the MIS partner.  What
+	// it CONSUMES is a different matter: the caller may have entered from
+	// `RayCaster`'s volume phase-scatter continuation, whose two fields
+	// differ under volume guiding, so the incoming partner is carried
+	// separately and used for every weight below.  Negative = "same as
+	// bsdfPdf" (every camera-ray and legacy-rasterizer entry).
+	Scalar bsdfMisPdf = bsdfMisPdf_ < 0 ? bsdfPdf : bsdfMisPdf_;
 
 	// Fast-mode albedo/normal fallback for callers that begin from a
 	// pre-computed hit. Root camera-ray entry points normally record this
@@ -4467,7 +4892,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
-						false, false, pAOV );
+						false, false, pAOV, bsdfMisPdf );
 			}
 		}
 		return;
@@ -4507,7 +4932,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
-						false, false, pAOV );
+						false, false, pAOV, bsdfMisPdf );
 				}
 			}
 			return;
@@ -4981,7 +5406,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						Scalar envRadiance = scene.GetGlobalRadianceMap()->GetRadianceNM(
 							currentRay, rast, swl.lambda[w] );
 
-						if( pLS && bsdfPdf > 0 )
+						// DL-74: gate on EITHER density being positive and
+						// weight from the MIS PARTNER -- the RGB/NM twin's
+						// rule, and `RayCasterEnvEscapeMISWeight`'s.
+						if( pLS && ( bsdfPdf > 0 || bsdfMisPdf > 0 ) )
 						{
 							const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 							if( pES )
@@ -4989,15 +5417,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 								const Scalar envPdf = pES->Pdf( currentRay.Dir() );
 								if( envPdf > 0 )
 								{
-									Scalar w_bsdf;
-									if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+									Scalar w_bsdf = 1.0;
+									if( bsdfMisPdf > 0 )
 									{
-										const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-										w_bsdf = MISWeights::OptimalMIS2Weight( bsdfPdf, envPdf, alpha );
-									}
-									else
-									{
-										w_bsdf = PowerHeuristic( bsdfPdf, envPdf );
+										if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+										{
+											const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+											w_bsdf = MISWeights::OptimalMIS2Weight( bsdfMisPdf, envPdf, alpha );
+										}
+										else
+										{
+											w_bsdf = PowerHeuristic( bsdfMisPdf, envPdf );
+										}
 									}
 									envRadiance *= w_bsdf;
 								}
@@ -5081,7 +5512,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
-					false, true, pAOV );
+					false, true, pAOV, bsdfMisPdf );
 			}
 			break;
 		}
@@ -5121,7 +5552,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// emission the HWSS-side SMS pass already counted.  Previously
 						// dropped (defaulted false/false), double-counting HWSS
 						// SMS+SSS+glass+emitter paths — the HWSS sibling of Codex Finding 2.
-						false, true, pAOV );
+						//
+						// DL-74 P2-1 (round-4 review): forward the incoming
+						// MIS PARTNER too.  Its three siblings -- the two
+						// HWSS-entry NM fallbacks and the no-BSDF (glass)
+						// mid-path delegation above -- all pass `bsdfMisPdf`;
+						// this one defaulted to -1 ("same as `bsdfPdf`").
+						// Latent today: the only producer whose two densities
+						// differ is `RayCaster`'s volume phase-scatter
+						// continuation, and reaching THIS site from it needs a
+						// medium vertex whose continuation lands on an
+						// SSS/diffusion-profile surface inside an HWSS walk --
+						// no scene in the tree does that.  Forwarded so the
+						// delegation set is uniform rather than three-quarters
+						// correct.
+						false, true, pAOV, bsdfMisPdf );
 				}
 				break;
 			}
@@ -5132,6 +5577,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		rs.depth = depth + 1;
 		rs.importance = importance;
 		rs.bsdfPdf = bsdfPdf;
+		// DL-74: no guiding in the HWSS body -- see the continuation
+		// site below -- but an incoming partner that differs from
+		// `bsdfPdf` (the guided volume continuation) must be carried
+		// forward, not overwritten.
+		rs.bsdfMisPdf = bsdfMisPdf;
 		rs.considerEmission = considerEmission;
 		rs.type = rayType;
 		rs.diffuseBounces = diffuseBounces;
@@ -5171,7 +5621,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// previous inverted `!pEmitGeomHW || ...`.
 					const IGeometry* pEmitGeomHW = ri.pObject ? ri.pObject->GetGeometry() : 0;
 					const bool emitterNeeSampleableHW = ( pEmitGeomHW && pEmitGeomHW->CanBeAreaLight() );
-					if( bsdfPdf > 0 && ri.pObject && emitterNeeSampleableHW )
+					// DL-74: gate on EITHER density; the weight below uses
+					// the MIS partner (RGB/NM twin's rule).
+					if( ( bsdfPdf > 0 || bsdfMisPdf > 0 ) && ri.pObject && emitterNeeSampleableHW )
 					{
 						const Scalar area = ri.pObject->GetArea();
 						if( area > 0 )
@@ -5202,16 +5654,19 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 									}
 									const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
 
-									if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+									if( bsdfMisPdf > 0 )
 									{
-										const Scalar alpha = rc.pOptimalMIS->GetAlpha(
-											rast.x, rast.y );
-										emission *= MISWeights::OptimalMIS2Weight(
-											bsdfPdf, p_nee, alpha );
-									}
-									else
-									{
-										emission *= PowerHeuristic( bsdfPdf, p_nee );
+										if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+										{
+											const Scalar alpha = rc.pOptimalMIS->GetAlpha(
+												rast.x, rast.y );
+											emission *= MISWeights::OptimalMIS2Weight(
+												bsdfMisPdf, p_nee, alpha );
+										}
+										else
+										{
+											emission *= PowerHeuristic( bsdfMisPdf, p_nee );
+										}
 									}
 								}
 							}
@@ -5259,7 +5714,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				Scalar directNM = pLS->EvaluateDirectLightingNM(
 					ri.geometric, *pBRDFCur,
 					EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, swl.lambda[w],
-					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
+					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject,
+					// DL-74 P2: no guiding hook in the HWSS body (it has no
+					// guiding block at all), but the MIS-partner aggregate
+					// pdf still has to be evaluated under the LIVE stack --
+					// this loop's own escape/emitter weights partner against
+					// a density the SPF produced under `iorStack`.
+					/*pGuidedBlend*/ 0, &iorStack );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible
@@ -5550,11 +6011,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		IRayCaster::RAY_STATE rs2 = rs;
 		rs2.depth = depth + 2;
 		rs2.importance = importance * fabs( heroScatterNM );
-		// DL-74: HWSS sibling of the RGB/NM surface-continuation site
-		// above -- same guided-combined-vs-raw-material-pdf MIS partition
-		// mismatch against LightSampler.cpp's env-NEE arm, filed OPEN, not
-		// fixed here.
+		// DL-74: NOT a sibling of the RGB/NM surface-continuation site.
+		// This function has no guiding block at all -- `effectiveBsdfPdf`
+		// is assigned once from `pS->isDelta ? 0 : pS->pdf` and never
+		// reassigned -- so HWSS's escape weight and LightSampler's NEE arms
+		// both already use the raw material pdf and no partition mismatch
+		// exists here.  The MIS-partner field is set to the same value for
+		// exactly that reason.
 		rs2.bsdfPdf = effectiveBsdfPdf;
+		rs2.bsdfMisPdf = effectiveBsdfPdf;
 		rs2.type = PathTracingRayType( *pS );
 
 		if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
@@ -5576,6 +6041,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		}
 		importance = rs2.importance;
 		bsdfPdf = effectiveBsdfPdf;
+		// DL-74: this body produces no guided density, so from the first
+		// continuation onwards the partner IS the sampling density.  The
+		// incoming caller-supplied partner applies to the ENTRY vertex
+		// only and must not survive into the next iteration.
+		bsdfMisPdf = effectiveBsdfPdf;
 		considerEmission = nextConsiderEmission;
 		rayType = rs2.type;
 		diffuseBounces = rs2.diffuseBounces;

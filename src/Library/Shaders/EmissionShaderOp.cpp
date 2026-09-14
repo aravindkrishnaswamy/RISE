@@ -81,7 +81,17 @@ void EmissionShaderOp::PerformOperation(
 		// NEE-sampleable, full BSDF weight, and no GetArea() call is even reached.
 		const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
 		const bool emitterNeeSampleable = ( pEmitGeom && pEmitGeom->CanBeAreaLight() );
-		if( rs.bsdfPdf > 0 && ri.pObject && emitterNeeSampleable )
+		// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): `p_bsdf` below is
+		// the MIS PARTNER, not the training denominator, so it reads
+		// `MisPartnerPdf()`.  The two differ for RayCaster's volume
+		// phase-scatter continuation under volume guiding (`bsdfPdf` = the
+		// guided mixture the direction was drawn from, `bsdfMisPdf` = the
+		// raw phase pdf the matching NEE arm weights against); using the
+		// guided one here broke that pair's partition of unity.  The gate
+		// admits EITHER density being positive, matching
+		// RayCasterEnvEscapeMISWeight; a zero partner keeps full weight.
+		const Scalar misPartnerPdf = rs.MisPartnerPdf();
+		if( ( rs.bsdfPdf > 0 || misPartnerPdf > 0 ) && ri.pObject && emitterNeeSampleable )
 		{
 			const Scalar area = ri.pObject->GetArea();
 			if( area > 0 )
@@ -94,9 +104,11 @@ void EmissionShaderOp::PerformOperation(
 					const Scalar dist = Vector3Ops::Magnitude(
 						Vector3Ops::mkVector3( ri.geometric.ptIntersection, ri.geometric.ray.origin ) );
 					const Scalar p_light = (dist * dist) / (area * cosLight);
-					const Scalar p_bsdf = rs.bsdfPdf;
-					const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
-					c = c * w_bsdf;
+					const Scalar p_bsdf = misPartnerPdf;
+					if( p_bsdf > 0 ) {
+						const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+						c = c * w_bsdf;
+					}
 				}
 			}
 		}
@@ -141,7 +153,9 @@ Scalar EmissionShaderOp::PerformOperationNM(
 		// inverted `!pEmitGeom || ...`.
 		const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
 		const bool emitterNeeSampleable = ( pEmitGeom && pEmitGeom->CanBeAreaLight() );
-		if( rs.bsdfPdf > 0 && ri.pObject && emitterNeeSampleable )
+		// DL-74 -- see the RGB twin above.
+		const Scalar misPartnerPdf = rs.MisPartnerPdf();
+		if( ( rs.bsdfPdf > 0 || misPartnerPdf > 0 ) && ri.pObject && emitterNeeSampleable )
 		{
 			const Scalar area = ri.pObject->GetArea();
 			if( area > 0 )
@@ -152,9 +166,11 @@ Scalar EmissionShaderOp::PerformOperationNM(
 					const Scalar dist = Vector3Ops::Magnitude(
 						Vector3Ops::mkVector3( ri.geometric.ptIntersection, ri.geometric.ray.origin ) );
 					const Scalar p_light = (dist * dist) / (area * cosLight);
-					const Scalar p_bsdf = rs.bsdfPdf;
-					const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
-					c = c * w_bsdf;
+					const Scalar p_bsdf = misPartnerPdf;
+					if( p_bsdf > 0 ) {
+						const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+						c = c * w_bsdf;
+					}
 				}
 			}
 		}

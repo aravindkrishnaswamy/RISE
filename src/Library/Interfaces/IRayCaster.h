@@ -56,7 +56,36 @@ namespace RISE
 			Scalar importance;					///< Importance of this ray
 			bool considerEmission;				///< Should shader consider direct emission
 			RayType type;						///< The type of ray
-			Scalar bsdfPdf;						///< BSDF sampling PDF for MIS weighting (0 = not set / delta)
+			//! The TRUE density the continuation direction was drawn from
+			//! (0 = not set / delta).  This is the throughput denominator:
+			//! under path guiding it is the guided mixture / RIS pdf, not
+			//! the raw material pdf.  Pairs with `bsdfTimesCos` to form the
+			//! optimal-MIS second-moment estimator `(f/p)^2`, so it MUST
+			//! stay the sampling density -- see DL-72.
+			Scalar bsdfPdf;
+			//! The NOMINAL density used as the BSDF-sampling technique's
+			//! MIS partner against light sampling.  Where path guiding is
+			//! active this and `LightSampler`'s NEE arms evaluate ONE
+			//! lobe-independent function of direction, so the two weights
+			//! partition to 1; everywhere else it equals `bsdfPdf`.
+			//! DL-74 / docs/DL74_ENV_NEE_GUIDING_PARTITION.md.
+			//!
+			//! Three-valued, and read through `MisPartnerPdf()` rather
+			//! than directly:
+			//!   < 0  not set -- fall back to `bsdfPdf`.  This is the
+			//!        DEFAULT, so a producer that predates this field (or
+			//!        simply has no guiding to describe) keeps its exact
+			//!        pre-DL-74 weight instead of silently losing it.
+			//!   0    no MIS partner exists: a delta lobe, or a vertex
+			//!        with no guiding at all whose aggregate pdf is zero
+			//!        in this direction.  With guiding ACTIVE a zero
+			//!        aggregate pdf is NOT a zero partner: the mixture
+			//!        still reaches the direction through the guide, so
+			//!        the partner is `alpha_nom * guide` there (review
+			//!        round 4 of DL-74, rows (h)/(i)).  The weight is 1
+			//!        and the sample is taken whole.
+			//!   > 0  the nominal partner density.
+			Scalar bsdfMisPdf;
 			RISEPel bsdfTimesCos;				///< BSDF * cos at scatter point (RGB), for optimal MIS full-integrand training
 
 			// Per-type bounce counters for StabilityConfig bounce limits
@@ -77,9 +106,16 @@ namespace RISE
 			bool smsHadNonSpecularShading;	///< True if path had at least one non-specular shading point (where SMS evaluated)
 
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
+				bsdfMisPdf( -1 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
 				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ) {}
+
+			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
+			Scalar MisPartnerPdf() const
+			{
+				return bsdfMisPdf < 0 ? bsdfPdf : bsdfMisPdf;
+			}
 		};
 
 		//! Tells the ray caster to cast the specified ray into the scene

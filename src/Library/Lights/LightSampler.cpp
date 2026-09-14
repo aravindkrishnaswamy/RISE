@@ -1931,7 +1931,10 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IObject* pShadingObject,
 	const IMedium* pMedium,
 	const bool isVolumeScatter,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	const IGuidedNEEPdfBlend* pGuidedBlend,
+	const IORStack* pMisIorStack,
+	const Scalar neeTrainingScale
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -2514,7 +2517,35 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						// probability of selecting this light.
 						const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 						static const IORStack defaultIOR( 1.0 );
-						const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, defaultIOR );
+						// DL-74 P2 (round-3 review): the aggregate pdf is the
+						// MIS-PARTNER density, so it has to be evaluated under
+						// the SAME IOR stack the BSDF-sampling side evaluates it
+						// under -- `PathTracingIntegrator`'s
+						// `PTEvalPdfAtSurface(pSPF, ..., iorStack)` uses the LIVE
+						// stack.  This arm used a `static const IORStack(1.0)`
+						// sentinel, so for any material whose pdf reads the stack
+						// (`PolishedSPF::Pdf` via `top()`, `TranslucentSPF::Pdf`
+						// via `containsCurrent()`) the two sides evaluated
+						// DIFFERENT functions and the pair stopped summing to one
+						// -- with guiding OFF as much as on.  `pMisIorStack` is
+						// the caller's live stack; null keeps the historical
+						// sentinel for callers that have none.
+						const IORStack& misIOR = pMisIorStack ? *pMisIorStack : defaultIOR;
+						// DL-74 (P1-B): the emitter-HIT side of this pair
+						// (PathTracingIntegrator's PART 1) weights with the
+						// guided nominal density, so this arm has to use
+						// the same function of direction or the pair stops
+						// summing to one -- exactly the asymmetry the env
+						// arm below had.  DL-74 P2-2: the blend runs
+						// OUTSIDE the `> 0` gate -- a direction the
+						// material's own pdf cannot reach is still a
+						// direction the GUIDED MIXTURE reaches, and the
+						// hook is what knows that (see
+						// IGuidedNEEPdfBlend's contract).
+						Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, misIOR );
+						if( pGuidedBlend && !isVolumeScatter ) {
+							p_bsdf = pGuidedBlend->Blend( vToLight, p_bsdf );
+						}
 
 						// Optimal MIS training: accumulate second moment
 						// for a successful NEE hit.  contrib includes the
@@ -2524,7 +2555,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						// f2/pdf^2 = (contrib/pdfAlias)^2 = (f/p_nee)^2.
 						if( pOptimalMIS && !pOptimalMIS->IsReady() )
 						{
-							const Scalar lum = ColorMath::MaxValue( contrib );
+							// DL-72 P2-3: the accumulator's moment is of the
+							// INTEGRAND, and for a caller that scales this
+							// result afterwards (the BSSRDF entry NEE, whose
+							// partner trains the full exit throughput) the
+							// integrand is `neeTrainingScale * contrib`.
+							// 1 everywhere else, so unchanged there.
+							const Scalar lum = neeTrainingScale * ColorMath::MaxValue( contrib );
 							const Scalar f2 = lum * lum;
 							if( f2 > 0 && pdfAlias > 0 )
 							{
@@ -2624,7 +2661,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				if( pOptimalMIS && !pOptimalMIS->IsReady() && pMaterial )
 				{
 					const RISEPel fullIntegrand = envContrib * envPdf;
-					const Scalar lum = ColorMath::MaxValue( fullIntegrand );
+					// DL-72 P2-3: see the area-light arm above.
+					const Scalar lum = neeTrainingScale * ColorMath::MaxValue( fullIntegrand );
 					const Scalar f2 = lum * lum;
 					if( f2 > 0 && envPdf > 0 )
 					{
@@ -2636,25 +2674,55 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 				// MIS: power heuristic (or optimal MIS) against BSDF PDF.
 				//
-				// DL-73/DL-74 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md):
+				// DL-73 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) /
+				// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md):
 				// `pMaterial->Pdf(...)` is the RAW, un-guided sampling pdf --
 				// at a VOLUME vertex (`pMaterial` is a `MediumScatterMaterial`
 				// adapter, see MediumTransport.cpp) this correctly matches
 				// what `RayCaster.cpp`'s env-escape weight also uses (both
 				// raw `phasePdf`), so that pairing is UNBIASED (DL-73, ruled
-				// not a debt). At a SURFACE vertex under active OpenPGL
-				// one-sample guiding, this is DIFFERENT from what
-				// `PathTracingIntegrator.cpp`'s matching escape weight uses
-				// (`effectiveBsdfPdf` = the GUIDED COMBINED pdf) -- that
-				// mismatch breaks the MIS partition of unity and is the
-				// real, currently-unfixed asymmetry filed as DL-74. Do not
-				// "fix" this call to take a combined pdf without ALSO
-				// auditing the volume case above, whose correctness
-				// currently depends on this staying raw.
+				// not a debt) -- `pGuidedBlend` is only ever non-null from
+				// PathTracingIntegrator's SURFACE NEE call site (never the
+				// volume one), and is additionally gated on `!isVolumeScatter`
+				// here as a second, local safety net so this call can never
+				// touch the volume case's correctness. At a SURFACE vertex
+				// under active OpenPGL guiding, the raw pdf alone WAS
+				// different from what `PathTracingIntegrator.cpp`'s matching
+				// escape weight uses -- that mismatch broke the MIS partition
+				// of unity (DL-74). `pGuidedBlend` (default null; see
+				// IGuidedNEEPdfBlend's doc) replaces the raw pdf with the
+				// lobe-INDEPENDENT NOMINAL density
+				// `alpha_nom*guide(w) + (1-alpha_nom)*p_aggregate(w)` that the
+				// escape side now also stores as its MIS partner
+				// (`RAY_STATE::bsdfMisPdf`), for the SAME direction. Because
+				// that nominal density is a property of the vertex and not of
+				// the lobe or of the guiding MODE, it closes the partition for
+				// one-sample-MIS and RIS guiding alike (DL-83 closed with
+				// DL-74).
 				if( pMaterial )
 				{
 					static const IORStack defaultIOR( 1.0 );
-					const Scalar pBsdf = pMaterial->Pdf( envDir, ri, defaultIOR );
+					// DL-74 P2: live stack, not the 1.0 sentinel -- see the
+					// area-light arm above for the derivation.
+					const IORStack& misIOR = pMisIorStack ? *pMisIorStack : defaultIOR;
+					Scalar pBsdf = pMaterial->Pdf( envDir, ri, misIOR );
+					// DL-74 P2-2 (round-4 review): the blend runs OUTSIDE
+					// the `pBsdf > 0` gate.  Round 3 kept it inside on the
+					// rationale that a zero aggregate pdf means "the
+					// BSDF-sampling technique never generates this
+					// direction" -- true with guiding OFF, FALSE with it
+					// on, because the mixture's guide term still does.
+					// Leaving it inside gave weight 1 to BOTH sides for
+					// every such direction (reachable wherever the
+					// material's sampling support is narrower than its
+					// BSDF's: the full-sphere BSDFs whose hemisphere
+					// rejection is disabled, and any partial-support lobe
+					// -- row (h)).  The hook itself decides what a zero
+					// aggregate pdf means; see IGuidedNEEPdfBlend.
+					if( pGuidedBlend && !isVolumeScatter )
+					{
+						pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
+					}
 					if( pBsdf > 0 )
 					{
 						Scalar w;
@@ -2689,7 +2757,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const IObject* pShadingObject,
 	const IMedium* pMedium,
 	const bool isVolumeScatter,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	const IGuidedNEEPdfBlend* pGuidedBlend,
+	const IORStack* pMisIorStack,
+	const Scalar neeTrainingScale
 	) const
 {
 	Scalar result = 0;
@@ -3043,14 +3114,24 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		{
 			const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 			static const IORStack defaultIOR( 1.0 );
-			const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, defaultIOR );
+			// DL-74 (P1-B): NM twin of the RGB area-light MIS block -- see
+			// that block's comment for the derivation.  DL-74 P2: and its
+			// live-IOR-stack rule, for the same reason.
+			const IORStack& misIOR = pMisIorStack ? *pMisIorStack : defaultIOR;
+			Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, misIOR );
+			// DL-74 P2-2: outside the `> 0` gate -- see the RGB copy.
+			if( pGuidedBlend && !isVolumeScatter ) {
+				p_bsdf = pGuidedBlend->Blend( vToLight, p_bsdf );
+			}
 
 			// Optimal MIS training (spectral NEE): contrib includes
 			// the geometry factor, so use pdfAlias (area measure)
 			// to match.  f2/pdfAlias^2 = (contrib/pdfAlias)^2.
 			if( pOptimalMIS && !pOptimalMIS->IsReady() )
 			{
-				const Scalar f2 = contrib * contrib;
+				// DL-72 P2-3: NM twin -- see the RGB area-light arm.
+				const Scalar scaled = neeTrainingScale * contrib;
+				const Scalar f2 = scaled * scaled;
 				if( f2 > 0 && pdfAlias > 0 )
 				{
 					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->Accumulate(
@@ -3135,7 +3216,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// so fullIntegrand = envContrib * envPdf.
 				if( pOptimalMIS && !pOptimalMIS->IsReady() && pMaterial )
 				{
-					const Scalar fullIntegrand = envContrib * envPdf;
+					// DL-72 P2-3: NM twin -- see the RGB area-light arm.
+					const Scalar fullIntegrand = neeTrainingScale * envContrib * envPdf;
 					const Scalar f2 = fullIntegrand * fullIntegrand;
 					if( f2 > 0 && envPdf > 0 )
 					{
@@ -3145,10 +3227,27 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 					}
 				}
 
+				// DL-73 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) /
+				// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md):
+				// NM twin of the RGB env-NEE MIS block above -- see that
+				// block's comment for the full derivation. `pGuidedBlend` is
+				// only ever non-null from PathTracingIntegrator's SURFACE NM
+				// NEE call site (never the volume one) and is additionally
+				// gated on `!isVolumeScatter` here as a local safety net, so
+				// this can never disturb DL-73's confirmed-unbiased volume
+				// pairing.
 				if( pMaterial )
 				{
 					static const IORStack defaultIOR( 1.0 );
-					const Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, defaultIOR );
+					// DL-74 P2: live stack, not the 1.0 sentinel.
+					const IORStack& misIOR = pMisIorStack ? *pMisIorStack : defaultIOR;
+					Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, misIOR );
+					// DL-74 P2-2: blend OUTSIDE the `> 0` gate -- see the
+					// RGB copy for the derivation.
+					if( pGuidedBlend && !isVolumeScatter )
+					{
+						pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
+					}
 					if( pBsdf > 0 )
 					{
 						Scalar w;

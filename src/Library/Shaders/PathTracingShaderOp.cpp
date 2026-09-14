@@ -108,7 +108,18 @@ void PathTracingShaderOp::PerformOperation(
 		rs.transmissionBounces, rs.translucentBounces,
 		0, rs.glossyFilterWidth,
 		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
-		rc.pAOV );
+		rc.pAOV,
+		// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): `bsdfPdf` and the
+		// MIS-PARTNER density are two different quantities in RAY_STATE and
+		// this boundary has to forward BOTH.  They differ for exactly one
+		// producer -- RayCaster's volume phase-scatter continuation under
+		// volume guiding, which records the guided mixture in `bsdfPdf`
+		// (the training denominator) and the raw phase pdf in `bsdfMisPdf`
+		// (what volume NEE weights against).  Forwarding only `bsdfPdf`
+		// made the integrator's emitter-hit weight use the guided density
+		// against an NEE arm that had used the raw one: measured +44 % on
+		// PTGuidingMISPartitionTest's row (g).
+		rs.MisPartnerPdf() );
 }
 
 
@@ -159,7 +170,9 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
 		// Inline OIDN AOV sink parked on rc by the shader-dispatch spectral
 		// rasterizer (PixelBasedSpectralIntegratingRasterizer); NULL otherwise.
-		rc.pAOV );
+		rc.pAOV,
+		// DL-74 -- see the RGB twin above.
+		rs.MisPartnerPdf() );
 }
 
 
@@ -201,5 +214,8 @@ void PathTracingShaderOp::PerformOperationHWSS(
 		rs.importance, rs.type,
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
-		0, rs.glossyFilterWidth, result, rc.pAOV );
+		0, rs.glossyFilterWidth, result, rc.pAOV,
+		// DL-74 -- see the RGB twin above.  The HWSS body has no guiding
+		// block of its own, but it still CONSUMES the incoming partner.
+		rs.MisPartnerPdf() );
 }

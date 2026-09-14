@@ -388,7 +388,17 @@ namespace RISE
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_,
 				bool smsHadNonSpecularShading_,
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				//! DL-74: the incoming vertex's MIS-PARTNER density, read off
+				//! the producer's `RAY_STATE::MisPartnerPdf()`.  Negative
+				//! means "same as `bsdfPdf_`", which is the right answer for
+				//! every camera-ray and legacy-rasterizer entry.  It is NOT
+				//! the right answer for `RayCaster`'s volume phase-scatter
+				//! continuation, whose two fields differ under volume
+				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
+				//! the raw phase pdf that volume NEE weights against), so
+				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
+				Scalar bsdfMisPdf_ = -1
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (NM).
@@ -417,7 +427,17 @@ namespace RISE
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_ = false,
 				bool smsHadNonSpecularShading_ = false,
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				//! DL-74: the incoming vertex's MIS-PARTNER density, read off
+				//! the producer's `RAY_STATE::MisPartnerPdf()`.  Negative
+				//! means "same as `bsdfPdf_`", which is the right answer for
+				//! every camera-ray and legacy-rasterizer entry.  It is NOT
+				//! the right answer for `RayCaster`'s volume phase-scatter
+				//! continuation, whose two fields differ under volume
+				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
+				//! the raw phase pdf that volume NEE weights against), so
+				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
+				Scalar bsdfMisPdf_ = -1 ///< DL-74 -- see the RGB twin
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -444,7 +464,17 @@ namespace RISE
 				unsigned int volumeBounces_,
 				Scalar glossyFilterWidth_,
 				Scalar result[SampledWavelengths::N],
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				//! DL-74: the incoming vertex's MIS-PARTNER density, read off
+				//! the producer's `RAY_STATE::MisPartnerPdf()`.  Negative
+				//! means "same as `bsdfPdf_`", which is the right answer for
+				//! every camera-ray and legacy-rasterizer entry.  It is NOT
+				//! the right answer for `RayCaster`'s volume phase-scatter
+				//! continuation, whose two fields differ under volume
+				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
+				//! the raw phase pdf that volume NEE weights against), so
+				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
+				Scalar bsdfMisPdf_ = -1 ///< DL-74 -- see the RGB twin
 				) const;
 
 			/// Traces one complete path for a single wavelength.
@@ -524,7 +554,8 @@ namespace RISE
 				bool smsHadNonSpecularShading_,
 				PixelAOV* pAOV,
 				typename SpectralDispatch::SpectralValueTraits<Tag>::value_type* pDirectResult,
-				const Tag& tag
+				const Tag& tag,
+				Scalar bsdfMisPdf_ = -1		///< DL-74 -- see IntegrateFromHit
 				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.
@@ -572,7 +603,8 @@ namespace RISE
 				unsigned int volumeBounces,
 				Scalar glossyFilterWidth,
 				PixelAOV* pAOV,
-				const Tag& tag
+				const Tag& tag,
+				Scalar bsdfMisPdf = -1		///< DL-74 -- see IntegrateFromHit
 				) const;
 		};
 	}

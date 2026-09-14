@@ -144,7 +144,20 @@ namespace
 
 		Scalar w_bsdf = 1.0;
 
-		if( !pLightSampler || rs.bsdfPdf <= 0 ) {
+		// DL-74: the two roles of the continuation's density are now
+		// SEPARATE fields (IRayCaster.h).  `bsdfPdf` is the TRUE sampling
+		// density and is what the optimal-MIS second moment must be
+		// divided by; `MisPartnerPdf()` is the nominal MIS-partner density
+		// LightSampler's NEE arms evaluate for the same direction.  They
+		// differ only where path guiding is active (and at the volume
+		// continuation below, whose NEE partner is the raw phase pdf by
+		// DL-73).  A zero partner density means "no MIS partner exists"
+		// (a delta lobe, or an unguided vertex whose aggregate pdf is
+		// zero here -- under active guiding the producer already folded
+		// `alpha_nom * guide` in, so a zero-aggregate direction does NOT
+		// arrive as zero) and keeps the historical unweighted result.
+		const Scalar misPartnerPdf = rs.MisPartnerPdf();
+		if( !pLightSampler || ( rs.bsdfPdf <= 0 && misPartnerPdf <= 0 ) ) {
 			return w_bsdf;
 		}
 
@@ -173,14 +186,18 @@ namespace
 			}
 		}
 
+		if( misPartnerPdf <= 0 ) {
+			return w_bsdf;
+		}
+
 		if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
 		{
 			const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-			w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
+			w_bsdf = MISWeights::OptimalMIS2Weight( misPartnerPdf, envPdf, alpha );
 		}
 		else
 		{
-			w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
+			w_bsdf = PathTransportUtilities::PowerHeuristic( misPartnerPdf, envPdf );
 		}
 
 		return w_bsdf;
@@ -1272,32 +1289,49 @@ bool RayCaster::CastRay(
 				// MIS weight alone and break the partition (w_bsdf +
 				// w_nee != 1). Do not "fix" this to match the surface
 				// convention -- see DL-74 for the real, opposite-signed
-				// asymmetry on the SURFACE path.
-				rs2.bsdfPdf = phasePdf;
-				// DL-72 REOPENED (P2-B, this pass): the round-1 DL-72 fix
-				// wired `bsdfTimesCos` here so this continuation could
-				// train `RayCasterEnvEscapeMISWeight`'s optimal-MIS
-				// accumulator when it escapes to the env map -- but nothing
-				// in `RayCaster.cpp` ever calls `AccumulateCount` for this
-				// continuation (grep confirms zero call sites), so a
-				// training escape adds to `OptimalMISAccumulator`'s moment
-				// SUM (`Accumulate`) with no matching increment to its
-				// attempt COUNT (`AccumulateCount`) -- `Solve()` divides
-				// `Mbsdf = rawBsdf / nBsdf`, so the missing count inflates
-				// every tile's `Mbsdf` and depresses `alpha` wherever
-				// volume scattering occurs. This is a VARIANCE regression
-				// (the final radiance still divides by the real sampling
-				// pdf via `throughput`, so it stays unbiased), not a
-				// correctness bug, but it is not the documented "BSDF*cos
-				// at the scatter point" contract (IRayCaster.h) either --
-				// `throughput` here is a phase-scatter throughput, and
-				// pairing it with a correct attempt count would need a
-				// dedicated `AccumulateCount` call threaded through this
-				// continuation, which is NOT done. Conservative fix:
-				// leave this arm UNWIRED (zero) until a future pass adds
-				// the paired count; see DL72_RAYCASTER_BSDFTIMESCOS_
-				// TRAINING.md's "P2-B ruling" for the full accounting.
-				rs2.bsdfTimesCos = RISEPel( 0, 0, 0 );
+				// asymmetry on the SURFACE path.  DL-74 (this pass) makes
+				// that requirement explicit instead of implicit: the raw
+				// phase pdf now lives in its own `bsdfMisPdf` field (the
+				// MIS-partner role), leaving `bsdfPdf` free to carry the
+				// TRUE sampling density the moment estimator needs.
+				rs2.bsdfMisPdf = phasePdf;
+				// DL-72 (round 3) + DL-74 P2-5 (this pass): the direction
+				// above was drawn from `effectivePdf` -- the guided
+				// mixture `combinedPdf` whenever guiding fired, and plain
+				// `phasePdf` otherwise -- and `Li` is rescaled by
+				// `guidingMISWeight = phasePdf / combinedPdf` below, so
+				// this continuation's actual contribution is
+				// `phaseValue * Li / effectivePdf`.  Recording the moment
+				// against the raw `phasePdf` (as round 3 did) therefore
+				// divided by the WRONG density under guiding and inflated
+				// `Mbsdf`.  Pair the moment with the density the sample
+				// really came from instead.
+				rs2.bsdfPdf = effectivePdf;
+				// DL-72 (round 3, this pass): `IPhaseFunction::Pdf()`'s own
+				// contract ("For normalized phase functions this equals
+				// Evaluate()") means the phase VALUE at the sampled
+				// direction is exactly `phasePdf` -- and a phase function
+				// has no separate cosine term (there is no surface normal
+				// in free space), so the volume analogue of "BSDF*cos at
+				// the scatter point" is just the phase value, i.e.
+				// `phasePdf` broadcast to all three channels (phase
+				// functions are achromatic here).  Paired with
+				// `rs2.bsdfPdf = effectivePdf` above, the training arm's
+				// ratio `bsdfTimesCos / bsdfPdf` is
+				// `phaseValue / effectivePdf` -- which is exactly this
+				// continuation's own per-sample weight (1 when guiding is
+				// off, `guidingMISWeight` when it is on), so the trained
+				// second moment is the true squared contribution.  Paired
+				// below with an `AccumulateCount` call, which round 1
+				// never added (round 1 wired only `bsdfTimesCos`, not the
+				// matching count) -- see
+				// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "Round 3".
+				rs2.bsdfTimesCos = RISEPel( phasePdf, phasePdf, phasePdf );
+				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
+				{
+					const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+						rast.x, rast.y, kTechniqueBSDF );
+				}
 
 				Scalar hitDist = 0;
 				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
@@ -1897,28 +1931,36 @@ bool RayCaster::CastRayNM(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
-				// DL-73 (STRUCK, ruled NOT a debt): NM sibling of the RGB
-				// volume-continuation note above -- `bsdfPdf` is
-				// deliberately the raw, un-combined `phasePdf`, matching
-				// env-NEE's `MediumScatterMaterial::Pdf` at the same
-				// vertex; substituting `combinedPdf` would double-apply
-				// the guiding correction (already folded into
-				// `rs2.importance` via `guidingMISWeight`) and break the
-				// w_bsdf + w_nee == 1 partition. See the RGB copy's
+				// DL-73 (STRUCK, ruled NOT a debt) + DL-74 (this pass): NM
+				// sibling of the RGB volume-continuation note above -- the
+				// MIS-PARTNER density is deliberately the raw, un-combined
+				// `phasePdf`, matching env-NEE's
+				// `MediumScatterMaterial::Pdf` at the same vertex;
+				// substituting `combinedPdf` would double-apply the guiding
+				// correction (already folded into `rs2.importance` via
+				// `guidingMISWeight`) and break the w_bsdf + w_nee == 1
+				// partition.  The TRUE sampling density goes in `bsdfPdf`
+				// so the moment estimator divides by what the direction
+				// really came from (DL-74 P2-5).  See the RGB copy's
 				// comment for the full derivation.
-				rs2.bsdfPdf = phasePdf;
-				// DL-72 REOPENED (P2-B, this pass): NM sibling of the RGB
-				// volume-continuation note above -- no `AccumulateCount`
-				// call exists anywhere in this file for this continuation,
-				// so training the optimal-MIS moment sum here without a
-				// matching attempt count inflates `Mbsdf` and depresses
-				// `alpha` (a variance regression, not a correctness bug --
-				// `rc.pOptimalMIS` is Pel-only at runtime, so this NM copy
-				// was always moot in practice, but is kept symmetric with
-				// the RGB copy). Left UNWIRED (zero) pending a properly
-				// paired count; see DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
-				// "P2-B ruling".
-				rs2.bsdfTimesCos = RISEPel( 0, 0, 0 );
+				rs2.bsdfMisPdf = phasePdf;
+				rs2.bsdfPdf = effectivePdf;
+				// DL-72 (round 3, this pass): NM sibling of the RGB
+				// volume-continuation fix above -- same derivation
+				// (`IPhaseFunction::Pdf() == Evaluate()`, no separate
+				// cosine term for a volume vertex), same paired
+				// `AccumulateCount`. `rc.pOptimalMIS` is Pel-only at
+				// runtime (spectral renders never construct one), so this
+				// NM copy is a structural no-op in practice -- kept
+				// symmetric with the RGB copy per the audit-by-bug-pattern
+				// sibling rule rather than left to silently diverge if a
+				// future change ever does construct one for NM.
+				rs2.bsdfTimesCos = RISEPel( phasePdf, phasePdf, phasePdf );
+				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
+				{
+					const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+						rast.x, rast.y, kTechniqueBSDF );
+				}
 
 				Scalar hitDist = 0;
 				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,

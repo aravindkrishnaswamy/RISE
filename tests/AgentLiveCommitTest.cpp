@@ -4309,34 +4309,60 @@ static void TestStaleIndexIdentityCheckRefusesP2()
 }
 
 //////////////////////////////////////////////////////////////////////
-// Test 31 (round-2 P1 red-prove): the reviewer's exact repro shape -- a chunk
-// (matTarget) glued DIRECTLY (zero whitespace) onto its LEFT neighbour (matA),
-// so DocEraseChunkTidy's glue-safety walk (Cst.cpp, ItemEndsInNewline on the
-// item BEFORE the removed chunk) finds the preceding item does NOT end in a
-// newline and refuses to collapse matTarget's own trailing separator ->
-// droppedCount == 1 -> SceneEditController's post-remove trim keeps ONLY
-// matTarget's own chunk bytes (ending in `}`, never `\n`) as the Undo capture.
-// An out-of-band insert then shifts indices so a DIFFERENT, non-whitespace-
-// leading chunk lands immediately to the RIGHT of the restore point -> Undo
-// must still be glue-safe on the RIGHT side (the round-1 fix only guarded the
-// LEFT).  Pre-fix (round-1 only), this reproduces `}lambertian_luminaire_material`-
-// style glue; post-fix (round-2), the symmetric right-side synthesis catches it.
+// Test 31 (round-2 P1 red-prove; DL-66 fixture repair, 2026-09-14): the
+// reviewer's exact repro shape -- matTarget's LEFT neighbour (matA) is
+// glue-UNSAFE, so DocEraseChunkTidy's glue-safety walk (Cst.cpp,
+// ItemEndsInNewline on the item BEFORE the removed chunk) finds the
+// preceding item does NOT end in a newline and refuses to collapse
+// matTarget's own trailing separator -> droppedCount == 1 ->
+// SceneEditController's post-remove trim keeps ONLY matTarget's own chunk
+// bytes (ending in `}`, never `\n`) as the Undo capture.  An out-of-band
+// insert then shifts indices so a DIFFERENT, non-whitespace-leading chunk
+// lands immediately to the RIGHT of the restore point -> Undo must still
+// be glue-safe on the RIGHT side (the round-1 fix only guarded the LEFT).
+//
+// DL-66 fixture repair: the ORIGINAL fixture engineered the glue-unsafe
+// left neighbour by gluing matA's `}` directly (ZERO whitespace) onto
+// matTarget's keyword in the raw ascii text.  `Cst.cpp`'s brace-on-own-
+// line hard-reject (`ChunkBraceViolations` via `NextDocContentSharesLine`,
+// commit bc3c8b71, 2026-09-03 -- two months AFTER this test was authored
+// in e5d653e0, 2026-07-04, confirming a genuine regression rather than a
+// parser rule this test was always relying on) now refuses to even PARSE
+// that shape, so the fixture never reached the code path it exists to
+// exercise.  Fixed WITHOUT re-introducing the same-line glue: the
+// separator between matA and matTarget is `"\n "` (one newline, then one
+// space) instead of nothing.  This satisfies the parser
+// (`NextDocContentSharesLine` stops at the first Trivia containing a
+// `\n`, so `closeSameLine` is false -- no hard-reject) while STILL
+// tripping `DocEraseChunkTidy`'s glue-unsafe path: the tokenizer folds
+// `"\n "` into ONE Trivia leaf whose LAST byte is the trailing space, not
+// `\n`, so `ItemEndsInNewline` on that leaf (which is what "the item
+// BEFORE matTarget" resolves to once there IS an intervening separator)
+// is still false, matching the original zero-whitespace fixture's
+// droppedCount==1 precondition exactly -- verified by the
+// RED-PROVE-PRECONDITION check just below, unchanged from before this
+// repair.
 //////////////////////////////////////////////////////////////////////
 static void TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2()
 {
-	std::cout << "Test 31: zero-whitespace-glued neighbour forces droppedCount==1 -> out-of-band shift -> Undo restore is RIGHT-side GLUE-SAFE (round-2 P1)..." << std::endl;
+	std::cout << "Test 31: glue-unsafe left neighbour forces droppedCount==1 -> out-of-band shift -> Undo restore is RIGHT-side GLUE-SAFE (round-2 P1)..." << std::endl;
 
-	// matA's chunk ends `}` immediately followed (ZERO whitespace) by matTarget's
-	// chunk -- the reviewer's engineered glue-unsafe left neighbour.  matTarget is
-	// followed by the ORDINARY `\n`-separated matB, so a normal trailing separator
-	// exists there but -- per the glueSafe rule -- DocEraseChunkTidy will decline to
-	// collapse it (the check is on the PRECEDING item, i.e. matA's chunk, which does
-	// NOT end in `\n`), leaving it in the Document and giving droppedCount == 1.
+	// matA's chunk ends `}`, then a SINGLE newline-plus-space separator (one
+	// Trivia leaf, `"\n "`, NOT ending in `\n`) precedes matTarget's chunk --
+	// the DL-66-repaired glue-unsafe left neighbour: it parses cleanly (a
+	// `\n` is present, so the brace-on-own-line rule is satisfied) but still
+	// does not END in `\n`, so DocEraseChunkTidy's glue-safety check on "the
+	// item before matTarget" still refuses the collapse.  matTarget is
+	// followed by the ORDINARY `\n`-separated matB, so a normal trailing
+	// separator exists there but -- per the glueSafe rule -- DocEraseChunkTidy
+	// will decline to collapse it (the check is on the PRECEDING item, i.e.
+	// the `"\n "` separator, which does NOT end in `\n`), leaving it in the
+	// Document and giving droppedCount == 1.
 	const char* kGlueScene =
 		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 		"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
-		"lambertian_material\n{\nname matA\nreflectance white\n}"
+		"lambertian_material\n{\nname matA\nreflectance white\n}\n "
 		"lambertian_material\n{\nname matTarget\nreflectance white\n}\n"
 		"lambertian_material\n{\nname matB\nreflectance white\n}\n"
 		"sphere_geometry\n{\nname s\nradius 1\n}\n"
@@ -4344,7 +4370,7 @@ static void TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2()
 
 	const char* tmp = "agentlive_p1_round2_right_glue.RISEscene";
 	Job* pJob = LoadScene( kGlueScene, tmp );
-	Check( pJob != nullptr, "the zero-whitespace-glued fixture scene loads via the CST path" );
+	Check( pJob != nullptr, "the glue-unsafe-neighbour fixture scene loads via the CST path" );
 	if( !pJob ) return;
 
 	{
@@ -4362,8 +4388,9 @@ static void TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2()
 		const int postRemoveCount = RISE::Cst::DocItemCount( *pJob->GetCstDocument() );
 		Check( preRemoveCount - postRemoveCount == 1,
 		       "RED-PROVE PRECONDITION: the erase dropped exactly 1 item (droppedCount==1 -- matTarget's own "
-		       "trailing separator was NOT collapsed because its LEFT neighbour matA does not end in a newline), "
-		       "so the Undo capture is chunk-ONLY bytes ending in `}` with no trailing separator of its own" );
+		       "trailing separator was NOT collapsed because the item immediately before it -- the \"\\n \" "
+		       "separator following matA -- does not end in a newline), so the Undo capture is chunk-ONLY "
+		       "bytes ending in `}` with no trailing separator of its own" );
 
 		// Out-of-band mechanism (Test-19/29-style: direct Job call under RunPreviewRenderParked +
 		// manual rebind, NO history footprint): insert a fresh tier-0 Painter chunk, which positions
