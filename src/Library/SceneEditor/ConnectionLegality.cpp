@@ -150,17 +150,40 @@ namespace RISE
 			bool candidateIsPerChannelValues )
 		{
 			if( candidateKeyword == "scalar_painter" ) {
-				// DL-29 note: `candidateIsPerChannelValues` is the
-				// candidate chunk's authored FORM (true only for the
-				// per-channel `values` form), which is exactly the
-				// distinction Job.cpp's resolver now makes at derive
-				// time -- an authored `values` triple in a
-				// `requireSingle` slot is a hard error, while a `file`
-				// spectral curve there is accepted (it binds a
-				// single-scalar view of the curve and warns; see
-				// `IScalarPainter::MakeSingleScalarSlotView`).  The two
-				// sides therefore already agree, and this verdict needs
-				// no change for curves.
+				// DL-29/precision-slice P2-2 note: `candidateIsPerChannelValues`
+				// is `ChunkHasValuesParam`'s check of the CANDIDATE CHUNK'S
+				// OWN immediate authored form (true only when that chunk's
+				// role is literally the per-channel `values` param) --
+				// deliberately NOT a recursive evaluation through the
+				// candidate's own graph (ConnectionLegality.h's "WHAT THIS
+				// DOES NOT DO" note documents this as a stated scope
+				// limit, not an oversight: "the schema/descriptor is a
+				// first-pass filter; the parser remains the authority").
+				// This agrees with Job.cpp's derive-time resolver ONLY
+				// for the two LEAF forms it was written to distinguish: a
+				// direct `values` triple (hard error both places) vs a
+				// direct `file` spectral curve (accepted both places, via
+				// `IScalarPainter::MakeSingleScalarSlotView`). It does
+				// NOT agree in general -- a `scale`/`multiply`/`add`
+				// composite wrapping a per-channel child, or a vec3-result
+				// `expression` painter, both report per-channel variation
+				// dynamically at derive time with no "values" param
+				// anywhere on the candidate chunk itself, so this check
+				// says LEGAL while `ResolveOrDiagnoseScalar` can still
+				// refuse the binding (when the wrapped/expression form has
+				// no `MakeSingleScalarSlotView` of its own). That gap is
+				// the ALREADY-DOCUMENTED first-pass-filter limitation
+				// above, not a new defect -- the canvas under-rejects,
+				// the real parser is still the final word, and a
+				// hand-edited scene that trips it gets the real parser's
+				// own diagnostic at derive time. Composites that DO carry
+				// a spectral-curve child now get a real view forwarded
+				// (ScaledScalarPainter.h / MultiplyScalarPainter.h /
+				// AddScalarPainter.h `MakeSingleScalarSlotView`), so the
+				// composite-wrapping-a-curve case this comment used to
+				// (wrongly) claim was already covered now genuinely is --
+				// it is the composite-wrapping-a-`values`-triple and the
+				// vec3-`expression` cases that remain the documented gap.
 				if( pd.semantics.requireSingle && candidateIsPerChannelValues ) {
 					return { false, Fmt( kScalarBoundToPerChannelFmt, targetKeyword.c_str(), "<name>",
 						paramName.c_str(), candidateKeyword.c_str() ) };
