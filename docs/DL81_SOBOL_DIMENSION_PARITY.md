@@ -136,7 +136,7 @@ recommended set, covering 21201 dimensions; SIAM J. Sci. Comput. 30, 2635-2654,
 their BSD-style licence verbatim (as its redistribution terms require), the
 source URL, the criterion, and the exact regeneration command.
 
-Only the **initial** direction numbers are embedded — 142066 values, 568 KiB —
+Only the **initial** direction numbers are embedded — 142066 values, 555 KiB —
 not the expanded 32-per-dimension table, which would be 1 MiB of read-only data;
 the expansion is one pass of XORs at first use, so first-use construction is the
 smaller binary cost. The data lives in a `.cpp`, not a header, so exactly one
@@ -199,9 +199,14 @@ inside the table. Over the 459 shipped scenes the deepest is **stream 241**, in
 > streams, so that one scene drove VCM's per-eye-vertex NEE stream 241 — and
 > `dimension mod 2311` re-aliased WHOLE STREAMS onto each other (stream 72 onto
 > dimensions 2304-2310 then 0-24; stream 73 onto 25-56), which is precisely the
-> DL-81 collapse for the aliased pair, made worse by the Owen seed using the
-> *unwrapped* dimension so the two aliased draws were not even differently
-> scrambled. Round 1's own justification for the constant — "the smallest prime
+> DL-81 collapse for the aliased pair. **Round-2-review correction (P3-4): the
+> account below this line previously had the scrambling backwards** — round 1's
+> Owen seed was `HashCombine(seed, dimension)` using the *unwrapped* dimension,
+> so the two aliased draws (e.g. stream 72's dimension 2304 and the wrapped
+> dimension 0) WERE differently scrambled; what they shared was only the same
+> pre-scramble BASE VALUE (`Sobol(index, dimension mod 2311)`), which is exactly
+> the DL-81 shape — two Owen-scrambled copies of one value, not two independent
+> sequences. Round 1's own justification for the constant — "the smallest prime
 > above 50 × kStreamStride" — was also arithmetically wrong about primes: 1601
 > is prime, so 2311 is not the smallest prime above 1600.
 
@@ -265,7 +270,9 @@ Two ways out were measured and rejected:
   to a different part of the table but not a better one: 151 collided pairs at
   M = 8 against the strided layout's 131.
 * **Compaction.** Dimensions 0..199 taken *consecutively* collapse only 75 pairs
-  at M = 8 — the floor — and **none** from 512 spp, because Joe & Kuo's search
+  at M = 8 — close to, but not exactly, the counting floor of 72 (round-2-review
+  correction, P3-6: consecutive Joe-Kuo dimensions are near-optimal, not
+  floor-exact) — and **none** from 512 spp, because Joe & Kuo's search
   optimises nearby-dimension projections. A progressive renderer cannot compact:
   it does not know at draw time which `(stream, slot)` pairs the walk will reach.
 
@@ -383,6 +390,9 @@ Worst cross-group dyadic 2×2 deviation over 2^16 samples: 0.0119.
 
 Counters: **52 passed / 11 failed → 63 passed / 0 failed** (round 1 vs round 2;
 against the pre-DL-81 library the same suite was 17 / 18 on its round-1 form).
+A subsequent round-2-review fix-up pass (P2-1/P3-1, this section) added section G's
+Get2D index-scramble-collapse guard and an E3 consistency pin, with no change to
+sampler behavior: **70 passed / 0 failed**.
 
 ### 4c. Convergence — two scenes, against a reference that belongs to neither
 
@@ -412,7 +422,9 @@ same scene at the same spp differ in every byte).
 
 | spp | RMSE, pre-DL-81 | RMSE, round 2 | delta |
 |---|---|---|---|
-| 16   | 0.09145 ± 0.00152 | 0.09646 ± 0.00280 | +5.5 % |
+| 4    | 0.25638 ± 0.00903 (n=16) | 0.25599 ± 0.00761 (n=16) | −0.15 % ± 1.15 pp |
+| 8    | 0.13982 ± 0.00428 (n=16) | 0.13718 ± 0.00515 (n=16) | −1.89 % ± 1.19 pp |
+| 16   | 0.09217 ± 0.00200 (n=16) | 0.09487 ± 0.00255 (n=16) | **+2.93 % ± 0.89 pp** |
 | 64   | 0.04900 ± 0.00138 | **0.04436 ± 0.00137** | −9.5 % |
 | 256  | 0.03650 ± 0.00023 | **0.02280 ± 0.00068** | −37.5 % |
 | 1024 | 0.03380 ± 0.00009 | **0.01296 ± 0.00017** | −61.7 % |
@@ -425,9 +437,44 @@ truth, the new build's is 0.0054. Round 2's numbers keep falling at
 roughly `N^-0.6`.
 
 Round 1 regressed the 64-spp row by +6.6 %; round 2 turns that into −9.5 %,
-which is the padded `Get2D` (§2) doing its job. The 16-spp row is still
-+5.5 % ± 2 pp — a real, small regression at very low sample counts, and the §3
-counting bound is why: at 2^4 samples only 8 leading generator rows exist.
+which is the padded `Get2D` (§2) doing its job.
+
+> **Round-2-review correction (P2-2): the 4/8/16-spp rows above are a
+> RE-DERIVATION at n = 16 (not the n = 4 this doc originally used), because the
+> review's own n = 8 re-measurement disagreed with what was here before ("16 spp
+> is still +5.5 % ± 2 pp regression … the §3 counting bound is why") badly
+> enough to need resolving with more repeats rather than trusting either draw.
+> At n = 16 the picture is**: 4 and 8 spp show **no significant delta** (z =
+> −0.13 and −1.59 against their own standard errors — the review's separately
+> reported "4 spp +5.66 % ± 1.59 pp (3.6σ)" does not reproduce here, and neither
+> does its "16 spp −0.33 % (no regression)"; both are single n = 8 draws from a
+> non-deterministic renderer, and this scene's per-run RMSE spread is wide
+> enough at these sample counts that n = 8 is not always enough to resolve an
+> effect this size — see the `variance-measurement` skill's "K too small"
+> pitfall), while **16 spp shows a real, reproducible regression, z = 3.3**
+> (+2.93 % ± 0.89 pp at n = 16, agreeing in sign and rough magnitude with both
+> the original n = 4 measurement, +5.5 %, and an independent n = 8 draw taken
+> during this pass, +3.94 %). **The attribution needs softening to two
+> contributors, not one**: (a) the §3 counting-floor bound on Get1D dimensions
+> (already documented) and (b) the LOSS of the pre-DL-81 padding's perfect
+> (0,2)-net between two CONSECUTIVE Get1D draws — pre-fix, every pair of
+> back-to-back Get1D calls shared Sobol' dimensions 0/1 (correlated, but
+> perfectly stratified as a PAIR); post-fix each draws its own, generally
+> unrelated, high dimension, which is only well-stratified against its
+> IMMEDIATE neighbours (section C's adjacent-bounce sweep), not against every
+> other dimension it might land near at 16 samples per pixel. Neither
+> contributor predicts the 4/8-spp result in isolation: the production Get2D
+> group set's OWN index-scramble collapse (§3's new subsection, P2-1) is at its
+> WORST at 4 spp (50 % of pairs) and its render-level effect there is
+> statistically indistinguishable from zero on this scene, which is itself
+> informative — collapse COUNT alone does not predict low-spp RMSE; the
+> pre-DL-81 sampler had 100 % Get2D cross-group collapse (every draw padded to
+> dimensions 0/1) and still WINS at 4 and 8 spp. This is consistent with the
+> render's own variance being dominated by other noise sources at 4-8 spp on
+> this particular (dielectric-free, NEE-heavy) scene, with the two-contributor
+> effect only surfacing clearly once other noise has fallen enough (16 spp) to
+> expose it, and presumably averaging out again by 64 spp where round 2 already
+> wins decisively.
 
 `scenes/Tests/UnifiedLighting/envmap_nee_test_pt.RISEscene` — the control, a
 scene with no repeated selection to bias:
@@ -526,7 +573,7 @@ loaded machine); take the figure as "roughly +10 %", not as a per-spp curve.
   projects updated), and one new tool,
   `tools/GenerateSobolDirectionNumbers.cpp`.
 * **Memory**: 1 MiB of expanded direction-number table per process (was
-  289 KiB after round 1, nothing before DL-81) plus 568 KiB of read-only
+  289 KiB after round 1, nothing before DL-81) plus 555 KiB of read-only
   embedded initial numbers in the binary.
 
 ## 6. Sibling audit
@@ -551,7 +598,7 @@ loaded machine); take the figure as "roughly +10 %", not as a per-spp curve.
 Run on round 2, in the `debt-sobol` worktree. Clean rebuild, zero warnings.
 | suite | counter |
 |---|---|
-| `SobolDimensionParityTest` | 63 passed / 0 failed (52 / 11 on round 1) |
+| `SobolDimensionParityTest` | 70 passed / 0 failed (63 / 0 after round 2, 52 / 11 on round 1; the round-2-review pass added section G + an E3 pin, no sampler behavior change) |
 | `SobolSelectionChannelBiasTest` | 19 passed / 0 failed (12 / 7 pre-DL-81) |
 | `SobolDimensionBudgetTest` | all passed — 459 scenes scanned, deepest stream 241, table covers 0..255 |
 | `TranslucentSamplerDimensionCountTest` | 65544 checks / 0 failures |
@@ -656,3 +703,112 @@ Both are fully green on the pre-DL-81 library — `EnvLightBalanceTest` 116 / 0,
 `SobolSequence.h`, `SobolSampler.h` and `CameraUtilities.h` reverted to
 `ab65f0a6` and the library rebuilt. Every band this slice touches is a p99
 tail statistic; no mean check moved in either suite, in either round.
+
+---
+
+## 8. Round-2-review fix-up (this pass) — P2/P3, no sampler behavior change
+
+The round-2 review found no P1s. This pass addresses its P2/P3 findings.
+**Nothing in `SobolSequence.h`'s runtime code changed** — every render this
+class produces is bit-identical to round 2's (`822006ce`). The changes are:
+documentation corrections, one new comment-level design note, and two new
+test guards (one of which is a documented non-fix).
+
+**P2-1 (index-scramble entropy at low spp) — measured, NOT fixed, and here is
+why.** `ScrambleIndex`'s own collapse at low M has the SAME shape as the
+direction-number floor in §3, just one level up (Get2D GROUPS instead of
+Get1D dimensions): over the production Get2D group set (streams 0..24 x slots
+0..7 plus the BDPT strategy-select group, 201 groups, 80400 (group,
+coordinate) pair combinations), measured collapse is 50.000 % at 4 spp,
+12.400 % at 8, 0.776 % at 16, ~0.02 % at 32, 0 % at 64+
+(`SobolDimensionParityTest` section G). These are, to three decimal places,
+the pigeonhole floor for a family of 2^(2^(M-1)) possible leading-digit
+functions (50 % / 12.5 % / 0.78 % at M = 2/3/4) — **the current `ScrambleIndex`
+is already at the floor**, not merely close to it. A two-independent-round
+composition of `ScrambleIndex` was implemented as a scratch candidate and
+measured against the same sweep: M=2 unchanged (50.000 %), M=3 slightly WORSE
+(12.517 % vs 12.400 %), M=4 unchanged (0.776 %), M=5 measured 0/80400 against
+the baseline's 14/80400 — compatible with Poisson noise at an expected count
+of ~2.45, not a reliable win. No change was kept.
+
+Render-level: re-measured the cornell-box fixture (§4c) at n = 16 rather than
+trusting either this doc's original n = 4 or the review's own n = 8 draw,
+because the two disagreed on WHICH spp regresses. See §4c's inline correction
+for the full table and reasoning; short version: 4 and 8 spp show no
+significant delta at n = 16, 16 spp shows a real +2.9 % regression (z = 3.3),
+and collapse count alone does not predict this — the pre-DL-81 sampler had
+100 % Get2D collapse and still wins at 4-8 spp.
+
+Per SobolSequence.h's new "Get2D's index-scramble collapse at low spp"
+section: the bound is now stated with its 2/2^(2^(M-1)) form (was
+unqualified), section G guards the measured counts against regression, and
+`SobolDimensionParityTest` section E gained an E3 pin (see P3-1 below).
+
+**P2-2 (§4c wrong spp / wrong attribution)** — corrected in §4c directly: the
+16-spp row is re-measured at n = 16 (was n = 4), a 4-spp and 8-spp row were
+added (also n = 16), and the attribution is now two contributors (the §3
+Get1D counting floor AND the loss of the pre-fix padding's Get1D pairwise net)
+rather than one, with the evidence that collapse count alone does not predict
+low-spp RMSE (pre-DL-81's 100 % Get2D collapse still wins at 4-8 spp).
+
+**P3-1 (`Sample`/`SamplePair` dimension-0 coincidence)** — confirmed exactly
+as reported (`SamplePair(i,0,seed).outU == Sample(i,0,seed)` and
+`.outV == Sample(i,1,seed)`, bit-for-bit, dimension 0 only). **Not fixed**:
+the suggested tag (`HashCombine(seed, dim, kPairTag)`) would also retag group
+0's own seed, breaking the documented "bit-identical to every version of this
+class" guarantee for the film/primary pair — the one place that guarantee is
+explicit and load-bearing (every `SobolSampler` render's primary-sample jitter
+would shift for a purely dormant, "not live today" coincidence). Documented
+instead, in `SamplePair`'s header comment and as a new pin,
+`SobolDimensionParityTest` section E3, so a future change to either function
+makes a conscious choice.
+
+**P3-2 (DL-82 stale citations)** — DL-82's row now cites round 2's commits
+(`4383e8f9`/`9b756e8b`/`c2b69f9b`/`e3374705`) instead of round 1's, and its
+residual-percentage figure is corrected from 0.78 % to the actual measured
+production-set count, 0.66 % (131/19900 at 256 spp).
+
+**P3-3 (568 KiB → 555 KiB)** — 142066 values x 4 bytes = 568264 bytes =
+554.95 KiB, which rounds to 555 KiB, not 568. Fixed everywhere it appeared:
+this doc (twice), `SobolSequence.h` (three places), `docs/DEBT_LEDGER.md`
+(DL-81 row), `CLAUDE.md`.
+
+**P3-4 (wrap-scramble sentence backwards)** — §2's account of round 1's
+`dimension mod 2311` wrap said the two aliased draws "were not even
+differently scrambled"; they WERE differently scrambled (round 1's Owen seed
+used the unwrapped dimension) — what they shared was the same pre-scramble
+BASE VALUE, which is the actual DL-81 shape. Corrected in place.
+
+**P3-5 (`SobolDimensionBudgetTest` two bugs)** — (a) `SceneDepthBound`'s
+no-declared-depth default was always `BDPTPelDefaults::maxEyeDepth` (8), even
+for a `pixelpel_rasterizer` scene (whose own default, `maxRecursion`, is 10)
+or an `mlt_*` scene (`maxEyeDepth` 10); now keyed to the rasterizer chunk the
+scene actually declares, falling back to `PathTracingIntegrator`'s own
+runtime default (128 — PT has no scene-level depth-cap parameter at all) when
+none of the depth-declaring rasterizers is recognised. (b) the
+`max_volume_bounce` line match required a literal trailing SPACE
+(`compare(0, 18, "max_volume_bounce ")`), silently missing every real,
+tab-separated scene file and always falling back to `StabilityConfig`'s
+default instead of reading the scene's own override; now matches on the key
+alone, same convention as the other three depth keys, letting `strtoul`'s own
+whitespace skip handle the separator. Neither bug moved
+`SobolDimensionBudgetTest`'s Test G result (still 459 scenes scanned, deepest
+stream 241 in `diamond_teapot_pour.RISEscene`, which declares its depths
+explicitly) — both were silent-default bugs on scenes this specific test
+happens not to depend on for its worst case, not a correctness regression in
+the shipped table-size bound.
+
+**P3-6 ("75 is the floor")** — §3's compaction bullet called 75 (the measured
+consecutive-dimension collapse count at M = 8) "the floor"; the actual
+counting floor for 200 dimensions in 128 boxes is 72. Consecutive Joe-Kuo
+dimensions are near-optimal, not floor-exact. Corrected in §3 and in
+`SobolSequence.h`'s mirroring comment.
+
+### Gate (this pass)
+
+Same suites as §7, re-run after every fix above; clean rebuild, zero
+warnings. Since no sampler runtime code changed, every render-level suite's
+counters are IDENTICAL to §7's round-2 numbers (re-confirmed, not assumed):
+`SobolDimensionParityTest` 70/0 (was 63/0; see above), `SobolDimensionBudgetTest`
+all passed (Test G unchanged: 459 scenes, deepest stream 241), and every
+other suite in §7's table unchanged.
