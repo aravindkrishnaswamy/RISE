@@ -78,6 +78,15 @@
 //         twin is VCMStrategyBalanceTest topology I (the two share the
 //         same scene text).
 //
+//      L. MULTI-LOBE `schlick_material` wall + floor, large area emitter
+//         (DL-69) -- the only topology in this file whose material
+//         emits more than one non-delta lobe per Scatter() call.
+//         BDPT's non-delta throughput used to pair the material's
+//         AGGREGATE BSDF value with the ONE selected lobe's density,
+//         an N-times over-count; every other topology here uses
+//         `lambertian_material` (N == 1) and is structurally blind
+//         to it.
+//
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
 //    multi-threaded BDPT splat-accumulation order adds run-to-run
@@ -1776,6 +1785,219 @@ static void TestSubmergedCeilingMISCombination()
 		kRasterizerPTCeilingK, kRasterizerBDPTCeilingK );
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Topology L: MULTI-LOBE `schlick_material` (DL-69).
+//
+// Every other topology in this file uses `lambertian_material`, whose
+// SPF emits exactly ONE lobe -- so the lobe-selection probability is
+// trivially 1 and the material's aggregate BSDF value IS its only
+// lobe's value.  That made this file structurally blind to DL-69:
+// BDPT's non-delta eye/light throughput paired the material's
+// AGGREGATE `IBSDF::value()` (all lobes summed) with the ONE
+// stochastically-selected lobe's own density, an N-times over-count
+// for N accepted lobes with overlapping support.
+//
+// `schlick_material` is the canonical such material: `SchlickSPF::
+// Scatter` pushes a cosine-weighted diffuse lobe AND a Schlick
+// half-vector specular lobe into the same container, both non-delta,
+// both over the same upper hemisphere, each carrying its OWN
+// conditional pdf.  tests/SchlickLobePairingTest.cpp measures the
+// resulting over-count in closed form: exactly 2.00x the BRDF
+// integral at 0/30/60 deg incidence.
+//
+// SCENE.  The receiver wall (z=0, +-1, normal +Z) fills the frame at
+// fov 30 (half-height 3.5*tan(15 deg) = 0.938).  Neither the floor
+// (y=-1, z in [0,2], normal +Y) nor the area emitter (y=1.4,
+// z in [0.1,2.6], normal -Y) is inside the frustum, so the image is
+// pure receiver radiance with no emitter pixels and no background.
+// Both non-emitting surfaces are `schlick_material`, which puts a
+// multi-lobe vertex on BOTH subpaths:
+//   - eye side: camera -> wall (v1) -> floor (v2) -> emitter.  The
+//     v1 scatter throughput multiplies every strategy of length >= 3,
+//     including the s=0 emitter-hit that competes with v1's NEE.
+//   - light side: emitter -> floor (l1) -> wall (l2) -> ...  The l1
+//     scatter throughput multiplies every s >= 3 connection and splat.
+// A large emitter (3.2 x 2.5 units, close to the receiver) is
+// deliberate: it gives the BSDF-sampling strategies real MIS weight
+// against NEE, so the over-count lands in the mean rather than being
+// MIS-suppressed.
+//
+// Depth budgets are matched explicitly (BDPT max_eye_depth /
+// max_light_depth 5 vs PT's `max_diffuse_bounce` / `max_glossy_bounce`
+// 5) because unlike the single-bounce Lambertian topologies above,
+// this scene has real interreflection and an unequal budget would be
+// a second free variable.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSchlickMultiLobeL =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rd\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rs\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"scalar_painter\n"
+	"{\n"
+	"\tname pnt_rough\n"
+	"\tvalue 0.5\n"
+	"}\n"
+	"\n"
+	"scalar_painter\n"
+	"{\n"
+	"\tname pnt_iso\n"
+	"\tvalue 1.0\n"
+	"}\n"
+	"\n"
+	"schlick_material\n"
+	"{\n"
+	"\tname mat_schlick\n"
+	"\trd pnt_rd\n"
+	"\trs pnt_rs\n"
+	"\troughness pnt_rough\n"
+	"\tisotropy pnt_iso\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_wall\n"
+	"\tpta -1 -1 0\n"
+	"\tptb 1 -1 0\n"
+	"\tptc 1 1 0\n"
+	"\tptd -1 1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_wall\n"
+	"\tgeometry quad_wall\n"
+	"\tmaterial mat_schlick\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_floor\n"
+	"\tpta -1 -1 0\n"
+	"\tptb -1 -1 2\n"
+	"\tptc 1 -1 2\n"
+	"\tptd 1 -1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_floor\n"
+	"\tgeometry quad_floor\n"
+	"\tmaterial mat_schlick\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_l\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_l\n"
+	"\texitance pnt_emit_l\n"
+	"\tscale 0.5\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit_l\n"
+	"\tpta -6 -6 4.2\n"
+	"\tptb -6 6 4.2\n"
+	"\tptc 6 6 4.2\n"
+	"\tptd 6 -6 4.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_l\n"
+	"\tgeometry quad_emit_l\n"
+	"\tmaterial mat_emit_l\n"
+	"}\n";
+
+// 256-spp, depth-matched twins of kRasterizerPT / kRasterizerBDPT for
+// topology L.  Identical in every respect except the rasterizer chunk
+// (and, inside it, the depth budget and sample count).
+static const char* kRasterizerPTSchlickL =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSchlickL =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static void TestSchlickMultiLobe()
+{
+	RunTopologyTest( "multi-lobe schlick_material wall + floor, area emitter (DL-69)",
+		std::string( kSceneSchlickMultiLobeL ), kStrictTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -1791,6 +2013,7 @@ int main()
 	TestThinLensBladedAperture();
 	TestSubmergedFloorCancellation();
 	TestSubmergedCeilingMISCombination();
+	TestSchlickMultiLobe();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
