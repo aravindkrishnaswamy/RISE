@@ -21,17 +21,32 @@ using namespace RISE::Implementation;
 
 namespace
 {
-	// Closed-form Schlick hemispherical Fresnel average: F0 + (1-F0)/21.
-	// Duplicated (not shared) from the identical helper in GGXSPF.cpp /
-	// GGXBRDF.cpp -- DL-67 Slice 0 (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md)
-	// deliberately keeps this file-local rather than hoisting a new shared
-	// header, to keep the slice's blast radius to SchlickSPF.{h,cpp} only;
-	// GGXSPF.cpp/GGXBRDF.cpp are untouched by this change.
-	template< class T >
-	inline T SchlickFresnelAvg( const T& F0 )
+	//! Stratified-quadrature resolution PER AXIS for the diffuse lobe's
+	//! selection coefficient C_D (see the derivation on
+	//! SchlickDiffuseSelectCoefficient below).  kSpecQuadN^2 replays of the
+	//! specular sampler per Pdf()/PdfNM() call.  The integrand is bounded in
+	//! [0,1] and smooth apart from ONE curve -- the accept boundary, where
+	//! Scatter's geometric gate starts rejecting the specular draw -- so the
+	//! error is O(1/kSpecQuadN), not O(1/kSpecQuadN^2).  16 was chosen by
+	//! measurement over 400 randomised (angle, rd, rs, roughness, isotropy,
+	//! tilt) configurations: mean |C_D error| 0.0034, max 0.022, against
+	//! 0.0083 / 0.039 at 8 and 0.0013 / 0.0083 at 32 (the cost grows as the
+	//! square).  See docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md section 4a.
+	const int kSpecQuadN = 16;
+
+	//! The specular lanes `Scatter()` would emit at this shading point: ONE
+	//! in the ordinary case (and always in the spectral path), THREE when a
+	//! per-channel roughness/isotropy painter drives Scatter()'s per-channel
+	//! branch.  `rho` is the lane's selection-weight base -- the value `w`
+	//! for which the lane's realized `PTScatterSelectWeight` reads
+	//! `rho + (1-rho)*fresnel`.
+	struct SchlickLobeSet
 	{
-		return F0 + (T(1.0) - F0) * (1.0 / 21.0);
-	}
+		int    count;
+		Scalar r[3];
+		Scalar p[3];
+		Scalar rho[3];
+	};
 }
 
 SchlickSPF::SchlickSPF(
@@ -77,22 +92,12 @@ static inline void GenerateDiffuseRay(
 	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( onb, ptrand ) );
 }
 
-static void GenerateSpecularRay(
-		ScatteredRay& specular,
-		Scalar& fresnel,
-		const OrthonormalBasis3D& onb,								///< [in] Orthonormal basis in 3D
-		const RayIntersectionGeometric& ri,							///< [in] Ray intersection information
-		const Point2& random,										///< [in] Two random numbers
-		const Scalar r,
-		const Scalar p
-		)
+//! The azimuthal half of Schlick's inverse-CDF warp: b in [0,1) -> phi in
+//! [0, 2pi).  Extracted verbatim from GenerateSpecularRay so `Pdf()` can
+//! replay the sampler EXACTLY (same branches, same arithmetic, same order)
+//! rather than approximate it -- see SchlickDiffuseSelectCoefficient.
+static inline Scalar SchlickSamplePhi( const Scalar b, const Scalar p )
 {
-	specular.type = ScatteredRay::eRayReflection;
-
-	// Use the warping function to perturb the reflected ray
-	const Scalar xi = random.x;
-	const Scalar b = random.y;
-
 	const Scalar sqr_p = p*p;
 
 	Scalar phi = 0;
@@ -124,7 +129,62 @@ static void GenerateSpecularRay(
 		phi = TWO_PI - phi;
 	}
 
-	const Scalar theta = acos(sqrt(xi/(r-xi*r+xi)));
+	return phi;
+}
+
+//! Inverse of SchlickSamplePhi: phi in [0, 2pi) -> b in [0,1).  Exact (the
+//! forward warp is monotone and bijective within each of its four
+//! quadrants).  Used only by the per-channel branch's density, which has to
+//! recover WHICH random pair produced a queried direction in order to know
+//! what the OTHER two lanes drew from the same pair.
+static inline bool SchlickInvertPhi( const Scalar phi, const Scalar p, Scalar& outB )
+{
+	if( p < NEARZERO ) {
+		return false;
+	}
+
+	// t = the quadrant-local value of phi/(pi/2) that the forward warp
+	// produced from `val`; invert t = sqrt(p^2 val^2/(1-val^2+val^2 p^2))
+	// as val = t/sqrt(p^2 + t^2 (1-p^2)).
+	Scalar t = 0;
+	int quadrant = 0;
+	if( phi <= PI_OV_TWO )          { t = phi / PI_OV_TWO;            quadrant = 0; }
+	else if( phi <= PI )            { t = (PI - phi) / PI_OV_TWO;     quadrant = 1; }
+	else if( phi <= PI + PI_OV_TWO ){ t = (phi - PI) / PI_OV_TWO;     quadrant = 2; }
+	else                            { t = (TWO_PI - phi) / PI_OV_TWO; quadrant = 3; }
+
+	t = r_max( Scalar(0), r_min( Scalar(1), t ) );
+	const Scalar sqr_p = p*p;
+	const Scalar den = sqr_p + t*t*(1.0 - sqr_p);
+	if( den < NEARZERO ) {
+		return false;
+	}
+	const Scalar val = r_max( Scalar(0), r_min( Scalar(1), t / sqrt(den) ) );
+
+	switch( quadrant ) {
+		case 0:  outB = val * 0.25;           break;
+		case 1:  outB = (val + 1.0) * 0.25;   break;
+		case 2:  outB = val * 0.25 + 0.5;     break;
+		default: outB = (val + 3.0) * 0.25;   break;
+	}
+	return true;
+}
+
+//! Schlick's half-vector warp, (xi,b) -> h.  NOTE: the frame is `ri.onb`,
+//! NOT the caller's (possibly FlipW'd) shading frame -- that is what the
+//! shipped sampler has always done, and `Pdf()` must replay it faithfully
+//! rather than "correct" it here (see DL-100 in docs/DEBT_LEDGER.md: on a
+//! back-face hit the lobe is therefore sampled around the unflipped normal
+//! and every draw is then rejected by Scatter's own accept-check).
+static inline Vector3 SchlickSampleHalfVector(
+		const RayIntersectionGeometric& ri,
+		const Point2& random,
+		const Scalar r,
+		const Scalar p
+		)
+{
+	const Scalar phi = SchlickSamplePhi( random.y, p );
+	const Scalar theta = acos(sqrt(random.x/(r-random.x*r+random.x)));
 
 	const Scalar cos_phi = cos(phi);
 	const Scalar sin_phi = sin(phi);
@@ -135,10 +195,25 @@ static void GenerateSpecularRay(
 	const Vector3	a( cos_phi*sin_theta, sin_phi*sin_theta, cos_theta );
 
 	// Generate the actual vector from the half-way vector
-	const Vector3	h(
+	return Vector3(
 		  ri.onb.u().x*a.x + ri.onb.v().x*a.y + ri.onb.w().x*a.z,
 	   	  ri.onb.u().y*a.x + ri.onb.v().y*a.y + ri.onb.w().y*a.z,
 		  ri.onb.u().z*a.x + ri.onb.v().z*a.y + ri.onb.w().z*a.z );
+}
+
+static void GenerateSpecularRay(
+		ScatteredRay& specular,
+		Scalar& fresnel,
+		const RayIntersectionGeometric& ri,							///< [in] Ray intersection information
+		const Point2& random,										///< [in] Two random numbers
+		const Scalar r,
+		const Scalar p
+		)
+{
+	specular.type = ScatteredRay::eRayReflection;
+
+	// Use the warping function to perturb the reflected ray
+	const Vector3	h = SchlickSampleHalfVector( ri, random, r, p );
 
 	const Scalar hdotk = Vector3Ops::Dot(h, -ri.ray.Dir());
 
@@ -173,21 +248,23 @@ static Scalar ComputeSchlickSpecularPdf(
 		return 0;
 	}
 
-	// Mirror Scatter()'s FlipW: GenerateSpecularRay() builds its half-vector
-	// relative to the (possibly flipped) myonb, so this helper must use the
-	// same frame or it returns 0 for directions Scatter legitimately emits
-	// on a back-face hit.
-	OrthonormalBasis3D myonb = ri.onb;
-	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
-		myonb.FlipW();
-	}
-
+	// FRAME: `ri.onb`, NEVER a FlipW'd copy.  GenerateSpecularRay builds its
+	// half-vector in ri.onb unconditionally (its `onb` parameter was dead --
+	// see SchlickSampleHalfVector), so this density has to use the same
+	// frame or it describes a distribution nothing draws from.  The earlier
+	// FlipW here was introduced on the premise that the sampler flipped too;
+	// it does not.  Consequence, and it is the RIGHT one: on a back-face hit
+	// wi and wo both lie on the -w side, h with them, so `hdotn <= 0` and
+	// this returns 0 -- exactly matching Scatter, whose every specular draw
+	// is then rejected by its own accept-check.  (That the sampler loses the
+	// whole specular lobe on a back-face hit is a real energy defect, but a
+	// SAMPLER defect: DL-100 in docs/DEBT_LEDGER.md.)
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 
 	// Compute half-vector
 	Vector3 h = Vector3Ops::Normalize( wi + woNorm );
-	const Scalar hdotn = Vector3Ops::Dot( h, myonb.w() );
+	const Scalar hdotn = Vector3Ops::Dot( h, ri.onb.w() );
 	if( hdotn <= 0 ) {
 		return 0;
 	}
@@ -223,32 +300,47 @@ static Scalar ComputeSchlickSpecularPdf(
 	// where p_theta(theta_h) = 2*cos*sin * r / denom^2
 	// and p_phi(phi_h) is the azimuthal PDF
 
-	// For the azimuthal part with anisotropy parameter p:
-	// The phi PDF (from the sampling inversion) is:
-	// p(phi) = p / (2*pi*(cos^2(phi) + p^2*sin^2(phi)))
-	// This integrates to 1 over [0, 2pi].
-
-	// Project h onto tangent plane to get phi (myonb, not ri.onb -- see the
-	// FlipW comment above).
-	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
-	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
+	// For the azimuthal part with anisotropy parameter p.
+	//
+	// This is NOT `p/(2 pi (cos^2 phi + p^2 sin^2 phi))`, which is what this
+	// helper used to return and what its comment claimed Schlick's warp
+	// samples.  It does not: GenerateSpecularRay draws
+	//   phi = (pi/2) * sqrt(p^2 v^2 / (1 - v^2 + v^2 p^2)),  v ~ U[0,1)
+	// per quadrant, i.e. with t := phi/(pi/2) in [0,1] measured from the
+	// quadrant's own axis, v = t/sqrt(p^2 + t^2(1-p^2)), so
+	//   p(phi) = |db/dphi| = (1/4)|dv/dt|(2/pi)
+	//          = p^2 / (2 pi (p^2 + t^2 (1-p^2))^(3/2)).
+	// Both forms integrate to 1 over [0,2pi) and both agree at p=1, which is
+	// why this went unnoticed; away from p=1 they are different
+	// distributions, off by up to 25x at p=0.3 (measured against a 2e6-draw
+	// histogram of the real sampler -- see
+	// docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md section 4b).  The corrected
+	// form below reproduces that histogram to MC noise at p = 1, .8, .6, .3.
+	const Scalar hu = Vector3Ops::Dot( h, ri.onb.u() );
+	const Scalar hv = Vector3Ops::Dot( h, ri.onb.v() );
 
 	Scalar phi_pdf;
-	if( sin2_theta_h < NEARZERO ) {
-		// At the pole, phi is degenerate; use uniform 1/(2*pi)
-		phi_pdf = INV_PI * 0.5;
-	} else {
-		// cos(phi_h) and sin(phi_h) in the tangent plane
-		const Scalar inv_sin = 1.0 / sqrt(sin2_theta_h);
-		const Scalar cos_phi = hu * inv_sin;
-		const Scalar sin_phi = hv * inv_sin;
-		const Scalar cos2_phi = cos_phi * cos_phi;
-		const Scalar sin2_phi = sin_phi * sin_phi;
-		const Scalar phi_denom = cos2_phi + p * p * sin2_phi;
+	{
+		// Quadrant-local t = |phi measured from this quadrant's axis|/(pi/2).
+		// At the pole (h == n) phi is degenerate and hu/hv are rounding
+		// noise; atan2(0,0) is 0, which lands on t = 0 -- the on-axis
+		// density.  Measure zero either way.
+		Scalar phi = atan2( hv, hu );
+		if( phi < 0 ) {
+			phi += TWO_PI;
+		}
+		Scalar t;
+		if( phi <= PI_OV_TWO )           { t = phi / PI_OV_TWO; }
+		else if( phi <= PI )             { t = (PI - phi) / PI_OV_TWO; }
+		else if( phi <= PI + PI_OV_TWO ) { t = (phi - PI) / PI_OV_TWO; }
+		else                             { t = (TWO_PI - phi) / PI_OV_TWO; }
+
+		const Scalar sqr_p = p*p;
+		const Scalar phi_denom = sqr_p + t*t*(1.0 - sqr_p);
 		if( phi_denom < NEARZERO ) {
 			return 0;
 		}
-		phi_pdf = p / (TWO_PI * phi_denom);
+		phi_pdf = sqr_p / (TWO_PI * phi_denom * sqrt(phi_denom));
 	}
 
 	// Full half-vector PDF in solid angle measure:
@@ -261,6 +353,368 @@ static Scalar ComputeSchlickSpecularPdf(
 	const Scalar pdf = h_pdf / (4.0 * hdotwo);
 
 	return pdf;
+}
+
+// ===================================================================
+//  The aggregate-density machinery (DL-67 Slice 0).
+//
+//  Scatter() is a "draw every lobe, then pick one by its REALIZED
+//  weight" sampler, so the density of the direction the integrator
+//  finally continues along is NOT a fixed mixture of the lobe pdfs.
+//  Writing p_D / p_i for the diffuse / i-th specular sampling density,
+//  w_D = MaxValue(rd) for the diffuse ray's (direction-INDEPENDENT)
+//  realized selection weight and w_i(omega) = rho_i + (1-rho_i)*
+//  fresnel(omega) for the i-th specular ray's (direction-DEPENDENT)
+//  one, the density of the selected direction is
+//
+//      f(omega) = C_D * p_D(omega) * 1{omega above the horizon}
+//               + sum_i q_i(omega) * p_i(omega)
+//
+//  with
+//
+//      C_D = E_{(u,v)~U[0,1]^2}[ P(the diffuse ray wins | that draw) ]
+//      q_i(omega) = P(specular lane i wins | lane i drew omega).
+//
+//  Both expectations run over the OTHER lobes' draws, because
+//  RandomlySelect's denominator contains them.  Three consequences the
+//  pre-DL-67 code and its first fix both got wrong:
+//
+//  (a) C_D is NOT w_D/(w_D + E[w_S]).  The relevant measure is p_S,
+//      which concentrates near the mirror direction where the Fresnel
+//      term is ~0 -- so E_{p_S}[w_S] is within 0.15% of rho itself, and
+//      what actually drives C_D is the specular sampler's REJECTION
+//      rate: a rejected specular ray leaves the container with one ray,
+//      and RandomlySelect then returns it with probability 1 regardless
+//      of weight.  Measured int p_S over the accepted region is 0.745 /
+//      0.662 / 0.577 at 30 / 60 / 80 degrees incidence, so a third or
+//      more of all draws are "diffuse wins outright".  No closed-form
+//      hemispherical-average proxy can see that.
+//
+//  (b) The only honest way to get C_D is therefore to integrate the
+//      sampler itself.  SchlickDiffuseSelectCoefficient does that with
+//      a DETERMINISTIC stratified quadrature in GenerateSpecularRay's
+//      own (xi, b) inverse-CDF parametrisation -- deterministic so that
+//      Pdf() stays a pure function of its arguments (an MIS weight that
+//      wobbled per call would not partition to one).
+//
+//  (c) With the exact C_D, `int f = 1` identically whenever the diffuse
+//      ray is always accepted, because for every specular draw the two
+//      conditional probabilities sum to 1 by construction.  Under a
+//      tilted shading normal the diffuse ray is itself sometimes
+//      rejected (Scatter's geometric-horizon gate), and then the
+//      SPECULAR side has to average over that: q_i picks up a
+//      "(1 - A_D) * (specular wins outright)" term, where A_D is the
+//      exact cosine-hemisphere clipped fraction (1+cos phi)/2.  `int f`
+//      is then P(Scatter emits anything at all) < 1 -- which is correct,
+//      not a defect: Scatter really does return an empty container on
+//      those draws.
+//
+//  Full derivation and measurements: docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md
+// ===================================================================
+
+//! Replay ONE (xi,b) draw of GenerateSpecularRay for one lane, and report
+//! what Scatter() would have done with it.  Shares SchlickSampleHalfVector
+//! with the sampler so the two cannot drift.
+static inline bool SchlickReplaySpecular(
+	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN,
+	const Point2& random,
+	const Scalar r,
+	const Scalar p,
+	Scalar& outFresnel
+	)
+{
+	const Vector3 h = SchlickSampleHalfVector( ri, random, r, p );
+	const Scalar hdotk = Vector3Ops::Dot( h, -ri.ray.Dir() );
+	outFresnel = ::pow(1-hdotk,5);
+
+	if( hdotk <= 0 ) {
+		// GenerateSpecularRay leaves the ray untouched; Scatter's
+		// accept-check then rejects it.  (In the per-channel branch the
+		// untouched ray is the PREVIOUS lane's -- see DL-101; this
+		// replay models the intended semantics, not that aliasing.)
+		return false;
+	}
+
+	const Vector3 dir = Vector3Ops::Normalize( ri.ray.Dir() + 2.0 * hdotk * h );
+	return ( Vector3Ops::Dot( dir, myonb.w() ) > 0.0 && Vector3Ops::Dot( dir, geomN ) > 0.0 );
+}
+
+//! Invert the specular sampler at a queried direction: recover the (xi,b)
+//! pair GenerateSpecularRay must have drawn for lane `r,p` to produce
+//! `woNorm`.  Only the multi-lane (per-channel) density needs this -- it is
+//! how a query direction tells us what the OTHER lanes drew from the same
+//! shared random pair.
+static bool SchlickInvertSpecular(
+	const RayIntersectionGeometric& ri,
+	const Vector3& woNorm,
+	const Scalar r,
+	const Scalar p,
+	Point2& outRandom
+	)
+{
+	if( r < NEARZERO ) {
+		return false;
+	}
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+
+	// Project into the frame the sampler built h in (ri.onb -- see
+	// SchlickSampleHalfVector's note).
+	const Scalar hz = Vector3Ops::Dot( h, ri.onb.w() );
+	if( hz <= 0 ) {
+		return false;
+	}
+	const Scalar hx = Vector3Ops::Dot( h, ri.onb.u() );
+	const Scalar hy = Vector3Ops::Dot( h, ri.onb.v() );
+
+	// cos^2(theta) = xi/(r + xi(1-r))  =>  xi = c2*r/(1 - c2 + c2*r)
+	const Scalar c2 = r_min( Scalar(1), hz*hz );
+	const Scalar den = 1.0 - c2 + c2*r;
+	if( den < NEARZERO ) {
+		return false;
+	}
+	const Scalar xi = r_max( Scalar(0), r_min( Scalar(1), c2*r/den ) );
+
+	Scalar phi = atan2( hy, hx );
+	if( phi < 0 ) {
+		phi += TWO_PI;
+	}
+	Scalar b = 0;
+	if( !SchlickInvertPhi( phi, p, b ) ) {
+		return false;
+	}
+
+	outRandom = Point2( xi, b );
+	return true;
+}
+
+//! Per-lane quadrature rows.  The (xi,b) grid is a PRODUCT grid, so each
+//! lane's kSpecQuadN half-angle values and kSpecQuadN azimuth values are
+//! evaluated ONCE per Pdf() call rather than kSpecQuadN^2 times -- that is
+//! what keeps every transcendental out of the inner loop, which then costs
+//! ~40 flops and no library calls at all.
+struct SchlickQuadRows
+{
+	Scalar cosT[3][kSpecQuadN];
+	Scalar sinT[3][kSpecQuadN];
+	Scalar cosP[3][kSpecQuadN];
+	Scalar sinP[3][kSpecQuadN];
+};
+
+static void SchlickBuildQuadRows( const SchlickLobeSet& lobes, SchlickQuadRows& rows )
+{
+	const Scalar inv = 1.0 / Scalar(kSpecQuadN);
+
+	// Plain stratified midpoints in the sampler's OWN (xi,b) unit square.
+	// Warping the xi axis (uniform in cos(theta_h), or in theta_h) was tried
+	// and measured WORSE: it buys resolution at the tangent end by starving
+	// the near-mirror end, which carries most of the probability mass at low
+	// roughness -- see docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md section 4a.
+	//
+	// The three per-channel lanes share ONE random pair, so they must share
+	// the nodes too; only their own (r, p) differ.
+	for( int j = 0; j < lobes.count; j++ ) {
+		const Scalar rj = lobes.r[j];
+		for( int a = 0; a < kSpecQuadN; a++ ) {
+			const Scalar xi = (Scalar(a) + 0.5) * inv;
+			const Scalar den = rj - xi*rj + xi;
+			// cos(acos(x)) == x: GenerateSpecularRay's own theta warp with
+			// the round trip through acos removed.
+			Scalar c = ( den > NEARZERO ) ? sqrt( xi/den ) : Scalar(1);
+			c = r_min( Scalar(1), c );
+			rows.cosT[j][a] = c;
+			rows.sinT[j][a] = sqrt( r_max( Scalar(0), 1.0 - c*c ) );
+		}
+		for( int b = 0; b < kSpecQuadN; b++ ) {
+			const Scalar phi = SchlickSamplePhi( (Scalar(b) + 0.5) * inv, lobes.p[j] );
+			rows.cosP[j][b] = cos(phi);
+			rows.sinP[j][b] = sin(phi);
+		}
+	}
+}
+
+//! C_D -- the constant coefficient the diffuse sampling density carries in
+//! the aggregate.  kSpecQuadN^2 deterministic stratified replays of the
+//! specular sampler; see the block comment above for why no closed form
+//! exists.
+static Scalar SchlickDiffuseSelectCoefficient(
+	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN,
+	const Scalar wD,
+	const SchlickLobeSet& lobes
+	)
+{
+	SchlickQuadRows rows;
+	SchlickBuildQuadRows( lobes, rows );
+
+	const Vector3& eu = ri.onb.u();
+	const Vector3& ev = ri.onb.v();
+	const Vector3& ew = ri.onb.w();
+	const Vector3& d  = ri.ray.Dir();
+	const Vector3& nW = myonb.w();
+
+	Scalar accum = 0;
+
+	for( int a = 0; a < kSpecQuadN; a++ ) {
+		for( int bIdx = 0; bIdx < kSpecQuadN; bIdx++ ) {
+			Scalar wS = 0;
+			int nAcceptedSpec = 0;
+
+			for( int j = 0; j < lobes.count; j++ ) {
+				const Scalar st = rows.sinT[j][a];
+				const Scalar ax = rows.cosP[j][bIdx] * st;
+				const Scalar ay = rows.sinP[j][bIdx] * st;
+				const Scalar az = rows.cosT[j][a];
+
+				const Scalar hx = eu.x*ax + ev.x*ay + ew.x*az;
+				const Scalar hy = eu.y*ax + ev.y*ay + ew.y*az;
+				const Scalar hz = eu.z*ax + ev.z*ay + ew.z*az;
+
+				const Scalar hdotk = -( hx*d.x + hy*d.y + hz*d.z );
+				if( hdotk <= 0 ) {
+					// GenerateSpecularRay leaves the ray untouched and
+					// Scatter's accept-check drops it.
+					continue;
+				}
+
+				// Only the SIGNS of the two accept dots matter, and
+				// normalizing a vector cannot change a sign -- so the
+				// replay skips Scatter's Normalize entirely.
+				const Scalar k = 2.0 * hdotk;
+				const Scalar dx = d.x + k*hx;
+				const Scalar dy = d.y + k*hy;
+				const Scalar dz = d.z + k*hz;
+				if( dx*nW.x + dy*nW.y + dz*nW.z <= 0 ) {
+					continue;
+				}
+				if( dx*geomN.x + dy*geomN.y + dz*geomN.z <= 0 ) {
+					continue;
+				}
+
+				// (1-hdotk)^5, spelled as multiplies.
+				const Scalar t = 1.0 - hdotk;
+				const Scalar t2 = t*t;
+				const Scalar fresnel = t2*t2*t;
+
+				wS += lobes.rho[j] + (1.0 - lobes.rho[j]) * fresnel;
+				nAcceptedSpec++;
+			}
+
+			if( nAcceptedSpec == 0 ) {
+				// RandomlySelect's freeidx==1 short-circuit: the lone
+				// diffuse ray is returned whatever its weight.
+				accum += 1.0;
+				continue;
+			}
+
+			const Scalar total = wD + wS;
+			if( total > NEARZERO ) {
+				accum += wD / total;
+			}
+			// else RandomlySelect returns nothing at all -- contributes 0.
+		}
+	}
+
+	return accum / Scalar(kSpecQuadN*kSpecQuadN);
+}
+
+//! sum_i q_i(omega) * p_i(omega) -- the specular half of the aggregate.
+//! `aD` is the probability Scatter's diffuse ray survived its own
+//! geometric-horizon gate (1 whenever the shading and geometric normals
+//! agree).
+static Scalar SchlickSpecularDensity(
+	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN,
+	const Vector3& woNorm,
+	const Scalar wD,
+	const Scalar aD,
+	const SchlickLobeSet& lobes
+	)
+{
+	// fresnel at the query direction.  GenerateSpecularRay reflects the
+	// incoming ray d about its sampled half-vector h, so wo = d - 2(d.h)h
+	// and, with wi=-d, wi+wo = 2(h.wi)h: for every direction the sampler
+	// could have emitted (h.wi>0 is its own accept condition),
+	// normalize(wi+wo) recovers exactly that h -- and therefore exactly
+	// the fresnel GenerateSpecularRay computed.  No approximation.
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+	const Scalar hdotk = Vector3Ops::Dot( h, wi );
+	const Scalar fresnelAtWo = ::pow(1-hdotk,5);
+
+	Scalar sum = 0;
+
+	for( int i = 0; i < lobes.count; i++ ) {
+		const Scalar pdf_i = ComputeSchlickSpecularPdf( ri, woNorm, lobes.r[i], lobes.p[i] );
+		if( pdf_i <= 0 ) {
+			continue;
+		}
+
+		const Scalar w_i = lobes.rho[i] + (1.0 - lobes.rho[i]) * fresnelAtWo;
+
+		// What the OTHER lanes drew.  They share lane i's random pair, so
+		// they are a deterministic function of the query direction -- but
+		// only the multi-lane branch has any.
+		Scalar wOther = 0;
+		int nAcceptedSpec = 1;
+		if( lobes.count > 1 ) {
+			Point2 random;
+			if( SchlickInvertSpecular( ri, woNorm, lobes.r[i], lobes.p[i], random ) ) {
+				for( int j = 0; j < lobes.count; j++ ) {
+					if( j == i ) {
+						continue;
+					}
+					Scalar fresnel = 0;
+					if( SchlickReplaySpecular( ri, myonb, geomN, random, lobes.r[j], lobes.p[j], fresnel ) ) {
+						wOther += lobes.rho[j] + (1.0 - lobes.rho[j]) * fresnel;
+						nAcceptedSpec++;
+					}
+				}
+			}
+		}
+
+		const Scalar wS = w_i + wOther;
+
+		Scalar q = 0;
+		// ...with the diffuse ray present (probability aD).
+		const Scalar totalWith = wD + wS;
+		if( totalWith > NEARZERO ) {
+			q += aD * (w_i / totalWith);
+		}
+		// ...and without it (probability 1-aD), where a lone specular ray
+		// wins outright through RandomlySelect's freeidx==1 short-circuit.
+		if( aD < 1.0 ) {
+			if( nAcceptedSpec == 1 ) {
+				q += (1.0 - aD);
+			} else if( wS > NEARZERO ) {
+				q += (1.0 - aD) * (w_i / wS);
+			}
+		}
+
+		sum += q * pdf_i;
+	}
+
+	return sum;
+}
+
+//! Probability Scatter's diffuse ray survives its geometric-horizon gate:
+//! the exact fraction of a cosine-weighted hemisphere about `n` that lies
+//! above the plane of `geomN`.  Malley's disk projection turns the clipped
+//! region into a half-disk plus a half-ellipse of semi-axes (cos phi, 1),
+//! giving (1 + cos phi)/2 -- the same closed form DL-45 uses for
+//! TranslucentSPF's tilted exit.
+static inline Scalar SchlickDiffuseAcceptFraction(
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN
+	)
+{
+	const Scalar c = Vector3Ops::Dot( myonb.w(), geomN );
+	return r_max( Scalar(0), r_min( Scalar(1), 0.5 * (1.0 + c) ) );
 }
 
 void SchlickSPF::Scatter(
@@ -317,7 +771,7 @@ void SchlickSPF::Scatter(
 	if( !pRoughness->HasPerChannelVariation() && !pIsotropy->HasPerChannelVariation() )
 	{
 		Scalar fresnel = 0;
-		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
+		GenerateSpecularRay( s, fresnel, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
 
 		// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
 		if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
@@ -335,7 +789,7 @@ void SchlickSPF::Scatter(
 
 		for( int i=0; i<3; i++ ) {
 			Scalar fresnel = 0;
-			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, rt.v[i], it.v[i] );
+			GenerateSpecularRay( s, fresnel, ri, ptrand, rt.v[i], it.v[i] );
 
 			// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
 			if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
@@ -385,7 +839,7 @@ void SchlickSPF::ScatterNM(
 	}
 
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
-	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
+	GenerateSpecularRay( s, fresnel, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
 
 	// Accept-checks use myonb.w() -- see Scatter()'s comment: it is the
 	// frame lobes are actually sampled around (post-FlipW), not the raw
@@ -436,7 +890,10 @@ Scalar SchlickSPF::Pdf(
 	// Diffuse PDF: cosine-weighted hemisphere
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
-	// Specular PDF: Schlick half-vector sampling (use average roughness/isotropy)
+	// The lanes Scatter() would have emitted.  Branch on the SAME predicate
+	// Scatter() branches on, and use each lane's own (r,p) rather than a
+	// channel average -- a lane's sampling density has to be the density of
+	// what that lane actually draws.
 	ScalarTriple roughness = pRoughness->GetValuesAt(ri);
 	const ScalarTriple isotropy = pIsotropy->GetValuesAt(ri);
 	if( ri.glossyFilterWidth > 0 ) {
@@ -444,74 +901,37 @@ Scalar SchlickSPF::Pdf(
 			roughness.v[ch] = r_min( roughness.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
 		}
 	}
-	const Scalar rAvg = (roughness.v[0] + roughness.v[1] + roughness.v[2]) / 3.0;
-	const Scalar pAvg = (isotropy.v[0] + isotropy.v[1] + isotropy.v[2]) / 3.0;
-	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, rAvg, pAvg );
 
-	// Weight by relative importance of diffuse vs specular -- DL-67 Slice 0.
-	//
-	// PTRandomlySelect (PathTracingIntegrator.cpp) does not pick a lobe with
-	// a fixed, direction-independent probability: Scatter() draws BOTH the
-	// diffuse ray (kray = rd, independent of the drawn direction) and the
-	// specular ray (kray = rho + (1-rho)*fresnel(half-vector(wi,wo_S)), a
-	// function of the SPECULAR lobe's OWN drawn direction) every call, and
-	// ScatteredRayContainer::RandomlySelect then picks one of the two with
-	// probability proportional to MaxValue(kray) (PTScatterSelectWeight).
-	//
-	// Because the diffuse kray never varies with which direction the
-	// diffuse lobe happened to draw, the diffuse lobe's TRUE per-draw
-	// selection probability is a genuine expectation over the (statistically
-	// independent) specular draw -- E_{wo_S~p_S}[dW/(dW+sW(wo_S))] -- which
-	// cannot be evaluated exactly at an arbitrary query wo without
-	// integrating over the whole specular sampling distribution.  The
-	// specular lobe's true per-draw selection probability, by contrast, IS
-	// an exact, deterministic function of its own drawn direction (the
-	// fresnel term depends only on the half-vector between wi and that one
-	// direction) -- and Pdf() already has that direction (wo) in hand, so
-	// no averaging is needed there.  This is why the fix below uses TWO
-	// different specular weights: an exact one (evaluated at wo) that feeds
-	// the specular PDF's own coefficient, and an averaged one (the same
-	// closed-form hemispherical Schlick average DL-64 already uses for
-	// this role in GGXSPF.cpp/GGXBRDF.cpp) that feeds only the diffuse
-	// coefficient.  A single shared "replace MaxValue(rs) with
-	// MaxValue(rho+(1-rho)*SchlickFresnelAvg(rs)) everywhere" would be
-	// wrong twice over: it would drop the free exact evaluation available
-	// for the specular term, and it would double-count rho, since
-	// SchlickFresnelAvg(rho) already equals the AVERAGE of the full
-	// "rho+(1-rho)*fresnel" reflectance, not merely the averaged fresnel
-	// factor alone.  Full derivation: docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md.
 	const RISEPel rd = pDiffuse->GetColor(ri);
-	const RISEPel rs = pSpecular->GetColor(ri);
-	const Scalar dWeight = ColorMath::MaxValue(rd);
+	const RISEPel rho = pSpecular->GetColor(ri);
+	const Scalar wD = ColorMath::MaxValue(rd);
 
-	// Exact specular selection weight AT wo -- reproduces exactly what
-	// PTScatterSelectWeight (MaxValue(kray)) would read had the specular
-	// lobe's own sampler happened to draw this wo.  h/hdotk mirror
-	// ComputeSchlickSpecularPdf's (and, for any direction the sampler can
-	// actually accept, GenerateSpecularRay's) half-vector construction.
-	const Vector3 wiFresnel = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3 hFresnel = Vector3Ops::Normalize( wiFresnel + woNorm );
-	const Scalar hdotkFresnel = Vector3Ops::Dot( hFresnel, wiFresnel );
-	const Scalar fresnelAtWo = ::pow(1-hdotkFresnel,5);
-	const RISEPel sKrayAtWo = rs + (RISEPel(1.0,1.0,1.0)-rs) * fresnelAtWo;
-	const Scalar sWeightExact = ColorMath::MaxValue(sKrayAtWo);
-
-	// Average specular selection weight -- E_{wo_S~p_S}[MaxValue(kray_S(wo_S))],
-	// approximated by the closed-form Schlick hemispherical average.  Used
-	// ONLY for the diffuse lobe's (direction-independent) coefficient.
-	const Scalar sWeightAvg = ColorMath::MaxValue( SchlickFresnelAvg<RISEPel>(rs) );
-
-	const Scalar dDenom = dWeight + sWeightAvg;
-	const Scalar cD = ( dDenom > NEARZERO ) ? dWeight / dDenom : 0;
-
-	const Scalar sDenom = dWeight + sWeightExact;
-	const Scalar qS = ( sDenom > NEARZERO ) ? sWeightExact / sDenom : 0;
-
-	if( cD < NEARZERO && qS < NEARZERO ) {
-		return 0;
+	SchlickLobeSet lobes;
+	if( !pRoughness->HasPerChannelVariation() && !pIsotropy->HasPerChannelVariation() ) {
+		lobes.count  = 1;
+		lobes.r[0]   = roughness.v[0];
+		lobes.p[0]   = isotropy.v[0];
+		// MaxValue(rho + (1-rho)*F) == MaxValue(rho) + (1-MaxValue(rho))*F
+		// exactly, for any F in [0,1]: the per-channel difference
+		// (rho_i - rho_j)(1 - F) keeps its sign, so the channel that
+		// maximises rho maximises the boosted value too.
+		lobes.rho[0] = ColorMath::MaxValue(rho);
+	} else {
+		lobes.count = 3;
+		for( int i = 0; i < 3; i++ ) {
+			lobes.r[i]   = roughness.v[i];
+			lobes.p[i]   = isotropy.v[i];
+			// The per-channel lane's kray is zero outside channel i, so
+			// its MaxValue is that one channel's boosted reflectance.
+			lobes.rho[i] = rho[i];
+		}
 	}
 
-	return cD * diffusePdf + qS * specPdf;
+	const Scalar aD = SchlickDiffuseAcceptFraction( myonb, geomN );
+	const Scalar cD = SchlickDiffuseSelectCoefficient( ri, myonb, geomN, wD, lobes );
+
+	return cD * diffusePdf
+	     + SchlickSpecularDensity( ri, myonb, geomN, woNorm, wD, aD, lobes );
 }
 
 Scalar SchlickSPF::PdfNM(
@@ -532,7 +952,7 @@ Scalar SchlickSPF::PdfNM(
 		return 0;
 	}
 
-	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// Geometric-horizon gate (MIS consistency with ScatterNM's sampler-side
 	// gate): a wo the sampler can no longer emit contributes zero density.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : myonb.w();
@@ -544,37 +964,26 @@ Scalar SchlickSPF::PdfNM(
 	// Diffuse PDF
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
-	// Specular PDF
+	// Spectral twin of Pdf() above; see its comments and the block comment
+	// on SchlickDiffuseSelectCoefficient for the derivation.  ScatterNM has
+	// no per-channel branch, so there is always exactly one specular lane.
 	Scalar r = pRoughness->GetValueAtNM(ri,nm);
 	const Scalar p = pIsotropy->GetValueAtNM(ri,nm);
 	if( ri.glossyFilterWidth > 0 ) {
 		r = r_min( r + ri.glossyFilterWidth, Scalar(1.0) );
 	}
-	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, r, p );
 
-	// Weight -- DL-67 Slice 0.  Spectral twin of Pdf()'s fix above; see
-	// that function's comment for the full derivation.
-	const Scalar rd = GuardedGetColorNM( *pDiffuse, ri, nm );
-	const Scalar rs = GuardedGetColorNM( *pSpecular, ri, nm );
-	const Scalar dWeight = rd;
+	const Scalar wD = GuardedGetColorNM( *pDiffuse, ri, nm );
 
-	const Vector3 wiFresnel = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3 hFresnel = Vector3Ops::Normalize( wiFresnel + woNorm );
-	const Scalar hdotkFresnel = Vector3Ops::Dot( hFresnel, wiFresnel );
-	const Scalar fresnelAtWo = ::pow(1-hdotkFresnel,5);
-	const Scalar sWeightExact = rs + (1.0-rs) * fresnelAtWo;
+	SchlickLobeSet lobes;
+	lobes.count  = 1;
+	lobes.r[0]   = r;
+	lobes.p[0]   = p;
+	lobes.rho[0] = GuardedGetColorNM( *pSpecular, ri, nm );
 
-	const Scalar sWeightAvg = SchlickFresnelAvg<Scalar>(rs);
+	const Scalar aD = SchlickDiffuseAcceptFraction( myonb, geomN );
+	const Scalar cD = SchlickDiffuseSelectCoefficient( ri, myonb, geomN, wD, lobes );
 
-	const Scalar dDenom = dWeight + sWeightAvg;
-	const Scalar cD = ( dDenom > NEARZERO ) ? dWeight / dDenom : 0;
-
-	const Scalar sDenom = dWeight + sWeightExact;
-	const Scalar qS = ( sDenom > NEARZERO ) ? sWeightExact / sDenom : 0;
-
-	if( cD < NEARZERO && qS < NEARZERO ) {
-		return 0;
-	}
-
-	return cD * diffusePdf + qS * specPdf;
+	return cD * diffusePdf
+	     + SchlickSpecularDensity( ri, myonb, geomN, woNorm, wD, aD, lobes );
 }
