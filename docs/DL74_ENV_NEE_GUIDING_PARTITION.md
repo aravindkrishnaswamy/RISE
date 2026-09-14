@@ -388,6 +388,24 @@ if it were stable and it was not**: the suite fails ~1 % of runs on row
 [R], independently of this slice.  §9.6 has the measurement and the
 fixture fix.
 
+**Round 4**, after `make -C build/make/rise clean && make -C build/make/rise
+-j8 all` (373 files, **0 warnings**), on `7c6d8f10`:
+
+`PTGuidingMISPartitionTest` 63/0 · `VolumeEnvFurnaceTest` 29/0 ·
+`OptimalMISTrainingSitesTest` 23/0 · `OptimalMISAccumulatorTest` 34/0 ·
+`RayCasterEnvEscapeMISTest` 91/0 · `MISWeightsTest` 59/0 ·
+`DirectionalFogTest` 11/0 · `RayCasterVolumeAbsorptionTest` 9/0 ·
+`VolumeAbsorptionAttenuationTest` 89/0 **three times** ·
+`EnvLightBalanceTest` 116/0 · `BDPTStrategyBalanceTest` 66/0 ·
+`VCMStrategyBalanceTest` 55/0 · `TranslucentIORStackTest` ALL TESTS
+PASSED · `TranslucentSpectralParityTest` 1918 checks / 0 failures ·
+`SSSRadianceScalingTest` 574017/0 · `RandomWalkSSSTest` ALL PASSED ·
+`PTGuidedSelectProbTest` ALL TESTS PASSED · `SobolDimensionBudgetTest`
+ALL PASSED · `GGXWhiteFurnaceTest` ALL TESTS PASSED ·
+`LayeredWhiteFurnaceTest` 0 of 57 configurations failed ·
+`RefractiveRadianceScalingTest` 38/0 · `HairRenderTest` 26/0 ·
+`FabricRenderTest` 57/0 · `AgentLiveCommitTest` 884/0.
+
 ## 8. Round 3 (2026-09-14, review round 3 of the same slice)
 
 Round 2 split one field into two.  Round 3 is the work that split implies:
