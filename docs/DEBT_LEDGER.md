@@ -57,12 +57,14 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-59~~ | ~~DL58_MATCHED_INDEX_GRAZING.md: remaining unequal-index derivative convention~~ | ~~SMS normal derivative uses the wrong unequal-index ratio/sign convention~~ | CLOSED 2026-09-12 | `a0c4a808`: ManifoldNormalDerivativeTest, `Checks: 141 Failures: 0` (unfixed: `Checks: 141 Failures: 12`). Entering/exiting tangent finite differences and curved analytical/numerical angle-difference Jacobians agree with the unchanged regression. Matched/reflection/TIR controls pass. See [closure](DL59_SMS_NORMAL_DERIVATIVE.md). | S | physics-bias | latent (test-only analytical Jacobian) |
 | ~~DL-62~~ | ~~DL37_GGX_DIFFUSE_TRANSMISSION.md: independent glossy-filter audit~~ | ~~GGX sampling and density use increased roughness under glossy filtering while BRDF evaluation uses the unfiltered roughness~~ | CLOSED 2026-09-13 | `dfdd5ee1`: `GGXSampleEvaluationConsistencyTest: 29 checks, 0 failures` (red on `a1db468d`: 23 failures, e.g. "asymmetric saturation W=0.7 maxRelErr=1.910e+01"). `GGXBRDF::value`/`valueNM` now widen alphaX/alphaY by `ri.glossyFilterWidth` identically to `GGXSPF`'s four sample/density paths. Zero-filter control and a same-mechanism `GGXSPF::Pdf` control both matched their reference exactly before and after (relErr=0), isolating the bug to `GGXBRDF` specifically. See [DL-62/DL-64 closure](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md). | S | physics-bias | user-visible (filtered GGX continuation versus direct evaluation) |
 | ~~DL-64~~ | ~~DL37_GGX_DIFFUSE_TRANSMISSION.md: zero-F0 support audit~~ | ~~GGX Schlick sampling assigns zero specular and multiscatter probability at F0=0 although both evaluated lobes can be nonzero~~ | CLOSED 2026-09-13 | `dfdd5ee1`: same `GGXSampleEvaluationConsistencyTest` run. `GGXSPF::Scatter`/`ScatterNM`/`Pdf`/`PdfNM` now derive the specular/MS selection weight, in `eFresnelSchlickF0` mode only, from `GGXInterfaceFresnel::Mean()`/`MeanNM()` (conductor/thin-film keep the tint-based weight; `a495a357`) (nonzero at F0=0: `SchlickFresnelAvg(0)=1/21`) instead of raw F0; a deterministic Pdf-at-peak reference (immune to the separate ~2.5e-5 JH-black-uplift epsilon a naive ">cosine" threshold would have been fooled by) went from relErr 0.87-0.99 to exactly 0. Per-direction Fresnel evaluation (the actual sampled throughput) is untouched. See [DL-62/DL-64 closure](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md). | S | physics-bias | user-visible (zero-F0 GGX continuation loses grazing reflection) |
+| DL-67 | Found during DL-42/DL-43 (debt-guiding slice, 2026-09-13; filed in this slice's own ledger as DL-65, RENUMBERED DL-67 at merge time -- see `## Counts` -- to avoid colliding with rows concurrently filed by sibling debt-cleanup slices: DL-65 is the ggx slice's row, DL-66 the sssenv slice's, DL-68 the translucent slice's) | PT's and BDPT's guided one-sample and RIS proposal/throughput densities are inconsistent across lobe-selection branches at a multi-lobe SPF: neither RIS candidate 0 nor the one-sample/RIS "aggregate BSDF" branches use the TRUE generating density of the direction they price | OPEN-confirmed (static + closed-form counterexample; rendered red-proof pending) | Root cause: at a multi-lobe SPF, candidate 0's (and any kray-based branch's) TRUE generating density for a direction is the mixture `sum_I q_I * p_I` over every lobe `Scatter()` could have emitted, where `q_I = PTScatterSelectWeight(lobe_I) / sum_j PTScatterSelectWeight(lobe_j)` (`PathTracingIntegrator.cpp:1337`, `MaxValue(kray)`-weighted) -- NOT the selected lobe's own `pS->pdf`, and NOT the material's aggregate `ISPF::Pdf()` either, because `ISPF::Pdf()` internally re-weights lobes by a DIFFERENT ratio than `PTRandomlySelect` used to pick one (`SchlickSPF::Pdf`, `SchlickSPF.cpp:437-447`, weights diffuse/specular by `MaxValue(rd)` vs `MaxValue(rs)` -- the raw painter albedos -- while `PTScatterSelectWeight`/`PTRandomlySelect` weight the SAME two lobes by `MaxValue(diffuse kray)` vs `MaxValue(rho+(1-rho)*fresnel)`, a Fresnel-weighted quantity that differs from `rs` at every non-normal incidence). So: (1) candidate 0 (`c.bsdfPdf = pS->pdf`, `PathTracingIntegrator.cpp:3137`; `BDPTIntegrator.cpp:2537` eye / `:6276` light) uses the wrong (single-lobe) density, and candidate 1's aggregate `PTEvalPdfAtSurface`/`PathValueOps::EvalPdfAtVertex` uses a DIFFERENT wrong (aggregate-but-mismatched-weights) density -- both miss the true `sum_I q_I p_I`, so RIS's `sum_i P_i/D_i = M` identity is violated: a closed-form 2-candidate example with `p1=10, p2=0.1` (per-lobe pdfs), guide pdf `p_g=1`, true aggregate `p_agg=5.05` gives per-branch coefficients 1.074 (candidate-0-style) vs 0.256 (aggregate-style) against the correct value, i.e. roughly a 33% low estimate using the true generating density as ground truth. (2) The same inconsistency exists between PT's THREE one-sample/RIS overwrite branches in `PathTracingIntegrator.cpp`'s trained-guiding block: branch (a), this slice's DL-42 fix (`PTScatterKray(*pS) * pS->pdf/(selectProb*combinedPdf)`, per-lobe kray/pdf); branch (c), the one-sample guided-direction-accepted branch (`PTMulDiv(fGuided,cosTheta,combinedPdf)`, aggregate f over aggregate-but-mismatched pdf); and the RIS-accepted branch (b). (a) and (c) do not partition to a consistent total unless every lobe shares one pdf (single-lobe SPF) -- adding `/q_I` to (c) does not fix this; the correct construction uses one `f` and one denominator (the true mixture density `sum_I q_I p_I` over the lobes `Scatter()` actually accepted) in ALL THREE branches, in both PT and BDPT eye/light. Scope: any multi-emit SPF (SchlickSPF, PolishedSPF/PolishedBRDF, TranslucentSPF, CompositeSPF, BioSpecSkinSPF, GenericHumanTissueSPF); `GGXSPF`/`CoatedSPF` are immune (internal single-lobe selection: exactly one `ScatteredRay` per `Scatter()` call, `pdf==mixPdf`, outer `selectProb` trivially 1). A separate, additive asymmetry in the same candidate machinery: candidate 1 is discarded (`c.valid=false`, `risWeight=0`) whenever the material's aggregate pdf is 0 at the guided direction (`PathTracingIntegrator.cpp:3148` candidate 0 / `:3177` candidate 1 / `:3191` fallback; `BDPTIntegrator.cpp:2547`/`:2584`/`:2598` eye, `:6286`/`:6314`/`:6328` light), silently falling back to candidate 0 alone and losing whatever variance-reduction the guide would have offered there -- energy-losing in the sense of discarding a legitimate RIS candidate, tracked as part of the same rework rather than a fourth bug. Recipe: red-prove on `schlick_material` (diffuse+specular, both eligible, overlapping support) with guiding forced to substitute (`guidingAlpha` near 1, a real trained field so `guidedSubstituted>0`, unlike this slice's DL-42 fixture which forced `guidedSubstituted=0`), comparing rendered radiance against unguided PT reference; fix = the one-f/one-denominator construction above in PT (all three branches) and BDPT eye/light RIS. | M-L | physics-bias | user-visible (guided renders of any multi-lobe, multi-emit material) |
+| DL-69 | Found during DL-42/DL-67 derivation (debt-guiding slice, 2026-09-13) | BDPT's ORDINARY (non-guiding, unconditional) eye/light non-delta throughput pairs the material's AGGREGATE (all-lobes-summed) BSDF value with a PER-LOBE selection pdf, over-counting by up to Nx at a multi-lobe SPF whose lobes have overlapping support | OPEN-confirmed (static evidence + closed-form BRDF check; rendered red-proof pending) | `BDPTIntegrator.cpp` eye subpath (`GenerateEyeSubpathImpl`, ~2703-2777) computes `scatterPdf = selectProb * effectivePdf` (`effectivePdf` = the ONE stochastically-selected lobe's own `pScat->pdf`, or its guided/RIS-blended replacement -- still a per-lobe/single-candidate density, ~2703), then for non-delta lobes `f = PathValueOps::EvalBSDFAtVertex(...)` -- the material's AGGREGATE `IBSDF::value()`, summed over every lobe (~2763-2766) -- and sets `localScatteringWeight = f * cos / scatterPdf` (~2774-2775). The light subpath (`GenerateLightSubpathImpl`, ~6459-6476) is byte-for-byte the same pattern (`scatterPdf = selectProb*effectivePdf` ~6460, aggregate `f` ~6449-6453, `f*cos/scatterPdf` ~6466-6472). For N accepted non-delta lobes with overlapping support this is `E[throughput] = N * integral(f_agg * cos)` -- an N-times over-count, not the correct per-lobe `kray_I/selectProb` estimator used elsewhere in the same codebase (e.g. this file's delta branch two lines above each site, `KrayValue<Tag>(*pScat) * (.../selectProb)`, and PT's own ordinary initialization, `PTScatterKray<Tag>(*pS) * (1/selectProb)`). Confirmed on `SchlickBRDF::value()` (`SchlickBRDF.cpp:126`: `return diffuse*INV_PI + (rho+(1-rho)*fresnel)*factor;` -- diffuse and specular summed over the SAME upper hemisphere) paired with `SchlickSPF::Scatter` emitting both a diffuse ray (`SchlickSPF.cpp:288`) and a specular ray (`:313`) as separate non-exclusive `ScatteredRay`s into the same container -- or, on the anisotropic/per-channel path, one diffuse plus THREE per-channel specular rays (`:321-331`), i.e. up to a 4x over-count from that one vertex alone. Invisible on disjoint-support SPFs (TranslucentSPF's hemisphere-piecewise lobes; PolishedSPF's delta coat + non-delta substrate, where only one of the pair is ever non-delta at a time) -- and invisible on `lambertian_material` (only one lobe, so N=1 trivially) or `ggx_material` (immune for a DIFFERENT, confirmed reason than "single-lobe selection": `GGXSPF::Scatter`/`ScatterNM` set EVERY emitted lobe's `.pdf` field to the SAME `mixPdf` -- the 3-lobe aggregate mixture density, `GGXSPF.cpp:221/320/410` etc. -- not a per-lobe conditional pdf, so `effectivePdf` at this BDPT site already equals the aggregate density `EvalBSDFAtVertex`'s `value()` integrates against, and `f_agg/effectivePdf` is the correct aggregate/aggregate pairing by construction; `SchlickSPF`'s per-lobe `.pdf` fields are each lobe's OWN conditional density (cosine/pi for diffuse, the half-vector pdf for specular), which is what creates the mismatch). `coated_material`'s internal single-lobe selection (exactly one `ScatteredRay` per `Scatter()` call) is a separate, also-immunizing reason but not the GGX one. `BDPTStrategyBalanceTest`/`VCMStrategyBalanceTest` use only `lambertian_material` scenes, so this pattern has never been exercised by the existing balance gates. Recipe: add a `schlick_material` (diffuse+specular, both non-delta, overlapping support) topology to `BDPTStrategyBalanceTest` (and/or a standalone red-proof harness) vs a `pathtracing_pel_rasterizer` PT reference on the same scene; red-prove the over-count, then fix by making the non-delta throughput construction consistent -- either per-lobe `f_I` paired with the per-lobe pdf (matching PT's `kray` convention), or the aggregate `f_agg` paired with the TRUE aggregate mixture pdf (see DL-67's `sum_I q_I p_I`) -- applied identically at both eye and light generators. Also corrects the DL-42 ledger row's earlier citation of this exact BDPT code ("does not share this pattern... always uses the aggregate `PathValueOps::EvalBSDFAtVertex`... for its non-delta throughput") as evidence BDPT is unaffected by anything in this area -- that statement is accurate about DL-42's specific pattern (a dropped `selectProb` division under guiding) but was read too broadly; it is not evidence against DL-69, which is this file's ordinary (non-guiding) throughput construction. | M | physics-bias | user-visible (BDPT/VCM/MLT renders of any multi-lobe material with overlapping-hemisphere lobes, e.g. `schlick_material`) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
 | ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | ~~DL-34~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~Published two-sphere union overlap exports only the deeper operand depth~~ | CLOSED 2026-09-12 (recorded regression; conservative contract retained) | `cffa254f`: unchanged ProximitySignalTest red `Passed: 465   Failed: 6`, fixed `Passed: 471   Failed: 0`; supplemental final `Passed: 491   Failed: 0`. Certified inscribed-ball union recovers `sqrt(3.56)` through signed field, manager and interior signal. The original proposed max-depth edit was already the existing signed-min magnitude; arbitrary unions remain non-exact. See [closure and limits](DL34_UNION_INTERIOR_DEPTH.md). | M | physics-bias | user-visible (published union seam regression) |
 | ~~DL-37~~ | ~~IMPROVEMENTS.md: GGX low-F0 grazing gain~~ | ~~Angle-flat diffuse split creates grazing gain~~ | CLOSED 2026-09-12 | `000df0b4`: LayeredWhiteFurnaceTest reports `0 of 57 configurations failed` (red: four failed configs). Reciprocal entry/exit transmission covers RGB/NM Schlick, conductor and film. Independent sweep: 150/46 before, 150/3 after; retained specular-only failures are DL-63. See [scope](DL37_GGX_DIFFUSE_TRANSMISSION.md). | M | physics-bias | user-visible |
-| DL-42 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation | OPEN-confirmed (static evidence; red-proof pending) | `PathTracingIntegrator.cpp` initializes `scatterThroughput = kray/selectProb`, then the trained-guiding BSDF branch replaces it with `kray*pdf/combinedPdf` without selectProb. Shared RGB/NM loop; ordinary mixed-lobe entry reflection is reachable. | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
-| DL-43 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | BDPT eye guiding swaps incoming/outgoing directions when evaluating forward candidate PDFs | OPEN-confirmed (static evidence; red-proof pending) | `BDPTIntegrator.cpp` eye RIS and one-sample guide candidates pass `(gDir,-currentRay.Dir())` to `PathValueOps::EvalPdfAtVertex`; its contract is Pdf(outgoing given incoming). Light twins pass `(-currentRay.Dir(),gDir)`. Both RGB/NM instantiate the eye code. | M | physics-bias | user-visible (BDPT eye path guiding) |
+| ~~DL-42~~ | ~~DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals~~ CLOSED 2026-09-13 — `PathTracingIntegrator.cpp` fix, `PTGuidedSelectProbTest: ALL TESTS PASSED` | ~~PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation~~ The kept-BSDF-direction one-sample branch now divides by `selectProb` too: `scatterThroughput = kray * pS->pdf / (selectProb * combinedPdf)` | CLOSED-by-test | Red-proved with a real multi-lobe `TranslucentMaterial` exit (diffuse-exit + translucent-backscatter lobes, unequal weights via `scattering`), a real trained `PathGuidingField` (`guidingAlpha=1e-6`, engaging the trained-guiding code path while making the guided-direction coin flip land on "keep BSDF direction" on ~4000/4000 trials), and a constant-radiance "sky" continuation with no LightManager (isolating the measured `IntegrateFromHit`/`IntegrateFromHitNM` return to exactly `scatterThroughput * skyRadiance`, no NEE, no area-light MIS reweight). Pre-fix: every diffuse-exit-selected trial (2586/2586 and 3588/3588 across two scattering splits, RGB and NM) matched the buggy `kray*pdf/combinedPdf` closed form and NONE matched the correct one. Post-fix: the reverse, exactly. `GGXBRDF::value()`/`GGXSPF::Pdf()` (`return diffuse+specular;` / "3-lobe mixture PDF") confirmed the OTHER two `PTMulDiv` overwrite sites in the same block (RIS-accepted candidate, one-sample guided-direction-accepted) re-evaluate the material's AGGREGATE BSDF/PDF fresh at the priced direction. **Correction (2026-09-13, same slice, before merge): this row originally continued "...and are therefore already complete, self-contained estimators that must NOT also divide by selectProb -- applying the fix there would double-count." That claim is FALSE and is withdrawn.** `GuidingSupportsSurfaceSampling` admits only non-delta eRayDiffuse/eRayReflection lobes, so at a multi-lobe surface with an ineligible lobe (e.g. this row's own `TranslucentMaterial` EXIT fixture: diffuse-exit eligible, translucent-backscatter not) the aggregate-BSDF branches price ALL lobes while guiding only ever proposed/weighted the eligible subset, and the ineligible lobe is priced AGAIN through the ordinary kray/selectProb path -- and even restricted to an all-eligible material, per-lobe kray/pdf (this fix) and aggregate BSDF/pdf (the other two branches) are two different, mutually-inconsistent RIS/one-sample proposal measures unless the SPF has only one lobe. This is a real, still-open, DIFFERENT bug from the one this row fixes; it is filed as DL-67 (renumbered from this slice's original DL-65 at merge time to avoid colliding with concurrently-filed rows from sibling debt-cleanup slices), not fixed here. Confirmed `ggx_material`/`coated_material` cannot exercise EITHER bug (this row's or DL-67's) at all (`GGXSPF`/`CoatedSPF` each do internal single-lobe selection, emitting exactly one `ScatteredRay` per call, so the outer `selectProb` is trivially 1 for either). `BDPTIntegrator.cpp`'s analogous "kept BSDF direction" one-sample fallback (eye ~2662, light ~6363-ish) does not share DL-42's pattern (a dropped `selectProb` division): it unconditionally folds `selectProb` into `scatterPdf = selectProb*effectivePdf`. It DOES, however, always use the aggregate `PathValueOps::EvalBSDFAtVertex` paired with a PER-LOBE `effectivePdf`, never `pScat->kray` directly, for its non-delta throughput -- a THIRD, independent measure-mismatch pattern (aggregate f over per-lobe pdf, an over-count on overlapping-support multi-lobe materials rather than an under-count), filed as DL-69, not fixed here. **HWSS correction: PT's HWSS body (`IntegrateFromHitHWSS`) contains no guiding block at all (verified: zero occurrences of `pGuidingField`/`GuidingCombinedPdf`/`GuidingRIS` in that function) -- it is unaffected by this fix, not "covered via the shared RGB/NM template" as an earlier version of this row's detailed section claimed; HWSS reaches the fixed line only indirectly, via its per-wavelength fallback calls into `IntegrateFromHitNM` for BSDF materials.** | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
+| ~~DL-43~~ | ~~DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals~~ CLOSED 2026-09-13 — `a69c9ce6`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~BDPT eye guiding swaps incoming/outgoing directions when evaluating forward candidate PDFs~~ Eye-subpath RIS candidate-1 and one-sample guiding now pass `(-currentRay.Dir(), candidateDirection)` to `PathValueOps::EvalPdfAtVertex`, matching the light-subpath twins and the wrapper's Pdf(outgoing\|incoming) contract | CLOSED-by-test | Red on unfixed HEAD (`42f3dc97`): eye RIS `substituted_out=0` (rejected every guide candidate) and eye one-sample `bad_pdf_value=41` (all 41 outward substitutions evaluated the density of the wrong direction); light-subpath rows already passed. Fixed both call sites (RIS candidate 1, one-sample), each compiled for PelTag/NMTag via the shared `GenerateEyeSubpathImpl` template. Green: eye RIS `substituted_out=13`, all `bad_pdf_value=0`. Sibling audit: the ~14 other `EvalPdfAtVertex` call sites in `BDPTIntegrator.cpp` are Veach MIS reverse-density/connection-strategy conversions (deliberately query the opposite direction) and already use the correct order; `PathTracingIntegrator.cpp` has no `EvalPdfAtVertex` calls (PT's guiding uses the single-argument `PTEvalPdfAtSurface`/`EvalPdfAtSurface` against an already-real `RayIntersectionGeometric`, architecturally immune to this swap). See `PathValueOpsTest.cpp` Test G for the closed-form derivation. | M | physics-bias | user-visible (BDPT eye path guiding) |
 | DL-39 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: independent residuals | Dedicated translucent photon deposition counts absorbed power as deposited power | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentPelPhotonTracer::TracePhoton` sums only propagated non-diffuse `kray`, then stores `power*(1-accum_scattered)`; at an inside exit with scattering zero it stores all power regardless of extinction. `TranslucentPelPhotonMap::RadianceEstimate` does not restore the missing Beer attenuation. | M | physics-bias | user-visible (translucent photon maps) |
 | DL-44 | DL36_EMITTER_NEIGHBOUR_PIN.md: review residual | Sampled emitter UV is omitted from LightSample and downstream rebuilt emission records | OPEN-confirmed (static evidence; red-proof pending) | `LightSampler.cpp::SampleLight` sets local RGB `rig.ptCoord = coord`, but `LightSample` carries no UV. BDPT NM/HWSS emission rebuilds and LIGHT root, and VCM sampled-emitter evaluation retain default (0,0); `CheckerPainter` consumes ptCoord. MLT shares BDPT generation. | M | physics-bias | user-visible (UV-textured luminaries under bidirectional/spectral transport) |
 | DL-45 | DL03_GUIDED_IOR_CONTINUATION.md: tilted-frame residual | TranslucentSPF samples geometrically inward diffuse exits under tilted shading normals and still pops the IOR stack | OPEN-confirmed (observed defect pin; correctness red-proof pending) | `TranslucentSPF.cpp` explicitly exempts exit re-emission from its geometric-horizon gate; RGB/NM exits sample around onb.w and unconditionally pop. DL-03 real-SPF fixture recorded 1021/4096 unchanged inward exits per RGB/NM unguided run at 60-degree shading-normal tilt. Exit Pdf also omits the geometric gate. | M | physics-bias | user-visible (translucent materials with perturbed shading normals) |
@@ -187,6 +189,42 @@ reflowed otherwise.
 
 ## Counts
 
+**Authoritative totals on `master` (recount after each merge; per-slice notes
+below are each slice's own snapshot at its branch HEAD and do NOT sum):**
+2026-09-13 after the ggx + guiding merges — **66 main rows: 46 open, 20 closed**
+(16 closed by the 2026-09-12 cleanup, DL-42/DL-43 by the guiding slice,
+DL-62/DL-64 by the ggx slice). Ids in use: DL-01..DL-69 minus DL-35;
+DL-66 (sssenv) and DL-68 (translucent) are reserved for slices not yet merged.
+
+**2026-09-13 (debt-guiding slice):** DL-43 closed (`a69c9ce6`,
+`TranslucentIORStackTest: ALL TESTS PASSED`) and DL-42 closed
+(`PTGuidedSelectProbTest: ALL TESTS PASSED`) — see the table rows and
+their "Verification recipes" entries above. One row opened while
+verifying both, originally filed in this slice's own ledger as DL-65 —
+**RENUMBERED DL-67 before merge** (this slice's local id collided with
+rows concurrently filed by sibling debt-cleanup slices working the same
+merge base: DL-65 is the ggx slice's row, DL-66 the sssenv slice's, DL-68
+the translucent slice's; every in-file cross-reference to the original
+DL-65 has been updated to DL-67). DL-67 (PT/BDPT guided one-sample and RIS
+proposal densities are inconsistent across lobe-selection branches, found
+in both PT and BDPT's RIS candidate-0 slot while re-deriving the correct
+estimator for DL-42/DL-43; not fixed here) supersedes and corrects an
+earlier draft of this note and of the DL-42 row/DL02 doc, which wrongly
+described DL-42's two UNCHANGED `PTMulDiv` sites as "already complete,
+self-contained estimators" merely because they use the material's
+aggregate BSDF/PDF — aggregate re-evaluation does not, by itself, make a
+branch immune to `selectProb`; see the corrected DL-42 row and DL-67 for
+the derivation. A second, independent row was also found and filed this
+pass, **DL-69** (BDPT's ordinary, non-guiding eye/light throughput pairs
+an aggregate BSDF value with a per-lobe selection pdf — a different
+lobe-selection defect than DL-67's guiding-specific one, discovered while
+correcting an over-broad "BDPT does not share this pattern" claim in the
+DL-42 row). Main rows: 63 -> 64 (DL-67, née DL-65, added) -> **65** (DL-69
+added). OPEN-confirmed: 47 -> 45 (DL-42 and DL-43 closed) -> 46 (DL-67
+opened) -> **47** (DL-69 opened). A new "CLOSED-by-later-slice" bucket of
+**2** is added below (distinct from the 2026-09-12 cleanup session's 16,
+since this slice ran independently afterward against `75f78ba5`).
+
 Updated for the 2026-09-12 DL-34 recorded-overlap closure and independent
 DL-60/DL-61 gate residuals, plus the DL-37 diffuse-composition closure and independent DL-62/DL-63/DL-64 residuals. Original sweep counts remain historical.
 
@@ -227,10 +265,20 @@ deliberately absent), and every internal `DL-xx` cross-reference were
 independently re-derived from the table text this pass and found consistent
 — no count below changed.
 
-- Main rows: **63** — **47 open**, **16 closed**.
-- OPEN-confirmed: **47**, including the two reproduced baseline gate residuals
-  DL-60/DL-61. DL-35 remains deliberately absent. Re-sweep 2026-09-12: all
-  47 independently re-verified against `876c9a26`; 0 reclassified.
+- Main rows: ~~63~~ ~~64~~ **65** as of 2026-09-13 (DL-67, née DL-65,
+  added by the debt-guiding slice; DL-69 also added by the same slice) —
+  ~~47 open, 16 closed~~ ~~46 open, 18 closed~~ **47 open, 18 closed**
+  (DL-42 and DL-43 closed, DL-67 and DL-69 opened; see the dated note
+  above).
+- OPEN-confirmed: ~~47~~ ~~46~~ **47** as of 2026-09-13 (DL-42 and DL-43
+  closed, DL-67 opened this pass, DL-69 opened this pass), including the
+  two reproduced baseline gate residuals DL-60/DL-61. DL-35 remains
+  deliberately absent. Re-sweep 2026-09-12: all 47 independently
+  re-verified against `876c9a26`; 0 reclassified.
+- CLOSED-by-later-slice: **2** (DL-42, `PTGuidedSelectProbTest`; DL-43,
+  `a69c9ce6`; both 2026-09-13, debt-guiding slice — run independently
+  after the 2026-09-12 cleanup/re-sweep sessions below, against
+  `75f78ba5`).
 - CLOSED-by-cleanup: **16** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin; DL-03, `8a9bdb18`;
   DL-04, `1b705ce1`, convention pin; DL-48, `12a7ef3e`;
@@ -677,22 +725,113 @@ mixture, then exercise VCM/MLT's shared generators. Fix the mixture/state
 contract rather than multiplying a guessed constant into the corrected
 DL-02 cosine exit. Static evidence only; numeric red proof is pending.
 
-**DL-42 (PT guided selected-lobe compensation).** Add a regression through
-trained one-sample guiding with an ordinary entry reflection on a material
-with multiple nonzero lobes. Force the BSDF proposal branch and compare
-throughput against `kray*conditionalPdf/(selectProb*combinedPdf)`, using
-different lobe probabilities. Cover RGB/NM and verify guided/RIS siblings
-against their own actual proposal measures; inspect HWSS separately.
-Avoid relying on ordinary translucent exit reachability: PT disables
-guiding for specular-classified arrivals. Static evidence; red proof pending.
+**~~DL-42 (PT guided selected-lobe compensation).~~ CLOSED 2026-09-13 —
+`PathTracingIntegrator.cpp` fix, `tests/PTGuidedSelectProbTest.cpp:
+ALL TESTS PASSED`.** The ledger's plain-English evidence text named the
+two `PTMulDiv()` overwrite sites (RIS-accepted, one-sample
+guided-direction-accepted) as illustrative examples of "the trained-guiding
+branch," but re-deriving the actual estimator (per this row's own recipe
+instruction to "think carefully about what the correct estimator is")
+found the real, immediately-fixable defect is narrower: `IBSDF::value()`
+and `ISPF::Pdf()` are the material's AGGREGATE (all-lobes) response
+(`GGXBRDF::value()`: `return diffuse + specular;`; `GGXSPF::Pdf()`: "3-lobe
+mixture PDF weighted by painter albedos"), and the two `PTMulDiv` sites --
+which both re-evaluate BSDF/PDF through `PTEvalBSDFAtSurface`/
+`PTEvalPdfAtSurface` at the priced direction -- stay entirely inside that
+aggregate representation, so unlike the third site below they at least do
+not mix per-lobe and aggregate units within themselves.
+**Correction (2026-09-13, same slice, before merge): the sentence
+originally continuing from here claimed this made the two sites "already
+complete, self-contained one-sample/RIS estimators for the WHOLE material"
+that "must NOT be divided by `selectProb` again." That claim is FALSE and
+is withdrawn; see DL-67, which supersedes it.** `GuidingSupportsSurfaceSampling`
+admits only non-delta eRayDiffuse/eRayReflection lobes, so at a multi-lobe
+surface with a guiding-ineligible lobe present (e.g. this row's own
+`TranslucentMaterial` EXIT fixture: diffuse-exit eligible, translucent-backscatter
+not) these two branches price the material's FULL aggregate `value()` --
+which covers every lobe, eligible or not -- while guiding only ever
+proposed/weighted the eligible subset, and the ineligible lobe is priced
+AGAIN whenever `PTRandomlySelect` happens to pick it via the ordinary
+kray/selectProb path; separately, even on an all-eligible material, the
+fixed branch's per-lobe proposal density and these two branches' aggregate
+proposal density do not partition to a consistent total unless the SPF has
+only one lobe (DL-67 has the numeric counterexample). The bug this row
+DOES fix is the THIRD overwrite site, the "kept BSDF direction" fallback
+(`combinedPdf = GuidingCombinedPdf(alpha, guidePdfForBsdf, pS->pdf);
+scatterThroughput = PTScatterKray(*pS) * (pS->pdf/combinedPdf);`), which
+stays entirely in per-lobe `kray`/`pdf` units (matching the ledger's own
+literal evidence cell, "kray*pdf/combinedPdf... without selectProb") and
+silently drops the initialization's `/selectProb`. Fixed to
+`kray*pS->pdf/(selectProb*combinedPdf)`. `ggx_material`/`coated_material`
+cannot exercise this bug (their SPFs do internal single-lobe selection,
+emitting exactly one `ScatteredRay` per `Scatter()` call, so the outer
+`selectProb` is trivially 1) -- the real-trained-guiding red-proof instead
+uses `TranslucentMaterial`'s EXIT branch, whose two non-exclusive,
+non-delta rays (diffuse exit + translucent backscatter, unequal weight via
+`scattering`) are exactly the "material with multiple nonzero lobes" this
+row calls for (only the diffuse-exit lobe of that pair is itself
+guiding-eligible; the backscatter lobe is what makes `selectProb < 1`
+here, not a second eligible candidate). See the main table row above for
+the full red/green counters and the sibling audit. **Correction on the
+BDPT-analog check and the HWSS claim, both withdrawn (2026-09-13, same
+slice, before merge):** an earlier version of this paragraph said BDPT's
+"kept BSDF direction" branch "does not share this pattern" because it
+"always uses the aggregate `PathValueOps::EvalBSDFAtVertex`... for its
+non-delta throughput" -- true as stated, but that BDPT code pairs that
+aggregate value with a PER-LOBE `effectivePdf`, an independent
+measure-mismatch (an over-count on overlapping-support lobes, not this
+row's under-count) now filed as DL-69; the sentence was accurate about
+this row's specific pattern but was read as broader clearance than it is.
+Separately, an earlier version claimed "HWSS is covered by the same
+shared RGB/NM template (`IntegrateFromHitNM` exercises the identical
+fixed line; the test's NM rows are byte-identical red/green to the Pel
+rows)." PT's HWSS body, `IntegrateFromHitHWSS`, contains NO guiding block
+at all (verified: zero occurrences of `pGuidingField`/`GuidingCombinedPdf`/
+`GuidingRIS` across that entire function) -- it is simply unaffected by
+this fix, and only reaches the fixed line indirectly, through its
+per-wavelength fallback calls into `IntegrateFromHitNM` for BSDF
+materials, not through its own scatter loop. Two new debts were found and
+filed, not fixed, during this derivation: DL-67 (RIS/one-sample proposal
+and throughput density inconsistency across all three trained-guiding
+branches, PT and BDPT) and DL-69 (BDPT's ordinary, non-guiding throughput
+pairing an aggregate BSDF value with a per-lobe selection pdf).
 
-**DL-43 (BDPT eye guiding PDF argument order).** Drive the real eye
-RIS and one-sample guided candidate paths at a Lambertian vertex with
-non-normal outgoing direction and assert the evaluated PDF equals that
-outgoing cosine over pi, not the incoming cosine. Cover RGB/NM and use
-light-side candidate evaluations as a control. Fix incoming/outgoing
-argument order at the actual producer and inspect all sibling candidate
-and reverse-density calls. Static evidence; red proof pending.
+**~~DL-43 (BDPT eye guiding PDF argument order).~~ CLOSED 2026-09-13 —
+`a69c9ce6`, `TranslucentIORStackTest: ALL TESTS PASSED`.** Extended the
+existing DL-03 BDPT fixture (real trained OpenPGL field + real
+TranslucentSPF + production `BDPTIntegrator` RGB/NM eye/light subpath
+generation, `tests/TranslucentGuidedStackProbe.h`) to capture the exit
+vertex's first guiding-phase `Pdf()`/`PdfNM()` query per trial (a second,
+later query at the same vertex is unrelated MIS reverse-density
+bookkeeping and must not be conflated with it) and assert that, for every
+outward-substituted trial, the captured density equals the substituted
+direction's own outgoing cosine/pi. Red on unfixed `42f3dc97`: eye RIS
+`substituted_out=0` (every guide candidate rejected outright — a
+swapped-argument density landing on the wrong side of the SPF's
+geometric-horizon gate reads zero) and eye one-sample `bad_pdf_value=41`
+(all 41 outward substitutions carried the wrong density, independent of
+which direction the guide actually proposed); all light-subpath rows
+already passed, confirming only the eye-subpath argument order was wrong.
+Fixed by swapping the two `PathValueOps::EvalPdfAtVertex` call sites
+(RIS candidate 1, one-sample) in `GenerateEyeSubpathImpl` to
+`(-currentRay.Dir(), candidateDirection)`, matching the light-subpath
+twins; `EvalBSDFAtVertex` calls at the same sites are unchanged (BSDF
+value is reciprocal, so argument order doesn't change the result there).
+Green: eye RIS `substituted_out=13`, `bad_pdf_value=0` everywhere.
+`PathValueOpsTest.cpp` Test G additionally pins the closed form at a real
+`LambertianMaterial` vertex (pre-fix eye order reproduces the incoming
+direction's cosine/pi regardless of the candidate; light order already
+matched the candidate's own outgoing cosine/pi) as documentation, not a
+red/green discriminator. Sibling audit (docs/skills/audit-by-bug-pattern.md):
+the ~14 other `EvalPdfAtVertex` sites in `BDPTIntegrator.cpp` are Veach MIS
+reverse-density/connection-strategy conversions that deliberately query the
+opposite direction and were spot-checked as already correct;
+`PathTracingIntegrator.cpp` has no `EvalPdfAtVertex` calls at all (PT's
+guiding uses the single-direction-argument `PTEvalPdfAtSurface` /
+`PathVertexEval::EvalPdfAtSurface` against an already-real
+`RayIntersectionGeometric`, architecturally immune to a two-argument
+swap) — DL-42 (PT's separate selected-lobe-compensation bug) is unrelated
+to this call shape.
 
 
 **DL-44 (sampled emitter UV propagation).** Add a deterministic two-texel
@@ -940,3 +1079,7 @@ without checking each class's own parameterization first). Gate
 `CookTorranceMultiscatterTest`, `SPFPdfConsistencyTest`,
 `SPFBSDFConsistencyTest`, and any suite `grep -l 'CookTorranceSPF\|
 CookTorranceBRDF\|SchlickSPF\|SchlickBRDF' tests/*.cpp` returns.
+
+**DL-67 (PT/BDPT guided one-sample and RIS proposal densities are inconsistent across lobe-selection branches; filed in this slice's own ledger as DL-65, renumbered DL-67 at merge -- see `## Counts`).** At a real multi-emit material (`schlick_material`: diffuse + specular, both guiding-eligible, overlapping support), drive RIS-mode and one-sample guiding through the real `PathTracingIntegrator`/`BDPTIntegrator` (eye and light) with `guidingAlpha` forced near 1 and a real trained field so substitution actually fires (`guidedSubstituted>0`, unlike DL-42's own fixture, which forced it to 0). Independently evaluate, at each candidate direction, the TRUE generating density `sum_I q_I * p_I` (`q_I` from `PTScatterSelectWeight`/`MaxValue(kray)`, `p_I` each lobe's own conditional pdf) against (a) `pS->pdf` (candidate 0's single-lobe density), (b) the material's aggregate `ISPF::Pdf()` (candidate 1's and the aggregate-BSDF branches' density), and (c) DL-42's fixed per-lobe branch's own denominator. Assert all three diverge from the true mixture density at some incidence angle (red-proving the mismatch exists in practice), and assert rendered radiance against an unguided PT reference on a scene where substitution fires disagrees by more than noise. Then implement the correct, consistent construction: one `f` and one denominator -- the true mixture density `sum_I q_I p_I` over the lobes `Scatter()` actually accepted -- in ALL THREE PT trained-guiding branches (candidate-0/RIS, one-sample kept-BSDF, one-sample guided-accepted) and both BDPT eye/light RIS instantiations, RGB and NM. Also resolve the candidate-validity asymmetry (candidate 1 discarded outright when the aggregate pdf is 0 at the guided direction, silently losing that RIS candidate) as part of the same rework. Cover PT and both BDPT eye/light instantiations, RGB and NM; verify against a known closed-form RIS estimator (e.g. a two-lobe synthetic material with hand-computed selection/conditional densities) in addition to the rendered comparison. Static evidence and closed-form counterexample only; rendered image-bias measurement pending.
+
+**DL-69 (BDPT's ordinary non-delta throughput pairs an aggregate BSDF value with a per-lobe selection pdf).** Add a `schlick_material` (diffuse + specular, both non-delta, overlapping hemisphere support) topology to `BDPTStrategyBalanceTest` and/or a standalone red-proof harness, rendered against a `pathtracing_pel_rasterizer` PT reference on the identical scene, with guiding disabled (this is BDPT's UNCONDITIONAL non-guiding throughput path, independent of DL-67). Red-prove the over-count predicted by pairing `f_agg = PathValueOps::EvalBSDFAtVertex(...)` (all lobes summed) with `scatterPdf = selectProb * effectivePdf` (one lobe's own density) at both the eye (`GenerateEyeSubpathImpl`) and light (`GenerateLightSubpathImpl`) generators. Then fix by making the non-delta throughput construction internally consistent -- either per-lobe `f_I` paired with the per-lobe pdf (matching the delta branch two lines above each site, and PT's own `kray`/`selectProb` convention), or the aggregate `f_agg` paired with the TRUE aggregate mixture pdf (DL-67's `sum_I q_I p_I`) -- applied identically at eye and light, RGB and NM, and re-verified against DL-67's fix rather than independently, since both rows touch the same lobe-selection contract. Confirm `ggx_material` remains immune post-fix (its lobes already carry the shared `mixPdf`, not a per-lobe conditional density, so this pattern cannot arise there) and that `lambertian_material`/disjoint-support SPFs (TranslucentSPF, PolishedSPF) are unaffected. Static evidence and closed-form BRDF check only; rendered red-proof pending.

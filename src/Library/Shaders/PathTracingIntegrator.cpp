@@ -3288,7 +3288,36 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( combinedPdf > NEARZERO )
 							{
-								scatterThroughput = PTScatterKray<Tag>( *pS ) * (pS->pdf / combinedPdf);
+								// DL-42: kray is already f_lobe*cos/pS->pdf for
+								// the ONE lobe PTRandomlySelect stochastically
+								// chose (ISPF.h's documented kray contract), so
+								// reweighting its own pdf to combinedPdf must
+								// still divide by selectProb -- the same
+								// multi-lobe compensation applied at this
+								// function's non-guided initialization above
+								// (`scatterThroughput = kray * (1/selectProb)`).
+								// DL-42 fixes THIS branch only. The
+								// RIS-accepted and guided-direction-accepted
+								// branches elsewhere in this block instead
+								// re-evaluate the BSDF/PDF through the
+								// material's AGGREGATE (all-lobes) interfaces
+								// -- that does NOT make them complete,
+								// self-contained estimators immune to
+								// selectProb: at a multi-lobe surface where
+								// GuidingSupportsSurfaceSampling's eligibility
+								// gate admits only SOME lobes (non-delta
+								// diffuse/reflection), the guided/RIS branches
+								// price the material's FULL aggregate value()
+								// while the guiding machinery only ever
+								// proposed/weighted the eligible subset, and
+								// ineligible lobes are additionally priced a
+								// second time through the ordinary
+								// kray/selectProb path below this block --
+								// see DL-67 for the derivation and the
+								// remaining inconsistency between all three
+								// branches (this one, RIS-accepted, and
+								// guided-direction-accepted).
+								scatterThroughput = PTScatterKray<Tag>( *pS ) * (pS->pdf / (selectProb * combinedPdf));
 								effectiveBsdfPdf = combinedPdf;
 								smplBsdfPdf = pS->pdf;
 								smplGuidePdf = guidePdfForBsdf;

@@ -59,8 +59,8 @@ Paths below are relative to `src/Library/`.
 | `Materials/TranslucentSPF.cpp`, RGB uniform/per-channel and NM entry/backscatter | VERIFIED unchanged for this pattern | These lobes intentionally use N-dependent Phong sampling with matching stored conditional densities; their evaluable mixture remains DL-41. |
 | `Shaders/PathTracingIntegrator.cpp`, ordinary RGB/NM | VERIFIED unchanged consumer | Uses supplied pS->pdf; no compensation for the old negative support. |
 | `Shaders/PathTracingIntegrator.cpp`, HWSS | VERIFIED hero density; OPEN DL-38 companions | Hero consumes stored pdf; companion fallback BSDF*cos/pdf cannot reproduce stateful amplitudes. |
-| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; DL-03 subsequently CLOSED | Pdf/PdfNM agree with the diffuse exit sampler; guiding state was closed by `8a9bdb18`, while selected-lobe compensation remains DL-42. |
-| `Shaders/BDPTIntegrator.cpp`, eye/light RGB/NM/HWSS | CORRECTED producer; OPEN DL-38/DL-41 | Uses selectProb*effectivePdf forward; reverse reevaluation converts to predecessor pdfRev. Eye guided-candidate argument order is separately DL-43. |
+| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; DL-03 subsequently CLOSED | Pdf/PdfNM agree with the diffuse exit sampler; guiding state was closed by `8a9bdb18`; selected-lobe compensation was DL-42, CLOSED 2026-09-13. |
+| `Shaders/BDPTIntegrator.cpp`, eye/light RGB/NM/HWSS | CORRECTED producer; OPEN DL-38/DL-41 | Uses selectProb*effectivePdf forward; reverse reevaluation converts to predecessor pdfRev. Eye guided-candidate argument order was separately DL-43, CLOSED `a69c9ce6`. |
 | `Utilities/PathVertexEval.h` | VERIFIED propagation; OPEN DL-41 full contract | Rebuilds intersection and stack then calls Pdf/PdfNM; does not compensate for the former sign error. |
 | `Shaders/VCMIntegrator.cpp` and MLT rasterizers | VERIFIED shared consumer | VCM consumes inherited pdfRev in MIS recurrence; RGB/NM MLT uses BDPT generators. No duplicate translucent sampler. |
 | `Lights/LightSampler.cpp`, RGB/NM area/environment NEE | OPEN DL-41 state query | Evaluates material Pdf/PdfNM using defaultIOR rather than current walk stack. |
@@ -88,25 +88,52 @@ DL-02 test pins the existing conditional API, not an ideal full mixture.
 
 ## Review residuals
 
-**DL-42 — PT one-sample guiding loses lobe-selection compensation.**
+**~~DL-42 — PT one-sample guiding loses lobe-selection compensation.~~
+CLOSED 2026-09-13 — `PathTracingIntegrator.cpp` fix,
+`tests/PTGuidedSelectProbTest.cpp: ALL TESTS PASSED`.**
 The ordinary RGB/NM loop initializes scatterThroughput as kray/selectProb.
-When trained one-sample guiding keeps the BSDF candidate, it overwrites
-that value with kray*pdf/combinedPdf, dropping selectProb. This is reachable
-at an ordinary entry reflection on a mixed-lobe material. It is independent
-of the translucent exit sign/shape producer and does not need BSDF
-reevaluation or a substituted stack. Ordinary translucent exits are not a
-clean PT fixture because GuidingEffectiveAlpha disables specular arrivals.
-Static finding verified by the supervisor; no measured render bias claimed.
+When trained one-sample guiding kept the BSDF candidate, it overwrote
+that value with kray*pdf/combinedPdf, dropping selectProb. This was
+reachable at an ordinary entry reflection on a mixed-lobe material. It is
+independent of the translucent exit sign/shape producer and needed no BSDF
+reevaluation or substituted stack. Ordinary translucent exits are not a
+clean PT fixture because GuidingEffectiveAlpha disables specular arrivals
+-- the closing red-proof instead used TranslucentSPF's EXIT branch, whose
+diffuse-exit + translucent-backscatter lobes are a real, reachable
+multi-lobe pair with unequal weight via `scattering`. (Only the
+diffuse-exit lobe is itself guiding-ELIGIBLE --
+`GuidingSupportsSurfaceSampling` admits non-delta eRayDiffuse/eRayReflection
+only, not eRayTranslucent -- so the fixture's assertions are restricted to
+trials where `PTRandomlySelect` happens to pick that one lobe; the
+backscatter lobe is what makes `selectProb < 1` at this vertex, not a
+second guiding-eligible candidate.) Fixed to
+`kray*pS->pdf/(selectProb*combinedPdf)`. The other two trained-guiding
+overwrite sites in the same block re-evaluate the material's AGGREGATE
+BSDF/PDF, but re-evaluating the aggregate does NOT make them complete,
+self-contained estimators immune to `selectProb` -- see DL-67 for the
+derivation of why all three branches (this one, RIS-accepted, and
+one-sample guided-direction-accepted) remain mutually inconsistent for a
+genuinely multi-lobe SPF, and why the "would double-count" claim in an
+earlier version of this paragraph was wrong. See
+[docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-42 for the full derivation,
+red/green counters and sibling audit (including the new DL-67 finding).
 
-**DL-43 — BDPT eye guided-candidate PDF arguments are reversed.**
-Both the RIS and one-sample eye guide branches call EvalPdfAtVertex with
+**~~DL-43 — BDPT eye guided-candidate PDF arguments are reversed.~~ CLOSED
+2026-09-13 — `a69c9ce6`, `TranslucentIORStackTest: ALL TESTS PASSED`.**
+Both the RIS and one-sample eye guide branches called EvalPdfAtVertex with
 (guided direction, -incoming ray direction), although the utility takes
 (incoming-away, outgoing-away) and evaluates Pdf(outgoing given incoming).
-The light-side twins have the correct order. The error already exists for
-an ordinary Lambertian vertex and is independent of translucent mixture
-state, so it receives its own row rather than being folded into DL-41.
-RGB/NM use the same templated eye code. Static finding verified by the
-supervisor; its dedicated red proof remains to be built.
+The light-side twins already had the correct order. The error existed for
+an ordinary Lambertian vertex and was independent of translucent mixture
+state, so it received its own row rather than being folded into DL-41.
+RGB/NM used the same templated eye code, so a single source fix (swapping
+the two arguments at both eye-subpath call sites) closed both. Red proof:
+extended `tests/TranslucentGuidedStackProbe.h`'s real trained-OpenPGL BDPT
+fixture to show eye+RIS rejected every guide candidate outright
+(`substituted_out=0`) and eye+one-sample carried the wrong density on every
+outward substitution (`bad_pdf_value=41`); light-subpath rows already
+passed. See [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-43 for the full
+red/green counters and sibling audit.
 
 ## Verification and review
 

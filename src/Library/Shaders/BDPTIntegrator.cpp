@@ -2562,8 +2562,17 @@ namespace {
 							{
 								c.bsdfEval = PathValueOps::EvalBSDFAtVertex<Tag>(
 									vertices.back(), c.direction, -currentRay.Dir(), tag );
+								// DL-43: EvalPdfAtVertex(vertex, wi, wo) evaluates
+								// Pdf(outgoing=wo | incoming=wi) -- wi must be the
+								// incoming direction (-currentRay.Dir()) and wo the
+								// candidate whose density we want, matching the
+								// light-subpath twin below.  This used to be
+								// swapped (c.direction, -currentRay.Dir()), which
+								// evaluated the density of scattering back toward
+								// the previous vertex instead of the guide
+								// candidate's own density.
 								c.bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-									vertices.back(), c.direction, -currentRay.Dir(), tag );
+									vertices.back(), -currentRay.Dir(), c.direction, tag );
 								c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
 								c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
 								const Scalar avgBsdf = Traits::max_value( c.bsdfEval );
@@ -2617,8 +2626,10 @@ namespace {
 							{
 								guidedF = PathValueOps::EvalBSDFAtVertex<Tag>(
 									vertices.back(), gDir, -currentRay.Dir(), tag );
+								// DL-43: see the RIS candidate above -- wi must be
+								// the incoming direction, wo the guide candidate.
 								const Scalar bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-									vertices.back(), gDir, -currentRay.Dir(), tag );
+									vertices.back(), -currentRay.Dir(), gDir, tag );
 
 								const Scalar combinedPdf =
 									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );

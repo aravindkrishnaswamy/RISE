@@ -662,8 +662,10 @@ entry/backscatter arrives as specular, which suppresses guiding. The PT
 fixture explicitly seeds a diffuse arrival and requires positive actual
 outward substitutions. PT admits non-delta diffuse/reflection lobes, while
 BDPT admits non-delta diffuse only. Both admit the translucent diffuse exit.
-BDPT eye RIS's missing actual guide substitutions in this fixture are
-separately explained by DL-43; that PDF defect remains open. See
+BDPT eye RIS's missing actual guide substitutions in this fixture were
+separately explained by DL-43; that PDF defect is now CLOSED (`a69c9ce6`,
+2026-09-13 -- eye RIS achieves actual outward guide-direction
+substitutions after the fix; see docs/DEBT_LEDGER.md). See
 [DL-03 mechanism, audit and verification](DL03_GUIDED_IOR_CONTINUATION.md).
 
 **What used to be item (b) here is CLOSED, not a residual.** An earlier
