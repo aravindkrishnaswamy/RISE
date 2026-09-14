@@ -762,6 +762,34 @@ namespace
 
 		return passed;
 	}
+
+	// DL-86 (docs/DEBT_LEDGER.md, docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// "DL-86"): LookupEssG2 used to flat-clamp cosTheta below the first LUT
+	// bin center c0=0.5/32~=0.0156 (theta > ~89.11 degrees) to that bin's
+	// value, under-reading the true, still-rising single-scatter
+	// directional albedo right at the grazing limit and over-stating the
+	// Kulla-Conty multiscatter compensation there -- a furnace GAIN.  The
+	// rows below drive the REAL production GGXBRDF (not just the LUT
+	// lookup GGXHeightCorrelatedEnergyLUTTest exercises in isolation) at
+	// view angles strictly beyond that boundary, at F0=1 (specular-only,
+	// diffuse=0) so the effect is not diluted by a diffuse term.
+	static bool TestGrazingFurnaceDL86()
+	{
+		std::cout << "\n--- DL-86: GGXBRDF furnace at extreme grazing incidence (F0=1, spec-only) ---\n";
+		bool passed = true;
+		const Case cases[] = {
+			// theta=89.40/89.70/89.89 degrees -> cosView ~ 0.0105/0.0052/0.0020,
+			// all strictly below c0 (theta > acos(c0) ~ 89.106 degrees).
+			{ "Schlick iso alpha=1.0 F0=1 theta=89.40 (cos~0.0105) spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.40, 0.0, 0.0 },
+			{ "Schlick iso alpha=1.0 F0=1 theta=89.70 (cos~0.0052) spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.70, 0.0, 0.0 },
+			{ "Schlick iso alpha=1.0 F0=1 theta=89.89 (cos~0.0020) spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.89, 0.0, 0.0 },
+			{ "Schlick iso alpha=0.3 F0=1 theta=89.70 (cos~0.0052) spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.70, 0.0, 0.0 },
+			{ "Schlick iso alpha=0.05 F0=1 theta=89.40 (cos~0.0105) spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.40, 0.0, 0.0 },
+		};
+		unsigned int seed = 9101;
+		for( const Case& c : cases ) passed &= RunRGBCase( c, seed++ );
+		return passed;
+	}
 }
 
 int main()
@@ -774,6 +802,7 @@ int main()
 	passed &= TestSchlickSweep();
 	passed &= TestConductorAndFilmControls();
 	passed &= TestAnisotropicFurnaceDL77();
+	passed &= TestGrazingFurnaceDL86();
 
 	std::cout << "GGXDiffuseTransmissionTest: " << checks << " checks, " << failures << " failures\n";
 	std::cout << "=== " << ( passed ? "ALL TESTS PASSED" : "TESTS FAILED" ) << " ===\n";
