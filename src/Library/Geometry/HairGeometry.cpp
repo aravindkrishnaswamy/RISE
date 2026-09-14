@@ -1027,13 +1027,16 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 	ri.vNormal      = Ncyl;
 	ri.vGeomNormal  = Nflat;
 	ri.bGeomNormalOrientedToRay = true;
-	// DL-75: this orientation is FABRICATED (ray-derived), not the
-	// recovery of a genuine two-sided winding-order normal -- a hair
-	// ribbon has no back side to recover.  Consumers that undo
-	// `bGeomNormalOrientedToRay` to reconstruct a true outward normal
-	// (e.g. BSSRDFSampling.cpp's entry-point probe) must check this flag
-	// first and skip the correction when it is set; see the field's own
-	// doc comment in RayIntersectionGeometric.h.
+	// ...and `Nflat` is DERIVED FROM THE RAY, not a static surface
+	// property, so the un-flip recovery documented on
+	// bGeomNormalOrientedToRay does NOT recover a meaningful surface
+	// facing here -- it just yields "always away from the ray", i.e.
+	// "always an exit" to any containment/entry-exit classifier.  Say so
+	// explicitly so those consumers can skip the hit instead of trusting
+	// a recovery that cannot work (see RayIntersectionGeometric.h's
+	// contract for this flag).
+	// (DL-75 records the consumer-side rule: skip the un-flip recovery when
+	// `bGeomNormalRayDerived` is set.)
 	ri.bGeomNormalRayDerived = true;
 
 	// (s, t): s = arc-length fraction root->tip, t = across-width in

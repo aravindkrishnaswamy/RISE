@@ -390,11 +390,17 @@ static void Run()
 								if( outward ) ++oldInNewOut; else ++oldInNewIn;
 							}
 						}
-						// Tilted shading can make the original SPF exit geometrically
-						// inward. Preserve that legacy unchanged-SPF behavior; this
-						// regression judges only actual guide replacements there.
-						if( (substituted || !tilted) && outward && (observation.containsOnArrival || !observation.entryLobeOnArrival) ) ++badOut;
-						if( (substituted || !tilted) && !outward && (!observation.containsOnArrival || observation.entryLobeOnArrival) ) ++badIn;
+						// DL-45 (was: "tilted shading can make the original SPF exit
+						// geometrically inward; preserve that legacy unchanged-SPF
+						// behavior, judge only actual guide replacements there").
+						// TranslucentSPF's own exit sampler now resamples until
+						// geometrically valid (TranslucentSPF.cpp's
+						// SampleValidDiffuseExit), so an UNCHANGED (unguided) SPF
+						// exit direction must ALSO be held to this check now, tilted
+						// or not -- the old `(substituted || !tilted)` exemption
+						// would silently mask a regression of that fix.
+						if( outward && (observation.containsOnArrival || !observation.entryLobeOnArrival) ) ++badOut;
+						if( !outward && (!observation.containsOnArrival || observation.entryLobeOnArrival) ) ++badIn;
 						if( !std::isfinite(observation.mediumOnArrival) || std::fabs(observation.mediumOnArrival-kWaterIOR) > 1e-12 ) ++badMedium;
 					}
 					scene->release(); manager->release(); material->release();
@@ -413,10 +419,23 @@ static void Run()
 				if( mode ) EXPECT(substitutedOut > 0, "DL-03 non-vacuous outward guided exit substitution count is positive");
 				if( mode == 2 ) EXPECT(retainedSPF > 0, "DL-03 RIS retained SPF candidate control is positive");
 				if( mode == 1 ) EXPECT(substitutedIn > 0, "DL-03 one-sample inward substitution control is positive");
-				if( tilted && mode ) {
-					EXPECT(oldInNewOut > 0, "DL-03 tilted SPF inward candidate replaced by actual outward guide");
-					EXPECT(oldInNewIn > 0, "DL-03 tilted SPF inward candidate replaced by different inward guide");
-				}
+				// DL-45 money assertion: the real SPF's OWN (unguided) exit
+				// sample is never geometrically inward any more -- this is the
+				// fixture that originally measured 1021/4096 inward exits per
+				// run at 60-degree tilt (pre-fix).  Distinct from badOut/badIn
+				// above: `unchangedIn` isolates unsubstituted SPF samples
+				// specifically, so a regression here can't hide behind a guided
+				// replacement masking it.
+				EXPECT(unchangedIn == 0, "DL-45 unsubstituted TranslucentSPF exit direction is never geometrically inward");
+				// oldInNewOut/oldInNewIn counted guided replacements whose
+				// baseline (unguided) SPF direction was inward -- DL-45
+				// eliminates that baseline entirely (see unchangedIn==0 above),
+				// so this scenario can no longer occur, tilted or not.  Kept as
+				// an explicit non-regression pin rather than deleted outright,
+				// so a future regression of DL-45 that reintroduces inward SPF
+				// exits is caught here too.
+				EXPECT(oldInNewOut == 0, "DL-45 no guided replacement starts from an inward SPF baseline (outward side)");
+				EXPECT(oldInNewIn == 0, "DL-45 no guided replacement starts from an inward SPF baseline (inward side)");
 			}
 		}
 	}

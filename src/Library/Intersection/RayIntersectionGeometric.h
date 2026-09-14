@@ -278,19 +278,9 @@ namespace RISE
 		Vector3						vGeomNormal2;
 
 		//! OUTPUT: set by geometries that flip `vGeomNormal` to oppose the
-		//! incoming ray.  FIVE setters as of DL-75 (2026-09-13):
-		//! `TriangleMeshGeometry::IntersectRay`, `TriangleMeshGeometryIndexed::
-		//! IntersectRay`, `ClippedPlaneGeometry::IntersectRay`,
-		//! `BezierPatchGeometry::RayElementIntersection` (all four flip a
-		//! genuine, ray-INDEPENDENT winding-order normal that has two real
-		//! sides -- undoing the flip recovers that true side), and
-		//! `HairGeometry::RayElementIntersection` (a FIFTH setter whose
-		//! reported normal is ray-DERIVED/fabricated -- a hair ribbon has no
-		//! second side to recover; see `bGeomNormalRayDerived` immediately
-		//! below).  Default false -- geometries that do not flip (single-
-		//! sided meshes, and every analytical primitive whose geometric
-		//! normal is the true, unmodified surface normal) leave this false,
-		//! so the recovery formula below is a no-op for them.
+		//! incoming ray.  Default false; the authoritative list of which
+		//! geometries set it is below -- geometries that do not flip leave
+		//! this false, so the recovery formula below is a no-op for them.
 		//!
 		//! Consumers that need the TRUE surface facing (which side of the
 		//! actual geometry the ray struck, independent of the double-sided
@@ -308,6 +298,25 @@ namespace RISE
 		//! the raw dot-product facing test to the same sign on both --
 		//! this flag lets the caster undo the flip losslessly instead.)
 		//!
+		//! WHICH GEOMETRIES SET IT (keep this list current -- an earlier
+		//! version of this comment, and copies of it in TranslucentSPF.cpp
+		//! and IORStackSeeding.h, claimed "single-sided meshes and every
+		//! analytical primitive leave the flag false", which is only half
+		//! the story):
+		//!   * `TriangleMeshGeometry` / `TriangleMeshGeometryIndexed` --
+		//!     only when `bDoubleSided`, and only when the flip actually
+		//!     happened.
+		//!   * `BezierPatchGeometry`, `ClippedPlaneGeometry` -- on a
+		//!     BACK-FACE hit (they flip the normal toward the ray there,
+		//!     exactly like the double-sided mesh path).
+		//!   * `HairGeometry` -- UNCONDITIONALLY; see
+		//!     `bGeomNormalRayDerived` below, because the recovery formula
+		//!     above does NOT apply there.
+		//!   * `CSGObject` propagates whichever operand's surface it is
+		//!     actually reporting.
+		//! Single-sided triangle meshes and the analytical primitives
+		//! (sphere, box, ellipsoid, torus, cylinder, plane, disk, bilinear
+		//! patch) do leave it false.
 		//! A consumer that instead wants the true, ray-independent
 		//! GEOMETRIC NORMAL VECTOR itself (not just its dot-product sign
 		//! against one particular ray direction -- e.g. an entry point's
@@ -327,20 +336,28 @@ namespace RISE
 		//! ONLY valid when `bGeomNormalRayDerived` is false; see that flag.
 		bool						bGeomNormalOrientedToRay;
 
-		//! OUTPUT: true when `bGeomNormalOrientedToRay` describes a FABRICATED
-		//! orientation rather than the recovery of a genuine, ray-independent
-		//! winding-order normal.  Set by `HairGeometry::RayElementIntersection`
-		//! only (DL-75, 2026-09-13): a hair ribbon is constructed to always
-		//! face the ray (it has no back side), so its `vGeomNormal` carries no
-		//! second, "true" orientation to recover -- `oriented ? -vGeomNormal :
-		//! vGeomNormal` would just report the OPPOSITE ray-derived direction,
-		//! not an outward surface normal.  Consumers that recover a true
-		//! outward/winding-order normal via `bGeomNormalOrientedToRay` (see
-		//! its doc comment immediately above) MUST first check this flag is
-		//! false; when true, there is no well-defined "outward side" to
-		//! recover and the correction must be skipped.  Default false for
-		//! every other geometry (the four winding-order setters above never
-		//! touch this field).
+		//! OUTPUT: set by geometries whose `vGeomNormal` is DERIVED FROM
+		//! THE RAY rather than being a static property of the surface.
+		//! `HairGeometry` is the only such geometry today: a hair strand is
+		//! a 1-D curve with no two-sided surface, so it fabricates a flat
+		//! normal `Nflat = normalize(-(D - (D.T)T))` from the ray direction
+		//! `D` and the strand tangent `T` -- by construction always facing
+		//! the ray -- and reports `bGeomNormalOrientedToRay = true`
+		//! unconditionally.
+		//!
+		//! CONTRACT: when this is true, `bGeomNormalOrientedToRay`'s
+		//! recovery formula above is MEANINGLESS.  Un-flipping a
+		//! ray-derived normal yields a direction that always faces AWAY
+		//! from the ray, so a "true entry vs. true exit" classifier built
+		//! on it reads EXIT at every single crossing.  A consumer asking a
+		//! which-side-of-the-real-surface question must therefore SKIP such
+		//! a hit (there is no real side to be on) rather than trust the
+		//! recovery -- `IORStackSeeding::SeedFromPoint`'s containment probe
+		//! skips it, and `TranslucentSPF`'s exit gate falls back to the
+		//! shading normal (making the gate a no-op).  A consumer that only
+		//! needs "which way does the surface face the ray" may keep reading
+		//! `vGeomNormal` directly; `bGeomNormalOrientedToRay` stays
+		//! truthful about the reported orientation either way.
 		bool						bGeomNormalRayDerived;
 
 		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)

@@ -148,6 +148,48 @@ boundary, not bias.
    camera straddling a boundary (PT's is the more correct).  Left
    unaligned to keep this change focused.
 
+## Non-refracting stateful media (DL-46, 2026-09-13)
+
+The probe's original contract only tracked materials whose
+`GetSpecularInfo` reported `canRefract=true` — i.e. an actual dielectric
+with its own numeric IOR.  `TranslucentSPF` (the diffuse "lampshade"
+model) is a second, narrower case the probe missed entirely: its
+`Scatter`/`ScatterNM` classify entry vs. exit purely from
+`ior_stack.containsCurrent()`, exactly like a refractor, but the
+material is not specular (its lobes are diffuse/Phong, sampled
+stochastically) and it carries no distinct IOR of its own — interior
+segments re-push the ENCLOSING medium's IOR unchanged (see
+`TranslucentSPF::Scatter`'s entry/backscatter comments).  Because
+`TranslucentMaterial` inherited `IMaterial`'s invalid/non-refracting
+default `GetSpecularInfo`, a camera or light origin already inside a
+closed translucent object was never seeded with its membership, and the
+first physical crossing was misclassified as an entry instead of an
+exit (the same failure mode this whole document is about, on a
+non-refracting material).
+
+The fix adds a `hasInterior` flag to `SpecularInfo`
+([SpecularInfo.h](../src/Library/Interfaces/SpecularInfo.h)) that a
+material sets to report "I track my own containment like a refractor,
+but I am not one" — `TranslucentMaterial::GetSpecularInfo` now returns
+`{valid=true, isSpecular=false, canRefract=false, hasInterior=true}`.
+`SeedFromPoint`'s probe accepts an object when EITHER `canRefract`
+(with `ior > 0`) OR `hasInterior` holds.  The two cases push differently
+in the final ordered push loop: a `canRefract` entry pushes its own
+captured `ior` (unchanged); a `hasInterior`-only entry instead re-pushes
+whatever IOR is already on the stack at that point (`stack.top()`),
+because such a material never introduces a new numeric medium — only
+membership changes.  Setting `canRefract` (or `isSpecular`) on
+`TranslucentMaterial` merely to be picked up by the probe was
+deliberately rejected: every OTHER `GetSpecularInfo` consumer (SMS
+chain building in `ManifoldSolver`/`SMSPhotonMap`, the dielectric clear-
+shadow-ray gate in `RayCaster`, the specular-companion checks in
+`BDPTIntegrator`/`PathTracingIntegrator`) gates on `isSpecular`/
+`canRefract` together, so a material that is genuinely non-specular
+must keep reporting exactly that; `hasInterior` is additive and those
+consumers are unaffected (confirmed by inspection of every
+`GetSpecularInfo`/`GetSpecularInfoNM` call site — see the DL-46 slice
+report for the full list).
+
 ## Perf note
 
 `IORStackSeeding::SeedFromPoint` per camera sample costs ~7% wall on a

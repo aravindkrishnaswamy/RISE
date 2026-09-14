@@ -149,6 +149,16 @@ observed defect pin, not a failing correctness assertion or an image-bias
 measurement. New DL-45 tracks its exit sampling/PDF/energy policy; changing
 the sampler is outside this state-propagation repair.
 
+~~DL-45 CLOSED 2026-09-13 — `14b06223`.~~ `TranslucentSPF::Scatter`/
+`ScatterNM`'s exit branch now resamples until the direction is also
+geometrically valid (`dot(wo,geomNRaw)>0`, the object's own unflipped
+outward direction) and reports the matching normalized conditional
+density; the observed-inward-exit pin above and this doc's own tilted
+fixture (`TranslucentGuidedStackProbe.h`'s `unchangedIn` counter,
+strengthened to an explicit `== 0` assertion) both went from
+1021/4096 to 0/4096. See [DL45's ledger row](DEBT_LEDGER.md) and
+[the closure test](../tests/TranslucentTiltedExitTest.cpp).
+
 The final expanded regression passed against `8a9bdb18` with test refinements
 through `f6aa67fd`: `ALL TESTS PASSED`, exit 0, warning-free test build.
 All recorded stack-error counters are zero, including the tilted witnesses
@@ -169,6 +179,17 @@ pending, not an observed image result. Membership tracking must be separated
 from specular-refraction capability; this repair does not relabel translucent
 materials as specular. DL-03's seeded PT and actual-entry BDPT tests remain
 honest propagation fixtures and do not claim to close initial containment.
+
+~~DL-46 CLOSED 2026-09-13 — `cd43da09`.~~ Membership tracking WAS separated
+from specular-refraction capability, as this section anticipated: a new
+`hasInterior` flag on `SpecularInfo` reports "I track containment like a
+refractor but I am not one," `TranslucentMaterial::GetSpecularInfo` sets
+it (leaving `isSpecular`/`canRefract` false), and
+`IORStackSeeding::SeedFromPoint` accepts `canRefract||hasInterior`,
+re-pushing the caller's current stack top rather than a captured
+constant for a `hasInterior`-only entry so a nested enclosure's IOR is
+preserved exactly. See [DL46's ledger row](DEBT_LEDGER.md) and
+[the closure test](../tests/TranslucentInitialContainmentTest.cpp).
 
 
 ## Guide-created entry residual

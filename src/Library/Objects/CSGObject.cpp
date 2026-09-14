@@ -275,6 +275,9 @@ namespace
 		// is a fabricated, ray-derived one (hair) rather than a recovered
 		// true winding-order normal travels with the same operand surface.
 		dst.bGeomNormalOrientedToRay = src.bGeomNormalOrientedToRay;
+		// Same category, same reason: whether the reported vGeomNormal is
+		// ray-derived (HairGeometry) is a property of the operand SURFACE
+		// being reported, so it travels with it.
 		dst.bGeomNormalRayDerived = src.bGeomNormalRayDerived;
 
 		dst.ptCoord = src.ptCoord;

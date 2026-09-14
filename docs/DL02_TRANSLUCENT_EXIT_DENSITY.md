@@ -6,18 +6,36 @@ CLOSED 2026-09-12 — fix `a041e51d`. The focused regression reports
 ## Contract and root cause
 
 The diffuse exit is a cosine-weighted re-emission around the positive
-shading normal, in both RGB and NM. Its stored conditional density is
-`max(dot(wo,onb.w()),0)/pi`. `Pdf` instead negated that cosine when the
-IOR stack identified an inside hit, so it returned zero on sampled exit
-directions and positive values on the opposite hemisphere. Additionally,
-NM sampled a Phong exit controlled by N while RGB already sampled cosine.
+shading normal, in both RGB and NM. At the time this fix landed its
+stored conditional density was `max(dot(wo,onb.w()),0)/pi`. `Pdf` instead
+negated that cosine when the IOR stack identified an inside hit, so it
+returned zero on sampled exit directions and positive values on the
+opposite hemisphere. Additionally, NM sampled a Phong exit controlled by
+N while RGB already sampled cosine.
 
 The fix removes the inside-state sign flip and uses the RGB cosine
 construction for NM exit sampling and its stored density. N still controls
-entry transmission and internal backscatter. Throughput, the entering-only
-geometric-horizon gate, delta flags, stack pop and ownership are unchanged.
-No integrator-wide MIS or physical-volume correctness is claimed: the
-conditional diffuse density is only one part of that contract.
+entry transmission and internal backscatter. Throughput, delta flags,
+stack pop and ownership are unchanged. No integrator-wide MIS or
+physical-volume correctness is claimed: the conditional diffuse density
+is only one part of that contract.
+
+**Superseded 2026-09-13 by DL-45/DL-68**: the "entering-only geometric-
+horizon gate" this section describes as unchanged no longer describes the
+exit lobe. DL-45 found that the plain (unclipped) cosine sampler this fix
+installed could still emit a direction that is geometrically INWARD under
+a tilted shading normal even though it is above the shading horizon, and
+added a matching exit-side geometric-horizon gate; the exit lobe is now a
+**clipped cosine sampler**, restricted to the geometrically-valid
+sub-hemisphere and renormalized by `ExitValidFraction = (1+cos(phi))/2`
+(phi = the angle between the shading and true geometric normal) rather
+than the plain `cos(theta)/pi` this section originally described. DL-68
+subsequently replaced DL-45's rejection-sampling implementation of that
+clipped sampler with an exact, unconditional two-draw closed-form remap
+(same density, no resampling) — see `SampleValidDiffuseExit`,
+`TranslucentSPF.cpp`, and [DL03_GUIDED_IOR_CONTINUATION.md](DL03_GUIDED_IOR_CONTINUATION.md).
+The DL-01/DL-02 contract this document otherwise describes (Beer
+attenuation, entry/backscatter Phong lobes, RGB/NM parity) is unaffected.
 
 ## Red proof
 
@@ -54,7 +72,7 @@ Paths below are relative to `src/Library/`.
 
 | Surface | STATUS | Evidence / disposition |
 |---|---|---|
-| `Materials/TranslucentSPF.cpp`, RGB diffuse exit | VERIFIED unchanged sampler | Already cosine around +onb.w(); Pdf support fixed by `a041e51d`. |
+| `Materials/TranslucentSPF.cpp`, RGB diffuse exit | VERIFIED at the time (unchanged sampler); SUPERSEDED 2026-09-13 by DL-45/DL-68 | Was plain cosine around +onb.w() with Pdf support fixed by `a041e51d`; DL-45 clipped it to the geometrically-valid sub-hemisphere (`ExitValidFraction`-normalized) and DL-68 replaced the clipping's rejection loop with an exact two-draw remap — see `SampleValidDiffuseExit`, `TranslucentSPF.cpp`. |
 | `Materials/TranslucentSPF.cpp`, NM diffuse exit | FIXED `a041e51d` | Cosine sample and stored density replace final exit Phong construction; PdfNM delegates to corrected Pdf. |
 | `Materials/TranslucentSPF.cpp`, RGB uniform/per-channel and NM entry/backscatter | VERIFIED unchanged for this pattern | These lobes intentionally use N-dependent Phong sampling with matching stored conditional densities; their evaluable mixture remains DL-41. |
 | `Shaders/PathTracingIntegrator.cpp`, ordinary RGB/NM | VERIFIED unchanged consumer | Uses supplied pS->pdf; no compensation for the old negative support. |
@@ -68,7 +86,7 @@ Paths below are relative to `src/Library/`.
 | `Materials/CoatedMaterial.h`, `Materials/FabricMaterial.h` | INAPPLICABLE | Substrate allowlists exclude TranslucentMaterial. |
 | SMS snell/uniform modes | INAPPLICABLE | TranslucentSPF has no valid analytic specular-info override. |
 | Generic/global/caustic photon consumers | VERIFIED unchanged | Consume directions, weights and optional stacks without reevaluating pdf. |
-| `PhotonMapping/TranslucentPelPhotonTracer.cpp` | VERIFIED density-independent; OPEN DL-39 | Deposition error concerns absorbed power, not the exit density. |
+| `PhotonMapping/TranslucentPelPhotonTracer.cpp` | VERIFIED density-independent; CLOSED DL-39 (`1fe5c760`) | Deposition error concerned absorbed power, not the exit density; now deposits the diffuse lobe's own kray directly. |
 | `ior_stack` / `delete_stack` | VERIFIED unchanged | Exit still pops the object; backscatter retains the input stack; no lifetime or allocation changes. |
 
 ## Independent residual: DL-41

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <initializer_list>
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
@@ -178,12 +179,24 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
     if (tilted) {
         ri.vNormal = Vector3Ops::Normalize(Vector3(1, 2, -3));
         ri.onb.CreateFromW(ri.vNormal);
-        // Retain the true geometric normal: exit transmission must not
-        // inherit the entering reflection lobe's geometric-horizon gate.
+        // Retain the true geometric normal (ri.vGeomNormal stays (0,0,-1)
+        // from Hit()): DL-45 -- the exit re-emission's geometric-horizon
+        // gate uses vGeomNormal directly (NOT the entering reflection
+        // lobe's ray-anchored `geomN`), so tilting only the SHADING
+        // normal here deliberately exercises that gate/renormalization,
+        // not the entry lobe's separate, unrenormalized one.
     }
     IORStack inside = MakeTestIORStack(object, 1.33);
     inside.push(inside.top());
     Check(inside.containsCurrent(), "density fixture starts inside");
+    // DL-45: the exit density is normalized to the geometrically-valid
+    // sub-hemisphere (dot(wo,vGeomNormal)>0), not the full shading
+    // hemisphere -- see TranslucentSPF.cpp's ExitValidFraction.  At
+    // tilt=0, onb.w() == vGeomNormal exactly (both (0,0,-1) from Hit()),
+    // so cosPhi=1 and validFraction=1: the untitled sub-test's original
+    // expectations are unaffected by this factor.
+    const Scalar cosPhi = Vector3Ops::Dot(ri.onb.w(), ri.vGeomNormal);
+    const Scalar validFraction = std::max(Scalar(1e-4), (Scalar(1) + cosPhi) * Scalar(0.5));
     for (int pipe = 0; pipe < 4; ++pipe) {
         const Scalar nm = 450 + 100 * (pipe - 1);
         bool support = true, stored = true, evaluated = true, cdf = true, popped = true;
@@ -200,15 +213,47 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
                 if (ray.type != ScatteredRay::eRayDiffuse) continue;
                 ++exits;
                 const Scalar mu = Vector3Ops::Dot(ray.ray.Dir(), ri.onb.w());
-                const Scalar expected = mu * INV_PI;
+                const Scalar expected = mu * INV_PI / validFraction;
                 const Scalar pdf = pipe == 0 ? spf->Pdf(ri, ray.ray.Dir(), inside)
                     : spf->PdfNM(ri, ray.ray.Dir(), nm, inside);
                 support &= mu > 0 && ray.pdf > 0 && !ray.isDelta;
                 stored &= DensityNear(ray.pdf, expected);
                 evaluated &= DensityNear(pdf, ray.pdf);
-                cdf &= DensityNear(mu * mu, u);
+                // P1 (same debt-cleanup slice, 2026-09-13): `cdf` and `secondMoment` pin the UNCLIPPED
+                // plain-cosine sampler's inverse-CDF identity
+                // (mu^2 == u, hence E[mu^2] == 1/2) under a FixedSampler
+                // that returns the SAME canonical (u1,u2) on every draw.
+                // DL-45's original rejection-loop implementation either
+                // reproduced that exact unclipped sample (first attempt
+                // already valid) or, since a FixedSampler makes every
+                // retry identical, failed all 32 identical attempts and
+                // emitted NOTHING -- so whenever `RunExitDensity` DID see
+                // an accepted sample under tilt, it was, by construction,
+                // an unmodified unclipped one, and this identity held
+                // coincidentally.  P1's exact two-draw remap instead
+                // deterministically TRANSFORMS (u1,u2) into a genuinely
+                // different, geometrically-valid direction whenever
+                // clipping is active (cosPhi<1) -- an accepted tilted
+                // sample's mu is no longer mu^2==u by construction, even
+                // though the resulting DISTRIBUTION remains exactly
+                // normalized (proven by `stored`/`evaluated` above and by
+                // TranslucentTiltedExitTest's independent fine-quadrature
+                // integral-to-1 checks).  So these two identities are
+                // correctly restricted to the untilted (cosPhi==1,
+                // identity remap) case, where the new remap is a no-op
+                // and the old identity still holds exactly -- verified:
+                // 0 failures at tilted=0 pre- and post-P1.
+                if (!tilted) {
+                    cdf &= DensityNear(mu * mu, u);
+                    secondMoment += mu * mu / 8;
+                }
+                // Under tilt neither identity applies; both checks are
+                // SKIPPED below rather than satisfied by assigning the
+                // expected value to the observable (a round-2 revision
+                // set `secondMoment = 0.5` here, which made
+                // `Check(DensityNear(secondMoment, 0.5))` a tautology
+                // that would pass against any sampler at all).
                 popped &= ray.ior_stack && !ray.ior_stack->containsCurrent();
-                secondMoment += mu * mu / 8;
             }
             Check(exits == 1, "density sample has exactly one exit");
         }
@@ -216,8 +261,17 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
         Check(support, "exit support is positive shading hemisphere");
         Check(stored, "stored exit density is cosine, independent of N");
         Check(evaluated, "exit evaluated density equals stored density");
-        Check(cdf, "exit sample inverse CDF is cosine, independent of N");
-        Check(DensityNear(secondMoment, 0.5), "exit sampled cosine second moment is 1/2");
+        // Both identities are specific to the UNCLIPPED plain-cosine
+        // draw the untilted case reduces to; the tilted case's own
+        // distribution is checked by TranslucentTiltedExitTest's
+        // chi-squared goodness-of-fit (sub-test 4), not here.
+        if (!tilted) {
+            Check(cdf, "exit sample inverse CDF is cosine, independent of N");
+            Check(DensityNear(secondMoment, 0.5), "exit sampled cosine second moment is 1/2");
+        } else {
+            std::printf("  (tilted: inverse-CDF and second-moment identities skipped -- "
+                "see TranslucentTiltedExitTest sub-test 4 for the tilted sampler's own test)\n");
+        }
         Check(popped, "density samples carry popped exit stack");
 
         // Integrate in mu/phi, where dOmega = dmu dphi. A midpoint rule
@@ -240,7 +294,24 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
                     : spf->PdfNM(ri, back, nm, inside)) * TWO_PI / (32 * 8);
             }
         }
-        Check(DensityNear(positive, 1), "exit PDF integrates to one on exit hemisphere");
+        // A tilted shading normal makes the geometric-horizon cutoff fall
+        // inside a mu-cell rather than exactly at a grid line, so this
+        // coarse (32x8) midpoint-rule quadrature no longer integrates the
+        // (now genuinely discontinuous, DL-45) density EXACTLY the way it
+        // does the untilted plain-cosine case -- loosen the tolerance by
+        // the quadrature's own O(1/gridsize) discretization error instead
+        // of the exact float-noise band DensityNear uses.  Still tight
+        // enough to separate a normalized density (~1.0) from the old
+        // unrenormalized-reject policy's value (validFraction ==
+        // (1+cosPhi)/2, e.g. ~0.90 for this fixture's tilt -- NOT cosPhi
+        // itself, ~0.80, which this comment previously and incorrectly
+        // cited), which is what a regression of DL-45 would produce here.
+        const Scalar positiveTol = tilted ? 0.05 : 1e-10;
+        ++checks;
+        if (!(std::isfinite(positive) && std::fabs(positive - 1) <= positiveTol)) {
+            ++failures;
+            std::printf("FAIL: exit PDF integrates to one on exit hemisphere got %.9f\n", positive);
+        }
         // This API describes the diffuse lobe only; backscatter has a
         // separate stored Phong density, not a complete Pdf/PdfNM mixture.
         Check(DensityNear(negative, 0), "diffuse PDF excludes backscatter hemisphere");
