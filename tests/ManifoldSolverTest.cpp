@@ -6,7 +6,10 @@
 //    direction computation, derivatives, constraint evaluation,
 //    Jacobian construction, block-tridiagonal solver, chain geometry,
 //    chain throughput, Fresnel, physical validation, and
-//    DeriveNormalized.
+//    DeriveNormalized.  Group 15 is the one exception: an end-to-end
+//    `BuildSeedChain`/`SnellContinueChain` scene test (real
+//    Object/ObjectManager/Scene/DielectricMaterial) pinning the DL-70
+//    `bEntering` fix on a double-sided-plane "slab" caster.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -15,6 +18,19 @@
 #include <cassert>
 #include <cmath>
 #include "TestableManifoldSolver.h"
+
+// DL-70 P2-1 chain-level pin: a double-sided dielectric "slab" caster
+// (two independent double-sided ClippedPlaneGeometry objects) end-to-end
+// through BuildSeedChain / SnellContinueChain.  Needs real scene/object
+// plumbing the rest of this file doesn't otherwise touch.
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Managers/ObjectManager.h"
+#include "../src/Library/Scene.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/RISE_API.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1568,6 +1584,166 @@ void TestAngleDiffJacobian_TwoVertex()
 }
 
 // ============================================================
+// Group 15: DL-70 chain-level pin -- SnellContinueChain's bEntering
+// on a double-sided dielectric slab caster
+// ============================================================
+
+//////////////////////////////////////////////////////////////////////
+//  DL-70 P2-1: `sms_slab_close_pt_sms_hispp.RISEscene` uses a
+//  double_sided dielectric slab (a rawmesh2 mesh) as its SMS caster.
+//  This pins the underlying mechanism that scene exercises --
+//  `SnellContinueChain`'s `bEntering` classification -- WITHOUT a
+//  render, using the "legacy slabs-from-planes" pattern the function's
+//  own comments name: a slab modelled as TWO SEPARATE double-sided
+//  planar objects (so the `sameObjectAgain` IOR-stack override, which
+//  already protects a SINGLE double-sided object's second crossing,
+//  cannot fire for either -- each plane is pushed/tested under its OWN
+//  IObject*).  That isolates the exact defect DL-70 fixed at this site:
+//  before the fix, `mv.geomNormal` copied the REPORTED `vGeomNormal`,
+//  which a double-sided plane flips to always oppose the incoming ray
+//  on EVERY crossing, so `cosI = Dot(dir, mv.geomNormal)` read negative
+//  ("entering") at BOTH the entry AND the exit face.  After the fix,
+//  `mv.geomNormal = UnflippedGeomNormal()` -- the TRUE, ray-independent
+//  normal -- so the two crossings' `cosI` signs correctly alternate.
+//
+//  Fixture: two double-sided `ClippedPlaneGeometry` quads at z=0 (true
+//  outward normal -Z, wound so the natural cross(dpdu,dpdv) is -Z --
+//  the "entry" face of a slab occupying z in [0, 0.2]) and z=0.2 (true
+//  outward normal +Z -- the "exit" face), both carrying a real
+//  DielectricMaterial (eta=1.5).  A seed chain traced from z=-3 to
+//  z=+3 along +Z crosses both at normal incidence: the entry face
+//  hits front-on (no flip -- reported already agrees with the true
+//  normal there) and the exit face hits back-on (flipped -- reported
+//  and true DISAGREE there), so the fixture isolates the bug to
+//  exactly the second crossing, matching the mechanism above.
+//
+//  RED-PROVED against the pre-DL-70 library, not just a same-tree
+//  consistency pin: run verbatim (unmodified) against an isolated
+//  checkout of `master` `32824325` (the DL-70 slice's own parent
+//  commit, built in a separate worktree under the session scratchpad,
+//  never the shared checkout or this worktree), this exact assertion
+//  FAILS --
+//
+//    Assertion failed: (chain[1].isExiting == true), function
+//    TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates,
+//    file ManifoldSolverTest.cpp (the "MONEY" isExiting assertion below).
+//
+//  -- because that commit's `SnellContinueChain` still copies the RAW
+//  `ri.geometric.vGeomNormal` into `mv.geomNormal`
+//  (`ManifoldSolver.cpp` pre-fix ~:3982), which a double-sided plane
+//  always flips to oppose the ray, so `cosI` reads negative
+//  ("entering") at BOTH crossings and `chain[1].isExiting` comes back
+//  `false` instead of `true`.  On the current (fixed) tree, where
+//  `mv.geomNormal = ri.geometric.UnflippedGeomNormal()`, the same
+//  fixture passes.  The second block below (the `preFix*` locals) is a
+//  from-first-principles restatement of the SAME mechanism kept
+//  in-line so a reader doesn't have to go build the old commit to see
+//  why it fails -- the ACTUAL red-proof is the assertion above it,
+//  confirmed by literally building and running this file against
+//  `32824325`.
+//////////////////////////////////////////////////////////////////////
+static void TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates()
+{
+	std::cout << "Group 15: SnellContinueChain bEntering alternates across a double-sided slab (DL-70 P2-1)" << std::endl;
+
+	// Entry face at z=0: winding gives true normal -Z (cross(dpdu,dpdv)
+	// with dpdu ~ (0,2,0), dpdv ~ (2,0,0) -> (0,0,-4)).
+	const Point3 entryCorners[4] = {
+		Point3( -1, -1, 0.0 ), Point3( -1, 1, 0.0 ), Point3( 1, 1, 0.0 ), Point3( 1, -1, 0.0 )
+	};
+	// Exit face at z=0.2: winding gives true normal +Z (the sub-test-5
+	// pattern from GeomNormalOrientationSitesTest.cpp: dpdu ~ (2,0,0),
+	// dpdv ~ (0,2,0) -> (0,0,4)).
+	const Point3 exitCorners[4] = {
+		Point3( -1, -1, 0.2 ), Point3( 1, -1, 0.2 ), Point3( 1, 1, 0.2 ), Point3( -1, 1, 0.2 )
+	};
+
+	ClippedPlaneGeometry* gEntry = new ClippedPlaneGeometry( entryCorners, /*bDoubleSided*/true );
+	Object* oEntry = new Object( gEntry );  gEntry->release();
+	oEntry->FinalizeTransformations();
+
+	ClippedPlaneGeometry* gExit = new ClippedPlaneGeometry( exitCorners, /*bDoubleSided*/true );
+	Object* oExit = new Object( gExit );  gExit->release();
+	oExit->FinalizeTransformations();
+
+	const Scalar eta = 1.5;
+	UniformScalarPainter* tau = new UniformScalarPainter( 1.0 );  tau->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter( eta );  ior->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 1000000.0 );  scat->addref();  // delta pass-through
+	DielectricMaterial* material = new DielectricMaterial( *tau, *ior, *scat, false );
+	material->addref();
+	oEntry->AssignMaterial( *material );
+	oExit->AssignMaterial( *material );
+
+	ObjectManager* manager = new ObjectManager( false, false, 4, 8 );
+	manager->addref();
+	manager->AddItem( oEntry, "slab_entry" );
+	manager->AddItem( oExit,  "slab_exit" );
+
+	Scene* scene = new Scene();
+	scene->addref();
+	scene->SetObjectManager( manager );
+
+	std::vector<IShaderOp*> noOps;
+	IShader* pShader = 0;
+	RISE_API_CreateStandardShader( &pShader, noOps );
+	IRayCaster* pICaster = 0;
+	RISE_API_CreateRayCaster( &pICaster, false, 10, *pShader, true );
+
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	const Point3 start( 0, 0, -3 );
+	const Point3 end(   0, 0,  3 );
+	const unsigned int produced = solver.BuildSeedChain(
+		start, end, *scene, *pICaster, chain, /*applyEmitterStop*/true );
+
+	assert( produced == 2 );
+	assert( chain.size() == 2 );
+
+	// POST-fix mechanism, on the chain BuildSeedChain actually produced:
+	// entry face is a true entry, exit face is a true exit.
+	assert( chain[0].isExiting == false );
+	assert( chain[1].isExiting == true );
+
+	// THE MONEY ASSERTION: they differ (alternate), which is exactly
+	// what a raw-`vGeomNormal` (pre-fix) reconstruction could not do --
+	// verified directly below by re-deriving what the PRE-fix `cosI`
+	// sign would have been at each vertex from first principles (the
+	// double-sided flip rule itself, not the fixed helper), using the
+	// same +Z trace direction BuildSeedChain used.
+	assert( chain[0].isExiting != chain[1].isExiting );
+
+	const Vector3 dir( 0, 0, 1 );
+	// A double-sided ClippedPlaneGeometry's REPORTED vGeomNormal always
+	// opposes the ray (that is the entire DL-70 bug): front-face hits
+	// already oppose it by construction, back-face hits get flipped to.
+	// So the PRE-fix `mv.geomNormal` at every crossing on this fixture
+	// would have been exactly `-dir`, regardless of which face.
+	const Vector3 preFixReportedNormal = dir * -1.0;
+	const Scalar preFixCosIEntry = Vector3Ops::Dot( dir, preFixReportedNormal );
+	const Scalar preFixCosIExit  = Vector3Ops::Dot( dir, preFixReportedNormal );
+	const bool preFixEnteringEntry = ( preFixCosIEntry < 0.0 );
+	const bool preFixEnteringExit  = ( preFixCosIExit  < 0.0 );
+	assert( preFixEnteringEntry == true );
+	assert( preFixEnteringExit  == true );   // BUG: pre-fix reads "entering" at the EXIT face too
+	assert( preFixEnteringEntry == preFixEnteringExit );   // pre-fix: constant, does NOT alternate
+
+	safe_release( pICaster );
+	safe_release( pShader );
+	scene->release();
+	manager->release();
+	oEntry->release();
+	oExit->release();
+	material->release();
+	scat->release();
+	ior->release();
+	tau->release();
+
+	std::cout << "  PASS: bEntering alternates true->false across the two crossings (post-fix); "
+		<< "would have been constant true->true pre-fix." << std::endl;
+}
+
+// ============================================================
 // main
 // ============================================================
 
@@ -1686,6 +1862,10 @@ int main()
 	TestAngleDiffJacobian_SingleVertex_Reflection();
 	TestAngleDiffJacobian_SingleVertex_Refraction();
 	TestAngleDiffJacobian_TwoVertex();
+
+	// Group 15: DL-70 chain-level pin (SnellContinueChain bEntering on a
+	// double-sided slab caster)
+	TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates();
 
 	std::cout << std::endl;
 	std::cout << "========================================" << std::endl;

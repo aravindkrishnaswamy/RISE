@@ -1223,7 +1223,21 @@ namespace {
 				// exiting a closed solid is a topology question (PBRT 4e
 				// §11.3.4).  Using shading on bumpy dielectrics mis-orders
 				// the medium stack on connection rays.
-				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, d );
+				//
+				// DL-70 (the exact twin of LightSampler.cpp's NEE shadow
+				// walk — see the long note there): it must be the TRUE,
+				// ray-INDEPENDENT geometric normal.  On a double-sided
+				// mesh the reported one always opposes the ray, so the
+				// raw dot read "entering" at every crossing and the stack
+				// was never unwound.  `TrueGeomFacing` undoes the flip and
+				// is a no-op on every geometry that does not set it; a
+				// RAY-DERIVED normal (HairGeometry) is skipped, since a
+				// 1-D curve has no interior for a medium to occupy.
+				if( !ri.geometric.HasTrueGeomSide() ) {
+					segStart = boundaryDist;
+					continue;
+				}
+				const Scalar ndotd = ri.geometric.TrueGeomFacing( d );
 				if( ndotd < 0 ) {
 					stack.push( pHitObj, pObjMedium );
 				} else {
@@ -2309,7 +2323,39 @@ namespace {
 				// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
 				// Fresnel angular dependence is shading-frame).
 				const Vector3 wo_bss = -currentRay.Dir();
-				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+				// DL-70: against the TRUE, ray-INDEPENDENT geometric
+				// normal.  A double-sided mesh reports a `vGeomNormal`
+				// that opposes the ray at every hit, so this gate was an
+				// unconditional PASS and a BACK-face (interior) hit was
+				// admitted into BSSRDF entry sampling -- feeding
+				// `BSSRDFSampling::SampleEntryPoint`, whose own DL-71
+				// correction already works in TRUE-normal space, a
+				// shading point on the wrong side of the surface.
+				// `TrueGeomFacing` restores the agreement; it is a no-op
+				// on single-sided meshes and analytic primitives.
+				// Deliberately NOT a `HasTrueGeomSide()` SKIP: a hair hit
+				// has no true side (DL-75), but rejecting it here would
+				// silently remove subsurface scattering from hair, a
+				// combination DL-75 left undefined-but-permitted and
+				// `HairSSSEntryNormalTest` characterises as producing
+				// well-defined output.  `TrueGeomFacing` is the identity
+				// on a ray-derived normal, so hair keeps exactly its
+				// pre-DL-70 behaviour here.
+				//
+				// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+				// semantics -- "outside" is the single, fixed, TRUE
+				// outward normal, so exactly one face of a double-sided
+				// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+				// with a diffusion profile (a leaf, a cloth card) is
+				// legitimately front on BOTH faces, and this gate now
+				// silently drops SSS entry from whichever face disagrees
+				// with the TRUE normal (pre-DL-70 it admitted both faces,
+				// but fed the WRONG-hemisphere normal into
+				// `SampleEntryPoint` on the disagreeing face -- DL-71's
+				// fix already made that an away-facing frame, so the
+				// pre-fix "both faces admitted" behaviour was not
+				// correct SSS on the second face either).  See DL-96.
+				const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 				// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
 				// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
 				const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
@@ -2397,7 +2443,39 @@ namespace {
 				if constexpr( Traits::is_pel ) {
 					if( ri.pMaterial->GetRandomWalkSSSParams() ) {
 						const Vector3 wo_bss = -currentRay.Dir();
-						const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+						// DL-70: against the TRUE, ray-INDEPENDENT geometric
+						// normal.  A double-sided mesh reports a `vGeomNormal`
+						// that opposes the ray at every hit, so this gate was an
+						// unconditional PASS and a BACK-face (interior) hit was
+						// admitted into BSSRDF entry sampling -- feeding
+						// `BSSRDFSampling::SampleEntryPoint`, whose own DL-71
+						// correction already works in TRUE-normal space, a
+						// shading point on the wrong side of the surface.
+						// `TrueGeomFacing` restores the agreement; it is a no-op
+						// on single-sided meshes and analytic primitives.
+						// Deliberately NOT a `HasTrueGeomSide()` SKIP: a hair hit
+						// has no true side (DL-75), but rejecting it here would
+						// silently remove subsurface scattering from hair, a
+						// combination DL-75 left undefined-but-permitted and
+						// `HairSSSEntryNormalTest` characterises as producing
+						// well-defined output.  `TrueGeomFacing` is the identity
+						// on a ray-derived normal, so hair keeps exactly its
+						// pre-DL-70 behaviour here.
+						//
+						// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+						// semantics -- "outside" is the single, fixed, TRUE
+						// outward normal, so exactly one face of a double-sided
+						// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+						// with a diffusion profile (a leaf, a cloth card) is
+						// legitimately front on BOTH faces, and this gate now
+						// silently drops SSS entry from whichever face disagrees
+						// with the TRUE normal (pre-DL-70 it admitted both faces,
+						// but fed the WRONG-hemisphere normal into
+						// `SampleEntryPoint` on the disagreeing face -- DL-71's
+						// fix already made that an away-facing frame, so the
+						// pre-fix "both faces admitted" behaviour was not
+						// correct SSS on the second face either).  See DL-96.
+						const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 						// Fresnel cosine clamped via fabs+NEARZERO -- see PT site.
 						const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
 						cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
@@ -6056,7 +6134,39 @@ unsigned int GenerateLightSubpathImpl(
 			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
 			// Fresnel angular dependence is shading-frame).
 			const Vector3 wo_bss = -currentRay.Dir();
-			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+			// DL-70: against the TRUE, ray-INDEPENDENT geometric
+			// normal.  A double-sided mesh reports a `vGeomNormal`
+			// that opposes the ray at every hit, so this gate was an
+			// unconditional PASS and a BACK-face (interior) hit was
+			// admitted into BSSRDF entry sampling -- feeding
+			// `BSSRDFSampling::SampleEntryPoint`, whose own DL-71
+			// correction already works in TRUE-normal space, a
+			// shading point on the wrong side of the surface.
+			// `TrueGeomFacing` restores the agreement; it is a no-op
+			// on single-sided meshes and analytic primitives.
+			// Deliberately NOT a `HasTrueGeomSide()` SKIP: a hair hit
+			// has no true side (DL-75), but rejecting it here would
+			// silently remove subsurface scattering from hair, a
+			// combination DL-75 left undefined-but-permitted and
+			// `HairSSSEntryNormalTest` characterises as producing
+			// well-defined output.  `TrueGeomFacing` is the identity
+			// on a ray-derived normal, so hair keeps exactly its
+			// pre-DL-70 behaviour here.
+			//
+			// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+			// semantics -- "outside" is the single, fixed, TRUE
+			// outward normal, so exactly one face of a double-sided
+			// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+			// with a diffusion profile (a leaf, a cloth card) is
+			// legitimately front on BOTH faces, and this gate now
+			// silently drops SSS entry from whichever face disagrees
+			// with the TRUE normal (pre-DL-70 it admitted both faces,
+			// but fed the WRONG-hemisphere normal into
+			// `SampleEntryPoint` on the disagreeing face -- DL-71's
+			// fix already made that an away-facing frame, so the
+			// pre-fix "both faces admitted" behaviour was not
+			// correct SSS on the second face either).  See DL-96.
+			const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
 			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
 			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
@@ -6143,7 +6253,39 @@ unsigned int GenerateLightSubpathImpl(
 			if constexpr( Traits::is_pel ) {
 				if( ri.pMaterial->GetRandomWalkSSSParams() ) {
 					const Vector3 wo_bss = -currentRay.Dir();
-					const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+					// DL-70: against the TRUE, ray-INDEPENDENT geometric
+					// normal.  A double-sided mesh reports a `vGeomNormal`
+					// that opposes the ray at every hit, so this gate was an
+					// unconditional PASS and a BACK-face (interior) hit was
+					// admitted into BSSRDF entry sampling -- feeding
+					// `BSSRDFSampling::SampleEntryPoint`, whose own DL-71
+					// correction already works in TRUE-normal space, a
+					// shading point on the wrong side of the surface.
+					// `TrueGeomFacing` restores the agreement; it is a no-op
+					// on single-sided meshes and analytic primitives.
+					// Deliberately NOT a `HasTrueGeomSide()` SKIP: a hair hit
+					// has no true side (DL-75), but rejecting it here would
+					// silently remove subsurface scattering from hair, a
+					// combination DL-75 left undefined-but-permitted and
+					// `HairSSSEntryNormalTest` characterises as producing
+					// well-defined output.  `TrueGeomFacing` is the identity
+					// on a ray-derived normal, so hair keeps exactly its
+					// pre-DL-70 behaviour here.
+					//
+					// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
+					// semantics -- "outside" is the single, fixed, TRUE
+					// outward normal, so exactly one face of a double-sided
+					// mesh admits BSSRDF entry.  An OPEN double-sided sheet
+					// with a diffusion profile (a leaf, a cloth card) is
+					// legitimately front on BOTH faces, and this gate now
+					// silently drops SSS entry from whichever face disagrees
+					// with the TRUE normal (pre-DL-70 it admitted both faces,
+					// but fed the WRONG-hemisphere normal into
+					// `SampleEntryPoint` on the disagreeing face -- DL-71's
+					// fix already made that an away-facing frame, so the
+					// pre-fix "both faces admitted" behaviour was not
+					// correct SSS on the second face either).  See DL-96.
+					const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo_bss );
 					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
 					cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
 					if( cosInGeom > NEARZERO ) {

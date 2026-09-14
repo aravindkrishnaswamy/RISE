@@ -360,6 +360,55 @@ namespace RISE
 		//! truthful about the reported orientation either way.
 		bool						bGeomNormalRayDerived;
 
+		//! THE shared recovery for the two flags above (DL-70).  Returns
+		//! the TRUE, ray-independent, winding-order geometric normal: the
+		//! reported `vGeomNormal` with the double-sided / back-face
+		//! orient-to-ray flip undone, and the `bGeomNormalRayDerived`
+		//! exception honoured (a fabricated, ray-derived normal has no
+		//! flip to undo, so it is returned AS REPORTED -- i.e. still
+		//! facing the ray).
+		//!
+		//! USE THIS, not a raw `vGeomNormal` read, for every
+		//! entry-vs-exit / front-vs-back / which-side-of-the-real-surface
+		//! test.  A raw read is deliberately always ray-facing on a
+		//! double-sided hit, which collapses exactly the distinction such
+		//! a test exists to make (DL-70 enumerated fourteen consumers that
+		//! did this and went blind on double-sided geometry).
+		//!
+		//! NOT for "which way does this surface face the ray" -- that
+		//! question wants the reported orientation and should keep reading
+		//! `vGeomNormal` directly.  And NOT on its own where a hit may be
+		//! HAIR: pair it with `HasTrueGeomSide()` and SKIP (or fall back)
+		//! when that is false, because for a ray-derived normal this
+		//! returns a ray-facing direction that is not a surface side at
+		//! all.  See both flags' doc comments above for the contract, and
+		//! docs/DL70_GEOM_NORMAL_ORIENTATION_SITES.md for the site table.
+		inline Vector3 UnflippedGeomNormal() const
+		{
+			return ( bGeomNormalOrientedToRay && !bGeomNormalRayDerived )
+				? -vGeomNormal : vGeomNormal;
+		}
+
+		//! Signed facing of the TRUE surface (`UnflippedGeomNormal()`)
+		//! against an arbitrary direction `d`.  Negative = `d` travels
+		//! INTO the surface (a true entry / front-face approach);
+		//! positive = `d` travels out of it (a true exit / back-face
+		//! approach).  Same caveats as `UnflippedGeomNormal()`.
+		inline Scalar TrueGeomFacing( const Vector3& d ) const
+		{
+			return Vector3Ops::Dot( UnflippedGeomNormal(), d );
+		}
+
+		//! True when `UnflippedGeomNormal()` / `TrueGeomFacing()` answer a
+		//! meaningful which-side-of-the-real-surface question -- i.e. when
+		//! the reported geometric normal is a genuine surface property
+		//! rather than a per-ray fabrication.  False only for
+		//! `HairGeometry` today (see `bGeomNormalRayDerived`).
+		inline bool HasTrueGeomSide() const
+		{
+			return !bGeomNormalRayDerived;
+		}
+
 		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)
 
 		//! Secondary texture coordinates (TEXCOORD_1 from glTF; NOT the

@@ -1028,8 +1028,16 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// chosen axis is the actual face orientation, not Phong-
 		// interpolated or bump-perturbed.  On analytical primitives
 		// shading == geometric so this is a no-op there.
+		//
+		// DL-70: and the TRUE, RAY-INDEPENDENT one.  `BoxUVGenerator`
+		// selects its box side from the SIGN of the normal's dominant
+		// component, so on a double-sided mesh (where `vGeomNormal` is
+		// flipped to oppose whichever ray arrived) the SAME surface point
+		// was charted onto the opposite box side depending on which side
+		// the ray came from -- a view-dependent texture chart, which a
+		// surface parameterisation must never be.
 		if( pUVGenerator ) {
-			pUVGenerator->GenerateUV( ri.geometric.ptIntersection, ri.geometric.vGeomNormal, ri.geometric.ptCoord );
+			pUVGenerator->GenerateUV( ri.geometric.ptIntersection, ri.geometric.UnflippedGeomNormal(), ri.geometric.ptCoord );
 		}
 
 		// Transform the normals back

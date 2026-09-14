@@ -66,6 +66,49 @@ namespace RISE
 			Point3				position;		///< World-space position on specular surface
 			Vector3				normal;			///< Surface normal (world space) — Phong-interpolated SHADING normal on triangle meshes; on analytical primitives it's the same as `geomNormal`.  Used by Newton's Jacobian and the chain-throughput math (which want the smooth shading normal so derivatives are well-defined across triangle edges).
 			Vector3				geomNormal;		///< Geometric (face) normal in world space.  On analytical primitives identical to `normal`.  On triangle meshes this is the actual flat-triangle face normal — INDEPENDENT of Phong vertex-normal interpolation.  Used by `ValidateChainPhysics` to test wi/wo against the actual surface (not the shading approximation), so chains aren't spuriously rejected when the Phong-tilted shading normal disagrees with the real geometry — empirically this was the dominant source of `physicsFail` rejections on smooth-displaced caustics (see docs/SMS_LEVENBERG_MARQUARDT.md).
+
+			//! INVARIANT (DL-70): this is the TRUE, RAY-INDEPENDENT outward
+			//! normal -- every producer stores
+			//! `RayIntersectionGeometric::UnflippedGeomNormal()`, never the
+			//! reported `vGeomNormal`, which a double-sided triangle mesh
+			//! (and ClippedPlane / BezierPatch on a back-face hit) flips to
+			//! oppose the incoming ray.  Two reasons it must be the unflipped
+			//! one.  (a) `BuildSeedChain`'s `bEntering` reads its SIGN against
+			//! the chain direction; the reported normal's sign is a constant
+			//! on such a mesh, which is why that site used to lean on the IOR
+			//! stack's `containsCurrent()` override to catch the
+			//! thin-double-sided case at all (and still missed a walk that
+			//! STARTS inside the solid, where nothing was pushed yet).
+			//! (b) Several sites republish this field into a synthetic
+			//! `RayIntersectionGeometric` whose `bGeomNormalOrientedToRay`
+			//! defaults FALSE -- a flipped value stored here would be
+			//! re-published as an unflipped one and lie to any consumer that
+			//! performs the recovery.
+			//!
+			//! The switch is invisible to this struct's other consumers by
+			//! construction: `ValidateChainPhysics` and the two-stage
+			//! `failIdx` scan test a sign PRODUCT `(wi.n)(wo.n)`, and
+			//! `EvaluateChainGeometry` / `EvaluateChainCosineProduct` /
+			//! `cosV1atX` take `fabs` -- all four are invariant under a global
+			//! sign flip of this vector.
+			//!
+			//! EXCEPTION: the three photon-chain reconstruction producers in
+			//! `ManifoldSolver.cpp` (~:5587, ~:6444, ~:7978) cannot recover
+			//! `UnflippedGeomNormal()` from a serialized `SMSPhotonChainVertex`
+			//! -- the photon record's own `geomNormal` slot is a legacy-photon
+			//! zero SENTINEL for photons captured before that field existed --
+			//! and fall back to `pv.normal` (the photon's stored SHADING
+			//! normal, which IS ray-facing: `SMSPhotonMap.cpp` captures it as
+			//! `ri.geometric.vNormal`, and a double-sided/back-face geometry
+			//! flips its shading normal in lockstep with `vGeomNormal`).  On
+			//! such a legacy-sentinel photon this field therefore does NOT
+			//! carry the TRUE-outward invariant and can disagree in sign with
+			//! `normal` below -- which itself ALWAYS keeps the ray-facing
+			//! convention, unlike this field.  The two are read jointly only
+			//! by the `SMS_SOLVE_DIAG`-gated `dotGS` diagnostic
+			//! (`ManifoldSolver.cpp` ~:2244), which is instrumentation, not a
+			//! solve-path consumer -- no production consumer of this struct
+			//! compares `normal` against `geomNormal`'s sign.
 			Vector3				dpdu;			///< Position derivative w.r.t. first surface param (world space)
 			Vector3				dpdv;			///< Position derivative w.r.t. second surface param (world space)
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)

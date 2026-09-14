@@ -2542,7 +2542,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			}
 			vertex.position = ri.geometric.ptIntersection;
 			vertex.normal = ri.geometric.vNormal;
-			vertex.geomNormal = ri.geometric.vGeomNormal;
+			vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri.geometric.ptCoord;
 			snapped = true;
 		}
@@ -2566,7 +2566,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			}
 			vertex.position = ri2.geometric.ptIntersection;
 			vertex.normal = ri2.geometric.vNormal;
-			vertex.geomNormal = ri2.geometric.vGeomNormal;
+			vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri2.geometric.ptCoord;
 			snapped = true;
 		}
@@ -2767,7 +2767,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			if( ri.geometric.derivatives.valid ) {
 				vertex.position = ri.geometric.ptIntersection;
 				vertex.normal = ri.geometric.vNormal;
-				vertex.geomNormal = ri.geometric.vGeomNormal;
+				vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 				vertex.dpdu = ri.geometric.derivatives.dpdu;
 				vertex.dpdv = ri.geometric.derivatives.dpdv;
 				vertex.dndu = ri.geometric.derivatives.dndu;
@@ -2812,7 +2812,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 				if( ri2.geometric.derivatives.valid ) {
 					vertex.position = ri2.geometric.ptIntersection;
 					vertex.normal = ri2.geometric.vNormal;
-					vertex.geomNormal = ri2.geometric.vGeomNormal;
+					vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 					vertex.dpdu = ri2.geometric.derivatives.dpdu;
 					vertex.dpdv = ri2.geometric.derivatives.dpdv;
 					vertex.dndu = ri2.geometric.derivatives.dndu;
@@ -3979,7 +3979,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		ManifoldVertex mv;
 		mv.position = ri.geometric.ptIntersection;
 		mv.normal = ri.geometric.vNormal;
-		mv.geomNormal = ri.geometric.vGeomNormal;
+		mv.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 		// Surface parameters at the hit.  Without this, vertex.uv stays at
 		// its default (0, 0) — which is a parametric pole on most closed
 		// surfaces.  Future SMS variants that key derivative computation
@@ -4002,6 +4002,14 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		//     inside this specific mesh).  Catches the thin-double-sided-
 		//     mesh case where both crossings have the normal pointing the
 		//     same way, so a raw cosI-sign test misses it.
+		//     (DL-70: `mv.geomNormal` is now the TRUE, ray-independent
+		//     outward normal -- see the invariant on the field in
+		//     ManifoldSolver.h -- so the cosI test below is correct on a
+		//     double-sided mesh in its own right, and this override is no
+		//     longer load-bearing for that case.  It still is for a walk
+		//     that STARTS inside the solid, which it always was: nothing
+		//     has been pushed yet there, so the override cannot fire and
+		//     only the now-correct sign test answers.)
 		//   - Else fall back to sign(dot(dir, normal)) < 0 ⇒ entering.
 		//     This is the correct test for closed volumes (sphere) AND
 		//     multi-object slabs-from-planes (each plane is a distinct

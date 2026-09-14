@@ -70,6 +70,29 @@ namespace RISE
 												///< and any "which side of the actual surface is this ray
 												///< on" decision at receiver-side photon reconstruction.
 												///< On analytical primitives equals `normal` by construction.
+												///<
+												///< INVARIANT (DL-70): this is the TRUE, RAY-INDEPENDENT
+												///< outward normal -- the same invariant
+												///< `ManifoldVertex::geomNormal` carries (see
+												///< ManifoldSolver.h ~:69-91 for the full rationale).  The
+												///< sole writer, `SMSPhotonMap.cpp` ~:379, stores
+												///< `ri.geometric.UnflippedGeomNormal()`, never the reported
+												///< `vGeomNormal`, which a double-sided mesh (and
+												///< ClippedPlane / BezierPatch on a back-face hit) flips to
+												///< oppose the incoming ray -- because this record is later
+												///< copied straight into a synthetic
+												///< `RayIntersectionGeometric` rig whose
+												///< `bGeomNormalOrientedToRay` defaults FALSE
+												///< (`ManifoldSolver.cpp`'s photon-chain reconstruction), so a
+												///< flipped value stored here would be republished as an
+												///< unflipped one and lie to any consumer that performs the
+												///< recovery.  EXCEPTION: a LEGACY photon serialized before
+												///< this field existed carries the zero sentinel, and the
+												///< three reconstruction sites fall back to `normal` above --
+												///< which is NOT this invariant, it is the ray-facing shading
+												///< normal -- so a legacy-sentinel photon's `geomNormal` can
+												///< disagree in sign with `normal` (see
+												///< `ManifoldSolver.h`'s own note on this exception).
 			Scalar				eta;			///< Material IOR at this vertex.
 			const IObject*		pObject;
 			const IMaterial*	pMaterial;

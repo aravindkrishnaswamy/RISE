@@ -344,7 +344,15 @@ namespace
 			// exiting on a reflection vertex, propagating a wrong
 			// `isExiting` bit into the photon record and downstream
 			// Fresnel etaI/etaT pair.  PBRT 4e §10.1.1.
-			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vGeomNormal );
+			// DL-70: against the TRUE, ray-INDEPENDENT geometric normal.
+			// A double-sided specular caster reports a `vGeomNormal`
+			// opposing the photon at every vertex, so `cosI` was
+			// unconditionally negative and the reflection branch stamped
+			// `bEntering = true` on a back-face vertex too, propagating a
+			// wrong side bit (and therefore a wrong Fresnel etaI/etaT
+			// pair) into the photon record.  No-op on every geometry that
+			// does not flip.
+			const Scalar cosI = ri.geometric.TrueGeomFacing( ray.Dir() );
 			const bool bReflection = ( pScat->type == ScatteredRay::eRayReflection );
 			const bool bEntering = bReflection
 			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
@@ -361,7 +369,14 @@ namespace
 			// (ManifoldSolver::ValidateChainPhysics) actually fires on
 			// photon-aided chains.  Without this slot, the validator would
 			// silently fall back to shading via its NEARZERO check.
-			v.geomNormal = ri.geometric.vGeomNormal;
+			// DL-70: store the TRUE, ray-INDEPENDENT outward normal, the
+			// same invariant `ManifoldVertex::geomNormal` carries -- the
+			// receiver-side reconstruction copies this field straight
+			// into a synthetic `RayIntersectionGeometric` whose
+			// `bGeomNormalOrientedToRay` defaults FALSE, so anything
+			// stored flipped would be republished as an unflipped normal
+			// and lie to any consumer that performs the recovery.
+			v.geomNormal = ri.geometric.UnflippedGeomNormal();
 			v.pObject   = ri.pObject;
 			v.pMaterial = ri.pMaterial;
 			// eta comes from the material's specular info at this vertex.

@@ -83,8 +83,17 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// Make the reported normal oppose the ray — standard convention for
 	// shading/reflection.  Flipping the back-face normal also gives the
 	// "both sides visible" look without needing a double_sided material flag.
+	//
+	// DL-70 P3-f: track whether the negation ACTUALLY HAPPENED, not the
+	// (subtly different) `!bRawFront` predicate -- `bRawFront` is false at
+	// the measure-zero `dotND == 0` edge (grazing hit) too, where this `if`
+	// does NOT fire, so `!bRawFront` alone would mark the normal as flipped
+	// when it never was and `UnflippedGeomNormal()` would then negate an
+	// already-correct normal.
+	bool bDidFlip = false;
 	if( dotND > 0.0 ) {
 		N = N * -1.0;
+		bDidFlip = true;
 	}
 
 	ri.bHit           = true;
@@ -96,7 +105,7 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// The flip above orients the normal toward the ray on back-face hits
 	// -- record it so consumers needing the TRUE surface facing
 	// (RayCaster's x-ray self-hit test) can recover the unflipped sign.
-	ri.bGeomNormalOrientedToRay = !bRawFront;
+	ri.bGeomNormalOrientedToRay = bDidFlip;
 }
 
 void BezierPatchGeometry::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

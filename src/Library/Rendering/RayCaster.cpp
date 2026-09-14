@@ -570,10 +570,15 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	// Un-flip via the recorded per-hit flag before dotting; geometries
 	// that never flip (the flag stays false) get the raw dot back
 	// unchanged.
+	// (DL-70: now THE shared recovery on the record itself, which also
+	// honours `bGeomNormalRayDerived` -- a hair hit's fabricated normal
+	// has no flip to undo, so the raw facing is returned there.  Hair
+	// cannot reach this walk today, since `HairMaterial` does not report
+	// `CouldLightPassThrough`, but the helper makes that structural
+	// rather than incidental.)
 	auto trueGeomFacing = []( const RayIntersectionGeometric& g, const Vector3& d ) -> Scalar
 	{
-		const Scalar raw = Vector3Ops::Dot( g.vGeomNormal, d );
-		return g.bGeomNormalOrientedToRay ? -raw : raw;
+		return g.TrueGeomFacing( d );
 	};
 
 	while( skip < kMaxSkips )
@@ -2293,7 +2298,51 @@ bool RayCaster::CastShadowRayTransmittance(
 		//
 		// cosI is measured against the GEOMETRIC normal.  Entering when
 		// the ray travels into the surface (dot < 0), exiting otherwise.
-		const Vector3 geomN = ri.geometric.vGeomNormal;
+		//
+		// DL-70: against the TRUE, ray-INDEPENDENT geometric normal --
+		// `UnflippedGeomNormal()`, the same recovery this file's own
+		// `trueGeomFacing` self-hit classifier already used.  A
+		// double-sided mesh (and ClippedPlane / BezierPatch on a
+		// back-face hit) reports a `vGeomNormal` that opposes the ray at
+		// EVERY crossing, so the raw dot read "entering" on a genuine
+		// EXIT face too and the (Ni, Nt) pair below became glass->glass
+		// (matched indices, F = 0, T = 1) instead of glass->air: a
+		// double-sided pane transmitted ONE interface's Fresnel instead
+		// of two, and the IOR stack grew a second push instead of
+		// popping.  Note `fresnelNormal` below is unaffected either way
+		// (the two spellings agree on it by construction); only the
+		// (Ni, Nt) selection and the stack update were wrong.  The
+		// recovery is a no-op on every geometry that does not flip.
+		//
+		// DL-70 P3-g: deliberately NOT a `HasTrueGeomSide()` skip here,
+		// unlike the two medium-stack walks (`LightSampler.cpp`,
+		// `BDPTIntegrator.cpp`).  Those walks skip a hair crossing
+		// because a medium push/pop is a STATE-MACHINE balance question
+		// with no answer for a 1-D curve.  This site instead computes a
+		// per-crossing Fresnel TRANSMITTANCE, and a hair strand carrying
+		// a `clearTransmission` dielectric material (unusual but not
+		// forbidden -- geometry and material are independently
+		// assignable) DOES have a real first interface: on the first
+		// crossing `UnflippedGeomNormal()` is the IDENTITY for a
+		// ray-derived normal (see the type's own contract), so
+		// `bEntering` reads correctly and the real air->fiber Fresnel
+		// loss is applied.  Skipping outright, as the medium walks do,
+		// would DROP that correct first-interface attenuation entirely
+		// -- a regression for the common single-fiber-crossing case, not
+		// an improvement.  The residual imprecision is on the SECOND (and
+		// any later) crossing of the same or another fiber: the
+		// ray-derived normal still opposes the ray there too, so
+		// `bEntering` again reads "entering" instead of alternating, Ni
+		// and Nt both read the fiber's own IOR (matched, F = 0, T = 1),
+		// and the IOR stack gets an extra unpaired push per fiber instead
+		// of a pop.  This under-attenuates the true exit interface (which
+		// should also lose some light to Fresnel) but is benign in the
+		// sense that it introduces no negative/NaN/divide-by-zero and the
+		// dominant, physically real entry loss is still applied; hair
+		// scenes dense enough in transmissive fibers to grow the IOR
+		// stack toward its capacity are not a case this engine's fur/hair
+		// materials (which do not set `clearTransmission`) produce.
+		const Vector3 geomN = ri.geometric.UnflippedGeomNormal();
 		const Scalar cosRaw = Vector3Ops::Dot( dir, geomN );
 		const bool bEntering = ( cosRaw < 0.0 );
 

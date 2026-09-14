@@ -317,7 +317,31 @@ static RISEPel EvalShadowTransmittance(
 				// boundaries can flip the shading-normal sign while the
 				// ray hasn't actually crossed the face, mis-ordering
 				// the medium stack on every NEE ray.
-				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, ray.Dir() );
+				//
+				// DL-70: it must be the TRUE, ray-INDEPENDENT geometric
+				// normal, not the reported one.  A double-sided triangle
+				// mesh (and ClippedPlane/BezierPatch on a back-face hit)
+				// flips `vGeomNormal` to oppose the ray at EVERY
+				// crossing, so the raw dot is unconditionally negative:
+				// every crossing pushed and nothing was ever removed, and
+				// the medium then attenuated the WHOLE remaining distance
+				// to the light.  `TrueGeomFacing` undoes that flip; it is
+				// a no-op on single-sided meshes and analytic primitives.
+				//
+				// A hit whose normal is RAY-DERIVED (HairGeometry) is
+				// skipped outright rather than recovered: the un-flip is
+				// meaningless there (see
+				// RayIntersectionGeometric::bGeomNormalRayDerived), and a
+				// 1-D curve has no interior for a medium to occupy — the
+				// same reasoning IORStackSeeding's containment probe
+				// uses.  Before this guard a hair strand crossing the
+				// shadow ray pushed its interior medium once per strand
+				// and never removed it.
+				if( !ri.geometric.HasTrueGeomSide() ) {
+					segStart = boundaryDist;
+					continue;
+				}
+				const Scalar ndotd = ri.geometric.TrueGeomFacing( ray.Dir() );
 				if( ndotd < 0 ) {
 					// Front-face: entering this object
 					stack.push( pHitObj, pObjMedium );
@@ -470,7 +494,31 @@ static Scalar EvalShadowTransmittanceNM(
 				// boundaries can flip the shading-normal sign while the
 				// ray hasn't actually crossed the face, mis-ordering
 				// the medium stack on every NEE ray.
-				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, ray.Dir() );
+				//
+				// DL-70: it must be the TRUE, ray-INDEPENDENT geometric
+				// normal, not the reported one.  A double-sided triangle
+				// mesh (and ClippedPlane/BezierPatch on a back-face hit)
+				// flips `vGeomNormal` to oppose the ray at EVERY
+				// crossing, so the raw dot is unconditionally negative:
+				// every crossing pushed and nothing was ever removed, and
+				// the medium then attenuated the WHOLE remaining distance
+				// to the light.  `TrueGeomFacing` undoes that flip; it is
+				// a no-op on single-sided meshes and analytic primitives.
+				//
+				// A hit whose normal is RAY-DERIVED (HairGeometry) is
+				// skipped outright rather than recovered: the un-flip is
+				// meaningless there (see
+				// RayIntersectionGeometric::bGeomNormalRayDerived), and a
+				// 1-D curve has no interior for a medium to occupy — the
+				// same reasoning IORStackSeeding's containment probe
+				// uses.  Before this guard a hair strand crossing the
+				// shadow ray pushed its interior medium once per strand
+				// and never removed it.
+				if( !ri.geometric.HasTrueGeomSide() ) {
+					segStart = boundaryDist;
+					continue;
+				}
+				const Scalar ndotd = ri.geometric.TrueGeomFacing( ray.Dir() );
 				if( ndotd < 0 ) {
 					stack.push( pHitObj, pObjMedium );
 				} else {
