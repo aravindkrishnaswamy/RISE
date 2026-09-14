@@ -31,9 +31,11 @@
 #include "../Utilities/RenderParallelScope.h"
 #include <cmath>
 #include <cassert>
+#include <cstdint>
+#include <unordered_map>
+#include <utility>
 #ifdef RISE_ENABLE_MAILBOXING
 #include <atomic>
-#include <unordered_map>
 #endif
 
 inline unsigned int VoidPtrToUInt( const void* v )
@@ -76,6 +78,7 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
 	) :
   bDoubleSided( bDoubleSided_ ),
   bUseFaceNormals( bUseFaceNormals_ ),
+  m_bWatertight( false ),
   pPtrBVH( 0 )
 #ifdef RISE_ENABLE_MAILBOXING
   , geometryId( s_nextGeometryId.fetch_add(1) )
@@ -244,6 +247,10 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
+	// Stale topology, same reasoning as the bakes below: a re-fed mesh's
+	// old watertightness answer describes edges that no longer exist.
+	// DoneIndexedTriangles recomputes it once the new topology is final.
+	m_bWatertight = false;
 	// Any bake describes the OLD vertex data.  In practice this runs at
 	// construction, before anything could have queried a signal, but the
 	// invariant "a table always describes the vertices currently in this
@@ -582,10 +589,194 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 	ComputeAreas();
 
+	// DL-31.  Topology is final now (ptr_polygons is built, indexedtris
+	// -- which is what carried the index triples -- was just cleared
+	// above), so this is the one place watertightness can be computed
+	// from live state.
+	ComputeWatertightness();
+
 	// Vertex arrays and topology are final only now (the block above
 	// re-points every PointerTriangle into pPoints/pNormals), so anything
 	// baked before this call describes storage that no longer exists.
 	InvalidateSignalBakes();
+}
+
+//! DL-31.  Every edge of `ptr_polygons`, keyed by its two ENDPOINT
+//! POSITION INDICES (undirected -- (i,j) and (j,i) are the same edge),
+//! must occur in exactly two triangles for the mesh to be a closed
+//! 2-manifold with no boundary.  The index is recovered from each
+//! `PointerTriangle::pVertices[k]` by pointer arithmetic into `pPoints`
+//! rather than read from `indexedtris`, because `DoneIndexedTriangles`
+//! has already freed that list by the time this runs (see its own
+//! comment) -- `ptr_polygons` is the only surviving source of topology.
+//!
+//! A CHEAP NECESSARY CONDITION, not a full manifold/orientability
+//! certificate: two triangles sharing an edge with the SAME winding
+//! (a non-orientable identification) would still pass this count. That
+//! residual is recorded rather than chased further here -- the parity
+//! ray test below only needs "no boundary" (every edge internal) to be
+//! well-defined, and a non-orientable closed surface is not constructible
+//! from consistently-wound authored triangles in the first place.
+void TriangleMeshGeometryIndexed::ComputeWatertightness()
+{
+	m_bWatertight = false;
+	if( ptr_polygons.empty() || pPoints.empty() ) {
+		return;
+	}
+
+	const Point3* const pBase = &pPoints[0];
+	std::unordered_map<std::uint64_t, int> edgeCounts;
+	edgeCounts.reserve( ptr_polygons.size() * 3 );
+
+	for( MyPointerTriangleList::const_iterator i = ptr_polygons.begin(), e = ptr_polygons.end(); i != e; ++i ) {
+		const PointerTriangle& tri = *i;
+		unsigned int idx[3];
+		for( int k = 0; k < 3; ++k ) {
+			const std::ptrdiff_t off = tri.pVertices[k] - pBase;
+			if( off < 0 || (std::size_t)off >= pPoints.size() ) {
+				// A pointer outside pPoints means broken state -- refuse
+				// rather than guess.  No diagnostic: this is an internal
+				// consistency failure, not an authoring one.
+				return;
+			}
+			idx[k] = (unsigned int)off;
+		}
+		bool degenerate = false;
+		for( int k = 0; k < 3; ++k ) {
+			unsigned int a = idx[k];
+			unsigned int b = idx[(k + 1) % 3];
+			if( a == b ) { degenerate = true; continue; }
+			if( a > b ) { std::swap( a, b ); }
+			const std::uint64_t key = ( (std::uint64_t)a << 32 ) | (std::uint64_t)b;
+			++edgeCounts[key];
+		}
+		if( degenerate ) {
+			GlobalLog()->PrintEx( eLog_Info,
+				"TriangleMeshGeometryIndexed:: this mesh has a degenerate (repeated-vertex) "
+				"triangle, so it cannot be certified watertight -- interior() will read its "
+				"honest unsigned proximity() distance only, never a signed depth; see "
+				"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-31)." );
+			return;
+		}
+	}
+
+	// DL-31.  A closed 2-manifold with no boundary has EVERY edge shared
+	// by exactly two triangles: 1 is a boundary (an open sheet, or a mesh
+	// missing a face), 3+ is non-manifold (two or more surface sheets
+	// stitched through one edge).  Either way this stays an unsigned-only
+	// sheet -- see the header comment on `m_bWatertight` -- but unlike
+	// `DeepestOtherContainment`'s own per-QUERY refusal (deliberately
+	// silent there: a shared latch would print once per ray for every
+	// mesh AND plane in the scene, see that function's comment), this is
+	// a one-shot, BUILD-TIME diagnostic on the mesh itself: it fires once
+	// per authored mesh that fails the check, not once per interior()
+	// call, so it cannot spam and it tells an author what "unsigned
+	// only" traces back to.
+	unsigned int boundaryEdges = 0, nonManifoldEdges = 0;
+	for( std::unordered_map<std::uint64_t, int>::const_iterator i = edgeCounts.begin(), e = edgeCounts.end(); i != e; ++i ) {
+		if( i->second == 1 ) { ++boundaryEdges; }
+		else if( i->second > 2 ) { ++nonManifoldEdges; }
+	}
+
+	if( boundaryEdges > 0 || nonManifoldEdges > 0 ) {
+		GlobalLog()->PrintEx( eLog_Info,
+			"TriangleMeshGeometryIndexed:: this mesh is not watertight (%u boundary edge%s, "
+			"%u non-manifold edge%s) -- it will answer proximity() (an honest unsigned "
+			"distance) but REFUSE interior() (no certified inside test), unlike a closed "
+			"mesh.  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-31).",
+			boundaryEdges, boundaryEdges == 1 ? "" : "s",
+			nonManifoldEdges, nonManifoldEdges == 1 ? "" : "s" );
+		return;
+	}
+
+	m_bWatertight = true;
+}
+
+//! See the header for the full contract (fixed generic direction,
+//! both-faces geometric crossing count, only meaningful on a watertight
+//! mesh).
+bool TriangleMeshGeometryIndexed::RayParityInsideTest( const Point3& ptObject, bool& outInside ) const
+{
+	if( !pPtrBVH ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( (double)ptObject.x )
+	 || !RISE::IsFiniteDouble( (double)ptObject.y )
+	 || !RISE::IsFiniteDouble( (double)ptObject.z ) ) {
+		return false;
+	}
+
+	const Scalar diagonal = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+	if( !RISE::IsFiniteDouble( (double)diagonal ) || !( diagonal > Scalar( 0 ) ) ) {
+		return false;
+	}
+	const Scalar eps = MeshSignalBake::kOriginEpsilonFraction * diagonal;
+
+	// A fixed, non-axis-aligned, non-"nice" direction: an authored mesh's
+	// faces and edges are overwhelmingly axis-aligned or built from a few
+	// round angles, so this makes an exact tangency (a ray running exactly
+	// along a face, or exactly through an edge or vertex) the kind of
+	// coincidence that does not happen from ordinary authoring, rather
+	// than trying to detect and special-case one.
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( Scalar( 0.5257311121 ), Scalar( 0.8506508084 ), Scalar( 0.1234567891 ) ) );
+
+	Point3 origin = ptObject;
+	int crossings = 0;
+	// A closed mesh's own ray can cross it at most once per triangle;
+	// the guard exists only to bound a numerical runaway (e.g. an eps too
+	// small to make progress on a degenerate mesh), never expected to
+	// bind on a real one.
+	const int kMaxCrossings = 1000000;
+	for( int iter = 0; iter < kMaxCrossings; ++iter ) {
+		RayIntersectionGeometric ri( Ray( origin, dir ), nullRasterizerState );
+		ri.range = RISE_INFINITY;
+		// BOTH faces: this is a geometric crossing count, not a shading
+		// query, and must be unaffected by winding or `bDoubleSided` --
+		// see the header comment.
+		IntersectRay( ri, true, true, false );
+		if( !ri.bHit || !RISE::IsFiniteDouble( (double)ri.range ) || !( ri.range >= Scalar( 0 ) ) ) {
+			break;
+		}
+		++crossings;
+		origin = Point3Ops::mkPoint3( origin, dir * ( ri.range + eps ) );
+	}
+
+	outInside = ( crossings % 2 ) == 1;
+	return true;
+}
+
+//! See the header for the full contract (watertight-only, exact
+// magnitude reused from DistanceToSurface, exact sign from the parity
+// test, outExact honoured).
+bool TriangleMeshGeometryIndexed::SignedDistanceLower( const Point3& ptObject, const Scalar /*maxDistObject*/,
+	Scalar& outSigned, bool& outExact ) const
+{
+	outExact = false;
+	if( !m_bWatertight ) {
+		return false;		// DL-31 residual: an open or non-manifold mesh stays a sheet
+	}
+
+	// UNBOUNDED on purpose: IGeometry::SignedDistanceLower's contract
+	// forbids a range refusal (`maxDistObject` is an effort hint only,
+	// per the interface comment), while DistanceToSurface's OWN contract
+	// permits one -- so the incoming budget is never forwarded to it.
+	Scalar dist = Scalar( 0 );
+	if( !DistanceToSurface( ptObject, RISE_INFINITY, dist ) ) {
+		return false;
+	}
+
+	bool inside = false;
+	if( !RayParityInsideTest( ptObject, inside ) ) {
+		return false;
+	}
+
+	const Scalar sgn = inside ? -dist : dist;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;	// both the magnitude (DistanceToSurface is exact for this family) and the sign (a certified watertight mesh) are exact
+	return true;
 }
 
 void TriangleMeshGeometryIndexed::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
