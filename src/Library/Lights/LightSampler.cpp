@@ -1933,7 +1933,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const bool isVolumeScatter,
 	const IObject* pMediumObject,
 	const IGuidedNEEPdfBlend* pGuidedBlend,
-	const IORStack* pMisIorStack
+	const IORStack* pMisIorStack,
+	const Scalar neeTrainingScale
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -2554,7 +2555,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						// f2/pdf^2 = (contrib/pdfAlias)^2 = (f/p_nee)^2.
 						if( pOptimalMIS && !pOptimalMIS->IsReady() )
 						{
-							const Scalar lum = ColorMath::MaxValue( contrib );
+							// DL-72 P2-3: the accumulator's moment is of the
+							// INTEGRAND, and for a caller that scales this
+							// result afterwards (the BSSRDF entry NEE, whose
+							// partner trains the full exit throughput) the
+							// integrand is `neeTrainingScale * contrib`.
+							// 1 everywhere else, so unchanged there.
+							const Scalar lum = neeTrainingScale * ColorMath::MaxValue( contrib );
 							const Scalar f2 = lum * lum;
 							if( f2 > 0 && pdfAlias > 0 )
 							{
@@ -2654,7 +2661,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				if( pOptimalMIS && !pOptimalMIS->IsReady() && pMaterial )
 				{
 					const RISEPel fullIntegrand = envContrib * envPdf;
-					const Scalar lum = ColorMath::MaxValue( fullIntegrand );
+					// DL-72 P2-3: see the area-light arm above.
+					const Scalar lum = neeTrainingScale * ColorMath::MaxValue( fullIntegrand );
 					const Scalar f2 = lum * lum;
 					if( f2 > 0 && envPdf > 0 )
 					{
@@ -2751,7 +2759,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const bool isVolumeScatter,
 	const IObject* pMediumObject,
 	const IGuidedNEEPdfBlend* pGuidedBlend,
-	const IORStack* pMisIorStack
+	const IORStack* pMisIorStack,
+	const Scalar neeTrainingScale
 	) const
 {
 	Scalar result = 0;
@@ -3120,7 +3129,9 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			// to match.  f2/pdfAlias^2 = (contrib/pdfAlias)^2.
 			if( pOptimalMIS && !pOptimalMIS->IsReady() )
 			{
-				const Scalar f2 = contrib * contrib;
+				// DL-72 P2-3: NM twin -- see the RGB area-light arm.
+				const Scalar scaled = neeTrainingScale * contrib;
+				const Scalar f2 = scaled * scaled;
 				if( f2 > 0 && pdfAlias > 0 )
 				{
 					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->Accumulate(
@@ -3205,7 +3216,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// so fullIntegrand = envContrib * envPdf.
 				if( pOptimalMIS && !pOptimalMIS->IsReady() && pMaterial )
 				{
-					const Scalar fullIntegrand = envContrib * envPdf;
+					// DL-72 P2-3: NM twin -- see the RGB area-light arm.
+					const Scalar fullIntegrand = neeTrainingScale * envContrib * envPdf;
 					const Scalar f2 = fullIntegrand * fullIntegrand;
 					if( f2 > 0 && envPdf > 0 )
 					{

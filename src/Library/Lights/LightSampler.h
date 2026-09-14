@@ -844,6 +844,20 @@ namespace RISE
 			/// evaluated deterministically outside the stochastic
 			/// selection to preserve backward compatibility.
 			///
+			/// `neeTrainingScale` (DL-72 P2-3) multiplies the integrand
+			/// this call feeds to `OptimalMISAccumulator` -- and NOTHING
+			/// else; the returned radiance is unaffected at any value.
+			/// It exists because a caller may apply a further factor to
+			/// the returned contribution before it reaches the image, and
+			/// the accumulator's moment is of the INTEGRAND (see
+			/// OptimalMISAccumulator.h): the ONE caller that needs it is
+			/// PathTracingIntegrator's BSSRDF/random-walk entry NEE, whose
+			/// result is scaled by the area-measure `weightSpatial` on
+			/// return, so without it that arm would train `f/weightSpatial`
+			/// while its own MIS partner -- the BSSRDF exit continuation --
+			/// trains the full `f`.  Default 1 = every other call site,
+			/// where the returned value IS the contribution.
+			///
 			/// \return Direct lighting contribution (RGB)
 			RISEPel EvaluateDirectLighting(
 				const RayIntersectionGeometric& ri,					///< [in] Geometric intersection at shading point
@@ -856,7 +870,8 @@ namespace RISE
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
 				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
-				const IORStack* pMisIorStack = 0					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
+				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
+				const Scalar neeTrainingScale = 1					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -873,7 +888,8 @@ namespace RISE
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
 				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
-				const IORStack* pMisIorStack = 0					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
+				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
+				const Scalar neeTrainingScale = 1					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
 				) const;
 
 			/// Returns the alias-table selection probability for a given

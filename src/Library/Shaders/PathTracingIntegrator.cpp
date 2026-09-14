@@ -1273,21 +1273,24 @@ namespace
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
 		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag,
 		const IGuidedNEEPdfBlend* pGuidedBlend = 0,
-		const IORStack* pMisIorStack = 0 );
+		const IORStack* pMisIorStack = 0,
+		Scalar neeTrainingScale = 1 );
 	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
 		bool isVolumeScatter, const IObject* pMediumObject, const PelTag&,
-		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack )
-	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack ); }
+		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
+		Scalar neeTrainingScale )
+	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
 		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag,
-		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack )
-	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack ); }
+		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
+		Scalar neeTrainingScale )
+	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -1363,47 +1366,59 @@ namespace
 	template<> inline RISEPel PTBssrdfWeightSpatial<PelTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatial; }
 	template<> inline Scalar  PTBssrdfWeightSpatial<NMTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatialNM; }
 
-	// DL-72 (round 3): the directional "BSDF*cos at the scatter point"
-	// quantity IRayCaster.h documents for RAY_STATE::bsdfTimesCos, recovered
-	// algebraically for a BSSRDF exit from the already-computed weight/
-	// weightSpatial split -- no new BSSRDF-file code needed.
+	// DL-72 / DL-84 (round 4): the numerator `OptimalMISAccumulator` has to
+	// be trained with at a BSSRDF EXIT.
 	//
-	// BSSRDFSampling.h's own header comment gives:
+	// THE ACCUMULATOR'S CONTRACT, from its own derivation (Kondapaneni 2019;
+	// OptimalMISAccumulator.h "CORRECT MOMENT ESTIMATION"): technique i's
+	// moment is `M_i = E_{x~p_i}[(f(x)/p_i(x))^2]`, where `f` is THE
+	// INTEGRAND -- the whole per-sample contribution of the vertex-local
+	// estimator, not some directional factor inside it -- and `p_i` is the
+	// density that sample was drawn from.  Every other training site obeys
+	// that: the surface continuation stores `scatterThroughput *
+	// effectiveBsdfPdf` (the entire vertex-local `BSDF*cos`), and NEE
+	// accumulates its `contrib` -- geometry factor included -- over its own
+	// pdf.
+	//
+	// WHAT THE BSSRDF EXIT'S INTEGRAND IS.  BSSRDFSampling.h's header gives
 	//   weight        = Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
-	//   weightSpatial = Rd * Ft(exit) / pdfSurface                    (no entry Sw)
-	//   Sw            = Ft(entry) / (c * PI)         (EvaluateSwWithFresnel)
-	// so weight / weightSpatial = Ft(entry) / c = Sw * PI, independent of
-	// Rd and pdfSurface (both cancel).  The exit direction is cosine-
-	// weighted, so cosinePdf = cos/PI, i.e. cos = cosinePdf * PI.  Hence:
-	//   Sw * cos = (Sw * PI) * (cosinePdf) = (weight / weightSpatial) * cosinePdf
-	// -- the PI cancels, leaving a ratio of two already-computed values
-	// times the already-computed cosinePdf.  Sw is achromatic
-	// (EvaluateSwWithFresnel's own doc: "Sw value (scalar, achromatic)"),
-	// so for Pel the ratio is computed off MaxValue() (a single scalar
-	// multiplier that applies uniformly to every channel) rather than a
-	// per-channel divide, which would produce a spurious NaN/Inf on any
-	// channel where the diffusion profile's Rd happens to be exactly zero
-	// (weightSpatial[ch]==0) even though the RATIO is channel-independent.
-	// Guards weightSpatial<=0 (BSSRDF continuations that never got this far
-	// -- e.g. skipped/invalid samples -- are never passed here, but a
-	// degenerate profile could still zero every channel).
-	inline Scalar PTBssrdfSwTimesCos(
-		const RISEPel& weight, const RISEPel& weightSpatial, Scalar cosinePdf )
+	//   weightSpatial = Rd * Ft(exit) / pdfSurface                (no entry Sw)
+	//   Sw            = Ft(entry) / (c * PI)      (EvaluateSwWithFresnel)
+	// so `weight = weightSpatial * Sw * PI`.  The exit direction is
+	// cosine-sampled, `cosinePdf = cos/PI`, and the contribution this
+	// continuation adds is `weightSpatial * Sw(w) * cos(w) * L(w)` divided
+	// by `cosinePdf` -- which is why the code multiplies the escaped
+	// radiance by `weight`.  So
+	//
+	//     f(w) = weightSpatial * Sw(w) * cos(w) = weight * cosinePdf
+	//
+	// exactly, with `Rd`, `pdfSurface` and PI all surviving in it, and
+	//     f / p = (weight * cosinePdf) / cosinePdf = weight
+	// -- the throughput this sample really carries.  No division is needed
+	// to form it, so unlike round 3's version there is no Rd==0 channel to
+	// guard and the Pel form stays PER-CHANNEL rather than collapsing to
+	// MaxValue().
+	//
+	// WHAT ROUND 3 TRAINED INSTEAD, and why it was wrong: `Sw * cos` alone,
+	// i.e. `f` with `weightSpatial` DROPPED.  `weightSpatial` is an
+	// area-measure quantity (`Rd / pdfSurface`), not an O(1) directional
+	// factor, so that scaled this site's moments by an arbitrary amount and
+	// skewed the alpha of every tile an SSS surface touches.  (Variance
+	// only -- alpha never biases a partition-of-unity weight.)  Its NEE
+	// partner at the same vertex had the identical defect, from the other
+	// side: `LightSampler` accumulates the `contrib` it computes, and
+	// `weightSpatial` is applied by the CALLER afterwards, so the NEE arm
+	// trained `f / weightSpatial` too.  That is what
+	// `EvaluateDirectLighting{,NM}`'s `neeTrainingScale` closes; the two
+	// halves of this pair are only comparable to each other, and to every
+	// other pair sharing the tile, when BOTH carry it.
+	inline RISEPel PTBssrdfTrainedBsdfTimesCos( const RISEPel& weight, Scalar cosinePdf )
 	{
-		const Scalar wsMax = ColorMath::MaxValue( weightSpatial );
-		if( wsMax <= NEARZERO ) {
-			return 0;
-		}
-		return ( ColorMath::MaxValue( weight ) / wsMax ) * cosinePdf;
+		return weight * cosinePdf;
 	}
-	inline Scalar PTBssrdfSwTimesCos(
-		Scalar weight, Scalar weightSpatial, Scalar cosinePdf )
+	inline Scalar PTBssrdfTrainedBsdfTimesCos( Scalar weight, Scalar cosinePdf )
 	{
-		const Scalar wsAbs = fabs( weightSpatial );
-		if( wsAbs <= NEARZERO ) {
-			return 0;
-		}
-		return ( fabs( weight ) / wsAbs ) * cosinePdf;
+		return weight * cosinePdf;
 	}
 
 	// CastRay continuation (BSSRDF / RW-SSS sub-path), 8-arg form with
@@ -2744,9 +2759,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								// showing its direct SSS glow under `indirect`.
 								if( pLS )
 								{
+									// DL-72 P2-3: this arm's own result is scaled by
+									// `bssrdfWeightSpatial` on the next line, so the
+									// INTEGRAND it must train the optimal-MIS moment
+									// with carries that factor -- exactly as its MIS
+									// partner, the exit continuation below, now does
+									// (PTBssrdfTrainedBsdfTimesCos).  Training-only;
+									// `directSSS` itself is unchanged.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, tag,
+										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -2818,20 +2841,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 (round 3): the directional "BSDF*cos at
-										// the scatter point" quantity IRayCaster.h's
-										// contract wants, recovered algebraically from
-										// the BSSRDF's own weight/weightSpatial split --
-										// see PTBssrdfSwTimesCos's doc above.  Paired
-										// with the AccumulateCount call above and with
-										// rs2.bsdfPdf = bssrdf.cosinePdf (unchanged) as
-										// the matching pdf.  Supersedes the round-2
-										// "leave zeroed" ruling now that the correct
-										// quantity is derived; see
-										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
-										// "Round 3".
+										// DL-72 / DL-84 (round 4): the FULL vertex-local
+										// integrand of this exit sample, `weight *
+										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
+										// derivation above.  Round 3 trained `Sw*cos`,
+										// which is the same quantity with the
+										// area-measure `weightSpatial` dropped; the
+										// accumulator's moment is of the INTEGRAND, so
+										// that scaled this site's moments arbitrarily.
+										// Paired with the AccumulateCount call above,
+										// with rs2.bsdfPdf = bssrdf.cosinePdf (unchanged)
+										// as the matching density, and with the same
+										// `weightSpatial` scale now given to the NEE arm
+										// at this vertex (its `neeTrainingScale`
+										// argument, a few lines above).
 										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
-											PTBssrdfSwTimesCos( bssrdfWeight, bssrdfWeightSpatial, bssrdf.cosinePdf ) );
+											PTBssrdfTrainedBsdfTimesCos( bssrdfWeight, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -2936,9 +2961,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								// gate as the diffusion-profile site above.
 								if( pLS )
 								{
+									// DL-72 P2-3: this arm's own result is scaled by
+									// `bssrdfWeightSpatial` on the next line, so the
+									// INTEGRAND it must train the optimal-MIS moment
+									// with carries that factor -- exactly as its MIS
+									// partner, the exit continuation below, now does
+									// (PTBssrdfTrainedBsdfTimesCos).  Training-only;
+									// `directSSS` itself is unchanged.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, tag,
+										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -3010,20 +3043,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 (round 3): the directional "BSDF*cos at
-										// the scatter point" quantity IRayCaster.h's
-										// contract wants, recovered algebraically from
-										// the BSSRDF's own weight/weightSpatial split --
-										// see PTBssrdfSwTimesCos's doc above.  Paired
-										// with the AccumulateCount call above and with
-										// rs2.bsdfPdf = bssrdf.cosinePdf (unchanged) as
-										// the matching pdf.  Supersedes the round-2
-										// "leave zeroed" ruling now that the correct
-										// quantity is derived; see
-										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
-										// "Round 3".
+										// DL-72 / DL-84 (round 4): the FULL vertex-local
+										// integrand of this exit sample, `weight *
+										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
+										// derivation above.  Round 3 trained `Sw*cos`,
+										// which is the same quantity with the
+										// area-measure `weightSpatial` dropped; the
+										// accumulator's moment is of the INTEGRAND, so
+										// that scaled this site's moments arbitrarily.
+										// Paired with the AccumulateCount call above,
+										// with rs2.bsdfPdf = bssrdf.cosinePdf (unchanged)
+										// as the matching density, and with the same
+										// `weightSpatial` scale now given to the NEE arm
+										// at this vertex (its `neeTrainingScale`
+										// argument, a few lines above).
 										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
-											PTBssrdfSwTimesCos( bssrdfWeight, bssrdfWeightSpatial, bssrdf.cosinePdf ) );
+											PTBssrdfTrainedBsdfTimesCos( bssrdfWeight, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
