@@ -40,7 +40,7 @@
 //       and `phase3_dielectric_iscalarpainter.RISEscene`) bound to
 //       `ior`.  BK7's visible-band dispersion is physically mild (index
 //       spread ~0.005 across 465-611nm, closed-form transmittance
-//       spread ~0.02%) -- too small to resolve cleanly against this
+//       spread ~0.2% (review-recomputed from the test's own n-values: T(611/549/465)=0.91930/0.91866/0.91736, spread 0.212%)) -- too small to resolve cleanly against this
 //       fixture's QMC residual (DL-81: ~0.1-0.3% at 1024spp), so this
 //       row's hard gate is the qualitative one ("no longer exactly
 //       achromatic") plus an informational closed-form comparison, not
@@ -320,7 +320,7 @@ int main( int argc, char** argv )
 			};
 			Report( "row A  sellmeier (BK7), dispersive", m, expect );
 			// Qualitative gate: BK7's mild visible-band dispersion is
-			// too small (~0.02% closed-form spread) to reliably clear
+			// too small (~0.2% closed-form spread) to reliably clear
 			// this fixture's QMC residual (~0.1-0.3% at 1024spp per
 			// DL-81) with a tight quantitative band, but the DEFECT this
 			// row exists to catch is binary -- pre-fix, `HasPerChannelVariation()`

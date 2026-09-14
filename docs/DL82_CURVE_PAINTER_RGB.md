@@ -97,7 +97,7 @@ luminaire behind, pinhole camera, 1024spp) with `ior` bound to a
 
 Pre-fix: 11 passed, 4 FAILED. Post-fix: 15 passed, 0 failed.
 
-BK7's own visible-band dispersion (row A) is physically mild — a ~0.02%
+BK7's own visible-band dispersion (row A) is physically mild — a ~0.2% (review-recomputed from the test's own n-values: T(611/549/465)=0.91930/0.91866/0.91736, spread 0.212%)
 closed-form transmittance spread, the reason optical designers use BK7 as
 a low-dispersion "crown" reference glass — so row A's gate is qualitative
 ("no longer float32-achromatic") rather than a tight quantitative band;
