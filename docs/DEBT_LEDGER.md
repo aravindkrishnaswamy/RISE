@@ -58,7 +58,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-62 | DL37_GGX_DIFFUSE_TRANSMISSION.md: independent glossy-filter audit | GGX sampling and density use increased roughness under glossy filtering while BRDF evaluation uses the unfiltered roughness | OPEN-confirmed (static evidence; red-proof pending) | `GGXSPF::Scatter`, `ScatterNM`, `Pdf`, and `PdfNM` add `ri.glossyFilterWidth` to both roughness axes; `GGXBRDF::value` and `valueNM` only floor authored roughness. `PathTracingIntegrator.cpp` propagates the field into hit contexts. | S | physics-bias | user-visible (filtered GGX continuation versus direct evaluation) |
 | DL-64 | DL37_GGX_DIFFUSE_TRANSMISSION.md: zero-F0 support audit | GGX Schlick sampling assigns zero specular and multiscatter probability at F0=0 although both evaluated lobes can be nonzero | OPEN-confirmed (static evidence; red-proof pending) | `GGXSPF::Scatter`/`ScatterNM` set ws from authored specular F0 and wms from ws; selected-lobe throughput omits unselected specular energy. `GGXBRDF::value`/`valueNM` retain Schlick fifth-power Fresnel and its positive hemispherical average when F0=0. | S | physics-bias | user-visible (zero-F0 GGX continuation loses grazing reflection) |
 | ~~DL-03~~ | ~~RENDERING_INTEGRATORS.md debt 31 item 1 / REFRACTIVE_RADIANCE_SCALING.md §10.3~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~Guided translucent exits lose their popped IOR stack~~ An available selected exit transition is preserved or rejected according to the accepted direction and shared by training/eta consumers; missing entry-state generation remains DL-47 | CLOSED-by-test | Red on unfixed `00bdcef5`: four failed assertions (`d3a5e732`); real trained PT RGB/NM outward substitutions, inward controls and later same-object classification. Additional BDPT eye/light RGB/NM coverage; eye RIS actual-guide limitation remains DL-43. See `DL03_GUIDED_IOR_CONTINUATION.md`. | M | physics-bias | user-visible (eligible guided translucent continuations) |
-| ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures; both deliberate eta directions fail all six SSS air-channel checks. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; distinct normalization/non-air support/MIS defects are tracked as DL-48 through DL-53. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
+| ~~DL-04~~ | ~~REFRACTIVE_RADIANCE_SCALING.md §10.1~~ | ~~Unsettled extra eta-square factor for complete SSS events~~ No unmatched factor belongs on the exterior-to-same-exterior event | CLOSED 2026-09-12 (consistency pin) | `1b705ce1`: SSSRadianceScalingTest unchanged-library baseline 572093 checks, 0 failures (both deliberate eta directions fail all six SSS air-channel checks); the baseline moved to **574017** checks, 0 failures after DL-52's probe fix started reaching additional entry points (`00cd6723`, 2026-09-13) and is unchanged by DL-68/DL-69. Independent helper plus matched explicit-volume/diffusion/RW camera matrix; of the normalization/non-air support/MIS defects originally tracked as DL-48 through DL-53, only **DL-49** (non-air relative-index) remains open. See [decision](DL04_SSS_RADIANCE_DECISION.md). | M | physics-bias | convention pinned; separate SSS defects remain open |
 | ~~DL-34~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~Published two-sphere union overlap exports only the deeper operand depth~~ | CLOSED 2026-09-12 (recorded regression; conservative contract retained) | `cffa254f`: unchanged ProximitySignalTest red `Passed: 465   Failed: 6`, fixed `Passed: 471   Failed: 0`; supplemental final `Passed: 491   Failed: 0`. Certified inscribed-ball union recovers `sqrt(3.56)` through signed field, manager and interior signal. The original proposed max-depth edit was already the existing signed-min magnitude; arbitrary unions remain non-exact. See [closure and limits](DL34_UNION_INTERIOR_DEPTH.md). | M | physics-bias | user-visible (published union seam regression) |
 | ~~DL-37~~ | ~~IMPROVEMENTS.md: GGX low-F0 grazing gain~~ | ~~Angle-flat diffuse split creates grazing gain~~ | CLOSED 2026-09-12 | `000df0b4`: LayeredWhiteFurnaceTest reports `0 of 57 configurations failed` (red: four failed configs). Reciprocal entry/exit transmission covers RGB/NM Schlick, conductor and film. Independent sweep: 150/46 before, 150/3 after; retained specular-only failures are DL-63. See [scope](DL37_GGX_DIFFUSE_TRANSMISSION.md). | M | physics-bias | user-visible |
 | DL-42 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation | OPEN-confirmed (static evidence; red-proof pending) | `PathTracingIntegrator.cpp` initializes `scatterThroughput = kray/selectProb`, then the trained-guiding BSDF branch replaces it with `kray*pdf/combinedPdf` without selectProb. Shared RGB/NM loop; ordinary mixed-lobe entry reflection is reachable. | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
@@ -67,8 +67,10 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-44 | DL36_EMITTER_NEIGHBOUR_PIN.md: review residual | Sampled emitter UV is omitted from LightSample and downstream rebuilt emission records | OPEN-confirmed (static evidence; red-proof pending) | `LightSampler.cpp::SampleLight` sets local RGB `rig.ptCoord = coord`, but `LightSample` carries no UV. BDPT NM/HWSS emission rebuilds and LIGHT root, and VCM sampled-emitter evaluation retain default (0,0); `CheckerPainter` consumes ptCoord. MLT shares BDPT generation. | M | physics-bias | user-visible (UV-textured luminaries under bidirectional/spectral transport) |
 | DL-45 | DL03_GUIDED_IOR_CONTINUATION.md: tilted-frame residual | TranslucentSPF samples geometrically inward diffuse exits under tilted shading normals and still pops the IOR stack | OPEN-confirmed (observed defect pin; correctness red-proof pending) | `TranslucentSPF.cpp` explicitly exempts exit re-emission from its geometric-horizon gate; RGB/NM exits sample around onb.w and unconditionally pop. DL-03 real-SPF fixture recorded 1021/4096 unchanged inward exits per RGB/NM unguided run at 60-degree shading-normal tilt. Exit Pdf also omits the geometric gate. | M | physics-bias | user-visible (translucent materials with perturbed shading normals) |
 | DL-46 | DL03_GUIDED_IOR_CONTINUATION.md: initial-containment residual | Camera/light origins inside closed translucent objects lack initial IOR-stack membership and misclassify their first exit as entry | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentMaterial` inherits invalid/non-refracting default `GetSpecularInfo`; `IORStackSeeding::SeedFromPoint` accepts only valid canRefract materials. Both TranslucentSPF scatter variants classify exclusively by containsCurrent. Shared PT camera and BDPT eye/light seeds skip this stateful non-refracting material. | M | physics-bias | user-visible (origins inside closed translucent objects) |
-| ~~DL-52~~ | ~~DL04_SSS_RADIANCE_DECISION.md: planar probe origin~~ | ~~BSSRDF entry probes skip nearby points on a flat surface by advancing from the projection plane before intersecting~~ | CLOSED 2026-09-13 — `00cd6723`, `BSSRDFPlanarProbeReachTest` | Unfixed: normal-axis probe on a real `InfinitePlaneGeometry` found 0/500 entry points (curved-sphere control 372/500). `BSSRDFSampling::SampleEntryPoint` now traces a single chord starting `probeMaxDist` before the projection plane and travelling through it (PBRT `SeparableBSSRDF::Sample_Sp` convention), instead of two half-lines starting ON the plane. Fixed: 500/500 reached, all coplanar with the exit point; control unchanged at 372/500. `BSSRDFProjectionNormalTest`'s own hand-copied probe oracle updated to the same chord shape to stay in lockstep (unchanged results: active=48/128, axes=33/10/5); `BSSRDFNormalizationTest`, `BSSRDFSamplingTest`, `SSSRadianceScalingTest` unaffected. See [DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md). | M | physics-bias | was user-visible (diffusion SSS on planar or nearly planar geometry) |
-| ~~DL-53~~ | ~~DL04_SSS_RADIANCE_DECISION.md: recursive environment MIS~~ | ~~Recursive RayCaster misses bypass environment MIS when passed the global map explicitly~~ | CLOSED 2026-09-13 — `b3de184d`, `RayCasterEnvEscapeMISTest` | Unfixed: `RayCaster::CastRay`/`CastRayNM`/`CastRayHWSS`'s explicit-`pRadianceMap` escape branch returned raw radiance regardless of `bsdfPdf` (48/79 checks fail: e.g. RGB `bsdfPdf=0.1` expected 0.474006, got 0.7 — the unweighted raw value). Fixed by a shared `RayCasterEnvEscapeMISWeight` helper applied in that branch too, gated on the resolved map being pointer-identical to `pScene->GetGlobalRadianceMap()` (the MIS PARTNER RULE, mirroring the PT-integrator fix in [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md)); a genuinely distinct per-object override map keeps full weight, `bsdfPdf==0` is unaffected. Fixed: 79/79 pass. Affects the SSS/RW-SSS continuation call sites in `PathTracingIntegrator.cpp` and the internal volume phase-scatter continuation in `RayCaster.cpp` itself (no call-site edits needed — the fix is at the shared layer); BDPT's `RecordGuidingTrainingSampleNM` guiding-training helper also passes through the same fixed branch. See [DL53_RAYCASTER_ENV_ESCAPE_MIS.md](DL53_RAYCASTER_ENV_ESCAPE_MIS.md). | M | physics-bias | was user-visible (SSS and eligible recursive environment continuations) |
+| ~~DL-52~~ | ~~DL04_SSS_RADIANCE_DECISION.md: planar probe origin~~ | ~~BSSRDF entry probes skip nearby points on a flat surface by advancing from the projection plane before intersecting~~ | CLOSED 2026-09-13 — `00cd6723`, `BSSRDFPlanarProbeReachTest` | Unfixed: normal-axis probe on a real `InfinitePlaneGeometry` found 0/500 entry points (curved-sphere control 372/500). `BSSRDFSampling::SampleEntryPoint` now traces a single chord starting `probeMaxDist` before the projection plane and travelling through it (PBRT `SeparableBSSRDF::Sample_Sp` convention), instead of two half-lines starting ON the plane. Fixed: 500/500 reached, all coplanar with the exit point; control unchanged at 372/500. `BSSRDFProjectionNormalTest`'s own hand-copied probe oracle updated to the same chord shape to stay in lockstep (unchanged results: active=48/128, axes=33/10/5); `BSSRDFNormalizationTest`, `BSSRDFSamplingTest`, `SSSRadianceScalingTest` unaffected. See [DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md). | M | physics-bias | user-visible (diffusion SSS on planar or nearly planar geometry) |
+| ~~DL-53~~ | ~~DL04_SSS_RADIANCE_DECISION.md: recursive environment MIS~~ | ~~Recursive RayCaster misses bypass environment MIS when passed the global map explicitly~~ | CLOSED 2026-09-13 — `b3de184d`, `RayCasterEnvEscapeMISTest` | Unfixed: `RayCaster::CastRay`/`CastRayNM`/`CastRayHWSS`'s explicit-`pRadianceMap` escape branch returned raw radiance regardless of `bsdfPdf` (48/79 checks fail: e.g. RGB `bsdfPdf=0.1` expected 0.474006, got 0.7 — the unweighted raw value). Fixed by a shared `RayCasterEnvEscapeMISWeight` helper applied in that branch too, gated on the resolved map being pointer-identical to `pScene->GetGlobalRadianceMap()` (the MIS PARTNER RULE, mirroring the PT-integrator fix in [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md)); a genuinely distinct per-object override map keeps full weight, `bsdfPdf==0` is unaffected. Fixed: 79/79 pass. Affects the SSS/RW-SSS continuation call sites in `PathTracingIntegrator.cpp` and the internal volume phase-scatter continuation in `RayCaster.cpp` itself (no call-site edits needed — the fix is at the shared layer); BDPT's `RecordGuidingTrainingSampleNM` guiding-training helper also passes through the same fixed branch. See [DL53_RAYCASTER_ENV_ESCAPE_MIS.md](DL53_RAYCASTER_ENV_ESCAPE_MIS.md). | M | physics-bias | user-visible (SSS and eligible recursive environment continuations) |
+| ~~DL-68~~ | ~~DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md: probe entry-normal orientation~~ | ~~DL-52's single-chord probe reports an inverted entry normal on near-half hits for geometry that orients normals toward the incoming ray~~ | CLOSED 2026-09-13 — `e416d3bd`, `BSSRDFPlanarProbeReachTest` | Unfixed: a coplanar double-sided `TriangleMeshGeometry` quad and `ClippedPlaneGeometry` both returned `outward 0/500  neePositive 0/500` (the real `BSSRDFEntryBSDF` adapter gave zero for an exterior light on every entry point, since `cosTheta = Dot(vLightIn, vNormal) <= 0`). The chord travels in one fixed `+probeAxis` direction for its whole length, so a near-half hit (before crossing `probeCenter`) is reached with the OPPOSITE ray direction from what the pre-DL-52 `-probeAxis` probe used, and a geometry that flips its normal to face the incoming ray (`bGeomNormalOrientedToRay`) reports it inverted. Fixed by negating `h.normal`/`h.geomNormal` (and rebuilding the ONB via `CreateFromWU`) for near-half hits on flagged geometry only; far-half hits and unflagged geometry (the vast majority) are untouched. Fixed: `outward 500/500  neePositive 500/500` on both cases. See [DL68_BSSRDF_PROBE_ENTRY_NORMAL.md](DL68_BSSRDF_PROBE_ENTRY_NORMAL.md). | M | physics-bias | user-visible (SSS entry-point NEE/continuation on double-sided planar geometry) |
+| ~~DL-69~~ | ~~DL53_RAYCASTER_ENV_ESCAPE_MIS.md: optimal-MIS training gap~~ | ~~BSSRDF and internal volume phase-scatter continuations never set `bsdfTimesCos`, so `RayCasterEnvEscapeMISWeight`'s optimal-MIS training arm could never fire for them~~ | CLOSED 2026-09-13 — `0c9eccc4` | Unfixed: `PathTracingIntegrator.cpp`'s two BSSRDF continuations set `rs2.bsdfTimesCos` only inside `if constexpr (Traits::is_nm)` — backwards, since `rc.pOptimalMIS` is non-null only for the Pel tag at runtime; `RayCaster.cpp`'s own internal volume phase-scatter continuation (RGB and NM copies) never set it at all. No render-time weight was wrong (`PowerHeuristic` is the correct fallback whenever `rc.pOptimalMIS` is absent/not ready) — this was a training-input gap only. Fixed by computing `bsdfTimesCos` unconditionally for both tags via the same `PTBsdfTimesCos`/`PTRayStateBsdfTimesCos` convention the main scatter continuation already uses (PT integrator sites), and the equivalent inline at the two RayCaster.cpp volume sites. HWSS unaffected (never trained this arm, still doesn't). See [DL69_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL69_RAYCASTER_BSDFTIMESCOS_TRAINING.md). | S | precision | not user-visible (training-input completeness only; weight already used the correct fallback) |
 | DL-63 | DL37_GGX_DIFFUSE_TRANSMISSION.md: independent specular-only sweep | GGX height-correlated single scattering receives compensation from a separable-masking energy LUT, producing specular-only furnace gain | OPEN-confirmed (reproduced baseline) | `GGXDiffuseTransmissionTest`: identical three specular-only failures before/after DL-37; F0=1 at alpha/theta {.6/80, 1/60, 1/80}. `GenerateMicrofacetEnergyLUT.cpp` integrates G1(wo), while GGXBRDF uses height-correlated G2; these are different single-scatter models. | M | physics-bias | user-visible (rough GGX specular over-energy) |
 | DL-65 | AgentLiveCommitTest.cpp: Test 31 fixture vs. CST brace-on-own-line rule | A regression fixture engineered to test right-side glue-safe Undo restore is rejected outright by an unrelated, apparently-later-hardened parser rule, so the glue-safety code path it exists to cover is currently unexercised | OPEN-confirmed (reproduced; found incidentally while gating an unrelated slice) | `TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2` (`tests/AgentLiveCommitTest.cpp`, `kGlueScene` around line 4327) deliberately glues `lambertian_material`'s closing `}` directly against the next chunk's keyword (zero whitespace) to engineer `DocEraseChunkTidy`'s glue-unsafe case. `Cst.cpp`'s `ChunkBraceViolations`/hard-reject (`Cst.cpp:1618-1630`) now refuses ANY chunk whose open or close brace shares a line with other content, so the fixture's own glued brace is rejected before the test ever reaches the Undo/glue-safety logic it targets: `Job::LoadAsciiSceneViaCst:: derive diagnostic: lambertian_material (line 18): chunk braces must be on their own lines`, then `FAIL: the zero-whitespace-glued fixture scene loads via the CST path` (868 passed, 1 failed overall). Unrelated to RayCaster/BSSRDFSampling (DL-52/DL-53); not touched by this slice. Recipe: adding a newline to de-glue the fixture's raw scene text would remove the exact condition Test 31 exists to engineer, so that is NOT a real fix — first confirm via `git log -- src/Library/Cst/Cst.cpp` / `git blame` around `ChunkBraceViolations` whether the hard-reject predates or postdates this test (i.e. whether this is a genuine regression or the test was always relying on an input shape the parser no longer accepts); if the latter, redesign the fixture to engineer the SAME post-load glued-`Document` state without an ascii-text round trip through the hard-reject (e.g. construct/load a well-formed scene, then splice the byte ranges directly, or drive an existing chunk-CRUD/edit operation that is documented to be able to produce a glued adjacency) so Test 31 again exercises `DocEraseChunkTidy`'s right-side glue-safety path rather than the brace-format gate. | S | coverage/test gap | test-only (regression coverage gap; no production rendering/state-machine behavior implicated) |
 | DL-05 | CLOTH_FABRIC_DESIGN.md §15 item 27 | Two-layer gapped weave with the light outside: PT under-reads BDPT/VCM by 1.28-1.55x because PT's binary NEE cannot see through the far layer's delta gap lobe; single layer or light inside is exact | OPEN-confirmed | Doc's own measured table (box/planes, gap 0.1/0.3); mechanism traced to `RayCaster::CastShadowRayTransmittance` (definition starts `RayCaster.cpp:2062`, re-derived this sweep — the previously cited ~1980 was drift) being gated to perfect-specular dielectrics only, confirmed present as described this sweep | L | physics-bias | user-visible |
@@ -225,17 +227,21 @@ correctly cited only to their own `DLxx_*.md` closure doc). Ledger ordering
 partition (every DL-xx id in exactly one section, no duplicates, DL-35
 deliberately absent), and every internal `DL-xx` cross-reference were
 independently re-derived from the table text this pass and found consistent
-— no count below changed.
+— no count below changed AS OF that re-sweep (`876c9a26`, 2026-09-12); the
+debt-sssenv slice (2026-09-13, below) made five further changes on top of
+it, so the "Main rows"/"OPEN-confirmed"/"CLOSED-by-cleanup" figures that
+follow are the CURRENT totals, not the re-sweep's own.
 
-- Main rows: **64** — **46 open**, **18 closed**.
+- Main rows: **66** — **46 open**, **20 closed**.
 - OPEN-confirmed: **46**, including the two reproduced baseline gate residuals
   DL-60/DL-61. DL-35 remains deliberately absent. Re-sweep 2026-09-12: all
-  47 independently re-verified against `876c9a26`; 0 reclassified. DL-52 and
-  DL-53 (2026-09-13, debt-sssenv slice) subsequently closed, bringing OPEN
-  to 45; DL-65 (2026-09-13, debt-sssenv slice) added — a coverage/test-gap
-  found incidentally while gating this slice, unrelated to DL-52/DL-53 —
-  bringing OPEN back to 46.
-- CLOSED-by-cleanup: **18** (DL-01, `1239edf2`; DL-02, `a041e51d`;
+  47 independently re-verified against `876c9a26`; 0 reclassified. Since then
+  (debt-sssenv slice, 2026-09-13): DL-52 and DL-53 closed, bringing OPEN to
+  45; DL-65 added — a coverage/test-gap found incidentally while gating this
+  slice, unrelated to DL-52/DL-53 — bringing OPEN back to 46; DL-68 and
+  DL-69 opened AND closed same-session (found while gating DL-52/DL-53's own
+  closure, see below), leaving OPEN at 46 throughout.
+- CLOSED-by-cleanup: **20** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin; DL-03, `8a9bdb18`;
   DL-04, `1b705ce1`, convention pin; DL-48, `12a7ef3e`;
   DL-50, `29ce61c7`; DL-51, `34434610`; DL-54, `ab85092d`;
@@ -244,7 +250,11 @@ independently re-derived from the table text this pass and found consistent
   DL-34, `cffa254f`, published overlap regression with conservative bounds retained;
   DL-37, `000df0b4`, diffuse composition with DL-63 specular failures retained;
   DL-52, `00cd6723`, planar probe-origin single-chord fix;
-  DL-53, `b3de184d`, RayCaster explicit-map MIS-partner fix).
+  DL-53, `b3de184d`, RayCaster explicit-map MIS-partner fix;
+  DL-68, `e416d3bd`, probe entry-normal orientation fix (found gating DL-52's
+  own closure);
+  DL-69, `0c9eccc4`, RayCaster/PT bsdfTimesCos training-gap fix (found
+  gating DL-53's own closure)).
 - CLOSED-by-sweep (heading was open/unlabeled; a sweep found it actually
   fixed and struck it): **7** (DR-01 .. DR-07, unchanged this pass)
 - Already RESOLVED in source, independently re-verified: **23** (DL-R1 ..
@@ -316,9 +326,11 @@ conservative-furnace bounds. Both deliberately added eta-square directions
 fail six SSS air-channel checks; a missing observer transform fails nine.
 The unchanged implementation passes. This closes the convention question,
 not exact material equality within MC noise: fixed pixel Sobol scrambles
-are not independent repetitions, and DL-48 through DL-53 retain the distinct
-normalization, relative-index, survival, fallback, support and recursive-MIS
-issues. See [the complete decision record](DL04_SSS_RADIANCE_DECISION.md).
+are not independent repetitions. Of the DL-48 through DL-53 range this
+sentence originally pointed at, only **DL-49** (non-air relative-index)
+remains open — DL-48 (normalization), DL-50/51 (survival/support), and
+DL-52/53 (probe reach, recursive-MIS) are all CLOSED; see
+[the complete decision record](DL04_SSS_RADIANCE_DECISION.md).
 
 **DL-05 (PT two-layer weave gap, debt 27).** Extend
 `tests/BDPTStrategyBalanceTest.cpp` with a topology pairing two
@@ -733,8 +745,9 @@ Fresnel law being evaluated, then update all sampled and reevaluated
 weights together (diffusion/RW, RGB/NM, PT/BDPT/VCM/MLT consumers). Confirm
 a conservative furnace without adding a separate eta-square multiplier.
 See [the closure and audit](DL48_SSS_NORMALIZATION.md); the rendered
-furnace remains a coarse convention guard because DL-49 through DL-53
-are separate open defects.
+furnace remains a coarse convention guard because DL-49 is a separate
+open defect (the only one left OPEN in the DL-49..DL-53 range this
+sentence originally pointed at — DL-50 through DL-53 are all CLOSED).
 
 **DL-49 (SSS exterior IOR).** Write a design note for carrying the actual
 exterior index through profile, random-walk and directional evaluation
@@ -763,7 +776,13 @@ controls demonstrating shipped materials still absorb that inside hit;
 do not claim that the dormant fallback changes their supported topology.
 
 
-**DL-52 (BSSRDF planar probe-origin omission).** Commit a direct real-object
+**~~DL-52 (BSSRDF planar probe-origin omission).~~ CLOSED 2026-09-13 —
+`00cd6723`, BSSRDFPlanarProbeReachTest passes after 500/500 unfixed
+0/500. A distinct follow-on defect the fix itself introduced (an
+inverted entry normal on near-half hits for double-sided/flip-oriented
+geometry) was found gating this closure and closed separately as
+DL-68.**
+The completed recipe was: commit a direct real-object
 helper regression whose deterministic normal-axis samples on a broad flat
 face must reach the nearby surface. Red-prove omitted support, then design
 a finite chord traversal that includes the projection plane and counts
@@ -774,7 +793,13 @@ Validate a conservative furnace and geometry convergence without changing
 the complete-event eta convention or absorbing Sw normalization into geometry.
 
 
-**DL-53 (recursive explicit-global-map MIS bypass).** Commit a real
+**~~DL-53 (recursive explicit-global-map MIS bypass).~~ CLOSED 2026-09-13 —
+`b3de184d`, RayCasterEnvEscapeMISTest passes 79/79 after 48/79 unfixed
+failures. A distinct follow-on defect (BSSRDF/volume continuations never
+set `bsdfTimesCos`, so the optimal-MIS training arm this fix wired up
+could never fire for them) was found gating this closure and closed
+separately as DL-69.**
+The completed recipe was: commit a real
 RayCaster miss-ray regression with positive BSDF PDF and compare null
 map versus explicit scene-global-map pointers against the same analytic
 MIS-weighted radiance. Red-prove RGB/NM/HWSS; preserve PDF-zero delta
@@ -783,6 +808,19 @@ weighting to a layer shared by both map-selection paths, then audit every
 recursive consumer carrying bsdfPdf and medium survival. Validate complete
 SSS environment NEE plus continuation against an independently integrated
 angular oracle; do not change Sw or eta convention to hide the extra term.
+
+**~~DL-68 (BSSRDF probe entry-normal inversion on near-half chord hits).~~
+CLOSED 2026-09-13 — `e416d3bd`, BSSRDFPlanarProbeReachTest's DL-68 rows
+pass 500/500 outward/neePositive after 0/500 unfixed.** See
+[DL68_BSSRDF_PROBE_ENTRY_NORMAL.md](DL68_BSSRDF_PROBE_ENTRY_NORMAL.md)
+for the full mechanism, repair, and sibling audit.
+
+**~~DL-69 (BSSRDF/volume continuations never trained
+RayCasterEnvEscapeMISWeight's optimal-MIS arm).~~ CLOSED 2026-09-13 —
+`0c9eccc4`.** No render-time weight was wrong (`PowerHeuristic` is the
+correct fallback whenever the optimal-MIS accumulator is absent or not
+ready) — this was a training-input completeness gap only. See
+[DL69_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL69_RAYCASTER_BSDFTIMESCOS_TRAINING.md).
 
 **DL-54 (BSSRDF geometric projection density).** Commit a regression using
 an actual curved object and a shading-normal-only entry modifier. Hold the

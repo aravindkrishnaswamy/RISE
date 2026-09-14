@@ -182,7 +182,15 @@ do not execute old phase lists blindly.
     records the disk-projection single-chord probe repair (a normal-axis
     probe no longer skips a coplanar near surface); [DL53_RAYCASTER_ENV_ESCAPE_MIS.md](DL53_RAYCASTER_ENV_ESCAPE_MIS.md)
     records the `RayCaster` explicit-global-map MIS-partner repair (the
-    `RayCaster.cpp` analogue of PT_ENV_MIS_DOUBLECOUNT.md's integrator fix).
+    `RayCaster.cpp` analogue of PT_ENV_MIS_DOUBLECOUNT.md's integrator fix);
+    [DL68_BSSRDF_PROBE_ENTRY_NORMAL.md](DL68_BSSRDF_PROBE_ENTRY_NORMAL.md)
+    records a follow-on defect found gating DL-52's own closure (the
+    single-chord probe reported an INVERTED entry normal on near-half
+    hits for double-sided/flip-oriented geometry); [DL69_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL69_RAYCASTER_BSDFTIMESCOS_TRAINING.md)
+    records a follow-on defect found gating DL-53's own closure (BSSRDF
+    and internal volume continuations never set `bsdfTimesCos`, so
+    `RayCasterEnvEscapeMISWeight`'s optimal-MIS training arm could never
+    fire for them — a training-input gap, not a render-time weight bug).
   - Propagation of these 16 models into CLAUDE.md, ARCHITECTURE.md,
     SPECTRAL_PARITY_AUDIT.md and the rest of the canonical docs/skills tree
     is tracked separately from each slice's own DLxx record.

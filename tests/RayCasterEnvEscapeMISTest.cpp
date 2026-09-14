@@ -85,6 +85,7 @@
 #include "../src/Library/Rendering/EnvironmentSampler.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/PathTransportUtilities.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/IORStack.h"
@@ -339,6 +340,28 @@ static void TestRGB()
 			CheckClose( cExplicit.r, expected.r, 1e-9, label );
 			CheckClose( cExplicit.g, expected.g, 1e-9, label );
 			CheckClose( cExplicit.b, expected.b, 1e-9, label );
+
+			// Pin the partition of unity against the SAME shared function
+			// LightSampler's own env-NEE weight resolves to (its
+			// non-optimal-MIS branch calls
+			// `PowerHeuristic(envPdf, pBsdf)` directly -- see
+			// LightSampler.cpp's `EvaluateInScattering`/NEE-at-scatter-point
+			// env arm, ~:2652) rather than only the hand-derived `w`
+			// formula above, so a future change to either side's
+			// heuristic (or a divergence between the two) is caught
+			// here: the escape weight and the actual NEE weight for the
+			// same (bsdfPdf, envPdf) pair must sum to exactly 1.
+			const Scalar w_bsdf_real = PathTransportUtilities::PowerHeuristic( bsdfPdf, envPdf );
+			const Scalar w_nee_real = PathTransportUtilities::PowerHeuristic( envPdf, bsdfPdf );
+			std::snprintf( label, sizeof(label),
+				"RGB: escape weight + LightSampler's actual env-NEE weight partition to 1 @ bsdfPdf=%g", bsdfPdf );
+			CheckClose( w_bsdf_real + w_nee_real, Scalar(1), 1e-12, label );
+
+			std::snprintf( label, sizeof(label),
+				"RGB: explicit-global-map matches PowerHeuristic (the function LightSampler's env-NEE actually calls) @ bsdfPdf=%g", bsdfPdf );
+			CheckClose( cExplicit.r, rawRadiance.r * w_bsdf_real, 1e-9, label );
+			CheckClose( cExplicit.g, rawRadiance.g * w_bsdf_real, 1e-9, label );
+			CheckClose( cExplicit.b, rawRadiance.b * w_bsdf_real, 1e-9, label );
 		}
 	}
 

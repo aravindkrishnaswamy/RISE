@@ -40,6 +40,20 @@ needed. No change to the disk-to-area PDF (`pdfSurface`), the projection
 cosines, the Sw normalization, or the complete-event eta convention (DL-04);
 DL-54's geometric-normal projection fix is untouched.
 
+**`maxProbeHits` scope change.** The `maxProbeHits = 64` bounce cap
+(`BSSRDFSampling.cpp` ~:154) is unchanged in VALUE but now applies to
+the whole single chord, where before it applied per DIRECTION (64 on
+the `+axis` half-line, 64 more on the `-axis` half-line) — i.e. the
+effective cap on total collected hits per `SampleEntryPoint` call
+dropped from 128 to 64. This is not expected to matter in practice
+(64 intersections along one probe direction through the profile's
+effective range is already far more than any realistic scene's local
+geometry produces), but is a real behavior change worth naming for
+anyone tuning dense/thin-shell scenes against this cap. See also
+[DL68_BSSRDF_PROBE_ENTRY_NORMAL.md](DL68_BSSRDF_PROBE_ENTRY_NORMAL.md)
+for a follow-on defect this single-chord repair introduced (entry-normal
+orientation on near-half hits), found gating this row's own closure.
+
 ## Red-proof
 
 `tests/BSSRDFPlanarProbeReachTest.cpp` (committed `459305de` against
