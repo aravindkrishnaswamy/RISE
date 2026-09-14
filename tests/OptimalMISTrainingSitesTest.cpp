@@ -426,6 +426,85 @@ static std::string EnvOnlyScene( double envLevel = 1.0 )
 		"\n" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// THE SPATIAL-WEIGHT SCALING LAW (DL-72 P2-3).
+//
+// `OptimalMISAccumulator`'s moment is `E[(f/p)^2]` where `f` is the
+// INTEGRAND -- the whole vertex-local contribution -- so at a BSSRDF
+// exit `f = weightSpatial * Sw(w) * cos(w) * L(w)`, whose
+// `weightSpatial = Rd * Ft(exit) / pdfSurface` is an AREA-measure
+// factor, not an O(1) directional one.  Round 3 trained `Sw*cos*L`,
+// dropping it on the BSDF side, and `LightSampler` dropped the very
+// same factor on the NEE side (the caller applies it AFTER the call).
+//
+// This decorator multiplies the profile's `Rd` -- and ONLY `Rd` -- by a
+// constant `k`.  `Rd` appears in `weight` and `weightSpatial` and
+// NOWHERE in the sampling: `BSSRDFSampling` draws its radius from
+// `SampleRadius`/`PdfRadius` and its exit direction from a cosine
+// lobe, none of which this touches.  So the identical seeds visit the
+// identical vertices (asserted below via the attempt COUNTS), while
+// every trained integrand scales by exactly `k` -- and the moment,
+// being its square, by exactly `k^2`.
+//
+// Pre-fix both moments are INVARIANT to `k` (neither numerator carries
+// `weightSpatial`), which is the red-proof: a ratio of 1 where the
+// derivation says 4.
+//////////////////////////////////////////////////////////////////////
+class ScaledRdProfile :
+	public virtual ISubSurfaceDiffusionProfile,
+	public virtual Reference
+{
+	ISubSurfaceDiffusionProfile*	real;
+	Scalar							k;
+
+protected:
+	~ScaledRdProfile() override {}
+
+public:
+	ScaledRdProfile( ISubSurfaceDiffusionProfile* r, Scalar scale )
+		: real( r ), k( scale ) {}
+
+	// The ONLY two methods that are scaled.
+	RISEPel EvaluateProfile( const Scalar r, const RayIntersectionGeometric& ri ) const override
+	{ return real->EvaluateProfile( r, ri ) * k; }
+	Scalar EvaluateProfileNM( const Scalar r, const RayIntersectionGeometric& ri, const Scalar nm ) const override
+	{ return real->EvaluateProfileNM( r, ri, nm ) * k; }
+
+	// Everything that steers SAMPLING is forwarded verbatim.
+	Scalar SampleRadius( const Scalar u, const int channel, const RayIntersectionGeometric& ri ) const override
+	{ return real->SampleRadius( u, channel, ri ); }
+	Scalar PdfRadius( const Scalar r, const int channel, const RayIntersectionGeometric& ri ) const override
+	{ return real->PdfRadius( r, channel, ri ); }
+	Scalar FresnelTransmission( const Scalar cosTheta, const RayIntersectionGeometric& ri ) const override
+	{ return real->FresnelTransmission( cosTheta, ri ); }
+	Scalar GetIOR( const RayIntersectionGeometric& ri ) const override
+	{ return real->GetIOR( ri ); }
+	Scalar GetMaximumDistanceForError( const Scalar error ) const override
+	{ return real->GetMaximumDistanceForError( error ); }
+	RISEPel ComputeTotalExtinction( const Scalar distance ) const override
+	{ return real->ComputeTotalExtinction( distance ); }
+};
+
+class ScaledRdMaterial : public SubSurfaceScatteringMaterial
+{
+	ScaledRdProfile* pScaled;
+
+protected:
+	~ScaledRdMaterial() override { safe_release( pScaled ); }
+
+public:
+	ScaledRdMaterial(
+		const IScalarPainter& ior, const IScalarPainter& absorption,
+		const IScalarPainter& scattering, Scalar g, Scalar roughness, Scalar k )
+		: SubSurfaceScatteringMaterial( ior, absorption, scattering, g, roughness )
+	{
+		pScaled = new ScaledRdProfile( pProfile, k );
+		GlobalLog()->PrintNew( pScaled, __FILE__, __LINE__, "Rd-scaled profile" );
+	}
+
+	ISubSurfaceDiffusionProfile* GetDiffusionProfile() const override { return pScaled; }
+};
+
 //! Drives the BSSRDF site and hands back the RAW per-tile training state.
 //! Seeded per sample, so two calls against fixtures that differ ONLY in
 //! environment brightness walk identical paths.
@@ -433,12 +512,30 @@ static void DriveBssrdfSite(
 	const Fixture& fx,
 	const PathTracingIntegrator& integrator,
 	Object& object,
-	SubSurfaceScatteringMaterial& material,
+	IMaterial& material,
 	OptimalMISAccumulator& acc,
 	double& sumBsdf,
-	unsigned int& countBsdf )
+	unsigned int& countBsdf,
+	double* pSumNee = 0,
+	unsigned int* pCountNee = 0,
+	//! Path importance handed to `IntegrateFromHit`.  The default 1 is
+	//! what the rows above use.  The scaling-law row passes a large
+	//! value so that `RayCaster`'s own `rs.importance < RC_RR_THRESHOLD`
+	//! survival test (RayCaster.cpp) cannot fire for EITHER run: that
+	//! test reads the BSSRDF throughput, which the Rd scale multiplies,
+	//! so at importance 1 the two runs would escape on slightly
+	//! different sample SETS and the law would only hold on average.
+	Scalar importance = 1,
+	//! Wire the accumulator into the LightSampler as well, so the NEE
+	//! half of the pair trains too.  Off by default -- the rows above
+	//! measure the BSDF half against a SYNTHETIC NEE half on purpose.
+	bool trainNee = false )
 {
 	const RasterizerState rast{};
+	const LightSampler* pLS = fx.pCaster ? fx.pCaster->GetLightSampler() : 0;
+	if( trainNee && pLS ) {
+		pLS->SetOptimalMIS( &acc );
+	}
 	// Exit point on the sphere's +Z pole, ray arriving from outside.
 	for( unsigned int s = 0; s < 600; ++s ) {
 		RandomNumberGenerator rng( 52000 + s );
@@ -462,13 +559,18 @@ static void DriveBssrdfSite(
 			rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
 			/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
 			/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
-			/*considerEmission_*/ true, /*importance_*/ 1,
+			/*considerEmission_*/ true, importance,
 			IRayCaster::RAY_STATE::eRayDiffuse,
 			0, 0, 0, 0, 0, 0, false, false );
+	}
+	if( trainNee && pLS ) {
+		pLS->SetOptimalMIS( 0 );
 	}
 	double sumNee = 0;
 	unsigned int countNee = 0;
 	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+	if( pSumNee ) *pSumNee = sumNee;
+	if( pCountNee ) *pCountNee = countNee;
 }
 
 static void RunBssrdfSite()
@@ -543,6 +645,85 @@ static void RunBssrdfSite()
 			Check( std::fabs( ratio - 9.0 ) < 1e-6,
 				"BSSRDF site: the accumulated moment scales exactly as L_env^2" );
 		}
+	}
+
+	// ------------------------------------------------------------------
+	// THE SPATIAL-WEIGHT SCALING LAW.  See ScaledRdProfile's derivation:
+	// scaling the profile's Rd by k scales the vertex-local integrand of
+	// BOTH techniques at this vertex by k, and their moments by k^2,
+	// while leaving every sampling decision untouched.  Run against a
+	// SECOND, pristine accumulator so the k=1 numbers above are not
+	// disturbed.
+	// ------------------------------------------------------------------
+	{
+		const Scalar k = 2.0;
+		double sumB1 = 0, sumN1 = 0, sumB2 = 0, sumN2 = 0;
+		unsigned int cntB1 = 0, cntN1 = 0, cntB2 = 0, cntN2 = 0;
+
+		OptimalMISAccumulator acc1;
+		acc1.Initialize( 64, 64, MakeConfig() );
+		DriveBssrdfSite( fx, *integrator, *object, *material, acc1,
+			sumB1, cntB1, &sumN1, &cntN1, 1.0e6, true );
+
+		ScaledRdMaterial* scaledMat = new ScaledRdMaterial(
+			*ior, *absorption, *scattering, 0.0, 0.2, k );
+		GlobalLog()->PrintNew( scaledMat, __FILE__, __LINE__, "Rd-scaled sss material" );
+		SphereGeometry* sphere2 = new SphereGeometry( 10.0 );
+		GlobalLog()->PrintNew( sphere2, __FILE__, __LINE__, "sss sphere (scaled)" );
+		sphere2->addref();
+		Object* object2 = new Object( sphere2 );
+		GlobalLog()->PrintNew( object2, __FILE__, __LINE__, "sss object (scaled)" );
+		object2->addref();
+		sphere2->release();
+		object2->AssignMaterial( *scaledMat );
+
+		OptimalMISAccumulator acc2;
+		acc2.Initialize( 64, 64, MakeConfig() );
+		DriveBssrdfSite( fx, *integrator, *object2, *scaledMat, acc2,
+			sumB2, cntB2, &sumN2, &cntN2, 1.0e6, true );
+
+		std::cout << "    BSSRDF site: Rd x" << k
+			<< "  BSDF sum " << sumB1 << " -> " << sumB2
+			<< " (attempts " << cntB1 << " / " << cntB2 << ")"
+			<< " ,  NEE sum " << sumN1 << " -> " << sumN2
+			<< " (attempts " << cntN1 << " / " << cntN2 << ")" << std::endl;
+
+		// Premise: Rd steers no sampling decision, so the same seeds
+		// visited the same vertices and made the same attempts.
+		Check( cntB1 == cntB2 && cntB1 > 0,
+			"BSSRDF site: scaling Rd changes no BSDF sampling decision (identical attempt count)" );
+		Check( cntN1 == cntN2 && cntN1 > 0,
+			"BSSRDF site: scaling Rd changes no NEE sampling decision (identical attempt count)" );
+
+		// The law itself, on both halves of the pair.
+		//
+		// THE BOUND, and why it is not exactly k^2.  A tile's sums are
+		// over EVERY training event the walk produced, and this walk has
+		// a second vertex whose events are Rd-INDEPENDENT: the SSS
+		// SURFACE itself (its own NEE, and its own continuation's escape
+		// to the environment).  So each sum is
+		//     S(k) = k^2 * S_bssrdf + S_surface
+		// and the ratio is bounded, for any nonzero S_surface, by
+		//     1 < S(k)/S(1) < k^2
+		// -- strictly below k^2, approaching it as the BSSRDF share of
+		// the tile grows.  A numerator that DROPPED `weightSpatial`
+		// (round 3's `Sw*cos`, and `LightSampler`'s unscaled `contrib`)
+		// makes S_bssrdf itself Rd-independent and pins the ratio at
+		// EXACTLY 1 -- which is what the pre-fix library reads, to every
+		// digit, on both halves.  The gate below therefore asks for the
+		// k^2 end of that interval, not for the midpoint.
+		const double target = (double)k * (double)k;
+		const double rB = sumB1 > 0 ? sumB2 / sumB1 : 0;
+		const double rN = sumN1 > 0 ? sumN2 / sumN1 : 0;
+		std::cout << "    BSSRDF site: moment ratios  BSDF " << rB
+			<< " , NEE " << rN << "  (bounded 1 < r < " << target << ")" << std::endl;
+		Check( sumB1 > 0 && rB > 0.975 * target && rB <= target + 1e-9,
+			"BSSRDF site: the BSDF moment carries weightSpatial (scales as Rd^2)" );
+		Check( sumN1 > 0 && rN > 0.975 * target && rN <= target + 1e-9,
+			"BSSRDF site: the entry-NEE moment carries the same weightSpatial (scales as Rd^2)" );
+
+		object2->release();
+		scaledMat->release();
 	}
 
 	FeedSyntheticNee( acc );
