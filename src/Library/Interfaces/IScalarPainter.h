@@ -89,7 +89,19 @@ namespace RISE
 	//! triple is NOT colorimetric (a curve and its metamer do not give
 	//! the same triple); it is exact only AT these three wavelengths;
 	//! and a Beer's-law tint built from it matches the spectral render
-	//! only approximately, and only near unit optical depth.
+	//! only approximately, and only near unit optical depth.  Concrete
+	//! case: gold's measured conductor n/k reflectance, sampled at
+	//! this convention's three wavelengths, reads approximately
+	//! `(1.000, 0.883, 0.412)`; a colorimetric (CMF-integrated) RGB of
+	//! the same curve reads approximately `(1.000, 0.730, 0.326)` —
+	//! visibly LESS saturated under this convention (a higher green and
+	//! blue relative to red) than the colorimetric answer, because a
+	//! discrete 3-point sample misses spectral structure a CMF integral
+	//! averages over.  This is expected, not a defect: see "why not a
+	//! colorimetric integral" above for why the colorimetric answer is
+	//! the wrong target for most of this interface's slots in the first
+	//! place.
+
 	//!
 	//! The values are the sRGB / Rec.709 primaries' dominant
 	//! wavelengths.  `DielectricSPF`'s RGB dispersion loop reads the
