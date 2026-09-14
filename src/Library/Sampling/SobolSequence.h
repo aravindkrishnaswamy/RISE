@@ -338,6 +338,21 @@ namespace RISE
 	public:
 
 		//////////////////////////////////////////////////////////////
+		// DirectionNumber - the i-th direction number of dimension
+		// `dim`, exactly as the table holds it.
+		//
+		// Exists so a test can read what the generator BUILT rather
+		// than what `Sobol` returns: `Sobol` short-circuits dimensions
+		// 0 and 1 to their closed forms, so comparing it against those
+		// same closed forms proves nothing about the table.
+		//////////////////////////////////////////////////////////////
+		static inline uint32_t DirectionNumber( uint32_t dim, uint32_t i )
+		{
+			if( dim >= kNumDimensions || i >= kNumBits ) return 0;
+			return Directions().v[dim][i];
+		}
+
+		//////////////////////////////////////////////////////////////
 		// Sobol - raw (unscrambled) Sobol' sample for dimension
 		// `dim` < kNumDimensions, returned as a uint32_t in [0, 2^32).
 		//

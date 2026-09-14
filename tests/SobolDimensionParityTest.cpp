@@ -69,6 +69,15 @@
 #include "../src/Library/Sampling/SobolSequence.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 
+// Declared by SobolSequence.h once the library consumes them; repeated
+// here so this test also builds against a library that does not yet.
+namespace RISE
+{
+	const uint32_t* SobolJoeKuoInitialNumbers();
+	unsigned int SobolJoeKuoDimensionCount();
+	unsigned int SobolJoeKuoRecordCount();
+}
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -244,6 +253,134 @@ static bool PolyOrderIsFull( uint32_t p, unsigned int d )
 	return x == 1u && order == n;
 }
 
+//! Index of the highest set bit of a non-zero value.
+static inline unsigned int HighBit( uint32_t v )
+{
+	unsigned int r = 0;
+	while( ( v >>= 1 ) != 0 ) r++;
+	return r;
+}
+
+//////////////////////////////////////////////////////////////////////
+// C. t-values of the PRODUCTION dimension set, read off the
+//    generator matrices.
+//
+// The dyadic-occupancy probes above sample the sequence; these read
+// what the sequence is BUILT from, which is both exact and cheap
+// enough to sweep every pair.
+//
+// For a 2-dimensional digital net over the first 2^m points, the
+// generator matrices are the dimensions' direction numbers truncated
+// to m rows and m columns.  Its t-value is the smallest t such that
+// for EVERY split k1 + k2 = m - t, the first k1 rows of one matrix
+// together with the first k2 rows of the other are linearly
+// independent over GF(2).  t = 0 is a perfect net; t = m - 1 means
+// even the (1,1) split fails, i.e. the two leading rows are equal --
+// which is exactly the "fully collapsed dyadic 2x2" DL-81 was about,
+// half the boxes empty and half at double density.
+//////////////////////////////////////////////////////////////////////
+
+//! Generator-matrix rows of `dim`, truncated to m columns.  Row r is
+//! bit (31 - r) of each of the first m direction numbers.  Reads the
+//! TABLE, via SobolSequence::DirectionNumber -- not `Sobol`, which
+//! short-circuits dimensions 0 and 1 to closed forms.
+static void GeneratorRows( uint32_t dim, unsigned int m, uint32_t* rows )
+{
+	for( unsigned int r = 0; r < m; r++ ) {
+		uint32_t mask = 0;
+		for( unsigned int c = 0; c < m; c++ ) {
+			if( ( SobolSequence::DirectionNumber( dim, c ) >> ( 31u - r ) ) & 1u ) {
+				mask |= ( 1u << c );
+			}
+		}
+		rows[r] = mask;
+	}
+}
+
+//! Are the first k1 rows of A and the first k2 rows of B jointly
+//! linearly independent over GF(2)?  Plain Gaussian elimination.
+static bool RowsIndependent(
+	const uint32_t* A, unsigned int k1,
+	const uint32_t* B, unsigned int k2 )
+{
+	uint32_t basis[64];
+	unsigned int n = 0;
+	for( unsigned int i = 0; i < k1 + k2; i++ ) {
+		uint32_t v = ( i < k1 ) ? A[i] : B[i - k1];
+		for( unsigned int j = 0; j < n; j++ ) {
+			if( v != 0 && HighBit( v ) == HighBit( basis[j] ) ) v ^= basis[j];
+		}
+		if( v == 0 ) return false;
+		basis[n++] = v;
+		for( unsigned int j = n - 1; j > 0; j-- ) {
+			if( HighBit( basis[j] ) > HighBit( basis[j - 1] ) ) {
+				const uint32_t tmp = basis[j]; basis[j] = basis[j - 1]; basis[j - 1] = tmp;
+			} else {
+				break;
+			}
+		}
+	}
+	return true;
+}
+
+//! t-value of the 2D net (dimA, dimB) over the first 2^m points.
+static unsigned int TValue( uint32_t dimA, uint32_t dimB, unsigned int m )
+{
+	uint32_t A[32], B[32];
+	GeneratorRows( dimA, m, A );
+	GeneratorRows( dimB, m, B );
+	for( unsigned int t = 0; t <= m; t++ ) {
+		const unsigned int r = m - t;
+		bool ok = true;
+		for( unsigned int k1 = 0; k1 <= r && ok; k1++ ) {
+			if( !RowsIndependent( A, k1, B, r - k1 ) ) ok = false;
+		}
+		if( ok ) return t;
+	}
+	return m;
+}
+
+struct PairSweep
+{
+	unsigned int pairs;
+	unsigned int collapsed;		//!< t == m-1: leading rows equal
+	unsigned int maxT;
+};
+
+static PairSweep SweepPairs(
+	const std::vector<uint32_t>& dimsA,
+	const std::vector<uint32_t>& dimsB,
+	bool allCross,
+	unsigned int m )
+{
+	PairSweep r; r.pairs = 0; r.collapsed = 0; r.maxT = 0;
+	for( size_t i = 0; i < dimsA.size(); i++ ) {
+		const size_t jStart = allCross ? 0 : i + 1;
+		const std::vector<uint32_t>& B = allCross ? dimsB : dimsA;
+		for( size_t j = jStart; j < B.size(); j++ ) {
+			if( dimsA[i] == B[j] ) continue;
+			const unsigned int t = TValue( dimsA[i], B[j], m );
+			r.pairs++;
+			if( t > r.maxT ) r.maxT = t;
+			if( t >= m - 1u ) r.collapsed++;
+		}
+	}
+	return r;
+}
+
+//! Pigeonhole floor: how many of C(n,2) pairs MUST share a leading
+//! generator row when n dimensions are spread over 2^(m-1) possible
+//! rows, under the most balanced assignment there is.
+static unsigned int CollapseFloor( unsigned int n, unsigned int m )
+{
+	const unsigned int buckets = 1u << ( m - 1u );
+	if( n <= buckets ) return 0;
+	const unsigned int q = n / buckets;
+	const unsigned int rem = n % buckets;
+	// `rem` buckets hold q+1, the rest hold q.
+	return rem * ( ( q + 1u ) * q / 2u ) + ( buckets - rem ) * ( q * ( q - 1u ) / 2u );
+}
+
 static void ReportAndCheck( const char* label, const Joint& j, double relTol, double dyadicTol )
 {
 	std::cout << "    " << std::left << std::setw( 44 ) << label << std::right
@@ -319,119 +456,388 @@ int main( int argc, char** argv )
 	          << std::setprecision( 5 ) << worstSame << std::endl;
 
 	// ----------------------------------------------------------------
-	// C. Bounce-to-bounce sweep -- the live-render configuration.
+	// C. The PRODUCTION dimension set, swept exhaustively by t-value.
 	//
-	// Every slot of eye-bounce 0's stream against the SAME slot of
-	// eye-bounce 1's stream, judged by DYADIC box occupancy, which is
-	// the criterion a digital net is actually built to satisfy (the 3x3
-	// partition above is deliberately non-dyadic, and a pair with a
-	// large t-value concentrates its error on those boundaries).
+	// The old section C swept only stream 16 slot k against stream 17
+	// slot k -- 32 same-slot pairs.  A render draws every slot of every
+	// live stream against every slot of the next, so that sweep could
+	// (and did) miss collapsed pairs sitting one slot off the diagonal.
+	// This one sweeps:
 	//
-	// The two sample counts are not interchangeable.  Over the first
-	// 2^M samples only index bits 0..M-1 vary, so a pair's
-	// equidistribution is governed by its generator rows TRUNCATED to M
-	// columns -- and a dimension's leading row has only 2^(M-1)
-	// distinct values there.  With 2311 dimensions that is 128 values
-	// at 256 samples per pixel, so SOME pairs of the 2311 must share a
-	// leading row and collapse their 2x2 occupancy; it is a counting
-	// bound, not something better direction numbers could fix (see
-	// SobolSequence.h, "What this does NOT fix").  The 32 pairs swept
-	// here are clear of it, and this test pins that.
+	//   C1  every ADJACENT-bounce cross-slot pair: streams (s, s+1) for
+	//       s in 0..23, all 8 x 8 slot combinations -- 1536 pairs.
+	//   C2  every pair inside the whole production set, streams 0..24 x
+	//       slots 0..7 -- 200 dimensions, 19900 pairs.
+	//   C3  the image-plane dimensions 0 and 1 against every production
+	//       dimension.
+	//   C4  consecutive dimensions (d, d+1) across the WHOLE table,
+	//       against Joe & Kuo's own published quality claim.
+	//
+	// at 64, 256 and 1024 samples per pixel.
+	//
+	// The bounds are not "zero collapses": that is impossible, and the
+	// test prints the proof beside each number.  Over the first 2^m
+	// samples a dimension's leading generator row takes one of only
+	// 2^(m-1) values (m_1 = 1 pins the top bit), so 200 production
+	// dimensions into 32 rows at m = 6, or 128 rows at m = 8, MUST
+	// collide -- `CollapseFloor` computes how often under the most
+	// balanced assignment that exists.  What the bounds pin is that
+	// the measured count stays near that floor, which is what the
+	// searched direction numbers buy, and nowhere near the pre-DL-81
+	// padding's 100%.
 	// ----------------------------------------------------------------
-	std::cout << std::endl << "C. Bounce-to-bounce sweep, all 32 slots of streams 16 and 17"
-	          << std::endl;
+	std::cout << std::endl << "C. Production-set t-value sweep" << std::endl;
 	{
-		static const uint32_t kCounts[2] = { 1u << 8, 1u << 12 };
+		std::vector<uint32_t> production;
+		for( uint32_t st = 0; st <= 24; st++ ) {
+			for( uint32_t slot = 0; slot < 8; slot++ ) production.push_back( st * 32u + slot );
+		}
+		std::vector<uint32_t> filmPair;
+		filmPair.push_back( 0 );
+		filmPair.push_back( 1 );
+
+		// The measured post-fix counts, pinned.  Each is the Joe-Kuo
+		// table's own measurement with a small regression margin; the
+		// floor printed next to it is the counting bound below which
+		// no direction numbers can go.
+		struct Bound { unsigned int m; unsigned int adjacent; unsigned int all; unsigned int film; };
+		static const Bound kBounds[3] = {
+			{  6,  70,  700,  20 },		// measured 53 / 616 / 12, floor 528 on C2
+			{  8,  12,  150,   4 },		// measured  6 / 131 /  2, floor  72 on C2
+			{ 10,   0,   30,   0 }		// measured  0 /  23 /  0, floor   0 on C2
+		};
+
+		for( int b = 0; b < 3; b++ )
+		{
+			const unsigned int m = kBounds[b].m;
+			char msg[256];
+
+			// C1 -- adjacent bounces, every cross-slot combination.
+			PairSweep adj; adj.pairs = 0; adj.collapsed = 0; adj.maxT = 0;
+			for( uint32_t st = 0; st <= 23; st++ ) {
+				std::vector<uint32_t> a, c;
+				for( uint32_t slot = 0; slot < 8; slot++ ) {
+					a.push_back( st * 32u + slot );
+					c.push_back( ( st + 1u ) * 32u + slot );
+				}
+				const PairSweep one = SweepPairs( a, c, true, m );
+				adj.pairs += one.pairs;
+				adj.collapsed += one.collapsed;
+				if( one.maxT > adj.maxT ) adj.maxT = one.maxT;
+			}
+
+			// C2 -- the whole production set.
+			const PairSweep all = SweepPairs( production, production, false, m );
+			// C3 -- dimensions 0 and 1 against it.
+			const PairSweep film = SweepPairs( filmPair, production, true, m );
+
+			std::cout << "    2^" << std::setw( 2 ) << m << " = " << std::setw( 5 ) << ( 1u << m )
+			          << " spp:  adjacent " << std::setw( 4 ) << adj.collapsed << "/" << adj.pairs
+			          << " collapsed (max t " << adj.maxT << ")"
+			          << "   production " << std::setw( 4 ) << all.collapsed << "/" << all.pairs
+			          << " (max t " << all.maxT << ", counting floor "
+			          << CollapseFloor( unsigned( production.size() ), m ) << ")"
+			          << "   dims 0/1 " << film.collapsed << "/" << film.pairs
+			          << " (max t " << film.maxT << ")" << std::endl;
+
+			std::snprintf( msg, sizeof(msg),
+				"C1: adjacent-bounce cross-slot collapses <= %u at 2^%u spp",
+				kBounds[b].adjacent, m );
+			Check( adj.collapsed <= kBounds[b].adjacent, msg );
+
+			std::snprintf( msg, sizeof(msg),
+				"C2: production-set collapses <= %u at 2^%u spp (counting floor %u)",
+				kBounds[b].all, m, CollapseFloor( unsigned( production.size() ), m ) );
+			Check( all.collapsed <= kBounds[b].all, msg );
+
+			std::snprintf( msg, sizeof(msg),
+				"C3: dims 0/1 vs production collapses <= %u at 2^%u spp",
+				kBounds[b].film, m );
+			Check( film.collapsed <= kBounds[b].film, msg );
+
+			// No sweep may EVER report a count above the number of
+			// pairs it claims to have examined -- a cheap guard that
+			// the sweep is really running.
+			std::snprintf( msg, sizeof(msg),
+				"C: sweeps examined the expected pair counts at 2^%u spp", m );
+			Check( adj.pairs == 1536u && all.pairs == 19900u && film.pairs == 398u, msg );
+		}
+
+		// ------------------------------------------------------------
+		// C4.  Joe & Kuo publish, for their `new-joe-kuo-6.21201` set,
+		// the dimension at which each t-value of a two-dimensional
+		// projection first occurs.  For m = 10 they report t = 10 first
+		// occurring beyond dimension 21201, i.e. t <= 9 throughout; for
+		// m = 12, t = 12 beyond 21201, i.e. t <= 11
+		// (https://web.maths.unsw.edu.au/~fkuo/sobol/, "Comparison of
+		// [2] and [1]").  Re-derive that from the table this build
+		// actually expanded: it checks the embedded initial numbers,
+		// the recurrence, AND the left-alignment convention all at
+		// once, against a number nobody here chose.
+		// ------------------------------------------------------------
+		static const unsigned int kConsecutiveM[2]     = { 10, 12 };
+		static const unsigned int kJoeKuoMaxT[2]       = {  9, 11 };
 		for( int c = 0; c < 2; c++ )
 		{
-			const uint32_t n = kCounts[c];
-			double worst2 = 0.0, worst4 = 0.0, worst3 = 0.0;
-			unsigned int slot2 = 0, slot4 = 0, collapsed = 0;
-			for( unsigned int k = 0; k < 32; k++ ) {
-				const Joint j = ProbeJoint( 512 + k, seed, 544 + k, seed, n );
-				if( j.worstDyadic > worst2 ) { worst2 = j.worstDyadic; slot2 = k; }
-				if( j.worstQuad   > worst4 ) { worst4 = j.worstQuad;   slot4 = k; }
-				if( j.worstDyadic > 1e-9 ) collapsed++;
-				worst3 = std::max( worst3, j.worstRel );
+			const unsigned int m = kConsecutiveM[c];
+			unsigned int maxT = 0, worstAt = 0;
+			for( uint32_t d = 0; d + 1 < SobolSequence::kNumDimensions; d++ ) {
+				const unsigned int t = TValue( d, d + 1u, m );
+				if( t > maxT ) { maxT = t; worstAt = d; }
 			}
-			std::cout << "    N=" << std::setw( 5 ) << n
-			          << "  worst 2x2 dyadic dev " << std::fixed << std::setprecision( 5 )
-			          << worst2 << " (slot " << slot2 << ")"
-			          << "   worst 4x4 dyadic dev " << worst4 << " (slot " << slot4 << ")"
-			          << "   worst 3x3 dev " << worst3
-			          << "   slots with a 2x2 collapse: " << collapsed << "/32" << std::endl;
-
+			std::cout << "    consecutive pairs (d, d+1), d < " << SobolSequence::kNumDimensions
+			          << ", m = " << m << ": max t = " << maxT
+			          << " (at d = " << worstAt << "), Joe-Kuo publish <= "
+			          << kJoeKuoMaxT[c] << std::endl;
 			char msg[192];
-			if( n >= ( 1u << 12 ) ) {
-				// Far enough above the counting bound that every pair
-				// here has a distinct leading row: demand exactness.
-				std::snprintf( msg, sizeof(msg),
-					"C: every 2x2 AND 4x4 dyadic box exact on all 32 slots at N=%u", n );
-				Check( worst2 <= 1e-9 && worst4 <= 1e-9, msg );
-			} else {
-				// At 256 samples per pixel only 128 distinct leading
-				// rows exist for 2311 dimensions, so ~0.78% of ALL
-				// dimension pairs must collapse (SobolSequence.h, "What
-				// this does NOT fix") -- about 0.25 of these 32.  One is
-				// consistent with that; 32 is the pre-DL-81 collapse.
-				std::snprintf( msg, sizeof(msg),
-					"C: at most 2 of 32 slots collapse at N=%u (counting bound predicts ~0.25)", n );
-				Check( collapsed <= 2u, msg );
-			}
+			std::snprintf( msg, sizeof(msg),
+				"C4: consecutive-pair t <= %u at m = %u, as Joe-Kuo's D(6) table claims",
+				kJoeKuoMaxT[c], m );
+			Check( maxT <= kJoeKuoMaxT[c], msg );
 		}
 	}
 
 	// ----------------------------------------------------------------
 	// E. Generator self-checks.
 	//
-	// The direction numbers are BUILT at first use rather than
-	// tabulated, so the build itself needs pinning.
-	//   E1  The number of primitive polynomials the enumeration accepts
-	//       at each degree d must be phi(2^d - 1) / d, computed here by
-	//       an independent Euler-phi over the trial-division
-	//       factorisation -- nothing the generator shares.
-	//   E2  Sobol' dimensions 0 and 1 must still be exactly the
-	//       closed-form van der Corput and x+1 sequences the padded
-	//       implementation used, so the image plane is untouched.
+	// The direction numbers are EXPANDED at first use from the embedded
+	// Joe-Kuo initial numbers, so both halves need pinning.
+	//   E1a The embedded records are admissible (m_i odd, m_i < 2^i),
+	//       genuinely primitive, and in the canonical Sobol' order.
+	//       Primitivity is decided here by walking the powers of x
+	//       until they return to 1 -- no code shared with anything the
+	//       library or the generator does.
+	//   E1b Every row of the LIBRARY's table equals the recurrence
+	//       expanded here, from those records.  This is what makes the
+	//       "RISE uses Joe & Kuo's searched initial numbers" claim
+	//       checkable rather than a comment.
+	//   E1c Per-degree counts of the embedded polynomials equal
+	//       phi(2^d - 1)/d, from an independent Euler-phi.
+	//   E2  Table rows 0 and 1 must still BE the closed-form van der
+	//       Corput and x+1 sequences, so the image plane is untouched.
+	//       Read through `DirectionNumber`, not `Sobol`: `Sobol`
+	//       short-circuits dimensions 0 and 1 to those same closed
+	//       forms, so checking it against them is a tautology that
+	//       passes whatever the table holds.
 	// ----------------------------------------------------------------
 	std::cout << std::endl << "E. Generator self-checks" << std::endl;
 	{
-		// E1 -- count what the same enumeration rule accepts, using an
-		// independently written primitivity test, and compare the per
-		// degree totals against phi(2^d - 1) / d.
-		unsigned int accepted = 1;		// dimension 0 carries no polynomial
-		bool countsOk = true;
-		for( unsigned int d = 1; d <= 15 && accepted < 2311; d++ ) {
-			unsigned int got = 0;
-			for( uint32_t a = 0; a < ( 1u << ( d - 1 ) ) && accepted < 2311; a++ ) {
-				const uint32_t poly = ( 1u << d ) | ( a << 1 ) | 1u;
-				if( PolyOrderIsFull( poly, d ) ) { got++; accepted++; }
+		const uint32_t* rec = SobolJoeKuoInitialNumbers();
+		const unsigned int avail = SobolJoeKuoDimensionCount();
+		const unsigned int total = SobolJoeKuoRecordCount();
+
+		Check( avail >= SobolSequence::kNumDimensions,
+			"E1a: the embedded records cover every dimension the table claims" );
+
+		bool admissible = true, primitive = true, canonical = true, expansion = true;
+		unsigned int perDegree[33] = {0};
+		uint32_t expectDeg = 1, expectA = 0;
+		unsigned int consumed = 0;
+		unsigned int firstBadDim = 0;
+
+		const unsigned int sweep =
+			( avail < SobolSequence::kNumDimensions ) ? avail : SobolSequence::kNumDimensions;
+		for( unsigned int dim = 1; dim < sweep; dim++ )
+		{
+			const unsigned int s = rec[consumed];
+			const uint32_t a     = rec[consumed + 1];
+			const uint32_t* m    = rec + consumed + 2;
+			consumed += 2 + s;
+
+			if( s == 0 || s > 32 ) { admissible = false; break; }
+			for( unsigned int i = 1; i <= s; i++ ) {
+				if( ( m[i - 1] & 1u ) == 0u || m[i - 1] >= ( 1u << i ) ) admissible = false;
 			}
+
+			const uint32_t p = ( 1u << s ) | ( a << 1 ) | 1u;
+			if( !PolyOrderIsFull( p, s ) ) primitive = false;
+			if( s <= 32 ) perDegree[s]++;
+
+			// Canonical order: advance our own (degree, a) cursor past
+			// every non-primitive a and require this record to name
+			// exactly the next primitive polynomial.
+			for( ;; ) {
+				if( expectA >= ( 1u << ( expectDeg - 1u ) ) ) { expectDeg++; expectA = 0; continue; }
+				const uint32_t q = ( 1u << expectDeg ) | ( expectA << 1 ) | 1u;
+				if( PolyOrderIsFull( q, expectDeg ) ) break;
+				expectA++;
+			}
+			if( s != expectDeg || a != expectA ) canonical = false;
+			expectA++;
+
+			// E1b -- expand the recurrence here and compare against the
+			// library's table.
+			uint32_t w[32];
+			for( unsigned int i = 1; i <= s; i++ ) w[i - 1] = m[i - 1] << ( 32u - i );
+			for( unsigned int i = s; i < 32; i++ ) {
+				uint32_t t = w[i - s] ^ ( w[i - s] >> s );
+				for( unsigned int k = 1; k < s; k++ ) {
+					if( ( p >> ( s - k ) ) & 1u ) t ^= w[i - k];
+				}
+				w[i] = t;
+			}
+			for( unsigned int i = 0; i < 32; i++ ) {
+				if( SobolSequence::DirectionNumber( dim, i ) != w[i] ) {
+					if( expansion ) firstBadDim = dim;
+					expansion = false;
+					break;
+				}
+			}
+		}
+
+		Check( admissible, "E1a: every embedded m_i is odd and below 2^i" );
+		Check( primitive,  "E1a: every embedded (s, a) is a primitive polynomial over GF(2)" );
+		Check( canonical,  "E1a: the embedded polynomials are in canonical Sobol' order" );
+		if( !expansion ) {
+			std::cout << "    first dimension whose table row is NOT the Joe-Kuo expansion: "
+			          << firstBadDim << std::endl;
+		}
+		Check( expansion,
+			"E1b: every table row is the recurrence expanded from the embedded Joe-Kuo record" );
+		Check( consumed <= total,
+			"E1a: the record walk stayed inside the embedded array" );
+
+		bool countsOk = true;
+		for( unsigned int d = 1; d <= 32; d++ ) {
+			if( perDegree[d] == 0 ) continue;
 			const uint32_t n = ( 1u << d ) - 1u;
 			const unsigned int expect = EulerPhi( n ) / d;
-			// The last degree is truncated by the 2311 cap, so only
-			// compare the degrees that ran to completion.
-			if( accepted < 2311 && got != expect ) {		// NOLINT
-				countsOk = false;
-				std::cout << "    degree " << d << ": accepted " << got
-				          << ", phi(2^d-1)/d = " << expect << std::endl;
-			} else {
-				std::cout << "    degree " << std::setw( 2 ) << d << ": "
-				          << std::setw( 4 ) << got << " primitive"
-				          << ( accepted < 2311 ? "" : " (truncated by the 2311 cap)" )
-				          << ",  phi(2^d-1)/d = " << expect << std::endl;
-			}
+			const bool complete = ( perDegree[d] == expect );
+			std::cout << "    degree " << std::setw( 2 ) << d << ": "
+			          << std::setw( 5 ) << perDegree[d] << " embedded,  phi(2^d-1)/d = "
+			          << expect << ( complete ? "" : "  (truncated by kNumDimensions)" )
+			          << std::endl;
+			// Only the degrees that ran to completion can be compared;
+			// the last one is cut off by the dimension cap.
+			if( perDegree[d] > expect ) countsOk = false;
 		}
-		Check( countsOk,
-			"E1: primitive-polynomial counts per degree equal phi(2^d-1)/d" );
+		Check( countsOk, "E1c: per-degree counts never exceed phi(2^d-1)/d" );
 
 		bool d0 = true, d1 = true;
-		for( uint32_t i = 0; i < ( 1u << 16 ); i++ ) {
-			if( SobolSequence::Sobol( i, 0 ) != SobolSequence::SobolDim0( i ) ) d0 = false;
-			if( SobolSequence::Sobol( i, 1 ) != SobolSequence::SobolDim1( i ) ) d1 = false;
+		uint32_t dir1 = 1u << 31;
+		for( uint32_t i = 0; i < 32; i++ ) {
+			if( SobolSequence::DirectionNumber( 0, i ) != ( 1u << ( 31u - i ) ) ) d0 = false;
+			if( SobolSequence::DirectionNumber( 1, i ) != dir1 ) d1 = false;
+			dir1 ^= ( dir1 >> 1 );
 		}
-		Check( d0, "E2: table dimension 0 == SobolDim0 (van der Corput), 2^16 indices" );
-		Check( d1, "E2: table dimension 1 == SobolDim1 (x+1), 2^16 indices" );
+		Check( d0, "E2: TABLE row 0 is the van der Corput direction numbers 2^31, 2^30, ..." );
+		Check( d1, "E2: TABLE row 1 is the x+1 recurrence SobolDim1 implements" );
+
+		bool s0 = true, s1 = true;
+		for( uint32_t i = 0; i < ( 1u << 16 ); i++ ) {
+			if( SobolSequence::Sobol( i, 0 ) != SobolSequence::SobolDim0( i ) ) s0 = false;
+			if( SobolSequence::Sobol( i, 1 ) != SobolSequence::SobolDim1( i ) ) s1 = false;
+		}
+		Check( s0 && s1,
+			"E2: Sobol()'s dimension 0/1 short-circuits agree with their closed forms" );
+	}
+
+	// ----------------------------------------------------------------
+	// F. Get2D must be a (0,2)-net -- at EVERY dimension group.
+	//
+	// Under the original padding, every Get2D drew Sobol' dimensions 0
+	// and 1, which is a perfect (0,2)-net; the DL-81 fix quietly traded
+	// that for two consecutive rows of the per-dimension table, whose
+	// joint projection is a net only by accident.  Get2D is now padded
+	// again -- dimensions 0 and 1 at an index permuted per group -- so
+	// every 2D draw a renderer makes (film position, lens point,
+	// hemisphere direction, light-surface point) is a (0,m,2)-net for
+	// every m at once, and different groups are decorrelated.
+	//
+	// Drawn through the real SobolSampler, so this tests what an
+	// integrator gets, not a private helper.
+	// ----------------------------------------------------------------
+	std::cout << std::endl << "F. Get2D (0,2)-net property, by dimension group" << std::endl;
+	{
+		// (stream, slots consumed before the Get2D).  Stream 0 slot 0 is
+		// the film pair; 3322 is the thin-lens aperture stream, whose
+		// pair the DL-81 fix had landed on table dimensions 2309/2310.
+		struct Group { int stream; int skip; const char* what; };
+		static const Group kGroups[8] = {
+			{    0, 0, "film / primary        " },
+			{    1, 0, "light bounce 0 slot 0 " },
+			{   16, 0, "eye bounce 0 slot 0   " },
+			{   16, 1, "eye bounce 0 slot 1   " },
+			{   17, 3, "eye bounce 1 slot 3   " },
+			{   24, 6, "eye bounce 8 slot 6   " },
+			{   47, 0, "BDPT strategy select  " },
+			{ 3322, 0, "thin-lens aperture    " }
+		};
+
+		for( int g = 0; g < 8; g++ )
+		{
+			unsigned int worstM = 0;
+			bool allOk = true;
+			for( unsigned int m = 2; m <= 12 && allOk; m++ )
+			{
+				const uint32_t n = 1u << m;
+				std::vector<double> xs( n ), ys( n );
+				for( uint32_t i = 0; i < n; i++ ) {
+					SobolSampler sampler( i, seed );
+					sampler.StartStream( kGroups[g].stream );
+					for( int d = 0; d < kGroups[g].skip; d++ ) sampler.Get1D();
+					const Point2 pt = sampler.Get2D();
+					xs[i] = pt.x;
+					ys[i] = pt.y;
+				}
+				for( unsigned int k = 0; k <= m && allOk; k++ ) {
+					const uint32_t nx = 1u << k;
+					const uint32_t ny = 1u << ( m - k );
+					std::vector<uint32_t> counts( size_t(nx) * size_t(ny), 0u );
+					for( uint32_t i = 0; i < n; i++ ) {
+						uint32_t bx = uint32_t( xs[i] * double(nx) ); if( bx >= nx ) bx = nx - 1;
+						uint32_t by = uint32_t( ys[i] * double(ny) ); if( by >= ny ) by = ny - 1;
+						counts[ size_t(by) * size_t(nx) + size_t(bx) ]++;
+					}
+					for( size_t b = 0; b < counts.size(); b++ ) {
+						if( counts[b] != 1u ) { allOk = false; break; }
+					}
+				}
+				if( allOk ) worstM = m;
+			}
+			std::cout << "    " << kGroups[g].what
+			          << "  (0,m,2)-net up to m = " << worstM
+			          << ( worstM >= 12 ? "" : "   <-- FAILS" ) << std::endl;
+			char msg[192];
+			std::snprintf( msg, sizeof(msg),
+				"F: Get2D on stream %d slot %d is a (0,m,2)-net for every m <= 12",
+				kGroups[g].stream, kGroups[g].skip );
+			Check( worstM >= 12, msg );
+		}
+
+		// Cross-group decorrelation: one coordinate of one group against
+		// the same coordinate of another must fill the dyadic 2x2 boxes.
+		// A shared index permutation -- or none at all -- would leave
+		// them locked exactly as the pre-DL-81 padding did.
+		const uint32_t nCross = 1u << 16;
+		double worstCross = 0.0;
+		for( int g = 1; g < 8; g++ )
+		{
+			uint32_t d4[4] = {0,0,0,0};
+			for( uint32_t i = 0; i < nCross; i++ ) {
+				SobolSampler sa( i, seed );
+				sa.StartStream( kGroups[g - 1].stream );
+				for( int d = 0; d < kGroups[g - 1].skip; d++ ) sa.Get1D();
+				const Point2 pa = sa.Get2D();
+
+				SobolSampler sb( i, seed );
+				sb.StartStream( kGroups[g].stream );
+				for( int d = 0; d < kGroups[g].skip; d++ ) sb.Get1D();
+				const Point2 pb = sb.Get2D();
+
+				d4[ ( pa.x < 0.5 ? 0 : 1 ) + ( pb.x < 0.5 ? 0 : 2 ) ]++;
+			}
+			double worst = 0.0;
+			for( int b = 0; b < 4; b++ ) {
+				worst = std::max( worst,
+					std::fabs( ( double( d4[b] ) / double( nCross ) ) * 4.0 - 1.0 ) );
+			}
+			worstCross = std::max( worstCross, worst );
+		}
+		std::cout << "    worst cross-group dyadic 2x2 deviation over 2^16 samples: "
+		          << std::fixed << std::setprecision( 5 ) << worstCross << std::endl;
+		Check( worstCross <= 0.02,
+			"F: consecutive Get2D groups fill all four dyadic 2x2 boxes within 2%" );
 	}
 
 	std::cout << std::endl;
