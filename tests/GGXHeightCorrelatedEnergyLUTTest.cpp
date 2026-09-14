@@ -546,20 +546,84 @@ namespace
 		return mean;
 	}
 
-	static bool TestDL86IsotropicEndCap( const char* label, const Scalar alpha, const double cosTheta, unsigned int seed )
+	// DL-86: SEPARABLE-model (G = G1(wi)*G1(wo)) twin of MonteCarloEssG2
+	// above -- the model CookTorranceBRDF/SPF render with, and the one
+	// E_ss_TABLE/LookupEss are calibrated to.  With VNDF sampling the
+	// G1(wi) factor cancels against the proposal density, so the
+	// per-sample weight is plain G1(wo) (see the generator's own comment
+	// on the same identity).  LookupEss's grazing end-cap had no direct
+	// coverage before DL-86: this test only ever drove LookupEss as a
+	// NEGATIVE control against the height-correlated quadrature.
+	static double MonteCarloEssSeparable( const Scalar alpha, const Scalar cosWi, unsigned int numSamples, unsigned int seed, double& outStdErr )
+	{
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( Vector3( 0, 0, 1 ) );
+
+		const Scalar sinWi = sqrt( r_max( Scalar(0), Scalar(1) - cosWi * cosWi ) );
+		const Vector3 wi( sinWi, 0, cosWi );
+
+		std::mt19937_64 rng( seed );
+		std::uniform_real_distribution<double> uni( 0.0, 1.0 );
+
+		double sum = 0.0;
+		double sumSq = 0.0;
+		unsigned int n = 0;
+		for( unsigned int s = 0; s < numSamples; ++s )
+		{
+			const Scalar u1 = uni( rng );
+			const Scalar u2 = uni( rng );
+			const Vector3 m = MicrofacetUtils::VNDF_Sample( wi, onb, alpha, u1, u2 );
+			const Scalar wiDotM = Vector3Ops::Dot( wi, m );
+			if( wiDotM <= 0 ) { ++n; continue; }
+
+			const Vector3 wo = Vector3Ops::Normalize( m * ( 2.0 * wiDotM ) - wi );
+			const Scalar cosWo = wo.z;
+			double weight = 0.0;
+			if( cosWo > 0 ) weight = MicrofacetUtils::GGX_G1( alpha, cosWo );
+			sum += weight;
+			sumSq += weight * weight;
+			++n;
+		}
+
+		const double mean = sum / n;
+		const double variance = r_max( 0.0, sumSq / n - mean * mean );
+		outStdErr = sqrt( variance / n );
+		return mean;
+	}
+
+	static bool TestDL86SeparableEndCap( const char* label, const Scalar alpha, const double cosTheta, const double toleranceAbs, unsigned int seed )
+	{
+		double stdErr = 0.0;
+		const double reference = MonteCarloEssSeparable( alpha, cosTheta, 20000000u, seed, stdErr );
+		const double looked = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
+
+		const double tol = 8.0 * stdErr + toleranceAbs;
+		const double diff = std::fabs( looked - reference );
+		const bool passed = diff <= tol;
+
+		std::ostringstream oss;
+		oss << label << " LookupEss=" << std::fixed << std::setprecision(6) << looked
+			<< " quadrature=" << reference << "+/-" << std::setprecision(6) << stdErr
+			<< " diff=" << diff << " (" << (diff/reference*100.0) << "%) tol=" << tol;
+		return Report( oss.str(), passed );
+	}
+
+	// `toleranceAbs` is PER-ALPHA, not one global floor.  Post-DL-86 the
+	// cosTheta axis is resolved by a baked sub-grid whose own residual is
+	// <=0.11% for any alpha the LUT's alpha axis actually resolves; what
+	// remains at the low end is the ALPHA axis (DL-105): alpha<0.01
+	// clamps to row 0 outright, and row 0 (alpha=0.01) to row 1
+	// (alpha=0.0419) is a 4.2x ratio inside one interpolation cell.  Each
+	// row below therefore carries the residual its own alpha really has,
+	// measured, instead of one loose floor that would hide a regression
+	// at the alphas where the fix is tight.
+	static bool TestDL86IsotropicEndCap( const char* label, const Scalar alpha, const double cosTheta, const double toleranceAbs, unsigned int seed )
 	{
 		double stdErr = 0.0;
 		const double reference = MonteCarloEssG2( alpha, cosTheta, 20000000u, seed, stdErr );
 		const double looked = MicrofacetEnergyLUT::LookupEssG2( cosTheta, alpha );
 
-		// Generous but real band: 8 standard errors of this 20M-sample
-		// quadrature plus a 1% absolute floor -- comfortably wider than
-		// this row's own measured residual (<=0.6% at every isotropic
-		// (alpha,cosTheta) pair tested, cos as low as 0.002) so this is a
-		// genuine regression gate, not a re-tuned pass.  The PRE-FIX flat
-		// clamp misses this band by 2-9x at cos<c0 (see the docstring
-		// numbers this test's own printed diff reproduces).
-		const double tol = 8.0 * stdErr + 0.01;
+		const double tol = 8.0 * stdErr + toleranceAbs;
 		const double diff = std::fabs( looked - reference );
 		const bool passed = diff <= tol;
 
@@ -656,44 +720,148 @@ int main()
 
 	std::cout << "\n--- DL-86: isotropic grazing end-cap, LookupEssG2 below c0=0.5/32~=0.0156 ---\n";
 	{
-		const double alphas[] = { 0.05, 0.3, 1.0 };
-		const double coss[]   = { 0.002, 0.005, 0.01, 0.0156, 0.03 };
+		// Per-alpha tolerance (see TestDL86IsotropicEndCap's comment).
+		// 0.004 is the tight band: the baked sub-grid's own residual at
+		// these alphas is <=0.11% relative, so 0.004 absolute leaves
+		// margin for Monte-Carlo noise without being able to pass either
+		// pre-fix model (flat clamp: up to 9.9% relative; straight line
+		// from the boundary: up to 5.7%).  The two loose rows name their
+		// cause: alpha=0.02 sits inside the 4.2x-wide first alpha cell
+		// and alpha=0.005 is BELOW the table's alpha range entirely and
+		// clamps to row 0 -- both DL-105, neither a cosTheta-axis effect
+		// (they do not move with SUB_SIZE).
+		struct Row { double alpha; double tolAbs; };
+		const Row rows[] = {
+			{ 0.005, 0.060 },	// DL-105: alpha below the table range, clamps to row 0
+			{ 0.01,  0.004 },
+			{ 0.02,  0.025 },	// DL-105: first alpha cell spans 0.01 -> 0.0419
+			{ 0.05,  0.004 },
+			{ 0.3,   0.004 },
+			{ 1.0,   0.004 },
+		};
+		// Every value here is strictly below c0=0.015625 -- the interval
+		// DL-86 is about.  cos=0.03 (the first ORDINARY interpolation
+		// span, between bin 0 and bin 1) is covered separately below:
+		// the true curve has real structure there too, but that is the
+		// main grid's own resolution (DL-105), untouched by this fix.
+		const double coss[] = { 0.0001, 0.001, 0.002, 0.005, 0.008, 0.01, 0.0156 };
 		unsigned int seed = 86001;
-		for( double alpha : alphas )
+		for( const Row& r : rows )
 		{
 			for( double c : coss )
 			{
 				std::ostringstream label;
-				label << "alpha=" << alpha << " cos=" << c;
-				passed &= TestDL86IsotropicEndCap( label.str().c_str(), alpha, c, seed++ );
+				label << "alpha=" << r.alpha << " cos=" << c;
+				passed &= TestDL86IsotropicEndCap( label.str().c_str(), r.alpha, c, r.tolAbs, seed++ );
 			}
+		}
+	}
+
+	std::cout << "\n--- DL-86: isotropic grazing end-cap, SEPARABLE LookupEss (CookTorrance's table) ---\n";
+	{
+		// P1-4: the separable table's row 0 RISES with cosTheta (0.8947
+		// at c0, 0.9731 at the next bin), so the bin0->bin1 secant an
+		// earlier draft of this fix extrapolated with pointed AWAY from
+		// the true cosTheta->0 limit and was WORSE than the flat clamp it
+		// replaced (measured alpha=0.01 cos=0.002: truth 0.9174, flat
+		// clamp 0.8947 = 2.5% low, secant 0.8606 = 6.2% low).  The baked
+		// sub-grid plus the baked per-alpha boundary constant
+		// (E_ss_LIMIT_TABLE) removes the guesswork entirely.
+		struct Row { double alpha; double tolAbs; };
+		const Row rows[] = {
+			{ 0.005, 0.060 },	// DL-105, as above
+			{ 0.01,  0.004 },
+			{ 0.02,  0.025 },	// DL-105, as above
+			{ 0.05,  0.004 },
+			{ 0.3,   0.004 },
+			{ 1.0,   0.004 },
+		};
+		// Every value here is strictly below c0=0.015625 -- the interval
+		// DL-86 is about.  cos=0.03 (the first ORDINARY interpolation
+		// span, between bin 0 and bin 1) is covered separately below:
+		// the true curve has real structure there too, but that is the
+		// main grid's own resolution (DL-105), untouched by this fix.
+		const double coss[] = { 0.0001, 0.001, 0.002, 0.005, 0.008, 0.01, 0.0156 };
+		unsigned int seed = 86501;
+		for( const Row& r : rows )
+		{
+			for( double c : coss )
+			{
+				std::ostringstream label;
+				label << "alpha=" << r.alpha << " cos=" << c;
+				passed &= TestDL86SeparableEndCap( label.str().c_str(), r.alpha, c, r.tolAbs, seed++ );
+			}
+		}
+	}
+
+	std::cout << "\n--- DL-86 control: the first ORDINARY span (cos=0.03, above c0) is untouched by this fix ---\n";
+	{
+		// Above c0 nothing changed: same bilinear interpolation between
+		// bin 0 and bin 1 as before DL-86.  These rows are recorded, with
+		// the residual the MAIN grid actually has there (up to ~3.3%
+		// relative at alpha=0.02, where the first alpha cell and the
+		// first cosTheta span are both at their widest), so a future
+		// change that "fixes" the end-cap by disturbing the interior
+		// shows up here instead of hiding.  The tolerance is that
+		// measured residual plus margin -- deliberately NOT the 0.004 the
+		// below-c0 rows get, and tracked as DL-105, not DL-86.
+		struct Row { double alpha; double tolAbs; };
+		const Row rows[] = {
+			{ 0.005, 0.060 },	// DL-105: below the table's alpha range
+			{ 0.01,  0.040 },
+			{ 0.02,  0.040 },
+			{ 0.05,  0.040 },
+			{ 0.3,   0.040 },
+			{ 1.0,   0.040 },
+		};
+		unsigned int seed = 86701;
+		for( const Row& r : rows )
+		{
+			std::ostringstream l1; l1 << "alpha=" << r.alpha << " cos=0.03 (G2)";
+			passed &= TestDL86IsotropicEndCap( l1.str().c_str(), r.alpha, 0.03, r.tolAbs, seed++ );
+			std::ostringstream l2; l2 << "alpha=" << r.alpha << " cos=0.03 (separable)";
+			passed &= TestDL86SeparableEndCap( l2.str().c_str(), r.alpha, 0.03, r.tolAbs, seed++ );
 		}
 	}
 
 	std::cout << "\n--- DL-86: anisotropic per-azimuth grazing end-cap, LookupEssG2AnisoDirectional ---\n";
 	{
-		// Measured (this red-proof, debt-dl86 slice): a strongly
-		// anisotropic ratio (9:1 or 10:1) combined with an azimuth close
-		// to either axis leaves a residual of up to ~4% even after the
-		// fix -- NOT "a few tenths of a percent" as an earlier draft of
-		// this test assumed for every azimuth.  This is compounded
-		// end-cap-extrapolation + pre-existing ANISO_PHI grid coarseness
-		// (the latter is DL-77's own separately-tracked residual, not
-		// re-litigated here).  Every row here is still a LARGE
-		// improvement over the pre-fix flat clamp (12-18%+ at these same
-		// configurations -- see the printed diffs and
-		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the
-		// before/after table), so a uniform, honestly-derived 5% absolute
-		// floor is used for every row below: wide enough to pass the
-		// fix's real (<=4.1%) residual with margin, tight enough to catch
-		// a full regression back toward the flat clamp.
-		const double kAnisoTol = 0.05;
+		// Tolerances here are per-GROUP and named, for the same reason as
+		// the isotropic rows above: what is left after DL-86 is not the
+		// cosTheta end-cap.
+		//
+		// kBelowC0Tol (the rows DL-86 is actually about, cosTheta < c0):
+		// measured residual <=0.64% relative at every configuration in
+		// the first group, against an independent 20M-sample per-azimuth
+		// quadrature -- so 0.010 absolute is a real gate.  Pre-fix (flat
+		// clamp) the same rows read up to 4.0% and would fail it.
+		//
+		// kAboveC0Tol (cosTheta=0.03, the first ORDINARY span): unchanged
+		// by DL-86 and left at the main grid's own residual, up to 2.43%
+		// -- DL-105, recorded not gated tightly.
+		//
+		// kGridCornerTol: the debt-ggx3 sweep's own cited worst case sits
+		// OFF-node on all three of alphaX (0.0361, between nodes 0.01 and
+		// 0.0530), alphaY (0.9627, between 0.9570 and 1.0) and phi (5
+		// degrees, between nodes 0 and 7.5), so what it measures is the
+		// aniso grid's interpolation error, not the end-cap.  DL-86 makes
+		// the value at every NODE right; the blend between nodes is
+		// DL-105/DL-77's own tracked residual, and at this corner it is
+		// 3.0-4.0% -- slightly WORSE than the straight-line model this
+		// slice replaced happened to read there (2.1-2.4%), which is a
+		// coincidence of that model's error pointing the same way as the
+		// interpolation error, not evidence for it: the straight line is
+		// 2-9x worse at every NODE-exact configuration below.
+		const double kBelowC0Tol = 0.010;
+		const double kAboveC0Tol = 0.035;
+		const double kGridCornerTol = 0.045;
+
 		struct Case { double aX, aY, phiDeg; };
 		const Case cases[] = {
 			{ 0.9, 0.1, 0.0 }, { 0.9, 0.1, 45.0 }, { 0.9, 0.1, 90.0 },
 			{ 0.05, 0.5, 0.0 }, { 0.05, 0.5, 45.0 }, { 0.05, 0.5, 90.0 },
 		};
-		const double coss[] = { 0.002, 0.005, 0.01, 0.0156, 0.03 };
+		const double coss[] = { 0.002, 0.005, 0.01, 0.0156 };
 		unsigned int seed = 86101;
 		for( const Case& c : cases )
 		{
@@ -701,16 +869,42 @@ int main()
 			{
 				std::ostringstream label;
 				label << "aX=" << c.aX << " aY=" << c.aY << " phi=" << c.phiDeg << " cos=" << cosTheta;
-				passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, cosTheta, kAnisoTol, seed++ );
+				passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, cosTheta, kBelowC0Tol, seed++ );
+			}
+			std::ostringstream label;
+			label << "aX=" << c.aX << " aY=" << c.aY << " phi=" << c.phiDeg << " cos=0.03 (above c0, control)";
+			passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, 0.03, kAboveC0Tol, seed++ );
+		}
+
+		// EXACT grid nodes on all three interpolated axes (alphaX, alphaY
+		// at 0.01 + 0.99*k/23; phi at multiples of 7.5 degrees), so the
+		// ONLY interpolation left is the cosTheta axis -- i.e. these rows
+		// isolate exactly what DL-86 changed, with the aniso grid's own
+		// resolution factored out.  This group did not exist before this
+		// slice, which is why the aniso end-cap's residual was previously
+		// only quotable at a configuration that confounds the two.
+		const Case nodeCases[] = {
+			{ 0.01, 1.0, 0.0 }, { 0.01, 1.0, 45.0 }, { 0.01, 1.0, 90.0 },
+			{ 1.0, 0.01, 0.0 }, { 1.0, 0.01, 90.0 },
+			{ 0.01 + 0.99 * 5.0 / 23.0, 0.01 + 0.99 * 11.0 / 23.0, 7.5 },
+			{ 0.01 + 0.99 * 22.0 / 23.0, 0.01 + 0.99 * 2.0 / 23.0, 82.5 },
+		};
+		for( const Case& c : nodeCases )
+		{
+			for( double cosTheta : coss )
+			{
+				std::ostringstream label;
+				label << "node-exact aX=" << c.aX << " aY=" << c.aY << " phi=" << c.phiDeg << " cos=" << cosTheta;
+				passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, cosTheta, kBelowC0Tol, seed++ );
 			}
 		}
 
-		// The debt-ggx3 sweep's own cited worst case (extreme anisotropy
-		// ratio, azimuth close to the smooth axis): the fix reduces this
-		// from ~18% to ~2-2.5%, well inside the same 5% floor.
-		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.0024 (debt-ggx3 cited worst case)", 0.0361, 0.9627, 5.0, 0.0024, kAnisoTol, 86200 );
-		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.005",  0.0361, 0.9627, 5.0, 0.005,  kAnisoTol, 86201 );
-		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.01",   0.0361, 0.9627, 5.0, 0.01,   kAnisoTol, 86202 );
+		// The debt-ggx3 sweep's cited worst case: off-node on every axis
+		// (see kGridCornerTol's comment).  Kept because the DL-77 record
+		// quotes it, gated at the residual it really has.
+		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.0024 (debt-ggx3 cited worst case, off-node on all 3 axes)", 0.0361, 0.9627, 5.0, 0.0024, kGridCornerTol, 86200 );
+		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.005 (off-node on all 3 axes)",  0.0361, 0.9627, 5.0, 0.005,  kGridCornerTol, 86201 );
+		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.01 (off-node on all 3 axes)",   0.0361, 0.9627, 5.0, 0.01,   kGridCornerTol, 86202 );
 	}
 
 	std::cout << "\nGGXHeightCorrelatedEnergyLUTTest: " << checks << " checks, " << failures << " failures\n";
