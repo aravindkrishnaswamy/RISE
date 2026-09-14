@@ -5502,7 +5502,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// emission the HWSS-side SMS pass already counted.  Previously
 						// dropped (defaulted false/false), double-counting HWSS
 						// SMS+SSS+glass+emitter paths — the HWSS sibling of Codex Finding 2.
-						false, true, pAOV );
+						//
+						// DL-74 P2-1 (round-4 review): forward the incoming
+						// MIS PARTNER too.  Its three siblings -- the two
+						// HWSS-entry NM fallbacks and the no-BSDF (glass)
+						// mid-path delegation above -- all pass `bsdfMisPdf`;
+						// this one defaulted to -1 ("same as `bsdfPdf`").
+						// Latent today: the only producer whose two densities
+						// differ is `RayCaster`'s volume phase-scatter
+						// continuation, and reaching THIS site from it needs a
+						// medium vertex whose continuation lands on an
+						// SSS/diffusion-profile surface inside an HWSS walk --
+						// no scene in the tree does that.  Forwarded so the
+						// delegation set is uniform rather than three-quarters
+						// correct.
+						false, true, pAOV, bsdfMisPdf );
 				}
 				break;
 			}
