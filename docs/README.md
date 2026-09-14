@@ -177,7 +177,9 @@ do not execute old phase lists blindly.
     (`GGXBRDF::value`/`valueNM` now widen by `ri.glossyFilterWidth` like
     their SPF twins) and the zero-F0 Schlick lobe-selection-weight repair
     (derived from the hemispherical Fresnel average instead of raw F0),
-    plus the new DL-65 CookTorrance/Schlick sibling debt it opened.
+    plus a follow-up DL-63 section (2026-09-14) recording the
+    height-correlated-G2 multiscatter-compensation fix and the DL-65
+    CookTorrance/Schlick glossy-filter sibling fix (both CLOSED).
   - CSG / signals: [DL34_UNION_INTERIOR_DEPTH.md](DL34_UNION_INTERIOR_DEPTH.md)
     records the published union-overlap interior-depth repair, conservative
     scope, and baseline gate residuals; [DL36_EMITTER_NEIGHBOUR_PIN.md](DL36_EMITTER_NEIGHBOUR_PIN.md)
