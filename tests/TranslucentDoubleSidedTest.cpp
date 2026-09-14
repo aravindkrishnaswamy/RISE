@@ -137,7 +137,16 @@ namespace
 	//! the shading-vs-geometric divergence this fixture exists to
 	//! create from any unrelated per-vertex interpolation effect).
 	//! `tiltDegrees=0` gives a plain, untilted cube (sub-test 2's needs).
-	TriangleMeshGeometryIndexed* BuildDoubleSidedCube( Scalar tiltDegrees )
+	//!
+	//! `bSmoothVaryX` switches the +Z face from that single uniform
+	//! authored normal to a genuinely PHONG-INTERPOLATED one: each of the
+	//! face's four vertices gets `normalize(tan(tilt)*su, 0, 1)` where
+	//! `su` is that vertex's own X sign, so the shading normal actually
+	//! VARIES across the face and a hit away from the face centre reads
+	//! an interpolated normal a few degrees off (0,0,1) -- the
+	//! smooth-shaded regime sub-test 3 needs (a flat-shaded face can only
+	//! produce the exactly-0-degree or the authored-tilt case).
+	TriangleMeshGeometryIndexed* BuildDoubleSidedCube( Scalar tiltDegrees, bool bSmoothVaryX = false )
 	{
 		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( /*bDoubleSided*/true, false );
 		mesh->BeginIndexedTriangles();
@@ -145,8 +154,9 @@ namespace
 		// axis: 0=X,1=Y,2=Z.  sign: +1 or -1.  Emits one quad (4 vertices,
 		// 2 triangles) for the face at that axis/sign, normal defaulting
 		// to the true flat outward direction unless overridden.
+		const Scalar tiltRadForSlope = tiltDegrees * PI / 180.0;
 		unsigned int nextVertex = 0;
-		auto addFace = [&]( int axis, Scalar sign, const Vector3* overrideNormal )
+		auto addFace = [&]( int axis, Scalar sign, const Vector3* overrideNormal, bool bVaryAcrossFace )
 		{
 			const Vector3 outward = AxisVector( axis, sign );
 
@@ -161,7 +171,16 @@ namespace
 					p[uAxis] = static_cast<Scalar>( su );
 					p[vAxis] = static_cast<Scalar>( sv );
 					mesh->AddVertex( p );
-					mesh->AddNormal( overrideNormal ? *overrideNormal : outward );
+					if( bVaryAcrossFace ) {
+						// Per-vertex normal leaning toward this vertex's own
+						// u-side, so Phong interpolation across the face gives
+						// a position-dependent shading normal.
+						Vector3 perVertex = outward
+							+ AxisVector( uAxis, std::tan( tiltRadForSlope ) * static_cast<Scalar>( su ) );
+						mesh->AddNormal( Vector3Ops::Normalize( perVertex ) );
+					} else {
+						mesh->AddNormal( overrideNormal ? *overrideNormal : outward );
+					}
 					mesh->AddTexCoord( Point2( 0, 0 ) );
 				}
 			}
@@ -186,12 +205,12 @@ namespace
 		const Scalar tiltRad = tiltDegrees * PI / 180.0;
 		Vector3 tiltedPlusZNormal( -std::sin(tiltRad), 0, std::cos(tiltRad) );
 
-		addFace( 0, +1, 0 );
-		addFace( 0, -1, 0 );
-		addFace( 1, +1, 0 );
-		addFace( 1, -1, 0 );
-		addFace( 2, +1, tiltDegrees != 0 ? &tiltedPlusZNormal : 0 );
-		addFace( 2, -1, 0 );
+		addFace( 0, +1, 0, false );
+		addFace( 0, -1, 0, false );
+		addFace( 1, +1, 0, false );
+		addFace( 1, -1, 0, false );
+		addFace( 2, +1, ( tiltDegrees != 0 && !bSmoothVaryX ) ? &tiltedPlusZNormal : 0, bSmoothVaryX );
+		addFace( 2, -1, 0, false );
 
 		mesh->DoneIndexedTriangles();
 		return mesh;
@@ -210,6 +229,68 @@ namespace
 		ri.geometric.range2 = RISE_INFINITY;
 		ri.geometric.ray = r;
 		pObj->IntersectRay( ri, RISE_INFINITY, true, true, true );
+	}
+
+	//! Shared holder for the five refcounted painters + material a
+	//! translucent fixture needs, so each sub-test can build one without
+	//! repeating eleven addref/release lines.
+	struct TranslucentFixture
+	{
+		UniformColorPainter* front;
+		UniformColorPainter* trans;
+		UniformScalarPainter* ext;
+		UniformScalarPainter* phongN;
+		UniformScalarPainter* scat;
+		TranslucentMaterial* material;
+
+		TranslucentFixture( Scalar extinction, Scalar scattering )
+		{
+			front = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  front->addref();
+			trans = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  trans->addref();
+			ext = new UniformScalarPainter( extinction );  ext->addref();
+			phongN = new UniformScalarPainter( 1.0 );  phongN->addref();
+			scat = new UniformScalarPainter( scattering );  scat->addref();
+			material = new TranslucentMaterial( *front, *trans, *ext, *phongN, *scat );
+			material->addref();
+		}
+		~TranslucentFixture()
+		{
+			material->release();
+			scat->release();
+			phongN->release();
+			ext->release();
+			trans->release();
+			front->release();
+		}
+	private:
+		TranslucentFixture( const TranslucentFixture& );
+		TranslucentFixture& operator=( const TranslucentFixture& );
+	};
+
+	//! Numerically integrates `spf->Pdf` over the FULL sphere, in the
+	//! intersection's own shading frame.  A correctly normalized
+	//! conditional density integrates to exactly 1 here; a lobe whose
+	//! support the sampler and the density disagree about (or that has
+	//! collapsed to nothing) does not.
+	Scalar IntegratePdfOverSphere( ISPF* spf, const RayIntersectionGeometric& ri, const IORStack& stack )
+	{
+		const int kThetaSteps = 300;
+		const int kPhiSteps = 600;
+		Scalar integral = 0;
+		for( int ti = 0; ti < kThetaSteps; ti++ ) {
+			const Scalar thetaMid = PI * ( Scalar(ti) + 0.5 ) / kThetaSteps;
+			const Scalar dTheta = PI / kThetaSteps;
+			const Scalar sinThetaMid = std::sin( thetaMid );
+			for( int pi_ = 0; pi_ < kPhiSteps; pi_++ ) {
+				const Scalar phi = TWO_PI * ( Scalar(pi_) + 0.5 ) / kPhiSteps;
+				const Scalar dPhi = TWO_PI / kPhiSteps;
+				const Vector3 wo = ri.onb.u()*sinThetaMid*std::cos(phi)
+					+ ri.onb.v()*sinThetaMid*std::sin(phi)
+					+ ri.onb.w()*std::cos(thetaMid);
+				integral += spf->Pdf( ri, wo, stack ) * sinThetaMid * dTheta * dPhi;
+			}
+		}
+		return integral;
 	}
 }
 
@@ -373,6 +454,144 @@ static void TestSeedingOnDoubleSidedMesh()
 	front->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 3 (P1, review round 3): the exit FRAME itself must be
+//  oriented outward before sampling.
+//
+//  On a double-sided mesh the geometry flips BOTH `vNormal` and
+//  `vGeomNormal` toward the ray, so at a genuine EXIT hit (ray already
+//  travelling outward) `ri.onb.w()` -- built from the flipped `vNormal`
+//  by Object::IntersectRay -- points INTO the solid.  Sampling the exit
+//  lobe around that inward frame while clipping against the recovered
+//  OUTWARD `geomNRaw` gives cos(phi) = -1 on a flat-shaded face
+//  (P(valid) = 0, no lobe emitted at all: total silent energy loss) and
+//  cos(phi) ~ -0.99 on a smooth-shaded one (the whole lobe collapses
+//  into a degrees-wide wedge at the horizon, with the density inflated
+//  by 1/P(valid)).  The same inversion makes the exit branch's
+//  backscatter `myonb.FlipW()` produce +outward, contradicting its own
+//  "stays inside this object, no stack change" contract.
+//
+//  Sub-test 1 above could not see any of this: its 60-degree AUTHORED
+//  face tilt happens to leave P(valid) = 0.25, and its assertions are
+//  "some lobe emitted" + "none inward", both of which a collapsed
+//  horizon wedge still satisfies.
+//////////////////////////////////////////////////////////////////////
+static void CheckExitFrameOrientation(
+	bool bSmoothShaded, Scalar tiltDegrees, Scalar minMeanOutwardCos, const char* label )
+{
+	std::cout << "Sub-test 3" << (bSmoothShaded ? "b" : "a") << ": " << label << std::endl;
+
+	TriangleMeshGeometryIndexed* g = BuildDoubleSidedCube( tiltDegrees, bSmoothShaded );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->FinalizeTransformations();
+
+	// scattering 0.3 so the exit branch also emits its interior
+	// backscatter `trans` ray (the second half of this sub-test);
+	// extinction 0 keeps the exit lobe's own kray non-zero.
+	TranslucentFixture fx( /*extinction*/ 0.0, /*scattering*/ 0.3 );
+	o->AssignMaterial( *fx.material );
+
+	// Straight out through the +Z face, off-centre in x so the
+	// smooth-shaded fixture's Phong interpolation actually reads a
+	// tilted normal there (at the face centre it would interpolate back
+	// to exactly (0,0,1)).
+	const Ray ray( Point3( 0.3, 0, 0 ), Vector3( 0, 0, 1 ) );
+	RayIntersection ri( ray, nullRasterizerState );
+	Hit( o, ray, ri );
+
+	Check( ri.geometric.bHit, ( std::string(label) + ": ray hits the +Z face" ).c_str() );
+	Check( ri.geometric.bGeomNormalOrientedToRay,
+		( std::string(label) + ": fixture sanity -- vGeomNormal WAS flipped (double-sided exit hit)" ).c_str() );
+
+	if( ri.geometric.bHit ) {
+		const Vector3 trueOutward( 0, 0, 1 );
+		// Fixture sanity: the shading frame really is inward-facing here,
+		// which is the whole premise of this sub-test.
+		Check( Vector3Ops::Dot( ri.geometric.onb.w(), trueOutward ) < 0,
+			( std::string(label) + ": fixture sanity -- ri.onb.w() points INTO the solid at this exit hit" ).c_str() );
+
+		IORStack stack( 1.0 );
+		stack.SetCurrentObject( o );
+		stack.push( 1.0 );
+		Check( stack.containsCurrent(),
+			( std::string(label) + ": fixture starts in the interior (exit) state" ).c_str() );
+
+		RandomNumberGenerator rng( 31337 );
+		IndependentSampler sampler( rng );
+
+		const int kTrials = 8192;
+		for( int spectral = 0; spectral < 2; spectral++ ) {
+			int emitted = 0, inward = 0, backscatter = 0, backscatterOutward = 0;
+			Scalar sumOutwardCos = 0;
+			for( int i = 0; i < kTrials; i++ ) {
+				ScatteredRayContainer scattered;
+				if( spectral ) {
+					fx.material->GetSPF()->ScatterNM( ri.geometric, sampler, 550.0, scattered, stack );
+				} else {
+					fx.material->GetSPF()->Scatter( ri.geometric, sampler, scattered, stack );
+				}
+				for( unsigned int j = 0; j < scattered.Count(); j++ ) {
+					const Scalar c = Vector3Ops::Dot( scattered[j].ray.Dir(), trueOutward );
+					if( scattered[j].type == ScatteredRay::eRayDiffuse ) {
+						emitted++;
+						sumOutwardCos += c;
+						if( c <= 0 ) inward++;
+					} else if( scattered[j].type == ScatteredRay::eRayTranslucent ) {
+						backscatter++;
+						if( c >= 0 ) backscatterOutward++;
+					}
+				}
+			}
+			const char* tag = spectral ? "NM" : "RGB";
+			const Scalar meanCos = emitted > 0 ? sumOutwardCos / emitted : Scalar(0);
+			std::cout << "  " << tag << " emitted=" << emitted << "/" << kTrials
+				<< " inward=" << inward << " meanOutwardCos=" << meanCos
+				<< " backscatter=" << backscatter << " backscatterOutward=" << backscatterOutward << std::endl;
+
+			Check( emitted > kTrials - 10,
+				( std::string(label) + " " + tag + ": an exit lobe IS emitted (P1 money assertion)" ).c_str() );
+			Check( inward == 0,
+				( std::string(label) + " " + tag + ": no emitted exit direction is geometrically inward" ).c_str() );
+			// A cosine lobe about the true OUTWARD shading normal has
+			// E[dot(dir,trueOutward)] = (2/3)*cos(shading tilt); a lobe
+			// collapsed into the horizon wedge has it near 0.
+			Check( meanCos > minMeanOutwardCos,
+				( std::string(label) + " " + tag + ": exit lobe is centred on the outward normal, not collapsed at the horizon (P1 money assertion)" ).c_str() );
+			Check( backscatter > kTrials - 10,
+				( std::string(label) + " " + tag + ": the interior backscatter lobe is emitted" ).c_str() );
+			Check( backscatterOutward == 0,
+				( std::string(label) + " " + tag + ": every backscatter direction points INTO the solid (P1 money assertion)" ).c_str() );
+		}
+
+		const Scalar integral = IntegratePdfOverSphere( fx.material->GetSPF(), ri.geometric, stack );
+		std::cout << "  integral(Pdf dOmega) = " << integral << std::endl;
+		Check( std::fabs( integral - 1.0 ) < 0.01,
+			( std::string(label) + ": Pdf integrates to 1 over the sphere (P1 money assertion)" ).c_str() );
+	}
+
+	o->release();
+}
+
+static void TestExitFrameOrientationOnDoubleSidedMesh()
+{
+	// Flat-shaded, zero tilt: cos(phi) = -1 pre-fix, so NOTHING is
+	// emitted and Pdf() has empty support.  Post-fix the exit frame is
+	// exactly the true outward normal, so a plain cosine lobe:
+	// E[dot(dir,trueOutward)] = 2/3.
+	CheckExitFrameOrientation( /*smooth*/ false, /*tilt*/ 0.0, /*minMeanOutwardCos*/ 0.60,
+		"flat-shaded double-sided face, zero tilt" );
+
+	// Smooth-shaded, ~6.3 degrees of interpolated tilt at the hit point
+	// (20-degree per-vertex lean, barycentric weight 0.30 in x at
+	// x=0.3 -- see BuildDoubleSidedCube's `bSmoothVaryX`): cos(phi) ~
+	// -0.994 pre-fix, so a lobe IS emitted but squeezed into a ~6-degree
+	// wedge.  Post-fix E[dot(dir,trueOutward)] = (2/3)*cos(6.3deg) =
+	// 0.663.
+	CheckExitFrameOrientation( /*smooth*/ true, /*tilt*/ 20.0, /*minMeanOutwardCos*/ 0.60,
+		"smooth-shaded double-sided face, few-degree interpolated tilt" );
+}
+
 int main()
 {
 	GlobalLog();
@@ -381,6 +600,7 @@ int main()
 
 	TestExitGateOnDoubleSidedMesh();
 	TestSeedingOnDoubleSidedMesh();
+	TestExitFrameOrientationOnDoubleSidedMesh();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
