@@ -19,7 +19,10 @@
 //    3. Sample radius r from the profile CDF for the channel
 //    4. Sample angle phi uniformly on [0, 2pi)
 //    5. Compute probe origin offset in the perpendicular plane
-//    6. Cast a probe ray along +-axis through the object
+//    6. Cast a single finite chord through the object along the axis,
+//       starting before and passing through the projection plane
+//       (DL-52: NOT two half-lines starting AT the plane -- that
+//       skips a coplanar near surface, see BSSRDFSampling.cpp)
 //    7. If hit: evaluate Rd(r_actual), compute multi-axis PDF
 //    8. Generate cosine-weighted scattered ray from entry normal
 //    9. Compute Fresnel transmission and Sw normalization

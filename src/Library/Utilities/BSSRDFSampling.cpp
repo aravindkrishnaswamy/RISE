@@ -107,9 +107,37 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		perpU * offsetU + perpV * offsetV );
 
 	//
-	// Step 6: Cast probe rays in both +axis and -axis directions.
-	// Trace the full intersection chain through the object and collect
-	// all valid hits, then select one uniformly (PBRT convention).
+	// Step 6: Cast a single finite CHORD along the probe axis, passing
+	// THROUGH the projection plane (the perpU/perpV plane through
+	// exitPoint that probeCenter lies in), and collect every
+	// intersection the chord crosses -- the standard separable-BSSRDF
+	// probe (Christensen & Burley 2015; PBRT's SeparableBSSRDF::Sample_Sp
+	// traces the same start-before/travel-through chord).
+	//
+	// DL-52: the previous implementation started BOTH probe rays AT
+	// probeCenter (a point IN the projection plane) and advanced
+	// BSSRDF_RAY_EPSILON before the first intersection test, once per
+	// +axis and once per -axis.  On a broad flat face, probeCenter is
+	// itself coplanar with the local surface (a lateral tangent/
+	// bitangent offset never leaves the plane of a flat surface), so
+	// BOTH epsilon advances moved the ray origin to the WRONG side of
+	// exactly the nearby surface the probe was centered on before the
+	// intersection test ever ran.  The dominant near-coplanar entry
+	// point -- the one the whole disk-projection scheme is built to
+	// find -- was skipped by construction on every sample; only a
+	// distant, unrelated surface crossed later along either half-line
+	// (e.g. the far side of a slab) could restore any profile mass.
+	//
+	// Fix: trace ONE continuous ray per axis, starting well BEFORE the
+	// projection plane (probeMaxDist back along -axis) and travelling
+	// forward THROUGH it for a total chord length of 2*probeMaxDist.  A
+	// surface coplanar with (or arbitrarily close to) the projection
+	// plane is now crossed mid-chord like any other intersection, never
+	// skipped by an epsilon offset anchored ON the plane.  The single
+	// monotonic sweep (the bounce loop only ever advances `traveled`
+	// forward) cannot hit the same physical point twice, and it
+	// subsumes what the old two-direction trace covered on both sides
+	// of probeCenter -- no distinct "+axis" and "-axis" loop is needed.
 	//
 	struct ProbeHit {
 		Point3 point;
@@ -119,22 +147,22 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	};
 	std::vector<ProbeHit> hits;
 	hits.reserve( 8 );
-	// Limit probe distance to the profile's effective range — hits
-	// beyond this contribute negligible energy and may cross voids.
+	// Limit the chord's reach on each side of the projection plane to the
+	// profile's effective range — hits beyond this contribute negligible
+	// energy and may cross voids.
 	const Scalar probeMaxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
 	const int maxProbeHits = 64;  // safety cap
 
-	// Trace all intersections along +axis and -axis
-	for( int dir = 0; dir < 2; dir++ )
 	{
-		const Vector3 probeDir = (dir == 0) ? probeAxis : -probeAxis;
-		Ray probeRay( probeCenter, probeDir );
+		const Point3 chordStart = Point3Ops::mkPoint3( probeCenter, -probeAxis * probeMaxDist );
+		Ray probeRay( chordStart, probeAxis );
 		probeRay.Advance( BSSRDF_RAY_EPSILON );
 
+		const Scalar chordLength = 2.0 * probeMaxDist;
 		Scalar traveled = 0;
 		for( int bounce = 0; bounce < maxProbeHits; bounce++ )
 		{
-			const Scalar remaining = probeMaxDist - traveled;
+			const Scalar remaining = chordLength - traveled;
 			if( remaining < BSSRDF_RAY_EPSILON ) break;
 
 			RayIntersection probeRI( probeRay, nullRasterizerState );
@@ -155,7 +183,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 			// Advance ray past this hit
 			traveled += probeRI.geometric.range;
-			probeRay = Ray( probeRI.geometric.ptIntersection, probeDir );
+			probeRay = Ray( probeRI.geometric.ptIntersection, probeAxis );
 			probeRay.Advance( BSSRDF_RAY_EPSILON );
 			traveled += BSSRDF_RAY_EPSILON;
 		}

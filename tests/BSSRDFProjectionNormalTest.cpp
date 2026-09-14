@@ -201,16 +201,24 @@ static bool SelectedProbeHit(
 	const Point3 probeCenter = Point3Ops::mkPoint3( ri.ptIntersection,
 		perpU * (radius * cos(phi)) + perpV * (radius * sin(phi)) );
 
+	// DL-52: mirrors BSSRDFSampling.cpp's Step 6 -- a SINGLE chord per
+	// axis, starting maxDistance back along -probeAxis from probeCenter
+	// (a point IN the projection plane) and travelling forward through
+	// 2*maxDistance, rather than two half-lines starting AT probeCenter.
+	// Must stay in lockstep with production: same draw count/order (this
+	// loop consumes no sampler draws), same physical hit enumeration, so
+	// draws[4]'s hit-selection index picks the SAME entry point in both.
 	struct RawHit { Point3 point; Vector3 normal; };
 	std::vector<RawHit> hits;
 	const Scalar maxDistance = profile->GetMaximumDistanceForError( 1e-4 );
-	for( int sign = 0; sign < 2; ++sign ) {
-		const Vector3 direction = sign == 0 ? probeAxis : -probeAxis;
-		Ray probeRay( probeCenter, direction );
+	{
+		const Point3 chordStart = Point3Ops::mkPoint3( probeCenter, -probeAxis * maxDistance );
+		Ray probeRay( chordStart, probeAxis );
 		probeRay.Advance( BSSRDFSampling::BSSRDF_RAY_EPSILON );
+		const Scalar chordLength = 2.0 * maxDistance;
 		Scalar traveled = 0;
 		for( int bounce = 0; bounce < 64; ++bounce ) {
-			const Scalar remaining = maxDistance - traveled;
+			const Scalar remaining = chordLength - traveled;
 			if( remaining < BSSRDFSampling::BSSRDF_RAY_EPSILON ) break;
 			RayIntersection probeRI( probeRay, nullRasterizerState );
 			sphere->IntersectRay( probeRI, remaining, true, true, false );
@@ -218,7 +226,7 @@ static bool SelectedProbeHit(
 			hits.push_back( RawHit{ probeRI.geometric.ptIntersection,
 				probeRI.geometric.vGeomNormal } );
 			traveled += probeRI.geometric.range;
-			probeRay = Ray( probeRI.geometric.ptIntersection, direction );
+			probeRay = Ray( probeRI.geometric.ptIntersection, probeAxis );
 			probeRay.Advance( BSSRDFSampling::BSSRDF_RAY_EPSILON );
 			traveled += BSSRDFSampling::BSSRDF_RAY_EPSILON;
 		}
