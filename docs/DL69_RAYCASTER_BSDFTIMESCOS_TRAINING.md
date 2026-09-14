@@ -81,6 +81,26 @@ does not — `trainOptimalMIS` is not asked for at the HWSS call site.
   `bsdfTimesCos` wiring (if any) is unrelated to the two sites fixed
   here.
 
+## Residual: volume-guiding bsdfPdf composition (DL-70, open)
+
+Auditing the two fixed volume sites surfaced a separate, pre-existing
+question this fix does not touch: when OpenPGL volume guiding fires,
+`wi` is drawn from `combinedPdf` (a phase/guide mixture), and
+`guidingMISWeight = phasePdf / combinedPdf` is folded into
+`rs2.importance` — correct for the immediate contribution. But
+`rs2.bsdfPdf` is then stored as the raw, un-combined `phasePdf`, not
+`effectivePdf`/`combinedPdf`. This is INCONSISTENT with the main
+surface scatter continuation (`PathTracingIntegrator.cpp` ~:3411/~:5507),
+which stores the COMBINED `effectiveBsdfPdf` in the equivalent
+situation. Whenever a guided volume continuation escapes to the
+environment map, `RayCasterEnvEscapeMISWeight`'s `w_bsdf =
+PowerHeuristic(rs.bsdfPdf, envPdf)` therefore uses an understated pdf
+relative to the true sampling density. This is a ruling, not a
+red-proved defect (no render-level measurement was taken, and the
+composite condition — trained+active volume guiding AND the guided
+ray escaping to the global env map — is narrow); filed as **DL-70**,
+left OPEN.
+
 ## File status
 
 | File | Status |

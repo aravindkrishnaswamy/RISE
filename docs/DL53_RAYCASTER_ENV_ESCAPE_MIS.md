@@ -99,6 +99,49 @@ pointer-identity gate.
 
 No sibling site required an independent fix.
 
+## What this gate does not cover
+
+Two pre-existing residuals, both out of this fix's scope (neither is a
+regression this fix introduced; both were true before and after
+`b3de184d`):
+
+- **Light-solo path.** `LightSampler.cpp`'s env-NEE (~:2567, "LIGHT-SOLO
+  Stage 3") only runs when solo is inactive or the environment IS the
+  soloed target — every other solo target (an explicit light or a mesh
+  luminary) sees zero env-NEE contribution. `RayCaster::CastRay`'s
+  escape path has no equivalent solo-suppression: a BSDF-sampled ray
+  that escapes to the global env map while some OTHER light is soloed
+  still returns its (now correctly MIS-weighted, post-this-fix)
+  partner-weighted radiance. Solo isolation for a non-environment
+  target is therefore not perfectly complete — a small `w_bsdf`
+  fraction of the env's contribution leaks through the escape path
+  even when the environment itself is not the soloed light. This
+  predates this fix (the escape previously returned FULL, unweighted
+  radiance in the same situation, an even larger leak) and is a
+  solo-mode preview/debug concern, not a production render bug.
+- **Override-map asymmetry.** `LightSampler`'s env-NEE always samples
+  and MIS-weights against the SCENE's global environment map,
+  regardless of whether the current shading point's escape path would
+  actually resolve through a different, per-object override map. If a
+  shading point has such an override, its BSDF-sampled escape (per the
+  MIS PARTNER RULE above) correctly keeps FULL weight — there is no
+  partner for a distinct override map — but the SAME point's env-NEE
+  still discounts the global env's contribution by `w_nee < 1`,
+  assuming a BSDF-escape partner that, at this specific point, does
+  not exist (it goes to the override map instead). The global env's
+  `(1 - w_nee)` share is under-counted at such points, not
+  double-counted. This is a pre-existing asymmetry between the two
+  independent NEE/escape code paths, not something this fix's
+  pointer-identity gate could have addressed (the gate correctly
+  identifies "does THIS escape's map have a partner", which is exactly
+  right for the escape side; the gap is that env-NEE does not
+  symmetrically ask "does THIS shading point's escape actually go to
+  the map I'm NEE-ing against").
+
+Neither residual has a dedicated regression or ledger row as of this
+writing; both are recorded here for a future reader who traces either
+symptom back to this fix.
+
 ## File status
 
 | File | Status |

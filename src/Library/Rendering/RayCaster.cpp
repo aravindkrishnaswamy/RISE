@@ -1249,6 +1249,24 @@ bool RayCaster::CastRay(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
+				// DL-70 (open, ruling only -- not fixed here): when
+				// OpenPGL guiding fires above, `wi` is drawn from
+				// `combinedPdf` (a phase/guide mixture) and
+				// `guidingMISWeight = phasePdf / combinedPdf` is folded
+				// into `rs2.importance` on the line above, but `bsdfPdf`
+				// here is stored as the raw, un-combined `phasePdf` --
+				// NOT `effectivePdf`/`combinedPdf`. This is INCONSISTENT
+				// with the main surface scatter continuation a few
+				// hundred lines below (PathTracingIntegrator.cpp
+				// ~:3411/5507), which stores the COMBINED
+				// `effectiveBsdfPdf` in exactly this situation. Whenever
+				// this continuation escapes to the env map,
+				// RayCasterEnvEscapeMISWeight's `w_bsdf =
+				// PowerHeuristic(rs.bsdfPdf, envPdf)` therefore uses an
+				// understated pdf (phasePdf, typically far below
+				// combinedPdf in a trained, useful guiding region) for
+				// that one MIS computation. Not fixed in this slice --
+				// filed as DL-70.
 				rs2.bsdfPdf = phasePdf;
 				// DL-69 (P2-2): mirror the PT integrator's PTBsdfTimesCos
 				// convention (scatterThroughput * pdf) so a phase-scatter
@@ -1856,6 +1874,13 @@ bool RayCaster::CastRayNM(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
+				// DL-70 (open, ruling only -- not fixed here): NM sibling
+				// of the RGB volume-continuation note above -- `bsdfPdf`
+				// is stored as the raw `phasePdf`, not the combined pdf
+				// guiding actually sampled from, inconsistent with the
+				// main surface continuation's `effectiveBsdfPdf`
+				// convention. See the RGB copy's comment for the full
+				// ruling; filed as DL-70.
 				rs2.bsdfPdf = phasePdf;
 				// DL-69 (P2-2): NM sibling of the RGB volume-continuation
 				// fix above -- mirrors PTBsdfTimesCos's Scalar overload
