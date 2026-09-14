@@ -294,8 +294,7 @@ void TranslucentSPF::Scatter(
 	// the ray" -- no geometric truth to gate against.  Fall back to the
 	// shading normal there, which makes both gates no-ops, exactly like
 	// the degenerate-normal fallback below.
-	const Vector3 trueGeomNormal = ri.bGeomNormalRayDerived ? n
-		: ( ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal );
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : n;
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
@@ -579,8 +578,7 @@ void TranslucentSPF::ScatterNM(
 	// the ray" -- no geometric truth to gate against.  Fall back to the
 	// shading normal there, which makes both gates no-ops, exactly like
 	// the degenerate-normal fallback below.
-	const Vector3 trueGeomNormal = ri.bGeomNormalRayDerived ? n
-		: ( ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal );
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : n;
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
@@ -745,8 +743,7 @@ Scalar TranslucentSPF::Pdf(
 	// the ray" -- no geometric truth to gate against.  Fall back to the
 	// shading normal there, which makes both gates no-ops, exactly like
 	// the degenerate-normal fallback below.
-	const Vector3 trueGeomNormal = ri.bGeomNormalRayDerived ? n
-		: ( ri.bGeomNormalOrientedToRay ? -ri.vGeomNormal : ri.vGeomNormal );
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : n;
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
 		? trueGeomNormal : n;
 

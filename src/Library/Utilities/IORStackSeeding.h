@@ -254,10 +254,7 @@ namespace RISE
 				// rather than tally a meaningless crossing.  (Harmless
 				// today only because HairMaterial reports no
 				// SpecularInfo; this guard makes it structural.)
-				const Vector3 trueGeomNormal = ri.geometric.bGeomNormalOrientedToRay
-					? -ri.geometric.vGeomNormal : ri.geometric.vGeomNormal;
-				const Scalar cosN = Vector3Ops::Dot(
-					trueGeomNormal, probe.Dir() );
+				const Scalar cosN = ri.geometric.TrueGeomFacing( probe.Dir() );
 
 				if( ri.pObject && ri.pMaterial && !ri.geometric.bGeomNormalRayDerived )
 				{
