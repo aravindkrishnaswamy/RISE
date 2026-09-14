@@ -60,11 +60,13 @@
 //    for the property that makes it legitimate.
 //
 //    Before DL-81 round 2, `Get2D` drew two CONSECUTIVE dimensions from
-//    the per-dimension table, whose pairwise t-value averaged 2 to 3
-//    (the aperture pair reached 6 at m = 8).  Under the original
-//    padding those same two consecutive dimensions had been Sobol' 0
-//    and 1 -- a perfect net -- so restoring the net here recovers a
-//    property the first DL-81 fix had silently dropped.
+//    the per-dimension table.  Measured on that table, its 2310
+//    consecutive pairs have mean t-value 2.51 at m = 8 and max 7, and
+//    the thin-lens aperture pair (dimensions 2309, 2310) sat at t = 6.
+//    Under the original padding those same two consecutive dimensions
+//    had been Sobol' 0 and 1 -- a perfect net -- so restoring the net
+//    here recovers a property the first DL-81 fix had silently
+//    dropped.
 //
 //  Direction numbers
 //  -----------------

@@ -103,11 +103,12 @@ namespace RISE
 			//! and 1 at an index permuted by this dimension group --
 			//! not as two consecutive rows of the per-dimension table.
 			//! Two consecutive table rows are a legitimate 2D
-			//! projection but not a net: measured over the production
-			//! dimension set their pairwise t-value averages 2 to 3,
-			//! and the aperture pair reached 6 at 256 samples per
-			//! pixel, where dimensions 0 and 1 are t = 0 by
-			//! construction.  See SobolSequence::SamplePair.
+			//! projection but not a net: measured on the first
+			//! DL-81 table, the 2310 consecutive pairs have mean
+			//! t-value 2.51 at 256 samples per pixel and max 7, and
+			//! the thin-lens aperture pair reached 6 -- where
+			//! dimensions 0 and 1 are t = 0 by construction.  See
+			//! SobolSequence::SamplePair.
 			Point2 Get2D()
 			{
 				double u = 0.0, v = 0.0;

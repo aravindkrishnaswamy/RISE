@@ -113,9 +113,24 @@ static unsigned int g_seedBase = kDefaultSeedBase;
 static unsigned int g_renderIndex = 0;
 
 //! Samples per pixel for every row.  Overridable from argv[2] so the
-//! rows can be re-measured at other sample counts: the sampler is
-//! deterministic QMC, so the seed base does NOT move these numbers and
-//! sample count is the only convergence knob.
+//! rows can be re-measured at other sample counts: the seed base does
+//! NOT move these numbers, so sample count is the only convergence
+//! knob -- which is how the pre-fix figures are known to be a BIAS and
+//! not a truncation error (row A read 11.94 % at 256 spp and 12.09 %
+//! at 1024).
+//!
+//! That seed-insensitivity is a property of THIS FIXTURE, not of RISE
+//! renders in general.  A render is not reproducible run to run:
+//! `BlockRasterizeSequence` shuffles its block order from
+//! `std::random_device`, nothing in the library calls `srand`, and two
+//! renders of the same scene at the same sample count differ in every
+//! byte (verified by hashing repeat EXRs).  What saves this fixture is
+//! that a `pathtracing_pel_rasterizer` pixel's value depends only on
+//! its pixel seed and its sample indices, neither of which the block
+//! order touches.  Any measurement that leaves that shape -- RMSE
+//! against a reference, a variance estimate, a wall-clock figure --
+//! needs repeats and a standard deviation; see
+//! docs/DL81_SOBOL_DIMENSION_PARITY.md section 4c.
 static const char* g_samples = "1024";
 
 static int passCount = 0;
