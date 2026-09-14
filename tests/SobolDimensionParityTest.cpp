@@ -48,6 +48,13 @@
 //       draws.
 //    D. Marginal uniformity of every dimension, so that a fix cannot
 //       "pass" B by degrading the individual sequences into noise.
+//    G. Get2D's OWN index-scramble collapse (round-2 review, P2-1): two
+//       Get2D GROUPS whose `ScrambleIndex` calls happen to share the
+//       same Boolean function of the sample index's upper bits have
+//       their leading digit locked together below 2^M samples, in
+//       every pixel.  A second counting floor, independent of C's;
+//       pinned near its measured value, not fixed (see
+//       SobolSequence.h).
 //
 //  Author: Claude (debt-sobol slice, DL-81)
 //  Tabs: 4
@@ -730,6 +737,28 @@ int main( int argc, char** argv )
 		}
 		Check( s0 && s1,
 			"E2: Sobol()'s dimension 0/1 short-circuits agree with their closed forms" );
+
+		// E3.  Round-2-review note (P3-1): at dimension 0 ONLY,
+		// SamplePair(i,0,seed).outU coincides bit-for-bit with
+		// Sample(i,0,seed), and .outV with Sample(i,1,seed) -- group 0
+		// draws at the unpermuted index with the same per-dimension
+		// Owen seed Sample would use.  This is deliberately left AS IS
+		// (see SamplePair's header comment): fixing it would retag
+		// group 0's own scramble seed and break the "bit-identical to
+		// every version of this class" guarantee that group's own
+		// comment documents.  It is dormant -- no production code
+		// draws both Sample(*,0,*) and SamplePair(*,0,*) against the
+		// same seed -- but pinned here so a future change to either
+		// function makes a conscious choice about it.
+		bool e3 = true;
+		for( uint32_t i = 0; i < ( 1u << 12 ); i++ ) {
+			double u, v;
+			SobolSequence::SamplePair( i, 0u, seed, u, v );
+			if( SobolSequence::Sample( i, 0u, seed ) != u ) e3 = false;
+			if( SobolSequence::Sample( i, 1u, seed ) != v ) e3 = false;
+		}
+		Check( e3,
+			"E3: SamplePair(*,0,seed) coincides with Sample(*,{0,1},seed) -- documented, not fixed" );
 	}
 
 	// ----------------------------------------------------------------
@@ -838,6 +867,117 @@ int main( int argc, char** argv )
 		          << std::fixed << std::setprecision( 5 ) << worstCross << std::endl;
 		Check( worstCross <= 0.02,
 			"F: consecutive Get2D groups fill all four dyadic 2x2 boxes within 2%" );
+	}
+
+	// ----------------------------------------------------------------
+	// G. Get2D's OWN index-scramble collapse, at low spp, across the
+	//    PRODUCTION Get2D group set (round-2 review, P2-1).
+	//
+	// This is a DIFFERENT collapse from section C's: C is about two
+	// Get1D DIMENSIONS sharing a leading generator-matrix row; this is
+	// about two Get2D GROUPS' `ScrambleIndex` calls sharing the same
+	// Boolean function of the index's upper bits, so their leading
+	// (coarsest) digit is locked together for every sample below 2^M,
+	// in every pixel.  See SobolSequence.h's "Get2D's index-scramble
+	// collapse at low spp" for the derivation: at 2^M samples there are
+	// only 2^(2^(M-1)) possible such functions, so this is ALSO a
+	// counting floor, not a fixable defect -- the test pins the
+	// measured count near that floor rather than asserting "zero".
+	//
+	// Production Get2D group set: streams 0..24 x slots 0..7 (200
+	// groups a real render's Get2D calls can land on) plus the BDPT
+	// strategy-select group (stream 47 slot 0) = 201 groups, matching
+	// section C's production DIMENSION set in spirit.  For each pair,
+	// all four (u,u)/(u,v)/(v,u)/(v,v) coordinate combinations are
+	// checked -- 201*200/2*4 = 80400 combinations per M.
+	// ----------------------------------------------------------------
+	std::cout << std::endl << "G. Get2D index-scramble collapse, production group set" << std::endl;
+	{
+		std::vector<uint32_t> groups;
+		for( uint32_t st = 0; st <= 24; st++ )
+			for( uint32_t slot = 0; slot < 8; slot++ ) groups.push_back( st * 32u + slot );
+		groups.push_back( 47u * 32u + 0u );
+
+		// Lower bound on the "leading digit forced equal" floor: the
+		// simple pigeonhole count for an exact-match family of size
+		// 2^(2^(m-1)), same construction as `CollapseFloor` above but
+		// with astronomically larger buckets.  This under-counts the
+		// true floor (it ignores the exact-COMPLEMENT pairing, which
+		// also locks the digit, just with the opposite sign), so the
+		// measured/asserted numbers below sit ABOVE it, same as
+		// section C's floor column.
+		struct GFloor {
+			static unsigned long long Of( unsigned int n, unsigned int m ) {
+				const unsigned int exp = 1u << ( m - 1u );
+				if( exp >= 26u ) return 0ull;		// family >> any n we test
+				const unsigned long long F = 1ull << exp;
+				if( (unsigned long long)n <= F ) return 0ull;
+				const unsigned long long q = n / F, rem = n % F;
+				return rem * ( ( q + 1ull ) * q / 2ull ) + ( F - rem ) * ( q * ( q - 1ull ) / 2ull );
+			}
+		};
+
+		// Measured on this table (seed-independent -- ScrambleIndex
+		// never reads the pixel seed, only the group id -- so the
+		// counts below are exact, not sampled noise).  Small headroom
+		// kept over the measured value, same convention as section C.
+		struct GBound { unsigned int m; unsigned long long maxCollapsed; };
+		static const GBound kGBounds[3] = {
+			{ 2, 40300 },		// measured 40200/80400 = 50.000% (match-floor 2 -> essentially all)
+			{ 4, 10100 },		// measured  9970/80400 = 12.400%
+			{ 6,   700 }		// measured   624/80400 =  0.776%
+		};
+
+		for( int b = 0; b < 3; b++ )
+		{
+			const unsigned int m = kGBounds[b].m;
+			const uint32_t n = 1u << m;
+			unsigned long long pairs = 0, collapsed = 0;
+
+			for( size_t i = 0; i < groups.size(); i++ ) {
+				for( size_t j = i + 1; j < groups.size(); j++ ) {
+					unsigned int box[2][2][4];
+					for( int a = 0; a < 2; a++ ) for( int c = 0; c < 2; c++ )
+						for( int k = 0; k < 4; k++ ) box[a][c][k] = 0;
+					for( uint32_t s = 0; s < n; s++ ) {
+						double ua, va, ub, vb;
+						SobolSequence::SamplePair( s, groups[i], seed, ua, va );
+						SobolSequence::SamplePair( s, groups[j], seed, ub, vb );
+						const double A[2] = { ua, va };
+						const double B[2] = { ub, vb };
+						int combo = 0;
+						for( int ca = 0; ca < 2; ca++ ) for( int cb = 0; cb < 2; cb++ ) {
+							box[ A[ca] < 0.5 ? 0 : 1 ][ B[cb] < 0.5 ? 0 : 1 ][combo]++;
+							combo++;
+						}
+					}
+					for( int c = 0; c < 4; c++ ) {
+						unsigned int empty = 0;
+						for( int a = 0; a < 2; a++ ) for( int bb = 0; bb < 2; bb++ )
+							if( box[a][bb][c] == 0u ) empty++;
+						pairs++;
+						if( empty >= 2u ) collapsed++;
+					}
+				}
+			}
+
+			std::cout << "    2^" << std::setw( 2 ) << m << " = " << std::setw( 4 ) << n
+			          << " spp:  " << std::setw( 5 ) << collapsed << "/" << pairs
+			          << " (" << std::fixed << std::setprecision( 3 )
+			          << ( 100.0 * double( collapsed ) / double( pairs ) )
+			          << "%), pigeonhole match-floor "
+			          << GFloor::Of( unsigned( groups.size() ), m ) << std::endl;
+
+			char msg[192];
+			std::snprintf( msg, sizeof(msg),
+				"G: Get2D production-group collapse <= %llu at 2^%u spp",
+				kGBounds[b].maxCollapsed, m );
+			Check( collapsed <= kGBounds[b].maxCollapsed, msg );
+
+			std::snprintf( msg, sizeof(msg),
+				"G: sweep at 2^%u spp examined all 80400 combinations", m );
+			Check( pairs == 80400ull, msg );
+		}
 	}
 
 	std::cout << std::endl;

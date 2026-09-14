@@ -81,7 +81,7 @@
 //    direction numbers follow from Sobol's recurrence.
 //
 //    Only the initial numbers are embedded, not the expanded 32-per-
-//    dimension table: that is 568 KiB of read-only data against the
+//    dimension table: that is 555 KiB of read-only data against the
 //    1 MiB the expansion would need, and the expansion itself is one
 //    pass of XORs at first use.  The generator re-verifies the data
 //    every time it runs -- admissibility (m_i odd, m_i < 2^i), actual
@@ -130,14 +130,56 @@
 //    `stream * 32 + slot` moves the production set into a different
 //    part of the table but not into a better one (151 collided pairs
 //    at M = 8 against the strided layout's 131).  Only genuine
-//    COMPACTION into dimensions 0..199 improves on it (75 pairs), and
-//    a progressive renderer cannot compact: it does not know at draw
-//    time which (stream, slot) pairs the walk will reach.
+//    COMPACTION into dimensions 0..199 improves on it (75 pairs --
+//    close to, but not exactly, the counting floor of 72 for 200
+//    dimensions in 128 boxes at M = 8; consecutive Joe-Kuo dimensions
+//    are merely near-optimal, not floor-exact), and a progressive
+//    renderer cannot compact: it does not know at draw time which
+//    (stream, slot) pairs the walk will reach.
 //
 //    The pre-DL-81 padding had this collapse on 100% of same-parity
 //    pairs -- which was every bounce-to-bounce pair -- at EVERY sample
 //    count, so the change is 100% to 0.66% of production pairs at 256
 //    samples per pixel, and better from there.
+//
+//  Get2D's index-scramble collapse at low spp (round-2 review, P2-1)
+//  -------------------------------------------------------------------
+//    `ScrambleIndex` has its own counting floor, independent of the
+//    direction-number one above, and it is already essentially AT that
+//    floor -- no scramble function can do meaningfully better.
+//
+//    For a sample index below 2^M, `ScrambleIndex(index, group)`'s
+//    output bit 0 (which becomes, via `SobolDim0`'s bit-reversal, the
+//    LEADING and therefore coarsest digit of `u`) has the form
+//    `i0 XOR g_group(i1 .. i_{M-1})` for some Boolean function g_group
+//    of the index's other M-1 bits -- Owen scrambling is a digit tree,
+//    so the coarsest digit's flip can depend only on OTHER, not finer,
+//    digits.  There are only 2^(2^(M-1)) possible such functions.  Two
+//    Get2D groups whose `g` happens to match (probability ~2 in that
+//    count, matching or exactly complementary) have their leading
+//    digit locked together for EVERY sample index below 2^M, in every
+//    pixel (the index scramble is seeded from the group id alone, per
+//    `ScrambleIndex`'s own doc above) -- the same dyadic-2x2 signature
+//    DL-81 was about, just between two Get2D GROUPS instead of two
+//    Get1D dimensions.
+//
+//    At M = 2 (4 spp) the family has only 4 members, so with the
+//    production Get2D group set (streams 0..24 x slots 0..7 plus the
+//    BDPT strategy-select group, 201 groups) the pigeonhole bound is
+//    essentially "50% of all group pairs collide", and this table's
+//    ScrambleIndex measures at exactly that: 50.000%, 12.4% (M=3,
+//    floor 12.5%), 0.776% (M=4, floor 0.78%), ~0.02% (M=5), 0% (M>=6)
+//    of the 80400 (group, coordinate) pair combinations
+//    (`SobolDimensionParityTest` section F).  A two-round composition
+//    of `ScrambleIndex` (independently seeded) was measured against
+//    this and did not reliably improve it (12.5% became 12.5%, 0.78%
+//    stayed 0.78%) -- consistent with the floor already being met, not
+//    with a defect in the mixing.  So, as with the direction-number
+//    floor: THIS IS NOT FIXABLE by a better index scramble, and no
+//    change was made here.  Judge any render sensitive to Get2D
+//    stratification (film position, lens point, hemisphere or
+//    light-surface sample) at 64 samples per pixel or above, where the
+//    floor is already zero.
 //
 //  References:
 //    - Sobol', "On the distribution of points in a cube and the
@@ -173,7 +215,7 @@ namespace RISE
 	// SobolDirectionNumbers.cpp, which is GENERATED -- see that file
 	// for the source data, its licence and the regeneration command.
 	// Declared here rather than in a header of their own so that the
-	// 568 KiB of table data is parsed by exactly ONE translation unit.
+	// 555 KiB of table data is parsed by exactly ONE translation unit.
 	//
 	//! Flat `s, a, m_1 .. m_s` records for Sobol' dimensions 1 .. N-1.
 	const uint32_t* SobolJoeKuoInitialNumbers();
@@ -284,7 +326,7 @@ namespace RISE
 		//! one.
 		//!
 		//! Cost: 8192 * 32 * 4 = 1 MiB of expanded table, built once
-		//! per process at first use, from 568 KiB of embedded initial
+		//! per process at first use, from 555 KiB of embedded initial
 		//! direction numbers.
 		static const unsigned int kNumDimensions = 8192;
 
@@ -585,6 +627,26 @@ namespace RISE
 		// kNumDimensions -- so a deliberately distant stream (the
 		// thin-lens aperture at stream 3322) keys its own group and
 		// can never share one with a walk stream.
+		//
+		// Round-2-review note (P3-1, not fixed): at `dimension == 0`
+		// ONLY, `SamplePair(i, 0, seed).outU` is bit-for-bit identical
+		// to `Sample(i, 0, seed)`, and `.outV` to `Sample(i, 1, seed)`
+		// -- group 0 draws at the unpermuted index with the SAME
+		// per-dimension seed `Sample` would use, so the two functions
+		// coincide exactly at this one group.  For dimension > 0 they
+		// never coincide (`SamplePair` reads a `ScrambleIndex`-permuted
+		// index there; `Sample` never permutes its index below
+		// `kNumDimensions`), so this is a dimension-0-only artefact,
+		// not a general property.  It is dormant today -- the only
+		// `StartStream(0)` consumer (`SampleLight`) draws with `Get1D`
+		// first, never both at the same dimension -- and it is left
+		// AS IS rather than "fixed" by tagging `SamplePair`'s seed,
+		// because the fix would also retag group 0's seed and break
+		// the bit-identity this comment documents two paragraphs up
+		// (every `SobolSampler` render's film-plane jitter would shift).
+		// `SobolDimensionParityTest` section E pins the coincidence
+		// explicitly so a future change to either function makes a
+		// conscious choice about it instead of an accidental one.
 		//////////////////////////////////////////////////////////////
 		static inline void SamplePair(
 			uint32_t sampleIndex,
