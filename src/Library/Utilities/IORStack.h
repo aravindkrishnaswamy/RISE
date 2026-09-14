@@ -297,16 +297,23 @@ namespace RISE
 	//!                leaving this null, which is why the test below
 	//!                compares the top IORs and does not just check for
 	//!                non-null.
+	//! @param etaBeforeOverride  DL-09: the chosen `ScatteredRay::
+	//!                etaBeforeOverride`, or the default -1 ("no
+	//!                override").  When positive, used in place of
+	//!                `before.top()` -- see the field's doc comment in
+	//!                ISPF.h for why `before.top()` can be stale at an
+	//!                EXIT hit under a spatially-varying `ior`.
 	//! @return        (eta_before / eta_after)^2 computed from
-	//!                `before.top()` and `after->top()` (see above for
-	//!                what that does and does not guarantee), or exactly
-	//!                1 when the two agree or the medium did not change.
-	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after )
+	//!                `before.top()` (or the override) and `after->top()`
+	//!                (see above for what that does and does not
+	//!                guarantee), or exactly 1 when the two agree or the
+	//!                medium did not change.
+	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after, const Scalar etaBeforeOverride = Scalar( -1 ) )
 	{
 		if( !after ) {
 			return Scalar( 1 );
 		}
-		const Scalar etaBefore = before.top();
+		const Scalar etaBefore = ( etaBeforeOverride > Scalar( 0 ) ) ? etaBeforeOverride : before.top();
 		const Scalar etaAfter  = after->top();
 		// Equal IORs -> exact 1 with no division, which keeps the
 		// overwhelmingly common reflection / same-index case bit-identical

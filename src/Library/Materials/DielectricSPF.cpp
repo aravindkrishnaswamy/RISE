@@ -187,6 +187,13 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			dielectric.ior_stack = new IORStack( ior_stack );
 			dielectric.ior_stack->pop();
 			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+			// DL-09: `rIndex` is this exit hit's FRESH ior (the value the
+			// two Optics calls immediately above and below actually
+			// refracted/reflected against) -- not necessarily the same as
+			// `ior_stack.top()`, which is whatever was pushed at this
+			// object's ENTRY hit and can differ under a spatially-varying
+			// `ior` painter.  See ISPF.h's ScatteredRay::etaBeforeOverride.
+			dielectric.etaBeforeOverride = rIndex;
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;

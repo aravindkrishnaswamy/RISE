@@ -361,7 +361,7 @@ void FinalGatherShaderOp::PerformOperation(
 				// walk.  This branch runs when the hit surface has no BSDF,
 				// i.e. a pure specular / dielectric one, which is exactly
 				// where the factor is not 1.
-				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack, scat.etaBeforeOverride );
 
 				caster.CastRay( rc, ri.geometric.rast, scat.ray, reflectedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 				c = c + (reflectedPixel * scat.kray * etaScale);
@@ -681,7 +681,7 @@ void FinalGatherShaderOp::PerformOperation(
 							// medium -- but written the same way as every
 							// other radiance-mode consumer so the rule is one
 							// rule rather than a case analysis (debt 30).
-							const Scalar etaScale = RadianceEtaScale( ior_stack, scat->ior_stack );
+							const Scalar etaScale = RadianceEtaScale( ior_stack, scat->ior_stack, scat->etaBeforeOverride );
 							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack ? *scat->ior_stack : ior_stack ) ) {
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;

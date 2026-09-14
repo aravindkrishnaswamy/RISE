@@ -2837,7 +2837,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// makes RR less efficient, never wrong.
 				rs2.importance = importance
 					* PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) )
-					* RadianceEtaScale( iorStack, pS->ior_stack ) / selectProb;
+					* RadianceEtaScale( iorStack, pS->ior_stack, pS->etaBeforeOverride ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
 				// Accurate guides describe the first non-delta interaction the
@@ -2881,7 +2881,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// in that same domain, and E[kray_I * eta_I / p_I] =
 				// sum_i kray_i * eta_i regardless.  Identically 1 for every
 				// reflection and every non-transmissive lobe.
-				const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );
+				const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack, pS->etaBeforeOverride );
 
 				// Pel multiplies (throughput * kray) * (1/selectProb); NM
 				// multiplies throughput * (krayNM * (1/selectProb)).  The two
@@ -3375,7 +3375,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// the SPF pop; an opposite-side guide sample keeps the input stack.
 			{
 				const Scalar etaScale = ( traceIorStack != &iorStack )
-					? RadianceEtaScale( iorStack, traceIorStack )
+					? RadianceEtaScale( iorStack, traceIorStack, pS->etaBeforeOverride )
 					: Scalar( 1 );
 				if( etaScale != Scalar( 1 ) ) {
 					scatterThroughput = scatterThroughput * etaScale;
@@ -5485,7 +5485,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// compounds once per crossing on a multi-bounce path through
 		// such a wrapper.
 		{
-			const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack );
+			const Scalar etaScale = RadianceEtaScale( iorStack, pS->ior_stack, pS->etaBeforeOverride );
 			if( etaScale != Scalar( 1 ) ) {
 				heroScatterNM *= etaScale;
 				compScatterNM[0] = heroScatterNM;

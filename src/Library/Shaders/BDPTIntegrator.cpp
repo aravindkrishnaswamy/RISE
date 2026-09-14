@@ -2800,7 +2800,7 @@ namespace {
 			// supplies training and the next vertex: guiding changes the
 			// direction, not the medium associated with that geometric side.
 			{
-				const Scalar etaScale = RadianceEtaScale( iorStack, traceIorStack );
+				const Scalar etaScale = RadianceEtaScale( iorStack, traceIorStack, pScat->etaBeforeOverride );
 				if( etaScale != Scalar( 1 ) ) {
 					localScatteringWeight = localScatteringWeight * etaScale;
 					beta = beta * etaScale;

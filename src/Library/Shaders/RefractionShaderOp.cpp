@@ -66,7 +66,7 @@ void RefractionShaderOp::PerformOperation(
 				// through glass under `pixelpel_rasterizer` read n^2 too
 				// bright.  kray carries Fresnel and Beer's law only --
 				// Interfaces/ISPF.h.
-				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack, scat.etaBeforeOverride );
 
 				rs2.depth = rs.depth+1;
 				rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray) * etaScale;
@@ -117,7 +117,7 @@ Scalar RefractionShaderOp::PerformOperationNM(
 				// ray carries was pushed with the WAVELENGTH's IOR by
 				// DielectricSPF::ScatterNM, so a dispersive medium gets a
 				// per-wavelength factor here for free.
-				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack, scat.etaBeforeOverride );
 
 				rs2.depth = rs.depth+1;
 				rs2.importance = rs.importance * scat.krayNM * etaScale;

@@ -146,6 +146,13 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		specular.ior_stack = new IORStack( ior_stack );
 		specular.ior_stack->pop();
 		GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
+		// DL-09: `newIOR` is this exit hit's FRESH ior, used immediately
+		// below for the actual Snell/Fresnel math -- not necessarily the
+		// same as `ior_stack.top()` (this object's ENTRY-hit value,
+		// pushed and left on the stack) under a spatially-varying `ior`
+		// painter.  See ISPF.h's ScatteredRay::etaBeforeOverride and
+		// the sibling site in DielectricSPF::GenerateScatteredRay.
+		specular.etaBeforeOverride = newIOR;
 
 		// Coming out, IOR becomes air
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0, vRefracted ) ) {
@@ -320,6 +327,9 @@ void PerfectRefractorSPF::ScatterNM(
 		specular.ior_stack = new IORStack( ior_stack );
 		specular.ior_stack->pop();
 		GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
+		// DL-09: see the RGB-path sibling site (DoSingleRGBComponent)
+		// above and ISPF.h's ScatteredRay::etaBeforeOverride.
+		specular.etaBeforeOverride = newIOR;
 
 		// Coming out, IOR becomes whatever was there before
 		const Scalar exitIOR = specular.ior_stack ? specular.ior_stack->top() : 1.0;
