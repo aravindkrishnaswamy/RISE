@@ -100,6 +100,39 @@ namespace RISE
 
 	namespace Implementation { class OptimalMISAccumulator; }
 
+	/// Optional per-call hook (DL-74, docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+	/// "DL-73 RULED NOT A DEBT" residual) letting a caller replace the raw
+	/// material pdf `EvaluateDirectLighting{,NM}`'s env-NEE arm would otherwise
+	/// use as the BSDF-sampling technique's MIS-partner density for a given
+	/// NEE direction.  Exists so PathTracingIntegrator can plumb the SAME
+	/// OpenPGL-guided combined pdf its BSDF-sampling continuation uses for the
+	/// escape-direction MIS weight (`PathTransportUtilities::GuidingCombinedPdf`)
+	/// into the NEE side too, for the SAME shading point -- without this, the
+	/// two sides feed `PowerHeuristic`/`OptimalMIS2Weight` different pdfs for
+	/// the same physical direction whenever path guiding is trained and
+	/// active, breaking `w_bsdf + w_nee == 1`.  Deliberately NOT specific to
+	/// OpenPGL types (no dependency on PathGuidingField here) so this header
+	/// stays buildable without RISE_ENABLE_OPENPGL; the concrete
+	/// implementation lives behind that guard in PathTracingIntegrator.cpp.
+	/// Passing null (the default at every existing call site) reproduces the
+	/// pre-DL-74 raw-pdf behavior exactly.
+	class IGuidedNEEPdfBlend
+	{
+	public:
+		virtual ~IGuidedNEEPdfBlend() {}
+
+		/// \param wo      The NEE-sampled direction being weighted.
+		/// \param rawPdf  The un-guided material pdf the caller already
+		///                computed for `wo` (0 if the material has no
+		///                support there).
+		/// \return The pdf to use in place of `rawPdf` as the BSDF-sampling
+		///         technique's MIS-partner density for `wo`.
+		virtual Scalar Blend(
+			const Vector3& wo,
+			Scalar rawPdf
+			) const = 0;
+	};
+
 	namespace Implementation
 	{
 		//! THE EMITTER PROBE'S SCALE-RELATIVE CONSTANTS, expressed as a
@@ -797,7 +830,8 @@ namespace RISE
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional env-NEE MIS-partner pdf override (see IGuidedNEEPdfBlend)
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -812,7 +846,8 @@ namespace RISE
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional env-NEE MIS-partner pdf override (see IGuidedNEEPdfBlend)
 				) const;
 
 			/// Returns the alias-table selection probability for a given

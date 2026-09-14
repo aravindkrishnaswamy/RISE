@@ -1931,7 +1931,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IObject* pShadingObject,
 	const IMedium* pMedium,
 	const bool isVolumeScatter,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	const IGuidedNEEPdfBlend* pGuidedBlend
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -2642,19 +2643,33 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// adapter, see MediumTransport.cpp) this correctly matches
 				// what `RayCaster.cpp`'s env-escape weight also uses (both
 				// raw `phasePdf`), so that pairing is UNBIASED (DL-73, ruled
-				// not a debt). At a SURFACE vertex under active OpenPGL
-				// one-sample guiding, this is DIFFERENT from what
-				// `PathTracingIntegrator.cpp`'s matching escape weight uses
-				// (`effectiveBsdfPdf` = the GUIDED COMBINED pdf) -- that
-				// mismatch breaks the MIS partition of unity and is the
-				// real, currently-unfixed asymmetry filed as DL-74. Do not
-				// "fix" this call to take a combined pdf without ALSO
-				// auditing the volume case above, whose correctness
-				// currently depends on this staying raw.
+				// not a debt) -- `pGuidedBlend` is only ever non-null from
+				// PathTracingIntegrator's SURFACE NEE call site (never the
+				// volume one), and is additionally gated on `!isVolumeScatter`
+				// here as a second, local safety net so this call can never
+				// touch the volume case's correctness. At a SURFACE vertex
+				// under active OpenPGL guiding, the raw pdf alone WAS
+				// different from what `PathTracingIntegrator.cpp`'s matching
+				// escape weight uses (`effectiveBsdfPdf` = the GUIDED
+				// COMBINED pdf) -- that mismatch broke the MIS partition of
+				// unity (DL-74). `pGuidedBlend` (default null; see
+				// IGuidedNEEPdfBlend's doc) lets the surface caller replace
+				// the raw pdf with the SAME combined pdf the escape side
+				// would use for this direction, closing the partition for
+				// the one-sample-MIS guiding mode. RIS-mode guiding's
+				// escape-side "effective pdf" has no established analytic
+				// form for an externally-fixed NEE direction (see DL-83);
+				// `pGuidedBlend` is not constructed by the caller in that
+				// mode, so this call is unaffected and the RIS residual
+				// remains open there.
 				if( pMaterial )
 				{
 					static const IORStack defaultIOR( 1.0 );
-					const Scalar pBsdf = pMaterial->Pdf( envDir, ri, defaultIOR );
+					Scalar pBsdf = pMaterial->Pdf( envDir, ri, defaultIOR );
+					if( pGuidedBlend && !isVolumeScatter )
+					{
+						pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
+					}
 					if( pBsdf > 0 )
 					{
 						Scalar w;
@@ -2689,7 +2704,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const IObject* pShadingObject,
 	const IMedium* pMedium,
 	const bool isVolumeScatter,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	const IGuidedNEEPdfBlend* pGuidedBlend
 	) const
 {
 	Scalar result = 0;
@@ -3145,10 +3161,22 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 					}
 				}
 
+				// DL-73/DL-74 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md):
+				// NM twin of the RGB env-NEE MIS block above -- see that
+				// block's comment for the full derivation. `pGuidedBlend` is
+				// only ever non-null from PathTracingIntegrator's SURFACE NM
+				// NEE call site (never the volume one) and is additionally
+				// gated on `!isVolumeScatter` here as a local safety net, so
+				// this can never disturb DL-73's confirmed-unbiased volume
+				// pairing.
 				if( pMaterial )
 				{
 					static const IORStack defaultIOR( 1.0 );
-					const Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, defaultIOR );
+					Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, defaultIOR );
+					if( pGuidedBlend && !isVolumeScatter )
+					{
+						pBsdf = pGuidedBlend->Blend( envDir, pBsdf );
+					}
 					if( pBsdf > 0 )
 					{
 						Scalar w;

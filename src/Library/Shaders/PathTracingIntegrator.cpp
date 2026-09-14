@@ -1255,24 +1255,34 @@ namespace
 	// Direct-lighting (NEE) dispatch.  Covers PART2 surface NEE and the
 	// BSSRDF / RW-SSS entry-point NEE (which pass an entry-BSDF + entry-
 	// material).  NM inserts nm after pMaterial, matching the original.
+	// DL-74: trailing `pGuidedBlend` defaults to null on the primary
+	// template's declaration only (explicit specializations may not
+	// re-declare a default; callers that write `PTEvaluateDirectLighting<Tag>(...)`
+	// resolve the default from this declaration regardless of which
+	// specialization's body ends up running).  Existing callers (the two
+	// BSSRDF/RW-SSS NEE sites) that don't pass it get the pre-DL-74
+	// raw-pdf behaviour unchanged.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type PTEvaluateDirectLighting(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag );
+		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag,
+		const IGuidedNEEPdfBlend* pGuidedBlend = 0 );
 	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const PelTag& )
-	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject, const PelTag&,
+		const IGuidedNEEPdfBlend* pGuidedBlend )
+	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag )
-	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag,
+		const IGuidedNEEPdfBlend* pGuidedBlend )
+	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -1512,6 +1522,67 @@ namespace
 		IBSDF* pBRDF;
 		ISPF* pSPF;
 	};
+
+#ifdef RISE_ENABLE_OPENPGL
+	//! DL-74 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "DL-73 RULED NOT
+	//! A DEBT" residual): a lightweight, non-reference-counted
+	//! IGuidedNEEPdfBlend implementation that blends the raw material pdf
+	//! LightSampler's env-NEE arm computes for a given direction with the
+	//! SAME OpenPGL guided-distribution pdf the surface scatter
+	//! continuation's escape-side MIS weight uses for that direction
+	//! (PathTransportUtilities::GuidingCombinedPdf), so the two MIS
+	//! partners agree whenever guiding is trained and active. Deliberately
+	//! plain (no IReference/AddRef/Release): constructed fresh on the
+	//! stack for each NEE call (see PART 2 below), never shared across
+	//! threads or calls, so there is no lifetime/refcounting concern the
+	//! way there is for the heap-allocated, integrator-lifetime-shared
+	//! ClayNEEMaterial above. `Configure()` with a null field leaves
+	//! `Blend()` a pass-through (returns `rawPdf` unchanged), matching the
+	//! pre-fix behaviour exactly when guiding isn't applicable.
+	//!
+	//! Alpha is the BASE `rc.guidingAlpha`, not the per-lobe-damped value
+	//! `GuidingEffectiveAlpha` would compute for whichever lobe PART 3
+	//! eventually selects -- NEE runs here in PART 2, before that lobe is
+	//! chosen, so the per-lobe value isn't known yet. This mirrors
+	//! BDPTIntegrator.cpp's own guiding block (`const Scalar alpha =
+	//! guidingAlpha;`), which uses the same base alpha uniformly for the
+	//! same structural reason. A residual: a material whose non-delta
+	//! lobes mix full-alpha-eligible (diffuse) and half-alpha-eligible
+	//! (glossy reflection) types gets ONE uniform alpha here instead of
+	//! each lobe's own damped value: a smaller, second-order mismatch
+	//! than the one this fix closes (which could be many orders of
+	//! magnitude wherever the guide has learned a sharply peaked
+	//! distribution), not a new debt row on its own.
+	class PTGuidedNEEPdfBlend : public IGuidedNEEPdfBlend
+	{
+	public:
+		PTGuidedNEEPdfBlend() : pField( 0 ), pDist( 0 ), alpha( 0 ) {}
+
+		void Configure(
+			Implementation::PathGuidingField* pF,
+			Implementation::GuidingDistributionHandle* pD,
+			Scalar a )
+		{
+			pField = pF;
+			pDist = pD;
+			alpha = a;
+		}
+
+		Scalar Blend( const Vector3& wo, Scalar rawPdf ) const override
+		{
+			if( !pField || !pDist ) {
+				return rawPdf;
+			}
+			const Scalar guidePdf = pField->Pdf( *pDist, wo );
+			return PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, rawPdf );
+		}
+
+	private:
+		Implementation::PathGuidingField* pField;
+		Implementation::GuidingDistributionHandle* pDist;
+		Scalar alpha;
+	};
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -3011,10 +3082,77 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// ri.pMaterial (whose Pdf() could be near-zero/delta for a
 			// mirror or dielectric, breaking MIS and making clay output
 			// depend on the hidden material).  See ClayNEEMaterial's doc.
+			const IMaterial* pNEEMaterial =
+				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial;
+
+#ifdef RISE_ENABLE_OPENPGL
+			// DL-74: see IGuidedNEEPdfBlend's doc and PTGuidedNEEPdfBlend's
+			// doc above for the full derivation.  This block only decides
+			// WHETHER to hand env-NEE a guided-combined-pdf hook; the
+			// actual blend happens inside LightSampler.cpp's env-NEE arm.
+			// Gates mirror GuidingEffectiveAlpha's own eligibility checks
+			// as closely as possible given NEE runs (PART 2) before PART
+			// 3's lobe selection chooses `pS`:
+			//   - trained field, within the configured guiding depth, and
+			//     a nonzero base alpha, exactly like PART 3 below;
+			//   - `rs.type != eRaySpecular`: same incoming-state gate
+			//     GuidingEffectiveAlpha applies (it zeroes alpha for a
+			//     specular arrival regardless of the outgoing lobe);
+			//   - `!pNEEMaterial->ScattersFullSphere()`: for an ordinary
+			//     (non-full-sphere) material, env-NEE only ever fires on
+			//     the reflection hemisphere (`cosEnv > 0` in
+			//     LightSampler.cpp), so any direction with a nonzero
+			//     aggregate Pdf() there can only be explained by a
+			//     diffuse/reflection lobe -- GuidingSupportsSurfaceSampling's
+			//     own eligible set -- never a refraction/translucent lobe
+			//     (those live on the other hemisphere, or both, only when
+			//     ScattersFullSphere() is true).  Skipping full-sphere
+			//     materials avoids blending guiding into a transmission
+			//     lobe PART 3 would never touch, which would just relocate
+			//     the DL-74 asymmetry rather than close it.
+			//   - `guidingSamplingType == eGuidingOneSampleMIS`: the
+			//     `GuidingCombinedPdf(alpha, guidePdf, bsdfPdf)` formula this
+			//     blend applies is the one-sample-MIS combined density.
+			//     Under RIS guiding, PART 3's escape-side `effectiveBsdfPdf`
+			//     is instead `risEffectivePdf` (a different, per-candidate
+			//     RIS-normalized quantity -- see
+			//     `PathTransportUtilities::GuidingRISSelectCandidate`'s doc),
+			//     which has no established closed-form value at an
+			//     EXTERNALLY fixed direction (env-NEE's `envDir`) the way
+			//     the one-sample blend does -- computing it would need a
+			//     second, hypothetical RIS candidate this call has no
+			//     principled way to draw. Applying the one-sample formula
+			//     here anyway while the escape side uses `risEffectivePdf`
+			//     would just trade one MIS-partner mismatch for a
+			//     different one, not close the partition -- so this gate
+			//     leaves RIS mode's DL-74 residual exactly as documented
+			//     (filed as DL-83) rather than guess at a formula.
+			static thread_local Implementation::GuidingDistributionHandle neeGuideDist;
+			PTGuidedNEEPdfBlend neeGuidedBlend;
+			const IGuidedNEEPdfBlend* pGuidedBlendArg = 0;
+			if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+				rc.guidingSamplingType == eGuidingOneSampleMIS &&
+				depth <= rc.maxGuidingDepth &&
+				rc.guidingAlpha > NEARZERO &&
+				rs.type != IRayCaster::RAY_STATE::eRaySpecular &&
+				pNEEMaterial && !pNEEMaterial->ScattersFullSphere() &&
+				rc.pGuidingField->InitDistribution( neeGuideDist,
+					ri.geometric.ptIntersection, neeSampler.Get1D() ) )
+			{
+				rc.pGuidingField->ApplyCosineProduct( neeGuideDist, GuidingCosineNormal( ri.geometric ) );
+				neeGuidedBlend.Configure( rc.pGuidingField, &neeGuideDist, rc.guidingAlpha );
+				pGuidedBlendArg = &neeGuidedBlend;
+			}
+#endif
+
 			Value directAll = PTEvaluateDirectLighting<Tag>(
 				pLS, ri.geometric, *pBRDF,
-				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, caster, neeSampler,
-				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
+				pNEEMaterial, caster, neeSampler,
+				ri.pObject, pCurrentMedium, false, pMediumObject, tag
+#ifdef RISE_ENABLE_OPENPGL
+				, pGuidedBlendArg
+#endif
+				);
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
