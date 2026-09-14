@@ -110,7 +110,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-31 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | A mesh neighbour is a SHEET (no inside test), unlike every solid family which clamps its signed field at zero; `interior(r)` did not close this either, since a mesh contributes 0 to it too | OPEN-confirmed | Doc's own §10 analysis; no closed-mesh containment test exists on `Object.cpp`'s `DistanceToSurface`/`ObjectManager::DeepestOtherContainment` paths, confirmed this sweep | M | precision | user-visible (a receiver buried inside a closed mesh neighbour reads no contact) |
 | DL-16 | CLOTH_FABRIC_DESIGN.md §15 item 4 | `ggx_material.tangent_rotation` stays Color-pipe only; the promised Scalar-pipe alias (so a `fabric_material`'s `weave_rotation` and its substrate's own rotation can share one painter) was never added | OPEN-confirmed | `ChunkParserRegistry.cpp:4495` — `tangent_rotation`'s only descriptor entry is `ParameterPipe::Color`, `p.description` states "a scalar_painter does NOT bind here"; no second `tangent_rotation`-family scalar parameter exists (grepped this sweep) | S | API/bridge gap | user-visible (authoring: can't drive both rotations from one field) |
 | DL-17 | CLOTH_FABRIC_DESIGN.md §15 item 12 | glTF PER-TEXEL `anisotropy_rotation` (the direction encoded in the anisotropy texture's R/G channels) is still dropped at import and falls back to the scalar rotation, even though the expression VM's `atan2` (confirmed present) makes the sketched fix executable today; the SCALAR `anisotropy_rotation` IS wired through (`Job::AddPBRMetallicRoughnessMaterial`, `tests/PBRMaterialAPITest.cpp` Test 3) | OPEN-confirmed | `GLTFSceneImporter.cpp:1300-1307`'s comment stands; `ChunkParserRegistry.cpp:4560`'s `anisotropy_rotation` descriptor still reads "Phase 1 reads but does not yet APPLY the rotation" — read directly this sweep | S | API/bridge gap | user-visible (glTF import only) |
-| DL-23 | CLOTH_FABRIC_DESIGN.md §15 item 16 (tail) / IMPROVEMENTS.md "Clearcoat over `fabric_material` — not composable, unowned" | `coated_material`'s substrate allowlist does not admit `fabric_material`/`weave_material`, so a coat-over-fabric composition (e.g. waxed canvas) is unreachable | OPEN-confirmed | `CoatedMaterial.h:112-113` (`SubstrateAllowlistText()`: "lambertian_material, orennayar_material, ggx_material, pbr_metallic_roughness_material") and `IsSupportedSubstrate` `:120-134` (the `dynamic_cast` allowlist) — `fabric_material`/`weave_material` absent from both, confirmed this sweep; IMPROVEMENTS.md's entry adds that this is a named glTF-import consequence (`KHR_materials_sheen` + `KHR_materials_clearcoat` together lose the clearcoat layer, warn-and-skip named in `GLTFSceneImporter.cpp`) | S | API/bridge gap | user-visible (authoring: can't compose a coat over fabric) |
+| ~~DL-23~~ | ~~CLOTH_FABRIC_DESIGN.md §15 item 16 (tail) / IMPROVEMENTS.md "Clearcoat over `fabric_material` — not composable, unowned"~~ | ~~`coated_material`'s substrate allowlist does not admit `fabric_material`/`weave_material`~~ | CLOSED 2026-09-14 | `CoatedMaterial.h`'s allowlist and `IsSupportedSubstrate` now admit both classes; `CoatedBRDF`/`CoatedSPF` forward and modulate a `transmission thin` weave's below-horizon transport, mirroring `FabricBRDF`/`FabricSPF`'s R8 P1.1 fix (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22) almost exactly -- same continuum forward-and-modulate with the coat's OWN recycling factor reused, same bare (non-recycled) two-crossing reprice for the substrate's delta gap ray. `tests/CoatedMaterialChunkTest.cpp`'s new `TestTransmissiveSubstrateForwarding`: 85/0 (red pre-fix: 11 failed -- the allowlist predicate, both forwarded flags, the below-horizon MONEY check, the closed-form match, and the real-transmitted-share energy check). Full narrative in this file's "Verification recipes" section, DL-23 entry. | S | API/bridge gap | user-visible (authoring: can't compose a coat over fabric) |
 | DL-26 | WETNESS_COAT_DESIGN.md §12 item 6c | `add_wetness` and `add_wear` mutually exclude on one material; worn-and-wet, the flagship subject, is unreachable | OPEN-confirmed | `src/Library/Agent/AgentSession.cpp` ~8021/8092/8328 ("add_wear / add_wetness cannot currently be combined on one..."), confirmed present this sweep | S | API/bridge gap | user-visible (agent-authored worn-and-wet materials) |
 | DL-28 | WETNESS_COAT_DESIGN.md §12 item 9 | Water-absorption spectral files must be pre-converted to a transmittance base because `dielectric_material`'s `tau` is `pow(tau,distance)`, not `exp(-sigma*distance)`; a pasted-in published sigma_a table is silently wrong | OPEN-confirmed | `DielectricSPF.cpp:318-323` (`pow(tauVals.v[i], distance)`), confirmed unchanged this sweep; no runtime validation or warning exists for a mismatched-convention input file | S | API/bridge gap | user-visible (authoring trap only, silent) |
 | ~~DL-32~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~`standard_object`'s `scale` written with ONE number (e.g. `scale 0.35`) derives to a degenerate transform silently~~ | CLOSED 2026-09-14 | `ChunkParserRegistry.cpp`'s shared `ResolveScaleVec3` helper: one finite number is now an explicit UNIFORM-scale broadcast (logged warning); anything else short of exactly three finite numbers is a hard parse error naming DL-32, applied identically to `standard_object` and `override_object` (whose own `scale` used to hard-refuse the single-number shorthand outright, despite its descriptor's "matches standard_object semantics" claim). `tests/StandardObjectScaleTest.cpp`: 23/0 (red pre-fix: 8 failed — the degenerate-zero-fill diagonal and the override_object hard-refusal). `CstDeriveGoldenTest`: 452/452, 0 drift. `ProximitySignalTest`: 491/0. Full narrative in this file's "Verification recipes" section, DL-32 entry. | S | API/bridge gap | user-visible (silent scene-authoring trap) |
@@ -207,6 +207,20 @@ reflowed otherwise.
 - ~~DL-73~~ (DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md: volume-guiding bsdfPdf composition) — STRUCK 2026-09-13, ruled consistent by derivation (P2-C, debt-sssenv round-2): the row proposed replacing `RayCaster.cpp`'s `rs2.bsdfPdf = phasePdf` (raw, un-combined) with the guided-mixture `combinedPdf`, on the theory that it should match the main surface continuation's `effectiveBsdfPdf` convention. Derivation shows this is backwards: env-NEE at a volume vertex weights via `MediumScatterMaterial::Pdf` (`MediumTransport.cpp`'s `EvaluateInScattering` -> `LightSampler::EvaluateDirectLighting`'s env arm, `LightSampler.cpp` ~:2652), which returns the RAW, un-guided `m_pPhase->Pdf(...)` — the SAME raw `phasePdf` the escape side already uses. Both sides feed `PowerHeuristic` the identical `(phasePdf, envPdf)` pair (opposite argument order), which is `PowerHeuristic(a,b) + PowerHeuristic(b,a) == 1` by construction — UNBIASED as written. `guidingMISWeight = phasePdf / combinedPdf` (folded into `rs2.importance`) already applies the full guiding correction to the sample's contribution; substituting `combinedPdf` into the MIS weight too, as this row prescribed, would double-apply that correction and BREAK the partition. Not a debt; the real, opposite-signed asymmetry is on the surface path, filed separately as DL-74. See [DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) "Residual: volume-guiding bsdfPdf composition — DL-73 RULED NOT A DEBT".
 
 ## Counts
+
+**2026-09-14 (debt-api1 slice, DL-23):** DL-23 CLOSED — `coated_material`'s
+substrate allowlist now admits `fabric_material`/`weave_material`, and
+`CoatedBRDF`/`CoatedSPF` forward and modulate a `transmission thin` weave's
+below-horizon transport, mirroring `FabricBRDF`/`FabricSPF`'s R8 P1.1 fix
+almost exactly (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22).  See the table row
+and its "Verification recipes" entry above.  No new debt rows filed: the
+one out-of-scope follow-up this fix unblocks (wiring `GLTFSceneImporter.cpp`
+to actually build a `coated_material` over a `fabric_material` for a
+combined `KHR_materials_sheen`+`KHR_materials_clearcoat` glTF asset,
+`IMPROVEMENTS.md`'s pre-existing "Clearcoat over `fabric_material`" item)
+was already tracked there, not a new discovery, and was spawned as a
+separate task rather than fixed in this parser/Job/material-composition
+slice.
 
 **2026-09-14 (debt-api1 slice, DL-32):** DL-32 CLOSED — `standard_object`'s
 (and `override_object`'s) `scale` now accepts a single number as an explicit
@@ -933,15 +947,94 @@ SSS-entry scene keyed on a geometry signal (e.g. `curv`-driven IOR). Fixed
 when that scene's PT and BDPT/VCM renders agree with the closed-form
 control the way the other five signal kinds already do post-S1/S3.
 
-**DL-23 (coated_material substrate allowlist excludes fabric).** Add
-`WeaveMaterial`/`FabricMaterial` (post-DL-R8 forwarding) to
-`CoatedMaterial::IsSupportedSubstrate`'s `dynamic_cast` chain and
-`SubstrateAllowlistText()`, then extend `CoatedBRDF`/`CoatedSPF`'s
-opposite-hemisphere early-outs the same way DL-R8 extended `FabricBRDF`/
-`FabricSPF`. Fixed when a `coated_material` over a `transmission thin`
-`weave_material` (a waxed sheer curtain) transmits attenuated light rather
-than reading opaque, guarded by a `CoatedMaterialChunkTest` case mirroring
-`TestTransmissiveSubstrateForwarding`.
+**~~DL-23 (coated_material substrate allowlist excludes fabric).~~
+CLOSED 2026-09-14 (debt-api1 slice).** Root cause: `CoatedMaterial`'s
+substrate allowlist (`SubstrateAllowlistText()` / `IsSupportedSubstrate`,
+`CoatedMaterial.h`) only ever named the four Phase-2 scattering classes;
+`FabricMaterial` and `WeaveMaterial` -- both of which satisfy the SAME two
+admission criteria the header's own banner states (a substrate
+`hemisphericalAlbedo` the recycling series can consume; a known
+one-ray-per-`Scatter`-call lobe budget) -- were simply never added when
+`fabric_material`/`weave_material` shipped.
+
+Fix, mirroring `FabricBRDF`/`FabricSPF`'s R8 P1.1 fix (docs/
+CLOTH_FABRIC_DESIGN.md 15 debt 22) as closely as the two triads' differing
+algebra allows:
+
+- `CoatedMaterial.h`: `IsSupportedSubstrate` and `SubstrateAllowlistText()`
+  admit `FabricMaterial`/`WeaveMaterial`; the constructor captures
+  `base.ScattersFullSphere()` and threads it into `CoatedBRDF`'s new
+  `baseScattersFullSphere` ctor parameter (default `false`, so every
+  existing caller is unaffected); `CoatedMaterial` itself gained
+  `ScattersFullSphere()`/`CouldLightPassThrough()` forwarders (the
+  DELEGATING claimer form `SourceHygieneTest`'s full-sphere census already
+  recognises from `FabricMaterial`'s identical fix).
+- `CoatedBRDF::value`/`valueNM`: a below-horizon branch (light on the far
+  side from the viewer, gated on the forwarded flag) evaluates the
+  substrate's own transmissive response and attenuates it by the SAME
+  `K = Ain*Aout*rec*(Tin*Tout/eta^2)` the reflection branch already
+  computes, with the light-side macro cosine now `|n.l|` in place of the
+  view's own `nr`. The coat's OWN recycling factor `rec` is REUSED (not
+  dropped) for the transmit branch, on `FabricBRDF.h`'s identical
+  reasoning: the multi-bounce series between the coat and the substrate
+  surface is a property of the layer pair, not of which side the light
+  exits, and a highly-transmissive substrate's own smaller `R` already
+  self-moderates the series. No separate coat term is added (the coat's
+  GGX lobe is reflection-only), matching `FabricBRDF.h`'s "sheen stays 0"
+  precedent for its own transmit branch.
+- `CoatedSPF::PdfImpl`/`ScatterImpl`: admit a below-horizon `wo` exactly
+  when `BaseScattersFullSphere()` (no geometric-horizon gate there, on
+  `FabricSPF`'s identical precedent -- that IS the below-horizon transport
+  the flag exists to admit); a substrate-emitted DELTA ray (a
+  `transmission thin` weave's gap pass-through) is repriced by the coat's
+  BARE two-crossing attenuation divided by the wrapper's own
+  substrate-branch selection probability `(1-pCoat)` -- explicitly WITHOUT
+  the `rec` factor, mirroring `FabricSPF.cpp`'s identical delta-branch
+  reasoning (a measure-zero direction has zero probability of receiving a
+  diffusely re-scattered share of the recycling series).
+- `hemisphericalAlbedo{,NM}` and `albedo()` are UNTOUCHED, matching
+  `FabricBRDF.h`'s identical choice: both read the substrate's own
+  `hemisphericalAlbedo` (a reflectance, not a reflectance+transmittance
+  sum), so adding transmission to `value()`/`Scatter()` does not change
+  what those two view-independent/AOV quantities report.
+
+Red-proof: `tests/CoatedMaterialChunkTest.cpp`'s new
+`TestTransmissiveSubstrateForwarding` (plus two new positive-control cases
+in `TestAllowlistAccepts`), built and run against the library reverted via
+a saved patch (not `git stash`) -- 11 of 85 checks failed: the scene-level
+`fabric_material`/`weave_material` substrate acceptance, the
+`IsSupportedSubstrate` predicate directly, both forwarded flags, the
+below-horizon MONEY check (0 of 9 probed pairs non-zero pre-fix, vs 9/9
+post-fix), the closed-form match, and the "> 1% of incoming energy
+transmits" real-forwarding check at all three probed angles. Reapplying
+the fix: 85/85 pass, closed-form match to 2.92e-16 relative error
+(re-derived independently from `CoatedLayer`'s public Fresnel/
+PassTransmittance/Recycling primitives, sharing no code with `CoatedBRDF`
+itself).
+
+Gate: `SPFBSDFConsistencyTest` (all Coated_* rows, 0 failures -- reflection
+branch is bit-identical, since `bBaseFullSphere` is `false` for every
+substrate those rows use), `SPFPdfConsistencyTest` (same), `LayeredWhite
+FurnaceTest` (0 of 57 configurations failed, including the pre-existing
+Coated rows 11-16), `FabricMaterialChunkTest` (170/0), `WeaveMaterial
+ChunkTest` (296/0), `FabricRenderTest` (57/0), `CstDeriveGoldenTest`
+(452/452, 0 drift), `SourceHygieneTest` (165/0 -- its full-sphere claimer
+census was widened from 3 to 4 to recognise `CoatedMaterial.h`'s new
+delegating claim, the one deliberate expectation change this row's fix
+required). Clean rebuild, zero warnings.
+
+Sibling audit: `composite_material` forwards one sub-material's BSDF
+wholesale rather than gating on hemisphere, so it was never exposed to
+this bug pattern and needed no change (confirmed by reading
+`CompositeSPF.cpp`, matching `CLOTH_FABRIC_DESIGN.md` 15 debt 22's own
+"one hop out" note, now struck as fulfilled).
+
+Docs: `CLOTH_FABRIC_DESIGN.md` 15 items 16 and 22 struck with closure
+notes; `IMPROVEMENTS.md`'s "Clearcoat over `fabric_material`" entry's
+blocker marked removed, with the glTF-importer wiring itself flagged as a
+separate, unscheduled follow-up (spawned as its own task, not fixed here
+-- it is importer composition logic, not parser/Job/material-composition
+plumbing).
 
 **DL-24 (CompositeSPF 96% coat-over-diffuse energy loss).** This is
 `coated_material`'s whole reason for existing (WETNESS_COAT_DESIGN.md's own

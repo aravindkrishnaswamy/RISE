@@ -28,7 +28,8 @@ CoatedBRDF::CoatedBRDF(
 	const IScalarPainter& coatThickness,
 	const IScalarPainter& coatAbsorption,
 	const IPainter& coatTint,
-	const bool recyclingCompensation
+	const bool recyclingCompensation,
+	const bool baseScattersFullSphere
 	) :
   pBase( &base ),
   pCoatWeight( &coatWeight ),
@@ -37,7 +38,8 @@ CoatedBRDF::CoatedBRDF(
   pCoatThickness( &coatThickness ),
   pCoatAbsorption( &coatAbsorption ),
   pCoatTint( &coatTint ),
-  bRecycling( recyclingCompensation )
+  bRecycling( recyclingCompensation ),
+  bBaseFullSphere( baseScattersFullSphere )
 {
 	pBase->addref();
 	pCoatWeight->addref();
@@ -288,7 +290,51 @@ RISEPel CoatedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometr
 
 	const Scalar nv = Vector3Ops::Dot( n, v );
 	const Scalar nr = Vector3Ops::Dot( n, r );
-	if( nv < NEARZERO || nr < NEARZERO ) {
+
+	// The VIEW must be on the shading-normal side; `n` is already the
+	// ray-facing normal, so this is a degeneracy guard, not a real gate
+	// (mirrors FabricBRDF::ComputeTerms's identical `nDotV` check).
+	if( nr < NEARZERO ) {
+		return RISEPel( 0, 0, 0 );
+	}
+
+	if( nv < -NEARZERO && bBaseFullSphere )
+	{
+		// DL-23 -- TRANSMISSION.  The light is on the FAR side of the
+		// surface from the viewer; reached only when the substrate
+		// itself reports `ScattersFullSphere()` (a `transmission thin`
+		// weave_material, or fabric_material wrapping one).  See
+		// CoatedBRDF.h's "TRANSMISSION THROUGH THE COAT" section for the
+		// derivation.  Bit-identical to the pre-DL-23 code for every
+		// substrate that cannot transmit, since `bBaseFullSphere` is
+		// false for all of them.
+		const RISEPel fBaseT = pBase->value( vLightIn, ri );
+
+		CoatParams cp;
+		ResolveCoat( ri, Scalar(-1), cp );
+		if( cp.weight <= 0 ) {
+			return fBaseT;
+		}
+
+		const Scalar absNv = -nv;
+		const Scalar Tin  = Scalar(1) - CoatedLayer::Fresnel( nr,    cp.eta );
+		const Scalar Tout = Scalar(1) - CoatedLayer::Fresnel( absNv, cp.eta );
+		const RISEPel Ain  = CoatedLayer::PassTransmittanceRGB( nr,    cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
+		const RISEPel Aout = CoatedLayer::PassTransmittanceRGB( absNv, cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
+
+		const RISEPel R   = SubstrateAlbedo( ri );
+		const RISEPel rec = RecyclingFactorRGB( bRecycling, cp, R );
+		const RISEPel K   = Ain * Aout * rec * ( Tin * Tout / ( cp.eta * cp.eta ) );
+
+		// No separate coat term: the coat's own GGX lobe is
+		// reflection-only and has no transmission to add (FabricBRDF.h's
+		// "sheen stays 0" precedent) -- only the `(1-c)` uncoated
+		// fraction shows the bare substrate's transmission and the `c`
+		// fraction shows it attenuated by `K`.
+		return fBaseT * ( K * cp.weight + RISEPel( 1, 1, 1 ) * ( Scalar(1) - cp.weight ) );
+	}
+
+	if( nv < NEARZERO ) {
 		return RISEPel( 0, 0, 0 );
 	}
 	if( !PassesHorizonGate( v, r, n, ri ) ) {
@@ -339,7 +385,36 @@ Scalar CoatedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeomet
 
 	const Scalar nv = Vector3Ops::Dot( n, v );
 	const Scalar nr = Vector3Ops::Dot( n, r );
-	if( nv < NEARZERO || nr < NEARZERO ) {
+
+	if( nr < NEARZERO ) {
+		return 0;
+	}
+
+	if( nv < -NEARZERO && bBaseFullSphere )
+	{
+		// DL-23 -- TRANSMISSION.  See `value()` above; identical
+		// structure, spectral path.
+		const Scalar fBaseT = pBase->valueNM( vLightIn, ri, nm );
+
+		CoatParams cp;
+		ResolveCoat( ri, nm, cp );
+		if( cp.weight <= 0 ) {
+			return fBaseT;
+		}
+
+		const Scalar absNv = -nv;
+		const Scalar Tin  = Scalar(1) - CoatedLayer::Fresnel( nr,    cp.eta );
+		const Scalar Tout = Scalar(1) - CoatedLayer::Fresnel( absNv, cp.eta );
+		const Scalar Ain  = CoatedLayer::PassTransmittance( nr,    cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+		const Scalar Aout = CoatedLayer::PassTransmittance( absNv, cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+
+		const Scalar R  = SubstrateAlbedoNM( ri, nm );
+		const Scalar K  = Ain * Aout * RecyclingFactorNM( bRecycling, cp, R ) * ( Tin * Tout / ( cp.eta * cp.eta ) );
+
+		return fBaseT * ( cp.weight * K + ( Scalar(1) - cp.weight ) );
+	}
+
+	if( nv < NEARZERO ) {
 		return 0;
 	}
 	if( !PassesHorizonGate( v, r, n, ri ) ) {
