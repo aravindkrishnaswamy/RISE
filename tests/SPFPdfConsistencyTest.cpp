@@ -916,39 +916,47 @@ int main()
         //--------------------------------------------------------------
         // Schlick (1994 approximation):
         //
-        // DL-67 Slice 0 (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md) fixed
-        // Pdf()/PdfNM()'s diffuse-vs-specular lobe weighting to match
-        // PTScatterSelectWeight's REALIZED per-draw weight (previously it
-        // used the raw, angle-independent painter albedos MaxValue(rd) /
-        // MaxValue(rs)).  This is PROVABLY exact for the specular-lobe
-        // side (verified to 0 failures out of ~37k-32k per-call
-        // lower-bound checks, tests/SchlickSPFPdfConsistencyTest.cpp Part
-        // 2/3 -- was 64-2857 failures pre-fix, max relative error up to
-        // 21.4%) but the diffuse-lobe side retains an INHERENT residual:
-        // Scatter() draws both lobes every call and selects post-hoc by
-        // realized MaxValue(kray), so the diffuse lobe's true selection
-        // probability is a genuine expectation over the (independent)
-        // specular draw that no direction-independent constant can match
-        // per-call.  This is why cross-val/chi2 stay off here -- it is a
-        // proven property of the architecture, not a residual bug this
-        // slice left behind (see the dedicated test's file header for the
-        // full derivation and per-lobe-split measurement).
+        // Cross-val: STILL SKIPPED, and provably must be.  Scatter()
+        //   draws BOTH lobes every call and RandomlySelect picks one by
+        //   the REALIZED MaxValue(kray), so the diffuse lobe's per-call
+        //   selection probability is an expectation over the independent
+        //   specular draw.  Cross-val's per-call lower bound cannot be
+        //   met by any direction-independent diffuse coefficient -- see
+        //   tests/SchlickSPFPdfConsistencyTest.cpp's header.
         //
-        // Integral: the Schlick PDF under-integrates at grazing angles
-        //   because the specular PDF normalization assumes isotropic
-        //   roughness, but the model has an isotropy parameter that
-        //   stretches the lobe.  Observed post-fix: 0.880 @ 30°, 0.861 @
-        //   60° (was 0.904 / 0.873 pre-fix -- the weighting fix shifts
-        //   this slightly since the specular term's coefficient is no
-        //   longer angle-independent, but the under-integration's ROOT
-        //   CAUSE -- the specular PDF model itself -- is untouched by
-        //   this slice).
-        // Chi2: fails due to the same inherent per-call weighting
-        //   architecture as cross-val, not a fixable normalization bug.
+        // Integral: PASSES at the standard 5% tolerance since DL-67
+        //   Slice 0 (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md).  Measured
+        //   1.00166 @ 30deg, 0.999932 @ 60deg.
         //
-        // Integral tolerance relaxed to 15% to cover 0.861.
+        //   The tolerance used to be 15%, with a comment blaming "the
+        //   specular PDF normalisation assumes isotropic roughness".
+        //   That diagnosis was wrong, and this exact fixture (rd 0.5,
+        //   rs 0.3, roughness 0.3, isotropy 0.8) is the one that shows
+        //   why.  The deficit -- 0.904 @ 30deg / 0.873 @ 60deg at the
+        //   time -- had TWO causes, neither a missing normalisation:
+        //
+        //   (a) the LOBE WEIGHTING, dominated by the specular sampler's
+        //       REJECTION rate, which Pdf() modelled not at all.  For
+        //       this fixture, Scatter accepts only 73.9% of its specular
+        //       draws at 30deg and 64.1% at 60deg, and a REJECTED
+        //       specular draw leaves RandomlySelect holding one ray,
+        //       which it then returns with probability 1 regardless of
+        //       weight.
+        //
+        //   (b) the azimuthal density for isotropy != 1 was a DIFFERENT
+        //       DISTRIBUTION from the one the sampler draws (not a
+        //       mis-scaled version of it) -- off by up to 25x at
+        //       isotropy 0.3, and this row runs at 0.8.
+        //
+        //   Both are fixed, each with its own red-proof in the dedicated
+        //   test.
+        //
+        // Chi2: NOW GATED (was skipped).  783.7 @ 30deg / 816.3 @ 60deg
+        //   against critical 928.3.  It was failing purely on the
+        //   weighting defect above -- the sampled histogram and Pdf()
+        //   now agree.
         //--------------------------------------------------------------
-        { "Schlick",                           schlick,     false, false, true,  true,  0.15 },
+        { "Schlick",                           schlick,     false, false, true,  false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
         // Ward Isotropic Gaussian (Ward 1992):
