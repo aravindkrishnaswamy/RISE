@@ -290,7 +290,8 @@ Two design notes about the fixture:
 | **Volume vertices** | Fixed as the two-role split (§2.6). DL-73's "the MIS partner stays the raw phase pdf" ruling is preserved exactly and is now explicit in its own field. |
 | **The shader-op boundary** (`PathTracingShaderOp`'s three entry points) | Round 3: was forwarding only `rs.bsdfPdf` into `IntegrateFromHit{,NM,HWSS}`, which then re-derived the partner as "the same value". Fixed -- all three forward `rs.MisPartnerPdf()`, and the three entry points take it as a trailing parameter defaulting to -1 = "same as `bsdfPdf`". |
 | **`EmissionShaderOp`** (RGB + NM emitter-hit weight -- the legacy shader chain's half of the same pair) | Round 3: read `rs.bsdfPdf` in the partner role, the same defect one file over. Fixed; both now read `MisPartnerPdf()` and gate on either density being positive. |
-| **PT's OWN camera-ray volume walk** (`IntegrateRayTemplated`'s medium-scatter loop) | NOT a sibling -- confirmed by reading. It samples `pPhase->Sample(wo, sampler)` with no guiding block anywhere in that loop, so its `walkPdf` is the true density and the MIS partner at once. |
+| **PT's OWN in-loop volume vertex** (`IntegrateFromHitTemplated`'s medium-scatter branch) | Round 3: a THIRD producer, missed by the round-2 split. Fixed -- `bsdfMisPdf = phasePdf` beside `bsdfPdf = effectivePdf`; its stale `bsdfTimesCos` cleared (DL-84). See §8.3; measured +9.6 % on a floor-in-fog white furnace. |
+| **PT's OWN camera-ray volume walks** (`IntegrateRayTemplated` and `IntegrateRayHWSS`) | NOT siblings -- confirmed by reading. Both sample `pPhase->Sample(wo, sampler)` with no guiding block anywhere in those loops, so their local `walkPdf` is the true density and the MIS partner at once. |
 | **HWSS** (`IntegrateFromHitHWSS`) | NOT a sibling — confirmed by reading, not assumed. `effectiveBsdfPdf` there is assigned once from `pS->isDelta ? 0 : pS->pdf` and never reassigned; the function has no guiding block. Both its sides already used the raw material pdf. The stale comment claiming otherwise is corrected in place. **Round 3 qualifier**: "produces no guided density" is not the same as "never sees one" -- HWSS is reachable through the shader-op boundary from `RayCaster`'s guided volume continuation, so it now CARRIES an incoming partner (used by its env-escape and emitter-hit weights and by its per-wavelength NM fallbacks, and reset to the sampling density from its first own continuation onwards). |
 | **BSSRDF / RW-SSS entry NEE** | Not wired. The entry material's `Pdf()` is the BSSRDF's own cosine density and its continuation's `rs2.bsdfPdf = bssrdf.cosinePdf` is never guiding-adjusted anywhere, so both sides already agree. Both fields are set to the same value there, explicitly. |
 | **BDPT / VCM / MLT** | Do not call `LightSampler::EvaluateDirectLighting{,NM}` at all. BDPT's own guiding/NEE consistency is a structurally separate code path, out of scope. BDPT's one `RAY_STATE` producer (a training probe cast) sets both fields to the same value. |
@@ -325,7 +326,7 @@ Two design notes about the fixture:
 | `src/Library/Interfaces/IRayCaster.h` | `RAY_STATE` gains `bsdfMisPdf` (default -1) and `MisPartnerPdf()`; `bsdfPdf`'s doc now states its single remaining role. |
 | `src/Library/Lights/LightSampler.h` | `IGuidedNEEPdfBlend`'s contract rewritten around the nominal-density design; the `rawPdf > 0` precondition is part of it. **Round 3**: `EvaluateDirectLighting{,NM}` gain a trailing `const IORStack* pMisIorStack` (null = the historical sentinel). |
 | `src/Library/Lights/LightSampler.cpp` | All FOUR NEE arms (env and area-light, RGB and NM) blend through the hook, inside their `pdf > 0` gates, gated `!isVolumeScatter`. **Round 3**: the same four arms evaluate the aggregate pdf under the caller-supplied live IOR stack instead of the `IORStack(1.0)` sentinel. |
-| `src/Library/Shaders/PathTracingIntegrator.cpp` | `PTGuidingMisPdf` (replaces `PTGuidedNEEPdfBlend`); the distribution is initialised once above PART 2 and shared; PART 3 no longer re-initialises, re-draws or re-applies the cosine product; `misBsdfPdf` computed at the continuation and carried to the emitter-hit and env-escape weights; BSSRDF, SPF-only and HWSS sites set both fields explicitly; three stale comments corrected. **Round 3**: the three `IntegrateFromHit*` entry points and the two templates behind them take a trailing `bsdfMisPdf_` (-1 = "same as `bsdfPdf`"); the env-escape and emitter-hit gates admit either density; the HWSS body carries an incoming partner through its weights and its NM fallbacks; PART 2's NEE and the HWSS NEE site pass the live `iorStack` as the MIS-partner evaluation context. |
+| `src/Library/Shaders/PathTracingIntegrator.cpp` | **Round 3 also**: the in-loop volume-scatter continuation now sets `bsdfMisPdf = phasePdf` and clears its stale `bsdfTimesCos` (§8.3, DL-84). `PTGuidingMisPdf` (replaces `PTGuidedNEEPdfBlend`); the distribution is initialised once above PART 2 and shared; PART 3 no longer re-initialises, re-draws or re-applies the cosine product; `misBsdfPdf` computed at the continuation and carried to the emitter-hit and env-escape weights; BSSRDF, SPF-only and HWSS sites set both fields explicitly; three stale comments corrected. **Round 3**: the three `IntegrateFromHit*` entry points and the two templates behind them take a trailing `bsdfMisPdf_` (-1 = "same as `bsdfPdf`"); the env-escape and emitter-hit gates admit either density; the HWSS body carries an incoming partner through its weights and its NM fallbacks; PART 2's NEE and the HWSS NEE site pass the live `iorStack` as the MIS-partner evaluation context. |
 | `src/Library/Shaders/PathTracingShaderOp.cpp` | **Round 3**: all three entry points forward `rs.MisPartnerPdf()` alongside `rs.bsdfPdf`. This file is the P1 defect's whole surface. |
 | `src/Library/Shaders/EmissionShaderOp.cpp` | **Round 3**: the RGB and NM emitter-hit weights read `MisPartnerPdf()` instead of `bsdfPdf` and gate on either density. |
 | `src/Library/Shaders/DirectLightingShaderOp.cpp` | **Round 3**: passes its own `ior_stack` as the MIS-partner evaluation context, so the legacy chain's NEE arm and `EmissionShaderOp`'s weight evaluate one function of direction. |
@@ -452,7 +453,53 @@ neither reads a stack at all.
 material whose aggregate `Pdf()` reads the IOR stack changes — it was
 mis-weighted before.  Every other render is byte-identical.
 
-### 8.3 Why the row-(f) furnace uses a decorator SPF
+### 8.3 P1, second instance — PT's OWN in-loop volume vertex
+
+The gate found what the consumer sweep alone would not have: a third
+PRODUCER.  `IntegrateFromHitTemplated`'s own medium-scatter branch (the
+`bsdfPdf = effectivePdf; continue;` site) sets the sampling density and
+falls straight back into the same loop's env-escape block -- and round 2
+did not give it a `bsdfMisPdf` assignment, so the escape after a volume
+scatter weighted against whatever the PREVIOUS vertex had left there.
+
+It is reached only AFTER a surface bounce (a camera ray's first medium
+interaction is handled by `IntegrateRayTemplated`'s separate walk, which
+carries its own `walkPdf` and has no guiding block), so the stale value
+is the surface's BSDF pdf -- or, when the surface bounce was the camera
+ray's first hit, **0**, which under §2.4's rule means "no partner
+exists" and hands the escape FULL weight on top of an already-weighted
+volume-NEE sample.
+
+`VolumeEnvFurnaceTest` is the guard, and it is a white furnace, so the
+error is read directly:
+
+| `VolumeEnvFurnaceTest` | §7 floor RGB PT | suite |
+|---|---|---|
+| `ddf05c6c` (before this slice) | 0.992665 (−0.73 %) | 29/0 |
+| `2ebcaff9` (after round 2) | 1.09604 (**+9.60 %**) | 26/3 |
+| round 3 | 0.993353 (−0.66 %) | 29/0 |
+
+Bisected to the file by rebuilding `ddf05c6c` with only
+`PathTracingIntegrator.cpp` (plus its compile dependencies) taken from
+`2ebcaff9`: 1.09574 (+9.57 %), 26/3.  §6 (fog box, no floor) passes
+throughout, which is the signature that pointed at the surface-bounce
+entry.
+
+Fix: `bsdfMisPdf = phasePdf` at that site (DL-73's ruling -- the NEE call
+a few lines above weights through `MediumScatterMaterial::Pdf`, which
+forwards to `IPhaseFunction::Pdf`), with `bsdfPdf = effectivePdf`
+unchanged.  Its `bsdfTimesCos` was ALSO stale -- the previous vertex's,
+i.e. a moment whose numerator and denominator come from different
+vertices -- and is now cleared to zero, the conservative state DL-72
+round 2 established for sites whose correct quantity is not wired; wiring
+it needs a paired `AccumulateCount` here too and is filed as **DL-84**.
+
+Refuted siblings: the other two `volumeBounces++` sites
+(`IntegrateRayTemplated` and `IntegrateRayHWSS`) are camera-ray walks
+that carry a local `walkPdf` used for both roles and have no guiding
+block, so neither can diverge.
+
+### 8.4 Why the row-(f) furnace uses a decorator SPF
 
 Rows (f) target a CLOSED FORM (`L_out == L_env` for an albedo-1 surface
 under a constant environment), which needs a material whose directional

@@ -2081,7 +2081,40 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 					currentRay = Ray( scatterPt, wi );
+					// DL-74 (round-3 review): this loop's OWN volume vertex is
+					// a THIRD producer of the two densities, and it was the one
+					// the round-2 split missed.  It is reached only after a
+					// SURFACE bounce (a camera ray's first medium interaction
+					// is handled by `IntegrateRayTemplated`'s separate walk),
+					// which is why "fog box + white floor" caught it and "fog
+					// box" alone did not.
+					//
+					//  * `bsdfPdf` is the TRUE sampling density -- `effectivePdf`,
+					//    the guided mixture when volume guiding fires, since the
+					//    throughput above divided by exactly that.
+					//  * `bsdfMisPdf` is the MIS partner, and at a volume vertex
+					//    that is the RAW `phasePdf` (DL-73): the NEE call a few
+					//    lines above weights through `MediumScatterMaterial::Pdf`,
+					//    which forwards straight to `IPhaseFunction::Pdf`.
+					//
+					// Leaving `bsdfMisPdf` at the PREVIOUS vertex's value (what
+					// round 2 did) made the env escape after this scatter weight
+					// against the floor's BSDF pdf -- and after a camera ray,
+					// against 0, i.e. FULL weight on top of an already-weighted
+					// volume NEE sample.  Measured +9.6 % on
+					// VolumeEnvFurnaceTest's floor-in-fog furnace.
 					bsdfPdf = effectivePdf;
+					bsdfMisPdf = phasePdf;
+					// The optimal-MIS moment's numerator must come from the SAME
+					// vertex as its denominator.  The surface `bsdfTimesCos` left
+					// standing here belongs to the previous vertex, so it is
+					// cleared rather than reused: a zero numerator simply does
+					// not train (the `f2 > 0` gate), which is the conservative
+					// state DL-72 round 2 established for sites whose correct
+					// quantity is not yet wired.  Wiring it properly needs a
+					// paired `AccumulateCount` at this site as well -- filed as
+					// DL-84, deliberately not done here.
+					bsdfTimesCos = Traits::zero();
 					considerEmission = true;
 					volumeBounces++;
 					continue;  // Re-enter loop: needsIntersection is still true
