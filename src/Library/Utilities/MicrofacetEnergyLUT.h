@@ -16,6 +16,12 @@
 //  Samples per entry: 1000000
 //  Alpha range: [0.01, 1.0] (uniform 32 steps)
 //  CosTheta range: [0.5/32, (31.5)/32] (cell centers)
+//  DL-86 grazing sub-grid: 8 uniform sub-intervals on
+//  [0, 0.5/32], i.e. 7 stored nodes per row, for the isotropic
+//  E_ss/E_ss_G2 tables AND the DL-77 aniso tables; the
+//  cosTheta->0 boundary is exactly 1 for the height-correlated
+//  G2 model and a baked per-alpha constant (E_ss_LIMIT_TABLE,
+//  probed at cosTheta=1e-07) for the separable model
 //  DL-77 aniso LUT resolution: 24 alphaX x 24 alphaY x 13 phi x 32 cosTheta
 //  DL-77 aniso samples per entry: 150000 (off-diagonal cells only --
 //  alphaX==alphaY cells are seeded from the isotropic tables, see
@@ -28,7 +34,12 @@
 //  into this generator's rng_state initializer (1234567890123456789ULL) with 1000000
 //  samples/entry (isotropic tables) and 150000 samples/entry (DL-77
 //  aniso tables, drawn from the SAME rng_state stream immediately
-//  afterward).  Regenerate + verify with:
+//  afterward).  The DL-86 grazing sub-grid tables (E_ss_SUB_TABLE,
+//  E_ss_SUB_TABLE_G2, E_ss_LIMIT_TABLE, E_ss_TABLE_G2_ANISO_PHI_SUB,
+//  E_ss_TABLE_G2_ANISO_SUB) are drawn from a SECOND, independently
+//  seeded stream (rng_state_sub, 9876543210987654321ULL) at the same per-entry
+//  sample counts, specifically so that adding them left every
+//  pre-existing table byte-for-byte unchanged.  Regenerate + verify with:
 //    c++ -O2 -Isrc/Library -std=c++11 -o tools/gen_lut \
 //        tools/GenerateMicrofacetEnergyLUT.cpp -lm
 //    tools/gen_lut > /tmp/regen_MicrofacetEnergyLUT.h
@@ -62,6 +73,25 @@ namespace RISE
 namespace MicrofacetEnergyLUT
 {
 	static const int LUT_SIZE = 32;
+
+	/// DL-86: number of uniform sub-intervals the grazing interval
+	/// [0, c0] is resolved at, where c0 = 0.5/N is the first ordinary
+	/// cosTheta bin center of an N-bin table (N = LUT_SIZE for the
+	/// isotropic tables, ANISO_COS_SIZE for the DL-77 aniso ones;
+	/// both are 32, so c0 = 0.015625 -- every incidence beyond ~89.1 degrees).
+	/// Every lookup used to FLAT-CLAMP that whole interval to the
+	/// bin-0 value; E_ss is not even monotone there at low roughness
+	/// (at alpha=0.01 an independent 20M-sample VNDF quadrature reads
+	/// 0.8920 at cosTheta=0.010, 0.9796 at 0.001 and the exact
+	/// boundary value at 0, while bin 0 reads 0.8993), so neither a
+	/// flat cap nor a single straight line to the boundary can follow
+	/// it -- the interval is BAKED instead.  7 nodes are stored per
+	/// row (k*c0/SUB_SIZE for k=1..SUB_SIZE-1); k=SUB_SIZE IS bin 0
+	/// itself (so the model is continuous with the ordinary bilinear
+	/// interior at c0 by construction) and k=0 is the exact
+	/// cosTheta->0 boundary.  See the generator's SUB_SIZE comment for
+	/// the residual measurements that picked this value.
+	static const int SUB_SIZE = 8;
 
 	/// Directional albedo E_ss(alpha, cosTheta) of GGX single-scatter BRDF with F=1.
 	/// Indexed as E_ss_TABLE[alphaIdx][cosThetaIdx].
@@ -110,6 +140,70 @@ namespace MicrofacetEnergyLUT
 		0.86823821, 0.84470447, 0.82071604, 0.79622496, 0.77153616, 0.74681634, 0.72220450, 0.69766314, 
 		0.67345856, 0.64984222, 0.62659325, 0.60363644, 0.58133228, 0.55970018, 0.53838956, 0.51779590, 
 		0.49794702, 0.47872293, 0.46003553, 0.44217436, 0.42485640, 0.40817185, 0.39206333, 0.37663494
+	};
+
+	/// DL-86: grazing sub-grid twin of E_ss_TABLE above -- the SAME
+	/// separable-model directional albedo, sampled at the SUB_SIZE-1
+	/// interior nodes of [0, c0] (cosTheta = k*c0/SUB_SIZE for
+	/// k=1..SUB_SIZE-1, c0 = 0.5/LUT_SIZE).  Indexed as
+	/// E_ss_SUB_TABLE[alphaIdx][k-1].  Consumed by LookupEss and by
+	/// MSLobeDetail::BuildSegmentsFromRow -- which MUST agree, since
+	/// MSPdf evaluates LookupEss directly while SampleMSCosTheta
+	/// inverts those segments (see the H6 header comment); sharing
+	/// one baked table is what makes them agree by construction
+	/// rather than by two matching formulas.
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_SUB_TABLE[32][7] = {
+		{ 0.91800056, 0.90135497, 0.88950270, 0.88288271, 0.88128540, 0.88375718, 0.88802974 },
+		{ 0.93045931, 0.92620802, 0.92138070, 0.91737093, 0.91323194, 0.90905011, 0.90504375 },
+		{ 0.92968424, 0.92736599, 0.92471955, 0.92235555, 0.91948624, 0.91725351, 0.91467417 },
+		{ 0.92694915, 0.92492505, 0.92302713, 0.92111460, 0.91952186, 0.91761654, 0.91586136 },
+		{ 0.92211931, 0.92087589, 0.91916640, 0.91784895, 0.91614164, 0.91509168, 0.91357263 },
+		{ 0.91636926, 0.91502460, 0.91400580, 0.91291041, 0.91147839, 0.91014354, 0.90911114 },
+		{ 0.90981056, 0.90841951, 0.90725494, 0.90630443, 0.90531985, 0.90426577, 0.90320806 },
+		{ 0.90175849, 0.90077734, 0.89975866, 0.89900853, 0.89775878, 0.89662917, 0.89621537 },
+		{ 0.89352214, 0.89267463, 0.89164127, 0.89082094, 0.88971062, 0.88849297, 0.88782686 },
+		{ 0.88400953, 0.88320294, 0.88222970, 0.88139669, 0.88050773, 0.87958519, 0.87876842 },
+		{ 0.87427921, 0.87323294, 0.87286190, 0.87196709, 0.87059510, 0.86973156, 0.86900538 },
+		{ 0.86341863, 0.86314874, 0.86221697, 0.86119573, 0.86031913, 0.85944863, 0.85863793 },
+		{ 0.85273111, 0.85213704, 0.85157944, 0.85044229, 0.84943946, 0.84843071, 0.84785765 },
+		{ 0.84147464, 0.84092441, 0.83978207, 0.83883067, 0.83814635, 0.83740314, 0.83637276 },
+		{ 0.82976576, 0.82884414, 0.82817699, 0.82724411, 0.82675001, 0.82522562, 0.82470540 },
+		{ 0.81782225, 0.81719044, 0.81627730, 0.81474704, 0.81424431, 0.81327433, 0.81259738 },
+		{ 0.80519108, 0.80453860, 0.80388840, 0.80290137, 0.80185637, 0.80118325, 0.80051664 },
+		{ 0.79305675, 0.79216152, 0.79120346, 0.79037115, 0.78906809, 0.78843119, 0.78686909 },
+		{ 0.78002708, 0.77940560, 0.77844711, 0.77776691, 0.77660960, 0.77544267, 0.77468795 },
+		{ 0.76783646, 0.76630313, 0.76516830, 0.76437352, 0.76358554, 0.76251699, 0.76146244 },
+		{ 0.75406540, 0.75320815, 0.75221198, 0.75199073, 0.75038553, 0.74937848, 0.74825424 },
+		{ 0.74081480, 0.74027811, 0.73908673, 0.73776469, 0.73692823, 0.73631434, 0.73533616 },
+		{ 0.72777829, 0.72775776, 0.72549934, 0.72510194, 0.72379796, 0.72303118, 0.72205439 },
+		{ 0.71477560, 0.71391951, 0.71293715, 0.71176266, 0.71066227, 0.71000564, 0.70948266 },
+		{ 0.70219658, 0.70076117, 0.69964452, 0.69881391, 0.69739868, 0.69683376, 0.69568739 },
+		{ 0.68887259, 0.68832363, 0.68658597, 0.68544355, 0.68422270, 0.68377083, 0.68246475 },
+		{ 0.67614425, 0.67469326, 0.67389198, 0.67245674, 0.67174443, 0.67058963, 0.66948724 },
+		{ 0.66319150, 0.66153460, 0.66074036, 0.65978435, 0.65853669, 0.65740502, 0.65654630 },
+		{ 0.65012347, 0.64914836, 0.64763573, 0.64704338, 0.64567824, 0.64448124, 0.64325697 },
+		{ 0.63770192, 0.63620377, 0.63542676, 0.63388659, 0.63317218, 0.63164424, 0.63055539 },
+		{ 0.62505642, 0.62417418, 0.62252236, 0.62096212, 0.62016000, 0.61947493, 0.61840679 },
+		{ 0.61254991, 0.61123094, 0.60992671, 0.60892357, 0.60780060, 0.60693865, 0.60554452 }
+	};
+
+	/// DL-86: the SEPARABLE model's limiting cosTheta->0 directional
+	/// albedo, per alpha row.  Unlike the height-correlated G2 model
+	/// (whose limit is provably exactly 1 -- see LookupEssG2's own
+	/// comment), the separable model's per-sample VNDF weight is
+	/// G1(wo), which has NO cancellation against the sampling pdf's
+	/// G1(wi), so its limit is a finite alpha-dependent constant with
+	/// no closed form here.  It is therefore BAKED, by evaluating the
+	/// same estimator at cosTheta=1e-07 (converged: an independent
+	/// quadrature reads 0.93436251 at 1e-6 vs 0.93436415 at 1e-7 for
+	/// alpha=0.05).  This is the k=0 node of the sub-grid above.
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_LIMIT_TABLE[32] = {
+		0.93608839, 0.93472616, 0.93232768, 0.92851285, 0.92354349, 0.91744907, 0.91068423, 0.90295142, 
+		0.89437669, 0.88512155, 0.87501756, 0.86476977, 0.85408825, 0.84249231, 0.83062560, 0.81880346, 
+		0.80647921, 0.79409957, 0.78090321, 0.76810366, 0.75511695, 0.74231421, 0.72936740, 0.71639782, 
+		0.70258847, 0.68993131, 0.67694630, 0.66398582, 0.65145042, 0.63923690, 0.62606682, 0.61347744
 	};
 
 	/// DL-63: height-correlated-G2 twin of E_ss_TABLE above --
@@ -166,24 +260,112 @@ namespace MicrofacetEnergyLUT
 		0.52106177, 0.50327811, 0.48600259, 0.46953013, 0.45356348, 0.43819543, 0.42337095, 0.40916929
 	};
 
+	/// DL-86: height-correlated-G2 twin of E_ss_SUB_TABLE above.
+	/// No E_ss_LIMIT_TABLE twin exists for this model: its
+	/// cosTheta->0 boundary is exactly 1 analytically.
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_SUB_TABLE_G2[32][7] = {
+		{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+		{ 0.98997440, 0.98046937, 0.97115792, 0.96272704, 0.95456374, 0.94686764, 0.93963934 },
+		{ 0.99381516, 0.98794869, 0.98221767, 0.97680949, 0.97125681, 0.96623717, 0.96121850 },
+		{ 0.99515640, 0.99056074, 0.98615370, 0.98184077, 0.97785701, 0.97376092, 0.96988450 },
+		{ 0.99566662, 0.99173906, 0.98790243, 0.98436542, 0.98067951, 0.97741436, 0.97408136 },
+		{ 0.99584658, 0.99213993, 0.98868296, 0.98541679, 0.98210622, 0.97892484, 0.97593034 },
+		{ 0.99587873, 0.99217505, 0.98885797, 0.98570175, 0.98259332, 0.97962718, 0.97671820 },
+		{ 0.99573359, 0.99206132, 0.98871650, 0.98549687, 0.98249454, 0.97947813, 0.97680195 },
+		{ 0.99557845, 0.99188552, 0.98837938, 0.98521286, 0.98205329, 0.97906610, 0.97628017 },
+		{ 0.99527755, 0.99149234, 0.98787823, 0.98457999, 0.98144120, 0.97828381, 0.97547219 },
+		{ 0.99511579, 0.99102259, 0.98745582, 0.98403468, 0.98063109, 0.97744721, 0.97451810 },
+		{ 0.99470442, 0.99057743, 0.98668080, 0.98315469, 0.97958354, 0.97638277, 0.97325828 },
+		{ 0.99451195, 0.99006936, 0.98604661, 0.98223921, 0.97871427, 0.97520030, 0.97197163 },
+		{ 0.99420927, 0.98948507, 0.98525434, 0.98129075, 0.97771234, 0.97413892, 0.97059988 },
+		{ 0.99387369, 0.98898955, 0.98451527, 0.98041062, 0.97668815, 0.97261985, 0.96937415 },
+		{ 0.99354841, 0.98839755, 0.98376075, 0.97930879, 0.97517711, 0.97141955, 0.96784645 },
+		{ 0.99316622, 0.98764410, 0.98286852, 0.97840232, 0.97416407, 0.97006750, 0.96626879 },
+		{ 0.99285917, 0.98709721, 0.98195563, 0.97738121, 0.97270751, 0.96870368, 0.96432145 },
+		{ 0.99244479, 0.98669465, 0.98123826, 0.97636669, 0.97150647, 0.96709379, 0.96280316 },
+		{ 0.99218142, 0.98596959, 0.98035011, 0.97501851, 0.97030773, 0.96567660, 0.96115008 },
+		{ 0.99182536, 0.98534360, 0.97946264, 0.97430605, 0.96891808, 0.96420701, 0.95953923 },
+		{ 0.99132673, 0.98456594, 0.97869885, 0.97292157, 0.96764857, 0.96276976, 0.95805402 },
+		{ 0.99105996, 0.98413803, 0.97768993, 0.97196240, 0.96636164, 0.96115848, 0.95618149 },
+		{ 0.99070532, 0.98336434, 0.97700329, 0.97086269, 0.96494338, 0.95979373, 0.95481024 },
+		{ 0.99038781, 0.98269841, 0.97591071, 0.96982771, 0.96384341, 0.95818874, 0.95303934 },
+		{ 0.98994055, 0.98213835, 0.97516198, 0.96862151, 0.96238862, 0.95673483, 0.95107607 },
+		{ 0.98960407, 0.98140545, 0.97430208, 0.96756242, 0.96122859, 0.95521311, 0.94953671 },
+		{ 0.98918947, 0.98078047, 0.97316806, 0.96642169, 0.95999836, 0.95359421, 0.94792002 },
+		{ 0.98896237, 0.98017888, 0.97238581, 0.96537946, 0.95864906, 0.95222470, 0.94614341 },
+		{ 0.98857894, 0.97955581, 0.97173761, 0.96430320, 0.95730001, 0.95071362, 0.94462927 },
+		{ 0.98820810, 0.97899011, 0.97069132, 0.96310993, 0.95575791, 0.94956961, 0.94300324 },
+		{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 }
+	};
+
+	/// DL-86: value of the grazing sub-grid model at node k of alpha
+	/// row `ai`, for k in [0, SUB_SIZE].  k==0 is the cosTheta->0
+	/// boundary (exactly 1 for the G2 model, a baked per-alpha
+	/// constant for the separable one), k==SUB_SIZE is the first bin
+	/// center c0 itself.  Every below-c0 consumer -- LookupEss,
+	/// LookupEssG2 and MSLobeDetail::BuildSegmentsFromRow -- reads the
+	/// model through these two accessors, so the lookup and the
+	/// sampler's segments describe the SAME curve by construction.
+	///
+	/// Every node value is a baked directional albedo in [0,1] (and
+	/// the k==0 G2 boundary is exactly 1), so a convex combination of
+	/// them is automatically in [0,1]: LookupEss/LookupEssG2's
+	/// defensive r_max/r_min around the blend below cannot fire, and
+	/// BuildSegmentsFromRow's un-clamped segment form is therefore
+	/// describing the identical function, not a laxer one.
+	inline Scalar SubNodeEss( const int ai, const int k )
+	{
+		if( k <= 0 ) return E_ss_LIMIT_TABLE[ai];
+		if( k >= SUB_SIZE ) return E_ss_TABLE[ai][0];
+		return E_ss_SUB_TABLE[ai][k-1];
+	}
+
+	/// DL-86: height-correlated-G2 twin of SubNodeEss above.  The
+	/// k==0 boundary is the PROVABLE exact value 1: under the
+	/// height-correlated Smith model the per-sample VNDF weight is
+	/// G2(wi,wo)/G1(wi) = (1+Lambda(wi)) / (1+Lambda(wi)+Lambda(wo)),
+	/// and Lambda(wi) ~ alpha/(2*cosWi) -> infinity as cosWi -> 0, so
+	/// that ratio -> 1 for ANY finite Lambda(wo) -- i.e. every
+	/// VNDF-sampled wo, however distributed, contributes weight -> 1.
+	inline Scalar SubNodeEssG2( const int ai, const int k )
+	{
+		if( k <= 0 ) return Scalar(1.0);
+		if( k >= SUB_SIZE ) return E_ss_TABLE_G2[ai][0];
+		return E_ss_SUB_TABLE_G2[ai][k-1];
+	}
+
+	/// DL-86: map a cosTheta strictly below c0 onto the grazing
+	/// sub-grid -- sub-interval index k0 in [0, SUB_SIZE-1] and the
+	/// fraction within it.  Shared by LookupEss/LookupEssG2 and the
+	/// DL-77 aniso lookups so all of them bin identically.
+	inline void SubNodeIndex( const Scalar cc, const Scalar c0, int& k0, Scalar& kf )
+	{
+		const Scalar t = cc / c0 * Scalar(SUB_SIZE);
+		k0 = (int)t;
+		if( k0 < 0 ) k0 = 0;
+		if( k0 > SUB_SIZE - 1 ) k0 = SUB_SIZE - 1;
+		kf = t - Scalar(k0);
+	}
+
 	/// Look up E_ss(cosTheta, alpha) with bilinear interpolation.
 	///
-	/// DL-86: below the first bin center c0=0.5/LUT_SIZE, this used to
-	/// flat-clamp to the c0 row (the `if(c<0) c=0` below), which
-	/// under-reads the true, still-rising Ess right at the grazing limit
-	/// (measured: at alpha=0.05, cos=0.002, an independent VNDF quadrature
-	/// gives Ess=0.9913 vs the flat clamp's 0.9047, a ~2.9% relative
-	/// under-read at the worst separable-model configuration tested).
-	/// Fixed with a one-sided linear extrapolation of the bin0->bin1
-	/// secant back to the query cosTheta (clamped to [0,1]) -- the
-	/// separable (G1(wi)*G1(wo)) model has no known closed-form
-	/// Ess(cosTheta->0) limit (unlike LookupEssG2 just below), so this is
-	/// a plain analytic extrapolation, not a derived physical boundary.
+	/// DL-86: below the first bin center c0 = 0.5/LUT_SIZE this used
+	/// to flat-clamp to the c0 row, which mis-reads the true, sharply
+	/// varying Ess right at the grazing limit (measured: alpha=0.01,
+	/// cosTheta=0.002, independent 20M-sample VNDF quadrature reads
+	/// 0.9174 for the SEPARABLE model against the flat clamp's
+	/// 0.8947, a 2.5% under-read that grows the compensation weight
+	/// (1-Ess) by 27.5%).  It now interpolates the BAKED sub-grid
+	/// (E_ss_SUB_TABLE + E_ss_LIMIT_TABLE, via SubNodeEss) -- an
+	/// extrapolated bin0->bin1 secant was tried first and is WORSE
+	/// than the flat clamp here, because row 0 RISES with cosTheta
+	/// (0.8947 at c0 vs 0.9731 at the next bin) so the secant
+	/// extrapolates DOWNWARD, away from the true limit.
 	/// MUST stay in sync with MSLobeDetail::BuildSegmentsFromRow's
-	/// `isG2Model=false` left-segment formula -- MSPdf (below) calls this
-	/// function directly while SampleMSCosTheta samples from that
-	/// segment's shape, and the two must never disagree on what Ess is
-	/// below c0.
+	/// left end-cap -- MSPdf calls this function directly while
+	/// SampleMSCosTheta inverts that segment's shape; both now read
+	/// the same nodes through SubNodeEss, so they cannot disagree.
 	inline Scalar LookupEss( const Scalar cosTheta, const Scalar alpha )
 	{
 		// Map alpha from [0.01, 1.0] to [0, LUT_SIZE-1]
@@ -196,12 +378,11 @@ namespace MicrofacetEnergyLUT
 		const Scalar c0 = Scalar(0.5) / Scalar(LUT_SIZE);
 		if( cc < c0 )
 		{
-			const Scalar c1 = Scalar(1.5) / Scalar(LUT_SIZE);
-			const Scalar v0 = (1-af) * E_ss_TABLE[ai0][0] + af * E_ss_TABLE[ai1][0];
-			const Scalar v1 = (1-af) * E_ss_TABLE[ai0][1] + af * E_ss_TABLE[ai1][1];
-			const Scalar slope = (v1 - v0) / (c1 - c0);
-			const Scalar v = v0 + slope * (cc - c0);
-			return r_max( Scalar(0.0), r_min( Scalar(1.0), v ) );
+			int k0; Scalar kf;
+			SubNodeIndex( cc, c0, k0, kf );
+			const Scalar s0 = (1-af) * SubNodeEss(ai0, k0)     + af * SubNodeEss(ai1, k0);
+			const Scalar s1 = (1-af) * SubNodeEss(ai0, k0 + 1) + af * SubNodeEss(ai1, k0 + 1);
+			return r_max( Scalar(0.0), r_min( Scalar(1.0), (1-kf) * s0 + kf * s1 ) );
 		}
 
 		// Map cosTheta from cell centers: idx = cosTheta * LUT_SIZE - 0.5
@@ -233,31 +414,34 @@ namespace MicrofacetEnergyLUT
 	/// CoatedBRDF (height-correlated G2 single-scatter); CookTorrance
 	/// keeps using LookupEss (separable G).
 	///
-	/// DL-86: below the first bin center c0=0.5/LUT_SIZE, this used to
-	/// flat-clamp to the c0 row, under-reading the true, still-rising Ess
-	/// right at the grazing limit and over-stating the Kulla-Conty
-	/// multiscatter compensation there by up to ~5.3% relative (measured:
-	/// alpha=1.0, cos=0.002, independent VNDF quadrature Ess=0.9876 vs the
-	/// flat clamp's 0.9349) -- an isotropic furnace GAIN confined to
-	/// incidence beyond ~89 degrees.  Fixed with a one-sided ANALYTIC
-	/// extrapolation anchored at the PROVABLE exact boundary
-	/// Ess_G2(cosTheta=0)=1: under the height-correlated Smith model,
-	/// the per-sample VNDF weight is G2(wi,wo)/G1(wi) = (1+Lambda(wi)) /
-	/// (1+Lambda(wi)+Lambda(wo)); as cosWi->0, Lambda(wi)->infinity (Smith
-	/// Lambda ~ alpha/(2*cosTheta) for small cosTheta), so this ratio ->1
-	/// for ANY finite Lambda(wo) -- i.e. every VNDF-sampled wo, however it
-	/// is distributed, contributes weight ->1 in the limit.  The
-	/// extrapolation is therefore exact-at-the-boundary linear-in-cosTheta
-	/// interpolation between (0,1) and (c0,v0), clamped to [0,1] as a
-	/// defensive floor/ceiling (never triggered by this construction,
-	/// since v0<=1 always).  Residual after the fix (independent 20M-
-	/// sample quadrature, debt-dl86 slice): <=0.6% at every tested
-	/// (alpha,cosTheta) pair with cosTheta<c0 down to cosTheta=0.002 (was
-	/// up to 5.3%); see docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86".
-	/// MUST stay in sync with MSLobeDetail::BuildSegmentsFromRow's
-	/// `isG2Model=true` left-segment formula -- see LookupEss's own
-	/// comment on why (MSPdfG2 calls this function directly while
-	/// SampleMSCosThetaG2 samples from that segment's shape).
+	/// DL-86: below the first bin center c0 = 0.5/LUT_SIZE this used
+	/// to flat-clamp to the c0 row, under-reading the true Ess right
+	/// at the grazing limit and over-stating the Kulla-Conty
+	/// multiscatter compensation there by up to ~9.9% relative
+	/// (measured against an independent 20M-sample VNDF quadrature:
+	/// alpha=0.01, cosTheta=0.0001, truth 0.99789 vs the flat clamp's
+	/// 0.89927) -- an isotropic furnace GAIN confined to incidence
+	/// beyond ~89.1 degrees.  It now interpolates the BAKED grazing
+	/// sub-grid (E_ss_SUB_TABLE_G2, via SubNodeEssG2), anchored at
+	/// the provable exact boundary Ess_G2(cosTheta=0)=1 (proof in
+	/// SubNodeEssG2's own comment).  A single straight line from that
+	/// boundary to bin 0 was tried first and is NOT sufficient: at
+	/// alpha=0.01 the true curve DIPS to 0.8920 near cosTheta=0.010
+	/// and only climbs to 1 as cosTheta itself goes to 0, so a
+	/// straight line from the boundary over-reads by up to
+	/// 5.7% -- a larger error, of the opposite sign, than the flat
+	/// clamp it replaced.  Residual after the baked sub-grid
+	/// (independent 20M-sample-per-point quadrature, alpha-row blend
+	/// included, cosTheta in [1e-4, c0]): <=0.26% at every tested
+	/// alpha in [0.01,1.0] EXCEPT inside the FIRST alpha cell (row 0
+	/// alpha=0.01 to row 1 alpha=0.0419, a 4.2x ratio), where the
+	/// ALPHA axis alone still contributes up to 1.6% -- and up to
+	/// 5.1% below alpha=0.01, which the table clamps to row 0
+	/// outright.  Both are DL-105, not this end-cap: neither moves
+	/// with SUB_SIZE.  MUST stay in sync with
+	/// MSLobeDetail::BuildSegmentsFromRow's left end-cap -- see
+	/// LookupEss's own comment on why; both read the same nodes
+	/// through SubNodeEssG2.
 	inline Scalar LookupEssG2( const Scalar cosTheta, const Scalar alpha )
 	{
 		Scalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
@@ -269,9 +453,11 @@ namespace MicrofacetEnergyLUT
 		const Scalar c0 = Scalar(0.5) / Scalar(LUT_SIZE);
 		if( cc < c0 )
 		{
-			const Scalar v0 = (1-af) * E_ss_TABLE_G2[ai0][0] + af * E_ss_TABLE_G2[ai1][0];
-			const Scalar v = Scalar(1.0) - ( Scalar(1.0) - v0 ) * ( cc / c0 );
-			return r_max( Scalar(0.0), r_min( Scalar(1.0), v ) );
+			int k0; Scalar kf;
+			SubNodeIndex( cc, c0, k0, kf );
+			const Scalar s0 = (1-af) * SubNodeEssG2(ai0, k0)     + af * SubNodeEssG2(ai1, k0);
+			const Scalar s1 = (1-af) * SubNodeEssG2(ai0, k0 + 1) + af * SubNodeEssG2(ai1, k0 + 1);
+			return r_max( Scalar(0.0), r_min( Scalar(1.0), (1-kf) * s0 + kf * s1 ) );
 		}
 
 		Scalar c = cc * LUT_SIZE - 0.5;
@@ -312,8 +498,9 @@ namespace MicrofacetEnergyLUT
 	// on smooth surfaces).
 	//
 	// LookupEss(cosTheta,alpha) is PIECEWISE-LINEAR in cosTheta between
-	// adjacent LUT bin centers (with flat clamping outside the first/
-	// last centers) -- exactly what its bilinear-interpolation code
+	// adjacent LUT bin centers (DL-86: between the grazing sub-grid's
+	// own nodes below the first bin center c0, and flat-clamped above
+	// the last center) -- exactly what its bilinear-interpolation code
 	// computes, and bilinear interpolation is separable, so blending the
 	// two alpha rows first and then interpolating cosTheta (as done
 	// below) is algebraically IDENTICAL to LookupEss's simultaneous
@@ -332,56 +519,52 @@ namespace MicrofacetEnergyLUT
 	namespace MSLobeDetail
 	{
 		// One [lo,hi] segment of the piecewise-linear-in-cosTheta Ess
-		// model: either a flat end-cap (below the first / above the
-		// last bin center) or the linear span between two adjacent bin
-		// centers.  Ess(cos) = essLo + slope*(cos-lo) for cos in [lo,hi].
+		// model: a DL-86 grazing sub-interval (below the first bin
+		// center), the linear span between two adjacent bin centers, or
+		// the flat right end-cap above the last center.
+		// Ess(cos) = essLo + slope*(cos-lo) for cos in [lo,hi].
 		struct Segment
 		{
 			Scalar lo, hi;
 			Scalar essLo, slope;
 		};
 
-		// Build the LUT_SIZE+1 segments (33: 1 left cap + LUT_SIZE-1
-		// interior spans + 1 right cap) from an already-resolved essRow
-		// (either a single exact LUT row, or LookupEss's alpha-blended row).
+		// Build the LUT_SIZE+SUB_SIZE segments (40 at SUB_SIZE=8:
+		// SUB_SIZE grazing sub-intervals + LUT_SIZE-1 interior spans +
+		// 1 right cap) from an already-resolved essRow / subRow / essLimit
+		// (either a single exact LUT row, or LookupEss's alpha-blended one).
 		//
-		// DL-86: the left end-cap [0, c0] used to be FLAT (Ess clamped to
-		// row 0), which under-reads the true, still-rising Ess right at
-		// the grazing limit and over-states the Kulla-Conty multiscatter
-		// compensation there (see the file-header / DL-86 ledger row).
-		// It is now a LINEAR segment from cosTheta=0 to c0, matching
-		// LookupEss/LookupEssG2's own below-c0 extrapolation EXACTLY --
-		// this is load-bearing, not cosmetic: MSPdf/MSPdfG2 call
-		// LookupEss/LookupEssG2 directly, while SampleMSCosTheta/
+		// DL-86: the left end-cap [0, c0] used to be a single FLAT
+		// segment (Ess clamped to row 0).  It is now SUB_SIZE linear
+		// pieces through the baked grazing sub-grid, reading exactly the
+		// nodes SubNodeEss/SubNodeEssG2 give LookupEss/LookupEssG2 -- this
+		// is load-bearing, not cosmetic: MSPdf/MSPdfG2 call
+		// LookupEss/LookupEssG2 directly while SampleMSCosTheta/
 		// SampleMSCosThetaG2 sample from THESE segments, and the file's
-		// own header comment guarantees the two "cannot drift apart" --
-		// a flat segment here paired with a non-flat LookupEss/LookupEssG2
-		// would have broken that invariant for any draw landing below c0.
-		// `isG2Model` selects which of the two below-c0 models applies:
-		// the height-correlated G2 model has a provable exact boundary
-		// Ess(cosTheta=0)=1 (as Lambda(wi)->infinity, weight=G2/G1(wi)->1
-		// for any finite wo -- see LookupEssG2's own comment); the
-		// separable model has no such closed form, so it extrapolates the
-		// bin0->bin1 secant back to cosTheta=0 instead (a plain, cheap
-		// analytic extrapolation, not a derived physical limit).  Both
-		// `leftBoundaryEss` forms are LINEAR in essRow, so this preserves
-		// MSLobeZ/MSLobeZG2's documented "Z is an exact affine function of
-		// af" per-row-then-blend optimization unchanged.
-		inline void BuildSegmentsFromRow( const Scalar essRow[LUT_SIZE], const bool isG2Model, Segment segs[LUT_SIZE + 1], int& nSegs )
+		// own header comment guarantees the two "cannot drift apart".
+		// `essLimit` is the cosTheta=0 boundary value (1 for the
+		// height-correlated G2 model, E_ss_LIMIT_TABLE's blended row for
+		// the separable one); `subRow` holds the SUB_SIZE-1 interior
+		// nodes.  All three inputs are LINEAR in the alpha blend, so this
+		// preserves MSLobeZ/MSLobeZG2's documented "Z is an exact affine
+		// function of af" per-row-then-blend optimization unchanged.
+		inline void BuildSegmentsFromRow( const Scalar essRow[LUT_SIZE], const Scalar subRow[SUB_SIZE-1], const Scalar essLimit, Segment segs[LUT_SIZE + SUB_SIZE], int& nSegs )
 		{
 			nSegs = 0;
 			const Scalar c0 = 0.5 / Scalar(LUT_SIZE);
 			const Scalar cLast = (Scalar(LUT_SIZE) - 0.5) / Scalar(LUT_SIZE);
 
-			// Left end-cap [0, c0]: linear from leftBoundaryEss (cosTheta=0)
-			// to essRow[0] (cosTheta=c0).
-			const Scalar leftBoundaryEss = isG2Model
-				? Scalar(1.0)
-				: ( essRow[0] + Scalar(0.5) * ( essRow[0] - essRow[1] ) );
-			segs[nSegs].lo = 0.0; segs[nSegs].hi = c0;
-			segs[nSegs].essLo = leftBoundaryEss;
-			segs[nSegs].slope = ( essRow[0] - leftBoundaryEss ) / c0;
-			nSegs++;
+			// DL-86 grazing sub-intervals covering [0, c0].
+			const Scalar h = c0 / Scalar(SUB_SIZE);
+			for( int k = 0; k < SUB_SIZE; k++ )
+			{
+				const Scalar vLo = (k == 0) ? essLimit : subRow[k-1];
+				const Scalar vHi = (k == SUB_SIZE - 1) ? essRow[0] : subRow[k];
+				segs[nSegs].lo = Scalar(k) * h; segs[nSegs].hi = Scalar(k + 1) * h;
+				segs[nSegs].essLo = vLo;
+				segs[nSegs].slope = (vHi - vLo) / h;
+				nSegs++;
+			}
 
 			// Interior linear spans between adjacent bin centers.
 			for( int k = 0; k < LUT_SIZE - 1; k++ )
@@ -402,7 +585,7 @@ namespace MicrofacetEnergyLUT
 
 		// Build the segments for a fixed alphaEff, using EXACTLY LookupEss's
 		// alpha-row blend.
-		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + 1], int& nSegs )
+		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + SUB_SIZE], int& nSegs )
 		{
 			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 			int ai0 = (int)a;
@@ -413,7 +596,14 @@ namespace MicrofacetEnergyLUT
 			for( int k = 0; k < LUT_SIZE; k++ )
 				essRow[k] = (1-af) * E_ss_TABLE[ai0][k] + af * E_ss_TABLE[ai1][k];
 
-			BuildSegmentsFromRow( essRow, false, segs, nSegs );
+			// DL-86: the same blend on the grazing sub-grid and its
+			// cosTheta=0 boundary constant.
+			Scalar subRow[SUB_SIZE-1];
+			for( int k = 0; k < SUB_SIZE - 1; k++ )
+				subRow[k] = (1-af) * E_ss_SUB_TABLE[ai0][k] + af * E_ss_SUB_TABLE[ai1][k];
+			const Scalar essLimit = (1-af) * E_ss_LIMIT_TABLE[ai0] + af * E_ss_LIMIT_TABLE[ai1];
+
+			BuildSegmentsFromRow( essRow, subRow, essLimit, segs, nSegs );
 		}
 
 		// DL-63: height-correlated-G2 twin of BuildSegments above, using
@@ -422,7 +612,7 @@ namespace MicrofacetEnergyLUT
 		// BuildSegmentsFromRow are already table-agnostic (they only see
 		// an already-resolved essRow), so only the alpha-row blend needs
 		// a G2-specific twin.
-		inline void BuildSegmentsG2( const Scalar alphaEff, Segment segs[LUT_SIZE + 1], int& nSegs )
+		inline void BuildSegmentsG2( const Scalar alphaEff, Segment segs[LUT_SIZE + SUB_SIZE], int& nSegs )
 		{
 			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 			int ai0 = (int)a;
@@ -433,7 +623,13 @@ namespace MicrofacetEnergyLUT
 			for( int k = 0; k < LUT_SIZE; k++ )
 				essRow[k] = (1-af) * E_ss_TABLE_G2[ai0][k] + af * E_ss_TABLE_G2[ai1][k];
 
-			BuildSegmentsFromRow( essRow, true, segs, nSegs );
+			// DL-86: this model's cosTheta=0 boundary is exactly 1, so
+			// only the interior sub-nodes need blending.
+			Scalar subRow[SUB_SIZE-1];
+			for( int k = 0; k < SUB_SIZE - 1; k++ )
+				subRow[k] = (1-af) * E_ss_SUB_TABLE_G2[ai0][k] + af * E_ss_SUB_TABLE_G2[ai1][k];
+
+			BuildSegmentsFromRow( essRow, subRow, Scalar(1.0), segs, nSegs );
 		}
 
 		// shape(cos) = (1-Ess(cos))*cos within a segment; y = cos - lo.
@@ -514,9 +710,9 @@ namespace MicrofacetEnergyLUT
 			std::array<Scalar, LUT_SIZE> z{};
 			for( int row = 0; row < LUT_SIZE; row++ )
 			{
-				MSLobeDetail::Segment segs[LUT_SIZE + 1];
+				MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
 				int nSegs = 0;
-				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE[row], false, segs, nSegs );
+				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE[row], E_ss_SUB_TABLE[row], E_ss_LIMIT_TABLE[row], segs, nSegs );
 				Scalar I = 0.0;
 				for( int i = 0; i < nSegs; i++ )
 					I += MSLobeDetail::SegTotal( segs[i] );
@@ -538,11 +734,11 @@ namespace MicrofacetEnergyLUT
 	/// Azimuth is NOT handled here (uniform; caller draws it separately).
 	inline Scalar SampleMSCosTheta( const Scalar alphaEff, const Scalar u1 )
 	{
-		MSLobeDetail::Segment segs[LUT_SIZE + 1];
+		MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
 		int nSegs = 0;
 		MSLobeDetail::BuildSegments( alphaEff, segs, nSegs );
 
-		Scalar totals[LUT_SIZE + 1];
+		Scalar totals[LUT_SIZE + SUB_SIZE];
 		Scalar I = 0.0;
 		for( int i = 0; i < nSegs; i++ )
 		{
@@ -598,9 +794,9 @@ namespace MicrofacetEnergyLUT
 			std::array<Scalar, LUT_SIZE> z{};
 			for( int row = 0; row < LUT_SIZE; row++ )
 			{
-				MSLobeDetail::Segment segs[LUT_SIZE + 1];
+				MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
 				int nSegs = 0;
-				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE_G2[row], true, segs, nSegs );
+				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE_G2[row], E_ss_SUB_TABLE_G2[row], Scalar(1.0), segs, nSegs );
 				Scalar I = 0.0;
 				for( int i = 0; i < nSegs; i++ )
 					I += MSLobeDetail::SegTotal( segs[i] );
@@ -619,11 +815,11 @@ namespace MicrofacetEnergyLUT
 	/// DL-63: height-correlated-G2 twin of SampleMSCosTheta above.
 	inline Scalar SampleMSCosThetaG2( const Scalar alphaEff, const Scalar u1 )
 	{
-		MSLobeDetail::Segment segs[LUT_SIZE + 1];
+		MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
 		int nSegs = 0;
 		MSLobeDetail::BuildSegmentsG2( alphaEff, segs, nSegs );
 
-		Scalar totals[LUT_SIZE + 1];
+		Scalar totals[LUT_SIZE + SUB_SIZE];
 		Scalar I = 0.0;
 		for( int i = 0; i < nSegs; i++ )
 		{
@@ -9371,6 +9567,8706 @@ namespace MicrofacetEnergyLUT
 		}
 	};
 
+	/// DL-86: grazing sub-grid twin of E_ss_TABLE_G2_ANISO_PHI
+	/// above -- the SAME per-azimuth height-correlated-G2
+	/// directional albedo, at the SUB_SIZE-1 interior nodes of
+	/// [0, 0.5/ANISO_COS_SIZE].  Indexed as
+	/// E_ss_TABLE_G2_ANISO_PHI_SUB[alphaXIdx][alphaYIdx][phiIdx][k-1].
+	/// Consumed by LookupEssG2AnisoDirectional (an energy-
+	/// compensation call site).  The cosTheta->0 boundary is
+	/// exactly 1 at every azimuth, so it is not stored.
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_TABLE_G2_ANISO_PHI_SUB[24][24][13][7] = {
+		{
+			{
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+				{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 }
+			},
+			{
+				{ 0.96080158, 0.93055773, 0.90885983, 0.89624569, 0.89133151, 0.89113116, 0.89300477 },
+				{ 0.96697884, 0.93970889, 0.91899511, 0.90480414, 0.89529576, 0.89035643, 0.89070679 },
+				{ 0.97604977, 0.95457309, 0.93719639, 0.92193745, 0.91026133, 0.90152130, 0.89564586 },
+				{ 0.98168560, 0.96494715, 0.94947739, 0.93697413, 0.92472402, 0.91553950, 0.90797368 },
+				{ 0.98535258, 0.97119970, 0.95880541, 0.94731145, 0.93660184, 0.92682104, 0.91924944 },
+				{ 0.98773257, 0.97576577, 0.96488216, 0.95431133, 0.94488460, 0.93568352, 0.92815736 },
+				{ 0.98903099, 0.97859075, 0.96903834, 0.96000972, 0.95176374, 0.94262545, 0.93576773 },
+				{ 0.99026627, 0.98078079, 0.97201936, 0.96280417, 0.95536988, 0.94784871, 0.94047451 },
+				{ 0.99109456, 0.98229044, 0.97383296, 0.96634841, 0.95834540, 0.95139942, 0.94529662 },
+				{ 0.99164298, 0.98328797, 0.97553492, 0.96779914, 0.96098614, 0.95393421, 0.94793448 },
+				{ 0.99191058, 0.98398787, 0.97661465, 0.96937209, 0.96228312, 0.95601018, 0.94912721 },
+				{ 0.99206882, 0.98441088, 0.97688216, 0.97008702, 0.96282887, 0.95645232, 0.95085343 },
+				{ 0.99220869, 0.98450312, 0.97746857, 0.97011224, 0.96344496, 0.95684521, 0.95096320 }
+			},
+			{
+				{ 0.95811579, 0.92690737, 0.90475021, 0.89233638, 0.88592264, 0.88483098, 0.88793746 },
+				{ 0.97316344, 0.95078811, 0.93180310, 0.91662924, 0.90546229, 0.89713287, 0.89224585 },
+				{ 0.98390135, 0.96963666, 0.95597628, 0.94325734, 0.93293514, 0.92337822, 0.91502179 },
+				{ 0.98859125, 0.97808501, 0.96772409, 0.95889206, 0.94950143, 0.94074856, 0.93361241 },
+				{ 0.99104834, 0.98244082, 0.97462612, 0.96685834, 0.95942418, 0.95225676, 0.94555532 },
+				{ 0.99253390, 0.98556152, 0.97863175, 0.97181738, 0.96593675, 0.95965020, 0.95377310 },
+				{ 0.99350471, 0.98721426, 0.98134797, 0.97572110, 0.97009458, 0.96533492, 0.95904184 },
+				{ 0.99418169, 0.98867930, 0.98327090, 0.97792764, 0.97308962, 0.96812983, 0.96315025 },
+				{ 0.99450539, 0.98942697, 0.98458121, 0.97955482, 0.97527865, 0.97012610, 0.96601777 },
+				{ 0.99494157, 0.99022663, 0.98554953, 0.98094182, 0.97659292, 0.97228947, 0.96772526 },
+				{ 0.99524826, 0.99050503, 0.98606976, 0.98181296, 0.97736409, 0.97338460, 0.96924688 },
+				{ 0.99519721, 0.99100333, 0.98636049, 0.98188944, 0.97792502, 0.97359058, 0.97011918 },
+				{ 0.99531265, 0.99076936, 0.98683407, 0.98225406, 0.97804882, 0.97382646, 0.97011434 }
+			},
+			{
+				{ 0.95455378, 0.92178748, 0.89910535, 0.88582380, 0.88020895, 0.87806771, 0.88027782 },
+				{ 0.97796809, 0.95853008, 0.94179361, 0.92787698, 0.91569571, 0.90699825, 0.89907656 },
+				{ 0.98771617, 0.97616435, 0.96560967, 0.95598688, 0.94610460, 0.93835631, 0.93008502 },
+				{ 0.99144022, 0.98294961, 0.97531484, 0.96833196, 0.96136559, 0.95438328, 0.94851273 },
+				{ 0.99314226, 0.98678746, 0.98063176, 0.97467714, 0.96922694, 0.96399979, 0.95859193 },
+				{ 0.99437944, 0.98902652, 0.98379936, 0.97890389, 0.97374858, 0.96928140, 0.96543448 },
+				{ 0.99506847, 0.99046285, 0.98609368, 0.98165425, 0.97746045, 0.97348106, 0.96934015 },
+				{ 0.99545311, 0.99171175, 0.98737691, 0.98359250, 0.97995555, 0.97612913, 0.97190426 },
+				{ 0.99586284, 0.99184296, 0.98826656, 0.98496927, 0.98129656, 0.97780453, 0.97450132 },
+				{ 0.99613920, 0.99251977, 0.98916299, 0.98567955, 0.98246462, 0.97904425, 0.97588306 },
+				{ 0.99637169, 0.99290124, 0.98960425, 0.98608808, 0.98300316, 0.98021661, 0.97680162 },
+				{ 0.99636980, 0.99304694, 0.98967912, 0.98654099, 0.98356286, 0.98017355, 0.97755748 },
+				{ 0.99649987, 0.99311952, 0.98987432, 0.98674183, 0.98360803, 0.98052006, 0.97784575 }
+			},
+			{
+				{ 0.94984307, 0.91494129, 0.89176231, 0.87661712, 0.87175183, 0.86951140, 0.87281522 },
+				{ 0.98012342, 0.96373146, 0.94958522, 0.93584507, 0.92405719, 0.91420789, 0.90644480 },
+				{ 0.98928880, 0.97966101, 0.97039325, 0.96208167, 0.95401262, 0.94668494, 0.94003829 },
+				{ 0.99240880, 0.98567939, 0.97950052, 0.97328670, 0.96715966, 0.96097666, 0.95622096 },
+				{ 0.99412422, 0.98897846, 0.98349005, 0.97869742, 0.97386393, 0.96924349, 0.96539236 },
+				{ 0.99508358, 0.99047479, 0.98641442, 0.98236322, 0.97824561, 0.97410347, 0.97084317 },
+				{ 0.99571528, 0.99198615, 0.98818933, 0.98432998, 0.98093731, 0.97753950, 0.97411856 },
+				{ 0.99611698, 0.99248121, 0.98915052, 0.98600082, 0.98293731, 0.97986841, 0.97657779 },
+				{ 0.99645284, 0.99304623, 0.99008205, 0.98695114, 0.98405403, 0.98148071, 0.97862806 },
+				{ 0.99660319, 0.99365021, 0.99071901, 0.98788865, 0.98497612, 0.98238120, 0.97976076 },
+				{ 0.99680345, 0.99388576, 0.99091492, 0.98833496, 0.98569271, 0.98301603, 0.98034206 },
+				{ 0.99687349, 0.99400539, 0.99136602, 0.98877795, 0.98609110, 0.98362604, 0.98068351 },
+				{ 0.99695915, 0.99414013, 0.99126347, 0.98852076, 0.98619811, 0.98350081, 0.98091944 }
+			},
+			{
+				{ 0.94327099, 0.90669407, 0.88148918, 0.86753644, 0.86075549, 0.85838787, 0.86114582 },
+				{ 0.98152187, 0.96643294, 0.95313299, 0.94100455, 0.92944669, 0.92060121, 0.91220572 },
+				{ 0.99003749, 0.98110230, 0.97329648, 0.96592193, 0.95907052, 0.95223963, 0.94551370 },
+				{ 0.99297426, 0.98676085, 0.98078949, 0.97577030, 0.97033006, 0.96486525, 0.96033971 },
+				{ 0.99457628, 0.98947408, 0.98514007, 0.98086688, 0.97624256, 0.97234681, 0.96783418 },
+				{ 0.99544951, 0.99147526, 0.98751045, 0.98358730, 0.98033452, 0.97645779, 0.97350609 },
+				{ 0.99590619, 0.99241302, 0.98903045, 0.98568216, 0.98261335, 0.97986233, 0.97675455 },
+				{ 0.99640841, 0.99312012, 0.99010782, 0.98711956, 0.98444465, 0.98179901, 0.97908245 },
+				{ 0.99670261, 0.99367093, 0.99093962, 0.98806606, 0.98544148, 0.98311370, 0.98040382 },
+				{ 0.99682712, 0.99412570, 0.99132460, 0.98870366, 0.98610686, 0.98392220, 0.98165299 },
+				{ 0.99693806, 0.99423614, 0.99175271, 0.98912109, 0.98697315, 0.98432746, 0.98232376 },
+				{ 0.99698809, 0.99441260, 0.99210858, 0.98983251, 0.98736602, 0.98482398, 0.98254848 },
+				{ 0.99701382, 0.99436643, 0.99199756, 0.98951058, 0.98714387, 0.98489338, 0.98282515 }
+			},
+			{
+				{ 0.93636056, 0.89646640, 0.87183189, 0.85584529, 0.84779021, 0.84650870, 0.84721342 },
+				{ 0.98253208, 0.96823839, 0.95547890, 0.94417721, 0.93305937, 0.92357984, 0.91569465 },
+				{ 0.99047987, 0.98263850, 0.97479751, 0.96827044, 0.96116618, 0.95482779, 0.94895953 },
+				{ 0.99332066, 0.98736938, 0.98168169, 0.97703788, 0.97205367, 0.96755259, 0.96257122 },
+				{ 0.99456894, 0.98980464, 0.98609310, 0.98152030, 0.97770095, 0.97355970, 0.97030450 },
+				{ 0.99553368, 0.99174194, 0.98823183, 0.98452271, 0.98107720, 0.97808996, 0.97463277 },
+				{ 0.99599190, 0.99257080, 0.98953245, 0.98645092, 0.98363071, 0.98049263, 0.97778446 },
+				{ 0.99646098, 0.99327178, 0.99061232, 0.98782093, 0.98497606, 0.98239927, 0.97961785 },
+				{ 0.99666278, 0.99376826, 0.99116643, 0.98876267, 0.98609289, 0.98347730, 0.98129884 },
+				{ 0.99682200, 0.99424021, 0.99157844, 0.98915629, 0.98687472, 0.98484256, 0.98236498 },
+				{ 0.99712925, 0.99444842, 0.99192787, 0.98958400, 0.98752755, 0.98529208, 0.98317867 },
+				{ 0.99705730, 0.99477218, 0.99215765, 0.99032420, 0.98770527, 0.98560112, 0.98358612 },
+				{ 0.99705814, 0.99472721, 0.99216304, 0.99024890, 0.98781195, 0.98556791, 0.98379916 }
+			},
+			{
+				{ 0.92766268, 0.88520251, 0.85867308, 0.84085673, 0.83327978, 0.83074614, 0.83060958 },
+				{ 0.98264808, 0.96893885, 0.95679593, 0.94614778, 0.93485512, 0.92541509, 0.91844842 },
+				{ 0.99048349, 0.98270014, 0.97519860, 0.96822978, 0.96196712, 0.95604580, 0.95001185 },
+				{ 0.99323378, 0.98718071, 0.98231628, 0.97709224, 0.97182679, 0.96777495, 0.96345194 },
+				{ 0.99439968, 0.98985913, 0.98601262, 0.98222855, 0.97799863, 0.97422592, 0.97059177 },
+				{ 0.99550345, 0.99158604, 0.98789132, 0.98478760, 0.98102503, 0.97846947, 0.97518937 },
+				{ 0.99605053, 0.99248164, 0.98929072, 0.98635106, 0.98353751, 0.98064886, 0.97819747 },
+				{ 0.99648675, 0.99333647, 0.99049662, 0.98771811, 0.98513595, 0.98271591, 0.98043002 },
+				{ 0.99670294, 0.99393083, 0.99142906, 0.98889045, 0.98639847, 0.98382216, 0.98155688 },
+				{ 0.99687937, 0.99407607, 0.99160376, 0.98931496, 0.98687080, 0.98478734, 0.98256173 },
+				{ 0.99692695, 0.99435400, 0.99189985, 0.98960133, 0.98773932, 0.98538880, 0.98353194 },
+				{ 0.99719203, 0.99457922, 0.99215281, 0.98981231, 0.98777633, 0.98575259, 0.98355213 },
+				{ 0.99709111, 0.99451807, 0.99242093, 0.99025076, 0.98821227, 0.98551376, 0.98398821 }
+			},
+			{
+				{ 0.91961712, 0.87452891, 0.84508681, 0.82744311, 0.81812360, 0.81594519, 0.81601491 },
+				{ 0.98242217, 0.96885760, 0.95645659, 0.94614638, 0.93561342, 0.92611092, 0.91865575 },
+				{ 0.98999116, 0.98228165, 0.97489937, 0.96882458, 0.96186512, 0.95642390, 0.95084183 },
+				{ 0.99294472, 0.98712839, 0.98192077, 0.97680275, 0.97201351, 0.96851183, 0.96349347 },
+				{ 0.99446210, 0.99003271, 0.98582613, 0.98124608, 0.97788517, 0.97394845, 0.97118958 },
+				{ 0.99532095, 0.99149286, 0.98785701, 0.98452348, 0.98174727, 0.97828355, 0.97524187 },
+				{ 0.99601099, 0.99245707, 0.98938217, 0.98621003, 0.98327408, 0.98050537, 0.97799201 },
+				{ 0.99617798, 0.99313920, 0.99043911, 0.98764103, 0.98489000, 0.98262806, 0.98041684 },
+				{ 0.99644543, 0.99366464, 0.99082779, 0.98872328, 0.98625500, 0.98352701, 0.98155844 },
+				{ 0.99685677, 0.99384082, 0.99140660, 0.98903552, 0.98698746, 0.98449520, 0.98266459 },
+				{ 0.99688475, 0.99429533, 0.99202560, 0.98947488, 0.98759942, 0.98526540, 0.98308546 },
+				{ 0.99687113, 0.99437807, 0.99216248, 0.98975662, 0.98754175, 0.98537136, 0.98347175 },
+				{ 0.99694990, 0.99443706, 0.99173275, 0.98974839, 0.98767949, 0.98583404, 0.98370395 }
+			},
+			{
+				{ 0.90957440, 0.86094593, 0.82999737, 0.81285652, 0.80148083, 0.79762848, 0.79733703 },
+				{ 0.98193943, 0.96803816, 0.95612582, 0.94500668, 0.93546469, 0.92666939, 0.91773244 },
+				{ 0.98970930, 0.98182706, 0.97449480, 0.96750600, 0.96121489, 0.95599535, 0.94979744 },
+				{ 0.99275808, 0.98676530, 0.98149595, 0.97629417, 0.97207212, 0.96697094, 0.96283614 },
+				{ 0.99424717, 0.98957713, 0.98524884, 0.98129803, 0.97721374, 0.97365204, 0.97021399 },
+				{ 0.99513194, 0.99091182, 0.98762383, 0.98391980, 0.98088232, 0.97765407, 0.97477680 },
+				{ 0.99564200, 0.99214477, 0.98883664, 0.98602222, 0.98308755, 0.98056457, 0.97768675 },
+				{ 0.99615430, 0.99298195, 0.98978500, 0.98709217, 0.98464453, 0.98180683, 0.97953951 },
+				{ 0.99628519, 0.99339976, 0.99086306, 0.98819845, 0.98570212, 0.98327774, 0.98078811 },
+				{ 0.99656974, 0.99393929, 0.99111426, 0.98888800, 0.98635404, 0.98387163, 0.98183587 },
+				{ 0.99664228, 0.99390645, 0.99131899, 0.98910529, 0.98697028, 0.98448653, 0.98284770 },
+				{ 0.99682006, 0.99396390, 0.99180727, 0.98948444, 0.98677198, 0.98504567, 0.98328800 },
+				{ 0.99684714, 0.99415512, 0.99160690, 0.98947108, 0.98699740, 0.98513197, 0.98330345 }
+			},
+			{
+				{ 0.89899599, 0.84605187, 0.81333168, 0.79357747, 0.78482681, 0.78022765, 0.78063409 },
+				{ 0.98099561, 0.96678846, 0.95504451, 0.94421626, 0.93416192, 0.92546735, 0.91614740 },
+				{ 0.98943992, 0.98070568, 0.97326115, 0.96682578, 0.96043980, 0.95481030, 0.94866230 },
+				{ 0.99217289, 0.98617705, 0.98067129, 0.97559297, 0.97097114, 0.96646847, 0.96209255 },
+				{ 0.99384349, 0.98924193, 0.98482960, 0.98059220, 0.97669405, 0.97276550, 0.96971455 },
+				{ 0.99496813, 0.99073666, 0.98684845, 0.98366115, 0.98009790, 0.97688251, 0.97363620 },
+				{ 0.99541955, 0.99182727, 0.98854319, 0.98526934, 0.98217477, 0.97955381, 0.97733039 },
+				{ 0.99590422, 0.99238099, 0.98963794, 0.98679380, 0.98361288, 0.98146667, 0.97887398 },
+				{ 0.99612655, 0.99308696, 0.99040079, 0.98751975, 0.98513454, 0.98263649, 0.98050036 },
+				{ 0.99643651, 0.99323013, 0.99074306, 0.98847837, 0.98567878, 0.98345654, 0.98123184 },
+				{ 0.99655539, 0.99376358, 0.99130553, 0.98882645, 0.98604956, 0.98423478, 0.98237520 },
+				{ 0.99664318, 0.99403942, 0.99130827, 0.98896463, 0.98676815, 0.98451372, 0.98212481 },
+				{ 0.99654434, 0.99402767, 0.99139008, 0.98914958, 0.98704322, 0.98472506, 0.98229307 }
+			},
+			{
+				{ 0.88859823, 0.83223924, 0.79837459, 0.77743619, 0.76503076, 0.75934524, 0.75874023 },
+				{ 0.98040067, 0.96598599, 0.95287375, 0.94235608, 0.93185109, 0.92260102, 0.91402713 },
+				{ 0.98885258, 0.98020243, 0.97256219, 0.96590037, 0.95933079, 0.95267026, 0.94689067 },
+				{ 0.99186710, 0.98531833, 0.98039758, 0.97471252, 0.97017416, 0.96494207, 0.96061204 },
+				{ 0.99354261, 0.98847538, 0.98387548, 0.97948533, 0.97561763, 0.97248604, 0.96798697 },
+				{ 0.99439664, 0.99046670, 0.98639645, 0.98291905, 0.97924215, 0.97549249, 0.97231070 },
+				{ 0.99534068, 0.99139154, 0.98791967, 0.98448794, 0.98148639, 0.97871212, 0.97566684 },
+				{ 0.99556465, 0.99209256, 0.98921007, 0.98592580, 0.98300841, 0.98080840, 0.97769187 },
+				{ 0.99595116, 0.99261036, 0.98986220, 0.98718389, 0.98415403, 0.98207562, 0.97920952 },
+				{ 0.99612487, 0.99309930, 0.99024106, 0.98800937, 0.98532260, 0.98306356, 0.98047677 },
+				{ 0.99630382, 0.99322967, 0.99059969, 0.98817737, 0.98601759, 0.98322216, 0.98128634 },
+				{ 0.99633884, 0.99360559, 0.99079843, 0.98815785, 0.98632959, 0.98387921, 0.98130109 },
+				{ 0.99654456, 0.99358860, 0.99085553, 0.98884774, 0.98587619, 0.98409272, 0.98166695 }
+			},
+			{
+				{ 0.87655857, 0.81705989, 0.78119460, 0.75955917, 0.74692930, 0.73940113, 0.74046493 },
+				{ 0.97954203, 0.96446180, 0.95139350, 0.93990477, 0.93006100, 0.91949504, 0.91181712 },
+				{ 0.98778548, 0.97911374, 0.97107506, 0.96379311, 0.95764284, 0.95112705, 0.94509820 },
+				{ 0.99176937, 0.98486174, 0.97885510, 0.97333878, 0.96853957, 0.96348502, 0.95868134 },
+				{ 0.99323068, 0.98789191, 0.98302074, 0.97875232, 0.97429752, 0.97078453, 0.96687056 },
+				{ 0.99435705, 0.98957561, 0.98545113, 0.98191091, 0.97827010, 0.97465030, 0.97111268 },
+				{ 0.99498907, 0.99069073, 0.98708978, 0.98393568, 0.98084404, 0.97747138, 0.97486139 },
+				{ 0.99549736, 0.99200963, 0.98869202, 0.98512560, 0.98218104, 0.97973657, 0.97684028 },
+				{ 0.99572995, 0.99248086, 0.98907402, 0.98652886, 0.98341940, 0.98110539, 0.97842691 },
+				{ 0.99583585, 0.99284555, 0.98972202, 0.98677172, 0.98474630, 0.98218059, 0.97922646 },
+				{ 0.99606525, 0.99311457, 0.98998462, 0.98751308, 0.98492935, 0.98262858, 0.98022379 },
+				{ 0.99619478, 0.99320742, 0.99057299, 0.98775795, 0.98513291, 0.98295162, 0.98021861 },
+				{ 0.99634714, 0.99324018, 0.99078136, 0.98793816, 0.98530689, 0.98336975, 0.98083861 }
+			},
+			{
+				{ 0.86516554, 0.80197614, 0.76388038, 0.74006732, 0.72772727, 0.72251706, 0.71796004 },
+				{ 0.97819375, 0.96292169, 0.94893146, 0.93676750, 0.92642353, 0.91667020, 0.90795229 },
+				{ 0.98768819, 0.97815385, 0.97026862, 0.96218040, 0.95531605, 0.94934143, 0.94305169 },
+				{ 0.99097866, 0.98438052, 0.97770988, 0.97256669, 0.96712694, 0.96208054, 0.95633316 },
+				{ 0.99295504, 0.98709698, 0.98194054, 0.97795426, 0.97350875, 0.96929911, 0.96549235 },
+				{ 0.99396645, 0.98912268, 0.98502826, 0.98057359, 0.97722811, 0.97362800, 0.97002091 },
+				{ 0.99467767, 0.99007933, 0.98654148, 0.98321766, 0.97957676, 0.97648329, 0.97344495 },
+				{ 0.99526031, 0.99148390, 0.98773172, 0.98477711, 0.98125094, 0.97875759, 0.97549316 },
+				{ 0.99547254, 0.99178143, 0.98880562, 0.98571062, 0.98284840, 0.97999928, 0.97763925 },
+				{ 0.99568248, 0.99245135, 0.98894982, 0.98637659, 0.98394035, 0.98134647, 0.97844135 },
+				{ 0.99590626, 0.99249339, 0.98981834, 0.98689794, 0.98448564, 0.98158892, 0.97949465 },
+				{ 0.99593410, 0.99296289, 0.98998890, 0.98715002, 0.98452141, 0.98203377, 0.97955163 },
+				{ 0.99613366, 0.99289341, 0.98990763, 0.98698053, 0.98483764, 0.98242521, 0.97981632 }
+			},
+			{
+				{ 0.85562275, 0.78667038, 0.74768053, 0.72057956, 0.70778080, 0.70100537, 0.69830768 },
+				{ 0.97721101, 0.96124251, 0.94760735, 0.93423822, 0.92265100, 0.91217091, 0.90312617 },
+				{ 0.98697421, 0.97683271, 0.96858813, 0.96081921, 0.95377177, 0.94685668, 0.94021172 },
+				{ 0.99078817, 0.98340055, 0.97649240, 0.97126883, 0.96601788, 0.96067400, 0.95453823 },
+				{ 0.99262157, 0.98687209, 0.98138020, 0.97649449, 0.97195886, 0.96781117, 0.96401689 },
+				{ 0.99357403, 0.98878045, 0.98391810, 0.97981739, 0.97574501, 0.97226537, 0.96885521 },
+				{ 0.99426688, 0.98999576, 0.98588199, 0.98213454, 0.97835754, 0.97496099, 0.97196353 },
+				{ 0.99486617, 0.99088608, 0.98708332, 0.98383337, 0.98075708, 0.97731351, 0.97452255 },
+				{ 0.99536365, 0.99144795, 0.98824554, 0.98495053, 0.98180143, 0.97907744, 0.97610671 },
+				{ 0.99545183, 0.99202406, 0.98898655, 0.98550330, 0.98304565, 0.97993947, 0.97744315 },
+				{ 0.99558348, 0.99211221, 0.98907139, 0.98611235, 0.98329993, 0.98075130, 0.97865929 },
+				{ 0.99562889, 0.99246861, 0.98918812, 0.98640508, 0.98392461, 0.98122410, 0.97857825 },
+				{ 0.99589146, 0.99223969, 0.98954857, 0.98658117, 0.98406081, 0.98118946, 0.97891142 }
+			},
+			{
+				{ 0.84099086, 0.77055706, 0.72945914, 0.70284547, 0.68733156, 0.67994688, 0.67755600 },
+				{ 0.97638049, 0.95911619, 0.94442287, 0.93123815, 0.92033174, 0.90915443, 0.89981993 },
+				{ 0.98598788, 0.97591942, 0.96720359, 0.95877777, 0.95056281, 0.94370784, 0.93830569 },
+				{ 0.99036370, 0.98249592, 0.97578754, 0.96952650, 0.96407779, 0.95824728, 0.95376313 },
+				{ 0.99192760, 0.98630758, 0.98006559, 0.97491280, 0.97039578, 0.96654678, 0.96200884 },
+				{ 0.99331052, 0.98787670, 0.98332800, 0.97846946, 0.97445098, 0.97128645, 0.96728154 },
+				{ 0.99398898, 0.98940373, 0.98555848, 0.98112904, 0.97772950, 0.97362315, 0.97038115 },
+				{ 0.99452699, 0.99032635, 0.98641325, 0.98262476, 0.97973860, 0.97626583, 0.97341261 },
+				{ 0.99509053, 0.99112129, 0.98753580, 0.98391770, 0.98088657, 0.97783122, 0.97495390 },
+				{ 0.99528959, 0.99146975, 0.98810879, 0.98464663, 0.98179412, 0.97923722, 0.97649593 },
+				{ 0.99543389, 0.99198665, 0.98852379, 0.98556513, 0.98256145, 0.97980668, 0.97693436 },
+				{ 0.99549372, 0.99205520, 0.98886935, 0.98579189, 0.98291138, 0.98026002, 0.97765547 },
+				{ 0.99557813, 0.99224976, 0.98888002, 0.98586057, 0.98287982, 0.98026422, 0.97833615 }
+			},
+			{
+				{ 0.82752444, 0.75356709, 0.70967147, 0.68545845, 0.66905254, 0.66011041, 0.65638079 },
+				{ 0.97490673, 0.95683113, 0.94151974, 0.92866007, 0.91742443, 0.90429870, 0.89587752 },
+				{ 0.98547848, 0.97496039, 0.96528214, 0.95699806, 0.94858256, 0.94141181, 0.93455746 },
+				{ 0.98954815, 0.98121006, 0.97444786, 0.96817642, 0.96165771, 0.95659011, 0.95113489 },
+				{ 0.99157963, 0.98523522, 0.97931292, 0.97423253, 0.96917168, 0.96453863, 0.95963356 },
+				{ 0.99306216, 0.98756119, 0.98239086, 0.97767772, 0.97343861, 0.96959469, 0.96517661 },
+				{ 0.99372725, 0.98908596, 0.98453921, 0.98021311, 0.97685443, 0.97273396, 0.96884159 },
+				{ 0.99436687, 0.98970231, 0.98544413, 0.98225816, 0.97822051, 0.97483189, 0.97163569 },
+				{ 0.99477856, 0.99031023, 0.98689386, 0.98326023, 0.98023063, 0.97690914, 0.97352568 },
+				{ 0.99510189, 0.99096476, 0.98744611, 0.98397076, 0.98092651, 0.97787149, 0.97520927 },
+				{ 0.99514483, 0.99128666, 0.98787991, 0.98495552, 0.98147206, 0.97831691, 0.97609688 },
+				{ 0.99532456, 0.99164091, 0.98825795, 0.98508474, 0.98198836, 0.97933467, 0.97644679 },
+				{ 0.99527469, 0.99188426, 0.98843996, 0.98525209, 0.98246118, 0.97918960, 0.97695609 }
+			},
+			{
+				{ 0.81381868, 0.73877555, 0.69370393, 0.66671838, 0.64979471, 0.64102358, 0.63465522 },
+				{ 0.97407924, 0.95476186, 0.93927998, 0.92510602, 0.91235297, 0.90049645, 0.89048667 },
+				{ 0.98520135, 0.97287625, 0.96420800, 0.95444874, 0.94633603, 0.93866711, 0.93156405 },
+				{ 0.98880069, 0.98011397, 0.97237749, 0.96636265, 0.95958612, 0.95400565, 0.94911733 },
+				{ 0.99120650, 0.98448239, 0.97835969, 0.97257508, 0.96718282, 0.96241539, 0.95793721 },
+				{ 0.99250294, 0.98698818, 0.98146601, 0.97635116, 0.97204224, 0.96751695, 0.96385267 },
+				{ 0.99345107, 0.98835770, 0.98356699, 0.97912894, 0.97501654, 0.97116937, 0.96751691 },
+				{ 0.99390434, 0.98930366, 0.98505212, 0.98105328, 0.97725634, 0.97415667, 0.97068490 },
+				{ 0.99439985, 0.99002540, 0.98615058, 0.98227338, 0.97932724, 0.97586406, 0.97241985 },
+				{ 0.99486871, 0.99041863, 0.98671983, 0.98362547, 0.98028796, 0.97660753, 0.97353689 },
+				{ 0.99502442, 0.99106321, 0.98744794, 0.98368886, 0.98093541, 0.97770713, 0.97474474 },
+				{ 0.99505819, 0.99095521, 0.98725902, 0.98432807, 0.98049868, 0.97833865, 0.97539762 },
+				{ 0.99515783, 0.99092723, 0.98765267, 0.98421826, 0.98148196, 0.97887740, 0.97557779 }
+			},
+			{
+				{ 0.80238041, 0.72255136, 0.67688776, 0.64886052, 0.63033543, 0.62083833, 0.61679832 },
+				{ 0.97253169, 0.95224948, 0.93584993, 0.92184836, 0.90841107, 0.89507455, 0.88541851 },
+				{ 0.98433816, 0.97177864, 0.96192514, 0.95208669, 0.94363473, 0.93641458, 0.92722910 },
+				{ 0.98839700, 0.97959192, 0.97195990, 0.96456290, 0.95836853, 0.95158501, 0.94571547 },
+				{ 0.99076201, 0.98356769, 0.97728701, 0.97136050, 0.96589715, 0.96064370, 0.95566049 },
+				{ 0.99213462, 0.98582418, 0.98064779, 0.97524258, 0.97089963, 0.96586153, 0.96214169 },
+				{ 0.99300843, 0.98767695, 0.98239905, 0.97811124, 0.97397882, 0.96976753, 0.96525840 },
+				{ 0.99383346, 0.98869224, 0.98401760, 0.97993279, 0.97631261, 0.97321366, 0.96933376 },
+				{ 0.99420688, 0.98932825, 0.98537939, 0.98169780, 0.97814438, 0.97460172, 0.97107133 },
+				{ 0.99449215, 0.98994874, 0.98614625, 0.98199019, 0.97882316, 0.97538557, 0.97276790 },
+				{ 0.99473293, 0.99021459, 0.98646977, 0.98291788, 0.98011731, 0.97630411, 0.97325225 },
+				{ 0.99494001, 0.99074515, 0.98695148, 0.98371763, 0.98029656, 0.97724574, 0.97365487 },
+				{ 0.99476066, 0.99086490, 0.98694607, 0.98369869, 0.98030930, 0.97732985, 0.97454079 }
+			},
+			{
+				{ 0.78658710, 0.70730645, 0.65941009, 0.62988680, 0.61173517, 0.60093710, 0.59400370 },
+				{ 0.97139664, 0.94983252, 0.93299519, 0.91816324, 0.90482359, 0.89131199, 0.87969385 },
+				{ 0.98338976, 0.97088806, 0.96012537, 0.95054962, 0.94142445, 0.93307261, 0.92481462 },
+				{ 0.98799277, 0.97847529, 0.97041734, 0.96331131, 0.95717270, 0.95013212, 0.94352669 },
+				{ 0.99022528, 0.98294587, 0.97633992, 0.97037980, 0.96450085, 0.95851425, 0.95398465 },
+				{ 0.99173889, 0.98535564, 0.97942136, 0.97407732, 0.96949597, 0.96469235, 0.96041514 },
+				{ 0.99244156, 0.98716575, 0.98196509, 0.97714382, 0.97272613, 0.96878396, 0.96435832 },
+				{ 0.99336193, 0.98870109, 0.98384023, 0.97950448, 0.97531086, 0.97110379, 0.96736309 },
+				{ 0.99393142, 0.98880783, 0.98476289, 0.98053131, 0.97721264, 0.97334384, 0.97011163 },
+				{ 0.99425692, 0.98945776, 0.98554152, 0.98175100, 0.97769553, 0.97450952, 0.97116565 },
+				{ 0.99446717, 0.99008744, 0.98586763, 0.98231681, 0.97875572, 0.97569140, 0.97238953 },
+				{ 0.99453048, 0.99040860, 0.98645122, 0.98240855, 0.97913321, 0.97628147, 0.97274053 },
+				{ 0.99451647, 0.99025637, 0.98636551, 0.98263371, 0.97930297, 0.97635625, 0.97307951 }
+			},
+			{
+				{ 0.77594281, 0.69129383, 0.64040200, 0.61091269, 0.59473699, 0.58268735, 0.57536640 },
+				{ 0.96911666, 0.94836438, 0.93017745, 0.91530846, 0.89993687, 0.88619966, 0.87545835 },
+				{ 0.98242934, 0.96941869, 0.95844706, 0.94791017, 0.93844677, 0.93020011, 0.92180212 },
+				{ 0.98749075, 0.97777245, 0.96840319, 0.96183349, 0.95429201, 0.94716511, 0.94131166 },
+				{ 0.99002035, 0.98223243, 0.97516004, 0.96845955, 0.96241101, 0.95671018, 0.95194299 },
+				{ 0.99147030, 0.98456201, 0.97882053, 0.97312790, 0.96790569, 0.96346068, 0.95863573 },
+				{ 0.99240862, 0.98667357, 0.98131938, 0.97594524, 0.97148281, 0.96705704, 0.96285213 },
+				{ 0.99333392, 0.98750213, 0.98275442, 0.97829595, 0.97438867, 0.97011492, 0.96570430 },
+				{ 0.99347704, 0.98868899, 0.98374040, 0.97942726, 0.97592126, 0.97174520, 0.96793605 },
+				{ 0.99387954, 0.98942319, 0.98473131, 0.98043006, 0.97669100, 0.97318823, 0.97000201 },
+				{ 0.99411026, 0.98951852, 0.98544848, 0.98116114, 0.97762868, 0.97387971, 0.97136990 },
+				{ 0.99413201, 0.98944832, 0.98563695, 0.98196059, 0.97843260, 0.97472524, 0.97156754 },
+				{ 0.99422890, 0.98972570, 0.98570071, 0.98199190, 0.97863328, 0.97471794, 0.97167206 }
+			},
+			{
+				{ 0.76117381, 0.67337356, 0.62466005, 0.59276401, 0.57406020, 0.56463133, 0.55995419 },
+				{ 0.96838822, 0.94557839, 0.92668338, 0.91051579, 0.89629922, 0.88247079, 0.87019097 },
+				{ 0.98175076, 0.96855794, 0.95730222, 0.94560686, 0.93560139, 0.92711678, 0.91775691 },
+				{ 0.98659015, 0.97663201, 0.96763911, 0.95936354, 0.95231414, 0.94539807, 0.93858767 },
+				{ 0.98943525, 0.98097837, 0.97421466, 0.96708924, 0.96113567, 0.95515477, 0.94997656 },
+				{ 0.99086123, 0.98391662, 0.97712234, 0.97191642, 0.96642774, 0.96140813, 0.95618221 },
+				{ 0.99199423, 0.98596784, 0.98019976, 0.97562176, 0.97012546, 0.96593670, 0.96099032 },
+				{ 0.99275546, 0.98721378, 0.98201017, 0.97681954, 0.97284636, 0.96884221, 0.96483525 },
+				{ 0.99319982, 0.98774312, 0.98319914, 0.97894988, 0.97438145, 0.97022300, 0.96675740 },
+				{ 0.99381638, 0.98873418, 0.98414988, 0.97952967, 0.97612116, 0.97199755, 0.96858179 },
+				{ 0.99390868, 0.98906918, 0.98475067, 0.98080398, 0.97689476, 0.97307610, 0.96981490 },
+				{ 0.99392082, 0.98920674, 0.98555736, 0.98059168, 0.97720408, 0.97371678, 0.97003515 },
+				{ 0.99399576, 0.98930538, 0.98491033, 0.98092373, 0.97722077, 0.97391367, 0.96993593 }
+			},
+			{
+				{ 0.74859831, 0.65637591, 0.60794940, 0.57750038, 0.55844169, 0.54728579, 0.53951251 },
+				{ 0.96735109, 0.94384751, 0.92393271, 0.90635989, 0.89102292, 0.87709346, 0.86447105 },
+				{ 0.98082005, 0.96650278, 0.95431670, 0.94270363, 0.93294122, 0.92380745, 0.91478880 },
+				{ 0.98615469, 0.97552937, 0.96635085, 0.95830088, 0.94964834, 0.94322211, 0.93608505 },
+				{ 0.98885481, 0.98052003, 0.97285271, 0.96593246, 0.95924040, 0.95275694, 0.94804458 },
+				{ 0.99032053, 0.98334727, 0.97655192, 0.97075164, 0.96501142, 0.95968508, 0.95442839 },
+				{ 0.99150293, 0.98524574, 0.97920756, 0.97400199, 0.96923729, 0.96454227, 0.95959239 },
+				{ 0.99242168, 0.98624569, 0.98096092, 0.97614355, 0.97207500, 0.96766701, 0.96254151 },
+				{ 0.99290170, 0.98738053, 0.98272620, 0.97813106, 0.97348588, 0.96917322, 0.96594930 },
+				{ 0.99336084, 0.98799011, 0.98368351, 0.97984169, 0.97500520, 0.97110149, 0.96741929 },
+				{ 0.99353993, 0.98848515, 0.98394845, 0.97983941, 0.97592869, 0.97178936, 0.96869099 },
+				{ 0.99377241, 0.98867796, 0.98427889, 0.98041275, 0.97664086, 0.97244762, 0.96843964 },
+				{ 0.99387749, 0.98906822, 0.98449268, 0.98027928, 0.97647908, 0.97234555, 0.96879958 }
+			},
+			{
+				{ 0.73506517, 0.64355509, 0.59218834, 0.55996450, 0.54199982, 0.52864282, 0.52264772 },
+				{ 0.96555723, 0.94081699, 0.92011772, 0.90307872, 0.88614974, 0.87217472, 0.85689095 },
+				{ 0.98022002, 0.96523486, 0.95271852, 0.94140443, 0.93028496, 0.91993058, 0.91120903 },
+				{ 0.98565250, 0.97415320, 0.96519741, 0.95569798, 0.94803417, 0.94049484, 0.93235433 },
+				{ 0.98857622, 0.97957351, 0.97158935, 0.96436100, 0.95707281, 0.95075865, 0.94581788 },
+				{ 0.99019675, 0.98245570, 0.97555634, 0.96979413, 0.96377231, 0.95830614, 0.95230209 },
+				{ 0.99119186, 0.98446258, 0.97832254, 0.97285835, 0.96726734, 0.96285188, 0.95813528 },
+				{ 0.99197531, 0.98571445, 0.98053070, 0.97505845, 0.97087991, 0.96579367, 0.96198983 },
+				{ 0.99266946, 0.98706630, 0.98183259, 0.97720257, 0.97220341, 0.96829497, 0.96414481 },
+				{ 0.99313485, 0.98749491, 0.98258894, 0.97790939, 0.97362464, 0.97015395, 0.96590868 },
+				{ 0.99323666, 0.98812610, 0.98337665, 0.97928766, 0.97474308, 0.97123752, 0.96740800 },
+				{ 0.99343246, 0.98813445, 0.98383979, 0.97914374, 0.97515194, 0.97134159, 0.96792173 },
+				{ 0.99351173, 0.98847637, 0.98371264, 0.97945145, 0.97546093, 0.97162717, 0.96788625 }
+			}
+		},
+		{
+			{
+				{ 0.99220869, 0.98450312, 0.97746857, 0.97011224, 0.96344496, 0.95684521, 0.95096320 },
+				{ 0.99206882, 0.98441088, 0.97688216, 0.97008702, 0.96282887, 0.95645232, 0.95085343 },
+				{ 0.99191058, 0.98398787, 0.97661465, 0.96937209, 0.96228312, 0.95601018, 0.94912721 },
+				{ 0.99164298, 0.98328797, 0.97553492, 0.96779914, 0.96098614, 0.95393421, 0.94793448 },
+				{ 0.99109456, 0.98229044, 0.97383296, 0.96634841, 0.95834540, 0.95139942, 0.94529662 },
+				{ 0.99026627, 0.98078079, 0.97201936, 0.96280417, 0.95536988, 0.94784871, 0.94047451 },
+				{ 0.98903099, 0.97859075, 0.96903834, 0.96000972, 0.95176374, 0.94262545, 0.93576773 },
+				{ 0.98773257, 0.97576577, 0.96488216, 0.95431133, 0.94488460, 0.93568352, 0.92815736 },
+				{ 0.98535258, 0.97119970, 0.95880541, 0.94731145, 0.93660184, 0.92682104, 0.91924944 },
+				{ 0.98168560, 0.96494715, 0.94947739, 0.93697413, 0.92472402, 0.91553950, 0.90797368 },
+				{ 0.97604977, 0.95457309, 0.93719639, 0.92193745, 0.91026133, 0.90152130, 0.89564586 },
+				{ 0.96697884, 0.93970889, 0.91899511, 0.90480414, 0.89529576, 0.89035643, 0.89070679 },
+				{ 0.96080158, 0.93055773, 0.90885983, 0.89624569, 0.89133151, 0.89113116, 0.89300477 }
+			},
+			{
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+				{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 }
+			},
+			{
+				{ 0.99107434, 0.98258488, 0.97450215, 0.96761240, 0.96020090, 0.95355151, 0.94697504 },
+				{ 0.99126421, 0.98297282, 0.97524950, 0.96810262, 0.96117391, 0.95439966, 0.94800041 },
+				{ 0.99166812, 0.98413914, 0.97693720, 0.96989122, 0.96297405, 0.95611680, 0.95025039 },
+				{ 0.99222200, 0.98535375, 0.97856076, 0.97207212, 0.96536582, 0.95940981, 0.95302374 },
+				{ 0.99303294, 0.98647637, 0.98047727, 0.97413952, 0.96812703, 0.96216198, 0.95725561 },
+				{ 0.99349020, 0.98754819, 0.98188744, 0.97603205, 0.97035212, 0.96508749, 0.96005494 },
+				{ 0.99415318, 0.98833519, 0.98307397, 0.97798176, 0.97217340, 0.96799841, 0.96229979 },
+				{ 0.99433150, 0.98904495, 0.98404826, 0.97917991, 0.97413959, 0.96933088, 0.96508374 },
+				{ 0.99480146, 0.98985927, 0.98497049, 0.98038290, 0.97536275, 0.97095491, 0.96734162 },
+				{ 0.99502360, 0.99046089, 0.98541193, 0.98091573, 0.97675822, 0.97167207, 0.96851795 },
+				{ 0.99515251, 0.99044104, 0.98589935, 0.98166361, 0.97729245, 0.97286210, 0.96873826 },
+				{ 0.99518335, 0.99050345, 0.98614459, 0.98179347, 0.97765972, 0.97348160, 0.96950655 },
+				{ 0.99521839, 0.99071220, 0.98634392, 0.98196469, 0.97756175, 0.97392153, 0.96943668 }
+			},
+			{
+				{ 0.98966694, 0.98074087, 0.97235675, 0.96414909, 0.95667110, 0.94973516, 0.94234747 },
+				{ 0.99044722, 0.98154548, 0.97383897, 0.96612511, 0.95899342, 0.95196544, 0.94521882 },
+				{ 0.99169488, 0.98397534, 0.97691705, 0.96985880, 0.96317935, 0.95677314, 0.95130285 },
+				{ 0.99296730, 0.98647419, 0.98006495, 0.97406180, 0.96823908, 0.96322674, 0.95737690 },
+				{ 0.99392659, 0.98818150, 0.98282677, 0.97740434, 0.97224485, 0.96748348, 0.96277884 },
+				{ 0.99455068, 0.98971406, 0.98500894, 0.98034701, 0.97587250, 0.97133720, 0.96731876 },
+				{ 0.99520816, 0.99077721, 0.98637629, 0.98237104, 0.97786362, 0.97419046, 0.97056220 },
+				{ 0.99565964, 0.99177118, 0.98738545, 0.98386349, 0.98015817, 0.97674505, 0.97279558 },
+				{ 0.99588547, 0.99207111, 0.98833576, 0.98522956, 0.98133846, 0.97773152, 0.97437095 },
+				{ 0.99612817, 0.99264506, 0.98900000, 0.98549607, 0.98260976, 0.97880862, 0.97576289 },
+				{ 0.99628245, 0.99284643, 0.98946995, 0.98620243, 0.98294627, 0.97985380, 0.97716279 },
+				{ 0.99633935, 0.99311269, 0.98969347, 0.98650975, 0.98339362, 0.98004853, 0.97734313 },
+				{ 0.99633286, 0.99306169, 0.98969743, 0.98655924, 0.98329289, 0.98044359, 0.97756646 }
+			},
+			{
+				{ 0.98807928, 0.97777768, 0.96850847, 0.95959705, 0.95200150, 0.94489897, 0.93689727 },
+				{ 0.98938644, 0.98030716, 0.97165804, 0.96359377, 0.95575085, 0.94866581, 0.94194968 },
+				{ 0.99124355, 0.98402929, 0.97672029, 0.97014678, 0.96356244, 0.95777169, 0.95136119 },
+				{ 0.99313515, 0.98708400, 0.98134616, 0.97576671, 0.97043097, 0.96527337, 0.96047645 },
+				{ 0.99443174, 0.98916727, 0.98470049, 0.97977416, 0.97530026, 0.97064401, 0.96644947 },
+				{ 0.99522320, 0.99088754, 0.98685213, 0.98247457, 0.97867700, 0.97497842, 0.97124910 },
+				{ 0.99569463, 0.99193085, 0.98850776, 0.98473776, 0.98096512, 0.97761083, 0.97435743 },
+				{ 0.99614045, 0.99272524, 0.98938740, 0.98583514, 0.98289211, 0.97974811, 0.97709908 },
+				{ 0.99649116, 0.99334252, 0.99013623, 0.98688048, 0.98411939, 0.98107943, 0.97871181 },
+				{ 0.99662046, 0.99372885, 0.99057428, 0.98785664, 0.98517438, 0.98231811, 0.97941108 },
+				{ 0.99670066, 0.99392574, 0.99110792, 0.98830191, 0.98566010, 0.98283894, 0.98043142 },
+				{ 0.99684220, 0.99398727, 0.99134375, 0.98848771, 0.98581777, 0.98325340, 0.98074981 },
+				{ 0.99680653, 0.99420791, 0.99117174, 0.98852484, 0.98594574, 0.98329249, 0.98083449 }
+			},
+			{
+				{ 0.98612110, 0.97466951, 0.96403532, 0.95455298, 0.94620778, 0.93766778, 0.92965239 },
+				{ 0.98813080, 0.97796924, 0.96869396, 0.96073419, 0.95271972, 0.94467280, 0.93785960 },
+				{ 0.99112968, 0.98349671, 0.97655241, 0.96989999, 0.96357964, 0.95813501, 0.95199478 },
+				{ 0.99328881, 0.98728401, 0.98188159, 0.97687267, 0.97184225, 0.96675789, 0.96219474 },
+				{ 0.99470334, 0.98981686, 0.98553436, 0.98107124, 0.97704109, 0.97288799, 0.96911115 },
+				{ 0.99556795, 0.99129648, 0.98769748, 0.98385626, 0.98039374, 0.97709157, 0.97415820 },
+				{ 0.99606250, 0.99233346, 0.98903466, 0.98559495, 0.98260916, 0.97988069, 0.97707907 },
+				{ 0.99637828, 0.99320247, 0.99018096, 0.98719574, 0.98442098, 0.98170138, 0.97917722 },
+				{ 0.99665725, 0.99390911, 0.99086013, 0.98814251, 0.98587859, 0.98282922, 0.98071669 },
+				{ 0.99689716, 0.99411957, 0.99150734, 0.98866287, 0.98639783, 0.98389961, 0.98153786 },
+				{ 0.99699035, 0.99423585, 0.99178356, 0.98933837, 0.98672530, 0.98471014, 0.98250372 },
+				{ 0.99711743, 0.99448508, 0.99191693, 0.98967893, 0.98698524, 0.98492752, 0.98254100 },
+				{ 0.99709324, 0.99442677, 0.99187558, 0.98963504, 0.98738749, 0.98490681, 0.98266803 }
+			},
+			{
+				{ 0.98371775, 0.97009148, 0.95925923, 0.94862213, 0.93799420, 0.92877133, 0.92181589 },
+				{ 0.98722320, 0.97616059, 0.96680861, 0.95806522, 0.94930181, 0.94230529, 0.93402535 },
+				{ 0.99093240, 0.98346833, 0.97617299, 0.96973675, 0.96350627, 0.95776333, 0.95184979 },
+				{ 0.99312964, 0.98783554, 0.98204820, 0.97753516, 0.97248823, 0.96783312, 0.96328587 },
+				{ 0.99468114, 0.99014665, 0.98554304, 0.98145621, 0.97808895, 0.97413581, 0.97018148 },
+				{ 0.99547326, 0.99154334, 0.98788421, 0.98414776, 0.98136638, 0.97801533, 0.97511479 },
+				{ 0.99614347, 0.99271933, 0.98933254, 0.98654334, 0.98357116, 0.98008750, 0.97773268 },
+				{ 0.99646933, 0.99337070, 0.99035536, 0.98776018, 0.98522846, 0.98252954, 0.97996470 },
+				{ 0.99660054, 0.99373835, 0.99117963, 0.98857944, 0.98629657, 0.98403354, 0.98146614 },
+				{ 0.99693465, 0.99425554, 0.99176304, 0.98926044, 0.98666825, 0.98461474, 0.98236702 },
+				{ 0.99693885, 0.99427027, 0.99197864, 0.98966886, 0.98732084, 0.98526888, 0.98277116 },
+				{ 0.99708896, 0.99450648, 0.99214990, 0.98984913, 0.98747694, 0.98561300, 0.98327447 },
+				{ 0.99714436, 0.99445293, 0.99225467, 0.98998615, 0.98783719, 0.98579918, 0.98368418 }
+			},
+			{
+				{ 0.98101279, 0.96643843, 0.95372299, 0.94178265, 0.93079995, 0.92120305, 0.91190793 },
+				{ 0.98586075, 0.97432638, 0.96375059, 0.95433121, 0.94648430, 0.93770997, 0.93006342 },
+				{ 0.99064015, 0.98265609, 0.97601667, 0.96931249, 0.96276581, 0.95736271, 0.95163575 },
+				{ 0.99321623, 0.98736558, 0.98221212, 0.97707456, 0.97279783, 0.96817400, 0.96371019 },
+				{ 0.99453363, 0.98999995, 0.98538970, 0.98206013, 0.97820114, 0.97434255, 0.97071283 },
+				{ 0.99552940, 0.99157907, 0.98774190, 0.98450572, 0.98169596, 0.97823605, 0.97554136 },
+				{ 0.99608777, 0.99258779, 0.98943218, 0.98632638, 0.98373761, 0.98084386, 0.97813245 },
+				{ 0.99644883, 0.99338974, 0.99063226, 0.98771359, 0.98516319, 0.98255537, 0.98012727 },
+				{ 0.99677671, 0.99394655, 0.99137122, 0.98890012, 0.98612941, 0.98389747, 0.98155770 },
+				{ 0.99697752, 0.99434557, 0.99168776, 0.98943197, 0.98704336, 0.98512584, 0.98242536 },
+				{ 0.99695149, 0.99427904, 0.99215979, 0.98988132, 0.98777491, 0.98579050, 0.98325065 },
+				{ 0.99703880, 0.99450197, 0.99231836, 0.98992748, 0.98800626, 0.98597049, 0.98373430 },
+				{ 0.99710084, 0.99437580, 0.99226999, 0.98999364, 0.98785362, 0.98573099, 0.98345015 }
+			},
+			{
+				{ 0.97745408, 0.96120532, 0.94707310, 0.93443216, 0.92214547, 0.91255013, 0.90205612 },
+				{ 0.98474076, 0.97206144, 0.96158659, 0.95119431, 0.94228733, 0.93428817, 0.92607515 },
+				{ 0.98988597, 0.98256037, 0.97508795, 0.96799479, 0.96166247, 0.95654065, 0.95082154 },
+				{ 0.99286363, 0.98740049, 0.98221483, 0.97718102, 0.97220931, 0.96841684, 0.96354868 },
+				{ 0.99437806, 0.98997174, 0.98566689, 0.98152459, 0.97753025, 0.97450844, 0.97056249 },
+				{ 0.99546854, 0.99129356, 0.98772411, 0.98465524, 0.98122104, 0.97816160, 0.97528351 },
+				{ 0.99586300, 0.99246847, 0.98941115, 0.98617352, 0.98373560, 0.98068000, 0.97782985 },
+				{ 0.99634028, 0.99321654, 0.99037599, 0.98742808, 0.98504029, 0.98256952, 0.97992715 },
+				{ 0.99643222, 0.99375389, 0.99102952, 0.98859033, 0.98603424, 0.98362298, 0.98190097 },
+				{ 0.99674398, 0.99408279, 0.99165126, 0.98924563, 0.98662560, 0.98439373, 0.98261030 },
+				{ 0.99677734, 0.99418028, 0.99193996, 0.98968893, 0.98711383, 0.98527743, 0.98321976 },
+				{ 0.99699239, 0.99433008, 0.99195882, 0.98986300, 0.98729500, 0.98562430, 0.98360464 },
+				{ 0.99689131, 0.99440857, 0.99209383, 0.98989030, 0.98761252, 0.98563808, 0.98365247 }
+			},
+			{
+				{ 0.97437470, 0.95542732, 0.93961804, 0.92607061, 0.91360593, 0.90137893, 0.89149736 },
+				{ 0.98287380, 0.97008941, 0.95865237, 0.94857653, 0.93958035, 0.93044872, 0.92223808 },
+				{ 0.98981453, 0.98170280, 0.97430694, 0.96753227, 0.96093454, 0.95565288, 0.95030804 },
+				{ 0.99245578, 0.98639762, 0.98160400, 0.97623961, 0.97177635, 0.96707249, 0.96271537 },
+				{ 0.99424703, 0.98945383, 0.98536961, 0.98133906, 0.97707321, 0.97363488, 0.96980114 },
+				{ 0.99516239, 0.99103847, 0.98756857, 0.98406698, 0.98071098, 0.97790416, 0.97448325 },
+				{ 0.99567945, 0.99236220, 0.98886746, 0.98608802, 0.98274412, 0.98003598, 0.97739444 },
+				{ 0.99612945, 0.99294880, 0.98995928, 0.98725615, 0.98436969, 0.98190715, 0.97975255 },
+				{ 0.99655660, 0.99340113, 0.99062987, 0.98799415, 0.98543184, 0.98317521, 0.98084009 },
+				{ 0.99672818, 0.99378737, 0.99104480, 0.98877314, 0.98625943, 0.98398025, 0.98176892 },
+				{ 0.99666706, 0.99403240, 0.99144415, 0.98888669, 0.98700794, 0.98495826, 0.98239676 },
+				{ 0.99677288, 0.99421815, 0.99170528, 0.98952423, 0.98692533, 0.98521980, 0.98323765 },
+				{ 0.99680600, 0.99411281, 0.99169300, 0.98950147, 0.98742591, 0.98527364, 0.98317309 }
+			},
+			{
+				{ 0.97045747, 0.95026803, 0.93130489, 0.91717932, 0.90295441, 0.89117158, 0.88029484 },
+				{ 0.98154845, 0.96773630, 0.95588082, 0.94487797, 0.93516969, 0.92574488, 0.91798401 },
+				{ 0.98894772, 0.98106009, 0.97372445, 0.96679714, 0.96020474, 0.95430958, 0.94807400 },
+				{ 0.99255658, 0.98609962, 0.98119045, 0.97514000, 0.97101587, 0.96643878, 0.96221643 },
+				{ 0.99401871, 0.98902848, 0.98455329, 0.98057685, 0.97638530, 0.97253167, 0.96886590 },
+				{ 0.99486751, 0.99066387, 0.98699791, 0.98345551, 0.98029359, 0.97680854, 0.97366191 },
+				{ 0.99558650, 0.99191082, 0.98866261, 0.98550697, 0.98246216, 0.97979387, 0.97690948 },
+				{ 0.99586225, 0.99248360, 0.98954173, 0.98654476, 0.98396574, 0.98141175, 0.97888114 },
+				{ 0.99628072, 0.99307237, 0.98998479, 0.98765218, 0.98515721, 0.98253272, 0.98042747 },
+				{ 0.99635601, 0.99345223, 0.99069215, 0.98806985, 0.98581080, 0.98341071, 0.98139410 },
+				{ 0.99659774, 0.99371603, 0.99125230, 0.98883626, 0.98626767, 0.98400913, 0.98189130 },
+				{ 0.99675493, 0.99385920, 0.99151546, 0.98903272, 0.98648921, 0.98467139, 0.98237823 },
+				{ 0.99655018, 0.99385451, 0.99135455, 0.98907931, 0.98682349, 0.98469533, 0.98265898 }
+			},
+			{
+				{ 0.96626844, 0.94307897, 0.92370603, 0.90639280, 0.89158790, 0.87962431, 0.86726979 },
+				{ 0.98026636, 0.96528259, 0.95376043, 0.94128123, 0.93195577, 0.92233821, 0.91344439 },
+				{ 0.98872146, 0.97975290, 0.97210993, 0.96471281, 0.95856225, 0.95236012, 0.94564243 },
+				{ 0.99206910, 0.98526465, 0.97979747, 0.97450046, 0.96976407, 0.96518677, 0.96059541 },
+				{ 0.99353675, 0.98871225, 0.98378654, 0.97971133, 0.97584107, 0.97178446, 0.96782541 },
+				{ 0.99468481, 0.99028411, 0.98648911, 0.98237919, 0.97920838, 0.97588333, 0.97280500 },
+				{ 0.99513342, 0.99136661, 0.98764339, 0.98473489, 0.98138644, 0.97851474, 0.97576394 },
+				{ 0.99561380, 0.99206773, 0.98906533, 0.98608906, 0.98303280, 0.98053382, 0.97769544 },
+				{ 0.99608977, 0.99250616, 0.98974408, 0.98693104, 0.98455271, 0.98195692, 0.97917901 },
+				{ 0.99628990, 0.99311267, 0.99039031, 0.98759560, 0.98524114, 0.98302895, 0.98063618 },
+				{ 0.99632141, 0.99344589, 0.99061863, 0.98808624, 0.98577204, 0.98324764, 0.98097835 },
+				{ 0.99633749, 0.99370010, 0.99090689, 0.98874399, 0.98590413, 0.98398054, 0.98150007 },
+				{ 0.99648543, 0.99369112, 0.99104869, 0.98881329, 0.98603676, 0.98395155, 0.98132647 }
+			},
+			{
+				{ 0.96215378, 0.93642391, 0.91507641, 0.89784622, 0.88000666, 0.86703328, 0.85458675 },
+				{ 0.97904097, 0.96365194, 0.95001293, 0.93846893, 0.92723266, 0.91821955, 0.90883516 },
+				{ 0.98805521, 0.97853967, 0.97108634, 0.96319845, 0.95627988, 0.94982481, 0.94407544 },
+				{ 0.99145406, 0.98456274, 0.97900457, 0.97341408, 0.96903658, 0.96329554, 0.95892386 },
+				{ 0.99305640, 0.98793878, 0.98302366, 0.97860236, 0.97467423, 0.97075176, 0.96641541 },
+				{ 0.99431686, 0.98961613, 0.98539510, 0.98180753, 0.97812597, 0.97496632, 0.97117222 },
+				{ 0.99475245, 0.99109135, 0.98731896, 0.98351265, 0.98069814, 0.97749982, 0.97474329 },
+				{ 0.99537618, 0.99177350, 0.98855982, 0.98540603, 0.98270360, 0.97927750, 0.97672099 },
+				{ 0.99577386, 0.99250821, 0.98924456, 0.98668567, 0.98359999, 0.98140828, 0.97846401 },
+				{ 0.99591515, 0.99279940, 0.98982085, 0.98728743, 0.98506781, 0.98159532, 0.97940005 },
+				{ 0.99609238, 0.99303312, 0.99043736, 0.98773853, 0.98491147, 0.98248705, 0.98026765 },
+				{ 0.99619048, 0.99339883, 0.99047491, 0.98751488, 0.98511268, 0.98334412, 0.98101275 },
+				{ 0.99626950, 0.99327553, 0.99058085, 0.98778547, 0.98545390, 0.98326852, 0.98114878 }
+			},
+			{
+				{ 0.95793076, 0.92941461, 0.90707676, 0.88676567, 0.87026708, 0.85518760, 0.84144915 },
+				{ 0.97792643, 0.96156713, 0.94762745, 0.93545985, 0.92363764, 0.91401756, 0.90453889 },
+				{ 0.98738098, 0.97774199, 0.96931047, 0.96174412, 0.95474114, 0.94822627, 0.94153284 },
+				{ 0.99111414, 0.98380703, 0.97786368, 0.97215478, 0.96697592, 0.96168721, 0.95676471 },
+				{ 0.99293764, 0.98754484, 0.98200989, 0.97772446, 0.97372959, 0.96910144, 0.96460998 },
+				{ 0.99407487, 0.98910824, 0.98493400, 0.98018928, 0.97722469, 0.97324841, 0.96997865 },
+				{ 0.99480522, 0.99015385, 0.98683279, 0.98314527, 0.97952502, 0.97683450, 0.97387621 },
+				{ 0.99506536, 0.99151457, 0.98759405, 0.98453474, 0.98128511, 0.97871731, 0.97622149 },
+				{ 0.99558773, 0.99191945, 0.98877235, 0.98554679, 0.98254230, 0.98004420, 0.97732072 },
+				{ 0.99585153, 0.99251717, 0.98921454, 0.98612218, 0.98371251, 0.98096077, 0.97850430 },
+				{ 0.99582419, 0.99274804, 0.98971536, 0.98681959, 0.98443226, 0.98149590, 0.97928485 },
+				{ 0.99603371, 0.99293337, 0.98983657, 0.98731076, 0.98453034, 0.98212261, 0.97958614 },
+				{ 0.99578986, 0.99277372, 0.99005517, 0.98711391, 0.98468791, 0.98240564, 0.98023438 }
+			},
+			{
+				{ 0.95233208, 0.92187233, 0.89780370, 0.87671619, 0.85838040, 0.84110868, 0.82703486 },
+				{ 0.97663910, 0.95886295, 0.94471012, 0.93237009, 0.91996272, 0.90946626, 0.90013356 },
+				{ 0.98689701, 0.97668442, 0.96754032, 0.96067207, 0.95232796, 0.94607806, 0.93948475 },
+				{ 0.99059624, 0.98328890, 0.97706077, 0.97053479, 0.96497268, 0.96000343, 0.95502139 },
+				{ 0.99251596, 0.98653729, 0.98156132, 0.97659949, 0.97177275, 0.96734161, 0.96358133 },
+				{ 0.99341683, 0.98843439, 0.98418153, 0.98014703, 0.97569175, 0.97223982, 0.96898858 },
+				{ 0.99428326, 0.98946031, 0.98616834, 0.98234474, 0.97868939, 0.97500818, 0.97224982 },
+				{ 0.99476745, 0.99083710, 0.98745379, 0.98402436, 0.98091976, 0.97717560, 0.97478255 },
+				{ 0.99538199, 0.99149527, 0.98801088, 0.98486137, 0.98181203, 0.97907932, 0.97615509 },
+				{ 0.99544319, 0.99179483, 0.98890960, 0.98560396, 0.98280199, 0.98030151, 0.97765103 },
+				{ 0.99556806, 0.99247757, 0.98900908, 0.98608679, 0.98338720, 0.98076642, 0.97796956 },
+				{ 0.99587556, 0.99255184, 0.98943807, 0.98632923, 0.98389072, 0.98108698, 0.97885408 },
+				{ 0.99575729, 0.99254095, 0.98930791, 0.98656401, 0.98410785, 0.98095362, 0.97896895 }
+			},
+			{
+				{ 0.94726834, 0.91507380, 0.88781702, 0.86462220, 0.84614030, 0.82824182, 0.81352926 },
+				{ 0.97527862, 0.95749939, 0.94216684, 0.92831201, 0.91607909, 0.90555227, 0.89468238 },
+				{ 0.98572154, 0.97607419, 0.96695412, 0.95805049, 0.95048080, 0.94324241, 0.93613975 },
+				{ 0.99006931, 0.98219922, 0.97563821, 0.96927146, 0.96322612, 0.95775013, 0.95274471 },
+				{ 0.99184041, 0.98560924, 0.98021401, 0.97536823, 0.97048452, 0.96611597, 0.96210897 },
+				{ 0.99327177, 0.98793404, 0.98349366, 0.97859588, 0.97465404, 0.97090273, 0.96728221 },
+				{ 0.99401275, 0.98930813, 0.98515428, 0.98080219, 0.97750224, 0.97444861, 0.97106517 },
+				{ 0.99456993, 0.99015996, 0.98646744, 0.98325304, 0.97972439, 0.97599902, 0.97306203 },
+				{ 0.99497469, 0.99122295, 0.98730991, 0.98396737, 0.98113912, 0.97763703, 0.97510202 },
+				{ 0.99520992, 0.99155405, 0.98822343, 0.98495527, 0.98177973, 0.97905992, 0.97608592 },
+				{ 0.99550872, 0.99176286, 0.98845853, 0.98581523, 0.98251822, 0.97948102, 0.97719908 },
+				{ 0.99555178, 0.99190976, 0.98899125, 0.98586013, 0.98290134, 0.98063556, 0.97711860 },
+				{ 0.99563568, 0.99209478, 0.98882307, 0.98602728, 0.98334355, 0.98018226, 0.97722415 }
+			},
+			{
+				{ 0.94239433, 0.90685886, 0.87732745, 0.85470075, 0.83235647, 0.81565627, 0.80036749 },
+				{ 0.97384148, 0.95493218, 0.93911925, 0.92539430, 0.91265573, 0.90120801, 0.88976135 },
+				{ 0.98543248, 0.97414093, 0.96527209, 0.95673426, 0.94816077, 0.94088533, 0.93372836 },
+				{ 0.98951519, 0.98137512, 0.97450891, 0.96820704, 0.96196180, 0.95596562, 0.95036293 },
+				{ 0.99156531, 0.98527460, 0.97968844, 0.97379359, 0.96921915, 0.96401106, 0.96002097 },
+				{ 0.99286956, 0.98738828, 0.98216311, 0.97816067, 0.97307466, 0.96916108, 0.96522887 },
+				{ 0.99381193, 0.98872382, 0.98418796, 0.98053686, 0.97676276, 0.97298660, 0.96911333 },
+				{ 0.99432104, 0.98982429, 0.98570518, 0.98196006, 0.97852240, 0.97538569, 0.97222792 },
+				{ 0.99467157, 0.99062888, 0.98662491, 0.98337034, 0.98040747, 0.97708164, 0.97387730 },
+				{ 0.99510163, 0.99123403, 0.98756052, 0.98423353, 0.98082703, 0.97767007, 0.97536095 },
+				{ 0.99520193, 0.99141949, 0.98795293, 0.98503699, 0.98168653, 0.97880477, 0.97596221 },
+				{ 0.99558648, 0.99174268, 0.98820636, 0.98510128, 0.98195514, 0.97916324, 0.97672406 },
+				{ 0.99538885, 0.99174131, 0.98816862, 0.98542408, 0.98196565, 0.97935701, 0.97629354 }
+			},
+			{
+				{ 0.93749577, 0.89906131, 0.86781064, 0.84277276, 0.81986560, 0.80173660, 0.78560755 },
+				{ 0.97253590, 0.95368299, 0.93586384, 0.92124677, 0.90750895, 0.89621111, 0.88474786 },
+				{ 0.98470484, 0.97328961, 0.96345217, 0.95434598, 0.94524562, 0.93837437, 0.93038555 },
+				{ 0.98891006, 0.98030778, 0.97275333, 0.96613621, 0.95998949, 0.95339289, 0.94820120 },
+				{ 0.99104501, 0.98405868, 0.97809151, 0.97291872, 0.96763275, 0.96291204, 0.95716539 },
+				{ 0.99263123, 0.98658679, 0.98129492, 0.97690759, 0.97207074, 0.96830655, 0.96326796 },
+				{ 0.99338553, 0.98828997, 0.98339966, 0.97948663, 0.97504146, 0.97156366, 0.96822651 },
+				{ 0.99406051, 0.98946707, 0.98512984, 0.98138261, 0.97789097, 0.97405172, 0.97101912 },
+				{ 0.99436076, 0.99000995, 0.98623376, 0.98248909, 0.97887930, 0.97570172, 0.97249853 },
+				{ 0.99461586, 0.99080525, 0.98702368, 0.98329839, 0.98020173, 0.97684673, 0.97378854 },
+				{ 0.99478061, 0.99082846, 0.98707511, 0.98391893, 0.98076095, 0.97723257, 0.97460835 },
+				{ 0.99524162, 0.99122160, 0.98777951, 0.98406957, 0.98087314, 0.97764777, 0.97519668 },
+				{ 0.99510541, 0.99093423, 0.98790298, 0.98453617, 0.98110870, 0.97849338, 0.97556204 }
+			},
+			{
+				{ 0.93179436, 0.89116228, 0.85781870, 0.83206639, 0.80779865, 0.78812636, 0.77112994 },
+				{ 0.97135224, 0.95062683, 0.93382957, 0.91829585, 0.90419251, 0.89158317, 0.87924645 },
+				{ 0.98405209, 0.97203820, 0.96153138, 0.95171078, 0.94329285, 0.93427264, 0.92718098 },
+				{ 0.98868389, 0.97967612, 0.97173507, 0.96495585, 0.95821823, 0.95178363, 0.94550096 },
+				{ 0.99066414, 0.98346173, 0.97693977, 0.97130217, 0.96621768, 0.96100762, 0.95530053 },
+				{ 0.99219104, 0.98637911, 0.98115347, 0.97527994, 0.97107568, 0.96658091, 0.96216269 },
+				{ 0.99301123, 0.98716846, 0.98227099, 0.97867394, 0.97430167, 0.96955027, 0.96604010 },
+				{ 0.99349576, 0.98848240, 0.98426098, 0.98013364, 0.97632567, 0.97324434, 0.96920238 },
+				{ 0.99425102, 0.98934883, 0.98541630, 0.98168376, 0.97808379, 0.97477943, 0.97172214 },
+				{ 0.99437556, 0.99039721, 0.98607540, 0.98272039, 0.97880344, 0.97557350, 0.97263416 },
+				{ 0.99454673, 0.99029904, 0.98678798, 0.98311033, 0.97995569, 0.97699430, 0.97387175 },
+				{ 0.99473257, 0.99069827, 0.98716576, 0.98353589, 0.98019426, 0.97709389, 0.97407727 },
+				{ 0.99501683, 0.99059022, 0.98720021, 0.98328887, 0.98034488, 0.97710293, 0.97453573 }
+			},
+			{
+				{ 0.92655561, 0.88171668, 0.84673884, 0.81927294, 0.79459592, 0.77541545, 0.75719204 },
+				{ 0.97006500, 0.94926859, 0.93181432, 0.91490372, 0.90023594, 0.88660026, 0.87475991 },
+				{ 0.98310492, 0.97087358, 0.95960447, 0.95070880, 0.94045908, 0.93263137, 0.92405458 },
+				{ 0.98760957, 0.97839446, 0.97063674, 0.96289642, 0.95628765, 0.94932169, 0.94309881 },
+				{ 0.99001481, 0.98361268, 0.97631457, 0.97009564, 0.96445955, 0.95885179, 0.95382198 },
+				{ 0.99131976, 0.98507145, 0.97978367, 0.97421702, 0.96915978, 0.96453863, 0.96004044 },
+				{ 0.99267174, 0.98712241, 0.98203180, 0.97739972, 0.97299591, 0.96868739, 0.96493467 },
+				{ 0.99364435, 0.98841089, 0.98364097, 0.97924076, 0.97477357, 0.97145086, 0.96773866 },
+				{ 0.99385879, 0.98902175, 0.98463751, 0.98063634, 0.97728561, 0.97333428, 0.97012798 },
+				{ 0.99406882, 0.98975516, 0.98562527, 0.98190852, 0.97783281, 0.97420086, 0.97099782 },
+				{ 0.99431220, 0.98999445, 0.98633692, 0.98223985, 0.97916539, 0.97561225, 0.97229470 },
+				{ 0.99442303, 0.99024473, 0.98623032, 0.98274410, 0.97927153, 0.97583653, 0.97276529 },
+				{ 0.99448641, 0.99035330, 0.98644993, 0.98239607, 0.97929508, 0.97572964, 0.97295502 }
+			},
+			{
+				{ 0.91986373, 0.87412922, 0.83692962, 0.80643149, 0.78207060, 0.75955435, 0.74215986 },
+				{ 0.96854351, 0.94642415, 0.92728072, 0.90993975, 0.89570035, 0.88196118, 0.86959348 },
+				{ 0.98254922, 0.96944559, 0.95831950, 0.94758993, 0.93798723, 0.92921812, 0.92134888 },
+				{ 0.98718071, 0.97768057, 0.96961481, 0.96190894, 0.95407684, 0.94747490, 0.94037032 },
+				{ 0.98982282, 0.98198634, 0.97494652, 0.96872639, 0.96227006, 0.95738882, 0.95117697 },
+				{ 0.99147417, 0.98479443, 0.97904440, 0.97343269, 0.96809613, 0.96300162, 0.95869347 },
+				{ 0.99242698, 0.98610143, 0.98117155, 0.97643748, 0.97170406, 0.96727859, 0.96334851 },
+				{ 0.99293097, 0.98757021, 0.98278352, 0.97840024, 0.97381628, 0.96999253, 0.96628343 },
+				{ 0.99361296, 0.98860837, 0.98412791, 0.97987359, 0.97627385, 0.97203239, 0.96872689 },
+				{ 0.99391914, 0.98919053, 0.98479898, 0.98050984, 0.97690049, 0.97384664, 0.96998424 },
+				{ 0.99410831, 0.98931147, 0.98526749, 0.98138893, 0.97788236, 0.97478767, 0.97147945 },
+				{ 0.99445619, 0.98961376, 0.98564653, 0.98202747, 0.97830945, 0.97475105, 0.97211351 },
+				{ 0.99423009, 0.98989832, 0.98557089, 0.98187493, 0.97835577, 0.97496869, 0.97200550 }
+			},
+			{
+				{ 0.91480739, 0.86487332, 0.82754503, 0.79462939, 0.76836611, 0.74720087, 0.72691573 },
+				{ 0.96739187, 0.94426037, 0.92395596, 0.90634620, 0.89228067, 0.87804453, 0.86342135 },
+				{ 0.98123264, 0.96784945, 0.95592186, 0.94568801, 0.93564377, 0.92581919, 0.91801616 },
+				{ 0.98695562, 0.97661401, 0.96795728, 0.95963318, 0.95194239, 0.94428777, 0.93891843 },
+				{ 0.98928938, 0.98099887, 0.97399915, 0.96721033, 0.96174432, 0.95483462, 0.94971563 },
+				{ 0.99084399, 0.98408515, 0.97774619, 0.97201840, 0.96689208, 0.96095237, 0.95654257 },
+				{ 0.99208479, 0.98585656, 0.98034594, 0.97525839, 0.96995236, 0.96551451, 0.96159230 },
+				{ 0.99268114, 0.98710976, 0.98222575, 0.97722733, 0.97285099, 0.96841448, 0.96437904 },
+				{ 0.99333532, 0.98802673, 0.98340999, 0.97885884, 0.97518174, 0.97072250, 0.96678884 },
+				{ 0.99372165, 0.98878814, 0.98420137, 0.97961233, 0.97611641, 0.97196969, 0.96858218 },
+				{ 0.99385325, 0.98925938, 0.98448698, 0.98043593, 0.97683823, 0.97344899, 0.97011778 },
+				{ 0.99390974, 0.98924429, 0.98509658, 0.98097994, 0.97735357, 0.97336047, 0.97014505 },
+				{ 0.99405528, 0.98926528, 0.98467989, 0.98102358, 0.97759059, 0.97416850, 0.97037696 }
+			},
+			{
+				{ 0.90901185, 0.85705696, 0.81575156, 0.78346042, 0.75609836, 0.73250715, 0.71379899 },
+				{ 0.96568509, 0.94265157, 0.92140339, 0.90361860, 0.88816077, 0.87292162, 0.86027357 },
+				{ 0.98086563, 0.96707991, 0.95368799, 0.94291070, 0.93292104, 0.92274698, 0.91345907 },
+				{ 0.98622810, 0.97536021, 0.96665509, 0.95818165, 0.95004475, 0.94326545, 0.93576980 },
+				{ 0.98893656, 0.98013324, 0.97309011, 0.96617537, 0.95991200, 0.95336056, 0.94846968 },
+				{ 0.99051427, 0.98343957, 0.97656604, 0.97100744, 0.96521285, 0.96022090, 0.95501740 },
+				{ 0.99162743, 0.98537559, 0.97948704, 0.97369615, 0.96941995, 0.96423061, 0.95969236 },
+				{ 0.99253787, 0.98678834, 0.98134209, 0.97667108, 0.97206515, 0.96699638, 0.96307920 },
+				{ 0.99292086, 0.98753282, 0.98292446, 0.97801125, 0.97384236, 0.96909630, 0.96523709 },
+				{ 0.99326590, 0.98803390, 0.98327121, 0.97942331, 0.97507037, 0.97100626, 0.96712008 },
+				{ 0.99381730, 0.98861596, 0.98401635, 0.97986931, 0.97598351, 0.97207866, 0.96832086 },
+				{ 0.99382328, 0.98866543, 0.98429467, 0.98023796, 0.97618985, 0.97237204, 0.96941128 },
+				{ 0.99362317, 0.98900396, 0.98449895, 0.98045050, 0.97657740, 0.97228371, 0.96933163 }
+			},
+			{
+				{ 0.90244332, 0.84646175, 0.80506100, 0.77088515, 0.74331363, 0.71936260, 0.69697097 },
+				{ 0.96501622, 0.93963324, 0.91926041, 0.89925988, 0.88384367, 0.86774110, 0.85431895 },
+				{ 0.97990983, 0.96566373, 0.95274904, 0.94155620, 0.93022974, 0.92017149, 0.91127729 },
+				{ 0.98543687, 0.97481921, 0.96509291, 0.95645332, 0.94837443, 0.94037856, 0.93320955 },
+				{ 0.98826946, 0.97943579, 0.97176985, 0.96445594, 0.95822244, 0.95093162, 0.94552005 },
+				{ 0.99031397, 0.98242798, 0.97561886, 0.96913619, 0.96337098, 0.95761438, 0.95259504 },
+				{ 0.99127225, 0.98424718, 0.97832865, 0.97341177, 0.96743149, 0.96253448, 0.95794813 },
+				{ 0.99214842, 0.98597612, 0.98071046, 0.97548750, 0.96986129, 0.96565756, 0.96170324 },
+				{ 0.99276106, 0.98679125, 0.98188084, 0.97693003, 0.97261351, 0.96857211, 0.96404520 },
+				{ 0.99302669, 0.98751695, 0.98283094, 0.97825230, 0.97359116, 0.97027714, 0.96597495 },
+				{ 0.99339293, 0.98818143, 0.98331324, 0.97941126, 0.97471778, 0.97122581, 0.96706949 },
+				{ 0.99354093, 0.98827666, 0.98374329, 0.97987762, 0.97510519, 0.97146225, 0.96827420 },
+				{ 0.99345306, 0.98833774, 0.98392629, 0.97949358, 0.97559603, 0.97195851, 0.96791580 }
+			}
+		},
+		{
+			{
+				{ 0.99531265, 0.99076936, 0.98683407, 0.98225406, 0.97804882, 0.97382646, 0.97011434 },
+				{ 0.99519721, 0.99100333, 0.98636049, 0.98188944, 0.97792502, 0.97359058, 0.97011918 },
+				{ 0.99524826, 0.99050503, 0.98606976, 0.98181296, 0.97736409, 0.97338460, 0.96924688 },
+				{ 0.99494157, 0.99022663, 0.98554953, 0.98094182, 0.97659292, 0.97228947, 0.96772526 },
+				{ 0.99450539, 0.98942697, 0.98458121, 0.97955482, 0.97527865, 0.97012610, 0.96601777 },
+				{ 0.99418169, 0.98867930, 0.98327090, 0.97792764, 0.97308962, 0.96812983, 0.96315025 },
+				{ 0.99350471, 0.98721426, 0.98134797, 0.97572110, 0.97009458, 0.96533492, 0.95904184 },
+				{ 0.99253390, 0.98556152, 0.97863175, 0.97181738, 0.96593675, 0.95965020, 0.95377310 },
+				{ 0.99104834, 0.98244082, 0.97462612, 0.96685834, 0.95942418, 0.95225676, 0.94555532 },
+				{ 0.98859125, 0.97808501, 0.96772409, 0.95889206, 0.94950143, 0.94074856, 0.93361241 },
+				{ 0.98390135, 0.96963666, 0.95597628, 0.94325734, 0.93293514, 0.92337822, 0.91502179 },
+				{ 0.97316344, 0.95078811, 0.93180310, 0.91662924, 0.90546229, 0.89713287, 0.89224585 },
+				{ 0.95811579, 0.92690737, 0.90475021, 0.89233638, 0.88592264, 0.88483098, 0.88793746 }
+			},
+			{
+				{ 0.99521839, 0.99071220, 0.98634392, 0.98196469, 0.97756175, 0.97392153, 0.96943668 },
+				{ 0.99518335, 0.99050345, 0.98614459, 0.98179347, 0.97765972, 0.97348160, 0.96950655 },
+				{ 0.99515251, 0.99044104, 0.98589935, 0.98166361, 0.97729245, 0.97286210, 0.96873826 },
+				{ 0.99502360, 0.99046089, 0.98541193, 0.98091573, 0.97675822, 0.97167207, 0.96851795 },
+				{ 0.99480146, 0.98985927, 0.98497049, 0.98038290, 0.97536275, 0.97095491, 0.96734162 },
+				{ 0.99433150, 0.98904495, 0.98404826, 0.97917991, 0.97413959, 0.96933088, 0.96508374 },
+				{ 0.99415318, 0.98833519, 0.98307397, 0.97798176, 0.97217340, 0.96799841, 0.96229979 },
+				{ 0.99349020, 0.98754819, 0.98188744, 0.97603205, 0.97035212, 0.96508749, 0.96005494 },
+				{ 0.99303294, 0.98647637, 0.98047727, 0.97413952, 0.96812703, 0.96216198, 0.95725561 },
+				{ 0.99222200, 0.98535375, 0.97856076, 0.97207212, 0.96536582, 0.95940981, 0.95302374 },
+				{ 0.99166812, 0.98413914, 0.97693720, 0.96989122, 0.96297405, 0.95611680, 0.95025039 },
+				{ 0.99126421, 0.98297282, 0.97524950, 0.96810262, 0.96117391, 0.95439966, 0.94800041 },
+				{ 0.99107434, 0.98258488, 0.97450215, 0.96761240, 0.96020090, 0.95355151, 0.94697504 }
+			},
+			{
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+				{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 }
+			},
+			{
+				{ 0.99411094, 0.98867311, 0.98357718, 0.97869934, 0.97400609, 0.96969244, 0.96438956 },
+				{ 0.99416204, 0.98908005, 0.98355821, 0.97907062, 0.97433859, 0.96977175, 0.96513633 },
+				{ 0.99441911, 0.98923402, 0.98440890, 0.97947487, 0.97510653, 0.97073502, 0.96627939 },
+				{ 0.99467712, 0.98981909, 0.98515392, 0.98018573, 0.97608001, 0.97178452, 0.96813418 },
+				{ 0.99489009, 0.99017696, 0.98559212, 0.98145060, 0.97703664, 0.97331339, 0.96959405 },
+				{ 0.99511539, 0.99062025, 0.98655135, 0.98230062, 0.97859698, 0.97432559, 0.97043043 },
+				{ 0.99542784, 0.99139487, 0.98713839, 0.98296590, 0.97939253, 0.97572353, 0.97225313 },
+				{ 0.99565454, 0.99162685, 0.98765711, 0.98442317, 0.98050248, 0.97652668, 0.97361020 },
+				{ 0.99590863, 0.99186053, 0.98837987, 0.98427305, 0.98125985, 0.97768223, 0.97399995 },
+				{ 0.99604181, 0.99220125, 0.98879102, 0.98531374, 0.98210846, 0.97850242, 0.97513627 },
+				{ 0.99619772, 0.99257447, 0.98904557, 0.98556808, 0.98233913, 0.97924174, 0.97609231 },
+				{ 0.99609841, 0.99254805, 0.98930733, 0.98557412, 0.98250761, 0.97929024, 0.97653162 },
+				{ 0.99614008, 0.99266328, 0.98908495, 0.98567379, 0.98244433, 0.97937260, 0.97631500 }
+			},
+			{
+				{ 0.99303227, 0.98711443, 0.98092218, 0.97577439, 0.97020575, 0.96564224, 0.96082965 },
+				{ 0.99320535, 0.98720217, 0.98148752, 0.97659175, 0.97135472, 0.96639864, 0.96204127 },
+				{ 0.99367684, 0.98811899, 0.98328855, 0.97756771, 0.97294325, 0.96858349, 0.96409410 },
+				{ 0.99438854, 0.98926953, 0.98460548, 0.97978434, 0.97559085, 0.97121719, 0.96707917 },
+				{ 0.99494110, 0.99040604, 0.98604193, 0.98170264, 0.97771221, 0.97369210, 0.96996274 },
+				{ 0.99531942, 0.99116395, 0.98735394, 0.98363030, 0.98030032, 0.97619658, 0.97287112 },
+				{ 0.99574288, 0.99205775, 0.98828559, 0.98498334, 0.98143519, 0.97849218, 0.97493847 },
+				{ 0.99603783, 0.99285306, 0.98910396, 0.98619005, 0.98273652, 0.97961513, 0.97669139 },
+				{ 0.99636144, 0.99294770, 0.99006134, 0.98677456, 0.98385961, 0.98104355, 0.97801104 },
+				{ 0.99653676, 0.99351279, 0.99033400, 0.98722114, 0.98447548, 0.98161540, 0.97887383 },
+				{ 0.99669269, 0.99358130, 0.99071435, 0.98782226, 0.98510949, 0.98241306, 0.97979732 },
+				{ 0.99675622, 0.99369983, 0.99104494, 0.98811729, 0.98538302, 0.98294868, 0.98011739 },
+				{ 0.99677190, 0.99380604, 0.99093108, 0.98822672, 0.98537249, 0.98289552, 0.98054076 }
+			},
+			{
+				{ 0.99174905, 0.98456778, 0.97801571, 0.97215883, 0.96661829, 0.96121875, 0.95616240 },
+				{ 0.99217163, 0.98524765, 0.97907032, 0.97312454, 0.96854120, 0.96247090, 0.95788211 },
+				{ 0.99291734, 0.98689275, 0.98140087, 0.97635064, 0.97115995, 0.96658805, 0.96200698 },
+				{ 0.99392175, 0.98863645, 0.98381003, 0.97936654, 0.97495587, 0.97051368, 0.96608555 },
+				{ 0.99479413, 0.99045404, 0.98621764, 0.98209634, 0.97829910, 0.97446780, 0.97143370 },
+				{ 0.99558501, 0.99156385, 0.98791470, 0.98397349, 0.98070452, 0.97764300, 0.97430176 },
+				{ 0.99588693, 0.99244677, 0.98915943, 0.98597406, 0.98303249, 0.97968485, 0.97670105 },
+				{ 0.99637549, 0.99290913, 0.99020310, 0.98709545, 0.98407560, 0.98145333, 0.97884313 },
+				{ 0.99660720, 0.99360479, 0.99076108, 0.98806054, 0.98515668, 0.98272992, 0.97978995 },
+				{ 0.99680529, 0.99401026, 0.99114939, 0.98855872, 0.98604818, 0.98350617, 0.98106668 },
+				{ 0.99697519, 0.99392072, 0.99163189, 0.98884519, 0.98659327, 0.98425090, 0.98187764 },
+				{ 0.99696249, 0.99430764, 0.99187990, 0.98907668, 0.98673285, 0.98473588, 0.98223084 },
+				{ 0.99705411, 0.99440505, 0.99169414, 0.98929695, 0.98704842, 0.98469858, 0.98254683 }
+			},
+			{
+				{ 0.99016884, 0.98209607, 0.97488506, 0.96786790, 0.96154323, 0.95581977, 0.95023720 },
+				{ 0.99082686, 0.98329605, 0.97654182, 0.97010212, 0.96400920, 0.95799106, 0.95261279 },
+				{ 0.99226398, 0.98596809, 0.98011237, 0.97448715, 0.96937316, 0.96390186, 0.95920521 },
+				{ 0.99359696, 0.98806129, 0.98317344, 0.97875710, 0.97408146, 0.96975229, 0.96580794 },
+				{ 0.99473307, 0.99011133, 0.98606509, 0.98201841, 0.97813707, 0.97471306, 0.97063881 },
+				{ 0.99553549, 0.99148861, 0.98798468, 0.98438015, 0.98161250, 0.97775421, 0.97493815 },
+				{ 0.99625079, 0.99259783, 0.98934544, 0.98634656, 0.98319873, 0.98054140, 0.97754533 },
+				{ 0.99643763, 0.99331060, 0.99033877, 0.98762145, 0.98463595, 0.98191623, 0.97983790 },
+				{ 0.99658427, 0.99378014, 0.99100681, 0.98837806, 0.98601537, 0.98366000, 0.98096705 },
+				{ 0.99684649, 0.99412956, 0.99160888, 0.98893088, 0.98687351, 0.98437762, 0.98211907 },
+				{ 0.99704890, 0.99433039, 0.99182063, 0.98952696, 0.98689473, 0.98482284, 0.98272122 },
+				{ 0.99711376, 0.99440152, 0.99209108, 0.98968662, 0.98750658, 0.98539348, 0.98328422 },
+				{ 0.99710463, 0.99450648, 0.99207175, 0.98975212, 0.98769898, 0.98541329, 0.98311502 }
+			},
+			{
+				{ 0.98831507, 0.97906424, 0.97075917, 0.96321909, 0.95588362, 0.94942469, 0.94230379 },
+				{ 0.98936519, 0.98116593, 0.97370961, 0.96623690, 0.96003911, 0.95405399, 0.94804087 },
+				{ 0.99134880, 0.98465776, 0.97841369, 0.97207886, 0.96705898, 0.96162820, 0.95662804 },
+				{ 0.99320494, 0.98776241, 0.98242599, 0.97806426, 0.97354213, 0.96906994, 0.96497895 },
+				{ 0.99448855, 0.98975411, 0.98576887, 0.98175837, 0.97775594, 0.97440906, 0.97075075 },
+				{ 0.99536959, 0.99160359, 0.98819136, 0.98464697, 0.98137818, 0.97802697, 0.97511119 },
+				{ 0.99590490, 0.99241907, 0.98937419, 0.98628900, 0.98369458, 0.98078522, 0.97791418 },
+				{ 0.99631754, 0.99331344, 0.99052383, 0.98735855, 0.98500544, 0.98254336, 0.98013058 },
+				{ 0.99657798, 0.99373509, 0.99107081, 0.98830661, 0.98626852, 0.98386627, 0.98108767 },
+				{ 0.99686118, 0.99409882, 0.99135839, 0.98901130, 0.98679388, 0.98507181, 0.98228231 },
+				{ 0.99687744, 0.99439525, 0.99190466, 0.98967853, 0.98733807, 0.98541954, 0.98296871 },
+				{ 0.99712095, 0.99453407, 0.99219504, 0.98995452, 0.98770385, 0.98548687, 0.98349527 },
+				{ 0.99713294, 0.99448996, 0.99230448, 0.98982953, 0.98771397, 0.98547056, 0.98360721 }
+			},
+			{
+				{ 0.98636609, 0.97565264, 0.96655094, 0.95797038, 0.94967155, 0.94275050, 0.93515648 },
+				{ 0.98790059, 0.97862072, 0.97015123, 0.96304434, 0.95501444, 0.94852415, 0.94140724 },
+				{ 0.99098291, 0.98332663, 0.97708501, 0.97080384, 0.96456422, 0.95948000, 0.95419461 },
+				{ 0.99287554, 0.98712299, 0.98184484, 0.97727298, 0.97233111, 0.96791811, 0.96396376 },
+				{ 0.99425820, 0.98972721, 0.98520803, 0.98147660, 0.97772517, 0.97386893, 0.96996882 },
+				{ 0.99513898, 0.99123448, 0.98763090, 0.98433205, 0.98088996, 0.97794852, 0.97524093 },
+				{ 0.99574553, 0.99232533, 0.98913682, 0.98609787, 0.98322262, 0.98067351, 0.97777305 },
+				{ 0.99607169, 0.99311273, 0.99038787, 0.98726564, 0.98491674, 0.98217868, 0.97985915 },
+				{ 0.99652923, 0.99372619, 0.99091501, 0.98808124, 0.98599873, 0.98375030, 0.98129609 },
+				{ 0.99664942, 0.99399273, 0.99125303, 0.98912108, 0.98684923, 0.98476884, 0.98222998 },
+				{ 0.99676559, 0.99430493, 0.99176667, 0.98959319, 0.98730371, 0.98501257, 0.98315891 },
+				{ 0.99695814, 0.99413582, 0.99187172, 0.98977962, 0.98775147, 0.98547277, 0.98340445 },
+				{ 0.99695214, 0.99428573, 0.99200031, 0.98984600, 0.98761576, 0.98564893, 0.98344519 }
+			},
+			{
+				{ 0.98397864, 0.97184494, 0.96157906, 0.95186706, 0.94350378, 0.93532875, 0.92720977 },
+				{ 0.98626504, 0.97596188, 0.96664120, 0.95824949, 0.95017498, 0.94334615, 0.93668316 },
+				{ 0.99004445, 0.98237872, 0.97523543, 0.96875821, 0.96239562, 0.95683599, 0.95196156 },
+				{ 0.99252857, 0.98640974, 0.98109969, 0.97623711, 0.97147191, 0.96718783, 0.96223519 },
+				{ 0.99435100, 0.98941568, 0.98487908, 0.98074298, 0.97656794, 0.97300063, 0.96998222 },
+				{ 0.99507555, 0.99094504, 0.98708189, 0.98383367, 0.98080569, 0.97723928, 0.97441860 },
+				{ 0.99571352, 0.99219917, 0.98884453, 0.98561854, 0.98263398, 0.98019001, 0.97711185 },
+				{ 0.99595751, 0.99313982, 0.98998351, 0.98703548, 0.98453761, 0.98195976, 0.97924024 },
+				{ 0.99639448, 0.99337048, 0.99068927, 0.98778096, 0.98573875, 0.98346194, 0.98106434 },
+				{ 0.99666680, 0.99389014, 0.99127436, 0.98868791, 0.98637421, 0.98420262, 0.98186954 },
+				{ 0.99667371, 0.99404621, 0.99142865, 0.98896034, 0.98688930, 0.98477877, 0.98277661 },
+				{ 0.99680153, 0.99405813, 0.99163391, 0.98913574, 0.98726231, 0.98508452, 0.98320274 },
+				{ 0.99678190, 0.99416592, 0.99173106, 0.98923262, 0.98722969, 0.98540423, 0.98321814 }
+			},
+			{
+				{ 0.98161099, 0.96817628, 0.95630973, 0.94527337, 0.93567343, 0.92561685, 0.91811900 },
+				{ 0.98472494, 0.97365924, 0.96257549, 0.95452181, 0.94552969, 0.93728562, 0.93046407 },
+				{ 0.98910283, 0.98128479, 0.97345154, 0.96676862, 0.96042325, 0.95490275, 0.94879020 },
+				{ 0.99197301, 0.98584921, 0.98060891, 0.97501521, 0.97072163, 0.96559146, 0.96076168 },
+				{ 0.99381039, 0.98890713, 0.98413362, 0.98027845, 0.97637161, 0.97189237, 0.96924618 },
+				{ 0.99483765, 0.99068820, 0.98681304, 0.98312088, 0.97972800, 0.97667371, 0.97303033 },
+				{ 0.99555047, 0.99171279, 0.98851206, 0.98521812, 0.98208297, 0.97936243, 0.97671782 },
+				{ 0.99594277, 0.99244984, 0.98975495, 0.98662463, 0.98381953, 0.98137083, 0.97843732 },
+				{ 0.99611299, 0.99276114, 0.99020565, 0.98742430, 0.98499043, 0.98225888, 0.98064539 },
+				{ 0.99640957, 0.99336834, 0.99078797, 0.98802390, 0.98579630, 0.98372883, 0.98105593 },
+				{ 0.99656178, 0.99371941, 0.99097102, 0.98877724, 0.98631452, 0.98450157, 0.98192332 },
+				{ 0.99660681, 0.99399419, 0.99147792, 0.98916302, 0.98684424, 0.98455168, 0.98237858 },
+				{ 0.99666012, 0.99371607, 0.99138006, 0.98906026, 0.98685126, 0.98451445, 0.98238755 }
+			},
+			{
+				{ 0.97899750, 0.96328629, 0.95054736, 0.93921063, 0.92855244, 0.91791615, 0.90957580 },
+				{ 0.98332689, 0.97068654, 0.95952389, 0.95002584, 0.94062562, 0.93266656, 0.92518111 },
+				{ 0.98876304, 0.97994801, 0.97198927, 0.96481128, 0.95848897, 0.95279269, 0.94667236 },
+				{ 0.99182249, 0.98534367, 0.97947831, 0.97372716, 0.96923757, 0.96356257, 0.95940999 },
+				{ 0.99341223, 0.98830045, 0.98358312, 0.97888838, 0.97467935, 0.97102028, 0.96755422 },
+				{ 0.99444499, 0.99010726, 0.98602950, 0.98265102, 0.97878581, 0.97531134, 0.97252429 },
+				{ 0.99509659, 0.99122648, 0.98780896, 0.98434914, 0.98128409, 0.97831143, 0.97566522 },
+				{ 0.99576098, 0.99225822, 0.98910118, 0.98595298, 0.98316954, 0.97984417, 0.97770732 },
+				{ 0.99590446, 0.99282912, 0.98962374, 0.98671036, 0.98448775, 0.98188728, 0.97922041 },
+				{ 0.99631871, 0.99320376, 0.99047806, 0.98818212, 0.98537052, 0.98251579, 0.98016596 },
+				{ 0.99613790, 0.99356106, 0.99090710, 0.98829359, 0.98589187, 0.98326892, 0.98116452 },
+				{ 0.99651180, 0.99345039, 0.99078633, 0.98836914, 0.98594451, 0.98378173, 0.98155390 },
+				{ 0.99645457, 0.99354032, 0.99106953, 0.98848281, 0.98607670, 0.98387213, 0.98200527 }
+			},
+			{
+				{ 0.97623915, 0.95895407, 0.94459459, 0.93151064, 0.92031922, 0.90955385, 0.89967812 },
+				{ 0.98182752, 0.96782721, 0.95593146, 0.94561817, 0.93636023, 0.92653557, 0.91875916 },
+				{ 0.98793208, 0.97837318, 0.97061652, 0.96340511, 0.95666643, 0.94999997, 0.94348439 },
+				{ 0.99136331, 0.98442213, 0.97848896, 0.97299614, 0.96785958, 0.96281044, 0.95844512 },
+				{ 0.99301738, 0.98752597, 0.98291723, 0.97842551, 0.97366698, 0.96994460, 0.96603181 },
+				{ 0.99412689, 0.98963974, 0.98573552, 0.98191084, 0.97806172, 0.97458850, 0.97111044 },
+				{ 0.99499965, 0.99081946, 0.98687145, 0.98394529, 0.98040966, 0.97748848, 0.97489669 },
+				{ 0.99542397, 0.99150676, 0.98824507, 0.98573808, 0.98212866, 0.97927264, 0.97687454 },
+				{ 0.99571025, 0.99212073, 0.98929337, 0.98627294, 0.98357401, 0.98104103, 0.97851896 },
+				{ 0.99603065, 0.99295696, 0.98955869, 0.98694161, 0.98427779, 0.98187950, 0.97961600 },
+				{ 0.99612870, 0.99308740, 0.99014355, 0.98765505, 0.98477902, 0.98237625, 0.97998264 },
+				{ 0.99628640, 0.99308613, 0.99042788, 0.98778320, 0.98545791, 0.98321642, 0.98062881 },
+				{ 0.99628956, 0.99324261, 0.99031159, 0.98806854, 0.98518151, 0.98278213, 0.98097321 }
+			},
+			{
+				{ 0.97294335, 0.95441860, 0.93809099, 0.92442725, 0.91092005, 0.89964190, 0.88898307 },
+				{ 0.97997185, 0.96576382, 0.95266429, 0.94096436, 0.93097737, 0.92172897, 0.91169656 },
+				{ 0.98737178, 0.97714011, 0.96909437, 0.96111440, 0.95289445, 0.94719190, 0.94052193 },
+				{ 0.99074866, 0.98374808, 0.97719669, 0.97159660, 0.96604427, 0.96143372, 0.95589946 },
+				{ 0.99269180, 0.98700538, 0.98219356, 0.97719969, 0.97308090, 0.96884845, 0.96497819 },
+				{ 0.99399194, 0.98903629, 0.98482377, 0.98076044, 0.97729466, 0.97332795, 0.96986744 },
+				{ 0.99463404, 0.99043423, 0.98645969, 0.98311384, 0.97968083, 0.97675728, 0.97370580 },
+				{ 0.99517805, 0.99142170, 0.98788370, 0.98447954, 0.98154243, 0.97859474, 0.97583967 },
+				{ 0.99550690, 0.99218810, 0.98885154, 0.98579600, 0.98254497, 0.98042463, 0.97731942 },
+				{ 0.99572524, 0.99238455, 0.98934372, 0.98618948, 0.98360952, 0.98093778, 0.97823430 },
+				{ 0.99590440, 0.99261615, 0.98985394, 0.98706899, 0.98425896, 0.98187146, 0.97980980 },
+				{ 0.99598488, 0.99274344, 0.99011196, 0.98698566, 0.98469171, 0.98218460, 0.97963589 },
+				{ 0.99608094, 0.99284546, 0.98963409, 0.98717977, 0.98459097, 0.98208872, 0.97994907 }
+			},
+			{
+				{ 0.97034274, 0.94875329, 0.93234171, 0.91651444, 0.90252889, 0.89007378, 0.87877761 },
+				{ 0.97858560, 0.96208097, 0.94879277, 0.93672051, 0.92543931, 0.91601281, 0.90584535 },
+				{ 0.98643889, 0.97611322, 0.96713727, 0.95893681, 0.95129941, 0.94427108, 0.93733634 },
+				{ 0.99037882, 0.98309752, 0.97556103, 0.97000789, 0.96468732, 0.95907241, 0.95397034 },
+				{ 0.99236040, 0.98608923, 0.98112146, 0.97622152, 0.97128897, 0.96730697, 0.96328677 },
+				{ 0.99361715, 0.98859473, 0.98366473, 0.97964993, 0.97548702, 0.97199791, 0.96824993 },
+				{ 0.99441292, 0.99004726, 0.98588322, 0.98216273, 0.97842585, 0.97496052, 0.97208019 },
+				{ 0.99485762, 0.99104630, 0.98717230, 0.98379952, 0.98078693, 0.97726594, 0.97464191 },
+				{ 0.99523664, 0.99154577, 0.98819088, 0.98496645, 0.98176492, 0.97868635, 0.97644436 },
+				{ 0.99541678, 0.99214291, 0.98877828, 0.98567500, 0.98289630, 0.98013713, 0.97728719 },
+				{ 0.99580843, 0.99228943, 0.98911876, 0.98610178, 0.98355256, 0.98108266, 0.97811434 },
+				{ 0.99594656, 0.99248616, 0.98935199, 0.98650633, 0.98409021, 0.98124747, 0.97889769 },
+				{ 0.99581175, 0.99227901, 0.98939470, 0.98665869, 0.98375735, 0.98148292, 0.97868372 }
+			},
+			{
+				{ 0.96659820, 0.94368771, 0.92518093, 0.90878308, 0.89298734, 0.87983742, 0.86905109 },
+				{ 0.97657341, 0.95984377, 0.94529381, 0.93281751, 0.92132829, 0.91147578, 0.89968822 },
+				{ 0.98576247, 0.97539558, 0.96560058, 0.95699491, 0.94871013, 0.94113679, 0.93376092 },
+				{ 0.98977769, 0.98192747, 0.97474889, 0.96894249, 0.96322902, 0.95748195, 0.95186923 },
+				{ 0.99206533, 0.98573263, 0.97994569, 0.97469769, 0.97025202, 0.96560496, 0.96062926 },
+				{ 0.99314531, 0.98781350, 0.98277956, 0.97810678, 0.97433265, 0.97020035, 0.96725346 },
+				{ 0.99411537, 0.98932868, 0.98525255, 0.98139527, 0.97785369, 0.97365681, 0.97089634 },
+				{ 0.99464108, 0.99017202, 0.98637831, 0.98273987, 0.97936958, 0.97643803, 0.97300552 },
+				{ 0.99507444, 0.99095630, 0.98751143, 0.98397074, 0.98066917, 0.97775896, 0.97544753 },
+				{ 0.99523641, 0.99160998, 0.98806616, 0.98492781, 0.98194050, 0.97897888, 0.97602055 },
+				{ 0.99564576, 0.99161169, 0.98893184, 0.98565002, 0.98240859, 0.97999152, 0.97713885 },
+				{ 0.99552660, 0.99196388, 0.98855319, 0.98579869, 0.98300679, 0.98028921, 0.97804152 },
+				{ 0.99548276, 0.99208309, 0.98879797, 0.98597394, 0.98309959, 0.98059170, 0.97798444 }
+			},
+			{
+				{ 0.96336058, 0.93961009, 0.91811016, 0.90042347, 0.88365438, 0.86962295, 0.85604916 },
+				{ 0.97502149, 0.95756949, 0.94235890, 0.92883297, 0.91616646, 0.90482965, 0.89424067 },
+				{ 0.98505611, 0.97342997, 0.96363229, 0.95435332, 0.94620481, 0.93854612, 0.93132752 },
+				{ 0.98939960, 0.98108860, 0.97431313, 0.96763880, 0.96090505, 0.95506278, 0.94886230 },
+				{ 0.99173216, 0.98501251, 0.97903174, 0.97346895, 0.96918994, 0.96397772, 0.95952251 },
+				{ 0.99292661, 0.98747381, 0.98220804, 0.97768138, 0.97303297, 0.96913757, 0.96568869 },
+				{ 0.99386539, 0.98915855, 0.98451336, 0.98042231, 0.97613911, 0.97291760, 0.96926247 },
+				{ 0.99433397, 0.98980895, 0.98563759, 0.98255154, 0.97832117, 0.97523561, 0.97189526 },
+				{ 0.99469458, 0.99067995, 0.98688870, 0.98299676, 0.98019266, 0.97685904, 0.97354570 },
+				{ 0.99492947, 0.99119745, 0.98761120, 0.98409422, 0.98086171, 0.97793932, 0.97484305 },
+				{ 0.99516709, 0.99149335, 0.98772854, 0.98499062, 0.98157953, 0.97907118, 0.97596330 },
+				{ 0.99545596, 0.99145621, 0.98836743, 0.98519841, 0.98188015, 0.97944413, 0.97589360 },
+				{ 0.99546986, 0.99185579, 0.98813982, 0.98513740, 0.98250631, 0.97947271, 0.97610325 }
+			},
+			{
+				{ 0.95977352, 0.93246012, 0.90983511, 0.89155037, 0.87493338, 0.85845975, 0.84482530 },
+				{ 0.97331573, 0.95441794, 0.93803694, 0.92450260, 0.91147909, 0.89954208, 0.88894134 },
+				{ 0.98435072, 0.97243676, 0.96220417, 0.95309777, 0.94409817, 0.93676805, 0.92796431 },
+				{ 0.98867405, 0.98041003, 0.97246419, 0.96580409, 0.95888178, 0.95341456, 0.94785734 },
+				{ 0.99096174, 0.98434159, 0.97792838, 0.97272213, 0.96736938, 0.96225941, 0.95717777 },
+				{ 0.99237893, 0.98669003, 0.98156770, 0.97662812, 0.97188337, 0.96749163, 0.96345012 },
+				{ 0.99336089, 0.98866769, 0.98329491, 0.97907313, 0.97522896, 0.97150958, 0.96770599 },
+				{ 0.99406488, 0.98946891, 0.98533431, 0.98104594, 0.97717507, 0.97414384, 0.97105549 },
+				{ 0.99461997, 0.99007987, 0.98597991, 0.98261675, 0.97951517, 0.97556240, 0.97277915 },
+				{ 0.99485841, 0.99055470, 0.98683944, 0.98327797, 0.97998344, 0.97682392, 0.97401033 },
+				{ 0.99499430, 0.99098345, 0.98723653, 0.98426059, 0.98090415, 0.97728630, 0.97491440 },
+				{ 0.99495465, 0.99139313, 0.98753830, 0.98428536, 0.98126286, 0.97822041, 0.97548209 },
+				{ 0.99512934, 0.99136148, 0.98743626, 0.98475723, 0.98149244, 0.97850867, 0.97505903 }
+			},
+			{
+				{ 0.95603160, 0.92690732, 0.90288438, 0.88261946, 0.86508786, 0.84917585, 0.83293922 },
+				{ 0.97158553, 0.95139027, 0.93519063, 0.92051739, 0.90672208, 0.89395200, 0.88250576 },
+				{ 0.98321702, 0.97123043, 0.96135320, 0.95046562, 0.94204107, 0.93349960, 0.92565269 },
+				{ 0.98826366, 0.97955384, 0.97157331, 0.96410235, 0.95700748, 0.95164428, 0.94468863 },
+				{ 0.99078045, 0.98371270, 0.97712119, 0.97064953, 0.96591523, 0.96104697, 0.95539212 },
+				{ 0.99227065, 0.98617622, 0.98065729, 0.97530748, 0.97068706, 0.96622182, 0.96239609 },
+				{ 0.99309547, 0.98791862, 0.98267607, 0.97817338, 0.97414635, 0.96991114, 0.96596940 },
+				{ 0.99380600, 0.98885981, 0.98430772, 0.98026798, 0.97650935, 0.97257435, 0.96882378 },
+				{ 0.99433559, 0.98963051, 0.98532579, 0.98191965, 0.97791088, 0.97431300, 0.97099612 },
+				{ 0.99454970, 0.99003541, 0.98616864, 0.98209785, 0.97889205, 0.97584955, 0.97211304 },
+				{ 0.99460328, 0.99054355, 0.98666617, 0.98341324, 0.97957263, 0.97644751, 0.97321705 },
+				{ 0.99486584, 0.99072076, 0.98726335, 0.98333066, 0.98004273, 0.97706783, 0.97415785 },
+				{ 0.99494628, 0.99090835, 0.98710307, 0.98376971, 0.98057001, 0.97737805, 0.97432840 }
+			},
+			{
+				{ 0.95252571, 0.92125299, 0.89548055, 0.87347229, 0.85585937, 0.83899746, 0.82244808 },
+				{ 0.97035509, 0.94900883, 0.93092742, 0.91527585, 0.90193411, 0.88827759, 0.87628091 },
+				{ 0.98268381, 0.97015765, 0.95839670, 0.94810738, 0.93922214, 0.92990308, 0.92170847 },
+				{ 0.98764156, 0.97862357, 0.96983190, 0.96321557, 0.95607481, 0.94943116, 0.94273363 },
+				{ 0.99029014, 0.98259277, 0.97539751, 0.96970060, 0.96398832, 0.95867615, 0.95330973 },
+				{ 0.99184593, 0.98513753, 0.97939241, 0.97414402, 0.96949120, 0.96423448, 0.96006059 },
+				{ 0.99272484, 0.98719408, 0.98199125, 0.97712052, 0.97237769, 0.96878111, 0.96403760 },
+				{ 0.99351993, 0.98807238, 0.98340200, 0.97953676, 0.97546537, 0.97176432, 0.96804639 },
+				{ 0.99391066, 0.98902777, 0.98426839, 0.98054883, 0.97679523, 0.97299872, 0.97016836 },
+				{ 0.99434766, 0.98951176, 0.98547316, 0.98166126, 0.97798572, 0.97458815, 0.97136434 },
+				{ 0.99415666, 0.99002880, 0.98609871, 0.98212699, 0.97875513, 0.97548359, 0.97229698 },
+				{ 0.99450020, 0.99012195, 0.98636991, 0.98252700, 0.97964533, 0.97600874, 0.97292761 },
+				{ 0.99461282, 0.99054223, 0.98612486, 0.98288819, 0.97938813, 0.97607724, 0.97307115 }
+			},
+			{
+				{ 0.94846437, 0.91485127, 0.88871298, 0.86561899, 0.84363059, 0.82695730, 0.80972920 },
+				{ 0.96915941, 0.94647308, 0.92892554, 0.91153537, 0.89690941, 0.88250623, 0.87000271 },
+				{ 0.98161307, 0.96953371, 0.95700000, 0.94637954, 0.93644705, 0.92804249, 0.91832028 },
+				{ 0.98704963, 0.97737277, 0.96839187, 0.96133641, 0.95399086, 0.94600436, 0.94067087 },
+				{ 0.98991238, 0.98194739, 0.97528333, 0.96840124, 0.96261727, 0.95705958, 0.95147293 },
+				{ 0.99115133, 0.98453964, 0.97867082, 0.97323246, 0.96818362, 0.96279665, 0.95870717 },
+				{ 0.99250168, 0.98638865, 0.98102996, 0.97593100, 0.97139799, 0.96729370, 0.96294098 },
+				{ 0.99301578, 0.98781656, 0.98294805, 0.97843629, 0.97433634, 0.96971606, 0.96623483 },
+				{ 0.99348926, 0.98813917, 0.98418694, 0.98027277, 0.97616064, 0.97201965, 0.96858572 },
+				{ 0.99377960, 0.98927176, 0.98478295, 0.98044735, 0.97717331, 0.97349006, 0.97001535 },
+				{ 0.99415050, 0.98966183, 0.98537485, 0.98153647, 0.97820199, 0.97457391, 0.97115231 },
+				{ 0.99412701, 0.98967293, 0.98601841, 0.98172896, 0.97828319, 0.97485264, 0.97145341 },
+				{ 0.99435930, 0.98972922, 0.98584623, 0.98193393, 0.97835010, 0.97527446, 0.97206373 }
+			},
+			{
+				{ 0.94429450, 0.90879907, 0.87986512, 0.85508312, 0.83591268, 0.81601573, 0.79912687 },
+				{ 0.96760208, 0.94436692, 0.92529075, 0.90799926, 0.89217587, 0.87716665, 0.86422574 },
+				{ 0.98126368, 0.96717798, 0.95530074, 0.94429816, 0.93405205, 0.92476843, 0.91492706 },
+				{ 0.98682368, 0.97648442, 0.96732415, 0.95894719, 0.95221853, 0.94490039, 0.93778391 },
+				{ 0.98925950, 0.98067505, 0.97361216, 0.96697988, 0.96045976, 0.95522752, 0.94958630 },
+				{ 0.99091210, 0.98440369, 0.97743474, 0.97196584, 0.96692502, 0.96182924, 0.95684428 },
+				{ 0.99188342, 0.98599188, 0.98039017, 0.97527107, 0.97031404, 0.96567457, 0.96163516 },
+				{ 0.99249157, 0.98708532, 0.98199937, 0.97784423, 0.97300762, 0.96822681, 0.96453988 },
+				{ 0.99347265, 0.98799884, 0.98328764, 0.97871282, 0.97474262, 0.97104720, 0.96688914 },
+				{ 0.99365938, 0.98849952, 0.98410160, 0.98003374, 0.97589265, 0.97253916, 0.96869214 },
+				{ 0.99393609, 0.98898518, 0.98469786, 0.98056239, 0.97692287, 0.97304892, 0.96948467 },
+				{ 0.99405197, 0.98928532, 0.98486060, 0.98091713, 0.97740550, 0.97421142, 0.97041806 },
+				{ 0.99390697, 0.98928613, 0.98488644, 0.98115491, 0.97785080, 0.97387439, 0.97066763 }
+			},
+			{
+				{ 0.94007319, 0.90275888, 0.87258955, 0.84584218, 0.82373402, 0.80543793, 0.78747716 },
+				{ 0.96618781, 0.94177475, 0.92120102, 0.90309101, 0.88694799, 0.87281069, 0.85841338 },
+				{ 0.98010081, 0.96616963, 0.95308501, 0.94196787, 0.93189637, 0.92146324, 0.91206168 },
+				{ 0.98609538, 0.97535805, 0.96607530, 0.95752562, 0.94979734, 0.94274603, 0.93542244 },
+				{ 0.98916110, 0.98062618, 0.97254805, 0.96606643, 0.95939960, 0.95367199, 0.94771435 },
+				{ 0.99062126, 0.98280007, 0.97694879, 0.97090231, 0.96517182, 0.95992001, 0.95474985 },
+				{ 0.99144497, 0.98519711, 0.97984664, 0.97418635, 0.96907206, 0.96421223, 0.95945015 },
+				{ 0.99259448, 0.98671398, 0.98133157, 0.97653605, 0.97152689, 0.96775017, 0.96305910 },
+				{ 0.99295713, 0.98761580, 0.98303183, 0.97787582, 0.97381017, 0.96966250, 0.96583248 },
+				{ 0.99364113, 0.98811268, 0.98404869, 0.97882195, 0.97499943, 0.97057295, 0.96796572 },
+				{ 0.99354888, 0.98864695, 0.98398390, 0.97973107, 0.97594025, 0.97190191, 0.96796723 },
+				{ 0.99367845, 0.98898535, 0.98468632, 0.98025478, 0.97652761, 0.97205262, 0.96870322 },
+				{ 0.99379887, 0.98915463, 0.98452399, 0.98036344, 0.97663493, 0.97323269, 0.96919593 }
+			},
+			{
+				{ 0.93631836, 0.89537312, 0.86466040, 0.83760239, 0.81401931, 0.79424529, 0.77504937 },
+				{ 0.96440450, 0.93916507, 0.91842426, 0.89849786, 0.88268716, 0.86654469, 0.85267621 },
+				{ 0.97989431, 0.96432466, 0.95132824, 0.94007861, 0.92892117, 0.91850993, 0.90959462 },
+				{ 0.98525999, 0.97457346, 0.96396839, 0.95546214, 0.94770570, 0.94047317, 0.93247083 },
+				{ 0.98852104, 0.97963671, 0.97140174, 0.96468506, 0.95803672, 0.95095857, 0.94546687 },
+				{ 0.99021404, 0.98256009, 0.97578473, 0.96983306, 0.96341082, 0.95802470, 0.95246514 },
+				{ 0.99132699, 0.98440693, 0.97855226, 0.97294519, 0.96788575, 0.96222933, 0.95827805 },
+				{ 0.99220729, 0.98607978, 0.98044026, 0.97570187, 0.97048756, 0.96583767, 0.96150113 },
+				{ 0.99290705, 0.98687515, 0.98189025, 0.97719539, 0.97252725, 0.96798290, 0.96450932 },
+				{ 0.99314195, 0.98788216, 0.98281054, 0.97853811, 0.97424770, 0.96958851, 0.96576184 },
+				{ 0.99335934, 0.98823074, 0.98330878, 0.97916022, 0.97472747, 0.97085264, 0.96761463 },
+				{ 0.99340947, 0.98817196, 0.98374703, 0.97951489, 0.97541907, 0.97157125, 0.96831589 },
+				{ 0.99355311, 0.98857577, 0.98356907, 0.98005289, 0.97536744, 0.97182684, 0.96824773 }
+			}
+		},
+		{
+			{
+				{ 0.99649987, 0.99311952, 0.98987432, 0.98674183, 0.98360803, 0.98052006, 0.97784575 },
+				{ 0.99636980, 0.99304694, 0.98967912, 0.98654099, 0.98356286, 0.98017355, 0.97755748 },
+				{ 0.99637169, 0.99290124, 0.98960425, 0.98608808, 0.98300316, 0.98021661, 0.97680162 },
+				{ 0.99613920, 0.99251977, 0.98916299, 0.98567955, 0.98246462, 0.97904425, 0.97588306 },
+				{ 0.99586284, 0.99184296, 0.98826656, 0.98496927, 0.98129656, 0.97780453, 0.97450132 },
+				{ 0.99545311, 0.99171175, 0.98737691, 0.98359250, 0.97995555, 0.97612913, 0.97190426 },
+				{ 0.99506847, 0.99046285, 0.98609368, 0.98165425, 0.97746045, 0.97348106, 0.96934015 },
+				{ 0.99437944, 0.98902652, 0.98379936, 0.97890389, 0.97374858, 0.96928140, 0.96543448 },
+				{ 0.99314226, 0.98678746, 0.98063176, 0.97467714, 0.96922694, 0.96399979, 0.95859193 },
+				{ 0.99144022, 0.98294961, 0.97531484, 0.96833196, 0.96136559, 0.95438328, 0.94851273 },
+				{ 0.98771617, 0.97616435, 0.96560967, 0.95598688, 0.94610460, 0.93835631, 0.93008502 },
+				{ 0.97796809, 0.95853008, 0.94179361, 0.92787698, 0.91569571, 0.90699825, 0.89907656 },
+				{ 0.95455378, 0.92178748, 0.89910535, 0.88582380, 0.88020895, 0.87806771, 0.88027782 }
+			},
+			{
+				{ 0.99633286, 0.99306169, 0.98969743, 0.98655924, 0.98329289, 0.98044359, 0.97756646 },
+				{ 0.99633935, 0.99311269, 0.98969347, 0.98650975, 0.98339362, 0.98004853, 0.97734313 },
+				{ 0.99628245, 0.99284643, 0.98946995, 0.98620243, 0.98294627, 0.97985380, 0.97716279 },
+				{ 0.99612817, 0.99264506, 0.98900000, 0.98549607, 0.98260976, 0.97880862, 0.97576289 },
+				{ 0.99588547, 0.99207111, 0.98833576, 0.98522956, 0.98133846, 0.97773152, 0.97437095 },
+				{ 0.99565964, 0.99177118, 0.98738545, 0.98386349, 0.98015817, 0.97674505, 0.97279558 },
+				{ 0.99520816, 0.99077721, 0.98637629, 0.98237104, 0.97786362, 0.97419046, 0.97056220 },
+				{ 0.99455068, 0.98971406, 0.98500894, 0.98034701, 0.97587250, 0.97133720, 0.96731876 },
+				{ 0.99392659, 0.98818150, 0.98282677, 0.97740434, 0.97224485, 0.96748348, 0.96277884 },
+				{ 0.99296730, 0.98647419, 0.98006495, 0.97406180, 0.96823908, 0.96322674, 0.95737690 },
+				{ 0.99169488, 0.98397534, 0.97691705, 0.96985880, 0.96317935, 0.95677314, 0.95130285 },
+				{ 0.99044722, 0.98154548, 0.97383897, 0.96612511, 0.95899342, 0.95196544, 0.94521882 },
+				{ 0.98966694, 0.98074087, 0.97235675, 0.96414909, 0.95667110, 0.94973516, 0.94234747 }
+			},
+			{
+				{ 0.99614008, 0.99266328, 0.98908495, 0.98567379, 0.98244433, 0.97937260, 0.97631500 },
+				{ 0.99609841, 0.99254805, 0.98930733, 0.98557412, 0.98250761, 0.97929024, 0.97653162 },
+				{ 0.99619772, 0.99257447, 0.98904557, 0.98556808, 0.98233913, 0.97924174, 0.97609231 },
+				{ 0.99604181, 0.99220125, 0.98879102, 0.98531374, 0.98210846, 0.97850242, 0.97513627 },
+				{ 0.99590863, 0.99186053, 0.98837987, 0.98427305, 0.98125985, 0.97768223, 0.97399995 },
+				{ 0.99565454, 0.99162685, 0.98765711, 0.98442317, 0.98050248, 0.97652668, 0.97361020 },
+				{ 0.99542784, 0.99139487, 0.98713839, 0.98296590, 0.97939253, 0.97572353, 0.97225313 },
+				{ 0.99511539, 0.99062025, 0.98655135, 0.98230062, 0.97859698, 0.97432559, 0.97043043 },
+				{ 0.99489009, 0.99017696, 0.98559212, 0.98145060, 0.97703664, 0.97331339, 0.96959405 },
+				{ 0.99467712, 0.98981909, 0.98515392, 0.98018573, 0.97608001, 0.97178452, 0.96813418 },
+				{ 0.99441911, 0.98923402, 0.98440890, 0.97947487, 0.97510653, 0.97073502, 0.96627939 },
+				{ 0.99416204, 0.98908005, 0.98355821, 0.97907062, 0.97433859, 0.96977175, 0.96513633 },
+				{ 0.99411094, 0.98867311, 0.98357718, 0.97869934, 0.97400609, 0.96969244, 0.96438956 }
+			},
+			{
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+				{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 }
+			},
+			{
+				{ 0.99505582, 0.99052087, 0.98624067, 0.98244935, 0.97797759, 0.97510226, 0.97152498 },
+				{ 0.99495899, 0.99041557, 0.98628481, 0.98258633, 0.97852443, 0.97502515, 0.97129421 },
+				{ 0.99508310, 0.99080265, 0.98673345, 0.98264043, 0.97875640, 0.97549886, 0.97132028 },
+				{ 0.99528163, 0.99116844, 0.98696518, 0.98317934, 0.97967982, 0.97618353, 0.97270717 },
+				{ 0.99545819, 0.99162936, 0.98748348, 0.98439720, 0.98046409, 0.97659497, 0.97326734 },
+				{ 0.99556818, 0.99161322, 0.98835122, 0.98452997, 0.98115409, 0.97775657, 0.97470649 },
+				{ 0.99589086, 0.99195452, 0.98863094, 0.98533826, 0.98218571, 0.97924090, 0.97578779 },
+				{ 0.99599153, 0.99258703, 0.98901592, 0.98583652, 0.98270112, 0.97957046, 0.97663543 },
+				{ 0.99615300, 0.99283935, 0.98924402, 0.98639639, 0.98339318, 0.98040907, 0.97704592 },
+				{ 0.99629445, 0.99301042, 0.98976724, 0.98654398, 0.98368363, 0.98097601, 0.97753866 },
+				{ 0.99632454, 0.99304199, 0.98996939, 0.98709939, 0.98413875, 0.98090333, 0.97862689 },
+				{ 0.99647338, 0.99313081, 0.99011235, 0.98702495, 0.98417641, 0.98118302, 0.97847686 },
+				{ 0.99625588, 0.99325054, 0.99013606, 0.98726767, 0.98415749, 0.98150532, 0.97881907 }
+			},
+			{
+				{ 0.99405116, 0.98869578, 0.98409778, 0.97946455, 0.97508670, 0.97120488, 0.96737765 },
+				{ 0.99430115, 0.98911337, 0.98437632, 0.98013109, 0.97589450, 0.97149294, 0.96726112 },
+				{ 0.99448920, 0.98948883, 0.98501790, 0.98066959, 0.97677630, 0.97282678, 0.96916043 },
+				{ 0.99480350, 0.99020363, 0.98594678, 0.98225963, 0.97833903, 0.97460718, 0.97077286 },
+				{ 0.99520059, 0.99111056, 0.98724129, 0.98357421, 0.98000784, 0.97670161, 0.97325673 },
+				{ 0.99542452, 0.99185707, 0.98806802, 0.98469855, 0.98124454, 0.97812186, 0.97492238 },
+				{ 0.99589998, 0.99233737, 0.98889661, 0.98588714, 0.98255795, 0.97982308, 0.97649604 },
+				{ 0.99620662, 0.99292390, 0.98976132, 0.98647098, 0.98377073, 0.98106472, 0.97822505 },
+				{ 0.99647142, 0.99329294, 0.99033303, 0.98722131, 0.98463336, 0.98201417, 0.97948099 },
+				{ 0.99653154, 0.99344089, 0.99064073, 0.98800931, 0.98522167, 0.98259146, 0.98018324 },
+				{ 0.99666245, 0.99377593, 0.99083930, 0.98834094, 0.98577628, 0.98349684, 0.98073067 },
+				{ 0.99680549, 0.99385284, 0.99112876, 0.98863489, 0.98588863, 0.98352839, 0.98084518 },
+				{ 0.99677167, 0.99377118, 0.99121333, 0.98857572, 0.98604439, 0.98377989, 0.98127467 }
+			},
+			{
+				{ 0.99281541, 0.98674160, 0.98172400, 0.97604530, 0.97123822, 0.96706427, 0.96216929 },
+				{ 0.99318667, 0.98713962, 0.98197592, 0.97729925, 0.97218643, 0.96789642, 0.96337750 },
+				{ 0.99351806, 0.98835899, 0.98321826, 0.97871030, 0.97427925, 0.96991118, 0.96592619 },
+				{ 0.99399915, 0.98932408, 0.98467420, 0.98049603, 0.97655200, 0.97287608, 0.96916990 },
+				{ 0.99500104, 0.99031355, 0.98654889, 0.98306045, 0.97962613, 0.97561425, 0.97239891 },
+				{ 0.99553780, 0.99158685, 0.98755709, 0.98453259, 0.98149233, 0.97788348, 0.97492093 },
+				{ 0.99582553, 0.99226105, 0.98920440, 0.98618588, 0.98305414, 0.98012335, 0.97704280 },
+				{ 0.99638059, 0.99313699, 0.98981244, 0.98700300, 0.98434574, 0.98173676, 0.97883377 },
+				{ 0.99652677, 0.99344485, 0.99061611, 0.98805484, 0.98537966, 0.98287499, 0.98048417 },
+				{ 0.99670368, 0.99389136, 0.99102755, 0.98860932, 0.98610221, 0.98346005, 0.98124892 },
+				{ 0.99680115, 0.99409436, 0.99139663, 0.98897551, 0.98679828, 0.98431330, 0.98216554 },
+				{ 0.99700579, 0.99414638, 0.99158961, 0.98949345, 0.98667751, 0.98452616, 0.98236016 },
+				{ 0.99683803, 0.99438942, 0.99156485, 0.98922470, 0.98676207, 0.98465730, 0.98236972 }
+			},
+			{
+				{ 0.99162443, 0.98492290, 0.97848495, 0.97254674, 0.96732167, 0.96213370, 0.95713343 },
+				{ 0.99193965, 0.98481979, 0.97934432, 0.97344960, 0.96786135, 0.96367378, 0.95899085 },
+				{ 0.99276664, 0.98684586, 0.98135562, 0.97657751, 0.97161886, 0.96679519, 0.96289627 },
+				{ 0.99396354, 0.98859213, 0.98354795, 0.97949026, 0.97501501, 0.97148780, 0.96683512 },
+				{ 0.99462416, 0.99015434, 0.98621441, 0.98247848, 0.97864297, 0.97495872, 0.97141236 },
+				{ 0.99533549, 0.99141195, 0.98768779, 0.98443588, 0.98111728, 0.97768856, 0.97442210 },
+				{ 0.99584670, 0.99238153, 0.98906231, 0.98615084, 0.98303286, 0.98037214, 0.97727581 },
+				{ 0.99619776, 0.99294569, 0.99032058, 0.98714375, 0.98434295, 0.98171268, 0.97948855 },
+				{ 0.99649163, 0.99354838, 0.99065889, 0.98829230, 0.98545399, 0.98331494, 0.98075007 },
+				{ 0.99682339, 0.99404044, 0.99109458, 0.98896359, 0.98638443, 0.98394122, 0.98206773 },
+				{ 0.99690703, 0.99387957, 0.99162384, 0.98938372, 0.98676010, 0.98441031, 0.98212270 },
+				{ 0.99683149, 0.99423102, 0.99181381, 0.98948903, 0.98750138, 0.98506199, 0.98300887 },
+				{ 0.99690741, 0.99430687, 0.99189509, 0.98963014, 0.98733180, 0.98491952, 0.98303161 }
+			},
+			{
+				{ 0.99004745, 0.98263100, 0.97479696, 0.96823075, 0.96192342, 0.95638847, 0.95066068 },
+				{ 0.99053050, 0.98312283, 0.97636348, 0.97007825, 0.96397143, 0.95865025, 0.95379042 },
+				{ 0.99166481, 0.98523624, 0.97961725, 0.97435662, 0.96867613, 0.96452480, 0.95932049 },
+				{ 0.99320230, 0.98757104, 0.98314537, 0.97822627, 0.97310335, 0.96948230, 0.96561792 },
+				{ 0.99438797, 0.98974818, 0.98538965, 0.98170656, 0.97775698, 0.97389956, 0.97018683 },
+				{ 0.99526690, 0.99132341, 0.98732893, 0.98415853, 0.98056703, 0.97746773, 0.97401330 },
+				{ 0.99559279, 0.99209923, 0.98901871, 0.98600899, 0.98287243, 0.97989853, 0.97705404 },
+				{ 0.99607693, 0.99296040, 0.98957768, 0.98718030, 0.98445895, 0.98200528, 0.97936607 },
+				{ 0.99631441, 0.99350002, 0.99077254, 0.98784264, 0.98571384, 0.98297135, 0.98066918 },
+				{ 0.99661444, 0.99376594, 0.99109606, 0.98885332, 0.98616713, 0.98402200, 0.98202561 },
+				{ 0.99680854, 0.99403814, 0.99157083, 0.98913342, 0.98721912, 0.98439616, 0.98267395 },
+				{ 0.99701439, 0.99407822, 0.99179304, 0.98915259, 0.98716026, 0.98492967, 0.98289415 },
+				{ 0.99696580, 0.99420095, 0.99185593, 0.98970512, 0.98722913, 0.98507172, 0.98277114 }
+			},
+			{
+				{ 0.98810374, 0.97896174, 0.97115289, 0.96374595, 0.95649936, 0.95056399, 0.94393642 },
+				{ 0.98922362, 0.98058314, 0.97319815, 0.96619876, 0.96016367, 0.95361710, 0.94836049 },
+				{ 0.99099924, 0.98398706, 0.97738427, 0.97198738, 0.96580636, 0.96082460, 0.95532186 },
+				{ 0.99262819, 0.98709040, 0.98202004, 0.97654933, 0.97213825, 0.96778729, 0.96355196 },
+				{ 0.99412182, 0.98914517, 0.98477538, 0.98047475, 0.97646895, 0.97329648, 0.96919837 },
+				{ 0.99487250, 0.99070917, 0.98664269, 0.98337099, 0.97980979, 0.97676690, 0.97372837 },
+				{ 0.99550209, 0.99202043, 0.98872012, 0.98535734, 0.98224208, 0.97908603, 0.97661677 },
+				{ 0.99608284, 0.99265088, 0.98936811, 0.98683266, 0.98405685, 0.98170052, 0.97928993 },
+				{ 0.99620041, 0.99320302, 0.99035899, 0.98811319, 0.98566927, 0.98263875, 0.97999634 },
+				{ 0.99658557, 0.99352539, 0.99110521, 0.98871079, 0.98566519, 0.98407389, 0.98162763 },
+				{ 0.99655667, 0.99398840, 0.99138724, 0.98863379, 0.98648278, 0.98420975, 0.98207785 },
+				{ 0.99680542, 0.99399829, 0.99156799, 0.98934114, 0.98676818, 0.98455021, 0.98252357 },
+				{ 0.99678017, 0.99400521, 0.99180102, 0.98927081, 0.98684776, 0.98458800, 0.98261325 }
+			},
+			{
+				{ 0.98621075, 0.97597504, 0.96705386, 0.95955186, 0.95093610, 0.94404233, 0.93723951 },
+				{ 0.98756705, 0.97841787, 0.97025896, 0.96269418, 0.95513771, 0.94838872, 0.94237707 },
+				{ 0.99001385, 0.98204962, 0.97532658, 0.96924474, 0.96295052, 0.95743162, 0.95260157 },
+				{ 0.99210742, 0.98580556, 0.98039682, 0.97513507, 0.97031755, 0.96546566, 0.96115038 },
+				{ 0.99375982, 0.98855270, 0.98408567, 0.97953269, 0.97558598, 0.97171860, 0.96828114 },
+				{ 0.99450645, 0.99058364, 0.98632763, 0.98267050, 0.97933568, 0.97631419, 0.97291671 },
+				{ 0.99538029, 0.99125132, 0.98831236, 0.98482295, 0.98194026, 0.97900814, 0.97599165 },
+				{ 0.99570735, 0.99240893, 0.98934609, 0.98624132, 0.98346257, 0.98142583, 0.97841266 },
+				{ 0.99625122, 0.99311743, 0.99005179, 0.98720846, 0.98484936, 0.98249226, 0.97938178 },
+				{ 0.99631143, 0.99323005, 0.99085736, 0.98808093, 0.98556813, 0.98361282, 0.98054863 },
+				{ 0.99642585, 0.99360178, 0.99098874, 0.98834854, 0.98603392, 0.98379431, 0.98169726 },
+				{ 0.99650761, 0.99380625, 0.99108466, 0.98858780, 0.98653490, 0.98436171, 0.98212763 },
+				{ 0.99656774, 0.99388237, 0.99138897, 0.98898538, 0.98664578, 0.98433088, 0.98210151 }
+			},
+			{
+				{ 0.98446773, 0.97290016, 0.96249792, 0.95353657, 0.94499860, 0.93717905, 0.92950152 },
+				{ 0.98620295, 0.97552938, 0.96662498, 0.95799589, 0.95012585, 0.94333050, 0.93657412 },
+				{ 0.98920391, 0.98067034, 0.97351351, 0.96645521, 0.96049145, 0.95451873, 0.94869236 },
+				{ 0.99129245, 0.98510450, 0.97937526, 0.97406338, 0.96891806, 0.96430919, 0.95920125 },
+				{ 0.99346846, 0.98813036, 0.98307810, 0.97837177, 0.97461708, 0.97046342, 0.96707823 },
+				{ 0.99436025, 0.98980870, 0.98583029, 0.98188956, 0.97804701, 0.97484720, 0.97196362 },
+				{ 0.99506711, 0.99105050, 0.98771215, 0.98422290, 0.98120890, 0.97806818, 0.97506328 },
+				{ 0.99559861, 0.99216215, 0.98870632, 0.98576963, 0.98315104, 0.98015480, 0.97726181 },
+				{ 0.99602425, 0.99258290, 0.98949062, 0.98654925, 0.98421147, 0.98162161, 0.97927126 },
+				{ 0.99632919, 0.99313677, 0.99052588, 0.98730803, 0.98478144, 0.98285476, 0.98037136 },
+				{ 0.99645673, 0.99355859, 0.99075263, 0.98795524, 0.98589636, 0.98326705, 0.98074691 },
+				{ 0.99646661, 0.99350543, 0.99077702, 0.98830236, 0.98582444, 0.98344240, 0.98133299 },
+				{ 0.99645814, 0.99344150, 0.99088091, 0.98852422, 0.98584057, 0.98377370, 0.98175372 }
+			},
+			{
+				{ 0.98230083, 0.96908938, 0.95782126, 0.94763042, 0.93848238, 0.92988385, 0.92144258 },
+				{ 0.98447807, 0.97336511, 0.96270600, 0.95359063, 0.94564913, 0.93756950, 0.93021881 },
+				{ 0.98837271, 0.97958263, 0.97151674, 0.96414331, 0.95780158, 0.95124479, 0.94447511 },
+				{ 0.99110204, 0.98450032, 0.97807351, 0.97238230, 0.96734820, 0.96227645, 0.95767773 },
+				{ 0.99296252, 0.98730622, 0.98262010, 0.97764540, 0.97337817, 0.96919352, 0.96537875 },
+				{ 0.99424134, 0.98933248, 0.98491684, 0.98106280, 0.97743240, 0.97394561, 0.97084954 },
+				{ 0.99500845, 0.99053494, 0.98703754, 0.98328521, 0.97992999, 0.97732549, 0.97368412 },
+				{ 0.99525531, 0.99183725, 0.98840986, 0.98538201, 0.98214894, 0.97922083, 0.97647935 },
+				{ 0.99583816, 0.99217564, 0.98899138, 0.98638957, 0.98336230, 0.98081964, 0.97829007 },
+				{ 0.99582093, 0.99263935, 0.98975893, 0.98676344, 0.98463942, 0.98243842, 0.97902983 },
+				{ 0.99600352, 0.99308264, 0.99025726, 0.98733951, 0.98514441, 0.98259038, 0.98003097 },
+				{ 0.99621934, 0.99312169, 0.99044053, 0.98772256, 0.98532523, 0.98263068, 0.98091229 },
+				{ 0.99634388, 0.99318425, 0.99056011, 0.98733517, 0.98541646, 0.98274301, 0.98049400 }
+			},
+			{
+				{ 0.97986882, 0.96529507, 0.95283899, 0.94235039, 0.93146622, 0.92184150, 0.91374194 },
+				{ 0.98282272, 0.97005145, 0.95872256, 0.94959869, 0.94032386, 0.93131629, 0.92373248 },
+				{ 0.98740474, 0.97794839, 0.96897349, 0.96152008, 0.95502165, 0.94865962, 0.94204583 },
+				{ 0.99053466, 0.98389787, 0.97699092, 0.97087909, 0.96564597, 0.95989500, 0.95451250 },
+				{ 0.99267424, 0.98657801, 0.98177012, 0.97677615, 0.97241504, 0.96815387, 0.96339360 },
+				{ 0.99378873, 0.98885829, 0.98428470, 0.98032342, 0.97675566, 0.97290545, 0.96929381 },
+				{ 0.99484943, 0.99042320, 0.98677790, 0.98285598, 0.97974435, 0.97579967, 0.97297388 },
+				{ 0.99515122, 0.99122335, 0.98780205, 0.98468988, 0.98143222, 0.97845934, 0.97555796 },
+				{ 0.99560942, 0.99191787, 0.98871003, 0.98543723, 0.98277857, 0.97992278, 0.97736012 },
+				{ 0.99580537, 0.99240418, 0.98909437, 0.98633356, 0.98347154, 0.98073175, 0.97868677 },
+				{ 0.99608131, 0.99242768, 0.98967783, 0.98681081, 0.98416741, 0.98125067, 0.97901755 },
+				{ 0.99592196, 0.99275489, 0.98971484, 0.98698365, 0.98450601, 0.98202126, 0.97944895 },
+				{ 0.99603037, 0.99290769, 0.99002677, 0.98735223, 0.98488885, 0.98206748, 0.98003861 }
+			},
+			{
+				{ 0.97772708, 0.96078444, 0.94800220, 0.93550246, 0.92460039, 0.91391487, 0.90439517 },
+				{ 0.98114322, 0.96701519, 0.95602445, 0.94470226, 0.93469891, 0.92574834, 0.91856645 },
+				{ 0.98664311, 0.97622159, 0.96754763, 0.95926695, 0.95230950, 0.94554460, 0.93781839 },
+				{ 0.99027738, 0.98262400, 0.97565152, 0.96971031, 0.96382130, 0.95808992, 0.95303965 },
+				{ 0.99232838, 0.98629207, 0.98051185, 0.97579685, 0.97090586, 0.96634263, 0.96177627 },
+				{ 0.99335679, 0.98810628, 0.98385677, 0.97918960, 0.97549929, 0.97117961, 0.96831884 },
+				{ 0.99435638, 0.98992352, 0.98566679, 0.98188709, 0.97875116, 0.97487714, 0.97164415 },
+				{ 0.99472527, 0.99071027, 0.98675893, 0.98342571, 0.98052572, 0.97729619, 0.97414605 },
+				{ 0.99526365, 0.99153748, 0.98809387, 0.98502497, 0.98165337, 0.97892148, 0.97594879 },
+				{ 0.99555685, 0.99179481, 0.98860156, 0.98557357, 0.98249981, 0.98014399, 0.97728813 },
+				{ 0.99578744, 0.99211066, 0.98886255, 0.98655567, 0.98348444, 0.98093490, 0.97863976 },
+				{ 0.99588218, 0.99251615, 0.98952122, 0.98627065, 0.98348412, 0.98102338, 0.97842629 },
+				{ 0.99601390, 0.99239531, 0.98935042, 0.98637559, 0.98388710, 0.98137294, 0.97898505 }
+			},
+			{
+				{ 0.97525598, 0.95749257, 0.94239063, 0.92917779, 0.91676623, 0.90616324, 0.89583488 },
+				{ 0.97965496, 0.96481358, 0.95142409, 0.94089372, 0.93004115, 0.92012042, 0.91089710 },
+				{ 0.98564337, 0.97462160, 0.96596380, 0.95668415, 0.94940198, 0.94168060, 0.93464618 },
+				{ 0.98950036, 0.98153390, 0.97472178, 0.96765793, 0.96191692, 0.95595817, 0.95031321 },
+				{ 0.99193409, 0.98534078, 0.97972767, 0.97456572, 0.96937112, 0.96508590, 0.96022497 },
+				{ 0.99313564, 0.98768025, 0.98331050, 0.97833818, 0.97409628, 0.97072771, 0.96608338 },
+				{ 0.99405448, 0.98927659, 0.98517701, 0.98092640, 0.97714403, 0.97394080, 0.96997169 },
+				{ 0.99446796, 0.99035852, 0.98641738, 0.98277637, 0.97980462, 0.97619760, 0.97262416 },
+				{ 0.99521137, 0.99079464, 0.98712537, 0.98392564, 0.98092368, 0.97790116, 0.97495393 },
+				{ 0.99519133, 0.99160162, 0.98819167, 0.98478721, 0.98176223, 0.97914601, 0.97679133 },
+				{ 0.99542070, 0.99181440, 0.98878269, 0.98544172, 0.98259764, 0.97973215, 0.97710472 },
+				{ 0.99563128, 0.99192460, 0.98881680, 0.98564884, 0.98304430, 0.97991018, 0.97732903 },
+				{ 0.99559554, 0.99210460, 0.98903845, 0.98600494, 0.98335028, 0.98013789, 0.97764887 }
+			},
+			{
+				{ 0.97247877, 0.95375638, 0.93714535, 0.92247394, 0.90922925, 0.89741830, 0.88601695 },
+				{ 0.97780476, 0.96166302, 0.94812632, 0.93654063, 0.92465809, 0.91421886, 0.90472335 },
+				{ 0.98477557, 0.97363188, 0.96368971, 0.95452921, 0.94669491, 0.93869047, 0.93242021 },
+				{ 0.98881499, 0.98089162, 0.97315720, 0.96647133, 0.96039215, 0.95470670, 0.94857118 },
+				{ 0.99138023, 0.98493428, 0.97868610, 0.97337598, 0.96799140, 0.96358685, 0.95828477 },
+				{ 0.99299215, 0.98714563, 0.98184291, 0.97681075, 0.97312002, 0.96887919, 0.96540554 },
+				{ 0.99368813, 0.98875712, 0.98401341, 0.98018844, 0.97599858, 0.97201265, 0.96907257 },
+				{ 0.99431525, 0.98960379, 0.98580984, 0.98179306, 0.97875231, 0.97534368, 0.97175311 },
+				{ 0.99467290, 0.99043195, 0.98698000, 0.98325177, 0.98001114, 0.97660595, 0.97372364 },
+				{ 0.99493591, 0.99103282, 0.98748200, 0.98440582, 0.98111623, 0.97752447, 0.97471382 },
+				{ 0.99507849, 0.99142130, 0.98816559, 0.98440869, 0.98189836, 0.97853784, 0.97581779 },
+				{ 0.99533490, 0.99138925, 0.98831159, 0.98481540, 0.98185558, 0.97925104, 0.97698429 },
+				{ 0.99540461, 0.99156881, 0.98840530, 0.98535887, 0.98215905, 0.97934028, 0.97676137 }
+			},
+			{
+				{ 0.97033663, 0.94893119, 0.93115494, 0.91569721, 0.90131893, 0.88798819, 0.87733188 },
+				{ 0.97616315, 0.95947194, 0.94451297, 0.93085660, 0.92024488, 0.90824940, 0.89810247 },
+				{ 0.98400067, 0.97199549, 0.96135357, 0.95204551, 0.94397608, 0.93546078, 0.92835883 },
+				{ 0.98882603, 0.98006138, 0.97207298, 0.96485263, 0.95849564, 0.95177347, 0.94653024 },
+				{ 0.99100848, 0.98432299, 0.97791272, 0.97195791, 0.96712116, 0.96203360, 0.95667410 },
+				{ 0.99228674, 0.98650985, 0.98094331, 0.97645794, 0.97171207, 0.96756211, 0.96321059 },
+				{ 0.99327244, 0.98792714, 0.98343300, 0.97925332, 0.97530368, 0.97118027, 0.96718510 },
+				{ 0.99393777, 0.98931029, 0.98479915, 0.98101355, 0.97759702, 0.97399940, 0.97032898 },
+				{ 0.99445010, 0.99009822, 0.98604650, 0.98231070, 0.97876524, 0.97590124, 0.97253232 },
+				{ 0.99487411, 0.99047883, 0.98700698, 0.98354569, 0.98010979, 0.97671903, 0.97424767 },
+				{ 0.99480294, 0.99099136, 0.98735771, 0.98398235, 0.98055931, 0.97793669, 0.97457187 },
+				{ 0.99505077, 0.99124360, 0.98775980, 0.98439768, 0.98137789, 0.97818046, 0.97543069 },
+				{ 0.99513940, 0.99143332, 0.98772276, 0.98417816, 0.98107575, 0.97813182, 0.97544516 }
+			},
+			{
+				{ 0.96705914, 0.94386761, 0.92532803, 0.90854410, 0.89369798, 0.87984784, 0.86703247 },
+				{ 0.97445824, 0.95581232, 0.94034566, 0.92682603, 0.91393414, 0.90373005, 0.89231738 },
+				{ 0.98344739, 0.97047769, 0.95934702, 0.95006086, 0.94056594, 0.93285747, 0.92382616 },
+				{ 0.98796616, 0.97927543, 0.97070910, 0.96330715, 0.95638662, 0.94980820, 0.94404934 },
+				{ 0.99048437, 0.98319996, 0.97664888, 0.97050715, 0.96529105, 0.96027211, 0.95476231 },
+				{ 0.99197898, 0.98599291, 0.98039475, 0.97521193, 0.97017479, 0.96633939, 0.96176139 },
+				{ 0.99296104, 0.98764021, 0.98277420, 0.97834965, 0.97374919, 0.96938982, 0.96610519 },
+				{ 0.99356808, 0.98876511, 0.98414228, 0.98039416, 0.97593925, 0.97216131, 0.96929895 },
+				{ 0.99411853, 0.98957873, 0.98541373, 0.98183611, 0.97777841, 0.97439127, 0.97122127 },
+				{ 0.99431424, 0.99014443, 0.98625995, 0.98239185, 0.97887615, 0.97570265, 0.97238000 },
+				{ 0.99459880, 0.99053809, 0.98657785, 0.98299989, 0.97993373, 0.97631173, 0.97326000 },
+				{ 0.99488736, 0.99083165, 0.98723762, 0.98389806, 0.97995698, 0.97743910, 0.97425642 },
+				{ 0.99486042, 0.99089231, 0.98710484, 0.98323057, 0.98041749, 0.97728975, 0.97455038 }
+			},
+			{
+				{ 0.96451295, 0.93955148, 0.91850943, 0.90016381, 0.88479153, 0.87059382, 0.85752671 },
+				{ 0.97279845, 0.95393625, 0.93662515, 0.92214449, 0.90986060, 0.89678190, 0.88555082 },
+				{ 0.98244366, 0.96957768, 0.95851871, 0.94758397, 0.93893821, 0.92954755, 0.92123120 },
+				{ 0.98761310, 0.97785269, 0.96955821, 0.96161667, 0.95412432, 0.94848464, 0.94104688 },
+				{ 0.99015924, 0.98245970, 0.97596657, 0.96919698, 0.96375428, 0.95829653, 0.95294445 },
+				{ 0.99171335, 0.98535345, 0.97953775, 0.97409783, 0.96899520, 0.96420083, 0.95946898 },
+				{ 0.99276506, 0.98695829, 0.98204307, 0.97712564, 0.97267320, 0.96849121, 0.96426119 },
+				{ 0.99332997, 0.98828200, 0.98360482, 0.97921098, 0.97527567, 0.97140022, 0.96677732 },
+				{ 0.99382286, 0.98896168, 0.98484426, 0.98060983, 0.97724329, 0.97315230, 0.97002912 },
+				{ 0.99423536, 0.98984995, 0.98566237, 0.98148674, 0.97795419, 0.97435408, 0.97101978 },
+				{ 0.99448735, 0.99025210, 0.98611987, 0.98250799, 0.97874624, 0.97549946, 0.97220585 },
+				{ 0.99454893, 0.99038509, 0.98638730, 0.98267029, 0.98006036, 0.97650380, 0.97334002 },
+				{ 0.99428276, 0.99020228, 0.98658569, 0.98242084, 0.97916883, 0.97608289, 0.97260228 }
+			},
+			{
+				{ 0.96080167, 0.93445443, 0.91234121, 0.89358322, 0.87642506, 0.86182841, 0.84783476 },
+				{ 0.97133507, 0.94993961, 0.93355191, 0.91722991, 0.90440803, 0.89089130, 0.87990331 },
+				{ 0.98169195, 0.96793200, 0.95654021, 0.94478117, 0.93537443, 0.92626975, 0.91775440 },
+				{ 0.98691789, 0.97681855, 0.96838457, 0.96000447, 0.95287412, 0.94542892, 0.93889193 },
+				{ 0.99005574, 0.98197102, 0.97456271, 0.96829271, 0.96237562, 0.95631468, 0.95046966 },
+				{ 0.99146932, 0.98457597, 0.97841175, 0.97313625, 0.96760037, 0.96305083, 0.95821661 },
+				{ 0.99232374, 0.98640656, 0.98127854, 0.97594742, 0.97184897, 0.96634959, 0.96335305 },
+				{ 0.99305706, 0.98782263, 0.98260778, 0.97811277, 0.97413716, 0.96986874, 0.96609630 },
+				{ 0.99366318, 0.98849781, 0.98398728, 0.97974813, 0.97579655, 0.97223503, 0.96814904 },
+				{ 0.99402646, 0.98934888, 0.98491007, 0.98039702, 0.97726812, 0.97339794, 0.96997912 },
+				{ 0.99416112, 0.98980503, 0.98554156, 0.98189076, 0.97803124, 0.97478943, 0.97117427 },
+				{ 0.99428138, 0.98985678, 0.98589820, 0.98183136, 0.97761755, 0.97503061, 0.97188442 },
+				{ 0.99416806, 0.98987141, 0.98605043, 0.98193623, 0.97817589, 0.97533309, 0.97193747 }
+			},
+			{
+				{ 0.95796456, 0.92941630, 0.90578156, 0.88574441, 0.86795903, 0.85235711, 0.83766025 },
+				{ 0.96935801, 0.94826983, 0.92943874, 0.91422851, 0.89925281, 0.88633096, 0.87225721 },
+				{ 0.98061438, 0.96670853, 0.95395965, 0.94290096, 0.93269193, 0.92275125, 0.91399133 },
+				{ 0.98611548, 0.97622026, 0.96658635, 0.95919795, 0.95104061, 0.94435469, 0.93707019 },
+				{ 0.98919656, 0.98107247, 0.97367765, 0.96677234, 0.96055855, 0.95447361, 0.94917175 },
+				{ 0.99071636, 0.98384073, 0.97789893, 0.97190015, 0.96607823, 0.96188214, 0.95655630 },
+				{ 0.99185263, 0.98587047, 0.98000761, 0.97513640, 0.97033901, 0.96497728, 0.96136000 },
+				{ 0.99298212, 0.98717451, 0.98226028, 0.97692420, 0.97336367, 0.96852500, 0.96471845 },
+				{ 0.99353732, 0.98804506, 0.98347017, 0.97887919, 0.97436745, 0.97097812, 0.96750124 },
+				{ 0.99356545, 0.98843692, 0.98388349, 0.97995502, 0.97636610, 0.97198323, 0.96856712 },
+				{ 0.99375030, 0.98903494, 0.98474779, 0.98067918, 0.97648216, 0.97308874, 0.96916561 },
+				{ 0.99395353, 0.98936477, 0.98528798, 0.98117438, 0.97725440, 0.97345950, 0.97037061 },
+				{ 0.99416650, 0.98942531, 0.98505925, 0.98119714, 0.97757625, 0.97363992, 0.97066985 }
+			},
+			{
+				{ 0.95488452, 0.92527046, 0.89948035, 0.87824341, 0.86024766, 0.84286763, 0.82763351 },
+				{ 0.96816394, 0.94525644, 0.92609143, 0.90898493, 0.89301060, 0.87936534, 0.86697879 },
+				{ 0.98012444, 0.96552037, 0.95289126, 0.94068037, 0.92961596, 0.91962054, 0.91165242 },
+				{ 0.98587542, 0.97511170, 0.96586583, 0.95734581, 0.94899828, 0.94112376, 0.93433337 },
+				{ 0.98851014, 0.98003090, 0.97223405, 0.96546078, 0.95866561, 0.95301823, 0.94658467 },
+				{ 0.99043941, 0.98288244, 0.97626415, 0.97061569, 0.96510060, 0.95956152, 0.95429212 },
+				{ 0.99162220, 0.98530068, 0.97975221, 0.97447157, 0.96902912, 0.96431097, 0.95979434 },
+				{ 0.99241947, 0.98651041, 0.98132383, 0.97649798, 0.97206558, 0.96729691, 0.96340932 },
+				{ 0.99302942, 0.98738893, 0.98261599, 0.97809397, 0.97377494, 0.96944440, 0.96539211 },
+				{ 0.99335929, 0.98833366, 0.98353247, 0.97883152, 0.97483947, 0.97102376, 0.96706994 },
+				{ 0.99352795, 0.98875970, 0.98389162, 0.97998094, 0.97599253, 0.97194046, 0.96804938 },
+				{ 0.99392634, 0.98868654, 0.98452883, 0.98014324, 0.97625678, 0.97242049, 0.96941065 },
+				{ 0.99402505, 0.98912277, 0.98469547, 0.98040751, 0.97647426, 0.97315244, 0.96940722 }
+			},
+			{
+				{ 0.95159389, 0.91910112, 0.89323295, 0.87080697, 0.85038900, 0.83226192, 0.81781551 },
+				{ 0.96626180, 0.94233565, 0.92269878, 0.90555288, 0.88835702, 0.87454060, 0.86033217 },
+				{ 0.97967723, 0.96427598, 0.95045818, 0.93912295, 0.92720334, 0.91770705, 0.90726939 },
+				{ 0.98550852, 0.97388042, 0.96411071, 0.95480630, 0.94715640, 0.93855119, 0.93158440 },
+				{ 0.98831957, 0.97924601, 0.97145615, 0.96400989, 0.95710198, 0.95077641, 0.94428919 },
+				{ 0.99013515, 0.98248970, 0.97548156, 0.96929693, 0.96361428, 0.95785483, 0.95201724 },
+				{ 0.99148134, 0.98447935, 0.97852985, 0.97290662, 0.96746633, 0.96244021, 0.95849159 },
+				{ 0.99225713, 0.98608001, 0.98012572, 0.97579634, 0.97052242, 0.96631305, 0.96157965 },
+				{ 0.99258225, 0.98710629, 0.98212446, 0.97728227, 0.97295907, 0.96833006, 0.96443600 },
+				{ 0.99320152, 0.98767313, 0.98310802, 0.97829193, 0.97374694, 0.96956630, 0.96589650 },
+				{ 0.99329525, 0.98826626, 0.98370265, 0.97879819, 0.97466257, 0.97069489, 0.96722831 },
+				{ 0.99338362, 0.98843764, 0.98359049, 0.97932841, 0.97537761, 0.97140644, 0.96756017 },
+				{ 0.99367597, 0.98843324, 0.98420189, 0.97975517, 0.97572599, 0.97188785, 0.96815397 }
+			}
+		},
+		{
+			{
+				{ 0.99695915, 0.99414013, 0.99126347, 0.98852076, 0.98619811, 0.98350081, 0.98091944 },
+				{ 0.99687349, 0.99400539, 0.99136602, 0.98877795, 0.98609110, 0.98362604, 0.98068351 },
+				{ 0.99680345, 0.99388576, 0.99091492, 0.98833496, 0.98569271, 0.98301603, 0.98034206 },
+				{ 0.99660319, 0.99365021, 0.99071901, 0.98788865, 0.98497612, 0.98238120, 0.97976076 },
+				{ 0.99645284, 0.99304623, 0.99008205, 0.98695114, 0.98405403, 0.98148071, 0.97862806 },
+				{ 0.99611698, 0.99248121, 0.98915052, 0.98600082, 0.98293731, 0.97986841, 0.97657779 },
+				{ 0.99571528, 0.99198615, 0.98818933, 0.98432998, 0.98093731, 0.97753950, 0.97411856 },
+				{ 0.99508358, 0.99047479, 0.98641442, 0.98236322, 0.97824561, 0.97410347, 0.97084317 },
+				{ 0.99412422, 0.98897846, 0.98349005, 0.97869742, 0.97386393, 0.96924349, 0.96539236 },
+				{ 0.99240880, 0.98567939, 0.97950052, 0.97328670, 0.96715966, 0.96097666, 0.95622096 },
+				{ 0.98928880, 0.97966101, 0.97039325, 0.96208167, 0.95401262, 0.94668494, 0.94003829 },
+				{ 0.98012342, 0.96373146, 0.94958522, 0.93584507, 0.92405719, 0.91420789, 0.90644480 },
+				{ 0.94984307, 0.91494129, 0.89176231, 0.87661712, 0.87175183, 0.86951140, 0.87281522 }
+			},
+			{
+				{ 0.99680653, 0.99420791, 0.99117174, 0.98852484, 0.98594574, 0.98329249, 0.98083449 },
+				{ 0.99684220, 0.99398727, 0.99134375, 0.98848771, 0.98581777, 0.98325340, 0.98074981 },
+				{ 0.99670066, 0.99392574, 0.99110792, 0.98830191, 0.98566010, 0.98283894, 0.98043142 },
+				{ 0.99662046, 0.99372885, 0.99057428, 0.98785664, 0.98517438, 0.98231811, 0.97941108 },
+				{ 0.99649116, 0.99334252, 0.99013623, 0.98688048, 0.98411939, 0.98107943, 0.97871181 },
+				{ 0.99614045, 0.99272524, 0.98938740, 0.98583514, 0.98289211, 0.97974811, 0.97709908 },
+				{ 0.99569463, 0.99193085, 0.98850776, 0.98473776, 0.98096512, 0.97761083, 0.97435743 },
+				{ 0.99522320, 0.99088754, 0.98685213, 0.98247457, 0.97867700, 0.97497842, 0.97124910 },
+				{ 0.99443174, 0.98916727, 0.98470049, 0.97977416, 0.97530026, 0.97064401, 0.96644947 },
+				{ 0.99313515, 0.98708400, 0.98134616, 0.97576671, 0.97043097, 0.96527337, 0.96047645 },
+				{ 0.99124355, 0.98402929, 0.97672029, 0.97014678, 0.96356244, 0.95777169, 0.95136119 },
+				{ 0.98938644, 0.98030716, 0.97165804, 0.96359377, 0.95575085, 0.94866581, 0.94194968 },
+				{ 0.98807928, 0.97777768, 0.96850847, 0.95959705, 0.95200150, 0.94489897, 0.93689727 }
+			},
+			{
+				{ 0.99677190, 0.99380604, 0.99093108, 0.98822672, 0.98537249, 0.98289552, 0.98054076 },
+				{ 0.99675622, 0.99369983, 0.99104494, 0.98811729, 0.98538302, 0.98294868, 0.98011739 },
+				{ 0.99669269, 0.99358130, 0.99071435, 0.98782226, 0.98510949, 0.98241306, 0.97979732 },
+				{ 0.99653676, 0.99351279, 0.99033400, 0.98722114, 0.98447548, 0.98161540, 0.97887383 },
+				{ 0.99636144, 0.99294770, 0.99006134, 0.98677456, 0.98385961, 0.98104355, 0.97801104 },
+				{ 0.99603783, 0.99285306, 0.98910396, 0.98619005, 0.98273652, 0.97961513, 0.97669139 },
+				{ 0.99574288, 0.99205775, 0.98828559, 0.98498334, 0.98143519, 0.97849218, 0.97493847 },
+				{ 0.99531942, 0.99116395, 0.98735394, 0.98363030, 0.98030032, 0.97619658, 0.97287112 },
+				{ 0.99494110, 0.99040604, 0.98604193, 0.98170264, 0.97771221, 0.97369210, 0.96996274 },
+				{ 0.99438854, 0.98926953, 0.98460548, 0.97978434, 0.97559085, 0.97121719, 0.96707917 },
+				{ 0.99367684, 0.98811899, 0.98328855, 0.97756771, 0.97294325, 0.96858349, 0.96409410 },
+				{ 0.99320535, 0.98720217, 0.98148752, 0.97659175, 0.97135472, 0.96639864, 0.96204127 },
+				{ 0.99303227, 0.98711443, 0.98092218, 0.97577439, 0.97020575, 0.96564224, 0.96082965 }
+			},
+			{
+				{ 0.99625588, 0.99325054, 0.99013606, 0.98726767, 0.98415749, 0.98150532, 0.97881907 },
+				{ 0.99647338, 0.99313081, 0.99011235, 0.98702495, 0.98417641, 0.98118302, 0.97847686 },
+				{ 0.99632454, 0.99304199, 0.98996939, 0.98709939, 0.98413875, 0.98090333, 0.97862689 },
+				{ 0.99629445, 0.99301042, 0.98976724, 0.98654398, 0.98368363, 0.98097601, 0.97753866 },
+				{ 0.99615300, 0.99283935, 0.98924402, 0.98639639, 0.98339318, 0.98040907, 0.97704592 },
+				{ 0.99599153, 0.99258703, 0.98901592, 0.98583652, 0.98270112, 0.97957046, 0.97663543 },
+				{ 0.99589086, 0.99195452, 0.98863094, 0.98533826, 0.98218571, 0.97924090, 0.97578779 },
+				{ 0.99556818, 0.99161322, 0.98835122, 0.98452997, 0.98115409, 0.97775657, 0.97470649 },
+				{ 0.99545819, 0.99162936, 0.98748348, 0.98439720, 0.98046409, 0.97659497, 0.97326734 },
+				{ 0.99528163, 0.99116844, 0.98696518, 0.98317934, 0.97967982, 0.97618353, 0.97270717 },
+				{ 0.99508310, 0.99080265, 0.98673345, 0.98264043, 0.97875640, 0.97549886, 0.97132028 },
+				{ 0.99495899, 0.99041557, 0.98628481, 0.98258633, 0.97852443, 0.97502515, 0.97129421 },
+				{ 0.99505582, 0.99052087, 0.98624067, 0.98244935, 0.97797759, 0.97510226, 0.97152498 }
+			},
+			{
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+				{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 }
+			},
+			{
+				{ 0.99514964, 0.99096677, 0.98707425, 0.98329609, 0.97989367, 0.97638772, 0.97299060 },
+				{ 0.99509150, 0.99104393, 0.98741459, 0.98336482, 0.98037033, 0.97666356, 0.97355781 },
+				{ 0.99519295, 0.99123640, 0.98727067, 0.98387891, 0.98037403, 0.97723172, 0.97375327 },
+				{ 0.99525803, 0.99131978, 0.98758176, 0.98426671, 0.98071300, 0.97773957, 0.97431171 },
+				{ 0.99565728, 0.99157731, 0.98822242, 0.98454313, 0.98146590, 0.97841321, 0.97515283 },
+				{ 0.99575297, 0.99185684, 0.98856270, 0.98514920, 0.98227111, 0.97876875, 0.97601033 },
+				{ 0.99595992, 0.99228348, 0.98892944, 0.98546255, 0.98274201, 0.97965628, 0.97678372 },
+				{ 0.99598178, 0.99256910, 0.98927277, 0.98611328, 0.98325464, 0.98029341, 0.97726170 },
+				{ 0.99601162, 0.99248545, 0.98971792, 0.98642096, 0.98394237, 0.98082096, 0.97807245 },
+				{ 0.99618978, 0.99288971, 0.98994019, 0.98670998, 0.98427821, 0.98127007, 0.97837421 },
+				{ 0.99630966, 0.99315113, 0.99031687, 0.98720967, 0.98436322, 0.98161973, 0.97911709 },
+				{ 0.99624184, 0.99321147, 0.99027676, 0.98724675, 0.98438596, 0.98204650, 0.97899019 },
+				{ 0.99654506, 0.99298587, 0.99017361, 0.98732769, 0.98455267, 0.98179355, 0.97948433 }
+			},
+			{
+				{ 0.99426860, 0.98964685, 0.98481109, 0.98072892, 0.97669927, 0.97303534, 0.96885003 },
+				{ 0.99429683, 0.98949157, 0.98518569, 0.98139563, 0.97737363, 0.97316784, 0.96983120 },
+				{ 0.99457194, 0.98986932, 0.98561876, 0.98180378, 0.97799611, 0.97502329, 0.97050042 },
+				{ 0.99472876, 0.99041578, 0.98658806, 0.98266241, 0.97880492, 0.97551591, 0.97205734 },
+				{ 0.99526759, 0.99122416, 0.98740583, 0.98365795, 0.98040713, 0.97682332, 0.97354550 },
+				{ 0.99547587, 0.99184743, 0.98827458, 0.98490036, 0.98152225, 0.97830540, 0.97540994 },
+				{ 0.99579778, 0.99229739, 0.98893169, 0.98553802, 0.98249850, 0.97983765, 0.97722778 },
+				{ 0.99597945, 0.99267239, 0.98955445, 0.98631173, 0.98383284, 0.98080061, 0.97826076 },
+				{ 0.99618813, 0.99310232, 0.99006428, 0.98724752, 0.98440660, 0.98158895, 0.97917421 },
+				{ 0.99638842, 0.99341725, 0.99028644, 0.98758326, 0.98503053, 0.98247398, 0.97992803 },
+				{ 0.99650959, 0.99348412, 0.99083120, 0.98810572, 0.98553424, 0.98297136, 0.98061077 },
+				{ 0.99649639, 0.99372103, 0.99098946, 0.98807142, 0.98592386, 0.98297019, 0.98085771 },
+				{ 0.99662086, 0.99372887, 0.99106978, 0.98844028, 0.98594906, 0.98370338, 0.98108837 }
+			},
+			{
+				{ 0.99307163, 0.98768813, 0.98246765, 0.97732067, 0.97302391, 0.96876881, 0.96483221 },
+				{ 0.99325847, 0.98781082, 0.98290674, 0.97795886, 0.97418543, 0.96938152, 0.96536090 },
+				{ 0.99377312, 0.98855832, 0.98353694, 0.97956986, 0.97530351, 0.97145072, 0.96720098 },
+				{ 0.99433086, 0.98931265, 0.98545377, 0.98110001, 0.97734830, 0.97291435, 0.96945399 },
+				{ 0.99485963, 0.99042336, 0.98635552, 0.98284769, 0.97886917, 0.97618040, 0.97266955 },
+				{ 0.99539322, 0.99151035, 0.98760884, 0.98432252, 0.98118807, 0.97802885, 0.97489137 },
+				{ 0.99551926, 0.99218949, 0.98898778, 0.98566822, 0.98256272, 0.97977671, 0.97694855 },
+				{ 0.99601864, 0.99265968, 0.98955181, 0.98644582, 0.98369199, 0.98119291, 0.97807526 },
+				{ 0.99618188, 0.99324176, 0.98998426, 0.98723334, 0.98477933, 0.98180235, 0.97961775 },
+				{ 0.99646924, 0.99347445, 0.99053311, 0.98797136, 0.98565276, 0.98336784, 0.98081621 },
+				{ 0.99660894, 0.99360480, 0.99106920, 0.98853226, 0.98598478, 0.98374219, 0.98146594 },
+				{ 0.99687062, 0.99382707, 0.99110244, 0.98878981, 0.98631150, 0.98388851, 0.98141276 },
+				{ 0.99665872, 0.99377857, 0.99113672, 0.98894384, 0.98605542, 0.98417866, 0.98181017 }
+			},
+			{
+				{ 0.99181291, 0.98567552, 0.97985350, 0.97434954, 0.96906586, 0.96427145, 0.95961475 },
+				{ 0.99234397, 0.98570079, 0.97996125, 0.97503512, 0.97002655, 0.96522889, 0.96130352 },
+				{ 0.99277080, 0.98695537, 0.98174106, 0.97723743, 0.97261192, 0.96811078, 0.96394691 },
+				{ 0.99378953, 0.98857130, 0.98393080, 0.97947752, 0.97523556, 0.97103795, 0.96770075 },
+				{ 0.99448868, 0.98973816, 0.98549723, 0.98204572, 0.97800290, 0.97439486, 0.97097046 },
+				{ 0.99516545, 0.99110295, 0.98730194, 0.98384153, 0.98025385, 0.97740745, 0.97437166 },
+				{ 0.99573768, 0.99169195, 0.98865609, 0.98498691, 0.98196823, 0.97942859, 0.97685352 },
+				{ 0.99588769, 0.99280932, 0.98952908, 0.98664205, 0.98360311, 0.98139364, 0.97852647 },
+				{ 0.99629861, 0.99301987, 0.99036353, 0.98766219, 0.98487068, 0.98224158, 0.97939343 },
+				{ 0.99643356, 0.99354264, 0.99086337, 0.98820151, 0.98579118, 0.98351497, 0.98079453 },
+				{ 0.99650314, 0.99365419, 0.99129075, 0.98863548, 0.98610354, 0.98391123, 0.98154106 },
+				{ 0.99680366, 0.99395233, 0.99149000, 0.98910079, 0.98650767, 0.98408668, 0.98174790 },
+				{ 0.99672215, 0.99390009, 0.99128187, 0.98886518, 0.98663847, 0.98415210, 0.98233611 }
+			},
+			{
+				{ 0.99028108, 0.98309458, 0.97673239, 0.97043591, 0.96510515, 0.95879821, 0.95411399 },
+				{ 0.99086443, 0.98382137, 0.97749921, 0.97196530, 0.96633748, 0.96102673, 0.95631884 },
+				{ 0.99191580, 0.98583245, 0.97975691, 0.97429048, 0.96926213, 0.96495311, 0.95947369 },
+				{ 0.99312381, 0.98760695, 0.98247974, 0.97755989, 0.97369617, 0.96942559, 0.96512278 },
+				{ 0.99384326, 0.98925969, 0.98480546, 0.98113683, 0.97683490, 0.97296378, 0.96957475 },
+				{ 0.99473053, 0.99061776, 0.98673931, 0.98310303, 0.97975237, 0.97638373, 0.97240975 },
+				{ 0.99548618, 0.99159492, 0.98825361, 0.98500362, 0.98166713, 0.97855667, 0.97588271 },
+				{ 0.99575285, 0.99245783, 0.98915187, 0.98651302, 0.98362133, 0.98096005, 0.97781587 },
+				{ 0.99618473, 0.99289322, 0.98984659, 0.98728079, 0.98453479, 0.98196850, 0.97960048 },
+				{ 0.99624777, 0.99340061, 0.99075183, 0.98781441, 0.98568810, 0.98302788, 0.98067306 },
+				{ 0.99663039, 0.99362029, 0.99106179, 0.98837665, 0.98603895, 0.98377143, 0.98179468 },
+				{ 0.99652500, 0.99378465, 0.99129432, 0.98864516, 0.98659433, 0.98433140, 0.98196814 },
+				{ 0.99667265, 0.99380824, 0.99139028, 0.98863230, 0.98640558, 0.98409103, 0.98228065 }
+			},
+			{
+				{ 0.98936272, 0.98059009, 0.97328750, 0.96633774, 0.95942505, 0.95422121, 0.94822034 },
+				{ 0.98949029, 0.98179514, 0.97419920, 0.96804494, 0.96206273, 0.95619727, 0.95067890 },
+				{ 0.99094542, 0.98402738, 0.97770859, 0.97220557, 0.96652109, 0.96128867, 0.95588549 },
+				{ 0.99230311, 0.98662654, 0.98135753, 0.97576952, 0.97133497, 0.96684865, 0.96312032 },
+				{ 0.99374119, 0.98856576, 0.98413820, 0.97950200, 0.97588630, 0.97175610, 0.96798508 },
+				{ 0.99451583, 0.99015621, 0.98603681, 0.98224854, 0.97863951, 0.97546876, 0.97228947 },
+				{ 0.99506196, 0.99146685, 0.98798733, 0.98421765, 0.98122983, 0.97814814, 0.97538373 },
+				{ 0.99556948, 0.99217004, 0.98881968, 0.98560839, 0.98275220, 0.98032407, 0.97744877 },
+				{ 0.99592899, 0.99270096, 0.98968992, 0.98698477, 0.98445077, 0.98157160, 0.97909092 },
+				{ 0.99623697, 0.99309207, 0.99032205, 0.98746670, 0.98519778, 0.98250880, 0.98015299 },
+				{ 0.99634451, 0.99346092, 0.99061799, 0.98832947, 0.98563060, 0.98333920, 0.98092765 },
+				{ 0.99656016, 0.99359605, 0.99097952, 0.98856878, 0.98609075, 0.98374868, 0.98150067 },
+				{ 0.99639819, 0.99369173, 0.99113748, 0.98872068, 0.98637758, 0.98374135, 0.98177070 }
+			},
+			{
+				{ 0.98771240, 0.97793420, 0.96958060, 0.96216289, 0.95445406, 0.94837447, 0.94171013 },
+				{ 0.98832089, 0.97930377, 0.97092132, 0.96389605, 0.95731505, 0.95114032, 0.94604714 },
+				{ 0.99011105, 0.98220640, 0.97564648, 0.96935955, 0.96380559, 0.95818408, 0.95249515 },
+				{ 0.99189603, 0.98518473, 0.97997117, 0.97410450, 0.96914259, 0.96447686, 0.95957211 },
+				{ 0.99308411, 0.98797802, 0.98310583, 0.97857366, 0.97362222, 0.97012249, 0.96632885 },
+				{ 0.99411731, 0.98951746, 0.98575038, 0.98165802, 0.97813388, 0.97432660, 0.97154054 },
+				{ 0.99495168, 0.99080631, 0.98724085, 0.98385778, 0.98077116, 0.97696100, 0.97437849 },
+				{ 0.99556117, 0.99208551, 0.98846406, 0.98518819, 0.98242196, 0.97923139, 0.97713836 },
+				{ 0.99574881, 0.99231269, 0.98942993, 0.98619576, 0.98364126, 0.98135616, 0.97841509 },
+				{ 0.99600553, 0.99293118, 0.99001991, 0.98716300, 0.98459281, 0.98210837, 0.97967087 },
+				{ 0.99621050, 0.99327582, 0.99016171, 0.98747975, 0.98526059, 0.98298764, 0.98091239 },
+				{ 0.99637100, 0.99337873, 0.99055100, 0.98830391, 0.98529052, 0.98326748, 0.98062944 },
+				{ 0.99632075, 0.99357597, 0.99081026, 0.98815275, 0.98571960, 0.98343742, 0.98094651 }
+			},
+			{
+				{ 0.98594955, 0.97472493, 0.96567615, 0.95717811, 0.94940977, 0.94174860, 0.93469949 },
+				{ 0.98703529, 0.97709340, 0.96837371, 0.96034939, 0.95227342, 0.94613072, 0.93921750 },
+				{ 0.98907793, 0.98069396, 0.97327185, 0.96652784, 0.95966256, 0.95400112, 0.94855198 },
+				{ 0.99134952, 0.98443725, 0.97821164, 0.97294290, 0.96753179, 0.96271345, 0.95792668 },
+				{ 0.99287647, 0.98743648, 0.98205173, 0.97724591, 0.97279707, 0.96884561, 0.96476161 },
+				{ 0.99408158, 0.98896589, 0.98467767, 0.98077159, 0.97683363, 0.97327639, 0.96956595 },
+				{ 0.99470206, 0.99037285, 0.98692367, 0.98325875, 0.97926291, 0.97642038, 0.97369496 },
+				{ 0.99519713, 0.99151364, 0.98830227, 0.98488328, 0.98203129, 0.97887803, 0.97587699 },
+				{ 0.99559741, 0.99201334, 0.98865449, 0.98579833, 0.98316741, 0.98002651, 0.97785090 },
+				{ 0.99582766, 0.99253845, 0.98957192, 0.98693662, 0.98370507, 0.98151776, 0.97880619 },
+				{ 0.99601658, 0.99292244, 0.98995785, 0.98727360, 0.98464467, 0.98233165, 0.98008022 },
+				{ 0.99626410, 0.99315830, 0.99040796, 0.98785363, 0.98514990, 0.98292101, 0.98022261 },
+				{ 0.99624786, 0.99321475, 0.99016623, 0.98763294, 0.98503718, 0.98297612, 0.98039829 }
+			},
+			{
+				{ 0.98389602, 0.97151504, 0.96139478, 0.95205616, 0.94358418, 0.93555670, 0.92735290 },
+				{ 0.98511894, 0.97408808, 0.96457403, 0.95585523, 0.94763111, 0.94118281, 0.93342685 },
+				{ 0.98822707, 0.97900351, 0.97093629, 0.96415209, 0.95712686, 0.95095903, 0.94418052 },
+				{ 0.99072372, 0.98334908, 0.97684925, 0.97084879, 0.96564161, 0.96093538, 0.95528780 },
+				{ 0.99241448, 0.98642764, 0.98106317, 0.97630988, 0.97204753, 0.96755555, 0.96304904 },
+				{ 0.99367459, 0.98891826, 0.98387602, 0.97984218, 0.97581034, 0.97208001, 0.96841612 },
+				{ 0.99460908, 0.99010950, 0.98595748, 0.98236100, 0.97881030, 0.97546223, 0.97226353 },
+				{ 0.99507210, 0.99117279, 0.98727474, 0.98403601, 0.98053346, 0.97750808, 0.97466004 },
+				{ 0.99548082, 0.99172414, 0.98818736, 0.98528199, 0.98211199, 0.97954285, 0.97671165 },
+				{ 0.99567690, 0.99232811, 0.98906075, 0.98633367, 0.98343422, 0.98095399, 0.97827654 },
+				{ 0.99593085, 0.99267653, 0.98958074, 0.98646505, 0.98440564, 0.98111894, 0.97873725 },
+				{ 0.99597641, 0.99302611, 0.98976636, 0.98687136, 0.98439160, 0.98209186, 0.97949057 },
+				{ 0.99600662, 0.99291567, 0.99010096, 0.98706867, 0.98436019, 0.98169669, 0.97959866 }
+			},
+			{
+				{ 0.98199706, 0.96887701, 0.95681866, 0.94698134, 0.93784273, 0.92940321, 0.92019351 },
+				{ 0.98363123, 0.97159502, 0.96112597, 0.95196119, 0.94322765, 0.93471203, 0.92719820 },
+				{ 0.98717576, 0.97716441, 0.96918391, 0.96097348, 0.95388921, 0.94725545, 0.94046294 },
+				{ 0.99008001, 0.98219157, 0.97575394, 0.96967795, 0.96406312, 0.95772775, 0.95283489 },
+				{ 0.99210480, 0.98579228, 0.98026771, 0.97514256, 0.97043851, 0.96578922, 0.96115726 },
+				{ 0.99337865, 0.98822721, 0.98356193, 0.97886258, 0.97472909, 0.97072191, 0.96675275 },
+				{ 0.99425988, 0.98960773, 0.98560741, 0.98131460, 0.97798422, 0.97528396, 0.97106721 },
+				{ 0.99471709, 0.99055201, 0.98668360, 0.98344137, 0.98009020, 0.97728982, 0.97352481 },
+				{ 0.99523486, 0.99142477, 0.98798582, 0.98473196, 0.98146458, 0.97886266, 0.97608028 },
+				{ 0.99551533, 0.99187178, 0.98874622, 0.98607694, 0.98278844, 0.97986188, 0.97701449 },
+				{ 0.99560046, 0.99225963, 0.98883829, 0.98567993, 0.98293512, 0.98079054, 0.97784805 },
+				{ 0.99574612, 0.99224371, 0.98914622, 0.98612568, 0.98370494, 0.98068723, 0.97816588 },
+				{ 0.99593555, 0.99224921, 0.98937006, 0.98651784, 0.98353777, 0.98095050, 0.97828094 }
+			},
+			{
+				{ 0.97984757, 0.96508019, 0.95233353, 0.94178965, 0.93118788, 0.92183479, 0.91217603 },
+				{ 0.98187681, 0.96923303, 0.95774363, 0.94738126, 0.93805405, 0.92921839, 0.92110156 },
+				{ 0.98615423, 0.97611749, 0.96644928, 0.95865306, 0.95075265, 0.94404176, 0.93719356 },
+				{ 0.98967173, 0.98133208, 0.97459052, 0.96791638, 0.96187276, 0.95564059, 0.95061085 },
+				{ 0.99167231, 0.98518964, 0.97930533, 0.97388550, 0.96914274, 0.96410952, 0.95936526 },
+				{ 0.99295110, 0.98771598, 0.98273320, 0.97801995, 0.97380042, 0.96914120, 0.96584780 },
+				{ 0.99403663, 0.98934173, 0.98495409, 0.98059810, 0.97676240, 0.97297633, 0.96976186 },
+				{ 0.99435328, 0.99003354, 0.98613857, 0.98245388, 0.97928408, 0.97574975, 0.97314311 },
+				{ 0.99496025, 0.99090230, 0.98683956, 0.98392864, 0.98030222, 0.97792696, 0.97482066 },
+				{ 0.99513339, 0.99130197, 0.98801433, 0.98487199, 0.98180456, 0.97878602, 0.97630130 },
+				{ 0.99542834, 0.99183446, 0.98826273, 0.98539949, 0.98239733, 0.97956163, 0.97696645 },
+				{ 0.99560339, 0.99203864, 0.98887729, 0.98579199, 0.98319974, 0.97999388, 0.97741841 },
+				{ 0.99556720, 0.99228948, 0.98860307, 0.98591440, 0.98282170, 0.98005663, 0.97756678 }
+			},
+			{
+				{ 0.97812928, 0.96176110, 0.94767017, 0.93598710, 0.92406190, 0.91475983, 0.90525213 },
+				{ 0.98065288, 0.96677898, 0.95482886, 0.94332769, 0.93272414, 0.92343578, 0.91473860 },
+				{ 0.98546679, 0.97453498, 0.96471629, 0.95592069, 0.94794278, 0.94088037, 0.93337173 },
+				{ 0.98896751, 0.98071675, 0.97286341, 0.96654512, 0.95965241, 0.95363418, 0.94776202 },
+				{ 0.99107943, 0.98453303, 0.97851579, 0.97282763, 0.96742485, 0.96295007, 0.95741149 },
+				{ 0.99270051, 0.98729747, 0.98219965, 0.97675908, 0.97238778, 0.96807763, 0.96391112 },
+				{ 0.99351288, 0.98860490, 0.98413486, 0.97957477, 0.97572459, 0.97198108, 0.96789732 },
+				{ 0.99414675, 0.98970371, 0.98577809, 0.98193793, 0.97797824, 0.97540356, 0.97122324 },
+				{ 0.99475435, 0.99034175, 0.98643525, 0.98322853, 0.97980537, 0.97627976, 0.97350910 },
+				{ 0.99493828, 0.99093604, 0.98759044, 0.98414042, 0.98125305, 0.97720684, 0.97511674 },
+				{ 0.99518159, 0.99124850, 0.98797276, 0.98454975, 0.98171098, 0.97901896, 0.97507277 },
+				{ 0.99535578, 0.99152150, 0.98814170, 0.98505338, 0.98176270, 0.97924748, 0.97581386 },
+				{ 0.99526644, 0.99145974, 0.98833836, 0.98513425, 0.98212897, 0.97947251, 0.97656411 }
+			},
+			{
+				{ 0.97551584, 0.95753239, 0.94370695, 0.92933348, 0.91790313, 0.90731367, 0.89696431 },
+				{ 0.97900696, 0.96374421, 0.95060055, 0.93891305, 0.92798115, 0.91797305, 0.90821845 },
+				{ 0.98448589, 0.97276309, 0.96296102, 0.95304980, 0.94450185, 0.93725223, 0.92920812 },
+				{ 0.98833177, 0.97937594, 0.97084947, 0.96438728, 0.95814670, 0.95168894, 0.94495974 },
+				{ 0.99084660, 0.98402922, 0.97737740, 0.97145788, 0.96648408, 0.96138447, 0.95607857 },
+				{ 0.99238735, 0.98602216, 0.98083351, 0.97595685, 0.97141723, 0.96716290, 0.96254561 },
+				{ 0.99312678, 0.98800871, 0.98324254, 0.97890459, 0.97466827, 0.97086255, 0.96699846 },
+				{ 0.99385523, 0.98920868, 0.98511639, 0.98064477, 0.97726232, 0.97332700, 0.97014990 },
+				{ 0.99442335, 0.98998076, 0.98607291, 0.98246681, 0.97905797, 0.97551236, 0.97232613 },
+				{ 0.99486854, 0.99069762, 0.98691725, 0.98335659, 0.98022897, 0.97666173, 0.97363723 },
+				{ 0.99500987, 0.99088575, 0.98710323, 0.98379936, 0.98080426, 0.97796274, 0.97434151 },
+				{ 0.99500685, 0.99119264, 0.98752496, 0.98398700, 0.98080675, 0.97822620, 0.97501649 },
+				{ 0.99482778, 0.99128000, 0.98750008, 0.98476211, 0.98147747, 0.97842712, 0.97529356 }
+			},
+			{
+				{ 0.97311977, 0.95427914, 0.93789174, 0.92369536, 0.91129369, 0.89911004, 0.88836945 },
+				{ 0.97710517, 0.96100867, 0.94682291, 0.93369365, 0.92266899, 0.91220842, 0.90218523 },
+				{ 0.98355666, 0.97104245, 0.96022623, 0.95060545, 0.94139972, 0.93390042, 0.92620375 },
+				{ 0.98777074, 0.97880127, 0.97057861, 0.96186273, 0.95602881, 0.94923440, 0.94307340 },
+				{ 0.99051385, 0.98307495, 0.97650456, 0.96980908, 0.96442982, 0.95923567, 0.95397832 },
+				{ 0.99183091, 0.98538373, 0.98051853, 0.97455805, 0.97011210, 0.96533204, 0.96116123 },
+				{ 0.99292803, 0.98757699, 0.98273653, 0.97779709, 0.97340398, 0.96932247, 0.96550807 },
+				{ 0.99355174, 0.98851105, 0.98372199, 0.98009336, 0.97635235, 0.97251487, 0.96915557 },
+				{ 0.99420199, 0.98948960, 0.98505023, 0.98113835, 0.97778805, 0.97404940, 0.97125575 },
+				{ 0.99440582, 0.99022103, 0.98571511, 0.98257158, 0.97922741, 0.97586487, 0.97234878 },
+				{ 0.99468368, 0.99049576, 0.98684071, 0.98326155, 0.98009281, 0.97665820, 0.97338073 },
+				{ 0.99490480, 0.99074255, 0.98693040, 0.98366344, 0.98004383, 0.97724658, 0.97438006 },
+				{ 0.99482111, 0.99073469, 0.98685233, 0.98384635, 0.98055812, 0.97704746, 0.97411932 }
+			},
+			{
+				{ 0.97047076, 0.94946769, 0.93305786, 0.91751734, 0.90448490, 0.89236307, 0.87941701 },
+				{ 0.97596446, 0.95786822, 0.94339925, 0.92936134, 0.91754084, 0.90693744, 0.89650998 },
+				{ 0.98282827, 0.97003726, 0.95861794, 0.94812545, 0.93894389, 0.92977956, 0.92114995 },
+				{ 0.98750457, 0.97779117, 0.96954413, 0.96099848, 0.95326519, 0.94756205, 0.94040063 },
+				{ 0.99015994, 0.98234522, 0.97549466, 0.96920890, 0.96302291, 0.95732752, 0.95205561 },
+				{ 0.99185159, 0.98494729, 0.97920683, 0.97352289, 0.96900171, 0.96390832, 0.95894782 },
+				{ 0.99265258, 0.98705502, 0.98169519, 0.97736916, 0.97257638, 0.96848663, 0.96380903 },
+				{ 0.99343536, 0.98815954, 0.98363091, 0.97897684, 0.97523964, 0.97135268, 0.96737361 },
+				{ 0.99374885, 0.98880149, 0.98485585, 0.98059955, 0.97661278, 0.97327724, 0.96986923 },
+				{ 0.99422006, 0.98960486, 0.98569211, 0.98136399, 0.97776768, 0.97480232, 0.97093758 },
+				{ 0.99443332, 0.98990575, 0.98604050, 0.98248591, 0.97875656, 0.97575201, 0.97286872 },
+				{ 0.99462075, 0.99024961, 0.98639875, 0.98261362, 0.97921729, 0.97598875, 0.97310261 },
+				{ 0.99472962, 0.99027306, 0.98639636, 0.98288133, 0.97928666, 0.97664934, 0.97288972 }
+			},
+			{
+				{ 0.96844975, 0.94610039, 0.92784785, 0.91227920, 0.89666552, 0.88304983, 0.87206211 },
+				{ 0.97422035, 0.95586135, 0.93960269, 0.92487429, 0.91244795, 0.90003071, 0.88941525 },
+				{ 0.98183701, 0.96807537, 0.95681002, 0.94629758, 0.93581601, 0.92694437, 0.91776999 },
+				{ 0.98679291, 0.97642598, 0.96725961, 0.95958288, 0.95178480, 0.94457166, 0.93827386 },
+				{ 0.98956353, 0.98156760, 0.97428347, 0.96771235, 0.96157316, 0.95590457, 0.95047045 },
+				{ 0.99128655, 0.98406048, 0.97810213, 0.97217143, 0.96717541, 0.96274984, 0.95749207 },
+				{ 0.99233464, 0.98589018, 0.98076593, 0.97567832, 0.97102047, 0.96678220, 0.96272913 },
+				{ 0.99319350, 0.98757491, 0.98282505, 0.97839364, 0.97403922, 0.96999329, 0.96574121 },
+				{ 0.99345258, 0.98831937, 0.98409176, 0.97977556, 0.97574561, 0.97190027, 0.96845173 },
+				{ 0.99397362, 0.98918159, 0.98508639, 0.98060369, 0.97715602, 0.97326557, 0.96935319 },
+				{ 0.99421962, 0.98940046, 0.98516736, 0.98127625, 0.97788622, 0.97421077, 0.97103846 },
+				{ 0.99428109, 0.98961965, 0.98573947, 0.98164475, 0.97853092, 0.97500312, 0.97148797 },
+				{ 0.99437006, 0.98993122, 0.98583925, 0.98202200, 0.97870398, 0.97506181, 0.97214071 }
+			},
+			{
+				{ 0.96580005, 0.94235802, 0.92232391, 0.90488999, 0.89073183, 0.87507887, 0.86323379 },
+				{ 0.97183094, 0.95192664, 0.93615503, 0.92044206, 0.90728512, 0.89494559, 0.88129560 },
+				{ 0.98092953, 0.96698310, 0.95402219, 0.94352281, 0.93254660, 0.92389653, 0.91416122 },
+				{ 0.98626138, 0.97541270, 0.96615099, 0.95821927, 0.94990552, 0.94285196, 0.93563153 },
+				{ 0.98910599, 0.98045090, 0.97299106, 0.96629585, 0.96001616, 0.95372606, 0.94722313 },
+				{ 0.99100119, 0.98333274, 0.97718064, 0.97144778, 0.96588593, 0.96050893, 0.95572646 },
+				{ 0.99216471, 0.98563232, 0.98018612, 0.97503523, 0.97022233, 0.96520176, 0.96111835 },
+				{ 0.99262446, 0.98688427, 0.98241527, 0.97741802, 0.97285166, 0.96829775, 0.96429827 },
+				{ 0.99330838, 0.98796531, 0.98320338, 0.97862958, 0.97492450, 0.97050940, 0.96701213 },
+				{ 0.99377538, 0.98889686, 0.98396689, 0.98004591, 0.97602717, 0.97276637, 0.96870286 },
+				{ 0.99413790, 0.98887175, 0.98491956, 0.98047683, 0.97675824, 0.97329779, 0.96997373 },
+				{ 0.99421784, 0.98925458, 0.98499698, 0.98088111, 0.97726657, 0.97334029, 0.97049865 },
+				{ 0.99400567, 0.98922024, 0.98518711, 0.98150863, 0.97726438, 0.97383695, 0.97065152 }
+			},
+			{
+				{ 0.96345273, 0.93782207, 0.91690143, 0.89751402, 0.88156977, 0.86760284, 0.85378335 },
+				{ 0.97044906, 0.95037821, 0.93177156, 0.91630465, 0.90137813, 0.88862936, 0.87673155 },
+				{ 0.98022856, 0.96524862, 0.95326506, 0.94094597, 0.93034471, 0.91997493, 0.91144601 },
+				{ 0.98544346, 0.97488541, 0.96505329, 0.95619499, 0.94833746, 0.94076786, 0.93353811 },
+				{ 0.98858300, 0.97967303, 0.97209217, 0.96516855, 0.95862812, 0.95260652, 0.94594024 },
+				{ 0.99051358, 0.98333726, 0.97659938, 0.97059467, 0.96486070, 0.95898885, 0.95413255 },
+				{ 0.99140324, 0.98493015, 0.97907216, 0.97413829, 0.96935984, 0.96392050, 0.95971427 },
+				{ 0.99248803, 0.98625163, 0.98113128, 0.97637888, 0.97171542, 0.96699987, 0.96345350 },
+				{ 0.99295977, 0.98759213, 0.98275466, 0.97840223, 0.97338570, 0.96975984, 0.96545791 },
+				{ 0.99355217, 0.98831483, 0.98373699, 0.97907819, 0.97491384, 0.97118565, 0.96760210 },
+				{ 0.99366998, 0.98835688, 0.98431801, 0.97967253, 0.97579954, 0.97212447, 0.96869570 },
+				{ 0.99390973, 0.98878132, 0.98444691, 0.98020264, 0.97607797, 0.97252079, 0.96951236 },
+				{ 0.99378807, 0.98869788, 0.98441198, 0.98052136, 0.97652397, 0.97291174, 0.96965546 }
+			},
+			{
+				{ 0.96035380, 0.93367450, 0.91111616, 0.89175474, 0.87456443, 0.85927364, 0.84418043 },
+				{ 0.96832623, 0.94636276, 0.92845126, 0.91184755, 0.89656736, 0.88336007, 0.87062905 },
+				{ 0.97941686, 0.96374289, 0.95061503, 0.93795592, 0.92806084, 0.91738387, 0.90728923 },
+				{ 0.98490932, 0.97320295, 0.96352819, 0.95465918, 0.94576143, 0.93843967, 0.93039479 },
+				{ 0.98812125, 0.97881373, 0.97127116, 0.96390381, 0.95643927, 0.95071472, 0.94405457 },
+				{ 0.99012145, 0.98241846, 0.97569831, 0.96910528, 0.96327903, 0.95746776, 0.95252284 },
+				{ 0.99133610, 0.98458875, 0.97835251, 0.97269380, 0.96779318, 0.96221009, 0.95850985 },
+				{ 0.99215326, 0.98580598, 0.98069902, 0.97545267, 0.97011603, 0.96596143, 0.96145112 },
+				{ 0.99255921, 0.98696077, 0.98183512, 0.97683528, 0.97293443, 0.96814430, 0.96424949 },
+				{ 0.99324221, 0.98749381, 0.98282223, 0.97851707, 0.97402751, 0.96963174, 0.96594502 },
+				{ 0.99323683, 0.98802661, 0.98319192, 0.97887450, 0.97500405, 0.97092288, 0.96710895 },
+				{ 0.99353479, 0.98839164, 0.98373411, 0.97934611, 0.97552725, 0.97190034, 0.96742481 },
+				{ 0.99349581, 0.98834982, 0.98350597, 0.98006366, 0.97554669, 0.97183861, 0.96795994 }
+			}
+		},
+		{
+			{
+				{ 0.99701382, 0.99436643, 0.99199756, 0.98951058, 0.98714387, 0.98489338, 0.98282515 },
+				{ 0.99698809, 0.99441260, 0.99210858, 0.98983251, 0.98736602, 0.98482398, 0.98254848 },
+				{ 0.99693806, 0.99423614, 0.99175271, 0.98912109, 0.98697315, 0.98432746, 0.98232376 },
+				{ 0.99682712, 0.99412570, 0.99132460, 0.98870366, 0.98610686, 0.98392220, 0.98165299 },
+				{ 0.99670261, 0.99367093, 0.99093962, 0.98806606, 0.98544148, 0.98311370, 0.98040382 },
+				{ 0.99640841, 0.99312012, 0.99010782, 0.98711956, 0.98444465, 0.98179901, 0.97908245 },
+				{ 0.99590619, 0.99241302, 0.98903045, 0.98568216, 0.98261335, 0.97986233, 0.97675455 },
+				{ 0.99544951, 0.99147526, 0.98751045, 0.98358730, 0.98033452, 0.97645779, 0.97350609 },
+				{ 0.99457628, 0.98947408, 0.98514007, 0.98086688, 0.97624256, 0.97234681, 0.96783418 },
+				{ 0.99297426, 0.98676085, 0.98078949, 0.97577030, 0.97033006, 0.96486525, 0.96033971 },
+				{ 0.99003749, 0.98110230, 0.97329648, 0.96592193, 0.95907052, 0.95223963, 0.94551370 },
+				{ 0.98152187, 0.96643294, 0.95313299, 0.94100455, 0.92944669, 0.92060121, 0.91220572 },
+				{ 0.94327099, 0.90669407, 0.88148918, 0.86753644, 0.86075549, 0.85838787, 0.86114582 }
+			},
+			{
+				{ 0.99709324, 0.99442677, 0.99187558, 0.98963504, 0.98738749, 0.98490681, 0.98266803 },
+				{ 0.99711743, 0.99448508, 0.99191693, 0.98967893, 0.98698524, 0.98492752, 0.98254100 },
+				{ 0.99699035, 0.99423585, 0.99178356, 0.98933837, 0.98672530, 0.98471014, 0.98250372 },
+				{ 0.99689716, 0.99411957, 0.99150734, 0.98866287, 0.98639783, 0.98389961, 0.98153786 },
+				{ 0.99665725, 0.99390911, 0.99086013, 0.98814251, 0.98587859, 0.98282922, 0.98071669 },
+				{ 0.99637828, 0.99320247, 0.99018096, 0.98719574, 0.98442098, 0.98170138, 0.97917722 },
+				{ 0.99606250, 0.99233346, 0.98903466, 0.98559495, 0.98260916, 0.97988069, 0.97707907 },
+				{ 0.99556795, 0.99129648, 0.98769748, 0.98385626, 0.98039374, 0.97709157, 0.97415820 },
+				{ 0.99470334, 0.98981686, 0.98553436, 0.98107124, 0.97704109, 0.97288799, 0.96911115 },
+				{ 0.99328881, 0.98728401, 0.98188159, 0.97687267, 0.97184225, 0.96675789, 0.96219474 },
+				{ 0.99112968, 0.98349671, 0.97655241, 0.96989999, 0.96357964, 0.95813501, 0.95199478 },
+				{ 0.98813080, 0.97796924, 0.96869396, 0.96073419, 0.95271972, 0.94467280, 0.93785960 },
+				{ 0.98612110, 0.97466951, 0.96403532, 0.95455298, 0.94620778, 0.93766778, 0.92965239 }
+			},
+			{
+				{ 0.99705411, 0.99440505, 0.99169414, 0.98929695, 0.98704842, 0.98469858, 0.98254683 },
+				{ 0.99696249, 0.99430764, 0.99187990, 0.98907668, 0.98673285, 0.98473588, 0.98223084 },
+				{ 0.99697519, 0.99392072, 0.99163189, 0.98884519, 0.98659327, 0.98425090, 0.98187764 },
+				{ 0.99680529, 0.99401026, 0.99114939, 0.98855872, 0.98604818, 0.98350617, 0.98106668 },
+				{ 0.99660720, 0.99360479, 0.99076108, 0.98806054, 0.98515668, 0.98272992, 0.97978995 },
+				{ 0.99637549, 0.99290913, 0.99020310, 0.98709545, 0.98407560, 0.98145333, 0.97884313 },
+				{ 0.99588693, 0.99244677, 0.98915943, 0.98597406, 0.98303249, 0.97968485, 0.97670105 },
+				{ 0.99558501, 0.99156385, 0.98791470, 0.98397349, 0.98070452, 0.97764300, 0.97430176 },
+				{ 0.99479413, 0.99045404, 0.98621764, 0.98209634, 0.97829910, 0.97446780, 0.97143370 },
+				{ 0.99392175, 0.98863645, 0.98381003, 0.97936654, 0.97495587, 0.97051368, 0.96608555 },
+				{ 0.99291734, 0.98689275, 0.98140087, 0.97635064, 0.97115995, 0.96658805, 0.96200698 },
+				{ 0.99217163, 0.98524765, 0.97907032, 0.97312454, 0.96854120, 0.96247090, 0.95788211 },
+				{ 0.99174905, 0.98456778, 0.97801571, 0.97215883, 0.96661829, 0.96121875, 0.95616240 }
+			},
+			{
+				{ 0.99677167, 0.99377118, 0.99121333, 0.98857572, 0.98604439, 0.98377989, 0.98127467 },
+				{ 0.99680549, 0.99385284, 0.99112876, 0.98863489, 0.98588863, 0.98352839, 0.98084518 },
+				{ 0.99666245, 0.99377593, 0.99083930, 0.98834094, 0.98577628, 0.98349684, 0.98073067 },
+				{ 0.99653154, 0.99344089, 0.99064073, 0.98800931, 0.98522167, 0.98259146, 0.98018324 },
+				{ 0.99647142, 0.99329294, 0.99033303, 0.98722131, 0.98463336, 0.98201417, 0.97948099 },
+				{ 0.99620662, 0.99292390, 0.98976132, 0.98647098, 0.98377073, 0.98106472, 0.97822505 },
+				{ 0.99589998, 0.99233737, 0.98889661, 0.98588714, 0.98255795, 0.97982308, 0.97649604 },
+				{ 0.99542452, 0.99185707, 0.98806802, 0.98469855, 0.98124454, 0.97812186, 0.97492238 },
+				{ 0.99520059, 0.99111056, 0.98724129, 0.98357421, 0.98000784, 0.97670161, 0.97325673 },
+				{ 0.99480350, 0.99020363, 0.98594678, 0.98225963, 0.97833903, 0.97460718, 0.97077286 },
+				{ 0.99448920, 0.98948883, 0.98501790, 0.98066959, 0.97677630, 0.97282678, 0.96916043 },
+				{ 0.99430115, 0.98911337, 0.98437632, 0.98013109, 0.97589450, 0.97149294, 0.96726112 },
+				{ 0.99405116, 0.98869578, 0.98409778, 0.97946455, 0.97508670, 0.97120488, 0.96737765 }
+			},
+			{
+				{ 0.99654506, 0.99298587, 0.99017361, 0.98732769, 0.98455267, 0.98179355, 0.97948433 },
+				{ 0.99624184, 0.99321147, 0.99027676, 0.98724675, 0.98438596, 0.98204650, 0.97899019 },
+				{ 0.99630966, 0.99315113, 0.99031687, 0.98720967, 0.98436322, 0.98161973, 0.97911709 },
+				{ 0.99618978, 0.99288971, 0.98994019, 0.98670998, 0.98427821, 0.98127007, 0.97837421 },
+				{ 0.99601162, 0.99248545, 0.98971792, 0.98642096, 0.98394237, 0.98082096, 0.97807245 },
+				{ 0.99598178, 0.99256910, 0.98927277, 0.98611328, 0.98325464, 0.98029341, 0.97726170 },
+				{ 0.99595992, 0.99228348, 0.98892944, 0.98546255, 0.98274201, 0.97965628, 0.97678372 },
+				{ 0.99575297, 0.99185684, 0.98856270, 0.98514920, 0.98227111, 0.97876875, 0.97601033 },
+				{ 0.99565728, 0.99157731, 0.98822242, 0.98454313, 0.98146590, 0.97841321, 0.97515283 },
+				{ 0.99525803, 0.99131978, 0.98758176, 0.98426671, 0.98071300, 0.97773957, 0.97431171 },
+				{ 0.99519295, 0.99123640, 0.98727067, 0.98387891, 0.98037403, 0.97723172, 0.97375327 },
+				{ 0.99509150, 0.99104393, 0.98741459, 0.98336482, 0.98037033, 0.97666356, 0.97355781 },
+				{ 0.99514964, 0.99096677, 0.98707425, 0.98329609, 0.97989367, 0.97638772, 0.97299060 }
+			},
+			{
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+				{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 }
+			},
+			{
+				{ 0.99519688, 0.99078648, 0.98694828, 0.98357416, 0.97997923, 0.97683118, 0.97361921 },
+				{ 0.99512449, 0.99102107, 0.98695288, 0.98346908, 0.97985164, 0.97702622, 0.97354826 },
+				{ 0.99496375, 0.99120455, 0.98740951, 0.98379641, 0.98021246, 0.97719243, 0.97408909 },
+				{ 0.99533214, 0.99108088, 0.98754587, 0.98437810, 0.98109720, 0.97763060, 0.97440262 },
+				{ 0.99544489, 0.99161633, 0.98787139, 0.98466996, 0.98142442, 0.97784958, 0.97536019 },
+				{ 0.99545745, 0.99185793, 0.98834658, 0.98484817, 0.98196455, 0.97898671, 0.97604394 },
+				{ 0.99574009, 0.99205756, 0.98839834, 0.98559192, 0.98215741, 0.97946182, 0.97706026 },
+				{ 0.99571146, 0.99210798, 0.98908908, 0.98594033, 0.98294874, 0.97981373, 0.97739986 },
+				{ 0.99599980, 0.99225641, 0.98938520, 0.98611458, 0.98328885, 0.98051036, 0.97814123 },
+				{ 0.99594312, 0.99277646, 0.98944051, 0.98673058, 0.98362964, 0.98075955, 0.97767138 },
+				{ 0.99607324, 0.99284955, 0.98970286, 0.98660653, 0.98383654, 0.98108319, 0.97875376 },
+				{ 0.99609047, 0.99291134, 0.98999614, 0.98681556, 0.98425264, 0.98135414, 0.97902435 },
+				{ 0.99628561, 0.99292606, 0.98998714, 0.98688707, 0.98427920, 0.98140636, 0.97833775 }
+			},
+			{
+				{ 0.99428855, 0.98940900, 0.98516600, 0.98078303, 0.97660280, 0.97320767, 0.96991032 },
+				{ 0.99435937, 0.98978952, 0.98510394, 0.98097340, 0.97744013, 0.97359936, 0.97049540 },
+				{ 0.99430649, 0.98988327, 0.98569068, 0.98184447, 0.97772765, 0.97448083, 0.97073853 },
+				{ 0.99469939, 0.99062862, 0.98613254, 0.98238145, 0.97883690, 0.97526200, 0.97195955 },
+				{ 0.99499063, 0.99088900, 0.98706526, 0.98354863, 0.97978300, 0.97664622, 0.97354136 },
+				{ 0.99524301, 0.99145680, 0.98754256, 0.98422235, 0.98108698, 0.97753627, 0.97475832 },
+				{ 0.99562953, 0.99183955, 0.98842185, 0.98518376, 0.98200011, 0.97924229, 0.97676153 },
+				{ 0.99572918, 0.99232165, 0.98915381, 0.98589226, 0.98275603, 0.98052080, 0.97744462 },
+				{ 0.99598784, 0.99263350, 0.98950757, 0.98661550, 0.98358540, 0.98088658, 0.97839062 },
+				{ 0.99618193, 0.99277846, 0.98982339, 0.98724853, 0.98411855, 0.98180156, 0.97905431 },
+				{ 0.99627173, 0.99294625, 0.99018820, 0.98768173, 0.98481120, 0.98238815, 0.97949654 },
+				{ 0.99636721, 0.99328917, 0.99017839, 0.98748018, 0.98517475, 0.98253494, 0.98013068 },
+				{ 0.99631661, 0.99346301, 0.99050438, 0.98751640, 0.98478922, 0.98245417, 0.98023827 }
+			},
+			{
+				{ 0.99322955, 0.98740451, 0.98233058, 0.97809339, 0.97396680, 0.96916587, 0.96520582 },
+				{ 0.99328881, 0.98793640, 0.98306603, 0.97844363, 0.97387949, 0.97000460, 0.96624935 },
+				{ 0.99361595, 0.98849566, 0.98374137, 0.97929956, 0.97464596, 0.97108926, 0.96801825 },
+				{ 0.99406415, 0.98897451, 0.98502515, 0.98062865, 0.97665116, 0.97316730, 0.96974665 },
+				{ 0.99448699, 0.99014351, 0.98611789, 0.98223163, 0.97882582, 0.97526252, 0.97237211 },
+				{ 0.99509573, 0.99097167, 0.98706490, 0.98347643, 0.98023222, 0.97729933, 0.97348625 },
+				{ 0.99546922, 0.99187117, 0.98794660, 0.98482285, 0.98129050, 0.97849750, 0.97602874 },
+				{ 0.99565543, 0.99221561, 0.98898196, 0.98584876, 0.98281910, 0.97993546, 0.97726831 },
+				{ 0.99597612, 0.99264610, 0.98949426, 0.98634275, 0.98372806, 0.98137023, 0.97852892 },
+				{ 0.99621101, 0.99304515, 0.98994816, 0.98758170, 0.98442056, 0.98218843, 0.97971368 },
+				{ 0.99632864, 0.99332806, 0.99043557, 0.98758352, 0.98491212, 0.98282294, 0.98030538 },
+				{ 0.99634528, 0.99327742, 0.99063730, 0.98797848, 0.98545605, 0.98317901, 0.98071686 },
+				{ 0.99641652, 0.99357079, 0.99090301, 0.98809966, 0.98553043, 0.98324158, 0.98090244 }
+			},
+			{
+				{ 0.99210463, 0.98567042, 0.98000619, 0.97456742, 0.96979676, 0.96461804, 0.96075757 },
+				{ 0.99233532, 0.98604109, 0.98093764, 0.97569709, 0.97045653, 0.96532908, 0.96109726 },
+				{ 0.99275862, 0.98672896, 0.98152391, 0.97682502, 0.97216416, 0.96840612, 0.96398571 },
+				{ 0.99322489, 0.98821775, 0.98337017, 0.97918599, 0.97476207, 0.97131173, 0.96666845 },
+				{ 0.99405785, 0.98936975, 0.98499015, 0.98101557, 0.97693612, 0.97379796, 0.96974586 },
+				{ 0.99482650, 0.99040575, 0.98653504, 0.98272036, 0.97947945, 0.97586461, 0.97280675 },
+				{ 0.99541541, 0.99142712, 0.98757975, 0.98453721, 0.98110806, 0.97806381, 0.97500129 },
+				{ 0.99565694, 0.99199426, 0.98871093, 0.98593260, 0.98248820, 0.97990819, 0.97675935 },
+				{ 0.99572199, 0.99271919, 0.98930398, 0.98658908, 0.98367052, 0.98122010, 0.97848436 },
+				{ 0.99614824, 0.99303134, 0.99015006, 0.98725960, 0.98453712, 0.98211426, 0.97971856 },
+				{ 0.99635974, 0.99326085, 0.99026422, 0.98778032, 0.98513291, 0.98232108, 0.98044943 },
+				{ 0.99635669, 0.99338562, 0.99057526, 0.98789278, 0.98546539, 0.98344701, 0.98082889 },
+				{ 0.99639634, 0.99351310, 0.99073513, 0.98771362, 0.98563976, 0.98291697, 0.98083225 }
+			},
+			{
+				{ 0.99071477, 0.98354784, 0.97691408, 0.97164583, 0.96519809, 0.96108587, 0.95483264 },
+				{ 0.99089587, 0.98433713, 0.97763205, 0.97226599, 0.96649125, 0.96106573, 0.95689873 },
+				{ 0.99192267, 0.98535814, 0.97969889, 0.97410183, 0.96985895, 0.96464733, 0.95972668 },
+				{ 0.99290925, 0.98746496, 0.98173098, 0.97708970, 0.97266895, 0.96833660, 0.96428414 },
+				{ 0.99368791, 0.98859285, 0.98434456, 0.97978005, 0.97589574, 0.97192619, 0.96857315 },
+				{ 0.99445208, 0.98984458, 0.98546270, 0.98228476, 0.97856516, 0.97468526, 0.97197877 },
+				{ 0.99497739, 0.99109959, 0.98693529, 0.98384476, 0.98078794, 0.97750497, 0.97452502 },
+				{ 0.99565200, 0.99205607, 0.98825203, 0.98528067, 0.98212671, 0.97947896, 0.97694186 },
+				{ 0.99578127, 0.99236063, 0.98940659, 0.98675119, 0.98356480, 0.98079488, 0.97823599 },
+				{ 0.99604355, 0.99276625, 0.98991589, 0.98720144, 0.98420465, 0.98166334, 0.97945443 },
+				{ 0.99631606, 0.99310414, 0.99022620, 0.98770782, 0.98508312, 0.98284754, 0.98034458 },
+				{ 0.99639321, 0.99310697, 0.99067406, 0.98787866, 0.98502857, 0.98289940, 0.98063873 },
+				{ 0.99635401, 0.99329963, 0.99040785, 0.98804691, 0.98535051, 0.98338368, 0.98054446 }
+			},
+			{
+				{ 0.98949684, 0.98129175, 0.97420010, 0.96745191, 0.96087366, 0.95539463, 0.95004567 },
+				{ 0.98966221, 0.98177936, 0.97518843, 0.96862171, 0.96306395, 0.95747254, 0.95170504 },
+				{ 0.99087661, 0.98378053, 0.97769073, 0.97168057, 0.96540869, 0.96127960, 0.95629556 },
+				{ 0.99213746, 0.98598184, 0.98064889, 0.97508205, 0.97030249, 0.96586963, 0.96139431 },
+				{ 0.99318023, 0.98763714, 0.98298026, 0.97829543, 0.97427323, 0.97016909, 0.96647838 },
+				{ 0.99409816, 0.98933367, 0.98550368, 0.98147530, 0.97718069, 0.97379685, 0.97083311 },
+				{ 0.99489373, 0.99064158, 0.98711314, 0.98324511, 0.97980330, 0.97661554, 0.97372635 },
+				{ 0.99523273, 0.99149654, 0.98798270, 0.98453899, 0.98182862, 0.97853218, 0.97619427 },
+				{ 0.99558269, 0.99202098, 0.98911542, 0.98616473, 0.98270550, 0.97995779, 0.97741770 },
+				{ 0.99599144, 0.99246113, 0.98953458, 0.98652901, 0.98403044, 0.98142965, 0.97883660 },
+				{ 0.99610030, 0.99294645, 0.99020451, 0.98745433, 0.98458621, 0.98213329, 0.97973769 },
+				{ 0.99618395, 0.99325853, 0.98990829, 0.98723928, 0.98472391, 0.98246259, 0.97997647 },
+				{ 0.99621791, 0.99324036, 0.99037197, 0.98790959, 0.98530409, 0.98258976, 0.97988825 }
+			},
+			{
+				{ 0.98792583, 0.97864917, 0.97110622, 0.96314886, 0.95711357, 0.94999494, 0.94328041 },
+				{ 0.98880749, 0.98003387, 0.97176322, 0.96517576, 0.95828943, 0.95230611, 0.94658664 },
+				{ 0.98994346, 0.98218400, 0.97551788, 0.96897216, 0.96299271, 0.95789112, 0.95233827 },
+				{ 0.99140746, 0.98480823, 0.97936912, 0.97358778, 0.96814136, 0.96334273, 0.95884204 },
+				{ 0.99269365, 0.98733100, 0.98193146, 0.97709273, 0.97268546, 0.96803313, 0.96446866 },
+				{ 0.99372677, 0.98909426, 0.98448064, 0.98037722, 0.97679825, 0.97225866, 0.96941082 },
+				{ 0.99472411, 0.99010211, 0.98618981, 0.98286917, 0.97889295, 0.97610973, 0.97266042 },
+				{ 0.99497590, 0.99124484, 0.98766791, 0.98394366, 0.98131089, 0.97798955, 0.97549890 },
+				{ 0.99562907, 0.99174224, 0.98860696, 0.98541600, 0.98223105, 0.97971355, 0.97614911 },
+				{ 0.99580303, 0.99236546, 0.98908516, 0.98629898, 0.98373169, 0.98098017, 0.97819162 },
+				{ 0.99593291, 0.99267860, 0.98972197, 0.98678787, 0.98400212, 0.98153065, 0.97897971 },
+				{ 0.99605662, 0.99265262, 0.98997075, 0.98753591, 0.98431093, 0.98171174, 0.97904371 },
+				{ 0.99601285, 0.99313396, 0.99014719, 0.98710531, 0.98429243, 0.98220055, 0.97982305 }
+			},
+			{
+				{ 0.98644271, 0.97602718, 0.96764329, 0.95902675, 0.95102371, 0.94433621, 0.93860305 },
+				{ 0.98722956, 0.97761437, 0.96948948, 0.96132843, 0.95411315, 0.94776459, 0.94110989 },
+				{ 0.98914887, 0.98024648, 0.97361240, 0.96617895, 0.95983946, 0.95391330, 0.94861531 },
+				{ 0.99086574, 0.98388580, 0.97796907, 0.97155269, 0.96611466, 0.96108954, 0.95657259 },
+				{ 0.99245382, 0.98636110, 0.98097658, 0.97622329, 0.97149481, 0.96700888, 0.96259289 },
+				{ 0.99354926, 0.98840074, 0.98402018, 0.97944303, 0.97549627, 0.97171337, 0.96761576 },
+				{ 0.99440351, 0.98970479, 0.98561774, 0.98163374, 0.97802553, 0.97489428, 0.97135504 },
+				{ 0.99478682, 0.99098739, 0.98696600, 0.98358717, 0.98013638, 0.97691352, 0.97375899 },
+				{ 0.99527478, 0.99143019, 0.98808577, 0.98490637, 0.98178830, 0.97881752, 0.97627520 },
+				{ 0.99553971, 0.99211363, 0.98898189, 0.98583661, 0.98334490, 0.98026165, 0.97744735 },
+				{ 0.99580070, 0.99236345, 0.98954421, 0.98635288, 0.98368374, 0.98045340, 0.97822746 },
+				{ 0.99595005, 0.99245588, 0.98943769, 0.98684685, 0.98362383, 0.98164180, 0.97863149 },
+				{ 0.99589347, 0.99243847, 0.98944834, 0.98658448, 0.98410668, 0.98139452, 0.97929311 }
+			},
+			{
+				{ 0.98417043, 0.97353435, 0.96310045, 0.95443353, 0.94618366, 0.93892299, 0.93105043 },
+				{ 0.98544734, 0.97514666, 0.96636493, 0.95759549, 0.94940880, 0.94200665, 0.93488885 },
+				{ 0.98806815, 0.97880246, 0.97096245, 0.96325359, 0.95632260, 0.95032201, 0.94413948 },
+				{ 0.99013573, 0.98275018, 0.97583307, 0.96995038, 0.96426499, 0.95811419, 0.95383140 },
+				{ 0.99196182, 0.98567381, 0.97975336, 0.97455578, 0.97008546, 0.96513960, 0.96125751 },
+				{ 0.99331072, 0.98761520, 0.98302514, 0.97850896, 0.97392932, 0.97004943, 0.96619137 },
+				{ 0.99400780, 0.98958102, 0.98520304, 0.98157036, 0.97701553, 0.97343668, 0.97015399 },
+				{ 0.99455200, 0.99010596, 0.98645445, 0.98300939, 0.97979526, 0.97618244, 0.97317864 },
+				{ 0.99496743, 0.99083084, 0.98743410, 0.98459941, 0.98099110, 0.97802334, 0.97504901 },
+				{ 0.99548281, 0.99160397, 0.98850694, 0.98520167, 0.98169455, 0.97927543, 0.97646171 },
+				{ 0.99554024, 0.99229363, 0.98874630, 0.98573221, 0.98268278, 0.97993602, 0.97744334 },
+				{ 0.99554383, 0.99214726, 0.98912923, 0.98650188, 0.98298602, 0.98020917, 0.97798072 },
+				{ 0.99560979, 0.99212320, 0.98908805, 0.98587915, 0.98373822, 0.98089389, 0.97836575 }
+			},
+			{
+				{ 0.98309218, 0.97022787, 0.95923732, 0.95013713, 0.94063207, 0.93228365, 0.92495945 },
+				{ 0.98430632, 0.97265683, 0.96250672, 0.95222555, 0.94393076, 0.93664723, 0.92961278 },
+				{ 0.98703722, 0.97713686, 0.96876747, 0.96089565, 0.95348364, 0.94636455, 0.94021082 },
+				{ 0.98936440, 0.98175761, 0.97447001, 0.96786357, 0.96234084, 0.95673706, 0.95071763 },
+				{ 0.99148762, 0.98485208, 0.97890146, 0.97333024, 0.96892974, 0.96381519, 0.95934873 },
+				{ 0.99310861, 0.98749723, 0.98206558, 0.97738143, 0.97337460, 0.96900086, 0.96500926 },
+				{ 0.99378603, 0.98886673, 0.98440139, 0.98044182, 0.97695443, 0.97297454, 0.96938640 },
+				{ 0.99422956, 0.99010393, 0.98610628, 0.98233770, 0.97828090, 0.97522578, 0.97202527 },
+				{ 0.99484113, 0.99077501, 0.98676332, 0.98328145, 0.98020156, 0.97679581, 0.97419367 },
+				{ 0.99527554, 0.99147085, 0.98765990, 0.98443123, 0.98164054, 0.97832704, 0.97580545 },
+				{ 0.99522452, 0.99154734, 0.98817181, 0.98496929, 0.98217002, 0.97905183, 0.97628447 },
+				{ 0.99545663, 0.99181158, 0.98874880, 0.98569707, 0.98250721, 0.98007451, 0.97691429 },
+				{ 0.99551684, 0.99171215, 0.98848215, 0.98550035, 0.98245404, 0.97984903, 0.97704677 }
+			},
+			{
+				{ 0.98111298, 0.96702193, 0.95486722, 0.94506502, 0.93566288, 0.92591316, 0.91704703 },
+				{ 0.98264472, 0.97039785, 0.95890372, 0.94969875, 0.94024988, 0.93171914, 0.92309061 },
+				{ 0.98616971, 0.97552783, 0.96637986, 0.95767006, 0.95034383, 0.94267946, 0.93640411 },
+				{ 0.98907253, 0.98084932, 0.97288452, 0.96613326, 0.95998726, 0.95413557, 0.94768712 },
+				{ 0.99146882, 0.98399883, 0.97836123, 0.97210485, 0.96724849, 0.96188439, 0.95733997 },
+				{ 0.99277656, 0.98662047, 0.98091947, 0.97634956, 0.97196725, 0.96791506, 0.96328711 },
+				{ 0.99344993, 0.98846766, 0.98372465, 0.97927539, 0.97533411, 0.97137910, 0.96777883 },
+				{ 0.99417608, 0.98963255, 0.98527305, 0.98113728, 0.97784675, 0.97394456, 0.97121013 },
+				{ 0.99471133, 0.99015230, 0.98627783, 0.98301768, 0.97978016, 0.97644524, 0.97271410 },
+				{ 0.99487497, 0.99085137, 0.98747500, 0.98349513, 0.98058349, 0.97725753, 0.97435733 },
+				{ 0.99497296, 0.99129492, 0.98759434, 0.98469877, 0.98139916, 0.97843124, 0.97555175 },
+				{ 0.99530464, 0.99144474, 0.98803048, 0.98512836, 0.98170545, 0.97881153, 0.97583341 },
+				{ 0.99528090, 0.99153904, 0.98810392, 0.98491652, 0.98200097, 0.97911569, 0.97630471 }
+			},
+			{
+				{ 0.97937414, 0.96471006, 0.95114332, 0.93977051, 0.92941860, 0.92026453, 0.91119465 },
+				{ 0.98118900, 0.96722215, 0.95604151, 0.94489309, 0.93487000, 0.92660646, 0.91777007 },
+				{ 0.98508134, 0.97380588, 0.96411951, 0.95561597, 0.94680158, 0.93935819, 0.93180091 },
+				{ 0.98830063, 0.97951450, 0.97169277, 0.96420746, 0.95756777, 0.95129793, 0.94540234 },
+				{ 0.99079652, 0.98351957, 0.97673455, 0.97102556, 0.96546449, 0.96068223, 0.95464196 },
+				{ 0.99206944, 0.98600188, 0.98081137, 0.97566348, 0.97096454, 0.96595196, 0.96196731 },
+				{ 0.99333583, 0.98780373, 0.98288561, 0.97829140, 0.97446516, 0.97032446, 0.96670430 },
+				{ 0.99388385, 0.98905054, 0.98506411, 0.98063786, 0.97709202, 0.97311012, 0.96946016 },
+				{ 0.99441018, 0.98978235, 0.98579624, 0.98212987, 0.97852976, 0.97491683, 0.97231249 },
+				{ 0.99447723, 0.99053797, 0.98675685, 0.98305996, 0.97973672, 0.97639921, 0.97300679 },
+				{ 0.99498299, 0.99077116, 0.98722819, 0.98331796, 0.98032601, 0.97745306, 0.97440453 },
+				{ 0.99516806, 0.99119754, 0.98765670, 0.98418494, 0.98098352, 0.97807478, 0.97498558 },
+				{ 0.99508693, 0.99134043, 0.98754028, 0.98419186, 0.98111721, 0.97815264, 0.97448908 }
+			},
+			{
+				{ 0.97728180, 0.96070502, 0.94726019, 0.93424667, 0.92398286, 0.91276731, 0.90222868 },
+				{ 0.97981934, 0.96456391, 0.95174382, 0.94097930, 0.93010091, 0.92089966, 0.91097861 },
+				{ 0.98421140, 0.97212669, 0.96134077, 0.95263316, 0.94396849, 0.93575226, 0.92791571 },
+				{ 0.98777714, 0.97838523, 0.97072711, 0.96319760, 0.95518982, 0.94857473, 0.94255315 },
+				{ 0.99013654, 0.98282373, 0.97615854, 0.96992038, 0.96398372, 0.95875967, 0.95270322 },
+				{ 0.99186765, 0.98553522, 0.98004789, 0.97464635, 0.96982151, 0.96452118, 0.96010933 },
+				{ 0.99275091, 0.98738410, 0.98211742, 0.97713160, 0.97330783, 0.96816814, 0.96509648 },
+				{ 0.99373079, 0.98879792, 0.98430915, 0.97990140, 0.97593545, 0.97150113, 0.96794018 },
+				{ 0.99407269, 0.98982758, 0.98530648, 0.98104289, 0.97772710, 0.97386416, 0.97078724 },
+				{ 0.99448320, 0.99003013, 0.98595710, 0.98235406, 0.97929431, 0.97549853, 0.97179023 },
+				{ 0.99455980, 0.99021909, 0.98677186, 0.98305650, 0.97975094, 0.97615446, 0.97345005 },
+				{ 0.99473128, 0.99084058, 0.98680152, 0.98324442, 0.98037830, 0.97708500, 0.97368549 },
+				{ 0.99483715, 0.99067196, 0.98697921, 0.98349041, 0.97996383, 0.97678915, 0.97430866 }
+			},
+			{
+				{ 0.97517555, 0.95720478, 0.94263045, 0.92895968, 0.91683655, 0.90628096, 0.89601304 },
+				{ 0.97814032, 0.96212920, 0.94856280, 0.93651177, 0.92508532, 0.91539028, 0.90482260 },
+				{ 0.98306963, 0.97099463, 0.95973567, 0.94964894, 0.94047985, 0.93219450, 0.92319142 },
+				{ 0.98734156, 0.97727421, 0.96888602, 0.96108861, 0.95377776, 0.94652788, 0.94008998 },
+				{ 0.98968509, 0.98236427, 0.97490821, 0.96797285, 0.96235085, 0.95719472, 0.95067616 },
+				{ 0.99133485, 0.98498368, 0.97876319, 0.97339624, 0.96801451, 0.96335050, 0.95831143 },
+				{ 0.99249700, 0.98695550, 0.98148688, 0.97681778, 0.97226882, 0.96718237, 0.96369302 },
+				{ 0.99328683, 0.98818523, 0.98323662, 0.97882238, 0.97480502, 0.97062078, 0.96714139 },
+				{ 0.99393196, 0.98888571, 0.98468017, 0.98018231, 0.97636806, 0.97308674, 0.96889740 },
+				{ 0.99421550, 0.98969100, 0.98546385, 0.98174819, 0.97792110, 0.97399954, 0.97090748 },
+				{ 0.99440846, 0.98998063, 0.98600886, 0.98246436, 0.97884064, 0.97545619, 0.97230035 },
+				{ 0.99448825, 0.99018744, 0.98642005, 0.98270199, 0.97896622, 0.97570493, 0.97230704 },
+				{ 0.99464279, 0.98997801, 0.98648081, 0.98271092, 0.97925174, 0.97608861, 0.97281866 }
+			},
+			{
+				{ 0.97339500, 0.95415385, 0.93779371, 0.92341178, 0.91112888, 0.89822827, 0.88751406 },
+				{ 0.97665441, 0.95922576, 0.94477045, 0.93196377, 0.92041104, 0.90919702, 0.89857501 },
+				{ 0.98199068, 0.96977297, 0.95752795, 0.94732038, 0.93833362, 0.92849066, 0.91930184 },
+				{ 0.98667357, 0.97633855, 0.96723635, 0.95937880, 0.95114321, 0.94499462, 0.93758519 },
+				{ 0.98948349, 0.98115657, 0.97406270, 0.96713832, 0.96075860, 0.95479236, 0.94908676 },
+				{ 0.99127279, 0.98459201, 0.97843160, 0.97195972, 0.96689463, 0.96157462, 0.95706450 },
+				{ 0.99210235, 0.98603282, 0.98055444, 0.97511437, 0.97099782, 0.96646483, 0.96227228 },
+				{ 0.99289651, 0.98774879, 0.98214603, 0.97818332, 0.97321641, 0.96940564, 0.96546101 },
+				{ 0.99363625, 0.98818520, 0.98382254, 0.97960356, 0.97505421, 0.97160447, 0.96831044 },
+				{ 0.99398057, 0.98900476, 0.98482729, 0.98072425, 0.97695064, 0.97304592, 0.96951409 },
+				{ 0.99417101, 0.98929303, 0.98547964, 0.98111053, 0.97796972, 0.97431013, 0.97131547 },
+				{ 0.99422654, 0.98985520, 0.98574500, 0.98177994, 0.97805874, 0.97478697, 0.97136666 },
+				{ 0.99428861, 0.98954641, 0.98612064, 0.98187705, 0.97829911, 0.97459581, 0.97196164 }
+			},
+			{
+				{ 0.97129414, 0.95084365, 0.93339991, 0.91775768, 0.90327855, 0.89114453, 0.88006022 },
+				{ 0.97484958, 0.95720406, 0.94109398, 0.92701715, 0.91544153, 0.90363889, 0.89361683 },
+				{ 0.98140093, 0.96752755, 0.95524617, 0.94432972, 0.93486864, 0.92483345, 0.91642691 },
+				{ 0.98613451, 0.97580075, 0.96561244, 0.95744746, 0.94837266, 0.94184437, 0.93438228 },
+				{ 0.98886188, 0.98044683, 0.97220700, 0.96534610, 0.95895038, 0.95306960, 0.94696313 },
+				{ 0.99092421, 0.98331620, 0.97717903, 0.97162086, 0.96556324, 0.96064897, 0.95565173 },
+				{ 0.99184304, 0.98530646, 0.97986210, 0.97450209, 0.96942350, 0.96561405, 0.96066719 },
+				{ 0.99277191, 0.98702057, 0.98199215, 0.97753314, 0.97243485, 0.96818608, 0.96407323 },
+				{ 0.99319449, 0.98778064, 0.98320623, 0.97893755, 0.97423057, 0.97074339, 0.96654673 },
+				{ 0.99374266, 0.98852152, 0.98429134, 0.98008405, 0.97570128, 0.97235055, 0.96807595 },
+				{ 0.99388809, 0.98902316, 0.98488046, 0.98095140, 0.97670089, 0.97284971, 0.96923614 },
+				{ 0.99394611, 0.98927620, 0.98521866, 0.98102555, 0.97708346, 0.97351863, 0.96962941 },
+				{ 0.99406045, 0.98962924, 0.98531668, 0.98143978, 0.97760512, 0.97394918, 0.97079962 }
+			},
+			{
+				{ 0.96841259, 0.94713844, 0.92886196, 0.91223934, 0.89794657, 0.88345436, 0.87279558 },
+				{ 0.97293974, 0.95409658, 0.93763855, 0.92361778, 0.90970337, 0.89774284, 0.88586571 },
+				{ 0.98059899, 0.96559830, 0.95332436, 0.94210276, 0.93210701, 0.92219609, 0.91213221 },
+				{ 0.98544792, 0.97442964, 0.96441559, 0.95576182, 0.94766615, 0.93960987, 0.93297633 },
+				{ 0.98852483, 0.97964313, 0.97181152, 0.96520402, 0.95721136, 0.95186162, 0.94531674 },
+				{ 0.99037120, 0.98304423, 0.97617911, 0.96988832, 0.96369440, 0.95866313, 0.95275618 },
+				{ 0.99159106, 0.98515802, 0.97887704, 0.97369315, 0.96823534, 0.96358650, 0.95940504 },
+				{ 0.99243623, 0.98649245, 0.98151230, 0.97585422, 0.97132603, 0.96674267, 0.96298176 },
+				{ 0.99310581, 0.98780788, 0.98282103, 0.97814766, 0.97344497, 0.96956998, 0.96531371 },
+				{ 0.99359753, 0.98838945, 0.98322808, 0.97922078, 0.97474039, 0.97092760, 0.96727484 },
+				{ 0.99346651, 0.98875048, 0.98410669, 0.98017265, 0.97615047, 0.97190001, 0.96868115 },
+				{ 0.99390021, 0.98889753, 0.98459475, 0.98012637, 0.97676133, 0.97256453, 0.96905548 },
+				{ 0.99385392, 0.98895338, 0.98452133, 0.98034756, 0.97643646, 0.97294173, 0.96899063 }
+			},
+			{
+				{ 0.96607059, 0.94342573, 0.92379258, 0.90679989, 0.89058367, 0.87702305, 0.86434507 },
+				{ 0.97177131, 0.95087760, 0.93390803, 0.91884181, 0.90484808, 0.89178400, 0.88034356 },
+				{ 0.97929739, 0.96450596, 0.95135298, 0.93842256, 0.92809850, 0.91858952, 0.90913436 },
+				{ 0.98475691, 0.97300741, 0.96319426, 0.95355953, 0.94576386, 0.93721590, 0.93052594 },
+				{ 0.98787520, 0.97888741, 0.97082288, 0.96270206, 0.95620927, 0.94961349, 0.94359329 },
+				{ 0.99024363, 0.98243552, 0.97514122, 0.96911435, 0.96227471, 0.95795413, 0.95116529 },
+				{ 0.99123688, 0.98395861, 0.97803273, 0.97267984, 0.96730269, 0.96229759, 0.95756337 },
+				{ 0.99194193, 0.98569851, 0.98070046, 0.97509565, 0.97058306, 0.96517648, 0.96081855 },
+				{ 0.99239937, 0.98705768, 0.98182486, 0.97641563, 0.97226057, 0.96828735, 0.96392898 },
+				{ 0.99322971, 0.98760612, 0.98251550, 0.97846222, 0.97345478, 0.96981826, 0.96610148 },
+				{ 0.99332130, 0.98826651, 0.98370784, 0.97903333, 0.97492563, 0.97105891, 0.96712789 },
+				{ 0.99352810, 0.98849965, 0.98375524, 0.97911596, 0.97576025, 0.97141774, 0.96776845 },
+				{ 0.99365659, 0.98839649, 0.98381918, 0.97986662, 0.97535731, 0.97191586, 0.96794612 }
+			}
+		},
+		{
+			{
+				{ 0.99705814, 0.99472721, 0.99216304, 0.99024890, 0.98781195, 0.98556791, 0.98379916 },
+				{ 0.99705730, 0.99477218, 0.99215765, 0.99032420, 0.98770527, 0.98560112, 0.98358612 },
+				{ 0.99712925, 0.99444842, 0.99192787, 0.98958400, 0.98752755, 0.98529208, 0.98317867 },
+				{ 0.99682200, 0.99424021, 0.99157844, 0.98915629, 0.98687472, 0.98484256, 0.98236498 },
+				{ 0.99666278, 0.99376826, 0.99116643, 0.98876267, 0.98609289, 0.98347730, 0.98129884 },
+				{ 0.99646098, 0.99327178, 0.99061232, 0.98782093, 0.98497606, 0.98239927, 0.97961785 },
+				{ 0.99599190, 0.99257080, 0.98953245, 0.98645092, 0.98363071, 0.98049263, 0.97778446 },
+				{ 0.99553368, 0.99174194, 0.98823183, 0.98452271, 0.98107720, 0.97808996, 0.97463277 },
+				{ 0.99456894, 0.98980464, 0.98609310, 0.98152030, 0.97770095, 0.97355970, 0.97030450 },
+				{ 0.99332066, 0.98736938, 0.98168169, 0.97703788, 0.97205367, 0.96755259, 0.96257122 },
+				{ 0.99047987, 0.98263850, 0.97479751, 0.96827044, 0.96116618, 0.95482779, 0.94895953 },
+				{ 0.98253208, 0.96823839, 0.95547890, 0.94417721, 0.93305937, 0.92357984, 0.91569465 },
+				{ 0.93636056, 0.89646640, 0.87183189, 0.85584529, 0.84779021, 0.84650870, 0.84721342 }
+			},
+			{
+				{ 0.99714436, 0.99445293, 0.99225467, 0.98998615, 0.98783719, 0.98579918, 0.98368418 },
+				{ 0.99708896, 0.99450648, 0.99214990, 0.98984913, 0.98747694, 0.98561300, 0.98327447 },
+				{ 0.99693885, 0.99427027, 0.99197864, 0.98966886, 0.98732084, 0.98526888, 0.98277116 },
+				{ 0.99693465, 0.99425554, 0.99176304, 0.98926044, 0.98666825, 0.98461474, 0.98236702 },
+				{ 0.99660054, 0.99373835, 0.99117963, 0.98857944, 0.98629657, 0.98403354, 0.98146614 },
+				{ 0.99646933, 0.99337070, 0.99035536, 0.98776018, 0.98522846, 0.98252954, 0.97996470 },
+				{ 0.99614347, 0.99271933, 0.98933254, 0.98654334, 0.98357116, 0.98008750, 0.97773268 },
+				{ 0.99547326, 0.99154334, 0.98788421, 0.98414776, 0.98136638, 0.97801533, 0.97511479 },
+				{ 0.99468114, 0.99014665, 0.98554304, 0.98145621, 0.97808895, 0.97413581, 0.97018148 },
+				{ 0.99312964, 0.98783554, 0.98204820, 0.97753516, 0.97248823, 0.96783312, 0.96328587 },
+				{ 0.99093240, 0.98346833, 0.97617299, 0.96973675, 0.96350627, 0.95776333, 0.95184979 },
+				{ 0.98722320, 0.97616059, 0.96680861, 0.95806522, 0.94930181, 0.94230529, 0.93402535 },
+				{ 0.98371775, 0.97009148, 0.95925923, 0.94862213, 0.93799420, 0.92877133, 0.92181589 }
+			},
+			{
+				{ 0.99710463, 0.99450648, 0.99207175, 0.98975212, 0.98769898, 0.98541329, 0.98311502 },
+				{ 0.99711376, 0.99440152, 0.99209108, 0.98968662, 0.98750658, 0.98539348, 0.98328422 },
+				{ 0.99704890, 0.99433039, 0.99182063, 0.98952696, 0.98689473, 0.98482284, 0.98272122 },
+				{ 0.99684649, 0.99412956, 0.99160888, 0.98893088, 0.98687351, 0.98437762, 0.98211907 },
+				{ 0.99658427, 0.99378014, 0.99100681, 0.98837806, 0.98601537, 0.98366000, 0.98096705 },
+				{ 0.99643763, 0.99331060, 0.99033877, 0.98762145, 0.98463595, 0.98191623, 0.97983790 },
+				{ 0.99625079, 0.99259783, 0.98934544, 0.98634656, 0.98319873, 0.98054140, 0.97754533 },
+				{ 0.99553549, 0.99148861, 0.98798468, 0.98438015, 0.98161250, 0.97775421, 0.97493815 },
+				{ 0.99473307, 0.99011133, 0.98606509, 0.98201841, 0.97813707, 0.97471306, 0.97063881 },
+				{ 0.99359696, 0.98806129, 0.98317344, 0.97875710, 0.97408146, 0.96975229, 0.96580794 },
+				{ 0.99226398, 0.98596809, 0.98011237, 0.97448715, 0.96937316, 0.96390186, 0.95920521 },
+				{ 0.99082686, 0.98329605, 0.97654182, 0.97010212, 0.96400920, 0.95799106, 0.95261279 },
+				{ 0.99016884, 0.98209607, 0.97488506, 0.96786790, 0.96154323, 0.95581977, 0.95023720 }
+			},
+			{
+				{ 0.99683803, 0.99438942, 0.99156485, 0.98922470, 0.98676207, 0.98465730, 0.98236972 },
+				{ 0.99700579, 0.99414638, 0.99158961, 0.98949345, 0.98667751, 0.98452616, 0.98236016 },
+				{ 0.99680115, 0.99409436, 0.99139663, 0.98897551, 0.98679828, 0.98431330, 0.98216554 },
+				{ 0.99670368, 0.99389136, 0.99102755, 0.98860932, 0.98610221, 0.98346005, 0.98124892 },
+				{ 0.99652677, 0.99344485, 0.99061611, 0.98805484, 0.98537966, 0.98287499, 0.98048417 },
+				{ 0.99638059, 0.99313699, 0.98981244, 0.98700300, 0.98434574, 0.98173676, 0.97883377 },
+				{ 0.99582553, 0.99226105, 0.98920440, 0.98618588, 0.98305414, 0.98012335, 0.97704280 },
+				{ 0.99553780, 0.99158685, 0.98755709, 0.98453259, 0.98149233, 0.97788348, 0.97492093 },
+				{ 0.99500104, 0.99031355, 0.98654889, 0.98306045, 0.97962613, 0.97561425, 0.97239891 },
+				{ 0.99399915, 0.98932408, 0.98467420, 0.98049603, 0.97655200, 0.97287608, 0.96916990 },
+				{ 0.99351806, 0.98835899, 0.98321826, 0.97871030, 0.97427925, 0.96991118, 0.96592619 },
+				{ 0.99318667, 0.98713962, 0.98197592, 0.97729925, 0.97218643, 0.96789642, 0.96337750 },
+				{ 0.99281541, 0.98674160, 0.98172400, 0.97604530, 0.97123822, 0.96706427, 0.96216929 }
+			},
+			{
+				{ 0.99662086, 0.99372887, 0.99106978, 0.98844028, 0.98594906, 0.98370338, 0.98108837 },
+				{ 0.99649639, 0.99372103, 0.99098946, 0.98807142, 0.98592386, 0.98297019, 0.98085771 },
+				{ 0.99650959, 0.99348412, 0.99083120, 0.98810572, 0.98553424, 0.98297136, 0.98061077 },
+				{ 0.99638842, 0.99341725, 0.99028644, 0.98758326, 0.98503053, 0.98247398, 0.97992803 },
+				{ 0.99618813, 0.99310232, 0.99006428, 0.98724752, 0.98440660, 0.98158895, 0.97917421 },
+				{ 0.99597945, 0.99267239, 0.98955445, 0.98631173, 0.98383284, 0.98080061, 0.97826076 },
+				{ 0.99579778, 0.99229739, 0.98893169, 0.98553802, 0.98249850, 0.97983765, 0.97722778 },
+				{ 0.99547587, 0.99184743, 0.98827458, 0.98490036, 0.98152225, 0.97830540, 0.97540994 },
+				{ 0.99526759, 0.99122416, 0.98740583, 0.98365795, 0.98040713, 0.97682332, 0.97354550 },
+				{ 0.99472876, 0.99041578, 0.98658806, 0.98266241, 0.97880492, 0.97551591, 0.97205734 },
+				{ 0.99457194, 0.98986932, 0.98561876, 0.98180378, 0.97799611, 0.97502329, 0.97050042 },
+				{ 0.99429683, 0.98949157, 0.98518569, 0.98139563, 0.97737363, 0.97316784, 0.96983120 },
+				{ 0.99426860, 0.98964685, 0.98481109, 0.98072892, 0.97669927, 0.97303534, 0.96885003 }
+			},
+			{
+				{ 0.99628561, 0.99292606, 0.98998714, 0.98688707, 0.98427920, 0.98140636, 0.97833775 },
+				{ 0.99609047, 0.99291134, 0.98999614, 0.98681556, 0.98425264, 0.98135414, 0.97902435 },
+				{ 0.99607324, 0.99284955, 0.98970286, 0.98660653, 0.98383654, 0.98108319, 0.97875376 },
+				{ 0.99594312, 0.99277646, 0.98944051, 0.98673058, 0.98362964, 0.98075955, 0.97767138 },
+				{ 0.99599980, 0.99225641, 0.98938520, 0.98611458, 0.98328885, 0.98051036, 0.97814123 },
+				{ 0.99571146, 0.99210798, 0.98908908, 0.98594033, 0.98294874, 0.97981373, 0.97739986 },
+				{ 0.99574009, 0.99205756, 0.98839834, 0.98559192, 0.98215741, 0.97946182, 0.97706026 },
+				{ 0.99545745, 0.99185793, 0.98834658, 0.98484817, 0.98196455, 0.97898671, 0.97604394 },
+				{ 0.99544489, 0.99161633, 0.98787139, 0.98466996, 0.98142442, 0.97784958, 0.97536019 },
+				{ 0.99533214, 0.99108088, 0.98754587, 0.98437810, 0.98109720, 0.97763060, 0.97440262 },
+				{ 0.99496375, 0.99120455, 0.98740951, 0.98379641, 0.98021246, 0.97719243, 0.97408909 },
+				{ 0.99512449, 0.99102107, 0.98695288, 0.98346908, 0.97985164, 0.97702622, 0.97354826 },
+				{ 0.99519688, 0.99078648, 0.98694828, 0.98357416, 0.97997923, 0.97683118, 0.97361921 }
+			},
+			{
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+				{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 }
+			},
+			{
+				{ 0.99463008, 0.99068881, 0.98652001, 0.98304172, 0.97957247, 0.97628278, 0.97285434 },
+				{ 0.99474984, 0.99053111, 0.98650302, 0.98267867, 0.97953127, 0.97639592, 0.97287475 },
+				{ 0.99502460, 0.99044863, 0.98672876, 0.98323460, 0.98002638, 0.97665977, 0.97352537 },
+				{ 0.99486833, 0.99073455, 0.98700427, 0.98359611, 0.98016016, 0.97711090, 0.97400304 },
+				{ 0.99515993, 0.99119787, 0.98764116, 0.98386716, 0.98028396, 0.97761963, 0.97440855 },
+				{ 0.99530165, 0.99136377, 0.98748578, 0.98466625, 0.98161641, 0.97798048, 0.97500528 },
+				{ 0.99521870, 0.99162757, 0.98808754, 0.98476251, 0.98159764, 0.97844388, 0.97587479 },
+				{ 0.99552304, 0.99171233, 0.98827032, 0.98524934, 0.98213870, 0.97956390, 0.97643889 },
+				{ 0.99564973, 0.99210993, 0.98859592, 0.98575705, 0.98261634, 0.97958162, 0.97667776 },
+				{ 0.99574089, 0.99236395, 0.98891840, 0.98578632, 0.98274482, 0.98000455, 0.97741444 },
+				{ 0.99563270, 0.99223829, 0.98895223, 0.98600498, 0.98264977, 0.98070878, 0.97757791 },
+				{ 0.99607602, 0.99230818, 0.98923633, 0.98629959, 0.98331245, 0.98010105, 0.97762053 },
+				{ 0.99579309, 0.99233345, 0.98917717, 0.98589469, 0.98329272, 0.98054752, 0.97737217 }
+			},
+			{
+				{ 0.99382769, 0.98927090, 0.98471650, 0.98013636, 0.97582141, 0.97316456, 0.96897318 },
+				{ 0.99406108, 0.98930320, 0.98483222, 0.98081015, 0.97687886, 0.97327974, 0.96916922 },
+				{ 0.99413897, 0.98949687, 0.98526850, 0.98109754, 0.97685232, 0.97329832, 0.97033036 },
+				{ 0.99438376, 0.98989356, 0.98558145, 0.98156524, 0.97829116, 0.97486132, 0.97154136 },
+				{ 0.99456597, 0.99006154, 0.98620201, 0.98289034, 0.97951346, 0.97607003, 0.97228271 },
+				{ 0.99517864, 0.99088279, 0.98703539, 0.98351995, 0.97990541, 0.97697485, 0.97377801 },
+				{ 0.99523523, 0.99118205, 0.98785039, 0.98430575, 0.98132157, 0.97822883, 0.97522983 },
+				{ 0.99557065, 0.99184950, 0.98832394, 0.98498317, 0.98220381, 0.97882768, 0.97585949 },
+				{ 0.99566875, 0.99202897, 0.98878175, 0.98547007, 0.98245274, 0.97976203, 0.97747403 },
+				{ 0.99592266, 0.99244480, 0.98927987, 0.98639372, 0.98339822, 0.98066613, 0.97813332 },
+				{ 0.99582670, 0.99264238, 0.98951203, 0.98624890, 0.98397377, 0.98114045, 0.97853613 },
+				{ 0.99598798, 0.99287105, 0.98922978, 0.98611222, 0.98381087, 0.98097314, 0.97853460 },
+				{ 0.99593756, 0.99270129, 0.98972571, 0.98643100, 0.98429198, 0.98152262, 0.97894872 }
+			},
+			{
+				{ 0.99292479, 0.98739467, 0.98237294, 0.97781478, 0.97274898, 0.96891278, 0.96532352 },
+				{ 0.99305808, 0.98756303, 0.98264474, 0.97810231, 0.97357674, 0.96990530, 0.96558252 },
+				{ 0.99354501, 0.98803994, 0.98332225, 0.97877886, 0.97480127, 0.97097238, 0.96696909 },
+				{ 0.99371320, 0.98847914, 0.98421383, 0.98014695, 0.97638593, 0.97203635, 0.96834858 },
+				{ 0.99419408, 0.98959087, 0.98528554, 0.98117550, 0.97772641, 0.97422300, 0.97048876 },
+				{ 0.99448778, 0.99016382, 0.98651642, 0.98248395, 0.97891735, 0.97584017, 0.97263640 },
+				{ 0.99499787, 0.99112692, 0.98724290, 0.98409342, 0.98084114, 0.97763804, 0.97438254 },
+				{ 0.99535227, 0.99137912, 0.98817231, 0.98498350, 0.98192714, 0.97897150, 0.97599132 },
+				{ 0.99573383, 0.99197964, 0.98875560, 0.98576753, 0.98294363, 0.98002926, 0.97700922 },
+				{ 0.99573363, 0.99252185, 0.98940207, 0.98608516, 0.98315145, 0.98075448, 0.97801747 },
+				{ 0.99598776, 0.99259431, 0.98965344, 0.98652871, 0.98375148, 0.98149630, 0.97890719 },
+				{ 0.99604475, 0.99261793, 0.98981539, 0.98685807, 0.98416467, 0.98169894, 0.97906442 },
+				{ 0.99603053, 0.99297496, 0.98987324, 0.98708922, 0.98442717, 0.98167808, 0.97931536 }
+			},
+			{
+				{ 0.99204394, 0.98576064, 0.97981492, 0.97444581, 0.96970549, 0.96541925, 0.96084647 },
+				{ 0.99215754, 0.98594259, 0.98009865, 0.97506576, 0.97078089, 0.96523222, 0.96084161 },
+				{ 0.99254252, 0.98650065, 0.98126503, 0.97655720, 0.97214821, 0.96736930, 0.96275243 },
+				{ 0.99311226, 0.98775513, 0.98294508, 0.97808860, 0.97412853, 0.96994570, 0.96609024 },
+				{ 0.99371970, 0.98886043, 0.98453825, 0.98033570, 0.97598307, 0.97221734, 0.96881692 },
+				{ 0.99443235, 0.98977130, 0.98565823, 0.98172564, 0.97810112, 0.97446135, 0.97161914 },
+				{ 0.99468416, 0.99061583, 0.98708819, 0.98327450, 0.98001106, 0.97675484, 0.97381484 },
+				{ 0.99531940, 0.99120609, 0.98801769, 0.98461325, 0.98092780, 0.97843059, 0.97552400 },
+				{ 0.99538580, 0.99171979, 0.98857963, 0.98543529, 0.98240388, 0.97968557, 0.97693896 },
+				{ 0.99583951, 0.99229908, 0.98915133, 0.98607371, 0.98361164, 0.98081888, 0.97824579 },
+				{ 0.99584485, 0.99268439, 0.98958374, 0.98694044, 0.98392719, 0.98163434, 0.97856273 },
+				{ 0.99606525, 0.99278916, 0.98953095, 0.98702971, 0.98449453, 0.98199306, 0.97930461 },
+				{ 0.99597396, 0.99307559, 0.98990617, 0.98708761, 0.98437358, 0.98208747, 0.97948389 }
+			},
+			{
+				{ 0.99071095, 0.98357271, 0.97761353, 0.97126956, 0.96596754, 0.96048130, 0.95529233 },
+				{ 0.99107039, 0.98401500, 0.97736597, 0.97232724, 0.96684426, 0.96175501, 0.95636636 },
+				{ 0.99161050, 0.98522281, 0.97917150, 0.97415943, 0.96915125, 0.96342583, 0.95889874 },
+				{ 0.99238999, 0.98666884, 0.98090919, 0.97608931, 0.97172169, 0.96730243, 0.96351744 },
+				{ 0.99334548, 0.98795825, 0.98295471, 0.97871163, 0.97438113, 0.97033060, 0.96694912 },
+				{ 0.99393939, 0.98920057, 0.98447482, 0.98083955, 0.97672334, 0.97374393, 0.96984458 },
+				{ 0.99468597, 0.99018479, 0.98587751, 0.98295957, 0.97948418, 0.97599313, 0.97278327 },
+				{ 0.99502989, 0.99101593, 0.98754448, 0.98392597, 0.98057800, 0.97791645, 0.97477672 },
+				{ 0.99557471, 0.99176507, 0.98845358, 0.98525821, 0.98202109, 0.97904798, 0.97648351 },
+				{ 0.99582037, 0.99210670, 0.98938424, 0.98622039, 0.98310446, 0.98017176, 0.97731832 },
+				{ 0.99607249, 0.99263956, 0.98937197, 0.98620760, 0.98357232, 0.98125167, 0.97841035 },
+				{ 0.99607853, 0.99273426, 0.98984121, 0.98673697, 0.98411920, 0.98139222, 0.97884284 },
+				{ 0.99604153, 0.99292480, 0.98960573, 0.98706545, 0.98377338, 0.98146020, 0.97865619 }
+			},
+			{
+				{ 0.98936927, 0.98129963, 0.97439899, 0.96802875, 0.96132487, 0.95619816, 0.95069763 },
+				{ 0.98963431, 0.98219972, 0.97497523, 0.96884013, 0.96270316, 0.95747736, 0.95169525 },
+				{ 0.99068214, 0.98384625, 0.97715391, 0.97145514, 0.96566022, 0.96032502, 0.95535800 },
+				{ 0.99174258, 0.98530363, 0.98009070, 0.97421862, 0.96931544, 0.96502755, 0.96010339 },
+				{ 0.99286797, 0.98719456, 0.98222951, 0.97728447, 0.97311376, 0.96878289, 0.96404739 },
+				{ 0.99373651, 0.98883104, 0.98416240, 0.98003288, 0.97623659, 0.97218300, 0.96845888 },
+				{ 0.99430566, 0.98975810, 0.98576532, 0.98160163, 0.97847209, 0.97511426, 0.97155009 },
+				{ 0.99497772, 0.99073203, 0.98704795, 0.98396175, 0.98020728, 0.97731744, 0.97451700 },
+				{ 0.99525322, 0.99145797, 0.98766682, 0.98491267, 0.98173196, 0.97879711, 0.97564896 },
+				{ 0.99569182, 0.99183933, 0.98853312, 0.98529615, 0.98276354, 0.98005606, 0.97712031 },
+				{ 0.99564355, 0.99190947, 0.98907499, 0.98585457, 0.98344233, 0.98044674, 0.97826784 },
+				{ 0.99586232, 0.99255528, 0.98944816, 0.98650951, 0.98393323, 0.98068447, 0.97852479 },
+				{ 0.99600844, 0.99268784, 0.98956468, 0.98684701, 0.98404465, 0.98122154, 0.97891095 }
+			},
+			{
+				{ 0.98828394, 0.97926806, 0.97156714, 0.96388221, 0.95733175, 0.95098792, 0.94481868 },
+				{ 0.98863164, 0.97991057, 0.97228765, 0.96551488, 0.95879215, 0.95253950, 0.94649272 },
+				{ 0.98965826, 0.98198039, 0.97525459, 0.96846720, 0.96248867, 0.95757095, 0.95146721 },
+				{ 0.99121169, 0.98386158, 0.97789478, 0.97234080, 0.96764794, 0.96219938, 0.95799692 },
+				{ 0.99231527, 0.98620401, 0.98127293, 0.97615934, 0.97146463, 0.96683329, 0.96263855 },
+				{ 0.99346820, 0.98816541, 0.98319230, 0.97899212, 0.97476784, 0.97089641, 0.96700679 },
+				{ 0.99409708, 0.98922299, 0.98483808, 0.98152953, 0.97732212, 0.97399496, 0.97044358 },
+				{ 0.99456684, 0.99045757, 0.98683601, 0.98303913, 0.97973860, 0.97628893, 0.97320432 },
+				{ 0.99508384, 0.99132844, 0.98756145, 0.98440728, 0.98120342, 0.97810100, 0.97511836 },
+				{ 0.99555739, 0.99156659, 0.98821969, 0.98527170, 0.98216988, 0.97896250, 0.97638886 },
+				{ 0.99557738, 0.99215934, 0.98897487, 0.98579446, 0.98269575, 0.98007159, 0.97786840 },
+				{ 0.99558017, 0.99221257, 0.98885479, 0.98610846, 0.98313608, 0.98065315, 0.97805086 },
+				{ 0.99588702, 0.99235431, 0.98933888, 0.98614917, 0.98345438, 0.98080316, 0.97815882 }
+			},
+			{
+				{ 0.98691353, 0.97661972, 0.96787824, 0.95993864, 0.95223376, 0.94539209, 0.93904914 },
+				{ 0.98716702, 0.97750132, 0.96918033, 0.96202229, 0.95433115, 0.94806137, 0.94150592 },
+				{ 0.98912025, 0.97990840, 0.97300328, 0.96581525, 0.95978912, 0.95304985, 0.94773059 },
+				{ 0.99062170, 0.98318971, 0.97616382, 0.97025726, 0.96520308, 0.96004765, 0.95445363 },
+				{ 0.99186510, 0.98562851, 0.97988796, 0.97456460, 0.96972072, 0.96521196, 0.96050638 },
+				{ 0.99309849, 0.98727280, 0.98275380, 0.97799522, 0.97380877, 0.96924029, 0.96563530 },
+				{ 0.99390446, 0.98885016, 0.98480679, 0.98065433, 0.97680888, 0.97297398, 0.96933942 },
+				{ 0.99437889, 0.99010763, 0.98615563, 0.98259626, 0.97897308, 0.97554442, 0.97251642 },
+				{ 0.99492927, 0.99092455, 0.98727310, 0.98370627, 0.98055149, 0.97748956, 0.97473925 },
+				{ 0.99515167, 0.99135413, 0.98788572, 0.98495791, 0.98145530, 0.97861877, 0.97571762 },
+				{ 0.99543748, 0.99168190, 0.98839445, 0.98519502, 0.98227416, 0.97932493, 0.97647185 },
+				{ 0.99558373, 0.99200818, 0.98897145, 0.98578788, 0.98309743, 0.98006081, 0.97703032 },
+				{ 0.99573445, 0.99215374, 0.98882710, 0.98583295, 0.98281219, 0.98006611, 0.97725084 }
+			},
+			{
+				{ 0.98499714, 0.97407303, 0.96482272, 0.95569587, 0.94824459, 0.93974344, 0.93236516 },
+				{ 0.98637980, 0.97539604, 0.96659972, 0.95837557, 0.95088842, 0.94279364, 0.93639566 },
+				{ 0.98778550, 0.97858078, 0.97013002, 0.96272635, 0.95647178, 0.94919160, 0.94368482 },
+				{ 0.98971364, 0.98189372, 0.97473875, 0.96882522, 0.96271797, 0.95779204, 0.95218509 },
+				{ 0.99114057, 0.98481643, 0.97890301, 0.97295650, 0.96806488, 0.96354670, 0.95873935 },
+				{ 0.99251363, 0.98714746, 0.98171919, 0.97728558, 0.97255354, 0.96874442, 0.96414803 },
+				{ 0.99361776, 0.98871016, 0.98416933, 0.97968037, 0.97623185, 0.97196959, 0.96866987 },
+				{ 0.99433221, 0.98950199, 0.98586657, 0.98143387, 0.97797760, 0.97498017, 0.97133631 },
+				{ 0.99466995, 0.99081321, 0.98664922, 0.98324707, 0.97986915, 0.97657907, 0.97267421 },
+				{ 0.99514179, 0.99113108, 0.98741414, 0.98384823, 0.98093369, 0.97803805, 0.97477229 },
+				{ 0.99513261, 0.99161284, 0.98809296, 0.98476813, 0.98132323, 0.97865745, 0.97603947 },
+				{ 0.99542268, 0.99165146, 0.98860099, 0.98499910, 0.98216508, 0.97916078, 0.97651680 },
+				{ 0.99534931, 0.99175981, 0.98848594, 0.98504111, 0.98184636, 0.97935539, 0.97618941 }
+			},
+			{
+				{ 0.98326396, 0.97160829, 0.96063943, 0.95121979, 0.94245179, 0.93453644, 0.92778308 },
+				{ 0.98457376, 0.97315313, 0.96286617, 0.95400135, 0.94510048, 0.93764466, 0.93009755 },
+				{ 0.98710508, 0.97694217, 0.96754770, 0.96023162, 0.95333466, 0.94578478, 0.93900891 },
+				{ 0.98904448, 0.98055979, 0.97365085, 0.96682550, 0.96032279, 0.95417165, 0.94908373 },
+				{ 0.99101173, 0.98414818, 0.97805472, 0.97220859, 0.96643797, 0.96195894, 0.95622378 },
+				{ 0.99231976, 0.98644768, 0.98099026, 0.97593994, 0.97194616, 0.96697676, 0.96277013 },
+				{ 0.99313170, 0.98837976, 0.98311789, 0.97878838, 0.97461103, 0.97036123, 0.96752286 },
+				{ 0.99409834, 0.98898815, 0.98500284, 0.98109253, 0.97702939, 0.97322803, 0.96992091 },
+				{ 0.99448017, 0.99028029, 0.98629851, 0.98219903, 0.97865475, 0.97550687, 0.97216539 },
+				{ 0.99476882, 0.99070948, 0.98654789, 0.98366397, 0.98018428, 0.97722750, 0.97373573 },
+				{ 0.99496763, 0.99132400, 0.98729075, 0.98453888, 0.98063491, 0.97769531, 0.97508293 },
+				{ 0.99510580, 0.99109919, 0.98774527, 0.98456975, 0.98129380, 0.97840626, 0.97517803 },
+				{ 0.99521953, 0.99139621, 0.98800593, 0.98450388, 0.98175810, 0.97846921, 0.97521850 }
+			},
+			{
+				{ 0.98209453, 0.96856906, 0.95752154, 0.94642435, 0.93784633, 0.92889891, 0.92044904 },
+				{ 0.98313299, 0.97086914, 0.96025540, 0.95020116, 0.94105688, 0.93217800, 0.92453948 },
+				{ 0.98590290, 0.97525555, 0.96563750, 0.95768461, 0.95016448, 0.94251221, 0.93544288 },
+				{ 0.98843399, 0.97980829, 0.97156893, 0.96459680, 0.95852273, 0.95171998, 0.94593183 },
+				{ 0.99067755, 0.98354948, 0.97660792, 0.97087043, 0.96435229, 0.95985502, 0.95441296 },
+				{ 0.99193718, 0.98556715, 0.98041312, 0.97507975, 0.96990891, 0.96567467, 0.96075270 },
+				{ 0.99300200, 0.98728138, 0.98268793, 0.97805280, 0.97392014, 0.96949798, 0.96518645 },
+				{ 0.99377842, 0.98875253, 0.98437636, 0.98017839, 0.97625078, 0.97243488, 0.96943427 },
+				{ 0.99416990, 0.98969827, 0.98564931, 0.98168728, 0.97805910, 0.97458881, 0.97128640 },
+				{ 0.99452651, 0.99034204, 0.98676514, 0.98270894, 0.97901549, 0.97606975, 0.97254938 },
+				{ 0.99475651, 0.99072210, 0.98702916, 0.98378977, 0.98044308, 0.97701987, 0.97410492 },
+				{ 0.99483131, 0.99082159, 0.98693243, 0.98404937, 0.98074689, 0.97682780, 0.97519731 },
+				{ 0.99499291, 0.99073452, 0.98743906, 0.98373064, 0.98035301, 0.97772765, 0.97458884 }
+			},
+			{
+				{ 0.98049697, 0.96599654, 0.95339980, 0.94180361, 0.93237905, 0.92190828, 0.91319658 },
+				{ 0.98160616, 0.96823642, 0.95637294, 0.94647420, 0.93738089, 0.92790949, 0.91886326 },
+				{ 0.98507041, 0.97366645, 0.96409338, 0.95475252, 0.94682607, 0.93905302, 0.93056014 },
+				{ 0.98769794, 0.97890015, 0.97016311, 0.96254231, 0.95561358, 0.94920744, 0.94337774 },
+				{ 0.99048578, 0.98243878, 0.97561585, 0.96982003, 0.96342476, 0.95817523, 0.95277064 },
+				{ 0.99179519, 0.98520853, 0.97932846, 0.97396175, 0.96868860, 0.96428034, 0.95965434 },
+				{ 0.99270699, 0.98693294, 0.98205911, 0.97710970, 0.97257862, 0.96787070, 0.96421555 },
+				{ 0.99346491, 0.98848064, 0.98344852, 0.97930461, 0.97508230, 0.97167103, 0.96787234 },
+				{ 0.99412944, 0.98920144, 0.98502110, 0.98089411, 0.97710576, 0.97381741, 0.97012185 },
+				{ 0.99432770, 0.98956467, 0.98579959, 0.98228947, 0.97820717, 0.97473216, 0.97167691 },
+				{ 0.99458562, 0.99018284, 0.98622923, 0.98277410, 0.97948773, 0.97627224, 0.97313173 },
+				{ 0.99456638, 0.99042941, 0.98674463, 0.98292566, 0.97998142, 0.97675968, 0.97336482 },
+				{ 0.99485312, 0.99031494, 0.98670332, 0.98356360, 0.97964055, 0.97697082, 0.97371742 }
+			},
+			{
+				{ 0.97869048, 0.96302559, 0.94868880, 0.93789957, 0.92638405, 0.91576110, 0.90691752 },
+				{ 0.97998058, 0.96519759, 0.95324794, 0.94216175, 0.93088871, 0.92201720, 0.91331058 },
+				{ 0.98436601, 0.97170691, 0.96154470, 0.95194621, 0.94242702, 0.93494792, 0.92737615 },
+				{ 0.98705780, 0.97767812, 0.96878758, 0.96176211, 0.95423705, 0.94814020, 0.94113613 },
+				{ 0.98979513, 0.98161894, 0.97456921, 0.96776769, 0.96175297, 0.95633490, 0.95023236 },
+				{ 0.99088114, 0.98482686, 0.97838491, 0.97281193, 0.96796389, 0.96289757, 0.95771803 },
+				{ 0.99243209, 0.98637037, 0.98126698, 0.97597321, 0.97204662, 0.96681472, 0.96279257 },
+				{ 0.99298209, 0.98774923, 0.98308822, 0.97868836, 0.97455862, 0.97049144, 0.96665624 },
+				{ 0.99385966, 0.98881748, 0.98406673, 0.97986035, 0.97657270, 0.97208012, 0.96886405 },
+				{ 0.99427239, 0.98922509, 0.98550019, 0.98163518, 0.97768399, 0.97416108, 0.96984820 },
+				{ 0.99428307, 0.98975368, 0.98548373, 0.98223058, 0.97827545, 0.97496893, 0.97154813 },
+				{ 0.99476763, 0.99002468, 0.98630528, 0.98235389, 0.97894830, 0.97545804, 0.97268737 },
+				{ 0.99457461, 0.99027223, 0.98596937, 0.98262776, 0.97900926, 0.97624847, 0.97297648 }
+			},
+			{
+				{ 0.97636085, 0.95977448, 0.94477652, 0.93291002, 0.92094402, 0.91067020, 0.90009305 },
+				{ 0.97833408, 0.96357738, 0.94950933, 0.93855006, 0.92752816, 0.91676129, 0.90662762 },
+				{ 0.98296556, 0.96971536, 0.95896757, 0.94916687, 0.93992200, 0.93198241, 0.92251224 },
+				{ 0.98658902, 0.97650196, 0.96732103, 0.95932986, 0.95135379, 0.94450775, 0.93767336 },
+				{ 0.98920863, 0.98075408, 0.97401356, 0.96647527, 0.96037678, 0.95432598, 0.94860696 },
+				{ 0.99090171, 0.98368651, 0.97735610, 0.97236490, 0.96619259, 0.96082297, 0.95574498 },
+				{ 0.99224876, 0.98590513, 0.98051984, 0.97525352, 0.97054214, 0.96607600, 0.96156121 },
+				{ 0.99281496, 0.98727781, 0.98224777, 0.97785679, 0.97329493, 0.96886796, 0.96572115 },
+				{ 0.99356933, 0.98821293, 0.98341599, 0.97927026, 0.97517071, 0.97109507, 0.96796638 },
+				{ 0.99394062, 0.98879312, 0.98468583, 0.98061885, 0.97653168, 0.97325900, 0.96994178 },
+				{ 0.99410747, 0.98949915, 0.98499809, 0.98158999, 0.97736142, 0.97389213, 0.97035114 },
+				{ 0.99422876, 0.98987475, 0.98561378, 0.98178370, 0.97781587, 0.97447539, 0.97107294 },
+				{ 0.99449760, 0.98980973, 0.98605412, 0.98155077, 0.97842549, 0.97450441, 0.97179411 }
+			},
+			{
+				{ 0.97452543, 0.95596641, 0.94100409, 0.92792619, 0.91549207, 0.90338950, 0.89251768 },
+				{ 0.97742873, 0.96038655, 0.94612317, 0.93298850, 0.92163393, 0.91163894, 0.90182390 },
+				{ 0.98237017, 0.96846803, 0.95692568, 0.94640650, 0.93654480, 0.92778426, 0.91895285 },
+				{ 0.98605644, 0.97505194, 0.96635440, 0.95781627, 0.94942889, 0.94262780, 0.93440967 },
+				{ 0.98880411, 0.98023326, 0.97257356, 0.96539876, 0.95893514, 0.95204244, 0.94692200 },
+				{ 0.99041480, 0.98307611, 0.97624700, 0.97087613, 0.96531421, 0.95962201, 0.95484209 },
+				{ 0.99183345, 0.98495904, 0.97983317, 0.97414306, 0.96900036, 0.96455679, 0.96000182 },
+				{ 0.99262725, 0.98691733, 0.98178002, 0.97658530, 0.97216121, 0.96780440, 0.96373031 },
+				{ 0.99346664, 0.98803636, 0.98286754, 0.97873558, 0.97431777, 0.97042556, 0.96694755 },
+				{ 0.99350431, 0.98848941, 0.98427968, 0.97943676, 0.97612482, 0.97181830, 0.96871812 },
+				{ 0.99376913, 0.98909972, 0.98471273, 0.98016160, 0.97649896, 0.97284352, 0.96907528 },
+				{ 0.99407765, 0.98921499, 0.98505954, 0.98106090, 0.97742391, 0.97375328, 0.97011457 },
+				{ 0.99412624, 0.98947870, 0.98503145, 0.98081138, 0.97703481, 0.97351819, 0.96999208 }
+			},
+			{
+				{ 0.97259985, 0.95317008, 0.93688809, 0.92191393, 0.90912904, 0.89654718, 0.88494850 },
+				{ 0.97552998, 0.95765204, 0.94350248, 0.92885694, 0.91724863, 0.90589167, 0.89503508 },
+				{ 0.98107157, 0.96719974, 0.95412741, 0.94377227, 0.93338684, 0.92438247, 0.91518701 },
+				{ 0.98539756, 0.97460812, 0.96491973, 0.95568554, 0.94711436, 0.93937130, 0.93270392 },
+				{ 0.98833506, 0.97963899, 0.97052602, 0.96394648, 0.95723316, 0.95045747, 0.94411942 },
+				{ 0.99009011, 0.98292674, 0.97586012, 0.96985291, 0.96323724, 0.95873286, 0.95267729 },
+				{ 0.99148704, 0.98503117, 0.97849868, 0.97335119, 0.96803482, 0.96358796, 0.95824826 },
+				{ 0.99256927, 0.98604638, 0.98075427, 0.97560283, 0.97101620, 0.96685337, 0.96220115 },
+				{ 0.99299504, 0.98715297, 0.98249250, 0.97773128, 0.97373853, 0.96913710, 0.96458457 },
+				{ 0.99331355, 0.98782846, 0.98344357, 0.97883980, 0.97477841, 0.97124188, 0.96656007 },
+				{ 0.99349692, 0.98846483, 0.98425732, 0.97957311, 0.97600098, 0.97211666, 0.96821966 },
+				{ 0.99386691, 0.98886474, 0.98443160, 0.98002283, 0.97604940, 0.97268052, 0.96909466 },
+				{ 0.99388704, 0.98880337, 0.98429835, 0.98026264, 0.97610019, 0.97323209, 0.96929133 }
+			},
+			{
+				{ 0.97060219, 0.95030930, 0.93203864, 0.91664098, 0.90194248, 0.88962704, 0.87822109 },
+				{ 0.97388450, 0.95539663, 0.93886530, 0.92506775, 0.91303084, 0.90113256, 0.88959819 },
+				{ 0.97963765, 0.96536628, 0.95285214, 0.94035111, 0.92997794, 0.92072448, 0.91052482 },
+				{ 0.98490563, 0.97280840, 0.96300153, 0.95402939, 0.94558807, 0.93750753, 0.92942373 },
+				{ 0.98785934, 0.97832666, 0.97023722, 0.96296265, 0.95557754, 0.94898312, 0.94269590 },
+				{ 0.99002820, 0.98205032, 0.97468679, 0.96835760, 0.96249887, 0.95703981, 0.95080387 },
+				{ 0.99094070, 0.98449173, 0.97813996, 0.97200070, 0.96686440, 0.96232266, 0.95641305 },
+				{ 0.99198883, 0.98609789, 0.97971584, 0.97479344, 0.97029387, 0.96527594, 0.96119490 },
+				{ 0.99289971, 0.98689763, 0.98166923, 0.97633723, 0.97179448, 0.96809188, 0.96399719 },
+				{ 0.99335327, 0.98801043, 0.98276166, 0.97858565, 0.97347188, 0.96971801, 0.96563555 },
+				{ 0.99338082, 0.98831278, 0.98330116, 0.97866974, 0.97467265, 0.97007467, 0.96660334 },
+				{ 0.99338631, 0.98799473, 0.98369682, 0.97887563, 0.97542875, 0.97126520, 0.96774428 },
+				{ 0.99365639, 0.98865753, 0.98377052, 0.97981679, 0.97574401, 0.97155808, 0.96845037 }
+			}
+		},
+		{
+			{
+				{ 0.99709111, 0.99451807, 0.99242093, 0.99025076, 0.98821227, 0.98551376, 0.98398821 },
+				{ 0.99719203, 0.99457922, 0.99215281, 0.98981231, 0.98777633, 0.98575259, 0.98355213 },
+				{ 0.99692695, 0.99435400, 0.99189985, 0.98960133, 0.98773932, 0.98538880, 0.98353194 },
+				{ 0.99687937, 0.99407607, 0.99160376, 0.98931496, 0.98687080, 0.98478734, 0.98256173 },
+				{ 0.99670294, 0.99393083, 0.99142906, 0.98889045, 0.98639847, 0.98382216, 0.98155688 },
+				{ 0.99648675, 0.99333647, 0.99049662, 0.98771811, 0.98513595, 0.98271591, 0.98043002 },
+				{ 0.99605053, 0.99248164, 0.98929072, 0.98635106, 0.98353751, 0.98064886, 0.97819747 },
+				{ 0.99550345, 0.99158604, 0.98789132, 0.98478760, 0.98102503, 0.97846947, 0.97518937 },
+				{ 0.99439968, 0.98985913, 0.98601262, 0.98222855, 0.97799863, 0.97422592, 0.97059177 },
+				{ 0.99323378, 0.98718071, 0.98231628, 0.97709224, 0.97182679, 0.96777495, 0.96345194 },
+				{ 0.99048349, 0.98270014, 0.97519860, 0.96822978, 0.96196712, 0.95604580, 0.95001185 },
+				{ 0.98264808, 0.96893885, 0.95679593, 0.94614778, 0.93485512, 0.92541509, 0.91844842 },
+				{ 0.92766268, 0.88520251, 0.85867308, 0.84085673, 0.83327978, 0.83074614, 0.83060958 }
+			},
+			{
+				{ 0.99710084, 0.99437580, 0.99226999, 0.98999364, 0.98785362, 0.98573099, 0.98345015 },
+				{ 0.99703880, 0.99450197, 0.99231836, 0.98992748, 0.98800626, 0.98597049, 0.98373430 },
+				{ 0.99695149, 0.99427904, 0.99215979, 0.98988132, 0.98777491, 0.98579050, 0.98325065 },
+				{ 0.99697752, 0.99434557, 0.99168776, 0.98943197, 0.98704336, 0.98512584, 0.98242536 },
+				{ 0.99677671, 0.99394655, 0.99137122, 0.98890012, 0.98612941, 0.98389747, 0.98155770 },
+				{ 0.99644883, 0.99338974, 0.99063226, 0.98771359, 0.98516319, 0.98255537, 0.98012727 },
+				{ 0.99608777, 0.99258779, 0.98943218, 0.98632638, 0.98373761, 0.98084386, 0.97813245 },
+				{ 0.99552940, 0.99157907, 0.98774190, 0.98450572, 0.98169596, 0.97823605, 0.97554136 },
+				{ 0.99453363, 0.98999995, 0.98538970, 0.98206013, 0.97820114, 0.97434255, 0.97071283 },
+				{ 0.99321623, 0.98736558, 0.98221212, 0.97707456, 0.97279783, 0.96817400, 0.96371019 },
+				{ 0.99064015, 0.98265609, 0.97601667, 0.96931249, 0.96276581, 0.95736271, 0.95163575 },
+				{ 0.98586075, 0.97432638, 0.96375059, 0.95433121, 0.94648430, 0.93770997, 0.93006342 },
+				{ 0.98101279, 0.96643843, 0.95372299, 0.94178265, 0.93079995, 0.92120305, 0.91190793 }
+			},
+			{
+				{ 0.99713294, 0.99448996, 0.99230448, 0.98982953, 0.98771397, 0.98547056, 0.98360721 },
+				{ 0.99712095, 0.99453407, 0.99219504, 0.98995452, 0.98770385, 0.98548687, 0.98349527 },
+				{ 0.99687744, 0.99439525, 0.99190466, 0.98967853, 0.98733807, 0.98541954, 0.98296871 },
+				{ 0.99686118, 0.99409882, 0.99135839, 0.98901130, 0.98679388, 0.98507181, 0.98228231 },
+				{ 0.99657798, 0.99373509, 0.99107081, 0.98830661, 0.98626852, 0.98386627, 0.98108767 },
+				{ 0.99631754, 0.99331344, 0.99052383, 0.98735855, 0.98500544, 0.98254336, 0.98013058 },
+				{ 0.99590490, 0.99241907, 0.98937419, 0.98628900, 0.98369458, 0.98078522, 0.97791418 },
+				{ 0.99536959, 0.99160359, 0.98819136, 0.98464697, 0.98137818, 0.97802697, 0.97511119 },
+				{ 0.99448855, 0.98975411, 0.98576887, 0.98175837, 0.97775594, 0.97440906, 0.97075075 },
+				{ 0.99320494, 0.98776241, 0.98242599, 0.97806426, 0.97354213, 0.96906994, 0.96497895 },
+				{ 0.99134880, 0.98465776, 0.97841369, 0.97207886, 0.96705898, 0.96162820, 0.95662804 },
+				{ 0.98936519, 0.98116593, 0.97370961, 0.96623690, 0.96003911, 0.95405399, 0.94804087 },
+				{ 0.98831507, 0.97906424, 0.97075917, 0.96321909, 0.95588362, 0.94942469, 0.94230379 }
+			},
+			{
+				{ 0.99690741, 0.99430687, 0.99189509, 0.98963014, 0.98733180, 0.98491952, 0.98303161 },
+				{ 0.99683149, 0.99423102, 0.99181381, 0.98948903, 0.98750138, 0.98506199, 0.98300887 },
+				{ 0.99690703, 0.99387957, 0.99162384, 0.98938372, 0.98676010, 0.98441031, 0.98212270 },
+				{ 0.99682339, 0.99404044, 0.99109458, 0.98896359, 0.98638443, 0.98394122, 0.98206773 },
+				{ 0.99649163, 0.99354838, 0.99065889, 0.98829230, 0.98545399, 0.98331494, 0.98075007 },
+				{ 0.99619776, 0.99294569, 0.99032058, 0.98714375, 0.98434295, 0.98171268, 0.97948855 },
+				{ 0.99584670, 0.99238153, 0.98906231, 0.98615084, 0.98303286, 0.98037214, 0.97727581 },
+				{ 0.99533549, 0.99141195, 0.98768779, 0.98443588, 0.98111728, 0.97768856, 0.97442210 },
+				{ 0.99462416, 0.99015434, 0.98621441, 0.98247848, 0.97864297, 0.97495872, 0.97141236 },
+				{ 0.99396354, 0.98859213, 0.98354795, 0.97949026, 0.97501501, 0.97148780, 0.96683512 },
+				{ 0.99276664, 0.98684586, 0.98135562, 0.97657751, 0.97161886, 0.96679519, 0.96289627 },
+				{ 0.99193965, 0.98481979, 0.97934432, 0.97344960, 0.96786135, 0.96367378, 0.95899085 },
+				{ 0.99162443, 0.98492290, 0.97848495, 0.97254674, 0.96732167, 0.96213370, 0.95713343 }
+			},
+			{
+				{ 0.99665872, 0.99377857, 0.99113672, 0.98894384, 0.98605542, 0.98417866, 0.98181017 },
+				{ 0.99687062, 0.99382707, 0.99110244, 0.98878981, 0.98631150, 0.98388851, 0.98141276 },
+				{ 0.99660894, 0.99360480, 0.99106920, 0.98853226, 0.98598478, 0.98374219, 0.98146594 },
+				{ 0.99646924, 0.99347445, 0.99053311, 0.98797136, 0.98565276, 0.98336784, 0.98081621 },
+				{ 0.99618188, 0.99324176, 0.98998426, 0.98723334, 0.98477933, 0.98180235, 0.97961775 },
+				{ 0.99601864, 0.99265968, 0.98955181, 0.98644582, 0.98369199, 0.98119291, 0.97807526 },
+				{ 0.99551926, 0.99218949, 0.98898778, 0.98566822, 0.98256272, 0.97977671, 0.97694855 },
+				{ 0.99539322, 0.99151035, 0.98760884, 0.98432252, 0.98118807, 0.97802885, 0.97489137 },
+				{ 0.99485963, 0.99042336, 0.98635552, 0.98284769, 0.97886917, 0.97618040, 0.97266955 },
+				{ 0.99433086, 0.98931265, 0.98545377, 0.98110001, 0.97734830, 0.97291435, 0.96945399 },
+				{ 0.99377312, 0.98855832, 0.98353694, 0.97956986, 0.97530351, 0.97145072, 0.96720098 },
+				{ 0.99325847, 0.98781082, 0.98290674, 0.97795886, 0.97418543, 0.96938152, 0.96536090 },
+				{ 0.99307163, 0.98768813, 0.98246765, 0.97732067, 0.97302391, 0.96876881, 0.96483221 }
+			},
+			{
+				{ 0.99631661, 0.99346301, 0.99050438, 0.98751640, 0.98478922, 0.98245417, 0.98023827 },
+				{ 0.99636721, 0.99328917, 0.99017839, 0.98748018, 0.98517475, 0.98253494, 0.98013068 },
+				{ 0.99627173, 0.99294625, 0.99018820, 0.98768173, 0.98481120, 0.98238815, 0.97949654 },
+				{ 0.99618193, 0.99277846, 0.98982339, 0.98724853, 0.98411855, 0.98180156, 0.97905431 },
+				{ 0.99598784, 0.99263350, 0.98950757, 0.98661550, 0.98358540, 0.98088658, 0.97839062 },
+				{ 0.99572918, 0.99232165, 0.98915381, 0.98589226, 0.98275603, 0.98052080, 0.97744462 },
+				{ 0.99562953, 0.99183955, 0.98842185, 0.98518376, 0.98200011, 0.97924229, 0.97676153 },
+				{ 0.99524301, 0.99145680, 0.98754256, 0.98422235, 0.98108698, 0.97753627, 0.97475832 },
+				{ 0.99499063, 0.99088900, 0.98706526, 0.98354863, 0.97978300, 0.97664622, 0.97354136 },
+				{ 0.99469939, 0.99062862, 0.98613254, 0.98238145, 0.97883690, 0.97526200, 0.97195955 },
+				{ 0.99430649, 0.98988327, 0.98569068, 0.98184447, 0.97772765, 0.97448083, 0.97073853 },
+				{ 0.99435937, 0.98978952, 0.98510394, 0.98097340, 0.97744013, 0.97359936, 0.97049540 },
+				{ 0.99428855, 0.98940900, 0.98516600, 0.98078303, 0.97660280, 0.97320767, 0.96991032 }
+			},
+			{
+				{ 0.99579309, 0.99233345, 0.98917717, 0.98589469, 0.98329272, 0.98054752, 0.97737217 },
+				{ 0.99607602, 0.99230818, 0.98923633, 0.98629959, 0.98331245, 0.98010105, 0.97762053 },
+				{ 0.99563270, 0.99223829, 0.98895223, 0.98600498, 0.98264977, 0.98070878, 0.97757791 },
+				{ 0.99574089, 0.99236395, 0.98891840, 0.98578632, 0.98274482, 0.98000455, 0.97741444 },
+				{ 0.99564973, 0.99210993, 0.98859592, 0.98575705, 0.98261634, 0.97958162, 0.97667776 },
+				{ 0.99552304, 0.99171233, 0.98827032, 0.98524934, 0.98213870, 0.97956390, 0.97643889 },
+				{ 0.99521870, 0.99162757, 0.98808754, 0.98476251, 0.98159764, 0.97844388, 0.97587479 },
+				{ 0.99530165, 0.99136377, 0.98748578, 0.98466625, 0.98161641, 0.97798048, 0.97500528 },
+				{ 0.99515993, 0.99119787, 0.98764116, 0.98386716, 0.98028396, 0.97761963, 0.97440855 },
+				{ 0.99486833, 0.99073455, 0.98700427, 0.98359611, 0.98016016, 0.97711090, 0.97400304 },
+				{ 0.99502460, 0.99044863, 0.98672876, 0.98323460, 0.98002638, 0.97665977, 0.97352537 },
+				{ 0.99474984, 0.99053111, 0.98650302, 0.98267867, 0.97953127, 0.97639592, 0.97287475 },
+				{ 0.99463008, 0.99068881, 0.98652001, 0.98304172, 0.97957247, 0.97628278, 0.97285434 }
+			},
+			{
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+				{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 }
+			},
+			{
+				{ 0.99458371, 0.99002947, 0.98588568, 0.98217355, 0.97864626, 0.97540214, 0.97172136 },
+				{ 0.99460921, 0.99011840, 0.98648133, 0.98213096, 0.97860471, 0.97515365, 0.97221654 },
+				{ 0.99462579, 0.99005454, 0.98602966, 0.98236162, 0.97883581, 0.97531234, 0.97246520 },
+				{ 0.99474446, 0.99032317, 0.98630840, 0.98307858, 0.97910583, 0.97545428, 0.97265387 },
+				{ 0.99493034, 0.99079711, 0.98680191, 0.98311245, 0.97976949, 0.97643419, 0.97339275 },
+				{ 0.99496472, 0.99072078, 0.98705861, 0.98363560, 0.98021896, 0.97718399, 0.97396829 },
+				{ 0.99480709, 0.99087890, 0.98747395, 0.98401428, 0.98068587, 0.97739118, 0.97401130 },
+				{ 0.99509247, 0.99112039, 0.98761060, 0.98432273, 0.98106749, 0.97782451, 0.97517898 },
+				{ 0.99527328, 0.99126360, 0.98789395, 0.98476211, 0.98108489, 0.97824848, 0.97533954 },
+				{ 0.99542702, 0.99136204, 0.98802355, 0.98490646, 0.98148792, 0.97890876, 0.97611755 },
+				{ 0.99542162, 0.99164240, 0.98812614, 0.98486702, 0.98192281, 0.97901912, 0.97622179 },
+				{ 0.99551626, 0.99173403, 0.98828256, 0.98524019, 0.98201976, 0.97942443, 0.97667072 },
+				{ 0.99546503, 0.99163180, 0.98839720, 0.98502139, 0.98208266, 0.97906841, 0.97656888 }
+			},
+			{
+				{ 0.99353390, 0.98865091, 0.98392466, 0.97981487, 0.97520392, 0.97160428, 0.96784561 },
+				{ 0.99350321, 0.98888007, 0.98434809, 0.97987842, 0.97566665, 0.97224454, 0.96878379 },
+				{ 0.99383706, 0.98902839, 0.98427619, 0.98011328, 0.97634455, 0.97263909, 0.96873452 },
+				{ 0.99385641, 0.98946817, 0.98507864, 0.98093825, 0.97672239, 0.97345698, 0.97015601 },
+				{ 0.99422667, 0.98936152, 0.98559970, 0.98153281, 0.97793920, 0.97489902, 0.97127780 },
+				{ 0.99447495, 0.99036452, 0.98607761, 0.98274781, 0.97885205, 0.97600997, 0.97242748 },
+				{ 0.99487565, 0.99075250, 0.98694184, 0.98314839, 0.98015677, 0.97712237, 0.97362801 },
+				{ 0.99508265, 0.99107514, 0.98754384, 0.98411669, 0.98069343, 0.97732537, 0.97514596 },
+				{ 0.99534975, 0.99138051, 0.98808365, 0.98483951, 0.98149779, 0.97862120, 0.97573084 },
+				{ 0.99532879, 0.99172454, 0.98812346, 0.98522824, 0.98209109, 0.97913895, 0.97620053 },
+				{ 0.99550013, 0.99197645, 0.98858777, 0.98545859, 0.98238204, 0.97991143, 0.97661805 },
+				{ 0.99545060, 0.99184781, 0.98859187, 0.98592563, 0.98252263, 0.97986434, 0.97687893 },
+				{ 0.99567461, 0.99189320, 0.98884054, 0.98593752, 0.98254629, 0.97974854, 0.97709929 }
+			},
+			{
+				{ 0.99286332, 0.98721794, 0.98155361, 0.97704752, 0.97220089, 0.96837012, 0.96401826 },
+				{ 0.99290258, 0.98720092, 0.98213161, 0.97698686, 0.97279678, 0.96932944, 0.96433683 },
+				{ 0.99296030, 0.98770002, 0.98304590, 0.97755191, 0.97325361, 0.96958782, 0.96563854 },
+				{ 0.99347297, 0.98800139, 0.98342628, 0.97918030, 0.97482766, 0.97128104, 0.96737552 },
+				{ 0.99386772, 0.98897997, 0.98450031, 0.98015483, 0.97605221, 0.97281242, 0.96856765 },
+				{ 0.99428852, 0.98953441, 0.98549765, 0.98163913, 0.97742286, 0.97435832, 0.97080552 },
+				{ 0.99454883, 0.99043042, 0.98639343, 0.98268517, 0.97928363, 0.97633310, 0.97261934 },
+				{ 0.99516666, 0.99089373, 0.98713698, 0.98382196, 0.98030287, 0.97690438, 0.97422484 },
+				{ 0.99502008, 0.99159929, 0.98779057, 0.98444751, 0.98150729, 0.97814507, 0.97529826 },
+				{ 0.99544692, 0.99184392, 0.98815804, 0.98518848, 0.98217522, 0.97918531, 0.97615916 },
+				{ 0.99560595, 0.99177512, 0.98867223, 0.98559753, 0.98245968, 0.97986451, 0.97705955 },
+				{ 0.99551766, 0.99224600, 0.98902917, 0.98586233, 0.98295792, 0.98016258, 0.97742383 },
+				{ 0.99575315, 0.99209419, 0.98879955, 0.98609795, 0.98286519, 0.98035493, 0.97787210 }
+			},
+			{
+				{ 0.99182621, 0.98526799, 0.97971164, 0.97445451, 0.96873122, 0.96523866, 0.95985554 },
+				{ 0.99179166, 0.98537707, 0.97981730, 0.97442107, 0.96938696, 0.96533518, 0.96021813 },
+				{ 0.99227009, 0.98643134, 0.98046009, 0.97549280, 0.97103282, 0.96619775, 0.96160053 },
+				{ 0.99305963, 0.98721780, 0.98171921, 0.97742413, 0.97283348, 0.96863288, 0.96433769 },
+				{ 0.99330910, 0.98802551, 0.98297868, 0.97893604, 0.97500865, 0.97108092, 0.96710670 },
+				{ 0.99398010, 0.98906794, 0.98482166, 0.98034733, 0.97680244, 0.97268414, 0.96934084 },
+				{ 0.99442943, 0.99015598, 0.98588717, 0.98191295, 0.97844383, 0.97516045, 0.97191067 },
+				{ 0.99489662, 0.99083546, 0.98679168, 0.98306405, 0.97948238, 0.97712608, 0.97406893 },
+				{ 0.99512951, 0.99134985, 0.98788806, 0.98443322, 0.98096063, 0.97835751, 0.97509301 },
+				{ 0.99526725, 0.99151002, 0.98832257, 0.98508614, 0.98178531, 0.97904586, 0.97606562 },
+				{ 0.99553329, 0.99182529, 0.98864432, 0.98564354, 0.98304044, 0.97983293, 0.97706758 },
+				{ 0.99569779, 0.99201859, 0.98895457, 0.98607041, 0.98279204, 0.98013056, 0.97717258 },
+				{ 0.99570533, 0.99231729, 0.98882811, 0.98565710, 0.98299624, 0.98062957, 0.97771666 }
+			},
+			{
+				{ 0.99062835, 0.98318677, 0.97706493, 0.97067192, 0.96521963, 0.96020045, 0.95548988 },
+				{ 0.99073616, 0.98392462, 0.97750176, 0.97140807, 0.96619100, 0.96076452, 0.95563147 },
+				{ 0.99139084, 0.98520054, 0.97895206, 0.97306547, 0.96776168, 0.96309135, 0.95772338 },
+				{ 0.99219130, 0.98616905, 0.98054206, 0.97565594, 0.97035658, 0.96615663, 0.96137610 },
+				{ 0.99291681, 0.98724206, 0.98211296, 0.97750747, 0.97296766, 0.96929458, 0.96463517 },
+				{ 0.99369644, 0.98892094, 0.98370785, 0.97959012, 0.97561226, 0.97192948, 0.96789957 },
+				{ 0.99417518, 0.98963248, 0.98546051, 0.98149889, 0.97768471, 0.97432123, 0.97128532 },
+				{ 0.99475080, 0.99046885, 0.98644010, 0.98289898, 0.97923659, 0.97629174, 0.97257833 },
+				{ 0.99488490, 0.99088958, 0.98716302, 0.98371612, 0.98077749, 0.97772849, 0.97427247 },
+				{ 0.99517336, 0.99149174, 0.98790049, 0.98505843, 0.98189404, 0.97886374, 0.97613329 },
+				{ 0.99538258, 0.99183398, 0.98861430, 0.98528955, 0.98263842, 0.97944595, 0.97662080 },
+				{ 0.99568648, 0.99223969, 0.98880511, 0.98554429, 0.98278770, 0.98015833, 0.97714855 },
+				{ 0.99544046, 0.99201949, 0.98887703, 0.98573843, 0.98271321, 0.98002614, 0.97724365 }
+			},
+			{
+				{ 0.98934379, 0.98111695, 0.97390317, 0.96740222, 0.96130800, 0.95582852, 0.95035284 },
+				{ 0.98972041, 0.98170194, 0.97503915, 0.96846020, 0.96265792, 0.95720749, 0.95085542 },
+				{ 0.99053381, 0.98280311, 0.97651591, 0.97093204, 0.96555997, 0.95906676, 0.95477250 },
+				{ 0.99131152, 0.98459328, 0.97936372, 0.97315312, 0.96804222, 0.96275282, 0.95893553 },
+				{ 0.99244938, 0.98657250, 0.98110615, 0.97630461, 0.97146676, 0.96743114, 0.96291633 },
+				{ 0.99322393, 0.98762946, 0.98330047, 0.97840379, 0.97470420, 0.97043759, 0.96603745 },
+				{ 0.99417101, 0.98903965, 0.98459523, 0.98084601, 0.97670619, 0.97342656, 0.96969872 },
+				{ 0.99453332, 0.98995327, 0.98604490, 0.98187624, 0.97890450, 0.97526077, 0.97174814 },
+				{ 0.99476290, 0.99066475, 0.98732590, 0.98367326, 0.98033156, 0.97697064, 0.97423527 },
+				{ 0.99521507, 0.99149174, 0.98764539, 0.98466748, 0.98137602, 0.97805316, 0.97524053 },
+				{ 0.99532770, 0.99165850, 0.98833783, 0.98506975, 0.98195847, 0.97921496, 0.97615365 },
+				{ 0.99540084, 0.99176720, 0.98866045, 0.98568114, 0.98181139, 0.97938887, 0.97678076 },
+				{ 0.99566077, 0.99166930, 0.98844561, 0.98561456, 0.98253714, 0.97960932, 0.97759228 }
+			},
+			{
+				{ 0.98808866, 0.97906329, 0.97108859, 0.96390611, 0.95647259, 0.95073090, 0.94480913 },
+				{ 0.98850417, 0.97946923, 0.97197544, 0.96504710, 0.95894484, 0.95222797, 0.94652743 },
+				{ 0.98950686, 0.98157086, 0.97438443, 0.96768252, 0.96179969, 0.95560125, 0.95075876 },
+				{ 0.99108868, 0.98348991, 0.97662471, 0.97118990, 0.96590065, 0.96085956, 0.95542762 },
+				{ 0.99186560, 0.98554092, 0.97988884, 0.97472315, 0.96971556, 0.96530228, 0.96010799 },
+				{ 0.99280747, 0.98713734, 0.98252711, 0.97766899, 0.97352274, 0.96894817, 0.96496913 },
+				{ 0.99365469, 0.98853545, 0.98433865, 0.97984467, 0.97596594, 0.97178297, 0.96841544 },
+				{ 0.99441418, 0.98984770, 0.98559762, 0.98144000, 0.97788511, 0.97434148, 0.97051416 },
+				{ 0.99452195, 0.99042326, 0.98653821, 0.98304750, 0.97960471, 0.97690796, 0.97346859 },
+				{ 0.99509455, 0.99112037, 0.98725224, 0.98425355, 0.98071628, 0.97764078, 0.97466955 },
+				{ 0.99525243, 0.99143985, 0.98797847, 0.98475458, 0.98133687, 0.97793515, 0.97554291 },
+				{ 0.99535670, 0.99167172, 0.98810213, 0.98477832, 0.98217803, 0.97877541, 0.97645702 },
+				{ 0.99537655, 0.99181527, 0.98859174, 0.98468190, 0.98199329, 0.97967979, 0.97628571 }
+			},
+			{
+				{ 0.98688327, 0.97695079, 0.96811693, 0.95980478, 0.95289612, 0.94596125, 0.93936980 },
+				{ 0.98739625, 0.97759680, 0.96928484, 0.96165230, 0.95435365, 0.94791987, 0.94170222 },
+				{ 0.98853414, 0.97990245, 0.97203037, 0.96503750, 0.95826594, 0.95168676, 0.94669764 },
+				{ 0.98990312, 0.98266482, 0.97564355, 0.96918401, 0.96336432, 0.95772345, 0.95326815 },
+				{ 0.99163322, 0.98463573, 0.97920531, 0.97338648, 0.96809092, 0.96359093, 0.95893381 },
+				{ 0.99247685, 0.98675080, 0.98139719, 0.97662962, 0.97166253, 0.96751150, 0.96345535 },
+				{ 0.99345983, 0.98829443, 0.98364092, 0.97917491, 0.97506727, 0.97099517, 0.96776890 },
+				{ 0.99427357, 0.98912773, 0.98461262, 0.98084988, 0.97751818, 0.97400175, 0.97036766 },
+				{ 0.99450500, 0.99022340, 0.98628089, 0.98239431, 0.97918192, 0.97547088, 0.97213763 },
+				{ 0.99497557, 0.99081029, 0.98695719, 0.98368244, 0.98020619, 0.97692551, 0.97352066 },
+				{ 0.99513868, 0.99097823, 0.98740397, 0.98409810, 0.98116541, 0.97784103, 0.97478589 },
+				{ 0.99528310, 0.99116334, 0.98779436, 0.98493412, 0.98168523, 0.97852115, 0.97568234 },
+				{ 0.99513061, 0.99170800, 0.98812113, 0.98449417, 0.98165449, 0.97838066, 0.97595687 }
+			},
+			{
+				{ 0.98554606, 0.97421861, 0.96524762, 0.95638939, 0.94823882, 0.94029118, 0.93433065 },
+				{ 0.98597912, 0.97524320, 0.96630130, 0.95815964, 0.94989024, 0.94321968, 0.93574795 },
+				{ 0.98746527, 0.97832041, 0.96945032, 0.96268908, 0.95534962, 0.94822520, 0.94292948 },
+				{ 0.98948575, 0.98130686, 0.97361223, 0.96755276, 0.96110139, 0.95535328, 0.94997351 },
+				{ 0.99087505, 0.98406743, 0.97757811, 0.97152851, 0.96654412, 0.96079040, 0.95670851 },
+				{ 0.99232671, 0.98611334, 0.98072527, 0.97549247, 0.97090697, 0.96658121, 0.96218591 },
+				{ 0.99293300, 0.98759100, 0.98262367, 0.97812690, 0.97402512, 0.97011660, 0.96593025 },
+				{ 0.99370651, 0.98902797, 0.98443703, 0.98028045, 0.97627987, 0.97312833, 0.96973554 },
+				{ 0.99442767, 0.98978979, 0.98604932, 0.98153714, 0.97848805, 0.97501818, 0.97119457 },
+				{ 0.99465389, 0.99028739, 0.98643960, 0.98263496, 0.97954073, 0.97636075, 0.97302646 },
+				{ 0.99491364, 0.99101956, 0.98719033, 0.98348709, 0.98034630, 0.97740071, 0.97392901 },
+				{ 0.99517132, 0.99096254, 0.98745667, 0.98458408, 0.98088130, 0.97781428, 0.97478909 },
+				{ 0.99506127, 0.99107146, 0.98738554, 0.98384613, 0.98089341, 0.97766920, 0.97500203 }
+			},
+			{
+				{ 0.98430103, 0.97160562, 0.96156173, 0.95253821, 0.94345413, 0.93611352, 0.92793508 },
+				{ 0.98468379, 0.97359821, 0.96367945, 0.95449019, 0.94636397, 0.93850690, 0.93172690 },
+				{ 0.98673381, 0.97640680, 0.96792245, 0.95988729, 0.95227376, 0.94447815, 0.93791224 },
+				{ 0.98882601, 0.98022079, 0.97260764, 0.96574159, 0.95880443, 0.95251816, 0.94664871 },
+				{ 0.99059125, 0.98311800, 0.97649245, 0.97058365, 0.96518089, 0.95936760, 0.95441159 },
+				{ 0.99202722, 0.98561945, 0.97989387, 0.97474768, 0.96877001, 0.96462605, 0.96113427 },
+				{ 0.99279208, 0.98730624, 0.98248292, 0.97732060, 0.97299581, 0.96938418, 0.96518160 },
+				{ 0.99348290, 0.98852263, 0.98382519, 0.97936759, 0.97563291, 0.97229479, 0.96852026 },
+				{ 0.99415758, 0.98926251, 0.98503375, 0.98125242, 0.97723901, 0.97353913, 0.97009747 },
+				{ 0.99434398, 0.99026180, 0.98614876, 0.98222844, 0.97930242, 0.97573280, 0.97218695 },
+				{ 0.99468191, 0.99048544, 0.98686718, 0.98276903, 0.97966506, 0.97686422, 0.97334120 },
+				{ 0.99484626, 0.99079438, 0.98689163, 0.98336595, 0.98016994, 0.97703658, 0.97437162 },
+				{ 0.99463947, 0.99095269, 0.98706647, 0.98367391, 0.97997709, 0.97682675, 0.97407749 }
+			},
+			{
+				{ 0.98234042, 0.96926284, 0.95811066, 0.94773414, 0.93878515, 0.93053965, 0.92105856 },
+				{ 0.98331217, 0.97102423, 0.96021370, 0.95007647, 0.94142117, 0.93268327, 0.92455889 },
+				{ 0.98569348, 0.97461710, 0.96570293, 0.95661246, 0.94887702, 0.94154330, 0.93368172 },
+				{ 0.98832952, 0.97858916, 0.97132534, 0.96386956, 0.95649877, 0.95020823, 0.94438710 },
+				{ 0.98992151, 0.98230664, 0.97517486, 0.96876901, 0.96340982, 0.95793181, 0.95227211 },
+				{ 0.99141107, 0.98496001, 0.97911004, 0.97323153, 0.96862595, 0.96357880, 0.95864348 },
+				{ 0.99254370, 0.98670720, 0.98140624, 0.97645876, 0.97160012, 0.96750650, 0.96297775 },
+				{ 0.99312783, 0.98807814, 0.98321584, 0.97894389, 0.97501481, 0.97054343, 0.96691175 },
+				{ 0.99398291, 0.98880218, 0.98442964, 0.98065340, 0.97657348, 0.97280141, 0.96913345 },
+				{ 0.99424416, 0.98957750, 0.98556164, 0.98154185, 0.97776870, 0.97452094, 0.97078830 },
+				{ 0.99439448, 0.99028957, 0.98606750, 0.98197022, 0.97920555, 0.97545572, 0.97223465 },
+				{ 0.99466576, 0.99057250, 0.98649250, 0.98241817, 0.97953033, 0.97651021, 0.97277907 },
+				{ 0.99475366, 0.99048069, 0.98631902, 0.98302551, 0.97987732, 0.97649274, 0.97328896 }
+			},
+			{
+				{ 0.98093571, 0.96658911, 0.95477251, 0.94383349, 0.93443974, 0.92369448, 0.91589339 },
+				{ 0.98218439, 0.96896988, 0.95751379, 0.94703591, 0.93731936, 0.92845631, 0.91985061 },
+				{ 0.98466035, 0.97297873, 0.96323492, 0.95421462, 0.94618465, 0.93754108, 0.93061871 },
+				{ 0.98746856, 0.97760647, 0.96911517, 0.96211887, 0.95406106, 0.94701453, 0.94148341 },
+				{ 0.98951834, 0.98126321, 0.97400345, 0.96760421, 0.96182814, 0.95648119, 0.95001433 },
+				{ 0.99100576, 0.98416403, 0.97820544, 0.97212618, 0.96735568, 0.96157951, 0.95683719 },
+				{ 0.99203804, 0.98629766, 0.98035686, 0.97597194, 0.97077338, 0.96602610, 0.96212103 },
+				{ 0.99324116, 0.98768314, 0.98240102, 0.97785012, 0.97398516, 0.97008121, 0.96565476 },
+				{ 0.99366886, 0.98847039, 0.98393771, 0.97963640, 0.97508097, 0.97211002, 0.96847203 },
+				{ 0.99397402, 0.98950784, 0.98494605, 0.98090237, 0.97739751, 0.97356067, 0.96928449 },
+				{ 0.99414841, 0.98965662, 0.98566062, 0.98138776, 0.97791581, 0.97453189, 0.97104116 },
+				{ 0.99439489, 0.98999092, 0.98588473, 0.98213969, 0.97851631, 0.97535803, 0.97186028 },
+				{ 0.99451437, 0.99018200, 0.98573350, 0.98215492, 0.97842813, 0.97548512, 0.97242244 }
+			},
+			{
+				{ 0.97905706, 0.96410488, 0.95106622, 0.93837645, 0.92780682, 0.91845630, 0.90927821 },
+				{ 0.98049104, 0.96626633, 0.95339908, 0.94259920, 0.93301987, 0.92346095, 0.91366414 },
+				{ 0.98365332, 0.97146705, 0.96069014, 0.95097146, 0.94214073, 0.93356619, 0.92605649 },
+				{ 0.98678777, 0.97668520, 0.96755663, 0.96000701, 0.95193843, 0.94466581, 0.93842351 },
+				{ 0.98915026, 0.98068064, 0.97317977, 0.96600953, 0.96021409, 0.95342656, 0.94850848 },
+				{ 0.99068233, 0.98376500, 0.97727852, 0.97139518, 0.96573541, 0.96043726, 0.95539940 },
+				{ 0.99199667, 0.98567562, 0.98003889, 0.97497209, 0.96966203, 0.96516580, 0.96053155 },
+				{ 0.99282674, 0.98724328, 0.98183146, 0.97683023, 0.97271223, 0.96813565, 0.96488770 },
+				{ 0.99346220, 0.98832413, 0.98326092, 0.97899723, 0.97542010, 0.97085547, 0.96696052 },
+				{ 0.99397710, 0.98886147, 0.98415613, 0.98053339, 0.97588427, 0.97199081, 0.96876691 },
+				{ 0.99412408, 0.98903797, 0.98486733, 0.98065863, 0.97705928, 0.97372531, 0.97006567 },
+				{ 0.99428533, 0.98981111, 0.98561185, 0.98170793, 0.97810477, 0.97468085, 0.97064957 },
+				{ 0.99436144, 0.98955724, 0.98582106, 0.98168369, 0.97765881, 0.97468193, 0.97093333 }
+			},
+			{
+				{ 0.97720738, 0.96080924, 0.94701657, 0.93423789, 0.92284004, 0.91321640, 0.90209741 },
+				{ 0.97910475, 0.96396127, 0.95073853, 0.93870891, 0.92812031, 0.91838926, 0.90903379 },
+				{ 0.98294606, 0.96971537, 0.95867387, 0.94889597, 0.93887126, 0.93067071, 0.92170898 },
+				{ 0.98619582, 0.97580501, 0.96572679, 0.95761924, 0.95045061, 0.94230588, 0.93508337 },
+				{ 0.98861237, 0.98005698, 0.97243652, 0.96543094, 0.95840998, 0.95162799, 0.94633356 },
+				{ 0.99057430, 0.98297572, 0.97645171, 0.97043291, 0.96470720, 0.95867071, 0.95392306 },
+				{ 0.99170757, 0.98487223, 0.97934975, 0.97383648, 0.96871525, 0.96388207, 0.95902833 },
+				{ 0.99273493, 0.98651063, 0.98159902, 0.97648696, 0.97172191, 0.96720212, 0.96295794 },
+				{ 0.99302671, 0.98739164, 0.98248109, 0.97845123, 0.97373832, 0.97010380, 0.96617923 },
+				{ 0.99333090, 0.98823623, 0.98359072, 0.97936050, 0.97507907, 0.97133793, 0.96820921 },
+				{ 0.99378818, 0.98887315, 0.98467372, 0.98063330, 0.97618319, 0.97239082, 0.96874260 },
+				{ 0.99401526, 0.98912653, 0.98481825, 0.98046312, 0.97682752, 0.97290942, 0.96974746 },
+				{ 0.99395396, 0.98946953, 0.98517863, 0.98083834, 0.97721090, 0.97337135, 0.97006501 }
+			},
+			{
+				{ 0.97580354, 0.95775642, 0.94318797, 0.92996816, 0.91799294, 0.90652778, 0.89570317 },
+				{ 0.97739630, 0.96173386, 0.94766410, 0.93461755, 0.92430270, 0.91311348, 0.90311374 },
+				{ 0.98200077, 0.96875402, 0.95629055, 0.94572528, 0.93625259, 0.92655566, 0.91738755 },
+				{ 0.98574021, 0.97455246, 0.96444134, 0.95589272, 0.94751611, 0.93976815, 0.93246990 },
+				{ 0.98826608, 0.97886156, 0.97108839, 0.96379339, 0.95623314, 0.94999634, 0.94421995 },
+				{ 0.99000874, 0.98234299, 0.97571453, 0.96896791, 0.96317406, 0.95747534, 0.95198616 },
+				{ 0.99115132, 0.98449287, 0.97813609, 0.97249978, 0.96753354, 0.96275416, 0.95764009 },
+				{ 0.99239531, 0.98623686, 0.98015097, 0.97517551, 0.97101885, 0.96626801, 0.96186813 },
+				{ 0.99288339, 0.98725461, 0.98219500, 0.97747389, 0.97307702, 0.96835094, 0.96445813 },
+				{ 0.99334122, 0.98807453, 0.98304446, 0.97882360, 0.97400384, 0.97036514, 0.96671927 },
+				{ 0.99362099, 0.98848541, 0.98406419, 0.97981828, 0.97547285, 0.97171623, 0.96812366 },
+				{ 0.99374369, 0.98883936, 0.98394559, 0.97994375, 0.97612364, 0.97269691, 0.96885528 },
+				{ 0.99368944, 0.98880680, 0.98429750, 0.97966523, 0.97620869, 0.97251856, 0.96840854 }
+			},
+			{
+				{ 0.97358955, 0.95521983, 0.93865320, 0.92477749, 0.91164704, 0.89980280, 0.88898095 },
+				{ 0.97621746, 0.95858998, 0.94463029, 0.93143470, 0.91916662, 0.90695410, 0.89675758 },
+				{ 0.98064953, 0.96661095, 0.95448615, 0.94320601, 0.93222053, 0.92213995, 0.91284950 },
+				{ 0.98476350, 0.97333905, 0.96343646, 0.95407060, 0.94558267, 0.93722263, 0.93024820 },
+				{ 0.98789815, 0.97852885, 0.96986102, 0.96185611, 0.95530459, 0.94869011, 0.94109381 },
+				{ 0.98991501, 0.98155390, 0.97455248, 0.96746781, 0.96205790, 0.95632601, 0.95023468 },
+				{ 0.99098753, 0.98402967, 0.97759413, 0.97178319, 0.96620490, 0.96150093, 0.95629841 },
+				{ 0.99193114, 0.98580577, 0.97998509, 0.97470754, 0.96973590, 0.96583425, 0.96049571 },
+				{ 0.99250210, 0.98664510, 0.98141213, 0.97625028, 0.97201433, 0.96722479, 0.96303638 },
+				{ 0.99321630, 0.98765114, 0.98228999, 0.97770110, 0.97335344, 0.96871355, 0.96593452 },
+				{ 0.99336606, 0.98788580, 0.98301569, 0.97902167, 0.97420748, 0.97083604, 0.96593415 },
+				{ 0.99331227, 0.98795398, 0.98376963, 0.97930578, 0.97511034, 0.97112382, 0.96676596 },
+				{ 0.99347565, 0.98793469, 0.98403700, 0.97959816, 0.97572265, 0.97135776, 0.96730962 }
+			}
+		},
+		{
+			{
+				{ 0.99694990, 0.99443706, 0.99173275, 0.98974839, 0.98767949, 0.98583404, 0.98370395 },
+				{ 0.99687113, 0.99437807, 0.99216248, 0.98975662, 0.98754175, 0.98537136, 0.98347175 },
+				{ 0.99688475, 0.99429533, 0.99202560, 0.98947488, 0.98759942, 0.98526540, 0.98308546 },
+				{ 0.99685677, 0.99384082, 0.99140660, 0.98903552, 0.98698746, 0.98449520, 0.98266459 },
+				{ 0.99644543, 0.99366464, 0.99082779, 0.98872328, 0.98625500, 0.98352701, 0.98155844 },
+				{ 0.99617798, 0.99313920, 0.99043911, 0.98764103, 0.98489000, 0.98262806, 0.98041684 },
+				{ 0.99601099, 0.99245707, 0.98938217, 0.98621003, 0.98327408, 0.98050537, 0.97799201 },
+				{ 0.99532095, 0.99149286, 0.98785701, 0.98452348, 0.98174727, 0.97828355, 0.97524187 },
+				{ 0.99446210, 0.99003271, 0.98582613, 0.98124608, 0.97788517, 0.97394845, 0.97118958 },
+				{ 0.99294472, 0.98712839, 0.98192077, 0.97680275, 0.97201351, 0.96851183, 0.96349347 },
+				{ 0.98999116, 0.98228165, 0.97489937, 0.96882458, 0.96186512, 0.95642390, 0.95084183 },
+				{ 0.98242217, 0.96885760, 0.95645659, 0.94614638, 0.93561342, 0.92611092, 0.91865575 },
+				{ 0.91961712, 0.87452891, 0.84508681, 0.82744311, 0.81812360, 0.81594519, 0.81601491 }
+			},
+			{
+				{ 0.99689131, 0.99440857, 0.99209383, 0.98989030, 0.98761252, 0.98563808, 0.98365247 },
+				{ 0.99699239, 0.99433008, 0.99195882, 0.98986300, 0.98729500, 0.98562430, 0.98360464 },
+				{ 0.99677734, 0.99418028, 0.99193996, 0.98968893, 0.98711383, 0.98527743, 0.98321976 },
+				{ 0.99674398, 0.99408279, 0.99165126, 0.98924563, 0.98662560, 0.98439373, 0.98261030 },
+				{ 0.99643222, 0.99375389, 0.99102952, 0.98859033, 0.98603424, 0.98362298, 0.98190097 },
+				{ 0.99634028, 0.99321654, 0.99037599, 0.98742808, 0.98504029, 0.98256952, 0.97992715 },
+				{ 0.99586300, 0.99246847, 0.98941115, 0.98617352, 0.98373560, 0.98068000, 0.97782985 },
+				{ 0.99546854, 0.99129356, 0.98772411, 0.98465524, 0.98122104, 0.97816160, 0.97528351 },
+				{ 0.99437806, 0.98997174, 0.98566689, 0.98152459, 0.97753025, 0.97450844, 0.97056249 },
+				{ 0.99286363, 0.98740049, 0.98221483, 0.97718102, 0.97220931, 0.96841684, 0.96354868 },
+				{ 0.98988597, 0.98256037, 0.97508795, 0.96799479, 0.96166247, 0.95654065, 0.95082154 },
+				{ 0.98474076, 0.97206144, 0.96158659, 0.95119431, 0.94228733, 0.93428817, 0.92607515 },
+				{ 0.97745408, 0.96120532, 0.94707310, 0.93443216, 0.92214547, 0.91255013, 0.90205612 }
+			},
+			{
+				{ 0.99695214, 0.99428573, 0.99200031, 0.98984600, 0.98761576, 0.98564893, 0.98344519 },
+				{ 0.99695814, 0.99413582, 0.99187172, 0.98977962, 0.98775147, 0.98547277, 0.98340445 },
+				{ 0.99676559, 0.99430493, 0.99176667, 0.98959319, 0.98730371, 0.98501257, 0.98315891 },
+				{ 0.99664942, 0.99399273, 0.99125303, 0.98912108, 0.98684923, 0.98476884, 0.98222998 },
+				{ 0.99652923, 0.99372619, 0.99091501, 0.98808124, 0.98599873, 0.98375030, 0.98129609 },
+				{ 0.99607169, 0.99311273, 0.99038787, 0.98726564, 0.98491674, 0.98217868, 0.97985915 },
+				{ 0.99574553, 0.99232533, 0.98913682, 0.98609787, 0.98322262, 0.98067351, 0.97777305 },
+				{ 0.99513898, 0.99123448, 0.98763090, 0.98433205, 0.98088996, 0.97794852, 0.97524093 },
+				{ 0.99425820, 0.98972721, 0.98520803, 0.98147660, 0.97772517, 0.97386893, 0.96996882 },
+				{ 0.99287554, 0.98712299, 0.98184484, 0.97727298, 0.97233111, 0.96791811, 0.96396376 },
+				{ 0.99098291, 0.98332663, 0.97708501, 0.97080384, 0.96456422, 0.95948000, 0.95419461 },
+				{ 0.98790059, 0.97862072, 0.97015123, 0.96304434, 0.95501444, 0.94852415, 0.94140724 },
+				{ 0.98636609, 0.97565264, 0.96655094, 0.95797038, 0.94967155, 0.94275050, 0.93515648 }
+			},
+			{
+				{ 0.99696580, 0.99420095, 0.99185593, 0.98970512, 0.98722913, 0.98507172, 0.98277114 },
+				{ 0.99701439, 0.99407822, 0.99179304, 0.98915259, 0.98716026, 0.98492967, 0.98289415 },
+				{ 0.99680854, 0.99403814, 0.99157083, 0.98913342, 0.98721912, 0.98439616, 0.98267395 },
+				{ 0.99661444, 0.99376594, 0.99109606, 0.98885332, 0.98616713, 0.98402200, 0.98202561 },
+				{ 0.99631441, 0.99350002, 0.99077254, 0.98784264, 0.98571384, 0.98297135, 0.98066918 },
+				{ 0.99607693, 0.99296040, 0.98957768, 0.98718030, 0.98445895, 0.98200528, 0.97936607 },
+				{ 0.99559279, 0.99209923, 0.98901871, 0.98600899, 0.98287243, 0.97989853, 0.97705404 },
+				{ 0.99526690, 0.99132341, 0.98732893, 0.98415853, 0.98056703, 0.97746773, 0.97401330 },
+				{ 0.99438797, 0.98974818, 0.98538965, 0.98170656, 0.97775698, 0.97389956, 0.97018683 },
+				{ 0.99320230, 0.98757104, 0.98314537, 0.97822627, 0.97310335, 0.96948230, 0.96561792 },
+				{ 0.99166481, 0.98523624, 0.97961725, 0.97435662, 0.96867613, 0.96452480, 0.95932049 },
+				{ 0.99053050, 0.98312283, 0.97636348, 0.97007825, 0.96397143, 0.95865025, 0.95379042 },
+				{ 0.99004745, 0.98263100, 0.97479696, 0.96823075, 0.96192342, 0.95638847, 0.95066068 }
+			},
+			{
+				{ 0.99672215, 0.99390009, 0.99128187, 0.98886518, 0.98663847, 0.98415210, 0.98233611 },
+				{ 0.99680366, 0.99395233, 0.99149000, 0.98910079, 0.98650767, 0.98408668, 0.98174790 },
+				{ 0.99650314, 0.99365419, 0.99129075, 0.98863548, 0.98610354, 0.98391123, 0.98154106 },
+				{ 0.99643356, 0.99354264, 0.99086337, 0.98820151, 0.98579118, 0.98351497, 0.98079453 },
+				{ 0.99629861, 0.99301987, 0.99036353, 0.98766219, 0.98487068, 0.98224158, 0.97939343 },
+				{ 0.99588769, 0.99280932, 0.98952908, 0.98664205, 0.98360311, 0.98139364, 0.97852647 },
+				{ 0.99573768, 0.99169195, 0.98865609, 0.98498691, 0.98196823, 0.97942859, 0.97685352 },
+				{ 0.99516545, 0.99110295, 0.98730194, 0.98384153, 0.98025385, 0.97740745, 0.97437166 },
+				{ 0.99448868, 0.98973816, 0.98549723, 0.98204572, 0.97800290, 0.97439486, 0.97097046 },
+				{ 0.99378953, 0.98857130, 0.98393080, 0.97947752, 0.97523556, 0.97103795, 0.96770075 },
+				{ 0.99277080, 0.98695537, 0.98174106, 0.97723743, 0.97261192, 0.96811078, 0.96394691 },
+				{ 0.99234397, 0.98570079, 0.97996125, 0.97503512, 0.97002655, 0.96522889, 0.96130352 },
+				{ 0.99181291, 0.98567552, 0.97985350, 0.97434954, 0.96906586, 0.96427145, 0.95961475 }
+			},
+			{
+				{ 0.99641652, 0.99357079, 0.99090301, 0.98809966, 0.98553043, 0.98324158, 0.98090244 },
+				{ 0.99634528, 0.99327742, 0.99063730, 0.98797848, 0.98545605, 0.98317901, 0.98071686 },
+				{ 0.99632864, 0.99332806, 0.99043557, 0.98758352, 0.98491212, 0.98282294, 0.98030538 },
+				{ 0.99621101, 0.99304515, 0.98994816, 0.98758170, 0.98442056, 0.98218843, 0.97971368 },
+				{ 0.99597612, 0.99264610, 0.98949426, 0.98634275, 0.98372806, 0.98137023, 0.97852892 },
+				{ 0.99565543, 0.99221561, 0.98898196, 0.98584876, 0.98281910, 0.97993546, 0.97726831 },
+				{ 0.99546922, 0.99187117, 0.98794660, 0.98482285, 0.98129050, 0.97849750, 0.97602874 },
+				{ 0.99509573, 0.99097167, 0.98706490, 0.98347643, 0.98023222, 0.97729933, 0.97348625 },
+				{ 0.99448699, 0.99014351, 0.98611789, 0.98223163, 0.97882582, 0.97526252, 0.97237211 },
+				{ 0.99406415, 0.98897451, 0.98502515, 0.98062865, 0.97665116, 0.97316730, 0.96974665 },
+				{ 0.99361595, 0.98849566, 0.98374137, 0.97929956, 0.97464596, 0.97108926, 0.96801825 },
+				{ 0.99328881, 0.98793640, 0.98306603, 0.97844363, 0.97387949, 0.97000460, 0.96624935 },
+				{ 0.99322955, 0.98740451, 0.98233058, 0.97809339, 0.97396680, 0.96916587, 0.96520582 }
+			},
+			{
+				{ 0.99593756, 0.99270129, 0.98972571, 0.98643100, 0.98429198, 0.98152262, 0.97894872 },
+				{ 0.99598798, 0.99287105, 0.98922978, 0.98611222, 0.98381087, 0.98097314, 0.97853460 },
+				{ 0.99582670, 0.99264238, 0.98951203, 0.98624890, 0.98397377, 0.98114045, 0.97853613 },
+				{ 0.99592266, 0.99244480, 0.98927987, 0.98639372, 0.98339822, 0.98066613, 0.97813332 },
+				{ 0.99566875, 0.99202897, 0.98878175, 0.98547007, 0.98245274, 0.97976203, 0.97747403 },
+				{ 0.99557065, 0.99184950, 0.98832394, 0.98498317, 0.98220381, 0.97882768, 0.97585949 },
+				{ 0.99523523, 0.99118205, 0.98785039, 0.98430575, 0.98132157, 0.97822883, 0.97522983 },
+				{ 0.99517864, 0.99088279, 0.98703539, 0.98351995, 0.97990541, 0.97697485, 0.97377801 },
+				{ 0.99456597, 0.99006154, 0.98620201, 0.98289034, 0.97951346, 0.97607003, 0.97228271 },
+				{ 0.99438376, 0.98989356, 0.98558145, 0.98156524, 0.97829116, 0.97486132, 0.97154136 },
+				{ 0.99413897, 0.98949687, 0.98526850, 0.98109754, 0.97685232, 0.97329832, 0.97033036 },
+				{ 0.99406108, 0.98930320, 0.98483222, 0.98081015, 0.97687886, 0.97327974, 0.96916922 },
+				{ 0.99382769, 0.98927090, 0.98471650, 0.98013636, 0.97582141, 0.97316456, 0.96897318 }
+			},
+			{
+				{ 0.99546503, 0.99163180, 0.98839720, 0.98502139, 0.98208266, 0.97906841, 0.97656888 },
+				{ 0.99551626, 0.99173403, 0.98828256, 0.98524019, 0.98201976, 0.97942443, 0.97667072 },
+				{ 0.99542162, 0.99164240, 0.98812614, 0.98486702, 0.98192281, 0.97901912, 0.97622179 },
+				{ 0.99542702, 0.99136204, 0.98802355, 0.98490646, 0.98148792, 0.97890876, 0.97611755 },
+				{ 0.99527328, 0.99126360, 0.98789395, 0.98476211, 0.98108489, 0.97824848, 0.97533954 },
+				{ 0.99509247, 0.99112039, 0.98761060, 0.98432273, 0.98106749, 0.97782451, 0.97517898 },
+				{ 0.99480709, 0.99087890, 0.98747395, 0.98401428, 0.98068587, 0.97739118, 0.97401130 },
+				{ 0.99496472, 0.99072078, 0.98705861, 0.98363560, 0.98021896, 0.97718399, 0.97396829 },
+				{ 0.99493034, 0.99079711, 0.98680191, 0.98311245, 0.97976949, 0.97643419, 0.97339275 },
+				{ 0.99474446, 0.99032317, 0.98630840, 0.98307858, 0.97910583, 0.97545428, 0.97265387 },
+				{ 0.99462579, 0.99005454, 0.98602966, 0.98236162, 0.97883581, 0.97531234, 0.97246520 },
+				{ 0.99460921, 0.99011840, 0.98648133, 0.98213096, 0.97860471, 0.97515365, 0.97221654 },
+				{ 0.99458371, 0.99002947, 0.98588568, 0.98217355, 0.97864626, 0.97540214, 0.97172136 }
+			},
+			{
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+				{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 }
+			},
+			{
+				{ 0.99396655, 0.98947457, 0.98504437, 0.98091573, 0.97755650, 0.97362155, 0.97089625 },
+				{ 0.99408153, 0.98939018, 0.98543317, 0.98085652, 0.97767892, 0.97391963, 0.97018436 },
+				{ 0.99427926, 0.98944132, 0.98516148, 0.98129706, 0.97779573, 0.97426267, 0.97072625 },
+				{ 0.99425668, 0.98980440, 0.98569109, 0.98126989, 0.97781914, 0.97443291, 0.97127059 },
+				{ 0.99437696, 0.99008495, 0.98612660, 0.98239484, 0.97837030, 0.97492590, 0.97166022 },
+				{ 0.99439578, 0.99009087, 0.98630460, 0.98232087, 0.97915761, 0.97592695, 0.97233921 },
+				{ 0.99465247, 0.99054933, 0.98623908, 0.98282349, 0.97934135, 0.97615724, 0.97310021 },
+				{ 0.99473778, 0.99048122, 0.98669607, 0.98280017, 0.97990109, 0.97610856, 0.97352463 },
+				{ 0.99481601, 0.99065118, 0.98682536, 0.98359679, 0.98011259, 0.97691772, 0.97374147 },
+				{ 0.99499945, 0.99091541, 0.98732797, 0.98393208, 0.98077001, 0.97658576, 0.97442690 },
+				{ 0.99516432, 0.99086915, 0.98760063, 0.98386438, 0.98066409, 0.97740606, 0.97422170 },
+				{ 0.99506518, 0.99117233, 0.98737849, 0.98425982, 0.98070666, 0.97777822, 0.97496273 },
+				{ 0.99528504, 0.99116771, 0.98729560, 0.98406074, 0.98116884, 0.97772951, 0.97470293 }
+			},
+			{
+				{ 0.99331695, 0.98817512, 0.98342652, 0.97896918, 0.97414836, 0.97056080, 0.96697618 },
+				{ 0.99310877, 0.98803157, 0.98340546, 0.97838672, 0.97551187, 0.97070500, 0.96752373 },
+				{ 0.99364956, 0.98862409, 0.98373706, 0.97933728, 0.97476784, 0.97154555, 0.96739474 },
+				{ 0.99372025, 0.98885372, 0.98396751, 0.97961847, 0.97605037, 0.97174070, 0.96829191 },
+				{ 0.99398321, 0.98890403, 0.98476886, 0.98039400, 0.97685000, 0.97322523, 0.96918566 },
+				{ 0.99425920, 0.98936102, 0.98537225, 0.98139600, 0.97782847, 0.97390296, 0.96994446 },
+				{ 0.99432600, 0.99001601, 0.98591903, 0.98191128, 0.97867103, 0.97508847, 0.97117871 },
+				{ 0.99496930, 0.99051625, 0.98631007, 0.98294036, 0.97920001, 0.97610768, 0.97338816 },
+				{ 0.99499135, 0.99070689, 0.98692761, 0.98333323, 0.97976776, 0.97626701, 0.97378802 },
+				{ 0.99507366, 0.99101518, 0.98724390, 0.98387848, 0.98046181, 0.97790108, 0.97391036 },
+				{ 0.99510291, 0.99117707, 0.98741107, 0.98423474, 0.98091372, 0.97804410, 0.97494891 },
+				{ 0.99512894, 0.99127832, 0.98766116, 0.98428967, 0.98135570, 0.97817907, 0.97548522 },
+				{ 0.99525056, 0.99123314, 0.98792130, 0.98429968, 0.98138490, 0.97846844, 0.97510999 }
+			},
+			{
+				{ 0.99233837, 0.98614702, 0.98103003, 0.97618308, 0.97177929, 0.96698121, 0.96288777 },
+				{ 0.99244290, 0.98659917, 0.98119791, 0.97627671, 0.97236321, 0.96705799, 0.96336296 },
+				{ 0.99263034, 0.98731455, 0.98148915, 0.97770648, 0.97235455, 0.96825033, 0.96399237 },
+				{ 0.99315099, 0.98769948, 0.98244608, 0.97806534, 0.97363796, 0.96983683, 0.96543133 },
+				{ 0.99350562, 0.98836065, 0.98358720, 0.97941872, 0.97512953, 0.97163178, 0.96743266 },
+				{ 0.99390623, 0.98907233, 0.98481968, 0.98040203, 0.97639223, 0.97289341, 0.96896142 },
+				{ 0.99425438, 0.98953648, 0.98530135, 0.98178708, 0.97787577, 0.97416644, 0.97064969 },
+				{ 0.99432214, 0.99016567, 0.98609410, 0.98244586, 0.97882101, 0.97543875, 0.97257156 },
+				{ 0.99473571, 0.99047800, 0.98663663, 0.98307572, 0.97993864, 0.97684705, 0.97315387 },
+				{ 0.99507490, 0.99098635, 0.98736959, 0.98399361, 0.98064418, 0.97750186, 0.97415304 },
+				{ 0.99504107, 0.99111438, 0.98793154, 0.98456524, 0.98073182, 0.97846981, 0.97515877 },
+				{ 0.99537259, 0.99145687, 0.98779870, 0.98448469, 0.98157992, 0.97805913, 0.97598200 },
+				{ 0.99517790, 0.99149247, 0.98795183, 0.98462950, 0.98147848, 0.97889746, 0.97582832 }
+			},
+			{
+				{ 0.99145895, 0.98471493, 0.97883340, 0.97321456, 0.96877345, 0.96319070, 0.95889738 },
+				{ 0.99159581, 0.98475937, 0.97893996, 0.97437120, 0.96867080, 0.96299749, 0.95876435 },
+				{ 0.99180173, 0.98542180, 0.98011509, 0.97461978, 0.96936294, 0.96517916, 0.96091975 },
+				{ 0.99239856, 0.98638090, 0.98131820, 0.97584088, 0.97151661, 0.96666285, 0.96289370 },
+				{ 0.99285490, 0.98724550, 0.98242758, 0.97812184, 0.97310868, 0.96909821, 0.96549754 },
+				{ 0.99345402, 0.98856213, 0.98409521, 0.97925911, 0.97541622, 0.97128833, 0.96730831 },
+				{ 0.99393680, 0.98894339, 0.98485696, 0.98074034, 0.97679182, 0.97321398, 0.96967984 },
+				{ 0.99428463, 0.98998637, 0.98587276, 0.98226335, 0.97863314, 0.97478033, 0.97241778 },
+				{ 0.99467232, 0.99052339, 0.98691598, 0.98297247, 0.97966155, 0.97614972, 0.97290548 },
+				{ 0.99514258, 0.99107714, 0.98721938, 0.98378170, 0.98062318, 0.97724609, 0.97390290 },
+				{ 0.99514300, 0.99106624, 0.98773106, 0.98441718, 0.98107804, 0.97755071, 0.97531741 },
+				{ 0.99525607, 0.99147059, 0.98778183, 0.98414832, 0.98142073, 0.97833114, 0.97560596 },
+				{ 0.99542738, 0.99129295, 0.98796485, 0.98513298, 0.98188383, 0.97867591, 0.97609312 }
+			},
+			{
+				{ 0.99024090, 0.98295289, 0.97615571, 0.97011781, 0.96428462, 0.95884872, 0.95435670 },
+				{ 0.99060234, 0.98287206, 0.97664307, 0.97030111, 0.96546118, 0.96062905, 0.95497845 },
+				{ 0.99109361, 0.98425770, 0.97780684, 0.97221558, 0.96687871, 0.96168497, 0.95675479 },
+				{ 0.99177440, 0.98511976, 0.97958642, 0.97417872, 0.96927674, 0.96365722, 0.95983554 },
+				{ 0.99233785, 0.98640360, 0.98108379, 0.97629831, 0.97174853, 0.96657046, 0.96319097 },
+				{ 0.99318414, 0.98779348, 0.98291418, 0.97818918, 0.97383851, 0.97021964, 0.96663855 },
+				{ 0.99388597, 0.98887184, 0.98397951, 0.97996216, 0.97617046, 0.97247640, 0.96843223 },
+				{ 0.99435327, 0.98954502, 0.98552879, 0.98145382, 0.97766211, 0.97443019, 0.97072165 },
+				{ 0.99476316, 0.99020321, 0.98601780, 0.98258754, 0.97925236, 0.97569557, 0.97250168 },
+				{ 0.99498473, 0.99095584, 0.98647891, 0.98333860, 0.98012838, 0.97728509, 0.97417092 },
+				{ 0.99496396, 0.99101402, 0.98740606, 0.98419217, 0.98082805, 0.97792249, 0.97467846 },
+				{ 0.99501244, 0.99123699, 0.98745680, 0.98438341, 0.98135576, 0.97826691, 0.97562003 },
+				{ 0.99532185, 0.99139230, 0.98799939, 0.98435669, 0.98153198, 0.97869165, 0.97564044 }
+			},
+			{
+				{ 0.98933741, 0.98094435, 0.97363580, 0.96719433, 0.96088080, 0.95528418, 0.94934480 },
+				{ 0.98957064, 0.98137170, 0.97440578, 0.96722916, 0.96196031, 0.95627184, 0.95057052 },
+				{ 0.99010734, 0.98268225, 0.97630023, 0.96978575, 0.96391969, 0.95876613, 0.95282864 },
+				{ 0.99094182, 0.98436589, 0.97814659, 0.97210131, 0.96704168, 0.96191449, 0.95643815 },
+				{ 0.99222549, 0.98580292, 0.97973768, 0.97494033, 0.96987253, 0.96562768, 0.96131842 },
+				{ 0.99291722, 0.98699881, 0.98204656, 0.97738227, 0.97294884, 0.96868972, 0.96439107 },
+				{ 0.99326733, 0.98828897, 0.98347811, 0.97934108, 0.97541674, 0.97177400, 0.96755721 },
+				{ 0.99401405, 0.98922996, 0.98477253, 0.98084116, 0.97744093, 0.97368307, 0.96979066 },
+				{ 0.99439639, 0.98997678, 0.98608067, 0.98221111, 0.97886108, 0.97502030, 0.97195404 },
+				{ 0.99476824, 0.99039644, 0.98683199, 0.98314035, 0.97974714, 0.97661581, 0.97401280 },
+				{ 0.99486355, 0.99091647, 0.98700895, 0.98354325, 0.98076264, 0.97749380, 0.97483290 },
+				{ 0.99524983, 0.99110701, 0.98737399, 0.98421779, 0.98071202, 0.97802222, 0.97454331 },
+				{ 0.99517591, 0.99119984, 0.98777879, 0.98433521, 0.98101602, 0.97829117, 0.97504473 }
+			},
+			{
+				{ 0.98804086, 0.97887459, 0.97049504, 0.96364079, 0.95722726, 0.94990804, 0.94399724 },
+				{ 0.98823804, 0.97969942, 0.97174222, 0.96422675, 0.95815950, 0.95234681, 0.94563852 },
+				{ 0.98894549, 0.98097995, 0.97412242, 0.96712731, 0.96026695, 0.95526249, 0.94867960 },
+				{ 0.99040441, 0.98312627, 0.97615084, 0.97003810, 0.96435850, 0.95917666, 0.95430266 },
+				{ 0.99145663, 0.98496025, 0.97855781, 0.97348022, 0.96835666, 0.96327110, 0.95805897 },
+				{ 0.99258709, 0.98656668, 0.98125048, 0.97620764, 0.97113964, 0.96695972, 0.96206871 },
+				{ 0.99337752, 0.98801498, 0.98332507, 0.97861804, 0.97464167, 0.97034789, 0.96626094 },
+				{ 0.99379258, 0.98898906, 0.98423433, 0.98072243, 0.97604303, 0.97302065, 0.96890011 },
+				{ 0.99416888, 0.98948699, 0.98558236, 0.98174677, 0.97791070, 0.97462363, 0.97101607 },
+				{ 0.99466065, 0.99025216, 0.98636990, 0.98273265, 0.97922498, 0.97662269, 0.97248795 },
+				{ 0.99482395, 0.99075141, 0.98682752, 0.98344474, 0.98026230, 0.97688066, 0.97399842 },
+				{ 0.99486724, 0.99101905, 0.98733300, 0.98400815, 0.98042020, 0.97744446, 0.97441165 },
+				{ 0.99470173, 0.99088415, 0.98761855, 0.98400026, 0.98054141, 0.97781283, 0.97493174 }
+			},
+			{
+				{ 0.98663600, 0.97620432, 0.96820728, 0.95972719, 0.95332059, 0.94534951, 0.93783445 },
+				{ 0.98728756, 0.97766244, 0.96888901, 0.96134038, 0.95420311, 0.94693717, 0.94143304 },
+				{ 0.98855355, 0.97949936, 0.97141770, 0.96454525, 0.95752699, 0.95150738, 0.94497255 },
+				{ 0.98960821, 0.98168085, 0.97475290, 0.96826201, 0.96185259, 0.95665570, 0.95124580 },
+				{ 0.99086961, 0.98392064, 0.97751618, 0.97204400, 0.96662503, 0.96155394, 0.95665615 },
+				{ 0.99207454, 0.98611064, 0.98008079, 0.97505459, 0.97050536, 0.96586663, 0.96149497 },
+				{ 0.99303900, 0.98764199, 0.98219666, 0.97781774, 0.97358674, 0.96902353, 0.96568106 },
+				{ 0.99376142, 0.98856059, 0.98435237, 0.98003753, 0.97536500, 0.97172730, 0.96813148 },
+				{ 0.99419291, 0.98945508, 0.98515235, 0.98084854, 0.97726213, 0.97349112, 0.97012996 },
+				{ 0.99458557, 0.98980193, 0.98572680, 0.98237384, 0.97864106, 0.97537738, 0.97194232 },
+				{ 0.99455452, 0.99043916, 0.98650123, 0.98297627, 0.97954430, 0.97633871, 0.97293295 },
+				{ 0.99485547, 0.99080196, 0.98695937, 0.98320464, 0.98000906, 0.97646077, 0.97347363 },
+				{ 0.99497603, 0.99087678, 0.98708381, 0.98335676, 0.98010222, 0.97718250, 0.97407152 }
+			},
+			{
+				{ 0.98567092, 0.97448188, 0.96480368, 0.95626443, 0.94875455, 0.94098140, 0.93477758 },
+				{ 0.98582551, 0.97544459, 0.96630877, 0.95750348, 0.94961369, 0.94275135, 0.93579856 },
+				{ 0.98741914, 0.97787601, 0.96924900, 0.96178521, 0.95508147, 0.94777306, 0.94168601 },
+				{ 0.98908248, 0.98068397, 0.97341756, 0.96633754, 0.95955314, 0.95383250, 0.94832929 },
+				{ 0.99080209, 0.98285540, 0.97667508, 0.97086130, 0.96462804, 0.95898294, 0.95493395 },
+				{ 0.99172715, 0.98492740, 0.97929859, 0.97387112, 0.96943098, 0.96464531, 0.95972089 },
+				{ 0.99253452, 0.98656363, 0.98174048, 0.97678110, 0.97201358, 0.96834482, 0.96365696 },
+				{ 0.99346802, 0.98830821, 0.98359385, 0.97932811, 0.97449025, 0.97131534, 0.96722552 },
+				{ 0.99387370, 0.98863474, 0.98452869, 0.98039650, 0.97690416, 0.97340484, 0.96956764 },
+				{ 0.99413323, 0.98961530, 0.98527999, 0.98199156, 0.97760646, 0.97475513, 0.97106410 },
+				{ 0.99440558, 0.99013829, 0.98591577, 0.98229921, 0.97878178, 0.97553299, 0.97243736 },
+				{ 0.99475320, 0.99048109, 0.98661584, 0.98264168, 0.97926521, 0.97618797, 0.97313251 },
+				{ 0.99470445, 0.99045416, 0.98669437, 0.98301237, 0.97966469, 0.97634227, 0.97337450 }
+			},
+			{
+				{ 0.98374990, 0.97230803, 0.96167477, 0.95281925, 0.94415898, 0.93606492, 0.92789834 },
+				{ 0.98489381, 0.97328735, 0.96338199, 0.95431812, 0.94589504, 0.93812042, 0.93083562 },
+				{ 0.98638001, 0.97652969, 0.96721375, 0.95898258, 0.95130407, 0.94430947, 0.93685694 },
+				{ 0.98834260, 0.97946370, 0.97137237, 0.96411149, 0.95751084, 0.95145905, 0.94514475 },
+				{ 0.99003438, 0.98242371, 0.97557511, 0.96891950, 0.96260820, 0.95782271, 0.95245311 },
+				{ 0.99141990, 0.98453132, 0.97886573, 0.97333211, 0.96790351, 0.96286010, 0.95821484 },
+				{ 0.99239088, 0.98653824, 0.98118030, 0.97591298, 0.97132571, 0.96664262, 0.96250552 },
+				{ 0.99320005, 0.98771349, 0.98283973, 0.97817164, 0.97383880, 0.96956937, 0.96618174 },
+				{ 0.99367445, 0.98844740, 0.98416570, 0.97999566, 0.97583555, 0.97245108, 0.96804203 },
+				{ 0.99397627, 0.98924596, 0.98526322, 0.98139221, 0.97768457, 0.97380587, 0.97063948 },
+				{ 0.99423030, 0.99003523, 0.98565730, 0.98166679, 0.97783879, 0.97457903, 0.97132808 },
+				{ 0.99429526, 0.99008733, 0.98607717, 0.98237351, 0.97896867, 0.97590763, 0.97238214 },
+				{ 0.99465048, 0.98992165, 0.98611347, 0.98268826, 0.97876564, 0.97610205, 0.97228973 }
+			},
+			{
+				{ 0.98263301, 0.96962975, 0.95880244, 0.94870686, 0.93836312, 0.93031323, 0.92229322 },
+				{ 0.98338819, 0.97133756, 0.96010830, 0.95026719, 0.94141932, 0.93298132, 0.92516341 },
+				{ 0.98525804, 0.97397142, 0.96510997, 0.95644200, 0.94762258, 0.94000324, 0.93268278 },
+				{ 0.98761993, 0.97786266, 0.96992153, 0.96230683, 0.95516679, 0.94769731, 0.94237394 },
+				{ 0.98950550, 0.98145340, 0.97435889, 0.96754324, 0.96120835, 0.95569064, 0.95004975 },
+				{ 0.99112409, 0.98369058, 0.97773042, 0.97276124, 0.96661077, 0.96164442, 0.95662159 },
+				{ 0.99220682, 0.98614357, 0.98061070, 0.97459320, 0.97051623, 0.96571199, 0.96110295 },
+				{ 0.99282711, 0.98677776, 0.98255649, 0.97765612, 0.97278093, 0.96833490, 0.96497590 },
+				{ 0.99350128, 0.98829102, 0.98383793, 0.97929057, 0.97480671, 0.97156347, 0.96679095 },
+				{ 0.99390263, 0.98905514, 0.98416201, 0.98027128, 0.97655198, 0.97305511, 0.96911926 },
+				{ 0.99407940, 0.98936433, 0.98503357, 0.98125436, 0.97726077, 0.97378208, 0.97045969 },
+				{ 0.99428813, 0.98969596, 0.98566359, 0.98160492, 0.97816791, 0.97461524, 0.97087767 },
+				{ 0.99446565, 0.98974882, 0.98538610, 0.98196549, 0.97772147, 0.97469302, 0.97125642 }
+			},
+			{
+				{ 0.98119958, 0.96767255, 0.95483635, 0.94497259, 0.93431573, 0.92564619, 0.91669107 },
+				{ 0.98191798, 0.96958471, 0.95776721, 0.94716956, 0.93753057, 0.92876522, 0.91991102 },
+				{ 0.98467238, 0.97302009, 0.96294122, 0.95360784, 0.94460174, 0.93646839, 0.92918383 },
+				{ 0.98704537, 0.97706696, 0.96845247, 0.95990594, 0.95319068, 0.94602557, 0.93907395 },
+				{ 0.98908628, 0.98108051, 0.97292897, 0.96644130, 0.96018177, 0.95408592, 0.94789550 },
+				{ 0.99079237, 0.98341156, 0.97655035, 0.97116330, 0.96478622, 0.95979442, 0.95419171 },
+				{ 0.99173604, 0.98542690, 0.97968201, 0.97423091, 0.96914947, 0.96423145, 0.96002714 },
+				{ 0.99259918, 0.98680102, 0.98181845, 0.97616979, 0.97234657, 0.96773977, 0.96344091 },
+				{ 0.99313694, 0.98782261, 0.98319882, 0.97860683, 0.97419315, 0.97045389, 0.96662471 },
+				{ 0.99385723, 0.98840434, 0.98417042, 0.97955570, 0.97587367, 0.97197210, 0.96814451 },
+				{ 0.99378486, 0.98911556, 0.98463604, 0.98047153, 0.97672165, 0.97337371, 0.96969764 },
+				{ 0.99416970, 0.98959857, 0.98476219, 0.98094692, 0.97652341, 0.97334823, 0.97015403 },
+				{ 0.99401350, 0.98937626, 0.98499708, 0.98111968, 0.97757253, 0.97396419, 0.97006379 }
+			},
+			{
+				{ 0.98015928, 0.96513755, 0.95221618, 0.94034821, 0.92896263, 0.92004306, 0.91006432 },
+				{ 0.98096318, 0.96667435, 0.95406931, 0.94354576, 0.93384804, 0.92368261, 0.91486605 },
+				{ 0.98348808, 0.97142148, 0.96021336, 0.95051797, 0.94100725, 0.93261676, 0.92514923 },
+				{ 0.98663211, 0.97573852, 0.96647681, 0.95773733, 0.95059640, 0.94324377, 0.93670440 },
+				{ 0.98869887, 0.97970351, 0.97196002, 0.96461380, 0.95870814, 0.95127261, 0.94588234 },
+				{ 0.99020352, 0.98288530, 0.97597833, 0.96996233, 0.96365418, 0.95900329, 0.95339341 },
+				{ 0.99160958, 0.98456365, 0.97867816, 0.97370311, 0.96778934, 0.96321214, 0.95849765 },
+				{ 0.99243189, 0.98621608, 0.98094068, 0.97571119, 0.97115863, 0.96695386, 0.96193365 },
+				{ 0.99305066, 0.98725148, 0.98241658, 0.97775663, 0.97336210, 0.96916056, 0.96507213 },
+				{ 0.99331441, 0.98805001, 0.98352440, 0.97887290, 0.97501806, 0.97056209, 0.96684064 },
+				{ 0.99370315, 0.98880043, 0.98389443, 0.97939847, 0.97585050, 0.97235754, 0.96829589 },
+				{ 0.99396323, 0.98887980, 0.98466577, 0.98053070, 0.97644817, 0.97243477, 0.96923316 },
+				{ 0.99384845, 0.98908246, 0.98478230, 0.98011034, 0.97639394, 0.97288993, 0.96940692 }
+			},
+			{
+				{ 0.97822510, 0.96233210, 0.94802367, 0.93565726, 0.92541367, 0.91381573, 0.90462528 },
+				{ 0.97941236, 0.96482785, 0.95122990, 0.93864241, 0.92907317, 0.91844775, 0.90995262 },
+				{ 0.98232366, 0.96891683, 0.95845135, 0.94754650, 0.93861742, 0.92948588, 0.92001948 },
+				{ 0.98580581, 0.97462873, 0.96508681, 0.95652414, 0.94847479, 0.94054481, 0.93355827 },
+				{ 0.98793888, 0.97924790, 0.97036124, 0.96297722, 0.95648841, 0.94979902, 0.94353546 },
+				{ 0.99001409, 0.98199234, 0.97529670, 0.96833970, 0.96255238, 0.95656212, 0.95115254 },
+				{ 0.99111505, 0.98432271, 0.97771980, 0.97267082, 0.96677807, 0.96211067, 0.95659203 },
+				{ 0.99216194, 0.98589810, 0.98049029, 0.97485943, 0.96985261, 0.96555232, 0.96064740 },
+				{ 0.99278870, 0.98719515, 0.98183323, 0.97707963, 0.97213532, 0.96783878, 0.96405037 },
+				{ 0.99317117, 0.98804673, 0.98285299, 0.97803239, 0.97380333, 0.97054090, 0.96579797 },
+				{ 0.99348512, 0.98788565, 0.98359538, 0.97922625, 0.97514955, 0.97151151, 0.96730843 },
+				{ 0.99370322, 0.98877124, 0.98391902, 0.97969226, 0.97606770, 0.97147670, 0.96815925 },
+				{ 0.99344584, 0.98830260, 0.98432016, 0.97954915, 0.97578950, 0.97167390, 0.96832826 }
+			},
+			{
+				{ 0.97634065, 0.95965386, 0.94461921, 0.93135120, 0.91983456, 0.90823343, 0.89813362 },
+				{ 0.97817968, 0.96155156, 0.94816945, 0.93495594, 0.92450985, 0.91373615, 0.90452781 },
+				{ 0.98162211, 0.96797810, 0.95584008, 0.94444219, 0.93485990, 0.92637041, 0.91710174 },
+				{ 0.98521259, 0.97359660, 0.96350616, 0.95415841, 0.94634787, 0.93756223, 0.92965090 },
+				{ 0.98755222, 0.97833677, 0.96993118, 0.96224753, 0.95439139, 0.94798921, 0.94139593 },
+				{ 0.98959085, 0.98170464, 0.97429172, 0.96748836, 0.96149235, 0.95580880, 0.95013465 },
+				{ 0.99075297, 0.98376284, 0.97705218, 0.97149053, 0.96567060, 0.96086481, 0.95490648 },
+				{ 0.99195829, 0.98554433, 0.97972261, 0.97414039, 0.96886650, 0.96412217, 0.95953896 },
+				{ 0.99256870, 0.98657790, 0.98136482, 0.97655190, 0.97138704, 0.96724292, 0.96299533 },
+				{ 0.99298619, 0.98725032, 0.98214790, 0.97715975, 0.97290366, 0.96842818, 0.96510428 },
+				{ 0.99312383, 0.98797406, 0.98308684, 0.97849691, 0.97448828, 0.97008598, 0.96627935 },
+				{ 0.99339487, 0.98815232, 0.98344314, 0.97900718, 0.97456371, 0.97136159, 0.96691588 },
+				{ 0.99346398, 0.98841220, 0.98332986, 0.97870745, 0.97516427, 0.97105358, 0.96701989 }
+			}
+		},
+		{
+			{
+				{ 0.99684714, 0.99415512, 0.99160690, 0.98947108, 0.98699740, 0.98513197, 0.98330345 },
+				{ 0.99682006, 0.99396390, 0.99180727, 0.98948444, 0.98677198, 0.98504567, 0.98328800 },
+				{ 0.99664228, 0.99390645, 0.99131899, 0.98910529, 0.98697028, 0.98448653, 0.98284770 },
+				{ 0.99656974, 0.99393929, 0.99111426, 0.98888800, 0.98635404, 0.98387163, 0.98183587 },
+				{ 0.99628519, 0.99339976, 0.99086306, 0.98819845, 0.98570212, 0.98327774, 0.98078811 },
+				{ 0.99615430, 0.99298195, 0.98978500, 0.98709217, 0.98464453, 0.98180683, 0.97953951 },
+				{ 0.99564200, 0.99214477, 0.98883664, 0.98602222, 0.98308755, 0.98056457, 0.97768675 },
+				{ 0.99513194, 0.99091182, 0.98762383, 0.98391980, 0.98088232, 0.97765407, 0.97477680 },
+				{ 0.99424717, 0.98957713, 0.98524884, 0.98129803, 0.97721374, 0.97365204, 0.97021399 },
+				{ 0.99275808, 0.98676530, 0.98149595, 0.97629417, 0.97207212, 0.96697094, 0.96283614 },
+				{ 0.98970930, 0.98182706, 0.97449480, 0.96750600, 0.96121489, 0.95599535, 0.94979744 },
+				{ 0.98193943, 0.96803816, 0.95612582, 0.94500668, 0.93546469, 0.92666939, 0.91773244 },
+				{ 0.90957440, 0.86094593, 0.82999737, 0.81285652, 0.80148083, 0.79762848, 0.79733703 }
+			},
+			{
+				{ 0.99680600, 0.99411281, 0.99169300, 0.98950147, 0.98742591, 0.98527364, 0.98317309 },
+				{ 0.99677288, 0.99421815, 0.99170528, 0.98952423, 0.98692533, 0.98521980, 0.98323765 },
+				{ 0.99666706, 0.99403240, 0.99144415, 0.98888669, 0.98700794, 0.98495826, 0.98239676 },
+				{ 0.99672818, 0.99378737, 0.99104480, 0.98877314, 0.98625943, 0.98398025, 0.98176892 },
+				{ 0.99655660, 0.99340113, 0.99062987, 0.98799415, 0.98543184, 0.98317521, 0.98084009 },
+				{ 0.99612945, 0.99294880, 0.98995928, 0.98725615, 0.98436969, 0.98190715, 0.97975255 },
+				{ 0.99567945, 0.99236220, 0.98886746, 0.98608802, 0.98274412, 0.98003598, 0.97739444 },
+				{ 0.99516239, 0.99103847, 0.98756857, 0.98406698, 0.98071098, 0.97790416, 0.97448325 },
+				{ 0.99424703, 0.98945383, 0.98536961, 0.98133906, 0.97707321, 0.97363488, 0.96980114 },
+				{ 0.99245578, 0.98639762, 0.98160400, 0.97623961, 0.97177635, 0.96707249, 0.96271537 },
+				{ 0.98981453, 0.98170280, 0.97430694, 0.96753227, 0.96093454, 0.95565288, 0.95030804 },
+				{ 0.98287380, 0.97008941, 0.95865237, 0.94857653, 0.93958035, 0.93044872, 0.92223808 },
+				{ 0.97437470, 0.95542732, 0.93961804, 0.92607061, 0.91360593, 0.90137893, 0.89149736 }
+			},
+			{
+				{ 0.99678190, 0.99416592, 0.99173106, 0.98923262, 0.98722969, 0.98540423, 0.98321814 },
+				{ 0.99680153, 0.99405813, 0.99163391, 0.98913574, 0.98726231, 0.98508452, 0.98320274 },
+				{ 0.99667371, 0.99404621, 0.99142865, 0.98896034, 0.98688930, 0.98477877, 0.98277661 },
+				{ 0.99666680, 0.99389014, 0.99127436, 0.98868791, 0.98637421, 0.98420262, 0.98186954 },
+				{ 0.99639448, 0.99337048, 0.99068927, 0.98778096, 0.98573875, 0.98346194, 0.98106434 },
+				{ 0.99595751, 0.99313982, 0.98998351, 0.98703548, 0.98453761, 0.98195976, 0.97924024 },
+				{ 0.99571352, 0.99219917, 0.98884453, 0.98561854, 0.98263398, 0.98019001, 0.97711185 },
+				{ 0.99507555, 0.99094504, 0.98708189, 0.98383367, 0.98080569, 0.97723928, 0.97441860 },
+				{ 0.99435100, 0.98941568, 0.98487908, 0.98074298, 0.97656794, 0.97300063, 0.96998222 },
+				{ 0.99252857, 0.98640974, 0.98109969, 0.97623711, 0.97147191, 0.96718783, 0.96223519 },
+				{ 0.99004445, 0.98237872, 0.97523543, 0.96875821, 0.96239562, 0.95683599, 0.95196156 },
+				{ 0.98626504, 0.97596188, 0.96664120, 0.95824949, 0.95017498, 0.94334615, 0.93668316 },
+				{ 0.98397864, 0.97184494, 0.96157906, 0.95186706, 0.94350378, 0.93532875, 0.92720977 }
+			},
+			{
+				{ 0.99678017, 0.99400521, 0.99180102, 0.98927081, 0.98684776, 0.98458800, 0.98261325 },
+				{ 0.99680542, 0.99399829, 0.99156799, 0.98934114, 0.98676818, 0.98455021, 0.98252357 },
+				{ 0.99655667, 0.99398840, 0.99138724, 0.98863379, 0.98648278, 0.98420975, 0.98207785 },
+				{ 0.99658557, 0.99352539, 0.99110521, 0.98871079, 0.98566519, 0.98407389, 0.98162763 },
+				{ 0.99620041, 0.99320302, 0.99035899, 0.98811319, 0.98566927, 0.98263875, 0.97999634 },
+				{ 0.99608284, 0.99265088, 0.98936811, 0.98683266, 0.98405685, 0.98170052, 0.97928993 },
+				{ 0.99550209, 0.99202043, 0.98872012, 0.98535734, 0.98224208, 0.97908603, 0.97661677 },
+				{ 0.99487250, 0.99070917, 0.98664269, 0.98337099, 0.97980979, 0.97676690, 0.97372837 },
+				{ 0.99412182, 0.98914517, 0.98477538, 0.98047475, 0.97646895, 0.97329648, 0.96919837 },
+				{ 0.99262819, 0.98709040, 0.98202004, 0.97654933, 0.97213825, 0.96778729, 0.96355196 },
+				{ 0.99099924, 0.98398706, 0.97738427, 0.97198738, 0.96580636, 0.96082460, 0.95532186 },
+				{ 0.98922362, 0.98058314, 0.97319815, 0.96619876, 0.96016367, 0.95361710, 0.94836049 },
+				{ 0.98810374, 0.97896174, 0.97115289, 0.96374595, 0.95649936, 0.95056399, 0.94393642 }
+			},
+			{
+				{ 0.99667265, 0.99380824, 0.99139028, 0.98863230, 0.98640558, 0.98409103, 0.98228065 },
+				{ 0.99652500, 0.99378465, 0.99129432, 0.98864516, 0.98659433, 0.98433140, 0.98196814 },
+				{ 0.99663039, 0.99362029, 0.99106179, 0.98837665, 0.98603895, 0.98377143, 0.98179468 },
+				{ 0.99624777, 0.99340061, 0.99075183, 0.98781441, 0.98568810, 0.98302788, 0.98067306 },
+				{ 0.99618473, 0.99289322, 0.98984659, 0.98728079, 0.98453479, 0.98196850, 0.97960048 },
+				{ 0.99575285, 0.99245783, 0.98915187, 0.98651302, 0.98362133, 0.98096005, 0.97781587 },
+				{ 0.99548618, 0.99159492, 0.98825361, 0.98500362, 0.98166713, 0.97855667, 0.97588271 },
+				{ 0.99473053, 0.99061776, 0.98673931, 0.98310303, 0.97975237, 0.97638373, 0.97240975 },
+				{ 0.99384326, 0.98925969, 0.98480546, 0.98113683, 0.97683490, 0.97296378, 0.96957475 },
+				{ 0.99312381, 0.98760695, 0.98247974, 0.97755989, 0.97369617, 0.96942559, 0.96512278 },
+				{ 0.99191580, 0.98583245, 0.97975691, 0.97429048, 0.96926213, 0.96495311, 0.95947369 },
+				{ 0.99086443, 0.98382137, 0.97749921, 0.97196530, 0.96633748, 0.96102673, 0.95631884 },
+				{ 0.99028108, 0.98309458, 0.97673239, 0.97043591, 0.96510515, 0.95879821, 0.95411399 }
+			},
+			{
+				{ 0.99639634, 0.99351310, 0.99073513, 0.98771362, 0.98563976, 0.98291697, 0.98083225 },
+				{ 0.99635669, 0.99338562, 0.99057526, 0.98789278, 0.98546539, 0.98344701, 0.98082889 },
+				{ 0.99635974, 0.99326085, 0.99026422, 0.98778032, 0.98513291, 0.98232108, 0.98044943 },
+				{ 0.99614824, 0.99303134, 0.99015006, 0.98725960, 0.98453712, 0.98211426, 0.97971856 },
+				{ 0.99572199, 0.99271919, 0.98930398, 0.98658908, 0.98367052, 0.98122010, 0.97848436 },
+				{ 0.99565694, 0.99199426, 0.98871093, 0.98593260, 0.98248820, 0.97990819, 0.97675935 },
+				{ 0.99541541, 0.99142712, 0.98757975, 0.98453721, 0.98110806, 0.97806381, 0.97500129 },
+				{ 0.99482650, 0.99040575, 0.98653504, 0.98272036, 0.97947945, 0.97586461, 0.97280675 },
+				{ 0.99405785, 0.98936975, 0.98499015, 0.98101557, 0.97693612, 0.97379796, 0.96974586 },
+				{ 0.99322489, 0.98821775, 0.98337017, 0.97918599, 0.97476207, 0.97131173, 0.96666845 },
+				{ 0.99275862, 0.98672896, 0.98152391, 0.97682502, 0.97216416, 0.96840612, 0.96398571 },
+				{ 0.99233532, 0.98604109, 0.98093764, 0.97569709, 0.97045653, 0.96532908, 0.96109726 },
+				{ 0.99210463, 0.98567042, 0.98000619, 0.97456742, 0.96979676, 0.96461804, 0.96075757 }
+			},
+			{
+				{ 0.99603053, 0.99297496, 0.98987324, 0.98708922, 0.98442717, 0.98167808, 0.97931536 },
+				{ 0.99604475, 0.99261793, 0.98981539, 0.98685807, 0.98416467, 0.98169894, 0.97906442 },
+				{ 0.99598776, 0.99259431, 0.98965344, 0.98652871, 0.98375148, 0.98149630, 0.97890719 },
+				{ 0.99573363, 0.99252185, 0.98940207, 0.98608516, 0.98315145, 0.98075448, 0.97801747 },
+				{ 0.99573383, 0.99197964, 0.98875560, 0.98576753, 0.98294363, 0.98002926, 0.97700922 },
+				{ 0.99535227, 0.99137912, 0.98817231, 0.98498350, 0.98192714, 0.97897150, 0.97599132 },
+				{ 0.99499787, 0.99112692, 0.98724290, 0.98409342, 0.98084114, 0.97763804, 0.97438254 },
+				{ 0.99448778, 0.99016382, 0.98651642, 0.98248395, 0.97891735, 0.97584017, 0.97263640 },
+				{ 0.99419408, 0.98959087, 0.98528554, 0.98117550, 0.97772641, 0.97422300, 0.97048876 },
+				{ 0.99371320, 0.98847914, 0.98421383, 0.98014695, 0.97638593, 0.97203635, 0.96834858 },
+				{ 0.99354501, 0.98803994, 0.98332225, 0.97877886, 0.97480127, 0.97097238, 0.96696909 },
+				{ 0.99305808, 0.98756303, 0.98264474, 0.97810231, 0.97357674, 0.96990530, 0.96558252 },
+				{ 0.99292479, 0.98739467, 0.98237294, 0.97781478, 0.97274898, 0.96891278, 0.96532352 }
+			},
+			{
+				{ 0.99567461, 0.99189320, 0.98884054, 0.98593752, 0.98254629, 0.97974854, 0.97709929 },
+				{ 0.99545060, 0.99184781, 0.98859187, 0.98592563, 0.98252263, 0.97986434, 0.97687893 },
+				{ 0.99550013, 0.99197645, 0.98858777, 0.98545859, 0.98238204, 0.97991143, 0.97661805 },
+				{ 0.99532879, 0.99172454, 0.98812346, 0.98522824, 0.98209109, 0.97913895, 0.97620053 },
+				{ 0.99534975, 0.99138051, 0.98808365, 0.98483951, 0.98149779, 0.97862120, 0.97573084 },
+				{ 0.99508265, 0.99107514, 0.98754384, 0.98411669, 0.98069343, 0.97732537, 0.97514596 },
+				{ 0.99487565, 0.99075250, 0.98694184, 0.98314839, 0.98015677, 0.97712237, 0.97362801 },
+				{ 0.99447495, 0.99036452, 0.98607761, 0.98274781, 0.97885205, 0.97600997, 0.97242748 },
+				{ 0.99422667, 0.98936152, 0.98559970, 0.98153281, 0.97793920, 0.97489902, 0.97127780 },
+				{ 0.99385641, 0.98946817, 0.98507864, 0.98093825, 0.97672239, 0.97345698, 0.97015601 },
+				{ 0.99383706, 0.98902839, 0.98427619, 0.98011328, 0.97634455, 0.97263909, 0.96873452 },
+				{ 0.99350321, 0.98888007, 0.98434809, 0.97987842, 0.97566665, 0.97224454, 0.96878379 },
+				{ 0.99353390, 0.98865091, 0.98392466, 0.97981487, 0.97520392, 0.97160428, 0.96784561 }
+			},
+			{
+				{ 0.99528504, 0.99116771, 0.98729560, 0.98406074, 0.98116884, 0.97772951, 0.97470293 },
+				{ 0.99506518, 0.99117233, 0.98737849, 0.98425982, 0.98070666, 0.97777822, 0.97496273 },
+				{ 0.99516432, 0.99086915, 0.98760063, 0.98386438, 0.98066409, 0.97740606, 0.97422170 },
+				{ 0.99499945, 0.99091541, 0.98732797, 0.98393208, 0.98077001, 0.97658576, 0.97442690 },
+				{ 0.99481601, 0.99065118, 0.98682536, 0.98359679, 0.98011259, 0.97691772, 0.97374147 },
+				{ 0.99473778, 0.99048122, 0.98669607, 0.98280017, 0.97990109, 0.97610856, 0.97352463 },
+				{ 0.99465247, 0.99054933, 0.98623908, 0.98282349, 0.97934135, 0.97615724, 0.97310021 },
+				{ 0.99439578, 0.99009087, 0.98630460, 0.98232087, 0.97915761, 0.97592695, 0.97233921 },
+				{ 0.99437696, 0.99008495, 0.98612660, 0.98239484, 0.97837030, 0.97492590, 0.97166022 },
+				{ 0.99425668, 0.98980440, 0.98569109, 0.98126989, 0.97781914, 0.97443291, 0.97127059 },
+				{ 0.99427926, 0.98944132, 0.98516148, 0.98129706, 0.97779573, 0.97426267, 0.97072625 },
+				{ 0.99408153, 0.98939018, 0.98543317, 0.98085652, 0.97767892, 0.97391963, 0.97018436 },
+				{ 0.99396655, 0.98947457, 0.98504437, 0.98091573, 0.97755650, 0.97362155, 0.97089625 }
+			},
+			{
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+				{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 }
+			},
+			{
+				{ 0.99374337, 0.98859886, 0.98430981, 0.98012556, 0.97619337, 0.97174740, 0.96922382 },
+				{ 0.99364679, 0.98876063, 0.98418239, 0.97969529, 0.97610653, 0.97200245, 0.96889903 },
+				{ 0.99391296, 0.98866316, 0.98425452, 0.98048319, 0.97633254, 0.97275076, 0.96834990 },
+				{ 0.99374904, 0.98909468, 0.98474823, 0.98021593, 0.97669807, 0.97292721, 0.96945048 },
+				{ 0.99389618, 0.98900819, 0.98500269, 0.98061817, 0.97705194, 0.97345360, 0.96955293 },
+				{ 0.99442142, 0.98924176, 0.98527655, 0.98109692, 0.97774523, 0.97371726, 0.97019840 },
+				{ 0.99436768, 0.98962685, 0.98543750, 0.98127756, 0.97774365, 0.97453170, 0.97102466 },
+				{ 0.99420834, 0.98996869, 0.98572962, 0.98186516, 0.97828157, 0.97481467, 0.97115499 },
+				{ 0.99461163, 0.98988094, 0.98583762, 0.98202722, 0.97846390, 0.97486746, 0.97193936 },
+				{ 0.99423267, 0.98991954, 0.98602930, 0.98238243, 0.97929561, 0.97545096, 0.97254222 },
+				{ 0.99464580, 0.99047867, 0.98632866, 0.98275878, 0.97899661, 0.97576134, 0.97315633 },
+				{ 0.99476729, 0.99061298, 0.98643200, 0.98252705, 0.97894756, 0.97625257, 0.97273853 },
+				{ 0.99463831, 0.99033407, 0.98622954, 0.98310539, 0.97932217, 0.97601911, 0.97277790 }
+			},
+			{
+				{ 0.99290875, 0.98749746, 0.98220206, 0.97798607, 0.97326614, 0.96872851, 0.96507221 },
+				{ 0.99302718, 0.98744924, 0.98227991, 0.97715348, 0.97335340, 0.96942670, 0.96546458 },
+				{ 0.99313801, 0.98774713, 0.98258510, 0.97812753, 0.97362728, 0.97023001, 0.96615017 },
+				{ 0.99324415, 0.98797573, 0.98308301, 0.97879615, 0.97371254, 0.97037927, 0.96682506 },
+				{ 0.99343193, 0.98848966, 0.98380910, 0.97926221, 0.97524645, 0.97132534, 0.96710853 },
+				{ 0.99380929, 0.98878585, 0.98410152, 0.97989199, 0.97602640, 0.97232511, 0.96935216 },
+				{ 0.99401428, 0.98920242, 0.98475956, 0.98098548, 0.97718908, 0.97324869, 0.96992764 },
+				{ 0.99417511, 0.98965430, 0.98533688, 0.98173370, 0.97783520, 0.97457215, 0.97093099 },
+				{ 0.99444638, 0.98996859, 0.98604875, 0.98214218, 0.97877373, 0.97494990, 0.97157952 },
+				{ 0.99457800, 0.99033283, 0.98611430, 0.98253747, 0.97928365, 0.97549622, 0.97230467 },
+				{ 0.99472827, 0.99027263, 0.98660596, 0.98311423, 0.97971898, 0.97615508, 0.97306852 },
+				{ 0.99501247, 0.99056631, 0.98651631, 0.98295319, 0.97977612, 0.97680755, 0.97351963 },
+				{ 0.99481952, 0.99076751, 0.98657426, 0.98316519, 0.97968680, 0.97674706, 0.97365618 }
+			},
+			{
+				{ 0.99208222, 0.98595485, 0.98005761, 0.97524390, 0.97040000, 0.96552301, 0.96116576 },
+				{ 0.99218691, 0.98597601, 0.98044055, 0.97522850, 0.97074849, 0.96615321, 0.96179687 },
+				{ 0.99216377, 0.98641042, 0.98077652, 0.97608970, 0.97172193, 0.96649433, 0.96264097 },
+				{ 0.99268790, 0.98665822, 0.98148128, 0.97656434, 0.97243407, 0.96869756, 0.96385777 },
+				{ 0.99289556, 0.98753813, 0.98281001, 0.97794626, 0.97336397, 0.96931109, 0.96554407 },
+				{ 0.99365724, 0.98829504, 0.98345666, 0.97900969, 0.97491544, 0.97151551, 0.96692797 },
+				{ 0.99389030, 0.98897974, 0.98416286, 0.98011225, 0.97605718, 0.97268259, 0.96931573 },
+				{ 0.99397302, 0.98923789, 0.98518172, 0.98128705, 0.97711371, 0.97370866, 0.96994329 },
+				{ 0.99437907, 0.99000474, 0.98583366, 0.98180889, 0.97827579, 0.97478871, 0.97150603 },
+				{ 0.99471611, 0.99031085, 0.98656637, 0.98244127, 0.97901879, 0.97562588, 0.97257521 },
+				{ 0.99468284, 0.99060466, 0.98675931, 0.98318392, 0.97940322, 0.97613565, 0.97306182 },
+				{ 0.99465292, 0.99058843, 0.98675283, 0.98293445, 0.97973455, 0.97703288, 0.97335832 },
+				{ 0.99488314, 0.99063417, 0.98689838, 0.98348974, 0.98017133, 0.97648639, 0.97309720 }
+			},
+			{
+				{ 0.99102674, 0.98425263, 0.97843405, 0.97254014, 0.96690372, 0.96212548, 0.95697706 },
+				{ 0.99122941, 0.98414742, 0.97831260, 0.97303209, 0.96749578, 0.96247069, 0.95878428 },
+				{ 0.99146229, 0.98489791, 0.97910886, 0.97370546, 0.96850696, 0.96422911, 0.95886807 },
+				{ 0.99214193, 0.98556093, 0.98019470, 0.97479253, 0.97040105, 0.96540650, 0.96134159 },
+				{ 0.99230559, 0.98659290, 0.98107397, 0.97678954, 0.97186598, 0.96759524, 0.96362300 },
+				{ 0.99321187, 0.98749987, 0.98233551, 0.97815648, 0.97329218, 0.96969471, 0.96521374 },
+				{ 0.99364242, 0.98815479, 0.98371170, 0.97960170, 0.97542904, 0.97166684, 0.96762656 },
+				{ 0.99405546, 0.98923065, 0.98483061, 0.98072483, 0.97716357, 0.97310403, 0.96950271 },
+				{ 0.99415131, 0.98980780, 0.98567204, 0.98135566, 0.97834730, 0.97468270, 0.97108072 },
+				{ 0.99459259, 0.99014764, 0.98613701, 0.98259138, 0.97895368, 0.97553263, 0.97219497 },
+				{ 0.99468920, 0.99032398, 0.98692126, 0.98274309, 0.97981868, 0.97615193, 0.97289368 },
+				{ 0.99484310, 0.99051319, 0.98699627, 0.98358648, 0.98030599, 0.97693689, 0.97396536 },
+				{ 0.99486564, 0.99065319, 0.98651723, 0.98360877, 0.97997614, 0.97673194, 0.97360934 }
+			},
+			{
+				{ 0.98983035, 0.98250379, 0.97573977, 0.96944673, 0.96362893, 0.95834858, 0.95308737 },
+				{ 0.99030941, 0.98227947, 0.97603397, 0.96975682, 0.96398618, 0.95903049, 0.95336626 },
+				{ 0.99095130, 0.98338587, 0.97685739, 0.97117377, 0.96549723, 0.96016933, 0.95558257 },
+				{ 0.99132692, 0.98474150, 0.97866277, 0.97278186, 0.96782473, 0.96333039, 0.95776513 },
+				{ 0.99217689, 0.98572400, 0.98012416, 0.97530465, 0.96969404, 0.96571475, 0.96085955 },
+				{ 0.99272176, 0.98693343, 0.98212903, 0.97696364, 0.97255512, 0.96830281, 0.96377663 },
+				{ 0.99311036, 0.98810761, 0.98314563, 0.97891148, 0.97441904, 0.97038437, 0.96661499 },
+				{ 0.99365088, 0.98873223, 0.98433957, 0.97999747, 0.97627594, 0.97248871, 0.96881718 },
+				{ 0.99429544, 0.98955729, 0.98557528, 0.98132785, 0.97772304, 0.97430776, 0.97084535 },
+				{ 0.99440907, 0.98980965, 0.98612084, 0.98224670, 0.97855201, 0.97548075, 0.97195956 },
+				{ 0.99442125, 0.99060941, 0.98625185, 0.98275132, 0.97954900, 0.97604529, 0.97286658 },
+				{ 0.99464323, 0.99072896, 0.98678439, 0.98329143, 0.97950900, 0.97667242, 0.97350227 },
+				{ 0.99489604, 0.99047761, 0.98679470, 0.98338907, 0.97945462, 0.97656381, 0.97313915 }
+			},
+			{
+				{ 0.98912265, 0.98055744, 0.97318513, 0.96617882, 0.96008596, 0.95427531, 0.94793813 },
+				{ 0.98906540, 0.98063527, 0.97353298, 0.96667908, 0.96112121, 0.95491112, 0.94905896 },
+				{ 0.98978908, 0.98189215, 0.97481812, 0.96808302, 0.96321376, 0.95658572, 0.95131650 },
+				{ 0.99070819, 0.98340927, 0.97683751, 0.97100680, 0.96518877, 0.96035980, 0.95522950 },
+				{ 0.99158852, 0.98493731, 0.97842698, 0.97345448, 0.96802353, 0.96349044, 0.95839145 },
+				{ 0.99236070, 0.98640501, 0.98061217, 0.97635977, 0.97126016, 0.96662268, 0.96222444 },
+				{ 0.99285083, 0.98740678, 0.98246837, 0.97813987, 0.97314855, 0.96934911, 0.96546399 },
+				{ 0.99362820, 0.98869670, 0.98384230, 0.97912980, 0.97547874, 0.97128983, 0.96773147 },
+				{ 0.99402007, 0.98907812, 0.98524356, 0.98077632, 0.97667815, 0.97322653, 0.96995221 },
+				{ 0.99442634, 0.98967889, 0.98583056, 0.98181828, 0.97817778, 0.97460175, 0.97110058 },
+				{ 0.99476442, 0.99013854, 0.98610768, 0.98251403, 0.97874356, 0.97570376, 0.97277559 },
+				{ 0.99460270, 0.99055253, 0.98654858, 0.98258756, 0.97951193, 0.97594188, 0.97292807 },
+				{ 0.99492650, 0.99058006, 0.98670431, 0.98294705, 0.97947733, 0.97662520, 0.97321951 }
+			},
+			{
+				{ 0.98768201, 0.97868965, 0.97065475, 0.96312912, 0.95627453, 0.94956036, 0.94349427 },
+				{ 0.98809328, 0.97882311, 0.97143039, 0.96371752, 0.95655526, 0.95078161, 0.94498267 },
+				{ 0.98894845, 0.98019096, 0.97287083, 0.96566576, 0.95930307, 0.95362147, 0.94805780 },
+				{ 0.99018744, 0.98201457, 0.97546631, 0.96910160, 0.96280851, 0.95732477, 0.95207350 },
+				{ 0.99098902, 0.98390747, 0.97818840, 0.97214260, 0.96723573, 0.96108059, 0.95697466 },
+				{ 0.99216257, 0.98568464, 0.97986265, 0.97433750, 0.96989388, 0.96542812, 0.96034637 },
+				{ 0.99274782, 0.98704376, 0.98184148, 0.97747066, 0.97274190, 0.96814368, 0.96427790 },
+				{ 0.99324212, 0.98820655, 0.98336401, 0.97891292, 0.97501240, 0.97072182, 0.96700394 },
+				{ 0.99376859, 0.98881712, 0.98420867, 0.98029249, 0.97651219, 0.97291683, 0.96874527 },
+				{ 0.99426713, 0.98956837, 0.98526407, 0.98152238, 0.97775353, 0.97421785, 0.97058175 },
+				{ 0.99414345, 0.98994658, 0.98584722, 0.98249701, 0.97842435, 0.97473883, 0.97178589 },
+				{ 0.99455897, 0.99027105, 0.98662841, 0.98235169, 0.97896059, 0.97539934, 0.97217209 },
+				{ 0.99466741, 0.99022128, 0.98633016, 0.98242440, 0.97931813, 0.97590608, 0.97275266 }
+			},
+			{
+				{ 0.98651931, 0.97673385, 0.96809961, 0.95958620, 0.95175646, 0.94560277, 0.93843462 },
+				{ 0.98703336, 0.97729857, 0.96914800, 0.96072914, 0.95313776, 0.94637742, 0.93961642 },
+				{ 0.98807228, 0.97864548, 0.97052723, 0.96303095, 0.95685696, 0.95031563, 0.94370387 },
+				{ 0.98946951, 0.98095507, 0.97414253, 0.96671156, 0.96100425, 0.95486814, 0.94891644 },
+				{ 0.99062679, 0.98323940, 0.97655263, 0.97057818, 0.96497145, 0.95917912, 0.95439898 },
+				{ 0.99166940, 0.98522218, 0.97900465, 0.97390271, 0.96871188, 0.96366996, 0.95901179 },
+				{ 0.99252969, 0.98642417, 0.98142358, 0.97644861, 0.97157983, 0.96749966, 0.96277204 },
+				{ 0.99306930, 0.98761511, 0.98280334, 0.97854038, 0.97418349, 0.97004783, 0.96613990 },
+				{ 0.99375556, 0.98856743, 0.98417182, 0.97981375, 0.97524990, 0.97251213, 0.96816522 },
+				{ 0.99395505, 0.98927719, 0.98459852, 0.98119304, 0.97741408, 0.97377435, 0.97032999 },
+				{ 0.99442862, 0.98961592, 0.98547338, 0.98177048, 0.97807502, 0.97429605, 0.97093817 },
+				{ 0.99433684, 0.98999731, 0.98604864, 0.98215737, 0.97885212, 0.97504514, 0.97205060 },
+				{ 0.99464450, 0.99010606, 0.98599753, 0.98256944, 0.97876644, 0.97515777, 0.97215542 }
+			},
+			{
+				{ 0.98551988, 0.97406168, 0.96544567, 0.95585722, 0.94777509, 0.93950987, 0.93352088 },
+				{ 0.98583616, 0.97523621, 0.96575031, 0.95743060, 0.94973527, 0.94191174, 0.93527117 },
+				{ 0.98689627, 0.97695867, 0.96872687, 0.96053608, 0.95316935, 0.94703327, 0.94036070 },
+				{ 0.98858505, 0.97952607, 0.97203683, 0.96524580, 0.95803258, 0.95174210, 0.94581519 },
+				{ 0.98992175, 0.98231944, 0.97515108, 0.96909456, 0.96302054, 0.95754726, 0.95217688 },
+				{ 0.99136200, 0.98453333, 0.97858201, 0.97219162, 0.96681135, 0.96216528, 0.95749992 },
+				{ 0.99214882, 0.98599029, 0.98050516, 0.97540625, 0.97079281, 0.96594164, 0.96158609 },
+				{ 0.99313761, 0.98722541, 0.98218104, 0.97744730, 0.97334611, 0.96933832, 0.96461060 },
+				{ 0.99346964, 0.98854818, 0.98344146, 0.97899702, 0.97505224, 0.97132167, 0.96751117 },
+				{ 0.99388186, 0.98884059, 0.98443256, 0.98042023, 0.97614874, 0.97263419, 0.96934754 },
+				{ 0.99430988, 0.98931259, 0.98485242, 0.98133056, 0.97717590, 0.97400968, 0.97058529 },
+				{ 0.99439190, 0.98977562, 0.98565716, 0.98175672, 0.97823258, 0.97441577, 0.97140068 },
+				{ 0.99440843, 0.98962775, 0.98583546, 0.98187660, 0.97774154, 0.97452603, 0.97169359 }
+			},
+			{
+				{ 0.98432736, 0.97235355, 0.96128554, 0.95314155, 0.94341097, 0.93589443, 0.92742123 },
+				{ 0.98499248, 0.97321987, 0.96386582, 0.95394719, 0.94588601, 0.93785799, 0.93010108 },
+				{ 0.98584049, 0.97557828, 0.96650686, 0.95815774, 0.95075037, 0.94309456, 0.93597608 },
+				{ 0.98801128, 0.97860434, 0.97047738, 0.96318412, 0.95609521, 0.94936754, 0.94267173 },
+				{ 0.98964603, 0.98112807, 0.97452211, 0.96787335, 0.96176039, 0.95579623, 0.94962524 },
+				{ 0.99081416, 0.98316732, 0.97753886, 0.97133314, 0.96623946, 0.96083233, 0.95606553 },
+				{ 0.99191876, 0.98562103, 0.98016490, 0.97437964, 0.96941238, 0.96518083, 0.96013555 },
+				{ 0.99269256, 0.98737401, 0.98177044, 0.97717945, 0.97219050, 0.96773827, 0.96371791 },
+				{ 0.99321565, 0.98816676, 0.98309151, 0.97859851, 0.97405680, 0.97031414, 0.96626163 },
+				{ 0.99393199, 0.98860111, 0.98364916, 0.97998458, 0.97599941, 0.97195178, 0.96835400 },
+				{ 0.99403408, 0.98916891, 0.98471351, 0.98054689, 0.97703058, 0.97317842, 0.96914693 },
+				{ 0.99407353, 0.98926489, 0.98524823, 0.98067954, 0.97747374, 0.97362273, 0.97005126 },
+				{ 0.99413688, 0.98968257, 0.98526693, 0.98120837, 0.97725450, 0.97434869, 0.97039264 }
+			},
+			{
+				{ 0.98258413, 0.96974394, 0.95850500, 0.94840222, 0.93888729, 0.93095666, 0.92305383 },
+				{ 0.98336835, 0.97111977, 0.96047004, 0.95117109, 0.94152849, 0.93338461, 0.92538838 },
+				{ 0.98529971, 0.97361342, 0.96451993, 0.95578366, 0.94665528, 0.93909926, 0.93201937 },
+				{ 0.98708898, 0.97733796, 0.96925614, 0.96084908, 0.95342486, 0.94695001, 0.93968132 },
+				{ 0.98916803, 0.98060732, 0.97300051, 0.96623110, 0.95972004, 0.95371965, 0.94762731 },
+				{ 0.99039186, 0.98322767, 0.97632232, 0.97062803, 0.96505017, 0.95901618, 0.95378851 },
+				{ 0.99164203, 0.98508005, 0.97951663, 0.97321001, 0.96843239, 0.96393579, 0.95947981 },
+				{ 0.99221155, 0.98636554, 0.98129066, 0.97617454, 0.97161168, 0.96692744, 0.96275001 },
+				{ 0.99298382, 0.98753798, 0.98285704, 0.97777922, 0.97333430, 0.96940650, 0.96499796 },
+				{ 0.99357215, 0.98836388, 0.98358783, 0.97905365, 0.97484678, 0.97109859, 0.96692933 },
+				{ 0.99354556, 0.98890404, 0.98433260, 0.98050864, 0.97603144, 0.97192811, 0.96860141 },
+				{ 0.99389824, 0.98904284, 0.98476908, 0.98070973, 0.97647627, 0.97308506, 0.96955596 },
+				{ 0.99394861, 0.98894313, 0.98464198, 0.98076980, 0.97673573, 0.97334198, 0.96957286 }
+			},
+			{
+				{ 0.98155489, 0.96741844, 0.95534935, 0.94498813, 0.93503101, 0.92570410, 0.91671633 },
+				{ 0.98218846, 0.96852261, 0.95722817, 0.94805672, 0.93765491, 0.92930800, 0.92064383 },
+				{ 0.98446526, 0.97229356, 0.96237829, 0.95336488, 0.94415866, 0.93519809, 0.92770250 },
+				{ 0.98658450, 0.97665027, 0.96738698, 0.95879626, 0.95051907, 0.94436328, 0.93704354 },
+				{ 0.98870148, 0.97961651, 0.97209577, 0.96476476, 0.95721933, 0.95148110, 0.94588080 },
+				{ 0.99015137, 0.98243228, 0.97571518, 0.96962730, 0.96306860, 0.95800792, 0.95207749 },
+				{ 0.99146691, 0.98469712, 0.97842590, 0.97269373, 0.96686559, 0.96270142, 0.95773756 },
+				{ 0.99219588, 0.98588102, 0.98053843, 0.97514909, 0.97023820, 0.96557530, 0.96157402 },
+				{ 0.99278013, 0.98717818, 0.98172153, 0.97707405, 0.97288889, 0.96846503, 0.96466328 },
+				{ 0.99328959, 0.98793875, 0.98295851, 0.97870724, 0.97407745, 0.97056923, 0.96637407 },
+				{ 0.99352897, 0.98845789, 0.98363643, 0.97958001, 0.97515197, 0.97164771, 0.96755975 },
+				{ 0.99384633, 0.98898637, 0.98396254, 0.97963543, 0.97546359, 0.97256843, 0.96868226 },
+				{ 0.99358744, 0.98918335, 0.98449742, 0.97954893, 0.97627590, 0.97200092, 0.96832589 }
+			},
+			{
+				{ 0.97989229, 0.96479623, 0.95261991, 0.94156428, 0.93079857, 0.92065484, 0.91103000 },
+				{ 0.98102511, 0.96687246, 0.95462466, 0.94341629, 0.93306736, 0.92406270, 0.91551743 },
+				{ 0.98326577, 0.97057806, 0.95988124, 0.95035250, 0.94002102, 0.93188664, 0.92370013 },
+				{ 0.98600055, 0.97513670, 0.96581931, 0.95706190, 0.94920613, 0.94075859, 0.93521272 },
+				{ 0.98817156, 0.97880166, 0.97012548, 0.96325625, 0.95628539, 0.95014689, 0.94245357 },
+				{ 0.98998203, 0.98165546, 0.97434357, 0.96743601, 0.96176357, 0.95582994, 0.95070773 },
+				{ 0.99090801, 0.98407819, 0.97750121, 0.97151648, 0.96664122, 0.96150879, 0.95619954 },
+				{ 0.99212171, 0.98547117, 0.98012656, 0.97396894, 0.96978038, 0.96490074, 0.96038767 },
+				{ 0.99242479, 0.98683351, 0.98167379, 0.97661455, 0.97136155, 0.96721228, 0.96330834 },
+				{ 0.99299979, 0.98727171, 0.98236139, 0.97768155, 0.97351543, 0.96890135, 0.96530657 },
+				{ 0.99338609, 0.98815623, 0.98364387, 0.97888745, 0.97497471, 0.97051255, 0.96641177 },
+				{ 0.99373567, 0.98832838, 0.98346004, 0.97959911, 0.97522284, 0.97128586, 0.96735422 },
+				{ 0.99343950, 0.98848450, 0.98383259, 0.97949106, 0.97569137, 0.97123760, 0.96684233 }
+			},
+			{
+				{ 0.97806462, 0.96244991, 0.94886171, 0.93666711, 0.92638894, 0.91466945, 0.90581487 },
+				{ 0.97918723, 0.96461785, 0.95165409, 0.93940288, 0.92812544, 0.91904603, 0.90996420 },
+				{ 0.98231434, 0.96903658, 0.95735818, 0.94745466, 0.93722492, 0.92870430, 0.92026063 },
+				{ 0.98508403, 0.97401420, 0.96384848, 0.95496344, 0.94648516, 0.93816537, 0.93212016 },
+				{ 0.98764178, 0.97835925, 0.96939601, 0.96194373, 0.95442529, 0.94770721, 0.94059435 },
+				{ 0.98950744, 0.98110173, 0.97357667, 0.96728796, 0.96054160, 0.95425321, 0.94934356 },
+				{ 0.99072152, 0.98384212, 0.97696802, 0.97046721, 0.96569406, 0.95873270, 0.95464125 },
+				{ 0.99181278, 0.98521375, 0.97893119, 0.97381725, 0.96840416, 0.96324698, 0.95951950 },
+				{ 0.99220338, 0.98628382, 0.98082392, 0.97543312, 0.97107952, 0.96628233, 0.96176519 },
+				{ 0.99276468, 0.98725188, 0.98178720, 0.97708112, 0.97251935, 0.96788637, 0.96407043 },
+				{ 0.99306117, 0.98775265, 0.98244023, 0.97848838, 0.97361921, 0.96946139, 0.96520107 },
+				{ 0.99325466, 0.98789618, 0.98307151, 0.97857773, 0.97401130, 0.97043904, 0.96695280 },
+				{ 0.99351874, 0.98820886, 0.98304293, 0.97891176, 0.97492748, 0.97016630, 0.96602282 }
+			}
+		},
+		{
+			{
+				{ 0.99654434, 0.99402767, 0.99139008, 0.98914958, 0.98704322, 0.98472506, 0.98229307 },
+				{ 0.99664318, 0.99403942, 0.99130827, 0.98896463, 0.98676815, 0.98451372, 0.98212481 },
+				{ 0.99655539, 0.99376358, 0.99130553, 0.98882645, 0.98604956, 0.98423478, 0.98237520 },
+				{ 0.99643651, 0.99323013, 0.99074306, 0.98847837, 0.98567878, 0.98345654, 0.98123184 },
+				{ 0.99612655, 0.99308696, 0.99040079, 0.98751975, 0.98513454, 0.98263649, 0.98050036 },
+				{ 0.99590422, 0.99238099, 0.98963794, 0.98679380, 0.98361288, 0.98146667, 0.97887398 },
+				{ 0.99541955, 0.99182727, 0.98854319, 0.98526934, 0.98217477, 0.97955381, 0.97733039 },
+				{ 0.99496813, 0.99073666, 0.98684845, 0.98366115, 0.98009790, 0.97688251, 0.97363620 },
+				{ 0.99384349, 0.98924193, 0.98482960, 0.98059220, 0.97669405, 0.97276550, 0.96971455 },
+				{ 0.99217289, 0.98617705, 0.98067129, 0.97559297, 0.97097114, 0.96646847, 0.96209255 },
+				{ 0.98943992, 0.98070568, 0.97326115, 0.96682578, 0.96043980, 0.95481030, 0.94866230 },
+				{ 0.98099561, 0.96678846, 0.95504451, 0.94421626, 0.93416192, 0.92546735, 0.91614740 },
+				{ 0.89899599, 0.84605187, 0.81333168, 0.79357747, 0.78482681, 0.78022765, 0.78063409 }
+			},
+			{
+				{ 0.99655018, 0.99385451, 0.99135455, 0.98907931, 0.98682349, 0.98469533, 0.98265898 },
+				{ 0.99675493, 0.99385920, 0.99151546, 0.98903272, 0.98648921, 0.98467139, 0.98237823 },
+				{ 0.99659774, 0.99371603, 0.99125230, 0.98883626, 0.98626767, 0.98400913, 0.98189130 },
+				{ 0.99635601, 0.99345223, 0.99069215, 0.98806985, 0.98581080, 0.98341071, 0.98139410 },
+				{ 0.99628072, 0.99307237, 0.98998479, 0.98765218, 0.98515721, 0.98253272, 0.98042747 },
+				{ 0.99586225, 0.99248360, 0.98954173, 0.98654476, 0.98396574, 0.98141175, 0.97888114 },
+				{ 0.99558650, 0.99191082, 0.98866261, 0.98550697, 0.98246216, 0.97979387, 0.97690948 },
+				{ 0.99486751, 0.99066387, 0.98699791, 0.98345551, 0.98029359, 0.97680854, 0.97366191 },
+				{ 0.99401871, 0.98902848, 0.98455329, 0.98057685, 0.97638530, 0.97253167, 0.96886590 },
+				{ 0.99255658, 0.98609962, 0.98119045, 0.97514000, 0.97101587, 0.96643878, 0.96221643 },
+				{ 0.98894772, 0.98106009, 0.97372445, 0.96679714, 0.96020474, 0.95430958, 0.94807400 },
+				{ 0.98154845, 0.96773630, 0.95588082, 0.94487797, 0.93516969, 0.92574488, 0.91798401 },
+				{ 0.97045747, 0.95026803, 0.93130489, 0.91717932, 0.90295441, 0.89117158, 0.88029484 }
+			},
+			{
+				{ 0.99666012, 0.99371607, 0.99138006, 0.98906026, 0.98685126, 0.98451445, 0.98238755 },
+				{ 0.99660681, 0.99399419, 0.99147792, 0.98916302, 0.98684424, 0.98455168, 0.98237858 },
+				{ 0.99656178, 0.99371941, 0.99097102, 0.98877724, 0.98631452, 0.98450157, 0.98192332 },
+				{ 0.99640957, 0.99336834, 0.99078797, 0.98802390, 0.98579630, 0.98372883, 0.98105593 },
+				{ 0.99611299, 0.99276114, 0.99020565, 0.98742430, 0.98499043, 0.98225888, 0.98064539 },
+				{ 0.99594277, 0.99244984, 0.98975495, 0.98662463, 0.98381953, 0.98137083, 0.97843732 },
+				{ 0.99555047, 0.99171279, 0.98851206, 0.98521812, 0.98208297, 0.97936243, 0.97671782 },
+				{ 0.99483765, 0.99068820, 0.98681304, 0.98312088, 0.97972800, 0.97667371, 0.97303033 },
+				{ 0.99381039, 0.98890713, 0.98413362, 0.98027845, 0.97637161, 0.97189237, 0.96924618 },
+				{ 0.99197301, 0.98584921, 0.98060891, 0.97501521, 0.97072163, 0.96559146, 0.96076168 },
+				{ 0.98910283, 0.98128479, 0.97345154, 0.96676862, 0.96042325, 0.95490275, 0.94879020 },
+				{ 0.98472494, 0.97365924, 0.96257549, 0.95452181, 0.94552969, 0.93728562, 0.93046407 },
+				{ 0.98161099, 0.96817628, 0.95630973, 0.94527337, 0.93567343, 0.92561685, 0.91811900 }
+			},
+			{
+				{ 0.99656774, 0.99388237, 0.99138897, 0.98898538, 0.98664578, 0.98433088, 0.98210151 },
+				{ 0.99650761, 0.99380625, 0.99108466, 0.98858780, 0.98653490, 0.98436171, 0.98212763 },
+				{ 0.99642585, 0.99360178, 0.99098874, 0.98834854, 0.98603392, 0.98379431, 0.98169726 },
+				{ 0.99631143, 0.99323005, 0.99085736, 0.98808093, 0.98556813, 0.98361282, 0.98054863 },
+				{ 0.99625122, 0.99311743, 0.99005179, 0.98720846, 0.98484936, 0.98249226, 0.97938178 },
+				{ 0.99570735, 0.99240893, 0.98934609, 0.98624132, 0.98346257, 0.98142583, 0.97841266 },
+				{ 0.99538029, 0.99125132, 0.98831236, 0.98482295, 0.98194026, 0.97900814, 0.97599165 },
+				{ 0.99450645, 0.99058364, 0.98632763, 0.98267050, 0.97933568, 0.97631419, 0.97291671 },
+				{ 0.99375982, 0.98855270, 0.98408567, 0.97953269, 0.97558598, 0.97171860, 0.96828114 },
+				{ 0.99210742, 0.98580556, 0.98039682, 0.97513507, 0.97031755, 0.96546566, 0.96115038 },
+				{ 0.99001385, 0.98204962, 0.97532658, 0.96924474, 0.96295052, 0.95743162, 0.95260157 },
+				{ 0.98756705, 0.97841787, 0.97025896, 0.96269418, 0.95513771, 0.94838872, 0.94237707 },
+				{ 0.98621075, 0.97597504, 0.96705386, 0.95955186, 0.95093610, 0.94404233, 0.93723951 }
+			},
+			{
+				{ 0.99639819, 0.99369173, 0.99113748, 0.98872068, 0.98637758, 0.98374135, 0.98177070 },
+				{ 0.99656016, 0.99359605, 0.99097952, 0.98856878, 0.98609075, 0.98374868, 0.98150067 },
+				{ 0.99634451, 0.99346092, 0.99061799, 0.98832947, 0.98563060, 0.98333920, 0.98092765 },
+				{ 0.99623697, 0.99309207, 0.99032205, 0.98746670, 0.98519778, 0.98250880, 0.98015299 },
+				{ 0.99592899, 0.99270096, 0.98968992, 0.98698477, 0.98445077, 0.98157160, 0.97909092 },
+				{ 0.99556948, 0.99217004, 0.98881968, 0.98560839, 0.98275220, 0.98032407, 0.97744877 },
+				{ 0.99506196, 0.99146685, 0.98798733, 0.98421765, 0.98122983, 0.97814814, 0.97538373 },
+				{ 0.99451583, 0.99015621, 0.98603681, 0.98224854, 0.97863951, 0.97546876, 0.97228947 },
+				{ 0.99374119, 0.98856576, 0.98413820, 0.97950200, 0.97588630, 0.97175610, 0.96798508 },
+				{ 0.99230311, 0.98662654, 0.98135753, 0.97576952, 0.97133497, 0.96684865, 0.96312032 },
+				{ 0.99094542, 0.98402738, 0.97770859, 0.97220557, 0.96652109, 0.96128867, 0.95588549 },
+				{ 0.98949029, 0.98179514, 0.97419920, 0.96804494, 0.96206273, 0.95619727, 0.95067890 },
+				{ 0.98936272, 0.98059009, 0.97328750, 0.96633774, 0.95942505, 0.95422121, 0.94822034 }
+			},
+			{
+				{ 0.99635401, 0.99329963, 0.99040785, 0.98804691, 0.98535051, 0.98338368, 0.98054446 },
+				{ 0.99639321, 0.99310697, 0.99067406, 0.98787866, 0.98502857, 0.98289940, 0.98063873 },
+				{ 0.99631606, 0.99310414, 0.99022620, 0.98770782, 0.98508312, 0.98284754, 0.98034458 },
+				{ 0.99604355, 0.99276625, 0.98991589, 0.98720144, 0.98420465, 0.98166334, 0.97945443 },
+				{ 0.99578127, 0.99236063, 0.98940659, 0.98675119, 0.98356480, 0.98079488, 0.97823599 },
+				{ 0.99565200, 0.99205607, 0.98825203, 0.98528067, 0.98212671, 0.97947896, 0.97694186 },
+				{ 0.99497739, 0.99109959, 0.98693529, 0.98384476, 0.98078794, 0.97750497, 0.97452502 },
+				{ 0.99445208, 0.98984458, 0.98546270, 0.98228476, 0.97856516, 0.97468526, 0.97197877 },
+				{ 0.99368791, 0.98859285, 0.98434456, 0.97978005, 0.97589574, 0.97192619, 0.96857315 },
+				{ 0.99290925, 0.98746496, 0.98173098, 0.97708970, 0.97266895, 0.96833660, 0.96428414 },
+				{ 0.99192267, 0.98535814, 0.97969889, 0.97410183, 0.96985895, 0.96464733, 0.95972668 },
+				{ 0.99089587, 0.98433713, 0.97763205, 0.97226599, 0.96649125, 0.96106573, 0.95689873 },
+				{ 0.99071477, 0.98354784, 0.97691408, 0.97164583, 0.96519809, 0.96108587, 0.95483264 }
+			},
+			{
+				{ 0.99597396, 0.99307559, 0.98990617, 0.98708761, 0.98437358, 0.98208747, 0.97948389 },
+				{ 0.99606525, 0.99278916, 0.98953095, 0.98702971, 0.98449453, 0.98199306, 0.97930461 },
+				{ 0.99584485, 0.99268439, 0.98958374, 0.98694044, 0.98392719, 0.98163434, 0.97856273 },
+				{ 0.99583951, 0.99229908, 0.98915133, 0.98607371, 0.98361164, 0.98081888, 0.97824579 },
+				{ 0.99538580, 0.99171979, 0.98857963, 0.98543529, 0.98240388, 0.97968557, 0.97693896 },
+				{ 0.99531940, 0.99120609, 0.98801769, 0.98461325, 0.98092780, 0.97843059, 0.97552400 },
+				{ 0.99468416, 0.99061583, 0.98708819, 0.98327450, 0.98001106, 0.97675484, 0.97381484 },
+				{ 0.99443235, 0.98977130, 0.98565823, 0.98172564, 0.97810112, 0.97446135, 0.97161914 },
+				{ 0.99371970, 0.98886043, 0.98453825, 0.98033570, 0.97598307, 0.97221734, 0.96881692 },
+				{ 0.99311226, 0.98775513, 0.98294508, 0.97808860, 0.97412853, 0.96994570, 0.96609024 },
+				{ 0.99254252, 0.98650065, 0.98126503, 0.97655720, 0.97214821, 0.96736930, 0.96275243 },
+				{ 0.99215754, 0.98594259, 0.98009865, 0.97506576, 0.97078089, 0.96523222, 0.96084161 },
+				{ 0.99204394, 0.98576064, 0.97981492, 0.97444581, 0.96970549, 0.96541925, 0.96084647 }
+			},
+			{
+				{ 0.99575315, 0.99209419, 0.98879955, 0.98609795, 0.98286519, 0.98035493, 0.97787210 },
+				{ 0.99551766, 0.99224600, 0.98902917, 0.98586233, 0.98295792, 0.98016258, 0.97742383 },
+				{ 0.99560595, 0.99177512, 0.98867223, 0.98559753, 0.98245968, 0.97986451, 0.97705955 },
+				{ 0.99544692, 0.99184392, 0.98815804, 0.98518848, 0.98217522, 0.97918531, 0.97615916 },
+				{ 0.99502008, 0.99159929, 0.98779057, 0.98444751, 0.98150729, 0.97814507, 0.97529826 },
+				{ 0.99516666, 0.99089373, 0.98713698, 0.98382196, 0.98030287, 0.97690438, 0.97422484 },
+				{ 0.99454883, 0.99043042, 0.98639343, 0.98268517, 0.97928363, 0.97633310, 0.97261934 },
+				{ 0.99428852, 0.98953441, 0.98549765, 0.98163913, 0.97742286, 0.97435832, 0.97080552 },
+				{ 0.99386772, 0.98897997, 0.98450031, 0.98015483, 0.97605221, 0.97281242, 0.96856765 },
+				{ 0.99347297, 0.98800139, 0.98342628, 0.97918030, 0.97482766, 0.97128104, 0.96737552 },
+				{ 0.99296030, 0.98770002, 0.98304590, 0.97755191, 0.97325361, 0.96958782, 0.96563854 },
+				{ 0.99290258, 0.98720092, 0.98213161, 0.97698686, 0.97279678, 0.96932944, 0.96433683 },
+				{ 0.99286332, 0.98721794, 0.98155361, 0.97704752, 0.97220089, 0.96837012, 0.96401826 }
+			},
+			{
+				{ 0.99525056, 0.99123314, 0.98792130, 0.98429968, 0.98138490, 0.97846844, 0.97510999 },
+				{ 0.99512894, 0.99127832, 0.98766116, 0.98428967, 0.98135570, 0.97817907, 0.97548522 },
+				{ 0.99510291, 0.99117707, 0.98741107, 0.98423474, 0.98091372, 0.97804410, 0.97494891 },
+				{ 0.99507366, 0.99101518, 0.98724390, 0.98387848, 0.98046181, 0.97790108, 0.97391036 },
+				{ 0.99499135, 0.99070689, 0.98692761, 0.98333323, 0.97976776, 0.97626701, 0.97378802 },
+				{ 0.99496930, 0.99051625, 0.98631007, 0.98294036, 0.97920001, 0.97610768, 0.97338816 },
+				{ 0.99432600, 0.99001601, 0.98591903, 0.98191128, 0.97867103, 0.97508847, 0.97117871 },
+				{ 0.99425920, 0.98936102, 0.98537225, 0.98139600, 0.97782847, 0.97390296, 0.96994446 },
+				{ 0.99398321, 0.98890403, 0.98476886, 0.98039400, 0.97685000, 0.97322523, 0.96918566 },
+				{ 0.99372025, 0.98885372, 0.98396751, 0.97961847, 0.97605037, 0.97174070, 0.96829191 },
+				{ 0.99364956, 0.98862409, 0.98373706, 0.97933728, 0.97476784, 0.97154555, 0.96739474 },
+				{ 0.99310877, 0.98803157, 0.98340546, 0.97838672, 0.97551187, 0.97070500, 0.96752373 },
+				{ 0.99331695, 0.98817512, 0.98342652, 0.97896918, 0.97414836, 0.97056080, 0.96697618 }
+			},
+			{
+				{ 0.99463831, 0.99033407, 0.98622954, 0.98310539, 0.97932217, 0.97601911, 0.97277790 },
+				{ 0.99476729, 0.99061298, 0.98643200, 0.98252705, 0.97894756, 0.97625257, 0.97273853 },
+				{ 0.99464580, 0.99047867, 0.98632866, 0.98275878, 0.97899661, 0.97576134, 0.97315633 },
+				{ 0.99423267, 0.98991954, 0.98602930, 0.98238243, 0.97929561, 0.97545096, 0.97254222 },
+				{ 0.99461163, 0.98988094, 0.98583762, 0.98202722, 0.97846390, 0.97486746, 0.97193936 },
+				{ 0.99420834, 0.98996869, 0.98572962, 0.98186516, 0.97828157, 0.97481467, 0.97115499 },
+				{ 0.99436768, 0.98962685, 0.98543750, 0.98127756, 0.97774365, 0.97453170, 0.97102466 },
+				{ 0.99442142, 0.98924176, 0.98527655, 0.98109692, 0.97774523, 0.97371726, 0.97019840 },
+				{ 0.99389618, 0.98900819, 0.98500269, 0.98061817, 0.97705194, 0.97345360, 0.96955293 },
+				{ 0.99374904, 0.98909468, 0.98474823, 0.98021593, 0.97669807, 0.97292721, 0.96945048 },
+				{ 0.99391296, 0.98866316, 0.98425452, 0.98048319, 0.97633254, 0.97275076, 0.96834990 },
+				{ 0.99364679, 0.98876063, 0.98418239, 0.97969529, 0.97610653, 0.97200245, 0.96889903 },
+				{ 0.99374337, 0.98859886, 0.98430981, 0.98012556, 0.97619337, 0.97174740, 0.96922382 }
+			},
+			{
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+				{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 }
+			},
+			{
+				{ 0.99333956, 0.98790933, 0.98315838, 0.97863114, 0.97406719, 0.97057144, 0.96649460 },
+				{ 0.99333038, 0.98809732, 0.98325513, 0.97847795, 0.97439850, 0.97094861, 0.96674953 },
+				{ 0.99334129, 0.98819960, 0.98332647, 0.97878835, 0.97510774, 0.97125621, 0.96757809 },
+				{ 0.99339485, 0.98805847, 0.98398254, 0.97921357, 0.97500877, 0.97039510, 0.96777576 },
+				{ 0.99343123, 0.98846610, 0.98354252, 0.97935772, 0.97547127, 0.97175680, 0.96739725 },
+				{ 0.99365588, 0.98870036, 0.98420543, 0.98011307, 0.97627872, 0.97192126, 0.96850077 },
+				{ 0.99401177, 0.98878921, 0.98463366, 0.98064401, 0.97610297, 0.97242995, 0.96914312 },
+				{ 0.99396107, 0.98885360, 0.98467418, 0.98039516, 0.97683251, 0.97273236, 0.96957311 },
+				{ 0.99413701, 0.98914813, 0.98478195, 0.98072457, 0.97667850, 0.97339764, 0.97002795 },
+				{ 0.99401395, 0.98938969, 0.98522010, 0.98116775, 0.97725890, 0.97341374, 0.97099583 },
+				{ 0.99411253, 0.98952031, 0.98539388, 0.98104346, 0.97749855, 0.97396263, 0.97047725 },
+				{ 0.99437024, 0.98959939, 0.98549542, 0.98133835, 0.97748836, 0.97421673, 0.97085423 },
+				{ 0.99418181, 0.98946946, 0.98587408, 0.98121885, 0.97771763, 0.97463138, 0.97070731 }
+			},
+			{
+				{ 0.99250802, 0.98672676, 0.98137602, 0.97646741, 0.97195299, 0.96809002, 0.96332789 },
+				{ 0.99263948, 0.98687191, 0.98170887, 0.97661558, 0.97172170, 0.96751683, 0.96379011 },
+				{ 0.99271761, 0.98710784, 0.98215277, 0.97717350, 0.97165760, 0.96825449, 0.96405093 },
+				{ 0.99280366, 0.98714504, 0.98203683, 0.97754869, 0.97289705, 0.96883533, 0.96445552 },
+				{ 0.99311363, 0.98759508, 0.98274954, 0.97806886, 0.97384501, 0.96949909, 0.96597475 },
+				{ 0.99347908, 0.98813355, 0.98373749, 0.97865329, 0.97504022, 0.97072735, 0.96659767 },
+				{ 0.99371052, 0.98871746, 0.98348590, 0.97934354, 0.97521280, 0.97151177, 0.96747224 },
+				{ 0.99375484, 0.98901983, 0.98442644, 0.98023900, 0.97649790, 0.97246078, 0.96948489 },
+				{ 0.99385490, 0.98913780, 0.98468822, 0.98064004, 0.97657814, 0.97320474, 0.96993620 },
+				{ 0.99417093, 0.98940949, 0.98504190, 0.98125722, 0.97741421, 0.97385827, 0.97037949 },
+				{ 0.99441936, 0.98971346, 0.98563919, 0.98164849, 0.97764379, 0.97399021, 0.97071806 },
+				{ 0.99424313, 0.98977703, 0.98544040, 0.98189657, 0.97791324, 0.97468484, 0.97133852 },
+				{ 0.99425299, 0.98991985, 0.98564020, 0.98180760, 0.97834893, 0.97430921, 0.97127422 }
+			},
+			{
+				{ 0.99178527, 0.98525082, 0.97923712, 0.97409251, 0.96895291, 0.96401578, 0.95975054 },
+				{ 0.99178224, 0.98541196, 0.97920189, 0.97430176, 0.96929261, 0.96394472, 0.95956040 },
+				{ 0.99183614, 0.98573071, 0.98007956, 0.97411846, 0.97003380, 0.96539886, 0.96105596 },
+				{ 0.99218897, 0.98632526, 0.98065757, 0.97600451, 0.97052210, 0.96624289, 0.96176113 },
+				{ 0.99257036, 0.98696381, 0.98162155, 0.97659910, 0.97194998, 0.96761017, 0.96350706 },
+				{ 0.99284686, 0.98758063, 0.98231751, 0.97768203, 0.97344307, 0.96963607, 0.96518224 },
+				{ 0.99337206, 0.98812100, 0.98336294, 0.97915134, 0.97480772, 0.97027843, 0.96687435 },
+				{ 0.99360797, 0.98836395, 0.98402366, 0.97976398, 0.97565265, 0.97194518, 0.96853503 },
+				{ 0.99410737, 0.98912508, 0.98461918, 0.98067321, 0.97649943, 0.97340286, 0.96936578 },
+				{ 0.99416206, 0.98938215, 0.98536477, 0.98136169, 0.97783990, 0.97387487, 0.97052228 },
+				{ 0.99442300, 0.98974226, 0.98550655, 0.98106490, 0.97816071, 0.97456316, 0.97108339 },
+				{ 0.99456292, 0.99000834, 0.98556456, 0.98166874, 0.97808939, 0.97514432, 0.97177925 },
+				{ 0.99447427, 0.98981756, 0.98555820, 0.98205258, 0.97855745, 0.97515465, 0.97153922 }
+			},
+			{
+				{ 0.99052093, 0.98337710, 0.97673126, 0.97142260, 0.96586947, 0.96039301, 0.95616907 },
+				{ 0.99063755, 0.98346040, 0.97760489, 0.97194230, 0.96624909, 0.96087483, 0.95676961 },
+				{ 0.99141218, 0.98409902, 0.97847325, 0.97227293, 0.96777309, 0.96166648, 0.95828331 },
+				{ 0.99164055, 0.98520356, 0.97926939, 0.97327130, 0.96876487, 0.96384232, 0.95898834 },
+				{ 0.99200920, 0.98578019, 0.98062442, 0.97542318, 0.97061346, 0.96583834, 0.96129888 },
+				{ 0.99279400, 0.98681146, 0.98160818, 0.97638016, 0.97211014, 0.96805724, 0.96336001 },
+				{ 0.99292281, 0.98801160, 0.98301716, 0.97800231, 0.97391621, 0.96947576, 0.96546805 },
+				{ 0.99359325, 0.98829685, 0.98377187, 0.97918757, 0.97497365, 0.97125792, 0.96761673 },
+				{ 0.99379021, 0.98903686, 0.98430858, 0.98035845, 0.97618881, 0.97238633, 0.96861895 },
+				{ 0.99396229, 0.98906890, 0.98492696, 0.98073138, 0.97705107, 0.97382226, 0.97062647 },
+				{ 0.99451976, 0.98930759, 0.98535680, 0.98146967, 0.97805694, 0.97498887, 0.97141916 },
+				{ 0.99427542, 0.98982028, 0.98543802, 0.98189170, 0.97828712, 0.97512189, 0.97104152 },
+				{ 0.99447737, 0.98998596, 0.98544118, 0.98244269, 0.97814330, 0.97442309, 0.97160059 }
+			},
+			{
+				{ 0.98996203, 0.98185162, 0.97487450, 0.96829769, 0.96204119, 0.95614217, 0.95119018 },
+				{ 0.99002370, 0.98238639, 0.97542310, 0.96938513, 0.96302887, 0.95708375, 0.95155273 },
+				{ 0.99013964, 0.98296660, 0.97601664, 0.97012223, 0.96434773, 0.95865610, 0.95339073 },
+				{ 0.99096463, 0.98384648, 0.97764058, 0.97210636, 0.96655223, 0.96124509, 0.95612921 },
+				{ 0.99165153, 0.98519880, 0.97885623, 0.97396199, 0.96854012, 0.96363101, 0.95946893 },
+				{ 0.99242000, 0.98608622, 0.98069446, 0.97574852, 0.97097124, 0.96620802, 0.96269041 },
+				{ 0.99286464, 0.98679153, 0.98234643, 0.97734819, 0.97269715, 0.96887191, 0.96478248 },
+				{ 0.99335740, 0.98771259, 0.98307573, 0.97911217, 0.97480326, 0.97061930, 0.96676547 },
+				{ 0.99382942, 0.98853436, 0.98431792, 0.98013946, 0.97599591, 0.97188964, 0.96866026 },
+				{ 0.99392084, 0.98920589, 0.98487676, 0.98066290, 0.97684151, 0.97294511, 0.97018106 },
+				{ 0.99433160, 0.98946678, 0.98534802, 0.98148472, 0.97791835, 0.97406321, 0.97059440 },
+				{ 0.99416651, 0.98978192, 0.98560978, 0.98159304, 0.97852178, 0.97443747, 0.97145047 },
+				{ 0.99448292, 0.98999622, 0.98557441, 0.98195808, 0.97822207, 0.97499349, 0.97137338 }
+			},
+			{
+				{ 0.98889725, 0.97979097, 0.97218285, 0.96529170, 0.95902473, 0.95244319, 0.94689019 },
+				{ 0.98883496, 0.98067793, 0.97310453, 0.96608086, 0.95947967, 0.95390446, 0.94767978 },
+				{ 0.98955150, 0.98138861, 0.97388644, 0.96746721, 0.96133704, 0.95620544, 0.94968752 },
+				{ 0.99006647, 0.98291754, 0.97577325, 0.96945933, 0.96406579, 0.95867038, 0.95315649 },
+				{ 0.99117812, 0.98442473, 0.97767114, 0.97230262, 0.96667595, 0.96101804, 0.95652693 },
+				{ 0.99190187, 0.98538886, 0.97950696, 0.97450126, 0.96933063, 0.96475862, 0.96040208 },
+				{ 0.99234505, 0.98661533, 0.98152183, 0.97650599, 0.97185467, 0.96766549, 0.96279470 },
+				{ 0.99320586, 0.98792142, 0.98270899, 0.97849598, 0.97405793, 0.96938724, 0.96606401 },
+				{ 0.99360426, 0.98823757, 0.98385713, 0.97981192, 0.97567906, 0.97175986, 0.96759125 },
+				{ 0.99412496, 0.98878205, 0.98449485, 0.98067731, 0.97677486, 0.97279531, 0.96936029 },
+				{ 0.99395784, 0.98929370, 0.98512278, 0.98079828, 0.97737740, 0.97351916, 0.96988429 },
+				{ 0.99432645, 0.98948496, 0.98553386, 0.98152010, 0.97773175, 0.97468914, 0.97143645 },
+				{ 0.99440177, 0.98994061, 0.98545765, 0.98175349, 0.97801583, 0.97401255, 0.97075981 }
+			},
+			{
+				{ 0.98745696, 0.97836768, 0.96986707, 0.96270461, 0.95513973, 0.94856040, 0.94240357 },
+				{ 0.98805368, 0.97860070, 0.97093952, 0.96334275, 0.95657536, 0.94934855, 0.94366725 },
+				{ 0.98846252, 0.98003866, 0.97206010, 0.96502439, 0.95797088, 0.95232409, 0.94592863 },
+				{ 0.98952836, 0.98155792, 0.97457147, 0.96783378, 0.96181482, 0.95539669, 0.95024998 },
+				{ 0.99059094, 0.98351024, 0.97698014, 0.97013956, 0.96507130, 0.95913177, 0.95509175 },
+				{ 0.99139812, 0.98486918, 0.97907041, 0.97353547, 0.96838512, 0.96286361, 0.95867129 },
+				{ 0.99229366, 0.98641107, 0.98034354, 0.97567089, 0.97045459, 0.96665136, 0.96219414 },
+				{ 0.99307027, 0.98739565, 0.98205937, 0.97749636, 0.97244740, 0.96829097, 0.96453069 },
+				{ 0.99338582, 0.98813363, 0.98346901, 0.97895621, 0.97463922, 0.97069095, 0.96732189 },
+				{ 0.99386028, 0.98851902, 0.98424636, 0.97987035, 0.97602110, 0.97257735, 0.96839668 },
+				{ 0.99391818, 0.98926589, 0.98516966, 0.98103991, 0.97727250, 0.97320277, 0.96944442 },
+				{ 0.99402049, 0.98943068, 0.98488557, 0.98152723, 0.97741609, 0.97413669, 0.97042189 },
+				{ 0.99398618, 0.98953768, 0.98550251, 0.98149539, 0.97783002, 0.97415173, 0.97052511 }
+			},
+			{
+				{ 0.98629740, 0.97631598, 0.96743904, 0.95885657, 0.95143238, 0.94434957, 0.93737350 },
+				{ 0.98696685, 0.97664301, 0.96784183, 0.96033527, 0.95234561, 0.94591780, 0.93924877 },
+				{ 0.98765834, 0.97825185, 0.96990900, 0.96243191, 0.95438353, 0.94914393, 0.94220130 },
+				{ 0.98908135, 0.98043527, 0.97283015, 0.96608297, 0.95958837, 0.95349003, 0.94735116 },
+				{ 0.99026877, 0.98226501, 0.97593230, 0.96953254, 0.96386322, 0.95648029, 0.95300072 },
+				{ 0.99111837, 0.98408140, 0.97776216, 0.97217564, 0.96692840, 0.96193837, 0.95676647 },
+				{ 0.99202523, 0.98571138, 0.98002453, 0.97500534, 0.97023316, 0.96477391, 0.96067216 },
+				{ 0.99270585, 0.98684415, 0.98147880, 0.97705779, 0.97250727, 0.96791301, 0.96333204 },
+				{ 0.99335725, 0.98791431, 0.98269667, 0.97870710, 0.97436697, 0.97014817, 0.96611023 },
+				{ 0.99344034, 0.98817452, 0.98372288, 0.97964028, 0.97543487, 0.97108724, 0.96793095 },
+				{ 0.99364632, 0.98860558, 0.98487982, 0.98048465, 0.97630197, 0.97236472, 0.96928723 },
+				{ 0.99397309, 0.98899426, 0.98501796, 0.98102980, 0.97703850, 0.97314698, 0.96999578 },
+				{ 0.99398709, 0.98941727, 0.98528615, 0.98077294, 0.97698195, 0.97335371, 0.96985100 }
+			},
+			{
+				{ 0.98546372, 0.97409499, 0.96439769, 0.95533462, 0.94746367, 0.93997424, 0.93288075 },
+				{ 0.98566781, 0.97496705, 0.96536011, 0.95737720, 0.94893475, 0.94076993, 0.93445348 },
+				{ 0.98680406, 0.97651711, 0.96774323, 0.95997390, 0.95215488, 0.94538193, 0.93854039 },
+				{ 0.98813523, 0.97929883, 0.97083278, 0.96347866, 0.95662638, 0.95127996, 0.94475634 },
+				{ 0.98940784, 0.98153703, 0.97432338, 0.96748895, 0.96156119, 0.95619474, 0.95056152 },
+				{ 0.99089033, 0.98342976, 0.97752328, 0.97156509, 0.96535504, 0.95965060, 0.95532170 },
+				{ 0.99169566, 0.98514875, 0.97981621, 0.97395776, 0.96899425, 0.96450320, 0.95877330 },
+				{ 0.99253131, 0.98649483, 0.98111358, 0.97593465, 0.97130026, 0.96708220, 0.96305561 },
+				{ 0.99285404, 0.98728906, 0.98266665, 0.97768483, 0.97348745, 0.96965515, 0.96518725 },
+				{ 0.99336770, 0.98844461, 0.98326817, 0.97928794, 0.97503830, 0.97091572, 0.96740533 },
+				{ 0.99382769, 0.98850523, 0.98405963, 0.97964530, 0.97616275, 0.97208326, 0.96841735 },
+				{ 0.99374182, 0.98879226, 0.98436932, 0.98023912, 0.97682864, 0.97268301, 0.96897104 },
+				{ 0.99410817, 0.98878503, 0.98472998, 0.98077888, 0.97652970, 0.97315854, 0.96946038 }
+			},
+			{
+				{ 0.98408669, 0.97168548, 0.96165725, 0.95207717, 0.94351876, 0.93540530, 0.92685941 },
+				{ 0.98467637, 0.97301654, 0.96251298, 0.95332687, 0.94553425, 0.93703087, 0.92876331 },
+				{ 0.98591654, 0.97488272, 0.96583260, 0.95681936, 0.94971006, 0.94136593, 0.93472951 },
+				{ 0.98774916, 0.97785244, 0.96937101, 0.96169936, 0.95467105, 0.94775599, 0.94107395 },
+				{ 0.98906041, 0.98050976, 0.97292662, 0.96612624, 0.96016930, 0.95294816, 0.94805130 },
+				{ 0.99045460, 0.98288057, 0.97591287, 0.96973908, 0.96371560, 0.95884466, 0.95266287 },
+				{ 0.99142060, 0.98495495, 0.97891502, 0.97272356, 0.96798646, 0.96292608, 0.95787663 },
+				{ 0.99235724, 0.98604885, 0.98098336, 0.97541203, 0.97084174, 0.96595996, 0.96186390 },
+				{ 0.99284160, 0.98731877, 0.98203895, 0.97691707, 0.97284963, 0.96841438, 0.96448503 },
+				{ 0.99338581, 0.98793512, 0.98299661, 0.97868674, 0.97396726, 0.96987127, 0.96653144 },
+				{ 0.99334490, 0.98863613, 0.98388379, 0.97951277, 0.97538314, 0.97121964, 0.96719891 },
+				{ 0.99381037, 0.98869345, 0.98417346, 0.97972329, 0.97598744, 0.97223573, 0.96862026 },
+				{ 0.99385988, 0.98846721, 0.98414070, 0.98016016, 0.97587148, 0.97251859, 0.96854062 }
+			},
+			{
+				{ 0.98231395, 0.97003562, 0.95898088, 0.94882557, 0.93913372, 0.93026772, 0.92155150 },
+				{ 0.98316031, 0.97101177, 0.96047809, 0.95005226, 0.94201366, 0.93286392, 0.92499327 },
+				{ 0.98490798, 0.97345409, 0.96326320, 0.95401896, 0.94607964, 0.93855245, 0.93003160 },
+				{ 0.98660201, 0.97694591, 0.96801263, 0.96022793, 0.95217762, 0.94500006, 0.93839816 },
+				{ 0.98833535, 0.97998967, 0.97205281, 0.96453130, 0.95830215, 0.95179731, 0.94567914 },
+				{ 0.99000216, 0.98213507, 0.97522695, 0.96903725, 0.96317671, 0.95713316, 0.95187595 },
+				{ 0.99109134, 0.98437473, 0.97826014, 0.97194687, 0.96689645, 0.96169407, 0.95679064 },
+				{ 0.99188338, 0.98584681, 0.97991823, 0.97489105, 0.96966841, 0.96496171, 0.95944062 },
+				{ 0.99251845, 0.98701457, 0.98152099, 0.97658556, 0.97226459, 0.96723377, 0.96285165 },
+				{ 0.99304299, 0.98764997, 0.98252248, 0.97796402, 0.97340533, 0.96882235, 0.96549811 },
+				{ 0.99356552, 0.98829674, 0.98322875, 0.97897349, 0.97446061, 0.96967843, 0.96684353 },
+				{ 0.99341650, 0.98841823, 0.98379442, 0.97921303, 0.97523416, 0.97187446, 0.96728959 },
+				{ 0.99367249, 0.98857914, 0.98388962, 0.97944752, 0.97539910, 0.97154445, 0.96791287 }
+			},
+			{
+				{ 0.98137376, 0.96771286, 0.95560638, 0.94423336, 0.93476971, 0.92589935, 0.91698606 },
+				{ 0.98243695, 0.96856630, 0.95738101, 0.94698407, 0.93667015, 0.92836957, 0.91962416 },
+				{ 0.98402097, 0.97181669, 0.96200684, 0.95182506, 0.94283112, 0.93468949, 0.92719288 },
+				{ 0.98638853, 0.97558761, 0.96611741, 0.95774846, 0.95005950, 0.94204494, 0.93514747 },
+				{ 0.98803722, 0.97910533, 0.97072162, 0.96339484, 0.95653693, 0.94963090, 0.94378510 },
+				{ 0.98960636, 0.98140876, 0.97444677, 0.96784274, 0.96113052, 0.95588998, 0.95008084 },
+				{ 0.99093628, 0.98367702, 0.97710271, 0.97138389, 0.96579487, 0.96080944, 0.95535774 },
+				{ 0.99181725, 0.98502727, 0.97952040, 0.97372937, 0.96890680, 0.96329349, 0.95906011 },
+				{ 0.99216784, 0.98660980, 0.98109455, 0.97581789, 0.97116340, 0.96611386, 0.96197724 },
+				{ 0.99301195, 0.98708677, 0.98194426, 0.97730162, 0.97282449, 0.96839559, 0.96426134 },
+				{ 0.99314704, 0.98767859, 0.98268938, 0.97769461, 0.97331169, 0.96957618, 0.96589160 },
+				{ 0.99347102, 0.98805845, 0.98315418, 0.97864230, 0.97423231, 0.96995000, 0.96681407 },
+				{ 0.99334456, 0.98801269, 0.98316287, 0.97943269, 0.97519823, 0.97050253, 0.96671098 }
+			},
+			{
+				{ 0.98030267, 0.96560838, 0.95252981, 0.94074615, 0.93033331, 0.92127793, 0.91092226 },
+				{ 0.98085441, 0.96707785, 0.95407263, 0.94267872, 0.93297113, 0.92439357, 0.91402949 },
+				{ 0.98299468, 0.97069051, 0.95911753, 0.94897289, 0.93985496, 0.93158635, 0.92252439 },
+				{ 0.98535523, 0.97429974, 0.96492942, 0.95537835, 0.94775515, 0.93947607, 0.93168293 },
+				{ 0.98740941, 0.97800753, 0.96979983, 0.96213704, 0.95431131, 0.94770224, 0.94180743 },
+				{ 0.98928907, 0.98093551, 0.97358867, 0.96706374, 0.95991518, 0.95361262, 0.94822052 },
+				{ 0.99078219, 0.98324302, 0.97651563, 0.97046624, 0.96446504, 0.95912112, 0.95368550 },
+				{ 0.99159213, 0.98476881, 0.97912127, 0.97337028, 0.96784644, 0.96328408, 0.95809927 },
+				{ 0.99212512, 0.98599487, 0.98052874, 0.97543971, 0.97005042, 0.96582859, 0.96108480 },
+				{ 0.99274716, 0.98681013, 0.98105809, 0.97675766, 0.97184740, 0.96735673, 0.96364349 },
+				{ 0.99288903, 0.98730077, 0.98196077, 0.97761483, 0.97292153, 0.96897291, 0.96547653 },
+				{ 0.99319626, 0.98763409, 0.98289281, 0.97785000, 0.97380776, 0.96939889, 0.96565612 },
+				{ 0.99307334, 0.98792629, 0.98295023, 0.97851813, 0.97406001, 0.96947796, 0.96539665 }
+			}
+		},
+		{
+			{
+				{ 0.99654456, 0.99358860, 0.99085553, 0.98884774, 0.98587619, 0.98409272, 0.98166695 },
+				{ 0.99633884, 0.99360559, 0.99079843, 0.98815785, 0.98632959, 0.98387921, 0.98130109 },
+				{ 0.99630382, 0.99322967, 0.99059969, 0.98817737, 0.98601759, 0.98322216, 0.98128634 },
+				{ 0.99612487, 0.99309930, 0.99024106, 0.98800937, 0.98532260, 0.98306356, 0.98047677 },
+				{ 0.99595116, 0.99261036, 0.98986220, 0.98718389, 0.98415403, 0.98207562, 0.97920952 },
+				{ 0.99556465, 0.99209256, 0.98921007, 0.98592580, 0.98300841, 0.98080840, 0.97769187 },
+				{ 0.99534068, 0.99139154, 0.98791967, 0.98448794, 0.98148639, 0.97871212, 0.97566684 },
+				{ 0.99439664, 0.99046670, 0.98639645, 0.98291905, 0.97924215, 0.97549249, 0.97231070 },
+				{ 0.99354261, 0.98847538, 0.98387548, 0.97948533, 0.97561763, 0.97248604, 0.96798697 },
+				{ 0.99186710, 0.98531833, 0.98039758, 0.97471252, 0.97017416, 0.96494207, 0.96061204 },
+				{ 0.98885258, 0.98020243, 0.97256219, 0.96590037, 0.95933079, 0.95267026, 0.94689067 },
+				{ 0.98040067, 0.96598599, 0.95287375, 0.94235608, 0.93185109, 0.92260102, 0.91402713 },
+				{ 0.88859823, 0.83223924, 0.79837459, 0.77743619, 0.76503076, 0.75934524, 0.75874023 }
+			},
+			{
+				{ 0.99648543, 0.99369112, 0.99104869, 0.98881329, 0.98603676, 0.98395155, 0.98132647 },
+				{ 0.99633749, 0.99370010, 0.99090689, 0.98874399, 0.98590413, 0.98398054, 0.98150007 },
+				{ 0.99632141, 0.99344589, 0.99061863, 0.98808624, 0.98577204, 0.98324764, 0.98097835 },
+				{ 0.99628990, 0.99311267, 0.99039031, 0.98759560, 0.98524114, 0.98302895, 0.98063618 },
+				{ 0.99608977, 0.99250616, 0.98974408, 0.98693104, 0.98455271, 0.98195692, 0.97917901 },
+				{ 0.99561380, 0.99206773, 0.98906533, 0.98608906, 0.98303280, 0.98053382, 0.97769544 },
+				{ 0.99513342, 0.99136661, 0.98764339, 0.98473489, 0.98138644, 0.97851474, 0.97576394 },
+				{ 0.99468481, 0.99028411, 0.98648911, 0.98237919, 0.97920838, 0.97588333, 0.97280500 },
+				{ 0.99353675, 0.98871225, 0.98378654, 0.97971133, 0.97584107, 0.97178446, 0.96782541 },
+				{ 0.99206910, 0.98526465, 0.97979747, 0.97450046, 0.96976407, 0.96518677, 0.96059541 },
+				{ 0.98872146, 0.97975290, 0.97210993, 0.96471281, 0.95856225, 0.95236012, 0.94564243 },
+				{ 0.98026636, 0.96528259, 0.95376043, 0.94128123, 0.93195577, 0.92233821, 0.91344439 },
+				{ 0.96626844, 0.94307897, 0.92370603, 0.90639280, 0.89158790, 0.87962431, 0.86726979 }
+			},
+			{
+				{ 0.99645457, 0.99354032, 0.99106953, 0.98848281, 0.98607670, 0.98387213, 0.98200527 },
+				{ 0.99651180, 0.99345039, 0.99078633, 0.98836914, 0.98594451, 0.98378173, 0.98155390 },
+				{ 0.99613790, 0.99356106, 0.99090710, 0.98829359, 0.98589187, 0.98326892, 0.98116452 },
+				{ 0.99631871, 0.99320376, 0.99047806, 0.98818212, 0.98537052, 0.98251579, 0.98016596 },
+				{ 0.99590446, 0.99282912, 0.98962374, 0.98671036, 0.98448775, 0.98188728, 0.97922041 },
+				{ 0.99576098, 0.99225822, 0.98910118, 0.98595298, 0.98316954, 0.97984417, 0.97770732 },
+				{ 0.99509659, 0.99122648, 0.98780896, 0.98434914, 0.98128409, 0.97831143, 0.97566522 },
+				{ 0.99444499, 0.99010726, 0.98602950, 0.98265102, 0.97878581, 0.97531134, 0.97252429 },
+				{ 0.99341223, 0.98830045, 0.98358312, 0.97888838, 0.97467935, 0.97102028, 0.96755422 },
+				{ 0.99182249, 0.98534367, 0.97947831, 0.97372716, 0.96923757, 0.96356257, 0.95940999 },
+				{ 0.98876304, 0.97994801, 0.97198927, 0.96481128, 0.95848897, 0.95279269, 0.94667236 },
+				{ 0.98332689, 0.97068654, 0.95952389, 0.95002584, 0.94062562, 0.93266656, 0.92518111 },
+				{ 0.97899750, 0.96328629, 0.95054736, 0.93921063, 0.92855244, 0.91791615, 0.90957580 }
+			},
+			{
+				{ 0.99645814, 0.99344150, 0.99088091, 0.98852422, 0.98584057, 0.98377370, 0.98175372 },
+				{ 0.99646661, 0.99350543, 0.99077702, 0.98830236, 0.98582444, 0.98344240, 0.98133299 },
+				{ 0.99645673, 0.99355859, 0.99075263, 0.98795524, 0.98589636, 0.98326705, 0.98074691 },
+				{ 0.99632919, 0.99313677, 0.99052588, 0.98730803, 0.98478144, 0.98285476, 0.98037136 },
+				{ 0.99602425, 0.99258290, 0.98949062, 0.98654925, 0.98421147, 0.98162161, 0.97927126 },
+				{ 0.99559861, 0.99216215, 0.98870632, 0.98576963, 0.98315104, 0.98015480, 0.97726181 },
+				{ 0.99506711, 0.99105050, 0.98771215, 0.98422290, 0.98120890, 0.97806818, 0.97506328 },
+				{ 0.99436025, 0.98980870, 0.98583029, 0.98188956, 0.97804701, 0.97484720, 0.97196362 },
+				{ 0.99346846, 0.98813036, 0.98307810, 0.97837177, 0.97461708, 0.97046342, 0.96707823 },
+				{ 0.99129245, 0.98510450, 0.97937526, 0.97406338, 0.96891806, 0.96430919, 0.95920125 },
+				{ 0.98920391, 0.98067034, 0.97351351, 0.96645521, 0.96049145, 0.95451873, 0.94869236 },
+				{ 0.98620295, 0.97552938, 0.96662498, 0.95799589, 0.95012585, 0.94333050, 0.93657412 },
+				{ 0.98446773, 0.97290016, 0.96249792, 0.95353657, 0.94499860, 0.93717905, 0.92950152 }
+			},
+			{
+				{ 0.99632075, 0.99357597, 0.99081026, 0.98815275, 0.98571960, 0.98343742, 0.98094651 },
+				{ 0.99637100, 0.99337873, 0.99055100, 0.98830391, 0.98529052, 0.98326748, 0.98062944 },
+				{ 0.99621050, 0.99327582, 0.99016171, 0.98747975, 0.98526059, 0.98298764, 0.98091239 },
+				{ 0.99600553, 0.99293118, 0.99001991, 0.98716300, 0.98459281, 0.98210837, 0.97967087 },
+				{ 0.99574881, 0.99231269, 0.98942993, 0.98619576, 0.98364126, 0.98135616, 0.97841509 },
+				{ 0.99556117, 0.99208551, 0.98846406, 0.98518819, 0.98242196, 0.97923139, 0.97713836 },
+				{ 0.99495168, 0.99080631, 0.98724085, 0.98385778, 0.98077116, 0.97696100, 0.97437849 },
+				{ 0.99411731, 0.98951746, 0.98575038, 0.98165802, 0.97813388, 0.97432660, 0.97154054 },
+				{ 0.99308411, 0.98797802, 0.98310583, 0.97857366, 0.97362222, 0.97012249, 0.96632885 },
+				{ 0.99189603, 0.98518473, 0.97997117, 0.97410450, 0.96914259, 0.96447686, 0.95957211 },
+				{ 0.99011105, 0.98220640, 0.97564648, 0.96935955, 0.96380559, 0.95818408, 0.95249515 },
+				{ 0.98832089, 0.97930377, 0.97092132, 0.96389605, 0.95731505, 0.95114032, 0.94604714 },
+				{ 0.98771240, 0.97793420, 0.96958060, 0.96216289, 0.95445406, 0.94837447, 0.94171013 }
+			},
+			{
+				{ 0.99621791, 0.99324036, 0.99037197, 0.98790959, 0.98530409, 0.98258976, 0.97988825 },
+				{ 0.99618395, 0.99325853, 0.98990829, 0.98723928, 0.98472391, 0.98246259, 0.97997647 },
+				{ 0.99610030, 0.99294645, 0.99020451, 0.98745433, 0.98458621, 0.98213329, 0.97973769 },
+				{ 0.99599144, 0.99246113, 0.98953458, 0.98652901, 0.98403044, 0.98142965, 0.97883660 },
+				{ 0.99558269, 0.99202098, 0.98911542, 0.98616473, 0.98270550, 0.97995779, 0.97741770 },
+				{ 0.99523273, 0.99149654, 0.98798270, 0.98453899, 0.98182862, 0.97853218, 0.97619427 },
+				{ 0.99489373, 0.99064158, 0.98711314, 0.98324511, 0.97980330, 0.97661554, 0.97372635 },
+				{ 0.99409816, 0.98933367, 0.98550368, 0.98147530, 0.97718069, 0.97379685, 0.97083311 },
+				{ 0.99318023, 0.98763714, 0.98298026, 0.97829543, 0.97427323, 0.97016909, 0.96647838 },
+				{ 0.99213746, 0.98598184, 0.98064889, 0.97508205, 0.97030249, 0.96586963, 0.96139431 },
+				{ 0.99087661, 0.98378053, 0.97769073, 0.97168057, 0.96540869, 0.96127960, 0.95629556 },
+				{ 0.98966221, 0.98177936, 0.97518843, 0.96862171, 0.96306395, 0.95747254, 0.95170504 },
+				{ 0.98949684, 0.98129175, 0.97420010, 0.96745191, 0.96087366, 0.95539463, 0.95004567 }
+			},
+			{
+				{ 0.99604153, 0.99292480, 0.98960573, 0.98706545, 0.98377338, 0.98146020, 0.97865619 },
+				{ 0.99607853, 0.99273426, 0.98984121, 0.98673697, 0.98411920, 0.98139222, 0.97884284 },
+				{ 0.99607249, 0.99263956, 0.98937197, 0.98620760, 0.98357232, 0.98125167, 0.97841035 },
+				{ 0.99582037, 0.99210670, 0.98938424, 0.98622039, 0.98310446, 0.98017176, 0.97731832 },
+				{ 0.99557471, 0.99176507, 0.98845358, 0.98525821, 0.98202109, 0.97904798, 0.97648351 },
+				{ 0.99502989, 0.99101593, 0.98754448, 0.98392597, 0.98057800, 0.97791645, 0.97477672 },
+				{ 0.99468597, 0.99018479, 0.98587751, 0.98295957, 0.97948418, 0.97599313, 0.97278327 },
+				{ 0.99393939, 0.98920057, 0.98447482, 0.98083955, 0.97672334, 0.97374393, 0.96984458 },
+				{ 0.99334548, 0.98795825, 0.98295471, 0.97871163, 0.97438113, 0.97033060, 0.96694912 },
+				{ 0.99238999, 0.98666884, 0.98090919, 0.97608931, 0.97172169, 0.96730243, 0.96351744 },
+				{ 0.99161050, 0.98522281, 0.97917150, 0.97415943, 0.96915125, 0.96342583, 0.95889874 },
+				{ 0.99107039, 0.98401500, 0.97736597, 0.97232724, 0.96684426, 0.96175501, 0.95636636 },
+				{ 0.99071095, 0.98357271, 0.97761353, 0.97126956, 0.96596754, 0.96048130, 0.95529233 }
+			},
+			{
+				{ 0.99570533, 0.99231729, 0.98882811, 0.98565710, 0.98299624, 0.98062957, 0.97771666 },
+				{ 0.99569779, 0.99201859, 0.98895457, 0.98607041, 0.98279204, 0.98013056, 0.97717258 },
+				{ 0.99553329, 0.99182529, 0.98864432, 0.98564354, 0.98304044, 0.97983293, 0.97706758 },
+				{ 0.99526725, 0.99151002, 0.98832257, 0.98508614, 0.98178531, 0.97904586, 0.97606562 },
+				{ 0.99512951, 0.99134985, 0.98788806, 0.98443322, 0.98096063, 0.97835751, 0.97509301 },
+				{ 0.99489662, 0.99083546, 0.98679168, 0.98306405, 0.97948238, 0.97712608, 0.97406893 },
+				{ 0.99442943, 0.99015598, 0.98588717, 0.98191295, 0.97844383, 0.97516045, 0.97191067 },
+				{ 0.99398010, 0.98906794, 0.98482166, 0.98034733, 0.97680244, 0.97268414, 0.96934084 },
+				{ 0.99330910, 0.98802551, 0.98297868, 0.97893604, 0.97500865, 0.97108092, 0.96710670 },
+				{ 0.99305963, 0.98721780, 0.98171921, 0.97742413, 0.97283348, 0.96863288, 0.96433769 },
+				{ 0.99227009, 0.98643134, 0.98046009, 0.97549280, 0.97103282, 0.96619775, 0.96160053 },
+				{ 0.99179166, 0.98537707, 0.97981730, 0.97442107, 0.96938696, 0.96533518, 0.96021813 },
+				{ 0.99182621, 0.98526799, 0.97971164, 0.97445451, 0.96873122, 0.96523866, 0.95985554 }
+			},
+			{
+				{ 0.99517790, 0.99149247, 0.98795183, 0.98462950, 0.98147848, 0.97889746, 0.97582832 },
+				{ 0.99537259, 0.99145687, 0.98779870, 0.98448469, 0.98157992, 0.97805913, 0.97598200 },
+				{ 0.99504107, 0.99111438, 0.98793154, 0.98456524, 0.98073182, 0.97846981, 0.97515877 },
+				{ 0.99507490, 0.99098635, 0.98736959, 0.98399361, 0.98064418, 0.97750186, 0.97415304 },
+				{ 0.99473571, 0.99047800, 0.98663663, 0.98307572, 0.97993864, 0.97684705, 0.97315387 },
+				{ 0.99432214, 0.99016567, 0.98609410, 0.98244586, 0.97882101, 0.97543875, 0.97257156 },
+				{ 0.99425438, 0.98953648, 0.98530135, 0.98178708, 0.97787577, 0.97416644, 0.97064969 },
+				{ 0.99390623, 0.98907233, 0.98481968, 0.98040203, 0.97639223, 0.97289341, 0.96896142 },
+				{ 0.99350562, 0.98836065, 0.98358720, 0.97941872, 0.97512953, 0.97163178, 0.96743266 },
+				{ 0.99315099, 0.98769948, 0.98244608, 0.97806534, 0.97363796, 0.96983683, 0.96543133 },
+				{ 0.99263034, 0.98731455, 0.98148915, 0.97770648, 0.97235455, 0.96825033, 0.96399237 },
+				{ 0.99244290, 0.98659917, 0.98119791, 0.97627671, 0.97236321, 0.96705799, 0.96336296 },
+				{ 0.99233837, 0.98614702, 0.98103003, 0.97618308, 0.97177929, 0.96698121, 0.96288777 }
+			},
+			{
+				{ 0.99481952, 0.99076751, 0.98657426, 0.98316519, 0.97968680, 0.97674706, 0.97365618 },
+				{ 0.99501247, 0.99056631, 0.98651631, 0.98295319, 0.97977612, 0.97680755, 0.97351963 },
+				{ 0.99472827, 0.99027263, 0.98660596, 0.98311423, 0.97971898, 0.97615508, 0.97306852 },
+				{ 0.99457800, 0.99033283, 0.98611430, 0.98253747, 0.97928365, 0.97549622, 0.97230467 },
+				{ 0.99444638, 0.98996859, 0.98604875, 0.98214218, 0.97877373, 0.97494990, 0.97157952 },
+				{ 0.99417511, 0.98965430, 0.98533688, 0.98173370, 0.97783520, 0.97457215, 0.97093099 },
+				{ 0.99401428, 0.98920242, 0.98475956, 0.98098548, 0.97718908, 0.97324869, 0.96992764 },
+				{ 0.99380929, 0.98878585, 0.98410152, 0.97989199, 0.97602640, 0.97232511, 0.96935216 },
+				{ 0.99343193, 0.98848966, 0.98380910, 0.97926221, 0.97524645, 0.97132534, 0.96710853 },
+				{ 0.99324415, 0.98797573, 0.98308301, 0.97879615, 0.97371254, 0.97037927, 0.96682506 },
+				{ 0.99313801, 0.98774713, 0.98258510, 0.97812753, 0.97362728, 0.97023001, 0.96615017 },
+				{ 0.99302718, 0.98744924, 0.98227991, 0.97715348, 0.97335340, 0.96942670, 0.96546458 },
+				{ 0.99290875, 0.98749746, 0.98220206, 0.97798607, 0.97326614, 0.96872851, 0.96507221 }
+			},
+			{
+				{ 0.99418181, 0.98946946, 0.98587408, 0.98121885, 0.97771763, 0.97463138, 0.97070731 },
+				{ 0.99437024, 0.98959939, 0.98549542, 0.98133835, 0.97748836, 0.97421673, 0.97085423 },
+				{ 0.99411253, 0.98952031, 0.98539388, 0.98104346, 0.97749855, 0.97396263, 0.97047725 },
+				{ 0.99401395, 0.98938969, 0.98522010, 0.98116775, 0.97725890, 0.97341374, 0.97099583 },
+				{ 0.99413701, 0.98914813, 0.98478195, 0.98072457, 0.97667850, 0.97339764, 0.97002795 },
+				{ 0.99396107, 0.98885360, 0.98467418, 0.98039516, 0.97683251, 0.97273236, 0.96957311 },
+				{ 0.99401177, 0.98878921, 0.98463366, 0.98064401, 0.97610297, 0.97242995, 0.96914312 },
+				{ 0.99365588, 0.98870036, 0.98420543, 0.98011307, 0.97627872, 0.97192126, 0.96850077 },
+				{ 0.99343123, 0.98846610, 0.98354252, 0.97935772, 0.97547127, 0.97175680, 0.96739725 },
+				{ 0.99339485, 0.98805847, 0.98398254, 0.97921357, 0.97500877, 0.97039510, 0.96777576 },
+				{ 0.99334129, 0.98819960, 0.98332647, 0.97878835, 0.97510774, 0.97125621, 0.96757809 },
+				{ 0.99333038, 0.98809732, 0.98325513, 0.97847795, 0.97439850, 0.97094861, 0.96674953 },
+				{ 0.99333956, 0.98790933, 0.98315838, 0.97863114, 0.97406719, 0.97057144, 0.96649460 }
+			},
+			{
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+				{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 }
+			},
+			{
+				{ 0.99291935, 0.98743629, 0.98196034, 0.97762387, 0.97293212, 0.96914074, 0.96425557 },
+				{ 0.99277165, 0.98735841, 0.98226312, 0.97736607, 0.97316248, 0.96869830, 0.96536890 },
+				{ 0.99275868, 0.98761373, 0.98204841, 0.97787807, 0.97297275, 0.96961787, 0.96483529 },
+				{ 0.99306570, 0.98754767, 0.98268563, 0.97745619, 0.97353347, 0.96952848, 0.96529991 },
+				{ 0.99307938, 0.98797266, 0.98251013, 0.97825822, 0.97374538, 0.96994321, 0.96529546 },
+				{ 0.99313478, 0.98765062, 0.98318439, 0.97850554, 0.97418284, 0.96990988, 0.96622897 },
+				{ 0.99342106, 0.98777277, 0.98333489, 0.97895150, 0.97467604, 0.97040766, 0.96645706 },
+				{ 0.99344789, 0.98815337, 0.98353667, 0.97934131, 0.97492223, 0.97070754, 0.96726184 },
+				{ 0.99369247, 0.98825122, 0.98385780, 0.97936417, 0.97514486, 0.97169470, 0.96803461 },
+				{ 0.99381056, 0.98845482, 0.98412924, 0.97944387, 0.97593946, 0.97170303, 0.96802919 },
+				{ 0.99352742, 0.98880678, 0.98394636, 0.97947444, 0.97604362, 0.97233137, 0.96858945 },
+				{ 0.99385768, 0.98886816, 0.98437415, 0.97978839, 0.97602409, 0.97211892, 0.96876863 },
+				{ 0.99351883, 0.98880240, 0.98454434, 0.98014333, 0.97615813, 0.97250806, 0.96902612 }
+			},
+			{
+				{ 0.99190029, 0.98591489, 0.98034622, 0.97532963, 0.97004547, 0.96567320, 0.96123709 },
+				{ 0.99182756, 0.98571702, 0.98060402, 0.97569949, 0.97047098, 0.96604212, 0.96133240 },
+				{ 0.99224761, 0.98618271, 0.98087276, 0.97553088, 0.97114199, 0.96604058, 0.96281229 },
+				{ 0.99231609, 0.98664357, 0.98094069, 0.97570826, 0.97163458, 0.96702203, 0.96300839 },
+				{ 0.99280359, 0.98682108, 0.98169491, 0.97682762, 0.97182566, 0.96803706, 0.96415803 },
+				{ 0.99284070, 0.98744710, 0.98180812, 0.97747261, 0.97271756, 0.96906845, 0.96451902 },
+				{ 0.99287658, 0.98747227, 0.98256958, 0.97858398, 0.97317634, 0.96931541, 0.96602708 },
+				{ 0.99338989, 0.98790989, 0.98308432, 0.97874324, 0.97467573, 0.97040823, 0.96689362 },
+				{ 0.99359420, 0.98865754, 0.98389350, 0.97943775, 0.97564719, 0.97140357, 0.96784976 },
+				{ 0.99380984, 0.98855710, 0.98413989, 0.98016880, 0.97581332, 0.97232247, 0.96843308 },
+				{ 0.99368694, 0.98865387, 0.98441098, 0.98037193, 0.97602119, 0.97213194, 0.96902704 },
+				{ 0.99372628, 0.98903897, 0.98427131, 0.98051820, 0.97652213, 0.97287868, 0.96908799 },
+				{ 0.99387179, 0.98900444, 0.98472302, 0.98012951, 0.97676119, 0.97285242, 0.96934814 }
+			},
+			{
+				{ 0.99119226, 0.98432925, 0.97796889, 0.97275184, 0.96703532, 0.96252826, 0.95846864 },
+				{ 0.99135638, 0.98462960, 0.97849195, 0.97266179, 0.96770563, 0.96245401, 0.95793004 },
+				{ 0.99142037, 0.98479594, 0.97926469, 0.97358411, 0.96817194, 0.96280742, 0.95843999 },
+				{ 0.99189558, 0.98542450, 0.97979923, 0.97454941, 0.96926994, 0.96469723, 0.96030438 },
+				{ 0.99219506, 0.98627869, 0.98040267, 0.97558465, 0.97054822, 0.96602822, 0.96152611 },
+				{ 0.99255238, 0.98651312, 0.98101050, 0.97681824, 0.97219289, 0.96754713, 0.96279834 },
+				{ 0.99293359, 0.98712627, 0.98220748, 0.97725886, 0.97340709, 0.96828528, 0.96487141 },
+				{ 0.99313473, 0.98770090, 0.98301360, 0.97797003, 0.97402261, 0.96965517, 0.96586152 },
+				{ 0.99355381, 0.98815886, 0.98338962, 0.97913711, 0.97560436, 0.97086905, 0.96733665 },
+				{ 0.99358491, 0.98864159, 0.98382490, 0.97960345, 0.97546171, 0.97178494, 0.96775302 },
+				{ 0.99368425, 0.98894801, 0.98427125, 0.98030842, 0.97627963, 0.97238592, 0.96916466 },
+				{ 0.99396361, 0.98904674, 0.98439407, 0.97988322, 0.97651833, 0.97269357, 0.96939542 },
+				{ 0.99394104, 0.98889721, 0.98444763, 0.98047840, 0.97688597, 0.97262680, 0.96927042 }
+			},
+			{
+				{ 0.99020782, 0.98321854, 0.97613307, 0.97020744, 0.96396784, 0.95927824, 0.95366609 },
+				{ 0.99057716, 0.98300647, 0.97677338, 0.97042120, 0.96441442, 0.95908513, 0.95422419 },
+				{ 0.99076041, 0.98343602, 0.97686224, 0.97138318, 0.96578662, 0.96069166, 0.95511346 },
+				{ 0.99111457, 0.98397351, 0.97821320, 0.97240004, 0.96742105, 0.96162431, 0.95719348 },
+				{ 0.99171142, 0.98520949, 0.97953188, 0.97367048, 0.96828758, 0.96423783, 0.95914211 },
+				{ 0.99200343, 0.98593805, 0.98077234, 0.97575080, 0.97080621, 0.96531362, 0.96117664 },
+				{ 0.99261644, 0.98690526, 0.98129779, 0.97666576, 0.97194279, 0.96797871, 0.96348980 },
+				{ 0.99314629, 0.98726454, 0.98247330, 0.97787333, 0.97302030, 0.96939164, 0.96568336 },
+				{ 0.99337951, 0.98787566, 0.98338099, 0.97916738, 0.97471755, 0.97086472, 0.96678089 },
+				{ 0.99386485, 0.98852562, 0.98367214, 0.97927409, 0.97517490, 0.97136103, 0.96822964 },
+				{ 0.99412936, 0.98869324, 0.98439342, 0.98044694, 0.97654490, 0.97259102, 0.96866398 },
+				{ 0.99401286, 0.98913104, 0.98487291, 0.98032556, 0.97657325, 0.97295873, 0.96993270 },
+				{ 0.99410868, 0.98900155, 0.98478464, 0.98052674, 0.97692833, 0.97367539, 0.96994409 }
+			},
+			{
+				{ 0.98931201, 0.98117240, 0.97377332, 0.96735549, 0.96120669, 0.95475559, 0.94940021 },
+				{ 0.98948848, 0.98132797, 0.97447909, 0.96783477, 0.96201309, 0.95566211, 0.95055640 },
+				{ 0.98965830, 0.98251311, 0.97552150, 0.96898859, 0.96283622, 0.95731779, 0.95211258 },
+				{ 0.99035263, 0.98302912, 0.97667595, 0.97066108, 0.96453608, 0.95919757, 0.95397551 },
+				{ 0.99136498, 0.98443329, 0.97825470, 0.97272495, 0.96684210, 0.96152192, 0.95715132 },
+				{ 0.99163422, 0.98572338, 0.97951482, 0.97428115, 0.96880669, 0.96398036, 0.95990216 },
+				{ 0.99228808, 0.98622247, 0.98071468, 0.97589195, 0.97142463, 0.96619867, 0.96254253 },
+				{ 0.99283347, 0.98711070, 0.98182254, 0.97691436, 0.97286723, 0.96831745, 0.96425511 },
+				{ 0.99310966, 0.98787807, 0.98310242, 0.97853694, 0.97407600, 0.96954259, 0.96590847 },
+				{ 0.99371167, 0.98826428, 0.98374916, 0.97955674, 0.97524820, 0.97114588, 0.96778095 },
+				{ 0.99372358, 0.98859388, 0.98412832, 0.98010755, 0.97560649, 0.97237107, 0.96866201 },
+				{ 0.99373373, 0.98923662, 0.98439714, 0.98058655, 0.97628816, 0.97224110, 0.96948923 },
+				{ 0.99373866, 0.98908734, 0.98486367, 0.98039594, 0.97667049, 0.97260194, 0.96925027 }
+			},
+			{
+				{ 0.98841020, 0.97945839, 0.97122555, 0.96449964, 0.95766624, 0.95116506, 0.94498967 },
+				{ 0.98856035, 0.97975448, 0.97208272, 0.96480120, 0.95849771, 0.95198818, 0.94605193 },
+				{ 0.98933402, 0.98075679, 0.97360221, 0.96659080, 0.96010003, 0.95405539, 0.94855046 },
+				{ 0.98970097, 0.98236765, 0.97475501, 0.96836920, 0.96258748, 0.95678440, 0.95117731 },
+				{ 0.99055542, 0.98339057, 0.97693797, 0.97075527, 0.96534852, 0.96006892, 0.95454852 },
+				{ 0.99132627, 0.98471310, 0.97873849, 0.97315684, 0.96758527, 0.96246903, 0.95864911 },
+				{ 0.99232708, 0.98578711, 0.97962291, 0.97573059, 0.97019123, 0.96550348, 0.96126770 },
+				{ 0.99266270, 0.98697100, 0.98178507, 0.97619235, 0.97174961, 0.96766899, 0.96367167 },
+				{ 0.99298435, 0.98764990, 0.98301398, 0.97773521, 0.97415318, 0.96944460, 0.96557546 },
+				{ 0.99353631, 0.98831593, 0.98338826, 0.97917611, 0.97521912, 0.97108186, 0.96774951 },
+				{ 0.99369325, 0.98846482, 0.98425106, 0.97967103, 0.97560326, 0.97230533, 0.96817592 },
+				{ 0.99372306, 0.98887679, 0.98414726, 0.98029925, 0.97662565, 0.97235865, 0.96886031 },
+				{ 0.99375978, 0.98900560, 0.98426074, 0.98048900, 0.97638681, 0.97321085, 0.96842119 }
+			},
+			{
+				{ 0.98729684, 0.97773728, 0.96931732, 0.96126722, 0.95426098, 0.94723743, 0.94098961 },
+				{ 0.98773582, 0.97807277, 0.96973999, 0.96226218, 0.95468894, 0.94767497, 0.94201927 },
+				{ 0.98820186, 0.97943019, 0.97108054, 0.96430791, 0.95721703, 0.95078845, 0.94459218 },
+				{ 0.98908395, 0.98098610, 0.97298622, 0.96694306, 0.95999943, 0.95461953, 0.94819265 },
+				{ 0.98995762, 0.98253248, 0.97554335, 0.96939013, 0.96313349, 0.95817113, 0.95280624 },
+				{ 0.99127397, 0.98381176, 0.97786505, 0.97201480, 0.96668421, 0.96132710, 0.95615757 },
+				{ 0.99173281, 0.98537398, 0.97971389, 0.97405766, 0.96903450, 0.96457381, 0.95975263 },
+				{ 0.99239091, 0.98643666, 0.98137458, 0.97607881, 0.97130200, 0.96692916, 0.96276233 },
+				{ 0.99284834, 0.98718072, 0.98206331, 0.97724607, 0.97306144, 0.96832007, 0.96405923 },
+				{ 0.99329128, 0.98820735, 0.98317112, 0.97872054, 0.97453558, 0.97016556, 0.96603950 },
+				{ 0.99371271, 0.98831744, 0.98348525, 0.97916300, 0.97541200, 0.97125958, 0.96767390 },
+				{ 0.99375349, 0.98874512, 0.98434280, 0.97992811, 0.97583012, 0.97194181, 0.96827642 },
+				{ 0.99367942, 0.98868099, 0.98431524, 0.98029058, 0.97576511, 0.97255988, 0.96866093 }
+			},
+			{
+				{ 0.98633039, 0.97568654, 0.96661164, 0.95786133, 0.95029384, 0.94355103, 0.93671064 },
+				{ 0.98637358, 0.97595225, 0.96673016, 0.95884529, 0.95196675, 0.94496954, 0.93741746 },
+				{ 0.98739996, 0.97774762, 0.96949596, 0.96151763, 0.95391930, 0.94762371, 0.94074657 },
+				{ 0.98835208, 0.97952462, 0.97215555, 0.96468308, 0.95813825, 0.95093189, 0.94565155 },
+				{ 0.98963422, 0.98176424, 0.97429418, 0.96751646, 0.96160842, 0.95549753, 0.95056544 },
+				{ 0.99078566, 0.98298710, 0.97736481, 0.97055040, 0.96538991, 0.95920645, 0.95467117 },
+				{ 0.99177097, 0.98466378, 0.97905918, 0.97388113, 0.96833258, 0.96329974, 0.95826853 },
+				{ 0.99213075, 0.98577746, 0.98081375, 0.97521382, 0.97026834, 0.96599270, 0.96188611 },
+				{ 0.99271794, 0.98701641, 0.98194507, 0.97667929, 0.97216964, 0.96817658, 0.96398350 },
+				{ 0.99313706, 0.98777928, 0.98269701, 0.97826547, 0.97359902, 0.96974848, 0.96559449 },
+				{ 0.99329791, 0.98867544, 0.98330273, 0.97878392, 0.97485340, 0.97079043, 0.96716324 },
+				{ 0.99359132, 0.98840115, 0.98411423, 0.97954972, 0.97503106, 0.97139649, 0.96789472 },
+				{ 0.99360762, 0.98892039, 0.98402435, 0.97931043, 0.97545598, 0.97209172, 0.96838584 }
+			},
+			{
+				{ 0.98505978, 0.97350383, 0.96416965, 0.95497191, 0.94666623, 0.93936015, 0.93203178 },
+				{ 0.98537231, 0.97446254, 0.96491411, 0.95600413, 0.94795272, 0.94025789, 0.93342147 },
+				{ 0.98653723, 0.97626247, 0.96730657, 0.95901264, 0.95108408, 0.94413842, 0.93632918 },
+				{ 0.98747432, 0.97864296, 0.96969683, 0.96304164, 0.95526818, 0.94810560, 0.94182843 },
+				{ 0.98915472, 0.98053443, 0.97307212, 0.96624947, 0.96015265, 0.95337087, 0.94827248 },
+				{ 0.99031927, 0.98264184, 0.97618876, 0.97017508, 0.96325408, 0.95796873, 0.95268212 },
+				{ 0.99115421, 0.98435305, 0.97831771, 0.97269400, 0.96711946, 0.96253721, 0.95705647 },
+				{ 0.99200664, 0.98583349, 0.97976915, 0.97460800, 0.96981347, 0.96560658, 0.96061018 },
+				{ 0.99234422, 0.98664239, 0.98147203, 0.97616083, 0.97152755, 0.96749387, 0.96334697 },
+				{ 0.99289721, 0.98723626, 0.98242744, 0.97796798, 0.97321598, 0.96892794, 0.96436117 },
+				{ 0.99329191, 0.98812603, 0.98345135, 0.97856887, 0.97440582, 0.96993796, 0.96635508 },
+				{ 0.99355363, 0.98838979, 0.98347339, 0.97915135, 0.97487638, 0.97095951, 0.96711158 },
+				{ 0.99343751, 0.98828767, 0.98358726, 0.97914417, 0.97555881, 0.97144275, 0.96764285 }
+			},
+			{
+				{ 0.98369359, 0.97171804, 0.96171209, 0.95163477, 0.94284151, 0.93453130, 0.92656590 },
+				{ 0.98426491, 0.97279974, 0.96196211, 0.95334341, 0.94305684, 0.93566713, 0.92942410 },
+				{ 0.98551553, 0.97479481, 0.96515312, 0.95645549, 0.94773647, 0.94013754, 0.93309283 },
+				{ 0.98708330, 0.97732100, 0.96863433, 0.96054737, 0.95254534, 0.94621295, 0.93924630 },
+				{ 0.98874455, 0.97969711, 0.97148720, 0.96488215, 0.95801853, 0.95210712, 0.94551059 },
+				{ 0.98992839, 0.98205299, 0.97501166, 0.96888551, 0.96229197, 0.95721204, 0.95107945 },
+				{ 0.99104004, 0.98382537, 0.97758682, 0.97160671, 0.96587769, 0.96053313, 0.95603574 },
+				{ 0.99178994, 0.98536965, 0.97950990, 0.97408154, 0.96870768, 0.96389006, 0.95907997 },
+				{ 0.99236077, 0.98623231, 0.98097281, 0.97575025, 0.97125114, 0.96645457, 0.96231477 },
+				{ 0.99293075, 0.98726959, 0.98172791, 0.97702228, 0.97240781, 0.96838252, 0.96414273 },
+				{ 0.99315169, 0.98723285, 0.98303121, 0.97784520, 0.97396380, 0.97005880, 0.96532034 },
+				{ 0.99345896, 0.98794928, 0.98327552, 0.97925519, 0.97474328, 0.97052526, 0.96665050 },
+				{ 0.99330919, 0.98831374, 0.98316235, 0.97871625, 0.97455566, 0.97042622, 0.96651551 }
+			},
+			{
+				{ 0.98266162, 0.96990784, 0.95842316, 0.94797617, 0.93946301, 0.93024073, 0.92138119 },
+				{ 0.98322519, 0.97062274, 0.95965753, 0.94871762, 0.94075693, 0.93200012, 0.92368341 },
+				{ 0.98461595, 0.97292624, 0.96244249, 0.95402723, 0.94553101, 0.93737848, 0.92895933 },
+				{ 0.98621814, 0.97637787, 0.96671059, 0.95834665, 0.95104980, 0.94324669, 0.93657912 },
+				{ 0.98773940, 0.97880434, 0.97116268, 0.96308011, 0.95650825, 0.95030638, 0.94341166 },
+				{ 0.98966283, 0.98146194, 0.97393862, 0.96772478, 0.96140058, 0.95504299, 0.94866632 },
+				{ 0.99080187, 0.98339802, 0.97627074, 0.97083339, 0.96506541, 0.95935617, 0.95383489 },
+				{ 0.99144422, 0.98490700, 0.97878420, 0.97319202, 0.96802570, 0.96244920, 0.95839578 },
+				{ 0.99197520, 0.98606994, 0.98043680, 0.97567055, 0.97007714, 0.96606318, 0.96106003 },
+				{ 0.99259698, 0.98642441, 0.98146254, 0.97660054, 0.97196004, 0.96770203, 0.96363303 },
+				{ 0.99296949, 0.98756434, 0.98213145, 0.97774642, 0.97337135, 0.96860716, 0.96464654 },
+				{ 0.99297490, 0.98769607, 0.98281623, 0.97853958, 0.97360714, 0.96985536, 0.96601863 },
+				{ 0.99317158, 0.98772774, 0.98313051, 0.97813086, 0.97406144, 0.96969358, 0.96648710 }
+			},
+			{
+				{ 0.98149059, 0.96781883, 0.95565326, 0.94454197, 0.93434490, 0.92621361, 0.91628786 },
+				{ 0.98201236, 0.96855431, 0.95741169, 0.94683658, 0.93646914, 0.92750961, 0.91898374 },
+				{ 0.98372621, 0.97111348, 0.96030271, 0.94995442, 0.94173503, 0.93358768, 0.92572526 },
+				{ 0.98567892, 0.97465732, 0.96534396, 0.95605361, 0.94773010, 0.94051439, 0.93309216 },
+				{ 0.98771690, 0.97816284, 0.96952143, 0.96237044, 0.95382961, 0.94755763, 0.94127914 },
+				{ 0.98930519, 0.98068274, 0.97356613, 0.96628898, 0.96042729, 0.95326880, 0.94788664 },
+				{ 0.99045670, 0.98287947, 0.97620245, 0.97001521, 0.96452376, 0.95807277, 0.95272031 },
+				{ 0.99144756, 0.98458575, 0.97787064, 0.97299900, 0.96697644, 0.96176414, 0.95711660 },
+				{ 0.99197220, 0.98557983, 0.97957905, 0.97428661, 0.96971103, 0.96467101, 0.96010775 },
+				{ 0.99242821, 0.98624411, 0.98101849, 0.97581752, 0.97133460, 0.96705231, 0.96198575 },
+				{ 0.99272098, 0.98729831, 0.98161247, 0.97701629, 0.97225919, 0.96773588, 0.96354077 },
+				{ 0.99295663, 0.98721114, 0.98241626, 0.97789332, 0.97343733, 0.96862671, 0.96421237 },
+				{ 0.99316323, 0.98736521, 0.98218215, 0.97773759, 0.97339068, 0.96880987, 0.96452479 }
+			}
+		},
+		{
+			{
+				{ 0.99634714, 0.99324018, 0.99078136, 0.98793816, 0.98530689, 0.98336975, 0.98083861 },
+				{ 0.99619478, 0.99320742, 0.99057299, 0.98775795, 0.98513291, 0.98295162, 0.98021861 },
+				{ 0.99606525, 0.99311457, 0.98998462, 0.98751308, 0.98492935, 0.98262858, 0.98022379 },
+				{ 0.99583585, 0.99284555, 0.98972202, 0.98677172, 0.98474630, 0.98218059, 0.97922646 },
+				{ 0.99572995, 0.99248086, 0.98907402, 0.98652886, 0.98341940, 0.98110539, 0.97842691 },
+				{ 0.99549736, 0.99200963, 0.98869202, 0.98512560, 0.98218104, 0.97973657, 0.97684028 },
+				{ 0.99498907, 0.99069073, 0.98708978, 0.98393568, 0.98084404, 0.97747138, 0.97486139 },
+				{ 0.99435705, 0.98957561, 0.98545113, 0.98191091, 0.97827010, 0.97465030, 0.97111268 },
+				{ 0.99323068, 0.98789191, 0.98302074, 0.97875232, 0.97429752, 0.97078453, 0.96687056 },
+				{ 0.99176937, 0.98486174, 0.97885510, 0.97333878, 0.96853957, 0.96348502, 0.95868134 },
+				{ 0.98778548, 0.97911374, 0.97107506, 0.96379311, 0.95764284, 0.95112705, 0.94509820 },
+				{ 0.97954203, 0.96446180, 0.95139350, 0.93990477, 0.93006100, 0.91949504, 0.91181712 },
+				{ 0.87655857, 0.81705989, 0.78119460, 0.75955917, 0.74692930, 0.73940113, 0.74046493 }
+			},
+			{
+				{ 0.99626950, 0.99327553, 0.99058085, 0.98778547, 0.98545390, 0.98326852, 0.98114878 },
+				{ 0.99619048, 0.99339883, 0.99047491, 0.98751488, 0.98511268, 0.98334412, 0.98101275 },
+				{ 0.99609238, 0.99303312, 0.99043736, 0.98773853, 0.98491147, 0.98248705, 0.98026765 },
+				{ 0.99591515, 0.99279940, 0.98982085, 0.98728743, 0.98506781, 0.98159532, 0.97940005 },
+				{ 0.99577386, 0.99250821, 0.98924456, 0.98668567, 0.98359999, 0.98140828, 0.97846401 },
+				{ 0.99537618, 0.99177350, 0.98855982, 0.98540603, 0.98270360, 0.97927750, 0.97672099 },
+				{ 0.99475245, 0.99109135, 0.98731896, 0.98351265, 0.98069814, 0.97749982, 0.97474329 },
+				{ 0.99431686, 0.98961613, 0.98539510, 0.98180753, 0.97812597, 0.97496632, 0.97117222 },
+				{ 0.99305640, 0.98793878, 0.98302366, 0.97860236, 0.97467423, 0.97075176, 0.96641541 },
+				{ 0.99145406, 0.98456274, 0.97900457, 0.97341408, 0.96903658, 0.96329554, 0.95892386 },
+				{ 0.98805521, 0.97853967, 0.97108634, 0.96319845, 0.95627988, 0.94982481, 0.94407544 },
+				{ 0.97904097, 0.96365194, 0.95001293, 0.93846893, 0.92723266, 0.91821955, 0.90883516 },
+				{ 0.96215378, 0.93642391, 0.91507641, 0.89784622, 0.88000666, 0.86703328, 0.85458675 }
+			},
+			{
+				{ 0.99628956, 0.99324261, 0.99031159, 0.98806854, 0.98518151, 0.98278213, 0.98097321 },
+				{ 0.99628640, 0.99308613, 0.99042788, 0.98778320, 0.98545791, 0.98321642, 0.98062881 },
+				{ 0.99612870, 0.99308740, 0.99014355, 0.98765505, 0.98477902, 0.98237625, 0.97998264 },
+				{ 0.99603065, 0.99295696, 0.98955869, 0.98694161, 0.98427779, 0.98187950, 0.97961600 },
+				{ 0.99571025, 0.99212073, 0.98929337, 0.98627294, 0.98357401, 0.98104103, 0.97851896 },
+				{ 0.99542397, 0.99150676, 0.98824507, 0.98573808, 0.98212866, 0.97927264, 0.97687454 },
+				{ 0.99499965, 0.99081946, 0.98687145, 0.98394529, 0.98040966, 0.97748848, 0.97489669 },
+				{ 0.99412689, 0.98963974, 0.98573552, 0.98191084, 0.97806172, 0.97458850, 0.97111044 },
+				{ 0.99301738, 0.98752597, 0.98291723, 0.97842551, 0.97366698, 0.96994460, 0.96603181 },
+				{ 0.99136331, 0.98442213, 0.97848896, 0.97299614, 0.96785958, 0.96281044, 0.95844512 },
+				{ 0.98793208, 0.97837318, 0.97061652, 0.96340511, 0.95666643, 0.94999997, 0.94348439 },
+				{ 0.98182752, 0.96782721, 0.95593146, 0.94561817, 0.93636023, 0.92653557, 0.91875916 },
+				{ 0.97623915, 0.95895407, 0.94459459, 0.93151064, 0.92031922, 0.90955385, 0.89967812 }
+			},
+			{
+				{ 0.99634388, 0.99318425, 0.99056011, 0.98733517, 0.98541646, 0.98274301, 0.98049400 },
+				{ 0.99621934, 0.99312169, 0.99044053, 0.98772256, 0.98532523, 0.98263068, 0.98091229 },
+				{ 0.99600352, 0.99308264, 0.99025726, 0.98733951, 0.98514441, 0.98259038, 0.98003097 },
+				{ 0.99582093, 0.99263935, 0.98975893, 0.98676344, 0.98463942, 0.98243842, 0.97902983 },
+				{ 0.99583816, 0.99217564, 0.98899138, 0.98638957, 0.98336230, 0.98081964, 0.97829007 },
+				{ 0.99525531, 0.99183725, 0.98840986, 0.98538201, 0.98214894, 0.97922083, 0.97647935 },
+				{ 0.99500845, 0.99053494, 0.98703754, 0.98328521, 0.97992999, 0.97732549, 0.97368412 },
+				{ 0.99424134, 0.98933248, 0.98491684, 0.98106280, 0.97743240, 0.97394561, 0.97084954 },
+				{ 0.99296252, 0.98730622, 0.98262010, 0.97764540, 0.97337817, 0.96919352, 0.96537875 },
+				{ 0.99110204, 0.98450032, 0.97807351, 0.97238230, 0.96734820, 0.96227645, 0.95767773 },
+				{ 0.98837271, 0.97958263, 0.97151674, 0.96414331, 0.95780158, 0.95124479, 0.94447511 },
+				{ 0.98447807, 0.97336511, 0.96270600, 0.95359063, 0.94564913, 0.93756950, 0.93021881 },
+				{ 0.98230083, 0.96908938, 0.95782126, 0.94763042, 0.93848238, 0.92988385, 0.92144258 }
+			},
+			{
+				{ 0.99624786, 0.99321475, 0.99016623, 0.98763294, 0.98503718, 0.98297612, 0.98039829 },
+				{ 0.99626410, 0.99315830, 0.99040796, 0.98785363, 0.98514990, 0.98292101, 0.98022261 },
+				{ 0.99601658, 0.99292244, 0.98995785, 0.98727360, 0.98464467, 0.98233165, 0.98008022 },
+				{ 0.99582766, 0.99253845, 0.98957192, 0.98693662, 0.98370507, 0.98151776, 0.97880619 },
+				{ 0.99559741, 0.99201334, 0.98865449, 0.98579833, 0.98316741, 0.98002651, 0.97785090 },
+				{ 0.99519713, 0.99151364, 0.98830227, 0.98488328, 0.98203129, 0.97887803, 0.97587699 },
+				{ 0.99470206, 0.99037285, 0.98692367, 0.98325875, 0.97926291, 0.97642038, 0.97369496 },
+				{ 0.99408158, 0.98896589, 0.98467767, 0.98077159, 0.97683363, 0.97327639, 0.96956595 },
+				{ 0.99287647, 0.98743648, 0.98205173, 0.97724591, 0.97279707, 0.96884561, 0.96476161 },
+				{ 0.99134952, 0.98443725, 0.97821164, 0.97294290, 0.96753179, 0.96271345, 0.95792668 },
+				{ 0.98907793, 0.98069396, 0.97327185, 0.96652784, 0.95966256, 0.95400112, 0.94855198 },
+				{ 0.98703529, 0.97709340, 0.96837371, 0.96034939, 0.95227342, 0.94613072, 0.93921750 },
+				{ 0.98594955, 0.97472493, 0.96567615, 0.95717811, 0.94940977, 0.94174860, 0.93469949 }
+			},
+			{
+				{ 0.99601285, 0.99313396, 0.99014719, 0.98710531, 0.98429243, 0.98220055, 0.97982305 },
+				{ 0.99605662, 0.99265262, 0.98997075, 0.98753591, 0.98431093, 0.98171174, 0.97904371 },
+				{ 0.99593291, 0.99267860, 0.98972197, 0.98678787, 0.98400212, 0.98153065, 0.97897971 },
+				{ 0.99580303, 0.99236546, 0.98908516, 0.98629898, 0.98373169, 0.98098017, 0.97819162 },
+				{ 0.99562907, 0.99174224, 0.98860696, 0.98541600, 0.98223105, 0.97971355, 0.97614911 },
+				{ 0.99497590, 0.99124484, 0.98766791, 0.98394366, 0.98131089, 0.97798955, 0.97549890 },
+				{ 0.99472411, 0.99010211, 0.98618981, 0.98286917, 0.97889295, 0.97610973, 0.97266042 },
+				{ 0.99372677, 0.98909426, 0.98448064, 0.98037722, 0.97679825, 0.97225866, 0.96941082 },
+				{ 0.99269365, 0.98733100, 0.98193146, 0.97709273, 0.97268546, 0.96803313, 0.96446866 },
+				{ 0.99140746, 0.98480823, 0.97936912, 0.97358778, 0.96814136, 0.96334273, 0.95884204 },
+				{ 0.98994346, 0.98218400, 0.97551788, 0.96897216, 0.96299271, 0.95789112, 0.95233827 },
+				{ 0.98880749, 0.98003387, 0.97176322, 0.96517576, 0.95828943, 0.95230611, 0.94658664 },
+				{ 0.98792583, 0.97864917, 0.97110622, 0.96314886, 0.95711357, 0.94999494, 0.94328041 }
+			},
+			{
+				{ 0.99600844, 0.99268784, 0.98956468, 0.98684701, 0.98404465, 0.98122154, 0.97891095 },
+				{ 0.99586232, 0.99255528, 0.98944816, 0.98650951, 0.98393323, 0.98068447, 0.97852479 },
+				{ 0.99564355, 0.99190947, 0.98907499, 0.98585457, 0.98344233, 0.98044674, 0.97826784 },
+				{ 0.99569182, 0.99183933, 0.98853312, 0.98529615, 0.98276354, 0.98005606, 0.97712031 },
+				{ 0.99525322, 0.99145797, 0.98766682, 0.98491267, 0.98173196, 0.97879711, 0.97564896 },
+				{ 0.99497772, 0.99073203, 0.98704795, 0.98396175, 0.98020728, 0.97731744, 0.97451700 },
+				{ 0.99430566, 0.98975810, 0.98576532, 0.98160163, 0.97847209, 0.97511426, 0.97155009 },
+				{ 0.99373651, 0.98883104, 0.98416240, 0.98003288, 0.97623659, 0.97218300, 0.96845888 },
+				{ 0.99286797, 0.98719456, 0.98222951, 0.97728447, 0.97311376, 0.96878289, 0.96404739 },
+				{ 0.99174258, 0.98530363, 0.98009070, 0.97421862, 0.96931544, 0.96502755, 0.96010339 },
+				{ 0.99068214, 0.98384625, 0.97715391, 0.97145514, 0.96566022, 0.96032502, 0.95535800 },
+				{ 0.98963431, 0.98219972, 0.97497523, 0.96884013, 0.96270316, 0.95747736, 0.95169525 },
+				{ 0.98936927, 0.98129963, 0.97439899, 0.96802875, 0.96132487, 0.95619816, 0.95069763 }
+			},
+			{
+				{ 0.99544046, 0.99201949, 0.98887703, 0.98573843, 0.98271321, 0.98002614, 0.97724365 },
+				{ 0.99568648, 0.99223969, 0.98880511, 0.98554429, 0.98278770, 0.98015833, 0.97714855 },
+				{ 0.99538258, 0.99183398, 0.98861430, 0.98528955, 0.98263842, 0.97944595, 0.97662080 },
+				{ 0.99517336, 0.99149174, 0.98790049, 0.98505843, 0.98189404, 0.97886374, 0.97613329 },
+				{ 0.99488490, 0.99088958, 0.98716302, 0.98371612, 0.98077749, 0.97772849, 0.97427247 },
+				{ 0.99475080, 0.99046885, 0.98644010, 0.98289898, 0.97923659, 0.97629174, 0.97257833 },
+				{ 0.99417518, 0.98963248, 0.98546051, 0.98149889, 0.97768471, 0.97432123, 0.97128532 },
+				{ 0.99369644, 0.98892094, 0.98370785, 0.97959012, 0.97561226, 0.97192948, 0.96789957 },
+				{ 0.99291681, 0.98724206, 0.98211296, 0.97750747, 0.97296766, 0.96929458, 0.96463517 },
+				{ 0.99219130, 0.98616905, 0.98054206, 0.97565594, 0.97035658, 0.96615663, 0.96137610 },
+				{ 0.99139084, 0.98520054, 0.97895206, 0.97306547, 0.96776168, 0.96309135, 0.95772338 },
+				{ 0.99073616, 0.98392462, 0.97750176, 0.97140807, 0.96619100, 0.96076452, 0.95563147 },
+				{ 0.99062835, 0.98318677, 0.97706493, 0.97067192, 0.96521963, 0.96020045, 0.95548988 }
+			},
+			{
+				{ 0.99542738, 0.99129295, 0.98796485, 0.98513298, 0.98188383, 0.97867591, 0.97609312 },
+				{ 0.99525607, 0.99147059, 0.98778183, 0.98414832, 0.98142073, 0.97833114, 0.97560596 },
+				{ 0.99514300, 0.99106624, 0.98773106, 0.98441718, 0.98107804, 0.97755071, 0.97531741 },
+				{ 0.99514258, 0.99107714, 0.98721938, 0.98378170, 0.98062318, 0.97724609, 0.97390290 },
+				{ 0.99467232, 0.99052339, 0.98691598, 0.98297247, 0.97966155, 0.97614972, 0.97290548 },
+				{ 0.99428463, 0.98998637, 0.98587276, 0.98226335, 0.97863314, 0.97478033, 0.97241778 },
+				{ 0.99393680, 0.98894339, 0.98485696, 0.98074034, 0.97679182, 0.97321398, 0.96967984 },
+				{ 0.99345402, 0.98856213, 0.98409521, 0.97925911, 0.97541622, 0.97128833, 0.96730831 },
+				{ 0.99285490, 0.98724550, 0.98242758, 0.97812184, 0.97310868, 0.96909821, 0.96549754 },
+				{ 0.99239856, 0.98638090, 0.98131820, 0.97584088, 0.97151661, 0.96666285, 0.96289370 },
+				{ 0.99180173, 0.98542180, 0.98011509, 0.97461978, 0.96936294, 0.96517916, 0.96091975 },
+				{ 0.99159581, 0.98475937, 0.97893996, 0.97437120, 0.96867080, 0.96299749, 0.95876435 },
+				{ 0.99145895, 0.98471493, 0.97883340, 0.97321456, 0.96877345, 0.96319070, 0.95889738 }
+			},
+			{
+				{ 0.99488314, 0.99063417, 0.98689838, 0.98348974, 0.98017133, 0.97648639, 0.97309720 },
+				{ 0.99465292, 0.99058843, 0.98675283, 0.98293445, 0.97973455, 0.97703288, 0.97335832 },
+				{ 0.99468284, 0.99060466, 0.98675931, 0.98318392, 0.97940322, 0.97613565, 0.97306182 },
+				{ 0.99471611, 0.99031085, 0.98656637, 0.98244127, 0.97901879, 0.97562588, 0.97257521 },
+				{ 0.99437907, 0.99000474, 0.98583366, 0.98180889, 0.97827579, 0.97478871, 0.97150603 },
+				{ 0.99397302, 0.98923789, 0.98518172, 0.98128705, 0.97711371, 0.97370866, 0.96994329 },
+				{ 0.99389030, 0.98897974, 0.98416286, 0.98011225, 0.97605718, 0.97268259, 0.96931573 },
+				{ 0.99365724, 0.98829504, 0.98345666, 0.97900969, 0.97491544, 0.97151551, 0.96692797 },
+				{ 0.99289556, 0.98753813, 0.98281001, 0.97794626, 0.97336397, 0.96931109, 0.96554407 },
+				{ 0.99268790, 0.98665822, 0.98148128, 0.97656434, 0.97243407, 0.96869756, 0.96385777 },
+				{ 0.99216377, 0.98641042, 0.98077652, 0.97608970, 0.97172193, 0.96649433, 0.96264097 },
+				{ 0.99218691, 0.98597601, 0.98044055, 0.97522850, 0.97074849, 0.96615321, 0.96179687 },
+				{ 0.99208222, 0.98595485, 0.98005761, 0.97524390, 0.97040000, 0.96552301, 0.96116576 }
+			},
+			{
+				{ 0.99425299, 0.98991985, 0.98564020, 0.98180760, 0.97834893, 0.97430921, 0.97127422 },
+				{ 0.99424313, 0.98977703, 0.98544040, 0.98189657, 0.97791324, 0.97468484, 0.97133852 },
+				{ 0.99441936, 0.98971346, 0.98563919, 0.98164849, 0.97764379, 0.97399021, 0.97071806 },
+				{ 0.99417093, 0.98940949, 0.98504190, 0.98125722, 0.97741421, 0.97385827, 0.97037949 },
+				{ 0.99385490, 0.98913780, 0.98468822, 0.98064004, 0.97657814, 0.97320474, 0.96993620 },
+				{ 0.99375484, 0.98901983, 0.98442644, 0.98023900, 0.97649790, 0.97246078, 0.96948489 },
+				{ 0.99371052, 0.98871746, 0.98348590, 0.97934354, 0.97521280, 0.97151177, 0.96747224 },
+				{ 0.99347908, 0.98813355, 0.98373749, 0.97865329, 0.97504022, 0.97072735, 0.96659767 },
+				{ 0.99311363, 0.98759508, 0.98274954, 0.97806886, 0.97384501, 0.96949909, 0.96597475 },
+				{ 0.99280366, 0.98714504, 0.98203683, 0.97754869, 0.97289705, 0.96883533, 0.96445552 },
+				{ 0.99271761, 0.98710784, 0.98215277, 0.97717350, 0.97165760, 0.96825449, 0.96405093 },
+				{ 0.99263948, 0.98687191, 0.98170887, 0.97661558, 0.97172170, 0.96751683, 0.96379011 },
+				{ 0.99250802, 0.98672676, 0.98137602, 0.97646741, 0.97195299, 0.96809002, 0.96332789 }
+			},
+			{
+				{ 0.99351883, 0.98880240, 0.98454434, 0.98014333, 0.97615813, 0.97250806, 0.96902612 },
+				{ 0.99385768, 0.98886816, 0.98437415, 0.97978839, 0.97602409, 0.97211892, 0.96876863 },
+				{ 0.99352742, 0.98880678, 0.98394636, 0.97947444, 0.97604362, 0.97233137, 0.96858945 },
+				{ 0.99381056, 0.98845482, 0.98412924, 0.97944387, 0.97593946, 0.97170303, 0.96802919 },
+				{ 0.99369247, 0.98825122, 0.98385780, 0.97936417, 0.97514486, 0.97169470, 0.96803461 },
+				{ 0.99344789, 0.98815337, 0.98353667, 0.97934131, 0.97492223, 0.97070754, 0.96726184 },
+				{ 0.99342106, 0.98777277, 0.98333489, 0.97895150, 0.97467604, 0.97040766, 0.96645706 },
+				{ 0.99313478, 0.98765062, 0.98318439, 0.97850554, 0.97418284, 0.96990988, 0.96622897 },
+				{ 0.99307938, 0.98797266, 0.98251013, 0.97825822, 0.97374538, 0.96994321, 0.96529546 },
+				{ 0.99306570, 0.98754767, 0.98268563, 0.97745619, 0.97353347, 0.96952848, 0.96529991 },
+				{ 0.99275868, 0.98761373, 0.98204841, 0.97787807, 0.97297275, 0.96961787, 0.96483529 },
+				{ 0.99277165, 0.98735841, 0.98226312, 0.97736607, 0.97316248, 0.96869830, 0.96536890 },
+				{ 0.99291935, 0.98743629, 0.98196034, 0.97762387, 0.97293212, 0.96914074, 0.96425557 }
+			},
+			{
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+				{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 }
+			},
+			{
+				{ 0.99245678, 0.98649868, 0.98107664, 0.97603159, 0.97150942, 0.96695274, 0.96289658 },
+				{ 0.99251092, 0.98632688, 0.98123391, 0.97629081, 0.97134299, 0.96676201, 0.96245913 },
+				{ 0.99238552, 0.98680448, 0.98141533, 0.97630874, 0.97131763, 0.96740407, 0.96328716 },
+				{ 0.99256565, 0.98669688, 0.98167479, 0.97662639, 0.97170764, 0.96724504, 0.96317500 },
+				{ 0.99251589, 0.98657448, 0.98139115, 0.97695113, 0.97246049, 0.96778950, 0.96405247 },
+				{ 0.99262638, 0.98699628, 0.98231102, 0.97696751, 0.97277614, 0.96873820, 0.96424505 },
+				{ 0.99288779, 0.98737737, 0.98196858, 0.97762344, 0.97315306, 0.96919812, 0.96473208 },
+				{ 0.99285402, 0.98726795, 0.98258281, 0.97801720, 0.97394332, 0.96935434, 0.96485829 },
+				{ 0.99317922, 0.98763371, 0.98241829, 0.97824804, 0.97369491, 0.96980934, 0.96566118 },
+				{ 0.99329018, 0.98774489, 0.98274450, 0.97841950, 0.97386990, 0.97042499, 0.96560489 },
+				{ 0.99327830, 0.98780949, 0.98310105, 0.97881862, 0.97428462, 0.97010658, 0.96609760 },
+				{ 0.99324528, 0.98776620, 0.98330760, 0.97854567, 0.97431492, 0.97069368, 0.96647505 },
+				{ 0.99321593, 0.98804865, 0.98271836, 0.97883461, 0.97429485, 0.97043052, 0.96625974 }
+			},
+			{
+				{ 0.99155590, 0.98526182, 0.97971493, 0.97375499, 0.96915929, 0.96423161, 0.95904808 },
+				{ 0.99156308, 0.98501734, 0.97944294, 0.97423740, 0.96908627, 0.96379893, 0.95924984 },
+				{ 0.99171750, 0.98553001, 0.97925392, 0.97411984, 0.96918331, 0.96461327, 0.95996078 },
+				{ 0.99198934, 0.98562650, 0.97998238, 0.97442172, 0.96980041, 0.96572205, 0.96059930 },
+				{ 0.99222947, 0.98623878, 0.98032941, 0.97519134, 0.97029792, 0.96572648, 0.96187381 },
+				{ 0.99254925, 0.98632281, 0.98099348, 0.97589767, 0.97086695, 0.96655000, 0.96283728 },
+				{ 0.99244553, 0.98698652, 0.98177574, 0.97665994, 0.97234165, 0.96835103, 0.96353456 },
+				{ 0.99274034, 0.98747649, 0.98253052, 0.97727002, 0.97280659, 0.96844257, 0.96476854 },
+				{ 0.99275494, 0.98766780, 0.98286553, 0.97820248, 0.97322974, 0.96999324, 0.96537574 },
+				{ 0.99329487, 0.98772174, 0.98273558, 0.97839009, 0.97413956, 0.97011463, 0.96566025 },
+				{ 0.99325261, 0.98796853, 0.98299809, 0.97854329, 0.97468899, 0.97064283, 0.96656652 },
+				{ 0.99334197, 0.98828668, 0.98325970, 0.97904718, 0.97490833, 0.97060311, 0.96689195 },
+				{ 0.99331313, 0.98813459, 0.98315052, 0.97894504, 0.97448269, 0.97112799, 0.96701542 }
+			},
+			{
+				{ 0.99070412, 0.98340610, 0.97729411, 0.97138455, 0.96620544, 0.96094074, 0.95610501 },
+				{ 0.99106151, 0.98361652, 0.97738720, 0.97170583, 0.96628031, 0.96075371, 0.95587523 },
+				{ 0.99113709, 0.98407671, 0.97792290, 0.97221625, 0.96646774, 0.96139300, 0.95718760 },
+				{ 0.99133201, 0.98458945, 0.97813015, 0.97261412, 0.96837536, 0.96279065, 0.95789559 },
+				{ 0.99173901, 0.98514191, 0.97912329, 0.97387698, 0.96861048, 0.96385918, 0.95942075 },
+				{ 0.99196290, 0.98567056, 0.98029197, 0.97469767, 0.97005735, 0.96518404, 0.96090050 },
+				{ 0.99238093, 0.98650070, 0.98091949, 0.97636761, 0.97109966, 0.96663876, 0.96254429 },
+				{ 0.99268008, 0.98711481, 0.98173938, 0.97684878, 0.97285692, 0.96797369, 0.96380077 },
+				{ 0.99294125, 0.98741754, 0.98208913, 0.97759155, 0.97372326, 0.96902591, 0.96498787 },
+				{ 0.99318889, 0.98802500, 0.98291686, 0.97801071, 0.97408493, 0.96993103, 0.96630162 },
+				{ 0.99333511, 0.98811968, 0.98322317, 0.97877893, 0.97464824, 0.97026383, 0.96663068 },
+				{ 0.99349608, 0.98797773, 0.98353980, 0.97896430, 0.97521580, 0.97139534, 0.96680555 },
+				{ 0.99338185, 0.98829000, 0.98332265, 0.97939673, 0.97511250, 0.97077069, 0.96715105 }
+			},
+			{
+				{ 0.98997930, 0.98214897, 0.97525059, 0.96876992, 0.96298079, 0.95736011, 0.95172269 },
+				{ 0.99026570, 0.98235378, 0.97560642, 0.96949369, 0.96385371, 0.95770506, 0.95249015 },
+				{ 0.99026055, 0.98269938, 0.97607061, 0.96993975, 0.96465078, 0.95867755, 0.95342994 },
+				{ 0.99055067, 0.98331811, 0.97693061, 0.97091492, 0.96562663, 0.96012827, 0.95489523 },
+				{ 0.99125010, 0.98429097, 0.97823172, 0.97249447, 0.96705446, 0.96167863, 0.95762641 },
+				{ 0.99191034, 0.98492368, 0.97938260, 0.97370608, 0.96786968, 0.96338372, 0.95927648 },
+				{ 0.99226613, 0.98580473, 0.98003498, 0.97508141, 0.97012646, 0.96540758, 0.96117740 },
+				{ 0.99264136, 0.98677709, 0.98157259, 0.97635426, 0.97203967, 0.96749170, 0.96366078 },
+				{ 0.99292443, 0.98706867, 0.98224580, 0.97694128, 0.97294380, 0.96906203, 0.96483971 },
+				{ 0.99296326, 0.98767701, 0.98294315, 0.97849699, 0.97382426, 0.96987165, 0.96602579 },
+				{ 0.99347161, 0.98789289, 0.98308887, 0.97914948, 0.97434305, 0.97068912, 0.96677365 },
+				{ 0.99336012, 0.98832180, 0.98347287, 0.97924549, 0.97546071, 0.97101322, 0.96732170 },
+				{ 0.99361179, 0.98836257, 0.98405907, 0.97929647, 0.97531625, 0.97076326, 0.96719706 }
+			},
+			{
+				{ 0.98904997, 0.98026365, 0.97279929, 0.96625008, 0.95929396, 0.95384326, 0.94800447 },
+				{ 0.98912587, 0.98078024, 0.97364353, 0.96612390, 0.96026051, 0.95411673, 0.94893100 },
+				{ 0.98937015, 0.98169879, 0.97406423, 0.96754033, 0.96182567, 0.95552323, 0.94951581 },
+				{ 0.99022373, 0.98231057, 0.97576174, 0.96963600, 0.96316431, 0.95889112, 0.95204048 },
+				{ 0.99064972, 0.98329676, 0.97708844, 0.97112676, 0.96558967, 0.96022446, 0.95492495 },
+				{ 0.99131226, 0.98481314, 0.97863937, 0.97259306, 0.96770408, 0.96188596, 0.95736052 },
+				{ 0.99182967, 0.98551130, 0.97996780, 0.97440720, 0.96893409, 0.96461131, 0.96045516 },
+				{ 0.99240337, 0.98593666, 0.98091953, 0.97556225, 0.97136396, 0.96631275, 0.96220503 },
+				{ 0.99292830, 0.98697441, 0.98154188, 0.97694924, 0.97258611, 0.96819791, 0.96381773 },
+				{ 0.99292493, 0.98750766, 0.98247775, 0.97767253, 0.97350249, 0.96937941, 0.96548233 },
+				{ 0.99346945, 0.98779852, 0.98302127, 0.97868720, 0.97463141, 0.97042991, 0.96640378 },
+				{ 0.99324871, 0.98802298, 0.98362087, 0.97892659, 0.97505611, 0.97062128, 0.96688359 },
+				{ 0.99343620, 0.98820339, 0.98349356, 0.97904566, 0.97516082, 0.97104451, 0.96731971 }
+			},
+			{
+				{ 0.98813278, 0.97898049, 0.97070139, 0.96314447, 0.95565597, 0.94962872, 0.94381700 },
+				{ 0.98821852, 0.97940417, 0.97106780, 0.96387883, 0.95707708, 0.95111569, 0.94447526 },
+				{ 0.98864091, 0.98024015, 0.97247977, 0.96523966, 0.95854378, 0.95248365, 0.94631401 },
+				{ 0.98966781, 0.98122103, 0.97372261, 0.96740753, 0.96061779, 0.95524195, 0.94892733 },
+				{ 0.99012903, 0.98266089, 0.97554471, 0.96927920, 0.96350434, 0.95775297, 0.95233812 },
+				{ 0.99088553, 0.98385613, 0.97747328, 0.97149702, 0.96620759, 0.96112877, 0.95630505 },
+				{ 0.99152407, 0.98472282, 0.97880305, 0.97373643, 0.96827188, 0.96302037, 0.95963852 },
+				{ 0.99223353, 0.98615196, 0.98034807, 0.97538850, 0.97065339, 0.96578011, 0.96070746 },
+				{ 0.99288954, 0.98662344, 0.98130240, 0.97633046, 0.97202946, 0.96722702, 0.96325692 },
+				{ 0.99312981, 0.98739332, 0.98265698, 0.97775015, 0.97321189, 0.96873700, 0.96452208 },
+				{ 0.99332502, 0.98764367, 0.98302320, 0.97844979, 0.97404736, 0.97022823, 0.96593408 },
+				{ 0.99339353, 0.98804286, 0.98342065, 0.97894944, 0.97440624, 0.97053830, 0.96649665 },
+				{ 0.99336577, 0.98820026, 0.98302492, 0.97896065, 0.97483901, 0.97049469, 0.96728920 }
+			},
+			{
+				{ 0.98685642, 0.97697940, 0.96864688, 0.96002307, 0.95316164, 0.94603024, 0.93976248 },
+				{ 0.98744088, 0.97772844, 0.96917379, 0.96171076, 0.95406766, 0.94738616, 0.94022915 },
+				{ 0.98798743, 0.97870803, 0.97063602, 0.96297179, 0.95618083, 0.94866518, 0.94326047 },
+				{ 0.98854141, 0.98035111, 0.97224598, 0.96564202, 0.95828896, 0.95228248, 0.94612096 },
+				{ 0.98964884, 0.98155989, 0.97431435, 0.96806981, 0.96154897, 0.95429683, 0.95041165 },
+				{ 0.99061145, 0.98302669, 0.97692633, 0.97022443, 0.96457843, 0.95924242, 0.95317109 },
+				{ 0.99122232, 0.98443304, 0.97842634, 0.97266458, 0.96745811, 0.96244709, 0.95805735 },
+				{ 0.99171380, 0.98593989, 0.97960915, 0.97468019, 0.96977775, 0.96537977, 0.96023170 },
+				{ 0.99250030, 0.98711484, 0.98088999, 0.97626682, 0.97146268, 0.96736452, 0.96274750 },
+				{ 0.99294329, 0.98695422, 0.98210474, 0.97726384, 0.97272919, 0.96815254, 0.96458018 },
+				{ 0.99307339, 0.98735308, 0.98256395, 0.97794053, 0.97340866, 0.96951475, 0.96563420 },
+				{ 0.99342429, 0.98793822, 0.98300953, 0.97852911, 0.97437145, 0.97000970, 0.96569588 },
+				{ 0.99337062, 0.98784805, 0.98327128, 0.97902538, 0.97446423, 0.97054561, 0.96625018 }
+			},
+			{
+				{ 0.98609769, 0.97535607, 0.96612232, 0.95737653, 0.94988226, 0.94212740, 0.93478357 },
+				{ 0.98637460, 0.97569122, 0.96763446, 0.95771207, 0.95019321, 0.94218244, 0.93600846 },
+				{ 0.98699598, 0.97655253, 0.96796286, 0.96075913, 0.95329147, 0.94537172, 0.93992204 },
+				{ 0.98820018, 0.97885203, 0.97068300, 0.96366932, 0.95633119, 0.94977699, 0.94354601 },
+				{ 0.98923231, 0.98046231, 0.97333577, 0.96666538, 0.95992033, 0.95387297, 0.94867050 },
+				{ 0.99028463, 0.98269622, 0.97556516, 0.96942789, 0.96292272, 0.95757185, 0.95260362 },
+				{ 0.99088694, 0.98432584, 0.97739747, 0.97206256, 0.96627841, 0.96147842, 0.95604668 },
+				{ 0.99184781, 0.98518365, 0.97924135, 0.97409230, 0.96856614, 0.96387313, 0.95904054 },
+				{ 0.99240889, 0.98622059, 0.98061229, 0.97595644, 0.97064138, 0.96622771, 0.96185377 },
+				{ 0.99279279, 0.98688065, 0.98164469, 0.97705176, 0.97218273, 0.96856298, 0.96318208 },
+				{ 0.99306316, 0.98704256, 0.98226874, 0.97808678, 0.97299088, 0.96896818, 0.96542013 },
+				{ 0.99323200, 0.98766403, 0.98251573, 0.97838984, 0.97349097, 0.96968429, 0.96615930 },
+				{ 0.99326292, 0.98806877, 0.98316927, 0.97828934, 0.97378941, 0.96996092, 0.96620663 }
+			},
+			{
+				{ 0.98451070, 0.97350298, 0.96383879, 0.95434714, 0.94561814, 0.93751617, 0.93069143 },
+				{ 0.98514848, 0.97413057, 0.96404270, 0.95540919, 0.94713390, 0.93916206, 0.93236668 },
+				{ 0.98615080, 0.97552335, 0.96597742, 0.95791635, 0.94972071, 0.94235008, 0.93589472 },
+				{ 0.98752257, 0.97741565, 0.96965688, 0.96094726, 0.95403088, 0.94706477, 0.94029751 },
+				{ 0.98865074, 0.98007349, 0.97187179, 0.96470716, 0.95787536, 0.95152993, 0.94548806 },
+				{ 0.98998196, 0.98184242, 0.97473390, 0.96848691, 0.96203782, 0.95619319, 0.95070099 },
+				{ 0.99074966, 0.98380925, 0.97735369, 0.97095761, 0.96561648, 0.96021706, 0.95460436 },
+				{ 0.99159677, 0.98510879, 0.97894167, 0.97312488, 0.96798051, 0.96300383, 0.95848885 },
+				{ 0.99221517, 0.98590023, 0.98010464, 0.97545158, 0.96996034, 0.96560039, 0.96107922 },
+				{ 0.99271677, 0.98630655, 0.98147940, 0.97670406, 0.97143215, 0.96722972, 0.96286911 },
+				{ 0.99288870, 0.98725007, 0.98193197, 0.97767980, 0.97260662, 0.96797893, 0.96373675 },
+				{ 0.99301780, 0.98773503, 0.98230796, 0.97795477, 0.97266564, 0.96900459, 0.96486510 },
+				{ 0.99290978, 0.98747054, 0.98290744, 0.97776101, 0.97364664, 0.96858883, 0.96549644 }
+			},
+			{
+				{ 0.98377261, 0.97124955, 0.96053175, 0.95139818, 0.94140575, 0.93433531, 0.92587414 },
+				{ 0.98399798, 0.97244383, 0.96174897, 0.95244078, 0.94286767, 0.93546294, 0.92707779 },
+				{ 0.98483700, 0.97407668, 0.96429645, 0.95521507, 0.94683757, 0.93883800, 0.93179089 },
+				{ 0.98658187, 0.97660529, 0.96750943, 0.95912391, 0.95096532, 0.94372960, 0.93765328 },
+				{ 0.98838161, 0.97895902, 0.97104229, 0.96302013, 0.95689418, 0.94955968, 0.94333851 },
+				{ 0.98935253, 0.98111797, 0.97364770, 0.96740222, 0.96087793, 0.95465835, 0.94937890 },
+				{ 0.99073223, 0.98325616, 0.97646727, 0.96996708, 0.96487418, 0.95861806, 0.95361970 },
+				{ 0.99107316, 0.98460884, 0.97852606, 0.97242536, 0.96688367, 0.96205855, 0.95741935 },
+				{ 0.99185175, 0.98562494, 0.97965365, 0.97441640, 0.96951101, 0.96490322, 0.96061137 },
+				{ 0.99243476, 0.98626079, 0.98113650, 0.97603130, 0.97097347, 0.96666349, 0.96214344 },
+				{ 0.99260016, 0.98683105, 0.98151253, 0.97657096, 0.97202105, 0.96791646, 0.96380295 },
+				{ 0.99292032, 0.98661178, 0.98226269, 0.97734825, 0.97278977, 0.96803490, 0.96376775 },
+				{ 0.99305966, 0.98757292, 0.98222783, 0.97742093, 0.97291273, 0.96854472, 0.96462697 }
+			},
+			{
+				{ 0.98250981, 0.96924483, 0.95821007, 0.94788316, 0.93789390, 0.92907223, 0.92090335 },
+				{ 0.98301490, 0.97105239, 0.95905664, 0.94904500, 0.93934611, 0.93154086, 0.92310069 },
+				{ 0.98429711, 0.97255404, 0.96230016, 0.95247707, 0.94366483, 0.93566633, 0.92815050 },
+				{ 0.98610523, 0.97543642, 0.96539262, 0.95754307, 0.94906312, 0.94145764, 0.93415726 },
+				{ 0.98744576, 0.97823223, 0.96996333, 0.96179421, 0.95422609, 0.94742355, 0.94163725 },
+				{ 0.98901630, 0.98034449, 0.97249719, 0.96597395, 0.95943748, 0.95303198, 0.94723618 },
+				{ 0.99028478, 0.98243952, 0.97576823, 0.96951901, 0.96325179, 0.95755551, 0.95229865 },
+				{ 0.99104603, 0.98418703, 0.97772987, 0.97206608, 0.96662467, 0.96053243, 0.95632624 },
+				{ 0.99157203, 0.98540088, 0.97899393, 0.97412057, 0.96855444, 0.96400862, 0.95899054 },
+				{ 0.99230698, 0.98600308, 0.98079771, 0.97500367, 0.97061033, 0.96562198, 0.96098884 },
+				{ 0.99268613, 0.98660184, 0.98138541, 0.97632735, 0.97159824, 0.96696110, 0.96261552 },
+				{ 0.99273276, 0.98727298, 0.98184043, 0.97654894, 0.97203935, 0.96763626, 0.96345640 },
+				{ 0.99265989, 0.98699792, 0.98164461, 0.97666609, 0.97207236, 0.96781174, 0.96385223 }
+			}
+		},
+		{
+			{
+				{ 0.99613366, 0.99289341, 0.98990763, 0.98698053, 0.98483764, 0.98242521, 0.97981632 },
+				{ 0.99593410, 0.99296289, 0.98998890, 0.98715002, 0.98452141, 0.98203377, 0.97955163 },
+				{ 0.99590626, 0.99249339, 0.98981834, 0.98689794, 0.98448564, 0.98158892, 0.97949465 },
+				{ 0.99568248, 0.99245135, 0.98894982, 0.98637659, 0.98394035, 0.98134647, 0.97844135 },
+				{ 0.99547254, 0.99178143, 0.98880562, 0.98571062, 0.98284840, 0.97999928, 0.97763925 },
+				{ 0.99526031, 0.99148390, 0.98773172, 0.98477711, 0.98125094, 0.97875759, 0.97549316 },
+				{ 0.99467767, 0.99007933, 0.98654148, 0.98321766, 0.97957676, 0.97648329, 0.97344495 },
+				{ 0.99396645, 0.98912268, 0.98502826, 0.98057359, 0.97722811, 0.97362800, 0.97002091 },
+				{ 0.99295504, 0.98709698, 0.98194054, 0.97795426, 0.97350875, 0.96929911, 0.96549235 },
+				{ 0.99097866, 0.98438052, 0.97770988, 0.97256669, 0.96712694, 0.96208054, 0.95633316 },
+				{ 0.98768819, 0.97815385, 0.97026862, 0.96218040, 0.95531605, 0.94934143, 0.94305169 },
+				{ 0.97819375, 0.96292169, 0.94893146, 0.93676750, 0.92642353, 0.91667020, 0.90795229 },
+				{ 0.86516554, 0.80197614, 0.76388038, 0.74006732, 0.72772727, 0.72251706, 0.71796004 }
+			},
+			{
+				{ 0.99578986, 0.99277372, 0.99005517, 0.98711391, 0.98468791, 0.98240564, 0.98023438 },
+				{ 0.99603371, 0.99293337, 0.98983657, 0.98731076, 0.98453034, 0.98212261, 0.97958614 },
+				{ 0.99582419, 0.99274804, 0.98971536, 0.98681959, 0.98443226, 0.98149590, 0.97928485 },
+				{ 0.99585153, 0.99251717, 0.98921454, 0.98612218, 0.98371251, 0.98096077, 0.97850430 },
+				{ 0.99558773, 0.99191945, 0.98877235, 0.98554679, 0.98254230, 0.98004420, 0.97732072 },
+				{ 0.99506536, 0.99151457, 0.98759405, 0.98453474, 0.98128511, 0.97871731, 0.97622149 },
+				{ 0.99480522, 0.99015385, 0.98683279, 0.98314527, 0.97952502, 0.97683450, 0.97387621 },
+				{ 0.99407487, 0.98910824, 0.98493400, 0.98018928, 0.97722469, 0.97324841, 0.96997865 },
+				{ 0.99293764, 0.98754484, 0.98200989, 0.97772446, 0.97372959, 0.96910144, 0.96460998 },
+				{ 0.99111414, 0.98380703, 0.97786368, 0.97215478, 0.96697592, 0.96168721, 0.95676471 },
+				{ 0.98738098, 0.97774199, 0.96931047, 0.96174412, 0.95474114, 0.94822627, 0.94153284 },
+				{ 0.97792643, 0.96156713, 0.94762745, 0.93545985, 0.92363764, 0.91401756, 0.90453889 },
+				{ 0.95793076, 0.92941461, 0.90707676, 0.88676567, 0.87026708, 0.85518760, 0.84144915 }
+			},
+			{
+				{ 0.99608094, 0.99284546, 0.98963409, 0.98717977, 0.98459097, 0.98208872, 0.97994907 },
+				{ 0.99598488, 0.99274344, 0.99011196, 0.98698566, 0.98469171, 0.98218460, 0.97963589 },
+				{ 0.99590440, 0.99261615, 0.98985394, 0.98706899, 0.98425896, 0.98187146, 0.97980980 },
+				{ 0.99572524, 0.99238455, 0.98934372, 0.98618948, 0.98360952, 0.98093778, 0.97823430 },
+				{ 0.99550690, 0.99218810, 0.98885154, 0.98579600, 0.98254497, 0.98042463, 0.97731942 },
+				{ 0.99517805, 0.99142170, 0.98788370, 0.98447954, 0.98154243, 0.97859474, 0.97583967 },
+				{ 0.99463404, 0.99043423, 0.98645969, 0.98311384, 0.97968083, 0.97675728, 0.97370580 },
+				{ 0.99399194, 0.98903629, 0.98482377, 0.98076044, 0.97729466, 0.97332795, 0.96986744 },
+				{ 0.99269180, 0.98700538, 0.98219356, 0.97719969, 0.97308090, 0.96884845, 0.96497819 },
+				{ 0.99074866, 0.98374808, 0.97719669, 0.97159660, 0.96604427, 0.96143372, 0.95589946 },
+				{ 0.98737178, 0.97714011, 0.96909437, 0.96111440, 0.95289445, 0.94719190, 0.94052193 },
+				{ 0.97997185, 0.96576382, 0.95266429, 0.94096436, 0.93097737, 0.92172897, 0.91169656 },
+				{ 0.97294335, 0.95441860, 0.93809099, 0.92442725, 0.91092005, 0.89964190, 0.88898307 }
+			},
+			{
+				{ 0.99603037, 0.99290769, 0.99002677, 0.98735223, 0.98488885, 0.98206748, 0.98003861 },
+				{ 0.99592196, 0.99275489, 0.98971484, 0.98698365, 0.98450601, 0.98202126, 0.97944895 },
+				{ 0.99608131, 0.99242768, 0.98967783, 0.98681081, 0.98416741, 0.98125067, 0.97901755 },
+				{ 0.99580537, 0.99240418, 0.98909437, 0.98633356, 0.98347154, 0.98073175, 0.97868677 },
+				{ 0.99560942, 0.99191787, 0.98871003, 0.98543723, 0.98277857, 0.97992278, 0.97736012 },
+				{ 0.99515122, 0.99122335, 0.98780205, 0.98468988, 0.98143222, 0.97845934, 0.97555796 },
+				{ 0.99484943, 0.99042320, 0.98677790, 0.98285598, 0.97974435, 0.97579967, 0.97297388 },
+				{ 0.99378873, 0.98885829, 0.98428470, 0.98032342, 0.97675566, 0.97290545, 0.96929381 },
+				{ 0.99267424, 0.98657801, 0.98177012, 0.97677615, 0.97241504, 0.96815387, 0.96339360 },
+				{ 0.99053466, 0.98389787, 0.97699092, 0.97087909, 0.96564597, 0.95989500, 0.95451250 },
+				{ 0.98740474, 0.97794839, 0.96897349, 0.96152008, 0.95502165, 0.94865962, 0.94204583 },
+				{ 0.98282272, 0.97005145, 0.95872256, 0.94959869, 0.94032386, 0.93131629, 0.92373248 },
+				{ 0.97986882, 0.96529507, 0.95283899, 0.94235039, 0.93146622, 0.92184150, 0.91374194 }
+			},
+			{
+				{ 0.99600662, 0.99291567, 0.99010096, 0.98706867, 0.98436019, 0.98169669, 0.97959866 },
+				{ 0.99597641, 0.99302611, 0.98976636, 0.98687136, 0.98439160, 0.98209186, 0.97949057 },
+				{ 0.99593085, 0.99267653, 0.98958074, 0.98646505, 0.98440564, 0.98111894, 0.97873725 },
+				{ 0.99567690, 0.99232811, 0.98906075, 0.98633367, 0.98343422, 0.98095399, 0.97827654 },
+				{ 0.99548082, 0.99172414, 0.98818736, 0.98528199, 0.98211199, 0.97954285, 0.97671165 },
+				{ 0.99507210, 0.99117279, 0.98727474, 0.98403601, 0.98053346, 0.97750808, 0.97466004 },
+				{ 0.99460908, 0.99010950, 0.98595748, 0.98236100, 0.97881030, 0.97546223, 0.97226353 },
+				{ 0.99367459, 0.98891826, 0.98387602, 0.97984218, 0.97581034, 0.97208001, 0.96841612 },
+				{ 0.99241448, 0.98642764, 0.98106317, 0.97630988, 0.97204753, 0.96755555, 0.96304904 },
+				{ 0.99072372, 0.98334908, 0.97684925, 0.97084879, 0.96564161, 0.96093538, 0.95528780 },
+				{ 0.98822707, 0.97900351, 0.97093629, 0.96415209, 0.95712686, 0.95095903, 0.94418052 },
+				{ 0.98511894, 0.97408808, 0.96457403, 0.95585523, 0.94763111, 0.94118281, 0.93342685 },
+				{ 0.98389602, 0.97151504, 0.96139478, 0.95205616, 0.94358418, 0.93555670, 0.92735290 }
+			},
+			{
+				{ 0.99589347, 0.99243847, 0.98944834, 0.98658448, 0.98410668, 0.98139452, 0.97929311 },
+				{ 0.99595005, 0.99245588, 0.98943769, 0.98684685, 0.98362383, 0.98164180, 0.97863149 },
+				{ 0.99580070, 0.99236345, 0.98954421, 0.98635288, 0.98368374, 0.98045340, 0.97822746 },
+				{ 0.99553971, 0.99211363, 0.98898189, 0.98583661, 0.98334490, 0.98026165, 0.97744735 },
+				{ 0.99527478, 0.99143019, 0.98808577, 0.98490637, 0.98178830, 0.97881752, 0.97627520 },
+				{ 0.99478682, 0.99098739, 0.98696600, 0.98358717, 0.98013638, 0.97691352, 0.97375899 },
+				{ 0.99440351, 0.98970479, 0.98561774, 0.98163374, 0.97802553, 0.97489428, 0.97135504 },
+				{ 0.99354926, 0.98840074, 0.98402018, 0.97944303, 0.97549627, 0.97171337, 0.96761576 },
+				{ 0.99245382, 0.98636110, 0.98097658, 0.97622329, 0.97149481, 0.96700888, 0.96259289 },
+				{ 0.99086574, 0.98388580, 0.97796907, 0.97155269, 0.96611466, 0.96108954, 0.95657259 },
+				{ 0.98914887, 0.98024648, 0.97361240, 0.96617895, 0.95983946, 0.95391330, 0.94861531 },
+				{ 0.98722956, 0.97761437, 0.96948948, 0.96132843, 0.95411315, 0.94776459, 0.94110989 },
+				{ 0.98644271, 0.97602718, 0.96764329, 0.95902675, 0.95102371, 0.94433621, 0.93860305 }
+			},
+			{
+				{ 0.99588702, 0.99235431, 0.98933888, 0.98614917, 0.98345438, 0.98080316, 0.97815882 },
+				{ 0.99558017, 0.99221257, 0.98885479, 0.98610846, 0.98313608, 0.98065315, 0.97805086 },
+				{ 0.99557738, 0.99215934, 0.98897487, 0.98579446, 0.98269575, 0.98007159, 0.97786840 },
+				{ 0.99555739, 0.99156659, 0.98821969, 0.98527170, 0.98216988, 0.97896250, 0.97638886 },
+				{ 0.99508384, 0.99132844, 0.98756145, 0.98440728, 0.98120342, 0.97810100, 0.97511836 },
+				{ 0.99456684, 0.99045757, 0.98683601, 0.98303913, 0.97973860, 0.97628893, 0.97320432 },
+				{ 0.99409708, 0.98922299, 0.98483808, 0.98152953, 0.97732212, 0.97399496, 0.97044358 },
+				{ 0.99346820, 0.98816541, 0.98319230, 0.97899212, 0.97476784, 0.97089641, 0.96700679 },
+				{ 0.99231527, 0.98620401, 0.98127293, 0.97615934, 0.97146463, 0.96683329, 0.96263855 },
+				{ 0.99121169, 0.98386158, 0.97789478, 0.97234080, 0.96764794, 0.96219938, 0.95799692 },
+				{ 0.98965826, 0.98198039, 0.97525459, 0.96846720, 0.96248867, 0.95757095, 0.95146721 },
+				{ 0.98863164, 0.97991057, 0.97228765, 0.96551488, 0.95879215, 0.95253950, 0.94649272 },
+				{ 0.98828394, 0.97926806, 0.97156714, 0.96388221, 0.95733175, 0.95098792, 0.94481868 }
+			},
+			{
+				{ 0.99566077, 0.99166930, 0.98844561, 0.98561456, 0.98253714, 0.97960932, 0.97759228 },
+				{ 0.99540084, 0.99176720, 0.98866045, 0.98568114, 0.98181139, 0.97938887, 0.97678076 },
+				{ 0.99532770, 0.99165850, 0.98833783, 0.98506975, 0.98195847, 0.97921496, 0.97615365 },
+				{ 0.99521507, 0.99149174, 0.98764539, 0.98466748, 0.98137602, 0.97805316, 0.97524053 },
+				{ 0.99476290, 0.99066475, 0.98732590, 0.98367326, 0.98033156, 0.97697064, 0.97423527 },
+				{ 0.99453332, 0.98995327, 0.98604490, 0.98187624, 0.97890450, 0.97526077, 0.97174814 },
+				{ 0.99417101, 0.98903965, 0.98459523, 0.98084601, 0.97670619, 0.97342656, 0.96969872 },
+				{ 0.99322393, 0.98762946, 0.98330047, 0.97840379, 0.97470420, 0.97043759, 0.96603745 },
+				{ 0.99244938, 0.98657250, 0.98110615, 0.97630461, 0.97146676, 0.96743114, 0.96291633 },
+				{ 0.99131152, 0.98459328, 0.97936372, 0.97315312, 0.96804222, 0.96275282, 0.95893553 },
+				{ 0.99053381, 0.98280311, 0.97651591, 0.97093204, 0.96555997, 0.95906676, 0.95477250 },
+				{ 0.98972041, 0.98170194, 0.97503915, 0.96846020, 0.96265792, 0.95720749, 0.95085542 },
+				{ 0.98934379, 0.98111695, 0.97390317, 0.96740222, 0.96130800, 0.95582852, 0.95035284 }
+			},
+			{
+				{ 0.99532185, 0.99139230, 0.98799939, 0.98435669, 0.98153198, 0.97869165, 0.97564044 },
+				{ 0.99501244, 0.99123699, 0.98745680, 0.98438341, 0.98135576, 0.97826691, 0.97562003 },
+				{ 0.99496396, 0.99101402, 0.98740606, 0.98419217, 0.98082805, 0.97792249, 0.97467846 },
+				{ 0.99498473, 0.99095584, 0.98647891, 0.98333860, 0.98012838, 0.97728509, 0.97417092 },
+				{ 0.99476316, 0.99020321, 0.98601780, 0.98258754, 0.97925236, 0.97569557, 0.97250168 },
+				{ 0.99435327, 0.98954502, 0.98552879, 0.98145382, 0.97766211, 0.97443019, 0.97072165 },
+				{ 0.99388597, 0.98887184, 0.98397951, 0.97996216, 0.97617046, 0.97247640, 0.96843223 },
+				{ 0.99318414, 0.98779348, 0.98291418, 0.97818918, 0.97383851, 0.97021964, 0.96663855 },
+				{ 0.99233785, 0.98640360, 0.98108379, 0.97629831, 0.97174853, 0.96657046, 0.96319097 },
+				{ 0.99177440, 0.98511976, 0.97958642, 0.97417872, 0.96927674, 0.96365722, 0.95983554 },
+				{ 0.99109361, 0.98425770, 0.97780684, 0.97221558, 0.96687871, 0.96168497, 0.95675479 },
+				{ 0.99060234, 0.98287206, 0.97664307, 0.97030111, 0.96546118, 0.96062905, 0.95497845 },
+				{ 0.99024090, 0.98295289, 0.97615571, 0.97011781, 0.96428462, 0.95884872, 0.95435670 }
+			},
+			{
+				{ 0.99486564, 0.99065319, 0.98651723, 0.98360877, 0.97997614, 0.97673194, 0.97360934 },
+				{ 0.99484310, 0.99051319, 0.98699627, 0.98358648, 0.98030599, 0.97693689, 0.97396536 },
+				{ 0.99468920, 0.99032398, 0.98692126, 0.98274309, 0.97981868, 0.97615193, 0.97289368 },
+				{ 0.99459259, 0.99014764, 0.98613701, 0.98259138, 0.97895368, 0.97553263, 0.97219497 },
+				{ 0.99415131, 0.98980780, 0.98567204, 0.98135566, 0.97834730, 0.97468270, 0.97108072 },
+				{ 0.99405546, 0.98923065, 0.98483061, 0.98072483, 0.97716357, 0.97310403, 0.96950271 },
+				{ 0.99364242, 0.98815479, 0.98371170, 0.97960170, 0.97542904, 0.97166684, 0.96762656 },
+				{ 0.99321187, 0.98749987, 0.98233551, 0.97815648, 0.97329218, 0.96969471, 0.96521374 },
+				{ 0.99230559, 0.98659290, 0.98107397, 0.97678954, 0.97186598, 0.96759524, 0.96362300 },
+				{ 0.99214193, 0.98556093, 0.98019470, 0.97479253, 0.97040105, 0.96540650, 0.96134159 },
+				{ 0.99146229, 0.98489791, 0.97910886, 0.97370546, 0.96850696, 0.96422911, 0.95886807 },
+				{ 0.99122941, 0.98414742, 0.97831260, 0.97303209, 0.96749578, 0.96247069, 0.95878428 },
+				{ 0.99102674, 0.98425263, 0.97843405, 0.97254014, 0.96690372, 0.96212548, 0.95697706 }
+			},
+			{
+				{ 0.99447427, 0.98981756, 0.98555820, 0.98205258, 0.97855745, 0.97515465, 0.97153922 },
+				{ 0.99456292, 0.99000834, 0.98556456, 0.98166874, 0.97808939, 0.97514432, 0.97177925 },
+				{ 0.99442300, 0.98974226, 0.98550655, 0.98106490, 0.97816071, 0.97456316, 0.97108339 },
+				{ 0.99416206, 0.98938215, 0.98536477, 0.98136169, 0.97783990, 0.97387487, 0.97052228 },
+				{ 0.99410737, 0.98912508, 0.98461918, 0.98067321, 0.97649943, 0.97340286, 0.96936578 },
+				{ 0.99360797, 0.98836395, 0.98402366, 0.97976398, 0.97565265, 0.97194518, 0.96853503 },
+				{ 0.99337206, 0.98812100, 0.98336294, 0.97915134, 0.97480772, 0.97027843, 0.96687435 },
+				{ 0.99284686, 0.98758063, 0.98231751, 0.97768203, 0.97344307, 0.96963607, 0.96518224 },
+				{ 0.99257036, 0.98696381, 0.98162155, 0.97659910, 0.97194998, 0.96761017, 0.96350706 },
+				{ 0.99218897, 0.98632526, 0.98065757, 0.97600451, 0.97052210, 0.96624289, 0.96176113 },
+				{ 0.99183614, 0.98573071, 0.98007956, 0.97411846, 0.97003380, 0.96539886, 0.96105596 },
+				{ 0.99178224, 0.98541196, 0.97920189, 0.97430176, 0.96929261, 0.96394472, 0.95956040 },
+				{ 0.99178527, 0.98525082, 0.97923712, 0.97409251, 0.96895291, 0.96401578, 0.95975054 }
+			},
+			{
+				{ 0.99387179, 0.98900444, 0.98472302, 0.98012951, 0.97676119, 0.97285242, 0.96934814 },
+				{ 0.99372628, 0.98903897, 0.98427131, 0.98051820, 0.97652213, 0.97287868, 0.96908799 },
+				{ 0.99368694, 0.98865387, 0.98441098, 0.98037193, 0.97602119, 0.97213194, 0.96902704 },
+				{ 0.99380984, 0.98855710, 0.98413989, 0.98016880, 0.97581332, 0.97232247, 0.96843308 },
+				{ 0.99359420, 0.98865754, 0.98389350, 0.97943775, 0.97564719, 0.97140357, 0.96784976 },
+				{ 0.99338989, 0.98790989, 0.98308432, 0.97874324, 0.97467573, 0.97040823, 0.96689362 },
+				{ 0.99287658, 0.98747227, 0.98256958, 0.97858398, 0.97317634, 0.96931541, 0.96602708 },
+				{ 0.99284070, 0.98744710, 0.98180812, 0.97747261, 0.97271756, 0.96906845, 0.96451902 },
+				{ 0.99280359, 0.98682108, 0.98169491, 0.97682762, 0.97182566, 0.96803706, 0.96415803 },
+				{ 0.99231609, 0.98664357, 0.98094069, 0.97570826, 0.97163458, 0.96702203, 0.96300839 },
+				{ 0.99224761, 0.98618271, 0.98087276, 0.97553088, 0.97114199, 0.96604058, 0.96281229 },
+				{ 0.99182756, 0.98571702, 0.98060402, 0.97569949, 0.97047098, 0.96604212, 0.96133240 },
+				{ 0.99190029, 0.98591489, 0.98034622, 0.97532963, 0.97004547, 0.96567320, 0.96123709 }
+			},
+			{
+				{ 0.99321593, 0.98804865, 0.98271836, 0.97883461, 0.97429485, 0.97043052, 0.96625974 },
+				{ 0.99324528, 0.98776620, 0.98330760, 0.97854567, 0.97431492, 0.97069368, 0.96647505 },
+				{ 0.99327830, 0.98780949, 0.98310105, 0.97881862, 0.97428462, 0.97010658, 0.96609760 },
+				{ 0.99329018, 0.98774489, 0.98274450, 0.97841950, 0.97386990, 0.97042499, 0.96560489 },
+				{ 0.99317922, 0.98763371, 0.98241829, 0.97824804, 0.97369491, 0.96980934, 0.96566118 },
+				{ 0.99285402, 0.98726795, 0.98258281, 0.97801720, 0.97394332, 0.96935434, 0.96485829 },
+				{ 0.99288779, 0.98737737, 0.98196858, 0.97762344, 0.97315306, 0.96919812, 0.96473208 },
+				{ 0.99262638, 0.98699628, 0.98231102, 0.97696751, 0.97277614, 0.96873820, 0.96424505 },
+				{ 0.99251589, 0.98657448, 0.98139115, 0.97695113, 0.97246049, 0.96778950, 0.96405247 },
+				{ 0.99256565, 0.98669688, 0.98167479, 0.97662639, 0.97170764, 0.96724504, 0.96317500 },
+				{ 0.99238552, 0.98680448, 0.98141533, 0.97630874, 0.97131763, 0.96740407, 0.96328716 },
+				{ 0.99251092, 0.98632688, 0.98123391, 0.97629081, 0.97134299, 0.96676201, 0.96245913 },
+				{ 0.99245678, 0.98649868, 0.98107664, 0.97603159, 0.97150942, 0.96695274, 0.96289658 }
+			},
+			{
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+				{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 }
+			},
+			{
+				{ 0.99211717, 0.98581283, 0.97958277, 0.97454735, 0.96940323, 0.96487398, 0.96032704 },
+				{ 0.99208655, 0.98592838, 0.97951172, 0.97468243, 0.96965007, 0.96456590, 0.96031433 },
+				{ 0.99190825, 0.98566061, 0.97995084, 0.97483100, 0.97007343, 0.96516383, 0.95998546 },
+				{ 0.99210607, 0.98595917, 0.98043432, 0.97514327, 0.97010683, 0.96539173, 0.96170536 },
+				{ 0.99217858, 0.98588291, 0.98054127, 0.97546034, 0.97038763, 0.96683652, 0.96198154 },
+				{ 0.99252673, 0.98614311, 0.98053921, 0.97536725, 0.97056931, 0.96597369, 0.96235054 },
+				{ 0.99266057, 0.98652981, 0.98108285, 0.97578996, 0.97135232, 0.96678016, 0.96234653 },
+				{ 0.99252601, 0.98648120, 0.98141669, 0.97636434, 0.97170770, 0.96721460, 0.96283542 },
+				{ 0.99271955, 0.98677376, 0.98136060, 0.97663398, 0.97221889, 0.96747890, 0.96354300 },
+				{ 0.99260648, 0.98689485, 0.98162880, 0.97675780, 0.97210096, 0.96793108, 0.96390792 },
+				{ 0.99274894, 0.98692656, 0.98162653, 0.97726589, 0.97287862, 0.96837402, 0.96415853 },
+				{ 0.99284266, 0.98672686, 0.98200611, 0.97732077, 0.97262566, 0.96832069, 0.96367838 },
+				{ 0.99279729, 0.98649003, 0.98220973, 0.97702995, 0.97271973, 0.96857596, 0.96436054 }
+			},
+			{
+				{ 0.99147895, 0.98411423, 0.97845744, 0.97295333, 0.96732752, 0.96212757, 0.95710084 },
+				{ 0.99146627, 0.98461289, 0.97853382, 0.97251502, 0.96661492, 0.96209579, 0.95774461 },
+				{ 0.99122979, 0.98485000, 0.97809155, 0.97305736, 0.96764424, 0.96193178, 0.95806526 },
+				{ 0.99160711, 0.98497404, 0.97902315, 0.97340678, 0.96819914, 0.96359496, 0.95857093 },
+				{ 0.99161900, 0.98519662, 0.97924824, 0.97382835, 0.96830998, 0.96364492, 0.95927121 },
+				{ 0.99196675, 0.98568169, 0.97973352, 0.97427826, 0.96927967, 0.96446356, 0.96079817 },
+				{ 0.99223309, 0.98595914, 0.98059582, 0.97566602, 0.97049273, 0.96542767, 0.96104853 },
+				{ 0.99237338, 0.98628326, 0.98080662, 0.97611896, 0.97131942, 0.96682576, 0.96214407 },
+				{ 0.99251515, 0.98670735, 0.98160695, 0.97628321, 0.97158985, 0.96666812, 0.96323168 },
+				{ 0.99259244, 0.98693714, 0.98198128, 0.97693331, 0.97225257, 0.96831298, 0.96426886 },
+				{ 0.99281671, 0.98688894, 0.98210412, 0.97710788, 0.97225612, 0.96874264, 0.96471104 },
+				{ 0.99294937, 0.98723835, 0.98225532, 0.97818071, 0.97310169, 0.96826498, 0.96436832 },
+				{ 0.99288291, 0.98717406, 0.98239064, 0.97733554, 0.97300188, 0.96851205, 0.96475198 }
+			},
+			{
+				{ 0.99024089, 0.98305409, 0.97620243, 0.97021752, 0.96425336, 0.95891235, 0.95350278 },
+				{ 0.99047128, 0.98304474, 0.97664081, 0.97027936, 0.96445081, 0.95917789, 0.95405318 },
+				{ 0.99077984, 0.98366888, 0.97672387, 0.97111081, 0.96500937, 0.96057123, 0.95399733 },
+				{ 0.99102015, 0.98378066, 0.97745876, 0.97128987, 0.96633005, 0.96062193, 0.95638381 },
+				{ 0.99118672, 0.98445334, 0.97826663, 0.97233597, 0.96730726, 0.96216656, 0.95693957 },
+				{ 0.99167084, 0.98449319, 0.97894385, 0.97321785, 0.96831518, 0.96387662, 0.95902728 },
+				{ 0.99173932, 0.98532457, 0.97953083, 0.97387749, 0.96973285, 0.96472000, 0.96049850 },
+				{ 0.99199323, 0.98617397, 0.98032498, 0.97562351, 0.97053058, 0.96586813, 0.96230304 },
+				{ 0.99250112, 0.98657909, 0.98082032, 0.97616147, 0.97162334, 0.96713849, 0.96260705 },
+				{ 0.99276207, 0.98699541, 0.98189702, 0.97726825, 0.97217570, 0.96801999, 0.96366087 },
+				{ 0.99285362, 0.98678743, 0.98194105, 0.97726960, 0.97300451, 0.96869714, 0.96440424 },
+				{ 0.99288529, 0.98729816, 0.98222208, 0.97767890, 0.97272348, 0.96885622, 0.96436285 },
+				{ 0.99310977, 0.98740249, 0.98243153, 0.97746950, 0.97310027, 0.96882115, 0.96526849 }
+			},
+			{
+				{ 0.98950310, 0.98126580, 0.97428945, 0.96765072, 0.96140804, 0.95545907, 0.94991670 },
+				{ 0.98965492, 0.98137744, 0.97453629, 0.96789960, 0.96185782, 0.95590660, 0.95009026 },
+				{ 0.99006821, 0.98190604, 0.97474671, 0.96881407, 0.96224657, 0.95734568, 0.95129740 },
+				{ 0.99020196, 0.98300938, 0.97597853, 0.96982931, 0.96366867, 0.95806648, 0.95306528 },
+				{ 0.99061501, 0.98361506, 0.97693069, 0.97114313, 0.96510823, 0.95983001, 0.95527458 },
+				{ 0.99122011, 0.98427126, 0.97811376, 0.97212466, 0.96709712, 0.96172519, 0.95738059 },
+				{ 0.99163653, 0.98498177, 0.97916306, 0.97353104, 0.96862770, 0.96336019, 0.95948185 },
+				{ 0.99212729, 0.98543457, 0.98049276, 0.97496051, 0.97004758, 0.96549483, 0.96092333 },
+				{ 0.99238477, 0.98587985, 0.98116002, 0.97556710, 0.97118730, 0.96686432, 0.96270339 },
+				{ 0.99277351, 0.98691624, 0.98189158, 0.97659651, 0.97201774, 0.96731719, 0.96356600 },
+				{ 0.99295698, 0.98727924, 0.98153082, 0.97732272, 0.97305214, 0.96837163, 0.96399477 },
+				{ 0.99314274, 0.98740743, 0.98200239, 0.97716465, 0.97302427, 0.96879013, 0.96472735 },
+				{ 0.99300297, 0.98730993, 0.98215102, 0.97754159, 0.97286912, 0.96897164, 0.96508482 }
+			},
+			{
+				{ 0.98881352, 0.98028850, 0.97209628, 0.96481803, 0.95800850, 0.95155093, 0.94612290 },
+				{ 0.98880684, 0.98022734, 0.97254297, 0.96534017, 0.95855951, 0.95209465, 0.94665734 },
+				{ 0.98904279, 0.98056265, 0.97321343, 0.96670865, 0.95999220, 0.95413247, 0.94797546 },
+				{ 0.98962252, 0.98180468, 0.97444152, 0.96786870, 0.96188856, 0.95599283, 0.94993525 },
+				{ 0.99018376, 0.98256925, 0.97608722, 0.96940572, 0.96330630, 0.95847145, 0.95215777 },
+				{ 0.99063676, 0.98383058, 0.97732593, 0.97138038, 0.96604976, 0.96050455, 0.95516983 },
+				{ 0.99125604, 0.98471808, 0.97843851, 0.97310567, 0.96722468, 0.96213609, 0.95797416 },
+				{ 0.99167074, 0.98544952, 0.97954775, 0.97432216, 0.96920633, 0.96408513, 0.95980985 },
+				{ 0.99206541, 0.98582461, 0.98068485, 0.97559509, 0.97076633, 0.96619675, 0.96185638 },
+				{ 0.99272835, 0.98694490, 0.98159166, 0.97688186, 0.97200368, 0.96735425, 0.96313178 },
+				{ 0.99310356, 0.98693213, 0.98172808, 0.97721318, 0.97245159, 0.96844793, 0.96422857 },
+				{ 0.99301008, 0.98729156, 0.98234546, 0.97739806, 0.97358209, 0.96899061, 0.96410144 },
+				{ 0.99281307, 0.98711490, 0.98250729, 0.97809176, 0.97320513, 0.96859798, 0.96520776 }
+			},
+			{
+				{ 0.98765757, 0.97842972, 0.96984659, 0.96201195, 0.95495698, 0.94896361, 0.94123677 },
+				{ 0.98801118, 0.97863697, 0.97018100, 0.96256853, 0.95615633, 0.94915905, 0.94228514 },
+				{ 0.98847812, 0.97921150, 0.97206681, 0.96370400, 0.95703466, 0.94986257, 0.94456619 },
+				{ 0.98920988, 0.98004389, 0.97320008, 0.96604542, 0.95932844, 0.95292637, 0.94647171 },
+				{ 0.98929692, 0.98163316, 0.97479608, 0.96746487, 0.96184931, 0.95556560, 0.95073773 },
+				{ 0.99063271, 0.98319221, 0.97606348, 0.97026083, 0.96458522, 0.95926805, 0.95341954 },
+				{ 0.99122319, 0.98459839, 0.97809776, 0.97175082, 0.96685700, 0.96136326, 0.95665965 },
+				{ 0.99185816, 0.98495136, 0.97945319, 0.97362099, 0.96837026, 0.96305089, 0.95891279 },
+				{ 0.99212737, 0.98592705, 0.98047362, 0.97534462, 0.97016605, 0.96592002, 0.96102406 },
+				{ 0.99243504, 0.98655529, 0.98114350, 0.97637306, 0.97149804, 0.96657373, 0.96264741 },
+				{ 0.99273893, 0.98695902, 0.98187992, 0.97681508, 0.97267117, 0.96767889, 0.96412662 },
+				{ 0.99265601, 0.98705279, 0.98214041, 0.97727020, 0.97259934, 0.96886322, 0.96425212 },
+				{ 0.99297129, 0.98715421, 0.98243689, 0.97754787, 0.97338129, 0.96841215, 0.96461595 }
+			},
+			{
+				{ 0.98675802, 0.97610790, 0.96767112, 0.95897863, 0.95138342, 0.94472691, 0.93719288 },
+				{ 0.98695269, 0.97711737, 0.96813910, 0.95999907, 0.95273938, 0.94553315, 0.93879732 },
+				{ 0.98733988, 0.97732313, 0.96936585, 0.96151123, 0.95448173, 0.94826964, 0.94121844 },
+				{ 0.98829528, 0.97913932, 0.97139995, 0.96377263, 0.95704778, 0.95017204, 0.94436727 },
+				{ 0.98936844, 0.98090871, 0.97304478, 0.96621964, 0.96023901, 0.95347578, 0.94766026 },
+				{ 0.99012395, 0.98239160, 0.97571780, 0.96881913, 0.96348671, 0.95713754, 0.95181956 },
+				{ 0.99078451, 0.98374652, 0.97722237, 0.97106606, 0.96533497, 0.96064212, 0.95523751 },
+				{ 0.99132543, 0.98482800, 0.97862029, 0.97330286, 0.96789645, 0.96214287, 0.95847812 },
+				{ 0.99219477, 0.98567750, 0.98002817, 0.97446100, 0.96911200, 0.96492203, 0.96063064 },
+				{ 0.99268788, 0.98658874, 0.98081939, 0.97532243, 0.97042776, 0.96642620, 0.96216175 },
+				{ 0.99270238, 0.98698531, 0.98161070, 0.97663325, 0.97205873, 0.96719270, 0.96353109 },
+				{ 0.99287133, 0.98703940, 0.98231322, 0.97694659, 0.97241811, 0.96832701, 0.96449008 },
+				{ 0.99292411, 0.98692866, 0.98193258, 0.97757477, 0.97287500, 0.96843977, 0.96416638 }
+			},
+			{
+				{ 0.98567055, 0.97485036, 0.96527165, 0.95627359, 0.94845734, 0.94063582, 0.93350904 },
+				{ 0.98577128, 0.97521852, 0.96572282, 0.95651643, 0.94966644, 0.94165627, 0.93443484 },
+				{ 0.98643449, 0.97624715, 0.96731428, 0.95888051, 0.95176965, 0.94388150, 0.93791631 },
+				{ 0.98784338, 0.97817658, 0.97001062, 0.96193593, 0.95476246, 0.94787300, 0.94116821 },
+				{ 0.98868406, 0.98004450, 0.97200846, 0.96485114, 0.95807108, 0.95205351, 0.94623044 },
+				{ 0.98953295, 0.98180814, 0.97452263, 0.96758909, 0.96183076, 0.95661088, 0.95033452 },
+				{ 0.99069872, 0.98310074, 0.97595182, 0.97020473, 0.96428284, 0.95899010, 0.95314857 },
+				{ 0.99119769, 0.98444074, 0.97795178, 0.97244943, 0.96721938, 0.96216125, 0.95686466 },
+				{ 0.99158345, 0.98550796, 0.97920842, 0.97404262, 0.96902343, 0.96369675, 0.95960381 },
+				{ 0.99192391, 0.98611626, 0.98051285, 0.97537354, 0.97049745, 0.96584269, 0.96164328 },
+				{ 0.99276830, 0.98655521, 0.98116719, 0.97633912, 0.97212154, 0.96766890, 0.96311666 },
+				{ 0.99284850, 0.98685503, 0.98144831, 0.97710063, 0.97238211, 0.96797262, 0.96294831 },
+				{ 0.99281046, 0.98708753, 0.98191729, 0.97660163, 0.97201948, 0.96831819, 0.96392198 }
+			},
+			{
+				{ 0.98460180, 0.97298069, 0.96256739, 0.95327718, 0.94442502, 0.93717965, 0.92887037 },
+				{ 0.98503504, 0.97342208, 0.96309502, 0.95433953, 0.94543120, 0.93786353, 0.92970653 },
+				{ 0.98582598, 0.97485186, 0.96550116, 0.95649915, 0.94833523, 0.94103917, 0.93425369 },
+				{ 0.98682859, 0.97673063, 0.96763742, 0.95996321, 0.95216911, 0.94563830, 0.93842015 },
+				{ 0.98815369, 0.97900659, 0.97057245, 0.96348973, 0.95580823, 0.94945433, 0.94428333 },
+				{ 0.98943469, 0.98095987, 0.97339586, 0.96636340, 0.95991965, 0.95427798, 0.94830683 },
+				{ 0.99052088, 0.98276947, 0.97614582, 0.96942646, 0.96361483, 0.95828040, 0.95232172 },
+				{ 0.99101001, 0.98388686, 0.97764097, 0.97179723, 0.96637966, 0.96119744, 0.95612365 },
+				{ 0.99180376, 0.98517926, 0.97952286, 0.97401867, 0.96810475, 0.96399905, 0.95831246 },
+				{ 0.99214935, 0.98587409, 0.98037972, 0.97509394, 0.96983088, 0.96539098, 0.96095827 },
+				{ 0.99262212, 0.98635817, 0.98109291, 0.97568714, 0.97099225, 0.96650734, 0.96221118 },
+				{ 0.99252207, 0.98681259, 0.98090201, 0.97668944, 0.97171820, 0.96749489, 0.96278735 },
+				{ 0.99245983, 0.98686669, 0.98112501, 0.97660811, 0.97173991, 0.96733824, 0.96333653 }
+			},
+			{
+				{ 0.98337093, 0.97117749, 0.96031098, 0.95027346, 0.94120221, 0.93314750, 0.92476902 },
+				{ 0.98355899, 0.97154884, 0.96120778, 0.95091104, 0.94222876, 0.93361538, 0.92621919 },
+				{ 0.98476302, 0.97351320, 0.96385548, 0.95417722, 0.94521127, 0.93748855, 0.92955653 },
+				{ 0.98676409, 0.97596625, 0.96684456, 0.95762418, 0.94999711, 0.94250905, 0.93547240 },
+				{ 0.98757573, 0.97814795, 0.96942556, 0.96148207, 0.95486912, 0.94770900, 0.94178005 },
+				{ 0.98887571, 0.98009330, 0.97303817, 0.96538139, 0.95907848, 0.95209856, 0.94676451 },
+				{ 0.99000930, 0.98201627, 0.97527219, 0.96904646, 0.96297282, 0.95642803, 0.95150663 },
+				{ 0.99091939, 0.98369577, 0.97706830, 0.97087865, 0.96486797, 0.96030037, 0.95531369 },
+				{ 0.99151067, 0.98462114, 0.97894254, 0.97295699, 0.96740554, 0.96283973, 0.95762371 },
+				{ 0.99182864, 0.98540533, 0.97931691, 0.97460529, 0.96942622, 0.96479448, 0.96000487 },
+				{ 0.99238635, 0.98633753, 0.98029393, 0.97529223, 0.97038310, 0.96605575, 0.96166716 },
+				{ 0.99245986, 0.98663827, 0.98138500, 0.97627629, 0.97109906, 0.96659173, 0.96200684 },
+				{ 0.99249389, 0.98680693, 0.98111091, 0.97613448, 0.97122393, 0.96661292, 0.96261756 }
+			}
+		},
+		{
+			{
+				{ 0.99589146, 0.99223969, 0.98954857, 0.98658117, 0.98406081, 0.98118946, 0.97891142 },
+				{ 0.99562889, 0.99246861, 0.98918812, 0.98640508, 0.98392461, 0.98122410, 0.97857825 },
+				{ 0.99558348, 0.99211221, 0.98907139, 0.98611235, 0.98329993, 0.98075130, 0.97865929 },
+				{ 0.99545183, 0.99202406, 0.98898655, 0.98550330, 0.98304565, 0.97993947, 0.97744315 },
+				{ 0.99536365, 0.99144795, 0.98824554, 0.98495053, 0.98180143, 0.97907744, 0.97610671 },
+				{ 0.99486617, 0.99088608, 0.98708332, 0.98383337, 0.98075708, 0.97731351, 0.97452255 },
+				{ 0.99426688, 0.98999576, 0.98588199, 0.98213454, 0.97835754, 0.97496099, 0.97196353 },
+				{ 0.99357403, 0.98878045, 0.98391810, 0.97981739, 0.97574501, 0.97226537, 0.96885521 },
+				{ 0.99262157, 0.98687209, 0.98138020, 0.97649449, 0.97195886, 0.96781117, 0.96401689 },
+				{ 0.99078817, 0.98340055, 0.97649240, 0.97126883, 0.96601788, 0.96067400, 0.95453823 },
+				{ 0.98697421, 0.97683271, 0.96858813, 0.96081921, 0.95377177, 0.94685668, 0.94021172 },
+				{ 0.97721101, 0.96124251, 0.94760735, 0.93423822, 0.92265100, 0.91217091, 0.90312617 },
+				{ 0.85562275, 0.78667038, 0.74768053, 0.72057956, 0.70778080, 0.70100537, 0.69830768 }
+			},
+			{
+				{ 0.99575729, 0.99254095, 0.98930791, 0.98656401, 0.98410785, 0.98095362, 0.97896895 },
+				{ 0.99587556, 0.99255184, 0.98943807, 0.98632923, 0.98389072, 0.98108698, 0.97885408 },
+				{ 0.99556806, 0.99247757, 0.98900908, 0.98608679, 0.98338720, 0.98076642, 0.97796956 },
+				{ 0.99544319, 0.99179483, 0.98890960, 0.98560396, 0.98280199, 0.98030151, 0.97765103 },
+				{ 0.99538199, 0.99149527, 0.98801088, 0.98486137, 0.98181203, 0.97907932, 0.97615509 },
+				{ 0.99476745, 0.99083710, 0.98745379, 0.98402436, 0.98091976, 0.97717560, 0.97478255 },
+				{ 0.99428326, 0.98946031, 0.98616834, 0.98234474, 0.97868939, 0.97500818, 0.97224982 },
+				{ 0.99341683, 0.98843439, 0.98418153, 0.98014703, 0.97569175, 0.97223982, 0.96898858 },
+				{ 0.99251596, 0.98653729, 0.98156132, 0.97659949, 0.97177275, 0.96734161, 0.96358133 },
+				{ 0.99059624, 0.98328890, 0.97706077, 0.97053479, 0.96497268, 0.96000343, 0.95502139 },
+				{ 0.98689701, 0.97668442, 0.96754032, 0.96067207, 0.95232796, 0.94607806, 0.93948475 },
+				{ 0.97663910, 0.95886295, 0.94471012, 0.93237009, 0.91996272, 0.90946626, 0.90013356 },
+				{ 0.95233208, 0.92187233, 0.89780370, 0.87671619, 0.85838040, 0.84110868, 0.82703486 }
+			},
+			{
+				{ 0.99581175, 0.99227901, 0.98939470, 0.98665869, 0.98375735, 0.98148292, 0.97868372 },
+				{ 0.99594656, 0.99248616, 0.98935199, 0.98650633, 0.98409021, 0.98124747, 0.97889769 },
+				{ 0.99580843, 0.99228943, 0.98911876, 0.98610178, 0.98355256, 0.98108266, 0.97811434 },
+				{ 0.99541678, 0.99214291, 0.98877828, 0.98567500, 0.98289630, 0.98013713, 0.97728719 },
+				{ 0.99523664, 0.99154577, 0.98819088, 0.98496645, 0.98176492, 0.97868635, 0.97644436 },
+				{ 0.99485762, 0.99104630, 0.98717230, 0.98379952, 0.98078693, 0.97726594, 0.97464191 },
+				{ 0.99441292, 0.99004726, 0.98588322, 0.98216273, 0.97842585, 0.97496052, 0.97208019 },
+				{ 0.99361715, 0.98859473, 0.98366473, 0.97964993, 0.97548702, 0.97199791, 0.96824993 },
+				{ 0.99236040, 0.98608923, 0.98112146, 0.97622152, 0.97128897, 0.96730697, 0.96328677 },
+				{ 0.99037882, 0.98309752, 0.97556103, 0.97000789, 0.96468732, 0.95907241, 0.95397034 },
+				{ 0.98643889, 0.97611322, 0.96713727, 0.95893681, 0.95129941, 0.94427108, 0.93733634 },
+				{ 0.97858560, 0.96208097, 0.94879277, 0.93672051, 0.92543931, 0.91601281, 0.90584535 },
+				{ 0.97034274, 0.94875329, 0.93234171, 0.91651444, 0.90252889, 0.89007378, 0.87877761 }
+			},
+			{
+				{ 0.99601390, 0.99239531, 0.98935042, 0.98637559, 0.98388710, 0.98137294, 0.97898505 },
+				{ 0.99588218, 0.99251615, 0.98952122, 0.98627065, 0.98348412, 0.98102338, 0.97842629 },
+				{ 0.99578744, 0.99211066, 0.98886255, 0.98655567, 0.98348444, 0.98093490, 0.97863976 },
+				{ 0.99555685, 0.99179481, 0.98860156, 0.98557357, 0.98249981, 0.98014399, 0.97728813 },
+				{ 0.99526365, 0.99153748, 0.98809387, 0.98502497, 0.98165337, 0.97892148, 0.97594879 },
+				{ 0.99472527, 0.99071027, 0.98675893, 0.98342571, 0.98052572, 0.97729619, 0.97414605 },
+				{ 0.99435638, 0.98992352, 0.98566679, 0.98188709, 0.97875116, 0.97487714, 0.97164415 },
+				{ 0.99335679, 0.98810628, 0.98385677, 0.97918960, 0.97549929, 0.97117961, 0.96831884 },
+				{ 0.99232838, 0.98629207, 0.98051185, 0.97579685, 0.97090586, 0.96634263, 0.96177627 },
+				{ 0.99027738, 0.98262400, 0.97565152, 0.96971031, 0.96382130, 0.95808992, 0.95303965 },
+				{ 0.98664311, 0.97622159, 0.96754763, 0.95926695, 0.95230950, 0.94554460, 0.93781839 },
+				{ 0.98114322, 0.96701519, 0.95602445, 0.94470226, 0.93469891, 0.92574834, 0.91856645 },
+				{ 0.97772708, 0.96078444, 0.94800220, 0.93550246, 0.92460039, 0.91391487, 0.90439517 }
+			},
+			{
+				{ 0.99593555, 0.99224921, 0.98937006, 0.98651784, 0.98353777, 0.98095050, 0.97828094 },
+				{ 0.99574612, 0.99224371, 0.98914622, 0.98612568, 0.98370494, 0.98068723, 0.97816588 },
+				{ 0.99560046, 0.99225963, 0.98883829, 0.98567993, 0.98293512, 0.98079054, 0.97784805 },
+				{ 0.99551533, 0.99187178, 0.98874622, 0.98607694, 0.98278844, 0.97986188, 0.97701449 },
+				{ 0.99523486, 0.99142477, 0.98798582, 0.98473196, 0.98146458, 0.97886266, 0.97608028 },
+				{ 0.99471709, 0.99055201, 0.98668360, 0.98344137, 0.98009020, 0.97728982, 0.97352481 },
+				{ 0.99425988, 0.98960773, 0.98560741, 0.98131460, 0.97798422, 0.97528396, 0.97106721 },
+				{ 0.99337865, 0.98822721, 0.98356193, 0.97886258, 0.97472909, 0.97072191, 0.96675275 },
+				{ 0.99210480, 0.98579228, 0.98026771, 0.97514256, 0.97043851, 0.96578922, 0.96115726 },
+				{ 0.99008001, 0.98219157, 0.97575394, 0.96967795, 0.96406312, 0.95772775, 0.95283489 },
+				{ 0.98717576, 0.97716441, 0.96918391, 0.96097348, 0.95388921, 0.94725545, 0.94046294 },
+				{ 0.98363123, 0.97159502, 0.96112597, 0.95196119, 0.94322765, 0.93471203, 0.92719820 },
+				{ 0.98199706, 0.96887701, 0.95681866, 0.94698134, 0.93784273, 0.92940321, 0.92019351 }
+			},
+			{
+				{ 0.99560979, 0.99212320, 0.98908805, 0.98587915, 0.98373822, 0.98089389, 0.97836575 },
+				{ 0.99554383, 0.99214726, 0.98912923, 0.98650188, 0.98298602, 0.98020917, 0.97798072 },
+				{ 0.99554024, 0.99229363, 0.98874630, 0.98573221, 0.98268278, 0.97993602, 0.97744334 },
+				{ 0.99548281, 0.99160397, 0.98850694, 0.98520167, 0.98169455, 0.97927543, 0.97646171 },
+				{ 0.99496743, 0.99083084, 0.98743410, 0.98459941, 0.98099110, 0.97802334, 0.97504901 },
+				{ 0.99455200, 0.99010596, 0.98645445, 0.98300939, 0.97979526, 0.97618244, 0.97317864 },
+				{ 0.99400780, 0.98958102, 0.98520304, 0.98157036, 0.97701553, 0.97343668, 0.97015399 },
+				{ 0.99331072, 0.98761520, 0.98302514, 0.97850896, 0.97392932, 0.97004943, 0.96619137 },
+				{ 0.99196182, 0.98567381, 0.97975336, 0.97455578, 0.97008546, 0.96513960, 0.96125751 },
+				{ 0.99013573, 0.98275018, 0.97583307, 0.96995038, 0.96426499, 0.95811419, 0.95383140 },
+				{ 0.98806815, 0.97880246, 0.97096245, 0.96325359, 0.95632260, 0.95032201, 0.94413948 },
+				{ 0.98544734, 0.97514666, 0.96636493, 0.95759549, 0.94940880, 0.94200665, 0.93488885 },
+				{ 0.98417043, 0.97353435, 0.96310045, 0.95443353, 0.94618366, 0.93892299, 0.93105043 }
+			},
+			{
+				{ 0.99573445, 0.99215374, 0.98882710, 0.98583295, 0.98281219, 0.98006611, 0.97725084 },
+				{ 0.99558373, 0.99200818, 0.98897145, 0.98578788, 0.98309743, 0.98006081, 0.97703032 },
+				{ 0.99543748, 0.99168190, 0.98839445, 0.98519502, 0.98227416, 0.97932493, 0.97647185 },
+				{ 0.99515167, 0.99135413, 0.98788572, 0.98495791, 0.98145530, 0.97861877, 0.97571762 },
+				{ 0.99492927, 0.99092455, 0.98727310, 0.98370627, 0.98055149, 0.97748956, 0.97473925 },
+				{ 0.99437889, 0.99010763, 0.98615563, 0.98259626, 0.97897308, 0.97554442, 0.97251642 },
+				{ 0.99390446, 0.98885016, 0.98480679, 0.98065433, 0.97680888, 0.97297398, 0.96933942 },
+				{ 0.99309849, 0.98727280, 0.98275380, 0.97799522, 0.97380877, 0.96924029, 0.96563530 },
+				{ 0.99186510, 0.98562851, 0.97988796, 0.97456460, 0.96972072, 0.96521196, 0.96050638 },
+				{ 0.99062170, 0.98318971, 0.97616382, 0.97025726, 0.96520308, 0.96004765, 0.95445363 },
+				{ 0.98912025, 0.97990840, 0.97300328, 0.96581525, 0.95978912, 0.95304985, 0.94773059 },
+				{ 0.98716702, 0.97750132, 0.96918033, 0.96202229, 0.95433115, 0.94806137, 0.94150592 },
+				{ 0.98691353, 0.97661972, 0.96787824, 0.95993864, 0.95223376, 0.94539209, 0.93904914 }
+			},
+			{
+				{ 0.99537655, 0.99181527, 0.98859174, 0.98468190, 0.98199329, 0.97967979, 0.97628571 },
+				{ 0.99535670, 0.99167172, 0.98810213, 0.98477832, 0.98217803, 0.97877541, 0.97645702 },
+				{ 0.99525243, 0.99143985, 0.98797847, 0.98475458, 0.98133687, 0.97793515, 0.97554291 },
+				{ 0.99509455, 0.99112037, 0.98725224, 0.98425355, 0.98071628, 0.97764078, 0.97466955 },
+				{ 0.99452195, 0.99042326, 0.98653821, 0.98304750, 0.97960471, 0.97690796, 0.97346859 },
+				{ 0.99441418, 0.98984770, 0.98559762, 0.98144000, 0.97788511, 0.97434148, 0.97051416 },
+				{ 0.99365469, 0.98853545, 0.98433865, 0.97984467, 0.97596594, 0.97178297, 0.96841544 },
+				{ 0.99280747, 0.98713734, 0.98252711, 0.97766899, 0.97352274, 0.96894817, 0.96496913 },
+				{ 0.99186560, 0.98554092, 0.97988884, 0.97472315, 0.96971556, 0.96530228, 0.96010799 },
+				{ 0.99108868, 0.98348991, 0.97662471, 0.97118990, 0.96590065, 0.96085956, 0.95542762 },
+				{ 0.98950686, 0.98157086, 0.97438443, 0.96768252, 0.96179969, 0.95560125, 0.95075876 },
+				{ 0.98850417, 0.97946923, 0.97197544, 0.96504710, 0.95894484, 0.95222797, 0.94652743 },
+				{ 0.98808866, 0.97906329, 0.97108859, 0.96390611, 0.95647259, 0.95073090, 0.94480913 }
+			},
+			{
+				{ 0.99517591, 0.99119984, 0.98777879, 0.98433521, 0.98101602, 0.97829117, 0.97504473 },
+				{ 0.99524983, 0.99110701, 0.98737399, 0.98421779, 0.98071202, 0.97802222, 0.97454331 },
+				{ 0.99486355, 0.99091647, 0.98700895, 0.98354325, 0.98076264, 0.97749380, 0.97483290 },
+				{ 0.99476824, 0.99039644, 0.98683199, 0.98314035, 0.97974714, 0.97661581, 0.97401280 },
+				{ 0.99439639, 0.98997678, 0.98608067, 0.98221111, 0.97886108, 0.97502030, 0.97195404 },
+				{ 0.99401405, 0.98922996, 0.98477253, 0.98084116, 0.97744093, 0.97368307, 0.96979066 },
+				{ 0.99326733, 0.98828897, 0.98347811, 0.97934108, 0.97541674, 0.97177400, 0.96755721 },
+				{ 0.99291722, 0.98699881, 0.98204656, 0.97738227, 0.97294884, 0.96868972, 0.96439107 },
+				{ 0.99222549, 0.98580292, 0.97973768, 0.97494033, 0.96987253, 0.96562768, 0.96131842 },
+				{ 0.99094182, 0.98436589, 0.97814659, 0.97210131, 0.96704168, 0.96191449, 0.95643815 },
+				{ 0.99010734, 0.98268225, 0.97630023, 0.96978575, 0.96391969, 0.95876613, 0.95282864 },
+				{ 0.98957064, 0.98137170, 0.97440578, 0.96722916, 0.96196031, 0.95627184, 0.95057052 },
+				{ 0.98933741, 0.98094435, 0.97363580, 0.96719433, 0.96088080, 0.95528418, 0.94934480 }
+			},
+			{
+				{ 0.99489604, 0.99047761, 0.98679470, 0.98338907, 0.97945462, 0.97656381, 0.97313915 },
+				{ 0.99464323, 0.99072896, 0.98678439, 0.98329143, 0.97950900, 0.97667242, 0.97350227 },
+				{ 0.99442125, 0.99060941, 0.98625185, 0.98275132, 0.97954900, 0.97604529, 0.97286658 },
+				{ 0.99440907, 0.98980965, 0.98612084, 0.98224670, 0.97855201, 0.97548075, 0.97195956 },
+				{ 0.99429544, 0.98955729, 0.98557528, 0.98132785, 0.97772304, 0.97430776, 0.97084535 },
+				{ 0.99365088, 0.98873223, 0.98433957, 0.97999747, 0.97627594, 0.97248871, 0.96881718 },
+				{ 0.99311036, 0.98810761, 0.98314563, 0.97891148, 0.97441904, 0.97038437, 0.96661499 },
+				{ 0.99272176, 0.98693343, 0.98212903, 0.97696364, 0.97255512, 0.96830281, 0.96377663 },
+				{ 0.99217689, 0.98572400, 0.98012416, 0.97530465, 0.96969404, 0.96571475, 0.96085955 },
+				{ 0.99132692, 0.98474150, 0.97866277, 0.97278186, 0.96782473, 0.96333039, 0.95776513 },
+				{ 0.99095130, 0.98338587, 0.97685739, 0.97117377, 0.96549723, 0.96016933, 0.95558257 },
+				{ 0.99030941, 0.98227947, 0.97603397, 0.96975682, 0.96398618, 0.95903049, 0.95336626 },
+				{ 0.98983035, 0.98250379, 0.97573977, 0.96944673, 0.96362893, 0.95834858, 0.95308737 }
+			},
+			{
+				{ 0.99447737, 0.98998596, 0.98544118, 0.98244269, 0.97814330, 0.97442309, 0.97160059 },
+				{ 0.99427542, 0.98982028, 0.98543802, 0.98189170, 0.97828712, 0.97512189, 0.97104152 },
+				{ 0.99451976, 0.98930759, 0.98535680, 0.98146967, 0.97805694, 0.97498887, 0.97141916 },
+				{ 0.99396229, 0.98906890, 0.98492696, 0.98073138, 0.97705107, 0.97382226, 0.97062647 },
+				{ 0.99379021, 0.98903686, 0.98430858, 0.98035845, 0.97618881, 0.97238633, 0.96861895 },
+				{ 0.99359325, 0.98829685, 0.98377187, 0.97918757, 0.97497365, 0.97125792, 0.96761673 },
+				{ 0.99292281, 0.98801160, 0.98301716, 0.97800231, 0.97391621, 0.96947576, 0.96546805 },
+				{ 0.99279400, 0.98681146, 0.98160818, 0.97638016, 0.97211014, 0.96805724, 0.96336001 },
+				{ 0.99200920, 0.98578019, 0.98062442, 0.97542318, 0.97061346, 0.96583834, 0.96129888 },
+				{ 0.99164055, 0.98520356, 0.97926939, 0.97327130, 0.96876487, 0.96384232, 0.95898834 },
+				{ 0.99141218, 0.98409902, 0.97847325, 0.97227293, 0.96777309, 0.96166648, 0.95828331 },
+				{ 0.99063755, 0.98346040, 0.97760489, 0.97194230, 0.96624909, 0.96087483, 0.95676961 },
+				{ 0.99052093, 0.98337710, 0.97673126, 0.97142260, 0.96586947, 0.96039301, 0.95616907 }
+			},
+			{
+				{ 0.99394104, 0.98889721, 0.98444763, 0.98047840, 0.97688597, 0.97262680, 0.96927042 },
+				{ 0.99396361, 0.98904674, 0.98439407, 0.97988322, 0.97651833, 0.97269357, 0.96939542 },
+				{ 0.99368425, 0.98894801, 0.98427125, 0.98030842, 0.97627963, 0.97238592, 0.96916466 },
+				{ 0.99358491, 0.98864159, 0.98382490, 0.97960345, 0.97546171, 0.97178494, 0.96775302 },
+				{ 0.99355381, 0.98815886, 0.98338962, 0.97913711, 0.97560436, 0.97086905, 0.96733665 },
+				{ 0.99313473, 0.98770090, 0.98301360, 0.97797003, 0.97402261, 0.96965517, 0.96586152 },
+				{ 0.99293359, 0.98712627, 0.98220748, 0.97725886, 0.97340709, 0.96828528, 0.96487141 },
+				{ 0.99255238, 0.98651312, 0.98101050, 0.97681824, 0.97219289, 0.96754713, 0.96279834 },
+				{ 0.99219506, 0.98627869, 0.98040267, 0.97558465, 0.97054822, 0.96602822, 0.96152611 },
+				{ 0.99189558, 0.98542450, 0.97979923, 0.97454941, 0.96926994, 0.96469723, 0.96030438 },
+				{ 0.99142037, 0.98479594, 0.97926469, 0.97358411, 0.96817194, 0.96280742, 0.95843999 },
+				{ 0.99135638, 0.98462960, 0.97849195, 0.97266179, 0.96770563, 0.96245401, 0.95793004 },
+				{ 0.99119226, 0.98432925, 0.97796889, 0.97275184, 0.96703532, 0.96252826, 0.95846864 }
+			},
+			{
+				{ 0.99331313, 0.98813459, 0.98315052, 0.97894504, 0.97448269, 0.97112799, 0.96701542 },
+				{ 0.99334197, 0.98828668, 0.98325970, 0.97904718, 0.97490833, 0.97060311, 0.96689195 },
+				{ 0.99325261, 0.98796853, 0.98299809, 0.97854329, 0.97468899, 0.97064283, 0.96656652 },
+				{ 0.99329487, 0.98772174, 0.98273558, 0.97839009, 0.97413956, 0.97011463, 0.96566025 },
+				{ 0.99275494, 0.98766780, 0.98286553, 0.97820248, 0.97322974, 0.96999324, 0.96537574 },
+				{ 0.99274034, 0.98747649, 0.98253052, 0.97727002, 0.97280659, 0.96844257, 0.96476854 },
+				{ 0.99244553, 0.98698652, 0.98177574, 0.97665994, 0.97234165, 0.96835103, 0.96353456 },
+				{ 0.99254925, 0.98632281, 0.98099348, 0.97589767, 0.97086695, 0.96655000, 0.96283728 },
+				{ 0.99222947, 0.98623878, 0.98032941, 0.97519134, 0.97029792, 0.96572648, 0.96187381 },
+				{ 0.99198934, 0.98562650, 0.97998238, 0.97442172, 0.96980041, 0.96572205, 0.96059930 },
+				{ 0.99171750, 0.98553001, 0.97925392, 0.97411984, 0.96918331, 0.96461327, 0.95996078 },
+				{ 0.99156308, 0.98501734, 0.97944294, 0.97423740, 0.96908627, 0.96379893, 0.95924984 },
+				{ 0.99155590, 0.98526182, 0.97971493, 0.97375499, 0.96915929, 0.96423161, 0.95904808 }
+			},
+			{
+				{ 0.99279729, 0.98649003, 0.98220973, 0.97702995, 0.97271973, 0.96857596, 0.96436054 },
+				{ 0.99284266, 0.98672686, 0.98200611, 0.97732077, 0.97262566, 0.96832069, 0.96367838 },
+				{ 0.99274894, 0.98692656, 0.98162653, 0.97726589, 0.97287862, 0.96837402, 0.96415853 },
+				{ 0.99260648, 0.98689485, 0.98162880, 0.97675780, 0.97210096, 0.96793108, 0.96390792 },
+				{ 0.99271955, 0.98677376, 0.98136060, 0.97663398, 0.97221889, 0.96747890, 0.96354300 },
+				{ 0.99252601, 0.98648120, 0.98141669, 0.97636434, 0.97170770, 0.96721460, 0.96283542 },
+				{ 0.99266057, 0.98652981, 0.98108285, 0.97578996, 0.97135232, 0.96678016, 0.96234653 },
+				{ 0.99252673, 0.98614311, 0.98053921, 0.97536725, 0.97056931, 0.96597369, 0.96235054 },
+				{ 0.99217858, 0.98588291, 0.98054127, 0.97546034, 0.97038763, 0.96683652, 0.96198154 },
+				{ 0.99210607, 0.98595917, 0.98043432, 0.97514327, 0.97010683, 0.96539173, 0.96170536 },
+				{ 0.99190825, 0.98566061, 0.97995084, 0.97483100, 0.97007343, 0.96516383, 0.95998546 },
+				{ 0.99208655, 0.98592838, 0.97951172, 0.97468243, 0.96965007, 0.96456590, 0.96031433 },
+				{ 0.99211717, 0.98581283, 0.97958277, 0.97454735, 0.96940323, 0.96487398, 0.96032704 }
+			},
+			{
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+				{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 }
+			},
+			{
+				{ 0.99165486, 0.98474953, 0.97861369, 0.97350825, 0.96836129, 0.96314306, 0.95786243 },
+				{ 0.99151603, 0.98509061, 0.97888260, 0.97352901, 0.96803738, 0.96302130, 0.95863683 },
+				{ 0.99151427, 0.98481407, 0.97873672, 0.97308470, 0.96842870, 0.96343225, 0.95874849 },
+				{ 0.99172795, 0.98470445, 0.97898643, 0.97400130, 0.96849577, 0.96405366, 0.95877263 },
+				{ 0.99168136, 0.98494906, 0.97936710, 0.97382677, 0.96884118, 0.96431895, 0.95930632 },
+				{ 0.99193944, 0.98529175, 0.97934623, 0.97433226, 0.96907892, 0.96466119, 0.96004364 },
+				{ 0.99203330, 0.98583808, 0.98016351, 0.97412192, 0.97003417, 0.96439305, 0.96016542 },
+				{ 0.99208428, 0.98570666, 0.98020093, 0.97473757, 0.97043080, 0.96499042, 0.96075981 },
+				{ 0.99226503, 0.98588630, 0.98049310, 0.97509507, 0.97031361, 0.96570461, 0.96203556 },
+				{ 0.99221128, 0.98596663, 0.98068667, 0.97561683, 0.97047538, 0.96636235, 0.96154954 },
+				{ 0.99231299, 0.98617989, 0.98036960, 0.97507448, 0.97076938, 0.96602465, 0.96193381 },
+				{ 0.99230498, 0.98615115, 0.98055191, 0.97623285, 0.97050555, 0.96656769, 0.96164279 },
+				{ 0.99235581, 0.98604031, 0.98116073, 0.97566075, 0.97097099, 0.96686674, 0.96209562 }
+			},
+			{
+				{ 0.99086459, 0.98368460, 0.97734249, 0.97120637, 0.96565948, 0.96026861, 0.95522512 },
+				{ 0.99063612, 0.98387868, 0.97725630, 0.97126956, 0.96585760, 0.96016634, 0.95496211 },
+				{ 0.99063762, 0.98369978, 0.97698060, 0.97154370, 0.96566937, 0.96058344, 0.95605081 },
+				{ 0.99115093, 0.98393273, 0.97733998, 0.97196499, 0.96604285, 0.96115790, 0.95661818 },
+				{ 0.99147083, 0.98438002, 0.97822298, 0.97239758, 0.96720595, 0.96190595, 0.95745783 },
+				{ 0.99142529, 0.98498982, 0.97883844, 0.97335801, 0.96780873, 0.96341693, 0.95808079 },
+				{ 0.99146763, 0.98497683, 0.97929694, 0.97363688, 0.96853954, 0.96354416, 0.95962959 },
+				{ 0.99185911, 0.98538665, 0.97958429, 0.97438681, 0.96917297, 0.96493293, 0.95961752 },
+				{ 0.99192399, 0.98580956, 0.98006453, 0.97497351, 0.97006647, 0.96594760, 0.96125464 },
+				{ 0.99233764, 0.98606593, 0.98082772, 0.97561642, 0.97047274, 0.96636013, 0.96149644 },
+				{ 0.99234239, 0.98616333, 0.98105652, 0.97599439, 0.97113198, 0.96675838, 0.96172641 },
+				{ 0.99238855, 0.98651805, 0.98120049, 0.97583656, 0.97113341, 0.96691252, 0.96255049 },
+				{ 0.99239791, 0.98672831, 0.98091272, 0.97618867, 0.97156913, 0.96672533, 0.96239053 }
+			},
+			{
+				{ 0.98978481, 0.98224279, 0.97515442, 0.96889524, 0.96312588, 0.95740682, 0.95123798 },
+				{ 0.99014285, 0.98224512, 0.97540207, 0.96917445, 0.96277474, 0.95740778, 0.95147646 },
+				{ 0.99030226, 0.98282878, 0.97573547, 0.96910939, 0.96357540, 0.95821922, 0.95281642 },
+				{ 0.99042891, 0.98304017, 0.97640950, 0.97028092, 0.96456711, 0.95903244, 0.95377556 },
+				{ 0.99082164, 0.98318883, 0.97693483, 0.97123963, 0.96537742, 0.96033230, 0.95508203 },
+				{ 0.99099236, 0.98400649, 0.97765447, 0.97174546, 0.96702583, 0.96130771, 0.95687398 },
+				{ 0.99152058, 0.98495786, 0.97885142, 0.97311833, 0.96778039, 0.96281210, 0.95861208 },
+				{ 0.99145899, 0.98505229, 0.97914472, 0.97416673, 0.96930426, 0.96432081, 0.95913023 },
+				{ 0.99198972, 0.98536233, 0.98009809, 0.97471585, 0.97023109, 0.96579870, 0.96051973 },
+				{ 0.99220513, 0.98612766, 0.98052877, 0.97519203, 0.97052116, 0.96595497, 0.96164660 },
+				{ 0.99234291, 0.98637787, 0.98085902, 0.97585613, 0.97128903, 0.96657075, 0.96235484 },
+				{ 0.99258753, 0.98679234, 0.98102877, 0.97604997, 0.97138207, 0.96695585, 0.96263655 },
+				{ 0.99251912, 0.98647433, 0.98133962, 0.97610876, 0.97131998, 0.96660785, 0.96318319 }
+			},
+			{
+				{ 0.98914872, 0.98081473, 0.97299099, 0.96646432, 0.95959950, 0.95399736, 0.94814841 },
+				{ 0.98909560, 0.98044085, 0.97368669, 0.96656683, 0.96033284, 0.95378173, 0.94816993 },
+				{ 0.98954169, 0.98105923, 0.97415093, 0.96769591, 0.96094481, 0.95573284, 0.94952097 },
+				{ 0.98985790, 0.98203064, 0.97459443, 0.96802913, 0.96229706, 0.95647009, 0.95107763 },
+				{ 0.99026910, 0.98257399, 0.97632854, 0.96918278, 0.96377184, 0.95788911, 0.95281625 },
+				{ 0.99089456, 0.98360614, 0.97672483, 0.97107569, 0.96525741, 0.96041740, 0.95527554 },
+				{ 0.99133024, 0.98443871, 0.97821750, 0.97235640, 0.96661939, 0.96164255, 0.95698399 },
+				{ 0.99177091, 0.98482470, 0.97911829, 0.97363734, 0.96837766, 0.96309046, 0.95835077 },
+				{ 0.99189953, 0.98574489, 0.97957001, 0.97443052, 0.96955800, 0.96504814, 0.96008131 },
+				{ 0.99211619, 0.98576213, 0.98054183, 0.97525233, 0.97066215, 0.96577717, 0.96096751 },
+				{ 0.99243565, 0.98641366, 0.98067659, 0.97537731, 0.97110524, 0.96626023, 0.96241754 },
+				{ 0.99271810, 0.98667812, 0.98149490, 0.97653200, 0.97173913, 0.96687486, 0.96252055 },
+				{ 0.99244925, 0.98664534, 0.98159514, 0.97647343, 0.97190817, 0.96685825, 0.96288023 }
+			},
+			{
+				{ 0.98846735, 0.97904852, 0.97097275, 0.96399936, 0.95716302, 0.95075201, 0.94440275 },
+				{ 0.98829635, 0.97966398, 0.97160077, 0.96383483, 0.95730120, 0.95090998, 0.94475387 },
+				{ 0.98875601, 0.98005092, 0.97214776, 0.96527278, 0.95854600, 0.95149106, 0.94613569 },
+				{ 0.98907122, 0.98089839, 0.97336740, 0.96665078, 0.95956916, 0.95389797, 0.94788480 },
+				{ 0.98984676, 0.98143175, 0.97438393, 0.96773547, 0.96169182, 0.95573267, 0.95124698 },
+				{ 0.99025592, 0.98246328, 0.97593054, 0.96986243, 0.96363999, 0.95799040, 0.95242811 },
+				{ 0.99093857, 0.98366703, 0.97730142, 0.97172592, 0.96634025, 0.96015135, 0.95551419 },
+				{ 0.99176024, 0.98449726, 0.97869836, 0.97252818, 0.96794290, 0.96252488, 0.95776477 },
+				{ 0.99173550, 0.98519293, 0.97948478, 0.97384568, 0.96905013, 0.96384893, 0.95938675 },
+				{ 0.99213929, 0.98595492, 0.98033951, 0.97519699, 0.96978940, 0.96519977, 0.96109712 },
+				{ 0.99234753, 0.98594153, 0.98085869, 0.97576681, 0.97096904, 0.96630554, 0.96208276 },
+				{ 0.99256707, 0.98645498, 0.98125314, 0.97587149, 0.97126518, 0.96635057, 0.96268472 },
+				{ 0.99235048, 0.98653657, 0.98133189, 0.97592068, 0.97151522, 0.96694338, 0.96229159 }
+			},
+			{
+				{ 0.98723460, 0.97732247, 0.96912395, 0.96141506, 0.95404171, 0.94664532, 0.94047698 },
+				{ 0.98721078, 0.97776146, 0.96921933, 0.96131434, 0.95470599, 0.94733252, 0.94045311 },
+				{ 0.98790486, 0.97851625, 0.97003666, 0.96313023, 0.95514438, 0.94868781, 0.94207726 },
+				{ 0.98849877, 0.97994947, 0.97149155, 0.96456561, 0.95796891, 0.95146919, 0.94569497 },
+				{ 0.98916995, 0.98109050, 0.97380151, 0.96650794, 0.96020520, 0.95438406, 0.94766243 },
+				{ 0.99009832, 0.98201560, 0.97532794, 0.96876971, 0.96256369, 0.95695150, 0.95142358 },
+				{ 0.99076778, 0.98314693, 0.97648801, 0.97085513, 0.96477942, 0.95971906, 0.95418861 },
+				{ 0.99148633, 0.98410186, 0.97807688, 0.97221394, 0.96677792, 0.96154574, 0.95711962 },
+				{ 0.99190570, 0.98508434, 0.97898533, 0.97389710, 0.96800078, 0.96323150, 0.95874065 },
+				{ 0.99206421, 0.98552746, 0.97987917, 0.97466369, 0.96955875, 0.96521074, 0.96051203 },
+				{ 0.99213087, 0.98605097, 0.98073099, 0.97540918, 0.97052386, 0.96605940, 0.96132423 },
+				{ 0.99269289, 0.98648454, 0.98112584, 0.97569711, 0.97136421, 0.96675030, 0.96281081 },
+				{ 0.99246944, 0.98654162, 0.98110020, 0.97606693, 0.97146539, 0.96711873, 0.96239133 }
+			},
+			{
+				{ 0.98629920, 0.97607992, 0.96632139, 0.95848357, 0.95075840, 0.94317358, 0.93621694 },
+				{ 0.98667660, 0.97610694, 0.96747678, 0.95901256, 0.95175475, 0.94401505, 0.93756097 },
+				{ 0.98719114, 0.97675345, 0.96854703, 0.96034496, 0.95301309, 0.94580154, 0.93921197 },
+				{ 0.98766690, 0.97874262, 0.97046964, 0.96239971, 0.95598201, 0.94929421, 0.94261657 },
+				{ 0.98855012, 0.98009304, 0.97205283, 0.96504028, 0.95875602, 0.95220144, 0.94607080 },
+				{ 0.98948331, 0.98155626, 0.97424003, 0.96806870, 0.96122998, 0.95510255, 0.94987608 },
+				{ 0.99042208, 0.98279311, 0.97598310, 0.96962284, 0.96311286, 0.95888496, 0.95276226 },
+				{ 0.99069760, 0.98377472, 0.97764597, 0.97186083, 0.96598919, 0.96112618, 0.95528606 },
+				{ 0.99158595, 0.98471162, 0.97896720, 0.97319387, 0.96826923, 0.96296857, 0.95727373 },
+				{ 0.99198631, 0.98554719, 0.98002145, 0.97438028, 0.96876484, 0.96499232, 0.96007222 },
+				{ 0.99216913, 0.98609622, 0.98059837, 0.97522375, 0.97086794, 0.96571875, 0.96058401 },
+				{ 0.99229464, 0.98618678, 0.98087351, 0.97539439, 0.97028715, 0.96597198, 0.96124696 },
+				{ 0.99246720, 0.98625266, 0.98088662, 0.97546046, 0.97120574, 0.96654795, 0.96282725 }
+			},
+			{
+				{ 0.98539956, 0.97443246, 0.96427650, 0.95537868, 0.94690082, 0.93990724, 0.93300454 },
+				{ 0.98531521, 0.97435466, 0.96504719, 0.95634849, 0.94783929, 0.93990841, 0.93321036 },
+				{ 0.98625699, 0.97554343, 0.96616893, 0.95802768, 0.95033959, 0.94290362, 0.93512094 },
+				{ 0.98723834, 0.97756529, 0.96890254, 0.96079411, 0.95323251, 0.94565901, 0.93933462 },
+				{ 0.98812214, 0.97884167, 0.97121927, 0.96367747, 0.95662712, 0.94990345, 0.94366639 },
+				{ 0.98928422, 0.98066444, 0.97340186, 0.96633888, 0.95972452, 0.95349531, 0.94781970 },
+				{ 0.99001366, 0.98223351, 0.97532921, 0.96886588, 0.96272932, 0.95796261, 0.95236115 },
+				{ 0.99085029, 0.98369938, 0.97717905, 0.97099289, 0.96496365, 0.96020421, 0.95429816 },
+				{ 0.99161910, 0.98466498, 0.97860231, 0.97290505, 0.96713510, 0.96199619, 0.95731594 },
+				{ 0.99199204, 0.98558387, 0.97972134, 0.97406516, 0.96897312, 0.96393191, 0.95961363 },
+				{ 0.99197694, 0.98569729, 0.98061816, 0.97491928, 0.96982956, 0.96509064, 0.96055112 },
+				{ 0.99210188, 0.98592419, 0.98012765, 0.97553262, 0.97047727, 0.96599338, 0.96165849 },
+				{ 0.99215099, 0.98613876, 0.98028567, 0.97588479, 0.97093191, 0.96602065, 0.96220756 }
+			},
+			{
+				{ 0.98430375, 0.97259628, 0.96175652, 0.95257562, 0.94441056, 0.93577448, 0.92776977 },
+				{ 0.98488585, 0.97311579, 0.96216523, 0.95334538, 0.94480833, 0.93606587, 0.92901796 },
+				{ 0.98535387, 0.97450932, 0.96477636, 0.95530492, 0.94811769, 0.93906130, 0.93214181 },
+				{ 0.98632265, 0.97624970, 0.96681137, 0.95832619, 0.95061636, 0.94297904, 0.93584242 },
+				{ 0.98767544, 0.97822144, 0.96957949, 0.96214716, 0.95411310, 0.94813481, 0.94193045 },
+				{ 0.98874191, 0.98027597, 0.97214826, 0.96553586, 0.95835916, 0.95279618, 0.94591845 },
+				{ 0.98962850, 0.98154984, 0.97488253, 0.96794791, 0.96205385, 0.95602364, 0.95065346 },
+				{ 0.99067562, 0.98298808, 0.97649907, 0.97029547, 0.96477663, 0.95939853, 0.95346627 },
+				{ 0.99126182, 0.98436724, 0.97805362, 0.97215162, 0.96654258, 0.96117148, 0.95639341 },
+				{ 0.99178300, 0.98513092, 0.97916958, 0.97316972, 0.96835468, 0.96312123, 0.95872903 },
+				{ 0.99182782, 0.98559407, 0.97974654, 0.97424365, 0.96936594, 0.96430794, 0.95948172 },
+				{ 0.99221353, 0.98606355, 0.98007927, 0.97483529, 0.97058629, 0.96579011, 0.96137395 },
+				{ 0.99229559, 0.98609907, 0.98035831, 0.97503972, 0.97012608, 0.96539553, 0.96082455 }
+			}
+		},
+		{
+			{
+				{ 0.99557813, 0.99224976, 0.98888002, 0.98586057, 0.98287982, 0.98026422, 0.97833615 },
+				{ 0.99549372, 0.99205520, 0.98886935, 0.98579189, 0.98291138, 0.98026002, 0.97765547 },
+				{ 0.99543389, 0.99198665, 0.98852379, 0.98556513, 0.98256145, 0.97980668, 0.97693436 },
+				{ 0.99528959, 0.99146975, 0.98810879, 0.98464663, 0.98179412, 0.97923722, 0.97649593 },
+				{ 0.99509053, 0.99112129, 0.98753580, 0.98391770, 0.98088657, 0.97783122, 0.97495390 },
+				{ 0.99452699, 0.99032635, 0.98641325, 0.98262476, 0.97973860, 0.97626583, 0.97341261 },
+				{ 0.99398898, 0.98940373, 0.98555848, 0.98112904, 0.97772950, 0.97362315, 0.97038115 },
+				{ 0.99331052, 0.98787670, 0.98332800, 0.97846946, 0.97445098, 0.97128645, 0.96728154 },
+				{ 0.99192760, 0.98630758, 0.98006559, 0.97491280, 0.97039578, 0.96654678, 0.96200884 },
+				{ 0.99036370, 0.98249592, 0.97578754, 0.96952650, 0.96407779, 0.95824728, 0.95376313 },
+				{ 0.98598788, 0.97591942, 0.96720359, 0.95877777, 0.95056281, 0.94370784, 0.93830569 },
+				{ 0.97638049, 0.95911619, 0.94442287, 0.93123815, 0.92033174, 0.90915443, 0.89981993 },
+				{ 0.84099086, 0.77055706, 0.72945914, 0.70284547, 0.68733156, 0.67994688, 0.67755600 }
+			},
+			{
+				{ 0.99563568, 0.99209478, 0.98882307, 0.98602728, 0.98334355, 0.98018226, 0.97722415 },
+				{ 0.99555178, 0.99190976, 0.98899125, 0.98586013, 0.98290134, 0.98063556, 0.97711860 },
+				{ 0.99550872, 0.99176286, 0.98845853, 0.98581523, 0.98251822, 0.97948102, 0.97719908 },
+				{ 0.99520992, 0.99155405, 0.98822343, 0.98495527, 0.98177973, 0.97905992, 0.97608592 },
+				{ 0.99497469, 0.99122295, 0.98730991, 0.98396737, 0.98113912, 0.97763703, 0.97510202 },
+				{ 0.99456993, 0.99015996, 0.98646744, 0.98325304, 0.97972439, 0.97599902, 0.97306203 },
+				{ 0.99401275, 0.98930813, 0.98515428, 0.98080219, 0.97750224, 0.97444861, 0.97106517 },
+				{ 0.99327177, 0.98793404, 0.98349366, 0.97859588, 0.97465404, 0.97090273, 0.96728221 },
+				{ 0.99184041, 0.98560924, 0.98021401, 0.97536823, 0.97048452, 0.96611597, 0.96210897 },
+				{ 0.99006931, 0.98219922, 0.97563821, 0.96927146, 0.96322612, 0.95775013, 0.95274471 },
+				{ 0.98572154, 0.97607419, 0.96695412, 0.95805049, 0.95048080, 0.94324241, 0.93613975 },
+				{ 0.97527862, 0.95749939, 0.94216684, 0.92831201, 0.91607909, 0.90555227, 0.89468238 },
+				{ 0.94726834, 0.91507380, 0.88781702, 0.86462220, 0.84614030, 0.82824182, 0.81352926 }
+			},
+			{
+				{ 0.99548276, 0.99208309, 0.98879797, 0.98597394, 0.98309959, 0.98059170, 0.97798444 },
+				{ 0.99552660, 0.99196388, 0.98855319, 0.98579869, 0.98300679, 0.98028921, 0.97804152 },
+				{ 0.99564576, 0.99161169, 0.98893184, 0.98565002, 0.98240859, 0.97999152, 0.97713885 },
+				{ 0.99523641, 0.99160998, 0.98806616, 0.98492781, 0.98194050, 0.97897888, 0.97602055 },
+				{ 0.99507444, 0.99095630, 0.98751143, 0.98397074, 0.98066917, 0.97775896, 0.97544753 },
+				{ 0.99464108, 0.99017202, 0.98637831, 0.98273987, 0.97936958, 0.97643803, 0.97300552 },
+				{ 0.99411537, 0.98932868, 0.98525255, 0.98139527, 0.97785369, 0.97365681, 0.97089634 },
+				{ 0.99314531, 0.98781350, 0.98277956, 0.97810678, 0.97433265, 0.97020035, 0.96725346 },
+				{ 0.99206533, 0.98573263, 0.97994569, 0.97469769, 0.97025202, 0.96560496, 0.96062926 },
+				{ 0.98977769, 0.98192747, 0.97474889, 0.96894249, 0.96322902, 0.95748195, 0.95186923 },
+				{ 0.98576247, 0.97539558, 0.96560058, 0.95699491, 0.94871013, 0.94113679, 0.93376092 },
+				{ 0.97657341, 0.95984377, 0.94529381, 0.93281751, 0.92132829, 0.91147578, 0.89968822 },
+				{ 0.96659820, 0.94368771, 0.92518093, 0.90878308, 0.89298734, 0.87983742, 0.86905109 }
+			},
+			{
+				{ 0.99559554, 0.99210460, 0.98903845, 0.98600494, 0.98335028, 0.98013789, 0.97764887 },
+				{ 0.99563128, 0.99192460, 0.98881680, 0.98564884, 0.98304430, 0.97991018, 0.97732903 },
+				{ 0.99542070, 0.99181440, 0.98878269, 0.98544172, 0.98259764, 0.97973215, 0.97710472 },
+				{ 0.99519133, 0.99160162, 0.98819167, 0.98478721, 0.98176223, 0.97914601, 0.97679133 },
+				{ 0.99521137, 0.99079464, 0.98712537, 0.98392564, 0.98092368, 0.97790116, 0.97495393 },
+				{ 0.99446796, 0.99035852, 0.98641738, 0.98277637, 0.97980462, 0.97619760, 0.97262416 },
+				{ 0.99405448, 0.98927659, 0.98517701, 0.98092640, 0.97714403, 0.97394080, 0.96997169 },
+				{ 0.99313564, 0.98768025, 0.98331050, 0.97833818, 0.97409628, 0.97072771, 0.96608338 },
+				{ 0.99193409, 0.98534078, 0.97972767, 0.97456572, 0.96937112, 0.96508590, 0.96022497 },
+				{ 0.98950036, 0.98153390, 0.97472178, 0.96765793, 0.96191692, 0.95595817, 0.95031321 },
+				{ 0.98564337, 0.97462160, 0.96596380, 0.95668415, 0.94940198, 0.94168060, 0.93464618 },
+				{ 0.97965496, 0.96481358, 0.95142409, 0.94089372, 0.93004115, 0.92012042, 0.91089710 },
+				{ 0.97525598, 0.95749257, 0.94239063, 0.92917779, 0.91676623, 0.90616324, 0.89583488 }
+			},
+			{
+				{ 0.99556720, 0.99228948, 0.98860307, 0.98591440, 0.98282170, 0.98005663, 0.97756678 },
+				{ 0.99560339, 0.99203864, 0.98887729, 0.98579199, 0.98319974, 0.97999388, 0.97741841 },
+				{ 0.99542834, 0.99183446, 0.98826273, 0.98539949, 0.98239733, 0.97956163, 0.97696645 },
+				{ 0.99513339, 0.99130197, 0.98801433, 0.98487199, 0.98180456, 0.97878602, 0.97630130 },
+				{ 0.99496025, 0.99090230, 0.98683956, 0.98392864, 0.98030222, 0.97792696, 0.97482066 },
+				{ 0.99435328, 0.99003354, 0.98613857, 0.98245388, 0.97928408, 0.97574975, 0.97314311 },
+				{ 0.99403663, 0.98934173, 0.98495409, 0.98059810, 0.97676240, 0.97297633, 0.96976186 },
+				{ 0.99295110, 0.98771598, 0.98273320, 0.97801995, 0.97380042, 0.96914120, 0.96584780 },
+				{ 0.99167231, 0.98518964, 0.97930533, 0.97388550, 0.96914274, 0.96410952, 0.95936526 },
+				{ 0.98967173, 0.98133208, 0.97459052, 0.96791638, 0.96187276, 0.95564059, 0.95061085 },
+				{ 0.98615423, 0.97611749, 0.96644928, 0.95865306, 0.95075265, 0.94404176, 0.93719356 },
+				{ 0.98187681, 0.96923303, 0.95774363, 0.94738126, 0.93805405, 0.92921839, 0.92110156 },
+				{ 0.97984757, 0.96508019, 0.95233353, 0.94178965, 0.93118788, 0.92183479, 0.91217603 }
+			},
+			{
+				{ 0.99551684, 0.99171215, 0.98848215, 0.98550035, 0.98245404, 0.97984903, 0.97704677 },
+				{ 0.99545663, 0.99181158, 0.98874880, 0.98569707, 0.98250721, 0.98007451, 0.97691429 },
+				{ 0.99522452, 0.99154734, 0.98817181, 0.98496929, 0.98217002, 0.97905183, 0.97628447 },
+				{ 0.99527554, 0.99147085, 0.98765990, 0.98443123, 0.98164054, 0.97832704, 0.97580545 },
+				{ 0.99484113, 0.99077501, 0.98676332, 0.98328145, 0.98020156, 0.97679581, 0.97419367 },
+				{ 0.99422956, 0.99010393, 0.98610628, 0.98233770, 0.97828090, 0.97522578, 0.97202527 },
+				{ 0.99378603, 0.98886673, 0.98440139, 0.98044182, 0.97695443, 0.97297454, 0.96938640 },
+				{ 0.99310861, 0.98749723, 0.98206558, 0.97738143, 0.97337460, 0.96900086, 0.96500926 },
+				{ 0.99148762, 0.98485208, 0.97890146, 0.97333024, 0.96892974, 0.96381519, 0.95934873 },
+				{ 0.98936440, 0.98175761, 0.97447001, 0.96786357, 0.96234084, 0.95673706, 0.95071763 },
+				{ 0.98703722, 0.97713686, 0.96876747, 0.96089565, 0.95348364, 0.94636455, 0.94021082 },
+				{ 0.98430632, 0.97265683, 0.96250672, 0.95222555, 0.94393076, 0.93664723, 0.92961278 },
+				{ 0.98309218, 0.97022787, 0.95923732, 0.95013713, 0.94063207, 0.93228365, 0.92495945 }
+			},
+			{
+				{ 0.99534931, 0.99175981, 0.98848594, 0.98504111, 0.98184636, 0.97935539, 0.97618941 },
+				{ 0.99542268, 0.99165146, 0.98860099, 0.98499910, 0.98216508, 0.97916078, 0.97651680 },
+				{ 0.99513261, 0.99161284, 0.98809296, 0.98476813, 0.98132323, 0.97865745, 0.97603947 },
+				{ 0.99514179, 0.99113108, 0.98741414, 0.98384823, 0.98093369, 0.97803805, 0.97477229 },
+				{ 0.99466995, 0.99081321, 0.98664922, 0.98324707, 0.97986915, 0.97657907, 0.97267421 },
+				{ 0.99433221, 0.98950199, 0.98586657, 0.98143387, 0.97797760, 0.97498017, 0.97133631 },
+				{ 0.99361776, 0.98871016, 0.98416933, 0.97968037, 0.97623185, 0.97196959, 0.96866987 },
+				{ 0.99251363, 0.98714746, 0.98171919, 0.97728558, 0.97255354, 0.96874442, 0.96414803 },
+				{ 0.99114057, 0.98481643, 0.97890301, 0.97295650, 0.96806488, 0.96354670, 0.95873935 },
+				{ 0.98971364, 0.98189372, 0.97473875, 0.96882522, 0.96271797, 0.95779204, 0.95218509 },
+				{ 0.98778550, 0.97858078, 0.97013002, 0.96272635, 0.95647178, 0.94919160, 0.94368482 },
+				{ 0.98637980, 0.97539604, 0.96659972, 0.95837557, 0.95088842, 0.94279364, 0.93639566 },
+				{ 0.98499714, 0.97407303, 0.96482272, 0.95569587, 0.94824459, 0.93974344, 0.93236516 }
+			},
+			{
+				{ 0.99513061, 0.99170800, 0.98812113, 0.98449417, 0.98165449, 0.97838066, 0.97595687 },
+				{ 0.99528310, 0.99116334, 0.98779436, 0.98493412, 0.98168523, 0.97852115, 0.97568234 },
+				{ 0.99513868, 0.99097823, 0.98740397, 0.98409810, 0.98116541, 0.97784103, 0.97478589 },
+				{ 0.99497557, 0.99081029, 0.98695719, 0.98368244, 0.98020619, 0.97692551, 0.97352066 },
+				{ 0.99450500, 0.99022340, 0.98628089, 0.98239431, 0.97918192, 0.97547088, 0.97213763 },
+				{ 0.99427357, 0.98912773, 0.98461262, 0.98084988, 0.97751818, 0.97400175, 0.97036766 },
+				{ 0.99345983, 0.98829443, 0.98364092, 0.97917491, 0.97506727, 0.97099517, 0.96776890 },
+				{ 0.99247685, 0.98675080, 0.98139719, 0.97662962, 0.97166253, 0.96751150, 0.96345535 },
+				{ 0.99163322, 0.98463573, 0.97920531, 0.97338648, 0.96809092, 0.96359093, 0.95893381 },
+				{ 0.98990312, 0.98266482, 0.97564355, 0.96918401, 0.96336432, 0.95772345, 0.95326815 },
+				{ 0.98853414, 0.97990245, 0.97203037, 0.96503750, 0.95826594, 0.95168676, 0.94669764 },
+				{ 0.98739625, 0.97759680, 0.96928484, 0.96165230, 0.95435365, 0.94791987, 0.94170222 },
+				{ 0.98688327, 0.97695079, 0.96811693, 0.95980478, 0.95289612, 0.94596125, 0.93936980 }
+			},
+			{
+				{ 0.99470173, 0.99088415, 0.98761855, 0.98400026, 0.98054141, 0.97781283, 0.97493174 },
+				{ 0.99486724, 0.99101905, 0.98733300, 0.98400815, 0.98042020, 0.97744446, 0.97441165 },
+				{ 0.99482395, 0.99075141, 0.98682752, 0.98344474, 0.98026230, 0.97688066, 0.97399842 },
+				{ 0.99466065, 0.99025216, 0.98636990, 0.98273265, 0.97922498, 0.97662269, 0.97248795 },
+				{ 0.99416888, 0.98948699, 0.98558236, 0.98174677, 0.97791070, 0.97462363, 0.97101607 },
+				{ 0.99379258, 0.98898906, 0.98423433, 0.98072243, 0.97604303, 0.97302065, 0.96890011 },
+				{ 0.99337752, 0.98801498, 0.98332507, 0.97861804, 0.97464167, 0.97034789, 0.96626094 },
+				{ 0.99258709, 0.98656668, 0.98125048, 0.97620764, 0.97113964, 0.96695972, 0.96206871 },
+				{ 0.99145663, 0.98496025, 0.97855781, 0.97348022, 0.96835666, 0.96327110, 0.95805897 },
+				{ 0.99040441, 0.98312627, 0.97615084, 0.97003810, 0.96435850, 0.95917666, 0.95430266 },
+				{ 0.98894549, 0.98097995, 0.97412242, 0.96712731, 0.96026695, 0.95526249, 0.94867960 },
+				{ 0.98823804, 0.97969942, 0.97174222, 0.96422675, 0.95815950, 0.95234681, 0.94563852 },
+				{ 0.98804086, 0.97887459, 0.97049504, 0.96364079, 0.95722726, 0.94990804, 0.94399724 }
+			},
+			{
+				{ 0.99492650, 0.99058006, 0.98670431, 0.98294705, 0.97947733, 0.97662520, 0.97321951 },
+				{ 0.99460270, 0.99055253, 0.98654858, 0.98258756, 0.97951193, 0.97594188, 0.97292807 },
+				{ 0.99476442, 0.99013854, 0.98610768, 0.98251403, 0.97874356, 0.97570376, 0.97277559 },
+				{ 0.99442634, 0.98967889, 0.98583056, 0.98181828, 0.97817778, 0.97460175, 0.97110058 },
+				{ 0.99402007, 0.98907812, 0.98524356, 0.98077632, 0.97667815, 0.97322653, 0.96995221 },
+				{ 0.99362820, 0.98869670, 0.98384230, 0.97912980, 0.97547874, 0.97128983, 0.96773147 },
+				{ 0.99285083, 0.98740678, 0.98246837, 0.97813987, 0.97314855, 0.96934911, 0.96546399 },
+				{ 0.99236070, 0.98640501, 0.98061217, 0.97635977, 0.97126016, 0.96662268, 0.96222444 },
+				{ 0.99158852, 0.98493731, 0.97842698, 0.97345448, 0.96802353, 0.96349044, 0.95839145 },
+				{ 0.99070819, 0.98340927, 0.97683751, 0.97100680, 0.96518877, 0.96035980, 0.95522950 },
+				{ 0.98978908, 0.98189215, 0.97481812, 0.96808302, 0.96321376, 0.95658572, 0.95131650 },
+				{ 0.98906540, 0.98063527, 0.97353298, 0.96667908, 0.96112121, 0.95491112, 0.94905896 },
+				{ 0.98912265, 0.98055744, 0.97318513, 0.96617882, 0.96008596, 0.95427531, 0.94793813 }
+			},
+			{
+				{ 0.99448292, 0.98999622, 0.98557441, 0.98195808, 0.97822207, 0.97499349, 0.97137338 },
+				{ 0.99416651, 0.98978192, 0.98560978, 0.98159304, 0.97852178, 0.97443747, 0.97145047 },
+				{ 0.99433160, 0.98946678, 0.98534802, 0.98148472, 0.97791835, 0.97406321, 0.97059440 },
+				{ 0.99392084, 0.98920589, 0.98487676, 0.98066290, 0.97684151, 0.97294511, 0.97018106 },
+				{ 0.99382942, 0.98853436, 0.98431792, 0.98013946, 0.97599591, 0.97188964, 0.96866026 },
+				{ 0.99335740, 0.98771259, 0.98307573, 0.97911217, 0.97480326, 0.97061930, 0.96676547 },
+				{ 0.99286464, 0.98679153, 0.98234643, 0.97734819, 0.97269715, 0.96887191, 0.96478248 },
+				{ 0.99242000, 0.98608622, 0.98069446, 0.97574852, 0.97097124, 0.96620802, 0.96269041 },
+				{ 0.99165153, 0.98519880, 0.97885623, 0.97396199, 0.96854012, 0.96363101, 0.95946893 },
+				{ 0.99096463, 0.98384648, 0.97764058, 0.97210636, 0.96655223, 0.96124509, 0.95612921 },
+				{ 0.99013964, 0.98296660, 0.97601664, 0.97012223, 0.96434773, 0.95865610, 0.95339073 },
+				{ 0.99002370, 0.98238639, 0.97542310, 0.96938513, 0.96302887, 0.95708375, 0.95155273 },
+				{ 0.98996203, 0.98185162, 0.97487450, 0.96829769, 0.96204119, 0.95614217, 0.95119018 }
+			},
+			{
+				{ 0.99410868, 0.98900155, 0.98478464, 0.98052674, 0.97692833, 0.97367539, 0.96994409 },
+				{ 0.99401286, 0.98913104, 0.98487291, 0.98032556, 0.97657325, 0.97295873, 0.96993270 },
+				{ 0.99412936, 0.98869324, 0.98439342, 0.98044694, 0.97654490, 0.97259102, 0.96866398 },
+				{ 0.99386485, 0.98852562, 0.98367214, 0.97927409, 0.97517490, 0.97136103, 0.96822964 },
+				{ 0.99337951, 0.98787566, 0.98338099, 0.97916738, 0.97471755, 0.97086472, 0.96678089 },
+				{ 0.99314629, 0.98726454, 0.98247330, 0.97787333, 0.97302030, 0.96939164, 0.96568336 },
+				{ 0.99261644, 0.98690526, 0.98129779, 0.97666576, 0.97194279, 0.96797871, 0.96348980 },
+				{ 0.99200343, 0.98593805, 0.98077234, 0.97575080, 0.97080621, 0.96531362, 0.96117664 },
+				{ 0.99171142, 0.98520949, 0.97953188, 0.97367048, 0.96828758, 0.96423783, 0.95914211 },
+				{ 0.99111457, 0.98397351, 0.97821320, 0.97240004, 0.96742105, 0.96162431, 0.95719348 },
+				{ 0.99076041, 0.98343602, 0.97686224, 0.97138318, 0.96578662, 0.96069166, 0.95511346 },
+				{ 0.99057716, 0.98300647, 0.97677338, 0.97042120, 0.96441442, 0.95908513, 0.95422419 },
+				{ 0.99020782, 0.98321854, 0.97613307, 0.97020744, 0.96396784, 0.95927824, 0.95366609 }
+			},
+			{
+				{ 0.99338185, 0.98829000, 0.98332265, 0.97939673, 0.97511250, 0.97077069, 0.96715105 },
+				{ 0.99349608, 0.98797773, 0.98353980, 0.97896430, 0.97521580, 0.97139534, 0.96680555 },
+				{ 0.99333511, 0.98811968, 0.98322317, 0.97877893, 0.97464824, 0.97026383, 0.96663068 },
+				{ 0.99318889, 0.98802500, 0.98291686, 0.97801071, 0.97408493, 0.96993103, 0.96630162 },
+				{ 0.99294125, 0.98741754, 0.98208913, 0.97759155, 0.97372326, 0.96902591, 0.96498787 },
+				{ 0.99268008, 0.98711481, 0.98173938, 0.97684878, 0.97285692, 0.96797369, 0.96380077 },
+				{ 0.99238093, 0.98650070, 0.98091949, 0.97636761, 0.97109966, 0.96663876, 0.96254429 },
+				{ 0.99196290, 0.98567056, 0.98029197, 0.97469767, 0.97005735, 0.96518404, 0.96090050 },
+				{ 0.99173901, 0.98514191, 0.97912329, 0.97387698, 0.96861048, 0.96385918, 0.95942075 },
+				{ 0.99133201, 0.98458945, 0.97813015, 0.97261412, 0.96837536, 0.96279065, 0.95789559 },
+				{ 0.99113709, 0.98407671, 0.97792290, 0.97221625, 0.96646774, 0.96139300, 0.95718760 },
+				{ 0.99106151, 0.98361652, 0.97738720, 0.97170583, 0.96628031, 0.96075371, 0.95587523 },
+				{ 0.99070412, 0.98340610, 0.97729411, 0.97138455, 0.96620544, 0.96094074, 0.95610501 }
+			},
+			{
+				{ 0.99288291, 0.98717406, 0.98239064, 0.97733554, 0.97300188, 0.96851205, 0.96475198 },
+				{ 0.99294937, 0.98723835, 0.98225532, 0.97818071, 0.97310169, 0.96826498, 0.96436832 },
+				{ 0.99281671, 0.98688894, 0.98210412, 0.97710788, 0.97225612, 0.96874264, 0.96471104 },
+				{ 0.99259244, 0.98693714, 0.98198128, 0.97693331, 0.97225257, 0.96831298, 0.96426886 },
+				{ 0.99251515, 0.98670735, 0.98160695, 0.97628321, 0.97158985, 0.96666812, 0.96323168 },
+				{ 0.99237338, 0.98628326, 0.98080662, 0.97611896, 0.97131942, 0.96682576, 0.96214407 },
+				{ 0.99223309, 0.98595914, 0.98059582, 0.97566602, 0.97049273, 0.96542767, 0.96104853 },
+				{ 0.99196675, 0.98568169, 0.97973352, 0.97427826, 0.96927967, 0.96446356, 0.96079817 },
+				{ 0.99161900, 0.98519662, 0.97924824, 0.97382835, 0.96830998, 0.96364492, 0.95927121 },
+				{ 0.99160711, 0.98497404, 0.97902315, 0.97340678, 0.96819914, 0.96359496, 0.95857093 },
+				{ 0.99122979, 0.98485000, 0.97809155, 0.97305736, 0.96764424, 0.96193178, 0.95806526 },
+				{ 0.99146627, 0.98461289, 0.97853382, 0.97251502, 0.96661492, 0.96209579, 0.95774461 },
+				{ 0.99147895, 0.98411423, 0.97845744, 0.97295333, 0.96732752, 0.96212757, 0.95710084 }
+			},
+			{
+				{ 0.99235581, 0.98604031, 0.98116073, 0.97566075, 0.97097099, 0.96686674, 0.96209562 },
+				{ 0.99230498, 0.98615115, 0.98055191, 0.97623285, 0.97050555, 0.96656769, 0.96164279 },
+				{ 0.99231299, 0.98617989, 0.98036960, 0.97507448, 0.97076938, 0.96602465, 0.96193381 },
+				{ 0.99221128, 0.98596663, 0.98068667, 0.97561683, 0.97047538, 0.96636235, 0.96154954 },
+				{ 0.99226503, 0.98588630, 0.98049310, 0.97509507, 0.97031361, 0.96570461, 0.96203556 },
+				{ 0.99208428, 0.98570666, 0.98020093, 0.97473757, 0.97043080, 0.96499042, 0.96075981 },
+				{ 0.99203330, 0.98583808, 0.98016351, 0.97412192, 0.97003417, 0.96439305, 0.96016542 },
+				{ 0.99193944, 0.98529175, 0.97934623, 0.97433226, 0.96907892, 0.96466119, 0.96004364 },
+				{ 0.99168136, 0.98494906, 0.97936710, 0.97382677, 0.96884118, 0.96431895, 0.95930632 },
+				{ 0.99172795, 0.98470445, 0.97898643, 0.97400130, 0.96849577, 0.96405366, 0.95877263 },
+				{ 0.99151427, 0.98481407, 0.97873672, 0.97308470, 0.96842870, 0.96343225, 0.95874849 },
+				{ 0.99151603, 0.98509061, 0.97888260, 0.97352901, 0.96803738, 0.96302130, 0.95863683 },
+				{ 0.99165486, 0.98474953, 0.97861369, 0.97350825, 0.96836129, 0.96314306, 0.95786243 }
+			},
+			{
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+				{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 }
+			},
+			{
+				{ 0.99105785, 0.98380290, 0.97793043, 0.97155506, 0.96660959, 0.96130981, 0.95608363 },
+				{ 0.99108974, 0.98401218, 0.97784393, 0.97181351, 0.96600132, 0.96098395, 0.95638041 },
+				{ 0.99116538, 0.98397093, 0.97790961, 0.97211545, 0.96682286, 0.96119868, 0.95612059 },
+				{ 0.99090614, 0.98398015, 0.97764039, 0.97252037, 0.96666948, 0.96197252, 0.95651990 },
+				{ 0.99122331, 0.98441305, 0.97819702, 0.97269350, 0.96676987, 0.96260350, 0.95747557 },
+				{ 0.99122016, 0.98466233, 0.97823786, 0.97273066, 0.96724195, 0.96225358, 0.95736450 },
+				{ 0.99125418, 0.98440500, 0.97870030, 0.97313802, 0.96860448, 0.96298533, 0.95790282 },
+				{ 0.99159518, 0.98489385, 0.97899260, 0.97377693, 0.96853742, 0.96304176, 0.95836992 },
+				{ 0.99176520, 0.98534737, 0.97921068, 0.97398264, 0.96857494, 0.96309629, 0.95906500 },
+				{ 0.99193440, 0.98529410, 0.97975363, 0.97424657, 0.96859632, 0.96423471, 0.95939953 },
+				{ 0.99207613, 0.98561812, 0.97950060, 0.97420429, 0.96926810, 0.96437347, 0.95976266 },
+				{ 0.99204048, 0.98533996, 0.97936607, 0.97437371, 0.96922891, 0.96438031, 0.95991672 },
+				{ 0.99180484, 0.98553910, 0.97988235, 0.97375185, 0.96923615, 0.96433821, 0.96015519 }
+			},
+			{
+				{ 0.99037316, 0.98262086, 0.97593507, 0.96943489, 0.96405263, 0.95780309, 0.95346587 },
+				{ 0.99005644, 0.98282857, 0.97637494, 0.96955477, 0.96342995, 0.95805121, 0.95334994 },
+				{ 0.99024540, 0.98299836, 0.97621670, 0.96971160, 0.96433116, 0.95917695, 0.95280479 },
+				{ 0.99065567, 0.98285884, 0.97674212, 0.97056827, 0.96515017, 0.95976002, 0.95432560 },
+				{ 0.99089561, 0.98335474, 0.97750458, 0.97099005, 0.96514375, 0.95997588, 0.95504102 },
+				{ 0.99103829, 0.98407948, 0.97785411, 0.97197230, 0.96593490, 0.96085955, 0.95608108 },
+				{ 0.99101290, 0.98436478, 0.97806872, 0.97241451, 0.96676507, 0.96154291, 0.95745775 },
+				{ 0.99132635, 0.98497068, 0.97868436, 0.97278452, 0.96799611, 0.96283998, 0.95771665 },
+				{ 0.99181228, 0.98513993, 0.97902318, 0.97372183, 0.96836352, 0.96374706, 0.95885283 },
+				{ 0.99187527, 0.98508335, 0.97951587, 0.97388575, 0.96882300, 0.96425375, 0.95954693 },
+				{ 0.99209710, 0.98514864, 0.97926609, 0.97453359, 0.96914933, 0.96419443, 0.95960071 },
+				{ 0.99185640, 0.98583599, 0.97983422, 0.97507026, 0.97027736, 0.96478520, 0.96032317 },
+				{ 0.99170775, 0.98538011, 0.97968443, 0.97412611, 0.96938275, 0.96502904, 0.95952083 }
+			},
+			{
+				{ 0.98927974, 0.98170645, 0.97423602, 0.96699813, 0.96085717, 0.95523133, 0.94980776 },
+				{ 0.98943482, 0.98134066, 0.97432892, 0.96742628, 0.96154377, 0.95578170, 0.95043255 },
+				{ 0.98972316, 0.98171068, 0.97456360, 0.96713411, 0.96169664, 0.95606131, 0.95081725 },
+				{ 0.99004934, 0.98208975, 0.97494018, 0.96888642, 0.96234529, 0.95729324, 0.95155251 },
+				{ 0.99011183, 0.98283957, 0.97605758, 0.96935464, 0.96389805, 0.95845159, 0.95298375 },
+				{ 0.99054316, 0.98318665, 0.97671042, 0.97137891, 0.96470463, 0.96034108, 0.95428891 },
+				{ 0.99095631, 0.98400904, 0.97779256, 0.97164906, 0.96634492, 0.96035743, 0.95609886 },
+				{ 0.99123704, 0.98458697, 0.97792157, 0.97229723, 0.96687917, 0.96145286, 0.95699183 },
+				{ 0.99146771, 0.98497506, 0.97853052, 0.97329062, 0.96805395, 0.96326730, 0.95803645 },
+				{ 0.99156857, 0.98501294, 0.97925749, 0.97388649, 0.96862490, 0.96428503, 0.95879728 },
+				{ 0.99192083, 0.98533239, 0.97951176, 0.97478901, 0.96901225, 0.96424337, 0.96020617 },
+				{ 0.99201479, 0.98582269, 0.98027449, 0.97473980, 0.96961240, 0.96438974, 0.96005970 },
+				{ 0.99205568, 0.98576361, 0.97973313, 0.97544235, 0.96962163, 0.96488126, 0.96055676 }
+			},
+			{
+				{ 0.98854483, 0.97988458, 0.97217406, 0.96480001, 0.95786349, 0.95223663, 0.94570605 },
+				{ 0.98864974, 0.98010612, 0.97232751, 0.96488837, 0.95825052, 0.95245599, 0.94610507 },
+				{ 0.98908261, 0.98069170, 0.97281530, 0.96619721, 0.95927125, 0.95313826, 0.94817114 },
+				{ 0.98924331, 0.98090383, 0.97375509, 0.96703196, 0.96078439, 0.95467279, 0.94892075 },
+				{ 0.98955483, 0.98166366, 0.97485995, 0.96803171, 0.96222377, 0.95599393, 0.95064111 },
+				{ 0.99033633, 0.98288421, 0.97577912, 0.96924516, 0.96382962, 0.95801177, 0.95253116 },
+				{ 0.99056464, 0.98331252, 0.97661076, 0.97059616, 0.96505571, 0.95998943, 0.95457042 },
+				{ 0.99096051, 0.98412084, 0.97754677, 0.97213610, 0.96656445, 0.96141851, 0.95625218 },
+				{ 0.99133066, 0.98454758, 0.97838295, 0.97314449, 0.96722972, 0.96310057, 0.95814312 },
+				{ 0.99159559, 0.98514724, 0.97943480, 0.97373110, 0.96847227, 0.96376425, 0.95893310 },
+				{ 0.99186751, 0.98561866, 0.97951456, 0.97445562, 0.96927715, 0.96478095, 0.95997992 },
+				{ 0.99204004, 0.98582314, 0.97980312, 0.97450416, 0.96948046, 0.96447654, 0.96061329 },
+				{ 0.99197416, 0.98563512, 0.98012091, 0.97464124, 0.96995758, 0.96529989, 0.96003963 }
+			},
+			{
+				{ 0.98780564, 0.97880541, 0.96980595, 0.96235164, 0.95554917, 0.94947334, 0.94228588 },
+				{ 0.98788089, 0.97880112, 0.97018169, 0.96317935, 0.95568327, 0.95004578, 0.94272571 },
+				{ 0.98805397, 0.97932812, 0.97123335, 0.96381469, 0.95644326, 0.94963255, 0.94446219 },
+				{ 0.98900514, 0.98012023, 0.97240957, 0.96527902, 0.95847917, 0.95192530, 0.94599085 },
+				{ 0.98928161, 0.98112654, 0.97325278, 0.96698320, 0.95997563, 0.95401872, 0.94792232 },
+				{ 0.98981501, 0.98220172, 0.97490212, 0.96831922, 0.96203874, 0.95653250, 0.95041493 },
+				{ 0.99043541, 0.98265092, 0.97577847, 0.96949924, 0.96438229, 0.95817195, 0.95308578 },
+				{ 0.99099952, 0.98424255, 0.97732200, 0.97185649, 0.96605209, 0.96006328, 0.95528764 },
+				{ 0.99141323, 0.98455974, 0.97877335, 0.97235590, 0.96732589, 0.96221207, 0.95676595 },
+				{ 0.99147040, 0.98513560, 0.97942242, 0.97335944, 0.96834058, 0.96315455, 0.95894785 },
+				{ 0.99198745, 0.98556305, 0.97977580, 0.97441458, 0.96881116, 0.96410354, 0.95970952 },
+				{ 0.99194260, 0.98571337, 0.97989062, 0.97457031, 0.96953647, 0.96521465, 0.96046266 },
+				{ 0.99210284, 0.98588381, 0.98034949, 0.97469210, 0.96969635, 0.96487626, 0.96073375 }
+			},
+			{
+				{ 0.98703841, 0.97691732, 0.96824605, 0.95944407, 0.95242681, 0.94531108, 0.93823566 },
+				{ 0.98707550, 0.97722355, 0.96879867, 0.96012514, 0.95244598, 0.94604110, 0.93926368 },
+				{ 0.98747293, 0.97825611, 0.96951119, 0.96175806, 0.95448939, 0.94741740, 0.94017810 },
+				{ 0.98788756, 0.97858555, 0.97070432, 0.96291343, 0.95633694, 0.95001427, 0.94354327 },
+				{ 0.98889325, 0.97991118, 0.97196862, 0.96488187, 0.95861014, 0.95249156, 0.94596538 },
+				{ 0.98940238, 0.98120929, 0.97446507, 0.96737046, 0.96080992, 0.95416486, 0.94931006 },
+				{ 0.99005602, 0.98251496, 0.97541931, 0.96899425, 0.96349375, 0.95716294, 0.95188914 },
+				{ 0.99084410, 0.98378187, 0.97685331, 0.97048801, 0.96457267, 0.95959732, 0.95444647 },
+				{ 0.99134529, 0.98440968, 0.97808093, 0.97214876, 0.96662912, 0.96190234, 0.95662718 },
+				{ 0.99176276, 0.98498469, 0.97888439, 0.97284004, 0.96872509, 0.96262883, 0.95840779 },
+				{ 0.99174365, 0.98513085, 0.97919934, 0.97425931, 0.96904002, 0.96417096, 0.95895992 },
+				{ 0.99191789, 0.98543647, 0.97968561, 0.97444064, 0.96885021, 0.96496052, 0.95999749 },
+				{ 0.99186985, 0.98590878, 0.97979720, 0.97453357, 0.96906064, 0.96507870, 0.96004826 }
+			},
+			{
+				{ 0.98608229, 0.97507195, 0.96623473, 0.95695041, 0.94899619, 0.94131546, 0.93464545 },
+				{ 0.98603356, 0.97523544, 0.96658579, 0.95877402, 0.94990522, 0.94279615, 0.93493436 },
+				{ 0.98664066, 0.97642823, 0.96736682, 0.95945334, 0.95150154, 0.94404941, 0.93683820 },
+				{ 0.98767478, 0.97798521, 0.96902427, 0.96106622, 0.95417078, 0.94657666, 0.94064489 },
+				{ 0.98825630, 0.97952864, 0.97112468, 0.96366267, 0.95645252, 0.94983877, 0.94410788 },
+				{ 0.98931255, 0.98036133, 0.97253529, 0.96630323, 0.95968108, 0.95340947, 0.94704507 },
+				{ 0.99013877, 0.98170757, 0.97494756, 0.96824194, 0.96194065, 0.95638851, 0.95066880 },
+				{ 0.99059215, 0.98312230, 0.97640192, 0.97012133, 0.96446035, 0.95898087, 0.95387966 },
+				{ 0.99116446, 0.98365988, 0.97756250, 0.97182295, 0.96591881, 0.96069251, 0.95564064 },
+				{ 0.99169620, 0.98461680, 0.97860254, 0.97303884, 0.96785396, 0.96274973, 0.95743249 },
+				{ 0.99161972, 0.98540783, 0.97921480, 0.97379033, 0.96839997, 0.96347314, 0.95940980 },
+				{ 0.99176881, 0.98530105, 0.97961582, 0.97426741, 0.96950078, 0.96432222, 0.95929574 },
+				{ 0.99203801, 0.98570114, 0.97968748, 0.97458334, 0.96899208, 0.96444073, 0.96009696 }
+			},
+			{
+				{ 0.98500480, 0.97358706, 0.96363354, 0.95475877, 0.94615153, 0.93808847, 0.93039185 },
+				{ 0.98511871, 0.97372708, 0.96397741, 0.95442575, 0.94661846, 0.93848278, 0.93094719 },
+				{ 0.98561601, 0.97535913, 0.96586967, 0.95729523, 0.94881327, 0.94152527, 0.93439014 },
+				{ 0.98687328, 0.97626035, 0.96781008, 0.95937326, 0.95149133, 0.94344346, 0.93708978 },
+				{ 0.98754969, 0.97839331, 0.96995593, 0.96256639, 0.95472404, 0.94779301, 0.94072948 },
+				{ 0.98867090, 0.98008193, 0.97203930, 0.96495458, 0.95758028, 0.95156813, 0.94555515 },
+				{ 0.98989366, 0.98146022, 0.97450458, 0.96771038, 0.96108178, 0.95502734, 0.94934750 },
+				{ 0.99026323, 0.98230638, 0.97577531, 0.96960646, 0.96390670, 0.95768969, 0.95212060 },
+				{ 0.99106925, 0.98358848, 0.97743606, 0.97100076, 0.96554759, 0.96001585, 0.95482963 },
+				{ 0.99160766, 0.98477248, 0.97780135, 0.97249750, 0.96672898, 0.96116906, 0.95743876 },
+				{ 0.99162459, 0.98501838, 0.97902295, 0.97313710, 0.96819037, 0.96314170, 0.95862523 },
+				{ 0.99185210, 0.98548090, 0.97954303, 0.97382898, 0.96873872, 0.96411736, 0.95940877 },
+				{ 0.99191010, 0.98512268, 0.97969307, 0.97419814, 0.96939722, 0.96393677, 0.95955821 }
+			}
+		},
+		{
+			{
+				{ 0.99527469, 0.99188426, 0.98843996, 0.98525209, 0.98246118, 0.97918960, 0.97695609 },
+				{ 0.99532456, 0.99164091, 0.98825795, 0.98508474, 0.98198836, 0.97933467, 0.97644679 },
+				{ 0.99514483, 0.99128666, 0.98787991, 0.98495552, 0.98147206, 0.97831691, 0.97609688 },
+				{ 0.99510189, 0.99096476, 0.98744611, 0.98397076, 0.98092651, 0.97787149, 0.97520927 },
+				{ 0.99477856, 0.99031023, 0.98689386, 0.98326023, 0.98023063, 0.97690914, 0.97352568 },
+				{ 0.99436687, 0.98970231, 0.98544413, 0.98225816, 0.97822051, 0.97483189, 0.97163569 },
+				{ 0.99372725, 0.98908596, 0.98453921, 0.98021311, 0.97685443, 0.97273396, 0.96884159 },
+				{ 0.99306216, 0.98756119, 0.98239086, 0.97767772, 0.97343861, 0.96959469, 0.96517661 },
+				{ 0.99157963, 0.98523522, 0.97931292, 0.97423253, 0.96917168, 0.96453863, 0.95963356 },
+				{ 0.98954815, 0.98121006, 0.97444786, 0.96817642, 0.96165771, 0.95659011, 0.95113489 },
+				{ 0.98547848, 0.97496039, 0.96528214, 0.95699806, 0.94858256, 0.94141181, 0.93455746 },
+				{ 0.97490673, 0.95683113, 0.94151974, 0.92866007, 0.91742443, 0.90429870, 0.89587752 },
+				{ 0.82752444, 0.75356709, 0.70967147, 0.68545845, 0.66905254, 0.66011041, 0.65638079 }
+			},
+			{
+				{ 0.99538885, 0.99174131, 0.98816862, 0.98542408, 0.98196565, 0.97935701, 0.97629354 },
+				{ 0.99558648, 0.99174268, 0.98820636, 0.98510128, 0.98195514, 0.97916324, 0.97672406 },
+				{ 0.99520193, 0.99141949, 0.98795293, 0.98503699, 0.98168653, 0.97880477, 0.97596221 },
+				{ 0.99510163, 0.99123403, 0.98756052, 0.98423353, 0.98082703, 0.97767007, 0.97536095 },
+				{ 0.99467157, 0.99062888, 0.98662491, 0.98337034, 0.98040747, 0.97708164, 0.97387730 },
+				{ 0.99432104, 0.98982429, 0.98570518, 0.98196006, 0.97852240, 0.97538569, 0.97222792 },
+				{ 0.99381193, 0.98872382, 0.98418796, 0.98053686, 0.97676276, 0.97298660, 0.96911333 },
+				{ 0.99286956, 0.98738828, 0.98216311, 0.97816067, 0.97307466, 0.96916108, 0.96522887 },
+				{ 0.99156531, 0.98527460, 0.97968844, 0.97379359, 0.96921915, 0.96401106, 0.96002097 },
+				{ 0.98951519, 0.98137512, 0.97450891, 0.96820704, 0.96196180, 0.95596562, 0.95036293 },
+				{ 0.98543248, 0.97414093, 0.96527209, 0.95673426, 0.94816077, 0.94088533, 0.93372836 },
+				{ 0.97384148, 0.95493218, 0.93911925, 0.92539430, 0.91265573, 0.90120801, 0.88976135 },
+				{ 0.94239433, 0.90685886, 0.87732745, 0.85470075, 0.83235647, 0.81565627, 0.80036749 }
+			},
+			{
+				{ 0.99546986, 0.99185579, 0.98813982, 0.98513740, 0.98250631, 0.97947271, 0.97610325 },
+				{ 0.99545596, 0.99145621, 0.98836743, 0.98519841, 0.98188015, 0.97944413, 0.97589360 },
+				{ 0.99516709, 0.99149335, 0.98772854, 0.98499062, 0.98157953, 0.97907118, 0.97596330 },
+				{ 0.99492947, 0.99119745, 0.98761120, 0.98409422, 0.98086171, 0.97793932, 0.97484305 },
+				{ 0.99469458, 0.99067995, 0.98688870, 0.98299676, 0.98019266, 0.97685904, 0.97354570 },
+				{ 0.99433397, 0.98980895, 0.98563759, 0.98255154, 0.97832117, 0.97523561, 0.97189526 },
+				{ 0.99386539, 0.98915855, 0.98451336, 0.98042231, 0.97613911, 0.97291760, 0.96926247 },
+				{ 0.99292661, 0.98747381, 0.98220804, 0.97768138, 0.97303297, 0.96913757, 0.96568869 },
+				{ 0.99173216, 0.98501251, 0.97903174, 0.97346895, 0.96918994, 0.96397772, 0.95952251 },
+				{ 0.98939960, 0.98108860, 0.97431313, 0.96763880, 0.96090505, 0.95506278, 0.94886230 },
+				{ 0.98505611, 0.97342997, 0.96363229, 0.95435332, 0.94620481, 0.93854612, 0.93132752 },
+				{ 0.97502149, 0.95756949, 0.94235890, 0.92883297, 0.91616646, 0.90482965, 0.89424067 },
+				{ 0.96336058, 0.93961009, 0.91811016, 0.90042347, 0.88365438, 0.86962295, 0.85604916 }
+			},
+			{
+				{ 0.99540461, 0.99156881, 0.98840530, 0.98535887, 0.98215905, 0.97934028, 0.97676137 },
+				{ 0.99533490, 0.99138925, 0.98831159, 0.98481540, 0.98185558, 0.97925104, 0.97698429 },
+				{ 0.99507849, 0.99142130, 0.98816559, 0.98440869, 0.98189836, 0.97853784, 0.97581779 },
+				{ 0.99493591, 0.99103282, 0.98748200, 0.98440582, 0.98111623, 0.97752447, 0.97471382 },
+				{ 0.99467290, 0.99043195, 0.98698000, 0.98325177, 0.98001114, 0.97660595, 0.97372364 },
+				{ 0.99431525, 0.98960379, 0.98580984, 0.98179306, 0.97875231, 0.97534368, 0.97175311 },
+				{ 0.99368813, 0.98875712, 0.98401341, 0.98018844, 0.97599858, 0.97201265, 0.96907257 },
+				{ 0.99299215, 0.98714563, 0.98184291, 0.97681075, 0.97312002, 0.96887919, 0.96540554 },
+				{ 0.99138023, 0.98493428, 0.97868610, 0.97337598, 0.96799140, 0.96358685, 0.95828477 },
+				{ 0.98881499, 0.98089162, 0.97315720, 0.96647133, 0.96039215, 0.95470670, 0.94857118 },
+				{ 0.98477557, 0.97363188, 0.96368971, 0.95452921, 0.94669491, 0.93869047, 0.93242021 },
+				{ 0.97780476, 0.96166302, 0.94812632, 0.93654063, 0.92465809, 0.91421886, 0.90472335 },
+				{ 0.97247877, 0.95375638, 0.93714535, 0.92247394, 0.90922925, 0.89741830, 0.88601695 }
+			},
+			{
+				{ 0.99526644, 0.99145974, 0.98833836, 0.98513425, 0.98212897, 0.97947251, 0.97656411 },
+				{ 0.99535578, 0.99152150, 0.98814170, 0.98505338, 0.98176270, 0.97924748, 0.97581386 },
+				{ 0.99518159, 0.99124850, 0.98797276, 0.98454975, 0.98171098, 0.97901896, 0.97507277 },
+				{ 0.99493828, 0.99093604, 0.98759044, 0.98414042, 0.98125305, 0.97720684, 0.97511674 },
+				{ 0.99475435, 0.99034175, 0.98643525, 0.98322853, 0.97980537, 0.97627976, 0.97350910 },
+				{ 0.99414675, 0.98970371, 0.98577809, 0.98193793, 0.97797824, 0.97540356, 0.97122324 },
+				{ 0.99351288, 0.98860490, 0.98413486, 0.97957477, 0.97572459, 0.97198108, 0.96789732 },
+				{ 0.99270051, 0.98729747, 0.98219965, 0.97675908, 0.97238778, 0.96807763, 0.96391112 },
+				{ 0.99107943, 0.98453303, 0.97851579, 0.97282763, 0.96742485, 0.96295007, 0.95741149 },
+				{ 0.98896751, 0.98071675, 0.97286341, 0.96654512, 0.95965241, 0.95363418, 0.94776202 },
+				{ 0.98546679, 0.97453498, 0.96471629, 0.95592069, 0.94794278, 0.94088037, 0.93337173 },
+				{ 0.98065288, 0.96677898, 0.95482886, 0.94332769, 0.93272414, 0.92343578, 0.91473860 },
+				{ 0.97812928, 0.96176110, 0.94767017, 0.93598710, 0.92406190, 0.91475983, 0.90525213 }
+			},
+			{
+				{ 0.99528090, 0.99153904, 0.98810392, 0.98491652, 0.98200097, 0.97911569, 0.97630471 },
+				{ 0.99530464, 0.99144474, 0.98803048, 0.98512836, 0.98170545, 0.97881153, 0.97583341 },
+				{ 0.99497296, 0.99129492, 0.98759434, 0.98469877, 0.98139916, 0.97843124, 0.97555175 },
+				{ 0.99487497, 0.99085137, 0.98747500, 0.98349513, 0.98058349, 0.97725753, 0.97435733 },
+				{ 0.99471133, 0.99015230, 0.98627783, 0.98301768, 0.97978016, 0.97644524, 0.97271410 },
+				{ 0.99417608, 0.98963255, 0.98527305, 0.98113728, 0.97784675, 0.97394456, 0.97121013 },
+				{ 0.99344993, 0.98846766, 0.98372465, 0.97927539, 0.97533411, 0.97137910, 0.96777883 },
+				{ 0.99277656, 0.98662047, 0.98091947, 0.97634956, 0.97196725, 0.96791506, 0.96328711 },
+				{ 0.99146882, 0.98399883, 0.97836123, 0.97210485, 0.96724849, 0.96188439, 0.95733997 },
+				{ 0.98907253, 0.98084932, 0.97288452, 0.96613326, 0.95998726, 0.95413557, 0.94768712 },
+				{ 0.98616971, 0.97552783, 0.96637986, 0.95767006, 0.95034383, 0.94267946, 0.93640411 },
+				{ 0.98264472, 0.97039785, 0.95890372, 0.94969875, 0.94024988, 0.93171914, 0.92309061 },
+				{ 0.98111298, 0.96702193, 0.95486722, 0.94506502, 0.93566288, 0.92591316, 0.91704703 }
+			},
+			{
+				{ 0.99521953, 0.99139621, 0.98800593, 0.98450388, 0.98175810, 0.97846921, 0.97521850 },
+				{ 0.99510580, 0.99109919, 0.98774527, 0.98456975, 0.98129380, 0.97840626, 0.97517803 },
+				{ 0.99496763, 0.99132400, 0.98729075, 0.98453888, 0.98063491, 0.97769531, 0.97508293 },
+				{ 0.99476882, 0.99070948, 0.98654789, 0.98366397, 0.98018428, 0.97722750, 0.97373573 },
+				{ 0.99448017, 0.99028029, 0.98629851, 0.98219903, 0.97865475, 0.97550687, 0.97216539 },
+				{ 0.99409834, 0.98898815, 0.98500284, 0.98109253, 0.97702939, 0.97322803, 0.96992091 },
+				{ 0.99313170, 0.98837976, 0.98311789, 0.97878838, 0.97461103, 0.97036123, 0.96752286 },
+				{ 0.99231976, 0.98644768, 0.98099026, 0.97593994, 0.97194616, 0.96697676, 0.96277013 },
+				{ 0.99101173, 0.98414818, 0.97805472, 0.97220859, 0.96643797, 0.96195894, 0.95622378 },
+				{ 0.98904448, 0.98055979, 0.97365085, 0.96682550, 0.96032279, 0.95417165, 0.94908373 },
+				{ 0.98710508, 0.97694217, 0.96754770, 0.96023162, 0.95333466, 0.94578478, 0.93900891 },
+				{ 0.98457376, 0.97315313, 0.96286617, 0.95400135, 0.94510048, 0.93764466, 0.93009755 },
+				{ 0.98326396, 0.97160829, 0.96063943, 0.95121979, 0.94245179, 0.93453644, 0.92778308 }
+			},
+			{
+				{ 0.99506127, 0.99107146, 0.98738554, 0.98384613, 0.98089341, 0.97766920, 0.97500203 },
+				{ 0.99517132, 0.99096254, 0.98745667, 0.98458408, 0.98088130, 0.97781428, 0.97478909 },
+				{ 0.99491364, 0.99101956, 0.98719033, 0.98348709, 0.98034630, 0.97740071, 0.97392901 },
+				{ 0.99465389, 0.99028739, 0.98643960, 0.98263496, 0.97954073, 0.97636075, 0.97302646 },
+				{ 0.99442767, 0.98978979, 0.98604932, 0.98153714, 0.97848805, 0.97501818, 0.97119457 },
+				{ 0.99370651, 0.98902797, 0.98443703, 0.98028045, 0.97627987, 0.97312833, 0.96973554 },
+				{ 0.99293300, 0.98759100, 0.98262367, 0.97812690, 0.97402512, 0.97011660, 0.96593025 },
+				{ 0.99232671, 0.98611334, 0.98072527, 0.97549247, 0.97090697, 0.96658121, 0.96218591 },
+				{ 0.99087505, 0.98406743, 0.97757811, 0.97152851, 0.96654412, 0.96079040, 0.95670851 },
+				{ 0.98948575, 0.98130686, 0.97361223, 0.96755276, 0.96110139, 0.95535328, 0.94997351 },
+				{ 0.98746527, 0.97832041, 0.96945032, 0.96268908, 0.95534962, 0.94822520, 0.94292948 },
+				{ 0.98597912, 0.97524320, 0.96630130, 0.95815964, 0.94989024, 0.94321968, 0.93574795 },
+				{ 0.98554606, 0.97421861, 0.96524762, 0.95638939, 0.94823882, 0.94029118, 0.93433065 }
+			},
+			{
+				{ 0.99497603, 0.99087678, 0.98708381, 0.98335676, 0.98010222, 0.97718250, 0.97407152 },
+				{ 0.99485547, 0.99080196, 0.98695937, 0.98320464, 0.98000906, 0.97646077, 0.97347363 },
+				{ 0.99455452, 0.99043916, 0.98650123, 0.98297627, 0.97954430, 0.97633871, 0.97293295 },
+				{ 0.99458557, 0.98980193, 0.98572680, 0.98237384, 0.97864106, 0.97537738, 0.97194232 },
+				{ 0.99419291, 0.98945508, 0.98515235, 0.98084854, 0.97726213, 0.97349112, 0.97012996 },
+				{ 0.99376142, 0.98856059, 0.98435237, 0.98003753, 0.97536500, 0.97172730, 0.96813148 },
+				{ 0.99303900, 0.98764199, 0.98219666, 0.97781774, 0.97358674, 0.96902353, 0.96568106 },
+				{ 0.99207454, 0.98611064, 0.98008079, 0.97505459, 0.97050536, 0.96586663, 0.96149497 },
+				{ 0.99086961, 0.98392064, 0.97751618, 0.97204400, 0.96662503, 0.96155394, 0.95665615 },
+				{ 0.98960821, 0.98168085, 0.97475290, 0.96826201, 0.96185259, 0.95665570, 0.95124580 },
+				{ 0.98855355, 0.97949936, 0.97141770, 0.96454525, 0.95752699, 0.95150738, 0.94497255 },
+				{ 0.98728756, 0.97766244, 0.96888901, 0.96134038, 0.95420311, 0.94693717, 0.94143304 },
+				{ 0.98663600, 0.97620432, 0.96820728, 0.95972719, 0.95332059, 0.94534951, 0.93783445 }
+			},
+			{
+				{ 0.99466741, 0.99022128, 0.98633016, 0.98242440, 0.97931813, 0.97590608, 0.97275266 },
+				{ 0.99455897, 0.99027105, 0.98662841, 0.98235169, 0.97896059, 0.97539934, 0.97217209 },
+				{ 0.99414345, 0.98994658, 0.98584722, 0.98249701, 0.97842435, 0.97473883, 0.97178589 },
+				{ 0.99426713, 0.98956837, 0.98526407, 0.98152238, 0.97775353, 0.97421785, 0.97058175 },
+				{ 0.99376859, 0.98881712, 0.98420867, 0.98029249, 0.97651219, 0.97291683, 0.96874527 },
+				{ 0.99324212, 0.98820655, 0.98336401, 0.97891292, 0.97501240, 0.97072182, 0.96700394 },
+				{ 0.99274782, 0.98704376, 0.98184148, 0.97747066, 0.97274190, 0.96814368, 0.96427790 },
+				{ 0.99216257, 0.98568464, 0.97986265, 0.97433750, 0.96989388, 0.96542812, 0.96034637 },
+				{ 0.99098902, 0.98390747, 0.97818840, 0.97214260, 0.96723573, 0.96108059, 0.95697466 },
+				{ 0.99018744, 0.98201457, 0.97546631, 0.96910160, 0.96280851, 0.95732477, 0.95207350 },
+				{ 0.98894845, 0.98019096, 0.97287083, 0.96566576, 0.95930307, 0.95362147, 0.94805780 },
+				{ 0.98809328, 0.97882311, 0.97143039, 0.96371752, 0.95655526, 0.95078161, 0.94498267 },
+				{ 0.98768201, 0.97868965, 0.97065475, 0.96312912, 0.95627453, 0.94956036, 0.94349427 }
+			},
+			{
+				{ 0.99440177, 0.98994061, 0.98545765, 0.98175349, 0.97801583, 0.97401255, 0.97075981 },
+				{ 0.99432645, 0.98948496, 0.98553386, 0.98152010, 0.97773175, 0.97468914, 0.97143645 },
+				{ 0.99395784, 0.98929370, 0.98512278, 0.98079828, 0.97737740, 0.97351916, 0.96988429 },
+				{ 0.99412496, 0.98878205, 0.98449485, 0.98067731, 0.97677486, 0.97279531, 0.96936029 },
+				{ 0.99360426, 0.98823757, 0.98385713, 0.97981192, 0.97567906, 0.97175986, 0.96759125 },
+				{ 0.99320586, 0.98792142, 0.98270899, 0.97849598, 0.97405793, 0.96938724, 0.96606401 },
+				{ 0.99234505, 0.98661533, 0.98152183, 0.97650599, 0.97185467, 0.96766549, 0.96279470 },
+				{ 0.99190187, 0.98538886, 0.97950696, 0.97450126, 0.96933063, 0.96475862, 0.96040208 },
+				{ 0.99117812, 0.98442473, 0.97767114, 0.97230262, 0.96667595, 0.96101804, 0.95652693 },
+				{ 0.99006647, 0.98291754, 0.97577325, 0.96945933, 0.96406579, 0.95867038, 0.95315649 },
+				{ 0.98955150, 0.98138861, 0.97388644, 0.96746721, 0.96133704, 0.95620544, 0.94968752 },
+				{ 0.98883496, 0.98067793, 0.97310453, 0.96608086, 0.95947967, 0.95390446, 0.94767978 },
+				{ 0.98889725, 0.97979097, 0.97218285, 0.96529170, 0.95902473, 0.95244319, 0.94689019 }
+			},
+			{
+				{ 0.99373866, 0.98908734, 0.98486367, 0.98039594, 0.97667049, 0.97260194, 0.96925027 },
+				{ 0.99373373, 0.98923662, 0.98439714, 0.98058655, 0.97628816, 0.97224110, 0.96948923 },
+				{ 0.99372358, 0.98859388, 0.98412832, 0.98010755, 0.97560649, 0.97237107, 0.96866201 },
+				{ 0.99371167, 0.98826428, 0.98374916, 0.97955674, 0.97524820, 0.97114588, 0.96778095 },
+				{ 0.99310966, 0.98787807, 0.98310242, 0.97853694, 0.97407600, 0.96954259, 0.96590847 },
+				{ 0.99283347, 0.98711070, 0.98182254, 0.97691436, 0.97286723, 0.96831745, 0.96425511 },
+				{ 0.99228808, 0.98622247, 0.98071468, 0.97589195, 0.97142463, 0.96619867, 0.96254253 },
+				{ 0.99163422, 0.98572338, 0.97951482, 0.97428115, 0.96880669, 0.96398036, 0.95990216 },
+				{ 0.99136498, 0.98443329, 0.97825470, 0.97272495, 0.96684210, 0.96152192, 0.95715132 },
+				{ 0.99035263, 0.98302912, 0.97667595, 0.97066108, 0.96453608, 0.95919757, 0.95397551 },
+				{ 0.98965830, 0.98251311, 0.97552150, 0.96898859, 0.96283622, 0.95731779, 0.95211258 },
+				{ 0.98948848, 0.98132797, 0.97447909, 0.96783477, 0.96201309, 0.95566211, 0.95055640 },
+				{ 0.98931201, 0.98117240, 0.97377332, 0.96735549, 0.96120669, 0.95475559, 0.94940021 }
+			},
+			{
+				{ 0.99361179, 0.98836257, 0.98405907, 0.97929647, 0.97531625, 0.97076326, 0.96719706 },
+				{ 0.99336012, 0.98832180, 0.98347287, 0.97924549, 0.97546071, 0.97101322, 0.96732170 },
+				{ 0.99347161, 0.98789289, 0.98308887, 0.97914948, 0.97434305, 0.97068912, 0.96677365 },
+				{ 0.99296326, 0.98767701, 0.98294315, 0.97849699, 0.97382426, 0.96987165, 0.96602579 },
+				{ 0.99292443, 0.98706867, 0.98224580, 0.97694128, 0.97294380, 0.96906203, 0.96483971 },
+				{ 0.99264136, 0.98677709, 0.98157259, 0.97635426, 0.97203967, 0.96749170, 0.96366078 },
+				{ 0.99226613, 0.98580473, 0.98003498, 0.97508141, 0.97012646, 0.96540758, 0.96117740 },
+				{ 0.99191034, 0.98492368, 0.97938260, 0.97370608, 0.96786968, 0.96338372, 0.95927648 },
+				{ 0.99125010, 0.98429097, 0.97823172, 0.97249447, 0.96705446, 0.96167863, 0.95762641 },
+				{ 0.99055067, 0.98331811, 0.97693061, 0.97091492, 0.96562663, 0.96012827, 0.95489523 },
+				{ 0.99026055, 0.98269938, 0.97607061, 0.96993975, 0.96465078, 0.95867755, 0.95342994 },
+				{ 0.99026570, 0.98235378, 0.97560642, 0.96949369, 0.96385371, 0.95770506, 0.95249015 },
+				{ 0.98997930, 0.98214897, 0.97525059, 0.96876992, 0.96298079, 0.95736011, 0.95172269 }
+			},
+			{
+				{ 0.99310977, 0.98740249, 0.98243153, 0.97746950, 0.97310027, 0.96882115, 0.96526849 },
+				{ 0.99288529, 0.98729816, 0.98222208, 0.97767890, 0.97272348, 0.96885622, 0.96436285 },
+				{ 0.99285362, 0.98678743, 0.98194105, 0.97726960, 0.97300451, 0.96869714, 0.96440424 },
+				{ 0.99276207, 0.98699541, 0.98189702, 0.97726825, 0.97217570, 0.96801999, 0.96366087 },
+				{ 0.99250112, 0.98657909, 0.98082032, 0.97616147, 0.97162334, 0.96713849, 0.96260705 },
+				{ 0.99199323, 0.98617397, 0.98032498, 0.97562351, 0.97053058, 0.96586813, 0.96230304 },
+				{ 0.99173932, 0.98532457, 0.97953083, 0.97387749, 0.96973285, 0.96472000, 0.96049850 },
+				{ 0.99167084, 0.98449319, 0.97894385, 0.97321785, 0.96831518, 0.96387662, 0.95902728 },
+				{ 0.99118672, 0.98445334, 0.97826663, 0.97233597, 0.96730726, 0.96216656, 0.95693957 },
+				{ 0.99102015, 0.98378066, 0.97745876, 0.97128987, 0.96633005, 0.96062193, 0.95638381 },
+				{ 0.99077984, 0.98366888, 0.97672387, 0.97111081, 0.96500937, 0.96057123, 0.95399733 },
+				{ 0.99047128, 0.98304474, 0.97664081, 0.97027936, 0.96445081, 0.95917789, 0.95405318 },
+				{ 0.99024089, 0.98305409, 0.97620243, 0.97021752, 0.96425336, 0.95891235, 0.95350278 }
+			},
+			{
+				{ 0.99239791, 0.98672831, 0.98091272, 0.97618867, 0.97156913, 0.96672533, 0.96239053 },
+				{ 0.99238855, 0.98651805, 0.98120049, 0.97583656, 0.97113341, 0.96691252, 0.96255049 },
+				{ 0.99234239, 0.98616333, 0.98105652, 0.97599439, 0.97113198, 0.96675838, 0.96172641 },
+				{ 0.99233764, 0.98606593, 0.98082772, 0.97561642, 0.97047274, 0.96636013, 0.96149644 },
+				{ 0.99192399, 0.98580956, 0.98006453, 0.97497351, 0.97006647, 0.96594760, 0.96125464 },
+				{ 0.99185911, 0.98538665, 0.97958429, 0.97438681, 0.96917297, 0.96493293, 0.95961752 },
+				{ 0.99146763, 0.98497683, 0.97929694, 0.97363688, 0.96853954, 0.96354416, 0.95962959 },
+				{ 0.99142529, 0.98498982, 0.97883844, 0.97335801, 0.96780873, 0.96341693, 0.95808079 },
+				{ 0.99147083, 0.98438002, 0.97822298, 0.97239758, 0.96720595, 0.96190595, 0.95745783 },
+				{ 0.99115093, 0.98393273, 0.97733998, 0.97196499, 0.96604285, 0.96115790, 0.95661818 },
+				{ 0.99063762, 0.98369978, 0.97698060, 0.97154370, 0.96566937, 0.96058344, 0.95605081 },
+				{ 0.99063612, 0.98387868, 0.97725630, 0.97126956, 0.96585760, 0.96016634, 0.95496211 },
+				{ 0.99086459, 0.98368460, 0.97734249, 0.97120637, 0.96565948, 0.96026861, 0.95522512 }
+			},
+			{
+				{ 0.99180484, 0.98553910, 0.97988235, 0.97375185, 0.96923615, 0.96433821, 0.96015519 },
+				{ 0.99204048, 0.98533996, 0.97936607, 0.97437371, 0.96922891, 0.96438031, 0.95991672 },
+				{ 0.99207613, 0.98561812, 0.97950060, 0.97420429, 0.96926810, 0.96437347, 0.95976266 },
+				{ 0.99193440, 0.98529410, 0.97975363, 0.97424657, 0.96859632, 0.96423471, 0.95939953 },
+				{ 0.99176520, 0.98534737, 0.97921068, 0.97398264, 0.96857494, 0.96309629, 0.95906500 },
+				{ 0.99159518, 0.98489385, 0.97899260, 0.97377693, 0.96853742, 0.96304176, 0.95836992 },
+				{ 0.99125418, 0.98440500, 0.97870030, 0.97313802, 0.96860448, 0.96298533, 0.95790282 },
+				{ 0.99122016, 0.98466233, 0.97823786, 0.97273066, 0.96724195, 0.96225358, 0.95736450 },
+				{ 0.99122331, 0.98441305, 0.97819702, 0.97269350, 0.96676987, 0.96260350, 0.95747557 },
+				{ 0.99090614, 0.98398015, 0.97764039, 0.97252037, 0.96666948, 0.96197252, 0.95651990 },
+				{ 0.99116538, 0.98397093, 0.97790961, 0.97211545, 0.96682286, 0.96119868, 0.95612059 },
+				{ 0.99108974, 0.98401218, 0.97784393, 0.97181351, 0.96600132, 0.96098395, 0.95638041 },
+				{ 0.99105785, 0.98380290, 0.97793043, 0.97155506, 0.96660959, 0.96130981, 0.95608363 }
+			},
+			{
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+				{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 }
+			},
+			{
+				{ 0.99061105, 0.98321739, 0.97630269, 0.97019408, 0.96491628, 0.95890266, 0.95389560 },
+				{ 0.99057049, 0.98280073, 0.97651467, 0.97059317, 0.96449422, 0.95928110, 0.95350882 },
+				{ 0.99068795, 0.98315513, 0.97665979, 0.97015508, 0.96473956, 0.95964916, 0.95377090 },
+				{ 0.99060995, 0.98354210, 0.97659744, 0.97039964, 0.96485591, 0.95965630, 0.95399860 },
+				{ 0.99090882, 0.98359516, 0.97716548, 0.97085666, 0.96573881, 0.96018588, 0.95418728 },
+				{ 0.99076665, 0.98343768, 0.97724093, 0.97167473, 0.96588639, 0.96067365, 0.95507005 },
+				{ 0.99089067, 0.98380890, 0.97769156, 0.97154307, 0.96610890, 0.96085296, 0.95576564 },
+				{ 0.99114986, 0.98419438, 0.97799127, 0.97231553, 0.96610794, 0.96133936, 0.95649912 },
+				{ 0.99119715, 0.98380464, 0.97823069, 0.97217452, 0.96690517, 0.96153416, 0.95669735 },
+				{ 0.99148635, 0.98436720, 0.97860213, 0.97235999, 0.96759186, 0.96230159, 0.95711516 },
+				{ 0.99151727, 0.98453565, 0.97813357, 0.97298845, 0.96772742, 0.96216961, 0.95754942 },
+				{ 0.99137731, 0.98439001, 0.97839102, 0.97295497, 0.96787096, 0.96207108, 0.95766674 },
+				{ 0.99139682, 0.98471277, 0.97848363, 0.97237126, 0.96775742, 0.96271092, 0.95786215 }
+			},
+			{
+				{ 0.98973509, 0.98179174, 0.97483465, 0.96822383, 0.96231674, 0.95687369, 0.95086689 },
+				{ 0.98961518, 0.98176792, 0.97550272, 0.96827223, 0.96233111, 0.95672293, 0.95087472 },
+				{ 0.98984792, 0.98175380, 0.97534988, 0.96876273, 0.96253017, 0.95662740, 0.95144054 },
+				{ 0.99008309, 0.98222464, 0.97512257, 0.96842356, 0.96374361, 0.95712227, 0.95127801 },
+				{ 0.99028606, 0.98283171, 0.97556833, 0.96942400, 0.96376366, 0.95837725, 0.95241006 },
+				{ 0.99063605, 0.98275964, 0.97648169, 0.96985751, 0.96504472, 0.95913980, 0.95387753 },
+				{ 0.99083651, 0.98333320, 0.97681512, 0.97099661, 0.96531907, 0.96015152, 0.95551350 },
+				{ 0.99091253, 0.98395133, 0.97739492, 0.97130692, 0.96619688, 0.96031415, 0.95554939 },
+				{ 0.99137127, 0.98454684, 0.97768713, 0.97199917, 0.96609130, 0.96169395, 0.95626821 },
+				{ 0.99122588, 0.98431082, 0.97810310, 0.97212331, 0.96719183, 0.96209061, 0.95667675 },
+				{ 0.99127788, 0.98442943, 0.97858048, 0.97295551, 0.96766533, 0.96276573, 0.95760208 },
+				{ 0.99150815, 0.98464728, 0.97872704, 0.97288294, 0.96783132, 0.96248245, 0.95789737 },
+				{ 0.99124309, 0.98453242, 0.97845519, 0.97346694, 0.96763525, 0.96300633, 0.95784457 }
+			},
+			{
+				{ 0.98891484, 0.98064380, 0.97334327, 0.96575606, 0.95970065, 0.95378026, 0.94699700 },
+				{ 0.98917237, 0.98063966, 0.97272727, 0.96603757, 0.95934914, 0.95378903, 0.94751476 },
+				{ 0.98917943, 0.98076559, 0.97328719, 0.96654916, 0.96019989, 0.95343499, 0.94780591 },
+				{ 0.98953044, 0.98112566, 0.97392092, 0.96743134, 0.96103713, 0.95499468, 0.95038891 },
+				{ 0.98996553, 0.98188084, 0.97468744, 0.96795742, 0.96197522, 0.95522751, 0.95048554 },
+				{ 0.98982980, 0.98217584, 0.97525386, 0.96934692, 0.96377837, 0.95755212, 0.95208077 },
+				{ 0.99037143, 0.98280599, 0.97618618, 0.97001427, 0.96428113, 0.95857715, 0.95430171 },
+				{ 0.99082934, 0.98343393, 0.97685694, 0.97136462, 0.96507684, 0.96020301, 0.95440003 },
+				{ 0.99093410, 0.98415480, 0.97779740, 0.97221778, 0.96643583, 0.96083489, 0.95565320 },
+				{ 0.99112173, 0.98430770, 0.97846267, 0.97234497, 0.96706441, 0.96167288, 0.95672965 },
+				{ 0.99143054, 0.98456103, 0.97871195, 0.97320531, 0.96796747, 0.96276113, 0.95715583 },
+				{ 0.99137902, 0.98524583, 0.97873306, 0.97334961, 0.96725413, 0.96279888, 0.95806299 },
+				{ 0.99151370, 0.98491334, 0.97868083, 0.97370562, 0.96798853, 0.96280008, 0.95850652 }
+			},
+			{
+				{ 0.98809448, 0.97927732, 0.97086770, 0.96335504, 0.95689178, 0.94960527, 0.94358803 },
+				{ 0.98830438, 0.97887856, 0.97087974, 0.96374283, 0.95703895, 0.95040902, 0.94406964 },
+				{ 0.98886537, 0.97952129, 0.97144208, 0.96458815, 0.95766047, 0.95114786, 0.94448865 },
+				{ 0.98901934, 0.98025284, 0.97299572, 0.96529711, 0.95901125, 0.95234246, 0.94675600 },
+				{ 0.98926809, 0.98090596, 0.97342444, 0.96677369, 0.96027833, 0.95457455, 0.94764449 },
+				{ 0.98976307, 0.98171010, 0.97479511, 0.96809417, 0.96131721, 0.95609064, 0.95110965 },
+				{ 0.99017276, 0.98240272, 0.97534862, 0.96904229, 0.96288086, 0.95773383, 0.95230441 },
+				{ 0.99056507, 0.98319228, 0.97661473, 0.97079521, 0.96466519, 0.95871786, 0.95443339 },
+				{ 0.99108712, 0.98389641, 0.97744449, 0.97164456, 0.96597631, 0.96065972, 0.95585698 },
+				{ 0.99115009, 0.98422894, 0.97817075, 0.97277424, 0.96645211, 0.96175834, 0.95716200 },
+				{ 0.99126928, 0.98460082, 0.97848845, 0.97257569, 0.96705740, 0.96241500, 0.95801877 },
+				{ 0.99158816, 0.98497273, 0.97860463, 0.97322372, 0.96785137, 0.96269454, 0.95822382 },
+				{ 0.99154643, 0.98494873, 0.97896168, 0.97304469, 0.96785860, 0.96299841, 0.95827317 }
+			},
+			{
+				{ 0.98758971, 0.97750607, 0.96898367, 0.96115652, 0.95333698, 0.94732537, 0.94018251 },
+				{ 0.98732953, 0.97783879, 0.96930695, 0.96105317, 0.95391209, 0.94771280, 0.94023165 },
+				{ 0.98771872, 0.97790188, 0.97014675, 0.96278454, 0.95562651, 0.94891077, 0.94190687 },
+				{ 0.98804252, 0.97916982, 0.97075738, 0.96401451, 0.95670482, 0.94997094, 0.94391998 },
+				{ 0.98849567, 0.98023640, 0.97254836, 0.96488479, 0.95864567, 0.95172382, 0.94642393 },
+				{ 0.98951552, 0.98131426, 0.97340906, 0.96738200, 0.96049340, 0.95417189, 0.94887301 },
+				{ 0.98994229, 0.98218700, 0.97563017, 0.96853753, 0.96213385, 0.95708539, 0.95116712 },
+				{ 0.99038159, 0.98256705, 0.97600016, 0.97084372, 0.96359164, 0.95816477, 0.95346122 },
+				{ 0.99099993, 0.98360399, 0.97717110, 0.97070189, 0.96531547, 0.96000503, 0.95528872 },
+				{ 0.99140921, 0.98401828, 0.97781312, 0.97210882, 0.96633318, 0.96119538, 0.95636662 },
+				{ 0.99124526, 0.98499291, 0.97859251, 0.97260067, 0.96710635, 0.96253648, 0.95818194 },
+				{ 0.99146111, 0.98494621, 0.97875336, 0.97288728, 0.96813122, 0.96306793, 0.95777707 },
+				{ 0.99149667, 0.98474185, 0.97878938, 0.97301131, 0.96761491, 0.96290933, 0.95777868 }
+			},
+			{
+				{ 0.98625687, 0.97606875, 0.96736353, 0.95839191, 0.95047540, 0.94331198, 0.93593811 },
+				{ 0.98634654, 0.97605986, 0.96749705, 0.95962990, 0.95089427, 0.94323816, 0.93704869 },
+				{ 0.98680038, 0.97678286, 0.96826298, 0.95969618, 0.95231346, 0.94511458, 0.93912145 },
+				{ 0.98767335, 0.97807378, 0.97008443, 0.96228563, 0.95483385, 0.94750745, 0.94102696 },
+				{ 0.98827969, 0.97901323, 0.97093592, 0.96390086, 0.95714925, 0.94972470, 0.94434859 },
+				{ 0.98907566, 0.98065023, 0.97291307, 0.96569018, 0.95907120, 0.95291239, 0.94661045 },
+				{ 0.98971542, 0.98125792, 0.97409110, 0.96727318, 0.96137037, 0.95565916, 0.94917776 },
+				{ 0.99026615, 0.98272482, 0.97601726, 0.96978498, 0.96347915, 0.95776038, 0.95222575 },
+				{ 0.99089822, 0.98327415, 0.97672153, 0.97029259, 0.96472348, 0.95933877, 0.95438446 },
+				{ 0.99110070, 0.98392710, 0.97760795, 0.97218478, 0.96643418, 0.96129588, 0.95621434 },
+				{ 0.99136302, 0.98444894, 0.97856655, 0.97256041, 0.96742990, 0.96194072, 0.95705841 },
+				{ 0.99121883, 0.98454300, 0.97883426, 0.97315809, 0.96721020, 0.96251934, 0.95751526 },
+				{ 0.99118767, 0.98468291, 0.97887454, 0.97340263, 0.96806275, 0.96264419, 0.95837568 }
+			},
+			{
+				{ 0.98584194, 0.97468389, 0.96424312, 0.95657333, 0.94799362, 0.93874819, 0.93190876 },
+				{ 0.98601259, 0.97452759, 0.96578383, 0.95646367, 0.94864140, 0.94120400, 0.93323581 },
+				{ 0.98607938, 0.97569294, 0.96682452, 0.95808846, 0.95018525, 0.94184005, 0.93601382 },
+				{ 0.98688908, 0.97699618, 0.96848744, 0.96013461, 0.95161605, 0.94502784, 0.93867457 },
+				{ 0.98791389, 0.97844725, 0.97001524, 0.96223359, 0.95487103, 0.94818494, 0.94154657 },
+				{ 0.98839674, 0.97973788, 0.97174356, 0.96475002, 0.95758779, 0.95104794, 0.94512479 },
+				{ 0.98928623, 0.98137553, 0.97395478, 0.96684263, 0.95957098, 0.95407984, 0.94836048 },
+				{ 0.99031226, 0.98241878, 0.97548696, 0.96859057, 0.96274784, 0.95693139, 0.95109204 },
+				{ 0.99067923, 0.98320162, 0.97664607, 0.97031096, 0.96416213, 0.95879102, 0.95360320 },
+				{ 0.99112356, 0.98396090, 0.97738253, 0.97129129, 0.96572121, 0.96034097, 0.95580471 },
+				{ 0.99113355, 0.98445041, 0.97791704, 0.97243645, 0.96714562, 0.96130252, 0.95666214 },
+				{ 0.99139576, 0.98477418, 0.97845497, 0.97265893, 0.96740940, 0.96222467, 0.95668360 },
+				{ 0.99139111, 0.98513248, 0.97877591, 0.97309334, 0.96778209, 0.96260294, 0.95818802 }
+			}
+		},
+		{
+			{
+				{ 0.99515783, 0.99092723, 0.98765267, 0.98421826, 0.98148196, 0.97887740, 0.97557779 },
+				{ 0.99505819, 0.99095521, 0.98725902, 0.98432807, 0.98049868, 0.97833865, 0.97539762 },
+				{ 0.99502442, 0.99106321, 0.98744794, 0.98368886, 0.98093541, 0.97770713, 0.97474474 },
+				{ 0.99486871, 0.99041863, 0.98671983, 0.98362547, 0.98028796, 0.97660753, 0.97353689 },
+				{ 0.99439985, 0.99002540, 0.98615058, 0.98227338, 0.97932724, 0.97586406, 0.97241985 },
+				{ 0.99390434, 0.98930366, 0.98505212, 0.98105328, 0.97725634, 0.97415667, 0.97068490 },
+				{ 0.99345107, 0.98835770, 0.98356699, 0.97912894, 0.97501654, 0.97116937, 0.96751691 },
+				{ 0.99250294, 0.98698818, 0.98146601, 0.97635116, 0.97204224, 0.96751695, 0.96385267 },
+				{ 0.99120650, 0.98448239, 0.97835969, 0.97257508, 0.96718282, 0.96241539, 0.95793721 },
+				{ 0.98880069, 0.98011397, 0.97237749, 0.96636265, 0.95958612, 0.95400565, 0.94911733 },
+				{ 0.98520135, 0.97287625, 0.96420800, 0.95444874, 0.94633603, 0.93866711, 0.93156405 },
+				{ 0.97407924, 0.95476186, 0.93927998, 0.92510602, 0.91235297, 0.90049645, 0.89048667 },
+				{ 0.81381868, 0.73877555, 0.69370393, 0.66671838, 0.64979471, 0.64102358, 0.63465522 }
+			},
+			{
+				{ 0.99510541, 0.99093423, 0.98790298, 0.98453617, 0.98110870, 0.97849338, 0.97556204 },
+				{ 0.99524162, 0.99122160, 0.98777951, 0.98406957, 0.98087314, 0.97764777, 0.97519668 },
+				{ 0.99478061, 0.99082846, 0.98707511, 0.98391893, 0.98076095, 0.97723257, 0.97460835 },
+				{ 0.99461586, 0.99080525, 0.98702368, 0.98329839, 0.98020173, 0.97684673, 0.97378854 },
+				{ 0.99436076, 0.99000995, 0.98623376, 0.98248909, 0.97887930, 0.97570172, 0.97249853 },
+				{ 0.99406051, 0.98946707, 0.98512984, 0.98138261, 0.97789097, 0.97405172, 0.97101912 },
+				{ 0.99338553, 0.98828997, 0.98339966, 0.97948663, 0.97504146, 0.97156366, 0.96822651 },
+				{ 0.99263123, 0.98658679, 0.98129492, 0.97690759, 0.97207074, 0.96830655, 0.96326796 },
+				{ 0.99104501, 0.98405868, 0.97809151, 0.97291872, 0.96763275, 0.96291204, 0.95716539 },
+				{ 0.98891006, 0.98030778, 0.97275333, 0.96613621, 0.95998949, 0.95339289, 0.94820120 },
+				{ 0.98470484, 0.97328961, 0.96345217, 0.95434598, 0.94524562, 0.93837437, 0.93038555 },
+				{ 0.97253590, 0.95368299, 0.93586384, 0.92124677, 0.90750895, 0.89621111, 0.88474786 },
+				{ 0.93749577, 0.89906131, 0.86781064, 0.84277276, 0.81986560, 0.80173660, 0.78560755 }
+			},
+			{
+				{ 0.99512934, 0.99136148, 0.98743626, 0.98475723, 0.98149244, 0.97850867, 0.97505903 },
+				{ 0.99495465, 0.99139313, 0.98753830, 0.98428536, 0.98126286, 0.97822041, 0.97548209 },
+				{ 0.99499430, 0.99098345, 0.98723653, 0.98426059, 0.98090415, 0.97728630, 0.97491440 },
+				{ 0.99485841, 0.99055470, 0.98683944, 0.98327797, 0.97998344, 0.97682392, 0.97401033 },
+				{ 0.99461997, 0.99007987, 0.98597991, 0.98261675, 0.97951517, 0.97556240, 0.97277915 },
+				{ 0.99406488, 0.98946891, 0.98533431, 0.98104594, 0.97717507, 0.97414384, 0.97105549 },
+				{ 0.99336089, 0.98866769, 0.98329491, 0.97907313, 0.97522896, 0.97150958, 0.96770599 },
+				{ 0.99237893, 0.98669003, 0.98156770, 0.97662812, 0.97188337, 0.96749163, 0.96345012 },
+				{ 0.99096174, 0.98434159, 0.97792838, 0.97272213, 0.96736938, 0.96225941, 0.95717777 },
+				{ 0.98867405, 0.98041003, 0.97246419, 0.96580409, 0.95888178, 0.95341456, 0.94785734 },
+				{ 0.98435072, 0.97243676, 0.96220417, 0.95309777, 0.94409817, 0.93676805, 0.92796431 },
+				{ 0.97331573, 0.95441794, 0.93803694, 0.92450260, 0.91147909, 0.89954208, 0.88894134 },
+				{ 0.95977352, 0.93246012, 0.90983511, 0.89155037, 0.87493338, 0.85845975, 0.84482530 }
+			},
+			{
+				{ 0.99513940, 0.99143332, 0.98772276, 0.98417816, 0.98107575, 0.97813182, 0.97544516 },
+				{ 0.99505077, 0.99124360, 0.98775980, 0.98439768, 0.98137789, 0.97818046, 0.97543069 },
+				{ 0.99480294, 0.99099136, 0.98735771, 0.98398235, 0.98055931, 0.97793669, 0.97457187 },
+				{ 0.99487411, 0.99047883, 0.98700698, 0.98354569, 0.98010979, 0.97671903, 0.97424767 },
+				{ 0.99445010, 0.99009822, 0.98604650, 0.98231070, 0.97876524, 0.97590124, 0.97253232 },
+				{ 0.99393777, 0.98931029, 0.98479915, 0.98101355, 0.97759702, 0.97399940, 0.97032898 },
+				{ 0.99327244, 0.98792714, 0.98343300, 0.97925332, 0.97530368, 0.97118027, 0.96718510 },
+				{ 0.99228674, 0.98650985, 0.98094331, 0.97645794, 0.97171207, 0.96756211, 0.96321059 },
+				{ 0.99100848, 0.98432299, 0.97791272, 0.97195791, 0.96712116, 0.96203360, 0.95667410 },
+				{ 0.98882603, 0.98006138, 0.97207298, 0.96485263, 0.95849564, 0.95177347, 0.94653024 },
+				{ 0.98400067, 0.97199549, 0.96135357, 0.95204551, 0.94397608, 0.93546078, 0.92835883 },
+				{ 0.97616315, 0.95947194, 0.94451297, 0.93085660, 0.92024488, 0.90824940, 0.89810247 },
+				{ 0.97033663, 0.94893119, 0.93115494, 0.91569721, 0.90131893, 0.88798819, 0.87733188 }
+			},
+			{
+				{ 0.99482778, 0.99128000, 0.98750008, 0.98476211, 0.98147747, 0.97842712, 0.97529356 },
+				{ 0.99500685, 0.99119264, 0.98752496, 0.98398700, 0.98080675, 0.97822620, 0.97501649 },
+				{ 0.99500987, 0.99088575, 0.98710323, 0.98379936, 0.98080426, 0.97796274, 0.97434151 },
+				{ 0.99486854, 0.99069762, 0.98691725, 0.98335659, 0.98022897, 0.97666173, 0.97363723 },
+				{ 0.99442335, 0.98998076, 0.98607291, 0.98246681, 0.97905797, 0.97551236, 0.97232613 },
+				{ 0.99385523, 0.98920868, 0.98511639, 0.98064477, 0.97726232, 0.97332700, 0.97014990 },
+				{ 0.99312678, 0.98800871, 0.98324254, 0.97890459, 0.97466827, 0.97086255, 0.96699846 },
+				{ 0.99238735, 0.98602216, 0.98083351, 0.97595685, 0.97141723, 0.96716290, 0.96254561 },
+				{ 0.99084660, 0.98402922, 0.97737740, 0.97145788, 0.96648408, 0.96138447, 0.95607857 },
+				{ 0.98833177, 0.97937594, 0.97084947, 0.96438728, 0.95814670, 0.95168894, 0.94495974 },
+				{ 0.98448589, 0.97276309, 0.96296102, 0.95304980, 0.94450185, 0.93725223, 0.92920812 },
+				{ 0.97900696, 0.96374421, 0.95060055, 0.93891305, 0.92798115, 0.91797305, 0.90821845 },
+				{ 0.97551584, 0.95753239, 0.94370695, 0.92933348, 0.91790313, 0.90731367, 0.89696431 }
+			},
+			{
+				{ 0.99508693, 0.99134043, 0.98754028, 0.98419186, 0.98111721, 0.97815264, 0.97448908 },
+				{ 0.99516806, 0.99119754, 0.98765670, 0.98418494, 0.98098352, 0.97807478, 0.97498558 },
+				{ 0.99498299, 0.99077116, 0.98722819, 0.98331796, 0.98032601, 0.97745306, 0.97440453 },
+				{ 0.99447723, 0.99053797, 0.98675685, 0.98305996, 0.97973672, 0.97639921, 0.97300679 },
+				{ 0.99441018, 0.98978235, 0.98579624, 0.98212987, 0.97852976, 0.97491683, 0.97231249 },
+				{ 0.99388385, 0.98905054, 0.98506411, 0.98063786, 0.97709202, 0.97311012, 0.96946016 },
+				{ 0.99333583, 0.98780373, 0.98288561, 0.97829140, 0.97446516, 0.97032446, 0.96670430 },
+				{ 0.99206944, 0.98600188, 0.98081137, 0.97566348, 0.97096454, 0.96595196, 0.96196731 },
+				{ 0.99079652, 0.98351957, 0.97673455, 0.97102556, 0.96546449, 0.96068223, 0.95464196 },
+				{ 0.98830063, 0.97951450, 0.97169277, 0.96420746, 0.95756777, 0.95129793, 0.94540234 },
+				{ 0.98508134, 0.97380588, 0.96411951, 0.95561597, 0.94680158, 0.93935819, 0.93180091 },
+				{ 0.98118900, 0.96722215, 0.95604151, 0.94489309, 0.93487000, 0.92660646, 0.91777007 },
+				{ 0.97937414, 0.96471006, 0.95114332, 0.93977051, 0.92941860, 0.92026453, 0.91119465 }
+			},
+			{
+				{ 0.99499291, 0.99073452, 0.98743906, 0.98373064, 0.98035301, 0.97772765, 0.97458884 },
+				{ 0.99483131, 0.99082159, 0.98693243, 0.98404937, 0.98074689, 0.97682780, 0.97519731 },
+				{ 0.99475651, 0.99072210, 0.98702916, 0.98378977, 0.98044308, 0.97701987, 0.97410492 },
+				{ 0.99452651, 0.99034204, 0.98676514, 0.98270894, 0.97901549, 0.97606975, 0.97254938 },
+				{ 0.99416990, 0.98969827, 0.98564931, 0.98168728, 0.97805910, 0.97458881, 0.97128640 },
+				{ 0.99377842, 0.98875253, 0.98437636, 0.98017839, 0.97625078, 0.97243488, 0.96943427 },
+				{ 0.99300200, 0.98728138, 0.98268793, 0.97805280, 0.97392014, 0.96949798, 0.96518645 },
+				{ 0.99193718, 0.98556715, 0.98041312, 0.97507975, 0.96990891, 0.96567467, 0.96075270 },
+				{ 0.99067755, 0.98354948, 0.97660792, 0.97087043, 0.96435229, 0.95985502, 0.95441296 },
+				{ 0.98843399, 0.97980829, 0.97156893, 0.96459680, 0.95852273, 0.95171998, 0.94593183 },
+				{ 0.98590290, 0.97525555, 0.96563750, 0.95768461, 0.95016448, 0.94251221, 0.93544288 },
+				{ 0.98313299, 0.97086914, 0.96025540, 0.95020116, 0.94105688, 0.93217800, 0.92453948 },
+				{ 0.98209453, 0.96856906, 0.95752154, 0.94642435, 0.93784633, 0.92889891, 0.92044904 }
+			},
+			{
+				{ 0.99463947, 0.99095269, 0.98706647, 0.98367391, 0.97997709, 0.97682675, 0.97407749 },
+				{ 0.99484626, 0.99079438, 0.98689163, 0.98336595, 0.98016994, 0.97703658, 0.97437162 },
+				{ 0.99468191, 0.99048544, 0.98686718, 0.98276903, 0.97966506, 0.97686422, 0.97334120 },
+				{ 0.99434398, 0.99026180, 0.98614876, 0.98222844, 0.97930242, 0.97573280, 0.97218695 },
+				{ 0.99415758, 0.98926251, 0.98503375, 0.98125242, 0.97723901, 0.97353913, 0.97009747 },
+				{ 0.99348290, 0.98852263, 0.98382519, 0.97936759, 0.97563291, 0.97229479, 0.96852026 },
+				{ 0.99279208, 0.98730624, 0.98248292, 0.97732060, 0.97299581, 0.96938418, 0.96518160 },
+				{ 0.99202722, 0.98561945, 0.97989387, 0.97474768, 0.96877001, 0.96462605, 0.96113427 },
+				{ 0.99059125, 0.98311800, 0.97649245, 0.97058365, 0.96518089, 0.95936760, 0.95441159 },
+				{ 0.98882601, 0.98022079, 0.97260764, 0.96574159, 0.95880443, 0.95251816, 0.94664871 },
+				{ 0.98673381, 0.97640680, 0.96792245, 0.95988729, 0.95227376, 0.94447815, 0.93791224 },
+				{ 0.98468379, 0.97359821, 0.96367945, 0.95449019, 0.94636397, 0.93850690, 0.93172690 },
+				{ 0.98430103, 0.97160562, 0.96156173, 0.95253821, 0.94345413, 0.93611352, 0.92793508 }
+			},
+			{
+				{ 0.99470445, 0.99045416, 0.98669437, 0.98301237, 0.97966469, 0.97634227, 0.97337450 },
+				{ 0.99475320, 0.99048109, 0.98661584, 0.98264168, 0.97926521, 0.97618797, 0.97313251 },
+				{ 0.99440558, 0.99013829, 0.98591577, 0.98229921, 0.97878178, 0.97553299, 0.97243736 },
+				{ 0.99413323, 0.98961530, 0.98527999, 0.98199156, 0.97760646, 0.97475513, 0.97106410 },
+				{ 0.99387370, 0.98863474, 0.98452869, 0.98039650, 0.97690416, 0.97340484, 0.96956764 },
+				{ 0.99346802, 0.98830821, 0.98359385, 0.97932811, 0.97449025, 0.97131534, 0.96722552 },
+				{ 0.99253452, 0.98656363, 0.98174048, 0.97678110, 0.97201358, 0.96834482, 0.96365696 },
+				{ 0.99172715, 0.98492740, 0.97929859, 0.97387112, 0.96943098, 0.96464531, 0.95972089 },
+				{ 0.99080209, 0.98285540, 0.97667508, 0.97086130, 0.96462804, 0.95898294, 0.95493395 },
+				{ 0.98908248, 0.98068397, 0.97341756, 0.96633754, 0.95955314, 0.95383250, 0.94832929 },
+				{ 0.98741914, 0.97787601, 0.96924900, 0.96178521, 0.95508147, 0.94777306, 0.94168601 },
+				{ 0.98582551, 0.97544459, 0.96630877, 0.95750348, 0.94961369, 0.94275135, 0.93579856 },
+				{ 0.98567092, 0.97448188, 0.96480368, 0.95626443, 0.94875455, 0.94098140, 0.93477758 }
+			},
+			{
+				{ 0.99464450, 0.99010606, 0.98599753, 0.98256944, 0.97876644, 0.97515777, 0.97215542 },
+				{ 0.99433684, 0.98999731, 0.98604864, 0.98215737, 0.97885212, 0.97504514, 0.97205060 },
+				{ 0.99442862, 0.98961592, 0.98547338, 0.98177048, 0.97807502, 0.97429605, 0.97093817 },
+				{ 0.99395505, 0.98927719, 0.98459852, 0.98119304, 0.97741408, 0.97377435, 0.97032999 },
+				{ 0.99375556, 0.98856743, 0.98417182, 0.97981375, 0.97524990, 0.97251213, 0.96816522 },
+				{ 0.99306930, 0.98761511, 0.98280334, 0.97854038, 0.97418349, 0.97004783, 0.96613990 },
+				{ 0.99252969, 0.98642417, 0.98142358, 0.97644861, 0.97157983, 0.96749966, 0.96277204 },
+				{ 0.99166940, 0.98522218, 0.97900465, 0.97390271, 0.96871188, 0.96366996, 0.95901179 },
+				{ 0.99062679, 0.98323940, 0.97655263, 0.97057818, 0.96497145, 0.95917912, 0.95439898 },
+				{ 0.98946951, 0.98095507, 0.97414253, 0.96671156, 0.96100425, 0.95486814, 0.94891644 },
+				{ 0.98807228, 0.97864548, 0.97052723, 0.96303095, 0.95685696, 0.95031563, 0.94370387 },
+				{ 0.98703336, 0.97729857, 0.96914800, 0.96072914, 0.95313776, 0.94637742, 0.93961642 },
+				{ 0.98651931, 0.97673385, 0.96809961, 0.95958620, 0.95175646, 0.94560277, 0.93843462 }
+			},
+			{
+				{ 0.99398618, 0.98953768, 0.98550251, 0.98149539, 0.97783002, 0.97415173, 0.97052511 },
+				{ 0.99402049, 0.98943068, 0.98488557, 0.98152723, 0.97741609, 0.97413669, 0.97042189 },
+				{ 0.99391818, 0.98926589, 0.98516966, 0.98103991, 0.97727250, 0.97320277, 0.96944442 },
+				{ 0.99386028, 0.98851902, 0.98424636, 0.97987035, 0.97602110, 0.97257735, 0.96839668 },
+				{ 0.99338582, 0.98813363, 0.98346901, 0.97895621, 0.97463922, 0.97069095, 0.96732189 },
+				{ 0.99307027, 0.98739565, 0.98205937, 0.97749636, 0.97244740, 0.96829097, 0.96453069 },
+				{ 0.99229366, 0.98641107, 0.98034354, 0.97567089, 0.97045459, 0.96665136, 0.96219414 },
+				{ 0.99139812, 0.98486918, 0.97907041, 0.97353547, 0.96838512, 0.96286361, 0.95867129 },
+				{ 0.99059094, 0.98351024, 0.97698014, 0.97013956, 0.96507130, 0.95913177, 0.95509175 },
+				{ 0.98952836, 0.98155792, 0.97457147, 0.96783378, 0.96181482, 0.95539669, 0.95024998 },
+				{ 0.98846252, 0.98003866, 0.97206010, 0.96502439, 0.95797088, 0.95232409, 0.94592863 },
+				{ 0.98805368, 0.97860070, 0.97093952, 0.96334275, 0.95657536, 0.94934855, 0.94366725 },
+				{ 0.98745696, 0.97836768, 0.96986707, 0.96270461, 0.95513973, 0.94856040, 0.94240357 }
+			},
+			{
+				{ 0.99375978, 0.98900560, 0.98426074, 0.98048900, 0.97638681, 0.97321085, 0.96842119 },
+				{ 0.99372306, 0.98887679, 0.98414726, 0.98029925, 0.97662565, 0.97235865, 0.96886031 },
+				{ 0.99369325, 0.98846482, 0.98425106, 0.97967103, 0.97560326, 0.97230533, 0.96817592 },
+				{ 0.99353631, 0.98831593, 0.98338826, 0.97917611, 0.97521912, 0.97108186, 0.96774951 },
+				{ 0.99298435, 0.98764990, 0.98301398, 0.97773521, 0.97415318, 0.96944460, 0.96557546 },
+				{ 0.99266270, 0.98697100, 0.98178507, 0.97619235, 0.97174961, 0.96766899, 0.96367167 },
+				{ 0.99232708, 0.98578711, 0.97962291, 0.97573059, 0.97019123, 0.96550348, 0.96126770 },
+				{ 0.99132627, 0.98471310, 0.97873849, 0.97315684, 0.96758527, 0.96246903, 0.95864911 },
+				{ 0.99055542, 0.98339057, 0.97693797, 0.97075527, 0.96534852, 0.96006892, 0.95454852 },
+				{ 0.98970097, 0.98236765, 0.97475501, 0.96836920, 0.96258748, 0.95678440, 0.95117731 },
+				{ 0.98933402, 0.98075679, 0.97360221, 0.96659080, 0.96010003, 0.95405539, 0.94855046 },
+				{ 0.98856035, 0.97975448, 0.97208272, 0.96480120, 0.95849771, 0.95198818, 0.94605193 },
+				{ 0.98841020, 0.97945839, 0.97122555, 0.96449964, 0.95766624, 0.95116506, 0.94498967 }
+			},
+			{
+				{ 0.99343620, 0.98820339, 0.98349356, 0.97904566, 0.97516082, 0.97104451, 0.96731971 },
+				{ 0.99324871, 0.98802298, 0.98362087, 0.97892659, 0.97505611, 0.97062128, 0.96688359 },
+				{ 0.99346945, 0.98779852, 0.98302127, 0.97868720, 0.97463141, 0.97042991, 0.96640378 },
+				{ 0.99292493, 0.98750766, 0.98247775, 0.97767253, 0.97350249, 0.96937941, 0.96548233 },
+				{ 0.99292830, 0.98697441, 0.98154188, 0.97694924, 0.97258611, 0.96819791, 0.96381773 },
+				{ 0.99240337, 0.98593666, 0.98091953, 0.97556225, 0.97136396, 0.96631275, 0.96220503 },
+				{ 0.99182967, 0.98551130, 0.97996780, 0.97440720, 0.96893409, 0.96461131, 0.96045516 },
+				{ 0.99131226, 0.98481314, 0.97863937, 0.97259306, 0.96770408, 0.96188596, 0.95736052 },
+				{ 0.99064972, 0.98329676, 0.97708844, 0.97112676, 0.96558967, 0.96022446, 0.95492495 },
+				{ 0.99022373, 0.98231057, 0.97576174, 0.96963600, 0.96316431, 0.95889112, 0.95204048 },
+				{ 0.98937015, 0.98169879, 0.97406423, 0.96754033, 0.96182567, 0.95552323, 0.94951581 },
+				{ 0.98912587, 0.98078024, 0.97364353, 0.96612390, 0.96026051, 0.95411673, 0.94893100 },
+				{ 0.98904997, 0.98026365, 0.97279929, 0.96625008, 0.95929396, 0.95384326, 0.94800447 }
+			},
+			{
+				{ 0.99300297, 0.98730993, 0.98215102, 0.97754159, 0.97286912, 0.96897164, 0.96508482 },
+				{ 0.99314274, 0.98740743, 0.98200239, 0.97716465, 0.97302427, 0.96879013, 0.96472735 },
+				{ 0.99295698, 0.98727924, 0.98153082, 0.97732272, 0.97305214, 0.96837163, 0.96399477 },
+				{ 0.99277351, 0.98691624, 0.98189158, 0.97659651, 0.97201774, 0.96731719, 0.96356600 },
+				{ 0.99238477, 0.98587985, 0.98116002, 0.97556710, 0.97118730, 0.96686432, 0.96270339 },
+				{ 0.99212729, 0.98543457, 0.98049276, 0.97496051, 0.97004758, 0.96549483, 0.96092333 },
+				{ 0.99163653, 0.98498177, 0.97916306, 0.97353104, 0.96862770, 0.96336019, 0.95948185 },
+				{ 0.99122011, 0.98427126, 0.97811376, 0.97212466, 0.96709712, 0.96172519, 0.95738059 },
+				{ 0.99061501, 0.98361506, 0.97693069, 0.97114313, 0.96510823, 0.95983001, 0.95527458 },
+				{ 0.99020196, 0.98300938, 0.97597853, 0.96982931, 0.96366867, 0.95806648, 0.95306528 },
+				{ 0.99006821, 0.98190604, 0.97474671, 0.96881407, 0.96224657, 0.95734568, 0.95129740 },
+				{ 0.98965492, 0.98137744, 0.97453629, 0.96789960, 0.96185782, 0.95590660, 0.95009026 },
+				{ 0.98950310, 0.98126580, 0.97428945, 0.96765072, 0.96140804, 0.95545907, 0.94991670 }
+			},
+			{
+				{ 0.99251912, 0.98647433, 0.98133962, 0.97610876, 0.97131998, 0.96660785, 0.96318319 },
+				{ 0.99258753, 0.98679234, 0.98102877, 0.97604997, 0.97138207, 0.96695585, 0.96263655 },
+				{ 0.99234291, 0.98637787, 0.98085902, 0.97585613, 0.97128903, 0.96657075, 0.96235484 },
+				{ 0.99220513, 0.98612766, 0.98052877, 0.97519203, 0.97052116, 0.96595497, 0.96164660 },
+				{ 0.99198972, 0.98536233, 0.98009809, 0.97471585, 0.97023109, 0.96579870, 0.96051973 },
+				{ 0.99145899, 0.98505229, 0.97914472, 0.97416673, 0.96930426, 0.96432081, 0.95913023 },
+				{ 0.99152058, 0.98495786, 0.97885142, 0.97311833, 0.96778039, 0.96281210, 0.95861208 },
+				{ 0.99099236, 0.98400649, 0.97765447, 0.97174546, 0.96702583, 0.96130771, 0.95687398 },
+				{ 0.99082164, 0.98318883, 0.97693483, 0.97123963, 0.96537742, 0.96033230, 0.95508203 },
+				{ 0.99042891, 0.98304017, 0.97640950, 0.97028092, 0.96456711, 0.95903244, 0.95377556 },
+				{ 0.99030226, 0.98282878, 0.97573547, 0.96910939, 0.96357540, 0.95821922, 0.95281642 },
+				{ 0.99014285, 0.98224512, 0.97540207, 0.96917445, 0.96277474, 0.95740778, 0.95147646 },
+				{ 0.98978481, 0.98224279, 0.97515442, 0.96889524, 0.96312588, 0.95740682, 0.95123798 }
+			},
+			{
+				{ 0.99170775, 0.98538011, 0.97968443, 0.97412611, 0.96938275, 0.96502904, 0.95952083 },
+				{ 0.99185640, 0.98583599, 0.97983422, 0.97507026, 0.97027736, 0.96478520, 0.96032317 },
+				{ 0.99209710, 0.98514864, 0.97926609, 0.97453359, 0.96914933, 0.96419443, 0.95960071 },
+				{ 0.99187527, 0.98508335, 0.97951587, 0.97388575, 0.96882300, 0.96425375, 0.95954693 },
+				{ 0.99181228, 0.98513993, 0.97902318, 0.97372183, 0.96836352, 0.96374706, 0.95885283 },
+				{ 0.99132635, 0.98497068, 0.97868436, 0.97278452, 0.96799611, 0.96283998, 0.95771665 },
+				{ 0.99101290, 0.98436478, 0.97806872, 0.97241451, 0.96676507, 0.96154291, 0.95745775 },
+				{ 0.99103829, 0.98407948, 0.97785411, 0.97197230, 0.96593490, 0.96085955, 0.95608108 },
+				{ 0.99089561, 0.98335474, 0.97750458, 0.97099005, 0.96514375, 0.95997588, 0.95504102 },
+				{ 0.99065567, 0.98285884, 0.97674212, 0.97056827, 0.96515017, 0.95976002, 0.95432560 },
+				{ 0.99024540, 0.98299836, 0.97621670, 0.96971160, 0.96433116, 0.95917695, 0.95280479 },
+				{ 0.99005644, 0.98282857, 0.97637494, 0.96955477, 0.96342995, 0.95805121, 0.95334994 },
+				{ 0.99037316, 0.98262086, 0.97593507, 0.96943489, 0.96405263, 0.95780309, 0.95346587 }
+			},
+			{
+				{ 0.99139682, 0.98471277, 0.97848363, 0.97237126, 0.96775742, 0.96271092, 0.95786215 },
+				{ 0.99137731, 0.98439001, 0.97839102, 0.97295497, 0.96787096, 0.96207108, 0.95766674 },
+				{ 0.99151727, 0.98453565, 0.97813357, 0.97298845, 0.96772742, 0.96216961, 0.95754942 },
+				{ 0.99148635, 0.98436720, 0.97860213, 0.97235999, 0.96759186, 0.96230159, 0.95711516 },
+				{ 0.99119715, 0.98380464, 0.97823069, 0.97217452, 0.96690517, 0.96153416, 0.95669735 },
+				{ 0.99114986, 0.98419438, 0.97799127, 0.97231553, 0.96610794, 0.96133936, 0.95649912 },
+				{ 0.99089067, 0.98380890, 0.97769156, 0.97154307, 0.96610890, 0.96085296, 0.95576564 },
+				{ 0.99076665, 0.98343768, 0.97724093, 0.97167473, 0.96588639, 0.96067365, 0.95507005 },
+				{ 0.99090882, 0.98359516, 0.97716548, 0.97085666, 0.96573881, 0.96018588, 0.95418728 },
+				{ 0.99060995, 0.98354210, 0.97659744, 0.97039964, 0.96485591, 0.95965630, 0.95399860 },
+				{ 0.99068795, 0.98315513, 0.97665979, 0.97015508, 0.96473956, 0.95964916, 0.95377090 },
+				{ 0.99057049, 0.98280073, 0.97651467, 0.97059317, 0.96449422, 0.95928110, 0.95350882 },
+				{ 0.99061105, 0.98321739, 0.97630269, 0.97019408, 0.96491628, 0.95890266, 0.95389560 }
+			},
+			{
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+				{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 }
+			},
+			{
+				{ 0.99005900, 0.98220752, 0.97491825, 0.96900548, 0.96325292, 0.95709644, 0.95155255 },
+				{ 0.99010365, 0.98254927, 0.97530190, 0.96881031, 0.96289419, 0.95745525, 0.95180393 },
+				{ 0.99011117, 0.98221280, 0.97617420, 0.96860049, 0.96273139, 0.95772672, 0.95222687 },
+				{ 0.98989841, 0.98261857, 0.97578880, 0.96918864, 0.96383077, 0.95786558, 0.95272695 },
+				{ 0.99040273, 0.98257697, 0.97561526, 0.96909985, 0.96361423, 0.95827907, 0.95245203 },
+				{ 0.99044140, 0.98336438, 0.97614829, 0.96998412, 0.96432392, 0.95858308, 0.95238668 },
+				{ 0.99059315, 0.98306983, 0.97682763, 0.97032835, 0.96454310, 0.95859957, 0.95430469 },
+				{ 0.99077742, 0.98279848, 0.97668311, 0.97056675, 0.96427997, 0.95908068, 0.95453180 },
+				{ 0.99075602, 0.98318303, 0.97695731, 0.97068377, 0.96506725, 0.95952167, 0.95451761 },
+				{ 0.99087727, 0.98338455, 0.97669016, 0.97104325, 0.96534631, 0.95995867, 0.95526639 },
+				{ 0.99068396, 0.98386722, 0.97746970, 0.97131080, 0.96525078, 0.96034056, 0.95534017 },
+				{ 0.99110026, 0.98354292, 0.97724670, 0.97174609, 0.96563001, 0.96042799, 0.95580361 },
+				{ 0.99084330, 0.98343403, 0.97724362, 0.97111909, 0.96596727, 0.96044471, 0.95523094 }
+			},
+			{
+				{ 0.98936444, 0.98111401, 0.97355585, 0.96660434, 0.96048137, 0.95427603, 0.94819263 },
+				{ 0.98943206, 0.98086029, 0.97411374, 0.96676652, 0.96042624, 0.95433184, 0.94913874 },
+				{ 0.98954693, 0.98167801, 0.97413069, 0.96777703, 0.96060313, 0.95451959, 0.94908311 },
+				{ 0.98974970, 0.98153613, 0.97410792, 0.96760411, 0.96154885, 0.95527017, 0.94960819 },
+				{ 0.98982466, 0.98186574, 0.97491029, 0.96840190, 0.96219171, 0.95650236, 0.95086276 },
+				{ 0.99024205, 0.98193436, 0.97497970, 0.96906546, 0.96279819, 0.95689827, 0.95164957 },
+				{ 0.98999424, 0.98260540, 0.97548036, 0.96932970, 0.96338188, 0.95798313, 0.95253494 },
+				{ 0.99040857, 0.98277807, 0.97622734, 0.97000139, 0.96444810, 0.95789385, 0.95290529 },
+				{ 0.99036920, 0.98356368, 0.97683732, 0.97072571, 0.96503390, 0.95931738, 0.95386403 },
+				{ 0.99074696, 0.98362024, 0.97736057, 0.97122481, 0.96535001, 0.96007881, 0.95540032 },
+				{ 0.99067357, 0.98375932, 0.97736094, 0.97105341, 0.96530349, 0.96003238, 0.95479422 },
+				{ 0.99113842, 0.98397715, 0.97755486, 0.97208658, 0.96596394, 0.96008078, 0.95547912 },
+				{ 0.99117481, 0.98374802, 0.97755635, 0.97128907, 0.96624501, 0.96142582, 0.95612768 }
+			},
+			{
+				{ 0.98850457, 0.97976081, 0.97196818, 0.96475797, 0.95794318, 0.95135990, 0.94572375 },
+				{ 0.98863845, 0.97989904, 0.97167586, 0.96470318, 0.95735926, 0.95177749, 0.94518806 },
+				{ 0.98856124, 0.98006705, 0.97253746, 0.96531585, 0.95812185, 0.95237740, 0.94597416 },
+				{ 0.98916562, 0.98036126, 0.97324874, 0.96554311, 0.95981018, 0.95303160, 0.94702792 },
+				{ 0.98942028, 0.98098955, 0.97308576, 0.96705260, 0.96031617, 0.95414655, 0.94875301 },
+				{ 0.98996455, 0.98156675, 0.97445746, 0.96784151, 0.96140903, 0.95535828, 0.94992921 },
+				{ 0.99027972, 0.98220437, 0.97514193, 0.96830545, 0.96273541, 0.95641661, 0.95132825 },
+				{ 0.99034444, 0.98286844, 0.97615888, 0.96971068, 0.96365263, 0.95779038, 0.95298736 },
+				{ 0.99048114, 0.98305100, 0.97657399, 0.97055309, 0.96532811, 0.95926038, 0.95366356 },
+				{ 0.99052346, 0.98317720, 0.97667553, 0.97087738, 0.96487731, 0.95997317, 0.95457763 },
+				{ 0.99083690, 0.98361426, 0.97766425, 0.97134621, 0.96544974, 0.96011644, 0.95516715 },
+				{ 0.99100584, 0.98403211, 0.97763583, 0.97135354, 0.96638486, 0.96088973, 0.95571942 },
+				{ 0.99134675, 0.98425803, 0.97764772, 0.97169997, 0.96627533, 0.96078312, 0.95610751 }
+			},
+			{
+				{ 0.98769302, 0.97803821, 0.97045183, 0.96184038, 0.95478190, 0.94828967, 0.94158836 },
+				{ 0.98800407, 0.97816823, 0.97012528, 0.96218641, 0.95486168, 0.94815612, 0.94206312 },
+				{ 0.98797995, 0.97914445, 0.97050427, 0.96331788, 0.95587738, 0.94900451, 0.94358232 },
+				{ 0.98834312, 0.97911542, 0.97129588, 0.96350581, 0.95704108, 0.95026373, 0.94515091 },
+				{ 0.98872170, 0.98026983, 0.97246233, 0.96526708, 0.95847723, 0.95250479, 0.94642297 },
+				{ 0.98925603, 0.98093383, 0.97336778, 0.96704964, 0.96043793, 0.95396777, 0.94817170 },
+				{ 0.98986285, 0.98154847, 0.97442053, 0.96779933, 0.96129350, 0.95563041, 0.94985851 },
+				{ 0.99029335, 0.98221589, 0.97586173, 0.96915450, 0.96313399, 0.95681827, 0.95214927 },
+				{ 0.99053973, 0.98289623, 0.97603368, 0.96958557, 0.96438092, 0.95878464, 0.95325379 },
+				{ 0.99067165, 0.98349642, 0.97661163, 0.97068656, 0.96482893, 0.95925441, 0.95487252 },
+				{ 0.99092430, 0.98383778, 0.97758454, 0.97170847, 0.96595711, 0.96105318, 0.95484548 },
+				{ 0.99107090, 0.98391449, 0.97781196, 0.97173875, 0.96616631, 0.96137239, 0.95618812 },
+				{ 0.99122661, 0.98405366, 0.97770628, 0.97187500, 0.96580101, 0.96101693, 0.95566465 }
+			},
+			{
+				{ 0.98715359, 0.97669378, 0.96834069, 0.95943885, 0.95192185, 0.94544326, 0.93865353 },
+				{ 0.98682079, 0.97724573, 0.96843623, 0.96010052, 0.95255393, 0.94530981, 0.93838640 },
+				{ 0.98719473, 0.97759996, 0.96898177, 0.96126724, 0.95352880, 0.94660778, 0.93970866 },
+				{ 0.98794266, 0.97840232, 0.96998645, 0.96246113, 0.95497665, 0.94743110, 0.94173206 },
+				{ 0.98829302, 0.97938554, 0.97166409, 0.96351091, 0.95670811, 0.95027207, 0.94434383 },
+				{ 0.98878163, 0.98030602, 0.97220617, 0.96579439, 0.95844662, 0.95199910, 0.94629978 },
+				{ 0.98964357, 0.98158461, 0.97380775, 0.96705060, 0.96077216, 0.95448470, 0.94909737 },
+				{ 0.99001300, 0.98223716, 0.97487506, 0.96852176, 0.96238349, 0.95651104, 0.95063732 },
+				{ 0.99035397, 0.98285351, 0.97558399, 0.96996693, 0.96378329, 0.95794310, 0.95246914 },
+				{ 0.99049272, 0.98329215, 0.97676689, 0.97072371, 0.96510772, 0.95935946, 0.95441203 },
+				{ 0.99105313, 0.98342327, 0.97721867, 0.97126606, 0.96534643, 0.96044230, 0.95530654 },
+				{ 0.99096627, 0.98427990, 0.97756642, 0.97174158, 0.96596536, 0.96090529, 0.95521739 },
+				{ 0.99102907, 0.98397918, 0.97817548, 0.97193025, 0.96600888, 0.96090890, 0.95624281 }
+			},
+			{
+				{ 0.98591604, 0.97485102, 0.96592242, 0.95742631, 0.94949370, 0.94191308, 0.93494083 },
+				{ 0.98591650, 0.97549480, 0.96661577, 0.95729225, 0.94974166, 0.94188328, 0.93520794 },
+				{ 0.98666691, 0.97652312, 0.96738123, 0.95917797, 0.95079383, 0.94373985, 0.93678937 },
+				{ 0.98735882, 0.97742258, 0.96890236, 0.96042493, 0.95305850, 0.94650409, 0.93987636 },
+				{ 0.98764069, 0.97860150, 0.97012048, 0.96189752, 0.95565426, 0.94851988, 0.94128076 },
+				{ 0.98869220, 0.97940518, 0.97147635, 0.96426794, 0.95738255, 0.95116815, 0.94481352 },
+				{ 0.98903152, 0.98097774, 0.97265663, 0.96617928, 0.95985499, 0.95315367, 0.94816061 },
+				{ 0.98979613, 0.98192161, 0.97443527, 0.96774965, 0.96156103, 0.95542494, 0.95032036 },
+				{ 0.98992902, 0.98252249, 0.97548393, 0.96903604, 0.96273049, 0.95755752, 0.95211548 },
+				{ 0.99072416, 0.98315077, 0.97680276, 0.97055025, 0.96417036, 0.95858481, 0.95353286 },
+				{ 0.99084309, 0.98359169, 0.97685029, 0.97130154, 0.96522392, 0.96030001, 0.95435824 },
+				{ 0.99102229, 0.98392229, 0.97744581, 0.97191158, 0.96589610, 0.96112524, 0.95579542 },
+				{ 0.99078842, 0.98411160, 0.97726819, 0.97154493, 0.96607634, 0.96113777, 0.95553432 }
+			}
+		},
+		{
+			{
+				{ 0.99476066, 0.99086490, 0.98694607, 0.98369869, 0.98030930, 0.97732985, 0.97454079 },
+				{ 0.99494001, 0.99074515, 0.98695148, 0.98371763, 0.98029656, 0.97724574, 0.97365487 },
+				{ 0.99473293, 0.99021459, 0.98646977, 0.98291788, 0.98011731, 0.97630411, 0.97325225 },
+				{ 0.99449215, 0.98994874, 0.98614625, 0.98199019, 0.97882316, 0.97538557, 0.97276790 },
+				{ 0.99420688, 0.98932825, 0.98537939, 0.98169780, 0.97814438, 0.97460172, 0.97107133 },
+				{ 0.99383346, 0.98869224, 0.98401760, 0.97993279, 0.97631261, 0.97321366, 0.96933376 },
+				{ 0.99300843, 0.98767695, 0.98239905, 0.97811124, 0.97397882, 0.96976753, 0.96525840 },
+				{ 0.99213462, 0.98582418, 0.98064779, 0.97524258, 0.97089963, 0.96586153, 0.96214169 },
+				{ 0.99076201, 0.98356769, 0.97728701, 0.97136050, 0.96589715, 0.96064370, 0.95566049 },
+				{ 0.98839700, 0.97959192, 0.97195990, 0.96456290, 0.95836853, 0.95158501, 0.94571547 },
+				{ 0.98433816, 0.97177864, 0.96192514, 0.95208669, 0.94363473, 0.93641458, 0.92722910 },
+				{ 0.97253169, 0.95224948, 0.93584993, 0.92184836, 0.90841107, 0.89507455, 0.88541851 },
+				{ 0.80238041, 0.72255136, 0.67688776, 0.64886052, 0.63033543, 0.62083833, 0.61679832 }
+			},
+			{
+				{ 0.99501683, 0.99059022, 0.98720021, 0.98328887, 0.98034488, 0.97710293, 0.97453573 },
+				{ 0.99473257, 0.99069827, 0.98716576, 0.98353589, 0.98019426, 0.97709389, 0.97407727 },
+				{ 0.99454673, 0.99029904, 0.98678798, 0.98311033, 0.97995569, 0.97699430, 0.97387175 },
+				{ 0.99437556, 0.99039721, 0.98607540, 0.98272039, 0.97880344, 0.97557350, 0.97263416 },
+				{ 0.99425102, 0.98934883, 0.98541630, 0.98168376, 0.97808379, 0.97477943, 0.97172214 },
+				{ 0.99349576, 0.98848240, 0.98426098, 0.98013364, 0.97632567, 0.97324434, 0.96920238 },
+				{ 0.99301123, 0.98716846, 0.98227099, 0.97867394, 0.97430167, 0.96955027, 0.96604010 },
+				{ 0.99219104, 0.98637911, 0.98115347, 0.97527994, 0.97107568, 0.96658091, 0.96216269 },
+				{ 0.99066414, 0.98346173, 0.97693977, 0.97130217, 0.96621768, 0.96100762, 0.95530053 },
+				{ 0.98868389, 0.97967612, 0.97173507, 0.96495585, 0.95821823, 0.95178363, 0.94550096 },
+				{ 0.98405209, 0.97203820, 0.96153138, 0.95171078, 0.94329285, 0.93427264, 0.92718098 },
+				{ 0.97135224, 0.95062683, 0.93382957, 0.91829585, 0.90419251, 0.89158317, 0.87924645 },
+				{ 0.93179436, 0.89116228, 0.85781870, 0.83206639, 0.80779865, 0.78812636, 0.77112994 }
+			},
+			{
+				{ 0.99494628, 0.99090835, 0.98710307, 0.98376971, 0.98057001, 0.97737805, 0.97432840 },
+				{ 0.99486584, 0.99072076, 0.98726335, 0.98333066, 0.98004273, 0.97706783, 0.97415785 },
+				{ 0.99460328, 0.99054355, 0.98666617, 0.98341324, 0.97957263, 0.97644751, 0.97321705 },
+				{ 0.99454970, 0.99003541, 0.98616864, 0.98209785, 0.97889205, 0.97584955, 0.97211304 },
+				{ 0.99433559, 0.98963051, 0.98532579, 0.98191965, 0.97791088, 0.97431300, 0.97099612 },
+				{ 0.99380600, 0.98885981, 0.98430772, 0.98026798, 0.97650935, 0.97257435, 0.96882378 },
+				{ 0.99309547, 0.98791862, 0.98267607, 0.97817338, 0.97414635, 0.96991114, 0.96596940 },
+				{ 0.99227065, 0.98617622, 0.98065729, 0.97530748, 0.97068706, 0.96622182, 0.96239609 },
+				{ 0.99078045, 0.98371270, 0.97712119, 0.97064953, 0.96591523, 0.96104697, 0.95539212 },
+				{ 0.98826366, 0.97955384, 0.97157331, 0.96410235, 0.95700748, 0.95164428, 0.94468863 },
+				{ 0.98321702, 0.97123043, 0.96135320, 0.95046562, 0.94204107, 0.93349960, 0.92565269 },
+				{ 0.97158553, 0.95139027, 0.93519063, 0.92051739, 0.90672208, 0.89395200, 0.88250576 },
+				{ 0.95603160, 0.92690732, 0.90288438, 0.88261946, 0.86508786, 0.84917585, 0.83293922 }
+			},
+			{
+				{ 0.99486042, 0.99089231, 0.98710484, 0.98323057, 0.98041749, 0.97728975, 0.97455038 },
+				{ 0.99488736, 0.99083165, 0.98723762, 0.98389806, 0.97995698, 0.97743910, 0.97425642 },
+				{ 0.99459880, 0.99053809, 0.98657785, 0.98299989, 0.97993373, 0.97631173, 0.97326000 },
+				{ 0.99431424, 0.99014443, 0.98625995, 0.98239185, 0.97887615, 0.97570265, 0.97238000 },
+				{ 0.99411853, 0.98957873, 0.98541373, 0.98183611, 0.97777841, 0.97439127, 0.97122127 },
+				{ 0.99356808, 0.98876511, 0.98414228, 0.98039416, 0.97593925, 0.97216131, 0.96929895 },
+				{ 0.99296104, 0.98764021, 0.98277420, 0.97834965, 0.97374919, 0.96938982, 0.96610519 },
+				{ 0.99197898, 0.98599291, 0.98039475, 0.97521193, 0.97017479, 0.96633939, 0.96176139 },
+				{ 0.99048437, 0.98319996, 0.97664888, 0.97050715, 0.96529105, 0.96027211, 0.95476231 },
+				{ 0.98796616, 0.97927543, 0.97070910, 0.96330715, 0.95638662, 0.94980820, 0.94404934 },
+				{ 0.98344739, 0.97047769, 0.95934702, 0.95006086, 0.94056594, 0.93285747, 0.92382616 },
+				{ 0.97445824, 0.95581232, 0.94034566, 0.92682603, 0.91393414, 0.90373005, 0.89231738 },
+				{ 0.96705914, 0.94386761, 0.92532803, 0.90854410, 0.89369798, 0.87984784, 0.86703247 }
+			},
+			{
+				{ 0.99482111, 0.99073469, 0.98685233, 0.98384635, 0.98055812, 0.97704746, 0.97411932 },
+				{ 0.99490480, 0.99074255, 0.98693040, 0.98366344, 0.98004383, 0.97724658, 0.97438006 },
+				{ 0.99468368, 0.99049576, 0.98684071, 0.98326155, 0.98009281, 0.97665820, 0.97338073 },
+				{ 0.99440582, 0.99022103, 0.98571511, 0.98257158, 0.97922741, 0.97586487, 0.97234878 },
+				{ 0.99420199, 0.98948960, 0.98505023, 0.98113835, 0.97778805, 0.97404940, 0.97125575 },
+				{ 0.99355174, 0.98851105, 0.98372199, 0.98009336, 0.97635235, 0.97251487, 0.96915557 },
+				{ 0.99292803, 0.98757699, 0.98273653, 0.97779709, 0.97340398, 0.96932247, 0.96550807 },
+				{ 0.99183091, 0.98538373, 0.98051853, 0.97455805, 0.97011210, 0.96533204, 0.96116123 },
+				{ 0.99051385, 0.98307495, 0.97650456, 0.96980908, 0.96442982, 0.95923567, 0.95397832 },
+				{ 0.98777074, 0.97880127, 0.97057861, 0.96186273, 0.95602881, 0.94923440, 0.94307340 },
+				{ 0.98355666, 0.97104245, 0.96022623, 0.95060545, 0.94139972, 0.93390042, 0.92620375 },
+				{ 0.97710517, 0.96100867, 0.94682291, 0.93369365, 0.92266899, 0.91220842, 0.90218523 },
+				{ 0.97311977, 0.95427914, 0.93789174, 0.92369536, 0.91129369, 0.89911004, 0.88836945 }
+			},
+			{
+				{ 0.99483715, 0.99067196, 0.98697921, 0.98349041, 0.97996383, 0.97678915, 0.97430866 },
+				{ 0.99473128, 0.99084058, 0.98680152, 0.98324442, 0.98037830, 0.97708500, 0.97368549 },
+				{ 0.99455980, 0.99021909, 0.98677186, 0.98305650, 0.97975094, 0.97615446, 0.97345005 },
+				{ 0.99448320, 0.99003013, 0.98595710, 0.98235406, 0.97929431, 0.97549853, 0.97179023 },
+				{ 0.99407269, 0.98982758, 0.98530648, 0.98104289, 0.97772710, 0.97386416, 0.97078724 },
+				{ 0.99373079, 0.98879792, 0.98430915, 0.97990140, 0.97593545, 0.97150113, 0.96794018 },
+				{ 0.99275091, 0.98738410, 0.98211742, 0.97713160, 0.97330783, 0.96816814, 0.96509648 },
+				{ 0.99186765, 0.98553522, 0.98004789, 0.97464635, 0.96982151, 0.96452118, 0.96010933 },
+				{ 0.99013654, 0.98282373, 0.97615854, 0.96992038, 0.96398372, 0.95875967, 0.95270322 },
+				{ 0.98777714, 0.97838523, 0.97072711, 0.96319760, 0.95518982, 0.94857473, 0.94255315 },
+				{ 0.98421140, 0.97212669, 0.96134077, 0.95263316, 0.94396849, 0.93575226, 0.92791571 },
+				{ 0.97981934, 0.96456391, 0.95174382, 0.94097930, 0.93010091, 0.92089966, 0.91097861 },
+				{ 0.97728180, 0.96070502, 0.94726019, 0.93424667, 0.92398286, 0.91276731, 0.90222868 }
+			},
+			{
+				{ 0.99485312, 0.99031494, 0.98670332, 0.98356360, 0.97964055, 0.97697082, 0.97371742 },
+				{ 0.99456638, 0.99042941, 0.98674463, 0.98292566, 0.97998142, 0.97675968, 0.97336482 },
+				{ 0.99458562, 0.99018284, 0.98622923, 0.98277410, 0.97948773, 0.97627224, 0.97313173 },
+				{ 0.99432770, 0.98956467, 0.98579959, 0.98228947, 0.97820717, 0.97473216, 0.97167691 },
+				{ 0.99412944, 0.98920144, 0.98502110, 0.98089411, 0.97710576, 0.97381741, 0.97012185 },
+				{ 0.99346491, 0.98848064, 0.98344852, 0.97930461, 0.97508230, 0.97167103, 0.96787234 },
+				{ 0.99270699, 0.98693294, 0.98205911, 0.97710970, 0.97257862, 0.96787070, 0.96421555 },
+				{ 0.99179519, 0.98520853, 0.97932846, 0.97396175, 0.96868860, 0.96428034, 0.95965434 },
+				{ 0.99048578, 0.98243878, 0.97561585, 0.96982003, 0.96342476, 0.95817523, 0.95277064 },
+				{ 0.98769794, 0.97890015, 0.97016311, 0.96254231, 0.95561358, 0.94920744, 0.94337774 },
+				{ 0.98507041, 0.97366645, 0.96409338, 0.95475252, 0.94682607, 0.93905302, 0.93056014 },
+				{ 0.98160616, 0.96823642, 0.95637294, 0.94647420, 0.93738089, 0.92790949, 0.91886326 },
+				{ 0.98049697, 0.96599654, 0.95339980, 0.94180361, 0.93237905, 0.92190828, 0.91319658 }
+			},
+			{
+				{ 0.99475366, 0.99048069, 0.98631902, 0.98302551, 0.97987732, 0.97649274, 0.97328896 },
+				{ 0.99466576, 0.99057250, 0.98649250, 0.98241817, 0.97953033, 0.97651021, 0.97277907 },
+				{ 0.99439448, 0.99028957, 0.98606750, 0.98197022, 0.97920555, 0.97545572, 0.97223465 },
+				{ 0.99424416, 0.98957750, 0.98556164, 0.98154185, 0.97776870, 0.97452094, 0.97078830 },
+				{ 0.99398291, 0.98880218, 0.98442964, 0.98065340, 0.97657348, 0.97280141, 0.96913345 },
+				{ 0.99312783, 0.98807814, 0.98321584, 0.97894389, 0.97501481, 0.97054343, 0.96691175 },
+				{ 0.99254370, 0.98670720, 0.98140624, 0.97645876, 0.97160012, 0.96750650, 0.96297775 },
+				{ 0.99141107, 0.98496001, 0.97911004, 0.97323153, 0.96862595, 0.96357880, 0.95864348 },
+				{ 0.98992151, 0.98230664, 0.97517486, 0.96876901, 0.96340982, 0.95793181, 0.95227211 },
+				{ 0.98832952, 0.97858916, 0.97132534, 0.96386956, 0.95649877, 0.95020823, 0.94438710 },
+				{ 0.98569348, 0.97461710, 0.96570293, 0.95661246, 0.94887702, 0.94154330, 0.93368172 },
+				{ 0.98331217, 0.97102423, 0.96021370, 0.95007647, 0.94142117, 0.93268327, 0.92455889 },
+				{ 0.98234042, 0.96926284, 0.95811066, 0.94773414, 0.93878515, 0.93053965, 0.92105856 }
+			},
+			{
+				{ 0.99465048, 0.98992165, 0.98611347, 0.98268826, 0.97876564, 0.97610205, 0.97228973 },
+				{ 0.99429526, 0.99008733, 0.98607717, 0.98237351, 0.97896867, 0.97590763, 0.97238214 },
+				{ 0.99423030, 0.99003523, 0.98565730, 0.98166679, 0.97783879, 0.97457903, 0.97132808 },
+				{ 0.99397627, 0.98924596, 0.98526322, 0.98139221, 0.97768457, 0.97380587, 0.97063948 },
+				{ 0.99367445, 0.98844740, 0.98416570, 0.97999566, 0.97583555, 0.97245108, 0.96804203 },
+				{ 0.99320005, 0.98771349, 0.98283973, 0.97817164, 0.97383880, 0.96956937, 0.96618174 },
+				{ 0.99239088, 0.98653824, 0.98118030, 0.97591298, 0.97132571, 0.96664262, 0.96250552 },
+				{ 0.99141990, 0.98453132, 0.97886573, 0.97333211, 0.96790351, 0.96286010, 0.95821484 },
+				{ 0.99003438, 0.98242371, 0.97557511, 0.96891950, 0.96260820, 0.95782271, 0.95245311 },
+				{ 0.98834260, 0.97946370, 0.97137237, 0.96411149, 0.95751084, 0.95145905, 0.94514475 },
+				{ 0.98638001, 0.97652969, 0.96721375, 0.95898258, 0.95130407, 0.94430947, 0.93685694 },
+				{ 0.98489381, 0.97328735, 0.96338199, 0.95431812, 0.94589504, 0.93812042, 0.93083562 },
+				{ 0.98374990, 0.97230803, 0.96167477, 0.95281925, 0.94415898, 0.93606492, 0.92789834 }
+			},
+			{
+				{ 0.99440843, 0.98962775, 0.98583546, 0.98187660, 0.97774154, 0.97452603, 0.97169359 },
+				{ 0.99439190, 0.98977562, 0.98565716, 0.98175672, 0.97823258, 0.97441577, 0.97140068 },
+				{ 0.99430988, 0.98931259, 0.98485242, 0.98133056, 0.97717590, 0.97400968, 0.97058529 },
+				{ 0.99388186, 0.98884059, 0.98443256, 0.98042023, 0.97614874, 0.97263419, 0.96934754 },
+				{ 0.99346964, 0.98854818, 0.98344146, 0.97899702, 0.97505224, 0.97132167, 0.96751117 },
+				{ 0.99313761, 0.98722541, 0.98218104, 0.97744730, 0.97334611, 0.96933832, 0.96461060 },
+				{ 0.99214882, 0.98599029, 0.98050516, 0.97540625, 0.97079281, 0.96594164, 0.96158609 },
+				{ 0.99136200, 0.98453333, 0.97858201, 0.97219162, 0.96681135, 0.96216528, 0.95749992 },
+				{ 0.98992175, 0.98231944, 0.97515108, 0.96909456, 0.96302054, 0.95754726, 0.95217688 },
+				{ 0.98858505, 0.97952607, 0.97203683, 0.96524580, 0.95803258, 0.95174210, 0.94581519 },
+				{ 0.98689627, 0.97695867, 0.96872687, 0.96053608, 0.95316935, 0.94703327, 0.94036070 },
+				{ 0.98583616, 0.97523621, 0.96575031, 0.95743060, 0.94973527, 0.94191174, 0.93527117 },
+				{ 0.98551988, 0.97406168, 0.96544567, 0.95585722, 0.94777509, 0.93950987, 0.93352088 }
+			},
+			{
+				{ 0.99398709, 0.98941727, 0.98528615, 0.98077294, 0.97698195, 0.97335371, 0.96985100 },
+				{ 0.99397309, 0.98899426, 0.98501796, 0.98102980, 0.97703850, 0.97314698, 0.96999578 },
+				{ 0.99364632, 0.98860558, 0.98487982, 0.98048465, 0.97630197, 0.97236472, 0.96928723 },
+				{ 0.99344034, 0.98817452, 0.98372288, 0.97964028, 0.97543487, 0.97108724, 0.96793095 },
+				{ 0.99335725, 0.98791431, 0.98269667, 0.97870710, 0.97436697, 0.97014817, 0.96611023 },
+				{ 0.99270585, 0.98684415, 0.98147880, 0.97705779, 0.97250727, 0.96791301, 0.96333204 },
+				{ 0.99202523, 0.98571138, 0.98002453, 0.97500534, 0.97023316, 0.96477391, 0.96067216 },
+				{ 0.99111837, 0.98408140, 0.97776216, 0.97217564, 0.96692840, 0.96193837, 0.95676647 },
+				{ 0.99026877, 0.98226501, 0.97593230, 0.96953254, 0.96386322, 0.95648029, 0.95300072 },
+				{ 0.98908135, 0.98043527, 0.97283015, 0.96608297, 0.95958837, 0.95349003, 0.94735116 },
+				{ 0.98765834, 0.97825185, 0.96990900, 0.96243191, 0.95438353, 0.94914393, 0.94220130 },
+				{ 0.98696685, 0.97664301, 0.96784183, 0.96033527, 0.95234561, 0.94591780, 0.93924877 },
+				{ 0.98629740, 0.97631598, 0.96743904, 0.95885657, 0.95143238, 0.94434957, 0.93737350 }
+			},
+			{
+				{ 0.99367942, 0.98868099, 0.98431524, 0.98029058, 0.97576511, 0.97255988, 0.96866093 },
+				{ 0.99375349, 0.98874512, 0.98434280, 0.97992811, 0.97583012, 0.97194181, 0.96827642 },
+				{ 0.99371271, 0.98831744, 0.98348525, 0.97916300, 0.97541200, 0.97125958, 0.96767390 },
+				{ 0.99329128, 0.98820735, 0.98317112, 0.97872054, 0.97453558, 0.97016556, 0.96603950 },
+				{ 0.99284834, 0.98718072, 0.98206331, 0.97724607, 0.97306144, 0.96832007, 0.96405923 },
+				{ 0.99239091, 0.98643666, 0.98137458, 0.97607881, 0.97130200, 0.96692916, 0.96276233 },
+				{ 0.99173281, 0.98537398, 0.97971389, 0.97405766, 0.96903450, 0.96457381, 0.95975263 },
+				{ 0.99127397, 0.98381176, 0.97786505, 0.97201480, 0.96668421, 0.96132710, 0.95615757 },
+				{ 0.98995762, 0.98253248, 0.97554335, 0.96939013, 0.96313349, 0.95817113, 0.95280624 },
+				{ 0.98908395, 0.98098610, 0.97298622, 0.96694306, 0.95999943, 0.95461953, 0.94819265 },
+				{ 0.98820186, 0.97943019, 0.97108054, 0.96430791, 0.95721703, 0.95078845, 0.94459218 },
+				{ 0.98773582, 0.97807277, 0.96973999, 0.96226218, 0.95468894, 0.94767497, 0.94201927 },
+				{ 0.98729684, 0.97773728, 0.96931732, 0.96126722, 0.95426098, 0.94723743, 0.94098961 }
+			},
+			{
+				{ 0.99336577, 0.98820026, 0.98302492, 0.97896065, 0.97483901, 0.97049469, 0.96728920 },
+				{ 0.99339353, 0.98804286, 0.98342065, 0.97894944, 0.97440624, 0.97053830, 0.96649665 },
+				{ 0.99332502, 0.98764367, 0.98302320, 0.97844979, 0.97404736, 0.97022823, 0.96593408 },
+				{ 0.99312981, 0.98739332, 0.98265698, 0.97775015, 0.97321189, 0.96873700, 0.96452208 },
+				{ 0.99288954, 0.98662344, 0.98130240, 0.97633046, 0.97202946, 0.96722702, 0.96325692 },
+				{ 0.99223353, 0.98615196, 0.98034807, 0.97538850, 0.97065339, 0.96578011, 0.96070746 },
+				{ 0.99152407, 0.98472282, 0.97880305, 0.97373643, 0.96827188, 0.96302037, 0.95963852 },
+				{ 0.99088553, 0.98385613, 0.97747328, 0.97149702, 0.96620759, 0.96112877, 0.95630505 },
+				{ 0.99012903, 0.98266089, 0.97554471, 0.96927920, 0.96350434, 0.95775297, 0.95233812 },
+				{ 0.98966781, 0.98122103, 0.97372261, 0.96740753, 0.96061779, 0.95524195, 0.94892733 },
+				{ 0.98864091, 0.98024015, 0.97247977, 0.96523966, 0.95854378, 0.95248365, 0.94631401 },
+				{ 0.98821852, 0.97940417, 0.97106780, 0.96387883, 0.95707708, 0.95111569, 0.94447526 },
+				{ 0.98813278, 0.97898049, 0.97070139, 0.96314447, 0.95565597, 0.94962872, 0.94381700 }
+			},
+			{
+				{ 0.99281307, 0.98711490, 0.98250729, 0.97809176, 0.97320513, 0.96859798, 0.96520776 },
+				{ 0.99301008, 0.98729156, 0.98234546, 0.97739806, 0.97358209, 0.96899061, 0.96410144 },
+				{ 0.99310356, 0.98693213, 0.98172808, 0.97721318, 0.97245159, 0.96844793, 0.96422857 },
+				{ 0.99272835, 0.98694490, 0.98159166, 0.97688186, 0.97200368, 0.96735425, 0.96313178 },
+				{ 0.99206541, 0.98582461, 0.98068485, 0.97559509, 0.97076633, 0.96619675, 0.96185638 },
+				{ 0.99167074, 0.98544952, 0.97954775, 0.97432216, 0.96920633, 0.96408513, 0.95980985 },
+				{ 0.99125604, 0.98471808, 0.97843851, 0.97310567, 0.96722468, 0.96213609, 0.95797416 },
+				{ 0.99063676, 0.98383058, 0.97732593, 0.97138038, 0.96604976, 0.96050455, 0.95516983 },
+				{ 0.99018376, 0.98256925, 0.97608722, 0.96940572, 0.96330630, 0.95847145, 0.95215777 },
+				{ 0.98962252, 0.98180468, 0.97444152, 0.96786870, 0.96188856, 0.95599283, 0.94993525 },
+				{ 0.98904279, 0.98056265, 0.97321343, 0.96670865, 0.95999220, 0.95413247, 0.94797546 },
+				{ 0.98880684, 0.98022734, 0.97254297, 0.96534017, 0.95855951, 0.95209465, 0.94665734 },
+				{ 0.98881352, 0.98028850, 0.97209628, 0.96481803, 0.95800850, 0.95155093, 0.94612290 }
+			},
+			{
+				{ 0.99244925, 0.98664534, 0.98159514, 0.97647343, 0.97190817, 0.96685825, 0.96288023 },
+				{ 0.99271810, 0.98667812, 0.98149490, 0.97653200, 0.97173913, 0.96687486, 0.96252055 },
+				{ 0.99243565, 0.98641366, 0.98067659, 0.97537731, 0.97110524, 0.96626023, 0.96241754 },
+				{ 0.99211619, 0.98576213, 0.98054183, 0.97525233, 0.97066215, 0.96577717, 0.96096751 },
+				{ 0.99189953, 0.98574489, 0.97957001, 0.97443052, 0.96955800, 0.96504814, 0.96008131 },
+				{ 0.99177091, 0.98482470, 0.97911829, 0.97363734, 0.96837766, 0.96309046, 0.95835077 },
+				{ 0.99133024, 0.98443871, 0.97821750, 0.97235640, 0.96661939, 0.96164255, 0.95698399 },
+				{ 0.99089456, 0.98360614, 0.97672483, 0.97107569, 0.96525741, 0.96041740, 0.95527554 },
+				{ 0.99026910, 0.98257399, 0.97632854, 0.96918278, 0.96377184, 0.95788911, 0.95281625 },
+				{ 0.98985790, 0.98203064, 0.97459443, 0.96802913, 0.96229706, 0.95647009, 0.95107763 },
+				{ 0.98954169, 0.98105923, 0.97415093, 0.96769591, 0.96094481, 0.95573284, 0.94952097 },
+				{ 0.98909560, 0.98044085, 0.97368669, 0.96656683, 0.96033284, 0.95378173, 0.94816993 },
+				{ 0.98914872, 0.98081473, 0.97299099, 0.96646432, 0.95959950, 0.95399736, 0.94814841 }
+			},
+			{
+				{ 0.99205568, 0.98576361, 0.97973313, 0.97544235, 0.96962163, 0.96488126, 0.96055676 },
+				{ 0.99201479, 0.98582269, 0.98027449, 0.97473980, 0.96961240, 0.96438974, 0.96005970 },
+				{ 0.99192083, 0.98533239, 0.97951176, 0.97478901, 0.96901225, 0.96424337, 0.96020617 },
+				{ 0.99156857, 0.98501294, 0.97925749, 0.97388649, 0.96862490, 0.96428503, 0.95879728 },
+				{ 0.99146771, 0.98497506, 0.97853052, 0.97329062, 0.96805395, 0.96326730, 0.95803645 },
+				{ 0.99123704, 0.98458697, 0.97792157, 0.97229723, 0.96687917, 0.96145286, 0.95699183 },
+				{ 0.99095631, 0.98400904, 0.97779256, 0.97164906, 0.96634492, 0.96035743, 0.95609886 },
+				{ 0.99054316, 0.98318665, 0.97671042, 0.97137891, 0.96470463, 0.96034108, 0.95428891 },
+				{ 0.99011183, 0.98283957, 0.97605758, 0.96935464, 0.96389805, 0.95845159, 0.95298375 },
+				{ 0.99004934, 0.98208975, 0.97494018, 0.96888642, 0.96234529, 0.95729324, 0.95155251 },
+				{ 0.98972316, 0.98171068, 0.97456360, 0.96713411, 0.96169664, 0.95606131, 0.95081725 },
+				{ 0.98943482, 0.98134066, 0.97432892, 0.96742628, 0.96154377, 0.95578170, 0.95043255 },
+				{ 0.98927974, 0.98170645, 0.97423602, 0.96699813, 0.96085717, 0.95523133, 0.94980776 }
+			},
+			{
+				{ 0.99124309, 0.98453242, 0.97845519, 0.97346694, 0.96763525, 0.96300633, 0.95784457 },
+				{ 0.99150815, 0.98464728, 0.97872704, 0.97288294, 0.96783132, 0.96248245, 0.95789737 },
+				{ 0.99127788, 0.98442943, 0.97858048, 0.97295551, 0.96766533, 0.96276573, 0.95760208 },
+				{ 0.99122588, 0.98431082, 0.97810310, 0.97212331, 0.96719183, 0.96209061, 0.95667675 },
+				{ 0.99137127, 0.98454684, 0.97768713, 0.97199917, 0.96609130, 0.96169395, 0.95626821 },
+				{ 0.99091253, 0.98395133, 0.97739492, 0.97130692, 0.96619688, 0.96031415, 0.95554939 },
+				{ 0.99083651, 0.98333320, 0.97681512, 0.97099661, 0.96531907, 0.96015152, 0.95551350 },
+				{ 0.99063605, 0.98275964, 0.97648169, 0.96985751, 0.96504472, 0.95913980, 0.95387753 },
+				{ 0.99028606, 0.98283171, 0.97556833, 0.96942400, 0.96376366, 0.95837725, 0.95241006 },
+				{ 0.99008309, 0.98222464, 0.97512257, 0.96842356, 0.96374361, 0.95712227, 0.95127801 },
+				{ 0.98984792, 0.98175380, 0.97534988, 0.96876273, 0.96253017, 0.95662740, 0.95144054 },
+				{ 0.98961518, 0.98176792, 0.97550272, 0.96827223, 0.96233111, 0.95672293, 0.95087472 },
+				{ 0.98973509, 0.98179174, 0.97483465, 0.96822383, 0.96231674, 0.95687369, 0.95086689 }
+			},
+			{
+				{ 0.99084330, 0.98343403, 0.97724362, 0.97111909, 0.96596727, 0.96044471, 0.95523094 },
+				{ 0.99110026, 0.98354292, 0.97724670, 0.97174609, 0.96563001, 0.96042799, 0.95580361 },
+				{ 0.99068396, 0.98386722, 0.97746970, 0.97131080, 0.96525078, 0.96034056, 0.95534017 },
+				{ 0.99087727, 0.98338455, 0.97669016, 0.97104325, 0.96534631, 0.95995867, 0.95526639 },
+				{ 0.99075602, 0.98318303, 0.97695731, 0.97068377, 0.96506725, 0.95952167, 0.95451761 },
+				{ 0.99077742, 0.98279848, 0.97668311, 0.97056675, 0.96427997, 0.95908068, 0.95453180 },
+				{ 0.99059315, 0.98306983, 0.97682763, 0.97032835, 0.96454310, 0.95859957, 0.95430469 },
+				{ 0.99044140, 0.98336438, 0.97614829, 0.96998412, 0.96432392, 0.95858308, 0.95238668 },
+				{ 0.99040273, 0.98257697, 0.97561526, 0.96909985, 0.96361423, 0.95827907, 0.95245203 },
+				{ 0.98989841, 0.98261857, 0.97578880, 0.96918864, 0.96383077, 0.95786558, 0.95272695 },
+				{ 0.99011117, 0.98221280, 0.97617420, 0.96860049, 0.96273139, 0.95772672, 0.95222687 },
+				{ 0.99010365, 0.98254927, 0.97530190, 0.96881031, 0.96289419, 0.95745525, 0.95180393 },
+				{ 0.99005900, 0.98220752, 0.97491825, 0.96900548, 0.96325292, 0.95709644, 0.95155255 }
+			},
+			{
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+				{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 }
+			},
+			{
+				{ 0.98954733, 0.98148080, 0.97436803, 0.96735705, 0.96109038, 0.95567933, 0.94943174 },
+				{ 0.98940508, 0.98165893, 0.97420018, 0.96732847, 0.96060895, 0.95548446, 0.94976263 },
+				{ 0.98963662, 0.98117070, 0.97358294, 0.96749214, 0.96136079, 0.95593600, 0.95031499 },
+				{ 0.98954042, 0.98158118, 0.97461837, 0.96807204, 0.96136671, 0.95525742, 0.95040723 },
+				{ 0.98961237, 0.98179500, 0.97482708, 0.96799727, 0.96194683, 0.95631743, 0.95000875 },
+				{ 0.99005360, 0.98185061, 0.97477193, 0.96862726, 0.96183796, 0.95670124, 0.95056641 },
+				{ 0.99009501, 0.98233192, 0.97492965, 0.96877847, 0.96244724, 0.95655337, 0.95181856 },
+				{ 0.98998260, 0.98218019, 0.97532947, 0.96895983, 0.96260772, 0.95695627, 0.95207059 },
+				{ 0.99002642, 0.98232424, 0.97586700, 0.96904817, 0.96320801, 0.95761694, 0.95179061 },
+				{ 0.99052913, 0.98256454, 0.97571074, 0.96944773, 0.96366109, 0.95777404, 0.95267168 },
+				{ 0.99013456, 0.98255067, 0.97576984, 0.96958036, 0.96371890, 0.95798481, 0.95286815 },
+				{ 0.99052073, 0.98298900, 0.97578513, 0.96940887, 0.96373532, 0.95882881, 0.95327051 },
+				{ 0.99075266, 0.98292811, 0.97616011, 0.96956966, 0.96394690, 0.95738121, 0.95330072 }
+			},
+			{
+				{ 0.98854414, 0.98032650, 0.97255142, 0.96492227, 0.95890268, 0.95228486, 0.94602612 },
+				{ 0.98894374, 0.98003119, 0.97268791, 0.96497574, 0.95883857, 0.95303913, 0.94688304 },
+				{ 0.98880513, 0.98049861, 0.97295165, 0.96573200, 0.95907287, 0.95344637, 0.94640776 },
+				{ 0.98932103, 0.98080898, 0.97333045, 0.96616841, 0.95965946, 0.95321766, 0.94701383 },
+				{ 0.98930614, 0.98101004, 0.97329387, 0.96682936, 0.96058916, 0.95375947, 0.94893587 },
+				{ 0.98933226, 0.98131197, 0.97357323, 0.96730957, 0.96097842, 0.95458923, 0.94855599 },
+				{ 0.99000625, 0.98160335, 0.97460655, 0.96827806, 0.96173054, 0.95626935, 0.95062936 },
+				{ 0.99026135, 0.98205719, 0.97506941, 0.96863037, 0.96235246, 0.95646791, 0.95177433 },
+				{ 0.99003165, 0.98230481, 0.97556076, 0.96952697, 0.96332688, 0.95771278, 0.95201707 },
+				{ 0.99031233, 0.98255633, 0.97609739, 0.96979360, 0.96337973, 0.95854641, 0.95234479 },
+				{ 0.99036611, 0.98270687, 0.97611026, 0.96979346, 0.96412528, 0.95792144, 0.95285934 },
+				{ 0.99045780, 0.98292102, 0.97608709, 0.97003782, 0.96397999, 0.95877378, 0.95366469 },
+				{ 0.99037874, 0.98310792, 0.97598051, 0.97030848, 0.96398185, 0.95894071, 0.95384788 }
+			},
+			{
+				{ 0.98803373, 0.97877229, 0.97034504, 0.96294425, 0.95627219, 0.94904246, 0.94334355 },
+				{ 0.98800686, 0.97942151, 0.97089400, 0.96352051, 0.95609830, 0.94985770, 0.94342936 },
+				{ 0.98836868, 0.97937686, 0.97145283, 0.96402511, 0.95675608, 0.94946470, 0.94352882 },
+				{ 0.98862990, 0.97995638, 0.97158712, 0.96460939, 0.95732248, 0.95098654, 0.94530169 },
+				{ 0.98887254, 0.98010725, 0.97208010, 0.96571230, 0.95881484, 0.95221516, 0.94687916 },
+				{ 0.98921679, 0.98050076, 0.97332434, 0.96664288, 0.95958109, 0.95366475, 0.94797253 },
+				{ 0.98934957, 0.98137015, 0.97379806, 0.96710794, 0.96057157, 0.95548658, 0.94878995 },
+				{ 0.98987679, 0.98173199, 0.97411187, 0.96804659, 0.96118410, 0.95570754, 0.94982714 },
+				{ 0.99032591, 0.98230520, 0.97495344, 0.96871561, 0.96217311, 0.95613104, 0.95123002 },
+				{ 0.99002353, 0.98270525, 0.97644354, 0.96978130, 0.96279520, 0.95784854, 0.95287984 },
+				{ 0.99041986, 0.98286759, 0.97619252, 0.96979382, 0.96363781, 0.95863407, 0.95251417 },
+				{ 0.99033881, 0.98303313, 0.97620328, 0.96999251, 0.96423240, 0.95907512, 0.95391037 },
+				{ 0.99070745, 0.98307310, 0.97642307, 0.97010937, 0.96438703, 0.95941596, 0.95354259 }
+			},
+			{
+				{ 0.98755313, 0.97736659, 0.96911301, 0.96082259, 0.95393448, 0.94646862, 0.93982524 },
+				{ 0.98748964, 0.97741897, 0.96872644, 0.96127064, 0.95341658, 0.94686871, 0.94062579 },
+				{ 0.98788531, 0.97828882, 0.96958543, 0.96203626, 0.95468866, 0.94720464, 0.94084304 },
+				{ 0.98814960, 0.97895431, 0.97022828, 0.96294343, 0.95553106, 0.94921661, 0.94199816 },
+				{ 0.98815440, 0.97936867, 0.97126025, 0.96370108, 0.95706940, 0.95005987, 0.94395605 },
+				{ 0.98880705, 0.97986375, 0.97218046, 0.96531257, 0.95882442, 0.95191031, 0.94538044 },
+				{ 0.98915384, 0.98079949, 0.97338258, 0.96667941, 0.96009612, 0.95386519, 0.94801014 },
+				{ 0.98963451, 0.98169146, 0.97433273, 0.96774989, 0.96136035, 0.95470936, 0.94967378 },
+				{ 0.98980675, 0.98170336, 0.97503895, 0.96819935, 0.96215563, 0.95581238, 0.95071141 },
+				{ 0.98984700, 0.98281427, 0.97564273, 0.96898235, 0.96347604, 0.95784792, 0.95255758 },
+				{ 0.99010510, 0.98275283, 0.97624321, 0.97003296, 0.96341217, 0.95854242, 0.95255594 },
+				{ 0.99038129, 0.98314079, 0.97641083, 0.96993569, 0.96427551, 0.95878280, 0.95331262 },
+				{ 0.99066067, 0.98312709, 0.97619753, 0.97047831, 0.96432609, 0.95843701, 0.95354936 }
+			},
+			{
+				{ 0.98651865, 0.97602014, 0.96687546, 0.95917251, 0.95053662, 0.94333290, 0.93588620 },
+				{ 0.98644612, 0.97635451, 0.96752784, 0.95878960, 0.95096988, 0.94372194, 0.93649639 },
+				{ 0.98653217, 0.97679361, 0.96795826, 0.95948409, 0.95153354, 0.94451535, 0.93762692 },
+				{ 0.98710952, 0.97764840, 0.96886939, 0.96115167, 0.95341720, 0.94607956, 0.93991923 },
+				{ 0.98800026, 0.97857613, 0.97028358, 0.96252645, 0.95523156, 0.94855543, 0.94239500 },
+				{ 0.98846162, 0.97941499, 0.97147277, 0.96389523, 0.95710340, 0.94988947, 0.94462750 },
+				{ 0.98915780, 0.98040821, 0.97232759, 0.96512371, 0.95882792, 0.95320305, 0.94617125 },
+				{ 0.98958306, 0.98142566, 0.97411272, 0.96726521, 0.96077985, 0.95449645, 0.94792660 },
+				{ 0.98967035, 0.98200875, 0.97502769, 0.96823453, 0.96226699, 0.95629752, 0.95036956 },
+				{ 0.99030610, 0.98241792, 0.97579898, 0.96887956, 0.96350449, 0.95739816, 0.95152721 },
+				{ 0.99033020, 0.98302784, 0.97621400, 0.96963037, 0.96369902, 0.95819784, 0.95234995 },
+				{ 0.99039678, 0.98275864, 0.97616172, 0.97033162, 0.96500319, 0.95852219, 0.95359195 },
+				{ 0.99052416, 0.98320403, 0.97682842, 0.97037893, 0.96425634, 0.95965876, 0.95323152 }
+			}
+		},
+		{
+			{
+				{ 0.99451647, 0.99025637, 0.98636551, 0.98263371, 0.97930297, 0.97635625, 0.97307951 },
+				{ 0.99453048, 0.99040860, 0.98645122, 0.98240855, 0.97913321, 0.97628147, 0.97274053 },
+				{ 0.99446717, 0.99008744, 0.98586763, 0.98231681, 0.97875572, 0.97569140, 0.97238953 },
+				{ 0.99425692, 0.98945776, 0.98554152, 0.98175100, 0.97769553, 0.97450952, 0.97116565 },
+				{ 0.99393142, 0.98880783, 0.98476289, 0.98053131, 0.97721264, 0.97334384, 0.97011163 },
+				{ 0.99336193, 0.98870109, 0.98384023, 0.97950448, 0.97531086, 0.97110379, 0.96736309 },
+				{ 0.99244156, 0.98716575, 0.98196509, 0.97714382, 0.97272613, 0.96878396, 0.96435832 },
+				{ 0.99173889, 0.98535564, 0.97942136, 0.97407732, 0.96949597, 0.96469235, 0.96041514 },
+				{ 0.99022528, 0.98294587, 0.97633992, 0.97037980, 0.96450085, 0.95851425, 0.95398465 },
+				{ 0.98799277, 0.97847529, 0.97041734, 0.96331131, 0.95717270, 0.95013212, 0.94352669 },
+				{ 0.98338976, 0.97088806, 0.96012537, 0.95054962, 0.94142445, 0.93307261, 0.92481462 },
+				{ 0.97139664, 0.94983252, 0.93299519, 0.91816324, 0.90482359, 0.89131199, 0.87969385 },
+				{ 0.78658710, 0.70730645, 0.65941009, 0.62988680, 0.61173517, 0.60093710, 0.59400370 }
+			},
+			{
+				{ 0.99448641, 0.99035330, 0.98644993, 0.98239607, 0.97929508, 0.97572964, 0.97295502 },
+				{ 0.99442303, 0.99024473, 0.98623032, 0.98274410, 0.97927153, 0.97583653, 0.97276529 },
+				{ 0.99431220, 0.98999445, 0.98633692, 0.98223985, 0.97916539, 0.97561225, 0.97229470 },
+				{ 0.99406882, 0.98975516, 0.98562527, 0.98190852, 0.97783281, 0.97420086, 0.97099782 },
+				{ 0.99385879, 0.98902175, 0.98463751, 0.98063634, 0.97728561, 0.97333428, 0.97012798 },
+				{ 0.99364435, 0.98841089, 0.98364097, 0.97924076, 0.97477357, 0.97145086, 0.96773866 },
+				{ 0.99267174, 0.98712241, 0.98203180, 0.97739972, 0.97299591, 0.96868739, 0.96493467 },
+				{ 0.99131976, 0.98507145, 0.97978367, 0.97421702, 0.96915978, 0.96453863, 0.96004044 },
+				{ 0.99001481, 0.98361268, 0.97631457, 0.97009564, 0.96445955, 0.95885179, 0.95382198 },
+				{ 0.98760957, 0.97839446, 0.97063674, 0.96289642, 0.95628765, 0.94932169, 0.94309881 },
+				{ 0.98310492, 0.97087358, 0.95960447, 0.95070880, 0.94045908, 0.93263137, 0.92405458 },
+				{ 0.97006500, 0.94926859, 0.93181432, 0.91490372, 0.90023594, 0.88660026, 0.87475991 },
+				{ 0.92655561, 0.88171668, 0.84673884, 0.81927294, 0.79459592, 0.77541545, 0.75719204 }
+			},
+			{
+				{ 0.99461282, 0.99054223, 0.98612486, 0.98288819, 0.97938813, 0.97607724, 0.97307115 },
+				{ 0.99450020, 0.99012195, 0.98636991, 0.98252700, 0.97964533, 0.97600874, 0.97292761 },
+				{ 0.99415666, 0.99002880, 0.98609871, 0.98212699, 0.97875513, 0.97548359, 0.97229698 },
+				{ 0.99434766, 0.98951176, 0.98547316, 0.98166126, 0.97798572, 0.97458815, 0.97136434 },
+				{ 0.99391066, 0.98902777, 0.98426839, 0.98054883, 0.97679523, 0.97299872, 0.97016836 },
+				{ 0.99351993, 0.98807238, 0.98340200, 0.97953676, 0.97546537, 0.97176432, 0.96804639 },
+				{ 0.99272484, 0.98719408, 0.98199125, 0.97712052, 0.97237769, 0.96878111, 0.96403760 },
+				{ 0.99184593, 0.98513753, 0.97939241, 0.97414402, 0.96949120, 0.96423448, 0.96006059 },
+				{ 0.99029014, 0.98259277, 0.97539751, 0.96970060, 0.96398832, 0.95867615, 0.95330973 },
+				{ 0.98764156, 0.97862357, 0.96983190, 0.96321557, 0.95607481, 0.94943116, 0.94273363 },
+				{ 0.98268381, 0.97015765, 0.95839670, 0.94810738, 0.93922214, 0.92990308, 0.92170847 },
+				{ 0.97035509, 0.94900883, 0.93092742, 0.91527585, 0.90193411, 0.88827759, 0.87628091 },
+				{ 0.95252571, 0.92125299, 0.89548055, 0.87347229, 0.85585937, 0.83899746, 0.82244808 }
+			},
+			{
+				{ 0.99428276, 0.99020228, 0.98658569, 0.98242084, 0.97916883, 0.97608289, 0.97260228 },
+				{ 0.99454893, 0.99038509, 0.98638730, 0.98267029, 0.98006036, 0.97650380, 0.97334002 },
+				{ 0.99448735, 0.99025210, 0.98611987, 0.98250799, 0.97874624, 0.97549946, 0.97220585 },
+				{ 0.99423536, 0.98984995, 0.98566237, 0.98148674, 0.97795419, 0.97435408, 0.97101978 },
+				{ 0.99382286, 0.98896168, 0.98484426, 0.98060983, 0.97724329, 0.97315230, 0.97002912 },
+				{ 0.99332997, 0.98828200, 0.98360482, 0.97921098, 0.97527567, 0.97140022, 0.96677732 },
+				{ 0.99276506, 0.98695829, 0.98204307, 0.97712564, 0.97267320, 0.96849121, 0.96426119 },
+				{ 0.99171335, 0.98535345, 0.97953775, 0.97409783, 0.96899520, 0.96420083, 0.95946898 },
+				{ 0.99015924, 0.98245970, 0.97596657, 0.96919698, 0.96375428, 0.95829653, 0.95294445 },
+				{ 0.98761310, 0.97785269, 0.96955821, 0.96161667, 0.95412432, 0.94848464, 0.94104688 },
+				{ 0.98244366, 0.96957768, 0.95851871, 0.94758397, 0.93893821, 0.92954755, 0.92123120 },
+				{ 0.97279845, 0.95393625, 0.93662515, 0.92214449, 0.90986060, 0.89678190, 0.88555082 },
+				{ 0.96451295, 0.93955148, 0.91850943, 0.90016381, 0.88479153, 0.87059382, 0.85752671 }
+			},
+			{
+				{ 0.99472962, 0.99027306, 0.98639636, 0.98288133, 0.97928666, 0.97664934, 0.97288972 },
+				{ 0.99462075, 0.99024961, 0.98639875, 0.98261362, 0.97921729, 0.97598875, 0.97310261 },
+				{ 0.99443332, 0.98990575, 0.98604050, 0.98248591, 0.97875656, 0.97575201, 0.97286872 },
+				{ 0.99422006, 0.98960486, 0.98569211, 0.98136399, 0.97776768, 0.97480232, 0.97093758 },
+				{ 0.99374885, 0.98880149, 0.98485585, 0.98059955, 0.97661278, 0.97327724, 0.96986923 },
+				{ 0.99343536, 0.98815954, 0.98363091, 0.97897684, 0.97523964, 0.97135268, 0.96737361 },
+				{ 0.99265258, 0.98705502, 0.98169519, 0.97736916, 0.97257638, 0.96848663, 0.96380903 },
+				{ 0.99185159, 0.98494729, 0.97920683, 0.97352289, 0.96900171, 0.96390832, 0.95894782 },
+				{ 0.99015994, 0.98234522, 0.97549466, 0.96920890, 0.96302291, 0.95732752, 0.95205561 },
+				{ 0.98750457, 0.97779117, 0.96954413, 0.96099848, 0.95326519, 0.94756205, 0.94040063 },
+				{ 0.98282827, 0.97003726, 0.95861794, 0.94812545, 0.93894389, 0.92977956, 0.92114995 },
+				{ 0.97596446, 0.95786822, 0.94339925, 0.92936134, 0.91754084, 0.90693744, 0.89650998 },
+				{ 0.97047076, 0.94946769, 0.93305786, 0.91751734, 0.90448490, 0.89236307, 0.87941701 }
+			},
+			{
+				{ 0.99464279, 0.98997801, 0.98648081, 0.98271092, 0.97925174, 0.97608861, 0.97281866 },
+				{ 0.99448825, 0.99018744, 0.98642005, 0.98270199, 0.97896622, 0.97570493, 0.97230704 },
+				{ 0.99440846, 0.98998063, 0.98600886, 0.98246436, 0.97884064, 0.97545619, 0.97230035 },
+				{ 0.99421550, 0.98969100, 0.98546385, 0.98174819, 0.97792110, 0.97399954, 0.97090748 },
+				{ 0.99393196, 0.98888571, 0.98468017, 0.98018231, 0.97636806, 0.97308674, 0.96889740 },
+				{ 0.99328683, 0.98818523, 0.98323662, 0.97882238, 0.97480502, 0.97062078, 0.96714139 },
+				{ 0.99249700, 0.98695550, 0.98148688, 0.97681778, 0.97226882, 0.96718237, 0.96369302 },
+				{ 0.99133485, 0.98498368, 0.97876319, 0.97339624, 0.96801451, 0.96335050, 0.95831143 },
+				{ 0.98968509, 0.98236427, 0.97490821, 0.96797285, 0.96235085, 0.95719472, 0.95067616 },
+				{ 0.98734156, 0.97727421, 0.96888602, 0.96108861, 0.95377776, 0.94652788, 0.94008998 },
+				{ 0.98306963, 0.97099463, 0.95973567, 0.94964894, 0.94047985, 0.93219450, 0.92319142 },
+				{ 0.97814032, 0.96212920, 0.94856280, 0.93651177, 0.92508532, 0.91539028, 0.90482260 },
+				{ 0.97517555, 0.95720478, 0.94263045, 0.92895968, 0.91683655, 0.90628096, 0.89601304 }
+			},
+			{
+				{ 0.99457461, 0.99027223, 0.98596937, 0.98262776, 0.97900926, 0.97624847, 0.97297648 },
+				{ 0.99476763, 0.99002468, 0.98630528, 0.98235389, 0.97894830, 0.97545804, 0.97268737 },
+				{ 0.99428307, 0.98975368, 0.98548373, 0.98223058, 0.97827545, 0.97496893, 0.97154813 },
+				{ 0.99427239, 0.98922509, 0.98550019, 0.98163518, 0.97768399, 0.97416108, 0.96984820 },
+				{ 0.99385966, 0.98881748, 0.98406673, 0.97986035, 0.97657270, 0.97208012, 0.96886405 },
+				{ 0.99298209, 0.98774923, 0.98308822, 0.97868836, 0.97455862, 0.97049144, 0.96665624 },
+				{ 0.99243209, 0.98637037, 0.98126698, 0.97597321, 0.97204662, 0.96681472, 0.96279257 },
+				{ 0.99088114, 0.98482686, 0.97838491, 0.97281193, 0.96796389, 0.96289757, 0.95771803 },
+				{ 0.98979513, 0.98161894, 0.97456921, 0.96776769, 0.96175297, 0.95633490, 0.95023236 },
+				{ 0.98705780, 0.97767812, 0.96878758, 0.96176211, 0.95423705, 0.94814020, 0.94113613 },
+				{ 0.98436601, 0.97170691, 0.96154470, 0.95194621, 0.94242702, 0.93494792, 0.92737615 },
+				{ 0.97998058, 0.96519759, 0.95324794, 0.94216175, 0.93088871, 0.92201720, 0.91331058 },
+				{ 0.97869048, 0.96302559, 0.94868880, 0.93789957, 0.92638405, 0.91576110, 0.90691752 }
+			},
+			{
+				{ 0.99451437, 0.99018200, 0.98573350, 0.98215492, 0.97842813, 0.97548512, 0.97242244 },
+				{ 0.99439489, 0.98999092, 0.98588473, 0.98213969, 0.97851631, 0.97535803, 0.97186028 },
+				{ 0.99414841, 0.98965662, 0.98566062, 0.98138776, 0.97791581, 0.97453189, 0.97104116 },
+				{ 0.99397402, 0.98950784, 0.98494605, 0.98090237, 0.97739751, 0.97356067, 0.96928449 },
+				{ 0.99366886, 0.98847039, 0.98393771, 0.97963640, 0.97508097, 0.97211002, 0.96847203 },
+				{ 0.99324116, 0.98768314, 0.98240102, 0.97785012, 0.97398516, 0.97008121, 0.96565476 },
+				{ 0.99203804, 0.98629766, 0.98035686, 0.97597194, 0.97077338, 0.96602610, 0.96212103 },
+				{ 0.99100576, 0.98416403, 0.97820544, 0.97212618, 0.96735568, 0.96157951, 0.95683719 },
+				{ 0.98951834, 0.98126321, 0.97400345, 0.96760421, 0.96182814, 0.95648119, 0.95001433 },
+				{ 0.98746856, 0.97760647, 0.96911517, 0.96211887, 0.95406106, 0.94701453, 0.94148341 },
+				{ 0.98466035, 0.97297873, 0.96323492, 0.95421462, 0.94618465, 0.93754108, 0.93061871 },
+				{ 0.98218439, 0.96896988, 0.95751379, 0.94703591, 0.93731936, 0.92845631, 0.91985061 },
+				{ 0.98093571, 0.96658911, 0.95477251, 0.94383349, 0.93443974, 0.92369448, 0.91589339 }
+			},
+			{
+				{ 0.99446565, 0.98974882, 0.98538610, 0.98196549, 0.97772147, 0.97469302, 0.97125642 },
+				{ 0.99428813, 0.98969596, 0.98566359, 0.98160492, 0.97816791, 0.97461524, 0.97087767 },
+				{ 0.99407940, 0.98936433, 0.98503357, 0.98125436, 0.97726077, 0.97378208, 0.97045969 },
+				{ 0.99390263, 0.98905514, 0.98416201, 0.98027128, 0.97655198, 0.97305511, 0.96911926 },
+				{ 0.99350128, 0.98829102, 0.98383793, 0.97929057, 0.97480671, 0.97156347, 0.96679095 },
+				{ 0.99282711, 0.98677776, 0.98255649, 0.97765612, 0.97278093, 0.96833490, 0.96497590 },
+				{ 0.99220682, 0.98614357, 0.98061070, 0.97459320, 0.97051623, 0.96571199, 0.96110295 },
+				{ 0.99112409, 0.98369058, 0.97773042, 0.97276124, 0.96661077, 0.96164442, 0.95662159 },
+				{ 0.98950550, 0.98145340, 0.97435889, 0.96754324, 0.96120835, 0.95569064, 0.95004975 },
+				{ 0.98761993, 0.97786266, 0.96992153, 0.96230683, 0.95516679, 0.94769731, 0.94237394 },
+				{ 0.98525804, 0.97397142, 0.96510997, 0.95644200, 0.94762258, 0.94000324, 0.93268278 },
+				{ 0.98338819, 0.97133756, 0.96010830, 0.95026719, 0.94141932, 0.93298132, 0.92516341 },
+				{ 0.98263301, 0.96962975, 0.95880244, 0.94870686, 0.93836312, 0.93031323, 0.92229322 }
+			},
+			{
+				{ 0.99413688, 0.98968257, 0.98526693, 0.98120837, 0.97725450, 0.97434869, 0.97039264 },
+				{ 0.99407353, 0.98926489, 0.98524823, 0.98067954, 0.97747374, 0.97362273, 0.97005126 },
+				{ 0.99403408, 0.98916891, 0.98471351, 0.98054689, 0.97703058, 0.97317842, 0.96914693 },
+				{ 0.99393199, 0.98860111, 0.98364916, 0.97998458, 0.97599941, 0.97195178, 0.96835400 },
+				{ 0.99321565, 0.98816676, 0.98309151, 0.97859851, 0.97405680, 0.97031414, 0.96626163 },
+				{ 0.99269256, 0.98737401, 0.98177044, 0.97717945, 0.97219050, 0.96773827, 0.96371791 },
+				{ 0.99191876, 0.98562103, 0.98016490, 0.97437964, 0.96941238, 0.96518083, 0.96013555 },
+				{ 0.99081416, 0.98316732, 0.97753886, 0.97133314, 0.96623946, 0.96083233, 0.95606553 },
+				{ 0.98964603, 0.98112807, 0.97452211, 0.96787335, 0.96176039, 0.95579623, 0.94962524 },
+				{ 0.98801128, 0.97860434, 0.97047738, 0.96318412, 0.95609521, 0.94936754, 0.94267173 },
+				{ 0.98584049, 0.97557828, 0.96650686, 0.95815774, 0.95075037, 0.94309456, 0.93597608 },
+				{ 0.98499248, 0.97321987, 0.96386582, 0.95394719, 0.94588601, 0.93785799, 0.93010108 },
+				{ 0.98432736, 0.97235355, 0.96128554, 0.95314155, 0.94341097, 0.93589443, 0.92742123 }
+			},
+			{
+				{ 0.99410817, 0.98878503, 0.98472998, 0.98077888, 0.97652970, 0.97315854, 0.96946038 },
+				{ 0.99374182, 0.98879226, 0.98436932, 0.98023912, 0.97682864, 0.97268301, 0.96897104 },
+				{ 0.99382769, 0.98850523, 0.98405963, 0.97964530, 0.97616275, 0.97208326, 0.96841735 },
+				{ 0.99336770, 0.98844461, 0.98326817, 0.97928794, 0.97503830, 0.97091572, 0.96740533 },
+				{ 0.99285404, 0.98728906, 0.98266665, 0.97768483, 0.97348745, 0.96965515, 0.96518725 },
+				{ 0.99253131, 0.98649483, 0.98111358, 0.97593465, 0.97130026, 0.96708220, 0.96305561 },
+				{ 0.99169566, 0.98514875, 0.97981621, 0.97395776, 0.96899425, 0.96450320, 0.95877330 },
+				{ 0.99089033, 0.98342976, 0.97752328, 0.97156509, 0.96535504, 0.95965060, 0.95532170 },
+				{ 0.98940784, 0.98153703, 0.97432338, 0.96748895, 0.96156119, 0.95619474, 0.95056152 },
+				{ 0.98813523, 0.97929883, 0.97083278, 0.96347866, 0.95662638, 0.95127996, 0.94475634 },
+				{ 0.98680406, 0.97651711, 0.96774323, 0.95997390, 0.95215488, 0.94538193, 0.93854039 },
+				{ 0.98566781, 0.97496705, 0.96536011, 0.95737720, 0.94893475, 0.94076993, 0.93445348 },
+				{ 0.98546372, 0.97409499, 0.96439769, 0.95533462, 0.94746367, 0.93997424, 0.93288075 }
+			},
+			{
+				{ 0.99360762, 0.98892039, 0.98402435, 0.97931043, 0.97545598, 0.97209172, 0.96838584 },
+				{ 0.99359132, 0.98840115, 0.98411423, 0.97954972, 0.97503106, 0.97139649, 0.96789472 },
+				{ 0.99329791, 0.98867544, 0.98330273, 0.97878392, 0.97485340, 0.97079043, 0.96716324 },
+				{ 0.99313706, 0.98777928, 0.98269701, 0.97826547, 0.97359902, 0.96974848, 0.96559449 },
+				{ 0.99271794, 0.98701641, 0.98194507, 0.97667929, 0.97216964, 0.96817658, 0.96398350 },
+				{ 0.99213075, 0.98577746, 0.98081375, 0.97521382, 0.97026834, 0.96599270, 0.96188611 },
+				{ 0.99177097, 0.98466378, 0.97905918, 0.97388113, 0.96833258, 0.96329974, 0.95826853 },
+				{ 0.99078566, 0.98298710, 0.97736481, 0.97055040, 0.96538991, 0.95920645, 0.95467117 },
+				{ 0.98963422, 0.98176424, 0.97429418, 0.96751646, 0.96160842, 0.95549753, 0.95056544 },
+				{ 0.98835208, 0.97952462, 0.97215555, 0.96468308, 0.95813825, 0.95093189, 0.94565155 },
+				{ 0.98739996, 0.97774762, 0.96949596, 0.96151763, 0.95391930, 0.94762371, 0.94074657 },
+				{ 0.98637358, 0.97595225, 0.96673016, 0.95884529, 0.95196675, 0.94496954, 0.93741746 },
+				{ 0.98633039, 0.97568654, 0.96661164, 0.95786133, 0.95029384, 0.94355103, 0.93671064 }
+			},
+			{
+				{ 0.99337062, 0.98784805, 0.98327128, 0.97902538, 0.97446423, 0.97054561, 0.96625018 },
+				{ 0.99342429, 0.98793822, 0.98300953, 0.97852911, 0.97437145, 0.97000970, 0.96569588 },
+				{ 0.99307339, 0.98735308, 0.98256395, 0.97794053, 0.97340866, 0.96951475, 0.96563420 },
+				{ 0.99294329, 0.98695422, 0.98210474, 0.97726384, 0.97272919, 0.96815254, 0.96458018 },
+				{ 0.99250030, 0.98711484, 0.98088999, 0.97626682, 0.97146268, 0.96736452, 0.96274750 },
+				{ 0.99171380, 0.98593989, 0.97960915, 0.97468019, 0.96977775, 0.96537977, 0.96023170 },
+				{ 0.99122232, 0.98443304, 0.97842634, 0.97266458, 0.96745811, 0.96244709, 0.95805735 },
+				{ 0.99061145, 0.98302669, 0.97692633, 0.97022443, 0.96457843, 0.95924242, 0.95317109 },
+				{ 0.98964884, 0.98155989, 0.97431435, 0.96806981, 0.96154897, 0.95429683, 0.95041165 },
+				{ 0.98854141, 0.98035111, 0.97224598, 0.96564202, 0.95828896, 0.95228248, 0.94612096 },
+				{ 0.98798743, 0.97870803, 0.97063602, 0.96297179, 0.95618083, 0.94866518, 0.94326047 },
+				{ 0.98744088, 0.97772844, 0.96917379, 0.96171076, 0.95406766, 0.94738616, 0.94022915 },
+				{ 0.98685642, 0.97697940, 0.96864688, 0.96002307, 0.95316164, 0.94603024, 0.93976248 }
+			},
+			{
+				{ 0.99297129, 0.98715421, 0.98243689, 0.97754787, 0.97338129, 0.96841215, 0.96461595 },
+				{ 0.99265601, 0.98705279, 0.98214041, 0.97727020, 0.97259934, 0.96886322, 0.96425212 },
+				{ 0.99273893, 0.98695902, 0.98187992, 0.97681508, 0.97267117, 0.96767889, 0.96412662 },
+				{ 0.99243504, 0.98655529, 0.98114350, 0.97637306, 0.97149804, 0.96657373, 0.96264741 },
+				{ 0.99212737, 0.98592705, 0.98047362, 0.97534462, 0.97016605, 0.96592002, 0.96102406 },
+				{ 0.99185816, 0.98495136, 0.97945319, 0.97362099, 0.96837026, 0.96305089, 0.95891279 },
+				{ 0.99122319, 0.98459839, 0.97809776, 0.97175082, 0.96685700, 0.96136326, 0.95665965 },
+				{ 0.99063271, 0.98319221, 0.97606348, 0.97026083, 0.96458522, 0.95926805, 0.95341954 },
+				{ 0.98929692, 0.98163316, 0.97479608, 0.96746487, 0.96184931, 0.95556560, 0.95073773 },
+				{ 0.98920988, 0.98004389, 0.97320008, 0.96604542, 0.95932844, 0.95292637, 0.94647171 },
+				{ 0.98847812, 0.97921150, 0.97206681, 0.96370400, 0.95703466, 0.94986257, 0.94456619 },
+				{ 0.98801118, 0.97863697, 0.97018100, 0.96256853, 0.95615633, 0.94915905, 0.94228514 },
+				{ 0.98765757, 0.97842972, 0.96984659, 0.96201195, 0.95495698, 0.94896361, 0.94123677 }
+			},
+			{
+				{ 0.99235048, 0.98653657, 0.98133189, 0.97592068, 0.97151522, 0.96694338, 0.96229159 },
+				{ 0.99256707, 0.98645498, 0.98125314, 0.97587149, 0.97126518, 0.96635057, 0.96268472 },
+				{ 0.99234753, 0.98594153, 0.98085869, 0.97576681, 0.97096904, 0.96630554, 0.96208276 },
+				{ 0.99213929, 0.98595492, 0.98033951, 0.97519699, 0.96978940, 0.96519977, 0.96109712 },
+				{ 0.99173550, 0.98519293, 0.97948478, 0.97384568, 0.96905013, 0.96384893, 0.95938675 },
+				{ 0.99176024, 0.98449726, 0.97869836, 0.97252818, 0.96794290, 0.96252488, 0.95776477 },
+				{ 0.99093857, 0.98366703, 0.97730142, 0.97172592, 0.96634025, 0.96015135, 0.95551419 },
+				{ 0.99025592, 0.98246328, 0.97593054, 0.96986243, 0.96363999, 0.95799040, 0.95242811 },
+				{ 0.98984676, 0.98143175, 0.97438393, 0.96773547, 0.96169182, 0.95573267, 0.95124698 },
+				{ 0.98907122, 0.98089839, 0.97336740, 0.96665078, 0.95956916, 0.95389797, 0.94788480 },
+				{ 0.98875601, 0.98005092, 0.97214776, 0.96527278, 0.95854600, 0.95149106, 0.94613569 },
+				{ 0.98829635, 0.97966398, 0.97160077, 0.96383483, 0.95730120, 0.95090998, 0.94475387 },
+				{ 0.98846735, 0.97904852, 0.97097275, 0.96399936, 0.95716302, 0.95075201, 0.94440275 }
+			},
+			{
+				{ 0.99197416, 0.98563512, 0.98012091, 0.97464124, 0.96995758, 0.96529989, 0.96003963 },
+				{ 0.99204004, 0.98582314, 0.97980312, 0.97450416, 0.96948046, 0.96447654, 0.96061329 },
+				{ 0.99186751, 0.98561866, 0.97951456, 0.97445562, 0.96927715, 0.96478095, 0.95997992 },
+				{ 0.99159559, 0.98514724, 0.97943480, 0.97373110, 0.96847227, 0.96376425, 0.95893310 },
+				{ 0.99133066, 0.98454758, 0.97838295, 0.97314449, 0.96722972, 0.96310057, 0.95814312 },
+				{ 0.99096051, 0.98412084, 0.97754677, 0.97213610, 0.96656445, 0.96141851, 0.95625218 },
+				{ 0.99056464, 0.98331252, 0.97661076, 0.97059616, 0.96505571, 0.95998943, 0.95457042 },
+				{ 0.99033633, 0.98288421, 0.97577912, 0.96924516, 0.96382962, 0.95801177, 0.95253116 },
+				{ 0.98955483, 0.98166366, 0.97485995, 0.96803171, 0.96222377, 0.95599393, 0.95064111 },
+				{ 0.98924331, 0.98090383, 0.97375509, 0.96703196, 0.96078439, 0.95467279, 0.94892075 },
+				{ 0.98908261, 0.98069170, 0.97281530, 0.96619721, 0.95927125, 0.95313826, 0.94817114 },
+				{ 0.98864974, 0.98010612, 0.97232751, 0.96488837, 0.95825052, 0.95245599, 0.94610507 },
+				{ 0.98854483, 0.97988458, 0.97217406, 0.96480001, 0.95786349, 0.95223663, 0.94570605 }
+			},
+			{
+				{ 0.99151370, 0.98491334, 0.97868083, 0.97370562, 0.96798853, 0.96280008, 0.95850652 },
+				{ 0.99137902, 0.98524583, 0.97873306, 0.97334961, 0.96725413, 0.96279888, 0.95806299 },
+				{ 0.99143054, 0.98456103, 0.97871195, 0.97320531, 0.96796747, 0.96276113, 0.95715583 },
+				{ 0.99112173, 0.98430770, 0.97846267, 0.97234497, 0.96706441, 0.96167288, 0.95672965 },
+				{ 0.99093410, 0.98415480, 0.97779740, 0.97221778, 0.96643583, 0.96083489, 0.95565320 },
+				{ 0.99082934, 0.98343393, 0.97685694, 0.97136462, 0.96507684, 0.96020301, 0.95440003 },
+				{ 0.99037143, 0.98280599, 0.97618618, 0.97001427, 0.96428113, 0.95857715, 0.95430171 },
+				{ 0.98982980, 0.98217584, 0.97525386, 0.96934692, 0.96377837, 0.95755212, 0.95208077 },
+				{ 0.98996553, 0.98188084, 0.97468744, 0.96795742, 0.96197522, 0.95522751, 0.95048554 },
+				{ 0.98953044, 0.98112566, 0.97392092, 0.96743134, 0.96103713, 0.95499468, 0.95038891 },
+				{ 0.98917943, 0.98076559, 0.97328719, 0.96654916, 0.96019989, 0.95343499, 0.94780591 },
+				{ 0.98917237, 0.98063966, 0.97272727, 0.96603757, 0.95934914, 0.95378903, 0.94751476 },
+				{ 0.98891484, 0.98064380, 0.97334327, 0.96575606, 0.95970065, 0.95378026, 0.94699700 }
+			},
+			{
+				{ 0.99117481, 0.98374802, 0.97755635, 0.97128907, 0.96624501, 0.96142582, 0.95612768 },
+				{ 0.99113842, 0.98397715, 0.97755486, 0.97208658, 0.96596394, 0.96008078, 0.95547912 },
+				{ 0.99067357, 0.98375932, 0.97736094, 0.97105341, 0.96530349, 0.96003238, 0.95479422 },
+				{ 0.99074696, 0.98362024, 0.97736057, 0.97122481, 0.96535001, 0.96007881, 0.95540032 },
+				{ 0.99036920, 0.98356368, 0.97683732, 0.97072571, 0.96503390, 0.95931738, 0.95386403 },
+				{ 0.99040857, 0.98277807, 0.97622734, 0.97000139, 0.96444810, 0.95789385, 0.95290529 },
+				{ 0.98999424, 0.98260540, 0.97548036, 0.96932970, 0.96338188, 0.95798313, 0.95253494 },
+				{ 0.99024205, 0.98193436, 0.97497970, 0.96906546, 0.96279819, 0.95689827, 0.95164957 },
+				{ 0.98982466, 0.98186574, 0.97491029, 0.96840190, 0.96219171, 0.95650236, 0.95086276 },
+				{ 0.98974970, 0.98153613, 0.97410792, 0.96760411, 0.96154885, 0.95527017, 0.94960819 },
+				{ 0.98954693, 0.98167801, 0.97413069, 0.96777703, 0.96060313, 0.95451959, 0.94908311 },
+				{ 0.98943206, 0.98086029, 0.97411374, 0.96676652, 0.96042624, 0.95433184, 0.94913874 },
+				{ 0.98936444, 0.98111401, 0.97355585, 0.96660434, 0.96048137, 0.95427603, 0.94819263 }
+			},
+			{
+				{ 0.99075266, 0.98292811, 0.97616011, 0.96956966, 0.96394690, 0.95738121, 0.95330072 },
+				{ 0.99052073, 0.98298900, 0.97578513, 0.96940887, 0.96373532, 0.95882881, 0.95327051 },
+				{ 0.99013456, 0.98255067, 0.97576984, 0.96958036, 0.96371890, 0.95798481, 0.95286815 },
+				{ 0.99052913, 0.98256454, 0.97571074, 0.96944773, 0.96366109, 0.95777404, 0.95267168 },
+				{ 0.99002642, 0.98232424, 0.97586700, 0.96904817, 0.96320801, 0.95761694, 0.95179061 },
+				{ 0.98998260, 0.98218019, 0.97532947, 0.96895983, 0.96260772, 0.95695627, 0.95207059 },
+				{ 0.99009501, 0.98233192, 0.97492965, 0.96877847, 0.96244724, 0.95655337, 0.95181856 },
+				{ 0.99005360, 0.98185061, 0.97477193, 0.96862726, 0.96183796, 0.95670124, 0.95056641 },
+				{ 0.98961237, 0.98179500, 0.97482708, 0.96799727, 0.96194683, 0.95631743, 0.95000875 },
+				{ 0.98954042, 0.98158118, 0.97461837, 0.96807204, 0.96136671, 0.95525742, 0.95040723 },
+				{ 0.98963662, 0.98117070, 0.97358294, 0.96749214, 0.96136079, 0.95593600, 0.95031499 },
+				{ 0.98940508, 0.98165893, 0.97420018, 0.96732847, 0.96060895, 0.95548446, 0.94976263 },
+				{ 0.98954733, 0.98148080, 0.97436803, 0.96735705, 0.96109038, 0.95567933, 0.94943174 }
+			},
+			{
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+				{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 }
+			},
+			{
+				{ 0.98902964, 0.98078029, 0.97282646, 0.96530316, 0.95953742, 0.95336529, 0.94808418 },
+				{ 0.98915595, 0.98044322, 0.97339099, 0.96595735, 0.95967001, 0.95329707, 0.94732640 },
+				{ 0.98945271, 0.98073212, 0.97303113, 0.96589001, 0.95917249, 0.95400702, 0.94801072 },
+				{ 0.98913135, 0.98054949, 0.97321789, 0.96653160, 0.95967531, 0.95382166, 0.94835780 },
+				{ 0.98935527, 0.98082249, 0.97359127, 0.96613983, 0.95993680, 0.95424021, 0.94835634 },
+				{ 0.98921221, 0.98143844, 0.97332463, 0.96694146, 0.96016548, 0.95451901, 0.94833073 },
+				{ 0.98936824, 0.98145569, 0.97385302, 0.96694886, 0.96092531, 0.95497163, 0.94867348 },
+				{ 0.98945276, 0.98132759, 0.97401100, 0.96730022, 0.96094787, 0.95511512, 0.94916604 },
+				{ 0.98978365, 0.98148466, 0.97442317, 0.96745348, 0.96115937, 0.95552538, 0.94976229 },
+				{ 0.98983213, 0.98200416, 0.97462691, 0.96762218, 0.96144266, 0.95613354, 0.95083022 },
+				{ 0.98979759, 0.98168577, 0.97476925, 0.96814575, 0.96173404, 0.95603032, 0.95056342 },
+				{ 0.98995640, 0.98189663, 0.97495676, 0.96810432, 0.96191334, 0.95629114, 0.95041547 },
+				{ 0.98984781, 0.98218161, 0.97470266, 0.96834399, 0.96278145, 0.95622233, 0.95067680 }
+			},
+			{
+				{ 0.98851231, 0.97895800, 0.97108178, 0.96394450, 0.95700183, 0.95009586, 0.94438219 },
+				{ 0.98808719, 0.97945406, 0.97162754, 0.96413154, 0.95725712, 0.95045594, 0.94517081 },
+				{ 0.98831108, 0.97949906, 0.97199150, 0.96403885, 0.95760523, 0.95122762, 0.94463102 },
+				{ 0.98852921, 0.98030710, 0.97223375, 0.96467665, 0.95815774, 0.95200385, 0.94539196 },
+				{ 0.98888128, 0.98032640, 0.97238646, 0.96499981, 0.95879522, 0.95205504, 0.94616405 },
+				{ 0.98886190, 0.98104646, 0.97262164, 0.96540213, 0.95913171, 0.95349056, 0.94692264 },
+				{ 0.98934256, 0.98074070, 0.97381469, 0.96613504, 0.96010221, 0.95410259, 0.94780997 },
+				{ 0.98949524, 0.98127888, 0.97316643, 0.96726537, 0.96058935, 0.95436867, 0.94879680 },
+				{ 0.98961818, 0.98115121, 0.97445020, 0.96742660, 0.96142664, 0.95502944, 0.94914551 },
+				{ 0.98987981, 0.98196706, 0.97455285, 0.96815106, 0.96175687, 0.95573913, 0.95027747 },
+				{ 0.98990368, 0.98181643, 0.97513571, 0.96843300, 0.96198527, 0.95603785, 0.95117446 },
+				{ 0.98985858, 0.98219199, 0.97488078, 0.96879977, 0.96226855, 0.95606073, 0.95097755 },
+				{ 0.99004575, 0.98221461, 0.97508095, 0.96900869, 0.96258813, 0.95666450, 0.95099294 }
+			},
+			{
+				{ 0.98739665, 0.97809027, 0.96963330, 0.96212406, 0.95428611, 0.94739311, 0.94118156 },
+				{ 0.98745129, 0.97798529, 0.96969940, 0.96174768, 0.95511835, 0.94795973, 0.94130221 },
+				{ 0.98788353, 0.97833536, 0.96994019, 0.96193461, 0.95544853, 0.94797616, 0.94116982 },
+				{ 0.98809954, 0.97887705, 0.97036098, 0.96315903, 0.95585332, 0.94896955, 0.94287312 },
+				{ 0.98838160, 0.97951887, 0.97094982, 0.96362890, 0.95597224, 0.95015293, 0.94391118 },
+				{ 0.98863985, 0.97998481, 0.97209458, 0.96440112, 0.95805386, 0.95191243, 0.94536743 },
+				{ 0.98903673, 0.98038074, 0.97303989, 0.96595862, 0.95871627, 0.95219156, 0.94662146 },
+				{ 0.98924357, 0.98092192, 0.97324859, 0.96657084, 0.95994567, 0.95377916, 0.94861720 },
+				{ 0.98945234, 0.98136183, 0.97397144, 0.96732343, 0.96135546, 0.95483433, 0.94840192 },
+				{ 0.98960397, 0.98226221, 0.97447929, 0.96774679, 0.96200400, 0.95539375, 0.95031722 },
+				{ 0.98996399, 0.98173497, 0.97441684, 0.96834236, 0.96225353, 0.95677143, 0.95048486 },
+				{ 0.99009337, 0.98218335, 0.97543785, 0.96902359, 0.96249030, 0.95674155, 0.95009298 },
+				{ 0.99026495, 0.98246534, 0.97474141, 0.96841350, 0.96273643, 0.95695365, 0.95149721 }
+			},
+			{
+				{ 0.98707286, 0.97664244, 0.96820739, 0.95939810, 0.95213181, 0.94509614, 0.93770265 },
+				{ 0.98707291, 0.97660063, 0.96812875, 0.95934616, 0.95208451, 0.94549877, 0.93780959 },
+				{ 0.98670332, 0.97761938, 0.96889553, 0.96031439, 0.95278661, 0.94600639, 0.93901299 },
+				{ 0.98730306, 0.97759250, 0.96975260, 0.96163010, 0.95438925, 0.94653945, 0.93993550 },
+				{ 0.98776331, 0.97838712, 0.97014451, 0.96214419, 0.95472583, 0.94863165, 0.94163494 },
+				{ 0.98845985, 0.97926748, 0.97089271, 0.96336017, 0.95678666, 0.94984588, 0.94346450 },
+				{ 0.98871204, 0.97986151, 0.97229262, 0.96479875, 0.95848473, 0.95105174, 0.94497849 },
+				{ 0.98930243, 0.98020437, 0.97308043, 0.96602870, 0.95939230, 0.95339498, 0.94734413 },
+				{ 0.98941093, 0.98133264, 0.97334847, 0.96651740, 0.96070186, 0.95474694, 0.94837585 },
+				{ 0.98959404, 0.98189672, 0.97456145, 0.96798174, 0.96149871, 0.95517834, 0.94969410 },
+				{ 0.98981432, 0.98214484, 0.97503502, 0.96829915, 0.96206628, 0.95611140, 0.95068114 },
+				{ 0.99003266, 0.98251351, 0.97553981, 0.96866802, 0.96276389, 0.95613765, 0.95104917 },
+				{ 0.99025530, 0.98234575, 0.97562804, 0.96918716, 0.96257287, 0.95695712, 0.95142931 }
+			}
+		},
+		{
+			{
+				{ 0.99422890, 0.98972570, 0.98570071, 0.98199190, 0.97863328, 0.97471794, 0.97167206 },
+				{ 0.99413201, 0.98944832, 0.98563695, 0.98196059, 0.97843260, 0.97472524, 0.97156754 },
+				{ 0.99411026, 0.98951852, 0.98544848, 0.98116114, 0.97762868, 0.97387971, 0.97136990 },
+				{ 0.99387954, 0.98942319, 0.98473131, 0.98043006, 0.97669100, 0.97318823, 0.97000201 },
+				{ 0.99347704, 0.98868899, 0.98374040, 0.97942726, 0.97592126, 0.97174520, 0.96793605 },
+				{ 0.99333392, 0.98750213, 0.98275442, 0.97829595, 0.97438867, 0.97011492, 0.96570430 },
+				{ 0.99240862, 0.98667357, 0.98131938, 0.97594524, 0.97148281, 0.96705704, 0.96285213 },
+				{ 0.99147030, 0.98456201, 0.97882053, 0.97312790, 0.96790569, 0.96346068, 0.95863573 },
+				{ 0.99002035, 0.98223243, 0.97516004, 0.96845955, 0.96241101, 0.95671018, 0.95194299 },
+				{ 0.98749075, 0.97777245, 0.96840319, 0.96183349, 0.95429201, 0.94716511, 0.94131166 },
+				{ 0.98242934, 0.96941869, 0.95844706, 0.94791017, 0.93844677, 0.93020011, 0.92180212 },
+				{ 0.96911666, 0.94836438, 0.93017745, 0.91530846, 0.89993687, 0.88619966, 0.87545835 },
+				{ 0.77594281, 0.69129383, 0.64040200, 0.61091269, 0.59473699, 0.58268735, 0.57536640 }
+			},
+			{
+				{ 0.99423009, 0.98989832, 0.98557089, 0.98187493, 0.97835577, 0.97496869, 0.97200550 },
+				{ 0.99445619, 0.98961376, 0.98564653, 0.98202747, 0.97830945, 0.97475105, 0.97211351 },
+				{ 0.99410831, 0.98931147, 0.98526749, 0.98138893, 0.97788236, 0.97478767, 0.97147945 },
+				{ 0.99391914, 0.98919053, 0.98479898, 0.98050984, 0.97690049, 0.97384664, 0.96998424 },
+				{ 0.99361296, 0.98860837, 0.98412791, 0.97987359, 0.97627385, 0.97203239, 0.96872689 },
+				{ 0.99293097, 0.98757021, 0.98278352, 0.97840024, 0.97381628, 0.96999253, 0.96628343 },
+				{ 0.99242698, 0.98610143, 0.98117155, 0.97643748, 0.97170406, 0.96727859, 0.96334851 },
+				{ 0.99147417, 0.98479443, 0.97904440, 0.97343269, 0.96809613, 0.96300162, 0.95869347 },
+				{ 0.98982282, 0.98198634, 0.97494652, 0.96872639, 0.96227006, 0.95738882, 0.95117697 },
+				{ 0.98718071, 0.97768057, 0.96961481, 0.96190894, 0.95407684, 0.94747490, 0.94037032 },
+				{ 0.98254922, 0.96944559, 0.95831950, 0.94758993, 0.93798723, 0.92921812, 0.92134888 },
+				{ 0.96854351, 0.94642415, 0.92728072, 0.90993975, 0.89570035, 0.88196118, 0.86959348 },
+				{ 0.91986373, 0.87412922, 0.83692962, 0.80643149, 0.78207060, 0.75955435, 0.74215986 }
+			},
+			{
+				{ 0.99435930, 0.98972922, 0.98584623, 0.98193393, 0.97835010, 0.97527446, 0.97206373 },
+				{ 0.99412701, 0.98967293, 0.98601841, 0.98172896, 0.97828319, 0.97485264, 0.97145341 },
+				{ 0.99415050, 0.98966183, 0.98537485, 0.98153647, 0.97820199, 0.97457391, 0.97115231 },
+				{ 0.99377960, 0.98927176, 0.98478295, 0.98044735, 0.97717331, 0.97349006, 0.97001535 },
+				{ 0.99348926, 0.98813917, 0.98418694, 0.98027277, 0.97616064, 0.97201965, 0.96858572 },
+				{ 0.99301578, 0.98781656, 0.98294805, 0.97843629, 0.97433634, 0.96971606, 0.96623483 },
+				{ 0.99250168, 0.98638865, 0.98102996, 0.97593100, 0.97139799, 0.96729370, 0.96294098 },
+				{ 0.99115133, 0.98453964, 0.97867082, 0.97323246, 0.96818362, 0.96279665, 0.95870717 },
+				{ 0.98991238, 0.98194739, 0.97528333, 0.96840124, 0.96261727, 0.95705958, 0.95147293 },
+				{ 0.98704963, 0.97737277, 0.96839187, 0.96133641, 0.95399086, 0.94600436, 0.94067087 },
+				{ 0.98161307, 0.96953371, 0.95700000, 0.94637954, 0.93644705, 0.92804249, 0.91832028 },
+				{ 0.96915941, 0.94647308, 0.92892554, 0.91153537, 0.89690941, 0.88250623, 0.87000271 },
+				{ 0.94846437, 0.91485127, 0.88871298, 0.86561899, 0.84363059, 0.82695730, 0.80972920 }
+			},
+			{
+				{ 0.99416806, 0.98987141, 0.98605043, 0.98193623, 0.97817589, 0.97533309, 0.97193747 },
+				{ 0.99428138, 0.98985678, 0.98589820, 0.98183136, 0.97761755, 0.97503061, 0.97188442 },
+				{ 0.99416112, 0.98980503, 0.98554156, 0.98189076, 0.97803124, 0.97478943, 0.97117427 },
+				{ 0.99402646, 0.98934888, 0.98491007, 0.98039702, 0.97726812, 0.97339794, 0.96997912 },
+				{ 0.99366318, 0.98849781, 0.98398728, 0.97974813, 0.97579655, 0.97223503, 0.96814904 },
+				{ 0.99305706, 0.98782263, 0.98260778, 0.97811277, 0.97413716, 0.96986874, 0.96609630 },
+				{ 0.99232374, 0.98640656, 0.98127854, 0.97594742, 0.97184897, 0.96634959, 0.96335305 },
+				{ 0.99146932, 0.98457597, 0.97841175, 0.97313625, 0.96760037, 0.96305083, 0.95821661 },
+				{ 0.99005574, 0.98197102, 0.97456271, 0.96829271, 0.96237562, 0.95631468, 0.95046966 },
+				{ 0.98691789, 0.97681855, 0.96838457, 0.96000447, 0.95287412, 0.94542892, 0.93889193 },
+				{ 0.98169195, 0.96793200, 0.95654021, 0.94478117, 0.93537443, 0.92626975, 0.91775440 },
+				{ 0.97133507, 0.94993961, 0.93355191, 0.91722991, 0.90440803, 0.89089130, 0.87990331 },
+				{ 0.96080167, 0.93445443, 0.91234121, 0.89358322, 0.87642506, 0.86182841, 0.84783476 }
+			},
+			{
+				{ 0.99437006, 0.98993122, 0.98583925, 0.98202200, 0.97870398, 0.97506181, 0.97214071 },
+				{ 0.99428109, 0.98961965, 0.98573947, 0.98164475, 0.97853092, 0.97500312, 0.97148797 },
+				{ 0.99421962, 0.98940046, 0.98516736, 0.98127625, 0.97788622, 0.97421077, 0.97103846 },
+				{ 0.99397362, 0.98918159, 0.98508639, 0.98060369, 0.97715602, 0.97326557, 0.96935319 },
+				{ 0.99345258, 0.98831937, 0.98409176, 0.97977556, 0.97574561, 0.97190027, 0.96845173 },
+				{ 0.99319350, 0.98757491, 0.98282505, 0.97839364, 0.97403922, 0.96999329, 0.96574121 },
+				{ 0.99233464, 0.98589018, 0.98076593, 0.97567832, 0.97102047, 0.96678220, 0.96272913 },
+				{ 0.99128655, 0.98406048, 0.97810213, 0.97217143, 0.96717541, 0.96274984, 0.95749207 },
+				{ 0.98956353, 0.98156760, 0.97428347, 0.96771235, 0.96157316, 0.95590457, 0.95047045 },
+				{ 0.98679291, 0.97642598, 0.96725961, 0.95958288, 0.95178480, 0.94457166, 0.93827386 },
+				{ 0.98183701, 0.96807537, 0.95681002, 0.94629758, 0.93581601, 0.92694437, 0.91776999 },
+				{ 0.97422035, 0.95586135, 0.93960269, 0.92487429, 0.91244795, 0.90003071, 0.88941525 },
+				{ 0.96844975, 0.94610039, 0.92784785, 0.91227920, 0.89666552, 0.88304983, 0.87206211 }
+			},
+			{
+				{ 0.99428861, 0.98954641, 0.98612064, 0.98187705, 0.97829911, 0.97459581, 0.97196164 },
+				{ 0.99422654, 0.98985520, 0.98574500, 0.98177994, 0.97805874, 0.97478697, 0.97136666 },
+				{ 0.99417101, 0.98929303, 0.98547964, 0.98111053, 0.97796972, 0.97431013, 0.97131547 },
+				{ 0.99398057, 0.98900476, 0.98482729, 0.98072425, 0.97695064, 0.97304592, 0.96951409 },
+				{ 0.99363625, 0.98818520, 0.98382254, 0.97960356, 0.97505421, 0.97160447, 0.96831044 },
+				{ 0.99289651, 0.98774879, 0.98214603, 0.97818332, 0.97321641, 0.96940564, 0.96546101 },
+				{ 0.99210235, 0.98603282, 0.98055444, 0.97511437, 0.97099782, 0.96646483, 0.96227228 },
+				{ 0.99127279, 0.98459201, 0.97843160, 0.97195972, 0.96689463, 0.96157462, 0.95706450 },
+				{ 0.98948349, 0.98115657, 0.97406270, 0.96713832, 0.96075860, 0.95479236, 0.94908676 },
+				{ 0.98667357, 0.97633855, 0.96723635, 0.95937880, 0.95114321, 0.94499462, 0.93758519 },
+				{ 0.98199068, 0.96977297, 0.95752795, 0.94732038, 0.93833362, 0.92849066, 0.91930184 },
+				{ 0.97665441, 0.95922576, 0.94477045, 0.93196377, 0.92041104, 0.90919702, 0.89857501 },
+				{ 0.97339500, 0.95415385, 0.93779371, 0.92341178, 0.91112888, 0.89822827, 0.88751406 }
+			},
+			{
+				{ 0.99449760, 0.98980973, 0.98605412, 0.98155077, 0.97842549, 0.97450441, 0.97179411 },
+				{ 0.99422876, 0.98987475, 0.98561378, 0.98178370, 0.97781587, 0.97447539, 0.97107294 },
+				{ 0.99410747, 0.98949915, 0.98499809, 0.98158999, 0.97736142, 0.97389213, 0.97035114 },
+				{ 0.99394062, 0.98879312, 0.98468583, 0.98061885, 0.97653168, 0.97325900, 0.96994178 },
+				{ 0.99356933, 0.98821293, 0.98341599, 0.97927026, 0.97517071, 0.97109507, 0.96796638 },
+				{ 0.99281496, 0.98727781, 0.98224777, 0.97785679, 0.97329493, 0.96886796, 0.96572115 },
+				{ 0.99224876, 0.98590513, 0.98051984, 0.97525352, 0.97054214, 0.96607600, 0.96156121 },
+				{ 0.99090171, 0.98368651, 0.97735610, 0.97236490, 0.96619259, 0.96082297, 0.95574498 },
+				{ 0.98920863, 0.98075408, 0.97401356, 0.96647527, 0.96037678, 0.95432598, 0.94860696 },
+				{ 0.98658902, 0.97650196, 0.96732103, 0.95932986, 0.95135379, 0.94450775, 0.93767336 },
+				{ 0.98296556, 0.96971536, 0.95896757, 0.94916687, 0.93992200, 0.93198241, 0.92251224 },
+				{ 0.97833408, 0.96357738, 0.94950933, 0.93855006, 0.92752816, 0.91676129, 0.90662762 },
+				{ 0.97636085, 0.95977448, 0.94477652, 0.93291002, 0.92094402, 0.91067020, 0.90009305 }
+			},
+			{
+				{ 0.99436144, 0.98955724, 0.98582106, 0.98168369, 0.97765881, 0.97468193, 0.97093333 },
+				{ 0.99428533, 0.98981111, 0.98561185, 0.98170793, 0.97810477, 0.97468085, 0.97064957 },
+				{ 0.99412408, 0.98903797, 0.98486733, 0.98065863, 0.97705928, 0.97372531, 0.97006567 },
+				{ 0.99397710, 0.98886147, 0.98415613, 0.98053339, 0.97588427, 0.97199081, 0.96876691 },
+				{ 0.99346220, 0.98832413, 0.98326092, 0.97899723, 0.97542010, 0.97085547, 0.96696052 },
+				{ 0.99282674, 0.98724328, 0.98183146, 0.97683023, 0.97271223, 0.96813565, 0.96488770 },
+				{ 0.99199667, 0.98567562, 0.98003889, 0.97497209, 0.96966203, 0.96516580, 0.96053155 },
+				{ 0.99068233, 0.98376500, 0.97727852, 0.97139518, 0.96573541, 0.96043726, 0.95539940 },
+				{ 0.98915026, 0.98068064, 0.97317977, 0.96600953, 0.96021409, 0.95342656, 0.94850848 },
+				{ 0.98678777, 0.97668520, 0.96755663, 0.96000701, 0.95193843, 0.94466581, 0.93842351 },
+				{ 0.98365332, 0.97146705, 0.96069014, 0.95097146, 0.94214073, 0.93356619, 0.92605649 },
+				{ 0.98049104, 0.96626633, 0.95339908, 0.94259920, 0.93301987, 0.92346095, 0.91366414 },
+				{ 0.97905706, 0.96410488, 0.95106622, 0.93837645, 0.92780682, 0.91845630, 0.90927821 }
+			},
+			{
+				{ 0.99401350, 0.98937626, 0.98499708, 0.98111968, 0.97757253, 0.97396419, 0.97006379 },
+				{ 0.99416970, 0.98959857, 0.98476219, 0.98094692, 0.97652341, 0.97334823, 0.97015403 },
+				{ 0.99378486, 0.98911556, 0.98463604, 0.98047153, 0.97672165, 0.97337371, 0.96969764 },
+				{ 0.99385723, 0.98840434, 0.98417042, 0.97955570, 0.97587367, 0.97197210, 0.96814451 },
+				{ 0.99313694, 0.98782261, 0.98319882, 0.97860683, 0.97419315, 0.97045389, 0.96662471 },
+				{ 0.99259918, 0.98680102, 0.98181845, 0.97616979, 0.97234657, 0.96773977, 0.96344091 },
+				{ 0.99173604, 0.98542690, 0.97968201, 0.97423091, 0.96914947, 0.96423145, 0.96002714 },
+				{ 0.99079237, 0.98341156, 0.97655035, 0.97116330, 0.96478622, 0.95979442, 0.95419171 },
+				{ 0.98908628, 0.98108051, 0.97292897, 0.96644130, 0.96018177, 0.95408592, 0.94789550 },
+				{ 0.98704537, 0.97706696, 0.96845247, 0.95990594, 0.95319068, 0.94602557, 0.93907395 },
+				{ 0.98467238, 0.97302009, 0.96294122, 0.95360784, 0.94460174, 0.93646839, 0.92918383 },
+				{ 0.98191798, 0.96958471, 0.95776721, 0.94716956, 0.93753057, 0.92876522, 0.91991102 },
+				{ 0.98119958, 0.96767255, 0.95483635, 0.94497259, 0.93431573, 0.92564619, 0.91669107 }
+			},
+			{
+				{ 0.99394861, 0.98894313, 0.98464198, 0.98076980, 0.97673573, 0.97334198, 0.96957286 },
+				{ 0.99389824, 0.98904284, 0.98476908, 0.98070973, 0.97647627, 0.97308506, 0.96955596 },
+				{ 0.99354556, 0.98890404, 0.98433260, 0.98050864, 0.97603144, 0.97192811, 0.96860141 },
+				{ 0.99357215, 0.98836388, 0.98358783, 0.97905365, 0.97484678, 0.97109859, 0.96692933 },
+				{ 0.99298382, 0.98753798, 0.98285704, 0.97777922, 0.97333430, 0.96940650, 0.96499796 },
+				{ 0.99221155, 0.98636554, 0.98129066, 0.97617454, 0.97161168, 0.96692744, 0.96275001 },
+				{ 0.99164203, 0.98508005, 0.97951663, 0.97321001, 0.96843239, 0.96393579, 0.95947981 },
+				{ 0.99039186, 0.98322767, 0.97632232, 0.97062803, 0.96505017, 0.95901618, 0.95378851 },
+				{ 0.98916803, 0.98060732, 0.97300051, 0.96623110, 0.95972004, 0.95371965, 0.94762731 },
+				{ 0.98708898, 0.97733796, 0.96925614, 0.96084908, 0.95342486, 0.94695001, 0.93968132 },
+				{ 0.98529971, 0.97361342, 0.96451993, 0.95578366, 0.94665528, 0.93909926, 0.93201937 },
+				{ 0.98336835, 0.97111977, 0.96047004, 0.95117109, 0.94152849, 0.93338461, 0.92538838 },
+				{ 0.98258413, 0.96974394, 0.95850500, 0.94840222, 0.93888729, 0.93095666, 0.92305383 }
+			},
+			{
+				{ 0.99385988, 0.98846721, 0.98414070, 0.98016016, 0.97587148, 0.97251859, 0.96854062 },
+				{ 0.99381037, 0.98869345, 0.98417346, 0.97972329, 0.97598744, 0.97223573, 0.96862026 },
+				{ 0.99334490, 0.98863613, 0.98388379, 0.97951277, 0.97538314, 0.97121964, 0.96719891 },
+				{ 0.99338581, 0.98793512, 0.98299661, 0.97868674, 0.97396726, 0.96987127, 0.96653144 },
+				{ 0.99284160, 0.98731877, 0.98203895, 0.97691707, 0.97284963, 0.96841438, 0.96448503 },
+				{ 0.99235724, 0.98604885, 0.98098336, 0.97541203, 0.97084174, 0.96595996, 0.96186390 },
+				{ 0.99142060, 0.98495495, 0.97891502, 0.97272356, 0.96798646, 0.96292608, 0.95787663 },
+				{ 0.99045460, 0.98288057, 0.97591287, 0.96973908, 0.96371560, 0.95884466, 0.95266287 },
+				{ 0.98906041, 0.98050976, 0.97292662, 0.96612624, 0.96016930, 0.95294816, 0.94805130 },
+				{ 0.98774916, 0.97785244, 0.96937101, 0.96169936, 0.95467105, 0.94775599, 0.94107395 },
+				{ 0.98591654, 0.97488272, 0.96583260, 0.95681936, 0.94971006, 0.94136593, 0.93472951 },
+				{ 0.98467637, 0.97301654, 0.96251298, 0.95332687, 0.94553425, 0.93703087, 0.92876331 },
+				{ 0.98408669, 0.97168548, 0.96165725, 0.95207717, 0.94351876, 0.93540530, 0.92685941 }
+			},
+			{
+				{ 0.99343751, 0.98828767, 0.98358726, 0.97914417, 0.97555881, 0.97144275, 0.96764285 },
+				{ 0.99355363, 0.98838979, 0.98347339, 0.97915135, 0.97487638, 0.97095951, 0.96711158 },
+				{ 0.99329191, 0.98812603, 0.98345135, 0.97856887, 0.97440582, 0.96993796, 0.96635508 },
+				{ 0.99289721, 0.98723626, 0.98242744, 0.97796798, 0.97321598, 0.96892794, 0.96436117 },
+				{ 0.99234422, 0.98664239, 0.98147203, 0.97616083, 0.97152755, 0.96749387, 0.96334697 },
+				{ 0.99200664, 0.98583349, 0.97976915, 0.97460800, 0.96981347, 0.96560658, 0.96061018 },
+				{ 0.99115421, 0.98435305, 0.97831771, 0.97269400, 0.96711946, 0.96253721, 0.95705647 },
+				{ 0.99031927, 0.98264184, 0.97618876, 0.97017508, 0.96325408, 0.95796873, 0.95268212 },
+				{ 0.98915472, 0.98053443, 0.97307212, 0.96624947, 0.96015265, 0.95337087, 0.94827248 },
+				{ 0.98747432, 0.97864296, 0.96969683, 0.96304164, 0.95526818, 0.94810560, 0.94182843 },
+				{ 0.98653723, 0.97626247, 0.96730657, 0.95901264, 0.95108408, 0.94413842, 0.93632918 },
+				{ 0.98537231, 0.97446254, 0.96491411, 0.95600413, 0.94795272, 0.94025789, 0.93342147 },
+				{ 0.98505978, 0.97350383, 0.96416965, 0.95497191, 0.94666623, 0.93936015, 0.93203178 }
+			},
+			{
+				{ 0.99326292, 0.98806877, 0.98316927, 0.97828934, 0.97378941, 0.96996092, 0.96620663 },
+				{ 0.99323200, 0.98766403, 0.98251573, 0.97838984, 0.97349097, 0.96968429, 0.96615930 },
+				{ 0.99306316, 0.98704256, 0.98226874, 0.97808678, 0.97299088, 0.96896818, 0.96542013 },
+				{ 0.99279279, 0.98688065, 0.98164469, 0.97705176, 0.97218273, 0.96856298, 0.96318208 },
+				{ 0.99240889, 0.98622059, 0.98061229, 0.97595644, 0.97064138, 0.96622771, 0.96185377 },
+				{ 0.99184781, 0.98518365, 0.97924135, 0.97409230, 0.96856614, 0.96387313, 0.95904054 },
+				{ 0.99088694, 0.98432584, 0.97739747, 0.97206256, 0.96627841, 0.96147842, 0.95604668 },
+				{ 0.99028463, 0.98269622, 0.97556516, 0.96942789, 0.96292272, 0.95757185, 0.95260362 },
+				{ 0.98923231, 0.98046231, 0.97333577, 0.96666538, 0.95992033, 0.95387297, 0.94867050 },
+				{ 0.98820018, 0.97885203, 0.97068300, 0.96366932, 0.95633119, 0.94977699, 0.94354601 },
+				{ 0.98699598, 0.97655253, 0.96796286, 0.96075913, 0.95329147, 0.94537172, 0.93992204 },
+				{ 0.98637460, 0.97569122, 0.96763446, 0.95771207, 0.95019321, 0.94218244, 0.93600846 },
+				{ 0.98609769, 0.97535607, 0.96612232, 0.95737653, 0.94988226, 0.94212740, 0.93478357 }
+			},
+			{
+				{ 0.99292411, 0.98692866, 0.98193258, 0.97757477, 0.97287500, 0.96843977, 0.96416638 },
+				{ 0.99287133, 0.98703940, 0.98231322, 0.97694659, 0.97241811, 0.96832701, 0.96449008 },
+				{ 0.99270238, 0.98698531, 0.98161070, 0.97663325, 0.97205873, 0.96719270, 0.96353109 },
+				{ 0.99268788, 0.98658874, 0.98081939, 0.97532243, 0.97042776, 0.96642620, 0.96216175 },
+				{ 0.99219477, 0.98567750, 0.98002817, 0.97446100, 0.96911200, 0.96492203, 0.96063064 },
+				{ 0.99132543, 0.98482800, 0.97862029, 0.97330286, 0.96789645, 0.96214287, 0.95847812 },
+				{ 0.99078451, 0.98374652, 0.97722237, 0.97106606, 0.96533497, 0.96064212, 0.95523751 },
+				{ 0.99012395, 0.98239160, 0.97571780, 0.96881913, 0.96348671, 0.95713754, 0.95181956 },
+				{ 0.98936844, 0.98090871, 0.97304478, 0.96621964, 0.96023901, 0.95347578, 0.94766026 },
+				{ 0.98829528, 0.97913932, 0.97139995, 0.96377263, 0.95704778, 0.95017204, 0.94436727 },
+				{ 0.98733988, 0.97732313, 0.96936585, 0.96151123, 0.95448173, 0.94826964, 0.94121844 },
+				{ 0.98695269, 0.97711737, 0.96813910, 0.95999907, 0.95273938, 0.94553315, 0.93879732 },
+				{ 0.98675802, 0.97610790, 0.96767112, 0.95897863, 0.95138342, 0.94472691, 0.93719288 }
+			},
+			{
+				{ 0.99246944, 0.98654162, 0.98110020, 0.97606693, 0.97146539, 0.96711873, 0.96239133 },
+				{ 0.99269289, 0.98648454, 0.98112584, 0.97569711, 0.97136421, 0.96675030, 0.96281081 },
+				{ 0.99213087, 0.98605097, 0.98073099, 0.97540918, 0.97052386, 0.96605940, 0.96132423 },
+				{ 0.99206421, 0.98552746, 0.97987917, 0.97466369, 0.96955875, 0.96521074, 0.96051203 },
+				{ 0.99190570, 0.98508434, 0.97898533, 0.97389710, 0.96800078, 0.96323150, 0.95874065 },
+				{ 0.99148633, 0.98410186, 0.97807688, 0.97221394, 0.96677792, 0.96154574, 0.95711962 },
+				{ 0.99076778, 0.98314693, 0.97648801, 0.97085513, 0.96477942, 0.95971906, 0.95418861 },
+				{ 0.99009832, 0.98201560, 0.97532794, 0.96876971, 0.96256369, 0.95695150, 0.95142358 },
+				{ 0.98916995, 0.98109050, 0.97380151, 0.96650794, 0.96020520, 0.95438406, 0.94766243 },
+				{ 0.98849877, 0.97994947, 0.97149155, 0.96456561, 0.95796891, 0.95146919, 0.94569497 },
+				{ 0.98790486, 0.97851625, 0.97003666, 0.96313023, 0.95514438, 0.94868781, 0.94207726 },
+				{ 0.98721078, 0.97776146, 0.96921933, 0.96131434, 0.95470599, 0.94733252, 0.94045311 },
+				{ 0.98723460, 0.97732247, 0.96912395, 0.96141506, 0.95404171, 0.94664532, 0.94047698 }
+			},
+			{
+				{ 0.99210284, 0.98588381, 0.98034949, 0.97469210, 0.96969635, 0.96487626, 0.96073375 },
+				{ 0.99194260, 0.98571337, 0.97989062, 0.97457031, 0.96953647, 0.96521465, 0.96046266 },
+				{ 0.99198745, 0.98556305, 0.97977580, 0.97441458, 0.96881116, 0.96410354, 0.95970952 },
+				{ 0.99147040, 0.98513560, 0.97942242, 0.97335944, 0.96834058, 0.96315455, 0.95894785 },
+				{ 0.99141323, 0.98455974, 0.97877335, 0.97235590, 0.96732589, 0.96221207, 0.95676595 },
+				{ 0.99099952, 0.98424255, 0.97732200, 0.97185649, 0.96605209, 0.96006328, 0.95528764 },
+				{ 0.99043541, 0.98265092, 0.97577847, 0.96949924, 0.96438229, 0.95817195, 0.95308578 },
+				{ 0.98981501, 0.98220172, 0.97490212, 0.96831922, 0.96203874, 0.95653250, 0.95041493 },
+				{ 0.98928161, 0.98112654, 0.97325278, 0.96698320, 0.95997563, 0.95401872, 0.94792232 },
+				{ 0.98900514, 0.98012023, 0.97240957, 0.96527902, 0.95847917, 0.95192530, 0.94599085 },
+				{ 0.98805397, 0.97932812, 0.97123335, 0.96381469, 0.95644326, 0.94963255, 0.94446219 },
+				{ 0.98788089, 0.97880112, 0.97018169, 0.96317935, 0.95568327, 0.95004578, 0.94272571 },
+				{ 0.98780564, 0.97880541, 0.96980595, 0.96235164, 0.95554917, 0.94947334, 0.94228588 }
+			},
+			{
+				{ 0.99154643, 0.98494873, 0.97896168, 0.97304469, 0.96785860, 0.96299841, 0.95827317 },
+				{ 0.99158816, 0.98497273, 0.97860463, 0.97322372, 0.96785137, 0.96269454, 0.95822382 },
+				{ 0.99126928, 0.98460082, 0.97848845, 0.97257569, 0.96705740, 0.96241500, 0.95801877 },
+				{ 0.99115009, 0.98422894, 0.97817075, 0.97277424, 0.96645211, 0.96175834, 0.95716200 },
+				{ 0.99108712, 0.98389641, 0.97744449, 0.97164456, 0.96597631, 0.96065972, 0.95585698 },
+				{ 0.99056507, 0.98319228, 0.97661473, 0.97079521, 0.96466519, 0.95871786, 0.95443339 },
+				{ 0.99017276, 0.98240272, 0.97534862, 0.96904229, 0.96288086, 0.95773383, 0.95230441 },
+				{ 0.98976307, 0.98171010, 0.97479511, 0.96809417, 0.96131721, 0.95609064, 0.95110965 },
+				{ 0.98926809, 0.98090596, 0.97342444, 0.96677369, 0.96027833, 0.95457455, 0.94764449 },
+				{ 0.98901934, 0.98025284, 0.97299572, 0.96529711, 0.95901125, 0.95234246, 0.94675600 },
+				{ 0.98886537, 0.97952129, 0.97144208, 0.96458815, 0.95766047, 0.95114786, 0.94448865 },
+				{ 0.98830438, 0.97887856, 0.97087974, 0.96374283, 0.95703895, 0.95040902, 0.94406964 },
+				{ 0.98809448, 0.97927732, 0.97086770, 0.96335504, 0.95689178, 0.94960527, 0.94358803 }
+			},
+			{
+				{ 0.99134675, 0.98425803, 0.97764772, 0.97169997, 0.96627533, 0.96078312, 0.95610751 },
+				{ 0.99100584, 0.98403211, 0.97763583, 0.97135354, 0.96638486, 0.96088973, 0.95571942 },
+				{ 0.99083690, 0.98361426, 0.97766425, 0.97134621, 0.96544974, 0.96011644, 0.95516715 },
+				{ 0.99052346, 0.98317720, 0.97667553, 0.97087738, 0.96487731, 0.95997317, 0.95457763 },
+				{ 0.99048114, 0.98305100, 0.97657399, 0.97055309, 0.96532811, 0.95926038, 0.95366356 },
+				{ 0.99034444, 0.98286844, 0.97615888, 0.96971068, 0.96365263, 0.95779038, 0.95298736 },
+				{ 0.99027972, 0.98220437, 0.97514193, 0.96830545, 0.96273541, 0.95641661, 0.95132825 },
+				{ 0.98996455, 0.98156675, 0.97445746, 0.96784151, 0.96140903, 0.95535828, 0.94992921 },
+				{ 0.98942028, 0.98098955, 0.97308576, 0.96705260, 0.96031617, 0.95414655, 0.94875301 },
+				{ 0.98916562, 0.98036126, 0.97324874, 0.96554311, 0.95981018, 0.95303160, 0.94702792 },
+				{ 0.98856124, 0.98006705, 0.97253746, 0.96531585, 0.95812185, 0.95237740, 0.94597416 },
+				{ 0.98863845, 0.97989904, 0.97167586, 0.96470318, 0.95735926, 0.95177749, 0.94518806 },
+				{ 0.98850457, 0.97976081, 0.97196818, 0.96475797, 0.95794318, 0.95135990, 0.94572375 }
+			},
+			{
+				{ 0.99037874, 0.98310792, 0.97598051, 0.97030848, 0.96398185, 0.95894071, 0.95384788 },
+				{ 0.99045780, 0.98292102, 0.97608709, 0.97003782, 0.96397999, 0.95877378, 0.95366469 },
+				{ 0.99036611, 0.98270687, 0.97611026, 0.96979346, 0.96412528, 0.95792144, 0.95285934 },
+				{ 0.99031233, 0.98255633, 0.97609739, 0.96979360, 0.96337973, 0.95854641, 0.95234479 },
+				{ 0.99003165, 0.98230481, 0.97556076, 0.96952697, 0.96332688, 0.95771278, 0.95201707 },
+				{ 0.99026135, 0.98205719, 0.97506941, 0.96863037, 0.96235246, 0.95646791, 0.95177433 },
+				{ 0.99000625, 0.98160335, 0.97460655, 0.96827806, 0.96173054, 0.95626935, 0.95062936 },
+				{ 0.98933226, 0.98131197, 0.97357323, 0.96730957, 0.96097842, 0.95458923, 0.94855599 },
+				{ 0.98930614, 0.98101004, 0.97329387, 0.96682936, 0.96058916, 0.95375947, 0.94893587 },
+				{ 0.98932103, 0.98080898, 0.97333045, 0.96616841, 0.95965946, 0.95321766, 0.94701383 },
+				{ 0.98880513, 0.98049861, 0.97295165, 0.96573200, 0.95907287, 0.95344637, 0.94640776 },
+				{ 0.98894374, 0.98003119, 0.97268791, 0.96497574, 0.95883857, 0.95303913, 0.94688304 },
+				{ 0.98854414, 0.98032650, 0.97255142, 0.96492227, 0.95890268, 0.95228486, 0.94602612 }
+			},
+			{
+				{ 0.98984781, 0.98218161, 0.97470266, 0.96834399, 0.96278145, 0.95622233, 0.95067680 },
+				{ 0.98995640, 0.98189663, 0.97495676, 0.96810432, 0.96191334, 0.95629114, 0.95041547 },
+				{ 0.98979759, 0.98168577, 0.97476925, 0.96814575, 0.96173404, 0.95603032, 0.95056342 },
+				{ 0.98983213, 0.98200416, 0.97462691, 0.96762218, 0.96144266, 0.95613354, 0.95083022 },
+				{ 0.98978365, 0.98148466, 0.97442317, 0.96745348, 0.96115937, 0.95552538, 0.94976229 },
+				{ 0.98945276, 0.98132759, 0.97401100, 0.96730022, 0.96094787, 0.95511512, 0.94916604 },
+				{ 0.98936824, 0.98145569, 0.97385302, 0.96694886, 0.96092531, 0.95497163, 0.94867348 },
+				{ 0.98921221, 0.98143844, 0.97332463, 0.96694146, 0.96016548, 0.95451901, 0.94833073 },
+				{ 0.98935527, 0.98082249, 0.97359127, 0.96613983, 0.95993680, 0.95424021, 0.94835634 },
+				{ 0.98913135, 0.98054949, 0.97321789, 0.96653160, 0.95967531, 0.95382166, 0.94835780 },
+				{ 0.98945271, 0.98073212, 0.97303113, 0.96589001, 0.95917249, 0.95400702, 0.94801072 },
+				{ 0.98915595, 0.98044322, 0.97339099, 0.96595735, 0.95967001, 0.95329707, 0.94732640 },
+				{ 0.98902964, 0.98078029, 0.97282646, 0.96530316, 0.95953742, 0.95336529, 0.94808418 }
+			},
+			{
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+				{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 }
+			},
+			{
+				{ 0.98867475, 0.97947803, 0.97162013, 0.96433832, 0.95726925, 0.95195064, 0.94500793 },
+				{ 0.98879697, 0.97925696, 0.97193898, 0.96492551, 0.95756490, 0.95158216, 0.94469268 },
+				{ 0.98871647, 0.97961759, 0.97206212, 0.96472716, 0.95751655, 0.95154615, 0.94543744 },
+				{ 0.98887811, 0.97984028, 0.97248542, 0.96473253, 0.95800944, 0.95145585, 0.94541621 },
+				{ 0.98882557, 0.97979953, 0.97285184, 0.96501474, 0.95843852, 0.95201099, 0.94557377 },
+				{ 0.98871551, 0.98035001, 0.97181680, 0.96559059, 0.95867641, 0.95231593, 0.94590833 },
+				{ 0.98909065, 0.98018055, 0.97260487, 0.96623266, 0.95923272, 0.95321811, 0.94656123 },
+				{ 0.98920103, 0.98042808, 0.97325720, 0.96597367, 0.96007860, 0.95308814, 0.94724010 },
+				{ 0.98906600, 0.98063630, 0.97296744, 0.96663479, 0.95947682, 0.95368759, 0.94721305 },
+				{ 0.98962359, 0.98077105, 0.97306694, 0.96618558, 0.96028033, 0.95319737, 0.94796702 },
+				{ 0.98931728, 0.98078563, 0.97381006, 0.96635323, 0.95983920, 0.95458173, 0.94842068 },
+				{ 0.98934829, 0.98114400, 0.97367862, 0.96666018, 0.96014718, 0.95432733, 0.94832077 },
+				{ 0.98922972, 0.98091540, 0.97329284, 0.96699705, 0.96066397, 0.95417610, 0.94899699 }
+			},
+			{
+				{ 0.98788655, 0.97848731, 0.97017037, 0.96209485, 0.95407387, 0.94811098, 0.94179662 },
+				{ 0.98771187, 0.97880821, 0.97034109, 0.96215883, 0.95507766, 0.94848598, 0.94222343 },
+				{ 0.98780604, 0.97863504, 0.97025258, 0.96264493, 0.95601428, 0.94839091, 0.94255702 },
+				{ 0.98818859, 0.97885509, 0.97077056, 0.96338119, 0.95636481, 0.94920182, 0.94293285 },
+				{ 0.98835115, 0.97940430, 0.97147738, 0.96427737, 0.95656959, 0.94961216, 0.94391661 },
+				{ 0.98856899, 0.97941397, 0.97145658, 0.96453438, 0.95749212, 0.95128830, 0.94426045 },
+				{ 0.98859596, 0.97992960, 0.97211006, 0.96464802, 0.95831567, 0.95169696, 0.94514623 },
+				{ 0.98907528, 0.98013592, 0.97278783, 0.96520349, 0.95894058, 0.95247779, 0.94555569 },
+				{ 0.98928296, 0.98061325, 0.97261041, 0.96641709, 0.95929914, 0.95337615, 0.94785870 },
+				{ 0.98916525, 0.98109788, 0.97313945, 0.96683885, 0.95976625, 0.95413969, 0.94818175 },
+				{ 0.98951112, 0.98121914, 0.97358165, 0.96677758, 0.96015341, 0.95483110, 0.94880759 },
+				{ 0.98961031, 0.98151267, 0.97380655, 0.96707954, 0.96087386, 0.95482562, 0.94861777 },
+				{ 0.98966118, 0.98141104, 0.97394998, 0.96699228, 0.96068617, 0.95478420, 0.94819736 }
+			},
+			{
+				{ 0.98715053, 0.97713427, 0.96866548, 0.96037209, 0.95276611, 0.94550410, 0.93883410 },
+				{ 0.98731834, 0.97695877, 0.96857931, 0.96025068, 0.95303526, 0.94571960, 0.93946143 },
+				{ 0.98789995, 0.97724231, 0.96881553, 0.96101302, 0.95322884, 0.94652431, 0.93967561 },
+				{ 0.98751734, 0.97783728, 0.96984048, 0.96116982, 0.95418500, 0.94728474, 0.94066521 },
+				{ 0.98795236, 0.97858876, 0.96997094, 0.96217338, 0.95428519, 0.94845884, 0.94117003 },
+				{ 0.98822030, 0.97909015, 0.97094745, 0.96285589, 0.95559793, 0.94921637, 0.94289743 },
+				{ 0.98847326, 0.97959722, 0.97159235, 0.96399035, 0.95745810, 0.95028970, 0.94412558 },
+				{ 0.98927216, 0.98021083, 0.97221962, 0.96494086, 0.95772773, 0.95135035, 0.94552239 },
+				{ 0.98950399, 0.98010778, 0.97263350, 0.96540293, 0.95890428, 0.95271784, 0.94734137 },
+				{ 0.98909098, 0.98089791, 0.97385384, 0.96678464, 0.95965277, 0.95388882, 0.94776912 },
+				{ 0.98965702, 0.98126015, 0.97342752, 0.96679263, 0.95990885, 0.95360933, 0.94837318 },
+				{ 0.98956033, 0.98138138, 0.97394414, 0.96743336, 0.96055278, 0.95497604, 0.94957674 },
+				{ 0.98953284, 0.98144798, 0.97406942, 0.96700366, 0.96054191, 0.95434001, 0.94946495 }
+			}
+		},
+		{
+			{
+				{ 0.99399576, 0.98930538, 0.98491033, 0.98092373, 0.97722077, 0.97391367, 0.96993593 },
+				{ 0.99392082, 0.98920674, 0.98555736, 0.98059168, 0.97720408, 0.97371678, 0.97003515 },
+				{ 0.99390868, 0.98906918, 0.98475067, 0.98080398, 0.97689476, 0.97307610, 0.96981490 },
+				{ 0.99381638, 0.98873418, 0.98414988, 0.97952967, 0.97612116, 0.97199755, 0.96858179 },
+				{ 0.99319982, 0.98774312, 0.98319914, 0.97894988, 0.97438145, 0.97022300, 0.96675740 },
+				{ 0.99275546, 0.98721378, 0.98201017, 0.97681954, 0.97284636, 0.96884221, 0.96483525 },
+				{ 0.99199423, 0.98596784, 0.98019976, 0.97562176, 0.97012546, 0.96593670, 0.96099032 },
+				{ 0.99086123, 0.98391662, 0.97712234, 0.97191642, 0.96642774, 0.96140813, 0.95618221 },
+				{ 0.98943525, 0.98097837, 0.97421466, 0.96708924, 0.96113567, 0.95515477, 0.94997656 },
+				{ 0.98659015, 0.97663201, 0.96763911, 0.95936354, 0.95231414, 0.94539807, 0.93858767 },
+				{ 0.98175076, 0.96855794, 0.95730222, 0.94560686, 0.93560139, 0.92711678, 0.91775691 },
+				{ 0.96838822, 0.94557839, 0.92668338, 0.91051579, 0.89629922, 0.88247079, 0.87019097 },
+				{ 0.76117381, 0.67337356, 0.62466005, 0.59276401, 0.57406020, 0.56463133, 0.55995419 }
+			},
+			{
+				{ 0.99405528, 0.98926528, 0.98467989, 0.98102358, 0.97759059, 0.97416850, 0.97037696 },
+				{ 0.99390974, 0.98924429, 0.98509658, 0.98097994, 0.97735357, 0.97336047, 0.97014505 },
+				{ 0.99385325, 0.98925938, 0.98448698, 0.98043593, 0.97683823, 0.97344899, 0.97011778 },
+				{ 0.99372165, 0.98878814, 0.98420137, 0.97961233, 0.97611641, 0.97196969, 0.96858218 },
+				{ 0.99333532, 0.98802673, 0.98340999, 0.97885884, 0.97518174, 0.97072250, 0.96678884 },
+				{ 0.99268114, 0.98710976, 0.98222575, 0.97722733, 0.97285099, 0.96841448, 0.96437904 },
+				{ 0.99208479, 0.98585656, 0.98034594, 0.97525839, 0.96995236, 0.96551451, 0.96159230 },
+				{ 0.99084399, 0.98408515, 0.97774619, 0.97201840, 0.96689208, 0.96095237, 0.95654257 },
+				{ 0.98928938, 0.98099887, 0.97399915, 0.96721033, 0.96174432, 0.95483462, 0.94971563 },
+				{ 0.98695562, 0.97661401, 0.96795728, 0.95963318, 0.95194239, 0.94428777, 0.93891843 },
+				{ 0.98123264, 0.96784945, 0.95592186, 0.94568801, 0.93564377, 0.92581919, 0.91801616 },
+				{ 0.96739187, 0.94426037, 0.92395596, 0.90634620, 0.89228067, 0.87804453, 0.86342135 },
+				{ 0.91480739, 0.86487332, 0.82754503, 0.79462939, 0.76836611, 0.74720087, 0.72691573 }
+			},
+			{
+				{ 0.99390697, 0.98928613, 0.98488644, 0.98115491, 0.97785080, 0.97387439, 0.97066763 },
+				{ 0.99405197, 0.98928532, 0.98486060, 0.98091713, 0.97740550, 0.97421142, 0.97041806 },
+				{ 0.99393609, 0.98898518, 0.98469786, 0.98056239, 0.97692287, 0.97304892, 0.96948467 },
+				{ 0.99365938, 0.98849952, 0.98410160, 0.98003374, 0.97589265, 0.97253916, 0.96869214 },
+				{ 0.99347265, 0.98799884, 0.98328764, 0.97871282, 0.97474262, 0.97104720, 0.96688914 },
+				{ 0.99249157, 0.98708532, 0.98199937, 0.97784423, 0.97300762, 0.96822681, 0.96453988 },
+				{ 0.99188342, 0.98599188, 0.98039017, 0.97527107, 0.97031404, 0.96567457, 0.96163516 },
+				{ 0.99091210, 0.98440369, 0.97743474, 0.97196584, 0.96692502, 0.96182924, 0.95684428 },
+				{ 0.98925950, 0.98067505, 0.97361216, 0.96697988, 0.96045976, 0.95522752, 0.94958630 },
+				{ 0.98682368, 0.97648442, 0.96732415, 0.95894719, 0.95221853, 0.94490039, 0.93778391 },
+				{ 0.98126368, 0.96717798, 0.95530074, 0.94429816, 0.93405205, 0.92476843, 0.91492706 },
+				{ 0.96760208, 0.94436692, 0.92529075, 0.90799926, 0.89217587, 0.87716665, 0.86422574 },
+				{ 0.94429450, 0.90879907, 0.87986512, 0.85508312, 0.83591268, 0.81601573, 0.79912687 }
+			},
+			{
+				{ 0.99416650, 0.98942531, 0.98505925, 0.98119714, 0.97757625, 0.97363992, 0.97066985 },
+				{ 0.99395353, 0.98936477, 0.98528798, 0.98117438, 0.97725440, 0.97345950, 0.97037061 },
+				{ 0.99375030, 0.98903494, 0.98474779, 0.98067918, 0.97648216, 0.97308874, 0.96916561 },
+				{ 0.99356545, 0.98843692, 0.98388349, 0.97995502, 0.97636610, 0.97198323, 0.96856712 },
+				{ 0.99353732, 0.98804506, 0.98347017, 0.97887919, 0.97436745, 0.97097812, 0.96750124 },
+				{ 0.99298212, 0.98717451, 0.98226028, 0.97692420, 0.97336367, 0.96852500, 0.96471845 },
+				{ 0.99185263, 0.98587047, 0.98000761, 0.97513640, 0.97033901, 0.96497728, 0.96136000 },
+				{ 0.99071636, 0.98384073, 0.97789893, 0.97190015, 0.96607823, 0.96188214, 0.95655630 },
+				{ 0.98919656, 0.98107247, 0.97367765, 0.96677234, 0.96055855, 0.95447361, 0.94917175 },
+				{ 0.98611548, 0.97622026, 0.96658635, 0.95919795, 0.95104061, 0.94435469, 0.93707019 },
+				{ 0.98061438, 0.96670853, 0.95395965, 0.94290096, 0.93269193, 0.92275125, 0.91399133 },
+				{ 0.96935801, 0.94826983, 0.92943874, 0.91422851, 0.89925281, 0.88633096, 0.87225721 },
+				{ 0.95796456, 0.92941630, 0.90578156, 0.88574441, 0.86795903, 0.85235711, 0.83766025 }
+			},
+			{
+				{ 0.99400567, 0.98922024, 0.98518711, 0.98150863, 0.97726438, 0.97383695, 0.97065152 },
+				{ 0.99421784, 0.98925458, 0.98499698, 0.98088111, 0.97726657, 0.97334029, 0.97049865 },
+				{ 0.99413790, 0.98887175, 0.98491956, 0.98047683, 0.97675824, 0.97329779, 0.96997373 },
+				{ 0.99377538, 0.98889686, 0.98396689, 0.98004591, 0.97602717, 0.97276637, 0.96870286 },
+				{ 0.99330838, 0.98796531, 0.98320338, 0.97862958, 0.97492450, 0.97050940, 0.96701213 },
+				{ 0.99262446, 0.98688427, 0.98241527, 0.97741802, 0.97285166, 0.96829775, 0.96429827 },
+				{ 0.99216471, 0.98563232, 0.98018612, 0.97503523, 0.97022233, 0.96520176, 0.96111835 },
+				{ 0.99100119, 0.98333274, 0.97718064, 0.97144778, 0.96588593, 0.96050893, 0.95572646 },
+				{ 0.98910599, 0.98045090, 0.97299106, 0.96629585, 0.96001616, 0.95372606, 0.94722313 },
+				{ 0.98626138, 0.97541270, 0.96615099, 0.95821927, 0.94990552, 0.94285196, 0.93563153 },
+				{ 0.98092953, 0.96698310, 0.95402219, 0.94352281, 0.93254660, 0.92389653, 0.91416122 },
+				{ 0.97183094, 0.95192664, 0.93615503, 0.92044206, 0.90728512, 0.89494559, 0.88129560 },
+				{ 0.96580005, 0.94235802, 0.92232391, 0.90488999, 0.89073183, 0.87507887, 0.86323379 }
+			},
+			{
+				{ 0.99406045, 0.98962924, 0.98531668, 0.98143978, 0.97760512, 0.97394918, 0.97079962 },
+				{ 0.99394611, 0.98927620, 0.98521866, 0.98102555, 0.97708346, 0.97351863, 0.96962941 },
+				{ 0.99388809, 0.98902316, 0.98488046, 0.98095140, 0.97670089, 0.97284971, 0.96923614 },
+				{ 0.99374266, 0.98852152, 0.98429134, 0.98008405, 0.97570128, 0.97235055, 0.96807595 },
+				{ 0.99319449, 0.98778064, 0.98320623, 0.97893755, 0.97423057, 0.97074339, 0.96654673 },
+				{ 0.99277191, 0.98702057, 0.98199215, 0.97753314, 0.97243485, 0.96818608, 0.96407323 },
+				{ 0.99184304, 0.98530646, 0.97986210, 0.97450209, 0.96942350, 0.96561405, 0.96066719 },
+				{ 0.99092421, 0.98331620, 0.97717903, 0.97162086, 0.96556324, 0.96064897, 0.95565173 },
+				{ 0.98886188, 0.98044683, 0.97220700, 0.96534610, 0.95895038, 0.95306960, 0.94696313 },
+				{ 0.98613451, 0.97580075, 0.96561244, 0.95744746, 0.94837266, 0.94184437, 0.93438228 },
+				{ 0.98140093, 0.96752755, 0.95524617, 0.94432972, 0.93486864, 0.92483345, 0.91642691 },
+				{ 0.97484958, 0.95720406, 0.94109398, 0.92701715, 0.91544153, 0.90363889, 0.89361683 },
+				{ 0.97129414, 0.95084365, 0.93339991, 0.91775768, 0.90327855, 0.89114453, 0.88006022 }
+			},
+			{
+				{ 0.99412624, 0.98947870, 0.98503145, 0.98081138, 0.97703481, 0.97351819, 0.96999208 },
+				{ 0.99407765, 0.98921499, 0.98505954, 0.98106090, 0.97742391, 0.97375328, 0.97011457 },
+				{ 0.99376913, 0.98909972, 0.98471273, 0.98016160, 0.97649896, 0.97284352, 0.96907528 },
+				{ 0.99350431, 0.98848941, 0.98427968, 0.97943676, 0.97612482, 0.97181830, 0.96871812 },
+				{ 0.99346664, 0.98803636, 0.98286754, 0.97873558, 0.97431777, 0.97042556, 0.96694755 },
+				{ 0.99262725, 0.98691733, 0.98178002, 0.97658530, 0.97216121, 0.96780440, 0.96373031 },
+				{ 0.99183345, 0.98495904, 0.97983317, 0.97414306, 0.96900036, 0.96455679, 0.96000182 },
+				{ 0.99041480, 0.98307611, 0.97624700, 0.97087613, 0.96531421, 0.95962201, 0.95484209 },
+				{ 0.98880411, 0.98023326, 0.97257356, 0.96539876, 0.95893514, 0.95204244, 0.94692200 },
+				{ 0.98605644, 0.97505194, 0.96635440, 0.95781627, 0.94942889, 0.94262780, 0.93440967 },
+				{ 0.98237017, 0.96846803, 0.95692568, 0.94640650, 0.93654480, 0.92778426, 0.91895285 },
+				{ 0.97742873, 0.96038655, 0.94612317, 0.93298850, 0.92163393, 0.91163894, 0.90182390 },
+				{ 0.97452543, 0.95596641, 0.94100409, 0.92792619, 0.91549207, 0.90338950, 0.89251768 }
+			},
+			{
+				{ 0.99395396, 0.98946953, 0.98517863, 0.98083834, 0.97721090, 0.97337135, 0.97006501 },
+				{ 0.99401526, 0.98912653, 0.98481825, 0.98046312, 0.97682752, 0.97290942, 0.96974746 },
+				{ 0.99378818, 0.98887315, 0.98467372, 0.98063330, 0.97618319, 0.97239082, 0.96874260 },
+				{ 0.99333090, 0.98823623, 0.98359072, 0.97936050, 0.97507907, 0.97133793, 0.96820921 },
+				{ 0.99302671, 0.98739164, 0.98248109, 0.97845123, 0.97373832, 0.97010380, 0.96617923 },
+				{ 0.99273493, 0.98651063, 0.98159902, 0.97648696, 0.97172191, 0.96720212, 0.96295794 },
+				{ 0.99170757, 0.98487223, 0.97934975, 0.97383648, 0.96871525, 0.96388207, 0.95902833 },
+				{ 0.99057430, 0.98297572, 0.97645171, 0.97043291, 0.96470720, 0.95867071, 0.95392306 },
+				{ 0.98861237, 0.98005698, 0.97243652, 0.96543094, 0.95840998, 0.95162799, 0.94633356 },
+				{ 0.98619582, 0.97580501, 0.96572679, 0.95761924, 0.95045061, 0.94230588, 0.93508337 },
+				{ 0.98294606, 0.96971537, 0.95867387, 0.94889597, 0.93887126, 0.93067071, 0.92170898 },
+				{ 0.97910475, 0.96396127, 0.95073853, 0.93870891, 0.92812031, 0.91838926, 0.90903379 },
+				{ 0.97720738, 0.96080924, 0.94701657, 0.93423789, 0.92284004, 0.91321640, 0.90209741 }
+			},
+			{
+				{ 0.99384845, 0.98908246, 0.98478230, 0.98011034, 0.97639394, 0.97288993, 0.96940692 },
+				{ 0.99396323, 0.98887980, 0.98466577, 0.98053070, 0.97644817, 0.97243477, 0.96923316 },
+				{ 0.99370315, 0.98880043, 0.98389443, 0.97939847, 0.97585050, 0.97235754, 0.96829589 },
+				{ 0.99331441, 0.98805001, 0.98352440, 0.97887290, 0.97501806, 0.97056209, 0.96684064 },
+				{ 0.99305066, 0.98725148, 0.98241658, 0.97775663, 0.97336210, 0.96916056, 0.96507213 },
+				{ 0.99243189, 0.98621608, 0.98094068, 0.97571119, 0.97115863, 0.96695386, 0.96193365 },
+				{ 0.99160958, 0.98456365, 0.97867816, 0.97370311, 0.96778934, 0.96321214, 0.95849765 },
+				{ 0.99020352, 0.98288530, 0.97597833, 0.96996233, 0.96365418, 0.95900329, 0.95339341 },
+				{ 0.98869887, 0.97970351, 0.97196002, 0.96461380, 0.95870814, 0.95127261, 0.94588234 },
+				{ 0.98663211, 0.97573852, 0.96647681, 0.95773733, 0.95059640, 0.94324377, 0.93670440 },
+				{ 0.98348808, 0.97142148, 0.96021336, 0.95051797, 0.94100725, 0.93261676, 0.92514923 },
+				{ 0.98096318, 0.96667435, 0.95406931, 0.94354576, 0.93384804, 0.92368261, 0.91486605 },
+				{ 0.98015928, 0.96513755, 0.95221618, 0.94034821, 0.92896263, 0.92004306, 0.91006432 }
+			},
+			{
+				{ 0.99358744, 0.98918335, 0.98449742, 0.97954893, 0.97627590, 0.97200092, 0.96832589 },
+				{ 0.99384633, 0.98898637, 0.98396254, 0.97963543, 0.97546359, 0.97256843, 0.96868226 },
+				{ 0.99352897, 0.98845789, 0.98363643, 0.97958001, 0.97515197, 0.97164771, 0.96755975 },
+				{ 0.99328959, 0.98793875, 0.98295851, 0.97870724, 0.97407745, 0.97056923, 0.96637407 },
+				{ 0.99278013, 0.98717818, 0.98172153, 0.97707405, 0.97288889, 0.96846503, 0.96466328 },
+				{ 0.99219588, 0.98588102, 0.98053843, 0.97514909, 0.97023820, 0.96557530, 0.96157402 },
+				{ 0.99146691, 0.98469712, 0.97842590, 0.97269373, 0.96686559, 0.96270142, 0.95773756 },
+				{ 0.99015137, 0.98243228, 0.97571518, 0.96962730, 0.96306860, 0.95800792, 0.95207749 },
+				{ 0.98870148, 0.97961651, 0.97209577, 0.96476476, 0.95721933, 0.95148110, 0.94588080 },
+				{ 0.98658450, 0.97665027, 0.96738698, 0.95879626, 0.95051907, 0.94436328, 0.93704354 },
+				{ 0.98446526, 0.97229356, 0.96237829, 0.95336488, 0.94415866, 0.93519809, 0.92770250 },
+				{ 0.98218846, 0.96852261, 0.95722817, 0.94805672, 0.93765491, 0.92930800, 0.92064383 },
+				{ 0.98155489, 0.96741844, 0.95534935, 0.94498813, 0.93503101, 0.92570410, 0.91671633 }
+			},
+			{
+				{ 0.99367249, 0.98857914, 0.98388962, 0.97944752, 0.97539910, 0.97154445, 0.96791287 },
+				{ 0.99341650, 0.98841823, 0.98379442, 0.97921303, 0.97523416, 0.97187446, 0.96728959 },
+				{ 0.99356552, 0.98829674, 0.98322875, 0.97897349, 0.97446061, 0.96967843, 0.96684353 },
+				{ 0.99304299, 0.98764997, 0.98252248, 0.97796402, 0.97340533, 0.96882235, 0.96549811 },
+				{ 0.99251845, 0.98701457, 0.98152099, 0.97658556, 0.97226459, 0.96723377, 0.96285165 },
+				{ 0.99188338, 0.98584681, 0.97991823, 0.97489105, 0.96966841, 0.96496171, 0.95944062 },
+				{ 0.99109134, 0.98437473, 0.97826014, 0.97194687, 0.96689645, 0.96169407, 0.95679064 },
+				{ 0.99000216, 0.98213507, 0.97522695, 0.96903725, 0.96317671, 0.95713316, 0.95187595 },
+				{ 0.98833535, 0.97998967, 0.97205281, 0.96453130, 0.95830215, 0.95179731, 0.94567914 },
+				{ 0.98660201, 0.97694591, 0.96801263, 0.96022793, 0.95217762, 0.94500006, 0.93839816 },
+				{ 0.98490798, 0.97345409, 0.96326320, 0.95401896, 0.94607964, 0.93855245, 0.93003160 },
+				{ 0.98316031, 0.97101177, 0.96047809, 0.95005226, 0.94201366, 0.93286392, 0.92499327 },
+				{ 0.98231395, 0.97003562, 0.95898088, 0.94882557, 0.93913372, 0.93026772, 0.92155150 }
+			},
+			{
+				{ 0.99330919, 0.98831374, 0.98316235, 0.97871625, 0.97455566, 0.97042622, 0.96651551 },
+				{ 0.99345896, 0.98794928, 0.98327552, 0.97925519, 0.97474328, 0.97052526, 0.96665050 },
+				{ 0.99315169, 0.98723285, 0.98303121, 0.97784520, 0.97396380, 0.97005880, 0.96532034 },
+				{ 0.99293075, 0.98726959, 0.98172791, 0.97702228, 0.97240781, 0.96838252, 0.96414273 },
+				{ 0.99236077, 0.98623231, 0.98097281, 0.97575025, 0.97125114, 0.96645457, 0.96231477 },
+				{ 0.99178994, 0.98536965, 0.97950990, 0.97408154, 0.96870768, 0.96389006, 0.95907997 },
+				{ 0.99104004, 0.98382537, 0.97758682, 0.97160671, 0.96587769, 0.96053313, 0.95603574 },
+				{ 0.98992839, 0.98205299, 0.97501166, 0.96888551, 0.96229197, 0.95721204, 0.95107945 },
+				{ 0.98874455, 0.97969711, 0.97148720, 0.96488215, 0.95801853, 0.95210712, 0.94551059 },
+				{ 0.98708330, 0.97732100, 0.96863433, 0.96054737, 0.95254534, 0.94621295, 0.93924630 },
+				{ 0.98551553, 0.97479481, 0.96515312, 0.95645549, 0.94773647, 0.94013754, 0.93309283 },
+				{ 0.98426491, 0.97279974, 0.96196211, 0.95334341, 0.94305684, 0.93566713, 0.92942410 },
+				{ 0.98369359, 0.97171804, 0.96171209, 0.95163477, 0.94284151, 0.93453130, 0.92656590 }
+			},
+			{
+				{ 0.99290978, 0.98747054, 0.98290744, 0.97776101, 0.97364664, 0.96858883, 0.96549644 },
+				{ 0.99301780, 0.98773503, 0.98230796, 0.97795477, 0.97266564, 0.96900459, 0.96486510 },
+				{ 0.99288870, 0.98725007, 0.98193197, 0.97767980, 0.97260662, 0.96797893, 0.96373675 },
+				{ 0.99271677, 0.98630655, 0.98147940, 0.97670406, 0.97143215, 0.96722972, 0.96286911 },
+				{ 0.99221517, 0.98590023, 0.98010464, 0.97545158, 0.96996034, 0.96560039, 0.96107922 },
+				{ 0.99159677, 0.98510879, 0.97894167, 0.97312488, 0.96798051, 0.96300383, 0.95848885 },
+				{ 0.99074966, 0.98380925, 0.97735369, 0.97095761, 0.96561648, 0.96021706, 0.95460436 },
+				{ 0.98998196, 0.98184242, 0.97473390, 0.96848691, 0.96203782, 0.95619319, 0.95070099 },
+				{ 0.98865074, 0.98007349, 0.97187179, 0.96470716, 0.95787536, 0.95152993, 0.94548806 },
+				{ 0.98752257, 0.97741565, 0.96965688, 0.96094726, 0.95403088, 0.94706477, 0.94029751 },
+				{ 0.98615080, 0.97552335, 0.96597742, 0.95791635, 0.94972071, 0.94235008, 0.93589472 },
+				{ 0.98514848, 0.97413057, 0.96404270, 0.95540919, 0.94713390, 0.93916206, 0.93236668 },
+				{ 0.98451070, 0.97350298, 0.96383879, 0.95434714, 0.94561814, 0.93751617, 0.93069143 }
+			},
+			{
+				{ 0.99281046, 0.98708753, 0.98191729, 0.97660163, 0.97201948, 0.96831819, 0.96392198 },
+				{ 0.99284850, 0.98685503, 0.98144831, 0.97710063, 0.97238211, 0.96797262, 0.96294831 },
+				{ 0.99276830, 0.98655521, 0.98116719, 0.97633912, 0.97212154, 0.96766890, 0.96311666 },
+				{ 0.99192391, 0.98611626, 0.98051285, 0.97537354, 0.97049745, 0.96584269, 0.96164328 },
+				{ 0.99158345, 0.98550796, 0.97920842, 0.97404262, 0.96902343, 0.96369675, 0.95960381 },
+				{ 0.99119769, 0.98444074, 0.97795178, 0.97244943, 0.96721938, 0.96216125, 0.95686466 },
+				{ 0.99069872, 0.98310074, 0.97595182, 0.97020473, 0.96428284, 0.95899010, 0.95314857 },
+				{ 0.98953295, 0.98180814, 0.97452263, 0.96758909, 0.96183076, 0.95661088, 0.95033452 },
+				{ 0.98868406, 0.98004450, 0.97200846, 0.96485114, 0.95807108, 0.95205351, 0.94623044 },
+				{ 0.98784338, 0.97817658, 0.97001062, 0.96193593, 0.95476246, 0.94787300, 0.94116821 },
+				{ 0.98643449, 0.97624715, 0.96731428, 0.95888051, 0.95176965, 0.94388150, 0.93791631 },
+				{ 0.98577128, 0.97521852, 0.96572282, 0.95651643, 0.94966644, 0.94165627, 0.93443484 },
+				{ 0.98567055, 0.97485036, 0.96527165, 0.95627359, 0.94845734, 0.94063582, 0.93350904 }
+			},
+			{
+				{ 0.99246720, 0.98625266, 0.98088662, 0.97546046, 0.97120574, 0.96654795, 0.96282725 },
+				{ 0.99229464, 0.98618678, 0.98087351, 0.97539439, 0.97028715, 0.96597198, 0.96124696 },
+				{ 0.99216913, 0.98609622, 0.98059837, 0.97522375, 0.97086794, 0.96571875, 0.96058401 },
+				{ 0.99198631, 0.98554719, 0.98002145, 0.97438028, 0.96876484, 0.96499232, 0.96007222 },
+				{ 0.99158595, 0.98471162, 0.97896720, 0.97319387, 0.96826923, 0.96296857, 0.95727373 },
+				{ 0.99069760, 0.98377472, 0.97764597, 0.97186083, 0.96598919, 0.96112618, 0.95528606 },
+				{ 0.99042208, 0.98279311, 0.97598310, 0.96962284, 0.96311286, 0.95888496, 0.95276226 },
+				{ 0.98948331, 0.98155626, 0.97424003, 0.96806870, 0.96122998, 0.95510255, 0.94987608 },
+				{ 0.98855012, 0.98009304, 0.97205283, 0.96504028, 0.95875602, 0.95220144, 0.94607080 },
+				{ 0.98766690, 0.97874262, 0.97046964, 0.96239971, 0.95598201, 0.94929421, 0.94261657 },
+				{ 0.98719114, 0.97675345, 0.96854703, 0.96034496, 0.95301309, 0.94580154, 0.93921197 },
+				{ 0.98667660, 0.97610694, 0.96747678, 0.95901256, 0.95175475, 0.94401505, 0.93756097 },
+				{ 0.98629920, 0.97607992, 0.96632139, 0.95848357, 0.95075840, 0.94317358, 0.93621694 }
+			},
+			{
+				{ 0.99186985, 0.98590878, 0.97979720, 0.97453357, 0.96906064, 0.96507870, 0.96004826 },
+				{ 0.99191789, 0.98543647, 0.97968561, 0.97444064, 0.96885021, 0.96496052, 0.95999749 },
+				{ 0.99174365, 0.98513085, 0.97919934, 0.97425931, 0.96904002, 0.96417096, 0.95895992 },
+				{ 0.99176276, 0.98498469, 0.97888439, 0.97284004, 0.96872509, 0.96262883, 0.95840779 },
+				{ 0.99134529, 0.98440968, 0.97808093, 0.97214876, 0.96662912, 0.96190234, 0.95662718 },
+				{ 0.99084410, 0.98378187, 0.97685331, 0.97048801, 0.96457267, 0.95959732, 0.95444647 },
+				{ 0.99005602, 0.98251496, 0.97541931, 0.96899425, 0.96349375, 0.95716294, 0.95188914 },
+				{ 0.98940238, 0.98120929, 0.97446507, 0.96737046, 0.96080992, 0.95416486, 0.94931006 },
+				{ 0.98889325, 0.97991118, 0.97196862, 0.96488187, 0.95861014, 0.95249156, 0.94596538 },
+				{ 0.98788756, 0.97858555, 0.97070432, 0.96291343, 0.95633694, 0.95001427, 0.94354327 },
+				{ 0.98747293, 0.97825611, 0.96951119, 0.96175806, 0.95448939, 0.94741740, 0.94017810 },
+				{ 0.98707550, 0.97722355, 0.96879867, 0.96012514, 0.95244598, 0.94604110, 0.93926368 },
+				{ 0.98703841, 0.97691732, 0.96824605, 0.95944407, 0.95242681, 0.94531108, 0.93823566 }
+			},
+			{
+				{ 0.99149667, 0.98474185, 0.97878938, 0.97301131, 0.96761491, 0.96290933, 0.95777868 },
+				{ 0.99146111, 0.98494621, 0.97875336, 0.97288728, 0.96813122, 0.96306793, 0.95777707 },
+				{ 0.99124526, 0.98499291, 0.97859251, 0.97260067, 0.96710635, 0.96253648, 0.95818194 },
+				{ 0.99140921, 0.98401828, 0.97781312, 0.97210882, 0.96633318, 0.96119538, 0.95636662 },
+				{ 0.99099993, 0.98360399, 0.97717110, 0.97070189, 0.96531547, 0.96000503, 0.95528872 },
+				{ 0.99038159, 0.98256705, 0.97600016, 0.97084372, 0.96359164, 0.95816477, 0.95346122 },
+				{ 0.98994229, 0.98218700, 0.97563017, 0.96853753, 0.96213385, 0.95708539, 0.95116712 },
+				{ 0.98951552, 0.98131426, 0.97340906, 0.96738200, 0.96049340, 0.95417189, 0.94887301 },
+				{ 0.98849567, 0.98023640, 0.97254836, 0.96488479, 0.95864567, 0.95172382, 0.94642393 },
+				{ 0.98804252, 0.97916982, 0.97075738, 0.96401451, 0.95670482, 0.94997094, 0.94391998 },
+				{ 0.98771872, 0.97790188, 0.97014675, 0.96278454, 0.95562651, 0.94891077, 0.94190687 },
+				{ 0.98732953, 0.97783879, 0.96930695, 0.96105317, 0.95391209, 0.94771280, 0.94023165 },
+				{ 0.98758971, 0.97750607, 0.96898367, 0.96115652, 0.95333698, 0.94732537, 0.94018251 }
+			},
+			{
+				{ 0.99122661, 0.98405366, 0.97770628, 0.97187500, 0.96580101, 0.96101693, 0.95566465 },
+				{ 0.99107090, 0.98391449, 0.97781196, 0.97173875, 0.96616631, 0.96137239, 0.95618812 },
+				{ 0.99092430, 0.98383778, 0.97758454, 0.97170847, 0.96595711, 0.96105318, 0.95484548 },
+				{ 0.99067165, 0.98349642, 0.97661163, 0.97068656, 0.96482893, 0.95925441, 0.95487252 },
+				{ 0.99053973, 0.98289623, 0.97603368, 0.96958557, 0.96438092, 0.95878464, 0.95325379 },
+				{ 0.99029335, 0.98221589, 0.97586173, 0.96915450, 0.96313399, 0.95681827, 0.95214927 },
+				{ 0.98986285, 0.98154847, 0.97442053, 0.96779933, 0.96129350, 0.95563041, 0.94985851 },
+				{ 0.98925603, 0.98093383, 0.97336778, 0.96704964, 0.96043793, 0.95396777, 0.94817170 },
+				{ 0.98872170, 0.98026983, 0.97246233, 0.96526708, 0.95847723, 0.95250479, 0.94642297 },
+				{ 0.98834312, 0.97911542, 0.97129588, 0.96350581, 0.95704108, 0.95026373, 0.94515091 },
+				{ 0.98797995, 0.97914445, 0.97050427, 0.96331788, 0.95587738, 0.94900451, 0.94358232 },
+				{ 0.98800407, 0.97816823, 0.97012528, 0.96218641, 0.95486168, 0.94815612, 0.94206312 },
+				{ 0.98769302, 0.97803821, 0.97045183, 0.96184038, 0.95478190, 0.94828967, 0.94158836 }
+			},
+			{
+				{ 0.99070745, 0.98307310, 0.97642307, 0.97010937, 0.96438703, 0.95941596, 0.95354259 },
+				{ 0.99033881, 0.98303313, 0.97620328, 0.96999251, 0.96423240, 0.95907512, 0.95391037 },
+				{ 0.99041986, 0.98286759, 0.97619252, 0.96979382, 0.96363781, 0.95863407, 0.95251417 },
+				{ 0.99002353, 0.98270525, 0.97644354, 0.96978130, 0.96279520, 0.95784854, 0.95287984 },
+				{ 0.99032591, 0.98230520, 0.97495344, 0.96871561, 0.96217311, 0.95613104, 0.95123002 },
+				{ 0.98987679, 0.98173199, 0.97411187, 0.96804659, 0.96118410, 0.95570754, 0.94982714 },
+				{ 0.98934957, 0.98137015, 0.97379806, 0.96710794, 0.96057157, 0.95548658, 0.94878995 },
+				{ 0.98921679, 0.98050076, 0.97332434, 0.96664288, 0.95958109, 0.95366475, 0.94797253 },
+				{ 0.98887254, 0.98010725, 0.97208010, 0.96571230, 0.95881484, 0.95221516, 0.94687916 },
+				{ 0.98862990, 0.97995638, 0.97158712, 0.96460939, 0.95732248, 0.95098654, 0.94530169 },
+				{ 0.98836868, 0.97937686, 0.97145283, 0.96402511, 0.95675608, 0.94946470, 0.94352882 },
+				{ 0.98800686, 0.97942151, 0.97089400, 0.96352051, 0.95609830, 0.94985770, 0.94342936 },
+				{ 0.98803373, 0.97877229, 0.97034504, 0.96294425, 0.95627219, 0.94904246, 0.94334355 }
+			},
+			{
+				{ 0.99004575, 0.98221461, 0.97508095, 0.96900869, 0.96258813, 0.95666450, 0.95099294 },
+				{ 0.98985858, 0.98219199, 0.97488078, 0.96879977, 0.96226855, 0.95606073, 0.95097755 },
+				{ 0.98990368, 0.98181643, 0.97513571, 0.96843300, 0.96198527, 0.95603785, 0.95117446 },
+				{ 0.98987981, 0.98196706, 0.97455285, 0.96815106, 0.96175687, 0.95573913, 0.95027747 },
+				{ 0.98961818, 0.98115121, 0.97445020, 0.96742660, 0.96142664, 0.95502944, 0.94914551 },
+				{ 0.98949524, 0.98127888, 0.97316643, 0.96726537, 0.96058935, 0.95436867, 0.94879680 },
+				{ 0.98934256, 0.98074070, 0.97381469, 0.96613504, 0.96010221, 0.95410259, 0.94780997 },
+				{ 0.98886190, 0.98104646, 0.97262164, 0.96540213, 0.95913171, 0.95349056, 0.94692264 },
+				{ 0.98888128, 0.98032640, 0.97238646, 0.96499981, 0.95879522, 0.95205504, 0.94616405 },
+				{ 0.98852921, 0.98030710, 0.97223375, 0.96467665, 0.95815774, 0.95200385, 0.94539196 },
+				{ 0.98831108, 0.97949906, 0.97199150, 0.96403885, 0.95760523, 0.95122762, 0.94463102 },
+				{ 0.98808719, 0.97945406, 0.97162754, 0.96413154, 0.95725712, 0.95045594, 0.94517081 },
+				{ 0.98851231, 0.97895800, 0.97108178, 0.96394450, 0.95700183, 0.95009586, 0.94438219 }
+			},
+			{
+				{ 0.98922972, 0.98091540, 0.97329284, 0.96699705, 0.96066397, 0.95417610, 0.94899699 },
+				{ 0.98934829, 0.98114400, 0.97367862, 0.96666018, 0.96014718, 0.95432733, 0.94832077 },
+				{ 0.98931728, 0.98078563, 0.97381006, 0.96635323, 0.95983920, 0.95458173, 0.94842068 },
+				{ 0.98962359, 0.98077105, 0.97306694, 0.96618558, 0.96028033, 0.95319737, 0.94796702 },
+				{ 0.98906600, 0.98063630, 0.97296744, 0.96663479, 0.95947682, 0.95368759, 0.94721305 },
+				{ 0.98920103, 0.98042808, 0.97325720, 0.96597367, 0.96007860, 0.95308814, 0.94724010 },
+				{ 0.98909065, 0.98018055, 0.97260487, 0.96623266, 0.95923272, 0.95321811, 0.94656123 },
+				{ 0.98871551, 0.98035001, 0.97181680, 0.96559059, 0.95867641, 0.95231593, 0.94590833 },
+				{ 0.98882557, 0.97979953, 0.97285184, 0.96501474, 0.95843852, 0.95201099, 0.94557377 },
+				{ 0.98887811, 0.97984028, 0.97248542, 0.96473253, 0.95800944, 0.95145585, 0.94541621 },
+				{ 0.98871647, 0.97961759, 0.97206212, 0.96472716, 0.95751655, 0.95154615, 0.94543744 },
+				{ 0.98879697, 0.97925696, 0.97193898, 0.96492551, 0.95756490, 0.95158216, 0.94469268 },
+				{ 0.98867475, 0.97947803, 0.97162013, 0.96433832, 0.95726925, 0.95195064, 0.94500793 }
+			},
+			{
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+				{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 }
+			},
+			{
+				{ 0.98820625, 0.97911503, 0.97058765, 0.96310216, 0.95591793, 0.94889104, 0.94253441 },
+				{ 0.98833388, 0.97910963, 0.97059870, 0.96292963, 0.95647524, 0.94979860, 0.94331049 },
+				{ 0.98795248, 0.97843392, 0.97071211, 0.96273148, 0.95578110, 0.94934659, 0.94320192 },
+				{ 0.98824638, 0.97902749, 0.97108425, 0.96324638, 0.95622292, 0.94969094, 0.94281984 },
+				{ 0.98840182, 0.97927825, 0.97091835, 0.96364185, 0.95663601, 0.94969312, 0.94339819 },
+				{ 0.98833793, 0.97961357, 0.97144585, 0.96352149, 0.95678908, 0.94988209, 0.94444546 },
+				{ 0.98833856, 0.97977219, 0.97191763, 0.96466814, 0.95784973, 0.95101809, 0.94492377 },
+				{ 0.98867009, 0.97973388, 0.97194064, 0.96435251, 0.95816368, 0.95161650, 0.94522252 },
+				{ 0.98892237, 0.97969586, 0.97198615, 0.96526920, 0.95778918, 0.95143159, 0.94569058 },
+				{ 0.98890954, 0.98013861, 0.97229928, 0.96525363, 0.95796480, 0.95174856, 0.94560984 },
+				{ 0.98911048, 0.98046166, 0.97238152, 0.96490964, 0.95820407, 0.95211327, 0.94607783 },
+				{ 0.98906786, 0.98045191, 0.97280495, 0.96484726, 0.95949971, 0.95191739, 0.94545709 },
+				{ 0.98873681, 0.98016652, 0.97255439, 0.96538407, 0.95864405, 0.95210306, 0.94633233 }
+			},
+			{
+				{ 0.98725202, 0.97771003, 0.96918789, 0.96044158, 0.95321688, 0.94660788, 0.93965267 },
+				{ 0.98736527, 0.97779445, 0.96921795, 0.96115870, 0.95383865, 0.94700023, 0.93960233 },
+				{ 0.98753266, 0.97794478, 0.96922680, 0.96133557, 0.95394713, 0.94660755, 0.94055734 },
+				{ 0.98782704, 0.97863214, 0.97007456, 0.96220735, 0.95450035, 0.94777425, 0.94085212 },
+				{ 0.98770420, 0.97809405, 0.96980732, 0.96255772, 0.95421877, 0.94849801, 0.94196563 },
+				{ 0.98800114, 0.97878180, 0.97041026, 0.96293976, 0.95566287, 0.94911634, 0.94219976 },
+				{ 0.98842401, 0.97912656, 0.97129498, 0.96348212, 0.95573127, 0.95003246, 0.94258806 },
+				{ 0.98834696, 0.97906984, 0.97155191, 0.96350567, 0.95694158, 0.95034550, 0.94398308 },
+				{ 0.98865195, 0.97955171, 0.97202913, 0.96421705, 0.95840120, 0.95121229, 0.94467666 },
+				{ 0.98880808, 0.97975698, 0.97251957, 0.96516818, 0.95807316, 0.95111811, 0.94492590 },
+				{ 0.98889450, 0.98012908, 0.97184470, 0.96526201, 0.95796167, 0.95210416, 0.94596699 },
+				{ 0.98891895, 0.98045894, 0.97270421, 0.96576791, 0.95896423, 0.95263340, 0.94640572 },
+				{ 0.98910990, 0.98086277, 0.97298847, 0.96558226, 0.95910649, 0.95267596, 0.94717066 }
+			}
+		},
+		{
+			{
+				{ 0.99387749, 0.98906822, 0.98449268, 0.98027928, 0.97647908, 0.97234555, 0.96879958 },
+				{ 0.99377241, 0.98867796, 0.98427889, 0.98041275, 0.97664086, 0.97244762, 0.96843964 },
+				{ 0.99353993, 0.98848515, 0.98394845, 0.97983941, 0.97592869, 0.97178936, 0.96869099 },
+				{ 0.99336084, 0.98799011, 0.98368351, 0.97984169, 0.97500520, 0.97110149, 0.96741929 },
+				{ 0.99290170, 0.98738053, 0.98272620, 0.97813106, 0.97348588, 0.96917322, 0.96594930 },
+				{ 0.99242168, 0.98624569, 0.98096092, 0.97614355, 0.97207500, 0.96766701, 0.96254151 },
+				{ 0.99150293, 0.98524574, 0.97920756, 0.97400199, 0.96923729, 0.96454227, 0.95959239 },
+				{ 0.99032053, 0.98334727, 0.97655192, 0.97075164, 0.96501142, 0.95968508, 0.95442839 },
+				{ 0.98885481, 0.98052003, 0.97285271, 0.96593246, 0.95924040, 0.95275694, 0.94804458 },
+				{ 0.98615469, 0.97552937, 0.96635085, 0.95830088, 0.94964834, 0.94322211, 0.93608505 },
+				{ 0.98082005, 0.96650278, 0.95431670, 0.94270363, 0.93294122, 0.92380745, 0.91478880 },
+				{ 0.96735109, 0.94384751, 0.92393271, 0.90635989, 0.89102292, 0.87709346, 0.86447105 },
+				{ 0.74859831, 0.65637591, 0.60794940, 0.57750038, 0.55844169, 0.54728579, 0.53951251 }
+			},
+			{
+				{ 0.99362317, 0.98900396, 0.98449895, 0.98045050, 0.97657740, 0.97228371, 0.96933163 },
+				{ 0.99382328, 0.98866543, 0.98429467, 0.98023796, 0.97618985, 0.97237204, 0.96941128 },
+				{ 0.99381730, 0.98861596, 0.98401635, 0.97986931, 0.97598351, 0.97207866, 0.96832086 },
+				{ 0.99326590, 0.98803390, 0.98327121, 0.97942331, 0.97507037, 0.97100626, 0.96712008 },
+				{ 0.99292086, 0.98753282, 0.98292446, 0.97801125, 0.97384236, 0.96909630, 0.96523709 },
+				{ 0.99253787, 0.98678834, 0.98134209, 0.97667108, 0.97206515, 0.96699638, 0.96307920 },
+				{ 0.99162743, 0.98537559, 0.97948704, 0.97369615, 0.96941995, 0.96423061, 0.95969236 },
+				{ 0.99051427, 0.98343957, 0.97656604, 0.97100744, 0.96521285, 0.96022090, 0.95501740 },
+				{ 0.98893656, 0.98013324, 0.97309011, 0.96617537, 0.95991200, 0.95336056, 0.94846968 },
+				{ 0.98622810, 0.97536021, 0.96665509, 0.95818165, 0.95004475, 0.94326545, 0.93576980 },
+				{ 0.98086563, 0.96707991, 0.95368799, 0.94291070, 0.93292104, 0.92274698, 0.91345907 },
+				{ 0.96568509, 0.94265157, 0.92140339, 0.90361860, 0.88816077, 0.87292162, 0.86027357 },
+				{ 0.90901185, 0.85705696, 0.81575156, 0.78346042, 0.75609836, 0.73250715, 0.71379899 }
+			},
+			{
+				{ 0.99379887, 0.98915463, 0.98452399, 0.98036344, 0.97663493, 0.97323269, 0.96919593 },
+				{ 0.99367845, 0.98898535, 0.98468632, 0.98025478, 0.97652761, 0.97205262, 0.96870322 },
+				{ 0.99354888, 0.98864695, 0.98398390, 0.97973107, 0.97594025, 0.97190191, 0.96796723 },
+				{ 0.99364113, 0.98811268, 0.98404869, 0.97882195, 0.97499943, 0.97057295, 0.96796572 },
+				{ 0.99295713, 0.98761580, 0.98303183, 0.97787582, 0.97381017, 0.96966250, 0.96583248 },
+				{ 0.99259448, 0.98671398, 0.98133157, 0.97653605, 0.97152689, 0.96775017, 0.96305910 },
+				{ 0.99144497, 0.98519711, 0.97984664, 0.97418635, 0.96907206, 0.96421223, 0.95945015 },
+				{ 0.99062126, 0.98280007, 0.97694879, 0.97090231, 0.96517182, 0.95992001, 0.95474985 },
+				{ 0.98916110, 0.98062618, 0.97254805, 0.96606643, 0.95939960, 0.95367199, 0.94771435 },
+				{ 0.98609538, 0.97535805, 0.96607530, 0.95752562, 0.94979734, 0.94274603, 0.93542244 },
+				{ 0.98010081, 0.96616963, 0.95308501, 0.94196787, 0.93189637, 0.92146324, 0.91206168 },
+				{ 0.96618781, 0.94177475, 0.92120102, 0.90309101, 0.88694799, 0.87281069, 0.85841338 },
+				{ 0.94007319, 0.90275888, 0.87258955, 0.84584218, 0.82373402, 0.80543793, 0.78747716 }
+			},
+			{
+				{ 0.99402505, 0.98912277, 0.98469547, 0.98040751, 0.97647426, 0.97315244, 0.96940722 },
+				{ 0.99392634, 0.98868654, 0.98452883, 0.98014324, 0.97625678, 0.97242049, 0.96941065 },
+				{ 0.99352795, 0.98875970, 0.98389162, 0.97998094, 0.97599253, 0.97194046, 0.96804938 },
+				{ 0.99335929, 0.98833366, 0.98353247, 0.97883152, 0.97483947, 0.97102376, 0.96706994 },
+				{ 0.99302942, 0.98738893, 0.98261599, 0.97809397, 0.97377494, 0.96944440, 0.96539211 },
+				{ 0.99241947, 0.98651041, 0.98132383, 0.97649798, 0.97206558, 0.96729691, 0.96340932 },
+				{ 0.99162220, 0.98530068, 0.97975221, 0.97447157, 0.96902912, 0.96431097, 0.95979434 },
+				{ 0.99043941, 0.98288244, 0.97626415, 0.97061569, 0.96510060, 0.95956152, 0.95429212 },
+				{ 0.98851014, 0.98003090, 0.97223405, 0.96546078, 0.95866561, 0.95301823, 0.94658467 },
+				{ 0.98587542, 0.97511170, 0.96586583, 0.95734581, 0.94899828, 0.94112376, 0.93433337 },
+				{ 0.98012444, 0.96552037, 0.95289126, 0.94068037, 0.92961596, 0.91962054, 0.91165242 },
+				{ 0.96816394, 0.94525644, 0.92609143, 0.90898493, 0.89301060, 0.87936534, 0.86697879 },
+				{ 0.95488452, 0.92527046, 0.89948035, 0.87824341, 0.86024766, 0.84286763, 0.82763351 }
+			},
+			{
+				{ 0.99378807, 0.98869788, 0.98441198, 0.98052136, 0.97652397, 0.97291174, 0.96965546 },
+				{ 0.99390973, 0.98878132, 0.98444691, 0.98020264, 0.97607797, 0.97252079, 0.96951236 },
+				{ 0.99366998, 0.98835688, 0.98431801, 0.97967253, 0.97579954, 0.97212447, 0.96869570 },
+				{ 0.99355217, 0.98831483, 0.98373699, 0.97907819, 0.97491384, 0.97118565, 0.96760210 },
+				{ 0.99295977, 0.98759213, 0.98275466, 0.97840223, 0.97338570, 0.96975984, 0.96545791 },
+				{ 0.99248803, 0.98625163, 0.98113128, 0.97637888, 0.97171542, 0.96699987, 0.96345350 },
+				{ 0.99140324, 0.98493015, 0.97907216, 0.97413829, 0.96935984, 0.96392050, 0.95971427 },
+				{ 0.99051358, 0.98333726, 0.97659938, 0.97059467, 0.96486070, 0.95898885, 0.95413255 },
+				{ 0.98858300, 0.97967303, 0.97209217, 0.96516855, 0.95862812, 0.95260652, 0.94594024 },
+				{ 0.98544346, 0.97488541, 0.96505329, 0.95619499, 0.94833746, 0.94076786, 0.93353811 },
+				{ 0.98022856, 0.96524862, 0.95326506, 0.94094597, 0.93034471, 0.91997493, 0.91144601 },
+				{ 0.97044906, 0.95037821, 0.93177156, 0.91630465, 0.90137813, 0.88862936, 0.87673155 },
+				{ 0.96345273, 0.93782207, 0.91690143, 0.89751402, 0.88156977, 0.86760284, 0.85378335 }
+			},
+			{
+				{ 0.99385392, 0.98895338, 0.98452133, 0.98034756, 0.97643646, 0.97294173, 0.96899063 },
+				{ 0.99390021, 0.98889753, 0.98459475, 0.98012637, 0.97676133, 0.97256453, 0.96905548 },
+				{ 0.99346651, 0.98875048, 0.98410669, 0.98017265, 0.97615047, 0.97190001, 0.96868115 },
+				{ 0.99359753, 0.98838945, 0.98322808, 0.97922078, 0.97474039, 0.97092760, 0.96727484 },
+				{ 0.99310581, 0.98780788, 0.98282103, 0.97814766, 0.97344497, 0.96956998, 0.96531371 },
+				{ 0.99243623, 0.98649245, 0.98151230, 0.97585422, 0.97132603, 0.96674267, 0.96298176 },
+				{ 0.99159106, 0.98515802, 0.97887704, 0.97369315, 0.96823534, 0.96358650, 0.95940504 },
+				{ 0.99037120, 0.98304423, 0.97617911, 0.96988832, 0.96369440, 0.95866313, 0.95275618 },
+				{ 0.98852483, 0.97964313, 0.97181152, 0.96520402, 0.95721136, 0.95186162, 0.94531674 },
+				{ 0.98544792, 0.97442964, 0.96441559, 0.95576182, 0.94766615, 0.93960987, 0.93297633 },
+				{ 0.98059899, 0.96559830, 0.95332436, 0.94210276, 0.93210701, 0.92219609, 0.91213221 },
+				{ 0.97293974, 0.95409658, 0.93763855, 0.92361778, 0.90970337, 0.89774284, 0.88586571 },
+				{ 0.96841259, 0.94713844, 0.92886196, 0.91223934, 0.89794657, 0.88345436, 0.87279558 }
+			},
+			{
+				{ 0.99388704, 0.98880337, 0.98429835, 0.98026264, 0.97610019, 0.97323209, 0.96929133 },
+				{ 0.99386691, 0.98886474, 0.98443160, 0.98002283, 0.97604940, 0.97268052, 0.96909466 },
+				{ 0.99349692, 0.98846483, 0.98425732, 0.97957311, 0.97600098, 0.97211666, 0.96821966 },
+				{ 0.99331355, 0.98782846, 0.98344357, 0.97883980, 0.97477841, 0.97124188, 0.96656007 },
+				{ 0.99299504, 0.98715297, 0.98249250, 0.97773128, 0.97373853, 0.96913710, 0.96458457 },
+				{ 0.99256927, 0.98604638, 0.98075427, 0.97560283, 0.97101620, 0.96685337, 0.96220115 },
+				{ 0.99148704, 0.98503117, 0.97849868, 0.97335119, 0.96803482, 0.96358796, 0.95824826 },
+				{ 0.99009011, 0.98292674, 0.97586012, 0.96985291, 0.96323724, 0.95873286, 0.95267729 },
+				{ 0.98833506, 0.97963899, 0.97052602, 0.96394648, 0.95723316, 0.95045747, 0.94411942 },
+				{ 0.98539756, 0.97460812, 0.96491973, 0.95568554, 0.94711436, 0.93937130, 0.93270392 },
+				{ 0.98107157, 0.96719974, 0.95412741, 0.94377227, 0.93338684, 0.92438247, 0.91518701 },
+				{ 0.97552998, 0.95765204, 0.94350248, 0.92885694, 0.91724863, 0.90589167, 0.89503508 },
+				{ 0.97259985, 0.95317008, 0.93688809, 0.92191393, 0.90912904, 0.89654718, 0.88494850 }
+			},
+			{
+				{ 0.99368944, 0.98880680, 0.98429750, 0.97966523, 0.97620869, 0.97251856, 0.96840854 },
+				{ 0.99374369, 0.98883936, 0.98394559, 0.97994375, 0.97612364, 0.97269691, 0.96885528 },
+				{ 0.99362099, 0.98848541, 0.98406419, 0.97981828, 0.97547285, 0.97171623, 0.96812366 },
+				{ 0.99334122, 0.98807453, 0.98304446, 0.97882360, 0.97400384, 0.97036514, 0.96671927 },
+				{ 0.99288339, 0.98725461, 0.98219500, 0.97747389, 0.97307702, 0.96835094, 0.96445813 },
+				{ 0.99239531, 0.98623686, 0.98015097, 0.97517551, 0.97101885, 0.96626801, 0.96186813 },
+				{ 0.99115132, 0.98449287, 0.97813609, 0.97249978, 0.96753354, 0.96275416, 0.95764009 },
+				{ 0.99000874, 0.98234299, 0.97571453, 0.96896791, 0.96317406, 0.95747534, 0.95198616 },
+				{ 0.98826608, 0.97886156, 0.97108839, 0.96379339, 0.95623314, 0.94999634, 0.94421995 },
+				{ 0.98574021, 0.97455246, 0.96444134, 0.95589272, 0.94751611, 0.93976815, 0.93246990 },
+				{ 0.98200077, 0.96875402, 0.95629055, 0.94572528, 0.93625259, 0.92655566, 0.91738755 },
+				{ 0.97739630, 0.96173386, 0.94766410, 0.93461755, 0.92430270, 0.91311348, 0.90311374 },
+				{ 0.97580354, 0.95775642, 0.94318797, 0.92996816, 0.91799294, 0.90652778, 0.89570317 }
+			},
+			{
+				{ 0.99344584, 0.98830260, 0.98432016, 0.97954915, 0.97578950, 0.97167390, 0.96832826 },
+				{ 0.99370322, 0.98877124, 0.98391902, 0.97969226, 0.97606770, 0.97147670, 0.96815925 },
+				{ 0.99348512, 0.98788565, 0.98359538, 0.97922625, 0.97514955, 0.97151151, 0.96730843 },
+				{ 0.99317117, 0.98804673, 0.98285299, 0.97803239, 0.97380333, 0.97054090, 0.96579797 },
+				{ 0.99278870, 0.98719515, 0.98183323, 0.97707963, 0.97213532, 0.96783878, 0.96405037 },
+				{ 0.99216194, 0.98589810, 0.98049029, 0.97485943, 0.96985261, 0.96555232, 0.96064740 },
+				{ 0.99111505, 0.98432271, 0.97771980, 0.97267082, 0.96677807, 0.96211067, 0.95659203 },
+				{ 0.99001409, 0.98199234, 0.97529670, 0.96833970, 0.96255238, 0.95656212, 0.95115254 },
+				{ 0.98793888, 0.97924790, 0.97036124, 0.96297722, 0.95648841, 0.94979902, 0.94353546 },
+				{ 0.98580581, 0.97462873, 0.96508681, 0.95652414, 0.94847479, 0.94054481, 0.93355827 },
+				{ 0.98232366, 0.96891683, 0.95845135, 0.94754650, 0.93861742, 0.92948588, 0.92001948 },
+				{ 0.97941236, 0.96482785, 0.95122990, 0.93864241, 0.92907317, 0.91844775, 0.90995262 },
+				{ 0.97822510, 0.96233210, 0.94802367, 0.93565726, 0.92541367, 0.91381573, 0.90462528 }
+			},
+			{
+				{ 0.99343950, 0.98848450, 0.98383259, 0.97949106, 0.97569137, 0.97123760, 0.96684233 },
+				{ 0.99373567, 0.98832838, 0.98346004, 0.97959911, 0.97522284, 0.97128586, 0.96735422 },
+				{ 0.99338609, 0.98815623, 0.98364387, 0.97888745, 0.97497471, 0.97051255, 0.96641177 },
+				{ 0.99299979, 0.98727171, 0.98236139, 0.97768155, 0.97351543, 0.96890135, 0.96530657 },
+				{ 0.99242479, 0.98683351, 0.98167379, 0.97661455, 0.97136155, 0.96721228, 0.96330834 },
+				{ 0.99212171, 0.98547117, 0.98012656, 0.97396894, 0.96978038, 0.96490074, 0.96038767 },
+				{ 0.99090801, 0.98407819, 0.97750121, 0.97151648, 0.96664122, 0.96150879, 0.95619954 },
+				{ 0.98998203, 0.98165546, 0.97434357, 0.96743601, 0.96176357, 0.95582994, 0.95070773 },
+				{ 0.98817156, 0.97880166, 0.97012548, 0.96325625, 0.95628539, 0.95014689, 0.94245357 },
+				{ 0.98600055, 0.97513670, 0.96581931, 0.95706190, 0.94920613, 0.94075859, 0.93521272 },
+				{ 0.98326577, 0.97057806, 0.95988124, 0.95035250, 0.94002102, 0.93188664, 0.92370013 },
+				{ 0.98102511, 0.96687246, 0.95462466, 0.94341629, 0.93306736, 0.92406270, 0.91551743 },
+				{ 0.97989229, 0.96479623, 0.95261991, 0.94156428, 0.93079857, 0.92065484, 0.91103000 }
+			},
+			{
+				{ 0.99334456, 0.98801269, 0.98316287, 0.97943269, 0.97519823, 0.97050253, 0.96671098 },
+				{ 0.99347102, 0.98805845, 0.98315418, 0.97864230, 0.97423231, 0.96995000, 0.96681407 },
+				{ 0.99314704, 0.98767859, 0.98268938, 0.97769461, 0.97331169, 0.96957618, 0.96589160 },
+				{ 0.99301195, 0.98708677, 0.98194426, 0.97730162, 0.97282449, 0.96839559, 0.96426134 },
+				{ 0.99216784, 0.98660980, 0.98109455, 0.97581789, 0.97116340, 0.96611386, 0.96197724 },
+				{ 0.99181725, 0.98502727, 0.97952040, 0.97372937, 0.96890680, 0.96329349, 0.95906011 },
+				{ 0.99093628, 0.98367702, 0.97710271, 0.97138389, 0.96579487, 0.96080944, 0.95535774 },
+				{ 0.98960636, 0.98140876, 0.97444677, 0.96784274, 0.96113052, 0.95588998, 0.95008084 },
+				{ 0.98803722, 0.97910533, 0.97072162, 0.96339484, 0.95653693, 0.94963090, 0.94378510 },
+				{ 0.98638853, 0.97558761, 0.96611741, 0.95774846, 0.95005950, 0.94204494, 0.93514747 },
+				{ 0.98402097, 0.97181669, 0.96200684, 0.95182506, 0.94283112, 0.93468949, 0.92719288 },
+				{ 0.98243695, 0.96856630, 0.95738101, 0.94698407, 0.93667015, 0.92836957, 0.91962416 },
+				{ 0.98137376, 0.96771286, 0.95560638, 0.94423336, 0.93476971, 0.92589935, 0.91698606 }
+			},
+			{
+				{ 0.99317158, 0.98772774, 0.98313051, 0.97813086, 0.97406144, 0.96969358, 0.96648710 },
+				{ 0.99297490, 0.98769607, 0.98281623, 0.97853958, 0.97360714, 0.96985536, 0.96601863 },
+				{ 0.99296949, 0.98756434, 0.98213145, 0.97774642, 0.97337135, 0.96860716, 0.96464654 },
+				{ 0.99259698, 0.98642441, 0.98146254, 0.97660054, 0.97196004, 0.96770203, 0.96363303 },
+				{ 0.99197520, 0.98606994, 0.98043680, 0.97567055, 0.97007714, 0.96606318, 0.96106003 },
+				{ 0.99144422, 0.98490700, 0.97878420, 0.97319202, 0.96802570, 0.96244920, 0.95839578 },
+				{ 0.99080187, 0.98339802, 0.97627074, 0.97083339, 0.96506541, 0.95935617, 0.95383489 },
+				{ 0.98966283, 0.98146194, 0.97393862, 0.96772478, 0.96140058, 0.95504299, 0.94866632 },
+				{ 0.98773940, 0.97880434, 0.97116268, 0.96308011, 0.95650825, 0.95030638, 0.94341166 },
+				{ 0.98621814, 0.97637787, 0.96671059, 0.95834665, 0.95104980, 0.94324669, 0.93657912 },
+				{ 0.98461595, 0.97292624, 0.96244249, 0.95402723, 0.94553101, 0.93737848, 0.92895933 },
+				{ 0.98322519, 0.97062274, 0.95965753, 0.94871762, 0.94075693, 0.93200012, 0.92368341 },
+				{ 0.98266162, 0.96990784, 0.95842316, 0.94797617, 0.93946301, 0.93024073, 0.92138119 }
+			},
+			{
+				{ 0.99305966, 0.98757292, 0.98222783, 0.97742093, 0.97291273, 0.96854472, 0.96462697 },
+				{ 0.99292032, 0.98661178, 0.98226269, 0.97734825, 0.97278977, 0.96803490, 0.96376775 },
+				{ 0.99260016, 0.98683105, 0.98151253, 0.97657096, 0.97202105, 0.96791646, 0.96380295 },
+				{ 0.99243476, 0.98626079, 0.98113650, 0.97603130, 0.97097347, 0.96666349, 0.96214344 },
+				{ 0.99185175, 0.98562494, 0.97965365, 0.97441640, 0.96951101, 0.96490322, 0.96061137 },
+				{ 0.99107316, 0.98460884, 0.97852606, 0.97242536, 0.96688367, 0.96205855, 0.95741935 },
+				{ 0.99073223, 0.98325616, 0.97646727, 0.96996708, 0.96487418, 0.95861806, 0.95361970 },
+				{ 0.98935253, 0.98111797, 0.97364770, 0.96740222, 0.96087793, 0.95465835, 0.94937890 },
+				{ 0.98838161, 0.97895902, 0.97104229, 0.96302013, 0.95689418, 0.94955968, 0.94333851 },
+				{ 0.98658187, 0.97660529, 0.96750943, 0.95912391, 0.95096532, 0.94372960, 0.93765328 },
+				{ 0.98483700, 0.97407668, 0.96429645, 0.95521507, 0.94683757, 0.93883800, 0.93179089 },
+				{ 0.98399798, 0.97244383, 0.96174897, 0.95244078, 0.94286767, 0.93546294, 0.92707779 },
+				{ 0.98377261, 0.97124955, 0.96053175, 0.95139818, 0.94140575, 0.93433531, 0.92587414 }
+			},
+			{
+				{ 0.99245983, 0.98686669, 0.98112501, 0.97660811, 0.97173991, 0.96733824, 0.96333653 },
+				{ 0.99252207, 0.98681259, 0.98090201, 0.97668944, 0.97171820, 0.96749489, 0.96278735 },
+				{ 0.99262212, 0.98635817, 0.98109291, 0.97568714, 0.97099225, 0.96650734, 0.96221118 },
+				{ 0.99214935, 0.98587409, 0.98037972, 0.97509394, 0.96983088, 0.96539098, 0.96095827 },
+				{ 0.99180376, 0.98517926, 0.97952286, 0.97401867, 0.96810475, 0.96399905, 0.95831246 },
+				{ 0.99101001, 0.98388686, 0.97764097, 0.97179723, 0.96637966, 0.96119744, 0.95612365 },
+				{ 0.99052088, 0.98276947, 0.97614582, 0.96942646, 0.96361483, 0.95828040, 0.95232172 },
+				{ 0.98943469, 0.98095987, 0.97339586, 0.96636340, 0.95991965, 0.95427798, 0.94830683 },
+				{ 0.98815369, 0.97900659, 0.97057245, 0.96348973, 0.95580823, 0.94945433, 0.94428333 },
+				{ 0.98682859, 0.97673063, 0.96763742, 0.95996321, 0.95216911, 0.94563830, 0.93842015 },
+				{ 0.98582598, 0.97485186, 0.96550116, 0.95649915, 0.94833523, 0.94103917, 0.93425369 },
+				{ 0.98503504, 0.97342208, 0.96309502, 0.95433953, 0.94543120, 0.93786353, 0.92970653 },
+				{ 0.98460180, 0.97298069, 0.96256739, 0.95327718, 0.94442502, 0.93717965, 0.92887037 }
+			},
+			{
+				{ 0.99215099, 0.98613876, 0.98028567, 0.97588479, 0.97093191, 0.96602065, 0.96220756 },
+				{ 0.99210188, 0.98592419, 0.98012765, 0.97553262, 0.97047727, 0.96599338, 0.96165849 },
+				{ 0.99197694, 0.98569729, 0.98061816, 0.97491928, 0.96982956, 0.96509064, 0.96055112 },
+				{ 0.99199204, 0.98558387, 0.97972134, 0.97406516, 0.96897312, 0.96393191, 0.95961363 },
+				{ 0.99161910, 0.98466498, 0.97860231, 0.97290505, 0.96713510, 0.96199619, 0.95731594 },
+				{ 0.99085029, 0.98369938, 0.97717905, 0.97099289, 0.96496365, 0.96020421, 0.95429816 },
+				{ 0.99001366, 0.98223351, 0.97532921, 0.96886588, 0.96272932, 0.95796261, 0.95236115 },
+				{ 0.98928422, 0.98066444, 0.97340186, 0.96633888, 0.95972452, 0.95349531, 0.94781970 },
+				{ 0.98812214, 0.97884167, 0.97121927, 0.96367747, 0.95662712, 0.94990345, 0.94366639 },
+				{ 0.98723834, 0.97756529, 0.96890254, 0.96079411, 0.95323251, 0.94565901, 0.93933462 },
+				{ 0.98625699, 0.97554343, 0.96616893, 0.95802768, 0.95033959, 0.94290362, 0.93512094 },
+				{ 0.98531521, 0.97435466, 0.96504719, 0.95634849, 0.94783929, 0.93990841, 0.93321036 },
+				{ 0.98539956, 0.97443246, 0.96427650, 0.95537868, 0.94690082, 0.93990724, 0.93300454 }
+			},
+			{
+				{ 0.99203801, 0.98570114, 0.97968748, 0.97458334, 0.96899208, 0.96444073, 0.96009696 },
+				{ 0.99176881, 0.98530105, 0.97961582, 0.97426741, 0.96950078, 0.96432222, 0.95929574 },
+				{ 0.99161972, 0.98540783, 0.97921480, 0.97379033, 0.96839997, 0.96347314, 0.95940980 },
+				{ 0.99169620, 0.98461680, 0.97860254, 0.97303884, 0.96785396, 0.96274973, 0.95743249 },
+				{ 0.99116446, 0.98365988, 0.97756250, 0.97182295, 0.96591881, 0.96069251, 0.95564064 },
+				{ 0.99059215, 0.98312230, 0.97640192, 0.97012133, 0.96446035, 0.95898087, 0.95387966 },
+				{ 0.99013877, 0.98170757, 0.97494756, 0.96824194, 0.96194065, 0.95638851, 0.95066880 },
+				{ 0.98931255, 0.98036133, 0.97253529, 0.96630323, 0.95968108, 0.95340947, 0.94704507 },
+				{ 0.98825630, 0.97952864, 0.97112468, 0.96366267, 0.95645252, 0.94983877, 0.94410788 },
+				{ 0.98767478, 0.97798521, 0.96902427, 0.96106622, 0.95417078, 0.94657666, 0.94064489 },
+				{ 0.98664066, 0.97642823, 0.96736682, 0.95945334, 0.95150154, 0.94404941, 0.93683820 },
+				{ 0.98603356, 0.97523544, 0.96658579, 0.95877402, 0.94990522, 0.94279615, 0.93493436 },
+				{ 0.98608229, 0.97507195, 0.96623473, 0.95695041, 0.94899619, 0.94131546, 0.93464545 }
+			},
+			{
+				{ 0.99118767, 0.98468291, 0.97887454, 0.97340263, 0.96806275, 0.96264419, 0.95837568 },
+				{ 0.99121883, 0.98454300, 0.97883426, 0.97315809, 0.96721020, 0.96251934, 0.95751526 },
+				{ 0.99136302, 0.98444894, 0.97856655, 0.97256041, 0.96742990, 0.96194072, 0.95705841 },
+				{ 0.99110070, 0.98392710, 0.97760795, 0.97218478, 0.96643418, 0.96129588, 0.95621434 },
+				{ 0.99089822, 0.98327415, 0.97672153, 0.97029259, 0.96472348, 0.95933877, 0.95438446 },
+				{ 0.99026615, 0.98272482, 0.97601726, 0.96978498, 0.96347915, 0.95776038, 0.95222575 },
+				{ 0.98971542, 0.98125792, 0.97409110, 0.96727318, 0.96137037, 0.95565916, 0.94917776 },
+				{ 0.98907566, 0.98065023, 0.97291307, 0.96569018, 0.95907120, 0.95291239, 0.94661045 },
+				{ 0.98827969, 0.97901323, 0.97093592, 0.96390086, 0.95714925, 0.94972470, 0.94434859 },
+				{ 0.98767335, 0.97807378, 0.97008443, 0.96228563, 0.95483385, 0.94750745, 0.94102696 },
+				{ 0.98680038, 0.97678286, 0.96826298, 0.95969618, 0.95231346, 0.94511458, 0.93912145 },
+				{ 0.98634654, 0.97605986, 0.96749705, 0.95962990, 0.95089427, 0.94323816, 0.93704869 },
+				{ 0.98625687, 0.97606875, 0.96736353, 0.95839191, 0.95047540, 0.94331198, 0.93593811 }
+			},
+			{
+				{ 0.99102907, 0.98397918, 0.97817548, 0.97193025, 0.96600888, 0.96090890, 0.95624281 },
+				{ 0.99096627, 0.98427990, 0.97756642, 0.97174158, 0.96596536, 0.96090529, 0.95521739 },
+				{ 0.99105313, 0.98342327, 0.97721867, 0.97126606, 0.96534643, 0.96044230, 0.95530654 },
+				{ 0.99049272, 0.98329215, 0.97676689, 0.97072371, 0.96510772, 0.95935946, 0.95441203 },
+				{ 0.99035397, 0.98285351, 0.97558399, 0.96996693, 0.96378329, 0.95794310, 0.95246914 },
+				{ 0.99001300, 0.98223716, 0.97487506, 0.96852176, 0.96238349, 0.95651104, 0.95063732 },
+				{ 0.98964357, 0.98158461, 0.97380775, 0.96705060, 0.96077216, 0.95448470, 0.94909737 },
+				{ 0.98878163, 0.98030602, 0.97220617, 0.96579439, 0.95844662, 0.95199910, 0.94629978 },
+				{ 0.98829302, 0.97938554, 0.97166409, 0.96351091, 0.95670811, 0.95027207, 0.94434383 },
+				{ 0.98794266, 0.97840232, 0.96998645, 0.96246113, 0.95497665, 0.94743110, 0.94173206 },
+				{ 0.98719473, 0.97759996, 0.96898177, 0.96126724, 0.95352880, 0.94660778, 0.93970866 },
+				{ 0.98682079, 0.97724573, 0.96843623, 0.96010052, 0.95255393, 0.94530981, 0.93838640 },
+				{ 0.98715359, 0.97669378, 0.96834069, 0.95943885, 0.95192185, 0.94544326, 0.93865353 }
+			},
+			{
+				{ 0.99066067, 0.98312709, 0.97619753, 0.97047831, 0.96432609, 0.95843701, 0.95354936 },
+				{ 0.99038129, 0.98314079, 0.97641083, 0.96993569, 0.96427551, 0.95878280, 0.95331262 },
+				{ 0.99010510, 0.98275283, 0.97624321, 0.97003296, 0.96341217, 0.95854242, 0.95255594 },
+				{ 0.98984700, 0.98281427, 0.97564273, 0.96898235, 0.96347604, 0.95784792, 0.95255758 },
+				{ 0.98980675, 0.98170336, 0.97503895, 0.96819935, 0.96215563, 0.95581238, 0.95071141 },
+				{ 0.98963451, 0.98169146, 0.97433273, 0.96774989, 0.96136035, 0.95470936, 0.94967378 },
+				{ 0.98915384, 0.98079949, 0.97338258, 0.96667941, 0.96009612, 0.95386519, 0.94801014 },
+				{ 0.98880705, 0.97986375, 0.97218046, 0.96531257, 0.95882442, 0.95191031, 0.94538044 },
+				{ 0.98815440, 0.97936867, 0.97126025, 0.96370108, 0.95706940, 0.95005987, 0.94395605 },
+				{ 0.98814960, 0.97895431, 0.97022828, 0.96294343, 0.95553106, 0.94921661, 0.94199816 },
+				{ 0.98788531, 0.97828882, 0.96958543, 0.96203626, 0.95468866, 0.94720464, 0.94084304 },
+				{ 0.98748964, 0.97741897, 0.96872644, 0.96127064, 0.95341658, 0.94686871, 0.94062579 },
+				{ 0.98755313, 0.97736659, 0.96911301, 0.96082259, 0.95393448, 0.94646862, 0.93982524 }
+			},
+			{
+				{ 0.99026495, 0.98246534, 0.97474141, 0.96841350, 0.96273643, 0.95695365, 0.95149721 },
+				{ 0.99009337, 0.98218335, 0.97543785, 0.96902359, 0.96249030, 0.95674155, 0.95009298 },
+				{ 0.98996399, 0.98173497, 0.97441684, 0.96834236, 0.96225353, 0.95677143, 0.95048486 },
+				{ 0.98960397, 0.98226221, 0.97447929, 0.96774679, 0.96200400, 0.95539375, 0.95031722 },
+				{ 0.98945234, 0.98136183, 0.97397144, 0.96732343, 0.96135546, 0.95483433, 0.94840192 },
+				{ 0.98924357, 0.98092192, 0.97324859, 0.96657084, 0.95994567, 0.95377916, 0.94861720 },
+				{ 0.98903673, 0.98038074, 0.97303989, 0.96595862, 0.95871627, 0.95219156, 0.94662146 },
+				{ 0.98863985, 0.97998481, 0.97209458, 0.96440112, 0.95805386, 0.95191243, 0.94536743 },
+				{ 0.98838160, 0.97951887, 0.97094982, 0.96362890, 0.95597224, 0.95015293, 0.94391118 },
+				{ 0.98809954, 0.97887705, 0.97036098, 0.96315903, 0.95585332, 0.94896955, 0.94287312 },
+				{ 0.98788353, 0.97833536, 0.96994019, 0.96193461, 0.95544853, 0.94797616, 0.94116982 },
+				{ 0.98745129, 0.97798529, 0.96969940, 0.96174768, 0.95511835, 0.94795973, 0.94130221 },
+				{ 0.98739665, 0.97809027, 0.96963330, 0.96212406, 0.95428611, 0.94739311, 0.94118156 }
+			},
+			{
+				{ 0.98966118, 0.98141104, 0.97394998, 0.96699228, 0.96068617, 0.95478420, 0.94819736 },
+				{ 0.98961031, 0.98151267, 0.97380655, 0.96707954, 0.96087386, 0.95482562, 0.94861777 },
+				{ 0.98951112, 0.98121914, 0.97358165, 0.96677758, 0.96015341, 0.95483110, 0.94880759 },
+				{ 0.98916525, 0.98109788, 0.97313945, 0.96683885, 0.95976625, 0.95413969, 0.94818175 },
+				{ 0.98928296, 0.98061325, 0.97261041, 0.96641709, 0.95929914, 0.95337615, 0.94785870 },
+				{ 0.98907528, 0.98013592, 0.97278783, 0.96520349, 0.95894058, 0.95247779, 0.94555569 },
+				{ 0.98859596, 0.97992960, 0.97211006, 0.96464802, 0.95831567, 0.95169696, 0.94514623 },
+				{ 0.98856899, 0.97941397, 0.97145658, 0.96453438, 0.95749212, 0.95128830, 0.94426045 },
+				{ 0.98835115, 0.97940430, 0.97147738, 0.96427737, 0.95656959, 0.94961216, 0.94391661 },
+				{ 0.98818859, 0.97885509, 0.97077056, 0.96338119, 0.95636481, 0.94920182, 0.94293285 },
+				{ 0.98780604, 0.97863504, 0.97025258, 0.96264493, 0.95601428, 0.94839091, 0.94255702 },
+				{ 0.98771187, 0.97880821, 0.97034109, 0.96215883, 0.95507766, 0.94848598, 0.94222343 },
+				{ 0.98788655, 0.97848731, 0.97017037, 0.96209485, 0.95407387, 0.94811098, 0.94179662 }
+			},
+			{
+				{ 0.98873681, 0.98016652, 0.97255439, 0.96538407, 0.95864405, 0.95210306, 0.94633233 },
+				{ 0.98906786, 0.98045191, 0.97280495, 0.96484726, 0.95949971, 0.95191739, 0.94545709 },
+				{ 0.98911048, 0.98046166, 0.97238152, 0.96490964, 0.95820407, 0.95211327, 0.94607783 },
+				{ 0.98890954, 0.98013861, 0.97229928, 0.96525363, 0.95796480, 0.95174856, 0.94560984 },
+				{ 0.98892237, 0.97969586, 0.97198615, 0.96526920, 0.95778918, 0.95143159, 0.94569058 },
+				{ 0.98867009, 0.97973388, 0.97194064, 0.96435251, 0.95816368, 0.95161650, 0.94522252 },
+				{ 0.98833856, 0.97977219, 0.97191763, 0.96466814, 0.95784973, 0.95101809, 0.94492377 },
+				{ 0.98833793, 0.97961357, 0.97144585, 0.96352149, 0.95678908, 0.94988209, 0.94444546 },
+				{ 0.98840182, 0.97927825, 0.97091835, 0.96364185, 0.95663601, 0.94969312, 0.94339819 },
+				{ 0.98824638, 0.97902749, 0.97108425, 0.96324638, 0.95622292, 0.94969094, 0.94281984 },
+				{ 0.98795248, 0.97843392, 0.97071211, 0.96273148, 0.95578110, 0.94934659, 0.94320192 },
+				{ 0.98833388, 0.97910963, 0.97059870, 0.96292963, 0.95647524, 0.94979860, 0.94331049 },
+				{ 0.98820625, 0.97911503, 0.97058765, 0.96310216, 0.95591793, 0.94889104, 0.94253441 }
+			},
+			{
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+				{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 }
+			},
+			{
+				{ 0.98729436, 0.97816653, 0.96913146, 0.96106587, 0.95424147, 0.94673429, 0.94035495 },
+				{ 0.98757427, 0.97776516, 0.96941886, 0.96152141, 0.95433814, 0.94713668, 0.94034658 },
+				{ 0.98777916, 0.97795230, 0.96967451, 0.96184511, 0.95426277, 0.94789286, 0.94074105 },
+				{ 0.98752891, 0.97835641, 0.96941746, 0.96199299, 0.95431933, 0.94851712, 0.94064174 },
+				{ 0.98788434, 0.97803429, 0.96975825, 0.96223584, 0.95491231, 0.94775045, 0.94154079 },
+				{ 0.98763271, 0.97873343, 0.97014791, 0.96284866, 0.95521980, 0.94866344, 0.94169941 },
+				{ 0.98825226, 0.97843552, 0.97033334, 0.96254374, 0.95558326, 0.94893438, 0.94229235 },
+				{ 0.98810306, 0.97871977, 0.97053149, 0.96301655, 0.95582050, 0.94887016, 0.94238607 },
+				{ 0.98832916, 0.97927798, 0.97118362, 0.96413326, 0.95633373, 0.94902288, 0.94292515 },
+				{ 0.98813714, 0.97907106, 0.97106713, 0.96407059, 0.95707289, 0.94965139, 0.94381862 },
+				{ 0.98871670, 0.97927467, 0.97109339, 0.96338390, 0.95589587, 0.95028120, 0.94362908 },
+				{ 0.98846396, 0.97916779, 0.97170664, 0.96369938, 0.95658791, 0.95066490, 0.94399076 },
+				{ 0.98878559, 0.97935844, 0.97105918, 0.96437325, 0.95688110, 0.94986192, 0.94383559 }
+			}
+		},
+		{
+			{
+				{ 0.99351173, 0.98847637, 0.98371264, 0.97945145, 0.97546093, 0.97162717, 0.96788625 },
+				{ 0.99343246, 0.98813445, 0.98383979, 0.97914374, 0.97515194, 0.97134159, 0.96792173 },
+				{ 0.99323666, 0.98812610, 0.98337665, 0.97928766, 0.97474308, 0.97123752, 0.96740800 },
+				{ 0.99313485, 0.98749491, 0.98258894, 0.97790939, 0.97362464, 0.97015395, 0.96590868 },
+				{ 0.99266946, 0.98706630, 0.98183259, 0.97720257, 0.97220341, 0.96829497, 0.96414481 },
+				{ 0.99197531, 0.98571445, 0.98053070, 0.97505845, 0.97087991, 0.96579367, 0.96198983 },
+				{ 0.99119186, 0.98446258, 0.97832254, 0.97285835, 0.96726734, 0.96285188, 0.95813528 },
+				{ 0.99019675, 0.98245570, 0.97555634, 0.96979413, 0.96377231, 0.95830614, 0.95230209 },
+				{ 0.98857622, 0.97957351, 0.97158935, 0.96436100, 0.95707281, 0.95075865, 0.94581788 },
+				{ 0.98565250, 0.97415320, 0.96519741, 0.95569798, 0.94803417, 0.94049484, 0.93235433 },
+				{ 0.98022002, 0.96523486, 0.95271852, 0.94140443, 0.93028496, 0.91993058, 0.91120903 },
+				{ 0.96555723, 0.94081699, 0.92011772, 0.90307872, 0.88614974, 0.87217472, 0.85689095 },
+				{ 0.73506517, 0.64355509, 0.59218834, 0.55996450, 0.54199982, 0.52864282, 0.52264772 }
+			},
+			{
+				{ 0.99345306, 0.98833774, 0.98392629, 0.97949358, 0.97559603, 0.97195851, 0.96791580 },
+				{ 0.99354093, 0.98827666, 0.98374329, 0.97987762, 0.97510519, 0.97146225, 0.96827420 },
+				{ 0.99339293, 0.98818143, 0.98331324, 0.97941126, 0.97471778, 0.97122581, 0.96706949 },
+				{ 0.99302669, 0.98751695, 0.98283094, 0.97825230, 0.97359116, 0.97027714, 0.96597495 },
+				{ 0.99276106, 0.98679125, 0.98188084, 0.97693003, 0.97261351, 0.96857211, 0.96404520 },
+				{ 0.99214842, 0.98597612, 0.98071046, 0.97548750, 0.96986129, 0.96565756, 0.96170324 },
+				{ 0.99127225, 0.98424718, 0.97832865, 0.97341177, 0.96743149, 0.96253448, 0.95794813 },
+				{ 0.99031397, 0.98242798, 0.97561886, 0.96913619, 0.96337098, 0.95761438, 0.95259504 },
+				{ 0.98826946, 0.97943579, 0.97176985, 0.96445594, 0.95822244, 0.95093162, 0.94552005 },
+				{ 0.98543687, 0.97481921, 0.96509291, 0.95645332, 0.94837443, 0.94037856, 0.93320955 },
+				{ 0.97990983, 0.96566373, 0.95274904, 0.94155620, 0.93022974, 0.92017149, 0.91127729 },
+				{ 0.96501622, 0.93963324, 0.91926041, 0.89925988, 0.88384367, 0.86774110, 0.85431895 },
+				{ 0.90244332, 0.84646175, 0.80506100, 0.77088515, 0.74331363, 0.71936260, 0.69697097 }
+			},
+			{
+				{ 0.99355311, 0.98857577, 0.98356907, 0.98005289, 0.97536744, 0.97182684, 0.96824773 },
+				{ 0.99340947, 0.98817196, 0.98374703, 0.97951489, 0.97541907, 0.97157125, 0.96831589 },
+				{ 0.99335934, 0.98823074, 0.98330878, 0.97916022, 0.97472747, 0.97085264, 0.96761463 },
+				{ 0.99314195, 0.98788216, 0.98281054, 0.97853811, 0.97424770, 0.96958851, 0.96576184 },
+				{ 0.99290705, 0.98687515, 0.98189025, 0.97719539, 0.97252725, 0.96798290, 0.96450932 },
+				{ 0.99220729, 0.98607978, 0.98044026, 0.97570187, 0.97048756, 0.96583767, 0.96150113 },
+				{ 0.99132699, 0.98440693, 0.97855226, 0.97294519, 0.96788575, 0.96222933, 0.95827805 },
+				{ 0.99021404, 0.98256009, 0.97578473, 0.96983306, 0.96341082, 0.95802470, 0.95246514 },
+				{ 0.98852104, 0.97963671, 0.97140174, 0.96468506, 0.95803672, 0.95095857, 0.94546687 },
+				{ 0.98525999, 0.97457346, 0.96396839, 0.95546214, 0.94770570, 0.94047317, 0.93247083 },
+				{ 0.97989431, 0.96432466, 0.95132824, 0.94007861, 0.92892117, 0.91850993, 0.90959462 },
+				{ 0.96440450, 0.93916507, 0.91842426, 0.89849786, 0.88268716, 0.86654469, 0.85267621 },
+				{ 0.93631836, 0.89537312, 0.86466040, 0.83760239, 0.81401931, 0.79424529, 0.77504937 }
+			},
+			{
+				{ 0.99367597, 0.98843324, 0.98420189, 0.97975517, 0.97572599, 0.97188785, 0.96815397 },
+				{ 0.99338362, 0.98843764, 0.98359049, 0.97932841, 0.97537761, 0.97140644, 0.96756017 },
+				{ 0.99329525, 0.98826626, 0.98370265, 0.97879819, 0.97466257, 0.97069489, 0.96722831 },
+				{ 0.99320152, 0.98767313, 0.98310802, 0.97829193, 0.97374694, 0.96956630, 0.96589650 },
+				{ 0.99258225, 0.98710629, 0.98212446, 0.97728227, 0.97295907, 0.96833006, 0.96443600 },
+				{ 0.99225713, 0.98608001, 0.98012572, 0.97579634, 0.97052242, 0.96631305, 0.96157965 },
+				{ 0.99148134, 0.98447935, 0.97852985, 0.97290662, 0.96746633, 0.96244021, 0.95849159 },
+				{ 0.99013515, 0.98248970, 0.97548156, 0.96929693, 0.96361428, 0.95785483, 0.95201724 },
+				{ 0.98831957, 0.97924601, 0.97145615, 0.96400989, 0.95710198, 0.95077641, 0.94428919 },
+				{ 0.98550852, 0.97388042, 0.96411071, 0.95480630, 0.94715640, 0.93855119, 0.93158440 },
+				{ 0.97967723, 0.96427598, 0.95045818, 0.93912295, 0.92720334, 0.91770705, 0.90726939 },
+				{ 0.96626180, 0.94233565, 0.92269878, 0.90555288, 0.88835702, 0.87454060, 0.86033217 },
+				{ 0.95159389, 0.91910112, 0.89323295, 0.87080697, 0.85038900, 0.83226192, 0.81781551 }
+			},
+			{
+				{ 0.99349581, 0.98834982, 0.98350597, 0.98006366, 0.97554669, 0.97183861, 0.96795994 },
+				{ 0.99353479, 0.98839164, 0.98373411, 0.97934611, 0.97552725, 0.97190034, 0.96742481 },
+				{ 0.99323683, 0.98802661, 0.98319192, 0.97887450, 0.97500405, 0.97092288, 0.96710895 },
+				{ 0.99324221, 0.98749381, 0.98282223, 0.97851707, 0.97402751, 0.96963174, 0.96594502 },
+				{ 0.99255921, 0.98696077, 0.98183512, 0.97683528, 0.97293443, 0.96814430, 0.96424949 },
+				{ 0.99215326, 0.98580598, 0.98069902, 0.97545267, 0.97011603, 0.96596143, 0.96145112 },
+				{ 0.99133610, 0.98458875, 0.97835251, 0.97269380, 0.96779318, 0.96221009, 0.95850985 },
+				{ 0.99012145, 0.98241846, 0.97569831, 0.96910528, 0.96327903, 0.95746776, 0.95252284 },
+				{ 0.98812125, 0.97881373, 0.97127116, 0.96390381, 0.95643927, 0.95071472, 0.94405457 },
+				{ 0.98490932, 0.97320295, 0.96352819, 0.95465918, 0.94576143, 0.93843967, 0.93039479 },
+				{ 0.97941686, 0.96374289, 0.95061503, 0.93795592, 0.92806084, 0.91738387, 0.90728923 },
+				{ 0.96832623, 0.94636276, 0.92845126, 0.91184755, 0.89656736, 0.88336007, 0.87062905 },
+				{ 0.96035380, 0.93367450, 0.91111616, 0.89175474, 0.87456443, 0.85927364, 0.84418043 }
+			},
+			{
+				{ 0.99365659, 0.98839649, 0.98381918, 0.97986662, 0.97535731, 0.97191586, 0.96794612 },
+				{ 0.99352810, 0.98849965, 0.98375524, 0.97911596, 0.97576025, 0.97141774, 0.96776845 },
+				{ 0.99332130, 0.98826651, 0.98370784, 0.97903333, 0.97492563, 0.97105891, 0.96712789 },
+				{ 0.99322971, 0.98760612, 0.98251550, 0.97846222, 0.97345478, 0.96981826, 0.96610148 },
+				{ 0.99239937, 0.98705768, 0.98182486, 0.97641563, 0.97226057, 0.96828735, 0.96392898 },
+				{ 0.99194193, 0.98569851, 0.98070046, 0.97509565, 0.97058306, 0.96517648, 0.96081855 },
+				{ 0.99123688, 0.98395861, 0.97803273, 0.97267984, 0.96730269, 0.96229759, 0.95756337 },
+				{ 0.99024363, 0.98243552, 0.97514122, 0.96911435, 0.96227471, 0.95795413, 0.95116529 },
+				{ 0.98787520, 0.97888741, 0.97082288, 0.96270206, 0.95620927, 0.94961349, 0.94359329 },
+				{ 0.98475691, 0.97300741, 0.96319426, 0.95355953, 0.94576386, 0.93721590, 0.93052594 },
+				{ 0.97929739, 0.96450596, 0.95135298, 0.93842256, 0.92809850, 0.91858952, 0.90913436 },
+				{ 0.97177131, 0.95087760, 0.93390803, 0.91884181, 0.90484808, 0.89178400, 0.88034356 },
+				{ 0.96607059, 0.94342573, 0.92379258, 0.90679989, 0.89058367, 0.87702305, 0.86434507 }
+			},
+			{
+				{ 0.99365639, 0.98865753, 0.98377052, 0.97981679, 0.97574401, 0.97155808, 0.96845037 },
+				{ 0.99338631, 0.98799473, 0.98369682, 0.97887563, 0.97542875, 0.97126520, 0.96774428 },
+				{ 0.99338082, 0.98831278, 0.98330116, 0.97866974, 0.97467265, 0.97007467, 0.96660334 },
+				{ 0.99335327, 0.98801043, 0.98276166, 0.97858565, 0.97347188, 0.96971801, 0.96563555 },
+				{ 0.99289971, 0.98689763, 0.98166923, 0.97633723, 0.97179448, 0.96809188, 0.96399719 },
+				{ 0.99198883, 0.98609789, 0.97971584, 0.97479344, 0.97029387, 0.96527594, 0.96119490 },
+				{ 0.99094070, 0.98449173, 0.97813996, 0.97200070, 0.96686440, 0.96232266, 0.95641305 },
+				{ 0.99002820, 0.98205032, 0.97468679, 0.96835760, 0.96249887, 0.95703981, 0.95080387 },
+				{ 0.98785934, 0.97832666, 0.97023722, 0.96296265, 0.95557754, 0.94898312, 0.94269590 },
+				{ 0.98490563, 0.97280840, 0.96300153, 0.95402939, 0.94558807, 0.93750753, 0.92942373 },
+				{ 0.97963765, 0.96536628, 0.95285214, 0.94035111, 0.92997794, 0.92072448, 0.91052482 },
+				{ 0.97388450, 0.95539663, 0.93886530, 0.92506775, 0.91303084, 0.90113256, 0.88959819 },
+				{ 0.97060219, 0.95030930, 0.93203864, 0.91664098, 0.90194248, 0.88962704, 0.87822109 }
+			},
+			{
+				{ 0.99347565, 0.98793469, 0.98403700, 0.97959816, 0.97572265, 0.97135776, 0.96730962 },
+				{ 0.99331227, 0.98795398, 0.98376963, 0.97930578, 0.97511034, 0.97112382, 0.96676596 },
+				{ 0.99336606, 0.98788580, 0.98301569, 0.97902167, 0.97420748, 0.97083604, 0.96593415 },
+				{ 0.99321630, 0.98765114, 0.98228999, 0.97770110, 0.97335344, 0.96871355, 0.96593452 },
+				{ 0.99250210, 0.98664510, 0.98141213, 0.97625028, 0.97201433, 0.96722479, 0.96303638 },
+				{ 0.99193114, 0.98580577, 0.97998509, 0.97470754, 0.96973590, 0.96583425, 0.96049571 },
+				{ 0.99098753, 0.98402967, 0.97759413, 0.97178319, 0.96620490, 0.96150093, 0.95629841 },
+				{ 0.98991501, 0.98155390, 0.97455248, 0.96746781, 0.96205790, 0.95632601, 0.95023468 },
+				{ 0.98789815, 0.97852885, 0.96986102, 0.96185611, 0.95530459, 0.94869011, 0.94109381 },
+				{ 0.98476350, 0.97333905, 0.96343646, 0.95407060, 0.94558267, 0.93722263, 0.93024820 },
+				{ 0.98064953, 0.96661095, 0.95448615, 0.94320601, 0.93222053, 0.92213995, 0.91284950 },
+				{ 0.97621746, 0.95858998, 0.94463029, 0.93143470, 0.91916662, 0.90695410, 0.89675758 },
+				{ 0.97358955, 0.95521983, 0.93865320, 0.92477749, 0.91164704, 0.89980280, 0.88898095 }
+			},
+			{
+				{ 0.99346398, 0.98841220, 0.98332986, 0.97870745, 0.97516427, 0.97105358, 0.96701989 },
+				{ 0.99339487, 0.98815232, 0.98344314, 0.97900718, 0.97456371, 0.97136159, 0.96691588 },
+				{ 0.99312383, 0.98797406, 0.98308684, 0.97849691, 0.97448828, 0.97008598, 0.96627935 },
+				{ 0.99298619, 0.98725032, 0.98214790, 0.97715975, 0.97290366, 0.96842818, 0.96510428 },
+				{ 0.99256870, 0.98657790, 0.98136482, 0.97655190, 0.97138704, 0.96724292, 0.96299533 },
+				{ 0.99195829, 0.98554433, 0.97972261, 0.97414039, 0.96886650, 0.96412217, 0.95953896 },
+				{ 0.99075297, 0.98376284, 0.97705218, 0.97149053, 0.96567060, 0.96086481, 0.95490648 },
+				{ 0.98959085, 0.98170464, 0.97429172, 0.96748836, 0.96149235, 0.95580880, 0.95013465 },
+				{ 0.98755222, 0.97833677, 0.96993118, 0.96224753, 0.95439139, 0.94798921, 0.94139593 },
+				{ 0.98521259, 0.97359660, 0.96350616, 0.95415841, 0.94634787, 0.93756223, 0.92965090 },
+				{ 0.98162211, 0.96797810, 0.95584008, 0.94444219, 0.93485990, 0.92637041, 0.91710174 },
+				{ 0.97817968, 0.96155156, 0.94816945, 0.93495594, 0.92450985, 0.91373615, 0.90452781 },
+				{ 0.97634065, 0.95965386, 0.94461921, 0.93135120, 0.91983456, 0.90823343, 0.89813362 }
+			},
+			{
+				{ 0.99351874, 0.98820886, 0.98304293, 0.97891176, 0.97492748, 0.97016630, 0.96602282 },
+				{ 0.99325466, 0.98789618, 0.98307151, 0.97857773, 0.97401130, 0.97043904, 0.96695280 },
+				{ 0.99306117, 0.98775265, 0.98244023, 0.97848838, 0.97361921, 0.96946139, 0.96520107 },
+				{ 0.99276468, 0.98725188, 0.98178720, 0.97708112, 0.97251935, 0.96788637, 0.96407043 },
+				{ 0.99220338, 0.98628382, 0.98082392, 0.97543312, 0.97107952, 0.96628233, 0.96176519 },
+				{ 0.99181278, 0.98521375, 0.97893119, 0.97381725, 0.96840416, 0.96324698, 0.95951950 },
+				{ 0.99072152, 0.98384212, 0.97696802, 0.97046721, 0.96569406, 0.95873270, 0.95464125 },
+				{ 0.98950744, 0.98110173, 0.97357667, 0.96728796, 0.96054160, 0.95425321, 0.94934356 },
+				{ 0.98764178, 0.97835925, 0.96939601, 0.96194373, 0.95442529, 0.94770721, 0.94059435 },
+				{ 0.98508403, 0.97401420, 0.96384848, 0.95496344, 0.94648516, 0.93816537, 0.93212016 },
+				{ 0.98231434, 0.96903658, 0.95735818, 0.94745466, 0.93722492, 0.92870430, 0.92026063 },
+				{ 0.97918723, 0.96461785, 0.95165409, 0.93940288, 0.92812544, 0.91904603, 0.90996420 },
+				{ 0.97806462, 0.96244991, 0.94886171, 0.93666711, 0.92638894, 0.91466945, 0.90581487 }
+			},
+			{
+				{ 0.99307334, 0.98792629, 0.98295023, 0.97851813, 0.97406001, 0.96947796, 0.96539665 },
+				{ 0.99319626, 0.98763409, 0.98289281, 0.97785000, 0.97380776, 0.96939889, 0.96565612 },
+				{ 0.99288903, 0.98730077, 0.98196077, 0.97761483, 0.97292153, 0.96897291, 0.96547653 },
+				{ 0.99274716, 0.98681013, 0.98105809, 0.97675766, 0.97184740, 0.96735673, 0.96364349 },
+				{ 0.99212512, 0.98599487, 0.98052874, 0.97543971, 0.97005042, 0.96582859, 0.96108480 },
+				{ 0.99159213, 0.98476881, 0.97912127, 0.97337028, 0.96784644, 0.96328408, 0.95809927 },
+				{ 0.99078219, 0.98324302, 0.97651563, 0.97046624, 0.96446504, 0.95912112, 0.95368550 },
+				{ 0.98928907, 0.98093551, 0.97358867, 0.96706374, 0.95991518, 0.95361262, 0.94822052 },
+				{ 0.98740941, 0.97800753, 0.96979983, 0.96213704, 0.95431131, 0.94770224, 0.94180743 },
+				{ 0.98535523, 0.97429974, 0.96492942, 0.95537835, 0.94775515, 0.93947607, 0.93168293 },
+				{ 0.98299468, 0.97069051, 0.95911753, 0.94897289, 0.93985496, 0.93158635, 0.92252439 },
+				{ 0.98085441, 0.96707785, 0.95407263, 0.94267872, 0.93297113, 0.92439357, 0.91402949 },
+				{ 0.98030267, 0.96560838, 0.95252981, 0.94074615, 0.93033331, 0.92127793, 0.91092226 }
+			},
+			{
+				{ 0.99316323, 0.98736521, 0.98218215, 0.97773759, 0.97339068, 0.96880987, 0.96452479 },
+				{ 0.99295663, 0.98721114, 0.98241626, 0.97789332, 0.97343733, 0.96862671, 0.96421237 },
+				{ 0.99272098, 0.98729831, 0.98161247, 0.97701629, 0.97225919, 0.96773588, 0.96354077 },
+				{ 0.99242821, 0.98624411, 0.98101849, 0.97581752, 0.97133460, 0.96705231, 0.96198575 },
+				{ 0.99197220, 0.98557983, 0.97957905, 0.97428661, 0.96971103, 0.96467101, 0.96010775 },
+				{ 0.99144756, 0.98458575, 0.97787064, 0.97299900, 0.96697644, 0.96176414, 0.95711660 },
+				{ 0.99045670, 0.98287947, 0.97620245, 0.97001521, 0.96452376, 0.95807277, 0.95272031 },
+				{ 0.98930519, 0.98068274, 0.97356613, 0.96628898, 0.96042729, 0.95326880, 0.94788664 },
+				{ 0.98771690, 0.97816284, 0.96952143, 0.96237044, 0.95382961, 0.94755763, 0.94127914 },
+				{ 0.98567892, 0.97465732, 0.96534396, 0.95605361, 0.94773010, 0.94051439, 0.93309216 },
+				{ 0.98372621, 0.97111348, 0.96030271, 0.94995442, 0.94173503, 0.93358768, 0.92572526 },
+				{ 0.98201236, 0.96855431, 0.95741169, 0.94683658, 0.93646914, 0.92750961, 0.91898374 },
+				{ 0.98149059, 0.96781883, 0.95565326, 0.94454197, 0.93434490, 0.92621361, 0.91628786 }
+			},
+			{
+				{ 0.99265989, 0.98699792, 0.98164461, 0.97666609, 0.97207236, 0.96781174, 0.96385223 },
+				{ 0.99273276, 0.98727298, 0.98184043, 0.97654894, 0.97203935, 0.96763626, 0.96345640 },
+				{ 0.99268613, 0.98660184, 0.98138541, 0.97632735, 0.97159824, 0.96696110, 0.96261552 },
+				{ 0.99230698, 0.98600308, 0.98079771, 0.97500367, 0.97061033, 0.96562198, 0.96098884 },
+				{ 0.99157203, 0.98540088, 0.97899393, 0.97412057, 0.96855444, 0.96400862, 0.95899054 },
+				{ 0.99104603, 0.98418703, 0.97772987, 0.97206608, 0.96662467, 0.96053243, 0.95632624 },
+				{ 0.99028478, 0.98243952, 0.97576823, 0.96951901, 0.96325179, 0.95755551, 0.95229865 },
+				{ 0.98901630, 0.98034449, 0.97249719, 0.96597395, 0.95943748, 0.95303198, 0.94723618 },
+				{ 0.98744576, 0.97823223, 0.96996333, 0.96179421, 0.95422609, 0.94742355, 0.94163725 },
+				{ 0.98610523, 0.97543642, 0.96539262, 0.95754307, 0.94906312, 0.94145764, 0.93415726 },
+				{ 0.98429711, 0.97255404, 0.96230016, 0.95247707, 0.94366483, 0.93566633, 0.92815050 },
+				{ 0.98301490, 0.97105239, 0.95905664, 0.94904500, 0.93934611, 0.93154086, 0.92310069 },
+				{ 0.98250981, 0.96924483, 0.95821007, 0.94788316, 0.93789390, 0.92907223, 0.92090335 }
+			},
+			{
+				{ 0.99249389, 0.98680693, 0.98111091, 0.97613448, 0.97122393, 0.96661292, 0.96261756 },
+				{ 0.99245986, 0.98663827, 0.98138500, 0.97627629, 0.97109906, 0.96659173, 0.96200684 },
+				{ 0.99238635, 0.98633753, 0.98029393, 0.97529223, 0.97038310, 0.96605575, 0.96166716 },
+				{ 0.99182864, 0.98540533, 0.97931691, 0.97460529, 0.96942622, 0.96479448, 0.96000487 },
+				{ 0.99151067, 0.98462114, 0.97894254, 0.97295699, 0.96740554, 0.96283973, 0.95762371 },
+				{ 0.99091939, 0.98369577, 0.97706830, 0.97087865, 0.96486797, 0.96030037, 0.95531369 },
+				{ 0.99000930, 0.98201627, 0.97527219, 0.96904646, 0.96297282, 0.95642803, 0.95150663 },
+				{ 0.98887571, 0.98009330, 0.97303817, 0.96538139, 0.95907848, 0.95209856, 0.94676451 },
+				{ 0.98757573, 0.97814795, 0.96942556, 0.96148207, 0.95486912, 0.94770900, 0.94178005 },
+				{ 0.98676409, 0.97596625, 0.96684456, 0.95762418, 0.94999711, 0.94250905, 0.93547240 },
+				{ 0.98476302, 0.97351320, 0.96385548, 0.95417722, 0.94521127, 0.93748855, 0.92955653 },
+				{ 0.98355899, 0.97154884, 0.96120778, 0.95091104, 0.94222876, 0.93361538, 0.92621919 },
+				{ 0.98337093, 0.97117749, 0.96031098, 0.95027346, 0.94120221, 0.93314750, 0.92476902 }
+			},
+			{
+				{ 0.99229559, 0.98609907, 0.98035831, 0.97503972, 0.97012608, 0.96539553, 0.96082455 },
+				{ 0.99221353, 0.98606355, 0.98007927, 0.97483529, 0.97058629, 0.96579011, 0.96137395 },
+				{ 0.99182782, 0.98559407, 0.97974654, 0.97424365, 0.96936594, 0.96430794, 0.95948172 },
+				{ 0.99178300, 0.98513092, 0.97916958, 0.97316972, 0.96835468, 0.96312123, 0.95872903 },
+				{ 0.99126182, 0.98436724, 0.97805362, 0.97215162, 0.96654258, 0.96117148, 0.95639341 },
+				{ 0.99067562, 0.98298808, 0.97649907, 0.97029547, 0.96477663, 0.95939853, 0.95346627 },
+				{ 0.98962850, 0.98154984, 0.97488253, 0.96794791, 0.96205385, 0.95602364, 0.95065346 },
+				{ 0.98874191, 0.98027597, 0.97214826, 0.96553586, 0.95835916, 0.95279618, 0.94591845 },
+				{ 0.98767544, 0.97822144, 0.96957949, 0.96214716, 0.95411310, 0.94813481, 0.94193045 },
+				{ 0.98632265, 0.97624970, 0.96681137, 0.95832619, 0.95061636, 0.94297904, 0.93584242 },
+				{ 0.98535387, 0.97450932, 0.96477636, 0.95530492, 0.94811769, 0.93906130, 0.93214181 },
+				{ 0.98488585, 0.97311579, 0.96216523, 0.95334538, 0.94480833, 0.93606587, 0.92901796 },
+				{ 0.98430375, 0.97259628, 0.96175652, 0.95257562, 0.94441056, 0.93577448, 0.92776977 }
+			},
+			{
+				{ 0.99191010, 0.98512268, 0.97969307, 0.97419814, 0.96939722, 0.96393677, 0.95955821 },
+				{ 0.99185210, 0.98548090, 0.97954303, 0.97382898, 0.96873872, 0.96411736, 0.95940877 },
+				{ 0.99162459, 0.98501838, 0.97902295, 0.97313710, 0.96819037, 0.96314170, 0.95862523 },
+				{ 0.99160766, 0.98477248, 0.97780135, 0.97249750, 0.96672898, 0.96116906, 0.95743876 },
+				{ 0.99106925, 0.98358848, 0.97743606, 0.97100076, 0.96554759, 0.96001585, 0.95482963 },
+				{ 0.99026323, 0.98230638, 0.97577531, 0.96960646, 0.96390670, 0.95768969, 0.95212060 },
+				{ 0.98989366, 0.98146022, 0.97450458, 0.96771038, 0.96108178, 0.95502734, 0.94934750 },
+				{ 0.98867090, 0.98008193, 0.97203930, 0.96495458, 0.95758028, 0.95156813, 0.94555515 },
+				{ 0.98754969, 0.97839331, 0.96995593, 0.96256639, 0.95472404, 0.94779301, 0.94072948 },
+				{ 0.98687328, 0.97626035, 0.96781008, 0.95937326, 0.95149133, 0.94344346, 0.93708978 },
+				{ 0.98561601, 0.97535913, 0.96586967, 0.95729523, 0.94881327, 0.94152527, 0.93439014 },
+				{ 0.98511871, 0.97372708, 0.96397741, 0.95442575, 0.94661846, 0.93848278, 0.93094719 },
+				{ 0.98500480, 0.97358706, 0.96363354, 0.95475877, 0.94615153, 0.93808847, 0.93039185 }
+			},
+			{
+				{ 0.99139111, 0.98513248, 0.97877591, 0.97309334, 0.96778209, 0.96260294, 0.95818802 },
+				{ 0.99139576, 0.98477418, 0.97845497, 0.97265893, 0.96740940, 0.96222467, 0.95668360 },
+				{ 0.99113355, 0.98445041, 0.97791704, 0.97243645, 0.96714562, 0.96130252, 0.95666214 },
+				{ 0.99112356, 0.98396090, 0.97738253, 0.97129129, 0.96572121, 0.96034097, 0.95580471 },
+				{ 0.99067923, 0.98320162, 0.97664607, 0.97031096, 0.96416213, 0.95879102, 0.95360320 },
+				{ 0.99031226, 0.98241878, 0.97548696, 0.96859057, 0.96274784, 0.95693139, 0.95109204 },
+				{ 0.98928623, 0.98137553, 0.97395478, 0.96684263, 0.95957098, 0.95407984, 0.94836048 },
+				{ 0.98839674, 0.97973788, 0.97174356, 0.96475002, 0.95758779, 0.95104794, 0.94512479 },
+				{ 0.98791389, 0.97844725, 0.97001524, 0.96223359, 0.95487103, 0.94818494, 0.94154657 },
+				{ 0.98688908, 0.97699618, 0.96848744, 0.96013461, 0.95161605, 0.94502784, 0.93867457 },
+				{ 0.98607938, 0.97569294, 0.96682452, 0.95808846, 0.95018525, 0.94184005, 0.93601382 },
+				{ 0.98601259, 0.97452759, 0.96578383, 0.95646367, 0.94864140, 0.94120400, 0.93323581 },
+				{ 0.98584194, 0.97468389, 0.96424312, 0.95657333, 0.94799362, 0.93874819, 0.93190876 }
+			},
+			{
+				{ 0.99078842, 0.98411160, 0.97726819, 0.97154493, 0.96607634, 0.96113777, 0.95553432 },
+				{ 0.99102229, 0.98392229, 0.97744581, 0.97191158, 0.96589610, 0.96112524, 0.95579542 },
+				{ 0.99084309, 0.98359169, 0.97685029, 0.97130154, 0.96522392, 0.96030001, 0.95435824 },
+				{ 0.99072416, 0.98315077, 0.97680276, 0.97055025, 0.96417036, 0.95858481, 0.95353286 },
+				{ 0.98992902, 0.98252249, 0.97548393, 0.96903604, 0.96273049, 0.95755752, 0.95211548 },
+				{ 0.98979613, 0.98192161, 0.97443527, 0.96774965, 0.96156103, 0.95542494, 0.95032036 },
+				{ 0.98903152, 0.98097774, 0.97265663, 0.96617928, 0.95985499, 0.95315367, 0.94816061 },
+				{ 0.98869220, 0.97940518, 0.97147635, 0.96426794, 0.95738255, 0.95116815, 0.94481352 },
+				{ 0.98764069, 0.97860150, 0.97012048, 0.96189752, 0.95565426, 0.94851988, 0.94128076 },
+				{ 0.98735882, 0.97742258, 0.96890236, 0.96042493, 0.95305850, 0.94650409, 0.93987636 },
+				{ 0.98666691, 0.97652312, 0.96738123, 0.95917797, 0.95079383, 0.94373985, 0.93678937 },
+				{ 0.98591650, 0.97549480, 0.96661577, 0.95729225, 0.94974166, 0.94188328, 0.93520794 },
+				{ 0.98591604, 0.97485102, 0.96592242, 0.95742631, 0.94949370, 0.94191308, 0.93494083 }
+			},
+			{
+				{ 0.99052416, 0.98320403, 0.97682842, 0.97037893, 0.96425634, 0.95965876, 0.95323152 },
+				{ 0.99039678, 0.98275864, 0.97616172, 0.97033162, 0.96500319, 0.95852219, 0.95359195 },
+				{ 0.99033020, 0.98302784, 0.97621400, 0.96963037, 0.96369902, 0.95819784, 0.95234995 },
+				{ 0.99030610, 0.98241792, 0.97579898, 0.96887956, 0.96350449, 0.95739816, 0.95152721 },
+				{ 0.98967035, 0.98200875, 0.97502769, 0.96823453, 0.96226699, 0.95629752, 0.95036956 },
+				{ 0.98958306, 0.98142566, 0.97411272, 0.96726521, 0.96077985, 0.95449645, 0.94792660 },
+				{ 0.98915780, 0.98040821, 0.97232759, 0.96512371, 0.95882792, 0.95320305, 0.94617125 },
+				{ 0.98846162, 0.97941499, 0.97147277, 0.96389523, 0.95710340, 0.94988947, 0.94462750 },
+				{ 0.98800026, 0.97857613, 0.97028358, 0.96252645, 0.95523156, 0.94855543, 0.94239500 },
+				{ 0.98710952, 0.97764840, 0.96886939, 0.96115167, 0.95341720, 0.94607956, 0.93991923 },
+				{ 0.98653217, 0.97679361, 0.96795826, 0.95948409, 0.95153354, 0.94451535, 0.93762692 },
+				{ 0.98644612, 0.97635451, 0.96752784, 0.95878960, 0.95096988, 0.94372194, 0.93649639 },
+				{ 0.98651865, 0.97602014, 0.96687546, 0.95917251, 0.95053662, 0.94333290, 0.93588620 }
+			},
+			{
+				{ 0.99025530, 0.98234575, 0.97562804, 0.96918716, 0.96257287, 0.95695712, 0.95142931 },
+				{ 0.99003266, 0.98251351, 0.97553981, 0.96866802, 0.96276389, 0.95613765, 0.95104917 },
+				{ 0.98981432, 0.98214484, 0.97503502, 0.96829915, 0.96206628, 0.95611140, 0.95068114 },
+				{ 0.98959404, 0.98189672, 0.97456145, 0.96798174, 0.96149871, 0.95517834, 0.94969410 },
+				{ 0.98941093, 0.98133264, 0.97334847, 0.96651740, 0.96070186, 0.95474694, 0.94837585 },
+				{ 0.98930243, 0.98020437, 0.97308043, 0.96602870, 0.95939230, 0.95339498, 0.94734413 },
+				{ 0.98871204, 0.97986151, 0.97229262, 0.96479875, 0.95848473, 0.95105174, 0.94497849 },
+				{ 0.98845985, 0.97926748, 0.97089271, 0.96336017, 0.95678666, 0.94984588, 0.94346450 },
+				{ 0.98776331, 0.97838712, 0.97014451, 0.96214419, 0.95472583, 0.94863165, 0.94163494 },
+				{ 0.98730306, 0.97759250, 0.96975260, 0.96163010, 0.95438925, 0.94653945, 0.93993550 },
+				{ 0.98670332, 0.97761938, 0.96889553, 0.96031439, 0.95278661, 0.94600639, 0.93901299 },
+				{ 0.98707291, 0.97660063, 0.96812875, 0.95934616, 0.95208451, 0.94549877, 0.93780959 },
+				{ 0.98707286, 0.97664244, 0.96820739, 0.95939810, 0.95213181, 0.94509614, 0.93770265 }
+			},
+			{
+				{ 0.98953284, 0.98144798, 0.97406942, 0.96700366, 0.96054191, 0.95434001, 0.94946495 },
+				{ 0.98956033, 0.98138138, 0.97394414, 0.96743336, 0.96055278, 0.95497604, 0.94957674 },
+				{ 0.98965702, 0.98126015, 0.97342752, 0.96679263, 0.95990885, 0.95360933, 0.94837318 },
+				{ 0.98909098, 0.98089791, 0.97385384, 0.96678464, 0.95965277, 0.95388882, 0.94776912 },
+				{ 0.98950399, 0.98010778, 0.97263350, 0.96540293, 0.95890428, 0.95271784, 0.94734137 },
+				{ 0.98927216, 0.98021083, 0.97221962, 0.96494086, 0.95772773, 0.95135035, 0.94552239 },
+				{ 0.98847326, 0.97959722, 0.97159235, 0.96399035, 0.95745810, 0.95028970, 0.94412558 },
+				{ 0.98822030, 0.97909015, 0.97094745, 0.96285589, 0.95559793, 0.94921637, 0.94289743 },
+				{ 0.98795236, 0.97858876, 0.96997094, 0.96217338, 0.95428519, 0.94845884, 0.94117003 },
+				{ 0.98751734, 0.97783728, 0.96984048, 0.96116982, 0.95418500, 0.94728474, 0.94066521 },
+				{ 0.98789995, 0.97724231, 0.96881553, 0.96101302, 0.95322884, 0.94652431, 0.93967561 },
+				{ 0.98731834, 0.97695877, 0.96857931, 0.96025068, 0.95303526, 0.94571960, 0.93946143 },
+				{ 0.98715053, 0.97713427, 0.96866548, 0.96037209, 0.95276611, 0.94550410, 0.93883410 }
+			},
+			{
+				{ 0.98910990, 0.98086277, 0.97298847, 0.96558226, 0.95910649, 0.95267596, 0.94717066 },
+				{ 0.98891895, 0.98045894, 0.97270421, 0.96576791, 0.95896423, 0.95263340, 0.94640572 },
+				{ 0.98889450, 0.98012908, 0.97184470, 0.96526201, 0.95796167, 0.95210416, 0.94596699 },
+				{ 0.98880808, 0.97975698, 0.97251957, 0.96516818, 0.95807316, 0.95111811, 0.94492590 },
+				{ 0.98865195, 0.97955171, 0.97202913, 0.96421705, 0.95840120, 0.95121229, 0.94467666 },
+				{ 0.98834696, 0.97906984, 0.97155191, 0.96350567, 0.95694158, 0.95034550, 0.94398308 },
+				{ 0.98842401, 0.97912656, 0.97129498, 0.96348212, 0.95573127, 0.95003246, 0.94258806 },
+				{ 0.98800114, 0.97878180, 0.97041026, 0.96293976, 0.95566287, 0.94911634, 0.94219976 },
+				{ 0.98770420, 0.97809405, 0.96980732, 0.96255772, 0.95421877, 0.94849801, 0.94196563 },
+				{ 0.98782704, 0.97863214, 0.97007456, 0.96220735, 0.95450035, 0.94777425, 0.94085212 },
+				{ 0.98753266, 0.97794478, 0.96922680, 0.96133557, 0.95394713, 0.94660755, 0.94055734 },
+				{ 0.98736527, 0.97779445, 0.96921795, 0.96115870, 0.95383865, 0.94700023, 0.93960233 },
+				{ 0.98725202, 0.97771003, 0.96918789, 0.96044158, 0.95321688, 0.94660788, 0.93965267 }
+			},
+			{
+				{ 0.98878559, 0.97935844, 0.97105918, 0.96437325, 0.95688110, 0.94986192, 0.94383559 },
+				{ 0.98846396, 0.97916779, 0.97170664, 0.96369938, 0.95658791, 0.95066490, 0.94399076 },
+				{ 0.98871670, 0.97927467, 0.97109339, 0.96338390, 0.95589587, 0.95028120, 0.94362908 },
+				{ 0.98813714, 0.97907106, 0.97106713, 0.96407059, 0.95707289, 0.94965139, 0.94381862 },
+				{ 0.98832916, 0.97927798, 0.97118362, 0.96413326, 0.95633373, 0.94902288, 0.94292515 },
+				{ 0.98810306, 0.97871977, 0.97053149, 0.96301655, 0.95582050, 0.94887016, 0.94238607 },
+				{ 0.98825226, 0.97843552, 0.97033334, 0.96254374, 0.95558326, 0.94893438, 0.94229235 },
+				{ 0.98763271, 0.97873343, 0.97014791, 0.96284866, 0.95521980, 0.94866344, 0.94169941 },
+				{ 0.98788434, 0.97803429, 0.96975825, 0.96223584, 0.95491231, 0.94775045, 0.94154079 },
+				{ 0.98752891, 0.97835641, 0.96941746, 0.96199299, 0.95431933, 0.94851712, 0.94064174 },
+				{ 0.98777916, 0.97795230, 0.96967451, 0.96184511, 0.95426277, 0.94789286, 0.94074105 },
+				{ 0.98757427, 0.97776516, 0.96941886, 0.96152141, 0.95433814, 0.94713668, 0.94034658 },
+				{ 0.98729436, 0.97816653, 0.96913146, 0.96106587, 0.95424147, 0.94673429, 0.94035495 }
+			},
+			{
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 },
+				{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 }
+			}
+		}
+	};
+
 	/// DL-77: azimuthally-averaged height-correlated-G2 single-
 	/// scatter directional albedo.  Indexed as
 	/// E_ss_TABLE_G2_ANISO[alphaXIdx][alphaYIdx][cosThetaIdx], both
@@ -10004,6 +18900,639 @@ namespace MicrofacetEnergyLUT
 		}
 	};
 
+	/// DL-86: grazing sub-grid twin of E_ss_TABLE_G2_ANISO above,
+	/// DERIVED from E_ss_TABLE_G2_ANISO_PHI_SUB by the same
+	/// trapezoidal phi average.  Consumed by LookupEssG2Aniso and
+	/// MSLobeDetail::BuildSegmentsFromRowN -- i.e. by the H6 aniso
+	/// sampler/pdf pair, which must read one shared model.
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_TABLE_G2_ANISO_SUB[24][24][7] = {
+		{
+			{ 0.96192519, 0.93170188, 0.91067398, 0.89790601, 0.89216567, 0.89174058, 0.89400198 },
+			{ 0.98502656, 0.97142281, 0.95970359, 0.94957817, 0.94089441, 0.93351502, 0.92776426 },
+			{ 0.98946095, 0.98020050, 0.97181111, 0.96438311, 0.95796587, 0.95211257, 0.94704463 },
+			{ 0.99128651, 0.98361642, 0.97681855, 0.97088203, 0.96548276, 0.96076350, 0.95639587 },
+			{ 0.99191626, 0.98517673, 0.97927652, 0.97392721, 0.96925021, 0.96496954, 0.96132647 },
+			{ 0.99203936, 0.98564618, 0.98015639, 0.97534996, 0.97102663, 0.96716667, 0.96367924 },
+			{ 0.99193907, 0.98570511, 0.98043797, 0.97588955, 0.97163880, 0.96797943, 0.96462499 },
+			{ 0.99157366, 0.98524028, 0.98005288, 0.97547733, 0.97132309, 0.96776473, 0.96456853 },
+			{ 0.99105597, 0.98467094, 0.97930112, 0.97474837, 0.97071448, 0.96716339, 0.96403925 },
+			{ 0.99042586, 0.98375051, 0.97829305, 0.97366492, 0.96955145, 0.96594791, 0.96263858 },
+			{ 0.98968963, 0.98266816, 0.97707956, 0.97234202, 0.96814321, 0.96456104, 0.96117943 },
+			{ 0.98893792, 0.98161598, 0.97577930, 0.97087146, 0.96649899, 0.96263933, 0.95897196 },
+			{ 0.98812081, 0.98045030, 0.97424325, 0.96909012, 0.96468185, 0.96058346, 0.95700243 },
+			{ 0.98728042, 0.97919690, 0.97271739, 0.96730803, 0.96270911, 0.95864164, 0.95465030 },
+			{ 0.98650725, 0.97795983, 0.97125480, 0.96542981, 0.96060430, 0.95617853, 0.95221927 },
+			{ 0.98550653, 0.97662352, 0.96958222, 0.96341274, 0.95837887, 0.95383937, 0.94991322 },
+			{ 0.98453489, 0.97512621, 0.96770587, 0.96173688, 0.95631036, 0.95134017, 0.94706703 },
+			{ 0.98358213, 0.97368315, 0.96604716, 0.95953416, 0.95387172, 0.94890795, 0.94436461 },
+			{ 0.98266232, 0.97219383, 0.96424585, 0.95747901, 0.95168386, 0.94626515, 0.94143111 },
+			{ 0.98152372, 0.97090894, 0.96255129, 0.95553313, 0.94948089, 0.94384033, 0.93867544 },
+			{ 0.98057955, 0.96950954, 0.96064088, 0.95335934, 0.94701854, 0.94109573, 0.93600850 },
+			{ 0.97951715, 0.96791147, 0.95896782, 0.95113769, 0.94458266, 0.93871778, 0.93322118 },
+			{ 0.97851988, 0.96637452, 0.95708596, 0.94927573, 0.94230813, 0.93609181, 0.93038392 },
+			{ 0.97751098, 0.96493740, 0.95530175, 0.94712537, 0.93982622, 0.93345612, 0.92744580 }
+		},
+		{
+			{ 0.98502656, 0.97142281, 0.95970359, 0.94957817, 0.94089441, 0.93351502, 0.92776426 },
+			{ 0.99131032, 0.98307087, 0.97500479, 0.96762529, 0.96037003, 0.95360487, 0.94714513 },
+			{ 0.99362245, 0.98764863, 0.98192365, 0.97641195, 0.97085503, 0.96560102, 0.96068990 },
+			{ 0.99434082, 0.98916796, 0.98416206, 0.97940196, 0.97473509, 0.97027111, 0.96599589 },
+			{ 0.99452938, 0.98975904, 0.98518121, 0.98065971, 0.97644367, 0.97235649, 0.96842603 },
+			{ 0.99454423, 0.98972475, 0.98529990, 0.98109514, 0.97711593, 0.97323176, 0.96958619 },
+			{ 0.99433721, 0.98952394, 0.98508109, 0.98099222, 0.97701913, 0.97329044, 0.96956529 },
+			{ 0.99409317, 0.98911541, 0.98464242, 0.98044609, 0.97659388, 0.97278965, 0.96904753 },
+			{ 0.99363824, 0.98859388, 0.98401921, 0.97964172, 0.97546950, 0.97193148, 0.96818653 },
+			{ 0.99322313, 0.98785019, 0.98306732, 0.97867190, 0.97444414, 0.97060967, 0.96685596 },
+			{ 0.99274008, 0.98709532, 0.98211047, 0.97746829, 0.97317591, 0.96913304, 0.96534674 },
+			{ 0.99220343, 0.98615673, 0.98097412, 0.97603074, 0.97166943, 0.96755029, 0.96336365 },
+			{ 0.99160297, 0.98531361, 0.97976731, 0.97470436, 0.97001444, 0.96565175, 0.96149155 },
+			{ 0.99112184, 0.98438749, 0.97852309, 0.97314097, 0.96831784, 0.96377107, 0.95942171 },
+			{ 0.99045244, 0.98330263, 0.97729997, 0.97176783, 0.96645609, 0.96163153, 0.95732280 },
+			{ 0.98978845, 0.98240151, 0.97594931, 0.96996467, 0.96460263, 0.95958639, 0.95483063 },
+			{ 0.98923418, 0.98133203, 0.97447814, 0.96854928, 0.96269954, 0.95748581, 0.95255823 },
+			{ 0.98854771, 0.98029549, 0.97299618, 0.96665458, 0.96054852, 0.95519634, 0.94997421 },
+			{ 0.98789682, 0.97912104, 0.97163968, 0.96492335, 0.95872777, 0.95292320, 0.94748102 },
+			{ 0.98713450, 0.97815043, 0.97027091, 0.96315212, 0.95657269, 0.95055320, 0.94497570 },
+			{ 0.98650599, 0.97689505, 0.96868768, 0.96119904, 0.95443586, 0.94824959, 0.94251682 },
+			{ 0.98581089, 0.97576350, 0.96712163, 0.95925795, 0.95248124, 0.94567115, 0.93973881 },
+			{ 0.98512832, 0.97472558, 0.96557197, 0.95764652, 0.95043004, 0.94339093, 0.93728464 },
+			{ 0.98441974, 0.97336411, 0.96414935, 0.95578511, 0.94806804, 0.94101892, 0.93453162 }
+		},
+		{
+			{ 0.98946095, 0.98020050, 0.97181111, 0.96438311, 0.95796587, 0.95211257, 0.94704463 },
+			{ 0.99362245, 0.98764863, 0.98192365, 0.97641195, 0.97085503, 0.96560102, 0.96068990 },
+			{ 0.99474819, 0.98976577, 0.98495578, 0.98030951, 0.97584825, 0.97147109, 0.96724703 },
+			{ 0.99530985, 0.99098372, 0.98682624, 0.98273226, 0.97895783, 0.97511913, 0.97146251 },
+			{ 0.99538010, 0.99127278, 0.98735402, 0.98353216, 0.97989081, 0.97637374, 0.97293025 },
+			{ 0.99528367, 0.99112337, 0.98733777, 0.98360417, 0.98017775, 0.97675026, 0.97346450 },
+			{ 0.99507291, 0.99081472, 0.98696395, 0.98325379, 0.97974662, 0.97628671, 0.97302948 },
+			{ 0.99468009, 0.99035139, 0.98637235, 0.98249235, 0.97903146, 0.97565074, 0.97219533 },
+			{ 0.99429458, 0.98971658, 0.98554390, 0.98173139, 0.97793425, 0.97448301, 0.97098315 },
+			{ 0.99390437, 0.98906837, 0.98462055, 0.98046586, 0.97668492, 0.97313783, 0.96964667 },
+			{ 0.99339740, 0.98827837, 0.98359475, 0.97934192, 0.97532371, 0.97143215, 0.96780867 },
+			{ 0.99293551, 0.98744402, 0.98250983, 0.97798398, 0.97377335, 0.96965474, 0.96605082 },
+			{ 0.99242593, 0.98645533, 0.98130690, 0.97670679, 0.97216603, 0.96794345, 0.96405618 },
+			{ 0.99185181, 0.98567616, 0.98019498, 0.97508938, 0.97036463, 0.96618057, 0.96183121 },
+			{ 0.99134475, 0.98467081, 0.97880341, 0.97352792, 0.96857183, 0.96398497, 0.95957376 },
+			{ 0.99071703, 0.98368674, 0.97750429, 0.97195169, 0.96676199, 0.96193565, 0.95727243 },
+			{ 0.99016647, 0.98284181, 0.97628466, 0.97041747, 0.96479616, 0.95979738, 0.95476011 },
+			{ 0.98949881, 0.98177957, 0.97475504, 0.96878902, 0.96299953, 0.95762553, 0.95260671 },
+			{ 0.98890518, 0.98072333, 0.97360809, 0.96695331, 0.96102299, 0.95548375, 0.94996220 },
+			{ 0.98829548, 0.97961456, 0.97186267, 0.96517875, 0.95911323, 0.95314037, 0.94755785 },
+			{ 0.98761346, 0.97859231, 0.97082436, 0.96358452, 0.95705767, 0.95078927, 0.94503775 },
+			{ 0.98703807, 0.97749973, 0.96922296, 0.96180423, 0.95508319, 0.94863211, 0.94249363 },
+			{ 0.98641395, 0.97649644, 0.96794532, 0.96000517, 0.95293950, 0.94634164, 0.93997301 },
+			{ 0.98579848, 0.97532343, 0.96631427, 0.95837000, 0.95089581, 0.94380079, 0.93752526 }
+		},
+		{
+			{ 0.99128651, 0.98361642, 0.97681855, 0.97088203, 0.96548276, 0.96076350, 0.95639587 },
+			{ 0.99434082, 0.98916796, 0.98416206, 0.97940196, 0.97473509, 0.97027111, 0.96599589 },
+			{ 0.99530985, 0.99098372, 0.98682624, 0.98273226, 0.97895783, 0.97511913, 0.97146251 },
+			{ 0.99567444, 0.99175649, 0.98793636, 0.98441113, 0.98074154, 0.97748004, 0.97416175 },
+			{ 0.99576114, 0.99200659, 0.98839553, 0.98503594, 0.98166043, 0.97847047, 0.97521492 },
+			{ 0.99568399, 0.99188590, 0.98832547, 0.98499315, 0.98172303, 0.97864679, 0.97547174 },
+			{ 0.99544275, 0.99152197, 0.98785546, 0.98458797, 0.98129115, 0.97808974, 0.97501652 },
+			{ 0.99516612, 0.99103880, 0.98732618, 0.98391195, 0.98042149, 0.97724533, 0.97411275 },
+			{ 0.99474838, 0.99048830, 0.98658333, 0.98297212, 0.97935358, 0.97608148, 0.97286066 },
+			{ 0.99433503, 0.98978207, 0.98566710, 0.98183987, 0.97807874, 0.97467729, 0.97129733 },
+			{ 0.99382730, 0.98897949, 0.98468817, 0.98056965, 0.97670896, 0.97318337, 0.96959641 },
+			{ 0.99341112, 0.98820087, 0.98358968, 0.97915947, 0.97522439, 0.97144618, 0.96776540 },
+			{ 0.99288540, 0.98738459, 0.98240995, 0.97776580, 0.97367577, 0.96963073, 0.96566624 },
+			{ 0.99238278, 0.98646555, 0.98116264, 0.97642165, 0.97203665, 0.96758918, 0.96357614 },
+			{ 0.99184926, 0.98545349, 0.97998112, 0.97486189, 0.97015643, 0.96564551, 0.96144191 },
+			{ 0.99127261, 0.98454659, 0.97878111, 0.97326977, 0.96834685, 0.96362927, 0.95897347 },
+			{ 0.99064458, 0.98363044, 0.97742000, 0.97170896, 0.96651524, 0.96147808, 0.95690495 },
+			{ 0.99011760, 0.98271611, 0.97605313, 0.97005096, 0.96470501, 0.95933804, 0.95446345 },
+			{ 0.98947858, 0.98163637, 0.97467229, 0.96847251, 0.96247033, 0.95724766, 0.95200249 },
+			{ 0.98894293, 0.98072881, 0.97345130, 0.96662864, 0.96080048, 0.95500424, 0.94941168 },
+			{ 0.98837231, 0.97959481, 0.97207253, 0.96492764, 0.95871939, 0.95268396, 0.94714652 },
+			{ 0.98764230, 0.97862161, 0.97055325, 0.96343492, 0.95671355, 0.95048359, 0.94457457 },
+			{ 0.98712107, 0.97758153, 0.96925663, 0.96170269, 0.95464254, 0.94809470, 0.94212396 },
+			{ 0.98656153, 0.97650314, 0.96784200, 0.96003948, 0.95260212, 0.94585466, 0.93947245 }
+		},
+		{
+			{ 0.99191626, 0.98517673, 0.97927652, 0.97392721, 0.96925021, 0.96496954, 0.96132647 },
+			{ 0.99452938, 0.98975904, 0.98518121, 0.98065971, 0.97644367, 0.97235649, 0.96842603 },
+			{ 0.99538010, 0.99127278, 0.98735402, 0.98353216, 0.97989081, 0.97637374, 0.97293025 },
+			{ 0.99576114, 0.99200659, 0.98839553, 0.98503594, 0.98166043, 0.97847047, 0.97521492 },
+			{ 0.99585916, 0.99215367, 0.98875145, 0.98552829, 0.98229682, 0.97919967, 0.97623863 },
+			{ 0.99579122, 0.99213341, 0.98884417, 0.98547316, 0.98253200, 0.97946787, 0.97646856 },
+			{ 0.99559546, 0.99193589, 0.98847257, 0.98515520, 0.98205456, 0.97898732, 0.97603107 },
+			{ 0.99534575, 0.99144551, 0.98782438, 0.98446433, 0.98128477, 0.97818334, 0.97510287 },
+			{ 0.99504086, 0.99087722, 0.98718273, 0.98370613, 0.98023561, 0.97708070, 0.97401047 },
+			{ 0.99456513, 0.99027843, 0.98630850, 0.98260194, 0.97914859, 0.97573446, 0.97240267 },
+			{ 0.99413153, 0.98956657, 0.98533911, 0.98137296, 0.97772482, 0.97418177, 0.97078829 },
+			{ 0.99369956, 0.98872798, 0.98428817, 0.98007817, 0.97617371, 0.97250569, 0.96903806 },
+			{ 0.99326037, 0.98792632, 0.98319383, 0.97885395, 0.97452360, 0.97078542, 0.96700871 },
+			{ 0.99273802, 0.98708659, 0.98190617, 0.97732664, 0.97299307, 0.96900145, 0.96483131 },
+			{ 0.99220087, 0.98612444, 0.98083295, 0.97589482, 0.97133378, 0.96701327, 0.96261200 },
+			{ 0.99162907, 0.98531047, 0.97953140, 0.97439602, 0.96953148, 0.96484098, 0.96061685 },
+			{ 0.99112122, 0.98440234, 0.97843178, 0.97286881, 0.96762186, 0.96293599, 0.95806134 },
+			{ 0.99054342, 0.98335958, 0.97701690, 0.97116432, 0.96592082, 0.96090705, 0.95580076 },
+			{ 0.98995199, 0.98240458, 0.97566815, 0.96940210, 0.96395615, 0.95863717, 0.95365627 },
+			{ 0.98950166, 0.98138632, 0.97452527, 0.96790212, 0.96198589, 0.95664006, 0.95109818 },
+			{ 0.98888044, 0.98033273, 0.97304812, 0.96626344, 0.96007171, 0.95420102, 0.94869373 },
+			{ 0.98827171, 0.97928336, 0.97166197, 0.96463448, 0.95814066, 0.95198336, 0.94604871 },
+			{ 0.98765175, 0.97841745, 0.97040818, 0.96300827, 0.95615403, 0.94981133, 0.94399531 },
+			{ 0.98699019, 0.97723504, 0.96895916, 0.96125836, 0.95421383, 0.94764108, 0.94130416 }
+		},
+		{
+			{ 0.99203936, 0.98564618, 0.98015639, 0.97534996, 0.97102663, 0.96716667, 0.96367924 },
+			{ 0.99454423, 0.98972475, 0.98529990, 0.98109514, 0.97711593, 0.97323176, 0.96958619 },
+			{ 0.99528367, 0.99112337, 0.98733777, 0.98360417, 0.98017775, 0.97675026, 0.97346450 },
+			{ 0.99568399, 0.99188590, 0.98832547, 0.98499315, 0.98172303, 0.97864679, 0.97547174 },
+			{ 0.99579122, 0.99213341, 0.98884417, 0.98547316, 0.98253200, 0.97946787, 0.97646856 },
+			{ 0.99577145, 0.99209099, 0.98875341, 0.98555032, 0.98252031, 0.97951701, 0.97678010 },
+			{ 0.99563518, 0.99196636, 0.98855050, 0.98534932, 0.98223278, 0.97923226, 0.97645612 },
+			{ 0.99542241, 0.99165765, 0.98805361, 0.98476850, 0.98150139, 0.97856083, 0.97565381 },
+			{ 0.99511336, 0.99111608, 0.98742300, 0.98394454, 0.98055080, 0.97758503, 0.97462405 },
+			{ 0.99475939, 0.99051446, 0.98660932, 0.98304801, 0.97949323, 0.97629595, 0.97302840 },
+			{ 0.99438047, 0.98987625, 0.98566168, 0.98200277, 0.97829584, 0.97484041, 0.97160755 },
+			{ 0.99389974, 0.98905032, 0.98484639, 0.98066727, 0.97674966, 0.97322591, 0.96979687 },
+			{ 0.99347248, 0.98834407, 0.98374430, 0.97943203, 0.97534082, 0.97149707, 0.96781014 },
+			{ 0.99301424, 0.98748305, 0.98277057, 0.97805797, 0.97376885, 0.96977810, 0.96592917 },
+			{ 0.99240900, 0.98661498, 0.98145894, 0.97671962, 0.97201145, 0.96771695, 0.96377368 },
+			{ 0.99195184, 0.98578717, 0.98020187, 0.97505614, 0.97044644, 0.96592340, 0.96170932 },
+			{ 0.99148493, 0.98487653, 0.97894248, 0.97364165, 0.96877315, 0.96392644, 0.95932753 },
+			{ 0.99091047, 0.98393604, 0.97784410, 0.97208406, 0.96683912, 0.96194865, 0.95710819 },
+			{ 0.99035002, 0.98301856, 0.97653345, 0.97058135, 0.96511931, 0.95962976, 0.95460653 },
+			{ 0.98977572, 0.98210191, 0.97522566, 0.96893256, 0.96307686, 0.95765777, 0.95222951 },
+			{ 0.98924417, 0.98108798, 0.97388010, 0.96724345, 0.96120855, 0.95542327, 0.94996592 },
+			{ 0.98868623, 0.98012170, 0.97251232, 0.96569948, 0.95910107, 0.95332038, 0.94755829 },
+			{ 0.98809277, 0.97919613, 0.97126672, 0.96417358, 0.95735269, 0.95113024, 0.94522102 },
+			{ 0.98745544, 0.97805934, 0.96989682, 0.96223135, 0.95537099, 0.94897357, 0.94285139 }
+		},
+		{
+			{ 0.99193907, 0.98570511, 0.98043797, 0.97588955, 0.97163880, 0.96797943, 0.96462499 },
+			{ 0.99433721, 0.98952394, 0.98508109, 0.98099222, 0.97701913, 0.97329044, 0.96956529 },
+			{ 0.99507291, 0.99081472, 0.98696395, 0.98325379, 0.97974662, 0.97628671, 0.97302948 },
+			{ 0.99544275, 0.99152197, 0.98785546, 0.98458797, 0.98129115, 0.97808974, 0.97501652 },
+			{ 0.99559546, 0.99193589, 0.98847257, 0.98515520, 0.98205456, 0.97898732, 0.97603107 },
+			{ 0.99563518, 0.99196636, 0.98855050, 0.98534932, 0.98223278, 0.97923226, 0.97645612 },
+			{ 0.99555229, 0.99185133, 0.98833581, 0.98515783, 0.98200006, 0.97899807, 0.97620991 },
+			{ 0.99534642, 0.99151228, 0.98793936, 0.98469756, 0.98150921, 0.97854880, 0.97554455 },
+			{ 0.99511858, 0.99113690, 0.98742654, 0.98389006, 0.98072157, 0.97761884, 0.97456917 },
+			{ 0.99477716, 0.99052012, 0.98676230, 0.98312133, 0.97973127, 0.97657176, 0.97330975 },
+			{ 0.99442603, 0.98996355, 0.98594311, 0.98215888, 0.97862979, 0.97519138, 0.97188970 },
+			{ 0.99408283, 0.98931338, 0.98491323, 0.98105028, 0.97721428, 0.97360848, 0.97009713 },
+			{ 0.99359055, 0.98855176, 0.98401083, 0.97978378, 0.97585536, 0.97207681, 0.96834135 },
+			{ 0.99315277, 0.98774005, 0.98297001, 0.97855338, 0.97431835, 0.97033393, 0.96651378 },
+			{ 0.99271517, 0.98690117, 0.98190242, 0.97720317, 0.97279468, 0.96852939, 0.96448306 },
+			{ 0.99216861, 0.98618097, 0.98079485, 0.97570954, 0.97118689, 0.96675024, 0.96245327 },
+			{ 0.99165409, 0.98529451, 0.97945296, 0.97432678, 0.96930460, 0.96462207, 0.96019089 },
+			{ 0.99114108, 0.98435994, 0.97836696, 0.97283140, 0.96762837, 0.96264102, 0.95802979 },
+			{ 0.99067596, 0.98344983, 0.97707729, 0.97129434, 0.96586556, 0.96076569, 0.95575553 },
+			{ 0.99010918, 0.98246816, 0.97579788, 0.96978791, 0.96400433, 0.95869307, 0.95350973 },
+			{ 0.98952818, 0.98154919, 0.97450535, 0.96829087, 0.96214790, 0.95655444, 0.95114361 },
+			{ 0.98905654, 0.98055461, 0.97331452, 0.96649818, 0.96030395, 0.95444760, 0.94889942 },
+			{ 0.98844970, 0.97970008, 0.97195058, 0.96486029, 0.95837110, 0.95244524, 0.94631258 },
+			{ 0.98786619, 0.97876974, 0.97056935, 0.96318831, 0.95650355, 0.95022737, 0.94399755 }
+		},
+		{
+			{ 0.99157366, 0.98524028, 0.98005288, 0.97547733, 0.97132309, 0.96776473, 0.96456853 },
+			{ 0.99409317, 0.98911541, 0.98464242, 0.98044609, 0.97659388, 0.97278965, 0.96904753 },
+			{ 0.99468009, 0.99035139, 0.98637235, 0.98249235, 0.97903146, 0.97565074, 0.97219533 },
+			{ 0.99516612, 0.99103880, 0.98732618, 0.98391195, 0.98042149, 0.97724533, 0.97411275 },
+			{ 0.99534575, 0.99144551, 0.98782438, 0.98446433, 0.98128477, 0.97818334, 0.97510287 },
+			{ 0.99542241, 0.99165765, 0.98805361, 0.98476850, 0.98150139, 0.97856083, 0.97565381 },
+			{ 0.99534642, 0.99151228, 0.98793936, 0.98469756, 0.98150921, 0.97854880, 0.97554455 },
+			{ 0.99520722, 0.99128810, 0.98769457, 0.98434290, 0.98108898, 0.97792007, 0.97505737 },
+			{ 0.99503639, 0.99090383, 0.98726934, 0.98383579, 0.98043067, 0.97729918, 0.97436514 },
+			{ 0.99467418, 0.99051097, 0.98663627, 0.98306699, 0.97947864, 0.97640914, 0.97317120 },
+			{ 0.99442554, 0.98998844, 0.98591323, 0.98205740, 0.97838106, 0.97519388, 0.97170452 },
+			{ 0.99409419, 0.98938396, 0.98504627, 0.98107396, 0.97728606, 0.97387653, 0.97023070 },
+			{ 0.99366827, 0.98880139, 0.98418093, 0.97995321, 0.97598955, 0.97234661, 0.96847260 },
+			{ 0.99326268, 0.98785571, 0.98325912, 0.97879800, 0.97462015, 0.97057747, 0.96677891 },
+			{ 0.99281666, 0.98714049, 0.98208733, 0.97739369, 0.97306695, 0.96879403, 0.96478384 },
+			{ 0.99238219, 0.98637312, 0.98103085, 0.97609776, 0.97148641, 0.96702991, 0.96299863 },
+			{ 0.99185347, 0.98553121, 0.97984837, 0.97468257, 0.96982665, 0.96524907, 0.96090138 },
+			{ 0.99138642, 0.98473962, 0.97884662, 0.97332171, 0.96817615, 0.96340156, 0.95887826 },
+			{ 0.99084780, 0.98378300, 0.97757625, 0.97166043, 0.96648808, 0.96139998, 0.95629517 },
+			{ 0.99033565, 0.98291454, 0.97629273, 0.97033186, 0.96473766, 0.95936086, 0.95428299 },
+			{ 0.98984551, 0.98205407, 0.97502620, 0.96872600, 0.96288534, 0.95722332, 0.95200164 },
+			{ 0.98930146, 0.98105534, 0.97388646, 0.96732147, 0.96107084, 0.95523205, 0.94975239 },
+			{ 0.98877454, 0.98024251, 0.97253983, 0.96562903, 0.95931743, 0.95321529, 0.94740814 },
+			{ 0.98819097, 0.97918095, 0.97136485, 0.96408272, 0.95738696, 0.95101221, 0.94481618 }
+		},
+		{
+			{ 0.99105597, 0.98467094, 0.97930112, 0.97474837, 0.97071448, 0.96716339, 0.96403925 },
+			{ 0.99363824, 0.98859388, 0.98401921, 0.97964172, 0.97546950, 0.97193148, 0.96818653 },
+			{ 0.99429458, 0.98971658, 0.98554390, 0.98173139, 0.97793425, 0.97448301, 0.97098315 },
+			{ 0.99474838, 0.99048830, 0.98658333, 0.98297212, 0.97935358, 0.97608148, 0.97286066 },
+			{ 0.99504086, 0.99087722, 0.98718273, 0.98370613, 0.98023561, 0.97708070, 0.97401047 },
+			{ 0.99511336, 0.99111608, 0.98742300, 0.98394454, 0.98055080, 0.97758503, 0.97462405 },
+			{ 0.99511858, 0.99113690, 0.98742654, 0.98389006, 0.98072157, 0.97761884, 0.97456917 },
+			{ 0.99503639, 0.99090383, 0.98726934, 0.98383579, 0.98043067, 0.97729918, 0.97436514 },
+			{ 0.99479385, 0.99067420, 0.98684928, 0.98334599, 0.97981127, 0.97661417, 0.97353215 },
+			{ 0.99462093, 0.99031429, 0.98641288, 0.98265868, 0.97930668, 0.97584143, 0.97274649 },
+			{ 0.99438308, 0.98984902, 0.98569982, 0.98177955, 0.97826210, 0.97476846, 0.97134025 },
+			{ 0.99401625, 0.98930031, 0.98493024, 0.98105231, 0.97717481, 0.97359106, 0.97001731 },
+			{ 0.99366530, 0.98862006, 0.98422276, 0.97997583, 0.97596770, 0.97195261, 0.96855902 },
+			{ 0.99331144, 0.98795384, 0.98308164, 0.97869482, 0.97462576, 0.97063401, 0.96687682 },
+			{ 0.99288155, 0.98726744, 0.98224086, 0.97754153, 0.97330267, 0.96922223, 0.96503604 },
+			{ 0.99239115, 0.98656046, 0.98121273, 0.97634778, 0.97163904, 0.96748477, 0.96294067 },
+			{ 0.99201570, 0.98575960, 0.98009924, 0.97500390, 0.97015273, 0.96551714, 0.96117057 },
+			{ 0.99151769, 0.98483306, 0.97903105, 0.97361960, 0.96846486, 0.96384901, 0.95930240 },
+			{ 0.99100317, 0.98411819, 0.97795721, 0.97224419, 0.96684800, 0.96196757, 0.95705652 },
+			{ 0.99052087, 0.98311106, 0.97676564, 0.97077726, 0.96501289, 0.95979857, 0.95474939 },
+			{ 0.99003374, 0.98248810, 0.97556874, 0.96927631, 0.96342025, 0.95800532, 0.95264353 },
+			{ 0.98958855, 0.98144122, 0.97427642, 0.96771496, 0.96167659, 0.95591387, 0.95046701 },
+			{ 0.98897962, 0.98058755, 0.97308405, 0.96609950, 0.95996619, 0.95388461, 0.94810422 },
+			{ 0.98848705, 0.97970521, 0.97187755, 0.96459737, 0.95808171, 0.95193466, 0.94592734 }
+		},
+		{
+			{ 0.99042586, 0.98375051, 0.97829305, 0.97366492, 0.96955145, 0.96594791, 0.96263858 },
+			{ 0.99322313, 0.98785019, 0.98306732, 0.97867190, 0.97444414, 0.97060967, 0.96685596 },
+			{ 0.99390437, 0.98906837, 0.98462055, 0.98046586, 0.97668492, 0.97313783, 0.96964667 },
+			{ 0.99433503, 0.98978207, 0.98566710, 0.98183987, 0.97807874, 0.97467729, 0.97129733 },
+			{ 0.99456513, 0.99027843, 0.98630850, 0.98260194, 0.97914859, 0.97573446, 0.97240267 },
+			{ 0.99475939, 0.99051446, 0.98660932, 0.98304801, 0.97949323, 0.97629595, 0.97302840 },
+			{ 0.99477716, 0.99052012, 0.98676230, 0.98312133, 0.97973127, 0.97657176, 0.97330975 },
+			{ 0.99467418, 0.99051097, 0.98663627, 0.98306699, 0.97947864, 0.97640914, 0.97317120 },
+			{ 0.99462093, 0.99031429, 0.98641288, 0.98265868, 0.97930668, 0.97584143, 0.97274649 },
+			{ 0.99447247, 0.98999314, 0.98594327, 0.98211550, 0.97858359, 0.97506186, 0.97179271 },
+			{ 0.99422089, 0.98956021, 0.98537740, 0.98138027, 0.97778508, 0.97420110, 0.97083397 },
+			{ 0.99395577, 0.98913143, 0.98463571, 0.98060610, 0.97675161, 0.97313782, 0.96963297 },
+			{ 0.99361403, 0.98857489, 0.98397498, 0.97966443, 0.97567273, 0.97192923, 0.96813829 },
+			{ 0.99327261, 0.98786083, 0.98314751, 0.97876281, 0.97458501, 0.97057500, 0.96669899 },
+			{ 0.99286498, 0.98725834, 0.98227434, 0.97757707, 0.97309393, 0.96911527, 0.96492244 },
+			{ 0.99248575, 0.98653328, 0.98118446, 0.97625933, 0.97169398, 0.96729441, 0.96306263 },
+			{ 0.99202363, 0.98574414, 0.98028874, 0.97506574, 0.97024981, 0.96559234, 0.96126044 },
+			{ 0.99162736, 0.98502315, 0.97924524, 0.97382950, 0.96877485, 0.96399714, 0.95927820 },
+			{ 0.99115876, 0.98417593, 0.97807979, 0.97239364, 0.96702298, 0.96208991, 0.95739770 },
+			{ 0.99070026, 0.98340939, 0.97706875, 0.97108659, 0.96560230, 0.96033803, 0.95508449 },
+			{ 0.99011972, 0.98254533, 0.97595802, 0.96972373, 0.96374360, 0.95839171, 0.95309439 },
+			{ 0.98973084, 0.98174629, 0.97466426, 0.96830983, 0.96191331, 0.95656150, 0.95103835 },
+			{ 0.98922391, 0.98081866, 0.97348228, 0.96669322, 0.96042371, 0.95441271, 0.94879132 },
+			{ 0.98861206, 0.98005828, 0.97215065, 0.96522558, 0.95856569, 0.95219523, 0.94669600 }
+		},
+		{
+			{ 0.98968963, 0.98266816, 0.97707956, 0.97234202, 0.96814321, 0.96456104, 0.96117943 },
+			{ 0.99274008, 0.98709532, 0.98211047, 0.97746829, 0.97317591, 0.96913304, 0.96534674 },
+			{ 0.99339740, 0.98827837, 0.98359475, 0.97934192, 0.97532371, 0.97143215, 0.96780867 },
+			{ 0.99382730, 0.98897949, 0.98468817, 0.98056965, 0.97670896, 0.97318337, 0.96959641 },
+			{ 0.99413153, 0.98956657, 0.98533911, 0.98137296, 0.97772482, 0.97418177, 0.97078829 },
+			{ 0.99438047, 0.98987625, 0.98566168, 0.98200277, 0.97829584, 0.97484041, 0.97160755 },
+			{ 0.99442603, 0.98996355, 0.98594311, 0.98215888, 0.97862979, 0.97519138, 0.97188970 },
+			{ 0.99442554, 0.98998844, 0.98591323, 0.98205740, 0.97838106, 0.97519388, 0.97170452 },
+			{ 0.99438308, 0.98984902, 0.98569982, 0.98177955, 0.97826210, 0.97476846, 0.97134025 },
+			{ 0.99422089, 0.98956021, 0.98537740, 0.98138027, 0.97778508, 0.97420110, 0.97083397 },
+			{ 0.99404878, 0.98924808, 0.98490087, 0.98086982, 0.97722251, 0.97341241, 0.97001366 },
+			{ 0.99379341, 0.98879263, 0.98441896, 0.98009908, 0.97616810, 0.97241937, 0.96897282 },
+			{ 0.99352397, 0.98841265, 0.98371797, 0.97935186, 0.97513105, 0.97131195, 0.96762495 },
+			{ 0.99321581, 0.98785745, 0.98289312, 0.97837185, 0.97417055, 0.97013556, 0.96623931 },
+			{ 0.99283803, 0.98713152, 0.98212381, 0.97732197, 0.97299924, 0.96872836, 0.96478132 },
+			{ 0.99249103, 0.98649179, 0.98120251, 0.97639938, 0.97169581, 0.96710154, 0.96307899 },
+			{ 0.99206224, 0.98583321, 0.98016683, 0.97509529, 0.97024042, 0.96563342, 0.96111740 },
+			{ 0.99160866, 0.98514044, 0.97928999, 0.97387807, 0.96871277, 0.96383091, 0.95936525 },
+			{ 0.99119867, 0.98423228, 0.97820489, 0.97269150, 0.96726659, 0.96210467, 0.95745909 },
+			{ 0.99072579, 0.98348871, 0.97713668, 0.97122418, 0.96570338, 0.96056384, 0.95555116 },
+			{ 0.99033258, 0.98273380, 0.97603719, 0.96973375, 0.96420925, 0.95854455, 0.95329643 },
+			{ 0.98970993, 0.98203708, 0.97497616, 0.96846485, 0.96257881, 0.95670981, 0.95120204 },
+			{ 0.98936671, 0.98104045, 0.97379698, 0.96701649, 0.96070381, 0.95474703, 0.94925342 },
+			{ 0.98882689, 0.98029418, 0.97261045, 0.96561347, 0.95899525, 0.95300926, 0.94700583 }
+		},
+		{
+			{ 0.98893792, 0.98161598, 0.97577930, 0.97087146, 0.96649899, 0.96263933, 0.95897196 },
+			{ 0.99220343, 0.98615673, 0.98097412, 0.97603074, 0.97166943, 0.96755029, 0.96336365 },
+			{ 0.99293551, 0.98744402, 0.98250983, 0.97798398, 0.97377335, 0.96965474, 0.96605082 },
+			{ 0.99341112, 0.98820087, 0.98358968, 0.97915947, 0.97522439, 0.97144618, 0.96776540 },
+			{ 0.99369956, 0.98872798, 0.98428817, 0.98007817, 0.97617371, 0.97250569, 0.96903806 },
+			{ 0.99389974, 0.98905032, 0.98484639, 0.98066727, 0.97674966, 0.97322591, 0.96979687 },
+			{ 0.99408283, 0.98931338, 0.98491323, 0.98105028, 0.97721428, 0.97360848, 0.97009713 },
+			{ 0.99409419, 0.98938396, 0.98504627, 0.98107396, 0.97728606, 0.97387653, 0.97023070 },
+			{ 0.99401625, 0.98930031, 0.98493024, 0.98105231, 0.97717481, 0.97359106, 0.97001731 },
+			{ 0.99395577, 0.98913143, 0.98463571, 0.98060610, 0.97675161, 0.97313782, 0.96963297 },
+			{ 0.99379341, 0.98879263, 0.98441896, 0.98009908, 0.97616810, 0.97241937, 0.96897282 },
+			{ 0.99360498, 0.98850051, 0.98389197, 0.97950042, 0.97543990, 0.97162830, 0.96811214 },
+			{ 0.99331553, 0.98804746, 0.98326026, 0.97872595, 0.97457436, 0.97062378, 0.96673418 },
+			{ 0.99300044, 0.98754673, 0.98256872, 0.97806603, 0.97358750, 0.96949445, 0.96570344 },
+			{ 0.99273678, 0.98698979, 0.98177318, 0.97699787, 0.97259525, 0.96806546, 0.96410426 },
+			{ 0.99245621, 0.98633908, 0.98105854, 0.97606216, 0.97126147, 0.96688127, 0.96261961 },
+			{ 0.99195201, 0.98578856, 0.98013990, 0.97499669, 0.96995696, 0.96509794, 0.96097179 },
+			{ 0.99162406, 0.98510668, 0.97917234, 0.97374768, 0.96872397, 0.96382640, 0.95924861 },
+			{ 0.99120591, 0.98435864, 0.97818186, 0.97257426, 0.96715932, 0.96213915, 0.95726310 },
+			{ 0.99076337, 0.98354940, 0.97727422, 0.97117267, 0.96567930, 0.96045458, 0.95553258 },
+			{ 0.99027952, 0.98283508, 0.97616399, 0.97005767, 0.96414857, 0.95872550, 0.95343437 },
+			{ 0.98989752, 0.98204672, 0.97506582, 0.96873755, 0.96244159, 0.95697166, 0.95153650 },
+			{ 0.98934506, 0.98125589, 0.97388256, 0.96729437, 0.96117630, 0.95516458, 0.94940191 },
+			{ 0.98897906, 0.98038011, 0.97281358, 0.96588931, 0.95935844, 0.95315606, 0.94725473 }
+		},
+		{
+			{ 0.98812081, 0.98045030, 0.97424325, 0.96909012, 0.96468185, 0.96058346, 0.95700243 },
+			{ 0.99160297, 0.98531361, 0.97976731, 0.97470436, 0.97001444, 0.96565175, 0.96149155 },
+			{ 0.99242593, 0.98645533, 0.98130690, 0.97670679, 0.97216603, 0.96794345, 0.96405618 },
+			{ 0.99288540, 0.98738459, 0.98240995, 0.97776580, 0.97367577, 0.96963073, 0.96566624 },
+			{ 0.99326037, 0.98792632, 0.98319383, 0.97885395, 0.97452360, 0.97078542, 0.96700871 },
+			{ 0.99347248, 0.98834407, 0.98374430, 0.97943203, 0.97534082, 0.97149707, 0.96781014 },
+			{ 0.99359055, 0.98855176, 0.98401083, 0.97978378, 0.97585536, 0.97207681, 0.96834135 },
+			{ 0.99366827, 0.98880139, 0.98418093, 0.97995321, 0.97598955, 0.97234661, 0.96847260 },
+			{ 0.99366530, 0.98862006, 0.98422276, 0.97997583, 0.97596770, 0.97195261, 0.96855902 },
+			{ 0.99361403, 0.98857489, 0.98397498, 0.97966443, 0.97567273, 0.97192923, 0.96813829 },
+			{ 0.99352397, 0.98841265, 0.98371797, 0.97935186, 0.97513105, 0.97131195, 0.96762495 },
+			{ 0.99331553, 0.98804746, 0.98326026, 0.97872595, 0.97457436, 0.97062378, 0.96673418 },
+			{ 0.99311282, 0.98754899, 0.98270975, 0.97822474, 0.97391075, 0.96983031, 0.96593012 },
+			{ 0.99284796, 0.98718936, 0.98217054, 0.97752085, 0.97298065, 0.96885146, 0.96460217 },
+			{ 0.99252612, 0.98679512, 0.98146667, 0.97652758, 0.97193089, 0.96768649, 0.96336253 },
+			{ 0.99227482, 0.98617489, 0.98063264, 0.97558862, 0.97100659, 0.96625540, 0.96199821 },
+			{ 0.99197165, 0.98553199, 0.97993625, 0.97465425, 0.96974514, 0.96493085, 0.96058143 },
+			{ 0.99156077, 0.98490705, 0.97907440, 0.97348941, 0.96848715, 0.96355316, 0.95880687 },
+			{ 0.99123221, 0.98429590, 0.97805881, 0.97241330, 0.96698486, 0.96194298, 0.95703905 },
+			{ 0.99076841, 0.98362676, 0.97715494, 0.97129068, 0.96564047, 0.96025245, 0.95526220 },
+			{ 0.99041663, 0.98277367, 0.97612561, 0.97014220, 0.96405377, 0.95863457, 0.95357902 },
+			{ 0.98994580, 0.98213185, 0.97514793, 0.96878280, 0.96255773, 0.95686559, 0.95154044 },
+			{ 0.98943163, 0.98131730, 0.97409861, 0.96736425, 0.96105459, 0.95515694, 0.94965454 },
+			{ 0.98900774, 0.98063719, 0.97297107, 0.96605780, 0.95944996, 0.95332319, 0.94761132 }
+		},
+		{
+			{ 0.98728042, 0.97919690, 0.97271739, 0.96730803, 0.96270911, 0.95864164, 0.95465030 },
+			{ 0.99112184, 0.98438749, 0.97852309, 0.97314097, 0.96831784, 0.96377107, 0.95942171 },
+			{ 0.99185181, 0.98567616, 0.98019498, 0.97508938, 0.97036463, 0.96618057, 0.96183121 },
+			{ 0.99238278, 0.98646555, 0.98116264, 0.97642165, 0.97203665, 0.96758918, 0.96357614 },
+			{ 0.99273802, 0.98708659, 0.98190617, 0.97732664, 0.97299307, 0.96900145, 0.96483131 },
+			{ 0.99301424, 0.98748305, 0.98277057, 0.97805797, 0.97376885, 0.96977810, 0.96592917 },
+			{ 0.99315277, 0.98774005, 0.98297001, 0.97855338, 0.97431835, 0.97033393, 0.96651378 },
+			{ 0.99326268, 0.98785571, 0.98325912, 0.97879800, 0.97462015, 0.97057747, 0.96677891 },
+			{ 0.99331144, 0.98795384, 0.98308164, 0.97869482, 0.97462576, 0.97063401, 0.96687682 },
+			{ 0.99327261, 0.98786083, 0.98314751, 0.97876281, 0.97458501, 0.97057500, 0.96669899 },
+			{ 0.99321581, 0.98785745, 0.98289312, 0.97837185, 0.97417055, 0.97013556, 0.96623931 },
+			{ 0.99300044, 0.98754673, 0.98256872, 0.97806603, 0.97358750, 0.96949445, 0.96570344 },
+			{ 0.99284796, 0.98718936, 0.98217054, 0.97752085, 0.97298065, 0.96885146, 0.96460217 },
+			{ 0.99264297, 0.98688718, 0.98158135, 0.97685190, 0.97208088, 0.96786374, 0.96352930 },
+			{ 0.99244730, 0.98633822, 0.98091627, 0.97595047, 0.97122774, 0.96672967, 0.96242923 },
+			{ 0.99212917, 0.98591446, 0.98036704, 0.97521002, 0.97010209, 0.96544108, 0.96126242 },
+			{ 0.99179490, 0.98531898, 0.97950726, 0.97416305, 0.96915666, 0.96446508, 0.95980195 },
+			{ 0.99150292, 0.98469718, 0.97873057, 0.97312912, 0.96792281, 0.96294063, 0.95833380 },
+			{ 0.99107834, 0.98415475, 0.97793743, 0.97222288, 0.96671982, 0.96154010, 0.95655526 },
+			{ 0.99074849, 0.98346280, 0.97713646, 0.97091653, 0.96544041, 0.95990996, 0.95483578 },
+			{ 0.99037397, 0.98277199, 0.97609029, 0.96969422, 0.96394765, 0.95840204, 0.95325597 },
+			{ 0.98987727, 0.98208665, 0.97495114, 0.96847673, 0.96265546, 0.95690704, 0.95134376 },
+			{ 0.98953642, 0.98131460, 0.97397770, 0.96735921, 0.96086554, 0.95528353, 0.94948238 },
+			{ 0.98904868, 0.98058134, 0.97311345, 0.96598631, 0.95947938, 0.95335924, 0.94763407 }
+		},
+		{
+			{ 0.98650725, 0.97795983, 0.97125480, 0.96542981, 0.96060430, 0.95617853, 0.95221927 },
+			{ 0.99045244, 0.98330263, 0.97729997, 0.97176783, 0.96645609, 0.96163153, 0.95732280 },
+			{ 0.99134475, 0.98467081, 0.97880341, 0.97352792, 0.96857183, 0.96398497, 0.95957376 },
+			{ 0.99184926, 0.98545349, 0.97998112, 0.97486189, 0.97015643, 0.96564551, 0.96144191 },
+			{ 0.99220087, 0.98612444, 0.98083295, 0.97589482, 0.97133378, 0.96701327, 0.96261200 },
+			{ 0.99240900, 0.98661498, 0.98145894, 0.97671962, 0.97201145, 0.96771695, 0.96377368 },
+			{ 0.99271517, 0.98690117, 0.98190242, 0.97720317, 0.97279468, 0.96852939, 0.96448306 },
+			{ 0.99281666, 0.98714049, 0.98208733, 0.97739369, 0.97306695, 0.96879403, 0.96478384 },
+			{ 0.99288155, 0.98726744, 0.98224086, 0.97754153, 0.97330267, 0.96922223, 0.96503604 },
+			{ 0.99286498, 0.98725834, 0.98227434, 0.97757707, 0.97309393, 0.96911527, 0.96492244 },
+			{ 0.99283803, 0.98713152, 0.98212381, 0.97732197, 0.97299924, 0.96872836, 0.96478132 },
+			{ 0.99273678, 0.98698979, 0.98177318, 0.97699787, 0.97259525, 0.96806546, 0.96410426 },
+			{ 0.99252612, 0.98679512, 0.98146667, 0.97652758, 0.97193089, 0.96768649, 0.96336253 },
+			{ 0.99244730, 0.98633822, 0.98091627, 0.97595047, 0.97122774, 0.96672967, 0.96242923 },
+			{ 0.99221577, 0.98606416, 0.98046595, 0.97519436, 0.97046409, 0.96586145, 0.96136570 },
+			{ 0.99196636, 0.98549780, 0.97980600, 0.97451977, 0.96958975, 0.96487792, 0.96029782 },
+			{ 0.99160595, 0.98508399, 0.97914970, 0.97372299, 0.96847633, 0.96376527, 0.95902105 },
+			{ 0.99132874, 0.98452819, 0.97840785, 0.97276257, 0.96758762, 0.96256000, 0.95767792 },
+			{ 0.99106071, 0.98394193, 0.97769980, 0.97180043, 0.96636828, 0.96111770, 0.95614136 },
+			{ 0.99067695, 0.98325079, 0.97679322, 0.97068761, 0.96503702, 0.95943757, 0.95452724 },
+			{ 0.99031521, 0.98263845, 0.97585627, 0.96964708, 0.96369556, 0.95818532, 0.95278679 },
+			{ 0.98984225, 0.98196069, 0.97503999, 0.96845952, 0.96241743, 0.95674486, 0.95100698 },
+			{ 0.98946217, 0.98125486, 0.97404988, 0.96734160, 0.96089895, 0.95500106, 0.94937971 },
+			{ 0.98905581, 0.98061780, 0.97291406, 0.96592590, 0.95958024, 0.95328626, 0.94743718 }
+		},
+		{
+			{ 0.98550653, 0.97662352, 0.96958222, 0.96341274, 0.95837887, 0.95383937, 0.94991322 },
+			{ 0.98978845, 0.98240151, 0.97594931, 0.96996467, 0.96460263, 0.95958639, 0.95483063 },
+			{ 0.99071703, 0.98368674, 0.97750429, 0.97195169, 0.96676199, 0.96193565, 0.95727243 },
+			{ 0.99127261, 0.98454659, 0.97878111, 0.97326977, 0.96834685, 0.96362927, 0.95897347 },
+			{ 0.99162907, 0.98531047, 0.97953140, 0.97439602, 0.96953148, 0.96484098, 0.96061685 },
+			{ 0.99195184, 0.98578717, 0.98020187, 0.97505614, 0.97044644, 0.96592340, 0.96170932 },
+			{ 0.99216861, 0.98618097, 0.98079485, 0.97570954, 0.97118689, 0.96675024, 0.96245327 },
+			{ 0.99238219, 0.98637312, 0.98103085, 0.97609776, 0.97148641, 0.96702991, 0.96299863 },
+			{ 0.99239115, 0.98656046, 0.98121273, 0.97634778, 0.97163904, 0.96748477, 0.96294067 },
+			{ 0.99248575, 0.98653328, 0.98118446, 0.97625933, 0.97169398, 0.96729441, 0.96306263 },
+			{ 0.99249103, 0.98649179, 0.98120251, 0.97639938, 0.97169581, 0.96710154, 0.96307899 },
+			{ 0.99245621, 0.98633908, 0.98105854, 0.97606216, 0.97126147, 0.96688127, 0.96261961 },
+			{ 0.99227482, 0.98617489, 0.98063264, 0.97558862, 0.97100659, 0.96625540, 0.96199821 },
+			{ 0.99212917, 0.98591446, 0.98036704, 0.97521002, 0.97010209, 0.96544108, 0.96126242 },
+			{ 0.99196636, 0.98549780, 0.97980600, 0.97451977, 0.96958975, 0.96487792, 0.96029782 },
+			{ 0.99171696, 0.98517455, 0.97929660, 0.97400508, 0.96864210, 0.96389457, 0.95921636 },
+			{ 0.99147514, 0.98471734, 0.97868826, 0.97318743, 0.96785321, 0.96282901, 0.95803308 },
+			{ 0.99115935, 0.98422199, 0.97807455, 0.97224900, 0.96684017, 0.96171692, 0.95679948 },
+			{ 0.99080794, 0.98372012, 0.97723947, 0.97133773, 0.96566295, 0.96049841, 0.95545396 },
+			{ 0.99045711, 0.98313161, 0.97641479, 0.97030689, 0.96452915, 0.95921427, 0.95397784 },
+			{ 0.99018662, 0.98264896, 0.97566832, 0.96934611, 0.96330761, 0.95768747, 0.95227377 },
+			{ 0.98982129, 0.98190477, 0.97479936, 0.96810073, 0.96206225, 0.95631225, 0.95064420 },
+			{ 0.98949651, 0.98114507, 0.97382859, 0.96719243, 0.96073165, 0.95467963, 0.94893906 },
+			{ 0.98904971, 0.98048363, 0.97294991, 0.96590624, 0.95926633, 0.95291552, 0.94712144 }
+		},
+		{
+			{ 0.98453489, 0.97512621, 0.96770587, 0.96173688, 0.95631036, 0.95134017, 0.94706703 },
+			{ 0.98923418, 0.98133203, 0.97447814, 0.96854928, 0.96269954, 0.95748581, 0.95255823 },
+			{ 0.99016647, 0.98284181, 0.97628466, 0.97041747, 0.96479616, 0.95979738, 0.95476011 },
+			{ 0.99064458, 0.98363044, 0.97742000, 0.97170896, 0.96651524, 0.96147808, 0.95690495 },
+			{ 0.99112122, 0.98440234, 0.97843178, 0.97286881, 0.96762186, 0.96293599, 0.95806134 },
+			{ 0.99148493, 0.98487653, 0.97894248, 0.97364165, 0.96877315, 0.96392644, 0.95932753 },
+			{ 0.99165409, 0.98529451, 0.97945296, 0.97432678, 0.96930460, 0.96462207, 0.96019089 },
+			{ 0.99185347, 0.98553121, 0.97984837, 0.97468257, 0.96982665, 0.96524907, 0.96090138 },
+			{ 0.99201570, 0.98575960, 0.98009924, 0.97500390, 0.97015273, 0.96551714, 0.96117057 },
+			{ 0.99202363, 0.98574414, 0.98028874, 0.97506574, 0.97024981, 0.96559234, 0.96126044 },
+			{ 0.99206224, 0.98583321, 0.98016683, 0.97509529, 0.97024042, 0.96563342, 0.96111740 },
+			{ 0.99195201, 0.98578856, 0.98013990, 0.97499669, 0.96995696, 0.96509794, 0.96097179 },
+			{ 0.99197165, 0.98553199, 0.97993625, 0.97465425, 0.96974514, 0.96493085, 0.96058143 },
+			{ 0.99179490, 0.98531898, 0.97950726, 0.97416305, 0.96915666, 0.96446508, 0.95980195 },
+			{ 0.99160595, 0.98508399, 0.97914970, 0.97372299, 0.96847633, 0.96376527, 0.95902105 },
+			{ 0.99147514, 0.98471734, 0.97868826, 0.97318743, 0.96785321, 0.96282901, 0.95803308 },
+			{ 0.99117595, 0.98432408, 0.97812859, 0.97237943, 0.96692118, 0.96185903, 0.95699563 },
+			{ 0.99101387, 0.98379972, 0.97755098, 0.97160821, 0.96619700, 0.96087680, 0.95564233 },
+			{ 0.99067413, 0.98330989, 0.97683149, 0.97065416, 0.96522375, 0.95978567, 0.95447866 },
+			{ 0.99032983, 0.98282295, 0.97605308, 0.96996249, 0.96402201, 0.95834470, 0.95311092 },
+			{ 0.99007276, 0.98222297, 0.97526029, 0.96889596, 0.96271372, 0.95707047, 0.95174987 },
+			{ 0.98967371, 0.98165838, 0.97450129, 0.96790690, 0.96153918, 0.95580521, 0.95021489 },
+			{ 0.98928835, 0.98092764, 0.97372093, 0.96686284, 0.96034820, 0.95416580, 0.94849075 },
+			{ 0.98898657, 0.98045762, 0.97285054, 0.96571954, 0.95896221, 0.95263756, 0.94682084 }
+		},
+		{
+			{ 0.98358213, 0.97368315, 0.96604716, 0.95953416, 0.95387172, 0.94890795, 0.94436461 },
+			{ 0.98854771, 0.98029549, 0.97299618, 0.96665458, 0.96054852, 0.95519634, 0.94997421 },
+			{ 0.98949881, 0.98177957, 0.97475504, 0.96878902, 0.96299953, 0.95762553, 0.95260671 },
+			{ 0.99011760, 0.98271611, 0.97605313, 0.97005096, 0.96470501, 0.95933804, 0.95446345 },
+			{ 0.99054342, 0.98335958, 0.97701690, 0.97116432, 0.96592082, 0.96090705, 0.95580076 },
+			{ 0.99091047, 0.98393604, 0.97784410, 0.97208406, 0.96683912, 0.96194865, 0.95710819 },
+			{ 0.99114108, 0.98435994, 0.97836696, 0.97283140, 0.96762837, 0.96264102, 0.95802979 },
+			{ 0.99138642, 0.98473962, 0.97884662, 0.97332171, 0.96817615, 0.96340156, 0.95887826 },
+			{ 0.99151769, 0.98483306, 0.97903105, 0.97361960, 0.96846486, 0.96384901, 0.95930240 },
+			{ 0.99162736, 0.98502315, 0.97924524, 0.97382950, 0.96877485, 0.96399714, 0.95927820 },
+			{ 0.99160866, 0.98514044, 0.97928999, 0.97387807, 0.96871277, 0.96383091, 0.95936525 },
+			{ 0.99162406, 0.98510668, 0.97917234, 0.97374768, 0.96872397, 0.96382640, 0.95924861 },
+			{ 0.99156077, 0.98490705, 0.97907440, 0.97348941, 0.96848715, 0.96355316, 0.95880687 },
+			{ 0.99150292, 0.98469718, 0.97873057, 0.97312912, 0.96792281, 0.96294063, 0.95833380 },
+			{ 0.99132874, 0.98452819, 0.97840785, 0.97276257, 0.96758762, 0.96256000, 0.95767792 },
+			{ 0.99115935, 0.98422199, 0.97807455, 0.97224900, 0.96684017, 0.96171692, 0.95679948 },
+			{ 0.99101387, 0.98379972, 0.97755098, 0.97160821, 0.96619700, 0.96087680, 0.95564233 },
+			{ 0.99073616, 0.98343162, 0.97706300, 0.97095832, 0.96506671, 0.95991241, 0.95492948 },
+			{ 0.99051638, 0.98299907, 0.97641533, 0.97011873, 0.96434350, 0.95888412, 0.95372937 },
+			{ 0.99019967, 0.98255078, 0.97571832, 0.96941528, 0.96336772, 0.95756329, 0.95229004 },
+			{ 0.98992894, 0.98198670, 0.97497197, 0.96840263, 0.96229615, 0.95643413, 0.95093595 },
+			{ 0.98959396, 0.98138225, 0.97417989, 0.96740481, 0.96106229, 0.95512196, 0.94959877 },
+			{ 0.98922057, 0.98091222, 0.97336263, 0.96650745, 0.95987816, 0.95370349, 0.94792156 },
+			{ 0.98883113, 0.98025126, 0.97248052, 0.96535622, 0.95865439, 0.95245724, 0.94645737 }
+		},
+		{
+			{ 0.98266232, 0.97219383, 0.96424585, 0.95747901, 0.95168386, 0.94626515, 0.94143111 },
+			{ 0.98789682, 0.97912104, 0.97163968, 0.96492335, 0.95872777, 0.95292320, 0.94748102 },
+			{ 0.98890518, 0.98072333, 0.97360809, 0.96695331, 0.96102299, 0.95548375, 0.94996220 },
+			{ 0.98947858, 0.98163637, 0.97467229, 0.96847251, 0.96247033, 0.95724766, 0.95200249 },
+			{ 0.98995199, 0.98240458, 0.97566815, 0.96940210, 0.96395615, 0.95863717, 0.95365627 },
+			{ 0.99035002, 0.98301856, 0.97653345, 0.97058135, 0.96511931, 0.95962976, 0.95460653 },
+			{ 0.99067596, 0.98344983, 0.97707729, 0.97129434, 0.96586556, 0.96076569, 0.95575553 },
+			{ 0.99084780, 0.98378300, 0.97757625, 0.97166043, 0.96648808, 0.96139998, 0.95629517 },
+			{ 0.99100317, 0.98411819, 0.97795721, 0.97224419, 0.96684800, 0.96196757, 0.95705652 },
+			{ 0.99115876, 0.98417593, 0.97807979, 0.97239364, 0.96702298, 0.96208991, 0.95739770 },
+			{ 0.99119867, 0.98423228, 0.97820489, 0.97269150, 0.96726659, 0.96210467, 0.95745909 },
+			{ 0.99120591, 0.98435864, 0.97818186, 0.97257426, 0.96715932, 0.96213915, 0.95726310 },
+			{ 0.99123221, 0.98429590, 0.97805881, 0.97241330, 0.96698486, 0.96194298, 0.95703905 },
+			{ 0.99107834, 0.98415475, 0.97793743, 0.97222288, 0.96671982, 0.96154010, 0.95655526 },
+			{ 0.99106071, 0.98394193, 0.97769980, 0.97180043, 0.96636828, 0.96111770, 0.95614136 },
+			{ 0.99080794, 0.98372012, 0.97723947, 0.97133773, 0.96566295, 0.96049841, 0.95545396 },
+			{ 0.99067413, 0.98330989, 0.97683149, 0.97065416, 0.96522375, 0.95978567, 0.95447866 },
+			{ 0.99051638, 0.98299907, 0.97641533, 0.97011873, 0.96434350, 0.95888412, 0.95372937 },
+			{ 0.99027113, 0.98255231, 0.97571539, 0.96951305, 0.96346390, 0.95780946, 0.95252718 },
+			{ 0.98997388, 0.98210012, 0.97505470, 0.96860033, 0.96241818, 0.95682842, 0.95140969 },
+			{ 0.98971710, 0.98162730, 0.97446954, 0.96789089, 0.96162297, 0.95577969, 0.95008526 },
+			{ 0.98939999, 0.98119156, 0.97370210, 0.96703956, 0.96029138, 0.95444175, 0.94872551 },
+			{ 0.98904345, 0.98058696, 0.97297393, 0.96604117, 0.95945302, 0.95310608, 0.94719269 },
+			{ 0.98870961, 0.98003723, 0.97230054, 0.96500731, 0.95831113, 0.95186440, 0.94563003 }
+		},
+		{
+			{ 0.98152372, 0.97090894, 0.96255129, 0.95553313, 0.94948089, 0.94384033, 0.93867544 },
+			{ 0.98713450, 0.97815043, 0.97027091, 0.96315212, 0.95657269, 0.95055320, 0.94497570 },
+			{ 0.98829548, 0.97961456, 0.97186267, 0.96517875, 0.95911323, 0.95314037, 0.94755785 },
+			{ 0.98894293, 0.98072881, 0.97345130, 0.96662864, 0.96080048, 0.95500424, 0.94941168 },
+			{ 0.98950166, 0.98138632, 0.97452527, 0.96790212, 0.96198589, 0.95664006, 0.95109818 },
+			{ 0.98977572, 0.98210191, 0.97522566, 0.96893256, 0.96307686, 0.95765777, 0.95222951 },
+			{ 0.99010918, 0.98246816, 0.97579788, 0.96978791, 0.96400433, 0.95869307, 0.95350973 },
+			{ 0.99033565, 0.98291454, 0.97629273, 0.97033186, 0.96473766, 0.95936086, 0.95428299 },
+			{ 0.99052087, 0.98311106, 0.97676564, 0.97077726, 0.96501289, 0.95979857, 0.95474939 },
+			{ 0.99070026, 0.98340939, 0.97706875, 0.97108659, 0.96560230, 0.96033803, 0.95508449 },
+			{ 0.99072579, 0.98348871, 0.97713668, 0.97122418, 0.96570338, 0.96056384, 0.95555116 },
+			{ 0.99076337, 0.98354940, 0.97727422, 0.97117267, 0.96567930, 0.96045458, 0.95553258 },
+			{ 0.99076841, 0.98362676, 0.97715494, 0.97129068, 0.96564047, 0.96025245, 0.95526220 },
+			{ 0.99074849, 0.98346280, 0.97713646, 0.97091653, 0.96544041, 0.95990996, 0.95483578 },
+			{ 0.99067695, 0.98325079, 0.97679322, 0.97068761, 0.96503702, 0.95943757, 0.95452724 },
+			{ 0.99045711, 0.98313161, 0.97641479, 0.97030689, 0.96452915, 0.95921427, 0.95397784 },
+			{ 0.99032983, 0.98282295, 0.97605308, 0.96996249, 0.96402201, 0.95834470, 0.95311092 },
+			{ 0.99019967, 0.98255078, 0.97571832, 0.96941528, 0.96336772, 0.95756329, 0.95229004 },
+			{ 0.98997388, 0.98210012, 0.97505470, 0.96860033, 0.96241818, 0.95682842, 0.95140969 },
+			{ 0.98973574, 0.98169224, 0.97463856, 0.96797685, 0.96168251, 0.95580857, 0.95013907 },
+			{ 0.98949475, 0.98127677, 0.97391338, 0.96698822, 0.96065851, 0.95489549, 0.94909778 },
+			{ 0.98917064, 0.98086380, 0.97332858, 0.96632804, 0.95990591, 0.95366263, 0.94784582 },
+			{ 0.98889005, 0.98031868, 0.97248552, 0.96542548, 0.95881023, 0.95240466, 0.94629157 },
+			{ 0.98856941, 0.97974290, 0.97196580, 0.96444845, 0.95775275, 0.95118082, 0.94487887 }
+		},
+		{
+			{ 0.98057955, 0.96950954, 0.96064088, 0.95335934, 0.94701854, 0.94109573, 0.93600850 },
+			{ 0.98650599, 0.97689505, 0.96868768, 0.96119904, 0.95443586, 0.94824959, 0.94251682 },
+			{ 0.98761346, 0.97859231, 0.97082436, 0.96358452, 0.95705767, 0.95078927, 0.94503775 },
+			{ 0.98837231, 0.97959481, 0.97207253, 0.96492764, 0.95871939, 0.95268396, 0.94714652 },
+			{ 0.98888044, 0.98033273, 0.97304812, 0.96626344, 0.96007171, 0.95420102, 0.94869373 },
+			{ 0.98924417, 0.98108798, 0.97388010, 0.96724345, 0.96120855, 0.95542327, 0.94996592 },
+			{ 0.98952818, 0.98154919, 0.97450535, 0.96829087, 0.96214790, 0.95655444, 0.95114361 },
+			{ 0.98984551, 0.98205407, 0.97502620, 0.96872600, 0.96288534, 0.95722332, 0.95200164 },
+			{ 0.99003374, 0.98248810, 0.97556874, 0.96927631, 0.96342025, 0.95800532, 0.95264353 },
+			{ 0.99011972, 0.98254533, 0.97595802, 0.96972373, 0.96374360, 0.95839171, 0.95309439 },
+			{ 0.99033258, 0.98273380, 0.97603719, 0.96973375, 0.96420925, 0.95854455, 0.95329643 },
+			{ 0.99027952, 0.98283508, 0.97616399, 0.97005767, 0.96414857, 0.95872550, 0.95343437 },
+			{ 0.99041663, 0.98277367, 0.97612561, 0.97014220, 0.96405377, 0.95863457, 0.95357902 },
+			{ 0.99037397, 0.98277199, 0.97609029, 0.96969422, 0.96394765, 0.95840204, 0.95325597 },
+			{ 0.99031521, 0.98263845, 0.97585627, 0.96964708, 0.96369556, 0.95818532, 0.95278679 },
+			{ 0.99018662, 0.98264896, 0.97566832, 0.96934611, 0.96330761, 0.95768747, 0.95227377 },
+			{ 0.99007276, 0.98222297, 0.97526029, 0.96889596, 0.96271372, 0.95707047, 0.95174987 },
+			{ 0.98992894, 0.98198670, 0.97497197, 0.96840263, 0.96229615, 0.95643413, 0.95093595 },
+			{ 0.98971710, 0.98162730, 0.97446954, 0.96789089, 0.96162297, 0.95577969, 0.95008526 },
+			{ 0.98949475, 0.98127677, 0.97391338, 0.96698822, 0.96065851, 0.95489549, 0.94909778 },
+			{ 0.98920749, 0.98080764, 0.97321736, 0.96647129, 0.96005185, 0.95366460, 0.94799031 },
+			{ 0.98904431, 0.98025056, 0.97274973, 0.96572486, 0.95901894, 0.95283956, 0.94664614 },
+			{ 0.98872012, 0.97996452, 0.97203286, 0.96487540, 0.95802062, 0.95164784, 0.94542125 },
+			{ 0.98856731, 0.97937197, 0.97143268, 0.96387462, 0.95676590, 0.95032983, 0.94422730 }
+		},
+		{
+			{ 0.97951715, 0.96791147, 0.95896782, 0.95113769, 0.94458266, 0.93871778, 0.93322118 },
+			{ 0.98581089, 0.97576350, 0.96712163, 0.95925795, 0.95248124, 0.94567115, 0.93973881 },
+			{ 0.98703807, 0.97749973, 0.96922296, 0.96180423, 0.95508319, 0.94863211, 0.94249363 },
+			{ 0.98764230, 0.97862161, 0.97055325, 0.96343492, 0.95671355, 0.95048359, 0.94457457 },
+			{ 0.98827171, 0.97928336, 0.97166197, 0.96463448, 0.95814066, 0.95198336, 0.94604871 },
+			{ 0.98868623, 0.98012170, 0.97251232, 0.96569948, 0.95910107, 0.95332038, 0.94755829 },
+			{ 0.98905654, 0.98055461, 0.97331452, 0.96649818, 0.96030395, 0.95444760, 0.94889942 },
+			{ 0.98930146, 0.98105534, 0.97388646, 0.96732147, 0.96107084, 0.95523205, 0.94975239 },
+			{ 0.98958855, 0.98144122, 0.97427642, 0.96771496, 0.96167659, 0.95591387, 0.95046701 },
+			{ 0.98973084, 0.98174629, 0.97466426, 0.96830983, 0.96191331, 0.95656150, 0.95103835 },
+			{ 0.98970993, 0.98203708, 0.97497616, 0.96846485, 0.96257881, 0.95670981, 0.95120204 },
+			{ 0.98989752, 0.98204672, 0.97506582, 0.96873755, 0.96244159, 0.95697166, 0.95153650 },
+			{ 0.98994580, 0.98213185, 0.97514793, 0.96878280, 0.96255773, 0.95686559, 0.95154044 },
+			{ 0.98987727, 0.98208665, 0.97495114, 0.96847673, 0.96265546, 0.95690704, 0.95134376 },
+			{ 0.98984225, 0.98196069, 0.97503999, 0.96845952, 0.96241743, 0.95674486, 0.95100698 },
+			{ 0.98982129, 0.98190477, 0.97479936, 0.96810073, 0.96206225, 0.95631225, 0.95064420 },
+			{ 0.98967371, 0.98165838, 0.97450129, 0.96790690, 0.96153918, 0.95580521, 0.95021489 },
+			{ 0.98959396, 0.98138225, 0.97417989, 0.96740481, 0.96106229, 0.95512196, 0.94959877 },
+			{ 0.98939999, 0.98119156, 0.97370210, 0.96703956, 0.96029138, 0.95444175, 0.94872551 },
+			{ 0.98917064, 0.98086380, 0.97332858, 0.96632804, 0.95990591, 0.95366263, 0.94784582 },
+			{ 0.98904431, 0.98025056, 0.97274973, 0.96572486, 0.95901894, 0.95283956, 0.94664614 },
+			{ 0.98884567, 0.97998925, 0.97218853, 0.96505191, 0.95823848, 0.95176481, 0.94568259 },
+			{ 0.98856358, 0.97961315, 0.97163837, 0.96413453, 0.95738804, 0.95072948, 0.94454924 },
+			{ 0.98822131, 0.97905223, 0.97098080, 0.96338450, 0.95620021, 0.94967369, 0.94309460 }
+		},
+		{
+			{ 0.97851988, 0.96637452, 0.95708596, 0.94927573, 0.94230813, 0.93609181, 0.93038392 },
+			{ 0.98512832, 0.97472558, 0.96557197, 0.95764652, 0.95043004, 0.94339093, 0.93728464 },
+			{ 0.98641395, 0.97649644, 0.96794532, 0.96000517, 0.95293950, 0.94634164, 0.93997301 },
+			{ 0.98712107, 0.97758153, 0.96925663, 0.96170269, 0.95464254, 0.94809470, 0.94212396 },
+			{ 0.98765175, 0.97841745, 0.97040818, 0.96300827, 0.95615403, 0.94981133, 0.94399531 },
+			{ 0.98809277, 0.97919613, 0.97126672, 0.96417358, 0.95735269, 0.95113024, 0.94522102 },
+			{ 0.98844970, 0.97970008, 0.97195058, 0.96486029, 0.95837110, 0.95244524, 0.94631258 },
+			{ 0.98877454, 0.98024251, 0.97253983, 0.96562903, 0.95931743, 0.95321529, 0.94740814 },
+			{ 0.98897962, 0.98058755, 0.97308405, 0.96609950, 0.95996619, 0.95388461, 0.94810422 },
+			{ 0.98922391, 0.98081866, 0.97348228, 0.96669322, 0.96042371, 0.95441271, 0.94879132 },
+			{ 0.98936671, 0.98104045, 0.97379698, 0.96701649, 0.96070381, 0.95474703, 0.94925342 },
+			{ 0.98934506, 0.98125589, 0.97388256, 0.96729437, 0.96117630, 0.95516458, 0.94940191 },
+			{ 0.98943163, 0.98131730, 0.97409861, 0.96736425, 0.96105459, 0.95515694, 0.94965454 },
+			{ 0.98953642, 0.98131460, 0.97397770, 0.96735921, 0.96086554, 0.95528353, 0.94948238 },
+			{ 0.98946217, 0.98125486, 0.97404988, 0.96734160, 0.96089895, 0.95500106, 0.94937971 },
+			{ 0.98949651, 0.98114507, 0.97382859, 0.96719243, 0.96073165, 0.95467963, 0.94893906 },
+			{ 0.98928835, 0.98092764, 0.97372093, 0.96686284, 0.96034820, 0.95416580, 0.94849075 },
+			{ 0.98922057, 0.98091222, 0.97336263, 0.96650745, 0.95987816, 0.95370349, 0.94792156 },
+			{ 0.98904345, 0.98058696, 0.97297393, 0.96604117, 0.95945302, 0.95310608, 0.94719269 },
+			{ 0.98889005, 0.98031868, 0.97248552, 0.96542548, 0.95881023, 0.95240466, 0.94629157 },
+			{ 0.98872012, 0.97996452, 0.97203286, 0.96487540, 0.95802062, 0.95164784, 0.94542125 },
+			{ 0.98856358, 0.97961315, 0.97163837, 0.96413453, 0.95738804, 0.95072948, 0.94454924 },
+			{ 0.98833709, 0.97918687, 0.97105525, 0.96352498, 0.95629429, 0.94996753, 0.94356882 },
+			{ 0.98803680, 0.97862924, 0.97036899, 0.96283425, 0.95549232, 0.94880696, 0.94217557 }
+		},
+		{
+			{ 0.97751098, 0.96493740, 0.95530175, 0.94712537, 0.93982622, 0.93345612, 0.92744580 },
+			{ 0.98441974, 0.97336411, 0.96414935, 0.95578511, 0.94806804, 0.94101892, 0.93453162 },
+			{ 0.98579848, 0.97532343, 0.96631427, 0.95837000, 0.95089581, 0.94380079, 0.93752526 },
+			{ 0.98656153, 0.97650314, 0.96784200, 0.96003948, 0.95260212, 0.94585466, 0.93947245 },
+			{ 0.98699019, 0.97723504, 0.96895916, 0.96125836, 0.95421383, 0.94764108, 0.94130416 },
+			{ 0.98745544, 0.97805934, 0.96989682, 0.96223135, 0.95537099, 0.94897357, 0.94285139 },
+			{ 0.98786619, 0.97876974, 0.97056935, 0.96318831, 0.95650355, 0.95022737, 0.94399755 },
+			{ 0.98819097, 0.97918095, 0.97136485, 0.96408272, 0.95738696, 0.95101221, 0.94481618 },
+			{ 0.98848705, 0.97970521, 0.97187755, 0.96459737, 0.95808171, 0.95193466, 0.94592734 },
+			{ 0.98861206, 0.98005828, 0.97215065, 0.96522558, 0.95856569, 0.95219523, 0.94669600 },
+			{ 0.98882689, 0.98029418, 0.97261045, 0.96561347, 0.95899525, 0.95300926, 0.94700583 },
+			{ 0.98897906, 0.98038011, 0.97281358, 0.96588931, 0.95935844, 0.95315606, 0.94725473 },
+			{ 0.98900774, 0.98063719, 0.97297107, 0.96605780, 0.95944996, 0.95332319, 0.94761132 },
+			{ 0.98904868, 0.98058134, 0.97311345, 0.96598631, 0.95947938, 0.95335924, 0.94763407 },
+			{ 0.98905581, 0.98061780, 0.97291406, 0.96592590, 0.95958024, 0.95328626, 0.94743718 },
+			{ 0.98904971, 0.98048363, 0.97294991, 0.96590624, 0.95926633, 0.95291552, 0.94712144 },
+			{ 0.98898657, 0.98045762, 0.97285054, 0.96571954, 0.95896221, 0.95263756, 0.94682084 },
+			{ 0.98883113, 0.98025126, 0.97248052, 0.96535622, 0.95865439, 0.95245724, 0.94645737 },
+			{ 0.98870961, 0.98003723, 0.97230054, 0.96500731, 0.95831113, 0.95186440, 0.94563003 },
+			{ 0.98856941, 0.97974290, 0.97196580, 0.96444845, 0.95775275, 0.95118082, 0.94487887 },
+			{ 0.98856731, 0.97937197, 0.97143268, 0.96387462, 0.95676590, 0.95032983, 0.94422730 },
+			{ 0.98822131, 0.97905223, 0.97098080, 0.96338450, 0.95620021, 0.94967369, 0.94309460 },
+			{ 0.98803680, 0.97862924, 0.97036899, 0.96283425, 0.95549232, 0.94880696, 0.94217557 },
+			{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 }
+		}
+	};
+
 	/// DL-77: azimuthally-averaged hemisphere average of
 	/// E_ss_TABLE_G2_ANISO per (alphaX, alphaY).
 	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
@@ -10104,15 +19633,31 @@ namespace MicrofacetEnergyLUT
 		// parameterized on row length instead of fixed at LUT_SIZE) --
 		// needed because the DL-77 aniso table's cosTheta resolution
 		// (ANISO_COS_SIZE) differs from the isotropic tables' LUT_SIZE.
-		inline void BuildSegmentsFromRowN( const Scalar* essRow, const int N, Segment segs[], int& nSegs )
+		//
+		// DL-86: `subRow` carries the SUB_SIZE-1 grazing sub-grid nodes,
+		// exactly as in BuildSegmentsFromRow; this twin is only ever used
+		// for the height-correlated G2 model, whose cosTheta=0 boundary
+		// is the exact constant 1, so there is no essLimit parameter.
+		// Keeping this end-cap in step with LookupEssG2Aniso's own
+		// below-c0 branch is load-bearing for the same reason as in the
+		// isotropic pair: MSPdfG2Aniso calls LookupEssG2Aniso directly
+		// while SampleMSCosThetaG2Aniso inverts THESE segments.
+		inline void BuildSegmentsFromRowN( const Scalar* essRow, const Scalar subRow[SUB_SIZE-1], const int N, Segment segs[], int& nSegs )
 		{
 			nSegs = 0;
 			const Scalar c0 = 0.5 / Scalar(N);
 			const Scalar cLast = (Scalar(N) - 0.5) / Scalar(N);
 
-			segs[nSegs].lo = 0.0; segs[nSegs].hi = c0;
-			segs[nSegs].essLo = essRow[0]; segs[nSegs].slope = 0.0;
-			nSegs++;
+			const Scalar h = c0 / Scalar(SUB_SIZE);
+			for( int k = 0; k < SUB_SIZE; k++ )
+			{
+				const Scalar vLo = (k == 0) ? Scalar(1.0) : subRow[k-1];
+				const Scalar vHi = (k == SUB_SIZE - 1) ? essRow[0] : subRow[k];
+				segs[nSegs].lo = Scalar(k) * h; segs[nSegs].hi = Scalar(k + 1) * h;
+				segs[nSegs].essLo = vLo;
+				segs[nSegs].slope = (vHi - vLo) / h;
+				nSegs++;
+			}
 
 			for( int k = 0; k < N - 1; k++ )
 			{
@@ -10164,27 +19709,40 @@ namespace MicrofacetEnergyLUT
 		pf = p - pi0;
 	}
 
+	/// DL-86: value of the azimuth-AVERAGED aniso grazing model at
+	/// sub-node k (k in [0, SUB_SIZE]) of cell (xi,yi).  Same contract as
+	/// the isotropic SubNodeEssG2: k==0 is the exact boundary 1,
+	/// k==SUB_SIZE is the cell's own first ordinary bin.
+	inline Scalar AnisoSubNodeEssG2( const int xi, const int yi, const int k )
+	{
+		if( k <= 0 ) return Scalar(1.0);
+		if( k >= SUB_SIZE ) return E_ss_TABLE_G2_ANISO[xi][yi][0];
+		return E_ss_TABLE_G2_ANISO_SUB[xi][yi][k-1];
+	}
+
+	/// DL-86: per-azimuth twin of AnisoSubNodeEssG2.
+	inline Scalar AnisoPhiSubNodeEssG2( const int xi, const int yi, const int pi, const int k )
+	{
+		if( k <= 0 ) return Scalar(1.0);
+		if( k >= SUB_SIZE ) return E_ss_TABLE_G2_ANISO_PHI[xi][yi][pi][0];
+		return E_ss_TABLE_G2_ANISO_PHI_SUB[xi][yi][pi][k-1];
+	}
+
 	/// DL-77: anisotropic twin of LookupEssG2.  Falls back to the exact
 	/// isotropic LookupEssG2 when alphaX==alphaY (see file-header note).
 	///
-	/// DL-86: this azimuth-AVERAGED table's below-c0 flat end-cap is
-	/// DELIBERATELY left unfixed here (still the pre-existing flat
-	/// clamp), unlike LookupEssG2/LookupEssG2AnisoDirectional above.
-	/// This function is used ONLY by the H6 multiscatter-lobe SAMPLER's
-	/// proposal shape (MSLobeZG2Aniso/SampleMSCosThetaG2Aniso/
-	/// MSPdfG2Aniso, when alphaX!=alphaY) -- never at a direct
-	/// ENERGY-COMPENSATION call site in GGXBRDF.cpp/GGXSPF.cpp, which all
-	/// route through the per-azimuth LookupEssG2AnisoDirectional instead
-	/// (see that function's own comment).  Precision here is an
-	/// importance-sampling EFFICIENCY concern, not a correctness one (a
-	/// suboptimal proposal shape still converges, just with slightly
-	/// higher variance) -- the existing DL-77 doctrine for this table.
-	/// Changing it would also require updating
-	/// MSLobeDetail::BuildSegmentsFromRowN's end-cap (the generic-N
-	/// twin of BuildSegmentsFromRow used only by this table's sampler) to
-	/// keep SampleMSCosThetaG2Aniso and MSPdfG2Aniso from drifting apart
-	/// for the genuinely-anisotropic (alphaX!=alphaY) case -- left as a
-	/// residual, not fixed in the debt-dl86 slice.
+	/// DL-86: this azimuth-AVERAGED table feeds ONLY the H6
+	/// multiscatter-lobe SAMPLER's proposal shape (MSLobeZG2Aniso/
+	/// SampleMSCosThetaG2Aniso/MSPdfG2Aniso) -- never a direct
+	/// ENERGY-COMPENSATION call site, which all route through the
+	/// per-azimuth LookupEssG2AnisoDirectional below.  It still gets the
+	/// grazing sub-grid, for two reasons that are about consistency, not
+	/// about proposal precision: (a) leaving it flat while its own
+	/// alphaX==alphaY fallback (LookupEssG2) is not would put a step in
+	/// the proposal shape as a surface approaches isotropy, and (b) the
+	/// sub-table is DERIVED from the phi-resolved bake by the same
+	/// trapezoidal average that already produces E_ss_TABLE_G2_ANISO, so
+	/// it costs nothing extra to bake.
 	inline Scalar LookupEssG2Aniso( const Scalar cosTheta, const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEssG2( cosTheta, alphaX );
@@ -10197,8 +19755,28 @@ namespace MicrofacetEnergyLUT
 		int yi0, yi1; Scalar yf;
 		AnisoAlphaIndex( aY, yi0, yi1, yf );
 
-		Scalar c = r_max(0.0, r_min(1.0, cosTheta)) * ANISO_COS_SIZE - 0.5;
-		if( c < 0 ) c = 0;
+		const Scalar cc = r_max(0.0, r_min(1.0, cosTheta));
+		const Scalar cSub0 = Scalar(0.5) / Scalar(ANISO_COS_SIZE);
+		if( cc < cSub0 )
+		{
+			int k0; Scalar kf;
+			SubNodeIndex( cc, cSub0, k0, kf );
+			Scalar vXY[2][2];
+			for( int xi = 0; xi < 2; xi++ )
+			{
+				const int xiv = (xi == 0) ? xi0 : xi1;
+				for( int yi = 0; yi < 2; yi++ )
+				{
+					const int yiv = (yi == 0) ? yi0 : yi1;
+					vXY[xi][yi] = (1-kf) * AnisoSubNodeEssG2(xiv, yiv, k0) + kf * AnisoSubNodeEssG2(xiv, yiv, k0 + 1);
+				}
+			}
+			const Scalar s0 = (1-yf)*vXY[0][0] + yf*vXY[0][1];
+			const Scalar s1 = (1-yf)*vXY[1][0] + yf*vXY[1][1];
+			return r_max( Scalar(0.0), r_min( Scalar(1.0), (1-xf)*s0 + xf*s1 ) );
+		}
+
+		Scalar c = cc * ANISO_COS_SIZE - 0.5;
 		int ci0 = (int)c;
 		int ci1 = r_min(ci0 + 1, ANISO_COS_SIZE - 1);
 		Scalar cf = c - ci0;
@@ -10234,36 +19812,24 @@ namespace MicrofacetEnergyLUT
 	/// the exact isotropic LookupEssG2 when alphaX==alphaY (phi is
 	/// meaningless for an isotropic surface).
 	///
-	/// DL-86: below the first cosTheta bin center c0=0.5/ANISO_COS_SIZE,
-	/// this shared the same flat end-cap pattern as LookupEssG2 (same
-	/// `if(c<0) c=0` clamp) -- measured worst case (debt-ggx3 sweep,
-	/// alphaX=0.0361, alphaY=0.9627, phi=5deg, cos=0.0024, deep inside the
-	/// first bin) an 18% relative under-read.  Fixed the same way as
-	/// LookupEssG2: a one-sided extrapolation anchored at the exact
-	/// boundary Ess_G2(cosTheta=0)=1 (the SAME height-correlated-Smith
-	/// argument holds per-direction -- Lambda_Aniso(wi)->infinity as
-	/// cosWi->0 regardless of azimuth, so G2_Aniso/G1_Aniso(wi)->1 for any
-	/// finite wo), using v0 = this SAME quadrilinear interpolation
-	/// evaluated exactly at cosTheta=c0 (alphaX/alphaY/phi held fixed).
-	/// Residual after the fix (independent 20M-sample quadrature,
-	/// debt-dl86 slice): reduces the cited worst case from ~18% to ~2.1-
-	/// 2.4%.  This is NOT unique to that one cited corner: any
-	/// strongly-anisotropic (9:1-10:1) ratio near either tangent axis
-	/// shows a similar-order residual after the fix (measured up to
-	/// ~4.0%, e.g. alphaX=0.9,alphaY=0.1,phi=90,cos=0.005), down from a
-	/// pre-fix flat-clamp error of 12-18%+ at the SAME configurations --
-	/// a large, broad improvement, but NOT closed to <=1% at these
-	/// extreme corners (compounded by DL-77's own separately-tracked
-	/// ANISO_PHI grid-coarseness residual); the residual is bounded and
-	/// reported, not silently accepted -- see
+	/// DL-86: below the first cosTheta bin center c0=0.5/ANISO_COS_SIZE
+	/// this shared the isotropic flat-clamp pattern, and this IS a direct
+	/// energy-compensation call site.  It now interpolates the baked
+	/// per-azimuth grazing sub-grid (E_ss_TABLE_G2_ANISO_PHI_SUB, via
+	/// AnisoPhiSubNodeEssG2), anchored at the same exact boundary 1 --
+	/// the height-correlated Smith argument holds PER DIRECTION
+	/// (Lambda_Aniso(wi) -> infinity as cosWi -> 0 at every azimuth), so
+	/// the boundary is azimuth-independent.  Measured against an
+	/// independent 20M-sample per-azimuth quadrature at cosTheta < c0:
+	/// <=0.72% relative at EXACT (alphaX, alphaY, phi) grid nodes (where
+	/// cosTheta is the only interpolated axis, i.e. where this end-cap is
+	/// the only thing being measured) and <=0.64% at the typical
+	/// near-node configurations, down from up to 18% pre-fix.  OFF-node
+	/// on all three of alphaX, alphaY and phi it is 3-4% -- that is the
+	/// aniso grid's own interpolation error (DL-105 / DL-77's tracked
+	/// ANISO_PHI and low-alpha residual), not this end-cap; see
 	/// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the full
-	/// residual table and why closing it further
-	/// needs the ANISO_PHI_SIZE/alpha-grid resolution work already
-	/// tracked (not this function's extrapolation model). This is a
-	/// direct ENERGY-COMPENSATION call site, not part of the H6 sampler's
-	/// proposal shape (that stays on the azimuth-averaged
-	/// LookupEssG2Aniso, untouched -- see that function's own comment),
-	/// so this change carries no sampler/pdf self-consistency obligation.
+	/// before/after table.
 	inline Scalar LookupEssG2AnisoDirectional( const Scalar cosTheta, const Scalar localX, const Scalar localY, const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEssG2( cosTheta, alphaX );
@@ -10279,17 +19845,19 @@ namespace MicrofacetEnergyLUT
 		AnisoPhiIndex( localX, localY, pi0, pi1, pf );
 
 		const Scalar cc = r_max(0.0, r_min(1.0, cosTheta));
-		const Scalar c0 = Scalar(0.5) / Scalar(ANISO_COS_SIZE);
+		const Scalar cSub0 = Scalar(0.5) / Scalar(ANISO_COS_SIZE);
+		const bool belowC0 = ( cc < cSub0 );
 
-		// Quadrilinear interpolation over (alphaX, alphaY, phi, cosTheta):
-		// 16 corners, collapsed one axis at a time (cos, then phi, then
-		// alphaY, then alphaX) -- same nested-lerp pattern as the
-		// trilinear form above, one dimension deeper.  `ci0f`/`ci1f`/`cff`
-		// pin to the exact c0 row (cf=0, so vP0c1/vP1c1 are never read)
-		// when extrapolating below c0, and to the normal bilinear indices
-		// otherwise -- the loop body is identical either way.
-		int ci0, ci1; Scalar cf;
-		if( cc < c0 ) { ci0 = 0; ci1 = 0; cf = Scalar(0.0); }
+		// Below c0 the cosTheta axis is resolved on the DL-86 sub-grid
+		// (k0/kf); at or above it, on the ordinary bin centers (ci0/ci1/
+		// cf).  Only the innermost cosTheta collapse differs -- the phi,
+		// alphaY and alphaX collapses below are shared verbatim.
+		int k0 = 0; Scalar kf = 0;
+		int ci0 = 0, ci1 = 0; Scalar cf = 0;
+		if( belowC0 )
+		{
+			SubNodeIndex( cc, cSub0, k0, kf );
+		}
 		else
 		{
 			Scalar c = cc * ANISO_COS_SIZE - 0.5;
@@ -10298,6 +19866,10 @@ namespace MicrofacetEnergyLUT
 			cf = c - ci0;
 		}
 
+		// Quadrilinear interpolation over (alphaX, alphaY, phi, cosTheta):
+		// 16 corners, collapsed one axis at a time (cos, then phi, then
+		// alphaY, then alphaX) -- same nested-lerp pattern as the
+		// trilinear form above, one dimension deeper.
 		Scalar vXY[2][2];	// [alphaX][alphaY], after collapsing phi and cos
 		for( int xi = 0; xi < 2; xi++ )
 		{
@@ -10305,25 +19877,24 @@ namespace MicrofacetEnergyLUT
 			for( int yi = 0; yi < 2; yi++ )
 			{
 				const int yiv = (yi == 0) ? yi0 : yi1;
-				const Scalar vP0c0 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi0][ci0];
-				const Scalar vP0c1 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi0][ci1];
-				const Scalar vP1c0 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi1][ci0];
-				const Scalar vP1c1 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi1][ci1];
-				const Scalar vP0 = (1-cf)*vP0c0 + cf*vP0c1;
-				const Scalar vP1 = (1-cf)*vP1c0 + cf*vP1c1;
+				Scalar vP0, vP1;
+				if( belowC0 )
+				{
+					vP0 = (1-kf) * AnisoPhiSubNodeEssG2(xiv, yiv, pi0, k0) + kf * AnisoPhiSubNodeEssG2(xiv, yiv, pi0, k0 + 1);
+					vP1 = (1-kf) * AnisoPhiSubNodeEssG2(xiv, yiv, pi1, k0) + kf * AnisoPhiSubNodeEssG2(xiv, yiv, pi1, k0 + 1);
+				}
+				else
+				{
+					vP0 = (1-cf) * E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi0][ci0] + cf * E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi0][ci1];
+					vP1 = (1-cf) * E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi1][ci0] + cf * E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi1][ci1];
+				}
 				vXY[xi][yi] = (1-pf)*vP0 + pf*vP1;
 			}
 		}
-		const Scalar v0row = (1-yf)*vXY[0][0] + yf*vXY[0][1];
-		const Scalar v1row = (1-yf)*vXY[1][0] + yf*vXY[1][1];
-		const Scalar v0 = (1-xf)*v0row + xf*v1row;
-
-		if( cc < c0 )
-		{
-			const Scalar v = Scalar(1.0) - ( Scalar(1.0) - v0 ) * ( cc / c0 );
-			return r_max( Scalar(0.0), r_min( Scalar(1.0), v ) );
-		}
-		return v0;
+		const Scalar v0 = (1-yf)*vXY[0][0] + yf*vXY[0][1];
+		const Scalar v1 = (1-yf)*vXY[1][0] + yf*vXY[1][1];
+		const Scalar v = (1-xf)*v0 + xf*v1;
+		return belowC0 ? r_max( Scalar(0.0), r_min( Scalar(1.0), v ) ) : v;
 	}
 
 	/// DL-77: anisotropic twin of LookupEavgG2.
@@ -10364,9 +19935,9 @@ namespace MicrofacetEnergyLUT
 			{
 				for( int yi = 0; yi < ANISO_ALPHA_SIZE; yi++ )
 				{
-					MSLobeDetail::Segment segs[ANISO_COS_SIZE + 1];
+					MSLobeDetail::Segment segs[ANISO_COS_SIZE + SUB_SIZE];
 					int nSegs = 0;
-					MSLobeDetail::BuildSegmentsFromRowN( E_ss_TABLE_G2_ANISO[xi][yi], ANISO_COS_SIZE, segs, nSegs );
+					MSLobeDetail::BuildSegmentsFromRowN( E_ss_TABLE_G2_ANISO[xi][yi], E_ss_TABLE_G2_ANISO_SUB[xi][yi], ANISO_COS_SIZE, segs, nSegs );
 					Scalar I = 0.0;
 					for( int i = 0; i < nSegs; i++ )
 						I += MSLobeDetail::SegTotal( segs[i] );
@@ -10414,11 +19985,20 @@ namespace MicrofacetEnergyLUT
 			essRow[k] = (1-xf)*v0 + xf*v1;
 		}
 
-		MSLobeDetail::Segment segs[ANISO_COS_SIZE + 1];
-		int nSegs = 0;
-		MSLobeDetail::BuildSegmentsFromRowN( essRow, ANISO_COS_SIZE, segs, nSegs );
+		// DL-86: the same bilinear blend on the grazing sub-grid.
+		Scalar subRow[SUB_SIZE-1];
+		for( int k = 0; k < SUB_SIZE - 1; k++ )
+		{
+			const Scalar s0 = (1-yf)*E_ss_TABLE_G2_ANISO_SUB[xi0][yi0][k] + yf*E_ss_TABLE_G2_ANISO_SUB[xi0][yi1][k];
+			const Scalar s1 = (1-yf)*E_ss_TABLE_G2_ANISO_SUB[xi1][yi0][k] + yf*E_ss_TABLE_G2_ANISO_SUB[xi1][yi1][k];
+			subRow[k] = (1-xf)*s0 + xf*s1;
+		}
 
-		Scalar totals[ANISO_COS_SIZE + 1];
+		MSLobeDetail::Segment segs[ANISO_COS_SIZE + SUB_SIZE];
+		int nSegs = 0;
+		MSLobeDetail::BuildSegmentsFromRowN( essRow, subRow, ANISO_COS_SIZE, segs, nSegs );
+
+		Scalar totals[ANISO_COS_SIZE + SUB_SIZE];
 		Scalar I = 0.0;
 		for( int i = 0; i < nSegs; i++ )
 		{
