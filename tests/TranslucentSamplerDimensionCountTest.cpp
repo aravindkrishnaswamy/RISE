@@ -81,6 +81,7 @@
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
 
 #include "TestStubObject.h"
@@ -154,6 +155,52 @@ namespace
 		stack.push( 1.33 );
 		stack.SetCurrentObject( obj );
 		return stack;
+	}
+
+	//! P2-a (DL-68 review): the fixture above (extinction=0, scattering=0,
+	//! MakeInsideStack) isolates ONLY the exit branch's diffuse re-emission
+	//! -- it never emits an entering `trans` lobe, its per-channel-N
+	//! branch, or the exit branch's own interior BACKSCATTER `trans` lobe
+	//! (which needs `scattering > 0` to fire at all).  Those are exactly
+	//! the lobes DL-68 changed, and the fixed-dimension-budget invariant
+	//! was never exercised against them by a committed test.  These two
+	//! fixtures complete that coverage.
+	RayIntersectionGeometric MakeTiltedEntryIntersection( Scalar tiltDeg )
+	{
+		const Scalar tiltRad = tiltDeg * PI / 180.0;
+		const Vector3 n( sin(tiltRad), 0, cos(tiltRad) );
+
+		Ray inRay( Point3(0,0,1), Vector3(0,0,-1) );   // travelling INTO the solid
+		RasterizerState rs = {0,0};
+		RayIntersectionGeometric ri( inRay, rs );
+
+		ri.bHit = true;
+		ri.range = 1.0;
+		ri.ptIntersection = Point3(0,0,0);
+		ri.vNormal = n;
+		ri.onb.CreateFromW( n );
+		ri.vGeomNormal = kTrueOutward;
+		ri.ptCoord = Point2(0.5,0.5);
+
+		return ri;
+	}
+
+	IORStack MakeOutsideStack( const IObject* obj )
+	{
+		IORStack stack( 1.0 );
+		stack.SetCurrentObject( obj );
+		return stack;
+	}
+
+	//! Pipe selector shared by the two new rows below -- isotropic RGB,
+	//! per-channel RGB (RGBScalarPainter's three distinct N values force
+	//! the `Nfactor[0] != Nfactor[1]` per-channel branch in
+	//! TranslucentSPF.cpp), and NM.
+	enum DimPipe { kIsoRGB, kSplitRGB, kSpectralNM };
+
+	const char* DimPipeName( DimPipe p )
+	{
+		return p == kIsoRGB ? "RGB iso" : p == kSplitRGB ? "RGB split-N" : "NM";
 	}
 }
 
@@ -249,6 +296,164 @@ static void TestExactlyTwoDrawsPerScatterCall()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+//  P2-a (DL-68 review): entering `trans` lobe dimension count.
+//
+//  Both `front` (reflection) and `trans` (entering transmission) are
+//  active on this fixture (both painters nonzero), so a call draws
+//  front's 2 dimensions plus trans's 2 -- 4 total, unconditionally,
+//  for every N-pipe (the split-N branch shares one canonical pair
+//  across all three channels, same as the isotropic branch).
+//////////////////////////////////////////////////////////////////////
+static void RunEnteringDims( Scalar tiltDeg, DimPipe pipe )
+{
+	StubObject* obj = new StubObject();  obj->addref();
+
+	UniformColorPainter* front = new UniformColorPainter( RISEPel(0.3,0.3,0.3) );  front->addref();
+	UniformColorPainter* trans = new UniformColorPainter( RISEPel(0.4,0.4,0.4) );  trans->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter( 0.2 );  ext->addref();
+	IScalarPainter* phongN = ( pipe == kSplitRGB )
+		? static_cast<IScalarPainter*>( new RGBScalarPainter( 1.0, 7.0, 30.0 ) )
+		: static_cast<IScalarPainter*>( new UniformScalarPainter( 1.0 ) );
+	phongN->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 0.0 );  scat->addref();
+	TranslucentSPF* pSpf = new TranslucentSPF( *front, *trans, *ext, *phongN, *scat );
+	pSpf->addref();
+
+	RayIntersectionGeometric ri = MakeTiltedEntryIntersection( tiltDeg );
+	IORStack stack = MakeOutsideStack( obj );
+
+	RandomNumberGenerator rng( 424242 );
+	IndependentSampler inner( rng );
+	CountingSampler counting( inner );
+
+	const int kTrials = 4096;
+	int minDims = 1000000, maxDims = -1;
+	int pushed = 0;
+
+	for( int i = 0; i < kTrials; i++ ) {
+		ScatteredRayContainer scattered;
+		counting.Reset();
+		if( pipe == kSpectralNM ) pSpf->ScatterNM( ri, counting, 550.0, scattered, stack );
+		else                      pSpf->Scatter( ri, counting, scattered, stack );
+		const int dims = counting.Dims();
+		if( dims < minDims ) minDims = dims;
+		if( dims > maxDims ) maxDims = dims;
+		for( unsigned int j = 0; j < scattered.Count(); j++ ) {
+			if( scattered[j].type == ScatteredRay::eRayTranslucent && scattered[j].ior_stack != 0 ) pushed++;
+		}
+	}
+
+	// The split-N pipe emits one translucent ray PER CHANNEL each trial
+	// (TranslucentSPF.cpp's per-channel branch), so its expected pushed
+	// count is 3x -- the dimension count itself stays 4 regardless (the
+	// three channels share one canonical (u1,u2) pair).
+	const int expectedPushed = ( pipe == kSplitRGB ) ? kTrials * 3 : kTrials;
+
+	char label[220];
+	std::snprintf( label, sizeof(label),
+		"entering %s tilt=%g: min=%d max=%d pushed=%d/%d",
+		DimPipeName(pipe), (double)tiltDeg, minDims, maxDims, pushed, expectedPushed );
+	std::cout << "  " << label << std::endl;
+	EXPECT( minDims == maxDims, label );
+	EXPECT( pushed == expectedPushed, label );
+
+	obj->release();
+	pSpf->release();
+	front->release();
+	trans->release();
+	ext->release();
+	phongN->release();
+	scat->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  P2-a (DL-68 review): exit branch's interior BACKSCATTER `trans`
+//  lobe dimension count, `scattering > 0` so it actually fires.  A
+//  call draws the backscatter's 2 dimensions plus the diffuse exit's
+//  2 -- 4 total, unconditionally.
+//////////////////////////////////////////////////////////////////////
+static void RunExitScatterDims( Scalar tiltDeg, DimPipe pipe )
+{
+	StubObject* obj = new StubObject();  obj->addref();
+
+	UniformColorPainter* front = new UniformColorPainter( RISEPel(0.3,0.3,0.3) );  front->addref();
+	UniformColorPainter* trans = new UniformColorPainter( RISEPel(0.3,0.3,0.3) );  trans->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter( 0.05 );  ext->addref();
+	IScalarPainter* phongN = ( pipe == kSplitRGB )
+		? static_cast<IScalarPainter*>( new RGBScalarPainter( 1.0, 7.0, 30.0 ) )
+		: static_cast<IScalarPainter*>( new UniformScalarPainter( 1.0 ) );
+	phongN->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 0.6 );  scat->addref();
+	TranslucentSPF* pSpf = new TranslucentSPF( *front, *trans, *ext, *phongN, *scat );
+	pSpf->addref();
+
+	RayIntersectionGeometric ri = MakeTiltedExitIntersection( tiltDeg );
+	IORStack stack = MakeInsideStack( obj );
+
+	RandomNumberGenerator rng( 13131313 );
+	IndependentSampler inner( rng );
+	CountingSampler counting( inner );
+
+	const int kTrials = 4096;
+	int minDims = 1000000, maxDims = -1;
+	int backCount = 0, exitCount = 0;
+
+	for( int i = 0; i < kTrials; i++ ) {
+		ScatteredRayContainer scattered;
+		counting.Reset();
+		if( pipe == kSpectralNM ) pSpf->ScatterNM( ri, counting, 550.0, scattered, stack );
+		else                      pSpf->Scatter( ri, counting, scattered, stack );
+		const int dims = counting.Dims();
+		if( dims < minDims ) minDims = dims;
+		if( dims > maxDims ) maxDims = dims;
+		for( unsigned int j = 0; j < scattered.Count(); j++ ) {
+			if( scattered[j].type == ScatteredRay::eRayTranslucent ) backCount++;
+			if( scattered[j].type == ScatteredRay::eRayDiffuse ) exitCount++;
+		}
+	}
+
+	// Same per-channel multiplicity as the entering pipe above: the
+	// split-N backscatter branch emits one ray PER CHANNEL each trial.
+	const int expectedBack = ( pipe == kSplitRGB ) ? kTrials * 3 : kTrials;
+
+	char label[240];
+	std::snprintf( label, sizeof(label),
+		"exit+scatter %s tilt=%g: min=%d max=%d back=%d/%d exit=%d/%d",
+		DimPipeName(pipe), (double)tiltDeg, minDims, maxDims, backCount, expectedBack, exitCount, kTrials );
+	std::cout << "  " << label << std::endl;
+	EXPECT( minDims == maxDims, label );
+	EXPECT( backCount == expectedBack, label );
+	EXPECT( exitCount == kTrials, label );
+
+	obj->release();
+	pSpf->release();
+	front->release();
+	trans->release();
+	ext->release();
+	phongN->release();
+	scat->release();
+}
+
+static void TestDL68LobeDims()
+{
+	std::cout << "Sub-test: DL-68 entering/backscatter trans lobes draw a FIXED dimension count (P2-a)" << std::endl;
+
+	const Scalar tilts[] = { 0.0, 45.0, 80.0 };
+	const DimPipe pipes[] = { kIsoRGB, kSplitRGB, kSpectralNM };
+
+	for( int t = 0; t < 3; t++ ) {
+		for( int p = 0; p < 3; p++ ) {
+			RunEnteringDims( tilts[t], pipes[p] );
+		}
+	}
+	for( int t = 0; t < 3; t++ ) {
+		for( int p = 0; p < 3; p++ ) {
+			RunExitScatterDims( tilts[t], pipes[p] );
+		}
+	}
+}
+
 int main()
 {
 	GlobalLog();
@@ -256,6 +461,7 @@ int main()
 	std::cout << "TranslucentSamplerDimensionCountTest: P1 fixed-dimension-budget draw count" << std::endl;
 
 	TestExactlyTwoDrawsPerScatterCall();
+	TestDL68LobeDims();
 
 	std::cout << std::endl;
 	std::cout << "TranslucentSamplerDimensionCountTest: " << checks << " checks, " << failed << " failures" << std::endl;
