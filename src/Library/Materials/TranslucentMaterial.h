@@ -64,6 +64,44 @@ namespace RISE
 			// is handled correctly by the eye/light subpath tracing.
 			inline bool CouldLightPassThrough() const { return false; };
 
+			// DL-46: TranslucentSPF::Scatter/ScatterNM classify entry vs.
+			// exit purely from `ior_stack.containsCurrent()` -- exactly
+			// like a real dielectric, an object whose interior a ray can
+			// be "inside".  The base IMaterial default (isSpecular=false,
+			// canRefract=false, valid=false) meant
+			// IORStackSeeding::SeedFromPoint's probe -- which only tracks
+			// materials reporting `canRefract` -- silently skipped this
+			// material, so a camera/light origin already inside a closed
+			// translucent object was never seeded with its membership, and
+			// the first physical crossing was misclassified as an entry
+			// instead of an exit.
+			//
+			// This is NOT a specular material (its lobes are diffuse / Phong,
+			// sampled stochastically, never delta) and it carries no
+			// distinct IOR of its own -- interior segments re-push the
+			// ENCLOSING medium's IOR unchanged (see the entry/backscatter
+			// comments in TranslucentSPF::Scatter).  Report that
+			// stateful-but-non-refracting nature via `hasInterior` rather
+			// than lying about specularity/refraction just to be picked up
+			// by the seeding probe; see SpecularInfo.h and
+			// docs/SUBMERGED_CAMERA_IOR_SEEDING.md.  `ior` is left at its
+			// default (1.0) -- informational only, since SeedFromPoint
+			// re-pushes the caller's own current stack top for a
+			// `hasInterior`-only entry instead of reading this field,
+			// matching Scatter()'s own `push(ior_stack.top())`.
+			inline SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric&,
+				const IORStack&
+				) const
+			{
+				SpecularInfo info;
+				info.valid = true;
+				info.isSpecular = false;
+				info.canRefract = false;
+				info.hasInterior = true;
+				return info;
+			}
+
 			//! Read-back + rebind for the interactive editor.  `ref`/`tau`/`N`
 			//! exist on both BSDF and SPF — Material forwards in lockstep.
 			//! `ext`/`scat` exist only on the SPF (BSDF doesn't carry them).

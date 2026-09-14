@@ -67,11 +67,21 @@
 //    pathological ray, which the rest of the path walk then corrects
 //    as it enters/exits real boundaries.
 //
-//    The probe only considers materials whose GetSpecularInfo
-//    reports canRefract=true.  Pure reflectors (mirrors) and
-//    lambertian surfaces are skipped — they are not media and their
-//    "interior" is not a place rays travel through with a different
-//    IOR.
+//    The probe only considers materials whose GetSpecularInfo reports
+//    canRefract=true OR hasInterior=true (DL-46).  Pure reflectors
+//    (mirrors) and lambertian surfaces report neither and are skipped
+//    — they are not media and their "interior" is not a place rays
+//    travel through with a different IOR.  `hasInterior` covers a
+//    second, narrower case: a material that is NOT specular (its
+//    lobes are stochastic, never delta) and carries no distinct IOR
+//    of its own, but still classifies entry/exit from
+//    ior_stack.containsCurrent() exactly like a refractor does —
+//    TranslucentSPF's diffuse lampshade model is the motivating
+//    example.  For a `canRefract` object the probe pushes that
+//    object's OWN captured `ior`; for a `hasInterior`-only object it
+//    instead re-pushes whatever IOR is already on the stack (see the
+//    push loop below), because such a material never introduces a
+//    new numeric medium — only membership changes.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 23, 2026
@@ -149,6 +159,13 @@ namespace RISE
 				Scalar ior;
 				int parity;
 				int firstExitStep;  // probe step of FIRST exit, for stack-order sort
+				// DL-46: true for a `hasInterior`-only (non-refracting,
+				// stateful) material -- push re-pushes the stack's CURRENT
+				// top instead of this entry's captured `ior`, matching
+				// TranslucentSPF::Scatter's own `push(ior_stack.top())`.
+				// False for an ordinary `canRefract` medium, which pushes
+				// its own distinct `ior` as before.
+				bool repushParentIor;
 			};
 			// Stack-allocated small buffer; real scenes rarely nest more
 			// than 2-3 refractive volumes so the fixed cap is generous.
@@ -186,13 +203,17 @@ namespace RISE
 
 				if( ri.pObject && ri.pMaterial )
 				{
-					// Only track refractive materials — pure reflectors
-					// (mirrors) and Lambertian surfaces have no "interior"
-					// the ray travels through with a different IOR.
+					// Track refractive materials (own numeric IOR) AND
+					// hasInterior-only stateful materials (DL-46, no
+					// distinct IOR, just membership tracking) — pure
+					// reflectors (mirrors) and Lambertian surfaces report
+					// neither and have no "interior" the ray travels
+					// through.
 					IORStack queryStack( Scalar( 1.0 ) );
 					const SpecularInfo info =
 						ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
-					if( info.valid && info.canRefract && info.ior > 0 )
+					const bool bTrackable = info.canRefract ? (info.ior > 0) : info.hasInterior;
+					if( info.valid && bTrackable )
 					{
 						// Find or create per-object entry.  Linear scan is
 						// fine — kMaxNestingDepth is 8.
@@ -209,6 +230,7 @@ namespace RISE
 							e->ior = info.ior;
 							e->parity = 0;
 							e->firstExitStep = -1;
+							e->repushParentIor = !info.canRefract;
 						}
 						if( e )
 						{
@@ -262,7 +284,14 @@ namespace RISE
 			}
 			for( std::size_t i = 0; i < orderedCount; i++ ) {
 				stack.SetCurrentObject( ordered[i]->pObj );
-				stack.push( ordered[i]->ior );
+				// DL-46: a hasInterior-only entry (e.g. TranslucentSPF) has
+				// no distinct IOR of its own -- re-push whatever is
+				// CURRENTLY on top (set by the previous, more-outer push,
+				// or the stack's initial environment IOR if this is the
+				// outermost entry), matching Scatter()'s own
+				// `push(ior_stack.top())`.  An ordinary canRefract medium
+				// pushes its own captured `ior` as before.
+				stack.push( ordered[i]->repushParentIor ? stack.top() : ordered[i]->ior );
 			}
 		}
 	}
