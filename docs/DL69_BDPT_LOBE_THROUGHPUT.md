@@ -302,11 +302,19 @@ to 4x.
 * **DL-125** — PT's HWSS companion fallback
   (`PathTracingIntegrator.cpp`, `compWeight = pBRDFCur->valueNM(...) *
   cos / pS->pdf` when `ISPF::EvaluateKrayNM` returns -1) carries this
-  exact pattern per companion wavelength for every multi-lobe SPF that
-  does not implement `EvaluateKrayNM` — Schlick, Ward, Phong, Ashikmin,
-  Composite.  PT's hero is correct (`pS->krayNM * invSelectProb`).
-  BDPT's HWSS companion path now mirrors PT's, fallback included, by
-  deliberate choice.
+  exact pattern per companion wavelength.  PT's hero is correct
+  (`pS->krayNM * invSelectProb`); BDPT's HWSS companion path now mirrors
+  PT's, fallback included, by deliberate choice.  Scope is narrower than
+  "every SPF that declines": exactly two classes override
+  `EvaluateKrayNM` in the tree (`PolishedSPF`, `HairBSDF`), and
+  `CoatedSPF` / `FabricSPF` / `WeaveSPF` each decline **on purpose** —
+  `CoatedSPF.cpp`'s own block explains that the fallback divides by
+  `pS->pdf`, "the true hero mixture pdf that actually drew it", and is
+  therefore EXACT for an SPF that stores a MIXTURE density on every
+  ray.  The defect is confined to the SPFs that store a PER-LOBE
+  conditional density and do not override: `SchlickSPF`, both Wards,
+  `IsotropicPhongSPF`, `AshikminShirleyAnisotropicPhongSPF`,
+  `CompositeSPF` — §4's affected set minus `PolishedSPF`.
 * **`SchlickSPF`'s `kray` is not `f_I cos / p_I`.**  §3.1's (a)/Q column
   drops to 0.802 at 60 deg incidence at roughness 0.5.
   `SPFBSDFConsistencyTest` already bands this material at 15 % and
