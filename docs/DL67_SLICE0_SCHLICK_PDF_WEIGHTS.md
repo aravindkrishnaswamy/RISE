@@ -155,30 +155,64 @@ change the sign of the two accept dots.
 The first version of this slice set
 `C_D = MaxValue(rd) / (MaxValue(rd) + SchlickFresnelAvg(rs))`, reusing
 DL-64's hemispherical Schlick average as a proxy for
-`E_{p_S}[w_S(omega_S)]`. Two things are wrong with that, and the second
-is the larger:
+`E_{p_S}[w_S(omega_S)]`. Three things are wrong with that, in
+increasing order of how much they matter. Measured with a 2000x2000
+quadrature of the sampler's own `(xi,b)` square (`A` = the fraction of
+specular draws `Scatter` accepts; `C_D` here agrees with the library's
+own empirical value to <= 0.0007 on every row, which is what makes it a
+usable reference):
 
-1. **Wrong measure.** The expectation runs under `p_S`, the
-   half-vector sampling density, which concentrates where `hdotk ~ 1`
-   and the Fresnel term is therefore ~0 — not under the cosine measure
-   `SchlickFresnelAvg` averages against. Measured, `E_{p_S}[w_S]` is
-   within **0.15%** of `MaxValue(rs)` itself. (`SchlickBRDF::albedo`
-   already says as much in passing: "integrated reflectance simplifies
-   to Rd+Rs".) So the proxy is a correction to something that needed no
-   correction.
+| config | `A` | `E[w_S given accepted]` | `MaxValue(rs)` | `SchlickFresnelAvg(rs)` | true `C_D` | `A*rd/(rd+rs)+(1-A)` |
+|---|---|---|---|---|---|---|
+| th=30 rd.5 rs.3 r.3 i.8 | 0.7386 | 0.3015 | 0.30 | 0.3333 | 0.72216 | 0.72303 (+0.12%) |
+| th=60 rd.5 rs.3 r.3 i.8 | 0.6402 | 0.3232 | 0.30 | 0.3333 | 0.74933 | 0.75991 (+1.41%) |
+| th=80 rd.5 rs.02 r.2 i1 | 0.5767 | 0.1961 | 0.02 | 0.0667 | 0.86020 | 0.97782 (+13.67%) |
+| th=75 rd.7 rs.1 r.5 i.6 | 0.5299 | 0.1555 | 0.10 | 0.1429 | 0.90809 | 0.93377 (+2.83%) |
+| th=45 rd.2 rs.6 r.15 i1 | 0.8065 | 0.6037 | 0.60 | 0.6190 | 0.39420 | 0.39511 (+0.23%) |
+| th=45 rd.05 rs.9 r.4 i1 | 0.6590 | 0.9009 | 0.90 | 0.9048 | 0.37565 | 0.37568 (+0.01%) |
 
-2. **The term it omits dominates.** What actually drives `C_D` is the
-   specular sampler's **rejection rate**. `Scatter` accepts only
-   0.745 / 0.662 / 0.577 of its specular draws at 30 / 60 / 80 degrees
-   incidence (measured), and a rejected specular draw leaves
-   `RandomlySelect` holding one ray, returned with probability 1. A
-   model of the form `A * rd/(rd+rs) + (1-A)` with `A` the measured
-   acceptance reproduces the Monte-Carlo `C_D` to 0.15%. No
-   direction-independent hemispherical average can see `A`, because `A`
-   is a property of the *geometry* (incidence angle, roughness,
-   anisotropy, the geometric normal), not of the reflectances.
+1. **Wrong measure, but only mildly.** The expectation runs under `p_S`,
+   the half-vector sampling density, not the cosine measure
+   `SchlickFresnelAvg` averages against. The table's third and fifth
+   columns show the damage is modest where `rs` is large (0.9009 vs
+   0.9048) and large where it is small (0.1961 vs 0.0667, a factor of 3
+   at 80 degrees incidence). This alone would not have justified the
+   rewrite — which is exactly why it is worth writing down: the proxy is
+   a *plausible* estimate of `E[w_S]`, and plausibility is what made the
+   first fix look finished.
 
----
+   (An earlier draft of this section claimed `E_{p_S}[w_S]` is "within
+   0.15% of `MaxValue(rs)` itself", on the strength of
+   `SchlickBRDF::albedo`'s "integrated reflectance simplifies to Rd+Rs".
+   That is **refuted** by the table: it holds only where `rs` dominates
+   the Fresnel boost — 0.5% at `rs=0.3`/30 degrees, 0.1% at `rs=0.9` —
+   and fails by 56% at `rs=0.1`/75 degrees and by 9.8x at `rs=0.02`/80
+   degrees. The claim is withdrawn.)
+
+2. **`C_D` is not a function of `E[w_S]` at all.** It is
+   `E[w_D/(w_D + w_S)]`, and that function is convex in `w_S`, so
+   substituting ANY average of `w_S` into it gives a different number by
+   Jensen — before asking whether the average itself was right.
+
+3. **The term that dominates is not a reflectance.** What actually
+   drives `C_D` is the specular sampler's **rejection rate**: `Scatter`
+   accepts only 0.739 / 0.640 / 0.577 of its specular draws at 30 / 60 /
+   80 degrees incidence (table column `A`; the 80-degree row also has a
+   lower roughness and no anisotropy, so it is not a pure angle series),
+   and a rejected specular draw leaves `RandomlySelect` holding one ray,
+   returned with probability 1. `A` is a property of the *geometry* —
+   incidence angle, roughness, anisotropy, the geometric normal — and no
+   average over reflectances can see it. The last column shows that even
+   a model built AROUND `A` (`A*rd/(rd+rs) + (1-A)`, which is what a
+   rejection-aware closed form would look like) still misses by up to
+   13.7%, because it re-linearises the same convex function point 2
+   rules out.
+
+So there is no closed form to reach for, and the honest options were a
+quadrature of the sampler or nothing. (An earlier draft also claimed
+that `A*rd/(rd+rs)+(1-A)` "reproduces the Monte-Carlo `C_D` to 0.15%".
+Also **refuted** by the table's last column — 0.01% to 13.67% — and
+withdrawn.)
 
 ## 4. Measurements
 
