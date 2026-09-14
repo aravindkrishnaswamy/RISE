@@ -1250,6 +1250,13 @@ bool RayCaster::CastRay(
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
 				rs2.bsdfPdf = phasePdf;
+				// DL-68 (P2-2): mirror the PT integrator's PTBsdfTimesCos
+				// convention (scatterThroughput * pdf) so a phase-scatter
+				// continuation that escapes to the env map can train
+				// RayCasterEnvEscapeMISWeight's optimal-MIS accumulator --
+				// previously left at its zero default here, so that arm
+				// could never fire for this continuation.
+				rs2.bsdfTimesCos = throughput * phasePdf;
 
 				Scalar hitDist = 0;
 				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
@@ -1850,6 +1857,11 @@ bool RayCaster::CastRayNM(
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
 				rs2.bsdfPdf = phasePdf;
+				// DL-68 (P2-2): NM sibling of the RGB volume-continuation
+				// fix above -- mirrors PTBsdfTimesCos's Scalar overload
+				// (fabs(throughput) * pdf) so RAY_STATE.bsdfTimesCos
+				// (always RISEPel) carries a real value here too.
+				rs2.bsdfTimesCos = RISEPel( std::fabs( throughput ) * phasePdf );
 
 				Scalar hitDist = 0;
 				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,

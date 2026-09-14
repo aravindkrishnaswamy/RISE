@@ -2553,18 +2553,26 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										if constexpr ( Traits::is_nm ) {
-											// Preserved Pel/NM asymmetry: the NM original ALSO recorded the
-											// BSSRDF cosine-sampled bsdfTimesCos for the continuation's
-											// optimal-MIS and counted a BSDF sample.  Optimal-MIS is Pel-only
-											// at runtime (rc.pOptimalMIS is null in spectral renders), so this
-											// is a structural no-op kept for parity.  The SMS suppression flags
-											// above are now set for BOTH tags (Codex review Finding 2).
-											rs2.bsdfTimesCos = RISEPel( std::fabs( sssThroughput ) * bssrdf.cosinePdf );
-											if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
-												const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
-													rast.x, rast.y, kTechniqueBSDF );
-											}
+										// DL-68 (P2-2): compute bsdfTimesCos for BOTH tags via the
+										// same PTBsdfTimesCos/PTRayStateBsdfTimesCos pair the main
+										// scatter continuation uses (~PTBsdfTimesCos( scatterThroughput,
+										// effectiveBsdfPdf ) a few hundred lines below), rather than
+										// gating the assignment to `if constexpr (Traits::is_nm)`.
+										// The old gate meant the Pel/RGB SSS continuation -- the ONE
+										// tag where rc.pOptimalMIS is actually non-null at runtime --
+										// never set rs2.bsdfTimesCos, so RayCasterEnvEscapeMISWeight's
+										// optimal-MIS training arm (which requires rs.bsdfTimesCos to
+										// be nonzero) could never fire for a BSSRDF continuation that
+										// escapes to the env map.  The NM branch was already correct
+										// but moot (rc.pOptimalMIS is null in spectral renders), so
+										// this is a genuine no-op there and the fix for Pel.  The SMS
+										// suppression flags above are set for BOTH tags unconditionally
+										// (Codex review Finding 2) and are unaffected by this change.
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
+											PTBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
+										if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
+											const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+												rast.x, rast.y, kTechniqueBSDF );
 										}
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
@@ -2720,18 +2728,26 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										if constexpr ( Traits::is_nm ) {
-											// Preserved Pel/NM asymmetry: the NM original ALSO recorded the
-											// BSSRDF cosine-sampled bsdfTimesCos for the continuation's
-											// optimal-MIS and counted a BSDF sample.  Optimal-MIS is Pel-only
-											// at runtime (rc.pOptimalMIS is null in spectral renders), so this
-											// is a structural no-op kept for parity.  The SMS suppression flags
-											// above are now set for BOTH tags (Codex review Finding 2).
-											rs2.bsdfTimesCos = RISEPel( std::fabs( sssThroughput ) * bssrdf.cosinePdf );
-											if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
-												const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
-													rast.x, rast.y, kTechniqueBSDF );
-											}
+										// DL-68 (P2-2): compute bsdfTimesCos for BOTH tags via the
+										// same PTBsdfTimesCos/PTRayStateBsdfTimesCos pair the main
+										// scatter continuation uses (~PTBsdfTimesCos( scatterThroughput,
+										// effectiveBsdfPdf ) a few hundred lines below), rather than
+										// gating the assignment to `if constexpr (Traits::is_nm)`.
+										// The old gate meant the Pel/RGB SSS continuation -- the ONE
+										// tag where rc.pOptimalMIS is actually non-null at runtime --
+										// never set rs2.bsdfTimesCos, so RayCasterEnvEscapeMISWeight's
+										// optimal-MIS training arm (which requires rs.bsdfTimesCos to
+										// be nonzero) could never fire for a BSSRDF continuation that
+										// escapes to the env map.  The NM branch was already correct
+										// but moot (rc.pOptimalMIS is null in spectral renders), so
+										// this is a genuine no-op there and the fix for Pel.  The SMS
+										// suppression flags above are set for BOTH tags unconditionally
+										// (Codex review Finding 2) and are unaffected by this change.
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
+											PTBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
+										if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
+											const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+												rast.x, rast.y, kTechniqueBSDF );
 										}
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
