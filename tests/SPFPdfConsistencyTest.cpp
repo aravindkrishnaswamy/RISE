@@ -916,14 +916,37 @@ int main()
         //--------------------------------------------------------------
         // Schlick (1994 approximation):
         //
-        // Cross-val: multi-lobe weighting mismatch (same as Phong).
+        // DL-67 Slice 0 (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md) fixed
+        // Pdf()/PdfNM()'s diffuse-vs-specular lobe weighting to match
+        // PTScatterSelectWeight's REALIZED per-draw weight (previously it
+        // used the raw, angle-independent painter albedos MaxValue(rd) /
+        // MaxValue(rs)).  This is PROVABLY exact for the specular-lobe
+        // side (verified to 0 failures out of ~37k-32k per-call
+        // lower-bound checks, tests/SchlickSPFPdfConsistencyTest.cpp Part
+        // 2/3 -- was 64-2857 failures pre-fix, max relative error up to
+        // 21.4%) but the diffuse-lobe side retains an INHERENT residual:
+        // Scatter() draws both lobes every call and selects post-hoc by
+        // realized MaxValue(kray), so the diffuse lobe's true selection
+        // probability is a genuine expectation over the (independent)
+        // specular draw that no direction-independent constant can match
+        // per-call.  This is why cross-val/chi2 stay off here -- it is a
+        // proven property of the architecture, not a residual bug this
+        // slice left behind (see the dedicated test's file header for the
+        // full derivation and per-lobe-split measurement).
+        //
         // Integral: the Schlick PDF under-integrates at grazing angles
         //   because the specular PDF normalization assumes isotropic
         //   roughness, but the model has an isotropy parameter that
-        //   stretches the lobe.  Observed: 0.90 @ 30°, 0.87 @ 60°.
-        // Chi2: fails due to PDF normalization + weighting issues.
+        //   stretches the lobe.  Observed post-fix: 0.880 @ 30°, 0.861 @
+        //   60° (was 0.904 / 0.873 pre-fix -- the weighting fix shifts
+        //   this slightly since the specular term's coefficient is no
+        //   longer angle-independent, but the under-integration's ROOT
+        //   CAUSE -- the specular PDF model itself -- is untouched by
+        //   this slice).
+        // Chi2: fails due to the same inherent per-call weighting
+        //   architecture as cross-val, not a fixable normalization bug.
         //
-        // Integral tolerance relaxed to 15% to cover 0.87.
+        // Integral tolerance relaxed to 15% to cover 0.861.
         //--------------------------------------------------------------
         { "Schlick",                           schlick,     false, false, true,  true,  0.15 },
 

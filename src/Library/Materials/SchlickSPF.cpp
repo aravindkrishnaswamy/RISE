@@ -19,6 +19,21 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// Closed-form Schlick hemispherical Fresnel average: F0 + (1-F0)/21.
+	// Duplicated (not shared) from the identical helper in GGXSPF.cpp /
+	// GGXBRDF.cpp -- DL-67 Slice 0 (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md)
+	// deliberately keeps this file-local rather than hoisting a new shared
+	// header, to keep the slice's blast radius to SchlickSPF.{h,cpp} only;
+	// GGXSPF.cpp/GGXBRDF.cpp are untouched by this change.
+	template< class T >
+	inline T SchlickFresnelAvg( const T& F0 )
+	{
+		return F0 + (T(1.0) - F0) * (1.0 / 21.0);
+	}
+}
+
 SchlickSPF::SchlickSPF(
 	const IPainter& diffuse,
 	const IPainter& specular,
@@ -433,18 +448,70 @@ Scalar SchlickSPF::Pdf(
 	const Scalar pAvg = (isotropy.v[0] + isotropy.v[1] + isotropy.v[2]) / 3.0;
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, rAvg, pAvg );
 
-	// Weight by relative importance of diffuse vs specular
+	// Weight by relative importance of diffuse vs specular -- DL-67 Slice 0.
+	//
+	// PTRandomlySelect (PathTracingIntegrator.cpp) does not pick a lobe with
+	// a fixed, direction-independent probability: Scatter() draws BOTH the
+	// diffuse ray (kray = rd, independent of the drawn direction) and the
+	// specular ray (kray = rho + (1-rho)*fresnel(half-vector(wi,wo_S)), a
+	// function of the SPECULAR lobe's OWN drawn direction) every call, and
+	// ScatteredRayContainer::RandomlySelect then picks one of the two with
+	// probability proportional to MaxValue(kray) (PTScatterSelectWeight).
+	//
+	// Because the diffuse kray never varies with which direction the
+	// diffuse lobe happened to draw, the diffuse lobe's TRUE per-draw
+	// selection probability is a genuine expectation over the (statistically
+	// independent) specular draw -- E_{wo_S~p_S}[dW/(dW+sW(wo_S))] -- which
+	// cannot be evaluated exactly at an arbitrary query wo without
+	// integrating over the whole specular sampling distribution.  The
+	// specular lobe's true per-draw selection probability, by contrast, IS
+	// an exact, deterministic function of its own drawn direction (the
+	// fresnel term depends only on the half-vector between wi and that one
+	// direction) -- and Pdf() already has that direction (wo) in hand, so
+	// no averaging is needed there.  This is why the fix below uses TWO
+	// different specular weights: an exact one (evaluated at wo) that feeds
+	// the specular PDF's own coefficient, and an averaged one (the same
+	// closed-form hemispherical Schlick average DL-64 already uses for
+	// this role in GGXSPF.cpp/GGXBRDF.cpp) that feeds only the diffuse
+	// coefficient.  A single shared "replace MaxValue(rs) with
+	// MaxValue(rho+(1-rho)*SchlickFresnelAvg(rs)) everywhere" would be
+	// wrong twice over: it would drop the free exact evaluation available
+	// for the specular term, and it would double-count rho, since
+	// SchlickFresnelAvg(rho) already equals the AVERAGE of the full
+	// "rho+(1-rho)*fresnel" reflectance, not merely the averaged fresnel
+	// factor alone.  Full derivation: docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md.
 	const RISEPel rd = pDiffuse->GetColor(ri);
 	const RISEPel rs = pSpecular->GetColor(ri);
 	const Scalar dWeight = ColorMath::MaxValue(rd);
-	const Scalar sWeight = ColorMath::MaxValue(rs);
-	const Scalar totalWeight = dWeight + sWeight;
 
-	if( totalWeight < NEARZERO ) {
+	// Exact specular selection weight AT wo -- reproduces exactly what
+	// PTScatterSelectWeight (MaxValue(kray)) would read had the specular
+	// lobe's own sampler happened to draw this wo.  h/hdotk mirror
+	// ComputeSchlickSpecularPdf's (and, for any direction the sampler can
+	// actually accept, GenerateSpecularRay's) half-vector construction.
+	const Vector3 wiFresnel = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 hFresnel = Vector3Ops::Normalize( wiFresnel + woNorm );
+	const Scalar hdotkFresnel = Vector3Ops::Dot( hFresnel, wiFresnel );
+	const Scalar fresnelAtWo = ::pow(1-hdotkFresnel,5);
+	const RISEPel sKrayAtWo = rs + (RISEPel(1.0,1.0,1.0)-rs) * fresnelAtWo;
+	const Scalar sWeightExact = ColorMath::MaxValue(sKrayAtWo);
+
+	// Average specular selection weight -- E_{wo_S~p_S}[MaxValue(kray_S(wo_S))],
+	// approximated by the closed-form Schlick hemispherical average.  Used
+	// ONLY for the diffuse lobe's (direction-independent) coefficient.
+	const Scalar sWeightAvg = ColorMath::MaxValue( SchlickFresnelAvg<RISEPel>(rs) );
+
+	const Scalar dDenom = dWeight + sWeightAvg;
+	const Scalar cD = ( dDenom > NEARZERO ) ? dWeight / dDenom : 0;
+
+	const Scalar sDenom = dWeight + sWeightExact;
+	const Scalar qS = ( sDenom > NEARZERO ) ? sWeightExact / sDenom : 0;
+
+	if( cD < NEARZERO && qS < NEARZERO ) {
 		return 0;
 	}
 
-	return (dWeight * diffusePdf + sWeight * specPdf) / totalWeight;
+	return cD * diffusePdf + qS * specPdf;
 }
 
 Scalar SchlickSPF::PdfNM(
@@ -485,14 +552,29 @@ Scalar SchlickSPF::PdfNM(
 	}
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, r, p );
 
-	// Weight
+	// Weight -- DL-67 Slice 0.  Spectral twin of Pdf()'s fix above; see
+	// that function's comment for the full derivation.
 	const Scalar rd = GuardedGetColorNM( *pDiffuse, ri, nm );
 	const Scalar rs = GuardedGetColorNM( *pSpecular, ri, nm );
-	const Scalar totalWeight = rd + rs;
+	const Scalar dWeight = rd;
 
-	if( totalWeight < NEARZERO ) {
+	const Vector3 wiFresnel = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 hFresnel = Vector3Ops::Normalize( wiFresnel + woNorm );
+	const Scalar hdotkFresnel = Vector3Ops::Dot( hFresnel, wiFresnel );
+	const Scalar fresnelAtWo = ::pow(1-hdotkFresnel,5);
+	const Scalar sWeightExact = rs + (1.0-rs) * fresnelAtWo;
+
+	const Scalar sWeightAvg = SchlickFresnelAvg<Scalar>(rs);
+
+	const Scalar dDenom = dWeight + sWeightAvg;
+	const Scalar cD = ( dDenom > NEARZERO ) ? dWeight / dDenom : 0;
+
+	const Scalar sDenom = dWeight + sWeightExact;
+	const Scalar qS = ( sDenom > NEARZERO ) ? sWeightExact / sDenom : 0;
+
+	if( cD < NEARZERO && qS < NEARZERO ) {
 		return 0;
 	}
 
-	return (rd * diffusePdf + rs * specPdf) / totalWeight;
+	return cD * diffusePdf + qS * specPdf;
 }
