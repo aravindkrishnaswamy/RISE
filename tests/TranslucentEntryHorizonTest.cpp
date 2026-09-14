@@ -225,6 +225,36 @@ static RayIntersectionGeometric MakeDoubleSidedEntry( Scalar tiltDeg )
 	return ri;
 }
 
+//! P2-b (review): the FRONT-face companion to `MakeDoubleSidedEntry` --
+//! the same physical sheet (true outward +Z), but struck from the
+//! OPPOSITE side with the ray REVERSED (MakeDoubleSidedEntry's ray
+//! origin/direction both negated).  Per the real geometry contract
+//! (`TriangleMeshGeometry.cpp`: `ri.bGeomNormalOrientedToRay =
+//! bFlipGeomNormal`) a genuine FRONT-face hit needs NO flip -- the
+//! reported normal is the true outward direction, tilted by `tiltDeg`,
+//! and the flag is false.  Never exercised by a committed test before
+//! this row even though it is the ROUTINE case (most double-sided-mesh
+//! hits are front-face, not back-face).
+static RayIntersectionGeometric MakeDoubleSidedFrontFaceEntry( Scalar tiltDeg )
+{
+	const Scalar tiltRad = tiltDeg * PI / 180.0;
+	const Vector3 n( sin(tiltRad), 0, cos(tiltRad) );
+
+	Ray inRay( Point3(0,0,2), Vector3(0,0,-1) );   // MakeDoubleSidedEntry's ray, reversed
+	RasterizerState rs = {0,0};
+	RayIntersectionGeometric ri( inRay, rs );
+
+	ri.bHit = true;
+	ri.range = 2.0;
+	ri.ptIntersection = Point3(0,0,0);
+	ri.vNormal = n;
+	ri.onb.CreateFromW( n );
+	ri.vGeomNormal = Vector3(0,0,1);        // true outward; no flip on a front-face hit
+	ri.bGeomNormalOrientedToRay = false;
+	ri.ptCoord = Point2(0.5,0.5);
+	return ri;
+}
+
 //! A SMOOTH-SHADED closed mesh: the interpolated shading normal deviates
 //! from the flat face's geometric normal by a few degrees, with the ray
 //! arriving obliquely (the ordinary, un-bump-mapped production case).
@@ -716,6 +746,118 @@ static void TestSampledDirectionChiSquared()
 	obj->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 7 (P2-b): double-sided sheet, FRONT-face entry.  Never
+//  exercised by a committed test even though it is the ROUTINE
+//  double-sided-mesh case -- sub-test 2 above only covers the BACK
+//  face.  Reviewer-measured base (pre-fix): 2014/4096 wrong-side at
+//  89 deg tilt, matching (1-cos(phi))/2 like every other row.
+//////////////////////////////////////////////////////////////////////
+static void TestDoubleSidedFrontFaceEntry()
+{
+	std::cout << "Sub-test 7: double-sided sheet, FRONT-face entry (P2-b)" << std::endl;
+
+	StubObject* obj = new StubObject(); obj->addref();
+	const Scalar tilts[] = { 0.0, 45.0, 89.0 };
+
+	for( int t = 0; t < 3; t++ ) {
+		for( int spectral = 0; spectral < 2; spectral++ ) {
+			SPFRig rig( 0.2, 1.0, 0.0, false );
+			RandomNumberGenerator rng( 246813579 );
+			IndependentSampler sampler( rng );
+
+			RayIntersectionGeometric ri = MakeDoubleSidedFrontFaceEntry( tilts[t] );
+			IORStack stack = MakeOutsideStack( obj );
+
+			// Fixture sanity: a genuine front-face hit needs no un-flip --
+			// the reported normal already IS the true outward direction.
+			EXPECT( Vector3Ops::Dot( ri.UnflippedGeomNormal(), Vector3(0,0,1) ) > 0.99,
+				"front-face fixture recovers +Z as the true outward normal (no flip)" );
+
+			Vector3 axis, clipN;
+			EntryLobeFrame( ri, axis, clipN );
+
+			const unsigned int kTrials = 4096;
+			unsigned int pushed = 0, wrongSide = 0;
+			for( unsigned int trial = 0; trial < kTrials; trial++ ) {
+				ScatteredRayContainer scattered;
+				if( spectral ) rig.spf->ScatterNM( ri, sampler, 550.0, scattered, stack );
+				else           rig.spf->Scatter( ri, sampler, scattered, stack );
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					if( scattered[i].type != ScatteredRay::eRayTranslucent ) continue;
+					if( scattered[i].ior_stack == 0 ) continue;
+					pushed++;
+					if( Vector3Ops::Dot( scattered[i].ray.Dir(), clipN ) <= 0 ) wrongSide++;
+				}
+			}
+
+			char label[256];
+			std::snprintf( label, sizeof(label),
+				"double-sided FRONT %s tilt=%g: pushed=%u wrongSide=%u (%.4f)",
+				spectral ? "NM " : "RGB", (double)tilts[t], pushed, wrongSide,
+				pushed ? (double)wrongSide/(double)pushed : 0.0 );
+			std::cout << "  " << label << std::endl;
+			EXPECT( pushed > 0, ( std::string(label) + " -- lobe emitted" ).c_str() );
+			EXPECT( wrongSide == 0, ( std::string(label) + " -- every pushed ray enters the solid" ).c_str() );
+		}
+	}
+	obj->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 8 (P2-b): double-sided sheet, EXIT interior backscatter.
+//  `MakeDoubleSidedEntry`'s own back-face-style bookkeeping
+//  (`bGeomNormalOrientedToRay=true`, flipped `vGeomNormal`) paired with
+//  an INSIDE stack instead of the entry-side Outside stack -- this
+//  drives the EXIT branch's own un-flip recovery path, a genuinely
+//  different code path from sub-test 4's non-flipped `MakeClosedExit`.
+//  Reviewer-measured base (pre-fix): 2004/4096 escaping at 89 deg tilt.
+//////////////////////////////////////////////////////////////////////
+static void TestDoubleSidedExitBackscatter()
+{
+	std::cout << "Sub-test 8: double-sided sheet, EXIT interior backscatter (P2-b)" << std::endl;
+
+	StubObject* obj = new StubObject(); obj->addref();
+	const Scalar tilts[] = { 0.0, 45.0, 89.0 };
+
+	for( int t = 0; t < 3; t++ ) {
+		for( int spectral = 0; spectral < 2; spectral++ ) {
+			SPFRig rig( 0.1, 1.0, 0.6, false );
+			RandomNumberGenerator rng( 135792468 );
+			IndependentSampler sampler( rng );
+
+			RayIntersectionGeometric ri = MakeDoubleSidedEntry( tilts[t] );
+			IORStack stack = MakeInsideStack( obj );
+
+			Vector3 axis, clipN;
+			BackscatterLobeFrame( ri, axis, clipN );
+
+			const unsigned int kTrials = 4096;
+			unsigned int back = 0, escaped = 0;
+			for( unsigned int trial = 0; trial < kTrials; trial++ ) {
+				ScatteredRayContainer scattered;
+				if( spectral ) rig.spf->ScatterNM( ri, sampler, 550.0, scattered, stack );
+				else           rig.spf->Scatter( ri, sampler, scattered, stack );
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					if( scattered[i].type != ScatteredRay::eRayTranslucent ) continue;
+					if( scattered[i].ior_stack != 0 ) continue;   // backscatter leaves the stack alone
+					back++;
+					if( Vector3Ops::Dot( scattered[i].ray.Dir(), clipN ) <= 0 ) escaped++;
+				}
+			}
+
+			char label[256];
+			std::snprintf( label, sizeof(label),
+				"double-sided EXIT %s tilt=%g: rays=%u escapedWithoutPop=%u",
+				spectral ? "NM " : "RGB", (double)tilts[t], back, escaped );
+			std::cout << "  " << label << std::endl;
+			EXPECT( back > 0, ( std::string(label) + " -- backscatter emitted" ).c_str() );
+			EXPECT( escaped == 0, ( std::string(label) + " -- no backscatter ray leaves the solid" ).c_str() );
+		}
+	}
+	obj->release();
+}
+
 int main()
 {
 	std::cout << "TranslucentEntryHorizonTest (DL-68)" << std::endl;
@@ -726,6 +868,8 @@ int main()
 	TestInteriorBackscatterStaysInside();
 	TestDensityNormalization();
 	TestSampledDirectionChiSquared();
+	TestDoubleSidedFrontFaceEntry();
+	TestDoubleSidedExitBackscatter();
 
 	std::cout << "checks=" << checks << " failed=" << failed << std::endl;
 	if( failed ) {
