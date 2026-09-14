@@ -334,7 +334,36 @@ static void TestSellmeierScalarPainter()
 	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 656.3 ) ), Scalar( 1.5143 ), Scalar( 1e-3 ) ),
 	       "sellmeier: BK7 C-line ≈ 1.5143" );
 
-	Check( ! p->HasPerChannelVariation(), "sellmeier: !HasPerChannelVariation" );
+	// DL-82: GetValuesAt samples the curve at ScalarPainterRGB::kChannelNM
+	// {611, 549, 465} per channel -- BK7's mild visible-band dispersion
+	// makes the three samples genuinely (if slightly) different, so
+	// HasPerChannelVariation() is now true, not unconditionally false.
+	const ScalarTriple bk7Triple = p->GetValuesAt( ri );
+	Check( ApproxEq( bk7Triple.v[0], Scalar( 1.5158711781837417 ), Scalar( 1e-9 ) ),
+	       "sellmeier: GetValuesAt.v[0] = curve(611nm)" );
+	Check( ApproxEq( bk7Triple.v[1], Scalar( 1.518572836436827 ), Scalar( 1e-9 ) ),
+	       "sellmeier: GetValuesAt.v[1] = curve(549nm)" );
+	Check( ApproxEq( bk7Triple.v[2], Scalar( 1.5240123784970663 ), Scalar( 1e-9 ) ),
+	       "sellmeier: GetValuesAt.v[2] = curve(465nm)" );
+	Check( p->HasPerChannelVariation(), "sellmeier: HasPerChannelVariation (BK7 genuinely disperses)" );
+
+	// DL-82: MakeSingleScalarSlotView -- same curve through GetValueAtNM,
+	// a uniform green (549nm) triple through GetValuesAt.
+	IScalarPainter* bk7View = p->MakeSingleScalarSlotView();
+	Check( bk7View != nullptr, "sellmeier: MakeSingleScalarSlotView is offered" );
+	if( bk7View ) {
+		Check( ! bk7View->HasPerChannelVariation(), "sellmeier-view: !HasPerChannelVariation" );
+		const ScalarTriple viewTriple = bk7View->GetValuesAt( ri );
+		Check( viewTriple.IsUniform(), "sellmeier-view: GetValuesAt is exactly uniform" );
+		Check( ApproxEq( viewTriple.v[0], Scalar( 1.518572836436827 ), Scalar( 1e-9 ) ),
+		       "sellmeier-view: v[0] = curve(549nm)" );
+		Check( ApproxEq( bk7View->GetValueAtNM( ri, Scalar( 587.6 ) ),
+		                  p->GetValueAtNM( ri, Scalar( 587.6 ) ), Scalar( 1e-12 ) ),
+		       "sellmeier-view: GetValueAtNM is the unchanged curve" );
+		Check( bk7View->MakeSingleScalarSlotView() == nullptr,
+		       "sellmeier-view: already a view, MakeSingleScalarSlotView returns nullptr" );
+		bk7View->release();
+	}
 
 	p->release();
 
@@ -383,6 +412,53 @@ static void TestPolynomialScalarPainter()
 	Check( ApproxEq( pe->GetValueAtNM( ri, Scalar( 555 ) ), 1.0 ),
 	       "polynomial: empty coeffs → 1.0 (air-IOR default)" );
 	pe->release();
+
+	// DL-82: GetValuesAt samples the curve at ScalarPainterRGB::kChannelNM
+	// {611, 549, 465} -- f(nm) = 1.0 + 0.001*nm gives 1.611/1.549/1.465,
+	// genuinely per-channel.
+	PolynomialScalarPainter* pv = new PolynomialScalarPainter( coeffs );
+	const ScalarTriple polyTriple = pv->GetValuesAt( ri );
+	Check( ApproxEq( polyTriple.v[0], Scalar( 1.611 ) ), "polynomial: GetValuesAt.v[0] = f(611nm)" );
+	Check( ApproxEq( polyTriple.v[1], Scalar( 1.549 ) ), "polynomial: GetValuesAt.v[1] = f(549nm)" );
+	Check( ApproxEq( polyTriple.v[2], Scalar( 1.465 ) ), "polynomial: GetValuesAt.v[2] = f(465nm)" );
+	Check( pv->HasPerChannelVariation(), "polynomial: HasPerChannelVariation (real slope disperses)" );
+
+	// DL-82: a CONSTANT polynomial (c1 = c2 = ... = 0) samples the same
+	// value at all three kChannelNM wavelengths -- IsUniform() is an
+	// EXACT comparison, so this must read false, not true.
+	std::vector<Scalar> flat = { Scalar( 1.5 ) };
+	PolynomialScalarPainter* pf = new PolynomialScalarPainter( flat );
+	Check( ! pf->HasPerChannelVariation(),
+	       "polynomial: constant curve stays !HasPerChannelVariation" );
+	Check( pf->GetValuesAt( ri ).IsUniform(), "polynomial: constant curve triple is exactly uniform" );
+
+	// DL-82: MakeSingleScalarSlotView on the dispersive painter.
+	IScalarPainter* polyView = pv->MakeSingleScalarSlotView();
+	Check( polyView != nullptr, "polynomial: MakeSingleScalarSlotView is offered" );
+	if( polyView ) {
+		Check( ! polyView->HasPerChannelVariation(), "polynomial-view: !HasPerChannelVariation" );
+		const ScalarTriple viewTriple = polyView->GetValuesAt( ri );
+		Check( viewTriple.IsUniform(), "polynomial-view: GetValuesAt is exactly uniform" );
+		Check( ApproxEq( viewTriple.v[0], Scalar( 1.549 ) ), "polynomial-view: v[0] = f(549nm)" );
+		Check( ApproxEq( polyView->GetValueAtNM( ri, Scalar( 700 ) ),
+		                  pv->GetValueAtNM( ri, Scalar( 700 ) ), Scalar( 1e-12 ) ),
+		       "polynomial-view: GetValueAtNM is the unchanged curve" );
+		polyView->release();
+	}
+	// A flat (non-dispersive) painter still offers a view -- matching
+	// PiecewiseLinearScalarPainter's convention, MakeSingleScalarSlotView
+	// doesn't special-case the CURRENT HasPerChannelVariation() value,
+	// only whether this instance already IS a single-slot view.  The
+	// parser never actually calls this on a flat curve in production
+	// (ResolveScalarPainterArg accepts a !HasPerChannelVariation painter
+	// directly, without needing a view at all), so this is a structural
+	// consistency check, not a behavioural one.
+	IScalarPainter* flatView = pf->MakeSingleScalarSlotView();
+	Check( flatView != nullptr, "polynomial: constant curve still offers a view (structural)" );
+	if( flatView ) flatView->release();
+
+	pf->release();
+	pv->release();
 }
 
 static void TestScaledScalarPainter()
@@ -730,7 +806,35 @@ static void TestFunction1DScalarPainter()
 	Function1DScalarPainter* pn = new Function1DScalarPainter( nullptr );
 	Check( ApproxEq( pn->GetValueAtNM( ri, Scalar( 555 ) ), 0.0 ),
 	       "function1d-null-func: GetValueAtNM = 0 (defensive)" );
+	Check( ! pn->HasPerChannelVariation(),
+	       "function1d-null-func: !HasPerChannelVariation" );
+	Check( pn->GetValuesAt( ri ).IsUniform(),
+	       "function1d-null-func: GetValuesAt is uniform (zero triple)" );
 	pn->release();
+
+	// DL-82: GetValuesAt samples f(nm) = nm*2 at ScalarPainterRGB::kChannelNM
+	// {611, 549, 465} -- 1222/1098/930, genuinely per-channel.
+	const ScalarTriple f1dTriple = p->GetValuesAt( ri );
+	Check( ApproxEq( f1dTriple.v[0], Scalar( 1222 ) ), "function1d-wrap: GetValuesAt.v[0] = f(611nm)" );
+	Check( ApproxEq( f1dTriple.v[1], Scalar( 1098 ) ), "function1d-wrap: GetValuesAt.v[1] = f(549nm)" );
+	Check( ApproxEq( f1dTriple.v[2], Scalar( 930 ) ),  "function1d-wrap: GetValuesAt.v[2] = f(465nm)" );
+	Check( p->HasPerChannelVariation(),
+	       "function1d-wrap: HasPerChannelVariation (f(nm)=2nm genuinely disperses)" );
+
+	// DL-82: MakeSingleScalarSlotView -- same curve through GetValueAtNM,
+	// a uniform green (549nm) triple through GetValuesAt.
+	IScalarPainter* f1dView = p->MakeSingleScalarSlotView();
+	Check( f1dView != nullptr, "function1d-wrap: MakeSingleScalarSlotView is offered" );
+	if( f1dView ) {
+		Check( ! f1dView->HasPerChannelVariation(), "function1d-view: !HasPerChannelVariation" );
+		const ScalarTriple viewTriple = f1dView->GetValuesAt( ri );
+		Check( viewTriple.IsUniform(), "function1d-view: GetValuesAt is exactly uniform" );
+		Check( ApproxEq( viewTriple.v[0], Scalar( 1098 ) ), "function1d-view: v[0] = f(549nm)" );
+		Check( ApproxEq( f1dView->GetValueAtNM( ri, Scalar( 100 ) ),
+		                  p->GetValueAtNM( ri, Scalar( 100 ) ), Scalar( 1e-12 ) ),
+		       "function1d-view: GetValueAtNM is the unchanged curve" );
+		f1dView->release();
+	}
 
 	p->release();
 }
