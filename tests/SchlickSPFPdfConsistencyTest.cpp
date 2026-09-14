@@ -2,64 +2,76 @@
 //
 //  SchlickSPFPdfConsistencyTest.cpp - DL-67 Slice 0 red-proof.
 //
-//  SchlickSPF::Scatter() draws BOTH the diffuse ray (kray = rd, a pure
-//  function of the shading point, independent of the drawn direction)
-//  and the specular ray (kray = rho + (1-rho)*fresnel(half-vector(wi,
-//  wo_S)), a function of the SPECULAR lobe's OWN drawn direction) every
-//  call, and ScatteredRayContainer::RandomlySelect then picks ONE of the
-//  two with probability proportional to MaxValue(kray) -- i.e. exactly
-//  what PathTracingIntegrator.cpp's PTScatterSelectWeight computes
-//  (PTScatterSelectWeight<PelTag> = ColorMath::MaxValue(kray)).
+//  ONE claim, gated two independent ways: `SchlickSPF::Pdf`/`PdfNM` is
+//  the probability density of the direction `Scatter`/`ScatterNM` plus
+//  `ScatteredRayContainer::RandomlySelect` actually hand the integrator.
 //
-//  Pre-fix, SchlickSPF::Pdf()/PdfNM() weighted the diffuse-vs-specular
-//  mixture by MaxValue(rd) vs MaxValue(rs) -- the RAW painter albedos,
-//  angle-independent and never equal to the REALIZED per-draw specular
-//  weight PTScatterSelectWeight actually used to pick a lobe.
+//  Why that is not trivially true.  SchlickSPF is a "draw every lobe,
+//  THEN pick one by its realized weight" sampler: Scatter() draws the
+//  diffuse ray (kray = rd, independent of the drawn direction) AND the
+//  specular ray (kray = rho + (1-rho)*fresnel(half-vector), a function
+//  of the specular lobe's OWN drawn direction) every call, and
+//  RandomlySelect then picks one with probability proportional to
+//  MaxValue(kray) -- PathTracingIntegrator.cpp's PTScatterSelectWeight.
+//  So the density of the SELECTED direction is
 //
-//  This file proves two things about the fix (SchlickSPF.cpp's Pdf()/
-//  PdfNM()):
+//      f(w) = C_D * p_D(w) * 1{w above the horizon} + sum_i q_i(w) p_i(w)
 //
-//  1. CLOSED FORM: at several (incidence angle, rd, rs, roughness,
-//     isotropy) points, Pdf()/PdfNM() bit-match an INDEPENDENT
-//     replica of the derived formula (cD*diffusePdf + qS(wo)*specPdf),
-//     and DIFFER from the OLD (pre-fix) formula whenever the two
-//     predict different numbers (i.e. whenever fresnel(wo) != the
-//     hemisphere-average fresnel and Rs != 0) -- this shows the shipped
-//     code actually implements the derivation, not just something that
-//     happens to test well.
+//  where C_D and q_i are expectations over the OTHER lobes' draws.  See
+//  docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md for the derivation.
 //
-//  2. STATISTICAL, PER-LOBE, GROUND-TRUTH: for MANY real Scatter() +
-//     lobe-selection draws (the exact production mechanism, replicated
-//     inline and cited against PTScatterSelectWeight/PTRandomlySelect),
-//     Pdf() evaluated AT THE SPECULAR LOBE'S OWN REALIZED DIRECTION must
-//     lower-bound that lobe's realized per-call selection weight WITH
-//     ZERO TOLERANCE -- this is provably achievable (see
-//     docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md "Derivation" step (c)/(d))
-//     because the specular lobe's true per-draw selection probability is
-//     an EXACT, deterministic function of ITS OWN drawn direction, and
-//     Pdf() has that exact direction in hand once it is asked to
-//     evaluate at it.  Pre-fix this failed 105/36946 times at 30 degrees
-//     incidence and 2845/32045 times at 60 degrees (max relative error
-//     3.9% / 21.4%); post-fix it is 0/N at both angles, exactly.
+//  GATE 1 -- NORMALISATION, TWO-SIDED.  A hemisphere quadrature of
+//  Pdf() must match the probability that Scatter() emits ANY ray at all,
+//  measured from real Scatter() calls, to within 1%.  Two-sided: too
+//  little density fails as loudly as too much.  (The target is exactly 1
+//  whenever the shading and geometric normals agree, and strictly less
+//  under a tilted normal -- Scatter really does return an empty
+//  container on some draws there, and the test measures that rather
+//  than assuming it.)
 //
-//     The SAME lower-bound check on the DIFFUSE lobe's own realized
-//     direction is NOT asserted to zero -- and this is not a residual
-//     bug left by this slice, it is a proven-inherent property of
-//     SchlickSPF's "draw both, select by realized weight" architecture:
-//     the diffuse lobe's true per-draw selection probability is a
-//     genuine EXPECTATION over the (statistically independent) specular
-//     draw, which cannot be evaluated exactly at an arbitrary query wo
-//     without integrating over the whole specular sampling distribution.
-//     No CONSTANT coefficient -- which is all Pdf() can offer for the
-//     diffuse term, since it has no way to know what the independent
-//     specular draw would have been -- can satisfy a PER-CALL,
-//     PER-REALIZATION lower bound for a randomly varying denominator.
-//     This file measures that residual (pre- and post-fix, both ~19-31%
-//     failure rate, effectively unchanged since it is not addressable by
-//     ANY choice of Pdf() formula) and asserts only that it has not
-//     regressed past its pre-fix magnitude, so a future change that
-//     genuinely worsens it (as opposed to this one, which does not) is
-//     still caught.
+//  GATE 2 -- TOTAL VARIATION vs THE REAL SAMPLER.  600 000 real
+//  Scatter() + real RandomlySelect() draws are histogrammed into 12
+//  equal-cos-theta x 8 equal-phi bins (equal solid angle) and compared
+//  against the same bins of the Pdf() quadrature.  Threshold 0.012,
+//  derived from the histogram's own Monte-Carlo noise:
+//
+//      E[TVD] = (1/2) sum_k E|phat_k - p_k|
+//             ~ (1/2) sqrt(2/pi) sum_k sqrt(p_k(1-p_k)/N)
+//            <= (1/2) sqrt(2/pi) sqrt(K/N)                (Cauchy-Schwarz)
+//             = 0.399 * sqrt(96/600000) = 0.0051
+//
+//  and the gate is set at ~2.4x that floor.  Measured post-fix values
+//  are 0.0051-0.0063 -- i.e. the residual IS the bin noise, with no
+//  detectable systematic component left.
+//
+//  RED PROOF (both gates, against this file's own predecessor at
+//  4325f365 -- the "cD = MaxValue(rd)/(MaxValue(rd)+SchlickFresnelAvg(rs))
+//  and exact qS(wo)" formula):
+//
+//    config                   int Pdf   target    TVD
+//    th=10 rd.5 rs.3 r.3 i.8   0.8876    1.0000   0.0621
+//    th=30 rd.5 rs.3 r.3 i.8   0.8802    1.0000   0.0646
+//    th=45 rd.2 rs.6 r.15 i1   0.8500    1.0000   0.0750
+//    th=60 rd.5 rs.3 r.3 i.8   0.8605    1.0000   0.0875
+//    th=75 rd.7 rs.1 r.5 i.6   0.9534    1.0000   0.0681
+//    th=45 rd.9 rs.05 r.4 i1   0.9445    1.0000   0.0278
+//    th=45 rd.05 rs.9 r.4 i1   0.6767    1.0000   0.1616
+//    th=80 rd.5 rs.02 r.2 i1   1.0222    1.0000   0.0125
+//    per-channel roughness     0.8705    1.0000   0.0670
+//    tilt 20 deg               0.8485    0.9903   0.0738
+//    tilt 40 deg               0.7906    0.9605   0.0852
+//    tilt 55 deg               0.7269    0.9248   0.0994
+//
+//  Post-fix every one of those reads |int Pdf - target| <= 0.007 and
+//  TVD <= 0.007.
+//
+//  What the OLD version of this file gated, and why it was replaced: its
+//  Part 1 compared Pdf() against an inline replica of Pdf()'s own
+//  formula (it checks the code implements itself), and its Parts 2/3
+//  asserted `Pdf(w_S) >= q_S(w_S)*p_S(w_S)`, which holds identically
+//  because Pdf() adds a non-negative `cD*p_D` on top -- an algebraic
+//  tautology, not a measurement.  Neither could see that the aggregate
+//  integrated to 0.68-1.02 instead of 1.
 //
 //  Build (from project root):
 //    make -C build/make/rise build-test/SchlickSPFPdfConsistencyTest
@@ -70,9 +82,11 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <iostream>
+#include <iomanip>
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Ray.h"
@@ -83,9 +97,10 @@
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
-#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/SchlickSPF.h"
 #include "TestStubObject.h"
 
@@ -94,9 +109,11 @@ using namespace RISE::Implementation;
 
 static StubObject* g_stubObject = 0;
 static int g_failures = 0;
+static int g_checks = 0;
 
 #define CHECK( cond, msg ) \
     do { \
+        g_checks++; \
         if( !(cond) ) { \
             std::cout << "  FAIL: " << msg << std::endl; \
             g_failures++; \
@@ -104,15 +121,16 @@ static int g_failures = 0;
     } while( 0 )
 
 // ============================================================
-//  Synthetic intersection (matches SPFPdfConsistencyTest.cpp's
-//  MakeIntersection exactly -- same convention, kept file-local so this
-//  file has no dependency on that one).
+//  Synthetic intersection.  `tiltDeg` puts the GEOMETRIC normal at that
+//  angle off the shading normal, which is what a GlintModifier-style
+//  shading-normal perturbation looks like from inside the SPF: Scatter's
+//  geometric-horizon gate then rejects part of the cosine hemisphere.
 // ============================================================
-static RayIntersectionGeometric MakeIntersection( double incomingTheta )
+static RayIntersectionGeometric MakeIntersection( double incomingTheta, double tiltDeg )
 {
-    double sinT = sin(incomingTheta);
-    double cosT = cos(incomingTheta);
-    Vector3 inDir( sinT, 0, -cosT );
+    const double sinT = sin(incomingTheta);
+    const double cosT = cos(incomingTheta);
+    const Vector3 inDir( sinT, 0, -cosT );
 
     Ray inRay( Point3(sinT, 0, 1.0), inDir );
     RasterizerState rs = {0, 0};
@@ -125,68 +143,152 @@ static RayIntersectionGeometric MakeIntersection( double incomingTheta )
     ri.onb.CreateFromW( Vector3(0, 0, 1) );
     ri.ptCoord = Point2(0.5, 0.5);
 
+    if( tiltDeg > 0 ) {
+        const double t = tiltDeg * PI / 180.0;
+        // Tilted toward +X, i.e. AWAY from the incoming ray's travel
+        // direction, so the ray-anchoring in Scatter/Pdf leaves this
+        // vector's sign alone and the hit stays a front-face hit.
+        ri.vGeomNormal = Vector3( sin(t), 0, cos(t) );
+    }
+
     return ri;
 }
 
-// ============================================================
-//  Independent replica of the DERIVED closed-form Pdf(), for the
-//  closed-form cross-check.  Mirrors SchlickSPF.cpp's Pdf() weighting
-//  block line for line (see docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md);
-//  kept separate so a future accidental edit to SchlickSPF.cpp that
-//  silently reverts the fix is caught by disagreement, not by the two
-//  copies drifting together.
-// ============================================================
-static double DerivedPdfReplica(
-    double cosTheta,        // dot(wo, n) -- caller guarantees > 0
-    double diffusePdf,      // cosTheta / pi
-    double specPdf,         // caller-supplied ComputeSchlickSpecularPdf-equivalent value
-    double fresnelAtWo,     // (1-hdotk)^5 at the query wo's own half-vector
-    double rd,
-    double rs
-    )
+// 12 equal-cos-theta x 8 equal-phi bins: equal solid angle, so a
+// mis-shaped density shows up as mass moving between bins rather than
+// being hidden inside one big bin.
+static const int kNT = 12;
+static const int kNP = 8;
+static const int kNBins = kNT * kNP;
+
+static int BinOf( const Vector3& d )
 {
-    (void)cosTheta;
-    const double dWeight = rd;
-    const double sWeightExact = rs + (1.0-rs)*fresnelAtWo;
-    const double sWeightAvg = rs + (1.0-rs)/21.0;   // SchlickFresnelAvg(rs)
-
-    const double dDenom = dWeight + sWeightAvg;
-    const double cD = ( dDenom > 1e-12 ) ? dWeight/dDenom : 0.0;
-
-    const double sDenom = dWeight + sWeightExact;
-    const double qS = ( sDenom > 1e-12 ) ? sWeightExact/sDenom : 0.0;
-
-    return cD*diffusePdf + qS*specPdf;
+    double c = d.z;
+    if( c < 0 ) c = 0;
+    if( c >= 1 ) c = 0.999999;
+    int it = (int)(c * kNT);
+    if( it >= kNT ) it = kNT-1;
+    double phi = atan2( d.y, d.x );
+    if( phi < 0 ) phi += TWO_PI;
+    int ip = (int)(phi / TWO_PI * kNP);
+    if( ip >= kNP ) ip = kNP-1;
+    return it*kNP + ip;
 }
 
-// Replica of the OLD (pre-fix) formula, for the "shipped code no longer
-// matches the old formula whenever the two genuinely disagree" check.
-static double OldBuggyPdfReplica(
-    double diffusePdf,
-    double specPdf,
-    double rd,
-    double rs
-    )
+struct Config
 {
-    const double dWeight = rd;
-    const double sWeight = rs;   // MaxValue(rs) -- raw, angle-independent
-    const double totalWeight = dWeight + sWeight;
-    if( totalWeight < 1e-12 ) return 0.0;
-    return (dWeight*diffusePdf + sWeight*specPdf) / totalWeight;
-}
+    const char* name;
+    double thetaDeg;
+    double rd, rs;
+    double roughness, isotropy;     // used when perChannel == false
+    bool   perChannel;
+    double rr, rg, rb;              // per-channel roughness
+    double tiltDeg;
+    bool   runNM;                   // also gate the spectral twin
+};
 
-// Exact fresnel-at-wo, replicated from GenerateSpecularRay's / Pdf()'s own
-// half-vector construction (h = normalize(wi+wo), hdotk = dot(h,wi),
-// fresnel = (1-hdotk)^5) -- proven algebraically in the design derivation
-// (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md) to reproduce EXACTLY what
-// GenerateSpecularRay computes for any wo the sampler could have drawn.
-static double FresnelAtWo( const RayIntersectionGeometric& ri, const Vector3& wo )
+// Quadrature resolution for the hemisphere integral of Pdf().  400x800
+// midpoints, uniform in (cos theta, phi) so each cell has equal solid
+// angle.  Verified against 800x1600 on every config below: the integral
+// agrees to <1e-5, so the numbers this test gates are Pdf()'s, not the
+// quadrature's.
+static const int kQT = 400;
+static const int kQP = 800;
+
+static const long kDraws = 600000;
+
+static const double kMassTol = 0.01;    // gate 1
+static const double kTvdTol  = 0.012;   // gate 2 (see the header derivation)
+
+// One config, one spectral mode.  `nm < 0` means the RGB path.
+static void RunConfig( const Config& c, double nm )
 {
-    const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-    const Vector3 woN = Vector3Ops::Normalize( wo );
-    const Vector3 h = Vector3Ops::Normalize( wi + woN );
-    const double hdotk = Vector3Ops::Dot( h, wi );
-    return ::pow( 1.0-hdotk, 5.0 );
+    UniformColorPainter* diff = new UniformColorPainter( RISEPel(c.rd,c.rd,c.rd) ); diff->addref();
+    UniformColorPainter* spec = new UniformColorPainter( RISEPel(c.rs,c.rs,c.rs) ); spec->addref();
+
+    IScalarPainter* rough = 0;
+    if( c.perChannel ) {
+        RGBScalarPainter* rp = new RGBScalarPainter( c.rr, c.rg, c.rb ); rp->addref(); rough = rp;
+    } else {
+        UniformScalarPainter* rp = new UniformScalarPainter( c.roughness ); rp->addref(); rough = rp;
+    }
+    UniformScalarPainter* iso = new UniformScalarPainter( c.isotropy ); iso->addref();
+
+    SchlickSPF* spf = new SchlickSPF( *diff, *spec, *rough, *iso ); spf->addref();
+
+    RayIntersectionGeometric ri = MakeIntersection( c.thetaDeg * PI / 180.0, c.tiltDeg );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    const bool bNM = (nm > 0);
+
+    // ---- the real sampler ----------------------------------------
+    // Fixed seed: this whole test is deterministic, which is what lets
+    // the TVD threshold sit only ~2.4x above the noise floor.
+    RandomNumberGenerator rng( bNM ? 909090 : 424242 );
+    Implementation::IndependentSampler sampler( rng );
+
+    std::vector<double> emp( kNBins, 0.0 );
+    long emitted = 0;
+
+    for( long i = 0; i < kDraws; i++ ) {
+        ScatteredRayContainer scattered;
+        if( bNM ) {
+            spf->ScatterNM( ri, sampler, nm, scattered, iorStack );
+        } else {
+            spf->Scatter( ri, sampler, scattered, iorStack );
+        }
+
+        // The production selection, called as production calls it
+        // (PTRandomlySelect<Tag> -> RandomlySelect(xi, bNM)).
+        ScatteredRay* sel = scattered.RandomlySelect( rng.CanonicalRandom(), bNM );
+        if( sel ) {
+            emitted++;
+            emp[ BinOf( Vector3Ops::Normalize( sel->ray.Dir() ) ) ] += 1.0;
+        }
+    }
+
+    const double massEmp = (double)emitted / (double)kDraws;
+    for( int k = 0; k < kNBins; k++ ) {
+        emp[k] /= (double)kDraws;
+    }
+
+    // ---- the density -------------------------------------------------
+    std::vector<double> quad( kNBins, 0.0 );
+    double intPdf = 0;
+    const double dw = (1.0/kQT) * (TWO_PI/kQP);
+    for( int a = 0; a < kQT; a++ ) {
+        const double ct = (a + 0.5)/kQT;
+        const double st = sqrt( 1.0 - ct*ct );
+        for( int b = 0; b < kQP; b++ ) {
+            const double ph = (b + 0.5)/kQP * TWO_PI;
+            const Vector3 wo( st*cos(ph), st*sin(ph), ct );
+            const double pdf = bNM ? spf->PdfNM( ri, wo, nm, iorStack )
+                                   : spf->Pdf( ri, wo, iorStack );
+            intPdf += pdf * dw;
+            quad[ BinOf(wo) ] += pdf * dw;
+        }
+    }
+
+    double tvd = 0;
+    for( int k = 0; k < kNBins; k++ ) {
+        tvd += fabs( emp[k] - quad[k] );
+    }
+    tvd *= 0.5;
+
+    std::cout << "  " << std::left << std::setw(26) << c.name << std::right
+              << ( bNM ? "  NM " : "  RGB" )
+              << "  intPdf=" << std::fixed << std::setprecision(5) << intPdf
+              << "  emitted=" << massEmp
+              << "  |diff|=" << fabs(intPdf - massEmp)
+              << "  TVD=" << tvd
+              << std::endl;
+
+    CHECK( fabs(intPdf - massEmp) <= kMassTol,
+        std::string(c.name) + (bNM?" (NM)":" (RGB)") + ": integral of Pdf must match the measured probability that Scatter emits a ray, within 1%" );
+    CHECK( tvd <= kTvdTol,
+        std::string(c.name) + (bNM?" (NM)":" (RGB)") + ": total variation between Pdf and the real Scatter+RandomlySelect histogram must sit at the MC noise floor" );
+
+    spf->release(); rough->release(); iso->release(); diff->release(); spec->release();
 }
 
 int main()
@@ -197,263 +299,45 @@ int main()
     g_stubObject->addref();
     GlobalLog();
 
-    // ============================================================
-    //  Part 1: closed-form cross-check at hand-picked (theta, rd, rs) points.
-    // ============================================================
-    {
-        std::cout << "\n-- Part 1: closed-form replica cross-check --" << std::endl;
+    // The 8 reviewer configurations, plus the per-channel-roughness
+    // branch and three shading-normal tilts.  The isotropy column is
+    // deliberately mixed: an anisotropic lobe (isotropy != 1) is the
+    // case whose azimuthal density was wrong by up to 25x, and it is
+    // invisible to any isotropic fixture.
+    const Config cfgs[] = {
+        // name                      th    rd    rs    r     iso  perCh  rr   rg   rb   tilt  NM
+        { "th=10 rd.5 rs.3 r.3 i.8", 10.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   0.0,  true  },
+        { "th=30 rd.5 rs.3 r.3 i.8", 30.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   0.0,  true  },
+        { "th=45 rd.2 rs.6 r.15 i1", 45.0, 0.2,  0.6,  0.15, 1.0, false, 0,   0,   0,   0.0,  false },
+        { "th=60 rd.5 rs.3 r.3 i.8", 60.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   0.0,  false },
+        { "th=75 rd.7 rs.1 r.5 i.6", 75.0, 0.7,  0.1,  0.5,  0.6, false, 0,   0,   0,   0.0,  true  },
+        { "th=45 rd.9 rs.05 r.4 i1", 45.0, 0.9,  0.05, 0.4,  1.0, false, 0,   0,   0,   0.0,  false },
+        { "th=45 rd.05 rs.9 r.4 i1", 45.0, 0.05, 0.9,  0.4,  1.0, false, 0,   0,   0,   0.0,  false },
+        { "th=80 rd.5 rs.02 r.2 i1", 80.0, 0.5,  0.02, 0.2,  1.0, false, 0,   0,   0,   0.0,  false },
+        { "per-channel roughness",   45.0, 0.5,  0.3,  0.3,  0.8, true,  0.2, 0.3, 0.4, 0.0,  false },
+        { "tilt 20 deg th=45",       45.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   20.0, true  },
+        { "tilt 40 deg th=45",       45.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   40.0, false },
+        { "tilt 55 deg th=30",       30.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   55.0, true  },
+    };
 
-        struct Pt { double thetaDeg; double rd; double rs; double roughness; double isotropy; };
-        Pt pts[] = {
-            { 10.0, 0.5, 0.3, 0.3, 0.8 },
-            { 30.0, 0.5, 0.3, 0.3, 0.8 },
-            { 45.0, 0.2, 0.6, 0.15, 1.0 },
-            { 60.0, 0.5, 0.3, 0.3, 0.8 },
-            { 75.0, 0.7, 0.1, 0.5, 0.6 },
-        };
+    std::cout << "\n-- Gate 1 (two-sided normalisation) + Gate 2 (TVD vs the real sampler) --" << std::endl;
+    for( const Config& c : cfgs ) {
+        RunConfig( c, -1.0 );
+    }
 
-        for( auto& p : pts )
-        {
-            UniformColorPainter* diff = new UniformColorPainter( RISEPel(p.rd,p.rd,p.rd) ); diff->addref();
-            UniformColorPainter* spec = new UniformColorPainter( RISEPel(p.rs,p.rs,p.rs) ); spec->addref();
-            UniformScalarPainter* rough = new UniformScalarPainter( p.roughness ); rough->addref();
-            UniformScalarPainter* iso   = new UniformScalarPainter( p.isotropy );  iso->addref();
-            SchlickSPF* spf = new SchlickSPF( *diff, *spec, *rough, *iso ); spf->addref();
-
-            RayIntersectionGeometric ri = MakeIntersection( p.thetaDeg * PI / 180.0 );
-            IORStack iorStack = MakeTestIORStack( g_stubObject );
-
-            // Sample a handful of query directions on the hemisphere,
-            // including directions near and far from the mirror lobe.
-            const int NDIRS = 37;
-            int agreeWithDerived = 0;
-            int differFromOld = 0;
-            int oldWouldHaveDiffered = 0;
-
-            for( int k = 0; k < NDIRS; k++ )
-            {
-                double theta = (k+0.5) * (PI_OV_TWO*0.98) / NDIRS;
-                double phi   = k * 2.399963;  // golden-angle-ish spread, arbitrary
-                Vector3 wo( sin(theta)*cos(phi), sin(theta)*sin(phi), cos(theta) );
-                wo = Vector3Ops::Normalize( wo );
-
-                double cosTheta = Vector3Ops::Dot( wo, ri.onb.w() );
-                if( cosTheta <= 0 ) continue;
-
-                double shipped = spf->Pdf( ri, wo, iorStack );
-
-                // Reconstruct diffusePdf/specPdf independently WITHOUT
-                // calling the file-local ComputeSchlickSpecularPdf: diffusePdf
-                // is trivial (cos/pi); specPdf is extracted via an rd=0 TWIN
-                // material at the SAME wo -- at rd=0, dWeight=0 so (per the
-                // derived formula) cD=0 and qS=1 identically, whenever
-                // sWeightExact(wo) = rs+(1-rs)*fresnelAtWo > 0.  So
-                // Pdf_at_rd0(wo) = 0*diffusePdf + 1*specPdf = specPdf, EXACTLY,
-                // with no equation-solving needed.
-                double diffusePdf = cosTheta * INV_PI;
-                double fAtWo = FresnelAtWo( ri, wo );
-
-                UniformColorPainter* diffZero = new UniformColorPainter( RISEPel(0,0,0) ); diffZero->addref();
-                SchlickSPF* spfRd0 = new SchlickSPF( *diffZero, *spec, *rough, *iso ); spfRd0->addref();
-                double specPdf = spfRd0->Pdf( ri, wo, iorStack );
-                spfRd0->release();
-                diffZero->release();
-
-                double derived = DerivedPdfReplica( cosTheta, diffusePdf, specPdf, fAtWo, p.rd, p.rs );
-                double oldFormula = OldBuggyPdfReplica( diffusePdf, specPdf, p.rd, p.rs );
-
-                double denomSD = r_max( r_max(fabs(shipped), fabs(derived)), 1e-9 );
-                double relErr = fabs(shipped-derived) / denomSD;
-                if( relErr < 1e-6 ) agreeWithDerived++;
-
-                double denomSO = r_max( r_max(fabs(shipped), fabs(oldFormula)), 1e-9 );
-                double relErrOld = fabs(shipped-oldFormula) / denomSO;
-                if( relErrOld > 1e-6 ) differFromOld++;
-                double denomOD = r_max( r_max(fabs(oldFormula), fabs(derived)), 1e-9 );
-                double oldVsDerived = fabs(oldFormula-derived) / denomOD;
-                if( oldVsDerived > 1e-3 ) oldWouldHaveDiffered++;
-            }
-
-            std::cout << "  theta=" << p.thetaDeg << " rd=" << p.rd << " rs=" << p.rs
-                      << "  agreeWithDerived=" << agreeWithDerived << "/" << NDIRS
-                      << "  differFromOld=" << differFromOld << "/" << NDIRS
-                      << "  (old-vs-derived would have differed=" << oldWouldHaveDiffered << "/" << NDIRS << ")"
-                      << std::endl;
-
-            CHECK( agreeWithDerived == NDIRS,
-                "shipped Pdf() must match the derived closed-form replica at every sampled direction (see count above)" );
-            // The shipped code must actually have moved off the old formula
-            // wherever the old and derived formulas predict different numbers.
-            CHECK( differFromOld >= oldWouldHaveDiffered - 1,
-                "shipped Pdf() should differ from the OLD buggy formula everywhere the old and derived formulas disagree" );
-
-            spf->release(); rough->release(); iso->release(); diff->release(); spec->release();
+    std::cout << "\n-- spectral twin (ScatterNM/PdfNM at 550nm) --" << std::endl;
+    for( const Config& c : cfgs ) {
+        if( c.runNM ) {
+            // ScatterNM has no per-channel branch, so a per-channel
+            // roughness painter is not a distinct spectral case.
+            RunConfig( c, 550.0 );
         }
     }
 
-    // ============================================================
-    //  Part 2 (RGB): per-lobe, statistical, ground-truth lower bound.
-    //  Replicates PTScatterSelectWeight/PTRandomlySelect's actual
-    //  selection rule (PathTracingIntegrator.cpp:1339-1356,
-    //  ScatteredRayContainer::RandomlySelect) using the SAME weight --
-    //  MaxValue(kray) -- so a pass here means Pdf() genuinely lower-
-    //  bounds what the production integrator's own selection actually
-    //  does, not merely something self-consistent invented by this test.
-    // ============================================================
-    {
-        std::cout << "\n-- Part 2 (RGB): per-lobe realized-weight lower bound --" << std::endl;
-
-        UniformColorPainter* gray = new UniformColorPainter( RISEPel(0.5,0.5,0.5) ); gray->addref();
-        UniformColorPainter* spec = new UniformColorPainter( RISEPel(0.3,0.3,0.3) ); spec->addref();
-        UniformScalarPainter* roughnessSc = new UniformScalarPainter( 0.3 ); roughnessSc->addref();
-        UniformScalarPainter* isotropySc  = new UniformScalarPainter( 0.8 ); isotropySc->addref();
-        SchlickSPF* schlick = new SchlickSPF( *gray, *spec, *roughnessSc, *isotropySc ); schlick->addref();
-
-        RandomNumberGenerator rng( 424242 );
-        Implementation::IndependentSampler sampler( rng );
-        IORStack iorStack = MakeTestIORStack( g_stubObject );
-
-        // Pre-fix reference numbers (measured against master, unfixed
-        // SchlickSPF.cpp, same seed/config): specular-side failures were
-        // 105/36946 (30deg) and 2845/32045 (60deg), max relative error up
-        // to 0.214.  Post-fix these must be EXACTLY zero.
-        const double thetas[] = { 30.0, 60.0 };
-        for( double thetaDeg : thetas )
-        {
-            RayIntersectionGeometric ri = MakeIntersection( thetaDeg * PI / 180.0 );
-
-            long N = 50000;
-            long dChecks=0, dFail=0, sChecks=0, sFail=0;
-            double dMaxRel=0, sMaxRel=0;
-
-            for( long i = 0; i < N; i++ )
-            {
-                ScatteredRayContainer scattered;
-                schlick->Scatter( ri, sampler, scattered, iorStack );
-                if( scattered.Count() == 0 ) continue;
-
-                // totalWeight uses MaxValue(kray) on the REALIZED draws --
-                // PTScatterSelectWeight<PelTag>'s exact formula.
-                double totalWeight = 0;
-                for( unsigned int j = 0; j < scattered.Count(); j++ )
-                    totalWeight += ColorMath::MaxValue( scattered[j].kray );
-                if( totalWeight < 1e-12 ) continue;
-
-                for( unsigned int j = 0; j < scattered.Count(); j++ )
-                {
-                    const ScatteredRay& scat = scattered[j];
-                    if( scat.isDelta ) continue;
-                    if( scat.pdf <= 0 ) continue;
-
-                    Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
-                    Scalar pdfEval = schlick->Pdf( ri, wo, iorStack );
-                    Scalar weight_j = ColorMath::MaxValue( scat.kray );
-                    Scalar minExpected = (weight_j * scat.pdf) / totalWeight;
-
-                    bool isDiffuse = (scat.type == ScatteredRay::eRayDiffuse);
-                    bool fail = false;
-                    double relErr = 0;
-                    if( pdfEval < minExpected * 0.99 - 1e-8 ) {
-                        fail = true;
-                        relErr = (minExpected - pdfEval) / minExpected;
-                    }
-                    if( isDiffuse ) { dChecks++; if(fail){ dFail++; if(relErr>dMaxRel) dMaxRel=relErr; } }
-                    else            { sChecks++; if(fail){ sFail++; if(relErr>sMaxRel) sMaxRel=relErr; } }
-                }
-            }
-
-            std::cout << "  theta=" << thetaDeg
-                      << "  SPECULAR checks=" << sChecks << " fail=" << sFail << " maxRel=" << sMaxRel
-                      << "  DIFFUSE checks=" << dChecks << " fail=" << dFail << " maxRel=" << dMaxRel
-                      << std::endl;
-
-            // Gating: the specular side must be EXACT (this is what the fix
-            // provably achieves -- see the file header derivation).
-            CHECK( sFail == 0, "specular-lobe realized-weight lower bound must hold with ZERO failures post-fix" );
-
-            // Non-gating-to-zero, but must not regress past the pre-fix
-            // magnitude (~19-31% failure rate, ~30-37% max rel error) --
-            // this is the proven-inherent residual, not a fixable defect.
-            double dFailRate = (double)dFail / (double)dChecks;
-            CHECK( dFailRate < 0.40, "diffuse-lobe residual failure rate must stay within its documented inherent bound (<40%)" );
-            CHECK( dMaxRel < 0.50, "diffuse-lobe residual max relative error must stay within its documented inherent bound (<0.50)" );
-        }
-
-        schlick->release(); roughnessSc->release(); isotropySc->release(); gray->release(); spec->release();
-    }
-
-    // ============================================================
-    //  Part 3 (NM): spectral twin of Part 2, hero wavelength 550nm.
-    // ============================================================
-    {
-        std::cout << "\n-- Part 3 (NM): per-lobe realized-weight lower bound --" << std::endl;
-
-        UniformColorPainter* gray = new UniformColorPainter( RISEPel(0.5,0.5,0.5) ); gray->addref();
-        UniformColorPainter* spec = new UniformColorPainter( RISEPel(0.3,0.3,0.3) ); spec->addref();
-        UniformScalarPainter* roughnessSc = new UniformScalarPainter( 0.3 ); roughnessSc->addref();
-        UniformScalarPainter* isotropySc  = new UniformScalarPainter( 0.8 ); isotropySc->addref();
-        SchlickSPF* schlick = new SchlickSPF( *gray, *spec, *roughnessSc, *isotropySc ); schlick->addref();
-
-        RandomNumberGenerator rng( 909090 );
-        Implementation::IndependentSampler sampler( rng );
-        IORStack iorStack = MakeTestIORStack( g_stubObject );
-        const double nm = 550.0;
-
-        const double thetas[] = { 30.0, 60.0 };
-        for( double thetaDeg : thetas )
-        {
-            RayIntersectionGeometric ri = MakeIntersection( thetaDeg * PI / 180.0 );
-
-            long N = 50000;
-            long sChecks=0, sFail=0;
-            double sMaxRel=0;
-
-            for( long i = 0; i < N; i++ )
-            {
-                ScatteredRayContainer scattered;
-                schlick->ScatterNM( ri, sampler, nm, scattered, iorStack );
-                if( scattered.Count() == 0 ) continue;
-
-                double totalWeight = 0;
-                for( unsigned int j = 0; j < scattered.Count(); j++ )
-                    totalWeight += scattered[j].krayNM;   // PTScatterSelectWeight<NMTag>
-                if( totalWeight < 1e-12 ) continue;
-
-                for( unsigned int j = 0; j < scattered.Count(); j++ )
-                {
-                    const ScatteredRay& scat = scattered[j];
-                    if( scat.isDelta ) continue;
-                    if( scat.pdf <= 0 ) continue;
-                    if( scat.type != ScatteredRay::eRayReflection ) continue; // specular only
-
-                    Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
-                    Scalar pdfEval = schlick->PdfNM( ri, wo, nm, iorStack );
-                    Scalar weight_j = scat.krayNM;
-                    Scalar minExpected = (weight_j * scat.pdf) / totalWeight;
-
-                    sChecks++;
-                    if( pdfEval < minExpected * 0.99 - 1e-8 ) {
-                        sFail++;
-                        double relErr = (minExpected - pdfEval) / minExpected;
-                        if( relErr > sMaxRel ) sMaxRel = relErr;
-                    }
-                }
-            }
-
-            std::cout << "  theta=" << thetaDeg << " nm=" << nm
-                      << "  SPECULAR checks=" << sChecks << " fail=" << sFail << " maxRel=" << sMaxRel
-                      << std::endl;
-            CHECK( sFail == 0, "NM specular-lobe realized-weight lower bound must hold with ZERO failures post-fix" );
-        }
-
-        schlick->release(); roughnessSc->release(); isotropySc->release(); gray->release(); spec->release();
-    }
-
+    std::cout << "\nChecks: " << g_checks << " Failures: " << g_failures << std::endl;
     if( g_failures == 0 ) {
-        std::cout << "\nAll SchlickSPF Pdf consistency checks passed!" << std::endl;
+        std::cout << "All SchlickSPF Pdf consistency checks passed!" << std::endl;
         return 0;
-    } else {
-        std::cout << "\n" << g_failures << " check(s) FAILED." << std::endl;
-        return 1;
     }
+    return 1;
 }
