@@ -408,6 +408,7 @@
     <ClCompile Include="..\..\..\src\Library\Sampling\RandomSampling2D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\SincPixelFilter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\StratifiedSampling2D.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Sampling\SobolDirectionNumbers.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\SobolSampling2D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling1D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling2D.cpp" />

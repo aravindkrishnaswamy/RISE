@@ -964,9 +964,24 @@ static const double kPeakCapNonUniformSpectral  = 2.40;
 //! bigger than 3 % (an SA-MIS migration, an env-NEE/S0 reweighting);
 //! the p99 band now genuinely catches a tail/variance regression at
 //! fixed spp, which it could not while OIDN was flattening the tail.
+//!
+//! BDPT p99 RE-DERIVED 2026-09-14 for DL-81 round 2 (the Sobol' sampler:
+//! Joe-Kuo direction numbers for Get1D, a padded (0,2)-net for Get2D --
+//! docs/DL81_SOBOL_DIMENSION_PARITY.md).  1.5347 -> 1.4508, the mean of
+//! 4 independent runs as this row's centres have always been derived
+//! (run-to-run spread 0.10 %, so the 3x rule wants >= 0.3 % and the
+//! 5 % tolerance is untouched).  It is a TAIL RESHAPE, not a bias:
+//!   PT    mean 0.500023 -> 0.500001 (-0.004 %)  p99 0.503460 -> 0.524910 (+4.26 %)  max 0.504749 -> 0.527494
+//!   BDPT  mean 0.642473 -> 0.641854 (-0.10 %)   p99 0.773977 -> 0.761689 (-1.59 %)  max 0.803207 -> 0.793176
+//! -- both MEANS are unchanged to a tenth of a per cent and both mean
+//! bands still pass; what moved is PT's own 99th percentile, up 4.3 %
+//! at 8 samples per pixel, which is where the new sampler is very
+//! slightly noisier (see that doc's section 4c, 16-spp row).  The
+//! quantity this row exists to pin -- BDPT's +28.5 % MEAN bias against
+//! a truth-referenced PT -- did not move.
 static const TopologyBias kBiasEnvOnly = {
 	/* bdpt */ { { { 1.2850, 1.2850, 1.2850 }, 0.03 },
-	             { { 1.5347, 1.5347, 1.5347 }, 0.05 } },
+	             { { 1.4508, 1.4508, 1.4508 }, 0.05 } },
 	/* vcm  */ { { { 1.2425, 1.2425, 1.2423 }, 0.03 },
 	             { { 1.2950, 1.2951, 1.2948 }, 0.05 } },
 	kPeakCapUniformEnvRGB
@@ -1068,7 +1083,22 @@ static const TopologyBias kBiasEnvOnlySpectralHWSS = {
 	/* bdpt */ { { { 1.3133, 1.2784, 1.2403 }, 0.06 },
 	             { { 1.7867, 1.8975, 1.8010 }, 0.12 } },
 	/* vcm  */ { { { 1.2477, 1.2105, 1.1670 }, 0.06 },
-	             { { 1.4135, 1.4953, 1.4293 }, 0.12 } },
+	             // VCM p99 RE-DERIVED 2026-09-14 for DL-81 round 2
+	             // (docs/DL81_SOBOL_DIMENSION_PARITY.md): (1.4135,
+	             // 1.4953, 1.4293) -> (1.0207, 1.0722, 1.0266), the
+	             // mean of 4 independent runs (run-to-run spread
+	             // <= 2.95 %, so the 3x rule wants >= 8.9 % and the
+	             // 12 % tolerance is untouched).  A FIREFLY REDUCTION,
+	             // not a bias -- VCM's tail collapsed toward its body
+	             // at constant energy:
+	             //   VCM mean (0.6038, 0.6023, 0.5975) -> (0.6054, 0.6037, 0.5998)   +0.26 / +0.25 / +0.39 %
+	             //   VCM p99  (0.8860, 0.8880, 0.8864) -> (0.6381, 0.6356, 0.6419)   -27.97 / -28.43 / -27.58 %
+	             //   VCM max  (0.9095, 0.9031, 0.9583) -> (0.6580, 0.6546, 0.6781)   -27.65 / -27.51 / -29.25 %
+	             //   PT  mean (0.4808, 0.4961, 0.5130) -> (0.4821, 0.4960, 0.5143)   +0.26 / -0.01 / +0.25 %
+	             // The VCM MEAN band above is untouched and still
+	             // passes, which is the bias statistic; only the tail
+	             // moved, and it moved toward PT's.
+	             { { 1.0207, 1.0722, 1.0266 }, 0.12 } },
 	kPeakCapUniformEnvSpectral
 };
 

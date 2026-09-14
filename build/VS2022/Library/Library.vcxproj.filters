@@ -369,6 +369,12 @@
     <ClCompile Include="..\..\..\src\Library\Sampling\SincPixelFilter.cpp">
       <Filter>Sampling</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\SobolDirectionNumbers.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\SobolSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Sampling\StratifiedSampling2D.cpp">
       <Filter>Sampling</Filter>
     </ClCompile>

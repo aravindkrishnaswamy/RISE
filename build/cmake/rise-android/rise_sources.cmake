@@ -231,6 +231,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Sampling/UniformSampling1D.cpp"
     "${RISE_LIB}/Sampling/UniformSampling2D.cpp"
     "${RISE_LIB}/Sampling/SobolSampling2D.cpp"
+    "${RISE_LIB}/Sampling/SobolDirectionNumbers.cpp"
 
     # SRCLIBPHOTONMAPPING
     "${RISE_LIB}/PhotonMapping/CausticPelPhotonMap.cpp"

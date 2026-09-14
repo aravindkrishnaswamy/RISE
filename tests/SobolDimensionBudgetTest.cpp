@@ -39,6 +39,8 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <filesystem>
+#include <system_error>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"
@@ -49,6 +51,9 @@
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Utilities/ISampler.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Sampling/SobolSequence.h"
+#include "../src/Library/Utilities/RasterizerDefaults.h"
+#include "../src/Library/Utilities/StabilityConfig.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
@@ -793,6 +798,36 @@ static void TestApertureDrawConsumption()
 				<< " (dimension " << ( BDPTCameraUtilities::kApertureSamplerStream * 32 )
 				<< " vs " << ( worst * 32 ) << "): OK\n";
 		}
+
+		// Being above the walk streams stopped being sufficient at
+		// DL-81, when SobolSequence acquired a FINITE supply of real
+		// Sobol' dimensions: the old 8192 wrapped onto dimension 1001,
+		// which is stream 31 slot 9 -- eye bounce 15.
+		//
+		// `DrawApertureSample` draws with Get2D, and Get2D is a PADDED
+		// (0,2)-net pair keyed by the RAW dimension index -- no wrap, no
+		// table row -- so the aperture group is 3322*32 = 106304 and
+		// cannot equal any walk stream's group, at any depth, whatever
+		// the table size.  What still has to hold is that the group is
+		// distinct: no walk stream may ever start at this dimension.
+		{
+			const unsigned int apertureGroup =
+				(unsigned int)BDPTCameraUtilities::kApertureSamplerStream * 32u;
+			const unsigned int worstWalkGroup = worst * 32u;
+			if( apertureGroup <= worstWalkGroup )
+			{
+				std::cerr << "  FAIL: the aperture's Get2D group " << apertureGroup
+					<< " is inside the walk streams' group range (up to "
+					<< worstWalkGroup << ").\n";
+				ok = false;
+			}
+			else
+			{
+				std::cout << "  aperture Get2D group " << apertureGroup
+					<< " is above every walk stream's group (" << worstWalkGroup
+					<< "), and Get2D is padded so no table wrap applies: OK\n";
+			}
+		}
 	}
 
 	pinhole->release();
@@ -810,6 +845,194 @@ static void TestApertureDrawConsumption()
 // main
 // ================================================================
 
+
+// ================================================================
+// Test G: no SHIPPED scene can drive a sampler stream past the end
+// of the Sobol' dimension table (DL-81 review, P2-2)
+//
+// `SobolSequence::kNumDimensions` is finite, and `StartStream(s)` puts
+// stream s at dimension s * kStreamStride.  Past the table, a Get1D
+// draw is re-indexed rather than aliased -- it decorrelates instead of
+// collapsing -- but it stops being a joint net with the dimension it
+// shares, so the table is SIZED to keep shipped content off that path
+// entirely.  This test recomputes the bound from the scene files
+// rather than trusting the comment that states it, so a scene that
+// raises a depth past the table turns red here.
+//
+// Reachable streams, read off the integrators:
+//   light walk   1  + d,  d < maxLightDepth + maxVolumeBounce
+//   eye walk     16 + d,  d < maxEyeDepth   + maxVolumeBounce
+//   BDPT select  47
+//   MLT          48
+//   VCM NEE      48 + i, i over the eye vertices the walk produced
+// A walk iteration appends one vertex, except that a BSSRDF material
+// appends a second (the entry vertex), so the VCM bound carries a
+// factor of two on a scene that declares subsurface scattering.
+// ================================================================
+
+static bool SceneDepthBound(
+	const std::string& path,
+	unsigned int& outStream,
+	std::string& outWhy )
+{
+	std::ifstream f( path );
+	if( !f ) return false;
+
+	StabilityConfig stability;
+
+	unsigned int maxDepth = 0;
+	unsigned int volumeBounce = stability.maxVolumeBounce;
+	bool isBidirectional = false, isVCM = false, hasSubsurface = false;
+
+	// Round-2-review fix (P3-5a): the no-depth default must match the
+	// SPECIFIC rasterizer the scene selects, not always BDPT's.
+	// PixelPelDefaults::maxRecursion and MLTDefaults::maxEyeDepth are
+	// BOTH 10 while BDPTPelDefaults/VCMPelDefaults::maxEyeDepth is 8
+	// (RasterizerDefaults.h) -- defaulting every undeclared-depth scene
+	// to 8 under-counted a pixelpel or MLT scene's true walk length.
+	// `pathtracing_*_rasterizer` has no scene-level depth cap at all
+	// (PathTracingPelDefaults/PathTracingSpectralDefaults carry no
+	// maxEyeDepth field); its runtime default is the GUI render-modes
+	// hard cap, `PathTracingIntegrator::mMaxPathDepth( 128 )`
+	// (PathTracingIntegrator.cpp), which is also the safe upper bound
+	// to assume for any scene whose rasterizer this scan does not
+	// otherwise recognise.
+	PixelPelDefaults pixelPelDflt;
+	BDPTPelDefaults  bdptDflt;
+	VCMPelDefaults   vcmDflt;
+	MLTDefaults      mltDflt;
+	static const unsigned int kPathTracingDefaultDepth = 128u;
+	unsigned int noDepthDefault = kPathTracingDefaultDepth;
+	bool sawRasterizer = false;
+
+	std::string line;
+	while( std::getline( f, line ) )
+	{
+		// Strip leading whitespace so a chunk name is recognisable.
+		size_t b = line.find_first_not_of( " \t\r" );
+		if( b == std::string::npos ) continue;
+		const std::string t = line.substr( b );
+
+		if( t.compare( 0, 3, "vcm" ) == 0 ) {
+			isVCM = true; isBidirectional = true;
+			noDepthDefault = vcmDflt.maxEyeDepth; sawRasterizer = true;
+		}
+		if( t.compare( 0, 4, "bdpt" ) == 0 ) {
+			isBidirectional = true;
+			noDepthDefault = bdptDflt.maxEyeDepth; sawRasterizer = true;
+		}
+		if( t.compare( 0, 3, "mlt" ) == 0 ) {
+			isBidirectional = true;
+			noDepthDefault = mltDflt.maxEyeDepth; sawRasterizer = true;
+		}
+		if( t.compare( 0, 8, "pixelpel" ) == 0 ||
+			t.compare( 0, 26, "pixelintegratingspectral_" ) == 0 ) {
+			noDepthDefault = pixelPelDflt.maxRecursion; sawRasterizer = true;
+		}
+		if( t.compare( 0, 12, "pathtracing_" ) == 0 ) {
+			noDepthDefault = kPathTracingDefaultDepth; sawRasterizer = true;
+		}
+		if( t.find( "subsurface" ) != std::string::npos ||
+			t.find( "bssrdf" ) != std::string::npos ) hasSubsurface = true;
+
+		const char* keys[3] = { "max_eye_depth", "max_light_depth", "max_recursion" };
+		for( int k = 0; k < 3; k++ ) {
+			if( t.compare( 0, std::string( keys[k] ).size(), keys[k] ) != 0 ) continue;
+			const unsigned int v = (unsigned int)std::strtoul(
+				t.c_str() + std::string( keys[k] ).size(), 0, 10 );
+			if( v > maxDepth ) maxDepth = v;
+		}
+		// Round-2-review fix (P3-5b): match on the KEY alone and let
+		// strtoul's own leading-whitespace skip handle the separator
+		// -- the previous `compare(0, 18, "max_volume_bounce ")`
+		// demanded a literal trailing SPACE, so every shipped scene
+		// (which tab-separates key and value, like every other param
+		// checked above) silently missed this line and always fell
+		// back to StabilityConfig's default, never reading the
+		// scene's own override.
+		static const char kVolKey[] = "max_volume_bounce";
+		if( t.compare( 0, sizeof(kVolKey) - 1, kVolKey ) == 0 ) {
+			volumeBounce = (unsigned int)std::strtoul( t.c_str() + sizeof(kVolKey) - 1, 0, 10 );
+		}
+	}
+
+	// A scene that names no depth gets ITS OWN rasterizer's default
+	// (or, if none was recognised, the conservative PT-sized bound).
+	(void)sawRasterizer;
+	if( maxDepth == 0 ) maxDepth = noDepthDefault;
+
+	// The walk loops saturate their iteration count at 1024.
+	unsigned int walk = maxDepth + volumeBounce;
+	if( maxDepth >= 1024u || volumeBounce > 1024u - maxDepth ) walk = 1024u;
+
+	const unsigned int perIteration = hasSubsurface ? 2u : 1u;
+	const unsigned int eyeStream   = 16u + walk;
+	const unsigned int lightStream = 1u + walk;
+	const unsigned int vcmStream   = isVCM ? ( 48u + perIteration * walk + 1u ) : 0u;
+
+	outStream = eyeStream;
+	outWhy = "eye walk";
+	if( lightStream > outStream && isBidirectional ) { outStream = lightStream; outWhy = "light walk"; }
+	if( vcmStream > outStream ) { outStream = vcmStream; outWhy = "VCM per-vertex NEE"; }
+	return true;
+}
+
+static void TestShippedSceneStreamBudget()
+{
+	std::cout << "\nTest G: shipped scenes stay inside the Sobol' dimension table (DL-81)\n";
+
+	const char* roots[2] = { "scenes", "../../../scenes" };
+	std::string root;
+	for( int i = 0; i < 2; i++ ) {
+		std::error_code ec;
+		if( std::filesystem::is_directory( roots[i], ec ) ) { root = roots[i]; break; }
+	}
+	if( root.empty() ) {
+		std::cerr << "  FAIL: could not locate the scenes/ directory from the working "
+			<< "directory; run this test from the repo root or from bin/tests.\n";
+		std::exit( 1 );
+	}
+
+	const unsigned int stride = 32;			// SobolSampler::kStreamStride
+	const unsigned int capacity = SobolSequence::kNumDimensions / stride;
+
+	unsigned int scanned = 0, worst = 0;
+	std::string worstScene, worstWhy;
+	std::error_code ec;
+	for( std::filesystem::recursive_directory_iterator it( root, ec ), end;
+		 it != end; it.increment( ec ) )
+	{
+		if( ec ) break;
+		if( !it->is_regular_file( ec ) ) continue;
+		if( it->path().extension() != ".RISEscene" ) continue;
+
+		unsigned int stream = 0;
+		std::string why;
+		if( !SceneDepthBound( it->path().string(), stream, why ) ) continue;
+		scanned++;
+		if( stream > worst ) { worst = stream; worstScene = it->path().string(); worstWhy = why; }
+	}
+
+	std::cout << "  scanned " << scanned << " scenes; deepest reachable stream " << worst
+		<< " (" << worstWhy << ") in " << worstScene << "\n";
+	std::cout << "  the table covers streams 0.." << ( capacity - 1 ) << " ("
+		<< SobolSequence::kNumDimensions << " dimensions / " << stride << " per stream)\n";
+
+	if( scanned < 100 ) {
+		std::cerr << "  FAIL: only " << scanned << " scenes scanned; the sweep is not "
+			<< "reaching the scene corpus.\n";
+		std::exit( 1 );
+	}
+	if( worst >= capacity ) {
+		std::cerr << "  FAIL: " << worstScene << " can reach stream " << worst
+			<< ", at or past the table's " << capacity << " streams.  Either raise "
+			<< "SobolSequence::kNumDimensions or accept that this scene's deepest "
+			<< "draws are re-indexed wraps rather than distinct dimensions.\n";
+		std::exit( 1 );
+	}
+	std::cout << "  deepest shipped stream is inside the table: OK\n";
+}
+
 int main( int /*argc*/, char** /*argv*/ )
 {
 	std::cout << "=== Sobol Dimension Budget Tests ===\n";
@@ -820,6 +1043,7 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestSobolSamplerMechanics();
 	TestHasFixedDimensionBudget();
 	TestApertureDrawConsumption();
+	TestShippedSceneStreamBudget();
 
 	std::cout << "\nAll Sobol dimension budget tests passed!\n";
 	return 0;
