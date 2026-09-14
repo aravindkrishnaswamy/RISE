@@ -340,18 +340,35 @@ Two design notes about the fixture:
 
 ## 7. Gate
 
-`PTGuidingMISPartitionTest` 22/0 · `PTGuidedSelectProbTest` ALL PASSED ·
-`TranslucentIORStackTest` ALL PASSED · `RayCasterEnvEscapeMISTest` 91/0 ·
-`OptimalMISAccumulatorTest` 34/0 · `MISWeightsTest` 59/0 ·
-`SobolDimensionBudgetTest` ALL PASSED · `SSSRadianceScalingTest` 574017/0 ·
-`OptimalMISTrainingSitesTest` 7/0 · `EnvLightBalanceTest` 116/0 ·
-`BDPTStrategyBalanceTest` 66/0 · `AgentLiveCommitTest` 884/0 ·
-`VCMStrategyBalanceTest` 54/1 then 55/0 on an immediate re-run — the one
-failure is a p99 TAIL statistic on a thin-lens VCM scene and nothing in
-this row touches VCM, thin-lens sampling or any tail; renders seed from
-an unsynchronized libc `rand()` (see CLAUDE.md), so this suite's tail
-checks are seed-sensitive. Clean `make -C build/make/rise clean && make
--C build/make/rise -j8 all`, zero warnings.
+**Round 2** (kept for the record): `PTGuidingMISPartitionTest` 22/0 ·
+`PTGuidedSelectProbTest` ALL PASSED · `TranslucentIORStackTest` ALL PASSED ·
+`RayCasterEnvEscapeMISTest` 91/0 · `OptimalMISAccumulatorTest` 34/0 ·
+`MISWeightsTest` 59/0 · `SobolDimensionBudgetTest` ALL PASSED ·
+`SSSRadianceScalingTest` 574017/0 · `OptimalMISTrainingSitesTest` 7/0 ·
+`EnvLightBalanceTest` 116/0 · `BDPTStrategyBalanceTest` 66/0 ·
+`AgentLiveCommitTest` 884/0 · `VCMStrategyBalanceTest` 54/1 then 55/0 on an
+immediate re-run.  **That gate did not include `VolumeEnvFurnaceTest`,
+which is what let §8.3's +9.6 % through.**
+
+**Round 3**, after `make -C build/make/rise clean && make -C build/make/rise
+-j8 all` (**0 warnings**):
+
+`PTGuidingMISPartitionTest` 37/0 · `OptimalMISTrainingSitesTest` 19/0 ·
+`PTGuidedSelectProbTest` ALL PASSED · `TranslucentIORStackTest` ALL PASSED ·
+`RayCasterEnvEscapeMISTest` 91/0 · `OptimalMISAccumulatorTest` 34/0 ·
+`MISWeightsTest` 59/0 · `SobolDimensionBudgetTest` ALL PASSED ·
+`SSSRadianceScalingTest` 574017/0 · `BDPTStrategyBalanceTest` 66/0 ·
+`VCMStrategyBalanceTest` 55/0 **twice** (run twice on purpose -- round 2's
+54/1 was a seed-sensitive p99 tail; both runs clean here) ·
+`AgentLiveCommitTest` 884/0 · `DirectionalFogTest` 11/0 ·
+`VolumeEnvFurnaceTest` 29/0 · `EnvLightBalanceTest` 116/0.
+
+Plus every suite that mentions `IntegrateFromHit` or `RAY_STATE`
+(`grep -l 'IntegrateFromHit\|RAY_STATE' tests/*.cpp tests/*.h`), which is
+how the touched-class rule resolves for this change:
+`AgentViewModeRenderTest` 687/0 · `AreaLightShaderOpScalarNTest` 11/0 ·
+`AmbientOcclusionCastsShadowsTest` 10/0 · `HairRenderTest` 26/0 ·
+`VolumeAbsorptionAttenuationTest` 89/0.
 
 ## 8. Round 3 (2026-09-14, review round 3 of the same slice)
 
