@@ -82,7 +82,14 @@ void DirectLightingShaderOp::PerformOperation(
 		ri.pObject,
 		0,		// pMedium: shader op runs at surface scatter, vacuum along shadow ray
 		false,	// isVolumeScatter
-		0 );	// pMediumObject
+		0,		// pMediumObject
+		// DL-74 P2: no guiding hook on the legacy chain, but the
+		// MIS-partner aggregate pdf must still be evaluated under the LIVE
+		// IOR stack -- this arm's partner is EmissionShaderOp's
+		// `rs.MisPartnerPdf()`, a density the previous vertex's SPF
+		// produced under exactly this stack.
+		/*pGuidedBlend*/ 0,
+		&ior_stack );
 }
 
 //! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -127,5 +134,8 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		ri.pObject,
 		0,		// pMedium
 		false,	// isVolumeScatter
-		0 );	// pMediumObject
+		0,		// pMediumObject
+		// DL-74 P2 -- see the RGB twin above.
+		/*pGuidedBlend*/ 0,
+		&ior_stack );
 }

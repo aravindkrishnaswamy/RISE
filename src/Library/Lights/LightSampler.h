@@ -100,6 +100,8 @@ namespace RISE
 
 	namespace Implementation { class OptimalMISAccumulator; }
 
+	class IORStack;
+
 	/// Optional per-call hook (DL-74, docs/DL74_ENV_NEE_GUIDING_PARTITION.md)
 	/// letting a caller replace the density `EvaluateDirectLighting{,NM}`'s
 	/// NEE arms use as the BSDF-SAMPLING technique's MIS-PARTNER for a given
@@ -842,7 +844,8 @@ namespace RISE
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
-				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
+				const IORStack* pMisIorStack = 0					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -858,7 +861,8 @@ namespace RISE
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
-				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
+				const IORStack* pMisIorStack = 0					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
 				) const;
 
 			/// Returns the alias-table selection probability for a given
