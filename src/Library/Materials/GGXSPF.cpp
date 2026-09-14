@@ -200,6 +200,12 @@ void GGXSPF::Scatter(
 	// separable-G1(wi)*G1(wo) LUT CookTorranceSPF/BRDF use, which is
 	// calibrated to a different single-scatter model.  See
 	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md and the DL-63 ledger row.
+	// DL-77 (open): the G2 LUT itself is calibrated to the ISOTROPIC
+	// Smith model at alphaEff=sqrt(alphaX*alphaY) -- exact only when
+	// alphaX==alphaY.  Strongly anisotropic alphaX/alphaY pairs
+	// under-compensate (measured 11-44% energy deficit at F0=1); see
+	// the DL-77 ledger row and docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// "DL-77".
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
 	// H6: direction-aware MS selection weight -- the true MS albedo for
 	// THIS incident direction is F_ms*(1-Ess(cosWi)), not the
@@ -501,6 +507,8 @@ void GGXSPF::ScatterNM(
 	const Scalar wsF0 = GuardedGetColorNM( *pSpecular, ri, nm );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : wsF0;
+	// DL-77 (open, see Scatter()'s twin comment): isotropized alphaEff
+	// lookup under-compensates strongly anisotropic alphaX/alphaY pairs.
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );

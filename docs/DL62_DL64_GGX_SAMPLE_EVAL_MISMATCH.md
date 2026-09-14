@@ -422,13 +422,48 @@ at every configuration (e.g. alpha=1.0 theta=80: `LookupEssG2=0.66805` vs
 `quadrature=0.66802+/-0.00017`); `LookupEss` (the pre-existing, unchanged
 separable table) measurably diverges from the same quadrature at those
 same points (e.g. the same config: `LookupEss=0.52281` vs
-`quadrature=0.66839`, diff `0.14558`, roughly 33 standard errors),
-confirming the two tables really are calibrated to different physical
-models. A closed-form Kulla-Conty identity check
-(`Ess_G2 + (1-Ess_G2)*F_ms == 1` at Schlick F0=1, where the tail's own
-`F_ms==1` at that Fresnel value) holds to `0.000000e+00` at all four spot
-alphas — this is the arithmetic identity the furnace test's mean landing
-at 1.0 depends on.
+`quadrature=0.66839+/-0.00017`, diff `0.14558` — that is **~830 standard
+errors** (0.14558 / 0.00017 ≈ 834σ), not "~33 standard errors" as an
+earlier draft of this doc stated; 33 is instead the ratio of the diff to
+this check's PASS TOLERANCE (`8σ + 0.003 ≈ 0.0044`), i.e.
+0.14558 / 0.0044 ≈ 33×, a different number answering a different
+question (how far past the gate, not how many σ from the mean) — see
+`GGXHeightCorrelatedEnergyLUTTest`'s printed `(834.2 sigma, 33.1x tol=...)`
+for both figures side by side), confirming the two tables really are
+calibrated to different physical models.
+
+**P2-1 correction (2026-09-14, debt-ggx2 slice)**: the original closed-form
+"Kulla-Conty identity" check described in this paragraph (`Ess_G2 +
+(1-Ess_G2)*F_ms == 1` at Schlick F0=1, holding to `0.000000e+00` at all
+four spot alphas) was **tautological**, not a regression pin — a review
+caught that `ComputeFms(F_avg=1, Eavg)` collapses to exactly `1` by pure
+algebra for ANY `Eavg` (`denom = 1 - 1*(1-Eavg) = Eavg`, so
+`F_ms = 1*1*Eavg/Eavg = 1`), which forces the reported total to `1`
+regardless of what `E_ss_TABLE_G2`/`E_avg_TABLE_G2` actually contain — the
+`0.000000e+00` diff was the tell, not evidence of a correct table.  It was
+replaced by two checks with real content: (a) re-deriving each
+`E_avg_TABLE_G2` row from the checked-in `E_ss_TABLE_G2` values via the
+SAME midpoint-rule discretization the generator used, blended across
+alpha exactly as `LookupEavgG2` blends — matches to `~2-5e-9` (the
+tables' own 8-decimal print precision), and would diverge measurably if
+`E_avg_TABLE_G2` were stale or mis-baked; and (b) a furnace-style
+evaluation at Schlick F0=0.9 (where `ComputeFms` does NOT collapse to a
+fixed point) asserting the provable bound `0 <= total <= F0` and that
+`F_ms` is measurably below 1 — both genuinely depend on the table
+contents.  See `GGXHeightCorrelatedEnergyLUTTest.cpp`'s
+`TestEssEavgConsistencyG2`/`TestFurnaceStyleAtF0Point9`.  A separate
+review finding (P2-2) added `TestUniformHemisphereIndependentQuadrature`:
+a THIRD independent estimator (its own re-implementation of the GGX `D`/
+Smith `Lambda`/height-correlated `G2`, its own RNG stream, and uniform-
+hemisphere — not VNDF — sampling) that agrees with `LookupEssG2` at
+alpha=1.0/mu=0.0156, alpha=0.649/mu=0.1719, and alpha=0.808/mu=0.4844
+(e.g. `LookupEssG2=0.93494` vs `uniformHemisphere=0.93486+/-0.00002`),
+closing the gap that both `MonteCarloEssG2` above and the offline
+generator share the identical VNDF `weight = G2/G1(wi)` derivation and so
+could not, between them, catch a shared sign/identity error in it.
+`GGXHeightCorrelatedEnergyLUTTest`: `23 checks, 0 failures` (was `14
+checks, 0 failures` before this slice; the count grew from the P2-1/P2-2
+additions, not from any change to the DL-63 fix itself).
 
 `GGXDiffuseTransmissionTest` (the row's original evidence): `150 checks,
 0 failures` (was `150 checks, 3 failures`) — the three configs now read
@@ -457,3 +492,50 @@ This is exactly the "reachable via a different code path" trap
 warns about: a test file's OWN reimplementation of a production formula
 is a downstream consumer of that formula's identity, not just of its
 numeric output.
+
+**User-visible impact (plain statement, both review rounds)**: DL-63
+affects the `ggx_material` and `coated_material` scene chunks, in EVERY
+Fresnel mode (Schlick/conductor/thin-film), whenever their multiscatter
+compensation term is active (`(1-Eavg) > 1e-10`, i.e. any roughness above
+the LUT's `alpha=0.01` floor). Head-on incidence is essentially unchanged
+(the compensation term itself is small there). The user-visible effect is
+a DARKENING at the grazing rim of rough metals/coated surfaces (the
+opposite direction from DL-37's earlier grazing-gain fix): recomputed
+this pass, directly from the checked-in tables, for the isolated
+multiscatter-albedo term `(1-Ess_i)*F_ms` at Schlick F0=0.9 (i.e. how much
+of the total reflectance the compensation lobe alone contributes, before
+vs. after this fix) --
+`alpha=0.3 mu=0.20`: `0.1464 -> 0.1284` (-12.3%);
+`alpha=0.3 mu=0.05`: `0.1098 -> 0.0543` (-50.6%);
+`alpha=0.6 mu=0.05`: `0.1894 -> 0.0760` (-59.9%)
+(near-identical to, and confirming, the review's own independently cited
+figures of -12%/-51%/-60% at the same three configurations). DL-65 (the
+CookTorrance/Schlick glossy-filter parity fix, closed in the same slice)
+is unrelated to DL-63's Fresnel/roughness scope and affects a narrower
+surface: **only** renders that have the `filter_glossy` stability knob
+enabled (`StabilityConfig::filterGlossy > 0`, a per-bounce roughness
+widening applied to `ri.glossyFilterWidth` for variance/firefly control —
+`PathTransportUtilities.h` ~:190-192) on `cook_torrance_material` or
+`schlick_material` surfaces past their first bounce; scenes that leave
+`filter_glossy` at its default 0, or that hit these materials only on the
+camera ray, are numerically identical before and after DL-65.
+
+**Known residual: LUT left end-cap (isotropic, small, NOT closed by this
+fix)**: `LookupEssG2`/`LookupEss` both flat-clamp `cosTheta` below the
+first bin center (`c0 = 0.5/32 ≈ 0.0156`) to that bin's value — a
+deliberate, cheap design choice (see `MSLobeDetail::BuildSegmentsFromRow`'s
+"left flat end-cap" comment), not a bug in the clamp mechanism itself, but
+it does mean `LookupEssG2` under-reads the TRUE (continuing-to-rise)
+`Ess` right at the grazing limit. Recomputed this pass with an
+independent 8M-sample VNDF quadrature of the real
+`MicrofacetUtils::GGX_Lambda`/`GGX_G2` primitives (same methodology as
+`GGXHeightCorrelatedEnergyLUTTest`, fresh seed): at `alpha=1.0,
+cosWi=0.008` (just inside the first bin), brute-force `Ess=0.9613` vs
+`LookupEssG2=0.9349`, diff `0.0263` — since the lookup UNDER-reads the
+true single-scatter energy here, the Kulla-Conty compensation adds
+slightly too much multiscatter energy back, an isotropic furnace GAIN of
+roughly 2.6% confined to incidence angles beyond ~89 degrees (`cosWi`
+below the first bin center). This is small, confined to an extreme
+grazing sliver, and independent of the anisotropic DL-77 deficit above
+(this one persists even for `alphaX==alphaY`) — recorded here as a known,
+bounded residual rather than filed as its own ledger row.

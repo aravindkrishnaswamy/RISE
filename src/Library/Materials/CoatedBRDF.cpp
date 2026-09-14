@@ -219,6 +219,13 @@ namespace
 		// LookupEavgG2/LookupEssG2, not LookupEavg/LookupEss (which are
 		// calibrated to the separable G1(wi)*G1(wo) model CookTorrance
 		// renders with instead).  Sibling of GGXBRDF's own DL-63 fix.
+		// DL-77 does NOT apply here: this function takes a single scalar
+		// `alpha` (line above), not an alphaX/alphaY pair -- the coat
+		// lobe's GGX_G2_Aniso call two lines up is always invoked with
+		// alpha==alpha, i.e. always isotropic, so the isotropic-LUT-vs-
+		// anisotropic-render mismatch GGXBRDF/GGXSPF are exposed to
+		// (see their own DL-77 comments) has no anisotropic case to
+		// mismatch against here.
 		const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 		if( ( Scalar(1) - Eavg ) > Scalar(1e-10) )
 		{

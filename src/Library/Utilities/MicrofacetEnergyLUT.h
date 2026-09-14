@@ -17,6 +17,19 @@
 //  Alpha range: [0.01, 1.0] (uniform 32 steps)
 //  CosTheta range: [0.5/32, (31.5)/32] (cell centers)
 //
+//  Provenance (P2-4, debt-ggx2): this exact file reproduces
+//  byte-for-byte via the fixed RNG seed baked into this
+//  generator's rng_state initializer (1234567890123456789ULL) with 1000000
+//  samples/entry.  Regenerate + verify with:
+//    c++ -O2 -Isrc/Library -std=c++11 -o tools/gen_lut \
+//        tools/GenerateMicrofacetEnergyLUT.cpp -lm
+//    tools/gen_lut > /tmp/regen_MicrofacetEnergyLUT.h
+//    diff src/Library/Utilities/MicrofacetEnergyLUT.h /tmp/regen_MicrofacetEnergyLUT.h
+//  The hand-derived H6/DL-63 multiscatter-lobe sampler/pdf
+//  machinery (MSLobeDetail, MSLobeZ*, SampleMSCosTheta*, MSPdf*)
+//  is embedded verbatim in this generator (kHandMaintainedH6Block)
+//  and is NOT re-derived by the Monte-Carlo bake above.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
 //  Tabs: 4

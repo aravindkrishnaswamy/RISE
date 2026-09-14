@@ -99,7 +99,14 @@ energy band is `mean <= 1 + 6*SE + 0.005`, with invalid samples and moments
 failing explicitly. `150 checks, 0 failures` since DL-63's fix (2026-09-14):
 the three previously-visible specular-only baseline failures (Schlick iso
 F0=1, alpha=0.6/1.0, theta=60/80) are gone -- see `GGXHeightCorrelatedEnergyLUTTest`
-below.
+below. **2026-09-14 review follow-up (P2-3 iii, same slice)**: gained a
+`KNOWN-FAILURE` control row (`TestAnisotropicKnownFailureDL77`, Schlick
+aniso alphaX=.02/alphaY=1.0 F0=1 spec-only) that records DL-77's
+isotropic-LUT-vs-anisotropic-render deficit (measured mean `~0.59` vs the
+1.0 a correctly-compensated furnace should read) without failing the
+suite -- the existing energy band is one-sided (gain-only) so this
+deficit was otherwise invisible to every aniso row already in the sweep.
+Now `151 checks, 0 failures`.
 
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
@@ -110,9 +117,22 @@ either the offline LUT generator or the LUT header) at the three
 previously-failing (alpha,theta) configurations plus additional spot checks;
 confirms `LookupEss`/`LookupEavg` (the pre-existing, UNCHANGED separable-
 model table CookTorranceSPF/BRDF still use) measurably diverge from the
-height-correlated quadrature at those same points; and pins the Kulla-Conty
-identity `Ess_G2 + (1-Ess_G2)*F_ms == 1` at Schlick F0=1 in closed form.
-`14 checks, 0 failures`.
+height-correlated quadrature at those same points. **2026-09-14 review
+follow-up (P2-1/P2-2)**: the closed-form Kulla-Conty "identity" check
+(`Ess_G2 + (1-Ess_G2)*F_ms == 1` at Schlick F0=1) was found TAUTOLOGICAL
+(`ComputeFms(1,*)` collapses to exactly `1` for any table content) and
+replaced with (a) an E_ss/E_avg cross-table consistency check that
+re-derives each `E_avg_TABLE_G2` row from the checked-in `E_ss_TABLE_G2`
+values via the generator's own discretization (matches to ~1e-9), and (b)
+a furnace-style bound at Schlick F0=0.9 (where `F_ms` is not forced to a
+fixed point) asserting the provable `0 <= total <= F0` bound. A THIRD
+independent estimator was also added: its own from-scratch GGX
+`D`/Smith-`Lambda`/height-correlated-`G2` re-implementation, its own RNG
+stream, and UNIFORM-hemisphere (not VNDF) sampling -- closing the gap
+that the original quadrature and the offline generator share one VNDF
+importance-sampling identity and so could not, between them, catch a
+shared error in it. `23 checks, 0 failures` (was `14 checks, 0
+failures`).
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's
