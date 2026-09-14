@@ -216,6 +216,21 @@ to have an impact at all.
 
 ## Round 3 (2026-09-14, debt-guiding2 slice): correct wiring, CLOSED
 
+> **SUPERSEDED IN PART by round 4 (same slice, same day) — read this
+> section with the substitution below.**  Everywhere this section says the
+> volume sites set `rs2.bsdfPdf = phasePdf`, or that the `AccumulateCount`
+> gate is `phasePdf > 0`, round 4 changed it: the raw `phasePdf` moved to
+> the NEW `rs2.bsdfMisPdf` field (the MIS-partner role, which is what
+> DL-73's ruling was actually about), `rs2.bsdfPdf` now carries
+> `effectivePdf` (the density the direction was really drawn from, which
+> is what the moment must be divided by), and the count gate follows
+> `effectivePdf > 0`.  Under guiding the two differ; with guiding off they
+> are the same number and this section reads correctly as written.  The
+> trained ratio `bsdfTimesCos / bsdfPdf` is therefore `phaseValue /
+> effectivePdf` — this continuation's own per-sample weight — rather than
+> identically 1.  See "Round 4" below and
+> docs/DL74_ENV_NEE_GUIDING_PARTITION.md §2.6.
+
 Round 2 left training unwired at all four sites because (a) `RayCaster.cpp`'s
 two volume sites called `Accumulate` with no paired `AccumulateCount`, and
 (b) neither the volume nor the BSSRDF trained quantity actually matched
@@ -233,7 +248,9 @@ so the volume analogue of "BSDF*cos" is just `phasePdf`, broadcast to all
 three channels (`rs2.bsdfTimesCos = RISEPel(phasePdf, phasePdf, phasePdf)`,
 replacing `RISEPel(0,0,0)`), paired with a new `AccumulateCount` call
 immediately after (gated on `phasePdf > 0`, mirroring `rs2.bsdfPdf =
-phasePdf`, DL-73's confirmed-correct raw pdf). This makes
+phasePdf`, DL-73's confirmed-correct raw pdf; round 4 moved that raw value
+to `rs2.bsdfMisPdf` and put `effectivePdf` in `rs2.bsdfPdf` — see the
+callout at the top of this section). With guiding OFF this makes
 `bsdfTimesCos / bsdfPdf == 1` identically — correct, since a perfectly
 importance-sampled phase function contributes no variance of its own to
 the single-technique estimator; the trained second moment reduces to

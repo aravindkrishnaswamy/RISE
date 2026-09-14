@@ -1,13 +1,14 @@
 # DL-74: the guided pdf had two jobs and one home
 
-Status: **CLOSED 2026-09-14** (debt-guiding2 slice, review round 2).
+Status: **CLOSED 2026-09-14** (debt-guiding2 slice, review round 3).
 **DL-83 (the RIS-mode residual) closes with it** — the repair's nominal
 density does not depend on the guiding mode, so there was nothing
 mode-specific left to leave open.
 
-Red-proof: `tests/PTGuidingMISPartitionTest.cpp`, 22 checks / 0 failures;
+Red-proof: `tests/PTGuidingMISPartitionTest.cpp`, 37 checks / 0 failures;
 red on `8fcce0bf` with 4 of its 6 measurement rows failing by −66 % to
-+63 %.
++63 %, and red again on the round-2 HEAD `2ebcaff9` with the two rows
+round 3 added failing by +44 % and −14 % (§8).
 
 > **Supersedes the first repair.** An earlier version of this document
 > described a narrower fix (an `IGuidedNEEPdfBlend` hook applied to the
@@ -174,6 +175,17 @@ shared by NEE and the continuation. Three things depended on that:
    all, so a guiding-off render's dimension budget is byte-identical
    (`SobolDimensionBudgetTest` passes).
 
+What this changed about WHERE the draw happens, stated plainly because it
+is a behaviour change and not only a refactor: with guiding ON, the
+`InitDistribution` 1D draw now happens at EVERY eligible vertex, before
+PART 2, instead of only at those vertices whose PART 3 reached the guiding
+block.  That is a variance-only difference — it consumes one sampler
+dimension per eligible vertex, shifting the QMC stream of a guided render,
+and buys the partition (§2.5 reasons 1-3).  With guiding OFF or untrained
+the gate fails on its first clause and NOTHING is drawn, so a guiding-off
+render's dimension budget is byte-identical; `SobolDimensionBudgetTest` is
+the guard for that half of the statement.
+
 The gate above PART 2 carries only the VERTEX-level parts of
 `GuidingEffectiveAlpha`'s eligibility: a trained field, `depth <=
 maxGuidingDepth`, a nonzero base alpha, and the same `eRaySpecular`
@@ -276,39 +288,53 @@ Two design notes about the fixture:
 | **Emitter-hit weight** (PT PART 1) | Fixed, same split. |
 | **RIS mode** (DL-83) | Closed here. The nominal density is mode-independent; there is no RIS-specific quantity to reproduce. |
 | **Volume vertices** | Fixed as the two-role split (§2.6). DL-73's "the MIS partner stays the raw phase pdf" ruling is preserved exactly and is now explicit in its own field. |
-| **HWSS** (`IntegrateFromHitHWSS`) | NOT a sibling — confirmed by reading, not assumed. `effectiveBsdfPdf` there is assigned once from `pS->isDelta ? 0 : pS->pdf` and never reassigned; the function has no guiding block. Both its sides already used the raw material pdf. The stale comment claiming otherwise is corrected in place. |
+| **The shader-op boundary** (`PathTracingShaderOp`'s three entry points) | Round 3: was forwarding only `rs.bsdfPdf` into `IntegrateFromHit{,NM,HWSS}`, which then re-derived the partner as "the same value". Fixed -- all three forward `rs.MisPartnerPdf()`, and the three entry points take it as a trailing parameter defaulting to -1 = "same as `bsdfPdf`". |
+| **`EmissionShaderOp`** (RGB + NM emitter-hit weight -- the legacy shader chain's half of the same pair) | Round 3: read `rs.bsdfPdf` in the partner role, the same defect one file over. Fixed; both now read `MisPartnerPdf()` and gate on either density being positive. |
+| **PT's OWN camera-ray volume walk** (`IntegrateRayTemplated`'s medium-scatter loop) | NOT a sibling -- confirmed by reading. It samples `pPhase->Sample(wo, sampler)` with no guiding block anywhere in that loop, so its `walkPdf` is the true density and the MIS partner at once. |
+| **HWSS** (`IntegrateFromHitHWSS`) | NOT a sibling — confirmed by reading, not assumed. `effectiveBsdfPdf` there is assigned once from `pS->isDelta ? 0 : pS->pdf` and never reassigned; the function has no guiding block. Both its sides already used the raw material pdf. The stale comment claiming otherwise is corrected in place. **Round 3 qualifier**: "produces no guided density" is not the same as "never sees one" -- HWSS is reachable through the shader-op boundary from `RayCaster`'s guided volume continuation, so it now CARRIES an incoming partner (used by its env-escape and emitter-hit weights and by its per-wavelength NM fallbacks, and reset to the sampling density from its first own continuation onwards). |
 | **BSSRDF / RW-SSS entry NEE** | Not wired. The entry material's `Pdf()` is the BSSRDF's own cosine density and its continuation's `rs2.bsdfPdf = bssrdf.cosinePdf` is never guiding-adjusted anywhere, so both sides already agree. Both fields are set to the same value there, explicitly. |
 | **BDPT / VCM / MLT** | Do not call `LightSampler::EvaluateDirectLighting{,NM}` at all. BDPT's own guiding/NEE consistency is a structurally separate code path, out of scope. BDPT's one `RAY_STATE` producer (a training probe cast) sets both fields to the same value. |
 
 ## 5. Known residuals (not filed as new rows)
 
-- **The IOR stack passed to the aggregate pdf differs by side.** The NEE
-  arms evaluate `pMaterial->Pdf(w, ri, IORStack(1.0))` — a pre-existing
-  convention, unchanged by this row — while the escape side evaluates
-  `PTEvalPdfAtSurface` against the live `iorStack`. For any material
-  whose aggregate pdf depends on the stack (nested dielectrics), the two
-  `p_aggregate` values can differ. This predates DL-74, is orthogonal to
-  guiding (it is equally present with guiding off), and is not made worse
-  by anything here.
+- ~~**The IOR stack passed to the aggregate pdf differs by side.**~~
+  **WRONG, and fixed in round 3 (§8.2).** This entry claimed the
+  divergence was "pre-existing, orthogonal to guiding, and not made worse
+  here". Two of those three are false. The escape side never evaluated the
+  aggregate pdf AT ALL before this row — that is exactly what §2.2
+  introduced — so "pre-existing" describes a comparison that did not
+  previously exist; and the measured error on an albedo-1 furnace inside a
+  dielectric is −14 %, which is not orthogonal to anything. (The one true
+  part: it is equally present with guiding off, which is why round 3's fix
+  is NOT gated on the blend being active.)
 - **Aggregate vs selected-lobe pdf with guiding OFF.** With no guiding,
   the escape side still stores the SELECTED LOBE's `pS->pdf` while NEE
   uses the aggregate. At a multi-lobe material those differ. This is
   DL-67 territory (the same measure inconsistency, from the throughput
-  side) and is deliberately left exactly as it was: the repair changes
-  the escape side's density only where guiding is active, so a
-  guiding-off render is byte-identical.
+  side) and is deliberately left exactly as it was. Round 3 narrows what
+  "byte-identical with guiding off" can still be claimed for: the escape
+  side's DENSITY is untouched with guiding off, but the NEE side's
+  `p_aggregate` is now evaluated under the live IOR stack (§8.2), so a
+  guiding-off render of a material whose `Pdf()` reads the stack DOES
+  change — for the better, and only there.
 
 ## 6. File status
 
 | File | Status |
 |---|---|
 | `src/Library/Interfaces/IRayCaster.h` | `RAY_STATE` gains `bsdfMisPdf` (default -1) and `MisPartnerPdf()`; `bsdfPdf`'s doc now states its single remaining role. |
-| `src/Library/Lights/LightSampler.h` | `IGuidedNEEPdfBlend`'s contract rewritten around the nominal-density design; the `rawPdf > 0` precondition is part of it. |
-| `src/Library/Lights/LightSampler.cpp` | All FOUR NEE arms (env and area-light, RGB and NM) blend through the hook, inside their `pdf > 0` gates, gated `!isVolumeScatter`. |
-| `src/Library/Shaders/PathTracingIntegrator.cpp` | `PTGuidingMisPdf` (replaces `PTGuidedNEEPdfBlend`); the distribution is initialised once above PART 2 and shared; PART 3 no longer re-initialises, re-draws or re-applies the cosine product; `misBsdfPdf` computed at the continuation and carried to the emitter-hit and env-escape weights; BSSRDF, SPF-only and HWSS sites set both fields explicitly; three stale comments corrected. |
+| `src/Library/Lights/LightSampler.h` | `IGuidedNEEPdfBlend`'s contract rewritten around the nominal-density design; the `rawPdf > 0` precondition is part of it. **Round 3**: `EvaluateDirectLighting{,NM}` gain a trailing `const IORStack* pMisIorStack` (null = the historical sentinel). |
+| `src/Library/Lights/LightSampler.cpp` | All FOUR NEE arms (env and area-light, RGB and NM) blend through the hook, inside their `pdf > 0` gates, gated `!isVolumeScatter`. **Round 3**: the same four arms evaluate the aggregate pdf under the caller-supplied live IOR stack instead of the `IORStack(1.0)` sentinel. |
+| `src/Library/Shaders/PathTracingIntegrator.cpp` | `PTGuidingMisPdf` (replaces `PTGuidedNEEPdfBlend`); the distribution is initialised once above PART 2 and shared; PART 3 no longer re-initialises, re-draws or re-applies the cosine product; `misBsdfPdf` computed at the continuation and carried to the emitter-hit and env-escape weights; BSSRDF, SPF-only and HWSS sites set both fields explicitly; three stale comments corrected. **Round 3**: the three `IntegrateFromHit*` entry points and the two templates behind them take a trailing `bsdfMisPdf_` (-1 = "same as `bsdfPdf`"); the env-escape and emitter-hit gates admit either density; the HWSS body carries an incoming partner through its weights and its NM fallbacks; PART 2's NEE and the HWSS NEE site pass the live `iorStack` as the MIS-partner evaluation context. |
+| `src/Library/Shaders/PathTracingShaderOp.cpp` | **Round 3**: all three entry points forward `rs.MisPartnerPdf()` alongside `rs.bsdfPdf`. This file is the P1 defect's whole surface. |
+| `src/Library/Shaders/EmissionShaderOp.cpp` | **Round 3**: the RGB and NM emitter-hit weights read `MisPartnerPdf()` instead of `bsdfPdf` and gate on either density. |
+| `src/Library/Shaders/DirectLightingShaderOp.cpp` | **Round 3**: passes its own `ior_stack` as the MIS-partner evaluation context, so the legacy chain's NEE arm and `EmissionShaderOp`'s weight evaluate one function of direction. |
+| `src/Library/Utilities/MediumTransport.cpp` | **Round 3**: `MediumScatterMaterial::Pdf`'s comment corrected -- it is `rs2.bsdfMisPdf`, not `rs2.bsdfPdf`, that carries the raw phase pdf since the round-2 split. |
+| `src/Library/Utilities/OptimalMISAccumulator.{h,cpp}` | **Round 3**: const `GetTileTraining()` accessor for the raw per-tile sums and counts, so a test can assert the trained QUANTITY and not only `Solve()`'s ratio (DL-72 P3-4). |
 | `src/Library/Rendering/RayCaster.cpp` | `RayCasterEnvEscapeMISWeight` weights from `MisPartnerPdf()` and trains from `bsdfPdf`; both volume continuations split the two roles (DL-72 P2-5). |
 | `src/Library/Shaders/BDPTIntegrator.cpp` | Its one `RAY_STATE` producer sets both fields. |
-| `tests/PTGuidingMISPartitionTest.cpp` | Added — the red-proof. |
+| `tests/PTGuidingMISPartitionTest.cpp` | Added — the red-proof. **Round 3**: two measurement rows added (§8) plus two deterministic premise checks on the production `PolishedSPF` / `TranslucentSPF` pdfs. 37 checks. |
+| `tests/OptimalMISTrainingSitesTest.cpp` | **Round 3**: both sites now assert the trained moment itself (a whole multiple of `L_env^2` at the volume site; exact `L_env^2` scaling at both). 19 checks. |
 | `docs/DEBT_LEDGER.md` | DL-74 and DL-83 struck CLOSED; Counts updated. |
 
 ## 7. Gate
@@ -325,3 +351,122 @@ this row touches VCM, thin-lens sampling or any tail; renders seed from
 an unsynchronized libc `rand()` (see CLAUDE.md), so this suite's tail
 checks are seed-sensitive. Clean `make -C build/make/rise clean && make
 -C build/make/rise -j8 all`, zero warnings.
+
+## 8. Round 3 (2026-09-14, review round 3 of the same slice)
+
+Round 2 split one field into two.  Round 3 is the work that split implies:
+enumerating every CONSUMER of the old field, and auditing the evaluation
+CONTEXT the two sides share.
+
+### 8.1 P1 — the partner did not survive the shader-op boundary
+
+`RAY_STATE::bsdfMisPdf` was consumed in exactly one place:
+`RayCasterEnvEscapeMISWeight`.  Every other consumer still read
+`bsdfPdf`:
+
+* `PathTracingShaderOp`'s three entry points forwarded `rs.bsdfPdf` into
+  `IntegrateFromHit{,NM,HWSS}`, and the integrator opened with
+  `bsdfMisPdf = bsdfPdf` under a comment asserting that every caller
+  enters from a non-guided context.  That assertion was false for exactly
+  one producer — `RayCaster`'s volume phase-scatter continuation, the one
+  §2.6 had just taught to set the two fields to different values.
+* `EmissionShaderOp`'s RGB and NM emitter-hit weights read `rs.bsdfPdf`
+  directly in the partner role.
+
+So: a global medium + trained VOLUME guiding + an area emitter weighted
+the emitter hit with the guided combined pdf, while the volume vertex's
+own area-NEE arm (`MediumScatterMaterial::Pdf` = the raw phase pdf)
+weighted against the raw one.  With the guide skewed toward the emitter,
+`w_bsdf -> 1` where `w_bsdf` should have been ~0.03, and `w_nee` stayed
+~0.97.
+
+Measured on `2ebcaff9` (row (g), a global fog + an emissive sphere,
+driven through the real `RayCaster::CastRay` with the real shader
+dispatch; the invariant is that guiding may not change the EXPECTATION):
+
+| | unguided | guided | error |
+|---|---|---|---|
+| round-2 HEAD | 0.0077211 | 0.0111283 | **+44.1 %** |
+| round 3 | 0.0077211 | 0.00772427 | +0.041 % |
+
+Fix: `IntegrateFromHit`, `IntegrateFromHitNM`, `IntegrateFromHitHWSS`
+(and `IntegrateFromHitTemplated` / `IntegrateFromHitForTag` behind them)
+take a trailing `bsdfMisPdf_` with the same three-valued convention
+`MisPartnerPdf()` uses, -1 meaning "same as `bsdfPdf`"; the shader op
+forwards `rs.MisPartnerPdf()`; `EmissionShaderOp` reads the partner.
+Every MIS block whose two arms use two different densities (train from
+`bsdfPdf`, weight from `bsdfMisPdf`) now gates on EITHER being positive,
+the rule `RayCasterEnvEscapeMISWeight` already followed.
+
+Consumer classification, the deliverable of this audit (`grep bsdfPdf`
+over `src/Library/Shaders/*ShaderOp.cpp` and `*Integrator*.cpp`):
+
+| Site | Role | Verdict |
+|---|---|---|
+| `RayCaster.cpp` env-escape weight | partner | already `MisPartnerPdf()` |
+| `RayCaster.cpp` env-escape `Accumulate` | true density | `bsdfPdf`, correct |
+| `PathTracingShaderOp.cpp` x3 | forwards into BOTH roles | **fixed** |
+| `EmissionShaderOp.cpp` RGB + NM | partner | **fixed** |
+| PT env-escape / emitter-hit `Accumulate` | true density | `bsdfPdf`, correct |
+| PT env-escape / emitter-hit weight | partner | `bsdfMisPdf`, correct |
+| PT env-escape / emitter-hit GATE | both | **widened to either** |
+| HWSS env-escape + emitter-hit weight | partner | **fixed** (carries the incoming partner) |
+| HWSS per-wavelength NM fallbacks | forwards | **fixed** |
+| PT's own camera-ray volume walk (`walkPdf`) | both | no guiding there; equal by construction |
+| `BDPTIntegrator.cpp` training probe | producer | sets both alike |
+
+### 8.2 P2 — the two sides evaluated `p_aggregate` under different IOR stacks
+
+The NEE arms evaluated `pMaterial->Pdf(w, ri, defaultIOR)` against a
+`static const IORStack(1.0)` sentinel; the escape side evaluates
+`PTEvalPdfAtSurface(pSPF, ..., iorStack)` against the LIVE stack.  Two
+production materials really do vary with it, measured directly in the
+test's premise checks:
+
+```
+PolishedSPF::Pdf     stack-top 1.0 -> 0.266774 ,  stack-top 1.5 -> 0.296169
+TranslucentSPF::Pdf  not-in-stack  -> 0        ,  in-stack      -> 0.185406
+```
+
+Row (f) puts an albedo-1 furnace material whose sampling density depends
+on the stack at a vertex inside a dielectric (entry stack top 1.5):
+
+| | guiding OFF | guiding ON |
+|---|---|---|
+| round-2 HEAD | 0.516268 vs L_env 0.6 (**−14.0 %**) | 0.511380 (**−14.8 %**) |
+| round 3 | 0.599805 (−0.03 %) | 0.597713 (−0.38 %) |
+
+The guiding-OFF control failing is the part §5 had got wrong: this is not
+a guiding-specific divergence, because the escape side's density is
+produced under the live stack whether or not guiding is on.  The fix is
+therefore NOT gated on the blend being active —
+`EvaluateDirectLighting{,NM}` take a trailing `const IORStack*
+pMisIorStack` and PT (both the Pel/NM PART 2 site and the HWSS NEE site)
+and `DirectLightingShaderOp` pass their live stack.  `MediumTransport`'s
+volume NEE and PT's two BSSRDF entry NEE sites keep the null default with
+a stated reason: `MediumScatterMaterial::Pdf` forwards to the phase
+function and the BSSRDF continuation's density is a plain cosine pdf, so
+neither reads a stack at all.
+
+**Consequence, stated rather than buried**: a guiding-OFF render of a
+material whose aggregate `Pdf()` reads the IOR stack changes — it was
+mis-weighted before.  Every other render is byte-identical.
+
+### 8.3 Why the row-(f) furnace uses a decorator SPF
+
+Rows (f) target a CLOSED FORM (`L_out == L_env` for an albedo-1 surface
+under a constant environment), which needs a material whose directional
+albedo is exactly 1.  Neither `PolishedSPF` nor `TranslucentSPF` is
+exactly energy-conserving, so neither has a closed-form furnace value,
+and their unguided readings cannot serve as a reference either (DL-67:
+a multi-lobe material's unguided escape side stores the SELECTED lobe's
+pdf while NEE uses the aggregate).  The decorator keeps the albedo-1
+Lambertian BRDF and varies ONLY the stack-dependence of the sampling
+density — a uniform hemisphere about a TILTED axis when the stack top is
+1.5, the real cosine `LambertianSPF` otherwise.  Both are legitimate
+sampling densities, so the closed form is exact; and the wedge where the
+tilted hemisphere does not cover the upper hemisphere exercises §2.4's
+"`p_aggregate == 0` means NEE takes the whole sample" rule on both sides
+at once.  The production materials' stack-dependence is asserted
+separately and deterministically (the premise block quoted above), so
+the decorator stands in for measured behaviour rather than for a guess.
