@@ -126,9 +126,18 @@ Sub-test 3: NEE shadow-walk medium stack through a double-sided medium cube (sit
         over the CHORD, not beyond it  (got 0, want 0.185342 +/- 0.00185342)
 ```
 
-Single-sided control on the same commit: `L = 0.177928` against
+The `want 0.185342` captured above is **not the physically correct
+value** — it is the `L_clear` half of the fixture measured through the
+DOUBLE-sided "clear" reference cube on an intermediate, still-partially
+unfixed build (site 3's `CastShadowRayTransmittance` bug was still live
+at capture time, so that reference itself over-transmitted and inflated
+`L_clear`, and therefore `want`, by the same bug this row fixes).  On the
+fully fixed library both variants converge to the SAME live-measured
+value: `L = 0.177928` for both the single-sided control and the
+double-sided case, against the closed form
 `L_clear * exp(-0.5) = 0.293354 * 0.606531 = 0.177931`.  Post-fix both
-variants pass.
+variants pass at that value; treat `0.177928`, not `0.185342`, as the
+reference number going forward.
 
 **Sites 1/2, the RAY-DERIVED half.**  A hair strand carrying an interior
 medium, measured with only the `HasTrueGeomSide()` skip removed:
