@@ -138,6 +138,56 @@ boundary, not bias.
    These were latent on the BDPT/VCM paths since the helper's
    introduction; closed-boundary scenes (like the jellyfish water box)
    are handled exactly.
+   **UPDATE (2026-09-14, DL-76 closure, debt-misc slice)**: the
+   single-open-surface false positive described above was closed by a
+   later slice's P2-4 fix (require positive parity along the probe AND
+   its reverse — see `IORStackSeeding.h`'s own doc comment and
+   `docs/DEBT_LEDGER.md` DL-46).  A narrower residual DL-46 opened
+   (DL-76) — a SINGLE `Object` built from two disjoint open pieces
+   straddling the seed on opposite sides of one axis, both pieces
+   facing away from the seed — was closed this pass by extending the
+   vote to the two other principal axes; see the DL-76 row for the
+   accepted false-POSITIVE residual (an adversarial object built from
+   open pieces straddling the seed along all three principal axes at
+   once would still fool the vote — this is a bounded improvement, not
+   a general winding-number/solid-angle containment test).  The
+   fixed-`+Z`-only probe direction and grazing-tangent-accumulation
+   limitations in this item are UNCHANGED by that work.
+
+   **UPDATE (2026-09-14, DL-76 perf + residual follow-up, same slice)**:
+   two corrections to the above. (1) **Probe count.** The X/Y vote is
+   traced ONCE per `SeedFromPoint` call, not per candidate object and
+   not via a per-call `IsConfirmedAlongAxis` helper (that helper was
+   removed) — the two X probes and two Y probes are hoisted next to the
+   existing Z-reverse probe, gated on at least one Z-confirmed candidate
+   existing, and each candidate is then checked by an array lookup
+   (`HasPositiveParity`) against the shared, already-traced arrays. The
+   real per-call budget is therefore **at most 6 `TallyProbe` traces**
+   (Z forward, Z reverse, X forward, X reverse, Y forward, Y reverse),
+   independent of how many candidates the Z round finds — not "three
+   probes" and not the up-to-32-calls-per-candidate cost the original
+   per-candidate implementation paid (measured red on the unfixed
+   per-candidate code with a 2-candidate nested-box fixture: 10 traces
+   [2 for Z + 4 per candidate x 2 candidates]; bounded at 6 after
+   hoisting). See `tests/TranslucentInitialContainmentTest.cpp`
+   sub-test 6 for the instrumented regression. (2) **No false-negative
+   from tunnel alignment (correction to an earlier draft of this
+   update).** This update originally claimed the three-axis vote could
+   REJECT a legitimately closed object whose through-tunnels happen to
+   align with the probe's three fixed axes. That claim is wrong and is
+   retracted: a point strictly inside the solid bounded by a closed
+   orientable manifold has ODD (net positive) crossing parity along
+   EVERY generic probe direction, independent of genus, tunnels, or
+   convexity — the ray starts inside a bounded solid and ends outside
+   it, so it must cross the boundary an odd number of times regardless
+   of which axis it follows, including one running through a hole.
+   Verified directly: a `TorusGeometry(major 3, minor 1, hole axis Y)`
+   probed from a seed point on the tube itself reads positive parity on
+   all six +-X/+-Y/+-Z probes and is correctly seeded. The one real
+   residual, now shared by three axes instead of just Z, is a probe
+   that grazes the surface exactly tangentially or threads a face/edge
+   boundary at the sampled precision — a pre-existing degenerate-
+   alignment hazard, not a new failure mode.
 7. **Photon-map flux is quadratic in luminaire area** (`power =
    E·area·scale` AND photon-count allocation ∝ `E·area`), so a scaled
    emitter's photon-map contribution moves by s⁴ where NEE moves by s².

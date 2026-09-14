@@ -17,6 +17,7 @@
 #include <string.h>
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/ColorUtils.h"
 #include "../Interfaces/ILog.h"
 #include "PPMWriter.h"
 

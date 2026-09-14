@@ -16,6 +16,7 @@
 #include "GlobalSpectralPhotonMap.h"
 #include <algorithm>
 #include "../Interfaces/ILog.h"
+#include "../Utilities/Color/ColorUtils.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;

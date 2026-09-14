@@ -24,6 +24,7 @@
 #include "Materials/FabricMaterial.h"	// AddFabricMaterial: the allowlist predicate + the preset-mismatch check
 #include "Materials/FabricPresets.h"	// AddFabricMaterial: the `fabric` enum's preset table
 #include "Materials/WeavePresets.h"	// AddWeaveMaterial: the `weave` draft enum + the Phase-2 `fabric` preset table
+#include "Utilities/Color/ColorUtils.h"
 #include <cstring>
 #include <cstdint>
 #define _USE_MATH_DEFINES

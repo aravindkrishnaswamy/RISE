@@ -17,10 +17,35 @@
 
 #include <memory.h>
 #include "../../Interfaces/ILog.h"
-#include "ColorUtils.h"
+#include "../../Interfaces/IFunction1D.h"
 
 namespace RISE
 {
+	// DL-80: forward-declare (rather than #include "ColorUtils.h") the
+	// one ColorUtils symbol this file calls.  ColorUtils.h and Color.h
+	// are mutually circular: ColorUtils.h includes Color.h (for `Scalar`
+	// and a forward-declared XYZPel), and Color.h includes THIS file.  A
+	// full #include here closes that cycle, and whichever of the two a
+	// translation unit names FIRST then loses the include-guard race --
+	// entering via ColorUtils.h reaches this point with ColorUtils.h's
+	// guard already set (from the outer, not-yet-finished
+	// #include "Color.h" at its own top), so a nested
+	// #include "ColorUtils.h" here would silently no-op and leave
+	// ColorUtils::XYZFromNM undeclared for GetXYZ() below, which calls
+	// it eagerly (not inside a template, so the call is checked at
+	// parse time, not deferred to instantiation).  A forward declaration
+	// needs no completed ColorUtils.h at all, so it works regardless of
+	// which header a translation unit names first.  See
+	// docs/DEBT_LEDGER.md DL-80 for the full derivation and
+	// tests/ColorUtilsBeforeColorIncludeOrderTest.cpp /
+	// tests/ColorBeforeColorUtilsIncludeOrderTest.cpp, which pin both
+	// entry orders.
+	struct XYZPel;
+	namespace ColorUtils
+	{
+		bool XYZFromNM( XYZPel& p, const Scalar nm );
+	}
+
 	////////////////////////////////////
 	//
 	// This is the definition of a robust spectral packet... 

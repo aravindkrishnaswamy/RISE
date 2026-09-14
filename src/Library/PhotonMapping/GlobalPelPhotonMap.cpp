@@ -18,6 +18,7 @@
 
 #include "pch.h"
 #include "GlobalPelPhotonMap.h"
+#include "../Utilities/Color/ColorUtils.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
