@@ -161,13 +161,21 @@ namespace RISE
 		// than 2-3 refractive volumes so the fixed cap is generous.
 		static const std::size_t kMaxNestingDepth = 8;
 
-		// Test-only instrumentation (2026-09-14, DL-76 perf follow-up):
-		// counts calls to `TallyProbe` so regression tests can assert
-		// `SeedFromPoint`'s total probe-trace budget stays bounded (see
-		// the X/Y probe-hoisting comment in `SeedFromPoint` below).
-		// Thread-local: one plain increment per call, no atomics/locking,
-		// correct under the render thread pool since each thread seeds
-		// its own subpaths independently.  Negligible production cost.
+		// Probe-trace counter (2026-09-14, DL-76 perf follow-up).  This
+		// compiles and increments UNCONDITIONALLY in every build -- it
+		// is not behind a test-only `#ifdef`, so production code takes
+		// the exact same path the regression test measures.  Cost: one
+		// thread_local `std::size_t` increment per `TallyProbe` call,
+		// sitting next to the ray-vs-scene intersection query that call
+		// performs -- negligible by construction relative to that query,
+		// which walks the object manager's acceleration structure doing
+		// real ray-primitive tests.  Thread-local: no atomics or
+		// locking, correct under the render thread pool since each
+		// thread seeds its own subpaths independently.  Counts calls to
+		// `TallyProbe` so regression tests can assert `SeedFromPoint`'s
+		// total probe-trace budget stays bounded (see the X/Y
+		// probe-hoisting comment in `SeedFromPoint` below).  Its only
+		// consumer is `TranslucentInitialContainmentTest`.
 		namespace Diagnostics
 		{
 			inline std::size_t& ProbeTraceCounter()
@@ -431,19 +439,27 @@ namespace RISE
 			// along all three principal axes at once would still fool
 			// it (accepted FALSE-POSITIVE limit).
 			//
-			// The mirror-image FALSE-NEGATIVE limit also exists: a
-			// legitimately CLOSED object whose only through-tunnels (an
-			// opening all the way through the solid) happen to align
-			// with the probe's three fixed principal-axis directions
-			// from the seed point would present zero parity on the axis
-			// sharing its tunnel, and the vote discards it as if it were
-			// this counterexample.  Both limits are the same root cause
-			// — three fixed-axis probe pairs approximate closedness, they
-			// don't decide it exactly — so neither is fixable without the
-			// general winding-number/solid-angle test this rule
-			// deliberately avoids paying for.  See docs/DEBT_LEDGER.md
-			// DL-76 and docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the
-			// accepted scope.
+			// There is no mirror-image false-negative from tunnel
+			// alignment: a point strictly inside the solid bounded by a
+			// closed orientable manifold has ODD (net positive) crossing
+			// parity along every generic probe direction, regardless of
+			// genus, tunnels, or convexity — the ray starts inside and
+			// ends at infinity (outside a bounded solid), so it must
+			// cross the boundary an odd number of times no matter which
+			// axis it follows, including one that happens to run through
+			// a hole.  (Verified directly: a torus with its hole aligned
+			// to Y, probed from a seed point on the tube itself, reads
+			// positive parity on all six +-X/+-Y/+-Z probes.)  An earlier
+			// draft of this comment claimed a through-tunnel false
+			// negative here; that claim was wrong and is retracted.  The
+			// one real residual — unchanged from the single-axis rule
+			// and now shared by three axes instead of one — is a probe
+			// that grazes the surface exactly tangentially or threads a
+			// face/edge boundary at the sampled precision, a pre-existing
+			// degenerate-alignment hazard rather than a new failure mode.
+			// See docs/DEBT_LEDGER.md DL-76 and
+			// docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the accepted
+			// scope.
 			ProbeEntry reverse[kMaxNestingDepth];
 			std::size_t reverseCount = 0;
 			bool anyCandidate = false;

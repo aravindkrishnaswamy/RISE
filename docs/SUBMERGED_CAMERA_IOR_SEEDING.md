@@ -170,19 +170,24 @@ boundary, not bias.
    per-candidate code with a 2-candidate nested-box fixture: 10 traces
    [2 for Z + 4 per candidate x 2 candidates]; bounded at 6 after
    hoisting). See `tests/TranslucentInitialContainmentTest.cpp`
-   sub-test 6 for the instrumented regression. (2) **False-negative
-   residual.** The three-axis unanimity vote can also REJECT a
-   legitimately closed object: an object whose only "through-tunnels"
-   (openings all the way through the solid) happen to align with the
-   probe's three fixed principal-axis directions from the seed point
-   would present zero parity on the axis whose tunnel it shares, and
-   the closed enclosure would be discarded as if it were the DL-76
-   open-blade counterexample. This is the mirror image of the
-   already-documented false-positive residual (an adversarial object
-   built to fool the vote in the OTHER direction), not a new mechanism
-   — both stem from the same root limit: three fixed-axis probe pairs
-   are a bounded, cheap approximation to true closedness, not an exact
-   winding-number/solid-angle test.
+   sub-test 6 for the instrumented regression. (2) **No false-negative
+   from tunnel alignment (correction to an earlier draft of this
+   update).** This update originally claimed the three-axis vote could
+   REJECT a legitimately closed object whose through-tunnels happen to
+   align with the probe's three fixed axes. That claim is wrong and is
+   retracted: a point strictly inside the solid bounded by a closed
+   orientable manifold has ODD (net positive) crossing parity along
+   EVERY generic probe direction, independent of genus, tunnels, or
+   convexity — the ray starts inside a bounded solid and ends outside
+   it, so it must cross the boundary an odd number of times regardless
+   of which axis it follows, including one running through a hole.
+   Verified directly: a `TorusGeometry(major 3, minor 1, hole axis Y)`
+   probed from a seed point on the tube itself reads positive parity on
+   all six +-X/+-Y/+-Z probes and is correctly seeded. The one real
+   residual, now shared by three axes instead of just Z, is a probe
+   that grazes the surface exactly tangentially or threads a face/edge
+   boundary at the sampled precision — a pre-existing degenerate-
+   alignment hazard, not a new failure mode.
 7. **Photon-map flux is quadratic in luminaire area** (`power =
    E·area·scale` AND photon-count allocation ∝ `E·area`), so a scaled
    emitter's photon-map contribution moves by s⁴ where NEE moves by s².
