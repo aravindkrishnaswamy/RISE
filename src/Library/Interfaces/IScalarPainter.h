@@ -62,6 +62,52 @@ namespace RISE
 {
 	class RayIntersectionGeometric;
 
+	//! Representative wavelength of each RGB channel, in nanometres.
+	//!
+	//! THE CONVENTION for turning a WAVELENGTH-parameterised physical
+	//! scalar into the `ScalarTriple` an RGB render consumes: evaluate
+	//! the curve AT THESE THREE WAVELENGTHS.  Nothing else — no CMF
+	//! integration, no illuminant weighting, no colorspace matrix, no
+	//! gamut mapping.
+	//!
+	//! Why not a colorimetric integral.  A colorimetric RGB is the right
+	//! answer only for a slot the renderer consumes LINEARLY as a
+	//! transmittance or reflectance (`tau`).  Most `IScalarPainter`
+	//! slots are not that: `ior` / `ext` / `film_ior` / `film_extinction`
+	//! feed a per-channel Fresnel evaluation, `absorption` /
+	//! `scattering` / `extinction` are per-channel RATES that then go
+	//! through `exp()`, `roughness` and Phong exponents parameterise a
+	//! lobe.  `f(integral of n) != integral of f(n)` for all of those,
+	//! and the painter cannot know which slot it was bound to.  Sampling
+	//! the curve at a representative wavelength per channel is the same
+	//! approximation the renderer already makes everywhere else on the
+	//! RGB path (it is exactly what `DielectricSPF`'s RGB dispersion
+	//! loop does with its three per-channel iors), it is EXACT for a
+	//! flat curve, it never clamps, and it is monotone in the curve.
+	//!
+	//! Limits, stated once here so no caller has to rediscover them: the
+	//! triple is NOT colorimetric (a curve and its metamer do not give
+	//! the same triple); it is exact only AT these three wavelengths;
+	//! and a Beer's-law tint built from it matches the spectral render
+	//! only approximately, and only near unit optical depth.
+	//!
+	//! The values are the sRGB / Rec.709 primaries' dominant
+	//! wavelengths.  `DielectricSPF`'s RGB dispersion loop reads the
+	//! same array (it used to carry a private copy named
+	//! `kARChannelNM`); keep the two in one place so a painter's triple
+	//! and the SPF's per-channel refraction always describe the same
+	//! three wavelengths.
+	namespace ScalarPainterRGB
+	{
+		const Scalar kChannelNM[3] = { Scalar( 611.0 ), Scalar( 549.0 ), Scalar( 465.0 ) };
+
+		//! Index into `kChannelNM` used when a wavelength-varying
+		//! painter has to report ONE value (a single-scalar material
+		//! slot): green, the luminance-dominant channel and the middle
+		//! of the three samples.
+		const unsigned int kSingleSampleChannel = 1u;
+	}
+
 	//! Three scalar values at a point, no colorspace.
 	//!
 	//! For RGB rendering, the three slots are interpreted as
@@ -107,9 +153,12 @@ namespace RISE
 	//!    `Function1DScalarPainter`, `RGBScalarPainter`):
 	//!    `GetValueAtNM(ri, nm)` varies with `nm`, while
 	//!    `GetValuesAt(ri)` reports a per-implementation representative
-	//!    value (e.g. value at 555 nm for piecewise/function-1D, value
-	//!    at the d-line 587.6 nm for Sellmeier, the authored
-	//!    `(r, g, b)` triple for `RGBScalarPainter`).
+	//!    value — the curve sampled at `ScalarPainterRGB::kChannelNM`
+	//!    for `PiecewiseLinearScalarPainter`, a single representative
+	//!    wavelength broadcast to all three channels for
+	//!    `Function1DScalarPainter` and for the Sellmeier / polynomial
+	//!    dispersion formulas, the authored `(r, g, b)` triple for
+	//!    `RGBScalarPainter`.
 	class IScalarPainter :
 		public virtual IReference
 	{
@@ -150,6 +199,30 @@ namespace RISE
 		//! per-pixel (the texture stores a grayscale channel by
 		//! contract).
 		virtual bool HasPerChannelVariation() const { return false; }
+
+		//! When this painter's per-channel triple is a SPECTRAL SAMPLING
+		//! of one authored curve (the curve read at
+		//! `ScalarPainterRGB::kChannelNM`) rather than three
+		//! independently AUTHORED channel values, return a newly
+		//! allocated painter — caller owns the reference — that reports
+		//! the same curve through `GetValueAtNM` but a UNIFORM
+		//! `GetValuesAt` triple (the green sample,
+		//! `kSingleSampleChannel`) and `HasPerChannelVariation() ==
+		//! false`.  That is the view a material slot which reads only
+		//! `.v[0]` should bind.  Returns `nullptr` — the default, and
+		//! the right answer for `RGBScalarPainter` and for an inline
+		//! `r g b` triple — when there is no such curve, in which case
+		//! the parser rejects the binding outright.
+		//!
+		//! The distinction is authoring intent, not arithmetic.  Someone
+		//! who typed three different channel numbers into a
+		//! single-scalar slot made a mistake and should be told so;
+		//! someone who bound a measured 2-column spectral file did not,
+		//! and their scene must keep loading (it did before the triple
+		//! became per-channel) with the slot reading a well-defined
+		//! single wavelength instead of whichever channel happens to sit
+		//! at `.v[0]`.
+		virtual IScalarPainter* MakeSingleScalarSlotView() const { return nullptr; }
 	};
 }
 

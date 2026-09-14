@@ -392,13 +392,18 @@ void DielectricSPF::Scatter(
 		// No dispersion
 		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, iorVals.v[0], scatVals.v[0], cosine, -1.0 );
 	} else {
-		// We have dispersion, so we must process each component seperately
-		// Representative per-channel wavelengths for the AR-coating reflectance
-		// on the RGB preview path (sRGB primary dominant wavelengths, nm).
-		static const Scalar kARChannelNM[3] = { 611.0, 549.0, 465.0 };
+		// We have dispersion, so we must process each component seperately.
+		// The per-channel representative wavelengths (used here for the
+		// AR-coating reflectance on the RGB preview path) are the SHARED
+		// `ScalarPainterRGB::kChannelNM` -- the same three an
+		// `IScalarPainter` samples its curve at to build the `iorVals`
+		// triple this loop is refracting against (DL-29).  They used to
+		// be a private `kARChannelNM` copy here; keeping one array means
+		// the painter's triple and this loop can never describe two
+		// different sets of wavelengths.
 		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
-			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, iorVals.v[i], scatVals.v[i], cosine, kARChannelNM[i] );
+			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, iorVals.v[i], scatVals.v[i], cosine, ScalarPainterRGB::kChannelNM[i] );
 		}
 	}
 }

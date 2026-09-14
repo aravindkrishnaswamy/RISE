@@ -220,6 +220,68 @@ static void TestPiecewiseLinearFile()
 	std::remove( path );
 }
 
+//! DL-29: a measured 2-column spectral curve now reports genuine
+//! per-channel variation (three samples of the curve), which would make
+//! it collide with `requireSingle` material slots -- slots that read
+//! only `.v[0]`.  Those bindings LOADED before the change (the painter
+//! resolved to one representative wavelength), several shipped
+//! materials take them, and a measured file is not the authoring
+//! mistake `requireSingle` exists to catch.  So the resolver binds a
+//! single-scalar VIEW of the curve (green, 549 nm, through
+//! `IScalarPainter::MakeSingleScalarSlotView`) and warns, instead of
+//! hard-failing -- while an inline `r g b` triple in the same slot,
+//! which IS that authoring mistake, still hard-fails.
+static void TestSpectralCurveInSingleScalarSlot()
+{
+	std::cout << "TestSpectralCurveInSingleScalarSlot" << std::endl;
+
+	char path[512];
+	std::snprintf( path, sizeof( path ),
+		"/tmp/scalar_painter_test_single_%d.ior", (int)::getpid() );
+	std::ofstream f( path );
+	f << "380 1.10\n720 1.45\n";
+	f.close();
+
+	// ACCEPTED: `coated_material`'s coat_ior is requireSingle.
+	{
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname pwl_curve\n\tfile " << path << "\n}\n\n"
+		      << "lambertian_material\n{\n\tname mat_base\n}\n\n"
+		      << "coated_material\n{\n\tname mat_coated\n\tbase mat_base\n"
+		         "\tcoat_ior pwl_curve\n}\n";
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "single_curve" );
+		Check( pJob != nullptr,
+			"single-slot curve: scene with a file curve in a requireSingle slot still loads" );
+		if( pJob ) {
+			Check( pJob->GetMaterials()->GetItem( "mat_coated" ) != nullptr,
+				"single-slot curve: the coated material was actually created" );
+			// The named painter itself is unchanged -- the view is a
+			// separate object bound only into the material's slot.
+			IScalarPainter* named = pJob->GetScalarPainters()->GetItem( "pwl_curve" );
+			Check( named != nullptr && named->HasPerChannelVariation(),
+				"single-slot curve: the registered painter still reports per-channel variation" );
+			safe_release( pJob );
+		}
+	}
+
+	// REJECTED: an inline per-channel triple in the same slot.  The
+	// material cannot be created, so the derive fails and the scene does
+	// not load -- the pre-existing `kScalarBoundToPerChannelFmt`
+	// behaviour, deliberately unchanged by DL-29.
+	{
+		const char* scene =
+			"lambertian_material\n{\n\tname mat_base\n}\n\n"
+			"coated_material\n{\n\tname mat_coated\n\tbase mat_base\n"
+			"\tcoat_ior 1.1 1.3 1.5\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "single_triple" );
+		Check( pJob == nullptr,
+			"single-slot triple: an inline r g b triple in a requireSingle slot is still rejected" );
+		if( pJob ) safe_release( pJob );
+	}
+
+	std::remove( path );
+}
+
 static void TestScaledComposition()
 {
 	std::cout << "TestScaledComposition" << std::endl;
@@ -668,6 +730,7 @@ int main()
 	TestSellmeier();
 	TestPolynomial();
 	TestPiecewiseLinearFile();
+	TestSpectralCurveInSingleScalarSlot();
 	TestScaledComposition();
 	TestMultiplyComposition();
 	TestAddComposition();

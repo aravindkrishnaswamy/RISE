@@ -296,7 +296,6 @@
     <ClCompile Include="..\..\..\src\Library\Painters\LinesPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\MandelbrotPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Painter.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Painters\PiecewiseLinearScalarPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin2DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\ControlledSmoothness2DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\CompositeFunction2DPainter.cpp" />

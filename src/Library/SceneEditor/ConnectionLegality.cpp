@@ -150,6 +150,17 @@ namespace RISE
 			bool candidateIsPerChannelValues )
 		{
 			if( candidateKeyword == "scalar_painter" ) {
+				// DL-29 note: `candidateIsPerChannelValues` is the
+				// candidate chunk's authored FORM (true only for the
+				// per-channel `values` form), which is exactly the
+				// distinction Job.cpp's resolver now makes at derive
+				// time -- an authored `values` triple in a
+				// `requireSingle` slot is a hard error, while a `file`
+				// spectral curve there is accepted (it binds a
+				// single-scalar view of the curve and warns; see
+				// `IScalarPainter::MakeSingleScalarSlotView`).  The two
+				// sides therefore already agree, and this verdict needs
+				// no change for curves.
 				if( pd.semantics.requireSingle && candidateIsPerChannelValues ) {
 					return { false, Fmt( kScalarBoundToPerChannelFmt, targetKeyword.c_str(), "<name>",
 						paramName.c_str(), candidateKeyword.c_str() ) };

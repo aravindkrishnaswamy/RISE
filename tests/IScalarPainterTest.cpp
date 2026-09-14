@@ -23,17 +23,9 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <vector>
-
-// DL-80 (docs/DEBT_LEDGER.md): Color.h and ColorUtils.h are mutually
-// circular; entering via ColorUtils.h first leaves
-// ColorUtils::XYZFromNM undeclared inside SpectralPacket.h's own
-// (skipped, guard-already-set) #include "ColorUtils.h".  Include
-// Color.h first, matching the order every existing consumer uses.
-#include "../src/Library/Utilities/Color/Color.h"
-#include "../src/Library/Utilities/Color/ColorUtils.h"
-#include "../src/Library/Utilities/Color/RGBSpectra.h"
 
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -77,34 +69,23 @@ static RayIntersectionGeometric MakeDummyRig()
 	return RayIntersectionGeometric( Ray(), nullRasterizerState );
 }
 
-//! Independent CMF-integration reference for DL-29, deliberately built
-//! DIFFERENTLY from PiecewiseLinearScalarPainter::ComputeCachedRGB (a
-//! 1nm grid here vs. the production 5nm grid, and no relative-tolerance
-//! "snap to uniform" step) so this is a genuine cross-check rather than
-//! a restatement of the same code.  Forward model per
-//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md:
-//!   rgb = M_XYZ->709 . (int S.D65.cmf dλ) / (int D65.ȳ dλ)
-static RISE::Rec709RGBPel IndependentCMFReference(
-	Scalar loNm, Scalar loVal, Scalar hiNm, Scalar hiVal )
+//! Independent reference for DL-29's RGB convention, written OUT OF
+//! THE PAINTER'S REACH: the straight-line curve evaluated by hand at
+//! one wavelength.  `PiecewiseLinearScalarPainter` does its own binary
+//! search and its own interpolation over a sorted sample vector; this
+//! helper does neither, so agreeing is evidence and not a restatement.
+//! There is deliberately no CMF integration, no illuminant weighting
+//! and no colorspace matrix here -- the convention is "the curve, at
+//! that wavelength" (see ScalarPainterRGB::kChannelNM's doc comment in
+//! Interfaces/IScalarPainter.h for why a colorimetric integral would be
+//! the wrong answer for a pipe carrying iors, extinctions and
+//! roughnesses).
+static Scalar StraightLineCurveAt(
+	Scalar loNm, Scalar loVal, Scalar hiNm, Scalar hiVal, Scalar atNm )
 {
-	Scalar sumX = 0, sumY = 0, sumZ = 0, sumYIllum = 0;
-	for( int nm = 380; nm <= 780; ++nm ) {
-		const Scalar lambda = Scalar( nm );
-		Scalar s;
-		if( lambda <= loNm )      s = loVal;
-		else if( lambda >= hiNm ) s = hiVal;
-		else                      s = loVal + ( lambda - loNm ) / ( hiNm - loNm ) * ( hiVal - loVal );
-
-		XYZPel cmf;
-		if( !ColorUtils::XYZFromNM( cmf, lambda ) ) continue;
-		const Scalar illum = RGBIlluminantSpectrum::ReferenceIlluminant( lambda );
-		sumX += s * illum * cmf.X;
-		sumY += s * illum * cmf.Y;
-		sumZ += s * illum * cmf.Z;
-		sumYIllum += illum * cmf.Y;
-	}
-	const XYZPel xyz( sumX / sumYIllum, sumY / sumYIllum, sumZ / sumYIllum );
-	return ColorUtils::XYZtoRec709RGB( xyz );
+	if( atNm <= loNm ) return loVal;
+	if( atNm >= hiNm ) return hiVal;
+	return loVal + ( atNm - loNm ) / ( hiNm - loNm ) * ( hiVal - loVal );
 }
 
 static void TestUniformScalarPainter()
@@ -227,13 +208,56 @@ static void TestPiecewiseLinearScalarPainter()
 		Check( t.v[0] > t.v[1] && t.v[1] > t.v[2],
 		       "piecewise: R > G > B for a curve rising toward red" );
 
-		const RISE::Rec709RGBPel ref = IndependentCMFReference( 380, 1.10, 720, 1.45 );
-		Check( ApproxEq( t.v[0], Scalar( ref.r ), Scalar( 1e-3 ) ),
-		       "piecewise: R matches independent CMF integration within 1e-3" );
-		Check( ApproxEq( t.v[1], Scalar( ref.g ), Scalar( 1e-3 ) ),
-		       "piecewise: G matches independent CMF integration within 1e-3" );
-		Check( ApproxEq( t.v[2], Scalar( ref.b ), Scalar( 1e-3 ) ),
-		       "piecewise: B matches independent CMF integration within 1e-3" );
+		// The convention, asserted EXACTLY (1e-12, not a tolerance
+		// band): each channel is the curve at
+		// ScalarPainterRGB::kChannelNM.  611 nm -> 1.3378, 549 nm ->
+		// 1.2739, 465 nm -> 1.1875 for this 380:1.10 -> 720:1.45 line.
+		const char* chanName[3] = { "R (611nm)", "G (549nm)", "B (465nm)" };
+		for( int c = 0; c < 3; ++c ) {
+			const Scalar ref = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ), ScalarPainterRGB::kChannelNM[c] );
+			char msg[128];
+			std::snprintf( msg, sizeof(msg),
+				"piecewise: %s is the curve at that wavelength", chanName[c] );
+			Check( ApproxEq( t.v[c], ref, Scalar( 1e-12 ) ), msg );
+		}
+
+		// The triple and GetValueAtNM must agree at those three
+		// wavelengths -- the whole point of dropping the CMF
+		// integration is that the RGB report and the spectral report
+		// are the SAME function, sampled.
+		for( int c = 0; c < 3; ++c ) {
+			Check( t.v[c] == p->GetValueAtNM( ri, ScalarPainterRGB::kChannelNM[c] ),
+			       "piecewise: GetValuesAt channel == GetValueAtNM at the same wavelength" );
+		}
+	}
+
+	// DL-29 single-scalar-slot view: a material slot that reads only
+	// `.v[0]` binds this instead of being rejected.  Same curve
+	// spectrally, uniform green sample under RGB, and it reports no
+	// per-channel variation so the parser's requireSingle contract and
+	// every SPF's `disperse` test see a plain single-valued painter.
+	{
+		IScalarPainter* view = p->MakeSingleScalarSlotView();
+		Check( view != nullptr, "piecewise: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( ! view->HasPerChannelVariation(), "piecewise-view: !HasPerChannelVariation" );
+			Check( tv.IsUniform(), "piecewise-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			Check( ApproxEq( tv.v[0], green, Scalar( 1e-12 ) ),
+			       "piecewise-view: v[0] is the curve at 549nm" );
+			// Spectral path identical to the original painter's.
+			Check( view->GetValueAtNM( ri, Scalar( 420 ) ) == p->GetValueAtNM( ri, Scalar( 420 ) ) &&
+			       view->GetValueAtNM( ri, Scalar( 700 ) ) == p->GetValueAtNM( ri, Scalar( 700 ) ),
+			       "piecewise-view: GetValueAtNM is the unchanged curve" );
+			// A view of a view would be pointless; it declines.
+			Check( view->MakeSingleScalarSlotView() == nullptr,
+			       "piecewise-view: does not offer a view of itself" );
+			view->release();
+		}
 	}
 
 	p->release();
@@ -250,8 +274,12 @@ static void TestPiecewiseLinearScalarPainter()
 		PiecewiseLinearScalarPainter* pf = new PiecewiseLinearScalarPainter( flat );
 		Check( ! pf->HasPerChannelVariation(), "piecewise-flat: !HasPerChannelVariation" );
 		const ScalarTriple tf = pf->GetValuesAt( ri );
+		// EXACTLY uniform and EXACTLY 1.33 -- three evaluations of one
+		// flat curve are bit-identical, so this needs no snap-to-uniform
+		// tolerance (a CMF integration would have needed one, which is
+		// one more reason the convention is "sample the curve").
 		Check( tf.IsUniform(), "piecewise-flat: GetValuesAt is exactly uniform" );
-		Check( ApproxEq( tf.v[0], 1.33, Scalar( 1e-3 ) ), "piecewise-flat: v[0] ~= 1.33" );
+		Check( tf.v[0] == Scalar( 1.33 ), "piecewise-flat: v[0] is exactly 1.33" );
 		pf->release();
 	}
 

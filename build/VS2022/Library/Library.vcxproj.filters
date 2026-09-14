@@ -441,9 +441,6 @@
     <ClCompile Include="..\..\..\src\Library\Painters\Painter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Painters\PiecewiseLinearScalarPainter.cpp">
-      <Filter>Painters</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin2DPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>

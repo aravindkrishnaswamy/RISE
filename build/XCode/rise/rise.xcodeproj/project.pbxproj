@@ -1937,8 +1937,6 @@
 		FA1ABSC1000000000000000D /* UniformScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000000C /* UniformScalarPainter.h */; };
 		FA1ABSC10000000000000011 /* RGBScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000010 /* RGBScalarPainter.h */; };
 		FA1ABSC10000000000000015 /* PiecewiseLinearScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000014 /* PiecewiseLinearScalarPainter.h */; };
-		FA1ABSC10000000000000041 /* PiecewiseLinearScalarPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000040 /* PiecewiseLinearScalarPainter.cpp */; };
-		FA1ABSC10000000000000042 /* PiecewiseLinearScalarPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000040 /* PiecewiseLinearScalarPainter.cpp */; };
 		FA1ABSC10000000000000019 /* SellmeierScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000018 /* SellmeierScalarPainter.h */; };
 		FA1ABSC1000000000000001D /* PolynomialScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */; };
 		FA1ABSC10000000000000021 /* Function1DScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000020 /* Function1DScalarPainter.h */; };
@@ -3065,7 +3063,6 @@
 		FA1ABFR1000000000000000C /* UniformScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UniformScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000010 /* RGBScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000014 /* PiecewiseLinearScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PiecewiseLinearScalarPainter.h; sourceTree = "<group>"; };
-		FA1ABFR10000000000000040 /* PiecewiseLinearScalarPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PiecewiseLinearScalarPainter.cpp; sourceTree = "<group>"; };
 		FA1ABFR10000000000000018 /* SellmeierScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SellmeierScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolynomialScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000020 /* Function1DScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DScalarPainter.h; sourceTree = "<group>"; };
@@ -3906,7 +3903,6 @@
 				FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */,
 				FA1ABFR10000000000000018 /* SellmeierScalarPainter.h */,
 				FA1ABFR10000000000000014 /* PiecewiseLinearScalarPainter.h */,
-				FA1ABFR10000000000000040 /* PiecewiseLinearScalarPainter.cpp */,
 				FA1ABFR10000000000000010 /* RGBScalarPainter.h */,
 				FA1ABFR1000000000000000C /* UniformScalarPainter.h */,
 				AAB7C04202604280000000A3 /* VertexColorPainter.h */,
@@ -5510,7 +5506,6 @@
 				F27F0BA0069C42910069C9E5 /* LinesPainter.cpp in Sources */,
 				F27F0BA2069C42910069C9E5 /* MandelbrotPainter.cpp in Sources */,
 				F27F0BA4069C42910069C9E5 /* Painter.cpp in Sources */,
-				FA1ABSC10000000000000041 /* PiecewiseLinearScalarPainter.cpp in Sources */,
 				F27F0BA6069C42910069C9E5 /* Perlin2DPainter.cpp in Sources */,
 				CDA10000000000000000000E /* ControlledSmoothness2DPainter.cpp in Sources */,
 				CC0F00000000000000000005 /* CompositeFunction2DPainter.cpp in Sources */,
@@ -6204,7 +6199,6 @@
 				FA1ABSC1000000000000001D /* PolynomialScalarPainter.h in Sources */,
 				FA1ABSC10000000000000019 /* SellmeierScalarPainter.h in Sources */,
 				FA1ABSC10000000000000015 /* PiecewiseLinearScalarPainter.h in Sources */,
-				FA1ABSC10000000000000042 /* PiecewiseLinearScalarPainter.cpp in Sources */,
 				FA1ABSC10000000000000011 /* RGBScalarPainter.h in Sources */,
 				FA1ABSC1000000000000000D /* UniformScalarPainter.h in Sources */,
 				AAB7C04202604280000000A1 /* VertexColorPainter.h in Sources */,

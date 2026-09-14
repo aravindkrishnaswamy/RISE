@@ -90,7 +90,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Painters/LinesPainter.cpp"
     "${RISE_LIB}/Painters/MandelbrotPainter.cpp"
     "${RISE_LIB}/Painters/Painter.cpp"
-    "${RISE_LIB}/Painters/PiecewiseLinearScalarPainter.cpp"
     "${RISE_LIB}/Importers/GLTFSceneImporter.cpp"
     "${RISE_LIB}/Importers/HairFileLoader.cpp"
     "${RISE_LIB}/Painters/Perlin2DPainter.cpp"
