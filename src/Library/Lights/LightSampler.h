@@ -100,33 +100,44 @@ namespace RISE
 
 	namespace Implementation { class OptimalMISAccumulator; }
 
-	/// Optional per-call hook (DL-74, docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
-	/// "DL-73 RULED NOT A DEBT" residual) letting a caller replace the raw
-	/// material pdf `EvaluateDirectLighting{,NM}`'s env-NEE arm would otherwise
-	/// use as the BSDF-sampling technique's MIS-partner density for a given
-	/// NEE direction.  Exists so PathTracingIntegrator can plumb the SAME
-	/// OpenPGL-guided combined pdf its BSDF-sampling continuation uses for the
-	/// escape-direction MIS weight (`PathTransportUtilities::GuidingCombinedPdf`)
-	/// into the NEE side too, for the SAME shading point -- without this, the
-	/// two sides feed `PowerHeuristic`/`OptimalMIS2Weight` different pdfs for
-	/// the same physical direction whenever path guiding is trained and
-	/// active, breaking `w_bsdf + w_nee == 1`.  Deliberately NOT specific to
-	/// OpenPGL types (no dependency on PathGuidingField here) so this header
-	/// stays buildable without RISE_ENABLE_OPENPGL; the concrete
-	/// implementation lives behind that guard in PathTracingIntegrator.cpp.
-	/// Passing null (the default at every existing call site) reproduces the
-	/// pre-DL-74 raw-pdf behavior exactly.
+	/// Optional per-call hook (DL-74, docs/DL74_ENV_NEE_GUIDING_PARTITION.md)
+	/// letting a caller replace the density `EvaluateDirectLighting{,NM}`'s
+	/// NEE arms use as the BSDF-SAMPLING technique's MIS-PARTNER for a given
+	/// shadow-ray direction.
+	///
+	/// Why this exists.  A guided path tracer's continuation is drawn from a
+	/// mixture of the material and a learned guide, so the density it divides
+	/// its throughput by (`alpha*guide + (1-alpha)*material`, or the RIS
+	/// equivalent) is NOT the material's own pdf.  MIS only partitions to one
+	/// when BOTH sides evaluate the SAME function of direction, so the NEE
+	/// side has to see the same mixture.  Note the partner density need not be
+	/// the density either side actually SAMPLED from: MIS is unbiased for any
+	/// weights with `sum_s w_s(w) == 1`, so a shared NOMINAL density is both
+	/// legal and sufficient -- which is what lets one hook serve every lobe,
+	/// every guiding mode, and both MIS arms below.
+	///
+	/// Deliberately NOT specific to OpenPGL types (no dependency on
+	/// PathGuidingField here) so this header stays buildable without
+	/// RISE_ENABLE_OPENPGL; the concrete implementation lives behind that
+	/// guard in PathTracingIntegrator.cpp.  Passing null (the default at every
+	/// call site that does not guide) reproduces the raw-material-pdf
+	/// behaviour exactly.
 	class IGuidedNEEPdfBlend
 	{
 	public:
 		virtual ~IGuidedNEEPdfBlend() {}
 
 		/// \param wo      The NEE-sampled direction being weighted.
-		/// \param rawPdf  The un-guided material pdf the caller already
-		///                computed for `wo` (0 if the material has no
-		///                support there).
-		/// \return The pdf to use in place of `rawPdf` as the BSDF-sampling
-		///         technique's MIS-partner density for `wo`.
+		/// \param rawPdf  The material's own AGGREGATE pdf for `wo`, which
+		///                the caller has already computed.  Guaranteed
+		///                > 0 by both call sites: where the aggregate pdf
+		///                is zero the BSDF-sampling technique cannot reach
+		///                `wo` at all, so it has no MIS share to claim and
+		///                the raw value is used unchanged (blending a
+		///                nonzero guide term in there would silently
+		///                discard the NEE sample's missing complement).
+		/// \return The nominal density to use in place of `rawPdf` as the
+		///         BSDF-sampling technique's MIS partner for `wo`.
 		virtual Scalar Blend(
 			const Vector3& wo,
 			Scalar rawPdf
@@ -831,7 +842,7 @@ namespace RISE
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
-				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional env-NEE MIS-partner pdf override (see IGuidedNEEPdfBlend)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -847,7 +858,7 @@ namespace RISE
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
-				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional env-NEE MIS-partner pdf override (see IGuidedNEEPdfBlend)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
 				) const;
 
 			/// Returns the alias-table selection probability for a given

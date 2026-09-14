@@ -262,6 +262,9 @@ namespace
 		rs.depth = rayDepth;
 		rs.considerEmission = true;
 		rs.bsdfPdf = samplePdf;
+		// DL-74: this probe cast is not a guided continuation -- the
+		// sampling density and the MIS-partner density are the same value.
+		rs.bsdfMisPdf = samplePdf;
 
 		Scalar Li = 0;
 		Scalar hitDist = 0;
