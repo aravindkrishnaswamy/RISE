@@ -77,6 +77,8 @@
 
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/BoxUVGenerator.h"
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
 #include "../src/Library/Geometry/HairGeometry.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Managers/ObjectManager.h"
@@ -805,6 +807,77 @@ static void TestShadowWalkSkipsRayDerivedNormals()
 	oHair->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 5 (sibling audit): an override UV generator charts a
+//  SURFACE, so the same point must get the same (u, v) whichever side
+//  the ray came from.
+//
+//  `BoxUVGenerator` picks its box side from the SIGN of the dominant
+//  component of the normal `Object::IntersectRay` hands it.  With the
+//  reported (flipped) `vGeomNormal`, a `ClippedPlaneGeometry` -- which
+//  is double-sided by default and flips its normal on a back-face hit --
+//  charted the same point onto the opposite box side depending on which
+//  side the ray came from, i.e. a VIEW-DEPENDENT texture chart.  Not
+//  enumerated in the DL-70 row (which classified this site "not a
+//  which-side test"); found by this slice's sibling audit and fixed with
+//  the same recovery.
+//
+//  The fixture uses a clipped plane rather than a triangle mesh because
+//  triangle meshes never populate `ri.ptIntersection` at all -- see
+//  DL-95, an independent pre-existing defect this sub-test surfaced,
+//  which makes the override UV generator read a stale point on every
+//  mesh and is NOT fixed here.
+//////////////////////////////////////////////////////////////////////
+static void TestUVGeneratorIsViewIndependent()
+{
+	std::cout << "Sub-test 5: an override UV generator charts the surface, not the viewing side (sibling audit)"
+		<< std::endl;
+
+	const Point3 corners[4] = {
+		Point3( -1, -1, 1 ), Point3( 1, -1, 1 ), Point3( 1, 1, 1 ), Point3( -1, 1, 1 )
+	};
+	ClippedPlaneGeometry* g = new ClippedPlaneGeometry( corners, /*bDoubleSided*/true );
+	Object* o = new Object( g );  safe_release( g );
+	BoxUVGenerator* uvg = new BoxUVGenerator( 2.0, 2.0, 2.0 );
+	uvg->addref();
+	o->SetUVGenerator( *uvg );
+	o->FinalizeTransformations();
+
+	RasterizerState rast = {0};
+
+	// The SAME point (0.3, 0.1, 1) on the plane, reached from the +Z side
+	// (a front-face hit, no flip) and from the -Z side (a back-face hit,
+	// which flips the reported normal).
+	const Ray fromFront( Point3( 0.3, 0.1,  3 ), Vector3( 0, 0, -1 ) );
+	const Ray fromBack ( Point3( 0.3, 0.1, -1 ), Vector3( 0, 0,  1 ) );
+
+	RayIntersection riF( fromFront, rast );  Hit( o, fromFront, riF );
+	RayIntersection riB( fromBack,  rast );  Hit( o, fromBack,  riB );
+
+	Check( riF.geometric.bHit && riB.geometric.bHit, "(clipped plane) fixture: both rays hit" );
+
+	if( riF.geometric.bHit && riB.geometric.bHit )
+	{
+		Check( !riF.geometric.bGeomNormalOrientedToRay && riB.geometric.bGeomNormalOrientedToRay,
+			"(clipped plane) fixture: only the back-face hit flips its geometric normal" );
+		Check( std::fabs( riF.geometric.ptIntersection.z - 1.0 ) < 1e-9 &&
+			std::fabs( riB.geometric.ptIntersection.z - 1.0 ) < 1e-9,
+			"(clipped plane) fixture: both hits are the same point on the plane" );
+
+		// Independently-known answer: the plane's TRUE outward normal is
+		// +Z, so `BoxUVGenerator` side 5, u = (x + w/2)/w = (0.3+1)/2.
+		CheckClose( riF.geometric.ptCoord.x, 0.65, 1e-9,
+			"(clipped plane) front-face hit charts onto the +Z box side" );
+
+		Check( std::fabs( riF.geometric.ptCoord.x - riB.geometric.ptCoord.x ) < 1e-9 &&
+			std::fabs( riF.geometric.ptCoord.y - riB.geometric.ptCoord.y ) < 1e-9,
+			"(clipped plane) MONEY: the UV chart is a property of the surface, not of the viewing side" );
+	}
+
+	uvg->release();
+	o->release();
+}
+
 int main()
 {
 	std::cout << "GeomNormalOrientationSitesTest (DL-70)" << std::endl;
@@ -815,6 +888,7 @@ int main()
 	TestTransmissiveShadowFresnelPair();
 	TestShadowWalkMediumStack();
 	TestShadowWalkSkipsRayDerivedNormals();
+	TestUVGeneratorIsViewIndependent();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
