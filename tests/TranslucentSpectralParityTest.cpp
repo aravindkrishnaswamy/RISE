@@ -246,9 +246,13 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
                 if (!tilted) {
                     cdf &= DensityNear(mu * mu, u);
                     secondMoment += mu * mu / 8;
-                } else {
-                    secondMoment = 0.5;  // inapplicable under tilt; see comment above.
                 }
+                // Under tilt neither identity applies; both checks are
+                // SKIPPED below rather than satisfied by assigning the
+                // expected value to the observable (a round-2 revision
+                // set `secondMoment = 0.5` here, which made
+                // `Check(DensityNear(secondMoment, 0.5))` a tautology
+                // that would pass against any sampler at all).
                 popped &= ray.ior_stack && !ray.ior_stack->containsCurrent();
             }
             Check(exits == 1, "density sample has exactly one exit");
@@ -257,8 +261,17 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
         Check(support, "exit support is positive shading hemisphere");
         Check(stored, "stored exit density is cosine, independent of N");
         Check(evaluated, "exit evaluated density equals stored density");
-        Check(cdf, "exit sample inverse CDF is cosine, independent of N");
-        Check(DensityNear(secondMoment, 0.5), "exit sampled cosine second moment is 1/2");
+        // Both identities are specific to the UNCLIPPED plain-cosine
+        // draw the untilted case reduces to; the tilted case's own
+        // distribution is checked by TranslucentTiltedExitTest's
+        // chi-squared goodness-of-fit (sub-test 4), not here.
+        if (!tilted) {
+            Check(cdf, "exit sample inverse CDF is cosine, independent of N");
+            Check(DensityNear(secondMoment, 0.5), "exit sampled cosine second moment is 1/2");
+        } else {
+            std::printf("  (tilted: inverse-CDF and second-moment identities skipped -- "
+                "see TranslucentTiltedExitTest sub-test 4 for the tilted sampler's own test)\n");
+        }
         Check(popped, "density samples carry popped exit stack");
 
         // Integrate in mu/phi, where dOmega = dmu dphi. A midpoint rule

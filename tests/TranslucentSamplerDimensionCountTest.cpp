@@ -34,8 +34,19 @@
 //    counts the ACTUAL number of `ISampler::Get1D()`/`Get2D()` calls
 //    a real `Scatter()`/`ScatterNM()` call makes (via a counting
 //    `ISampler` wrapper around a real `IndependentSampler`) and asserts
-//    it is exactly 2, at a 60-degree shading-normal tilt -- the same
-//    tilt DL-45's own fixtures use.
+//    it is exactly 2.
+//
+//    P3 (review round 3): the count is asserted UNCONDITIONALLY, on
+//    every call rather than only on calls that emitted an exit lobe --
+//    the earlier `if(hasExit)` guard left the VANISH path (where the old
+//    rejection loop burned its whole attempt budget, up to 64
+//    dimensions, and emitted nothing) entirely unchecked.  The sweep
+//    covers 0 / 60 / 179 / 180 degrees of shading-vs-outward tilt; 179
+//    and 180 are the configurations that sat at or below
+//    `kExitVanishThreshold` before P1 oriented the exit frame outward
+//    (180 is a double-sided mesh's exit hit).  Post-P1, P(valid) >= 0.5
+//    at every geometry, so the test also asserts an exit lobe IS emitted
+//    on every trial at all four tilts.
 //
 //  RED-PROOF (recorded from a run against the pre-P1-fix library; see
 //    the fix commit message for the verbatim failing output)
@@ -146,9 +157,9 @@ namespace
 	}
 }
 
-static void TestExactlyTwoDrawsPerScatterCall()
+static void RunTilt( Scalar tiltDeg )
 {
-	std::cout << "Sub-test: exactly 2 sampler dimensions per Scatter()/ScatterNM() call at 60-degree tilt (P1)" << std::endl;
+	std::cout << "  tilt=" << tiltDeg << " deg" << std::endl;
 
 	StubObject* obj = new StubObject();  obj->addref();
 
@@ -161,7 +172,7 @@ static void TestExactlyTwoDrawsPerScatterCall()
 	pSpf->addref();
 	TranslucentSPF& spf = *pSpf;
 
-	RayIntersectionGeometric ri = MakeTiltedExitIntersection( 60.0 );
+	RayIntersectionGeometric ri = MakeTiltedExitIntersection( tiltDeg );
 	IORStack stack = MakeInsideStack( obj );
 
 	RandomNumberGenerator rng( 909090 );
@@ -169,51 +180,48 @@ static void TestExactlyTwoDrawsPerScatterCall()
 	CountingSampler counting( inner );
 
 	const int kTrials = 8192;
-	int rgbExitCount = 0, rgbOverTwo = 0;
-	int nmExitCount = 0, nmOverTwo = 0;
+	int rgbExitCount = 0, rgbNotTwo = 0;
+	int nmExitCount = 0, nmNotTwo = 0;
 
 	for( int i = 0; i < kTrials; i++ ) {
 		ScatteredRayContainer scattered;
 		counting.Reset();
 		spf.Scatter( ri, counting, scattered, stack );
-		bool hasExit = false;
 		for( unsigned int j = 0; j < scattered.Count(); j++ ) {
-			if( scattered[j].type == ScatteredRay::eRayDiffuse ) hasExit = true;
+			if( scattered[j].type == ScatteredRay::eRayDiffuse ) rgbExitCount++;
 		}
-		if( hasExit ) {
-			rgbExitCount++;
-			EXPECT( counting.Dims() == 2, "RGB Scatter() draws exactly 2 sampler dimensions when it emits an exit lobe" );
-			if( counting.Dims() > 2 ) rgbOverTwo++;
-		}
+		// UNCONDITIONAL (P3, review round 3): the draw count is the
+		// invariant, not "the draw count on calls that happened to emit
+		// something".  Asserting it only when an exit lobe came out left
+		// the vanish path -- the one case where the old rejection loop
+		// could burn the most dimensions -- entirely unchecked.
+		if( counting.Dims() != 2 ) rgbNotTwo++;
+		EXPECT( counting.Dims() == 2, "RGB Scatter() draws exactly 2 sampler dimensions, exit lobe or not" );
 	}
 
 	for( int i = 0; i < kTrials; i++ ) {
 		ScatteredRayContainer scattered;
 		counting.Reset();
 		spf.ScatterNM( ri, counting, 550.0, scattered, stack );
-		bool hasExit = false;
 		for( unsigned int j = 0; j < scattered.Count(); j++ ) {
-			if( scattered[j].type == ScatteredRay::eRayDiffuse ) hasExit = true;
+			if( scattered[j].type == ScatteredRay::eRayDiffuse ) nmExitCount++;
 		}
-		if( hasExit ) {
-			nmExitCount++;
-			EXPECT( counting.Dims() == 2, "NM ScatterNM() draws exactly 2 sampler dimensions when it emits an exit lobe" );
-			if( counting.Dims() > 2 ) nmOverTwo++;
-		}
+		if( counting.Dims() != 2 ) nmNotTwo++;
+		EXPECT( counting.Dims() == 2, "NM ScatterNM() draws exactly 2 sampler dimensions, exit lobe or not" );
 	}
 
-	std::cout << "  RGB: " << rgbExitCount << "/" << kTrials << " calls emitted an exit; "
-		<< rgbOverTwo << " of those drew more than 2 dimensions" << std::endl;
-	std::cout << "  NM:  " << nmExitCount << "/" << kTrials << " calls emitted an exit; "
-		<< nmOverTwo << " of those drew more than 2 dimensions" << std::endl;
+	std::cout << "    RGB: " << rgbExitCount << "/" << kTrials << " calls emitted an exit; "
+		<< rgbNotTwo << " calls drew other than 2 dimensions" << std::endl;
+	std::cout << "    NM:  " << nmExitCount << "/" << kTrials << " calls emitted an exit; "
+		<< nmNotTwo << " calls drew other than 2 dimensions" << std::endl;
 
-	// Sanity: the fixture must actually exercise the exit branch on
-	// (almost) every trial at this tilt/extinction/scattering
-	// configuration (extinction=0 -> front.kray never extinguishes;
-	// scattering=0 -> no vanishing region at 60 degrees), or the test
-	// above would be vacuously true.
-	EXPECT( rgbExitCount > kTrials - 10, "RGB fixture reliably reaches the exit branch (not a vacuous count)" );
-	EXPECT( nmExitCount > kTrials - 10, "NM fixture reliably reaches the exit branch (not a vacuous count)" );
+	// Post-P1 the exit lobe's frame is oriented outward before sampling,
+	// so P(valid) >= 0.5 at EVERY geometry and the vanish branch can no
+	// longer be reached from a production call -- including the
+	// 180-degree case (a double-sided mesh's exit hit), which before P1
+	// gave P(valid)=0 and emitted nothing at all.
+	EXPECT( rgbExitCount == kTrials, "RGB fixture emits an exit lobe on every trial (vanish path unreachable post-P1)" );
+	EXPECT( nmExitCount == kTrials, "NM fixture emits an exit lobe on every trial (vanish path unreachable post-P1)" );
 
 	obj->release();
 	pSpf->release();
@@ -222,6 +230,23 @@ static void TestExactlyTwoDrawsPerScatterCall()
 	ext->release();
 	phongN->release();
 	scat->release();
+}
+
+static void TestExactlyTwoDrawsPerScatterCall()
+{
+	std::cout << "Sub-test: exactly 2 sampler dimensions per Scatter()/ScatterNM() call (P1)" << std::endl;
+
+	// 60 deg is DL-45's own fixture tilt (P(valid)=0.75, where the old
+	// rejection loop drew >2 dimensions 25% of the time).  179 and 180
+	// are the configurations that used to sit AT or BELOW
+	// kExitVanishThreshold before P1 oriented the exit frame outward --
+	// the vanish path, where a rejection loop burned its full attempt
+	// budget (up to 64 dimensions) and emitted nothing.  0 is the
+	// identity-remap control.
+	const Scalar tilts[] = { 0.0, 60.0, 179.0, 180.0 };
+	for( int i = 0; i < 4; i++ ) {
+		RunTilt( tilts[i] );
+	}
 }
 
 int main()

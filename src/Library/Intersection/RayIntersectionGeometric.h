@@ -278,11 +278,8 @@ namespace RISE
 		Vector3						vGeomNormal2;
 
 		//! OUTPUT: set by geometries that flip `vGeomNormal` to oppose the
-		//! incoming ray (currently: double-sided triangle meshes -- see
-		//! TriangleMeshGeometry::IntersectRay / TriangleMeshGeometryIndexed::
-		//! IntersectRay).  Default false -- geometries that do not flip
-		//! (single-sided meshes, and every analytical primitive whose
-		//! geometric normal is the true, unmodified surface normal) leave
+		//! incoming ray.  Default false; the authoritative list of which
+		//! geometries set it is below -- geometries that do not flip leave
 		//! this false, so the recovery formula below is a no-op for them.
 		//!
 		//! Consumers that need the TRUE surface facing (which side of the
