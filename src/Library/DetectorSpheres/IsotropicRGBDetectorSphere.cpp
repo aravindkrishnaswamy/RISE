@@ -18,6 +18,7 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/RTime.h"
+#include "../Utilities/Color/ColorUtils.h"
 #include "../Interfaces/ILog.h"
 #include <algorithm>
 

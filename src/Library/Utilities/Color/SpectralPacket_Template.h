@@ -17,11 +17,18 @@
 
 #include <memory.h>
 #include "../../Interfaces/IFunction1D.h"
-#include "ColorUtils.h"
 
 namespace RISE
 {
 	struct XYZPel;
+
+	// DL-80: forward-declare rather than #include "ColorUtils.h" -- see
+	// SpectralPacket.h's own DL-80 comment for the full cycle
+	// derivation.  Same rule, same one symbol.
+	namespace ColorUtils
+	{
+		bool XYZFromNM( XYZPel& p, const Scalar nm );
+	}
 
 	////////////////////////////////////
 	//

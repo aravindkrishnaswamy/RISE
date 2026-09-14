@@ -36,6 +36,7 @@
 #include "../Utilities/PathValueOps.h"
 #include "../Utilities/Color/SpectralValueTraits.h"
 #include "../Utilities/Color/RGBSpectra.h"		// Stage C slice 2: light-subpath throughput uplift
+#include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/BDPTUtilities.h"
 #include "../Interfaces/ICamera.h"
 #include "../Cameras/CameraUtilities.h"
