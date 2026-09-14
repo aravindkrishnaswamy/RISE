@@ -255,7 +255,13 @@ or dividing the complete subsurface contribution by eta squared. At IOR 2
 the values are 0.926139012437, 3.37122271642 and 0.314868086443. These are
 quadrature/arithmetic diagnostics, not executed production mutations.
 
-## Planar probe origin (DL-52)
+## ~~Planar probe origin (DL-52)~~
+
+CLOSED 2026-09-13 — `00cd6723`, `BSSRDFPlanarProbeReachTest`: unfixed
+0/500 entry points reached on a real flat face (curved-sphere control
+372/500), fixed 500/500. See [closure](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md).
+The following diagnosis and low-sample smoke tests remain historical
+evidence from before this repair.
 
 The first four-spp flat-box smoke returned diffusion air RGB mean
 (0.04000010123, 0.04000011512, 0.04000005414), near the surface reflection
@@ -294,7 +300,13 @@ choices can vary. The fixture labels repeat dispersion descriptively and
 does not use it as a confidence interval for the integral. Sample-count,
 geometry and cap comparisons supplement the absolute convention check.
 
-## Recursive environment MIS (DL-53)
+## ~~Recursive environment MIS (DL-53)~~
+
+CLOSED 2026-09-13 — `b3de184d`, `RayCasterEnvEscapeMISTest`: unfixed
+48/79 checks failed (explicit-global-map escape returned raw, unweighted
+radiance regardless of `bsdfPdf`), fixed 79/79 pass. See
+[closure](DL53_RAYCASTER_ENV_ESCAPE_MIS.md). The following diagnosis
+remains historical evidence from before this repair.
 
 The rendered diffusion air mean exceeds the independently sampled helper
 mean. Source inspection confirms an independent positive extra term:

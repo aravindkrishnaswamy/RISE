@@ -77,8 +77,10 @@ volume free-flight sampling and pdfSurface=0, with no disk projection.
 Coated/Fabric supported substrate lists exclude SSS; CompositeMaterial does
 not forward a diffusion profile. No sibling projection site remains.
 
-DL-52's coplanar probe omission and DL-49 remain distinct open work. The
-separate fallback-proposal defect DL-55 was subsequently closed by
+DL-49 remains distinct open work. DL-52's coplanar probe omission was
+subsequently closed by `00cd6723` (see
+[closure](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)). The separate fallback-proposal
+defect DL-55 was subsequently closed by
 `cba4e88c`, and DL-56's grazing-Fresnel quotient defect by `df7e3dad`; the
 separate DL-58 grazing classification group was subsequently closed by
 `1b1909c0` / `ed8d9c94` (see [closure](DL58_MATCHED_INDEX_GRAZING.md)). This slice found no new residual. At the DL-54 closure, the ledger had 55 main rows: 46 open
