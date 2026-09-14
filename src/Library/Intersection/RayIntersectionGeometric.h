@@ -280,7 +280,7 @@ namespace RISE
 		//! OUTPUT: set by geometries that flip `vGeomNormal` to oppose the
 		//! incoming ray.  FIVE setters as of DL-75 (2026-09-13):
 		//! `TriangleMeshGeometry::IntersectRay`, `TriangleMeshGeometryIndexed::
-		//! IntersectRay`, `ClippedPlaneGeometry::RayElementIntersection`,
+		//! IntersectRay`, `ClippedPlaneGeometry::IntersectRay`,
 		//! `BezierPatchGeometry::RayElementIntersection` (all four flip a
 		//! genuine, ray-INDEPENDENT winding-order normal that has two real
 		//! sides -- undoing the flip recovers that true side), and
