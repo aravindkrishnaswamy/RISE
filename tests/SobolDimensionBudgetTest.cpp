@@ -878,12 +878,32 @@ static bool SceneDepthBound(
 	std::ifstream f( path );
 	if( !f ) return false;
 
-	BDPTPelDefaults bdptDflt;
 	StabilityConfig stability;
 
 	unsigned int maxDepth = 0;
 	unsigned int volumeBounce = stability.maxVolumeBounce;
 	bool isBidirectional = false, isVCM = false, hasSubsurface = false;
+
+	// Round-2-review fix (P3-5a): the no-depth default must match the
+	// SPECIFIC rasterizer the scene selects, not always BDPT's.
+	// PixelPelDefaults::maxRecursion and MLTDefaults::maxEyeDepth are
+	// BOTH 10 while BDPTPelDefaults/VCMPelDefaults::maxEyeDepth is 8
+	// (RasterizerDefaults.h) -- defaulting every undeclared-depth scene
+	// to 8 under-counted a pixelpel or MLT scene's true walk length.
+	// `pathtracing_*_rasterizer` has no scene-level depth cap at all
+	// (PathTracingPelDefaults/PathTracingSpectralDefaults carry no
+	// maxEyeDepth field); its runtime default is the GUI render-modes
+	// hard cap, `PathTracingIntegrator::mMaxPathDepth( 128 )`
+	// (PathTracingIntegrator.cpp), which is also the safe upper bound
+	// to assume for any scene whose rasterizer this scan does not
+	// otherwise recognise.
+	PixelPelDefaults pixelPelDflt;
+	BDPTPelDefaults  bdptDflt;
+	VCMPelDefaults   vcmDflt;
+	MLTDefaults      mltDflt;
+	static const unsigned int kPathTracingDefaultDepth = 128u;
+	unsigned int noDepthDefault = kPathTracingDefaultDepth;
+	bool sawRasterizer = false;
 
 	std::string line;
 	while( std::getline( f, line ) )
@@ -893,9 +913,25 @@ static bool SceneDepthBound(
 		if( b == std::string::npos ) continue;
 		const std::string t = line.substr( b );
 
-		if( t.compare( 0, 3, "vcm" ) == 0 )      { isVCM = true; isBidirectional = true; }
-		if( t.compare( 0, 4, "bdpt" ) == 0 )     { isBidirectional = true; }
-		if( t.compare( 0, 3, "mlt" ) == 0 )      { isBidirectional = true; }
+		if( t.compare( 0, 3, "vcm" ) == 0 ) {
+			isVCM = true; isBidirectional = true;
+			noDepthDefault = vcmDflt.maxEyeDepth; sawRasterizer = true;
+		}
+		if( t.compare( 0, 4, "bdpt" ) == 0 ) {
+			isBidirectional = true;
+			noDepthDefault = bdptDflt.maxEyeDepth; sawRasterizer = true;
+		}
+		if( t.compare( 0, 3, "mlt" ) == 0 ) {
+			isBidirectional = true;
+			noDepthDefault = mltDflt.maxEyeDepth; sawRasterizer = true;
+		}
+		if( t.compare( 0, 8, "pixelpel" ) == 0 ||
+			t.compare( 0, 26, "pixelintegratingspectral_" ) == 0 ) {
+			noDepthDefault = pixelPelDflt.maxRecursion; sawRasterizer = true;
+		}
+		if( t.compare( 0, 12, "pathtracing_" ) == 0 ) {
+			noDepthDefault = kPathTracingDefaultDepth; sawRasterizer = true;
+		}
 		if( t.find( "subsurface" ) != std::string::npos ||
 			t.find( "bssrdf" ) != std::string::npos ) hasSubsurface = true;
 
@@ -906,13 +942,24 @@ static bool SceneDepthBound(
 				t.c_str() + std::string( keys[k] ).size(), 0, 10 );
 			if( v > maxDepth ) maxDepth = v;
 		}
-		if( t.compare( 0, 18, "max_volume_bounce " ) == 0 ) {
-			volumeBounce = (unsigned int)std::strtoul( t.c_str() + 18, 0, 10 );
+		// Round-2-review fix (P3-5b): match on the KEY alone and let
+		// strtoul's own leading-whitespace skip handle the separator
+		// -- the previous `compare(0, 18, "max_volume_bounce ")`
+		// demanded a literal trailing SPACE, so every shipped scene
+		// (which tab-separates key and value, like every other param
+		// checked above) silently missed this line and always fell
+		// back to StabilityConfig's default, never reading the
+		// scene's own override.
+		static const char kVolKey[] = "max_volume_bounce";
+		if( t.compare( 0, sizeof(kVolKey) - 1, kVolKey ) == 0 ) {
+			volumeBounce = (unsigned int)std::strtoul( t.c_str() + sizeof(kVolKey) - 1, 0, 10 );
 		}
 	}
 
-	// A scene that names no depth gets the integrator default.
-	if( maxDepth == 0 ) maxDepth = bdptDflt.maxEyeDepth;
+	// A scene that names no depth gets ITS OWN rasterizer's default
+	// (or, if none was recognised, the conservative PT-sized bound).
+	(void)sawRasterizer;
+	if( maxDepth == 0 ) maxDepth = noDepthDefault;
 
 	// The walk loops saturate their iteration count at 1024.
 	unsigned int walk = maxDepth + volumeBounce;
