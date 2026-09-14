@@ -86,6 +86,51 @@ taking the maximum channel mean, and fail when a scattered ray has an invalid
 (non-finite, zero-length, or negative-throughput) contribution, or its
 aggregate overflows, before the mean is used as evidence.
 
+`OrenNayarHemisphericalAlbedoTest` (DL-07, 2026-09-14) regresses
+`OrenNayarBRDF::hemisphericalAlbedo{,NM}`, which used to return `Rd`
+verbatim (an over-estimate of ~10-27% depending on roughness against an
+independent double-hemisphere quadrature of the real BRDF) and now bakes
+the true bihemispherical `A1(sigma)/A2(sigma)` integrals of its own
+L1/L2 terms (`tools/OrenNayarHemisphericalAlbedoGen.cpp`). Coverage:
+reproduces the pre-fix directional-hemispherical bias at fixed incidence
+angles via the real `value()`; an independent brute-force bihemispherical
+double integral (different loop structure/resolution than the generator's
+own bake) gated at 1% absolute; the `valueNM`/`hemisphericalAlbedoNM`
+spectral twin; edge cases (sigma=0 exact Lambertian, monotonic decrease,
+constant extrapolation beyond the table's `kSigmaMax=3` domain); and a
+per-channel-roughness (`RGBScalarPainter`) case, since `value()` already
+reads a full per-channel `ScalarTriple` roughness that the pre-fix
+`hemisphericalAlbedo` silently ignored. `47 checks, 0 failures` post-fix
+(11 failures pre-fix, reproducing the ledger's measured bias). Downstream:
+`FabricMaterialChunkTest` gate 5(b)'s Oren-Nayar "substr%" column drops
+from up to ~17.8% to 0.002-0.005%; GGX's own `hemisphericalAlbedo` is a
+separate, still-open estimate and is now the dominant residual there.
+
+`SheenDirectionalAlbedoTest` gained two functions for DL-11 (2026-09-14):
+`TestMiddleBandInterpolationError` (a consistency pin against this file's
+own independent `BruteForceE`) and `TestMiddleBandFurnaceRho` (the real
+red-proof, via the actual `FabricBRDF` white-Lambertian furnace). Root
+cause: `SheenDirectionalAlbedo::E`'s cosTheta axis blended linearly in
+the WARPED POSITION `sqrt(mu)` between table nodes, which under-reads a
+concave region at low alpha near `kMinSheenAlpha`; fixed by blending in
+`log(mu)` instead (`CosThetaLogFrac`), matching what the alpha axis
+already does. Middle-band worst furnace rho: 1.007496 (+0.75%, matching
+CLOTH_FABRIC_DESIGN.md's own figure) pre-fix, RED at 1.006198 (+0.62%)
+against `TestMiddleBandFurnaceRho`'s own 0.6% gate, 1.004457 (+0.45%)
+post-fix. An independent table-free cross-check (brute-forced `E`
+everywhere, no interpolation at all, scratch probe) at the same point
+reads +0.54% -- i.e. most of the residual is the Kulla-Conty
+product-form's own inexactness ("energy-bounded, not
+energy-conserving"), not a table defect; the fix closes the fixable
+~0.2-0.3% share to ~0.09%. The exact `n.v == mu1` seam is a separate,
+LARGER instance of the same model-inherent property at low alpha
+(table-free cross-check: +1.54%), reported and loosely bounded (<5%,
+matching `LayeredWhiteFurnaceTest`'s own grazing posture) rather than
+chased further. Downstream: `FabricMaterialChunkTest`'s bit-exact
+`kFabricLockLambertian`/`kFabricLockWeaveNone` regression pins were
+re-captured (5th-6th-significant-digit drift from the corrected
+interpolation) -- 170/0.
+
 DL-37 makes the low-F0 Schlick rows 17 and 20 energy-bounded at all four
 angles (`rho <= 1.05`; loss is allowed), retaining their measured curves as
 inputs to the coated and fabric reference checks. Rows 54–56 extend that
