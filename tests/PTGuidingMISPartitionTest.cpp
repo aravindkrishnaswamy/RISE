@@ -115,7 +115,10 @@
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/PolishedSPF.h"
+#include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/Utilities/PathGuidingField.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
@@ -243,6 +246,179 @@ public:
 		GlobalLog()->PrintNew( pRetyped, __FILE__, __LINE__, "retyping SPF" );
 	}
 	ISPF* GetSPF() const override { return pRetyped; }
+};
+
+//////////////////////////////////////////////////////////////////////
+// Row (f)'s ONLY difference from row (a): this SPF's sampling density
+// depends on the IOR STACK it is handed.
+//
+// WHY THAT IS THE VARIABLE UNDER TEST.  The BSDF-sampling side of the
+// MIS pair evaluates the material's aggregate pdf against the LIVE
+// stack (`PTEvalPdfAtSurface(pSPF, ..., iorStack)`), while
+// `LightSampler`'s four NEE arms evaluate it against a
+// `static const IORStack defaultIOR(1.0)` sentinel.  For any material
+// whose pdf reads the stack the two `p_aggregate` values differ, and
+// the nominal MIS density built on top of them stops being ONE
+// function of direction -- the exact failure DL-74 exists to close.
+//
+// Production materials that read the stack in `Pdf()`:
+//   * `PolishedSPF::Pdf`   -- `ior_stack.top()` drives the Fresnel Rs
+//                             that weights its specular/diffuse lobe
+//                             mixture (PolishedSPF.cpp).
+//   * `TranslucentSPF::Pdf` -- `!ior_stack.containsCurrent()` selects
+//                             whether the geometric-horizon gate runs
+//                             (TranslucentSPF.cpp).
+// `RealMaterialStackPremise()` below asserts that dependence directly
+// on the production code, so this decorator is a controlled stand-in
+// for a measured behaviour, not a straw man.
+//
+// WHY A DECORATOR AND NOT `polished_material` ITSELF.  The furnace
+// target here is a CLOSED FORM (`L_out == L_env` for an albedo-1
+// surface under a constant environment), which needs a material whose
+// directional albedo is exactly 1.  Neither PolishedSPF nor
+// TranslucentSPF is exactly energy-conserving, so neither has a
+// closed-form furnace value, and their unguided readings cannot serve
+// as a reference either (a multi-lobe material's unguided escape side
+// stores the SELECTED lobe's pdf while NEE uses the aggregate -- the
+// separate, still-open DL-67 mismatch).  This decorator keeps the
+// albedo-1 Lambertian BRDF (so the closed form holds exactly) and
+// varies ONLY the stack-dependence of the sampling density.
+//
+// THE TWO LOBES, and why both are legitimate sampling densities:
+//   stack.top() <= 1.2 (the `defaultIOR` sentinel's value):
+//       delegate to the real LambertianSPF -- cosine hemisphere about
+//       the shading normal, pdf = cos/PI, kray = reflectance.
+//   stack.top() >  1.2 (inside the dielectric, the live stack):
+//       uniform over the hemisphere about a TILTED axis
+//       n' = normalize(N + kTilt*(0,1,0)), pdf = 1/(2*PI) inside that
+//       hemisphere and 0 outside it, kray = reflectance*2*max(0,cos).
+// MIS is unbiased for ANY valid sampling density, so the furnace still
+// reads L_env exactly once the two sides agree -- including over the
+// wedge where the tilted hemisphere does NOT cover the upper
+// hemisphere, where `p_aggregate` is legitimately 0 and DL-74's
+// documented "no BSDF-side partner exists, NEE takes the whole sample"
+// rule has to fire on both sides at once.
+//
+// The tilted lobe always emits exactly one ray (no horizon rejection):
+// a Scatter() that sometimes returns NOTHING would make PART 3 break
+// out before the guiding block and silently drop the guided half of
+// the one-sample mixture, which would bias the row for a reason that
+// has nothing to do with the stack.
+//////////////////////////////////////////////////////////////////////
+static const Scalar kStackAwareTilt = 1.0;
+static const Scalar kInsideIOR      = 1.5;
+
+class StackAwareSPF : public virtual ISPF, public virtual Reference
+{
+	const ISPF& real;
+	const IPainter& reflectance;
+
+	static bool Inside( const IORStack& stack ) { return stack.top() > 1.2; }
+
+	static Vector3 TiltedAxis( const RayIntersectionGeometric& ri )
+	{
+		const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO )
+			? -ri.onb.w() : ri.onb.w();
+		return Vector3Ops::Normalize(
+			n + Vector3( 0, kStackAwareTilt, 0 ) );
+	}
+
+	void ScatterTilted( const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRay& out ) const
+	{
+		const Vector3 axis = TiltedAxis( ri );
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( axis );
+
+		const Scalar u0 = sampler.Get1D();
+		const Scalar u1 = sampler.Get1D();
+		const Scalar z = u0;								// uniform in cos-free z
+		const Scalar r = std::sqrt( r_max( Scalar(0), Scalar(1) - z * z ) );
+		const Scalar phi = TWO_PI * u1;
+		const Vector3 dir = onb.Transform(
+			Vector3( r * std::cos( phi ), r * std::sin( phi ), z ) );
+
+		out.type = ScatteredRay::eRayDiffuse;
+		out.ray.Set( ri.ptIntersection, dir );
+		out.pdf = 1.0 / TWO_PI;
+		out.isDelta = false;
+	}
+
+	Scalar TiltedPdf( const RayIntersectionGeometric& ri, const Vector3& wo ) const
+	{
+		return Vector3Ops::Dot( wo, TiltedAxis( ri ) ) > 0 ? Scalar( 1.0 / TWO_PI ) : Scalar( 0 );
+	}
+
+	//! kray is the FULL throughput factor BSDF*cos/pdf (ISPF.h's
+	//! contract -- LambertianSPF's cosine-sampled kray is exactly the
+	//! reflectance for the same reason).
+	Scalar TiltedCosFactor( const RayIntersectionGeometric& ri, const Vector3& wo ) const
+	{
+		const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO )
+			? -ri.onb.w() : ri.onb.w();
+		const Scalar c = Vector3Ops::Dot( wo, n );
+		return c > 0 ? 2.0 * c : 0.0;
+	}
+
+protected:
+	~StackAwareSPF() override {}
+
+public:
+	StackAwareSPF( const ISPF& delegate, const IPainter& ref )
+		: real( delegate ), reflectance( ref ) {}
+
+	void Scatter( const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& rays, const IORStack& stack ) const override
+	{
+		if( !Inside( stack ) ) {
+			real.Scatter( ri, sampler, rays, stack );
+			return;
+		}
+		ScatteredRay s;
+		ScatterTilted( ri, sampler, s );
+		s.kray = reflectance.GetColor( ri ) * TiltedCosFactor( ri, s.ray.Dir() );
+		rays.AddScatteredRay( s );
+	}
+
+	void ScatterNM( const RayIntersectionGeometric& ri, ISampler& sampler, Scalar nm,
+		ScatteredRayContainer& rays, const IORStack& stack ) const override
+	{
+		if( !Inside( stack ) ) {
+			real.ScatterNM( ri, sampler, nm, rays, stack );
+			return;
+		}
+		ScatteredRay s;
+		ScatterTilted( ri, sampler, s );
+		s.krayNM = reflectance.GetColorNM( ri, nm ) * TiltedCosFactor( ri, s.ray.Dir() );
+		rays.AddScatteredRay( s );
+	}
+
+	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo,
+		const IORStack& stack ) const override
+	{
+		return Inside( stack ) ? TiltedPdf( ri, wo ) : real.Pdf( ri, wo, stack );
+	}
+
+	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, Scalar nm,
+		const IORStack& stack ) const override
+	{
+		return Inside( stack ) ? TiltedPdf( ri, wo ) : real.PdfNM( ri, wo, nm, stack );
+	}
+};
+
+class StackAwareLambertianMaterial : public LambertianMaterial
+{
+	StackAwareSPF* pStackAware;
+protected:
+	~StackAwareLambertianMaterial() override { safe_release( pStackAware ); }
+public:
+	StackAwareLambertianMaterial( const IPainter& ref )
+		: LambertianMaterial( ref )
+	{
+		pStackAware = new StackAwareSPF( *pSPF, ref );
+		GlobalLog()->PrintNew( pStackAware, __FILE__, __LINE__, "stack-aware SPF" );
+	}
+	ISPF* GetSPF() const override { return pStackAware; }
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -435,7 +611,14 @@ static Scalar RunBatch(
 	PathGuidingField* guide,
 	const RowConfig& cfg,
 	unsigned int nSamples,
-	unsigned int seedBase )
+	unsigned int seedBase,
+	// DL-74 P2 (round-3 review): when non-null, the walk starts INSIDE a
+	// dielectric -- this object is pushed onto the entry IORStack with
+	// ior 1.5, so `stack.top()` is 1.5 rather than the ambient 1.0.  The
+	// NEE arms' historical `IORStack(1.0)` sentinel therefore evaluates
+	// the material's aggregate pdf under a DIFFERENT stack than the
+	// escape side's `PTEvalPdfAtSurface(..., iorStack)` does.
+	const IObject* pEnclosing = 0 )
 {
 	PathTracingIntegrator* integrator =
 		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
@@ -480,6 +663,10 @@ static Scalar RunBatch(
 		hit.pMaterial = &material;
 
 		IORStack stack( 1.0 );
+		if( pEnclosing ) {
+			stack.SetCurrentObject( pEnclosing );
+			stack.push( 1.5 );
+		}
 
 		const RISEPel r = integrator->IntegrateFromHit(
 			rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
@@ -695,10 +882,361 @@ static void RunAreaLightRow()
 	whiteP->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+// PREMISE for row (f): production materials really do read the IOR
+// stack inside `Pdf()`, so the `IORStack(1.0)` sentinel the NEE arms
+// historically used is not equivalent to the live stack the escape
+// side uses.  Deterministic -- no sampling, no render.
+//////////////////////////////////////////////////////////////////////
+static void RealMaterialStackPremise()
+{
+	std::cout << "DL-74 P2 premise: a production material's aggregate Pdf reads the IOR stack"
+		<< std::endl;
+
+	const RasterizerState rast{};
+	StubObject* enclosing = new StubObject();
+	GlobalLog()->PrintNew( enclosing, __FILE__, __LINE__, "enclosing object" );
+
+	RayIntersectionGeometric ri( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
+	ri.bHit = true;
+	ri.range = 1;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( ri.vNormal );
+
+	IORStack ambient( 1.0 );
+	IORStack inside( 1.0 );
+	inside.SetCurrentObject( enclosing );
+	inside.push( kInsideIOR );
+
+	const Vector3 wo = Vector3Ops::Normalize( Vector3( 0.3, 0.2, 0.93 ) );
+
+	// PolishedSPF: ior_stack.top() feeds the Fresnel Rs that weights the
+	// specular-vs-diffuse lobe mixture its Pdf returns.
+	{
+		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		UniformScalarPainter* tau = new UniformScalarPainter( 1.0 );
+		UniformScalarPainter* nt = new UniformScalarPainter( 1.6 );
+		UniformScalarPainter* s = new UniformScalarPainter( 50000.0 );
+		PolishedSPF* spf = new PolishedSPF( *rd, *tau, *nt, *s, false );
+		GlobalLog()->PrintNew( spf, __FILE__, __LINE__, "polished spf" );
+
+		const Scalar pAmbient = spf->Pdf( ri, wo, ambient );
+		const Scalar pInside  = spf->Pdf( ri, wo, inside );
+		std::cout << "    PolishedSPF::Pdf  stack-top 1.0 -> " << pAmbient
+			<< " ,  stack-top " << kInsideIOR << " -> " << pInside << std::endl;
+		Check( std::fabs( (double)pAmbient - (double)pInside ) > 1e-6,
+			"premise: PolishedSPF::Pdf differs between the defaultIOR sentinel and the live stack" );
+
+		spf->release();
+		s->release();
+		nt->release();
+		tau->release();
+		rd->release();
+	}
+
+	// TranslucentSPF: `!ior_stack.containsCurrent()` selects whether the
+	// entry-only geometric-horizon gate runs.  The gate is only
+	// observable where the shading normal and the geometric normal
+	// disagree, so this probe tilts them apart -- exactly the horizon
+	// band the DL-74 review named.
+	{
+		RayIntersectionGeometric tilted( ri );
+		tilted.vNormal = Vector3Ops::Normalize( Vector3( 0.0, 0.6, 0.8 ) );
+		tilted.onb.CreateFromW( tilted.vNormal );
+		const Vector3 band = Vector3Ops::Normalize( Vector3( 0.0, 0.92, -0.02 ) );
+
+		UniformColorPainter* rf = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		UniformColorPainter* tr = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		UniformScalarPainter* ext = new UniformScalarPainter( 1.0 );
+		UniformScalarPainter* nn = new UniformScalarPainter( 10.0 );
+		UniformScalarPainter* sc = new UniformScalarPainter( 0.5 );
+		TranslucentSPF* spf = new TranslucentSPF( *rf, *tr, *ext, *nn, *sc );
+		GlobalLog()->PrintNew( spf, __FILE__, __LINE__, "translucent spf" );
+
+		// `containsCurrent()` is what the SPF reads, so the stack has to
+		// name the SHADING object as current in both probes; only its
+		// membership differs.
+		IORStack outsideT( 1.0 );
+		outsideT.SetCurrentObject( enclosing );
+		IORStack insideT( 1.0 );
+		insideT.SetCurrentObject( enclosing );
+		insideT.push( kInsideIOR );
+
+		const Scalar pOut = spf->Pdf( tilted, band, outsideT );
+		const Scalar pIn  = spf->Pdf( tilted, band, insideT );
+		std::cout << "    TranslucentSPF::Pdf  not-in-stack -> " << pOut
+			<< " ,  in-stack -> " << pIn << std::endl;
+		Check( std::fabs( (double)pOut - (double)pIn ) > 1e-6,
+			"premise: TranslucentSPF::Pdf differs between the defaultIOR sentinel and the live stack" );
+
+		spf->release();
+		sc->release();
+		nn->release();
+		ext->release();
+		tr->release();
+		rf->release();
+	}
+
+	enclosing->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row (f): the vertex is INSIDE a dielectric (entry IOR stack top
+// 1.5) and the material's aggregate pdf reads the stack.  The escape
+// side evaluates that pdf against the live stack; the NEE arms
+// evaluated it against `IORStack(1.0)`.  Same white furnace, same
+// closed form.
+//////////////////////////////////////////////////////////////////////
+static void RunIorStackRow()
+{
+	std::cout << "DL-74 P2: the two sides must evaluate p_aggregate under the SAME IOR stack"
+		<< std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "iorstack" ), "ior-stack fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const IRadianceMap* pGlobal = fx.pScene->GetGlobalRadianceMap();
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+	Check( pGlobal != 0 && pLS != 0, "ior-stack fixture has a radiance map and a LightSampler" );
+	if( !pGlobal || !pLS ) return;
+	const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+	Check( pES != 0 && pES->IsValid(), "ior-stack fixture has a valid EnvironmentSampler" );
+	if( !pES || !pES->IsValid() ) return;
+
+	const RasterizerState rast{};
+	const Ray probe( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+	const Scalar Lenv = ColorMath::MaxValue( pGlobal->GetRadiance( probe, rast ) );
+	if( Lenv <= 0 ) { Check( false, "ior-stack fixture env radiance is positive" ); return; }
+
+	UniformColorPainter* whiteP = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( whiteP, __FILE__, __LINE__, "white" );
+	StackAwareLambertianMaterial* stackMat = new StackAwareLambertianMaterial( *whiteP );
+	GlobalLog()->PrintNew( stackMat, __FILE__, __LINE__, "stack-aware furnace material" );
+	StubObject* enclosing = new StubObject();
+	GlobalLog()->PrintNew( enclosing, __FILE__, __LINE__, "enclosing dielectric" );
+
+	PathGuidingField* guide = BuildSkewedField(
+		Point3( 0, 0, 0 ), Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) ) );
+	Check( guide->IsTrained(), "(f) skewed guiding field is trained" );
+
+	const unsigned int kN = 160000;
+
+	// Control: the SAME material and the SAME entry stack with guiding
+	// OFF.  The blend never runs, so nothing in this row's fix is
+	// engaged -- it proves the tilted-lobe SPF itself is an unbiased
+	// albedo-1 estimator and the closed form is reachable.
+	{
+		RowConfig cfg{ "(f) control", false, false, false, eGuidingOneSampleMIS, 0.0 };
+		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 8000, enclosing );
+		CheckRel( m, Lenv, 0.015,
+			"(f) CONTROL stack-aware material inside a dielectric, guiding OFF: furnace reads L_env" );
+	}
+
+	{
+		RowConfig cfg{ "(f)", false, false, false, eGuidingOneSampleMIS, 0.5 };
+		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 9000, enclosing );
+		CheckRel( m, Lenv, 0.015,
+			"(f) stack-aware material inside a dielectric, guiding ON: furnace reads L_env" );
+	}
+
+	guide->release();
+	enclosing->release();
+	stackMat->release();
+	whiteP->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row (g): the SHADER-OP BOUNDARY.
+//
+// `RayCaster`'s volume phase-scatter continuation is the one producer
+// that sets the two `RAY_STATE` pdf fields to DIFFERENT values:
+// `bsdfPdf = effectivePdf` (the guided mixture the direction was drawn
+// from -- the training denominator) and `bsdfMisPdf = phasePdf` (the
+// raw density env-NEE and area-NEE at a volume vertex weight against,
+// DL-73's ruling).  When that continuation hits an EMISSIVE SURFACE it
+// leaves `RayCaster` through the shader dispatch --
+// `PathTracingShaderOp::PerformOperation` -> `IntegrateFromHit` -> the
+// PART 1 emitter-hit MIS weight.  If the boundary forwards `bsdfPdf`
+// instead of `MisPartnerPdf()`, that weight is built from the guided
+// combined pdf while the volume vertex's own area-NEE arm weighted
+// against the raw phase pdf, and the pair stops summing to one.
+//
+// THE INVARIANT.  Path guiding changes only the SAMPLING distribution;
+// a correct estimator's EXPECTATION is identical with it on and off.
+// So the guiding-off reading of this fixture is the reference, and it
+// needs no closed form -- which matters here, because a conservative
+// medium's multiple scattering has no closed form at this optical
+// depth.  (The guiding-off arm has no partition asymmetry of its own
+// to worry about: with guiding off the producer sets both fields to
+// `phasePdf`, exactly what the NEE arm uses.)
+//////////////////////////////////////////////////////////////////////
+static std::string VolumeAreaLightScene()
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\n\tname pnt_density\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_luminaire_material\n{\n\tname emitter\n\texitance white\n"
+		"\tscale 4.0\n\tmaterial none\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname lightball\n\tradius " << kSphereRadius << "\n}\n"
+		"\n"
+		"standard_object\n{\n\tname light_object\n\tgeometry lightball\n"
+		"\tmaterial emitter\n\tposition 0 0 " << kSphereDist << "\n}\n"
+		"\n"
+		"painter_heterogeneous_medium\n{\n"
+		"\tname fog\n"
+		"\tabsorption 0.02 0.02 0.02\n"
+		"\tscattering 0.05 0.05 0.05\n"
+		"\tphase isotropic\n"
+		"\tdensity_painter pnt_density\n"
+		"\tresolution 4\n"
+		"\tcolor_to_scalar luminance\n"
+		"\tbbox_min -20 -20 -20\n"
+		"\tbbox_max 20 20 20\n"
+		"}\n"
+		"\n"
+		"global_medium\n{\n\tmedium fog\n}\n"
+		"\n"
+		// DefaultPathTracing (not DefaultDirectLighting): the emitter hit
+		// this row measures is weighted inside PathTracingShaderOp ->
+		// IntegrateFromHit, which is the boundary under test.
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n"
+		"\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n"
+		"\toidn_denoise FALSE\n\tmax_recursion 3\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 -3\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n"
+		"\n";
+	return ss.str();
+}
+
+//! A trained VOLUME guiding field whose incident-radiance estimate is
+//! concentrated about `axis` at every scatter position along the probe
+//! ray, so `SampleVolume`/`PdfVolume` differ from the isotropic phase
+//! pdf by orders of magnitude.  Surface samples are deposited too so
+//! the field trains both distributions from one storage pass (the
+//! surface half is never queried here -- the only surface in the scene
+//! is a pure luminaire).
+static PathGuidingField* BuildSkewedVolumeField( const Vector3& axis )
+{
+	PathGuidingConfig config;
+	config.enabled = true;
+	PathGuidingField* guide = new PathGuidingField( config,
+		Point3( -22, -22, -22 ), Point3( 22, 22, 22 ) );
+	GlobalLog()->PrintNew( guide, __FILE__, __LINE__, "skewed volume guiding field" );
+
+	guide->BeginTrainingIteration();
+	const unsigned int kPositions = 48;
+	const unsigned int kDirs = 512;
+	for( unsigned int p = 0; p < kPositions; ++p ) {
+		const Point3 at( 0, 0, -20.0 * ( p + 0.5 ) / kPositions );
+		for( unsigned int i = 0; i < kDirs; ++i ) {
+			const Scalar z = -1 + 2 * ( i + 0.5 ) / kDirs;
+			const Scalar phi = i * 2.399963229728653;
+			const Scalar r = std::sqrt( r_max( Scalar(0), Scalar(1) - z * z ) );
+			const Vector3 dir( r * std::cos( phi ), r * std::sin( phi ), z );
+			const Scalar c = Vector3Ops::Dot( dir, axis );
+			const Scalar lum = c > 0 ? std::pow( (double)c, 16.0 ) : 0.0;
+			if( lum <= 1e-9 ) {
+				guide->AddZeroValueVolumeSample( at, dir );
+				guide->AddZeroValueSample( at, dir );
+			} else {
+				guide->AddVolumeSample( at, dir, 1.0, 1 / ( 4 * PI ), lum, false );
+				guide->AddSample( at, dir, 1.0, 1 / ( 4 * PI ), lum, false );
+			}
+		}
+	}
+	guide->EndTrainingIteration();
+	return guide;
+}
+
+static Scalar RunVolumeBatch(
+	const Fixture& fx,
+	PathGuidingField* guide,
+	Scalar alpha,
+	unsigned int nSamples,
+	unsigned int seedBase )
+{
+	const RasterizerState rast{};
+	Scalar sum = 0;
+
+	for( unsigned int s = 0; s < nSamples; ++s ) {
+		RandomNumberGenerator rng( seedBase + s );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		if( alpha > 0 ) {
+			rc.pGuidingField = guide;
+			rc.guidingAlpha = alpha;
+			rc.guidingLearnedAlpha = false;
+			rc.maxGuidingDepth = 4;
+			rc.guidingSamplingType = eGuidingOneSampleMIS;
+		}
+
+		IRayCaster::RAY_STATE rs;
+		rs.depth = 0;
+		rs.importance = 1.0;
+		rs.considerEmission = true;
+		rs.type = IRayCaster::RAY_STATE::eRayDiffuse;
+
+		// Pointed AWAY from the emitter: the unscattered ray hits nothing
+		// and the fixture has no radiance map, so every unit of the
+		// measured radiance came through a volume scatter event.
+		const Ray ray( Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ) );
+
+		RISEPel c( 0, 0, 0 );
+		Scalar dist = 0;
+		fx.pCaster->CastRay( rc, rast, ray, c, rs, &dist, 0 );
+		sum += ColorMath::MaxValue( c );
+	}
+
+	return sum / nSamples;
+}
+
+static void RunVolumeEmitterRow()
+{
+	std::cout << "DL-74 P1: the volume vertex's MIS partner must survive the shader-op boundary"
+		<< std::endl;
+
+	Fixture fx;
+	Check( fx.Build( VolumeAreaLightScene(), "volemit" ), "volume+emitter fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	Check( fx.pScene->GetGlobalRadianceMap() == 0,
+		"volume+emitter fixture has NO env map (so only the area-light MIS pair is exercised)" );
+	Check( fx.pScene->GetGlobalMedium() != 0, "volume+emitter fixture has a global medium" );
+
+	PathGuidingField* guide = BuildSkewedVolumeField( Vector3( 0, 0, 1 ) );
+	Check( guide->IsTrained(), "(g) skewed volume guiding field is trained" );
+	Check( guide->GetLastAddedVolumeSampleCount() > 0,
+		"(g) the field really received VOLUME training samples" );
+
+	const unsigned int kN = 120000;
+
+	const Scalar reference = RunVolumeBatch( fx, guide, 0.0, kN, 11000 );
+	Check( reference > 0, "(g) the unguided volumetric reading is positive" );
+	const Scalar guided = RunVolumeBatch( fx, guide, 0.9, kN, 11000 );
+
+	std::cout << "    (g) unguided " << reference << " , guided " << guided << std::endl;
+	CheckRel( guided, reference, 0.03,
+		"(g) volume vertex + trained volume guiding + area emitter: guiding does not change the expectation" );
+
+	guide->release();
+}
+
 static void Run()
 {
 	RunEnvRows();
 	RunAreaLightRow();
+	RealMaterialStackPremise();
+	RunIorStackRow();
+	RunVolumeEmitterRow();
 }
 
 #else
