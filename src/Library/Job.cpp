@@ -3886,6 +3886,39 @@ static IScalarPainter* ResolveOrDiagnoseScalar(
 	if( requireSingle && smgr ) {
 		IScalarPainter* named = smgr->GetItem( value );
 		if( named && named->HasPerChannelVariation() ) {
+			// DL-29: distinguish a per-channel painter whose triple was
+			// AUTHORED channel-by-channel (an `r g b` triple, a
+			// `scalar_painter { values ... }`) from one whose triple is
+			// a SPECTRAL SAMPLING of a single authored curve (a
+			// `scalar_painter { file ... }`, sampled at
+			// `ScalarPainterRGB::kChannelNM`).  The first is an
+			// authoring mistake and stays a hard error.  The second is
+			// not: such a binding LOADED before the curve's triple
+			// became per-channel (it resolved to one representative
+			// wavelength), several shipped material slots take it
+			// (`coated_material`'s coat_*, `subsurfacescattering_material`
+			// / `randomwalk_sss_material` / `hair_material`'s `ior`,
+			// `weave_material`'s warp/weft_ior and siblings,
+			// `fabric_material`'s sheen_roughness / weave_rotation,
+			// `generichumantissue_material`'s g / sca), and hard-failing
+			// them would break those scenes for no physical reason.
+			// Bind a single-scalar view instead: same curve through
+			// `GetValueAtNM` (the spectral renderers see NO change),
+			// green (549 nm) sample through `GetValuesAt`, so the slot's
+			// `.v[0]` read is a named wavelength rather than whichever
+			// channel happens to sit first.
+			IScalarPainter* view = named->MakeSingleScalarSlotView();
+			if( view ) {
+				// Freshly allocated at refcount 1, owned by this caller
+				// exactly like every `RISE_API_Create*ScalarPainter`
+				// return above.
+				GlobalLog()->PrintNew( view, __FILE__, __LINE__, "single-scalar-slot scalar painter view" );
+				GlobalLog()->PrintEx( eLog_Warning,
+					"%s `%s`: parameter `%s` is bound to spectral-curve scalar_painter `%s`, but this slot reads a single scalar \xE2\x80\x94 using the curve at %g nm for RGB rendering; the spectral rasterizers still evaluate the full curve.",
+					chunkKind, chunkName, paramName, value,
+					double( ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] ) );
+				return view;
+			}
 			GlobalLog()->PrintEx( eLog_Error,
 				kScalarBoundToPerChannelFmt,
 				chunkKind, chunkName, paramName, value );

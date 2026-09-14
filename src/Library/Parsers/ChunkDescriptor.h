@@ -63,7 +63,9 @@ namespace RISE
 		"ChunkParser:: Failed to parse parameter name `%s` (not declared in `%s` descriptor)";
 	inline constexpr const char* const kScalarBoundToPerChannelFmt =
 		"%s `%s`: parameter `%s` is bound to per-channel scalar_painter `%s`, but this slot reads "
-		"a single scalar \xE2\x80\x94 use a wavelength-uniform painter (`value` or `file` / `sellmeier` / etc.) instead.";
+		"a single scalar \xE2\x80\x94 use a wavelength-uniform painter (`value` / `sellmeier` / "
+		"`polynomial` / etc.), or a spectral-curve painter (`file`, or a `scale`/`multiply`/`add` "
+		"composite over one) \xE2\x80\x94 those resolve through a single-scalar view instead of this error.";
 	inline constexpr const char* const kScalarBoundToIPainterFmt =
 		"%s `%s`: parameter `%s` is bound to `IPainter` chunk `%s`; this slot now requires a "
 		"`scalar_painter` (physical scalar, no JH spectral uplift).  See docs/ISCALARPAINTER_REFACTOR.md.";

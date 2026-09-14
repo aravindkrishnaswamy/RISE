@@ -79,6 +79,41 @@ namespace RISE
 				return ( pA && pA->HasPerChannelVariation() ) ||
 				       ( pB && pB->HasPerChannelVariation() );
 			}
+
+			//! DL-09/precision-slice P2-1: forward the single-scalar-slot
+			//! view through the composite (see ScaledScalarPainter.h's
+			//! sibling comment for the full rationale). Only an operand
+			//! that ITSELF varies per-channel needs its own view -- an
+			//! operand that doesn't is used as-is. Returns `nullptr` if
+			//! either present, per-channel-varying operand has no view
+			//! of its own.
+			IScalarPainter* MakeSingleScalarSlotView() const override
+			{
+				if( !pA && !pB ) return nullptr;
+
+				bool ownsA = false;
+				IScalarPainter* va = pA;
+				if( pA && pA->HasPerChannelVariation() ) {
+					va = pA->MakeSingleScalarSlotView();
+					if( !va ) return nullptr;
+					ownsA = true;
+				}
+				bool ownsB = false;
+				IScalarPainter* vb = pB;
+				if( pB && pB->HasPerChannelVariation() ) {
+					vb = pB->MakeSingleScalarSlotView();
+					if( !vb ) {
+						if( ownsA ) va->release();
+						return nullptr;
+					}
+					ownsB = true;
+				}
+
+				IScalarPainter* view = new MultiplyScalarPainter( va, vb );
+				if( ownsA ) va->release();
+				if( ownsB ) vb->release();
+				return view;
+			}
 		};
 	}
 }

@@ -405,6 +405,44 @@ namespace {
 		return true;
 	}
 
+	//! DL-10: Jacobian of the map v -> normalize(Stretch(pixelAR,1,1) * v),
+	//! restricted to the unit sphere's tangent planes -- i.e. world-space
+	//! solid angle per unit of the UN-stretched local solid angle that
+	//! `pixelSolidAngle` below measures.
+	//!
+	//! `GenerateRay` builds the local hemisphere point v = (x, y,
+	//! sqrt(1-r^2)) and sends the world direction through
+	//! `Normalize(Transform(mxTrans, v))`, where mxTrans's 3x3 part is
+	//! R * Stretch(pixelAR,1,1) for a rotation R.  Since R is orthonormal,
+	//! Normalize(R*u) = R*Normalize(u), so the stretch-then-normalize step
+	//! happens entirely in the PRE-rotation frame and rotation alone does
+	//! not change solid angle.  For an invertible linear map A applied to
+	//! a unit vector v and renormalized (n = Av/|Av|), the standard result
+	//! (used identically for a uniform-sphere sample warped by a linear
+	//! transform, e.g. GGX's stretch-invariant sampling) is that the
+	//! solid-angle Jacobian of v -> n is |det(A)| / |Av|^3.  Here
+	//! A = diag(pixelAR, 1, 1), so det(A) = pixelAR.
+	//!
+	//! `v` must already be the UNIT local hemisphere point (what
+	//! `FisheyeWorldToLocal` returns) -- `Optics`-style callers never need
+	//! to renormalize it first, since `FisheyeWorldToLocal` recovers v
+	//! EXACTLY regardless of pixelAR (the two normalize divisions in the
+	//! forward map and its inverse cancel algebraically).
+	//!
+	//! At `pixelAR == 1` this is exactly 1 (A is the identity); special-
+	//! cased so the ubiquitous square-pixel path stays bit-identical to
+	//! the pre-fix formula rather than 1.0 recovered via division by a
+	//! floating-point |Av| that may not be EXACTLY 1.
+	static inline Scalar FisheyeStretchJacobian( const Scalar pixelAR, const Vector3& v )
+	{
+		if( pixelAR == Scalar( 1 ) ) {
+			return Scalar( 1 );
+		}
+		const Scalar sx = pixelAR * v.x;
+		const Scalar sMagSq = sx * sx + v.y * v.y + v.z * v.z;
+		return pixelAR / ( sMagSq * sqrt( sMagSq ) );
+	}
+
 	static Scalar ImportanceFisheye(
 		const FisheyeCamera& cam,
 		const Ray& ray )
@@ -414,7 +452,10 @@ namespace {
 		// The solid angle per pixel depends on the cos of the angle
 		// from the optical axis:
 		//   d(omega)/d(pixel) = scale^2 / (W * H * cosAngle)
-		// We = 1 / (d(omega)/d(pixel) * W * H)
+		// That is the solid angle in the PRE-STRETCH local frame; the
+		// world-space solid angle folds in FisheyeStretchJacobian (DL-10)
+		// on top of it, exactly 1 at pixelAR == 1.
+		// We = 1 / (d(omega_world)/d(pixel) * W * H)
 
 		const Matrix4 mxInv = Matrix4Ops::Inverse( cam.GetMatrix() );
 		const Vector3 localDir = FisheyeWorldToLocal( mxInv, ray.Dir() );
@@ -438,15 +479,21 @@ namespace {
 			return 0.0;
 		}
 
-		return 1.0 / (pixelSolidAngle * width * height);
+		const Scalar jacobian = FisheyeStretchJacobian( cam.GetPixelAR(), localDir );
+		if( jacobian < NEARZERO ) {
+			return 0.0;
+		}
+
+		return 1.0 / (pixelSolidAngle * jacobian * width * height);
 	}
 
 	static Scalar PdfDirectionFisheye(
 		const FisheyeCamera& cam,
 		const Ray& ray )
 	{
-		// PDF over solid angle for one pixel:
-		// p(omega) = 1 / pixelSolidAngle
+		// PDF over WORLD solid angle for one pixel:
+		// p(omega_world) = 1 / (pixelSolidAngle_local * jacobian)
+		// (DL-10; see ImportanceFisheye and FisheyeStretchJacobian above)
 
 		const Matrix4 mxInv = Matrix4Ops::Inverse( cam.GetMatrix() );
 		const Vector3 localDir = FisheyeWorldToLocal( mxInv, ray.Dir() );
@@ -470,7 +517,12 @@ namespace {
 			return 0.0;
 		}
 
-		return 1.0 / pixelSolidAngle;
+		const Scalar jacobian = FisheyeStretchJacobian( cam.GetPixelAR(), localDir );
+		if( jacobian < NEARZERO ) {
+			return 0.0;
+		}
+
+		return 1.0 / (pixelSolidAngle * jacobian);
 	}
 
 	//////////////////////////////////////////////////////////////////////////

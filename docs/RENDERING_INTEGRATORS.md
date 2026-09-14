@@ -757,16 +757,20 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   fold to get wrong.  Pinned by
   `tests/CameraImportanceTest.cpp::TestFisheyeFilmResponse`, which
   integrates a unit-radiance sphere to 1.000166 against the closed
-  form 1.  One narrower, PRE-EXISTING and UNFIXED issue was found
-  there: the fisheye's pixel solid angle `scale²/(W·H·cosAngle)` is
-  measured in the camera's pre-stretch local frame while `mxTrans`
-  applies `Stretch(pixelAR,1,1)` to the direction, so at
-  `pixelAR != 1` the world-space solid angle per pixel differs by a
-  direction-dependent Jacobian.  It is not debt 28's missing aperture
-  sample (the thin lens carried the constant-factor version of the
-  same thing, which this arc did fix); no in-tree scene pairs a
-  fisheye with non-square pixels, and a correct fix needs the full
-  Jacobian of `normalize ∘ Stretch`, not a constant.
+  form 1.  One narrower issue was found there, filed as **DL-09-adjacent
+  DL-10** (docs/DEBT_LEDGER.md) and **CLOSED 2026-09-14**: the fisheye's
+  pixel solid angle `scale²/(W·H·cosAngle)` was measured in the camera's
+  pre-stretch local frame while `mxTrans` applies `Stretch(pixelAR,1,1)`
+  to the direction, so at `pixelAR != 1` the world-space solid angle per
+  pixel differed from the formula by a direction-dependent Jacobian.  It
+  was not debt 28's missing aperture sample (the thin lens carried the
+  constant-factor version of the same thing, which this arc did fix).
+  Fixed by folding `FisheyeStretchJacobian(pixelAR, v) =
+  pixelAR / |Stretch(pixelAR,1,1)·v|³` (the standard linear-map-then-
+  renormalize solid-angle Jacobian) into `ImportanceFisheye` /
+  `PdfDirectionFisheye` (`CameraUtilities.cpp`); `TestFisheyeFilmResponse`
+  now runs at pixelAR ∈ {0.5, 1.0, 2.0} and converges to the closed form
+  1 at all three (red-proof pre-fix: 0.554694 / 1.511822 at 0.5 / 2.0).
 
   **NEW, OPEN, and a direct consequence of this fix —
   `SignalIntegratorConsistencyTest`'s tidal MASKED BDPT row became

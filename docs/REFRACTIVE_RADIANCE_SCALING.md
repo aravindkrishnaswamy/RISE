@@ -8,7 +8,10 @@ IMPORTANCE-mode walks (light subpaths, photon tracers, SMS photon seeds,
 detector-sphere rigs) deliberately do not.
 
 Guard: [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp)
-(38 checks, ~27 s), plus `VCMStrategyBalanceTest` topology H (the red row)
+(38 checks, ~27 s),
+[`tests/RadianceEtaScaleGradedIndexTest.cpp`](../tests/RadianceEtaScaleGradedIndexTest.cpp)
+(10 checks — the spatially-varying-`ior` invariant, §10.2), plus
+`VCMStrategyBalanceTest` topology H (the red row)
 and `BDPTStrategyBalanceTest` topology J (the cancellation pin). Review
 round 2 (2026-09-12) added `VCMStrategyBalanceTest` topology I and
 `BDPTStrategyBalanceTest` topology K, a consistency pin on the same
@@ -620,32 +623,142 @@ for source evidence, geometry controls, executed eta mutations and gate
 counters. The closure pins the absence of an unmatched factor; it does not
 claim exact SSS energy conservation or spectral/non-air material equality.
 
-### 10.2 Named residual: spatially-varying `ior` mismatch (review round 2)
+### 10.2 Named residual: spatially-varying `ior` — the INTERIOR-VERTEX gather AND the DielectricSPF exit-hit Snell trace (review round 2; re-scoped 2026-09-14; widened M→L round 3, same day, DL-09)
 
-`RadianceEtaScale` (`Utilities/IORStack.h`) reads only `before.top()` and
-`after->top()` — the values recorded on the IOR stack at push/pop time.
-`DielectricSPF` and `PerfectRefractorSPF` instead price their own
+`RadianceEtaScale` (`Utilities/IORStack.h`) reads only `before.top()`
+and `after->top()` — the values recorded on the IOR stack at push/pop
+time — while `DielectricSPF` and `PerfectRefractorSPF` price their own
 Fresnel/Snell calculation with the `ior` painter's value FRESHLY
 RE-FETCHED at the current hit (`DielectricSPF.cpp` ~line 384
 `pRIndex->GetValuesAt(ri)`; the equivalent `newIOR` parameter shape in
-`PerfectRefractorSPF.cpp`). For a spatially UNIFORM `ior` painter (every
-scene in this document's measurements, and every canonical SMS/dielectric
-test scene in the tree) those two reads are the same number and the
-distinction is invisible. For an `ior` bound to a spatially-varying
-`IScalarPainter` — a graded-index object, or any procedural `ior` texture
-— the ENTRY hit's pushed value and the EXIT (or an interior bounce's)
-freshly-fetched value can differ, and this helper's throughput factor
-would then be computed from a different index than the one the SPF's own
-Fresnel transmittance was priced against. A full entry-to-exit trip
-still telescopes to the physically correct net factor (the same
-mismatched entry value cancels against itself at the matching exit), so
-this is NOT a bug for the ordinary "object seen from outside, light
-outside too" case documented as CORRECT above — it is a residual only for
-contributions gathered at a vertex INSIDE such an object (an NEE
-connection or a bounce before the walk exits). No scene or test in the
-tree currently uses a spatially-varying `ior` painter, so this is
-unexercised, not measured to be wrong. Full detail in the
-`RadianceEtaScale` doc comment (`IORStack.h`).
+`PerfectRefractorSPF.cpp`). For a spatially UNIFORM `ior` painter those
+two reads are the same number and the distinction is invisible; for an
+`ior` bound to a spatially-varying `IScalarPainter` (a graded-index
+object, or any procedural `ior` texture), the EXIT hit's fresh value
+differs from the stack's entry-time value `before.top()` read instead.
+
+**Substituting the fresh exit value ALONE is NOT the fix.** That was
+implemented on 2026-09-14 and reverted the same day. §1's basic radiance
+`L / n²` is conserved in TWO places — across an interface AND *along the
+ray inside a medium whose index varies with position* — and RISE applies
+no interior-segment factor at all. Write `n_A` for the index at the
+entry point and `n_B` for the index at the exit point of one graded
+object. The physical account of a camera(air) → A → B → air trip is
+
+```
+entry crossing      (1 / n_A)²
+interior segment    (n_A / n_B)²      <-- RISE never applies this
+exit crossing       (n_B / 1)²
+                    -------------
+net                  1
+```
+
+and RISE's actual account is `(1/n_A)² · (n_A/1)² = 1` — the same net,
+because the "stale" `n_A` at the exit read is exactly the product of the
+missing interior-segment factor and the true exit factor. The mismatch
+and the omission cancel. Reading the fresh `n_B` at the exit *without*
+adding the interior-segment factor turns that net 1 into `(n_B/n_A)²`:
+on the reverted slice's own fixture (a passive, lossless slab, `ior`
+1.2 at the entry face and 1.8 at the exit face) it read 0.652746 where
+the physics is `L·T1·T2 = 0.289909` — an emitter behind a slab that
+neither emits nor absorbs, 2.25× brighter than the emitter.
+`tests/RadianceEtaScaleGradedIndexTest.cpp` now pins the correct net
+(PT and BDPT both 0.290109, ratio 1.00069) and asserts explicitly
+against the 2.25× value.
+
+**The two halves of the real fix must land TOGETHER — neither alone is
+correct.** The genuine defect is the *missing interior-segment factor*,
+and the principled fix is `(n_prev / n_C)²` applied along the walk each
+time it advances to a new point inside a spatially-varying-`ior` medium
+without a scatter event to hang the factor on. But that factor's
+partner is the exit crossing's OWN read: today the exit crossing gets
+its `(n_B/1)²` for free, for the wrong reason, by `RadianceEtaScale`
+reading the STALE `before.top()` (`n_A`) instead of the SPF's freshly
+re-fetched exit value (`n_B`). Add the interior factor `(n_A/n_B)²`
+while leaving that stale read untouched and the walk now double-charges
+the entry-to-exit segment: `(1/n_A)² · (n_A/n_B)² · (n_A/1)² =
+(n_A/n_B)²` — **0.444** at this document's 1.2 → 1.8 fixture, the
+MIRROR IMAGE of the 2.25× regression above (a mirror image, not its
+inverse by coincidence: both wrong answers are `(n_B/n_A)²` and
+`(n_A/n_B)²`, i.e. reciprocals of each other, because both come from
+applying exactly one of the two changes instead of both). Only pairing
+the interior factor with switching the exit's own read to the fresh
+`n_B` restores the net: `(1/n_A)² · (n_A/n_B)² · (n_B/1)² = 1` on any
+completed through-trip — which is exactly why
+`RadianceEtaScaleGradedIndexTest`'s through-slab pin stays green whether
+or not this fix has landed, and why the only place the fix is actually
+*visible* is a gather that never reaches the exit event at all (below).
+A fix that implements the interior factor but leaves the exit-read
+"not a substitution" per an earlier, overly literal reading of this
+section is therefore **itself a regression** — silent on this file's
+own through-path test, wrong on any interior gather.
+
+**A prerequisite the fix needs and does not yet have: `n_C` is
+UNDEFINED, in RISE's model, for most painter forms.**
+`IScalarPainter::GetValuesAt` (and `GetValueAtNM`) take a
+`RayIntersectionGeometric` — a hit record on the painter's own object's
+surface (UV coordinates, geometric/shading normal, world position of
+that SURFACE point). An interior gather vertex C is, by construction,
+NOT a surface hit — there is no ray/object intersection to build that
+record from. A world-position-only form (`ExpressionPainter` reading
+only `P`, no `u`/`v`) is fine: it needs nothing but C's coordinates. Any
+UV-driven form — `TextureScalarPainter`, `Function2DScalarPainter`, the
+measured-curve painters when composed with a UV lookup, an
+`ExpressionPainter` that reads `u`/`v` — has no defined value at C, because
+C was never rasterized against the object's parameterization. The
+"principled fix" above is therefore incomplete as stated: it needs
+either a restriction (graded-`ior` authoring limited to world-position
+expressions) or a genuine interior-point query mode on `IScalarPainter`,
+not just a walk-side multiply.
+
+**A second, independent inconsistency at the SAME site — widens this
+row's scope.** `DielectricSPF::GenerateScatteredRay`'s exit branch
+(`bFromInside`, ~lines 179-198) computes the exit ray's DIRECTION and
+its TIR classification via
+`Optics::CalculateRefractedRay(-ri.onb.w(), rIndex, exitIOR, refracted)`
+where `rIndex` is the painter's value freshly re-fetched AT THIS EXIT
+HIT (`n_B`) and `exitIOR` is the popped stack's underlying medium. But
+the IOR stack's own tracked model believes the ray has been travelling
+in `n_A` (the entry-time value) the entire way through the object,
+because nothing updates it along the walk — that is the same "no
+interior-segment factor" gap this section is about, now showing up in
+the SPF's own Snell trace rather than in radiance accounting. Direction
+and TIR classification are therefore computed for a medium the walk's
+own model says the ray never travelled in. Concretely, at this
+document's 1.2 → 1.8 fixture: the TRACED medium (`n_A` = 1.2) has a
+critical angle of 56.4°, but the exit computation Snell-tests against
+`n_B` = 1.8, whose critical angle is 33.7° — so an incidence angle
+between 33.7° and 56.4° is classified TOTAL INTERNAL REFLECTION by the
+SPF's own fresh-value test, even though, per the walk's own tracked
+account, the ray was never inside a medium dense enough to trap it
+there. This is not the radiance-scaling bug above, but it is the same
+root cause (no interior-segment update along a graded-index walk) and
+it lives at the same call site, so DL-09's scope widens from **M to
+L**: fixing `RadianceEtaScale` alone leaves the ray's own geometry
+wrong at the same exit hit.
+
+**Not user-visible today.** No in-tree scene binds a position-dependent
+`ior`: the only `scalar_painter` bound to an `ior`
+(`scenes/Tests/GUI/panel_stress_params.RISEscene:232`) is three
+per-channel constants combined algebraically, with no `P` term.
+
+**Recipe.** Build the graded slab of
+`tests/RadianceEtaScaleGradedIndexTest.cpp` but place a diffuse gather
+target INSIDE it (or turn the slab's `scattering` down so the walk
+scatters non-deltaically at an interior vertex), and compare against a
+piecewise-uniform reference: the same object modelled as N concentric
+shells of CONSTANT `ior` stepping between `n_A` and `n_B`, where every
+shell boundary is a real interface and RISE's per-crossing factor is
+therefore already correct by construction. The graded render must
+converge to the multi-shell render as N grows; today it will not, by
+`(n_C/n_A)²` at the gather vertex. Implement the interior-segment factor
+AND the exit-read switch TOGETHER (see above — either alone fails this
+file's own through-slab pin, in opposite directions), restrict the
+fixture's `ior` painter to a world-position-only expression (`n_C` is
+undefined otherwise — see above), and extend the same pass to make
+`DielectricSPF`'s exit-hit Snell test (direction + TIR) consistent with
+whatever medium the walk's own model now tracks at that point, rather
+than the raw fresh painter sample.
 
 ### ~~10.3 Named residual: `TranslucentSPF` guided-direction IOR-stack leak~~ CLOSED 2026-09-12 — `8a9bdb18`, `TranslucentIORStackTest: ALL TESTS PASSED`
 
