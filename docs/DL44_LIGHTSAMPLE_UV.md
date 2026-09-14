@@ -26,11 +26,13 @@ default-construct its `ptCoord` to — `(0,0)` — regardless of where
   itself a `RayIntersectionGeometric` but is later rebuilt into one by
   `PathVertexEval::PopulateRIGFromVertex` at every consumer of that
   vertex — `LuminaryRadiance<Tag>` (BDPT's own s=0/t=1 splat and every
-  s=1 connection strategy that reaches the light via `ConnectAndEvaluate`)
-  and VCM's own light-to-camera splat (`SplatLightSubpathToCameraImpl`,
-  which skips `i==0`/`LIGHT`-typed vertices for splatting but reuses the
-  same generated subpath's root for `EvaluateS0Impl`'s s=0-side accounting
-  and for any interior connection reaching back to it).
+  s=1 connection strategy that reaches the light via `ConnectAndEvaluate`).
+  VCM is NOT reached through this vertex: `SplatLightSubpathToCameraImpl`
+  skips `i==0`/`LIGHT`-typed vertices outright, its connection loop starts
+  at `i=1`, and `EvaluateS0Impl` prices a REAL ray intersection's own UV
+  (it takes no light-subpath argument at all) -- review correction,
+  2026-09-14. VCM's fix is carried entirely by the `EvaluateNEEImpl` line
+  below.
 - `VCMIntegrator.cpp::EvaluateNEEImpl`'s `rig` (VCM's own bespoke
   light-sampling NEE strategy — VCM does not reuse
   `LightSampler::EvaluateDirectLighting{,NM}`; it needs its own MIS
@@ -75,9 +77,10 @@ site enumerated above now carries `ls.ptCoord` onto its own rebuilt record:
   ls.ptCoord;`.
 - The `BDPTVertex::LIGHT` root vertex gained `v.ptCoord = ls.ptCoord;`
   beside its existing `v.ptObjIntersec = ls.ptObjIntersec;` line — this one
-  change also fixes `LuminaryRadiance`'s and VCM's light-to-camera splat's
-  `PopulateRIGFromVertex` rebuilds, since they consume the vertex rather
-  than `LightSample` directly. `v.ptCoord1` is left at its default `(0,0)`:
+  change also fixes `LuminaryRadiance`'s `PopulateRIGFromVertex` rebuild
+  (BDPT s=0/t=1 splat and s=1 connections; MLT shares the generator),
+  since it consumes the vertex rather than `LightSample` directly. It does
+  NOT reach VCM (see above) -- VCM is fixed by the `EvaluateNEEImpl` line. `v.ptCoord1` is left at its default `(0,0)`:
   `IObject::UniformRandomPoint` returns exactly one `Point2`, so there is no
   second UV channel to carry, matching a real surface vertex on an object
   with no `TEXCOORD_1`.

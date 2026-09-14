@@ -413,8 +413,9 @@ namespace RISE
 			/// subpath NM hero and HWSS companion rebuilds, the BDPT
 			/// `type == LIGHT` root vertex (and therefore every
 			/// `PathVertexEval::PopulateRIGFromVertex` consumer of it --
-			/// `LuminaryRadiance`'s s=0/t=1 splat, VCM's own light-to-camera
-			/// splat), and VCM's `EvaluateNEEImpl` light-vertex record.
+			/// `LuminaryRadiance`'s s=0/t=1 splat and s=1 connections; VCM
+			/// never rebuilds from the LIGHT root), and VCM's
+			/// `EvaluateNEEImpl` light-vertex record (VCM's only affected site).
 			/// `SampleLight`'s own RGB emission evaluation and the two
 			/// direct-lighting NEE sites in `EvaluateDirectLighting{,NM}`
 			/// (PT's and BDPT's shared NEE strategy) already sampled their

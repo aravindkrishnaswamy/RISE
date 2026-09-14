@@ -1212,9 +1212,11 @@ whose UV(0,0) corner is fully white against its true 0.5 area-weighted
 average). Added `LightSample::ptCoord` and threaded it through
 `SampleLight`, the BDPT NM hero/HWSS companion rigs, the `BDPTVertex::
 LIGHT` root vertex, and VCM's `EvaluateNEEImpl` rig; the root-vertex fix
-also fixes every `PathVertexEval::PopulateRIGFromVertex` consumer of it
-(BDPT's `LuminaryRadiance` s=0/t=1 splat, VCM's own light-to-camera
-splat) without a separate change. `EvaluateDirectLighting{,NM}` (PT's
+also fixes `PathVertexEval::PopulateRIGFromVertex`'s consumer of it
+(BDPT's `LuminaryRadiance` s=0/t=1 splat and s=1 connections) without a
+separate change; VCM never rebuilds from the LIGHT root (its splat skips
+it and `EvaluateS0Impl` prices a real ray hit), so VCM's fix is the
+`EvaluateNEEImpl` line alone (review correction). `EvaluateDirectLighting{,NM}` (PT's
 and BDPT's shared NEE strategy), `EvaluateS0Impl`/BDPT's own s=0
 emission strategy, and `ManifoldSolver.cpp`'s SMS light-directed
 seeding were audited and confirmed unaffected — none of them rebuild a

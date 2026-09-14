@@ -5504,10 +5504,12 @@ unsigned int GenerateLightSubpathImpl(
 		// bullet).  Two emitter evaluations price this vertex THROUGH
 		// `PathVertexEval::PopulateRIGFromVertex` rather than through the
 		// records above -- `LuminaryRadiance` (the t=1 light-to-camera
-		// splat) here, and `VCMIntegrator`'s own light-to-camera splat --
-		// so a better record inside `LightSampler` alone would leave those
-		// two reading the neutral channel while everything else on the same
-		// subpath read the live one.
+		// splat and the s=1 connections) here.  (`VCMIntegrator`'s splat
+		// skips the LIGHT root and its s=0 strategy prices a real ray hit,
+		// so VCM is NOT a consumer of this vertex -- DL-44 review
+		// correction, 2026-09-14.)  A better record inside `LightSampler`
+		// alone would leave `LuminaryRadiance` reading the neutral channel
+		// while everything else on the same subpath read the live one.
 		//
 		// The three field groups are exactly the ones S1 put on the vertex
 		// for surface hits (§3); `ptObjIntersec` rides along because the
@@ -5527,8 +5529,9 @@ unsigned int GenerateLightSubpathImpl(
 		v.ptObjIntersec = ls.ptObjIntersec;
 		// DL-44: same ungated treatment for the sampled UV.  Read by
 		// `PathVertexEval::PopulateRIGFromVertex`'s consumers of this
-		// vertex -- `LuminaryRadiance` (BDPT's own s=0/t=1 splat) and
-		// VCM's light-to-camera splat -- so a UV-keyed emission painter
+		// vertex -- `LuminaryRadiance` (BDPT's own s=0/t=1 splat and s=1
+		// connections; VCM does not rebuild from this vertex) -- so a
+		// UV-keyed emission painter
 		// sees the same texel there that `SampleLight`'s own RGB
 		// evaluation and the NM hero/HWSS rebuilds above see.  No second
 		// UV channel: `IObject::UniformRandomPoint` returns one Point2, so
