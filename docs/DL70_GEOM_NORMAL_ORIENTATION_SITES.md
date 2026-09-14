@@ -18,8 +18,17 @@ then asks *"am I entering this solid?"* by testing
 hit — the predicate can no longer distinguish the very thing it exists
 to distinguish.
 
-Fourteen consumers did exactly that.  A fifteenth (`Object.cpp`'s
-override UV generator) was found by this slice's sibling audit.
+Fifteen consumers did exactly that (the original ledger row's own
+enumeration undercounted itself as "14 sites": item (6), the BSSRDF
+front-face gate, is alone six call sites — `PathTracingIntegrator.cpp`
+×2 + `BDPTIntegrator.cpp` ×4 — so its seven numbered items sum to 15,
+not 14).  A sixteenth (`Object.cpp`'s override UV generator) was found
+by this slice's sibling audit — see §3 row 8.  Counted as actual
+behaviour-changing predicate call sites (not files): `LightSampler.cpp`
+×2, `BDPTIntegrator.cpp` medium-walk ×1 + BSSRDF ×4, `RayCaster.cpp`
+×1, `DirectVolumeRenderingShader.cpp` ×2, `PathTracingIntegrator.cpp`
+BSSRDF ×2, `TransparencyShaderOp.cpp` ×2, `SMSPhotonMap.cpp` ×1,
+`Object.cpp` ×1 — sixteen in total.
 
 ## 2. The shared recovery
 
@@ -191,8 +200,11 @@ red-proof.
 ## 5. Sibling audit
 
 Every `vGeomNormal` read in `src/Library` was enumerated
-(`grep -rn vGeomNormal src/Library`, 200 non-comment lines outside
-`RayIntersectionGeometric.h`) and classified.
+(`grep -rn vGeomNormal src/Library`, **281** non-comment lines outside
+`RayIntersectionGeometric.h`, of which **226** are reads and the
+remaining 55 are writes — producer stores and struct-to-struct copies;
+an earlier draft of this section undercounted the total as 200) and
+classified.
 
 | Class | Count | Sites | Verdict |
 |---|---|---|---|
@@ -205,12 +217,15 @@ Every `vGeomNormal` read in `src/Library` was enumerated
 | Sign-invariant chain consumers | 7 | `ValidateChainPhysics` `nForTest`, `VCMIntegrator:521` `sideN`, `ManifoldSolver` `EvaluateChainGeometry` / `EvaluateChainCosineProduct` / `cosV1atX` / the two-stage `failIdx` scan | **IMMUNE** (sign product or `fabs`) — and re-verified against the new `ManifoldVertex::geomNormal` invariant. |
 | Comparison against ITSELF | 1 | `PathTransportUtilities.h:282` (DL-03's guided-continuation resolver compares two dots against the SAME normal) | **IMMUNE** |
 | Producers | 5 geometry types | `TriangleMeshGeometry{,Indexed}` (`bFlipGeomNormal`), `ClippedPlaneGeometry`, `BezierPatchGeometry`, `HairGeometry` | not consumers |
-| **IN PATTERN — fixed here** | 15 sites + 6 captures | the table in §3, plus `ManifoldSolver` ×5 and `SMSPhotonMap` ×1 captures | fixed |
+| **IN PATTERN — fixed here** | 16 sites + 6 captures | the table in §3 (`LightSampler.cpp` ×2, `BDPTIntegrator.cpp` medium ×1 + BSSRDF ×4, `RayCaster.cpp` ×1, `DirectVolumeRenderingShader.cpp` ×2, `PathTracingIntegrator.cpp` BSSRDF ×2, `TransparencyShaderOp.cpp` ×2, `SMSPhotonMap.cpp` ×1, `Object.cpp` ×1), plus `ManifoldSolver` ×5 and `SMSPhotonMap` ×1 captures | fixed |
 
-The original 14-site enumeration was **complete for the classes it
-considered** but missed `Object.cpp`'s UV-generator argument, which it
-had classified as "not a which-side test at all".  It is one (see §3
-row 8).
+The original enumeration was **complete for the classes it considered**
+but undercounted its own tally as "14 sites" (its seven numbered items
+actually sum to 15 call sites — item (6), the BSSRDF gate, is six call
+sites on its own) and missed `Object.cpp`'s UV-generator argument
+entirely, which it had classified as "not a which-side test at all".
+The correct total is **16** behaviour-changing predicate sites (see the
+row above); §3 row 8 covers the missed one.
 
 ## 6. New debt opened
 
