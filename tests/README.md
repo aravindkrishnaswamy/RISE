@@ -206,14 +206,32 @@ external-linkage dedupe, but no compile-time-evaluation obligation --
 avoids MSVC's default `/constexpr:steps 100000` limit on the largest
 table, `E_ss_TABLE_G2_ANISO_PHI` at 24*24*13*32 = 239,616 elements).
 
-**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained `TestGrazingFurnaceDL86`,
-five real-`GGXBRDF` (not just LUT-lookup) Schlick F0=1 spec-only furnace
-rows at `theta=89.40/89.70/89.89` degrees (cosView strictly below the LUT's
-first bin center `c0=0.5/32~=0.0156`), driving the SAME `LookupEssG2`
-end-cap fix through the production BRDF. On the unfixed header 3 of 5
-FAILED (e.g. `theta=89.89 alpha=1.0`: `mean=1.0538+/-0.0016`, a real
-furnace GAIN, not just a LUT artifact); all 5 pass post-fix
-(`0.9952-0.9998`). `161 checks, 0 failures` (was `156/0`). See
+**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained `TestGrazingFurnaceDL86`
+— 16 real-`GGXBRDF` (14 isotropic + 2 anisotropic) and 14 real-`CookTorranceBRDF`
+furnace rows (F=1, specular-only, 400k samples) at `theta=89.40/89.60/89.80/89.89` degrees,
+i.e. cosView strictly below the LUT's first bin center `c0=0.5/32~=0.0156`,
+driving the grazing end-cap through the PRODUCTION BRDFs rather than the
+LUT lookup in isolation. Two things about this section are load-bearing.
+(1) The rows are **two-sided** (`|mean - expected| <= 3*SE + tolAbs` via
+`CheckTwoSidedFurnaceRow`), not routed through `CheckRGBBound`, whose
+energy gate is upper-bound-only: the DL-86 defect reads as a GAIN on the
+pre-slice header and as a DEFICIT on the first (defective) fix, and a
+one-sided gate is blind to the second. (2) The `CookTorranceBRDF` rows
+exist because `IntegrateRGB`/`IntegrateNM` now take `const IBSDF&`:
+before this slice NO test drove `LookupEss` — the SEPARABLE table
+Cook-Torrance renders with — through a material at all, so that path was
+unguarded at material level. Red-proof in both directions: **16 failures**
+against the straight-line header `aff019de` (e.g. `GGX a=0.01 th=89.60`
+`0.94668+/-0.00150`; `CT conductor a=0.02 th=89.89` `1.05222+/-0.00136`)
+and **12 failures** against the pre-slice `943d353b` flat clamp (e.g.
+`GGX a=1.0 th=89.80` `1.04585+/-0.00041`). The two anisotropic rows
+(`(.9,.1)` at `az=90` and the axis-swapped `(.1,.9)` at `az=0`, both at
+`theta=89.89`) carry the tightest band in the section (`3*SE + 0.005`)
+because the fix closes them to within 0.05% of 1 (`1.00043`/`0.99960`)
+while the flat clamp reads `1.15718`/`1.15650` and the straight line
+`0.97388`/`0.97302`. Three rows carry a MEASURED `expected != 1` with the
+cause named (DL-105, the LUT's alpha axis) rather than a band widened
+until they pass. `186 checks, 0 failures` (was `156/0` pre-slice). See
 [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
 "DL-86" section.
 
@@ -257,26 +275,29 @@ epsilon -- the re-parametrized table mirrors the canonical
 Monte-Carlo samples, so the symmetry is exact, not merely close). `30
 checks, 0 failures` (was `23 checks, 0 failures`).
 
-**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained two new gating
-sections promoting the doc's brute-force-vs-lookup end-cap numbers into
-real checks. (1) Isotropic: `LookupEssG2` at 3 alphas x 5 cosTheta values
-(`0.002` to `0.03`, spanning the first LUT bin's `c0=0.5/32~=0.0156`
-boundary) against a fresh 20M-sample VNDF quadrature -- on the unfixed
-flat-clamp lookup, 12 of 15 rows FAILED (e.g. `alpha=1 cos=0.002`:
-`LookupEssG2=0.934940` vs quadrature `0.987561+/-0.000014`, 5.33%); all
-15 pass post-fix (residual `<=0.6%`). (2) Anisotropic: `LookupEssG2AnisoDirectional`
-at 6 `(alphaX,alphaY,phi)` configurations x 5 cosTheta values, plus the
-debt-ggx3-cited worst case (`alphaX=0.0361,alphaY=0.9627,phi=5,cos=0.0024`)
--- on the unfixed lookup that worst case read `17.99%` off (reproducing
-the ledger's `17.89%`); post-fix the SAME point reads `~2.14%`, and the
-fix genuinely helps every row (12-18%+ pre-fix down to at most `~4.0%`
-post-fix across the whole sweep, not only the one cited corner) --
-gated at an honest 5% floor rather than a falsely tight one. `78 checks,
-0 failures` (was `30 checks, 0 failures`). See
+**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained four gating groups
+against a fresh 20M-sample VNDF quadrature, all at `cosTheta` strictly
+below the first bin center `c0=0.5/32~=0.0156` unless marked otherwise.
+(1) `LookupEssG2` at 6 alphas x 7 cosTheta values down to `1e-4`.
+(2) `LookupEss` — the SEPARABLE table `CookTorranceBRDF`/`CookTorranceSPF`
+render with — at the same grid, via a new `MonteCarloEssSeparable`
+quadrature; this test previously used `LookupEss` only as a NEGATIVE
+control against the height-correlated model, so its own grazing end-cap
+had no coverage. (3) `LookupEssG2AnisoDirectional`, split into a
+**node-exact** group (`alphaX`, `alphaY`, `phi` all on grid nodes, so
+cosTheta is the ONLY interpolated axis — the group that actually isolates
+this end-cap) and the typical near-node configurations. (4) A labelled
+control at `cosTheta=0.03`, the first ORDINARY interpolation span, which
+this fix must leave untouched — and does, to every printed digit.
+Tolerances are PER-ALPHA, not one floor: `0.004` where the fix is tight
+(measured residual `<=0.26%`), `0.025`/`0.060` where DL-105's alpha axis
+dominates, each labelled with its cause. Red-proof: **41 failures**
+against the straight-line header `aff019de` (e.g. `alpha=0.01 cos=0.002
+LookupEss=0.860587` vs quadrature `0.917441+/-0.000033`, 6.20%) and
+**90 failures** against the pre-slice `943d353b` flat clamp. `187 checks,
+0 failures` (was `30/0` pre-slice). See
 [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
-"DL-86" section for the fix (a one-sided extrapolation anchored at the
-provable exact boundary `Ess_G2(cosTheta=0)=1`) and the full residual
-table.
+"DL-86" for the full before/after residual tables.
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's
