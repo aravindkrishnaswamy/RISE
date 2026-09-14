@@ -156,9 +156,11 @@ namespace RISE
 		//     the phase function, which reads none of these.)
 		//   * A `type == LIGHT` ROOT VERTEX is NOT in that list any more.
 		//     It was until 2026-09-11: a mesh luminary's root IS a
-		//     surface, and TWO emitter evaluations price it through THIS
-		//     function -- `LuminaryRadiance` (BDPT's t=1 light-to-camera
-		//     splat) and VCM's own light-to-camera splat -- so leaving it
+		//     surface, and `LuminaryRadiance` (BDPT's t=1 light-to-camera
+		//     splat and s=1 connections; MLT shares the generator) prices
+		//     it through THIS function -- NOT VCM: `SplatLightSubpathToCameraImpl`
+		//     skips the LIGHT root and `EvaluateS0Impl` prices a real ray
+		//     hit (DL-44 review correction, 2026-09-14) -- so leaving it
 		//     default made an emissive material keyed on a signal read
 		//     neutral there.  Slice S3
 		//     (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5) has

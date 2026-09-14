@@ -5427,6 +5427,11 @@ unsigned int GenerateLightSubpathImpl(
 				rig.ptIntersection = ls.position;
 				rig.vNormal = ls.normal;
 				rig.vGeomNormal = ls.normal;
+				// DL-44: the sampled emitter UV, so a UV-keyed emission
+				// painter (checker_painter, an image exitance map) reads the
+				// same texel the RGB hero (`ls.Le`, evaluated inside
+				// `SampleLight`) did, not the default-constructed (0,0).
+				rig.ptCoord = ls.ptCoord;
 				OrthonormalBasis3D onb;
 				onb.CreateFromW( ls.normal );
 				rig.onb = onb;
@@ -5499,10 +5504,12 @@ unsigned int GenerateLightSubpathImpl(
 		// bullet).  Two emitter evaluations price this vertex THROUGH
 		// `PathVertexEval::PopulateRIGFromVertex` rather than through the
 		// records above -- `LuminaryRadiance` (the t=1 light-to-camera
-		// splat) here, and `VCMIntegrator`'s own light-to-camera splat --
-		// so a better record inside `LightSampler` alone would leave those
-		// two reading the neutral channel while everything else on the same
-		// subpath read the live one.
+		// splat and the s=1 connections) here.  (`VCMIntegrator`'s splat
+		// skips the LIGHT root and its s=0 strategy prices a real ray hit,
+		// so VCM is NOT a consumer of this vertex -- DL-44 review
+		// correction, 2026-09-14.)  A better record inside `LightSampler`
+		// alone would leave `LuminaryRadiance` reading the neutral channel
+		// while everything else on the same subpath read the live one.
 		//
 		// The three field groups are exactly the ones S1 put on the vertex
 		// for surface hits (§3); `ptObjIntersec` rides along because the
@@ -5520,6 +5527,17 @@ unsigned int GenerateLightSubpathImpl(
 		// exactly what this vertex carried before -- whenever there is no
 		// single object frame to map into.
 		v.ptObjIntersec = ls.ptObjIntersec;
+		// DL-44: same ungated treatment for the sampled UV.  Read by
+		// `PathVertexEval::PopulateRIGFromVertex`'s consumers of this
+		// vertex -- `LuminaryRadiance` (BDPT's own s=0/t=1 splat and s=1
+		// connections; VCM does not rebuild from this vertex) -- so a
+		// UV-keyed emission painter
+		// sees the same texel there that `SampleLight`'s own RGB
+		// evaluation and the NM hero/HWSS rebuilds above see.  No second
+		// UV channel: `IObject::UniformRandomPoint` returns one Point2, so
+		// `v.ptCoord1` stays default (0,0), matching every real surface
+		// vertex on an object with no TEXCOORD_1.
+		v.ptCoord = ls.ptCoord;
 
 		// pdfFwd is the probability of generating this light vertex
 		// = pdfSelect * pdfPosition
@@ -5608,6 +5626,9 @@ unsigned int GenerateLightSubpathImpl(
 						rigW.ptIntersection = ls.position;
 						rigW.vNormal = ls.normal;
 						rigW.vGeomNormal = ls.normal;
+						// DL-44: same ungated UV as the hero `rig` above --
+						// see that site's comment.
+						rigW.ptCoord = ls.ptCoord;
 						OrthonormalBasis3D onbW;
 						onbW.CreateFromW( ls.normal );
 						rigW.onb = onbW;

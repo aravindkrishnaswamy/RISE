@@ -398,6 +398,31 @@ namespace RISE
 			/// unconditionally -- for a delta light, an env sample, and a
 			/// luminary with no single object frame (a CSG composite).
 			Point3					ptObjIntersec;
+			/// The surface (u,v) `IObject::UniformRandomPoint` returned for
+			/// `position` on a mesh luminary (DL-44).  UNGATED -- unlike
+			/// `surface` it costs no probe ray, it is simply the coordinate
+			/// the sampler already computed to place `position` -- and, like
+			/// `ptObjIntersec`, not part of the signal-demand contract, so a
+			/// UV-keyed emission painter (`checker_painter`, an image-based
+			/// exitance map, `expression_painter`'s `u`/`v`) must not depend
+			/// on the probe gate.  Before this field existed, every
+			/// consumer that rebuilds an `EmitterSurfacePayload`-style
+			/// record from a `LightSample` rather than from `SampleLight`'s
+			/// own local `coord` variable left `RayIntersectionGeometric`'s
+			/// default-constructed `ptCoord` (0,0) in place: BDPT's light-
+			/// subpath NM hero and HWSS companion rebuilds, the BDPT
+			/// `type == LIGHT` root vertex (and therefore every
+			/// `PathVertexEval::PopulateRIGFromVertex` consumer of it --
+			/// `LuminaryRadiance`'s s=0/t=1 splat and s=1 connections; VCM
+			/// never rebuilds from the LIGHT root), and VCM's
+			/// `EvaluateNEEImpl` light-vertex record (VCM's only affected site).
+			/// `SampleLight`'s own RGB emission evaluation and the two
+			/// direct-lighting NEE sites in `EvaluateDirectLighting{,NM}`
+			/// (PT's and BDPT's shared NEE strategy) already sampled their
+			/// own local UV and were never affected.  `(0,0)` -- the value
+			/// every one of those rebuilds carried before -- for a delta
+			/// light and an env sample, neither of which has a surface UV.
+			Point2					ptCoord;
 		};
 
 		/// Unified light sampling utility shared by PT and BDPT.

@@ -77,12 +77,16 @@ channel evaluation. It is not a rendered end-to-end test of every listed
 consumer. Existing SignalEmitterRecordTest render families remain the
 broader gate. DL-19's individual NM/HWSS conversion red-proof gap and
 DL-22's BSSRDF entry payload remain open; this pin does not close them.
-Independent review found a separate sampled-UV propagation defect, now
-DL-44: SampleLight evaluates RGB emission using its local sampled coord,
-but LightSample carries no UV. BDPT NM/HWSS rebuilds, its LIGHT root, and
-VCM rebuilt emission retain default (0,0), which UV-dependent painters
-consume; MLT shares BDPT generation. This is static evidence with a
-dedicated two-texel red-proof pending, not a measured rendering result.
+Independent review found a separate sampled-UV propagation defect, filed
+as DL-44: SampleLight evaluates RGB emission using its local sampled coord,
+but LightSample carried no UV, so BDPT NM/HWSS rebuilds, its LIGHT root,
+and VCM rebuilt emission retained default (0,0), which UV-dependent
+painters consume; MLT shares BDPT generation. **DL-44 CLOSED 2026-09-14**
+(`18892254`) — `LightSample::ptCoord` now carries the sampled UV through
+every one of those sites; red-proof `tests/EmitterUVSampleTest.cpp`
+measured the predicted closed-form 2.0x bias on a checker-textured
+luminary and confirmed it gone post-fix. See
+[DL44_LIGHTSAMPLE_UV.md](DL44_LIGHTSAMPLE_UV.md).
 The existing DL-40 nonfinite
 comparison gap also applies to this test harness: ComputeStats marks
 nonempty captures valid without finite checks, and WorstRelDiff uses fmax,

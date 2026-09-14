@@ -1572,6 +1572,13 @@ bool LightSampler::SampleLight(
 		sample.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, sample.position, sample.ptObjIntersec );
 
+		// DL-44: the surface UV `UniformRandomPoint` returned for this
+		// sample, carried for the same five rebuild sites `ptObjIntersec`
+		// is (see `LightSample::ptCoord`'s doc comment).  Ungated and
+		// ray-free, like `Po` above -- it is simply `coord`, already
+		// computed a few lines up.
+		sample.ptCoord = coord;
+
 		// Compute emitted radiance at this point in this direction
 		RayIntersectionGeometric rig( Ray( sample.position, sample.direction ), nullRasterizerState );
 		rig.vNormal = sample.normal;
