@@ -1348,6 +1348,49 @@ namespace
 	template<> inline RISEPel PTBssrdfWeightSpatial<PelTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatial; }
 	template<> inline Scalar  PTBssrdfWeightSpatial<NMTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatialNM; }
 
+	// DL-72 (round 3): the directional "BSDF*cos at the scatter point"
+	// quantity IRayCaster.h documents for RAY_STATE::bsdfTimesCos, recovered
+	// algebraically for a BSSRDF exit from the already-computed weight/
+	// weightSpatial split -- no new BSSRDF-file code needed.
+	//
+	// BSSRDFSampling.h's own header comment gives:
+	//   weight        = Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
+	//   weightSpatial = Rd * Ft(exit) / pdfSurface                    (no entry Sw)
+	//   Sw            = Ft(entry) / (c * PI)         (EvaluateSwWithFresnel)
+	// so weight / weightSpatial = Ft(entry) / c = Sw * PI, independent of
+	// Rd and pdfSurface (both cancel).  The exit direction is cosine-
+	// weighted, so cosinePdf = cos/PI, i.e. cos = cosinePdf * PI.  Hence:
+	//   Sw * cos = (Sw * PI) * (cosinePdf) = (weight / weightSpatial) * cosinePdf
+	// -- the PI cancels, leaving a ratio of two already-computed values
+	// times the already-computed cosinePdf.  Sw is achromatic
+	// (EvaluateSwWithFresnel's own doc: "Sw value (scalar, achromatic)"),
+	// so for Pel the ratio is computed off MaxValue() (a single scalar
+	// multiplier that applies uniformly to every channel) rather than a
+	// per-channel divide, which would produce a spurious NaN/Inf on any
+	// channel where the diffusion profile's Rd happens to be exactly zero
+	// (weightSpatial[ch]==0) even though the RATIO is channel-independent.
+	// Guards weightSpatial<=0 (BSSRDF continuations that never got this far
+	// -- e.g. skipped/invalid samples -- are never passed here, but a
+	// degenerate profile could still zero every channel).
+	inline Scalar PTBssrdfSwTimesCos(
+		const RISEPel& weight, const RISEPel& weightSpatial, Scalar cosinePdf )
+	{
+		const Scalar wsMax = ColorMath::MaxValue( weightSpatial );
+		if( wsMax <= NEARZERO ) {
+			return 0;
+		}
+		return ( ColorMath::MaxValue( weight ) / wsMax ) * cosinePdf;
+	}
+	inline Scalar PTBssrdfSwTimesCos(
+		Scalar weight, Scalar weightSpatial, Scalar cosinePdf )
+	{
+		const Scalar wsAbs = fabs( weightSpatial );
+		if( wsAbs <= NEARZERO ) {
+			return 0;
+		}
+		return ( fabs( weight ) / wsAbs ) * cosinePdf;
+	}
+
 	// CastRay continuation (BSSRDF / RW-SSS sub-path), 8-arg form with
 	// IOR stack; distance is always passed null as in both originals.
 	template<class Tag>
@@ -2520,6 +2563,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									Value sssThroughput = bssrdfWeight;
 
+									// DL-72 (round 3, this pass): pair every Accumulate
+									// (inside RayCasterEnvEscapeMISWeight, if this
+									// continuation happens to escape to the global env
+									// map) with one AccumulateCount here, at the SAME
+									// "sample attempt" granularity the main surface
+									// continuation uses -- BEFORE Russian roulette, so
+									// a subsequently RR-killed attempt is still counted
+									// (OptimalMISAccumulator.h's AccumulateCount doc:
+									// "regardless of whether the sample contributed
+									// non-zero radiance").  Round 2 removed this call
+									// because the paired moment was wrong-shaped; round
+									// 3 derives the correct one below and reinstates it.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
+										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									{
+										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+											rast.x, rast.y, kTechniqueBSDF );
+									}
+
 									const PathTransportUtilities::RussianRouletteResult rr =
 										PathTransportUtilities::EvaluateRussianRoulette(
 											depth, rrMinDepth, rrThreshold,
@@ -2553,29 +2615,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 REOPENED (P2-B, this pass): the round-1 fix computed
-										// `bsdfTimesCos` for BOTH tags via PTBsdfTimesCos(sssThroughput,
-										// bssrdf.cosinePdf) and paired it with an AccumulateCount call
-										// (fixing the previous if-constexpr(is_nm) backwards gate --
-										// that structural fix stands and is NOT reverted). Review this
-										// pass (P2-B) found the TRAINED QUANTITY itself does not match
-										// IRayCaster.h's documented contract for rs.bsdfTimesCos ("BSDF
-										// * cos at the SCATTER point"): `sssThroughput` is the SSS
-										// profile's spatial transport weight (Rd * FtExit / pdfSurface,
-										// a diffusion-profile quantity over the entry/exit DISK
-										// projection), not a directional BSDF value at the continuation
-										// ray's origin, and `bssrdf.cosinePdf` is the cosine-hemisphere
-										// sampling density there -- their product is not the integrand
-										// OptimalMISAccumulator::Accumulate's second-moment estimator
-										// assumes. Training the accumulator with the wrong-shaped
-										// quantity does not miscompute the RENDERED weight (`PowerHeuristic`
-										// is the correct, still-used fallback whenever the accumulator
-										// is not ready), but corrupts `Solve()`'s alpha once it IS ready.
-										// Conservative fix: leave this arm UNWIRED (zero, no count) at
-										// BOTH sites/tags until a future pass derives and wires the
-										// correct directional-only quantity with a matching count; see
-										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "P2-B ruling".
-										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( Traits::zero() );
+										// DL-72 (round 3): the directional "BSDF*cos at
+										// the scatter point" quantity IRayCaster.h's
+										// contract wants, recovered algebraically from
+										// the BSSRDF's own weight/weightSpatial split --
+										// see PTBssrdfSwTimesCos's doc above.  Paired
+										// with the AccumulateCount call above and with
+										// rs2.bsdfPdf = bssrdf.cosinePdf (unchanged) as
+										// the matching pdf.  Supersedes the round-2
+										// "leave zeroed" ruling now that the correct
+										// quantity is derived; see
+										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+										// "Round 3".
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
+											PTBssrdfSwTimesCos( bssrdfWeight, bssrdfWeightSpatial, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -2697,6 +2750,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									Value sssThroughput = bssrdfWeight;
 
+									// DL-72 (round 3, this pass): pair every Accumulate
+									// (inside RayCasterEnvEscapeMISWeight, if this
+									// continuation happens to escape to the global env
+									// map) with one AccumulateCount here, at the SAME
+									// "sample attempt" granularity the main surface
+									// continuation uses -- BEFORE Russian roulette, so
+									// a subsequently RR-killed attempt is still counted
+									// (OptimalMISAccumulator.h's AccumulateCount doc:
+									// "regardless of whether the sample contributed
+									// non-zero radiance").  Round 2 removed this call
+									// because the paired moment was wrong-shaped; round
+									// 3 derives the correct one below and reinstates it.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
+										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									{
+										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+											rast.x, rast.y, kTechniqueBSDF );
+									}
+
 									const PathTransportUtilities::RussianRouletteResult rr =
 										PathTransportUtilities::EvaluateRussianRoulette(
 											depth, rrMinDepth, rrThreshold,
@@ -2730,29 +2802,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 REOPENED (P2-B, this pass): the round-1 fix computed
-										// `bsdfTimesCos` for BOTH tags via PTBsdfTimesCos(sssThroughput,
-										// bssrdf.cosinePdf) and paired it with an AccumulateCount call
-										// (fixing the previous if-constexpr(is_nm) backwards gate --
-										// that structural fix stands and is NOT reverted). Review this
-										// pass (P2-B) found the TRAINED QUANTITY itself does not match
-										// IRayCaster.h's documented contract for rs.bsdfTimesCos ("BSDF
-										// * cos at the SCATTER point"): `sssThroughput` is the SSS
-										// profile's spatial transport weight (Rd * FtExit / pdfSurface,
-										// a diffusion-profile quantity over the entry/exit DISK
-										// projection), not a directional BSDF value at the continuation
-										// ray's origin, and `bssrdf.cosinePdf` is the cosine-hemisphere
-										// sampling density there -- their product is not the integrand
-										// OptimalMISAccumulator::Accumulate's second-moment estimator
-										// assumes. Training the accumulator with the wrong-shaped
-										// quantity does not miscompute the RENDERED weight (`PowerHeuristic`
-										// is the correct, still-used fallback whenever the accumulator
-										// is not ready), but corrupts `Solve()`'s alpha once it IS ready.
-										// Conservative fix: leave this arm UNWIRED (zero, no count) at
-										// BOTH sites/tags until a future pass derives and wires the
-										// correct directional-only quantity with a matching count; see
-										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "P2-B ruling".
-										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( Traits::zero() );
+										// DL-72 (round 3): the directional "BSDF*cos at
+										// the scatter point" quantity IRayCaster.h's
+										// contract wants, recovered algebraically from
+										// the BSSRDF's own weight/weightSpatial split --
+										// see PTBssrdfSwTimesCos's doc above.  Paired
+										// with the AccumulateCount call above and with
+										// rs2.bsdfPdf = bssrdf.cosinePdf (unchanged) as
+										// the matching pdf.  Supersedes the round-2
+										// "leave zeroed" ruling now that the correct
+										// quantity is derived; see
+										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+										// "Round 3".
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
+											PTBssrdfSwTimesCos( bssrdfWeight, bssrdfWeightSpatial, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );

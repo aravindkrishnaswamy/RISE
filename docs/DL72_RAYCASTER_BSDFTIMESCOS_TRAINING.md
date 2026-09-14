@@ -1,12 +1,15 @@
 # DL-72: BSSRDF/volume continuations never trained RayCasterEnvEscapeMISWeight's optimal-MIS arm
 
-Status: **CLOSED 2026-09-13** — source repair `0c9eccc4`; **REOPENED and
-re-resolved by REVERTING the training wiring, round-2 (P2-B) same day** —
-the round-1 fix's wiring itself had a count-pairing defect (RayCaster.cpp
-sites) and fed the accumulator a quantity that does not match its
-documented contract (all four sites). See "Round-2 correction (P2-B)"
-below for what actually ships; the Mechanism/Repair sections immediately
-below describe the ORIGINAL (round-1) fix for the historical record.
+Status: **CLOSED 2026-09-14 (round 3)** — correct wiring landed this pass
+(debt-guiding2 slice), see "Round 3" below. History: CLOSED 2026-09-13 —
+source repair `0c9eccc4`; REOPENED and re-resolved by REVERTING the
+training wiring, round-2 (P2-B) same day — the round-1 fix's wiring
+itself had a count-pairing defect (RayCaster.cpp sites) and fed the
+accumulator a quantity that does not match its documented contract (all
+four sites). See "Round-2 correction (P2-B)" for that ruling and "Round
+3" for the fix that supersedes it; the Mechanism/Repair sections
+immediately below describe the ORIGINAL (round-1) fix for the historical
+record.
 
 ## Mechanism
 
@@ -211,21 +214,100 @@ sites, the impact is now correctly "not applicable" rather than
 "not user-visible" — there is no trained contribution from these sites
 to have an impact at all.
 
+## Round 3 (2026-09-14, debt-guiding2 slice): correct wiring, CLOSED
+
+Round 2 left training unwired at all four sites because (a) `RayCaster.cpp`'s
+two volume sites called `Accumulate` with no paired `AccumulateCount`, and
+(b) neither the volume nor the BSSRDF trained quantity actually matched
+`IRayCaster.h`'s "BSDF*cos at the scatter point" contract. Round 3 derives
+the correct directional quantity for each site and pairs every `Accumulate`
+with exactly one `AccumulateCount`, per attempt, matching the ordinary
+surface continuation's own pattern.
+
+**Volume phase-scatter continuation** (`RayCaster.cpp`'s `CastRay`/
+`CastRayNM`, both RGB and NM copies): `IPhaseFunction::Pdf()`'s own
+contract ("For normalized phase functions this equals Evaluate()") means
+the phase VALUE at the sampled direction is exactly `phasePdf`, and a phase
+function has no separate cosine term (no surface normal in free space) —
+so the volume analogue of "BSDF*cos" is just `phasePdf`, broadcast to all
+three channels (`rs2.bsdfTimesCos = RISEPel(phasePdf, phasePdf, phasePdf)`,
+replacing `RISEPel(0,0,0)`), paired with a new `AccumulateCount` call
+immediately after (gated on `phasePdf > 0`, mirroring `rs2.bsdfPdf =
+phasePdf`, DL-73's confirmed-correct raw pdf). This makes
+`bsdfTimesCos / bsdfPdf == 1` identically — correct, since a perfectly
+importance-sampled phase function contributes no variance of its own to
+the single-technique estimator; the trained second moment reduces to
+`(envRadiance)^2`, independent of the actual `phasePdf` value (verified
+directly in `OptimalMISAccumulatorTest`'s new Test 12, see below).
+
+**BSSRDF continuations** (`PathTracingIntegrator.cpp`, both the diffusion-
+profile site and its `RandomWalkSSS` twin, both tags): recovered
+algebraically from the ALREADY-COMPUTED `bssrdfWeight`/`bssrdfWeightSpatial`
+split, no new BSSRDF-file code needed. `BSSRDFSampling.h`'s own header
+comment gives `weight = Rd*Ft(exit)*Ft(entry)/(c*pdfSurface)`,
+`weightSpatial = Rd*Ft(exit)/pdfSurface` (no entry Sw), and
+`Sw = Ft(entry)/(c*PI)` (`EvaluateSwWithFresnel`), so
+`weight/weightSpatial = Ft(entry)/c = Sw*PI`, independent of `Rd` and
+`pdfSurface` (both cancel). The exit direction is cosine-weighted
+(`cosinePdf = cos/PI`), so `Sw*cos = (weight/weightSpatial)*cosinePdf` —
+the PI cancels. A new helper pair, `PTBssrdfSwTimesCos` (one overload for
+`RISEPel`, one for `Scalar`), computes this; the `RISEPel` overload works
+off `ColorMath::MaxValue()` rather than a per-channel divide because `Sw`
+is documented achromatic ("Sw value (scalar, achromatic)") and a
+per-channel divide would produce a spurious NaN/Inf on any channel where
+the diffusion profile's `Rd` happens to be exactly zero even though the
+ratio is channel-independent. Paired with a new `AccumulateCount` call
+placed BEFORE Russian roulette (mirroring the main surface continuation's
+placement — an RR-killed attempt is still counted, per
+`OptimalMISAccumulator.h`'s "regardless of whether the sample contributed
+non-zero radiance" contract), gated on `PTSurvivalMagnitude(sssThroughput)
+> NEARZERO`.
+
+**Red-proof**: `OptimalMISAccumulatorTest`'s new Test 12
+(`TestDL72PairedTrainingFires`) drives the shared `OptimalMISAccumulator`
+contract directly through three scenarios built on identical base traffic
+(200 ordinary BSDF hits f2=4/pdf=1, 200 NEE hits f2=4/pdf=1, plus 50
+"SSS/volume" hits f2=16/pdf=1): **unwired** (round-2's conservative fix —
+the 50 extra hits contribute nothing) solves `alpha=0.5`; **buggy**
+(round-1's exact pattern — `Accumulate` with no `AccumulateCount` for the
+50 extra hits) solves `alpha=1/3` (Mbsdf inflated to 1600/200=8.0,
+matching the ledger's own "inflating Mbsdf... and depressing alpha"
+wording exactly); **fixed** (round 3 — paired) solves `alpha=4/10.4≈0.3846`,
+the theoretically correct value (Mbsdf=1600/250=6.4). All three numbers
+are hand-derived and checked exactly (not just "differs"), and a fourth
+sub-check confirms the phasePdf/cosinePdf-invariance property the volume
+and BSSRDF fixes both rely on (three different pdfs, same
+`bsdfTimesCos/bsdfPdf` ratio of 1, identical trained moment). This proves
+the CONTRACT-level bug and fix (PathTracingIntegrator.cpp / RayCaster.cpp
+only ever consume this same public accumulator API); it does not itself
+render a BSSRDF/volume scene and inspect the trained `alpha`, since no
+public accessor exposes `OptimalMISAccumulator`'s per-tile state after a
+real render — the existing render-level suites below instead confirm NO
+REGRESSION in actual rendered radiance from wiring this training (the
+render-time weight was already `PowerHeuristic`-correct before AND after,
+since training only ever affects `Solve()`'s `alpha`, never the raw
+sampling-pdf division), matching round 1's own validation precedent.
+
 ## File status
 
 | File | Status |
 |---|---|
-| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed; the round-1 if-constexpr-gate structural fix (both tags computed identically) is retained. |
-| `src/Library/Rendering/RayCaster.cpp` | Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. |
-| `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. |
-| `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added round 1; round-2 correction sections added this pass. |
+| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3 (this pass): `PTBssrdfSwTimesCos` helper added; both sites wired to the correct directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). |
+| `src/Library/Rendering/RayCaster.cpp` | Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. Round 3 (this pass): `rs2.bsdfTimesCos = RISEPel(phasePdf,phasePdf,phasePdf)` at both sites, `AccumulateCount` added (paired, gated `phasePdf > 0`). |
+| `tests/OptimalMISAccumulatorTest.cpp` | Round 3: new Test 12 (`TestDL72PairedTrainingFires`), 7 new checks. |
+| `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. Round 3: DL-72 CLOSED again, this time with correct wiring. |
+| `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added round 1; round-2 correction sections added same day; this "Round 3" section added 2026-09-14. |
 
-Gate: `MISWeightsTest`, `OptimalMISAccumulatorTest`,
-`RasterizerDefaultsConsistencyTest`, `RayCasterEnvEscapeMISTest` (91/91,
-P3-2: the suite grew from 79 to 91 checks the same day via `0eb7a47e`),
-`SSSRadianceScalingTest` (574017 checks, 0 failures — unchanged),
-`RandomWalkSurvivalTest` all pass; `make -C build/make/rise -j8 all`
-clean (zero warnings).
+Gate (round 3): `MISWeightsTest` (59/0), `OptimalMISAccumulatorTest`
+(34/0, was 27/0 — the 7 new Test 12 checks), `RasterizerDefaultsConsistencyTest`
+(164/0), `RayCasterEnvEscapeMISTest` (91/91 — this file's earlier "91/91,
+P3-2" note stands; `tests/README.md`'s stale "79/79" line for this suite
+was also corrected this pass), `SSSRadianceScalingTest` (574017/0,
+unchanged), `PTGuidedSelectProbTest` and `TranslucentIORStackTest` (ALL
+TESTS PASSED, unaffected — these do not exercise BSSRDF/volume training),
+`AgentLiveCommitTest` (884/0, DL-66's own gate), `EnvLightBalanceTest`
+(116/116); `make -C build/make/rise -j8 all` clean (zero warnings) after
+every edit in this pass.
 
 ## Tag errata (P3-7)
 
