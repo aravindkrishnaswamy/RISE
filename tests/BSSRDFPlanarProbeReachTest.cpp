@@ -57,6 +57,35 @@
 //      surface -- both fail on the unfixed orientation logic and pass
 //      after it.
 //
+//    P1/P2-A round-2 red-proof (this slice, gating DL-71's own
+//    reopening): round-1's fix above applied its correction ONLY to
+//    "near-half" hits (`distFromChordStart < probeMaxDist`), reasoning
+//    far-half hits already matched the pre-DL-52 "+axis" probe.  That
+//    positional model is wrong -- the ray-facing flip is a per-hit
+//    fact about approach side, independent of chord position, so a
+//    concave/multi-surface case can flip a FAR-half hit too, and the
+//    near/far boundary itself sits at the initial epsilon advance from
+//    chordStart (fragile even on its own terms).  Two new fixtures:
+//      - `MakeDoubleSidedQuadMeshAtZ`: a flip-oriented double-sided
+//        quad placed entirely in the far half.  Round-1 code leaves
+//        its entry normal INVERTED (the positional gate never fires);
+//        round-2 corrects it unconditionally.
+//      - `MakeDoubleSidedWallMeshAtX` + `MakeExitRecordOnPlaneWithTangent`
+//        + `kTangentAxisSample`: NormalAxisForcingSampler's default
+//        (0.15) forced the axis-selection draw below 0.5 on EVERY
+//        attempt in every round-1 fixture, so the tangent/bitangent
+//        probe branches (`axisSample` in [0.5, 1), 50% of production
+//        sampling) were never exercised by this suite at all.  This
+//        fixture forces the tangent branch and re-checks the same
+//        orientation/NEE invariants there.
+//    P2-A also fixes a separate defect the far-half fixture's fresh
+//      code path exposed: the SHADING normal's own flip predicate is
+//      independent of the geometric normal's, so blindly negating both
+//      in lockstep (round-1 behaviour) can leave them in opposite
+//      hemispheres at a grazing crossing.  The round-2 fix instead
+//      orients the shading normal into the geometric normal's
+//      hemisphere AFTER correcting the latter.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <iostream>
@@ -95,26 +124,36 @@ static void Fail( const std::string& label )
 
 //////////////////////////////////////////////////////////////////////
 // Deterministic sampler: forces the SECOND Get1D() draw (the
-// axis-selection sample in SampleEntryPoint's Step 2) below 0.5, so
-// every attempt takes the "normal axis" branch (probeAxis =
-// exitNormal).  Every other draw is a genuine random sample from a
-// per-attempt seed, so radius/phi/hit-selection/cosine-direction vary
-// normally across attempts.
+// axis-selection sample in SampleEntryPoint's Step 2) to a fixed
+// value, so every attempt takes the SAME axis branch.  Default 0.15
+// (< 0.5, the "normal axis" branch, probeAxis = exitNormal) preserves
+// every existing call site's behaviour; round-2 (P1/P2-A red-proof)
+// also passes 0.6 (in [0.5, 0.75), the "tangent axis" branch,
+// probeAxis = exitTangent) to exercise the axis this sampler
+// previously never selected -- see kNormalAxis/kTangentAxis below.
+// Every other draw is a genuine random sample from a per-attempt
+// seed, so radius/phi/hit-selection/cosine-direction vary normally
+// across attempts.
 //////////////////////////////////////////////////////////////////////
+static const Scalar kNormalAxisSample = 0.15;
+static const Scalar kTangentAxisSample = 0.6;
+
 class NormalAxisForcingSampler : public ISampler
 {
 	RandomNumberGenerator rng;
 	int callIndex;
+	Scalar forcedAxisSample;
 public:
-	explicit NormalAxisForcingSampler( const unsigned int seed ) :
-		rng( seed ), callIndex( 0 ) {}
+	explicit NormalAxisForcingSampler(
+		const unsigned int seed, const Scalar forcedAxisSample_ = kNormalAxisSample ) :
+		rng( seed ), callIndex( 0 ), forcedAxisSample( forcedAxisSample_ ) {}
 
 	Scalar Get1D()
 	{
 		const int idx = callIndex++;
 		if( idx == 1 ) {
-			// The axis-selection draw: force < 0.5 -> normal axis.
-			return 0.15;
+			// The axis-selection draw.
+			return forcedAxisSample;
 		}
 		return rng.CanonicalRandom();
 	}
@@ -127,6 +166,43 @@ public:
 	}
 };
 
+// Generic builder: a broad DOUBLE-SIDED quad centered at `center`, in
+// the plane spanned by `axisU`/`axisV`, with per-vertex normal
+// authored as `normal` on BOTH triangles (the common, consistent-
+// winding authoring case) -- so probing along a direction with
+// positive dot against `normal` triggers TriangleMeshGeometry's
+// ray-facing flip (`bGeomNormalOrientedToRay`).
+static Object* MakeDoubleSidedQuadMeshGeneric(
+	const Point3& center, const Vector3& normal,
+	const Vector3& axisU, const Vector3& axisV, const Scalar half )
+{
+	TriangleMeshGeometry* pGeo = new TriangleMeshGeometry( /*bDoubleSided_=*/true );
+
+	const Point3 verts[4] = {
+		Point3Ops::mkPoint3( center, axisU * -half + axisV * -half ),
+		Point3Ops::mkPoint3( center, axisU *  half + axisV * -half ),
+		Point3Ops::mkPoint3( center, axisU *  half + axisV *  half ),
+		Point3Ops::mkPoint3( center, axisU * -half + axisV *  half ) };
+	const Point2 uv[4] = { Point2(0,0), Point2(1,0), Point2(1,1), Point2(0,1) };
+
+	Triangle t1, t2;
+	const int idx1[3] = { 0, 1, 2 };
+	const int idx2[3] = { 0, 2, 3 };
+	for( int k = 0; k < 3; k++ ) {
+		t1.vertices[k] = verts[ idx1[k] ]; t1.normals[k] = normal; t1.coords[k] = uv[ idx1[k] ];
+		t2.vertices[k] = verts[ idx2[k] ]; t2.normals[k] = normal; t2.coords[k] = uv[ idx2[k] ];
+	}
+	pGeo->AddTriangle( t1 );
+	pGeo->AddTriangle( t2 );
+	pGeo->DoneTriangles();
+
+	pGeo->addref();
+	Object* pObj = new Object( pGeo );
+	pObj->addref();
+	pGeo->release();
+	return pObj;
+}
+
 // DL-71: a broad DOUBLE-SIDED quad, authored coplanar with the exit
 // point exactly like MakeInfinitePlane() above, but through a
 // geometry type that sets bGeomNormalOrientedToRay -- the disk
@@ -138,31 +214,46 @@ public:
 // -- exactly the scenario the fix targets.
 static Object* MakeDoubleSidedQuadMesh()
 {
-	TriangleMeshGeometry* pGeo = new TriangleMeshGeometry( /*bDoubleSided_=*/true );
+	return MakeDoubleSidedQuadMeshGeneric(
+		Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ), Vector3( 1, 0, 0 ), Vector3( 0, 1, 0 ), 100.0 );
+}
 
-	const Scalar half = 100.0;
-	const Point3 verts[4] = {
-		Point3( -half, -half, 0 ), Point3( half, -half, 0 ),
-		Point3( half, half, 0 ), Point3( -half, half, 0 ) };
-	const Vector3 n( 0, 0, 1 );
-	const Point2 uv[4] = { Point2(0,0), Point2(1,0), Point2(1,1), Point2(0,1) };
+// P1 round-2 red-proof (this slice): the SAME flat, +Z-authored,
+// double-sided quad as MakeDoubleSidedQuadMesh(), but shifted to
+// `zOffset` ABOVE the exit plane -- i.e. entirely in the "far half"
+// of the probe chord (any hit here has `distFromChordStart >
+// probeMaxDist`).  A ray travelling +Z still approaches this quad
+// from underneath (the same side, since the quad's orientation and
+// the ray direction are unchanged), so TriangleMeshGeometry flips its
+// normal here exactly as it does for the coplanar near-quad above --
+// contradicting round-1 DL-71's premise that "far-half hits ...
+// already matched the pre-DL-52 +axis probe, so they need no
+// correction".  The round-1 fix's positional gate
+// (`distFromChordStart < probeMaxDist`) skipped this hit, leaving its
+// entry normal INVERTED; the round-2 fix (unconditional correction,
+// gated only on `bGeomNormalOrientedToRay && !bGeomNormalRayDerived`)
+// corrects it regardless of chord position.
+static Object* MakeDoubleSidedQuadMeshAtZ( const Scalar zOffset )
+{
+	return MakeDoubleSidedQuadMeshGeneric(
+		Point3( 0, 0, zOffset ), Vector3( 0, 0, 1 ), Vector3( 1, 0, 0 ), Vector3( 0, 1, 0 ), 100.0 );
+}
 
-	Triangle t1, t2;
-	const int idx1[3] = { 0, 1, 2 };
-	const int idx2[3] = { 0, 2, 3 };
-	for( int k = 0; k < 3; k++ ) {
-		t1.vertices[k] = verts[ idx1[k] ]; t1.normals[k] = n; t1.coords[k] = uv[ idx1[k] ];
-		t2.vertices[k] = verts[ idx2[k] ]; t2.normals[k] = n; t2.coords[k] = uv[ idx2[k] ];
-	}
-	pGeo->AddTriangle( t1 );
-	pGeo->AddTriangle( t2 );
-	pGeo->DoneTriangles();
-
-	pGeo->addref();
-	Object* pObj = new Object( pGeo );
-	pObj->addref();
-	pGeo->release();
-	return pObj;
+// P2-A / axis-coverage red-proof (this slice): the same coplanar
+// DOUBLE-SIDED-quad scenario as MakeDoubleSidedQuadMesh(), but built
+// in the plane x=0 with authored normal +X instead of +Z -- i.e. a
+// "wall" perpendicular to the TANGENT axis rather than the normal
+// axis.  Paired with an exit record whose ONB tangent is pinned to
+// +X (MakeExitRecordOnPlaneWithTangent below) and a sampler that
+// forces the axis-selection draw into the tangent branch
+// (kTangentAxisSample), this exercises the 50% of production
+// axis-selection space (`axisSample` in [0.5, 1)) that
+// NormalAxisForcingSampler's default (0.15, always the normal axis)
+// never reached in the round-1 regression.
+static Object* MakeDoubleSidedWallMeshAtX( const Scalar xOffset )
+{
+	return MakeDoubleSidedQuadMeshGeneric(
+		Point3( xOffset, 0, 0 ), Vector3( 1, 0, 0 ), Vector3( 0, 1, 0 ), Vector3( 0, 0, 1 ), 100.0 );
 }
 
 // DL-71: same coplanar broad-quad scenario through ClippedPlaneGeometry
@@ -235,6 +326,27 @@ static RayIntersectionGeometric MakeExitRecordOnPlane()
 	return ri;
 }
 
+// Same exit point/normal as MakeExitRecordOnPlane(), but with the ONB
+// tangent PINNED to +X (rather than whatever arbitrary tangent
+// CreateFromW() derives) so a test can force the tangent-axis probe
+// branch and know exactly which world direction it travels in --
+// paired with MakeDoubleSidedWallMeshAtX() above.
+static RayIntersectionGeometric MakeExitRecordOnPlaneWithTangent()
+{
+	const Point3 point( 0, 0, 0 );
+	const Vector3 normal( 0, 0, 1 );
+	const Vector3 incoming( 0, 0, -1 );
+	RayIntersectionGeometric ri(
+		Ray( Point3Ops::mkPoint3( point, -incoming * 2.0 ), incoming ),
+		nullRasterizerState );
+	ri.bHit = true;
+	ri.ptIntersection = point;
+	ri.vNormal = normal;
+	ri.vGeomNormal = normal;
+	ri.onb.CreateFromWU( normal, Vector3( 1, 0, 0 ) );
+	return ri;
+}
+
 static RayIntersectionGeometric MakeExitRecordOnSphere()
 {
 	const Point3 point( 0, -2, 0 );
@@ -301,30 +413,40 @@ struct OrientationStats
 };
 
 // DL-71: exercises the SAME reach path as RunReachTrial, but on a
-// coplanar DOUBLE-SIDED surface, and additionally checks that the
-// recovered entry normal is outward-oriented (matches the exit
-// point's own +Z normal -- this is a single flat, coplanar surface,
-// so there is no legitimate reason for the entry side to disagree)
-// and that the real production NEE adapter used at BSSRDF entry
-// points (BSSRDFAdapters::BSSRDFEntryBSDF, BSSRDFEntryAdapters.h)
-// gives a positive value for a light straight above the surface --
-// exactly the site the DL-71 recipe names as broken by an inverted
-// entry normal (`cosTheta = Dot(vLightIn, vNormal) <= 0` zeroing NEE
-// for every exterior light).
+// DOUBLE-SIDED surface, and additionally checks that the recovered
+// entry normal is outward-oriented (matches the surface's own known
+// true normal, `outwardDir` -- there is no legitimate reason for the
+// entry side to disagree) and that the real production NEE adapter
+// used at BSSRDF entry points (BSSRDFAdapters::BSSRDFEntryBSDF,
+// BSSRDFEntryAdapters.h) gives a positive value for a light straight
+// outside the surface (`exteriorLightDir`) -- exactly the site the
+// DL-71 recipe names as broken by an inverted entry normal
+// (`cosTheta = Dot(vLightIn, vNormal) <= 0` zeroing NEE for every
+// exterior light).
+//
+// Generalized in the round-2 (P1/P2-A) slice to take the surface's
+// outward direction / coplanarity-check axis and the sampler's forced
+// axis-selection value as parameters, rather than hardcoding the
+// original coplanar +Z fixture's assumptions -- reused for the
+// far-half (`MakeDoubleSidedQuadMeshAtZ`) and tangent-axis
+// (`MakeDoubleSidedWallMeshAtX`) round-2 fixtures below.
 static OrientationStats RunOrientationTrial(
 	const RayIntersectionGeometric& exit,
 	Object* pObject,
 	SubSurfaceScatteringMaterial* pMaterial,
 	const unsigned int seedBase,
-	const int N )
+	const int N,
+	const Vector3& outwardDir = Vector3( 0, 0, 1 ),
+	const Scalar coplanarPlaneValue = 0.0,
+	const Scalar forcedAxisSample = kNormalAxisSample )
 {
 	OrientationStats stats{ N, 0, 0, 0, 0 };
 	ISubSurfaceDiffusionProfile* pProfile = pMaterial->GetDiffusionProfile();
-	const Vector3 exteriorLightDir( 0, 0, 1 );	// straight above the z=0 surface
+	const Vector3 exteriorLightDir = outwardDir;	// straight outside the surface
 
 	for( int i = 0; i < N; i++ )
 	{
-		NormalAxisForcingSampler sampler( seedBase + static_cast<unsigned int>(i) );
+		NormalAxisForcingSampler sampler( seedBase + static_cast<unsigned int>(i), forcedAxisSample );
 		const BSSRDFSampling::SampleResult result = BSSRDFSampling::SampleEntryPoint(
 			exit, pObject, pMaterial, sampler, 0 );
 
@@ -333,11 +455,12 @@ static OrientationStats RunOrientationTrial(
 
 		const Point3 onSurface = Point3Ops::mkPoint3(
 			result.entryPoint, -result.entryNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
-		if( std::fabs( onSurface.z ) < 1e-4 ) {
+		if( std::fabs( Vector3Ops::Dot( Vector3( onSurface.x, onSurface.y, onSurface.z ), outwardDir )
+			- coplanarPlaneValue ) < 1e-4 ) {
 			stats.coplanar++;
 		}
 
-		if( Vector3Ops::Dot( result.entryNormal, Vector3( 0, 0, 1 ) ) > 0 ) {
+		if( Vector3Ops::Dot( result.entryNormal, outwardDir ) > 0 ) {
 			stats.outwardOriented++;
 		}
 
@@ -453,6 +576,97 @@ int main()
 				"exterior light -- DL-71 inverted-normal regression zeroes NEE" );
 		}
 		pPlane->release();
+	}
+
+	// --- P1 round-2 red-proof: FAR-half hit on a flip-oriented double-
+	// sided quad must ALSO recover an outward entry normal.  Round-1's
+	// DL-71 fix gated the correction on `distFromChordStart <
+	// probeMaxDist` (i.e. "near half only"), reasoning far-half hits
+	// were reached exactly like the pre-DL-52 "+axis" probe and needed
+	// no correction.  That reasoning is wrong: the ray-facing flip is a
+	// per-hit fact about approach side, independent of chord position --
+	// a quad entirely in the far half, authored with the SAME +Z normal
+	// as the near-quad fixture above, gets flipped identically. Placed
+	// at half the profile's effective probe reach so it is definitely
+	// within `probeMaxDist` of the exit plane, definitely in the far
+	// half (zOffset > 0), and definitely NOT coplanar with the exit
+	// point (so RunOrientationTrial's coplanar counter is not meaningful
+	// here and is only logged, not asserted on).
+	{
+		ISubSurfaceDiffusionProfile* pProfile = material->GetDiffusionProfile();
+		const Scalar probeMaxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
+		const Scalar zOffset = 0.5 * probeMaxDist;
+
+		Object* pMesh = MakeDoubleSidedQuadMeshAtZ( zOffset );
+		const RayIntersectionGeometric exit = MakeExitRecordOnPlane();
+		const OrientationStats stats = RunOrientationTrial(
+			exit, pMesh, material, 4000u, N, Vector3( 0, 0, 1 ), zOffset, kNormalAxisSample );
+		std::cout << "Far-half double-sided quad (z=" << zOffset << ", normal-axis forced): valid "
+			<< stats.valid << "/" << stats.attempts << "  coplanar " << stats.coplanar << "/" << stats.valid
+			<< "  outward " << stats.outwardOriented << "/" << stats.valid
+			<< "  neePositive " << stats.neePositive << "/" << stats.valid << std::endl;
+
+		if( stats.valid < stats.attempts / 2 ) {
+			Fail( "far-half double-sided quad: normal-axis probe must reach the surface "
+				"(check zOffset is within the profile's probe reach)" );
+		}
+		if( stats.valid > 0 && stats.outwardOriented < stats.valid * 9 / 10 ) {
+			Fail( "far-half double-sided quad: entry normal must face outward -- P1 round-2: "
+				"round-1's DL-71 fix only corrected NEAR-half hits (distFromChordStart < "
+				"probeMaxDist); a far-half hit on flip-oriented geometry was left INVERTED" );
+		}
+		if( stats.valid > 0 && stats.neePositive < stats.valid * 9 / 10 ) {
+			Fail( "far-half double-sided quad: BSSRDFEntryBSDF must give a positive value for an "
+				"exterior light -- P1 round-2: an inverted far-half entry normal zeroes NEE" );
+		}
+		pMesh->release();
+	}
+
+	// --- P2-A / axis-coverage red-proof: TANGENT-axis probe branch,
+	// FAR-half hit, on a flip-oriented double-sided wall.
+	// NormalAxisForcingSampler's default (0.15) forces `axisSample <
+	// 0.5` on every attempt, so the round-1 regression suite never
+	// exercised the tangent/bitangent branches (axisSample in [0.5, 1),
+	// 50% of production sampling) AT ALL.  Combined with placing the
+	// wall in the far half (xOffset > 0, mirroring the Z-axis far-half
+	// fixture above) this fixture is red on HEAD for the SAME P1
+	// positional-gate reason as the far-half quad above, while also
+	// closing the axis-coverage gap: it demonstrates the general,
+	// axis-independent nature of both the bug (the positional gate
+	// checks `distFromChordStart`, a scalar along whichever axis was
+	// selected -- the same defect regardless of which world axis that
+	// is) and the round-2 fix (unconditional on
+	// `bGeomNormalOrientedToRay`, still axis-independent).
+	{
+		ISubSurfaceDiffusionProfile* pProfile = material->GetDiffusionProfile();
+		const Scalar probeMaxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
+		const Scalar xOffset = 0.5 * probeMaxDist;
+
+		Object* pWall = MakeDoubleSidedWallMeshAtX( xOffset );
+		const RayIntersectionGeometric exit = MakeExitRecordOnPlaneWithTangent();
+		const OrientationStats stats = RunOrientationTrial(
+			exit, pWall, material, 5000u, N, Vector3( 1, 0, 0 ), xOffset, kTangentAxisSample );
+		std::cout << "Far-half tangent-axis double-sided wall (x=" << xOffset
+			<< ", axis forced 0.6): valid " << stats.valid << "/" << stats.attempts
+			<< "  coplanar " << stats.coplanar << "/" << stats.valid
+			<< "  outward " << stats.outwardOriented << "/" << stats.valid
+			<< "  neePositive " << stats.neePositive << "/" << stats.valid << std::endl;
+
+		if( stats.valid < stats.attempts / 2 ) {
+			Fail( "far-half tangent-axis double-sided wall: tangent-axis probe must reach the "
+				"surface (axis-selection branch untested before this slice; check xOffset is "
+				"within the profile's probe reach)" );
+		}
+		if( stats.valid > 0 && stats.outwardOriented < stats.valid * 9 / 10 ) {
+			Fail( "far-half tangent-axis double-sided wall: entry normal must face outward -- "
+				"P1 round-2: the positional gate bug and its fix are axis-independent, and this "
+				"branch was never exercised at all before this slice" );
+		}
+		if( stats.valid > 0 && stats.neePositive < stats.valid * 9 / 10 ) {
+			Fail( "far-half tangent-axis double-sided wall: BSSRDFEntryBSDF must give a positive "
+				"value for an exterior light on the tangent-axis probe branch" );
+		}
+		pWall->release();
 	}
 
 	material->release();

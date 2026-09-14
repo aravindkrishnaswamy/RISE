@@ -156,6 +156,12 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	{
 		const Point3 chordStart = Point3Ops::mkPoint3( probeCenter, -probeAxis * probeMaxDist );
 		Ray probeRay( chordStart, probeAxis );
+		// P3 bookkeeping note: this initial epsilon advance is NOT added to
+		// `traveled` below, so the loop's actual reach is
+		// `chordLength + BSSRDF_RAY_EPSILON` from `chordStart`, not exactly
+		// `chordLength` -- negligible (epsilon-scale) but stated explicitly
+		// here since the per-hit `remaining` budget is computed against
+		// `chordLength` alone.
 		probeRay.Advance( BSSRDF_RAY_EPSILON );
 
 		const Scalar chordLength = 2.0 * probeMaxDist;
@@ -180,42 +186,78 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			h.geomNormal = probeRI.geometric.vGeomNormal;
 			h.onb = probeRI.geometric.onb;
 
-			// DL-71 (P1): the chord travels in ONE fixed direction
-			// (+probeAxis) for its entire length.  A hit on the near
-			// (-axis) side of probeCenter -- i.e. before the chord has
-			// travelled probeMaxDist from chordStart -- is the analogue
-			// of what the pre-DL-52 code's SEPARATE -probeAxis probe
-			// would have found, approaching the surface from the
-			// OPPOSITE physical direction; here it was actually reached
-			// with ray.Dir()==+probeAxis.  A geometry that re-orients
-			// its reported normal to face the incoming ray
-			// (RayIntersectionGeometric::bGeomNormalOrientedToRay --
-			// currently double-sided triangle meshes, ClippedPlaneGeometry,
-			// and BezierPatchGeometry) therefore reports, on every such
-			// near-half hit, a normal that faces INTO the solid instead
-			// of out of it: "outward" for the entry point must agree
-			// with the approach direction a -probeAxis-directed probe
-			// would have used, not the chord's actual +probeAxis travel
-			// direction.  Far-half hits (beyond probeCenter) were
-			// already reached with ray.Dir()==+probeAxis, exactly
-			// matching the pre-DL-52 "+axis" probe, so they need no
-			// correction.  Recover the ray-independent winding normal
-			// (the same recovery RayCaster.cpp's env-escape helper uses,
-			// `oriented ? -raw : raw`) by negating; the geometry types
-			// that never set the flag (the vast majority -- any
-			// consistently-wound single-sided mesh, and every
-			// analytical primitive) are untouched either way, since
-			// `bGeomNormalOrientedToRay` defaults false for them.
-			const Scalar distFromChordStart = traveled + probeRI.geometric.range;
-			if( probeRI.geometric.bGeomNormalOrientedToRay && distFromChordStart < probeMaxDist )
+			// DL-71/DL-75 (P1): recover the TRUE, ray-independent winding
+			// normal from a geometry that re-orients its reported normal
+			// to face the incoming ray (RayIntersectionGeometric::
+			// bGeomNormalOrientedToRay -- double-sided triangle meshes,
+			// ClippedPlaneGeometry, BezierPatchGeometry, and HairGeometry).
+			//
+			// A PREVIOUS version of this fix (round 1, DL-71) applied the
+			// correction only on "near-half" hits (`distFromChordStart <
+			// probeMaxDist`), reasoning that only those hits were reached
+			// from the "opposite" direction a pre-DL-52 `-probeAxis` probe
+			// would have used.  That positional model is WRONG in general:
+			// the flip predicate each setter evaluates (e.g.
+			// TriangleMeshGeometry::IntersectRay's `bFlipGeomNormal =
+			// Dot(vGeomNormal, ray.Dir()) > 0`) is a per-hit fact about
+			// THIS ray direction and THIS surface winding -- it does not
+			// depend on which half of the chord the hit falls in.  On a
+			// concave double-sided mesh (an L-corner, an ear) a FAR-half
+			// hit can just as easily be an EXITING crossing that gets
+			// flipped, and the near/far boundary itself sits at the
+			// initial `BSSRDF_RAY_EPSILON` advance from chordStart -- a
+			// hit a few ulps past that boundary was silently inverted by
+			// the old code for no physical reason.  The correct rule is
+			// unconditional: `oriented ? -raw : raw` recovers the true
+			// winding-order normal for EVERY hit where the flag is set,
+			// regardless of position or approach direction (see the field's
+			// own doc comment in RayIntersectionGeometric.h).
+			//
+			// EXCEPTION -- HairGeometry (DL-75): its
+			// `bGeomNormalOrientedToRay` is unconditionally true, but the
+			// reported normal is FABRICATED (ray-derived), not the
+			// recovery of a genuine two-sided winding normal -- a hair
+			// ribbon has no "outward side" to undo the flip back to.
+			// Applying the correction there would just report the
+			// ray-OPPOSITE direction, not a physically meaningful entry
+			// normal, so `bGeomNormalRayDerived` gates the correction off
+			// for hair (filed as DL-75: SSS on hair geometry has no
+			// defined outward entry normal -- coverage/precision gap, not
+			// fixed here).
+			//
+			// Geometry types that never set `bGeomNormalOrientedToRay`
+			// (the vast majority -- any consistently-wound single-sided
+			// mesh, and every analytical primitive) are untouched either
+			// way, since the flag defaults false for them.
+			if( probeRI.geometric.bGeomNormalOrientedToRay &&
+				!probeRI.geometric.bGeomNormalRayDerived )
 			{
-				h.normal = -h.normal;
 				h.geomNormal = -h.geomNormal;
-				// Rebuild the basis around the corrected normal, keeping
-				// the existing tangent (u) as the seed so the frame
-				// stays a genuine orthonormal triple rather than just
-				// negating W in isolation (which downstream consumers
-				// that overwrite vNormal/onb together -- e.g.
+
+				// P2-A: the SHADING normal's own flip predicate
+				// (`Dot(vNormal, ray.Dir()) > 0`, e.g.
+				// TriangleMeshGeometry::IntersectRay's `ri.vNormal =
+				// -ri.vNormal` a few lines above its independent
+				// `bFlipGeomNormal` test) is evaluated INDEPENDENTLY of
+				// the geometric normal's -- at a grazing crossing the two
+				// can disagree (the interpolated per-vertex shading
+				// normal already opposes the chord while the flat face
+				// normal does not, or vice versa).  Blindly negating
+				// `h.normal` in lockstep with `h.geomNormal` (round-1
+				// DL-71 behaviour) can therefore leave the pair in
+				// OPPOSITE hemispheres.  Instead, orient the (unflipped)
+				// shading normal into the SAME hemisphere as the just-
+				// corrected geometric normal -- the pairing every
+				// downstream BSSRDF/Fresnel/cosine consumer assumes.
+				if( Vector3Ops::Dot( h.normal, h.geomNormal ) < 0 ) {
+					h.normal = -h.normal;
+				}
+
+				// Rebuild the basis around the corrected shading normal,
+				// keeping the existing tangent (u) as the seed so the
+				// frame stays a genuine orthonormal triple rather than
+				// just negating W in isolation (which downstream
+				// consumers that overwrite vNormal/onb together -- e.g.
 				// PathTracingIntegrator.cpp, BDPTIntegrator.cpp -- would
 				// otherwise receive as a mismatched W-vs-U/V pair).
 				h.onb.CreateFromWU( h.normal, h.onb.u() );

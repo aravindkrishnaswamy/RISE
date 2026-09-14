@@ -194,7 +194,17 @@ namespace RISE
 		//  the honest statement of what happened: the reported geometric
 		//  normal was oriented to oppose the ray rather than read off a
 		//  fixed surface orientation (see that field's contract in
-		//  RayIntersectionGeometric.h).
+		//  RayIntersectionGeometric.h).  `bGeomNormalRayDerived` is ALSO
+		//  set TRUE on every hit (DL-75, 2026-09-13): unlike the four
+		//  winding-order geometries that set `bGeomNormalOrientedToRay`,
+		//  a hair ribbon's orientation is FABRICATED, not the recovery of
+		//  a genuine two-sided normal -- there is no "other side" to
+		//  undo the flip back to.  A consumer that reconstructs a true
+		//  outward normal via `oriented ? -vGeomNormal : vGeomNormal`
+		//  (e.g. BSSRDFSampling.cpp's entry-point probe) MUST check
+		//  `bGeomNormalRayDerived` first and skip the correction here;
+		//  applying it anyway would just report the ray-OPPOSITE
+		//  direction, not a physically meaningful outward side.
 		//
 		//  bComputeExitInfo: a ribbon is a zero-thickness surface -- it
 		//  encloses no volume, so there is no second crossing to report.

@@ -208,6 +208,18 @@ static bool SelectedProbeHit(
 	// Must stay in lockstep with production: same draw count/order (this
 	// loop consumes no sampler draws), same physical hit enumeration, so
 	// draws[4]'s hit-selection index picks the SAME entry point in both.
+	//
+	// P3-5 (round-2 review, this slice): this oracle does NOT reproduce
+	// production's DL-71/DL-75 orientation correction (`oriented ?
+	// -vGeomNormal : vGeomNormal`, skipped for `bGeomNormalRayDerived`
+	// geometry) -- it reads `probeRI.geometric.vGeomNormal` straight off
+	// the hit record below, unconditionally. This is SAFE for the fixture
+	// this file actually uses (a `SphereGeometry`, which never sets
+	// `bGeomNormalOrientedToRay`, so the raw and corrected normals are
+	// identical here), but this oracle would silently diverge from
+	// production if ever pointed at a double-sided/flip-oriented geometry
+	// (a mesh, `ClippedPlaneGeometry`, `BezierPatchGeometry`) or hair --
+	// it is not a general-purpose lockstep reference for those cases.
 	struct RawHit { Point3 point; Vector3 normal; };
 	std::vector<RawHit> hits;
 	const Scalar maxDistance = profile->GetMaximumDistanceForError( 1e-4 );

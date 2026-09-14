@@ -23,12 +23,16 @@
 //       starting before and passing through the projection plane
 //       (DL-52: NOT two half-lines starting AT the plane -- that
 //       skips a coplanar near surface, see BSSRDFSampling.cpp).
-//       DL-71: because the chord travels in one fixed direction, a
-//       hit on the near (-axis) side of the projection plane must
-//       have its reported normal re-negated when the underlying
-//       geometry orients normals to face the incoming ray
-//       (RayIntersectionGeometric::bGeomNormalOrientedToRay) -- see
-//       the probe loop in BSSRDFSampling.cpp for the full rule.
+//       DL-71/DL-75: any hit -- near OR far side of the projection
+//       plane, position is irrelevant -- whose underlying geometry
+//       orients its reported normal to face the incoming ray
+//       (RayIntersectionGeometric::bGeomNormalOrientedToRay) has that
+//       normal (and its shading-normal partner, oriented into the
+//       same hemisphere -- P2-A) unconditionally recovered via
+//       `oriented ? -raw : raw`, EXCEPT when the orientation is
+//       fabricated rather than a recovered winding normal
+//       (HairGeometry; RayIntersectionGeometric::bGeomNormalRayDerived)
+//       -- see the probe loop in BSSRDFSampling.cpp for the full rule.
 //    7. If hit: evaluate Rd(r_actual), compute multi-axis PDF
 //    8. Generate cosine-weighted scattered ray from entry normal
 //    9. Compute Fresnel transmission and Sw normalization
