@@ -63,7 +63,7 @@ The audit searched consumed `kray`/`krayNM`, then the adjacent
 | `Shaders/PathTracingIntegrator.cpp`, HWSS companions | OPEN DL-38 | BSDF fallback cannot reproduce the stateful exit weight. |
 | `Shaders/BDPTIntegrator.cpp`, eye/light RGB/NM/HWSS; VCM/MLT shared walks | OPEN DL-38 | Non-delta continuation reevaluates BSDF instead of carrying the SPF amplitude. |
 | Generic/global/caustic photon consumers and shader operations | VERIFIED unchanged for DL-01 | Multiply selected supplied weights; no compensating duplicate tau. |
-| `PhotonMapping/TranslucentPelPhotonTracer.cpp` and photon-map gather | OPEN DL-39 | Dedicated deposition accounts absorbed energy as stored power. |
+| `PhotonMapping/TranslucentPelPhotonTracer.cpp` and photon-map gather | CLOSED DL-39 (`1fe5c760`) | Dedicated deposition accounted absorbed energy as stored power; now deposits the diffuse lobe's own kray directly. |
 | SMS snell/uniform modes | INAPPLICABLE | TranslucentSPF supplies no specular-info override for an analytic translucent chain. |
 | `ior_stack` / `delete_stack` | VERIFIED unchanged | The weight edit changes neither stack allocation nor ownership; existing ownership guards remain in TranslucentIORStackTest. |
 
@@ -89,6 +89,14 @@ and scattering zero, it stores all incoming power regardless of extinction.
 `TranslucentPelPhotonMap::RadianceEstimate` sums stored power and applies
 the BSDF, which cannot recover the missing Beer attenuation. Static evidence
 is confirmed; deposited-flux red-proof remains DL-39's separate recipe.
+
+~~DL-39 CLOSED 2026-09-13 — `1fe5c760`.~~ `TracePhoton` now sums the
+diffuse lobe's own kray directly (TranslucentSPF emits at most one
+`eRayDiffuse` ray per `Scatter`/`ScatterNM` call) and deposits
+`power*diffuse_kray`, instead of the old `power*(1-accum_scattered)`
+which never included that lobe's weight at all. See
+[DL-39's ledger row](DEBT_LEDGER.md) and
+[the closure test](../tests/TranslucentPhotonEnergyTest.cpp).
 
 ## Corrections to the original ledger
 

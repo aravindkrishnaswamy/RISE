@@ -148,7 +148,14 @@ do not execute old phase lists blindly.
     records the NM exit/backscatter lobe double-tau repair; [DL02_TRANSLUCENT_EXIT_DENSITY.md](DL02_TRANSLUCENT_EXIT_DENSITY.md)
     records the diffuse-exit Pdf sign-flip and NM/RGB shape-parity repair;
     [DL03_GUIDED_IOR_CONTINUATION.md](DL03_GUIDED_IOR_CONTINUATION.md) records
-    the guided-continuation IOR-stack state repair.
+    the guided-continuation IOR-stack state repair. Three residuals these
+    docs recorded as open were subsequently closed 2026-09-13 (debt-cleanup
+    slice `translucent`, struck in place in the same files and in
+    [DEBT_LEDGER.md](DEBT_LEDGER.md)): DL-39 (photon-map deposition
+    accounted absorbed power as stored power), DL-45 (the diffuse exit
+    re-emission ignored the geometric horizon under a tilted shading
+    normal), and DL-46 (a camera/light origin already inside a closed
+    translucent object was never seeded with its IOR-stack membership).
   - Subsurface scattering: [DL04_SSS_RADIANCE_DECISION.md](DL04_SSS_RADIANCE_DECISION.md)
     records the complete-event eta² convention pin and discriminating
     measurements; [DL48_SSS_NORMALIZATION.md](DL48_SSS_NORMALIZATION.md)

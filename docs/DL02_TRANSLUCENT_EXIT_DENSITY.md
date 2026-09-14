@@ -68,7 +68,7 @@ Paths below are relative to `src/Library/`.
 | `Materials/CoatedMaterial.h`, `Materials/FabricMaterial.h` | INAPPLICABLE | Substrate allowlists exclude TranslucentMaterial. |
 | SMS snell/uniform modes | INAPPLICABLE | TranslucentSPF has no valid analytic specular-info override. |
 | Generic/global/caustic photon consumers | VERIFIED unchanged | Consume directions, weights and optional stacks without reevaluating pdf. |
-| `PhotonMapping/TranslucentPelPhotonTracer.cpp` | VERIFIED density-independent; OPEN DL-39 | Deposition error concerns absorbed power, not the exit density. |
+| `PhotonMapping/TranslucentPelPhotonTracer.cpp` | VERIFIED density-independent; CLOSED DL-39 (`1fe5c760`) | Deposition error concerned absorbed power, not the exit density; now deposits the diffuse lobe's own kray directly. |
 | `ior_stack` / `delete_stack` | VERIFIED unchanged | Exit still pops the object; backscatter retains the input stack; no lifetime or allocation changes. |
 
 ## Independent residual: DL-41
