@@ -136,8 +136,23 @@ Two constructions were unavailable:
 * **Rejection.** `ISampler` may have a fixed per-bounce dimension budget
   (`ISampler::HasFixedDimensionBudget()`, `ISampler.h`); a variable draw count
   shifts every later `Get1D()` in the bounce's phase in a tilt-correlated way.
-  `TranslucentSamplerDimensionCountTest` (65544 checks) exists precisely
-  because DL-45's first attempt did this.
+  `TranslucentSamplerDimensionCountTest` exists precisely because DL-45's
+  first attempt did this — but at this row's original closure its own rows
+  all built `MakeInsideStack` fixtures with `scattering=0`, which isolates
+  only the exit branch's diffuse re-emission. It never actually counted a
+  call through the entering `trans` lobe, its per-channel-`N` branch, or the
+  exit branch's own interior backscatter `trans` lobe — precisely the lobes
+  this row changed — so the suite's checks were not, at closure time,
+  evidence that *this* fix respects the fixed-dimension-budget invariant
+  (review P2-a). The invariant did hold regardless (both new and old code
+  draw the lobe's two canonical numbers unconditionally, so the draw count
+  cannot depend on geometry or which channel branch fires), and the suite
+  now has dedicated rows proving it directly: an ENTERING-stack fixture
+  (isotropic, per-channel-`N`, NM) and a `scattering > 0` exit fixture (same
+  three pipes), each swept over tilts `{0,45,80}` and asserting `min==max`
+  draw count (4, since both the entry front/reflection lobe and the entering
+  `trans` lobe — or the backscatter `trans` lobe and the diffuse exit lobe —
+  are active on these fixtures). 65589 checks post-P2-a (was 65544).
 * **DL-45's Malley disk remap.** Its disk-projection equivalence is specific
   to the **plain cosine** (`N = 1`) case. These lobes carry an
   author-controlled `N` (`translucent_material`'s `N` painter, per-channel in
