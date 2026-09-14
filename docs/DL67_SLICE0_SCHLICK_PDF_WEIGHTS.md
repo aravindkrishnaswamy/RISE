@@ -1,325 +1,451 @@
-# DL-67 Slice 0 — `SchlickSPF::Pdf`/`PdfNM` lobe weights
+# DL-67 Slice 0 — `SchlickSPF::Pdf`/`PdfNM` is the density of what `Scatter` emits
 
-Scope: make `SchlickSPF::Pdf`/`PdfNM`'s aggregate-pdf lobe weights
-consistent with the weights `PTScatterSelectWeight`/`PTRandomlySelect`
-actually use to pick a lobe at runtime. This is the shared prerequisite
-identified in the DL-67/DL-69 design note's "Slice 0" — it does **not**
-touch DL-69 (BDPT/VCM ordinary throughput) or the rest of DL-67 (PT/BDPT
-guided RIS/one-sample candidates), which consume this fix but are
-separate slices.
+Scope: make `SchlickSPF::Pdf`/`PdfNM` return the actual probability
+density of the direction the integrator continues along. That is the
+shared prerequisite the DL-67/DL-69 design note calls "Slice 0"; it does
+**not** touch DL-69 (BDPT/VCM ordinary throughput) or the rest of DL-67
+(PT/BDPT guided RIS / one-sample candidates), which consume this fix but
+are separate slices.
+
+Status: **landed 2026-09-14** on branch `debt-slice0`. This document
+supersedes the first version of this slice, whose fix was measured and
+found to make the density *worse* on 6 of 8 configurations; §6 records
+what that version got wrong, because the mistake is instructive.
+
+---
 
 ## 0. What `Scatter()` emits
 
-`SchlickSPF::Scatter`/`ScatterNM` (`SchlickSPF.cpp`) draw the diffuse ray
-and the specular ray **unconditionally, every call** (subject only to
-geometric accept-checks), and push BOTH into the `ScatteredRayContainer`:
+`SchlickSPF::Scatter`/`ScatterNM` draw the diffuse ray and the specular
+ray **unconditionally, every call**, subject only to geometric
+accept-checks, and push both into the `ScatteredRayContainer`:
 
 - Diffuse: `d.kray = pDiffuse->GetColor(ri)` — a pure function of the
-  shading point `ri`. It does **not** vary with the diffuse lobe's own
-  sampled direction. `d.pdf = cosTheta/pi` (cosine-weighted hemisphere).
-- Specular: `s.kray = rho + (1-rho)*fresnel`, where `fresnel =
-  (1-hdotk)^5` and `hdotk = dot(h, wi)`, `h = half-vector(wi, wo_S)` —
-  a function of the specular lobe's **own** sampled direction `wo_S`.
-  `s.pdf = ComputeSchlickSpecularPdf(ri, wo_S, r, p)` (the Schlick
-  half-vector-sampling density).
+  shading point. It does **not** vary with the diffuse lobe's own
+  sampled direction. `d.pdf = cosTheta/pi`.
+- Specular: `s.kray = rho + (1-rho)*fresnel`, `fresnel = (1-hdotk)^5`,
+  `hdotk = dot(h, wi)` with `h` the sampled half-vector — a function of
+  the specular lobe's **own** sampled direction. `s.pdf` is the
+  half-vector sampling density (`ComputeSchlickSpecularPdf`).
+- With a per-channel roughness/isotropy painter, `Scatter` (not
+  `ScatterNM`) emits up to **three** specular rays instead of one, all
+  three from **the same random pair**.
 
-(The anisotropic/per-channel branch emits up to three per-channel
-specular rays instead of one; each uses the identical fresnel formula,
-so the analysis below is unaffected — Pdf() already collapses this case
-to a single averaged-roughness specular lobe, and this slice does not
-change that pre-existing collapse.)
+Both accept-checks are `dot(dir, myonb.w()) > 0 && dot(dir, geomN) > 0`.
+The geometric one is not decoration: a specular draw failing it is the
+single largest term in the answer below, and under a tilted shading
+normal the *diffuse* ray fails it too.
 
-Neither call resamples: both rays are drawn from the SAME `Scatter()`
-invocation and both survive into the container (subject to their own
-accept-checks) before anything picks between them.
+`ScatteredRayContainer::RandomlySelect` then picks one of the survivors
+with probability proportional to `MaxValue(kray)` — exactly
+`PTScatterSelectWeight` (`PathTracingIntegrator.cpp`). Two of its
+branches matter here and are easy to miss:
 
-## 1. `q_I` as `PTScatterSelectWeight`/`PTRandomlySelect` compute it
+- `freeidx == 1` returns that single ray **with probability 1**,
+  whatever its weight.
+- a 2+-ray container whose weights sum below `NEARZERO` returns
+  **nothing**.
 
-The integrator does the actual lobe selection, later, via
-`ScatteredRayContainer::RandomlySelect` (`ScatteredRayContainer.cpp`),
-called from `PTRandomlySelect<Tag>` (`PathTracingIntegrator.cpp:1338-
-1342`). Both `RandomlySelect`'s internal weight and
-`PTScatterSelectWeight<PelTag>`/`<NMTag>` (`:1354-1356`) use
-`MaxValue(kray)` (Pel) / `krayNM` (NM) — evaluated on the **realized**
-kray of each already-sampled ray. So the selection weight for lobe `I`
-at this call is:
+---
 
-```
-w_D = MaxValue(rd)                                     -- constant, independent of any draw
-w_S(wo_S) = MaxValue(rho + (1-rho)*fresnel(wi, wo_S))   -- a function of the specular lobe's OWN drawn direction
-```
+## 1. The density
 
-and the realized selection probability is `q_D = w_D/(w_D+w_S(wo_S))`,
-`q_S = w_S(wo_S)/(w_D+w_S(wo_S))`.
-
-## 2. The true generating density `sum_I q_I p_I(omega)`
-
-Because `w_D` never depends on which direction the diffuse lobe drew,
-and `w_S` is a **deterministic** function of the specular lobe's own
-drawn direction alone (not of the diffuse draw, and not of any other
-randomness), the two lobes' conditional selection probabilities behave
-asymmetrically when we ask "what is the density of the FINAL, selected
-direction landing at some direction `omega`, for an arbitrary `omega`
-(not necessarily anything actually drawn)?":
-
-- **Specular contribution, exact.** If the specular lobe's own draw
-  happens to be `omega`, the probability specular wins is
-  `q_S(omega) = w_S(omega) / (w_D + w_S(omega))` — a function of
-  `omega` ALONE (via the half-vector fresnel term), with **no
-  dependence on the diffuse lobe's unobserved draw** (since `w_D` is a
-  known constant, not something that needs to be averaged over). Pdf()
-  is asked to evaluate at a specific `omega = wo`, so it can compute
-  `w_S(wo)` exactly — no resampling needed, no approximation needed.
-
-- **Diffuse contribution, an expectation.** If the diffuse lobe's own
-  draw happens to be `omega`, the probability diffuse wins is
-  `q_D(omega) = w_D / (w_D + w_S(omega_S))`, where `omega_S` is the
-  SPECULAR lobe's own, statistically INDEPENDENT draw for that same
-  `Scatter()` call — not `omega`, and not observable from a bare query
-  `Pdf(ri, omega)`. This makes the diffuse lobe's true per-draw
-  selection probability a genuine expectation over the specular
-  sampling distribution:
-  `C_D = E_{omega_S ~ p_S}[ w_D / (w_D + w_S(omega_S)) ]` — a CONSTANT
-  (it does not depend on `omega` at all, since `w_D` doesn't), but one
-  that cannot be evaluated in closed form without integrating over the
-  whole specular lobe.
-
-So the true marginal density of SchlickSPF's own two-stage generation
-procedure, evaluable at an arbitrary `omega`, is:
+Write `p_D`, `p_i` for the diffuse / i-th specular sampling densities,
+`w_D = MaxValue(rd)` and `w_i(omega) = rho_i + (1-rho_i)*fresnel(omega)`
+for the realized selection weights. The density of the SELECTED
+direction, evaluable at an arbitrary `omega`, is
 
 ```
-f_true(omega) = C_D * p_D(omega) + q_S(omega) * p_S(omega)
+f(omega) = C_D * p_D(omega) * 1{omega passes the diffuse gate}
+         + sum_i q_i(omega) * p_i(omega)
 ```
 
-(`p_D`, `p_S` are the diffuse/specular sampling densities.) This
-integrates to exactly 1 over the hemisphere provided `C_D` is the exact
-expectation above (`∫f_true = C_D + E[q_S(omega_S)] = C_D + (1-C_D) =
-1`) — a genuine, well-posed density, not a heuristic.
-
-## 3. What `Pdf()` returned pre-fix
+with
 
 ```
-dWeight = MaxValue(rd)
-sWeight = MaxValue(rs)                    -- RAW painter albedo, no fresnel term at all
-return (dWeight*diffusePdf + sWeight*specPdf) / (dWeight+sWeight)
+C_D        = E_{(u,v) ~ U[0,1]^2} [ P(the diffuse ray wins | that specular draw) ]
+q_i(omega) = P(specular lane i wins | lane i drew omega)
 ```
 
-This used neither `q_S(omega)` (exact, cheaply available) nor a
-principled approximation of `C_D` — `MaxValue(rs)` is not even a
-plausible proxy for either quantity, since it omits the fresnel term
-entirely (`rs` alone, not `rho+(1-rho)*<something>`).
-
-## 4. The minimal change
-
-`C_D` cannot be computed in closed form (it requires integrating
-`w_S(omega_S)` over `p_S`), but the codebase already has a standard,
-shipped proxy for "the expected Fresnel-boosted reflectance under an
-unspecified angular measure": `SchlickFresnelAvg(F0) = F0 + (1-F0)/21`
-(`GGXSPF.cpp:77-82` / `GGXBRDF.cpp:77`, DL-64's hemispherical-average
-Schlick reflectance). Reusing it:
+Both are expectations over the OTHER lobes' draws, because
+`RandomlySelect`'s denominator contains them. Spelled out for the
+single-lane case, with `A_D` the probability the diffuse ray survives
+its own gate:
 
 ```
-sWeightAvg   = SchlickFresnelAvg(rs)                              -- proxy for E_{omega_S~p_S}[w_S(omega_S)]
-sWeightExact = rs + (1-rs)*fresnelAtWo                            -- EXACT w_S(wo), no averaging
-cD = dWeight / (dWeight + sWeightAvg)                             -- constant, approximates C_D
-qS = sWeightExact / (dWeight + sWeightExact)                      -- exact q_S(wo)
+C_D = E_{(u,v)}[  1                      if the specular draw was rejected
+                  w_D/(w_D + w_S)        otherwise (and 0 if that sum underflows) ]
 
-Pdf(wo) = cD * diffusePdf(wo) + qS * specPdf(wo)
+q_S(omega) =   A_D   * w_S(omega)/(w_D + w_S(omega))      (diffuse present)
+           + (1-A_D) * 1                                   (diffuse absent -> freeidx==1)
 ```
 
-**This is NOT** the design note's originally literal phrasing
-("`MaxValue(rho+(1-rho)*SchlickFresnelAvg(rs))`" used as a SINGLE
-replacement for `sWeight` everywhere). That phrasing double-counts
-`rho`: `SchlickFresnelAvg(rho)` **already** equals the hemisphere
-average of the full `rho+(1-rho)*fresnel` expression (see the
-docstring on `SchlickFresnelAvg` in `GGXBRDF.cpp`: `F_avg = 2∫[F0 +
-(1-F0)(1-mu)^5] mu dmu = F0 + (1-F0)/21` — `F0` IS `rho`, already
-folded in). Wrapping it in a second `rho+(1-rho)*X` would apply the
-Fresnel blend twice. The fix above uses `SchlickFresnelAvg(rs)` directly
-as the (already-complete) averaged reflectance, and — the second,
-larger correction over the design note's literal text — uses it **only**
-for the diffuse coefficient's denominator, not for the specular
-coefficient, which gets the CHEAPER, EXACT, per-query-direction value
-instead of any averaged approximation.
+Integrating: for every specular draw the two conditional probabilities
+sum to 1, so
 
-`fresnelAtWo` is computed by rebuilding the exact half-vector
-`h=normalize(wi+wo)` and `hdotk=dot(h,wi)`, mirroring
-`ComputeSchlickSpecularPdf`'s own construction. Algebraic proof this
-recovers exactly what `GenerateSpecularRay` would have computed had it
-happened to draw this `wo`: `GenerateSpecularRay` reflects the incoming
-ray `d=ri.ray.Dir()` about its sampled half-vector `h` to get
-`wo = d - 2(d.h)h`; substituting `wi=-d` gives
-`wi+wo = 2(h.wi)h`, so whenever `hdotk=h.wi>0` (the sampler's own accept
-condition), `normalize(wi+wo)=h` — i.e. the query-side reconstruction
-recovers the SAME `h`, and therefore the same fresnel, for any `wo` the
-sampler could legitimately have produced. No approximation is needed on
-the specular side at all.
+```
+integral f = A_D + (1 - A_D) * P(specular accepted)
+           = P(Scatter emits anything at all)
+```
 
-## 5. Consumer impact
+which is exactly 1 when the shading and geometric normals agree, and
+strictly less under a tilt — correctly, because `Scatter` really does
+return an empty container on some draws there.
 
-`ISPF::Pdf()`/`PdfNM()` is called from:
+`A_D` has a closed form. Malley's disk projection turns
+"cosine-weighted hemisphere about `n`, clipped by the plane of `geomN`"
+into a half-disk plus a half-ellipse of semi-axes `(cos phi, 1)`, so
 
-- **NEE partner** (`IMaterial::Pdf` → `SchlickSPF::Pdf`, via
-  `LightSampler.cpp`'s BSDF-side MIS weight). Unedited this slice; picks
-  up the corrected density automatically through the shared interface.
-  Its own MIS partition is unaffected in kind (still `w_bsdf+w_nee=1`
-  for any valid density), only the NUMBER changes, and only at
-  `SchlickSPF` vertices.
-- **BDPT `pdfRev`** (`PathValueOps::EvalPdfAtVertex` →
-  `PathVertexEval.h` → `pSPF->Pdf(...)`). Read-only this slice (DL-69's
-  own `pdfFwd` redefinition is a separate slice); the aggregate density
-  it reads is now the corrected one.
-- **PT/BDPT guided RIS candidate 1 / guided-accepted branch**
-  (`PTEvalPdfAtSurface` → `ISPF::Pdf`). DL-67's own remaining slices
-  (candidate 0 / kept-BSDF fix) consume this improved density for free,
-  as the design note anticipated — not edited here.
-- **VCM** — same `ISPF::Pdf()` interface, same effect as BDPT.
-- **`SPFPdfConsistencyTest`** (`tests/SPFPdfConsistencyTest.cpp`) — the
-  Schlick row's flags (`skipCrossVal=true, skipChi2=true`) are
-  UNCHANGED (see §7 below for why); the row's comment and its cited
-  integral numbers were updated to the corrected post-fix values.
-- **New `SchlickSPFPdfConsistencyTest`** — added this slice; see §6.
+```
+A_D = (1 + cos phi)/2,   cos phi = dot(n, geomN)
+```
 
-## 6. Red-proof
+— the same closed form DL-45 uses for `TranslucentSPF`'s tilted exit.
+Verified against the sampler at 20/40/55 degrees of tilt: predicted
+emission probabilities 0.99049 / 0.96060 / 0.92516 against measured
+0.99038 / 0.96071 / 0.92505 over 600 000 draws.
 
-Two independent checks, both run against master (`32824325`, unfixed
-`SchlickSPF.cpp`) for RED and against the fixed tree for GREEN, via
-`git diff > patch; git checkout HEAD -- SchlickSPF.cpp; <rebuild+run>;
-git apply patch; <rebuild+run>` (never `git stash`, per the slice's
-common rules).
+---
 
-### 6.1 Closed-form replica (`tests/SchlickSPFPdfConsistencyTest.cpp` Part 1)
+## 2. What the implementation does
 
-At 5 hand-picked `(theta, rd, rs, roughness, isotropy)` points, 37
-query directions each: an INDEPENDENT replica of the derived formula
-(`DerivedPdfReplica`, extracting `specPdf` via an `rd=0` twin material —
-at `rd=0`, `cD=0` and `qS=1` identically, so `Pdf_at_rd0(wo) ==
-specPdf(wo)` exactly, no equation-solving needed) is compared against
-the shipped `spf->Pdf()`.
+`SchlickSPF.cpp`, all inside `Pdf`/`PdfNM` and the helpers they call.
+`Scatter`/`ScatterNM` are unchanged in behaviour.
 
-- **Pre-fix (master):** `agreeWithDerived=0/37` at every one of the 5
-  points (shipped code uses the old formula, which the closed-form
-  replica of the DERIVED formula correctly does not match).
-- **Post-fix:** `agreeWithDerived=37/37` at every point (shipped code
-  matches the derivation to < 1e-6 relative error).
+**`C_D` by deterministic quadrature.** No closed form exists (§3 says
+why), so `SchlickDiffuseSelectCoefficient` integrates the sampler
+itself: a stratified grid of midpoints in `GenerateSpecularRay`'s own
+`(xi, b)` inverse-CDF unit square, each node **replayed** through
+`SchlickSampleHalfVector` — the same function the sampler calls, so the
+two cannot drift — and put through Scatter's own accept-checks and
+`RandomlySelect`'s own branch structure. Deterministic, not stochastic:
+an MIS weight that wobbled per call would not partition to one.
 
-### 6.2 Statistical, per-lobe, ground-truth lower bound (Part 2/3)
+**`q_i` exactly.** `GenerateSpecularRay` reflects the incoming ray `d`
+about its sampled `h`, so `wo = d - 2(d.h)h` and, with `wi = -d`,
+`wi + wo = 2(h.wi)h`. Whenever `h.wi > 0` — the sampler's own accept
+condition — `normalize(wi + wo)` recovers exactly that `h`, hence
+exactly that fresnel. No approximation is needed on the specular side
+at all.
 
-Replicates `PTScatterSelectWeight`/`PTRandomlySelect`'s ACTUAL selection
-rule inline (same `MaxValue(kray)` weighting, same
-`ScatteredRayContainer` production code path via real `Scatter()`/
-`ScatterNM()` calls), and checks, for each non-delta ray in a real
-Scatter() call, that `Pdf(ri, wo)` at that ray's own realized direction
-lower-bounds that lobe's realized per-call contribution
-`weight_j*pdf_j/totalWeight` — split by lobe type (diffuse vs specular),
-50000 draws per angle, seeded (`RandomNumberGenerator(424242)` RGB,
-`(909090)` NM) for reproducibility.
+**Per-channel lanes.** The three lanes share one random pair, so a
+query direction determines the other two lanes' directions.
+`SchlickInvertSpecular` inverts the sampler at the query direction (the
+theta warp inverts as `xi = c2*r/(1-c2+c2*r)`; the azimuth warp is
+monotone and bijective within each of its four quadrants, inverted by
+`SchlickInvertPhi`), and the other lanes are replayed from the recovered
+pair. Exact, not approximate.
 
-| | Pre-fix (master) | Post-fix |
-|---|---|---|
-| RGB specular @ 30deg | 64/37070 fail, maxRel 4.20% | **0/37070 fail** |
-| RGB specular @ 60deg | 2857/32008 fail, maxRel 21.43% | **0/32008 fail** |
-| RGB diffuse @ 30deg | 9409/50000 fail, maxRel 29.78% | 9709/50000 fail, maxRel 32.28% |
-| RGB diffuse @ 60deg | 15354/50000 fail, maxRel 34.20% | 15502/50000 fail, maxRel 36.70% |
-| NM specular @ 30deg | 79/36966 fail, maxRel 4.10% | **0/36966 fail** |
-| NM specular @ 60deg | 2846/32037 fail, maxRel 21.37% | **0/32037 fail** |
+**Branch parity.** `Pdf` now branches on the same
+`HasPerChannelVariation()` predicate `Scatter` branches on, and uses
+each lane's own `(r, p)`. It used to average the three roughness
+channels unconditionally, which is neither branch's behaviour.
 
-The specular side goes from a real, non-trivial failure rate (up to
-8.9% of checks, max relative error 21.4%) to **exactly zero**, matching
-§2's proof that the specular coefficient is exactly computable. The
-diffuse side is essentially unchanged (a ~0.3-2.5pp shift, consistent
-with `SchlickFresnelAvg` being an imperfect but reasonable proxy for the
-true `p_S`-weighted expectation `C_D` — see the standalone diagnostic in
-§7) — this is the PROVEN-INHERENT residual from §2's derivation, not a
-regression: no constant coefficient can satisfy a per-call lower bound
-against a randomly-varying per-call denominator. The new test's gate
-allows this residual up to 40%/0.50 (its pre-fix magnitude) so a genuine
-future regression is still caught, without asserting the mathematically
-impossible.
+**Cost.** The grid is a product grid, so each lane's `kSpecQuadN`
+half-angle values and `kSpecQuadN` azimuth values are computed once per
+call and the inner loop is ~40 flops with no library calls — no `acos`
+(`cos(acos(x)) == x`), no `pow` (`(1-hdotk)^5` as four multiplies), and
+no `Normalize` on the replayed direction, since normalizing cannot
+change the sign of the two accept dots.
 
-## 7. Why full strict `SPFPdfConsistencyTest` gating stays off for Schlick
+---
 
-A standalone diagnostic (`Monte-Carlo estimate of the TRUE C_D` at
-`rd=0.5, rs=0.3`, roughness 0.3, isotropy 0.8, 2,000,000 draws per
-angle) shows `SchlickFresnelAvg`-based `cD` tracks the true `C_D`
-reasonably but not exactly:
+## 3. Why no closed-form proxy works
 
-| theta | true C_D (MC) | cD (SchlickFresnelAvg) |
-|---|---|---|
-| 10 deg | 0.6248 | 0.6 |
-| 30 deg | 0.6238 | 0.6 |
-| 45 deg | 0.6200 | 0.6 |
-| 60 deg | 0.6085 | 0.6 |
-| 75 deg | 0.5818 | 0.6 |
+The first version of this slice set
+`C_D = MaxValue(rd) / (MaxValue(rd) + SchlickFresnelAvg(rs))`, reusing
+DL-64's hemispherical Schlick average as a proxy for
+`E_{p_S}[w_S(omega_S)]`. Two things are wrong with that, and the second
+is the larger:
 
-This ~2-4% gap between the true (incidence-angle-dependent) expectation
-and the flat hemisphere-average proxy is why `SPFPdfConsistencyTest`'s
-Schlick row keeps `skipCrossVal=true`/`skipChi2=true` (its "multi-lobe
-lower-bound" cross-val and full chi2 both check the DIFFUSE side too,
-which is provably not exactly satisfiable — see §2/§6.2). Improving `cD`
-past `SchlickFresnelAvg`'s flat proxy (e.g. an incidence-angle-aware
-term) is future work, not part of this slice's scope (the task only
-asks for consistency with `PTScatterSelectWeight`'s realized weights,
-which is fully and provably achieved on the specular side, the only
-side where an exact match is even possible).
+1. **Wrong measure.** The expectation runs under `p_S`, the
+   half-vector sampling density, which concentrates where `hdotk ~ 1`
+   and the Fresnel term is therefore ~0 — not under the cosine measure
+   `SchlickFresnelAvg` averages against. Measured, `E_{p_S}[w_S]` is
+   within **0.15%** of `MaxValue(rs)` itself. (`SchlickBRDF::albedo`
+   already says as much in passing: "integrated reflectance simplifies
+   to Rd+Rs".) So the proxy is a correction to something that needed no
+   correction.
 
-## 8. Sibling audit — other multi-lobe SPFs
+2. **The term it omits dominates.** What actually drives `C_D` is the
+   specular sampler's **rejection rate**. `Scatter` accepts only
+   0.745 / 0.662 / 0.577 of its specular draws at 30 / 60 / 80 degrees
+   incidence (measured), and a rejected specular draw leaves
+   `RandomlySelect` holding one ray, returned with probability 1. A
+   model of the form `A * rd/(rd+rs) + (1-A)` with `A` the measured
+   acceptance reproduces the Monte-Carlo `C_D` to 0.15%. No
+   direction-independent hemispherical average can see `A`, because `A`
+   is a property of the *geometry* (incidence angle, roughness,
+   anisotropy, the geometric normal), not of the reflectances.
 
-One-sentence bug pattern: *`Pdf()` weights a multi-lobe mixture by the
-raw, angle-independent painter albedo(s) instead of the REALIZED
-per-draw `MaxValue(kray)` weight `PTScatterSelectWeight`/
-`PTRandomlySelect` actually select by.*
+---
 
-| SPF | `Scatter()` kray direction-dependence | `Pdf()` weight | Verdict |
+## 4. Measurements
+
+### 4a. Choosing the quadrature
+
+Error of `C_D` against a converged reference, over **400 randomised**
+`(incidence, rd, rs, roughness, isotropy, tilt)` configurations:
+
+| grid | cells | mean abs err | max abs err |
 |---|---|---|---|
-| `SchlickSPF` | diffuse constant; specular = `rho+(1-rho)*fresnel(wo)` | **fixed this slice**: exact fresnel(wo) for specular, `SchlickFresnelAvg` for diffuse's constant | Fixed |
-| `SchlickBRDF` | n/a — no `Pdf()` method exists (BRDF classes are eval-only; importance sampling is the SPF's job) | n/a | Not applicable — nothing to fix |
-| `GGXSPF`/`CoatedSPF` | every lobe's `.pdf` field set to the SAME `mixPdf` (the full mixture density) | uses that same `mixPdf`/`ComputeLobeWeights` machinery | Immune (already established, DL-69 ledger; reconfirmed here — `GGXSampleEvaluationConsistencyTest` 48/0) |
-| `CookTorranceSPF` | selects a lobe via `ComputeLobeWeights(wdRGB, wsRGB, Ess_i)` computed from `ri` alone (incidence angle `cosWi`, painter albedos) BEFORE sampling — a genuinely fixed, ri-only weight, unlike Schlick's post-hoc realized-kray selection | Pdf() calls the SAME `ComputeLobeWeights` with the SAME inputs | Immune — different (select-first) architecture, not the DL-67 pattern. Confirmed: `CookTorrance*` rows already run with `exactSelectedPdf=true`, 0 cross-val failures. |
-| `PolishedSPF` | specular kray = `tau*Rs`, diffuse kray = `Rd*(1-Rs)`, `Rs` = Fresnel reflectance computed from the INCIDENT geometry | `Pdf()`/`PdfNM()` ALREADY compute the same `Rs` the same way and weight by it (`PolishedSPF.cpp` comment: "Weight by MaxValue(kray) to match RandomlySelect") | Already fixed (pre-existing, not this slice) — not in-pattern |
-| `WardIsotropicGaussianSPF` / `WardAnisotropicEllipticalGaussianSPF` | BOTH `d.kray` and `s.kray` are pure `GetColor(ri)` — no direction-dependent modulation at all | `MaxValue(rd)` / `MaxValue(rs)` | Immune (coincidentally correct: kray happens to already be direction-independent for both lobes, so raw-albedo weighting IS the exact realized weight) |
-| `IsotropicPhongSPF` | diffuse constant; **specular kray = `Rs*(N+2)/(N+1)*cos_o`**, `cos_o=dot(wo,n)` — direction-dependent, exactly analogous to Schlick's fresnel term and just as cheaply computable at a query `wo` | `MaxValue(rd)` / `MaxValue(rs)` — raw albedo, NO `cos_o` term at all | **In-pattern — filed as DL-98 below** |
-| `AshikminShirleyAnisotropicPhongSPF` | diffuse and specular kray both direction-dependent (`specFactor=fresnel/max(cos_i,cos_o)`, `diffFactor` similar) | ALREADY partially mitigated: weights are evaluated "at the mirror reflection direction" (`cos_o=cos_i`) rather than raw albedo, with its own comment explaining why — but this is still an approximation, since `Pdf()` receives the actual query `wo` and could evaluate `specFactor`/`diffFactor` exactly there instead of at the mirror proxy | Partially in-pattern (already better than raw-albedo, but not exact) — filed as DL-99 below, lower priority |
-| `TranslucentSPF` | disjoint-hemisphere lobes (entry: front+trans; exit: trans+front) | per DL-69's ledger analysis, disjoint support means no lobe overlap to mis-weight | Not in this pattern (per DL-69) |
-| `CompositeSPF` | `Pdf()` is a documented hard-coded 50/50 placeholder (`SPFPdfConsistencyTest.cpp`'s own comment) | n/a — not attempting to match `RandomlySelect` at all | Out of scope (pre-existing, documented placeholder, not a DL-67-shaped regression) |
-| `FabricSPF`/`WeaveSPF` | mixture Pdf is the REAL, full, priced mixture per `docs/CLOTH_FABRIC_DESIGN.md` §9.2's "sample-then-reprice" recipe (verified: `SPFPdfConsistencyTest.cpp`'s Fabric/Weave rows run with `skipCrossVal=false`, 0 mismatches) | n/a | Not in this pattern |
+| 8 x 8 | 64 | 0.0083 | 0.039 |
+| 12 x 16 | 192 | 0.0047 | 0.032 |
+| 16 x 12 | 192 | 0.0037 | 0.023 |
+| **16 x 16** | **256** | **0.0034** | **0.022** |
+| 20 x 20 | 400 | 0.0025 | 0.013 |
+| 32 x 32 | 1024 | 0.0014 | 0.0083 |
 
-New debt rows (this slice's assigned id block DL-98/DL-99; not fixed —
-scope is Schlick only):
+The convergence is `O(1/N)`, not `O(1/N^2)`, because the integrand is
+bounded in `[0,1]` and smooth apart from one curve — the accept
+boundary. `kSpecQuadN = 16` is the setting that keeps every
+configuration in the gate below under 1%; it is the one knob if the cost
+ever needs trading back.
 
-- **DL-98** — `IsotropicPhongSPF::Pdf`/`PdfNM` weight the diffuse/
-  specular mixture by raw `MaxValue(rd)`/`MaxValue(rs)`
-  (`IsotropicPhongSPF.cpp:293-294`), but `Scatter()`'s specular kray is
-  `Rs*(N+2)/(N+1)*cos_o` (`:141-142`) — a function of the query
-  direction's own `cos_o=dot(wo,n)`, exactly analogous to
-  `SchlickSPF`'s fresnel term and just as cheaply exact at a query
-  `wo`. `SPFPdfConsistencyTest.cpp`'s existing `IsotropicPhong` row
-  already documents "massive cross-val divergence (38k-45k mismatches
-  out of 50k samples)". Same fix shape as this slice's `SchlickSPF` fix
-  (exact per-wo weight for the direction-dependent lobe's coefficient;
-  a hemisphere/lobe-average constant, if one is needed, for any
-  direction-independent lobe's coefficient — here `dWeight=MaxValue(rd)`
-  is already exact since diffuse kray is direction-independent, so NO
-  averaging approximation is even needed on the diffuse side, unlike
-  Schlick). Size S, physics-bias, user-visible (`phong_material`
-  guided/BDPT/VCM renders and NEE partner weight). Recipe: mirror
-  `tests/SchlickSPFPdfConsistencyTest.cpp`'s Part 2/3 per-lobe
-  ground-truth check against `IsotropicPhongSPF`.
-- **DL-99** — `AshikminShirleyAnisotropicPhongSPF::Pdf`/`PdfNM`
-  evaluate their Fresnel/diffuse-factor lobe weights at the MIRROR
-  REFLECTION direction (`AshikminShirleyAnisotropicPhongSPF.cpp:417-
-  451`, `cos_i` only) rather than at the actual query `wo` — an
-  existing, better-than-raw-albedo mitigation (its own comment: "gives
-  constant weights that are much more representative than raw Rs/Rd,
-  especially at grazing"), but `Scatter()`'s kray is a function of
-  BOTH `cos_i` and `cos_o` (`specFactor = fresnel/max(cos_i,cos_o)`),
-  so the mirror-direction proxy (`cos_o=cos_i` there) is still an
-  approximation Pdf() need not make, since it already has the real
-  query `wo` in hand. `SPFPdfConsistencyTest.cpp`'s own row still
-  documents "large mismatch (16k-43k)" despite this existing mitigation.
-  Size S-M (both `Pdf`/`PdfNM`, RGB+NM `specFactor`/`diffFactor`
-  reconstruction at the query direction rather than the mirror
-  direction), physics-bias, user-visible, LOWER PRIORITY than DL-98
-  since a deliberate partial mitigation is already in place. Recipe:
-  same per-lobe ground-truth harness, applied to
-  `AshikminShirleyAnisotropicPhongSPF`.
+Two warped grids were tried and **measured worse**, which is worth
+recording because both look like obvious improvements: stratifying
+uniformly in `cos(theta_h)` (max error 0.062 at 64 cells) and uniformly
+in `theta_h` (0.022 at 64 cells) buy resolution at the tangent end by
+starving the near-mirror end, which carries most of the probability mass
+at low roughness. Plain midpoints in the sampler's own `xi` win.
+
+### 4b. Two further defects found while measuring
+
+Both are the same one-sentence pattern as the slice itself — *`Pdf`
+does not describe what `Scatter` draws* — and both are fixed here.
+
+**The anisotropic azimuthal density was the wrong distribution.**
+`ComputeSchlickSpecularPdf` returned
+`p/(2 pi (cos^2 phi + p^2 sin^2 phi))`. `GenerateSpecularRay` draws,
+per quadrant,
+
+```
+phi = (pi/2) * sqrt(p^2 v^2 / (1 - v^2 + v^2 p^2)),   v ~ U[0,1)
+```
+
+i.e. with `t := phi/(pi/2)` measured from the quadrant's own axis,
+`v = t/sqrt(p^2 + t^2(1-p^2))`, hence
+
+```
+p(phi) = |db/dphi| = (1/4)|dv/dt|(2/pi) = p^2 / (2 pi (p^2 + t^2(1-p^2))^(3/2))
+```
+
+Both forms integrate to 1 over `[0, 2pi)` and both agree at `p = 1`,
+which is how this survived. Away from `p = 1` they are different
+distributions. Against a 2 000 000-draw histogram of the real sampler:
+
+| isotropy `p` | `phi` | histogram | shipped formula | corrected formula |
+|---|---|---|---|---|
+| 1.0 | 0.131 | 0.15907 | 0.15915 | 0.15915 |
+| 0.8 | 1.702 | 0.11120 | 0.19706 | 0.11132 |
+| 0.6 | 1.702 | 0.06778 | 0.25746 | 0.06735 |
+| 0.3 | 0.131 | 0.46732 | 0.04850 | 0.47917 |
+| 0.3 | 1.702 | 0.01806 | 0.45256 | 0.01813 |
+
+— up to **25x** wrong. The corrected form matches the histogram to
+Monte-Carlo noise at every `p` tested.
+
+**The density was built in the wrong frame.**
+`ComputeSchlickSpecularPdf` mirrored `Scatter`'s `FlipW`, with a comment
+asserting that "GenerateSpecularRay() builds its half-vector relative to
+the (possibly flipped) myonb". It does not: that function's `onb`
+parameter was **dead** and it always built `h` in `ri.onb`. (The
+parameter is now removed so this cannot be misread again.) The density
+now uses `ri.onb` too. As a side effect it returns 0 on a back-face hit,
+which is the right answer — `Scatter`'s every specular draw is rejected
+there. That the *sampler* loses its whole specular lobe on a back-face
+hit is a real energy defect; it is filed as **DL-100**, not fixed here,
+because fixing it changes what renders sample.
+
+### 4c. The gate
+
+`tests/SchlickSPFPdfConsistencyTest.cpp`, 12 configurations (the 8
+review configurations, the per-channel branch, three tilts), RGB plus
+the spectral twin on 5 of them, 34 checks.
+
+`int Pdf` is a 400x800 hemisphere quadrature; `emitted` is the measured
+fraction of 600 000 real `Scatter()` calls that produced any ray; `TVD`
+is the total variation between the Pdf quadrature and a histogram of
+600 000 real `Scatter()` + real `RandomlySelect()` draws over 12
+equal-cos-theta x 8 equal-phi bins.
+
+| configuration | int Pdf (4325f365) | TVD (4325f365) | int Pdf (fixed) | TVD (fixed) | emitted |
+|---|---|---|---|---|---|
+| th=10 rd.5 rs.3 r.3 i.8 | 0.88760 | 0.0627 | 1.00011 | 0.0070 | 1.00000 |
+| th=30 rd.5 rs.3 r.3 i.8 | 0.88017 | 0.0642 | 1.00162 | 0.0072 | 1.00000 |
+| th=45 rd.2 rs.6 r.15 i1 | 0.84998 | 0.0750 | 0.99545 | 0.0081 | 1.00000 |
+| th=60 rd.5 rs.3 r.3 i.8 | 0.86050 | 0.0876 | 0.99993 | 0.0072 | 1.00000 |
+| th=75 rd.7 rs.1 r.5 i.6 | 0.95345 | 0.0680 | 1.00181 | 0.0074 | 1.00000 |
+| th=45 rd.9 rs.05 r.4 i1 | 0.94447 | 0.0278 | 0.99966 | 0.0072 | 1.00000 |
+| th=45 rd.05 rs.9 r.4 i1 | 0.67672 | 0.1616 | 0.99520 | 0.0077 | 1.00000 |
+| th=80 rd.5 rs.02 r.2 i1 | 1.02215 | 0.0125 | 0.99633 | 0.0075 | 1.00000 |
+| per-channel roughness | 0.87051 | 0.0670 | 1.00624 | 0.0077 | 1.00000 |
+| tilt 20 deg th=45 | 0.84854 | 0.0736 | 0.98913 | 0.0077 | 0.99038 |
+| tilt 40 deg th=45 | 0.79061 | 0.0854 | 0.95989 | 0.0072 | 0.96071 |
+| tilt 55 deg th=30 | 0.72688 | 0.0996 | 0.92731 | 0.0060 | 0.92505 |
+
+`Checks: 34 Failures: 34` at `4325f365`; `Checks: 34 Failures: 33` at
+pre-slice master `32824325` (the `rd=0.9` row's TVD lands at 0.01162,
+just inside the 0.012 gate; its normalisation check still fails);
+`Checks: 34 Failures: 0` after.
+
+The TVD threshold, 0.012, is derived rather than tuned. For a histogram
+of `N` draws over `K` bins,
+
+```
+E[TVD] = (1/2) sum_k E|phat_k - p_k|
+       ~ (1/2) sqrt(2/pi) sum_k sqrt(p_k(1-p_k)/N)
+      <= (1/2) sqrt(2/pi) sqrt(K/N)            (Cauchy-Schwarz)
+       = 0.399 * sqrt(96/600000) = 0.0051
+```
+
+and the measured post-fix values (0.0060-0.0081) sit at that floor: the
+residual **is** the bin noise, with no detectable systematic component.
+The gate sits ~2.4x above it. The whole test is deterministic (fixed RNG
+seeds), which is what permits a threshold that tight.
+
+### 4d. Cost
+
+`Pdf()` alone, 200 000 calls, one shading point:
+
+| | pre-fix | fixed |
+|---|---|---|
+| single specular lane | 17.0 ns | 690 ns |
+| per-channel (3 lanes) | 17.0 ns | 2003 ns |
+
+Whole-render CPU time, PT 64 spp at 512x512, `oidn_denoise false` and
+`pixel_filter box`:
+
+| scene | pre-fix | fixed | delta |
+|---|---|---|---|
+| Cornell-box material grid (1 of 15 objects schlick) | 104.5 s | 107.1 s | +2.5%, inside a +/-4% 3-run spread |
+| same scene, EVERY surface schlick | 129.1 s | 163.1 s | +26% |
+
+So the realistic cost is not separable from machine noise and the
+worst-case cost is ~26%. `kSpecQuadN` trades it back if that is ever
+needed (8 gives ~200 ns at ~2% `C_D` error, which does not hold the 1%
+normalisation gate).
+
+### 4e. Rendered before/after
+
+`scenes/Tests/BDPT/cornellbox_bdpt_materials_pt.RISEscene` (one
+`schlick_material` sphere, `rd` grey / `rs` white, roughness 0.05,
+isotropy 0.3), PT 64 spp, `oidn_denoise false`, `pixel_filter box`, EXR
+`Rec709RGB_Linear`. RISE seeds renders from an unsynchronized libc
+`rand()`, so each run is an independent estimate; 4 runs each:
+
+| | frame mean luminance |
+|---|---|
+| pre-fix (`4325f365`) | 0.995781 +/- 0.000318 |
+| fixed | 0.997451 +/- 0.000065 |
+
+**+0.168%**, about 5x the run-to-run spread. Only PT's NEE MIS weight
+changes — no sampling changed — so a small frame-mean move on a scene
+where one object of fifteen is `schlick_material` is the expected shape
+of the result.
+
+---
+
+## 5. Consumers
+
+`ISPF::Pdf()`/`PdfNM()` is called from the NEE partner MIS weight
+(`LightSampler.cpp` via `IMaterial::Pdf`), BDPT's `pdfRev`
+(`PathValueOps::EvalPdfAtVertex`), PT/BDPT's guided RIS candidate 1 and
+guided-accepted branches (`PTEvalPdfAtSurface`), and VCM through the
+same interface. None is edited here; each picks up the corrected
+density through the shared interface. DL-67's own subject — candidate 0
+and the three one-sample/RIS overwrite branches — is untouched and still
+open.
+
+---
+
+## 6. What the first version of this slice got wrong
+
+Recorded because the failure mode is general, not specific to Schlick.
+
+The first version reasoned correctly that the specular coefficient is
+exactly computable and the diffuse coefficient is an expectation, then
+reached for the nearest shipped closed-form average (`SchlickFresnelAvg`,
+DL-64) to stand in for the expectation. It shipped with two gates: a
+comparison against an inline replica of its own formula, and a per-call
+lower bound `Pdf(w_S) >= q_S(w_S) p_S(w_S)`.
+
+Neither gate could fail. The first checks that the code implements
+itself. The second is an algebraic identity — `Pdf` adds a non-negative
+`C_D p_D(w_S)` on top of exactly the term being bounded — so it holds
+for **any** `C_D >= 0`, including the wrong one. Measured afterwards,
+that version's aggregate integrated to 0.68-1.02 over the same
+configurations, and its total variation against the real sampler was
+**worse than the code it replaced on 6 of 8 configurations**, by up to
+2.8x.
+
+Three lessons, in order of how much they cost:
+
+1. **A density claim needs a normalisation measurement.** `int Pdf`
+   against the sampler's own emission probability is one line of test
+   and it is unfoolable. Neither of the original gates was a
+   measurement of the sampler at all.
+2. **A one-sided bound cannot gate a two-sided quantity.** If the
+   quantity under test appears on both sides of the assertion, check
+   whether the assertion is an identity before trusting a pass.
+3. **When an expectation has no closed form, integrate the sampler.**
+   A deterministic replay of the sampler's own inverse-CDF map is cheap
+   to write, exact in structure (it inherits every accept-check and
+   short-circuit for free), and cannot drift from the sampler as long
+   as it shares the sampler's code — which is a stronger guarantee than
+   any analytic approximation offers.
+
+An earlier §7 of this document justified keeping
+`SPFPdfConsistencyTest`'s Schlick row at a 15% integral tolerance with
+`skipChi2=true`, on the theory that the deficit was inherent. It was
+not: that row now passes at the standard 5% tolerance (1.00166 at 30
+degrees, 0.999932 at 60) and its chi-squared test is gated (783.7 /
+816.3 against critical 928.3). `skipCrossVal` stays true, and for a
+reason that IS inherent — §1's `C_D` is a constant, and cross-val's
+per-call lower bound compares against a denominator that varies per
+call.
+
+---
+
+## 7. Sibling audit
+
+One-sentence bug pattern: *`Pdf()` reports a density other than the one
+`Scatter()` + `RandomlySelect()` actually generate from.*
+
+| SPF | verdict |
+|---|---|
+| `SchlickSPF` | **fixed this slice** (lobe coefficients, azimuthal density, frame, per-channel branch parity) |
+| `SchlickBRDF` | n/a — BRDF classes are eval-only, no `Pdf()` exists |
+| `GGXSPF` / `CoatedSPF` | immune: every emitted lobe's `.pdf` is the SAME aggregate `mixPdf`, and selection is internal and single-lobe. Reconfirmed: `GGXSampleEvaluationConsistencyTest` 48/0 |
+| `CookTorranceSPF` | immune by a different architecture: `ComputeLobeWeights` picks a lobe from `ri` alone BEFORE sampling, and `Pdf()` calls the same function with the same inputs. `SPFPdfConsistencyTest`'s CookTorrance rows run with `exactSelectedPdf=true`, 0 cross-val failures |
+| `PolishedSPF` | already correct: `Pdf`/`PdfNM` compute the same incident-geometry Fresnel `Rs` the krays use and weight by it |
+| `WardIsotropicGaussianSPF`, `WardAnisotropicEllipticalGaussianSPF` | immune, coincidentally: both krays are pure `GetColor(ri)`, so raw-albedo weighting IS the realized weight. (Their rejection-rate term is unmodelled in the same way Schlick's was, which is why their `SPFPdfConsistencyTest` rows still skip cross-val/chi2 — not investigated here) |
+| `IsotropicPhongSPF` | **in-pattern, unfixed — DL-98** |
+| `AshikminShirleyAnisotropicPhongSPF` | **in-pattern, unfixed — DL-99** |
+| `TranslucentSPF` | not this pattern: disjoint-hemisphere lobes, no overlap to mis-weight (per DL-69) |
+| `CompositeSPF` | out of scope: `Pdf()` is a documented hard-coded 50/50 placeholder, not an attempt to match `RandomlySelect` |
+| `FabricSPF` / `WeaveSPF` | not this pattern: the real priced mixture per `CLOTH_FABRIC_DESIGN.md` §9.2; `SPFPdfConsistencyTest` runs them with `skipCrossVal=false`, 0 mismatches |
+
+Rows opened by this slice: **DL-98** (`IsotropicPhongSPF`), **DL-99**
+(`AshikminShirleyAnisotropicPhongSPF`), **DL-100** (`GenerateSpecularRay`
+samples the unflipped frame, so a back-face hit loses its whole specular
+lobe), **DL-101** (the per-channel branch reuses one `ScatteredRay`
+across its three lanes, so a lane whose `hdotk <= 0` can push the
+PREVIOUS lane's direction with its own kray and pdf), **DL-102** (the
+azimuthal-density defect of §4b — recorded as a closed row so the
+mechanism is findable, since it is a different bug from this row's
+subject).
+
+---
+
+## 8. Note on two stale numbers
+
+Earlier versions of this document and of `tests/README.md` quoted a
+per-lobe lower-bound failure count two different ways — `105/36946` and
+`2845/32045` in one place, `64/37070` and `2857/32008` in another. The
+totals differ (36946 vs 37070 specular draws from a fixed seed), so the
+two were measured against different library states, not merely different
+seeds. Neither figure is carried forward and neither should be quoted:
+the check that produced them has been deleted, because post-fix it is an
+identity (§6). The replacement evidence is §4c's table, which is a
+measurement of the sampler rather than of the formula.
