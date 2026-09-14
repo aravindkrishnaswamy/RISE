@@ -22,7 +22,13 @@
 //    6. Cast a single finite chord through the object along the axis,
 //       starting before and passing through the projection plane
 //       (DL-52: NOT two half-lines starting AT the plane -- that
-//       skips a coplanar near surface, see BSSRDFSampling.cpp)
+//       skips a coplanar near surface, see BSSRDFSampling.cpp).
+//       DL-68: because the chord travels in one fixed direction, a
+//       hit on the near (-axis) side of the projection plane must
+//       have its reported normal re-negated when the underlying
+//       geometry orients normals to face the incoming ray
+//       (RayIntersectionGeometric::bGeomNormalOrientedToRay) -- see
+//       the probe loop in BSSRDFSampling.cpp for the full rule.
 //    7. If hit: evaluate Rd(r_actual), compute multi-axis PDF
 //    8. Generate cosine-weighted scattered ray from entry normal
 //    9. Compute Fresnel transmission and Sw normalization

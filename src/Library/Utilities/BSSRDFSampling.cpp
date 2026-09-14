@@ -179,6 +179,48 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			h.normal = probeRI.geometric.vNormal;
 			h.geomNormal = probeRI.geometric.vGeomNormal;
 			h.onb = probeRI.geometric.onb;
+
+			// DL-68 (P1): the chord travels in ONE fixed direction
+			// (+probeAxis) for its entire length.  A hit on the near
+			// (-axis) side of probeCenter -- i.e. before the chord has
+			// travelled probeMaxDist from chordStart -- is the analogue
+			// of what the pre-DL-52 code's SEPARATE -probeAxis probe
+			// would have found, approaching the surface from the
+			// OPPOSITE physical direction; here it was actually reached
+			// with ray.Dir()==+probeAxis.  A geometry that re-orients
+			// its reported normal to face the incoming ray
+			// (RayIntersectionGeometric::bGeomNormalOrientedToRay --
+			// currently double-sided triangle meshes, ClippedPlaneGeometry,
+			// and BezierPatchGeometry) therefore reports, on every such
+			// near-half hit, a normal that faces INTO the solid instead
+			// of out of it: "outward" for the entry point must agree
+			// with the approach direction a -probeAxis-directed probe
+			// would have used, not the chord's actual +probeAxis travel
+			// direction.  Far-half hits (beyond probeCenter) were
+			// already reached with ray.Dir()==+probeAxis, exactly
+			// matching the pre-DL-52 "+axis" probe, so they need no
+			// correction.  Recover the ray-independent winding normal
+			// (the same recovery RayCaster.cpp's env-escape helper uses,
+			// `oriented ? -raw : raw`) by negating; the geometry types
+			// that never set the flag (the vast majority -- any
+			// consistently-wound single-sided mesh, and every
+			// analytical primitive) are untouched either way, since
+			// `bGeomNormalOrientedToRay` defaults false for them.
+			const Scalar distFromChordStart = traveled + probeRI.geometric.range;
+			if( probeRI.geometric.bGeomNormalOrientedToRay && distFromChordStart < probeMaxDist )
+			{
+				h.normal = -h.normal;
+				h.geomNormal = -h.geomNormal;
+				// Rebuild the basis around the corrected normal, keeping
+				// the existing tangent (u) as the seed so the frame
+				// stays a genuine orthonormal triple rather than just
+				// negating W in isolation (which downstream consumers
+				// that overwrite vNormal/onb together -- e.g.
+				// PathTracingIntegrator.cpp, BDPTIntegrator.cpp -- would
+				// otherwise receive as a mismatched W-vs-U/V pair).
+				h.onb.CreateFromWU( h.normal, h.onb.u() );
+			}
+
 			hits.push_back( h );
 
 			// Advance ray past this hit
