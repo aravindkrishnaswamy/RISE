@@ -272,7 +272,7 @@ Clean library rebuild, zero warnings. Per-test builds, all green:
 | `TranslucentTiltedExitTest` | ALL TESTS PASSED |
 | `TranslucentDoubleSidedTest` | Passed 44 / Failed 0 |
 | `TranslucentInitialContainmentTest` | Passed 43 / Failed 0 |
-| `TranslucentIORStackTest` | see the ledger row's closure line |
+| `TranslucentIORStackTest` | ALL TESTS PASSED (real trained OpenPGL + production PT/BDPT, RGB and NM) |
 | `TranslucentSpectralParityTest` | 1846 checks / 0 failures |
 | `TranslucentPhotonEnergyTest` | 14 checks / 0 failures |
 | `TranslucentSamplerDimensionCountTest` | 65544 checks / 0 failures |
