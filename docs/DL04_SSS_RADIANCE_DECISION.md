@@ -313,9 +313,10 @@ geometry and cap comparisons supplement the absolute convention check.
 
 CLOSED 2026-09-13 — `b3de184d`, `RayCasterEnvEscapeMISTest`: unfixed
 48/79 checks failed (explicit-global-map escape returned raw, unweighted
-radiance regardless of `bsdfPdf`), fixed 79/79 pass. See
-[closure](DL53_RAYCASTER_ENV_ESCAPE_MIS.md). The following diagnosis
-remains historical evidence from before this repair.
+radiance regardless of `bsdfPdf`), fixed 79/79 pass at the time (suite
+later grew to 91 checks the same day, `0eb7a47e` — current total 91/91,
+P3-2). See [closure](DL53_RAYCASTER_ENV_ESCAPE_MIS.md). The following
+diagnosis remains historical evidence from before this repair.
 
 The rendered diffusion air mean exceeds the independently sampled helper
 mean. Source inspection confirms an independent positive extra term:
