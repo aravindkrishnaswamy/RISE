@@ -102,10 +102,15 @@ F0=1, alpha=0.6/1.0, theta=60/80) are gone -- see `GGXHeightCorrelatedEnergyLUTT
 below. **2026-09-14 review follow-up (P2-3 iii, debt-ggx2 slice)**: gained a
 `KNOWN-FAILURE` control row (`TestAnisotropicKnownFailureDL77`, Schlick
 aniso alphaX=.02/alphaY=1.0 F0=1 spec-only) that recorded DL-77's
-isotropic-LUT-vs-anisotropic-render deficit (measured mean `~0.59` vs the
-1.0 a correctly-compensated furnace should read) without failing the
-suite -- the existing energy band is one-sided (gain-only) so this
-deficit was otherwise invisible to every aniso row already in the sweep.
+isotropic-LUT-vs-anisotropic-render deficit (measured mean `0.9292+/-0.0033`
+vs the 1.0 a correctly-compensated furnace should read -- **P3-2 review
+correction, debt-ggx3**: this row previously quoted a rough `~0.59`
+projection from the raw `E_ss` gap alone; the actual measured furnace
+mean, muted by the H6 direction-aware selection weight, is `0.9292`, and
+that is the figure the DEBT_LEDGER.md row and the fix commit record)
+without failing the suite -- the existing energy band is one-sided
+(gain-only) so this deficit was otherwise invisible to every aniso row
+already in the sweep.
 `151 checks, 0 failures`. **DL-77 CLOSED 2026-09-14 (debt-ggx3 slice)**:
 the `KNOWN-FAILURE` control was promoted to a real, TWO-SIDED gating
 check (`TestAnisotropicFurnaceDL77`/`CheckAnisotropicFurnaceBound` --
@@ -118,6 +123,31 @@ now read close to 1.0 (`0.9982`/`1.0061`/`1.0049`). `153 checks,
 0 failures`. See [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
 "DL-77" section for the fix (an anisotropy-ratio table plus a per-azimuth
 refinement in `MicrofacetEnergyLUT.h`).
+
+**Review follow-up (debt-ggx3, P1, same day)**: every row above has
+`alphaX < alphaY`, so all three were structurally blind to a second bug --
+`AnisoPhiIndex` read the queried direction's azimuth with no axis swap,
+but the table's baked phi=0 axis always meant "the smaller-alpha axis";
+callers passing `alphaX > alphaY` (e.g. every glTF
+`pbrmetallicroughness_material`) read a MIRRORED azimuth. Two new rows
+deliberately pass `alphaX>alphaY`, reproducing the ledger's cited
+red-proof furnace numbers on the unfixed lookup (`1.1678+/-0.0028` and
+`0.7574+/-0.0037`, matching the ledger's independently-measured
+`1.1699`/`0.7613`). Fixed by re-parametrizing the table directly on
+`(alphaX,alphaY)` as two independent grid axes (rather than
+`(ratio,alphaEff)`), so phi=0 means "aligned with the queried alphaX
+axis" unconditionally -- both new rows now read `0.9988`/`0.9924`.
+`155 checks, 0 failures`. The same re-parametrization also closed two
+follow-on issues found in review: **P2-1** (a seam at `alphaX==alphaY` --
+the table's own diagonal is now seeded from the converged isotropic
+tables instead of an independent noisier bake) and **P2-2** (most
+nominal `(ratio,alphaEff)` grid cells were physically unreachable --
+`alphaX`,`alphaY` now each span the full `[0.01,1.0]` range
+independently, and the alpha/cos resolution was raised `16->24`/`16->32`
+to shrink the residual further). See `GGXHeightCorrelatedEnergyLUTTest`
+below for the relabel-symmetry proof and
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-77" section for the full P2-2 sweep numbers.
 
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
@@ -144,6 +174,20 @@ that the original quadrature and the offline generator share one VNDF
 importance-sampling identity and so could not, between them, catch a
 shared error in it. `23 checks, 0 failures` (was `14 checks, 0
 failures`).
+
+**Review follow-up (debt-ggx3, P1, same day)**: gained a relabel-symmetry
+section (`TestRelabelSymmetry`) directly proving DL-77's P1 fix --
+`LookupEssG2AnisoDirectional(cosTheta,localX,localY,alphaX,alphaY)` must
+equal `LookupEssG2AnisoDirectional(cosTheta,localY,localX,alphaY,alphaX)`
+for the same physical direction (swapping which axis is "X" is a pure
+coordinate relabeling). 7 rows, including the two ledger-cited
+configurations; on the unfixed lookup all 7 FAILED (diffs up to `0.24`,
+e.g. `(alphaX=.827,alphaY=.09,theta=80,az=90)` read `0.831` one way and
+`0.590` the other); fixed, all 7 match to `~1e-16` (floating-point
+epsilon -- the re-parametrized table mirrors the canonical
+`alphaX<=alphaY` half into the `alphaX>alphaY` half using the SAME
+Monte-Carlo samples, so the symmetry is exact, not merely close). `30
+checks, 0 failures` (was `23 checks, 0 failures`).
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's

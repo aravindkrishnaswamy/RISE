@@ -427,6 +427,51 @@ namespace
 			<< " (F0=" << F0 << ", bound [0," << F0 << "])";
 		return Report( oss.str(), passed );
 	}
+
+	// DL-77 P1 red proof (debt-ggx3): the anisotropic Kulla-Conty energy
+	// table is baked with phi=0 meaning "aligned with the axis this
+	// generator calls alphaX" -- so relabeling which physical roughness
+	// is "X" and which is "Y" (a pure coordinate-frame choice) must leave
+	// the ENERGY unchanged, provided the azimuth is relabeled to match:
+	// LookupEssG2AnisoDirectional(cosTheta, localX, localY, alphaX,
+	// alphaY) == LookupEssG2AnisoDirectional(cosTheta, localY, localX,
+	// alphaY, alphaX) for the identical physical wi (swapping which axis
+	// is "X" swaps localX/localY too).  At HEAD before the debt-ggx3 P1
+	// fix, the table's azimuth READ (AnisoPhiIndex) ignored which of
+	// alphaX,alphaY was larger while the table's azimuth BAKE always
+	// treated the SMALLER alpha as the phi=0 axis -- so a caller passing
+	// alphaX>alphaY (the swapped labelling) read a MIRRORED azimuth,
+	// breaking this identity outright (see the two RunFurnaceBothLabels
+	// configurations below, which independently reproduce the ledger's
+	// cited furnace numbers on the unfixed code: 1.1699 and 0.7613).
+	static bool TestRelabelSymmetry(
+		const char* label, const Scalar alphaX, const Scalar alphaY,
+		const double thetaDeg, const double phiDeg )
+	{
+		const double theta = thetaDeg * PI / 180.0;
+		const double phi = phiDeg * PI / 180.0;
+		const double phiSwapped = ( 90.0 - phiDeg ) * PI / 180.0;
+		const Scalar cosTheta = std::cos( theta );
+		const Scalar sinTheta = std::sin( theta );
+
+		const Scalar localX = sinTheta * std::cos( phi );
+		const Scalar localY = sinTheta * std::sin( phi );
+		const Scalar v1 = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosTheta, localX, localY, alphaX, alphaY );
+
+		const Scalar localX2 = sinTheta * std::cos( phiSwapped );
+		const Scalar localY2 = sinTheta * std::sin( phiSwapped );
+		const Scalar v2 = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosTheta, localX2, localY2, alphaY, alphaX );
+
+		const double diff = std::fabs( (double)v1 - (double)v2 );
+		const bool passed = diff < 1e-6;
+
+		std::ostringstream oss;
+		oss << label << " Ess(aX=" << alphaX << ",aY=" << alphaY << ",phi=" << phiDeg << ")="
+			<< std::fixed << std::setprecision(6) << v1
+			<< " vs Ess(aX=" << alphaY << ",aY=" << alphaX << ",phi=" << (90.0-phiDeg) << ")="
+			<< v2 << "  diff=" << std::scientific << diff;
+		return Report( oss.str(), passed );
+	}
 }
 
 int main()
@@ -470,6 +515,15 @@ int main()
 	passed &= TestUniformHemisphereIndependentQuadrature( "alpha=1.0 mu=0.0156",  1.0,   0.0156, 6001 );
 	passed &= TestUniformHemisphereIndependentQuadrature( "alpha=0.649 mu=0.1719", 0.649, 0.1719, 6002 );
 	passed &= TestUniformHemisphereIndependentQuadrature( "alpha=0.808 mu=0.4844", 0.808, 0.4844, 6003 );
+
+	std::cout << "\n--- DL-77 P1: relabel-symmetry, LookupEssG2AnisoDirectional(aX,aY,phi) == (aY,aX,90-phi) ---\n";
+	passed &= TestRelabelSymmetry( "(.9,.1) theta=70 az=0   (ledger red: 1.1699 furnace)",   0.9,  0.1,  70.0, 0.0 );
+	passed &= TestRelabelSymmetry( "(.827,.09) theta=80 az=90 (ledger red: 0.7613 furnace)", 0.827, 0.09, 80.0, 90.0 );
+	passed &= TestRelabelSymmetry( "(.5,.05) theta=80 az=0",                                 0.5,  0.05, 80.0, 0.0 );
+	passed &= TestRelabelSymmetry( "(.3,.7) theta=45 az=30",                                 0.3,  0.7,  45.0, 30.0 );
+	passed &= TestRelabelSymmetry( "(.05,.5) theta=60 az=60",                                0.05, 0.5,  60.0, 60.0 );
+	passed &= TestRelabelSymmetry( "(.2,.8) theta=20 az=10",                                 0.2,  0.8,  20.0, 10.0 );
+	passed &= TestRelabelSymmetry( "(.02,1.0) theta=60 az=0",                                0.02, 1.0,  60.0, 0.0 );
 
 	std::cout << "\nGGXHeightCorrelatedEnergyLUTTest: " << checks << " checks, " << failures << " failures\n";
 	std::cout << "=== " << ( passed ? "ALL TESTS PASSED" : "TESTS FAILED" ) << " ===\n";

@@ -650,6 +650,28 @@ namespace
 			{ "Schlick aniso(.1,.9) ratio=9 F0=1 theta=70 az=90 spec-only",
 			  eFresnelSchlickF0, 0.0, 1.0, 0.1, 0.9, 70.0, 90.0, 0.0 }, 9003 );
 
+		// P1 red proof (debt-ggx3): every row above has alphaX < alphaY,
+		// so they were blind to the axis-swap azimuth-mirroring bug the
+		// P1 follow-up fixed -- the table's baked phi=0 axis always meant
+		// "the smaller-alpha axis", but the lookup read phi off the
+		// caller's (localX,localY) with no swap when the caller's actual
+		// alphaX was the LARGER of the pair (e.g. every glTF
+		// pbrmetallicroughness_material, which always sets alphaX>=
+		// alphaY).  These two rows deliberately pass alphaX>alphaY and
+		// reproduce the two configurations cited in the DL-77 ledger's
+		// P1 follow-up: on the unfixed lookup this test measured
+		// mean=1.1699 (row 1, energy GAIN -- alone enough to fail the
+		// upper bound) and mean=0.7613 (row 2, well under kAnisoFloor).
+		// Fixed, both read close to 1.0 like the alphaX<alphaY rows
+		// above.
+		passed &= CheckAnisotropicFurnaceBound(
+			{ "Schlick aniso(.9,.1) ratio=9 F0=1 theta=70 az=0 spec-only (P1: alphaX>alphaY)",
+			  eFresnelSchlickF0, 0.0, 1.0, 0.9, 0.1, 70.0, 0.0, 0.0 }, 9004 );
+
+		passed &= CheckAnisotropicFurnaceBound(
+			{ "Schlick aniso(.827,.09) ratio=9.19 F0=1 theta=80 az=90 spec-only (P1: alphaX>alphaY)",
+			  eFresnelSchlickF0, 0.0, 1.0, 0.827, 0.09, 80.0, 90.0, 0.0 }, 9005 );
+
 		return passed;
 	}
 }

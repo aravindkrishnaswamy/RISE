@@ -139,12 +139,26 @@ static const int NUM_SAMPLES = 1000000;
 
 // DL-77: anisotropic Kulla-Conty compensation table dimensions.
 // ANISO_ALPHA_SIZE/ANISO_COS_SIZE are coarser than LUT_SIZE (16 vs 32) to
-// keep the total sample budget in the same generation-time ballpark as the
-// isotropic bake.  ANISO_RATIO_MAX=100 spans the full ratio range reachable
-// by alphaX,alphaY both clamped to the existing [0.01,1.0] LUT alpha range
-// (max/min = 1.0/0.01 = 100); ratio is log-spaced since the compensation's
-// sensitivity to ratio is itself roughly logarithmic (halving alphaX at
-// fixed alphaY matters far more near ratio=1 than near ratio=50).
+// keep the total sample budget in a reasonable generation-time ballpark.
+//
+// P2-2 (debt-ggx3, reachability fix): this table used to be parametrized
+// on (ratio=max(alphaX,alphaY)/min(alphaX,alphaY), alphaEff=sqrt(alphaX*
+// alphaY)), with alphaX,alphaY RECOVERED as alphaEff/sqrt(ratio) and
+// alphaEff*sqrt(ratio).  That coupling makes most (ratio,alphaEff) grid
+// cells physically UNREACHABLE: both alphaX and alphaY must stay in
+// [0.01,1.0], so at ratio=100 the only valid alphaEff is the single point
+// 0.1 (alphaX=0.01, alphaY=1.0) -- every other alphaEff node at that
+// ratio row was dead weight, and the reachable WINDOW shrinks continuously
+// as ratio grows, wasting an increasing fraction of ANISO_ALPHA_SIZE's
+// nominal resolution exactly where the compensation curve is steepest.
+// The table now resolves alphaX and alphaY as two INDEPENDENT grid axes,
+// each spanning the full isotropic LUT range [0.01,1.0] linearly (the
+// SAME per-axis mapping AnisoAlphaIndex already used for alphaEff) --
+// every (ix,iy) cell is a literal, always-reachable (alphaX,alphaY) pair.
+// ANISO_ALPHA_SIZE is reused as the per-axis size for BOTH alphaX and
+// alphaY (16x16=256 (alphaX,alphaY) pairs, vs the old 8x16=128
+// (ratio,alphaEff) pairs -- more than double the WORKING resolution even
+// though the nominal grid only grew 2x, since none of it is wasted now).
 //
 // ANISO_PHI_SIZE resolves the incident direction's AZIMUTH relative to the
 // tangent/bitangent axes -- a first cut at this table (azimuthally
@@ -157,25 +171,67 @@ static const int NUM_SAMPLES = 1000000;
 // deficit was closed).  ANISO_PHI_SIZE grid points span [0,90] degrees
 // INCLUSIVE of both endpoints (by the ellipse symmetry: Ess(alphaX,alphaY,
 // mu,phi) has period 180 degrees and is mirror-symmetric about both 0 and
-// 90, so one quarter-period with reflective boundaries suffices) --
-// endpoint-inclusive specifically so phi=0 and phi=90 (the two azimuths
+// 90, so one quarter-period with reflective boundaries suffices -- this
+// symmetry is a property of the elliptical GGX distribution alone and
+// holds for ANY alphaX,alphaY pair, not just a designated "smaller" axis)
+// -- endpoint-inclusive specifically so phi=0 and phi=90 (the two azimuths
 // TestSchlickSweep's anisotropic rows actually probe, i.e. wi aligned with
 // one tangent axis or the other) are EXACT table entries, not
-// interpolated.  E_ss_TABLE_G2_ANISO_PHI[ratio][alphaEff][phi][cos] feeds
-// the ENERGY-COMPENSATION lookup (LookupEssG2AnisoDirectional, used at
-// GGXBRDF/GGXSPF's Ess_i/Ess_o call sites); E_ss_TABLE_G2_ANISO (no phi
-// dimension) is DERIVED from it by trapezoidal-averaging over phi and
-// continues to feed ONLY the H6 multiscatter-lobe OUTGOING-DIRECTION
-// SAMPLER (MSLobeZG2Aniso/SampleMSCosThetaG2Aniso/MSPdfG2Aniso), where an
-// azimuth-averaged proposal shape costs importance-sampling efficiency,
-// not correctness (MSPdfG2Aniso always reports the density of what
-// SampleMSCosThetaG2Aniso actually samples, so the estimator stays
-// unbiased regardless of how good the proposal shape is).
-static const int ANISO_ALPHA_SIZE = 16;
-static const int ANISO_RATIO_SIZE = 8;
-static const int ANISO_COS_SIZE = 16;
+// interpolated.  Critically, phi=0 now means "wi aligned with the
+// alphaX axis" LITERALLY (the table's ix index IS alphaX, not "the
+// smaller of the pair" as under the old ratio parametrization) -- so
+// LookupEssG2AnisoDirectional needs no axis-swap heuristic to stay
+// consistent with the query's actual (localX,localY) tangent frame (see
+// DL-77's P1 follow-up, debt-ggx3: the old ratio-based table silently
+// assumed alphaX was always the smaller axis, which a caller passing
+// alphaX>alphaY -- e.g. every glTF pbrmetallicroughness_material --
+// violated, mirroring the azimuth).  E_ss_TABLE_G2_ANISO_PHI[alphaX]
+// [alphaY][phi][cos] feeds the ENERGY-COMPENSATION lookup
+// (LookupEssG2AnisoDirectional, used at GGXBRDF/GGXSPF's Ess_i/Ess_o call
+// sites); E_ss_TABLE_G2_ANISO (no phi dimension) is DERIVED from it by
+// trapezoidal-averaging over phi and continues to feed ONLY the H6
+// multiscatter-lobe OUTGOING-DIRECTION SAMPLER (MSLobeZG2Aniso/
+// SampleMSCosThetaG2Aniso/MSPdfG2Aniso), where an azimuth-averaged
+// proposal shape costs importance-sampling efficiency, not correctness
+// (MSPdfG2Aniso always reports the density of what SampleMSCosThetaG2Aniso
+// actually samples, so the estimator stays unbiased regardless of how
+// good the proposal shape is).
+//
+// P2-1 (debt-ggx3, continuity fix): the alphaX==alphaY diagonal (ix==iy)
+// is no longer an independent Monte-Carlo bake at this table's own
+// coarser NUM_SAMPLES_ANISO -- see main()'s DL-77 bake loop, which seeds
+// it directly from the WELL-CONVERGED isotropic E_ss_G2/E_avg_G2 tables
+// (NUM_SAMPLES samples/cell) via the exact bilinear scheme LookupEssG2/
+// LookupEavgG2 use at runtime, so a query approaching the diagonal
+// interpolates toward the SAME numbers the runtime alphaX==alphaY
+// shortcut returns instead of an independently-noisy neighboring node.
+// P2-2 residual pass (debt-ggx3): an independent 4000-point sweep (own
+// mt19937_64 RNG stream, 200k VNDF samples/point) against a fresh
+// quadrature of this same file's GGX_G2_Aniso_HeightCorrelated found the
+// worst-case interpolation residual concentrated at LOW alphaY combined
+// with EXTREME grazing (cosTheta near/inside the ANISO_COS_SIZE grid's
+// first, widest bin) -- the same end-cap-flattening effect as the
+// isotropic table's own tracked DL-86 residual, compounded by the aniso
+// grid's coarser 16-step alpha/cos resolution (worst case at the
+// original 8x16x7x16 (ratio,alphaEff,phi,cos) parametrization: 5.09% at
+// alphaX=0.0114,alphaY=0.1464,cos=0.1377,phi=69.5, per the DL-77 P2-2
+// ledger note).  At the reachability fix's initial 16x16x7x16 direct
+// (alphaX,alphaY) grid: worst case 4.52% at alphaX=0.7684,alphaY=0.0626,
+// cos=0.0254,phi=80.4 (mean residual 0.20% over the 4000 points, 84 >1%,
+// 18 >2%, 0 >5%).  ANISO_ALPHA_SIZE 16->24 and ANISO_COS_SIZE 16->32
+// (now matching the isotropic LUT_SIZE) directly narrow that end-cap and
+// the low-alpha cell width: worst case dropped to 3.25% at
+// alphaX=0.9353,alphaY=0.0752,cos=0.1211,phi=85.5 (mean 0.15%, 35 >1%,
+// 7 >2%, 0 >5%).  NOT fully closed to the <=1% target -- the residual's
+// root cause is the same grazing end-cap DL-86 already tracks (a flat-
+// clamp below the first cosTheta bin center), which grid density alone
+// asymptotically approaches but does not eliminate, and revisiting the
+// end-cap clamp itself is explicitly out of scope for this slice per
+// DL-86's own note.  See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md's
+// "DL-77" section, P2-2 subsection, for the full sweep methodology.
+static const int ANISO_ALPHA_SIZE = 24;
+static const int ANISO_COS_SIZE = 32;
 static const int ANISO_PHI_SIZE = 7;	// 0,15,30,45,60,75,90 degrees
-static const double ANISO_RATIO_MAX = 100.0;
 static const int NUM_SAMPLES_ANISO = 150000;
 
 // H6 + DL-63: verbatim, hand-maintained multiscatter-lobe sampler/pdf
@@ -539,15 +595,13 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77").
 	//
 	// E_ss_TABLE_G2_ANISO/E_avg_TABLE_G2_ANISO below tabulate the SAME
-	// height-correlated-G2 directional albedo, additionally resolved by
-	// anisotropy RATIO = max(alphaX,alphaY)/min(alphaX,alphaY) (log-
-	// spaced [1, ANISO_RATIO_MAX]), AZIMUTHALLY AVERAGED over the incident
-	// direction's azimuth relative to the tangent/bitangent axes.  By
-	// symmetry (swapping alphaX<->alphaY is a 90-degree relabeling of the
-	// tangent axes, which the full-2*pi azimuthal average is invariant
-	// to), the table only needs RATIO >= 1, with alphaX,alphaY resolved
-	// from (alphaEff,ratio) as alphaEff/sqrt(ratio) and alphaEff*
-	// sqrt(ratio).
+	// height-correlated-G2 directional albedo, resolved DIRECTLY by
+	// (alphaX,alphaY) as two independent grid axes (see the generator's
+	// ANISO_ALPHA_SIZE comment, debt-ggx3 P2-2, for why this replaced an
+	// earlier (ratio,alphaEff) parametrization: that coupling left most
+	// nominal grid cells physically unreachable), AZIMUTHALLY AVERAGED
+	// over the incident direction's azimuth relative to the tangent/
+	// bitangent axes.
 	//
 	// A first cut at this fix used ONLY the azimuthally-averaged table for
 	// EVERYTHING (energy compensation AND the H6 sampler) and closed the
@@ -567,6 +621,19 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	// precision is an efficiency concern, not a correctness one (MSPdf
 	// always reports the density of what the sampler actually draws, so
 	// the estimator stays unbiased regardless of proposal quality).
+	//
+	// P1 follow-up (debt-ggx3): under the table's PRIOR (ratio,alphaEff)
+	// parametrization, phi=0 was baked to always mean "wi aligned with
+	// the SMALLER-alpha axis" (alphaX_table=alphaEff/sqrt(ratio) was
+	// always <= alphaY_table=alphaEff*sqrt(ratio) by construction), but
+	// LookupEssG2AnisoDirectional read phi directly off the caller's
+	// (localX,localY) with NO swap when the caller's actual alphaX was
+	// the LARGER of the pair -- mirroring the azimuth for every caller
+	// whose alphaX>alphaY (e.g. every glTF pbrmetallicroughness_material,
+	// Job.cpp's alphaX>=alphaY convention).  The direct (alphaX,alphaY)
+	// grid below eliminates the ambiguity structurally: ix IS alphaX and
+	// iy IS alphaY, so phi=0 means "aligned with the queried alphaX axis"
+	// unconditionally and AnisoPhiIndex needs no swap.
 	//
 	// LookupEssG2Aniso/LookupEssG2AnisoDirectional/LookupEavgG2Aniso/
 	// MSLobeZG2Aniso/SampleMSCosThetaG2Aniso/MSPdfG2Aniso below take
@@ -611,34 +678,26 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		}
 	}
 
-	/// Map alphaEff (already clamped to [0.01,1.0]) to the DL-77 aniso
-	/// table's alpha index pair (ai0,ai1,af) -- same linear mapping style
-	/// as LookupEssG2's own alpha blend.
-	inline void AnisoAlphaIndex( const Scalar alphaEff, int& ai0, int& ai1, Scalar& af )
+	/// Map an alpha value (already clamped to [0.01,1.0]) to the DL-77
+	/// aniso table's per-axis index pair (i0,i1,f) -- same linear mapping
+	/// style as LookupEss's own alpha blend.  Used for BOTH the alphaX and
+	/// alphaY axes (they share the same [0.01,1.0] range and grid size).
+	inline void AnisoAlphaIndex( const Scalar alpha, int& i0, int& i1, Scalar& f )
 	{
-		Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (ANISO_ALPHA_SIZE - 1);
-		ai0 = (int)a;
-		ai1 = r_min(ai0 + 1, ANISO_ALPHA_SIZE - 1);
-		af = a - ai0;
-	}
-
-	/// Map anisotropy ratio (>=1) to the DL-77 aniso table's log-spaced
-	/// ratio index pair (ri0,ri1,rf).  Clamped (not extrapolated) beyond
-	/// ANISO_RATIO_MAX, matching how the generator baked the grid.
-	inline void AnisoRatioIndex( const Scalar ratio, int& ri0, int& ri1, Scalar& rf )
-	{
-		const Scalar logRatio = log( r_max( Scalar(1.0), ratio ) ) / log( ANISO_RATIO_MAX );
-		Scalar r = r_max(0.0, r_min(1.0, logRatio)) * (ANISO_RATIO_SIZE - 1);
-		ri0 = (int)r;
-		ri1 = r_min(ri0 + 1, ANISO_RATIO_SIZE - 1);
-		rf = r - ri0;
+		Scalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (ANISO_ALPHA_SIZE - 1);
+		i0 = (int)a;
+		i1 = r_min(i0 + 1, ANISO_ALPHA_SIZE - 1);
+		f = a - i0;
 	}
 
 	/// Map a local-space direction's (x,y) to the DL-77 aniso table's
 	/// endpoint-inclusive phi index pair (pi0,pi1,pf), folded into the
 	/// ellipse's quarter-period [0,90] degrees (see ANISO_PHI_SIZE's
-	/// comment in the generator for the symmetry argument).  Degenerate
-	/// (x,y) near zero (a direction nearly along the normal) folds to an
+	/// comment in the generator for the symmetry argument -- this holds
+	/// for any alphaX,alphaY pair, so the caller does NOT need to swap
+	/// localX/localY based on which of alphaX,alphaY is larger; phi=0 is
+	/// simply "aligned with the queried alphaX axis").  Degenerate (x,y)
+	/// near zero (a direction nearly along the normal) folds to an
 	/// arbitrary phi -- harmless, since Ess is nearly phi-independent
 	/// there (every phi bin agrees close to cosTheta=1).
 	inline void AnisoPhiIndex( const Scalar localX, const Scalar localY, int& pi0, int& pi1, Scalar& pf )
@@ -661,13 +720,11 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 
 		const Scalar aX = r_max(0.01, r_min(1.0, alphaX));
 		const Scalar aY = r_max(0.01, r_min(1.0, alphaY));
-		const Scalar alphaEff = sqrt( aX * aY );
-		const Scalar ratio = r_max(aX, aY) / r_min(aX, aY);
 
-		int ai0, ai1; Scalar af;
-		AnisoAlphaIndex( alphaEff, ai0, ai1, af );
-		int ri0, ri1; Scalar rf;
-		AnisoRatioIndex( ratio, ri0, ri1, rf );
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaIndex( aX, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaIndex( aY, yi0, yi1, yf );
 
 		Scalar c = r_max(0.0, r_min(1.0, cosTheta)) * ANISO_COS_SIZE - 0.5;
 		if( c < 0 ) c = 0;
@@ -675,22 +732,22 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		int ci1 = r_min(ci0 + 1, ANISO_COS_SIZE - 1);
 		Scalar cf = c - ci0;
 
-		const Scalar v000 = E_ss_TABLE_G2_ANISO[ri0][ai0][ci0];
-		const Scalar v001 = E_ss_TABLE_G2_ANISO[ri0][ai0][ci1];
-		const Scalar v010 = E_ss_TABLE_G2_ANISO[ri0][ai1][ci0];
-		const Scalar v011 = E_ss_TABLE_G2_ANISO[ri0][ai1][ci1];
-		const Scalar v100 = E_ss_TABLE_G2_ANISO[ri1][ai0][ci0];
-		const Scalar v101 = E_ss_TABLE_G2_ANISO[ri1][ai0][ci1];
-		const Scalar v110 = E_ss_TABLE_G2_ANISO[ri1][ai1][ci0];
-		const Scalar v111 = E_ss_TABLE_G2_ANISO[ri1][ai1][ci1];
+		const Scalar v000 = E_ss_TABLE_G2_ANISO[xi0][yi0][ci0];
+		const Scalar v001 = E_ss_TABLE_G2_ANISO[xi0][yi0][ci1];
+		const Scalar v010 = E_ss_TABLE_G2_ANISO[xi0][yi1][ci0];
+		const Scalar v011 = E_ss_TABLE_G2_ANISO[xi0][yi1][ci1];
+		const Scalar v100 = E_ss_TABLE_G2_ANISO[xi1][yi0][ci0];
+		const Scalar v101 = E_ss_TABLE_G2_ANISO[xi1][yi0][ci1];
+		const Scalar v110 = E_ss_TABLE_G2_ANISO[xi1][yi1][ci0];
+		const Scalar v111 = E_ss_TABLE_G2_ANISO[xi1][yi1][ci1];
 
 		const Scalar v00 = (1-cf)*v000 + cf*v001;
 		const Scalar v01 = (1-cf)*v010 + cf*v011;
 		const Scalar v10 = (1-cf)*v100 + cf*v101;
 		const Scalar v11 = (1-cf)*v110 + cf*v111;
-		const Scalar v0 = (1-af)*v00 + af*v01;
-		const Scalar v1 = (1-af)*v10 + af*v11;
-		return (1-rf)*v0 + rf*v1;
+		const Scalar v0 = (1-yf)*v00 + yf*v01;
+		const Scalar v1 = (1-yf)*v10 + yf*v11;
+		return (1-xf)*v0 + xf*v1;
 	}
 
 	/// DL-77: per-azimuth (NOT azimuthally-averaged) twin of
@@ -711,13 +768,11 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 
 		const Scalar aX = r_max(0.01, r_min(1.0, alphaX));
 		const Scalar aY = r_max(0.01, r_min(1.0, alphaY));
-		const Scalar alphaEff = sqrt( aX * aY );
-		const Scalar ratio = r_max(aX, aY) / r_min(aX, aY);
 
-		int ai0, ai1; Scalar af;
-		AnisoAlphaIndex( alphaEff, ai0, ai1, af );
-		int ri0, ri1; Scalar rf;
-		AnisoRatioIndex( ratio, ri0, ri1, rf );
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaIndex( aX, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaIndex( aY, yi0, yi1, yf );
 		int pi0, pi1; Scalar pf;
 		AnisoPhiIndex( localX, localY, pi0, pi1, pf );
 
@@ -727,29 +782,29 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		int ci1 = r_min(ci0 + 1, ANISO_COS_SIZE - 1);
 		Scalar cf = c - ci0;
 
-		// Quadrilinear interpolation over (ratio, alphaEff, phi, cosTheta):
+		// Quadrilinear interpolation over (alphaX, alphaY, phi, cosTheta):
 		// 16 corners, collapsed one axis at a time (cos, then phi, then
-		// alphaEff, then ratio) -- same nested-lerp pattern as the
+		// alphaY, then alphaX) -- same nested-lerp pattern as the
 		// trilinear form above, one dimension deeper.
-		Scalar vRP[2][2];	// [ratio][alphaEff], after collapsing phi and cos
-		for( int ri = 0; ri < 2; ri++ )
+		Scalar vXY[2][2];	// [alphaX][alphaY], after collapsing phi and cos
+		for( int xi = 0; xi < 2; xi++ )
 		{
-			const int riv = (ri == 0) ? ri0 : ri1;
-			for( int ai = 0; ai < 2; ai++ )
+			const int xiv = (xi == 0) ? xi0 : xi1;
+			for( int yi = 0; yi < 2; yi++ )
 			{
-				const int aiv = (ai == 0) ? ai0 : ai1;
-				const Scalar vP0c0 = E_ss_TABLE_G2_ANISO_PHI[riv][aiv][pi0][ci0];
-				const Scalar vP0c1 = E_ss_TABLE_G2_ANISO_PHI[riv][aiv][pi0][ci1];
-				const Scalar vP1c0 = E_ss_TABLE_G2_ANISO_PHI[riv][aiv][pi1][ci0];
-				const Scalar vP1c1 = E_ss_TABLE_G2_ANISO_PHI[riv][aiv][pi1][ci1];
+				const int yiv = (yi == 0) ? yi0 : yi1;
+				const Scalar vP0c0 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi0][ci0];
+				const Scalar vP0c1 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi0][ci1];
+				const Scalar vP1c0 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi1][ci0];
+				const Scalar vP1c1 = E_ss_TABLE_G2_ANISO_PHI[xiv][yiv][pi1][ci1];
 				const Scalar vP0 = (1-cf)*vP0c0 + cf*vP0c1;
 				const Scalar vP1 = (1-cf)*vP1c0 + cf*vP1c1;
-				vRP[ri][ai] = (1-pf)*vP0 + pf*vP1;
+				vXY[xi][yi] = (1-pf)*vP0 + pf*vP1;
 			}
 		}
-		const Scalar v0 = (1-af)*vRP[0][0] + af*vRP[0][1];
-		const Scalar v1 = (1-af)*vRP[1][0] + af*vRP[1][1];
-		return (1-rf)*v0 + rf*v1;
+		const Scalar v0 = (1-yf)*vXY[0][0] + yf*vXY[0][1];
+		const Scalar v1 = (1-yf)*vXY[1][0] + yf*vXY[1][1];
+		return (1-xf)*v0 + xf*v1;
 	}
 
 	/// DL-77: anisotropic twin of LookupEavgG2.
@@ -759,46 +814,44 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 
 		const Scalar aX = r_max(0.01, r_min(1.0, alphaX));
 		const Scalar aY = r_max(0.01, r_min(1.0, alphaY));
-		const Scalar alphaEff = sqrt( aX * aY );
-		const Scalar ratio = r_max(aX, aY) / r_min(aX, aY);
 
-		int ai0, ai1; Scalar af;
-		AnisoAlphaIndex( alphaEff, ai0, ai1, af );
-		int ri0, ri1; Scalar rf;
-		AnisoRatioIndex( ratio, ri0, ri1, rf );
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaIndex( aX, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaIndex( aY, yi0, yi1, yf );
 
-		const Scalar v00 = E_avg_TABLE_G2_ANISO[ri0][ai0];
-		const Scalar v01 = E_avg_TABLE_G2_ANISO[ri0][ai1];
-		const Scalar v10 = E_avg_TABLE_G2_ANISO[ri1][ai0];
-		const Scalar v11 = E_avg_TABLE_G2_ANISO[ri1][ai1];
-		const Scalar v0 = (1-af)*v00 + af*v01;
-		const Scalar v1 = (1-af)*v10 + af*v11;
-		return (1-rf)*v0 + rf*v1;
+		const Scalar v00 = E_avg_TABLE_G2_ANISO[xi0][yi0];
+		const Scalar v01 = E_avg_TABLE_G2_ANISO[xi0][yi1];
+		const Scalar v10 = E_avg_TABLE_G2_ANISO[xi1][yi0];
+		const Scalar v11 = E_avg_TABLE_G2_ANISO[xi1][yi1];
+		const Scalar v0 = (1-yf)*v00 + yf*v01;
+		const Scalar v1 = (1-yf)*v10 + yf*v11;
+		return (1-xf)*v0 + xf*v1;
 	}
 
 	/// DL-77: anisotropic twin of MSLobeZG2.  Z is a LINEAR functional of
 	/// the essRow (see MSLobeZ's own perf-note comment above), so the
 	/// per-corner Z values can be precomputed once and then blended with
-	/// the SAME bilinear (alphaEff, ratio) weights LookupEssG2Aniso/
+	/// the SAME bilinear (alphaX, alphaY) weights LookupEssG2Aniso/
 	/// LookupEavgG2Aniso use -- exactly how MSLobeZG2 blends across alpha
-	/// alone, just with a second (ratio) dimension.
+	/// alone, just with a second (alphaY) dimension.
 	inline Scalar MSLobeZG2Aniso( const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return MSLobeZG2( alphaX );
 
-		static const std::array<std::array<Scalar, ANISO_ALPHA_SIZE>, ANISO_RATIO_SIZE> rowZ = []() {
-			std::array<std::array<Scalar, ANISO_ALPHA_SIZE>, ANISO_RATIO_SIZE> z{};
-			for( int rj = 0; rj < ANISO_RATIO_SIZE; rj++ )
+		static const std::array<std::array<Scalar, ANISO_ALPHA_SIZE>, ANISO_ALPHA_SIZE> rowZ = []() {
+			std::array<std::array<Scalar, ANISO_ALPHA_SIZE>, ANISO_ALPHA_SIZE> z{};
+			for( int xi = 0; xi < ANISO_ALPHA_SIZE; xi++ )
 			{
-				for( int ai = 0; ai < ANISO_ALPHA_SIZE; ai++ )
+				for( int yi = 0; yi < ANISO_ALPHA_SIZE; yi++ )
 				{
 					MSLobeDetail::Segment segs[ANISO_COS_SIZE + 1];
 					int nSegs = 0;
-					MSLobeDetail::BuildSegmentsFromRowN( E_ss_TABLE_G2_ANISO[rj][ai], ANISO_COS_SIZE, segs, nSegs );
+					MSLobeDetail::BuildSegmentsFromRowN( E_ss_TABLE_G2_ANISO[xi][yi], ANISO_COS_SIZE, segs, nSegs );
 					Scalar I = 0.0;
 					for( int i = 0; i < nSegs; i++ )
 						I += MSLobeDetail::SegTotal( segs[i] );
-					z[rj][ai] = 2.0 * I;
+					z[xi][yi] = 2.0 * I;
 				}
 			}
 			return z;
@@ -806,17 +859,15 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 
 		const Scalar aX = r_max(0.01, r_min(1.0, alphaX));
 		const Scalar aY = r_max(0.01, r_min(1.0, alphaY));
-		const Scalar alphaEff = sqrt( aX * aY );
-		const Scalar ratio = r_max(aX, aY) / r_min(aX, aY);
 
-		int ai0, ai1; Scalar af;
-		AnisoAlphaIndex( alphaEff, ai0, ai1, af );
-		int ri0, ri1; Scalar rf;
-		AnisoRatioIndex( ratio, ri0, ri1, rf );
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaIndex( aX, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaIndex( aY, yi0, yi1, yf );
 
-		const Scalar v0 = (1-af)*rowZ[ri0][ai0] + af*rowZ[ri0][ai1];
-		const Scalar v1 = (1-af)*rowZ[ri1][ai0] + af*rowZ[ri1][ai1];
-		return (1-rf)*v0 + rf*v1;
+		const Scalar v0 = (1-yf)*rowZ[xi0][yi0] + yf*rowZ[xi0][yi1];
+		const Scalar v1 = (1-yf)*rowZ[xi1][yi0] + yf*rowZ[xi1][yi1];
+		return (1-xf)*v0 + xf*v1;
 	}
 
 	/// DL-77: anisotropic twin of SampleMSCosThetaG2.  Unlike Z (a linear
@@ -830,20 +881,18 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 
 		const Scalar aX = r_max(0.01, r_min(1.0, alphaX));
 		const Scalar aY = r_max(0.01, r_min(1.0, alphaY));
-		const Scalar alphaEff = sqrt( aX * aY );
-		const Scalar ratio = r_max(aX, aY) / r_min(aX, aY);
 
-		int ai0, ai1; Scalar af;
-		AnisoAlphaIndex( alphaEff, ai0, ai1, af );
-		int ri0, ri1; Scalar rf;
-		AnisoRatioIndex( ratio, ri0, ri1, rf );
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaIndex( aX, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaIndex( aY, yi0, yi1, yf );
 
 		Scalar essRow[ANISO_COS_SIZE];
 		for( int k = 0; k < ANISO_COS_SIZE; k++ )
 		{
-			const Scalar v0 = (1-af)*E_ss_TABLE_G2_ANISO[ri0][ai0][k] + af*E_ss_TABLE_G2_ANISO[ri0][ai1][k];
-			const Scalar v1 = (1-af)*E_ss_TABLE_G2_ANISO[ri1][ai0][k] + af*E_ss_TABLE_G2_ANISO[ri1][ai1][k];
-			essRow[k] = (1-rf)*v0 + rf*v1;
+			const Scalar v0 = (1-yf)*E_ss_TABLE_G2_ANISO[xi0][yi0][k] + yf*E_ss_TABLE_G2_ANISO[xi0][yi1][k];
+			const Scalar v1 = (1-yf)*E_ss_TABLE_G2_ANISO[xi1][yi0][k] + yf*E_ss_TABLE_G2_ANISO[xi1][yi1][k];
+			essRow[k] = (1-xf)*v0 + xf*v1;
 		}
 
 		MSLobeDetail::Segment segs[ANISO_COS_SIZE + 1];
@@ -968,26 +1017,64 @@ int main() {
 		fprintf(stderr, "alpha=%.4f  E_avg=%.6f  E_avg_G2=%.6f\n", alpha, E_avg[ai], E_avg_G2[ai]);
 	}
 
-	// DL-77: anisotropic height-correlated-G2 E_ss/E_avg, resolved by
-	// (ratio, alphaEff, phi, cosTheta) -- see the ANISO_PHI_SIZE comment
-	// above and the kHandMaintainedDL77AnisoBlock header comment below for
-	// the phi-grid rationale and the alphaX,alphaY<->(alphaEff,ratio)
-	// mapping.  E_ss_G2_ANISO_PHI is the primary (phi-resolved) bake;
-	// E_ss_G2_ANISO (no phi) is DERIVED from it by trapezoidal-averaging
-	// over phi, then E_avg_G2_ANISO is derived from THAT exactly as the
-	// isotropic tables derive E_avg from E_ss.
-	static double E_ss_G2_ANISO_PHI[ANISO_RATIO_SIZE][ANISO_ALPHA_SIZE][ANISO_PHI_SIZE][ANISO_COS_SIZE];
-	static double E_ss_G2_ANISO[ANISO_RATIO_SIZE][ANISO_ALPHA_SIZE][ANISO_COS_SIZE];
-	static double E_avg_G2_ANISO[ANISO_RATIO_SIZE][ANISO_ALPHA_SIZE];
+	// DL-77: anisotropic height-correlated-G2 E_ss/E_avg, resolved DIRECTLY
+	// by (alphaX, alphaY, phi, cosTheta) -- P2-2 (debt-ggx3) replaced the
+	// old (ratio, alphaEff) coupling, which left most nominal grid cells
+	// physically unreachable (see the ANISO_ALPHA_SIZE comment above), with
+	// two independent alphaX/alphaY axes that are each always fully
+	// reachable across [0.01,1.0].  E_ss_G2_ANISO_PHI is the primary
+	// (phi-resolved) bake; E_ss_G2_ANISO (no phi) is DERIVED from it by
+	// trapezoidal-averaging over phi, then E_avg_G2_ANISO is derived from
+	// THAT exactly as the isotropic tables derive E_avg from E_ss.
+	static double E_ss_G2_ANISO_PHI[ANISO_ALPHA_SIZE][ANISO_ALPHA_SIZE][ANISO_PHI_SIZE][ANISO_COS_SIZE];
+	static double E_ss_G2_ANISO[ANISO_ALPHA_SIZE][ANISO_ALPHA_SIZE][ANISO_COS_SIZE];
+	static double E_avg_G2_ANISO[ANISO_ALPHA_SIZE][ANISO_ALPHA_SIZE];
 
-	for(int rj = 0; rj < ANISO_RATIO_SIZE; rj++) {
-		const double ratio = pow(ANISO_RATIO_MAX, (double)rj / (double)(ANISO_RATIO_SIZE - 1));
-		const double sqrtRatio = sqrt(ratio);
+	// P2-1 (debt-ggx3): bilinear evaluation of the WELL-CONVERGED isotropic
+	// E_ss_G2 table above, using the EXACT SAME interpolation scheme
+	// LookupEssG2 uses at runtime (LUT_SIZE resolution, NUM_SAMPLES
+	// samples/cell) -- used ONLY to seed the aniso table's alphaX==alphaY
+	// diagonal below, so that boundary matches the isotropic curve exactly
+	// instead of an independently-noisy NUM_SAMPLES_ANISO estimate, and a
+	// query approaching the diagonal interpolates toward a consistent
+	// limit instead of jumping.
+	auto evalIsoEssG2 = [&](double alpha, double cosTheta) -> double {
+		double a = fmax(0.0, fmin(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+		int ai0 = (int)a;
+		int ai1 = (ai0 + 1 < LUT_SIZE - 1) ? ai0 + 1 : LUT_SIZE - 1;
+		double af = a - ai0;
+		double c = fmax(0.0, fmin(1.0, cosTheta)) * LUT_SIZE - 0.5;
+		if(c < 0) c = 0;
+		int ci0 = (int)c;
+		int ci1 = (ci0 + 1 < LUT_SIZE - 1) ? ci0 + 1 : LUT_SIZE - 1;
+		double cf = c - ci0;
+		double v00 = E_ss_G2[ai0][ci0];
+		double v01 = E_ss_G2[ai0][ci1];
+		double v10 = E_ss_G2[ai1][ci0];
+		double v11 = E_ss_G2[ai1][ci1];
+		return (1-af) * ((1-cf)*v00 + cf*v01) + af * ((1-cf)*v10 + cf*v11);
+	};
 
-		for(int ai = 0; ai < ANISO_ALPHA_SIZE; ai++) {
-			const double alphaEff = 0.01 + (1.0 - 0.01) * (double)ai / (double)(ANISO_ALPHA_SIZE - 1);
-			const double alphaX = alphaEff / sqrtRatio;
-			const double alphaY = alphaEff * sqrtRatio;
+	// Pass 1: Monte-Carlo bake (or P2-1 iso-seed on the diagonal) ONLY the
+	// canonical upper triangle ix<=iy.  Relabeling which axis is "X" and
+	// which is "Y" is a pure coordinate swap of the SAME physical wi
+	// (m.x^2/alphaX^2+m.y^2/alphaY^2 is invariant under x<->y with
+	// alphaX<->alphaY), so Ess(alphaX=a,alphaY=b,phi) is EXACTLY
+	// Ess(alphaX=b,alphaY=a,90-phi) for the identical physical direction
+	// -- not an approximate symmetry to be independently re-sampled (that
+	// would only agree up to Monte-Carlo noise between the two bakes, as
+	// a naive full-square bake measured at ~1e-3..1e-4 relative
+	// disagreement).  Pass 2 below fills the ix>iy half by MIRRORING pass
+	// 1's data (same samples, zero extra noise), so the (alphaX,alphaY,
+	// phi)<->(alphaY,alphaX,90-phi) relabel-symmetry is exact to the
+	// bit, not just "close".  This also roughly halves the Monte-Carlo
+	// work versus baking the full square independently.
+	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
+		const double alphaX = 0.01 + (1.0 - 0.01) * (double)ix / (double)(ANISO_ALPHA_SIZE - 1);
+
+		for(int iy = ix; iy < ANISO_ALPHA_SIZE; iy++) {
+			const double alphaY = 0.01 + (1.0 - 0.01) * (double)iy / (double)(ANISO_ALPHA_SIZE - 1);
+			const bool isDiagonal = (ix == iy);
 
 			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
 				// Endpoint-inclusive grid over [0,90] degrees -- phi=0 and
@@ -1002,6 +1089,16 @@ int main() {
 
 				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
 					const double cosTheta = ((double)ci + 0.5) / ANISO_COS_SIZE;
+
+					if(isDiagonal) {
+						// P2-1: alphaX==alphaY is isotropic -- no azimuthal
+						// dependence, so every phi slot at this cell gets
+						// the SAME converged isotropic value instead of an
+						// independent (noisier) Monte-Carlo draw.
+						E_ss_G2_ANISO_PHI[ix][iy][pi][ci] = evalIsoEssG2(alphaX, cosTheta);
+						continue;
+					}
+
 					const double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
 
 					// wi's azimuth is FIXED at this grid point (not
@@ -1033,10 +1130,37 @@ int main() {
 						}
 					}
 
-					E_ss_G2_ANISO_PHI[rj][ai][pi][ci] = sumG2 / (double)NUM_SAMPLES_ANISO;
+					E_ss_G2_ANISO_PHI[ix][iy][pi][ci] = sumG2 / (double)NUM_SAMPLES_ANISO;
 				}
 			}
 
+			fprintf(stderr, "aniso alphaX=%.4f alphaY=%.4f  (canonical bake)%s\n",
+				alphaX, alphaY, isDiagonal ? "  [diag: iso-seeded]" : "");
+		}
+	}
+
+	// Pass 2: mirror the ix>iy half from pass 1's ix<=iy data -- see the
+	// exact-symmetry rationale above.  phi index pi mirrors to
+	// ANISO_PHI_SIZE-1-pi because the endpoint-inclusive phi grid is
+	// itself symmetric about 45 degrees (phiDeg[k] = 90 - phiDeg[N-1-k]).
+	for(int ix = 1; ix < ANISO_ALPHA_SIZE; ix++) {
+		for(int iy = 0; iy < ix; iy++) {
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+					E_ss_G2_ANISO_PHI[ix][iy][pi][ci] = E_ss_G2_ANISO_PHI[iy][ix][ANISO_PHI_SIZE - 1 - pi][ci];
+				}
+			}
+		}
+	}
+
+	// Pass 3: derive E_ss_G2_ANISO (phi-trapezoidal average) and
+	// E_avg_G2_ANISO (cosTheta integral) for the FULL square -- the
+	// endpoint-symmetric trapezoidal weights [0.5,1,1,...,1,0.5] read the
+	// same forwards or reversed, so this comes out exactly symmetric
+	// (E_ss_G2_ANISO[ix][iy]==E_ss_G2_ANISO[iy][ix]) as a consequence of
+	// pass 2's mirror, with no special-casing needed here.
+	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
 			// Derive the phi-averaged row via trapezoidal quadrature over
 			// the endpoint-inclusive phi grid (half-weight at phi=0/90,
 			// full weight interior, normalized by the number of
@@ -1044,22 +1168,24 @@ int main() {
 			// quantity the pre-fix generator computed via random phi
 			// draws, exploiting the ellipse's quarter-period symmetry.
 			for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
-				double trapz = 0.5 * E_ss_G2_ANISO_PHI[rj][ai][0][ci] + 0.5 * E_ss_G2_ANISO_PHI[rj][ai][ANISO_PHI_SIZE-1][ci];
+				double trapz = 0.5 * E_ss_G2_ANISO_PHI[ix][iy][0][ci] + 0.5 * E_ss_G2_ANISO_PHI[ix][iy][ANISO_PHI_SIZE-1][ci];
 				for(int pi = 1; pi < ANISO_PHI_SIZE - 1; pi++)
-					trapz += E_ss_G2_ANISO_PHI[rj][ai][pi][ci];
-				E_ss_G2_ANISO[rj][ai][ci] = trapz / (double)(ANISO_PHI_SIZE - 1);
+					trapz += E_ss_G2_ANISO_PHI[ix][iy][pi][ci];
+				E_ss_G2_ANISO[ix][iy][ci] = trapz / (double)(ANISO_PHI_SIZE - 1);
 			}
 
 			double integralAniso = 0.0;
 			for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
 				const double mu = ((double)ci + 0.5) / ANISO_COS_SIZE;
 				const double dmu = 1.0 / ANISO_COS_SIZE;
-				integralAniso += E_ss_G2_ANISO[rj][ai][ci] * mu * dmu;
+				integralAniso += E_ss_G2_ANISO[ix][iy][ci] * mu * dmu;
 			}
-			E_avg_G2_ANISO[rj][ai] = 2.0 * integralAniso;
+			E_avg_G2_ANISO[ix][iy] = 2.0 * integralAniso;
 
-			fprintf(stderr, "aniso ratio=%.4f alphaEff=%.4f (aX=%.4f aY=%.4f)  E_avg_G2_ANISO=%.6f\n",
-				ratio, alphaEff, alphaX, alphaY, E_avg_G2_ANISO[rj][ai]);
+			const double alphaX = 0.01 + (1.0 - 0.01) * (double)ix / (double)(ANISO_ALPHA_SIZE - 1);
+			const double alphaY = 0.01 + (1.0 - 0.01) * (double)iy / (double)(ANISO_ALPHA_SIZE - 1);
+			fprintf(stderr, "aniso alphaX=%.4f alphaY=%.4f  E_avg_G2_ANISO=%.6f\n",
+				alphaX, alphaY, E_avg_G2_ANISO[ix][iy]);
 		}
 	}
 
@@ -1082,9 +1208,11 @@ int main() {
 	printf("//  Samples per entry: %d\n", NUM_SAMPLES);
 	printf("//  Alpha range: [0.01, 1.0] (uniform %d steps)\n", LUT_SIZE);
 	printf("//  CosTheta range: [0.5/%d, (%.1f)/%d] (cell centers)\n", LUT_SIZE, LUT_SIZE - 0.5, LUT_SIZE);
-	printf("//  DL-77 aniso LUT resolution: %d ratio x %d alphaEff x %d phi x %d cosTheta\n", ANISO_RATIO_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
-	printf("//  DL-77 aniso samples per entry: %d\n", NUM_SAMPLES_ANISO);
-	printf("//  DL-77 aniso ratio range: [1, %.0f] (log-spaced %d steps)\n", ANISO_RATIO_MAX, ANISO_RATIO_SIZE);
+	printf("//  DL-77 aniso LUT resolution: %d alphaX x %d alphaY x %d phi x %d cosTheta\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
+	printf("//  DL-77 aniso samples per entry: %d (off-diagonal cells only --\n", NUM_SAMPLES_ANISO);
+	printf("//  alphaX==alphaY cells are seeded from the isotropic tables, see\n");
+	printf("//  the P2-1 comment above the DL-77 bake loop)\n");
+	printf("//  DL-77 aniso alphaX,alphaY range: [0.01, 1.0] (uniform %d steps each)\n", ANISO_ALPHA_SIZE);
 	printf("//  DL-77 aniso phi range: [0, 90] degrees (endpoint-inclusive %d steps)\n", ANISO_PHI_SIZE);
 	printf("//\n");
 	printf("//  Provenance (P2-4, debt-ggx2; extended DL-77, debt-ggx3): this\n");
@@ -1099,7 +1227,7 @@ int main() {
 	printf("//    diff src/Library/Utilities/MicrofacetEnergyLUT.h /tmp/regen_MicrofacetEnergyLUT.h\n");
 	printf("//  The hand-derived H6/DL-63 multiscatter-lobe sampler/pdf\n");
 	printf("//  machinery (MSLobeDetail, MSLobeZ*, SampleMSCosTheta*, MSPdf*) and\n");
-	printf("//  the DL-77 anisotropic twins (AnisoAlphaIndex/AnisoRatioIndex,\n");
+	printf("//  the DL-77 anisotropic twins (AnisoAlphaIndex/AnisoPhiIndex,\n");
 	printf("//  LookupEssG2Aniso, LookupEavgG2Aniso, MSLobeZG2Aniso,\n");
 	printf("//  SampleMSCosThetaG2Aniso, MSPdfG2Aniso) are embedded verbatim in\n");
 	printf("//  this generator (kHandMaintainedH6Block, kHandMaintainedDL77AnisoBlock)\n");
@@ -1130,7 +1258,7 @@ int main() {
 	printf("\t/// Directional albedo E_ss(alpha, cosTheta) of GGX single-scatter BRDF with F=1.\n");
 	printf("\t/// Indexed as E_ss_TABLE[alphaIdx][cosThetaIdx].\n");
 	printf("\t/// Alpha mapped linearly from 0.01 to 1.0, cosTheta from cell centers.\n");
-	printf("\tstatic const Scalar E_ss_TABLE[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
+	printf("\tinline constexpr Scalar E_ss_TABLE[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("\t\t{ ");
 		for(int ci = 0; ci < LUT_SIZE; ci++) {
@@ -1146,7 +1274,7 @@ int main() {
 	// Emit E_avg table
 	printf("\t/// Cosine-weighted hemisphere average of E_ss per roughness.\n");
 	printf("\t/// E_avg(alpha) = 2 * integral_0^1 E_ss(alpha, mu) * mu d_mu\n");
-	printf("\tstatic const Scalar E_avg_TABLE[%d] = {\n\t\t", LUT_SIZE);
+	printf("\tinline constexpr Scalar E_avg_TABLE[%d] = {\n\t\t", LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("%.8f", E_avg[ai]);
 		if(ai < LUT_SIZE - 1) printf(", ");
@@ -1174,7 +1302,7 @@ int main() {
 	printf("\t/// correlated G2; CookTorranceBRDF/SPF (separable G) keep\n");
 	printf("\t/// using E_ss_TABLE/LookupEss, unchanged.  Same indexing,\n");
 	printf("\t/// resolution and sample count as E_ss_TABLE.\n");
-	printf("\tstatic const Scalar E_ss_TABLE_G2[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
+	printf("\tinline constexpr Scalar E_ss_TABLE_G2[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("\t\t{ ");
 		for(int ci = 0; ci < LUT_SIZE; ci++) {
@@ -1188,7 +1316,7 @@ int main() {
 	printf("\t};\n\n");
 
 	printf("\t/// DL-63: height-correlated-G2 twin of E_avg_TABLE above.\n");
-	printf("\tstatic const Scalar E_avg_TABLE_G2[%d] = {\n\t\t", LUT_SIZE);
+	printf("\tinline constexpr Scalar E_avg_TABLE_G2[%d] = {\n\t\t", LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("%.8f", E_avg_G2[ai]);
 		if(ai < LUT_SIZE - 1) printf(", ");
@@ -1269,35 +1397,40 @@ int main() {
 	// machinery.  See kHandMaintainedDL77AnisoBlock's own header comment
 	// (emitted below) for the full rationale.
 	printf("\tstatic const int ANISO_ALPHA_SIZE = %d;\n", ANISO_ALPHA_SIZE);
-	printf("\tstatic const int ANISO_RATIO_SIZE = %d;\n", ANISO_RATIO_SIZE);
 	printf("\tstatic const int ANISO_COS_SIZE = %d;\n", ANISO_COS_SIZE);
-	printf("\tstatic const int ANISO_PHI_SIZE = %d;\n", ANISO_PHI_SIZE);
-	printf("\tstatic const Scalar ANISO_RATIO_MAX = %.1f;\n\n", ANISO_RATIO_MAX);
+	printf("\tstatic const int ANISO_PHI_SIZE = %d;\n\n", ANISO_PHI_SIZE);
 
 	printf("\t/// DL-77: per-azimuth (NOT azimuthally-averaged) height-\n");
 	printf("\t/// correlated-G2 single-scatter directional albedo -- the\n");
 	printf("\t/// primary bake; E_ss_TABLE_G2_ANISO below is DERIVED from this\n");
 	printf("\t/// by trapezoidal-averaging over phi.  Indexed as\n");
-	printf("\t/// E_ss_TABLE_G2_ANISO_PHI[ratioIdx][alphaEffIdx][phiIdx][cosThetaIdx].\n");
-	printf("\t/// phi is wi's azimuth relative to the tangent/bitangent axes,\n");
-	printf("\t/// grid points at 0,15,...,90 degrees INCLUSIVE of both\n");
-	printf("\t/// endpoints (ellipse quarter-period symmetry -- see the\n");
-	printf("\t/// ANISO_PHI_SIZE comment in the generator).  Consumed by\n");
-	printf("\t/// LookupEssG2AnisoDirectional, used ONLY at the energy-\n");
-	printf("\t/// compensation Ess_i/Ess_o call sites in GGXBRDF.cpp/\n");
-	printf("\t/// GGXSPF.cpp -- NOT by the H6 multiscatter-lobe sampler, which\n");
-	printf("\t/// keeps using the phi-averaged E_ss_TABLE_G2_ANISO below (an\n");
-	printf("\t/// importance-sampling proposal shape; exactness there is an\n");
-	printf("\t/// efficiency concern, not a correctness one).\n");
-	printf("\tstatic const Scalar E_ss_TABLE_G2_ANISO_PHI[%d][%d][%d][%d] = {\n", ANISO_RATIO_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
-	for(int rj = 0; rj < ANISO_RATIO_SIZE; rj++) {
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI[alphaXIdx][alphaYIdx][phiIdx][cosThetaIdx],\n");
+	printf("\t/// alphaX,alphaY each mapped linearly from 0.01 to 1.0 (P2-2,\n");
+	printf("\t/// debt-ggx3: this used to be resolved by (ratio,alphaEff)\n");
+	printf("\t/// instead, which left most nominal grid cells physically\n");
+	printf("\t/// unreachable -- see the generator's ANISO_ALPHA_SIZE comment).\n");
+	printf("\t/// phi is wi's azimuth relative to the alphaX axis, grid points\n");
+	printf("\t/// at 0,15,...,90 degrees INCLUSIVE of both endpoints (ellipse\n");
+	printf("\t/// quarter-period symmetry -- see the ANISO_PHI_SIZE comment in\n");
+	printf("\t/// the generator).  Consumed by LookupEssG2AnisoDirectional,\n");
+	printf("\t/// used ONLY at the energy-compensation Ess_i/Ess_o call sites\n");
+	printf("\t/// in GGXBRDF.cpp/GGXSPF.cpp -- NOT by the H6 multiscatter-lobe\n");
+	printf("\t/// sampler, which keeps using the phi-averaged\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO below (an importance-sampling proposal\n");
+	printf("\t/// shape; exactness there is an efficiency concern, not a\n");
+	printf("\t/// correctness one).  The alphaX==alphaY diagonal is seeded\n");
+	printf("\t/// from the converged isotropic E_ss_TABLE_G2 (P2-1, debt-ggx3)\n");
+	printf("\t/// rather than an independent Monte-Carlo bake, so it matches\n");
+	printf("\t/// LookupEssG2's own curve exactly at the isotropic boundary.\n");
+	printf("\tinline constexpr Scalar E_ss_TABLE_G2_ANISO_PHI[%d][%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
+	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{\n");
-		for(int ai = 0; ai < ANISO_ALPHA_SIZE; ai++) {
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
 			printf("\t\t\t{\n");
 			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
 				printf("\t\t\t\t{ ");
 				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
-					printf("%.8f", E_ss_G2_ANISO_PHI[rj][ai][pi][ci]);
+					printf("%.8f", E_ss_G2_ANISO_PHI[ix][iy][pi][ci]);
 					if(ci < ANISO_COS_SIZE - 1) printf(", ");
 				}
 				printf(" }");
@@ -1305,53 +1438,50 @@ int main() {
 				printf("\n");
 			}
 			printf("\t\t\t}");
-			if(ai < ANISO_ALPHA_SIZE - 1) printf(",");
+			if(iy < ANISO_ALPHA_SIZE - 1) printf(",");
 			printf("\n");
 		}
 		printf("\t\t}");
-		if(rj < ANISO_RATIO_SIZE - 1) printf(",");
+		if(ix < ANISO_ALPHA_SIZE - 1) printf(",");
 		printf("\n");
 	}
 	printf("\t};\n\n");
 
 	printf("\t/// DL-77: azimuthally-averaged height-correlated-G2 single-\n");
-	printf("\t/// scatter directional albedo, resolved by anisotropy RATIO in\n");
-	printf("\t/// addition to alphaEff and cosTheta.  Indexed as\n");
-	printf("\t/// E_ss_TABLE_G2_ANISO[ratioIdx][alphaEffIdx][cosThetaIdx].\n");
-	printf("\t/// Ratio mapped log-spaced from 1 to ANISO_RATIO_MAX, alphaEff\n");
-	printf("\t/// linearly from 0.01 to 1.0, cosTheta from cell centers.  See\n");
-	printf("\t/// the DL-77 hand-maintained block below for how alphaX,alphaY\n");
-	printf("\t/// map to (ratio, alphaEff) and back.\n");
-	printf("\tstatic const Scalar E_ss_TABLE_G2_ANISO[%d][%d][%d] = {\n", ANISO_RATIO_SIZE, ANISO_ALPHA_SIZE, ANISO_COS_SIZE);
-	for(int rj = 0; rj < ANISO_RATIO_SIZE; rj++) {
+	printf("\t/// scatter directional albedo.  Indexed as\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO[alphaXIdx][alphaYIdx][cosThetaIdx], both\n");
+	printf("\t/// alpha axes mapped linearly from 0.01 to 1.0, cosTheta from\n");
+	printf("\t/// cell centers.\n");
+	printf("\tinline constexpr Scalar E_ss_TABLE_G2_ANISO[%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_COS_SIZE);
+	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{\n");
-		for(int ai = 0; ai < ANISO_ALPHA_SIZE; ai++) {
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
 			printf("\t\t\t{ ");
 			for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
-				printf("%.8f", E_ss_G2_ANISO[rj][ai][ci]);
+				printf("%.8f", E_ss_G2_ANISO[ix][iy][ci]);
 				if(ci < ANISO_COS_SIZE - 1) printf(", ");
 			}
 			printf(" }");
-			if(ai < ANISO_ALPHA_SIZE - 1) printf(",");
+			if(iy < ANISO_ALPHA_SIZE - 1) printf(",");
 			printf("\n");
 		}
 		printf("\t\t}");
-		if(rj < ANISO_RATIO_SIZE - 1) printf(",");
+		if(ix < ANISO_ALPHA_SIZE - 1) printf(",");
 		printf("\n");
 	}
 	printf("\t};\n\n");
 
 	printf("\t/// DL-77: azimuthally-averaged hemisphere average of\n");
-	printf("\t/// E_ss_TABLE_G2_ANISO per (ratio, alphaEff).\n");
-	printf("\tstatic const Scalar E_avg_TABLE_G2_ANISO[%d][%d] = {\n", ANISO_RATIO_SIZE, ANISO_ALPHA_SIZE);
-	for(int rj = 0; rj < ANISO_RATIO_SIZE; rj++) {
+	printf("\t/// E_ss_TABLE_G2_ANISO per (alphaX, alphaY).\n");
+	printf("\tinline constexpr Scalar E_avg_TABLE_G2_ANISO[%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE);
+	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{ ");
-		for(int ai = 0; ai < ANISO_ALPHA_SIZE; ai++) {
-			printf("%.8f", E_avg_G2_ANISO[rj][ai]);
-			if(ai < ANISO_ALPHA_SIZE - 1) printf(", ");
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
+			printf("%.8f", E_avg_G2_ANISO[ix][iy]);
+			if(iy < ANISO_ALPHA_SIZE - 1) printf(", ");
 		}
 		printf(" }");
-		if(rj < ANISO_RATIO_SIZE - 1) printf(",");
+		if(ix < ANISO_ALPHA_SIZE - 1) printf(",");
 		printf("\n");
 	}
 	printf("\t};\n\n");

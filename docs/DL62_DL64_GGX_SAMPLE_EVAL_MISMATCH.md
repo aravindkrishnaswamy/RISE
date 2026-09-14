@@ -692,3 +692,29 @@ metric at the tested configs; not exhaustively swept across the full
 `(alphaX,alphaY,theta,azimuth)` space). The pre-existing isotropic LUT
 left end-cap residual (see above, now tracked as DL-86) is independent
 and unaffected by this fix.
+
+**P3 (debt-ggx3 review, limitation of the render evidence above)**: the
+`ggx_anisotropy_sweep.RISEscene` per-region MEAN luminance comparison
+above is a poor detector for an azimuth-mirroring bug specifically (the
+class of bug the P1 follow-up below fixed). A sphere under a fixed
+tangent-frame convention presents every azimuth around its silhouette;
+mirroring phi (swapping which axis reads "smaller-alpha") REDISTRIBUTES
+energy between symmetric points on the sphere rather than changing the
+region's aggregate mean by much, particularly under indirect/ambient
+lighting where many incident azimuths get integrated together at each
+pixel. Concretely: this render comparison shipped in the CLOSED section
+above with the P1 axis-swap bug still present in the code (P1 was found
+and fixed in a same-day follow-up, see below) and did not catch it — the
++0.9%/+4.8% brightening it reports is real (it reflects the ratio-and-
+average-case E_ss fix) but is NOT evidence the azimuth convention was
+correct. The actual regression coverage for azimuth-mirroring is the
+unit-level `GGXHeightCorrelatedEnergyLUTTest::TestRelabelSymmetry` rows
+added by the P1 follow-up (exact `LookupEssG2AnisoDirectional(aX,aY,phi)
+== (aY,aX,90-phi)` identity, tight to `~1e-16`) plus
+`GGXDiffuseTransmissionTest::TestAnisotropicFurnaceDL77`'s two
+`alphaX>alphaY` furnace rows — not a re-render. A genuinely azimuth-
+resolved render check (e.g. per-longitude-band luminance on a single
+sphere with a strong directional key light, so azimuth-mirrored energy
+would show up as a left/right asymmetry) was not built this slice; this
+is recorded as the honest scope limitation rather than an unbuilt
+diagnostic.
