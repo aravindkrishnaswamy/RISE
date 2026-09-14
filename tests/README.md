@@ -99,14 +99,25 @@ energy band is `mean <= 1 + 6*SE + 0.005`, with invalid samples and moments
 failing explicitly. `150 checks, 0 failures` since DL-63's fix (2026-09-14):
 the three previously-visible specular-only baseline failures (Schlick iso
 F0=1, alpha=0.6/1.0, theta=60/80) are gone -- see `GGXHeightCorrelatedEnergyLUTTest`
-below. **2026-09-14 review follow-up (P2-3 iii, same slice)**: gained a
+below. **2026-09-14 review follow-up (P2-3 iii, debt-ggx2 slice)**: gained a
 `KNOWN-FAILURE` control row (`TestAnisotropicKnownFailureDL77`, Schlick
-aniso alphaX=.02/alphaY=1.0 F0=1 spec-only) that records DL-77's
+aniso alphaX=.02/alphaY=1.0 F0=1 spec-only) that recorded DL-77's
 isotropic-LUT-vs-anisotropic-render deficit (measured mean `~0.59` vs the
 1.0 a correctly-compensated furnace should read) without failing the
 suite -- the existing energy band is one-sided (gain-only) so this
 deficit was otherwise invisible to every aniso row already in the sweep.
-Now `151 checks, 0 failures`.
+`151 checks, 0 failures`. **DL-77 CLOSED 2026-09-14 (debt-ggx3 slice)**:
+the `KNOWN-FAILURE` control was promoted to a real, TWO-SIDED gating
+check (`TestAnisotropicFurnaceDL77`/`CheckAnisotropicFurnaceBound` --
+standard upper bound `1+6SE+.005` PLUS a `0.90` lower floor, so a
+regression of the fix, which used to read as low as ~0.57-0.93, fails
+loudly instead of passing a gain-only check again), with 2 added
+independent `(alphaX,alphaY,theta,azimuth)` rows (ratio=10 az=45 --
+deliberately off the phi interpolation grid; ratio=9 az=90). All three
+now read close to 1.0 (`0.9982`/`1.0061`/`1.0049`). `153 checks,
+0 failures`. See [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-77" section for the fix (an anisotropy-ratio table plus a per-azimuth
+refinement in `MicrofacetEnergyLUT.h`).
 
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
