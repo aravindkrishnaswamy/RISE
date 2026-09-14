@@ -25,10 +25,13 @@
 //    harmless; see SobolSequence.h's header for the mechanism and
 //    docs/DL81_SOBOL_DIMENSION_PARITY.md for the measurements.  There
 //    is now a finite dimension supply (`SobolSequence::kNumDimensions`
-//    = 2311) and a stream index past it wraps -- a consumer that picks
-//    a deliberately large stream index must reason about where it
-//    lands after the wrap, as `BDPTCameraUtilities::kApertureSamplerStream`
-//    now does.
+//    = 8192 = 256 streams' worth), sized so that every stream a
+//    SHIPPED scene reaches has dimensions of its own; past it, Get1D
+//    draws are re-indexed rather than aliased (they decorrelate, but
+//    stop being a joint net) and Get2D draws are unaffected, since
+//    they are padded and keyed by the raw dimension.
+//    `SobolDimensionBudgetTest` Test G recomputes the shipped bound
+//    from the scene files.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 27, 2026
@@ -94,13 +97,23 @@ namespace RISE
 				return Scalar( SobolSequence::Sample( sampleIndex, dimension++, seed ) );
 			}
 
-			//! Returns a 2D Owen-scrambled Sobol sample in [0,1)^2
+			//! Returns a 2D Owen-scrambled Sobol sample in [0,1)^2.
+			//!
+			//! Drawn as a PADDED (0,2)-net pair -- Sobol' dimensions 0
+			//! and 1 at an index permuted by this dimension group --
+			//! not as two consecutive rows of the per-dimension table.
+			//! Two consecutive table rows are a legitimate 2D
+			//! projection but not a net: measured over the production
+			//! dimension set their pairwise t-value averages 2 to 3,
+			//! and the aperture pair reached 6 at 256 samples per
+			//! pixel, where dimensions 0 and 1 are t = 0 by
+			//! construction.  See SobolSequence::SamplePair.
 			Point2 Get2D()
 			{
-				Scalar u = Scalar( SobolSequence::Sample( sampleIndex, dimension, seed ) );
-				Scalar v = Scalar( SobolSequence::Sample( sampleIndex, dimension + 1, seed ) );
+				double u = 0.0, v = 0.0;
+				SobolSequence::SamplePair( sampleIndex, dimension, seed, u, v );
 				dimension += 2;
-				return Point2( u, v );
+				return Point2( Scalar( u ), Scalar( v ) );
 			}
 
 			//! SobolSampler uses fixed-size phases (kStreamStride dimensions

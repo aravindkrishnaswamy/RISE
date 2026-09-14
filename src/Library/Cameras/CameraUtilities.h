@@ -63,24 +63,27 @@ namespace RISE
 		/// walk streams was the whole argument while
 		/// `SobolSequence::Sample` was padded -- it hashed the dimension
 		/// index, so any distinct stream was a distinct hash seed and
-		/// the constant could be anything large (it was 8192).  Since
-		/// DL-81 the sampler has a finite supply of real Sobol'
-		/// dimensions, `SobolSequence::kNumDimensions` = 2311, and a
-		/// dimension past the end WRAPS.  8192 would wrap to dimension
-		/// 262144 mod 2311 = 1001, which is stream 31 slot 9 -- eye
-		/// bounce 15, well inside what a normal render reaches, so the
-		/// aperture sample would be the SAME dimension as that bounce's.
+		/// the constant could be anything large (it was 8192).  DL-81
+		/// gave the sampler a FINITE supply of real Sobol' dimensions,
+		/// and 8192*32 = 262144 wrapped onto dimension 1001 -- stream 31
+		/// slot 9, eye bounce 15, well inside a normal render -- so the
+		/// aperture would have drawn the SAME dimension as that bounce.
+		/// 3322 is the smallest stream above 3121 that placed the
+		/// aperture clear of that.
 		///
-		/// 3322 is the smallest stream above 3121 whose dimension wraps
-		/// to the very END of the table: 3322*32 mod 2311 = 2309, so the
-		/// aperture's two dimensions are 2309 and 2310, the last two.
-		/// Nothing below stream 72 can reach them, and stream 72 is eye
-		/// bounce 56 -- past any production `max_recursion`.  A finite
-		/// dimension supply cannot give a collision-free guarantee at
-		/// every depth (that would need 3121*32 dimensions), so this is
-		/// the best available placement, and `SobolDimensionBudgetTest`
-		/// asserts BOTH properties: above the walk streams, and wrapping
-		/// into the table's last row.
+		/// Since DL-81 round 2 the wrap no longer enters the argument
+		/// at all for THIS constant: `DrawApertureSample` draws with
+		/// `Get2D`, and `Get2D` is a padded (0,2)-net pair -- Sobol'
+		/// dimensions 0 and 1 at a sample index permuted per dimension
+		/// group -- keyed by the RAW dimension index, 3322*32 = 106304.
+		/// No table row is read, nothing is reduced modulo the table
+		/// size, and no walk stream can key the same group because none
+		/// reaches stream 3322.  What the constant still has to be is
+		/// ABOVE every walk stream, which is what
+		/// `SobolDimensionBudgetTest` Test F asserts; Test G separately
+		/// asserts that no shipped scene drives a WALK stream past the
+		/// end of the dimension table, which is where the wrap would
+		/// still matter (for Get1D draws).
 		///
 		/// Drawing the aperture point from a dedicated stream keeps it
 		/// stratified across pixels under Sobol and, under PSSMLT,
@@ -94,10 +97,10 @@ namespace RISE
 		{
 			/// `StartStream( kApertureSamplerStream )` first.  Correct
 			/// for `SobolSampler` / `IndependentSampler`, whose streams
-			/// are unbounded (Sobol wraps a too-large dimension into its
-			/// table -- see `kApertureSamplerStream` for why the
-			/// constant's value is chosen around that wrap -- and
-			/// Independent ignores the stream entirely).
+			/// are unbounded (Sobol's Get2D is padded and keyed by the
+			/// raw dimension index, so a large stream is simply its own
+			/// group -- see `kApertureSamplerStream` -- and Independent
+			/// ignores the stream entirely).
 			APERTURE_DEDICATED_STREAM,
 
 			/// Draw from whatever stream is already active.  This is
