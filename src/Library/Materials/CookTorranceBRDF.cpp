@@ -92,7 +92,19 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
 	// back-face hits.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
-	const ScalarTriple alphaT = pMasking->GetValuesAt(ri);
+	ScalarTriple alphaT = pMasking->GetValuesAt(ri);
+
+	// DL-65 (sibling of DL-62): widen by the same glossy-filter amount
+	// CookTorranceSPF::Scatter/ScatterNM/Pdf already apply to their
+	// sampling/density roughness -- NEE evaluation and BSDF-sampled
+	// continuation must agree on which surface roughness is being
+	// rendered at this hit.
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			alphaT.v[ch] = r_min( alphaT.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
+
 	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
 	const Scalar scalarAlpha = alphaT.v[0];
 
@@ -159,7 +171,13 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 {
 	// Same ray-facing flip as value() above.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
-	const Scalar alpha = pMasking->GetValueAtNM(ri,nm);
+	Scalar alpha = pMasking->GetValueAtNM(ri,nm);
+
+	// DL-65: same glossy-filter widening as value() above.
+	if( ri.glossyFilterWidth > 0 ) {
+		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+
 	const Scalar specColor = GuardedGetColorNM( *pSpecular, ri, nm );
 	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
