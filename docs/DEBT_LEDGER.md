@@ -62,7 +62,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-34~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~Published two-sphere union overlap exports only the deeper operand depth~~ | CLOSED 2026-09-12 (recorded regression; conservative contract retained) | `cffa254f`: unchanged ProximitySignalTest red `Passed: 465   Failed: 6`, fixed `Passed: 471   Failed: 0`; supplemental final `Passed: 491   Failed: 0`. Certified inscribed-ball union recovers `sqrt(3.56)` through signed field, manager and interior signal. The original proposed max-depth edit was already the existing signed-min magnitude; arbitrary unions remain non-exact. See [closure and limits](DL34_UNION_INTERIOR_DEPTH.md). | M | physics-bias | user-visible (published union seam regression) |
 | ~~DL-37~~ | ~~IMPROVEMENTS.md: GGX low-F0 grazing gain~~ | ~~Angle-flat diffuse split creates grazing gain~~ | CLOSED 2026-09-12 | `000df0b4`: LayeredWhiteFurnaceTest reports `0 of 57 configurations failed` (red: four failed configs). Reciprocal entry/exit transmission covers RGB/NM Schlick, conductor and film. Independent sweep: 150/46 before, 150/3 after; retained specular-only failures are DL-63. See [scope](DL37_GGX_DIFFUSE_TRANSMISSION.md). | M | physics-bias | user-visible |
 | DL-42 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | PT's BSDF-surviving one-sample guiding branch drops selected-lobe probability compensation | OPEN-confirmed (static evidence; red-proof pending) | `PathTracingIntegrator.cpp` initializes `scatterThroughput = kray/selectProb`, then the trained-guiding BSDF branch replaces it with `kray*pdf/combinedPdf` without selectProb. Shared RGB/NM loop; ordinary mixed-lobe entry reflection is reachable. | M | physics-bias | user-visible (path guiding and mixed-lobe materials) |
-| DL-43 | DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals | BDPT eye guiding swaps incoming/outgoing directions when evaluating forward candidate PDFs | OPEN-confirmed (static evidence; red-proof pending) | `BDPTIntegrator.cpp` eye RIS and one-sample guide candidates pass `(gDir,-currentRay.Dir())` to `PathValueOps::EvalPdfAtVertex`; its contract is Pdf(outgoing given incoming). Light twins pass `(-currentRay.Dir(),gDir)`. Both RGB/NM instantiate the eye code. | M | physics-bias | user-visible (BDPT eye path guiding) |
+| ~~DL-43~~ | ~~DL02_TRANSLUCENT_EXIT_DENSITY.md: review residuals~~ CLOSED 2026-09-13 — `a69c9ce6`, `TranslucentIORStackTest: ALL TESTS PASSED` | ~~BDPT eye guiding swaps incoming/outgoing directions when evaluating forward candidate PDFs~~ Eye-subpath RIS candidate-1 and one-sample guiding now pass `(-currentRay.Dir(), candidateDirection)` to `PathValueOps::EvalPdfAtVertex`, matching the light-subpath twins and the wrapper's Pdf(outgoing\|incoming) contract | CLOSED-by-test | Red on unfixed HEAD (`42f3dc97`): eye RIS `substituted_out=0` (rejected every guide candidate) and eye one-sample `bad_pdf_value=41` (all 41 outward substitutions evaluated the density of the wrong direction); light-subpath rows already passed. Fixed both call sites (RIS candidate 1, one-sample), each compiled for PelTag/NMTag via the shared `GenerateEyeSubpathImpl` template. Green: eye RIS `substituted_out=13`, all `bad_pdf_value=0`. Sibling audit: the ~14 other `EvalPdfAtVertex` call sites in `BDPTIntegrator.cpp` are Veach MIS reverse-density/connection-strategy conversions (deliberately query the opposite direction) and already use the correct order; `PathTracingIntegrator.cpp` has no `EvalPdfAtVertex` calls (PT's guiding uses the single-argument `PTEvalPdfAtSurface`/`EvalPdfAtSurface` against an already-real `RayIntersectionGeometric`, architecturally immune to this swap). See `PathValueOpsTest.cpp` Test G for the closed-form derivation. | M | physics-bias | user-visible (BDPT eye path guiding) |
 | DL-39 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: independent residuals | Dedicated translucent photon deposition counts absorbed power as deposited power | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentPelPhotonTracer::TracePhoton` sums only propagated non-diffuse `kray`, then stores `power*(1-accum_scattered)`; at an inside exit with scattering zero it stores all power regardless of extinction. `TranslucentPelPhotonMap::RadianceEstimate` does not restore the missing Beer attenuation. | M | physics-bias | user-visible (translucent photon maps) |
 | DL-44 | DL36_EMITTER_NEIGHBOUR_PIN.md: review residual | Sampled emitter UV is omitted from LightSample and downstream rebuilt emission records | OPEN-confirmed (static evidence; red-proof pending) | `LightSampler.cpp::SampleLight` sets local RGB `rig.ptCoord = coord`, but `LightSample` carries no UV. BDPT NM/HWSS emission rebuilds and LIGHT root, and VCM sampled-emitter evaluation retain default (0,0); `CheckerPainter` consumes ptCoord. MLT shares BDPT generation. | M | physics-bias | user-visible (UV-textured luminaries under bidirectional/spectral transport) |
 | DL-45 | DL03_GUIDED_IOR_CONTINUATION.md: tilted-frame residual | TranslucentSPF samples geometrically inward diffuse exits under tilted shading normals and still pops the IOR stack | OPEN-confirmed (observed defect pin; correctness red-proof pending) | `TranslucentSPF.cpp` explicitly exempts exit re-emission from its geometric-horizon gate; RGB/NM exits sample around onb.w and unconditionally pop. DL-03 real-SPF fixture recorded 1021/4096 unchanged inward exits per RGB/NM unguided run at 60-degree shading-normal tilt. Exit Pdf also omits the geometric gate. | M | physics-bias | user-visible (translucent materials with perturbed shading normals) |
@@ -186,6 +186,15 @@ reflowed otherwise.
 
 ## Counts
 
+**2026-09-13 (debt-guiding slice):** DL-43 closed (`a69c9ce6`,
+`TranslucentIORStackTest: ALL TESTS PASSED`) — see the table row and its
+"Verification recipes" entry above. Main rows unchanged at 63;
+OPEN-confirmed drops from 47 to **46**; a new "CLOSED-by-later-slice"
+bucket of **1** is added below (distinct from the 2026-09-12 cleanup
+session's 16, since this slice ran independently afterward against
+`75f78ba5`). No other row was touched by this slice; DL-42 (PT's separate
+selected-lobe-compensation bug, same source doc) remains OPEN.
+
 Updated for the 2026-09-12 DL-34 recorded-overlap closure and independent
 DL-60/DL-61 gate residuals, plus the DL-37 diffuse-composition closure and independent DL-62/DL-63/DL-64 residuals. Original sweep counts remain historical.
 
@@ -226,10 +235,16 @@ deliberately absent), and every internal `DL-xx` cross-reference were
 independently re-derived from the table text this pass and found consistent
 — no count below changed.
 
-- Main rows: **63** — **47 open**, **16 closed**.
-- OPEN-confirmed: **47**, including the two reproduced baseline gate residuals
+- Main rows: **63** — ~~47 open, 16 closed~~ **46 open, 17 closed** as of
+  2026-09-13 (DL-43 closed by the debt-guiding slice; see the dated note
+  above).
+- OPEN-confirmed: ~~47~~ **46** as of 2026-09-13 (DL-43 closed this pass),
+  including the two reproduced baseline gate residuals
   DL-60/DL-61. DL-35 remains deliberately absent. Re-sweep 2026-09-12: all
   47 independently re-verified against `876c9a26`; 0 reclassified.
+- CLOSED-by-later-slice: **1** (DL-43, `a69c9ce6`, 2026-09-13, debt-guiding
+  slice — run independently after the 2026-09-12 cleanup/re-sweep sessions
+  below, against `75f78ba5`).
 - CLOSED-by-cleanup: **16** (DL-01, `1239edf2`; DL-02, `a041e51d`;
   DL-36, `ac9891f3`, consistency pin; DL-03, `8a9bdb18`;
   DL-04, `1b705ce1`, convention pin; DL-48, `12a7ef3e`;
@@ -657,13 +672,42 @@ against their own actual proposal measures; inspect HWSS separately.
 Avoid relying on ordinary translucent exit reachability: PT disables
 guiding for specular-classified arrivals. Static evidence; red proof pending.
 
-**DL-43 (BDPT eye guiding PDF argument order).** Drive the real eye
-RIS and one-sample guided candidate paths at a Lambertian vertex with
-non-normal outgoing direction and assert the evaluated PDF equals that
-outgoing cosine over pi, not the incoming cosine. Cover RGB/NM and use
-light-side candidate evaluations as a control. Fix incoming/outgoing
-argument order at the actual producer and inspect all sibling candidate
-and reverse-density calls. Static evidence; red proof pending.
+**~~DL-43 (BDPT eye guiding PDF argument order).~~ CLOSED 2026-09-13 —
+`a69c9ce6`, `TranslucentIORStackTest: ALL TESTS PASSED`.** Extended the
+existing DL-03 BDPT fixture (real trained OpenPGL field + real
+TranslucentSPF + production `BDPTIntegrator` RGB/NM eye/light subpath
+generation, `tests/TranslucentGuidedStackProbe.h`) to capture the exit
+vertex's first guiding-phase `Pdf()`/`PdfNM()` query per trial (a second,
+later query at the same vertex is unrelated MIS reverse-density
+bookkeeping and must not be conflated with it) and assert that, for every
+outward-substituted trial, the captured density equals the substituted
+direction's own outgoing cosine/pi. Red on unfixed `42f3dc97`: eye RIS
+`substituted_out=0` (every guide candidate rejected outright — a
+swapped-argument density landing on the wrong side of the SPF's
+geometric-horizon gate reads zero) and eye one-sample `bad_pdf_value=41`
+(all 41 outward substitutions carried the wrong density, independent of
+which direction the guide actually proposed); all light-subpath rows
+already passed, confirming only the eye-subpath argument order was wrong.
+Fixed by swapping the two `PathValueOps::EvalPdfAtVertex` call sites
+(RIS candidate 1, one-sample) in `GenerateEyeSubpathImpl` to
+`(-currentRay.Dir(), candidateDirection)`, matching the light-subpath
+twins; `EvalBSDFAtVertex` calls at the same sites are unchanged (BSDF
+value is reciprocal, so argument order doesn't change the result there).
+Green: eye RIS `substituted_out=13`, `bad_pdf_value=0` everywhere.
+`PathValueOpsTest.cpp` Test G additionally pins the closed form at a real
+`LambertianMaterial` vertex (pre-fix eye order reproduces the incoming
+direction's cosine/pi regardless of the candidate; light order already
+matched the candidate's own outgoing cosine/pi) as documentation, not a
+red/green discriminator. Sibling audit (docs/skills/audit-by-bug-pattern.md):
+the ~14 other `EvalPdfAtVertex` sites in `BDPTIntegrator.cpp` are Veach MIS
+reverse-density/connection-strategy conversions that deliberately query the
+opposite direction and were spot-checked as already correct;
+`PathTracingIntegrator.cpp` has no `EvalPdfAtVertex` calls at all (PT's
+guiding uses the single-direction-argument `PTEvalPdfAtSurface` /
+`PathVertexEval::EvalPdfAtSurface` against an already-real
+`RayIntersectionGeometric`, architecturally immune to a two-argument
+swap) — DL-42 (PT's separate selected-lobe-compensation bug) is unrelated
+to this call shape.
 
 
 **DL-44 (sampled emitter UV propagation).** Add a deterministic two-texel

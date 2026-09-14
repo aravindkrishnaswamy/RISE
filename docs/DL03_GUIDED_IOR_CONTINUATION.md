@@ -24,7 +24,8 @@ is zero. Blindly copying an exit's popped stack would create incorrect
 inward state. This change neither rejects/resamples proposals nor changes
 PDFs or BSDF amplitudes. Full translucent guiding weights/densities remain
 DL-38/DL-41, PT selected-lobe compensation DL-42, and BDPT eye PDF argument
-order DL-43. Existing unchanged tilted SPF exit behavior is retained and now tracked
+order DL-43 (CLOSED `a69c9ce6`, 2026-09-13 -- see docs/DEBT_LEDGER.md).
+Existing unchanged tilted SPF exit behavior is retained and now tracked
 as DL-45; this is not a geometric-horizon correction for the sampler itself.
 
 ## Red proof
@@ -109,6 +110,16 @@ BDPT eye one-sample and light both modes; it requires inward controls in
 one-sample guiding. Eye RIS records retained SPF directions and requires
 more exit PDF queries than the unguided baseline, proving guide-candidate
 evaluation without claiming successful guide-direction replacement.
+
+**Superseded 2026-09-13**: the preceding paragraph's "Eye RIS records
+retained SPF directions ... without claiming successful guide-direction
+replacement" described the state while DL-43 was open. DL-43 is now
+CLOSED (`a69c9ce6`) -- the same `RunBDPT` fixture (extended further, see
+docs/DEBT_LEDGER.md DL-43) now shows eye+RIS achieving actual outward
+guide-direction substitutions (`substituted_out>0`) with a correctly-valued
+density, not merely a live query count. This paragraph is retained
+verbatim as the historical record of what DL-03's own closure proved at
+the time; it no longer describes eye RIS's current behavior.
 
 Self-audit risks: vacant guiding paths, blindly popping inward replacements,
 training/eta reading a different state, dangling borrowed stacks, and

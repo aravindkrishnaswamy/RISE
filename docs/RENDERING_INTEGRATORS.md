@@ -1053,9 +1053,10 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      eye/light coverage was first run on the fixed library. Ordinary PT
      specular arrivals suppress guiding, so the fixture explicitly seeds
      a diffuse arrival and demands positive actual outward substitutions.
-     BDPT eye RIS's retained-SPF-only case is disclosed under DL-43, not
-     counted as actual guide-direction coverage. See
-     [DL-03 closure and audit](DL03_GUIDED_IOR_CONTINUATION.md).
+     BDPT eye RIS's retained-SPF-only case was disclosed under DL-43
+     (CLOSED `a69c9ce6`, 2026-09-13 -- eye RIS now achieves actual
+     outward guide-direction substitutions; see docs/DEBT_LEDGER.md).
+     See [DL-03 closure and audit](DL03_GUIDED_IOR_CONTINUATION.md).
   2. **`ScatteredRayContainer` overflow leak in the per-channel loop —
      CLOSED, review round 3 (in the same commit range that fixed debt
      30's review round 3 items C1/C2).**  Auditing the shape described
