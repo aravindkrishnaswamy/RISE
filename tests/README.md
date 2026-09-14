@@ -100,6 +100,25 @@ failing explicitly. Three specular-only baseline failures remain visible with
 a nonzero exit and are tracked separately as DL-63; no energy assertion is
 skipped. This test is not an all-green gate until DL-63 is resolved.
 
+`GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13) pins
+GGX's sample-vs-evaluation consistency at two spots an aggregate energy
+bound cannot see: (1) `GGXBRDF::value`/`valueNM` under nonzero
+`ri.glossyFilterWidth` must match an independently constructed
+pre-widened-reference `GGXBRDF` EXACTLY (relErr=0), not merely stay
+energy-bounded — Kulla-Conty compensation keeps total energy near 1
+regardless of alpha, so it cannot detect a roughness mismatch between the
+BRDF and its SPF twin; (2) at F0=0, `GGXSPF::Scatter`/`ScatterNM` must
+still reach the specular `ScatteredRay` type (deterministic count > 0 at
+grazing and normal incidence, zero and nonzero diffuse), and
+`GGXSPF::Pdf`/`PdfNM` at the specular peak must match an independent
+hemispherical-Fresnel-weighted reference exactly, not merely exceed the
+bare cosine density — `UniformColorPainter`'s spectral path JH-uplifts
+even an authored `(0,0,0)` to a small nonzero value (~2.5e-5, a separate
+out-of-scope "black guard" gap) that alone produces a false-positive
+elevation over cosine. 29 checks, 0 failures post-fix (23 failures
+pre-fix, `a1db468d`). See
+[DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md).
+
 `GGXDiffuseRenderTest` loads `ggx_diffuse_transmission.RISEscene` and seeds each
 render immediately before rasterization. Its 384×128, 64-sample direct-light
 fixture writes `rendered/DL37_pbr.exr` in linear Rec.709, with box filtering and

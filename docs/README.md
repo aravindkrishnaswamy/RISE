@@ -171,7 +171,13 @@ do not execute old phase lists blindly.
     records the subsequent matched-index Snell/Fresnel classification repair;
     [DL59_SMS_NORMAL_DERIVATIVE.md](DL59_SMS_NORMAL_DERIVATIVE.md) records
     the separate, test-only unequal-index normal-derivative convention
-    correction found during DL-58 review.
+    correction found during DL-58 review;
+    [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+    (2026-09-13) records the GGX glossy-filter roughness parity repair
+    (`GGXBRDF::value`/`valueNM` now widen by `ri.glossyFilterWidth` like
+    their SPF twins) and the zero-F0 Schlick lobe-selection-weight repair
+    (derived from the hemispherical Fresnel average instead of raw F0),
+    plus the new DL-65 CookTorrance/Schlick sibling debt it opened.
   - CSG / signals: [DL34_UNION_INTERIOR_DEPTH.md](DL34_UNION_INTERIOR_DEPTH.md)
     records the published union-overlap interior-depth repair, conservative
     scope, and baseline gate residuals; [DL36_EMITTER_NEIGHBOUR_PIN.md](DL36_EMITTER_NEIGHBOUR_PIN.md)

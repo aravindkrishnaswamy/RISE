@@ -1369,7 +1369,7 @@ CLOSED 2026-09-12 — `000df0b4`: reciprocal single-pass diffuse transmission no
 
 The former constant deduction did not give up diffuse energy as specular Fresnel rose; conductor/film mixtures had no deduction. The replacement multiplies entry and exit transmissions and deliberately omits diffuse recycling. It is a rough-interface approximation, not a universal exact-energy theorem. See [formulation, curves and validation](DL37_GGX_DIFFUSE_TRANSMISSION.md).
 
-A broader independent BRDF sweep changed from 150 checks/46 failures to 150 checks/3 failures. Those identical specular-only baseline failures remain DL-63, with nonzero exit retained. Glossy-filter evaluation mismatch and zero-F0 sampling support remain DL-62/DL-64. The standalone report includes the serial linear before/after images and all gate counters.
+A broader independent BRDF sweep changed from 150 checks/46 failures to 150 checks/3 failures. Those identical specular-only baseline failures remain DL-63, with nonzero exit retained. Glossy-filter evaluation mismatch and zero-F0 sampling support were tracked as DL-62/DL-64 and CLOSED 2026-09-13 (`dfdd5ee1`; see [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)) — re-verified DL-63's three failures unchanged (bit-for-bit identical against a stashed pre-fix rebuild) in the same pass. The standalone report includes the serial linear before/after images and all gate counters.
 
 ---
 
