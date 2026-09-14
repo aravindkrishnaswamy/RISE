@@ -485,9 +485,12 @@ namespace
 		return mesh;
 	}
 
-	//! Closed, single-sided, axis-aligned box [-1,1]^3 centred at
-	//! (0,0,`zCentre`): the positive control for the same rule.
-	TriangleMeshGeometryIndexed* BuildClosedBox( Scalar zCentre )
+	//! Closed, single-sided, axis-aligned box [-halfSize,halfSize]^3
+	//! centred at (0,0,`zCentre`): the positive control for the same
+	//! rule.  `halfSize` defaults to 1 (every pre-existing call site);
+	//! sub-test 6 passes a second, larger size to build a nested pair of
+	//! closed boxes that both contain the same seed point.
+	TriangleMeshGeometryIndexed* BuildClosedBox( Scalar zCentre, Scalar halfSize = Scalar( 1.0 ) )
 	{
 		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( /*bDoubleSided*/false, false );
 		mesh->BeginIndexedTriangles();
@@ -502,9 +505,9 @@ namespace
 				for( int su = -1; su <= 1; su += 2 ) {
 					for( int sv = -1; sv <= 1; sv += 2 ) {
 						Point3 p( 0, 0, 0 );
-						p[axis] = sgn;
-						p[uAxis] = static_cast<Scalar>( su );
-						p[vAxis] = static_cast<Scalar>( sv );
+						p[axis] = sgn * halfSize;
+						p[uAxis] = static_cast<Scalar>( su ) * halfSize;
+						p[vAxis] = static_cast<Scalar>( sv ) * halfSize;
 						p.z += zCentre;
 						mesh->AddVertex( p );
 						mesh->AddNormal( outward );
@@ -882,6 +885,108 @@ static void TestTwoDisjointOpenSurfacesOfSameObjectIsNotAnEnclosure()
 	front->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 6 (perf, 2026-09-14 review follow-up): SeedFromPoint's
+//  total probe-trace budget is bounded, not O(candidates).
+//
+//  THE BUG THIS TEST GUARDS AGAINST
+//
+//    The DL-76 X/Y confirmation vote (sub-test 5, above) used to be
+//    implemented by a helper (`IsConfirmedAlongAxis`) that RE-TRACED a
+//    fresh forward+reverse `TallyProbe` pair for X and for Y EVERY TIME
+//    it was called -- and it was called once per Z-confirmed CANDIDATE
+//    OBJECT inside `SeedFromPoint`'s confirmation loop.  The probe only
+//    depends on `pos` and the fixed axis direction, never on which
+//    candidate is being checked, so a scene with N nested Z-confirmed
+//    candidates re-traced the SAME X/Y rays N times: up to
+//    kMaxNestingDepth (8) candidates x 4 probes (X fwd/rev, Y fwd/rev)
+//    = up to 32 extra `TallyProbe` calls, on top of the Z pair.
+//
+//  THE FIX
+//
+//    The X and Y probe pairs are now traced ONCE per `SeedFromPoint`
+//    call (gated on at least one Z-confirmed candidate existing, same
+//    as the pre-existing Z-reverse gate), and each candidate is checked
+//    by looking its `pObj` up in the already-traced arrays
+//    (`HasPositiveParity`) instead of re-tracing.  Total probe-trace
+//    budget per `SeedFromPoint` call is now bounded by 6 (Z fwd, Z rev,
+//    X fwd, X rev, Y fwd, Y rev), independent of candidate count.
+//
+//  FIXTURE
+//
+//    Two concentric closed translucent boxes (half-size 1 and 3, both
+//    centred at the origin) -- the seed point at the origin is
+//    genuinely inside BOTH, so both are Z-confirmed candidates and the
+//    confirmation loop exercises the shared X/Y arrays for 2 objects,
+//    not 1 -- the interesting case this fix targets.
+//////////////////////////////////////////////////////////////////////
+static void TestProbeTraceCountIsBounded()
+{
+	std::cout << "Sub-test 6: SeedFromPoint's probe-trace count is bounded, not O(candidates) (perf)" << std::endl;
+
+	UniformColorPainter* front = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  front->addref();
+	UniformColorPainter* tau = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  tau->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter( 0.0 );  ext->addref();
+	UniformScalarPainter* phongN = new UniformScalarPainter( 1.0 );  phongN->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 0.3 );  scat->addref();
+	TranslucentMaterial* material = new TranslucentMaterial( *front, *tau, *ext, *phongN, *scat );
+	material->addref();
+
+	TriangleMeshGeometryIndexed* innerGeom = BuildClosedBox( 0.0, 1.0 );
+	Object* inner = new Object( innerGeom );
+	safe_release( innerGeom );
+	inner->FinalizeTransformations();
+	inner->AssignMaterial( *material );
+
+	TriangleMeshGeometryIndexed* outerGeom = BuildClosedBox( 0.0, 3.0 );
+	Object* outer = new Object( outerGeom );
+	safe_release( outerGeom );
+	outer->FinalizeTransformations();
+	outer->AssignMaterial( *material );
+
+	ObjectManager* manager = new ObjectManager( false, false, 4, 8 );
+	manager->addref();
+	manager->AddItem( inner, "inner_box" );
+	manager->AddItem( outer, "outer_box" );
+
+	Scene* scene = new Scene();
+	scene->addref();
+	scene->SetObjectManager( manager );
+
+	// (N) Fixture sanity: both nested boxes are actually seeded -- 2
+	// confirmed candidates, the case that exercises the shared X/Y
+	// arrays for more than one object.
+	{
+		IORStack stack( 1.0 );
+		IORStackSeeding::SeedFromPoint( stack, Point3(0,0,0), *scene );
+		Check( stack.topObject() == inner,
+			"(N) fixture sanity: the innermost of the two nested boxes is on top" );
+	}
+
+	// (O) DL-76 perf money assertion: the total probe-trace count is
+	// bounded by 6, regardless of the 2 confirmed candidates.
+	{
+		IORStackSeeding::DebugResetProbeTraceCount();
+		IORStack stack( 1.0 );
+		IORStackSeeding::SeedFromPoint( stack, Point3(0,0,0), *scene );
+		const std::size_t traces = IORStackSeeding::DebugGetProbeTraceCount();
+		Check( traces <= 6,
+			"(O) DL-76 perf money assertion: SeedFromPoint traces at most 6 probes "
+			"total, regardless of candidate count" );
+	}
+
+	manager->release();
+	scene->release();
+	inner->release();
+	outer->release();
+	material->release();
+	scat->release();
+	phongN->release();
+	ext->release();
+	tau->release();
+	front->release();
+}
+
 int main()
 {
 	GlobalLog();
@@ -908,6 +1013,7 @@ int main()
 					TestOpenTranslucentGeometryIsNotAnEnclosure();
 					TestHairIsNotAnEnclosure();
 					TestTwoDisjointOpenSurfacesOfSameObjectIsNotAnEnclosure();
+					TestProbeTraceCountIsBounded();
 			}
 			safe_release( pJob );
 		}

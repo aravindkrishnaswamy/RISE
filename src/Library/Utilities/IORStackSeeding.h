@@ -161,6 +161,30 @@ namespace RISE
 		// than 2-3 refractive volumes so the fixed cap is generous.
 		static const std::size_t kMaxNestingDepth = 8;
 
+		// Test-only instrumentation (2026-09-14, DL-76 perf follow-up):
+		// counts calls to `TallyProbe` so regression tests can assert
+		// `SeedFromPoint`'s total probe-trace budget stays bounded (see
+		// the X/Y probe-hoisting comment in `SeedFromPoint` below).
+		// Thread-local: one plain increment per call, no atomics/locking,
+		// correct under the render thread pool since each thread seeds
+		// its own subpaths independently.  Negligible production cost.
+		namespace Diagnostics
+		{
+			inline std::size_t& ProbeTraceCounter()
+			{
+				static thread_local std::size_t counter = 0;
+				return counter;
+			}
+		}
+
+		inline void DebugResetProbeTraceCount() {
+			Diagnostics::ProbeTraceCounter() = 0;
+		}
+
+		inline std::size_t DebugGetProbeTraceCount() {
+			return Diagnostics::ProbeTraceCounter();
+		}
+
 		/// Walks one probe ray from `pos` along `dir` and fills `out`
 		/// with the per-object exit/entry parity tally.  Returns the
 		/// number of entries written.
@@ -171,6 +195,7 @@ namespace RISE
 			ProbeEntry* out
 			)
 		{
+			Diagnostics::ProbeTraceCounter()++;
 			std::size_t count = 0;
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			Ray probe( pos, dir );
@@ -301,34 +326,26 @@ namespace RISE
 		// along every direction by construction, so this is a no-op for
 		// the enclosures the mechanism targets.
 		//
-		// Returns true iff `pObj` shows positive parity along BOTH `axis`
-		// and its reverse, exactly like the inline Z-axis check in
-		// `SeedFromPoint` -- factored out so it can be reused for the
-		// additional X/Y votes without duplicating the probe/scan logic.
-		inline bool IsConfirmedAlongAxis(
-			const IObjectManager* pObjects,
-			const Point3& pos,
-			const IObject* pObj,
-			const Vector3& axis
+		// PERF (2026-09-14, review follow-up): the X/Y probe pairs used
+		// to be re-traced by a per-candidate `IsConfirmedAlongAxis` call
+		// INSIDE `SeedFromPoint`'s confirmation loop below -- but the
+		// probe only depends on `pos` and the fixed axis, never on which
+		// candidate object is being checked, so re-tracing it per
+		// candidate was pure waste: up to 8 nested candidates x 4 probes
+		// (X fwd/rev, Y fwd/rev) = up to 32 extra `TallyProbe` calls per
+		// `SeedFromPoint`.  The X/Y pairs are now traced ONCE, exactly
+		// like the Z-reverse probe already was, and candidates are
+		// checked by looking their `pObj` up in the resulting arrays.
+		// `HasPositiveParity` is that lookup -- a linear scan of an
+		// already-traced array, no ray tracing at all.
+		inline bool HasPositiveParity(
+			const ProbeEntry* entries,
+			std::size_t count,
+			const IObject* pObj
 			)
 		{
-			ProbeEntry fwd[kMaxNestingDepth];
-			const std::size_t fwdCount = TallyProbe( pObjects, pos, axis, fwd );
-			bool fwdPositive = false;
-			for( std::size_t i = 0; i < fwdCount; i++ ) {
-				if( fwd[i].pObj == pObj && fwd[i].parity > 0 ) {
-					fwdPositive = true;
-					break;
-				}
-			}
-			if( !fwdPositive ) {
-				return false;
-			}
-
-			ProbeEntry rev[kMaxNestingDepth];
-			const std::size_t revCount = TallyProbe( pObjects, pos, -axis, rev );
-			for( std::size_t i = 0; i < revCount; i++ ) {
-				if( rev[i].pObj == pObj && rev[i].parity > 0 ) {
+			for( std::size_t i = 0; i < count; i++ ) {
+				if( entries[i].pObj == pObj && entries[i].parity > 0 ) {
 					return true;
 				}
 			}
@@ -412,8 +429,21 @@ namespace RISE
 			// solid-angle containment test — so an adversarial Object
 			// deliberately built from open pieces straddling the seed
 			// along all three principal axes at once would still fool
-			// it.  See docs/DEBT_LEDGER.md DL-76 and
-			// docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the accepted scope.
+			// it (accepted FALSE-POSITIVE limit).
+			//
+			// The mirror-image FALSE-NEGATIVE limit also exists: a
+			// legitimately CLOSED object whose only through-tunnels (an
+			// opening all the way through the solid) happen to align
+			// with the probe's three fixed principal-axis directions
+			// from the seed point would present zero parity on the axis
+			// sharing its tunnel, and the vote discards it as if it were
+			// this counterexample.  Both limits are the same root cause
+			// — three fixed-axis probe pairs approximate closedness, they
+			// don't decide it exactly — so neither is fixable without the
+			// general winding-number/solid-angle test this rule
+			// deliberately avoids paying for.  See docs/DEBT_LEDGER.md
+			// DL-76 and docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the
+			// accepted scope.
 			ProbeEntry reverse[kMaxNestingDepth];
 			std::size_t reverseCount = 0;
 			bool anyCandidate = false;
@@ -422,6 +452,37 @@ namespace RISE
 			}
 			if( anyCandidate ) {
 				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse );
+			}
+
+			// DL-76 perf fix (2026-09-14): trace the X and Y confirmation
+			// pairs ONCE per SeedFromPoint call here -- exactly like the Z
+			// reverse probe above -- instead of re-tracing them per
+			// candidate object inside the loop below (see the comment on
+			// `HasPositiveParity`).  Only pay for them when at least one
+			// object is already Z-confirmed (positive parity along +Z AND
+			// -Z): the overwhelmingly common "nothing here" and "open
+			// single sheet" calls stop at the Z pair, exactly as before.
+			// Worst case is now Z-fwd + Z-rev + X-fwd + X-rev + Y-fwd +
+			// Y-rev = 6 `TallyProbe` calls total, independent of how many
+			// candidates the Z round found (was up to 8 candidates x 4 =
+			// 32 on top of the Z pair).
+			ProbeEntry xForward[kMaxNestingDepth], xReverse[kMaxNestingDepth];
+			ProbeEntry yForward[kMaxNestingDepth], yReverse[kMaxNestingDepth];
+			std::size_t xForwardCount = 0, xReverseCount = 0;
+			std::size_t yForwardCount = 0, yReverseCount = 0;
+			bool anyZConfirmed = false;
+			for( std::size_t i = 0; i < containingCount; i++ ) {
+				if( containing[i].parity > 0 &&
+					HasPositiveParity( reverse, reverseCount, containing[i].pObj ) ) {
+					anyZConfirmed = true;
+					break;
+				}
+			}
+			if( anyZConfirmed ) {
+				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward );
+				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse );
+				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward );
+				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse );
 			}
 
 			// Push containing objects (parity > 0) onto the stack.
@@ -443,23 +504,19 @@ namespace RISE
 					continue;
 				}
 				// P2-4: confirm against the reverse probe (see above).
-				bool confirmed = false;
-				for( std::size_t r = 0; r < reverseCount; r++ ) {
-					if( reverse[r].pObj == containing[i].pObj && reverse[r].parity > 0 ) {
-						confirmed = true;
-						break;
-					}
-				}
-				if( !confirmed ) {
+				if( !HasPositiveParity( reverse, reverseCount, containing[i].pObj ) ) {
 					continue;
 				}
 				// DL-76: the Z pair alone cannot distinguish a genuine
 				// enclosure from two disjoint open pieces of the SAME
 				// Object straddling the seed along Z (see the comment
 				// above).  Require the two other principal axes to
-				// independently confirm this exact object too.
-				if( !IsConfirmedAlongAxis( pObjects, pos, containing[i].pObj, Vector3( 1, 0, 0 ) ) ||
-					!IsConfirmedAlongAxis( pObjects, pos, containing[i].pObj, Vector3( 0, 1, 0 ) ) ) {
+				// independently confirm this exact object too, using the
+				// X/Y probe pairs already traced once above.
+				if( !HasPositiveParity( xForward, xForwardCount, containing[i].pObj ) ||
+					!HasPositiveParity( xReverse, xReverseCount, containing[i].pObj ) ||
+					!HasPositiveParity( yForward, yForwardCount, containing[i].pObj ) ||
+					!HasPositiveParity( yReverse, yReverseCount, containing[i].pObj ) ) {
 					continue;
 				}
 				// Insert into ordered[] keeping descending firstExitStep.

@@ -146,14 +146,43 @@ boundary, not bias.
    (DL-76) — a SINGLE `Object` built from two disjoint open pieces
    straddling the seed on opposite sides of one axis, both pieces
    facing away from the seed — was closed this pass by extending the
-   vote to the two other principal axes
-   (`IORStackSeeding::IsConfirmedAlongAxis`); see the DL-76 row for the
-   accepted residual (an adversarial object built from open pieces
-   straddling the seed along all three principal axes at once would
-   still fool the vote — this is a bounded improvement, not a general
-   winding-number/solid-angle containment test).  The fixed-`+Z`-only
-   probe direction and grazing-tangent-accumulation limitations in this
-   item are UNCHANGED by that work.
+   vote to the two other principal axes; see the DL-76 row for the
+   accepted false-POSITIVE residual (an adversarial object built from
+   open pieces straddling the seed along all three principal axes at
+   once would still fool the vote — this is a bounded improvement, not
+   a general winding-number/solid-angle containment test).  The
+   fixed-`+Z`-only probe direction and grazing-tangent-accumulation
+   limitations in this item are UNCHANGED by that work.
+
+   **UPDATE (2026-09-14, DL-76 perf + residual follow-up, same slice)**:
+   two corrections to the above. (1) **Probe count.** The X/Y vote is
+   traced ONCE per `SeedFromPoint` call, not per candidate object and
+   not via a per-call `IsConfirmedAlongAxis` helper (that helper was
+   removed) — the two X probes and two Y probes are hoisted next to the
+   existing Z-reverse probe, gated on at least one Z-confirmed candidate
+   existing, and each candidate is then checked by an array lookup
+   (`HasPositiveParity`) against the shared, already-traced arrays. The
+   real per-call budget is therefore **at most 6 `TallyProbe` traces**
+   (Z forward, Z reverse, X forward, X reverse, Y forward, Y reverse),
+   independent of how many candidates the Z round finds — not "three
+   probes" and not the up-to-32-calls-per-candidate cost the original
+   per-candidate implementation paid (measured red on the unfixed
+   per-candidate code with a 2-candidate nested-box fixture: 10 traces
+   [2 for Z + 4 per candidate x 2 candidates]; bounded at 6 after
+   hoisting). See `tests/TranslucentInitialContainmentTest.cpp`
+   sub-test 6 for the instrumented regression. (2) **False-negative
+   residual.** The three-axis unanimity vote can also REJECT a
+   legitimately closed object: an object whose only "through-tunnels"
+   (openings all the way through the solid) happen to align with the
+   probe's three fixed principal-axis directions from the seed point
+   would present zero parity on the axis whose tunnel it shares, and
+   the closed enclosure would be discarded as if it were the DL-76
+   open-blade counterexample. This is the mirror image of the
+   already-documented false-positive residual (an adversarial object
+   built to fool the vote in the OTHER direction), not a new mechanism
+   — both stem from the same root limit: three fixed-axis probe pairs
+   are a bounded, cheap approximation to true closedness, not an exact
+   winding-number/solid-angle test.
 7. **Photon-map flux is quadratic in luminaire area** (`power =
    E·area·scale` AND photon-count allocation ∝ `E·area`), so a scaled
    emitter's photon-map contribution moves by s⁴ where NEE moves by s².
