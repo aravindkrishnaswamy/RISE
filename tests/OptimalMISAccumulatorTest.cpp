@@ -552,8 +552,18 @@ static void TestZeroMomentFallback()
 //                 denominator.
 //   "fixed"    -- round 3 (this pass): the SSS/volume sites contribute
 //                 BOTH, paired, like every other BSDF-technique sample.
-// All three are computed against a HAND-DERIVED expected alpha so this
-// is a genuine numeric red-proof, not just a not-equal check.
+// All three are computed against a HAND-DERIVED expected alpha, so this
+// pins the ACCUMULATOR'S OWN ARITHMETIC exactly -- an unpaired
+// `Accumulate` really does inflate `Mbsdf` and depress alpha.
+//
+// WHAT IT DOES NOT PIN (corrected 2026-09-14, debt-guiding2 review round
+// 2; the DL-72 ledger row used to call this test the row's red-proof):
+// this drives the accumulator's PUBLIC API by hand and executes no line
+// of `RayCaster.cpp` or `PathTracingIntegrator.cpp`, so it cannot see
+// whether either file calls that API at all -- which is exactly what
+// both DL-72 regressions were (round 1: a moment with no count; round 2:
+// neither).  `tests/OptimalMISTrainingSitesTest.cpp` runs the real sites
+// and is the row's red-proof; this test is its arithmetic companion.
 //////////////////////////////////////////////////////////////////////
 static void TestDL72PairedTrainingFires()
 {

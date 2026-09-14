@@ -288,13 +288,91 @@ render-time weight was already `PowerHeuristic`-correct before AND after,
 since training only ever affects `Solve()`'s `alpha`, never the raw
 sampling-pdf division), matching round 1's own validation precedent.
 
+## Round 4 (2026-09-14, debt-guiding2 review round 2): two corrections
+
+Round 3's wiring is kept. Review found two things wrong ABOUT it.
+
+### 4.1 Round 3's "red-proof" was not one (P2-4)
+
+The DL-72 ledger row cited `OptimalMISAccumulatorTest`'s Test 12 as the
+red-proof. Test 12 drives `OptimalMISAccumulator`'s PUBLIC API by hand
+and hand-derives the three alphas. That pins the ACCUMULATOR'S
+ARITHMETIC — an unpaired `Accumulate` really does inflate `Mbsdf` — but
+it executes no line of `RayCaster.cpp` or `PathTracingIntegrator.cpp`,
+so it is structurally blind to whether either file calls the API at all.
+Which is exactly what both DL-72 regressions were: round 1 accumulated a
+moment with no count; round 2 removed both.
+
+`tests/OptimalMISTrainingSitesTest.cpp` is the real red-proof. It runs
+both production sites — an optically thin global fog under an
+environment (thin on purpose: a thick fog re-scatters until the volume
+bounce limit ends the walk and the escape arm, the arm under test, is
+never reached), and a real `SubSurfaceScatteringMaterial` on a real
+sphere `Object` driven through production `IntegrateFromHit` in an
+object-free environment-lit scene — and reads `Solve()`'s branch table
+back out. The NEE half of the tile is supplied synthetically so the
+solved alpha is a function of the BSDF half alone: clampMin when the
+BSDF count is short or its moment is zero, clampMax when the BSDF moment
+is absent or negligible beside NEE's, and an interior value only when
+both advanced.
+
+With `RayCaster.cpp` and `PathTracingIntegrator.cpp` reverted to
+`ddf05c6c` — round 2's "leave the arm UNWIRED" state — the volume site
+reads exactly **0.001** (clampMin) and the BSSRDF site exactly **0.999**
+(clampMax): 5 passed, 2 failed. With the round-3 wiring in place they
+read **0.857** and **0.929**: 7 passed, 0 failed.
+
+Test 12's own header has been corrected to say what it does and does not
+cover, and the ledger row no longer calls it the red-proof.
+
+### 4.2 The volume moment was divided by the wrong density (P2-5)
+
+Round 3 set `rs2.bsdfPdf = phasePdf` at both volume sites and paired the
+moment with it. But under guiding the direction is drawn from
+`effectivePdf` (the guided mixture `combinedPdf`), and `Li` is rescaled
+by `guidingMISWeight = phasePdf / combinedPdf` afterwards, so the
+continuation's real contribution is `phaseValue * Li / effectivePdf`.
+Dividing the trained moment by `phasePdf` instead therefore biased the
+moment whenever guiding was active — variance-only, like the rest of
+this row, but wrong.
+
+The obstacle was that DL-73 requires that same `phasePdf` to stay the
+volume vertex's MIS PARTNER (env-NEE at a volume vertex weights with the
+raw `MediumScatterMaterial::Pdf`), and one field cannot be two
+quantities. DL-74's repair splits them: `RAY_STATE::bsdfPdf` is now the
+TRUE sampling density and the new `RAY_STATE::bsdfMisPdf` is the MIS
+partner. So both volume sites now set
+
+```
+rs2.bsdfMisPdf = phasePdf;      // DL-73's requirement, unchanged in effect
+rs2.bsdfPdf    = effectivePdf;  // what the direction was really drawn from
+```
+
+and the trained ratio `bsdfTimesCos / bsdfPdf` becomes
+`phaseValue / effectivePdf` — exactly this continuation's own per-sample
+weight (1 with guiding off, `guidingMISWeight` with it on). The paired
+`AccumulateCount` gate moves from `phasePdf > 0` to `effectivePdf > 0`
+for the same reason. The round-3 comment claiming the ratio is
+"exactly 1" was true only with guiding off and has been corrected in
+place.
+
+Rejected alternative: skipping training entirely whenever the direction
+was guided. It is simpler, but it biases the solved alpha toward the
+unguided regime on exactly the scenes where guiding is doing work, and
+it discards samples for no reason once the two roles are in two fields.
+
+See [DL74_ENV_NEE_GUIDING_PARTITION.md](DL74_ENV_NEE_GUIDING_PARTITION.md)
+§2.6 for the surface-side half of the same split.
+
 ## File status
 
 | File | Status |
 |---|---|
 | `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3 (this pass): `PTBssrdfSwTimesCos` helper added; both sites wired to the correct directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). |
-| `src/Library/Rendering/RayCaster.cpp` | Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. Round 3 (this pass): `rs2.bsdfTimesCos = RISEPel(phasePdf,phasePdf,phasePdf)` at both sites, `AccumulateCount` added (paired, gated `phasePdf > 0`). |
-| `tests/OptimalMISAccumulatorTest.cpp` | Round 3: new Test 12 (`TestDL72PairedTrainingFires`), 7 new checks. |
+| `src/Library/Interfaces/IRayCaster.h` | Round 4: `RAY_STATE` gains `bsdfMisPdf` + `MisPartnerPdf()` (DL-74), which is what lets the volume sites carry the true sampling density and the MIS partner at the same time. |
+| `src/Library/Rendering/RayCaster.cpp` | Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. Round 3: `rs2.bsdfTimesCos = RISEPel(phasePdf,phasePdf,phasePdf)` at both sites, `AccumulateCount` added (paired, gated `phasePdf > 0`). Round 4: `rs2.bsdfPdf = effectivePdf` (the true sampling density) with the raw `phasePdf` moved to `rs2.bsdfMisPdf`; the count gate follows `effectivePdf > 0`. |
+| `tests/OptimalMISAccumulatorTest.cpp` | Round 3: new Test 12 (`TestDL72PairedTrainingFires`), 7 new checks. Round 4: header corrected — Test 12 pins the accumulator's arithmetic, not the production call sites. |
+| `tests/OptimalMISTrainingSitesTest.cpp` | Round 4: added. The row's actual red-proof; drives both production sites. |
 | `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. Round 3: DL-72 CLOSED again, this time with correct wiring. |
 | `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added round 1; round-2 correction sections added same day; this "Round 3" section added 2026-09-14. |
 

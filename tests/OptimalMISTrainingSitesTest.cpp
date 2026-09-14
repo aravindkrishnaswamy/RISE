@@ -32,16 +32,25 @@
 //                          or neither accumulated any moment
 //      alpha == clampMin   BSDF short of attempts (NO COUNT), or enough
 //                          attempts with zero moment (NO MOMENT)
-//      alpha == clampMax   NEE short of attempts / moment
-//      strictly interior   BOTH techniques cleared minSamplesPerTile AND
-//                          BOTH accumulated a positive moment -- the only
-//                          branch that reads `rawBsdf` as a number
+//      alpha == clampMax   NEE short of attempts / moment, OR the solved
+//                          Mbsdf is so small beside Mnee that the ratio
+//                          saturates the clamp
+//      strictly interior   BOTH techniques cleared minSamplesPerTile,
+//                          BOTH accumulated a positive moment, and the
+//                          BSDF moment is a comparable quantity rather
+//                          than a residual
 //
-//    So an interior alpha, with clamps pushed out to 0.01 / 0.99 so the
-//    interior band is unmistakable, IS the assertion "the count and the
-//    moment both advanced at this site".  Each case additionally reports
-//    a fresh, untouched accumulator (0.5) as the "nothing trained"
-//    reference the measured value has to differ from.
+//    So an interior alpha, with the clamps pushed out to 0.001 / 0.999 so
+//    the interior band is unmistakable, IS the assertion "the count and
+//    the moment both advanced at this site".  Each case additionally
+//    reports a fresh, untouched accumulator (0.5) as the "nothing
+//    trained" reference the measured value has to differ from.
+//
+//    Measured with the two files reverted to ddf05c6c -- DL-72's round-2
+//    "leave the arm UNWIRED" state, where the volume site contributed
+//    neither a count nor a moment and the BSSRDF site contributed no
+//    moment: the volume case reads exactly clampMin and the BSSRDF case
+//    exactly clampMax.  Both are interior with the sites wired.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -162,8 +171,8 @@ static OptimalMISAccumulator::Config MakeConfig()
 	OptimalMISAccumulator::Config config;
 	config.tileSize = 64;			// one tile covers the whole fixture
 	config.minSamplesPerTile = 16;
-	config.alphaClampMin = 0.01;
-	config.alphaClampMax = 0.99;
+	config.alphaClampMin = 0.001;
+	config.alphaClampMax = 0.999;
 	return config;
 }
 
@@ -196,11 +205,12 @@ static void CheckTrainedInterior( const OptimalMISAccumulator& acc, const char* 
 	const Scalar alpha = acc.GetAlpha( 0, 0 );
 	std::cout << "    " << site << ": solved alpha = " << alpha << std::endl;
 
-	const bool interior = ( alpha > 0.0101 && alpha < 0.9899 &&
+	const bool interior = ( alpha > 0.0011 && alpha < 0.9989 &&
 		std::fabs( (double)alpha - 0.5 ) > 1e-6 );
 	if( !interior ) {
-		std::cout << "      (0.5 = nothing trained; 0.01 = BSDF technique short of "
-			"attempts OR zero moment; 0.99 = NEE technique short)" << std::endl;
+		std::cout << "      (0.5 = neither technique trained; 0.001 = BSDF technique "
+			"short of attempts OR zero moment; 0.999 = the BSDF moment is absent or "
+			"negligible beside NEE's)" << std::endl;
 	}
 	Check( interior, site );
 }

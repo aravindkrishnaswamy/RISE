@@ -3166,6 +3166,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// stay in PART 3 where the lobe is known; they steer SAMPLING and
 		// must not steer the shared nominal density, which is
 		// lobe-independent by design.
+		// `static thread_local` (the same storage class PART 3 used before
+		// this hoist, and BDPTIntegrator's own guiding block uses) so the
+		// OpenPGL distribution object is allocated once per thread rather
+		// than per shading point.  INVARIANT it depends on: nothing between
+		// this initialisation and PART 3's use may re-enter
+		// IntegrateFromHit{,NM} on the same thread, or the inner call's
+		// distribution would overwrite the outer's.  Audited: PART 2's NEE
+		// reaches LightSampler and its shadow/transmittance queries, which
+		// dispatch no shader and start no new integrator walk, and the SMS
+		// block between them casts visibility rays only.  Re-audit before
+		// putting anything shader-dispatching in that window.
 		static thread_local GuidingDistributionHandle guideDist;
 		PTGuidingMisPdf guidingMis;
 		if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
