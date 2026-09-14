@@ -8,9 +8,10 @@ shared prerequisite the DL-67/DL-69 design note calls "Slice 0"; it does
 are separate slices.
 
 Status: **landed 2026-09-14** on branch `debt-slice0`. This document
-supersedes the first version of this slice, whose fix was measured and
-found to make the density *worse* on 6 of 8 configurations; §6 records
-what that version got wrong, because the mistake is instructive.
+supersedes the first version of this slice, whose fix was measured
+afterwards and found to move the density FURTHER from the sampler on 6
+of the 8 review configurations; §6 records what that version got wrong,
+because the mistake is instructive.
 
 ---
 
@@ -410,8 +411,12 @@ itself. The second is an algebraic identity — `Pdf` adds a non-negative
 for **any** `C_D >= 0`, including the wrong one. Measured afterwards,
 that version's aggregate integrated to 0.68-1.02 over the same
 configurations, and its total variation against the real sampler was
-**worse than the code it replaced on 6 of 8 configurations**, by up to
-2.8x.
+**worse than the code it replaced on 6 of the 8 review configurations**
+(0.0552 -> 0.0627, 0.0553 -> 0.0642, 0.0726 -> 0.0750, 0.0742 -> 0.0876,
+0.0313 -> 0.0680, 0.0116 -> 0.0278 — up to **2.4x**), a wash on a
+seventh (0.16153 -> 0.16164) and better on the eighth
+(0.0938 -> 0.0125, the `rs=0.02` grazing row, where its two errors
+happened to cancel).
 
 Three lessons, in order of how much they cost:
 
