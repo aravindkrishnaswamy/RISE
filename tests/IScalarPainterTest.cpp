@@ -26,6 +26,15 @@
 #include <iostream>
 #include <vector>
 
+// DL-80 (docs/DEBT_LEDGER.md): Color.h and ColorUtils.h are mutually
+// circular; entering via ColorUtils.h first leaves
+// ColorUtils::XYZFromNM undeclared inside SpectralPacket.h's own
+// (skipped, guard-already-set) #include "ColorUtils.h".  Include
+// Color.h first, matching the order every existing consumer uses.
+#include "../src/Library/Utilities/Color/Color.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
+#include "../src/Library/Utilities/Color/RGBSpectra.h"
+
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/RGBScalarPainter.h"
@@ -66,6 +75,36 @@ static bool ApproxEq( Scalar a, Scalar b, Scalar tol = Scalar( 1e-9 ) )
 static RayIntersectionGeometric MakeDummyRig()
 {
 	return RayIntersectionGeometric( Ray(), nullRasterizerState );
+}
+
+//! Independent CMF-integration reference for DL-29, deliberately built
+//! DIFFERENTLY from PiecewiseLinearScalarPainter::ComputeCachedRGB (a
+//! 1nm grid here vs. the production 5nm grid, and no relative-tolerance
+//! "snap to uniform" step) so this is a genuine cross-check rather than
+//! a restatement of the same code.  Forward model per
+//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md:
+//!   rgb = M_XYZ->709 . (int S.D65.cmf dλ) / (int D65.ȳ dλ)
+static RISE::Rec709RGBPel IndependentCMFReference(
+	Scalar loNm, Scalar loVal, Scalar hiNm, Scalar hiVal )
+{
+	Scalar sumX = 0, sumY = 0, sumZ = 0, sumYIllum = 0;
+	for( int nm = 380; nm <= 780; ++nm ) {
+		const Scalar lambda = Scalar( nm );
+		Scalar s;
+		if( lambda <= loNm )      s = loVal;
+		else if( lambda >= hiNm ) s = hiVal;
+		else                      s = loVal + ( lambda - loNm ) / ( hiNm - loNm ) * ( hiVal - loVal );
+
+		XYZPel cmf;
+		if( !ColorUtils::XYZFromNM( cmf, lambda ) ) continue;
+		const Scalar illum = RGBIlluminantSpectrum::ReferenceIlluminant( lambda );
+		sumX += s * illum * cmf.X;
+		sumY += s * illum * cmf.Y;
+		sumZ += s * illum * cmf.Z;
+		sumYIllum += illum * cmf.Y;
+	}
+	const XYZPel xyz( sumX / sumYIllum, sumY / sumYIllum, sumZ / sumYIllum );
+	return ColorUtils::XYZtoRec709RGB( xyz );
 }
 
 static void TestUniformScalarPainter()
@@ -171,9 +210,50 @@ static void TestPiecewiseLinearScalarPainter()
 	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 720 ) ), 1.45 ),
 	       "piecewise: exact endpoint high" );
 
-	Check( ! p->HasPerChannelVariation(), "piecewise: !HasPerChannelVariation" );
+	// DL-29 (docs/DEBT_LEDGER.md): this curve genuinely varies red-to-
+	// blue (1.10 at 380nm rising to 1.45 at 720nm), so under RGB
+	// rendering GetValuesAt must report a real per-channel triple, not
+	// a single-wavelength broadcast -- HasPerChannelVariation is now
+	// TRUE (was asserted FALSE pre-fix, which was exactly the bug: a
+	// measured curve silently rendering grey).
+	Check( p->HasPerChannelVariation(), "piecewise: HasPerChannelVariation (DL-29)" );
+
+	{
+		const ScalarTriple t = p->GetValuesAt( ri );
+		Check( ! t.IsUniform(), "piecewise: GetValuesAt is not grey (DL-29)" );
+		// R > G > B: the curve rises toward longer (redder) wavelengths,
+		// and this is a physical-scalar magnitude (an IOR-like value
+		// > 1), not a [0,1] reflectance -- no clamping.
+		Check( t.v[0] > t.v[1] && t.v[1] > t.v[2],
+		       "piecewise: R > G > B for a curve rising toward red" );
+
+		const RISE::Rec709RGBPel ref = IndependentCMFReference( 380, 1.10, 720, 1.45 );
+		Check( ApproxEq( t.v[0], Scalar( ref.r ), Scalar( 1e-3 ) ),
+		       "piecewise: R matches independent CMF integration within 1e-3" );
+		Check( ApproxEq( t.v[1], Scalar( ref.g ), Scalar( 1e-3 ) ),
+		       "piecewise: G matches independent CMF integration within 1e-3" );
+		Check( ApproxEq( t.v[2], Scalar( ref.b ), Scalar( 1e-3 ) ),
+		       "piecewise: B matches independent CMF integration within 1e-3" );
+	}
 
 	p->release();
+
+	// A FLAT curve (constant value at every sampled wavelength) must
+	// stay grey: HasPerChannelVariation FALSE and GetValuesAt uniform,
+	// exactly the pre-fix broadcast behaviour for the one case where
+	// broadcasting is actually correct.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> flat = {
+			{ Scalar( 380 ), Scalar( 1.33 ) },
+			{ Scalar( 720 ), Scalar( 1.33 ) }
+		};
+		PiecewiseLinearScalarPainter* pf = new PiecewiseLinearScalarPainter( flat );
+		Check( ! pf->HasPerChannelVariation(), "piecewise-flat: !HasPerChannelVariation" );
+		const ScalarTriple tf = pf->GetValuesAt( ri );
+		Check( tf.IsUniform(), "piecewise-flat: GetValuesAt is exactly uniform" );
+		Check( ApproxEq( tf.v[0], 1.33, Scalar( 1e-3 ) ), "piecewise-flat: v[0] ~= 1.33" );
+		pf->release();
+	}
 
 	// Empty-samples edge case: defensive fallback to 0 (consumers will
 	// see "no contribution" rather than NaN / Inf).
