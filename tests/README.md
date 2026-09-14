@@ -100,23 +100,32 @@ failing explicitly. Three specular-only baseline failures remain visible with
 a nonzero exit and are tracked separately as DL-63; no energy assertion is
 skipped. This test is not an all-green gate until DL-63 is resolved.
 
-`GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13) pins
-GGX's sample-vs-evaluation consistency at two spots an aggregate energy
-bound cannot see: (1) `GGXBRDF::value`/`valueNM` under nonzero
+`GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
+extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's
+sample-vs-evaluation consistency at spots an aggregate energy bound
+cannot see: (1) `GGXBRDF::value`/`valueNM` under nonzero
 `ri.glossyFilterWidth` must match an independently constructed
 pre-widened-reference `GGXBRDF` EXACTLY (relErr=0), not merely stay
 energy-bounded — Kulla-Conty compensation keeps total energy near 1
 regardless of alpha, so it cannot detect a roughness mismatch between the
-BRDF and its SPF twin; (2) at F0=0, `GGXSPF::Scatter`/`ScatterNM` must
-still reach the specular `ScatteredRay` type (deterministic count > 0 at
-grazing and normal incidence, zero and nonzero diffuse), and
+BRDF and its SPF twin (also covers a `GGXSPF::Scatter()` case under
+nonzero filter width, and an authored-alpha-below-the-1e-4-floor case
+pinning the floor-then-widen ordering); (2) at F0=0, `GGXSPF::Scatter`/
+`ScatterNM` must still reach the specular `ScatteredRay` type at the
+correct RATE (empirical draw fraction within a binomial-SE-derived band
+of the expected `pSpecSelect`, not merely "count > 0"), and
 `GGXSPF::Pdf`/`PdfNM` at the specular peak must match an independent
 hemispherical-Fresnel-weighted reference exactly, not merely exceed the
 bare cosine density — `UniformColorPainter`'s spectral path JH-uplifts
 even an authored `(0,0,0)` to a small nonzero value (~2.5e-5, a separate
 out-of-scope "black guard" gap) that alone produces a false-positive
-elevation over cosine. 29 checks, 0 failures post-fix (23 failures
-pre-fix, `a1db468d`). See
+elevation over cosine; (3) the same hemispherical-weight reference,
+mode-gated per the P2-1 fix (raw tint in conductor/thin-film mode, not
+`Mean()`/`MeanNM()`), also pins `Pdf`/`PdfNM` in `eFresnelConductor` and
+`eFresnelThinFilmConductor` (RGB and NM) — a regression guard against
+reintroducing the unconditional `Mean()`/`MeanNM()` call P2-1 removed for
+performance. 48 checks, 0 failures (29/0 at the original `dfdd5ee1`
+close; 23 failures pre-fix, `a1db468d`). See
 [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md).
 
 `GGXDiffuseRenderTest` loads `ggx_diffuse_transmission.RISEscene` and seeds each

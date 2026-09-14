@@ -130,6 +130,15 @@ namespace
 		return ri;
 	}
 
+	// Extended for P2-2 (2026-09-13 review follow-up) to also build
+	// eFresnelConductor / eFresnelThinFilmConductor fixtures: `mode`,
+	// `iorVal`/`extVal` (real substrate n/k for conductor and thin-film;
+	// irrelevant garbage 1.5/0.0 for Schlick, unchanged from before) and
+	// the film n/k/thickness triple (allocated unconditionally but only
+	// PASSED to GGXBRDF/GGXSPF -- and only dereferenced inside
+	// GGXInterfaceFresnel -- when mode == eFresnelThinFilmConductor).
+	// Every pre-existing call site omits the new trailing parameters, so
+	// defaults reproduce the old Schlick-only fixture exactly.
 	struct GGXFixture
 	{
 		UniformColorPainter* diffuse;
@@ -138,23 +147,40 @@ namespace
 		UniformScalarPainter* alphaY;
 		UniformScalarPainter* ior;
 		UniformScalarPainter* ext;
+		UniformScalarPainter* filmIor;
+		UniformScalarPainter* filmExt;
+		UniformScalarPainter* filmThk;
 		GGXBRDF* brdf;
 		GGXSPF*  spf;
+		const FresnelMode mode;
 
-		GGXFixture( const Scalar d, const Scalar f0, const Scalar ax, const Scalar ay )
+		GGXFixture( const Scalar d, const Scalar f0, const Scalar ax, const Scalar ay,
+			const FresnelMode fresnelMode = eFresnelSchlickF0,
+			const Scalar iorVal = 1.5, const Scalar extVal = 0.0,
+			const Scalar filmN = 2.5, const Scalar filmK = 0.0, const Scalar filmThicknessNm = 180.0 )
 			: diffuse( new UniformColorPainter( RISEPel(d,d,d) ) ),
 			  specular( new UniformColorPainter( RISEPel(f0,f0,f0) ) ),
 			  alphaX( new UniformScalarPainter( ax ) ),
 			  alphaY( new UniformScalarPainter( ay ) ),
-			  ior( new UniformScalarPainter( 1.5 ) ),
-			  ext( new UniformScalarPainter( 0.0 ) ),
-			  brdf( 0 ), spf( 0 )
+			  ior( new UniformScalarPainter( iorVal ) ),
+			  ext( new UniformScalarPainter( extVal ) ),
+			  filmIor( new UniformScalarPainter( filmN ) ),
+			  filmExt( new UniformScalarPainter( filmK ) ),
+			  filmThk( new UniformScalarPainter( filmThicknessNm ) ),
+			  brdf( 0 ), spf( 0 ), mode( fresnelMode )
 		{
 			diffuse->addref(); specular->addref(); alphaX->addref(); alphaY->addref();
 			ior->addref(); ext->addref();
-			brdf = new GGXBRDF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, eFresnelSchlickF0 );
+			filmIor->addref(); filmExt->addref(); filmThk->addref();
+
+			const bool isThinFilm = (fresnelMode == eFresnelThinFilmConductor);
+			const IScalarPainter* pFilmIor = isThinFilm ? filmIor : nullptr;
+			const IScalarPainter* pFilmExt = isThinFilm ? filmExt : nullptr;
+			const IScalarPainter* pFilmThk = isThinFilm ? filmThk : nullptr;
+
+			brdf = new GGXBRDF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, fresnelMode, nullptr, pFilmIor, pFilmExt, pFilmThk );
 			brdf->addref();
-			spf = new GGXSPF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, eFresnelSchlickF0 );
+			spf = new GGXSPF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, fresnelMode, nullptr, pFilmIor, pFilmExt, pFilmThk );
 			spf->addref();
 		}
 
@@ -164,6 +190,7 @@ namespace
 			diffuse->release(); specular->release();
 			alphaX->release(); alphaY->release();
 			ior->release(); ext->release();
+			filmIor->release(); filmExt->release(); filmThk->release();
 		}
 	};
 
@@ -173,6 +200,24 @@ namespace
 		const double phi = azimuthDeg * PI / 180.0;
 		return Vector3( std::sin(theta)*std::cos(phi), std::sin(theta)*std::sin(phi), std::cos(theta) );
 	}
+
+	// P3-3 (2026-09-13 review follow-up): deterministic sampler replaying
+	// a fixed list of 1D draws, so two GGXSPF::Scatter() calls land on
+	// the SAME lobe selection / half-vector (mirrors
+	// ThinFilmBRDFTest.cpp's ScriptedSampler).
+	class ScriptedSampler : public ISampler
+	{
+		const Scalar*	seq;
+		unsigned int	n;
+		unsigned int	idx;
+		Scalar			tail;
+	public:
+		ScriptedSampler( const Scalar* s, unsigned int count, Scalar tailVal )
+			: seq( s ), n( count ), idx( 0 ), tail( tailVal ) {}
+		Scalar Get1D() { return idx < n ? seq[idx++] : tail; }
+		Point2 Get2D() { return Point2( Get1D(), Get1D() ); }
+		void StartStream( int ) {}
+	};
 
 	// ================================================================
 	//  DL-62: GGXBRDF::value/valueNM must widen alpha by
@@ -305,10 +350,154 @@ namespace
 		return Report( oss.str(), relErr <= 1e-6 );
 	}
 
+	// P3-3 (2026-09-13 review follow-up): DL-62's checks so far only
+	// probe GGXBRDF::value/valueNM and GGXSPF::Pdf under
+	// glossyFilterWidth>0; add a GGXSPF::Scatter() case too.  diffuse=0
+	// forces pDiffuseSelect=0 EXACTLY, so a scripted uLobe=0.0
+	// deterministically selects the specular branch in both the raw
+	// (authored alpha + real filter width) and reference (pre-widened
+	// alpha, filterWidth=0) fixtures; identical subsequent u1/u2 draws
+	// then sample the SAME half-vector in both (VNDF_Sample_Aniso is a
+	// pure function of alphaX/alphaY/u1/u2, and both fixtures now carry
+	// the same effective alpha) -- so the produced specular kray and
+	// mixPdf must match EXACTLY, proving the widened roughness used for
+	// SAMPLING and the widened roughness now used for value()
+	// evaluation stay in lockstep end-to-end, not only at Pdf() queries.
+	static bool TestGlossyFilterScatterMatchesPrewidened(
+		const char* label,
+		const Scalar f0,
+		const Scalar alphaXRaw,
+		const Scalar alphaYRaw,
+		const Scalar filterWidth,
+		const double thetaDeg )
+	{
+		const Scalar effAlphaX = r_min( alphaXRaw + filterWidth, Scalar(1.0) );
+		const Scalar effAlphaY = r_min( alphaYRaw + filterWidth, Scalar(1.0) );
+
+		GGXFixture raw( Scalar(0.0), f0, alphaXRaw, alphaYRaw );
+		GGXFixture reference( Scalar(0.0), f0, effAlphaX, effAlphaY );
+
+		const RayIntersectionGeometric riRaw = MakeRI( thetaDeg, 0.0, filterWidth );
+		const RayIntersectionGeometric riRef = MakeRI( thetaDeg, 0.0, Scalar(0.0) );
+		IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+		const Scalar draws[] = { 0.0, 0.37, 0.61 };	// uLobe=0 -> specular; u1,u2 -> VNDF sample
+		ScriptedSampler sRaw( draws, 3, 0.5 );
+		ScriptedSampler sRef( draws, 3, 0.5 );
+
+		ScatteredRayContainer scRaw, scRef;
+		raw.spf->Scatter( riRaw, sRaw, scRaw, iorStack );
+		reference.spf->Scatter( riRef, sRef, scRef, iorStack );
+
+		int iRaw = -1, iRef = -1;
+		for( unsigned int k = 0; k < scRaw.Count(); ++k )
+			if( scRaw[k].type == ScatteredRay::eRayReflection ) { iRaw = (int)k; break; }
+		for( unsigned int k = 0; k < scRef.Count(); ++k )
+			if( scRef[k].type == ScatteredRay::eRayReflection ) { iRef = (int)k; break; }
+
+		if( iRaw < 0 || iRef < 0 )
+			return Report( std::string(label) + " (no specular ray emitted -- invalid test config)", false );
+
+		double maxRelErr = 0.0;
+		for( int c = 0; c < 3; ++c )
+		{
+			const double denom = std::max( 1e-12, std::fabs( scRef[iRef].kray[c] ) );
+			maxRelErr = std::max( maxRelErr, std::fabs( scRaw[iRaw].kray[c] - scRef[iRef].kray[c] ) / denom );
+		}
+		const double pdfDenom = std::max( 1e-12, std::fabs( scRef[iRef].pdf ) );
+		const double pdfRelErr = std::fabs( scRaw[iRaw].pdf - scRef[iRef].pdf ) / pdfDenom;
+		maxRelErr = std::max( maxRelErr, pdfRelErr );
+
+		std::ostringstream oss;
+		oss << label << " maxRelErr=" << std::scientific << std::setprecision(3) << maxRelErr;
+		return Report( oss.str(), maxRelErr <= 1e-6 );
+	}
+
+	// P3-3 (2026-09-13 review follow-up): authored-alpha-below-floor +
+	// glossyFilterWidth pins the FLOOR-THEN-WIDEN ordering both
+	// GGXBRDF::value/valueNM and GGXSPF's four sample/density sites use:
+	// `alpha = max(authored, 1e-4); if (filterWidth>0) alpha =
+	// min(alpha + filterWidth, 1)`.  At an authored alpha below the
+	// floor (0.0) and a filterWidth SMALLER than the floor itself
+	// (5e-5), floor-then-widen and widen-then-floor diverge measurably:
+	// floor-then-widen gives 1e-4+5e-5=1.05e-4; widen-then-floor gives
+	// max(5e-5,1e-4)=1.0e-4 -- a ~5% difference in alphaEff, far above
+	// the 1e-6 tolerance used throughout this file.  The reference below
+	// computes floor-then-widen independently (not by calling
+	// GGXBRDF/GGXSPF) and asserts the two orderings actually diverge for
+	// this config first (so a coincidental numeric match can't hide a
+	// broken assertion), then checks production `raw.brdf->value()`
+	// (authored alpha 0.0 + real filterWidth, which must floor-then-
+	// widen internally) against a fixture built directly from the
+	// pre-computed floor-then-widen effective alpha (filterWidth=0).
+	static bool TestGlossyFilterFloorThenWidenOrdering()
+	{
+		const Scalar authoredAlpha = Scalar(0.0);	// below the 1e-4 floor
+		const Scalar filterWidth   = Scalar(0.00005);	// smaller than the floor itself
+		const Scalar flooredAlpha  = r_max( authoredAlpha, Scalar(1e-4) );
+		const Scalar effAlphaFloorThenWiden = r_min( flooredAlpha + filterWidth, Scalar(1.0) );
+		const Scalar effAlphaWidenThenFloor = r_max( r_min( authoredAlpha + filterWidth, Scalar(1.0) ), Scalar(1e-4) );
+		if( std::fabs( double(effAlphaFloorThenWiden) - double(effAlphaWidenThenFloor) ) < 1e-8 )
+			return Report( "floor-then-widen ordering probe (orderings coincide -- invalid test config)", false );
+
+		GGXFixture raw( Scalar(0.3), Scalar(0.5), authoredAlpha, authoredAlpha );
+		GGXFixture reference( Scalar(0.3), Scalar(0.5), effAlphaFloorThenWiden, effAlphaFloorThenWiden );
+
+		const RayIntersectionGeometric riRaw = MakeRI( 30.0, 0.0, filterWidth );
+		const RayIntersectionGeometric riRef = MakeRI( 30.0, 0.0, Scalar(0.0) );
+		const Vector3 wo = DirectionFromAngles( 30.0, 180.0 );	// mirror peak
+
+		const RISEPel vRaw = raw.brdf->value( wo, riRaw );
+		const RISEPel vRef = reference.brdf->value( wo, riRef );
+
+		double maxRelErr = 0.0;
+		for( int c = 0; c < 3; ++c )
+		{
+			const double denom = std::max( 1e-12, std::fabs( vRef[c] ) );
+			maxRelErr = std::max( maxRelErr, std::fabs( vRaw[c] - vRef[c] ) / denom );
+		}
+
+		std::ostringstream oss;
+		oss << "authored alpha below floor + W=" << double(filterWidth) << " (floor-then-widen ordering) maxRelErr="
+			<< std::scientific << std::setprecision(3) << maxRelErr;
+		return Report( oss.str(), maxRelErr <= 1e-6 );
+	}
+
 	// ================================================================
 	//  DL-64: at F0=0, GGXSPF must still sample the specular/MS lobes
 	//  some of the time (the actual Fresnel term is nonzero at grazing).
 	// ================================================================
+
+	// P3-2 companion: the SAME mode-gated `ws` formula, but returning the
+	// LOBE-SELECTION PROBABILITY pSpecSelect = ws/total (independent of
+	// wo) rather than the mixture Pdf at a specific outgoing direction --
+	// this is the quantity GGXSPF::Scatter/ScatterNM actually compare
+	// `uLobe` against, so it is what an empirical specular-draw fraction
+	// should be checked against (not a Pdf value).
+	static Scalar ExpectedGGXPSpecSelect(
+		const RayIntersectionGeometric& ri,
+		const IPainter& diffusePainter,
+		const IPainter& specularPainter,
+		const IScalarPainter& iorPainter,
+		const IScalarPainter& extPainter,
+		const Scalar alphaX,
+		const Scalar alphaY,
+		const FresnelMode mode = eFresnelSchlickF0 )
+	{
+		const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
+		const Vector3 n = ri.onb.w();
+		const Scalar alphaEff = sqrt( alphaX * alphaY );
+		const GGXInterfaceFresnel interfaceFresnel{ ri, mode, specularPainter, iorPainter, extPainter, 0, 0, 0 };
+
+		const Scalar wd = ColorMath::MaxValue( diffusePainter.GetColor(ri) );
+		const Scalar ws = (mode == eFresnelSchlickF0)
+			? ColorMath::MaxValue( interfaceFresnel.Mean() )
+			: ColorMath::MaxValue( specularPainter.GetColor(ri) );
+		const Scalar cosWi = Vector3Ops::Dot( wi, n );
+		const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ) );
+		const Scalar total = wd + ws + wms;
+		return (total > Scalar(1e-10)) ? ws / total : Scalar(0);
+	}
 
 	static bool TestZeroF0SpecularIsSampled(
 		const Scalar diffuseVal,
@@ -345,13 +534,43 @@ namespace
 			}
 		}
 
+		// P3-2 (2026-09-13 review follow-up): beyond "reachable at all",
+		// pin the empirical specular-draw FRACTION against the expected
+		// selection probability pSpecSelect = ws/total (the same
+		// mode-gated formula GGXSPF::Scatter compares `uLobe` against).
+		// Band derivation: under the null hypothesis phat==pSpecSelect,
+		// the binomial standard error is SE=sqrt(p(1-p)/N); at the
+		// largest pSpecSelect these callers probe (~0.4) with N=20000,
+		// 6*SE ~= 0.0208.  A further +0.03 additive slack absorbs a real
+		// (non-defect) bias: the specular branch can be SELECTED by
+		// `uLobe` yet still emit zero rays when the sampled half-vector
+		// reflects wi to a below-geometric-horizon wo (ordinary VNDF
+		// rejection), which under-counts specularCount relative to
+		// pSpecSelect.  Both together (<=0.05 at worst) remain two
+		// orders of magnitude tighter than the gap a rejected epsilon-
+		// hack weight would leave: the doc's "naive bound" section
+		// measures the pre-DL-64 JH-black-uplift epsilon at ~2.5e-5,
+		// versus a real hemispherical-average pSpecSelect of ~0.02-0.4
+		// across these configs -- an epsilon-sized weight could not
+		// land inside this band.
+		const Scalar pSpecSelect = ExpectedGGXPSpecSelect(
+			ri, *fixture.diffuse, *fixture.specular, *fixture.ior, *fixture.ext, alphaX, alphaY, eFresnelSchlickF0 );
+		const double phat = double(specularCount) / double(kSamples);
+		const double se = std::sqrt( std::max( 1e-12, double(pSpecSelect) * (1.0 - double(pSpecSelect)) ) / double(kSamples) );
+		const double band = 6.0 * se + 0.03;
+		const double fracErr = std::fabs( phat - double(pSpecSelect) );
+		const bool fractionOk = fracErr <= band;
+
 		std::ostringstream oss;
 		oss << "F0=0 diffuse=" << diffuseVal << " theta=" << thetaDeg
 			<< " specular draws=" << specularCount << "/" << kSamples
-			<< " energy=" << std::fixed << std::setprecision(5) << (specularEnergy / kSamples);
+			<< " energy=" << std::fixed << std::setprecision(5) << (specularEnergy / kSamples)
+			<< " phat=" << std::setprecision(4) << phat << " pSpecSelect=" << pSpecSelect
+			<< " |err|=" << fracErr << " band=" << band;
 		// The Schlick lobe at F0=0 has real grazing reflectance; the
-		// specular ScatteredRay type must be reachable at all.
-		return Report( oss.str(), specularCount > 0 );
+		// specular ScatteredRay type must be reachable at all, AND the
+		// draw rate must match the expected selection probability.
+		return Report( oss.str(), specularCount > 0 && fractionOk );
 	}
 
 	// Independent reference: recomputes GGXSPF::Pdf/PdfNM's mixture
@@ -369,6 +588,14 @@ namespace
 	// already satisfied by that unrelated epsilon times a large VNDF
 	// spike, and would pass BEFORE the fix too.  An exact match to the
 	// Mean()-weighted formula is not satisfiable by the epsilon alone.
+	// P2-1 (2026-09-13 review follow-up): `ws` uses the hemispherical
+	// Fresnel-weighted average (GGXInterfaceFresnel::Mean()/MeanNM())
+	// ONLY in eFresnelSchlickF0 mode; eFresnelConductor and
+	// eFresnelThinFilmConductor keep the raw painter tint, mirroring
+	// GGXSPF::Pdf/PdfNM's corrected formula exactly (see GGXSPF.cpp).
+	// `filmIorPainter`/`filmExtPainter`/`filmThkPainter` are only
+	// dereferenced (inside GGXInterfaceFresnel) when mode is thin-film;
+	// pass nullptr for the other two modes.
 	static Scalar ExpectedGGXPdfHemisphericalWeight(
 		const RayIntersectionGeometric& ri,
 		const Vector3& wo,
@@ -376,6 +603,10 @@ namespace
 		const IPainter& specularPainter,
 		const IScalarPainter& iorPainter,
 		const IScalarPainter& extPainter,
+		const IScalarPainter* filmIorPainter,
+		const IScalarPainter* filmExtPainter,
+		const IScalarPainter* filmThkPainter,
+		const FresnelMode mode,
 		const Scalar alphaX,
 		const Scalar alphaY,
 		const bool spectral,
@@ -390,10 +621,14 @@ namespace
 		const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 		const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-		const GGXInterfaceFresnel interfaceFresnel{ ri, eFresnelSchlickF0, specularPainter, iorPainter, extPainter, 0, 0, 0 };
+		const GGXInterfaceFresnel interfaceFresnel{ ri, mode, specularPainter, iorPainter, extPainter, filmIorPainter, filmExtPainter, filmThkPainter };
 
 		const Scalar wd = spectral ? GuardedGetColorNM( diffusePainter, ri, nm ) : ColorMath::MaxValue( diffusePainter.GetColor(ri) );
-		const Scalar ws = spectral ? interfaceFresnel.MeanNM( nm ) : ColorMath::MaxValue( interfaceFresnel.Mean() );
+		Scalar ws;
+		if( mode == eFresnelSchlickF0 )
+			ws = spectral ? interfaceFresnel.MeanNM( nm ) : ColorMath::MaxValue( interfaceFresnel.Mean() );
+		else
+			ws = spectral ? GuardedGetColorNM( specularPainter, ri, nm ) : ColorMath::MaxValue( specularPainter.GetColor(ri) );
 
 		const Scalar cosWi = Vector3Ops::Dot( wi, n );
 		const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ) );
@@ -407,6 +642,7 @@ namespace
 
 		return (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total;
 	}
+
 
 	// Deterministic (no RNG): GGXSPF::Pdf at the exact mirror-reflection
 	// direction must match the hemispherical-weight reference above, not
@@ -424,7 +660,8 @@ namespace
 		const Vector3 wo = DirectionFromAngles( thetaDeg, 180.0 );	// mirror-reflection peak
 		const Scalar pdf = fixture.spf->Pdf( ri, wo, iorStack );
 		const Scalar expected = ExpectedGGXPdfHemisphericalWeight(
-			ri, wo, *fixture.diffuse, *fixture.specular, *fixture.ior, *fixture.ext, alphaX, alphaY, false, 0.0 );
+			ri, wo, *fixture.diffuse, *fixture.specular, *fixture.ior, *fixture.ext,
+			nullptr, nullptr, nullptr, eFresnelSchlickF0, alphaX, alphaY, false, 0.0 );
 
 		const double denom = std::max( 1e-12, std::fabs( expected ) );
 		const double relErr = std::fabs( pdf - expected ) / denom;
@@ -457,7 +694,8 @@ namespace
 		const Vector3 wo = DirectionFromAngles( thetaDeg, 180.0 );
 		const Scalar pdf = fixture.spf->PdfNM( ri, wo, nm, iorStack );
 		const Scalar expected = ExpectedGGXPdfHemisphericalWeight(
-			ri, wo, *fixture.diffuse, *fixture.specular, *fixture.ior, *fixture.ext, alphaX, alphaY, true, nm );
+			ri, wo, *fixture.diffuse, *fixture.specular, *fixture.ior, *fixture.ext,
+			nullptr, nullptr, nullptr, eFresnelSchlickF0, alphaX, alphaY, true, nm );
 
 		const double denom = std::max( 1e-12, std::fabs( expected ) );
 		const double relErr = std::fabs( pdf - expected ) / denom;
@@ -484,6 +722,90 @@ namespace
 		oss << "HWSS companion control: valueNM grazing F0=0 nm=" << nm
 			<< " value=" << std::fixed << std::setprecision(6) << v;
 		return Report( oss.str(), v > 0 );
+	}
+
+	// ================================================================
+	//  P2-2 (2026-09-13 review follow-up): the DL62/DL64 doc's sibling-
+	//  audit sentence claimed "verified by the conductor/thin-film RGB
+	//  and NM probes in the red-proof test" -- no such probes existed
+	//  (only eFresnelSchlickF0 was ever constructed above).  These pin
+	//  GGXSPF::Pdf/PdfNM's mixture formula in BOTH non-Schlick modes
+	//  against ExpectedGGXPdfHemisphericalWeight's independent
+	//  reference (P2-1-corrected: `ws` is the RAW painter tint in these
+	//  two modes, not GGXInterfaceFresnel::Mean()/MeanNM()) -- a
+	//  regression guard against reintroducing the unconditional Mean()/
+	//  MeanNM() call P2-1 removed for performance
+	//  (docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "Cost"), and against
+	//  Scatter()/Pdf() mixture-identity drift in these modes.
+	// ================================================================
+
+	static bool TestNonSchlickPdfMatchesExpectedWeight(
+		const char* label,
+		const FresnelMode mode,
+		const Scalar diffuseVal,
+		const Scalar tint,
+		const Scalar alphaX,
+		const Scalar alphaY,
+		const double thetaDeg,
+		const Scalar iorVal,
+		const Scalar extVal,
+		const Scalar filmN = 2.5,
+		const Scalar filmK = 0.0,
+		const Scalar filmThicknessNm = 180.0 )
+	{
+		GGXFixture fixture( diffuseVal, tint, alphaX, alphaY, mode, iorVal, extVal, filmN, filmK, filmThicknessNm );
+		const RayIntersectionGeometric ri = MakeRI( thetaDeg, 0.0, Scalar(0.0) );
+		IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+		const Vector3 wo = DirectionFromAngles( thetaDeg, 180.0 );	// mirror-reflection peak
+		const Scalar pdf = fixture.spf->Pdf( ri, wo, iorStack );
+		const Scalar expected = ExpectedGGXPdfHemisphericalWeight(
+			ri, wo, *fixture.diffuse, *fixture.specular, *fixture.ior, *fixture.ext,
+			fixture.filmIor, fixture.filmExt, fixture.filmThk, mode, alphaX, alphaY, false, 0.0 );
+
+		const double denom = std::max( 1e-12, std::fabs( expected ) );
+		const double relErr = std::fabs( pdf - expected ) / denom;
+
+		std::ostringstream oss;
+		oss << label << " theta=" << thetaDeg
+			<< " pdf=" << std::fixed << std::setprecision(6) << pdf << " expected=" << expected
+			<< " relErr=" << std::scientific << std::setprecision(3) << relErr;
+		return Report( oss.str(), relErr <= 1e-6 );
+	}
+
+	static bool TestNonSchlickPdfMatchesExpectedWeightNM(
+		const char* label,
+		const FresnelMode mode,
+		const Scalar diffuseVal,
+		const Scalar tint,
+		const Scalar alphaX,
+		const Scalar alphaY,
+		const double thetaDeg,
+		const double nm,
+		const Scalar iorVal,
+		const Scalar extVal,
+		const Scalar filmN = 2.5,
+		const Scalar filmK = 0.0,
+		const Scalar filmThicknessNm = 180.0 )
+	{
+		GGXFixture fixture( diffuseVal, tint, alphaX, alphaY, mode, iorVal, extVal, filmN, filmK, filmThicknessNm );
+		const RayIntersectionGeometric ri = MakeRI( thetaDeg, 0.0, Scalar(0.0) );
+		IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+		const Vector3 wo = DirectionFromAngles( thetaDeg, 180.0 );
+		const Scalar pdf = fixture.spf->PdfNM( ri, wo, nm, iorStack );
+		const Scalar expected = ExpectedGGXPdfHemisphericalWeight(
+			ri, wo, *fixture.diffuse, *fixture.specular, *fixture.ior, *fixture.ext,
+			fixture.filmIor, fixture.filmExt, fixture.filmThk, mode, alphaX, alphaY, true, nm );
+
+		const double denom = std::max( 1e-12, std::fabs( expected ) );
+		const double relErr = std::fabs( pdf - expected ) / denom;
+
+		std::ostringstream oss;
+		oss << label << " nm=" << nm << " theta=" << thetaDeg
+			<< " pdf=" << std::fixed << std::setprecision(6) << pdf << " expected=" << expected
+			<< " relErr=" << std::scientific << std::setprecision(3) << relErr;
+		return Report( oss.str(), relErr <= 1e-6 );
 	}
 }
 
@@ -516,6 +838,13 @@ int main()
 	passed &= TestGlossyFilterSPFAlreadyConsistent( 0.3, 0.5, 0.05, 0.30, 0.3, 30.0 );
 	passed &= TestGlossyFilterSPFAlreadyConsistent( 0.0, 0.8, 0.10, 0.40, 0.25, 45.0 );
 
+	std::cout << "\n--- P3-3: GGXSPF::Scatter() under glossyFilterWidth>0 matches pre-widened reference ---\n";
+	passed &= TestGlossyFilterScatterMatchesPrewidened( "Scatter spec-only aniso W=0.3", 0.7, 0.05, 0.30, 0.3, 40.0 );
+	passed &= TestGlossyFilterScatterMatchesPrewidened( "Scatter spec-only W=0.6 grazing", 0.5, 0.15, 0.15, 0.6, 70.0 );
+
+	std::cout << "\n--- P3-3: authored alpha below the 1e-4 floor + glossyFilterWidth (floor-then-widen ordering) ---\n";
+	passed &= TestGlossyFilterFloorThenWidenOrdering();
+
 	std::cout << "\n--- DL-64: specular lobe is reachable at F0=0 (RGB) ---\n";
 	unsigned int seed = 7100;
 	passed &= TestZeroF0SpecularIsSampled( 0.0, 0.2, 0.2, 80.0, seed++ );	// diffuse=0, grazing
@@ -537,6 +866,28 @@ int main()
 	std::cout << "\n--- DL-64: HWSS companion control -- valueNM already correct ---\n";
 	for( const double nm : { 450.0, 550.0, 650.0 } )
 		passed &= TestZeroF0ValueNMGrazingIsNonzero( nm );
+
+	std::cout << "\n--- P2-2: Pdf matches the mode-gated reference in conductor mode (RGB) ---\n";
+	passed &= TestNonSchlickPdfMatchesExpectedWeight( "conductor mixed", eFresnelConductor, 0.2, 0.7, 0.25, 0.25, 50.0, 2.74, 3.79 );
+	passed &= TestNonSchlickPdfMatchesExpectedWeight( "conductor spec-only grazing", eFresnelConductor, 0.0, 0.9, 0.15, 0.15, 75.0, 2.74, 3.79 );
+
+	std::cout << "\n--- P2-2: PdfNM matches the mode-gated reference in conductor mode (NM) ---\n";
+	for( const double nm : { 450.0, 550.0, 650.0 } )
+	{
+		passed &= TestNonSchlickPdfMatchesExpectedWeightNM( "NM conductor mixed", eFresnelConductor, 0.2, 0.7, 0.25, 0.25, 50.0, nm, 2.74, 3.79 );
+		passed &= TestNonSchlickPdfMatchesExpectedWeightNM( "NM conductor spec-only grazing", eFresnelConductor, 0.0, 0.9, 0.15, 0.15, 75.0, nm, 2.74, 3.79 );
+	}
+
+	std::cout << "\n--- P2-2: Pdf matches the mode-gated reference in thin-film mode (RGB) ---\n";
+	passed &= TestNonSchlickPdfMatchesExpectedWeight( "thin-film mixed", eFresnelThinFilmConductor, 0.15, 0.6, 0.30, 0.30, 40.0, 2.74, 3.79, 2.5, 0.0, 180.0 );
+	passed &= TestNonSchlickPdfMatchesExpectedWeight( "thin-film spec-only thick", eFresnelThinFilmConductor, 0.0, 0.8, 0.20, 0.20, 55.0, 2.74, 3.79, 2.5, 0.0, 420.0 );
+
+	std::cout << "\n--- P2-2: PdfNM matches the mode-gated reference in thin-film mode (NM) ---\n";
+	for( const double nm : { 450.0, 550.0, 650.0 } )
+	{
+		passed &= TestNonSchlickPdfMatchesExpectedWeightNM( "NM thin-film mixed", eFresnelThinFilmConductor, 0.15, 0.6, 0.30, 0.30, 40.0, nm, 2.74, 3.79, 2.5, 0.0, 180.0 );
+		passed &= TestNonSchlickPdfMatchesExpectedWeightNM( "NM thin-film spec-only thick", eFresnelThinFilmConductor, 0.0, 0.8, 0.20, 0.20, 55.0, nm, 2.74, 3.79, 2.5, 0.0, 420.0 );
+	}
 
 	g_stubObject->release();
 
