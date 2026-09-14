@@ -665,6 +665,78 @@ namespace RISE
 					&& actual == expected;
 			}
 
+			//! DL-32 (docs/DEBT_LEDGER.md).  A `scale` field is declared
+			//! `DoubleVec3` (`Sx Sy Sz`), but `ParseStateBag::GetVec3` zero-
+			//! FILLS every unread component before `sscanf`, so a partially
+			//! written value never fails to parse -- it silently DEGENERATES.
+			//! `scale 0.35` used to derive `(0.35, 0, 0)`: a transform with
+			//! two zero axes, which vanishes the object from the render and
+			//! makes `Object::DistanceToSurface` refuse it for every
+			//! `proximity()`/`interior()` query (`sigma_min <= 0`) -- with NO
+			//! diagnostic anywhere.  `override_object`'s own `scale` (a
+			//! DIFFERENT bug shape: it already hard-refused a non-3-count
+			//! value via `HasExactNumericArity`, but that refusal ALSO fired
+			//! on the single-number authoring shorthand this fixes) shares
+			//! this helper too, so the two chunks cannot drift apart on what
+			//! `scale` accepts -- their own descriptor text says "matches
+			//! standard_object semantics".
+			//!
+			//! Convention chosen (SCENE_CONVENTIONS.md's own "`scale` is
+			//! per-axis (Vector3, not scalar)" is the AUTHORING documentation,
+			//! not a parser contract -- nothing enforced it before this fix,
+			//! and both the glTF importer and the Blender bridge always emit
+			//! all three components, so a single number reaching the parser
+			//! is exclusively a hand-authoring shorthand): ONE number is a
+			//! UNIFORM-scale broadcast to all three axes (the intuitive
+			//! reading, and the one every other 3D tool's "uniform scale"
+			//! field means); anything else that is not exactly three finite
+			//! numbers -- two, four, a non-numeric token -- is a HARD parse
+			//! error naming the two accepted forms, rather than the previous
+			//! silent zero-fill.
+			//!
+			//! Returns `present = false` (and leaves `out` untouched) when
+			//! the key is absent, so a caller's own default -- `{1,1,1}` at
+			//! every call site -- stands.  Returns `present = true, ok =
+			//! false` on a malformed value, with `*diag` set to the
+			//! caller-ready message; the caller must fail the chunk rather
+			//! than proceed with a garbage `out`.
+			struct ScaleResolution { bool present; bool ok; };
+			inline ScaleResolution ResolveScaleVec3(
+				const ParseStateBag& bag, const char* chunkKeyword, const std::string& name,
+				double out[3], std::string* diag )
+			{
+				if( !bag.Has( "scale" ) ) {
+					return ScaleResolution{ false, true };
+				}
+				const std::string raw = bag.GetString( "scale" );
+				int actual = 0;
+				const bool allFinite = AllTokensAreFiniteNumbers( raw.c_str(), &actual );
+				if( !allFinite || ( actual != 1 && actual != 3 ) ) {
+					if( diag ) {
+						*diag = std::string( chunkKeyword ) + " `" + name + "`: `scale " + raw +
+							"` -- needs exactly ONE finite number (a UNIFORM scale, broadcast to "
+							"all three axes) or THREE (`Sx Sy Sz`).  A partial fill used to derive "
+							"a DEGENERATE transform silently (DL-32, docs/DEBT_LEDGER.md) -- the "
+							"object would vanish from the render with no diagnostic -- so it is "
+							"refused instead.";
+					}
+					return ScaleResolution{ true, false };
+				}
+				if( actual == 1 ) {
+					double s = 0.0;
+					sscanf( raw.c_str(), "%lf", &s );
+					out[0] = out[1] = out[2] = s;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"%s `%s`: `scale %s` -- ONE number is a UNIFORM-scale broadcast to "
+						"(%.6g %.6g %.6g).  Write all three components explicitly (`scale %.6g "
+						"%.6g %.6g`) to silence this.",
+						chunkKeyword, name.c_str(), raw.c_str(), s, s, s, s, s, s );
+				} else {
+					bag.GetVec3( "scale", out );
+				}
+				return ScaleResolution{ true, true };
+			}
+
 			inline bool DispatchChunkParameters(
 				const ChunkDescriptor& desc,
 				ParseStateBag&         bag,
@@ -9199,6 +9271,24 @@ namespace RISE
 							name.c_str() );
 					}
 
+					// DL-32: resolve `scale` ONCE, before the transform-mode
+					// branch, so both the quaternion and Euler paths below
+					// read the same validated value.  Skipped entirely under
+					// `matrix` -- `scale` is subsumed there (the descriptor
+					// says so) and never reaches AddObjectMatrix, so a
+					// malformed value alongside an explicit `matrix` would be
+					// refusing the chunk over a field the transform ignores.
+					double scale[3] = {1.0, 1.0, 1.0};
+					if( !hasMatrix ) {
+						std::string scaleDiag;
+						const ScaleResolution sr = ResolveScaleVec3( bag, "standard_object", name, scale, &scaleDiag );
+						if( sr.present && !sr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", scaleDiag.c_str() );
+							if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = scaleDiag;
+							return false;
+						}
+					}
+
 					bool bRet = false;
 					if( hasMatrix ) {
 						double mat[16];
@@ -9219,10 +9309,8 @@ namespace RISE
 						// ComposeTRS_QuaternionGltf (§8.10).
 						double pos[3]   = {0,0,0};
 						double q[4]     = {0,0,0,1};	// xyzw, glTF convention
-						double scale[3] = {1,1,1};
 						bag.GetVec3( "position",   pos );
 						bag.GetVec4( "quaternion", q );
-						bag.GetVec3( "scale",      scale );
 
 						double M[16];
 						ComposeTRS_QuaternionGltf( pos, q, scale, M );
@@ -9237,14 +9325,12 @@ namespace RISE
 					} else {
 						double pos[3]    = {0,0,0};
 						double orient[3] = {0,0,0};
-						double scale[3]  = {1.0,1.0,1.0};
 						bag.GetVec3( "position", pos );
 						if( bag.GetVec3( "orientation", orient ) ) {
 							orient[0] *= DEG_TO_RAD;
 							orient[1] *= DEG_TO_RAD;
 							orient[2] *= DEG_TO_RAD;
 						}
-						bag.GetVec3( "scale", scale );
 
 						bRet = pJob.AddObject( name.c_str(), geometry.c_str(),
 							material=="none"?0:material.c_str(),
@@ -9369,7 +9455,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
 						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 transform, column-major, LOCAL to `parent` (overrides position/orientation/quaternion/scale)"; }
-						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale (`Sx Sy Sz`).  ONE number is accepted as a UNIFORM-scale shorthand (`scale 0.35` broadcasts to (0.35, 0.35, 0.35), with a log warning) -- anything else that is not exactly one or three finite numbers is a hard parse error (DL-32, docs/DEBT_LEDGER.md): a partial fill used to derive a silently DEGENERATE transform (the object would vanish and refuse every proximity() query)"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "mirror";           p.kind = ValueKind::Enum;      p.enumValues = {"x","y","z","none"}; p.description = "REFLECT this node across the plane through its OWN origin perpendicular to the named LOCAL axis -- author one wing, hand, fin or shoe and mirror the other instead of building both.  Applied INNERMOST, before this node's `position` / `orientation` / `scale`, so `mirror x  position 3 0 0` puts the reflected shape AT +3 (it does not move it to -3).  With `source` the whole cloned SUBTREE arrives reflected, which is the headline use: `standard_object { name right_wing  source left_wing  mirror x }` off an UN-mirrored `left_wing`; with `count_u` every repetition is mirrored.  `mirror` is INSTANCE-OWN, never inherited through `source` -- exactly like `position` / `orientation` / `scale`.  So if the SOURCE itself carries a `mirror`, a plain `source` copy DROPS it and comes out as the source's mirror image; repeat the same `mirror <axis>` on the copy to reproduce the source exactly (the derive warns when you have not).  Legal on a geometry-less CONTAINER too -- everything parented under it composes through the reflection, exactly once, so a mirrored arm's own children are not double-mirrored.  `none` (or omitting the line) means no mirror"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
@@ -9400,9 +9486,18 @@ namespace RISE
 						return false;
 					}
 					struct NumericArity { const char* key; int count; };
+					// DL-32: `scale` is deliberately NOT in this strict-arity
+					// list any more -- it has its own broadcast-aware
+					// resolver (ResolveScaleVec3) below, shared with
+					// StandardObjectAsciiChunkParser so the two chunks'
+					// "matches standard_object semantics" descriptor claim
+					// stays true rather than aspirational: before this fix,
+					// `override_object`'s `scale` hard-refused the SAME
+					// single-number shorthand `standard_object` silently
+					// degenerated on -- two different bugs on one field.
 					const NumericArity numericArities[] = {
 						{ "position", 3 }, { "orientation", 3 }, { "quaternion", 4 },
-						{ "matrix", 16 }, { "scale", 3 }
+						{ "matrix", 16 }
 					};
 					for( const NumericArity& arity : numericArities ) {
 						if( !HasExactNumericArity( bag, arity.key, arity.count ) ) {
@@ -9411,6 +9506,17 @@ namespace RISE
 								name.c_str(), arity.key, arity.count );
 							return false;
 						}
+					}
+					double resolvedScale[3] = {1.0, 1.0, 1.0};
+					bool scalePresent = false;
+					{
+						std::string scaleDiag;
+						const ScaleResolution sr = ResolveScaleVec3( bag, "override_object", name, resolvedScale, &scaleDiag );
+						if( sr.present && !sr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", scaleDiag.c_str() );
+							return false;
+						}
+						scalePresent = sr.present;
 					}
 					IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
 					if( !priv ) {
@@ -9453,12 +9559,11 @@ namespace RISE
 						}
 						any = true;
 					} else if( hasQuaternion ) {
-						double pos[3]={0,0,0}, q[4]={0,0,0,1}, s[3]={1,1,1};
+						double pos[3]={0,0,0}, q[4]={0,0,0,1};
 						bag.GetVec3( "position",   pos );
 						bag.GetVec4( "quaternion", q );
-						bag.GetVec3( "scale",      s );
 						double M[16];
-						ComposeTRS_QuaternionGltf( pos, q, s, M );
+						ComposeTRS_QuaternionGltf( pos, q, resolvedScale, M );
 						const Matrix4 transform = BuildMatrix4FromColumnMajor( M );
 						if( Implementation::Transformable* concrete =
 							dynamic_cast<Implementation::Transformable*>( obj ) ) {
@@ -9492,14 +9597,13 @@ namespace RISE
 								v[0]*DEG_TO_RAD, v[1]*DEG_TO_RAD, v[2]*DEG_TO_RAD ) );
 							any = true;
 						}
-						double scl[3];
-						if( bag.GetVec3( "scale", scl ) ) {
+						if( scalePresent ) {
 							// R2 fix (pinned 2.7): ALWAYS use
 							// SetStretch — `scale` Vec3 routes to
 							// SetStretch in standard_object too
 							// (its parser in this file → AddObject
 							// → IObjectPriv::SetStretch).
-							obj->SetStretch( Vector3( scl[0], scl[1], scl[2] ) );
+							obj->SetStretch( Vector3( resolvedScale[0], resolvedScale[1], resolvedScale[2] ) );
 							any = true;
 						}
 					}
@@ -9559,7 +9663,10 @@ namespace RISE
 						                  "nothing emits override_object today, but older scene "
 						                  "files that contain it remain parseable."; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.required = false;
-						  p.description = "Per-axis scale; matches standard_object semantics."; }
+						  p.description = "Per-axis scale; matches standard_object semantics -- including the "
+						                  "DL-32 uniform-scale broadcast (ONE number scales all three axes; "
+						                  "anything else that is not exactly one or three finite numbers is a "
+						                  "hard parse error)."; }
 						return cd;
 					}();
 					return d;

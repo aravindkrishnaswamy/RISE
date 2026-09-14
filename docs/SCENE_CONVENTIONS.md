@@ -514,7 +514,16 @@ standard_object
 The glTF importer always uses the `matrix` path for losslessness.  Most
 hand-authored scenes use the Euler form for simplicity.
 
-`scale` is per-axis (`Vector3`, not scalar).
+`scale` is per-axis (`Vector3`: `Sx Sy Sz`).  A single number IS accepted as an
+explicit shorthand -- `scale 0.35` broadcasts to `(0.35, 0.35, 0.35)`, with a
+log warning suggesting the fully-spelled form -- but nothing else short of all
+three: two numbers, four numbers, or a non-numeric token is a hard parse error
+(DL-32, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md)).  Before that fix a partial
+value silently zero-filled the missing axes (`scale 0.35` derived
+`(0.35, 0, 0)`), vanishing the object from the render with no diagnostic and
+making it refuse every `proximity()`/`interior()` query
+(`Object::DistanceToSurface`'s `sigma_min <= 0` gate) -- a trap worth knowing
+even though the parser no longer springs it.
 
 ### `parent` — the transform is LOCAL, relative to the parent
 

@@ -113,7 +113,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-23 | CLOTH_FABRIC_DESIGN.md §15 item 16 (tail) / IMPROVEMENTS.md "Clearcoat over `fabric_material` — not composable, unowned" | `coated_material`'s substrate allowlist does not admit `fabric_material`/`weave_material`, so a coat-over-fabric composition (e.g. waxed canvas) is unreachable | OPEN-confirmed | `CoatedMaterial.h:112-113` (`SubstrateAllowlistText()`: "lambertian_material, orennayar_material, ggx_material, pbr_metallic_roughness_material") and `IsSupportedSubstrate` `:120-134` (the `dynamic_cast` allowlist) — `fabric_material`/`weave_material` absent from both, confirmed this sweep; IMPROVEMENTS.md's entry adds that this is a named glTF-import consequence (`KHR_materials_sheen` + `KHR_materials_clearcoat` together lose the clearcoat layer, warn-and-skip named in `GLTFSceneImporter.cpp`) | S | API/bridge gap | user-visible (authoring: can't compose a coat over fabric) |
 | DL-26 | WETNESS_COAT_DESIGN.md §12 item 6c | `add_wetness` and `add_wear` mutually exclude on one material; worn-and-wet, the flagship subject, is unreachable | OPEN-confirmed | `src/Library/Agent/AgentSession.cpp` ~8021/8092/8328 ("add_wear / add_wetness cannot currently be combined on one..."), confirmed present this sweep | S | API/bridge gap | user-visible (agent-authored worn-and-wet materials) |
 | DL-28 | WETNESS_COAT_DESIGN.md §12 item 9 | Water-absorption spectral files must be pre-converted to a transmittance base because `dielectric_material`'s `tau` is `pow(tau,distance)`, not `exp(-sigma*distance)`; a pasted-in published sigma_a table is silently wrong | OPEN-confirmed | `DielectricSPF.cpp:318-323` (`pow(tauVals.v[i], distance)`), confirmed unchanged this sweep; no runtime validation or warning exists for a mismatched-convention input file | S | API/bridge gap | user-visible (authoring trap only, silent) |
-| DL-32 | CROSS_OBJECT_PROXIMITY_DESIGN.md §10 | `standard_object`'s `scale` written with ONE number (e.g. `scale 0.35`) derives to a degenerate transform silently — no diagnostic, the object vanishes from the render, and `DistanceToSurface`'s `sigma_min<=0` gate then refuses every proximity query against it | OPEN-confirmed | `ChunkParserRegistry.cpp`'s `standard_object` `scale` descriptor (`DoubleVec3`, no partial-fill diagnostic); `Object.cpp:1708` warns only for an ANISOTROPIC transform's `proximity()`, not a degenerate one — confirmed no parser-side warning for a partially-specified `DoubleVec3` this sweep | S | API/bridge gap | user-visible (silent scene-authoring trap) |
+| ~~DL-32~~ | ~~CROSS_OBJECT_PROXIMITY_DESIGN.md §10~~ | ~~`standard_object`'s `scale` written with ONE number (e.g. `scale 0.35`) derives to a degenerate transform silently~~ | CLOSED 2026-09-14 | `ChunkParserRegistry.cpp`'s shared `ResolveScaleVec3` helper: one finite number is now an explicit UNIFORM-scale broadcast (logged warning); anything else short of exactly three finite numbers is a hard parse error naming DL-32, applied identically to `standard_object` and `override_object` (whose own `scale` used to hard-refuse the single-number shorthand outright, despite its descriptor's "matches standard_object semantics" claim). `tests/StandardObjectScaleTest.cpp`: 23/0 (red pre-fix: 8 failed — the degenerate-zero-fill diagonal and the override_object hard-refusal). `CstDeriveGoldenTest`: 452/452, 0 drift. `ProximitySignalTest`: 491/0. Full narrative in this file's "Verification recipes" section, DL-32 entry. | S | API/bridge gap | user-visible (silent scene-authoring trap) |
 | ~~DL-80~~ | ~~Utilities/Color/ColorUtils.h:17 / Color.h:71 / SpectralPacket.h:20~~ | ~~`Color.h` and `ColorUtils.h` are mutually circular via `SpectralPacket.h`'s own `#include "ColorUtils.h"`, so whichever of the two a translation unit includes FIRST wins the include-guard race and the other's declarations (`ColorUtils::XYZFromNM`, transitively `IFunction1D`) are invisible to `SpectralPacket.h` when entered the losing way~~ Cycle broken at the root: `SpectralPacket.h`/`SpectralPacket_Template.h` no longer `#include "ColorUtils.h"` at all | CLOSED 2026-09-14 (debt-misc slice) | Row filed by the `precision` slice (`11393740`, uncommitted to master at the time this slice started); its own fix commit originally worked around the landmine at its two discovered call sites (`PiecewiseLinearScalarPainter.cpp`, `tests/IScalarPainterTest.cpp`) by including `Color.h` first, not at the root.  **Superseded**: per the `precision` slice's own re-verification, its DL-29 redesign subsequently removed the code paths that needed that workaround, so those two include-order workaround sites no longer exist in its branch either way.  This row's root fix (breaking the `Color.h`/`ColorUtils.h` cycle at `SpectralPacket.h`) supersedes any such workaround regardless of whether the sites survive — the include-order hazard it worked around is gone for every caller, not just those two.  The `precision` branch's own copy of this DL-80 row is reconciled against this one at merge time to avoid a double-filing under the same id. Re-derived independently on current master (`a3aa5b8d`) by reading the three cited lines directly: `ColorUtils.h:17` `#include "Color.h"`; `Color.h:71` `#include "SpectralPacket.h"`; `SpectralPacket.h:20` (pre-fix) `#include "ColorUtils.h"`. Red-proved with two new standalone tests exercising both entry orders directly against `git rev-parse a3aa5b8d`'s unfixed headers: `tests/ColorUtilsBeforeColorIncludeOrderTest.cpp` (includes `ColorUtils.h` then `Color.h`) reproduces the EXACT reported errors — `error: unknown type name 'IFunction1D'` and `error: no member named 'XYZFromNM' in namespace 'RISE::ColorUtils'` at `SpectralPacket.h:109,246` and `SpectralPacket_Template.h:222` — while its sibling `tests/ColorBeforeColorUtilsIncludeOrderTest.cpp` (the order every existing production file happened to use) compiled clean throughout, confirming the race is real and order-dependent, not a general breakage. **Fix**: `SpectralPacket.h` and `SpectralPacket_Template.h` no longer include `ColorUtils.h` — each forward-declares the single function it actually calls (`bool ColorUtils::XYZFromNM(XYZPel&, const Scalar)`) plus `struct XYZPel;`, and `SpectralPacket.h` gained a direct `#include "../../Interfaces/IFunction1D.h"` (previously reached only transitively through the now-removed `ColorUtils.h` edge) for the `IFunction1D*`-constructor overload it defines inline. `ColorUtils.h`'s own `#include "Color.h"` is UNCHANGED (many existing files rely on it transitively) — only the back-edge that closed the cycle was cut, so the fix needs no caller to change its own include order. **Second-order breakage found and fixed in the same pass**: cutting that back-edge also removed a HIDDEN transitive path 9 other files relied on to reach `ColorUtils.h`'s declarations without including it directly (`Color.h` used to reach `ColorUtils.h` via `SpectralPacket.h`, so anything that included `Color.h` got `ColorUtils.h` for free) — a full library rebuild after the header fix failed with `no member named 'SerializeRGBPel'/'DeserializeRGBPel' in namespace 'RISE::ColorUtils'` in `CausticPelPhotonMap.cpp`/`GlobalPelPhotonMap.cpp`; a symbol-level audit (grepping every real, non-comment `ColorUtils::<exact-symbol>` call site against every file that already includes `ColorUtils.h` directly) found 9 total: `DetectorSpheres/IsotropicRGBDetectorSphere.cpp`, `Job.cpp`, `PhotonMapping/{Caustic,Global}{Pel,Spectral}PhotonMap.cpp` (4 files), `PhotonMapping/TranslucentPelPhotonMap.cpp`, `RasterImages/PPMWriter.cpp`, `Shaders/VCMIntegrator.cpp` — each given its own direct `#include ".../Color/ColorUtils.h"` rather than relying on transitive luck (two further textual hits, `Rendering/FrameStoreColorSpace.h` and `Shaders/VCMIntegrator.h`, were confirmed to be COMMENT-only references and needed no fix; `FrameStoreColorSpace.h` got a documentation-anchoring include anyway, harmlessly). Full library rebuild clean (zero warnings) after both the header fix and the 9 call-site fixes. Gate: both include-order tests green; `ColorUtilsTest` (all passed), `FrameStoreColorMathTest` (324/0), `JakobHanikaRoundTripTest` (14/0), `RGBPainterSpectralRoundTripTest` (18/0), `TexCoord1PainterTest` (33/0), `ThinFilmAnodizeSwatchTest` (24/0), `TextureExpressionVMTest` (846/0), `ThinFilmRGBSpectralTest` (7/0), `AgentObjectMapTest` (254/0), `PainterVolumeAccessorTest` (all passed) — every test file matching `grep -l 'SpectralPacket\|ColorUtils' tests/*.cpp`. **Not fixed, and not a new debt**: `SpectralPacket.h`'s own `#if 0 ... #endif` dead-code block (a `GetRGB()` overload calling `ColorUtils::RGBFromNM`, a name that has never existed — the closest real function, `ArbritaryRGBFromNM`, is itself commented out in `ColorUtils.cpp`'s explicitly-labeled "DEAD CODE section") is pre-existing, already self-labeled dead code on both ends, not a hidden landmine, and out of scope. | S | API/bridge gap | internal (fixed before any in-tree file tripped the losing order in production; the `precision` slice's DL-29 fix, if merged as-is, keeps working — its own include-order workaround is now simply redundant, not broken) |
 | DL-18 | CLOTH_FABRIC_DESIGN.md §15 item 13 | The Blender bridge has no sheen, anisotropic, or velvet mapping at all — Principled's Sheen sockets have no `fabric_material` target | OPEN-confirmed | No `fabric_material`/`sheen` reference found in the Blender bridge sources this sweep (`grep -rl fabric_material` under the Blender add-on tree returns nothing) | M | API/bridge gap | user-visible (Blender-authored scenes only) |
 | DL-25 | WETNESS_COAT_DESIGN.md §12 item 6b | Phase 1 cannot darken a textured substrate: the expression VM has no painter-sampling builtin | OPEN-confirmed | `src/Library/Painters/ExpressionEval.h` function table (~lines 1166-1171) has no painter-sample builtin alongside `sin`/`cos`/`atan2`/etc.; confirmed absent this sweep by grep | M | API/bridge gap | user-visible (wet textured substrates can't darken) |
@@ -207,6 +207,14 @@ reflowed otherwise.
 - ~~DL-73~~ (DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md: volume-guiding bsdfPdf composition) — STRUCK 2026-09-13, ruled consistent by derivation (P2-C, debt-sssenv round-2): the row proposed replacing `RayCaster.cpp`'s `rs2.bsdfPdf = phasePdf` (raw, un-combined) with the guided-mixture `combinedPdf`, on the theory that it should match the main surface continuation's `effectiveBsdfPdf` convention. Derivation shows this is backwards: env-NEE at a volume vertex weights via `MediumScatterMaterial::Pdf` (`MediumTransport.cpp`'s `EvaluateInScattering` -> `LightSampler::EvaluateDirectLighting`'s env arm, `LightSampler.cpp` ~:2652), which returns the RAW, un-guided `m_pPhase->Pdf(...)` — the SAME raw `phasePdf` the escape side already uses. Both sides feed `PowerHeuristic` the identical `(phasePdf, envPdf)` pair (opposite argument order), which is `PowerHeuristic(a,b) + PowerHeuristic(b,a) == 1` by construction — UNBIASED as written. `guidingMISWeight = phasePdf / combinedPdf` (folded into `rs2.importance`) already applies the full guiding correction to the sample's contribution; substituting `combinedPdf` into the MIS weight too, as this row prescribed, would double-apply that correction and BREAK the partition. Not a debt; the real, opposite-signed asymmetry is on the surface path, filed separately as DL-74. See [DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) "Residual: volume-guiding bsdfPdf composition — DL-73 RULED NOT A DEBT".
 
 ## Counts
+
+**2026-09-14 (debt-api1 slice, DL-32):** DL-32 CLOSED — `standard_object`'s
+(and `override_object`'s) `scale` now accepts a single number as an explicit
+uniform-scale broadcast and hard-refuses anything else short of three finite
+numbers, instead of silently deriving a degenerate transform.  See the table
+row and its "Verification recipes" entry above.  No new rows filed by this
+row's fix (a small, self-contained parser change; the sibling audit found
+only `override_object`, fixed in the same commit, not a new debt).
 
 **2026-09-14 (debt-precision slice):** DL-10 and DL-29 CLOSED (see the
 table rows and their "Verification recipes" entries above). **DL-09 is
@@ -1028,14 +1036,61 @@ geometry. Fixed when a receiver point buried inside a closed mesh
 neighbour reads `interior(r) > 0` in a `ProximitySignalTest` case, matching
 every solid family's existing behavior.
 
-**DL-32 (standard_object single-number scale degenerates silently).**
-Add a parser-time diagnostic when a `DoubleVec3`-typed `scale` is given a
-partial fill (or an explicit single-scalar broadcast convention, if that
-is the intended authoring shorthand) on `standard_object`. Fixed when
-authoring `scale 0.35` either broadcasts predictably to `(0.35,0.35,0.35)`
-with a stated convention, or fails to parse with a clear message, instead
-of silently vanishing the object and refusing every proximity query
-against it.
+**~~DL-32 (standard_object single-number scale degenerates silently).~~
+CLOSED 2026-09-14 (debt-api1 slice).** Root cause:
+`ParseStateBag::GetVec3` zero-fills all three output components before
+`sscanf`, so a `DoubleVec3`-typed field with fewer than three tokens never
+fails to parse -- `scale 0.35` silently derived `(0.35, 0, 0)`. Read
+[docs/SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md)'s own "`scale` is
+per-axis (`Vector3`, not scalar)" line and confirmed neither the glTF
+importer nor the Blender bridge ever emit fewer than three components
+(`src/Blender/addons/rise_renderer/exporter.py`'s `scale` is a 3-tuple,
+the native bridge struct is `ctypes.c_float * 3`), so a bare single number
+reaching the parser is exclusively a hand-authoring shorthand.
+`override_object`'s OWN `scale` (same descriptor claim, "matches
+standard_object semantics") had the OPPOSITE bug: `HasExactNumericArity`
+hard-refused anything but exactly three numbers, including the same
+single-number shorthand -- so the two chunks disagreed on the very field
+their own descriptors claimed was identical.
+
+Fix, at the parser layer (`ChunkParserRegistry.cpp`): a new shared
+`ResolveScaleVec3` helper accepts ONE finite number as an explicit
+UNIFORM-scale broadcast (`scale 0.35` -> `(0.35, 0.35, 0.35)`, with an
+`eLog_Warning` naming the fully-spelled form to silence it) and refuses
+anything else that is not exactly three finite numbers -- two, four, a
+non-numeric token -- as a hard parse error naming DL-32 by id. Both
+`StandardObjectAsciiChunkParser` and `OverrideObjectAsciiChunkParser` call
+it, so the two chunks cannot drift apart on `scale` again; `scale` was
+removed from `override_object`'s old `HasExactNumericArity` strict-arity
+array since the new resolver supersedes it. `matrix` still bypasses
+`scale` entirely on both chunks (unchanged precedence), so a malformed
+`scale` alongside an explicit `matrix` is not spuriously refused. Both
+chunks' descriptor text and [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md)
+now state the broadcast rule.
+
+Red-proof: `tests/StandardObjectScaleTest.cpp`, built and run against the
+UNFIXED library (`ChunkParserRegistry.cpp` reverted via a saved patch, not
+`git stash`) -- 8 of 23 checks failed: the broadcast case's diagonal read
+`(0.35, 0, 0)` instead of uniform, the quaternion-transform branch showed
+the identical degeneracy, the malformed-two-number case derived a
+successful-but-degenerate object instead of failing that one chunk, and
+`override_object`'s `scale 0.35` hard-refused instead of broadcasting.
+Reapplying the fix: 23/23 pass. Gate: `CstDeriveGoldenTest` 452/452 (0
+drift, the full corpus unaffected), `ProximitySignalTest` 491/0 (the
+row's own cited consumer), `CstOverrideParamEditTest` 51/0, `ObjectMirrorTest`
+174/0, `SceneGraphParentTest` 291/0 -- all touched-class suites (`grep -l
+'standard_object' tests/*.cpp` filtered to non-`Agent*` transform/CST
+tests) clean rebuild, zero warnings.
+
+One correction to this row's own evidence, found while fixing it: the
+row's "Fixed when ... broadcasts predictably ... or fails to parse" gave
+both options as open choices; `override_object`'s pre-existing (if
+inconsistent) hard-refusal of a non-3-count `scale`, plus every
+glTF/Blender-bridge emitter always writing three numbers, settled the
+choice for the BROADCAST option rather than a blanket refusal -- a
+uniform-scale shorthand is what every other 3D tool's "scale" field means
+by one number, and refusing it outright would have been a needless
+authoring regression for hand-written scenes.
 
 **DL-33 (interior's candidate-walk cost shape unmeasured).** Instrument
 `BVH::ForEachContainingPoint` the way `NearestOtherSurface` is instrumented

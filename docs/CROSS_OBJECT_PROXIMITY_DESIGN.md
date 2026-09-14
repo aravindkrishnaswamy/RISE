@@ -1923,13 +1923,22 @@ load and returns before its own render-freeze assert.
    on a scene of four or fewer objects, where the linear `IntersectRay` loop
    WOULD draw the new object — keeps the flat scan and keeps the check, and
    `ProximitySignalTest` (g) still pins it.
-4. **A scene-language trap found while authoring scene D, and NOT fixed here.**
+4. ~~**A scene-language trap found while authoring scene D, and NOT fixed here.**
    `standard_object`'s `scale` is a `DoubleVec3`. Writing it with ONE number
    (`scale 0.35`) derives to a **degenerate transform with no diagnostic** —
    the object silently disappears from the render and refuses every proximity
    query (`Object::DistanceToSurface` rejects `σ_min ≤ 0`). Verified by
    re-introducing the edit: `MeshClosestPointTest`'s mesh-on-mesh station goes
-   1.0 → 0. This is a parser gap outside Phase 2's scope; recorded in §10.
+   1.0 → 0. This is a parser gap outside Phase 2's scope; recorded in §10.~~
+   **CLOSED 2026-09-14 (DL-32, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — a
+   single number is now an explicit UNIFORM-scale broadcast (with a log
+   warning), and anything else short of three finite numbers is a hard parse
+   error naming DL-32, instead of a silent zero-fill.  `ResolveScaleVec3`
+   (`ChunkParserRegistry.cpp`) is shared by `standard_object` and
+   `override_object` so the two cannot drift apart on it again.
+   `tests/StandardObjectScaleTest.cpp` is the dedicated regression;
+   `CstDeriveGoldenTest` (452/452, 0 drift) and `ProximitySignalTest`
+   (491/0) confirm the corpus is unaffected.
 
 **(a) The differential — `MeshClosestPointTest` (a), 56 checks total in the
 suite.** Traversal vs brute force over EVERY triangle, under the SAME
@@ -3186,14 +3195,13 @@ measured by a harness test against the tracked scene.
   receiver buried inside a closed mesh reads `interior` 0 as well as
   `proximity` its honest distance. The closed-mesh test is still the missing
   piece.
-- **`standard_object`'s `scale` written with ONE number derives to a
-  DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
-  produces no diagnostic, makes the object vanish from the render, and
-  makes it refuse every proximity query (`Object::DistanceToSurface`
-  rejects `sigma_min <= 0`).  Found while authoring scene D and verified by
-  re-introducing it (§8.3, trap 4).  A parser gap, outside this design's
-  scope, recorded here because it is a live trap for anyone placing an
-  object for a contact scene.
+- ~~**`standard_object`'s `scale` written with ONE number derives to a
+  DEGENERATE transform, silently.**~~  **CLOSED 2026-09-14 (DL-32,
+  [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — `scale 0.35` is now an explicit
+  UNIFORM-scale broadcast (logged); anything else short of three finite
+  numbers is a hard parse error instead of the silent zero-fill found while
+  authoring scene D (§8.3, trap 4).  `override_object`'s identically-claimed
+  `scale` shares the same resolver.
 - `proximity` is unsigned; Phase 3's `interior(r)` **ships** and supplies the
   inside half for the solid families only (meshes and every sheet family
   contribute 0 to it, silently — a shared refusal latch would print the
