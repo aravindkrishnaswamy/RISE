@@ -3288,7 +3288,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( combinedPdf > NEARZERO )
 							{
-								scatterThroughput = PTScatterKray<Tag>( *pS ) * (pS->pdf / combinedPdf);
+								// DL-42: kray is already f_lobe*cos/pS->pdf for
+								// the ONE lobe PTRandomlySelect stochastically
+								// chose (ISPF.h's documented kray contract), so
+								// reweighting its own pdf to combinedPdf must
+								// still divide by selectProb -- the same
+								// multi-lobe compensation applied at this
+								// function's non-guided initialization above
+								// (`scatterThroughput = kray * (1/selectProb)`).
+								// This differs from the RIS-accepted and
+								// guided-direction-accepted branches elsewhere
+								// in this block, which re-evaluate the BSDF/PDF
+								// through the material's AGGREGATE (all-lobes)
+								// interfaces and are therefore already complete,
+								// self-contained estimators that must NOT be
+								// divided by selectProb again.
+								scatterThroughput = PTScatterKray<Tag>( *pS ) * (pS->pdf / (selectProb * combinedPdf));
 								effectiveBsdfPdf = combinedPdf;
 								smplBsdfPdf = pS->pdf;
 								smplGuidePdf = guidePdfForBsdf;
