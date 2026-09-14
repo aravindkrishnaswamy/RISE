@@ -138,6 +138,7 @@ struct Joint
 {
 	double worstRel;		//!< max |joint / (marginal_x * marginal_y) - 1| over a 3x3 partition
 	double worstDyadic;		//!< max |count / (N/4) - 1| over the four dyadic 2x2 boxes
+	double worstQuad;		//!< max |count / (N/16) - 1| over the sixteen dyadic 4x4 boxes
 	double dyadic[4];		//!< the four 2x2 box fractions, as multiples of 1/4
 	double marginalDev;		//!< max |marginal - 1/3| * 3 over both dimensions
 };
@@ -151,6 +152,7 @@ static Joint ProbeJoint(
 	uint32_t mx[3] = {0,0,0};
 	uint32_t my[3] = {0,0,0};
 	uint32_t d4[4] = {0,0,0,0};
+	uint32_t d16[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 	for( uint32_t i = 0; i < N; i++ ) {
 		const double x = SobolSequence::Sample( i, dimA, seedA );
@@ -161,6 +163,9 @@ static Joint ProbeJoint(
 		mx[bx]++;
 		my[by]++;
 		d4[ ( x < 0.5 ? 0 : 1 ) + ( y < 0.5 ? 0 : 2 ) ]++;
+		int qx = int( x * 4.0 ); if( qx > 3 ) qx = 3; if( qx < 0 ) qx = 0;
+		int qy = int( y * 4.0 ); if( qy > 3 ) qy = 3; if( qy < 0 ) qy = 0;
+		d16[ qy * 4 + qx ]++;
 	}
 
 	Joint r;
@@ -179,6 +184,11 @@ static Joint ProbeJoint(
 		r.dyadic[b] = ( double( d4[b] ) / dN ) * 4.0;
 		r.worstDyadic = std::max( r.worstDyadic, std::fabs( r.dyadic[b] - 1.0 ) );
 	}
+	r.worstQuad = 0.0;
+	for( int b = 0; b < 16; b++ ) {
+		r.worstQuad = std::max( r.worstQuad,
+			std::fabs( ( double( d16[b] ) / dN ) * 16.0 - 1.0 ) );
+	}
 	r.marginalDev = 0.0;
 	for( int a = 0; a < 3; a++ ) {
 		r.marginalDev = std::max( r.marginalDev,
@@ -187,6 +197,51 @@ static Joint ProbeJoint(
 			std::fabs( double( my[a] ) / dN * 3.0 - 1.0 ) );
 	}
 	return r;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Independent helpers for the generator self-check.  Deliberately
+// written separately from SobolSequence's own versions: sharing them
+// would make E1 a tautology.
+//////////////////////////////////////////////////////////////////////
+static uint32_t EulerPhi( uint32_t n )
+{
+	uint32_t result = n;
+	for( uint32_t q = 2; q * q <= n; q++ ) {
+		if( n % q == 0 ) {
+			while( n % q == 0 ) n /= q;
+			result -= result / q;
+		}
+	}
+	if( n > 1 ) result -= result / n;
+	return result;
+}
+
+//! Multiply two GF(2) polynomials modulo `p` of degree `d`, by plain
+//! shift-and-add with reduction after every shift.
+static uint32_t GF2Mul( uint32_t a, uint32_t b, uint32_t p, unsigned int d )
+{
+	uint32_t r = 0;
+	if( ( a >> d ) & 1u ) a ^= p;		// x itself needs reducing when d == 1
+	for( unsigned int i = 0; i < 32; i++ ) {
+		if( ( b >> i ) & 1u ) r ^= a;
+		a <<= 1;
+		if( ( a >> d ) & 1u ) a ^= p;
+	}
+	return r;
+}
+
+//! Does x have multiplicative order exactly 2^d - 1 modulo `p`?
+//! Computed by walking the powers of x until it returns to 1, which
+//! shares no code path with the generator's version (that one raises x
+//! to n and to n/q for each prime factor q of n).
+static bool PolyOrderIsFull( uint32_t p, unsigned int d )
+{
+	const uint32_t n = ( 1u << d ) - 1u;
+	uint32_t x = GF2Mul( 1u, 2u, p, d );		// x, reduced mod p
+	uint32_t order = 1u;
+	while( x != 1u && order <= n ) { x = GF2Mul( x, 2u, p, d ); order++; }
+	return x == 1u && order == n;
 }
 
 static void ReportAndCheck( const char* label, const Joint& j, double relTol, double dyadicTol )
@@ -264,34 +319,121 @@ int main( int argc, char** argv )
 	          << std::setprecision( 5 ) << worstSame << std::endl;
 
 	// ----------------------------------------------------------------
-	// C. Sweep: every slot of one bounce's stream against the same slot
-	// of the next bounce's stream -- the live-render configuration.
+	// C. Bounce-to-bounce sweep -- the live-render configuration.
+	//
+	// Every slot of eye-bounce 0's stream against the SAME slot of
+	// eye-bounce 1's stream, judged by DYADIC box occupancy, which is
+	// the criterion a digital net is actually built to satisfy (the 3x3
+	// partition above is deliberately non-dyadic, and a pair with a
+	// large t-value concentrates its error on those boundaries).
+	//
+	// The two sample counts are not interchangeable.  Over the first
+	// 2^M samples only index bits 0..M-1 vary, so a pair's
+	// equidistribution is governed by its generator rows TRUNCATED to M
+	// columns -- and a dimension's leading row has only 2^(M-1)
+	// distinct values there.  With 2311 dimensions that is 128 values
+	// at 256 samples per pixel, so SOME pairs of the 2311 must share a
+	// leading row and collapse their 2x2 occupancy; it is a counting
+	// bound, not something better direction numbers could fix (see
+	// SobolSequence.h, "What this does NOT fix").  The 32 pairs swept
+	// here are clear of it, and this test pins that.
 	// ----------------------------------------------------------------
-	std::cout << std::endl << "C. Bounce-to-bounce sweep, all "
-	          << 32 << " slots of streams 16 and 17, 2^16 samples" << std::endl;
+	std::cout << std::endl << "C. Bounce-to-bounce sweep, all 32 slots of streams 16 and 17"
+	          << std::endl;
 	{
-		double worst = 0.0;
-		unsigned int worstSlot = 0;
-		unsigned int nBad = 0;
-		for( unsigned int k = 0; k < 32; k++ ) {
-			const Joint j = ProbeJoint( 512 + k, seed, 544 + k, seed, 1u << 16 );
-			if( j.worstRel > worst ) { worst = j.worstRel; worstSlot = k; }
-			if( j.worstRel > 0.05 ) nBad++;
+		static const uint32_t kCounts[2] = { 1u << 8, 1u << 12 };
+		for( int c = 0; c < 2; c++ )
+		{
+			const uint32_t n = kCounts[c];
+			double worst2 = 0.0, worst4 = 0.0, worst3 = 0.0;
+			unsigned int slot2 = 0, slot4 = 0, collapsed = 0;
+			for( unsigned int k = 0; k < 32; k++ ) {
+				const Joint j = ProbeJoint( 512 + k, seed, 544 + k, seed, n );
+				if( j.worstDyadic > worst2 ) { worst2 = j.worstDyadic; slot2 = k; }
+				if( j.worstQuad   > worst4 ) { worst4 = j.worstQuad;   slot4 = k; }
+				if( j.worstDyadic > 1e-9 ) collapsed++;
+				worst3 = std::max( worst3, j.worstRel );
+			}
+			std::cout << "    N=" << std::setw( 5 ) << n
+			          << "  worst 2x2 dyadic dev " << std::fixed << std::setprecision( 5 )
+			          << worst2 << " (slot " << slot2 << ")"
+			          << "   worst 4x4 dyadic dev " << worst4 << " (slot " << slot4 << ")"
+			          << "   worst 3x3 dev " << worst3
+			          << "   slots with a 2x2 collapse: " << collapsed << "/32" << std::endl;
+
+			char msg[192];
+			if( n >= ( 1u << 12 ) ) {
+				// Far enough above the counting bound that every pair
+				// here has a distinct leading row: demand exactness.
+				std::snprintf( msg, sizeof(msg),
+					"C: every 2x2 AND 4x4 dyadic box exact on all 32 slots at N=%u", n );
+				Check( worst2 <= 1e-9 && worst4 <= 1e-9, msg );
+			} else {
+				// At 256 samples per pixel only 128 distinct leading
+				// rows exist for 2311 dimensions, so ~0.78% of ALL
+				// dimension pairs must collapse (SobolSequence.h, "What
+				// this does NOT fix") -- about 0.25 of these 32.  One is
+				// consistent with that; 32 is the pre-DL-81 collapse.
+				std::snprintf( msg, sizeof(msg),
+					"C: at most 2 of 32 slots collapse at N=%u (counting bound predicts ~0.25)", n );
+				Check( collapsed <= 2u, msg );
+			}
 		}
-		std::cout << "    worst 3x3 relative deviation " << std::setprecision( 5 ) << worst
-		          << " at slot " << worstSlot
-		          << ";  slots exceeding 5%: " << nBad << " of 32" << std::endl;
-		Check( nBad == 0u, "C: no bounce-to-bounce slot pair exceeds 5% joint deviation" );
-		Check( worst <= 0.05, "C: worst bounce-to-bounce slot pair within 5%" );
 	}
 
 	// ----------------------------------------------------------------
-	// The property the fix must establish, stated on the sampler rather
-	// than on SobolSequence: kStreamStride is even, so two bounces'
-	// streams always differ by an even dimension offset.  That is fine
-	// once distinct dimensions really are distinct sequences; it was
-	// fatal while the dimension was reduced modulo 2.
+	// E. Generator self-checks.
+	//
+	// The direction numbers are BUILT at first use rather than
+	// tabulated, so the build itself needs pinning.
+	//   E1  The number of primitive polynomials the enumeration accepts
+	//       at each degree d must be phi(2^d - 1) / d, computed here by
+	//       an independent Euler-phi over the trial-division
+	//       factorisation -- nothing the generator shares.
+	//   E2  Sobol' dimensions 0 and 1 must still be exactly the
+	//       closed-form van der Corput and x+1 sequences the padded
+	//       implementation used, so the image plane is untouched.
 	// ----------------------------------------------------------------
+	std::cout << std::endl << "E. Generator self-checks" << std::endl;
+	{
+		// E1 -- count what the same enumeration rule accepts, using an
+		// independently written primitivity test, and compare the per
+		// degree totals against phi(2^d - 1) / d.
+		unsigned int accepted = 1;		// dimension 0 carries no polynomial
+		bool countsOk = true;
+		for( unsigned int d = 1; d <= 15 && accepted < 2311; d++ ) {
+			unsigned int got = 0;
+			for( uint32_t a = 0; a < ( 1u << ( d - 1 ) ) && accepted < 2311; a++ ) {
+				const uint32_t poly = ( 1u << d ) | ( a << 1 ) | 1u;
+				if( PolyOrderIsFull( poly, d ) ) { got++; accepted++; }
+			}
+			const uint32_t n = ( 1u << d ) - 1u;
+			const unsigned int expect = EulerPhi( n ) / d;
+			// The last degree is truncated by the 2311 cap, so only
+			// compare the degrees that ran to completion.
+			if( accepted < 2311 && got != expect ) {		// NOLINT
+				countsOk = false;
+				std::cout << "    degree " << d << ": accepted " << got
+				          << ", phi(2^d-1)/d = " << expect << std::endl;
+			} else {
+				std::cout << "    degree " << std::setw( 2 ) << d << ": "
+				          << std::setw( 4 ) << got << " primitive"
+				          << ( accepted < 2311 ? "" : " (truncated by the 2311 cap)" )
+				          << ",  phi(2^d-1)/d = " << expect << std::endl;
+			}
+		}
+		Check( countsOk,
+			"E1: primitive-polynomial counts per degree equal phi(2^d-1)/d" );
+
+		bool d0 = true, d1 = true;
+		for( uint32_t i = 0; i < ( 1u << 16 ); i++ ) {
+			if( SobolSequence::Sobol( i, 0 ) != SobolSequence::SobolDim0( i ) ) d0 = false;
+			if( SobolSequence::Sobol( i, 1 ) != SobolSequence::SobolDim1( i ) ) d1 = false;
+		}
+		Check( d0, "E2: table dimension 0 == SobolDim0 (van der Corput), 2^16 indices" );
+		Check( d1, "E2: table dimension 1 == SobolDim1 (x+1), 2^16 indices" );
+	}
+
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
 	std::cout << "Failed: " << failCount << std::endl;

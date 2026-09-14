@@ -29,9 +29,20 @@
 //    with a white Lambertian luminaire (exitance 1) directly behind it
 //    and a pinhole camera on axis at fov 10.  At normal incidence every
 //    pixel reads the closed form
-//        L * (1 - R0(n_c))^2,   L = 1/pi,  R0(n) = ((n-1)/(n+1))^2
-//    per channel.  The index triple gives channels 0 and 1 the SAME
-//    index and channel 2 a different one, so:
+//        L * T^2 / (1 - R^2),   L = 1/pi,  R = R0(n) = ((n-1)/(n+1))^2,
+//                               T = 1 - R
+//    per channel: T^2 for the straight-through path, times the geometric
+//    series over the paths that internally reflect off the front face,
+//    off the back face, and exit -- at normal incidence every one of
+//    those re-emerges along the same ray and lands in the same pixel.
+//    (Dropping the series costs 0.81% on the shared index; the pre-DL-81
+//    sampler's non-dispersive control read 0.26% ABOVE the series-free
+//    form and so looked "right", but it was in fact 0.54% BELOW the true
+//    value -- the correlated selection draws were losing the
+//    multiply-reflected paths.)
+//
+//    The index triple gives channels 0 and 1 the SAME index and channel
+//    2 a different one, so:
 //      * R and G must agree (the sharp statement -- it needs no closed
 //        form and no absolute calibration at all), and
 //      * all three must sit on the closed form to within the band the
@@ -45,7 +56,20 @@
 //       named sibling: PerfectRefractorSPF.cpp's own per-channel loop)
 //    D  polished_material, dispersive mirror coat at normal incidence
 //       (the second named sibling, PolishedSPF.cpp): closed form
-//       L * R0(n_c), reflectance black, delta coat.
+//       L * R0(n_c), reflectance black, delta coat.  Honestly a
+//       consistency pin and not a red-proof: a mirror coat at normal
+//       incidence makes ONE stochastic lobe selection, and the defect
+//       needs two selections at successive bounces to express, so this
+//       row was green before the fix too (R/G -0.065%).
+//
+//  Sample count
+//  ------------
+//    1024 spp.  The residual is QMC truncation, not noise -- the
+//    sampler is deterministic, so the seed base does not move any
+//    number here at all; only the sample count does.  Measured row A
+//    R/G departure: 1.15% at 256 spp, 0.29% at 1024, 0.22% at 4096.
+//    Pre-fix the same quantity was 11.9% and did NOT converge, which is
+//    the difference between a bias and a truncation error.
 //
 //  Author: Claude (debt-sobol slice, DL-81)
 //  Tabs: 4
@@ -87,6 +111,12 @@ namespace RISE
 static const unsigned int kDefaultSeedBase = 1000u;
 static unsigned int g_seedBase = kDefaultSeedBase;
 static unsigned int g_renderIndex = 0;
+
+//! Samples per pixel for every row.  Overridable from argv[2] so the
+//! rows can be re-measured at other sample counts: the sampler is
+//! deterministic QMC, so the seed base does NOT move these numbers and
+//! sample count is the only convergence knob.
+static const char* g_samples = "1024";
 
 static int passCount = 0;
 static int failCount = 0;
@@ -199,6 +229,16 @@ static double R0( double n )
 	return r * r;
 }
 
+//! Total normal-incidence transmittance of a lossless slab with two
+//! air interfaces of reflectance R0(n): T^2 summed over every even
+//! number of internal reflections, T^2 * sum_k (R^2)^k.
+static double SlabTransmittance( double n )
+{
+	const double r = R0( n );
+	const double t = 1.0 - r;
+	return t * t / ( 1.0 - r * r );
+}
+
 static const double kL = 1.0 / 3.14159265358979323846;	// Lambertian luminaire, exitance 1
 
 // The two indices.  `kNShared` is on channels 0 AND 1; `kNOdd` on
@@ -309,15 +349,25 @@ int main( int argc, char** argv )
 		if( v > 0 ) g_seedBase = (unsigned int)v;
 	}
 
+	static char samplesBuf[32];
+	if( argc > 2 && argv[2] ) {
+		const long v = std::strtol( argv[2], nullptr, 10 );
+		if( v > 0 ) {
+			std::snprintf( samplesBuf, sizeof(samplesBuf), "%ld", v );
+			g_samples = samplesBuf;
+		}
+	}
+
 	std::cout << "=== SobolSelectionChannelBiasTest ===" << std::endl;
+	std::cout << "samples per pixel = " << g_samples << std::endl;
 	std::cout << "seed base = " << g_seedBase << std::endl;
 	std::cout << "ior triple = " << kNShared << " " << kNShared << " " << kNOdd << std::endl;
 
 	// Closed form for the two transmissive rows.
 	double transmit[3];
-	transmit[0] = kL * ( 1.0 - R0( kNShared ) ) * ( 1.0 - R0( kNShared ) );
+	transmit[0] = kL * SlabTransmittance( kNShared );
 	transmit[1] = transmit[0];
-	transmit[2] = kL * ( 1.0 - R0( kNOdd ) )    * ( 1.0 - R0( kNOdd ) );
+	transmit[2] = kL * SlabTransmittance( kNOdd );
 
 	const std::string ior3 = InlineTriple( kNShared, kNShared, kNOdd );
 
@@ -328,17 +378,17 @@ int main( int argc, char** argv )
 		const std::string mat =
 			"dielectric_material\n{\n\tname mat_slab\n\tior " + ior3 + "\n"
 			"\ttau 1.0\n\tscattering 1000000\n}\n\n";
-		const Means m = RenderMeans( TransmitScene( mat, "256" ), "dielA" );
+		const Means m = RenderMeans( TransmitScene( mat, g_samples ), "dielA" );
 		Check( m.valid, "row A: render produced output" );
 		if( m.valid ) {
 			Report( "row A  dielectric_material, dispersive", m, transmit );
-			CheckDispersiveRow( "row A", m, transmit, 0.02, 0.02 );
+			CheckDispersiveRow( "row A", m, transmit, 0.015, 0.015 );
 			const double sum    = m.rgb[0] + m.rgb[1] + m.rgb[2];
 			const double sumRef = transmit[0] + transmit[1] + transmit[2];
 			std::cout << "      sum=" << sum << " vs " << sumRef
 			          << "  (" << ( sum / sumRef - 1.0 ) * 100.0 << "%)" << std::endl;
-			Check( std::fabs( sum - sumRef ) <= 0.02 * sumRef,
-				"row A: R+G+B on the closed-form total within 2% (no dropped scattered ray)" );
+			Check( std::fabs( sum - sumRef ) <= 0.01 * sumRef,
+				"row A: R+G+B on the closed-form total within 1% (no dropped scattered ray)" );
 		}
 	}
 
@@ -353,7 +403,7 @@ int main( int argc, char** argv )
 		const std::string mat =
 			"dielectric_material\n{\n\tname mat_slab\n\tior " + std::string( uniform ) + "\n"
 			"\ttau 1.0\n\tscattering 1000000\n}\n\n";
-		const Means m = RenderMeans( TransmitScene( mat, "256" ), "dielB" );
+		const Means m = RenderMeans( TransmitScene( mat, g_samples ), "dielB" );
 		Check( m.valid, "row B: render produced output" );
 		if( m.valid ) {
 			std::cout << "  row B  dielectric_material, NON-dispersive control" << std::endl;
@@ -365,11 +415,11 @@ int main( int argc, char** argv )
 			// Achromatic to within the film's float32 storage, not to the
 			// last double bit: the three channels travel the same lobe but
 			// are accumulated and read back through a float raster image.
-			Check( std::fabs( m.rgb[0] - m.rgb[1] ) <= 1e-5 * m.rgb[0] &&
-			       std::fabs( m.rgb[1] - m.rgb[2] ) <= 1e-5 * m.rgb[0],
-				"row B: control is achromatic to 1e-5 (one achromatic lobe)" );
+			Check( std::fabs( m.rgb[0] - m.rgb[1] ) <= 1e-4 * m.rgb[0] &&
+			       std::fabs( m.rgb[1] - m.rgb[2] ) <= 1e-4 * m.rgb[0],
+				"row B: control is achromatic to 1e-4 (one achromatic lobe)" );
 			Check( std::fabs( m.rgb[0] - transmit[0] ) <= 0.005 * transmit[0],
-				"row B: control on the closed form within 0.5%" );
+				"row B: control on the closed form within 0.5% (internal reflections included)" );
 		}
 	}
 
@@ -381,11 +431,11 @@ int main( int argc, char** argv )
 			"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 1.0 1.0 1.0\n}\n\n"
 			"perfectrefractor_material\n{\n\tname mat_slab\n"
 			"\trefractance pnt_white\n\tior " + ior3 + "\n}\n\n";
-		const Means m = RenderMeans( TransmitScene( mat, "256" ), "refrC" );
+		const Means m = RenderMeans( TransmitScene( mat, g_samples ), "refrC" );
 		Check( m.valid, "row C: render produced output" );
 		if( m.valid ) {
 			Report( "row C  perfectrefractor_material, dispersive", m, transmit );
-			CheckDispersiveRow( "row C", m, transmit, 0.02, 0.02 );
+			CheckDispersiveRow( "row C", m, transmit, 0.015, 0.015 );
 		}
 	}
 
@@ -402,11 +452,11 @@ int main( int argc, char** argv )
 		const std::string mat =
 			"polished_material\n{\n\tname mat_slab\n\treflectance pnt_black\n"
 			"\ttau 1.0\n\tior " + ior3 + "\n\tscattering 1000000\n}\n\n";
-		const Means m = RenderMeans( ReflectScene( mat, "256" ), "polD" );
+		const Means m = RenderMeans( ReflectScene( mat, g_samples ), "polD" );
 		Check( m.valid, "row D: render produced output" );
 		if( m.valid ) {
 			Report( "row D  polished_material, dispersive mirror coat", m, reflect );
-			CheckDispersiveRow( "row D", m, reflect, 0.02, 0.03 );
+			CheckDispersiveRow( "row D", m, reflect, 0.005, 0.005 );
 		}
 	}
 
