@@ -369,7 +369,14 @@ namespace
 			// (ManifoldSolver::ValidateChainPhysics) actually fires on
 			// photon-aided chains.  Without this slot, the validator would
 			// silently fall back to shading via its NEARZERO check.
-			v.geomNormal = ri.geometric.vGeomNormal;
+			// DL-70: store the TRUE, ray-INDEPENDENT outward normal, the
+			// same invariant `ManifoldVertex::geomNormal` carries -- the
+			// receiver-side reconstruction copies this field straight
+			// into a synthetic `RayIntersectionGeometric` whose
+			// `bGeomNormalOrientedToRay` defaults FALSE, so anything
+			// stored flipped would be republished as an unflipped normal
+			// and lie to any consumer that performs the recovery.
+			v.geomNormal = ri.geometric.UnflippedGeomNormal();
 			v.pObject   = ri.pObject;
 			v.pMaterial = ri.pMaterial;
 			// eta comes from the material's specular info at this vertex.
