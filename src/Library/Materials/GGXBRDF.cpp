@@ -249,8 +249,17 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	}
 
 	// Read roughness parameters, clamped to avoid division-by-zero in NDF
-	const Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
-	const Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
+	Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
+
+	// DL-62: widen by the same glossy-filter amount GGXSPF::Scatter/
+	// ScatterNM/Pdf/PdfNM already apply to their sampling/density
+	// roughness -- NEE evaluation and BSDF-sampled continuation must
+	// agree on which surface roughness is being rendered at this hit.
+	if( ri.glossyFilterWidth > 0 ) {
+		alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
+		alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 
 	// Half-vector and tangent-space projections
 	const Vector3 h = Vector3Ops::Normalize( v + r );
@@ -442,8 +451,15 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		return 0;
 	}
 
-	const Scalar alphaX = r_max( pAlphaX->GetValueAtNM(ri,nm), Scalar(1e-4) );
-	const Scalar alphaY = r_max( pAlphaY->GetValueAtNM(ri,nm), Scalar(1e-4) );
+	Scalar alphaX = r_max( pAlphaX->GetValueAtNM(ri,nm), Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValueAtNM(ri,nm), Scalar(1e-4) );
+
+	// DL-62: see the RGB value() path above -- keep in lockstep with
+	// GGXSPF::ScatterNM/PdfNM's widening.
+	if( ri.glossyFilterWidth > 0 ) {
+		alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
+		alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 
 	const Vector3 h = Vector3Ops::Normalize( v + r );
 	const Vector3 h_local(

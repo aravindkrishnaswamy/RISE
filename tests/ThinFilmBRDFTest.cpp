@@ -379,6 +379,42 @@ static bool TestSpectralExactness()
 	return s_fail == startFail;
 }
 
+// DL-64 (2026-09-13): the specular/MS lobe-selection weight is now the
+// mode's actual hemispherical Fresnel-weighted albedo
+// (GGXInterfaceFresnel::MeanNM), not raw F0/tint -- so, unlike before,
+// it DIFFERS between eFresnelThinFilmConductor and eFresnelConductor
+// even at the identical tint (a thin-film hemispherical average is not
+// the bare-substrate one).  Test B's kray ratio trick below assumed
+// pSpecSelect cancels between the TF/Cond twins the same way the
+// shared half-vector/G2/G1 do; it no longer does (to within the residual
+// left by the diffuse painter's ~2.5e-5 JH-black-uplift epsilon, a
+// separate out-of-scope gap -- see GGXSampleEvaluationConsistencyTest.cpp).
+// This mirrors GGXSPF::PdfNM's pSpecSelect formula exactly so the ratio
+// below can divide it back out and stay an exact (~1e-16) single-scatter
+// pin instead of drifting to ~1e-4.
+static Scalar ComputeGGXPSpecSelectNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wi,
+	const IPainter& diffusePainter,
+	const IPainter& specularPainter,
+	const IScalarPainter& iorPainter,
+	const IScalarPainter& extPainter,
+	const IScalarPainter* filmIor,
+	const IScalarPainter* filmExt,
+	const IScalarPainter* filmThk,
+	const FresnelMode mode,
+	const Scalar alphaEff,
+	const Scalar nm )
+{
+	const GGXInterfaceFresnel interfaceFresnel{ ri, mode, specularPainter, iorPainter, extPainter, filmIor, filmExt, filmThk };
+	const Scalar wd = GuardedGetColorNM( diffusePainter, ri, nm );
+	const Scalar ws = interfaceFresnel.MeanNM( nm );
+	const Scalar cosWi = Vector3Ops::Dot( wi, ri.onb.w() );
+	const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ) );
+	const Scalar total = wd + ws + wms;
+	return (total > Scalar(1e-10)) ? ws / total : Scalar(0);
+}
+
 // ============================================================
 //  Test B: ScatterNM ≡ valueNM thin-film term (twin consistency)
 // ============================================================
@@ -439,7 +475,18 @@ static bool TestTwinConsistency()
 			const Scalar Rcond = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, 1.0, kSubN, kSubK );
 			if( Rcond < 1e-12 ) continue;
 
-			const double gotRatio = krayTF / krayCond;	// (specColor*Rfilm*W)/(specColor*Rcond*W) = Rfilm/Rcond
+			// DL-64: pSpecSelect no longer cancels between the TF/Cond twins
+			// (see ComputeGGXPSpecSelectNM above) -- divide each kray back
+			// through its own pSpecSelect (recovering the shared
+			// F*G2/G1wi term) before ratioing, so only the true
+			// single-scatter Fresnel terms remain.
+			const Scalar pSelTF = ComputeGGXPSpecSelectNM( ri, v, *stk.diffuse, *stk.specular, *stk.ior, *stk.ext,
+				stk.filmIor, stk.filmExt, stk.filmThk, eFresnelThinFilmConductor, alpha, nm );
+			const Scalar pSelCond = ComputeGGXPSpecSelectNM( ri, v, *stk.diffuse, *stk.specular, *stk.ior, *stk.ext,
+				nullptr, nullptr, nullptr, eFresnelConductor, alpha, nm );
+			if( pSelTF < 1e-12 || pSelCond < 1e-12 ) continue;
+
+			const double gotRatio = ( krayTF * pSelTF ) / ( krayCond * pSelCond );	// (specColor*Rfilm*W)/(specColor*Rcond*W) = Rfilm/Rcond
 			const double expRatio = Rfilm / Rcond;
 			const double rel = std::fabs( gotRatio - expRatio ) / r_max( std::fabs( expRatio ), Scalar( 1e-9 ) );
 			if( rel > maxRel ) maxRel = rel;
