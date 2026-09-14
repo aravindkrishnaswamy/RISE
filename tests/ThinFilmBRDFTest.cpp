@@ -379,19 +379,21 @@ static bool TestSpectralExactness()
 	return s_fail == startFail;
 }
 
-// DL-64 (2026-09-13): the specular/MS lobe-selection weight is now the
-// mode's actual hemispherical Fresnel-weighted albedo
-// (GGXInterfaceFresnel::MeanNM), not raw F0/tint -- so, unlike before,
-// it DIFFERS between eFresnelThinFilmConductor and eFresnelConductor
-// even at the identical tint (a thin-film hemispherical average is not
-// the bare-substrate one).  Test B's kray ratio trick below assumed
-// pSpecSelect cancels between the TF/Cond twins the same way the
-// shared half-vector/G2/G1 do; it no longer does (to within the residual
-// left by the diffuse painter's ~2.5e-5 JH-black-uplift epsilon, a
-// separate out-of-scope gap -- see GGXSampleEvaluationConsistencyTest.cpp).
-// This mirrors GGXSPF::PdfNM's pSpecSelect formula exactly so the ratio
-// below can divide it back out and stay an exact (~1e-16) single-scatter
-// pin instead of drifting to ~1e-4.
+// DL-64 (2026-09-13) / P2-1 (2026-09-13 review follow-up): the
+// specular/MS lobe-selection weight is the mode's actual hemispherical
+// Fresnel-weighted albedo (GGXInterfaceFresnel::MeanNM) ONLY in
+// eFresnelSchlickF0 mode -- where raw F0 can be exactly 0 despite real
+// grazing energy.  eFresnelConductor and eFresnelThinFilmConductor keep
+// the pre-DL-64 raw-tint weight (never the defect: a zero tint there
+// legitimately zeroes the lobe, and paying MeanNM's LUT/Airy-quadrature
+// cost on every Scatter()/Pdf() call bought nothing -- see
+// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "Cost").  Consequently
+// pSpecSelect is IDENTICAL between the TF/Cond twins again (both derive
+// `ws` from the same raw tint sample), restoring the pre-DL-64 exact
+// cancellation Test B originally relied on -- this helper mirrors
+// GGXSPF::PdfNM's corrected formula so a future change to that formula
+// is caught here too, even though the division below is now an
+// identity in practice.
 static Scalar ComputeGGXPSpecSelectNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wi,
@@ -408,7 +410,9 @@ static Scalar ComputeGGXPSpecSelectNM(
 {
 	const GGXInterfaceFresnel interfaceFresnel{ ri, mode, specularPainter, iorPainter, extPainter, filmIor, filmExt, filmThk };
 	const Scalar wd = GuardedGetColorNM( diffusePainter, ri, nm );
-	const Scalar ws = interfaceFresnel.MeanNM( nm );
+	const Scalar ws = (mode == eFresnelSchlickF0)
+		? interfaceFresnel.MeanNM( nm )
+		: GuardedGetColorNM( specularPainter, ri, nm );
 	const Scalar cosWi = Vector3Ops::Dot( wi, ri.onb.w() );
 	const Scalar wms = ws * ( Scalar(1.0) - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ) );
 	const Scalar total = wd + ws + wms;

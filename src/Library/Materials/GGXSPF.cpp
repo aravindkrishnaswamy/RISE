@@ -171,17 +171,28 @@ void GGXSPF::Scatter(
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
 	// 3-lobe mixture weights: diffuse + specular + multiscatter.
-	// DL-64: the specular/MS lobe-selection weight is the lobe's actual
-	// hemispherical Fresnel-weighted albedo (GGXInterfaceFresnel::Mean),
-	// not raw F0 -- a Schlick lobe at F0=0 still has nonzero grazing
-	// reflectance (up to (1-cosTheta)^5), so pSpecSelect must not
-	// collapse to exactly zero and strand that energy unreachable by
-	// BSDF sampling.  Per-direction Fresnel evaluation inside the
-	// specular/MS branches below is unaffected: they read the painter's
-	// true F0/tint independently (see `specColor` in each branch).
+	// DL-64 / P2-1 (2026-09-13): the specular/MS lobe-selection weight
+	// `ws` must stay reachable at F0=0 -- but only eFresnelSchlickF0 has
+	// that failure mode (raw F0 can be exactly 0 while the Schlick
+	// grazing term (1-cosTheta)^5 is not).  eFresnelConductor and
+	// eFresnelThinFilmConductor already multiply a real physically
+	// computed Fresnel term by the painter TINT elsewhere (`specColor`);
+	// tint==0 legitimately means "no specular energy" there, so the raw
+	// tint is already a valid, cheap, always-correct selection weight for
+	// those two modes.  Calling interfaceFresnel.Mean()/MeanNM()
+	// unconditionally on EVERY Scatter()/Pdf() call was measured to cost
+	// an unconditional 21-tap MicrofacetEnergyLUT::ComputeFresnelAvg
+	// (conductor -- the parser DEFAULT) or a 21-node Gauss-Legendre
+	// quadrature over a 32-wavelength-step Airy thin-film evaluation
+	// (thin-film) -- see docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// "Cost".  Restrict the hemispherical-average path to Schlick mode
+	// only; the other two modes keep the pre-DL-64 raw-tint weight, which
+	// was never the defect.
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
-	const Scalar ws = ColorMath::MaxValue( interfaceFresnel.Mean() );
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0)
+		? ColorMath::MaxValue( interfaceFresnel.Mean() )
+		: ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
 	// H6: direction-aware MS selection weight -- the true MS albedo for
 	// THIS incident direction is F_ms*(1-Ess(cosWi)), not the
@@ -468,16 +479,21 @@ void GGXSPF::ScatterNM(
 
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-	// 3-lobe mixture weights.  DL-64: the specular/MS lobe-selection
-	// weight (`ws`) is the hemispherical Fresnel-weighted albedo
-	// (GGXInterfaceFresnel::MeanNM), not raw F0 -- see Scatter()'s twin
-	// comment.  `wsF0` keeps the true per-wavelength painter sample for
-	// the per-direction Fresnel evaluations below (specColor/F0), which
-	// are unaffected by this fix.
+	// 3-lobe mixture weights.  DL-64 / P2-1 (see Scatter()'s twin comment):
+	// `ws` uses the hemispherical Fresnel-weighted albedo
+	// (GGXInterfaceFresnel::MeanNM) ONLY in eFresnelSchlickF0 mode, where
+	// raw F0 can collapse to exactly zero despite real grazing energy.
+	// eFresnelConductor / eFresnelThinFilmConductor keep the pre-DL-64
+	// raw-tint weight (`wsF0`) -- calling MeanNM unconditionally there
+	// costs a 21-tap LUT average or a 21-node x 32-wavelength Airy
+	// quadrature on every call for no correctness benefit.  `wsF0` also
+	// remains the true per-wavelength painter sample for the
+	// per-direction Fresnel evaluations below (specColor/F0), which are
+	// unaffected by this fix.
 	const Scalar wd = GuardedGetColorNM( *pDiffuse, ri, nm );
 	const Scalar wsF0 = GuardedGetColorNM( *pSpecular, ri, nm );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const Scalar ws = interfaceFresnel.MeanNM( nm );
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : wsF0;
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
@@ -739,14 +755,18 @@ Scalar GGXSPF::Pdf(
 	}
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-	// 3-lobe mixture PDF weighted by painter albedos.  DL-64: `ws` is the
-	// hemispherical Fresnel-weighted albedo (see Scatter()'s twin
-	// comment), matching the mixture Scatter() actually samples from --
-	// otherwise this reported density would disagree with the sampler
-	// it is meant to describe (MIS / SPFPdfConsistencyTest).
+	// 3-lobe mixture PDF weighted by painter albedos.  DL-64 / P2-1: `ws`
+	// matches the mixture Scatter() actually samples from -- the
+	// hemispherical Fresnel-weighted albedo ONLY in eFresnelSchlickF0
+	// mode (see Scatter()'s twin comment for why the other two modes keep
+	// the cheap raw-tint weight); otherwise this reported density would
+	// disagree with the sampler it is meant to describe (MIS /
+	// SPFPdfConsistencyTest).
 	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const Scalar ws = ColorMath::MaxValue( interfaceFresnel.Mean() );
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0)
+		? ColorMath::MaxValue( interfaceFresnel.Mean() )
+		: ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
 	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ));
@@ -796,13 +816,13 @@ Scalar GGXSPF::PdfNM(
 	}
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-	// 3-lobe mixture PDF weighted by per-wavelength albedos.  DL-64: `ws`
-	// is the hemispherical Fresnel-weighted albedo (see ScatterNM()'s
-	// twin comment), matching the mixture ScatterNM() actually samples
-	// from.
+	// 3-lobe mixture PDF weighted by per-wavelength albedos.  DL-64 /
+	// P2-1: `ws` matches the mixture ScatterNM() actually samples from --
+	// the hemispherical Fresnel-weighted albedo ONLY in eFresnelSchlickF0
+	// mode (see ScatterNM()'s twin comment).
 	const Scalar wd = GuardedGetColorNM( *pDiffuse, ri, nm );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const Scalar ws = interfaceFresnel.MeanNM( nm );
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : GuardedGetColorNM( *pSpecular, ri, nm );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
 	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ));
