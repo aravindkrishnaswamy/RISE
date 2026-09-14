@@ -708,6 +708,180 @@ static void TestHairIsNotAnEnclosure()
 	front->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 5 (DL-76): a SINGLE Object built from two disjoint open
+//  pieces straddling the seed on opposite sides of one axis, each
+//  piece's normal facing AWAY from the seed, must not be mistaken for
+//  an enclosure -- even though the per-object reverse-probe rule
+//  (sub-test 3 / P2-4) sees the SAME `pObj` register a positive-parity
+//  "exit" in BOTH probe directions.
+//
+//  THE RESIDUAL THIS TEST GUARDS AGAINST
+//
+//    P2-4's rule requires positive parity along a probe AND its
+//    reverse, keyed by object identity.  A single mesh `Object` with
+//    TWO disjoint quads -- one above the seed at z=+3 with normal +Z
+//    (away from the seed), one below at z=-3 with normal -Z (also away
+//    from the seed) -- presents exactly the pattern the rule accepts:
+//    the +Z probe crosses the top quad (an "exit" for that pObj), and
+//    the -Z probe crosses the BOTTOM quad (also an "exit" for the SAME
+//    pObj, since both quads belong to one mesh/Object).  Both
+//    directions report positive parity for the identical object
+//    pointer, so the P2-4 confirmation alone falsely declares the seed
+//    contained -- even though the seed sits in open air between two
+//    unconnected sheets.
+//
+//  THE FIX (this slice)
+//
+//    `IsConfirmedAlongAxis` (IORStackSeeding.h) extends the vote to the
+//    two OTHER principal axes (X, Y) for whichever object the Z pair
+//    already accepts.  Both blades lie entirely in their own z=const
+//    plane spanning a BOUNDED x/y extent, so a probe along X or Y from
+//    the origin travels through z=0 forever and crosses neither blade
+//    -- that axis reports zero parity for the object, and the
+//    unanimity vote rejects it.  A genuinely closed enclosure (the
+//    positive control reused from sub-test 3, a closed box) agrees
+//    along every axis by construction and is unaffected.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	//! ONE mesh containing TWO disjoint open quads: one at z=+zAbs with
+	//! normal +Z (away from a seed at the origin), one at z=-zAbs with
+	//! normal -Z (also away from the seed) -- the two-blade counterexample
+	//! to the per-object reverse-probe rule.
+	TriangleMeshGeometryIndexed* BuildTwoDisjointAwayFacingBlades( Scalar zAbs )
+	{
+		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( /*bDoubleSided*/false, false );
+		mesh->BeginIndexedTriangles();
+		unsigned int next = 0;
+		for( int blade = 0; blade < 2; blade++ ) {
+			const Scalar z = ( blade == 0 ) ? zAbs : -zAbs;
+			const Scalar normalZ = ( blade == 0 ) ? 1.0 : -1.0;	// away from the origin either way
+			const Vector3 nrm( 0, 0, normalZ );
+			const unsigned int base = next;
+			for( int sx = -1; sx <= 1; sx += 2 ) {
+				for( int sy = -1; sy <= 1; sy += 2 ) {
+					mesh->AddVertex( Point3( 4.0*sx, 4.0*sy, z ) );
+					mesh->AddNormal( nrm );
+					mesh->AddTexCoord( Point2( 0, 0 ) );
+				}
+			}
+			IndexedTriangle t1, t2;
+			t1.iVertices[0] = base+0; t1.iVertices[1] = base+1; t1.iVertices[2] = base+2;
+			t2.iVertices[0] = base+1; t2.iVertices[1] = base+3; t2.iVertices[2] = base+2;
+			for( int k = 0; k < 3; k++ ) {
+				t1.iNormals[k] = t1.iVertices[k]; t1.iCoords[k] = t1.iVertices[k];
+				t2.iNormals[k] = t2.iVertices[k]; t2.iCoords[k] = t2.iVertices[k];
+			}
+			mesh->AddIndexedTriangle( t1 );
+			mesh->AddIndexedTriangle( t2 );
+			next += 4;
+		}
+		mesh->DoneIndexedTriangles();
+		return mesh;
+	}
+}
+
+static void TestTwoDisjointOpenSurfacesOfSameObjectIsNotAnEnclosure()
+{
+	std::cout << "Sub-test 5: two disjoint away-facing blades of the SAME object is not containment (DL-76)" << std::endl;
+
+	UniformColorPainter* front = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  front->addref();
+	UniformColorPainter* tau = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  tau->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter( 0.0 );  ext->addref();
+	UniformScalarPainter* phongN = new UniformScalarPainter( 1.0 );  phongN->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 0.3 );  scat->addref();
+	TranslucentMaterial* material = new TranslucentMaterial( *front, *tau, *ext, *phongN, *scat );
+	material->addref();
+
+	TriangleMeshGeometryIndexed* bladesGeom = BuildTwoDisjointAwayFacingBlades( 3.0 );
+	Object* blades = new Object( bladesGeom );
+	safe_release( bladesGeom );
+	blades->FinalizeTransformations();
+	blades->AssignMaterial( *material );
+
+	// Closed single-sided translucent box centred at z = 20 (reused
+	// pattern from sub-test 3): positive control in the SAME scene,
+	// confirming the extra X/Y votes did not just disable seeding.
+	TriangleMeshGeometryIndexed* boxGeom = BuildClosedBox( 20.0 );
+	Object* box = new Object( boxGeom );
+	safe_release( boxGeom );
+	box->FinalizeTransformations();
+	box->AssignMaterial( *material );
+
+	ObjectManager* manager = new ObjectManager( false, false, 4, 8 );
+	manager->addref();
+	manager->AddItem( blades, "two_disjoint_blades" );
+	manager->AddItem( box, "closed_translucent_box" );
+
+	Scene* scene = new Scene();
+	scene->addref();
+	scene->SetObjectManager( manager );
+
+	// Fixture sanity: BOTH the +Z and -Z probes really do hit the SAME
+	// object (`blades`), each reading its crossing as an "exit" --
+	// exactly the pattern that fools the Z-only reverse-probe rule, so
+	// this fixture is a genuine red-proof against that rule alone.
+	for( int s = 0; s < 2; s++ ) {
+		const Vector3 dir( 0, 0, s ? -1.0 : 1.0 );
+		RayIntersection ri( Ray( Point3(0,0,0), dir ), nullRasterizerState );
+		scene->GetObjects()->IntersectRay( ri, true, true, false );
+		Check( ri.geometric.bHit && ri.pObject == blades,
+			s ? "(K) fixture sanity: the -Z probe hits the bottom blade" : "(K) fixture sanity: the +Z probe hits the top blade" );
+		if( ri.geometric.bHit ) {
+			const Vector3 trueN = ri.geometric.bGeomNormalOrientedToRay
+				? -ri.geometric.vGeomNormal : ri.geometric.vGeomNormal;
+			Check( Vector3Ops::Dot( trueN, dir ) > 0,
+				"(K) fixture sanity: that hit reads as an EXIT crossing in both directions" );
+		}
+	}
+	// X and Y probes must cross NEITHER blade (both lie in a bounded
+	// x/y extent within their own z=const plane) -- confirming the
+	// extra votes actually have signal to reject on, not a probe that
+	// happens to graze something else.
+	{
+		const Vector3 axes[2] = { Vector3(1,0,0), Vector3(0,1,0) };
+		for( int a = 0; a < 2; a++ ) {
+			for( int s = -1; s <= 1; s += 2 ) {
+				RayIntersection ri( Ray( Point3(0,0,0), axes[a] * static_cast<Scalar>(s) ), nullRasterizerState );
+				scene->GetObjects()->IntersectRay( ri, true, true, false );
+				Check( !( ri.geometric.bHit && ri.pObject == blades ),
+					"(K) fixture sanity: an X/Y probe from the origin does not cross either blade" );
+			}
+		}
+	}
+
+	// (L) Money assertion: the seed between two disjoint away-facing
+	// blades of the same object is not seeded.
+	{
+		IORStack stack( 1.0 );
+		IORStackSeeding::SeedFromPoint( stack, Point3(0,0,0), *scene );
+		Check( stack.topObject() == 0 && std::fabs( stack.top() - 1.0 ) < 1e-9,
+			"(L) DL-76 money assertion: a point between two disjoint away-facing blades "
+			"of the SAME object is not seeded" );
+	}
+
+	// (M) Positive control: the closed box in the same scene is still seeded.
+	{
+		IORStack stack( 1.0 );
+		IORStackSeeding::SeedFromPoint( stack, Point3(0,0,20), *scene );
+		Check( stack.topObject() == box,
+			"(M) positive control: a point inside the CLOSED translucent box is still seeded "
+			"(the extra X/Y votes did not just disable seeding)" );
+	}
+
+	manager->release();
+	scene->release();
+	blades->release();
+	box->release();
+	material->release();
+	scat->release();
+	phongN->release();
+	ext->release();
+	tau->release();
+	front->release();
+}
+
 int main()
 {
 	GlobalLog();
@@ -733,6 +907,7 @@ int main()
 				TestFirstCrossing( *pScene );
 					TestOpenTranslucentGeometryIsNotAnEnclosure();
 					TestHairIsNotAnEnclosure();
+					TestTwoDisjointOpenSurfacesOfSameObjectIsNotAnEnclosure();
 			}
 			safe_release( pJob );
 		}

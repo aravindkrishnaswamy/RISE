@@ -280,6 +280,61 @@ namespace RISE
 			return count;
 		}
 
+		// DL-76: a single axis's forward+reverse probe PAIR is only a
+		// containment test for a surface that is closed ALONG THAT AXIS.
+		// A single `Object` built from two disjoint open pieces that
+		// straddle the seed point on opposite sides of one axis, each
+		// piece's normal facing away from the seed (e.g. a two-blade
+		// louvre mesh with one blade above and one below along Z, both
+		// part of the same triangle mesh `Object`), independently
+		// registers an "exit" for that ONE `pObj` in both the forward AND
+		// the reverse probe along that axis -- the per-object identity
+		// check in `SeedFromPoint` below cannot distinguish that from a
+		// genuine enclosure, because both probes really do see the same
+		// object with positive parity.  Extending the vote to a SECOND,
+		// non-coplanar axis rejects that specific counterexample: the two
+		// blades lie in the plane perpendicular to the axis they straddle,
+		// so a probe along either OTHER principal axis is coplanar with
+		// both blades and (barring a coincidental edge-on hit) crosses
+		// neither -- that axis then reports zero parity for the object,
+		// failing the unanimity vote.  A genuinely closed manifold agrees
+		// along every direction by construction, so this is a no-op for
+		// the enclosures the mechanism targets.
+		//
+		// Returns true iff `pObj` shows positive parity along BOTH `axis`
+		// and its reverse, exactly like the inline Z-axis check in
+		// `SeedFromPoint` -- factored out so it can be reused for the
+		// additional X/Y votes without duplicating the probe/scan logic.
+		inline bool IsConfirmedAlongAxis(
+			const IObjectManager* pObjects,
+			const Point3& pos,
+			const IObject* pObj,
+			const Vector3& axis
+			)
+		{
+			ProbeEntry fwd[kMaxNestingDepth];
+			const std::size_t fwdCount = TallyProbe( pObjects, pos, axis, fwd );
+			bool fwdPositive = false;
+			for( std::size_t i = 0; i < fwdCount; i++ ) {
+				if( fwd[i].pObj == pObj && fwd[i].parity > 0 ) {
+					fwdPositive = true;
+					break;
+				}
+			}
+			if( !fwdPositive ) {
+				return false;
+			}
+
+			ProbeEntry rev[kMaxNestingDepth];
+			const std::size_t revCount = TallyProbe( pObjects, pos, -axis, rev );
+			for( std::size_t i = 0; i < revCount; i++ ) {
+				if( rev[i].pObj == pObj && rev[i].parity > 0 ) {
+					return true;
+				}
+			}
+			return false;
+		}
+
 		/// Populate `stack` with the dielectric objects that physically
 		/// contain `pos`, so that subsequent scatters at the first
 		/// enclosing boundary see bFromInside==true.
@@ -337,15 +392,28 @@ namespace RISE
 			// overwhelmingly common "not inside anything" call costs
 			// exactly what it did before.
 			//
-			// LIMIT, documented rather than papered over: a configuration
-			// of SEVERAL open surfaces that happens to present an
-			// away-facing sheet in BOTH directions (e.g. two parallel
-			// cards straddling the seed, normals pointing outward) still
-			// reads as containment.  Deciding that correctly needs real
-			// solid-angle / winding-number containment, not a pair of
-			// probes; this rule removes the single-open-surface false
-			// positive, which is the one open-geometry authors actually
-			// build.
+			// DL-76 (this rule's own documented residual, closed below):
+			// a single-axis pair alone still cannot tell a genuine
+			// enclosure from a SINGLE Object built out of several open
+			// pieces that straddle the seed on opposite sides of just
+			// that one axis, each piece's normal facing away from the
+			// seed (e.g. a two-blade louvre mesh, one blade above and one
+			// below along Z, both part of the same triangle mesh Object)
+			// -- both probes independently see an "exit" for that one
+			// pObj, so the same-object confirmation above accepts it.
+			// The vote below extends confirmation to the two OTHER
+			// principal axes (X, Y) for whichever objects the Z pair
+			// already accepts: a probe along an axis coplanar with a flat
+			// pair of blades crosses neither, so the false positive is
+			// caught by requiring ALL THREE axes to agree.  This is a
+			// closed manifold's natural behaviour (it agrees along every
+			// direction, so the extra votes are a no-op there); it is a
+			// bounded, cheap improvement — not a general winding-number /
+			// solid-angle containment test — so an adversarial Object
+			// deliberately built from open pieces straddling the seed
+			// along all three principal axes at once would still fool
+			// it.  See docs/DEBT_LEDGER.md DL-76 and
+			// docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the accepted scope.
 			ProbeEntry reverse[kMaxNestingDepth];
 			std::size_t reverseCount = 0;
 			bool anyCandidate = false;
@@ -383,6 +451,15 @@ namespace RISE
 					}
 				}
 				if( !confirmed ) {
+					continue;
+				}
+				// DL-76: the Z pair alone cannot distinguish a genuine
+				// enclosure from two disjoint open pieces of the SAME
+				// Object straddling the seed along Z (see the comment
+				// above).  Require the two other principal axes to
+				// independently confirm this exact object too.
+				if( !IsConfirmedAlongAxis( pObjects, pos, containing[i].pObj, Vector3( 1, 0, 0 ) ) ||
+					!IsConfirmedAlongAxis( pObjects, pos, containing[i].pObj, Vector3( 0, 1, 0 ) ) ) {
 					continue;
 				}
 				// Insert into ordered[] keeping descending firstExitStep.

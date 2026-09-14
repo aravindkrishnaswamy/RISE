@@ -138,6 +138,22 @@ boundary, not bias.
    These were latent on the BDPT/VCM paths since the helper's
    introduction; closed-boundary scenes (like the jellyfish water box)
    are handled exactly.
+   **UPDATE (2026-09-14, DL-76 closure, debt-misc slice)**: the
+   single-open-surface false positive described above was closed by a
+   later slice's P2-4 fix (require positive parity along the probe AND
+   its reverse — see `IORStackSeeding.h`'s own doc comment and
+   `docs/DEBT_LEDGER.md` DL-46).  A narrower residual DL-46 opened
+   (DL-76) — a SINGLE `Object` built from two disjoint open pieces
+   straddling the seed on opposite sides of one axis, both pieces
+   facing away from the seed — was closed this pass by extending the
+   vote to the two other principal axes
+   (`IORStackSeeding::IsConfirmedAlongAxis`); see the DL-76 row for the
+   accepted residual (an adversarial object built from open pieces
+   straddling the seed along all three principal axes at once would
+   still fool the vote — this is a bounded improvement, not a general
+   winding-number/solid-angle containment test).  The fixed-`+Z`-only
+   probe direction and grazing-tangent-accumulation limitations in this
+   item are UNCHANGED by that work.
 7. **Photon-map flux is quadratic in luminaire area** (`power =
    E·area·scale` AND photon-count allocation ∝ `E·area`), so a scaled
    emitter's photon-map contribution moves by s⁴ where NEE moves by s².
