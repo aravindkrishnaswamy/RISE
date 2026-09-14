@@ -1049,6 +1049,311 @@ static void RunIorStackRow()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Rows (h) and (i): the ZERO-AGGREGATE-PDF WEDGE (DL-74 P2-2).
+//
+// THE REGION.  `StackAwareSPF`'s inside-the-dielectric lobe samples
+// uniformly over the hemisphere about a TILTED axis
+// `a = normalize(N + (0,1,0))` (45 degrees off `N`), and its `Pdf`
+// returns exactly 0 outside that hemisphere.  The BRDF, though, is the
+// albedo-1 Lambertian over the WHOLE upper hemisphere.  So the lune
+//
+//     W = { w : dot(w,N) > 0  and  dot(w,a) <= 0 }
+//
+// is a set of directions that
+//   * carry a NONZERO BSDF value and pass every horizon gate, so NEE
+//     samples them and takes their contribution, and
+//   * have `p_aggregate(w) == 0`, so the material's OWN sampler never
+//     proposes them -- but the GUIDE does, and the guided mixture
+//     `alpha*guide + (1-alpha)*p_agg` therefore has positive density
+//     there and the continuation really is traced into W.
+//
+// WHAT WAS BROKEN.  Both MIS sides treated `p_aggregate == 0` as "the
+// BSDF-sampling technique never generates this direction, so NEE takes
+// the whole sample": `PTGuidingMisPdf::Eval` returned 0 unchanged, and
+// the four `LightSampler` NEE arms ran the blend INSIDE their
+// `pdf > 0` gate so the hook was not even consulted.  For every
+// direction in W that gave `w_nee = 1` AND `w_bsdf = 1` -- the two
+// halves of one partition both claiming the whole sample -- so W's
+// energy was counted TWICE.
+//
+// WHY TWO ROWS.  The two MIS pairs are independent code: row (h) is
+// env-NEE against the env ESCAPE weight, row (i) is area-NEE against
+// the EMITTER-HIT weight, and each has its own `p_bsdf > 0` gate.
+// (The NM twins of both arms take the identical edit; no NM driver
+// exists in this harness.)
+//
+// THE CLOSED FORMS, and why W does not disturb them.  MIS is unbiased
+// for ANY weights that partition to one, over any sampling densities
+// that cover their own integrand -- which both do here (the env
+// sampler covers the sphere; the mixture covers W through its guide
+// term).  So row (h) is still the albedo-1 white furnace `L_env`, and
+// row (i) is still the spherical-emitter form factor below.
+//
+// THE PREDICTED PRE-FIX ERROR is the wedge integral counted a second
+// time.  Both estimators are unbiased for their own weighted integral,
+// so the pre-fix mean is
+//
+//     INTEGRAL_upper f L  +  INTEGRAL_W f L
+//
+// and the excess is W's COSINE-WEIGHTED share of the upper hemisphere.
+// For a hemisphere clipped by a plane tilted by `phi` that share is
+// `(1 - cos(phi)) / 2` (the complement of Malley's-method disk
+// projection, the same closed form `TranslucentSPF::ExitValidFraction`
+// uses), so at `phi = 45 deg`:
+//
+//     row (h):  (1 - cos(45 deg)) / 2 = 14.6 %  of L_env
+//     row (i):  100 %  -- the emitter lies ENTIRELY inside W, so the
+//               whole of its contribution is the doubled part
+//
+// MEASURED on the pre-fix library (commit 0860f78f): row (i) reads
+// +100.354 %, dead on its closed form.  Row (h) reads +10.57 % at this
+// row's 160k samples and +12.23 % at 640k -- an under-converged
+// estimate of the 14.6 %, because the guide is a narrow cos^64 lobe
+// sitting INSIDE a 45-degree-wide lune, so the pre-fix escape side's
+// own estimate of `INTEGRAL_W f L` is heavy-tailed.  The assertions
+// below are against the CLOSED FORMS, never against those figures.
+//
+//////////////////////////////////////////////////////////////////////
+
+//! A direction inside the wedge: above the surface horizon
+//! (`dot(.,+Z) > 0`) and below the tilted sampling hemisphere
+//! (`dot(., a) < 0`).  30 degrees of elevation puts it 15 degrees clear
+//! of the wedge's own boundary, which is what lets row (i)'s emitter fit
+//! ENTIRELY inside W.
+static Vector3 WedgeDirection()
+{
+	return Vector3Ops::Normalize( Vector3( 0.0, -0.8660254, 0.5 ) );
+}
+
+//! Deterministic premise for both rows: the wedge really is the region
+//! the comment claims -- nonzero BRDF support, zero aggregate pdf, and
+//! positive guide density.  No sampling, no render.
+static void WedgePremise( const IMaterial& stackMat, PathGuidingField& guide,
+	const IObject* enclosing )
+{
+	const RasterizerState rast{};
+	RayIntersectionGeometric ri( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
+	ri.bHit = true;
+	ri.range = 1;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( ri.vNormal );
+
+	IORStack inside( 1.0 );
+	inside.SetCurrentObject( enclosing );
+	inside.push( kInsideIOR );
+
+	const Vector3 w = WedgeDirection();
+	Check( Vector3Ops::Dot( w, ri.vNormal ) > 0,
+		"wedge premise: the probe direction is ABOVE the surface horizon" );
+
+	const ISPF* pSPF = stackMat.GetSPF();
+	Check( pSPF != 0, "wedge premise: the stack-aware material has an SPF" );
+	if( !pSPF ) return;
+
+	const Scalar pWedge = pSPF->Pdf( ri, w, inside );
+	// Control: the tilted axis itself, which the same lobe DOES sample.
+	const Vector3 axis = Vector3Ops::Normalize(
+		Vector3( 0, 0, 1 ) + Vector3( 0, kStackAwareTilt, 0 ) );
+	const Scalar pAxis = pSPF->Pdf( ri, axis, inside );
+	std::cout << "    wedge premise: p_aggregate(wedge) = " << pWedge
+		<< " , p_aggregate(tilted axis) = " << pAxis << std::endl;
+	Check( pWedge == 0, "wedge premise: the material's aggregate pdf is EXACTLY zero in the wedge" );
+	Check( pAxis > 0, "wedge premise: the same lobe has positive pdf on its own axis" );
+
+	GuidingDistributionHandle h;
+	const bool ok = guide.InitDistribution( h, Point3( 0, 0, 0 ), 0.5 );
+	Check( ok, "wedge premise: the guiding distribution initialises at the shading point" );
+	if( ok ) {
+		const Scalar g = guide.Pdf( h, w );
+		std::cout << "    wedge premise: guide pdf in the wedge = " << g << std::endl;
+		Check( g > 0,
+			"wedge premise: the GUIDE reaches the wedge, so the mixture density there is positive" );
+	}
+}
+
+// Row (h): env-NEE against the env escape, guide aimed INTO the wedge.
+static void RunZeroAggregateEnvRow()
+{
+	std::cout << "DL-74 P2-2: a zero AGGREGATE pdf is not a zero MIXTURE pdf (env arm)"
+		<< std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "wedgeenv" ), "wedge-env fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const IRadianceMap* pGlobal = fx.pScene->GetGlobalRadianceMap();
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+	Check( pGlobal != 0 && pLS != 0, "wedge-env fixture has a radiance map and a LightSampler" );
+	if( !pGlobal || !pLS ) return;
+	const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+	Check( pES != 0 && pES->IsValid(), "wedge-env fixture has a valid EnvironmentSampler" );
+	if( !pES || !pES->IsValid() ) return;
+
+	const RasterizerState rast{};
+	const Ray probe( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+	const Scalar Lenv = ColorMath::MaxValue( pGlobal->GetRadiance( probe, rast ) );
+	if( Lenv <= 0 ) { Check( false, "wedge-env fixture env radiance is positive" ); return; }
+
+	UniformColorPainter* whiteP = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( whiteP, __FILE__, __LINE__, "white" );
+	StackAwareLambertianMaterial* stackMat = new StackAwareLambertianMaterial( *whiteP );
+	GlobalLog()->PrintNew( stackMat, __FILE__, __LINE__, "stack-aware furnace material" );
+	StubObject* enclosing = new StubObject();
+	GlobalLog()->PrintNew( enclosing, __FILE__, __LINE__, "enclosing dielectric" );
+
+	PathGuidingField* guide = BuildSkewedField( Point3( 0, 0, 0 ), WedgeDirection() );
+	Check( guide->IsTrained(), "(h) wedge-aimed guiding field is trained" );
+
+	WedgePremise( *stackMat, *guide, enclosing );
+
+	const unsigned int kN = 160000;
+
+	{
+		RowConfig cfg{ "(h) control", false, false, false, eGuidingOneSampleMIS, 0.0 };
+		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 12000, enclosing );
+		CheckRel( m, Lenv, 0.015,
+			"(h) CONTROL guiding OFF: the wedge is unreachable by the BSDF technique and the furnace reads L_env" );
+	}
+
+	{
+		RowConfig cfg{ "(h)", false, false, false, eGuidingOneSampleMIS, 0.5 };
+		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 13000, enclosing );
+		std::cout << "    (h) guided " << m << " vs L_env " << Lenv
+			<< "  (pre-fix: the doubled wedge integral, 14.6 % of L_env)" << std::endl;
+		CheckRel( m, Lenv, 0.015,
+			"(h) guide aimed into the zero-aggregate wedge: furnace still reads L_env" );
+	}
+
+	guide->release();
+	enclosing->release();
+	stackMat->release();
+	whiteP->release();
+}
+
+// Row (i): area-NEE against the emitter hit, with the emitter placed
+// ENTIRELY inside the wedge.
+static const Scalar kWedgeSphereRadius = 1.0;
+static const Scalar kWedgeSphereDist   = 5.0;
+
+static std::string WedgeAreaLightScene()
+{
+	const Vector3 w = WedgeDirection();
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_luminaire_material\n{\n\tname emitter\n\texitance white\n"
+		"\tscale 4.0\n\tmaterial none\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname lightball\n\tradius " << kWedgeSphereRadius << "\n}\n"
+		"\n"
+		"standard_object\n{\n\tname light_object\n\tgeometry lightball\n"
+		"\tmaterial emitter\n\tposition "
+			<< w.x * kWedgeSphereDist << " "
+			<< w.y * kWedgeSphereDist << " "
+			<< w.z * kWedgeSphereDist << "\n}\n"
+		"\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
+		"\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 -3\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n"
+		"\n";
+	return ss.str();
+}
+
+static void RunZeroAggregateAreaRow()
+{
+	std::cout << "DL-74 P2-2: a zero AGGREGATE pdf is not a zero MIXTURE pdf (area arm)"
+		<< std::endl;
+
+	Fixture fx;
+	Check( fx.Build( WedgeAreaLightScene(), "wedgearea" ), "wedge-area fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	Check( fx.pScene->GetGlobalRadianceMap() == 0,
+		"wedge-area fixture has NO env map (so only the area-light MIS pair is exercised)" );
+
+	const RasterizerState rast{};
+	const Vector3 w = WedgeDirection();
+	Scalar Le = 0;
+	{
+		RayIntersection probe( Ray( Point3( 0, 0, 0 ), w ), rast );
+		fx.pScene->GetObjects()->IntersectRay( probe, true, true, false );
+		Check( probe.geometric.bHit && probe.pMaterial != 0,
+			"wedge-area fixture: the emissive sphere is hit along the wedge direction" );
+		if( !probe.geometric.bHit || !probe.pMaterial ) return;
+		IEmitter* pEm = probe.pMaterial->GetEmitter();
+		Check( pEm != 0, "wedge-area fixture: the sphere carries an emitter" );
+		if( !pEm ) return;
+		Le = ColorMath::MaxValue( pEm->emittedRadiance(
+			probe.geometric, -probe.geometric.ray.Dir(), probe.geometric.vNormal ) );
+		Check( Le > 0, "wedge-area fixture: emitted radiance probe is positive" );
+		if( Le <= 0 ) return;
+	}
+
+	// Closed form for a uniform-radiance sphere of angular radius
+	// `alpha = asin(R/d)` whose centre sits at polar angle `beta` from
+	// the shading normal and which lies ENTIRELY above the horizon
+	// (`alpha + beta < 90 deg`): the projected solid angle is
+	// `PI * sin^2(alpha) * cos(beta)` (the differential-element-to-sphere
+	// form factor `(R/d)^2 cos(beta)`), so for an albedo-1 Lambertian
+	//
+	//     L_out = L_e * (R/d)^2 * cos(beta)
+	//
+	// Here alpha = asin(1/5) = 11.54 deg and beta = 60 deg (the wedge
+	// direction's elevation is 30 deg), so alpha + beta = 71.5 deg: the
+	// sphere clears the horizon, and it also clears the wedge's own
+	// boundary, which is 15 deg away.
+	const Scalar cosBeta = Vector3Ops::Dot( w, Vector3( 0, 0, 1 ) );
+	const Scalar expected = Le * ( kWedgeSphereRadius * kWedgeSphereRadius ) /
+		( kWedgeSphereDist * kWedgeSphereDist ) * cosBeta;
+
+	UniformColorPainter* whiteP = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( whiteP, __FILE__, __LINE__, "white" );
+	StackAwareLambertianMaterial* stackMat = new StackAwareLambertianMaterial( *whiteP );
+	GlobalLog()->PrintNew( stackMat, __FILE__, __LINE__, "stack-aware furnace material" );
+	StubObject* enclosing = new StubObject();
+	GlobalLog()->PrintNew( enclosing, __FILE__, __LINE__, "enclosing dielectric" );
+
+	PathGuidingField* guide = BuildSkewedField( Point3( 0, 0, 0 ), w );
+	Check( guide->IsTrained(), "(i) wedge-aimed guiding field is trained" );
+
+	WedgePremise( *stackMat, *guide, enclosing );
+
+	const unsigned int kN = 200000;
+
+	// Control: guiding OFF.  The tilted lobe cannot sample the wedge at
+	// all, so the emitter is reachable ONLY by NEE -- which is exactly
+	// the "no BSDF-side partner" case, and weight 1 is then correct.
+	{
+		RowConfig cfg{ "(i) control", false, false, false, eGuidingOneSampleMIS, 0.0 };
+		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 14000, enclosing );
+		CheckRel( m, expected, 0.02,
+			"(i) CONTROL guiding OFF: NEE alone reads L_e*(R/d)^2*cos(beta)" );
+	}
+
+	{
+		RowConfig cfg{ "(i)", false, false, false, eGuidingOneSampleMIS, 0.9 };
+		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 15000, enclosing );
+		std::cout << "    (i) guided " << m << " vs expected " << expected
+			<< "  (pre-fix: the emitter is entirely inside the wedge, so +100 %)" << std::endl;
+		CheckRel( m, expected, 0.02,
+			"(i) emitter entirely inside the zero-aggregate wedge: area-NEE and the emitter hit still partition to 1" );
+	}
+
+	guide->release();
+	enclosing->release();
+	stackMat->release();
+	whiteP->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 // Row (g): the SHADER-OP BOUNDARY.
 //
 // `RayCaster`'s volume phase-scatter continuation is the one producer
@@ -1236,6 +1541,8 @@ static void Run()
 	RunAreaLightRow();
 	RealMaterialStackPremise();
 	RunIorStackRow();
+	RunZeroAggregateEnvRow();
+	RunZeroAggregateAreaRow();
 	RunVolumeEmitterRow();
 }
 
