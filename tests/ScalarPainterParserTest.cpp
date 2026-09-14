@@ -279,6 +279,47 @@ static void TestSpectralCurveInSingleScalarSlot()
 		if( pJob ) safe_release( pJob );
 	}
 
+	// ACCEPTED (precision-slice P2-1): a `scale` / `multiply` / `add`
+	// COMPOSITE wrapping the same file curve, bound to the same
+	// requireSingle slot, keeps loading too -- before P2-1,
+	// `ScaledScalarPainter`/`MultiplyScalarPainter`/`AddScalarPainter`
+	// forwarded `HasPerChannelVariation()` from their child but not
+	// `MakeSingleScalarSlotView()`, so a scene that loaded fine with the
+	// curve bound DIRECTLY started hard-failing the moment an author
+	// wrapped it in `scale 1` (or any of the other composite forms).
+	{
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname pwl_curve\n\tfile " << path << "\n}\n\n"
+		      << "scalar_painter\n{\n\tname pwl_scaled\n\tbase pwl_curve\n\tscale 1\n}\n\n"
+		      << "lambertian_material\n{\n\tname mat_base\n}\n\n"
+		      << "coated_material\n{\n\tname mat_coated\n\tbase mat_base\n"
+		         "\tcoat_ior pwl_scaled\n}\n";
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "single_curve_scaled" );
+		Check( pJob != nullptr,
+			"single-slot curve via scale composite: scene still loads" );
+		if( pJob ) {
+			Check( pJob->GetMaterials()->GetItem( "mat_coated" ) != nullptr,
+				"single-slot curve via scale composite: the coated material was actually created" );
+			IScalarPainter* named = pJob->GetScalarPainters()->GetItem( "pwl_scaled" );
+			Check( named != nullptr && named->HasPerChannelVariation(),
+				"single-slot curve via scale composite: the registered composite still reports per-channel variation" );
+			safe_release( pJob );
+		}
+	}
+	{
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname pwl_curve2\n\tfile " << path << "\n}\n\n"
+		      << "scalar_painter\n{\n\tname unit_val\n\tvalue 1.0\n}\n\n"
+		      << "scalar_painter\n{\n\tname pwl_multiplied\n\tmultiply pwl_curve2 unit_val\n}\n\n"
+		      << "lambertian_material\n{\n\tname mat_base2\n}\n\n"
+		      << "coated_material\n{\n\tname mat_coated2\n\tbase mat_base2\n"
+		         "\tcoat_ior pwl_multiplied\n}\n";
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "single_curve_multiplied" );
+		Check( pJob != nullptr,
+			"single-slot curve via multiply composite: scene still loads" );
+		if( pJob ) safe_release( pJob );
+	}
+
 	std::remove( path );
 }
 

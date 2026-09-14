@@ -406,6 +406,56 @@ static void TestScaledScalarPainter()
 	       "scaled-null-child: GetValueAtNM = 0 (defensive)" );
 	nullChild->release();
 
+	// DL-09/precision-slice P2-1: MakeSingleScalarSlotView forwarded
+	// through the composite. A `scalar_painter { base <curve> scale ... }`
+	// bound to a requireSingle slot (e.g. coated_material's coat_ior)
+	// used to hard-fail even though the curve alone would have resolved
+	// via a view -- ScaledScalarPainter didn't forward one.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		ScaledScalarPainter* triple = new ScaledScalarPainter( curve, Scalar( 3.0 ) );
+		curve->release();
+		Check( triple->HasPerChannelVariation(),
+		       "scaled-view: composite reports per-channel variation from the child" );
+
+		IScalarPainter* view = triple->MakeSingleScalarSlotView();
+		Check( view != nullptr, "scaled-view: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			Check( ! view->HasPerChannelVariation(), "scaled-view: !HasPerChannelVariation" );
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( tv.IsUniform(), "scaled-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			Check( ApproxEq( tv.v[0], Scalar( 3.0 ) * green, Scalar( 1e-12 ) ),
+			       "scaled-view: v[0] is 3.0 * curve(549nm)" );
+			// NM path is the unchanged composite -- unaffected by the view.
+			Check( ApproxEq( view->GetValueAtNM( ri, Scalar( 420 ) ),
+			                  triple->GetValueAtNM( ri, Scalar( 420 ) ), Scalar( 1e-12 ) ),
+			       "scaled-view: GetValueAtNM is the unchanged composite" );
+			view->release();
+		}
+		triple->release();
+	}
+
+	// No view available: the child's own per-channel triple was
+	// AUTHORED (RGBScalarPainter), not sampled from one curve -- the
+	// composite must not manufacture a single-scalar reading out of it.
+	{
+		RGBScalarPainter* authored =
+			new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+		ScaledScalarPainter* wrapped = new ScaledScalarPainter( authored, Scalar( 2.0 ) );
+		authored->release();
+		Check( wrapped->MakeSingleScalarSlotView() == nullptr,
+		       "scaled-view: no view over an authored-triple child" );
+		wrapped->release();
+	}
+
 	scaled->release();
 }
 
@@ -452,6 +502,61 @@ static void TestMultiplyScalarPainter()
 	                  Scalar( 0.5 ) * Scalar( 1.5168 ), Scalar( 1e-3 ) ),
 	       "multiply (sellmeier × uniform): per-wavelength product" );
 	m3->release();
+
+	// DL-09/precision-slice P2-1: MakeSingleScalarSlotView forwarded
+	// through the composite -- only the operand that itself varies
+	// needs its own view; a non-varying operand is used as-is.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		UniformScalarPainter* two = new UniformScalarPainter( Scalar( 2.0 ) );
+		MultiplyScalarPainter* prod = new MultiplyScalarPainter( curve, two );
+		curve->release();
+		two->release();
+		Check( prod->HasPerChannelVariation(),
+		       "multiply-view: composite reports per-channel variation from one child" );
+
+		IScalarPainter* view = prod->MakeSingleScalarSlotView();
+		Check( view != nullptr, "multiply-view: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			Check( ! view->HasPerChannelVariation(), "multiply-view: !HasPerChannelVariation" );
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( tv.IsUniform(), "multiply-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			Check( ApproxEq( tv.v[0], Scalar( 2.0 ) * green, Scalar( 1e-12 ) ),
+			       "multiply-view: v[0] is 2.0 * curve(549nm)" );
+			Check( ApproxEq( view->GetValueAtNM( ri, Scalar( 420 ) ),
+			                  prod->GetValueAtNM( ri, Scalar( 420 ) ), Scalar( 1e-12 ) ),
+			       "multiply-view: GetValueAtNM is the unchanged composite" );
+			view->release();
+		}
+		prod->release();
+	}
+
+	// No view available: an authored-triple operand blocks the view,
+	// even though the OTHER operand is a plain curve.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		RGBScalarPainter* authored =
+			new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+		MultiplyScalarPainter* mixed = new MultiplyScalarPainter( curve, authored );
+		curve->release();
+		authored->release();
+		Check( mixed->MakeSingleScalarSlotView() == nullptr,
+		       "multiply-view: no view when either operand's triple was authored" );
+		mixed->release();
+	}
 
 	m->release();
 }
@@ -528,6 +633,61 @@ static void TestAddScalarPainter()
 	Check( ApproxEq( bothNull->GetValueAtNM( ri, 555 ), 0.0 ),
 	       "add-both-null: GetValueAtNM = 0 (defensive)" );
 	bothNull->release();
+
+	// DL-09/precision-slice P2-1: MakeSingleScalarSlotView forwarded
+	// through the composite, weights carried through unchanged.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		UniformScalarPainter* base = new UniformScalarPainter( Scalar( 0.2 ) );
+		AddScalarPainter* sum = new AddScalarPainter(
+			curve, base, Scalar( 1.0 ), Scalar( 0.5 ) );
+		curve->release();
+		base->release();
+		Check( sum->HasPerChannelVariation(),
+		       "add-view: composite reports per-channel variation from one child" );
+
+		IScalarPainter* view = sum->MakeSingleScalarSlotView();
+		Check( view != nullptr, "add-view: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			Check( ! view->HasPerChannelVariation(), "add-view: !HasPerChannelVariation" );
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( tv.IsUniform(), "add-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			// weightA*curve(549) + weightB*0.2 = 1.0*green + 0.5*0.2.
+			Check( ApproxEq( tv.v[0], green + Scalar( 0.5 ) * Scalar( 0.2 ), Scalar( 1e-12 ) ),
+			       "add-view: v[0] is the weighted sum at 549nm" );
+			Check( ApproxEq( view->GetValueAtNM( ri, Scalar( 420 ) ),
+			                  sum->GetValueAtNM( ri, Scalar( 420 ) ), Scalar( 1e-12 ) ),
+			       "add-view: GetValueAtNM is the unchanged composite" );
+			view->release();
+		}
+		sum->release();
+	}
+
+	// No view available: an authored-triple operand blocks the view.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		RGBScalarPainter* authored =
+			new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+		AddScalarPainter* mixed = new AddScalarPainter( curve, authored );
+		curve->release();
+		authored->release();
+		Check( mixed->MakeSingleScalarSlotView() == nullptr,
+		       "add-view: no view when either operand's triple was authored" );
+		mixed->release();
+	}
 }
 
 // Minimal IFunction1D for the Function1D wrapper test.  Returns
