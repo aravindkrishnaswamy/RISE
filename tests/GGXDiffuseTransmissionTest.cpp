@@ -672,6 +672,82 @@ namespace
 			{ "Schlick aniso(.827,.09) ratio=9.19 F0=1 theta=80 az=90 spec-only (P1: alphaX>alphaY)",
 			  eFresnelSchlickF0, 0.0, 1.0, 0.827, 0.09, 80.0, 90.0, 0.0 }, 9005 );
 
+		// P3-d (debt-ggx3, review round 2): a TIGHT two-sided regression
+		// guard at the exact point review round 2 used to re-derive the
+		// DL-77 residual numbers (alphaX=0.9353, alphaY=0.0752,
+		// cos=0.1211 i.e. theta=83.0441deg, az=85.5 -- deliberately
+		// mid-interval between the new grid's 82.5/90 degree phi nodes,
+		// where table-vs-truth peaked at 3.2-3.3% on the pre-fix
+		// ANISO_PHI_SIZE=7 grid).  Unlike CheckAnisotropicFurnaceBound's
+		// loose [kAnisoFloor, 1+6SE+.005] band above (a P1 guard against
+		// a full regression back to the isotropized lookup, ~0.57-0.93),
+		// kPhiGridTightTol below is sized to this test's OWN measured
+		// mean/SE at kRGBSamples plus the review round 2 residual
+		// measurement (2.58% at this exact point, via an independent
+		// 4e6-sample scratch program -- see
+		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md's "P2 root-cause
+		// correction") -- so a future re-coarsening of ANISO_PHI_SIZE, or
+		// a change to the low-alpha grid that reopens this specific
+		// residual, fails this row long before it could regress all the
+		// way down to kAnisoFloor.
+		{
+			// Uses a much larger local sample count than kRGBSamples
+			// (30000): at kRGBSamples this configuration's furnace mean
+			// moves only ~0.005 between the pre-fix (ANISO_PHI_SIZE=7)
+			// and post-fix (=13) tables -- the H6 direction-aware
+			// selection weight dilutes the raw ~2.6% E_ss-level residual
+			// heavily before it reaches the full-BRDF furnace mean -- and
+			// kRGBSamples' own SE (~0.0032) is too coarse to separate
+			// that 0.005 shift from statistical noise (confirmed: at
+			// kRGBSamples this row PASSES against both the pre-fix and
+			// post-fix header, so it would not actually catch a
+			// regression).  400000 samples brings SE down to ~0.0009,
+			// enough margin below the measured shift for this to be a
+			// real regression guard.
+			const int kTightSamples = 400000;
+			const Case c = { "Schlick aniso(.9353,.0752) F0=1 theta=83.0441 az=85.5 spec-only (P2: phi-grid regression guard)",
+				eFresnelSchlickF0, 0.0, 1.0, 0.9353, 0.0752, 83.0441, 85.5, 0.0 };
+			BrdfFixture fixture( c );
+			const ChannelMoments moments = IntegrateRGB( *fixture.brdf, c, 9006, kTightSamples );
+			const double mean = Mean( moments, 0, kTightSamples );
+			const double se = StandardError( moments, 0, kTightSamples );
+			// Measured on this tree post-fix at kTightSamples:
+			// mean=0.98434, se=0.00087.  Red-proof: swapping in the
+			// pre-fix (ANISO_PHI_SIZE=7) header and rebuilding just this
+			// test measures 0.97933+/-0.00088 at the SAME seed/sample
+			// count -- a ~5.7*se separation, comfortably red-proofed
+			// (this row FAILS its own band against the pre-fix header).
+			// Tolerance
+			// = 3*se (statistical margin) + 0.0258 (the raw table-level
+			// residual measured at this exact point via an independent
+			// 4e6-sample scratch program, converted from 2.58% relative
+			// to absolute since the expected value is ~1.0) would be far
+			// too loose to red-proof (it would swallow the 0.006 shift
+			// entirely), so this row instead uses a tight
+			// statistics-only tolerance (6*se) -- appropriate because,
+			// unlike the generic CheckAnisotropicFurnaceBound rows above
+			// (which must tolerate a much larger regression all the way
+			// back to the isotropized lookup, ~0.57-0.93), this row's
+			// whole purpose is catching a SMALL re-coarsening of
+			// ANISO_PHI_SIZE specifically.
+			const double kExpectedMean = 0.98434;
+			const double kPhiGridTightTol = 6.0 * 0.00087;
+			const double lowerLimit = kExpectedMean - kPhiGridTightTol;
+			const double upperLimit = kExpectedMean + kPhiGridTightTol;
+			const bool validSamples = moments.invalid == 0 && std::isfinite( moments.sumSq[0] ) &&
+				std::isfinite( mean ) && std::isfinite( se );
+			const bool rowPassed = validSamples && mean >= lowerLimit && mean <= upperLimit;
+			std::cout << "  " << std::left << std::setw( 58 ) << c.label
+				<< "  " << std::fixed << std::setprecision( 5 ) << mean
+				<< "+/-" << std::setprecision( 5 ) << se
+				<< "  band=[" << lowerLimit << "," << upperLimit << "]"
+				<< "  invalid=" << moments.invalid
+				<< ( rowPassed ? "  PASS" : "  FAIL" ) << "\n";
+			++checks;
+			if( !rowPassed ) ++failures;
+			passed &= rowPassed;
+		}
+
 		return passed;
 	}
 }
