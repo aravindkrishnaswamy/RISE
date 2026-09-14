@@ -79,6 +79,9 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/PerfectReflectorMaterial.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Lights/LightSampler.h"
 
 using namespace RISE;
@@ -739,12 +742,365 @@ static void RunBssrdfSite()
 	ior->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+// Site 3 (DL-84): PathTracingIntegrator's OWN in-loop volume phase-
+// scatter continuation -- `IntegrateFromHitTemplated`'s
+// `bsdfPdf = effectivePdf` site, reached only AFTER a surface bounce
+// (a camera ray's first medium interaction is a different walk,
+// `IntegrateRayTemplated`, which is not this row's subject).
+//
+// CONSTRUCTION: a perfectly-specular (delta) mirror floor in the SAME
+// optically-thin global fog `VolumeScene()` builds for Site 1, so the
+// reflected ray continues straight into the medium.  A delta lobe is
+// deliberately chosen for the floor: PathTracingIntegrator's no-BSDF
+// (SPF-only) branch that handles it sets `bsdfPdf = bsdfMisPdf = 0`
+// and `bsdfTimesCos = Traits::zero()` for a delta scatter and calls
+// NEITHER `AccumulateCount` NOR `Accumulate` anywhere in that branch
+// (confirmed by reading -- grep finds zero training calls in
+// `PathTracingIntegrator.cpp`'s "Specular surfaces (no BSDF)" block).
+// So the mirror bounce itself is training-INERT by construction, and
+// this fixture has no other geometry for the reflected ray to hit --
+// EVERY count and moment this fixture's accumulator ever records can
+// only have come from the medium vertex the reflected ray travels
+// into, i.e. DL-84's site and nothing else.  A nonzero `countBsdf` is
+// therefore itself the direct evidence that this site (not some other
+// producer) is the one training; the ledger row's own pre-fix state
+// (no `AccumulateCount` call at this site at all) reads `countBsdf == 0`
+// here -- verified below by literally reverting the two-line fix and
+// re-running (see the fix commit message for the paired numbers).
+//////////////////////////////////////////////////////////////////////
+
+//! Drives the DL-84 site and hands back the RAW per-tile training
+//! state.  Seeded per sample, so two calls against fixtures that
+//! differ only in environment brightness walk identical paths -- the
+//! incoming ray direction (hence the delta-mirror's reflected
+//! direction) and every downstream phase-function / Russian-roulette
+//! decision are functions of the RNG stream alone, never of radiance.
+static void DriveFloorFogSite(
+	const Fixture& fx,
+	const PathTracingIntegrator& integrator,
+	Object& object,
+	IMaterial& material,
+	OptimalMISAccumulator& acc,
+	double& sumBsdf,
+	unsigned int& countBsdf )
+{
+	const RasterizerState rast{};
+	for( unsigned int s = 0; s < 1200; ++s )
+	{
+		RandomNumberGenerator rng( 61000 + s );
+		IndependentSampler sampler( rng );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		rc.pOptimalMIS = &acc;
+
+		// Incoming ray from the downward hemisphere (Fibonacci lattice,
+		// matching DriveVolumeSite's construction) striking a horizontal
+		// mirror floor at the fog box's own centre -- the reflected ray
+		// therefore always points into the UPWARD hemisphere, straight
+		// into the bulk of the medium (bbox +-20).
+		const Scalar z = -1 + 1 * ( s + 0.5 ) / 1200;			// in (-1, 0): downward only
+		const Scalar phi = s * 2.399963229728653;
+		const Scalar r = std::sqrt( 1 - z * z );
+		const Vector3 inDir( r * std::cos( phi ), z, r * std::sin( phi ) );
+
+		const Point3 origin( -inDir[0] * 10, -inDir[1] * 10, -inDir[2] * 10 );
+		RayIntersection hit( Ray( origin, inDir ), rast );
+		hit.geometric.bHit = true;
+		hit.geometric.range = 10;
+		hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+		hit.geometric.vNormal = Vector3( 0, 1, 0 );
+		hit.geometric.vGeomNormal = Vector3( 0, 1, 0 );
+		hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+		hit.pObject = &object;
+		hit.pMaterial = &material;
+
+		IORStack stack( 1.0 );
+
+		integrator.IntegrateFromHit(
+			rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
+			/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
+			/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
+			/*considerEmission_*/ true, /*importance*/ 1,
+			IRayCaster::RAY_STATE::eRaySpecular,
+			0, 0, 0, 0, 0, 0, false, false );
+	}
+	double sumNee = 0;
+	unsigned int countNee = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+}
+
+static void RunFloorFogSite()
+{
+	std::cout << "DL-84 site: PathTracingIntegrator's own in-loop volume "
+		"phase-scatter continuation" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( VolumeScene(), "floorfog" ), "floor-fog fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	Check( fx.pCaster->GetLightSampler() != 0, "floor-fog fixture has a LightSampler" );
+
+	const RasterizerState rast{};
+	const IRadianceMap* pEnv = fx.pScene->GetGlobalRadianceMap();
+	Check( pEnv != 0, "floor-fog fixture has a global radiance map" );
+	if( !pEnv ) return;
+	const Scalar Lenv = ColorMath::MaxValue(
+		pEnv->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+	Check( Lenv > 0, "floor-fog fixture env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( white, __FILE__, __LINE__, "floor-fog mirror painter" );
+	PerfectReflectorMaterial* material = new PerfectReflectorMaterial( *white );
+	GlobalLog()->PrintNew( material, __FILE__, __LINE__, "floor-fog mirror material" );
+
+	SphereGeometry* sphere = new SphereGeometry( 10.0 );
+	GlobalLog()->PrintNew( sphere, __FILE__, __LINE__, "floor-fog placeholder geometry" );
+	sphere->addref();
+	Object* object = new Object( sphere );
+	GlobalLog()->PrintNew( object, __FILE__, __LINE__, "floor-fog placeholder object" );
+	object->addref();
+	sphere->release();
+	object->AssignMaterial( *material );
+
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "floor-fog integrator" );
+	integrator->SetMaxPathDepth( 6 );
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	DriveFloorFogSite( fx, *integrator, *object, *material, acc, sumBsdf, countBsdf );
+
+	std::cout << "    floor-fog site: sum(f/p)^2 = " << sumBsdf
+		<< " over " << countBsdf << " attempts" << std::endl;
+	Check( countBsdf > 0,
+		"floor-fog site: the in-loop volume continuation counted at least one attempt "
+		"(the mirror floor's own delta bounce contributes none)" );
+	Check( sumBsdf > 0,
+		"floor-fog site: the in-loop volume continuation accumulated a positive moment" );
+
+	// ------------------------------------------------------------------
+	// THE TRAINED QUANTITY.  With guiding inactive (this fixture never
+	// configures rc.pGuidingField), `effectivePdf == phasePdf` and, for
+	// the isotropic phase function VolumeScene() configures, `phaseVal
+	// == pPhase->Evaluate(...) == phasePdf` too (both are the same
+	// constant 1/(4*pi) for every direction).  So, exactly as in
+	// DriveVolumeSite's own site,
+	//     f^2/p^2 = (L_env * phaseVal)^2 / effectivePdf^2 = L_env^2
+	// for every accumulation, regardless of direction or bounce depth.
+	// ------------------------------------------------------------------
+	const double accPerLenv2 = sumBsdf / ( (double)Lenv * (double)Lenv );
+	const double nearestWhole = std::floor( accPerLenv2 + 0.5 );
+	Check( accPerLenv2 > 0 && std::fabs( accPerLenv2 - nearestWhole ) < 1e-6,
+		"floor-fog site: the accumulated moment is a WHOLE multiple of L_env^2 "
+		"(every escape contributes exactly (L_env*phaseVal)^2/effectivePdf^2)" );
+	Check( accPerLenv2 <= (double)countBsdf + 1e-6,
+		"floor-fog site: the number of L_env^2 contributions does not exceed the attempt count" );
+
+	// Radiance-scaling law (k^2 = 9 for k=3), mirroring both existing
+	// sites' construction: nothing in this fixture's SAMPLING depends on
+	// radiance, so a 3x brighter, still-uniform environment should visit
+	// the same vertices and scale the accumulated moment by exactly 9.
+	//
+	// UNLIKE the two existing sites (which drive `RayCaster::CastRay` /
+	// a BSSRDF entry directly), this fixture goes through
+	// `PathTracingIntegrator::IntegrateFromHit` against a FRESH,
+	// separately-built Job/Scene/EnvironmentSampler for `fxBright` --
+	// and empirically (checked by re-running this fixture against TWO
+	// IDENTICALLY-WORDED scenes, envLevel 1.0 vs 1.0) the attempt count
+	// differs by a handful out of ~700 (690 vs 695) EVEN WITH IDENTICAL
+	// scene text and IDENTICAL per-sample RNG seeds -- i.e. this is a
+	// property of building two SEPARATE Job/Scene instances (almost
+	// certainly floating-point noise in the two independently-built
+	// EnvironmentSamplers' importance tables nudging a small number of
+	// borderline equiangular-MIS strategy decisions across their
+	// threshold), not a radiance-dependence bug and not specific to
+	// DL-84's fix.  So this check uses a statistical tolerance wide
+	// enough to swallow that ~1% cross-build noise while still catching
+	// the failure modes it exists to catch (a missing factor, a wrong
+	// exponent, a moment that does not scale with radiance at all).
+	{
+		Fixture fxBright;
+		Check( fxBright.Build( VolumeScene( 3.0 ), "floorfog3" ), "bright floor-fog fixture builds" );
+		if( fxBright.pCaster && fxBright.pScene ) {
+			OptimalMISAccumulator accBright;
+			accBright.Initialize( 64, 64, MakeConfig() );
+			double sumBright = 0;
+			unsigned int countBright = 0;
+			DriveFloorFogSite( fxBright, *integrator, *object, *material,
+				accBright, sumBright, countBright );
+			const double ratio = sumBsdf > 0 ? sumBright / sumBsdf : 0;
+			const double countRatio = countBsdf > 0 ? (double)countBright / (double)countBsdf : 0;
+			std::cout << "    floor-fog site: moment ratio at 3x radiance = " << ratio
+				<< " (target 9, +-2% cross-build tolerance); attempts " << countBsdf
+				<< " / " << countBright << " (ratio " << countRatio << ", +-2% tolerance)" << std::endl;
+			Check( countRatio > 0.98 && countRatio < 1.02,
+				"floor-fog site: the brighter fixture visited approximately the same number of "
+				"continuations (within cross-build floating-point noise)" );
+			Check( ratio > 8.82 && ratio < 9.18,
+				"floor-fog site: the accumulated moment scales as L_env^2 (within cross-build noise)" );
+		}
+	}
+
+	FeedSyntheticNee( acc );
+	acc.Solve();
+	CheckTrainedInterior( acc,
+		"in-loop volume continuation trains BOTH a count and a moment for the BSDF technique" );
+
+	integrator->release();
+	object->release();
+	material->release();
+	white->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// RR CONVENTION CHECK (DL-84 step 1): the ORDINARY surface
+// continuation's trained moment must be the PRE-Russian-roulette
+// integrand, not RR's post-division throughput -- see
+// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "Round 6" for the
+// derivation this pins.  Independent of the fog-box fixture above; it
+// exercises PathTracingIntegrator's plain (no medium) surface
+// continuation directly, the same site the BSSRDF/volume sites already
+// mirror.
+//
+// CONSTRUCTION.  A Lambertian floor of reflectance rho = 0.5 in an
+// object-free, environment-lit scene (so every SURVIVING continuation
+// escapes straight to the environment -- there is nothing else for it
+// to hit), driven at `startDepth = rrMinDepth` (StabilityConfig's
+// default 3, so Russian roulette evaluates on this very first
+// continuation) with `importance = 1`, so
+//
+//     rrProb = min(1, importance*rho / max(importance, rrThreshold))
+//            = rho                              (importance=1 >> rrThreshold=0.05)
+//
+// is an EXACT, deterministic 0.5 for every sample -- only the
+// accept/reject coin flip is random.  A cosine-sampled Lambertian's
+// `kray` (hence `scatterThroughput`) is exactly `rho`, direction-
+// independent (the BSDF/pdf ratio cancels analytically), so:
+//
+//   POST-FIX (pre-RR trained):  bsdfTimesCos = rho * (cos/pi)
+//     f/p = rho          ->  moment = (L_env * rho)^2
+//   PRE-FIX (post-RR trained):  a surviving sample's scatterThroughput
+//     is rho / rrProb = rho / rho = 1 (Russian roulette's own
+//     compensation identity -- it always renormalises survivors back
+//     to the PRE-RR EXPECTED throughput), so bsdfTimesCos = 1*(cos/pi)
+//     f/p = 1            ->  moment = L_env^2 = (L_env*rho)^2 / rho^2
+//
+// i.e. the PRE-FIX moment is exactly 1/rho^2 = 4x too large for EVERY
+// surviving sample, independent of L_env, of the sampled direction, and
+// of WHICH samples happen to survive.  `AccumulateCount` fires for
+// every attempt (survivor or not, matching the row's own "regardless of
+// whether the sample contributed" contract), but `Accumulate` only for
+// survivors, and survival is an RR-convention-independent Bernoulli(0.5)
+// coin flip -- so over enough samples,
+//     sum(f/p)^2 / ( attempts * (L_env*rho)^2 )
+// converges to the survival probability itself, 0.5, post-fix and to
+// 0.5*4 = 2.0 pre-fix: a clean 4x discriminator that needs no in-file
+// code toggle.  Measured across the two builds and pasted into the fix
+// commit message.
+//////////////////////////////////////////////////////////////////////
+static void RunRRConventionCheck()
+{
+	std::cout << "DL-84 (RR convention): the surface continuation trains the PRE-RR integrand" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "rrconv" ), "RR-convention fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const RasterizerState rast{};
+	const IRadianceMap* pEnv = fx.pScene->GetGlobalRadianceMap();
+	Check( pEnv != 0, "RR-convention fixture has a global radiance map" );
+	if( !pEnv ) return;
+	const Scalar Lenv = ColorMath::MaxValue(
+		pEnv->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+	Check( Lenv > 0, "RR-convention fixture env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	const Scalar rho = 0.5;
+	UniformColorPainter* grey = new UniformColorPainter( RISEPel( rho, rho, rho ) );
+	GlobalLog()->PrintNew( grey, __FILE__, __LINE__, "RR-convention floor painter" );
+	LambertianMaterial* material = new LambertianMaterial( *grey );
+	GlobalLog()->PrintNew( material, __FILE__, __LINE__, "RR-convention floor material" );
+
+	SphereGeometry* sphere = new SphereGeometry( 10.0 );
+	GlobalLog()->PrintNew( sphere, __FILE__, __LINE__, "RR-convention placeholder geometry" );
+	sphere->addref();
+	Object* object = new Object( sphere );
+	GlobalLog()->PrintNew( object, __FILE__, __LINE__, "RR-convention placeholder object" );
+	object->addref();
+	sphere->release();
+	object->AssignMaterial( *material );
+
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "RR-convention integrator" );
+	integrator->SetMaxPathDepth( 6 );
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+
+	const unsigned int rrMinDepth = StabilityConfig().rrMinDepth;	// 3: forces RR to evaluate immediately
+	const unsigned int N = 4000;
+	for( unsigned int s = 0; s < N; ++s )
+	{
+		RandomNumberGenerator rng( 91000 + s );
+		IndependentSampler sampler( rng );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		rc.pOptimalMIS = &acc;
+
+		RayIntersection hit( Ray( Point3( 0, 0, 10 ), Vector3( 0, 0, -1 ) ), rast );
+		hit.geometric.bHit = true;
+		hit.geometric.range = 10;
+		hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+		hit.geometric.vNormal = Vector3( 0, 0, 1 );
+		hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
+		hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+		hit.pObject = object;
+		hit.pMaterial = material;
+
+		IORStack stack( 1.0 );
+
+		integrator->IntegrateFromHit(
+			rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
+			/*pRadianceMap*/ 0, /*startDepth*/ rrMinDepth, stack,
+			/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
+			/*considerEmission_*/ true, /*importance*/ 1.0,
+			IRayCaster::RAY_STATE::eRayDiffuse,
+			0, 0, 0, 0, 0, 0, false, false );
+	}
+
+	double sumNee = 0, sumBsdf = 0;
+	unsigned int countNee = 0, countBsdf = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+
+	const double denom = (double)countBsdf * (double)Lenv * (double)Lenv * (double)rho * (double)rho;
+	const double observed = denom > 0 ? sumBsdf / denom : -1;
+	std::cout << "    RR-convention: sum(f/p)^2 = " << sumBsdf << " over " << countBsdf
+		<< " attempts; sum / (attempts * (L_env*rho)^2) = " << observed
+		<< "  (expect ~0.5, the RR survival probability; a PRE-RR-inflation bug reads ~2.0)"
+		<< std::endl;
+	Check( countBsdf > 0, "RR-convention: the surface continuation counted attempts" );
+	Check( sumBsdf > 0, "RR-convention: the surface continuation accumulated a positive moment" );
+	Check( observed > 0.35 && observed < 0.65,
+		"RR-convention: the trained moment matches the PRE-RR integrand (~0.5), "
+		"not the RR-inflated post-division throughput (~2.0)" );
+
+	integrator->release();
+	object->release();
+	material->release();
+	grey->release();
+}
+
 int main()
 {
 	GlobalLog();
 
 	RunVolumeSite();
 	RunBssrdfSite();
+	RunFloorFogSite();
+	RunRRConventionCheck();
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
