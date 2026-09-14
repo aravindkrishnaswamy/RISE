@@ -57,22 +57,24 @@
 //      is algebraically implied once Sub-test 1's per-channel formula
 //      is confirmed; it is included as a redundant cross-check of the
 //      arithmetic, not as coverage of a code path Sub-test 1 misses.
-//    Sub-test 3 (DL-39 P3 follow-up) -- the deposit fix is not specific
-//      to TranslucentSPF's own diffuse lobe: TracePhoton re-fetches
-//      `pMaterial->GetSPF()` at every hit, so an eRayTranslucent-typed
-//      backscatter ray that goes on to hit a DIFFERENT, non-translucent
-//      surface now has that surface's own SPF govern the deposit there.
-//      A Lambertian wall's Scatter() emits kray==its own albedo for its
-//      one eRayDiffuse ray, so the deposit becomes incoming*albedo
-//      (previously the unattenuated full incoming power, independent of
-//      the wall's color -- a real accuracy improvement, not just a
-//      formula swap).  A pure reflector hit with tracing disabled for
-//      that ray type emits only an untraced, non-diffuse ray that now
-//      matches neither the trace filter nor the diffuse-deposit branch,
-//      so it deposits 0 there instead of the pre-fix full power --
-//      documented in this file's TestLambertianWallDeposit() but not
-//      independently asserted (the Lambertian case is the
-//      representative, lower-risk one).
+//    Sub-test 3 (P2-2, review round 3) -- the deposit rule is SCOPED to
+//      the translucent exit.  `TranslucentPelPhotonMap::RadianceEstimate`
+//      is the Jensen estimator (`sum(power_i) * brdf.value(...) /
+//      (pi*r^2)`), so the STORED quantity must be the flux ARRIVING at
+//      the surface -- the gather applies that surface's own BSDF itself.
+//      Depositing the diffuse lobe's kray is correct only where that
+//      kray is a TRANSPORT attenuation, i.e. at a translucent interior
+//      exit (Beer * (1-scattering)).  A Lambertian wall's eRayDiffuse
+//      kray is instead its ALBEDO (LambertianSPF.cpp), so depositing it
+//      would make the gather read `power * albedo^2`; TranslucentSPF's
+//      own ENTERING branch has the same shape (its diffuse kray is
+//      `pRefFront`, a reflectance).  A round-2 revision of this test
+//      asserted the albedo-weighted deposit as "an accuracy
+//      improvement"; that was wrong, and this sub-test now asserts the
+//      full arriving power at the Lambertian wall.  The tracer keeps the
+//      pre-DL-39 `power*(1-accum_scattered)` formula at every
+//      non-translucent-exit hit, which for a wall that traces nothing
+//      onward IS the full arriving power.
 //
 //  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `translucent`)
 //  Tabs: 4
@@ -322,37 +324,26 @@ namespace
 		return stored;
 	}
 
-	// DL-39 P3 follow-up: the deposit fix's "sum the diffuse lobe's own
-	// kray" rule is not specific to TranslucentSPF's own diffuse exit --
-	// TracePhoton fetches `ri.pMaterial->GetSPF()` at EVERY hit, so when
-	// the translucent object's own eRayTranslucent-typed backscatter ray
-	// (which carries `bFromTranslucent=true` into its recursive call)
-	// goes on to hit a completely different, non-translucent surface,
-	// THAT surface's own SPF now governs what gets deposited there:
-	//   - a Lambertian wall's Scatter() emits exactly one eRayDiffuse
-	//     ray with kray == its own reflectance/albedo (LambertianSPF.cpp),
-	//     so the deposit there is (arriving power) * albedo -- power was
-	//     previously read back as the FULL arriving power regardless of
-	//     the wall's color (the pre-fix formula's `accum_scattered`
-	//     never included eRayDiffuse rays either), so this is also a
-	//     real accuracy improvement, not merely a formula swap.
-	//   - a pure reflector hit with `bTraceReflections==false` emits
-	//     only an eRayReflection ray, which now matches NEITHER the
-	//     traced-type filter (tracing is disabled) NOR the eRayDiffuse
-	//     deposit branch, so nothing is deposited there at all (power ->
-	//     0) -- pre-fix, `accum_scattered` also excluded it (never
-	//     traced), so `power*(1-accum_scattered)` deposited the FULL
-	//     power there instead.  Not covered by a dedicated assertion
-	//     here (LambertianSPF's kray==albedo trace above is the
-	//     representative, and lower-risk, case), but documented so a
-	//     future reader isn't surprised by the asymmetry.
+	// P2-2 (review round 3): DL-39's "sum the diffuse lobe's own kray"
+	// rule is SCOPED to the translucent interior exit -- the one place
+	// that kray is a transport attenuation rather than a reflectance.
+	// `TracePhoton` re-fetches `ri.pMaterial->GetSPF()` at EVERY hit, so
+	// when the translucent object's own eRayTranslucent-typed backscatter
+	// ray (which carries `bFromTranslucent=true` into its recursive call)
+	// goes on to hit a completely different, non-translucent surface, the
+	// deposit there must still be the flux ARRIVING at that surface,
+	// because `TranslucentPelPhotonMap::RadianceEstimate` multiplies by
+	// the surface's own BSDF at gather time.  A Lambertian wall's
+	// eRayDiffuse kray IS its albedo (LambertianSPF.cpp), so depositing
+	// it would make the gather read `power * albedo^2`.
 	//
-	// This sub-test exercises the Lambertian-wall case directly: a
-	// fully-backscattering (scattering=1, extinction=0) translucent
-	// object hands its ENTIRE incoming power to the backscatter ray,
-	// which then hits a real LambertianMaterial; the single photon
-	// stored at THAT hit must equal incoming power times the wall's own
-	// reflectance, not the unattenuated incoming power.
+	// This sub-test exercises that directly: a fully-backscattering
+	// (scattering=1, extinction=0) translucent object hands its ENTIRE
+	// incoming power to the backscatter ray, which then hits a real
+	// LambertianMaterial; the single photon stored at THAT hit must equal
+	// the full arriving power, independent of the wall's colour.  The
+	// wall's albedo is deliberately non-grey (0.7,0.5,0.3) so an
+	// albedo-weighted deposit is distinguishable per channel.
 	RISEPel RunLambertianWallDeposit( const RISEPel& wallAlbedo )
 	{
 		UniformColorPainter* front = new UniformColorPainter( RISEPel( 0.2, 0.2, 0.2 ) );  front->addref();
@@ -395,9 +386,11 @@ namespace
 		// deposit call stores a photon: `TranslucentPelPhotonMap::Store`
 		// silently drops a zero-power deposit (`MaxValue(power)<=0`,
 		// TranslucentPelPhotonMap.cpp), and the interior segment's OWN
-		// deposit is exactly zero here (scattering=1 leaves nothing for
-		// its own exit lobe -- see the header comment).  So the map's
-		// one stored photon is the Lambertian wall's.
+		// deposit is exactly zero here -- it IS a translucent exit, so it
+		// deposits its exit lobe's transport weight
+		// `Beer * (1-scattering)`, and scattering=1 leaves that at 0.  So
+		// the map's one stored photon is the Lambertian wall's, which
+		// takes the non-exit branch (full arriving power).
 		EXPECT( map.StoredCount() == 1,
 			"exactly one non-zero photon deposited (the Lambertian-wall hit; the interior segment's own deposit is zero and silently dropped)" );
 
@@ -479,20 +472,23 @@ static void TestBackscatterBalance()
 
 static void TestLambertianWallDeposit()
 {
-	std::cout << "Sub-test 3: deposit at a non-translucent surface reached via eRayTranslucent (DL-39 P3)" << std::endl;
+	std::cout << "Sub-test 3: deposit at a non-translucent surface reached via eRayTranslucent (P2-2)" << std::endl;
 
 	const RISEPel wallAlbedo( 0.7, 0.5, 0.3 );
 	const RISEPel deposited = RunLambertianWallDeposit( wallAlbedo );
 
-	EXPECT_NEAR_PEL( deposited, wallAlbedo, 1e-9,
-		"Lambertian wall reached via the translucent object's own backscatter ray deposits incoming_power * albedo" );
-	// Red-proof-shape guard, mirroring TestExtinctionSweep's: the pre-fix
-	// formula would have deposited the FULL unattenuated incoming power
-	// (1,1,1) at this hit too (accum_scattered never included eRayDiffuse
-	// rays), independent of the wall's own color.
+	// The Jensen gather at this wall multiplies the stored power by the
+	// wall's own BSDF, so the stored power must be the ARRIVING flux --
+	// here the full (1,1,1) the fully-backscattering translucent object
+	// handed on, NOT that times the wall's albedo.
+	EXPECT_NEAR_PEL( deposited, RISEPel( 1, 1, 1 ), 1e-9,
+		"Lambertian wall reached via the translucent object's own backscatter ray deposits the FULL arriving power" );
+	// Red-proof-shape guard: a deposit that had been weighted by the
+	// wall's own albedo would read (0.7,0.5,0.3) here, and the gather
+	// would then square it.
 	{
-		const Scalar d = r_max( r_max(fabs(deposited[0]-1.0),fabs(deposited[1]-1.0)), fabs(deposited[2]-1.0) );
-		EXPECT( d > 1e-6, "deposited power is NOT the unattenuated full incoming power (DL-39 red-proof shape)" );
+		const Scalar d = r_max( r_max(fabs(deposited[0]-wallAlbedo[0]),fabs(deposited[1]-wallAlbedo[1])), fabs(deposited[2]-wallAlbedo[2]) );
+		EXPECT( d > 1e-6, "deposited power is NOT albedo-weighted (P2-2 red-proof shape)" );
 	}
 }
 
