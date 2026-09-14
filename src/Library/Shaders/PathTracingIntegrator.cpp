@@ -2553,27 +2553,29 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 (P2-2): compute bsdfTimesCos for BOTH tags via the
-										// same PTBsdfTimesCos/PTRayStateBsdfTimesCos pair the main
-										// scatter continuation uses (~PTBsdfTimesCos( scatterThroughput,
-										// effectiveBsdfPdf ) a few hundred lines below), rather than
-										// gating the assignment to `if constexpr (Traits::is_nm)`.
-										// The old gate meant the Pel/RGB SSS continuation -- the ONE
-										// tag where rc.pOptimalMIS is actually non-null at runtime --
-										// never set rs2.bsdfTimesCos, so RayCasterEnvEscapeMISWeight's
-										// optimal-MIS training arm (which requires rs.bsdfTimesCos to
-										// be nonzero) could never fire for a BSSRDF continuation that
-										// escapes to the env map.  The NM branch was already correct
-										// but moot (rc.pOptimalMIS is null in spectral renders), so
-										// this is a genuine no-op there and the fix for Pel.  The SMS
-										// suppression flags above are set for BOTH tags unconditionally
-										// (Codex review Finding 2) and are unaffected by this change.
-										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
-											PTBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
-										if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
-											const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
-												rast.x, rast.y, kTechniqueBSDF );
-										}
+										// DL-72 REOPENED (P2-B, this pass): the round-1 fix computed
+										// `bsdfTimesCos` for BOTH tags via PTBsdfTimesCos(sssThroughput,
+										// bssrdf.cosinePdf) and paired it with an AccumulateCount call
+										// (fixing the previous if-constexpr(is_nm) backwards gate --
+										// that structural fix stands and is NOT reverted). Review this
+										// pass (P2-B) found the TRAINED QUANTITY itself does not match
+										// IRayCaster.h's documented contract for rs.bsdfTimesCos ("BSDF
+										// * cos at the SCATTER point"): `sssThroughput` is the SSS
+										// profile's spatial transport weight (Rd * FtExit / pdfSurface,
+										// a diffusion-profile quantity over the entry/exit DISK
+										// projection), not a directional BSDF value at the continuation
+										// ray's origin, and `bssrdf.cosinePdf` is the cosine-hemisphere
+										// sampling density there -- their product is not the integrand
+										// OptimalMISAccumulator::Accumulate's second-moment estimator
+										// assumes. Training the accumulator with the wrong-shaped
+										// quantity does not miscompute the RENDERED weight (`PowerHeuristic`
+										// is the correct, still-used fallback whenever the accumulator
+										// is not ready), but corrupts `Solve()`'s alpha once it IS ready.
+										// Conservative fix: leave this arm UNWIRED (zero, no count) at
+										// BOTH sites/tags until a future pass derives and wires the
+										// correct directional-only quantity with a matching count; see
+										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "P2-B ruling".
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( Traits::zero() );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -2728,27 +2730,29 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// light doesn't re-enable emission.
 										rs2.smsPassedThroughSpecular = false;
 										rs2.smsHadNonSpecularShading = true;
-										// DL-72 (P2-2): compute bsdfTimesCos for BOTH tags via the
-										// same PTBsdfTimesCos/PTRayStateBsdfTimesCos pair the main
-										// scatter continuation uses (~PTBsdfTimesCos( scatterThroughput,
-										// effectiveBsdfPdf ) a few hundred lines below), rather than
-										// gating the assignment to `if constexpr (Traits::is_nm)`.
-										// The old gate meant the Pel/RGB SSS continuation -- the ONE
-										// tag where rc.pOptimalMIS is actually non-null at runtime --
-										// never set rs2.bsdfTimesCos, so RayCasterEnvEscapeMISWeight's
-										// optimal-MIS training arm (which requires rs.bsdfTimesCos to
-										// be nonzero) could never fire for a BSSRDF continuation that
-										// escapes to the env map.  The NM branch was already correct
-										// but moot (rc.pOptimalMIS is null in spectral renders), so
-										// this is a genuine no-op there and the fix for Pel.  The SMS
-										// suppression flags above are set for BOTH tags unconditionally
-										// (Codex review Finding 2) and are unaffected by this change.
-										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
-											PTBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
-										if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
-											const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
-												rast.x, rast.y, kTechniqueBSDF );
-										}
+										// DL-72 REOPENED (P2-B, this pass): the round-1 fix computed
+										// `bsdfTimesCos` for BOTH tags via PTBsdfTimesCos(sssThroughput,
+										// bssrdf.cosinePdf) and paired it with an AccumulateCount call
+										// (fixing the previous if-constexpr(is_nm) backwards gate --
+										// that structural fix stands and is NOT reverted). Review this
+										// pass (P2-B) found the TRAINED QUANTITY itself does not match
+										// IRayCaster.h's documented contract for rs.bsdfTimesCos ("BSDF
+										// * cos at the SCATTER point"): `sssThroughput` is the SSS
+										// profile's spatial transport weight (Rd * FtExit / pdfSurface,
+										// a diffusion-profile quantity over the entry/exit DISK
+										// projection), not a directional BSDF value at the continuation
+										// ray's origin, and `bssrdf.cosinePdf` is the cosine-hemisphere
+										// sampling density there -- their product is not the integrand
+										// OptimalMISAccumulator::Accumulate's second-moment estimator
+										// assumes. Training the accumulator with the wrong-shaped
+										// quantity does not miscompute the RENDERED weight (`PowerHeuristic`
+										// is the correct, still-used fallback whenever the accumulator
+										// is not ready), but corrupts `Solve()`'s alpha once it IS ready.
+										// Conservative fix: leave this arm UNWIRED (zero, no count) at
+										// BOTH sites/tags until a future pass derives and wires the
+										// correct directional-only quantity with a matching count; see
+										// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "P2-B ruling".
+										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( Traits::zero() );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -3408,6 +3412,19 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			IRayCaster::RAY_STATE rs2 = rs;
 			rs2.depth = depth + 2;
 			rs2.importance = importance * PTSurvivalMagnitude( scatterThroughput );
+			// DL-74 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+			// "DL-73 RULED NOT A DEBT" residual): `effectiveBsdfPdf` is the
+			// GUIDED COMBINED pdf whenever OpenPGL guiding/RIS fired above.
+			// Surface env-NEE at this SAME shading point
+			// (LightSampler.cpp's env arm, `pMaterial->Pdf(envDir, ri,
+			// defaultIOR)`) instead uses the RAW material pdf with no
+			// guiding term -- an unresolved MIS partition mismatch between
+			// this escape weight and that NEE weight whenever guiding is
+			// active. Filed OPEN as DL-74, not fixed here; do not "fix" by
+			// reverting THIS side to a raw pdf without first deriving the
+			// correct joint treatment (see the volume-vertex case, DL-73,
+			// which is unbiased for the OPPOSITE reason -- both its sides
+			// already agree on a raw pdf).
 			rs2.bsdfPdf = effectiveBsdfPdf;
 			rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( bsdfTimesCosVal );
 			rs2.type = PathTracingRayType( *pS );
@@ -5504,6 +5521,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		IRayCaster::RAY_STATE rs2 = rs;
 		rs2.depth = depth + 2;
 		rs2.importance = importance * fabs( heroScatterNM );
+		// DL-74: HWSS sibling of the RGB/NM surface-continuation site
+		// above -- same guided-combined-vs-raw-material-pdf MIS partition
+		// mismatch against LightSampler.cpp's env-NEE arm, filed OPEN, not
+		// fixed here.
 		rs2.bsdfPdf = effectiveBsdfPdf;
 		rs2.type = PathTracingRayType( *pS );
 

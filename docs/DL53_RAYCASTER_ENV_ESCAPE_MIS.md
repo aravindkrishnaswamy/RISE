@@ -88,10 +88,25 @@ pointer-identity gate.
   automatically; no guiding-branch code was touched.
 - **Reflection/Refraction/Transparency/AlphaTest/DistributionTracing/
   FinalGather/DirectVolumeRendering shader ops**: all call `CastRay`/
-  `CastRayNM` with `ri.pRadianceMap` for their continuation ray, but none
-  of them set `RAY_STATE::bsdfPdf` (default 0), so the new weighting is a
-  no-op for them — confirmed by grep (no `bsdfPdf =` assignment in any of
-  those files).
+  `CastRayNM` with `ri.pRadianceMap` for their continuation ray.
+  **Correction (P3-4, round-2 review, this slice)**: the original claim
+  here — "none of them set `RAY_STATE::bsdfPdf` (default 0), so the new
+  weighting is a no-op for them" — is WRONG on the facts.  These shader
+  ops do not construct a fresh `RAY_STATE`; they forward the CALLER's
+  `rs` argument verbatim (e.g. `TransparencyShaderOp.cpp:52`,
+  `AlphaTestShaderOp.cpp:71`, `DirectVolumeRenderingShader.cpp:349` all
+  pass `rs`, not a zero-initialized `RAY_STATE`), so `bsdfPdf` is
+  whatever the CALLER carried, not necessarily 0.  The correct argument
+  is narrower: the only production call chain that reaches one of these
+  shader ops with a positive `bsdfPdf` already set is a PT SSS
+  continuation's `rs2` being passed onward as the `rs` of a nested
+  shader-op dispatch (e.g. a BSSRDF exit ray that next hits a
+  transparent or alpha-tested surface) — and in that case the inherited
+  `bsdfPdf` is exactly the value the SSS continuation itself intended,
+  so `RayCasterEnvEscapeMISWeight`'s weight is CORRECT, not a bug: this
+  is a legitimate pass-through of an already-meaningful value, not an
+  accidental default. No sibling defect follows from this correction;
+  it only fixes the doc's factual claim about how these ops behave.
 - **Legacy `pixelpel_rasterizer` / `pixelintegratingspectral_rasterizer`
   top-level camera rays**: call `CastRay`/`CastRayNM`/`CastRayHWSS` with
   `pRadianceMap = nullptr` explicitly, so they already reached the

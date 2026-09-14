@@ -2634,7 +2634,23 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					}
 				}
 
-				// MIS: power heuristic (or optimal MIS) against BSDF PDF
+				// MIS: power heuristic (or optimal MIS) against BSDF PDF.
+				//
+				// DL-73/DL-74 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md):
+				// `pMaterial->Pdf(...)` is the RAW, un-guided sampling pdf --
+				// at a VOLUME vertex (`pMaterial` is a `MediumScatterMaterial`
+				// adapter, see MediumTransport.cpp) this correctly matches
+				// what `RayCaster.cpp`'s env-escape weight also uses (both
+				// raw `phasePdf`), so that pairing is UNBIASED (DL-73, ruled
+				// not a debt). At a SURFACE vertex under active OpenPGL
+				// one-sample guiding, this is DIFFERENT from what
+				// `PathTracingIntegrator.cpp`'s matching escape weight uses
+				// (`effectiveBsdfPdf` = the GUIDED COMBINED pdf) -- that
+				// mismatch breaks the MIS partition of unity and is the
+				// real, currently-unfixed asymmetry filed as DL-74. Do not
+				// "fix" this call to take a combined pdf without ALSO
+				// auditing the volume case above, whose correctness
+				// currently depends on this staying raw.
 				if( pMaterial )
 				{
 					static const IORStack defaultIOR( 1.0 );

@@ -74,6 +74,14 @@ Scalar MediumScatterMaterial::Pdf(
 	const IORStack& ior_stack
 	) const
 {
+	// DL-73 (ruled not a debt, see docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+	// "DL-73 RULED NOT A DEBT"): this is the RAW, un-guided phase pdf --
+	// deliberately NOT combined with any OpenPGL volume-guiding mixture.
+	// RayCaster.cpp's volume phase-scatter continuation env-escape weight
+	// (`rs2.bsdfPdf = phasePdf`) uses this SAME raw value, so the two
+	// sides of the env-NEE/env-escape MIS pair feed PowerHeuristic the
+	// identical (phasePdf, envPdf) pair and sum to exactly 1. Combining
+	// this with the guide pdf would break that partition -- do not do it.
 	return m_pPhase->Pdf( vToLight, m_wo );
 }
 

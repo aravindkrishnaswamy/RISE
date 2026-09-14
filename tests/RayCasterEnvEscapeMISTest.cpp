@@ -341,16 +341,30 @@ static void TestRGB()
 			CheckClose( cExplicit.g, expected.g, 1e-9, label );
 			CheckClose( cExplicit.b, expected.b, 1e-9, label );
 
-			// Pin the partition of unity against the SAME shared function
-			// LightSampler's own env-NEE weight resolves to (its
-			// non-optimal-MIS branch calls
-			// `PowerHeuristic(envPdf, pBsdf)` directly -- see
-			// LightSampler.cpp's `EvaluateInScattering`/NEE-at-scatter-point
-			// env arm, ~:2652) rather than only the hand-derived `w`
-			// formula above, so a future change to either side's
-			// heuristic (or a divergence between the two) is caught
-			// here: the escape weight and the actual NEE weight for the
-			// same (bsdfPdf, envPdf) pair must sum to exactly 1.
+			// P3 note (round-2 review, this slice): this check pins
+			// `PowerHeuristic(a,b) + PowerHeuristic(a,b swapped) == 1`,
+			// which is a property of `PathTransportUtilities::
+			// PowerHeuristic` ITSELF (algebraically true for any (a,b):
+			// a^2/(a^2+b^2) + b^2/(b^2+a^2) == 1) -- it does NOT call
+			// into LightSampler's actual env-NEE code path, so it does
+			// not by itself prove the two sides AGREE on which pdf pair
+			// to feed the heuristic, only that the heuristic sums to 1
+			// when given the same pair both ways.  It still catches a
+			// regression to the heuristic FORMULA itself (e.g. a stray
+			// balance-heuristic substitution). The correction to
+			// (`escapeSide == PowerHeuristic(bsdfPdf, envPdf)`) is what
+			// the earlier `w`/`w_bsdf_real` checks above already pin
+			// directly against `RayCasterEnvEscapeMISWeight`'s actual
+			// output. The real env-NEE call this is meant to mirror is
+			// `LightSampler::EvaluateDirectLighting`'s env arm
+			// (LightSampler.cpp, `w = PowerHeuristic(envPdf, pBsdf)`,
+			// ~:2652) -- NOT `EvaluateInScattering`, which is a
+			// `MediumTransport` method (MediumTransport.cpp) that
+			// constructs a synthetic `MediumScatterMaterial`/BSDF and
+			// calls INTO `LightSampler::EvaluateDirectLighting`; the
+			// previous version of this comment misattributed the env
+			// arm to "LightSampler.cpp's EvaluateInScattering", a
+			// function that does not exist in that file.
 			const Scalar w_bsdf_real = PathTransportUtilities::PowerHeuristic( bsdfPdf, envPdf );
 			const Scalar w_nee_real = PathTransportUtilities::PowerHeuristic( envPdf, bsdfPdf );
 			std::snprintf( label, sizeof(label),
