@@ -902,6 +902,25 @@ namespace
 		unsigned int seed = 9101;
 		for( const GrazingRow& r : ggxRows ) passed &= RunGGXGrazingRow( r, seed++ );
 
+		// The two ANISOTROPIC configurations the DL-86 review called out
+		// by name: a 9:1 ratio viewed along the SMOOTH axis at
+		// theta=89.89 (cosView ~ 0.00192) is where
+		// `LookupEssG2AnisoDirectional`'s end-cap bites hardest, and the
+		// pair is written both ways round (alphaX>alphaY and
+		// alphaX<alphaY, azimuth swapped to name the same physical
+		// direction) because DL-77's own P1 was an axis-swap bug that
+		// every same-signed row was blind to.
+		// tolAbs 0.005 (band +/-0.0088 at this SE), tighter than the
+		// isotropic rows': the aniso sub-grid closes these to within
+		// 0.05% of 1, and both pre-fix models miss that band by 3x or
+		// more, so there is no reason to leave slack here.
+		const GrazingRow anisoRows[] = {
+			{ { "GGX Schlick aniso(.9,.1) F0=1 th=89.89 az=90 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.9, 0.1, 89.89, 90.0, 0.0 }, 1.0, 0.005, "" },
+			{ { "GGX Schlick aniso(.1,.9) F0=1 th=89.89 az=0 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.1, 0.9, 89.89,  0.0, 0.0 }, 1.0, 0.005, "" },
+		};
+		seed = 9150;
+		for( const GrazingRow& r : anisoRows ) passed &= RunGGXGrazingRow( r, seed++ );
+
 		std::cout << "\n--- DL-86: CookTorranceBRDF (SEPARABLE-model LookupEss consumer) furnace at extreme grazing, two-sided ---\n";
 		const GrazingRow ctRows[] = {
 			{ { "CT conductor a=1.0 th=89.40 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
