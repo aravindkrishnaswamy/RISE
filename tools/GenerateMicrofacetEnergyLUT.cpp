@@ -138,8 +138,21 @@ static const int LUT_SIZE = 32;
 static const int NUM_SAMPLES = 1000000;
 
 // DL-77: anisotropic Kulla-Conty compensation table dimensions.
-// ANISO_ALPHA_SIZE/ANISO_COS_SIZE are coarser than LUT_SIZE (16 vs 32) to
-// keep the total sample budget in a reasonable generation-time ballpark.
+//
+// P3-c (debt-ggx3 review correction): the paragraph immediately below
+// used to say "ANISO_ALPHA_SIZE/ANISO_COS_SIZE are coarser than LUT_SIZE
+// (16 vs 32)" and "16x16=256 pairs ... grew 2x" -- accurate ONLY at the
+// moment the reachability fix (below) first landed, when both sizes were
+// still 16.  The very next pass in this same slice (the P2-2 residual
+// pass, see the ANISO_PHI_SIZE paragraph further down) raised
+// ANISO_ALPHA_SIZE to 24 and ANISO_COS_SIZE to 32, so the CURRENT sizes
+// are: ANISO_ALPHA_SIZE=24 (still coarser than LUT_SIZE=32, per axis) and
+// ANISO_COS_SIZE=32 (now MATCHES LUT_SIZE exactly, no longer coarser).
+// 24x24=576 (alphaX,alphaY) pairs are baked (vs the old (ratio,alphaEff)
+// parametrization's 8x16=128 pairs), kept smaller than a hypothetical
+// full 32x32 to keep the total sample budget in a reasonable
+// generation-time ballpark -- see the wall-clock time recorded in the
+// DL-77 ledger row/DL62_DL64 doc for the actual bake cost at this size.
 //
 // P2-2 (debt-ggx3, reachability fix): this table used to be parametrized
 // on (ratio=max(alphaX,alphaY)/min(alphaX,alphaY), alphaEff=sqrt(alphaX*
@@ -156,9 +169,10 @@ static const int NUM_SAMPLES = 1000000;
 // SAME per-axis mapping AnisoAlphaIndex already used for alphaEff) --
 // every (ix,iy) cell is a literal, always-reachable (alphaX,alphaY) pair.
 // ANISO_ALPHA_SIZE is reused as the per-axis size for BOTH alphaX and
-// alphaY (16x16=256 (alphaX,alphaY) pairs, vs the old 8x16=128
-// (ratio,alphaEff) pairs -- more than double the WORKING resolution even
-// though the nominal grid only grew 2x, since none of it is wasted now).
+// alphaY -- at the CURRENT ANISO_ALPHA_SIZE=24 that is 24x24=576
+// (alphaX,alphaY) pairs, vs the old (ratio,alphaEff) parametrization's
+// 8x16=128 pairs -- more than 4x the WORKING resolution even though the
+// nominal grid grew only 3x (24/8), since none of it is wasted now.
 //
 // ANISO_PHI_SIZE resolves the incident direction's AZIMUTH relative to the
 // tangent/bitangent axes -- a first cut at this table (azimuthally
@@ -222,16 +236,63 @@ static const int NUM_SAMPLES = 1000000;
 // (now matching the isotropic LUT_SIZE) directly narrow that end-cap and
 // the low-alpha cell width: worst case dropped to 3.25% at
 // alphaX=0.9353,alphaY=0.0752,cos=0.1211,phi=85.5 (mean 0.15%, 35 >1%,
-// 7 >2%, 0 >5%).  NOT fully closed to the <=1% target -- the residual's
-// root cause is the same grazing end-cap DL-86 already tracks (a flat-
-// clamp below the first cosTheta bin center), which grid density alone
-// asymptotically approaches but does not eliminate, and revisiting the
-// end-cap clamp itself is explicitly out of scope for this slice per
-// DL-86's own note.  See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md's
-// "DL-77" section, P2-2 subsection, for the full sweep methodology.
+// 7 >2%, 0 >5%).
+//
+// P2 root-cause correction (debt-ggx3, review round 2): the "3.25% worst
+// case is the same grazing end-cap DL-86 tracks" attribution above was
+// WRONG for the cited point.  A profile at that exact configuration
+// (alphaX=0.9353, alphaY=0.0752, cos=0.1211 -- nowhere near the
+// c0=0.5/32=0.0156 end-cap clamp) found table-vs-truth is 0.1-0.7% at
+// every phi GRID NODE (the old grid's 60/75/90 degree nodes) but peaks
+// 3.2-3.3% MID-INTERVAL (85-87.5 degrees, i.e. between the 75 and 90
+// degree nodes): snapping phi alone to the nearest node dropped the
+// residual 3.43%->0.79%, while snapping cos alone (keeping phi at the
+// off-grid 85.5) left 3.24% unchanged -- so the dominant driver at this
+// point is the 15-degree-coarse ANISO_PHI_SIZE=7 azimuth grid against
+// strong curvature near phi=90 at high anisotropy, not the cosTheta
+// end-cap.  A SEPARATE, secondary driver is the LINEAR alpha axis: node0
+// (alpha=0.01) and node1 (alpha=0.053) are a 5.3x ratio apart in a single
+// cell, so bilinear interpolation near the low-alpha diagonal mixes
+// strongly anisotropic corner cells (also the source of the pre-existing
+// 1.27e-3 E_ss seam and 3.6% MSLobeZ seam noted elsewhere).  The
+// cosTheta end-cap (cos<0.0156) IS real and IS DL-86 -- it dominates
+// OTHER sweep points (e.g. 2.79% at cos=0.0062) -- it just wasn't the
+// driver at the specific point this comment used to cite.
+//
+// Fix: ANISO_PHI_SIZE 7->13 (7.5-degree steps instead of 15-degree,
+// endpoint-inclusive grid and exact node mirror `phiDeg[N-1-pi] =
+// 90-phiDeg[pi]` both preserved for any N).  The alpha axis was measured
+// and left LINEAR (see AnisoAlphaIndex): a log-spaced axis would need
+// re-deriving the P2-1 isotropic-diagonal seeding, the pass-2 mirror
+// symmetry, and every runtime call site's index math, for a driver this
+// pass measured as SECONDARY to the phi grid -- out of scope here, and
+// recorded as a residual, not silently dropped.
+//
+// Re-measured post-fix (own mt19937_64 stream, 4000 points, 200k VNDF
+// samples/point, seed 424242; independent scratch program, not checked
+// in): the SAME cited point (alphaX=0.9353, alphaY=0.0752, cos=0.1211,
+// phi=85.5), re-evaluated at 4e6 samples for a clean number, now reads
+// 2.58% (was 3.25%).  Full 4000-point sweep: UNRESTRICTED worst case
+// 17.89% at alphaX=0.0361,alphaY=0.9627,cos=0.0024,phi=5.0 -- this IS a
+// DL-86 end-cap point (cos=0.0024 << the c0=0.0156 clamp), not a DL-77
+// regression.  RESTRICTED to cos>=0.03 (isolates the phi-interpolation/
+// low-alpha-grid residual this pass targets, per the root-cause
+// correction above): worst case 2.69% at alphaX=0.0411,alphaY=0.6853,
+// cos=0.0742,phi=2.9 (mean residual 0.118% over 3908 points, 6 >1%,
+// 2 >2%, 0 >5%) -- down from the pre-fix 3.25%/0.15%/35/7/0.  NOT fully
+// closed to the <=1% target -- the residual's root cause is now measured
+// as (a) phi-interpolation curvature near the axis-aligned/45-degree
+// boundary at extreme anisotropy ratios, which a 13-point grid narrows
+// but does not eliminate, and (b) the low-alpha linear-grid coarseness
+// noted above -- revisiting either further (a denser or non-uniform phi
+// grid, or a log-spaced alpha axis) is out of scope for this pass.  The
+// SEPARATE cosTheta end-cap (cos<0.0156) remains tracked as DL-86 and is
+// unaffected by this fix, isotropic or anisotropic.  See
+// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md's "DL-77" section, P2-2
+// subsection, for the full sweep methodology and this correction.
 static const int ANISO_ALPHA_SIZE = 24;
 static const int ANISO_COS_SIZE = 32;
-static const int ANISO_PHI_SIZE = 7;	// 0,15,30,45,60,75,90 degrees
+static const int ANISO_PHI_SIZE = 13;	// 0,7.5,15,...,90 degrees (7.5-degree steps)
 static const int NUM_SAMPLES_ANISO = 150000;
 
 // H6 + DL-63: verbatim, hand-maintained multiscatter-lobe sampler/pdf
@@ -1255,10 +1316,23 @@ int main() {
 	printf("\tstatic const int LUT_SIZE = %d;\n\n", LUT_SIZE);
 
 	// Emit E_ss table
+	//
+	// P3-e (debt-ggx3 review): all 7 large tables in this header are
+	// `inline const`, not `inline constexpr` -- both give identical
+	// C++17 external-linkage/one-definition-rule dedupe (an `inline`
+	// variable has one shared definition across every including TU
+	// regardless of the `const`/`constexpr` qualifier), but `constexpr`
+	// additionally obligates the compiler to constant-evaluate the
+	// initializer, and MSVC's default `/constexpr:steps 100000` step
+	// budget cannot evaluate the largest table here (129,024 elements)
+	// at compile time -- `inline const` keeps the same runtime data and
+	// linkage without asking for compile-time evaluation at all.  Each
+	// table below carries a one-line printed reminder of this.
 	printf("\t/// Directional albedo E_ss(alpha, cosTheta) of GGX single-scatter BRDF with F=1.\n");
 	printf("\t/// Indexed as E_ss_TABLE[alphaIdx][cosThetaIdx].\n");
 	printf("\t/// Alpha mapped linearly from 0.01 to 1.0, cosTheta from cell centers.\n");
-	printf("\tinline constexpr Scalar E_ss_TABLE[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("\t\t{ ");
 		for(int ci = 0; ci < LUT_SIZE; ci++) {
@@ -1274,7 +1348,8 @@ int main() {
 	// Emit E_avg table
 	printf("\t/// Cosine-weighted hemisphere average of E_ss per roughness.\n");
 	printf("\t/// E_avg(alpha) = 2 * integral_0^1 E_ss(alpha, mu) * mu d_mu\n");
-	printf("\tinline constexpr Scalar E_avg_TABLE[%d] = {\n\t\t", LUT_SIZE);
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_avg_TABLE[%d] = {\n\t\t", LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("%.8f", E_avg[ai]);
 		if(ai < LUT_SIZE - 1) printf(", ");
@@ -1302,7 +1377,8 @@ int main() {
 	printf("\t/// correlated G2; CookTorranceBRDF/SPF (separable G) keep\n");
 	printf("\t/// using E_ss_TABLE/LookupEss, unchanged.  Same indexing,\n");
 	printf("\t/// resolution and sample count as E_ss_TABLE.\n");
-	printf("\tinline constexpr Scalar E_ss_TABLE_G2[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE_G2[%d][%d] = {\n", LUT_SIZE, LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("\t\t{ ");
 		for(int ci = 0; ci < LUT_SIZE; ci++) {
@@ -1316,7 +1392,8 @@ int main() {
 	printf("\t};\n\n");
 
 	printf("\t/// DL-63: height-correlated-G2 twin of E_avg_TABLE above.\n");
-	printf("\tinline constexpr Scalar E_avg_TABLE_G2[%d] = {\n\t\t", LUT_SIZE);
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_avg_TABLE_G2[%d] = {\n\t\t", LUT_SIZE);
 	for(int ai = 0; ai < LUT_SIZE; ai++) {
 		printf("%.8f", E_avg_G2[ai]);
 		if(ai < LUT_SIZE - 1) printf(", ");
@@ -1422,7 +1499,8 @@ int main() {
 	printf("\t/// from the converged isotropic E_ss_TABLE_G2 (P2-1, debt-ggx3)\n");
 	printf("\t/// rather than an independent Monte-Carlo bake, so it matches\n");
 	printf("\t/// LookupEssG2's own curve exactly at the isotropic boundary.\n");
-	printf("\tinline constexpr Scalar E_ss_TABLE_G2_ANISO_PHI[%d][%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_PHI[%d][%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
 	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{\n");
 		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
@@ -1452,7 +1530,8 @@ int main() {
 	printf("\t/// E_ss_TABLE_G2_ANISO[alphaXIdx][alphaYIdx][cosThetaIdx], both\n");
 	printf("\t/// alpha axes mapped linearly from 0.01 to 1.0, cosTheta from\n");
 	printf("\t/// cell centers.\n");
-	printf("\tinline constexpr Scalar E_ss_TABLE_G2_ANISO[%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_COS_SIZE);
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO[%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_COS_SIZE);
 	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{\n");
 		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
@@ -1473,7 +1552,8 @@ int main() {
 
 	printf("\t/// DL-77: azimuthally-averaged hemisphere average of\n");
 	printf("\t/// E_ss_TABLE_G2_ANISO per (alphaX, alphaY).\n");
-	printf("\tinline constexpr Scalar E_avg_TABLE_G2_ANISO[%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE);
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_avg_TABLE_G2_ANISO[%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE);
 	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{ ");
 		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
