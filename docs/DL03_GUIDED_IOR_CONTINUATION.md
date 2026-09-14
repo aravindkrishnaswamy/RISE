@@ -23,8 +23,8 @@ inward candidate with positive combined PDF and BSDF even when its SPF PDF
 is zero. Blindly copying an exit's popped stack would create incorrect
 inward state. This change neither rejects/resamples proposals nor changes
 PDFs or BSDF amplitudes. Full translucent guiding weights/densities remain
-DL-38/DL-41, PT selected-lobe compensation DL-42, and BDPT eye PDF argument
-order DL-43 (CLOSED `a69c9ce6`, 2026-09-13 -- see docs/DEBT_LEDGER.md).
+DL-38/DL-41. PT selected-lobe compensation DL-42 and BDPT eye PDF argument
+order DL-43 are both CLOSED 2026-09-13 -- see docs/DEBT_LEDGER.md.
 Existing unchanged tilted SPF exit behavior is retained and now tracked
 as DL-45; this is not a geometric-horizon correction for the sampler itself.
 

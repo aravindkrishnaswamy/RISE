@@ -59,7 +59,7 @@ Paths below are relative to `src/Library/`.
 | `Materials/TranslucentSPF.cpp`, RGB uniform/per-channel and NM entry/backscatter | VERIFIED unchanged for this pattern | These lobes intentionally use N-dependent Phong sampling with matching stored conditional densities; their evaluable mixture remains DL-41. |
 | `Shaders/PathTracingIntegrator.cpp`, ordinary RGB/NM | VERIFIED unchanged consumer | Uses supplied pS->pdf; no compensation for the old negative support. |
 | `Shaders/PathTracingIntegrator.cpp`, HWSS | VERIFIED hero density; OPEN DL-38 companions | Hero consumes stored pdf; companion fallback BSDF*cos/pdf cannot reproduce stateful amplitudes. |
-| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; DL-03 subsequently CLOSED | Pdf/PdfNM agree with the diffuse exit sampler; guiding state was closed by `8a9bdb18`, while selected-lobe compensation remains DL-42. |
+| `Shaders/PathTracingIntegrator.cpp`, guided RGB/NM | CORRECTED producer; DL-03 subsequently CLOSED | Pdf/PdfNM agree with the diffuse exit sampler; guiding state was closed by `8a9bdb18`; selected-lobe compensation was DL-42, CLOSED 2026-09-13. |
 | `Shaders/BDPTIntegrator.cpp`, eye/light RGB/NM/HWSS | CORRECTED producer; OPEN DL-38/DL-41 | Uses selectProb*effectivePdf forward; reverse reevaluation converts to predecessor pdfRev. Eye guided-candidate argument order was separately DL-43, CLOSED `a69c9ce6`. |
 | `Utilities/PathVertexEval.h` | VERIFIED propagation; OPEN DL-41 full contract | Rebuilds intersection and stack then calls Pdf/PdfNM; does not compensate for the former sign error. |
 | `Shaders/VCMIntegrator.cpp` and MLT rasterizers | VERIFIED shared consumer | VCM consumes inherited pdfRev in MIS recurrence; RGB/NM MLT uses BDPT generators. No duplicate translucent sampler. |
@@ -88,15 +88,25 @@ DL-02 test pins the existing conditional API, not an ideal full mixture.
 
 ## Review residuals
 
-**DL-42 — PT one-sample guiding loses lobe-selection compensation.**
+**~~DL-42 — PT one-sample guiding loses lobe-selection compensation.~~
+CLOSED 2026-09-13 — `PathTracingIntegrator.cpp` fix,
+`tests/PTGuidedSelectProbTest.cpp: ALL TESTS PASSED`.**
 The ordinary RGB/NM loop initializes scatterThroughput as kray/selectProb.
-When trained one-sample guiding keeps the BSDF candidate, it overwrites
-that value with kray*pdf/combinedPdf, dropping selectProb. This is reachable
-at an ordinary entry reflection on a mixed-lobe material. It is independent
-of the translucent exit sign/shape producer and does not need BSDF
-reevaluation or a substituted stack. Ordinary translucent exits are not a
-clean PT fixture because GuidingEffectiveAlpha disables specular arrivals.
-Static finding verified by the supervisor; no measured render bias claimed.
+When trained one-sample guiding kept the BSDF candidate, it overwrote
+that value with kray*pdf/combinedPdf, dropping selectProb. This was
+reachable at an ordinary entry reflection on a mixed-lobe material. It is
+independent of the translucent exit sign/shape producer and needed no BSDF
+reevaluation or substituted stack. Ordinary translucent exits are not a
+clean PT fixture because GuidingEffectiveAlpha disables specular arrivals
+-- the closing red-proof instead used TranslucentSPF's EXIT branch, whose
+diffuse-exit + translucent-backscatter lobes are a real, reachable
+guiding-eligible multi-lobe pair. Fixed to
+`kray*pS->pdf/(selectProb*combinedPdf)`; the other two trained-guiding
+overwrite sites in the same block re-evaluate the material's AGGREGATE
+BSDF/PDF and were confirmed NOT to need the same fix (dividing there would
+double-count). See [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-42 for the
+full derivation, red/green counters and sibling audit (including the new
+DL-65 finding).
 
 **~~DL-43 — BDPT eye guided-candidate PDF arguments are reversed.~~ CLOSED
 2026-09-13 — `a69c9ce6`, `TranslucentIORStackTest: ALL TESTS PASSED`.**
