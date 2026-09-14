@@ -149,6 +149,57 @@ below for the relabel-symmetry proof and
 [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
 "DL-77" section for the full P2-2 sweep numbers.
 
+**Review follow-up (debt-ggx3, P2, review round 2)**: two corrections.
+(1) **Stale numbers** -- the `0.9982`/`1.0061`/`1.0049` and `0.9988`/
+`0.9924` furnace means quoted above two paragraphs back had drifted from
+what this tree's `TestAnisotropicFurnaceDL77` (seeds 9001-9005)
+deterministically produces; every quoted furnace number in this file was
+re-taken on the tree at the time of this review and read `0.9995`/
+`1.0020`/`1.0013`/`0.9995`/`0.9949`, immediately before the fix below,
+and `0.9990+/-0.0033`/`1.0027+/-0.0038`/`1.0009+/-0.0029`/
+`0.9991+/-0.0029`/`0.9950+/-0.0032` (seeds 9001-9005 respectively) after
+it -- both sets pass the `[0.90, 1+6SE+.005]` gate comfortably; quote the
+post-fix numbers going forward.
+(2) **P2-2's own worst-case residual root cause was mis-attributed** --
+the `alphaX=0.9353,alphaY=0.0752,cos=0.1211,phi=85.5` worst point (3.25%)
+was blamed on "the same grazing end-cap DL-86 tracks", but a profile at
+that exact configuration is nowhere near DL-86's `cos<0.0156` clamp;
+table-vs-truth is 0.1-0.7% at every phi grid node but peaks 3.2-3.3%
+MID-INTERVAL (85-87.5 degrees) -- the real driver is the 15-degree-coarse
+`ANISO_PHI_SIZE=7` azimuth grid, with the linear alpha axis as a
+secondary driver; DL-86's cosTheta end-cap is real but dominates OTHER
+points, not this one. Fixed by raising `ANISO_PHI_SIZE` 7->13 (7.5-degree
+steps); the alpha axis was measured and left linear (a log-spaced axis
+needs re-deriving several other pieces of this table for a secondary
+driver -- out of scope here). Re-measured (independent scratch program,
+not checked in): the cited point now reads `2.58%` (clean 4e6-sample
+measurement, was `3.25%`); a fresh 4000-point sweep restricted to
+`cos>=0.03` (isolating this residual from DL-86's separately-tracked
+end-cap) gives worst case `2.69%` at `alphaX=0.0411,alphaY=0.6853,
+cos=0.0742,phi=2.9` (mean `0.118%`, 6 of 3908 points >1%, 2 >2%, 0 >5%),
+down from the pre-fix `3.25%`/`0.15%`/35/7/0. The UNRESTRICTED sweep
+worst case is `17.89%` at a genuine DL-86 end-cap point
+(`cos=0.0024`) -- not a regression of this fix. Bake wall time at the
+final `24x24x13x32` grid: `~292s` (`~4m52s`), single-threaded. Generator
+regenerates the header byte-for-byte (0-line diff) at the new grid size.
+See [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-77" section for the full corrected attribution and sweep numbers.
+
+Also added: one tight two-sided regression guard row (seed 9006, 400k
+local samples to get SE small enough to discriminate a ~0.005 furnace-mean
+shift) pinned to the exact cited residual point
+(`alphaX=0.9353,alphaY=0.0752,theta=83.0441,az=85.5`) -- reads
+`0.98434+/-0.00087` post-fix, red-proofed FAIL against the pre-fix
+(`ANISO_PHI_SIZE=7`) header at the same seed/samples
+(`0.97933+/-0.00088`, a ~5.7*SE separation) -- so any future
+re-coarsening of `ANISO_PHI_SIZE` fails this row specifically, not just
+the loose `kAnisoFloor` guard. `156 checks, 0 failures` (was `155/0`).
+The 7 large `Scalar` tables in `MicrofacetEnergyLUT.h` were also changed
+from `inline constexpr` to `inline const` (identical C++17
+external-linkage dedupe, but no compile-time-evaluation obligation --
+avoids MSVC's default `/constexpr:steps 100000` limit on the largest
+table, 129,024 elements).
+
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
 (`E_ss_TABLE_G2`/`E_avg_TABLE_G2`, `LookupEssG2`/`LookupEavgG2`) against a
