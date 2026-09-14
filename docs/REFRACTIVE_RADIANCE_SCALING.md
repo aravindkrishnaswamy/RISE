@@ -374,7 +374,7 @@ is exact even across a layered SPF's internal chain:
 | `Materials/GenericHumanTissueSPF.cpp` | 0 (2 `containsCurrent()` reads) | — | no | reads `ior_stack.containsCurrent()` to branch its own scattering behaviour but never pushes or pops — no medium-change site here for the debt-30 factor to apply to. |
 | `Materials/WeaveSPF.cpp` | 0 | — | no | pure pass-through to its own `ScatterImpl`, same "thin transmission, no stack change" shape as `FabricSPF` above. |
 | `DetectorSpheres/*` | 5 | FLUX | no | measurement rigs; comment only |
-| `Materials/SubSurfaceScatteringSPF.cpp` (front-face), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.{h,cpp}` | 0 stack transitions in complete-event helpers | exterior to same exterior | no transport change | RISE samples both boundaries together; their basic-radiance factors telescope to one. PBRT applies complementary factors in its surface and BSSRDF stages. DL-04 measures the convention; normalization was subsequently fixed in DL-48; index/support residuals remain DL-49/DL-52. See §10.1. |
+| `Materials/SubSurfaceScatteringSPF.cpp` (front-face), `Utilities/RandomWalkSSS.{h,cpp}`, `Utilities/BSSRDFSampling.{h,cpp}` | 0 stack transitions in complete-event helpers | exterior to same exterior | no transport change | RISE samples both boundaries together; their basic-radiance factors telescope to one. PBRT applies complementary factors in its surface and BSSRDF stages. DL-04 measures the convention; normalization was subsequently fixed in DL-48; the support residual was subsequently fixed in DL-52 (`00cd6723`); the relative-index residual remains DL-49. See §10.1. |
 | `Materials/SubSurfaceScatteringSPF.cpp` inside fallback (`Scatter` / `ScatterNM`) | 2 pop sites | standalone non-absorbing SPF | no transport change | Shipped SSS materials set `bAbsorbBackFace=true`, so membership-selected inside hits return before these sites. The default standalone SPF allows this branch; DL-51 (`34434610`) corrected its destination-IOR read to use the popped stack. Initial seeding alone does not make it reachable in shipped materials. See §10.1. |
 
 **Is this table exhaustive over `src/Library/Materials`?** (review round
@@ -562,7 +562,13 @@ document.
 ### ~~10.1 Named residual: the subsurface-scattering family (§6.1)~~
 
 CLOSED 2026-09-12 — DL-04 convention consistency pin, `1b705ce1`;
-SSSRadianceScalingTest: 572093 checks, 0 failures on unchanged transport.
+SSSRadianceScalingTest: 572093 checks, 0 failures on unchanged transport
+at the time. The baseline has since moved to **574017** checks, 0
+failures (DL-52's probe fix, `00cd6723`, 2026-09-13, reaches additional
+entry points on flat/near-flat surfaces; the DL-71 follow-up fix does
+not move it further) — see
+[DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)
+and [DL71_BSSRDF_PROBE_ENTRY_NORMAL.md](DL71_BSSRDF_PROBE_ENTRY_NORMAL.md).
 
 **DL-04 audit correction, 2026-09-12.** The
 previous account conflated a complete subsurface event with one boundary,

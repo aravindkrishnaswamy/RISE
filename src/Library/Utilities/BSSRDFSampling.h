@@ -19,7 +19,20 @@
 //    3. Sample radius r from the profile CDF for the channel
 //    4. Sample angle phi uniformly on [0, 2pi)
 //    5. Compute probe origin offset in the perpendicular plane
-//    6. Cast a probe ray along +-axis through the object
+//    6. Cast a single finite chord through the object along the axis,
+//       starting before and passing through the projection plane
+//       (DL-52: NOT two half-lines starting AT the plane -- that
+//       skips a coplanar near surface, see BSSRDFSampling.cpp).
+//       DL-71/DL-75: any hit -- near OR far side of the projection
+//       plane, position is irrelevant -- whose underlying geometry
+//       orients its reported normal to face the incoming ray
+//       (RayIntersectionGeometric::bGeomNormalOrientedToRay) has that
+//       normal (and its shading-normal partner, oriented into the
+//       same hemisphere -- P2-A) unconditionally recovered via
+//       `oriented ? -raw : raw`, EXCEPT when the orientation is
+//       fabricated rather than a recovered winding normal
+//       (HairGeometry; RayIntersectionGeometric::bGeomNormalRayDerived)
+//       -- see the probe loop in BSSRDFSampling.cpp for the full rule.
 //    7. If hit: evaluate Rd(r_actual), compute multi-axis PDF
 //    8. Generate cosine-weighted scattered ray from entry normal
 //    9. Compute Fresnel transmission and Sw normalization

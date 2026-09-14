@@ -114,6 +114,77 @@ namespace
 		}
 		return RISE::RISEPel( 1, 1, 1 );
 	}
+
+	// MIS PARTNER RULE (DL-53; mirrors PathTracingIntegrator's fixed escape
+	// site, see docs/PT_ENV_MIS_DOUBLECOUNT.md "MIS PARTNER RULE").  A
+	// BSDF-sampled ray that escapes to the SAME radiance map env-NEE
+	// imports through (the scene's GLOBAL map, via EnvironmentSampler) is
+	// that strategy's complementary partner and must carry the matching
+	// weight, or the two strategies sum to 1 + w_nee instead of 1.  Callers
+	// must apply this ONLY when the map the escape actually resolved to is
+	// pointer-identical to pScene->GetGlobalRadianceMap() -- a genuinely
+	// per-object/local override map has no NEE partner (nothing importance
+	// samples it) and must keep full weight (i.e. not call this at all).
+	//
+	// envRadiance is the RAW (unweighted) escaped radiance and is consumed
+	// ONLY for optimal-MIS training (trainOptimalMIS==true); pass any value
+	// when training is skipped.  Training is Pel/NM-only, matching the
+	// previous per-callsite behaviour: HWSS applies the weight but never
+	// trained the optimal-MIS accumulator at this site before this fix.
+	inline RISE::Scalar RayCasterEnvEscapeMISWeight(
+		const RISE::Implementation::LightSampler* pLightSampler,
+		const RISE::RuntimeContext& rc,
+		const RISE::RasterizerState& rast,
+		const RISE::Ray& ray,
+		const RISE::IRayCaster::RAY_STATE& rs,
+		const RISE::RISEPel& envRadiance,
+		const bool trainOptimalMIS )
+	{
+		using namespace RISE;
+
+		Scalar w_bsdf = 1.0;
+
+		if( !pLightSampler || rs.bsdfPdf <= 0 ) {
+			return w_bsdf;
+		}
+
+		const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
+		if( !pES ) {
+			return w_bsdf;
+		}
+
+		const Scalar envPdf = pES->Pdf( ray.Dir() );
+		if( envPdf <= 0 ) {
+			return w_bsdf;
+		}
+
+		// Optimal MIS training: use full integrand Le * BSDF * cos.
+		// bsdfTimesCos carries RGB BSDF*cos from the scatter site (for NM,
+		// all three channels carry the same scalar value -- see the NM
+		// call site); component-wise multiply with Le then scalarize.
+		if( trainOptimalMIS && rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+		{
+			const Scalar fLum = ColorMath::MaxValue( envRadiance * rs.bsdfTimesCos );
+			const Scalar f2 = fLum * fLum;
+			if( f2 > 0 && rs.bsdfPdf > 0 )
+			{
+				const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->Accumulate(
+					rast.x, rast.y, f2, rs.bsdfPdf, kTechniqueBSDF );
+			}
+		}
+
+		if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+		{
+			const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+			w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
+		}
+		else
+		{
+			w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
+		}
+
+		return w_bsdf;
+	}
 }
 
 RayCaster::RayCaster(
@@ -1178,7 +1249,55 @@ bool RayCaster::CastRay(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
+				// DL-73 (STRUCK, ruled NOT a debt -- see DL72_
+				// RAYCASTER_BSDFTIMESCOS_TRAINING.md "DL-73 ruling"):
+				// storing the raw, un-combined `phasePdf` here (rather
+				// than `effectivePdf`/`combinedPdf`, the value the
+				// direction was actually drawn from under guiding) LOOKS
+				// inconsistent with the main surface scatter
+				// continuation's `effectiveBsdfPdf` convention, but the
+				// derivation shows it is REQUIRED, not a bug: env-NEE at
+				// a volume vertex weights with `MediumScatterMaterial::
+				// Pdf` = the same raw, un-guided `phasePdf`
+				// (MediumTransport.cpp, `LightSampler.cpp`'s
+				// `EvaluateDirectLighting`), so `w_bsdf =
+				// PowerHeuristic(phasePdf, envPdf)` here and `w_nee =
+				// PowerHeuristic(envPdf, phasePdf)` there are the two
+				// halves of the SAME power-heuristic pair and sum to
+				// exactly 1. `guidingMISWeight = phasePdf / combinedPdf`
+				// (folded into `rs2.importance` above) already applies
+				// the guiding correction to this sample's CONTRIBUTION;
+				// additionally substituting `combinedPdf` for `bsdfPdf`
+				// here would apply that correction a SECOND time to the
+				// MIS weight alone and break the partition (w_bsdf +
+				// w_nee != 1). Do not "fix" this to match the surface
+				// convention -- see DL-74 for the real, opposite-signed
+				// asymmetry on the SURFACE path.
 				rs2.bsdfPdf = phasePdf;
+				// DL-72 REOPENED (P2-B, this pass): the round-1 DL-72 fix
+				// wired `bsdfTimesCos` here so this continuation could
+				// train `RayCasterEnvEscapeMISWeight`'s optimal-MIS
+				// accumulator when it escapes to the env map -- but nothing
+				// in `RayCaster.cpp` ever calls `AccumulateCount` for this
+				// continuation (grep confirms zero call sites), so a
+				// training escape adds to `OptimalMISAccumulator`'s moment
+				// SUM (`Accumulate`) with no matching increment to its
+				// attempt COUNT (`AccumulateCount`) -- `Solve()` divides
+				// `Mbsdf = rawBsdf / nBsdf`, so the missing count inflates
+				// every tile's `Mbsdf` and depresses `alpha` wherever
+				// volume scattering occurs. This is a VARIANCE regression
+				// (the final radiance still divides by the real sampling
+				// pdf via `throughput`, so it stays unbiased), not a
+				// correctness bug, but it is not the documented "BSDF*cos
+				// at the scatter point" contract (IRayCaster.h) either --
+				// `throughput` here is a phase-scatter throughput, and
+				// pairing it with a correct attempt count would need a
+				// dedicated `AccumulateCount` call threaded through this
+				// continuation, which is NOT done. Conservative fix:
+				// leave this arm UNWIRED (zero) until a future pass adds
+				// the paired count; see DL72_RAYCASTER_BSDFTIMESCOS_
+				// TRAINING.md's "P2-B ruling" for the full accounting.
+				rs2.bsdfTimesCos = RISEPel( 0, 0, 0 );
 
 				Scalar hitDist = 0;
 				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
@@ -1333,6 +1452,23 @@ bool RayCaster::CastRay(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadiance( ray, rast );
 
+		// DL-53: this explicit map is env-NEE's complementary partner ONLY
+		// when it is the scene's global map (the only map EnvironmentSampler
+		// ever imports through) -- see RayCasterEnvEscapeMISWeight's doc.
+		// Every production pathtracing_* rasterizer's BSSRDF/RW-SSS
+		// continuation forwards its own pRadianceMap (the global map) here
+		// with a positive cosine bsdfPdf; before this fix this branch
+		// always won and the weight below was unreachable, so that
+		// continuation's env escape summed to 1 + w_nee on top of the
+		// entry point's already-weighted env-NEE sample. A genuinely
+		// distinct per-object override map keeps full weight (w_bsdf stays
+		// 1 inside the helper, since it has no NEE partner).
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			c = c * RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs, c, /*trainOptimalMIS=*/true );
+		}
+
 		// Analog no-scatter survival weight for the escape-to-background path
 		// (Tr / pSurvival, not full Tr — see above).
 		if( pMedium ) {
@@ -1344,43 +1480,9 @@ bool RayCaster::CastRay(
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
 
 		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
-		if( pLightSampler && rs.bsdfPdf > 0 )
-		{
-			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
-			if( pES )
-			{
-				const Scalar envPdf = pES->Pdf( ray.Dir() );
-				if( envPdf > 0 )
-				{
-					// Optimal MIS training: use full integrand Le * BSDF * cos.
-					// bsdfTimesCos carries RGB BSDF*cos from the scatter site;
-					// component-wise multiply with Le then scalarize.
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar fLum = ColorMath::MaxValue( c * rs.bsdfTimesCos );
-						const Scalar f2 = fLum * fLum;
-						if( f2 > 0 && rs.bsdfPdf > 0 )
-						{
-							const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
-								rast.x, rast.y,
-								f2, rs.bsdfPdf, kTechniqueBSDF );
-						}
-					}
-
-					Scalar w_bsdf;
-					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
-					}
-					else
-					{
-						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
-					}
-					c = c * w_bsdf;
-				}
-			}
-		}
+		// (shared with the explicit-map branch above -- see DL-53).
+		c = c * RayCasterEnvEscapeMISWeight(
+			pLightSampler, rc, rast, ray, rs, c, /*trainOptimalMIS=*/true );
 
 		// Analog no-scatter survival weight for the escape-to-environment path
 		// (Tr / pSurvival, not full Tr — see above).
@@ -1795,7 +1897,28 @@ bool RayCaster::CastRayNM(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
+				// DL-73 (STRUCK, ruled NOT a debt): NM sibling of the RGB
+				// volume-continuation note above -- `bsdfPdf` is
+				// deliberately the raw, un-combined `phasePdf`, matching
+				// env-NEE's `MediumScatterMaterial::Pdf` at the same
+				// vertex; substituting `combinedPdf` would double-apply
+				// the guiding correction (already folded into
+				// `rs2.importance` via `guidingMISWeight`) and break the
+				// w_bsdf + w_nee == 1 partition. See the RGB copy's
+				// comment for the full derivation.
 				rs2.bsdfPdf = phasePdf;
+				// DL-72 REOPENED (P2-B, this pass): NM sibling of the RGB
+				// volume-continuation note above -- no `AccumulateCount`
+				// call exists anywhere in this file for this continuation,
+				// so training the optimal-MIS moment sum here without a
+				// matching attempt count inflates `Mbsdf` and depresses
+				// `alpha` (a variance regression, not a correctness bug --
+				// `rc.pOptimalMIS` is Pel-only at runtime, so this NM copy
+				// was always moot in practice, but is kept symmetric with
+				// the RGB copy). Left UNWIRED (zero) pending a properly
+				// paired count; see DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+				// "P2-B ruling".
+				rs2.bsdfTimesCos = RISEPel( 0, 0, 0 );
 
 				Scalar hitDist = 0;
 				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
@@ -1917,6 +2040,18 @@ bool RayCaster::CastRayNM(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadianceNM( ray, rast, nm );
 
+		// DL-53: see RayCasterEnvEscapeMISWeight's doc / the RGB CastRay
+		// call site above -- apply the env-NEE complementary weight ONLY
+		// when this explicit map is pointer-identical to the scene's
+		// global map (the SSS/RW-SSS continuation case); a genuinely
+		// distinct per-object override map keeps full weight.
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			c = c * RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs,
+				RISEPel( c, c, c ), /*trainOptimalMIS=*/true );
+		}
+
 		// Analog no-scatter survival weight for the escape-to-background path:
 		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
 		// homogeneous, correct for heterogeneous — see the surface-hit case).
@@ -1931,44 +2066,11 @@ bool RayCaster::CastRayNM(
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
-		// Apply MIS weight for BSDF-sampled environment hit vs env NEE (spectral)
-		if( pLightSampler && rs.bsdfPdf > 0 )
-		{
-			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
-			if( pES )
-			{
-				const Scalar envPdf = pES->Pdf( ray.Dir() );
-				if( envPdf > 0 )
-				{
-					// Optimal MIS training (spectral env BSDF-hit): use
-					// full integrand Le * BSDF * cos.  For NM, all channels
-					// of bsdfTimesCos carry the same scalar value.
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar fVal = c * rs.bsdfTimesCos.r;
-						const Scalar f2 = fVal * fVal;
-						if( f2 > 0 && rs.bsdfPdf > 0 )
-						{
-							const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
-								rast.x, rast.y,
-								f2, rs.bsdfPdf, kTechniqueBSDF );
-						}
-					}
-
-					Scalar w_bsdf;
-					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
-					}
-					else
-					{
-						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
-					}
-					c = c * w_bsdf;
-				}
-			}
-		}
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		// (spectral; shared with the explicit-map branch above -- see DL-53).
+		c = c * RayCasterEnvEscapeMISWeight(
+			pLightSampler, rc, rast, ray, rs,
+			RISEPel( c, c, c ), /*trainOptimalMIS=*/true );
 
 		// Analog no-scatter survival weight for the escape-to-environment path:
 		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
@@ -2635,6 +2737,22 @@ bool RayCaster::CastRayHWSS(
 				c[i] = pRadianceMap->GetRadianceNM( ray, rast, swl.lambda[i] );
 			}
 		}
+
+		// DL-53: see RayCasterEnvEscapeMISWeight's doc / the RGB CastRay
+		// call site above -- apply the env-NEE complementary weight ONLY
+		// when this explicit map is pointer-identical to the scene's
+		// global map; a genuinely distinct per-object override map keeps
+		// full weight. No optimal-MIS training here, matching the
+		// pre-existing HWSS global-map branch (never trained at this site).
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			const Scalar w_bsdf = RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs,
+				RISEPel( 0, 0, 0 ), /*trainOptimalMIS=*/false );
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+				c[i] *= w_bsdf;
+			}
+		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		// Global radiance map (environment): per wavelength with
 		// MIS weights using the hero's BSDF pdf.
@@ -2645,31 +2763,16 @@ bool RayCaster::CastRayHWSS(
 			}
 		}
 
-		// Environment MIS: use hero's bsdfPdf for the balance
-		// heuristic (all wavelengths share the same geometric
-		// direction, so the same PDF applies).
-		if( pLightSampler && rs.bsdfPdf > 0 )
+		// Environment MIS: use hero's bsdfPdf for the balance heuristic
+		// (all wavelengths share the same geometric direction, so the same
+		// PDF applies; shared with the explicit-map branch above -- see
+		// DL-53).
 		{
-			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
-			if( pES )
-			{
-				const Scalar envPdf = pES->Pdf( ray.Dir() );
-				if( envPdf > 0 )
-				{
-					Scalar w_bsdf;
-					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
-					}
-					else
-					{
-						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
-					}
-					for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
-						c[i] *= w_bsdf;
-					}
-				}
+			const Scalar w_bsdf = RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs,
+				RISEPel( 0, 0, 0 ), /*trainOptimalMIS=*/false );
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+				c[i] *= w_bsdf;
 			}
 		}
 

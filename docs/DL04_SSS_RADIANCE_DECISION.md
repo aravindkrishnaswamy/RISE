@@ -5,6 +5,15 @@ Historical DL-04 measurements and open-residual statements below describe
 that audit. Follow-up DL-48 fixed the directional normalization at
 `9e48b225`, followed by the evaluated-record correction `12a7ef3e`;
 see [its current closure record](DL48_SSS_NORMALIZATION.md).
+**The `SSSRadianceScalingTest` guard counts quoted below (572078/572084/
+572093) are historical, dated to this audit's own commits and are NOT the
+current count** — DL-52's probe fix (`00cd6723`, 2026-09-13) made the
+BSSRDF disk-projection probe reach entry points it previously missed on
+flat/near-flat surfaces, which changed how many guard checks the same
+test executes; the follow-up DL-71 orientation fix (`e416d3bd`,
+2026-09-13) does not move it further. The current baseline is
+**574017 checks, 0 failures** — see [DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)
+and [DL71_BSSRDF_PROBE_ENTRY_NORMAL.md](DL71_BSSRDF_PROBE_ENTRY_NORMAL.md).
 Other residual status is maintained in the debt ledger.
 This records the source audit, measured probes, and the coarse convention gate
 introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.
@@ -255,7 +264,13 @@ or dividing the complete subsurface contribution by eta squared. At IOR 2
 the values are 0.926139012437, 3.37122271642 and 0.314868086443. These are
 quadrature/arithmetic diagnostics, not executed production mutations.
 
-## Planar probe origin (DL-52)
+## ~~Planar probe origin (DL-52)~~
+
+CLOSED 2026-09-13 — `00cd6723`, `BSSRDFPlanarProbeReachTest`: unfixed
+0/500 entry points reached on a real flat face (curved-sphere control
+372/500), fixed 500/500. See [closure](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md).
+The following diagnosis and low-sample smoke tests remain historical
+evidence from before this repair.
 
 The first four-spp flat-box smoke returned diffusion air RGB mean
 (0.04000010123, 0.04000011512, 0.04000005414), near the surface reflection
@@ -294,7 +309,14 @@ choices can vary. The fixture labels repeat dispersion descriptively and
 does not use it as a confidence interval for the integral. Sample-count,
 geometry and cap comparisons supplement the absolute convention check.
 
-## Recursive environment MIS (DL-53)
+## ~~Recursive environment MIS (DL-53)~~
+
+CLOSED 2026-09-13 — `b3de184d`, `RayCasterEnvEscapeMISTest`: unfixed
+48/79 checks failed (explicit-global-map escape returned raw, unweighted
+radiance regardless of `bsdfPdf`), fixed 79/79 pass at the time (suite
+later grew to 91 checks the same day, `0eb7a47e` — current total 91/91,
+P3-2). See [closure](DL53_RAYCASTER_ENV_ESCAPE_MIS.md). The following
+diagnosis remains historical evidence from before this repair.
 
 The rendered diffusion air mean exceeds the independently sampled helper
 mean. Source inspection confirms an independent positive extra term:

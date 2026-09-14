@@ -278,12 +278,19 @@ namespace RISE
 		Vector3						vGeomNormal2;
 
 		//! OUTPUT: set by geometries that flip `vGeomNormal` to oppose the
-		//! incoming ray (currently: double-sided triangle meshes -- see
-		//! TriangleMeshGeometry::IntersectRay / TriangleMeshGeometryIndexed::
-		//! IntersectRay).  Default false -- geometries that do not flip
-		//! (single-sided meshes, and every analytical primitive whose
-		//! geometric normal is the true, unmodified surface normal) leave
-		//! this false, so the recovery formula below is a no-op for them.
+		//! incoming ray.  FIVE setters as of DL-75 (2026-09-13):
+		//! `TriangleMeshGeometry::IntersectRay`, `TriangleMeshGeometryIndexed::
+		//! IntersectRay`, `ClippedPlaneGeometry::IntersectRay`,
+		//! `BezierPatchGeometry::RayElementIntersection` (all four flip a
+		//! genuine, ray-INDEPENDENT winding-order normal that has two real
+		//! sides -- undoing the flip recovers that true side), and
+		//! `HairGeometry::RayElementIntersection` (a FIFTH setter whose
+		//! reported normal is ray-DERIVED/fabricated -- a hair ribbon has no
+		//! second side to recover; see `bGeomNormalRayDerived` immediately
+		//! below).  Default false -- geometries that do not flip (single-
+		//! sided meshes, and every analytical primitive whose geometric
+		//! normal is the true, unmodified surface normal) leave this false,
+		//! so the recovery formula below is a no-op for them.
 		//!
 		//! Consumers that need the TRUE surface facing (which side of the
 		//! actual geometry the ray struck, independent of the double-sided
@@ -300,7 +307,41 @@ namespace RISE
 		//! genuine exit both face the ray under the flip, which collapses
 		//! the raw dot-product facing test to the same sign on both --
 		//! this flag lets the caster undo the flip losslessly instead.)
+		//!
+		//! A consumer that instead wants the true, ray-independent
+		//! GEOMETRIC NORMAL VECTOR itself (not just its dot-product sign
+		//! against one particular ray direction -- e.g. an entry point's
+		//! outward normal for a Fresnel/cosine term computed against an
+		//! arbitrary later direction, such as a light sample) recovers it
+		//! the same way, applied to the vector rather than the scalar dot:
+		//!
+		//!     oriented ? -vGeomNormal : vGeomNormal
+		//!
+		//! This is unconditional on WHERE or in what direction the hit was
+		//! reached -- the flip predicate is evaluated fresh per hit by each
+		//! setter above (see e.g. TriangleMeshGeometry::IntersectRay's
+		//! `bFlipGeomNormal`), so undoing it always recovers that hit's true
+		//! winding-order normal, never a position- or direction-dependent
+		//! approximation of one (BSSRDFSampling.cpp's DL-71/DL-75 probe
+		//! correction is the motivating consumer -- see that file).
+		//! ONLY valid when `bGeomNormalRayDerived` is false; see that flag.
 		bool						bGeomNormalOrientedToRay;
+
+		//! OUTPUT: true when `bGeomNormalOrientedToRay` describes a FABRICATED
+		//! orientation rather than the recovery of a genuine, ray-independent
+		//! winding-order normal.  Set by `HairGeometry::RayElementIntersection`
+		//! only (DL-75, 2026-09-13): a hair ribbon is constructed to always
+		//! face the ray (it has no back side), so its `vGeomNormal` carries no
+		//! second, "true" orientation to recover -- `oriented ? -vGeomNormal :
+		//! vGeomNormal` would just report the OPPOSITE ray-derived direction,
+		//! not an outward surface normal.  Consumers that recover a true
+		//! outward/winding-order normal via `bGeomNormalOrientedToRay` (see
+		//! its doc comment immediately above) MUST first check this flag is
+		//! false; when true, there is no well-defined "outward side" to
+		//! recover and the correction must be skipped.  Default false for
+		//! every other geometry (the four winding-order setters above never
+		//! touch this field).
+		bool						bGeomNormalRayDerived;
 
 		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)
 
@@ -560,6 +601,7 @@ namespace RISE
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
 		  bGeomNormalOrientedToRay( false ),
+		  bGeomNormalRayDerived( false ),
 		  bHasTexCoord1( false ),
 		  pmxWorldToObject( 0 ),
 		  pCustom( 0 ),
@@ -590,6 +632,7 @@ namespace RISE
 		  vGeomNormal( r.vGeomNormal ),
 		  vGeomNormal2( r.vGeomNormal2 ),
 		  bGeomNormalOrientedToRay( r.bGeomNormalOrientedToRay ),
+		  bGeomNormalRayDerived( r.bGeomNormalRayDerived ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
@@ -634,6 +677,7 @@ namespace RISE
 			vGeomNormal = r.vGeomNormal;
 			vGeomNormal2 = r.vGeomNormal2;
 			bGeomNormalOrientedToRay = r.bGeomNormalOrientedToRay;
+			bGeomNormalRayDerived = r.bGeomNormalRayDerived;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;

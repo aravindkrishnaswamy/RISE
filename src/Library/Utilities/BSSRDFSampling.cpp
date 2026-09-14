@@ -107,9 +107,37 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		perpU * offsetU + perpV * offsetV );
 
 	//
-	// Step 6: Cast probe rays in both +axis and -axis directions.
-	// Trace the full intersection chain through the object and collect
-	// all valid hits, then select one uniformly (PBRT convention).
+	// Step 6: Cast a single finite CHORD along the probe axis, passing
+	// THROUGH the projection plane (the perpU/perpV plane through
+	// exitPoint that probeCenter lies in), and collect every
+	// intersection the chord crosses -- the standard separable-BSSRDF
+	// probe (Christensen & Burley 2015; PBRT's SeparableBSSRDF::Sample_Sp
+	// traces the same start-before/travel-through chord).
+	//
+	// DL-52: the previous implementation started BOTH probe rays AT
+	// probeCenter (a point IN the projection plane) and advanced
+	// BSSRDF_RAY_EPSILON before the first intersection test, once per
+	// +axis and once per -axis.  On a broad flat face, probeCenter is
+	// itself coplanar with the local surface (a lateral tangent/
+	// bitangent offset never leaves the plane of a flat surface), so
+	// BOTH epsilon advances moved the ray origin to the WRONG side of
+	// exactly the nearby surface the probe was centered on before the
+	// intersection test ever ran.  The dominant near-coplanar entry
+	// point -- the one the whole disk-projection scheme is built to
+	// find -- was skipped by construction on every sample; only a
+	// distant, unrelated surface crossed later along either half-line
+	// (e.g. the far side of a slab) could restore any profile mass.
+	//
+	// Fix: trace ONE continuous ray per axis, starting well BEFORE the
+	// projection plane (probeMaxDist back along -axis) and travelling
+	// forward THROUGH it for a total chord length of 2*probeMaxDist.  A
+	// surface coplanar with (or arbitrarily close to) the projection
+	// plane is now crossed mid-chord like any other intersection, never
+	// skipped by an epsilon offset anchored ON the plane.  The single
+	// monotonic sweep (the bounce loop only ever advances `traveled`
+	// forward) cannot hit the same physical point twice, and it
+	// subsumes what the old two-direction trace covered on both sides
+	// of probeCenter -- no distinct "+axis" and "-axis" loop is needed.
 	//
 	struct ProbeHit {
 		Point3 point;
@@ -119,22 +147,28 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	};
 	std::vector<ProbeHit> hits;
 	hits.reserve( 8 );
-	// Limit probe distance to the profile's effective range — hits
-	// beyond this contribute negligible energy and may cross voids.
+	// Limit the chord's reach on each side of the projection plane to the
+	// profile's effective range — hits beyond this contribute negligible
+	// energy and may cross voids.
 	const Scalar probeMaxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
 	const int maxProbeHits = 64;  // safety cap
 
-	// Trace all intersections along +axis and -axis
-	for( int dir = 0; dir < 2; dir++ )
 	{
-		const Vector3 probeDir = (dir == 0) ? probeAxis : -probeAxis;
-		Ray probeRay( probeCenter, probeDir );
+		const Point3 chordStart = Point3Ops::mkPoint3( probeCenter, -probeAxis * probeMaxDist );
+		Ray probeRay( chordStart, probeAxis );
+		// P3 bookkeeping note: this initial epsilon advance is NOT added to
+		// `traveled` below, so the loop's actual reach is
+		// `chordLength + BSSRDF_RAY_EPSILON` from `chordStart`, not exactly
+		// `chordLength` -- negligible (epsilon-scale) but stated explicitly
+		// here since the per-hit `remaining` budget is computed against
+		// `chordLength` alone.
 		probeRay.Advance( BSSRDF_RAY_EPSILON );
 
+		const Scalar chordLength = 2.0 * probeMaxDist;
 		Scalar traveled = 0;
 		for( int bounce = 0; bounce < maxProbeHits; bounce++ )
 		{
-			const Scalar remaining = probeMaxDist - traveled;
+			const Scalar remaining = chordLength - traveled;
 			if( remaining < BSSRDF_RAY_EPSILON ) break;
 
 			RayIntersection probeRI( probeRay, nullRasterizerState );
@@ -151,11 +185,89 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			h.normal = probeRI.geometric.vNormal;
 			h.geomNormal = probeRI.geometric.vGeomNormal;
 			h.onb = probeRI.geometric.onb;
+
+			// DL-71/DL-75 (P1): recover the TRUE, ray-independent winding
+			// normal from a geometry that re-orients its reported normal
+			// to face the incoming ray (RayIntersectionGeometric::
+			// bGeomNormalOrientedToRay -- double-sided triangle meshes,
+			// ClippedPlaneGeometry, BezierPatchGeometry, and HairGeometry).
+			//
+			// A PREVIOUS version of this fix (round 1, DL-71) applied the
+			// correction only on "near-half" hits (`distFromChordStart <
+			// probeMaxDist`), reasoning that only those hits were reached
+			// from the "opposite" direction a pre-DL-52 `-probeAxis` probe
+			// would have used.  That positional model is WRONG in general:
+			// the flip predicate each setter evaluates (e.g.
+			// TriangleMeshGeometry::IntersectRay's `bFlipGeomNormal =
+			// Dot(vGeomNormal, ray.Dir()) > 0`) is a per-hit fact about
+			// THIS ray direction and THIS surface winding -- it does not
+			// depend on which half of the chord the hit falls in.  On a
+			// concave double-sided mesh (an L-corner, an ear) a FAR-half
+			// hit can just as easily be an EXITING crossing that gets
+			// flipped, and the near/far boundary itself sits at the
+			// initial `BSSRDF_RAY_EPSILON` advance from chordStart -- a
+			// hit a few ulps past that boundary was silently inverted by
+			// the old code for no physical reason.  The correct rule is
+			// unconditional: `oriented ? -raw : raw` recovers the true
+			// winding-order normal for EVERY hit where the flag is set,
+			// regardless of position or approach direction (see the field's
+			// own doc comment in RayIntersectionGeometric.h).
+			//
+			// EXCEPTION -- HairGeometry (DL-75): its
+			// `bGeomNormalOrientedToRay` is unconditionally true, but the
+			// reported normal is FABRICATED (ray-derived), not the
+			// recovery of a genuine two-sided winding normal -- a hair
+			// ribbon has no "outward side" to undo the flip back to.
+			// Applying the correction there would just report the
+			// ray-OPPOSITE direction, not a physically meaningful entry
+			// normal, so `bGeomNormalRayDerived` gates the correction off
+			// for hair (filed as DL-75: SSS on hair geometry has no
+			// defined outward entry normal -- coverage/precision gap, not
+			// fixed here).
+			//
+			// Geometry types that never set `bGeomNormalOrientedToRay`
+			// (the vast majority -- any consistently-wound single-sided
+			// mesh, and every analytical primitive) are untouched either
+			// way, since the flag defaults false for them.
+			if( probeRI.geometric.bGeomNormalOrientedToRay &&
+				!probeRI.geometric.bGeomNormalRayDerived )
+			{
+				h.geomNormal = -h.geomNormal;
+
+				// P2-A: the SHADING normal's own flip predicate
+				// (`Dot(vNormal, ray.Dir()) > 0`, e.g.
+				// TriangleMeshGeometry::IntersectRay's `ri.vNormal =
+				// -ri.vNormal` a few lines above its independent
+				// `bFlipGeomNormal` test) is evaluated INDEPENDENTLY of
+				// the geometric normal's -- at a grazing crossing the two
+				// can disagree (the interpolated per-vertex shading
+				// normal already opposes the chord while the flat face
+				// normal does not, or vice versa).  Blindly negating
+				// `h.normal` in lockstep with `h.geomNormal` (round-1
+				// DL-71 behaviour) can therefore leave the pair in
+				// OPPOSITE hemispheres.  Instead, orient the (unflipped)
+				// shading normal into the SAME hemisphere as the just-
+				// corrected geometric normal -- the pairing every
+				// downstream BSSRDF/Fresnel/cosine consumer assumes.
+				if( Vector3Ops::Dot( h.normal, h.geomNormal ) < 0 ) {
+					h.normal = -h.normal;
+				}
+
+				// Rebuild the basis around the corrected shading normal,
+				// keeping the existing tangent (u) as the seed so the
+				// frame stays a genuine orthonormal triple rather than
+				// just negating W in isolation (which downstream
+				// consumers that overwrite vNormal/onb together -- e.g.
+				// PathTracingIntegrator.cpp, BDPTIntegrator.cpp -- would
+				// otherwise receive as a mismatched W-vs-U/V pair).
+				h.onb.CreateFromWU( h.normal, h.onb.u() );
+			}
+
 			hits.push_back( h );
 
 			// Advance ray past this hit
 			traveled += probeRI.geometric.range;
-			probeRay = Ray( probeRI.geometric.ptIntersection, probeDir );
+			probeRay = Ray( probeRI.geometric.ptIntersection, probeAxis );
 			probeRay.Advance( BSSRDF_RAY_EPSILON );
 			traveled += BSSRDF_RAY_EPSILON;
 		}

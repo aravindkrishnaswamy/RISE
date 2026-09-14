@@ -1027,6 +1027,14 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 	ri.vNormal      = Ncyl;
 	ri.vGeomNormal  = Nflat;
 	ri.bGeomNormalOrientedToRay = true;
+	// DL-75: this orientation is FABRICATED (ray-derived), not the
+	// recovery of a genuine two-sided winding-order normal -- a hair
+	// ribbon has no back side to recover.  Consumers that undo
+	// `bGeomNormalOrientedToRay` to reconstruct a true outward normal
+	// (e.g. BSSRDFSampling.cpp's entry-point probe) must check this flag
+	// first and skip the correction when it is set; see the field's own
+	// doc comment in RayIntersectionGeometric.h.
+	ri.bGeomNormalRayDerived = true;
 
 	// (s, t): s = arc-length fraction root->tip, t = across-width in
 	// [0,1] so the BSDF's near-field offset is h = 2t - 1.

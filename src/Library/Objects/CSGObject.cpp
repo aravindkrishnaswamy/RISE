@@ -270,8 +270,12 @@ namespace
 		// actually being reported, not whichever operand `dst` started
 		// life as a whole-record copy of (external review round 7,
 		// item 4).  See RayIntersectionGeometric::bGeomNormalOrientedToRay's
-		// doc comment.
+		// doc comment.  `bGeomNormalRayDerived` (DL-75) is the same per-
+		// surface identity category -- whether the oriented normal above
+		// is a fabricated, ray-derived one (hair) rather than a recovered
+		// true winding-order normal travels with the same operand surface.
 		dst.bGeomNormalOrientedToRay = src.bGeomNormalOrientedToRay;
+		dst.bGeomNormalRayDerived = src.bGeomNormalRayDerived;
 
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;

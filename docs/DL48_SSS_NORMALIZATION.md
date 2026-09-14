@@ -145,8 +145,11 @@ coarse bounds retain the distinct spatial-support, environment-MIS,
 relative-index, and spectral-survival limitations found in DL-04. A pass
 there is not a new exact-energy or independent-QMC claim. Exact directional
 normalization and the coarse complete-render convention are different
-assertions. Of the DL-49 through DL-54 follow-ups, DL-49/DL-52/DL-53 remain open;
-DL-50/DL-51/DL-54 are closed. The geometric projection issue discovered
+assertions. Of the DL-49 through DL-54 follow-ups, DL-49 remains open;
+DL-50/DL-51/DL-54 are closed, and DL-52/DL-53 were subsequently closed by
+`00cd6723`/`b3de184d` (see
+[DL52](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)/[DL53](DL53_RAYCASTER_ENV_ESCAPE_MIS.md)
+closures). The geometric projection issue discovered
 in review is closed below as DL-54. Final clean-build/gate and review results belong to the
 standalone completion report.
 
