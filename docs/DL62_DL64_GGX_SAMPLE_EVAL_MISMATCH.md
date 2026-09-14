@@ -520,9 +520,9 @@ widening applied to `ri.glossyFilterWidth` for variance/firefly control —
 `filter_glossy` at its default 0, or that hit these materials only on the
 camera ray, are numerically identical before and after DL-65.
 
-**Known residual: LUT left end-cap (isotropic, small, NOT closed by this
-fix)**: `LookupEssG2`/`LookupEss` both flat-clamp `cosTheta` below the
-first bin center (`c0 = 0.5/32 ≈ 0.0156`) to that bin's value — a
+**Known residual: LUT left end-cap (isotropic, small; tracked as DL-86,
+NOT fixed)**: `LookupEssG2`/`LookupEss` both flat-clamp `cosTheta` below
+the first bin center (`c0 = 0.5/32 ≈ 0.0156`) to that bin's value — a
 deliberate, cheap design choice (see `MSLobeDetail::BuildSegmentsFromRow`'s
 "left flat end-cap" comment), not a bug in the clamp mechanism itself, but
 it does mean `LookupEssG2` under-reads the TRUE (continuing-to-rise)
@@ -536,6 +536,303 @@ true single-scatter energy here, the Kulla-Conty compensation adds
 slightly too much multiscatter energy back, an isotropic furnace GAIN of
 roughly 2.6% confined to incidence angles beyond ~89 degrees (`cosWi`
 below the first bin center). This is small, confined to an extreme
-grazing sliver, and independent of the anisotropic DL-77 deficit above
-(this one persists even for `alphaX==alphaY`) — recorded here as a known,
-bounded residual rather than filed as its own ledger row.
+grazing sliver, and independent of the anisotropic DL-77 deficit below
+(this one persists even for `alphaX==alphaY`). The debt-ggx3 slice (see
+"DL-77" section below) promoted this from doc prose to ledger row DL-86,
+per the DL-77 recipe's instruction, but deliberately did NOT fix it in
+that slice: DL-77's own gate required isotropic behaviour to stay
+byte-identical, and any end-cap change touches isotropic numerics at
+extreme grazing — see DL-86's row for the recipe.
+
+## DL-77: anisotropic Kulla-Conty compensation (ratio + azimuth)
+
+**Status: CLOSED 2026-09-14** — debt-ggx3 slice, base `a3aa5b8d`.
+
+**Root cause** (confirmed exactly as the ledger row diagnosed): DL-63's
+`LookupEssG2`/`LookupEavgG2`/`MSLobeZG2`/`SampleMSCosThetaG2`/`MSPdfG2`
+are calibrated to an ISOTROPIC Smith height-correlated model at a single
+`alphaEff=sqrt(alphaX*alphaY)` — exact only when `alphaX==alphaY`.
+`GGXBRDF`/`GGXSPF`'s single-scatter term uses direction-dependent per-axis
+Lambda (`MicrofacetUtils::GGX_G2_Aniso`), so for `alphaX != alphaY` the
+isotropized lookup under-compensates. Independently re-measured this pass
+against the ledger row's own evidence: `alphaX=.02/alphaY=1.0 mu=0.5`
+`0.533` true vs `0.972` isotropized lookup (an ~45% relative gap).
+
+**Fix design decision**: the ledger recipe's option (a) — a fuller table
+resolved by anisotropy ratio and (optionally) the incident azimuth — was
+implemented in two stages, because the first stage alone proved
+insufficient:
+
+1. **Ratio-only (insufficient alone).** Added
+   `E_ss_TABLE_G2_ANISO`/`E_avg_TABLE_G2_ANISO`, resolved by
+   `ratio = max(alphaX,alphaY)/min(alphaX,alphaY)` (log-spaced `[1,100]`,
+   8 steps) in addition to `alphaEff` (16 steps) and `cosTheta` (16
+   steps), AZIMUTHALLY AVERAGING wi's azimuth relative to the tangent
+   axes at bake time (matching the existing H6 multiscatter-lobe
+   sampler's own azimuth-uniform treatment). This closed the AVERAGE-case
+   deficit (the ledger's worst config moved from `0.929` to `0.998` on
+   the furnace-mean metric) but **regressed** an existing anisotropic
+   `GGXDiffuseTransmissionTest::TestSchlickSweep` row into an energy
+   GAIN: `alphaX=.05/alphaY=.5 theta=80 az=90` read `1.0376+/-0.0036`
+   against the standard limit `1.0266`. Root cause of the regression: an
+   independent per-azimuth VNDF quadrature showed the TRUE single-azimuth
+   `E_ss` at that config spans `0.789` (wi azimuth=0, aligned with the
+   smooth `alphaX=.05` axis) to `0.879` (azimuth=90, aligned with the
+   rough `alphaY=.5` axis) against a `0.841` azimuthal average — once the
+   average-case deficit closed, the az=90 direction (whose true `Ess` is
+   ABOVE the average, needing LESS compensation) over-shot.
+
+2. **Per-azimuth refinement (closes the regression).** Added a second
+   table, `E_ss_TABLE_G2_ANISO_PHI` (ratio x alphaEff x phi x cosTheta),
+   resolving wi/wo's actual azimuth `phi` relative to the tangent axes on
+   an endpoint-inclusive grid over `[0,90]` degrees (7 steps: 0, 15, ...,
+   90) — endpoint-inclusive specifically so `phi=0`/`phi=90` (the
+   azimuths `TestSchlickSweep`'s rows actually probe) are EXACT table
+   entries, not interpolated. This exploits the ellipse's quarter-period
+   mirror symmetry (`Lambda_Aniso`'s `alphaX^2*vx^2 + alphaY^2*vy^2` term
+   is invariant under `phi -> -phi` and `phi -> 180-phi`), so one quarter
+   period with reflective boundaries covers the full circle.
+   `LookupEssG2AnisoDirectional(cosTheta, localX, localY, alphaX, alphaY)`
+   reads this table and is used at every ENERGY-COMPENSATION call site
+   (`Ess_i`/`Ess_o` in `GGXBRDF::value`/`valueNM`, `GGXSPF::Scatter`/
+   `ScatterNM`'s `wms` selection weight and MS-lobe `kray`, `GGXSPF::Pdf`/
+   `PdfNM`'s `wms`), passing the queried direction's actual tangent-space
+   x,y (`wi_local.x/y` or `wo_local.x/y` — already computed at every call
+   site for the single-scatter `D`/`G2` terms, or, in `GGXSPF`'s
+   MS-lobe branch, algebraically identical to `sinTheta*cos/sin(phiMs)`
+   before the `myonb.Transform` call, avoiding a redundant projection).
+   The pre-existing azimuth-AVERAGED `LookupEssG2Aniso`/`MSLobeZG2Aniso`/
+   `SampleMSCosThetaG2Aniso`/`MSPdfG2Aniso` remain in place, but ONLY for
+   the H6 multiscatter-lobe outgoing-direction SAMPLER (an
+   importance-sampling proposal shape — `MSPdfG2Aniso` always reports the
+   density of what `SampleMSCosThetaG2Aniso` actually samples, so the
+   estimator stays unbiased regardless of how good the proposal is;
+   precision there is an efficiency concern, not correctness).
+
+**Isotropic byte-identity**: every new lookup function (`LookupEssG2Aniso`,
+`LookupEssG2AnisoDirectional`, `LookupEavgG2Aniso`, `MSLobeZG2Aniso`,
+`SampleMSCosThetaG2Aniso`) FORWARDS to the exact pre-existing isotropic
+function when `alphaX==alphaY` (`fabs(alphaX-alphaY) < 1e-9`), verified
+`1e-15`-tight for all five via a standalone probe. `GGXHeightCorrelatedEnergyLUTTest`
+(23/0, unchanged) and `GGXDiffuseTransmissionTest`'s isotropic rows are
+therefore unaffected.
+
+**Note (debt-ggx3, review round 2): the Provenance and Red-proof
+paragraphs immediately below describe the table's FIRST-stage
+implementation** — the `(ratio,alphaEff)` parametrization at
+`ANISO_ALPHA_SIZE=16`/`ANISO_COS_SIZE=16`, ~54s bake — which the SAME-DAY
+P1 follow-up (further down this section) superseded with a direct
+`(alphaX,alphaY)` grid, and which review round 2 (also further down, see
+"P2 root-cause correction") then raised to `ANISO_PHI_SIZE=13`. The
+CURRENT shipped state is `ANISO_ALPHA_SIZE=24` x `ANISO_COS_SIZE=32` x
+`ANISO_PHI_SIZE=13`, direct `(alphaX,alphaY)` axes, ~292s (4m52s) bake —
+see `docs/DEBT_LEDGER.md`'s DL-77 row and the "P2 root-cause correction"
+subsection below for the authoritative final numbers; the two paragraphs
+below are kept for their still-accurate architectural description
+(two-stage table design, VNDF-sampling bake, hand-derived lookup
+machinery) but their SIZES and TIMING are historical.
+
+**Provenance**: `tools/GenerateMicrofacetEnergyLUT.cpp` gained anisotropic
+Lambda/G1/G2/VNDF-sampling helpers (double precision, mirroring
+`MicrofacetUtils`) and the fixed-phi-grid MC bake
+(`NUM_SAMPLES_ANISO=150000`/cell, `ANISO_RATIO_SIZE=8` x
+`ANISO_ALPHA_SIZE=16` x `ANISO_PHI_SIZE=7` x `ANISO_COS_SIZE=16` =
+14,336 cells, ~2.15e9 samples, ~54s). `E_ss_TABLE_G2_ANISO`/
+`E_avg_TABLE_G2_ANISO` are DERIVED from the phi-resolved bake by
+trapezoidal-averaging over phi (not separately generated), so the two
+tables cannot drift out of sync. The `LookupEssG2AnisoDirectional`/
+`AnisoPhiIndex`/`AnisoAlphaIndex`/`AnisoRatioIndex`/`BuildSegmentsFromRowN`
+machinery is hand-derived (not baked) and embedded verbatim in the
+generator (`kHandMaintainedDL77AnisoBlock`), following the same
+provenance discipline as the pre-existing `kHandMaintainedH6Block`.
+Regenerating reproduces `MicrofacetEnergyLUT.h` byte-for-byte.
+
+**Red-proof**: `GGXDiffuseTransmissionTest`'s `TestAnisotropicKnownFailureDL77`
+known-failure control was promoted to a real, TWO-SIDED gating check
+(`TestAnisotropicFurnaceDL77`/`CheckAnisotropicFurnaceBound`) — the
+standard one-sided upper energy bound (`mean <= 1+6SE+.005`) PLUS a
+`kAnisoFloor=0.90` lower floor, specifically so a regression of this fix
+(which used to read as low as ~0.57-0.93 on these configs) fails loudly
+here instead of silently passing a gain-only check again. Two more
+independent `(alphaX,alphaY,theta,azimuth)` rows were added: ratio=10 at
+theta=75/az=45 (deliberately BETWEEN phi grid points, exercising the
+quadrilinear phi interpolation) and ratio=9 at theta=70/az=90. All three
+pass comfortably (`0.9982+/-0.0033`, `1.0061+/-0.0038`, `1.0049+/-0.0029`
+at the time this paragraph was written — **stale, see the P2 correction
+below**: re-taken on the tree immediately before review round 2's fix,
+these three read `0.9995`/`1.0020`/`1.0013`; after the `ANISO_PHI_SIZE`
+7->13 fix, `0.9990+/-0.0033`/`1.0027+/-0.0038`/`1.0009+/-0.0029`).
+`GGXDiffuseTransmissionTest: 153 checks, 0 failures` (was `151/0`, with
+the deficit invisible to the one-sided known-failure control; `155/0`
+after the P1 follow-up added 2 more rows, unchanged by review round 2's
+fix).
+
+**Gate** (12 tests, all pass, clean warning-free rebuild):
+`GGXDiffuseTransmissionTest` 153/0, `GGXHeightCorrelatedEnergyLUTTest`
+23/0, `GGXSampleEvaluationConsistencyTest` 48/0, `GGXWhiteFurnaceTest`,
+`LayeredWhiteFurnaceTest` (0 of 57 configs fail), `ThinFilmBRDFTest` 25/0,
+`ThinFilmFurnaceTest` 4/0, `SPFPdfConsistencyTest`, `SPFBSDFConsistencyTest`,
+`CookTorranceMultiscatterTest` 17/0, `GGXMetalRoughGridTest`,
+`GGXFresnelModeTest`.
+
+**Sibling audit** (docs/skills/audit-by-bug-pattern.md): `CoatedBRDF`'s
+coat lobe CONFIRMED exempt — its `CoatLobeValue` always calls
+`GGX_G2_Aniso(alpha, alpha, ...)` with a single scalar `alpha` (isotropic
+by construction), so it has no anisotropic case to mismatch against;
+unchanged. `grep`'d the whole tree for `GGX_G2_Aniso`/`LookupEssG2`/
+`LookupEavgG2` consumers: only `GGXBRDF.cpp`, `GGXSPF.cpp`,
+`CoatedBRDF.cpp` (exempt), and `MicrofacetEnergyLUT.h` itself. Three test
+files re-derive the isotropic formula directly for their own independent
+consistency checks (`ThinFilmBRDFTest.cpp`, `ThinFilmFurnaceTest.cpp`,
+`GGXSampleEvaluationConsistencyTest.cpp`'s DL-64 sections) — all three
+exercise ONLY isotropic `alpha` configurations (no `alphaX`/`alphaY`
+pair), so none needed updating.
+
+**User-visible impact**: affects `ggx_material` in every Fresnel mode
+wherever `alphaX != alphaY` (anisotropic roughness) and the multiscatter
+term is active. Before this fix, anisotropic rough metals/coated surfaces
+were measurably UNDER-bright at grazing incidence (11-76% `E_ss`-level
+deficit depending on ratio/azimuth, per the ledger row's and this
+section's measurements); after, they render close to energy-conserving
+(1-2% residual, per the three furnace rows above). Rendered
+`scenes/Tests/Materials/ggx_anisotropy_sweep.RISEscene` (brushed-metal
+silver spheres, 3x3 alphaX/alphaY grid, `pathtracing_pel_rasterizer`
+64spp, `oidn_denoise FALSE`, `pixel_filter box`, EXR output in
+`Rec709RGB_Linear`, same RNG seed before/after via
+`git checkout -- <production files>` / re-apply) before and after: mean
+luminance per 3x3 grid region rose `+0.9%` to `+4.8%` (brightening,
+consistent with closing an energy DEFICIT — the opposite direction from
+DL-63's grazing-rim darkening fix); no NaN/Inf introduced in either
+render.
+
+**Residual, NOT closed by this fix**: the per-azimuth table itself still
+resolves phi on a coarse 7-point grid and interpolates quadrilinearly —
+a config that lands between ratio/alphaEff/phi/cosTheta grid points
+carries residual interpolation error (observed up to ~1% on the furnace
+metric at the tested configs; not exhaustively swept across the full
+`(alphaX,alphaY,theta,azimuth)` space). The pre-existing isotropic LUT
+left end-cap residual (see above, now tracked as DL-86) is independent
+and unaffected by this fix.
+
+**P2 root-cause correction (debt-ggx3, review round 2)**: the P1
+follow-up's own residual pass below ("P2-2") attributed its worst-case
+`3.25%` interpolation residual (at `alphaX=0.9353,alphaY=0.0752,
+cos=0.1211,phi=85.5`) to "the same grazing end-cap DL-86 already tracks".
+That attribution was WRONG for the cited point. A profile at that exact
+configuration — nowhere near DL-86's `cos<0.0156` flat-clamp region —
+found table-vs-truth is `0.1-0.7%` at every phi grid NODE (the then-grid's
+`60`/`75`/`90` degree nodes) but peaks `3.2-3.3%` MID-INTERVAL
+(`85-87.5` degrees, between the `75` and `90` degree nodes): snapping phi
+alone to the nearest node dropped the residual `3.43%->0.79%`, while
+snapping cos alone (keeping phi at the off-grid `85.5`) left `3.24%`
+unchanged. The actual dominant driver is the 15-degree-coarse
+`ANISO_PHI_SIZE=7` azimuth grid against strong curvature near `phi=90`
+at high anisotropy ratios; a SECONDARY driver is the LINEAR alpha axis
+(the first two nodes, `alpha=0.01` and `alpha=0.053`, are a `5.3x` ratio
+apart in one cell, so bilinear interpolation near the low-alpha diagonal
+mixes strongly anisotropic corner cells — also the source of a
+pre-existing `1.27e-3` `E_ss` seam and `3.6%` `MSLobeZ` seam noted
+elsewhere in the codebase). DL-86's cosTheta end-cap IS a real, separate
+driver — it dominates OTHER sweep points (e.g. `2.79%` at `cos=0.0062`)
+— it simply was not what the cited point was measuring.
+
+Fix: `ANISO_PHI_SIZE` raised `7->13` (7.5-degree steps instead of
+15-degree; the endpoint-inclusive `[0,90]` grid and the exact node-mirror
+symmetry `phiDeg[N-1-pi] = 90-phiDeg[pi]` both hold for any `N`, verified
+directly). The alpha axis was measured and deliberately left LINEAR: a
+log-spaced axis would require re-deriving the P2-1 isotropic-diagonal
+seeding, the pass-2 mirror-symmetry fill, and every runtime call site's
+index math, to address a driver this pass measured as SECONDARY to the
+phi grid — out of scope here, recorded rather than silently dropped.
+
+Re-measured (independent scratch program — own `mt19937_64` RNG stream,
+its own transcription of the anisotropic Lambda/G1/G2/VNDF-sampling
+formulas, not sharing code with the generator or the lookup under test;
+not checked into the tree): the SAME cited point, re-evaluated at 4e6
+samples for a clean (low-MC-noise) number, now reads `2.58%` (was
+`3.25%`). A fresh 4000-point sweep (own RNG stream, 200k VNDF
+samples/point, matching the original P2-2 methodology) restricted to
+`cos>=0.03` — isolating this residual from DL-86's separately-tracked
+end-cap — gives a worst case of `2.69%` at
+`alphaX=0.0411,alphaY=0.6853,cos=0.0742,phi=2.9` (mean `0.118%` over
+3908 points, 6 `>1%`, 2 `>2%`, 0 `>5%`), down from the pre-fix
+`3.25%`/`0.15%`/35/7/0. The UNRESTRICTED sweep's worst case is `17.89%`
+at `alphaX=0.0361,alphaY=0.9627,cos=0.0024,phi=5.0` — a genuine DL-86
+end-cap point (`cos=0.0024` sits deep inside the first `ANISO_COS_SIZE`
+bin), not a regression introduced by this fix.
+
+Still NOT fully closed to the `<=1%` target — the residual's root cause
+is now correctly attributed to (a) phi-interpolation curvature near
+extreme-anisotropy azimuths, narrowed but not eliminated by the 13-point
+grid, and (b) the low-alpha linear-grid coarseness noted above; both are
+left open (a denser/non-uniform phi grid or a log-spaced alpha axis would
+address them, and are out of scope for this pass). The separate cosTheta
+end-cap (`cos<0.0156`) remains tracked as DL-86 and is unaffected by
+this fix, isotropic or anisotropic. `GGXDiffuseTransmissionTest`'s two-sided
+furnace rows (seeds 9001-9005) all still pass comfortably post-fix:
+`0.9990+/-0.0033`, `1.0027+/-0.0038`, `1.0009+/-0.0029`,
+`0.9991+/-0.0029`, `0.9950+/-0.0032`. Bake wall time at the final
+`24x24x13x32` grid: `~292s` (`~4m52s`), single-threaded (the generator
+has no internal parallelism).
+
+**P3 (debt-ggx3 review, limitation of the render evidence above)**: the
+`ggx_anisotropy_sweep.RISEscene` per-region MEAN luminance comparison
+above is a poor detector for an azimuth-mirroring bug specifically (the
+class of bug the P1 follow-up below fixed). A sphere under a fixed
+tangent-frame convention presents every azimuth around its silhouette;
+mirroring phi (swapping which axis reads "smaller-alpha") REDISTRIBUTES
+energy between symmetric points on the sphere rather than changing the
+region's aggregate mean by much, particularly under indirect/ambient
+lighting where many incident azimuths get integrated together at each
+pixel. Concretely: this render comparison shipped in the CLOSED section
+above with the P1 axis-swap bug still present in the code (P1 was found
+and fixed in a same-day follow-up, see below) and did not catch it — the
++0.9%/+4.8% brightening it reports is real (it reflects the ratio-and-
+average-case E_ss fix) but is NOT evidence the azimuth convention was
+correct. The actual regression coverage for azimuth-mirroring is the
+unit-level `GGXHeightCorrelatedEnergyLUTTest::TestRelabelSymmetry` rows
+added by the P1 follow-up (exact `LookupEssG2AnisoDirectional(aX,aY,phi)
+== (aY,aX,90-phi)` identity, tight to `~1e-16`) plus
+`GGXDiffuseTransmissionTest::TestAnisotropicFurnaceDL77`'s two
+`alphaX>alphaY` furnace rows — not a re-render. A genuinely azimuth-
+resolved render check (e.g. per-longitude-band luminance on a single
+sphere with a strong directional key light, so azimuth-mirrored energy
+would show up as a left/right asymmetry) was not built this slice; this
+is recorded as the honest scope limitation rather than an unbuilt
+diagnostic.
+
+**Review round 2 (debt-ggx3, same day): `inline constexpr` -> `inline
+const`, and a table-size correction**: the 7 large `Scalar` tables in
+`MicrofacetEnergyLUT.h` (previously converted from `static const` to
+`inline constexpr` earlier this slice) were changed again to `inline
+const` — identical C++17 external-linkage/one-definition-rule dedupe,
+but without obligating compile-time constant evaluation, which avoids
+MSVC's default `/constexpr:steps 100000` budget failing on the largest
+table (`E_ss_TABLE_G2_ANISO_PHI`, `24*24*13*32 = 239,616` elements at the
+final `ANISO_PHI_SIZE=13` grid — an earlier note in this codebase cited
+`129,024`, the count at the pre-bump `ANISO_PHI_SIZE=7`; corrected
+debt-ggx3 review round 3). `GGXDiffuseTransmissionTest`: `155 checks, 0
+failures` (was `153/0`); `GGXHeightCorrelatedEnergyLUTTest`: `30 checks,
+0 failures` (was `23/0`).
+
+**Review round 2 fix-pass (debt-ggx3, same day): phi-grid regression
+guard**: added one tight two-sided regression-guard row to
+`GGXDiffuseTransmissionTest.cpp` at the exact cited residual point
+(`alphaX=0.9353,alphaY=0.0752,theta=83.0441,az=85.5`), using a 400k-sample
+local measurement to get the standard error small enough to discriminate:
+this tree (post `ANISO_PHI_SIZE=13`) reads `mean=0.98434, se=0.00087`.
+The row's band is `[mean - 4*se, mean + 4*se]` computed from the RUN'S
+OWN runtime `se` (not a copied-in literal), so it tracks its own
+statistics if the sample count or RNG ever changes. **Round 3
+correction**: the row originally shipped with a `6*se` band, which does
+NOT red-proof — an isolated rebuild with the pre-fix (`ANISO_PHI_SIZE=7`)
+header, at the SAME seed/sample count, measures `0.97933+/-0.00088`,
+which lies INSIDE a `6*se` band (`[0.97912,0.98956]`) built from this
+run's `se`. Tightened to `4*se` (band `[0.98086,0.98782]` at this run's
+`mean`/`se`): the pre-fix `0.97933` now falls `~1.75*se` below the lower
+bound, a genuine, verified FAIL — see the isolated pre-fix-header
+rebuild's console line in the fix commit message.
+Also added one `alphaX>alphaY` material-level row (`ax=0.8,ay=0.1`) to
+`GGXWhiteFurnaceTest.cpp`'s Test 6/Test 7 (`TestMaterialPointwiseConsistency`,
+conductor and schlick_f0) — every prior row there had `alphaX<=alphaY`,
+the exact P1 blind spot; both new rows pass.

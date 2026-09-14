@@ -99,14 +99,112 @@ energy band is `mean <= 1 + 6*SE + 0.005`, with invalid samples and moments
 failing explicitly. `150 checks, 0 failures` since DL-63's fix (2026-09-14):
 the three previously-visible specular-only baseline failures (Schlick iso
 F0=1, alpha=0.6/1.0, theta=60/80) are gone -- see `GGXHeightCorrelatedEnergyLUTTest`
-below. **2026-09-14 review follow-up (P2-3 iii, same slice)**: gained a
+below. **2026-09-14 review follow-up (P2-3 iii, debt-ggx2 slice)**: gained a
 `KNOWN-FAILURE` control row (`TestAnisotropicKnownFailureDL77`, Schlick
-aniso alphaX=.02/alphaY=1.0 F0=1 spec-only) that records DL-77's
-isotropic-LUT-vs-anisotropic-render deficit (measured mean `~0.59` vs the
-1.0 a correctly-compensated furnace should read) without failing the
-suite -- the existing energy band is one-sided (gain-only) so this
-deficit was otherwise invisible to every aniso row already in the sweep.
-Now `151 checks, 0 failures`.
+aniso alphaX=.02/alphaY=1.0 F0=1 spec-only) that recorded DL-77's
+isotropic-LUT-vs-anisotropic-render deficit (measured mean `0.9292+/-0.0033`
+vs the 1.0 a correctly-compensated furnace should read -- **P3-2 review
+correction, debt-ggx3**: this row previously quoted a rough `~0.59`
+projection from the raw `E_ss` gap alone; the actual measured furnace
+mean, muted by the H6 direction-aware selection weight, is `0.9292`, and
+that is the figure the DEBT_LEDGER.md row and the fix commit record)
+without failing the suite -- the existing energy band is one-sided
+(gain-only) so this deficit was otherwise invisible to every aniso row
+already in the sweep.
+`151 checks, 0 failures`. **DL-77 CLOSED 2026-09-14 (debt-ggx3 slice)**:
+the `KNOWN-FAILURE` control was promoted to a real, TWO-SIDED gating
+check (`TestAnisotropicFurnaceDL77`/`CheckAnisotropicFurnaceBound` --
+standard upper bound `1+6SE+.005` PLUS a `0.90` lower floor, so a
+regression of the fix, which used to read as low as ~0.57-0.93, fails
+loudly instead of passing a gain-only check again), with 2 added
+independent `(alphaX,alphaY,theta,azimuth)` rows (ratio=10 az=45 --
+deliberately off the phi interpolation grid; ratio=9 az=90). All three
+now read close to 1.0 (`0.9982`/`1.0061`/`1.0049`). `153 checks,
+0 failures`. See [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-77" section for the fix (an anisotropy-ratio table plus a per-azimuth
+refinement in `MicrofacetEnergyLUT.h`).
+
+**Review follow-up (debt-ggx3, P1, same day)**: every row above has
+`alphaX < alphaY`, so all three were structurally blind to a second bug --
+`AnisoPhiIndex` read the queried direction's azimuth with no axis swap,
+but the table's baked phi=0 axis always meant "the smaller-alpha axis";
+callers passing `alphaX > alphaY` (e.g. every glTF
+`pbrmetallicroughness_material`) read a MIRRORED azimuth. Two new rows
+deliberately pass `alphaX>alphaY`, reproducing the ledger's cited
+red-proof furnace numbers on the unfixed lookup (`1.1678+/-0.0028` and
+`0.7574+/-0.0037`, matching the ledger's independently-measured
+`1.1699`/`0.7613`). Fixed by re-parametrizing the table directly on
+`(alphaX,alphaY)` as two independent grid axes (rather than
+`(ratio,alphaEff)`), so phi=0 means "aligned with the queried alphaX
+axis" unconditionally -- both new rows now read `0.9988`/`0.9924`.
+`155 checks, 0 failures`. The same re-parametrization also closed two
+follow-on issues found in review: **P2-1** (a seam at `alphaX==alphaY` --
+the table's own diagonal is now seeded from the converged isotropic
+tables instead of an independent noisier bake) and **P2-2** (most
+nominal `(ratio,alphaEff)` grid cells were physically unreachable --
+`alphaX`,`alphaY` now each span the full `[0.01,1.0]` range
+independently, and the alpha/cos resolution was raised `16->24`/`16->32`
+to shrink the residual further). See `GGXHeightCorrelatedEnergyLUTTest`
+below for the relabel-symmetry proof and
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-77" section for the full P2-2 sweep numbers.
+
+**Review follow-up (debt-ggx3, P2, review round 2)**: two corrections.
+(1) **Stale numbers** -- the `0.9982`/`1.0061`/`1.0049` and `0.9988`/
+`0.9924` furnace means quoted above two paragraphs back had drifted from
+what this tree's `TestAnisotropicFurnaceDL77` (seeds 9001-9005)
+deterministically produces; every quoted furnace number in this file was
+re-taken on the tree at the time of this review and read `0.9995`/
+`1.0020`/`1.0013`/`0.9995`/`0.9949`, immediately before the fix below,
+and `0.9990+/-0.0033`/`1.0027+/-0.0038`/`1.0009+/-0.0029`/
+`0.9991+/-0.0029`/`0.9950+/-0.0032` (seeds 9001-9005 respectively) after
+it -- both sets pass the `[0.90, 1+6SE+.005]` gate comfortably; quote the
+post-fix numbers going forward.
+(2) **P2-2's own worst-case residual root cause was mis-attributed** --
+the `alphaX=0.9353,alphaY=0.0752,cos=0.1211,phi=85.5` worst point (3.25%)
+was blamed on "the same grazing end-cap DL-86 tracks", but a profile at
+that exact configuration is nowhere near DL-86's `cos<0.0156` clamp;
+table-vs-truth is 0.1-0.7% at every phi grid node but peaks 3.2-3.3%
+MID-INTERVAL (85-87.5 degrees) -- the real driver is the 15-degree-coarse
+`ANISO_PHI_SIZE=7` azimuth grid, with the linear alpha axis as a
+secondary driver; DL-86's cosTheta end-cap is real but dominates OTHER
+points, not this one. Fixed by raising `ANISO_PHI_SIZE` 7->13 (7.5-degree
+steps); the alpha axis was measured and left linear (a log-spaced axis
+needs re-deriving several other pieces of this table for a secondary
+driver -- out of scope here). Re-measured (independent scratch program,
+not checked in): the cited point now reads `2.58%` (clean 4e6-sample
+measurement, was `3.25%`); a fresh 4000-point sweep restricted to
+`cos>=0.03` (isolating this residual from DL-86's separately-tracked
+end-cap) gives worst case `2.69%` at `alphaX=0.0411,alphaY=0.6853,
+cos=0.0742,phi=2.9` (mean `0.118%`, 6 of 3908 points >1%, 2 >2%, 0 >5%),
+down from the pre-fix `3.25%`/`0.15%`/35/7/0. The UNRESTRICTED sweep
+worst case is `17.89%` at a genuine DL-86 end-cap point
+(`cos=0.0024`) -- not a regression of this fix. Bake wall time at the
+final `24x24x13x32` grid: `~292s` (`~4m52s`), single-threaded. Generator
+regenerates the header byte-for-byte (0-line diff) at the new grid size.
+See [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-77" section for the full corrected attribution and sweep numbers.
+
+Also added: one tight two-sided regression guard row (seed 9006, 400k
+local samples to get SE small enough to discriminate a ~0.005 furnace-mean
+shift) pinned to the exact cited residual point
+(`alphaX=0.9353,alphaY=0.0752,theta=83.0441,az=85.5`) -- reads
+`0.98434+/-0.00087` post-fix. **Round 3 correction (debt-ggx3 review
+round 3)**: the row as first written used a `6*SE` band, which does NOT
+red-proof -- the pre-fix (`ANISO_PHI_SIZE=7`) header, rebuilt in
+isolation at the same seed/samples, reads `0.97933+/-0.00088`, which
+falls INSIDE a `6*SE` band (`[0.97912,0.98956]`) even though it is only
+a ~5.7*SE separation from this run's mean. Tightened to a `4*SE` band
+computed from the test's own runtime `se` (not a copied-in literal):
+band `[0.98086,0.98782]`, and the pre-fix `0.97933` now falls `~1.75*SE`
+below the lower bound -- a genuine, verified FAIL -- so any future
+re-coarsening of `ANISO_PHI_SIZE` fails this row specifically, not just
+the loose `kAnisoFloor` guard. `156 checks, 0 failures` (was `155/0`).
+The 7 large `Scalar` tables in `MicrofacetEnergyLUT.h` were also changed
+from `inline constexpr` to `inline const` (identical C++17
+external-linkage dedupe, but no compile-time-evaluation obligation --
+avoids MSVC's default `/constexpr:steps 100000` limit on the largest
+table, `E_ss_TABLE_G2_ANISO_PHI` at 24*24*13*32 = 239,616 elements).
 
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
@@ -133,6 +231,20 @@ that the original quadrature and the offline generator share one VNDF
 importance-sampling identity and so could not, between them, catch a
 shared error in it. `23 checks, 0 failures` (was `14 checks, 0
 failures`).
+
+**Review follow-up (debt-ggx3, P1, same day)**: gained a relabel-symmetry
+section (`TestRelabelSymmetry`) directly proving DL-77's P1 fix --
+`LookupEssG2AnisoDirectional(cosTheta,localX,localY,alphaX,alphaY)` must
+equal `LookupEssG2AnisoDirectional(cosTheta,localY,localX,alphaY,alphaX)`
+for the same physical direction (swapping which axis is "X" is a pure
+coordinate relabeling). 7 rows, including the two ledger-cited
+configurations; on the unfixed lookup all 7 FAILED (diffs up to `0.24`,
+e.g. `(alphaX=.827,alphaY=.09,theta=80,az=90)` read `0.831` one way and
+`0.590` the other); fixed, all 7 match to `~1e-16` (floating-point
+epsilon -- the re-parametrized table mirrors the canonical
+`alphaX<=alphaY` half into the `alphaX>alphaY` half using the SAME
+Monte-Carlo samples, so the symmetry is exact, not merely close). `30
+checks, 0 failures` (was `23 checks, 0 failures`).
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's

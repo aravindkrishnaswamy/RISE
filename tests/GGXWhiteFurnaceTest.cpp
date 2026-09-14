@@ -675,11 +675,17 @@ int main()
 		// Initialize the global log to prevent null pointer crashes
 		GlobalLog();
 
-		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1 };
-		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8 };
+		// P3-f (debt-ggx3 review): the last row (0.8,0.1) is the P1's
+		// blind spot fixed elsewhere in this slice -- every prior row
+		// here has alphaX<=alphaY, so none of them exercised
+		// GGXBRDF/GGXSPF's Kulla-Conty energy-compensation lookup with
+		// alphaX the LARGER of the pair (e.g. every glTF
+		// pbrmetallicroughness_material's convention).
+		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1, 0.8 };
+		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8, 0.1 };
 		Scalar thetas[] = { 0.3, 0.8, 1.2 };
 
-		for( int a = 0; a < 4; a++ ) {
+		for( int a = 0; a < 5; a++ ) {
 			for( int t = 0; t < 3; t++ ) {
 				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000, eFresnelConductor );
 			}
@@ -693,11 +699,12 @@ int main()
 	// conductor Fresnel.
 	std::cout << std::endl << "--- Test 7: Material BRDF/SPF Pointwise Consistency [schlick_f0] ---" << std::endl;
 	{
-		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1 };
-		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8 };
+		// P3-f (debt-ggx3 review): same alphaX>alphaY addition as Test 6.
+		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1, 0.8 };
+		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8, 0.1 };
 		Scalar thetas[] = { 0.3, 0.8, 1.2 };
 
-		for( int a = 0; a < 4; a++ ) {
+		for( int a = 0; a < 5; a++ ) {
 			for( int t = 0; t < 3; t++ ) {
 				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000, eFresnelSchlickF0 );
 			}

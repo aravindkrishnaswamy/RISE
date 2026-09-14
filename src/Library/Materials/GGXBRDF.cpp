@@ -357,23 +357,29 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	// function's own single-scatter specFactor renders with above --
 	// NOT LookupEavg/LookupEss, which are calibrated to the separable
 	// G1(wi)*G1(wo) model CookTorranceBRDF renders with instead.
-	// Use effective alpha = sqrt(alphaX * alphaY) for isotropic LUT lookup.
-	// DL-77 (open, NOT fixed by DL-63): this calibration is exact only for
-	// alphaX == alphaY.  The G2 LUT was baked from an ISOTROPIC Smith
-	// Lambda, but the single-scatter term above uses direction-dependent
-	// per-axis Lambda (MicrofacetUtils::GGX_G2_Aniso) -- isotropizing via
-	// alphaEff=sqrt(alphaX*alphaY) under-estimates the true energy deficit
-	// for strongly anisotropic configurations (measured 11-44% deficit at
-	// F0=1, e.g. alphaX=.02/alphaY=1.0).  See docs/DL62_DL64_GGX_SAMPLE_EVAL_
-	// MISMATCH.md "DL-77" and the DL-77 ledger row; GGXDiffuseTransmissionTest
-	// carries a KNOWN-FAILURE control that keeps the residual visible.
-	const Scalar alphaEff = sqrt( alphaX * alphaY );
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
+	// DL-77 (fixed): LookupEavgG2/LookupEssG2 are calibrated to an
+	// ISOTROPIC Smith Lambda at alphaEff=sqrt(alphaX*alphaY), while the
+	// single-scatter term above uses direction-dependent per-axis Lambda
+	// (MicrofacetUtils::GGX_G2_Aniso) -- isotropizing under-compensated
+	// strongly anisotropic configurations by 11-44% at F0=1 (e.g.
+	// alphaX=.02/alphaY=1.0).  LookupEavgG2Aniso/LookupEssG2Aniso resolve
+	// an additional anisotropy-RATIO table dimension and fall back to the
+	// exact isotropic LookupEavgG2/LookupEssG2 when alphaX==alphaY (so
+	// isotropic materials render byte-identically to before this fix).
+	// See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77" and the
+	// DL-77 ledger row for the azimuthal-averaging design and residual.
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
 
 	if( (1.0 - Eavg) > 1e-10 )
 	{
-		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( nr, alphaEff );
-		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( nv, alphaEff );
+		// DL-77 P2 (per-azimuth, not azimuth-averaged): Ess_o/Ess_i are the
+		// ENERGY term (unlike the H6 sampler, which stays azimuth-averaged
+		// -- see the LookupEssG2AnisoDirectional doc comment), so they use
+		// the actual per-direction azimuth (wo_local/wi_local's x,y in the
+		// SAME tangent frame alphaX/alphaY are defined in) rather than
+		// LookupEssG2Aniso's averaged table.
+		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( nr, wo_local.x, wo_local.y, alphaX, alphaY );
+		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( nv, wi_local.x, wi_local.y, alphaX, alphaY );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
 		if( fresnelMode == eFresnelSchlickF0 )
@@ -545,16 +551,18 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 	}
 
-	// Kulla-Conty multiscattering.  DL-77 (open): see value()'s twin
-	// comment above -- this isotropized alphaEff lookup under-compensates
-	// strongly anisotropic configurations.
-	const Scalar alphaEff = sqrt( alphaX * alphaY );
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alphaEff );
+	// Kulla-Conty multiscattering.  DL-77 (fixed): see value()'s twin
+	// comment above -- LookupEavgG2Aniso/LookupEssG2Aniso resolve the
+	// anisotropy-ratio dimension the isotropized alphaEff lookup was
+	// missing, and fall back to the exact isotropic lookup at
+	// alphaX==alphaY.
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
 
 	if( (1.0 - Eavg) > 1e-10 )
 	{
-		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2( nr, alphaEff );
-		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2( nv, alphaEff );
+		// DL-77 P2 (per-azimuth energy term; see value()'s twin comment).
+		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( nr, wo_local.x, wo_local.y, alphaX, alphaY );
+		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( nv, wi_local.x, wi_local.y, alphaX, alphaY );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
 		if( fresnelMode == eFresnelSchlickF0 )

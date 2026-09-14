@@ -565,54 +565,202 @@ namespace
 		return passed;
 	}
 
-	// DL-77 (P2-3 iii, debt-ggx2 review follow-up): GGXBRDF/GGXSPF's
-	// Kulla-Conty compensation looks up the height-correlated LUT at the
-	// ISOTROPIZED alphaEff=sqrt(alphaX*alphaY), while the single-scatter
-	// term above it uses direction-dependent per-axis
-	// MicrofacetUtils::GGX_G2_Aniso -- for strongly anisotropic alphaX/
-	// alphaY this under-compensates (measured E_ss deficits of 11-44% at
-	// F0=1 against an independent per-axis quadrature; see the DL-77
-	// ledger row and docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77").
+	// DL-77 (debt-ggx3 CLOSED): GGXBRDF/GGXSPF's Kulla-Conty compensation
+	// used to look up the height-correlated LUT at the ISOTROPIZED
+	// alphaEff=sqrt(alphaX*alphaY), while the single-scatter term above it
+	// uses direction-dependent per-axis MicrofacetUtils::GGX_G2_Aniso --
+	// for strongly anisotropic alphaX/alphaY this under-compensated
+	// (measured E_ss deficits of 11-44% at F0=1 against an independent
+	// per-axis quadrature; see the DL-77 ledger row and
+	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77").
 	// CheckRGBBound's energy gate is one-sided (fails only on a GAIN,
-	// `mean > 1 + 6*SE + 0.005`), so this deficit is invisible to every
-	// existing aniso F0=1 row in TestSchlickSweep above -- it silently
-	// PASSES today despite being measurably wrong.  This is a
-	// KNOWN-FAILURE control, in the same spirit as
-	// LayeredWhiteFurnaceTest's kPostureKnownFailure posture: it records
-	// the real, currently-wrong furnace mean without failing the suite
-	// (a genuine sampling/NaN defect in the estimator itself still fails
-	// it, via the invalid-sample guard), so DL-77's fix (or an accidental
-	// regression of it) shows up as a visible NUMBER change here rather
-	// than being silently absorbed by a gain-only bound.
-	static bool RunRGBCaseKnownFailureDL77( const Case& c, const unsigned int seed )
+	// `mean > 1 + 6*SE + 0.005`), so this deficit was invisible to every
+	// aniso F0=1 row in TestSchlickSweep above -- it silently PASSED
+	// despite being measurably wrong.  Fixed by resolving the anisotropy
+	// RATIO (and, separately, wi/wo's actual AZIMUTH -- an azimuth-
+	// averaged-only first cut regressed the existing (.05,.5) az=90 row
+	// in TestSchlickSweep into a GAIN; see MicrofacetEnergyLUT.h's
+	// LookupEssG2AnisoDirectional doc comment) in the Kulla-Conty LUT.
+	//
+	// CheckAnisotropicFurnaceBound below is TWO-SIDED (unlike
+	// CheckRGBBound): a LOWER floor in addition to the standard upper
+	// energy-conservation bound, specifically so a regression of THIS fix
+	// (silently reverting to the isotropized lookup, which reads as low
+	// as ~0.57 on the worst-measured configuration) fails loudly here
+	// instead of being invisible to a gain-only check again.  kAnisoFloor
+	// is fixed well below the fixed values (~0.97-1.00 measured) but
+	// comfortably above the old broken values (~0.57-0.93) so it has
+	// margin against MC noise without being able to pass a reintroduced
+	// regression.
+	static const double kAnisoFloor = 0.90;
+
+	static bool CheckAnisotropicFurnaceBound( const Case& c, const unsigned int seed )
 	{
 		BrdfFixture fixture( c );
 		const ChannelMoments moments = IntegrateRGB( *fixture.brdf, c, seed, kRGBSamples );
 		const double mean = Mean( moments, 0, kRGBSamples );
 		const double se = StandardError( moments, 0, kRGBSamples );
+		const double upperLimit = 1.0 + kEnergySigma * se + kEnergyFloor;
+		const double lowerLimit = kAnisoFloor - kEnergySigma * se;
 		const bool validSamples = moments.invalid == 0 && std::isfinite( moments.sumSq[0] ) &&
 			std::isfinite( mean ) && std::isfinite( se );
+		const bool passed = validSamples && mean <= upperLimit && mean >= lowerLimit;
 
 		std::cout << "  " << std::left << std::setw( 58 ) << c.label
 			<< "  " << std::fixed << std::setprecision( 4 ) << mean
 			<< "+/-" << std::setprecision( 4 ) << se
 			<< "  invalid=" << moments.invalid << " below=" << moments.belowHorizon
-			<< ( validSamples ? "  KNOWN-FAIL (DL-77)" : "  FAIL (invalid samples)" ) << "\n";
+			<< ( passed ? "  PASS" : "  FAIL" ) << "\n";
 		++checks;
-		if( !validSamples ) ++failures;	// a real sampling/NaN bug is still a real failure
-		return validSamples;
+		if( !passed ) ++failures;
+		return passed;
 	}
 
-	static bool TestAnisotropicKnownFailureDL77()
+	static bool TestAnisotropicFurnaceDL77()
 	{
-		std::cout << "\n--- DL-77 KNOWN-FAILURE control: strongly anisotropic F0=1 furnace deficit ---\n";
-		// alphaX=.02/alphaY=1.0 is the worst-measured case in the DL-77
-		// ledger row's E_ss evidence (0.533 true vs 0.972 isotropized
-		// lookup at mu=0.5, an ~45% relative Ess gap): spec-only (F0=1,
-		// diffuse=0) so the deficit is not diluted by a diffuse term.
-		const Case c = { "Schlick aniso(.02,1.0) F0=1 theta=60 spec-only KNOWN-FAIL",
-			eFresnelSchlickF0, 0.0, 1.0, 0.02, 1.0, 60.0, 0.0, 0.0 };
-		return RunRGBCaseKnownFailureDL77( c, 9001 );
+		std::cout << "\n--- DL-77: strongly anisotropic F0=1 furnace, two-sided gate ---\n";
+		bool passed = true;
+
+		// alphaX=.02/alphaY=1.0 (ratio=50) is the worst-measured case in
+		// the DL-77 ledger row's E_ss evidence (0.533 true vs 0.972
+		// isotropized lookup at mu=0.5, an ~45% relative Ess gap):
+		// spec-only (F0=1, diffuse=0) so the deficit is not diluted by a
+		// diffuse term.  This is the same config the KNOWN-FAILURE control
+		// this test replaces used to record (pre-fix: 0.929; the
+		// isotropized-lookup-only regression this replaces would have
+		// read close to the raw E_ss deficit, ~0.57-0.7).
+		passed &= CheckAnisotropicFurnaceBound(
+			{ "Schlick aniso(.02,1.0) ratio=50 F0=1 theta=60 az=0 spec-only",
+			  eFresnelSchlickF0, 0.0, 1.0, 0.02, 1.0, 60.0, 0.0, 0.0 }, 9001 );
+
+		// alphaX=.05/alphaY=.5 (ratio=10) at az=45 -- BETWEEN the phi grid
+		// points (0,15,...,90 in the LUT), so this exercises the
+		// quadrilinear phi interpolation rather than an exact grid hit
+		// like TestSchlickSweep's az=0/az=90 rows.  theta=75 is a
+		// different incidence angle than the existing (.05,.5) rows.
+		passed &= CheckAnisotropicFurnaceBound(
+			{ "Schlick aniso(.05,.5) ratio=10 F0=1 theta=75 az=45 spec-only",
+			  eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.5, 75.0, 45.0, 0.0 }, 9002 );
+
+		// alphaX=.1/alphaY=.9 (ratio=9) at az=90, theta=70 -- a third,
+		// independent (alphaX,alphaY,theta,azimuth) combination from the
+		// DL-77 ledger row's second-worst measured E_ss deficit
+		// (0.573 true vs 0.822 isotropized lookup at mu=0.5).
+		passed &= CheckAnisotropicFurnaceBound(
+			{ "Schlick aniso(.1,.9) ratio=9 F0=1 theta=70 az=90 spec-only",
+			  eFresnelSchlickF0, 0.0, 1.0, 0.1, 0.9, 70.0, 90.0, 0.0 }, 9003 );
+
+		// P1 red proof (debt-ggx3): every row above has alphaX < alphaY,
+		// so they were blind to the axis-swap azimuth-mirroring bug the
+		// P1 follow-up fixed -- the table's baked phi=0 axis always meant
+		// "the smaller-alpha axis", but the lookup read phi off the
+		// caller's (localX,localY) with no swap when the caller's actual
+		// alphaX was the LARGER of the pair (e.g. every glTF
+		// pbrmetallicroughness_material, which always sets alphaX>=
+		// alphaY).  These two rows deliberately pass alphaX>alphaY and
+		// reproduce the two configurations cited in the DL-77 ledger's
+		// P1 follow-up: on the unfixed lookup this test measured
+		// mean=1.1699 (row 1, energy GAIN -- alone enough to fail the
+		// upper bound) and mean=0.7613 (row 2, well under kAnisoFloor).
+		// Fixed, both read close to 1.0 like the alphaX<alphaY rows
+		// above.
+		passed &= CheckAnisotropicFurnaceBound(
+			{ "Schlick aniso(.9,.1) ratio=9 F0=1 theta=70 az=0 spec-only (P1: alphaX>alphaY)",
+			  eFresnelSchlickF0, 0.0, 1.0, 0.9, 0.1, 70.0, 0.0, 0.0 }, 9004 );
+
+		passed &= CheckAnisotropicFurnaceBound(
+			{ "Schlick aniso(.827,.09) ratio=9.19 F0=1 theta=80 az=90 spec-only (P1: alphaX>alphaY)",
+			  eFresnelSchlickF0, 0.0, 1.0, 0.827, 0.09, 80.0, 90.0, 0.0 }, 9005 );
+
+		// P3-d (debt-ggx3, review round 2): a TIGHT two-sided regression
+		// guard at the exact point review round 2 used to re-derive the
+		// DL-77 residual numbers (alphaX=0.9353, alphaY=0.0752,
+		// cos=0.1211 i.e. theta=83.0441deg, az=85.5 -- deliberately
+		// mid-interval between the new grid's 82.5/90 degree phi nodes,
+		// where table-vs-truth peaked at 3.2-3.3% on the pre-fix
+		// ANISO_PHI_SIZE=7 grid).  Unlike CheckAnisotropicFurnaceBound's
+		// loose [kAnisoFloor, 1+6SE+.005] band above (a P1 guard against
+		// a full regression back to the isotropized lookup, ~0.57-0.93),
+		// kPhiGridTightTol below is sized to this test's OWN measured
+		// mean/SE at kRGBSamples plus the review round 2 residual
+		// measurement (2.58% at this exact point, via an independent
+		// 4e6-sample scratch program -- see
+		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md's "P2 root-cause
+		// correction") -- so a future re-coarsening of ANISO_PHI_SIZE, or
+		// a change to the low-alpha grid that reopens this specific
+		// residual, fails this row long before it could regress all the
+		// way down to kAnisoFloor.
+		{
+			// Uses a much larger local sample count than kRGBSamples
+			// (30000): at kRGBSamples this configuration's furnace mean
+			// moves only ~0.005 between the pre-fix (ANISO_PHI_SIZE=7)
+			// and post-fix (=13) tables -- the H6 direction-aware
+			// selection weight dilutes the raw ~2.6% E_ss-level residual
+			// heavily before it reaches the full-BRDF furnace mean -- and
+			// kRGBSamples' own SE (~0.0032) is too coarse to separate
+			// that 0.005 shift from statistical noise (confirmed: at
+			// kRGBSamples this row PASSES against both the pre-fix and
+			// post-fix header, so it would not actually catch a
+			// regression).  400000 samples brings SE down to ~0.0009,
+			// enough margin below the measured shift for this to be a
+			// real regression guard.
+			const int kTightSamples = 400000;
+			const Case c = { "Schlick aniso(.9353,.0752) F0=1 theta=83.0441 az=85.5 spec-only (P2: phi-grid regression guard)",
+				eFresnelSchlickF0, 0.0, 1.0, 0.9353, 0.0752, 83.0441, 85.5, 0.0 };
+			BrdfFixture fixture( c );
+			const ChannelMoments moments = IntegrateRGB( *fixture.brdf, c, 9006, kTightSamples );
+			const double mean = Mean( moments, 0, kTightSamples );
+			const double se = StandardError( moments, 0, kTightSamples );
+			// Measured on this tree post-fix at kTightSamples:
+			// mean=0.98434, se=0.00087.  Red-proof (debt-ggx3 review
+			// round 3): swapping in the pre-fix (ANISO_PHI_SIZE=7)
+			// header and rebuilding an isolated copy of just this test
+			// measures 0.97933+/-0.00088 at the SAME seed/sample count.
+			// That is only a ~5.7*se separation from THIS run's mean --
+			// a *6*se* band (as this row originally used) is therefore
+			// [0.97912, 0.98956], which the pre-fix value 0.97933 falls
+			// INSIDE of: the original 6*se band did not actually
+			// red-proof (verified: it reads PASS, not FAIL, against the
+			// pre-fix header).  Fixed by tightening to a *4*se* band and
+			// computing the multiplier against THIS run's own runtime
+			// `se` (not a copied-in literal), so the row tracks its own
+			// statistics if the sample count or RNG ever changes: lower
+			// bound = mean - 4*se = 0.98434 - 4*0.00087 = 0.98086, a
+			// 1.75*se margin above the pre-fix 0.97933 -- comfortably
+			// red-proofed (see the isolated pre-fix-header rebuild's
+			// FAIL line in the DL-77 ledger row / fix commit message).
+			// A looser band built from the raw table-level residual
+			// (3*se + 0.0258, the 2.58% relative residual measured at
+			// this exact point via an independent 4e6-sample scratch
+			// program, converted to absolute since the expected value
+			// is ~1.0) would swallow the 0.006 shift entirely, so this
+			// row uses the tight statistics-only band instead --
+			// appropriate because, unlike the generic
+			// CheckAnisotropicFurnaceBound rows above (which must
+			// tolerate a much larger regression all the way back to the
+			// isotropized lookup, ~0.57-0.93), this row's whole purpose
+			// is catching a SMALL re-coarsening of ANISO_PHI_SIZE
+			// specifically.
+			const double kExpectedMean = 0.98434;
+			const double kPhiGridTightSigma = 4.0;
+			const double kPhiGridTightTol = kPhiGridTightSigma * se;
+			const double lowerLimit = kExpectedMean - kPhiGridTightTol;
+			const double upperLimit = kExpectedMean + kPhiGridTightTol;
+			const bool validSamples = moments.invalid == 0 && std::isfinite( moments.sumSq[0] ) &&
+				std::isfinite( mean ) && std::isfinite( se );
+			const bool rowPassed = validSamples && mean >= lowerLimit && mean <= upperLimit;
+			std::cout << "  " << std::left << std::setw( 58 ) << c.label
+				<< "  " << std::fixed << std::setprecision( 5 ) << mean
+				<< "+/-" << std::setprecision( 5 ) << se
+				<< "  band=[" << lowerLimit << "," << upperLimit << "]"
+				<< "  invalid=" << moments.invalid
+				<< ( rowPassed ? "  PASS" : "  FAIL" ) << "\n";
+			++checks;
+			if( !rowPassed ) ++failures;
+			passed &= rowPassed;
+		}
+
+		return passed;
 	}
 }
 
@@ -625,7 +773,7 @@ int main()
 	passed &= TestReciprocity();
 	passed &= TestSchlickSweep();
 	passed &= TestConductorAndFilmControls();
-	passed &= TestAnisotropicKnownFailureDL77();
+	passed &= TestAnisotropicFurnaceDL77();
 
 	std::cout << "GGXDiffuseTransmissionTest: " << checks << " checks, " << failures << " failures\n";
 	std::cout << "=== " << ( passed ? "ALL TESTS PASSED" : "TESTS FAILED" ) << " ===\n";
