@@ -205,9 +205,9 @@ void PNGWriter::EndWrite( )
 		png_set_compression_level(png_ptr, Z_BEST_COMPRESSION);
 		png_set_bgr(png_ptr);
 
-		if( bpp == 16 ) {
-			png_set_gAMA(png_ptr, info_ptr, 1.0);
-		} else {
+		// WriteColor applies the selected transfer function at both bit depths.
+		// Metadata must describe that encoding, not the integer precision.
+		{
 			switch( color_space )
 			{
 			case eColorSpace_ROMMRGB_Linear:
@@ -217,7 +217,7 @@ void PNGWriter::EndWrite( )
 				} break;
 			case eColorSpace_sRGB:
 				{
-					png_set_gAMA(png_ptr, info_ptr, 1.0/2.2);
+					png_set_sRGB_gAMA_and_cHRM(png_ptr, info_ptr, PNG_sRGB_INTENT_RELATIVE);
 				} break;
 			case eColorSpace_ProPhotoRGB:
 				{
@@ -246,4 +246,3 @@ void PNGWriter::EndWrite( )
 }
 
 #endif
-

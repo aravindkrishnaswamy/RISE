@@ -24,6 +24,7 @@
 #include "FireProductionRoundoffTraceAdapter.h"
 #include "FireProductionRoundoffWalker.h"
 #include "FireProductionOwnerConvergenceProbe.h"
+#include "FireProductionAcceptedFuelBudget.h"
 #include "FireProductionStaggeredColumnBudget.h"
 #include "FireProductionOnsetEvidence.h"
 #include "FireRunHostMemory.h"
@@ -1117,6 +1118,8 @@ namespace
 		bool projectedHeunEOSDiagnostic=false;
 		// Isolated checkpoint reporting probe, never a migration/publication authority.
 		bool projectedHeunCertificateDiagnostic=false;
+		// Isolated retained-state fuel observation; never empirical continuation.
+		bool acceptedFuelBudgetDiagnostic=false;
 		// Versioned r216 scope: original tier-ten kernel and retained step 792.
 		bool tier10RetainedContinuation=false;
 		bool r217RefusalDiagnostic=false;
@@ -1130,7 +1133,7 @@ namespace
 		bool UsesProjectedHeunOwner() const
 		{
 			return portedProductionTransport||sealedProjectedHeunReplay||sealedProjectedHeunContinuation||
-				projectedHeunCostDiagnostic||projectedHeunEOSDiagnostic;
+				projectedHeunCostDiagnostic||projectedHeunEOSDiagnostic||acceptedFuelBudgetDiagnostic;
 		}
 		std::filesystem::path replayProtocolPath;
 		std::string replayProtocolDigest;
@@ -1259,7 +1262,7 @@ namespace
 		const RISE::FireProductionProjectedHeunMetalOwnerResult& accepted,
 		const double beginningTimeS,const double representedStepS,const std::size_t acceptedStep,
 		const std::size_t columnX,const std::size_t columnY,std::string& error,
-		const bool syntheticFixture=false)
+		const bool syntheticFixture=false,const std::vector<double>& bottomSourcePattern={})
 	{
 		using namespace FireProductionOwnerConvergenceProbe;
 		if(!MatchesAcceptedEvent(liveRequest,beginningTimeS,representedStepS,error))return false;
@@ -1290,6 +1293,15 @@ namespace
 			&observed.qualificationIterationTrace[2]}};
 		std::string text,binding,csv;
 		if(!SerializeV2(traces,geometry,context,digest,text,binding,error,&csv))return false;
+		FireProductionAcceptedFuelBudget::Result fuelBudget;
+		std::vector<unsigned char> footprint;
+		for(const double value:bottomSourcePattern){
+			if(!std::isfinite(value)||value<0.0){error="fuel budget source pattern invalid";return false;}
+			footprint.push_back(value>0.0?1u:0u);
+		}
+		if(!FireProductionAcceptedFuelBudget::Reduce(shape,representedStepS,
+			liveRequest.lineage.eos.physicalFlux.transport.conservativeValues,
+			liveRequest.lineage.frozenSource.SourceDelta(),observed,fuelBudget,error,footprint))return false;
 		RISECBOR64::Bytes tailBytes;
 		std::ostringstream tailRecords;tailRecords<<std::setprecision(17);
 		for(unsigned int stage=0u;stage<3u;++stage)
@@ -1334,6 +1346,22 @@ namespace
 			<<" fixed_k_selection=not_authorized\n";
 		if(!WriteV2(artifact,traces,geometry,context,digest,binding,error))return false;
 		artifact<<"OWNER_CONVERGENCE_CSV sha256="<<digest(csv)<<"\n";
+		artifact<<"ACCEPTED_R1_CH4_BUDGET scope=observed_step_not_window_integral"
+			<<" boundary_transport_kg="<<fuelBudget.boundaryTransportKG
+			<<" divergence_transport_kg="<<fuelBudget.divergenceTransportKG
+			<<" state_change_kg="<<fuelBudget.stateChangeKG
+			<<" frozen_source_kg="<<fuelBudget.frozenSourceKG
+			<<" closure_residual_kg="<<fuelBudget.closureResidualKG<<'\n';
+		for(unsigned int side=0u;side<6u;++side)artifact<<"ACCEPTED_R1_CH4_BOUNDARY side="<<side
+			<<" low_outward_kg_per_s="<<fuelBudget.lowOutwardKGPerS[side]
+			<<" correction_outward_kg_per_s="<<fuelBudget.correctionOutwardKGPerS[side]<<'\n';
+		if(fuelBudget.bottomFootprintAvailable){
+			artifact<<"ACCEPTED_R1_BOTTOM_SOURCE_MASK faces="<<fuelBudget.bottomFootprintFaces
+				<<" sha256="<<RISECBOR64::SHA256Hex(footprint)<<" predicate=canonical_source_pattern_gt_zero\n";
+			for(unsigned int region=0u;region<2u;++region)artifact<<"ACCEPTED_R1_BOTTOM_REGION source_footprint="<<region
+				<<" low_outward_kg_per_s="<<fuelBudget.bottomFootprintLowKGPerS[region]
+				<<" correction_outward_kg_per_s="<<fuelBudget.bottomFootprintCorrectionKGPerS[region]<<'\n';
+		}
 		artifact<<tailRecords.str()<<"OWNER_CONSUMED_TAIL_PAYLOAD encoding=binary32_little_endian sha256="
 			<<RISECBOR64::SHA256Hex(tailBytes)<<" bytes="<<tailBytes.size()<<"\n"
 			<<"OWNER_PROJECTION_BUDGET pressure_impulse=combined_tangent_source_tail_projection "
@@ -3361,6 +3389,26 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.acceptedFuelBudgetDiagnostic&&(!persistence.productionMetal||
+			!persistence.resume||!persistence.isolatedEquivalenceProbe||
+			persistence.stopAfterAdditionalAcceptedSteps!=8u||resolutionTier!=10.0||
+			caseDurationS!=25.05154563611109||caseFramesPerS!=16.0||targetTimeS!=0.0||
+			persistence.portedProductionTransport||persistence.compatibleMomentumDiagnostic||
+			persistence.singleStageFCTDiagnostic||persistence.sealedLegacyMomentumReplay||
+			persistence.sealedProjectedHeunReplay||persistence.sealedProjectedHeunContinuation||
+			persistence.projectedHeunCostDiagnostic||persistence.projectedHeunEOSDiagnostic||
+			persistence.projectedHeunCertificateDiagnostic||persistence.forceZeroSourceForTest||
+			persistence.killAfterFirstCheckpoint||!persistence.resumeEquivalenceCertificatePath.empty()||
+			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
+			!persistence.equivalenceSnapshotDirectory.empty()||!persistence.temporalSnapshotDirectory.empty()||
+			persistence.productionOnsetDiagnosticDirectory.empty()||
+			persistence.checkpointCadenceWallS!=std::numeric_limits<double>::max()||
+			persistence.isolatedExpectedCheckpointDigest!=
+				"68421f97b1035a6788b134c5c1e1ce65fddc9330aeb20ed929298c27c77345ae"||
+			DigestFile(persistence.checkpointPath)!=persistence.isolatedExpectedCheckpointDigest||
+			persistence.isolatedExpectedCheckpointBuildId!=
+				"fdb9eaf08be4ec8e9a49b1e4ea2283a0e27360226bdec786f7bdb4e591addc41")){
+			values.structuredError="accepted_fuel_budget_diagnostic_scope_refused";return values;}
 		if(persistence.r221Retained&&(!persistence.productionMetal||!persistence.resume||
 			resolutionTier!=10.0||DigestFile(persistence.checkpointPath)!=R221CheckpointSHA||
 			persistence.r220ResumeProbe||persistence.r217RefusalDiagnostic||persistence.tier10RetainedContinuation||
@@ -3846,6 +3894,8 @@ namespace
 			config.transport.producerPrecision=checkpointPrecision;
 			advanced.velocityMPerS=std::move(checkpoint.velocity);
 			values=std::move(checkpoint.values);
+			// A retained success flag describes the old run, never this attempt.
+			values.succeeded=false;
 			// Historical retained checkpoints may have no nested frame case ID.
 			// Reattach this admitted case even when the next step refuses.
 			values.caseRecordId=caseRecord.caseRecordId;
@@ -5021,10 +5071,10 @@ namespace
 								if(!event){lastAdvanceError="production onset event write failed";
 									mandatoryEvidenceFailure=true;advancedOK=false;break;}
 								if((persistence.sealedProjectedHeunReplay||
-									persistence.projectedHeunCertificateDiagnostic)&&
+									persistence.projectedHeunCertificateDiagnostic||persistence.acceptedFuelBudgetDiagnostic)&&
 									!WriteProductionCrossingConvergence(effectiveMomentumAuditPath,
 										projectedHeunRequest,projectedHeunDiagnostics,simulationTimeS,
-										representedStep,acceptedSteps,columnX,columnY,lastAdvanceError)){
+										representedStep,acceptedSteps,columnX,columnY,lastAdvanceError,false,sourcePattern)){
 									mandatoryEvidenceFailure=true;advancedOK=false;break;}
 								observationEvidencePublished=true;
 								if(exactTimeObservation)productionMomentumObservationCaptured=true;
@@ -7224,7 +7274,10 @@ namespace
 		double maximumReducedGravity=0.0;std::size_t maximumReducedGravityCell=0u;
 		std::vector<double> deviations;deviations.reserve(checkpoint.states.size());
 		std::vector<double> signedDeviation(checkpoint.states.size(),0.0);
+		double retainedFuelInventoryKG=0.0;
+		const double inventoryCellVolumeM3=shape.cellWidthM*shape.cellWidthM*shape.cellWidthM;
 		for(std::size_t cell=0u;cell<checkpoint.states.size();++cell){
+			retainedFuelInventoryKG+=checkpoint.states[cell].constituent[MethaneCH4]*inventoryCellVolumeM3;
 			const double density=checkpoint.states[cell].GasDensity();
 			if(density<minimumGasDensity){minimumGasDensity=density;minimumGasDensityCell=cell;}
 			maximumGasDensity=std::max(maximumGasDensity,density);
@@ -7477,6 +7530,21 @@ namespace
 		std::ofstream output(outputPath,std::ios::trunc);output<<std::setprecision(17)
 			<<"checkpoint_sha256 "<<DigestFile(checkpointPath)<<"\n"
 			<<"checkpoint_producer_build_id "<<checkpoint.producerBuildId<<"\n"
+			<<"retained_statistics_start_s "<<checkpoint.values.statisticsStartS<<"\n"
+			<<"retained_first_statistics_step_start_s "<<checkpoint.values.firstStatisticsStepStartS<<"\n"
+			<<"retained_statistics_boundary_observed "<<checkpoint.values.statisticsBoundaryObserved<<"\n"
+			<<"retained_integrated_hrr_J "<<checkpoint.values.integratedHeatReleaseJ<<"\n"
+			<<"retained_integrated_fuel_kg "<<checkpoint.values.integratedFuelConsumptionKG<<"\n"
+			<<"retained_fuel_inventory_kg "<<retainedFuelInventoryKG<<"\n"
+			<<"retained_integrated_radiative_loss_J "<<checkpoint.values.integratedRadiativeLossJ<<"\n"
+			<<"retained_centerline_statistics_duration_s "<<checkpoint.centerlineStatisticsDurationS<<"\n"
+			<<"record_lhv_J_per_kg "<<fuel.LowerHeatingValueJPerKG()<<"\n"
+			<<"retained_integrated_radiative_fraction "<<checkpoint.values.integratedRadiativeFraction<<"\n"
+			<<"retained_mccaffrey_station_count "<<checkpoint.values.mccaffreyPlumeStationCount<<"\n"
+			<<"retained_mccaffrey_max_temperature_relative_error "<<checkpoint.values.mccaffreyMaximumTemperatureRelativeError<<"\n"
+			<<"retained_mccaffrey_max_velocity_relative_error "<<checkpoint.values.mccaffreyMaximumVelocityRelativeError<<"\n"
+			<<"retained_maximum_temperature_K "<<checkpoint.values.maximumTemperatureK<<"\n"
+			<<"retained_ignited_during_pilot "<<checkpoint.values.ignitedDuringPilot<<"\n"
 			<<"accepted_steps "<<checkpoint.acceptedSteps<<"\n"
 			<<"simulation_time_s "<<checkpoint.simulationTimeS<<"\n"
 			<<"last_accepted_dt_s "<<checkpoint.lastAcceptedStepS<<"\n"
@@ -7537,6 +7605,15 @@ namespace
 			<<"production_device_p95_ms "<<deviceP95<<"\n"
 			<<"production_device_maximum_ms "<<deviceMaximum<<"\n"
 			<<"format13_retry_counters_persisted false\n";
+		for(std::size_t z=0;z<checkpoint.centerlineTemperatureIntegral.size();++z){
+			if(z>=checkpoint.centerlineVelocityIntegral.size()||
+				z>=checkpoint.planeHeatReleaseIntegral.size())return 98;
+			output<<"retained_station_integrals "<<z<<' '<<
+				(static_cast<double>(z)+0.5)*checkpoint.cellWidthM<<' '<<
+				checkpoint.centerlineTemperatureIntegral[z]<<' '<<
+				checkpoint.centerlineVelocityIntegral[z]<<' '<<
+				checkpoint.planeHeatReleaseIntegral[z]<<'\n';
+		}
 		output<<"source_probe_scope retained_state_last_accepted_dt_not_failed_candidate_replay\n"
 			<<"source_probe_migration_authority false\n"
 			<<"source_probe_shared_inputs staged_Q_evaluation_temperature_original_eligibility_Q_masks_mixing_time\n"
@@ -7968,6 +8045,62 @@ namespace
 			const char* profile=std::getenv(name);if(profile&&std::strcmp(profile,"1")!=0)return false;
 		}
 		return true;
+	}
+
+	int RunAcceptedFuelBudgetDiagnostic(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& outputDirectory)
+	{
+		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 90;
+		const std::string expected="68421f97b1035a6788b134c5c1e1ce65fddc9330aeb20ed929298c27c77345ae";
+		const std::string digest=DigestFile(checkpointPath);
+		const auto sidecar=std::filesystem::path(checkpointPath.string()+".payload-v2.json");
+		const std::string sidecarDigest=DigestFile(sidecar);
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(digest!=expected||sidecarDigest.size()!=64u||!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
+			checkpoint.acceptedSteps!=6489u||checkpoint.caseRecordId!=
+			"3e88f9ca9d13b186b70a66771960a92f32878bce49991fedf44de7272cf8a5ed"||
+			checkpoint.producerBuildId!="fdb9eaf08be4ec8e9a49b1e4ea2283a0e27360226bdec786f7bdb4e591addc41")return 91;
+		RISECBOR64::Bytes buildRecord;std::string build,executable;
+		if(!CurrentRendererBuildIdentity(buildRecord,build)||
+			!CurrentExecutableDigest(buildRecord,executable,error))return 92;
+		std::filesystem::create_directories(outputDirectory/"budgets");
+		RunPersistenceOptions options;options.productionMetal=true;options.acceptedFuelBudgetDiagnostic=true;
+		options.resume=true;options.isolatedEquivalenceProbe=true;options.checkpointPath=checkpointPath;
+		options.isolatedExpectedCheckpointDigest=digest;options.isolatedExpectedCheckpointBuildId=checkpoint.producerBuildId;
+		options.stopAfterAdditionalAcceptedSteps=8u;options.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		options.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
+		options.productionMomentumObservationTimeS=checkpoint.simulationTimeS;
+		options.productionMomentumObservationColumnX=42u;options.productionMomentumObservationColumnY=43u;
+		options.productionMomentumObservationReferenceTier=10.0;
+		options.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
+		// Existing isolated loader consumes a retained state, but emits no empirical
+		// continuation or migration certificate. Only diagnostic files leave it.
+		const auto result=RunMethaneFrameProbe(8u,8u,0.0,25.05154563611109,16.0,10.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		const bool unchanged=DigestFile(checkpointPath)==digest&&DigestFile(sidecar)==sidecarDigest;
+		bool budgetPresent=false;
+		for(const auto& file:std::filesystem::directory_iterator(outputDirectory/"budgets")){
+			const std::string name=file.path().filename().string();
+			if(name.find(".convergence.v2")==std::string::npos||file.path().extension()!=".v2")continue;
+			const auto bytes=ReadFileBytes(file.path());const std::string text(bytes.begin(),bytes.end());
+			budgetPresent=budgetPresent||(text.find("ACCEPTED_R1_CH4_BUDGET ")!=std::string::npos&&
+				text.find("ACCEPTED_R1_BOTTOM_SOURCE_MASK ")!=std::string::npos);
+		}
+		const bool complete=FireProductionAcceptedFuelBudget::DiagnosticComplete(result.succeeded,
+			result.structuredError,checkpoint.acceptedSteps,result.acceptedTimeStepHistoryS.size(),budgetPresent,unchanged);
+		std::ofstream receipt(outputDirectory/"diagnostic_receipt.v1");
+		receipt<<std::setprecision(17)<<"scope isolated_retained_state_eight_step_diagnostic_not_window\n"
+			<<"checkpoint_sha256 "<<digest<<"\ncheckpoint_sidecar_sha256 "<<sidecarDigest
+			<<"\nexecutable_sha256 "<<executable<<"\nbuild_id "<<build
+			<<"\nbeginning_time_s "<<checkpoint.simulationTimeS<<"\nend_time_s "<<result.simulatedTimeS
+			<<"\ncheckpoint_unchanged "<<unchanged<<"\nsolver_accepted "<<result.succeeded
+			<<"\nfinal_accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\nbudget_present "<<budgetPresent
+			<<"\ndiagnostic_complete "<<complete
+			<<"\nmigration_authority false\nerror "<<result.structuredError<<'\n';
+		if(!ClosePublishedStream(receipt)||!SealPublishedRunDirectory(outputDirectory,checkpoint.caseRecordId,error))return 93;
+		std::fprintf(stderr,"ACCEPTED_FUEL_DIAGNOSTIC accepted=%d unchanged=%d error=%s\n",
+			result.succeeded?1:0,unchanged?1:0,result.structuredError.c_str());
+		return complete?0:94;
 	}
 
 	int RunProductionOwnerEOSRefusalChild(const std::filesystem::path& checkpointPath,
@@ -17582,6 +17715,8 @@ int main(int argc,char** argv)
 	}
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-checkpoint-physics-diagnostic")==0)
 		return RunProductionCheckpointPhysicsDiagnosticChild(argv[2],argv[3]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-accepted-fuel-diagnostic")==0)
+		return RunAcceptedFuelBudgetDiagnostic(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-frame-write-benchmark")==0)
 		return RunProductionFrameWriteBenchmarkChild(argv[2],argv[3]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-temporal-capstone")==0){
