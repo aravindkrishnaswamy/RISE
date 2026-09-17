@@ -268,6 +268,19 @@ int main()
         { "tilt 20 deg th=45",     45.0, 0.5,  0.3,  5.0,  false, 0,   0,   0,   20.0,  true , 0, 0 },
         { "tilt 40 deg th=45",     45.0, 0.5,  0.3,  5.0,  false, 0,   0,   0,   40.0,  false, 0, 0 },
         { "tilt 55 deg th=30",     30.0, 0.5,  0.3,  5.0,  false, 0,   0,   0,   55.0,  true , 0, 0 },
+        // Adversarial rows: N=1 (the broadest possible cosine-power lobe,
+        // maximising how much of the specular cone spills below the
+        // shading-normal horizon at grazing incidence) with rs dominant
+        // over rd, so the missing (N+2)/(N+1)=1.5x boost and the missing
+        // geomN-tilt accounting both bite hardest.  A standalone quadrature
+        // of the UNFIXED formula (see the fix commit message) reads mass
+        // 0.76-0.93 at these four configs -- well outside gate 1 -- which
+        // is what makes them a real red-proof rather than a restatement of
+        // the formula.
+        { "N1 rd.05 rs.95 tilt20 th45", 45.0, 0.05, 0.95, 1.0, false, 0, 0, 0, 20.0, true , 0, 0 },
+        { "N1 rd.05 rs.95 tilt30 th45", 45.0, 0.05, 0.95, 1.0, false, 0, 0, 0, 30.0, false, 0, 0 },
+        { "N1 rd.05 rs.95 tilt20 th60", 60.0, 0.05, 0.95, 1.0, false, 0, 0, 0, 20.0, false, 0, 0 },
+        { "N1 rd.05 rs.95 tilt25 th50", 50.0, 0.05, 0.95, 1.0, false, 0, 0, 0, 25.0, true , 0, 0 },
     };
 
     std::cout << "\n-- Gate 1 (two-sided normalisation) + Gate 2 (TVD vs the real sampler) --" << std::endl;
