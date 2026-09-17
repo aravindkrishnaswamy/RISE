@@ -15,6 +15,7 @@
 #include "GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Functions/Polynomial.h"
+#include "../Interfaces/ILog.h"
 
 using namespace RISE;
 
@@ -115,6 +116,71 @@ Vector3 GeometricUtilities::Perturb( const Vector3& vec, const Scalar down, cons
 	a = Vector3Ops::Transform( rx, a );
 	a = Vector3Ops::Transform( rback, a );
 	return a;
+}
+
+Vector3 GeometricUtilities::PerturbClipped(
+	const Vector3& vec, const Scalar down, const Vector3& clipN,
+	const Scalar u, Scalar* outHalfArc )
+{
+	// See the header for the derivation and the precondition.  This is
+	// DL-68's azimuth-arc construction with the polar angle supplied by
+	// the caller instead of drawn from a cos^N marginal.
+	const Scalar cosPhiRaw = Vector3Ops::Dot( vec, clipN );
+	if( cosPhiRaw < Scalar(0) ) {
+		// Fail loudly rather than manufacture a direction from a corrupted
+		// frame -- the same choice TranslucentSPFDetail::SampleClippedPhong
+		// made after its own review (a masking clamp there produced a
+		// non-unit vector).  Every caller orients first, so this is
+		// unreachable from production.
+		GlobalLog()->PrintEasyError(
+			"GeometricUtilities::PerturbClipped:: precondition violated -- "
+			"the axis is not inside the clip half-space (Dot(vec,clipN) < 0); "
+			"returning the axis unperturbed." );
+		if( outHalfArc ) *outHalfArc = 0;
+		return vec;
+	}
+
+	const Scalar cosPhi   = r_min( Scalar(1), cosPhiRaw );
+	const Scalar cosTheta = cos( down );
+	const Scalar sinTheta = sin( down );
+
+	// Tangential component of the clip normal in the lobe's frame.
+	Vector3 uAxis = clipN - cosPhi*vec;
+	const Scalar uLen2 = Vector3Ops::SquaredModulus( uAxis );
+	if( uLen2 <= Scalar(1e-12) ) {
+		// clipN parallel to the axis: the clip is inactive, the whole cone
+		// is valid.  Reproduce the unclipped draw EXACTLY (same Perturb
+		// call, same azimuth convention) so an untilted surface is
+		// bit-for-bit unchanged.
+		if( outHalfArc ) *outHalfArc = PI;
+		return GeometricUtilities::Perturb( vec, down, TWO_PI * u );
+	}
+	uAxis = uAxis * ( Scalar(1) / sqrt(uLen2) );
+	const Vector3 vAxis = Vector3Ops::Cross( vec, uAxis );
+
+	const Scalar sinPhi = sqrt( r_max( Scalar(0), Scalar(1) - cosPhi*cosPhi ) );
+
+	// Half-width of the valid azimuth arc, written as a ratio comparison
+	// rather than cot(theta)*cot(phi) so that theta -> 0 (cot -> infinity)
+	// needs no special case: the "whole circle" branch is exactly
+	// `num >= denom`.
+	Scalar half = PI;
+	const Scalar denom = sinTheta * sinPhi;
+	const Scalar num   = cosTheta * cosPhi;
+	if( num < denom ) {
+		half = acos( -num/denom );
+	}
+	if( outHalfArc ) *outHalfArc = half;
+
+	if( half >= PI ) {
+		// Same bit-for-bit reproduction as above: with the clip inactive at
+		// this particular theta the arc IS the full circle, so keep the
+		// pre-existing draw rather than an equivalent-but-different one.
+		return GeometricUtilities::Perturb( vec, down, TWO_PI * u );
+	}
+
+	const Scalar psi = ( Scalar(2)*u - Scalar(1) ) * half;
+	return uAxis*(sinTheta*cos(psi)) + vAxis*(sinTheta*sin(psi)) + vec*cosTheta;
 }
 
 Point3 GeometricUtilities::CreatePoint3FromSphericalONB( const OrthonormalBasis3D& onb, const Scalar phi, const Scalar theta )

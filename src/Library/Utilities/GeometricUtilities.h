@@ -47,9 +47,52 @@ namespace RISE
 					const Scalar around									///< [in] Perturbation amount in phi
 					);
 
+		//! Perturbs the given vector by `down` in theta, with the azimuth
+		//! drawn UNIFORMLY on the sub-arc for which the result stays in
+		//! the half-space `Dot(result, clipN) > 0`.
+		//!
+		//! This is DL-68's construction (`TranslucentSPFDetail::
+		//! SampleClippedPhong`, TranslucentSPF.cpp, which carries the full
+		//! derivation), factored out so DL-111's callers can reuse it for
+		//! lobes whose POLAR marginal is not `cos^N` -- `DielectricSPF`'s
+		//! `scattering` warp draws its `down` from either a Phong
+		//! `cos^N` inverse CDF or a Henyey-Greenstein one.  The
+		//! construction does not care: ANY lobe that is azimuthally
+		//! uniform about `vec` at fixed `down` has a clipped conditional
+		//! that is still uniform in azimuth (the clip is a plane through
+		//! the origin and the lobe is azimuthally symmetric), so drawing
+		//! the azimuth uniformly on the valid arc
+		//!
+		//!     halfArc = PI                             if cot(down)cot(phi) >= 1
+		//!             = acos( -cot(down)cot(phi) )     otherwise,
+		//!
+		//! with `phi` the angle between `vec` and `clipN`, is EXACT, uses
+		//! exactly ONE canonical number, and renormalizes the
+		//! clipped-away energy into the valid region rather than dropping
+		//! it.  The caller composes its own density by scaling its
+		//! unclipped azimuth-marginal `1/(2 PI)` to `1/(2 halfArc)`
+		//! (`outHalfArc` reports it); a caller whose lobe is treated as a
+		//! delta (pdf 1) simply ignores it.
+		//!
+		//! PRECONDITION: `Dot(vec, clipN) >= 0` -- the axis must already be
+		//! inside the half-space, or the valid arc can be empty.  Callers
+		//! orient it first.  Violating it is checked and reported.
+		//!
+		//! When the clip is inactive at this `down` (the whole cone is
+		//! valid), `outHalfArc` is exactly PI and the draw covers the full
+		//! circle.
+		/// \return Perturbed vector, guaranteed to satisfy the clip
+		extern Vector3 PerturbClipped(
+					const Vector3& vec,									///< [in] Vector to perturb (must satisfy Dot(vec,clipN) >= 0)
+					const Scalar down,									///< [in] Perturbation amount in theta
+					const Vector3& clipN,								///< [in] Half-space normal the result must satisfy
+					const Scalar u,										///< [in] One canonical random number
+					Scalar* outHalfArc = 0								///< [out] Optional: half-width of the valid azimuth arc
+					);
+
 		//! Generates a random point on a sphere
 		/// \return Point on sphere
-		extern Point3 PointOnSphere( 
+		extern Point3 PointOnSphere(
 					const Point3& ptCenter,								///< [in] Center of the sphere
 					const Scalar radius,								///< [in] Radius of the sphere
 					const Point2& coord									///< [in] Two canonical random numbers
