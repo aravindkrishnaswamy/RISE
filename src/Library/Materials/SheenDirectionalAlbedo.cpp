@@ -109,12 +109,79 @@ namespace
 		s.frac = Clamp01( p - (Scalar)s.i0 );
 		return s;
 	}
+
+	//! DL-11 fix (2026-09-14).  `BuildStencil`'s frac is linear in the
+	//! WARPED POSITION s = sqrt(mu) -- fine for CHOOSING the bracket
+	//! (s is monotone in mu, so `BuildStencil(CosThetaPos(mu), ...)`
+	//! still picks the correct two nodes), but wrong for BLENDING
+	//! between them: CLOTH_FABRIC_DESIGN.md's round-9 exhaustive search
+	//! found the middle band's (mu1 <= n.v < 0.0349) worst-case rho
+	//! (1.0075, +0.75%) sitting at alpha ~= 0.065 -- close to
+	//! `kMinSheenAlpha`, essentially AT an alpha grid node, not between
+	//! two -- which pins the driver to the cosTheta axis alone.  An
+	//! independent brute-force probe (scratch, not shipped) confirmed
+	//! it: between mu-nodes 1 and 2 at low alpha, `E` is measurably
+	//! concave in s = sqrt(mu) (linear-in-s under-reads the true curve
+	//! by up to ~0.017 there), so the very fix that closed the
+	//! round-6/7 grazing catastrophe -- warp harder in s -- makes this
+	//! narrower, lower-alpha residual WORSE, not better: pushing node 1
+	//! closer to `V`'s hard cutoff (`CharlieSheen::V` zeros when
+	//! `n.l*n.v < 1e-6`) sharpens the curvature linear-in-s has to
+	//! track, rather than resolving it (measured: raising N from 64 to
+	//! 128/256/512 at the SAME warp power, or raising the warp power at
+	//! N=64, both eventually REGRESS the worst-case error instead of
+	//! shrinking it -- "another blind resolution doubling" the doc's
+	//! own text warned against, confirmed empirically rather than
+	//! merely asserted).
+	//!
+	//! The fix is not more/sharper warping; it is the RIGHT interpolation
+	//! VARIABLE.  The alpha axis already blends log-linearly (`AlphaPos`
+	//! above) because `D`'s exponent is 1/alpha -- log-alpha is what
+	//! makes that axis's curve close to piecewise-linear.  The cosTheta
+	//! axis never got the same treatment; it blends linearly in s
+	//! instead of in log(mu).  Switching the BLEND FRACTION (not the
+	//! node placement -- the shipped `kETable` is unchanged, so no
+	//! rebake) to log(mu) cuts the measured worst-case interpolation
+	//! error at EVERY alpha tested (0.04 to 1.0), most where it matters:
+	//! -0.0172 -> -0.0099 absolute at alpha=0.04 (the global worst),
+	//! -0.0104 -> -0.0046 at alpha=0.065.  No regression found anywhere
+	//! in a full-domain scan (mu1..1, alpha 0.04..1.0).
+	//!
+	//! Node 0 (mu=0, log(mu)=-inf) is never a bracket endpoint here --
+	//! `CosThetaPos` already floors its input at mu1 before this runs,
+	//! so `i0 >= 1` always (see that function's own floor note) and
+	//! `log(muI0)` is always finite.
+	Scalar CosThetaLogFrac( const Scalar cosThetaFloored, const Stencil1D& sc, const unsigned int n )
+	{
+		const Scalar t = (Scalar)( n - 1 );
+		const Scalar s0 = (Scalar)sc.i0 / t;
+		const Scalar s1 = (Scalar)sc.i1 / t;
+		const Scalar muI0 = s0 * s0;
+		const Scalar muI1 = s1 * s1;
+		if( !( muI1 > muI0 ) || !( cosThetaFloored > 0 ) ) {
+			return sc.frac;		// degenerate cell or non-positive mu: fall back to the s-linear frac (matches pre-fix behaviour, unreachable at n>=2 with a floored mu)
+		}
+		const Scalar f = ( std::log( cosThetaFloored ) - std::log( muI0 ) )
+		                / ( std::log( muI1 ) - std::log( muI0 ) );
+		return Clamp01( f );
+	}
 }
 
 Scalar SheenDirectionalAlbedo::E( const Scalar alpha, const Scalar cosTheta )
 {
 	const Stencil1D sa = BuildStencil( AlphaPos( alpha ), kNumAlphaBins );
-	const Stencil1D sc = BuildStencil( CosThetaPos( cosTheta ), kNumCosThetaBins );
+	Stencil1D sc = BuildStencil( CosThetaPos( cosTheta ), kNumCosThetaBins );
+
+	// DL-11: blend the cosTheta axis in log(mu), not in the warped
+	// position s -- see CosThetaLogFrac above.  `cosTheta` is re-floored
+	// here identically to CosThetaPos's own floor (mu1 = 1/(N-1)^2) so
+	// the two never disagree about what "the floored mu" was.
+	{
+		const Scalar t = (Scalar)( kNumCosThetaBins - 1 );
+		const Scalar mu1 = Scalar(1) / ( t * t );
+		const Scalar muFloored = Clamp01( r_max( cosTheta, mu1 ) );
+		sc.frac = CosThetaLogFrac( muFloored, sc, kNumCosThetaBins );
+	}
 
 	const Scalar v00 = kETable[sa.i0][sc.i0];
 	const Scalar v01 = kETable[sa.i0][sc.i1];

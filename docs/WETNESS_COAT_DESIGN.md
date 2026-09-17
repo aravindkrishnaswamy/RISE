@@ -2413,13 +2413,25 @@ timing exists because no implementation exists.
    this debt, though it would still be the more principled long-term slot
    design. Related: the session-filed repo-wide audit of colour-pipe slots
    with the same shape.
-13. **(added 2026-09-01) `hemisphericalAlbedo` for Oren-Nayar over-estimates at
+13. ~~**(added 2026-09-01) `hemisphericalAlbedo` for Oren-Nayar over-estimates at
    high roughness** (measured: exact at 0, ~5% high at 0.3, 25.6% high at 1.0,
    mildly view-dependent), which over-amplifies the recycling term for a coated
    rough Oren-Nayar substrate — bounded ~20% on the recycled portion at extreme
    roughness, documented at the override. A fitted correction needs its own
    validation (C3/L2 add energy in a way that does not factor out of `Rd`);
-   open, low priority.
+   open, low priority.~~ **CLOSED 2026-09-14 (debt ledger DL-07, branch
+   `debt-brdfnorm`)** — `OrenNayarBRDF::hemisphericalAlbedo` now bakes the
+   true bihemispherical `A1(sigma)/A2(sigma)` integrals of its own L1/L2
+   terms instead of returning `Rd` verbatim (see
+   [OrenNayarBRDF.cpp](../src/Library/Materials/OrenNayarBRDF.cpp) and
+   `tools/OrenNayarHemisphericalAlbedoGen.cpp`), measuring under 0.01%
+   absolute against an independent brute-force double-hemisphere quadrature
+   (`tests/OrenNayarHemisphericalAlbedoTest.cpp`) in place of the old
+   ~12.6%/25.6% over-estimate at roughness 0.5/1.0. `coated_material`'s
+   recycling denominator over an Oren-Nayar substrate now uses the corrected
+   value; `LayeredWhiteFurnaceTest`'s 57/57 furnace configs (incl. the
+   coated-Oren-Nayar rows) and `FabricMaterialChunkTest`'s gate 5(b) both
+   stay green post-fix.
 
 ---
 
