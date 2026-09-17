@@ -315,7 +315,9 @@ weave-rotation mechanism are all unchanged.
   as up to 25.6 % high, and GGX's estimate runs high at grazing. No
   change to `fabric_material` can fix that, and `coated_material`'s
   recycling denominator already inherits the identical debt (§9.9
-  gate 5b, debt 16, new debt 17).
+  gate 5b, debt 16, new debt 17). [Debt 17 / DL-07 CLOSED 2026-09-14 —
+  see §15 item 17; the Oren-Nayar share of this is now under 0.01 %,
+  GGX's estimate remains open.]
 
 **Round 6 (implementation review, 2026-09-02).** Three adversarial
 reviews of the built slice found one P1, in the *table* rather than in
@@ -2195,7 +2197,11 @@ does not clear the same +0.2 % bar the outer/inner bands now clear.
 That residual is reported here rather than chased with a still-finer
 table: closing it would need its own root-cause hunt (an α node near
 the floor, or a different table warp there), not a blind resolution
-escalation.
+escalation. [CLOSED 2026-09-14, DL-11: the root-cause hunt found neither
+an alpha node nor a sharper mu warp closes it (both were tried and
+measured to make it WORSE) -- the fix is a different interpolation
+VARIABLE, log(mu) instead of the warped position, at the SAME node
+placement. See item 18's closure note above.]
 
 The outer/inner-band residual is the α-chord shortfall directly;
 closing the middle band's *new* residual is an open question for a
@@ -2366,7 +2372,9 @@ roughness 1), and GGX's runs high at grazing. End-to-end against a
 brute-force quadrature that reaches **15.7 %**, essentially all of it
 attributable there. No change to `fabric_material` can fix it, and
 `coated_material`'s recycling denominator already inherits the identical
-debt — §15 debt 17 tracks it as its own item.
+debt — §15 debt 17 tracks it as its own item. [Debt 17 / DL-07 CLOSED
+2026-09-14 — the Oren-Nayar share of this is now under 0.01 %, GGX's
+estimate remains open; see §15 item 17.]
 
 Getting route 1 right is what would let a future `coated_material` sit
 *over* a `fabric_material` — a waxed canvas — since this is the quantity the
@@ -4800,35 +4808,80 @@ yet known (§10.1).
     `coated_material`'s substrate allowlist does not admit `fabric_material`
     today.
 
-17. **NEW 2026-09-02 (round 5) — the substrate's own `hemisphericalAlbedo` is
-    the larger error, and it is not `fabric_material`'s to fix.** Gate 5(b)'s
-    end-to-end figure against a brute-force quadrature reaches **15.7 %**,
-    of which debt 16's factorisation accounts for at most 0.64 %. **All the
-    rest is inherited**: `OrenNayarBRDF::hemisphericalAlbedo` returns `Rd`
-    verbatim — its own header
-    ([OrenNayarBRDF.cpp:148-190](../src/Library/Materials/OrenNayarBRDF.cpp))
-    documents this as measured 12.6 % high at roughness 0.5 and up to 25.6 %
-    high at roughness 1, and mildly view-dependent besides — and GGX's
-    estimate runs high at grazing. Measured through the fabric wrapper:
-    Oren-Nayar σ = 0.6 reports **17.8 %** high, GGX α = 0.5 **6.8 %** high.
+17. ~~**NEW 2026-09-02 (round 5) — the substrate's own `hemisphericalAlbedo` is
+    the larger error, and it is not `fabric_material`'s to fix.**~~
+    **CLOSED 2026-09-14 (debt ledger DL-07, branch `debt-brdfnorm`)** —
+    `OrenNayarBRDF::hemisphericalAlbedo` no longer returns `Rd` verbatim.
+    It now bakes the true bihemispherical
+    `A1(sigma)/A2(sigma)` integrals of its own L1/L2 terms (see
+    [OrenNayarBRDF.cpp](../src/Library/Materials/OrenNayarBRDF.cpp)'s
+    hemisphericalAlbedo header and
+    `tools/OrenNayarHemisphericalAlbedoGen.cpp`) and measures under 0.01 %
+    end-to-end through the fabric wrapper (was: Oren-Nayar σ = 0.6 reporting
+    17.8 % high; now: 0.002-0.005 %, see
+    [tests/FabricMaterialChunkTest.cpp](../tests/FabricMaterialChunkTest.cpp)
+    gate 5(b)'s "substr%" column). GGX's own `hemisphericalAlbedo` remains a
+    SEPARATE, still-open estimate that runs high at grazing (unaffected by
+    this fix; it is now the dominant term in gate 5(b)'s end-to-end figure).
+    `coated_material`'s Saunderson recycling denominator inherits the fix
+    for an Oren-Nayar substrate and still inherits the GGX-only residual.
+    Original text kept below for the historical record.
 
-    **Nothing in `fabric_material` can correct this**, and the round-4 remedy
+    Gate 5(b)'s end-to-end figure against a brute-force quadrature reached
+    **15.7 %**, of which debt 16's factorisation accounted for at most
+    0.64 %. **All the rest was inherited**: `OrenNayarBRDF::hemisphericalAlbedo`
+    returned `Rd` verbatim — its own header
+    ([OrenNayarBRDF.cpp:148-190](../src/Library/Materials/OrenNayarBRDF.cpp))
+    documented this as measured 12.6 % high at roughness 0.5 and up to 25.6 %
+    high at roughness 1, and mildly view-dependent besides — and GGX's
+    estimate ran high at grazing. Measured through the fabric wrapper:
+    Oren-Nayar σ = 0.6 reported **17.8 %** high, GGX α = 0.5 **6.8 %** high.
+
+    **Nothing in `fabric_material` could correct this**, and the round-4 remedy
     it would have been mistaken for — a 3D `S(α, m, σ_base)` table — could
-    not have touched it either, because the error is the substrate
+    not have touched it either, because the error was the substrate
     misreporting *its own* reflectance one layer down. **`coated_material`
-    already inherits the identical debt** through its Saunderson recycling
-    denominator `1/(1 − r_i·R)`, where an over-estimated `R` over-amplifies
-    the recycled term; OrenNayarBRDF's own note bounds that at roughly 20 %
+    inherited the identical debt** through its Saunderson recycling
+    denominator `1/(1 − r_i·R)`, where an over-estimated `R` over-amplified
+    the recycled term; OrenNayarBRDF's own note bounded that at roughly 20 %
     of the recycled portion at extreme roughness.
 
-    The fix, if it is ever wanted, is a bake in `OrenNayarBRDF` (and a review
-    of GGX's estimator), validated on its own — *not* work in either layered
-    material. That file's note is explicit that no clean closed form exists
-    to correct it with, since the C3 and L2 terms add energy back in a way
-    that does not factor out of `Rd`. Recorded here so the next reader of
-    gate 5(b)'s output does not mistake a substrate debt for a fabric one.
+18. **CLOSED 2026-09-14 (debt ledger DL-11, branch `debt-brdfnorm`) —
+    the middle band's α ≈ 0.065 mechanism named below is root-caused:
+    `SheenDirectionalAlbedo::E`'s cosTheta axis was blending LINEARLY IN
+    THE WARPED POSITION `s = sqrt(mu)` between table nodes, where `E` is
+    measurably concave in `s` at low alpha (a chord under-reads by up to
+    ~0.017 absolute at alpha=0.04) — and sharpening the warp makes this
+    WORSE, confirmed empirically (raising node count OR warp power both
+    regress after an initial dip), ruling out yet another resolution
+    escalation.** Fix: blend in `log(mu)` instead, matching what the
+    ALPHA axis already does (`AlphaPos` is log-alpha because `D`'s
+    exponent is `1/alpha`) — no rebake, same `kETable` node values, only
+    the blend fraction (`CosThetaLogFrac`, `SheenDirectionalAlbedo.cpp`).
+    Measured via the real `FabricBRDF` white-Lambertian furnace: the
+    middle band's worst rho drops from 1.007496 (+0.75%, matching this
+    item's own figure below) to 1.004457 (+0.45%). **An independent
+    brute-forced, table-free cross-check at that exact point reads
+    rho = 1.00539 (+0.54%) with NO table involved at all** — i.e.
+    roughly 72% of the pre-fix +0.75% was the Kulla-Conty product-form
+    compensation's OWN inexactness (this item's own "energy-bounded, not
+    energy-conserving" framing, below), not a table defect; only the
+    remaining ~0.2-0.3% was ever a fixable interpolation error, and the
+    fix closes THAT part to ~0.09%. The exact `n·v == mu1` seam is a
+    SECOND, LARGER instance of the same model-inherent property at low
+    alpha (table-free cross-check: rho = 1.01542, +1.54%, at
+    alpha=0.065) — reported and loosely bounded rather than tightened,
+    since closing it needs a different energy-compensation model, not a
+    different table. `tests/SheenDirectionalAlbedoTest.cpp` gained
+    `TestMiddleBandInterpolationError` and `TestMiddleBandFurnaceRho`
+    (red on the unfixed library: 1.006198, +0.62%, failing that test's
+    own 0.6% gate); `FabricMaterialChunkTest`'s bit-exact
+    `kFabricLockLambertian`/`kFabricLockWeaveNone` regression pins were
+    re-captured (5th-6th-significant-digit drift, same precedent as the
+    2026-09-04 round-9 re-capture below) — 170/0.
+    Original text kept below for the historical record.
 
-18. **NEW 2026-09-02 (round 6), FIGURES CORRECTED 2026-09-03 (round 8),
+    **NEW 2026-09-02 (round 6), FIGURES CORRECTED 2026-09-03 (round 8),
     RESOLUTION RAISED 2026-09-04 (round 9, reviewer P2.3) — fabric is
     energy-BOUNDED, not energy-CONSERVING; residual REDUCED, not
     closed.** Round 9 raised the `E` table's uniform refinement from
@@ -4859,10 +4912,14 @@ yet known (§10.1).
     figures; `tests/SheenDirectionalAlbedoTest.cpp`'s domination-slack
     check and `tests/LayeredWhiteFurnaceTest.cpp`'s grazing-check
     tolerance were both re-derived and tightened for the new table.
-    **Closing the middle band's new residual is unstarted work** — table
-    resolution alone did not close it, it only moved the bottleneck; a
-    principled fix needs a fresh root-cause hunt near the roughness
-    floor rather than another blind resolution doubling.
+    **Closing the middle band's new residual was root-caused and fixed
+    2026-09-14 (DL-11, see this item's closure note above)** — table
+    resolution alone did not close it, it only moved the bottleneck; the
+    principled fix was a different interpolation VARIABLE (log(mu), not
+    a sharper warp) near the roughness floor, not another blind
+    resolution doubling, and the residual left after that fix is
+    root-caused too (proven model-inherent via a table-free
+    cross-check), not merely reduced.
 
     The round-6/7/8 history follows, unedited, for the record. §9.2.
     Once the `E` table's cosθ

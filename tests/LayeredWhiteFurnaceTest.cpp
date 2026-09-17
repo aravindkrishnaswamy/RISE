@@ -1872,8 +1872,12 @@ int main()
 	//         white iso GGX-PBR).  Same placement idiom as configs 17/18.
 	{ ConfigReport& r = add( "19. White Oren-Nayar(0.4) base alone (ref for 25-28)", kPostureBounded, 0.06,
 	    "reference row: rho_substrate(theta) for the Oren-Nayar fabric rows' analytic check.  "
-	    "Oren-Nayar dissipates by its own design (OrenNayarBRDF.cpp documents Rd as up to 25.6 % "
-	    "high at roughness 1), which is why this is Bounded and not Pass" );
+	    "Oren-Nayar dissipates by its own design -- the model's TRUE bihemispherical "
+	    "reflectance is up to 25.6 % BELOW rho at roughness 1 (this is real physics of "
+	    "ComputeFactor's L1/L2 terms, measured directly by rendering here, not a "
+	    "hemisphericalAlbedo question; DL-07 fixed hemisphericalAlbedo's REPORT of this "
+	    "quantity to match it, see OrenNayarBRDF.cpp and "
+	    "tests/OrenNayarHemisphericalAlbedoTest.cpp) -- which is why this is Bounded and not Pass" );
 	  Run( r, *whiteOnMat->GetSPF() ); }
 
 	{ ConfigReport& r = add( "20. White aniso GGX + F0=0.04 alone (ref for 33-36)", kPostureBounded, 0.05,

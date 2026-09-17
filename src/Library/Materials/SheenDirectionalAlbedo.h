@@ -283,13 +283,19 @@ namespace RISE
 		               "kEHatMeanTable extent must match kNumAlphaBins" );
 
 		//! Directional-hemispherical albedo of the bare Charlie lobe at
-		//! (alpha, cosTheta).  Bilinear interpolation (log-alpha x
-		//! WARPED-cosTheta, inverted with sqrt), clamped at the table
-		//! edges.  Not clamped to [0, 1] on return -- see the file
-		//! header: the lobe itself is not tightly energy-conserving near
-		//! grazing, and this function reports that honestly.  The
-		//! CONSUMER is what bounds it (FabricBRDF's symmetric normaliser
-		//! and Ehat), so that a caller wanting the true lobe can have it.
+		//! (alpha, cosTheta).  Bracket selection is bilinear (log-alpha x
+		//! WARPED-cosTheta, inverted with sqrt) but the BLEND within the
+		//! bracket differs per axis: log-alpha for the alpha axis, and
+		//! -- since DL-11, 2026-09-14 -- log(mu) for the cosTheta axis
+		//! (not linear in the warped position sqrt(mu), which measurably
+		//! under-reads a concave region at low alpha near the roughness
+		//! floor; see SheenDirectionalAlbedo.cpp's `CosThetaLogFrac`),
+		//! clamped at the table edges.  Not clamped to [0, 1] on return
+		//! -- see the file header: the lobe itself is not tightly
+		//! energy-conserving near grazing, and this function reports
+		//! that honestly.  The CONSUMER is what bounds it (FabricBRDF's
+		//! symmetric normaliser and Ehat), so that a caller wanting the
+		//! true lobe can have it.
 		Scalar E( Scalar alpha, Scalar cosTheta );
 
 		//! Hemispherical mean of Ehat = min(E, 1) at `alpha`.  Linear
