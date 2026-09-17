@@ -1005,16 +1005,65 @@ static void RunFloorFogSite()
 }
 
 //////////////////////////////////////////////////////////////////////
-// RR CONVENTION CHECK (DL-84 step 1): the ORDINARY surface
-// continuation's trained moment must be the PRE-Russian-roulette
-// integrand, not RR's post-division throughput -- see
-// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "Round 6" for the
-// derivation this pins.  Independent of the fog-box fixture above; it
-// exercises PathTracingIntegrator's plain (no medium) surface
-// continuation directly, the same site the BSSRDF/volume sites already
-// mirror.
+// RR CONVENTION CHECK: the REALIZED-MOMENT ruling (round 7).
 //
-// CONSTRUCTION.  A Lambertian floor of reflectance rho = 0.5 in an
+// THE CONTRACT.  `OptimalMISAccumulator::Solve()` computes
+// `alpha = M_nee / (M_nee + M_bsdf)`, i.e. each technique's coefficient
+// is `1 / M_i` (Kondapaneni 2019).  The `M_i` that belongs in that
+// expression is the second moment of the estimator the FILM ACTUALLY
+// SEES for technique `i` -- so if technique `i`'s sample is subjected
+// to Russian roulette, RR is part of its EFFECTIVE density, not a
+// separate layer sitting above the moment.
+//
+// THE DERIVATION.  Write the realized two-technique estimator, with the
+// BSDF branch RR'd at survival probability `q` and compensated:
+//
+//     F = w_n(x_n) f(x_n)/p_n(x_n)
+//       + S * w_b(x_b) f(x_b) / ( p_b(x_b) * q(x_b) ),    S ~ Bern(q)
+//
+// which is exactly sampling the BSDF branch from the DEFECTIVE density
+// `p~_b = q * p_b`.  Its second moment is
+//
+//     E[F_b^2] = q * E_{x~p_b}[ ( w_b f / (p_b q) )^2 ]
+//              = integral w_b^2 f^2 / (p_b q)
+//
+// so the quantity that belongs in alpha's denominator is
+//
+//     M_bsdf = integral f^2 / (p_b q) = E_pre / q            (E_pre = integral f^2/p_b)
+//
+// -- the REALIZED moment.  Russian roulette makes a technique WORSE
+// (more variance), and `1/M` must see that.
+//
+// THE THREE CANDIDATE WIRINGS, and what each estimates.  The estimator
+// of `M_i` is (sum of accumulated per-sample moments) / (attempt count):
+//
+//   (a) numerator POST-RR (as carried), count EVERY attempt
+//         E[sum]/N = (1/N) * N * q * E[(f/(p q))^2] = E_pre / q   <== CORRECT
+//   (b) numerator PRE-RR, count EVERY attempt
+//         E[sum]/N = q * E_pre                       -- off by q^2
+//   (c) numerator PRE-RR, count only SURVIVORS
+//         E[sum]/N = E_pre                           -- off by q
+//
+// Round 6 ruled (b) and wired the ordinary surface continuation to it,
+// on the argument that "RR is a separate later estimator, not part of
+// the vertex-local integrand".  THAT RULING IS RETRACTED.  It is also
+// not what (b) computes: (b) divides a survivor-only numerator by an
+// all-attempts denominator, so it is neither the pre-RR moment nor the
+// realized one -- it is the pre-RR moment scaled DOWN by `q`, i.e. the
+// realized moment scaled by `q^2`.  Quadrature over a family of
+// two-technique toys (RunAlphaQualityCheck below) puts (a) at the
+// lowest combined variance and (b) at the highest in every config.
+//
+// Round 6's second argument -- "NEE undergoes no RR, so only the BSDF
+// side would carry the factor" -- is also false:  `LightSampler`'s
+// mesh-luminary arm has its own light-sample Russian roulette
+// (`rrSurvivalCompensation`, scene knob `light_rr_threshold`, default
+// 0), applied AFTER its `AccumulateCount` and EXCLUDED from the
+// accumulated `contrib`, so with that knob on NEE trained wiring (b)
+// by the identical mechanism.  `RunLightRRConventionCheck` below is
+// that row.
+//
+// THE FIXTURE.  A Lambertian floor of reflectance rho = 0.5 in an
 // object-free, environment-lit scene (so every SURVIVING continuation
 // escapes straight to the environment -- there is nothing else for it
 // to hit), driven at `startDepth = rrMinDepth` (StabilityConfig's
@@ -1029,30 +1078,24 @@ static void RunFloorFogSite()
 // `kray` (hence `scatterThroughput`) is exactly `rho`, direction-
 // independent (the BSDF/pdf ratio cancels analytically), so:
 //
-//   POST-FIX (pre-RR trained):  bsdfTimesCos = rho * (cos/pi)
-//     f/p = rho          ->  moment = (L_env * rho)^2
-//   PRE-FIX (post-RR trained):  a surviving sample's scatterThroughput
-//     is rho / rrProb = rho / rho = 1 (Russian roulette's own
-//     compensation identity -- it always renormalises survivors back
-//     to the PRE-RR EXPECTED throughput), so bsdfTimesCos = 1*(cos/pi)
-//     f/p = 1            ->  moment = L_env^2 = (L_env*rho)^2 / rho^2
+//   CORRECT, wiring (a):  a survivor's POST-RR `scatterThroughput` is
+//     rho/rrProb = rho/rho = 1, so f/p = 1 and each survivor's moment
+//     is L_env^2 = (L_env*rho)^2 / rho^2.
+//   ROUND 6, wiring (b):  the PRE-RR `rho`, so f/p = rho and each
+//     survivor's moment is (L_env*rho)^2.
 //
-// i.e. the PRE-FIX moment is exactly 1/rho^2 = 4x too large for EVERY
-// surviving sample, independent of L_env, of the sampled direction, and
-// of WHICH samples happen to survive.  `AccumulateCount` fires for
-// every attempt (survivor or not, matching the row's own "regardless of
-// whether the sample contributed" contract), but `Accumulate` only for
-// survivors, and survival is an RR-convention-independent Bernoulli(0.5)
-// coin flip -- so over enough samples,
+// `AccumulateCount` fires for EVERY attempt (survivor or not), and
+// survival is a convention-independent Bernoulli(0.5) coin flip, so
+//
 //     sum(f/p)^2 / ( attempts * (L_env*rho)^2 )
-// converges to the survival probability itself, 0.5, post-fix and to
-// 0.5*4 = 2.0 pre-fix: a clean 4x discriminator that needs no in-file
-// code toggle.  Measured across the two builds and pasted into the fix
-// commit message.
+//
+// converges to  q / rho^2 = 1/rho = 2.0  under the correct wiring and
+// to  q = 0.5  under round 6's -- a clean 4x discriminator that needs
+// no in-file code toggle.  Round 6 asserted the 0.5 end.
 //////////////////////////////////////////////////////////////////////
 static void RunRRConventionCheck()
 {
-	std::cout << "DL-84 (RR convention): the surface continuation trains the PRE-RR integrand" << std::endl;
+	std::cout << "DL-84 (RR convention): the surface continuation trains the REALIZED (post-RR) moment" << std::endl;
 
 	Fixture fx;
 	Check( fx.Build( EnvOnlyScene(), "rrconv" ), "RR-convention fixture builds" );
@@ -1092,6 +1135,7 @@ static void RunRRConventionCheck()
 
 	const unsigned int rrMinDepth = StabilityConfig().rrMinDepth;	// 3: forces RR to evaluate immediately
 	const unsigned int N = 4000;
+	DriveOnFreshThread( 5104u, [&]() {
 	for( unsigned int s = 0; s < N; ++s )
 	{
 		RandomNumberGenerator rng( 91000 + s );
@@ -1119,6 +1163,7 @@ static void RunRRConventionCheck()
 			IRayCaster::RAY_STATE::eRayDiffuse,
 			0, 0, 0, 0, 0, 0, false, false );
 	}
+	} );
 
 	double sumNee = 0, sumBsdf = 0;
 	unsigned int countNee = 0, countBsdf = 0;
@@ -1128,18 +1173,387 @@ static void RunRRConventionCheck()
 	const double observed = denom > 0 ? sumBsdf / denom : -1;
 	std::cout << "    RR-convention: sum(f/p)^2 = " << sumBsdf << " over " << countBsdf
 		<< " attempts; sum / (attempts * (L_env*rho)^2) = " << observed
-		<< "  (expect ~0.5, the RR survival probability; a PRE-RR-inflation bug reads ~2.0)"
+		<< "  (expect ~2.0 = q/rho^2, the REALIZED moment; round 6's PRE-RR wiring reads ~0.5)"
 		<< std::endl;
 	Check( countBsdf > 0, "RR-convention: the surface continuation counted attempts" );
 	Check( sumBsdf > 0, "RR-convention: the surface continuation accumulated a positive moment" );
-	Check( observed > 0.35 && observed < 0.65,
-		"RR-convention: the trained moment matches the PRE-RR integrand (~0.5), "
-		"not the RR-inflated post-division throughput (~2.0)" );
+	Check( observed > 1.85 && observed < 2.15,
+		"RR-convention: the trained moment is the REALIZED one, E_pre/q (~2.0) -- "
+		"not round 6's q*E_pre (~0.5), and not the bare pre-RR moment E_pre (~1.0)" );
 
 	integrator->release();
 	object->release();
 	material->release();
 	grey->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// LIGHT-SAMPLE RR CONVENTION (round 7).
+//
+// Round 6's ruling leaned on "NEE undergoes no RR at this vertex, so
+// only the BSDF side would carry an RR factor".  `LightSampler`'s
+// mesh-luminary arm has its OWN Russian roulette:
+//
+//     AccumulateCount( ..., kTechniqueNEE );          <-- every attempt
+//     ...
+//     if( lightSampleRRThreshold > 0 ) {
+//         pSurvive = min( estimate / lightSampleRRThreshold, 1 );
+//         if( sampler.Get1D() >= pSurvive ) break;    <-- killed
+//         rrSurvivalCompensation = 1 / pSurvive;
+//     }
+//     ...
+//     Accumulate( ..., lum(contrib)^2, pdfAlias, kTechniqueNEE );
+//     result += contrib * (rrSurvivalCompensation * risWeight / pdfAlias);
+//
+// so `rrSurvivalCompensation` is in the ESTIMATOR the film sees but not
+// in the trained moment: exactly wiring (b) again, on the NEE side,
+// whenever `light_rr_threshold` is non-zero.
+//
+// THE ASSERTION, with no need to know `q` anywhere.  The two runs below
+// use ONE fixture, ONE set of per-sample seeds and `maxPathDepth = 1`
+// (so there is EXACTLY one NEE attempt per sample and the light-RR coin
+// is the last random draw of the walk -- nothing downstream can diverge
+// between the two runs).  The sampled point on the emitter is therefore
+// IDENTICAL, sample for sample, with the threshold off and on.  Writing
+// `s_i` for sample i's un-RR'd moment `(contrib_i/pdfAlias_i)^2`:
+//
+//     sum_off       = sum_i s_i
+//     sum_on (a)    = sum_{survivors} s_i / q_i^2 ,  E = sum_i s_i / q_i
+//     sum_on (b)    = sum_{survivors} s_i         ,  E = sum_i s_i * q_i
+//
+// and `q_i = min(estimate_i/threshold, 1) <= 1` POINTWISE, so
+//
+//     ratio (a) = sum_on/sum_off >= 1      (strictly > 1 once RR fires)
+//     ratio (b) = sum_on/sum_off <= 1      (strictly < 1 once RR fires)
+//
+// A rigorous two-sided discriminator with no tuned constant and no
+// closed form for the light's geometry.
+//////////////////////////////////////////////////////////////////////
+
+static const Scalar kLightRRSphereRadius = 2.0;
+static const Scalar kLightRRSphereDist   = 5.0;
+//! Chosen so that the typical `estimate` lands well BELOW it and the
+//! roulette actually fires on most samples; the assertions above hold
+//! for any positive value, this one just makes the gap large.
+static const Scalar kLightRRThreshold    = 5000.0;
+
+static std::string AreaLightScene()
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_luminaire_material\n{\n\tname emitter\n\texitance white\n"
+		"\tscale 4.0\n\tmaterial none\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname lightball\n\tradius " << kLightRRSphereRadius << "\n}\n"
+		"\n"
+		"standard_object\n{\n\tname light_object\n\tgeometry lightball\n"
+		"\tmaterial emitter\n\tposition 0 0 " << kLightRRSphereDist << "\n}\n"
+		"\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
+		"\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 -3\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n"
+		"\n";
+	return ss.str();
+}
+
+static void DriveLightRRSite(
+	const Fixture& fx,
+	const PathTracingIntegrator& integrator,
+	Object& object,
+	IMaterial& material,
+	Scalar rrThreshold,
+	double& sumNee,
+	unsigned int& countNee )
+{
+	const RasterizerState rast{};
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+
+	const_cast<LightSampler*>( pLS )->SetLightSampleRRThreshold( rrThreshold );
+	pLS->SetOptimalMIS( &acc );
+
+	DriveOnFreshThread( 5105u, [&]() {
+		for( unsigned int s = 0; s < 4000; ++s )
+		{
+			RandomNumberGenerator rng( 71000 + s );
+			IndependentSampler sampler( rng );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			rc.pOptimalMIS = &acc;
+
+			// Arriving from the +Z side, so the emitter at +Z sits in the
+			// front hemisphere (the same construction the RR-convention
+			// row above uses).
+			RayIntersection hit( Ray( Point3( 0, 0, 10 ), Vector3( 0, 0, -1 ) ), rast );
+			hit.geometric.bHit = true;
+			hit.geometric.range = 10;
+			hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+			hit.geometric.vNormal = Vector3( 0, 0, 1 );
+			hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
+			hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+			hit.pObject = &object;
+			hit.pMaterial = &material;
+
+			IORStack stack( 1.0 );
+
+			integrator.IntegrateFromHit(
+				rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
+				/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
+				/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
+				/*considerEmission_*/ true, /*importance*/ 1.0,
+				IRayCaster::RAY_STATE::eRayDiffuse,
+				0, 0, 0, 0, 0, 0, false, false );
+		}
+	} );
+
+	pLS->SetOptimalMIS( 0 );
+	const_cast<LightSampler*>( pLS )->SetLightSampleRRThreshold( 0.0 );
+
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+}
+
+static void RunLightRRConventionCheck()
+{
+	std::cout << "DL-84 (light-sample RR): LightSampler's NEE arm trains the REALIZED moment"
+		<< std::endl;
+
+	Fixture fx;
+	Check( fx.Build( AreaLightScene(), "lightrr" ), "light-RR fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	Check( fx.pCaster->GetLightSampler() != 0, "light-RR fixture has a LightSampler" );
+	if( !fx.pCaster->GetLightSampler() ) return;
+
+	UniformColorPainter* grey = new UniformColorPainter( RISEPel( 0.8, 0.8, 0.8 ) );
+	GlobalLog()->PrintNew( grey, __FILE__, __LINE__, "light-RR floor painter" );
+	LambertianMaterial* material = new LambertianMaterial( *grey );
+	GlobalLog()->PrintNew( material, __FILE__, __LINE__, "light-RR floor material" );
+
+	SphereGeometry* sphere = new SphereGeometry( 10.0 );
+	GlobalLog()->PrintNew( sphere, __FILE__, __LINE__, "light-RR placeholder geometry" );
+	sphere->addref();
+	Object* object = new Object( sphere );
+	GlobalLog()->PrintNew( object, __FILE__, __LINE__, "light-RR placeholder object" );
+	object->addref();
+	sphere->release();
+	object->AssignMaterial( *material );
+
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "light-RR integrator" );
+	// EXACTLY one NEE attempt per driven sample: the light-RR coin is
+	// then the last random draw of the walk, so the two runs below visit
+	// the identical emitter points.
+	integrator->SetMaxPathDepth( 1 );
+
+	double sumOff = 0, sumOn = 0;
+	unsigned int countOff = 0, countOn = 0;
+	DriveLightRRSite( fx, *integrator, *object, *material, 0.0, sumOff, countOff );
+	DriveLightRRSite( fx, *integrator, *object, *material, kLightRRThreshold, sumOn, countOn );
+
+	const double ratio = sumOff > 0 ? sumOn / sumOff : -1;
+	std::cout << "    light-RR: NEE moment sum " << sumOff << " (threshold 0) -> " << sumOn
+		<< " (threshold " << kLightRRThreshold << "); attempts " << countOff << " / " << countOn
+		<< "; ratio = " << ratio
+		<< "  (expect > 1: q <= 1 pointwise, so E_pre/q >= E_pre.  Round 6's wiring reads < 1)"
+		<< std::endl;
+
+	Check( countOff == 4000 && countOn == 4000,
+		"light-RR: exactly one counted NEE attempt per driven sample, in both runs "
+		"(AccumulateCount fires before the roulette)" );
+	Check( sumOff > 0 && sumOn > 0, "light-RR: both runs accumulated a positive NEE moment" );
+	Check( ratio > 1.0,
+		"light-RR: turning the light-sample roulette ON RAISES the trained NEE moment "
+		"(the realized moment E_pre/q), rather than lowering it (round 6's q*E_pre)" );
+	// A strictly-greater-than-1 gate alone would pass on a fixture where
+	// the roulette never fires.  This one asserts it really did.
+	Check( ratio > 1.2,
+		"light-RR: the roulette actually fired on this fixture (ratio well above 1)" );
+
+	integrator->release();
+	object->release();
+	material->release();
+	grey->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// ALPHA QUALITY (round 7): the three candidate RR wirings, ranked by
+// the COMBINED VARIANCE their alpha produces, on two-technique toys
+// where every integral is done by quadrature.
+//
+// This is the row that says the round-7 ruling is not merely a
+// different reading of a doc comment but the LOWER-VARIANCE one.  For a
+// 1-D toy on [0,1] with `p_n = 1`, a BSDF density `p_b`, an integrand
+// `f` and a constant RR survival `q` on the BSDF branch, the realized
+// combined estimator is
+//
+//     F(alpha) = w_n f/p_n  +  S * w_b f/(p_b q)
+//     w_b(x) = alpha p_b / (alpha p_b + (1-alpha) p_n),  w_n = 1 - w_b
+//
+// (the weights use the NOMINAL densities, exactly as
+// `MISWeights::OptimalMIS2Weight` does), whose variance is
+//
+//     Var(alpha) = integral w_n^2 f^2/p_n
+//                + integral w_b^2 f^2/(p_b q)
+//                - (integral w_n f)^2 - (integral w_b f)^2
+//
+// -- unbiased for every alpha, so alpha is a pure variance knob.  The
+// three wirings feed `Solve()` three different `M_bsdf`:
+//
+//     (a) realized      E_pre/q      (b) round 6   q*E_pre     (c) E_pre
+//
+// Also reported: a brute-force grid minimum, because
+// `alpha = M_n/(M_n+M_b)` is the 1/M NORMALISATION, not the exact
+// minimiser -- the claim being gated is the RANKING of the three, not
+// that any of them hits the true optimum.
+//
+// The second half feeds `OptimalMISAccumulator` real Monte Carlo draws
+// under wiring (a) and checks `Solve()` returns the alpha the closed
+// form predicts.  Config 1 is chosen for it because its per-survivor
+// realized moment is EXACTLY 1: with f = x, p_b = 2x, q = 1/2,
+// (f/(p_b q))^2 = (x/x)^2 = 1, so the BSDF half has ZERO sampling
+// variance and the round-trip is tight.
+//////////////////////////////////////////////////////////////////////
+
+typedef double (*ToyFn)( double );
+
+static double ToyF_x( double x )     { return x; }
+static double ToyF_x2( double x )    { return x * x; }
+static double ToyF_exp( double x )   { return std::exp( -4.0 * x ); }
+static double ToyPb_2x( double x )   { return 2.0 * x; }
+static double ToyPb_3x2( double x )  { return 3.0 * x * x; }
+static double ToyPb_1( double )      { return 1.0; }
+
+static const unsigned int kToyQuadN = 20000;
+
+//! Midpoint quadrature of the realized combined variance at `alpha`.
+static double ToyVariance( ToyFn f, ToyFn pb, double q, double alpha )
+{
+	const double h = 1.0 / (double)kToyQuadN;
+	double t1 = 0, t2 = 0, m1 = 0, m2 = 0;
+	for( unsigned int i = 0; i < kToyQuadN; ++i ) {
+		const double x = ( (double)i + 0.5 ) * h;
+		const double fv = f( x );
+		const double pbv = pb( x );
+		const double den = alpha * pbv + ( 1.0 - alpha );
+		const double wb = den > 0 ? alpha * pbv / den : 0.0;
+		const double wn = 1.0 - wb;
+		t1 += wn * wn * fv * fv * h;
+		if( pbv > 0 ) t2 += wb * wb * fv * fv / pbv * h / q;
+		m1 += wn * fv * h;
+		m2 += wb * fv * h;
+	}
+	return t1 + t2 - m1 * m1 - m2 * m2;
+}
+
+static void ToyMoments( ToyFn f, ToyFn pb, double& Mn, double& Ipre )
+{
+	const double h = 1.0 / (double)kToyQuadN;
+	Mn = 0; Ipre = 0;
+	for( unsigned int i = 0; i < kToyQuadN; ++i ) {
+		const double x = ( (double)i + 0.5 ) * h;
+		const double fv = f( x );
+		const double pbv = pb( x );
+		Mn += fv * fv * h;
+		if( pbv > 0 ) Ipre += fv * fv / pbv * h;
+	}
+}
+
+static void RunOneToy( const char* name, ToyFn f, ToyFn pb, double q )
+{
+	double Mn = 0, Ipre = 0;
+	ToyMoments( f, pb, Mn, Ipre );
+
+	const double aRealized = Mn / ( Mn + Ipre / q );
+	const double aRound6   = Mn / ( Mn + q * Ipre );
+	const double aBare     = Mn / ( Mn + Ipre );
+
+	const double vRealized = ToyVariance( f, pb, q, aRealized );
+	const double vRound6   = ToyVariance( f, pb, q, aRound6 );
+	const double vBare     = ToyVariance( f, pb, q, aBare );
+
+	double vBest = vRealized, aBest = aRealized;
+	for( unsigned int i = 1; i < 250; ++i ) {
+		const double a = (double)i / 250.0;
+		const double v = ToyVariance( f, pb, q, a );
+		if( v < vBest ) { vBest = v; aBest = a; }
+	}
+
+	std::cout << "    toy " << name << " q=" << q
+		<< " | grid-min alpha=" << aBest
+		<< " | realized a=" << aRealized << " var=" << vRealized
+		<< " (+" << 100.0 * ( vRealized / vBest - 1.0 ) << "%)"
+		<< " | bare a=" << aBare << " var=" << vBare
+		<< " (+" << 100.0 * ( vBare / vBest - 1.0 ) << "%)"
+		<< " | round6 a=" << aRound6 << " var=" << vRound6
+		<< " (+" << 100.0 * ( vRound6 / vBest - 1.0 ) << "%)"
+		<< std::endl;
+
+	Check( vRealized < vBare,
+		"alpha quality: the realized moment beats the bare pre-RR moment" );
+	Check( vBare < vRound6,
+		"alpha quality: the bare pre-RR moment beats round 6's q*E_pre" );
+	Check( vRealized < vRound6,
+		"alpha quality: the realized moment beats round 6's q*E_pre" );
+}
+
+static void RunAlphaQualityCheck()
+{
+	std::cout << "DL-84 (alpha quality): which RR wiring minimises the combined variance"
+		<< std::endl;
+
+	RunOneToy( "f=x,pb=2x",    ToyF_x,   ToyPb_2x,  0.5 );
+	RunOneToy( "f=x,pb=2x",    ToyF_x,   ToyPb_2x,  0.2 );
+	RunOneToy( "f=x^2,pb=3x^2", ToyF_x2, ToyPb_3x2, 0.5 );
+	RunOneToy( "f=e^-4x,pb=1", ToyF_exp, ToyPb_1,   0.5 );
+
+	// Round-trip: real Monte Carlo draws, fed to the production
+	// accumulator under wiring (a), must solve to the closed-form alpha.
+	{
+		const double q = 0.5;
+		double Mn = 0, Ipre = 0;
+		ToyMoments( ToyF_x, ToyPb_2x, Mn, Ipre );
+		const double aRealized = Mn / ( Mn + Ipre / q );
+
+		OptimalMISAccumulator acc;
+		acc.Initialize( 64, 64, MakeConfig() );
+
+		RandomNumberGenerator rng( 8123u );
+		const unsigned int N = 200000;
+		for( unsigned int i = 0; i < N; ++i ) {
+			// NEE technique: x ~ p_n = U(0,1), no roulette.
+			const double xn = rng.CanonicalRandom();
+			acc.AccumulateCount( 0, 0, kTechniqueNEE );
+			acc.Accumulate( 0, 0, (Scalar)( ToyF_x( xn ) * ToyF_x( xn ) ), 1.0, kTechniqueNEE );
+
+			// BSDF technique: x ~ p_b = 2x (inverse CDF sqrt(u)), then
+			// roulette at q; the survivor's numerator is the AS-CARRIED
+			// f/(p_b q), i.e. wiring (a).
+			const double xb = std::sqrt( rng.CanonicalRandom() );
+			acc.AccumulateCount( 0, 0, kTechniqueBSDF );
+			if( rng.CanonicalRandom() < q ) {
+				const double carried = ToyF_x( xb ) / q;		// f / q, over p_b below
+				acc.Accumulate( 0, 0, (Scalar)( carried * carried ),
+					(Scalar)ToyPb_2x( xb ), kTechniqueBSDF );
+			}
+		}
+		acc.Solve();
+		const double solved = (double)acc.GetAlpha( 0, 0 );
+		std::cout << "    alpha round-trip: closed form " << aRealized
+			<< ", accumulator Solve() " << solved << std::endl;
+		Check( std::fabs( solved - aRealized ) < 0.005,
+			"alpha quality: Solve() reproduces the closed-form realized-moment alpha" );
+	}
 }
 
 int main()
@@ -1150,6 +1564,8 @@ int main()
 	RunBssrdfSite();
 	RunFloorFogSite();
 	RunRRConventionCheck();
+	RunLightRRConventionCheck();
+	RunAlphaQualityCheck();
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
