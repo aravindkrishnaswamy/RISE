@@ -78,37 +78,40 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	//   cosine = dot(normal, ray_dir), so cosine < NEARZERO means entering.
 	const bool bEntering = !ior_stack.containsCurrent();
 
-	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
-	// to 60 deg off the true surface, so a Fresnel reflection direction that
-	// validates against the (tilted) shading normal can still point below the
-	// geometric surface -- the continuation ray then tunnels into the solid.
-	// Orient the geometric normal to the side of the normal this reflection is
-	// actually built around (bEntering -> +onb.w(), else -> -onb.w(), mirroring
-	// the two branches below).  Degenerate vGeomNormal (SquaredModulus guard,
-	// matches GlintModifier.cpp) falls back to the shading normal, making the
-	// gate a no-op.  Drop (not redistribute) the Fresnel lobe on failure.
-	//
-	// NOTE (ray-anchor sweep): nEff is stack-anchored via bEntering (ground
-	// truth, independent of any glint tilt), not re-derived from a per-hit
-	// Dot(rayDir, tiltable shading normal) test -- provably equivalent to a
-	// direct ray-anchor: entering, the ray opposes the true outward normal
-	// (Dot(rayDir,Ng)<0) so nEff=+onb.w() agrees; leaving, the ray travels
-	// outward (Dot(rayDir,Ng)>0) so nEff=-onb.w() again agrees.  Left as-is
-	// to avoid perturbing well-tested crossing logic for a no-op change.
-	// CAVEAT: the equivalence assumes the IOR stack accurately reflects the
-	// ray's physical containment (bEntering is only as good as the stack).
-	// See IORStackSeeding.h for the class of bug where it doesn't -- a
-	// subpath origin sealed inside nested dielectrics with an unseeded stack.
-	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : nEff;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
-	bool bDropFresnel = false;
+	// Geometric-horizon reference (DL-111, 2026-09-17).  Identical in
+	// construction and rationale to `DielectricSPF::GenerateScatteredRay`'s
+	// -- see the long comment there.  In brief: a bump / normal map or
+	// `GlintModifier` (up to 60 deg) moves the SHADING normal off the
+	// surface, so both lobes need a reference no shading tilt can move.
+	// `geomN` is RAY-ANCHORED (flipped to oppose `ri.ray.Dir()`), which
+	// makes the reflection's half-space `Dot(dir, geomN) > 0` and the
+	// transmission's its exact complement `Dot(dir, throughSurface) > 0`,
+	// with ONE expression correct on both crossings.  This replaces an
+	// `nEff`-anchored rule whose own comment claimed equivalence; it is
+	// not equivalent on a DOUBLE-SIDED mesh, where the geometry flips both
+	// normals toward the ray and `nEff = -onb.w()` at an exit hit lands on
+	// the outward side instead of the ray-opposing one.
+	// `HasTrueGeomSide()` (DL-70) excludes `HairGeometry`, whose normal is
+	// fabricated from the ray; there, as for a degenerate normal, fall
+	// back to the shading normal and both gates become no-ops.
+	const Vector3 nShading = ri.onb.w();
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : nShading;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : nShading;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 throughSurface = -geomN;
+
+	// The ordered indices of THIS crossing, hoisted so the DL-111
+	// re-derivation below can rebuild both the direction and its Fresnel
+	// at the same interface.
+	Scalar Ni = 1.0, Nt = 1.0;
 
 	Scalar ref = 0;
 	if( bEntering )
 	{
 		// Going in
+		Ni = ior_stack.top();
+		Nt = newIOR;
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), newIOR, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack.top(), newIOR );
 			specular.ior_stack = new IORStack( ior_stack );
@@ -122,22 +125,20 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		if( ref > 0.0 ) {
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				if( ref >= 1.0 ) {
-					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
-					// transmission lobe will be emitted at all (see the `ref < 1.0`
-					// gate below), so dropping the Fresnel lobe here would be total,
-					// deterministic energy loss.  TIR has no companion channel:
-					// re-derive the reflection direction about the TRUE geometric
-					// normal instead of the shading normal.  This is guaranteed to
-					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
-					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
-					// (up to the measure-zero exact-tangent boundary).
-					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-				} else {
-					bDropFresnel = true;
-				}
+				// DL-111, reflection half of the disposal ruling (see
+				// DielectricSPF for the full statement).  This re-derivation
+				// used to be reserved for a MANDATORY (TIR) reflection, and
+				// every other wrong-side reflection was DROPPED -- the `ref`
+				// was then paid to nothing, deterministic energy loss growing
+				// with the shading tilt.  A delta reflection has no
+				// distribution to renormalize, so the same answer applies:
+				// re-derive about the TRUE geometric normal (the coarse form
+				// of Cycles' `ensure_valid_reflection`).  Guaranteed to
+				// satisfy the gate, so no re-check is needed: geomN is
+				// ray-anchored, so dot(reflect(d,geomN), geomN) =
+				// -dot(d,geomN) > 0 (up to the measure-zero exact-tangent
+				// boundary).
+				fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 			}
 		}
 	}
@@ -148,6 +149,8 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 		// Coming out, IOR becomes air
+		Ni = newIOR;
+		Nt = specular.ior_stack ? specular.ior_stack->top() : 1.0;
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0 );
 		} else {
@@ -161,23 +164,51 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				if( ref >= 1.0 ) {
-					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
-					// transmission lobe will be emitted at all (see the `ref < 1.0`
-					// gate below), so dropping the Fresnel lobe here would be total,
-					// deterministic energy loss.  TIR has no companion channel:
-					// re-derive the reflection direction about the TRUE geometric
-					// normal instead of the shading normal.  This is guaranteed to
-					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
-					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
-					// (up to the measure-zero exact-tangent boundary).
-					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-				} else {
-					bDropFresnel = true;
-				}
+				// DL-111, reflection half of the disposal ruling (see
+				// DielectricSPF for the full statement).  This re-derivation
+				// used to be reserved for a MANDATORY (TIR) reflection, and
+				// every other wrong-side reflection was DROPPED -- the `ref`
+				// was then paid to nothing, deterministic energy loss growing
+				// with the shading tilt.  A delta reflection has no
+				// distribution to renormalize, so the same answer applies:
+				// re-derive about the TRUE geometric normal (the coarse form
+				// of Cycles' `ensure_valid_reflection`).  Guaranteed to
+				// satisfy the gate, so no re-check is needed: geomN is
+				// ray-anchored, so dot(reflect(d,geomN), geomN) =
+				// -dot(d,geomN) > 0 (up to the measure-zero exact-tangent
+				// boundary).
+				fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 			}
+		}
+	}
+
+	// DL-111: the refracted direction above was built from the SHADING
+	// normal, and nothing yet says it actually crossed the surface -- while
+	// `specular.ior_stack` has ALREADY been pushed (entry) or popped (exit)
+	// to say it did.  Unlike `DielectricSPF`, this SPF had NO geometric
+	// gate on the transmission at all; only the Fresnel lobe was gated.
+	//
+	// Disposal ruling, identical to DielectricSPF's (full derivation in
+	// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+	// refraction about the true geometric normal and recompute its Fresnel
+	// there, rather than dropping.  It keeps the event a genuine refraction
+	// at the same eta (so a dispersion fan stays an ordered fan),
+	// preserves the energy, and cannot fail the gate.  If the TRUE
+	// interface total-internally-reflects at this incidence where the
+	// tilted shading normal did not, `ref` becomes 1 and the reflection
+	// above carries everything.
+	//
+	// Reachable only when refracting into a RARER medium (a glass->air
+	// exit, or entry into a bubble) at a grazing, normal-perturbed
+	// silhouette -- refraction into a denser medium always crosses.  See
+	// `MakeObliqueHit` in tests/TransmissionPushGateTest.cpp.
+	if( ref < 1.0 && Vector3Ops::Dot( vRefracted, throughSurface ) <= 0 ) {
+		Vector3 geomRefracted = ri.ray.Dir();
+		if( Optics::CalculateRefractedRay( geomN, Ni, Nt, geomRefracted ) ) {
+			vRefracted = geomRefracted;
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, geomN, Ni, Nt );
+		} else {
+			ref = 1.0;
 		}
 	}
 
@@ -192,7 +223,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		scattered.AddScatteredRay( specular );
 	}
 
-	if( ref > 0.0 && !bDropFresnel ) {
+	if( ref > 0.0 ) {
 		if( oneofthree ) {
 			fresnel.kray[oneofthree-1] = ref;
 		} else {
@@ -252,37 +283,40 @@ void PerfectRefractorSPF::ScatterNM(
 	// determination when available (see DoSingleRGBComponent for details)
 	const bool bEntering = !ior_stack.containsCurrent();
 
-	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
-	// to 60 deg off the true surface, so a Fresnel reflection direction that
-	// validates against the (tilted) shading normal can still point below the
-	// geometric surface -- the continuation ray then tunnels into the solid.
-	// Orient the geometric normal to the side of the normal this reflection is
-	// actually built around (bEntering -> +onb.w(), else -> -onb.w(), mirroring
-	// the two branches below).  Degenerate vGeomNormal (SquaredModulus guard,
-	// matches GlintModifier.cpp) falls back to the shading normal, making the
-	// gate a no-op.  Drop (not redistribute) the Fresnel lobe on failure.
-	//
-	// NOTE (ray-anchor sweep): nEff is stack-anchored via bEntering (ground
-	// truth, independent of any glint tilt), not re-derived from a per-hit
-	// Dot(rayDir, tiltable shading normal) test -- provably equivalent to a
-	// direct ray-anchor: entering, the ray opposes the true outward normal
-	// (Dot(rayDir,Ng)<0) so nEff=+onb.w() agrees; leaving, the ray travels
-	// outward (Dot(rayDir,Ng)>0) so nEff=-onb.w() again agrees.  Left as-is
-	// to avoid perturbing well-tested crossing logic for a no-op change.
-	// CAVEAT: the equivalence assumes the IOR stack accurately reflects the
-	// ray's physical containment (bEntering is only as good as the stack).
-	// See IORStackSeeding.h for the class of bug where it doesn't -- a
-	// subpath origin sealed inside nested dielectrics with an unseeded stack.
-	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : nEff;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
-	bool bDropFresnel = false;
+	// Geometric-horizon reference (DL-111, 2026-09-17).  Identical in
+	// construction and rationale to `DielectricSPF::GenerateScatteredRay`'s
+	// -- see the long comment there.  In brief: a bump / normal map or
+	// `GlintModifier` (up to 60 deg) moves the SHADING normal off the
+	// surface, so both lobes need a reference no shading tilt can move.
+	// `geomN` is RAY-ANCHORED (flipped to oppose `ri.ray.Dir()`), which
+	// makes the reflection's half-space `Dot(dir, geomN) > 0` and the
+	// transmission's its exact complement `Dot(dir, throughSurface) > 0`,
+	// with ONE expression correct on both crossings.  This replaces an
+	// `nEff`-anchored rule whose own comment claimed equivalence; it is
+	// not equivalent on a DOUBLE-SIDED mesh, where the geometry flips both
+	// normals toward the ray and `nEff = -onb.w()` at an exit hit lands on
+	// the outward side instead of the ray-opposing one.
+	// `HasTrueGeomSide()` (DL-70) excludes `HairGeometry`, whose normal is
+	// fabricated from the ray; there, as for a degenerate normal, fall
+	// back to the shading normal and both gates become no-ops.
+	const Vector3 nShading = ri.onb.w();
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : nShading;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : nShading;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 throughSurface = -geomN;
+
+	// The ordered indices of THIS crossing, hoisted so the DL-111
+	// re-derivation below can rebuild both the direction and its Fresnel
+	// at the same interface.
+	Scalar Ni = 1.0, Nt = 1.0;
 
 	Scalar ref = 0;
 	if( bEntering )
 	{
 		// Going in
+		Ni = ior_stack.top();
+		Nt = newIOR;
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), newIOR, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack.top(), newIOR );
 			specular.ior_stack = new IORStack( ior_stack );
@@ -296,22 +330,20 @@ void PerfectRefractorSPF::ScatterNM(
 		if( ref > 0.0 ) {
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				if( ref >= 1.0 ) {
-					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
-					// transmission lobe will be emitted at all (see the `ref < 1.0`
-					// gate below), so dropping the Fresnel lobe here would be total,
-					// deterministic energy loss.  TIR has no companion channel:
-					// re-derive the reflection direction about the TRUE geometric
-					// normal instead of the shading normal.  This is guaranteed to
-					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
-					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
-					// (up to the measure-zero exact-tangent boundary).
-					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-				} else {
-					bDropFresnel = true;
-				}
+				// DL-111, reflection half of the disposal ruling (see
+				// DielectricSPF for the full statement).  This re-derivation
+				// used to be reserved for a MANDATORY (TIR) reflection, and
+				// every other wrong-side reflection was DROPPED -- the `ref`
+				// was then paid to nothing, deterministic energy loss growing
+				// with the shading tilt.  A delta reflection has no
+				// distribution to renormalize, so the same answer applies:
+				// re-derive about the TRUE geometric normal (the coarse form
+				// of Cycles' `ensure_valid_reflection`).  Guaranteed to
+				// satisfy the gate, so no re-check is needed: geomN is
+				// ray-anchored, so dot(reflect(d,geomN), geomN) =
+				// -dot(d,geomN) > 0 (up to the measure-zero exact-tangent
+				// boundary).
+				fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 			}
 		}
 	}
@@ -323,6 +355,8 @@ void PerfectRefractorSPF::ScatterNM(
 
 		// Coming out, IOR becomes whatever was there before
 		const Scalar exitIOR = specular.ior_stack ? specular.ior_stack->top() : 1.0;
+		Ni = newIOR;
+		Nt = exitIOR;
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, exitIOR, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, exitIOR );
 		} else {
@@ -336,23 +370,51 @@ void PerfectRefractorSPF::ScatterNM(
 			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				if( ref >= 1.0 ) {
-					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
-					// transmission lobe will be emitted at all (see the `ref < 1.0`
-					// gate below), so dropping the Fresnel lobe here would be total,
-					// deterministic energy loss.  TIR has no companion channel:
-					// re-derive the reflection direction about the TRUE geometric
-					// normal instead of the shading normal.  This is guaranteed to
-					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
-					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
-					// (up to the measure-zero exact-tangent boundary).
-					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-				} else {
-					bDropFresnel = true;
-				}
+				// DL-111, reflection half of the disposal ruling (see
+				// DielectricSPF for the full statement).  This re-derivation
+				// used to be reserved for a MANDATORY (TIR) reflection, and
+				// every other wrong-side reflection was DROPPED -- the `ref`
+				// was then paid to nothing, deterministic energy loss growing
+				// with the shading tilt.  A delta reflection has no
+				// distribution to renormalize, so the same answer applies:
+				// re-derive about the TRUE geometric normal (the coarse form
+				// of Cycles' `ensure_valid_reflection`).  Guaranteed to
+				// satisfy the gate, so no re-check is needed: geomN is
+				// ray-anchored, so dot(reflect(d,geomN), geomN) =
+				// -dot(d,geomN) > 0 (up to the measure-zero exact-tangent
+				// boundary).
+				fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 			}
+		}
+	}
+
+	// DL-111: the refracted direction above was built from the SHADING
+	// normal, and nothing yet says it actually crossed the surface -- while
+	// `specular.ior_stack` has ALREADY been pushed (entry) or popped (exit)
+	// to say it did.  Unlike `DielectricSPF`, this SPF had NO geometric
+	// gate on the transmission at all; only the Fresnel lobe was gated.
+	//
+	// Disposal ruling, identical to DielectricSPF's (full derivation in
+	// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+	// refraction about the true geometric normal and recompute its Fresnel
+	// there, rather than dropping.  It keeps the event a genuine refraction
+	// at the same eta (so a dispersion fan stays an ordered fan),
+	// preserves the energy, and cannot fail the gate.  If the TRUE
+	// interface total-internally-reflects at this incidence where the
+	// tilted shading normal did not, `ref` becomes 1 and the reflection
+	// above carries everything.
+	//
+	// Reachable only when refracting into a RARER medium (a glass->air
+	// exit, or entry into a bubble) at a grazing, normal-perturbed
+	// silhouette -- refraction into a denser medium always crosses.  See
+	// `MakeObliqueHit` in tests/TransmissionPushGateTest.cpp.
+	if( ref < 1.0 && Vector3Ops::Dot( vRefracted, throughSurface ) <= 0 ) {
+		Vector3 geomRefracted = ri.ray.Dir();
+		if( Optics::CalculateRefractedRay( geomN, Ni, Nt, geomRefracted ) ) {
+			vRefracted = geomRefracted;
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, geomN, Ni, Nt );
+		} else {
+			ref = 1.0;
 		}
 	}
 
@@ -363,7 +425,7 @@ void PerfectRefractorSPF::ScatterNM(
 		scattered.AddScatteredRay( specular );
 	}
 
-	if( ref > 0.0 && !bDropFresnel ) {
+	if( ref > 0.0 ) {
 		fresnel.krayNM = ref;
 
 		scattered.AddScatteredRay( fresnel );
