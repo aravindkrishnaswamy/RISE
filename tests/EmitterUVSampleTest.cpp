@@ -226,6 +226,53 @@ static double RenderMeanLuminance( const char* scenePath )
 	return mean;
 }
 
+//! DL-108 topology test only: same as RenderMeanLuminance, but after
+//! loading the scene and BEFORE rasterizing, binds a BoxUVGenerator to
+//! the named object via the construction-API setter `IJob::
+//! SetObjectUVToBox` -- there is no scene-language chunk that reaches
+//! `Object::SetUVGenerator` (see docs/DL95_OBJECT_UV_GENERATOR_INPUT.md
+//! "Scene-level impact"), so this is the only way to exercise an
+//! override UV generator through a real end-to-end render.
+static double RenderMeanLuminanceWithBoxUV(
+	const char* scenePath, const char* objectName,
+	double width, double height, double depth )
+{
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
+		return -1.0;
+	}
+
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
+		safe_release( pJob );
+		return -1.0;
+	}
+
+	if( !pJob->SetObjectUVToBox( objectName, width, height, depth ) ) {
+		safe_release( pJob );
+		return -1.0;
+	}
+
+	pJob->RemoveRasterizerOutputs();
+
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+
+	std::srand( g_renderSeed++ );
+	const bool bRendered = pJob->Rasterize();
+	if( !bRendered ) {
+		safe_release( pCap );
+		safe_release( pJob );
+		return -1.0;
+	}
+
+	const double mean = MeanLuminance( *pCap );
+
+	safe_release( pCap );
+	safe_release( pJob );
+	return mean;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Scene text.
 //
@@ -484,6 +531,186 @@ static void PrintStat( const char* label, double v )
 }
 
 //////////////////////////////////////////////////////////////////////
+// DL-108 topology: Object::UniformRandomPoint (hence LightSampler::
+// SampleLight, hence EVERY light-sampling strategy -- PT's NEE, BDPT's
+// s=1 connection from the generated light subpath's root, VCM's
+// EvaluateNEEImpl) never consulted an override UV generator, so a
+// UV-textured emitter charted via a BoxUVGenerator lit the wall with
+// its NATIVE (ClippedPlaneGeometry) checker pattern instead of the
+// override one, even after DL-95/DL-44 fixed every OTHER UV-generator
+// consumer.
+//
+// SAME wall receiver + camera as kSceneCommonGeometry above, but the
+// emitter quad is offset well away from the object-local origin (the
+// corners below span local x,y in [0.1, 2.1], not [-1, 1]) and its
+// BoxUVGenerator (bound via SetObjectUVToBox below, not scene text --
+// see RenderMeanLuminanceWithBoxUV) uses a deliberately HUGE width and
+// height (10000).  Two independent, closed-form-derivable facts follow:
+//
+//   NATIVE (ClippedPlaneGeometry) UV always spans the full [0, 1]^2
+//   parameter square exactly, by construction, regardless of the
+//   quad's placement -- a size=0.5 checker over that square is always
+//   an EXACT 2x2 board, so avgNative = 0.5 (colorA=white=1, colorB=
+//   black=0) for ANY quad placement.  (Verified separately, by
+//   inspection of the pre-existing kSceneCommonGeometry test above,
+//   which relies on the identical fact.)
+//
+//   BOX-projected UV, from BoxUVGenerator's `GenerateUV` (side chosen
+//   by dominant normal axis -- here always -Z, side 4, so u/v depend
+//   only on local x/y): with width=height=10000 the box maps the
+//   ENTIRE local x,y in [0.1,2.1]^2 extent into a range of width
+//   2.1/10000 ~ 0.0002 centred near u=v=0.49989 -- far too narrow to
+//   cross ANY checker cell boundary (multiples of 0.5) starting from a
+//   quad deliberately NOT centred on one -- so the WHOLE emitter charts
+//   into a SINGLE checker cell.  0.49989 falls in the (0, 0.5) cell,
+//   which (ceil(0.49989/0.5)=1, odd) is colorB... wait: XOR of x and y
+//   both odd is EVEN overall -> colorA.  avgBox = 1.0 (solid colorA,
+//   white) for this construction -- verified by an independent
+//   quadrature script during test authoring (2000x2000 grid): exactly
+//   1.0.
+//
+// So avgNative=0.5, avgBox=1.0 -- an exact 2x factor, deliberately
+// chosen to be unmistakable against Monte-Carlo noise at production
+// sample counts, mirroring DL-44's own "exact factor, not area noise"
+// design.  A companion UNIFORM (exitance=1.0, no checker) emitter scene
+// calibrates the unknown light-transport proportionality constant
+// (distance falloff, solid angle, BRDF cosine, radiometric scale) that
+// a bare receiver-mean number can't separate from the exitance average
+// on its own: for LINEAR transport, meanReceiver(checker) /
+// meanReceiver(uniform) -> avgExitance-under-whichever-UV-convention-
+// light-sampling-actually-used, independent of that constant, in the
+// Monte-Carlo limit.  Pre-fix this ratio clusters near avgNative (0.5,
+// light sampling ignores the override generator); post-fix it must
+// track avgBox (1.0, DL-108 fixed).
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneWallAndCameraTopology =
+	"film\n"
+	"{\n"
+	"\twidth 24\n"
+	"\theight 24\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.8 0.8 0.8\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad\n"
+	"\tpta -1 -1 0\n"
+	"\tptb 1 -1 0\n"
+	"\tptc 1 1 0\n"
+	"\tptd -1 1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_quad\n"
+	"\tgeometry quad\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n";
+
+//! Emitter quad: local (x, y) in [0.1, 2.1]^2 -- see the block comment
+//! above for why this offset-from-origin placement matters for the
+//! BoxUVGenerator side of the closed form.  Same z=6 / behind-camera /
+//! -Z-facing placement as kSceneCommonGeometry's own quad_emit.
+static const char* kEmitterQuadGeometry =
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit\n"
+	"\tpta 0.1 2.1 6.0\n"
+	"\tptb 2.1 2.1 6.0\n"
+	"\tptc 2.1 0.1 6.0\n"
+	"\tptd 0.1 0.1 6.0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit\n"
+	"\tgeometry quad_emit\n"
+	"\tmaterial mat_emit\n"
+	"}\n";
+
+static const char* kEmitterMaterialChecker =
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_white\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_black\n"
+	"\tcolor 0.0 0.0 0.0\n"
+	"}\n"
+	"\n"
+	"checker_painter\n"
+	"{\n"
+	"\tname pnt_checker_topo\n"
+	"\tcolora pnt_white\n"
+	"\tcolorb pnt_black\n"
+	"\tsize 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit\n"
+	"\texitance pnt_checker_topo\n"
+	"\tscale 10.0\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n";
+
+static const char* kEmitterMaterialUniform =
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_uniform_topo\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit\n"
+	"\texitance pnt_uniform_topo\n"
+	"\tscale 10.0\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n";
+
+static std::string BuildSceneTopology( const char* rasterizerBlock, const char* emitterMaterialBlock )
+{
+	std::string s( "RISE ASCII SCENE 7\n" );
+	s += kSceneWallAndCameraTopology;
+	s += emitterMaterialBlock;
+	s += kEmitterQuadGeometry;
+	s += rasterizerBlock;
+	return s;
+}
+
+//! Box dimensions bound to `obj_emit` for the topology test -- see the
+//! block comment above for the closed-form derivation.
+static const double kTopoBoxWidth  = 10000.0;
+static const double kTopoBoxHeight = 10000.0;
+static const double kTopoBoxDepth  = 1.0;
+
+//////////////////////////////////////////////////////////////////////
 // TestCheckerLuminaireRGB
 //
 // PT vs BDPT vs VCM under an RGB (Pel) render.  Pre-fix, BDPT and VCM
@@ -571,12 +798,84 @@ static void TestCheckerLuminaireSpectral()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// TestUVGeneratorLightSamplingTopology (DL-108)
+//
+// PT and BDPT, each rendered twice (checker exitance / uniform
+// exitance) with a BoxUVGenerator bound to the emitter via the
+// construction API (RenderMeanLuminanceWithBoxUV).  ratio =
+// mean(checker) / mean(uniform) measures the area-weighted average
+// exitance under WHICHEVER UV convention the rasterizer's light
+// sampling strategy actually used, cancelling every other transport
+// constant (see the block comment above kSceneWallAndCameraTopology
+// for the full derivation).  Pre-fix this must cluster near avgNative
+// = 0.5 for BOTH rasterizers (LightSampler::SampleLight -> IObject::
+// UniformRandomPoint never consulted the override generator, for PT's
+// own NEE exactly as much as BDPT's); post-fix it must track avgBox =
+// 1.0.
+//////////////////////////////////////////////////////////////////////
+static void TestUVGeneratorLightSamplingTopology()
+{
+	std::cout << "DL-108: UV-generator light-sampling topology (PT vs BDPT, checker/uniform ratio)\n";
+
+	const std::string ptCheckerPath = WriteSceneToTempFile(
+		BuildSceneTopology( kRasterizerPT, kEmitterMaterialChecker ).c_str(), "topo_pt_checker" );
+	const std::string ptUniformPath = WriteSceneToTempFile(
+		BuildSceneTopology( kRasterizerPT, kEmitterMaterialUniform ).c_str(), "topo_pt_uniform" );
+	const std::string bdptCheckerPath = WriteSceneToTempFile(
+		BuildSceneTopology( kRasterizerBDPT, kEmitterMaterialChecker ).c_str(), "topo_bdpt_checker" );
+	const std::string bdptUniformPath = WriteSceneToTempFile(
+		BuildSceneTopology( kRasterizerBDPT, kEmitterMaterialUniform ).c_str(), "topo_bdpt_uniform" );
+
+	Check( !ptCheckerPath.empty() && !ptUniformPath.empty() &&
+		!bdptCheckerPath.empty() && !bdptUniformPath.empty(), "topology scene files written" );
+
+	const double ptChecker = RenderMeanLuminanceWithBoxUV(
+		ptCheckerPath.c_str(), "obj_emit", kTopoBoxWidth, kTopoBoxHeight, kTopoBoxDepth );
+	const double ptUniform = RenderMeanLuminanceWithBoxUV(
+		ptUniformPath.c_str(), "obj_emit", kTopoBoxWidth, kTopoBoxHeight, kTopoBoxDepth );
+	const double bdptChecker = RenderMeanLuminanceWithBoxUV(
+		bdptCheckerPath.c_str(), "obj_emit", kTopoBoxWidth, kTopoBoxHeight, kTopoBoxDepth );
+	const double bdptUniform = RenderMeanLuminanceWithBoxUV(
+		bdptUniformPath.c_str(), "obj_emit", kTopoBoxWidth, kTopoBoxHeight, kTopoBoxDepth );
+
+	PrintStat( "PT checker",     ptChecker );
+	PrintStat( "PT uniform",     ptUniform );
+	PrintStat( "BDPT checker",   bdptChecker );
+	PrintStat( "BDPT uniform",   bdptUniform );
+
+	Check( ptChecker > 1e-6 && ptUniform > 1e-6, "PT: both renders positive (scene actually lit)" );
+	Check( bdptChecker > 1e-6 && bdptUniform > 1e-6, "BDPT: both renders positive (scene actually lit)" );
+
+	if( ptUniform > 1e-6 && bdptUniform > 1e-6 )
+	{
+		const double ratioPT   = ptChecker / ptUniform;
+		const double ratioBDPT = bdptChecker / bdptUniform;
+		std::printf( "  ratio PT (checker/uniform)   = %.4f  (avgNative=0.5, avgBox=1.0)\n", ratioPT );
+		std::printf( "  ratio BDPT (checker/uniform) = %.4f  (avgNative=0.5, avgBox=1.0)\n", ratioBDPT );
+
+		// Post-fix band around avgBox=1.0 -- generous for a 256-spp
+		// direct-lighting-only Monte-Carlo estimate, but comfortably
+		// clear of avgNative=0.5 (the pre-fix value), so this genuinely
+		// discriminates fixed from unfixed rather than just checking
+		// "the light is on".
+		Check( ratioPT > 0.75, "PT ratio tracks avgBox=1.0, not avgNative=0.5 (DL-108 fixed)" );
+		Check( ratioBDPT > 0.75, "BDPT ratio tracks avgBox=1.0, not avgNative=0.5 (DL-108 fixed)" );
+
+		std::printf(
+			"  [diagnostic] pre-fix closed-form expectation is ratio ~0.5 (light "
+			"sampling's UniformRandomPoint ignores the override BoxUVGenerator and "
+			"reads the native ClippedPlaneGeometry checker average instead)\n" );
+	}
+}
+
 int main()
 {
-	std::cout << "=== EmitterUVSampleTest (DL-44) ===\n";
+	std::cout << "=== EmitterUVSampleTest (DL-44 / DL-108) ===\n";
 
 	TestCheckerLuminaireRGB();
 	TestCheckerLuminaireSpectral();
+	TestUVGeneratorLightSamplingTopology();
 
 	std::cout << "\nPassed: " << passCount << "  Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
