@@ -65,6 +65,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
+#include <thread>
 
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
@@ -180,6 +181,54 @@ static OptimalMISAccumulator::Config MakeConfig()
 }
 
 //////////////////////////////////////////////////////////////////////
+// DETERMINISM (round-7 review P2-1).  Every driven walk in this file
+// runs on a FRESH thread, with libc's `rand()` re-seeded immediately
+// before that thread is spawned.
+//
+// THE MECHANISM (measured, not inferred).  `HeterogeneousMedium`'s
+// ratio-tracking transmittance estimator keeps ONE per-thread Mersenne
+// Twister -- `static thread_local RandomNumberGenerator tl_rng` /
+// `tl_rng_nm` in `HeterogeneousMedium.cpp` -- default-constructed, i.e.
+// seeded from libc `rand()` on first use on that thread.  `Fixture::
+// Build`'s throwaway `Rasterize()` is multithreaded AND the CALLING
+// thread participates in the work (`ThreadPool.cpp`: "The caller thread
+// participates in ParallelFor by draining"), so by the time a driven
+// walk runs on the main thread that thread's `tl_rng` has been advanced
+// by a nondeterministic number of render blocks.  Every medium shadow
+// ray the walk then casts reads a different point of that stream on
+// every process run.
+//
+// Three measurements pin it, all on the floor-fog row:
+//   * main thread, as this file used to drive it:  691 / 686 / 690
+//     attempts on three consecutive runs of the SAME binary;
+//   * main thread with an extra `std::srand()` after the throwaway
+//     render:  693 / 690 / 690 -- STILL drifting, because the main
+//     thread's `tl_rng` was already constructed and advanced by then,
+//     and re-seeding `rand()` cannot reset an existing engine;
+//   * a fresh thread:  692 / 692 / 692, and the bright-fixture replay
+//     lands on the same 692, making the k^2 radiance law EXACT rather
+//     than approximate.
+// A fresh thread with NO `std::srand` is also stable (681) but at a
+// value that depends on whatever `rand()` state the process happens to
+// be in, so the `std::srand` is kept: it makes the seed a property of
+// this file alone.
+//
+// This SUPERSEDES the "floating-point noise in two independently-built
+// EnvironmentSampler importance tables" explanation this file and
+// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md carried in round 6.
+// That explanation was wrong: two separately-built Job/Scene instances
+// are not involved at all (the drift reproduces on ONE fixture), and
+// the EnvironmentSampler is built deterministically.
+//////////////////////////////////////////////////////////////////////
+template< typename F >
+static void DriveOnFreshThread( unsigned int randSeed, F body )
+{
+	std::srand( randSeed );
+	std::thread worker( body );
+	worker.join();
+}
+
+//////////////////////////////////////////////////////////////////////
 // The NEE half of the tile is supplied SYNTHETICALLY, on purpose.
 //
 // `Solve()`'s decision table only reaches the branch that reads
@@ -278,6 +327,7 @@ static void DriveVolumeSite(
 	unsigned int& countBsdf )
 {
 	const RasterizerState rast{};
+	DriveOnFreshThread( 5101u, [&]() {
 	for( unsigned int s = 0; s < 1200; ++s ) {
 		RandomNumberGenerator rng( 31000 + s );
 		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
@@ -298,6 +348,7 @@ static void DriveVolumeSite(
 		Scalar dist = 0;
 		fx.pCaster->CastRay( rc, rast, ray, c, rs, &dist, 0 );
 	}
+	} );
 	double sumNee = 0;
 	unsigned int countNee = 0;
 	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
@@ -540,6 +591,7 @@ static void DriveBssrdfSite(
 		pLS->SetOptimalMIS( &acc );
 	}
 	// Exit point on the sphere's +Z pole, ray arriving from outside.
+	DriveOnFreshThread( 5102u, [&]() {
 	for( unsigned int s = 0; s < 600; ++s ) {
 		RandomNumberGenerator rng( 52000 + s );
 		IndependentSampler sampler( rng );
@@ -566,6 +618,7 @@ static void DriveBssrdfSite(
 			IRayCaster::RAY_STATE::eRayDiffuse,
 			0, 0, 0, 0, 0, 0, false, false );
 	}
+	} );
 	if( trainNee && pLS ) {
 		pLS->SetOptimalMIS( 0 );
 	}
@@ -786,6 +839,7 @@ static void DriveFloorFogSite(
 	unsigned int& countBsdf )
 {
 	const RasterizerState rast{};
+	DriveOnFreshThread( 5103u, [&]() {
 	for( unsigned int s = 0; s < 1200; ++s )
 	{
 		RandomNumberGenerator rng( 61000 + s );
@@ -824,6 +878,7 @@ static void DriveFloorFogSite(
 			IRayCaster::RAY_STATE::eRaySpecular,
 			0, 0, 0, 0, 0, 0, false, false );
 	}
+	} );
 	double sumNee = 0;
 	unsigned int countNee = 0;
 	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
@@ -901,26 +956,21 @@ static void RunFloorFogSite()
 
 	// Radiance-scaling law (k^2 = 9 for k=3), mirroring both existing
 	// sites' construction: nothing in this fixture's SAMPLING depends on
-	// radiance, so a 3x brighter, still-uniform environment should visit
-	// the same vertices and scale the accumulated moment by exactly 9.
+	// radiance, so a 3x brighter, still-uniform environment visits the
+	// same vertices and scales the accumulated moment by exactly 9.
 	//
-	// UNLIKE the two existing sites (which drive `RayCaster::CastRay` /
-	// a BSSRDF entry directly), this fixture goes through
-	// `PathTracingIntegrator::IntegrateFromHit` against a FRESH,
-	// separately-built Job/Scene/EnvironmentSampler for `fxBright` --
-	// and empirically (checked by re-running this fixture against TWO
-	// IDENTICALLY-WORDED scenes, envLevel 1.0 vs 1.0) the attempt count
-	// differs by a handful out of ~700 (690 vs 695) EVEN WITH IDENTICAL
-	// scene text and IDENTICAL per-sample RNG seeds -- i.e. this is a
-	// property of building two SEPARATE Job/Scene instances (almost
-	// certainly floating-point noise in the two independently-built
-	// EnvironmentSamplers' importance tables nudging a small number of
-	// borderline equiangular-MIS strategy decisions across their
-	// threshold), not a radiance-dependence bug and not specific to
-	// DL-84's fix.  So this check uses a statistical tolerance wide
-	// enough to swallow that ~1% cross-build noise while still catching
-	// the failure modes it exists to catch (a missing factor, a wrong
-	// exponent, a moment that does not scale with radiance at all).
+	// ROUND-7 REVIEW P2-1 / P3.  Round 6 ran this row with a +-2%
+	// "cross-build noise" tolerance and blamed a ~1% attempt-count drift
+	// on floating-point noise between two independently-built
+	// EnvironmentSampler importance tables.  That diagnosis was WRONG --
+	// see `DriveOnFreshThread`'s own comment for the measured mechanism
+	// (a `rand()`-seeded thread_local RNG inside HeterogeneousMedium's
+	// ratio-tracking transmittance, advanced a nondeterministic number
+	// of times on the MAIN thread by the throwaway multithreaded
+	// `Rasterize()` inside `Fixture::Build`).  With every driven walk
+	// now on its own fresh thread the two fixtures are EXACT replays of
+	// each other: identical attempt counts and a ratio of exactly 9, so
+	// both checks below are exact.
 	{
 		Fixture fxBright;
 		Check( fxBright.Build( VolumeScene( 3.0 ), "floorfog3" ), "bright floor-fog fixture builds" );
@@ -934,13 +984,12 @@ static void RunFloorFogSite()
 			const double ratio = sumBsdf > 0 ? sumBright / sumBsdf : 0;
 			const double countRatio = countBsdf > 0 ? (double)countBright / (double)countBsdf : 0;
 			std::cout << "    floor-fog site: moment ratio at 3x radiance = " << ratio
-				<< " (target 9, +-2% cross-build tolerance); attempts " << countBsdf
-				<< " / " << countBright << " (ratio " << countRatio << ", +-2% tolerance)" << std::endl;
-			Check( countRatio > 0.98 && countRatio < 1.02,
-				"floor-fog site: the brighter fixture visited approximately the same number of "
-				"continuations (within cross-build floating-point noise)" );
-			Check( ratio > 8.82 && ratio < 9.18,
-				"floor-fog site: the accumulated moment scales as L_env^2 (within cross-build noise)" );
+				<< " (exact target 9); attempts " << countBsdf
+				<< " / " << countBright << " (exact ratio " << countRatio << ")" << std::endl;
+			Check( countBright == countBsdf,
+				"floor-fog site: the brighter fixture visited exactly the same continuations" );
+			Check( std::fabs( ratio - 9.0 ) < 1e-9,
+				"floor-fog site: the accumulated moment scales as L_env^2 (exactly)" );
 		}
 	}
 
