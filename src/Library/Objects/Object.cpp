@@ -1071,6 +1071,15 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		ri.geometric.ptObjIntersec = ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR );
 		if( pUVGenerator ) {
 			pUVGenerator->GenerateUV( ri.geometric.ptObjIntersec, ri.geometric.UnflippedGeomNormal(), ri.geometric.ptCoord );
+			// DL-107: record that a generator supplied `ptCoord` for THIS
+			// hit, so a CSGObject compositing this Object as an operand
+			// knows its own (fallback) generator must NOT override it.
+			// Written in BOTH branches (never left at a prior candidate's
+			// stale value) -- the exact discipline DL-95 established for
+			// every other field this block writes.
+			ri.geometric.bUVGeneratorApplied = true;
+		} else {
+			ri.geometric.bUVGeneratorApplied = false;
 		}
 
 		// Transform the normals back
@@ -1571,7 +1580,28 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 		return;
 	}
 
-	pGeometry->UniformRandomPoint( point, normal, coord, prand );
+	// DL-108: an overriding UV generator (if bound) must chart the SAME
+	// object-space point/normal an override generator on this object's
+	// IntersectRay path charts (docs/DL95_OBJECT_UV_GENERATOR_INPUT.md's
+	// frame decision) -- so when one is present, always obtain a LOCAL
+	// object-space point+normal to feed it, even if the caller passed a
+	// null `point`/`normal` (only wanting `coord`).  Mirrors
+	// `IntersectRay`'s own placement: run the generator BEFORE
+	// transforming to world space, below.
+	if( pUVGenerator && coord )
+	{
+		Point3  ptObjSpace;
+		Vector3 vNormObjSpace;
+		pGeometry->UniformRandomPoint( point ? point : &ptObjSpace, normal ? normal : &vNormObjSpace, coord, prand );
+
+		const Point3&  ptForGen = point  ? *point  : ptObjSpace;
+		const Vector3& nmForGen = normal ? *normal : vNormObjSpace;
+		pUVGenerator->GenerateUV( ptForGen, nmForGen, *coord );
+	}
+	else
+	{
+		pGeometry->UniformRandomPoint( point, normal, coord, prand );
+	}
 
 	if( point ) {
 		*point = Point3Ops::Transform( m_mxFinalTrans, (*point) );
