@@ -41,11 +41,13 @@ namespace RISE
 				return false;
 			}
 
-			bool ExactKeys( const Value& value, std::initializer_list<const char*> keys )
+			bool ExactKeys( const Value& value, std::initializer_list<const char*> keys,
+				std::initializer_list<const char*> optionalKeys={} )
 			{
-				if( value.GetType() != Value::Map || value.GetMap().size() != keys.size() ) {
-					return false;
-				}
+				if( value.GetType() != Value::Map ) return false;
+				std::size_t expected=keys.size();
+				for( const char* key : optionalKeys ) if( value.Find(key) ) ++expected;
+				if( value.GetMap().size()!=expected ) return false;
 				for( const char* key : keys ) if( !value.Find(key) ) return false;
 				return true;
 			}
@@ -485,7 +487,7 @@ namespace RISE
 				"scene_translation_m","scene_unit_meters",
 				"schema_version","source_kind","source_qualification","temperature_domain_K",
 				"time_map","transport_closure_record","transport_closure_record_id",
-				"velocity_halo_width_m"}) ) return Fail(error,
+				"velocity_halo_width_m"},{"producer_numerical_policy","producer_numerical_policy_id"}) ) return Fail(error,
 				"fire sequence payload is outside schema_version 1");
 			const Value* schema = payload->Find("schema_version");
 			if( !schema || schema->GetType() != Value::UnsignedInteger ||
@@ -575,7 +577,18 @@ namespace RISE
 					id->GetText() != RISECBOR64::SHA256Hex(bytes->GetBytes()) ) return Fail(error,
 					std::string("fire sequence embedded record identity is invalid: ")+fields.first);
 				embeddedRecords_[fields.first] = bytes->GetBytes();
-				embeddedRecordIds.push_back(id->GetText());
+				 embeddedRecordIds.push_back(id->GetText());
+			}
+			const Value* numericalPolicy=payload->Find("producer_numerical_policy");
+			const Value* numericalPolicyId=payload->Find("producer_numerical_policy_id");
+			if( numericalPolicy || numericalPolicyId ) {
+				if( !numericalPolicy || numericalPolicy->GetType()!=Value::ByteString ||
+					numericalPolicy->GetBytes().empty() || !numericalPolicyId ||
+					numericalPolicyId->GetType()!=Value::Text ||
+					RISECBOR64::SHA256Hex(numericalPolicy->GetBytes())!=numericalPolicyId->GetText() )
+					return Fail(error,"fire sequence numerical policy identity is invalid");
+				embeddedRecords_["producer_numerical_policy"]=numericalPolicy->GetBytes();
+				embeddedRecordIds.push_back(numericalPolicyId->GetText());
 			}
 			opticalRecord_ = payload->Find("optical_record")->GetBytes();
 			FireSimulationMethaneRecord fuelRecord;

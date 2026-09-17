@@ -79,6 +79,11 @@ namespace RISEFireProductionFP64
 		double timeStepS;
 		double ambientDensityKGPerM3;
 		std::array<FireProductionProjectionBoundary,6> boundary;
+		//! r239: fixed lower-z burner faces within the canonical adiabatic bed.
+		//! Empty vectors mean no burner. Zero flux on a masked face is still fixed.
+		std::vector<unsigned char> bottomFuelMask;
+		std::vector<double> bottomFuelMassFluxKGPerM2S;
+		double injectedGasDensityKGPerM3;
 		std::vector<double> gasDensityKGPerM3;
 		std::array<std::vector<double>,3> provisionalMomentumKGPerM2S;
 		std::vector<double> divergenceTargetPerS;
@@ -91,6 +96,7 @@ namespace RISEFireProductionFP64
 		double endpointVelocityToleranceMPerS;
 
 		FireProductionProjectionRequest() : timeStepS(0.0),ambientDensityKGPerM3(0.0),
+			injectedGasDensityKGPerM3(0.0),
 			residentPhysicalOpenVCycleCount(17u),
 			openClassificationMode(FireProductionProjectionDeriveOpenClassification),
 			openHeadMode(FireProductionProjectionDeriveCurrentOpenHead),
@@ -144,6 +150,9 @@ namespace RISEFireProductionFP64
 	bool FireProductionProjectionWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
+	//! Includes optional packed burner operands without changing the no-inlet certificate.
+	bool FireProductionProjectionWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner );
 
 	bool FireProductionProjectionResidualWithinBand(
 		double maximumResidualPerS,
@@ -212,6 +221,10 @@ namespace RISEFireProductionFP64
 		std::array<id<MTLBuffer>,3> provisionalMomentumKGPerM2S;
 		std::array<std::size_t,3> provisionalMomentumByteOffset;
 		id<MTLBuffer> divergenceTargetPerS;
+		//! Optional immutable Private operand: nx*ny double mask values followed
+		//! by nx*ny prescribed mass fluxes. Caller owns validation and lifetime.
+		//! The owner binds these exact bytes through its immutable input root.
+		id<MTLBuffer> bottomFuelMaskAndMassFlux;
 		//! Optional device-issued identity of the exact target surface.  Live
 		//! projected-Heun owners must provide it; legacy resident callers leave it
 		//! nil and consequently receive no projection publication identity.
@@ -229,7 +242,8 @@ namespace RISEFireProductionFP64
 		id<MTLBuffer> sealedPressureOpenDynamicPressurePa;
 
 		FireProductionMetalProjectionResidentInput() : gasDensityKGPerM3(nil),
-			divergenceTargetPerS(nil),targetPublicationIdentity(nil),targetConsumerIdentity(nil),
+			divergenceTargetPerS(nil),bottomFuelMaskAndMassFlux(nil),
+			targetPublicationIdentity(nil),targetConsumerIdentity(nil),
 			sealedPressureOpenInflow(nil),sealedPressureOpenDynamicPressurePa(nil)
 		{
 			provisionalMomentumKGPerM2S.fill(nil);

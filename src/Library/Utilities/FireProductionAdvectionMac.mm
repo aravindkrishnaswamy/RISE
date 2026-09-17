@@ -394,6 +394,7 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 		{
 			std::uint32_t advectiveNullity,physicalNullity,mutateHighNonadvective;
 			float ambientTemperatureK;
+			std::uint32_t burnerFaces;
 		};
 
 		struct MetalResidentEOSParameters
@@ -2137,6 +2138,8 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
  device const float* ambient [[buffer(3)]],device const float* unitVelocityRate [[buffer(4)]],
  device atomic_uint* maximumResidualBits [[buffer(5)]],device atomic_uint* maximumScaleBits [[buffer(6)]],
  device atomic_uint* failure [[buffer(7)]],constant FCTParams& p [[buffer(8)]],
+ device const float* low [[buffer(9)]],device const float* delta [[buffer(10)]],
+ device const float* alpha [[buffer(11)]],
  uint gid [[thread_position_in_grid]]){
  uint all=fct_all_faces(p);if(gid>=all)return;uint component,x,y,z;
  fct_decode_face(p,gid,component,x,y,z);uint normal=fct_coordinate(component,x,y,z),
@@ -2161,6 +2164,26 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
  float base=fct_restricted_cell_gas(beginning,ambient,p,component,x,y,z)+sourceRestricted;
  float acceptedRestricted=fct_restricted_cell_gas(accepted,ambient,p,component,x,y,z);
  float advanced=base-p.dt*unitVelocityRate[gid];
+ // The physical unit-velocity operator closes prescribed transverse faces
+ // with zero tangential momentum. Scalar restriction still receives their
+ // mass flux. Restore that exact boundary term to the identity, not to M.
+ float boundaryMass=0.0f;
+ for(uint derivative=0u;derivative<3u;++derivative){if(derivative==component)continue;
+  uint position=fct_coordinate(derivative,x,y,z),derivativeExtent=fct_extent(p,derivative);
+  for(uint upper=0u;upper<2u;++upper){uint derivativeSide=2u*derivative+upper;
+   if(p.boundary[derivativeSide]!=2u||(upper?position+1u!=derivativeExtent:position!=0u))continue;
+   uint lx=x,ly=y,lz=z,hx=x,hy=y,hz=z;
+   fct_set_coordinate(component,normal?normal-1u:0u,lx,ly,lz);
+   fct_set_coordinate(component,normal<extent?normal:extent-1u,hx,hy,hz);
+   fct_set_coordinate(derivative,upper?derivativeExtent:0u,lx,ly,lz);
+   fct_set_coordinate(derivative,upper?derivativeExtent:0u,hx,hy,hz);
+   float restricted=0.5f*(fct_accepted_gas(low,delta,alpha,p,derivative,lx,ly,lz)+
+    fct_accepted_gas(low,delta,alpha,p,derivative,hx,hy,hz));
+   boundaryMass+=upper?-restricted:restricted;
+  }
+ }
+ if(boundaryFace)boundaryMass*=0.5f;
+ if(boundaryMass!=0.0f)advanced+=(p.dt/p.dx)*boundaryMass;
  float residual=abs(acceptedRestricted-advanced),scale=max(abs(base),abs(acceptedRestricted));
  if(!isfinite(residual)||!isfinite(scale)){
   atomic_fetch_or_explicit(failure,8192u,memory_order_relaxed);return;}
@@ -2452,7 +2475,7 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
  hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Pr));hash*=1099511628211ul;
  hash^=ulong(as_type<uint>(p.Sc));hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Cv));
  identity[0]=hash==0ul?1ul:hash;}
-struct PhysicalParams {uint advectiveNullity;uint physicalNullity;uint mutateHigh;float ambientT;};
+struct PhysicalParams {uint advectiveNullity;uint physicalNullity;uint mutateHigh;float ambientT;uint burnerFaces;};
 struct EOSParams {uint cells;uint stage;uint precision;uint affineRowCount;
  float Tmin;float Tmax;float pressure;float feasibility;
  float dynamicsBound;float timeStepS;uint pad0;uint pad1;ulong attempt;ulong caseIdentity;};
@@ -2513,6 +2536,13 @@ inline float pf_mass_slope(device const float* q,device const float* ambient,
   for(uint column=0u;column<extra.advectiveNullity;++column){volatile float product=
    projector[b*extra.advectiveNullity+column]*coordinateSlope[column];projected+=product;}
   volatile float product=basis[component*extra.advectiveNullity+b]*projected;result+=product;}return result;}
+inline bool pf_burner(device const float* operands,constant TransportParams& p,
+ constant PhysicalParams& extra,uint axis,uint x,uint y,uint z){
+ return extra.burnerFaces!=0u&&axis==2u&&z==0u&&operands[9u+y*p.nx+x]!=0.0f;}
+inline float pf_imposed(device const float* operands,constant PhysicalParams& extra,
+ uint bottomFace,uint component){uint base=9u+2u*extra.burnerFaces;float total=0.0f;
+ for(uint species=1u;species<=7u;++species)total+=operands[base+species];
+ return (operands[9u+extra.burnerFaces+bottomFace]*operands[base+component])/total;}
 inline float pf_enthalpy(device const float* thermo,uint species,float temperature,float logT,
  thread bool& valid,device atomic_uint* obligations){device const float* record=thermo+32u*species;
  uint segments=uint(record[1]);device const float* selected=record+2u;bool found=false;
@@ -2533,11 +2563,20 @@ kernel void evaluate_resident_physical_flux(device const float* state [[buffer(0
  device float* physicalGas [[buffer(9)]],device float* faceLogTemperature [[buffer(10)]],
  device float* faceEnthalpy [[buffer(11)]],device atomic_uint* failure [[buffer(12)]],
  device atomic_uint* obligations [[buffer(13)]],constant TransportParams& p [[buffer(14)]],
- constant PhysicalParams& extra [[buffer(15)]],uint gid [[thread_position_in_grid]]){
+ constant PhysicalParams& extra [[buffer(15)]],device const float* velocity [[buffer(16)]],
+ uint gid [[thread_position_in_grid]]){
  uint all=pf_all_faces(p);if(gid>=all)return;uint axis,x,y,z;pf_decode_face(p,gid,axis,x,y,z);
  for(uint component=0u;component<8u;++component)physicalMass[component*all+gid]=0.0f;
  physicalEnergy[gid]=0.0f;physicalGas[gid]=0.0f;faceLogTemperature[gid]=0.0f;
  for(uint species=0u;species<7u;++species)faceEnthalpy[species*all+gid]=0.0f;
+ if(pf_burner(ambient,p,extra,axis,x,y,z)){uint cell=tr_cell(p,x,y,0u);float gas=0.0f;
+  for(uint component=0u;component<9u;++component){
+   volatile float carrier=velocity[gid]*state[component*p.cells+cell];
+   float value=pf_imposed(ambient,extra,y*p.nx+x,component)-carrier;
+   if(component<8u)physicalMass[component*all+gid]=value;else physicalEnergy[gid]=value;
+   if(component>=1u&&component<=6u)gas+=value;
+   if(!isfinite(value))atomic_fetch_or_explicit(failure,2u,memory_order_relaxed);}
+  physicalGas[gid]=gas;if(!isfinite(gas))atomic_fetch_or_explicit(failure,2u,memory_order_relaxed);return;}
  uint coordinate=pf_coordinate(axis,x,y,z),extent=tr_extent(p,axis);bool boundary=coordinate==0u||coordinate==extent;
  if(p.boundary[2u*axis]==0u){boundary=false;if(coordinate==extent){tr_set(axis,0u,x,y,z);
   atomic_fetch_or_explicit(obligations,1u<<1u,memory_order_relaxed);}}
@@ -2589,6 +2628,8 @@ kernel void evaluate_resident_advective_pair(device const float* state [[buffer(
  uint gid [[thread_position_in_grid]]){uint all=pf_all_faces(p);if(gid>=9u*all)return;
  uint component=gid/all,packed=gid-component*all,axis,x,y,z;pf_decode_face(p,packed,axis,x,y,z);
  uint coordinate=pf_coordinate(axis,x,y,z),extent=tr_extent(p,axis);float u=velocity[packed];
+ if(pf_burner(ambient,p,extra,axis,x,y,z)){
+  donorOutput[gid]=u*state[component*p.cells+tr_cell(p,x,y,0u)];highOutput[gid]=0.0f;return;}
  if((coordinate==0u||coordinate==extent)&&p.boundary[2u*axis+(coordinate==extent?1u:0u)]==2u){
   donorOutput[gid]=0.0f;highOutput[gid]=0.0f;return;}
  if((coordinate==0u||coordinate==extent)&&p.boundary[2u*axis+(coordinate==extent?1u:0u)]!=0u){
@@ -2616,8 +2657,13 @@ kernel void compose_resident_flux_pair(device const float* donor [[buffer(0)]],
  device const float* highAdvective [[buffer(1)]],device const float* physicalMass [[buffer(2)]],
  device const float* physicalEnergy [[buffer(3)]],device float* low [[buffer(4)]],
  device float* high [[buffer(5)]],constant TransportParams& p [[buffer(6)]],
- constant PhysicalParams& extra [[buffer(7)]],uint gid [[thread_position_in_grid]]){
+ constant PhysicalParams& extra [[buffer(7)]],device const float* ambient [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){
  uint all=pf_all_faces(p);if(gid>=9u*all)return;uint component=gid/all,packed=gid-component*all;
+ uint axis,x,y,z;pf_decode_face(p,packed,axis,x,y,z);
+ if(pf_burner(ambient,p,extra,axis,x,y,z)){
+  float imposed=pf_imposed(ambient,extra,y*p.nx+x,component);low[gid]=imposed;high[gid]=imposed;
+  if(extra.mutateHigh!=0u&&component==1u&&x==0u&&y==0u)high[gid]+=0.0009765625f;return;}
  float physical=component<8u?physicalMass[component*all+packed]:physicalEnergy[packed];
  low[gid]=donor[gid]+physical;high[gid]=highAdvective[gid]+physical;
  if(extra.mutateHigh!=0u&&gid==all+1u)high[gid]+=0.0009765625f;}
@@ -2626,12 +2672,20 @@ kernel void validate_resident_physical_flux(device const float* donor [[buffer(0
  device const float* physicalEnergy [[buffer(3)]],device const float* physicalGas [[buffer(4)]],
  device const float* low [[buffer(5)]],device const float* high [[buffer(6)]],
  device atomic_uint* failure [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
- constant TransportParams& p [[buffer(9)]],uint gid [[thread_position_in_grid]]){
+ constant TransportParams& p [[buffer(9)]],constant PhysicalParams& extra [[buffer(10)]],
+ device const float* ambient [[buffer(11)]],uint gid [[thread_position_in_grid]]){
  uint all=pf_all_faces(p);if(gid>=9u*all)return;uint component=gid/all,packed=gid-component*all;
  float physical=component<8u?physicalMass[component*all+packed]:physicalEnergy[packed];
  if(!isfinite(donor[gid])||!isfinite(highAdvective[gid])||!isfinite(physical)||
   !isfinite(low[gid])||!isfinite(high[gid])||!isfinite(physicalGas[packed]))
   atomic_fetch_or_explicit(failure,4u,memory_order_relaxed);
+ uint axis,x,y,z;pf_decode_face(p,packed,axis,x,y,z);
+ if(pf_burner(ambient,p,extra,axis,x,y,z)){
+  float imposed=pf_imposed(ambient,extra,y*p.nx+x,component);
+  if(as_type<uint>(low[gid])!=as_type<uint>(imposed)||as_type<uint>(high[gid])!=as_type<uint>(imposed)||
+   as_type<uint>(physical)!=as_type<uint>(imposed-donor[gid])||
+   highAdvective[gid]!=donor[gid])atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);
+  return;}
  if(as_type<uint>(low[gid])!=as_type<uint>(donor[gid]+physical)||
   as_type<uint>(high[gid])!=as_type<uint>(highAdvective[gid]+physical))
   atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);
@@ -2685,7 +2739,8 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
  hash=payload_fnv_words(hash,physicalMass,8u*all,gid,width);
  hash=payload_fnv_three(hash,physicalEnergy,physicalGas,faceLogTemperature,all,gid,width);
  hash=payload_fnv_words(hash,faceEnthalpy,7u*all,gid,width);
- for(uint word=0u;word<9u;++word){hash^=ulong(as_type<uint>(ambient[word]));hash*=1099511628211ul;}
+ uint ambientWords=extra.burnerFaces==0u?9u:18u+2u*extra.burnerFaces;
+ for(uint word=0u;word<ambientWords;++word){hash^=ulong(as_type<uint>(ambient[word]));hash*=1099511628211ul;}
  uint inflowWords=p.sideOffset[5]+p.nx*p.ny;for(uint word=0u;word<inflowWords;++word){hash^=ulong(inflow[word]);hash*=1099511628211ul;}
  for(uint word=0u;word<8u*extra.physicalNullity;++word){hash^=ulong(as_type<uint>(physicalBasis[word]));hash*=1099511628211ul;}
  for(uint word=0u;word<8u*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(advectiveBasis[word]));hash*=1099511628211ul;}
@@ -7638,12 +7693,30 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			return true;
 		}
 
+		// One byte layout for every consumer of the physical-flux operands.
+		// Call only after request validation. Live-owner inlet admission remains
+		// guarded until the projection and force consumers are connected.
+		std::vector<float> PackResidentPhysicalFluxOperands(
+			const FireProductionResidentPhysicalFluxComparatorRequest& request)
+		{
+			std::vector<float> packed(request.ambient.begin(),request.ambient.end());
+			if(!request.bottomFuelMassFluxKGPerM2S.empty()){
+				packed.insert(packed.end(),request.transport.fuelInletBoundaryFace[4].begin(),
+					request.transport.fuelInletBoundaryFace[4].end());
+				packed.insert(packed.end(),request.bottomFuelMassFluxKGPerM2S.begin(),
+					request.bottomFuelMassFluxKGPerM2S.end());
+				packed.insert(packed.end(),request.injectedConservative.begin(),
+					request.injectedConservative.end());
+			}
+			return packed;
+		}
+
 		bool PrepareResidentEOSCandidateRequest(
 			const FireProductionResidentEOSCandidateComparatorRequest&,
 			MetalResidentTransportParameters&,MetalResidentPhysicalFluxParameters&,
 			MetalResidentEOSParameters&,std::array<std::size_t,3>&,std::size_t&,
 			std::vector<unsigned char>&,std::vector<unsigned char>&,
-			std::vector<float>&,std::string*);
+			std::vector<float>&,std::string*,bool allowPrescribedQualification=false);
 
 		// R201_RESIDENT_OWNER_TRANSFER_SURFACE_BEGIN
 		class ResidentProjectedHeunMetalOwner
@@ -7710,6 +7783,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				failure_,transportObligations_,physicalObligations_,eosObligations_,
 				targetObligations_,zeroTarget_,zeroTargetIdentity_,zeroTargetConsumerIdentity_,rootCandidateIdentity_,
 				integratedOpenHead_;
+			id<MTLBuffer> inletProjectionOperand_=nil,inletForceMask_=nil;
+			float injectedGasDensity_=0.0f;
 			std::unique_ptr<ResidentProjectionTargetMetalAuthority> bootstrapTarget_;
 			const Stage* eosReuseParent_=nullptr;
 			std::vector<std::shared_ptr<unsigned char> > issuedTargetCapabilities_;
@@ -8271,6 +8346,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				projection.shape=shape_;projection.timeStepS=ownerMetadata_.timeStepS;
 				projection.ambientDensityKGPerM3=request_.ambientDensityKGPerM3;
 				projection.boundary=request_.lineage.eos.physicalFlux.transport.boundary;
+				if(inletProjectionOperand_){
+					// Structural placeholders only: the adapter consumes the exact
+					// root-bound private mask/j operand, not these host values.
+					projection.bottomFuelMask.assign(shape_.nx*shape_.ny,0u);
+					projection.bottomFuelMassFluxKGPerM2S.assign(shape_.nx*shape_.ny,0.0f);
+					projection.injectedGasDensityKGPerM3=injectedGasDensity_;
+				}
 				projection.gasDensityKGPerM3.assign(cells_,request_.ambientDensityKGPerM3);
 				projection.divergenceTargetPerS.assign(cells_,0.0f);
 				projection.openClassificationMode=sealedInflow?
@@ -8299,6 +8381,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				for(unsigned int axis=0u;axis<3u;++axis)
 					input.provisionalMomentumByteOffset[axis]=faceOffset_[axis]*sizeof(float);
 				input.divergenceTargetPerS=targetAuthority.assembled;
+				input.bottomFuelMaskAndMassFlux=inletProjectionOperand_;
 				input.targetPublicationIdentity=targetAuthority.publicationIdentity;
 				input.targetConsumerIdentity=targetAuthority.consumerIdentity;
 				input.qualifiedOwnerStageTokens=context_.productionStageTokens;
@@ -8661,6 +8744,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				rhs.cellGasPhaseSourceRateKGPerM3S=output.gasSource;
 				rhs.packedFaceDensityKGPerM3=output.packedDensity;
 				rhs.packedMomentumKGPerM2S=output.packedMomentum;
+				rhs.bottomFuelMask=inletForceMask_;
 				FireProductionNonpressureMomentumRHSMetalDiagnostics rhsDiagnostics;
 				// The resident RHS API currently has no byte offset, so copy the third
 				// coefficient plane into a private view without exposing it to the host.
@@ -9026,7 +9110,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::vector<unsigned char> packedFuel,packedInflow;std::vector<float> physicalBasis;
 			if(!PrepareResidentEOSCandidateRequest(request_.lineage.eos,transportMetadata_,
 				physicalMetadata_,eosMetadata_,faceOffset_,allFaces_,packedFuel,packedInflow,
-				physicalBasis,error))return false;
+				physicalBasis,error,true))return false;
 			shape_=request_.lineage.eos.physicalFlux.transport.shape;cells_=shape_.CellCount();
 			boundaryFaces_=packedFuel.size();
 			const auto& eosRequest=request_.lineage.eos;
@@ -9070,6 +9154,16 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				!PackMetalSingleStageFCTCertificate(fctBasis,fctProjector,enthalpy,affine,
 					feasibility,reserve,error))return false;
 			const auto& flux=request_.lineage.eos.physicalFlux;
+			if(!flux.bottomFuelMassFluxKGPerM2S.empty()){
+				// The capstone burner injects gas, never a prescribed solid phase.
+				// Projection fixes gas momentum to the authored gas mass flux.
+				if(flux.injectedConservative[7]!=0.0f){
+					if(error)*error="projected-Heun burner inlet must contain gas only";return false;}
+				for(std::size_t component=1u;component<=6u;++component)
+					injectedGasDensity_+=flux.injectedConservative[component];
+				if(!(injectedGasDensity_>0.0f)||!std::isfinite(injectedGasDensity_)){
+					if(error)*error="projected-Heun injected gas density is invalid";return false;}
+			}
 			fctMetadata_={static_cast<std::uint32_t>(shape_.nx),static_cast<std::uint32_t>(shape_.ny),
 				static_cast<std::uint32_t>(shape_.nz),static_cast<std::uint32_t>(cells_),9u,11u,
 				static_cast<std::uint32_t>(flux.nullity),static_cast<std::uint32_t>(affine.size()/8u),
@@ -9128,7 +9222,18 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			thermo_=copyIn(packedThermo.data(),packedThermo.size()*sizeof(float));
 			eosThermo_=copyIn(packedEOSThermo.data(),packedEOSThermo.size()*sizeof(float));
 			transportData_=copyIn(packedTransport.data(),packedTransport.size()*sizeof(float));
-			ambient_=copyIn(flux.ambient.data(),9u*sizeof(float));
+			const std::vector<float> packedAmbient=PackResidentPhysicalFluxOperands(flux);
+			ambient_=copyIn(packedAmbient.data(),packedAmbient.size()*sizeof(float));
+			if(physicalMetadata_.burnerFaces!=0u){
+				const auto& mask=flux.transport.fuelInletBoundaryFace[4];
+				std::vector<float> projectionOperand(mask.begin(),mask.end());
+				projectionOperand.insert(projectionOperand.end(),flux.bottomFuelMassFluxKGPerM2S.begin(),
+					flux.bottomFuelMassFluxKGPerM2S.end());
+				inletProjectionOperand_=copyIn(projectionOperand.data(),projectionOperand.size()*sizeof(float));
+				inletForceMask_=copyIn(mask.data(),mask.size());
+				copyIn(&injectedGasDensity_,sizeof(injectedGasDensity_));
+				if(!inletProjectionOperand_||!inletForceMask_)return false;
+			}
 			// These authored controls enter separately compiled force/projection
 			// adapters later. Bind their exact bit representations at ingress too.
 			const std::array<float,7> adapterControls={{request_.ambientDensityKGPerM3,
@@ -9184,7 +9289,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			descriptor+="end\n";
 			if(descriptor.size()>std::numeric_limits<std::size_t>::max()-inputBytes)return false;
 			inputBytes+=descriptor.size();
-			const std::size_t inputBound=80u*cells_+4u*allFaces_+2u*boundaryFaces_+(std::size_t(1u)<<20u);
+			const std::size_t inletInputBytes=physicalMetadata_.burnerFaces!=0u?
+				17u*shape_.nx*shape_.ny+10u*sizeof(float):0u;
+			const std::size_t inputBound=80u*cells_+4u*allFaces_+2u*boundaryFaces_+
+				(std::size_t(1u)<<20u)+inletInputBytes;
 			if(inputBytes>inputBound||descriptor.size()>(std::size_t(1u)<<20u)){
 				if(error)*error="owner input digest exceeds its working-set certificate";return false;}
 			id<MTLBuffer> inputPayload=Private(inputBytes);
@@ -9486,9 +9594,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::uint64_t preflightBytes=0u;
 			const FireProductionProjectionShape& preflightShape=
 				request_.lineage.eos.physicalFlux.transport.shape;
+			const bool hasPrescribedInlet=!request_.lineage.eos.physicalFlux.bottomFuelMassFluxKGPerM2S.empty();
 			const bool certificateKnown=request_.qualificationCaptureIterationTrace?
-				FireProductionProjectedHeunMetalObserverWorkingSetBytes(preflightShape,preflightBytes):
-				FireProductionProjectedHeunMetalOwnerWorkingSetBytes(preflightShape,preflightBytes);
+				FireProductionProjectedHeunMetalObserverWorkingSetBytes(preflightShape,preflightBytes,hasPrescribedInlet):
+				FireProductionProjectedHeunMetalOwnerWorkingSetBytes(preflightShape,preflightBytes,hasPrescribedInlet);
 			if(!certificateKnown||
 				(request_.qualificationWorkingSetLimitBytes!=0u&&
 				 preflightBytes>request_.qualificationWorkingSetLimitBytes)){
@@ -9671,7 +9780,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					unitVelocity,unitVelocity,identityRate,failure_,fctParameters_[1]},allFaces_)||
 				!Encode(command,fct_.commutingIdentity,{q0_,sourceDelta_,
 					r1->candidate->conservative,ambient_,identityRate,commutingResidual,
-					commutingScale,failure_,fctParameters_[1]},allFaces_))return false;
+					commutingScale,failure_,fctParameters_[1],r1->averagedPhysical->lowComposite,
+					r1->averagedPhysical->advectiveDelta,r1->candidate->faceAlpha},allFaces_))return false;
 			if(request_.qualificationForgedLineage||
 				request_.qualificationCallbackMutation||request_.qualificationAtomicPublicationFailure){
 				id<MTLBlitCommandEncoder> red=[command blitCommandEncoder];if(!red)return false;
@@ -10005,7 +10115,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				([temperature length]!=cells*sizeof(float)&&[temperature length]!=2u*cells*sizeof(float))||
 				[velocity length]!=allFaces*sizeof(float)||
 				[thermochemistry length]!=MetalManifoldCertificateValues*sizeof(float)||
-				[ambient length]!=9u*sizeof(float)||
+				[ambient length]!=(metadata.burnerFaces==0u?9u:
+					18u+2u*static_cast<std::size_t>(metadata.burnerFaces))*sizeof(float)||
 				[inflow length]!=transportAuthority.parentBoundaryFaces*sizeof(unsigned char)||
 				[physicalBasis length]!=8u*metadata.physicalNullity*sizeof(float)||
 				[advectiveBasis length]!=8u*metadata.advectiveNullity*sizeof(float)||
@@ -10071,6 +10182,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			[encoder setBuffer:obligations offset:0 atIndex:13];
 			[encoder setBuffer:transportParameters offset:0 atIndex:14];
 			[encoder setBuffer:physicalParameters offset:0 atIndex:15];
+			[encoder setBuffer:velocity offset:0 atIndex:16];
 			Dispatch(encoder,context.physicalFlux,allFaces);[encoder endEncoding];
 			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident advective-flux encoder failed";
@@ -10107,6 +10219,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			[encoder setBuffer:authority.highComposite offset:0 atIndex:5];
 			[encoder setBuffer:transportParameters offset:0 atIndex:6];
 			[encoder setBuffer:physicalParameters offset:0 atIndex:7];
+			[encoder setBuffer:ambient offset:0 atIndex:8];
 			Dispatch(encoder,context.composePair,9u*allFaces);[encoder endEncoding];
 			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident shared-f_N validation encoder failed";
@@ -10122,6 +10235,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			[encoder setBuffer:authority.highComposite offset:0 atIndex:6];
 			[encoder setBuffer:failure offset:0 atIndex:7];[encoder setBuffer:obligations offset:0 atIndex:8];
 			[encoder setBuffer:transportParameters offset:0 atIndex:9];
+			[encoder setBuffer:physicalParameters offset:0 atIndex:10];
+			[encoder setBuffer:ambient offset:0 atIndex:11];
 			Dispatch(encoder,context.validatePhysical,9u*allFaces);[encoder endEncoding];
 			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident physical-flux identity encoder failed";
@@ -10790,6 +10905,28 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			const FireProductionProjectionShape& shape=request.transport.shape;
 			const FireSimulationMethaneRecord& record=FireSimulationMethaneRecord::PhysicalV1();
 			const FireCertifiedNullspace& physical=record.NonadvectiveFluxProjection();
+			if(!request.bottomFuelMassFluxKGPerM2S.empty()){
+				const std::size_t bottomFaces=shape.nx*shape.ny;
+				if(request.transport.boundary[4]!=FireProductionProjectionWall||
+					request.bottomFuelMassFluxKGPerM2S.size()!=bottomFaces){
+					if(error)*error="production prescribed flux requires the complete wall-bed extent";return false;}
+				for(std::size_t face=0u;face<bottomFaces;++face){
+					const float flux=request.bottomFuelMassFluxKGPerM2S[face];
+					if(!std::isfinite(flux)||flux<0.0f||
+						(request.transport.fuelInletBoundaryFace[4][face]==0u&&flux!=0.0f)){
+						if(error)*error="production prescribed flux value is invalid";return false;}}
+				float total=0.0f;
+				for(std::size_t component=0u;component<9u;++component){
+					const float value=request.injectedConservative[component];
+					if(!std::isfinite(value)||(component<8u&&value<0.0f)){
+						if(error)*error="production injected tuple is invalid";return false;}
+					if(component>=1u&&component<=7u)total+=value;}
+				if(!(total>0.0f)||!std::isfinite(total)){
+					if(error)*error="production injected constituent density is invalid";return false;}
+			}else if(std::any_of(request.injectedConservative.begin(),request.injectedConservative.end(),
+				[](float value){return value!=0.0f;})){
+				if(error)*error="production injected tuple lacks prescribed flux";return false;
+			}
 			if(!record.IsValid()||physical.stateDimension!=8u||physical.nullity==0u||
 				physical.nullity>8u||physical.orthonormalBasis.size()!=8u*physical.nullity||
 				request.nullity==0u||request.nullity>8u||
@@ -10842,7 +10979,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			physicalParameters={static_cast<std::uint32_t>(request.nullity),
 				static_cast<std::uint32_t>(physical.nullity),
 				request.qualificationMutateHighNonadvective?1u:0u,
-				request.ambientTemperatureK};
+				request.ambientTemperatureK,
+				static_cast<std::uint32_t>(request.bottomFuelMassFluxKGPerM2S.size())};
 			return true;
 		}
 
@@ -10854,8 +10992,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::array<std::size_t,3>& faceOffset,std::size_t& allFaces,
 			std::vector<unsigned char>& packedFuelInlet,
 			std::vector<unsigned char>& packedPressureInflow,
-			std::vector<float>& physicalBasis,std::string* error )
+			std::vector<float>& physicalBasis,std::string* error,
+			const bool allowPrescribedQualification )
 		{
+			if(!allowPrescribedQualification&&!request.physicalFlux.bottomFuelMassFluxKGPerM2S.empty()){
+				if(error)*error="production prescribed flux EOS/owner integration is not yet implemented";
+				return false;
+			}
 			if(!PrepareResidentPhysicalFluxRequest(request.physicalFlux,transportParameters,
 				physicalParameters,faceOffset,allFaces,packedFuelInlet,packedPressureInflow,
 				physicalBasis,error))return false;
@@ -11166,12 +11309,12 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 	}
 
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux )
 	{
 		bytes=0u;std::uint64_t projection=0u,target=0u,nonpressure=0u;
-		if(!FireProductionProjectionWorkingSetBytes(shape,projection)||
-			!FireProductionResidentTargetLineageMetalWorkingSetBytes(shape,target)||
-			!FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,nonpressure))return false;
+		if(!FireProductionProjectionWorkingSetBytes(shape,projection,prescribedBottomFlux)||
+			!FireProductionResidentTargetLineageMetalWorkingSetBytes(shape,target,prescribedBottomFlux)||
+			!FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,nonpressure,prescribedBottomFlux))return false;
 		auto add=[&](const std::uint64_t value){const std::uint64_t rounded=
 			(value+UINT64_C(16383))&~UINT64_C(16383);
 			if(rounded<value||bytes>std::numeric_limits<std::uint64_t>::max()-rounded)return false;
@@ -11193,7 +11336,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			FireProductionProjectionFaceCount(shape,0u)+FireProductionProjectionFaceCount(shape,1u)+
 			FireProductionProjectionFaceCount(shape,2u),boundary=2u*(shape.nx*shape.ny+
 			shape.nx*shape.nz+shape.ny*shape.nz);
-		const std::uint64_t input=80u*cells+4u*faces+2u*boundary+(UINT64_C(1)<<20u);
+		const std::uint64_t inletFaces=prescribedBottomFlux?shape.nx*shape.ny:0u;
+		const std::uint64_t input=80u*cells+4u*faces+2u*boundary+(UINT64_C(1)<<20u)+
+			(inletFaces?17u*inletFaces+10u*sizeof(float):0u);
+		// Root-bound projection mask/j and force mask upload/private pairs,
+		// plus the separately sealed injected-density control pair.
+		if(inletFaces&&(!add(8u*inletFaces)||!add(8u*inletFaces)||
+			!add(inletFaces)||!add(inletFaces)||!add(sizeof(float))||!add(sizeof(float))))return false;
 		const std::uint64_t publication=76u*cells+52u*faces+256u;
 		if(!add(input)||!add(input/120u+8u*16384u)||
 			!add(publication/120u+8u*16384u)||!add(64u)||!add(UINT64_C(1)<<20u))return false;
@@ -11207,9 +11356,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 	}
 
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux )
 	{
-		if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,bytes))return false;
+		if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
 		// CaptureIterationTrace v2 wire layout: 27 cell float fields, 38 face
 		// float fields, one boundary float and two boundary class bytes,
 		// plus two uint64 identities. The local autorelease pool bounds its
@@ -11469,6 +11618,12 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
 	{
+		return FireProductionResidentPhysicalFluxMetalWorkingSetBytes(shape,bytes,false);
+	}
+
+	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner )
+	{
 		bytes=0u;
 		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
 			shape.nz<4u||shape.nz>1024u||!std::isfinite(shape.cellWidthM)||
@@ -11495,11 +11650,14 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			!addPair(boundaryFaces*sizeof(unsigned char))||
 			!addPair(MetalManifoldCertificateValues*sizeof(float))||
 			!addPair(MetalResidentTransportSpeciesCount*MetalResidentTransportSpeciesStride*
-				sizeof(float))||!addPair(9u*sizeof(float))||!addPair(64u*sizeof(float))||
+				sizeof(float))||!addPair((hasBurner?18u+2u*shape.nx*shape.ny:9u)*sizeof(float))||!addPair(64u*sizeof(float))||
 			!addPair(64u*sizeof(float))||!addPair(64u*sizeof(float))||
 			!addPair(sizeof(MetalResidentTransportParameters))||
 			!addPair(sizeof(MetalResidentPhysicalFluxParameters))||
-			!addPair(3u*sizeof(std::uint32_t)))return false;
+			!add(3u*sizeof(std::uint32_t))||!add(sizeof(std::uint32_t))||
+			!add(sizeof(std::uint32_t))||!add(sizeof(std::uint32_t)))return false;
+		// The endpoint-class seal owns a separate private identity allocation.
+		if(!add(sizeof(std::uint64_t)))return false;
 		// Private transport publication, then the physical/advective authority.
 		if(!add(3u*cells*sizeof(float))||!add(sizeof(std::uint64_t))||
 			!add(9u*faces*sizeof(float))||!add(9u*faces*sizeof(float))||!add(9u*faces*sizeof(float))||
@@ -11516,9 +11674,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 	}
 
 	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
+		const bool prescribedBottomFlux )
 	{
-		if(!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(shape,bytes))return false;
+		if(!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
 		const std::uint64_t cells=shape.CellCount();
 		const std::uint64_t faces=FireProductionProjectionFaceCount(shape,0u)+
 			FireProductionProjectionFaceCount(shape,1u)+
@@ -11583,9 +11742,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 	}
 
 	bool FireProductionResidentTargetLineageMetalWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
+		const bool prescribedBottomFlux )
 	{
-		if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,bytes))return false;
+		if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
 		std::uint64_t increment=0u;
 		if(!FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(shape,increment)||
 			bytes>std::numeric_limits<std::uint64_t>::max()-increment)return false;
@@ -11825,6 +11985,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			if(!PrepareResidentPhysicalFluxRequest(request,transportParameters,
 				physicalParameters,faceOffset,allFaces,packedFuelInlet,packedPressureInflow,
 				physicalBasis,error))return false;
+			const std::vector<float> packedAmbient=PackResidentPhysicalFluxOperands(request);
 			std::array<float,MetalResidentTransportSpeciesCount*
 				MetalResidentTransportSpeciesStride> packedTransport;
 			if(!PackMetalResidentTransport(packedTransport,transportParameters,error))return false;
@@ -11843,7 +12004,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			const std::size_t stateBytes=9u*cells*sizeof(float),temperatureBytes=cells*sizeof(float),
 				velocityBytes=allFaces*sizeof(float),fuelBytes=packedFuelInlet.size(),
 				inflowBytes=packedPressureInflow.size(),thermoBytes=packedThermochemistry.size()*sizeof(float),
-				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=9u*sizeof(float),
+				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=packedAmbient.size()*sizeof(float),
 				physicalBasisBytes=physicalBasis.size()*sizeof(float),
 				advectiveBasisBytes=request.nullspaceBasis.size()*sizeof(float),
 				projectorBytes=request.coordinateProjector.size()*sizeof(float),
@@ -11872,7 +12033,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			terminalOffset[terminalField++]=terminalBytes;terminalBytes+=controlBytes;
 			std::uint64_t certified=0u;
 			if(!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(request.transport.shape,
-				certified)){if(error)*error="production resident physical-flux working-set certificate failed";
+				certified,physicalParameters.burnerFaces!=0u)){if(error)*error="production resident physical-flux working-set certificate failed";
 				return false;}
 			if(certified>request.qualificationWorkingSetLimitBytes){if(error)*error=
 				"production resident physical-flux working-set limit is understated";
@@ -11891,7 +12052,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				id<MTLBuffer> inflowUpload=upload(packedPressureInflow.data(),inflowBytes);
 				id<MTLBuffer> thermoUpload=upload(packedThermochemistry.data(),thermoBytes);
 				id<MTLBuffer> transportUpload=upload(packedTransport.data(),transportBytes);
-				id<MTLBuffer> ambientUpload=upload(request.ambient.data(),ambientBytes);
+				id<MTLBuffer> ambientUpload=upload(packedAmbient.data(),ambientBytes);
 				id<MTLBuffer> physicalBasisUpload=upload(physicalBasis.data(),physicalBasisBytes);
 				id<MTLBuffer> advectiveBasisUpload=upload(request.nullspaceBasis.data(),advectiveBasisBytes);
 				id<MTLBuffer> projectorUpload=upload(request.coordinateProjector.data(),projectorBytes);
@@ -12032,9 +12193,26 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				computed.interstageFullGridTransferCount=static_cast<std::uint32_t>(
 					observedReads>0u?observedReads-1u:0u);computed.certifiedWorkingSetBytes=certified;
 				computed.actualMetalAllocationBytes=transportAuthority.allocationBytes+
-					physicalAuthority.allocationBytes;
+					endpointClassAuthority.allocationBytes+physicalAuthority.allocationBytes;
 				computed.liveAuthorityAllocationBytes=physicalAuthority.allocationBytes;
 				for(id<MTLBuffer> buffer:buffers)computed.actualMetalAllocationBytes+=[buffer allocatedSize];
+				// Independent retained-buffer inventory: do not reuse authority byte
+				// subtotals, so an omitted seal cannot silently underreport the peak.
+				const std::array<id<MTLBuffer>,14> authorityBuffers={{
+					transportAuthority.coefficients,transportAuthority.publicationIdentity,
+					endpointClassAuthority.publicationIdentity,physicalAuthority.donorAdvective,
+					physicalAuthority.advectiveDelta,physicalAuthority.mcMusclAdvective,
+					physicalAuthority.physicalMass,physicalAuthority.physicalEnergy,
+					physicalAuthority.physicalGas,physicalAuthority.faceLogTemperature,
+					physicalAuthority.faceSensibleEnthalpy,physicalAuthority.lowComposite,
+					physicalAuthority.highComposite,physicalAuthority.publicationIdentity}};
+				std::uint64_t inventoriedBytes=0u;
+				for(id<MTLBuffer> buffer:authorityBuffers)inventoriedBytes+=[buffer allocatedSize];
+				for(id<MTLBuffer> buffer:buffers)inventoriedBytes+=[buffer allocatedSize];
+				if(inventoriedBytes!=computed.actualMetalAllocationBytes){
+					if(error)*error="production resident physical-flux allocation inventory disagrees";
+					return false;
+				}
 				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
 				computed.deviceProduced=computed.transportPublicationIdentity!=0u&&
 					computed.devicePublicationIdentity!=0u;
@@ -12081,7 +12259,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::vector<float> physicalBasis;
 			if(!PrepareResidentEOSCandidateRequest(request,transportParameters,physicalParameters,
 				eosParameters,faceOffset,allFaces,packedFuelInlet,packedPressureInflow,
-				physicalBasis,error))return false;
+				physicalBasis,error,true))return false;
 			const bool splitMetadata=request.qualificationMismatchedDeviceCase;
 			MetalResidentEOSParameters deviceEOSParameters=eosParameters;
 			if(request.qualificationMismatchedDeviceStage)deviceEOSParameters.stage=2u;
@@ -12138,13 +12316,14 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				packedVelocity.insert(packedVelocity.end(),axis.begin(),axis.end());
 			ResidentTransportMetalContext& context=ResidentTransportContext();
 			if(!context.Valid()){if(error)*error=context.error;return false;}
+			const std::vector<float> packedAmbient=PackResidentPhysicalFluxOperands(request.physicalFlux);
 			const FireProductionProjectionShape& shape=request.physicalFlux.transport.shape;
 			const std::size_t cells=shape.CellCount(),stateBytes=9u*cells*sizeof(float),
 				temperatureBytes=cells*sizeof(float),velocityBytes=allFaces*sizeof(float),
 				fuelBytes=packedFuelInlet.size(),inflowBytes=packedPressureInflow.size(),
 				thermoBytes=packedThermochemistry.size()*sizeof(float),
 				eosThermoBytes=packedEOSThermochemistry.size()*sizeof(float),
-				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=9u*sizeof(float),
+				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=packedAmbient.size()*sizeof(float),
 				physicalBasisBytes=physicalBasis.size()*sizeof(float),
 				advectiveBasisBytes=request.physicalFlux.nullspaceBasis.size()*sizeof(float),
 				projectorBytes=request.physicalFlux.coordinateProjector.size()*sizeof(float),
@@ -12157,7 +12336,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				alternateOffset=failureMapOffset+fieldBytes,
 				terminalBytes=alternateOffset+2u*fieldBytes;
 			std::uint64_t certified=0u;
-			if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,certified)){
+			if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,certified,
+				physicalParameters.burnerFaces!=0u)){
 				if(error)*error="production resident EOS working-set certificate failed";return false;}
 			if(certified>request.qualificationWorkingSetLimitBytes){
 				if(error)*error="production resident EOS working-set limit is understated";
@@ -12178,7 +12358,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				id<MTLBuffer> thermoUpload=upload(packedThermochemistry.data(),thermoBytes);
 				id<MTLBuffer> eosThermoUpload=upload(packedEOSThermochemistry.data(),eosThermoBytes);
 				id<MTLBuffer> transportUpload=upload(packedTransport.data(),transportBytes);
-				id<MTLBuffer> ambientUpload=upload(request.physicalFlux.ambient.data(),ambientBytes);
+				id<MTLBuffer> ambientUpload=upload(packedAmbient.data(),ambientBytes);
 				id<MTLBuffer> physicalBasisUpload=upload(physicalBasis.data(),physicalBasisBytes);
 				id<MTLBuffer> advectiveBasisUpload=upload(request.physicalFlux.nullspaceBasis.data(),advectiveBasisBytes);
 				id<MTLBuffer> projectorUpload=upload(request.physicalFlux.coordinateProjector.data(),projectorBytes);
@@ -12387,7 +12567,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				computed.interstageFullGridTransferCount=static_cast<std::uint32_t>(
 					observedReads>0u?observedReads-1u:0u);computed.certifiedWorkingSetBytes=certified;
 				computed.actualMetalAllocationBytes=transportAuthority.allocationBytes+
-					physicalAuthority.allocationBytes+candidateAuthority.allocationBytes+
+					endpointClassAuthority.allocationBytes+physicalAuthority.allocationBytes+candidateAuthority.allocationBytes+
 					eosAuthority.allocationBytes;
 				computed.liveAuthorityAllocationBytes=candidateAuthority.allocationBytes+
 					eosAuthority.allocationBytes;
@@ -12432,7 +12612,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::vector<float> physicalBasis;
 			if(!PrepareResidentEOSCandidateRequest(request.eos,transportParameters,
 				physicalParameters,eosParameters,faceOffset,allFaces,packedFuelInlet,
-				packedPressureInflow,physicalBasis,error))return false;
+				packedPressureInflow,physicalBasis,error,true))return false;
 			if(request.qualificationExactPositiveTailThreshold)eosParameters.padding[0]|=64u;
 			if(request.qualificationExactNegativeTailThreshold)eosParameters.padding[0]|=128u;
 			const FireProductionProjectionShape& shape=request.eos.physicalFlux.transport.shape;
@@ -12541,12 +12721,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				packedVelocity.insert(packedVelocity.end(),axis.begin(),axis.end());
 			ResidentTransportMetalContext& context=ResidentTransportContext();
 			if(!context.Valid()){if(error)*error=context.error;return false;}
+			const std::vector<float> packedAmbient=PackResidentPhysicalFluxOperands(request.eos.physicalFlux);
 			const std::size_t stateBytes=9u*cells*sizeof(float),fieldBytes=cells*sizeof(float),
 				velocityBytes=allFaces*sizeof(float),fuelBytes=packedFuelInlet.size(),
 				inflowBytes=packedPressureInflow.size(),
 				thermoBytes=packedThermochemistry.size()*sizeof(float),
 				eosThermoBytes=packedEOSThermochemistry.size()*sizeof(float),
-				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=9u*sizeof(float),
+				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=packedAmbient.size()*sizeof(float),
 				physicalBasisBytes=physicalBasis.size()*sizeof(float),
 				advectiveBasisBytes=request.eos.physicalFlux.nullspaceBasis.size()*sizeof(float),
 				projectorBytes=request.eos.physicalFlux.coordinateProjector.size()*sizeof(float),
@@ -12555,7 +12736,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				controlOffset=identityOffset+8u*sizeof(std::uint64_t),
 				terminalBytes=controlOffset+2u*sizeof(std::uint32_t);
 			std::uint64_t certified=0u;
-			if(!FireProductionResidentTargetLineageMetalWorkingSetBytes(shape,certified)){
+			if(!FireProductionResidentTargetLineageMetalWorkingSetBytes(shape,certified,
+				physicalParameters.burnerFaces!=0u)){
 				if(error)*error="production resident target working-set certificate failed";return false;}
 			if(certified>request.qualificationWorkingSetLimitBytes){
 				if(error)*error="production resident target working-set limit is understated";
@@ -12577,7 +12759,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					thermoUpload=upload(packedThermochemistry.data(),thermoBytes),
 					eosThermoUpload=upload(packedEOSThermochemistry.data(),eosThermoBytes),
 					transportUpload=upload(packedTransport.data(),transportBytes),
-					ambientUpload=upload(flux.ambient.data(),ambientBytes),
+					ambientUpload=upload(packedAmbient.data(),ambientBytes),
 					physicalBasisUpload=upload(physicalBasis.data(),physicalBasisBytes),
 					advectiveBasisUpload=upload(flux.nullspaceBasis.data(),advectiveBasisBytes),
 					projectorUpload=upload(flux.coordinateProjector.data(),projectorBytes),
@@ -12790,7 +12972,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				computed.interstageFullGridTransferCount=interstageFullGridTransfers;
 				computed.certifiedWorkingSetBytes=certified;
 				computed.actualMetalAllocationBytes=transportAuthority.allocationBytes+
-					physicalAuthority.allocationBytes+candidateAuthority.allocationBytes+
+					endpointClassAuthority.allocationBytes+physicalAuthority.allocationBytes+candidateAuthority.allocationBytes+
 					eosAuthority.allocationBytes+sourceAuthority.allocationBytes+
 					targetAuthority.allocationBytes;
 				for(id<MTLBuffer> buffer:buffers)computed.actualMetalAllocationBytes+=[buffer allocatedSize];

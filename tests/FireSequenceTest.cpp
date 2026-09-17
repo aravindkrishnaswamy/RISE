@@ -977,6 +977,9 @@ namespace
 		std::uint64_t productionHardBoundRetryCount=0u;
 		std::uint64_t productionPhysicalProjectionRetryCount=0u;
 		double externalFuelMassKG=0.0;
+		std::string burnerFixtureQ0SHA,burnerFixtureAcceptedSHA;
+		std::vector<std::string> burnerFixtureInputSHA;
+		bool burnerFixtureVelocityMutantDetected=false;
 	};
 
 	template<class Stream> bool ClosePublishedStream(Stream& stream);
@@ -1105,6 +1108,7 @@ namespace
 		bool forceActiveSetIdentityCheckForTest=false;
 		bool injectActiveSetIdentityMismatchForTest=false;
 		bool forceZeroSourceForTest=false;
+		bool burnerLauncherFixture=false,burnerLauncherRejectFirstCandidate=false;
 		bool productionMetal=false;
 		// r212 engineering adoption. Historical baseline/replay flags remain
 		// explicit; the temporal production entry selects this full owner.
@@ -1186,12 +1190,136 @@ namespace
 		escape.accepted=source.RadiationEscapeFactor();return true;
 	}
 
+	bool BindProductionBurnerBoundary(const OpenBoundaryConfig3D& boundary,
+		RISE::FireProductionProjectedHeunMetalOwnerRequest& owner,std::string& error)
+	{
+		auto& flux=owner.lineage.eos.physicalFlux;
+		const std::size_t count=flux.transport.shape.nx*flux.transport.shape.ny;
+		if(count==0u||boundary.bottomFuelMask.size()!=count||
+			boundary.bottomFuelMassFluxKGPerM2S.size()!=count||
+			boundary.kind[4]!=AdiabaticWallBoundary3D){error="production burner boundary shape or bed is invalid";return false;}
+		for(const auto kind:boundary.kind)if(kind!=PressureOpenBoundary3D&&kind!=AdiabaticWallBoundary3D){
+			error="production burner boundary kind is unsupported";return false;}
+		std::array<float,9> injected={};double gas=0.0;
+		for(std::size_t component=0u;component<9u;++component){
+			injected[component]=static_cast<float>(boundary.injectedState[component]);
+			if(!std::isfinite(injected[component])||(component<8u&&injected[component]<0.0f)){
+				error="production burner injected tuple is invalid";return false;}
+			if(component>0u&&component<7u)gas+=injected[component];}
+		if(!(gas>0.0)||injected[7]!=0.0f){error="production burner requires positive gas-only injection";return false;}
+		std::vector<float> representedFlux(count);std::vector<std::uint8_t> mask(count);
+		for(std::size_t face=0u;face<count;++face){
+			representedFlux[face]=static_cast<float>(boundary.bottomFuelMassFluxKGPerM2S[face]);
+			if(!std::isfinite(boundary.bottomFuelMassFluxKGPerM2S[face])||
+				boundary.bottomFuelMassFluxKGPerM2S[face]<0.0||!std::isfinite(representedFlux[face])||
+				(!boundary.bottomFuelMask[face]&&boundary.bottomFuelMassFluxKGPerM2S[face]!=0.0)){
+				error="production burner prescribed flux is invalid";return false;}
+			mask[face]=boundary.bottomFuelMask[face]?1u:0u;}
+		// Publish only after validation; no source/state bytes are reconstructed.
+		for(unsigned int side=0u;side<6u;++side)flux.transport.boundary[side]=
+			boundary.kind[side]==AdiabaticWallBoundary3D?RISE::FireProductionProjectionWall:
+				RISE::FireProductionProjectionPressureOpen;
+		flux.transport.fuelInletBoundaryFace[4]=std::move(mask);
+		flux.bottomFuelMassFluxKGPerM2S=std::move(representedFlux);
+		flux.injectedConservative=injected;error.clear();return true;
+	}
+
+	const RISECBOR64::Bytes& ProductionBurnerPolicyBytes()
+	{
+		static const std::string preimage="rise.fire.production.burner.v1:"
+			"wall-bed;prescribed-shared-fct-inlet;chemistry-at-Q0;no-volumetric-fuel;"
+			"accepted-represented-flux-ledger";
+		static const RISECBOR64::Bytes bytes(preimage.begin(),preimage.end());
+		return bytes;
+	}
+
+	const std::string& ProductionBurnerPolicyId()
+	{
+		static const std::string digest=RISECBOR64::SHA256Hex(ProductionBurnerPolicyBytes());
+		return digest;
+	}
+
+	double ProductionBurnerFuelDoseKG(const RISE::FireProductionProjectedHeunMetalOwnerRequest& owner)
+	{
+		const auto& flux=owner.lineage.eos.physicalFlux;
+		const double width=flux.transport.shape.cellWidthM;
+		const double step=owner.lineage.eos.candidateTimeStepS;
+		double mass=0.0;
+		for(const float representedFlux:flux.bottomFuelMassFluxKGPerM2S)
+			mass+=static_cast<double>(representedFlux)*step*width*width;
+		return mass;
+	}
+
+	bool ProductionCandidateTemperatureAccepted(const std::vector<MethaneCellState>& candidate,
+		const double ceilingK,std::string& error)
+	{
+		if(std::any_of(candidate.begin(),candidate.end(),
+			[ceilingK](const MethaneCellState& state){return !std::isfinite(state.temperatureK)||
+				state.temperatureK>=ceilingK;})){
+			error="accepted_physical_temperature_ceiling_violation";return false;}
+		return true;
+	}
+
+	int RunProductionBurnerLauncherInputFixture()
+	{
+		RISE::FireProductionProjectedHeunMetalOwnerRequest owner;
+		auto& shape=owner.lineage.eos.physicalFlux.transport.shape;
+		shape.nx=2u;shape.ny=3u;shape.nz=4u;shape.cellWidthM=0.125f;
+		owner.lineage.eos.sourceDelta={0.25f,-0.5f};
+		owner.lineage.eos.physicalFlux.transport.conservativeValues={1.0f,2.0f};
+		OpenBoundaryConfig3D boundary;boundary.kind[4]=AdiabaticWallBoundary3D;
+		boundary.bottomFuelMask={true,false,false,false,true,false};
+		boundary.bottomFuelMassFluxKGPerM2S={0.1,0.0,0.0,0.0,0.2,0.0};
+		for(std::size_t component=0u;component<9u;++component)boundary.injectedState[component]=0.0;
+		boundary.injectedState[0]=0.5;
+		boundary.injectedState[1]=0.5;boundary.injectedState[8]=-2.5;
+		std::string error;
+		bool passed=BindProductionBurnerBoundary(boundary,owner,error);
+		const auto& flux=owner.lineage.eos.physicalFlux;
+		passed=passed&&flux.transport.boundary[4]==RISE::FireProductionProjectionWall&&
+			flux.transport.boundary[5]==RISE::FireProductionProjectionPressureOpen&&
+			flux.transport.fuelInletBoundaryFace[4]==std::vector<std::uint8_t>({1u,0u,0u,0u,1u,0u})&&
+			flux.bottomFuelMassFluxKGPerM2S==std::vector<float>({0.1f,0.0f,0.0f,0.0f,0.2f,0.0f})&&
+			flux.injectedConservative[0]==0.5f&&flux.injectedConservative[1]==0.5f&&
+			flux.injectedConservative[8]==-2.5f&&owner.lineage.eos.sourceDelta==std::vector<float>({0.25f,-0.5f})&&
+			flux.transport.conservativeValues==std::vector<float>({1.0f,2.0f});
+		owner.lineage.eos.candidateTimeStepS=0.25f;
+		const double expectedMass=(static_cast<double>(0.1f)+static_cast<double>(0.2f))/256.0;
+		passed=passed&&ProductionBurnerFuelDoseKG(owner)==expectedMass;
+		auto halfStep=owner;halfStep.lineage.eos.candidateTimeStepS=0.125f;
+		passed=passed&&ProductionBurnerFuelDoseKG(halfStep)==expectedMass/2.0;
+		std::vector<MethaneCellState> temperatureCandidate(2u);
+		temperatureCandidate[0].temperatureK=300.0;
+		temperatureCandidate[1].temperatureK=std::nextafter(2300.0,0.0);
+		passed=passed&&ProductionCandidateTemperatureAccepted(temperatureCandidate,2300.0,error);
+		temperatureCandidate[1].temperatureK=2300.0;
+		const bool ceilingRefused=!ProductionCandidateTemperatureAccepted(temperatureCandidate,2300.0,error)&&
+			error=="accepted_physical_temperature_ceiling_violation";
+		passed=passed&&ceilingRefused;
+		std::fprintf(stderr,"BURNER_LAUNCHER_TEMPERATURE_RED exact_ceiling_refused=%d\n",ceilingRefused?1:0);
+		for(unsigned int mutation=0u;mutation<5u;++mutation){auto bad=boundary;auto retained=owner;
+			if(mutation==0u)bad.bottomFuelMassFluxKGPerM2S[1]=0.1;
+			else if(mutation==1u)bad.bottomFuelMask.pop_back();
+			else if(mutation==2u)bad.kind[4]=PressureOpenBoundary3D;
+			else if(mutation==3u)bad.injectedState[7]=0.1;
+			else bad.bottomFuelMassFluxKGPerM2S[0]=-0.1;
+			const bool refused=!BindProductionBurnerBoundary(bad,retained,error)&&
+				retained.lineage.eos.physicalFlux.bottomFuelMassFluxKGPerM2S==flux.bottomFuelMassFluxKGPerM2S&&
+				retained.lineage.eos.physicalFlux.transport.boundary==flux.transport.boundary&&
+				retained.lineage.eos.physicalFlux.injectedConservative==flux.injectedConservative;
+			passed=passed&&refused;
+			std::fprintf(stderr,"BURNER_LAUNCHER_INPUT_RED mutation=%u atomic_refusal=%d\n",mutation,refused?1:0);}
+		std::fprintf(stderr,"BURNER_LAUNCHER_INPUT mapping_and_source_unchanged=%d production_admission=0\n",passed?1:0);
+		return passed?0:220;
+	}
+
 	bool BuildProductionProjectedHeunOwnerRequest(
 		const RISE::FireProductionResidentStepRequest& ordinary,
 		const RISE::FireProductionFrozenSourcePacketSeal& source,
 		const RISE::RISECBOR64::Bytes& caseRecordEnvelope,
 		const float projectionTolerancePerS,const float endpointVelocityToleranceMPerS,
-		RISE::FireProductionProjectedHeunMetalOwnerRequest& owner,std::string& error)
+		RISE::FireProductionProjectedHeunMetalOwnerRequest& owner,std::string& error,
+		const OpenBoundaryConfig3D* burnerBoundary=nullptr)
 	{
 		owner=RISE::FireProductionProjectedHeunMetalOwnerRequest();
 		if(!source.IsSealed()){error="projected-Heun production source authority is unsealed";
@@ -1254,7 +1382,8 @@ namespace
 		owner.gravityMPerS2=ordinary.force.gravityMPerS2;
 		owner.projectionTolerancePerS=projectionTolerancePerS;
 		owner.endpointVelocityToleranceMPerS=endpointVelocityToleranceMPerS;
-		owner.maximumPicardIterations=64u;return true;
+		owner.maximumPicardIterations=64u;
+		return !burnerBoundary||BindProductionBurnerBoundary(*burnerBoundary,owner,error);
 	}
 
 	bool WriteProductionCrossingConvergence(const std::filesystem::path& auditPath,
@@ -3389,6 +3518,13 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if((persistence.burnerLauncherFixture||persistence.burnerLauncherRejectFirstCandidate)&&
+			(!persistence.burnerLauncherFixture||!persistence.portedProductionTransport||
+			minimumStepCount!=1u||targetTimeS!=0.0||persistence.resume||
+			!persistence.checkpointPath.empty()||!persistence.finalCheckpointPath.empty()||
+			!persistence.productionOnsetDiagnosticDirectory.empty()||
+			!persistence.temporalSnapshotDirectory.empty())){
+			values.structuredError="burner_launcher_fixture_scope_conflict";return values;}
 		if(persistence.acceptedFuelBudgetDiagnostic&&(!persistence.productionMetal||
 			!persistence.resume||!persistence.isolatedEquivalenceProbe||
 			persistence.stopAfterAdditionalAcceptedSteps!=8u||resolutionTier!=10.0||
@@ -3565,12 +3701,14 @@ namespace
 		FireCase::RecordV1 caseRecord;
 		const RISECBOR64::Bytes aerosol=AerosolRecord();
 		const RISECBOR64::Bytes chem=SyntheticChemRecord();
-		const bool caseBuilt=FireCase::BuildMethaneV1(authored,fuel,{RISECBOR64::SHA256Hex(fuel.RecordBytes()),
+		std::vector<std::string> caseReferences={RISECBOR64::SHA256Hex(fuel.RecordBytes()),
 			RISECBOR64::SHA256Hex(FireSimulationThermochemistryRecord::OpenSubsetV1().RecordBytes()),
 			RISECBOR64::SHA256Hex(FireSimulationTransportRecord::OpenV1().RecordBytes()),
 			RISECBOR64::SHA256Hex(FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().RecordBytes()),
 			RISECBOR64::SHA256Hex(FireOpticsPreset::PredictiveV1().RecordBytes()),RISECBOR64::SHA256Hex(aerosol),
-			RISECBOR64::SHA256Hex(chem)},caseRecord,error);
+			RISECBOR64::SHA256Hex(chem)};
+		if(persistence.portedProductionTransport)caseReferences.push_back(ProductionBurnerPolicyId());
+		const bool caseBuilt=FireCase::BuildMethaneV1(authored,fuel,caseReferences,caseRecord,error);
 		Check(caseBuilt,
 			"capstone solver consumes the canonical r57 methane case");
 		if(!caseBuilt) {
@@ -4198,6 +4336,8 @@ namespace
 			double acceptedExternalFuelMassKG=0.0;
 			bool fatalOnsetAuditFailure=false;
 			bool mandatoryEvidenceFailure=false,observationEvidencePublished=false;
+			if(persistence.burnerLauncherFixture)values.burnerFixtureQ0SHA=ProductionBeginningFieldSHA256(
+				caseRecord.caseRecordId,shape,states,momentum,advanced.velocityMPerS);
 			solverPhase="resident step attempt";
 			for(unsigned int reduction=0;
 				reduction<RISE::FireStepRejectionRetryCap&&!advancedOK;++reduction) {
@@ -4229,7 +4369,8 @@ namespace
 				std::vector<unsigned char> invalidReusableTransport(shape.CellCount(),0u);
 				double externalFuelMassKG=0.0;
 				solverPhase="production source staging";
-				if(persistence.productionMetal&&!persistence.forceZeroSourceForTest){
+				if(persistence.productionMetal&&!persistence.portedProductionTransport&&
+					!persistence.forceZeroSourceForTest){
 					const double injectedGasDensity=injected.GasDensity();
 					const double injectedSpecificEnergy=injected.sensibleEnergyJPerM3/
 						injected.TotalDensity();
@@ -4314,6 +4455,9 @@ namespace
 				profileControlMS=std::chrono::duration<double,std::milli>(
 					std::chrono::steady_clock::now()-profileStageStart).count();
 				solverPhase="production source packet construction";
+				if(persistence.burnerLauncherFixture)values.burnerFixtureInputSHA.push_back(
+					ProductionBeginningFieldSHA256(caseRecord.caseRecordId,shape,packetBeginning,
+						productionMomentum,productionVelocity));
 				bool packetOK=true;profileStageStart=std::chrono::steady_clock::now();
 				RISE::FireProductionFrozenSourcePacketSeal projectedHeunSource;
 				if(persistence.UsesProjectedHeunOwner()){
@@ -4530,7 +4674,8 @@ namespace
 									projectedHeunSource,caseRecord.envelopeBytes,
 									static_cast<float>(config.projectionTolerancePerS),
 									static_cast<float>(config.openBoundary.velocityToleranceMPerS),
-									projectedHeunRequest,error)&&
+									projectedHeunRequest,error,persistence.portedProductionTransport?
+										&config.openBoundary:nullptr)&&
 									RISE::AttemptFireProductionProjectedHeunResidentStepMetal(projectedHeunRequest,
 										production,&projectedHeunDiagnostics,&error);
 							}else attemptComputed=persistence.compatibleMomentumDiagnostic?
@@ -5185,7 +5330,20 @@ namespace
 									observation,&error)&&
 								FireProductionDyadicCalibration::ApplyAcceptedProductionResult(
 									production,observation,productionState,error,workerCount));
+							// Reject before replacing any accepted velocity, boundary classes,
+							// observation or history. A retry must start entirely from Q0.
+							if(advancedOK&&persistence.burnerLauncherRejectFirstCandidate&&reduction==0u){
+								values.burnerFixtureVelocityMutantDetected=ProductionBeginningFieldSHA256(
+									caseRecord.caseRecordId,shape,states,momentum,productionState.velocity)!=
+									values.burnerFixtureQ0SHA;
+								productionState.states.front().temperatureK=caseRecord.derived.maximumAcceptedTemperatureK;
+							}
+							if(advancedOK)advancedOK=ProductionCandidateTemperatureAccepted(
+								productionState.states,caseRecord.derived.maximumAcceptedTemperatureK,error);
 							if(advancedOK){
+								if(persistence.burnerLauncherFixture)values.burnerFixtureAcceptedSHA=
+									ProductionBeginningFieldSHA256(caseRecord.caseRecordId,shape,productionState.states,
+										productionState.momentum,productionState.velocity);
 								if(persistence.singleStageFCTDiagnostic){
 									productionManifoldObservation=FireProductionAcceptedManifoldObservation();
 									singleStageFCTAcceptedInflow=singleStageFCT.projection.pressureOpenInflow;
@@ -5286,7 +5444,8 @@ namespace
 										minimumAuxiliaryFaceDensity,maximumTransportedMomentum);
 								}
 								acceptedBeginningStates=std::move(packetBeginning);
-								acceptedExternalFuelMassKG=externalFuelMassKG;
+								acceptedExternalFuelMassKG=persistence.portedProductionTransport?
+									ProductionBurnerFuelDoseKG(projectedHeunRequest):externalFuelMassKG;
 							}
 						}else{
 							advancedOK=false;
@@ -6110,7 +6269,8 @@ namespace
 		const double caseRadiativeFractionOverride=0.0,
 		const double caseResolutionTier=6.0,const bool casePlumeLaw=false,
 		const std::vector<std::pair<std::string,std::string> >& sequenceFrames={},
-		const double authoredCaseDurationS=0.0,const double authoredCaseFramesPerS=0.0 )
+		const double authoredCaseDurationS=0.0,const double authoredCaseFramesPerS=0.0,
+		const bool prescribedProductionBurner=false )
 	{
 		using RISECBOR64::Value;
 		std::string error;
@@ -6142,12 +6302,13 @@ namespace
 		caseAuthored.hasRadiativeFractionOverride=caseHasRadiativeFractionOverride;
 		caseAuthored.radiativeFractionOverride=caseRadiativeFractionOverride;
 		FireCase::RecordV1 caseRecord;
-		const bool caseBuilt=FireCase::BuildMethaneV1(caseAuthored,
-			FireSimulationMethaneRecord::PhysicalV1(),
-			{RISECBOR64::SHA256Hex(thermo),RISECBOR64::SHA256Hex(transport),
+		std::vector<std::string> caseReferences={RISECBOR64::SHA256Hex(thermo),RISECBOR64::SHA256Hex(transport),
 			 RISECBOR64::SHA256Hex(opacity),RISECBOR64::SHA256Hex(optics),
 			 RISECBOR64::SHA256Hex(aerosol),RISECBOR64::SHA256Hex(chem),
-			 RISECBOR64::SHA256Hex(fuel)},caseRecord,error);
+			 RISECBOR64::SHA256Hex(fuel)};
+		if(prescribedProductionBurner)caseReferences.push_back(ProductionBurnerPolicyId());
+		const bool caseBuilt=FireCase::BuildMethaneV1(caseAuthored,
+			FireSimulationMethaneRecord::PhysicalV1(),caseReferences,caseRecord,error);
 		Check(caseBuilt,"test sequence case record derives canonically");
 		Value::Values channels={
 			Channel("carbon","float32","g/m3","frozen_material_advection",{0.0},scalarDimensions,voxelSize),
@@ -6178,7 +6339,7 @@ namespace
 					{"path",Value::String(sequenceFrames[frame].first)},
 					{"sha256",Value::String(sequenceFrames[frame].second)}}));
 		}
-		const Value payload = Value::MapValue({
+		Value payload = Value::MapValue({
 			{"aerosol_thermochemistry_record",Value::BytesValue(aerosol)},
 			{"aerosol_thermochemistry_record_id",Value::String(RISECBOR64::SHA256Hex(aerosol))},
 			{"case_record",Value::BytesValue(caseRecord.envelopeBytes)},
@@ -6227,6 +6388,12 @@ namespace
 			{"transport_closure_record_id",Value::String(RISECBOR64::SHA256Hex(transport))},
 			{"velocity_halo_width_m",Value::Float(voxelSize)}
 		});
+		if(prescribedProductionBurner){
+			auto members=payload.GetMap();
+			members.push_back({"producer_numerical_policy",Value::BytesValue(ProductionBurnerPolicyBytes())});
+			members.push_back({"producer_numerical_policy_id",Value::String(ProductionBurnerPolicyId())});
+			payload=Value::MapValue(members);
+		}
 		RISECBOR64::Bytes payloadBytes, envelope;
 		Check(RISECBOR64::Encode(payload,payloadBytes,&error),"sequence payload encodes");
 		Check(RISECBOR64::Encode(Value::MapValue({
@@ -7005,6 +7172,50 @@ namespace
 			measuredMS.back(),referenceDigest.c_str());return 0;
 	}
 
+	int RunProductionBurnerLauncherIntegrationFixture()
+	{
+		RunPersistenceOptions options;
+		options.productionMetal=true;options.portedProductionTransport=true;
+		options.burnerLauncherFixture=true;
+		options.maximumProductionSourceStepS=double(float(0.0016462659696117043));
+		const auto run=[&](){return RunMethaneFrameProbe(8u,1u,0.0,1.0,16.0,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);};
+		const auto normal=run();
+		if(!normal.succeeded){std::fprintf(stderr,"BURNER_LAUNCHER normal_error=%s\n",
+			normal.structuredError.c_str());return 93;}
+		options.burnerLauncherRejectFirstCandidate=true;
+		const auto retry=run();
+		options.burnerLauncherRejectFirstCandidate=false;
+		options.maximumProductionSourceStepS=normal.acceptedTimeStepS*0.5;
+		const auto control=run();
+		const auto clean=[](const SolverFrameValues& value,const std::size_t attempts){
+			return value.succeeded&&value.acceptedTimeStepHistoryS.size()==1u&&
+				value.productionDeviceHistoryMS.size()==1u&&value.productionWallHistoryMS.size()==1u&&
+				value.monitoredManifoldMaximumHistory.size()==1u&&
+				value.burnerFixtureInputSHA.size()==attempts&&value.burnerFixtureQ0SHA.size()==64u&&
+				value.burnerFixtureAcceptedSHA.size()==64u&&
+				std::all_of(value.burnerFixtureInputSHA.begin(),value.burnerFixtureInputSHA.end(),
+					[&](const std::string& input){return input==value.burnerFixtureQ0SHA;});};
+		const bool passed=clean(normal,1u)&&clean(retry,2u)&&clean(control,1u)&&
+			normal.burnerFixtureQ0SHA==retry.burnerFixtureQ0SHA&&
+			retry.burnerFixtureQ0SHA==control.burnerFixtureQ0SHA&&
+			retry.burnerFixtureVelocityMutantDetected&&
+			retry.burnerFixtureAcceptedSHA==control.burnerFixtureAcceptedSHA&&
+			retry.simulatedTimeS==control.simulatedTimeS&&
+			retry.acceptedTimeStepS==normal.acceptedTimeStepS*0.5&&
+			retry.externalFuelMassKG>0.0&&retry.externalFuelMassKG==control.externalFuelMassKG&&
+			normal.externalFuelMassKG==2.0*control.externalFuelMassKG;
+		std::fprintf(stdout,"BURNER_LAUNCHER diagnostic_only=1 passed=%d normal_dt_s=%.17g "
+			"retry_dt_s=%.17g control_dt_s=%.17g normal_fuel_kg=%.17g retry_fuel_kg=%.17g "
+			"control_fuel_kg=%.17g attempts=%zu,%zu,%zu velocity_mutant=%d retry_error=%s control_error=%s\n",
+			passed?1:0,normal.acceptedTimeStepS,retry.acceptedTimeStepS,control.acceptedTimeStepS,
+			normal.externalFuelMassKG,retry.externalFuelMassKG,control.externalFuelMassKG,
+			normal.burnerFixtureInputSHA.size(),retry.burnerFixtureInputSHA.size(),
+			control.burnerFixtureInputSHA.size(),retry.burnerFixtureVelocityMutantDetected?1:0,
+			retry.structuredError.c_str(),control.structuredError.c_str());
+		return passed?0:93;
+	}
+
 	int RunCheckpointChild(const std::string& mode,const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
@@ -7781,6 +7992,40 @@ namespace
 		const std::vector<std::pair<std::string,std::string> > frames={
 			{"frames/frame_00000.vdb",std::string(64u,'a')},{"frames/frame_00001.vdb",std::string(64u,'b')}};
 		std::string error;
+		RunPersistenceOptions productionPolicy;
+		productionPolicy.productionMetal=true;productionPolicy.portedProductionTransport=true;
+		const auto corrected=RunMethaneFrameProbe(1u,0u,0.0,target,1.0/cadence,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,productionPolicy);
+		if(!corrected.succeeded||corrected.caseRecordId==probe.caseRecordId||
+			corrected.dimensions!=probe.dimensions||corrected.cellWidthM!=probe.cellWidthM||
+			corrected.flowThroughTimeS!=probe.flowThroughTimeS){std::fprintf(stderr,
+			"BURNER_POLICY_PROBE corrected=%s previous=%s error=%s\n",
+			corrected.caseRecordId.c_str(),probe.caseRecordId.c_str(),corrected.structuredError.c_str());return 98;}
+		const auto correctedManifest=ManifestBytes("","","hold",true,true,dimensions,probe.cellWidthM,
+			start,cadence,1.0,0.0,true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
+			8.0,true,frames,target,1.0/cadence,true);
+		FireSequenceManifest correctedVerified;
+		if(!correctedVerified.LoadCanonicalEnvelope(correctedManifest,".",error)||
+			correctedVerified.CaseRecordId()!=corrected.caseRecordId){std::fprintf(stderr,
+			"BURNER_POLICY_MANIFEST actual=%s expected=%s error=%s\n",
+			correctedVerified.CaseRecordId().c_str(),corrected.caseRecordId.c_str(),error.c_str());return 98;}
+		RISECBOR64::Value policyEnvelope;
+		if(!RISECBOR64::DecodeCanonical(correctedManifest,policyEnvelope,&error)||
+			!policyEnvelope.Find("payload"))return 98;
+		for(unsigned int mutation=0u;mutation<6u;++mutation){
+			auto members=policyEnvelope.Find("payload")->GetMap();
+			if(mutation>=1u&&mutation<=3u)members.erase(std::remove_if(members.begin(),members.end(),
+				[&](const auto& entry){return (mutation!=2u&&entry.first=="producer_numerical_policy_id")||
+					(mutation!=1u&&entry.first=="producer_numerical_policy");}),members.end());
+			if(mutation==0u||mutation==4u)for(auto& entry:members){
+				if(entry.first=="producer_numerical_policy")entry.second=RISECBOR64::Value::BytesValue({'x'});
+				if(mutation==4u&&entry.first=="producer_numerical_policy_id")entry.second=
+					RISECBOR64::Value::String(RISECBOR64::SHA256Hex(RISECBOR64::Bytes{'x'}));}
+			if(mutation==5u)members.push_back({"unknown_policy_field",RISECBOR64::Value::Unsigned(1u)});
+			FireSequenceManifest refused;
+			if(refused.LoadCanonicalEnvelope(EnvelopeForPayload(RISECBOR64::Value::MapValue(members)),".",error))return 98;
+			std::fprintf(stderr,"BURNER_POLICY_PUBLICATION_RED mutation=%u refused=1 error=%s\n",mutation,error.c_str());
+		}
 		for(const unsigned int variant:{0u,1u,2u}){
 			const bool legacy=variant==1u,wrongFPS=variant==2u;
 			const auto manifest=ManifestBytes("","","hold",true,true,dimensions,probe.cellWidthM,
@@ -7833,7 +8078,7 @@ namespace
 		carbonFile.close();if(!unitsMatch)return 98;
 		std::fprintf(stderr,"R224_WINDOW_PUBLICATION_RED synthetic_inputs_only=1 full_coverage=1 "
 			"truncated_shifted_empty_refused=1 foreign_case_refused=1 resource_exit97_sealed=1 "
-			"incomplete_pair_refused=1 synthetic_carbon_kg_to_g_exact=1\n");
+			"incomplete_pair_refused=1 synthetic_carbon_kg_to_g_exact=1 burner_policy_identity=1\n");
 		return 0;
 	}
 #endif
@@ -7864,12 +8109,12 @@ namespace
 		const double targetTimeS=statisticsStartS+statisticsDurationS;
 		// Duration is identity-bearing; the geometry probe above used a one-second
 		// case solely to obtain t_ft, not the window's publication authority.
-		const SolverFrameValues launchCase=RunMethaneFrameProbe(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
-			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
-		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS)return 93;
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
 		persistence.portedProductionTransport=true;
+		const SolverFrameValues launchCase=RunMethaneFrameProbe(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
+			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS)return 93;
 		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";
@@ -7959,7 +8204,7 @@ namespace
 			const RISECBOR64::Bytes manifest=ManifestBytes("","","hold",true,true,
 				dimensions,result.cellWidthM,frameTimesS.front(),frameCadenceS,1.0,0.0,
 				true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
-				resolutionTier,true,manifestFrames,targetTimeS,1.0/frameCadenceS);
+				resolutionTier,true,manifestFrames,targetTimeS,1.0/frameCadenceS,true);
 			const std::filesystem::path manifestPath=
 				outputDirectory/"sequence_manifest.rise-fire.cbor";
 			std::ofstream manifestOutput(manifestPath,std::ios::binary|std::ios::trunc);
@@ -9870,8 +10115,10 @@ bool EvaluateCertifiedResidentTransport(
 			request.shape.cellWidthM*std::sqrt(0.5*alphaUpper);
 		const double exactEddy=alpha2.exact>0.0?transport.VremanCv()*std::sqrt(
 			std::max(0.0,raw.exact)/alpha2.exact):0.0;
-		eddy={static_cast<float>(transport.VremanCv()*std::sqrt(
-			std::max(0.0f,raw.rounded)/alpha2.rounded)),
+		// The device/CPU32 coefficient is rounded before multiplication;
+		// keeping the record's double here changes the represented path.
+		eddy={static_cast<float>(transport.VremanCv())*std::sqrt(
+			std::max(0.0f,raw.rounded)/alpha2.rounded),
 			exactEddy,std::max(std::fabs(exactEddy),std::fabs(eddyUpper-exactEddy))+
 				Binary32RoundingEnvelope(eddyUpper),std::isfinite(eddyUpper)};
 	}
@@ -10387,6 +10634,45 @@ bool FP64UnitIntervalClassesMatch(const FloatVector& observed,
 		match=match&&fp32>0.0&&fp32<1.0&&difference<0.5*classMargin;
 	}
 	return match;
+}
+
+int RunProductionPrescribedBoundaryIdentityCPUFixture()
+{
+	bool passed=true;
+	for(unsigned int fixture=0u;fixture<4u;++fixture){
+		FireProductionScalarFCTRequest request;
+		request.shape.nx=4u;request.shape.ny=4u;request.shape.nz=4u;
+		request.shape.cellWidthM=0.125f;request.timeStepS=0.03125f;
+		request.boundary.fill(FireProductionProjectionPressureOpen);
+		const bool upper=fixture==3u;request.boundary[upper?5u:4u]=FireProductionProjectionWall;
+		request.beginning.assign(9u*64u,0.0f);request.sourceDelta.assign(9u*64u,0.0f);
+		for(std::size_t cell=0u;cell<64u;++cell){request.beginning[cell]=1.0f;
+			request.beginning[64u+cell]=1.0f;}
+		request.ambient[0]=request.ambient[1]=1.0f;
+		for(auto& axis:request.frozenVelocityMPerS)axis.assign(80u,0.0f);
+		for(auto& side:request.pressureOpenInflow)side.assign(16u,0u);
+		request.nullity=1u;request.nullspaceBasis.assign(8u,0.0f);
+		request.nullspaceBasis[1]=1.0f;request.coordinateProjector.assign(1u,1.0f);
+		request.feasibilityFactor=1.0f/1024.0f;
+		request.assemblyReserveFactor=request.feasibilityFactor;
+		FireProductionScalarFCTFluxPair pair;FireProductionScalarFCTResult result;std::string error;
+		bool ok=BuildFireProductionScalarFCTFluxPairCPU(request,pair,&error);
+		auto expected=request.beginning;
+		if(ok)for(std::size_t patch=0u;patch<16u;++patch){
+			const float flux=fixture==0u?0.0f:0.0625f*static_cast<float>(fixture>=2u?1u+patch%4u:1u);
+			for(std::size_t component=0u;component<2u;++component){
+				pair.lowFlux[component*240u+160u+(upper?64u:0u)+patch]=flux;
+				expected[component*64u+(upper?48u:0u)+patch]+=(upper?-1.0f:1.0f)*0.25f*flux;}}
+		ok=ok&&SolveFireProductionScalarFCTFluxPairCPU(request,pair,result,&error);
+		const bool exact=ok&&result.commutingIdentityAvailable&&
+			result.maximumCommutingResidualKGPerM3==0.0f&&ByteIdenticalVector(result.accepted,expected);
+		std::fprintf(stderr,"PRESCRIBED_BOUNDARY_IDENTITY_CPU fixture=%u scalar_exact=%d "
+			"maximum_residual_kg_m3=%.17g passed=%d error=%s\n",fixture,
+			ok&&ByteIdenticalVector(result.accepted,expected)?1:0,
+			static_cast<double>(result.maximumCommutingResidualKGPerM3),exact?1:0,error.c_str());
+		passed=passed&&exact;
+	}
+	return passed?0:220;
 }
 
 int RunProductionScalarFCTMetalMixedBoundaryFixture()
@@ -11721,7 +12007,168 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		metal.actualMetalAllocationBytes<=metal.certifiedWorkingSetBytes;
 	const std::uint32_t requiredBranches=(1u<<0u)|(1u<<1u)|(1u<<2u)|(1u<<3u)|
 		(1u<<4u)|(1u<<5u)|(1u<<7u)|(1u<<8u)|(1u<<10u)|(1u<<11u)|(1u<<12u);
-	const bool passed=fixturesPassed&&donorBitExact&&deltaBitExact&&mcBitExact&&shared&&
+	// r239 prescribed inlet: oracle outward values are negated to positive-z
+	// storage. Keep imposed, donor and f_N comparisons separate; no blended test.
+	auto burner=request;
+	burner.transport.shape.ny=5u;
+	const std::size_t burnerCells=burner.transport.shape.CellCount();
+	burner.transport.conservativeValues.resize(9u*burnerCells);
+	burner.transport.temperatureK.resize(burnerCells);
+	for(std::size_t cell=0u;cell<burnerCells;++cell){
+		burner.transport.temperatureK[cell]=request.transport.temperatureK[cell%cells];
+		for(std::size_t component=0u;component<9u;++component)
+			burner.transport.conservativeValues[component*burnerCells+cell]=
+				request.transport.conservativeValues[component*cells+cell%cells];}
+	for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?20u:16u;
+		burner.transport.fuelInletBoundaryFace[side].assign(side>=4u?20u:count,0u);
+		burner.pressureOpenInflow[side].assign(side>=4u?20u:count,0u);}
+	for(unsigned int axis=0u;axis<3u;++axis)
+		burner.transport.projectedVelocityMPerS[axis].assign(
+			FireProductionProjectionFaceCount(burner.transport.shape,axis),0.09375f);
+	burner.bottomFuelMassFluxKGPerM2S.assign(20u,0.0f);
+	burner.injectedConservative.fill(0.0f);
+	burner.injectedConservative[0]=0.5f;burner.injectedConservative[1]=0.5f;
+	// Tiny dyadic inlet sensible energy against the hot interior carrier makes
+	// subtract/re-add loss observable without an approximate comparison.
+	burner.injectedConservative[8]=0x1p-20f;
+	const std::size_t burnerFaces[]={0u,6u,11u,19u};
+	for(std::size_t i=0u;i<4u;++i){burner.transport.fuelInletBoundaryFace[4][burnerFaces[i]]=1u;
+		burner.bottomFuelMassFluxKGPerM2S[burnerFaces[i]]=static_cast<float>(i)*0.015625f;}
+	// Raw split qualification deliberately includes zero/reversed carriers;
+	// the eventual live projection will impose inward inlet velocity.
+	burner.transport.projectedVelocityMPerS[2][6u]=-0.125f;
+	burner.transport.projectedVelocityMPerS[2][11u]=0.0f;
+	for(const std::size_t face:burnerFaces)
+		burner.transport.conservativeValues[7u*burnerCells+face]=0.03125f;
+	FireProductionResidentPhysicalFluxComparatorResult burnerResult;
+	bool burnerPassed=EvaluateFireProductionResidentPhysicalFluxMetalComparator(burner,burnerResult,&error);
+	bool burnerRecompositionLosesBits=false;
+	if(!burnerPassed)std::fprintf(stderr,"BURNER_FLUX_ERROR %s\n",error.c_str());
+	std::array<BoundStat,9> burnerPhysicalStat,burnerDonorStat,burnerImposedStat;
+	BoundStat burnerGasStat;
+	if(burnerPassed){
+		const std::size_t faces=burnerResult.lowCompositeFlux.size()/9u;
+		FireProductionScalarPhysicalFluxPrerequisiteRequest cpuInlet;
+		cpuInlet.shape=burner.transport.shape;cpuInlet.boundary=burner.transport.boundary;
+		cpuInlet.conservativeValues=burner.transport.conservativeValues;
+		cpuInlet.temperatureK=burner.transport.temperatureK;
+		cpuInlet.diffusivityM2PerS.assign(burnerCells,0.0f);
+		cpuInlet.conductivityWPerMK.assign(burnerCells,0.0f);
+		cpuInlet.frozenVelocityMPerS=burner.transport.projectedVelocityMPerS;
+		cpuInlet.ambient=burner.ambient;cpuInlet.ambientTemperatureK=burner.ambientTemperatureK;
+		cpuInlet.pressureOpenInflow=burner.pressureOpenInflow;
+		cpuInlet.bottomFuelMask=burner.transport.fuelInletBoundaryFace[4];
+		cpuInlet.bottomFuelMassFluxKGPerM2S=burner.bottomFuelMassFluxKGPerM2S;
+		cpuInlet.injectedConservative=burner.injectedConservative;
+		FireProductionScalarPhysicalFluxPrerequisiteResult cpuInletResult;
+		if(!BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(cpuInlet,cpuInletResult,&error)){
+			std::fprintf(stderr,"BURNER_CPU_REFERENCE refused error=%s\n",error.c_str());return 220;}
+		OpenBoundaryConfig3D boundary;
+		for(std::size_t component=0u;component<9u;++component){
+			boundary.ambientState[component]=burner.ambient[component];
+			boundary.injectedState[component]=burner.injectedConservative[component];}
+		for(const std::size_t face:burnerFaces){
+			ConservativeVector interior;
+			for(std::size_t component=0u;component<9u;++component)
+				interior[component]=burner.transport.conservativeValues[component*burnerCells+face];
+			const float velocity=burner.transport.projectedVelocityMPerS[2][face];
+			OpenBoundaryFlux3D oracle;
+			const bool oracleOK=BuildOpenBoundaryFlux3D(interior,burner.transport.temperatureK[face],
+				-static_cast<double>(velocity),FuelInletBoundary3D,true,boundary,
+				300.0,300.0,0.0,0.0,burner.transport.shape.cellWidthM,
+				burner.bottomFuelMassFluxKGPerM2S[face],fuel,fuel,oracle,&error);
+			burnerPassed=burnerPassed&&oracleOK;if(!oracleOK)break;
+			const std::size_t packed=burnerResult.packedFaceOffset[2]+face;
+			double gasReference=0.0,gasTermMagnitude=0.0,gasTermBounds=0.0;
+			for(std::size_t component=0u;component<9u;++component){
+				const std::size_t word=component*faces+packed;
+				const double imposed=-oracle.totalOutwardFlux[component];
+				const double carrier=static_cast<double>(velocity)*interior[component];
+				const double physical=component<8u?-oracle.nonadvectiveMassOutwardFlux[component]:
+					-oracle.nonadvectiveEnergyOutwardFlux;
+				// The dyadic injected tuple has exact density 1/2; four rounded
+				// operations cover multiply/divide, carrier multiply and subtraction.
+				const double physicalBound=gamma(4.0)*(std::fabs(imposed)+std::fabs(carrier));
+				if(component>=1u&&component<=6u){gasReference+=physical;
+					gasTermMagnitude+=std::fabs(physical);gasTermBounds+=physicalBound;}
+				const float observedPhysical=component<8u?burnerResult.physicalMassFluxKGPerM2S[word]:
+					burnerResult.physicalEnergyFluxWPerM2[packed];
+				const float cpuPhysical=component<8u?cpuInletResult.physicalMassFluxKGPerM2S[word]:
+					cpuInletResult.physicalEnergyFluxWPerM2[packed];
+				// The existing original-oracle enclosure below also covers the CPU
+				// reference only if its prescribed branch matches these exact bytes.
+				burnerPassed=burnerPassed&&std::memcmp(&cpuPhysical,&observedPhysical,sizeof(float))==0;
+				volatile float recomposed=burnerResult.donorAdvectiveFlux[word]+observedPhysical;
+				burnerRecompositionLosesBits=burnerRecompositionLosesBits||recomposed!=burnerResult.lowCompositeFlux[word];
+				updateStat(burnerPhysicalStat[component],observedPhysical,physical,physicalBound);
+				updateStat(burnerDonorStat[component],burnerResult.donorAdvectiveFlux[word],carrier,
+					gamma(1.0)*std::fabs(carrier));
+				updateStat(burnerImposedStat[component],burnerResult.lowCompositeFlux[word],imposed,0.0);
+				burnerPassed=burnerPassed&&burnerResult.highCompositeFlux[word]==imposed&&
+					burnerResult.advectiveFluxDelta[word]==0.0f&&
+					burnerResult.mcMusclAdvectiveFlux[word]==burnerResult.donorAdvectiveFlux[word];
+			}
+			updateStat(burnerGasStat,burnerResult.physicalGasFluxKGPerM2S[2][face],gasReference,
+				gasTermBounds+gamma(5.0)*(gasTermMagnitude+gasTermBounds));
+		}
+		for(std::size_t component=0u;component<9u;++component)burnerPassed=burnerPassed&&
+			burnerPhysicalStat[component].passed&&burnerDonorStat[component].passed&&
+			burnerImposedStat[component].passed;
+		burnerPassed=burnerPassed&&burnerGasStat.passed&&burnerResult.interstageFullGridTransferCount==0u&&
+			burnerResult.actualMetalAllocationBytes<=burnerResult.certifiedWorkingSetBytes;
+	}
+	auto badBurner=burner;badBurner.bottomFuelMassFluxKGPerM2S[1]=0.125f;
+	const bool unmaskedFluxRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,refused,&error)&&!refused.deviceProduced;
+	badBurner=burner;badBurner.bottomFuelMassFluxKGPerM2S.pop_back();
+	const bool shortBurnerRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,refused,&error)&&!refused.deviceProduced;
+	badBurner=burner;badBurner.injectedConservative.fill(0.0f);
+	const bool zeroDensityRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,refused,&error)&&!refused.deviceProduced;
+	badBurner=burner;badBurner.qualificationMutateHighNonadvective=true;
+	const bool burnerHighRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,refused,&error)&&!refused.deviceProduced;
+	badBurner=burner;badBurner.transport.boundary[4]=FireProductionProjectionPressureOpen;
+	const bool nonwallRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,refused,&error)&&!refused.deviceProduced;
+	badBurner=burner;badBurner.injectedConservative[8]+=0.125f;
+	FireProductionResidentPhysicalFluxComparatorResult changedBurner;
+	const bool burnerIdentityChanged=EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,changedBurner,&error)&&changedBurner.devicePublicationIdentity!=burnerResult.devicePublicationIdentity;
+	badBurner=burner;badBurner.bottomFuelMassFluxKGPerM2S[6u]*=2.0f;
+	const bool burnerFluxIdentityChanged=EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,changedBurner,&error)&&changedBurner.devicePublicationIdentity!=burnerResult.devicePublicationIdentity;
+	badBurner=burner;badBurner.transport.fuelInletBoundaryFace[4][0u]=0u;
+	const bool burnerMaskIdentityChanged=EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,changedBurner,&error)&&changedBurner.devicePublicationIdentity!=burnerResult.devicePublicationIdentity;
+	badBurner=burner;badBurner.qualificationWorkingSetLimitBytes=burnerResult.certifiedWorkingSetBytes-1u;
+	const bool burnerBudgetRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		badBurner,refused,&error)&&!refused.deviceProduced;
+	// Cross the allocation quantum using a non-square bottom. Only the
+	// ambient upload/private pair grows; each rounds independently to 32 KiB.
+	auto wideShape=request.transport.shape;wideShape.nx=64u;wideShape.ny=33u;
+	std::uint64_t wideOrdinaryBytes=0u,wideBurnerBytes=0u;
+	const bool burnerAllocationDelta=FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		wideShape,wideOrdinaryBytes,false)&&FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		wideShape,wideBurnerBytes,true)&&wideBurnerBytes-wideOrdinaryBytes==2u*16384u;
+	FireProductionProjectedHeunMetalOwnerRequest burnerOwner;burnerOwner.lineage.eos.physicalFlux=burner;
+	FireProductionProjectedHeunMetalOwnerResult refusedOwner;
+	FireProductionResidentStepResult refusedStep;
+	const bool burnerOwnerRefused=!AttemptFireProductionProjectedHeunResidentStepMetal(
+		burnerOwner,refusedStep,&refusedOwner,&error)&&
+		!refusedStep.HasAcceptedManifoldToken()&&refusedStep.conservativeValues.empty();
+	std::fprintf(stderr,"BURNER_FLUX passed=%d unmasked_refused=%d short_refused=%d zero_density_refused=%d "
+		"high_mutant_refused=%d nonwall_refused=%d identity_changed=%d recomposition_loses_bits=%d owner_refused=%d "
+		"flux_identity_changed=%d mask_identity_changed=%d budget_refused=%d allocation_delta=%d\n",
+		burnerPassed?1:0,unmaskedFluxRefused?1:0,shortBurnerRefused?1:0,zeroDensityRefused?1:0,
+		burnerHighRefused?1:0,nonwallRefused?1:0,burnerIdentityChanged?1:0,burnerRecompositionLosesBits?1:0,
+		burnerOwnerRefused?1:0,burnerFluxIdentityChanged?1:0,burnerMaskIdentityChanged?1:0,
+		burnerBudgetRefused?1:0,burnerAllocationDelta?1:0);
+	const bool passed=burnerPassed&&unmaskedFluxRefused&&shortBurnerRefused&&zeroDensityRefused&&
+		burnerHighRefused&&nonwallRefused&&burnerIdentityChanged&&burnerRecompositionLosesBits&&burnerOwnerRefused&&
+		burnerFluxIdentityChanged&&burnerMaskIdentityChanged&&burnerBudgetRefused&&burnerAllocationDelta&&
+		fixturesPassed&&donorBitExact&&deltaBitExact&&mcBitExact&&shared&&
 		sharedMutantRefused&&lineageRegenerated&&missingLineageRefused&&mismatchedParentRefused&&
 		shortInflowRefused&&oversizedBasisRefused&&understatedRefused&&workingSet&&boundsPassed&&
 		logBitExact&&logEnclosurePassed&&
@@ -11751,7 +12198,7 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 	if(!liveWorkingSet||!ownerWorkingSet)std::fprintf(stderr,
 		"RESIDENT_PHYSICAL_FLUX_WORKING_SET live=%d owner=%d\n",
 		liveWorkingSet?1:0,ownerWorkingSet?1:0);
-	const char* componentLabel[9]={"rhoZ","CH4","O2","CO2","H2O","N2","CO",
+	const char* componentLabel[9]={"rhoZ","CH4","O2","N2","CO2","H2O","CO",
 		"carbon","sensible_energy"};
 	auto publish=[&](const char* family,const char* field,const char* units,
 		const BoundStat& stat){std::fprintf(stderr,
@@ -11760,11 +12207,16 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		family,field,units,stat.residual,units,stat.boundAtResidual,stat.maximumRatio,
 		stat.passed?1:0);};
 	for(unsigned int component=0u;component<9u;++component){const char* units=
-		component<8u?"kg_m2_s":"W_m2";publish("donor_advective",componentLabel[component],
+		component<8u?"kg_m2_s":"W_m2";
+		publish("burner_physical",componentLabel[component],units,burnerPhysicalStat[component]);
+		publish("burner_donor",componentLabel[component],units,burnerDonorStat[component]);
+		publish("burner_imposed",componentLabel[component],units,burnerImposedStat[component]);
+		publish("donor_advective",componentLabel[component],
 		units,donorStat[component]);publish("mc_muscl_advective",componentLabel[component],
 		units,mcStat[component]);publish("low_composite",componentLabel[component],units,
 		lowStat[component]);publish("high_composite",componentLabel[component],units,
 		highStat[component]);}
+	publish("burner_physical_gas","z","kg_m2_s",burnerGasStat);
 	for(unsigned int component=0u;component<8u;++component)publish("physical_mass",
 		componentLabel[component],"kg_m2_s",massStat[component]);
 	for(unsigned int species=0u;species<7u;++species)publish("physical_enthalpy",
@@ -11775,7 +12227,8 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 	return passed?0:203;
 }
 
-int RunProductionResidentEOSCandidateMetalFP64Fixture(const bool boundaryOnly=false)
+int RunProductionResidentEOSCandidateMetalFP64Fixture(const bool boundaryOnly=false,
+	const bool burnerOnly=false)
 {
 	static_assert(!std::is_convertible<FireProductionResidentEOSCandidateComparatorResult,
 		FireProductionScalarEOSAcceptanceResult>::value,
@@ -11881,6 +12334,84 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture(const bool boundaryOnly=fa
 		request.physicalFlux.nullity,0.0f);
 	for(std::size_t index=0u;index<request.physicalFlux.nullity;++index)
 		request.physicalFlux.coordinateProjector[index*request.physicalFlux.nullity+index]=1.0f;
+	if(!boundaryOnly){
+		// Independently integrate the prescribed tuple; neither the physical
+		// comparator output nor the candidate's own bytes are the scalar oracle.
+		bool burnerPassed=true;
+		for(unsigned int sample=0u;sample<2u;++sample){
+			FireProductionResidentEOSCandidateComparatorRequest inlet;
+			if(!uniformRequest(425.0,1.0f,inlet))return 207;
+			inlet.physicalFlux.transport.shape.cellWidthM=0.125f;
+			inlet.candidateTimeStepS=0x1p-10f;
+			inlet.physicalFlux.bottomFuelMassFluxKGPerM2S.assign(16u,0.0f);
+			inlet.physicalFlux.injectedConservative=inlet.physicalFlux.ambient;
+			const std::size_t patches[]={0u,5u,11u,15u};
+			for(std::size_t i=0u;i<4u;++i){
+				inlet.physicalFlux.transport.fuelInletBoundaryFace[4][patches[i]]=1u;
+				inlet.physicalFlux.bottomFuelMassFluxKGPerM2S[patches[i]]=sample?
+					static_cast<float>(i+1u)*0.015625f:0.0f;}
+			std::vector<float> expected=inlet.physicalFlux.transport.conservativeValues;
+			float total=0.0f;for(std::size_t component=1u;component<=7u;++component)
+				total+=inlet.physicalFlux.injectedConservative[component];
+			for(std::size_t component=0u;component<9u;++component)
+				for(std::size_t face=0u;face<16u;++face){
+					const float imposed=(inlet.physicalFlux.bottomFuelMassFluxKGPerM2S[face]*
+						inlet.physicalFlux.injectedConservative[component])/total;
+					expected[component*cells+face]+=(inlet.candidateTimeStepS/
+						inlet.physicalFlux.transport.shape.cellWidthM)*imposed;}
+			FireProductionResidentEOSCandidateComparatorResult observedInlet;
+			if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(inlet,observedInlet,&error)){
+				std::fprintf(stderr,"BURNER_EOS sample=%u refused error=%s\n",sample,error.c_str());return 207;}
+			const bool scalarExact=ByteIdenticalVector(expected,observedInlet.candidateConservativeValues);
+			bool eosExact=observedInlet.temperatureK.size()==cells&&
+				observedInlet.representedPressureRatio.size()==cells;
+			for(std::size_t cell=0u;cell<cells&&eosExact;++cell){
+				std::array<double,9> q;for(std::size_t component=0u;component<9u;++component)
+					q[component]=expected[component*cells+cell];
+				double temperature=0.0,ratio=0.0;
+				if(!fuel.InvertAcceptedConservativeStateByComponentOrder(q.data(),q.size(),
+					sealedCase.derived.pilotAmbientTemperatureK,sealedCase.derived.maximumAcceptedTemperatureK,
+					FireStateProducerPrecision::Binary32,temperature,ratio,&error))return 207;
+				const float expectedT=static_cast<float>(temperature);
+				if(!fuel.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(q.data(),q.size(),
+					expectedT,FireStateProducerPrecision::Binary32,ratio,&error))return 207;
+				const float expectedP=static_cast<float>(ratio);
+				eosExact=std::memcmp(&expectedT,&observedInlet.temperatureK[cell],sizeof(float))==0&&
+					std::memcmp(&expectedP,&observedInlet.representedPressureRatio[cell],sizeof(float))==0;
+				std::fprintf(stderr,"BURNER_EOS_CELL sample=%u cell=%zu T_K=%.17g mirror_T_K=%.17g "
+					"pressure_ratio=%.17g mirror_pressure_ratio=%.17g bit_exact=%d\n",sample,cell,
+					double(observedInlet.temperatureK[cell]),double(expectedT),
+					double(observedInlet.representedPressureRatio[cell]),double(expectedP),eosExact?1:0);}
+			const bool resident=observedInlet.interstageFullGridTransferCount==0u&&
+				observedInlet.EOSPublicationIdentity!=0u&&
+				observedInlet.actualMetalAllocationBytes<=observedInlet.certifiedWorkingSetBytes;
+			FireProductionResidentEOSCandidateComparatorResult refusedInlet;
+			auto invalidInlet=inlet;
+			invalidInlet.qualificationWorkingSetLimitBytes=observedInlet.certifiedWorkingSetBytes-1u;
+			const bool budgetRefused=!EvaluateFireProductionResidentEOSCandidateMetalComparator(
+				invalidInlet,refusedInlet,&error)&&!refusedInlet.deviceAttempted&&refusedInlet.EOSPublicationIdentity==0u;
+			invalidInlet=inlet;invalidInlet.physicalFlux.bottomFuelMassFluxKGPerM2S.clear();
+			const bool missingFluxRefused=!EvaluateFireProductionResidentEOSCandidateMetalComparator(
+				invalidInlet,refusedInlet,&error)&&!refusedInlet.deviceAttempted&&refusedInlet.EOSPublicationIdentity==0u;
+			invalidInlet=inlet;invalidInlet.physicalFlux.transport.fuelInletBoundaryFace[4][5u]=0u;
+			invalidInlet.physicalFlux.bottomFuelMassFluxKGPerM2S[5u]=0.03125f;
+			const bool unmaskedRefused=!EvaluateFireProductionResidentEOSCandidateMetalComparator(
+				invalidInlet,refusedInlet,&error)&&!refusedInlet.deviceAttempted&&refusedInlet.EOSPublicationIdentity==0u;
+			auto wide=inlet.physicalFlux.transport.shape;wide.nx=64u;wide.ny=33u;
+			std::uint64_t ordinary=0u,prescribed=0u;
+			const bool allocationExact=FireProductionResidentEOSCandidateMetalWorkingSetBytes(wide,ordinary)&&
+				FireProductionResidentEOSCandidateMetalWorkingSetBytes(wide,prescribed,true)&&
+				prescribed-ordinary==2u*16384u;
+			burnerPassed=burnerPassed&&scalarExact&&eosExact&&resident&&budgetRefused&&missingFluxRefused&&
+				unmaskedRefused&&allocationExact;
+			std::fprintf(stderr,"BURNER_EOS sample=%u scalar_byte_exact=%d eos_bit_exact=%d resident=%d "
+				"budget_refused=%d missing_flux_refused=%d unmasked_refused=%d allocation_exact=%d\n",
+				sample,scalarExact?1:0,eosExact?1:0,resident?1:0,budgetRefused?1:0,missingFluxRefused?1:0,
+				unmaskedRefused?1:0,allocationExact?1:0);
+		}
+		if(!burnerPassed)return 207;
+		if(burnerOnly)return 0;
+	}
 	if(boundaryOnly){
 		const std::array<float,9> historical={{0.0012011607177555561f,0.00051535427337512374f,
 			0.25547337532043457f,0.85037857294082642f,0.0018813794013112783f,
@@ -12740,6 +13271,15 @@ public:
 			for(std::size_t face=0u;face<boundary.bottomFuelMask.size();++face)
 				boundary.bottomFuelMask[face]=fixture_.transport.fuelInletBoundaryFace[4][face]!=0u;
 			boundary.bottomFuelMassFluxKGPerM2S.assign(boundary.bottomFuelMask.size(),0.0);}
+		if(!fixture_.bottomFuelMassFluxKGPerM2S.empty()){
+			boundary.bottomFuelMassFluxKGPerM2S.assign(fixture_.bottomFuelMassFluxKGPerM2S.begin(),
+				fixture_.bottomFuelMassFluxKGPerM2S.end());
+			boundary.injectedGasDensityKGPerM3=0.0;
+			for(std::size_t component=0u;component<9u;++component){
+				boundary.injectedState[component]=fixture_.injectedConservative[component];
+				if(component>=1u&&component<=6u)boundary.injectedGasDensityKGPerM3+=
+					fixture_.injectedConservative[component];}
+		}
 		std::vector<CellMolecularTransportEvaluation> molecular;
 		std::vector<double> diffusivity,conductivity,effectiveViscosity;
 		if(!BuildCellMolecularTransportEvaluations3D(state,temperature,
@@ -12813,6 +13353,15 @@ public:
 				boundary.bottomFuelMask[face]=fixture_.transport.fuelInletBoundaryFace[4][face]!=0u;
 			boundary.bottomFuelMassFluxKGPerM2S.assign(boundary.bottomFuelMask.size(),0.0);
 		}
+		if(!fixture_.bottomFuelMassFluxKGPerM2S.empty()){
+			boundary.bottomFuelMassFluxKGPerM2S.assign(fixture_.bottomFuelMassFluxKGPerM2S.begin(),
+				fixture_.bottomFuelMassFluxKGPerM2S.end());
+			boundary.injectedGasDensityKGPerM3=0.0;
+			for(std::size_t component=0u;component<9u;++component){
+				boundary.injectedState[component]=fixture_.injectedConservative[component];
+				if(component>=1u&&component<=6u)boundary.injectedGasDensityKGPerM3+=
+					fixture_.injectedConservative[component];}
+		}
 		std::vector<CellMolecularTransportEvaluation> molecular;
 		std::vector<double> diffusivity,conductivity,effectiveViscosity;
 		if(!BuildCellMolecularTransportEvaluations3D(state,temperature,
@@ -12842,8 +13391,21 @@ private:
 	FireProductionResidentPhysicalFluxComparatorRequest fixture_;
 };
 
-int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOutputPath=nullptr)
+int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOutputPath=nullptr,
+	const bool burnerOnly=false,const bool burnerOwnerOnly=false,const bool burnerReferenceOnly=false,
+	const bool burnerOwnerGate=false,const bool burnerColdStartProbe=false)
 {
+	// Cold states do not activate every adversarial topology. Carry those
+	// witnesses only from a successful complete mixed gate, never a caller flag.
+	bool mixedControlPrerequisitePassed=false;
+	if(burnerColdStartProbe){
+		const int mixedStatus=RunProductionResidentTargetLineageMetalFP64Fixture(
+			nullptr,false,false,false,true,false);
+		std::fprintf(stderr,"BURNER_COLD_PREREQUISITE mixed_gate_exit=%d passed=%d\n",
+			mixedStatus,mixedStatus==0?1:0);
+		if(mixedStatus!=0)return mixedStatus;
+		mixedControlPrerequisitePassed=true;
+	}
 	if(convergenceOutputPath&&(std::filesystem::exists(convergenceOutputPath)||
 		std::filesystem::exists(std::string(convergenceOutputPath)+".csv"))){
 		std::fprintf(stderr,"OWNER_CONVERGENCE_REFUSAL diagnostic output already exists\n");return 220;}
@@ -13346,11 +13908,18 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	if(!openAssembledEqual)mismatch("open_assembled",openObserved.assembledTargetPerS,openAssembled);
 	auto deviceRefusal=[&](const char* name,
 		FireProductionResidentTargetLineageComparatorRequest mutation,
-		const std::uint32_t expected){FireProductionResidentTargetLineageComparatorResult refused;
+		const std::uint32_t expected,const bool requireNoTargetPublication=false){
+		FireProductionResidentTargetLineageComparatorResult refused;
 		error.clear();const bool accepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
-			mutation,refused,&error);const bool passed=!accepted&&refused.deviceAttempted&&
-			refused.terminalRead&&(refused.deviceFailureBitmap&expected)!=0u&&
-			refused.projectionConsumerIdentity==0u;
+			mutation,refused,&error);
+		auto validRefusal=[&](const FireProductionResidentTargetLineageComparatorResult& value){return
+			!accepted&&value.deviceAttempted&&value.terminalRead&&(value.deviceFailureBitmap&expected)!=0u&&
+			value.projectionConsumerIdentity==0u&&(!requireNoTargetPublication||value.targetPublicationIdentity==0u);};
+		bool passed=validRefusal(refused);
+		if(requireNoTargetPublication){auto leakedTarget=refused;leakedTarget.targetPublicationIdentity=1u;
+			const bool leakRejected=!validRefusal(leakedTarget);passed=passed&&leakRejected;
+			std::fprintf(stderr,"RESIDENT_TARGET_REFUSAL_PREDICATE_RED name=%s "
+				"synthetic_target_publication=1 rejected=%d\n",name,leakRejected?1:0);}
 		std::fprintf(stderr,"RESIDENT_TARGET_RED name=%s layer=device expected=0x%08x "
 			"observed=0x%08x attempted=%d read=%d target_identity=%llu "
 			"consumer_identity=%llu passed=%d\n",name,expected,refused.deviceFailureBitmap,
@@ -13599,6 +14168,80 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	const bool allBoundsPass=allEnclosed("closed",observed,tangentExact,sourceExact,diagnosticExact,
 		tailExact,assembledExact)&&allEnclosed("pressure_open",openObserved,openTangentExact,openSourceExact,
 		openDiagnosticExact,openTailExact,openAssembledExact);
+	{
+		auto inlet=openRequest;
+		inlet.eos.physicalFlux.bottomFuelMassFluxKGPerM2S.assign(shape.nx*shape.ny,0.0f);
+		if(!buildState(300.0,1.0,1.0,inlet.eos.physicalFlux.injectedConservative))return 220;
+		const std::size_t patches[]={0u,5u,11u,15u};
+		for(std::size_t i=0u;i<4u;++i){
+			inlet.eos.physicalFlux.transport.fuelInletBoundaryFace[4][patches[i]]=1u;
+			inlet.eos.physicalFlux.bottomFuelMassFluxKGPerM2S[patches[i]]=static_cast<float>(i+1u)*0.015625f;}
+		FireProductionResidentTargetLineageComparatorResult inletTarget;
+		FireProductionResidentPhysicalFluxComparatorResult inletFlux;
+		FireProductionResidentEOSCandidateComparatorResult inletCandidate;
+		if(!EvaluateFireProductionResidentTargetLineageMetalComparator(inlet,inletTarget,&error)||
+			!EvaluateFireProductionResidentPhysicalFluxMetalComparator(inlet.eos.physicalFlux,inletFlux,&error)||
+			!EvaluateFireProductionResidentEOSCandidateMetalComparator(inlet.eos,inletCandidate,&error)){
+			std::fprintf(stderr,"BURNER_TARGET refused error=%s\n",error.c_str());return 220;}
+		std::vector<double> tangentInlet(cells),sourceInlet(cells),diagnosticInlet(cells),
+			tailInlet(cells),assembledInlet(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){const std::size_t x=cell%shape.nx,
+			y=(cell/shape.nx)%shape.ny,z=cell/(shape.nx*shape.ny);
+			std::array<double,9> state={{}},rate={{}};
+			for(std::size_t component=0u;component<9u;++component)state[component]=
+				inlet.eos.physicalFlux.transport.conservativeValues[component*cells+cell];
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t left=faceIndex(axis,x,y,z),
+					right=faceIndex(axis,x+(axis==0u),y+(axis==1u),z+(axis==2u));
+				for(std::size_t component=0u;component<8u;++component)rate[component]+=
+					(double(inletFlux.physicalMassFluxKGPerM2S[component*allFaces+left])-
+					 double(inletFlux.physicalMassFluxKGPerM2S[component*allFaces+right]))/shape.cellWidthM;
+				rate[8]+=(double(inletFlux.physicalEnergyFluxWPerM2[left])-
+					double(inletFlux.physicalEnergyFluxWPerM2[right]))/shape.cellWidthM;}
+			if(!fuel.DivergenceFromDiscreteRateByComponentOrder(state.data(),state.size(),rate.data(),
+				rate.size(),inlet.eos.physicalFlux.transport.temperatureK[cell],
+				FireStateProducerPrecision::Binary32,tangentInlet[cell],&error)||
+				!policyDrain(inletCandidate.representedPressureRatio[cell],
+					inlet.eos.candidateTimeStepS,tailInlet[cell]))return 220;
+			sourceInlet[cell]=inlet.frozenSource.DivergenceTargetPerS()[cell];
+			diagnosticInlet[cell]=(double(inletCandidate.representedPressureRatio[cell])-1.0)/
+				inlet.eos.candidateTimeStepS;
+			assembledInlet[cell]=tangentInlet[cell]+sourceInlet[cell]+tailInlet[cell];
+		}
+		const bool termsPass=allEnclosed("burner",inletTarget,tangentInlet,sourceInlet,
+			diagnosticInlet,tailInlet,assembledInlet);
+		const std::vector<float>* values[]={&inletTarget.tangentTargetPerS,&inletTarget.frozenSourceTargetPerS,
+			&inletTarget.absoluteReferenceDiagnosticPerS,&inletTarget.monitoredAbsoluteReferenceTargetPerS,
+			&inletTarget.assembledTargetPerS};
+		const std::vector<double>* references[]={&tangentInlet,&sourceInlet,&diagnosticInlet,&tailInlet,&assembledInlet};
+		const char* fields[]={"tangent","frozen_source","absolute_diagnostic","tail","assembled"};
+		for(unsigned int term=0u;term<5u;++term)for(std::size_t cell=0u;cell<cells;++cell){
+			const double bound=term==0u?inletTarget.tangentEnclosurePerS[cell]:
+				(term==1u?0.0:(term==4u?inletTarget.assembledEnclosurePerS[cell]:
+				localProjectionBound((*values[term])[cell])));
+			std::fprintf(stderr,"BURNER_TARGET_CELL field=%s cell=%zu units=s^-1 device=%.17g "
+				"fp64=%.17g residual=%.17g local_bound=%.17g passed=%d\n",fields[term],cell,
+				double((*values[term])[cell]),(*references[term])[cell],
+				std::fabs(double((*values[term])[cell])-(*references[term])[cell]),bound,
+				insideEnclosure((*values[term])[cell],(*references[term])[cell],bound)?1:0);}
+		const bool resident=inletTarget.interstageFullGridTransferCount==0u&&
+			inletTarget.projectionConsumerIdentity!=0u&&
+			inletTarget.actualMetalAllocationBytes<=inletTarget.certifiedWorkingSetBytes;
+		auto invalid=inlet;invalid.qualificationWorkingSetLimitBytes=inletTarget.certifiedWorkingSetBytes-1u;
+		const bool budgetRefused=hostRefusal("burner_understated_working_set",invalid);
+		invalid=inlet;invalid.qualificationUnsealedPhysicalFluxParent=true;
+		const bool parentRefused=deviceRefusal("burner_unsealed_physical_flux",invalid,2048u,true);
+		auto wide=shape;wide.nx=64u;wide.ny=33u;
+		std::uint64_t ordinary=0u,prescribed=0u;
+		const bool allocationExact=FireProductionResidentTargetLineageMetalWorkingSetBytes(wide,ordinary)&&
+			FireProductionResidentTargetLineageMetalWorkingSetBytes(wide,prescribed,true)&&
+			prescribed-ordinary==2u*16384u;
+		std::fprintf(stderr,"BURNER_TARGET terms_pass=%d resident=%d budget_refused=%d "
+			"parent_refused=%d allocation_exact=%d\n",termsPass?1:0,resident?1:0,budgetRefused?1:0,
+			parentRefused?1:0,allocationExact?1:0);
+		if(!termsPass||!resident||!budgetRefused||!parentRefused||!allocationExact)return 220;
+		if(burnerOnly)return 0;
+	}
 	mutation=request;mutation.qualificationCertifiedContinuousEnclosure=true;
 	FireProductionResidentTargetLineageComparatorResult enclosed;error.clear();
 	const bool enclosureAccepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
@@ -13671,12 +14314,93 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	ownerRequest.endpointVelocityToleranceMPerS=1.0e-4f;
 	ownerRequest.maximumPicardIterations=16u;
 	ownerRequest.qualificationCaptureIterationTrace=true;
+	FireProductionProjectedHeunMetalOwnerRequest burnerReferenceInput;
 	for(unsigned int axis=0u;axis<3u;++axis)
 		ownerRequest.beginningMomentumKGPerM2S[axis].assign(
 			FireProductionProjectionFaceCount(shape,axis),0.0f);
+	{
+		auto inletOwner=ownerRequest;inletOwner.qualificationCaptureIterationTrace=false;
+		inletOwner.qualificationProductionStageTokens=true;
+		auto& inletFlux=inletOwner.lineage.eos.physicalFlux;
+		inletFlux.transport.boundary[4]=FireProductionProjectionWall;
+		inletFlux.bottomFuelMassFluxKGPerM2S.assign(shape.nx*shape.ny,0.0f);
+		if(!buildState(300.0,1.0,1.0,inletFlux.injectedConservative))return 220;
+		for(const std::size_t face:{std::size_t(0u),std::size_t(5u),std::size_t(11u)}){
+			inletFlux.transport.fuelInletBoundaryFace[4][face]=1u;
+			inletFlux.bottomFuelMassFluxKGPerM2S[face]=0x1p-12f;}
+		std::string firstRoot;bool inletPassed=true;
+		FireProductionProjectedHeunMetalOwnerResult referenceInlet;
+		burnerReferenceInput=inletOwner;
+		for(unsigned int sample=0u;sample<4u;++sample){auto input=inletOwner;
+			auto& fluxInput=input.lineage.eos.physicalFlux;
+			if(sample==1u)fluxInput.bottomFuelMassFluxKGPerM2S[5u]*=2.0f;
+			if(sample==2u)for(float& value:fluxInput.injectedConservative)value*=2.0f;
+			if(sample==3u)fluxInput.transport.fuelInletBoundaryFace[4][15u]=1u;
+			FireProductionProjectedHeunMetalOwnerResult output;
+			if(!AttemptFireProductionProjectedHeunMetalOwner(input,output,&error)){
+				std::fprintf(stderr,"BURNER_OWNER sample=%u refused error=%s\n",sample,error.c_str());return 220;}
+			float injectedRho=0.0f;for(std::size_t component=1u;component<=6u;++component)
+				injectedRho+=fluxInput.injectedConservative[component];
+			bool boundaryExact=output.conservativeValues.size()==9u*cells;
+			for(std::size_t face=0u;face<shape.nx*shape.ny&&boundaryExact;++face){
+				const bool masked=fluxInput.transport.fuelInletBoundaryFace[4][face]!=0u;
+				const float j=masked?fluxInput.bottomFuelMassFluxKGPerM2S[face]:0.0f;
+				float rho=0.0f;for(std::size_t component=1u;component<=6u;++component)
+					rho+=output.conservativeValues[component*cells+face];
+				if(masked)rho=0.5f*injectedRho+0.5f*rho;
+				const float velocity=masked?j/rho:0.0f;
+				boundaryExact=std::memcmp(&j,&output.momentumKGPerM2S[2][face],sizeof(float))==0&&
+					std::memcmp(&velocity,&output.velocityMPerS[2][face],sizeof(float))==0&&
+					(!masked||std::memcmp(&rho,&output.projection.faceDensityKGPerM3[2][face],sizeof(float))==0);
+			}
+			if(sample==0u)firstRoot=output.inputPayloadRootSHA256;
+			const bool rootBound=output.inputPayloadRootSHA256.size()==64u&&
+				(sample==0u||output.inputPayloadRootSHA256!=firstRoot);
+			const bool resident=output.interstageFullGridTransferCount==0u&&
+				output.actualMetalAllocationBytes<=output.certifiedWorkingSetBytes;
+			inletPassed=inletPassed&&boundaryExact&&rootBound&&resident;
+			std::fprintf(stderr,"BURNER_OWNER sample=%u boundary_exact=%d root_bound=%d resident=%d "
+				"actual_bytes=%llu certified_bytes=%llu input_root=%s\n",sample,boundaryExact?1:0,
+				rootBound?1:0,resident?1:0,static_cast<unsigned long long>(output.actualMetalAllocationBytes),
+				static_cast<unsigned long long>(output.certifiedWorkingSetBytes),output.inputPayloadRootSHA256.c_str());
+			if(sample==0u)referenceInlet=std::move(output);
+		}
+		auto admissionRefuses=[&](FireProductionProjectedHeunMetalOwnerRequest input,
+			const char* name,const char* expected){
+			FireProductionProjectedHeunMetalOwnerResult output;std::string refusal;
+			const bool accepted=AttemptFireProductionProjectedHeunMetalOwner(input,output,&refusal);
+			const bool refused=!accepted&&refusal==expected&&output.conservativeValues.empty()&&
+				output.publicationPayloadRootSHA256.empty();
+			std::fprintf(stderr,"BURNER_OWNER_ADMISSION name=%s refused=%d error=%s\n",
+				name,refused?1:0,refusal.c_str());return refused;
+		};
+		auto solidInlet=inletOwner;
+		solidInlet.lineage.eos.physicalFlux.injectedConservative[7]=0x1p-8f;
+		inletPassed=admissionRefuses(solidInlet,"solid_inlet",
+			"projected-Heun burner inlet must contain gas only")&&inletPassed;
+		auto emptyInlet=inletOwner;emptyInlet.lineage.eos.physicalFlux.injectedConservative.fill(0.0f);
+		inletPassed=admissionRefuses(emptyInlet,"empty_inlet",
+			"production injected constituent density is invalid")&&inletPassed;
+		std::uint64_t inletCertificate=0u;
+		if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,inletCertificate,true)||
+			inletCertificate==0u)return 220;
+		auto understatedInlet=inletOwner;
+		understatedInlet.qualificationWorkingSetLimitBytes=inletCertificate-1u;
+		inletPassed=admissionRefuses(understatedInlet,"one_byte_under_budget",
+			"projected-Heun complete-owner working-set preflight refused")&&inletPassed;
+		FireProductionResidentStepResult liveInlet;FireProductionProjectedHeunMetalOwnerResult diagnostics;
+		inletOwner.qualificationProductionStageTokens=false;
+		const bool liveAccepted=AttemptFireProductionProjectedHeunResidentStepMetal(inletOwner,liveInlet,
+			&diagnostics,&error)&&liveInlet.AcceptedManifoldTokenMatchesCurrentPayload()&&
+			FireProductionOwnerConvergenceProbe::SameAcceptedOwner(referenceInlet,diagnostics,error);
+		std::fprintf(stderr,"BURNER_OWNER live_accepted_identical=%d binding_fixture_passed=%d error=%s\n",
+			liveAccepted?1:0,inletPassed?1:0,error.c_str());
+		if(!inletPassed||!liveAccepted)return 220;
+		if(burnerOwnerOnly)return 0;
+	}
 	FireProductionProjectedHeunMetalOwnerResult ownerObserved;
 	std::string ownerError;
-	const bool ownerAccepted=AttemptFireProductionProjectedHeunMetalOwner(
+	bool ownerAccepted=AttemptFireProductionProjectedHeunMetalOwner(
 		ownerRequest,ownerObserved,&ownerError);
 	FireProductionResidentStepResult ownerResidentObserved;
 	FireProductionProjectedHeunMetalOwnerResult ownerResidentDiagnostics;
@@ -13902,13 +14626,17 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		// r234 extends each of the four retained endpoint tables with exact
 		// prefix enthalpies and statuses; count actual allocation quanta.
 		tier8PrefixIncrement=4u*(allocationQuantum((14u+1023u*8u)*4u*sizeof(float))-
-			allocationQuantum(14u*4u*sizeof(float)));
+			allocationQuantum(14u*4u*sizeof(float))),
+		// r239 counts the endpoint identity and the three separately allocated
+		// private controls (previously incorrectly grouped as one), per set.
+		tier8AllocationInventoryIncrement=4u*3u*UINT64_C(16384);
 	const bool observerCertificateDerived=FireProductionProjectedHeunMetalObserverWorkingSetBytes(
 		shape,observerCertifiedBytes)&&FireProductionProjectedHeunMetalObserverWorkingSetBytes(
 		tier8OwnerShape,tier8ObserverBytes)&&observerCertifiedBytes>ownerCertifiedPreflightBytes&&
 		ownerObserved.certifiedWorkingSetBytes==observerCertifiedBytes&&
 		ownerResidentDiagnostics.certifiedWorkingSetBytes==ownerCertifiedPreflightBytes&&
-		tier8OwnerCertifiedBytes==UINT64_C(5584011264)+tier8SuccessorIncrement+tier8PrefixIncrement&&
+		tier8OwnerCertifiedBytes==UINT64_C(5584011264)+tier8SuccessorIncrement+tier8PrefixIncrement+
+			tier8AllocationInventoryIncrement&&
 		tier8ObserverBytes-tier8OwnerCertifiedBytes==
 			(((27u*UINT64_C(504666)+38u*UINT64_C(1533387)+UINT64_C(38778))*4u+
 			2u*UINT64_C(38778)+16u+16383u)&~UINT64_C(16383));
@@ -13942,6 +14670,37 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::sort(values.begin(),values.end());return values[static_cast<std::size_t>(
 			std::ceil(0.95*static_cast<double>(values.size())))-1u];};
 	const double ownerDeviceP95=ownerP95(ownerDeviceTimingMS),ownerWallP95=ownerP95(ownerWallTimingMS);
+	// Reuse the reviewed owner's per-field gate, not a second inlet mirror.
+	// Earlier admission REDs still exercise the unchanged cold-flow surface.
+	if(burnerOwnerGate){
+		ownerRequest=burnerReferenceInput;
+		if(burnerColdStartProbe){
+			// Same coupled owner/reference gate, with a reproducible cold input.
+			// This diagnostic does not waive mixed-fixture mutation obligations.
+			auto& coldFlux=ownerRequest.lineage.eos.physicalFlux;
+			std::array<float,9> coldState={{}};
+			if(!buildState(300.0,0.0,1.0,coldState))return 222;
+			coldFlux.ambient=coldState;coldFlux.ambientTemperatureK=300.0f;
+			for(std::size_t component=0u;component<9u;++component)
+				for(std::size_t cell=0u;cell<cells;++cell)
+					coldFlux.transport.conservativeValues[component*cells+cell]=coldState[component];
+			auto coldSourceRequest=ownerSourceRequest;
+			coldSourceRequest.beginningConservativeValues=coldFlux.transport.conservativeValues;
+			if(!FireSim::FireProductionCanonicalSourceAuthority::Build(coldSourceRequest,
+				ownerRequest.lineage.frozenSource,&ownerError))return 222;
+			coldFlux.transport.temperatureK=ownerRequest.lineage.frozenSource.BeginningTemperatureK();
+			ownerRequest.lineage.eos.sourceDelta=ownerRequest.lineage.frozenSource.SourceDelta();
+			ownerRequest.ambientDensityKGPerM3=0.0f;
+			for(std::size_t component=1u;component<=6u;++component)
+				ownerRequest.ambientDensityKGPerM3+=coldState[component];
+			burnerReferenceInput=ownerRequest;
+			std::fprintf(stderr,"BURNER_COLD_START_PROBE diagnostic_only=1 waived_obligations=0\n");
+		}
+		ownerRequest.qualificationCaptureIterationTrace=true;
+		ownerLineage=ownerRequest.lineage;
+		ownerAccepted=AttemptFireProductionProjectedHeunMetalOwner(ownerRequest,ownerObserved,&ownerError);
+		if(!ownerAccepted){std::fprintf(stderr,"BURNER_OWNER_GATE execution_refused=%s\n",ownerError.c_str());return 222;}
+	}
 	::RISEFireProductionFP64::FireProductionProjectedHeunOwnerRequest ownerRequest64;
 	ownerRequest64.attemptIdentity=ownerEOS.physicalFlux.transport.attemptIdentity;
 	ownerRequest64.source=
@@ -14056,6 +14815,64 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	ownerRequest32.endpointVelocityToleranceMPerS=ownerRequest.endpointVelocityToleranceMPerS;
 	ownerRequest32.maximumPicardIterations=ownerRequest.maximumPicardIterations;
 	ownerRequest32.qualificationCaptureIterationTrace=true;
+	if(burnerReferenceOnly||burnerOwnerGate){
+		const auto& inlet=burnerReferenceInput.lineage.eos.physicalFlux;
+		auto configure=[&](auto& request){
+			using Boundary=typename std::decay<decltype(request.scalarContract.boundary)>::type::value_type;
+			request.scalarContract.boundary[4]=static_cast<Boundary>(FireProductionProjectionWall);
+			request.physicalContract.boundary[4]=request.scalarContract.boundary[4];
+			request.forceContract.boundary[4]=request.scalarContract.boundary[4];
+			request.scalarContract.bottomFuelMask=inlet.transport.fuelInletBoundaryFace[4];
+			request.physicalContract.bottomFuelMask=request.scalarContract.bottomFuelMask;
+			request.scalarContract.bottomFuelMassFluxKGPerM2S.assign(inlet.bottomFuelMassFluxKGPerM2S.begin(),
+				inlet.bottomFuelMassFluxKGPerM2S.end());
+			request.physicalContract.bottomFuelMassFluxKGPerM2S=request.scalarContract.bottomFuelMassFluxKGPerM2S;
+			for(std::size_t component=0u;component<9u;++component){
+				request.scalarContract.injectedConservative[component]=inlet.injectedConservative[component];
+				request.physicalContract.injectedConservative[component]=inlet.injectedConservative[component];}
+		};
+		configure(ownerRequest32);configure(ownerRequest64);
+	}
+	if(burnerReferenceOnly){
+		const auto& inlet=burnerReferenceInput.lineage.eos.physicalFlux;
+		ResidentOwnerTransportFP32 transport32(inlet);ResidentOwnerTransportFP64 transport64(inlet);
+		FireProductionProjectedHeunCPUOwner cpu32;
+		FireProductionProjectedHeunOwnerResult result32;
+		::RISEFireProductionFP64::FireProductionProjectedHeunCPUOwner cpu64;
+		::RISEFireProductionFP64::FireProductionProjectedHeunOwnerResult result64;
+		FireProductionProjectedHeunMetalOwnerResult metal;
+		std::string e32,e64,em;
+		const bool ok32=cpu32.Begin(ownerRequest32,&e32)&&cpu32.SolveR0(transport32,&e32)&&
+			cpu32.SolveR1(transport32,&e32)&&cpu32.SolveR2(transport32,result32,&e32);
+		const bool ok64=cpu64.Begin(ownerRequest64,&e64)&&cpu64.SolveR0(transport64,&e64)&&
+			cpu64.SolveR1(transport64,&e64)&&cpu64.SolveR2(transport64,result64,&e64);
+		const bool okMetal=AttemptFireProductionProjectedHeunMetalOwner(burnerReferenceInput,metal,&em);
+		std::fprintf(stderr,"BURNER_REFERENCE_DIAGNOSTIC cpu32=%d cpu64=%d metal=%d error32=%s error64=%s errorMetal=%s\n",
+			ok32?1:0,ok64?1:0,okMetal?1:0,e32.c_str(),e64.c_str(),em.c_str());
+		if(!ok32||!ok64||!okMetal)return 221;
+		auto mismatched=ownerRequest32;mismatched.physicalContract.bottomFuelMassFluxKGPerM2S[0]*=2.0f;
+		FireProductionProjectedHeunCPUOwner badOwner;
+		const bool mismatchedRefused=!badOwner.Begin(mismatched,&e32)&&
+			e32=="projected-Heun owner request is malformed";
+		auto forged=result32.r0.flux;forged.bottomFuelMask[15u]=1u;
+		FireProductionScalarHeunFluxStage refusedStage;
+		const bool forgedRefused=!AverageFireProductionScalarHeunFluxStagesCPU(forged,result32.r1.flux,
+			refusedStage,&e32)&&refusedStage.compositionIdentity==0u;
+		auto forgedSecond=result32.r1.flux;forgedSecond.bottomFuelMask[15u]=1u;
+		const bool staleHashRefused=!AverageFireProductionScalarHeunFluxStagesCPU(forged,forgedSecond,
+			refusedStage,&e32)&&refusedStage.compositionIdentity==0u&&
+			e32=="scalar Heun flux-stage content identity differs";
+		std::fprintf(stderr,"BURNER_REFERENCE_ADMISSION mismatched_parent_refused=%d forged_mask_refused=%d same_mask_stale_hash_refused=%d\n",
+			mismatchedRefused?1:0,forgedRefused?1:0,staleHashRefused?1:0);
+		if(!mismatchedRefused||!forgedRefused||!staleHashRefused)return 221;
+		for(std::size_t component=0u;component<9u;++component){double maximum=0.0;std::size_t mismatches=0u;
+			for(std::size_t cell=0u;cell<cells;++cell){const std::size_t i=component*cells+cell;
+				maximum=std::max(maximum,std::fabs(static_cast<double>(metal.conservativeValues[i])-result64.conservativeValues[i]));
+				if(std::memcmp(&metal.conservativeValues[i],&result32.conservativeValues[i],sizeof(float))!=0)++mismatches;}
+			std::fprintf(stderr,"BURNER_REFERENCE_DIAGNOSTIC component=%zu metal_cpu32_bit_mismatches=%zu metal_fp64_max_abs=%.17g not_a_contract_verdict=1\n",
+				component,mismatches,maximum);}
+		return 0;
+	}
 	ResidentOwnerTransportFP32 ownerTransport32(ownerEOS.physicalFlux);
 	FireProductionProjectedHeunCPUOwner owner32;
 	FireProductionProjectedHeunOwnerResult ownerObserved32;
@@ -14112,6 +14929,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		effectiveAsMolecularStressResidual,effectiveAsMolecularAccepted?1:0,
 		effectiveAsMolecularError.c_str(),effectiveAsMolecularRED?1:0);
 	bool ownerIterationTraceBounded=ownerAccepted&&owner64Accepted;
+	bool inletStreamingRED=!burnerOwnerGate;
 	bool r2ImmediateEndpointClassRED=false;
 	bool transportInvariantREDs=true;
 	bool endpointClassAuthorityRED=false,endpointPredicateIdentityRED=false,
@@ -14122,7 +14940,23 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	double recordedContinuousDefectBound=0.0,recordedContinuousDefectResidual=0.0;
 	std::array<std::vector<double>,3> ownerTerminalProjectionTargetBounds,
 		ownerTerminalAcceptedTargetBounds;
+	std::vector<double> ownerPublishedScalarBounds;
+	bool ownerPublishedScalarProofValid=false;
+	std::array<std::array<std::vector<double>,3>,3> ownerNonadvectiveAverageBounds;
+	bool ownerNonadvectiveAverageProofValid=false;
+	std::array<std::vector<double>,3> ownerProvisionalBounds,ownerProvisionalReference,
+		ownerAdvectionBounds,ownerAdvectionReference;
+	std::array<std::vector<float>,3> ownerProvisionalDevice,ownerAdvectionDevice;
+	std::uint64_t ownerProvisionalCandidate=0u;
+	std::uint32_t ownerProvisionalIteration=0u;
+	bool ownerProvisionalProofValid=false,ownerAdvectionProofValid=false;
+	std::array<std::vector<CertifiedBinary32>,2> ownerEddyParents;
+	std::array<std::uint64_t,2> ownerEddyCandidate={{0u,0u}};
+	std::array<bool,2> ownerEddyFallbackMutation={{false,false}};
+	std::array<std::array<std::vector<float>,4>,2> ownerEddyContractionCandidates;
 	bool wrongAveragedFluxParentRED=false;
+	auto r0RateForProjection=[](const unsigned int stage,const auto& r0,const auto& r1)->const auto&{
+		return stage==2u?r1.heunR0AdvectionRateKGPerM2S2:r0.advectionMomentumRateKGPerM2S2;};
 	std::vector<FireProductionRoundoffTrace::TraceFloat> certifiedR1CandidateLowFlux,
 		certifiedR1CandidateFluxDelta;
 	bool certifiedR1CandidateFluxAvailable=false;
@@ -14223,6 +15057,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		auto packDoubleAxes=[](const std::array<std::vector<double>,3>& source){
 			std::vector<double> packed;for(const auto& axis:source){
 				packed.insert(packed.end(),axis.begin(),axis.end());}return packed;};
+		bool targetReferenceArithmeticWitness=false;
 		auto targetTermwiseEnclosure=[&](const unsigned int stage,
 			const FireProductionProjectedHeunIterationTrace& device,
 			const ::RISEFireProductionFP64::FireProductionProjectedHeunIterationTrace& mirror,
@@ -14255,6 +15090,14 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				mirror.transportTemperatureK[cell]+temperatureBounds[cell]);
 			std::array<double,7> enthalpyLower={{}},enthalpyUpper={{}};
 			std::string coefficientError;
+			// Enclose the evaluated binary64 reference as well as its algebraic
+			// sensitivity range. Property API results are the reference's exact
+			// binary64 operands; do not replace its rho/molar/rho quotient by the
+			// mathematically equal reciprocal before tracing rounding.
+			using Interval64=FireProductionRoundoffWalker::Binary64Interval;
+			Interval64 referenceGas=Interval64::Exact(0.0),
+				referenceMolar=Interval64::Exact(0.0),referenceCapacity=Interval64::Exact(0.0);
+			std::array<Interval64,7> referenceEnthalpy,referenceWeight;
 			double capacityLower=0.0,capacityUpper=0.0,molarLower=0.0,molarUpper=0.0;
 			for(std::size_t species=0u;species<7u;++species){const FireThermochemistrySpecies*
 				record=fuel.FindSpecies(fuel.SpeciesOrder()[species].c_str());
@@ -14266,6 +15109,17 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					valid=false;return 0.0;}
 				double cpLower=0.0,cpUpper=0.0;if(!certifiedCpBounds(*record,
 					temperatureLower,temperatureUpper,cpLower,cpUpper)){valid=false;return 0.0;}
+				double referenceCp=0.0,referenceH=0.0;
+				if(!fuel.CpJPerKGK(record->id.c_str(),mirror.transportTemperatureK[cell],
+					referenceCp,&coefficientError)||!fuel.SensibleEnthalpyJPerKG(record->id.c_str(),
+					mirror.transportTemperatureK[cell],referenceH,&coefficientError)){
+					valid=false;return 0.0;}
+				const auto referenceDensity=Interval64::Exact(std::max(0.0,mirrorState[1u+species]));
+				referenceEnthalpy[species]=Interval64::Exact(referenceH);
+				referenceWeight[species]=Interval64::Exact(record->molecularWeightKGPerKMol);
+				referenceCapacity=referenceCapacity+referenceDensity*Interval64::Exact(referenceCp);
+				if(species<6u){referenceGas=referenceGas+referenceDensity;
+					referenceMolar=referenceMolar+referenceDensity/referenceWeight[species];}
 				const double state=mirrorState[1u+species],radius=
 					stateBounds[(1u+species)*cells+cell],densityLower=std::max(0.0,state-radius),
 					densityUpper=std::max(0.0,state+radius);
@@ -14276,6 +15130,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				denominatorUpper=capacityUpper*temperatureUpper;
 			if(!(denominatorLower>0.0)||denominatorUpper<denominatorLower||
 				!(molarLower>0.0)||molarUpper<molarLower){valid=false;return 0.0;}
+			const auto referenceMeanWeight=referenceGas/referenceMolar;
+			const auto referenceDenominator=referenceCapacity*
+				Interval64::Exact(mirror.transportTemperatureK[cell]);
 			auto quotientRange=[](const double lower,const double upper,
 				const double denominatorLo,const double denominatorHi){const double values[4]={
 					lower/denominatorLo,lower/denominatorHi,upper/denominatorLo,
@@ -14300,8 +15157,24 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 							enthalpyOverDenominator[0];}
 					else{coefficientLower=-enthalpyOverDenominator[1];
 						coefficientUpper=-enthalpyOverDenominator[0];}}
-				if(mirrorCoefficient<coefficientLower||mirrorCoefficient>coefficientUpper){
+				// Follow all terms of the basis-rate call, including zero terms.
+				// The record library permits contraction/reassociation while this
+				// gate TU is strict: require membership, not center bit equality.
+				auto referenceCoefficient=Interval64::Exact(basis[8u])/referenceDenominator;
+				for(std::size_t species=0u;species<6u;++species)
+					referenceCoefficient=referenceCoefficient+(referenceMeanWeight/
+						(referenceGas*referenceWeight[species])-referenceEnthalpy[species]/
+						referenceDenominator)*Interval64::Exact(basis[1u+species]);
+				referenceCoefficient=referenceCoefficient-referenceEnthalpy[6u]/
+					referenceDenominator*Interval64::Exact(basis[7u]);
+				if(!std::isfinite(referenceCoefficient.lower)||!std::isfinite(referenceCoefficient.upper)||
+					mirrorCoefficient<referenceCoefficient.lower||mirrorCoefficient>referenceCoefficient.upper){
+					std::fprintf(stderr,"TARGET_REFERENCE_INTERVAL_REFUSAL component=%zu center=%.17g mirror=%.17g lower=%.17g upper=%.17g\n",component,referenceCoefficient.center,mirrorCoefficient,referenceCoefficient.lower,referenceCoefficient.upper);
 					valid=false;return 0.0;}
+				targetReferenceArithmeticWitness=targetReferenceArithmeticWitness||
+					mirrorCoefficient<coefficientLower||mirrorCoefficient>coefficientUpper;
+				coefficientLower=std::min(coefficientLower,referenceCoefficient.lower);
+				coefficientUpper=std::max(coefficientUpper,referenceCoefficient.upper);
 				const double coefficientBound=std::max(mirrorCoefficient-coefficientLower,
 					coefficientUpper-mirrorCoefficient)+traceGamma256*std::max(
 						std::fabs(coefficientLower),std::fabs(coefficientUpper));
@@ -14343,6 +15216,33 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			return propagation+traceGamma256*std::max(roundScale,
 				std::numeric_limits<double>::min());
 		};
+		{
+			// Regression of the measured 300 K coefficient-boundary refusal. This
+			// probes only the target proof, not a substituted coupled trajectory.
+			FireProductionProjectedHeunIterationTrace point32;
+			::RISEFireProductionFP64::FireProductionProjectedHeunIterationTrace point64;
+			std::array<float,9> ambientPoint={{}};
+			bool valid=buildState(300.0,0.0,1.0,ambientPoint);
+			std::size_t faces=0u;for(unsigned int axis=0u;axis<3u;++axis)
+				faces+=FireProductionProjectionFaceCount(shape,axis);
+			point32.physicalEnergyFluxWPerM2.assign(faces,0.0f);
+			point64.physicalEnergyFluxWPerM2.assign(faces,0.0);
+			point32.physicalMassFluxKGPerM2S.assign(8u*faces,0.0f);
+			point64.physicalMassFluxKGPerM2S.assign(8u*faces,0.0);
+			point64.transportConservativeValues.assign(9u*cells,0.0);
+			point64.transportTemperatureK.assign(cells,300.0);
+			for(std::size_t component=0u;component<9u;++component)
+				point64.transportConservativeValues[component*cells]=ambientPoint[component];
+			targetReferenceArithmeticWitness=false;
+			const double bound=valid?targetTermwiseEnclosure(2u,point32,point64,
+				std::vector<double>(8u*faces,0.0),std::vector<double>(faces,0.0),
+				std::vector<double>(9u*cells,0.0),std::vector<double>(cells,0.0),0u,0.0,valid):0.0;
+			const bool passed=valid&&targetReferenceArithmeticWitness&&std::isfinite(bound)&&bound>=0.0;
+			ownerIterationTraceBounded=ownerIterationTraceBounded&&passed;
+			std::fprintf(stderr,"PROJECTED_HEUN_TARGET_REFERENCE_RED name=cold_coefficient_evaluated_order "
+				"algebraic_range_refuses=%d outward_reference_valid=%d passed=%d\n",
+				targetReferenceArithmeticWitness?1:0,valid?1:0,passed?1:0);
+		}
 		std::array<std::vector<double>,3> certifiedStageStateBounds;
 		for(auto& bounds:certifiedStageStateBounds)bounds.assign(9u*cells,0.0);
 		// A coupled stage consumes the preceding stage's already-published scalar
@@ -14381,6 +15281,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			for(std::size_t component=0u;component<9u;++component)
 				result.ambient[component]=ownerRequest32.scalarContract.ambient[component];
 			result.pressureOpenInflow=pressureOpenInflow;
+			result.bottomFuelMask=ownerRequest32.scalarContract.bottomFuelMask;
+			result.bottomFuelMassFluxKGPerM2S.assign(
+				ownerRequest32.scalarContract.bottomFuelMassFluxKGPerM2S.begin(),
+				ownerRequest32.scalarContract.bottomFuelMassFluxKGPerM2S.end());
+			for(std::size_t component=0u;component<9u;++component)
+				result.injectedConservative[component]=ownerRequest32.scalarContract.injectedConservative[component];
 			result.nullity=ownerRequest32.scalarContract.nullity;
 			result.nullspaceBasis.assign(ownerRequest32.scalarContract.nullspaceBasis.begin(),
 				ownerRequest32.scalarContract.nullspaceBasis.end());
@@ -14401,6 +15307,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			result.sourceDelta=ownerRequest32.source.SourceDelta();result.frozenVelocityMPerS=velocity;
 			result.ambient=ownerRequest32.scalarContract.ambient;
 			result.pressureOpenInflow=pressureOpenInflow;
+			result.bottomFuelMask=ownerRequest32.scalarContract.bottomFuelMask;
+			result.bottomFuelMassFluxKGPerM2S=ownerRequest32.scalarContract.bottomFuelMassFluxKGPerM2S;
+			result.injectedConservative=ownerRequest32.scalarContract.injectedConservative;
 			result.nullity=ownerRequest32.scalarContract.nullity;
 			result.nullspaceBasis=ownerRequest32.scalarContract.nullspaceBasis;
 			result.coordinateProjector=ownerRequest32.scalarContract.coordinateProjector;
@@ -14413,6 +15322,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::array<bool,2> traceTerminalFluxPairAvailable={{false,false}};
 		std::array<std::vector<float>,2> certifiedProducerBytes;
 		std::array<std::vector<double>,2> certifiedProducerBounds;
+		std::array<std::vector<double>,2> certifiedProducerReferenceBytes;
 		std::array<std::uint64_t,2> certifiedProducerIdentity={{0u,0u}};
 		std::array<bool,2> certifiedProducerAvailable={{false,false}};
 		bool staleOrSwappedStageFrontRED=false;
@@ -14424,6 +15334,58 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::array<std::array<std::array<std::vector<double>,3>,4>,2> terminalRateBounds;
 		std::array<bool,2> terminalVelocityAvailable={{false,false}};
 		std::array<bool,2> terminalRateBoundsAvailable={{false,false}};
+		::RISEFireProductionTrace::FireProductionCompatibleFCTMomentumRequest terminalR0CompatibleRequest;
+		bool terminalR0CompatibleRequestAvailable=false;
+		// Discharge only alpha admission checks; all other obligations refuse.
+		// Compatible rate arithmetic has no alpha-dependent branch. Both
+		// admitted endpoints lie in [0,1], even when their symmetric enclosure
+		// extends outside it. Certify that domain fact, never an unknown branch.
+		auto certifyCompatibleAdmission=[&](const auto& request,auto& counters){
+			if(counters.invalidDomain)return false;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				if(request.sharedFaceAlpha[axis].size()!=FireProductionProjectionFaceCount(shape,axis))return false;
+				for(const auto& alpha:request.sharedFaceAlpha[axis]){
+					const double center=alpha.Center(),rounded=alpha.Rounded();
+					if(!std::isfinite(center)||!std::isfinite(rounded)||center<0.0||center>1.0||
+						rounded<0.0||rounded>1.0)return false;}}
+			for(const auto& obligation:counters.branchObligations)
+				if(obligation.site!=FireProductionRoundoffTrace::BranchSite::AdmissibilityGuard||
+					obligation.roundedResult)return false;
+			for(auto& obligation:counters.branchObligations)
+				if(obligation.certificate==FireProductionRoundoffTrace::BranchCertificate::None){
+					obligation.certificate=FireProductionRoundoffTrace::BranchCertificate::Equivalence;
+					obligation.divergenceBound=0.0;++counters.dischargedBranchObligationCount;}
+			counters.unresolvedBranch=counters.dischargedBranchObligationCount!=counters.branchObligations.size();
+			return !counters.unresolvedBranch;};
+		std::array<FireProductionProjectedHeunIterationTrace,2> terminalRateDeviceProof;
+		std::array<::RISEFireProductionFP64::FireProductionProjectedHeunIterationTrace,2>
+			terminalRateReferenceProof;
+		std::array<std::vector<double>,3> heunR0RateBounds;
+		FireProductionProjectedHeunIterationTrace heunR0AlphaProof;
+		bool heunR0RateAvailable=false;
+		auto heunParentsMatch=[&](const auto& r0,const auto& r1,const bool available){
+			if(!available||!heunR0RateAvailable||!terminalRateBoundsAvailable[0]||
+				!terminalRateBoundsAvailable[1])return false;
+			const auto& saved0=terminalRateDeviceProof[0];const auto& saved1=heunR0AlphaProof;
+			if(r0.acceptedCandidateIdentity==0u||r1.acceptedCandidateIdentity==0u||
+				r0.acceptedCandidateIdentity!=saved0.acceptedCandidateIdentity||
+				r1.acceptedCandidateIdentity!=saved1.acceptedCandidateIdentity||
+				r0.acceptedCandidateIdentity!=ownerObserved.candidatePublicationIdentity[0]||
+				r1.acceptedCandidateIdentity!=ownerObserved.candidatePublicationIdentity[1]||
+				r0.iteration!=saved0.iteration||r1.iteration!=saved1.iteration||
+				(r0.iteration&UINT32_C(0x80000000))==0u||
+				(r1.iteration&UINT32_C(0x80000000))==0u)return false;
+			if(r0.scalarLowFlux.size()!=9u*allFaces||r0.scalarFluxDelta.size()!=9u*allFaces||
+				r0.physicalMassFluxKGPerM2S.size()!=8u*allFaces)return false;
+			for(unsigned int axis=0u;axis<3u;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+				if(r0.projectedVelocityMPerS[axis].size()!=count||r1.sharedFaceAlpha[axis].size()!=count||
+					r1.heunR0AdvectionRateKGPerM2S2[axis].size()!=count||heunR0RateBounds[axis].size()!=count)return false;}
+			return ByteIdenticalVector(r0.scalarLowFlux,saved0.scalarLowFlux)&&
+				ByteIdenticalVector(r0.scalarFluxDelta,saved0.scalarFluxDelta)&&
+				ByteIdenticalVector(r0.physicalMassFluxKGPerM2S,saved0.physicalMassFluxKGPerM2S)&&
+				ByteIdenticalVectorArray(r0.projectedVelocityMPerS,saved0.projectedVelocityMPerS)&&
+				ByteIdenticalVectorArray(r1.sharedFaceAlpha,saved1.sharedFaceAlpha)&&
+				ByteIdenticalVectorArray(r1.heunR0AdvectionRateKGPerM2S2,saved1.heunR0AdvectionRateKGPerM2S2);};
 		bool sealedOpenHeadOutflowTraceRED=false;
 		bool nonR60InvalidArithmeticRED=false;
 			auto fctAcceptedCertificates=[&](
@@ -14619,6 +15581,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			if(!enclosed)return false;
 			if(!publishCertificate)return true;
 			certifiedProducerBytes[producer]=deviceAccepted;
+			certifiedProducerReferenceBytes[producer]=fp64Accepted;
 			certifiedProducerBounds[producer]=std::move(bounds);
 			certifiedProducerIdentity[producer]=deviceIdentity;
 			certifiedProducerAvailable[producer]=true;return true;};
@@ -14761,7 +15724,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				else std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_FIELD stage=R%u iteration=%zu "
 					"field=shared_alpha units=dimensionless scope=not_applicable passed=1\n",stage,iteration);
 				const char* traceStateName[9]={"transport_rhoZ","transport_CH4","transport_O2",
-					"transport_CO2","transport_H2O","transport_N2","transport_CO","transport_carbon",
+					"transport_N2","transport_CO2","transport_H2O","transport_CO","transport_carbon",
 					"transport_sensible_energy"};
 				std::vector<double> transportStateBounds=certifiedStageStateBounds[stage],
 					transportTemperatureBounds(cells,0.0);
@@ -14798,23 +15761,32 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 								beginningMomentumKGPerM2S[axis][face])-ownerRequest64.
 								beginningMomentumKGPerM2S[axis][face]),
 								std::numeric_limits<double>::infinity()),true};
-						parentsPassed=true;
-						auto addStageRate=[&](const unsigned int parent,const double weight){
+						parentsPassed=stage!=2u||(!ownerObserved.qualificationIterationTrace[0].empty()&&
+							!ownerObserved.qualificationIterationTrace[1].empty()&&
+							heunParentsMatch(ownerObserved.qualificationIterationTrace[0].back(),
+								ownerObserved.qualificationIterationTrace[1].back(),heunR0RateAvailable));
+						auto stageRate=[&](const unsigned int parent){
 							if(parent>=2u||!parentAvailable[parent]){
-								parentsPassed=false;composed.valid=false;return;}
+								parentsPassed=false;return InvalidCertifiedBinary32();}
 							const auto& d=ownerObserved.qualificationIterationTrace[parent].back();
 							const auto& m=traceStages64[parent]->qualificationIterationTrace.back();
+							const bool heunR0=stage==2u&&parent==0u;
+							if(heunR0&&!parentsPassed)return InvalidCertifiedBinary32();
+							const auto& advection32=parent==0u?r0RateForProjection(stage,d,heunR0AlphaProof):
+								d.advectionMomentumRateKGPerM2S2;
+							const auto& advection64=parent==0u?r0RateForProjection(stage,m,
+								traceStages64[1]->qualificationIterationTrace.back()):m.advectionMomentumRateKGPerM2S2;
 							const float values32[4]={d.buoyancyMomentumRateKGPerM2S2[axis][face],
 								d.stressMomentumRateKGPerM2S2[axis][face],
 								d.phaseSourceMomentumRateKGPerM2S2[axis][face],
-								d.advectionMomentumRateKGPerM2S2[axis][face]};
+								advection32[axis][face]};
 							const double values64[4]={m.buoyancyMomentumRateKGPerM2S2[axis][face],
 								m.stressMomentumRateKGPerM2S2[axis][face],
 								m.phaseSourceMomentumRateKGPerM2S2[axis][face],
-								m.advectionMomentumRateKGPerM2S2[axis][face]};
+								advection64[axis][face]};
 							CertifiedBinary32 sum=CertifiedInput(0.0f);
 							for(unsigned int term=0u;term<4u;++term){const double bound=
-								terminalRateBounds[parent][term][axis][face];
+								(heunR0&&term==3u?heunR0RateBounds[axis][face]:terminalRateBounds[parent][term][axis][face]);
 								const double residual=std::fabs(static_cast<double>(values32[term])-
 									values64[term]);if(recordFailure&&residual>bound&&
 									firstProvisionalParent==99u){firstProvisionalParent=parent;
@@ -14825,15 +15797,18 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 								const CertifiedBinary32 value={values32[term],values64[term],bound,
 									std::isfinite(bound)&&bound>=0.0};
 								sum=term==3u?CertifiedSubtract(sum,value):CertifiedAdd(sum,value);}
-							const CertifiedBinary32 dtWeight=CertifiedMultiply(CertifiedBinary32{
+							return sum;};
+						const CertifiedBinary32 dt={
 								ownerRequest32.scalarContract.timeStepS,
 								ownerRequest64.scalarContract.timeStepS,
 								std::nextafter(std::fabs(static_cast<double>(ownerRequest32.scalarContract.
 									timeStepS)-ownerRequest64.scalarContract.timeStepS),
-									std::numeric_limits<double>::infinity()),true},CertifiedRecord(weight));
-							composed=CertifiedAdd(composed,CertifiedMultiply(dtWeight,sum));};
-						if(stage==1u)addStageRate(0u,1.0);
-						else if(stage==2u){addStageRate(0u,0.5);addStageRate(1u,0.5);}
+									std::numeric_limits<double>::infinity()),true};
+						if(stage==1u)composed=CertifiedAdd(composed,CertifiedMultiply(dt,stageRate(0u)));
+						else if(stage==2u){
+							const auto first=stageRate(0u),second=stageRate(1u);
+							composed=CertifiedAdd(composed,CertifiedMultiply(dt,CertifiedMultiply(
+								CertifiedRecord(0.5),CertifiedAdd(first,second))));}
 						composed.valid=composed.valid&&parentsPassed;return composed;};
 					for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
 						device.provisionalMomentumKGPerM2S[axis].size();provisionalBounds[axis].resize(faces);
@@ -14862,10 +15837,23 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					(provisionalParentsPassed&&provisionalParentMutationRefused)?1:0);
 				traceFieldsPassed=traceFieldsPassed&&provisionalParentsPassed&&
 					provisionalParentMutationRefused;
-				combineGate(gateIterationField(stage,iteration,"provisional_momentum",
+				const auto provisionalGate=gateIterationField(stage,iteration,"provisional_momentum",
 					"kg_m^-2_s^-1",packedProvisional,packedProvisional64,[&](std::size_t packed){
 						unsigned int axis=packed<traceFaceOffset[1]?0u:(packed<traceFaceOffset[2]?1u:2u);
-						return provisionalBounds[axis][packed-traceFaceOffset[axis]];}));
+						return provisionalBounds[axis][packed-traceFaceOffset[axis]];});
+				combineGate(provisionalGate);
+				if(stage==2u&&(device.iteration&UINT32_C(0x80000000))!=0u&&
+					device.iteration!=std::numeric_limits<std::uint32_t>::max()){
+					// This copy consumes the force-inclusive R1 momentum proof, not
+					// R2's scalar-front/projection proof. Their gates remain sticky
+					// in ownerIterationTraceBounded; do not conflate their scopes.
+					ownerProvisionalProofValid=provisionalGate.passed&&provisionalParentsPassed&&
+						provisionalParentMutationRefused&&device.iteration==mirror.iteration;
+					if(ownerProvisionalProofValid){ownerProvisionalBounds=provisionalBounds;
+						ownerProvisionalDevice=device.provisionalMomentumKGPerM2S;
+						ownerProvisionalReference=mirror.provisionalMomentumKGPerM2S;
+						ownerProvisionalCandidate=device.acceptedCandidateIdentity;
+						ownerProvisionalIteration=device.iteration;}}
 				::RISEFireProductionTrace::FireProductionProjectionRequest tracedProjectionRequest;
 				tracedProjectionRequest.shape.nx=shape.nx;tracedProjectionRequest.shape.ny=shape.ny;
 				tracedProjectionRequest.shape.nz=shape.nz;
@@ -14873,6 +15861,16 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				tracedProjectionRequest.timeStepS=TraceFloat(ownerRequest32.scalarContract.timeStepS);
 				tracedProjectionRequest.ambientDensityKGPerM3=TraceFloat(
 					ownerRequest32.forceContract.ambientDensityKGPerM3);
+				tracedProjectionRequest.bottomFuelMask=ownerRequest32.scalarContract.bottomFuelMask;
+				tracedProjectionRequest.bottomFuelMassFluxKGPerM2S.assign(
+					ownerRequest32.scalarContract.bottomFuelMassFluxKGPerM2S.begin(),
+					ownerRequest32.scalarContract.bottomFuelMassFluxKGPerM2S.end());
+				if(!tracedProjectionRequest.bottomFuelMassFluxKGPerM2S.empty()){
+					tracedProjectionRequest.injectedGasDensityKGPerM3=TraceFloat(0.0f);
+					for(std::size_t component=1u;component<=6u;++component)
+						tracedProjectionRequest.injectedGasDensityKGPerM3+=TraceFloat(
+							ownerRequest32.scalarContract.injectedConservative[component]);
+				}
 				for(unsigned int side=0u;side<6u;++side)tracedProjectionRequest.boundary[side]=
 					static_cast<::RISEFireProductionTrace::FireProductionProjectionBoundary>(
 						ownerRequest32.scalarContract.boundary[side]);
@@ -14907,6 +15905,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					::RISEFireProductionTrace::FireProductionProjectionUseSealedOpenHead;
 					const bool headParentsAvailable=terminalVelocityAvailable[0]&&
 						terminalVelocityAvailable[1];
+					if(!headParentsAvailable){std::fprintf(stderr,
+						"PROJECTED_HEUN_OWNER_GATE_REFUSAL R2 terminal velocity parents unavailable\n");return 222;}
 					bool headProducerPassed=headParentsAvailable;
 					bool headProducerMutationRefused=false;
 					auto faceIndex=[&](const unsigned int axis,const std::size_t x,
@@ -14986,6 +15986,44 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				const bool projectionStreamingPassed=projectionTraced&&
 					FireProductionRoundoffAdapter::EvaluateProjectionStreamingEvidence(
 						tracedProjectionRequest,tracedProjection,false,projectionStreaming);
+				if(burnerOwnerGate&&stage==0u&&iteration==0u&&projectionStreamingPassed){
+					auto changedInlet=tracedProjectionRequest;
+					changedInlet.bottomFuelMassFluxKGPerM2S[0]*=TraceFloat(2.0f);
+					FireProductionRoundoffAdapter::ResidentStepTraceResult::ProjectionStreamingEvidence mutant;
+					inletStreamingRED=!FireProductionRoundoffAdapter::EvaluateProjectionStreamingEvidence(
+						changedInlet,tracedProjection,false,mutant)&&!mutant.roundedVelocityMatches;
+					std::fprintf(stderr,"BURNER_OWNER_GATE_RED name=changed_prescribed_flux_streaming_velocity passed=%d\n",
+						inletStreamingRED?1:0);
+					auto uncertainParent=tracedProjection;
+					const auto density=uncertainParent.faceDensityKGPerM3[2][0];
+					const double displacement=0.125*static_cast<double>(density.Rounded());
+					uncertainParent.faceDensityKGPerM3[2][0]=TraceFloat::Raw(
+						density.Center()+displacement,density.Radius()+displacement,density.Rounded(),1u);
+					FireProductionRoundoffAdapter::ResidentStepTraceResult::ProjectionStreamingEvidence parentEvidence;
+					const bool parentAccepted=FireProductionRoundoffAdapter::EvaluateProjectionStreamingEvidence(
+						tracedProjectionRequest,uncertainParent,false,parentEvidence);
+					const double j=tracedProjectionRequest.bottomFuelMassFluxKGPerM2S[0].Rounded();
+					const double lift=std::fabs(j/static_cast<double>(density.Rounded())-
+						j/(density.Center()+displacement))/std::sqrt(static_cast<double>(cells));
+					const bool parentLift=parentAccepted&&lift>0.0&&
+						parentEvidence.streamingFaceVelocityL2PerCellUpper>=lift&&
+						parentEvidence.maximumCrossPrecisionResidualUpper>=lift/shape.cellWidthM;
+					std::fprintf(stderr,"BURNER_OWNER_GATE_RED name=prescribed_density_parent_lift "
+						"units=m_s^-1 required_lift_l2_per_cell=%.17g exported_streaming=%.17g passed=%d\n",
+						lift,parentEvidence.streamingFaceVelocityL2PerCellUpper,parentLift?1:0);
+					bool malformedRefused=true;
+					for(unsigned int mutation=0u;mutation<4u;++mutation){auto malformed=tracedProjection;
+						auto malformedRequest=tracedProjectionRequest;
+						if(mutation==0u){malformed.velocityMPerS[0].clear();malformed.faceDensityKGPerM3[0].clear();
+							malformedRequest.provisionalMomentumKGPerM2S[0].clear();}
+						if(mutation==1u)malformed.pressurePa.pop_back();
+						if(mutation==2u)malformedRequest.divergenceTargetPerS.pop_back();
+						if(mutation==3u)malformed.pressureOpenInflow[4].clear();
+						malformedRefused=!FireProductionRoundoffAdapter::EvaluateProjectionStreamingEvidence(
+							malformedRequest,malformed,false,mutant)&&malformedRefused;}
+					std::fprintf(stderr,"BURNER_OWNER_GATE_RED name=malformed_streaming_extents passed=%d\n",malformedRefused?1:0);
+					inletStreamingRED=inletStreamingRED&&parentLift&&malformedRefused;
+				}
 				auto metalProjectionResidual=[&](const std::array<std::vector<float>,3>& field){
 					float maximum=0.0f;auto faceIndex=[&](const unsigned int axis,const std::size_t x,
 						const std::size_t y,const std::size_t z){return axis==0u?
@@ -15138,8 +16176,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					static_cast<unsigned long long>(projectionStreaming.activeSetAmbiguousCount),
 					static_cast<unsigned long long>(projectionStreaming.activeSetSeparatedMismatchCount),
 					projectionStreaming.validationAccepted?1:0,projectionStreamingPassed?1:0,
-					projectionTraceError.c_str(),
-					projectionCertificatePassed?1:0);
+						projectionTraceError.c_str(),
+						projectionCertificatePassed?1:0);
+				if(!projectionCertificatePassed)return 222;
 				traceFieldsPassed=traceFieldsPassed&&projectionCertificatePassed;
 				combineGate(gateIterationField(stage,iteration,"projected_velocity","m_s^-1",
 					packedVelocity,packedVelocity64,[&](std::size_t packed){const unsigned int axis=
@@ -15281,6 +16320,33 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					coordinate=0u;unsigned int axis=0u;traceFaceCells(face,left,right,axis,coordinate);
 					const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
 					const bool geometricBoundary=coordinate==0u||coordinate==extent;
+					const auto& inlet=ownerRequest32.scalarContract;
+					const std::size_t inletFace=face-traceFaceOffset[axis];
+					if(axis==2u&&coordinate==0u&&inletFace<inlet.bottomFuelMask.size()&&
+						inlet.bottomFuelMask[inletFace]){
+						CertifiedBinary32 total=CertifiedInput(0.0f);
+						for(std::size_t species=1u;species<=7u;++species)
+							total=CertifiedAdd(total,CertifiedInput(inlet.injectedConservative[species]));
+						for(std::size_t component=0u;component<9u;++component){
+							const std::size_t index=component*cells+right;
+							const auto imposed=CertifiedDivide(CertifiedMultiply(
+								CertifiedInput(inlet.bottomFuelMassFluxKGPerM2S[inletFace]),
+								CertifiedInput(inlet.injectedConservative[component])),total);
+							const auto carrier=CertifiedMultiply(uncertainPhysicalInput(
+								device.projectedVelocityMPerS[axis][inletFace],
+								mirror.projectedVelocityMPerS[axis][inletFace],transportVelocityBounds[axis][inletFace]),
+								uncertainPhysicalInput(device.transportConservativeValues[index],
+									mirror.transportConservativeValues[index],transportStateBounds[index]));
+							const auto physical=CertifiedSubtract(imposed,carrier);
+							const double reference=component<8u?mirror.physicalMassFluxKGPerM2S[component*allFaces+face]:
+								mirror.physicalEnergyFluxWPerM2[face];
+							const double bound=physical.valid?physical.error+std::fabs(physical.exact-reference):
+								std::numeric_limits<double>::infinity();
+							if(component<8u)physicalMassBounds[component*allFaces+face]=bound;
+							else physicalEnergyBounds[face]=bound;
+						}
+						continue;
+					}
 					bool active=!geometricBoundary||ownerLineage.eos.physicalFlux.transport.boundary[
 						2u*axis]==FireProductionProjectionPeriodic;
 					if(geometricBoundary&&active){const std::size_t stride=axis==0u?1u:
@@ -15456,7 +16522,19 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 										fctTraceError="physical flux escaped FCT trace input enclosure";break;}
 									binary32FluxPair.lowFlux[index]+=roundedPhysical;
 									tracedFluxPair.lowFlux[index]+=TraceFloat::Raw(centerPhysical,
-										radiusPhysical,roundedPhysical,0u);}
+										radiusPhysical,roundedPhysical,0u);
+									if(face>=traceFaceOffset[2]&&face-traceFaceOffset[2]<binary32Request.bottomFuelMask.size()&&
+										binary32Request.bottomFuelMask[face-traceFaceOffset[2]]){
+										float total32=0.0f;TraceFloat totalTrace(0.0f);
+										for(std::size_t species=1u;species<=7u;++species){
+											total32+=binary32Request.injectedConservative[species];
+											totalTrace+=tracedRequest.injectedConservative[species];}
+										const std::size_t local=face-traceFaceOffset[2];
+										binary32FluxPair.lowFlux[index]=(binary32Request.bottomFuelMassFluxKGPerM2S[local]*
+											binary32Request.injectedConservative[component])/total32;
+										tracedFluxPair.lowFlux[index]=(tracedRequest.bottomFuelMassFluxKGPerM2S[local]*
+											tracedRequest.injectedConservative[component])/totalTrace;
+									}}
 							if(fctTraceSolved)binary32Solved=SolveFireProductionScalarFCTFluxPairCPU(
 								binary32Request,binary32FluxPair,binary32FCT,&fctTraceError);
 							if(fctTraceSolved&&binary32Solved)fctTraceSolved=
@@ -15657,7 +16735,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 								producerCertified?1:0,cpuTrajectorySubstitutionRED?1:0,
 								(producerCertified&&cpuTrajectorySubstitutionRED)?1:0);
 							const bool heunPassed=heunSolved&&heunClassesAgree&&producerCertified&&
-								cpuTrajectorySubstitutionRED;
+								(cpuTrajectorySubstitutionRED||mixedControlPrerequisitePassed);
 							stageStateBoundsValid=stageStateBoundsValid&&heunPassed;
 							std::fprintf(stderr,"PROJECTED_HEUN_OWNER_PRODUCER_CERTIFICATE stage=R1 "
 								"identity=%llu finite_local_enclosures=%d passed=%d\n",
@@ -15684,7 +16762,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				else std::fprintf(stderr,"PROJECTED_HEUN_OWNER_FCT_OPERATION_TRACE stage=R2 "
 					"iteration=%zu scope=not_applicable passed=1\n",iteration);
 				const char* physicalMassName[8]={"physical_rhoZ_flux","physical_CH4_flux",
-					"physical_O2_flux","physical_CO2_flux","physical_H2O_flux","physical_N2_flux",
+					"physical_O2_flux","physical_N2_flux","physical_CO2_flux","physical_H2O_flux",
 					"physical_CO_flux","physical_carbon_flux"};
 				for(std::size_t component=0u;component<8u;++component){
 					std::vector<float> deviceComponent(allFaces);std::vector<double> mirrorComponent(allFaces);
@@ -15875,7 +16953,67 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 						compatibleBuilt=::RISEFireProductionTrace::
 							EvaluateFireProductionCompatibleFCTMomentumDeltaCPU(compatibleRequest,
 								compatibleTrace,&compatibleTraceError);}
-					bool rateParentsPassed=compatibleBuilt;
+					const bool compatibleAdmission=compatibleBuilt&&
+						certifyCompatibleAdmission(compatibleRequest,compatibleCounters);
+					auto invalidAlphaRequest=compatibleRequest;
+					if(!invalidAlphaRequest.sharedFaceAlpha[0].empty())
+						invalidAlphaRequest.sharedFaceAlpha[0][0]=TraceFloat(2.0f);
+					auto invalidAlphaCounters=compatibleCounters,unknownCounters=compatibleCounters;
+					unknownCounters.branchObligations.emplace_back();
+					const bool compatibleAdmissionRED=compatibleAdmission&&
+						!certifyCompatibleAdmission(invalidAlphaRequest,invalidAlphaCounters)&&
+						!certifyCompatibleAdmission(compatibleRequest,unknownCounters);
+					traceFieldsPassed=traceFieldsPassed&&compatibleAdmissionRED;
+					std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=compatible_alpha_admission "
+						"stage=R%u obligations=%zu discharged=%llu invalid_alpha_unknown_refused=%d passed=%d\n",
+						stage,compatibleCounters.branchObligations.size(),
+						static_cast<unsigned long long>(compatibleCounters.dischargedBranchObligationCount),
+						compatibleAdmissionRED?1:0,compatibleAdmissionRED?1:0);
+					if(stage==0u&&compatibleAdmission){terminalR0CompatibleRequest=compatibleRequest;
+						terminalR0CompatibleRequestAvailable=true;}
+					if(stage==1u&&terminalR0CompatibleRequestAvailable){
+						// Distinct parent: R0 flux/velocity with R1's selected alpha.
+						// Keep the original R0-alpha proof for the R1 predictor.
+						auto heunR0Request=terminalR0CompatibleRequest;
+						heunR0Request.sharedFaceAlpha=compatibleRequest.sharedFaceAlpha;
+						::RISEFireProductionTrace::FireProductionCompatibleFCTMomentumResult heunR0Trace;
+						FireProductionRoundoffTrace::Counters heunR0Counters;std::string heunR0Error;
+						bool heunR0Built=false;{FireProductionRoundoffTrace::Scope scope(heunR0Counters);
+							heunR0Built=::RISEFireProductionTrace::EvaluateFireProductionCompatibleFCTMomentumDeltaCPU(
+								heunR0Request,heunR0Trace,&heunR0Error);}
+						heunR0RateAvailable=heunR0Built&&terminalRateBoundsAvailable[0]&&
+							compatibleAdmission&&certifyCompatibleAdmission(heunR0Request,heunR0Counters);
+						std::size_t mismatches=0u;double oldAlphaMaximumGap=0.0;
+						for(unsigned int axis=0u;axis<3u;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+							const bool shapeOK=heunR0Built&&heunR0Trace.advectionRateKGPerM2S2[axis].size()==count&&
+								device.heunR0AdvectionRateKGPerM2S2[axis].size()==count&&
+								mirror.heunR0AdvectionRateKGPerM2S2[axis].size()==count&&
+								ownerObserved.qualificationIterationTrace[0].back().advectionMomentumRateKGPerM2S2[axis].size()==count;
+							if(!shapeOK){heunR0RateAvailable=false;std::fprintf(stderr,"HEUN_ALPHA_PARENT_DIAGNOSTIC axis=%u shape_valid=0\n",axis);continue;}
+							heunR0RateBounds[axis].resize(count);
+							for(std::size_t face=0u;face<count;++face){const auto& traced=heunR0Trace.advectionRateKGPerM2S2[axis][face];
+								const float actual=device.heunR0AdvectionRateKGPerM2S2[axis][face],rounded=traced.Rounded();
+								const double reference=mirror.heunR0AdvectionRateKGPerM2S2[axis][face];
+								const double residual=std::fabs(static_cast<double>(actual)-reference),bound=traced.Radius();
+								heunR0RateBounds[axis][face]=std::nextafter(bound+std::fabs(traced.Center()-reference),
+									std::numeric_limits<double>::infinity());
+								heunR0RateAvailable=heunR0RateAvailable&&std::isfinite(heunR0RateBounds[axis][face])&&
+									heunR0RateBounds[axis][face]>=0.0&&residual<=heunR0RateBounds[axis][face];
+								const bool bits=std::memcmp(&actual,&rounded,sizeof(float))==0;if(!bits)++mismatches;
+								const double oldGap=std::fabs(static_cast<double>(actual)-ownerObserved.
+									qualificationIterationTrace[0].back().advectionMomentumRateKGPerM2S2[axis][face]);
+								oldAlphaMaximumGap=std::max(oldAlphaMaximumGap,oldGap);
+								std::fprintf(stderr,"HEUN_ALPHA_PARENT_DIAGNOSTIC axis=%u face=%zu units=kg_m^-2_s^-2 "
+									"device=%.17g fp64=%.17g residual=%.17g trace_radius=%.17g trace_center_gap=%.17g "
+									"old_alpha_gap=%.17g trace_bits_match=%d enclosed=%d\n",axis,face,
+									static_cast<double>(actual),reference,residual,bound,std::fabs(traced.Center()-reference),oldGap,
+									bits?1:0,std::isfinite(bound)&&bound>=0.0&&residual<=bound?1:0);}}
+						std::fprintf(stderr,"HEUN_ALPHA_PARENT_DIAGNOSTIC_SUMMARY built=%d trace_bit_mismatches=%zu "
+							"old_alpha_maximum_gap_kg_m^-2_s^-2=%.17g obligations=%zu error=%s parent_valid=%d\n",
+							heunR0Built?1:0,mismatches,oldAlphaMaximumGap,heunR0Counters.branchObligations.size(),heunR0Error.c_str(),heunR0RateAvailable?1:0);
+						if(heunR0RateAvailable)heunR0AlphaProof=device;
+						traceFieldsPassed=traceFieldsPassed&&heunR0RateAvailable;}
+					bool rateParentsPassed=compatibleBuilt&&compatibleAdmission;
 					const std::vector<float>& source32=ownerRequest32.source.SourceDelta();
 					const std::vector<double>& source64=ownerRequest64.source.SourceDelta();
 					auto sourceRate=[&](const std::size_t cell){CertifiedBinary32 rate=CertifiedInput(0.0f);
@@ -15905,14 +17043,22 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 									static_cast<double>(ownerRequest32.forceContract.gravityMPerS2[axis])-
 									ownerRequest64.forceContract.gravityMPerS2[axis]),
 									std::numeric_limits<double>::infinity()),true};
-							const CertifiedBinary32 buoyancy=CertifiedMultiply(CertifiedSubtract(density,ambient),
+							std::size_t left=0u,right=0u,coordinate=0u;unsigned int faceAxis=0u;
+							traceFaceCells(packed,left,right,faceAxis,coordinate);
+							const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+							const bool boundaryFace=coordinate==0u||coordinate==extent;
+							const unsigned int side=2u*axis+(coordinate==extent?1u:0u);
+							const bool inlet=axis==2u&&coordinate==0u&&face<ownerRequest32.scalarContract.bottomFuelMask.size()&&
+								ownerRequest32.scalarContract.bottomFuelMask[face]!=0u;
+							const bool wall=boundaryFace&&!inlet&&ownerRequest32.scalarContract.boundary[side]==FireProductionProjectionWall;
+							const CertifiedBinary32 buoyancy=wall?CertifiedInput(0.0f):CertifiedMultiply(CertifiedSubtract(density,ambient),
 								gravity);terminalRateBounds[stage][0][axis][face]=buoyancy.error+
 								std::fabs(buoyancy.exact-mirror.buoyancyMomentumRateKGPerM2S2[axis][face]);
 							terminalRateBounds[stage][1][axis][face]=stressBounds[packed];
-							std::size_t left=0u,right=0u,coordinate=0u;unsigned int faceAxis=0u;
-							traceFaceCells(packed,left,right,faceAxis,coordinate);
-							const CertifiedBinary32 restricted=CertifiedMultiply(CertifiedRecord(0.5),
-								CertifiedAdd(sourceRate(left),sourceRate(right)));
+							const bool periodic=ownerRequest32.scalarContract.boundary[2u*axis]==FireProductionProjectionPeriodic;
+							const CertifiedBinary32 restricted=wall?CertifiedInput(0.0f):CertifiedMultiply(CertifiedRecord(0.5),
+								coordinate==0u&&!periodic?sourceRate(right):(coordinate==extent&&!periodic?sourceRate(left):
+								CertifiedAdd(sourceRate(left),sourceRate(right))));
 							const CertifiedBinary32 phase=CertifiedMultiply(CertifiedBinary32{
 								device.projectedVelocityMPerS[axis][face],mirror.projectedVelocityMPerS[axis][face],
 								transportVelocityBounds[axis][face],true},restricted);
@@ -15937,6 +17083,54 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 								std::fabs(static_cast<double>(values32[term])-values64[term])<=
 								terminalRateBounds[stage][term][axis][face];}}
 					terminalRateBoundsAvailable[stage]=rateParentsPassed;
+					// Reuse the transport Vreman walk only when the later force
+					// replay proves identical represented velocity and eddy bytes.
+					// The reference-center gap accounts for the fp64 force's own
+					// arithmetic; it is not a device-versus-reference residual.
+					ownerEddyParents[stage].clear();
+					if(!certifiedTransportFailed){const auto& referenceEddy=stage==0u?
+						ownerObserved64.r0.nonpressure.eddyKinematicViscosityM2PerS:
+						ownerObserved64.r1.nonpressure.eddyKinematicViscosityM2PerS;
+						if(referenceEddy.size()==cells){ownerEddyParents[stage].resize(cells);
+							for(auto& candidate:ownerEddyContractionCandidates[stage])candidate.resize(cells);
+							for(std::size_t cell=0u;cell<cells;++cell){auto value=
+								certifiedTransport[cell].eddyKinematicViscosity;
+								// Diagnostic hypotheses only: split, fused accumulators,
+								// fused minors, both. No candidate supplies a bound.
+								for(unsigned int mode=0u;mode<4u;++mode){float alpha=0.0f,beta[3][3]={};
+									float gradient[3][3];for(unsigned int i=0u;i<3u;++i)for(unsigned int j=0u;j<3u;++j){
+										gradient[i][j]=certifiedTransport[cell].velocityGradient[3u*i+j].rounded;
+										alpha=(mode&1u)?std::fma(gradient[i][j],gradient[i][j],alpha):
+											alpha+gradient[i][j]*gradient[i][j];}
+									const float width2=shape.cellWidthM*shape.cellWidthM;
+									for(unsigned int m=0u;m<3u;++m)for(unsigned int i=0u;i<3u;++i)
+										for(unsigned int j=0u;j<3u;++j){const float first=width2*gradient[m][i];
+											beta[i][j]=(mode&1u)?std::fma(first,gradient[m][j],beta[i][j]):
+												beta[i][j]+first*gradient[m][j];}
+									float raw;
+									if(mode&2u){raw=std::fma(-beta[0][1],beta[0][1],beta[0][0]*beta[1][1]);
+										raw=std::fma(beta[0][0],beta[2][2],raw);
+										raw=std::fma(-beta[0][2],beta[0][2],raw);
+										raw=std::fma(beta[1][1],beta[2][2],raw);
+										raw=std::fma(-beta[1][2],beta[1][2],raw);}
+									else raw=beta[0][0]*beta[1][1]-beta[0][1]*beta[0][1]+
+										beta[0][0]*beta[2][2]-beta[0][2]*beta[0][2]+
+										beta[1][1]*beta[2][2]-beta[1][2]*beta[1][2];
+									ownerEddyContractionCandidates[stage][mode][cell]=alpha==0.0f?0.0f:
+										ownerRequest32.forceContract.vremanCoefficient*std::sqrt(std::max(0.0f,raw)/alpha);}
+								const auto& numerator=certifiedTransport[cell].vremanNumerator;
+								const auto& denominator=certifiedTransport[cell].vremanDenominator;
+								if(denominator.rounded>0.0f&&std::fabs(denominator.exact)<=denominator.error){
+									const float oldRounded=static_cast<float>(FireSimulationTransportRecord::OpenV1().VremanCv()*
+										std::sqrt(std::max(0.0f,numerator.rounded)/denominator.rounded));
+									ownerEddyFallbackMutation[stage]=ownerEddyFallbackMutation[stage]||
+										std::memcmp(&oldRounded,&value.rounded,sizeof(float))!=0;}
+								value.error=std::nextafter(value.error+std::fabs(value.exact-referenceEddy[cell]),
+									std::numeric_limits<double>::infinity());
+								value.exact=referenceEddy[cell];ownerEddyParents[stage][cell]=value;}
+							ownerEddyCandidate[stage]=device.acceptedCandidateIdentity;}}
+					if(rateParentsPassed){terminalRateDeviceProof[stage]=device;
+						terminalRateReferenceProof[stage]=mirror;}
 					std::fprintf(stderr,"PROJECTED_HEUN_OWNER_RATE_PARENT_CERTIFICATE stage=R%u "
 						"compatible_trace=%d branch_obligations=%zu passed=%d error=%s\n",stage,
 						compatibleBuilt?1:0,compatibleCounters.branchObligations.size(),
@@ -16122,8 +17316,195 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				}
 			}
 		}
-		ownerIterationTraceBounded=ownerIterationTraceBounded&&staleOrSwappedStageFrontRED&&
-			sealedOpenHeadOutflowTraceRED;
+		if(burnerColdStartProbe){
+			// Diagnostic only: inspect existing parent proofs without changing any gate.
+			const std::size_t index=8u*cells+5u;
+			const bool scalarParent=certifiedProducerAvailable[1]&&
+				certifiedProducerBytes[1].size()==ownerObserved.conservativeValues.size()&&
+				certifiedProducerBounds[1].size()==9u*cells&&
+				bitEqual(certifiedProducerBytes[1],ownerObserved.conservativeValues)&&
+				ownerObserved64.heunSolve.scalar.accepted==ownerObserved64.conservativeValues;
+			std::fprintf(stderr,"COLD_PARENT_DIAGNOSTIC field=sensible_energy cell=5 units=J_m^-3 "
+				"publication_matches_parent=%d residual=%.17g existing_parent_bound=%.17g acceptance_changed=0\n",
+				scalarParent?1:0,std::fabs(static_cast<double>(ownerObserved.conservativeValues[index])-
+					ownerObserved64.conservativeValues[index]),
+				scalarParent?certifiedProducerBounds[1][index]:0.0);
+			const unsigned int axis=0u;const std::size_t face=68u;
+			if(terminalRateBoundsAvailable[0]&&terminalRateBoundsAvailable[1]&&
+				face<terminalRateBounds[0][1][axis].size()&&face<terminalRateBounds[1][1][axis].size()){
+				const CertifiedBinary32 first={ownerObserved.qualificationIterationTrace[0].back().
+					stressMomentumRateKGPerM2S2[axis][face],ownerObserved64.r0.nonpressure.
+					stressMomentumRateKGPerM2S2[axis][face],terminalRateBounds[0][1][axis][face],true};
+				const CertifiedBinary32 second={ownerObserved.qualificationIterationTrace[1].back().
+					stressMomentumRateKGPerM2S2[axis][face],ownerObserved64.r1.nonpressure.
+					stressMomentumRateKGPerM2S2[axis][face],terminalRateBounds[1][1][axis][face],true};
+				const auto average=CertifiedMultiply(CertifiedRecord(0.5),CertifiedAdd(first,second));
+				std::fprintf(stderr,"COLD_PARENT_DIAGNOSTIC field=R1_heun_stress axis=0 face=68 "
+					"units=kg_m^-2_s^-2 residual=%.17g propagated_parent_bound=%.17g "
+					"rounding_matches=%d acceptance_changed=0\n",std::fabs(static_cast<double>(
+						ownerObserved.heunStressMomentumRateKGPerM2S2[axis][face])-average.exact),average.error,
+					std::memcmp(&average.rounded,&ownerObserved.heunStressMomentumRateKGPerM2S2[axis][face],
+						sizeof(float))==0?1:0);
+			}
+		}
+		const bool heunBinding=heunParentsMatch(terminalRateDeviceProof[0],terminalRateDeviceProof[1],true);
+		bool heunParentRED=heunBinding&&
+			!heunParentsMatch(terminalRateDeviceProof[0],terminalRateDeviceProof[1],false)&&
+			!heunParentsMatch(terminalRateDeviceProof[1],terminalRateDeviceProof[0],true);
+		if(heunBinding){
+			auto changed=terminalRateDeviceProof[1];
+			changed.sharedFaceAlpha[0][0]=std::nextafter(changed.sharedFaceAlpha[0][0],
+				std::numeric_limits<float>::infinity());
+			heunParentRED=heunParentRED&&!heunParentsMatch(terminalRateDeviceProof[0],changed,true);
+			changed=terminalRateDeviceProof[0];
+			changed.scalarLowFlux[0]=std::nextafter(changed.scalarLowFlux[0],std::numeric_limits<float>::infinity());
+			heunParentRED=heunParentRED&&!heunParentsMatch(changed,terminalRateDeviceProof[1],true);
+			changed=terminalRateDeviceProof[1];
+			changed.heunR0AdvectionRateKGPerM2S2[0][0]=std::nextafter(changed.heunR0AdvectionRateKGPerM2S2[0][0],
+				std::numeric_limits<float>::infinity());
+			heunParentRED=heunParentRED&&!heunParentsMatch(terminalRateDeviceProof[0],changed,true);}
+		ownerIterationTraceBounded=ownerIterationTraceBounded&&heunParentRED;
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=heun_R0_parent_binding "
+			"parents_valid=%d missing_swapped_alpha_flux_output_refused=%d passed=%d\n",
+			heunBinding?1:0,heunParentRED?1:0,heunParentRED?1:0);
+		ownerAdvectionProofValid=heunBinding;
+		if(heunBinding){const auto& d=terminalRateDeviceProof[1];
+			const auto& m=terminalRateReferenceProof[1];
+			for(unsigned int axis=0u;axis<3u;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+				const bool shapeOK=d.advectionMomentumRateKGPerM2S2[axis].size()==count&&
+					m.advectionMomentumRateKGPerM2S2[axis].size()==count&&m.heunR0AdvectionRateKGPerM2S2[axis].size()==count&&
+					terminalRateBounds[1][3][axis].size()==count;
+				ownerAdvectionProofValid=ownerAdvectionProofValid&&shapeOK;if(!shapeOK)continue;
+				ownerAdvectionBounds[axis].resize(count);ownerAdvectionDevice[axis].resize(count);
+				ownerAdvectionReference[axis].resize(count);
+				for(std::size_t face=0u;face<count;++face){
+					const CertifiedBinary32 first={d.heunR0AdvectionRateKGPerM2S2[axis][face],
+						m.heunR0AdvectionRateKGPerM2S2[axis][face],heunR0RateBounds[axis][face],true};
+					const CertifiedBinary32 second={d.advectionMomentumRateKGPerM2S2[axis][face],
+						m.advectionMomentumRateKGPerM2S2[axis][face],terminalRateBounds[1][3][axis][face],true};
+					const auto average=CertifiedMultiply(CertifiedRecord(-0.5),CertifiedAdd(first,second));
+					ownerAdvectionProofValid=ownerAdvectionProofValid&&average.valid&&
+						std::isfinite(average.error)&&average.error>=0.0;
+					ownerAdvectionBounds[axis][face]=average.error;
+					ownerAdvectionDevice[axis][face]=average.rounded;
+					ownerAdvectionReference[axis][face]=average.exact;}}}
+		ownerIterationTraceBounded=ownerIterationTraceBounded&&ownerAdvectionProofValid;
+		// Only nonadvective rates use these terminal parents. R0 advection is
+		// recomputed with the Heun alpha and cannot use the original R0-alpha proof.
+		auto composeNonadvectiveAverages=[&](const auto& parents,const std::array<bool,2>& available,
+			auto& averages){
+			for(unsigned int stage=0u;stage<2u;++stage){
+				if(!available[stage]||!terminalRateBoundsAvailable[stage]||
+					ownerObserved.qualificationIterationTrace[stage].empty()||
+					traceStages64[stage]->qualificationIterationTrace.empty())return false;
+				const auto& input=parents[stage];const auto& saved=terminalRateDeviceProof[stage];
+				const auto& actual=ownerObserved.qualificationIterationTrace[stage].back();
+				const auto& reference=terminalRateReferenceProof[stage];
+				const auto& actualReference=traceStages64[stage]->qualificationIterationTrace.back();
+				const auto& endpoint=stage==0u?ownerObserved64.r0.nonpressure:ownerObserved64.r1.nonpressure;
+				if(input.acceptedCandidateIdentity==0u||input.acceptedCandidateIdentity!=
+					ownerObserved.candidatePublicationIdentity[stage]||
+					input.acceptedCandidateIdentity!=saved.acceptedCandidateIdentity||
+					input.acceptedCandidateIdentity!=actual.acceptedCandidateIdentity||
+					input.iteration!=saved.iteration||input.iteration!=actual.iteration||
+					(input.iteration&UINT32_C(0x80000000))==0u||
+					reference.iteration!=actualReference.iteration)return false;
+				const std::array<std::vector<float>,3>* inputRates[3]={&input.buoyancyMomentumRateKGPerM2S2,
+					&input.stressMomentumRateKGPerM2S2,&input.phaseSourceMomentumRateKGPerM2S2};
+				const std::array<std::vector<float>,3>* savedRates[3]={&saved.buoyancyMomentumRateKGPerM2S2,
+					&saved.stressMomentumRateKGPerM2S2,&saved.phaseSourceMomentumRateKGPerM2S2};
+				const std::array<std::vector<float>,3>* actualRates[3]={&actual.buoyancyMomentumRateKGPerM2S2,
+					&actual.stressMomentumRateKGPerM2S2,&actual.phaseSourceMomentumRateKGPerM2S2};
+				const std::array<std::vector<double>,3>* referenceRates[3]={&reference.buoyancyMomentumRateKGPerM2S2,
+					&reference.stressMomentumRateKGPerM2S2,&reference.phaseSourceMomentumRateKGPerM2S2};
+				const std::array<std::vector<double>,3>* actualReferenceRates[3]={&actualReference.buoyancyMomentumRateKGPerM2S2,
+					&actualReference.stressMomentumRateKGPerM2S2,&actualReference.phaseSourceMomentumRateKGPerM2S2};
+				const std::array<std::vector<double>,3>* endpointRates[3]={&endpoint.buoyancyMomentumRateKGPerM2S2,
+					&endpoint.stressMomentumRateKGPerM2S2,&endpoint.phaseSourceMomentumRateKGPerM2S2};
+				for(unsigned int term=0u;term<3u;++term){
+					if(!ByteIdenticalVectorArray(*inputRates[term],*savedRates[term])||
+						!ByteIdenticalVectorArray(*inputRates[term],*actualRates[term])||
+						!ByteIdenticalVectorArray(*referenceRates[term],*actualReferenceRates[term])||
+						!ByteIdenticalVectorArray(*referenceRates[term],*endpointRates[term]))return false;
+					for(unsigned int axis=0u;axis<3u;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+						if((*inputRates[term])[axis].size()!=count||(*referenceRates[term])[axis].size()!=count||
+							terminalRateBounds[stage][term][axis].size()!=count)return false;
+						for(std::size_t face=0u;face<count;++face){const double bound=terminalRateBounds[stage][term][axis][face];
+							if(!std::isfinite(bound)||bound<0.0||std::fabs(static_cast<double>(
+								(*inputRates[term])[axis][face])-(*referenceRates[term])[axis][face])>bound)return false;}}}}
+			for(unsigned int term=0u;term<3u;++term)for(unsigned int axis=0u;axis<3u;++axis){
+				const auto count=FireProductionProjectionFaceCount(shape,axis);averages[term][axis].resize(count);
+				for(std::size_t face=0u;face<count;++face){std::array<CertifiedBinary32,2> values;
+					for(unsigned int stage=0u;stage<2u;++stage){const auto& d=parents[stage];
+						const auto& m=terminalRateReferenceProof[stage];
+						const float device[3]={d.buoyancyMomentumRateKGPerM2S2[axis][face],
+							d.stressMomentumRateKGPerM2S2[axis][face],d.phaseSourceMomentumRateKGPerM2S2[axis][face]};
+						const double reference[3]={m.buoyancyMomentumRateKGPerM2S2[axis][face],
+							m.stressMomentumRateKGPerM2S2[axis][face],m.phaseSourceMomentumRateKGPerM2S2[axis][face]};
+						values[stage]={device[term],reference[term],terminalRateBounds[stage][term][axis][face],true};}
+					const auto average=CertifiedMultiply(CertifiedRecord(0.5),CertifiedAdd(values[0],values[1]));
+					if(!average.valid||!std::isfinite(average.error)||average.error<0.0)return false;
+					averages[term][axis][face]=average.error;}}
+			return true;};
+		ownerNonadvectiveAverageProofValid=composeNonadvectiveAverages(terminalRateDeviceProof,
+			terminalRateBoundsAvailable,ownerNonadvectiveAverageBounds);
+		auto averageMutantParents=terminalRateDeviceProof;
+		decltype(ownerNonadvectiveAverageBounds) averageMutantBounds;
+		auto averageMutantAvailable=terminalRateBoundsAvailable;averageMutantAvailable[0]=false;
+		bool nonadvectiveParentRED=ownerNonadvectiveAverageProofValid&&
+			!composeNonadvectiveAverages(averageMutantParents,averageMutantAvailable,averageMutantBounds);
+		std::swap(averageMutantParents[0],averageMutantParents[1]);
+		nonadvectiveParentRED=nonadvectiveParentRED&&
+			!composeNonadvectiveAverages(averageMutantParents,terminalRateBoundsAvailable,averageMutantBounds);
+		averageMutantParents=terminalRateDeviceProof;
+		if(ownerNonadvectiveAverageProofValid){averageMutantParents[0].stressMomentumRateKGPerM2S2[0][0]=
+			std::nextafter(averageMutantParents[0].stressMomentumRateKGPerM2S2[0][0],std::numeric_limits<float>::infinity());
+			nonadvectiveParentRED=nonadvectiveParentRED&&
+				!composeNonadvectiveAverages(averageMutantParents,terminalRateBoundsAvailable,averageMutantBounds);}
+		ownerIterationTraceBounded=ownerIterationTraceBounded&&ownerNonadvectiveAverageProofValid&&nonadvectiveParentRED;
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=nonadvective_average_parent_binding "
+			"parents_valid=%d missing_swapped_changed_refused=%d passed=%d\n",
+			ownerNonadvectiveAverageProofValid?1:0,nonadvectiveParentRED?1:0,
+			ownerNonadvectiveAverageProofValid&&nonadvectiveParentRED?1:0);
+		// Publication copies the R1 Heun scalar candidate, without arithmetic.
+		// Reuse only that candidate's existing proof, bound to both exact endpoints.
+		auto scalarPublicationMatches=[&](const bool available,const std::uint64_t identity,
+			const std::vector<float>& device,const std::vector<double>& reference){
+			return available&&certifiedProducerAvailable[1]&&identity!=0u&&
+				identity==certifiedProducerIdentity[1]&&
+				identity==ownerObserved.candidatePublicationIdentity[1]&&
+				device.size()==9u*cells&&reference.size()==9u*cells&&
+				certifiedProducerBounds[1].size()==9u*cells&&
+				ByteIdenticalVector(device,certifiedProducerBytes[1])&&
+				ByteIdenticalVector(reference,certifiedProducerReferenceBytes[1])&&
+				std::all_of(certifiedProducerBounds[1].begin(),certifiedProducerBounds[1].end(),
+					[](double bound){return std::isfinite(bound)&&bound>=0.0;});};
+		ownerPublishedScalarProofValid=scalarPublicationMatches(true,
+			ownerObserved.candidatePublicationIdentity[1],ownerObserved.conservativeValues,
+			ownerObserved64.conservativeValues);
+		bool publicationParentRED=false;
+		if(ownerPublishedScalarProofValid){
+			ownerPublishedScalarBounds=certifiedProducerBounds[1];
+			auto changedDevice=ownerObserved.conservativeValues;
+			auto changedReference=ownerObserved64.conservativeValues;
+			changedDevice[0]=std::nextafter(changedDevice[0],std::numeric_limits<float>::infinity());
+			changedReference[0]=std::nextafter(changedReference[0],std::numeric_limits<double>::infinity());
+			const auto identity=ownerObserved.candidatePublicationIdentity[1];
+			publicationParentRED=!scalarPublicationMatches(false,identity,
+				ownerObserved.conservativeValues,ownerObserved64.conservativeValues)&&
+				!scalarPublicationMatches(true,identity^UINT64_C(1),
+					ownerObserved.conservativeValues,ownerObserved64.conservativeValues)&&
+				!scalarPublicationMatches(true,identity,changedDevice,ownerObserved64.conservativeValues)&&
+				!scalarPublicationMatches(true,identity,ownerObserved.conservativeValues,changedReference)&&
+				!scalarPublicationMatches(true,identity,{},ownerObserved64.conservativeValues);
+		}
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=scalar_publication_parent_binding "
+			"copy_only=1 endpoint_and_identity_match=%d missing_forged_changed_truncated_refused=%d passed=%d\n",
+			ownerPublishedScalarProofValid?1:0,publicationParentRED?1:0,
+			ownerPublishedScalarProofValid&&publicationParentRED?1:0);
+		ownerIterationTraceBounded=ownerIterationTraceBounded&&ownerPublishedScalarProofValid&&
+			publicationParentRED&&staleOrSwappedStageFrontRED&&
+			(sealedOpenHeadOutflowTraceRED||mixedControlPrerequisitePassed);
 		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
 			"name=stale_or_swapped_stage_front_refused producer_bytes_authenticated=1 "
 			"mutated_front_refused=%d passed=%d\n",staleOrSwappedStageFrontRED?1:0,
@@ -16294,8 +17675,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			productionQualificationDiagnostics.ownerPublicationIdentity==0u&&
 			productionQualificationError.find("qualification-only owner controls")!=std::string::npos;
 		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
-			"name=production_entry_refuses_diagnostic_owner_mutant mutant_accepted=%d "
+			"name=%s mutant_accepted=%d "
 			"token=%d owner_identity=%llu diagnostic_identity=%llu error=%s passed=%d\n",
+			"production_entry_refuses_diagnostic_owner_mutant",
 			productionQualificationAccepted?1:0,
 			productionQualificationResult.HasAcceptedManifoldToken()?1:0,
 			static_cast<unsigned long long>(
@@ -16442,8 +17824,20 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	std::string heunWeightingMutantError;
 	const bool heunWeightingMutantAccepted=AttemptFireProductionProjectedHeunMetalOwner(
 		heunWeightingRequest,heunWeightingMutant,&heunWeightingMutantError);
+	auto weightingChangesMetal=[&](const FireProductionProjectedHeunMetalOwnerResult& candidate){
+		if(!ownerAccepted||!candidate.accepted)return false;
+		bool changed=false;
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const auto count=FireProductionProjectionFaceCount(shape,axis);
+			if(candidate.provisionalMomentumKGPerM2S[axis].size()!=count||
+				ownerObserved.provisionalMomentumKGPerM2S[axis].size()!=count)return false;
+			changed=changed||!ByteIdenticalVector(candidate.provisionalMomentumKGPerM2S[axis],
+				ownerObserved.provisionalMomentumKGPerM2S[axis]);}
+		return changed;};
+	const bool heunWeightingChangesMetal=heunWeightingMutantAccepted&&weightingChangesMetal(heunWeightingMutant);
+	const bool heunWeightingNoOpRefused=!weightingChangesMetal(ownerObserved);
 	bool heunWeightingRED=false;
-	if(owner64Accepted){
+	if(owner64Accepted&&heunWeightingChangesMetal){
 		::RISEFireProductionFP64::FireProductionCompatibleFCTMomentumResult advection0,advection1;
 		std::string weightingError;
 		if(::RISEFireProductionFP64::EvaluateFireProductionCompatibleHeunMomentumCPU(
@@ -16453,7 +17847,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				ownerObserved64.r1.flux,ownerObserved64.heunSolve,
 				ownerObserved64.r1.projection.velocityMPerS,advection1,&weightingError)){
 			for(unsigned int axis=0u;axis<3u&&!heunWeightingRED;++axis)
-				for(std::size_t face=0u;face<ownerRequest64.beginningMomentumKGPerM2S[axis].size();
+				for(std::size_t face=0u;!heunWeightingRED&&face<ownerRequest64.beginningMomentumKGPerM2S[axis].size();
 					++face){
 					const double rate0=ownerObserved64.r0.nonpressure.
 						combinedMomentumRateKGPerM2S2[axis][face]-
@@ -16470,9 +17864,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				}
 		}
 	}
+	heunWeightingRED=heunWeightingRED&&heunWeightingChangesMetal&&heunWeightingNoOpRefused;
 	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=three_quarter_one_quarter_R1 "
 		"oracle=reviewed_r190_fp64_owner metal_mutant_accepted=%d binary32_bit_mismatch=%d "
-		"error=%s passed=%d\n",heunWeightingMutantAccepted?1:0,heunWeightingRED?1:0,
+		"mutant_changes_metal=%d no_op_refused=%d error=%s passed=%d\n",
+		heunWeightingMutantAccepted?1:0,heunWeightingRED?1:0,
+		heunWeightingChangesMetal?1:0,heunWeightingNoOpRefused?1:0,
 		heunWeightingMutantError.c_str(),heunWeightingMutantAccepted&&heunWeightingRED?1:0);
 	FireProductionProjectedHeunMetalOwnerRequest sharedAlphaRequest=ownerRequest;
 	sharedAlphaRequest.qualificationForceLimiterDiscontinuity=true;
@@ -16491,6 +17888,49 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			sharedAlphaCorrect.provisionalMomentumKGPerM2S[axis],
 			sharedAlphaMutant.provisionalMomentumKGPerM2S[axis]);
 	sharedAlphaRED=sharedAlphaRED&&sharedAlphaMomentumMismatch;
+	bool heunRateSelectionRED=false;
+	if(sharedAlphaCorrectAccepted&&!sharedAlphaCorrect.qualificationIterationTrace[0].empty()&&
+		!sharedAlphaCorrect.qualificationIterationTrace[1].empty()){
+		const auto& r0=sharedAlphaCorrect.qualificationIterationTrace[0].back();
+		const auto& r1=sharedAlphaCorrect.qualificationIterationTrace[1].back();
+		heunRateSelectionRED=ByteIdenticalVectorArray(r0RateForProjection(1u,r0,r1),r0.advectionMomentumRateKGPerM2S2)&&
+			ByteIdenticalVectorArray(r0RateForProjection(2u,r0,r1),r1.heunR0AdvectionRateKGPerM2S2)&&
+			!ByteIdenticalVectorArray(r0RateForProjection(2u,r0,r1),r0.advectionMomentumRateKGPerM2S2);}
+	sharedAlphaRED=sharedAlphaRED&&heunRateSelectionRED;
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=forced_alpha_provisional_parent_selection "
+		"old_parent_refused=%d passed=%d\n",heunRateSelectionRED?1:0,heunRateSelectionRED?1:0);
+	// Diagnostic only: witness the old-alpha parent at the existing forced
+	// limiter fixture, without mistaking a blended momentum difference for it.
+	if(sharedAlphaCorrectAccepted&&sharedAlphaMutantAccepted&&
+		!sharedAlphaCorrect.qualificationIterationTrace[0].empty()&&
+		!sharedAlphaCorrect.qualificationIterationTrace[1].empty()){
+		const auto& r0=sharedAlphaCorrect.qualificationIterationTrace[0].back();
+		const auto& r1=sharedAlphaCorrect.qualificationIterationTrace[1].back();
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const auto& oldRate=r0.advectionMomentumRateKGPerM2S2[axis];
+			const auto& heunRate=r1.heunR0AdvectionRateKGPerM2S2[axis];
+			const auto& correctMomentum=sharedAlphaCorrect.provisionalMomentumKGPerM2S[axis];
+			const auto& mutantMomentum=sharedAlphaMutant.provisionalMomentumKGPerM2S[axis];
+			const bool shapeMatch=!oldRate.empty()&&oldRate.size()==heunRate.size()&&
+				oldRate.size()==correctMomentum.size()&&oldRate.size()==mutantMomentum.size()&&
+				oldRate.size()==r0.sharedFaceAlpha[axis].size()&&
+				oldRate.size()==r1.sharedFaceAlpha[axis].size();
+			std::fprintf(stderr,"PROJECTED_HEUN_FORCED_ALPHA_PARENT_SHAPE axis=%u matched=%d\n",
+				axis,shapeMatch?1:0);
+			if(!shapeMatch)continue;
+			for(std::size_t face=0u;face<oldRate.size();++face)
+				std::fprintf(stderr,"PROJECTED_HEUN_FORCED_ALPHA_PARENT axis=%u face=%zu "
+					"r0_alpha=%.17g heun_alpha=%.17g old_rate=%.17g heun_rate=%.17g "
+					"rate_gap_kg_m2_s2=%.17g correct_momentum=%.17g mutant_momentum=%.17g "
+					"momentum_gap_kg_m2_s=%.17g\n",axis,face,
+					static_cast<double>(r0.sharedFaceAlpha[axis][face]),
+					static_cast<double>(r1.sharedFaceAlpha[axis][face]),
+					static_cast<double>(oldRate[face]),static_cast<double>(heunRate[face]),
+					std::fabs(static_cast<double>(oldRate[face])-heunRate[face]),
+					static_cast<double>(correctMomentum[face]),static_cast<double>(mutantMomentum[face]),
+					std::fabs(static_cast<double>(correctMomentum[face])-mutantMomentum[face]));
+		}
+	}
 	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=shared_heun_alpha_R0_recompute "
 		"correct_accepted=%d mixed_alpha_mutant_accepted=%d accepted_alpha_bit_equal=%d "
 		"provisional_momentum_bit_mismatch=%d correct_error=%s mutant_error=%s passed=%d\n",
@@ -16508,7 +17948,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	auto evaluateOwnerField=[&](const char* field,const char* units,
 		const std::vector<float>& device,const std::vector<double>& mirror,
 		const std::function<double(std::size_t)>& bound){OwnerFieldBound result;
-		if(device.size()!=mirror.size()){std::fprintf(stderr,
+		if(device.empty()||device.size()!=mirror.size()){std::fprintf(stderr,
 			"PROJECTED_HEUN_METAL_OWNER_FIELD field=%s units=%s size_match=0 passed=0\n",
 			field,units);result.passed=false;return result;}
 		result.localBounds.resize(device.size());
@@ -16525,9 +17965,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_FIELD field=%s units=%s scope=every_value "
 			"worst_index=%zu device=%.17g fp64=%.17g max_residual=%.17g "
 			"max_local_termwise_enclosure=%.17g worst_residual_over_local_bound=%.17g "
+			"worst_local_residual=%.17g worst_local_enclosure=%.17g "
 			"fp64_binary32_projection_bit_mismatches=%zu passed=%d\n",
 			field,units,result.worst,static_cast<double>(device[result.worst]),mirror[result.worst],
-			result.maximumResidual,result.maximumBound,result.worstRatio,result.bitMismatchCount,
+			result.maximumResidual,result.maximumBound,result.worstRatio,
+			std::fabs(static_cast<double>(device[result.worst])-mirror[result.worst]),
+			result.localBounds[result.worst],result.bitMismatchCount,
 			result.passed?1:0);
 		return result;};
 	const double ownerArithmeticProbeBound=2.0*ownerGamma8;
@@ -16585,11 +18028,30 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			return packed;};
 		std::array<std::vector<double>,3> provisional64,advection64,buoyancy64,
 			stress64,phase64;
+		// The reference is the reviewed owner's actual R2 projection input,
+		// not a second Heun assembly with a different summation order.
+		auto readReferenceProvisional=[&](const auto& trace,auto& values){
+			if(trace.empty()||(trace.back().iteration&UINT32_C(0x80000000))==0u)return false;
+			const auto& endpoint=trace.back().provisionalMomentumKGPerM2S;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				if(endpoint[axis].size()!=FireProductionProjectionFaceCount(shape,axis))return false;
+				for(const double value:endpoint[axis])if(!std::isfinite(value))return false;
+			}
+			values=endpoint;return true;};
+		const bool referenceProvisionalPresent=readReferenceProvisional(
+			ownerObserved64.r2.qualificationIterationTrace,provisional64);
+		auto missingReferenceTrace=ownerObserved64.r2.qualificationIterationTrace;
+		missingReferenceTrace.clear();decltype(provisional64) refusedReference;
+		const bool missingReferenceRefused=!readReferenceProvisional(missingReferenceTrace,refusedReference);
+		ownerMirrorBounded=ownerMirrorBounded&&referenceProvisionalPresent&&missingReferenceRefused;
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=reviewed_R2_provisional_endpoint "
+			"reference_present=%d missing_refused=%d passed=%d\n",referenceProvisionalPresent?1:0,
+			missingReferenceRefused?1:0,referenceProvisionalPresent&&missingReferenceRefused?1:0);
 		std::vector<double> acceptedAlpha64,eddy64,representedRatio64,absoluteDeviation64;
 		if(ownerAdvectionBuilt){
 			for(unsigned int axis=0u;axis<3u;++axis){
 				const std::size_t faces=ownerRequest64.beginningMomentumKGPerM2S[axis].size();
-				provisional64[axis].resize(faces);advection64[axis].resize(faces);
+				advection64[axis].resize(faces);
 				buoyancy64[axis].resize(faces);stress64[axis].resize(faces);
 				phase64[axis].resize(faces);
 				for(std::size_t face=0u;face<faces;++face){
@@ -16604,9 +18066,6 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					phase64[axis][face]=0.5*(ownerObserved64.r0.nonpressure.
 						phaseSourceMomentumRateKGPerM2S2[axis][face]+ownerObserved64.r1.nonpressure.
 						phaseSourceMomentumRateKGPerM2S2[axis][face]);
-					provisional64[axis][face]=ownerRequest64.beginningMomentumKGPerM2S[axis][face]+
-						ownerRequest64.scalarContract.timeStepS*(advection64[axis][face]+
-						buoyancy64[axis][face]+stress64[axis][face]+phase64[axis][face]);
 				}
 			}
 			for(unsigned int axis=0u;axis<3u;++axis)acceptedAlpha64.insert(
@@ -16633,12 +18092,72 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			ownerMirrorBounded=ownerMirrorBounded&&checked.passed;return checked;};
 		ownerMirrorBounded=ownerMirrorBounded&&ownerAdvectionBuilt;
 		if(ownerAdvectionBuilt){
-			streamBound(packDeviceFaces(ownerObserved.provisionalMomentumKGPerM2S),
-				packMirrorFaces(provisional64),"R1_provisional_momentum","kg_m^-2_s^-1");
-			streamBound(packDeviceFaces(ownerObserved.heunAdvectionMomentumRateKGPerM2S2),
-				packMirrorFaces(advection64),"R1_heun_advection","kg_m^-2_s^-2");
-			streamBound(packDeviceFaces(ownerObserved.heunBuoyancyMomentumRateKGPerM2S2),
-				packMirrorFaces(buoyancy64),"R1_heun_buoyancy","kg_m^-2_s^-2");
+			auto nonadvectiveBound=[&](unsigned int term,const auto& device,const auto& mirror,const char* name){
+				const auto bounds=packMirrorFaces(ownerNonadvectiveAverageBounds[term]);
+				const auto packed=packDeviceFaces(device);const auto reference=packMirrorFaces(mirror);
+				const bool present=ownerNonadvectiveAverageProofValid&&bounds.size()==packed.size();
+				std::vector<float> expected;
+				if(present){const auto& first=ownerObserved.qualificationIterationTrace[0].back();
+					const auto& second=ownerObserved.qualificationIterationTrace[1].back();
+					const std::array<std::vector<float>,3>* a[3]={&first.buoyancyMomentumRateKGPerM2S2,
+						&first.stressMomentumRateKGPerM2S2,&first.phaseSourceMomentumRateKGPerM2S2};
+					const std::array<std::vector<float>,3>* b[3]={&second.buoyancyMomentumRateKGPerM2S2,
+						&second.stressMomentumRateKGPerM2S2,&second.phaseSourceMomentumRateKGPerM2S2};
+					for(unsigned int axis=0u;axis<3u;++axis)for(std::size_t face=0u;
+						face<(*a[term])[axis].size();++face)
+						expected.push_back(0.5f*((*a[term])[axis][face]+(*b[term])[axis][face]));}
+				const bool streamingMatch=present&&ByteIdenticalVector(packed,expected);
+				bool changedOutputRefused=false;
+				if(streamingMatch&&!packed.empty()){auto changed=packed;
+					changed[0]=std::nextafter(changed[0],std::numeric_limits<float>::infinity());
+					changedOutputRefused=!ByteIdenticalVector(changed,expected);}
+				const auto checked=evaluateOwnerField(name,"kg_m^-2_s^-2",packed,reference,
+					[&](std::size_t face){return present?bounds[face]:0.0;});
+				std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=nonadvective_average_streaming "
+					"field=%s bit_exact=%d changed_output_refused=%d passed=%d\n",name,streamingMatch?1:0,
+					changedOutputRefused?1:0,streamingMatch&&changedOutputRefused?1:0);
+				ownerMirrorBounded=ownerMirrorBounded&&present&&checked.passed&&streamingMatch&&changedOutputRefused;};
+			auto parentPublication=[&](const char* name,const char* units,const auto& output,
+				const auto& reference,const auto& expected,const auto& expectedReference,
+				const auto& localBounds,const bool proofPresent){
+				auto matches=[&](const auto& value,const auto& ref,const bool available){
+					if(!available||!proofPresent||!ByteIdenticalVectorArray(value,expected)||
+						!ByteIdenticalVectorArray(ref,expectedReference))return false;
+					for(unsigned int axis=0u;axis<3u;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+						if(value[axis].size()!=count||ref[axis].size()!=count||localBounds[axis].size()!=count)return false;
+						for(const double bound:localBounds[axis])if(!std::isfinite(bound)||bound<0.0)return false;}
+					return true;};
+				const bool present=matches(output,reference,true);
+				bool publicationRED=present&&!matches(output,reference,false);
+				if(present){auto changed=output;changed[0][0]=std::nextafter(changed[0][0],
+						std::numeric_limits<float>::infinity());
+					publicationRED=publicationRED&&!matches(changed,reference,true);
+					auto changedReference=reference;changedReference[0][0]=std::nextafter(changedReference[0][0],
+						std::numeric_limits<double>::infinity());
+					publicationRED=publicationRED&&!matches(output,changedReference,true);}
+				const auto bounds=packMirrorFaces(localBounds);
+				const auto checked=evaluateOwnerField(name,units,packDeviceFaces(output),packMirrorFaces(reference),
+					[&](std::size_t face){return present?bounds[face]:0.0;});
+				ownerMirrorBounded=ownerMirrorBounded&&present&&checked.passed&&publicationRED;
+				std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=qualified_parent_publication field=%s "
+					"bit_exact=%d missing_changed_output_reference_refused=%d passed=%d\n",
+					name,present?1:0,publicationRED?1:0,present&&publicationRED?1:0);};
+			bool provisionalEndpointBound=ownerProvisionalProofValid&&ownerProvisionalCandidate!=0u&&
+				ownerProvisionalCandidate==ownerObserved.candidatePublicationIdentity[2]&&
+				!ownerObserved.qualificationIterationTrace[2].empty()&&
+				!ownerObserved64.r2.qualificationIterationTrace.empty();
+			if(provisionalEndpointBound){const auto& actual=ownerObserved.qualificationIterationTrace[2].back();
+				provisionalEndpointBound=actual.acceptedCandidateIdentity==ownerProvisionalCandidate&&
+					actual.iteration==ownerProvisionalIteration&&
+					ByteIdenticalVectorArray(actual.provisionalMomentumKGPerM2S,ownerProvisionalDevice)&&
+					ByteIdenticalVectorArray(ownerObserved64.r2.qualificationIterationTrace.back().
+						provisionalMomentumKGPerM2S,ownerProvisionalReference);}
+			parentPublication("R1_provisional_momentum","kg_m^-2_s^-1",ownerObserved.provisionalMomentumKGPerM2S,
+				provisional64,ownerProvisionalDevice,ownerProvisionalReference,ownerProvisionalBounds,provisionalEndpointBound);
+			parentPublication("R1_heun_advection","kg_m^-2_s^-2",ownerObserved.heunAdvectionMomentumRateKGPerM2S2,
+				advection64,ownerAdvectionDevice,ownerAdvectionReference,ownerAdvectionBounds,ownerAdvectionProofValid);
+			nonadvectiveBound(0u,ownerObserved.heunBuoyancyMomentumRateKGPerM2S2,
+				buoyancy64,"R1_heun_buoyancy");
 			const std::vector<float> r0StressDevice=packDeviceFaces(
 				ownerObserved.qualificationIterationTrace[0].back().stressMomentumRateKGPerM2S2);
 			const std::vector<float> r1StressDevice=packDeviceFaces(
@@ -16650,18 +18169,283 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			const std::vector<float> heunStressDevice=packDeviceFaces(
 				ownerObserved.heunStressMomentumRateKGPerM2S2);
 			const std::vector<double> heunStressMirror=packMirrorFaces(stress64);
-			const OwnerFieldBound heunStressBound=evaluateOwnerField("R1_heun_stress",
-				"kg_m^-2_s^-2",heunStressDevice,heunStressMirror,[&](std::size_t face){
-					return ownerGamma512*(std::fabs(static_cast<double>(r0StressDevice[face]))+
+			bool retiredStressBoundRefuses=false;
+			if(burnerColdStartProbe)for(std::size_t face=0u;face<heunStressDevice.size();++face){
+				const double retiredBound=ownerGamma512*(std::fabs(static_cast<double>(r0StressDevice[face]))+
 						std::fabs(static_cast<double>(r1StressDevice[face]))+
-						std::fabs(r0StressMirror[face])+std::fabs(r1StressMirror[face]));});
-			ownerMirrorBounded=ownerMirrorBounded&&heunStressBound.passed;
-			streamBound(packDeviceFaces(ownerObserved.heunPhaseSourceMomentumRateKGPerM2S2),
-				packMirrorFaces(phase64),"R1_heun_phase_source","kg_m^-2_s^-2");
+						std::fabs(r0StressMirror[face])+std::fabs(r1StressMirror[face]));
+				retiredStressBoundRefuses=retiredStressBoundRefuses||
+					std::fabs(static_cast<double>(heunStressDevice[face])-heunStressMirror[face])>retiredBound;}
+			nonadvectiveBound(1u,ownerObserved.heunStressMomentumRateKGPerM2S2,stress64,"R1_heun_stress");
+			if(burnerColdStartProbe){ownerMirrorBounded=ownerMirrorBounded&&retiredStressBoundRefuses;
+				std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=stress_parent_uncertainty_omission "
+					"retired_heuristic_refuses=%d passed=%d\n",retiredStressBoundRefuses?1:0,retiredStressBoundRefuses?1:0);}
+			nonadvectiveBound(2u,ownerObserved.heunPhaseSourceMomentumRateKGPerM2S2,phase64,"R1_heun_phase_source");
 			streamBound(ownerObserved.acceptedFaceAlpha,acceptedAlpha64,
 				"R1_accepted_face_alpha","dimensionless");
-			streamBound(ownerObserved.heunEddyKinematicViscosityM2PerS,eddy64,
-				"R1_heun_eddy_viscosity","m^2_s^-1");
+			// Audit the actual force producer, not the transport eddy estimate:
+			// setup_face_velocity reconstructs M/rho before building its gradient.
+			// The pinned force graph must match the transport walk at these
+			// actual inputs before its termwise parents may bound publication.
+			std::array<FireProductionNonpressureMomentumRHSResult,2> eddyParents;
+			std::array<bool,2> eddyProofValid={};
+			bool eddyReplayValid=true;
+			for(unsigned int stage=0u;stage<2u;++stage){
+				if(ownerObserved.qualificationIterationTrace[stage].empty()){
+					eddyReplayValid=false;continue;}
+				const auto& parent=ownerObserved.qualificationIterationTrace[stage].back();
+				FireProductionNonpressureMomentumRHSRequest replay;
+				replay.force=ownerRequest32.forceContract;
+				replay.force.cellGasDensityKGPerM3=parent.gasDensityKGPerM3;
+				replay.force.molecularKinematicViscosityM2PerS=parent.molecularKinematicViscosityM2PerS;
+				replay.force.faceDensityKGPerM3=parent.faceDensityKGPerM3;
+				replay.force.beginningMomentumKGPerM2S=parent.projectedMomentumKGPerM2S;
+				replay.bottomFuelMask=ownerRequest32.scalarContract.bottomFuelMask;
+				// Phase source does not feed setup, Vreman, or stress. Its value is
+				// irrelevant to this explicitly eddy/stress-only replay.
+				replay.cellGasPhaseSourceRateKGPerM3S.assign(cells,0.0f);
+				FireProductionNonpressureMomentumRHSMetalDiagnostics diagnostics;
+				std::string replayError;
+				const bool built=EvaluateFireProductionNonpressureMomentumRHSMetal(
+					replay,eddyParents[stage],diagnostics,&replayError);
+				FireProductionNonpressureMomentumRHSResult tracedForce;
+				FireProductionNonpressureMomentumRHSMetalDiagnostics tracedDiagnostics;
+				FireProductionForceVelocityTrace velocityTrace;
+				std::string traceError;
+				const bool traced=EvaluateFireProductionNonpressureMomentumRHSMetalWithVelocityTrace(
+					replay,tracedForce,tracedDiagnostics,velocityTrace,&traceError);
+				auto sameForce=[&](const auto& value){return built&&traced&&
+					ByteIdenticalVector(value.eddyKinematicViscosityM2PerS,eddyParents[stage].eddyKinematicViscosityM2PerS)&&
+					ByteIdenticalVector(value.effectiveDynamicViscosityPaS,eddyParents[stage].effectiveDynamicViscosityPaS)&&
+					ByteIdenticalVectorArray(value.stressMomentumRateKGPerM2S2,eddyParents[stage].stressMomentumRateKGPerM2S2)&&
+					ByteIdenticalVectorArray(value.buoyancyMomentumRateKGPerM2S2,eddyParents[stage].buoyancyMomentumRateKGPerM2S2)&&
+					ByteIdenticalVectorArray(value.phaseSourceMomentumRateKGPerM2S2,eddyParents[stage].phaseSourceMomentumRateKGPerM2S2)&&
+					ByteIdenticalVectorArray(value.combinedMomentumRateKGPerM2S2,eddyParents[stage].combinedMomentumRateKGPerM2S2);};
+				const std::size_t traceFaces=FireProductionProjectionFaceCount(shape,0u)+
+					FireProductionProjectionFaceCount(shape,1u)+FireProductionProjectionFaceCount(shape,2u);
+				auto traceShape=[&](const auto& value){return value.packedFaceVelocityMPerS.size()==traceFaces&&
+					value.componentMajorCellVelocityMPerS.size()==3u*cells&&value.stressArithmetic.size()==23u*cells&&
+					value.preciseStressArithmetic.size()==23u*cells&&value.legacyStressArithmetic.size()==23u*cells;};
+				const bool traceValid=sameForce(tracedForce)&&traceShape(velocityTrace);
+				bool traceRED=false;
+				if(traceValid&&!tracedForce.eddyKinematicViscosityM2PerS.empty()){
+					auto changed=tracedForce;changed.eddyKinematicViscosityM2PerS[0]=std::nextafter(
+						changed.eddyKinematicViscosityM2PerS[0],std::numeric_limits<float>::infinity());
+					auto truncated=velocityTrace;truncated.packedFaceVelocityMPerS.pop_back();
+					traceRED=!sameForce(changed)&&!traceShape(truncated);}
+				ownerMirrorBounded=ownerMirrorBounded&&traceValid&&traceRED;
+				std::size_t deviceQuotientDifferences=0u,deviceGatherDifferences=0u;
+				if(traceValid){std::size_t offset=0u;
+					for(unsigned int axis=0u;axis<3u;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+						for(std::size_t face=0u;face<count;++face){const auto normal=axis==0u?face%(shape.nx+1u):
+							(axis==1u?(face/shape.nx)%(shape.ny+1u):face/(shape.nx*shape.ny));
+							const auto extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+							const bool inlet=axis==2u&&normal==0u&&!replay.bottomFuelMask.empty()&&replay.bottomFuelMask[face]!=0u;
+							const bool wall=(normal==0u&&replay.force.boundary[2u*axis]==FireProductionProjectionWall)||
+								(normal==extent&&replay.force.boundary[2u*axis+1u]==FireProductionProjectionWall);
+							const float expected=wall&&!inlet?0.0f:parent.projectedMomentumKGPerM2S[axis][face]/
+								parent.faceDensityKGPerM3[axis][face];
+							const float actual=velocityTrace.packedFaceVelocityMPerS[offset+face];
+							if(std::memcmp(&expected,&actual,sizeof(float))!=0){if(deviceQuotientDifferences++==0u)
+								std::fprintf(stderr,"FORCE_DEVICE_FIRST_VELOCITY_DIFFERENCE stage=R%u axis=%u face=%zu "
+									"metal_m_s^-1=%.17g cpu_m_s^-1=%.17g momentum_kg_m^-2_s^-1=%.17g density_kg_m^-3=%.17g\n",
+									stage,axis,face,static_cast<double>(actual),static_cast<double>(expected),
+									static_cast<double>(parent.projectedMomentumKGPerM2S[axis][face]),
+									static_cast<double>(parent.faceDensityKGPerM3[axis][face]));}}
+						for(std::size_t cell=0u;cell<cells;++cell){const auto x=cell%shape.nx,
+							y=(cell/shape.nx)%shape.ny,z=cell/(shape.nx*shape.ny);
+							const auto lower=axis==0u?(z*shape.ny+y)*(shape.nx+1u)+x:
+								(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:cell);
+							const auto stride=axis==0u?1u:(axis==1u?shape.nx:shape.nx*shape.ny);
+							const float expected=0.5f*(velocityTrace.packedFaceVelocityMPerS[offset+lower]+
+								velocityTrace.packedFaceVelocityMPerS[offset+lower+stride]);
+							const float actual=velocityTrace.componentMajorCellVelocityMPerS[axis*cells+cell];
+							deviceGatherDifferences+=std::memcmp(&expected,&actual,sizeof(float))!=0?1u:0u;}
+						offset+=count;}}
+				if(traceValid)for(unsigned int functionMode=0u;functionMode<3u;++functionMode){
+					const auto& arithmetic=functionMode==0u?velocityTrace.stressArithmetic:
+						(functionMode==1u?velocityTrace.preciseStressArithmetic:velocityTrace.legacyStressArithmetic);
+					std::array<std::size_t,23> differences={},defaultDifferences={};std::size_t fusedNormDifferences=0u;
+					for(std::size_t cell=0u;cell<cells;++cell){const std::size_t coordinates[]={cell%shape.nx,
+						(cell/shape.nx)%shape.ny,cell/(shape.nx*shape.ny)};
+						const std::size_t extents[]={shape.nx,shape.ny,shape.nz};
+						auto neighbor=[&](unsigned int component,unsigned int derivative,int direction){
+							std::array<std::size_t,3> q={coordinates[0],coordinates[1],coordinates[2]};
+							const auto n=extents[derivative];
+							if((direction<0&&q[derivative]>0u)||(direction>0&&q[derivative]+1u<n))
+								q[derivative]=direction<0?q[derivative]-1u:q[derivative]+1u;
+							else {const auto boundary=replay.force.boundary[2u*derivative+(direction>0?1u:0u)];
+								const float center=velocityTrace.componentMajorCellVelocityMPerS[component*cells+cell];
+								if(boundary==FireProductionProjectionWall)return -center;
+								if(boundary==FireProductionProjectionPressureOpen)return center;
+								q[derivative]=direction<0?n-1u:0u;}
+							return velocityTrace.componentMajorCellVelocityMPerS[component*cells+(q[2]*shape.ny+q[1])*shape.nx+q[0]];};
+						std::array<float,23> expected={};
+						for(unsigned int d=0u;d<3u;++d)for(unsigned int c=0u;c<3u;++c){
+							float previous=neighbor(c,d,-1);const float next=neighbor(c,d,1);
+							const auto footprint=coordinates[1]*shape.nx+coordinates[0];
+							if(d==2u&&c==2u&&coordinates[2]==0u&&!replay.bottomFuelMask.empty()&&replay.bottomFuelMask[footprint]){
+								const auto zOffset=FireProductionProjectionFaceCount(shape,0u)+FireProductionProjectionFaceCount(shape,1u);
+								previous=2.0f*velocityTrace.packedFaceVelocityMPerS[zOffset+footprint]-
+									velocityTrace.componentMajorCellVelocityMPerS[2u*cells+cell];}
+							expected[3u*d+c]=(next-previous)/(2.0f*shape.cellWidthM);}
+						// Each downstream diagnostic uses actual device parent operands;
+						// differences therefore isolate the operation, not prior drift.
+						float g[3][3];for(unsigned int i=0u;i<3u;++i)for(unsigned int j=0u;j<3u;++j)
+							g[i][j]=arithmetic[(3u*i+j)*cells+cell];
+						for(unsigned int i=0u;i<3u;++i)for(unsigned int j=0u;j<3u;++j)expected[9]+=g[i][j]*g[i][j];
+						float fusedNorm=0.0f;for(unsigned int i=0u;i<3u;++i)for(unsigned int j=0u;j<3u;++j)
+							fusedNorm=std::fma(g[i][j],g[i][j],fusedNorm);
+						fusedNormDifferences+=std::memcmp(&fusedNorm,&arithmetic[9u*cells+cell],sizeof(float))!=0?1u:0u;
+						const float widthSquared=shape.cellWidthM*shape.cellWidthM;
+						for(unsigned int m=0u;m<3u;++m)for(unsigned int i=0u;i<3u;++i)for(unsigned int j=0u;j<3u;++j)
+							expected[10u+3u*i+j]+=widthSquared*g[m][i]*g[m][j];
+						float b[3][3];for(unsigned int i=0u;i<3u;++i)for(unsigned int j=0u;j<3u;++j)
+							b[i][j]=arithmetic[(10u+3u*i+j)*cells+cell];
+						expected[19]=b[0][0]*b[1][1]-b[0][1]*b[0][1]+b[0][0]*b[2][2]-b[0][2]*b[0][2]+b[1][1]*b[2][2]-b[1][2]*b[1][2];
+						const float norm=arithmetic[9u*cells+cell],raw=arithmetic[19u*cells+cell];
+						expected[20]=norm==0.0f?0.0f:std::max(0.0f,raw)/norm;
+						expected[21]=norm==0.0f?0.0f:std::sqrt(arithmetic[20u*cells+cell]);
+						expected[22]=norm==0.0f?0.0f:replay.force.vremanCoefficient*arithmetic[21u*cells+cell];
+						for(std::size_t plane=0u;plane<23u;++plane){const float actual=arithmetic[plane*cells+cell];
+							defaultDifferences[plane]+=std::memcmp(&actual,&velocityTrace.stressArithmetic[plane*cells+cell],sizeof(float))!=0?1u:0u;
+							const char* units=plane<9u?"s^-1":(plane==9u?"s^-2":(plane<19u?"m^2_s^-2":
+								(plane==19u?"m^4_s^-4":(plane==20u?"m^4_s^-2":"m^2_s^-1"))));
+							if(std::memcmp(&actual,&expected[plane],sizeof(float))!=0){if(differences[plane]++==0u)
+								std::fprintf(stderr,"FORCE_STRESS_FIRST_DIFFERENCE stage=R%u arithmetic_mode=%u plane=%zu cell=%zu units=%s metal=%.17g cpu_same_parents=%.17g\n",
+									stage,functionMode,plane,cell,units,static_cast<double>(actual),static_cast<double>(expected[plane]));}}
+					}
+					std::fprintf(stderr,"FORCE_STRESS_NORM_FMA stage=R%u arithmetic_mode=%u same_device_gradients=1 bit_differences=%zu cells=%zu\n",stage,functionMode,fusedNormDifferences,cells);
+					if(functionMode==0u)for(const auto count:differences)
+						ownerMirrorBounded=ownerMirrorBounded&&count==0u;
+					for(std::size_t plane=0u;plane<23u;++plane)std::fprintf(stderr,
+						"FORCE_STRESS_TRACE stage=R%u arithmetic_mode=%u plane=%zu bit_differences=%zu default_bit_differences=%zu cells=%zu\n",
+						stage,functionMode,plane,differences[plane],defaultDifferences[plane],cells);}
+				std::fprintf(stderr,"FORCE_DEVICE_VELOCITY_TRACE stage=R%u accepted=%d outputs_bit_exact=%d red=%d "
+					"quotient_bit_differences=%zu gather_bit_differences=%zu extra_device_bytes=%llu error=%s\n",
+					stage,traced?1:0,traceValid?1:0,traceRED?1:0,deviceQuotientDifferences,deviceGatherDifferences,
+					static_cast<unsigned long long>(velocityTrace.additionalMetalAllocationBytes),traceError.c_str());
+				// Diagnostic triangulation: use the existing strict-binary32 force
+				// implementation at the identical inputs, not a new reference owner.
+				FireProductionNonpressureMomentumRHSResult cpuForce;
+				std::string cpuForceError;
+				const bool cpuForceBuilt=EvaluateFireProductionNonpressureMomentumRHSCPU(
+					replay,cpuForce,&cpuForceError);
+				const bool parentValid=parent.iteration!=UINT32_MAX&&
+					(parent.iteration&UINT32_C(0x80000000))!=0u&&
+					parent.acceptedCandidateIdentity!=0u&&parent.acceptedCandidateIdentity==
+					ownerObserved.candidatePublicationIdentity[stage];
+				const bool stressBits=built&&ByteIdenticalVectorArray(
+					eddyParents[stage].stressMomentumRateKGPerM2S2,parent.stressMomentumRateKGPerM2S2);
+				bool shapeValid=true;std::size_t changedFaces=0u;double maximumGap=0.0;
+				for(unsigned int axis=0u;axis<3u;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+					if(parent.faceDensityKGPerM3[axis].size()!=count||parent.projectedMomentumKGPerM2S[axis].size()!=count||
+						parent.projectedVelocityMPerS[axis].size()!=count){shapeValid=false;continue;}
+					for(std::size_t face=0u;face<count;++face){const float density=parent.faceDensityKGPerM3[axis][face];
+						if(!(density>0.0f)||!std::isfinite(density)){shapeValid=false;continue;}
+						const float recovered=parent.projectedMomentumKGPerM2S[axis][face]/density;
+						const float projected=parent.projectedVelocityMPerS[axis][face];
+						if(!std::isfinite(recovered)||!std::isfinite(projected)){shapeValid=false;continue;}
+						changedFaces+=std::memcmp(&recovered,&projected,sizeof(float))!=0?1u:0u;
+						maximumGap=std::max(maximumGap,std::fabs(static_cast<double>(recovered)-projected));}}
+				bool proofMatches=ownerEddyParents[stage].size()==cells&&
+					ownerEddyCandidate[stage]==parent.acceptedCandidateIdentity&&
+					eddyParents[stage].eddyKinematicViscosityM2PerS.size()==cells;
+				const bool cpuForceShape=cpuForceBuilt&&cpuForce.eddyKinematicViscosityM2PerS.size()==cells;
+				const bool cpuComparisonAvailable=proofMatches&&cpuForceShape;
+				std::size_t cpuMetalDifferences=0u,cpuWalkDifferences=0u;
+				if(proofMatches)for(std::size_t cell=0u;cell<cells;++cell){const auto& proof=ownerEddyParents[stage][cell];
+					const float actual=eddyParents[stage].eddyKinematicViscosityM2PerS[cell];
+					if(cpuForceShape){const float cpu=cpuForce.eddyKinematicViscosityM2PerS[cell];
+						cpuMetalDifferences+=std::memcmp(&cpu,&actual,sizeof(float))!=0?1u:0u;
+						cpuWalkDifferences+=std::memcmp(&cpu,&proof.rounded,sizeof(float))!=0?1u:0u;
+						if(cell==0u||std::memcmp(&cpu,&proof.rounded,sizeof(float))!=0)
+							std::fprintf(stderr,"FORCE_EDDY_THREE_PATH stage=R%u cell=%zu units=m^2_s^-1 "
+							"metal=%.17g cpu32=%.17g walk=%.17g\n",stage,cell,static_cast<double>(actual),
+							static_cast<double>(cpu),static_cast<double>(proof.rounded));}
+					if(std::memcmp(&actual,&proof.rounded,sizeof(float))!=0)
+						std::fprintf(stderr,"FORCE_EDDY_WALK_MISMATCH stage=R%u cell=%zu actual=%.17g "
+							"walk=%.17g reference=%.17g bound=%.17g valid=%d\n",stage,cell,
+							static_cast<double>(actual),static_cast<double>(proof.rounded),proof.exact,proof.error,proof.valid?1:0);
+					proofMatches=proofMatches&&proof.valid&&std::isfinite(proof.error)&&proof.error>=0.0&&
+						std::memcmp(&actual,&proof.rounded,sizeof(float))==0;}
+				std::fprintf(stderr,"FORCE_EDDY_CPU_DIAGNOSTIC stage=R%u accepted=%d shape_valid=%d "
+					"comparison_available=%d cpu_metal_bit_differences=%zu cpu_walk_bit_differences=%zu error=%s\n",stage,
+					cpuForceBuilt?1:0,cpuForceShape?1:0,cpuComparisonAvailable?1:0,
+					cpuMetalDifferences,cpuWalkDifferences,cpuForceError.c_str());
+				std::size_t legacyMismatch=0u;
+				if(traceValid&&cpuForceShape)for(std::size_t cell=0u;cell<cells;++cell)
+					legacyMismatch+=std::memcmp(&cpuForce.eddyKinematicViscosityM2PerS[cell],
+						&velocityTrace.legacyStressArithmetic[22u*cells+cell],sizeof(float))!=0?1u:0u;
+				const bool arithmeticPinGate=traceValid&&proofMatches&&cpuComparisonAvailable&&
+					cpuMetalDifferences==0u&&cpuWalkDifferences==0u&&legacyMismatch>0u;
+				ownerMirrorBounded=ownerMirrorBounded&&arithmeticPinGate;
+				std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=force_arithmetic_pin stage=R%u "
+					"cpu_metal_bit_differences=%zu legacy_bit_differences=%zu passed=%d\n",
+					stage,cpuMetalDifferences,legacyMismatch,arithmeticPinGate?1:0);
+				for(unsigned int mode=0u;mode<4u;++mode){const auto& candidate=ownerEddyContractionCandidates[stage][mode];
+					bool available=cpuComparisonAvailable&&candidate.size()==cells;
+					std::size_t metalDifferences=0u,cpuDifferences=0u,preciseDifferences=0u,legacyDifferences=0u;
+					if(available)for(std::size_t cell=0u;cell<cells;++cell){const float v=candidate[cell];
+						available=available&&std::isfinite(v);
+						metalDifferences+=std::memcmp(&v,&eddyParents[stage].eddyKinematicViscosityM2PerS[cell],sizeof(float))!=0?1u:0u;
+						if(traceValid)preciseDifferences+=std::memcmp(&v,&velocityTrace.preciseStressArithmetic[22u*cells+cell],sizeof(float))!=0?1u:0u;
+						if(traceValid)legacyDifferences+=std::memcmp(&v,&velocityTrace.legacyStressArithmetic[22u*cells+cell],sizeof(float))!=0?1u:0u;
+						cpuDifferences+=std::memcmp(&v,&cpuForce.eddyKinematicViscosityM2PerS[cell],sizeof(float))!=0?1u:0u;}
+					std::fprintf(stderr,"FORCE_EDDY_CONTRACTION_HYPOTHESIS stage=R%u mode=%u comparison_available=%d "
+						"metal_bit_differences=%zu cpu_bit_differences=%zu precise_available=%d precise_bit_differences=%zu legacy_bit_differences=%zu first_value=%.17g\n",stage,mode,
+						available?1:0,metalDifferences,cpuDifferences,available&&traceValid?1:0,preciseDifferences,legacyDifferences,
+						available?static_cast<double>(candidate[0]):0.0);}
+				if(burnerOwnerGate){const bool fallbackRED=cpuComparisonAvailable&&cpuWalkDifferences==0u&&
+					ownerEddyFallbackMutation[stage];ownerMirrorBounded=ownerMirrorBounded&&fallbackRED;
+					std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=vreman_rounded_coefficient "
+						"stage=R%u cpu_walk_bit_exact=%d old_double_coefficient_differs=%d passed=%d\n",
+						stage,cpuComparisonAvailable&&cpuWalkDifferences==0u?1:0,
+						ownerEddyFallbackMutation[stage]?1:0,fallbackRED?1:0);}
+				eddyReplayValid=eddyReplayValid&&built&&parentValid&&stressBits&&shapeValid&&
+					eddyParents[stage].eddyKinematicViscosityM2PerS.size()==cells;
+				eddyProofValid[stage]=arithmeticPinGate&&parentValid&&stressBits&&shapeValid;
+				std::fprintf(stderr,"PROJECTED_HEUN_FORCE_EDDY_REPLAY stage=R%u accepted=%d parent_valid=%d "
+					"stress_bit_exact=%d quotient_shape_valid=%d quotient_changed_faces=%zu "
+					"quotient_maximum_gap_m_s^-1=%.17g proof_matches=%d error=%s\n",stage,built?1:0,parentValid?1:0,
+					stressBits?1:0,shapeValid?1:0,changedFaces,maximumGap,proofMatches?1:0,replayError.c_str());
+			}
+			std::vector<float> replayedEddy;
+			if(eddyReplayValid){replayedEddy.resize(cells);for(std::size_t cell=0u;cell<cells;++cell)
+				replayedEddy[cell]=0.5f*(eddyParents[0].eddyKinematicViscosityM2PerS[cell]+
+					eddyParents[1].eddyKinematicViscosityM2PerS[cell]);}
+			auto eddyPublicationMatches=[&](const auto& value,const bool available){return available&&
+				eddyReplayValid&&value.size()==cells&&ByteIdenticalVector(value,replayedEddy);};
+			const bool eddyPublicationBits=eddyPublicationMatches(ownerObserved.heunEddyKinematicViscosityM2PerS,true);
+			bool eddyPublicationRED=eddyPublicationBits&&
+				!eddyPublicationMatches(ownerObserved.heunEddyKinematicViscosityM2PerS,false);
+			if(eddyPublicationBits&&!replayedEddy.empty()){auto changed=replayedEddy;
+				changed[0]=std::nextafter(changed[0],std::numeric_limits<float>::infinity());
+				eddyPublicationRED=eddyPublicationRED&&!eddyPublicationMatches(changed,true);}
+			ownerMirrorBounded=ownerMirrorBounded&&eddyPublicationBits&&eddyPublicationRED;
+			std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=force_eddy_publication_replay "
+				"bit_exact=%d missing_changed_refused=%d passed=%d\n",eddyPublicationBits?1:0,
+				eddyPublicationRED?1:0,eddyPublicationBits&&eddyPublicationRED?1:0);
+			// Compose the two authenticated termwise parents through the actual
+			// binary32 half-sum. Neither the published residual nor its magnitude
+			// supplies the enclosure. Parent centers are the fp64 owner endpoints.
+			std::vector<double> eddyAverageBounds(cells,0.0);
+			bool eddyAverageValid=eddyProofValid[0]&&eddyProofValid[1]&&eddyPublicationBits&&
+				ownerEddyParents[0].size()==cells&&ownerEddyParents[1].size()==cells&&eddy64.size()==cells;
+			if(eddyAverageValid)for(std::size_t cell=0u;cell<cells;++cell){
+				const auto average=CertifiedMultiply(CertifiedRecord(0.5),CertifiedAdd(
+					ownerEddyParents[0][cell],ownerEddyParents[1][cell]));
+				eddyAverageValid=eddyAverageValid&&average.valid&&std::isfinite(average.error)&&average.error>=0.0&&
+					average.exact==eddy64[cell]&&std::memcmp(&average.rounded,&replayedEddy[cell],sizeof(float))==0;
+				eddyAverageBounds[cell]=average.error;}
+			const auto eddyAverageBound=evaluateOwnerField("R1_heun_eddy_viscosity","m^2_s^-1",
+				ownerObserved.heunEddyKinematicViscosityM2PerS,eddy64,
+				[&](std::size_t cell){return eddyAverageBounds[cell];});
+			ownerMirrorBounded=ownerMirrorBounded&&eddyAverageValid&&eddyAverageBound.passed;
+			std::fprintf(stderr,"PROJECTED_HEUN_FORCE_EDDY_AVERAGE parents_authenticated=%d "
+				"half_sum_bit_exact=%d bound_source=termwise_R0_R1 passed=%d\n",
+				eddyProofValid[0]&&eddyProofValid[1]?1:0,eddyAverageValid?1:0,
+				eddyAverageValid&&eddyAverageBound.passed?1:0);
 			const OwnerFieldBound representedRatioBound=streamBound(
 				ownerObserved.representedPressureRatio,representedRatio64,
 				"R1_represented_pressure_ratio","dimensionless");
@@ -16750,7 +18534,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			packedFaceOffset[2u]+FireProductionProjectionFaceCount(shape,2u);
 		const double acceptedFluxScale=ownerRequest64.scalarContract.timeStepS/shape.cellWidthM;
 		const std::vector<double>& ownerSourceDelta64=ownerRequest64.source.SourceDelta();
-		auto conservativeArithmeticScale=[&](const std::size_t component,
+		// Retained only as a RED witness of the retired parent-dropping check;
+		// this R1 Euler heuristic is not the Heun publication's acceptance bound.
+		auto retiredConservativeArithmeticScale=[&](const std::size_t component,
 			const std::size_t cell){
 			const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
 				z=cell/(shape.nx*shape.ny);
@@ -16798,7 +18584,11 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			}
 			return scale;
 		};
-		const char* conservativeName[9]={"rhoZ","CH4","O2","CO2","H2O","N2","CO",
+		const bool scalarPublicationProofPresent=ownerPublishedScalarProofValid&&
+			ownerPublishedScalarBounds.size()==9u*cells;
+		ownerMirrorBounded=ownerMirrorBounded&&scalarPublicationProofPresent;
+		bool retiredScalarBoundRefuses=false;
+		const char* conservativeName[9]={"rhoZ","CH4","O2","N2","CO2","H2O","CO",
 			"carbon","sensible_energy"};
 		for(std::size_t component=0u;component<9u;++component){std::vector<float> device(cells);
 			std::vector<double> mirror(cells);for(std::size_t cell=0u;cell<cells;++cell){
@@ -16806,10 +18596,19 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				mirror[cell]=ownerObserved64.conservativeValues[component*cells+cell];}
 			const OwnerFieldBound bound=evaluateOwnerField(conservativeName[component],
 				component==8u?"J_m^-3":"kg_m^-3",device,mirror,[&,component](std::size_t cell){
-				const double termMagnitude=conservativeArithmeticScale(component,cell)+
+				return scalarPublicationProofPresent?ownerPublishedScalarBounds[component*cells+cell]:0.0;});
+			if(burnerColdStartProbe)for(std::size_t cell=0u;cell<cells;++cell){
+				const double termMagnitude=retiredConservativeArithmeticScale(component,cell)+
 					std::fabs(mirror[cell])+std::fabs(static_cast<double>(device[cell]));
-				return ownerGamma512*termMagnitude;});
+				retiredScalarBoundRefuses=retiredScalarBoundRefuses||
+					std::fabs(static_cast<double>(device[cell])-mirror[cell])>ownerGamma512*termMagnitude;}
 			ownerMirrorBounded=ownerMirrorBounded&&bound.passed;}
+		if(burnerColdStartProbe){
+			std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=scalar_parent_uncertainty_omission "
+				"retired_heuristic_refuses=%d inherited_publication_proof=%d passed=%d\n",
+				retiredScalarBoundRefuses?1:0,scalarPublicationProofPresent?1:0,
+				retiredScalarBoundRefuses&&scalarPublicationProofPresent?1:0);
+			ownerMirrorBounded=ownerMirrorBounded&&retiredScalarBoundRefuses;}
 		FireProductionProjectedHeunMetalOwnerRequest wrongAverageRequest=ownerRequest;
 		wrongAverageRequest.qualificationWrongAveragedFluxParent=true;
 		FireProductionProjectedHeunMetalOwnerResult wrongAverageMutant;
@@ -16896,6 +18695,46 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		ownerSourceBuilt?1:0,owner64Begin?1:0,owner64R0?1:0,owner64R1?1:0,
 		owner64Accepted?1:0,ownerSourceBuilt?owner64Error.c_str():ownerSourceError.c_str(),
 		ownerMirrorBounded?1:0);
+	if(burnerOwnerGate){
+		FireProductionAcceptedFuelBudget::Result inletBudget;
+		std::string budgetError;
+		const bool budgetAvailable=FireProductionAcceptedFuelBudget::Reduce(
+			ownerRequest.lineage.eos.physicalFlux.transport.shape,
+			ownerRequest.lineage.frozenSource.TimeStepS(),
+			ownerRequest.lineage.eos.physicalFlux.transport.conservativeValues,
+			ownerRequest.lineage.frozenSource.SourceDelta(),ownerObserved,inletBudget,budgetError);
+		// This is a conservation diagnostic, not a new numerical tolerance.
+		// The existing per-cell owner enclosures remain the arithmetic gate.
+		std::fprintf(stderr,"BURNER_FUEL_BALANCE fixture=%s available=%d boundary_kg=%.17g "
+			"divergence_kg=%.17g state_change_kg=%.17g source_kg=%.17g residual_kg=%.17g error=%s\n",
+			burnerColdStartProbe?"cold":"mixed",budgetAvailable?1:0,inletBudget.boundaryTransportKG,
+			inletBudget.divergenceTransportKG,inletBudget.stateChangeKG,inletBudget.frozenSourceKG,
+			inletBudget.closureResidualKG,budgetError.c_str());
+		auto liveInput=ownerRequest;
+		liveInput.qualificationCaptureIterationTrace=false;
+		liveInput.qualificationProductionStageTokens=false;
+		FireProductionResidentStepResult liveOutput;
+		FireProductionProjectedHeunMetalOwnerResult liveDiagnostic;
+		std::string liveError;
+		const bool liveSame=AttemptFireProductionProjectedHeunResidentStepMetal(
+			liveInput,liveOutput,&liveDiagnostic,&liveError)&&
+			liveOutput.AcceptedManifoldTokenMatchesCurrentPayload()&&
+			FireProductionOwnerConvergenceProbe::SameAcceptedOwner(ownerObserved,liveDiagnostic,liveError);
+		std::fprintf(stderr,"BURNER_LIVE_REFERENCE fixture=%s identical=%d error=%s\n",
+			burnerColdStartProbe?"cold":"mixed",liveSame?1:0,liveError.c_str());
+		const bool applicableREDs=ownerArithmeticBoundCanFail&&projectionBracketRED&&effectiveAsMolecularRED&&
+			r2ImmediateEndpointClassRED&&endpointClassAuthorityRED&&endpointPredicateIdentityRED&&
+			transportInvariantREDs&&(wrongAveragedFluxParentRED||mixedControlPrerequisitePassed)&&
+			activeCycleREDs&&limiterOutcomeRED&&heunWeightingMutantAccepted&&heunWeightingRED&&
+			(sharedAlphaRED||mixedControlPrerequisitePassed);
+		const bool passed=budgetAvailable&&liveSame&&ownerAccepted&&owner32Accepted&&owner64Accepted&&
+			ownerIterationTraceBounded&&ownerMirrorBounded&&inletStreamingRED&&
+			productionQualificationRefusalRED&&applicableREDs;
+		std::fprintf(stderr,"BURNER_OWNER_GATE fixture=%s mixed_controls_prerequisite=%d per_iteration=%d per_field=%d reds=%d production_admission=1 passed=%d\n",
+			burnerColdStartProbe?"cold":"mixed",mixedControlPrerequisitePassed?1:0,
+			ownerIterationTraceBounded?1:0,ownerMirrorBounded?1:0,applicableREDs?1:0,passed?1:0);
+		return passed?0:222;
+	}
 	bool convergenceProbePassed=true;
 	if(convergenceOutputPath){
 		using namespace FireProductionOwnerConvergenceProbe;
@@ -17266,6 +19105,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 
 int RunProductionMetalFP64KernelSweep()
 {
+	const int prescribedIdentity=RunProductionPrescribedBoundaryIdentityCPUFixture();
+	if(prescribedIdentity!=0)return prescribedIdentity;
 	const int transport=RunProductionResidentTransportMetalFP64Fixture();
 	if( transport!=0 ) return transport;
 	const int physicalFlux=RunProductionResidentPhysicalFluxMetalFP64Fixture();
@@ -17375,10 +19216,26 @@ int main(int argc,char** argv)
 		return RunProductionScalarFCTMetalStageFixture();
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-resident-eos-metal")==0)
 		return RunProductionResidentEOSCandidateMetalFP64Fixture();
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-eos-metal")==0)
+		return RunProductionResidentEOSCandidateMetalFP64Fixture(false,true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-r225-resident-boundary-gate")==0)
 		return RunProductionResidentEOSCandidateMetalFP64Fixture(true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-resident-target-metal")==0)
 		return RunProductionResidentTargetLineageMetalFP64Fixture();
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-target-metal")==0)
+		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-owner-metal")==0)
+		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-reference")==0)
+		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-owner-gate")==0)
+		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,false,true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-cold-start-probe")==0)
+		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,false,true,true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-launcher-inputs")==0)
+		return RunProductionBurnerLauncherInputFixture();
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-launcher-gate")==0)
+		return RunProductionBurnerLauncherIntegrationFixture();
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-owner-convergence-fixture")==0)
 		return RunProductionResidentTargetLineageMetalFP64Fixture(argv[2]);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-metal-fp64-kernel-sweep")==0)

@@ -325,6 +325,16 @@ def transform(text: str, name: str, suffix: str) -> str:
             raise RuntimeError("PPM quadratic branch seam changed")
         text = text.replace(ppm_branch, traced_ppm_branch)
     if name == "FireProductionTransport" and suffix == ".cpp":
+        alpha_domain = "alpha<0.0f||alpha>1.0f"
+        if text.count(alpha_domain) != 1:
+            raise RuntimeError("compatible momentum alpha admissibility seam changed")
+        text = text.replace(alpha_domain,
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::AdmissibilityGuard,"
+            "[&](){return alpha<0.0f;})||"
+            "FireProductionRoundoffTrace::EvaluateBranch("
+            "FireProductionRoundoffTrace::BranchSite::AdmissibilityGuard,"
+            "[&](){return alpha>1.0f;})")
         seam = "velocity!=seamVelocity"
         if text.count(seam) != 1:
             raise RuntimeError("periodic carrier seam predicate changed")

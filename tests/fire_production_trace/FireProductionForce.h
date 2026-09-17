@@ -161,6 +161,11 @@ namespace RISEFireProductionTrace
 	{
 		FireProductionFrozenForceRequest force;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> cellGasPhaseSourceRateKGPerM3S;
+		//! Optional x-fast bottom inlet classification. Momentum/density already
+		//! carry the projected boundary velocity; this mask preserves it through
+		//! the cell gather, inhomogeneous wall ghost and phase-source restriction.
+		//! Empty keeps the historical homogeneous-wall stencil.
+		std::vector<unsigned char> bottomFuelMask;
 	};
 
 	struct FireProductionNonpressureMomentumRHSResult
@@ -370,7 +375,8 @@ namespace RISEFireProductionTrace
 
 	//! Complete simultaneous host live-set certificate for the staged owner.
 	bool FireProductionProjectedHeunCPUOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
+		bool prescribedBottomFlux=false );
 
 	//! r60 permits rounding-scale negative constituent rows.  Gas density is
 	//! therefore the signed sum of the six represented gas rows; per-row clamps
@@ -438,6 +444,11 @@ namespace RISEFireProductionTrace
 	bool FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
+	//! Adds the caller mask plus its separately rounded upload/private buffers.
+	bool FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes,
+		bool hasBurner );
 
 	//! One-command Private-buffer stage evaluator.  Inputs upload before the
 	//! first kernel and the six published rate/diagnostic fields stage only after
@@ -447,6 +458,33 @@ namespace RISEFireProductionTrace
 		const FireProductionNonpressureMomentumRHSRequest& request,
 		FireProductionNonpressureMomentumRHSResult& result,
 		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		std::string* error=0 );
+
+	//! Qualification-only terminal velocity copies plus a diagnostic stress
+	//! clone. Not used by the resident production owner. Additional device
+	//! allocation is separate from the ordinary comparator working-set
+	//! diagnostic; certificate, private outputs, staging and host trace copies
+	//! together remain under its two-GiB resource cap.
+	struct FireProductionForceVelocityTrace
+	{
+		std::vector<FireProductionRoundoffTrace::TraceFloat> packedFaceVelocityMPerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> componentMajorCellVelocityMPerS;
+		//! Diagnostic clone of build_stress: 23 component-major planes:
+		//! gradient[9], alphaSquared, beta[9], raw minors, quotient, root, eddy.
+		//! Admitted only when its eddy plane bit-matches the original kernel.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> stressArithmetic;
+		//! Same inputs/source with precise functions but contraction enabled;
+		//! diagnostic alternative only, never replaces resident output.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> preciseStressArithmetic;
+		//! Historical fast-functions/contraction-enabled mutation control.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> legacyStressArithmetic;
+		std::uint64_t additionalMetalAllocationBytes=0u;
+	};
+	bool EvaluateFireProductionNonpressureMomentumRHSMetalWithVelocityTrace(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		FireProductionForceVelocityTrace& trace,
 		std::string* error=0 );
 
 	//! Live Metal counterpart of the complete r190 projected-Heun owner.  The
@@ -610,11 +648,11 @@ namespace RISEFireProductionTrace
 	};
 
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false );
 
 	//! Qualification observer only: production peak plus one bounded trace staging packet.
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false );
 
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest& request,
@@ -709,12 +747,15 @@ namespace RISEFireProductionTrace
 		id<MTLBuffer> cellGasPhaseSourceRateKGPerM3S;
 		id<MTLBuffer> packedFaceDensityKGPerM3;
 		id<MTLBuffer> packedMomentumKGPerM2S;
+		//! Optional immutable, private x-fast bottom classification, admitted by
+		//! the caller's existing case-input lineage. No interstage upload occurs.
+		id<MTLBuffer> bottomFuelMask;
 
 		FireProductionMetalNonpressureMomentumRHSResidentInput() :
 			ambientDensityKGPerM3(1.0f),vremanCoefficient(0.07f),commandBuffer(nil),
 			cellGasDensityKGPerM3(nil),molecularKinematicViscosityM2PerS(nil),
 			cellGasPhaseSourceRateKGPerM3S(nil),packedFaceDensityKGPerM3(nil),
-			packedMomentumKGPerM2S(nil)
+			packedMomentumKGPerM2S(nil),bottomFuelMask(nil)
 		{
 			gravityMPerS2.fill(0.0f);boundary.fill(FireProductionProjectionPeriodic);
 		}

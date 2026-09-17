@@ -559,6 +559,196 @@ int main()
 	using namespace RISE;
 	std::string error;
 	{
+		// r239: a prescribed burner is a constraint, not an initial momentum.
+		// Asymmetric location distinguishes x-fast indexing from a transpose.
+		auto inlet=EmptyRequest(8u,6u,4u);
+		SetBoundary(inlet,FireProductionProjectionPressureOpen);
+		inlet.boundary[4]=FireProductionProjectionWall;
+		inlet.injectedGasDensityKGPerM3=0.5f;
+		inlet.bottomFuelMask.assign(48u,0u);
+		inlet.bottomFuelMassFluxKGPerM2S.assign(48u,0.0f);
+		const std::size_t burner=2u*8u+3u;
+		inlet.bottomFuelMask[burner]=1u;
+		inlet.bottomFuelMassFluxKGPerM2S[burner]=0.0625f;
+		inlet.provisionalMomentumKGPerM2S[2][burner]=-0.25f;
+		inlet.residentPhysicalOpenVCycleCount=64u;
+		std::uint64_t baseBytes=0u,burnerBytes=0u;
+		Check(FireProductionProjectionWorkingSetBytes(inlet.shape,baseBytes)&&
+			FireProductionProjectionWorkingSetBytes(inlet.shape,burnerBytes,true)&&
+			burnerBytes-baseBytes==48u*(sizeof(unsigned char)+3u*sizeof(float))+2u*16384u,
+			"r239 optional operands add exact host payload plus two rounded Metal buffers");
+		FireProductionProjectionResult projected;
+		Check(ProjectFireProductionResidentPhysicalCPU(inlet,projected,&error),
+			"r239 mixed burner projection completes");
+		if(projected.faceDensityKGPerM3[2].size()>burner){
+			const float density=0.5f*inlet.gasDensityKGPerM3[burner]+0.25f;
+			Check(projected.faceDensityKGPerM3[2][burner]==density&&
+				projected.momentumKGPerM2S[2][burner]==0.0625f&&
+				projected.velocityMPerS[2][burner]==0.0625f/density&&
+				projected.pressureOpenInflow[4][burner]==0u,
+				"r239 prescribed face uses arithmetic density and resists reversed provisional momentum");
+			Check(projected.validationPassed,
+				"r239 prescribed face participates in projection RHS and existing residual gate");
+		}
+#ifdef __APPLE__
+		FireProductionProjectionResult metalBurner;
+		const bool metalBurnerOK=ProjectFireProductionMetal(inlet,metalBurner,&error);
+		if(!metalBurnerOK)std::cerr<<"r239 Metal burner detail: "<<error<<'\n';
+		Check(metalBurnerOK&&metalBurner.validationPassed&&
+			metalBurner.momentumKGPerM2S[2][burner]==0.0625f&&
+			metalBurner.faceDensityKGPerM3[2][burner]==0.75f&&
+			metalBurner.velocityMPerS[2][burner]==0.0625f/0.75f,
+			"r239 device burner honors fixed momentum and existing residual gate");
+#endif
+		{
+			using namespace FireSim;
+			PeriodicMACShape shape;shape.nx=8u;shape.ny=6u;shape.nz=4u;
+			shape.cellWidthM=inlet.shape.cellWidthM;
+			OpenBoundaryConfig3D boundary;
+			boundary.ambientDensityKGPerM3=1.0;boundary.injectedGasDensityKGPerM3=0.5;
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component){
+				boundary.ambientState[component]=0.0;boundary.injectedState[component]=0.0;
+			}
+			boundary.ambientState[1]=1.0;boundary.injectedState[1]=0.5;
+			boundary.pressureTolerancePa=1e-10;
+			boundary.bottomFuelMask.assign(inlet.bottomFuelMask.begin(),inlet.bottomFuelMask.end());
+			boundary.bottomFuelMassFluxKGPerM2S.assign(inlet.bottomFuelMassFluxKGPerM2S.begin(),
+				inlet.bottomFuelMassFluxKGPerM2S.end());
+			OpenMACField3D momentum;
+			for(unsigned int axis=0u;axis<3u;++axis)momentum.component[axis].assign(
+				inlet.provisionalMomentumKGPerM2S[axis].begin(),inlet.provisionalMomentumKGPerM2S[axis].end());
+			OpenMACProjection3DResult reference;
+			const bool solved=ProjectPressureOpenMACVelocity3D(shape,
+				std::vector<double>(shape.CellCount(),1.0),momentum,
+				std::vector<double>(shape.CellCount(),0.0),boundary,inlet.timeStepS,
+				1e-10,reference,&error);
+			Check(solved,"r239 live fp64 oracle solves the same opposed-inlet input");
+			if(solved&&projected.faceDensityKGPerM3[2].size()>burner){
+				Check(projected.faceDensityKGPerM3[2][burner]==
+					static_cast<float>(reference.faceDensityKGPerM3.component[2][burner])&&
+					projected.velocityMPerS[2][burner]==
+					static_cast<float>(reference.velocityMPerS.component[2][burner]),
+					"r239 burner face bit-matches live fp64 oracle binary32 projection");
+			}
+		}
+		auto oldOpen=inlet;oldOpen.bottomFuelMask.clear();oldOpen.bottomFuelMassFluxKGPerM2S.clear();
+		oldOpen.injectedGasDensityKGPerM3=0.0f;
+		oldOpen.boundary[4]=FireProductionProjectionPressureOpen;
+		FireProductionProjectionResult oldResult;
+		Check(ProjectFireProductionResidentPhysicalCPU(oldOpen,oldResult,&error)&&
+			oldResult.momentumKGPerM2S[2][burner]!=0.0625f,
+			"r239 old pressure-open mutant fails the prescribed-momentum identity");
+		auto correction=inlet;
+		correction.openHeadMode=FireProductionProjectionUseSealedOpenHead;
+		for(unsigned int side=0u;side<6u;++side)correction.sealedPressureOpenDynamicPressurePa[side].assign(
+			side<2u?24u:(side<4u?32u:48u),side==4u?0.0f:-1.0f);
+		FireProductionProjectionResult restored;
+		Check(ProjectFireProductionRestorationCPU(correction,restored,&error)&&
+			restored.maximumPostProjectionResidualPerS==0.0f&&
+			restored.momentumKGPerM2S[2][burner]==0.0625f&&
+			restored.velocityMPerS[2][burner]==0.0625f/0.75f,
+			"r239 zero correction ignores physical head and preserves imposed burner");
+		inlet.bottomFuelMassFluxKGPerM2S[burner]=0.0f;
+		Check(ProjectFireProductionResidentPhysicalCPU(inlet,projected,&error)&&
+			projected.momentumKGPerM2S[2][burner]==0.0f&&
+			projected.velocityMPerS[2][burner]==0.0f,
+			"r239 zero-flux masked burner remains fixed");
+#ifdef __APPLE__
+		FireProductionProjectionResult metalZero;
+		Check(ProjectFireProductionMetal(inlet,metalZero,&error)&&
+			metalZero.momentumKGPerM2S[2][burner]==0.0f&&
+			metalZero.velocityMPerS[2][burner]==0.0f,
+			"r239 device zero-flux mask overrides reversed provisional momentum");
+#endif
+		inlet.bottomFuelMask[burner]=2u;
+		Check(!ValidateFireProductionProjectionRequest(inlet,&error),
+			"r239 refuses nonbinary burner mask");
+		inlet.bottomFuelMask[burner]=0u;inlet.bottomFuelMassFluxKGPerM2S[burner]=0.0625f;
+		Check(!ValidateFireProductionProjectionRequest(inlet,&error),
+			"r239 refuses imposed flux outside mask");
+		std::fill(inlet.bottomFuelMask.begin(),inlet.bottomFuelMask.end(),0u);
+		std::fill(inlet.bottomFuelMassFluxKGPerM2S.begin(),inlet.bottomFuelMassFluxKGPerM2S.end(),0.0f);
+		auto noMask=inlet;noMask.bottomFuelMask.clear();noMask.bottomFuelMassFluxKGPerM2S.clear();
+		noMask.injectedGasDensityKGPerM3=0.0f;
+		FireProductionProjectionResult emptyMaskResult,absentMaskResult;
+		Check(ProjectFireProductionResidentPhysicalCPU(inlet,emptyMaskResult,&error)&&
+			ProjectFireProductionResidentPhysicalCPU(noMask,absentMaskResult,&error)&&
+			emptyMaskResult.pressurePa==absentMaskResult.pressurePa&&
+			emptyMaskResult.velocityMPerS==absentMaskResult.velocityMPerS&&
+			emptyMaskResult.momentumKGPerM2S==absentMaskResult.momentumKGPerM2S&&
+			emptyMaskResult.faceDensityKGPerM3==absentMaskResult.faceDensityKGPerM3,
+			"r239 empty classification has exact no-inlet collapse");
+#ifdef __APPLE__
+		FireProductionProjectionResult metalEmpty,metalAbsent;
+		Check(ProjectFireProductionMetal(inlet,metalEmpty,&error)&&
+			ProjectFireProductionMetal(noMask,metalAbsent,&error)&&
+			metalEmpty.pressurePa==metalAbsent.pressurePa&&
+			metalEmpty.velocityMPerS==metalAbsent.velocityMPerS&&
+			metalEmpty.momentumKGPerM2S==metalAbsent.momentumKGPerM2S&&
+			metalEmpty.faceDensityKGPerM3==metalAbsent.faceDensityKGPerM3&&
+			metalEmpty.pressureOpenInflow==metalAbsent.pressureOpenInflow,
+			"r239 device empty classification has exact no-inlet collapse");
+#endif
+	}
+	{
+		// Analytic zero-pressure solution, not a CPU/device agreement heuristic.
+		// The authored target equals the divergence of fixed bottom velocities.
+		// Opposed input momentum must be replaced BEFORE the RHS is assembled.
+		auto inlet=EmptyRequest(7u,5u,4u);
+		SetBoundary(inlet,FireProductionProjectionPressureOpen);
+		inlet.boundary[4]=FireProductionProjectionWall;
+		inlet.injectedGasDensityKGPerM3=0.5f;
+		inlet.bottomFuelMask.assign(35u,0u);
+		inlet.bottomFuelMassFluxKGPerM2S.assign(35u,0.0f);
+		for(std::size_t cell=0u;cell<inlet.shape.CellCount();++cell)
+			inlet.gasDensityKGPerM3[cell]=0.5f+static_cast<float>(cell%13u)*0.0625f;
+		const std::array<std::size_t,4> imposed={{0u,11u,26u,34u}};
+		for(std::size_t index=0u;index<imposed.size();++index){
+			const std::size_t face=imposed[index];
+			inlet.bottomFuelMask[face]=1u;
+			const float flux=static_cast<float>(index)*0.015625f;
+			inlet.bottomFuelMassFluxKGPerM2S[face]=flux;
+			inlet.provisionalMomentumKGPerM2S[2][face]=-0.25f;
+			const float density=0.5f*inlet.gasDensityKGPerM3[face]+0.25f;
+			inlet.divergenceTargetPerS[face]=-(flux/density)/inlet.shape.cellWidthM;
+		}
+		auto analyticCheck=[&](const FireProductionProjectionResult& result){
+			if(result.pressurePa.size()!=inlet.shape.CellCount()||!result.validationPassed||
+				result.maximumPreProjectionResidualPerS!=0.0f||
+				result.maximumPostProjectionResidualPerS!=0.0f)return false;
+			for(const float pressure:result.pressurePa)if(pressure!=0.0f)return false;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t count=FireProductionProjectionFaceCount(inlet.shape,axis);
+				if(result.velocityMPerS[axis].size()!=count||
+					result.momentumKGPerM2S[axis].size()!=count||
+					result.faceDensityKGPerM3[axis].size()!=count)return false;
+				for(std::size_t face=0u;face<count;++face){
+					const bool masked=axis==2u&&face<35u&&inlet.bottomFuelMask[face]!=0u;
+					const float flux=masked?inlet.bottomFuelMassFluxKGPerM2S[face]:0.0f;
+					const float density=masked?0.5f*inlet.gasDensityKGPerM3[face]+0.25f:1.0f;
+					if(result.momentumKGPerM2S[axis][face]!=flux||
+						result.velocityMPerS[axis][face]!=flux/density||
+						(masked&&result.faceDensityKGPerM3[axis][face]!=density))return false;
+				}
+			}
+			return true;
+		};
+		FireProductionProjectionResult cpu;
+		const bool cpuOK=ProjectFireProductionResidentPhysicalCPU(inlet,cpu,&error);
+		if(!cpuOK||!analyticCheck(cpu))std::cerr<<"r239 analytic CPU: "<<error<<
+			" pre="<<cpu.maximumPreProjectionResidualPerS<<" post="<<cpu.maximumPostProjectionResidualPerS<<'\n';
+		Check(cpuOK&&analyticCheck(cpu),
+			"r239 heterogeneous corner inlets have the analytic zero-pressure solution on CPU");
+#ifdef __APPLE__
+		FireProductionProjectionResult metal;
+		const bool metalOK=ProjectFireProductionMetal(inlet,metal,&error);
+		if(!metalOK||!analyticCheck(metal))std::cerr<<"r239 analytic Metal: "<<error<<
+			" pre="<<metal.maximumPreProjectionResidualPerS<<" post="<<metal.maximumPostProjectionResidualPerS<<'\n';
+		Check(metalOK&&analyticCheck(metal),
+			"r239 heterogeneous corner inlets have the analytic zero-pressure solution on Metal");
+#endif
+	}
+	{
 		FireProductionRestorationPlateauValidation burning;
 		Check(FireProductionRestorationPlateauWithinBand(
 			0.0025328069638265172,0.00021371165348682553,
@@ -1609,8 +1799,12 @@ int main()
 		Count(metalSource," newBufferWithBytes:")==1u&&
 		residentProjectionBody.find(" newBufferWithLength:")==std::string::npos&&
 		residentProjectionBody.find(" newBufferWithBytes:")==std::string::npos&&
-		Count(metalSource,"CommitProjectionCommand(")==5u&&
-		Count(metalSource,"CopyProjectionBuffer(")==16u&&
+		// Sealed-class/head metadata adds one command and two private copies.
+		Count(metalSource,"CommitProjectionCommand(metadataCommand)")==1u&&
+		Count(metalSource,"CopyProjectionBuffer(metadataBlit,")==2u&&
+		Count(metalSource,"CommitProjectionCommand(")==5u+1u&&
+		Count(metalSource,"CopyProjectionBuffer(upload,burnerUpload,")==1u&&
+		Count(metalSource,"CopyProjectionBuffer(")==16u+2u+1u&&
 		Count(metalSource,"ProjectionTransferScope transferScope(")==3u&&
 		Count(residentProjectionBody,"ObserveProjectionInvocation();")==2u&&
 		residentProjectionBody.find(" copyFromBuffer:")==std::string::npos&&
@@ -1654,7 +1848,7 @@ int main()
 			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; };")==2u&&
 		Count(xcode,"FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile;")==2u&&
 		Count(xcode,"FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "
-			"\"-fno-fast-math -ffp-contract=off\"; };")==2u&&
+			"\"-fobjc-arc -fno-fast-math -ffp-contract=off\"; };")==2u&&
 		filelist.find("FireProductionProjectionMac.mm")!=std::string::npos&&
 		filelist.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&
 		androidSources.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&

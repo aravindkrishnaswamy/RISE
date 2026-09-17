@@ -105,7 +105,7 @@ namespace RISE
 	}
 
 	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool )
 	{
 		bytes=0u;return false;
 	}
@@ -122,7 +122,7 @@ namespace RISE
 	}
 
 	bool FireProductionResidentTargetLineageMetalWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool )
 	{
 		bytes=0u;return false;
 	}

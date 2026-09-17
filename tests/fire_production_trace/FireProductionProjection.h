@@ -80,6 +80,11 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat timeStepS;
 		FireProductionRoundoffTrace::TraceFloat ambientDensityKGPerM3;
 		std::array<FireProductionProjectionBoundary,6> boundary;
+		//! r239: fixed lower-z burner faces within the canonical adiabatic bed.
+		//! Empty vectors mean no burner. Zero flux on a masked face is still fixed.
+		std::vector<unsigned char> bottomFuelMask;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> bottomFuelMassFluxKGPerM2S;
+		FireProductionRoundoffTrace::TraceFloat injectedGasDensityKGPerM3;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> gasDensityKGPerM3;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> provisionalMomentumKGPerM2S;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> divergenceTargetPerS;
@@ -92,6 +97,7 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat endpointVelocityToleranceMPerS;
 
 		FireProductionProjectionRequest() : timeStepS(0.0f),ambientDensityKGPerM3(0.0f),
+			injectedGasDensityKGPerM3(0.0f),
 			residentPhysicalOpenVCycleCount(17u),
 			openClassificationMode(FireProductionProjectionDeriveOpenClassification),
 			openHeadMode(FireProductionProjectionDeriveCurrentOpenHead),
@@ -145,6 +151,9 @@ namespace RISEFireProductionTrace
 	bool FireProductionProjectionWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
+	//! Includes optional packed burner operands without changing the no-inlet certificate.
+	bool FireProductionProjectionWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner );
 
 	bool FireProductionProjectionResidualWithinBand(
 		FireProductionRoundoffTrace::TraceFloat maximumResidualPerS,
@@ -213,6 +222,10 @@ namespace RISEFireProductionTrace
 		std::array<id<MTLBuffer>,3> provisionalMomentumKGPerM2S;
 		std::array<std::size_t,3> provisionalMomentumByteOffset;
 		id<MTLBuffer> divergenceTargetPerS;
+		//! Optional immutable Private operand: nx*ny FireProductionRoundoffTrace::TraceFloat mask values followed
+		//! by nx*ny prescribed mass fluxes. Caller owns validation and lifetime.
+		//! The owner binds these exact bytes through its immutable input root.
+		id<MTLBuffer> bottomFuelMaskAndMassFlux;
 		//! Optional device-issued identity of the exact target surface.  Live
 		//! projected-Heun owners must provide it; legacy resident callers leave it
 		//! nil and consequently receive no projection publication identity.
@@ -230,7 +243,8 @@ namespace RISEFireProductionTrace
 		id<MTLBuffer> sealedPressureOpenDynamicPressurePa;
 
 		FireProductionMetalProjectionResidentInput() : gasDensityKGPerM3(nil),
-			divergenceTargetPerS(nil),targetPublicationIdentity(nil),targetConsumerIdentity(nil),
+			divergenceTargetPerS(nil),bottomFuelMaskAndMassFlux(nil),
+			targetPublicationIdentity(nil),targetConsumerIdentity(nil),
 			sealedPressureOpenInflow(nil),sealedPressureOpenDynamicPressurePa(nil)
 		{
 			provisionalMomentumKGPerM2S.fill(nil);

@@ -39,14 +39,24 @@ namespace RISE
 		return false;
 	}
 
+	bool EvaluateFireProductionNonpressureMomentumRHSMetalWithVelocityTrace(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		FireProductionForceVelocityTrace& trace,std::string* error)
+	{
+		trace=FireProductionForceVelocityTrace();
+		return EvaluateFireProductionNonpressureMomentumRHSMetal(request,result,diagnostics,error);
+	}
+
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool )
 	{
 		bytes=0u;return false;
 	}
 
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool )
 	{
 		bytes=0u;return false;
 	}

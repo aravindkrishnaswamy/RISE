@@ -626,6 +626,14 @@ namespace RISEFireProductionFP64
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes )
 	{
+		return FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,bytes,false);
+	}
+
+	bool FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes,
+		bool hasBurner )
+	{
 		bytes=0u;
 		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
 			shape.nz<4u||shape.nz>1024u ) return false;
@@ -647,6 +655,7 @@ namespace RISEFireProductionFP64
 			rounded(faces)+rounded(3u*cells)+rounded(9u*cells)+
 			2u*rounded(cells)+4u*rounded(faces)+
 			2u*rounded(cells)+4u*rounded(faces)+quantum;
+		if(hasBurner)bytes+=nx*ny+2u*((nx*ny+quantum-1u)/quantum)*quantum;
 		return true;
 	}
 
@@ -669,7 +678,7 @@ namespace RISEFireProductionFP64
 	}
 
 	bool FireProductionProjectedHeunCPUOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux )
 	{
 		bytes=0u;
 		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
@@ -687,6 +696,10 @@ namespace RISEFireProductionFP64
 			274u*cells+97u*faces>std::numeric_limits<std::uint64_t>::max()/sizeof(double))
 			return false;
 		bytes=(274u*cells+97u*faces)*sizeof(double);
+		// Conservatively charge 32 simultaneous copies of authored inlet operands
+		// across retained requests, three stage builders and projection scratch.
+		if(prescribedBottomFlux)bytes+=32u*(shape.nx*shape.ny*(sizeof(double)+sizeof(unsigned char))+
+			9u*sizeof(double));
 		return true;
 	}
 
@@ -889,7 +902,8 @@ namespace RISEFireProductionFP64
 		const std::vector<double>* fixedDynamicViscosityPaS,
 		bool propagateAllocationFailure,
 		FireProductionFrozenForceResult& result,
-		std::string* error )
+		std::string* error,
+		const std::vector<unsigned char>* bottomFuelMask=0 )
 	{
 		result=FireProductionFrozenForceResult();
 		try {
@@ -967,7 +981,10 @@ namespace RISEFireProductionFP64
 									"production frozen-force periodic face seam differs");
 						}
 						if( request.boundary[2u*axis]==FireProductionProjectionWall ) {
-							xyz[axis]=0u;faceVelocity[axis][FaceIndex(shape,axis,
+							xyz[axis]=0u;
+							const bool inlet=axis==2u&&bottomFuelMask&&
+								!bottomFuelMask->empty()&&(*bottomFuelMask)[xyz[1]*shape.nx+xyz[0]]!=0u;
+							if(!inlet)faceVelocity[axis][FaceIndex(shape,axis,
 								xyz[0],xyz[1],xyz[2])]=0.0;
 						}
 						if( request.boundary[2u*axis+1u]==FireProductionProjectionWall ) {
@@ -1012,8 +1029,12 @@ namespace RISEFireProductionFP64
 							} else if( request.boundary[2u*derivative]==FireProductionProjectionPeriodic ) {
 								std::size_t xyz[]={x,y,z};xyz[derivative]=extent-1u;
 								previous=cellVelocity[component][CellIndex(shape,xyz[0],xyz[1],xyz[2])];
-							} else if( request.boundary[2u*derivative]==FireProductionProjectionWall )
-								previous=-cellVelocity[component][cell];
+							} else if( request.boundary[2u*derivative]==FireProductionProjectionWall ){
+								const bool inlet=derivative==2u&&component==2u&&bottomFuelMask&&
+									!bottomFuelMask->empty()&&(*bottomFuelMask)[y*shape.nx+x]!=0u;
+								previous=inlet?2.0*faceVelocity[2][FaceIndex(shape,2u,x,y,0u)]-
+									cellVelocity[component][cell]:-cellVelocity[component][cell];
+							}
 							if( coordinate[derivative]+1u<extent ) {
 								std::size_t xyz[]={x,y,z};++xyz[derivative];
 								next=cellVelocity[component][CellIndex(shape,xyz[0],xyz[1],xyz[2])];
@@ -1074,9 +1095,11 @@ namespace RISEFireProductionFP64
 							xyz[firstAxis]=first;xyz[secondAxis]=second;
 							const std::size_t face=FaceIndex(shape,component,xyz[0],xyz[1],xyz[2]);
 							if( periodicNormal&&normal==normalExtent ) continue;
-							const bool prescribedWall=(normal==0u&&request.boundary[2u*component]==
+							const bool inlet=component==2u&&normal==0u&&bottomFuelMask&&
+								!bottomFuelMask->empty()&&(*bottomFuelMask)[xyz[1]*shape.nx+xyz[0]]!=0u;
+							const bool prescribedWall=!inlet&&((normal==0u&&request.boundary[2u*component]==
 								FireProductionProjectionWall)||(normal==normalExtent&&
-								request.boundary[2u*component+1u]==FireProductionProjectionWall);
+								request.boundary[2u*component+1u]==FireProductionProjectionWall));
 							computed.gravityMomentumRateKGPerM2S2[component][face]=prescribedWall?
 								0.0:(request.faceDensityKGPerM3[component][face]-
 									request.ambientDensityKGPerM3)*request.gravityMPerS2[component];
@@ -1186,6 +1209,15 @@ namespace RISEFireProductionFP64
 			const std::size_t cells=shape.CellCount();
 			if(!workingSetKnown)return Fail(error,
 				"production nonpressure momentum working set is invalid");
+			if(!request.bottomFuelMask.empty()){
+				if(request.bottomFuelMask.size()!=shape.nx*shape.ny||
+					request.force.boundary[4]!=FireProductionProjectionWall)
+					return Fail(error,"production nonpressure momentum burner shape or bed is invalid");
+				for(const unsigned char value:request.bottomFuelMask)if(value>1u)
+					return Fail(error,"production nonpressure momentum burner mask is nonbinary");
+				if(request.bottomFuelMask.size()>(UINT64_C(1)<<31u)-workingBytes)
+					return Fail(error,"production nonpressure momentum working set exceeds two GiB");
+			}
 			if( request.cellGasPhaseSourceRateKGPerM3S.size()!=cells )
 				return Fail(error,"production nonpressure momentum phase-source shape is invalid");
 			for( const double sourceRate : request.cellGasPhaseSourceRateKGPerM3S )
@@ -1198,7 +1230,8 @@ namespace RISEFireProductionFP64
 			FireProductionFrozenForceRequest fieldRequest=request.force;
 			fieldRequest.timeStepS=1.0;
 			FireProductionFrozenForceResult fields;
-			if( !BuildFireProductionFrozenForceFieldsImpl(fieldRequest,0,true,fields,error) )
+			if( !BuildFireProductionFrozenForceFieldsImpl(fieldRequest,0,true,fields,error,
+				&request.bottomFuelMask) )
 				return false;
 
 			FireProductionNonpressureMomentumRHSResult computed;
@@ -1229,9 +1262,11 @@ namespace RISEFireProductionFP64
 							xyz[firstAxis]=first;xyz[secondAxis]=second;
 							const std::size_t face=FaceIndex(shape,axis,xyz[0],xyz[1],xyz[2]);
 							if( periodic&&normal==extent ) continue;
-							const bool prescribedWall=(normal==0u&&request.force.boundary[2u*axis]==
+							const bool inlet=axis==2u&&normal==0u&&!request.bottomFuelMask.empty()&&
+								request.bottomFuelMask[xyz[1]*shape.nx+xyz[0]]!=0u;
+							const bool prescribedWall=!inlet&&((normal==0u&&request.force.boundary[2u*axis]==
 								FireProductionProjectionWall)||(normal==extent&&
-								request.force.boundary[2u*axis+1u]==FireProductionProjectionWall);
+								request.force.boundary[2u*axis+1u]==FireProductionProjectionWall));
 							double restrictedSource=0.0;
 							if( !prescribedWall ) {
 								if( normal>0u ) {
@@ -2083,9 +2118,30 @@ namespace RISEFireProductionFP64
 									highX,highY,highZ);
 								return 0.5*(gas[CellIndex(shape,highX,highY,highZ)]+ambientGas);
 							};
-							const double base=restricted(baseGas),acceptedValue=restricted(acceptedGas),
-								advanced=base-request.timeStepS*
+							const double base=restricted(baseGas),acceptedValue=restricted(acceptedGas);
+							double advanced=base-request.timeStepS*
 								identityRate.advectionRateKGPerM2S2[component][face];
+							double boundaryMass=0.0;
+							for(unsigned int derivative=0u;derivative<3u;++derivative){
+								if(derivative==component)continue;
+								const std::size_t position=derivative==0u?x:(derivative==1u?y:z),
+									derivativeExtent=AxisExtent(shape,derivative);
+								for(unsigned int upper=0u;upper<2u;++upper){
+									if(request.boundary[2u*derivative+upper]!=FireProductionProjectionWall||
+										(upper?position+1u!=derivativeExtent:position!=0u))continue;
+									std::size_t lx=x,ly=y,lz=z,hx=x,hy=y,hz=z;
+									setAxis(component,normal?normal-1u:0u,lx,ly,lz);
+									setAxis(component,normal<extent?normal:extent-1u,hx,hy,hz);
+									setAxis(derivative,upper?derivativeExtent:0u,lx,ly,lz);
+									setAxis(derivative,upper?derivativeExtent:0u,hx,hy,hz);
+									const double restrictedFlux=0.5*(computed.acceptedGasFluxKGPerM2S[derivative][
+										FaceIndex(shape,derivative,lx,ly,lz)]+computed.acceptedGasFluxKGPerM2S[derivative][
+										FaceIndex(shape,derivative,hx,hy,hz)]);
+									boundaryMass+=upper?-restrictedFlux:restrictedFlux;
+								}
+							}
+							if(boundaryFace)boundaryMass*=0.5;
+							if(boundaryMass!=0.0)advanced+=(request.timeStepS/shape.cellWidthM)*boundaryMass;
 							computed.commutingIdentityScaleKGPerM3=std::max(
 								computed.commutingIdentityScaleKGPerM3,std::max(std::fabs(base),
 								std::fabs(acceptedValue)));
@@ -2193,7 +2249,8 @@ namespace RISEFireProductionFP64
 				RISE::FireSimulationMethaneRecord::PhysicalV1();
 			if(!FireProductionFrozenSourcePacketSealMatches(request.source,error))
 				return Fail(error,"projected-Heun owner source is invalid");
-			if(!FireProductionProjectedHeunCPUOwnerWorkingSetBytes(shape,ownerWorkingSetBytes))
+			if(!FireProductionProjectedHeunCPUOwnerWorkingSetBytes(shape,ownerWorkingSetBytes,
+				!request.physicalContract.bottomFuelMassFluxKGPerM2S.empty()))
 				return Fail(error,"projected-Heun owner working-set query failed");
 			if(OwnerTestFailure("working-set-preflight"))
 				ownerWorkingSetBytes=FireProductionFP64QualificationOwnerCapacityBytes+1u;
@@ -2210,6 +2267,9 @@ namespace RISEFireProductionFP64
 				request.forceContract.timeStepS!=request.source.TimeStepS()||
 				request.scalarContract.boundary!=request.physicalContract.boundary||
 				request.scalarContract.boundary!=request.forceContract.boundary||
+				request.scalarContract.bottomFuelMask!=request.physicalContract.bottomFuelMask||
+				!SameOwnerFloatBits(request.scalarContract.bottomFuelMassFluxKGPerM2S,
+					request.physicalContract.bottomFuelMassFluxKGPerM2S)||
 				request.beginningConservativeValues.size()!=9u*cells||
 				!EmptyOwnerStageArrays(request)||
 				!std::isfinite(request.projectionTolerancePerS)||
@@ -2220,7 +2280,9 @@ namespace RISEFireProductionFP64
 				return Fail(error,"projected-Heun owner request is malformed");
 			for(std::size_t component=0u;component<9u;++component)
 				if(request.scalarContract.ambient[component]!=
-					request.physicalContract.ambient[component])return Fail(error,
+					request.physicalContract.ambient[component]||!SameFloatBytes(
+					request.scalarContract.injectedConservative[component],
+					request.physicalContract.injectedConservative[component]))return Fail(error,
 						"projected-Heun owner ambient contract differs");
 			for(unsigned int axis=0u;axis<3u;++axis){
 				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
@@ -2267,6 +2329,12 @@ namespace RISEFireProductionFP64
 				projection.shape=shape;projection.timeStepS=request_.source.TimeStepS();
 				projection.ambientDensityKGPerM3=request_.forceContract.ambientDensityKGPerM3;
 				projection.boundary=request_.scalarContract.boundary;
+				projection.bottomFuelMask=request_.physicalContract.bottomFuelMask;
+				projection.bottomFuelMassFluxKGPerM2S=request_.physicalContract.bottomFuelMassFluxKGPerM2S;
+				if(!projection.bottomFuelMask.empty()){
+					projection.injectedGasDensityKGPerM3=0.0;
+					for(std::size_t component=1u;component<=6u;++component)
+						projection.injectedGasDensityKGPerM3+=request_.physicalContract.injectedConservative[component];}
 				OwnerGasDensity(shape,state,projection.gasDensityKGPerM3);
 				projection.provisionalMomentumKGPerM2S=provisionalMomentum;
 				if(!target)projection.divergenceTargetPerS.assign(cells,0.0);
@@ -2342,6 +2410,7 @@ namespace RISEFireProductionFP64
 					fluxRole,scalar,physical,flux,error))return false;
 				FireProductionNonpressureMomentumRHSRequest force;
 				force.force=request_.forceContract;
+				force.bottomFuelMask=request_.physicalContract.bottomFuelMask;
 				force.force.cellGasDensityKGPerM3=projectionRequest(0,0).gasDensityKGPerM3;
 				force.force.molecularKinematicViscosityM2PerS=
 					coefficients.molecularKinematicViscosityM2PerS;
@@ -3067,6 +3136,12 @@ namespace RISEFireProductionFP64
 				projection.shape=shape;projection.timeStepS=request_.source.TimeStepS();
 				projection.ambientDensityKGPerM3=request_.forceContract.ambientDensityKGPerM3;
 				projection.boundary=request_.scalarContract.boundary;
+				projection.bottomFuelMask=request_.physicalContract.bottomFuelMask;
+				projection.bottomFuelMassFluxKGPerM2S=request_.physicalContract.bottomFuelMassFluxKGPerM2S;
+				if(!projection.bottomFuelMask.empty()){
+					projection.injectedGasDensityKGPerM3=0.0;
+					for(std::size_t component=1u;component<=6u;++component)
+						projection.injectedGasDensityKGPerM3+=request_.physicalContract.injectedConservative[component];}
 				projection.gasDensityKGPerM3=gasDensity;
 				projection.provisionalMomentumKGPerM2S=heunMomentum_;
 				projection.openClassificationMode=

@@ -229,6 +229,10 @@ namespace RISE
 		std::array<float,9> ambient;
 		float ambientTemperatureK;
 		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+		//! Optional prescribed gas inlet on the lower-z wall, in positive-z units.
+		std::vector<unsigned char> bottomFuelMask;
+		std::vector<float> bottomFuelMassFluxKGPerM2S;
+		std::array<float,9> injectedConservative={{}};
 
 		FireProductionScalarPhysicalFluxPrerequisiteRequest() : ambientTemperatureK(0.0f)
 		{
@@ -280,6 +284,9 @@ namespace RISE
 		std::array<std::vector<float>,3> frozenVelocityMPerS;
 		std::array<float,9> ambient;
 		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+		std::vector<unsigned char> bottomFuelMask;
+		std::vector<float> bottomFuelMassFluxKGPerM2S;
+		std::array<float,9> injectedConservative={{}};
 		std::size_t nullity;
 		std::vector<float> nullspaceBasis;
 		std::vector<float> coordinateProjector;
@@ -747,10 +754,14 @@ namespace RISE
 	//! energy flux, with an advective-only antidiffusive delta.  The remaining
 	//! twelve face fields retain f_N, J_g, Phi_g^L, and Delta Phi_g separately so
 	//! compatible momentum never reconstructs them from a rounded composite.
-	//! The persistent payload is exactly 30 packed binary32 face fields.
+	//! The persistent payload is 30 packed binary32 face fields, plus optional
+	//! prescribed inlet operands (5N+36 bytes for N bottom faces).
 	struct FireProductionScalarHeunFluxStage
 	{
 		FireProductionScalarFCTFluxPair compositeFluxPair;
+		std::vector<unsigned char> bottomFuelMask;
+		std::vector<float> bottomFuelMassFluxKGPerM2S;
+		std::array<float,9> injectedConservative={{}};
 		std::vector<float> physicalMassFluxKGPerM2S;
 		std::vector<float> physicalEnergyFluxWPerM2;
 		std::array<std::vector<float>,3> physicalGasFluxKGPerM2S;
@@ -969,30 +980,32 @@ namespace RISE
 		std::string* error=0 );
 
 	//! Logical caller-input plus produced-output footprint: 4(12C+11F)+B.
+	//! A prescribed inlet additionally retains 5N+36 bytes for N bottom faces.
 	//! This is query-only and performs no allocation.
 	bool QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& workingSetBytes,
-		std::string* error=0 );
+		std::string* error=0,bool prescribedBottomFlux=false );
 
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
 		const FireProductionScalarPhysicalFluxPrerequisiteRequest& request,
 		FireProductionScalarPhysicalFluxPrerequisiteResult& result,
 		std::string* error=0 );
 
-	//! Exact persistent payload for one composed stage: 30 packed face fields.
+	//! Persistent payload: 30 packed face fields plus optional inlet operands.
 	//! Query-only; allocation and payload inspection are forbidden here.
 	bool QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& payloadBytes,
-		std::string* error=0 );
+		std::string* error=0,bool prescribedBottomFlux=false );
 
 	//! Builds and composes one donor/MC pair with its same-stage physical f_N/J_g
 	//! directly from authenticated raw operands; mutable prerequisite results are
 	//! never accepted as authority.
 	//! The operation order is fixed: publish the physical fields, add them once
-	//! to the low pair component-by-component, and retain the advective gas sums
-	//! independently in ascending species order.  Failure publishes no fields.
+	//! to the ordinary low pair component-by-component, assign prescribed lows
+	//! directly with zero delta, and retain the advective gas sums independently
+	//! in ascending species order. Failure publishes no fields.
 	bool ComposeFireProductionScalarHeunFluxStageCPU(
 		std::uint64_t attemptIdentity,
 		FireProductionScalarHeunFluxRole role,
@@ -1189,6 +1202,11 @@ namespace RISE
 		FireProductionResidentTransportComparatorRequest transport;
 		std::array<float,9> ambient;
 		float ambientTemperatureK;
+		//! Optional prescribed bottom flux; classification is transport's side 4.
+		//! Empty means no prescribed inlet. Qualification first; live EOS/owner
+		//! admission remains refused until all boundary consumers are connected.
+		std::vector<float> bottomFuelMassFluxKGPerM2S;
+		std::array<float,9> injectedConservative;
 		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
 		std::size_t nullity;
 		std::vector<float> nullspaceBasis;
@@ -1211,7 +1229,7 @@ namespace RISE
 			qualificationShortInflowSurface(false),
 			qualificationOversizedPhysicalBasisSurface(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max())
-			{ ambient.fill(0.0f); }
+			{ ambient.fill(0.0f);injectedConservative.fill(0.0f); }
 	};
 
 	//! Terminal qualification tap. Each vector preserves its field boundary:
@@ -1263,6 +1281,8 @@ namespace RISE
 
 	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner );
 
 	//! Qualification-only terminal tap. This function always executes the
 	//! device transport issuer and the private physical-flux issuer in one Metal
@@ -1396,7 +1416,8 @@ namespace RISE
 	};
 
 	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
+		bool prescribedBottomFlux=false );
 
 	//! Incremental owner peak for the complete source-inclusive FCT Q* producer
 	//! over r198's retained delta and for EOS evaluation: low state, limiter
@@ -1525,7 +1546,8 @@ namespace RISE
 	};
 
 	bool FireProductionResidentTargetLineageMetalWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
+		bool prescribedBottomFlux=false );
 
 	bool FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
