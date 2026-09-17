@@ -71,6 +71,7 @@
 #include <sstream>
 #include <random>
 #include <algorithm>
+#include <vector>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
@@ -665,6 +666,117 @@ namespace
 			<< " diff=" << diff << " (" << (diff/reference*100.0) << "%) tol=" << tol;
 		return Report( oss.str(), passed );
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-86 round 2: the H6 multiscatter-lobe sampler for the
+	// ANISOTROPIC lobe.  SampleMSCosThetaG2Aniso inverts a piecewise-
+	// linear reconstruction of the Ess row built by
+	// MSLobeDetail::BuildSegmentsFromRowN, while MSPdfG2Aniso reports
+	// (1-LookupEssG2Aniso(c))*c/(PI*Z).  Those are two DIFFERENT pieces
+	// of code reading the SAME tables, so refining the grazing sub-grid
+	// under one of them and not the other would silently break the
+	// estimator's "the pdf describes what the sampler draws" invariant.
+	// Both checks below are about the region the refinement touched.
+	//////////////////////////////////////////////////////////////////
+
+	// (a) The solid-angle density integrates to 1 over the hemisphere:
+	//     2*PI * integral_0^1 MSPdfG2Aniso(c) dc == 1.  Composite
+	//     Simpson, refined separately on [0,c0] (where the sub-grid
+	//     lives, and where a uniform whole-range rule would put only a
+	//     handful of nodes) and on [c0,1].
+	static bool TestMSPdfAnisoNormalization( const char* label, const Scalar alphaX, const Scalar alphaY )
+	{
+		const Scalar Z = MicrofacetEnergyLUT::MSLobeZG2Aniso( alphaX, alphaY );
+		const double c0 = 0.5 / 32.0;
+
+		auto simpson = [&]( const double lo, const double hi, const int n ) -> double
+		{
+			const double h = ( hi - lo ) / double(n);
+			double acc = 0.0;
+			for( int i = 0; i <= n; ++i )
+			{
+				const double c = lo + double(i) * h;
+				const double w = ( i == 0 || i == n ) ? 1.0 : ( ( i & 1 ) ? 4.0 : 2.0 );
+				acc += w * MicrofacetEnergyLUT::MSPdfG2Aniso( c, alphaX, alphaY, Z );
+			}
+			return acc * h / 3.0;
+		};
+
+		// 2^16 intervals on [0,c0] resolves even the narrowest sub-grid
+		// interval (c0/256) with ~256 nodes.
+		const double integral = 2.0 * PI * ( simpson( 0.0, c0, 65536 ) + simpson( c0, 1.0, 262144 ) );
+		const bool passed = std::fabs( integral - 1.0 ) <= 1e-4;
+
+		std::ostringstream oss;
+		oss << label << " 2PI*int MSPdfG2Aniso dc=" << std::fixed << std::setprecision(8) << integral
+			<< " Z=" << Z;
+		return Report( oss.str(), passed );
+	}
+
+	// (b) A histogram of SampleMSCosThetaG2Aniso draws against the
+	//     cosTheta marginal 2*PI*MSPdfG2Aniso, binned on the DL-86
+	//     sub-grid's own node intervals (plus one bin for everything
+	//     above c0).  Gated where the expected count supports a test;
+	//     the innermost bins carry mass ~ c^2 and are recorded instead.
+	static bool TestMSSamplerAnisoHistogram( const char* label, const Scalar alphaX, const Scalar alphaY, const long numSamples, unsigned int seed )
+	{
+		const Scalar Z = MicrofacetEnergyLUT::MSLobeZG2Aniso( alphaX, alphaY );
+		const double c0 = 0.5 / 32.0;
+
+		// Bin edges, built HERE rather than read from the header, so the
+		// sampler is not binned by its own node list: geometric octaves
+		// c0/8 * 2^-j down to c0/2048, then the eight uniform c0/8
+		// steps, then everything above c0 in one bin.
+		std::vector<double> edges;
+		edges.push_back( 0.0 );
+		for( int j = 8; j >= 1; --j ) edges.push_back( ( c0 / 8.0 ) * std::pow( 2.0, -double(j) ) );
+		for( int k = 1; k <= 8; ++k ) edges.push_back( double(k) * c0 / 8.0 );
+		edges.push_back( 1.0 );
+
+		const size_t nb = edges.size() - 1;
+		std::vector<long> counts( nb, 0 );
+
+		std::mt19937_64 rng( seed );
+		std::uniform_real_distribution<double> uni( 0.0, 1.0 );
+		for( long s = 0; s < numSamples; ++s )
+		{
+			// Argument order is (alphaX, alphaY, u1) -- the order
+			// GGXSPF.cpp:387 calls it in.
+			const Scalar c = MicrofacetEnergyLUT::SampleMSCosThetaG2Aniso( alphaX, alphaY, uni( rng ) );
+			size_t b = 0;
+			while( b + 1 < nb && c >= edges[b+1] ) ++b;
+			counts[b]++;
+		}
+
+		bool passed = true;
+		std::ostringstream detail;
+		for( size_t b = 0; b < nb; ++b )
+		{
+			// Expected probability of this bin: Simpson on the marginal.
+			const int n = 256;
+			const double h = ( edges[b+1] - edges[b] ) / double(n);
+			double acc = 0.0;
+			for( int i = 0; i <= n; ++i )
+			{
+				const double c = edges[b] + double(i) * h;
+				const double w = ( i == 0 || i == n ) ? 1.0 : ( ( i & 1 ) ? 4.0 : 2.0 );
+				acc += w * 2.0 * PI * MicrofacetEnergyLUT::MSPdfG2Aniso( c, alphaX, alphaY, Z );
+			}
+			const double p = acc * h / 3.0;
+			const double expected = p * double(numSamples);
+			if( expected < 50.0 ) continue;			// recorded below, not gated
+			const double sigma = sqrt( expected * ( 1.0 - p ) );
+			const double z = ( double(counts[b]) - expected ) / sigma;
+			if( std::fabs( z ) > 5.0 ) passed = false;
+			detail << " [" << std::scientific << std::setprecision(2) << edges[b]
+				<< "," << edges[b+1] << ") obs=" << std::fixed << std::setprecision(0) << double(counts[b])
+				<< " exp=" << expected << " z=" << std::setprecision(2) << z;
+		}
+
+		std::ostringstream oss;
+		oss << label << " sub-grid bins:" << detail.str();
+		return Report( oss.str(), passed );
+	}
 }
 
 int main()
@@ -861,7 +973,20 @@ int main()
 			{ 0.9, 0.1, 0.0 }, { 0.9, 0.1, 45.0 }, { 0.9, 0.1, 90.0 },
 			{ 0.05, 0.5, 0.0 }, { 0.05, 0.5, 45.0 }, { 0.05, 0.5, 90.0 },
 		};
-		const double coss[] = { 0.002, 0.005, 0.01, 0.0156 };
+		// DL-86 round 2: the probe set starts at 1e-4, not at 0.002.  The
+		// round-1 set's smallest value (0.002) sat just ABOVE the first
+		// baked sub-node (c0/8 = 1.953e-3), so the WHOLE first
+		// sub-interval -- the one straight ramp from the exact
+		// cosTheta->0 anchor to that node -- went unprobed, and it is the
+		// interval this end-cap is least able to follow: for an
+		// anisotropic pair the approach to 1 only begins at
+		// cos << alphaX*sinTheta, so at alphaX=0.01 the true curve is
+		// still at 0.735 where the isotropic alpha=0.01 curve has already
+		// reached 0.958.  These 8 values put at least one probe in every
+		// sub-interval of the refined grid (see ANISO_SUB_FINE in
+		// MicrofacetEnergyLUT.h), down to the cos below which no
+		// production shading direction lands (1e-4 is theta=89.994 deg).
+		const double coss[] = { 0.0001, 0.00025, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.0156 };
 		unsigned int seed = 86101;
 		for( const Case& c : cases )
 		{
@@ -883,9 +1008,22 @@ int main()
 		// resolution factored out.  This group did not exist before this
 		// slice, which is why the aniso end-cap's residual was previously
 		// only quotable at a configuration that confounds the two.
+		//
+		// (0.01,1.0,phi=0) and its axis-swapped twin (1.0,0.01,phi=90)
+		// are the WORST configurations this end-cap has: the queried
+		// azimuth is aligned with the 0.01 axis, so the masking of wi
+		// only takes over at cos << 0.01, while the scattered lobe is
+		// spread over the alpha=1.0 axis -- the pair the round-2 review
+		// measured at +5.9% before the grid was refined.
+		// (0.8709,0.0961,phi=90) is the node-exact stand-in for the
+		// review's third named configuration, (0.9,0.1,phi=90): 0.9 and
+		// 0.1 are NOT grid nodes (the alpha axis is 0.01+0.99k/23), so
+		// (0.9,0.1) can only be probed off-node, which it is -- in the
+		// `cases` group above, under that group's own tolerance.
 		const Case nodeCases[] = {
 			{ 0.01, 1.0, 0.0 }, { 0.01, 1.0, 45.0 }, { 0.01, 1.0, 90.0 },
 			{ 1.0, 0.01, 0.0 }, { 1.0, 0.01, 90.0 },
+			{ 0.01 + 0.99 * 20.0 / 23.0, 0.01 + 0.99 * 2.0 / 23.0, 90.0 },
 			{ 0.01 + 0.99 * 5.0 / 23.0, 0.01 + 0.99 * 11.0 / 23.0, 7.5 },
 			{ 0.01 + 0.99 * 22.0 / 23.0, 0.01 + 0.99 * 2.0 / 23.0, 82.5 },
 		};
@@ -905,6 +1043,24 @@ int main()
 		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.0024 (debt-ggx3 cited worst case, off-node on all 3 axes)", 0.0361, 0.9627, 5.0, 0.0024, kGridCornerTol, 86200 );
 		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.005 (off-node on all 3 axes)",  0.0361, 0.9627, 5.0, 0.005,  kGridCornerTol, 86201 );
 		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.01 (off-node on all 3 axes)",   0.0361, 0.9627, 5.0, 0.01,   kGridCornerTol, 86202 );
+	}
+
+	std::cout << "\n--- DL-86 round 2: the anisotropic H6 multiscatter lobe's sampler and pdf agree on the sub-grid ---\n";
+	{
+		// A CONSISTENCY PIN, not a red proof: this invariant holds
+		// before and after the round-2 refinement (it held on the
+		// uniform sub-grid too).  It exists because the refinement
+		// changes the node list two independent pieces of code read --
+		// MSLobeDetail::BuildSegmentsFromRowN, which
+		// SampleMSCosThetaG2Aniso inverts, and LookupEssG2Aniso, which
+		// MSPdfG2Aniso evaluates -- so a refinement applied to one and
+		// not the other would leave the estimator reporting a density
+		// that is not the sampler's.
+		passed &= TestMSPdfAnisoNormalization( "aX=0.01 aY=1.0",  0.01, 1.0 );
+		passed &= TestMSPdfAnisoNormalization( "aX=1.0 aY=0.01",  1.0,  0.01 );
+		passed &= TestMSPdfAnisoNormalization( "aX=0.05 aY=0.5",  0.05, 0.5 );
+		passed &= TestMSPdfAnisoNormalization( "aX=0.9 aY=0.1",   0.9,  0.1 );
+		passed &= TestMSSamplerAnisoHistogram( "aX=0.01 aY=1.0 (40M draws)", 0.01, 1.0, 40000000L, 86301 );
 	}
 
 	std::cout << "\nGGXHeightCorrelatedEnergyLUTTest: " << checks << " checks, " << failures << " failures\n";
