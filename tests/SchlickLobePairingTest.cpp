@@ -28,8 +28,12 @@
 //        DELTA branch (`KrayValue<Tag>(*pScat) * (.../selectProb)`).
 //
 //    (b) AGGREGATE     X_b = f_agg * cos / P_mix(w)
-//        E[X_b] = integral f_agg cos dw when w is drawn from the SAME
-//        mixture P_mix describes.  Veach 9.2 / PBRT's BxDF convention.
+//        where `P_mix = ISPF::Pdf` is the TRUE generating density of
+//        `Scatter` + `RandomlySelect` (DL-67 Slice 0) -- the MARGINAL
+//        `E_D[ sum_I q_I(D) delta_{w_I(D)} ]` over the container draw
+//        D AND the lobe choice.  Drawn with that same real procedure,
+//        E[X_b] = integral f_agg cos dw exactly.  Veach 9.2 / PBRT's
+//        BxDF convention.
 //
 //    (c) MISMATCHED    X_c = f_agg * cos / (q_I * p_I)     <-- the bug
 //        E[X_c] = sum_I integral p_I * f_agg cos / p_I dw
@@ -207,12 +211,11 @@ static PairingMeasurement MeasurePairings(
 	unsigned int nRatio = 0;
 	unsigned int used = 0;
 
-	// `SchlickSPF::Pdf`'s own fixed lobe weights: max(rd) vs max(rs).
-	// Section 2's aggregate estimator has to draw its lobe from the
-	// SAME mixture P_mix describes, or E[X_b] is not integral f_agg cos.
-	// The painters are grey 0.4/0.4 here, so the weights are 0.5/0.5;
-	// the estimator reads them off the realized container by lobe TYPE
-	// rather than hard-coding the split.
+	// All three estimators read ONE realized draw: the container from
+	// `Scatter`, then the lobe `RandomlySelect` actually chose.  They
+	// differ only in what they divide by -- the lobe's own `kray/q_I`,
+	// the aggregate `ISPF::Pdf` at the realized direction, or the
+	// conditional `q_I * p_I`.
 
 	for( unsigned int s = 0; s < nSamples; s++ )
 	{
@@ -265,39 +268,53 @@ static PairingMeasurement MeasurePairings(
 		// (c) the mismatched pairing BDPT used for non-delta lobes.
 		sumC += fAggI * cosI / ( qI * pI );
 
-		// (b) aggregate/aggregate.  The lobe must be drawn from the
-		// mixture `SchlickSPF::Pdf` actually describes: a FIXED coin
-		// over the two PROPOSALS (equal weights for the grey 0.4/0.4
-		// painters used here), not a coin over whichever proposals
-		// happened to survive `Scatter`'s horizon gate.  A proposal
-		// that was rejected produced a direction BELOW the horizon,
-		// where `f_agg` is zero -- so the correct outcome for that
-		// branch is a zero contribution, NOT a re-draw of the other
-		// lobe.  (Re-drawing is what makes an "aggregate" estimator
-		// read high: measured 1.20-1.27x Q before this was fixed.)
-		{
-			const bool wantDiffuse = ( sampler.Get1D() < 0.5 );
-			const ScatteredRay* pMix = 0;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				if( scattered[i].isDelta ) continue;
-				const bool isDiffuse =
-					( scattered[i].type == ScatteredRay::eRayDiffuse );
-				if( isDiffuse == wantDiffuse ) { pMix = &scattered[i]; break; }
-			}
-			if( pMix ) {
-				const Vector3 woM = Vector3Ops::Normalize( pMix->ray.Dir() );
-				const double cosM = fabs( Vector3Ops::Dot( woM, n ) );
-				const double pMixDensity = spf.Pdf( ri, woM, iorStack );
-				if( pMixDensity > 0 ) {
-					const double fAggM = ColorMath::MaxValue( brdf.value( woM, ri ) );
-					sumB += fAggM * cosM / pMixDensity;
-				}
-			}
+		// --- The aggregate density at the REALIZED direction --------
+		// `SchlickSPF::Pdf` is (since DL-67 Slice 0,
+		// docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md) the TRUE generating
+		// density of `Scatter` + `RandomlySelect`: writing D for the
+		// joint random state one `Scatter()` call consumes, w_I(D) for
+		// the direction of lobe I in the container it produced and
+		// q_I(D) for `RandomlySelect`'s realized probability of
+		// choosing it, `Pdf(w)` is the MARGINAL
+		//
+		//     P_mix(w) = E_D[ sum_I q_I(D) delta_{w_I(D)}(w) ].
+		//
+		// Both (b) and section 3 below need it at the SAME realized
+		// direction the real selection produced, so it is evaluated
+		// once here and shared.
+		const double pMixAtI = spf.Pdf( ri, woI, iorStack );
+
+		// (b) aggregate/aggregate.  The lobe is drawn with the REAL
+		// selection rule -- the container from `Scatter`, then
+		// `RandomlySelect`'s max(kray) PMF -- which is exactly the
+		// procedure `P_mix` is the density of.  So for any g,
+		//
+		//     E[ g(w)/P_mix(w) ] = integral_{supp P_mix} g(w) dw,
+		//
+		// and with g = f_agg cos that integral is Q: the diffuse lobe
+		// is a full-hemisphere cosine proposal that `Scatter` always
+		// accepts here (shading normal == geometric normal), so
+		// `P_mix > 0` wherever `f_agg cos > 0` and nothing is clipped
+		// out of the support.  Contrast (c), which divides by
+		// `q_I * p_I` -- the density of w_I CONDITIONED on the
+		// realized container, not the marginal -- and therefore sums
+		// to N*Q over the N lobes.  Equivalently (b) = (c) * r with r
+		// the section-3 ratio, so the three estimators below are three
+		// readings of one draw.
+		//
+		// A FIXED 50/50 coin over the realized container is NOT the
+		// right draw: `SchlickSPF::Pdf` has not described a fixed coin
+		// since DL-67 Slice 0 (it reproduces `RandomlySelect`'s
+		// kray-weighted, direction-dependent split, including the
+		// specular sampler's rejection rate), so pairing it with a
+		// fixed coin is biased -- measured (b)/Q = 0.842/0.821/0.793
+		// at 0/30/60 deg against master's `Pdf`.
+		if( pMixAtI > 0 ) {
+			sumB += fAggI * cosI / pMixAtI;
 		}
 
 		// --- pdfFwd vs pdfRev: two formulas, one density -----------
 		{
-			const double pMixAtI = spf.Pdf( ri, woI, iorStack );
 			if( pMixAtI > 0 ) {
 				const double r = ( qI * pI ) / pMixAtI;
 				sumRatio += r;
