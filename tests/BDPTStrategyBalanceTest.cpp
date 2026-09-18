@@ -2160,6 +2160,155 @@ static void TestGGXLambertianControl()
 		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// DL-125 probe: spectral BDPT on topology L, hwss FALSE vs hwss TRUE.
+//
+// DL-69's throughput fix prices the SELECTED lobe's own `kray`.  On the
+// HWSS COMPANION wavelengths it asks the SPF for that same lobe's kray
+// at the companion wavelength via `ISPF::EvaluateKrayNM`, and falls
+// back to the OLD aggregate-BSDF-over-per-lobe-pdf pairing when the SPF
+// declines (returns -1, the base-class default).  Only `PolishedSPF`
+// and `HairBSDF`'s `HairSPF` implement that method today, so on
+// `schlick_material` the fallback is REACHABLE ON EVERY COMPANION
+// WAVELENGTH -- which is exactly what DL-125 records (PT's own HWSS
+// companion body has the identical ladder and the identical residual).
+//
+// This is a MEASUREMENT, not a gate on correctness: `hwss FALSE`
+// (hero wavelength only) takes the DL-69-fixed per-lobe path on every
+// bounce, so any systematic gap between the two is the companions'
+// un-fixed pairing.  The band below is deliberately wide and exists
+// only so the recorded magnitude cannot drift silently -- tighten it
+// when DL-125 closes, don't "fix" the number here.
+//
+// TWO MEASUREMENT NOTES, both load-bearing.
+//
+//   * The GATED statistic is the ACHROMATIC mean (the average of the
+//     three channel means), not a per-channel ratio.  The scene is
+//     grey under a white emitter, so its true image is neutral; an
+//     `hwss FALSE` render draws ONE wavelength per path, which leaves
+//     several percent of purely chromatic MC noise on each individual
+//     channel (measured spread 0.0662 / 0.0623 / 0.0639 at 256 spp)
+//     that the achromatic mean averages away.  Per-channel ratios are
+//     still printed, but reading a bias off one of them would be
+//     reading noise.
+//   * The two renders deliberately do NOT use the same sample count.
+//     `hwss TRUE` carries SampledWavelengths::N wavelengths per path,
+//     so at equal `samples` its spectral estimate is several times
+//     less noisy than `hwss FALSE`'s.  The hero-only render gets 4x
+//     the samples to bring the two to comparable precision; both are
+//     unbiased estimates of the same quantity, so an unequal count
+//     costs only time.  Depth budget, geometry, filter and denoise
+//     settings are identical.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerBDPTSpectralNoHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_spectral_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 1024\n"
+	"\thwss FALSE\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_spectral_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSpectralHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_spectral_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\thwss TRUE\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_spectral_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static void TestSpectralHWSSCompanionLadder()
+{
+	const char* name = "spectral BDPT hwss FALSE vs TRUE on topology L (DL-125 probe)";
+	std::cout << "Testing " << name << std::endl;
+
+	const std::string sceneNo = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerBDPTSpectralNoHWSS + kSceneSchlickMultiLobeL;
+	const std::string sceneHW = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerBDPTSpectralHWSS   + kSceneSchlickMultiLobeL;
+
+	const std::string pathNo = WriteSceneToTempFile( sceneNo.c_str(), "spec_nohwss" );
+	const std::string pathHW = WriteSceneToTempFile( sceneHW.c_str(), "spec_hwss"   );
+	if( pathNo.empty() || pathHW.empty() ) {
+		Check( false, ( std::string("temp file write: ") + name ).c_str() );
+		return;
+	}
+
+	const ImageStats noHWSS = RenderAndComputeStats( pathNo.c_str() );
+	const ImageStats hwss   = RenderAndComputeStats( pathHW.c_str() );
+
+	PrintStats( "hwss FALSE", noHWSS );
+	PrintStats( "hwss TRUE ", hwss );
+
+	std::remove( pathNo.c_str() );
+	std::remove( pathHW.c_str() );
+
+	Check( noHWSS.valid, "spectral hwss FALSE render produced output" );
+	Check( hwss.valid,   "spectral hwss TRUE render produced output" );
+	if( !noHWSS.valid || !hwss.valid ) return;
+
+	for( int c = 0; c < 3; c++ ) {
+		if( noHWSS.mean[c] > 1e-6 ) {
+			const double r = hwss.mean[c] / noHWSS.mean[c];
+			std::cout << "    channel " << c << " hwss/no-hwss mean ratio = "
+			          << r << "  (" << ( ( r - 1.0 ) * 100.0 ) << "%)  [chromatic"
+			          << " MC noise dominates a single channel -- see the block comment]"
+			          << std::endl;
+		}
+	}
+
+	const double achroNo = ( noHWSS.mean[0] + noHWSS.mean[1] + noHWSS.mean[2] ) / 3.0;
+	const double achroHW = ( hwss.mean[0]   + hwss.mean[1]   + hwss.mean[2]   ) / 3.0;
+	Check( achroNo > 1e-6, "DL-125 probe: hero-only achromatic mean is non-zero" );
+	if( achroNo <= 1e-6 ) return;
+
+	const double achroRatio = achroHW / achroNo;
+	std::cout << "    ACHROMATIC mean: hwss FALSE = " << achroNo
+	          << ", hwss TRUE = " << achroHW
+	          << ", ratio = " << achroRatio
+	          << "  (" << ( ( achroRatio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+
+	// Recorded magnitude of the DL-125 companion residual on this scene.
+	// See the block comment: a wide band that pins the number, not a
+	// correctness claim about the companions.
+	Check( std::fabs( achroRatio - 1.0 ) < 0.05,
+		"DL-125 probe: spectral hwss TRUE achromatic mean stays within 5% of hwss FALSE on topology L" );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -2177,6 +2326,7 @@ int main()
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
 	TestGGXLambertianControl();
+	TestSpectralHWSSCompanionLadder();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

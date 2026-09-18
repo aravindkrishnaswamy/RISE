@@ -1445,21 +1445,36 @@ static void TestSubmergedCeilingMISCombination()
 // integral at 0/30/60 deg incidence.
 //
 // SCENE.  The receiver wall (z=0, +-1, normal +Z) fills the frame at
-// fov 30 (half-height 3.5*tan(15 deg) = 0.938).  Neither the floor
-// (y=-1, z in [0,2], normal +Y) nor the area emitter (y=1.4,
-// z in [0.1,2.6], normal -Y) is inside the frustum, so the image is
-// pure receiver radiance with no emitter pixels and no background.
-// Both non-emitting surfaces are `schlick_material`, which puts a
-// multi-lobe vertex on BOTH subpaths:
-//   - eye side: camera -> wall (v1) -> floor (v2) -> emitter.  The
-//     v1 scatter throughput multiplies every strategy of length >= 3,
-//     including the s=0 emitter-hit that competes with v1's NEE.
-//   - light side: emitter -> floor (l1) -> wall (l2) -> ...  The l1
-//     scatter throughput multiplies every s >= 3 connection and splat.
-// A large emitter (3.2 x 2.5 units, close to the receiver) is
-// deliberate: it gives the BSDF-sampling strategies real MIS weight
+// fov 30 (half-height 3.5*tan(15 deg) = 0.938).  The floor (y=-1,
+// z in [0,2], normal +Y) is outside the frustum, and the area emitter
+// -- a 12 x 12 quad in the z=4.2 plane, normal -Z, i.e. a large
+// softbox BEHIND the camera (which sits at z=3.5 looking toward -Z) --
+// is behind the near plane, so the image is pure receiver radiance
+// with no emitter pixels and no background.  Both non-emitting
+// surfaces are `schlick_material`, which puts a multi-lobe vertex on
+// BOTH subpaths:
+//   - eye side: camera -> wall (v1) -> floor or emitter (v2) -> ...
+//     The v1 scatter throughput multiplies every strategy of length
+//     >= 3, including the s=0 emitter-hit that competes with v1's NEE.
+//   - light side: emitter -> wall or floor (l1) -> the other (l2) ->
+//     ...  The l1 scatter throughput multiplies every s >= 3
+//     connection and splat.
+// The emitter's size and proximity (12 x 12 units at z=4.2, so it
+// subtends a large solid angle from every point on the wall) are
+// deliberate: they give the BSDF-sampling strategies real MIS weight
 // against NEE, so the over-count lands in the mean rather than being
 // MIS-suppressed.
+//
+// WHAT THIS TOPOLOGY DOES *NOT* EXERCISE (review, 2026-09-14).  The
+// scene has NO specular surfaces and NO delta lights, so the VCM
+// auto-radius pre-pass reports `foundSpecular = false` and VCM
+// DISABLES VERTEX MERGING for it -- exactly like this file's topology
+// A/B (see their comments).  So the DL-69 red-proof here covers VCM's
+// VERTEX CONNECTION half only; the merge half shares the same two
+// subpath generators and therefore the same fix, but no test in this
+// repository red-proves DL-69 through a merge.  A merge-exercising
+// variant would need a specular caster, which would also change what
+// the PT reference can reach and is a separate piece of work.
 //
 // Depth budgets are matched explicitly (VCM max_eye_depth /
 // max_light_depth 5 vs PT's `max_diffuse_bounce` / `max_glossy_bounce`

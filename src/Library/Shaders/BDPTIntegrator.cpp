@@ -3068,14 +3068,26 @@ namespace {
 			// real `schlick_material` draws.
 			//
 			// So `pdfFwd` now uses the SAME function the reverse walk
-			// does, evaluated at the forward direction.  A material
-			// that cannot evaluate its own density (`ISPF::Pdf`'s
-			// base-class default returns 0 -- `BioSpecSkinSPF`,
-			// `GenericHumanTissueSPF`) keeps the per-lobe value, which
-			// is what it had before this row: its `pdfRev` is zero
-			// there too and `MISWeight`'s remap0 already governs that
-			// case, so substituting a zero would be a behaviour change
-			// for no consistency gain.
+			// does, evaluated at the forward direction.  When that
+			// function reports nothing (`misFwdPdf <= NEARZERO`) the
+			// per-lobe value is kept, which is what this site had
+			// before this row: `pdfRev` is zero at the same vertex and
+			// `MISWeight`'s remap0 already governs that case, so
+			// substituting a zero would be a behaviour change for no
+			// consistency gain.
+			//
+			// WHICH MATERIALS REACH THAT FALLBACK (review, 2026-09-14).
+			// It is NOT `BioSpecSkinSPF` / `GenericHumanTissueSPF`, as
+			// this comment used to say: their `ISPF::Pdf` really is the
+			// base-class 0, but the walk never gets here for them --
+			// their materials' `GetBSDF()` is null, so the
+			// `PositiveMagnitude(f) <= 0` gate above already `break`s
+			// (that is DL-126, a separate row).  The reachable case is
+			// a material whose `Pdf` is real but does not cover the
+			// lobe that was drawn: `TranslucentSPF`, whose `Pdf`/`PdfNM`
+			// deliberately do not cover either Phong `cos^N` lobe (the
+			// entering transmission and the interior backscatter) --
+			// that gap is DL-41.
 			//
 			// `guidingPdfDirectionIn`, set a few lines above, keeps
 			// `scatterPdf` deliberately: it is OpenPGL's
@@ -6546,8 +6558,13 @@ unsigned int GenerateLightSubpathImpl(
 		// and blend with BSDF sampling using RIS or one-sample MIS.  The
 		// shared field's incident-radiance distribution approximates the
 		// reciprocal scattering distribution for diffuse-dominated transport.
-		// The guided PDF flows into pdfFwdPrev, which becomes pdfFwd of the
-		// next vertex, so MISWeight() auto-corrects via the ratio chain.
+		// (STALE since DL-69, corrected 2026-09-14: the guided PDF no
+		// longer flows into pdfFwdPrev.  `pdfFwdPrev` is now the
+		// material's aggregate `ISPF::Pdf()` at `scatDir` -- the same
+		// function `pdfRev` uses -- and the guided density survives only
+		// as the NEARZERO fallback.  The guided density still reaches
+		// OpenPGL through `guidingPdfDirectionIn`, which is a training
+		// input and is deliberately left as `selectProb * effectivePdf`.)
 		bool usedGuidedDirection = false;
 		V guidedF = Traits::zero();
 		Vector3 guidedDir;
@@ -6794,8 +6811,15 @@ unsigned int GenerateLightSubpathImpl(
 					( f * (bssrdfReflectCompensation * cosTheta / scatterPdf) );
 				beta = beta * localScatteringWeight;
 			} else {
-				// Pel/NM association divergence preserved: the guided
-				// fallback keeps the original left-to-right chain.
+				// The guided fallback keeps the original left-to-right
+				// multiplication order.  (This comment used to claim the
+				// NM branch's "association" was thereby PRESERVED; that
+				// was overstated -- the pre-DL-69 NM branch multiplied
+				// `beta * f * comp * cos / scatterPdf` left to right,
+				// while this one forms `wHero` first and then
+				// `beta * wHero`, so the two differ at the ulp.  The
+				// order is kept because there is no reason to perturb
+				// it, not because it is bit-identical.)
 				const Scalar wHero = useKray ?
 					( KrayValue<Tag>( *pScat ) * krayScale ) :
 					( f * bssrdfReflectCompensation * cosTheta / scatterPdf );

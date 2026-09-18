@@ -129,11 +129,21 @@ Three deliberate carve-outs:
   (`bsdfCombinedPdf > NEARZERO`): the per-lobe form still applies, and
   takes PT's DL-42-fixed shape,
   `kray_I * pScat->pdf / (selectProb * combinedPdf)`.
-* **A material whose `ISPF::Pdf` is the base-class 0** (`BioSpecSkinSPF`,
-  `GenericHumanTissueSPF` do not override it) keeps the old per-lobe
-  `pdfFwd`.  Its `pdfRev` is zero there too and `MISWeight`'s remap0
-  already governs that case, so substituting a zero would be a
-  behaviour change for no consistency gain.
+* **`misFwdPdf <= NEARZERO`** keeps the old per-lobe `pdfFwd`: the
+  aggregate density carries no information there, its `pdfRev` is zero
+  at the same vertex, and `MISWeight`'s remap0 already governs that
+  case, so substituting a zero would be a behaviour change for no
+  consistency gain.  **Which materials actually reach it** (review,
+  2026-09-14 -- this bullet used to name `BioSpecSkinSPF` /
+  `GenericHumanTissueSPF`, whose `ISPF::Pdf` IS the base-class 0 but
+  which BDPT never reaches: their materials' `GetBSDF()` returns null,
+  so the walk already `break`s at the `PositiveMagnitude(f) <= 0` gate
+  one block earlier -- that is **DL-126**, not this fallback): the
+  reachable case is a material whose `Pdf` is real but does not cover
+  the lobe that was drawn.  `TranslucentSPF` is the shipped instance --
+  its `Pdf`/`PdfNM` deliberately do not cover either Phong `cos^N` lobe
+  (the entering transmission and the interior backscatter), which is
+  **DL-41** -- so a draw from one of those lobes lands here.
 
 The `PositiveMagnitude<Tag>( f ) <= 0 → break` guard is **retained** and
 re-commented as a path-termination gate only.  DL-69 removed `f` from
@@ -155,10 +165,6 @@ equal to `f_I cos / p_I` as the paired BSDF evaluates it:
 
 * **`TranslucentSPF`** — `kray` carries Beer extinction and the layer
   transmittance, which `TranslucentBSDF::value` does not model at all.
-* **Any material with a bump/normal map** — the old expression's `cos`
-  came from `ri.geometric.vNormal` (the GEOMETRIC normal) while `p_I`
-  is a density around `ri.onb.w()` (the SHADING normal).  `kray` is
-  internally consistent; the old pairing was not.
 * **`SchlickSPF`** — the Schlick-1994 sampling weight differs from
   `f_I cos / p_I` by `hl / (nv * t * A)` on the specular lobe; see §5.
 
@@ -166,6 +172,18 @@ So the fix changes BDPT/VCM/MLT renders of **every** material at every
 non-delta vertex, not only multi-lobe ones — always in the direction of
 agreeing with PT, which has used `kray` since it shipped, and with this
 file's own delta branch.
+
+**STRUCK (review, 2026-09-14) — a third bullet that was WRONG.**  This
+list used to claim a normal-mapped material diverges because the old
+expression's `cos` "came from `ri.geometric.vNormal` (the GEOMETRIC
+normal) while `p_I` is a density around `ri.onb.w()` (the SHADING
+normal)".  `RayIntersectionGeometric::vNormal` **is** the shading
+normal (its own doc comment says so: "SHADING normal — Phong-
+interpolated on triangle meshes, perturbed by the normal-perturbing
+modifiers"; the geometric one is `vGeomNormal`), and `Object::
+IntersectRay` builds `ri.onb` **from** `vNormal`, so the two were the
+same frame and there was no mismatch to name.  The other two bullets
+stand, and DL-127 is the measured instance of the third.
 
 ---
 
@@ -179,18 +197,39 @@ against a 200x400 quadrature of `SchlickBRDF::value()`:
 
 | incidence | Q (quadrature) | (a) `kray_I/q_I` | (b) `f_agg cos/P_mix` | (c) `f_agg cos/(q_I p_I)` | (c)/Q |
 |---|---|---|---|---|---|
-| 0 deg  | 0.66676 | 0.66628 (0.999 Q) | 0.66640 (0.999 Q) | 1.33228 | **1.998** |
-| 30 deg | 0.68613 | 0.65966 (0.961 Q) | 0.68600 (1.000 Q) | 1.37162 | **1.999** |
-| 60 deg | 0.80531 | 0.64585 (0.802 Q) | 0.80608 (1.001 Q) | 1.61569 | **2.006** |
+| 0 deg  | 0.66676 | 0.66677 (1.000 Q) | 0.67377 (1.011 Q) | 1.33283 | **1.999** |
+| 30 deg | 0.68613 | 0.65966 (0.961 Q) | 0.68423 (0.997 Q) | 1.37222 | **2.000** |
+| 60 deg | 0.80531 | 0.64605 (0.802 Q) | 0.80462 (0.999 Q) | 1.61393 | **2.004** |
 
 (c) is exactly what BDPT computed.  It lands on **2.00 x** the true
 integral at every incidence — the N-times over-count for N = 2.  Both
 principled pairings land on Q.
 
+**RE-MEASURED 2026-09-14 (review P1), against the merge target.**  The
+numbers above are the post-merge ones.  Estimator (b) had to be fixed
+first: it drew its lobe with a FIXED 50/50 coin over the realized
+container, which is unbiased only while `ISPF::Pdf` IS that fixed
+mixture.  DL-67 Slice 0 (merged from master) replaced `SchlickSPF::Pdf`
+with the TRUE generating density of `Scatter` + `RandomlySelect` --
+kray-weighted, direction-dependent, and inclusive of the specular
+sampler's rejection rate -- so the fixed coin stopped matching it and
+(b) read `0.842 / 0.821 / 0.793 Q` (`Passed: 21  Failed: 3`).  (b) now
+draws with the REAL selection rule, which is exactly the procedure
+`P_mix` is the density of, and is unbiased for that reason: for any
+`g`, `E[g(w)/P_mix(w)] = integral over supp(P_mix) of g`, and the
+support condition holds here (the diffuse lobe is a full-hemisphere
+cosine proposal `Scatter` always accepts).  The residual `+1.1 %` at
+normal incidence is within the `Pdf` implementation's own documented
+quadrature residual (`SchlickSPFPdfConsistencyTest` bounds
+`|int Pdf - emitted| <= 0.0062`) plus MC noise; the 5 % band is not
+tightened past it.
+
 The same test measures the `pdfFwd` half: `(q_I p_I) / ISPF::Pdf()` on
-real draws spans `[0.018, 1.333]` at 0 deg, `[0.009, 1.537]` at 30 deg,
-`[0.003, 1.724]` at 60 deg — over two orders of magnitude between the
-two formulas MIS treats as one density.
+real draws spans `[0.018, 1.104]` at 0 deg, `[0.006, 1.205]` at 30 deg,
+`[0.004, 1.281]` at 60 deg — between two and almost three orders of
+magnitude between the two formulas MIS treats as one density.  (Those
+spreads also moved with the merge: against the pre-Slice-0 `Pdf` they
+read `[0.018, 1.333]` / `[0.009, 1.537]` / `[0.003, 1.724]`.)
 
 This test is a closed-form **characterisation** of the material's
 arithmetic, not a red-to-green regression; it passes on both sides of
@@ -265,13 +304,34 @@ defect, because that is what a future reviewer needs.
 | `IsotropicPhongSPF` | diffuse + specular (1 or 3 per-channel) | yes | yes | **AFFECTED** (not previously enumerated) |
 | `AshikminShirleyAnisotropicPhongSPF` | diffuse + specular | yes | yes | **AFFECTED** (not previously enumerated) |
 | `CompositeSPF` | forwards its sub-SPFs' lobes from the top and/or bottom layer | yes (the sub-SPF's) | possible | **AFFECTED** in principle; fixed by the same integrator change |
-| `CookTorranceSPF` | diffuse + specular + multiscatter | **no** — all three set `.pdf = mixPdf` | n/a | **IMMUNE**, for GGX's reason (`CookTorranceSPF.cpp:205/256/316` Pel, `:419/463/515` NM) |
-| `GGXSPF` | diffuse + specular + multiscatter | **no** — `mixPdf` | n/a | **IMMUNE**, matches the ledger |
+| `CookTorranceSPF` | **1** — `Scatter`/`ScatterNM` select the lobe INTERNALLY (`if( uLobe < pDiffuseSelect ) … else if … else`) and emit exactly one `ScatteredRay` | n/a — the one ray's `.pdf` is `mixPdf`, the aggregate density | n/a | **IMMUNE**, for GGX's reason |
+| `GGXSPF` | **1** — same internal selection (`GGXSPF.cpp` `uLobe` branch; one of `:271`/`:370`/`:467` Pel, `:577`/`:672`/`:760` NM fires per call) | n/a — `.pdf = mixPdf` | n/a | **IMMUNE**, matches the ledger |
 | `CoatedSPF` | one `AddScatteredRay` per call | n/a | n/a | **IMMUNE**, matches the ledger |
 | `LambertianSPF`, `OrenNayarSPF`, `SheenSPF` | 1 | n/a | n/a | **IMMUNE** (N = 1) |
 | `TranslucentSPF` | 2 (entry: front-reflect + transmit; exit: exit + interior backscatter) | yes | **no** — `TranslucentBSDF::value` is a `switch` on `GetReflectedSide`, returning exactly ONE lobe's term per direction | **not over-counting**, matches the ledger.  The fix still changes it, for §2.1's reason (its `kray` carries Beer extinction the BSDF value omits) — gated by `TranslucentIORStackTest` |
 | `FabricSPF`, `WeaveSPF` | 1 non-delta (+ an optional delta) | — | delta and non-delta never overlap | **IMMUNE** to the over-count |
 | `BioSpecSkinSPF`, `GenericHumanTissueSPF` | several | — | — | **not reached**: their materials' `GetBSDF()` returns 0, so `EvalBSDFAtVertex` is 0 and BDPT's eye/light walk already `break`s at such a vertex.  Pre-existing energy loss, filed **DL-126** |
+
+**Why those two are immune, precisely** (this table used to say only
+"all lobes carry `mixPdf`", which mis-describes the mechanism -- it
+implies several rays reach the container).  BOTH halves are
+load-bearing and neither alone suffices:
+
+1. **Internal single-lobe selection.**  `Scatter` draws `uLobe` itself
+   and emits exactly ONE `ScatteredRay`, so `RandomlySelect` has one
+   candidate and the integrator's `selectProb` is identically 1.  The
+   `sum_I` that produces DL-69's factor N has one term.
+2. **That ray's `.pdf` is the AGGREGATE mixture density**
+   (`mixPdf = (wd*diffPdf + wms*msPdf + ws*specPdf)/total`), not the
+   selected sub-lobe's own conditional.  Single-emit with a per-lobe
+   `.pdf` would still be mispaired -- not by a factor N, but by the
+   mixture ratio.
+
+Together they make `f_agg cos / (selectProb * pScat->pdf)` the correct
+aggregate-over-aggregate pairing by construction, which is why the
+pre-fix integrator was already right on these two.  `CoatedSPF` has
+property 1 only; it is immune because its single lobe's `.pdf` is that
+lobe's true density and its `kray` is the matching weight.
 
 ### 4.1 `SchlickSPF`'s per-channel branch (3 specular rays, one `ptrand`)
 
