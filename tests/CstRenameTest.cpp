@@ -16,8 +16,10 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Job.h"
 
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -189,6 +191,92 @@ int main()
 		Document dcr = DocRename( d, pnt, "y", &dc );
 		Check( !dp.empty() && SerializeCst( dpr ) == before, "plf1d+painter conflation: renaming the plf1d REFUSED (review #3a)" );
 		Check( !dc.empty() && SerializeCst( dcr ) == before, "plf1d+painter conflation: renaming the colour painter REFUSED (review #3a)" );
+	}
+
+	// [DL-164 sample() rewrite] renaming a colour painter named ONLY inside an
+	// expression_painter's `expr sample(rock)` body must REWRITE that call in place --
+	// unlike the piecewise_linear_function2d `cp` precedent (a String token the rename
+	// refuses to touch), a sample() reference's identifier has a well-defined byte range
+	// and IS rewritable.
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname rock\ncolor 0.5 0.5 0.5\n}\n"
+			"expression_painter\n{\nname wet\nexpr sample(rock)\n}\n" );
+		const NodeId rock = DocFindByName( d, "uniformcolor_painter/rock" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, rock, "stone", &diags );
+		const std::string out = SerializeCst( d2 );
+		Check( DocFindByName( d2, "uniformcolor_painter/stone" ) == rock, "DL-164: target painter renamed rock->stone, NodeId preserved" );
+		Check( diags.empty(), "DL-164: clean rename: no diagnostics" );
+		Check( Has( out, "expr sample(stone)" ), "DL-164: MONEY ASSERTION -- sample(rock) REWRITTEN to sample(stone) in the expr body" );
+		Check( !Has( out, "sample(rock)" ), "DL-164: no partial rename -- the old name is not left behind anywhere in the body" );
+
+		// [round-trip] the renamed document must still LOAD through the real production
+		// path (Job::LoadAsciiSceneViaCst), not merely re-tokenise -- a rewrite that
+		// produced syntactically-plausible but semantically-broken text (e.g. clobbering
+		// neighbouring characters) would still parse as a String param and only fail here.
+		const char* path = "/tmp/dl164_renametest_roundtrip.RISEscene";
+		{ std::ofstream o( path ); o << out; }
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path );
+		std::remove( path );
+		Check( loaded, "DL-164: the renamed document round-trips through Job::LoadAsciiSceneViaCst (still loads)" );
+		j->release();
+	}
+
+	// [DL-164 sample_scalar() rewrite] the SCALAR pipe's own call, inside a
+	// scalar_painter's `expression` field, rewrites the same way.
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\nname rough\nvalue 0.3\n}\n"
+			"scalar_painter\n{\nname wetrough\nexpression sample_scalar(rough)\n}\n" );
+		const NodeId rough = DocFindByName( d, "scalar_painter/rough" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, rough, "roughwet", &diags );
+		const std::string out = SerializeCst( d2 );
+		Check( diags.empty() && Has( out, "expression sample_scalar(roughwet)" ) && !Has( out, "sample_scalar(rough)\n" ),
+		       "DL-164: sample_scalar(rough) REWRITTEN to sample_scalar(roughwet)" );
+	}
+
+	// [DL-164 P1.4 guard still governs a same-name colour+scalar pair] a colour painter
+	// and a scalar painter sharing the SAME name are ALREADY refused by the pre-existing
+	// P1.4 conflation guard above (the two live in separate managers, but the (Painter,
+	// name) rename-rewrite path cannot disambiguate a plain Reference to it) -- confirm
+	// the new dimension-precise sample()/sample_scalar() sub-namespace does not bypass
+	// that guard by making the rename LOOK safe when it is not.
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname x\ncolor 0.1 0.2 0.3\n}\n"
+			"scalar_painter\n{\nname x\nvalue 0.4\n}\n"
+			"expression_painter\n{\nname usesColor\nexpr sample(x)\n}\n"
+			"scalar_painter\n{\nname usesScalar\nexpression sample_scalar(x)\n}\n" );
+		const std::string before = SerializeCst( d );
+		const NodeId colourX = DocFindByName( d, "uniformcolor_painter/x" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, colourX, "y", &diags );
+		Check( !diags.empty() && SerializeCst( d2 ) == before,
+		       "DL-164: a same-name colour+scalar pair is still REFUSED by the P1.4 guard, unchanged by the new sub-namespace" );
+	}
+
+	// [DL-164 exact-identifier match, not substring] renaming `rock` must not touch a
+	// DIFFERENT painter whose name merely CONTAINS `rock` as a substring (`rockbed`) --
+	// the rewrite goes through the SAME tokenizer the compiler uses (Tok::Ident equality),
+	// never a naive string search-and-replace.
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname rock\ncolor 0.5 0.5 0.5\n}\n"
+			"uniformcolor_painter\n{\nname rockbed\ncolor 0.2 0.2 0.2\n}\n"
+			"expression_painter\n{\nname mixed\nexpr mix(sample(rock), sample(rockbed), 0.5)\n}\n" );
+		const NodeId rock = DocFindByName( d, "uniformcolor_painter/rock" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, rock, "stone", &diags );
+		const std::string out = SerializeCst( d2 );
+		Check( diags.empty() && Has( out, "sample(stone)" ) && Has( out, "sample(rockbed)" ) && !Has( out, "sample(rock)" ),
+		       "DL-164: MONEY ASSERTION -- exact-identifier rewrite touches sample(rock) but leaves sample(rockbed) byte-exact" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

@@ -75,6 +75,45 @@ int main()
 		Check( r.dumpBefore == r.dumpAfter, "painter refusal mutated NOTHING" );
 	}
 
+	// DL-164 structural guard (docs/DEBT_LEDGER.md residual, added by the DL-25 review):
+	// an expression_painter/scalar_painter's `sample(name)`/`sample_scalar(name)` resolves
+	// its bound IPainter*/IScalarPainter* ONCE at attach time and holds it under a RAW
+	// addref (ExpressionPainter.h's BoundPainterRefs) -- no re-resolution hook exists. That
+	// is safe TODAY only because EVERY Painter-category chunk (this switch's `default` arm,
+	// just above) is refused from this incremental path and always falls back to a full
+	// DeriveToJob, which rebuilds BoundPainterRefs from scratch. If a future change ever
+	// widens this switch to admit ChunkCategory::Painter, an in-place re-Finalize of a
+	// SAMPLED painter chunk would leave every OTHER chunk's already-resolved sample()/
+	// sample_scalar() pointer referencing the OLD (possibly freed) painter object --
+	// silently, since a raw addref does not detect its target's replacement. This case
+	// pins the refusal specifically for a chunk that USES sample() -- not just an ordinary
+	// painter -- so a future incremental-Painter change trips this test and must address
+	// BindPainterRefs' doc comment before it can pass.
+	{
+		std::string s =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname rock\ncolor 0.5 0.5 0.5\n}\n"
+			"expression_painter\n{\nname wet\nexpr sample(rock)\n}\n"
+			"lambertian_material\n{\nname m\nreflectance wet\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		IncResult r = RunInc( s, "expression_painter/wet" );
+		Check( r.applied == 0 && r.diagCount > 0,
+		       "DL-164: a sample()-using expression_painter's closure is REFUSED by the incremental path (applied 0 + diagnosed)" );
+		Check( r.dumpBefore == r.dumpAfter, "DL-164: the refusal mutated NOTHING" );
+	}
+	{
+		std::string s =
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\nname rough\nvalue 0.3\n}\n"
+			"scalar_painter\n{\nname wetrough\nexpression sample_scalar(rough)\n}\n"
+			"ggx_material\n{\nname m\nrd rough\nalphax wetrough\nalphay wetrough\n}\n";
+		IncResult r = RunInc( s, "scalar_painter/wetrough" );
+		Check( r.applied == 0 && r.diagCount > 0,
+		       "DL-164: a sample_scalar()-using scalar_painter's closure is REFUSED by the incremental path (applied 0 + diagnosed)" );
+		Check( r.dumpBefore == r.dumpAfter, "DL-164: the refusal mutated NOTHING (scalar pipe)" );
+	}
+
 	// translucent_material closure -> REFUSED (reads ambient painter-colour cache).
 	{
 		std::string s =

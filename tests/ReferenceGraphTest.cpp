@@ -2569,6 +2569,109 @@ int main()
 		}
 	}
 
+	// -----------------------------------------------------------------
+	// PART 15 -- DL-164 (docs/DEBT_LEDGER.md): sample(name)/sample_scalar(name) painter
+	// references, previously invisible to Cst::BuildReferenceGraph (an expression body is a
+	// ValueKind::String param, not a Reference), now trace as dimension-precise edges into the
+	// colour vs scalar painter sub-namespace. Exercised directly at the Cst::BuildReferenceGraph
+	// level (not through SceneReferenceGraph) since the defect and the fix both live there.
+	// -----------------------------------------------------------------
+	{
+		std::cout << "PART 15: DL-164 sample()/sample_scalar() reference-graph edges" << std::endl;
+
+		// A. dependents(rock) reads 0 pre-fix -> 1 post-fix: a colour painter named only
+		// inside an expression_painter's `expr sample(rock)` body.
+		{
+			Cst::Document d = Cst::ParseToCst(
+				"RISE ASCII SCENE 7\n"
+				"uniformcolor_painter\n{\nname rock\ncolor 0.5 0.5 0.5\n}\n"
+				"expression_painter\n{\nname wet\nexpr sample(rock)\n}\n" );
+			const Cst::NodeId rock = Cst::DocFindByName( d, "uniformcolor_painter/rock" );
+			const Cst::NodeId wet  = Cst::DocFindByName( d, "expression_painter/wet" );
+			Check( rock != 0 && wet != 0, "PART15a: fixture parses, both chunks resolve" );
+			const Cst::ReferenceGraph graph = Cst::BuildReferenceGraph( d );
+			std::map<Cst::NodeId, std::set<Cst::NodeId> >::const_iterator dep = graph.dependents.find( rock );
+			Check( dep != graph.dependents.end() && dep->second.count( wet ) == 1 && dep->second.size() == 1,
+			       "PART15a: MONEY ASSERTION -- dependents(rock) == {wet} via its sample(rock) body (was 0 pre-fix)" );
+		}
+
+		// B. Same shape for sample_scalar() into the SCALAR painter manager.
+		{
+			Cst::Document d = Cst::ParseToCst(
+				"RISE ASCII SCENE 7\n"
+				"scalar_painter\n{\nname rough\nvalue 0.3\n}\n"
+				"scalar_painter\n{\nname wetrough\nexpression sample_scalar(rough)\n}\n" );
+			const Cst::NodeId rough    = Cst::DocFindByName( d, "scalar_painter/rough" );
+			const Cst::NodeId wetrough = Cst::DocFindByName( d, "scalar_painter/wetrough" );
+			Check( rough != 0 && wetrough != 0, "PART15b: fixture parses, both chunks resolve" );
+			const Cst::ReferenceGraph graph = Cst::BuildReferenceGraph( d );
+			std::map<Cst::NodeId, std::set<Cst::NodeId> >::const_iterator dep = graph.dependents.find( rough );
+			Check( dep != graph.dependents.end() && dep->second.count( wetrough ) == 1 && dep->second.size() == 1,
+			       "PART15b: dependents(rough) == {wetrough} via sample_scalar(rough)" );
+		}
+
+		// C. Dimension precision: a colour painter and a scalar painter sharing the SAME
+		// name `x` -- sample(x) must depend on ONLY the colour one, sample_scalar(x) on ONLY
+		// the scalar one (never the coarse, ambiguous (Painter,name) key -- see the P1.4 alias
+		// this row deliberately does NOT reuse).
+		{
+			Cst::Document d = Cst::ParseToCst(
+				"RISE ASCII SCENE 7\n"
+				"uniformcolor_painter\n{\nname x\ncolor 0.1 0.2 0.3\n}\n"
+				"scalar_painter\n{\nname x\nvalue 0.4\n}\n"
+				"expression_painter\n{\nname usesColor\nexpr sample(x)\n}\n"
+				"scalar_painter\n{\nname usesScalar\nexpression sample_scalar(x)\n}\n" );
+			const Cst::NodeId colourX  = Cst::DocFindByName( d, "uniformcolor_painter/x" );
+			const Cst::NodeId scalarX  = Cst::DocFindByName( d, "scalar_painter/x" );
+			const Cst::NodeId useColor = Cst::DocFindByName( d, "expression_painter/usesColor" );
+			const Cst::NodeId useScalar= Cst::DocFindByName( d, "scalar_painter/usesScalar" );
+			Check( colourX != 0 && scalarX != 0 && useColor != 0 && useScalar != 0, "PART15c: fixture parses, all four chunks resolve" );
+			const Cst::ReferenceGraph graph = Cst::BuildReferenceGraph( d );
+			std::map<Cst::NodeId, std::set<Cst::NodeId> >::const_iterator depColour = graph.dependents.find( colourX );
+			std::map<Cst::NodeId, std::set<Cst::NodeId> >::const_iterator depScalar = graph.dependents.find( scalarX );
+			Check( depColour != graph.dependents.end() && depColour->second.count( useColor ) == 1 && depColour->second.count( useScalar ) == 0,
+			       "PART15c: MONEY ASSERTION -- dependents(colour x) == {usesColor} only, NOT usesScalar" );
+			Check( depScalar != graph.dependents.end() && depScalar->second.count( useScalar ) == 1 && depScalar->second.count( useColor ) == 0,
+			       "PART15c: MONEY ASSERTION -- dependents(scalar x) == {usesScalar} only, NOT usesColor" );
+		}
+
+		// D. A dangling sample() call (naming a painter that does not exist) surfaces through
+		// BOTH the diagnostics string list AND the structured UnresolvedReference vector --
+		// the same two channels an ordinary dangling Reference param uses.
+		{
+			Cst::Document d = Cst::ParseToCst(
+				"RISE ASCII SCENE 7\n"
+				"expression_painter\n{\nname broken\nexpr sample(nope)\n}\n" );
+			std::vector<std::string> diags;
+			std::vector<Cst::UnresolvedReference> unresolved;
+			Cst::BuildReferenceGraph( d, &diags, &unresolved );
+			bool foundDiag = false;
+			for( const std::string& s : diags ) if( s.find( "sample(nope)" ) != std::string::npos ) foundDiag = true;
+			Check( foundDiag, "PART15d: a dangling sample(nope) is reported in the diagnostics list" );
+			bool foundUnresolved = false;
+			for( const Cst::UnresolvedReference& u : unresolved )
+				if( u.param == "expr" && u.value == "nope" ) foundUnresolved = true;
+			Check( foundUnresolved, "PART15d: a dangling sample(nope) is reported as a structured UnresolvedReference" );
+		}
+
+		// E. def-body calls are traced too (not just the final `expr`), and multiple calls to
+		// the SAME target inside one body still resolve (no crash, no duplicate-edge blowup
+		// beyond what the loop naturally emits).
+		{
+			Cst::Document d = Cst::ParseToCst(
+				"RISE ASCII SCENE 7\n"
+				"uniformcolor_painter\n{\nname rock\ncolor 0.5 0.5 0.5\n}\n"
+				"expression_painter\n{\nname wet\ndef base sample(rock)\nexpr vec3(base.x, sample(rock).y, base.z)\n}\n" );
+			const Cst::NodeId rock = Cst::DocFindByName( d, "uniformcolor_painter/rock" );
+			const Cst::NodeId wet  = Cst::DocFindByName( d, "expression_painter/wet" );
+			Check( rock != 0 && wet != 0, "PART15e: fixture with a def-body sample() call parses" );
+			const Cst::ReferenceGraph graph = Cst::BuildReferenceGraph( d );
+			std::map<Cst::NodeId, std::set<Cst::NodeId> >::const_iterator dep = graph.dependents.find( rock );
+			Check( dep != graph.dependents.end() && dep->second.count( wet ) == 1,
+			       "PART15e: a def-body sample() call is traced (dependents(rock) still contains wet)" );
+		}
+	}
+
 	std::cout << "Passed: " << passCount << ", Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
 }
