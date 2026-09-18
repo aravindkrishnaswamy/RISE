@@ -33,6 +33,21 @@
 //    (f) TestAnisotropicFallback -- alphaX != alphaY does not crash
 //        and stays a plausible reflectance (residual is documented as
 //        an approximation, not gated tightly here -- see DL-139).
+//    (g) TestLowAlphaVNDF -- DL-160 red-proof.  `kGGXSpecularQuadWeight`
+//        (GGXBRDF.cpp's own baked moment-matched quadrature, consumed
+//        by hemisphericalAlbedo{,NM}) resolves its alpha axis with the
+//        SAME uniform [0.01,1.0] 32-row mapping and clamp DL-105 fixed
+//        on MicrofacetEnergyLUT's E_ss/E_avg tables -- alpha<0.01
+//        clamps to row 0 outright.  TestBihemispherical's own uniform
+//        angular-grid Bihemispherical() cannot resolve a GGX lobe below
+//        alpha~0.03 (same limitation DL-105's own test file documents
+//        for its "uniform-hemisphere" estimator), so this uses an
+//        independent VNDF-IMPORTANCE-SAMPLING bihemispherical estimator
+//        (own re-implementation of D/Lambda/G1 + Heitz-2018 VNDF
+//        sampling, own RNG stream, matching the DL-105
+//        IndependentGGX precedent in GGXHeightCorrelatedEnergyLUTTest.cpp)
+//        that calls the REAL GGXBRDF::value() directly -- not a
+//        re-implementation of its Fresnel/multiscatter terms.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -48,6 +63,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <random>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/math_utils.h"
@@ -435,6 +451,164 @@ namespace
 		// approximation's residual for genuinely anisotropic materials.
 		Check( fabs( reported - trueBi ) < 0.15, "anisotropic hemisphericalAlbedo within a loose (DL-139-tracked) bound" );
 	}
+
+	//////////////////////////////////////////////////////////////////
+	//  (g) DL-160 red-proof: low alpha, VNDF-importance-sampled
+	//      independent bihemispherical estimator.
+	//////////////////////////////////////////////////////////////////
+
+	// Own from-scratch re-implementation (own RNG stream) of the GGX
+	// isotropic D/Lambda/G1 primitives and Heitz-2018 VNDF sampling --
+	// independent of tools/GGXSpecularBihemisphericalGen.cpp's and
+	// GenerateMicrofacetEnergyLUT.cpp's own copies, matching the DL-105
+	// `IndependentGGX` precedent in tests/GGXHeightCorrelatedEnergyLUTTest.cpp.
+	// Used ONLY to build a VNDF importance-sampling PROPOSAL for wo
+	// given wi -- the numerator of every estimator sample below calls
+	// the REAL, production `GGXBRDF::value()` directly, so this is a
+	// true black-box check of the fix's effect on the shipped code
+	// path, not a replay of any piece of it.
+	namespace IndependentGGX
+	{
+		static double D_Isotropic( double alpha, double cosThetaM )
+		{
+			if( cosThetaM <= 0 ) return 0.0;
+			const double a2 = alpha * alpha;
+			const double d = cosThetaM * cosThetaM * ( a2 - 1.0 ) + 1.0;
+			return a2 / ( PI * d * d );
+		}
+		static double Lambda( double alpha, double cosTheta )
+		{
+			if( cosTheta >= 1.0 - 1e-10 ) return 0.0;
+			if( cosTheta < 1e-10 ) return 1e10;
+			const double cos2 = cosTheta * cosTheta;
+			const double tan2 = ( 1.0 - cos2 ) / cos2;
+			return ( -1.0 + sqrt( 1.0 + alpha * alpha * tan2 ) ) * 0.5;
+		}
+		static double G1( double alpha, double cosTheta ) { return 1.0 / ( 1.0 + Lambda( alpha, cosTheta ) ); }
+
+		// Heitz 2018 "Sampling the GGX Distribution of Visible Normals"
+		// -- transcribed independently (own variable names/structure),
+		// wi already in local shading space (normal = (0,0,1)).
+		static Vector3 VNDFSample( const Vector3& wi, double alpha, double u1, double u2 )
+		{
+			const Vector3 wiStd = Vector3Ops::Normalize( Vector3( alpha * wi.x, alpha * wi.y, wi.z ) );
+			const double lensq = wiStd.x * wiStd.x + wiStd.y * wiStd.y;
+			const Vector3 T1 = ( lensq > 0 )
+				? Vector3( -wiStd.y, wiStd.x, 0 ) * ( 1.0 / sqrt( lensq ) )
+				: Vector3( 1, 0, 0 );
+			const Vector3 T2 = Vector3Ops::Cross( wiStd, T1 );
+
+			const double r = sqrt( u1 );
+			const double phi = 2.0 * PI * u2;
+			double t1 = r * cos( phi );
+			double t2 = r * sin( phi );
+			const double s = 0.5 * ( 1.0 + wiStd.z );
+			t2 = ( 1.0 - s ) * sqrt( r_max( 0.0, 1.0 - t1 * t1 ) ) + s * t2;
+
+			const Vector3 Nh = T1 * t1 + T2 * t2 + wiStd * sqrt( r_max( 0.0, 1.0 - t1 * t1 - t2 * t2 ) );
+			return Vector3Ops::Normalize( Vector3( alpha * Nh.x, alpha * Nh.y, r_max( 0.0, Nh.z ) ) );
+		}
+	}
+
+	//! Independent, VNDF-importance-sampled bihemispherical estimator
+	//! of the REAL brdf.value().  Standard Heitz-2018 VNDF pdf:
+	//! p(wo|wi) = G1(wi)*D(m)/(4*cosWi), so the per-sample estimator of
+	//! INT f(wi,wo)*cosO dwo is f(wi,wo)*cosO*4*cosWi/(G1(wi)*D(m)).
+	//! The outer wi integral uses the same fixed-grid + final *2.0
+	//! normalization Bihemispherical() above and the generator's own
+	//! Moments() use (isotropy lets phi_i integrate out to exactly
+	//! 2*pi, which cancels against the 1/pi bihemispherical measure to
+	//! a factor of 2).  Needed because a plain angular grid in wo (as
+	//! Bihemispherical() uses) cannot resolve a GGX lobe whose angular
+	//! width is ~alpha at alpha<0.03 -- same limitation DL-105 hit for
+	//! its own "uniform-hemisphere" estimator.
+	double BihemisphericalVNDF( IBSDF& brdf, double alpha, int numMuI, int numSamples, unsigned long long seed )
+	{
+		std::mt19937_64 rng( seed );
+		std::uniform_real_distribution<double> uni( 0.0, 1.0 );
+		const double dmu = 1.0 / numMuI;
+		double outerSum = 0.0;
+		for( int bi = 0; bi < numMuI; bi++ )
+		{
+			const double muI = ( bi + 0.5 ) * dmu;
+			const double sinI = sqrt( r_max( 0.0, 1.0 - muI * muI ) );
+			const Vector3 wi( sinI, 0.0, muI );
+			const double G1wi = IndependentGGX::G1( alpha, muI );
+
+			double innerSum = 0.0;
+			for( int s = 0; s < numSamples; s++ )
+			{
+				const double u1 = uni( rng );
+				const double u2 = uni( rng );
+				const Vector3 m = IndependentGGX::VNDFSample( wi, alpha, u1, u2 );
+				const double wiDotM = Vector3Ops::Dot( wi, m );
+				if( wiDotM <= 0 ) continue;
+				const Vector3 wo = Vector3Ops::Normalize( m * ( 2.0 * wiDotM ) - wi );
+				const double cosWo = wo.z;
+				if( cosWo <= 0 ) continue;
+				const double Dm = IndependentGGX::D_Isotropic( alpha, m.z );
+				if( Dm <= 0 ) continue;
+
+				RayIntersectionGeometric ri = MakeRIForView( wo );
+				const double f = ColorMath::MaxValue( brdf.value( wi, ri ) );
+
+				const double weight = f * cosWo * 4.0 * muI / ( G1wi * Dm );
+				innerSum += weight;
+			}
+			outerSum += ( innerSum / numSamples ) * muI * dmu;
+		}
+		return outerSum * 2.0;
+	}
+
+	void TestLowAlphaVNDF()
+	{
+		std::cout << "--- TestLowAlphaVNDF (DL-160 red-proof) ---" << std::endl;
+
+		struct Row { double alpha; double F0; };
+		Row rows[] = {
+			{ 0.002, 1.00 }, { 0.002, 0.04 }, { 0.002, 0.00 },
+			{ 0.005, 1.00 }, { 0.005, 0.04 }, { 0.005, 0.00 },
+			{ 0.008, 1.00 }, { 0.008, 0.00 },
+			{ 0.015, 1.00 }, { 0.015, 0.00 },
+			{ 0.03,  1.00 }, { 0.03,  0.00 },
+		};
+
+		// Tighter than TestBihemispherical's 0.01 -- the DL-160 defect
+		// is a nearly F0-INDEPENDENT ABSOLUTE weight-sum error (~5e-4,
+		// derived closed-form from the row0-vs-alpha->0-limit weight
+		// difference), so at F0=0 (where the true reflectance itself
+		// is small, ~0.05) a 1% absolute bar is far too loose to see
+		// it -- 4e-4 catches the ~5e-4 defect while staying above this
+		// estimator's own VNDF MC noise floor (~1e-4 at these sample
+		// counts).
+		const double kTol = 0.0004;
+
+		for( const Row& row : rows )
+		{
+			Owned<UniformColorPainter> spec( new UniformColorPainter( RISEPel( row.F0, row.F0, row.F0 ) ) );
+			Owned<UniformColorPainter> diff( new UniformColorPainter( RISEPel( 0, 0, 0 ) ) );
+			Owned<UniformScalarPainter> alphaX( new UniformScalarPainter( row.alpha ) );
+			Owned<UniformScalarPainter> alphaY( new UniformScalarPainter( row.alpha ) );
+			Owned<UniformScalarPainter> iorP( new UniformScalarPainter( 1.5 ) );
+			Owned<UniformScalarPainter> extP( new UniformScalarPainter( 0.0 ) );
+			Owned<GGXBRDF> brdf( new GGXBRDF( *diff, *spec, *alphaX, *alphaY, *iorP, *extP, eFresnelSchlickF0 ) );
+
+			const unsigned long long seed = 0xD1160ULL + (unsigned long long)( row.alpha * 1.0e7 ) * 1000003ULL + (unsigned long long)( row.F0 * 1.0e6 );
+			const double trueBi = BihemisphericalVNDF( *brdf, row.alpha, 48, 100000, seed );
+
+			RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
+			RISEPel out;
+			brdf->hemisphericalAlbedo( dummyRi, out );
+			const double reported = ColorMath::MaxValue( out );
+
+			printf( "  alpha=%.4f F0=%.2f: bihemispherical_VNDF=%.5f  hemisphericalAlbedo()=%.5f  |diff|=%.5f  relerr=%.2f%%\n",
+				row.alpha, row.F0, trueBi, reported, fabs(reported - trueBi), 100.0*fabs(reported-trueBi)/trueBi );
+
+			CheckClose( reported, trueBi, kTol,
+				"DL-160 low-alpha hemisphericalAlbedo matches VNDF bihemispherical at alpha=" + std::to_string(row.alpha)
+				+ " F0=" + std::to_string(row.F0) );
+		}
+	}
 }
 
 int main()
@@ -445,6 +619,7 @@ int main()
 	TestMomentZeroCrossCheck();
 	TestSmoothLimit();
 	TestAnisotropicFallback();
+	TestLowAlphaVNDF();
 
 	std::cout << std::endl << g_numChecks << " checks, " << g_numFailures << " failures" << std::endl;
 	return g_numFailures == 0 ? 0 : 1;
