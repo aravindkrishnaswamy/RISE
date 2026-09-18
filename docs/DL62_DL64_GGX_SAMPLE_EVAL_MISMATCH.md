@@ -1157,6 +1157,121 @@ scene's smallest authored alpha). The furnace-level and LUT-level tables
 above are the decisive evidence for this fix; the render confirms no
 corruption, not a visible before/after difference at this alpha.
 
+## DL-160: low-alpha sub-grid (GGXBRDF's own bihemispherical quadrature weights)
+
+**Status: CLOSED 2026-09-18** — debt-dl160 slice, base `50dbc4d8`.
+
+**Root cause**: `GGXBRDF.cpp`'s `LookupGGXSpecularQuadWeight` (the
+lookup for `kGGXSpecularQuadWeight[32][8]`, DL-123's own baked
+moment-matched bihemispherical quadrature, `tools/GGXSpecularBihemisphericalGen.cpp`)
+resolved its alpha axis with the SAME
+`a = clamp((alpha-0.01)/0.99, 0, 1) * 31` mapping DL-105 fixed on
+`E_ss_TABLE`/`E_ss_TABLE_G2`/`E_avg_TABLE{,_G2}` — `alpha < 0.01`
+clamped to row 0 outright, and row 0 (`0.01`) to row 1 (`0.0419`) was
+the same 4.2x-in-one-cell first interpolation interval.
+
+**Measured pre-fix (red-proof)**: `tests/GGXHemisphericalAlbedoTest.cpp`'s
+new `TestLowAlphaVNDF` — an independent VNDF-importance-sampled
+bihemispherical estimator (own D/Lambda/G1 + Heitz-2018 VNDF sampling,
+own RNG) calling the REAL `GGXBRDF::value()` directly, needed because a
+uniform angular grid (as `TestBihemispherical`'s own `Bihemispherical()`
+uses) cannot resolve a GGX lobe this narrow — measured, at Schlick F0=0
+(worst case; the defect is a nearly F0-independent ABSOLUTE weight-sum
+error, so the SMALLER the true reflectance the LARGER the relative
+error): `alpha=0.002` reads **1.10%** high (`0.047097` vs `0.047620`);
+`alpha=0.005` **0.80%**; `alpha=0.008` **0.35%**; `alpha=0.015`
+**0.34%**; `alpha=0.03` **0.49%**. At F0=1 the SAME absolute defect
+(~5e-4) reads as a much smaller relative error (~0.05%) because the
+true value there is near 1 — this is why the pre-existing
+`TestBihemispherical`/`FabricMaterialChunkTest` gates, which only ever
+exercised alpha>=0.03 or F0 near 1 or both, never caught it.
+
+**Boundary condition — derived, not guessed** (the ledger row
+explicitly flagged this: "re-derive before assuming", since this
+table's `alpha->0` limit is a QUADRATURE WEIGHT VECTOR, not a
+directional albedo, so DL-105's own "`Ess=1`" boundary does not carry
+over unchanged). A first, plausible-looking guess — "`alpha->0` makes
+the lobe a delta at the mirror direction (`muH->1` for every `wi`), so
+the answer is a weight delta at `kGGXSpecularQuadNodes[0]`" — is WRONG.
+For a FIXED `wi` at polar angle `theta_i`, the `alpha->0` limit
+mirror-reflects `wi` about the MACROSCOPIC normal `n`, not about `wi`
+itself, so `h->n` and `muH=dot(wi,h)->dot(wi,n)=mu_i`, NOT 1, unless
+`wi` is ALSO at normal incidence. Since this table's target quantity
+integrates over ALL `wi` (isotropic, weighted `mu_i*dmu_i`), the
+`alpha->0` bihemispherical single-scatter reflectance of ANY Fresnel
+function `F` is the well-known perfect-mirror result
+`R_ss(alpha->0) = 2*INT_0^1 F(mu)*mu dmu` (the same reduction
+`E_avg`'s own definition uses, `F` in place of `Ess`), giving boundary
+MOMENTS (in `u=1-cosThetaH`) `Moments_k(alpha->0) = 2/((k+1)(k+2))` for
+ANY `F` — verified numerically: the max `|weight|` difference between
+this closed form and the actual baked `alpha=0.01` row is only `~0.0015`
+(row 0 is already close to the true limit), against the `~0.28`
+difference the delta-at-node-0 guess would have predicted at node 2.
+Solved via the same fixed Vandermonde system every other row uses.
+
+A second, smaller correction on top of that: the boundary must be
+baked through the SAME `numMuI=48`-bin midpoint discretization every
+other row in this table uses, not the raw continuum integral — an
+exact continuum closed form measurably DISAGREES with where the
+MC-baked `idx=1..7` rows already converge (`~0.0012` at node 0, purely
+from the outer `wi` quadrature's own `O(dmu^2)` truncation error, an
+artifact unrelated to the alpha axis this fix targets, confirmed by
+hand: the discretized closed form matches the MC-baked `idx=1`
+row — `alpha=7.8e-5` — to `<3e-7`).
+
+**Fix**: the SAME `ALPHA_SUB_FINE=7`/`ALPHA_MID_SIZE=4` low-alpha
+sub-grid construction DL-105 used, applied to `kGGXSpecularQuadWeight`'s
+own bake in `tools/GGXSpecularBihemisphericalGen.cpp` (7 geometric
+octaves below 0.01 down to `7.8e-5`, 2 geometric mid-nodes bridging
+`(0.01, 0.0419]`, each row solved through the same fixed Vandermonde
+system as every ordinary row), plus the closed-form `alpha->0` anchor
+above. `GGXBRDF.cpp`'s `LookupGGXSpecularQuadWeight` now routes
+`alpha < MicrofacetEnergyLUT::ALPHA_LOW_A1` through the new
+`kGGXSpecularQuadWeightAlphaZero`/`kGGXSpecularQuadWeightAlphaLow`
+tables via the SHARED `MicrofacetEnergyLUT::AlphaLowIndex`/
+`AlphaLowSlot`/`ALPHA_SUB_FINE`/`ALPHA_LOW_TOTAL` bracket — the exact
+same axis and helpers DL-105 already ships and tests, reused rather
+than reimplemented, so this table's bracketing cannot drift from
+DL-105's. Regenerating `tools/GGXSpecularBihemisphericalGen.cpp` and
+diffing its output against the pasted tables in `GGXBRDF.cpp` is a
+clean 0-line diff (verified).
+
+**Residual (post-fix, same VNDF estimator)**: `alpha=0.002` F0=0 error
+drops **1.10% -> 0.01%**; `alpha=0.005` **0.80% -> 0.01%**;
+`alpha=0.03` **0.49% -> 0.19%** (the residual at the top of this
+table's own fixed range is expected — `alpha=0.03` sits inside the
+2-node geometric mid-zone bridging to row 1, the same coarsest part of
+DL-105's own construction). All under the test's 4e-4 absolute
+tolerance.
+
+**Gate**: `GGXHemisphericalAlbedoTest` 40/0 (was 34/6 with this slice's
+own new rows; 28/0 unaffected on the pre-existing rows), `GGXHeightCorrelatedEnergyLUTTest`
+261/0, `GGXDiffuseTransmissionTest` 190/0, `GGXWhiteFurnaceTest` pass,
+`LayeredWhiteFurnaceTest` 0/57, `FabricMaterialChunkTest` 178/0 (was
+170/0; +8 checks from a new low-alpha GGX row added to gate 5(b) —
+its informational "substr%" column is unaffected by this fix, `8.682%
+-> 8.743%`, because that gate's own 64x128 uniform-grid
+`BruteForceIntegrals` reference cannot resolve alpha this low either,
+the same limitation this fix's own red-proof needed VNDF sampling to
+get past), `CoatedMaterialChunkTest` 85/0 (no low-alpha GGX row
+present), `FabricRenderTest` 60/0, `GGXSampleEvaluationConsistencyTest`
+48/0, `CstDeriveGoldenTest` 452 MATCH/0 DRIFT, `SourceHygieneTest`
+167/0; clean warning-free rebuild (incremental + full).
+
+**Sibling audit**: re-ran the `(alpha-0.01)/0.99`-style grep across
+`src/Library` and `tools/`. Nothing new: `MicrofacetEnergyLUT.h`'s four
+remaining occurrences of the raw formula are the DL-105-fixed
+functions' own `alpha >= ALPHA_LOW_A1` fallthrough branch (guarded,
+confirmed by reading each call site); `SheenDirectionalAlbedo`'s
+`kNumAlphaBins` axis is LOG-spaced, a structurally different
+construction with no analogous low-end coarseness; **DL-161** (the
+anisotropic `AnisoAlphaIndex` off-diagonal case) is the only other live
+instance, already filed by the DL-105 slice, confirmed still open and
+correctly out of scope here — its boundary is a non-constant function
+of `(alphaY, phi, cosTheta)`, not the simple closed form this slice
+used, and closing it needs a bake of comparable scope to the DL-77
+slice itself. No new debt row opened.
+
 ## DL-77: anisotropic Kulla-Conty compensation (ratio + azimuth)
 
 **Status: CLOSED 2026-09-14** — debt-ggx3 slice, base `a3aa5b8d`.

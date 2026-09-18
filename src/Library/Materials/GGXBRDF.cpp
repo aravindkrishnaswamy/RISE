@@ -758,11 +758,75 @@ namespace
 		{ 0.0217673239f, 0.1445616620f, 0.1514399619f, 0.0713737717f, 0.0185561643f, 0.0009202578f, 0.0005866106f, -0.0002724636f },
 	};
 
+	// DL-160: low-alpha sub-grid -- see LookupGGXSpecularQuadWeight's
+	// own comment below for how these are consumed.  The exact alpha->0
+	// boundary (idx<=0) is a CLOSED FORM (moments 2/((k+1)(k+2)) of the
+	// mirror-limit kernel, discretized through the SAME numMuI-bin
+	// midpoint rule every other row uses -- see
+	// tools/GGXSpecularBihemisphericalGen.cpp's own derivation comment;
+	// NOT a delta at node 0, which a naive first guess would suggest).
+	// Row order: ALPHA_SUB_FINE=7 geometric octaves below 0.01
+	// (alpha=0.01/2^(8-j)), then ALPHA_MID_SIZE-1=3 geometric nodes
+	// bridging (0.01,0.04193548] -- IDENTICAL scheme to
+	// MicrofacetEnergyLUT.h's own ALPHA_SUB_FINE/ALPHA_MID_SIZE
+	// (DL-105); last row is an unused zero-padding slot
+	// (MicrofacetEnergyLUT::AlphaLowSlot's own range only ever
+	// addresses 9 of these 10 rows).  DO NOT HAND-EDIT; regenerate via
+	// tools/GGXSpecularBihemisphericalGen.cpp and paste both arrays
+	// back in verbatim.
+	static const Scalar kGGXSpecularQuadWeightAlphaZero[ kGGXSpecularQuadNumNodes ] =
+	{
+		0.0196366999f, 0.1812715419f, 0.2864598270f, 0.2665231478f, 0.1707519982f, 0.0654906004f, 0.0102491160f, -0.0003829311f
+	};
+
+	static const Scalar kGGXSpecularQuadWeightAlphaLow[ 10 ][ kGGXSpecularQuadNumNodes ] =
+	{
+		{ 0.0196366957f, 0.1812717610f, 0.2864598542f, 0.2665229694f, 0.1707520275f, 0.0654905098f, 0.0102490686f, -0.0003829698f },	// slot 0, idx=1, alpha=0.00007813
+		{ 0.0196368844f, 0.1812712062f, 0.2864596426f, 0.2665237506f, 0.1707518823f, 0.0654906372f, 0.0102488727f, -0.0003830577f },	// slot 1, idx=2, alpha=0.00015625
+		{ 0.0196372950f, 0.1812709980f, 0.2864601309f, 0.2665243237f, 0.1707505219f, 0.0654908638f, 0.0102484391f, -0.0003833771f },	// slot 2, idx=3, alpha=0.00031250
+		{ 0.0196370084f, 0.1812727192f, 0.2864589360f, 0.2665246245f, 0.1707517230f, 0.0654904877f, 0.0102471274f, -0.0003851709f },	// slot 3, idx=4, alpha=0.00062500
+		{ 0.0196354520f, 0.1812754930f, 0.2864606924f, 0.2665252693f, 0.1707554320f, 0.0654855949f, 0.0102435009f, -0.0003920428f },	// slot 4, idx=5, alpha=0.00125000
+		{ 0.0196369355f, 0.1812742989f, 0.2864802330f, 0.2665171320f, 0.1707626089f, 0.0654783444f, 0.0102219730f, -0.0004127991f },	// slot 5, idx=6, alpha=0.00250000
+		{ 0.0196485605f, 0.1812898903f, 0.2864969597f, 0.2665383723f, 0.1707476189f, 0.0654594238f, 0.0101318461f, -0.0004621646f },	// slot 6, idx=7, alpha=0.00500000
+		{ 0.0196716623f, 0.1813923454f, 0.2867367430f, 0.2666085826f, 0.1706584649f, 0.0651428744f, 0.0094035006f, -0.0005879527f },	// slot 7, idx=9, alpha=0.01431019
+		{ 0.0197293578f, 0.1815247718f, 0.2868315902f, 0.2667236500f, 0.1705646109f, 0.0646660954f, 0.0087290608f, -0.0006161293f },	// slot 8, idx=10, alpha=0.02047816
+		{ 0.0000000000f, 0.0000000000f, 0.0000000000f, 0.0000000000f, 0.0000000000f, 0.0000000000f, 0.0000000000f, 0.0000000000f },
+	};
+
+	//! DL-160: resolve a low-alpha VIRTUAL node index (as returned by
+	//! MicrofacetEnergyLUT::AlphaLowIndex, which this table's alpha
+	//! axis shares byte-for-byte with MicrofacetEnergyLUT.h's own
+	//! E_avg_TABLE_G2 -- see this file's header comment) to a weight
+	//! for quadrature node `nodeIdx`.  Reuses MicrofacetEnergyLUT's own
+	//! ALPHA_SUB_FINE/ALPHA_LOW_TOTAL/AlphaLowSlot constants/helper so
+	//! the bracketing arithmetic cannot drift from DL-105's.
+	inline Scalar AlphaLowQuadWeight( const int idx, const int nodeIdx )
+	{
+		if( idx <= 0 ) return kGGXSpecularQuadWeightAlphaZero[nodeIdx];
+		if( idx == MicrofacetEnergyLUT::ALPHA_SUB_FINE + 1 ) return kGGXSpecularQuadWeight[0][nodeIdx];
+		if( idx >= MicrofacetEnergyLUT::ALPHA_LOW_TOTAL ) return kGGXSpecularQuadWeight[1][nodeIdx];
+		return kGGXSpecularQuadWeightAlphaLow[ MicrofacetEnergyLUT::AlphaLowSlot(idx) ][nodeIdx];
+	}
+
 	//! Linear interpolation across the alpha axis (same [0.01,1.0]
 	//! uniform-32-node mapping as MicrofacetEnergyLUT::LookupEavgG2),
 	//! returning the weight for quadrature node `nodeIdx`.
+	//!
+	//! DL-160: below MicrofacetEnergyLUT::ALPHA_LOW_A1 (row 1's alpha)
+	//! this used to clamp unconditionally to row 0 -- covering both the
+	//! alpha<0.01 clamp and the coarse row0->row1 cell (a 4.2x ratio in
+	//! one interpolation cell) -- the SAME defect DL-105 fixed on
+	//! MicrofacetEnergyLUT's E_ss/E_avg tables.  Now sources the row
+	//! from the low-alpha sub-grid via the shared
+	//! MicrofacetEnergyLUT::AlphaLowIndex bracket instead.
 	inline Scalar LookupGGXSpecularQuadWeight( const int nodeIdx, const Scalar alpha )
 	{
+		if( alpha < MicrofacetEnergyLUT::ALPHA_LOW_A1 )
+		{
+			int idx0, idx1; Scalar f;
+			MicrofacetEnergyLUT::AlphaLowIndex( alpha, idx0, idx1, f );
+			return ( Scalar(1) - f ) * AlphaLowQuadWeight( idx0, nodeIdx ) + f * AlphaLowQuadWeight( idx1, nodeIdx );
+		}
 		const int kNumAlphaBins = 32;
 		Scalar a = r_max( Scalar(0), r_min( Scalar(1), (alpha - Scalar(0.01)) / Scalar(0.99) ) ) * Scalar(kNumAlphaBins - 1);
 		int ai0 = (int)a;

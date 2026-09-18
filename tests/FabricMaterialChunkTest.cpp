@@ -1927,6 +1927,30 @@ void TestHemisphericalAlbedoError()
 	subs.push_back( { "GGX alpha=0.2", ggx2 } );
 	subs.push_back( { "GGX alpha=0.5", ggx5 } );
 
+	// DL-160: a very-smooth-surface row (alpha well below
+	// MicrofacetEnergyLUT::ALPHA_LOW_A1 ~= 0.042), so this gate's own
+	// "substr%" column exercises GGXBRDF::hemisphericalAlbedo's
+	// low-alpha sub-grid, not just the moderate-roughness path the
+	// pre-existing alpha=0.2/0.5 rows use.  MEASURED (not asserted --
+	// "substr%" is informational only, same as the pre-existing rows
+	// above): substr% reads +8.7% both BEFORE (8.682%) and AFTER
+	// (8.743%) the DL-160 fix, an unchanged-to-within-noise 0.06pp
+	// delta -- this is a KNOWN LIMITATION OF THIS TEST'S OWN 64x128
+	// uniform-angular-grid `BruteForceIntegrals` reference, not
+	// evidence about the fix: DL-160's own red-proof
+	// (tests/GGXHemisphericalAlbedoTest.cpp, TestLowAlphaVNDF) needed
+	// VNDF importance sampling specifically because a uniform grid
+	// cannot resolve a GGX lobe this narrow (documented precedent:
+	// GGXHemisphericalAlbedoTest's PickResolution comment shows even
+	// Nmu=300/Nphi=600 is required at alpha=0.05, let alone this
+	// gate's 64x128 at alpha=0.005).  errFactor/errRoute1True (the two
+	// ASSERTED checks below) do not call hemisphericalAlbedo() at all
+	// and are bit-for-bit unaffected by the fix, confirming this row
+	// adds no new failure surface.
+	UniformScalarPainter* gx005 = new UniformScalarPainter( 0.005 ); gx005->addref();
+	GGXMaterial* ggx005 = new GGXMaterial( *grey, *f0, *gx005, *gx005, *iorSc, *zeroSc, eFresnelSchlickF0 ); ggx005->addref();
+	subs.push_back( { "GGX alpha=0.005 (DL-160)", ggx005 } );
+
 	// m = max3(sheenColor): 0.5 and 1.0, the two the gate names.
 	struct MRow { const char* name; IPainter* pnt; double m; };
 	const MRow ms[] = { { "m=0.5", half, 0.5 }, { "m=1.0", white, 1.0 } };
