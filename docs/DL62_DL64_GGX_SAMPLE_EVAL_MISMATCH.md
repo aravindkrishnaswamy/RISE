@@ -1820,3 +1820,165 @@ identical deliberate trade-off for the same reason: "a documented
 perf/complexity trade-off for a rare regime, correctness does not depend
 on it"). Not opened as a new debt — it is a documented, intentional scope
 boundary inherited from DL-86/DL-105, not a newly-discovered defect.
+
+## DL-206: `ALPHA_LOW_STORED` off-by-one (dead slot, footprint)
+
+Found reviewing the `debt-dl161` slice above. `ALPHA_LOW_STORED =
+ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 1)` = 10, but `AlphaLowSlot` only ever
+addresses 9 slots: virtual mid-node indices run
+`ALPHA_SUB_FINE+2..ALPHA_LOW_TOTAL-1` (with `ALPHA_SUB_FINE=7`,
+`ALPHA_MID_SIZE=4` that is `idx={9,10}`), mapping to slots 7 and 8. Slot
+9 is unreachable for every legitimate `idx` — `idx==ALPHA_LOW_TOTAL` (11)
+is A1 itself, an EXISTING row of the main table, deliberately "not
+re-baked" per this file's own DL-105 derivation, and never passed to
+`AlphaLowSlot` at all. So the count baked into `ALPHA_LOW_STORED`
+(`ALPHA_MID_SIZE-1` = 3 "mid nodes") was off by one against what the bake
+loop actually visits (`ALPHA_MID_SIZE-2` = 2). DL-105 wasted one scalar
+row per table (7 isotropic-ish `*_ALPHA_LOW_*` tables); DL-161 inherited
+the unchanged constant across its four much larger multi-dimensional
+low-alpha table families (`ALPHALOW_X`/`_SUB`, `ALPHALOW_XY`/`_SUB`, and
+their `E_avg` twins), so ~24,639 stored zeros (~296 KB of header text,
+~12.6% of the DL-161 additions above) were dead weight — baked, stored,
+never read by any production code path.
+
+### Fix
+
+`ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 2)` = 9, changed
+in BOTH `MicrofacetEnergyLUT.h`'s own constant AND
+`tools/GenerateMicrofacetEnergyLUT.cpp` (its local copy of the constant,
+the `printf` block that emits the constant into the header, and the
+`printf`'d doc-comment text describing the stored count as "3 geometric
+nodes" — corrected to 2) — the DL-86 lesson repeated verbatim in DL-105's
+own section above: a header-only fix the generator does not know about
+is silently reverted by the next bake.
+
+Added a compile-time guard so this specific mistake cannot recur
+silently: `AlphaLowSlot` is now emitted `inline constexpr` (not just
+`inline`) and immediately followed by
+
+```cpp
+static_assert( AlphaLowSlot( ALPHA_LOW_TOTAL - 1 ) == ALPHA_LOW_STORED - 1,
+    "ALPHA_LOW_STORED must equal the highest slot AlphaLowSlot ever returns, plus one" );
+```
+
+Verified this actually fires, not merely compiles: reverted ONLY the
+header's `ALPHA_LOW_STORED` formula back to `ALPHA_SUB_FINE +
+(ALPHA_MID_SIZE - 1)` (leaving every baked array literal at its correct,
+already-regenerated `[9]` size) and rebuilt — every consumer TU
+(`CoatedBRDF.cpp`, `CookTorranceBRDF.cpp`, `CookTorranceSPF.cpp`,
+`DielectricSPF.cpp`, `GGXBRDF.cpp`, `GGXSPF.cpp`) failed with `static
+assertion failed due to requirement 'AlphaLowSlot(ALPHA_LOW_TOTAL - 1) ==
+ALPHA_LOW_STORED - 1': ... note: expression evaluates to '8 == 9'`.
+Restored the fixed constant and confirmed a clean rebuild.
+
+### Regeneration
+
+Ran the regenerate command from the header's own top comment (`c++ -O2
+-Isrc/Library -std=c++11 -o tools/gen_lut
+tools/GenerateMicrofacetEnergyLUT.cpp -lm` then `tools/gen_lut >
+MicrofacetEnergyLUT.h`) in the foreground: **10m33s** (`627.50s user,
+4.14s system, 99% cpu`) — comfortably under this row's own ~30-35 minute
+estimate, because the "both axes low" bake loop (the DL-161 `ALPHALOW_XY`
+family) now visits 45 `(ixRaw,iyRaw)` pairs (`9x9` upper triangular)
+instead of 55 (`10x10`), an 18% reduction in that specific Monte-Carlo
+loop's own cost.
+
+Header size: **6,962,043 -> 6,656,394 bytes (-305,649 bytes, -298.5 KiB,
+-4.4%)**, 31,333 -> 30,043 lines (-1,290).
+
+### Verifying every reachable value
+
+Wrote a small script (not committed) that parses each of the 13
+`*_ALPHA_LOW_*`-family array literals out of both the pre-fix and
+post-fix headers (a brace-counting tokenizer, not a line-based diff) and
+compares `old[0..8]` (or `old[0..8][0..8]` for the two-axis tables)
+against the corresponding post-fix elements:
+
+- **10 of 13 tables are byte-for-byte identical** on every reachable
+  slot: `E_ss_ALPHA_LOW_TABLE{,_G2}`, `E_ss_ALPHA_LOW_SUB_TABLE{,_G2}`,
+  `E_ss_ALPHA_LOW_LIMIT_TABLE`, `E_avg_ALPHA_LOW_TABLE{,_G2}`,
+  `E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X{,_SUB}`,
+  `E_avg_TABLE_G2_ANISO_ALPHALOW_X`. Their bake loops are keyed directly
+  on the virtual node index (`for(idx=ALPHA_SUB_FINE+2; idx<ALPHA_LOW_TOTAL;
+  idx++)`), a condition that never referenced `ALPHA_LOW_STORED` at all —
+  removing the dead slot changes nothing else these loops do.
+- **3 tables shift within Monte-Carlo noise**: `E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY`,
+  its `_SUB` twin, and `E_avg_TABLE_G2_ANISO_ALPHALOW_XY` — the "both axes
+  low" family, whose own bake loop iterates `for(ixRaw=0; ixRaw<ALPHA_LOW_STORED;
+  ixRaw++) for(iyRaw=ixRaw; iyRaw<ALPHA_LOW_STORED; iyRaw++)` DIRECTLY on
+  the (now-corrected) constant. With the pre-fix `ALPHA_LOW_STORED=10`,
+  this loop's LAST iteration at `ixRaw==9` (mapping to the invalid virtual
+  `idx=11=ALPHA_LOW_TOTAL`, i.e. A1 itself — a value that should never
+  have been re-baked, per the same rule the other 10 tables already
+  respect) drew real VNDF Monte-Carlo samples from a SHARED, sequential
+  RNG stream (`rand01_anisolow()`) before moving to the next `ixRaw`.
+  Removing that extra, invalid iteration means every subsequent
+  `(ixRaw,iyRaw)` pair's draws land at an earlier position in the same
+  stream than before — a harmless but real shift, since each cell's own
+  estimator is still an independently valid Monte-Carlo estimate of the
+  same expectation, just fed by different (still uniformly-distributed)
+  random numbers. Measured: max absolute diff over the reachable `9x9`
+  reduced grid is **0.00238** on `E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY`
+  (~0.27% relative at the affected cells — inside this table family's
+  own documented `<=0.34%` residual band from the DL-161 section above),
+  **0.00233** on its `_SUB` twin, and **4.86e-6** on
+  `E_avg_TABLE_G2_ANISO_ALPHALOW_XY`. The DIAGONAL cells of all three
+  (`ix==iy`, "iso-seeded" — copied deterministically from the isotropic
+  tables with no RNG draw at all, per the DL-161 section's own
+  Pass-1/Pass-2 construction) read **EXACTLY 0 diff**, which is the
+  clean confirmation that the shift is precisely and only the RNG-stream-
+  position effect described above, not a new bug.
+
+### `GGXSpecularBihemisphericalGen.cpp` (DL-160) — checked, left unchanged
+
+`tools/GGXSpecularBihemisphericalGen.cpp` reuses the identical
+`ALPHA_SUB_FINE`/`ALPHA_MID_SIZE`/`ALPHA_LOW_TOTAL`/`ALPHA_LOW_STORED`
+formulas and its own local `AlphaLowSlot`/`AlphaLowNode` (a standalone
+translation unit by design, per its own file comment — it does not
+`#include` `MicrofacetEnergyLUT.h`) to bake
+`kGGXSpecularQuadWeightAlphaLow` (`GGXBRDF.cpp:782`, hand-pasted from
+this generator's stdout). It carries the SAME `ALPHA_MID_SIZE-1`
+off-by-one in shape, but its OWN comment already names the consequence
+and handles it safely: "last row is an unused zero-padding slot
+(MicrofacetEnergyLUT::AlphaLowSlot's own range only ever addresses 9 of
+these 10 rows)" — a single explicit, labeled, all-zero row appended after
+the real bake loop, not an accidental dead slot. Two things make this a
+non-issue rather than a sibling instance of the same bug: (1) its own
+footprint is ~8 `Scalar`s, four orders of magnitude smaller than DL-161's
+~24,639 dead values: not worth a coordinated fix for its own sake. (2)
+More importantly, `GGXBRDF.cpp`'s own consumer
+(`LookupGGXSpecularQuadWeight`) indexes this array via
+`MicrofacetEnergyLUT::AlphaLowSlot(idx)` — the REAL, now-fixed one — and
+`AlphaLowSlot`'s return value has NEVER depended on `ALPHA_LOW_STORED`'s
+value (its formula only references `ALPHA_SUB_FINE`), so this row's fix
+to the MAIN header's `ALPHA_LOW_STORED` constant does not change what
+`AlphaLowSlot` returns for any `idx`, and therefore cannot desynchronize
+this table's own (unrelated, hand-maintained) size from what its
+consumer actually indexes. Confirmed via `GGXHemisphericalAlbedoTest`
+(DL-160's own gate) staying **40/0**, byte-for-byte unaffected. Left
+as its own, separately-tracked, harmless design choice — not reopened,
+not fixed here.
+
+### Gate
+
+Clean rebuild, zero warnings (full and incremental). `GGXHeightCorrelatedEnergyLUTTest`
+278/0, `GGXDiffuseTransmissionTest` 192/0, `GGXSampleEvaluationConsistencyTest`
+48/0, `GGXHemisphericalAlbedoTest` 40/0, `CookTorranceMultiscatterTest`
+17/0, `LayeredWhiteFurnaceTest` 0/57, `SourceHygieneTest` 167/0,
+`CstDeriveGoldenTest` 452 MATCH/0 DRIFT — every gated suite unchanged
+from its pre-fix count, exactly as expected for a fix whose entire
+purpose is removing dead, unread storage.
+
+### Cost
+
+Per-TU compile time (`GGXBRDF.cpp`, isolated pre-/post-fix header, 5
+runs each via a direct `c++` invocation with the project's real
+`Config.OSX` flags): pre-fix median **0.90s**, post-fix median **0.94s**.
+A ~4.4% smaller header did not translate into a measurable compile-time
+win at this file's size — front-end parse/constant-folding cost for a
+~300 KB table literal is apparently not the dominant term, and the added
+`constexpr`/`static_assert` costs a small, roughly offsetting amount.
+Report this honestly as "no measurable win", not as a speedup — the
+footprint reduction (disk/repo size, and one fewer dead value for every
+future low-alpha table family to inherit) is the real benefit here, not
+compile time.
