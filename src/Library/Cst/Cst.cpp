@@ -4235,6 +4235,22 @@ static bool LooksNumeric( const std::string& s )
 static const int kFunc1DSubCat = 100001;
 static const int kFunc2DSubCat = 100002;
 
+// DL-164 sub-namespace keys (docs/DEBT_LEDGER.md), same pattern as kFunc1DSubCat/kFunc2DSubCat
+// above: ChunkCategory::Painter lumps the colour-painter manager (IPainterManager) and the
+// scalar-painter manager (IScalarPainterManager, the ONLY chunk kind that registers there is
+// `scalar_painter` -- see PainterIntrospection.h), and the coarse (Painter,name) key cannot tell
+// them apart (the P1.4 alias in BuildReferenceNamespace papers over that for the ORDINARY
+// Reference-kind painter slots by aliasing same-name colour/scalar painters as mutual
+// dependents).  A `sample(name)` / `sample_scalar(name)` call inside an expression body resolves
+// against ONE specific manager -- ExpressionPainterAsciiChunkParser's / ScalarPainterAsciiChunkParser's
+// `ResolveColorPainter`/`ResolveScalarPainter` -- so its edge must be dimension-precise the same
+// way a `function1d`/`function2d` consumer is, not the lossy coarse key or the P1.4 alias (which
+// would make a `sample_scalar(rock)` referencing a SCALAR "rock" spuriously depend on a same-named
+// COLOUR "rock" too).  First-wins within each sub-namespace, matching the real managers' own
+// first-registered-wins AddItem semantics.
+static const int kColorPainterSubCat  = 100003;
+static const int kScalarPainterSubCat = 100004;
+
 //! The dimension-precise Function sub-namespace a reference PARAM resolves into, or 0 for a
 //! coarse {Function} consumer.  `pd` is the param's OWN ParameterDescriptor -- the caller (the
 //! single one, in ComputeChunkRefs) has already resolved it against the chunk's ChunkDescriptor
@@ -4344,6 +4360,16 @@ static std::map<std::pair<int,std::string>, NodeId> BuildReferenceNamespace(
 				}
 			}
 			painterNs[ name ].push_back( std::make_pair( isScalar, thisId ) );
+			// DL-164 dimension-precise seed: sample()/sample_scalar() resolve against
+			// exactly one of the two managers -- seed that sub-namespace here (first-wins,
+			// matching the real manager's AddItem) so ComputeChunkRefs's expression-body
+			// scan below binds the SAME chunk the derive's ResolveColorPainter /
+			// ResolveScalarPainter would, not the ambiguous coarse (Painter,name) key.
+			{
+				const int sub = isScalar ? kScalarPainterSubCat : kColorPainterSubCat;
+				const std::pair<int,std::string> sk( sub, name );
+				if( defs.find( sk ) == defs.end() ) defs[sk] = thisId;
+			}
 		}
 		const std::pair<int,std::string> key( (int)cat, name );
 		// Function-namespace CONFLATION diagnostic (review #3): Function1D and Function2D
@@ -4441,6 +4467,46 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 		const ParameterDescriptor* pd = 0;
 		for( const auto& p : desc.parameters ) if( p.name == role ) { pd = &p; break; }
 		if( !pd ) continue;
+		// DL-164 (docs/DEBT_LEDGER.md): an expression-body String param (expression_painter's
+		// `expr`/`def`, scalar_painter's `expression`/`def` -- flagged by the descriptor, never
+		// guessed by param name) can embed sample(name)/sample_scalar(name) painter references
+		// invisible to the generic Reference/tuple scan below (the whole value is expression
+		// TEXT, not a bare chunk name).  Scan it with the SAME tokenizer ParseSampleCall
+		// consumes at compile time (ExtractSampleRefs) and resolve each call against the
+		// dimension-precise colour/scalar sub-namespace seeded in BuildReferenceNamespace --
+		// exactly the cp-embedded-Function1D-name precedent just below, EXCEPT that unlike `cp`
+		// this reference IS rewritten by DocRename (RewriteSampleCallRefs edits the call's own
+		// identifier span, not the whole param value), so no rename-refusal guard is needed.
+		if( pd->carriesExpressionSampleRefs ) {
+			const std::string exprText = ParamNodeValue( kid.get() );
+			mix( exprText );   // stamp: the whole body text, so a non-sample edit inside it still moves the stamp
+			std::vector<RISE::Implementation::ExpressionProgram::Builder::SampleRef> refs;
+			RISE::Implementation::ExpressionProgram::Builder::ExtractSampleRefs( exprText, refs );
+			for( const RISE::Implementation::ExpressionProgram::Builder::SampleRef& r : refs ) {
+				const int sub = r.isScalar ? kScalarPainterSubCat : kColorPainterSubCat;
+				std::map<std::pair<int,std::string>, NodeId>::const_iterator d =
+					defs.find( std::pair<int,std::string>( sub, r.painterName ) );
+				const NodeId target = ( d != defs.end() ) ? d->second : 0;
+				if( target == kRuntimeDefaultTarget ) continue;   // painters have no runtime default; defensive parity with the generic path only
+				if( target == 0 ) {
+					// Not silent at LOAD (attach-time resolution hard-fails naming the missing
+					// chunk -- see BuildExpressionProgramFromChunkFields's resolver), but this
+					// static pass must still surface it: AnalyzeRejectedRemove and the editor's
+					// dangling-reference warning key off `unresolved`/`diags`, not a render.
+					diags.push_back( c->role + "." + role + " -> '" + std::string( r.isScalar ? "sample_scalar(" : "sample(" ) +
+						r.painterName + ")': unresolved reference" );
+					if( unresolved )
+						unresolved->push_back( UnresolvedReference{ chunkId, c->role, role, r.painterName } );
+					continue;
+				}
+				const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
+				mix( std::to_string( (long long)srcParam ) );
+				mix( std::to_string( (long long)target ) );   // fold the resolved target, same as the generic path (review P1 parity)
+				out.edges.push_back( ReferenceUse{ srcParam, target } );
+				if( chunkId != target ) out.deps.push_back( target );
+			}
+			continue;   // handled this expression-body param; do not fall through to the generic scan
+		}
 		// piecewise_linear_function2d.cp embeds a Function1D NAME as the 2nd whitespace token of
 		// each repeatable `cp` row ("<x> <function1d_name>"; consumed by AddPiecewiseLinearFunction2D
 		// via GetFunction1Ds).  The descriptor types `cp` as an opaque String, so the generic
@@ -4913,7 +4979,11 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 
 	// One walk: detect a same-category CST name COLLISION + map each param NodeId ->
 	// (owning chunk, role, occ, tupleKinds*) so a referrer edge becomes a rewrite.
-	struct Loc { NodeId chunk; std::string role; int occ; const std::vector<ValueKind>* tk; };
+	// DL-164: `exprBody` marks a String param flagged carriesExpressionSampleRefs (an
+	// expression_painter/scalar_painter expr/expression/def field) so the rewrite loop below
+	// runs RewriteSampleCallRefs on it instead of the plain-Reference/tuple substitution --
+	// its value is expression TEXT, not a bare chunk name.
+	struct Loc { NodeId chunk; std::string role; int occ; const std::vector<ValueKind>* tk; bool exprBody; };
 	std::map<NodeId, Loc> paramLoc;
 	bool collision = false;
 	for( size_t i = 0; i < items.size(); ++i ) {
@@ -4932,8 +5002,9 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 			const std::string role = kid->role;
 			const int thisOcc = occ[role]++;
 			const std::vector<ValueKind>* tk = 0;
-			if( desc ) for( const ParameterDescriptor& p : desc->parameters ) if( p.name == role ) { if( !p.tupleKinds.empty() ) tk = &p.tupleKinds; break; }
-			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tk };
+			bool exprBody = false;
+			if( desc ) for( const ParameterDescriptor& p : desc->parameters ) if( p.name == role ) { if( !p.tupleKinds.empty() ) tk = &p.tupleKinds; exprBody = p.carriesExpressionSampleRefs; break; }
+			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tk, exprBody };
 		}
 	}
 
@@ -4968,7 +5039,19 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 		if( u.targetNodeId != chunkId ) continue;
 		std::map<NodeId, Loc>::const_iterator l = paramLoc.find( u.sourceValueNodeId );
 		if( l == paramLoc.end() ) continue;
-		if( l->second.tk ) {
+		if( l->second.exprBody ) {
+			// DL-164: `target` (the chunk being renamed) tells us which pipe the call
+			// belongs to -- a scalar_painter is only ever named by sample_scalar(),
+			// every other Painter-category chunk only by sample().  RewriteSampleCallRefs
+			// processes the WHOLE body in one pass and is idempotent, so re-running it once
+			// per traced occurrence in the same param (a body with >1 call to this target)
+			// is safe -- exactly the RewriteTupleRef precedent just below.
+			NodeRef pnode = DocResolveNodeId( doc, u.sourceValueNodeId );
+			const std::string cur = pnode ? ParamNodeValue( pnode.get() ) : std::string();
+			const bool isScalarPipe = ( target->role == "scalar_painter" );
+			result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ,
+				RISE::Implementation::ExpressionProgram::Builder::RewriteSampleCallRefs( cur, isScalarPipe, oldName, newName ) );
+		} else if( l->second.tk ) {
 			NodeRef pnode = DocResolveNodeId( doc, u.sourceValueNodeId );
 			const std::string cur = pnode ? ParamNodeValue( pnode.get() ) : std::string();
 			result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ, RewriteTupleRef( cur, *l->second.tk, oldName, newName ) );

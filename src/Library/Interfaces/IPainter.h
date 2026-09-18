@@ -138,6 +138,36 @@ namespace RISE
 		virtual Scalar GetAlpha(
 			const RayIntersectionGeometric& /*ri*/				///< [in] Geometric intersection details
 			) const { return Scalar(1); }
+
+		//! DL-165 (docs/DEBT_LEDGER.md): true iff this painter's `GetColorNM`
+		//! answers from a genuine, independently-AUTHORED spectral power
+		//! distribution rather than a Jakob-Hanika uplift of an RGB triple --
+		//! today exactly `SpectralColorPainter` (`spectral_painter`),
+		//! `BlackBodyPainter` (`blackbody_painter`), and
+		//! `Function1DSpectralPainter` (a `piecewise_linear_function`'s
+		//! dual-registration into the colour-painter manager; its own
+		//! `GetColor` returns pure BLACK -- the RGB view is not merely
+		//! lossy for this one, it is empty).
+		//!
+		//! Default FALSE for every RGB-defined painter, INCLUDING one that
+		//! overrides `GetRadianceNM` for an unrelated reason: a cheap-path
+		//! cache of the SAME RGB->spectrum uplift (`UniformColorPainter`,
+		//! `TexturePainter`), or a forward to a selected/blended child
+		//! (`CheckerPainter`, `MappingPainter`, `BlendPainter`, ...) --
+		//! those all still answer `GetColorNM` via the ordinary uplift, so
+		//! reading them through `GetColor` and re-uplifting elsewhere loses
+		//! nothing a direct bind would not also lose.
+		//!
+		//! Consulted ONLY by the expression VM's `sample(name)` builtin
+		//! (ExpressionPainter.h's `BuildExpressionProgramFromChunkFields`,
+		//! at ATTACH time) to REFUSE binding a spectrally-defined painter --
+		//! `sample()` reads `GetColor()` only, so binding one here would
+		//! silently collapse its real SPD to RGB and then re-uplift a
+		//! DIFFERENT curve through whatever spectral consumer the
+		//! expression feeds. Not consulted anywhere else; a painter with no
+		//! opinion (the default) is assumed RGB-defined, which is correct
+		//! for every painter kind in this codebase except the three above.
+		virtual bool IsSpectrallyDefined() const { return false; }
 	};
 
 	//! An authored colour is "untinted white" iff its minimum RGB

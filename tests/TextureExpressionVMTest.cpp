@@ -59,6 +59,27 @@
 #include "../src/Library/Interfaces/IRasterImageWriter.h"
 #include "../src/Library/Interfaces/IWriteBuffer.h"
 
+// DL-165 (docs/DEBT_LEDGER.md): stdout-capture plumbing for the
+// attach-time-refusal diagnostic check, same fd-dup/dup2 technique as
+// tests/HairMaterialChunkTest.cpp's ParseBodyCapturing.
+#ifdef _WIN32
+	#include <process.h>
+	#include <io.h>
+	#define RISE_TEST_GETPID _getpid
+	#define RISE_TEST_DUP    _dup
+	#define RISE_TEST_DUP2   _dup2
+	#define RISE_TEST_CLOSE  _close
+	#define RISE_TEST_FILENO _fileno
+#else
+	#include <unistd.h>
+	#define RISE_TEST_GETPID getpid
+	#define RISE_TEST_DUP    dup
+	#define RISE_TEST_DUP2   dup2
+	#define RISE_TEST_CLOSE  close
+	#define RISE_TEST_FILENO fileno
+#endif
+#include <sstream>
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -1026,6 +1047,38 @@ namespace S2 {
 		job->addref();
 		const bool ok = ParseBody( tag, body, *job );
 		job->release();
+		return ok;
+	}
+
+	//! DL-165: runs ParseBody with stdout captured (GlobalLog's eLog_Console
+	//! sink includes eLog_Error, so an attach-time refusal diagnostic lands
+	//! there) -- same technique as HairMaterialChunkTest.cpp's
+	//! ParseBodyCapturing, duplicated locally rather than shared across
+	//! test binaries (each test executable is standalone; see tests/README.md).
+	bool ParseBodyCapturing( const std::string& tag, const std::string& body, std::string& capturedOutput )
+	{
+		const char* tmpEnv = getenv( "TMPDIR" );
+		std::string dir = tmpEnv ? tmpEnv : "/tmp/";
+		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
+		char pidbuf[32];
+		std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( RISE_TEST_GETPID() ) );
+		const std::string capPath = dir + "rise_texexprvm_dl165_stdout_" + tag + "_" + pidbuf + ".txt";
+
+		std::fflush( stdout );
+		const int savedFd = RISE_TEST_DUP( RISE_TEST_FILENO( stdout ) );
+		FILE* capFile = std::fopen( capPath.c_str(), "w" );
+		if( capFile ) RISE_TEST_DUP2( RISE_TEST_FILENO( capFile ), RISE_TEST_FILENO( stdout ) );
+
+		const bool ok = ParseBody( tag, body );
+
+		std::fflush( stdout );
+		if( savedFd >= 0 ) { RISE_TEST_DUP2( savedFd, RISE_TEST_FILENO( stdout ) ); RISE_TEST_CLOSE( savedFd ); }
+		if( capFile ) std::fclose( capFile );
+
+		std::ifstream ifs( capPath.c_str() );
+		if( ifs.is_open() ) { std::ostringstream oss; oss << ifs.rdbuf(); capturedOutput = oss.str(); }
+		remove( capPath.c_str() );
+
 		return ok;
 	}
 
@@ -5133,6 +5186,107 @@ static void TestPainterSampleForwardsTheRealHitRecord()
 	}
 }
 
+//======================================================================
+// Test 79 -- DL-165 (docs/DEBT_LEDGER.md): sample(name) refuses a
+// SPECTRALLY DEFINED substrate at ATTACH time (spectral_painter,
+// blackbody_painter, a colour-painter-dual-registered
+// piecewise_linear_function) instead of silently collapsing its real SPD
+// to RGB and re-uplifting a DIFFERENT curve through whatever spectral
+// consumer the expression feeds.
+//======================================================================
+static void TestPainterSampleRefusesSpectralSubstrate()
+{
+	std::cout << "Test 79: DL-165 -- sample() refuses a spectrally-defined substrate (spectral_painter/blackbody_painter/measured-SPD), quantifying the collapsed-then-reuplifted error once" << std::endl;
+
+	// (a) QUANTIFY THE DEFECT ONCE: bind a spectral_painter with a sharply
+	// oscillating SPD directly (no sample(), no attach-time gate involved),
+	// then compare its OWN GetColorNM (the true SPD) against
+	// RGBAlbedoSpectrum::FromRGB(GetColor()).Eval(nm) -- the EXACT formula
+	// ExpressionPainter::GetColorNM applies to whatever sample() would have
+	// handed it (default eSpectrumKind_Albedo) -- at 4 wavelengths.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"spectral_painter\n{\nname harsh_spd\nnmbegin 400\nnmend 700\ncp 400 0.95\ncp 480 0.05\ncp 550 0.9\ncp 620 0.05\ncp 700 0.95\n}\n";
+		Check( S2::ParseBody( "dl165_quantify", body, *job ), "(a) a sharply-oscillating spectral_painter parses standalone" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* spd = priv->GetPainters()->GetItem( "harsh_spd" );
+			Check( spd != 0, "(a) registered" );
+			if( spd ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const RISEPel rgb = spd->GetColor( r );
+				const RGBAlbedoSpectrum collapsed = RGBAlbedoSpectrum::FromRGB( rgb );
+				const Scalar wavelengths[4] = { Scalar(420.0), Scalar(480.0), Scalar(550.0), Scalar(620.0) };
+				double worstRelErr = 0.0;
+				for( int i = 0; i < 4; ++i ) {
+					const Scalar nm = wavelengths[i];
+					const Scalar trueVal = spd->GetColorNM( r, nm );
+					const Scalar collapsedVal = collapsed.Eval( nm );
+					const double relErr = std::fabs( (double)( trueVal - collapsedVal ) ) / std::max( 1e-6, std::fabs( (double)trueVal ) );
+					worstRelErr = std::max( worstRelErr, relErr );
+					std::cout << "    (a) nm=" << (double)nm << " true(SPD)=" << (double)trueVal
+						<< " collapsed-then-reuplifted=" << (double)collapsedVal
+						<< " relErr=" << (relErr*100.0) << "%" << std::endl;
+				}
+				Check( worstRelErr > 0.05,
+					"(a) MONEY MEASUREMENT -- the collapsed-then-reuplifted curve diverges from the true SPD "
+					"by >5% at at least one of the 4 wavelengths (quantifying WHY DL-165 refuses this)" );
+			}
+		}
+		job->release();
+	}
+
+	// (b) spectral_painter sampled via sample() -- REFUSED at attach time.
+	{
+		const char* body =
+			"spectral_painter\n{\nname spec_sub\nnmbegin 400\nnmend 700\ncp 400 0.95\ncp 550 0.05\ncp 700 0.95\n}\n"
+			"expression_painter\n{\nname wet_spec\nexpr sample(spec_sub)\n}\n";
+		std::string cap;
+		const bool ok = S2::ParseBodyCapturing( "dl165_spectral_refuse", body, cap );
+		Check( !ok, "(b) MONEY ASSERTION -- expression_painter sampling a spectral_painter is REFUSED" );
+		Check( cap.find( "spec_sub" ) != std::string::npos, "(b) the diagnostic names the spectrally-defined substrate" );
+		Check( cap.find( "spectrally defined" ) != std::string::npos, "(b) the diagnostic says WHY (spectrally defined)" );
+	}
+
+	// (c) blackbody_painter sampled via sample() -- REFUSED at attach time.
+	{
+		const char* body =
+			"blackbody_painter\n{\nname bb_sub\ntemperature 5000\n}\n"
+			"expression_painter\n{\nname wet_bb\nexpr sample(bb_sub)\n}\n";
+		std::string cap;
+		const bool ok = S2::ParseBodyCapturing( "dl165_bb_refuse", body, cap );
+		Check( !ok, "(c) MONEY ASSERTION -- expression_painter sampling a blackbody_painter is REFUSED" );
+		Check( cap.find( "bb_sub" ) != std::string::npos, "(c) the diagnostic names the blackbody substrate" );
+		Check( cap.find( "spectrally defined" ) != std::string::npos, "(c) the diagnostic says WHY" );
+	}
+
+	// (d) a measured-SPD painter -- piecewise_linear_function dual-registered
+	// into the colour-painter manager (Function1DSpectralPainter, whose OWN
+	// GetColor returns pure BLACK) -- sampled via sample() -- REFUSED.
+	{
+		const char* body =
+			"piecewise_linear_function\n{\nname measured_spd\ncp 0 0.1\ncp 1 0.9\n}\n"
+			"expression_painter\n{\nname wet_measured\nexpr sample(measured_spd)\n}\n";
+		std::string cap;
+		const bool ok = S2::ParseBodyCapturing( "dl165_plf_refuse", body, cap );
+		Check( !ok, "(d) MONEY ASSERTION -- expression_painter sampling a dual-registered piecewise_linear_function is REFUSED" );
+		Check( cap.find( "measured_spd" ) != std::string::npos, "(d) the diagnostic names the substrate" );
+		Check( cap.find( "spectrally defined" ) != std::string::npos, "(d) the diagnostic says WHY" );
+	}
+
+	// (e) CONTROL: an ordinary RGB-defined painter still samples fine -- no
+	// regression on the DL-25 happy path (Test 77(a)'s own fixture, repeated
+	// here under the SAME diagnostic-capturing harness for a clean A/B).
+	{
+		const char* body =
+			"uniformcolor_painter\n{\nname rgb_sub\ncolor 0.4 0.5 0.6\n}\n"
+			"expression_painter\n{\nname wet_rgb\nexpr sample(rgb_sub)\n}\n";
+		Check( S2::ParseBody( "dl165_rgb_control", body ),
+			"(e) CONTROL -- an RGB-defined painter still samples fine (no false-positive refusal)" );
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -5214,6 +5368,7 @@ int main( int, char** )
 	TestPainterSampleParseDiagnostics();
 	TestPainterSampleAttachAndEval();
 	TestPainterSampleForwardsTheRealHitRecord();
+	TestPainterSampleRefusesSpectralSubstrate();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

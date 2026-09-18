@@ -623,6 +623,28 @@ namespace RISE
 		// can show the shorthand is legal here specifically, rather than a
 		// reader having to know to special-case these two params by name.
 		bool                         allowsUniformScalarBroadcast = false;
+		// DL-164 (docs/DEBT_LEDGER.md): true for a ValueKind::String parameter
+		// whose value is texture-expression-VM BODY TEXT that may embed a
+		// `sample(name)` / `sample_scalar(name)` painter reference -- today
+		// `expression_painter`'s `expr`/`def` and `scalar_painter`'s
+		// `expression`/`def` (both routed through
+		// BuildExpressionProgramFromChunkFields with context vars enabled;
+		// `expression_function2d`'s `expr`/`def` run with context vars OFF,
+		// so `sample()` is a compile error there and this stays false).  Such
+		// a reference is invisible to the ordinary Reference/tuple scan below
+		// it (the value is a whole expression, not a bare chunk name), so
+        // Cst.cpp's BuildReferenceGraph scans a flagged param's text with
+		// ExpressionProgram::Builder::ExtractSampleRefs (the SAME tokenizer
+		// ParseSampleCall consumes) instead, and DocRename rewrites a
+		// matched call's identifier in place with RewriteSampleCallRefs --
+		// unlike the piecewise_linear_function2d `cp` precedent, a sample()
+		// reference IS rewritable (its whole value is not a single chunk
+		// name, so it cannot go through the ordinary Reference substitution
+		// path, but the identifier's exact byte range inside the text is
+		// well-defined and reusable). A descriptor FLAG rather than a
+		// role/param name check keeps the scan sites in Cst.cpp honest by
+		// construction if a future chunk gains its own expression-body field.
+		bool                         carriesExpressionSampleRefs = false;
 		ApplyParameterFn             apply      = nullptr;
 	};
 

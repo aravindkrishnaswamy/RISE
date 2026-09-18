@@ -4224,6 +4224,52 @@ static void TestActionableRemoveDiagnostics()
 		std::remove( tmp.c_str() );
 	}
 
+	// (h2) DL-164 (docs/DEBT_LEDGER.md): still_referenced now reaches a painter named
+	// ONLY inside another painter's `sample(name)` expression body -- previously invisible
+	// to the reference graph (an expression body is a ValueKind::String param, not a
+	// Reference), so a remove of `pnt_sampled` used to report ZERO dependents (the "OTHER
+	// cause" / honesty branch) even though the derive would hard-fail naming `wetPainter`.
+	{
+		static const char* const kSampleScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_sampled\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"expression_painter\n{\n\tname wetPainter\n\texpr sample(pnt_sampled)\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance wetPainter\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
+
+		const std::string tmp = TempPath( "agentcrud_r3h2.RISEscene" );
+		Job* pJob = LoadScene( kSampleScene, tmp );
+		Check( pJob != nullptr, "R3(h2) DL-164 fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			Agent::AgentChunkResult r = sess->RemoveChunk( "pnt_sampled" );
+			Check( !r.applied && r.status == "rejected",
+			       "R3(h2) DL-164: removing a painter named only inside a sample() body is REFUSED" );
+			Check( r.issues.size() == 1, "R3(h2) DL-164 exactly ONE issue" );
+			if( r.issues.size() == 1 ) {
+				const Agent::AgentChunkIssue& u = r.issues[0];
+				Check( u.value == "pnt_sampled", "R3(h2) DL-164 issue value is the remove target's own name" );
+				Check( u.reason == "still_referenced", "R3(h2) DL-164 issue reason is \"still_referenced\" (was empty/honesty pre-fix)" );
+				bool sawIt = false;
+				for( const std::string& s : u.suggestions ) if( s == "wetPainter" ) sawIt = true;
+				Check( sawIt, "R3(h2) DL-164 MONEY ASSERTION -- suggestions NAME the blocking sample()-only referrer 'wetPainter'" );
+			}
+			Check( r.message.find( "wetPainter" ) != std::string::npos,
+			       "R3(h2) DL-164 message NAMES the blocking sample()-only referrer" );
+			std::printf( "  R3(h2) message: %s\n", r.message.c_str() );
+
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
 	// (j) HONESTY: a remove that fails for the OTHER (non-reference) reason --
 	// camA is targeted by a timeline's `element` param, a DYNAMIC reference
 	// outside any declared Reference param, so the static reference graph

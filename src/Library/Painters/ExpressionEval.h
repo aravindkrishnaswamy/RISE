@@ -991,6 +991,27 @@ namespace RISE
 			//! ever reaching here (a null in `colorPtrs`/`scalarPtrs` means a
 			//! name failed to resolve, which the caller -- not this function
 			//! -- knows the name of).
+			//!
+			//! DL-164 (docs/DEBT_LEDGER.md) STALE-POINTER WARNING: the addref this
+			//! function takes is a snapshot of "the painter object live at attach
+			//! time" -- there is no re-resolution hook, and nothing here notices if
+			//! the pointer it holds is later replaced (a same-name chunk re-Finalized
+			//! in place). That is safe TODAY only because Cst.cpp's
+			//! DeriveToJobIncremental refuses every ChunkCategory::Painter chunk
+			//! outright (its own `default:` arm), so the ONLY way any chunk's
+			//! painter bindings are ever rebuilt is a FULL DeriveToJob, which always
+			//! reconstructs this ExpressionProgram (and re-runs BindPainterRefs)
+			//! from scratch. If a future change ever admits Painter-category chunks
+			//! to that incremental path, it MUST also either (a) re-run
+			//! BindPainterRefs on every program that references a re-Finalized
+			//! painter (which first needs a colour/scalar-painter reverse-dependency
+			//! walk analogous to the one this row's reference-graph fix added -- see
+			//! Cst.cpp's kColorPainterSubCat/kScalarPainterSubCat), or (b) refuse the
+			//! incremental path specifically for a re-Finalized chunk that is the
+			//! TARGET of any live sample()/sample_scalar() binding. See
+			//! tests/CstIncrementalSafetyTest.cpp's DL-164 cases, which pin the
+			//! current refusal and will need updating (not merely re-passing) if this
+			//! ever changes.
 			bool BindPainterRefs( const std::vector<IPainter*>& colorPtrs, const std::vector<IScalarPainter*>& scalarPtrs )
 			{
 				if( colorPtrs.size() != m_colorPainterRefNames.size() ) return false;
@@ -1314,6 +1335,98 @@ namespace RISE
 				//! BuildExpressionProgramFromChunkFields doc comment for the
 				//! frozen-contract rationale.
 				void EnableContextVars( bool enable = true ) { m_contextVarsEnabled = enable; }
+
+				//! One `sample(name)` / `sample_scalar(name)` call site found by a
+				//! text scan of an expression BODY (DL-164, docs/DEBT_LEDGER.md) --
+				//! `painterName` is the bare identifier argument, `identOff`/
+				//! `identLen` the exact byte range of THAT IDENTIFIER (not the
+				//! whole call) within the scanned string, so a caller can excise or
+				//! replace just the name (a rename) without re-deriving the call's
+				//! surrounding syntax.
+				struct SampleRef { bool isScalar; std::string painterName; size_t identOff; size_t identLen; };
+
+				//! Scan `expr` for every `sample(<ident>)` / `sample_scalar(<ident>)`
+				//! call using the SAME tokenizer `ParseSampleCall` consumes at
+				//! compile time -- not a hand-rolled regex that can drift from the
+				//! real grammar.  This is a TOKEN-SEQUENCE scan, not a full parse: it
+				//! reports every `Ident(sample|sample_scalar) LP Ident RP` token
+				//! quadruple wherever it occurs in the token stream, regardless of
+				//! surrounding context.  That is exact, not a heuristic, because this
+				//! grammar has no other construct that could produce that exact
+				//! four-token sequence -- an identifier immediately followed by `(`
+				//! is ALWAYS a function call here (ParseAtom/ParseCall), so a
+				//! `sample`/`sample_scalar` token followed by `(<ident>)` is a sample
+				//! call whether or not the rest of the expression around it parses.
+				//! Returns false only when `expr` fails to tokenize at all (e.g. a
+				//! malformed numeric literal) -- `out` is left as populated so far
+				//! (empty on a scan of `expr`'s well-formed prefix is the common
+				//! case); a caller like BuildReferenceGraph, which must not treat a
+				//! tokenizer hiccup as "this document has no sample() edges", should
+				//! still use whatever `out` it got rather than discard it, but the
+				//! false return lets a stricter caller distinguish "no calls found"
+				//! from "couldn't scan".
+				static bool ExtractSampleRefs( const std::string& expr, std::vector<SampleRef>& out )
+				{
+					Builder b;
+					std::vector<Tok> toks;
+					const bool ok = b.Tokenize( expr, toks );
+					for( size_t i = 0; i + 3 < toks.size(); ++i ) {
+						if( toks[i].t != Tok::Ident ) continue;
+						if( toks[i].s != "sample" && toks[i].s != "sample_scalar" ) continue;
+						if( toks[i+1].t != Tok::LP ) continue;
+						if( toks[i+2].t != Tok::Ident ) continue;
+						if( toks[i+3].t != Tok::RP ) continue;
+						SampleRef r;
+						r.isScalar = ( toks[i].s == "sample_scalar" );
+						r.painterName = toks[i+2].s;
+						r.identOff = toks[i+2].off;
+						r.identLen = toks[i+2].s.size();
+						out.push_back( r );
+					}
+					return ok;
+				}
+
+				//! Rewrite every `sample(oldName)` (isScalar==false) or
+				//! `sample_scalar(oldName)` (isScalar==true) call in `expr` to name
+				//! `newName` instead, leaving every other token (including a
+				//! same-named call of the OTHER pipe, and any call naming a
+				//! different painter) byte-exact -- the DocRename counterpart to
+				//! ExtractSampleRefs, built on the identical token scan so the two
+				//! can never disagree about where a call's identifier sits.
+				//! Processes the WHOLE string in one pass and is idempotent (a
+				//! second call with the same oldName finds nothing left to rewrite),
+				//! which matters because DocRename may invoke this once per
+				//! traced edge when a body contains more than one call to the
+				//! renamed painter -- see Cst.cpp's DocRename.  On a tokenize
+				//! failure, returns `expr` unchanged (a malformed body has no
+				//! well-defined call sites to rewrite; DocRename never reaches one
+				//! in practice since a scene only loads a body that compiled).
+				static std::string RewriteSampleCallRefs( const std::string& expr, bool isScalar,
+					const std::string& oldName, const std::string& newName )
+				{
+					Builder b;
+					std::vector<Tok> toks;
+					if( !b.Tokenize( expr, toks ) ) return expr;
+					std::string out;
+					out.reserve( expr.size() );
+					size_t last = 0;
+					for( size_t i = 0; i + 3 < toks.size(); ++i ) {
+						if( toks[i].t != Tok::Ident ) continue;
+						const bool thisIsScalar = ( toks[i].s == "sample_scalar" );
+						const bool thisIsColor  = ( toks[i].s == "sample" );
+						if( !thisIsScalar && !thisIsColor ) continue;
+						if( thisIsScalar != isScalar ) continue;
+						if( toks[i+1].t != Tok::LP ) continue;
+						if( toks[i+2].t != Tok::Ident ) continue;
+						if( toks[i+3].t != Tok::RP ) continue;
+						if( toks[i+2].s != oldName ) continue;
+						out.append( expr, last, toks[i+2].off - last );
+						out.append( newName );
+						last = toks[i+2].off + toks[i+2].s.size();
+					}
+					out.append( expr, last, expr.size() - last );
+					return out;
+				}
 
 			private:
 				std::vector<std::string> m_names;	// slot index -> name (vec3 reserves 3 consecutive)

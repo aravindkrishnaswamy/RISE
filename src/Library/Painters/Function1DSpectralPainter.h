@@ -62,6 +62,10 @@ namespace RISE
 				return GetColorNM( ri, nm );
 			}
 
+			//! DL-165: a measured-SPD painter whose GetColor is pure BLACK -- see
+			//! IPainter::IsSpectrallyDefined's doc comment.
+			bool			IsSpectrallyDefined() const { return true; }
+
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0;};
 			void SetIntermediateValue( const IKeyframeParameter& val ){};
