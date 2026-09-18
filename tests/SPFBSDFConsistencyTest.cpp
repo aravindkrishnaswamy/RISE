@@ -1654,6 +1654,16 @@ int main()
     //  BDPT/VCM's connections pay for the same direction.  A ratio != 1
     //  means two estimators of one integral disagree, and any MIS of
     //  them is biased (the DL-74 lesson).
+    //
+    //  The NM column (added by the round-3 review, 2026-09-17) is the
+    //  same invariant asked of `valueNM` against `ScatterNM`'s own
+    //  `krayNM`, and it is what proved the NM branch was NOT the twin
+    //  its comment claimed: it carried `GetReflectedSide`'s Phong
+    //  `pow(sd, exponent)` factor, which the RGB branch does not have
+    //  and which the SPF's cosine-density front lobe does not describe.
+    //  Pre-fix the two columns read 1.00000 (RGB) against
+    //  6.05071 / 6.63664 / 11.67190 / 104.08390 / 116.17059 / 26.92116
+    //  (NM) at these six tilts, at this row's own 40000 trials.
     // ================================================================
 
     std::cout << "========================================" << std::endl;
@@ -1664,7 +1674,12 @@ int main()
         const double tiltsDeg[] = { 0.0, 30.0, 45.0, 60.0, 75.0, 89.0 };
         const int    numTilts   = 6;
         const int    kTrials    = 40000;
+        const double kProbeNM   = 550.0;
 
+        for( int mode = 0; mode < 2; mode++ )
+        {
+        const bool bNM = ( mode == 1 );
+        std::cout << "  -- " << ( bNM ? "NM (ScatterNM / valueNM)" : "RGB (Scatter / value)" ) << std::endl;
         for( int t = 0; t < numTilts; t++ )
         {
             const double tiltRad = tiltsDeg[t] * PI / 180.0;
@@ -1693,7 +1708,8 @@ int main()
             for( int i = 0; i < kTrials; i++ )
             {
                 ScatteredRayContainer scattered;
-                translucentSPF->Scatter( ri, sampler, scattered, iorStack );
+                if( bNM ) translucentSPF->ScatterNM( ri, sampler, kProbeNM, scattered, iorStack );
+                else      translucentSPF->Scatter( ri, sampler, scattered, iorStack );
 
                 for( unsigned int j = 0; j < scattered.Count(); j++ )
                 {
@@ -1705,8 +1721,13 @@ int main()
                     const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
                     const double cosO = fabs( Vector3Ops::Dot( wo, ri.vNormal ) );
                     if( s.pdf <= 0 ) continue;
-                    sumKray += ColorMath::MaxValue( s.kray );
-                    sumBsdf += ColorMath::MaxValue( translucentBSDF->value( wo, ri ) ) * cosO / s.pdf;
+                    if( bNM ) {
+                        sumKray += s.krayNM;
+                        sumBsdf += translucentBSDF->valueNM( wo, ri, kProbeNM ) * cosO / s.pdf;
+                    } else {
+                        sumKray += ColorMath::MaxValue( s.kray );
+                        sumBsdf += ColorMath::MaxValue( translucentBSDF->value( wo, ri ) ) * cosO / s.pdf;
+                    }
                     emitted++;
                 }
             }
@@ -1718,7 +1739,7 @@ int main()
             // regression is self-diagnosing: 1/P(valid), P = (1+cos phi)/2.
             const double oneOverP = 2.0 / ( 1.0 + cos(tiltRad) );
 
-            std::cout << "  tilt " << std::setprecision(0) << std::fixed << tiltsDeg[t] << " deg:"
+            std::cout << "    tilt " << std::setprecision(0) << std::fixed << tiltsDeg[t] << " deg:"
                       << "  E[kray]=" << std::setprecision(5) << meanKray
                       << "  E[value*cos/pdf]=" << meanBsdf
                       << "  ratio=" << ratio
@@ -1732,6 +1753,7 @@ int main()
                 std::cout << " -> FAIL" << std::endl;
                 numFailed++;
             }
+        }
         }
     }
     std::cout << std::endl;
