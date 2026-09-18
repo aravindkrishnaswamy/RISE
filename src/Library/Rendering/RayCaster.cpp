@@ -1512,34 +1512,50 @@ bool RayCaster::CastRay(
 		// entry point's already-weighted env-NEE sample. A genuinely
 		// distinct per-object override map keeps full weight (w_bsdf stays
 		// 1 inside the helper, since it has no NEE partner).
-		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
-		{
-			c = c * RayCasterEnvEscapeMISWeight(
-				pLightSampler, rc, rast, ray, rs, c, /*trainOptimalMIS=*/true );
-		}
-
-		// Analog no-scatter survival weight for the escape-to-background path
-		// (Tr / pSurvival, not full Tr — see above).
+		// DL-124: apply the medium's escape-segment survival weight
+		// (Tr / pSurvival) BEFORE the MIS-training call below, not after
+		// -- multiplication is commutative, so `c`'s final value here is
+		// unchanged, but the trained moment inside
+		// RayCasterEnvEscapeMISWeight (which reads `envRadiance` == `c`
+		// at the point it is called) now sees the SAME medium
+		// attenuation its NEE partner already carries via
+		// EvalShadowTransmittance, instead of the raw pre-medium
+		// radiance.  See docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md's
+		// DL-124 entry.
 		if( pMedium ) {
 			c = c * RayCasterSurvivalWeight(
 				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
 				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
+		}
+
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			// DL-148: fold this cast's own whole-subpath importance-RR
+			// compensation into the TRAINING argument only (the returned
+			// weight `w_bsdf` never reads `envRadiance` outside the
+			// training block, so `c`'s real value is unaffected) -- the
+			// realized-moment rule (DL-84) says the trained numerator is
+			// the post-RR, as-carried contribution, and `rrCompensation`
+			// is exactly the factor `c` itself is compensated by a few
+			// lines below/above every return site in this function.
+			c = c * RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs, c * rrCompensation, /*trainOptimalMIS=*/true );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
 
-		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
-		// (shared with the explicit-map branch above -- see DL-53).
-		c = c * RayCasterEnvEscapeMISWeight(
-			pLightSampler, rc, rast, ray, rs, c, /*trainOptimalMIS=*/true );
-
-		// Analog no-scatter survival weight for the escape-to-environment path
-		// (Tr / pSurvival, not full Tr — see above).
+		// DL-124: same reorder as the explicit-map branch above.
 		if( pMedium ) {
 			c = c * RayCasterSurvivalWeight(
 				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
 				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
+
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		// (shared with the explicit-map branch above -- see DL-53).
+		// DL-148: see the explicit-map branch's comment above.
+		c = c * RayCasterEnvEscapeMISWeight(
+			pLightSampler, rc, rast, ray, rs, c * rrCompensation, /*trainOptimalMIS=*/true );
 
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
@@ -2112,16 +2128,11 @@ bool RayCaster::CastRayNM(
 		// when this explicit map is pointer-identical to the scene's
 		// global map (the SSS/RW-SSS continuation case); a genuinely
 		// distinct per-object override map keeps full weight.
-		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
-		{
-			c = c * RayCasterEnvEscapeMISWeight(
-				pLightSampler, rc, rast, ray, rs,
-				RISEPel( c, c, c ), /*trainOptimalMIS=*/true );
-		}
-
-		// Analog no-scatter survival weight for the escape-to-background path:
-		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
-		// homogeneous, correct for heterogeneous — see the surface-hit case).
+		// DL-124: apply the medium's escape-segment survival weight
+		// (Tr / pSurvival) BEFORE the MIS-training call below, not after
+		// -- see the RGB CastRay reorder above for the derivation; `c`'s
+		// final value is unchanged (multiplication is commutative), but
+		// the training call now sees the medium-attenuated radiance.
 		if( pMedium ) {
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
 			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
@@ -2129,19 +2140,21 @@ bool RayCaster::CastRayNM(
 			if( pSurvival > 0 ) {
 				c = c * ( Tr / pSurvival );
 			}
+		}
+
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			// DL-148: fold this cast's own importance-RR compensation
+			// into the training argument only -- see the RGB CastRay
+			// call site's comment for the derivation.
+			c = c * RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs,
+				RISEPel( c, c, c ) * rrCompensation, /*trainOptimalMIS=*/true );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
-		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
-		// (spectral; shared with the explicit-map branch above -- see DL-53).
-		c = c * RayCasterEnvEscapeMISWeight(
-			pLightSampler, rc, rast, ray, rs,
-			RISEPel( c, c, c ), /*trainOptimalMIS=*/true );
-
-		// Analog no-scatter survival weight for the escape-to-environment path:
-		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
-		// homogeneous, correct for heterogeneous — see the surface-hit case).
+		// DL-124: same reorder as the explicit-map branch above.
 		if( pMedium ) {
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
 			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
@@ -2150,6 +2163,13 @@ bool RayCaster::CastRayNM(
 				c = c * ( Tr / pSurvival );
 			}
 		}
+
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		// (spectral; shared with the explicit-map branch above -- see DL-53).
+		// DL-148: see the explicit-map branch's comment above.
+		c = c * RayCasterEnvEscapeMISWeight(
+			pLightSampler, rc, rast, ray, rs,
+			RISEPel( c, c, c ) * rrCompensation, /*trainOptimalMIS=*/true );
 
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;

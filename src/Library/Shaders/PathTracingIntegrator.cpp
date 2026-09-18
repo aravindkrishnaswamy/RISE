@@ -1898,6 +1898,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 		sampler.StartStream( 16 + depth );
 
+		// DL-124: the escape/hit-through-medium survival weight crossed
+		// on THIS iteration's segment (Tr / pSurvival; set below when
+		// either the `!scattered && bHit` or `!scattered && !bHit`
+		// medium branch fires; stays 1 -- a no-op -- when this segment
+		// crosses no medium, or `needsIntersection` is false, i.e. the
+		// caller-provided initial hit).  Declared here, OUTSIDE
+		// `if( needsIntersection )`, so it both resets every iteration
+		// AND stays in scope for PART 1's emission-hit MIS training
+		// below, which runs unconditionally every iteration regardless
+		// of whether this one re-intersected.  `throughput` already
+		// carries the SAME factor via the ordinary multiply in those
+		// branches, so `result`'s actual value is unaffected; this copy
+		// exists ONLY so the optimal-MIS training (which reads
+		// `bsdfTimesCos`, a value separate from `throughput`) can fold
+		// in the SAME medium attenuation its NEE partner already
+		// carries via `EvalShadowTransmittance` -- see
+		// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md's DL-124 entry.
+		Value escapeTr = PTValueOne<Tag>();
+
 		// ============================================================
 		// Intersection + medium transport (skipped for first iteration
 		// — the caller provides the pre-computed hit)
@@ -2209,7 +2228,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						pCurrentMedium, currentRay, ri.geometric.range, tag );
 					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 						pCurrentMedium, currentRay, ri.geometric.range, tag );
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
+					const Value survivalWeight = PTSurvivalWeight<Tag>( Tr, pSurvival );
+					throughput = throughput * survivalWeight;
+					// DL-124: same factor, kept aside for the training fold
+					// at PART 1's emission-hit MIS training below -- see
+					// `escapeTr`'s declaration.
+					escapeTr = survivalWeight;
 				}
 				else if( !scattered && !bHit )
 				{
@@ -2224,7 +2248,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						pCurrentMedium, currentRay, maxDist, tag );
 					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
+					const Value survivalWeight = PTSurvivalWeight<Tag>( Tr, pSurvival );
+					throughput = throughput * survivalWeight;
+					// DL-124: same factor, kept aside for the training fold
+					// below -- see `escapeTr`'s declaration.
+					escapeTr = survivalWeight;
 				}
 			}
 
@@ -2374,10 +2402,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							const Scalar envPdf = pES->Pdf( currentRay.Dir() );
 							if( envPdf > 0 )
 							{
-								// Optimal MIS training
+								// Optimal MIS training.
+								// DL-124: fold `escapeTr` (the medium
+								// transmittance along THIS escape segment,
+								// 1 when no medium was crossed) into the
+								// trained numerator -- its NEE partner
+								// (LightSampler's env arm) already carries
+								// the equivalent shadow-ray transmittance
+								// via EvalShadowTransmittance, and the
+								// realized moment must match what actually
+								// reaches the film (`bsdfTimesCos` alone
+								// omitted it; `throughput`, which DOES
+								// carry it, is not part of this per-vertex
+								// moment).
 								if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 								{
-									const Scalar fLum = PTPositiveMagnitude( envRadiance * bsdfTimesCos );
+									const Scalar fLum = PTPositiveMagnitude( envRadiance * bsdfTimesCos * escapeTr );
 									const Scalar f2 = fLum * fLum;
 									if( f2 > 0 && bsdfPdf > 0 )
 									{
@@ -2630,9 +2670,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 								const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
 
+								// DL-124: fold `escapeTr` in here too -- when the
+								// vertex that set `bsdfTimesCos` was a volume
+								// scatter, its NEE partner (LightSampler's
+								// mesh-luminary arm, called via
+								// PTEvaluateInScattering) already multiplies by
+								// EvalShadowTransmittance; this BSDF-sampled hit
+								// on the SAME luminary must carry the matching
+								// medium attenuation crossed en route.  A no-op
+								// (escapeTr == 1) whenever no medium was crossed
+								// since the training vertex, including the
+								// ordinary all-surface case.
 								if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 								{
-									const Scalar fLum = PTPositiveMagnitude( rawEmission * bsdfTimesCos );
+									const Scalar fLum = PTPositiveMagnitude( rawEmission * bsdfTimesCos * escapeTr );
 									const Scalar f2 = fLum * fLum;
 									if( f2 > 0 && bsdfPdf > 0 )
 									{
@@ -4595,6 +4646,23 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					return result;
 				}
 
+				// DL-109: this walk trains optimal-MIS the same way
+				// IntegrateFromHitTemplated's own in-loop volume vertex
+				// does (DL-84) -- one AccumulateCount per phase-sampled
+				// attempt, placed BEFORE Russian roulette so an
+				// RR-terminated attempt is still counted.  The paired
+				// Accumulate happens below, at whichever env escape or
+				// bounce-cap closure this vertex's continuation reaches
+				// (see `trainedPhaseVal`) -- an earlier vertex in a
+				// multi-scatter chain is superseded by the next one's
+				// `trainedPhaseVal` exactly as DL-84's sibling site
+				// overwrites `bsdfTimesCos` each iteration.
+				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+				{
+					const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+						rast.x, rast.y, kTechniqueBSDF );
+				}
+
 				const Scalar phaseVal = pPhase->Evaluate( wo, wi );
 				// Preserve the per-variant arithmetic exactly: the Pel path
 				// builds RISEPel(s,s,s) and multiplies channel-wise; the NM
@@ -4608,6 +4676,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				} else {
 					throughput = throughput * phaseVal / phasePdf;
 				}
+
+				// DL-109: track this vertex's own RR survival probability
+				// so the trained moment (`trainedPhaseVal` below) is the
+				// REALIZED, post-RR quantity `phaseVal / q` -- the DL-84
+				// round-7 convention -- rather than the pre-RR value.
+				Scalar phaseRrSurvivalProb = 1.0;
 
 				// Russian roulette on the volume scatter -- same call, same
 				// arguments, same ordering as the main loop's volume RR.
@@ -4624,8 +4698,17 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					}
 					if( rr.survivalProb < 1.0 ) {
 						throughput = PTDivByScalar( throughput, rr.survivalProb );
+						phaseRrSurvivalProb = rr.survivalProb;
 					}
 				}
+
+				// DL-109: the realized (post-RR) phase value at THIS
+				// vertex.  Consumed by the Accumulate call below only if
+				// THIS vertex's continuation is the one that escapes to
+				// the environment; otherwise it is superseded by the next
+				// iteration's own value, or the walk ends without ever
+				// consuming it (a counted zero for this technique).
+				const Scalar trainedPhaseVal = phaseVal / phaseRrSurvivalProb;
 
 				walkRay = Ray( scatterPt, wi );
 				walkPdf = phasePdf;
@@ -4740,14 +4823,14 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// parallelism with the surface site (where `bsdfPdf > 0` really
 				// does select the "delta lobe keeps full weight" arm).
 				//
-				// Optimal-MIS TRAINING is deliberately not accumulated here.
-				// The surface site feeds `kTechniqueBSDF` using `bsdfTimesCos`,
-				// which has no tracked volume analogue at this site; adding one
-				// would change the alpha estimate for `optimal_mis TRUE` scenes
-				// beyond the scope of this fix.  The READY branch below is still
-				// mirrored, because omitting it would break partition-of-unity
-				// against LightSampler's env-NEE (which does switch to
-				// OptimalMIS2Weight for volume scatter points once alpha solves).
+				// DL-109 (2026-09-17): optimal-MIS TRAINING IS now
+				// accumulated here (the block below, gated on `envPdf > 0`
+				// alongside the weight) -- this comment used to say the
+				// opposite and left this walk untrained, the same
+				// training-input gap DL-84 closed at the OTHER volume
+				// vertex (IntegrateFromHitTemplated's in-loop one).  See
+				// `trainedPhaseVal`'s derivation a few dozen lines above
+				// for the realized-moment numerator this site trains.
 				//
 				// The env escape after scatter 1 is the camera-visible
 				// vertex's direct partner and follows the indirect-only
@@ -4768,6 +4851,31 @@ PathTracingIntegrator::IntegrateRayTemplated(
 							const Scalar envPdf = pES->Pdf( walkRay.Dir() );
 							if( envPdf > 0 )
 							{
+								// DL-109/DL-124: train the optimal-MIS moment
+								// for THIS vertex's phase-sampled escape.
+								// `trainedPhaseVal` is the realized (post-RR)
+								// phase value at the vertex that produced
+								// `walkRay` (DL-84's convention); `escapeWeight`
+								// (Tr/pSurvival along the escape segment, or
+								// the deterministic Beer-Lambert term at the
+								// bounce cap) is folded in too, matching its
+								// NEE partner's own EvalShadowTransmittance
+								// (DL-124) -- both are already computed above
+								// for the real image contribution, so this is
+								// purely additive to the trained moment.
+								if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+								{
+									const Scalar fLum = PTPositiveMagnitude(
+										envRadiance * trainedPhaseVal * escapeWeight );
+									const Scalar f2 = fLum * fLum;
+									if( f2 > 0 && walkPdf > 0 )
+									{
+										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
+											rast.x, rast.y,
+											f2, walkPdf, kTechniqueBSDF );
+									}
+								}
+
 								Scalar w_phase;
 								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
 								{
