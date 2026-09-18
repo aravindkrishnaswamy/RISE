@@ -721,6 +721,20 @@ dropped eye-side NEE was a variance cost as well as a bias.  Red-proof
 and regression: `tests/MediumEnclosureConnectibilityTest.cpp`, 12/0 (red
 8/4).
 
+**Cost, measured.**  On this deliberately adversarial scene -- a strongly
+scattering medium entirely inside a delta enclosure, i.e. 100% affected
+vertices -- a 48x48 / 32-spp BDPT render goes from **1.07 s to 2.15 s**
+user CPU (n=3 each, isolated A/B, +101%): NEE and interior connections
+are now ATTEMPTED from every interior medium vertex, which is exactly the
+work PT was already doing and BDPT was skipping.  It buys back far more
+than it costs even on this scene, because the same change drops BDPT's
+run-to-run sd 2.94% -> 0.37% -- roughly 8x lower standard error, i.e.
+~64x fewer samples for equal noise, against a 2x per-sample cost.  Every
+other scene is unaffected BY CONSTRUCTION, not merely by measurement: a
+global medium (`pMedObj == 0`) took the old derivation's own early-out,
+and a medium behind a non-delta boundary had `prev.isConnectible == true`,
+so the flag was already `true` in both cases.
+
 **Sibling audit.**  `isConnectible` is ASSIGNED at seven sites in
 `BDPTIntegrator.cpp` (env, surface, two BSSRDF entry vertices, the light
 root, and these two medium sites); only the two medium ones carried an
