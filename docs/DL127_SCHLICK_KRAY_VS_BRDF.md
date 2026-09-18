@@ -200,7 +200,7 @@ reverted to `38e7939e`, running the same (final) test:
 
 | | pre-fix | post-fix |
 | --- | --- | --- |
-| total | `Passed: 296  Failed: 213` | `Passed: 509  Failed: 0` |
+| total | `Passed: 324  Failed: 213` | `Passed: 537  Failed: 0` |
 | §1 worst \|per-draw − 1\| | 1.798527627 | 0.000000000 |
 | §1 worst \|mean − 1\| | 0.713139892 | 0.000000000 |
 | §3 worst \|E/Q − 1\| | 0.763426 | 0.005859 |
