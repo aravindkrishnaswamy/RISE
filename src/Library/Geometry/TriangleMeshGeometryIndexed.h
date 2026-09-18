@@ -104,9 +104,16 @@ namespace RISE
 			//! (welded by DL-143's position epsilon) from two independent
 			//! open sheets welded together by the SAME epsilon exceeding
 			//! their physical gap -- `ComputeWatertightness` additionally
-			//! refuses when the weld merges vertices whose surface
-			//! orientations are opposed (see that function's own comment
-			//! for the discriminator and its documented residual).
+			//! refuses when the weld produces two geometrically COINCIDENT
+			//! triangles (two distinct triangles sharing the same 3
+			//! post-weld vertices), the signature of a false stitch at any
+			//! dihedral angle.  (An earlier per-corner-orientation
+			//! discriminator was REMOVED, 2026-09-18: it falsely refused a
+			//! legitimately closed solid with a sharp convex crease, since
+			//! a real wedge's own face-normal cosine approaches -1 just as
+			//! a false stitch's does -- see that function's own comment
+			//! for the full account and the current mechanism's documented
+			//! residual.)
 			bool					m_bWatertight;
 
 			//! Computes and caches `m_bWatertight`.  Called from
