@@ -3855,11 +3855,33 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// SLOT-PRECISE resolution for the radiance_map {Painter} slot: AddObject binds it
 			// via the COLOUR painter manager ONLY, so a scalar-only painter there does NOT
 			// resolve.  Check colour-only rather than EntityExists(Painter) (which accepts
-			// EITHER manager) -- this is what makes an OBJECT re-point unable to fail mid-apply
-			// (Part A atomicity: objects are re-pointed AFTER the entities are recreated; an
-			// object failure would strand already-re-pointed prior objects, which the
-			// entity-only rollback below cannot restore -- so objects must never fail;
-			// see the 87 caveat at the apply loop about `parent`).
+			// EITHER manager) -- this narrows (but, see below, no longer eliminates) an
+			// OBJECT re-point's ability to fail mid-apply (Part A atomicity: objects are
+			// re-pointed AFTER the entities are recreated; an object failure would strand
+			// already-re-pointed prior objects, which the entity-only rollback below cannot
+			// restore; see the 87 caveat at the apply loop about `parent`).
+			//
+			// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-98): this preflight
+			// only validates REFERENCE-kind params.  It does NOT validate a DoubleVec3/
+			// DoubleVec4/DoubleMat4 param's ARITY, so a malformed `position`/`orientation`/
+			// `quaternion`/`scale`/`matrix` on the object BEING EDITED sails past it and can
+			// only be caught inside that object's own Finalize (`ParseStateBag::GetVec3`'s
+			// DL-32 hard-error latch) -- AFTER Finalize has already called
+			// `pJob.AddObject`/`AddObjectMatrix` with the zero-filled value.  "Objects must
+			// never fail" is therefore FALSE as an absolute; what actually holds (proven by
+			// `CstIncrementalSafetyTest`'s "arity-parent-chain" case) is narrower: the
+			// EDITED object is always the index-minimal object in its own closure (no
+			// forward references in the grammar -- a dependent, e.g. a `parent`-linked
+			// child, is always declared LATER), so the entities-first-then-by-index apply
+			// loop always reaches it FIRST among objects and breaks there -- no OTHER,
+			// downstream object's Finalize is ever CALLED.  That does NOT mean a downstream
+			// object is left visibly correct, though: `ComposeObjectHierarchy()` still runs
+			// on the failure path below and recomposes every child's WORLD transform from
+			// its parent's now-corrupted LOCAL transform, so a `parent`-chained descendant's
+			// world bbox is corrupted too, without its own Finalize ever running.  DL-98
+			// tracks the fix (snapshot + restore each closure object's pre-edit local
+			// transform, mirroring `rollbackEntities()`, before `ComposeObjectHierarchy()`
+			// runs on failure); not fixed here.
 			if( pd.name == "radiance_map" )
 				resolves = ( priv->GetPainters() != 0 && priv->GetPainters()->GetItem( val.c_str() ) != 0 );
 			else
@@ -3933,10 +3955,33 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// Material/Geometry/Light/Modifier reach the drop loop (the validation switch above) and
 	// each is a single-manager entity, so capture/restore is a clean per-category GetItem /
 	// RemoveItem+AddItem.  Objects are NOT captured: the slot-precise preflight above (incl.
-	// radiance_map colour-only) guarantees every object re-point resolves, and the
+	// radiance_map colour-only) guarantees every object's REFERENCE params resolve, and the
 	// entities-first sort above guarantees every object is re-pointed only AFTER every
-	// entity is recreated -- so a failure can only occur at an entity, BEFORE any object is
-	// touched, and restoring the entities fully restores the Job.
+	// entity is recreated -- so restoring the entities is ENOUGH to undo an entity-level
+	// failure with the Job back to its pre-edit state.
+	//
+	// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-98): "a failure can only
+	// occur at an entity, before any object is touched" is no longer true -- DL-32 gave a
+	// wrong-arity position/orientation/quaternion/scale/matrix on the object BEING EDITED a
+	// second way to fail, one the preflight above cannot see (it only checks Reference-kind
+	// params) and one that does NOT stop `ParseStateBag::GetVec3` et al. from letting the
+	// object's own Finalize run to completion on a zero-filled value before the apply loop's
+	// `!bag.HadHardError()` check notices.  So an object CAN fail, and IS partially mutated
+	// (re-pointed to the zero-filled value) before that is caught.  What is NOT captured
+	// stays not captured, and the reason the Job still comes back reasonably (not perfectly)
+	// intact is narrower than the old claim: the EDITED object is always index-minimal among
+	// the objects in its own closure (no forward references in the grammar -- any object
+	// that depends on it, e.g. a `parent`-linked child, is declared LATER), so this loop
+	// always reaches it FIRST among objects and breaks there, and NO OTHER object's own
+	// Finalize is ever CALLED.  A `parent`-chained descendant's WORLD transform can still be
+	// wrong afterward, though: `ComposeObjectHierarchy()` runs on the failure path below
+	// regardless, and recomposes it from the edited object's now-corrupted LOCAL transform
+	// even though the descendant's own params were never touched --
+	// `CstIncrementalSafetyTest`'s "arity-parent-chain" case measures and pins exactly this.
+	// DL-98 tracks the fix (snapshot + restore each closure object's pre-edit local
+	// transform, mirroring this entity capture, before recomposing on failure); not fixed
+	// here -- this comment states the invariant that actually holds today, not the one
+	// design intended.
 	struct EntCap { ChunkCategory cat; std::string name; IReference* old; };   // old addref'd (or null)
 	std::vector<EntCap> entCaps;
 	entCaps.reserve( pending.size() );

@@ -370,6 +370,86 @@ int main()
 		j->release();
 	}
 
+	// OBJECT VECTOR ARITY UNDER A PARENT CHAIN (DL-32 round-2 review, P2-2).
+	// Cst.cpp's rollback design (the "PART A" comment block above the entity
+	// capture loop, and the "Objects are NOT captured" comment on it) argues
+	// atomicity from "a failure can only occur at an entity, BEFORE any
+	// object is touched" -- entities are captured/restored on a re-Finalize
+	// failure; objects are not, because the slot-precise preflight validates
+	// every object's REFERENCE param before any mutation, and the
+	// entities-first sort means no object is reached until every entity has
+	// already succeeded.
+	//
+	// DL-32 round 2 added a SECOND way an object's OWN Finalize can fail: a
+	// wrong-arity position/orientation/quaternion/scale/matrix.  The
+	// preflight does not see it (it only validates Reference-kind params),
+	// and unlike a Finalize() `return false`, `ParseStateBag::GetVec3` does
+	// NOT abort the caller -- it zero-fills the output and only LATCHES
+	// `HadHardError()`, so the object's own Finalize keeps running and calls
+	// `pJob.AddObject(...)` with the zero-filled value BEFORE the apply loop
+	// notices the latch and gives up.  That mutation is never undone: only
+	// non-object entities are captured/restored.
+	//
+	// Grounded in what the closure actually contains (checked below, not
+	// assumed): editing `parentObj` closes over {parentObj, childObj} --
+	// both objects, no entities (an object's dependents, via `parent`, are
+	// only ever OTHER objects) -- sorted entities-first-then-by-document-
+	// index, so parentObj (declared first) is always processed before
+	// childObj.  The loop breaks at parentObj, so childObj's own Finalize is
+	// NEVER called -- its own `position` param is never touched.
+	//
+	// Measured anyway: childObj's WORLD bbox is corrupted too.
+	// `DeriveToJobIncremental`'s failure branch still calls
+	// `pJob.ComposeObjectHierarchy()` (kept for a different reason -- the 87
+	// step 2 "detached child" self-heal) before returning 0, and that call
+	// recomposes EVERY child's world transform from its parent's CURRENT
+	// (now zero-filled) local transform.  So the "leaves every sibling
+	// object untouched" reading of the old comment is FALSE for a parent
+	// chain: the API reports the edit as refused (applied 0 + a diagnostic,
+	// matching the documented contract for every OTHER refusal in this
+	// suite), but the live Job is left with BOTH the edited parent and every
+	// descendant showing a wrong world transform, and nothing here triggers
+	// a corrective full re-derive.
+	//
+	// Filed as DL-98 (docs/DEBT_LEDGER.md) -- fix recipe: extend `ObjState`
+	// to also snapshot each closure object's pre-edit LOCAL transform, add
+	// an object-transform rollback that restores it before
+	// `ComposeObjectHierarchy()` runs on the failure path, mirroring
+	// `rollbackEntities()`.  This test PINS the CONFIRMED-CURRENT (not yet
+	// fixed) behaviour, both so a future change cannot make it worse
+	// unnoticed and so a future fix is caught (these two assertions will
+	// need to flip when DL-98 closes).
+	{
+		std::string s =
+			"RISE ASCII SCENE 7\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname parentObj\ngeometry g\nposition 5 0 0\n}\n"
+			"standard_object\n{\nname childObj\ngeometry g\nparent parentObj\nposition 1 0 0\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		Check( d0.empty(), "arity-parent-chain: baseline scene derives cleanly" );
+		const std::string before = DumpJob( *j );
+		Check( before.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: baseline parentObj bbox is centred at its authored position (5,0,0)" );
+		Check( before.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: baseline childObj bbox is centred at parent+local (5,0,0)+(1,0,0)=(6,0,0)" );
+		const NodeId pId = DocFindByName( doc, "standard_object/parentObj" );
+		Document docM = DocSetParamValue( doc, pId, "position", 0, "-4 4" );   // wrong arity: 2 tokens, not 3
+		std::vector<NodeId> closure = DocEditClosure( docM, pId );
+		Check( closure.size() == 2, "arity-parent-chain: closure is exactly {parentObj, childObj} -- no entities" );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( docM, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "arity-parent-chain: malformed parent position REFUSED (applied 0 + diagnosed)" );
+		const std::string after = DumpJob( *j );
+		// DL-98 KNOWN GAP: both assertions below pin the CURRENT, confirmed-
+		// buggy state -- a correct atomic refusal would leave `after == before`.
+		Check( after.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[-1 -1 -1 .. 1 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: DL-98 -- parentObj was silently re-pointed to the zero-filled (0,0,0) position despite the \"refused\" result" );
+		Check( after.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[0 -1 -1 .. 2 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: DL-98 -- childObj's own Finalize never ran, yet its WORLD bbox moved too (ComposeObjectHierarchy recomposed it from the corrupted parent)" );
+		j->release();
+	}
+
 	// OPTIONAL-SLOT REMOVAL (workstream #3): removing radiance_map from a stable object CLEARS it in
 	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
 	{
