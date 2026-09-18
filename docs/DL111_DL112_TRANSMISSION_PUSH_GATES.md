@@ -351,7 +351,12 @@ construction was specific to the exit lobe; it samples a plain cosine lobe
 about any axis clipped to any half-space through the origin), and report the
 matching NORMALIZED density from `Pdf()`'s front branch. RGB and NM. The
 draw count is unchanged at 2, so `ISampler::HasFixedDimensionBudget()` is
-untouched, and the change is an **identity at zero tilt**.
+untouched — pinned by **`TransmissionPushGateTest` sub-test 10**'s
+`Translucent RGB entry` / `Translucent NM entry` rows (`min == max` draws
+across the whole 0…89° tilt sweep), which is the row written for this
+claim; `TranslucentSamplerDimensionCountTest` in the gate table below is a
+regression on the *other* translucent lobes and is not the evidence for it.
+The change is an **identity at zero tilt**.
 
 ### The MIS movement the ledger row required to be measured
 
@@ -470,6 +475,25 @@ this row made truthful.
   the **selection weight** of the clipped lobe is not renormalized alongside
   the direction. Bounded by the same `pi/halfArc <= 2` factor DL-68
   documents, and entangled with DL-41's open mixture-density scope.
+  **Third call site (review P3):** `DielectricSPF`'s `scattering`/HG warp
+  now uses the same construction via `GeometricUtilities::PerturbClipped`,
+  and its `dielectric.kray` (`tau^d * (1-ref)`) is likewise unchanged by
+  the clip — the row is a three-site question, not a two-site one.
+  **THE RULING (review P3):** leave `kray` alone. The DL-112 fix in this
+  same slice settled the identical question on the identical mechanism —
+  the clipped lobe *always existed only on the valid side*, so its albedo
+  is the painter's reflectance at every tilt, and both the density and the
+  VALUE are renormalized while the throughput multiplier is not. Scaling
+  `kray` by `halfArc/pi` would delete that fraction of the lobe's energy,
+  which is **exactly DL-112's defect re-filed under a different name**
+  (measured there as emitted energy `0.3 * P(valid)` instead of `0.3`).
+  What remains genuinely open in DL-130 is therefore narrower than the row
+  states: not "is `kray` wrong" but "is the lobe's SELECTION probability,
+  which `RandomlySelect` derives from `kray`, still proportional to the
+  right thing once one lobe's density has been renormalized and the
+  others' have not" — a `RandomlySelect`/MIS question, bounded by the same
+  `<= 2` factor, and unanswerable in isolation while DL-41 leaves `Pdf()`
+  not covering these lobes at all.
 * **DL-131** — `GenericHumanTissueSPF::Scatter` / `::ScatterNM` compute a
   scattered direction in the interior branch and then **unconditionally
   overwrite it** with `ri.ray.Dir()` on the next line: the

@@ -353,6 +353,27 @@ Scalar DielectricSPF::GenerateScatteredRay(
 		// `Optics::CalculateReflectedRay` is sign-invariant in its normal
 		// argument (r = d - 2 Dot(d,n) n), so the two branches differ only
 		// in the IOR stack the reflection carries, not in the direction.
+		//
+		// REVIEW P3, worth stating because the DL-111 re-derivation above
+		// made the two normals differ: this direction is the SHADING
+		// mirror (`ri.onb.w()`), while after a re-derivation the `ref` it
+		// is about to be weighted by was recomputed at the GEOMETRIC
+		// normal.  That pairing is deliberate, and the alternatives are
+		// worse:
+		//   * `ref` must come from `geomN` in that case, because it is the
+		//     Fresnel partner of a transmission that is now a refraction
+		//     about `geomN` -- `ref` and `1-ref` have to describe ONE
+		//     interface or they do not sum to the incident energy;
+		//   * the DIRECTION is left at the shading mirror because that is
+		//     what a bump / normal map is FOR (the perturbed highlight is
+		//     the whole visual point of the map), and because the gate
+		//     immediately below already re-derives it about `geomN`
+		//     whenever the shading mirror is geometrically impossible --
+		//     i.e. exactly where keeping it would be wrong.
+		// So the split is: weight from the true interface, direction from
+		// the shading frame unless the shading frame is invalid.  The
+		// re-derivation branch below IS the one place both come from
+		// `geomN`.
 		if( bFromInside ) {
 			fresnel.ior_stack = new IORStack( ior_stack );
 			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
