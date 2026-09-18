@@ -105,11 +105,31 @@ namespace RISE
 			bool smsPassedThroughSpecular;	///< True if path traversed a delta surface since last non-specular bounce
 			bool smsHadNonSpecularShading;	///< True if path had at least one non-specular shading point (where SMS evaluated)
 
+			//! DL-185: `RayCaster::CastRay{,NM,HWSS}` applies its own
+			//! CAST-LEVEL importance Russian roulette (`RC_RR_THRESHOLD`)
+			//! to the COMBINED radiance it returns for THIS call, at the
+			//! very end of the call frame -- see `rrCompensation` in
+			//! RayCaster.cpp.  That factor is known at the top of the call
+			//! (before intersection), but the NEE done while shading this
+			//! same hit (`LightSampler::EvaluateDirectLighting{,NM}`,
+			//! reached through `SelectShader(ri).Shade{,NM,HWSS}`) lives in
+			//! a different call frame and has no visibility into it, so its
+			//! own trained optimal-MIS moment used to disagree with the
+			//! BSDF-escape arm's (DL-148) by exactly this factor.  CastRay
+			//! stamps the LOCAL `rrCompensation` it computed for THIS call
+			//! onto a copy of `rs` handed to `Shade{,NM,HWSS}`, purely for
+			//! that NEE call's `neeTrainingScale` argument -- it is NEVER
+			//! read for anything that changes returned radiance.  Default 1
+			//! (no compensation) for every producer that predates this
+			//! field or is not itself wrapped by that roulette.
+			Scalar castRRCompensation;
+
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
 				bsdfMisPdf( -1 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
-				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ) {}
+				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
+				castRRCompensation( 1.0 ) {}
 
 			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
 			Scalar MisPartnerPdf() const

@@ -119,7 +119,15 @@ void PathTracingShaderOp::PerformOperation(
 		// made the integrator's emitter-hit weight use the guided density
 		// against an NEE arm that had used the raw one: measured +44 % on
 		// PTGuidingMISPartitionTest's row (g).
-		rs.MisPartnerPdf() );
+		rs.MisPartnerPdf(),
+		// DL-185: forward CastRay's cast-level RR compensation for THIS
+		// hit (see RAY_STATE::castRRCompensation's doc) so the FIRST
+		// vertex's own NEE -- reached only when this shading is itself a
+		// re-entry through RayCaster::CastRay, e.g. a BSSRDF/random-walk
+		// continuation's exit hit -- trains its optimal-MIS moment
+		// consistently with the escape arm (DL-148).  1.0 (no-op) for an
+		// ordinary top-level camera-ray dispatch.
+		rs.castRRCompensation );
 }
 
 
@@ -172,7 +180,9 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		// rasterizer (PixelBasedSpectralIntegratingRasterizer); NULL otherwise.
 		rc.pAOV,
 		// DL-74 -- see the RGB twin above.
-		rs.MisPartnerPdf() );
+		rs.MisPartnerPdf(),
+		// DL-185 -- see the RGB twin above.
+		rs.castRRCompensation );
 }
 
 

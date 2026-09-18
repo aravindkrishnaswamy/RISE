@@ -1177,9 +1177,16 @@ bool RayCaster::CastRay(
 			}
 
 			// 1. NEE at scatter point (in-scattering from lights)
+			// DL-185: this scatter event is itself subject to the
+			// cast-level RR compensation `c` gets multiplied by a few
+			// lines below (`if( rrCompensation != 1.0 ) c = c * rrCompensation;`)
+			// -- fold the SAME local factor into the NEE training
+			// integrand so its trained moment agrees with the BSDF-side
+			// (DL-148).  `rrCompensation` is already in scope in this
+			// function.
 			RISEPel Ld = MediumTransport::EvaluateInScattering(
 				scatterPt, wo, pMedium, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject );
+				mediumSampler, rast, pMediumObject, rrCompensation );
 
 			// 2. Phase-function continuation (indirect in-scattering)
 			// Volume bounces are bounded independently of the general
@@ -1479,8 +1486,18 @@ bool RayCaster::CastRay(
 		// Set the current object on the IOR stack
 		ior_stack.SetCurrentObject( ri.pObject );
 
+		// DL-185: hand the shader a copy of `rs` carrying THIS call's own
+		// cast-level RR compensation, so any NEE done while shading this
+		// hit (`LightSampler::EvaluateDirectLighting{,NM}`, reached via
+		// `DirectLightingShaderOp` / `PathTracingShaderOp`) can fold it
+		// into its optimal-MIS training integrand -- see
+		// `RAY_STATE::castRRCompensation`'s doc.  Never affects the
+		// returned radiance `c`.
+		RAY_STATE rsForShade( rs );
+		rsForShade.castRRCompensation = rrCompensation;
+
 		// Apply shade by calling the appropriate shader
-		SelectShader( ri ).Shade( rc, ri, *this, rs, c, ior_stack );
+		SelectShader( ri ).Shade( rc, ri, *this, rsForShade, c, ior_stack );
 
 		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
 		// reaching this surface without a scatter event is a survival outcome
@@ -1874,9 +1891,10 @@ bool RayCaster::CastRayNM(
 			}
 
 			// NEE at scatter point
+			// DL-185 -- see the RGB twin's comment above.
 			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 				scatterPt, wo, pMedium, nm, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject );
+				mediumSampler, rast, pMediumObject, rrCompensation );
 
 			// Phase-function continuation
 			static const unsigned int nMaxVolumeBounces = 64;
@@ -2094,8 +2112,12 @@ bool RayCaster::CastRayNM(
 		// Set the current object on the IOR stack
 		ior_stack.SetCurrentObject( ri.pObject );
 
+		// DL-185 -- see the RGB CastRay's identical call site above.
+		RAY_STATE rsForShade( rs );
+		rsForShade.castRRCompensation = rrCompensation;
+
 		// Apply shade by calling the appropriate shader
-		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
+		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rsForShade, nm, ior_stack );
 
 		// Analog no-scatter survival: reaching this surface without a scatter
 		// event is a survival outcome whose probability already carries
@@ -2851,10 +2873,16 @@ bool RayCaster::CastRayHWSS(
 		// IOR stack (shared geometry)
 		ior_stack.SetCurrentObject( ri.pObject );
 
+		// DL-185 -- see RGB CastRay's identical call site above.  (The
+		// per-wavelength medium fallback above already delegates to
+		// CastRayNM, which applies its own copy of this fix.)
+		RAY_STATE rsForShade( rs );
+		rsForShade.castRRCompensation = rrCompensation;
+
 		// Dispatch to ShadeHWSS — this routes through
 		// PerformOperationHWSS, enabling hero-wavelength
 		// directional sharing in PathTracingShaderOp.
-		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
+		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rsForShade, c, swl, ior_stack );
 
 		if( distance ) {
 			*distance = ri.geometric.range;

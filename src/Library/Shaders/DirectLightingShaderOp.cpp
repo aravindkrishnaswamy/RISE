@@ -89,7 +89,14 @@ void DirectLightingShaderOp::PerformOperation(
 		// `rs.MisPartnerPdf()`, a density the previous vertex's SPF
 		// produced under exactly this stack.
 		/*pGuidedBlend*/ 0,
-		&ior_stack );
+		&ior_stack,
+		// DL-185: `RayCaster::CastRay{,NM,HWSS}` stamps its own local
+		// cast-level RR compensation onto `rs` before dispatching to this
+		// shader op (see `RAY_STATE::castRRCompensation`) -- fold it into
+		// the training integrand so this NEE arm's trained optimal-MIS
+		// moment agrees with the BSDF-escape arm's (DL-148).  Default 1
+		// for every producer that predates the field.
+		rs.castRRCompensation );
 }
 
 //! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -137,5 +144,7 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		0,		// pMediumObject
 		// DL-74 P2 -- see the RGB twin above.
 		/*pGuidedBlend*/ 0,
-		&ior_stack );
+		&ior_stack,
+		// DL-185 -- see the RGB twin above.
+		rs.castRRCompensation );
 }

@@ -112,7 +112,8 @@ RISEPel MediumTransport::EvaluateInScattering(
 	const Implementation::LightSampler* pLightSampler,
 	ISampler& sampler,
 	const RasterizerState& rast,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	Scalar neeTrainingScale
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -143,9 +144,14 @@ RISEPel MediumTransport::EvaluateInScattering(
 	scatterRI.vNormal = wo;
 	scatterRI.onb.CreateFromW( wo );
 
+	// DL-185: `neeTrainingScale` forwards CastRay's LOCAL cast-level RR
+	// compensation for THIS call (default 1 for every other caller) --
+	// scales the optimal-MIS training integrand only, never the returned
+	// in-scattered radiance itself.
 	return pLightSampler->EvaluateDirectLighting(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		caster, sampler, 0, pMedium, true, pMediumObject );
+		caster, sampler, 0, pMedium, true, pMediumObject,
+		0, 0, neeTrainingScale );
 }
 
 Scalar MediumTransport::EvaluateInScatteringNM(
@@ -157,7 +163,8 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	const Implementation::LightSampler* pLightSampler,
 	ISampler& sampler,
 	const RasterizerState& rast,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	Scalar neeTrainingScale
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -180,7 +187,9 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	scatterRI.vNormal = wo;
 	scatterRI.onb.CreateFromW( wo );
 
+	// DL-185 -- see the RGB twin above.
 	return pLightSampler->EvaluateDirectLightingNM(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		nm, caster, sampler, 0, pMedium, true, pMediumObject );
+		nm, caster, sampler, 0, pMedium, true, pMediumObject,
+		0, 0, neeTrainingScale );
 }

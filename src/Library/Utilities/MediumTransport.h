@@ -145,7 +145,8 @@ namespace RISE
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
-			const IObject* pMediumObject							///< [in] Object enclosing the medium (NULL for global medium)
+			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
+			Scalar neeTrainingScale = 1							///< [in] DL-185: `RayCaster::CastRay`'s LOCAL cast-level RR compensation for THIS call -- scales the OPTIMAL-MIS TRAINING integrand only (see `LightSampler::EvaluateDirectLighting`'s note); never the returned radiance
 			);
 
 		/// Spectral variant of EvaluateInScattering
@@ -159,7 +160,8 @@ namespace RISE
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
-			const IObject* pMediumObject							///< [in] Object enclosing the medium (NULL for global medium)
+			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
+			Scalar neeTrainingScale = 1							///< [in] DL-185 -- see the RGB twin above
 			);
 	}
 }
