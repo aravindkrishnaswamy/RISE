@@ -85,6 +85,22 @@ namespace RISE
 
 			//! Tells the shader to reset itself
 			void ResetRuntimeData() const;
+
+		protected:
+			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS
+			//! partner): unlike `StandardShader`, an `AdvancedShader`'s
+			//! ops are depth-RANGED, so "does a DirectLightingShaderOp/
+			//! DistributionTracingShaderOp sibling exist" is a per-CALL
+			//! question (an op outside `[nMinDepth,nMaxDepth]` for the
+			//! CURRENT `depth` does not actually run at this vertex) --
+			//! resolved fresh each `Shade{,NM,HWSS}` call by scanning the
+			//! depth-filtered subset (the op list is a handful of entries,
+			//! so this is cheap).  See RAY_STATE::chainHasNEEOp's doc.
+			void ResolveChainFlagsForDepth(
+				unsigned int depth,
+				bool& outHasDirectLightingOp,
+				bool& outHasBsdfContinuationOp
+				) const;
 		};
 	}
 }

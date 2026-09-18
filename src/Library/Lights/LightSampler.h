@@ -896,7 +896,19 @@ namespace RISE
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
 				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
 				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
-				const Scalar neeTrainingScale = 1					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
+				const Scalar neeTrainingScale = 1,					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
+				//! DL-171/DL-209: does a competing BSDF-SAMPLED strategy
+				//! actually exist in the caller's shader (a chain-aware
+				//! fact only the OWNING StandardShader/AdvancedShader can
+				//! resolve -- see RAY_STATE::chainHasBsdfContinuationOp)?
+				//! Default TRUE preserves every pre-existing caller's
+				//! behaviour (PT/BDPT/volume NEE always pair with a real
+				//! BSDF-sampling strategy).  FALSE suppresses ONLY the
+				//! weight computation below (this NEE sample takes the
+				//! full, unweighted contribution) while `pMaterial` is
+				//! still used for `bFullSphere`/the BRDF value -- there is
+				//! no BSDF-sampled sibling to partition against.
+				const bool bBsdfSamplingPartnerExists = true
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -914,7 +926,9 @@ namespace RISE
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
 				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
 				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
-				const Scalar neeTrainingScale = 1					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
+				const Scalar neeTrainingScale = 1,					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
+				//! DL-171/DL-209 -- see the RGB overload's doc.
+				const bool bBsdfSamplingPartnerExists = true
 				) const;
 
 			/// Returns the alias-table selection probability for a given

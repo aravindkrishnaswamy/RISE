@@ -96,7 +96,14 @@ void DirectLightingShaderOp::PerformOperation(
 		// the training integrand so this NEE arm's trained optimal-MIS
 		// moment agrees with the BSDF-escape arm's (DL-148).  Default 1
 		// for every producer that predates the field.
-		rs.castRRCompensation );
+		rs.castRRCompensation,
+		// DL-171/DL-209: does a competing BSDF-sampled strategy actually
+		// exist in THIS shader's own op list?  Stamped by the owning
+		// StandardShader/AdvancedShader (see RAY_STATE::
+		// chainHasBsdfContinuationOp's doc) -- default TRUE for every
+		// caller that predates the field, so this is a no-op everywhere
+		// but the legacy shader-op chain.
+		rs.chainHasBsdfContinuationOp );
 }
 
 //! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -146,5 +153,7 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		/*pGuidedBlend*/ 0,
 		&ior_stack,
 		// DL-185 -- see the RGB twin above.
-		rs.castRRCompensation );
+		rs.castRRCompensation,
+		// DL-171/DL-209 -- see the RGB twin above.
+		rs.chainHasBsdfContinuationOp );
 }

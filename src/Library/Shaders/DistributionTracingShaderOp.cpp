@@ -175,10 +175,21 @@ void DistributionTracingShaderOp::PerformOperation(
 				IRayCaster::RAY_STATE rs2;
 				rs2.type = rs.eRayFinalGather;
 				rs2.depth = rs.depth+1;
+				// DL-171 ruling: the pre-MIS "suppress emission whenever
+				// the source material has a BSDF" hack is RETIRED -- now
+				// that this continuation stamps a real MIS partner
+				// (below), the BSDF-hit strategy and NEE partition
+				// properly instead of needing one of them silenced.
+				// `bForceCheckEmitters` stays wired (a scene can still set
+				// it) but is now a NO-OP for that removed clause; it
+				// remains meaningful only for the orthogonal caustic-map
+				// suppression below (a scene relying on a caustic photon
+				// map for this transport, not on the BSDF-vs-NEE MIS
+				// pair, still wants that suppressed).
 				if( bForceCheckEmitters ) {
 					rs2.considerEmission = true;
 				} else {
-					rs2.considerEmission = ((ri.pMaterial->GetBSDF())||(caster.GetAttachedScene()->GetCausticSpectralMap()&&!rs.considerEmission))?false:true;
+					rs2.considerEmission = (caster.GetAttachedScene()->GetCausticSpectralMap() && !rs.considerEmission) ? false : true;
 				}
 
 				Scalar t = 0;
@@ -205,7 +216,12 @@ void DistributionTracingShaderOp::PerformOperation(
 							rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray) * etaScale;
 							// DL-171: this continuation's own MIS partner --
 							// see `LegacyChainMisPartner`'s doc above.
-							rs2.bsdfPdf = LegacyChainMisPartner( *pSPF, ri.geometric, scat, ior_stack );
+							// DL-209: 0 (no partner -> full weight) when
+							// THIS shader has no DirectLightingShaderOp
+							// sibling to compete against -- see
+							// RAY_STATE::chainHasNEEOp's doc.
+							rs2.bsdfPdf = rs.chainHasNEEOp ?
+								LegacyChainMisPartner( *pSPF, ri.geometric, scat, ior_stack ) : Scalar( 0 );
 							rs2.bsdfMisPdf = rs2.bsdfPdf;
 							RISEPel	cThisIndirectSample(0,0,0);
 							if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack ) ) {
@@ -221,8 +237,9 @@ void DistributionTracingShaderOp::PerformOperation(
 						pScatRay->ray.Advance( 1e-8 );
 						const Scalar etaScale = RadianceEtaScale( ior_stack, pScatRay->ior_stack );
 						rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray) * etaScale;
-						// DL-171: see `LegacyChainMisPartner`'s doc above.
-						rs2.bsdfPdf = LegacyChainMisPartner( *pSPF, ri.geometric, *pScatRay, ior_stack );
+						// DL-171/DL-209: see the multi-ray branch above.
+						rs2.bsdfPdf = rs.chainHasNEEOp ?
+							LegacyChainMisPartner( *pSPF, ri.geometric, *pScatRay, ior_stack ) : Scalar( 0 );
 						rs2.bsdfMisPdf = rs2.bsdfPdf;
 						RISEPel	cThisIndirectSample(0,0,0);
 						if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack ) ) {
@@ -304,7 +321,9 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 						// DL-171: this continuation's own MIS partner AT
 						// THIS WAVELENGTH -- see `LegacyChainMisPartnerNM`'s
 						// doc above `LegacyChainMisPartner`.
-						rs2.bsdfPdf = LegacyChainMisPartnerNM( *pSPF, ri.geometric, scat, nm, ior_stack );
+						// DL-209 -- see the RGB twin's identical gate.
+						rs2.bsdfPdf = rs.chainHasNEEOp ?
+							LegacyChainMisPartnerNM( *pSPF, ri.geometric, scat, nm, ior_stack ) : Scalar( 0 );
 						rs2.bsdfMisPdf = rs2.bsdfPdf;
 						Scalar	cThisIndirectSample = 0;
 						caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
@@ -317,8 +336,9 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 					pScatRay->ray.Advance( 1e-8 );
 					const Scalar etaScale = RadianceEtaScale( ior_stack, pScatRay->ior_stack );
 					rs2.importance = rs.importance * pScatRay->krayNM * etaScale;
-					// DL-171: see `LegacyChainMisPartnerNM`'s doc above.
-					rs2.bsdfPdf = LegacyChainMisPartnerNM( *pSPF, ri.geometric, *pScatRay, nm, ior_stack );
+					// DL-171/DL-209 -- see the multi-ray branch above.
+					rs2.bsdfPdf = rs.chainHasNEEOp ?
+						LegacyChainMisPartnerNM( *pSPF, ri.geometric, *pScatRay, nm, ior_stack ) : Scalar( 0 );
 					rs2.bsdfMisPdf = rs2.bsdfPdf;
 					Scalar	cThisIndirectSample = 0;
 					caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack );

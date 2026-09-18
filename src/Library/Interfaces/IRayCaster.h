@@ -142,12 +142,48 @@ namespace RISE
 			//! field or is not itself wrapped by that roulette.
 			Scalar castRRCompensation;
 
+			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS
+			//! partner): does THIS SHADER's own op list contain a
+			//! `DirectLightingShaderOp` (NEE)?  Set once per `Shade{,NM}`
+			//! call by the owning `StandardShader`/`AdvancedShader`, from
+			//! its own resolved op list (`AdvancedShader` restricts to the
+			//! ops whose `[nMinDepth,nMaxDepth]` covers `depth`, since its
+			//! op list is depth-gated; `StandardShader` has no such
+			//! ranges, so it resolves once at construction).  Read by
+			//! `DistributionTracingShaderOp`'s own continuation: TRUE
+			//! stamps the real aggregate-density MIS partner (a
+			//! `DirectLightingShaderOp` sibling genuinely competes for the
+			//! same light); FALSE stamps 0 (no NEE sibling in this
+			//! shader, so `EmissionShaderOp` must take the traced hit at
+			//! FULL, unweighted credit -- DL-209's shape).  Default TRUE:
+			//! every producer outside the legacy chain (PT, BDPT, the
+			//! entry-point construction below) has always paired
+			//! BSDF-sampling with a real NEE strategy, so this is a no-op
+			//! everywhere else.
+			bool chainHasNEEOp;
+			//! The converse: does THIS shader's own op list contain a
+			//! `DistributionTracingShaderOp` (a non-delta, emission-
+			//! considering BSDF-sampled continuation)?  Read by
+			//! `DirectLightingShaderOp`, forwarded to `LightSampler::
+			//! EvaluateDirectLighting{,NM}`'s `bBsdfSamplingPartnerExists`
+			//! parameter: TRUE weights NEE's own sample against the
+			//! material's aggregate density as before (a competing
+			//! BSDF-sampled strategy exists to partition against); FALSE
+			//! forces weight 1 (no such strategy exists in this shader to
+			//! discount against -- `DirectLightingShaderOp` alone, or with
+			//! only delta `Reflection`/`Refraction` ops (already weight-1
+			//! on their own side, so nothing to partition with either),
+			//! or with `FinalGatherShaderOp` (never considers emission at
+			//! all)).  Default TRUE for the same reason as `chainHasNEEOp`.
+			bool chainHasBsdfContinuationOp;
+
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
 				bsdfMisPdf( -1 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
 				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
-				castRRCompensation( 1.0 ) {}
+				castRRCompensation( 1.0 ),
+				chainHasNEEOp( true ), chainHasBsdfContinuationOp( true ) {}
 
 			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
 			Scalar MisPartnerPdf() const

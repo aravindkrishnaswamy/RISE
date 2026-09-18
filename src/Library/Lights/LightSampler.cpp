@@ -1989,7 +1989,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IObject* pMediumObject,
 	const IGuidedNEEPdfBlend* pGuidedBlend,
 	const IORStack* pMisIorStack,
-	const Scalar neeTrainingScale
+	const Scalar neeTrainingScale,
+	const bool bBsdfSamplingPartnerExists
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -2589,7 +2590,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// emitter contribution in PathTracingShaderOp.
 					const bool bCanDoMIS = (pLightBVH && pLightBVH->IsBuilt()) ||
 						risCandidates == 0;
-					if( bCanDoMIS && pMaterial && area > 0 && cosLight > 0 )
+					// DL-171/DL-209: no competing BSDF-sampled strategy in
+					// this caller's chain means no MIS partner to weigh
+					// against -- take this NEE sample whole (skip straight
+					// to the unweighted `result +=` below).  `pMaterial`
+					// itself stays available outside this gate (bFullSphere
+					// above already read it).
+					if( bCanDoMIS && pMaterial && bBsdfSamplingPartnerExists && area > 0 && cosLight > 0 )
 					{
 						// Convert selection PDF to solid angle.
 						// For both alias-table and BVH, pdfAlias is the
@@ -2807,7 +2814,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// the lobe or of the guiding MODE, it closes the partition for
 				// one-sample-MIS and RIS guiding alike (DL-83 closed with
 				// DL-74).
-				if( pMaterial )
+				//
+				// DL-171/DL-209: see the area-light arm above -- no
+				// competing BSDF-sampled strategy in this chain means no
+				// partner to weigh against; skip straight to `result +=
+				// envContrib` unweighted.
+				if( pMaterial && bBsdfSamplingPartnerExists )
 				{
 					static const IORStack defaultIOR( 1.0 );
 					// DL-74 P2: live stack, not the 1.0 sentinel -- see the
@@ -2868,7 +2880,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const IObject* pMediumObject,
 	const IGuidedNEEPdfBlend* pGuidedBlend,
 	const IORStack* pMisIorStack,
-	const Scalar neeTrainingScale
+	const Scalar neeTrainingScale,
+	const bool bBsdfSamplingPartnerExists
 	) const
 {
 	Scalar result = 0;
@@ -3237,7 +3250,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// MIS when selection PDF is tractable (alias table or BVH)
 		const bool bCanDoMIS_NM = (pLightBVH && pLightBVH->IsBuilt()) ||
 			risCandidates == 0;
-		if( bCanDoMIS_NM && pMaterial && area > 0 && cosLight > 0 )
+		// DL-171/DL-209 -- see the RGB area-light arm's twin.
+		if( bCanDoMIS_NM && pMaterial && bBsdfSamplingPartnerExists && area > 0 && cosLight > 0 )
 		{
 			const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 			static const IORStack defaultIOR( 1.0 );
@@ -3368,7 +3382,9 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// gated on `!isVolumeScatter` here as a local safety net, so
 				// this can never disturb DL-73's confirmed-unbiased volume
 				// pairing.
-				if( pMaterial )
+				//
+				// DL-171/DL-209 -- see the RGB env arm's twin.
+				if( pMaterial && bBsdfSamplingPartnerExists )
 				{
 					static const IORStack defaultIOR( 1.0 );
 					// DL-74 P2: live stack, not the 1.0 sentinel.

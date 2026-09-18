@@ -284,17 +284,22 @@ static void BuildHit( RayIntersection& hit, const IMaterial& material, const IOb
 }
 
 //////////////////////////////////////////////////////////////////////
-// One legacy-chain furnace sample: DirectLightingShaderOp (NEE) +
-// DistributionTracingShaderOp (the BSDF-sampled continuation) summed,
-// exactly as StandardShader::Shade sums its op list.
+// One legacy-chain furnace sample.  `pNee`/`pDist` are each optional
+// (0 = "this op is not in the chain"), and `chainHasNEEOp`/
+// `chainHasBsdfContinuationOp` are the CHAIN-COMPOSITION facts a real
+// StandardShader would resolve from its own op list and stamp onto
+// `rs` before dispatching (see RAY_STATE::chainHasNEEOp's doc) --
+// passed explicitly here so each row can construct whatever chain
+// shape it needs without a full scene-language shader chunk.
 //////////////////////////////////////////////////////////////////////
 static Scalar RunLegacyChainSample(
 	const Fixture& fx,
 	const IMaterial& material,
-	DirectLightingShaderOp& nee,
-	DistributionTracingShaderOp& dist,
+	DirectLightingShaderOp* pNee,
+	DistributionTracingShaderOp* pDist,
+	bool chainHasNEEOp,
+	bool chainHasBsdfContinuationOp,
 	RuntimeContext& rc,
-	ISampler& sampler,
 	StubObject& shadingObject
 	)
 {
@@ -308,18 +313,19 @@ static Scalar RunLegacyChainSample(
 	rs.importance = 1.0;
 	rs.considerEmission = true;
 	rs.type = IRayCaster::RAY_STATE::eRayDiffuse;
-
-	IndependentSampler fallback( rc.random );
-	ISampler& s = rc.pSampler ? *rc.pSampler : fallback;
-	(void)sampler;
+	rs.chainHasNEEOp = chainHasNEEOp;
+	rs.chainHasBsdfContinuationOp = chainHasBsdfContinuationOp;
 
 	RISEPel total( 0, 0, 0 );
 	RISEPel c( 0, 0, 0 );
-	nee.PerformOperation( rc, hit, *fx.pCaster, rs, c, stack, 0 );
-	total = total + c;
-	dist.PerformOperation( rc, hit, *fx.pCaster, rs, c, stack, 0 );
-	total = total + c;
-	(void)s;
+	if( pNee ) {
+		pNee->PerformOperation( rc, hit, *fx.pCaster, rs, c, stack, 0 );
+		total = total + c;
+	}
+	if( pDist ) {
+		pDist->PerformOperation( rc, hit, *fx.pCaster, rs, c, stack, 0 );
+		total = total + c;
+	}
 	return ColorMath::MaxValue( total );
 }
 
@@ -327,18 +333,22 @@ static Scalar RunLegacyChainBatch(
 	const Fixture& fx,
 	const IMaterial& material,
 	bool forceCheckEmitters,
+	bool includeNee,
+	bool includeDist,
+	bool chainHasNEEOp,
+	bool chainHasBsdfContinuationOp,
 	unsigned int nSamples,
 	unsigned int seedBase
 	)
 {
-	DirectLightingShaderOp* nee = new DirectLightingShaderOp( 0 );
-	GlobalLog()->PrintNew( nee, __FILE__, __LINE__, "legacy chain NEE op" );
+	DirectLightingShaderOp* nee = includeNee ? new DirectLightingShaderOp( 0 ) : 0;
+	if( nee ) GlobalLog()->PrintNew( nee, __FILE__, __LINE__, "legacy chain NEE op" );
 	// numSamples=1, irradiancecaching=false, forcecheckemitters=<row>,
 	// reflections=refractions=diffuse=translucents=true (trace
 	// whatever the material's own SPF emits).
-	DistributionTracingShaderOp* dist = new DistributionTracingShaderOp(
-		1, false, forceCheckEmitters, true, true, true, true );
-	GlobalLog()->PrintNew( dist, __FILE__, __LINE__, "legacy chain distribution-tracing op" );
+	DistributionTracingShaderOp* dist = includeDist ? new DistributionTracingShaderOp(
+		1, false, forceCheckEmitters, true, true, true, true ) : 0;
+	if( dist ) GlobalLog()->PrintNew( dist, __FILE__, __LINE__, "legacy chain distribution-tracing op" );
 
 	StubObject* shadingObject = new StubObject();
 	GlobalLog()->PrintNew( shadingObject, __FILE__, __LINE__, "legacy chain shading object" );
@@ -348,18 +358,21 @@ static Scalar RunLegacyChainBatch(
 		RandomNumberGenerator rng( seedBase + i );
 		IndependentSampler sampler( rng );
 		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
-		sum += RunLegacyChainSample( fx, material, *nee, *dist, rc, sampler, *shadingObject );
+		(void)sampler;
+		sum += RunLegacyChainSample( fx, material, nee, dist,
+			chainHasNEEOp, chainHasBsdfContinuationOp, rc, *shadingObject );
 	}
 
 	shadingObject->release();
-	dist->release();
-	nee->release();
+	if( dist ) dist->release();
+	if( nee ) nee->release();
 	return sum / nSamples;
 }
 
 static void RunEnvRow()
 {
-	std::cout << "DL-171 legacy chain: env-background furnace (the OVER sign -- "
+	std::cout << "DL-171 legacy chain: env-background furnace, the CANONICAL paired "
+		"chain [DirectLightingShaderOp, DistributionTracingShaderOp] (the OVER sign -- "
 		"RayCaster's env-escape weight never gates on considerEmission)" << std::endl;
 
 	Fixture fx;
@@ -381,7 +394,11 @@ static void RunEnvRow()
 	GlobalLog()->PrintNew( mat, __FILE__, __LINE__, "legacy chain Lambertian" );
 
 	const unsigned int kN = 100000;
-	const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false, kN, 51000 );
+	// Canonical chain: BOTH ops present, both chain flags true (matches
+	// what a real StandardShader with [DirectLighting, dt] would stamp).
+	const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false,
+		/*includeNee*/ true, /*includeDist*/ true,
+		/*chainHasNEEOp*/ true, /*chainHasBsdfContinuationOp*/ true, kN, 51000 );
 	std::cout << "    env furnace (legacy chain) " << m << " , expected " << Lenv << std::endl;
 	CheckRel( m, Lenv, 0.02,
 		"DL-171: legacy chain (DirectLightingShaderOp + DistributionTracingShaderOp) "
@@ -393,8 +410,8 @@ static void RunEnvRow()
 
 static void RunAreaEmitterRows()
 {
-	std::cout << "DL-171 legacy chain: area-emitter furnace -- default "
-		"(considerEmission suppressed, UNDER) vs bForceCheckEmitters=true (OVER)" << std::endl;
+	std::cout << "DL-171 legacy chain: area-emitter furnace, the CANONICAL paired chain -- "
+		"default vs bForceCheckEmitters=TRUE, both must now partition to 1" << std::endl;
 
 	Fixture fx;
 	Check( fx.Build( AreaLightScene(), "area" ), "legacy chain area fixture builds" );
@@ -411,44 +428,253 @@ static void RunAreaEmitterRows()
 
 	const unsigned int kN = 100000;
 
-	// Default: the receiver material HAS a BSDF, so
-	// DistributionTracingShaderOp's own considerEmission logic
-	// suppresses the BSDF-sampled emitter strategy on its
-	// continuation ENTIRELY (`EmissionShaderOp`'s `rs.considerEmission`
-	// gate skips its whole weight block regardless of the partner) --
-	// this row's total is purely NEE's OWN weighted contribution
-	// (`w_nee(w) < 1` in general), genuinely LESS than the full
-	// closed form (the UNDER magnitude the row's own doc quotes), and
-	// UNCHANGED by this fix either way, since the suppressed escape
-	// term contributes exactly 0 whether or not it carries a partner.
-	// Not a closed-form gate (that needs integrating the balance
-	// weight over the light's own solid angle, out of proportion to
-	// this row) -- a bounded sanity check that suppression is real
-	// (positive, and strictly below the un-suppressed closed form).
+	// Default (canonical [DirectLighting, dt] chain, force_check_emitters
+	// FALSE): the pre-fix "suppress emission whenever the source material
+	// has a BSDF" hack used to zero the BSDF-sampled emitter strategy
+	// here entirely, leaving NEE's own MIS-weighted sample as the whole
+	// total -- genuinely and knowably LESS than the closed form (the
+	// UNDER sign this row's own ledger entry names).  The ruling retires
+	// that hack: with the partner this continuation now stamps, the
+	// escape strategy contributes its properly-weighted share too, and
+	// the pair must partition to 1 -- a real closed-form gate, not a
+	// bounded sanity check.
 	{
-		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false, kN, 52000 );
-		std::cout << "    area furnace, considerEmission suppressed (default, UNDER magnitude) "
-			<< m << " , full closed form " << expected << std::endl;
-		Check( m > 0 && m < expected * Scalar( 0.9 ),
-			"DL-171: legacy chain area furnace, default (BSDF-sampled emitter strategy "
-			"suppressed): NEE alone reads meaningfully BELOW the closed form (UNDER)" );
+		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false,
+			/*includeNee*/ true, /*includeDist*/ true,
+			/*chainHasNEEOp*/ true, /*chainHasBsdfContinuationOp*/ true, kN, 52000 );
+		std::cout << "    area furnace, default (canonical chain) " << m
+			<< " , expected " << expected << std::endl;
+		CheckRel( m, expected, 0.03,
+			"DL-171: legacy chain area furnace, default (canonical [DirectLighting, dt] "
+			"chain, considerEmission NOT suppressed): partition to 1" );
 	}
 
-	// bForceCheckEmitters: the continuation's emitter hit is NOT
-	// suppressed, so BOTH NEE and the BSDF-sampled emitter-hit
-	// strategy fire.  Pre-fix, the emitter-hit strategy carries NO
-	// partner (defaults to weight 1) on top of NEE's own weighted
-	// sample -- OVER.  Post-fix the two partition to 1.
+	// bForceCheckEmitters=TRUE: now a NO-OP for the (removed) BSDF-has-a-
+	// material suppression clause -- both this row and the default above
+	// read the same considerEmission=true, so this is a regression pin
+	// that the flag stays harmless (kept, per the ruling, as a
+	// no-op-compatible flag rather than retired outright, since it still
+	// matters for the orthogonal caustic-spectral-map suppression this
+	// fixture doesn't exercise).
 	{
-		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ true, kN, 53000 );
+		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ true,
+			/*includeNee*/ true, /*includeDist*/ true,
+			/*chainHasNEEOp*/ true, /*chainHasBsdfContinuationOp*/ true, kN, 53000 );
 		std::cout << "    area furnace, bForceCheckEmitters=TRUE " << m
 			<< " , expected " << expected << std::endl;
 		CheckRel( m, expected, 0.03,
-			"DL-171: legacy chain area furnace, bForceCheckEmitters=TRUE (both NEE "
-			"and the BSDF-sampled emitter-hit strategy fire): partition to 1" );
+			"DL-171: legacy chain area furnace, bForceCheckEmitters=TRUE (now a no-op): "
+			"partition to 1" );
 	}
 
 	mat->release();
+	white->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-171 ruling point 2: a DirectLightingShaderOp-ALONE chain (no
+// DistributionTracingShaderOp sibling at all) has no competing
+// BSDF-sampled strategy, so NEE must take weight 1 (the closed form
+// exactly, since it is the SOLE estimator).  `chainHasBsdfContinuationOp
+// = true` reproduces the PRE-RULING assumption (every caller has a real
+// partner) to quantify the UNDER magnitude that assumption cost here;
+// `= false` is the post-ruling, chain-aware answer.
+//////////////////////////////////////////////////////////////////////
+static void RunDirectLightingAloneRow()
+{
+	std::cout << "DL-171/DL-209: DirectLightingShaderOp ALONE (no dt sibling) -- "
+		"chainHasBsdfContinuationOp=false must read the closed form; =true quantifies "
+		"the pre-ruling UNDER" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( AreaLightScene(), "dlalone" ), "legacy chain DirectLighting-alone fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const Scalar Le = kSphereScale / PI;
+	const Scalar expected = Le * ( kSphereRadius * kSphereRadius ) / ( kSphereDist * kSphereDist );
+
+	UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( white, __FILE__, __LINE__, "legacy chain white painter (dlalone)" );
+	LambertianMaterial* mat = new LambertianMaterial( *white );
+	GlobalLog()->PrintNew( mat, __FILE__, __LINE__, "legacy chain Lambertian (dlalone)" );
+
+	const unsigned int kN = 100000;
+
+	// Pre-ruling assumption: a partner "exists" even though nothing in
+	// this chain ever traces a matching BSDF-sampled continuation --
+	// NEE's own PowerHeuristic weight discounts against a phantom
+	// competitor, UNDER-counting the sole estimator for this light.
+	{
+		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false,
+			/*includeNee*/ true, /*includeDist*/ false,
+			/*chainHasNEEOp*/ false, /*chainHasBsdfContinuationOp*/ true, kN, 54000 );
+		std::cout << "    DirectLighting-alone, chainHasBsdfContinuationOp=TRUE (pre-ruling UNDER) "
+			<< m << " , full closed form " << expected << std::endl;
+		Check( m > 0 && m < expected * Scalar( 0.9 ),
+			"DL-171/DL-209: DirectLighting-alone with a PHANTOM partner reads meaningfully "
+			"BELOW the closed form (the pre-ruling UNDER)" );
+	}
+
+	// Chain-aware: no DistributionTracingShaderOp sibling, so NEE takes
+	// weight 1 -- the closed form exactly (NEE is the sole estimator).
+	{
+		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false,
+			/*includeNee*/ true, /*includeDist*/ false,
+			/*chainHasNEEOp*/ false, /*chainHasBsdfContinuationOp*/ false, kN, 55000 );
+		std::cout << "    DirectLighting-alone, chainHasBsdfContinuationOp=FALSE " << m
+			<< " , expected " << expected << std::endl;
+		CheckRel( m, expected, 0.02,
+			"DL-171: DirectLightingShaderOp alone (no BSDF-sampled sibling): NEE takes "
+			"weight 1 and reads the closed form exactly" );
+	}
+
+	mat->release();
+	white->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-171 ruling point 3 / DL-209: a DistributionTracingShaderOp in a
+// chain with NO DirectLightingShaderOp sibling has no NEE to partition
+// against -- its continuation's partner must be 0 (full, unweighted
+// credit), closing DL-209's own shape
+// (scenes/Tests/Shaders/dt_with_irrcache.RISEscene's `[dist,
+// DefaultEmission]`).  `chainHasNEEOp = true` reproduces the DL-171-v1
+// (pre-this-ruling) behaviour that DL-209 was filed against.
+//////////////////////////////////////////////////////////////////////
+static void RunDistributionTracingWithoutDirectLightingRow()
+{
+	std::cout << "DL-209: DistributionTracingShaderOp WITHOUT a DirectLighting sibling -- "
+		"chainHasNEEOp=false must close to the closed form (was DL-209's own residual)" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( AreaLightScene(), "dtalone" ), "legacy chain dt-alone fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const Scalar Le = kSphereScale / PI;
+	const Scalar expected = Le * ( kSphereRadius * kSphereRadius ) / ( kSphereDist * kSphereDist );
+
+	UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( white, __FILE__, __LINE__, "legacy chain white painter (dtalone)" );
+	LambertianMaterial* mat = new LambertianMaterial( *white );
+	GlobalLog()->PrintNew( mat, __FILE__, __LINE__, "legacy chain Lambertian (dtalone)" );
+
+	const unsigned int kN = 100000;
+
+	// DL-209's own (pre-fix) shape: `chainHasNEEOp=true` stamps a real
+	// partner even though nothing in THIS chain does NEE, so the
+	// escape/emitter-hit strategy is wrongly discounted -- UNDER.
+	{
+		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false,
+			/*includeNee*/ false, /*includeDist*/ true,
+			/*chainHasNEEOp*/ true, /*chainHasBsdfContinuationOp*/ false, kN, 56000 );
+		std::cout << "    dt-alone, chainHasNEEOp=TRUE (DL-209's own pre-fix UNDER) " << m
+			<< " , full closed form " << expected << std::endl;
+		Check( m > 0 && m < expected * Scalar( 0.9 ),
+			"DL-209: dt-alone with a PHANTOM NEE partner reads meaningfully BELOW the "
+			"closed form (the pre-fix UNDER)" );
+	}
+
+	// Chain-aware: no DirectLightingShaderOp sibling, so the escape
+	// strategy takes weight 1 -- the closed form exactly.
+	{
+		const Scalar m = RunLegacyChainBatch( fx, *mat, /*forceCheckEmitters*/ false,
+			/*includeNee*/ false, /*includeDist*/ true,
+			/*chainHasNEEOp*/ false, /*chainHasBsdfContinuationOp*/ false, kN, 57000 );
+		std::cout << "    dt-alone, chainHasNEEOp=FALSE " << m << " , expected " << expected << std::endl;
+		CheckRel( m, expected, 0.03,
+			"DL-209 CLOSED: DistributionTracingShaderOp alone (no NEE sibling) takes "
+			"weight 1 and reads the closed form exactly" );
+	}
+
+	mat->release();
+	white->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-171 ruling point 1's own control: a
+// [DirectLightingShaderOp, ReflectionShaderOp] chain on a PURE MIRROR
+// (no diffuse component -- `GetBSDF()` is null) is UNCHANGED whichever
+// way `chainHasBsdfContinuationOp` reads, because NEE has nothing to
+// weight in the first place (no BSDF means `DirectLightingShaderOp`
+// returns 0 before it ever reaches the partner question) and
+// `ReflectionShaderOp`'s own delta lobe is untouched by this row's
+// mechanism -- confirms a delta `Reflection`/`Refraction` sibling is
+// correctly NOT classified as a competing BSDF-sampled strategy either
+// (dynamic_cast in the resolver only recognises
+// DistributionTracingShaderOp).
+//////////////////////////////////////////////////////////////////////
+static void RunDirectLightingPlusMirrorRow()
+{
+	std::cout << "DL-171 control: [DirectLightingShaderOp, ReflectionShaderOp] on a "
+		"pure mirror is UNCHANGED regardless of chainHasBsdfContinuationOp" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "dlmirror" ), "legacy chain DirectLighting+mirror fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const IRadianceMap* pGlobal = fx.pScene->GetGlobalRadianceMap();
+	if( !pGlobal ) { Check( false, "legacy chain DirectLighting+mirror fixture has a radiance map" ); return; }
+	const RasterizerState rast{};
+	const Scalar Lenv = ColorMath::MaxValue(
+		pGlobal->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+
+	UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( white, __FILE__, __LINE__, "legacy chain mirror painter (dl+mirror)" );
+	PerfectReflectorMaterial* mirror = new PerfectReflectorMaterial( *white );
+	GlobalLog()->PrintNew( mirror, __FILE__, __LINE__, "legacy chain mirror material (dl+mirror)" );
+
+	StubObject* shadingObject = new StubObject();
+	GlobalLog()->PrintNew( shadingObject, __FILE__, __LINE__, "dl+mirror shading object" );
+
+	DirectLightingShaderOp* nee = new DirectLightingShaderOp( 0 );
+	GlobalLog()->PrintNew( nee, __FILE__, __LINE__, "dl+mirror NEE op" );
+	ReflectionShaderOp* refl = new ReflectionShaderOp();
+	GlobalLog()->PrintNew( refl, __FILE__, __LINE__, "dl+mirror reflection op" );
+
+	const RasterizerState rast2{};
+	RayIntersection hit( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast2 );
+	BuildHit( hit, *mirror, *shadingObject );
+
+	IORStack stack( 1.0 );
+	RandomNumberGenerator rng( 62000u );
+	IndependentSampler sampler( rng );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+
+	ScatteredRayContainer scattered;
+	mirror->GetSPF()->Scatter( hit.geometric, sampler, scattered, stack );
+
+	// No DistributionTracingShaderOp in this chain -> chainHasBsdfContinuationOp
+	// should read FALSE from a real StandardShader; run BOTH values to
+	// confirm the mirror's own answer is identical either way.
+	for( int pass = 0; pass < 2; ++pass ) {
+		const bool chainHasBsdfContinuationOp = ( pass == 1 );
+		IRayCaster::RAY_STATE rs;
+		rs.depth = 0;
+		rs.importance = 1.0;
+		rs.considerEmission = true;
+		rs.type = IRayCaster::RAY_STATE::eRayDiffuse;
+		rs.chainHasNEEOp = true;
+		rs.chainHasBsdfContinuationOp = chainHasBsdfContinuationOp;
+
+		RISEPel c( 0, 0, 0 ), total( 0, 0, 0 );
+		nee->PerformOperation( rc, hit, *fx.pCaster, rs, c, stack, 0 );
+		total = total + c;
+		refl->PerformOperation( rc, hit, *fx.pCaster, rs, c, stack, &scattered );
+		total = total + c;
+
+		const Scalar m = ColorMath::MaxValue( total );
+		std::cout << "    dl+mirror, chainHasBsdfContinuationOp=" << ( chainHasBsdfContinuationOp ? "TRUE" : "FALSE" )
+			<< " " << m << " , expected " << Lenv << std::endl;
+		CheckRel( m, Lenv, 1e-6,
+			"DL-171 control: [DirectLighting, Reflection] on a pure mirror reads L_env "
+			"exactly, unchanged by chainHasBsdfContinuationOp (no BSDF means NEE "
+			"contributes 0 regardless; the delta lobe is untouched)" );
+	}
+
+	refl->release();
+	nee->release();
+	shadingObject->release();
+	mirror->release();
 	white->release();
 }
 
@@ -526,6 +752,9 @@ static void Run()
 {
 	RunEnvRow();
 	RunAreaEmitterRows();
+	RunDirectLightingAloneRow();
+	RunDistributionTracingWithoutDirectLightingRow();
+	RunDirectLightingPlusMirrorRow();
 	RunDeltaControlRow();
 }
 

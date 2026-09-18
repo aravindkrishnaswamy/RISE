@@ -16,9 +16,32 @@
 #include "../Utilities/Optics.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
+#include "DirectLightingShaderOp.h"
+#include "DistributionTracingShaderOp.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+void AdvancedShader::ResolveChainFlagsForDepth(
+	unsigned int depth,
+	bool& outHasDirectLightingOp,
+	bool& outHasBsdfContinuationOp
+	) const
+{
+	outHasDirectLightingOp = false;
+	outHasBsdfContinuationOp = false;
+	for( ShadeOpListType::const_iterator i=shaderops.begin(); i!=shaderops.end(); i++ ) {
+		if( depth < i->nMinDepth || depth > i->nMaxDepth ) {
+			continue;
+		}
+		if( dynamic_cast<DirectLightingShaderOp*>( i->pShaderOp ) ) {
+			outHasDirectLightingOp = true;
+		}
+		if( dynamic_cast<DistributionTracingShaderOp*>( i->pShaderOp ) ) {
+			outHasBsdfContinuationOp = true;
+		}
+	}
+}
 
 AdvancedShader::AdvancedShader(
 	const ShadeOpListType& shaderops_
@@ -62,13 +85,18 @@ void AdvancedShader::Shade(
 		pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
 	}
 
+	// DL-171/DL-209: resolve THIS call's depth-filtered chain composition
+	// -- see ResolveChainFlagsForDepth's doc.
+	IRayCaster::RAY_STATE rs2 = rs;
+	ResolveChainFlagsForDepth( rs.depth, rs2.chainHasNEEOp, rs2.chainHasBsdfContinuationOp );
+
 	// Iterate through the shader ops and accumulate the results
 	ShadeOpListType::const_iterator i, e;
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
 			RISEPel cthis = c;
-			op.pShaderOp->PerformOperation( rc, ri, caster, rs, cthis, ior_stack, pSPF?&scattered:0 );
+			op.pShaderOp->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
 			switch( op.operation ) {
 				default:
 				case 'a':
@@ -126,12 +154,16 @@ Scalar AdvancedShader::ShadeNM(
 
 	Scalar c = 0;
 
+	// DL-171/DL-209 -- see Shade's identical construction above.
+	IRayCaster::RAY_STATE rs2 = rs;
+	ResolveChainFlagsForDepth( rs.depth, rs2.chainHasNEEOp, rs2.chainHasBsdfContinuationOp );
+
 	// Iterate through the shader ops and accumulate the results
 	ShadeOpListType::const_iterator i, e;
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
-			const Scalar cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs, c, nm, ior_stack, pSPF?&scattered:0 );
+			const Scalar cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
 
 			switch( op.operation ) {
 				default:
@@ -197,6 +229,10 @@ void AdvancedShader::ShadeHWSS(
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 		caccum[i] = 0;
 
+	// DL-171/DL-209 -- see Shade's identical construction above.
+	IRayCaster::RAY_STATE rs2 = rs;
+	ResolveChainFlagsForDepth( rs.depth, rs2.chainHasNEEOp, rs2.chainHasBsdfContinuationOp );
+
 	// Iterate through shader ops with depth filtering and blend modes
 	ShadeOpListType::const_iterator it, e;
 	for( it=shaderops.begin(), e=shaderops.end(); it!=e; it++ )
@@ -205,7 +241,7 @@ void AdvancedShader::ShadeHWSS(
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth )
 		{
 			Scalar opResult[SampledWavelengths::N];
-			op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs, caccum, swl,
+			op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
 				ior_stack, pSPF?&scattered:0, opResult );
 
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
