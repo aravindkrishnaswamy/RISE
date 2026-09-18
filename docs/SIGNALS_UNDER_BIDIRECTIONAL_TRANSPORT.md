@@ -92,13 +92,24 @@ Findings that changed the plan:
   lights); it never inspects painters. There is nothing to remove there; the
   containment is the one-time `GlobalLog` warning plus descriptor/README text.
 - **The VCM light-vertex store does not need widening** (row 4).
-- **BDPT/VCM/MLT eye rays carry no ray differentials** (no `hasDifferentials`
-  anywhere in the BDPT/VCM/MLT rasterizers), so `fw`/`fwo` read 0 at every
-  bidirectional vertex today, live or rebuilt. That is a PT-vs-BDPT
-  difference on `fbm` fade bands that is **not** attributable to signals.
-  §6's control variant is built so it cancels (§6.1); if the showcase
-  invariant surfaces it as a residual anyway, it is recorded in
-  RENDERING_INTEGRATORS.md per charter item 6, not absorbed.
+- **CORRECTED (DL-14, 2026-09-17 — docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md):
+  this bullet's original claim was wrong.** `hasDifferentials` does not need
+  to appear anywhere in the BDPT/VCM/MLT rasterizer FILES for the eye ray to
+  carry differentials: `ICamera::GenerateRay` (Pinhole/ThinLens/Orthographic/
+  Fisheye) unconditionally stamps them onto the returned ray, and BDPT/VCM/MLT
+  all obtain their eye subpath's starting ray through that same interface
+  call and hand it, unmodified, into `GenerateEyeSubpathImpl` as
+  `currentRay`. `Object::IntersectRay` computes `txFootprint` whenever
+  `ray.hasDifferentials` is true, so the depth-0 eye vertex — the ONLY vertex
+  any integrator, PT included, ever attaches a real footprint to, since no
+  ray carries differentials after a scattering bounce anywhere in this
+  renderer — gets the identical non-zero footprint PT's own primary hit
+  gets. `fw`/`fwo` do NOT read 0 there, live or rebuilt (S1's own
+  `v.txFootprint = ri.geometric.txFootprint;` copy makes this observable and
+  was never inert). §6's control variant being built to cancel this was
+  therefore unnecessary insurance, not a workaround for a real gap — see the
+  DL-14 doc for the direct render measurement (PT vs BDPT agree to ~1e-4
+  relative on a `fbm`-fade fixture; VCM agrees within ordinary MC noise).
 
 ## 3. The fix for rows 1–2: widen `BDPTVertex`
 
@@ -542,9 +553,23 @@ Ledger (filled per slice):
   disclosed in PathVertexEval.h's contract.
 - **GUI painter preview, realize-time displacement, `HairGenerator`** —
   not transport; unchanged and already disclosed.
-- **Ray differentials under BDPT/VCM/MLT** — none today, so `fw`/`fwo` are 0
-  there; a PT-vs-bidirectional difference on filtered-noise bands that §6.2's
-  control cancels; recorded in RENDERING_INTEGRATORS.md only if it shows.
+- **~~Ray differentials under BDPT/VCM/MLT~~ — CLOSED 2026-09-17, on
+  re-verification (DL-14, docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md): this
+  bullet's premise was wrong.** The depth-0 eye vertex DOES carry a real,
+  non-zero `txFootprint` under BDPT/VCM/MLT — the camera ray they all start
+  from unconditionally carries Igehy differentials (every `ICamera`
+  implementation stamps them, with no gate on which rasterizer is asking),
+  and the shared `Object::IntersectRay` layer computes the footprint from
+  them the same way regardless of integrator. `fw`/`fwo` are not 0 there;
+  §6.2's control variant being built to cancel a difference that does not
+  exist was unneeded insurance, not evidence the gap was real. Direct render
+  measurement on a `fbm`-fade fixture: PT vs BDPT agree to ~1e-4 relative
+  (whole-image mean AND high-frequency energy); VCM agrees within its own,
+  separately documented, higher MC noise for non-caustic scenes. See the
+  DL-14 doc for the full account, including the red-proof (reintroducing
+  the literal defect this bullet described — forcing the eye ray's
+  `hasDifferentials` to false — reproduces exactly the symptom this bullet
+  predicted).**
 - **Debt 27** (PT under-reads gapped two-layer weaves) — untouched; any new
   integrator-disagreement data from §6.2 is appended there.
 - **No weight formula changes** — MIS heuristics per integrator stay as
