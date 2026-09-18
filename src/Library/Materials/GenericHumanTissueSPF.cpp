@@ -124,7 +124,13 @@ void GenericHumanTissueSPF::Scatter(
 	) const
 {
 	ScatteredRay trans;
-	trans.ray.origin = ri.ray.origin;
+	// DL-183: this used to be `ri.ray.origin` -- the INCOMING ray's
+	// origin (the camera, or the previous bounce point), not the point
+	// on THIS surface the ray actually hit.  Every continuation ray
+	// started on the wrong line.  BioSpecSkinSPF's sibling sites
+	// (`remmitted.ray.origin = ri.ptIntersection`) always did this
+	// correctly.
+	trans.ray.origin = ri.ptIntersection;
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.kray = RISEPel(1.0,1.0,1.0);
 	trans.isDelta = false;
@@ -193,7 +199,9 @@ void GenericHumanTissueSPF::ScatterNM(
 	) const
 {
 	ScatteredRay trans;
-	trans.ray.origin = ri.ray.origin;
+	// DL-183: see Scatter()'s twin comment -- this used to be
+	// `ri.ray.origin` instead of the actual hit point.
+	trans.ray.origin = ri.ptIntersection;
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.krayNM = 1.0;
 	trans.isDelta = false;
