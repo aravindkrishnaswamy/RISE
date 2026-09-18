@@ -302,6 +302,113 @@ void TestNumericCoatRoughnessVaries()
 }
 
 // ============================================================
+//  4b. MONEY (review P1 red-proof): the perceptual-roughness ->
+//      GGX-alpha squaring must apply on the TEXTURE-driven
+//      coat_roughness path exactly as it does on the numeric path --
+//      pre-fix, `resolve_material_scalar_slot` bound the texture's
+//      channel value UNSQUARED, so the same authored roughness value
+//      read alpha=0.25 numerically but alpha=0.5 (2x) through a
+//      texture.  Probes `CoatedBRDF::GetCoatRoughness()` directly --
+//      the exact GGX alpha the coat lobe uses -- rather than inferring
+//      it from a BSDF response.
+// ============================================================
+
+double CoatAlphaAt( RISE::IJobPriv& job, const char* matName, const double u, const double v )
+{
+	RISE::IMaterial* m = job.GetMaterials() ? job.GetMaterials()->GetItem( matName ) : 0;
+	const CoatedMaterial* coated = dynamic_cast<const CoatedMaterial*>( m );
+	if( !coated ) return -1.0;
+	RISE::RayIntersectionGeometric ri = MakeProbe( u, v );
+	return coated->GetCoatRoughness().GetValuesAt( ri ).v[0];
+}
+
+void TestTextureDrivenCoatRoughnessSquaresLikeNumeric()
+{
+	std::cout << "Test: MONEY -- textured coat_roughness squares to a GGX alpha exactly like the numeric path" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) { Check( false, "created a job" ); return; }
+
+	// A UNIFORM (spatially constant) grey texture standing in for a
+	// flat Coat Roughness map, same authored perceptual value (0.5)
+	// the numeric-only control uses.
+	double greyHalf[3] = { 0.5, 0.5, 0.5 };
+	(*job).AddUniformColorPainter( "coat_rough_uniform_half", greyHalf, "Rec709RGB_Linear" );
+
+	rise_blender_material numOnly = PbrFixture( *job, "coat_rough_num_half" );
+	numOnly.coat_weight = 1.0;
+	numOnly.coat_ior = 1.5;
+	numOnly.coat_roughness = 0.5;	// perceptual -- expect GGX alpha 0.25
+
+	rise_blender_material texOnly = PbrFixture( *job, "coat_rough_tex_half" );
+	texOnly.coat_weight = 1.0;
+	texOnly.coat_ior = 1.5;
+	texOnly.coat_roughness = 0.5;	// same numeric fallback -- must be IGNORED, the texture wins
+	texOnly.coat_roughness_texture_painter_name = "coat_rough_uniform_half";
+
+	char err[256] = { 0 };
+	Check( add_material( *job, numOnly, err, sizeof( err ) ), "numeric-only coat_roughness=0.5 material registered" );
+	Check( add_material( *job, texOnly, err, sizeof( err ) ), "textured coat_roughness=0.5 material registered" );
+
+	const double numAlpha = CoatAlphaAt( *job, "coat_rough_num_half", 0.5, 0.5 );
+	const double texAlpha = CoatAlphaAt( *job, "coat_rough_tex_half", 0.5, 0.5 );
+
+	std::cout << "  numeric alpha=" << numAlpha << "  textured alpha=" << texAlpha << std::endl;
+
+	Check( numAlpha >= 0.0 && texAlpha >= 0.0, "both materials are real CoatedMaterials with a readable coat roughness" );
+	Check( std::fabs( numAlpha - 0.25 ) < 1.0e-6,
+		"the numeric path squares perceptual 0.5 into GGX alpha 0.25" );
+	Check( std::fabs( texAlpha - 0.25 ) < 1.0e-6,
+		"MONEY: the TEXTURED path ALSO squares perceptual 0.5 into GGX alpha 0.25 -- "
+		"pre-fix this read 0.5 (unsquared, 2x the numeric path's alpha for the same authored value)" );
+	Check( std::fabs( numAlpha - texAlpha ) < 1.0e-9,
+		"numeric and textured paths agree exactly for the same authored roughness value" );
+}
+
+// ============================================================
+//  4c. A spatially varying coat_roughness texture squares PER TEXEL,
+//      not just at one sampled point -- two UV regions with different
+//      authored roughness must each read alpha = value^2 independently.
+// ============================================================
+
+void TestTextureDrivenCoatRoughnessSquaresPerTexel()
+{
+	std::cout << "Test: a spatially varying coat_roughness texture squares per-texel (alpha = value^2 at each region)" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) { Check( false, "created a job" ); return; }
+
+	// Two checker cells at different perceptual roughness values --
+	// 0.2 and 0.8 -- so alpha should read 0.04 and 0.64 respectively.
+	double cellA[3] = { 0.2, 0.2, 0.2 };
+	double cellB[3] = { 0.8, 0.8, 0.8 };
+	(*job).AddUniformColorPainter( "coat_rough_cell_a", cellA, "Rec709RGB_Linear" );
+	(*job).AddUniformColorPainter( "coat_rough_cell_b", cellB, "Rec709RGB_Linear" );
+	(*job).AddCheckerPainter( "coat_rough_tex_varying", 0.5, "coat_rough_cell_a", "coat_rough_cell_b" );
+
+	rise_blender_material mat = PbrFixture( *job, "coat_rough_varying" );
+	mat.coat_weight = 1.0;
+	mat.coat_ior = 1.5;
+	mat.coat_roughness = 0.5;	// fallback only -- overridden by the texture below
+	mat.coat_roughness_texture_painter_name = "coat_rough_tex_varying";
+
+	char err[256] = { 0 };
+	Check( add_material( *job, mat, err, sizeof( err ) ), std::string( "spatially varying coat_roughness material registered: " ) + err );
+
+	// Same u/v pair BlenderBridgeFabricTest.cpp's own texture group and
+	// TestTextureDrivenCoatWeight above use (off the u==v diagonal).
+	const double alphaA = CoatAlphaAt( *job, "coat_rough_varying", 0.1, 0.5 );
+	const double alphaB = CoatAlphaAt( *job, "coat_rough_varying", 0.6, 0.5 );
+
+	std::cout << "  cell A (roughness 0.2) alpha=" << alphaA
+	          << "  cell B (roughness 0.8) alpha=" << alphaB << std::endl;
+
+	Check( alphaA >= 0.0 && alphaB >= 0.0, "both probes read a real coat roughness" );
+	Check( std::fabs( alphaA - 0.04 ) < 1.0e-6, "cell A (perceptual 0.2) squares to alpha 0.04" );
+	Check( std::fabs( alphaB - 0.64 ) < 1.0e-6, "cell B (perceptual 0.8) squares to alpha 0.64" );
+}
+
+// ============================================================
 //  5. Texture-driven coat weight (v13 exception)
 // ============================================================
 
@@ -487,6 +594,8 @@ int main()
 	TestNoCoatIsUnaffected();
 	TestCoatWrapsCoatedMaterial();
 	TestNumericCoatRoughnessVaries();
+	TestTextureDrivenCoatRoughnessSquaresLikeNumeric();
+	TestTextureDrivenCoatRoughnessSquaresPerTexel();
 	TestTextureDrivenCoatWeight();
 	TestCoatWithEmissionKeepsBoth();
 	TestCoatAndSheenTogetherKeepsSheenOnly();

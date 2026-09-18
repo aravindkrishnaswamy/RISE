@@ -1101,10 +1101,13 @@ namespace
 	//! Forward declaration -- defined below, near its hair-path sibling
 	//! `resolve_hair_scalar_slot` (ABI v12 / DL-18; see that function's
 	//! own banner and this one's definition for the wrapper mechanism).
+	//! `square` (ABI v13 / DL-186 review P1) -- see the definition's own
+	//! banner.
 	std::string resolve_material_scalar_slot(
 		RISE::IJobPriv& job,
 		const char* painterName,
-		const std::string& fallbackLiteral
+		const std::string& fallbackLiteral,
+		const bool square = false
 	);
 
 	bool add_pbr_metallic_roughness_material(
@@ -1302,17 +1305,26 @@ namespace
 			// `clearcoat_roughness_factor` (that file's own comment:
 			// "passing the perceptual value straight through would
 			// silently render a coat about sqrt too rough").  Applied
-			// to the NUMERIC fallback before resolving any texture
-			// override, matching the numeric-then-texture order every
-			// other resolve_material_scalar_slot call site in this file
-			// uses (the texture, when present, is expected to already
-			// encode the desired alpha directly -- same convention as
-			// `sheen_roughness_texture_painter_name`).
+			// to the NUMERIC fallback here; the TEXTURE-driven branch
+			// needs the IDENTICAL per-texel squaring, so `square=true` is
+			// passed to resolve_material_scalar_slot below rather than
+			// assuming (as an earlier revision of this comment wrongly
+			// did) that a bound texture "already encodes the desired
+			// alpha directly" -- review found that assumption false
+			// (`CoatedBRDF::GetCoatRoughness()` read alpha 0.25 on the
+			// numeric path vs 0.5 on the texture path for the SAME
+			// authored value 0.5, a 2x divergence) and the review is what
+			// added the `square` parameter.  `sheen_roughness_texture_-
+			// painter_name` below is a genuinely DIFFERENT case, not a
+			// counter-example: Charlie alpha is never squared from a
+			// perceptual value on EITHER its numeric or texture path, so
+			// `square=false` (the default) there is correct, not merely
+			// unaudited.
 			const double coatRoughSq = material.coat_roughness * material.coat_roughness;
 			char roughLiteral[64];
 			std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", coatRoughSq );
 			const std::string coatRoughness = resolve_material_scalar_slot(
-				job, material.coat_roughness_texture_painter_name, roughLiteral );
+				job, material.coat_roughness_texture_painter_name, roughLiteral, /*square*/ true );
 
 			char iorLiteral[64];
 			std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g",
@@ -1755,10 +1767,10 @@ namespace
 	//! IScalarPainter wrappers rather than one mis-scoped one.
 	const char* const kMaterialScalarWrapperSuffix = "::matscalar";
 
-	//! Resolve one OPTIONAL v12 texture-driven IScalarPainter slot on a
-	//! `rise_blender_material` to the string a `Job::Add*Material` scalar
-	//! slot should be handed for it -- the material-path sibling of
-	//! `resolve_hair_scalar_slot` above, same wrapper mechanism
+	//! Resolve one OPTIONAL v12/v13 texture-driven IScalarPainter slot on
+	//! a `rise_blender_material` to the string a `Job::Add*Material`
+	//! scalar slot should be handed for it -- the material-path sibling
+	//! of `resolve_hair_scalar_slot` above, same wrapper mechanism
 	//! (`RISE_API_CreatePainterChannelScalarPainter`, channel R, scale 1,
 	//! bias 0), but SILENT on failure rather than warning: unlike hair's
 	//! `warnings` vector (a channel that reaches the artist through
@@ -1768,10 +1780,29 @@ namespace
 	//! its literal default with no warning when unset or unresolvable,
 	//! and this slot matches that existing convention rather than
 	//! inventing a new one.
+	//!
+	//! `square` (default false, ABI v13 / DL-186 review P1): when true,
+	//! the returned scalar painter reports `channelR(u,v)^2`, not the
+	//! raw channel value -- for slots whose NUMERIC fallback is a
+	//! PERCEPTUAL roughness the caller SQUARES into a GGX alpha before
+	//! handing it here (`coat_roughness`), so the texture-driven branch
+	//! must apply the identical per-texel conversion or a textured coat
+	//! renders at up to 2x the intended alpha wherever the numeric and
+	//! textured paths would otherwise agree (caught by review: reading
+	//! back `CoatedBRDF::GetCoatRoughness()` for the authored value 0.5
+	//! measured numeric alpha 0.25 against textured alpha 0.5 -- the
+	//! square was silently skipped on the texture path only).  Squaring
+	//! is layered onto the SAME shared channel-view wrapper (so two
+	//! slots binding one texture, one squared and one not -- unusual,
+	//! not forbidden -- each get their own correct result) via a
+	//! `RISE_API_CreateMultiplyScalarPainter(view, view)` self-product,
+	//! registered under a further-derived `::sq` name and cached the
+	//! same way.
 	std::string resolve_material_scalar_slot(
 		RISE::IJobPriv& job,
 		const char* painterName,
-		const std::string& fallbackLiteral
+		const std::string& fallbackLiteral,
+		const bool square
 	)
 	{
 		if( !painterName || !painterName[0] ) {
@@ -1808,7 +1839,31 @@ namespace
 			}
 		}
 
-		return wrapperName;
+		if( !square ) {
+			return wrapperName;
+		}
+
+		const std::string squaredName = wrapperName + "::sq";
+		if( !smgr->GetItem( squaredName.c_str() ) ) {
+			RISE::IScalarPainter* view = smgr->GetItem( wrapperName.c_str() );
+			if( !view ) {
+				return fallbackLiteral;
+			}
+			RISE::IScalarPainter* squared = 0;
+			RISE::RISE_API_CreateMultiplyScalarPainter( &squared, view, view );
+			if( !squared ) {
+				return fallbackLiteral;
+			}
+
+			const bool added = smgr->AddItem( squared, squaredName.c_str() );
+			squared->release();
+
+			if( !added ) {
+				return fallbackLiteral;
+			}
+		}
+
+		return squaredName;
 	}
 
 	// Pack the accumulated non-fatal warnings into the fixed result

@@ -390,7 +390,23 @@ typedef struct rise_blender_material {
 	// (HG asymmetry, default 0).  `subsurface_roughness` reuses the
 	// material's ordinary specular Roughness value for the walk's
 	// boundary Fresnel roughness slot -- Blender has no separate
-	// SSS-boundary-roughness concept.
+	// SSS-boundary-roughness concept.  SIBLING-AUDIT NOTE (ABI v13
+	// review P1, alongside the `coat_roughness` squaring fix): this
+	// field has NO texture-driven counterpart at all in this ABI, so
+	// the numeric-vs-texture divergence that hit `coat_roughness`
+	// cannot occur here -- and unlike that slot, no squaring belongs
+	// on the BRIDGE side regardless, because `SubSurfaceScatteringBSDF`
+	// / `SubSurfaceScatteringSPF` already square this value into a GGX
+	// alpha THEMSELVES, uniformly, for any caller (`alpha =
+	// roughness^2`, see those headers) -- squaring it again here would
+	// be a double-square.  `sheen_roughness_texture_painter_name`
+	// (this struct's v12 sibling, above) was ALSO audited: Charlie
+	// alpha is never squared from a perceptual value on either its
+	// numeric or texture path, so it needed no fix either.  Hair's own
+	// `beta_m`/`beta_n` scalar-texture slots (`resolve_hair_scalar_-
+	// slot`, rise_blender_bridge.cpp) were checked too: the Chiang
+	// hair BCSDF consumes them directly with no squaring anywhere, on
+	// either path.
 	const char* subsurface_absorption;
 	const char* subsurface_scattering;
 	double subsurface_ior;
