@@ -271,7 +271,39 @@ namespace RISE
 		{
 			return -1;
 		}
+
+		/// DL-125.  The class name to report when the HWSS companion
+		/// ladder's `EvaluateKrayNM` fallback is reached for an SPF the
+		/// fallback is NOT exact for; 0 (the default) for every SPF
+		/// where it IS exact or unreachable.
+		///
+		/// The fallback is `IBSDF::valueNM(outDir) * cos / pS->pdf` --
+		/// the material's AGGREGATE spectral BSDF over the ONE selected
+		/// lobe's density.  That is the correct `f_I cos / p_I` exactly
+		/// when the emitted ray's `pdf` is the AGGREGATE mixture
+		/// density (CoatedSPF / FabricSPF / WeaveSPF, which say so in
+		/// their own headers, and the single-emit GGXSPF /
+		/// CookTorranceSPF), and wrong when it is a PER-LOBE
+		/// conditional density.  Every per-lobe-density SPF in the tree
+		/// therefore implements `EvaluateKrayNM` -- except
+		/// `CompositeSPF`, whose emitted `krayNM` is the product of a
+		/// STOCHASTIC two-layer random walk and is not a function of
+		/// `(ri, outDir, type, nm)` at all (DL-221).  Overriding this
+		/// method is how such a class stays VISIBLE instead of silently
+		/// taking a wrong number.
+		virtual const char* PerLobeDensityFallbackName() const
+		{
+			return 0;
+		}
 	};
+
+	//! DL-125.  One-shot (per process, per class) warning when the HWSS
+	//! companion ladder falls back to the aggregate-BSDF pairing for an
+	//! SPF that names itself through `PerLobeDensityFallbackName()`.
+	//! A no-op for every other SPF, and never more than one log line per
+	//! class however many million vertices are shaded.
+	//! Defined in Materials/ScatteredRayContainer.cpp.
+	void NotePerLobeDensityCompanionFallback( const ISPF* pSPF );
 }
 
 #include "../Intersection/RayIntersectionGeometric.h"

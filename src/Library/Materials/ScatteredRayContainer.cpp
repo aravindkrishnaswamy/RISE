@@ -13,7 +13,9 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <atomic>
 #include "../Interfaces/ISPF.h"
+#include "../Interfaces/ILog.h"
 
 using namespace RISE;
 
@@ -218,4 +220,67 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(
 	}
 
 	return 0;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-125.  One-shot diagnostic for the HWSS companion ladder's
+// `ISPF::EvaluateKrayNM` fallback.
+//
+// The three HWSS companion loops (PathTracingIntegrator.cpp's HWSS
+// body and BDPTIntegrator.cpp's eye and light subpath generators) price
+// a companion wavelength with the SELECTED lobe's own kray when the SPF
+// implements `EvaluateKrayNM`, and otherwise fall back to
+// `IBSDF::valueNM(outDir) * cos / pS->pdf`.  That fallback is EXACT for
+// an SPF whose emitted ray carries the AGGREGATE mixture density and
+// wrong for one that carries a PER-LOBE conditional density; the latter
+// all implement the method now except `CompositeSPF` (DL-221), which
+// names itself here instead of failing silently.
+//
+// Warn ONCE per process per class (the CompositeSPF.cpp /
+// SplatFilm.cpp log-once idiom): this sits inside the per-sample
+// companion loop, so an unthrottled warning would emit millions of
+// lines and cost more than the render.  The class-name pointers come
+// from string literals in the overriding classes, so comparing them by
+// VALUE is enough to keep one slot per class without allocating.
+//////////////////////////////////////////////////////////////////////
+namespace RISE
+{
+	void NotePerLobeDensityCompanionFallback( const ISPF* pSPF )
+	{
+		if( !pSPF ) {
+			return;
+		}
+		const char* name = pSPF->PerLobeDensityFallbackName();
+		if( !name ) {
+			return;
+		}
+
+		static const unsigned int kMaxNamed = 8;
+		static std::atomic<const char*> warned[ kMaxNamed ];
+
+		for( unsigned int i = 0; i < kMaxNamed; i++ ) {
+			const char* cur = warned[i].load( std::memory_order_acquire );
+			if( cur == name ) {
+				return;						// already reported
+			}
+			if( cur == 0 ) {
+				const char* expected = 0;
+				if( !warned[i].compare_exchange_strong( expected, name ) ) {
+					// Another thread claimed this slot; re-examine it.
+					i--;
+					continue;
+				}
+				GlobalLog()->PrintEx( eLog_Warning,
+					"%s:: an HWSS companion wavelength was priced through the AGGREGATE-BSDF "
+					"fallback because this SPF does not implement ISPF::EvaluateKrayNM, and it "
+					"stores a PER-LOBE conditional density on each emitted ray -- so the "
+					"companion's throughput pairs the material's summed BSDF with one lobe's "
+					"density (DL-125/DL-221).  Affects `hwss TRUE` spectral renders under PT, "
+					"BDPT, VCM and MLT only; the hero wavelength and every RGB render are "
+					"unaffected.  Render with `hwss FALSE` to avoid it.",
+					name );
+				return;
+			}
+		}
+	}
 }
