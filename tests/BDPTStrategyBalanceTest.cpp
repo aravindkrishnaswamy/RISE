@@ -2743,6 +2743,9 @@ static void TestPTSpectralHWSSKnownDefectControl()
 	Check( ratio > 0.90 && ratio < 1.10,
 		"DL-125 control (topology M): PT spectral hwss TRUE tracks PT pel within 10% "
 		"-- the immune material shows no companion inflation" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology N: biospec_skin_material receiver, mesh area emitter
 // (DL-126).
 //
@@ -2937,9 +2940,9 @@ int main()
 	TestSpectralHWSSCompanionLadderControl();
 	TestPTSpectralHWSSKnownDefect();
 	TestPTSpectralHWSSKnownDefectControl();
+	TestNonfiniteCandidateRejected();
 	TestNullBSDFMaterialContinuation();
 	TestNullBSDFHWSSCompanionLadder();
-	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
