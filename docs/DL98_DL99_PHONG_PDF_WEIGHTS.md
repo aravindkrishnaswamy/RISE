@@ -6,7 +6,12 @@ Scope: the same one-sentence bug pattern DL-67 Slice 0 fixed in
 confirmed present in two more multi-lobe SPFs by that slice's own
 sibling audit and closed here.
 
-Status: **landed 2026-09-17** on branch `debt-phongpdf`.
+Status: **landed 2026-09-17** on branch `debt-phongpdf`, then revised the
+same day by an external review pass whose three P1 findings are folded in
+here: the diffuse selection weight's chromatic reduction order (§3), the
+DL-100 sibling verdict (§3), and the two chi2 sub-tests that were still
+skipped above comments describing the just-fixed bug (§5).  §4, §6 and
+§7 replace numbers this document quoted from single un-averaged runs.
 
 ---
 
@@ -203,10 +208,58 @@ call (no early-return path that could leave a stale direction); Ashikmin's
 `GenerateSpecularRay` returns `bool` and the caller only reads/uses its
 output (and calls `AddScatteredRay`) inside the `if (...)` — a rejected
 lane contributes NOTHING to the container, not a stale entry with a
-freshly-computed weight. DL-100's "unflipped-frame back-face lobe loss"
+freshly-computed weight. ~~DL-100's "unflipped-frame back-face lobe loss"
 pattern also does not reproduce: both files already sample around
 `myonb`/the ray-facing-flipped normal throughout (visible in their own
-extensive prior-fix comments).
+extensive prior-fix comments).~~
+
+**STRUCK 2026-09-17 (review P1-3): that verdict was FALSE for
+`AshikminShirleyAnisotropicPhongSPF`.**  The audit checked which frame
+the lobes are SAMPLED around (`myonb` — correct in both files) and
+stopped there.  It did not check which frame the realized krays and the
+stored pdf are MEASURED in, and in Ashikmin those were three different
+raw `ri.onb.w()` reads: `cos_o` (the specular kray's cosine),
+`cos_o_diff` (the diffuse pdf and Schlick `fromK1`) and `cos_i`
+(`fromK2`).  On a back-face hit they all come out with the wrong sign,
+so the diffuse lobe's stored pdf and both transmission factors collapse
+to exactly 0 while the specular kray goes NEGATIVE.  Measured over
+600 000 real `Scatter` calls at a back-face hit, pre-fix:
+
+| row | emitted mass | rays with negative `MaxValue(kray)` (min) |
+|---|---|---|
+| `backface th=10 Nu20 Nv80` RGB | 0.00047 | 599720 / 600000 (−0.3000) |
+| `backface th=45 Nu20 Nv80` RGB | 0.03601 | 578394 / 600000 (−0.3015) |
+| `backface th=70 az30 Nu5 Nv5` RGB | 0.37102 | 377389 / 600000 (−0.1416) |
+| `backface tilt20 th=45 az60` RGB | 0.03839 | 594711 / 600000 (−0.3015) |
+| `backface per-channel Nu/Nv` RGB | 0.01754 | 0 (the per-channel branch writes one channel and leaves the others at 0, so `MaxValue` clamps the sign away) |
+
+against a `Pdf()` that integrated to 0.997-0.999 the whole time — which
+is what identifies it as a SAMPLER defect, not a density one.  A
+negative selection weight is worse than a lost sample: it is not a
+probability mass, it reverses the CDF ordering inside
+`ScatteredRayContainer::RandomlySelect`, and
+`RandomlySelectNonDiffuse` (`SMSPhotonMap.cpp`,
+`CausticPelPhotonTracer.cpp`, `CausticSpectralPhotonTracer.cpp`) returns
+such a ray unconditionally, with no weight test at all.  Fixed by taking
+all three cosines against `myonb.w()`; front-face behaviour is
+bit-for-bit unchanged (no flip is performed there, so the two frames are
+the same vector) and every pre-existing row is identical to the printed
+digit.  `IsotropicPhongSPF` really is clean on this pattern — it binds
+`n` once and uses it for the lobe, the kray cosine and the pdf alike.
+
+The audit was then re-run properly, over every file in
+`src/Library/Materials` containing a `FlipW`, asking the CONSUMED-field
+question ("is a kray or pdf cosine taken against the raw `ri.onb.w()` in
+a function that samples around a FlipW'd copy?"):
+
+| SPF | verdict |
+|---|---|
+| `SchlickSPF` | refuted — kray is `rho+(1-rho)*fresnel`, no cosine at all; both accept-checks already use `myonb.w()`.  Its half-vector frame IS the raw `ri.onb`, but deliberately and documented; the back-face specular loss that causes is the separate, still-open DL-100. |
+| `Ward{Isotropic,AnisotropicElliptical}...SPF` | refuted — krays are pure `GetColor(ri)`, no cosine; the pdf cosine already uses `myonb.w()`. |
+| `CookTorranceSPF`, `GGXSPF`, `CoatedSPF`, `FabricSPF`, `WeaveSPF`, `SheenSPF`, `PerfectReflectorSPF` | refuted — each binds `n = myonb.w()` (or an equivalent `nEff`) and uses only that. |
+| `LambertianSPF`, `OrenNayarSPF` | refuted — their two raw `ri.onb.w()` pdf reads are inside `fabs()`, which CLAUDE.md's own DL-70 immunity list already names. |
+
+No new rows opened.
 
 **~~One accepted, documented approximation, not filed as a new debt.~~
 STRUCK 2026-09-17 (review P1-1): the claim below was wrong on both
@@ -273,51 +326,62 @@ printed digit, as the algebra requires.
 
 ## 4. Cost
 
-Microbenchmark, 200000 `Pdf()` calls, one shading point (measured on a
-machine also running several other concurrent debt-cleanup builds this
-session — treat as order-of-magnitude, not precise):
+**RE-MEASURED 2026-09-17 (review P2-1/P2-4).**  The table that stood here
+before quoted ranges up to 20x wide ("~1100-13000 ns") taken on a machine
+running several concurrent worktree builds; it is replaced.  The
+protocol now is: three separately linked binaries against three library
+states, run ALTERNATELY in the same session, each reporting the best of
+15 timed blocks of 50 000 `Pdf()` calls on pre-generated directions
+(so no RNG in the timed loop), with an UNTOUCHED reference workload
+(`IsotropicPhongSPF::Pdf`, single lobe) measured inside every process so
+machine drift can be divided out.  n = 5 alternating rounds.
 
-| | pre-fix | fixed (kPhongQuadN/kAshQuadN=16) |
-|---|---|---|
-| `IsotropicPhongSPF::Pdf`, single lobe | ~17-20 ns (trivial closed form) | ~660-1500 ns |
-| `IsotropicPhongSPF::Pdf`, per-channel (3 lanes) | ~17-20 ns | ~1840-5900 ns |
-| `AshikminShirleyAnisotropicPhongSPF::Pdf`, single lobe | ~a few tens of ns (mirror-direction-only formula) | ~1100-13000 ns |
-| `AshikminShirleyAnisotropicPhongSPF::Pdf`, per-channel (3 lanes) | ~a few tens of ns | ~3100-32000 ns |
+| `Pdf()` configuration | pre-slice `a4495f94` | shipped (16x16 grids) | ratio |
+|---|---|---|---|
+| `IsotropicPhongSPF::Pdf`, single lobe | 18.8 ns | 486 ns | 26x |
+| `AshikminShirleyAnisotropicPhongSPF::Pdf`, single lobe | 22.0 ns | 2576 ns | 117x |
+| `AshikminShirleyAnisotropicPhongSPF::Pdf`, per-channel (3 lanes) | 22.0 ns | 7651 ns | 348x |
+| `AshikminShirleyAnisotropicPhongSPF::PdfNM` | 23.5 ns | 2594 ns | 110x |
 
-The wide range on the "fixed" column reflects real measurement noise
-from concurrent machine load (this session ran alongside several other
-worktrees' builds), not a change in the algorithm; the SHAPE is stable
-across repeats (per-channel costs ~3x single-lobe within one run, and
-Ashikmin costs ~2-9x Phong's, consistent with running two independent
-16x16 quadratures per lane instead of one).
+(The pre-slice column is stable to +/-0.2 ns across runs; the shipped
+column's own spread over n=12 is +/-30 ns on the Phong reference,
++/-230 ns on Ashikmin single-lobe and +/-732 ns on per-channel.)
 
-**`kAshQuadN`/`kPhongQuadN` = 16 was measured, not assumed.** A trial at
-`kAshQuadN=8` (the same order-of-magnitude speedup Schlick's own kSpecQuadN
-decision considered) regressed `AshikminShirleySPFPdfConsistencyTest` from
-38/0 to 38/7 failures — specifically the four `Nu2Nv2` (low, equal
-exponent) tilted-normal adversarial rows, the same regime DL-67 Slice 0's
-own `kSpecQuadN` decision found most sensitive to quadrature resolution.
-16 is kept.
+### 4a. The `kAshQuadN` hoist was implemented, measured, and NOT kept
 
-**Whole-render visible effect**, `oidn_denoise FALSE`, `pixel_filter box`,
-EXR `Rec709RGB_Linear`, single un-averaged run per side (RISE seeds from
-an unsynchronized libc `rand()`, so this is a directional measurement,
-not a converged one):
+The review's P2-4 asked for the lane-independent 16x16 diffuse draw grid
+inside `AshikminSpecularSelectCoefficient` to be hoisted out of the
+per-lane loop: it depends only on `wDBase`, `cos_i` and `geomN`, all
+fixed for a whole `Pdf()` call, while the per-lane inputs enter as three
+scalars.  In the 3-lane per-channel case that is 512 of roughly 1536
+grid cells per call, ~33% of the arithmetic, provably redundant.
 
-- `scenes/Tests/BDPT/cornellbox_bdpt_materials_pt.RISEscene` (one
-  `isotropic_phong_material` sphere, `N=60`), PT 32spp at 160x160: frame
-  mean moved +0.06% (dominated by the other 8 non-Phong objects at low
-  spp); the phong sphere's own screen block moved **+7.65%**
-  (0.6874 -> 0.7400 mean luminance in an 8x8 block decomposition).
-- `scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene` (path
-  guiding and adaptive sampling disabled for this comparison;
-  `ashikminshirley_anisotropicphong_material` panels), PT 32spp at
-  160x120: frame mean moved +0.04% (large emitter-dominated scene); per-
-  block deltas on the Ashikmin panels' own screen regions ranged from
-  **-28% to +43%**, consistent with the pre-fix mass error's own
-  magnitude (up to 43% off on the adversarial red-proof configs).
+It was implemented exactly that way (a once-per-call
+`AshikminDiffuseDrawTable` of 256 `wD` values, with -1 marking a cell
+Scatter's geomN gate would have rejected, shared by every lane) and
+measured against the un-hoisted build under the protocol above,
+ratio-normalised against the in-process reference to remove drift, n=12:
 
----
+| configuration | un-hoisted (Ash/ref) | hoisted (Ash/ref) | delta | t |
+|---|---|---|---|---|
+| `Pdf`, single lobe | 5.288 +/- 0.175 | 5.464 +/- 0.306 | +3.31% | +1.72 |
+| `Pdf`, per-channel (3 lanes) | 15.727 +/- 1.067 | 16.213 +/- 2.070 | +3.09% | +0.72 |
+| `PdfNM` | 5.327 +/- 0.451 | 5.323 +/- 0.227 | −0.07% | −0.03 |
+
+i.e. no win anywhere, and if anything marginally negative.  It was
+therefore reverted rather than shipped: it adds a 2 KB stack buffer and
+a second data structure to a construction whose exactness is the whole
+point, for nothing measurable.
+
+The likely reason, stated as an inference rather than a measurement: the
+specular-side grid is much CHEAPER per cell than it looks, because its
+only transcendental is `pow(1 - cost*0.5, 5.0)` — a compile-time
+integral exponent that `-ffast-math` folds into multiplies — while
+`AshikminDiffuseSelectCoefficient`'s own grid evaluates a genuine
+`pow(y, expo)` with a runtime exponent per cell.  Materialising 256
+doubles then costs about what recomputing them costs.  Whoever wants to
+move this number should attack the DIFFUSE grid (or `kAshQuadN` itself,
+see §6), not this one.
 
 ## 5. Gates
 
@@ -325,17 +389,175 @@ not a converged one):
 configs mirrored from Schlick's own review set, plus 4 adversarial
 low-N/high-Rs/tilted-normal rows added after the first 12 turned out not
 to discriminate the bug on gate 1 alone — see the test file's own header)
-and `tests/AshikminShirleySPFPdfConsistencyTest.cpp` (38 checks: 9
+and `tests/AshikminShirleySPFPdfConsistencyTest.cpp` (99 checks: 9
 ordinary configs varying incidence AND azimuth relative to the object's
 tangent frame, a per-channel Nu/Nv row, 2 tilted-normal rows, 4
-adversarial low-equal-exponent/high-Rs/tilted rows) both gate `Checks: N
+adversarial low-equal-exponent/high-Rs/tilted rows, 5 BACK-FACE rows and
+5 CHROMATIC-reflectance rows added by the 2026-09-17 review pass, each
+row now carrying three gates rather than two) both gate `Checks: N
 Failures: 0` at HEAD. Full red/green tables and the captured red-proof
-output are in the two fix commit messages (`7703785f`, `644a056b`).
+output are in the fix commit messages.
 
-Broader regression suites gated clean at HEAD: `SPFPdfConsistencyTest`,
-`SPFBSDFConsistencyTest`, `PTGuidingMISPartitionTest` (63/0),
-`PathValueOpsTest`, `LayeredWhiteFurnaceTest` (57/0 configs),
-`MISWeightsTest` (59/0), `EnvLightBalanceTest` (116/0),
-`BDPTStrategyBalanceTest` (66/0), `CstDeriveGoldenTest` (452 MATCH / 0
-DRIFT), `SourceHygieneTest` (165/0). Clean rebuild, zero compiler
-warnings, both files.
+**Gate 1's domain is the FULL SPHERE, not the hemisphere** (review
+P2-3).  `IsotropicPhongSPF::Scatter` has no `dot(dir,n) >= 0`
+accept-check at all — only the geomN gate — and `Perturb` around
+`reflected` reaches `down = pi/2`, so at low exponent and grazing
+incidence a real fraction of emitted specular rays point BELOW the
+shading horizon; their kray is `r_max(cos_o,0) = 0`, so they never win a
+two-ray `RandomlySelect`, but when the diffuse ray has been dropped by
+the geomN gate they are the container's only occupant and the
+`freeidx==1` short-circuit returns them regardless.  `Pdf()` prices
+exactly that event, so the old hemisphere-only quadrature was measuring
+its own domain error.  On `N1 rd.05 rs.95 tilt30 th45`: 0.870% of
+emitted directions are below the horizon, the hemisphere integral read
+0.99180 against a measured emission probability of 0.99884, and the full
+sphere reads 1.00047.  The same error was inflating gate 2 there — TVD
+0.01196 of a 0.012 threshold, 99.7% of the band ON AN ARTIFACT; it is
+0.00763 with the domain corrected, and the worst TVD over the whole file
+drops to 0.00855, 71% of the band.  The threshold needed no retune once
+the artifact was gone.  `AshikminShirleyAnisotropicPhongSPF` carries the
+same domain as a guard: its own sampler CANNOT emit below the shading
+hemisphere (`GenerateSpecularRay` rejects `Dot(k2, onb.w()) < 0`) and
+its `Pdf` early-outs at `cosO <= 0`, so every row reads
+`belowZ=0.00000` and no figure moved.
+
+**Gate 3 (new): no scattered ray may carry a negative selection weight.**
+Every ray in the container is inspected for the exact quantity
+`RandomlySelect` reads.  This is the gate that the DL-100 sibling defect
+(§3) needed; a one-sided "does the density integrate to the emission
+probability" check could not see it, because the density was right and
+the sampler was wrong.
+
+**What each gate can and cannot see.**  Worth recording, because the
+P1-1 chromatic defect was invisible to one of them by construction:
+gate 1 moves mass between the lobes' totals only if the TOTAL changes,
+so a wrong split between two lobes that each integrate correctly leaves
+it at 0.0005-0.0047 against a 0.01 band while the real total variation
+is 0.25-0.29.  A normalisation gate is necessary and nowhere near
+sufficient; the histogram gate is what does the work.
+
+Broader regression suites gated clean at HEAD: see the merge commit /
+the slice report for the current counters.  Clean rebuild, zero compiler
+warnings.
+
+---
+
+## 6. The quadrature's own systematic bias (review P2-3)
+
+`C_D` and `q_i` are DETERMINISTIC stratified quadratures over the
+sampler's own unit square, not Monte-Carlo estimates, so their error is
+a systematic bias, not noise — it does not shrink with the test's draw
+count and it is the same sign on every evaluation of a given
+configuration.  It is disclosed here for the same reason DL-67 Slice 0
+§4c/§4f disclosed its own.
+
+Measured end to end by raising the grid and re-running the gates
+(nothing else changed):
+
+| | worst gate-1 `abs(intPdf - emitted)` | at |
+|---|---|---|
+| `kPhongQuadN` = 16 (shipped) | 0.00207 | `th=45 rd.05 rs.9 N5` |
+| `kPhongQuadN` = 64 | 0.00038 | `tilt 55 deg th=30` |
+| `kAshQuadN` = 16 (shipped) | 0.00785 | `Nu2Nv2 rd.05 rs.95 tilt20 th45` (NM) |
+| `kAshQuadN` = 32 | 0.00279 | `Nu2Nv2 rd.05 rs.95 tilt20 th60` |
+
+On the single most biased Phong row, `th=45 rd.05 rs.9 N5`, the integral
+moves 0.99793 -> 0.99984 between grid 16 and grid 64: the shipped grid
+is 0.191 pp low there.  Since that configuration's diffuse half is the
+one `C_D` scales and the specular half is exact at the query direction,
+dividing that deficit by the row's own `C_D` puts the bias ON `C_D`
+itself at roughly 1.7-1.9% (a derived figure, not a direct
+measurement — `C_D` is not exposed).
+
+**Both grids stay at 16, deliberately.**  Raising `kAshQuadN` to 32
+costs 3.9x (single-lobe `Pdf` 2576 ns -> ~10000 ns; per-channel 7651 ns
+-> ~27500 ns) to move a residual that is already 4x inside its band;
+`kPhongQuadN` = 64 costs 13.5x (486 ns -> ~6520 ns).  What this bias
+DOES mean for anyone reading a gate number: the gate-1 residuals in
+these two suites are NOT all Monte-Carlo noise, so tightening
+`kMassTol` below roughly 0.01 would start gating the quadrature's
+resolution rather than the density's correctness.
+
+---
+
+## 7. The render movement is NOT evidence of improvement (review P2-2)
+
+**DL-103 has two more instances, and they are these two SPFs.**  That
+row records that un-guided default PT's escape-side MIS partner is
+`effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf`
+(`PathTracingIntegrator.cpp:3585`, stored via `misBsdfPdf` at `:3900`) —
+the SELECTED LOBE's own density — while `LightSampler`'s NEE arms weight
+against the material's AGGREGATE `pMaterial->Pdf(...)`
+(`LightSampler.cpp:2600`, `:2763`, and the `PdfNM` twins).  At a
+single-lobe SPF those coincide; at any multi-emit SPF they are different
+quantities and `w_bsdf + w_nee != 1`.  The row was filed with
+`SchlickSPF` as its example and its "check every other multi-emit SPF"
+list did not name Phong or Ashikmin.  It should:
+`IsotropicPhongSPF` and `AshikminShirleyAnisotropicPhongSPF` are exact
+instances — both emit a diffuse and one-or-three specular lanes per
+`Scatter()` call with per-lobe pdfs that differ from their aggregate,
+which is the entire subject of this document.
+
+The consequence for §7a below is blunt: **at a Phong or Ashikmin vertex
+the NEE/escape MIS pair does not partition to one either before or after
+this slice.**  A rendered mean therefore moving toward or away from
+anything is not evidence that the render got closer to ground truth; the
+evidence for THIS slice is the sampler-vs-density gates in §5, which
+compare `Pdf()` against the sampler's own 600 000-draw histogram and are
+independent of how any integrator then weights it.  The render numbers
+below are reported as a magnitude check — "is this change visible at
+all, and where" — and nothing more.
+
+### 7a. Re-measured render deltas (review P2-1)
+
+The figures that stood here before ("+7.65%" on the Phong sphere's
+block, "−28% to +43%" on the Ashikmin regions) came from SINGLE
+un-averaged 32-spp runs, which at those regions' brightness is mostly
+Monte-Carlo noise.  Re-measured at 1024 spp with n = 6 independent
+renders per build (renders are not deterministic run to run — RISE seeds
+from an unsynchronised libc `rand()`), `oidn_denoise FALSE`,
+`pixel_filter box`, EXR `Rec709RGB_Linear`, pre-slice `a4495f94` vs this
+branch:
+
+**`scenes/Tests/BDPT/cornellbox_bdpt_materials_pt.RISEscene`**, one
+`isotropic_phong_material` sphere of 9 objects, 160x160:
+
+| region | pre-slice | this branch | delta | t |
+|---|---|---|---|---|
+| frame mean luminance | 0.996758 +/- 0.000121 | 0.997091 +/- 0.000297 | +0.033% +/- 0.013% | +2.54 |
+| the phong sphere itself (disc r=21 px, 1387 px, located by projecting its own world position through the scene camera) | 0.821338 +/- 0.001213 | 0.823676 +/- 0.000317 | +0.285% +/- 0.062% | +4.57 |
+| its 8x8 screen block (row 3, col 5) | 0.853583 | 0.861933 | +0.978% +/- 0.164% | +5.96 |
+
+That block is also the largest-moving of the 64, and 3 of 64 move at
+`abs(t) >= 3` — so the effect is real, localised on the material that
+changed, and about 8x smaller than the number this document used to
+quote.
+
+**`scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene`**, path
+guiding and adaptive sampling disabled for the comparison, 160x120:
+
+| region | pre-slice | this branch | delta | t |
+|---|---|---|---|---|
+| frame mean luminance | 10.964884 +/- 0.004299 | 10.966679 +/- 0.003392 | +0.016% +/- 0.020% | +0.80 |
+| gold-ellipsoid footprint (x 18-31, y 72-96) | 0.257538 +/- 0.004417 | 0.254618 +/- 0.004514 | −1.134% +/- 1.001% | −1.13 |
+| largest-moving 8x8 block of 64 | 0.565213 | 0.581249 | +2.837% +/- 1.469% | +1.93 |
+
+**Nothing in this scene moves significantly** — 0 of 64 blocks reach
+`abs(t) >= 3`.  Two things about the fixture explain that, and both
+correct the earlier account:
+
+1. There are no "Ashikmin panels".  `gold_mat` is bound by exactly ONE
+   object, `gold_ellipsoid` (`ellipsoid_geometry`, radii 0.225 / 0.425 /
+   0.175).
+2. It is a ~11 x 21 px object at the LEFT EDGE of a 160x120 frame,
+   about 1.2% of the pixels, in a dim region (block mean ~0.27) of a
+   frame whose mean is 10.96.  Its screen position was pinned
+   empirically, not by trusting a projection: re-rendering with the
+   ellipsoid's radii raised to 2.0 lights up blocks (rows 4-6, cols 0-1)
+   by +147% / +118% / +74%, which is where it is.
+
+So `pt_jewel_vault` is a poor instrument for this material at this
+camera, and "−28% to +43% per-block" was single-run noise in dim blocks,
+not a measured effect.  A directed fixture (an Ashikmin sphere placed on
+screen, with chromatic Rd/Rs so the P1-1 defect is in play) would be the
+right way to put a render number on the Ashikmin half; none exists yet.
