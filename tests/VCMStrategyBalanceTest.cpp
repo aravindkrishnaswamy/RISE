@@ -1498,6 +1498,11 @@ static const char* kRasterizerVCMCeiling =
 
 static const Tolerances kCeilingTolerances{ 0.08, 0.30, 1.00 };
 
+//! Topology L only (DL-103 closure, 2026-09-17) -- see that
+//! topology's own comment for the isolated-A/B evidence.  MEAN only;
+//! p99/max stay at the shared values.
+static const Tolerances kSchlickTopologyLTolerances{ 0.02, 0.25, 1.00 };
+
 static void TestSubmergedCeilingMISCombination()
 {
 	RunTopologyTest( "air ceiling patch, floor + emitter both submerged (eta^2 MIS combination, debt 30 review round 2)",
@@ -1562,6 +1567,26 @@ static void TestSubmergedCeilingMISCombination()
 // 5) because unlike the single-bounce Lambertian topologies above,
 // this scene has real interreflection and an unequal budget would be
 // a second free variable.
+//
+// MEAN BAND TIGHTENED TO 2% BY DL-103's CLOSURE (2026-09-17,
+// docs/DL103_PT_ESCAPE_MIS_PARTNER.md).  Until that row, un-guided PT's
+// escape-side MIS partner at a multi-lobe SPF was the SELECTED lobe's
+// own density rather than the material's aggregate, so this row's own
+// REFERENCE carried a Schlick-specific bias.  Isolated A/B on
+// `PathTracingIntegrator.cpp` alone (n = 4 each side, same scene, same
+// rasterizer strings):
+//
+//   pre-fix   PT 0.0601696 +/- 0.0000120   VCM 0.0632495 +/- 0.0000012
+//             VCM/PT 1.05119 +/- 0.00020   (+5.119%)
+//   post-fix  PT 0.0632650 +/- 0.0000084   VCM 0.0632485 +/- 0.0000039
+//             VCM/PT 0.99974 +/- 0.00011   (-0.026%)
+//
+// PT moved +5.14%, VCM moved -0.002% -- VCM's own MIS densities come
+// from `BDPTVertex::pdfFwd`, which DL-69 already made the aggregate, so
+// the PT-side fix is the whole movement.  See the BDPT twin's comment
+// for what a pass here does and does not claim (DL-127 is still open
+// and both integrators consume `kray`, so a residual from that row can
+// sit inside this agreement).
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSchlickMultiLobeL =
 	"film\n"
@@ -1733,7 +1758,7 @@ static const char* kRasterizerVCMSchlickL =
 static void TestSchlickMultiLobe()
 {
 	RunTopologyTest( "multi-lobe schlick_material wall + floor, area emitter (DL-69)",
-		std::string( kSceneSchlickMultiLobeL ), kStrictTolerances,
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
 		kRasterizerPTSchlickL, kRasterizerVCMSchlickL );
 }
 

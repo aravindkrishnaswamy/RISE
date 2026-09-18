@@ -298,9 +298,10 @@ tracks it, as it did pre-fix.
 **The swing is PT's.**  Across that one-file A/B, PT moved **-6.99 %**
 and BDPT **-0.21 %**.  `SchlickSPF::Pdf` enters PT only through its MIS
 partner arms, and Slice 0 did not touch `kray` (DL-127), so the mover is
-**DL-103**: PT's un-guided escape-side MIS partner is still the SELECTED
-lobe's own density while its NEE side now evaluates the true aggregate,
-so `w_bsdf + w_nee != 1` at a multi-lobe SPF.  BDPT is insensitive
+**DL-103**: PT's un-guided escape-side MIS partner was still the
+SELECTED lobe's own density while its NEE side now evaluated the true
+aggregate, so `w_bsdf + w_nee != 1` at a multi-lobe SPF.  (Confirmed and
+CLOSED 2026-09-17 — see the closure block below.)  BDPT is insensitive
 because DL-69 made its `pdfFwd` and `pdfRev` the same function, so a
 change to that function largely cancels in the ratio chain.
 
@@ -327,21 +328,33 @@ BDPT 0.0472026 (channel-averaged over the render's 3 output channels)
 = **+0.16 %** — unchanged within MC noise of the pre-DL-123 +0.19 %, so
 DL-123 does not move this control's conclusion.
 
-**Topology L's 8 % band is PROVISIONAL, pending DL-103.**  PT is not an
-integrator-free reference for a multi-lobe `schlick_material` scene
-while DL-103 (OPEN) stands: the one-file `SchlickSPF.cpp` A/B above
-shows changing only the density DL-103's escape-side partner should
-have used, but doesn't, moves PT's own mean on this exact topology by
-7 % — that is DL-103's mechanism at render scale, not a furnace
-abstraction.  There is no closed form or furnace for topology L's full
-multi-bounce scene (wall + floor + area emitter, depth 5) the way
-`SchlickLobePairingTest` has one for a single vertex, and a
-hashed-sampler independent-MC PT rebuild would not be integrator-free
-either — DL-103 lives in `PathTracingIntegrator.cpp`'s MIS-weight
-construction, not in the sampler, so a different RNG does not remove
-it.  So the 8 % band is kept (it has margin either way), and a pass on
-topology L is evidence BDPT and PT agree to within that band, not that
-either is correct to the residual quoted above.
+**Topology L's band was PROVISIONAL pending DL-103; that row CLOSED
+2026-09-17 and the gap closed with it**
+([DL103_PT_ESCAPE_MIS_PARTNER.md](DL103_PT_ESCAPE_MIS_PARTNER.md)).
+The prediction this section made — that the +5.16 % residual was PT's,
+and that fixing PT's un-guided escape-side MIS partner would move PT and
+not BDPT — is discharged.  Isolated A/B on
+`src/Library/Shaders/PathTracingIntegrator.cpp` alone (n = 4 per side,
+this same topology, same rasterizer strings):
+
+| build | PT mean | BDPT mean | rel |
+|---|---|---|---|
+| pre-DL-103 | 0.0601656 ± 0.0000054 | 0.0632933 ± 0.0000024 | **+5.198 % ± 0.011 pp** |
+| post-DL-103 | 0.0632676 ± 0.0000110 | 0.0632930 ± 0.0000044 | **+0.040 % ± 0.012 pp** |
+
+and the VCM twin +5.119 % ± 0.020 pp → **−0.026 % ± 0.011 pp**.  PT
+moved **+5.16 %**; BDPT moved −0.0005 % and VCM −0.002 %.  Topology M
+(the immune control) is unmoved at +0.18 %.
+
+Topology L's **mean** band is therefore tightened from the shared 8 % to
+**2 %** in both suites and the PROVISIONAL marker is removed.  What a
+pass there claims is "PT and BDPT/VCM agree to 2 % on a multi-lobe
+material" — still **not** that either is correct in absolute terms,
+because **DL-127** is open and both integrators consume `kray`, so a
+residual from that row sits inside the agreement rather than showing up
+as a gap.  There is still no closed form for topology L's full
+multi-bounce scene; the closure evidence is the one-file A/B above plus
+the two closed-form furnaces DL-103's own red-proof added.
 
 ### 3.2b Cost (review P2-5)
 

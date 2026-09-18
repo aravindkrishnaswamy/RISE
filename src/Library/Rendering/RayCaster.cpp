@@ -148,14 +148,23 @@ namespace
 		// SEPARATE fields (IRayCaster.h).  `bsdfPdf` is the TRUE sampling
 		// density and is what the optimal-MIS second moment must be
 		// divided by; `MisPartnerPdf()` is the nominal MIS-partner density
-		// LightSampler's NEE arms evaluate for the same direction.  They
-		// differ only where path guiding is active (and at the volume
-		// continuation below, whose NEE partner is the raw phase pdf by
-		// DL-73).  A zero partner density means "no MIS partner exists"
-		// (a delta lobe, or an unguided vertex whose aggregate pdf is
-		// zero here -- under active guiding the producer already folded
-		// `alpha_nom * guide` in, so a zero-aggregate direction does NOT
-		// arrive as zero) and keeps the historical unweighted result.
+		// LightSampler's NEE arms evaluate for the same direction.
+		//
+		// DL-103 corrected what this comment used to claim ("they differ
+		// only where path guiding is active"): at a SURFACE continuation
+		// the partner is the material's AGGREGATE `ISPF::Pdf()` whenever a
+		// non-delta lobe was sampled -- guided or not -- while `bsdfPdf`
+		// is the SELECTED lobe's own density, and those differ at every
+		// multi-lobe SPF.  Guiding additionally blends the guide density
+		// into the partner; the volume continuation below is the third
+		// case, its NEE partner being the raw phase pdf (DL-73).
+		//
+		// A zero partner density means "no MIS partner exists" -- a DELTA
+		// lobe -- and keeps the historical unweighted result.  A non-delta
+		// surface continuation never arrives as zero: where the aggregate
+		// pdf is zero in the traced direction the producer substitutes the
+		// selected lobe's own density (DL-103), and under active guiding
+		// it has already folded `alpha_nom * guide` in (DL-74 round 4).
 		const Scalar misPartnerPdf = rs.MisPartnerPdf();
 		if( !pLightSampler || ( rs.bsdfPdf <= 0 && misPartnerPdf <= 0 ) ) {
 			return w_bsdf;

@@ -3346,10 +3346,26 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					* PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) )
 					* RadianceEtaScale( iorStack, pS->ior_stack ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-				// DL-74: this is the no-BRDF (SPF-only) continuation --
-				// guiding never runs on it and NEE never fires at this
-				// vertex, so the sampling density and the MIS-partner
-				// density are the same value.
+				// DL-74 / DL-103: this is the no-BRDF (SPF-only)
+				// continuation, and guiding never runs on it.
+				//
+				// It does NOT need DL-103's aggregate partner, and the
+				// reason is checkable rather than a claim about NEE:
+				// `rs2.bsdfPdf` is ALWAYS 0 here, so there is no per-lobe
+				// density for an aggregate to disagree with.  Exactly two
+				// families reach this branch (`IMaterial::GetBSDF()` null):
+				//   * `DielectricMaterial` / `PerfectReflectorMaterial` /
+				//     `PerfectRefractorMaterial` -- every lobe they emit
+				//     sets `isDelta = true` (DielectricSPF's `scattering`
+				//     /HG-warped transmission included), so the line above
+				//     stores 0.
+				//   * `BioSpecSkinMaterial` / `GenericHumanTissueMaterial`
+				//     -- their lobes are non-delta but never assign `.pdf`
+				//     at all, so it keeps `ScatteredRay()`'s 0; their
+				//     `ISPF::Pdf` is likewise the base-class 0, so the
+				//     aggregate would be 0 too.
+				// Should a future SPF reach here with a real non-delta
+				// density, this line needs PART 3's treatment.
 				rs2.bsdfMisPdf = rs2.bsdfPdf;
 				rs2.type = PathTracingRayType( *pS );
 				// Accurate guides describe the first non-delta interaction the
@@ -4087,17 +4103,61 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			const Value bsdfTimesCosVal = pS->isDelta ? Traits::zero() :
 				PTBsdfTimesCos( scatterThroughput, effectiveBsdfPdf );
 
-			// DL-74: the nominal MIS-partner density for the direction
-			// actually being traced.  Identical to `effectiveBsdfPdf`
-			// whenever guiding is inactive.
-			Scalar misBsdfPdf = effectiveBsdfPdf;
-#ifdef RISE_ENABLE_OPENPGL
-			if( guidingMis.IsActive() && !pS->isDelta )
+			// DL-74 / DL-103: the nominal MIS-partner density for the
+			// direction actually being traced.
+			//
+			// DL-103 (docs/DL103_PT_ESCAPE_MIS_PARTNER.md): the partner is
+			// the material's AGGREGATE `ISPF::Pdf()` in BOTH branches, not
+			// just the guided one.  `LightSampler`'s four NEE arms have
+			// always weighted against that aggregate
+			// (`pMaterial->Pdf(...)`, which forwards to this same
+			// function); with guiding inactive this side used to store the
+			// SELECTED lobe's own `pS->pdf` instead.  Those coincide at a
+			// single-lobe SPF, and are different functions of direction at
+			// a multi-lobe one (`SchlickSPF`, `IsotropicPhongSPF`,
+			// `PolishedSPF`, the two Ward SPFs, `CompositeSPF`), so
+			// `w_bsdf(w) + w_nee(w) != 1` in ordinary, un-guided,
+			// default-configuration PT.  Same direction, same live
+			// `iorStack` (DL-74 P2), same `ri.geometric` and therefore the
+			// same `glossyFilterWidth` -- one function of omega on both
+			// sides, which is the whole requirement.
+			//
+			// `bsdfPdf` is deliberately NOT changed: it stays the TRUE
+			// density this direction was drawn from (the throughput
+			// denominator and the optimal-MIS `f^2/pdf^2` divisor).  The
+			// two roles are two fields -- that is DL-74's design.
+			//
+			// A delta lobe keeps 0 (no partner exists); see the field
+			// comment below.
+			Scalar misBsdfPdf = 0;
+			if( !pS->isDelta )
 			{
-				misBsdfPdf = guidingMis.Eval( traceRay.Dir(),
-					PTEvalPdfAtSurface<Tag>( pSPF, ri.geometric, traceRay.Dir(), iorStack, tag ) );
-			}
+				const Scalar aggregatePdf = PTEvalPdfAtSurface<Tag>(
+					pSPF, ri.geometric, traceRay.Dir(), iorStack, tag );
+#ifdef RISE_ENABLE_OPENPGL
+				if( guidingMis.IsActive() )
+				{
+					misBsdfPdf = guidingMis.Eval( traceRay.Dir(), aggregatePdf );
+				}
+				else
 #endif
+				// DL-41 guard, guiding-inactive branch only.  A few SPFs
+				// emit a non-delta lobe their own `Pdf()` does not cover
+				// (`TranslucentSPF`'s two Phong `cos^N` lobes are the
+				// documented case), so the aggregate reads 0 at a direction
+				// the technique really did generate.  Handing 0 to both
+				// sides would mean "no BSDF-side partner exists" -- weight
+				// 1 on BOTH, a full double count, strictly worse than the
+				// pre-DL-103 asymmetry.  Fall back to the lobe's own
+				// density there, which reproduces the pre-DL-103 behaviour
+				// exactly at those SPFs and nowhere else.  (Under guiding
+				// the blend is evaluated UNCONDITIONALLY instead -- DL-74
+				// round 4: the mixture's guide term reaches those
+				// directions even when the material's own pdf does not.)
+				{
+					misBsdfPdf = aggregatePdf > 0 ? aggregatePdf : effectiveBsdfPdf;
+				}
+			}
 
 			// Per-type bounce limits
 			IRayCaster::RAY_STATE rs2 = rs;
@@ -4117,9 +4177,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			//  * `bsdfMisPdf` is the lobe-independent nominal density
 			//    LightSampler's NEE arms evaluate for the same direction.
 			//    Under guiding that is `alpha_nom*guide + (1-alpha_nom)*
-			//    p_aggregate`; with guiding inactive it collapses to
-			//    `effectiveBsdfPdf`, reproducing the pre-DL-74 behaviour
-			//    byte for byte.
+			//    p_aggregate`; with guiding inactive it is `p_aggregate`
+			//    itself (DL-103 -- it used to be the selected lobe's own
+			//    `effectiveBsdfPdf`, which is a DIFFERENT function of
+			//    direction at a multi-lobe SPF).
 			// A delta lobe keeps 0 in BOTH fields: it has no MIS partner
 			// (NEE cannot sample through it) and no density to train from.
 			// The aggregate pdf is evaluated at the FINAL `traceRay`
@@ -6329,15 +6390,36 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		IRayCaster::RAY_STATE rs2 = rs;
 		rs2.depth = depth + 2;
 		rs2.importance = importance * fabs( heroScatterNM );
-		// DL-74: NOT a sibling of the RGB/NM surface-continuation site.
-		// This function has no guiding block at all -- `effectiveBsdfPdf`
+		// DL-74: NOT a sibling of the RGB/NM site for the GUIDING half --
+		// this function has no guiding block at all, so `effectiveBsdfPdf`
 		// is assigned once from `pS->isDelta ? 0 : pS->pdf` and never
-		// reassigned -- so HWSS's escape weight and LightSampler's NEE arms
-		// both already use the raw material pdf and no partition mismatch
-		// exists here.  The MIS-partner field is set to the same value for
-		// exactly that reason.
+		// reassigned by a guided/RIS replacement.
+		//
+		// DL-103: it IS a sibling for the multi-lobe half.  The claim this
+		// comment used to make -- "LightSampler's NEE arms also use the raw
+		// material pdf, so no mismatch exists here" -- was wrong in the
+		// same way the RGB/NM site was: those arms evaluate the material's
+		// AGGREGATE `PdfNM()`, while `pS->pdf` is the SELECTED lobe's own
+		// density.  The partner is the aggregate at the HERO wavelength,
+		// which is the wavelength this continuation was sampled at
+		// (`pSPF->ScatterNM(..., heroNM, ...)` above) and the one the hero
+		// NEE arm weights with.
+		//
+		// KNOWN AND PRE-EXISTING, not introduced here: `RAY_STATE` carries
+		// ONE scalar partner while HWSS's own emitter-hit weight applies it
+		// to all `SampledWavelengths::N` companion wavelengths, whose NEE
+		// arms each evaluated `PdfNM` at their OWN lambda.  That
+		// hero-vs-companion gap exists identically for `pS->pdf` (also
+		// hero-only) and is DL-170, not this row.
+		const Scalar misBsdfPdfHW = pS->isDelta ? Scalar( 0 ) :
+			[&]() -> Scalar {
+				const Scalar aggregatePdf = pSPF->PdfNM(
+					ri.geometric, traceRay.Dir(), heroNM, iorStack );
+				// DL-41 guard -- see the RGB/NM twin's fuller derivation.
+				return aggregatePdf > 0 ? aggregatePdf : effectiveBsdfPdf;
+			}();
 		rs2.bsdfPdf = effectiveBsdfPdf;
-		rs2.bsdfMisPdf = effectiveBsdfPdf;
+		rs2.bsdfMisPdf = misBsdfPdfHW;
 		rs2.type = PathTracingRayType( *pS );
 
 		if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
@@ -6359,11 +6441,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		}
 		importance = rs2.importance;
 		bsdfPdf = effectiveBsdfPdf;
-		// DL-74: this body produces no guided density, so from the first
-		// continuation onwards the partner IS the sampling density.  The
-		// incoming caller-supplied partner applies to the ENTRY vertex
-		// only and must not survive into the next iteration.
-		bsdfMisPdf = effectiveBsdfPdf;
+		// DL-74: the incoming caller-supplied partner applies to the ENTRY
+		// vertex only and must not survive into the next iteration.
+		// DL-103: what replaces it is the aggregate partner computed above,
+		// not the selected lobe's sampling density.
+		bsdfMisPdf = misBsdfPdfHW;
 		considerEmission = nextConsiderEmission;
 		rayType = rs2.type;
 		diffuseBounces = rs2.diffuseBounces;

@@ -381,15 +381,23 @@ Two design notes about the fixture:
   part: it is equally present with guiding off, which is why round 3's fix
   is NOT gated on the blend being active.)
 - **Aggregate vs selected-lobe pdf with guiding OFF.** With no guiding,
-  the escape side still stores the SELECTED LOBE's `pS->pdf` while NEE
-  uses the aggregate. At a multi-lobe material those differ. This is
-  DL-67 territory (the same measure inconsistency, from the throughput
-  side) and is deliberately left exactly as it was. Round 3 narrows what
-  "byte-identical with guiding off" can still be claimed for: the escape
-  side's DENSITY is untouched with guiding off, but the NEE side's
-  `p_aggregate` is now evaluated under the live IOR stack (§8.2), so a
-  guiding-off render of a material whose `Pdf()` reads the stack DOES
-  change — for the better, and only there.
+  the escape side still stored the SELECTED LOBE's `pS->pdf` while NEE
+  used the aggregate. At a multi-lobe material those differ. This round
+  deliberately left it exactly as it was, and it was filed separately as
+  **DL-103** — **CLOSED 2026-09-17**
+  ([DL103_PT_ESCAPE_MIS_PARTNER.md](DL103_PT_ESCAPE_MIS_PARTNER.md)): the
+  un-guided branch now stores the aggregate too, which is a pure
+  application of THIS row's two-fields design (`bsdfPdf` untouched,
+  `bsdfMisPdf` becomes the shared function) and needed no new machinery.
+  Two closed-form furnaces on a two-lobe SPF measured the gap at
+  **+11.03 %** (env) and **+12.69 %** (area emitter) before that fix, and
+  it drove a **+5.2 %** PT-vs-BDPT gap on `BDPTStrategyBalanceTest`
+  topology L that closed to +0.04 % entirely by PT moving. So "byte
+  identical with guiding off" is no longer claimed at a multi-lobe SPF at
+  all — two separate rounds have now changed the guiding-off path here.
+  Round 3 was the first: the NEE side's `p_aggregate` is evaluated under
+  the live IOR stack (§8.2), so a guiding-off render of a material whose
+  `Pdf()` reads the stack changed — for the better, and only there.
 
 ## 6. File status
 
@@ -616,9 +624,11 @@ Rows (f) target a CLOSED FORM (`L_out == L_env` for an albedo-1 surface
 under a constant environment), which needs a material whose directional
 albedo is exactly 1.  Neither `PolishedSPF` nor `TranslucentSPF` is
 exactly energy-conserving, so neither has a closed-form furnace value,
-and their unguided readings cannot serve as a reference either (DL-67:
-a multi-lobe material's unguided escape side stores the SELECTED lobe's
-pdf while NEE uses the aggregate).  The decorator keeps the albedo-1
+and their unguided readings could not serve as a reference either at the
+time (DL-67 / DL-103: a multi-lobe material's unguided escape side
+stored the SELECTED lobe's pdf while NEE used the aggregate — DL-103
+CLOSED 2026-09-17, so that particular objection no longer applies, but
+the energy-conservation one still does and the decorator stays).  The decorator keeps the albedo-1
 Lambertian BRDF and varies ONLY the stack-dependence of the sampling
 density — a uniform hemisphere about a TILTED axis when the stack top is
 1.5, the real cosine `LambertianSPF` otherwise.  Both are legitimate

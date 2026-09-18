@@ -778,6 +778,16 @@ struct Tolerances
 
 static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 
+//! Topology L only (DL-103 closure, 2026-09-17).  Its MEAN band is
+//! tightened from the shared 8% to 2% -- see that topology's own
+//! comment for the isolated-A/B evidence (BDPT/PT went from
+//! +5.198% +/- 0.011 pp to +0.040% +/- 0.012 pp when the PT-side fix
+//! landed; 2% is ~115x the measured run-to-run sigma, and catches both
+//! a DL-103-class regression (5.2%) and a DL-69-class one (19%)).
+//! p99 and max stay at the shared values: they are noise-dominated on
+//! this topology and neither row moved them materially.
+static const Tolerances kSchlickTopologyLTolerances{ 0.02, 0.25, 1.00 };
+
 //////////////////////////////////////////////////////////////////////
 // RunTopologyTest - shared driver for each (PT, BDPT) comparison.
 //
@@ -1944,36 +1954,43 @@ static void TestSubmergedCeilingMISCombination()
 // this scene has real interreflection and an unequal budget would be
 // a second free variable.
 //
-// THIS TOPOLOGY'S 8% BAND IS PROVISIONAL, PENDING DL-103 (round-2
-// review P2-3/P2-4, 2026-09-17).  The reference this row gates against
-// is PT, and PT is not integrator-free here: DL-103 (OPEN) is that
-// un-guided PT's escape-side MIS partner is the SELECTED lobe's own
-// per-lobe density rather than the material's aggregate, so
-// `w_bsdf + w_nee != 1` at THIS material (measured 1.01-1.07 on a
-// Schlick furnace, docs/DEBT_LEDGER.md's DL-103 row) -- meaning PT's
-// own mean on this scene can be biased, in a direction DL-103's row
-// does not pin down for a full scene (only for a furnace).  There is
-// no closed form or integrator-free reference for this topology: it is
-// a full multi-bounce scene (wall + floor + area emitter, BDPT
-// max_eye_depth/max_light_depth 5), not a furnace, so a quadrature
-// reference is not available the way `SchlickLobePairingTest` has one
-// for a single vertex.  A hashed-sampler independent-MC PT rebuild
-// would still carry the pre-Slice-0 (or post-Slice-0) `SchlickSPF::Pdf`
-// bias into its escape-side MIS weight -- it is not integrator-free
-// either, since DL-103 lives in `PathTracingIntegrator.cpp`, not in the
-// sampler.  So: the 5.2% BDPT-over-PT reading below is real and
-// reproducible, but whether it means "BDPT is 5.2% over the truth" or
-// "PT is under the truth by some amount and BDPT is closer" is NOT
-// resolved by this test.  Cross-reference: this slice's isolated
-// SchlickSPF.cpp-only A/B (revert that one file to its pre-Slice-0
-// state, rebuild, re-render this same topology) measured PT move
-// -6.99% (0.0647011 -> 0.0601765) and BDPT move only -0.21% (0.0634197
-// -> 0.0632883) when `SchlickSPF::Pdf` changed -- i.e. changing ONLY
-// PT's NEE-side density (the escape side was untouched by Slice 0)
-// moved PT's own mean by 7% on this exact scene, which is DL-103's
-// mechanism made concrete at render scale.  Keep the 8% band (it has
-// margin either way) but do not read a pass here as "BDPT is correct
-// to 5.2%" until DL-103 is closed.
+// THIS TOPOLOGY'S BAND WAS PROVISIONAL PENDING DL-103; THAT ROW IS NOW
+// CLOSED AND THE MEAN BAND IS TIGHTENED TO 2%
+// (docs/DL103_PT_ESCAPE_MIS_PARTNER.md, 2026-09-17).
+//
+// The marker existed because the reference this row gates against is
+// PT, and PT was not integrator-free here: un-guided PT's escape-side
+// MIS partner was the SELECTED lobe's own per-lobe density rather than
+// the material's aggregate, so `w_bsdf + w_nee != 1` at THIS material
+// -- a PT-side bias in a direction a furnace could bound but a full
+// scene could not.  There is still no closed form for this topology
+// (wall + floor + area emitter, depth 5 both sides), so the closure
+// evidence is an isolated A/B on `PathTracingIntegrator.cpp` alone
+// (revert that one file to this slice's own pre-fix commit, rebuild,
+// re-render this same topology, n = 4 each side):
+//
+//   pre-fix   PT 0.0601656 +/- 0.0000054   BDPT 0.0632933 +/- 0.0000024
+//             BDPT/PT 1.05198 +/- 0.00011   (+5.198%)
+//   post-fix  PT 0.0632676 +/- 0.0000110   BDPT 0.0632930 +/- 0.0000044
+//             BDPT/PT 1.00040 +/- 0.00012   (+0.040%)
+//
+// PT moved +5.16% and BDPT moved -0.0005%.  That asymmetry is the
+// point: the ONLY file that changed lives in PT, BDPT's `pdfFwd` has
+// been the same aggregate function as its `pdfRev` since DL-69, and the
+// two integrators -- which share no MIS code and weight completely
+// different strategy mixes -- now agree to 0.040%, four times their own
+// run-to-run sigma.  Two independent estimators landing on the same
+// number after only one of them was corrected is evidence about the
+// TRUTH, not merely about their agreement.
+//
+// What the tightened band does NOT claim: DL-127 (`SchlickSPF`'s
+// per-lobe `kray` is the Schlick-1994 sampling weight, not that lobe's
+// `f_I cos / p_I`) is still open, and PT and BDPT BOTH consume `kray`,
+// so a residual from that row can sit inside this agreement rather than
+// show up as a gap.  Read a pass here as "PT and BDPT agree to 2% on a
+// multi-lobe material", which is exactly what a strategy-balance test
+// is for.  Topology M below is the immune control that makes a future
+// L-only residual attributable.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSchlickMultiLobeL =
 	"film\n"
@@ -2140,7 +2157,7 @@ static const char* kRasterizerBDPTSchlickL =
 static void TestSchlickMultiLobe()
 {
 	RunTopologyTest( "multi-lobe schlick_material wall + floor, area emitter (DL-69)",
-		std::string( kSceneSchlickMultiLobeL ), kStrictTolerances,
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
 		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
 }
 
@@ -2532,6 +2549,199 @@ static void TestSpectralHWSSCompanionLadderControl()
 		"DL-125 control: spectral hwss TRUE achromatic mean stays within 5% of hwss FALSE on topology M" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-125 KNOWN-DEFECT PROBE, PT-SIDE (DL-103 review round 2, P2-1).
+//
+// WHAT IT MEASURES, AND WHY IT IS PT-VS-PT.  The two ladders above
+// compare `bdpt_spectral_rasterizer` at `hwss FALSE` vs `hwss TRUE`.
+// This one compares `pathtracing_pel_rasterizer` against
+// `pathtracing_spectral_rasterizer` at `hwss TRUE` on the SAME scene:
+// one integrator, one material, one geometry, the ONLY difference being
+// whether the walk carries a spectral bundle.  On a grey scene the two
+// estimate the same achromatic quantity, so a ratio far from 1 is a
+// defect in the HWSS body itself and cannot be an integrator-balance
+// question.
+//
+// THE DEFECT IT PINS is DL-125: `PathTracingIntegrator.cpp`'s HWSS
+// companion loop asks the SPF for the SELECTED lobe's kray at each
+// companion wavelength via `ISPF::EvaluateKrayNM`, and falls back to
+// `pBRDFCur->valueNM(...)` -- the material's AGGREGATE BSDF -- paired
+// with the hero's per-lobe `pS->pdf` and `invSelectProb` when the SPF
+// declines.  `SchlickSPF` does not override `EvaluateKrayNM`, so on
+// topology L the fallback fires on EVERY companion wavelength, and the
+// aggregate-over-per-lobe mispairing compounds once per bounce -- the
+// same pattern DL-69 fixed on the hero/RGB paths.
+//
+// WHY THIS PROBE EXISTS NOW.  DL-103 made PT's un-guided escape-side MIS
+// partner the material's aggregate pdf.  That is correct and its sign is
+// right (see topology L's own comment), but it RAISES the weight the
+// BSDF-sampling strategy carries at a multi-lobe vertex -- and on the
+// HWSS path that strategy's companion throughput is already inflated by
+// DL-125, so the product moves further from the truth.  Measured on this
+// scene (n = 3 per side, isolated `PathTracingIntegrator.cpp`-only A/B):
+// PT pel moved +5.14 % and PT spectral `hwss FALSE` +5.09 % (both the
+// intended DL-103 correction, and both agreeing with each other), while
+// PT spectral `hwss TRUE` moved +12.66 % -- from 1.533x the pel
+// reference to 1.643x it.  The Lambertian/GGX control below is unchanged
+// to within noise across the same A/B.
+//
+// So DL-103 did not create this; it made an open row's cost visible.
+// The number below is what DL-125's closure has to move.  It is a WIDE
+// band around a recorded value, not a correctness claim -- when DL-125
+// closes, this ratio should collapse toward 1 and the band should be
+// tightened then, not "fixed" here.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerPTSpectralNoHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_spectral_rasterizer\n"
+	"{\n"
+	"\tsamples 1024\n"
+	"\thwss FALSE\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_ptspec_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerPTSpectralHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_spectral_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\thwss TRUE\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_ptspec_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+//! Returns the achromatic (PT spectral hwss TRUE) / (PT pel) mean ratio,
+//! or -1 on a render failure (already `Check`-flagged).
+static double RunPTSpectralHWSSProbe( const char* topologyLabel, const std::string& sceneBody )
+{
+	std::cout << "Testing PT pel vs PT spectral hwss TRUE on " << topologyLabel << std::endl;
+
+	const std::string scenePel = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerPTSchlickL + sceneBody;
+	const std::string sceneNo  = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerPTSpectralNoHWSS + sceneBody;
+	const std::string sceneHW  = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerPTSpectralHWSS + sceneBody;
+
+	const std::string pathPel = WriteSceneToTempFile( scenePel.c_str(), "ptpel_probe" );
+	const std::string pathNo  = WriteSceneToTempFile( sceneNo.c_str(),  "ptspecno_probe" );
+	const std::string pathHW  = WriteSceneToTempFile( sceneHW.c_str(),  "ptspec_probe" );
+	if( pathPel.empty() || pathNo.empty() || pathHW.empty() ) {
+		Check( false, "temp file write: PT spectral HWSS probe" );
+		return -1;
+	}
+
+	const ImageStats pel   = RenderAndComputeStats( pathPel.c_str() );
+	const ImageStats noHW  = RenderAndComputeStats( pathNo.c_str()  );
+	const ImageStats hwss  = RenderAndComputeStats( pathHW.c_str()  );
+
+	PrintStats( "PT pel        ", pel );
+	PrintStats( "PT spec hero  ", noHW );
+	PrintStats( "PT spec hwss  ", hwss );
+
+	std::remove( pathPel.c_str() );
+	std::remove( pathNo.c_str()  );
+	std::remove( pathHW.c_str()  );
+
+	Check( pel.valid,  ( std::string("PT pel render produced output: ") + topologyLabel ).c_str() );
+	Check( noHW.valid, ( std::string("PT spectral hwss FALSE render produced output: ") + topologyLabel ).c_str() );
+	Check( hwss.valid, ( std::string("PT spectral hwss TRUE render produced output: ") + topologyLabel ).c_str() );
+	if( !pel.valid || !noHW.valid || !hwss.valid ) return -1;
+
+	const double achroPel = ( pel.mean[0]  + pel.mean[1]  + pel.mean[2]  ) / 3.0;
+	const double achroNo  = ( noHW.mean[0] + noHW.mean[1] + noHW.mean[2] ) / 3.0;
+	const double achroHW  = ( hwss.mean[0] + hwss.mean[1] + hwss.mean[2] ) / 3.0;
+	Check( achroPel > 1e-6, ( std::string("PT pel achromatic mean is non-zero: ") + topologyLabel ).c_str() );
+	if( achroPel <= 1e-6 ) return -1;
+
+	// The hero-only SPECTRAL render is the discriminator between "the
+	// spectral pipeline" and "the HWSS bundle": it takes the same
+	// per-lobe hero path the pel render does, so it must track pel on a
+	// grey scene, and it moves with pel (not with hwss TRUE) across
+	// DL-103's own A/B.
+	std::cout << "    ACHROMATIC mean: PT spectral hwss FALSE = " << achroNo
+	          << ", / PT pel = " << ( achroNo / achroPel )
+	          << "  (" << ( ( achroNo / achroPel - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	Check( std::fabs( achroNo / achroPel - 1.0 ) < 0.05,
+		( std::string("PT spectral hwss FALSE tracks PT pel within 5%: ") + topologyLabel ).c_str() );
+
+	const double ratio = achroHW / achroPel;
+	std::cout << "    ACHROMATIC mean: PT pel = " << achroPel
+	          << ", PT spectral hwss TRUE = " << achroHW
+	          << ", ratio = " << ratio
+	          << "  (" << ( ( ratio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	return ratio;
+}
+
+static void TestPTSpectralHWSSKnownDefect()
+{
+	const double ratio = RunPTSpectralHWSSProbe(
+		"topology L (DL-125 KNOWN-DEFECT probe)", kSceneSchlickMultiLobeL );
+	if( ratio < 0 ) return;
+
+	// KNOWN DEFECT.  This is NOT a correctness gate -- the target value
+	// is 1.0 and the recorded value is nowhere near it.  The band brackets
+	// the measured 1.64 widely enough to absorb MC noise while still
+	// catching a silent drift in either direction; DL-125's closure should
+	// drive this toward 1.0, at which point tighten it around 1.0 and
+	// delete this comment.
+	Check( ratio > 1.35 && ratio < 1.95,
+		"DL-125 KNOWN DEFECT (topology L): PT spectral hwss TRUE reads ~1.64x PT pel "
+		"-- pinned, not gated; closing DL-125 must move this toward 1.0" );
+}
+
+static void TestPTSpectralHWSSKnownDefectControl()
+{
+	// Topology M: `ggx_material` + `lambertian_material`.  `GGXSPF` also
+	// declines `EvaluateKrayNM`, so the companion FALLBACK fires here too
+	// -- but its selected lobe's density already IS the aggregate `mixPdf`
+	// and its `kray` already matches, so the fallback computes the right
+	// thing (see `TestSpectralHWSSCompanionLadderControl`'s comment).  A
+	// residual here would therefore be material-independent HWSS
+	// behaviour, not DL-125, which is exactly what makes it the control
+	// for the row above.
+	const double ratio = RunPTSpectralHWSSProbe(
+		"topology M (DL-125 control, exact companion fallback)", kSceneGGXLambertianControlM );
+	if( ratio < 0 ) return;
+
+	Check( ratio > 0.90 && ratio < 1.10,
+		"DL-125 control (topology M): PT spectral hwss TRUE tracks PT pel within 10% "
+		"-- the immune material shows no companion inflation" );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -2551,6 +2761,8 @@ int main()
 	TestGGXLambertianControl();
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
+	TestPTSpectralHWSSKnownDefect();
+	TestPTSpectralHWSSKnownDefectControl();
 	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
