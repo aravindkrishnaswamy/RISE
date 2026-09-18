@@ -667,10 +667,22 @@ halves of the partition then returned "no partner" and both took weight
 1, so that whole region's energy was counted **twice**.
 
 Reachable set in production: any direction with a nonzero BSDF value but
-zero aggregate SAMPLING density.  That includes the four full-sphere
-BSDFs (hair, fabric, weave, translucent), whose NEE hemisphere rejection
-is deliberately disabled (`bFullSphere` in `LightSampler.cpp`), and any
-partial-support lobe.
+zero aggregate SAMPLING density.  That includes the THREE full-sphere
+BSDFs -- hair, fabric and weave, the only three materials that override
+`IMaterial::ScattersFullSphere()` -- whose NEE hemisphere rejection is
+deliberately disabled (`bFullSphere` in `LightSampler.cpp`), and any
+partial-support lobe.  (An earlier revision of this paragraph counted
+FOUR and listed `translucent_material` among them.  That is wrong and was
+corrected 2026-09-17: `TranslucentMaterial` does NOT override
+`ScattersFullSphere()`, so it inherits the `false` default and the three
+`LightSampler.cpp` NEE arms still reject its below-horizon directions at
+`if( !isVolumeScatter && cosSurface <= 0 ) break;`.  `TranslucentSPF`
+really does have the underlying property -- its `Pdf`/`PdfNM` cover
+neither Phong `cos^N` lobe, which is DL-41 -- but PT's NEE never asks it
+for a direction on the far side, so translucent does not belong in this
+list.  Under BIDIRECTIONAL transport it is a different story:
+`PathVertexEval::EvalBSDFAtVertex` has no hemisphere gate at all, which
+is part of what DL-157 records.)
 
 Fix (`145c9259`): `PTGuidingMisPdf::Eval` returns the true mixture
 `alpha_nom*guide(w) + (1-alpha_nom)*max(p_agg,0)` whenever guiding is

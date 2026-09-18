@@ -629,3 +629,167 @@ verbatim.
 | **P2-2** | Four `SubSurfaceScatteringSPF` comment blocks still described the pre-DL-111 "drop unless mandatory". | comment-only |
 | **P2-3** | "Roughly HALF … at any tilt, on a FLAT surface" overstates the `scattering 0` deletion ~2× — see §11. | doc-only; row-3 values are a snapshot lock and did not move |
 | **P3** | `PerturbClipped`'s two undocumented, SILENT preconditions (non-unit `clipN` disables the clip; `down > PI/2` returns a NaN direction); the shading-mirror-direction / `geomN`-Fresnel pairing was undocumented; DL-130's ruling and its third call site; four dead `const bool bEmit = true`; the draw-count citation. | sub-test 11: half-arc **3.141593 vs 1.797187** with 1750 samples below the true clip, and `dir=(nan,nan,nan)` → both guarded |
+
+---
+
+## 14. Review round 3 (2026-09-17, on the tree merged with `master` `e240c660`)
+
+A second independent review of §13's own fixes found one P1, two P2s and
+four P3s.
+
+### 14.1 P1 — `valueNM` was not the twin it said it was
+
+§13's P1-2 renormalized `TranslucentBSDF::value`'s **case 2** and wrote
+its NM counterpart calling itself "the NM twin".  It was not.  Both
+`valueNM`'s case 1 and its case 2 multiplied by `GetReflectedSide`'s
+out-param `intensity = pow(sd, exponent)` — a Phong factor that
+
+* the RGB branches do **not** have, and
+* no lobe on either side describes: `TranslucentSPF::ScatterNM`'s entry
+  front-reflection ray carries `krayNM = GuardedGetColorNM(pRefFront)`
+  drawn from DL-45's exact **cosine**-density remap, with no `cos^N`
+  anywhere.
+
+The invariant the two techniques share — `E[kray] == E[value·cos/pdf]`
+over the SPF's own draws, PT's NEE and BDPT/VCM's connections on one
+side and a BSDF-sampled continuation on the other — therefore read, at
+40000 trials per cell with `ref 0.5`:
+
+| tilt | RGB ratio | NM ratio (before) | NM ratio (after) |
+|---|---|---|---|
+| 0°  | 1.00000 | **6.05071** | 1.00000 |
+| 30° | 1.00000 | **6.63664** | 1.00000 |
+| 45° | 1.00000 | **11.67190** | 1.00000 |
+| 60° | 1.00000 | **104.08390** | 1.00000 |
+| 75° | 1.00000 | **116.17059** | 1.00000 |
+| 89° | 1.00000 | **26.92116** | 1.00000 |
+
+Wrong at **zero tilt**, i.e. this predates DL-112 entirely and no
+shading-normal perturbation is needed to reach it.  `SPFBSDFConsistencyTest`
+Part F now runs the same six tilts through `ScatterNM`/`valueNM` as well
+(red-proof `e1c81f0c`, fix `dc5bd8b5`).
+
+Case 1 got the same one-line correction, as a **twin-parity** fix only:
+it takes the NM branch from `3.600254` to `0.673976`, which is the RGB
+branch's own `0.673975`.  One number instead of two — both still ≠ 1.
+That residual is §14.2.
+
+The comment block at the top of `TranslucentBSDF.cpp` claimed
+`kray == value·cos/pdf` "held exactly before DL-112".  It held on the
+**RGB** pipe, for the **one** lobe case 2 prices.  Corrected in the same
+commit.
+
+### 14.2 P2-1 — the sibling audit stopped one lobe short: DL-157
+
+Over the SPF's own draws (200000 trials/cell, `ref 0.5 / tau 0.4 / N 10
+/ scattering 0.3 / ext 0`), the same invariant on the other three lobes:
+
+| lobe (`value` branch) | 0° | 30° | 45° | 60° | 75° | 89° |
+|---|---|---|---|---|---|---|
+| entry transmission (case 0), RGB | 5.999 | 7.181 | 13.818 | 153.17 | 748.4 | 116.4 |
+| entry transmission (case 0), NM | 5.999 | 7.181 | 13.818 | 153.17 | 748.4 | 116.4 |
+| interior exit (case 0), RGB | 10.427 | 10.642 | 11.029 | 12.110 | 16.798 | 70.408 |
+| interior exit (case 0), NM | 10.429 | 10.643 | 11.031 | 12.112 | 16.800 | 70.419 |
+| interior backscatter (case 1), RGB | 0.674 | 0.694 | 0.759 | 0.869 | 1.048 | 1.322 |
+| interior backscatter (case 1), NM (post-`dc5bd8b5`) | 0.674 | 0.694 | 0.759 | 0.869 | 1.048 | 1.322 |
+| entry front reflection (case 2), both pipes | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+Case 0 is both the larger mismatch and the one PT's own NEE reaches (its
+`nv > 0` sub-case, at an interior/exit vertex).  Case 1 is unreachable
+from PT — `LightSampler.cpp`'s three arms `break` at
+`if( !isVolumeScatter && cosSurface <= 0 )` unless the material overrides
+`IMaterial::ScattersFullSphere()`, and only `FabricMaterial`,
+`HairMaterial` and `WeaveMaterial` do — but fully reachable from BDPT/VCM
+connections, because `PathVertexEval::EvalBSDFAtVertex`'s surface path
+calls `pBSDF->value` with no hemisphere gate and
+`BDPTUtilities::GeometricTerm` takes `fabs` of both cosines.  So the
+mismatch is **full-sphere asymmetric**: the bidirectional integrators
+read it and PT largely does not.
+
+Filed as ledger row **DL-157** (M, physics-bias), the `value()` side of
+DL-41's structural gap — DL-41 records that `Pdf`/`PdfNM` never covered
+the Phong lobes; DL-157 records that `value`/`valueNM` do not describe
+them either.  Not fixed here: the principled fix needs the entry-vs-exit
+bit `Pdf`/`Scatter` get from the IOR stack, and `IBSDF::value` takes no
+stack — an interface change DL-41 needs too.
+
+### 14.3 P2-2 — "pre-existing and unrelated" retracted
+
+§13's P1-2 row reported a residual PT-vs-BDPT gap at the measurement cell
+and the slice called it pre-existing and unrelated.  Measured, it is
+neither a constant nor gap-neutral.  Same fixture, `relief_modifier
+scale` swept, n = 4 renders per cell, 200×200 / 256 spp, `oidn_denoise
+FALSE`, `pixel_filter box`, EXR `Rec709RGB_Linear`, central 80×80
+per-channel mean:
+
+| relief `scale` | PT mean (sd) | BDPT mean (sd) | PT/BDPT | dev | z |
+|---|---|---|---|---|---|
+| −0.20 | 1.243974 (7.9e-5) | 1.296216 (1.8e-4) | 0.959696 | −4.030 % | 540 |
+| 0.00 | 1.431327 (1.2e-5) | 1.430235 (9.4e-6) | 1.000764 | +0.076 % | 145 |
+| +0.02 | 1.455216 (2.2e-5) | 1.429377 (1.8e-5) | 1.018077 | +1.808 % | 1808 |
+| +0.05 | 1.493264 (3.7e-5) | 1.426427 (4.8e-5) | 1.046856 | +4.686 % | 2141 |
+| +0.20 | 1.505591 (8.1e-5) | 1.381488 (1.1e-4) | 1.089833 | +8.983 % | 1700 |
+
+The gap is **tilt-driven**: essentially absent at zero relief (+0.076 %,
+which is still 145 σ but 50× smaller than the shaped cells) and growing
+monotonically with |scale| in both signs, flipping sign with the sign of
+the relief.  And the DL-112 `value` fix is not neutral to it — an
+isolated A/B against the library with `TranslucentBSDF.cpp` reverted to
+`1dd9a6c7^`, everything else identical:
+
+| cell | PT/BDPT before | after | Δ |
+|---|---|---|---|
+| −0.20 | 0.970583 | 0.959696 | **−1.089 pp** |
+| 0.00 | 1.000761 | 1.000764 | +0.000 pp |
+| +0.02 | 1.018095 | 1.018077 | −0.002 pp |
+| +0.05 | 1.046572 | 1.046856 | +0.028 pp |
+| +0.20 | 1.085096 | 1.089833 | +0.474 pp |
+
+Zero relief is an exact identity (`P(valid) = 1`), as predicted.  At the
+−0.2 cell the fix **widened** the disagreement by 1.09 pp.  So `0.96029`
+is not an unbiased pair, and the honest statement is: the residual is a
+pre-existing, tilt-dependent PT-vs-BDPT disagreement that this slice does
+not close and at the measurement cell slightly widens.  It is consistent
+with DL-157 — BDPT connects into lobes `value()` misprices and PT mostly
+cannot — though this measurement does not by itself attribute it.
+
+Two notes on reproducing the table.  The pre-fix PT figures reproduce
+§13's to five digits (`1.157369` vs `1.15735`); the BDPT ones sit ~0.16 %
+higher on **both** sides of the A/B, which is the `debt-dl69` merge
+moving BDPT, not this fix.  And run-to-run σ/mean is 8e-6 (flat) to 8e-5
+(shaped) — small, but renders are not deterministic, so every figure here
+is a mean of 4.
+
+### 14.4 P3s
+
+1. **Double-sided EXIT hits.**  `value` classifies entry-vs-exit by
+   `GetReflectedSide`'s geometric sign tests; `Pdf`/`Scatter` classify by
+   `ior_stack.containsCurrent()`.  At a double-sided exit hit the
+   geometry has already flipped both reported normals toward the ray, so
+   every direction on the shading normal's side is priced as case 2 (the
+   ENTRY front-reflection branch) while the SPF runs its EXIT branch —
+   and DL-112's clip therefore zeroes `value` over the lune between the
+   shading and ray-anchored geometric hemispheres.  Measured over 40000
+   uniform-sphere directions: **0/19941**, **3379/19934** (0.1695) and
+   **6689/19786** (0.3381) case-2 directions zeroed at 0/30/60 degrees of
+   tilt, against the lune's exact solid-angle share `φ/180°`.  Pinned by
+   `TranslucentDoubleSidedTest` sub-test 4 (`384d3f28`, 50/0 from 44/0)
+   as CURRENT BEHAVIOUR, not as correct behaviour — the row is expected
+   to change when DL-157 is fixed, and exists so the change is noticed.
+2. **DL-112's ledger closure account** now records the
+   `TranslucentBSDF::value` move and the render movement (§13 had them
+   only in the commit message and this doc).
+3. **CLAUDE.md's DL-74 bullet**, `docs/DL74_ENV_NEE_GUIDING_PARTITION.md`
+   and the DL-74 ledger row all listed `translucent` among the
+   "four full-sphere BSDFs whose NEE hemisphere rejection is deliberately
+   disabled".  There are **three** (`FabricMaterial`, `HairMaterial`,
+   `WeaveMaterial` — the only `ScattersFullSphere()` overriders), and
+   `TranslucentMaterial` is not one of them.  Corrected in all three
+   places, with the reason translucent looks like it belongs (it does
+   have the underlying nonzero-value/zero-density property, via DL-41)
+   and why it does not (PT's NEE never asks it below the horizon;
+   bidirectional transport does, which is DL-157).
+4. **`LayeredWhiteFurnaceTest` row 3** was re-run on the merged tree: the
+   snapshot `{0.4271, 0.4284, 0.4569, 0.6367}` locked by §11 is
+   unchanged, so nothing was re-locked.  It is a pure `DielectricSPF`
+   row; nothing in `master` `e240c660` or in round 3 touches it.
