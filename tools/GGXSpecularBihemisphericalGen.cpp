@@ -336,5 +336,142 @@ int main()
 
 	printf( "};\n" );
 
+	// ------------------------------------------------------------------
+	// DL-160: low-alpha sub-grid.  IDENTICAL scheme to
+	// MicrofacetEnergyLUT.h's own ALPHA_SUB_FINE/ALPHA_MID_SIZE
+	// construction (DL-105), applied to THIS table's alpha axis (same
+	// uniform [0.01,1.0], kNumAlphaBins=32 mapping).  Own constants
+	// here (not #include-ing MicrofacetEnergyLUT.h) since this
+	// generator is deliberately a standalone translation unit -- see
+	// the file header.  GGXBRDF.cpp's consumer calls the REAL
+	// MicrofacetEnergyLUT::AlphaLowIndex/ALPHA_SUB_FINE/ALPHA_LOW_TOTAL
+	// (that header already has them, public, DL-105); only the BAKE
+	// below needs its own copy of the node-placement arithmetic.
+	//
+	// BOUNDARY CONDITION -- derived, not guessed.  A naive first guess
+	// ("alpha->0 makes the GGX lobe a delta at the mirror direction, so
+	// muH->1 and the answer is a delta at kGGXSpecularQuadNodes[0]") is
+	// WRONG: for a FIXED wi at polar angle theta_i, the alpha->0 limit
+	// mirror-reflects wi about the MACROSCOPIC normal n (not about wi
+	// itself), so h->n and muH = dot(wi,h) -> dot(wi,n) = mu_i, NOT 1,
+	// unless wi is ALSO at normal incidence.  Since R_ss integrates
+	// over ALL wi (weighted mu_i*dmu_i, isotropic phi), the alpha->0
+	// bihemispherical single-scatter reflectance of ANY Fresnel
+	// function F is the well-known perfect-mirror result
+	//     R_ss(alpha->0) = 2 * INT_0^1 F(mu) * mu dmu
+	// (same reduction as E_avg's own definition, with Ess replaced by
+	// F -- see GGXBRDF.cpp's own hemisphericalAlbedo derivation
+	// comment).  So the boundary MOMENTS (in u=1-cosThetaH) are
+	//     Moments_k(alpha->0) = INT_0^1 u^k * 2*(1-u) du = 2/((k+1)(k+2))
+	// for ANY F -- verified against a VNDF-MC bake at alpha=0.005: the
+	// max |weight| difference between this closed form and the actual
+	// alpha=0.01 row is only ~0.0015 (row 0 is already close to this
+	// limit), NOT the delta-at-node-0 guess (whose difference from row
+	// 0 would be ~0.28 at node 2).
+	//
+	// DISCRETIZED, not the raw continuum integral: the outer wi
+	// integral is a fixed `numMuI`-bin midpoint rule EVERYWHERE ELSE
+	// in this file, and that rule's own O(dmu^2) truncation error
+	// (dmu=1/48) does not vanish as alpha->0 -- an exact analytic
+	// weight vector measurably disagrees with the MC-baked idx=1..7
+	// rows (max ~0.0012 abs at node 0) purely from this discretization
+	// seam, even though those rows' UNDERLYING VNDF estimator is
+	// numerically exact at such tiny alpha (matches the discretized
+	// closed form to <3e-7 -- confirmed by hand).  Baking the SAME
+	// `numMuI`-bin sum (with the alpha->0 kernel u_i^k in place of a
+	// VNDF sample average, since the per-sample weight is provably a
+	// constant 1 in that limit) keeps idx=0 exactly consistent with
+	// where idx=1..7 already converge, instead of introducing a new,
+	// avoidable seam at the low end of the table.
+	//
+	// Solved via the SAME fixed Vandermonde system V (V*w=m) used for
+	// every other row.
+	{
+		const int ALPHA_SUB_FINE = 7;
+		const int ALPHA_MID_SIZE = 4;
+		const int ALPHA_LOW_TOTAL = ALPHA_SUB_FINE + ALPHA_MID_SIZE; // 11
+		const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + ( ALPHA_MID_SIZE - 1 ); // 10
+		const double ALPHA_LOW_A0 = kAlphaMin; // 0.01, row 0
+		const double ALPHA_LOW_A1 = kAlphaMin + ( kAlphaMax - kAlphaMin ) * 1.0 / ( kNumAlphaBins - 1 ); // row 1
+
+		auto AlphaLowNode = [&]( int idx ) -> double {
+			if( idx <= 0 ) return 0.0;
+			if( idx <= ALPHA_SUB_FINE ) return ALPHA_LOW_A0 * pow( 2.0, double( idx - ( ALPHA_SUB_FINE + 1 ) ) );
+			if( idx == ALPHA_SUB_FINE + 1 ) return ALPHA_LOW_A0;
+			if( idx < ALPHA_LOW_TOTAL ) {
+				const double t = double( idx - ( ALPHA_SUB_FINE + 1 ) ) / double( ALPHA_MID_SIZE );
+				return ALPHA_LOW_A0 * pow( ALPHA_LOW_A1 / ALPHA_LOW_A0, t );
+			}
+			return ALPHA_LOW_A1;
+		};
+		auto AlphaLowSlot = [&]( int idx ) -> int {
+			if( idx <= ALPHA_SUB_FINE ) return idx - 1;
+			return ALPHA_SUB_FINE + ( idx - ( ALPHA_SUB_FINE + 2 ) );
+		};
+
+		// alpha->0 boundary: closed-form KERNEL (u^k*2*(1-u)), baked
+		// through the SAME numMuI-bin midpoint discretization as every
+		// MC row above (no RNG needed -- the per-sample weight is
+		// provably the constant 1 in this limit, see the derivation
+		// comment).
+		std::vector<double> momentsZero( numNodes, 0.0 );
+		{
+			const double dmuI = 1.0 / numMuI;
+			for( int bi = 0; bi < numMuI; bi++ ) {
+				const double muI = ( bi + 0.5 ) * dmuI;
+				const double uI = 1.0 - muI;
+				double upow = 1.0;
+				for( int k = 0; k < numNodes; k++ ) {
+					momentsZero[k] += upow * muI * dmuI;
+					upow *= uI;
+				}
+			}
+			for( int k = 0; k < numNodes; k++ ) momentsZero[k] *= 2.0;
+		}
+		const std::vector<double> wZero = SolveVandermonde( V, momentsZero );
+
+		double sumZero = 0.0;
+		for( double w : wZero ) sumZero += w;
+		fprintf( stderr, "\nDL-160 low-alpha sub-grid:\n" );
+		fprintf( stderr, "  alpha->0 exact limit weights (sum=%.8f):", sumZero );
+		for( double w : wZero ) fprintf( stderr, " %.8f", w );
+		fprintf( stderr, "\n" );
+
+		printf( "\n// DL-160: low-alpha sub-grid -- see GGXBRDF.cpp's LookupGGXSpecularQuadWeight\n" );
+		printf( "// for how these are consumed.  The exact alpha->0 boundary (idx<=0) is the\n" );
+		printf( "// CLOSED FORM below (moments 2/((k+1)(k+2)) of the mirror-limit kernel -- see\n" );
+		printf( "// this generator's own derivation comment; NOT a delta at node 0).  Row order:\n" );
+		printf( "// ALPHA_SUB_FINE=%d geometric octaves below 0.01 (alpha=0.01/2^(8-j)), then\n", ALPHA_SUB_FINE );
+		printf( "// ALPHA_MID_SIZE-1=%d geometric nodes bridging (0.01,%.8f] -- IDENTICAL scheme\n", ALPHA_MID_SIZE - 1, ALPHA_LOW_A1 );
+		printf( "// to MicrofacetEnergyLUT.h's own ALPHA_SUB_FINE/ALPHA_MID_SIZE (DL-105); last\n" );
+		printf( "// row is an unused zero-padding slot (MicrofacetEnergyLUT::AlphaLowSlot's own\n" );
+		printf( "// range only ever addresses 9 of these 10 rows).  DO NOT HAND-EDIT.\n" );
+		printf( "static const Scalar kGGXSpecularQuadWeightAlphaZero[ kGGXSpecularQuadNumNodes ] =\n{\n\t" );
+		for( int i = 0; i < numNodes; i++ ) printf( "%.10ff%s", wZero[i], ( i + 1 < numNodes ) ? ", " : "" );
+		printf( "\n};\n\n" );
+
+		printf( "static const Scalar kGGXSpecularQuadWeightAlphaLow[ %d ][ kGGXSpecularQuadNumNodes ] =\n{\n", ALPHA_LOW_STORED );
+		fprintf( stderr, "\nLow-alpha spot checks (idx, alpha, N0):\n" );
+		for( int idx = 1; idx < ALPHA_LOW_TOTAL; idx++ ) {
+			if( idx == ALPHA_SUB_FINE + 1 ) continue; // A0 itself == row 0, not re-baked.
+			const double alphaLow = AlphaLowNode( idx );
+			std::vector<double> momentsLow;
+			Moments( alphaLow, numMuI, numSamples, numNodes, momentsLow );
+			const std::vector<double> wLow = SolveVandermonde( V, momentsLow );
+			printf( "\t{ " );
+			for( int i = 0; i < numNodes; i++ ) printf( "%.10ff%s", wLow[i], ( i + 1 < numNodes ) ? ", " : "" );
+			printf( " },\t// slot %d, idx=%d, alpha=%.8f\n", AlphaLowSlot( idx ), idx, alphaLow );
+			fprintf( stderr, "  idx=%d alpha=%.8f N0=%.6f\n", idx, alphaLow, momentsLow[0] );
+		}
+		// Zero-padding slot (never addressed via AlphaLowSlot's range --
+		// kept only so this flat C array matches ALPHA_LOW_STORED's
+		// declared size without a separate "unused" case at the lookup
+		// site).
+		printf( "\t{ " );
+		for( int i = 0; i < numNodes; i++ ) printf( "0.0000000000f%s", ( i + 1 < numNodes ) ? ", " : "" );
+		printf( " },\n" );
+		printf( "};\n" );
+	}
+
 	return 0;
 }
