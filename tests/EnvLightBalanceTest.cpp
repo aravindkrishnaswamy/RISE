@@ -152,6 +152,7 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -258,10 +259,22 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	std::vector<double> ch[3];
 	for( int c = 0; c < 3; c++ ) ch[c].reserve( cap.pixels.size() );
 
+	// DL-40: a nonfinite (NaN/Inf) captured component is a broken render,
+	// not a statistic -- reject the whole capture (return invalid) before
+	// sort/sum ever touches it.  See the matching fix/comment in
+	// BDPTStrategyBalanceTest.cpp's ComputeStats (same sibling pattern).
+	bool allFinite = true;
 	for( const RISEColor& c : cap.pixels ) {
+		if( !std::isfinite( c.base.r ) || !std::isfinite( c.base.g ) || !std::isfinite( c.base.b ) ) {
+			allFinite = false;
+			break;
+		}
 		ch[0].push_back( c.base.r );
 		ch[1].push_back( c.base.g );
 		ch[2].push_back( c.base.b );
+	}
+	if( !allFinite ) {
+		return ImageStats{};   // valid stays false
 	}
 
 	for( int c = 0; c < 3; c++ ) {
@@ -356,6 +369,12 @@ static void PrintStats( const char* label, const ImageStats& s )
 static bool AbsWithin( const double v[3], const double expected[3], double tol )
 {
 	for( int c = 0; c < 3; c++ ) {
+		// DL-40: a nonfinite measured/expected value must disagree -- see
+		// the matching fix/comment in BDPTStrategyBalanceTest.cpp's
+		// ChannelsAgree (same sibling pattern: fabs() of a NaN operand is
+		// NaN, and "NaN > tol" is false, so an un-guarded compare fell
+		// through to "within tolerance").
+		if( !std::isfinite( v[c] ) || !std::isfinite( expected[c] ) ) return false;
 		if( std::fabs( expected[c] ) < 1e-12 ) return false;
 		if( std::fabs( v[c] - expected[c] ) / std::fabs( expected[c] ) > tol ) return false;
 	}
@@ -403,6 +422,9 @@ struct TopologyBias
 static bool RatioWithinBand( const double ref[3], const double x[3], const StatBand& b )
 {
 	for( int c = 0; c < 3; c++ ) {
+		// DL-40: a nonfinite reference or candidate must disagree -- see
+		// AbsWithin's comment above (same sibling pattern).
+		if( !std::isfinite( ref[c] ) || !std::isfinite( x[c] ) ) return false;
 		if( std::fabs( ref[c] ) < 1e-12 ) return false;
 		const double ratio = x[c] / ref[c];
 		if( std::fabs( ratio - b.center[c] ) > b.tol * b.center[c] ) return false;
@@ -424,6 +446,80 @@ static void PrintRatioBand(
 		std::cout << " " << ratio;
 	}
 	std::cout << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: nonfinite candidate statistics must be REJECTED, not
+// silently pass.  Sibling of BDPTStrategyBalanceTest.cpp's identically
+// named test -- see that file's header comment for the two-layer
+// rationale (ComputeStats rejects a poisoned capture; the direct
+// comparison helpers reject a poisoned stat handed to them directly).
+// This file has two comparison helpers instead of one (AbsWithin
+// against a closed form, RatioWithinBand against a measured centre),
+// so both are exercised here.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	// (1) ComputeStats.
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+
+	// (2) AbsWithin against a closed form: a NaN measured value must
+	// disagree even at a huge tolerance.
+	{
+		const double expected[3] = { 0.5, 0.5, 0.5 };
+		const double measured[3] = { std::nan(""), 0.5, 0.5 };
+		Check( !AbsWithin( measured, expected, /*tol=*/1000.0 ),
+		       "DL-40: AbsWithin rejects a NaN measured[0] even at tol=1000" );
+	}
+	{
+		const double expected[3] = { 0.5, 0.5, 0.5 };
+		const double measured[3] = { 0.5, 0.5, 0.5 };
+		Check( AbsWithin( measured, expected, /*tol=*/0.01 ),
+		       "DL-40: AbsWithin control -- identical finite values still agree" );
+	}
+
+	// (3) RatioWithinBand against a measured centre: a NaN candidate
+	// must disagree even at a huge band tolerance.
+	{
+		const double ref[3] = { 0.5, 0.5, 0.5 };
+		const double x[3]   = { std::numeric_limits<double>::infinity(), 0.5, 0.5 };
+		StatBand b; b.center[0] = b.center[1] = b.center[2] = 1.0; b.tol = 1000.0;
+		Check( !RatioWithinBand( ref, x, b ),
+		       "DL-40: RatioWithinBand rejects an Inf candidate[0] even at tol=1000" );
+	}
+	{
+		const double ref[3] = { 0.5, 0.5, 0.5 };
+		const double x[3]   = { 0.5, 0.5, 0.5 };
+		StatBand b; b.center[0] = b.center[1] = b.center[2] = 1.0; b.tol = 0.01;
+		Check( RatioWithinBand( ref, x, b ),
+		       "DL-40: RatioWithinBand control -- identical finite values still agree" );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1954,6 +2050,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestEnvNonUniformOffCenter();
 	TestEnvNonUniformOffCenterSpectral( false );
 	TestEnvNonUniformOffCenterSpectral( true );
+	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

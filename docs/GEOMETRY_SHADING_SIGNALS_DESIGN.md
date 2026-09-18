@@ -1935,9 +1935,13 @@ is the comparison to beat.
 
 1. **Non-uniform / scaled object transforms corrupt world-space `dndu/dndv`**
    (§5.5). **RESOLVED 2026-08-29** — fixed and merged to master with the
-   sign-pairing family (see §5.5); one disclosed residual remains (a CSG
+   sign-pairing family (see §5.5); the disclosed residual (a CSG
    exit-designated subtraction branch's `dndu` pairing, reachable only via a
-   nested-CSG construction no test could produce).
+   nested-CSG construction no test could produce) is **CLOSED 2026-09-14
+   (DL-30, debt-cov slice)** — `tests/CsgSurfacePayloadTest.cpp` Test29
+   exercises the exit-designated branch with a curved (sphere) operand,
+   mutation-red-proofed against the existing dot-product re-pairing; see
+   [DEBT_LEDGER.md](DEBT_LEDGER.md) DL-30.
 2. **Patch geometries report flat while genuinely curved.** Until Phase 4, keep
    them on the `valid = false` path so `curv` reads 0 as *absence*, not as a
    claim of flatness. An expression cannot distinguish the two without a

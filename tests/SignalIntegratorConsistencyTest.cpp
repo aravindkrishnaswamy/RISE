@@ -799,6 +799,7 @@
 #include <sstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <algorithm>
 #include <regex>
@@ -971,14 +972,58 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	double sum[3] = { 0, 0, 0 };
 	for( const RISEColor& c : cap.pixels ) {
 		const double cov = c.a;
-		sum[0] += c.base.r * cov;
-		sum[1] += c.base.g * cov;
-		sum[2] += c.base.b * cov;
+		const double r = c.base.r * cov, g = c.base.g * cov, b = c.base.b * cov;
+		// DL-40: a nonfinite (NaN/Inf) composited component is a broken
+		// render, not a statistic -- reject the whole capture before it
+		// reaches the running sum.
+		if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) {
+			return ImageStats{};   // valid stays false
+		}
+		sum[0] += r;
+		sum[1] += g;
+		sum[2] += b;
 	}
 	for( int c = 0; c < 3; c++ ) s.meanRGB[c] = sum[c] / double(cap.pixels.size());
 	s.mean = ( s.meanRGB[0] + s.meanRGB[1] + s.meanRGB[2] ) / 3.0;
 	s.valid = true;
 	return s;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: ComputeStats must reject a capture containing a
+// nonfinite composited component (return valid==false) rather than
+// silently folding NaN/Inf into the mean.  Explicit malformed
+// CapturingRasterizerOutput fixtures, not a live render.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2935,6 +2980,8 @@ int main( int argc, char** argv )
 			}
 		}
 	}
+
+	TestNonfiniteCandidateRejected();
 
 	std::cout << "\n========================================" << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount

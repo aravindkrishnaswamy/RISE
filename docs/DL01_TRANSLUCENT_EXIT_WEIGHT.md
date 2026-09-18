@@ -187,16 +187,29 @@ by BOTH RGB and NM, even at N=1. NM additionally has the documented Phong
 shape difference. The DL-02 row, recipe, and both source documents now
 state this wider density scope; no next-row implementation was started.
 
-**DL-40 — balance-harness nonfinite false-green risk.** The test-integrity
-review found both BDPT/VCM `ComputeStats` functions accept nonfinite
-captured values and mark nonempty statistics valid. `ChannelsAgree`
-rejects only a relative difference greater than tolerance, so a NaN
-candidate can pass against a finite reference. This is independently
-confirmed by reading both comparators and the capture loop. The recorded
-DL-01 summary statistics are finite; no observed gate result is explained
-by this defect. Per the one-row scope rule, this separate malformed-input
-robustness pattern is recorded as DL-40 with an exact red-proof recipe,
-rather than expanded into the translucent weight fix.
+**~~DL-40 — balance-harness nonfinite false-green risk.~~ CLOSED
+2026-09-14 (debt-cov slice).** The test-integrity review found both
+BDPT/VCM `ComputeStats` functions accept nonfinite captured values and
+mark nonempty statistics valid. `ChannelsAgree` rejects only a relative
+difference greater than tolerance, so a NaN candidate can pass against a
+finite reference. This is independently confirmed by reading both
+comparators and the capture loop. The recorded DL-01 summary statistics
+are finite; no observed gate result is explained by this defect. Per the
+one-row scope rule, this separate malformed-input robustness pattern was
+recorded as DL-40 with an exact red-proof recipe, rather than expanded
+into the translucent weight fix. Fixed by rejecting a nonfinite captured
+component in `ComputeStats` (both `BDPTStrategyBalanceTest.cpp` and
+`VCMStrategyBalanceTest.cpp`) before it reaches sort/sum, and by adding
+an explicit nonfinite-operand check to `ChannelsAgree` (both files);
+`EnvLightBalanceTest.cpp`'s `AbsWithin`/`RatioWithinBand` and
+`SignalEmitterRecordTest.cpp`'s `ComputeStats`/`WorstRelDiff` carried the
+identical pattern and were fixed the same way (`WorstRelDiff` returns
+`HUGE_VAL` for a nonfinite operand rather than letting `std::fmax` discard
+it). Red-proofed by temporarily reverting each fix and observing the new
+`TestNonfiniteCandidateRejected` checks fail (4/4, 4/4, 3/3, 5/5 across
+the four files respectively), then restoring the fix and confirming
+green. See [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-40 for the exact
+counters.
 
 The documentation review also identified historical sweep header labels
 that still said "this revision" / "previous revision". Those labels now
