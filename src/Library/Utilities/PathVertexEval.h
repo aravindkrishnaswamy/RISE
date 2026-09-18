@@ -304,7 +304,21 @@ namespace RISE
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
-			return pBSDF->value( wi, ri );
+			// DL-157: a stateful BSDF (`translucent_material`) prices a hit
+			// by which side of the surface the walk is on, and the vertex
+			// carries that -- `BDPTVertex::insideObject`, the same bit
+			// `EvalPdfAtVertex` already rebuilds a stack from.  Handing it
+			// over matters MORE here than it does for PT, because the
+			// rebuilt `evalRay` above is NOT the walk's own incoming
+			// segment on the light side (`GenerateLightSubpathImpl` passes
+			// `(wi, wo)` in the opposite roles from the eye walk), so a
+			// stateful BSDF that inferred the side from that ray would
+			// invert its whole lobe frame there.  Every other BSDF ignores
+			// the argument (IBSDF's default forwards to `value`).
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+
+			return pBSDF->valueStateful( wi, ri, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -558,7 +572,11 @@ namespace RISE
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
-			return pBSDF->valueNM( wi, ri, nm );
+			// DL-157, spectral twin of the RGB path above.
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+
+			return pBSDF->valueStatefulNM( wi, ri, nm, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////

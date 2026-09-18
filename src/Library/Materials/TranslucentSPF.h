@@ -86,6 +86,122 @@ namespace RISE
 			//! Unreachable from a production call once the axis is
 			//! oriented (P(valid) >= 0.5).
 			const Scalar kExitVanishThreshold = Scalar(1e-4);
+
+			//! DL-157 / DL-41 / DL-38 (2026-09-18) -- ONE FUNCTION PER SIDE.
+			//!
+			//! `TranslucentSPF::Scatter`/`ScatterNM` emit at most two KINDS
+			//! of lobe, and which two depends on which side of the surface
+			//! the walk is on:
+			//!
+			//!   ENTRY (`!ior_stack.containsCurrent()`)
+			//!     front reflection  clipped COSINE about `OrientedLobeAxis(n, geomN)`,
+			//!                       clipped to `Dot(w, geomN) > 0`, kray = ref      [DL-112]
+			//!     transmission      clipped PHONG about `OrientedLobeAxis(n,-geomN)`,
+			//!                       clipped to `Dot(w,-geomN) > 0`, kray = tau      [DL-68]
+			//!   EXIT (`ior_stack.containsCurrent()`)
+			//!     diffuse exit      clipped COSINE about `OrientedExitNormal(n, geomNRaw)`,
+			//!                       clipped to `Dot(w, geomNRaw) > 0`, kray = B*(1-s) [DL-45]
+			//!     backscatter       clipped PHONG about `OrientedLobeAxis(n, geomN)`,
+			//!                       clipped to `Dot(w, geomN) > 0`, kray = B*s        [DL-68]
+			//!
+			//! with `B = exp(-ext * |ri.ray.origin - ri.ptIntersection|)`
+			//! the Beer extinction over the interior segment (DL-01's
+			//! "pTrans is charged once at entry; each interior segment then
+			//! pays only Beer") and `s` the scattering split.
+			//!
+			//! `Pdf`/`PdfNM` (the MIS-partner density, which must describe
+			//! what `Scatter` + `ScatteredRayContainer::RandomlySelect`
+			//! actually generate) and `TranslucentBSDF::value`/`valueNM`
+			//! (which must return each lobe's own `kray * pdf / |cos|`, so
+			//! that a BSDF-sampled continuation and an NEE / BDPT
+			//! connection estimate the same integral) are therefore two
+			//! readings of ONE per-hit lobe set.  `BuildLobeSet` below is
+			//! that set, rebuilt without sampling; both readings go through
+			//! it, so they cannot drift from each other or from the sampler.
+			//!
+			//! TWO PROPERTIES THIS MATERIAL HAS THAT MAKE THE DENSITY EXACT
+			//! IN CLOSED FORM, where `SchlickSPF` / `IsotropicPhongSPF` /
+			//! `AshikminShirleyAnisotropicPhongSPF` needed DL-67/DL-98/DL-99's
+			//! replay quadrature:
+			//!   (1) every lobe's `kray` is DIRECTION-INDEPENDENT (a painter
+			//!       read, times a Beer factor that depends only on the
+			//!       INCOMING segment), so `RandomlySelect`'s realized
+			//!       probability really is the raw weight ratio
+			//!       `MaxValue(kray_I) / sum_J MaxValue(kray_J)` -- the same
+			//!       reason DL-98/DL-99 recorded both Ward SPFs as immune to
+			//!       that pattern;
+			//!   (2) on each side the two lobes live in COMPLEMENTARY
+			//!       half-spaces (`Dot(w, geomN) > 0` against its exact
+			//!       complement), so they never overlap and no direction is
+			//!       priced by two of them.
+			//! Neither is an accident of the current painters; both are
+			//! structural, and (1) is what a future direction-dependent
+			//! `kray` here would break.
+			struct Lobe
+			{
+				bool    isPhong;        //!< false = clipped cosine, true = clipped cos^N
+				Vector3 axis;           //!< ALWAYS +n or -n (every lobe here is built on the shading normal)
+				Vector3 clipN;          //!< the half-space the lobe is conditioned on
+				Scalar  N;              //!< Phong exponent (ignored when !isPhong)
+				RISEPel kray;           //!< the RGB transport weight the sampler stamps
+				Scalar  krayNM;         //!< its spectral twin
+				Scalar  selectWeight;   //!< exactly what `RandomlySelect`'s CDF uses for this ray
+			};
+
+			//! At most four: the RGB per-channel-exponent branch emits one
+			//! Phong ray per colour channel alongside the single cosine lobe.
+			struct LobeSet
+			{
+				Lobe    lobes[4];
+				int     count;
+				Scalar  totalSelectWeight;
+				Vector3 n;              //!< the shading normal the integrators take their cosine against
+				LobeSet() : count(0), totalSelectWeight(0), n(0,0,1) {}
+			};
+
+			//! Rebuild -- WITHOUT drawing anything -- exactly the set of
+			//! lobes `TranslucentSPF::Scatter` (`bNM == false`) /
+			//! `ScatterNM` (`bNM == true`) would emit at this hit, including
+			//! the same emission gates (a zero painter, a vanished valid
+			//! region, a zero scattering split) and the same per-channel
+			//! exponent split.
+			//!
+			//! `pIorStack` is the LIVE stack where the caller has one; the
+			//! entry-vs-exit branch is then decided by exactly the
+			//! `containsCurrent()` test `Scatter` uses, so density, value and
+			//! sampler cannot land in different branches (DL-157(b)).  Where
+			//! the caller has none (an AOV probe, the legacy final-gather /
+			//! ambient-occlusion ops, an interactive preview), pass null and
+			//! the side is inferred GEOMETRICALLY from
+			//! `Dot(geomNRaw, ri.ray.Dir())` -- exact for any closed object
+			//! and for a double-sided mesh (whose reported geometric normal
+			//! is recovered through `UnflippedGeomNormal()` first), and the
+			//! best answer available when no stack exists.
+			void BuildLobeSet(
+				const IPainter& refFront,
+				const IPainter& trans,
+				const IScalarPainter& extinction,
+				const IScalarPainter& phongN,
+				const IScalarPainter& scattering,
+				const RayIntersectionGeometric& ri,
+				const IORStack* pIorStack,
+				const bool bNM,
+				const Scalar nm,
+				LobeSet& out );
+
+			//! Evaluate one lobe at `w`.  Returns false when `w` is outside
+			//! the lobe's support (the SAME support the sampler has: inside
+			//! the axis hemisphere AND across the clip plane), in which case
+			//! neither output is written.
+			//!
+			//! `outPdf` is the solid-angle density.  `outFOverKray` is
+			//! `pdf / |cos(w, n)|`, i.e. the lobe's BRDF divided by its own
+			//! `kray` -- computed with the cosine CANCELLED analytically
+			//! rather than divided out, which is exact because every lobe's
+			//! axis is `+n` or `-n` and the support forces
+			//! `Dot(w, axis) == |cos(w, n)|`.
+			bool EvalLobe( const Lobe& lobe, const Vector3& w,
+				Scalar& outPdf, Scalar& outFOverKray );
 		}
 
 		class TranslucentSPF : public virtual ISPF, public virtual Reference
@@ -148,6 +264,19 @@ namespace RISE
 			Scalar	PdfNM(
 				const RayIntersectionGeometric& ri,
 				const Vector3& wo,
+				const Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+		private:
+			//! The shared body of `Pdf`/`PdfNM` (DL-41): the aggregate
+			//! density of the direction `Scatter`/`ScatterNM` +
+			//! `RandomlySelect` return, over every lobe this side of the
+			//! surface can emit.  See the definition's own comment.
+			Scalar	AggregatePdf(
+				const RayIntersectionGeometric& ri,
+				const Vector3& wo,
+				const bool bNM,
 				const Scalar nm,
 				const IORStack& ior_stack
 				) const;

@@ -4747,18 +4747,22 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 4
+		Check( claimers.size() == 5
 		    && claimers[0] == "CoatedMaterial.h"
 		    && claimers[1] == "FabricMaterial.h"
 		    && claimers[2] == "HairMaterial.h"
-		    && claimers[3] == "WeaveMaterial.h",
+		    && claimers[3] == "TranslucentMaterial.h"
+		    && claimers[4] == "WeaveMaterial.h",
 		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
-		       "`transmission thin`, P2-B), FabricMaterial and CoatedMaterial (both DELEGATING -- "
-		       "each is full-sphere exactly when its substrate is; DL-23 added CoatedMaterial "
-		       "alongside FabricMaterial's pre-existing R8 P1.1 / debt 22 forwarding) are the ONLY "
-		       "materials claiming ScattersFullSphere() -- adding another is a deliberate act that "
-		       "must update this expectation in the same commit (see IMaterial::ScattersFullSphere's "
-		       "doc for what claiming it wrongly costs)" );
+		       "`transmission thin`, P2-B), TranslucentMaterial (unconditional, DL-157 -- its "
+		       "entry TRANSMISSION and interior BACKSCATTER lobes both live below the shading "
+		       "horizon, and DL-157/DL-41 made `value` and `Pdf` describe them, which is the "
+		       "capability's own safety condition), FabricMaterial and CoatedMaterial (both "
+		       "DELEGATING -- each is full-sphere exactly when its substrate is; DL-23 added "
+		       "CoatedMaterial alongside FabricMaterial's pre-existing R8 P1.1 / debt 22 "
+		       "forwarding) are the ONLY materials claiming ScattersFullSphere() -- adding another "
+		       "is a deliberate act that must update this expectation in the same commit (see "
+		       "IMaterial::ScattersFullSphere's doc for what claiming it wrongly costs)" );
 	}
 
 	// ---- `signals` is written in a CLOSED set of files, and nowhere else ----

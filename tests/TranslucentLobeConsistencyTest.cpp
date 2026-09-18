@@ -355,10 +355,27 @@ static void Gate234( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
 		}
 
 		// ---- histogram of what the sampler + RandomlySelect produce ----
+		//
+		// A total-variation distance over 4608 cells at 200000 draws has a
+		// LARGE pure-multinomial floor -- roughly `0.5*sqrt(2K/(pi N))`,
+		// i.e. ~0.06 here -- so a fixed tolerance either sits below the
+		// noise (and fails on a correct density, which the first draft of
+		// this file did at 0.035) or is set so loose it stops discriminating.
+		// The floor is therefore MEASURED rather than assumed: the same
+		// draws are also split into two independent halves, and
+		// `TVD(halfA, halfB)` is a sample of exactly that noise at half the
+		// count.  For pure noise `TVD(full, exact) ~ C/sqrt(N)` and
+		// `TVD(halfA, halfB) ~ 2C/sqrt(N)`, so the model-vs-sampler distance
+		// must come in at about HALF the halves' distance; the gate allows
+		// 0.75 of it (a 50 % margin) plus a small absolute slack for the
+		// grid's own discretisation of a sharp lobe.  Pre-fix this reads
+		// 0.54-0.60 against a floor near 0.10, i.e. it fails by 5x.
 		RandomNumberGenerator rng( 9090u + (unsigned)t );
 		Implementation::IndependentSampler sampler( rng );
 		std::vector<double> observed( kCells, 0.0 );
-		long selected = 0;
+		std::vector<double> halfA( kCells, 0.0 );
+		std::vector<double> halfB( kCells, 0.0 );
+		long selected = 0, selA = 0, selB = 0;
 
 		for( int i = 0; i < kTrials; i++ )
 		{
@@ -368,24 +385,31 @@ static void Gate234( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
 			const ScatteredRay* pS = scattered.RandomlySelect( sampler.Get1D(), bNM );
 			if( !pS ) continue;
 			const Vector3 wo = Vector3Ops::Normalize( pS->ray.Dir() );
-			observed[ SphereGrid::CellOf( wo ) ] += 1.0;
+			const int cell = SphereGrid::CellOf( wo );
+			observed[cell] += 1.0;
 			selected++;
+			if( (i & 1) == 0 ) { halfA[cell] += 1.0; selA++; }
+			else               { halfB[cell] += 1.0; selB++; }
 		}
 
 		const double emitProb = (double)selected / (double)kTrials;
 
-		double tvd = 0;
-		if( selected > 0 ) {
+		double tvd = 0, tvdNoise = 0;
+		if( selected > 0 && selA > 0 && selB > 0 ) {
 			for( int c = 0; c < kCells; c++ ) {
-				tvd += fabs( observed[c]/(double)selected - expected[c]/r_max(1e-12,mass) );
+				tvd      += fabs( observed[c]/(double)selected - expected[c]/r_max(1e-12,mass) );
+				tvdNoise += fabs( halfA[c]/(double)selA - halfB[c]/(double)selB );
 			}
 			tvd *= 0.5;
+			tvdNoise *= 0.5;
 		}
+		const double tvdGate = 0.75*tvdNoise + 0.004;
 
 		std::cout << "    tilt " << std::setw(2) << (int)kTiltAnglesDeg[t]
 		          << "  int(Pdf)=" << std::fixed << std::setprecision(5) << mass
 		          << "  emitted=" << emitProb
 		          << "  TVD=" << std::setprecision(5) << tvd
+		          << "  (noiseFloor=" << tvdNoise << " gate=" << tvdGate << ")"
 		          << "  partitionViolations=" << partitionViolations << std::endl;
 
 		char buf[256];
@@ -393,9 +417,9 @@ static void Gate234( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
 			label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], mass, emitProb );
 		EXPECT( fabs( mass - emitProb ) < 0.02, buf );
 
-		snprintf( buf, sizeof(buf), "%s %s tilt %d: TVD(sampler,Pdf)=%.5f",
-			label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], tvd );
-		EXPECT( tvd < 0.035, buf );
+		snprintf( buf, sizeof(buf), "%s %s tilt %d: TVD(sampler,Pdf)=%.5f vs gate %.5f (noise floor %.5f)",
+			label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], tvd, tvdGate, tvdNoise );
+		EXPECT( tvd <= tvdGate, buf );
 
 		snprintf( buf, sizeof(buf), "%s %s tilt %d: %ld directions with value>0 and Pdf==0",
 			label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], partitionViolations );
