@@ -1059,57 +1059,56 @@ static void AddTri( IndexTriangleListType& tris, unsigned int a, unsigned int b,
 	tris.push_back( t );
 }
 
-static bool BuildOpposedQuadsWithRemoteTetrahedron( const Scalar gap,
+//! Two SINGLE triangles (no internal diagonal, hence no way for this
+//! fixture to trip the PRE-EXISTING DL-31 edge-count check by accident --
+//! that confound is exactly why an earlier revision of this fixture used
+//! two-triangle QUADS sharing a diagonal, discovered on review to
+//! already refuse via DL-31 alone before DL-150's own discriminator ever
+//! runs, which made it a red-proof of the WRONG mechanism).  Triangle A
+//! at z=0; triangle B at z=`gap`, over the SAME (x,y) positions, so after
+//! the weld its 3 vertices resolve to the EXACT SAME post-weld ids as
+//! A's -- literally the coincident-triangle signature `ComputeWatertightness`
+//! now looks for.  `sameWinding=false` (default) reverses B's vertex
+//! order (the reviewer's own "opposite winding" repro: an unordered-set
+//! match only, cosine -1 under the REMOVED orientation check); `true`
+//! keeps B's order identical to A's (an exact ORDERED match -- two
+//! literally duplicate triangles, closing the prior orientation
+//! discriminator's "same-facing" residual too).  Either way each lone
+//! triangle's own 3 edges are all boundary (count 1) before the weld, and
+//! become count 2 (A+B) after it -- 0 boundary, 0 non-manifold, so the
+//! edge-count check alone falsely certifies this as a closed 2-manifold
+//! with NO other structure to confound the read.
+static bool BuildCoincidentTriangleWithRemoteTetrahedron( const Scalar gap,
 	IndexTriangleListType& tris, VerticesListType& vertices, bool sameWinding = false )
 {
 	tris.clear();
 	vertices.clear();
 
-	// Quad A, z=0, wound CCW from +Z (normal (0,0,+1)).
 	const unsigned int a0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, 0 ) );
 	const unsigned int a1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, 0 ) );
-	const unsigned int a2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, 0 ) );
-	const unsigned int a3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, 0 ) );
+	const unsigned int a2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, 0 ) );
 	AddTri( tris, a0, a1, a2 );
-	AddTri( tris, a0, a2, a3 );
 
-	// Quad B, z=gap, split along the OTHER diagonal (b1-b3, not A's
-	// b0-b2/a0-a2) -- if both quads shared the same diagonal choice, that
-	// diagonal would weld into ONE edge shared by all 4 triangles (2 from
-	// each quad), a NON-MANIFOLD edge the pre-existing DL-31 edge count
-	// already refuses on its own, which would falsify this fixture as a
-	// DL-150 red-proof (it would refuse for an unrelated reason, before
-	// the discriminator ever runs).  With the diagonals disjoint, only the
-	// 4 PERIMETER edges are shared between A and B post-weld -- exactly
-	// the reviewer's own repro shape.  OPPOSITE winding from +Z (normal
-	// (0,0,-1), faces quad A) by default -- `sameWinding` builds the
-	// DOCUMENTED-RESIDUAL control instead (section (n)), where B faces
-	// the SAME way as A; both are valid consistent windings for either
-	// diagonal choice (verified: cross-product normal is (0,0,+-1) either way).
 	const unsigned int b0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, gap ) );
 	const unsigned int b1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, gap ) );
-	const unsigned int b2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, gap ) );
-	const unsigned int b3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, gap ) );
+	const unsigned int b2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, gap ) );
 	if( sameWinding ) {
-		AddTri( tris, b1, b2, b3 );	// normal (0,0,+1), matches quad A
-		AddTri( tris, b1, b3, b0 );
+		AddTri( tris, b0, b1, b2 );	// same order as A -- literally duplicate post-weld
 	} else {
-		AddTri( tris, b1, b3, b2 );	// normal (0,0,-1), faces quad A
-		AddTri( tris, b1, b0, b3 );
+		AddTri( tris, b0, b2, b1 );	// reversed -- same SET, opposite winding
 	}
 
 	// A remote, genuinely closed tetrahedron (4 vertices, 4 triangular
-	// faces, each edge shared by exactly two of them) far from the quads,
-	// purely to inflate the mesh's own bounding-box diagonal to ~1732 --
-	// matching the reviewer's own repro numbers (eps ~1.7e-3, between the
-	// 0.001 gap that should falsely weld and the 0.01 gap that should
-	// correctly refuse).
+	// faces, each edge shared by exactly two of them) far from the two
+	// triangles, purely to inflate the mesh's own bounding-box diagonal
+	// to ~1732 -- matching the reviewer's own repro numbers (eps ~1.7e-3,
+	// between the 0.001 gap that should falsely weld and the 0.01 gap
+	// that should correctly refuse).
 	const Point3 tCenter( 1000, 1000, 1000 );
 	const unsigned int t0 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 0, 0, 1 ) ) );
 	const unsigned int t1 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 1, 0, -1 ) ) );
 	const unsigned int t2 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, 1, -1 ) ) );
 	const unsigned int t3 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, -1, -1 ) ) );
-	// Outward-wound (CCW from outside) for each of the 4 faces.
 	AddTri( tris, t0, t1, t2 );
 	AddTri( tris, t0, t2, t3 );
 	AddTri( tris, t0, t3, t1 );
@@ -1118,104 +1117,61 @@ static bool BuildOpposedQuadsWithRemoteTetrahedron( const Scalar gap,
 	return true;
 }
 
-//! Builds vertex NORMALS matching `BuildOpposedQuadsWithRemoteTetrahedron`'s
-//! own triangle winding above (one flat per-corner normal per face,
-//! matching every real tessellator/importer's own per-corner convention
-//! this whole file already exercises) -- required so `ComputeWatertightness`'s
-//! DL-150 discriminator (which reads `BuildVertexNormals`' accumulated
-//! per-position orientation) sees the SAME opposed orientation an authored
-//! asset's own normals would carry, not an unauthored (0,0,0) that would
-//! silently skip the check.
-static void BuildOpposedQuadsNormals( const std::size_t nVertices, NormalsListType& normals )
+//! DL-150's own DOCUMENTED RESIDUAL fixture: two INDEPENDENTLY
+//! tessellated quads (2 triangles each, split along DIFFERENT internal
+//! diagonals) facing each other -- after the weld only the 4 PERIMETER
+//! edges are shared between them (each quad's own diagonal stays
+//! internal to itself, at a DIFFERENT post-weld vertex pair than the
+//! other quad's), so no two triangles ever resolve to the same 3
+//! vertices.  Still a false stitch by the same physical mechanism as the
+//! coincident-triangle fixture above, but structurally invisible to a
+//! check that only looks for exact triangle coincidence -- see
+//! `ComputeWatertightness`'s own comment for why this residual is
+//! accepted rather than chased further.
+static bool BuildOffsetTessellationQuadsWithRemoteTetrahedron( const Scalar gap,
+	IndexTriangleListType& tris, VerticesListType& vertices )
 {
-	normals.assign( nVertices, Vector3( 0, 0, 1 ) );
-	// Quad A (indices 0..3): faces +Z.
-	for( std::size_t i = 0; i < 4 && i < nVertices; ++i ) { normals[i] = Vector3( 0, 0, 1 ); }
-	// Quad B (indices 4..7): faces -Z -- the opposed pair the discriminator must catch.
-	for( std::size_t i = 4; i < 8 && i < nVertices; ++i ) { normals[i] = Vector3( 0, 0, -1 ); }
-	// Remote tetrahedron (indices 8..11): outward radial normals -- never
-	// welded to anything else (too far away), so their exact direction
-	// does not matter to the discriminator; only present so every vertex
-	// has SOME authored normal.
-	for( std::size_t i = 8; i < nVertices; ++i ) {
-		normals[i] = Vector3Ops::Normalize( Vector3( 1, 1, 1 ) );
-	}
+	tris.clear();
+	vertices.clear();
+
+	const unsigned int a0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, 0 ) );
+	const unsigned int a1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, 0 ) );
+	const unsigned int a2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, 0 ) );
+	const unsigned int a3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, 0 ) );
+	AddTri( tris, a0, a1, a2 );	// diagonal a0-a2
+	AddTri( tris, a0, a2, a3 );
+
+	const unsigned int b0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, gap ) );
+	const unsigned int b1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, gap ) );
+	const unsigned int b2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, gap ) );
+	const unsigned int b3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, gap ) );
+	AddTri( tris, b1, b3, b2 );	// diagonal b1-b3, opposite winding -- faces quad A
+	AddTri( tris, b1, b0, b3 );
+
+	const Point3 tCenter( 1000, 1000, 1000 );
+	const unsigned int t0 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 0, 0, 1 ) ) );
+	const unsigned int t1 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 1, 0, -1 ) ) );
+	const unsigned int t2 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, 1, -1 ) ) );
+	const unsigned int t3 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, -1, -1 ) ) );
+	AddTri( tris, t0, t1, t2 );
+	AddTri( tris, t0, t2, t3 );
+	AddTri( tris, t0, t3, t1 );
+	AddTri( tris, t1, t3, t2 );
+
+	return true;
 }
 
-static void TestOpposedFacingSheetsRefuseViaDiscriminator()
+//! Builds a `TriangleMeshGeometryIndexed` from the given index/vertex
+//! lists and runs `SignedDistanceLower` at `queryPoint`.  Normals are a
+//! trivial per-vertex placeholder (DL-150's coincident-triangle
+//! discriminator, unlike the orientation-based one it replaced, reads
+//! POSITIONS only -- see `ComputeWatertightness`'s own comment): any
+//! authored value works, `DoneIndexedTriangles`' DEBUG check just needs
+//! an index-sized array to exist (same convention as `BuildMesh` above).
+static bool RunSignedDistanceFixture( const IndexTriangleListType& tris, const VerticesListType& vertices,
+	const Point3& queryPoint, Scalar& outSigned, bool& outExact )
 {
-	std::cout << "(m) DL-150 MONEY -- two opposite-winding facing quads, welded by a remote-inflated "
-		"bbox, REFUSE via the orientation discriminator" << std::endl;
-
-	{
-		// Control at the SAME shape, gap=0.01 > eps: unaffected by DL-150,
-		// the quads never weld to each other at all and each keeps its own
-		// 4 boundary edges (8 total) -- refuses via the pre-existing
-		// DL-31 edge-count check alone, exactly as the ledger row states.
-		IndexTriangleListType tris; VerticesListType vertices; NormalsListType normals;
-		BuildOpposedQuadsWithRemoteTetrahedron( Scalar( 0.01 ), tris, vertices );
-		BuildOpposedQuadsNormals( vertices.size(), normals );
-		TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
-		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
-		mesh->addref();
-		mesh->BeginIndexedTriangles();
-		mesh->AddVertices( vertices );
-		mesh->AddNormals( normals );
-		mesh->AddTexCoords( coords );
-		mesh->AddIndexedTriangles( tris );
-		mesh->DoneIndexedTriangles();
-
-		Scalar outSigned = 12345.0; bool outExact = false;
-		const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0.5, 0.005 ), Scalar( 1000 ), outSigned, outExact );
-		Check( !ok, "(m) control -- gap=0.01 > eps never welds the quads together; refuses via the ordinary boundary-edge count" );
-		mesh->release();
-	}
-	{
-		// MONEY: gap=0.001 < eps (~1.7e-3).  Pre-DL-150 this falsely
-		// certifies watertight; post-DL-150 the orientation discriminator
-		// refuses it.
-		IndexTriangleListType tris; VerticesListType vertices; NormalsListType normals;
-		BuildOpposedQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices );
-		BuildOpposedQuadsNormals( vertices.size(), normals );
-		TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
-		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
-		mesh->addref();
-		mesh->BeginIndexedTriangles();
-		mesh->AddVertices( vertices );
-		mesh->AddNormals( normals );
-		mesh->AddTexCoords( coords );
-		mesh->AddIndexedTriangles( tris );
-		mesh->DoneIndexedTriangles();
-
-		Scalar outSigned = 12345.0; bool outExact = false;
-		const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0.5, 0.0005 ), Scalar( 1000 ), outSigned, outExact );
-		Check( !ok, "(m) MONEY -- DL-150: gap=0.001 < eps welds the two opposed-facing quads, but the "
-			"orientation discriminator now refuses the false 2-manifold instead of answering a wrong signed depth" );
-		mesh->release();
-	}
-}
-
-//! DL-150's own DOCUMENTED RESIDUAL, per this function's own header
-//! comment and the ledger row: two sheets facing the SAME way (identical,
-//! not opposed, winding) weld into an equally false 2-manifold with a
-//! near +1 cosine -- indistinguishable from a genuine seam by orientation
-//! alone.  This is a CONTROL, not a red-proof target: it is expected to
-//! stay falsely certified both before and after this fix, and exists so a
-//! future, stronger discriminator's own regression test has a known
-//! starting point rather than silently inheriting an untested claim.
-static void TestSameFacingSheetsResidualUncaught()
-{
-	std::cout << "(n) DL-150 documented residual -- two SAME-winding facing quads still falsely certify "
-		"(orientation alone cannot catch this case)" << std::endl;
-
-	// Same fixture as (m), but quad B wound the SAME way as quad A (both
-	// CCW from +Z) -- both accumulated normals end up (0,0,1), cosine +1,
-	// well outside the -0.5 discriminator threshold.
-	IndexTriangleListType tris; VerticesListType vertices; NormalsListType normals;
-	BuildOpposedQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices, /*sameWinding=*/true );
-	BuildOpposedQuadsNormals( vertices.size(), normals );
-	// Both quads face +Z here -- correct the second quad's normals to match its (unreversed) winding.
-	for( std::size_t i = 4; i < 8 && i < normals.size(); ++i ) { normals[i] = Vector3( 0, 0, 1 ); }
+	NormalsListType normals( vertices.size(), Vector3( 0, 0, 1 ) );
 	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
 
 	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
@@ -1227,10 +1183,275 @@ static void TestSameFacingSheetsResidualUncaught()
 	mesh->AddIndexedTriangles( tris );
 	mesh->DoneIndexedTriangles();
 
+	outSigned = 12345.0; outExact = false;
+	const bool ok = mesh->SignedDistanceLower( queryPoint, Scalar( 1000 ), outSigned, outExact );
+	mesh->release();
+	return ok;
+}
+
+static void TestOpposedFacingSheetsRefuseViaDiscriminator()
+{
+	std::cout << "(m) DL-150 MONEY -- two coincident triangles, welded by a remote-inflated bbox, "
+		"REFUSE via the coincident-triangle discriminator" << std::endl;
+
+	{
+		// Control at the SAME shape, gap=0.01 > eps: unaffected by DL-150,
+		// the two triangles never weld to each other at all and each
+		// keeps its own 3 boundary edges (6 total) -- refuses via the
+		// pre-existing DL-31 edge-count check alone, exactly as the
+		// ledger row states.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildCoincidentTriangleWithRemoteTetrahedron( Scalar( 0.01 ), tris, vertices );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.3, 0.3, 0.005 ), outSigned, outExact );
+		Check( !ok, "(m) control -- gap=0.01 > eps never welds the two triangles together; refuses via the ordinary boundary-edge count" );
+	}
+	{
+		// MONEY: gap=0.001 < eps (~1.7e-3), opposite winding.  Pre-DL-150
+		// (verified against master commit 4b692be6, before ANY DL-150
+		// code existed) this falsely certifies watertight with a
+		// confidently wrong signed depth in the sliver between the two
+		// triangles; the coincident-triangle discriminator now refuses it.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildCoincidentTriangleWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices, /*sameWinding=*/false );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.3, 0.3, 0.0005 ), outSigned, outExact );
+		Check( !ok, "(m) MONEY -- DL-150: gap=0.001 < eps welds two opposite-winding coincident triangles; "
+			"the discriminator refuses the false 2-manifold instead of answering a wrong signed depth" );
+	}
+}
+
+//! DL-150 review round 2 (2026-09-18): the SAME-winding case is no longer
+//! a documented residual -- it is now CAUGHT too, and by a STRONGER
+//! signal than the opposite-winding case: with matching winding, the two
+//! triangles resolve to the exact same ORDERED vertex triple (not just
+//! the same unordered set), i.e. two literally duplicate triangles.  The
+//! orientation-based discriminator this replaced could not see this case
+//! at all (cosine +1, indistinguishable from a genuine seam by
+//! orientation alone); the coincident-triangle check does not consult
+//! orientation in the first place, so it treats both cases identically.
+static void TestSameWindingCoincidentTriangleAlsoRefuses()
+{
+	std::cout << "(n) DL-150 -- same-winding coincident triangles ALSO refuse (closes the prior "
+		"orientation-discriminator residual)" << std::endl;
+
+	IndexTriangleListType tris; VerticesListType vertices;
+	BuildCoincidentTriangleWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices, /*sameWinding=*/true );
+	Scalar outSigned; bool outExact;
+	const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.3, 0.3, 0.0005 ), outSigned, outExact );
+	Check( !ok, "(n) MONEY -- same-winding coincident triangles weld into two LITERALLY duplicate "
+		"triangles; the coincident-triangle discriminator refuses regardless of orientation" );
+}
+
+//! DL-150's own DOCUMENTED RESIDUAL (per `ComputeWatertightness`'s own
+//! comment and the ledger row): two independently-tessellated quads on
+//! DIFFERENT internal diagonals still weld into an equally false
+//! 2-manifold that this check cannot see (every edge still reads count
+//! 2; no two triangles share all three vertices).  This is a CONTROL,
+//! not a red-proof target: it is expected to stay falsely certified, and
+//! exists so a future, stronger check has a known, honestly-stated
+//! starting point.
+static void TestOffsetTessellationResidualUncaught()
+{
+	std::cout << "(o) DL-150 documented residual -- independently-tessellated (different-diagonal) quads "
+		"still falsely certify (no coincident triangles for this check to find)" << std::endl;
+
+	IndexTriangleListType tris; VerticesListType vertices;
+	BuildOffsetTessellationQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices );
+	Scalar outSigned; bool outExact;
+	const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.5, 0.5, 0.0005 ), outSigned, outExact );
+	Check( ok, "(o) DOCUMENTED RESIDUAL -- independently-tessellated (different-diagonal) facing sheets "
+		"still falsely certify watertight; see DL-150's own stated limit" );
+}
+
+//! Appends ONE triangle with brand-new, per-corner vertex slots and a
+//! REAL flat face normal computed from its own winding (`cross(p1-p0,
+//! p2-p0)`, normalized) -- the exact per-face-flat-shaded convention
+//! `Box.glb`/section (e) use, but built explicitly here (not through
+//! `BuildMesh()`'s placeholder-normal helper) so the caller's own winding
+//! determines a REAL outward direction.  Used by the wedge/prism fixture
+//! below, whose whole point is to exercise a genuine sharp CONVEX crease
+//! with authored normals that actually vary face to face -- the exact
+//! thing `BuildMesh()`'s `(0,0,1)`-for-every-vertex placeholder could
+//! never exercise (see `ComputeWatertightness`'s own comment on why the
+//! removed orientation discriminator's flat-cube control was a red
+//! herring for this reason).
+static void AddFlatTriFace( VerticesListType& vertices, NormalsListType& normals, IndexTriangleListType& tris,
+	const Point3& p0, const Point3& p1, const Point3& p2 )
+{
+	const Vector3 e1 = Vector3Ops::mkVector3( p1, p0 );	// p1 - p0
+	const Vector3 e2 = Vector3Ops::mkVector3( p2, p0 );	// p2 - p0
+	const Vector3 n = Vector3Ops::Normalize( Vector3Ops::Cross( e1, e2 ) );
+	const unsigned int base = (unsigned int)vertices.size();
+	vertices.push_back( p0 ); vertices.push_back( p1 ); vertices.push_back( p2 );
+	normals.push_back( n ); normals.push_back( n ); normals.push_back( n );
+	AddTri( tris, base, base + 1, base + 2 );
+}
+
+//! A CLOSED triangular-prism wedge with apex angle `apexDeg` at the edge
+//! `A0-A1` (the edge shared by the two slanted side faces), REAL per-face
+//! flat normals throughout.  Apex at x=0; base (the wide face opposite
+//! the apex) at x=1, spanning y in `[-t,t]` where `t=tan(apexDeg/2)`;
+//! prism axis along Z, length H.  8 triangles: 2 end caps + 3 side
+//! quads (each split into 2), EVERY winding independently verified by
+//! hand (see the review-round-2 fix commit message for the full
+//! derivation) to produce the correct OUTWARD normal -- in particular,
+//! the two slanted faces' outward normals are `(-t,+-1,0)` (unnormalized),
+//! whose cosine is EXACTLY `-cos(apexDeg)`: this is what makes a sharp
+//! wedge (small `apexDeg`) read a cosine near -1, indistinguishable from
+//! the false-stitch signature the REMOVED orientation discriminator
+//! looked for, and why that discriminator was wrong.
+static void BuildWedge( const Scalar apexDeg, const Scalar H,
+	VerticesListType& vertices, NormalsListType& normals, IndexTriangleListType& tris )
+{
+	vertices.clear(); normals.clear(); tris.clear();
+
+	const Scalar t = std::tan( apexDeg * PI / Scalar( 360 ) );	// tan(apexDeg/2 in radians)
+	const Point3 A0( 0, 0, 0 ),      B0( 1, t, 0 ),      C0( 1, -t, 0 );
+	const Point3 A1( 0, 0, H ),      B1( 1, t, H ),      C1( 1, -t, H );
+
+	AddFlatTriFace( vertices, normals, tris, A0, B0, C0 );	// cap z=0, outward -Z
+	AddFlatTriFace( vertices, normals, tris, A1, C1, B1 );	// cap z=H, outward +Z
+	AddFlatTriFace( vertices, normals, tris, A0, B1, B0 );	// face AB, outward (-t,+1,0)
+	AddFlatTriFace( vertices, normals, tris, A0, A1, B1 );
+	AddFlatTriFace( vertices, normals, tris, A0, C0, C1 );	// face AC, outward (-t,-1,0)
+	AddFlatTriFace( vertices, normals, tris, A0, C1, A1 );
+	AddFlatTriFace( vertices, normals, tris, B0, B1, C1 );	// face BC (the wide base), outward (+1,0,0)
+	AddFlatTriFace( vertices, normals, tris, B0, C1, C0 );
+}
+
+//! DL-150 review round 2 MONEY: a genuinely closed, correctly-wound
+//! wedge/prism with a sharp CONVEX crease must certify watertight and
+//! answer the correct signed depth at EVERY apex angle, including ones
+//! sharp enough (<60 degrees) that the REMOVED orientation discriminator
+//! (threshold cosine < -0.5) falsely refused it (red on the parent
+//! commit 1c0bf3ae: apex 30/50/58 degrees refused, only 60/70 passed,
+//! since cosine = -cos(apexDeg) crosses -0.5 exactly at apexDeg=60).
+//! Query point is on the prism's central axis at half-height; its true
+//! nearest surface (verified analytically for every angle tested here)
+//! is always one of the two slanted side faces, at closed-form distance
+//! `0.5*t/sqrt(t*t+1)` where `t=tan(apexDeg/2)` -- the mesh is exactly
+//! flat (no polyhedral-approximation slack), so this is checked tight.
+static void TestWedgeSharpCreaseCertifiesAtEveryAngle()
+{
+	std::cout << "(p) DL-150 MONEY -- a closed, real-normal wedge certifies at every apex angle, "
+		"including sharp convex creases the removed orientation check falsely refused" << std::endl;
+
+	const Scalar apexAnglesDeg[] = { 30, 50, 58, 60, 70 };
+	const Scalar H = 2.0;
+	for( const Scalar apexDeg : apexAnglesDeg ) {
+		VerticesListType vertices; NormalsListType normals; IndexTriangleListType tris;
+		BuildWedge( apexDeg, H, vertices, normals, tris );
+		TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+
+		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+		mesh->addref();
+		mesh->BeginIndexedTriangles();
+		mesh->AddVertices( vertices );
+		mesh->AddNormals( normals );
+		mesh->AddTexCoords( coords );
+		mesh->AddIndexedTriangles( tris );
+		mesh->DoneIndexedTriangles();
+
+		const std::string tag = "(p) apex=" + std::to_string( (int)apexDeg ) + "deg";
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0, H / 2 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, tag + " -- MONEY: certifies watertight (a genuine sharp convex crease is not a false stitch)" );
+		if( ok ) {
+			const Scalar t = std::tan( apexDeg * PI / Scalar( 360 ) );
+			const Scalar expected = Scalar( 0.5 ) * t / std::sqrt( t * t + Scalar( 1 ) );
+			CheckClose( (double)outSigned, -(double)expected, 1e-9, tag + " -- signed depth matches the closed-form nearest-slanted-face distance" );
+			Check( outExact, tag + " -- exact" );
+		}
+
+		mesh->release();
+	}
+}
+
+//! A hand-built, per-face-duplicated (REAL per-face flat normals, not
+//! `BuildMesh()`'s `(0,0,1)` placeholder) closed cube -- the regression
+//! `ComputeWatertightness`'s own review-round-2 correction calls for: the
+//! three mutually orthogonal face normals meeting at any corner have
+//! cosine exactly 0 (a bounded, ordinary angle no discriminator should
+//! ever flag), confirmed here through REAL authored normals rather than
+//! the placeholder that let the removed orientation check's own control
+//! pass for the wrong reason.
+static void TestFlatShadedCubeWithRealNormalsCertifies()
+{
+	std::cout << "(q) DL-150 sibling -- a flat-shaded cube with REAL per-face normals still certifies" << std::endl;
+
+	const Scalar h = 2.0;
+	std::vector<Point3> corners;
+	CubeCorners( h, corners );
+
+	// Same 12-triangle winding `CubeTriangles()` uses (see that function's
+	// own comment), so the per-face normals computed by `AddFlatTriFace`
+	// really do point outward.
+	VerticesListType vertices; NormalsListType normals; IndexTriangleListType tris;
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[1], corners[2] );	// bottom (z=-h)
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[2], corners[3] );
+	AddFlatTriFace( vertices, normals, tris, corners[4], corners[6], corners[5] );	// top (z=+h)
+	AddFlatTriFace( vertices, normals, tris, corners[4], corners[7], corners[6] );
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[5], corners[1] );	// front (y=-h)
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[4], corners[5] );
+	AddFlatTriFace( vertices, normals, tris, corners[3], corners[2], corners[6] );	// back (y=+h)
+	AddFlatTriFace( vertices, normals, tris, corners[3], corners[6], corners[7] );
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[3], corners[7] );	// left (x=-h)
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[7], corners[4] );
+	AddFlatTriFace( vertices, normals, tris, corners[1], corners[5], corners[6] );	// right (x=+h)
+	AddFlatTriFace( vertices, normals, tris, corners[1], corners[6], corners[2] );
+
+	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
 	Scalar outSigned = 12345.0; bool outExact = false;
-	const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0.5, 0.0005 ), Scalar( 1000 ), outSigned, outExact );
-	Check( ok, "(n) DOCUMENTED RESIDUAL -- same-winding facing sheets still falsely certify watertight "
-		"(orientation-only discriminator cannot distinguish this from a genuine seam; see DL-150's own limit)" );
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(q) MONEY -- flat-shaded cube with REAL (non-placeholder) per-face normals certifies watertight" );
+	CheckClose( (double)outSigned, -(double)h, 1e-9, "(q) centre depth equals the half-size exactly" );
+	Check( outExact, "(q) exact" );
+
+	mesh->release();
+}
+
+//! A genuinely closed, valid thin box (a real slab) whose two large
+//! faces are thicker apart than `eps` -- confirms the position weld does
+//! NOT merge them (they stay two distinct, non-coincident sheets of the
+//! SAME closed solid) and the mesh still certifies via the ordinary
+//! DL-31/DL-143 path, unaffected by DL-150's mechanism either way.
+static void TestThinButValidSolidThickerThanEpsCertifies()
+{
+	std::cout << "(r) DL-150 sibling -- a genuinely closed thin slab (thickness >> eps) certifies normally" << std::endl;
+
+	// Half-thickness 0.05 in a unit-scale box: bbox diagonal ~sqrt(2^2+2^2+0.1^2)~2.83,
+	// eps~2.83e-6 -- far below the 0.1 physical thickness, so the two
+	// large faces are never welded to each other.
+	const Scalar halfW = 1.0, halfD = 1.0, halfThick = 0.05;
+	std::vector<Point3> corners;
+	corners.push_back( Point3( -halfW, -halfD, -halfThick ) );	// 0
+	corners.push_back( Point3(  halfW, -halfD, -halfThick ) );	// 1
+	corners.push_back( Point3(  halfW,  halfD, -halfThick ) );	// 2
+	corners.push_back( Point3( -halfW,  halfD, -halfThick ) );	// 3
+	corners.push_back( Point3( -halfW, -halfD,  halfThick ) );	// 4
+	corners.push_back( Point3(  halfW, -halfD,  halfThick ) );	// 5
+	corners.push_back( Point3(  halfW,  halfD,  halfThick ) );	// 6
+	corners.push_back( Point3( -halfW,  halfD,  halfThick ) );	// 7
+
+	IndexTriangleListType tris;
+	CubeTriangles( tris, /*dropTopFace=*/false );
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( corners, tris );
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(r) MONEY -- a genuinely closed thin (but > eps) slab certifies watertight normally" );
+	CheckClose( (double)outSigned, -(double)halfThick, 1e-9, "(r) centre depth equals the slab's own half-thickness (nearest surface, not half-width)" );
+	Check( outExact, "(r) exact" );
 
 	mesh->release();
 }
@@ -1418,7 +1639,11 @@ int main()
 	TestDisplacedWrapsWatertight();
 	TestScaledMeshWeldsRelatively();
 	TestOpposedFacingSheetsRefuseViaDiscriminator();
-	TestSameFacingSheetsResidualUncaught();
+	TestSameWindingCoincidentTriangleAlsoRefuses();
+	TestOffsetTessellationResidualUncaught();
+	TestWedgeSharpCreaseCertifiesAtEveryAngle();
+	TestFlatShadedCubeWithRealNormalsCertifies();
+	TestThinButValidSolidThickerThanEpsCertifies();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

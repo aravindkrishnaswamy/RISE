@@ -3286,56 +3286,88 @@ measured by a harness test against the tracked scene.
   EXACT-bit-equality local model — that model exists specifically to
   isolate the seam from the pole fix, not to describe DL-143's actual
   (epsilon, not exact) production weld, so the two are not in tension.
-  **DL-150 OPEN 2026-09-17, discriminator added** (`debt-dlweld`, found
-  reviewing this same DL-143 closure): the weld epsilon being RELATIVE to
-  the whole mesh's bounding box cuts both ways — it can also exceed the
-  PHYSICAL GAP between two genuinely INDEPENDENT open sheets whenever
-  anything else in the same mesh inflates that bbox (a thin double shell,
-  a z-fight offset, fine detail inside a large architectural mesh),
-  welding them into one false, confidently-signed 2-manifold that
-  `SignedDistanceLower` then answers a wrong depth for. `ComputeWatertightness`
-  now additionally refuses when the weld merges vertices whose accumulated
-  surface orientations are opposed (cosine < -0.5, ~120 degrees) — the
-  signature of two facing sheets glued by coincidence rather than one
-  continuous seam (a legitimate seam's welded corners agree in
-  orientation: identical on a smooth seam, at most ~90 degrees apart at a
-  flat-shaded cube corner). Red-proved with the reviewer's own repro
-  (two independently-triangulated, opposite-winding quads 0.001 units
+  **DL-150 OPEN, discriminator added 2026-09-17, REPLACED 2026-09-18
+  after independent review found a P1 in the first version** (`debt-dlweld`,
+  found reviewing this same DL-143 closure): the weld epsilon being
+  RELATIVE to the whole mesh's bounding box cuts both ways — it can also
+  exceed the PHYSICAL GAP between two genuinely INDEPENDENT open sheets
+  whenever anything else in the same mesh inflates that bbox (a thin
+  double shell, a z-fight offset, fine detail inside a large architectural
+  mesh), welding them into one false, confidently-signed 2-manifold that
+  `SignedDistanceLower` then answers a wrong depth for.
+  ~~The first fix (2026-09-17) refused certification when the weld merged
+  vertices whose accumulated surface orientations were opposed (cosine
+  < -0.5, ~120 degrees), on the theory that a legitimate seam's welded
+  corners always agree in orientation while two facing sheets do not.~~
+  **That theory is FALSE for a genuinely closed solid with a sharp CONVEX
+  crease**: a symmetric wedge/prism with apex angle `theta` has its two
+  side faces' outward normals at cosine EXACTLY `-cos(theta)` — identical
+  in sign and rough magnitude to the false-stitch signature the threshold
+  was meant to catch, and as `theta -> 0` (a knife edge) that cosine
+  approaches -1, so NO fixed orientation threshold can separate a sharp
+  legitimate crease from a genuinely opposed false stitch. A real, closed,
+  correctly-wound triangular-prism wedge at apex 30/50/58/60/70 degrees
+  was FALSELY REFUSED by the first fix at every one of those angles
+  (`tests/MeshInteriorSignalTest.cpp` section (p)) — the flat-shaded-cube
+  control that seemed to validate the threshold at the time was itself a
+  red herring, since it went through `BuildMesh()`'s helper, which stamps
+  a `(0,0,1)` placeholder normal on every vertex regardless of face, so it
+  never exercised a real per-face crease at all.
+
+  The current discriminator instead targets the actual GEOMETRIC SIGNATURE
+  of a false stitch, independent of orientation: after the position weld,
+  two independently-triangulated sheets closer than `eps` produce two
+  topologically DISTINCT triangles (by authoring origin) that resolve to
+  the SAME three post-weld vertex ids — an unordered-set match for an
+  opposite-winding pair, an exact ordered match too when the windings
+  happen to agree. A legitimate closed mesh, at ANY dihedral angle from a
+  hairline crease to a near-flat seam, never has two distinct faces
+  occupying the same three vertices. Detected by sorting each triangle's
+  post-weld id triple and scanning the full sorted list for adjacent
+  duplicates (`O(T log T)`, `T` = triangle count) — no per-vertex or
+  per-face normal computation needed at all. Red-proved against `master`
+  `4b692be6` (before ANY DL-150 code existed) with two COINCIDENT
+  triangles (no internal diagonal, so no confound with the pre-existing
+  DL-31 edge count — an earlier fixture using two-triangle QUADS sharing a
+  diagonal was found on review to already trip DL-31 on its own, which
+  would have made it a red-proof of the wrong mechanism) 0.001 units
   apart, sharing a mesh with one remote vertex that inflates the bbox
-  diagonal to ~1732 so `eps`~1.7e-3 exceeds the gap): pre-fix falsely
-  certifies watertight with a confidently WRONG signed depth in the
-  sliver between the quads; post-fix, the orientation discriminator
-  refuses it (`tests/MeshInteriorSignalTest.cpp` section (m)). **This
-  does NOT close DL-150 as a design limit, only as a shipped mitigation**:
-  two sheets facing the SAME way (cosine near +1, e.g. two overlapping
-  coplanar duplicate quads) weld into an equally false 2-manifold that
-  orientation alone cannot distinguish from a genuine seam — a documented,
+  diagonal to ~1732 so `eps`~1.7e-3 exceeds the gap: pre-any-fix falsely
+  certifies watertight with a confidently WRONG signed depth in the sliver
+  between the triangles, for both an opposite-winding and a same-winding
+  pair; post-fix, the coincident-triangle discriminator refuses both
+  (`tests/MeshInteriorSignalTest.cpp` sections (m)/(n) — the same-winding
+  case, formerly a documented residual the orientation check could not
+  see at cosine +1, is now caught too, since coincidence does not depend
+  on orientation). **This still does NOT close DL-150 as a design limit,
+  only as a shipped mitigation**: two independently-tessellated sheets
+  closer than `eps` that are NOT triangle-coincident after the weld (e.g.
+  two quads split along DIFFERENT internal diagonals) still weld into an
+  equally false 2-manifold this check cannot see — every edge still reads
+  count 2, and no two triangles share all three vertices — a documented,
   deliberately UNCAUGHT residual (`tests/MeshInteriorSignalTest.cpp`
-  section (n), a control, not a red-proof target). No shipped glTF asset
+  section (o), a control, not a red-proof target). No shipped glTF asset
   (Avocado, DragonAttenuation, SheenChair, NormalTangentTest) or shipped
   tessellator flips certification from this change — verified by
   re-running each through the production path and confirming the DL-143
   per-asset boundary/non-manifold counts (38; 617; 0/6; 400/528/384/32;
-  128) are byte-for-byte unchanged. Measured cost (CPU-time, isolated
-  pre-/post-fix library A/B, `DoneIndexedTriangles` only, median of 25-40
-  repeats): a 48401-vertex synthetic watertight sphere (detail=220, where
-  the discriminator actually runs) moved from ~1047 to ~1134 ns/vertex
-  (+8.3%); the 76809-vertex `DragonAttenuation` "Dragon" asset (which
-  fails the boundary/non-manifold check before the discriminator ever
-  runs) moved from ~909 to ~991 ns/vertex (+8.9%, from the now-unconditional
-  per-triangle orientation accumulation folded into the SAME loop that
-  already builds the edge map, plus the new weld-reduction log line) —
-  both comfortably inside a 20% budget. The discriminator itself uses a
-  counting-sort (CSR) grouping rather than a hash map of vectors, and is
-  capped at 64 members per weld group (a documented limit, not a
-  correctness claim either way for a larger group — a rare, arguably
-  pathological input). See the ledger's DL-150 entry for the full
-  mechanism, the `WeldVertexPositions`/`ComputeWatertightness` function
-  comments in `TriangleMeshGeometryIndexed.cpp` for the code-level
-  account, and this bullet's own "documented residual" above for what a
-  stronger guarantee would still need (an independent geometric test —
-  self-intersection or distinct connected-component volume enclosure —
-  out of scope for this cheap, build-time check).
+  128) are byte-for-byte unchanged. Measured cost (CPU-time via `clock()`,
+  isolated pre-/post-fix library A/B, `DoneIndexedTriangles` only, median
+  of 20-40 repeats — wall-clock was tried first and rejected, it swung 2x
+  run to run from unrelated system scheduling noise on this shared
+  machine): the current mechanism is indistinguishable from the true
+  `master` baseline (no DL-150 code at all) within measurement noise on
+  both a 48401-vertex synthetic watertight sphere and the 76809-vertex
+  `DragonAttenuation` "Dragon" asset — markedly cheaper than the removed
+  orientation discriminator's own measured +8.3%/+8.9% overhead, since
+  sorting id triples needs no cross products or per-position vector
+  accumulation. See the ledger's DL-150 entry for the full mechanism, the
+  `WeldVertexPositions`/`ComputeWatertightness` function comments in
+  `TriangleMeshGeometryIndexed.cpp` for the code-level account, and this
+  bullet's own "documented residual" above for what a stronger guarantee
+  would still need (an independent geometric test — self-intersection or
+  distinct connected-component volume enclosure — out of scope for this
+  cheap, build-time check).
 - **`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
   produces no diagnostic, makes the object vanish from the render, and
