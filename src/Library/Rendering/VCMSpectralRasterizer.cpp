@@ -456,6 +456,18 @@ void VCMSpectralRasterizer::IntegratePixel(
 					continue;
 				}
 
+				// DL-126 P1.  See BDPTSpectralRasterizer.cpp's twin
+				// comment: a null-BSDF continuation vertex gives
+				// RecomputeSubpathThroughputNM no companion/hero ratio to
+				// compute, wavelength-independently, so terminate
+				// secondaries here too rather than let those always-zero
+				// companions dilute the bundle mean.
+				if( BDPTIntegrator::HasNullBSDFContinuationVertex( localLightVerts ) ||
+					BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
+				{
+					swl.TerminateSecondary();
+				}
+
 				// HWSS: re-evaluate companion wavelengths on the same
 				// geometric path.  If any vertex along the hero path is
 				// dispersive (wavelength-dependent IOR) the companions
