@@ -360,6 +360,50 @@ namespace RISE
 		//! truthful about the reported orientation either way.
 		bool						bGeomNormalRayDerived;
 
+		//! OUTPUT: set by geometries whose double-sided/back-face
+		//! `bGeomNormalOrientedToRay` flip happens on an OPEN 2-D SHEET
+		//! rather than a closed, watertight solid -- i.e. a surface where
+		//! BOTH faces are legitimate physical sides (a leaf, a cloth
+		//! card, a bare `clipped_plane`/Bezier patch) rather than the
+		//! inside/outside of a solid volume.  Default false.
+		//!
+		//! DL-96: the BSSRDF front-face admission gate
+		//! (`PathTracingIntegrator.cpp`, `BDPTIntegrator.cpp`) uses
+		//! `TrueGeomFacing()` to pick the SINGLE true outward face of a
+		//! closed solid -- correct there (that is DL-70's own fix), but
+		//! it silently drops subsurface-scattering entry from the SECOND
+		//! face of an open sheet, where both faces are legitimate entry
+		//! points.  `BSSRDFEntryFacing()` below reads this flag to admit
+		//! entry on the RAY-FACING (reported) side instead, for that
+		//! gate ONLY.  No other DL-70 consumer (the medium-stack walk,
+		//! the transmissive-shadow Fresnel pair, the volume-shading
+		//! entering/leaving test, the SMS photon `bEntering` stamp, the
+		//! alpha-card `bOneSided` cull, the override-UV-generator normal)
+		//! reads this flag -- they keep DL-70's closed-solid recovery
+		//! unconditionally, so adding this flag does not change their
+		//! behaviour.
+		//!
+		//! WHICH GEOMETRIES SET IT (mirrors `bGeomNormalOrientedToRay`'s
+		//! own list, but narrower):
+		//!   * `TriangleMeshGeometryIndexed` -- `bDoubleSided &&
+		//!     !m_bWatertight` (DL-143's build-time position-weld
+		//!     watertightness certification).
+		//!   * `TriangleMeshGeometry` (the non-indexed twin) --
+		//!     `bDoubleSided` unconditionally: this class has no
+		//!     watertightness certification at all, so every
+		//!     double-sided non-indexed mesh is treated as an open
+		//!     sheet.
+		//!   * `ClippedPlaneGeometry`, `BezierPatchGeometry` -- on a
+		//!     back-face hit (the same condition each already uses for
+		//!     `bGeomNormalOrientedToRay`): a plane or patch never
+		//!     encloses a volume, so a double-sided hit on one is always
+		//!     an open sheet.
+		//! `HairGeometry` does NOT set it -- it is already excluded from
+		//! the recovery via `bGeomNormalRayDerived`/`HasTrueGeomSide()`,
+		//! for an orthogonal reason (no genuine two-sided winding at
+		//! all, not "two legitimate sides of one winding").
+		bool						bOpenSheet;
+
 		//! THE shared recovery for the two flags above (DL-70).  Returns
 		//! the TRUE, ray-independent, winding-order geometric normal: the
 		//! reported `vGeomNormal` with the double-sided / back-face
@@ -407,6 +451,22 @@ namespace RISE
 		inline bool HasTrueGeomSide() const
 		{
 			return !bGeomNormalRayDerived;
+		}
+
+		//! DL-96: the BSSRDF front-face admission test's own facing
+		//! function.  Admits entry from the RAY-FACING (reported) side
+		//! on an open sheet -- `bOpenSheet`, both faces legitimate -- and
+		//! from the TRUE outward side (`TrueGeomFacing`) otherwise
+		//! (closed-solid semantics, DL-70's original fix, unchanged).
+		//! NOT a general-purpose replacement for `TrueGeomFacing` --
+		//! scoped to this one gate; see `bOpenSheet`'s doc comment for
+		//! why every other DL-70 consumer keeps `TrueGeomFacing`
+		//! unconditionally.
+		inline Scalar BSSRDFEntryFacing( const Vector3& d ) const
+		{
+			return bOpenSheet
+				? Vector3Ops::Dot( vGeomNormal, d )
+				: TrueGeomFacing( d );
 		}
 
 		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)
@@ -701,6 +761,7 @@ namespace RISE
 		  range2( RISE_INFINITY ),
 		  bGeomNormalOrientedToRay( false ),
 		  bGeomNormalRayDerived( false ),
+		  bOpenSheet( false ),
 		  bHasTexCoord1( false ),
 		  bUVGeneratorApplied( false ),
 		  pmxWorldToObject( 0 ),
@@ -733,6 +794,7 @@ namespace RISE
 		  vGeomNormal2( r.vGeomNormal2 ),
 		  bGeomNormalOrientedToRay( r.bGeomNormalOrientedToRay ),
 		  bGeomNormalRayDerived( r.bGeomNormalRayDerived ),
+		  bOpenSheet( r.bOpenSheet ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
@@ -779,6 +841,7 @@ namespace RISE
 			vGeomNormal2 = r.vGeomNormal2;
 			bGeomNormalOrientedToRay = r.bGeomNormalOrientedToRay;
 			bGeomNormalRayDerived = r.bGeomNormalRayDerived;
+			bOpenSheet = r.bOpenSheet;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;

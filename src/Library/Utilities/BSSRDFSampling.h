@@ -33,6 +33,11 @@
 //       fabricated rather than a recovered winding normal
 //       (HairGeometry; RayIntersectionGeometric::bGeomNormalRayDerived)
 //       -- see the probe loop in BSSRDFSampling.cpp for the full rule.
+//       DL-96 (checked, not changed here): the entry ADMISSION GATE at
+//       the call site treats an open sheet's two faces symmetrically
+//       (RayIntersectionGeometric::bOpenSheet), but this probe's own
+//       per-hit recovery stays unconditional -- see the long comment
+//       at its call site in BSSRDFSampling.cpp for why.
 //    7. If hit: evaluate Rd(r_actual), compute multi-axis PDF
 //    8. Generate cosine-weighted scattered ray from entry normal
 //    9. Compute Fresnel transmission and Sw normalization

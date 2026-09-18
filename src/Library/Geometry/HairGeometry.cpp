@@ -1021,7 +1021,19 @@ void HairGeometry::RayElementIntersection( RayIntersectionGeometric& ri, const M
 
 	ri.bHit   = true;
 	ri.range  = t;
-	ri.range2 = t;					// no volume: exit == entry (class comment)
+	// no volume: exit == entry (class comment).  DL-97 CONTRACT: this
+	// zero-length chord is load-bearing, not incidental -- it is what
+	// makes it SAFE for LightSampler.cpp's and BDPTIntegrator.cpp's
+	// medium-stack shadow/connection walks to unconditionally SKIP any
+	// crossing whose normal is ray-derived (bGeomNormalRayDerived,
+	// HasTrueGeomSide() == false) rather than push/pop an interior
+	// medium they have no principled entering/exiting classification
+	// for on a 1-D curve.  If this ever stops being `t` (a genuine
+	// positive-length chord), those two call sites' skip silently makes
+	// the object's interior medium invisible on shadow/connection
+	// rays -- see their own DL-97 comments.  Pinned by
+	// tests/HairInteriorMediumSkipTest.cpp.
+	ri.range2 = t;
 	ri.ptIntersection = H;			// object space; Object::IntersectRay recomputes + transforms
 
 	ri.vNormal      = Ncyl;

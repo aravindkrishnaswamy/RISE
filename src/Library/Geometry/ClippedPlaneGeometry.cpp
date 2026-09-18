@@ -187,6 +187,11 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	// ray -- record it so consumers needing the TRUE surface facing
 	// (RayCaster's x-ray self-hit test) can recover the unflipped sign.
 	ri.bGeomNormalOrientedToRay = isBackFaceHit;
+	// DL-96: a plane/patch never encloses a volume, so a double-sided
+	// hit here is always an open sheet (both faces are legitimate
+	// physical sides) -- see RayIntersectionGeometric::bOpenSheet's
+	// doc comment.
+	ri.bOpenSheet = isBackFaceHit;
 	ri.ptCoord = Point2( h.u, h.v );
 
 	// docs/CLOTH_FABRIC_DESIGN.md 9.1: `dpdu` above is the bilinear

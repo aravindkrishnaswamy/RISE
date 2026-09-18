@@ -294,6 +294,11 @@ raw-normal read) — filed as its own row because it is a real, judged
 user-visible behavioural change from the pre-DL-70 state on a
 combination RISE's own cloth/fabric/thin-material authoring encourages.
 
+**DL-96 CLOSED 2026-09-18** (slice `debt-dl96`) — see
+[DL96_BSSRDF_OPEN_SHEET_ENTRY.md](DL96_BSSRDF_OPEN_SHEET_ENTRY.md) for
+the full design, site table and red-proof; `tests/BSSRDFOpenSheetEntryTest.cpp`
+(52/0) is the regression guard.
+
 **DL-97** — the medium-stack walks' `HasTrueGeomSide()` skip (sites 1/2,
 §3) makes a `HairGeometry` crossing that carries a non-null
 `IObject::GetInteriorMedium()` invisible to shadow-ray/connection-ray
@@ -312,6 +317,26 @@ at which point the skip would silently and permanently drop a real
 medium's absorption on every hair-interior shadow segment. Related to,
 but distinct from, DL-75 (which is about the BSSRDF entry normal on
 hair, not interior media).
+
+**DL-97 CLOSED 2026-09-18 as a CONSISTENCY PIN** (slice `debt-dl96`,
+no functional code change — the medium-walk skip logic in
+`LightSampler.cpp`/`BDPTIntegrator.cpp` and `HairGeometry.cpp`'s
+`ri.range2 = t` assignment are byte-identical to this row's own
+pre-existing text; only comments were strengthened at all three sites
+to name the invariant and point at the new test).
+`tests/HairInteriorMediumSkipTest.cpp` (24/0) pins exactly what this
+paragraph asserts: Test 1 fires several rays at a real `HairGeometry`
+strand and asserts `range2 == range` (within `Object::IntersectRay`'s
+own ~2e-12 epsilon back-off) on every hit; Tests 2/3 drive a real
+`HomogeneousMedium`-carrying hair strand through both the NEE shadow
+walk (`LightSampler::EvaluateDirectLighting`) and the BDPT connection
+walk (`BDPTIntegrator::EvalConnectionTransmittance`) and confirm
+neither leaks the medium.  A future geometry that ever pairs
+`bGeomNormalRayDerived == true` with a genuine positive-length chord
+would fail Test 1 first, which is the loud failure this row asked for
+in place of a runtime assert (both consumer files avoid asserts on
+their per-sample hot path — `BDPTIntegrator.cpp`'s `MISWeight` already
+documents that convention).
 
 ## 7. Files touched
 

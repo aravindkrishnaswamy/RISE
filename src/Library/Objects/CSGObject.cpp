@@ -279,6 +279,12 @@ namespace
 		// ray-derived (HairGeometry) is a property of the operand SURFACE
 		// being reported, so it travels with it.
 		dst.bGeomNormalRayDerived = src.bGeomNormalRayDerived;
+		// DL-96: same category again -- whether the reported surface is
+		// an open sheet (both faces legitimate) rather than one face of
+		// a closed solid is a property of the operand SURFACE being
+		// reported, not of `dst`'s original whole-record copy.  See
+		// RayIntersectionGeometric::bOpenSheet's doc comment.
+		dst.bOpenSheet = src.bOpenSheet;
 
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;

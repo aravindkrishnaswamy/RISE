@@ -2819,20 +2819,19 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// on a ray-derived normal, so hair keeps exactly its
 				// pre-DL-70 behaviour here.
 				//
-				// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
-				// semantics -- "outside" is the single, fixed, TRUE
-				// outward normal, so exactly one face of a double-sided
-				// mesh admits BSSRDF entry.  An OPEN double-sided sheet
-				// with a diffusion profile (a leaf, a cloth card) is
-				// legitimately front on BOTH faces, and this gate now
-				// silently drops SSS entry from whichever face disagrees
-				// with the TRUE normal (pre-DL-70 it admitted both faces,
-				// but fed the WRONG-hemisphere normal into
-				// `SampleEntryPoint` on the disagreeing face -- DL-71's
-				// fix already made that an away-facing frame, so the
-				// pre-fix "both faces admitted" behaviour was not
-				// correct SSS on the second face either).  See DL-96.
-				const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo );
+				// DL-96 (CLOSED): this gate used to assume CLOSED-SOLID
+				// semantics unconditionally -- "outside" is the single,
+				// fixed, TRUE outward normal, so exactly one face of a
+				// double-sided mesh admitted BSSRDF entry, silently
+				// dropping SSS entry from an OPEN double-sided sheet's
+				// (a leaf, a cloth card) second face, where both faces
+				// are legitimate entry points.  `BSSRDFEntryFacing()`
+				// keeps that closed-solid gate for a genuinely closed
+				// solid (`!bOpenSheet`), and for an open sheet
+				// (`bOpenSheet`, set by the geometry -- see its doc
+				// comment) admits entry from whichever RAY-FACING side
+				// the ray actually struck instead, so both faces enter.
+				const Scalar cosInGeom = ri.geometric.BSSRDFEntryFacing( wo );
 				if( cosInGeom > NEARZERO )
 				{
 					// Fresnel cosine uses the SHADING normal — the
@@ -3083,20 +3082,19 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// on a ray-derived normal, so hair keeps exactly its
 				// pre-DL-70 behaviour here.
 				//
-				// DL-70 P2-2 DECISION: this gate assumes CLOSED-SOLID
-				// semantics -- "outside" is the single, fixed, TRUE
-				// outward normal, so exactly one face of a double-sided
-				// mesh admits BSSRDF entry.  An OPEN double-sided sheet
-				// with a diffusion profile (a leaf, a cloth card) is
-				// legitimately front on BOTH faces, and this gate now
-				// silently drops SSS entry from whichever face disagrees
-				// with the TRUE normal (pre-DL-70 it admitted both faces,
-				// but fed the WRONG-hemisphere normal into
-				// `SampleEntryPoint` on the disagreeing face -- DL-71's
-				// fix already made that an away-facing frame, so the
-				// pre-fix "both faces admitted" behaviour was not
-				// correct SSS on the second face either).  See DL-96.
-				const Scalar cosInGeom = ri.geometric.TrueGeomFacing( wo );
+				// DL-96 (CLOSED): this gate used to assume CLOSED-SOLID
+				// semantics unconditionally -- "outside" is the single,
+				// fixed, TRUE outward normal, so exactly one face of a
+				// double-sided mesh admitted BSSRDF entry, silently
+				// dropping SSS entry from an OPEN double-sided sheet's
+				// (a leaf, a cloth card) second face, where both faces
+				// are legitimate entry points.  `BSSRDFEntryFacing()`
+				// keeps that closed-solid gate for a genuinely closed
+				// solid (`!bOpenSheet`), and for an open sheet
+				// (`bOpenSheet`, set by the geometry -- see its doc
+				// comment) admits entry from whichever RAY-FACING side
+				// the ray actually struck instead, so both faces enter.
+				const Scalar cosInGeom = ri.geometric.BSSRDFEntryFacing( wo );
 				if( cosInGeom > NEARZERO )
 				{
 					// Fresnel cosine clamped via fabs+NEARZERO to a safe
