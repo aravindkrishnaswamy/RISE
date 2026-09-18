@@ -110,7 +110,14 @@ Scalar CoatedSPF::PdfImpl(
 		return 0;
 	}
 
-	const Scalar qCoat = MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, onb, cp.alpha, cp.alpha );
+	// DL-192: `VNDF_Pdf_Aniso` reports the density of what the COAT
+	// branch's sampler (below, `ScatterImpl`) actually draws -- which
+	// samples about `ResolveCoatFrame`'s frame, not the substrate's
+	// bare `onb`.  Self-gates to 0 when `wi`/`wo` fall below the
+	// perturbed frame's own horizon (its `cosWi < 1e-10` check), so no
+	// separate guard is needed here.
+	const OrthonormalBasis3D coatOnb = pBRDF->ResolveCoatFrame( ri, onb );
+	const Scalar qCoat = MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, coatOnb, cp.alpha, cp.alpha );
 	const Scalar qBase = ( nm < 0 )
 		? pBaseSPF->Pdf( ri, wo, ior_stack )
 		: pBaseSPF->PdfNM( ri, wo, nm, ior_stack );
@@ -163,6 +170,18 @@ void CoatedSPF::ScatterImpl(
 	// its own lobes by its own weights.
 	const Scalar pCoat = cp.weight * CoatedLayer::Fresnel( cosWi, cp.eta );
 
+	// DL-192: the coat's OWN frame -- ResolveCoatFrame is `onb`
+	// unchanged when no coat-normal painter is bound.  `cosWiCoat` is
+	// deliberately separate from `cosWi` above (which keeps gating the
+	// substrate-branch entry and selection weight, unperturbed): a
+	// tilted coat normal can put `wi` below the COAT's own horizon
+	// even though it's above the substrate's, in which case the coat
+	// branch draws nothing (matching PdfImpl's `VNDF_Pdf_Aniso`, which
+	// self-gates on the identical condition) -- an accepted grazing
+	// dimming, the same one any normal-mapped BRDF has.
+	const OrthonormalBasis3D coatOnb = pBRDF->ResolveCoatFrame( ri, onb );
+	const Scalar cosWiCoat = Vector3Ops::Dot( wi, coatOnb.w() );
+
 	const unsigned int before = scattered.Count();
 	Vector3 wo;
 	ScatteredRay::ScatRayType lobeType = ScatteredRay::eRayReflection;
@@ -172,11 +191,13 @@ void CoatedSPF::ScatterImpl(
 	{
 		// --- coat lobe: anisotropic-capable VNDF sampling at the
 		//     isotropic coat alpha (7.2 gives the coat one roughness).
+		//     u1/u2 are drawn UNCONDITIONALLY (HasFixedDimensionBudget)
+		//     even when `cosWiCoat <= 0` rejects the draw below.
 		const Scalar u1 = sampler.Get1D();
 		const Scalar u2 = sampler.Get1D();
-		const Vector3 m = MicrofacetUtils::VNDF_Sample_Aniso( wi, onb, cp.alpha, cp.alpha, u1, u2 );
+		const Vector3 m = MicrofacetUtils::VNDF_Sample_Aniso( wi, coatOnb, cp.alpha, cp.alpha, u1, u2 );
 		const Scalar wiDotM = Vector3Ops::Dot( wi, m );
-		if( wiDotM > 0 ) {
+		if( cosWiCoat > 0 && wiDotM > 0 ) {
 			wo = Vector3Ops::Normalize( m * ( Scalar(2) * wiDotM ) - wi );
 			// eRayReflection is the honest tag for a coat lobe, and
 			// every modern integrator reads it correctly.

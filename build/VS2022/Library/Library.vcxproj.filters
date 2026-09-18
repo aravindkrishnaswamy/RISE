@@ -2898,6 +2898,9 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.h">
       <Filter>Shaders\Shader Ops</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShaderWiring.h">
+      <Filter>Shaders</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Shaders\SSS\DiffusionApproximationExtinction.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>

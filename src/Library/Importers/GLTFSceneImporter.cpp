@@ -68,6 +68,7 @@
 #include "../Managers/GenericManager.h"  // g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure
 #include "../RISE_API.h"
 #include "../Polygon.h"
+#include "../Shaders/AdvancedShaderWiring.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/MediaPathLocator.h"
 
@@ -1864,12 +1865,11 @@ namespace
 		auto WireAlphaShader = [&]( const char* opName ) -> bool
 		{
 			const std::string shaderName = matName + ".shader";
-			const char* ops[] = { "DefaultEmission", "DefaultDirectLighting", opName };
-			const unsigned int minDepth[] = { 0, 0, 0 };
-			const unsigned int maxDepth[] = { 100, 100, 100 };
-			const char operations[] = { '+', '+', '=' };
-			const bool ok = job.AddAdvancedShader(
-				shaderName.c_str(), 3, ops, minDepth, maxDepth, operations );
+			// DL-193 (docs/DEBT_LEDGER.md): the [Emission+, DirectLighting+,
+			// op=] construction is now shared with rise_blender_bridge.cpp's
+			// identical Blender-side wiring -- see AdvancedShaderWiring.h.
+			const bool ok = RISE::Utilities::WireAlphaAdvancedShader(
+				job, shaderName.c_str(), opName );
 			if( !ok ) {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"GLTFSceneImporter:: failed to wire alpha shader for material `%s`; "

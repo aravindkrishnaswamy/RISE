@@ -16,6 +16,11 @@
 #include "CoatedLayer.h"
 #include "../Utilities/MicrofacetUtils.h"
 #include "../Utilities/MicrofacetEnergyLUT.h"
+#include "../Modifiers/ModifierFrame.h"
+#include "../Interfaces/ILog.h"
+
+#include <atomic>
+#include <cmath>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -29,7 +34,9 @@ CoatedBRDF::CoatedBRDF(
 	const IScalarPainter& coatAbsorption,
 	const IPainter& coatTint,
 	const bool recyclingCompensation,
-	const bool baseScattersFullSphere
+	const bool baseScattersFullSphere,
+	const IPainter* coatNormal,
+	const Scalar coatNormalScale_
 	) :
   pBase( &base ),
   pCoatWeight( &coatWeight ),
@@ -39,7 +46,9 @@ CoatedBRDF::CoatedBRDF(
   pCoatAbsorption( &coatAbsorption ),
   pCoatTint( &coatTint ),
   bRecycling( recyclingCompensation ),
-  bBaseFullSphere( baseScattersFullSphere )
+  bBaseFullSphere( baseScattersFullSphere ),
+  pCoatNormal( coatNormal ),
+  coatNormalScale( coatNormalScale_ )
 {
 	pBase->addref();
 	pCoatWeight->addref();
@@ -48,6 +57,9 @@ CoatedBRDF::CoatedBRDF(
 	pCoatThickness->addref();
 	pCoatAbsorption->addref();
 	pCoatTint->addref();
+	if( pCoatNormal ) {
+		pCoatNormal->addref();
+	}
 }
 
 CoatedBRDF::~CoatedBRDF()
@@ -59,6 +71,7 @@ CoatedBRDF::~CoatedBRDF()
 	safe_release( pCoatThickness );
 	safe_release( pCoatAbsorption );
 	safe_release( pCoatTint );
+	safe_release( pCoatNormal );	// null-checks internally; may already be 0
 }
 
 // Editor rebind.  addref BEFORE release so a self-rebind is safe; see
@@ -165,6 +178,51 @@ namespace
 		return onb;
 	}
 
+	//! DL-192: once-per-process warning when a coat-normal painter is
+	//! bound at a hit with no coherent tangent frame (mirrors
+	//! `NormalMap.cpp`'s identical, SEPARATELY-scoped flag -- a scene
+	//! using both an object-level normal map AND a coat normal on the
+	//! same tangent-less primitive gets one warning from each, which is
+	//! correct: they are two independent perturbations with the same
+	//! underlying limitation).
+	std::atomic<bool> g_warnedCoatNoTangentFrame{ false };
+
+	//! DL-192: decode `coatNormal`'s tangent-space normal at `ri` and
+	//! perturb `baseOnb` (the substrate's own ray-facing frame) by it,
+	//! same glTF convention `NormalMap.cpp` uses (RGB [0,1] -> [-1,1],
+	//! z reconstructed).  `baseOnb.u()/.v()/.w()` serve directly as the
+	//! tangent/bitangent/normal triple -- see ResolveCoatFrame's own
+	//! comment (CoatedBRDF.h) for why that is the right frame to decode
+	//! into, and DL-100's frame trap for why there must be exactly ONE
+	//! such function.
+	inline RISE::Vector3 DecodeCoatPerturbedNormal(
+		const RISE::RayIntersectionGeometric& ri,
+		const RISE::OrthonormalBasis3D& baseOnb,
+		const RISE::IPainter& coatNormalPainter,
+		const RISE::Scalar scale )
+	{
+		using namespace RISE;
+
+		if( !Implementation::ModifierFrame::HasCoherentTangent( ri ) &&
+		    !g_warnedCoatNoTangentFrame.exchange( true ) ) {
+			GlobalLog()->PrintEasyWarning(
+				"coated_material: coat_normal is bound at a hit with no coherent "
+				"tangent frame (no imported TANGENT, no valid UV derivatives, no "
+				"geometry-supplied shading tangent).  Falling back to an arbitrary "
+				"ONB-aligned frame, which is correct only when the normal map's UV "
+				"axes happen to align with it -- i.e. essentially never.  This "
+				"warning fires once per process; subsequent hits are silent." );
+		}
+
+		const RISEPel encoded = coatNormalPainter.GetColor( ri );
+		const Scalar nx = ( Scalar(2) * encoded.r - Scalar(1) ) * scale;
+		const Scalar ny = ( Scalar(2) * encoded.g - Scalar(1) ) * scale;
+		const Scalar nzSqr = Scalar(1) - nx*nx - ny*ny;
+		const Scalar nz = ( nzSqr > 0 ) ? std::sqrt( nzSqr ) : Scalar(0);
+
+		return Vector3Ops::Normalize( baseOnb.u()*nx + baseOnb.v()*ny + baseOnb.w()*nz );
+	}
+
 	//! Geometric-horizon gate, identical in construction to
 	//! GGXBRDF::value's (ray-anchored so a tilted shading normal can't
 	//! flip it to the wrong side).
@@ -198,6 +256,18 @@ namespace
 		const RISE::Scalar re )
 	{
 		using namespace RISE;
+
+		// DL-192: `onb`/`nv`/`nr` may now be the COAT's OWN perturbed
+		// frame (ResolveCoatFrame), not the substrate's -- a tilted
+		// coat normal can put either direction below ITS OWN horizon
+		// even though both are above the substrate's.  Guard here
+		// (rather than at every caller) so a negative product can never
+		// reach `single`'s division below; pre-DL-192 callers always
+		// passed the substrate's already-gated nv/nr (both provably
+		// positive at every call site), so this is a no-op for them.
+		if( nv <= 0 || nr <= 0 ) {
+			return 0;
+		}
 
 		Scalar spec = 0;
 
@@ -281,6 +351,20 @@ namespace
 	}
 }
 
+OrthonormalBasis3D CoatedBRDF::ResolveCoatFrame(
+	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& baseOnb
+	) const
+{
+	if( !pCoatNormal ) {
+		return baseOnb;
+	}
+	OrthonormalBasis3D coatOnb;
+	coatOnb.CreateFromW(
+		DecodeCoatPerturbedNormal( ri, baseOnb, *pCoatNormal, coatNormalScale ) );
+	return coatOnb;
+}
+
 RISEPel CoatedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	const OrthonormalBasis3D onb = RayFacingONB( ri );
@@ -350,7 +434,17 @@ RISEPel CoatedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometr
 	}
 
 	// --- coat lobe -------------------------------------------------
-	const Scalar fCoat = CoatLobeValue( v, r, onb, nv, nr, cp.alpha, cp.eta, cp.re );
+	// DL-192: the coat lobe's OWN frame -- ResolveCoatFrame returns
+	// `onb` unchanged when no coat-normal painter is bound, so this is
+	// a no-op for every pre-DL-192 material.  `coatNv`/`coatNr` are
+	// deliberately SEPARATE from the substrate's `nv`/`nr` above (which
+	// keep gating the horizon / Fresnel / recycling terms below,
+	// unperturbed) -- CoatLobeValue's own guard handles either going
+	// non-positive under a tilted coat normal.
+	const OrthonormalBasis3D coatOnb = ResolveCoatFrame( ri, onb );
+	const Scalar coatNv = Vector3Ops::Dot( coatOnb.w(), v );
+	const Scalar coatNr = Vector3Ops::Dot( coatOnb.w(), r );
+	const Scalar fCoat = CoatLobeValue( v, r, coatOnb, coatNv, coatNr, cp.alpha, cp.eta, cp.re );
 
 	// --- substrate reached THROUGH the coat ------------------------
 	// Interface transmittances at the two macro angles.  The substrate
@@ -429,7 +523,11 @@ Scalar CoatedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeomet
 		return fBase;
 	}
 
-	const Scalar fCoat = CoatLobeValue( v, r, onb, nv, nr, cp.alpha, cp.eta, cp.re );
+	// DL-192: see the identical block in value() above.
+	const OrthonormalBasis3D coatOnb = ResolveCoatFrame( ri, onb );
+	const Scalar coatNv = Vector3Ops::Dot( coatOnb.w(), v );
+	const Scalar coatNr = Vector3Ops::Dot( coatOnb.w(), r );
+	const Scalar fCoat = CoatLobeValue( v, r, coatOnb, coatNv, coatNr, cp.alpha, cp.eta, cp.re );
 
 	const Scalar Tin  = Scalar(1) - CoatedLayer::Fresnel( nr, cp.eta );
 	const Scalar Tout = Scalar(1) - CoatedLayer::Fresnel( nv, cp.eta );

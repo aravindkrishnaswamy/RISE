@@ -4649,6 +4649,44 @@ namespace RISE
 									const double offset				///< [in] Additive constant in radians
 									) = 0;
 
+		//! Adds a Coated material WITH an optional coat-lobe-only
+		//! tangent-space normal map (DL-192, docs/DEBT_LEDGER.md;
+		//! Blender Principled BSDF's "Coat Normal" socket).  Same eight
+		//! leading parameters as `AddCoatedMaterial` above, plus:
+		//!
+		//! `coat_normal` names an already-registered COLOUR painter
+		//! (a normal-map texture, RGB [0,1] encoding a tangent-space
+		//! vector -- the identical glTF/`normal_map_modifier` convention
+		//! `NormalMap.cpp` decodes) applied ONLY to the coat's own GGX
+		//! reflection lobe; the substrate keeps its own (possibly
+		//! separately normal-mapped) shading normal unchanged.  NULL /
+		//! empty / `"none"` = no perturbation.  `coat_normal_scale` is
+		//! the xy multiplier (glTF `normalTexture.scale`'s analogue;
+		//! Blender's Normal Map node "Strength" slider binds here),
+		//! ignored when `coat_normal` is unset.
+		//!
+		//! WHY A NEW VIRTUAL rather than a parameter on
+		//! `AddCoatedMaterial`: IJob's vtable is APPEND-ONLY
+		//! (SourceHygieneTest + tests/IJobVtableManifest.txt) -- even a
+		//! trailing defaulted parameter on an existing pure virtual
+		//! moves or changes a vtable slot (see `AddReliefModifierEx`'s
+		//! identical note).  `AddCoatedMaterial` is kept verbatim and
+		//! forwards here with `coat_normal = "none"`.  Appended after
+		//! `AddAtan2ScalarPainter` per the append-only IJob tail.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCoatedMaterialEx(
+									const char* name,				///< [in] Name of the material
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* coat_weight,		///< [in] [0,1] coat coverage (physical scalar)
+									const char* coat_ior,			///< [in] Coat index of refraction (physical scalar)
+									const char* coat_roughness,		///< [in] Coat GGX alpha (physical scalar)
+									const char* coat_thickness,		///< [in] Coat thickness, world length (physical scalar)
+									const char* coat_absorption,	///< [in] Coat absorption, 1/length (physical scalar)
+									const char* coat_tint,			///< [in] Coat transmission colour (colour painter)
+									const char* coat_normal,		///< [in] DL-192: coat-lobe-only normal-map colour painter; NULL/"none" = no perturbation
+									const double coat_normal_scale	///< [in] DL-192: xy scale on the decoded tangent-space normal
+									) = 0;
+
 	};
 
 

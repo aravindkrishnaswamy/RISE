@@ -3406,6 +3406,30 @@ bool Job::AddCoatedMaterial(
 							const char* coat_tint			///< [in] Coat transmission colour
 							)
 {
+	// IJob's vtable is append-only -- see AddCoatedMaterialEx's own doc
+	// (IJob.h) for why DL-192's coat-normal slot is a NEW virtual rather
+	// than a parameter added here.  "none" = no perturbation, bit-
+	// identical to a pre-DL-192 render.
+	return AddCoatedMaterialEx( name, base, coat_weight, coat_ior, coat_roughness,
+	                            coat_thickness, coat_absorption, coat_tint,
+	                            "none", 1.0 );
+}
+
+//! DL-192: see IJob.h's own doc for the coat-normal contract.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddCoatedMaterialEx(
+							const char* name,
+							const char* base,
+							const char* coat_weight,
+							const char* coat_ior,
+							const char* coat_roughness,
+							const char* coat_thickness,
+							const char* coat_absorption,
+							const char* coat_tint,
+							const char* coat_normal,
+							const double coat_normal_scale
+							)
+{
 	IMaterial* pBase = pMatManager->GetItem( base );
 	if( !pBase ) {
 		GlobalLog()->PrintEx( eLog_Error,
@@ -3470,9 +3494,35 @@ bool Job::AddCoatedMaterial(
 		return false;
 	}
 
+	// DL-192: `coat_normal` names an already-registered COLOUR painter
+	// (a normal-map texture) -- NULL/empty/`"none"` means no coat-lobe
+	// perturbation, the same sentinel convention `normal_map_modifier`'s
+	// own `normal_map` parameter uses.  Unlike `coat_tint`, there is no
+	// "none resolves to a synthesised default" step: an unset coat
+	// normal is simply absent (CoatedBRDF's `pCoatNormal == 0` case),
+	// not a painter standing in for identity.
+	IPainter* pCoatNormal = 0;
+	const bool coatNormalUnset = ( !coat_normal || !coat_normal[0] || std::string( coat_normal ) == "none" );
+	if( !coatNormalUnset ) {
+		pCoatNormal = pPntManager->GetItem( coat_normal );
+		if( !pCoatNormal ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"coated_material `%s`: coat_normal `%s` is not a registered colour painter",
+				name, coat_normal );
+			safe_release( pWeight );
+			safe_release( pIOR );
+			safe_release( pRoughness );
+			safe_release( pThickness );
+			safe_release( pAbsorption );
+			safe_release( pTintOwned );
+			return false;
+		}
+	}
+
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateCoatedMaterial( &pMaterial, *pBase, *pWeight, *pIOR, *pRoughness,
-	                               *pThickness, *pAbsorption, *pTint );
+	                               *pThickness, *pAbsorption, *pTint,
+	                               pCoatNormal, coat_normal_scale );
 
 	const bool ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
 
