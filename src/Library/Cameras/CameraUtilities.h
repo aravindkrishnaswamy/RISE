@@ -44,11 +44,18 @@ namespace RISE
 		///                                          bound, not a claim
 		///                                          of current use)
 		///   47                                    BDPT strategy select
-		///   48                                    MLT film/lens/aperture
+		///   kPSSMLTFilmLensApertureStream         MLT film/lens/aperture
+		///                                          under PSSMLTSampler
+		///                                          (DL-08 fix, 2026-09-17;
+		///                                          was the literal 48)
 		///   48 + i, i >= 1                        VCM per-eye-vertex NEE
 		///                                          (i starts at 1; VCM
 		///                                          never itself starts
-		///                                          stream 48)
+		///                                          stream 48; VCM never
+		///                                          drives a PSSMLTSampler
+		///                                          either, so this range
+		///                                          does not interact with
+		///                                          `kPSSMLTFilmLensApertureStream`)
 		///
 		/// Both walk loops saturate their iteration count at 1024
 		/// (`GenerateEyeSubpath` / `GenerateLightSubpath`), and an
@@ -92,6 +99,51 @@ namespace RISE
 		/// `GenerateRayWithLensSample` exists to give the primary ray).
 		static const int kApertureSamplerStream = 3322;
 
+		/// Upper bound on any stream index BDPTIntegrator's own
+		/// `StartStream` calls can reach WHILE DRIVEN BY A
+		/// `PSSMLTSampler` (i.e. under MLT).  Unlike `kApertureSamplerStream`
+		/// above (which has to clear Sobol's dimension-table wrap and
+		/// therefore uses a conservative bound that also covers VCM's
+		/// `48 + eye-vertex-index` NEE stream), VCM never drives a
+		/// PSSMLTSampler at all, so the relevant bound here is BDPT's own
+		/// two walks only:
+		///   light walk:  `StartStream( 1u + depth )`,  depth < 1024 (the
+		///                loop's saturating cap) -> max stream 1+1023 = 1024
+		///   eye walk:    `StartStream( 16u + depth )`, depth < 1024      -> max stream 16+1023 = 1039
+		///   BDPT (s,t) strategy select: fixed at stream 47
+		///   SMS (reserved, unused today): streams 31..46
+		/// giving a true maximum of 1039.  Written here as `16 +
+		/// kWalkIterationCap` (1024, not 1023) for the same one-off
+		/// margin `tests/SobolDimensionBudgetTest.cpp`'s
+		/// `TestApertureDrawConsumption` uses when it derives
+		/// `kMaxEyeWalkStream` the same way.
+		static const int kMaxBdptWalkStreamUnderPSSMLT = 16 + 1024;
+
+		/// Stream reserved for the MLT film / lens / (debt 28) aperture
+		/// block under `PSSMLTSampler` (DL-08 fix, 2026-09-17).  Used by
+		/// `MLTRasterizer::EvaluateSample` and
+		/// `MLTSpectralRasterizer::EvaluateSampleSpectral` in place of the
+		/// historical literal `48`.
+		///
+		/// Debt 29 / DL-08: `PSSMLTSampler` multiplexes lanes as
+		/// `idx = stream + kNumStreams*sample`.  Stream 48 was NOT a safe
+		/// choice for this block: BDPT's eye walk reaches stream 48
+		/// itself at eye depth 32 (`StabilityConfig::maxVolumeBounce`
+		/// defaults to 64, so ordinary scattering-medium scenes reach that
+		/// depth with no unusual settings), and a chain whose accepted
+		/// path is that deep had its 32nd-bounce scattering direction and
+		/// its film position living in the literal same primary-sample
+		/// slot -- not modular aliasing, an outright integer collision.
+		/// Chosen comfortably above `kMaxBdptWalkStreamUnderPSSMLT` (1039)
+		/// so it can never collide with either walk at any depth
+		/// `PSSMLTSampler`'s own loop caps allow, with margin for future
+		/// per-stream lanes (e.g. a wider spectral wavelength count) to be
+		/// added without re-deriving this constant.  See
+		/// `tests/PSSMLTStreamAliasingTest.cpp` Test F for the red-proof
+		/// and `PSSMLTSampler::kDefaultNumStreams` (2048 -> 4096, DL-08)
+		/// for the paired modulus increase that keeps this a private lane.
+		static const int kPSSMLTFilmLensApertureStream = 2048;
+
 		/// Where `DrawApertureSample` takes its two canonical randoms.
 		enum ApertureStreamPolicy
 		{
@@ -106,41 +158,49 @@ namespace RISE
 			/// Draw from whatever stream is already active.  This is
 			/// the ONLY correct policy for `PSSMLTSampler`, which
 			/// multiplexes lanes as `idx = stream + kNumStreams*sample`
-			/// with `kNumStreams == 49`: a stream index >= 49 does not
-			/// get a fresh lane, it ALIASES an existing one (stream 80
-			/// is stream 31's sample 1, stream 129 its sample 2).  The
-			/// MLT rasterizers therefore draw the aperture point as a
-			/// further `Get2D` on their own stream 48, contiguous with
-			/// the film and lens samples -- but the exact lanes depend
-			/// on which MLT rasterizer is asking:
+			/// with `kNumStreams == PSSMLTSampler::kDefaultNumStreams`
+			/// (4096, DL-08): a stream index >= kNumStreams does not
+			/// get a fresh lane, it ALIASES an existing one.  The MLT
+			/// rasterizers therefore draw the aperture point as a
+			/// further `Get2D` on their own reserved stream
+			/// (`kPSSMLTFilmLensApertureStream`, 2048 -- NOT the literal
+			/// 48 this comment described before DL-08; see that
+			/// constant's own doc for why 48 was unsafe), contiguous
+			/// with the film and lens samples -- but the exact lanes
+			/// depend on which MLT rasterizer is asking:
 			///   `MLTRasterizer` (RGB): film Get2D + lens Get2D leave
 			///     4 lanes consumed, so the aperture Get2D lands at
-			///     48 + 49*4 = 244 and 48 + 49*5 = 293.
+			///     sample indices 4 and 5 on the reserved stream.
 			///   `MLTSpectralRasterizer::EvaluateSampleSpectral`:
 			///     film + lens are the same 4 lanes, but it THEN
 			///     pre-consumes `nSpectralSamples` (S) wavelength
-			///     `Get1D`s from stream 48 before drawing the
+			///     `Get1D`s from the reserved stream before drawing the
 			///     aperture point, so the aperture lanes shift to
-			///     48 + 49*(4+S) and 48 + 49*(5+S) -- 440/489 at the
-			///     default S=4.
+			///     sample indices `4+S` and `5+S` (8 and 9 at the
+			///     default S=4).
 			/// The safety argument is not "the lane depth stays below
-			/// some fixed number" -- it is that lanes on streams 0..48
-			/// are partitioned by RESIDUE mod 49, and every draw on
-			/// stream 48 (film, lens, wavelengths, aperture, at any
-			/// depth) keeps residue 48, which no stream < 49 can ever
-			/// produce.
+			/// some fixed number" -- it is that lanes on streams
+			/// `0..kNumStreams-1` are partitioned by RESIDUE mod
+			/// `kNumStreams`, and every draw on the reserved stream
+			/// (film, lens, wavelengths, aperture, at any sample index)
+			/// keeps that stream's residue, which no OTHER stream <
+			/// kNumStreams can ever produce.
 			///
 			/// That residue argument only protects streams that STAY
-			/// below 49.  It is FALSE that a stream-48 lane can never
-			/// collide with an integrator stream in general: the eye
-			/// walk's `StartStream( 16u + depth )` reaches stream 48
-			/// itself at eye depth 32 and aliases stream-48 lanes (and
-			/// beyond) at deeper depths -- a PRE-EXISTING overrun
-			/// (`maxVolumeBounce` defaults to 64, so ordinary scenes
-			/// can reach it) that debt 28 only extends, from 4 lanes
-			/// on stream 48 to 6 (RGB) or 6+S (spectral).  Ledgered as
-			/// debt 29 in docs/RENDERING_INTEGRATORS.md §7, not fixed
-			/// here.
+			/// below `kNumStreams`.  `kPSSMLTFilmLensApertureStream`
+			/// (2048) is chosen strictly above
+			/// `kMaxBdptWalkStreamUnderPSSMLT` (1039, BDPT's own
+			/// documented walk-stream ceiling under PSSMLT) specifically
+			/// so the eye walk's `StartStream( 16u + depth )` can never
+			/// reach it at ANY depth PSSMLTSampler's own loop caps
+			/// allow -- unlike the historical literal 48, which the eye
+			/// walk reached at eye depth 32
+			/// (`StabilityConfig::maxVolumeBounce` defaults to 64, so
+			/// ordinary scattering-medium scenes reached it with no
+			/// unusual settings).  This was debt 29 / DL-08 in
+			/// docs/RENDERING_INTEGRATORS.md §7 and
+			/// docs/DEBT_LEDGER.md; CLOSED 2026-09-17, see
+			/// docs/DL08_PSSMLT_LANE_LAYOUT.md.
 			APERTURE_CURRENT_STREAM
 		};
 

@@ -104,22 +104,41 @@ namespace RISE
 			unsigned int					currentIteration;	///< Global mutation counter
 
 			// Stream multiplexing: each stream gets its own lane in the
-			// primary sample vector so that mutations to one part of the
-			// path don't disturb others.  BDPTIntegrator uses streams
-			// 0-47 internally (light source=0, light bounces=1-16,
-			// eye bounces=16-31, SMS=47).  Stream 48 is reserved for
-			// the MLT film position.  kNumStreams must exceed the
-			// maximum stream index used by any consumer.
+			// primary sample vector (idx = stream + kNumStreams*sample,
+			// see Get1D) so that mutations to one part of the path don't
+			// disturb others.  BDPTIntegrator uses streams 0-47
+			// internally (light source=0, light bounces 1.., eye bounces
+			// 16.., SMS reserved 31-46, (s,t) strategy select=47) --
+			// see BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT
+			// (CameraUtilities.h) for the derived ceiling on how high
+			// those bounce streams can actually reach (1039).  The MLT
+			// rasterizers reserve
+			// BDPTCameraUtilities::kPSSMLTFilmLensApertureStream for the
+			// film/lens/aperture block.  kNumStreams must exceed the
+			// maximum stream index used by any consumer -- a debug
+			// assertion in Get1D() enforces this at runtime.
 			//
-			// PSSMLT itself only needs 49 streams (kDefaultNumStreams).
-			// Subclasses (MMLTSampler) reserve more — see the protected
-			// constructor below.  kNumStreams was historically a static
-			// const; it became a regular member so MMLTSampler can
-			// allocate two extra lanes (49 = (s,t) selection, 50 = lens)
-			// without disturbing PSSMLT's bit-identical layout.  When
-			// constructed via the public ctor, kNumStreams = 49 exactly
-			// as before.
-			static const int				kDefaultNumStreams = 49;
+			// DL-08 (debt 29, 2026-09-17): this used to be 49, with the
+			// MLT block hardcoded to the literal stream 48.  BDPT's own
+			// eye walk reaches stream 48 itself at eye depth 32
+			// (StabilityConfig::maxVolumeBounce defaults to 64, so
+			// ordinary scattering-medium scenes got there with no
+			// unusual settings) -- not modular aliasing, an outright
+			// same-integer collision between the film position and the
+			// 32nd eye bounce.  Raised to 4096, with the MLT block moved
+			// to stream 2048 (kPSSMLTFilmLensApertureStream), comfortably
+			// clear of every stream BDPT's own StartStream calls can
+			// reach under PSSMLTSampler at any depth its loop caps allow.
+			// See docs/DL08_PSSMLT_LANE_LAYOUT.md and
+			// tests/PSSMLTStreamAliasingTest.cpp Test F.
+			//
+			// kNumStreams was historically a static const; it became a
+			// regular member so a future subclass can reserve additional
+			// lanes above this default via the protected constructor
+			// below without disturbing PSSMLT's bit-identical layout.
+			// When constructed via the public ctor, kNumStreams =
+			// kDefaultNumStreams exactly as before.
+			static const int				kDefaultNumStreams = 4096;
 			int								kNumStreams;		///< Number of sample streams (per-instance)
 			int								streamIndex;		///< Current active stream
 
@@ -186,7 +205,10 @@ namespace RISE
 
 			/// Switch to a new sample stream and reset the within-stream
 			/// sample index.  Streams 0-47 are used by BDPTIntegrator;
-			/// stream 48 is reserved for the MLT film position.
+			/// stream `BDPTCameraUtilities::kPSSMLTFilmLensApertureStream`
+			/// (2048, DL-08) is reserved for the MLT film/lens/aperture
+			/// block -- see `kDefaultNumStreams`'s comment above for why
+			/// it is no longer the literal 48.
 			void StartStream( int streamIndex );
 
 			//////////////////////////////////////////////////////////////

@@ -38,6 +38,7 @@
 #include "pch.h"
 #include "PSSMLTSampler.h"
 #include <algorithm>
+#include <cassert>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -144,6 +145,25 @@ Scalar PSSMLTSampler::Get1D()
 	// Interleaved stream indexing: each stream gets its own contiguous
 	// region of the primary sample vector so mutations to one stream
 	// don't disturb others.  idx = streamIndex + kNumStreams * sampleIndex
+	//
+	// This mapping is collision-free BY CONSTRUCTION *only* while
+	// 0 <= streamIndex < kNumStreams for every call: idx is then a
+	// base-kNumStreams positional encoding of (streamIndex, sampleIndex)
+	// and the map is injective.  A caller that passes a streamIndex >=
+	// kNumStreams breaks that invariant silently -- it lands on lane
+	// (streamIndex % kNumStreams) at sample depth (streamIndex /
+	// kNumStreams), aliasing whatever legitimately owns that lane (DL-08
+	// / debt 29: this is exactly how BDPTIntegrator's eye walk used to
+	// collide with MLT's reserved film/lens/aperture stream once
+	// kNumStreams was too small).  Catch it here, at the one place idx
+	// is actually computed, rather than trusting every StartStream call
+	// site to stay in range.
+	assert( streamIndex >= 0 && streamIndex < kNumStreams &&
+		"PSSMLTSampler::Get1D: streamIndex must be in [0, kNumStreams) or "
+		"idx = streamIndex + kNumStreams*sampleIndex silently aliases another "
+		"stream's lane (DL-08 / debt 29) -- raise kNumStreams or keep every "
+		"StartStream() argument below it" );
+
 	const unsigned int idx = streamIndex + kNumStreams * sampleIndex;
 	sampleIndex++;
 
