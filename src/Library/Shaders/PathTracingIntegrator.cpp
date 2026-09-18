@@ -6335,6 +6335,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( compWeight < 0 && pBRDFCur )
 			{
+				// DL-125.  This fallback pairs the material's AGGREGATE
+				// spectral BSDF with the ONE selected lobe's density.
+				// That is EXACT for an SPF whose emitted ray carries the
+				// aggregate mixture density (CoatedSPF / FabricSPF /
+				// WeaveSPF, and the single-emit GGXSPF /
+				// CookTorranceSPF), and the DL-69 mispairing for one
+				// that carries a PER-LOBE conditional density.  Every
+				// such SPF implements `EvaluateKrayNM` now except
+				// `CompositeSPF` (DL-221), which names itself so this
+				// one-shot-per-class warning can report it.
+				NotePerLobeDensityCompanionFallback( pSPF );
+
 				compWeight = pBRDFCur->valueNM(
 					pS->ray.Dir(), ri.geometric, swl.lambda[w] );
 				Scalar cosTheta = fabs( Vector3Ops::Dot(

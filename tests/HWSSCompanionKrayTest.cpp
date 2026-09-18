@@ -61,6 +61,13 @@
 //       the FRESNEL TERM, not zero, at `Rs = 0` -- no painter choice
 //       reduces their `valueNM` to the diffuse term alone.  Sections A
 //       and B cover those two lobes exactly instead.
+//       Two residuals in this section are the JH black residual, not a
+//       kray defect, and are why the band is 5e-3 rather than machine
+//       precision: the three DIFFUSE rows read 1.6e-3 / 3.1e-3 / 2.6e-3
+//       (the black SPECULAR painter's own uplifted contribution, which
+//       is NOT subtracted because each class's specular term has a
+//       different closed form), against <= 2.8e-14 on every SPECULAR
+//       row, where the black diffuse term IS subtracted exactly.
 //    D. NEGATIVE CONTROLS.  An SPF for which the fallback is exact
 //       (`GGXSPF`) or which has a single lobe whose density IS the
 //       aggregate (`LambertianSPF`) must still return -1, so the
@@ -197,7 +204,34 @@ struct Subject
 	const IPainter* diffusePainter;	///< the BLACK painter section C subtracts
 	bool		specularBRDFIsolable;	///< see section C's header comment
 	bool		diffuseBRDFIsolable;	///< see section C's header comment
+	//! Ashikmin-Shirley's `valueNM` is `Rd*(1-Rs)*diffuseFactor +
+	//! specularFactor`, NOT `Rd/pi + specular` -- so the BLACK diffuse
+	//! painter's residual has a different closed form there and must be
+	//! subtracted with the BRDF's own helper.  See section C.
+	bool		ashikminDiffuseForm;
+	const IPainter* rsPainter;			///< only read when ashikminDiffuseForm
+	Scalar		nuConst;				///< only read when ashikminDiffuseForm
+	Scalar		nvConst;				///< only read when ashikminDiffuseForm
 };
+
+//! Every Subject starts with the non-Ashikmin defaults; the one
+//! Ashikmin section-C row overrides them explicitly.
+static Subject MakeSubject( const char* name, ISPF* spf, const IBSDF* brdf,
+	const IPainter* diffusePainter, bool specIsolable, bool diffIsolable )
+{
+	Subject s;
+	s.name = name;
+	s.spf = spf;
+	s.brdf = brdf;
+	s.diffusePainter = diffusePainter;
+	s.specularBRDFIsolable = specIsolable;
+	s.diffuseBRDFIsolable = diffIsolable;
+	s.ashikminDiffuseForm = false;
+	s.rsPainter = 0;
+	s.nuConst = 0;
+	s.nvConst = 0;
+	return s;
+}
 
 static const Scalar kLambdas[3] = { 450.0, 550.0, 650.0 };
 static const double kDegrees[3] = { 0.0, 35.0, 70.0 };
@@ -361,6 +395,10 @@ static void SectionC( const Subject& s, const IORStack& iorStack, unsigned int n
 		// same treatment tests/SchlickKrayBRDFConsistencyTest.cpp
 		// section 4 gives it.
 		const Scalar fBlackDiffuse = GuardedGetColorNM( *s.diffusePainter, ri, kLambdas[li] ) * INV_PI;
+		OrthonormalBasis3D ashonb = ri.onb;
+		if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+			ashonb.FlipW();
+		}
 
 		for( unsigned int k = 0; k < nDraws; k++ ) {
 			ScatteredRayContainer scattered;
@@ -378,7 +416,25 @@ static void SectionC( const Subject& s, const IORStack& iorStack, unsigned int n
 				if( kray <= 0 ) continue;
 
 				if( sr.type == ScatteredRay::eRayReflection && s.specularBRDFIsolable ) {
-					const double fI = s.brdf->valueNM( wo, ri, kLambdas[li] ) - fBlackDiffuse;
+					// Subtract exactly what `valueNM` added for the
+					// BLACK diffuse painter.  Ashikmin-Shirley's diffuse
+					// term is `Rd*(1-Rs)*diffuseFactor`, not `Rd/pi`, and
+					// the difference (~20% of a ~1e-5 residual) is large
+					// enough RELATIVE to its own specular factor at a
+					// low-reflectance channel to swamp this check --
+					// measured 7.65e-3 with the wrong subtraction against
+					// <= 2.8e-14 for the other four classes.
+					double fSub = fBlackDiffuse;
+					if( s.ashikminDiffuseForm ) {
+						const Scalar rhoNM = GuardedGetColorNM( *s.rsPainter, ri, kLambdas[li] );
+						Scalar dF = 0, sF = 0;
+						AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
+							dF, sF, wo, ri, ashonb.w(), ashonb.u(), ashonb.v(),
+							s.nuConst, s.nvConst, rhoNM );
+						fSub = GuardedGetColorNM( *s.diffusePainter, ri, kLambdas[li] )
+						       * ( 1.0 - rhoNM ) * dF;
+					}
+					const double fI = s.brdf->valueNM( wo, ri, kLambdas[li] ) - fSub;
 					if( fI <= 0 ) continue;
 					const double r = ( kray * sr.pdf ) / ( fI * cosO );
 					if( std::isfinite( r ) ) {
@@ -471,22 +527,29 @@ int main()
 
 	std::vector<Subject> subjects;
 	{
-		Subject a; a.name = "SchlickSPF";                           a.spf = schSPF; a.brdf = 0; a.diffusePainter = diff; a.specularBRDFIsolable = false; a.diffuseBRDFIsolable = false; subjects.push_back( a );
-		Subject b; b.name = "WardIsotropicGaussianSPF";             b.spf = wiSPF;  b.brdf = 0; b.diffusePainter = diff; b.specularBRDFIsolable = false; b.diffuseBRDFIsolable = false;  subjects.push_back( b );
-		Subject c; c.name = "WardAnisotropicEllipticalGaussianSPF"; c.spf = waSPF;  c.brdf = 0; c.diffusePainter = diff; c.specularBRDFIsolable = false; c.diffuseBRDFIsolable = false;  subjects.push_back( c );
-		Subject d; d.name = "IsotropicPhongSPF";                    d.spf = ipSPF;  d.brdf = 0; d.diffusePainter = diff; d.specularBRDFIsolable = false; d.diffuseBRDFIsolable = false;  subjects.push_back( d );
-		Subject e; e.name = "AshikminShirleyAnisotropicPhongSPF";   e.spf = asSPF;  e.brdf = 0; e.diffusePainter = diff; e.specularBRDFIsolable = false; e.diffuseBRDFIsolable = false; subjects.push_back( e );
+		subjects.push_back( MakeSubject( "SchlickSPF", schSPF, 0, diff, false, false ) );
+		subjects.push_back( MakeSubject( "WardIsotropicGaussianSPF", wiSPF, 0, diff, false, false ) );
+		subjects.push_back( MakeSubject( "WardAnisotropicEllipticalGaussianSPF", waSPF, 0, diff, false, false ) );
+		subjects.push_back( MakeSubject( "IsotropicPhongSPF", ipSPF, 0, diff, false, false ) );
+		subjects.push_back( MakeSubject( "AshikminShirleyAnisotropicPhongSPF", asSPF, 0, diff, false, false ) );
 	}
 
 	// Section C reads the BLACK-diffuse twins so `valueNM` isolates the
 	// specular term (and, where the flag says so, the diffuse one).
 	std::vector<Subject> cSubjects;
 	{
-		Subject a; a.name = "SchlickSPF";                           a.spf = schSPFb; a.brdf = schBRDF; a.diffusePainter = black; a.specularBRDFIsolable = true; a.diffuseBRDFIsolable = false; cSubjects.push_back( a );
-		Subject b; b.name = "WardIsotropicGaussianSPF";             b.spf = wiSPFb;  b.brdf = wiBRDF;  b.diffusePainter = black; b.specularBRDFIsolable = true; b.diffuseBRDFIsolable = false; cSubjects.push_back( b );
-		Subject c; c.name = "WardAnisotropicEllipticalGaussianSPF"; c.spf = waSPFb;  c.brdf = waBRDF;  c.diffusePainter = black; c.specularBRDFIsolable = true; c.diffuseBRDFIsolable = false; cSubjects.push_back( c );
-		Subject d; d.name = "IsotropicPhongSPF";                    d.spf = ipSPFb;  d.brdf = ipBRDF;  d.diffusePainter = black; d.specularBRDFIsolable = true; d.diffuseBRDFIsolable = false; cSubjects.push_back( d );
-		Subject e; e.name = "AshikminShirleyAnisotropicPhongSPF";   e.spf = asSPFb;  e.brdf = asBRDF;  e.diffusePainter = black; e.specularBRDFIsolable = true; e.diffuseBRDFIsolable = false; cSubjects.push_back( e );
+		cSubjects.push_back( MakeSubject( "SchlickSPF", schSPFb, schBRDF, black, true, false ) );
+		cSubjects.push_back( MakeSubject( "WardIsotropicGaussianSPF", wiSPFb, wiBRDF, black, true, false ) );
+		cSubjects.push_back( MakeSubject( "WardAnisotropicEllipticalGaussianSPF", waSPFb, waBRDF, black, true, false ) );
+		cSubjects.push_back( MakeSubject( "IsotropicPhongSPF", ipSPFb, ipBRDF, black, true, false ) );
+		{
+			Subject ash = MakeSubject( "AshikminShirleyAnisotropicPhongSPF", asSPFb, asBRDF, black, true, false );
+			ash.ashikminDiffuseForm = true;
+			ash.rsPainter = spec;
+			ash.nuConst = 90.0;
+			ash.nvConst = 25.0;
+			cSubjects.push_back( ash );
+		}
 	}
 
 	// The DIFFUSE half of section C needs the specular painter black
@@ -502,9 +565,9 @@ int main()
 
 	std::vector<Subject> dSubjects;
 	{
-		Subject b; b.name = "WardIsotropicGaussianSPF (diffuse)";             b.spf = wiSPFd; b.brdf = wiBRDFd; b.diffusePainter = black; b.specularBRDFIsolable = false; b.diffuseBRDFIsolable = true; dSubjects.push_back( b );
-		Subject c; c.name = "WardAnisotropicEllipticalGaussianSPF (diffuse)"; c.spf = waSPFd; c.brdf = waBRDFd; c.diffusePainter = black; c.specularBRDFIsolable = false; c.diffuseBRDFIsolable = true; dSubjects.push_back( c );
-		Subject d; d.name = "IsotropicPhongSPF (diffuse)";                    d.spf = ipSPFd; d.brdf = ipBRDFd; d.diffusePainter = black; d.specularBRDFIsolable = false; d.diffuseBRDFIsolable = true; dSubjects.push_back( d );
+		dSubjects.push_back( MakeSubject( "WardIsotropicGaussianSPF (diffuse)", wiSPFd, wiBRDFd, black, false, true ) );
+		dSubjects.push_back( MakeSubject( "WardAnisotropicEllipticalGaussianSPF (diffuse)", waSPFd, waBRDFd, black, false, true ) );
+		dSubjects.push_back( MakeSubject( "IsotropicPhongSPF (diffuse)", ipSPFd, ipBRDFd, black, false, true ) );
 	}
 
 	//----------------------------------------------------------------
@@ -539,11 +602,11 @@ int main()
 
 	{
 		std::vector<Subject> rSubjects;
-		Subject a; a.name = "SchlickSPF (lambda-varying shape)";                           a.spf = schR; a.brdf = 0; a.diffusePainter = diff; a.specularBRDFIsolable = false; a.diffuseBRDFIsolable = false; rSubjects.push_back( a );
-		Subject b; b.name = "WardIsotropicGaussianSPF (lambda-varying shape)";             b.spf = wiR;  b.brdf = 0; b.diffusePainter = diff; b.specularBRDFIsolable = false; b.diffuseBRDFIsolable = false; rSubjects.push_back( b );
-		Subject c; c.name = "WardAnisotropicEllipticalGaussianSPF (lambda-varying shape)"; c.spf = waR;  c.brdf = 0; c.diffusePainter = diff; c.specularBRDFIsolable = false; c.diffuseBRDFIsolable = false; rSubjects.push_back( c );
-		Subject d; d.name = "IsotropicPhongSPF (lambda-varying shape)";                    d.spf = ipR;  d.brdf = 0; d.diffusePainter = diff; d.specularBRDFIsolable = false; d.diffuseBRDFIsolable = false; rSubjects.push_back( d );
-		Subject e; e.name = "AshikminShirleyAnisotropicPhongSPF (lambda-varying shape)";   e.spf = asR;  e.brdf = 0; e.diffusePainter = diff; e.specularBRDFIsolable = false; e.diffuseBRDFIsolable = false; rSubjects.push_back( e );
+		rSubjects.push_back( MakeSubject( "SchlickSPF (lambda-varying shape)", schR, 0, diff, false, false ) );
+		rSubjects.push_back( MakeSubject( "WardIsotropicGaussianSPF (lambda-varying shape)", wiR, 0, diff, false, false ) );
+		rSubjects.push_back( MakeSubject( "WardAnisotropicEllipticalGaussianSPF (lambda-varying shape)", waR, 0, diff, false, false ) );
+		rSubjects.push_back( MakeSubject( "IsotropicPhongSPF (lambda-varying shape)", ipR, 0, diff, false, false ) );
+		rSubjects.push_back( MakeSubject( "AshikminShirleyAnisotropicPhongSPF (lambda-varying shape)", asR, 0, diff, false, false ) );
 		for( size_t i = 0; i < rSubjects.size(); i++ ) SectionA( rSubjects[i], iorStack, 400 );
 	}
 

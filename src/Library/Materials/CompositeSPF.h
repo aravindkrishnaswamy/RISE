@@ -193,6 +193,24 @@ namespace RISE
 				const Scalar nm,											///< [in] Wavelength
 				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
+
+			//! DL-125 / DL-221.  This SPF stores a PER-LOBE conditional
+			//! density on every emitted ray (whatever density the
+			//! sub-SPF that produced it stored), so the HWSS companion
+			//! ladder's aggregate-BSDF fallback is NOT exact for it --
+			//! and, unlike the five SPFs that were fixed under DL-125,
+			//! it CANNOT implement `EvaluateKrayNM`: an emitted ray's
+			//! `krayNM` is the product of a STOCHASTIC random walk
+			//! between the two layers (a sequence of sub-SPF krays and
+			//! Beer gap attenuations), and neither the intermediate
+			//! directions nor the number of layer crossings is
+			//! recoverable from the final outgoing direction.  Naming
+			//! ourselves here makes the residual AUDIBLE (one log line
+			//! per process) instead of silent.  See DL-221.
+			const char* PerLobeDensityFallbackName() const
+			{
+				return "CompositeSPF";
+			}
 		};
 	}
 }

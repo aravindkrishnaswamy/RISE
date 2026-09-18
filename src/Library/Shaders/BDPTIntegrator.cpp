@@ -3019,6 +3019,17 @@ namespace {
 								}
 							}
 							if( compScale < 0 ) {
+								// DL-125.  The fallback is EXACT only for
+								// an SPF whose emitted ray carries the
+								// AGGREGATE mixture density; a per-lobe
+								// conditional density makes it the DL-69
+								// mispairing.  Every such SPF implements
+								// `EvaluateKrayNM` now except
+								// `CompositeSPF` (DL-221), which names
+								// itself for this one-shot warning.
+								if( useKray ) {
+									NotePerLobeDensityCompanionFallback( pSPF );
+								}
 								const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
 									vertices.back(), scatDir, -currentRay.Dir(), pSwlHWSS->lambda[w] );
 								compScale = fw * invScale;
@@ -7055,6 +7066,10 @@ unsigned int GenerateLightSubpathImpl(
 							}
 						}
 						if( compScale < 0 ) {
+							// DL-125 -- see the eye twin's comment.
+							if( useKray ) {
+								NotePerLobeDensityCompanionFallback( pSPF );
+							}
 							const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
 								vertices.back(), -currentRay.Dir(), scatDir, pSwlHWSS->lambda[w] );
 							compScale = fw * invScale;

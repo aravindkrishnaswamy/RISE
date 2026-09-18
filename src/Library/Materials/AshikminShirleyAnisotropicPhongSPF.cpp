@@ -871,3 +871,98 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 
 	return cD * diffusePdf + specDensity;
 }
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateKrayNM -- DL-125.
+//
+// Returns the `krayNM` `ScatterNM` itself would have stamped on this
+// lobe had `nm` been the hero wavelength, for the SAME outgoing
+// direction.  Both lobes are recoverable from `(ri, outDir, nm)`:
+//
+//   diffuse:   Rd(nm) * (1 - Rs(nm)) * (28/23) * K1(cos_o) * K2(cos_i)
+//   specular:  (brdf_S / p_S) * cos_o
+//
+// The diffuse lobe's own sampled direction IS `outDir`, so DL-99's
+// "an Ashikmin diffuse weight depends on its own draw" hazard does not
+// bite here -- the draw is the argument.
+//
+// The specular lobe replays `GenerateSpecularRay`'s own density from
+// the recovered half-vector: `h = normalize(wi + wo)` (exact -- `wo`
+// is the mirror of `-wi` about `h`), the sampled azimuth `phi` read
+// back off `h`'s tangential components in the SAMPLING frame (the
+// sampler builds `h` as `(cos_phi sin_theta, sin_phi sin_theta,
+// cos_theta)` in that frame, so `cos_phi = (h.u)/sin_theta`), and
+// `p_S = factor1 * factor2 / (4 (h.wi))` exactly as the sampler stores
+// it.  At the pole (`sin_theta -> 0`) the azimuth is undefined and
+// irrelevant: `factor2 = pow(h.n, ...)` -> 1 for any exponent.
+//
+// `NU`, `NV` and both reflectances are read at `nm`; no sampler draw
+// is consumed.
+//////////////////////////////////////////////////////////////////////
+Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	// Rebuild ScatterNM's sampling frame exactly (post-FlipW on a
+	// back-face hit -- DL-100).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Scalar rho = GuardedGetColorNM( *pRs, ri, nm );
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		const Scalar cos_o_diff = Vector3Ops::Dot( outDir, myonb.w() );
+		const Scalar cos_i = Vector3Ops::Dot(
+			Vector3Ops::Normalize( -ri.ray.Dir() ), myonb.w() );
+		const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
+		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
+		static const Scalar diffuseNorm = 28.0 / 23.0;
+		return GuardedGetColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	const Scalar NU = pNu->GetValueAtNM( ri, nm );
+	const Scalar NV = pNv->GetValueAtNM( ri, nm );
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 k2 = Vector3Ops::Normalize( outDir );
+	const Vector3 h = Vector3Ops::Normalize( wi + k2 );
+
+	const Scalar hdotk = Vector3Ops::Dot( h, wi );
+	const Scalar hdotn = Vector3Ops::Dot( myonb.w(), h );
+	if( hdotk <= 0 || hdotn <= 0 ) {
+		return 0;						// a genuine zero, not "unimplemented"
+	}
+
+	// Recover the sampler's own azimuth from h's tangential part.
+	const Scalar sin_theta_sq = r_max( Scalar(0), Scalar(1) - hdotn*hdotn );
+	Scalar cos_phi = 1.0, sin_phi = 0.0;
+	if( sin_theta_sq > 1e-24 ) {
+		const Scalar inv_sin_theta = 1.0 / sqrt( sin_theta_sq );
+		cos_phi = Vector3Ops::Dot( h, myonb.u() ) * inv_sin_theta;
+		sin_phi = Vector3Ops::Dot( h, myonb.v() ) * inv_sin_theta;
+	}
+
+	const Scalar factor1 = sqrt((NU+1.0)*(NV+1.0)) / TWO_PI;
+	const Scalar factor2 = pow( hdotn, (NU*cos_phi*cos_phi + NV*sin_phi*sin_phi) );
+	const Scalar density = (factor1 * factor2) / (4.0 * hdotk);
+	if( density <= 0 ) {
+		return 0;
+	}
+
+	Scalar diffuseFactor = 0, brdf = 0;
+	AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
+		diffuseFactor, brdf, k2, ri, myonb.w(), myonb.u(), myonb.v(), NU, NV, rho );
+
+	const Scalar cos_o = Vector3Ops::Dot( k2, myonb.w() );
+	return ( brdf / density ) * cos_o;
+}

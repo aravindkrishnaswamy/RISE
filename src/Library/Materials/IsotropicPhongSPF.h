@@ -80,6 +80,18 @@ namespace RISE
 				const Scalar nm,
 				const IORStack& ior_stack
 				) const;
+
+			//! DL-125.  The SELECTED lobe's own `f_I cos / p_I` at a
+			//! COMPANION wavelength, for the HWSS companion ladder.
+			//! Required because this SPF stores a PER-LOBE conditional
+			//! density on each emitted ray.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
 		};
 	}
 }
