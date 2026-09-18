@@ -159,6 +159,18 @@ static double rand01_lowalpha() {
 	return (double)(rng_state_lowalpha >> 11) / (double)(1ULL << 53);
 }
 
+// DL-161: a FOURTH, independently-seeded LCG stream, used exclusively by
+// the DL-161 aniso low-alpha sub-grid bake (ALPHALOW_X/ALPHALOW_XY and
+// their grazing SUB twins).  Same isolation rationale as rng_state_sub/
+// rng_state_lowalpha above -- every pre-existing table (isotropic AND
+// the DL-77/DL-86 aniso ones, all fully baked before this stream is
+// ever touched) stays byte-for-byte identical.
+static unsigned long long rng_state_anisolow = 271828182845904523ULL;
+static double rand01_anisolow() {
+	rng_state_anisolow = rng_state_anisolow * 6364136223846793005ULL + 1442695040888963407ULL;
+	return (double)(rng_state_anisolow >> 11) / (double)(1ULL << 53);
+}
+
 static const int LUT_SIZE = 32;
 static const int NUM_SAMPLES = 1000000;
 
@@ -1119,6 +1131,65 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		f = a - i0;
 	}
 
+	/// DL-161: alpha value of the ANISO grid's own row 0 / row 1 -- the
+	/// two endpoints the aniso low-alpha sub-grid below is anchored to.
+	/// Distinct from the isotropic ALPHA_LOW_A0/A1 (defined above): the
+	/// aniso grid has ANISO_ALPHA_SIZE=24 nodes (not LUT_SIZE=32), so its
+	/// own row1 sits at a coarser ~5.3x ratio from row0 (isotropic:
+	/// ~4.2x).  ALPHA_LOW_A0 is numerically identical (both are 0.01),
+	/// reused as-is.
+	static const Scalar ANISO_ALPHA_LOW_A1 = Scalar(0.01) + Scalar(1.0 - 0.01) * Scalar(1.0) / Scalar(ANISO_ALPHA_SIZE - 1);
+
+	/// DL-161: alpha value of aniso low-alpha virtual node `idx` (idx in
+	/// [0, ALPHA_LOW_TOTAL]) -- the SAME node-count/placement
+	/// construction (ALPHA_SUB_FINE geometric octaves below A0,
+	/// ALPHA_MID_SIZE-1 geometric nodes between A0 and A1) DL-105 used
+	/// for the isotropic axis, re-anchored to ANISO_ALPHA_LOW_A1 instead
+	/// of ALPHA_LOW_A1.  The below-A0 octaves (idx 1..ALPHA_SUB_FINE)
+	/// depend only on A0=0.01, shared with the isotropic axis, so those
+	/// 7 alpha VALUES are numerically identical to AlphaLowNode's -- only
+	/// the mid-section (between A0 and A1) differs, since A1 differs.
+	inline Scalar AnisoAlphaLowNode( const int idx )
+	{
+		if( idx <= 0 ) return Scalar(0.0);
+		if( idx <= ALPHA_SUB_FINE ) return ALPHA_LOW_A0 * pow( Scalar(2.0), Scalar(idx - (ALPHA_SUB_FINE + 1)) );
+		if( idx == ALPHA_SUB_FINE + 1 ) return ALPHA_LOW_A0;
+		if( idx < ALPHA_LOW_TOTAL )
+		{
+			const Scalar t = Scalar(idx - (ALPHA_SUB_FINE + 1)) / Scalar(ALPHA_MID_SIZE);
+			return ALPHA_LOW_A0 * pow( ANISO_ALPHA_LOW_A1 / ALPHA_LOW_A0, t );
+		}
+		return ANISO_ALPHA_LOW_A1;
+	}
+
+	/// DL-161: bracket a query alpha in [0, ANISO_ALPHA_LOW_A1) against
+	/// the AnisoAlphaLowNode list -- twin of AlphaLowIndex, reusing the
+	/// SAME AlphaLowSlot storage-index mapping (layout-only, independent
+	/// of the node VALUES, so no aniso-specific twin of it is needed).
+	/// idx0==0 (the exact alpha->0 virtual node) is a value this scan can
+	/// return; every *Ordinary/*Grazing/*Eavg accessor below folds it to
+	/// idx=1's own baked row instead of dereferencing it, because unlike
+	/// the isotropic axis the anisotropic alpha->0 boundary is NOT simply
+	/// Ess=1 (Lambda_Aniso stays finite off-axis) and has no closed form
+	/// -- and because it is PROVABLY UNREACHABLE from any production
+	/// roughness (GGXBRDF.cpp/GGXSPF.cpp floor authored alpha at 1e-4,
+	/// comfortably inside the [AnisoAlphaLowNode(1)=7.8e-5,
+	/// AnisoAlphaLowNode(2)~1.6e-4) octave).  See
+	/// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161".
+	inline void AnisoAlphaLowIndex( const Scalar alpha, int& idx0, int& idx1, Scalar& frac )
+	{
+		const Scalar a = r_max( Scalar(0.0), alpha );
+		idx0 = 0;
+		for( int j = 0; j < ALPHA_LOW_TOTAL; j++ )
+		{
+			if( a >= AnisoAlphaLowNode( j + 1 ) ) idx0 = j + 1; else break;
+		}
+		if( idx0 > ALPHA_LOW_TOTAL - 1 ) idx0 = ALPHA_LOW_TOTAL - 1;
+		idx1 = idx0 + 1;
+		const Scalar lo = AnisoAlphaLowNode(idx0), hi = AnisoAlphaLowNode(idx1);
+		frac = (hi > lo) ? r_max( Scalar(0.0), r_min( Scalar(1.0), (a - lo) / (hi - lo) ) ) : Scalar(0.0);
+	}
+
 	/// Map a local-space direction's (x,y) to the DL-77 aniso table's
 	/// endpoint-inclusive phi index pair (pi0,pi1,pf), folded into the
 	/// ellipse's quarter-period [0,90] degrees (see ANISO_PHI_SIZE's
@@ -1160,6 +1231,104 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		if( n <= 0 ) return Scalar(1.0);
 		if( n >= ANISO_SUB_TOTAL ) return E_ss_TABLE_G2_ANISO_PHI[xi][yi][pi][0];
 		return E_ss_TABLE_G2_ANISO_PHI_SUB[xi][yi][pi][n-1];
+	}
+
+	/// DL-161: per-azimuth aniso E_ss_G2 at a cell whose X axis is EITHER
+	/// an ordinary grid index (xLow==false, xIdx in [0,ANISO_ALPHA_SIZE))
+	/// or a low-alpha virtual node index (xLow==true, an
+	/// AnisoAlphaLowIndex idx0/idx1 value), paired against an ORDINARY Y
+	/// grid index yi.  See AnisoAlphaLowIndex's own comment for why
+	/// idx<=0 folds to idx=1's baked row instead of a fabricated anchor.
+	inline Scalar AnisoPhiCellMixedX( const bool xLow, const int xIdx, const int yi, const int pi, const int ci )
+	{
+		if( !xLow ) return E_ss_TABLE_G2_ANISO_PHI[xIdx][yi][pi][ci];
+		const int idx = (xIdx <= 0) ? 1 : xIdx;
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_ss_TABLE_G2_ANISO_PHI[0][yi][pi][ci];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_ss_TABLE_G2_ANISO_PHI[1][yi][pi][ci];
+		return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X[ AlphaLowSlot(idx) ][yi][pi][ci];
+	}
+
+	/// DL-161: grazing-sub-grid twin of AnisoPhiCellMixedX above.  Same
+	/// n<=0 / n>=ANISO_SUB_TOTAL boundary contract as the pre-existing
+	/// AnisoPhiSubNodeEssG2 (n<=0 is the exact cosTheta->0 boundary,
+	/// exactly 1 for the G2 model; n>=ANISO_SUB_TOTAL IS the cell's own
+	/// ordinary bin 0, read via AnisoPhiCellMixedX rather than the SUB
+	/// table, which only stores the ANISO_SUB_TOTAL-1 INTERIOR nodes) --
+	/// AnisoSubNodeIndex's own k0/k0+1 pair reaches both ends of this
+	/// range (verified: n=ANISO_SUB_TOTAL is reachable at cosTheta values
+	/// close to c0, e.g. cos=0.0156).
+	inline Scalar AnisoPhiSubCellMixedX( const bool xLow, const int xIdx, const int yi, const int pi, const int k )
+	{
+		if( k <= 0 ) return Scalar(1.0);
+		if( k >= ANISO_SUB_TOTAL ) return AnisoPhiCellMixedX( xLow, xIdx, yi, pi, 0 );
+		if( !xLow ) return E_ss_TABLE_G2_ANISO_PHI_SUB[xIdx][yi][pi][k-1];
+		const int idx = (xIdx <= 0) ? 1 : xIdx;
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_ss_TABLE_G2_ANISO_PHI_SUB[0][yi][pi][k-1];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_ss_TABLE_G2_ANISO_PHI_SUB[1][yi][pi][k-1];
+		return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X_SUB[ AlphaLowSlot(idx) ][yi][pi][k-1];
+	}
+
+	/// DL-161: per-azimuth aniso E_ss_G2 at a cell where BOTH axes are
+	/// low-alpha virtual node indices (or a boundary forward to A0/A1).
+	/// Dispatches to the dedicated both-low corner table only when
+	/// NEITHER index is a boundary forward; a boundary-vs-interior pair
+	/// reduces to the ALPHALOW_X table (with a phi flip when it is the Y
+	/// index that is interior-low, by the X<->Y relabel symmetry -- see
+	/// AnisoPhiIndex's own comment), and a boundary-vs-boundary pair
+	/// reduces to the main ordinary table.
+	inline Scalar AnisoPhiCellBothLow( const int xIdx, const int yIdx, const int pi, const int ci )
+	{
+		const int ix = (xIdx <= 0) ? 1 : xIdx;
+		const int iy = (yIdx <= 0) ? 1 : yIdx;
+		const bool ixBoundary = (ix == ALPHA_SUB_FINE + 1) || (ix >= ALPHA_LOW_TOTAL);
+		const bool iyBoundary = (iy == ALPHA_SUB_FINE + 1) || (iy >= ALPHA_LOW_TOTAL);
+		if( ixBoundary && iyBoundary )
+		{
+			const int xo = (ix == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			const int yo = (iy == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_ss_TABLE_G2_ANISO_PHI[xo][yo][pi][ci];
+		}
+		if( iyBoundary )
+		{
+			const int yo = (iy == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X[ AlphaLowSlot(ix) ][yo][pi][ci];
+		}
+		if( ixBoundary )
+		{
+			const int xo = (ix == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X[ AlphaLowSlot(iy) ][xo][ ANISO_PHI_SIZE - 1 - pi ][ci];
+		}
+		return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY[ AlphaLowSlot(ix) ][ AlphaLowSlot(iy) ][pi][ci];
+	}
+
+	/// DL-161: grazing-sub-grid twin of AnisoPhiCellBothLow above.  Same
+	/// n<=0 / n>=ANISO_SUB_TOTAL boundary contract as AnisoPhiSubCellMixedX
+	/// above -- see its own comment.
+	inline Scalar AnisoPhiSubCellBothLow( const int xIdx, const int yIdx, const int pi, const int k )
+	{
+		if( k <= 0 ) return Scalar(1.0);
+		if( k >= ANISO_SUB_TOTAL ) return AnisoPhiCellBothLow( xIdx, yIdx, pi, 0 );
+		const int ix = (xIdx <= 0) ? 1 : xIdx;
+		const int iy = (yIdx <= 0) ? 1 : yIdx;
+		const bool ixBoundary = (ix == ALPHA_SUB_FINE + 1) || (ix >= ALPHA_LOW_TOTAL);
+		const bool iyBoundary = (iy == ALPHA_SUB_FINE + 1) || (iy >= ALPHA_LOW_TOTAL);
+		if( ixBoundary && iyBoundary )
+		{
+			const int xo = (ix == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			const int yo = (iy == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_ss_TABLE_G2_ANISO_PHI_SUB[xo][yo][pi][k-1];
+		}
+		if( iyBoundary )
+		{
+			const int yo = (iy == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X_SUB[ AlphaLowSlot(ix) ][yo][pi][k-1];
+		}
+		if( ixBoundary )
+		{
+			const int xo = (ix == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X_SUB[ AlphaLowSlot(iy) ][xo][ ANISO_PHI_SIZE - 1 - pi ][k-1];
+		}
+		return E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY_SUB[ AlphaLowSlot(ix) ][ AlphaLowSlot(iy) ][pi][k-1];
 	}
 
 	/// DL-77: anisotropic twin of LookupEssG2.  Falls back to the exact
@@ -1275,9 +1444,139 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	/// (DL-105 / DL-77's tracked ANISO_PHI and low-alpha residual).  See
 	/// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the full
 	/// before/after table and the probe protocol.
+	///
+	/// DL-161: LookupEssG2AnisoDirectionalLowX/LowXY below handle the
+	/// case where alphaX and/or alphaY fall below ANISO_ALPHA_LOW_A1 --
+	/// see this function's own dispatch and docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161".
+	inline Scalar LookupEssG2AnisoDirectionalLowX( const Scalar cosTheta, const Scalar localX, const Scalar localY, const Scalar aXLow, const Scalar aYOrd )
+	{
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaLowIndex( aXLow, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaIndex( aYOrd, yi0, yi1, yf );
+		int pi0, pi1; Scalar pf;
+		AnisoPhiIndex( localX, localY, pi0, pi1, pf );
+
+		const Scalar cc = r_max(0.0, r_min(1.0, cosTheta));
+		const Scalar cSub0 = Scalar(0.5) / Scalar(ANISO_COS_SIZE);
+		const bool belowC0 = ( cc < cSub0 );
+
+		int k0 = 0; Scalar kf = 0;
+		int ci0 = 0, ci1 = 0; Scalar cf = 0;
+		if( belowC0 ) { AnisoSubNodeIndex( cc, cSub0, k0, kf ); }
+		else
+		{
+			Scalar c = cc * ANISO_COS_SIZE - 0.5;
+			ci0 = (int)c;
+			ci1 = r_min(ci0 + 1, ANISO_COS_SIZE - 1);
+			cf = c - ci0;
+		}
+
+		Scalar vXY[2][2];
+		for( int xi = 0; xi < 2; xi++ )
+		{
+			const int xiv = (xi == 0) ? xi0 : xi1;
+			for( int yi = 0; yi < 2; yi++ )
+			{
+				const int yiv = (yi == 0) ? yi0 : yi1;
+				Scalar vP0, vP1;
+				if( belowC0 )
+				{
+					vP0 = (1-kf) * AnisoPhiSubCellMixedX(true, xiv, yiv, pi0, k0) + kf * AnisoPhiSubCellMixedX(true, xiv, yiv, pi0, k0 + 1);
+					vP1 = (1-kf) * AnisoPhiSubCellMixedX(true, xiv, yiv, pi1, k0) + kf * AnisoPhiSubCellMixedX(true, xiv, yiv, pi1, k0 + 1);
+				}
+				else
+				{
+					vP0 = (1-cf) * AnisoPhiCellMixedX(true, xiv, yiv, pi0, ci0) + cf * AnisoPhiCellMixedX(true, xiv, yiv, pi0, ci1);
+					vP1 = (1-cf) * AnisoPhiCellMixedX(true, xiv, yiv, pi1, ci0) + cf * AnisoPhiCellMixedX(true, xiv, yiv, pi1, ci1);
+				}
+				vXY[xi][yi] = (1-pf)*vP0 + pf*vP1;
+			}
+		}
+		const Scalar v0 = (1-yf)*vXY[0][0] + yf*vXY[0][1];
+		const Scalar v1 = (1-yf)*vXY[1][0] + yf*vXY[1][1];
+		const Scalar v = (1-xf)*v0 + xf*v1;
+		return belowC0 ? r_max( Scalar(0.0), r_min( Scalar(1.0), v ) ) : v;
+	}
+
+	/// DL-161: LookupEssG2AnisoDirectional's both-low branch -- SAME
+	/// quadrilinear-interpolation shape as LookupEssG2AnisoDirectionalLowX,
+	/// resolving BOTH axes via AnisoAlphaLowIndex/AnisoPhiCellBothLow.
+	inline Scalar LookupEssG2AnisoDirectionalLowXY( const Scalar cosTheta, const Scalar localX, const Scalar localY, const Scalar aXLow, const Scalar aYLow )
+	{
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaLowIndex( aXLow, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaLowIndex( aYLow, yi0, yi1, yf );
+		int pi0, pi1; Scalar pf;
+		AnisoPhiIndex( localX, localY, pi0, pi1, pf );
+
+		const Scalar cc = r_max(0.0, r_min(1.0, cosTheta));
+		const Scalar cSub0 = Scalar(0.5) / Scalar(ANISO_COS_SIZE);
+		const bool belowC0 = ( cc < cSub0 );
+
+		int k0 = 0; Scalar kf = 0;
+		int ci0 = 0, ci1 = 0; Scalar cf = 0;
+		if( belowC0 ) { AnisoSubNodeIndex( cc, cSub0, k0, kf ); }
+		else
+		{
+			Scalar c = cc * ANISO_COS_SIZE - 0.5;
+			ci0 = (int)c;
+			ci1 = r_min(ci0 + 1, ANISO_COS_SIZE - 1);
+			cf = c - ci0;
+		}
+
+		Scalar vXY[2][2];
+		for( int xi = 0; xi < 2; xi++ )
+		{
+			const int xiv = (xi == 0) ? xi0 : xi1;
+			for( int yi = 0; yi < 2; yi++ )
+			{
+				const int yiv = (yi == 0) ? yi0 : yi1;
+				Scalar vP0, vP1;
+				if( belowC0 )
+				{
+					vP0 = (1-kf) * AnisoPhiSubCellBothLow(xiv, yiv, pi0, k0) + kf * AnisoPhiSubCellBothLow(xiv, yiv, pi0, k0 + 1);
+					vP1 = (1-kf) * AnisoPhiSubCellBothLow(xiv, yiv, pi1, k0) + kf * AnisoPhiSubCellBothLow(xiv, yiv, pi1, k0 + 1);
+				}
+				else
+				{
+					vP0 = (1-cf) * AnisoPhiCellBothLow(xiv, yiv, pi0, ci0) + cf * AnisoPhiCellBothLow(xiv, yiv, pi0, ci1);
+					vP1 = (1-cf) * AnisoPhiCellBothLow(xiv, yiv, pi1, ci0) + cf * AnisoPhiCellBothLow(xiv, yiv, pi1, ci1);
+				}
+				vXY[xi][yi] = (1-pf)*vP0 + pf*vP1;
+			}
+		}
+		const Scalar v0 = (1-yf)*vXY[0][0] + yf*vXY[0][1];
+		const Scalar v1 = (1-yf)*vXY[1][0] + yf*vXY[1][1];
+		const Scalar v = (1-xf)*v0 + xf*v1;
+		return belowC0 ? r_max( Scalar(0.0), r_min( Scalar(1.0), v ) ) : v;
+	}
+
 	inline Scalar LookupEssG2AnisoDirectional( const Scalar cosTheta, const Scalar localX, const Scalar localY, const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEssG2( cosTheta, alphaX );
+
+		// DL-161: the low-alpha dispatch MUST see the RAW alpha (floored
+		// only at 0, not at 0.01) -- the r_max(0.01,...) clamp two lines
+		// below exists for the ORDINARY grid's own domain and is applied
+		// AFTER this check.  Clamping first would silently round every
+		// alphaX/alphaY below 0.01 up to exactly 0.01 before the low-alpha
+		// branch ever saw it, so e.g. alphaX=0.002 and alphaX=0.005 would
+		// both dispatch as if alphaX==0.01 and return IDENTICAL results --
+		// exactly the regression GGXHeightCorrelatedEnergyLUTTest's DL-161
+		// rows caught (both then read the alpha=0.01 boundary row's own
+		// value, discarding the true low alpha's sharper masking).  The
+		// X<->Y relabel symmetry (Ess(a,b,phi) == Ess(b,a,90-phi)) lets a
+		// single "low X" bake (LookupEssG2AnisoDirectionalLowX) cover the
+		// "low Y" case too, by swapping (alphaX,alphaY,localX,localY).
+		const Scalar rawX = r_max( Scalar(0.0), alphaX );
+		const Scalar rawY = r_max( Scalar(0.0), alphaY );
+		const bool xLow = rawX < ANISO_ALPHA_LOW_A1;
+		const bool yLow = rawY < ANISO_ALPHA_LOW_A1;
+		if( xLow && !yLow ) return LookupEssG2AnisoDirectionalLowX( cosTheta, localX, localY, rawX, rawY );
+		if( yLow && !xLow ) return LookupEssG2AnisoDirectionalLowX( cosTheta, localY, localX, rawY, rawX );
+		if( xLow && yLow )  return LookupEssG2AnisoDirectionalLowXY( cosTheta, localX, localY, rawX, rawY );
 
 		const Scalar aX = r_max(0.01, r_min(1.0, alphaX));
 		const Scalar aY = r_max(0.01, r_min(1.0, alphaY));
@@ -1342,10 +1641,95 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		return belowC0 ? r_max( Scalar(0.0), r_min( Scalar(1.0), v ) ) : v;
 	}
 
+	/// DL-161: E_avg_G2_ANISO twin of AnisoPhiCellMixedX -- no phi axis
+	/// (Eavg is already azimuth-averaged by construction), so no flip is
+	/// needed for the X<->Y relabel: Eavg(alphaX,alphaY) ==
+	/// Eavg(alphaY,alphaX) identically.
+	inline Scalar AnisoEavgCellMixedX( const bool xLow, const int xIdx, const int yi )
+	{
+		if( !xLow ) return E_avg_TABLE_G2_ANISO[xIdx][yi];
+		const int idx = (xIdx <= 0) ? 1 : xIdx;
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_avg_TABLE_G2_ANISO[0][yi];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_avg_TABLE_G2_ANISO[1][yi];
+		return E_avg_TABLE_G2_ANISO_ALPHALOW_X[ AlphaLowSlot(idx) ][yi];
+	}
+
+	/// DL-161: E_avg_G2_ANISO twin of AnisoPhiCellBothLow.
+	inline Scalar AnisoEavgCellBothLow( const int xIdx, const int yIdx )
+	{
+		const int ix = (xIdx <= 0) ? 1 : xIdx;
+		const int iy = (yIdx <= 0) ? 1 : yIdx;
+		const bool ixBoundary = (ix == ALPHA_SUB_FINE + 1) || (ix >= ALPHA_LOW_TOTAL);
+		const bool iyBoundary = (iy == ALPHA_SUB_FINE + 1) || (iy >= ALPHA_LOW_TOTAL);
+		if( ixBoundary && iyBoundary )
+		{
+			const int xo = (ix == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			const int yo = (iy == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_avg_TABLE_G2_ANISO[xo][yo];
+		}
+		if( iyBoundary )
+		{
+			const int yo = (iy == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_avg_TABLE_G2_ANISO_ALPHALOW_X[ AlphaLowSlot(ix) ][yo];
+		}
+		if( ixBoundary )
+		{
+			const int xo = (ix == ALPHA_SUB_FINE + 1) ? 0 : 1;
+			return E_avg_TABLE_G2_ANISO_ALPHALOW_X[ AlphaLowSlot(iy) ][xo];
+		}
+		return E_avg_TABLE_G2_ANISO_ALPHALOW_XY[ AlphaLowSlot(ix) ][ AlphaLowSlot(iy) ];
+	}
+
+	/// DL-161: LookupEavgG2Aniso's low-alpha-X (ordinary-Y) branch.
+	inline Scalar LookupEavgG2AnisoLowX( const Scalar aXLow, const Scalar aYOrd )
+	{
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaLowIndex( aXLow, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaIndex( aYOrd, yi0, yi1, yf );
+
+		const Scalar v00 = AnisoEavgCellMixedX(true, xi0, yi0);
+		const Scalar v01 = AnisoEavgCellMixedX(true, xi0, yi1);
+		const Scalar v10 = AnisoEavgCellMixedX(true, xi1, yi0);
+		const Scalar v11 = AnisoEavgCellMixedX(true, xi1, yi1);
+		const Scalar v0 = (1-yf)*v00 + yf*v01;
+		const Scalar v1 = (1-yf)*v10 + yf*v11;
+		return (1-xf)*v0 + xf*v1;
+	}
+
+	/// DL-161: LookupEavgG2Aniso's both-low branch.
+	inline Scalar LookupEavgG2AnisoLowXY( const Scalar aXLow, const Scalar aYLow )
+	{
+		int xi0, xi1; Scalar xf;
+		AnisoAlphaLowIndex( aXLow, xi0, xi1, xf );
+		int yi0, yi1; Scalar yf;
+		AnisoAlphaLowIndex( aYLow, yi0, yi1, yf );
+
+		const Scalar v00 = AnisoEavgCellBothLow(xi0, yi0);
+		const Scalar v01 = AnisoEavgCellBothLow(xi0, yi1);
+		const Scalar v10 = AnisoEavgCellBothLow(xi1, yi0);
+		const Scalar v11 = AnisoEavgCellBothLow(xi1, yi1);
+		const Scalar v0 = (1-yf)*v00 + yf*v01;
+		const Scalar v1 = (1-yf)*v10 + yf*v11;
+		return (1-xf)*v0 + xf*v1;
+	}
+
 	/// DL-77: anisotropic twin of LookupEavgG2.
 	inline Scalar LookupEavgG2Aniso( const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEavgG2( alphaX );
+
+		// DL-161: same "check the raw alpha before the ordinary [0.01,1.0]
+		// clamp" fix as LookupEssG2AnisoDirectional's own dispatch --
+		// see its comment for why clamping first breaks the low-alpha
+		// branch (every alpha below 0.01 would alias to exactly 0.01).
+		const Scalar rawX = r_max( Scalar(0.0), alphaX );
+		const Scalar rawY = r_max( Scalar(0.0), alphaY );
+		const bool xLow = rawX < ANISO_ALPHA_LOW_A1;
+		const bool yLow = rawY < ANISO_ALPHA_LOW_A1;
+		if( xLow && !yLow ) return LookupEavgG2AnisoLowX( rawX, rawY );
+		if( yLow && !xLow ) return LookupEavgG2AnisoLowX( rawY, rawX );
+		if( xLow && yLow )  return LookupEavgG2AnisoLowXY( rawX, rawY );
 
 		const Scalar aX = r_max(0.01, r_min(1.0, alphaX));
 		const Scalar aY = r_max(0.01, r_min(1.0, alphaY));
@@ -2015,6 +2399,263 @@ int main() {
 			const double alphaY = 0.01 + (1.0 - 0.01) * (double)iy / (double)(ANISO_ALPHA_SIZE - 1);
 			fprintf(stderr, "aniso alphaX=%.4f alphaY=%.4f  E_avg_G2_ANISO=%.6f\n",
 				alphaX, alphaY, E_avg_G2_ANISO[ix][iy]);
+		}
+	}
+
+	// DL-161: aniso low-alpha sub-grid bake.  Reuses alphaLowNode/
+	// alphaLowSlot (both already parameterized by A0,A1 -- no new
+	// generator-side node function is needed) re-anchored to the ANISO
+	// grid's own row0/row1 (anisoAlphaLowA0=0.01, anisoAlphaLowA1=
+	// 0.01+0.99/(ANISO_ALPHA_SIZE-1)=0.053043...), NOT the isotropic
+	// axis's A1 (0.041935...) -- the aniso grid's first cell is a 5.3x
+	// ratio (isotropic: 4.2x), so the low-alpha MID nodes (between A0
+	// and A1) sit at different alpha values.  The below-0.01 geometric
+	// octaves (which depend only on A0=0.01, shared with the isotropic
+	// axis) are numerically identical to alphaLowNode's isotropic call
+	// sites' own octave values -- confirmed by construction, not
+	// re-measured.
+	//
+	// Two families of tables: ALPHALOW_X (low alphaX paired against the
+	// FULL ordinary 24-node alphaY grid -- no symmetry between a
+	// low-alpha virtual index and an ordinary grid index, so this is a
+	// genuine rectangular bake) and ALPHALOW_XY (BOTH axes low -- itself
+	// relabel-symmetric like the main DL-77 table, so baked
+	// upper-triangle + mirrored).  The "low alphaY, ordinary alphaX" and
+	// "boundary-vs-interior" cases are NOT separately baked --
+	// LookupEssG2AnisoDirectional's runtime dispatch derives them from
+	// ALPHALOW_X via the X<->Y relabel symmetry (phi -> 90-phi) and from
+	// the main ordinary table where a low index forwards to A0/A1
+	// (idx==ALPHA_SUB_FINE+1 or idx>=ALPHA_LOW_TOTAL) -- see the emitted
+	// AnisoPhiCellBothLow's own comment.
+	//
+	// The H6 multiscatter-lobe SAMPLER (E_ss_G2_ANISO/_SUB,
+	// MSLobeZG2Aniso, SampleMSCosThetaG2Aniso, MSPdfG2Aniso,
+	// BuildSegmentsFromRowN) is DELIBERATELY NOT extended here -- it
+	// keeps reading the pre-existing AnisoAlphaIndex clamp-to-row-0
+	// behavior below 0.01, matching the DL-86 precedent that the
+	// sampler's own precision is an efficiency concern (MSPdfG2Aniso
+	// always reports the density of what SampleMSCosThetaG2Aniso
+	// actually draws, so the estimator stays unbiased regardless of the
+	// proposal's accuracy), not a correctness one -- only the two
+	// ENERGY-COMPENSATION call sites (LookupEssG2AnisoDirectional,
+	// LookupEavgG2Aniso) are fixed.  See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161".
+	const double anisoAlphaLowA0 = 0.01;
+	const double anisoAlphaLowA1 = 0.01 + (1.0 - 0.01) * 1.0 / (double)(ANISO_ALPHA_SIZE - 1);
+
+	static double E_ss_G2_ANISO_PHI_ALPHALOW_X[ALPHA_LOW_STORED][ANISO_ALPHA_SIZE][ANISO_PHI_SIZE][ANISO_COS_SIZE];
+	static double E_ss_G2_ANISO_PHI_ALPHALOW_X_SUB[ALPHA_LOW_STORED][ANISO_ALPHA_SIZE][ANISO_PHI_SIZE][ANISO_SUB_TOTAL-1];
+	static double E_ss_G2_ANISO_PHI_ALPHALOW_XY[ALPHA_LOW_STORED][ALPHA_LOW_STORED][ANISO_PHI_SIZE][ANISO_COS_SIZE];
+	static double E_ss_G2_ANISO_PHI_ALPHALOW_XY_SUB[ALPHA_LOW_STORED][ALPHA_LOW_STORED][ANISO_PHI_SIZE][ANISO_SUB_TOTAL-1];
+	static double E_avg_G2_ANISO_ALPHALOW_X[ALPHA_LOW_STORED][ANISO_ALPHA_SIZE];
+	static double E_avg_G2_ANISO_ALPHALOW_XY[ALPHA_LOW_STORED][ALPHA_LOW_STORED];
+
+	// -- ALPHALOW_X: low alphaX (ALPHA_LOW_STORED nodes) x ordinary
+	// alphaY (ANISO_ALPHA_SIZE nodes), full phi x cosTheta resolution
+	// (ordinary bins) plus the grazing sub-grid twin. --
+	auto bakeAnisoLowXRow = [&](int lowIdx) {
+		const int slot = alphaLowSlot(lowIdx);
+		const double alphaX = alphaLowNode(lowIdx, anisoAlphaLowA0, anisoAlphaLowA1);
+
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
+			const double alphaY = 0.01 + (1.0 - 0.01) * (double)iy / (double)(ANISO_ALPHA_SIZE - 1);
+
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				const double phiDeg = (double)pi * 90.0 / (double)(ANISO_PHI_SIZE - 1);
+				const double phi = phiDeg * PI / 180.0;
+				const double cosPhi = cos(phi);
+				const double sinPhi = sin(phi);
+
+				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+					const double cosTheta = ((double)ci + 0.5) / ANISO_COS_SIZE;
+					const double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
+					const Vec3 wi(sinTheta * cosPhi, sinTheta * sinPhi, cosTheta);
+					const double G1wi = GGX_G1_Aniso(alphaX, alphaY, wi);
+
+					double sumG2 = 0.0;
+					for(int s = 0; s < NUM_SAMPLES_ANISO; s++) {
+						const double u1 = rand01_anisolow();
+						const double u2 = rand01_anisolow();
+						const Vec3 m = VNDF_Sample_Local_Aniso(wi, alphaX, alphaY, u1, u2);
+						const double wiDotM = dot(wi, m);
+						if(wiDotM <= 0) continue;
+						Vec3 wo(2.0*wiDotM*m.x - wi.x, 2.0*wiDotM*m.y - wi.y, 2.0*wiDotM*m.z - wi.z);
+						wo = normalize(wo);
+						const double cosWo = wo.z;
+						if(cosWo > 0) {
+							if(G1wi > 1e-12)
+								sumG2 += GGX_G2_Aniso_HeightCorrelated(alphaX, alphaY, wi, wo) / G1wi;
+						}
+					}
+					E_ss_G2_ANISO_PHI_ALPHALOW_X[slot][iy][pi][ci] = sumG2 / (double)NUM_SAMPLES_ANISO;
+				}
+
+				for(int n = 1; n < ANISO_SUB_TOTAL; n++) {
+					const double cosTheta = anisoSubNodeCos(n, 0.5 / (double)ANISO_COS_SIZE);
+					const double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
+					const Vec3 wi(sinTheta * cosPhi, sinTheta * sinPhi, cosTheta);
+					const double G1wi = GGX_G1_Aniso(alphaX, alphaY, wi);
+
+					double sumG2 = 0.0;
+					for(int s = 0; s < NUM_SAMPLES_ANISO; s++) {
+						const double u1 = rand01_anisolow();
+						const double u2 = rand01_anisolow();
+						const Vec3 m = VNDF_Sample_Local_Aniso(wi, alphaX, alphaY, u1, u2);
+						const double wiDotM = dot(wi, m);
+						if(wiDotM <= 0) continue;
+						Vec3 wo(2.0*wiDotM*m.x - wi.x, 2.0*wiDotM*m.y - wi.y, 2.0*wiDotM*m.z - wi.z);
+						wo = normalize(wo);
+						const double cosWo = wo.z;
+						if(cosWo > 0) {
+							if(G1wi > 1e-12)
+								sumG2 += GGX_G2_Aniso_HeightCorrelated(alphaX, alphaY, wi, wo) / G1wi;
+						}
+					}
+					E_ss_G2_ANISO_PHI_ALPHALOW_X_SUB[slot][iy][pi][n-1] = sumG2 / (double)NUM_SAMPLES_ANISO;
+				}
+			}
+
+			// E_avg via phi-trapezoidal average (endpoint-half-weight,
+			// matching the main table's own derivation) THEN the
+			// midpoint-rule cosTheta integral over the ordinary bins --
+			// identical two-step derivation to E_avg_G2_ANISO's own,
+			// just sourced from this row's freshly-baked PHI table
+			// instead of the main one.  The phi average is an EPHEMERAL
+			// scratch quantity here (not separately stored in the
+			// header): only the final per-(alphaX,alphaY) E_avg needs a
+			// table entry, matching DL-77's economy for the main table.
+			double integral = 0.0;
+			for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+				double trapz = 0.5 * E_ss_G2_ANISO_PHI_ALPHALOW_X[slot][iy][0][ci] + 0.5 * E_ss_G2_ANISO_PHI_ALPHALOW_X[slot][iy][ANISO_PHI_SIZE-1][ci];
+				for(int pi = 1; pi < ANISO_PHI_SIZE - 1; pi++)
+					trapz += E_ss_G2_ANISO_PHI_ALPHALOW_X[slot][iy][pi][ci];
+				const double essAvgPhi = trapz / (double)(ANISO_PHI_SIZE - 1);
+				const double mu = ((double)ci + 0.5) / ANISO_COS_SIZE;
+				const double dmu = 1.0 / ANISO_COS_SIZE;
+				integral += essAvgPhi * mu * dmu;
+			}
+			E_avg_G2_ANISO_ALPHALOW_X[slot][iy] = 2.0 * integral;
+		}
+
+		fprintf(stderr, "DL-161 aniso low-X idx=%d alphaX=%.8f  (canonical bake)\n", lowIdx, alphaX);
+	};
+	for(int idx = 1; idx <= ALPHA_SUB_FINE; idx++) bakeAnisoLowXRow(idx);
+	for(int idx = ALPHA_SUB_FINE + 2; idx < ALPHA_LOW_TOTAL; idx++) bakeAnisoLowXRow(idx);
+
+	// -- ALPHALOW_XY: BOTH axes low (ALPHA_LOW_STORED x ALPHA_LOW_STORED)
+	// -- relabel-symmetric like the main DL-77 table, so only the
+	// canonical ix<=iy half is Monte-Carlo baked; the ix>iy half is
+	// filled by MIRRORING (phi -> 90-phi), zero extra noise, exactly
+	// the main table's own Pass-1/Pass-2 construction. --
+	for(int ixRaw = 0; ixRaw < ALPHA_LOW_STORED; ixRaw++) {
+		const int ix = (ixRaw < ALPHA_SUB_FINE) ? (ixRaw + 1) : (ixRaw + 2);	// virtual idx skipping the unstored A0/A1 slots
+		const double alphaX = alphaLowNode(ix, anisoAlphaLowA0, anisoAlphaLowA1);
+
+		for(int iyRaw = ixRaw; iyRaw < ALPHA_LOW_STORED; iyRaw++) {
+			const int iy = (iyRaw < ALPHA_SUB_FINE) ? (iyRaw + 1) : (iyRaw + 2);
+			const double alphaY = alphaLowNode(iy, anisoAlphaLowA0, anisoAlphaLowA1);
+			const bool isDiagonal = (ixRaw == iyRaw);
+
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				const double phiDeg = (double)pi * 90.0 / (double)(ANISO_PHI_SIZE - 1);
+				const double phi = phiDeg * PI / 180.0;
+				const double cosPhi = cos(phi);
+				const double sinPhi = sin(phi);
+
+				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+					const double cosTheta = ((double)ci + 0.5) / ANISO_COS_SIZE;
+
+					if(isDiagonal) {
+						E_ss_G2_ANISO_PHI_ALPHALOW_XY[ixRaw][iyRaw][pi][ci] = evalIsoEssG2(alphaX, cosTheta);
+						continue;
+					}
+
+					const double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
+					const Vec3 wi(sinTheta * cosPhi, sinTheta * sinPhi, cosTheta);
+					const double G1wi = GGX_G1_Aniso(alphaX, alphaY, wi);
+
+					double sumG2 = 0.0;
+					for(int s = 0; s < NUM_SAMPLES_ANISO; s++) {
+						const double u1 = rand01_anisolow();
+						const double u2 = rand01_anisolow();
+						const Vec3 m = VNDF_Sample_Local_Aniso(wi, alphaX, alphaY, u1, u2);
+						const double wiDotM = dot(wi, m);
+						if(wiDotM <= 0) continue;
+						Vec3 wo(2.0*wiDotM*m.x - wi.x, 2.0*wiDotM*m.y - wi.y, 2.0*wiDotM*m.z - wi.z);
+						wo = normalize(wo);
+						const double cosWo = wo.z;
+						if(cosWo > 0) {
+							if(G1wi > 1e-12)
+								sumG2 += GGX_G2_Aniso_HeightCorrelated(alphaX, alphaY, wi, wo) / G1wi;
+						}
+					}
+					E_ss_G2_ANISO_PHI_ALPHALOW_XY[ixRaw][iyRaw][pi][ci] = sumG2 / (double)NUM_SAMPLES_ANISO;
+				}
+
+				for(int n = 1; n < ANISO_SUB_TOTAL; n++) {
+					const double cosTheta = anisoSubNodeCos(n, 0.5 / (double)ANISO_COS_SIZE);
+
+					if(isDiagonal) {
+						E_ss_G2_ANISO_PHI_ALPHALOW_XY_SUB[ixRaw][iyRaw][pi][n-1] = evalIsoEssG2SubAt(alphaX, cosTheta);
+						continue;
+					}
+
+					const double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
+					const Vec3 wi(sinTheta * cosPhi, sinTheta * sinPhi, cosTheta);
+					const double G1wi = GGX_G1_Aniso(alphaX, alphaY, wi);
+
+					double sumG2 = 0.0;
+					for(int s = 0; s < NUM_SAMPLES_ANISO; s++) {
+						const double u1 = rand01_anisolow();
+						const double u2 = rand01_anisolow();
+						const Vec3 m = VNDF_Sample_Local_Aniso(wi, alphaX, alphaY, u1, u2);
+						const double wiDotM = dot(wi, m);
+						if(wiDotM <= 0) continue;
+						Vec3 wo(2.0*wiDotM*m.x - wi.x, 2.0*wiDotM*m.y - wi.y, 2.0*wiDotM*m.z - wi.z);
+						wo = normalize(wo);
+						const double cosWo = wo.z;
+						if(cosWo > 0) {
+							if(G1wi > 1e-12)
+								sumG2 += GGX_G2_Aniso_HeightCorrelated(alphaX, alphaY, wi, wo) / G1wi;
+						}
+					}
+					E_ss_G2_ANISO_PHI_ALPHALOW_XY_SUB[ixRaw][iyRaw][pi][n-1] = sumG2 / (double)NUM_SAMPLES_ANISO;
+				}
+			}
+
+			fprintf(stderr, "DL-161 aniso low-XY ix=%d iy=%d alphaX=%.6f alphaY=%.6f  (canonical bake)%s\n",
+				ixRaw, iyRaw, alphaX, alphaY, isDiagonal ? "  [diag: iso-seeded]" : "");
+		}
+	}
+	// Mirror the ixRaw>iyRaw half.
+	for(int ixRaw = 1; ixRaw < ALPHA_LOW_STORED; ixRaw++) {
+		for(int iyRaw = 0; iyRaw < ixRaw; iyRaw++) {
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+					E_ss_G2_ANISO_PHI_ALPHALOW_XY[ixRaw][iyRaw][pi][ci] = E_ss_G2_ANISO_PHI_ALPHALOW_XY[iyRaw][ixRaw][ANISO_PHI_SIZE - 1 - pi][ci];
+				}
+				for(int k = 0; k < ANISO_SUB_TOTAL - 1; k++) {
+					E_ss_G2_ANISO_PHI_ALPHALOW_XY_SUB[ixRaw][iyRaw][pi][k] = E_ss_G2_ANISO_PHI_ALPHALOW_XY_SUB[iyRaw][ixRaw][ANISO_PHI_SIZE - 1 - pi][k];
+				}
+			}
+		}
+	}
+	// E_avg_G2_ANISO_ALPHALOW_XY: phi-trapezoidal average (ephemeral)
+	// then cosTheta midpoint-rule integral, over the FULL (mirrored)
+	// square -- comes out symmetric automatically, same argument as the
+	// main E_avg_G2_ANISO's own derivation.
+	for(int ixRaw = 0; ixRaw < ALPHA_LOW_STORED; ixRaw++) {
+		for(int iyRaw = 0; iyRaw < ALPHA_LOW_STORED; iyRaw++) {
+			double integral = 0.0;
+			for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+				double trapz = 0.5 * E_ss_G2_ANISO_PHI_ALPHALOW_XY[ixRaw][iyRaw][0][ci] + 0.5 * E_ss_G2_ANISO_PHI_ALPHALOW_XY[ixRaw][iyRaw][ANISO_PHI_SIZE-1][ci];
+				for(int pi = 1; pi < ANISO_PHI_SIZE - 1; pi++)
+					trapz += E_ss_G2_ANISO_PHI_ALPHALOW_XY[ixRaw][iyRaw][pi][ci];
+				const double essAvgPhi = trapz / (double)(ANISO_PHI_SIZE - 1);
+				const double mu = ((double)ci + 0.5) / ANISO_COS_SIZE;
+				const double dmu = 1.0 / ANISO_COS_SIZE;
+				integral += essAvgPhi * mu * dmu;
+			}
+			E_avg_G2_ANISO_ALPHALOW_XY[ixRaw][iyRaw] = 2.0 * integral;
 		}
 	}
 
@@ -2973,6 +3614,170 @@ int main() {
 		}
 		printf(" }");
 		if(ix < ANISO_ALPHA_SIZE - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-161: per-azimuth aniso E_ss_G2 twin of\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI, resolved at ALPHA_LOW_STORED low\n");
+	printf("\t/// alphaX virtual nodes (see AlphaLowNode/AnisoAlphaLowIndex)\n");
+	printf("\t/// paired against the FULL ordinary alphaY grid.  Indexed as\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X[AlphaLowSlot(lowIdx)][alphaYIdx][phiIdx][cosThetaIdx].\n");
+	printf("\t/// Consumed (via AnisoPhiCellMixedX) by LookupEssG2AnisoDirectional's\n");
+	printf("\t/// low-alphaX branch; the low-alphaY case is derived at\n");
+	printf("\t/// lookup time by the X<->Y relabel symmetry (phi -> 90-phi),\n");
+	printf("\t/// not separately baked.\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X[%d][%d][%d][%d] = {\n", ALPHA_LOW_STORED, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("\t\t{\n");
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
+			printf("\t\t\t{\n");
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				printf("\t\t\t\t{ ");
+				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+					printf("%.8f", E_ss_G2_ANISO_PHI_ALPHALOW_X[s][iy][pi][ci]);
+					if(ci < ANISO_COS_SIZE - 1) printf(", ");
+				}
+				printf(" }");
+				if(pi < ANISO_PHI_SIZE - 1) printf(",");
+				printf("\n");
+			}
+			printf("\t\t\t}");
+			if(iy < ANISO_ALPHA_SIZE - 1) printf(",");
+			printf("\n");
+		}
+		printf("\t\t}");
+		if(s < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-161: grazing sub-grid twin of\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X above, at the\n");
+	printf("\t/// ANISO_SUB_TOTAL-1 interior nodes of [0, 0.5/ANISO_COS_SIZE]\n");
+	printf("\t/// (see AnisoSubNodeCos).  Indexed as\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X_SUB[AlphaLowSlot(lowIdx)][alphaYIdx][phiIdx][n-1].\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X_SUB[%d][%d][%d][%d] = {\n", ALPHA_LOW_STORED, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_SUB_TOTAL - 1);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("\t\t{\n");
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
+			printf("\t\t\t{\n");
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				printf("\t\t\t\t{ ");
+				for(int k = 0; k < ANISO_SUB_TOTAL - 1; k++) {
+					printf("%.8f", E_ss_G2_ANISO_PHI_ALPHALOW_X_SUB[s][iy][pi][k]);
+					if(k < ANISO_SUB_TOTAL - 2) printf(", ");
+				}
+				printf(" }");
+				if(pi < ANISO_PHI_SIZE - 1) printf(",");
+				printf("\n");
+			}
+			printf("\t\t\t}");
+			if(iy < ANISO_ALPHA_SIZE - 1) printf(",");
+			printf("\n");
+		}
+		printf("\t\t}");
+		if(s < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-161: per-azimuth aniso E_ss_G2 twin of\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X above, for the corner\n");
+	printf("\t/// where BOTH alphaX and alphaY are low-alpha virtual nodes.\n");
+	printf("\t/// Relabel-symmetric (baked upper-triangle, mirrored) exactly\n");
+	printf("\t/// like E_ss_TABLE_G2_ANISO_PHI itself.  Indexed as\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY[AlphaLowSlot(lowIdxX)][AlphaLowSlot(lowIdxY)][phiIdx][cosThetaIdx].\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY[%d][%d][%d][%d] = {\n", ALPHA_LOW_STORED, ALPHA_LOW_STORED, ANISO_PHI_SIZE, ANISO_COS_SIZE);
+	for(int sx = 0; sx < ALPHA_LOW_STORED; sx++) {
+		printf("\t\t{\n");
+		for(int sy = 0; sy < ALPHA_LOW_STORED; sy++) {
+			printf("\t\t\t{\n");
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				printf("\t\t\t\t{ ");
+				for(int ci = 0; ci < ANISO_COS_SIZE; ci++) {
+					printf("%.8f", E_ss_G2_ANISO_PHI_ALPHALOW_XY[sx][sy][pi][ci]);
+					if(ci < ANISO_COS_SIZE - 1) printf(", ");
+				}
+				printf(" }");
+				if(pi < ANISO_PHI_SIZE - 1) printf(",");
+				printf("\n");
+			}
+			printf("\t\t\t}");
+			if(sy < ALPHA_LOW_STORED - 1) printf(",");
+			printf("\n");
+		}
+		printf("\t\t}");
+		if(sx < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-161: grazing sub-grid twin of\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY above.  Indexed as\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY_SUB[AlphaLowSlot(lowIdxX)][AlphaLowSlot(lowIdxY)][phiIdx][n-1].\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY_SUB[%d][%d][%d][%d] = {\n", ALPHA_LOW_STORED, ALPHA_LOW_STORED, ANISO_PHI_SIZE, ANISO_SUB_TOTAL - 1);
+	for(int sx = 0; sx < ALPHA_LOW_STORED; sx++) {
+		printf("\t\t{\n");
+		for(int sy = 0; sy < ALPHA_LOW_STORED; sy++) {
+			printf("\t\t\t{\n");
+			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
+				printf("\t\t\t\t{ ");
+				for(int k = 0; k < ANISO_SUB_TOTAL - 1; k++) {
+					printf("%.8f", E_ss_G2_ANISO_PHI_ALPHALOW_XY_SUB[sx][sy][pi][k]);
+					if(k < ANISO_SUB_TOTAL - 2) printf(", ");
+				}
+				printf(" }");
+				if(pi < ANISO_PHI_SIZE - 1) printf(",");
+				printf("\n");
+			}
+			printf("\t\t\t}");
+			if(sy < ALPHA_LOW_STORED - 1) printf(",");
+			printf("\n");
+		}
+		printf("\t\t}");
+		if(sx < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-161: E_avg_G2_ANISO twin of\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X -- low alphaX (rows)\n");
+	printf("\t/// against the ordinary alphaY grid (columns), derived by the\n");
+	printf("\t/// SAME phi-trapezoidal-average-then-cosTheta-integral rule\n");
+	printf("\t/// E_avg_TABLE_G2_ANISO itself uses.  Indexed as\n");
+	printf("\t/// E_avg_TABLE_G2_ANISO_ALPHALOW_X[AlphaLowSlot(lowIdx)][alphaYIdx].\n");
+	printf("\tinline const Scalar E_avg_TABLE_G2_ANISO_ALPHALOW_X[%d][%d] = {\n", ALPHA_LOW_STORED, ANISO_ALPHA_SIZE);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("\t\t{ ");
+		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
+			printf("%.8f", E_avg_G2_ANISO_ALPHALOW_X[s][iy]);
+			if(iy < ANISO_ALPHA_SIZE - 1) printf(", ");
+		}
+		printf(" }");
+		if(s < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-161: E_avg_G2_ANISO twin of\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY -- BOTH alphaX and\n");
+	printf("\t/// alphaY low.  Symmetric by construction (Eavg has no phi\n");
+	printf("\t/// axis to break the X<->Y relabel symmetry).  Indexed as\n");
+	printf("\t/// E_avg_TABLE_G2_ANISO_ALPHALOW_XY[AlphaLowSlot(lowIdxX)][AlphaLowSlot(lowIdxY)].\n");
+	printf("\tinline const Scalar E_avg_TABLE_G2_ANISO_ALPHALOW_XY[%d][%d] = {\n", ALPHA_LOW_STORED, ALPHA_LOW_STORED);
+	for(int sx = 0; sx < ALPHA_LOW_STORED; sx++) {
+		printf("\t\t{ ");
+		for(int sy = 0; sy < ALPHA_LOW_STORED; sy++) {
+			printf("%.8f", E_avg_G2_ANISO_ALPHALOW_XY[sx][sy]);
+			if(sy < ALPHA_LOW_STORED - 1) printf(", ");
+		}
+		printf(" }");
+		if(sx < ALPHA_LOW_STORED - 1) printf(",");
 		printf("\n");
 	}
 	printf("\t};\n\n");

@@ -1100,7 +1100,8 @@ own bake, its own boundary-condition derivation, or both):
     independently-baked alpha axis with the identical uniform
     `[0.01,1.0]` 32-row mapping and the identical clamp, at
     `GGXBRDF.cpp:753`. Confirmed present; not measured or fixed here.
-  * **DL-161** — the DL-77 ANISOTROPIC alpha axis (`AnisoAlphaIndex`,
+  * **DL-161 (CLOSED 2026-09-18, debt-dl161 slice — see the dedicated
+    "DL-161" section below)** — the DL-77 ANISOTROPIC alpha axis (`AnisoAlphaIndex`,
     consumed by `LookupEssG2Aniso`/`LookupEssG2AnisoDirectional`/
     `LookupEavgG2Aniso`/`MSLobeZG2Aniso`/`SampleMSCosThetaG2Aniso`) has
     the SAME defect, independently on both `alphaX` and `alphaY` (node0
@@ -1574,3 +1575,248 @@ Also added one `alphaX>alphaY` material-level row (`ax=0.8,ay=0.1`) to
 `GGXWhiteFurnaceTest.cpp`'s Test 6/Test 7 (`TestMaterialPointwiseConsistency`,
 conductor and schlick_f0) — every prior row there had `alphaX<=alphaY`,
 the exact P1 blind spot; both new rows pass.
+
+## DL-161: anisotropic low-alpha sub-grid (both axes)
+
+**Status: CLOSED 2026-09-18** — debt-dl161 slice, base `50dbc4d8`.
+
+**Root cause** (confirmed exactly as the ledger row and DL-105's own
+sibling audit diagnosed): the DL-77 aniso alpha axis (`AnisoAlphaIndex`)
+maps `alphaX`/`alphaY` independently via the SAME
+`clamp((alpha-0.01)/0.99,0,1)*(ANISO_ALPHA_SIZE-1)` pattern DL-105 fixed
+on the isotropic tables — `alpha<0.01` clamps to row 0 outright, and row
+0 (`alpha=0.01`) to row 1 (`alpha=0.053043`) is a 5.3x ratio inside one
+linear interpolation cell (worse than the isotropic axis's 4.2x, since
+`ANISO_ALPHA_SIZE=24` is coarser than `LUT_SIZE=32`). DL-105's own
+`fabs(alphaX-alphaY)<1e-9` isotropic-diagonal shortcut already fixes the
+`alphaX==alphaY` case for free; the OFF-diagonal case (one or both axes
+low, the two unequal) was untouched.
+
+**Why this needed a bake, not a derivation**: unlike the isotropic
+axis's `alpha->0` boundary (provably `Ess=1` for any fixed `cosTheta>0`,
+since Smith `Lambda(v)->0`), the anisotropic `alphaX->0` boundary (fixed
+`alphaY`) is NOT simply 1: `Lambda_Aniso`'s effective alpha for a
+direction `v` is `sqrt((alphaX*cosPhiV)^2+(alphaY*sinPhiV)^2)`, which
+stays FINITE whenever `v`'s azimuth is not exactly aligned with the
+vanishing axis, so masking persists and the true limit is a
+non-constant function of `(alphaY, phi, cosTheta)`. The ledger row's own
+recipe therefore prescribed baking that boundary rather than assuming a
+closed form, "a bake of comparable scope to the DL-77 slice itself."
+
+### Fix
+
+Two new bake families, reusing DL-105's existing 10-node `AlphaLowNode`/
+`AlphaLowSlot` machinery (generic over `A0`/`A1`, so no new generator-side
+node function was needed) re-anchored to the ANISO grid's own row1
+(`ANISO_ALPHA_LOW_A1 = 0.01 + 0.99/(ANISO_ALPHA_SIZE-1) = 0.053043...`,
+not the isotropic axis's `0.041935`):
+
+  * `E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X[10][24][13][32]` (+ grazing
+    sub-grid twin `_X_SUB[10][24][13][12]`) — a low alphaX (the 10
+    stored virtual nodes) paired against the FULL ordinary 24-node
+    alphaY grid, at full phi/cosTheta resolution. A genuine rectangular
+    bake (no symmetry between the low-node set and the ordinary grid).
+  * `E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY[10][10][13][32]` (+
+    `_XY_SUB[10][10][13][12]`) — the corner where BOTH axes are low.
+    Relabel-symmetric exactly like the main DL-77 table
+    (`Ess(a,b,phi)==Ess(b,a,90-phi)` holds for the low-alpha nodes too),
+    so only the canonical `ix<=iy` half is Monte-Carlo baked and the
+    rest mirrored (phi -> 90-phi), zero extra noise.
+  * `E_avg_TABLE_G2_ANISO_ALPHALOW_X[10][24]` and `_XY[10][10]` extend
+    `LookupEavgG2Aniso` — a REAL energy-compensation call site (the
+    `F_ms` multiscatter term in `GGXBRDF.cpp`/`GGXSPF.cpp`), not merely
+    a sampler input, so it needed the same fix. Derived from an
+    EPHEMERAL phi-trapezoidal average of the corresponding Ess table's
+    cosTheta rows at bake time (no separate phi-averaged Ess table is
+    stored for the low-alpha regime — an economy matching DL-77's own
+    derivation of `E_avg_TABLE_G2_ANISO` from `E_ss_TABLE_G2_ANISO`).
+
+A "low alphaY, ordinary alphaX" query is deliberately NOT separately
+baked: `LookupEssG2AnisoDirectional`'s dispatch derives it from the SAME
+`ALPHALOW_X` table by swapping `(alphaX,alphaY,localX,localY)` before
+calling `LookupEssG2AnisoDirectionalLowX` — exactly what the relabel
+symmetry means physically, and it halves the bake cost the naive
+four-case cross product would need. `LookupEavgG2AnisoLowX` needs no
+phi swap at all (Eavg has no azimuth dependence by construction).
+
+The exact `alphaX->0` virtual node (index 0 in `AnisoAlphaLowIndex`) is
+never baked. `AnisoAlphaLowIndex`'s dead-zone (`idx<=0`) folds to
+index 1's own baked row in every `*Ordinary`/`*Grazing`/`*Eavg`
+accessor. This is a documented, deliberate simplification, not a
+silently-dropped case: (a) no closed-form limit exists here (that is
+this row's whole root-cause finding), and (b) it is PROVABLY
+UNREACHABLE from any production roughness — `GGXBRDF.cpp`/`GGXSPF.cpp`
+floor authored alpha at `1e-4`, comfortably inside the interval
+`[AnisoAlphaLowNode(1)=7.8e-5, AnisoAlphaLowNode(2)~1.56e-4)`, the same
+argument DL-105 already relied on for its own isotropic idx-0 boundary
+(there, the boundary IS exactly 1 and this is moot; here the boundary
+has no closed form, so avoiding it matters more, and the same
+unreachability argument licenses skipping it).
+
+**The H6 multiscatter-lobe SAMPLER is deliberately NOT extended.**
+`E_ss_TABLE_G2_ANISO`/`E_ss_TABLE_G2_ANISO_SUB` (phi-averaged),
+`LookupEssG2Aniso`, `MSLobeZG2Aniso`, `SampleMSCosThetaG2Aniso`,
+`MSPdfG2Aniso`, and `MSLobeDetail::BuildSegmentsFromRowN` are BYTE-FOR-
+BYTE UNCHANGED — they keep reading the pre-existing `AnisoAlphaIndex`
+clamp/coarse-cell behavior below `ANISO_ALPHA_LOW_A1`. This matches the
+DL-86 precedent explicitly: the sampler's own precision is an
+EFFICIENCY concern, not a correctness one, because `MSPdfG2Aniso`
+always reports the density of whatever `SampleMSCosThetaG2Aniso`
+actually draws — the estimator is unbiased regardless of how accurate
+the proposal shape is. Only the two direct ENERGY-COMPENSATION call
+sites (`LookupEssG2AnisoDirectional`, `LookupEavgG2Aniso`) needed the
+fix.
+
+### Two bugs found and fixed in-slice (own red-proof, not a review round)
+
+**Bug 1 — the ordinary-path clamp swallowed the low-alpha check.** The
+first implementation computed `xLow = aX < ANISO_ALPHA_LOW_A1` from
+`aX = r_max(0.01, r_min(1.0, alphaX))` — the SAME `[0.01,1.0]` clamp the
+pre-existing ORDINARY interpolation path applies — so every alphaX/
+alphaY below 0.01 was silently rounded UP TO 0.01 before the low-alpha
+branch ever saw it. `alphaX=0.002` and `alphaX=0.005` both dispatched
+as if `alphaX==0.01` and returned IDENTICAL results (caught directly by
+this slice's own new test rows: both read `0.880751` at `aY=1.0, phi=0,
+cos=0.0005`, against independently-computed reference values of
+`0.703040` and `0.816008` respectively). Fixed by checking `xLow`/`yLow`
+against the RAW alpha (floored only at 0, not at 0.01) BEFORE the
+ordinary path's clamp — matching `LookupEssG2`'s own pre-existing
+`if(alpha<ALPHA_LOW_A1){...}` structure, which checks first and clamps
+only in the untaken branch.
+
+**Bug 2 — missing boundary dispatch in the new grazing-sub-grid
+accessors.** `AnisoPhiSubCellMixedX`/`AnisoPhiSubCellBothLow` (the new
+accessors backing the `_SUB` tables) were missing the `k<=0` /
+`k>=ANISO_SUB_TOTAL` boundary handling the pre-existing
+`AnisoPhiSubNodeEssG2` has (`k<=0` is the exact `cosTheta->0` boundary,
+exactly 1 for the G2 model; `k>=ANISO_SUB_TOTAL` IS the cell's own
+ordinary bin 0, read via the ordinary accessor, NOT a `_SUB`-table
+index — the `_SUB` tables only store the `ANISO_SUB_TOTAL-1` INTERIOR
+nodes). Without it, a query at `k=ANISO_SUB_TOTAL=13` (reachable at
+`cosTheta` near `c0`, e.g. the test suite's own `cos=0.0156` probe) read
+one element past the end of the `_SUB` array. This corrupted several
+PRE-EXISTING DL-86/DL-77 gate rows that happened to query an alpha now
+routed through the low-alpha branch (e.g. `alphaX=0.01`, which is `<
+ANISO_ALPHA_LOW_A1`): `node-exact aX=0.01 aY=1 phi=0 cos=0.0156` read
+`0.996626` against an independent quadrature of `0.519115`. Caught by
+re-running the FULL existing gate suite before declaring the fix done
+(not by a downstream review) — 37 pre-existing rows failed, immediately
+pointing at the new accessors rather than the bake. Fixed by adding the
+identical two-branch boundary dispatch, forwarding `k>=ANISO_SUB_TOTAL`
+to the corresponding ordinary-cell accessor at `ci=0`.
+
+### Red-proof
+
+`GGXHeightCorrelatedEnergyLUTTest`'s new "DL-161" section reuses the
+pre-existing `TestDL86AnisoDirectionalEndCap` helper verbatim (it is
+already generic over `(alphaX,alphaY,phi,cosTheta)`) at 17 low-alpha
+configurations: `alphaX` in `{0.002,0.005,0.01,0.015}` crossed with
+`alphaY` in `{0.05,0.2,0.5,1.0}`, `phi` in `{0,45,90}` degrees, several
+`cosTheta` down to `1e-4` (both ordinary and grazing), plus dedicated
+swapped-role (low-Y, ordinary-X) and both-low-axis rows. Worst relative
+error against an independent 20M-sample-per-point VNDF quadrature:
+
+| configuration | pre-fix | post-fix |
+|---|---|---|
+| aX=0.002 aY=1.0 phi=0 cos=0.0005 | 25.28% | 0.95% |
+| aX=0.002 aY=1.0 phi=0 cos=0.0001 | 9.34% | 0.51% |
+| aX=0.005 aY=1.0 phi=0 cos=0.0005 | 7.93% | 0.10% |
+| aX=1.0 aY=0.005 phi=90 cos=0.0005 (swapped) | 7.94% | 0.11% |
+| aX=0.002 aY=0.009 phi=0 cos=0.0005 (both low) | 3.96% | 0.36% |
+
+Every other probed cell in the 17-row set reads under 0.1% post-fix.
+`GGXHeightCorrelatedEnergyLUTTest`: 278 checks, 0 failures (was 261/0
+pre-slice; 4 of the 17 new rows red at a 5% band pre-fix, tightened to
+2% post-fix with 0 failures once both bugs above were fixed).
+
+`GGXDiffuseTransmissionTest`'s `TestGrazingFurnaceDL86` aniso section
+gained two rows at `theta=89.60` (the exact "low alpha AND grazing
+cosTheta" corner the ledger row named), F0=1 spec-only:
+
+| row | pre-fix | post-fix |
+|---|---|---|
+| Schlick aniso(.005,.5) az=0 | 0.97306+/-0.00110 | 0.99853+/-0.00107 |
+| Schlick aniso(.5,.005) az=90 (swapped) | 0.97104+/-0.00110 | 0.99662+/-0.00107 |
+
+Both rows red-proof at a `3*se + 0.015` two-sided band (pre-fix diff
+from 1.0 is ~0.027-0.029, outside the ~0.018 band; post-fix diff is
+~0.0015-0.0034, comfortably inside). `GGXDiffuseTransmissionTest`: 192
+checks, 0 failures (was 190/0 pre-slice).
+
+### Byte-identity of the pre-existing tables and code
+
+Regenerating `tools/GenerateMicrofacetEnergyLUT.cpp` reproduces the
+checked-in `MicrofacetEnergyLUT.h` with a **0-line diff**. Verified two
+ways, since a naive line-diff over a 31000-line file with heavy internal
+repetition (many identical rows at the isotropic diagonal) can hide a
+real change inside diff-alignment noise: (1) MD5 of each of the 19
+pre-existing table literals (`E_ss_TABLE`, `E_ss_TABLE_G2`,
+`E_ss_TABLE_G2_ANISO_PHI`, `E_ss_TABLE_G2_ANISO_PHI_SUB`,
+`E_ss_TABLE_G2_ANISO`, `E_ss_TABLE_G2_ANISO_SUB`, `E_avg_TABLE_G2_ANISO`
+and all 12 DL-105 isotropic low-alpha tables), extracted independently
+from the pre-fix and post-fix headers, all identical. (2) A line-diff
+restricted to the non-table runtime-code region (from `AnisoSubNodeCos`
+to end of file) contains ONLY insertion hunks (`NNNaNNN,NNN`) — zero
+change/delete hunks — confirming every pre-existing line of code is
+untouched, not merely textually similar. This also confirms the ledger
+row's own "byte-identical at both axes >= 0.042" claim was imprecise
+(that is the ISOTROPIC threshold): the correct, verified claim is
+byte-identical whenever BOTH axes are `>= ANISO_ALPHA_LOW_A1 =
+0.053043`.
+
+### Render sanity
+
+A scratch copy of `scenes/Tests/Materials/ggx_anisotropy_sweep.RISEscene`
+with its `alphax`/`alphay = 0.05` cells lowered to `0.005` (`oidn_denoise
+FALSE`, `pixel_filter box`, EXR `Rec709RGB_Linear`, 64spp,
+`pathtracing_pel_rasterizer`, same PT seed via an isolated pre-/post-fix
+header rebuild) moved by `+0.009%` to `-0.303%` per 3x3 grid region (no
+NaN/Inf in either render). This is EXPECTED to be small, matching
+DL-105's own render-sanity finding: `ggx_anisotropy_sweep.RISEscene` (and
+this scratch variant) is a full-GI aluminum-conductor reflection scene
+under environment/area lighting, not an isolated grazing-incidence
+furnace, so the correction — which is largest at extreme grazing angles
+along a specific azimuth — is heavily diluted by everything else the
+pixel integrates. The LUT-level and furnace-level tables above are the
+decisive evidence for this fix; the render confirms no corruption, not a
+visible before/after difference at whole-image scale.
+
+### Gate
+
+`GGXHeightCorrelatedEnergyLUTTest` 278/0 (was 261/0), `GGXDiffuseTransmissionTest`
+192/0 (was 190/0), `GGXSampleEvaluationConsistencyTest` 48/0,
+`GGXWhiteFurnaceTest`/`GGXMetalRoughGridTest` pass, `LayeredWhiteFurnaceTest`
+0/57 (1 pre-existing, unrelated `KNOWN-FAIL` row, unchanged),
+`CookTorranceMultiscatterTest` 17/0, `FabricRenderTest` 60/0,
+`CstDeriveGoldenTest` 452 MATCH/0 DRIFT, `SourceHygieneTest` 167/0; clean
+warning-free rebuild, both incremental and full (`make -C build/make/rise
+-j8 all`).
+
+### Cost
+
+Bake time for the two new families (`ALPHALOW_X`/`_SUB` fully baked at
+150000 samples/cell, matching the existing DL-77 aniso sample count;
+`ALPHALOW_XY`/`_SUB` baked upper-triangle-plus-mirror): measured ~3.5
+additional minutes on top of the pre-existing isotropic+aniso bake
+(~6m35s per the DL-105 entry), for a total single-threaded generator run
+of ~10 minutes. Table footprint: `E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X`
+99,840 `Scalar`s, `_X_SUB` 37,440, `_XY` 41,600 (includes the mirrored
+half), `_XY_SUB` 15,600, `E_avg_TABLE_G2_ANISO_ALPHALOW_X` 240,
+`_XY` 100 — 194,820 new stored values total, roughly comparable to the
+pre-existing `E_ss_TABLE_G2_ANISO_PHI`'s own 239,616.
+
+### Residual, deliberately not closed by this fix
+
+The H6 multiscatter-lobe sampler's own proposal shape (`E_ss_TABLE_G2_ANISO`/
+`LookupEssG2Aniso`/`MSLobeZG2Aniso`/`SampleMSCosThetaG2Aniso`/`MSPdfG2Aniso`)
+remains coarse below `ANISO_ALPHA_LOW_A1`, matching the DL-86 precedent
+that this is an efficiency-only concern (never a bias, since `MSPdfG2Aniso`
+and `SampleMSCosThetaG2Aniso` always describe the same distribution as
+each other, whatever its shape). Extending it would need a low-alpha
+twin of `BuildSegmentsFromRowN` sourcing the new `ALPHALOW_X`/`ALPHALOW_XY`
+tables, plus re-deriving `MSLobeZG2Aniso`'s per-corner cached-affine
+optimization for the low-alpha nodes (the isotropic DL-105 fix made the
+identical deliberate trade-off for the same reason: "a documented
+perf/complexity trade-off for a rare regime, correctness does not depend
+on it"). Not opened as a new debt — it is a documented, intentional scope
+boundary inherited from DL-86/DL-105, not a newly-discovered defect.
