@@ -397,30 +397,47 @@ static void RunVolumeSite()
 	// (broadcast to all three channels -- a phase function's "BSDF times
 	// cos" IS its value, and for an isotropic phase that value equals its
 	// own pdf) paired with `bsdfPdf = effectivePdf`, which with guiding OFF
-	// is that same `phasePdf`.  The escape arm forms
+	// is that same `phasePdf`.
 	//
-	//     f^2 / p^2 = (L_env * phasePdf)^2 / phasePdf^2 = L_env^2
-	//
-	// for EVERY accumulation, at every scatter depth, with no dependence on
-	// the direction or on how deep the walk got.  So the accumulated sum
-	// is an exact whole multiple of L_env^2, and that multiple (the number
-	// of continuations that reached the environment) cannot exceed the
-	// attempt count.  Solve()'s alpha is a RATIO and would be unmoved by a
-	// `bsdfTimesCos` scaled by any constant; these two assertions are not.
-	// The classic mis-shaping -- `bsdfTimesCos = 1` for a phase function --
-	// inflates every term by 1/phasePdf^2 = (4*PI)^2 ~ 158 and breaks both.
+	// DL-124 (2026-09-17): this row used to assert the escape arm forms
+	// `f^2/p^2 = (L_env*phasePdf)^2/phasePdf^2 = L_env^2` EXACTLY for every
+	// accumulation, making the accumulated sum a WHOLE multiple of L_env^2.
+	// That was itself DL-124's bug wearing a green checkmark: the escape
+	// arm (`RayCaster::CastRay`'s global-radiance-map branch, reached via
+	// this fixture's recursive volume-continuation `CastRay` call) also
+	// crosses the SAME `painter_heterogeneous_medium` on its way out, whose
+	// `EvalTransmittance` is a genuinely STOCHASTIC per-call ratio-tracking
+	// ESTIMATE (ratio tracking draws its OWN random numbers -- ../src/
+	// Library/Materials/HeterogeneousMedium.cpp -- it is not a deterministic
+	// function of distance the way `HomogeneousMedium`'s is), while
+	// `EvalDistancePdf`'s "no-scatter survival" denominator is a
+	// DETERMINISTIC Simpson approximation of the same quantity: the two
+	// only agree in EXPECTATION, not per sample, so `escapeWeight =
+	// Tr/pSurvival` is a real per-accumulation random variable, not an
+	// identical 1.  DL-124 folds that same `escapeWeight` into the
+	// trained numerator here (mirroring env-NEE's own EvalShadowTransmittance
+	// fold), so post-fix each accumulation is
+	// `(L_env*phasePdf*escapeWeight)^2/phasePdf^2 = L_env^2*escapeWeight^2`
+	// -- no longer a clean whole multiple.  The invariant that DOES still
+	// hold, and that a stray missing-Tr regression (or an accidental
+	// escapeWeight-squared-twice bug) would violate, is a per-attempt
+	// average of ORDER L_env^2: `escapeWeight` is close to 1 in expectation
+	// for this fixture's modest optical depth, so the average should sit
+	// within a generous [0.1, 10] x L_env^2 band, not at exactly 1 (the
+	// pre-fix invariant) and not at some wildly different order of
+	// magnitude (a sign of a missing or double-applied factor).
 	// ------------------------------------------------------------------
 	const double accPerLenv2 = sumBsdf / ( (double)Lenv * (double)Lenv );
-	const double nearestWhole = std::floor( accPerLenv2 + 0.5 );
+	const double perAttempt = countBsdf > 0 ? accPerLenv2 / (double)countBsdf : 0;
 	std::cout << "    volume site: sum(f/p)^2 = " << sumBsdf
 		<< " = " << accPerLenv2 << " x L_env^2 (L_env = " << Lenv
-		<< "), over " << countBsdf << " attempts" << std::endl;
+		<< "), over " << countBsdf << " attempts (per-attempt average "
+		<< perAttempt << " x L_env^2)" << std::endl;
 	Check( sumBsdf > 0, "volume site: the BSDF technique accumulated a positive moment" );
-	Check( accPerLenv2 > 0 && std::fabs( accPerLenv2 - nearestWhole ) < 1e-6,
-		"volume site: the accumulated moment is a WHOLE multiple of L_env^2 "
-		"(every escape contributes exactly (L_env*phasePdf)^2/phasePdf^2)" );
-	Check( accPerLenv2 <= (double)countBsdf + 1e-6,
-		"volume site: the number of L_env^2 contributions does not exceed the attempt count" );
+	Check( perAttempt > 0.1 && perAttempt < 10.0,
+		"volume site: the per-attempt average moment is of order L_env^2 "
+		"(DL-124's escapeWeight fold moves it off the exact whole-multiple "
+		"this row used to require, but not by an order of magnitude)" );
 
 	// Radiance-scaling law: the same fixture with a 3x brighter, still
 	// uniform environment must accumulate exactly 9x the moment -- same
@@ -943,18 +960,30 @@ static void RunFloorFogSite()
 	// configures rc.pGuidingField), `effectivePdf == phasePdf` and, for
 	// the isotropic phase function VolumeScene() configures, `phaseVal
 	// == pPhase->Evaluate(...) == phasePdf` too (both are the same
-	// constant 1/(4*pi) for every direction).  So, exactly as in
-	// DriveVolumeSite's own site,
-	//     f^2/p^2 = (L_env * phaseVal)^2 / effectivePdf^2 = L_env^2
-	// for every accumulation, regardless of direction or bounce depth.
+	// constant 1/(4*pi) for every direction).
+	//
+	// DL-124 (2026-09-17): as in DriveVolumeSite's own site above, this
+	// row used to assert `f^2/p^2 = (L_env*phaseVal)^2/effectivePdf^2 =
+	// L_env^2` EXACTLY for every accumulation -- a whole multiple of
+	// L_env^2.  DL-124 folds `escapeTr` (this vertex's own
+	// escape-through-medium Tr/pSurvival, captured in
+	// `PathTracingIntegrator.cpp`'s `!scattered && !bHit` branch and
+	// consumed at the env-escape training site) into the trained
+	// numerator, matching env-NEE's EvalShadowTransmittance fold -- see
+	// DriveVolumeSite's own comment for why that factor is a genuine
+	// per-sample random variable (HeterogeneousMedium's stochastic ratio
+	// tracking vs its deterministic Simpson survival pdf), not an
+	// identical 1.  Same replacement invariant as above: a per-attempt
+	// average of order L_env^2.
 	// ------------------------------------------------------------------
 	const double accPerLenv2 = sumBsdf / ( (double)Lenv * (double)Lenv );
-	const double nearestWhole = std::floor( accPerLenv2 + 0.5 );
-	Check( accPerLenv2 > 0 && std::fabs( accPerLenv2 - nearestWhole ) < 1e-6,
-		"floor-fog site: the accumulated moment is a WHOLE multiple of L_env^2 "
-		"(every escape contributes exactly (L_env*phaseVal)^2/effectivePdf^2)" );
-	Check( accPerLenv2 <= (double)countBsdf + 1e-6,
-		"floor-fog site: the number of L_env^2 contributions does not exceed the attempt count" );
+	const double perAttempt = countBsdf > 0 ? accPerLenv2 / (double)countBsdf : 0;
+	std::cout << "    floor-fog site: per-attempt average = " << perAttempt
+		<< " x L_env^2" << std::endl;
+	Check( perAttempt > 0.1 && perAttempt < 10.0,
+		"floor-fog site: the per-attempt average moment is of order L_env^2 "
+		"(DL-124's escapeTr fold moves it off the exact whole-multiple this "
+		"row used to require, but not by an order of magnitude)" );
 
 	// Radiance-scaling law (k^2 = 9 for k=3), mirroring both existing
 	// sites' construction: nothing in this fixture's SAMPLING depends on
@@ -1340,15 +1369,31 @@ static void RunOneVolumeRR( double absorption, const char* tag )
 
 	const double perLenv2 = sumBsdf / ( (double)Lenv * (double)Lenv );
 	const double escapes = perLenv2 / invQ2;
+	const double escapesPerAttempt = countBsdf > 0 ? escapes / (double)countBsdf : 0;
 	std::cout << "    volume-RR: sum(f/p)^2 / L_env^2 = " << perLenv2
 		<< " over " << countBsdf << " attempts; / (1/q^2) = " << escapes
 		<< " escapes  (round 6's wiring reads the bare escape count instead)" << std::endl;
 
 	Check( countBsdf > 0, "volume-RR: the medium continuation counted attempts" );
 	Check( sumBsdf > 0, "volume-RR: the medium continuation accumulated a positive moment" );
-	Check( escapes >= 1.0 && std::fabs( escapes - std::floor( escapes + 0.5 ) ) < 1e-6,
-		"volume-RR: the trained moment is a whole multiple of (1/q^2)*L_env^2 -- the roulette "
-		"compensation is folded into bsdfTimesCos" );
+	// DL-124 (2026-09-17): this row used to assert `escapes` (the trained
+	// moment normalised by (1/q^2)*L_env^2) is a WHOLE NUMBER -- a clean
+	// escape count -- because pre-DL-124 the ONLY per-accumulation factor
+	// beyond the RR compensation this row targets was the constant
+	// `phaseVal/effectivePdf = 1` for VolumeScene()'s isotropic phase.
+	// DL-124 additionally folds `escapeTr` (this vertex's own
+	// escape-through-medium Tr/pSurvival) into the SAME trained numerator
+	// -- see RunFloorFogSite's own DL-124 comment for why that factor is a
+	// genuine per-sample random variable for this fixture's
+	// painter_heterogeneous_medium, not an identical 1.  `escapes` is
+	// therefore no longer a whole number; the surviving invariant is a
+	// per-attempt average of order 1 escape (bounded well away from 0 and
+	// not off by an order of magnitude, which is what a missing or
+	// double-applied RR/Tr factor would produce).
+	Check( escapesPerAttempt > 0.001 && escapesPerAttempt < 10.0,
+		"volume-RR: the per-attempt average escape count is of order 1 -- the "
+		"roulette compensation AND the escape-segment Tr are both folded into "
+		"bsdfTimesCos (DL-84 + DL-124), not by an order of magnitude off" );
 
 	integrator->release();
 	object->release();
@@ -2041,6 +2086,358 @@ static void RunCountPopulationCheck()
 	white->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-155: LightSampler's light-selection step consumes its random
+// numbers and breaks to env-NEE WITHOUT calling AccumulateCount when
+// the alias/BVH/RIS draw hits SELF -- at a self-luminous shading point
+// with exactly one light in the table (itself), EVERY draw self-hits,
+// so pre-fix NOT ONE of these valid NEE attempts is counted.
+//
+// The shading object must be the SAME IObject the scene's own
+// LuminaryManager registered -- FindLuminaryIndex compares by identity,
+// so a freshly-fabricated standalone Object (the pattern the other
+// rows in this file use for a placeholder shading surface) would never
+// match and this row would trivially pass for the wrong reason.  A real
+// ray-sphere intersection against the scene's own light gives a real,
+// registered IObject*/IMaterial* instead.
+//////////////////////////////////////////////////////////////////////
+static std::string SelfLuminousScene()
+{
+	return std::string(
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname pnt_diffuse\n\tcolor 0.5 0.5 0.5\n}\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_material\n{\n\tname mat_base\n\treflectance pnt_diffuse\n}\n"
+		"\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n"
+		"\tscale 4.0\n\tmaterial mat_base\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname lightball\n\tradius 2.0\n}\n"
+		"\n"
+		"standard_object\n{\n\tname light_object\n\tgeometry lightball\n"
+		"\tmaterial mat_emit\n\tposition 0 0 5\n}\n"
+		"\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
+		"\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 -3\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n"
+		"\n" );
+}
+
+static void RunSelfHitSite()
+{
+	std::cout << "DL-155: LightSampler self-hit at a self-luminous shading point" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( SelfLuminousScene(), "selfhit" ), "self-hit fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+	Check( pLS != 0, "self-hit fixture has a LightSampler" );
+	if( !pLS ) return;
+
+	const RasterizerState rast{};
+	RayIntersection ri( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast );
+	fx.pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	Check( ri.geometric.bHit && ri.pObject && ri.pMaterial,
+		"self-hit fixture's probe ray hits the scene's own light sphere" );
+	if( !ri.geometric.bHit || !ri.pObject || !ri.pMaterial ) return;
+
+	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
+	Check( pBRDF != 0, "self-hit fixture's luminaire carries a real BSDF" );
+	if( !pBRDF ) return;
+
+	static const unsigned int kSamples = 2000;
+
+	// RGB lane.
+	{
+		OptimalMISAccumulator acc;
+		acc.Initialize( 64, 64, MakeConfig() );
+		pLS->SetOptimalMIS( &acc );
+
+		DriveOnFreshThread( 5110u, [&]() {
+			for( unsigned int s = 0; s < kSamples; ++s )
+			{
+				RandomNumberGenerator rng( 81000 + s );
+				IndependentSampler sampler( rng );
+				pLS->EvaluateDirectLighting(
+					ri.geometric, *pBRDF, ri.pMaterial, *fx.pCaster, sampler,
+					ri.pObject, /*pMedium*/ 0, /*isVolumeScatter*/ false,
+					/*pMediumObject*/ 0 );
+			}
+		} );
+
+		pLS->SetOptimalMIS( 0 );
+
+		double sumNee = 0, sumBsdf = 0;
+		unsigned int countNee = 0, countBsdf = 0;
+		acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+
+		std::cout << "    self-hit site (RGB): " << countNee << " / " << kSamples
+			<< " counted NEE attempts (the light is the ONLY table entry and IS "
+			"the shading object, so every draw self-hits; pre-fix this reads 0)"
+			<< std::endl;
+		Check( countNee == kSamples,
+			"self-hit site (RGB): every self-hit NEE attempt is counted (DL-155)" );
+	}
+
+	// NM lane.
+	{
+		OptimalMISAccumulator acc;
+		acc.Initialize( 64, 64, MakeConfig() );
+		pLS->SetOptimalMIS( &acc );
+
+		static const Scalar kNM = 550.0;
+		DriveOnFreshThread( 5111u, [&]() {
+			for( unsigned int s = 0; s < kSamples; ++s )
+			{
+				RandomNumberGenerator rng( 82000 + s );
+				IndependentSampler sampler( rng );
+				pLS->EvaluateDirectLightingNM(
+					ri.geometric, *pBRDF, ri.pMaterial, kNM, *fx.pCaster, sampler,
+					ri.pObject, /*pMedium*/ 0, /*isVolumeScatter*/ false,
+					/*pMediumObject*/ 0 );
+			}
+		} );
+
+		pLS->SetOptimalMIS( 0 );
+
+		double sumNee = 0, sumBsdf = 0;
+		unsigned int countNee = 0, countBsdf = 0;
+		acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+
+		std::cout << "    self-hit site (NM): " << countNee << " / " << kSamples
+			<< " counted NEE attempts (pre-fix this reads 0)" << std::endl;
+		Check( countNee == kSamples,
+			"self-hit site (NM): every self-hit NEE attempt is counted (DL-155)" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-109: PathTracingIntegrator's camera-ray-first-medium-interaction
+// volume walk (IntegrateRayTemplated's own dedicated `for(;;)`, distinct
+// from IntegrateFromHitTemplated's in-loop volume vertex DL-84 already
+// wired) never called AccumulateCount/Accumulate at all -- pre-fix this
+// site's count and moment are BOTH zero, no matter how many camera rays
+// scatter in the medium before any surface hit.  Reuses VolumeScene()
+// exactly as DriveVolumeSite/DriveFloorFogSite do, but drives
+// `PathTracingIntegrator::IntegrateRay` (the camera-ray entry point)
+// directly instead of `RayCaster::CastRay` or `IntegrateFromHit`, so
+// this row's own scatter is the camera ray's FIRST medium interaction --
+// the one case those two existing sites cannot reach.
+//////////////////////////////////////////////////////////////////////
+static void DriveCameraVolumeWalkSite(
+	const Fixture& fx,
+	const PathTracingIntegrator& integrator,
+	OptimalMISAccumulator& acc,
+	double& sumBsdf,
+	unsigned int& countBsdf )
+{
+	const RasterizerState rast{};
+	DriveOnFreshThread( 5112u, [&]() {
+	for( unsigned int s = 0; s < 1200; ++s ) {
+		RandomNumberGenerator rng( 41000 + s );
+		IndependentSampler sampler( rng );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		rc.pOptimalMIS = &acc;
+
+		// Fibonacci lattice over the full sphere, matching DriveVolumeSite's
+		// own construction, from the camera ORIGIN (already inside
+		// VolumeScene()'s fog bbox) -- every one of these is the camera
+		// ray's FIRST medium interaction.
+		const Scalar z = -1 + 2 * ( s + 0.5 ) / 1200;
+		const Scalar phi = s * 2.399963229728653;
+		const Scalar r = std::sqrt( 1 - z * z );
+		const Ray ray( Point3( 0, 0, 0 ),
+			Vector3( r * std::cos( phi ), r * std::sin( phi ), z ) );
+
+		integrator.IntegrateRay( rc, rast, ray, *fx.pScene, *fx.pCaster,
+			sampler, /*pRadianceMap*/ 0, /*pAOV*/ 0 );
+	}
+	} );
+	double sumNee = 0;
+	unsigned int countNee = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+}
+
+static void RunCameraVolumeWalkSite()
+{
+	std::cout << "DL-109: PathTracingIntegrator's camera-ray-first-medium-interaction "
+		"volume walk (IntegrateRayTemplated)" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( VolumeScene(), "camvol" ), "camera-volume-walk fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const RasterizerState rast{};
+	const IRadianceMap* pEnv = fx.pScene->GetGlobalRadianceMap();
+	Check( pEnv != 0, "camera-volume-walk fixture has a global radiance map" );
+	if( !pEnv ) return;
+	const Scalar Lenv = ColorMath::MaxValue(
+		pEnv->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+	Check( Lenv > 0, "camera-volume-walk fixture env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "camera-volume-walk integrator" );
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	DriveCameraVolumeWalkSite( fx, *integrator, acc, sumBsdf, countBsdf );
+
+	std::cout << "    camera-volume-walk site: sum(f/p)^2 = " << sumBsdf
+		<< " over " << countBsdf << " attempts (pre-DL-109: 0 / 0 -- the site "
+		"trained nothing at all)" << std::endl;
+	Check( countBsdf > 0,
+		"camera-volume-walk site: the camera-ray volume walk counted at least "
+		"one phase-sampled attempt (DL-109)" );
+	Check( sumBsdf > 0,
+		"camera-volume-walk site: the camera-ray volume walk accumulated a "
+		"positive moment for its escape to the environment (DL-109)" );
+
+	// Radiance-scaling law.  escapeWeight and the RR survival factor
+	// (DL-124/DL-84) are per-sample properties of the MEDIUM alone,
+	// invariant to env radiance; the SAME seeds visit the SAME vertices
+	// at any envLevel, so a 3x brighter, still-uniform environment must
+	// scale the accumulated moment by exactly 9, regardless of what
+	// escapeWeight each accumulation individually carries.
+	{
+		Fixture fxBright;
+		Check( fxBright.Build( VolumeScene( 3.0 ), "camvol3" ),
+			"bright camera-volume-walk fixture builds" );
+		if( fxBright.pCaster && fxBright.pScene ) {
+			OptimalMISAccumulator accBright;
+			accBright.Initialize( 64, 64, MakeConfig() );
+			double sumBright = 0;
+			unsigned int countBright = 0;
+			DriveCameraVolumeWalkSite( fxBright, *integrator, accBright, sumBright, countBright );
+			const double ratio = sumBsdf > 0 ? sumBright / sumBsdf : 0;
+			std::cout << "    camera-volume-walk site: moment ratio at 3x radiance = "
+				<< ratio << " (exact target 9); attempts " << countBsdf
+				<< " / " << countBright << std::endl;
+			Check( countBright == countBsdf,
+				"camera-volume-walk site: the brighter fixture visited exactly "
+				"the same continuations" );
+			Check( std::fabs( ratio - 9.0 ) < 1e-6,
+				"camera-volume-walk site: the accumulated moment scales exactly "
+				"as L_env^2" );
+		}
+	}
+
+	FeedSyntheticNee( acc );
+	acc.Solve();
+	CheckTrainedInterior( acc,
+		"camera-ray volume walk trains BOTH a count and a moment for the BSDF "
+		"technique (DL-109)" );
+
+	integrator->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-148: RayCaster::CastRay's own CAST-LEVEL importance Russian
+// roulette (RC_RR_THRESHOLD = 0.01 in RayCaster.cpp; not visible to this
+// file) sits BETWEEN a caller's AccumulateCount and the escape arm's
+// Accumulate, and pre-fix its `rrCompensation` reaches the returned `c`
+// but not the value trained inside RayCasterEnvEscapeMISWeight.
+//
+// Fixture: an object-free, medium-free, environment-only scene
+// (EnvOnlyScene(), already used by RunBssrdfSite/RunFloorFogSite) so the
+// ONLY thing that can make a cast survive-or-die is the entry-level
+// roulette itself.  `rs.importance = 0.005` is below RayCaster.cpp's own
+// 0.01 threshold, giving an EXACT, deterministic
+// `pSurvive = importance/0.01 = 0.5` and `rrCompensation = 2.0` for
+// every SURVIVING call -- with a fixed ray, fixed env, and a
+// caller-supplied `rs.bsdfPdf`/`rs.bsdfTimesCos` standing in for "the
+// previous vertex's BSDF technique", every survivor's accumulated
+// moment is IDENTICAL, giving a closed-form total rather than a
+// statistical one.
+//
+// "Survived" is read off `c` itself (`MaxValue(c) > 0`), not CastRay's
+// own boolean return: that return value conflates the entry-level
+// roulette's kill (`return false` before any work) with an ordinary
+// escape-to-background result gated on `bConsiderRMapAsBackground`
+// (also commonly false), so it cannot distinguish the two here.
+//////////////////////////////////////////////////////////////////////
+static void RunImportanceRRTrainingFold()
+{
+	std::cout << "DL-148: RayCaster::CastRay's cast-level importance-RR "
+		"compensation folded into the BSDF-side trained moment" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "castrr" ), "cast-level-RR fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	Check( fx.pCaster->GetLightSampler() != 0, "cast-level-RR fixture has a LightSampler" );
+
+	const RasterizerState rast{};
+	const IRadianceMap* pEnv = fx.pScene->GetGlobalRadianceMap();
+	Check( pEnv != 0, "cast-level-RR fixture has a global radiance map" );
+	if( !pEnv ) return;
+	const Ray ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+	const Scalar Lenv = ColorMath::MaxValue( pEnv->GetRadiance( ray, rast ) );
+	Check( Lenv > 0, "cast-level-RR fixture env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+
+	static const unsigned int kSamples = 4000;
+	unsigned int survivors = 0;
+	DriveOnFreshThread( 5113u, [&]() {
+		for( unsigned int s = 0; s < kSamples; ++s )
+		{
+			RandomNumberGenerator rng( 91000 + s );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			rc.pOptimalMIS = &acc;
+
+			IRayCaster::RAY_STATE rs;
+			rs.depth = 1;
+			rs.importance = 0.005;			// < RC_RR_THRESHOLD (0.01)
+			rs.considerEmission = true;
+			rs.bsdfPdf = 1.0;
+			rs.bsdfTimesCos = RISEPel( 1, 1, 1 );
+
+			RISEPel c( 0, 0, 0 );
+			Scalar dist = 0;
+			fx.pCaster->CastRay( rc, rast, ray, c, rs, &dist, 0 );
+			if( ColorMath::MaxValue( c ) > 0 ) {
+				++survivors;
+			}
+		}
+	} );
+
+	double sumNee = 0, sumBsdf = 0;
+	unsigned int countNee = 0, countBsdf = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+
+	std::cout << "    cast-level-RR site: " << survivors << " / " << kSamples
+		<< " casts survived; sum(f/p)^2 = " << sumBsdf << std::endl;
+	Check( survivors > 0 && survivors < kSamples,
+		"cast-level-RR site: the roulette actually fired (some survived, some "
+		"did not)" );
+
+	// Expected per-survivor moment under the fix: f = Lenv * bsdfTimesCos *
+	// rrCompensation (rrCompensation = 1/0.5 = 2.0 exactly), p = bsdfPdf =
+	// 1.0, so f^2/p^2 = (Lenv*2)^2 for EVERY survivor (no other randomness
+	// in this fixture).  Pre-fix (rrCompensation ignored) this reads
+	// exactly a quarter of that.
+	const double expectedPerSurvivor = (double)Lenv * (double)Lenv * 4.0;
+	const double expectedTotal = expectedPerSurvivor * (double)survivors;
+	const double preFixExpectedTotal = expectedTotal / 4.0;
+	std::cout << "    cast-level-RR site: expected total with rrCompensation "
+		"folded = " << expectedTotal << "; pre-fix expected total (ignored) = "
+		<< preFixExpectedTotal << std::endl;
+	Check( std::fabs( sumBsdf - expectedTotal ) < 1e-6 * std::fmax( 1.0, expectedTotal ),
+		"cast-level-RR site: the trained moment folds in rrCompensation "
+		"(post-RR, as-carried convention, DL-148)" );
+}
+
 int main()
 {
 	GlobalLog();
@@ -2053,6 +2450,9 @@ int main()
 	RunLightRRConventionCheck();
 	RunAlphaQualityCheck();
 	RunCountPopulationCheck();
+	RunSelfHitSite();
+	RunCameraVolumeWalkSite();
+	RunImportanceRRTrainingFold();
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
