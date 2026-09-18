@@ -337,6 +337,22 @@ static RISEPel EvalShadowTransmittance(
 				// uses.  Before this guard a hair strand crossing the
 				// shadow ray pushed its interior medium once per strand
 				// and never removed it.
+				// DL-97 CONTRACT (pinned by tests/HairInteriorMediumSkipTest.cpp,
+				// not a runtime assert -- this walk is per-sample hot path,
+				// same convention BDPTIntegrator.cpp's MISWeight documents
+				// for its own "no asserts" choice): this skip is correct
+				// ONLY because every geometry that sets
+				// `bGeomNormalRayDerived` (HairGeometry, today the only
+				// one) ALSO reports a zero-length chord
+				// (`range2 == range` -- HairGeometry.cpp's own "no volume:
+				// exit == entry" contract).  A zero-length chord has
+				// nothing for this push/pop walk to integrate either way,
+				// so skipping it changes nothing FOR HAIR TODAY.  If a
+				// future geometry ever sets `bGeomNormalRayDerived` with a
+				// GENUINE positive-length chord, this skip would silently
+				// make its interior medium invisible to shadow rays --
+				// such a change must replace this skip with real handling,
+				// not just widen the flag's meaning.
 				if( !ri.geometric.HasTrueGeomSide() ) {
 					segStart = boundaryDist;
 					continue;
@@ -514,6 +530,22 @@ static Scalar EvalShadowTransmittanceNM(
 				// uses.  Before this guard a hair strand crossing the
 				// shadow ray pushed its interior medium once per strand
 				// and never removed it.
+				// DL-97 CONTRACT (pinned by tests/HairInteriorMediumSkipTest.cpp,
+				// not a runtime assert -- this walk is per-sample hot path,
+				// same convention BDPTIntegrator.cpp's MISWeight documents
+				// for its own "no asserts" choice): this skip is correct
+				// ONLY because every geometry that sets
+				// `bGeomNormalRayDerived` (HairGeometry, today the only
+				// one) ALSO reports a zero-length chord
+				// (`range2 == range` -- HairGeometry.cpp's own "no volume:
+				// exit == entry" contract).  A zero-length chord has
+				// nothing for this push/pop walk to integrate either way,
+				// so skipping it changes nothing FOR HAIR TODAY.  If a
+				// future geometry ever sets `bGeomNormalRayDerived` with a
+				// GENUINE positive-length chord, this skip would silently
+				// make its interior medium invisible to shadow rays --
+				// such a change must replace this skip with real handling,
+				// not just widen the flag's meaning.
 				if( !ri.geometric.HasTrueGeomSide() ) {
 					segStart = boundaryDist;
 					continue;

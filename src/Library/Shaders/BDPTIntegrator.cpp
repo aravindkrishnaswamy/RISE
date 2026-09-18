@@ -1233,6 +1233,19 @@ namespace {
 				// is a no-op on every geometry that does not set it; a
 				// RAY-DERIVED normal (HairGeometry) is skipped, since a
 				// 1-D curve has no interior for a medium to occupy.
+				//
+				// DL-97 CONTRACT (pinned by
+				// tests/HairInteriorMediumSkipTest.cpp, not a runtime
+				// assert -- this connection walk is per-sample hot path,
+				// the same "no asserts" convention this file's own
+				// MISWeight documents): correct ONLY because every
+				// geometry setting `bGeomNormalRayDerived` (HairGeometry,
+				// today the only one) ALSO reports a zero-length chord
+				// (`range2 == range`, HairGeometry.cpp's own "no volume:
+				// exit == entry" contract) -- nothing for this walk to
+				// integrate either way.  A future geometry setting the
+				// flag with a genuine positive-length chord would need
+				// real handling here, not a widened skip.
 				if( !ri.geometric.HasTrueGeomSide() ) {
 					segStart = boundaryDist;
 					continue;
