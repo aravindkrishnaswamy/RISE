@@ -567,8 +567,9 @@ but not of the ACCOUNTING around it, and the difference matters.
   count, but the ones that DO survive are correctly, unbiasedly priced,
   so the average over many pixels still converges to the right answer.
 
-### 7.2 P2-1 (documented, not filed): a medium-vertex `isConnectible`
-asymmetry between light- and eye-rooted derivations
+### 7.2 P2-3 (review round 4 rewrite; filed as DL-200): a medium-vertex
+`isConnectible` asymmetry between light- and eye-rooted derivations --
+reachability not yet demonstrated
 
 `BDPTIntegrator.cpp`'s medium-vertex `connectible` derivation (the
 "medium enclosed by a specular boundary" logic, ~line 1835) inherits
@@ -581,37 +582,71 @@ INTO an enclosed medium leaves the medium's first vertex
 same enclosure a specular-boundary-crossing EYE walk reaching a
 similar-looking medium point would correctly mark `false`.
 
-**On reflection, this is very likely NOT a partition defect, and the
-reason clarifies what `isConnectible` actually certifies.** A given
-rendered PATH has one fixed vertex sequence; `isConnectible` at a
-vertex position is evaluated once, from that ONE walk's own history,
-and is consulted only by strategies re-splitting THAT SAME sequence at
-a different (s,t) -- never compared across two independently-generated
-paths that happen to visit similar-looking 3D coordinates by
-coincidence. The light-rooted case above is correct for what it
-describes: a light emitting directly into a medium with NO intervening
-specular surface between the emission point and that first scatter
-really can be connected to (no boundary blocks a straight line back to
-the light). The eye-rooted case is a genuinely different situation
-(the eye ray had to cross a real specular boundary to arrive at ITS
-first medium vertex), correctly marked non-connectible. Both
-derivations are locally correct for the walk that produced them; there
-is no shared vertex position whose two conflicting classifications
-would ever need to be reconciled inside one `MISWeight` call.
+**Round 2 dismissed this as "very likely NOT a partition defect" on
+reasoning that review round 4 found WRONG, and this section is
+rewritten to correct it.** Round 2's argument was: a rendered path has
+one fixed vertex sequence, `isConnectible` is set once by whichever
+walk actually generated a vertex, and MISWeight only re-splits THAT
+SAME sequence at different (s,t) -- so there is supposedly no shared
+vertex position whose two conflicting classifications ever need
+reconciling.
 
-Not filed as a new row: this reasoning, plus the reviewer's own
-preliminary check (`RefractiveRadianceScalingTest` 41/0,
-`VolumeAbsorptionAttenuationTest` 89/0, both re-confirmed unchanged
-after every fix in this document), together argue against a real
-defect. A dedicated isolated render (a light literally inside a
-specular-enclosed medium, BDPT vs PT) was NOT built in this round --
-constructing one that isolates this mechanism from confounds (a real
-dielectric boundary's own Fresnel behaviour; a `perfectrefractor` at
-`ior=1.0` degenerately makes a straight-line connection THROUGH the
-boundary exact, which could mask rather than expose the effect) is
-nontrivial, and is left as a residual for whoever next touches this
-derivation, rather than shipping a rushed and possibly misleading
-measurement.
+That framing gets the object of the partition-of-unity claim backwards.
+MIS's partition-of-unity is not a statement about one already-sampled
+vertex array; it is a statement about STRATEGIES -- the claim that,
+summed over every (s,t), the ESTIMATOR for a given physical path
+integrates to the right answer regardless of which strategy happened to
+generate the sample that landed on it. Different (s,t) strategies are
+different SAMPLES that CAN produce the identical physical path (same 3D
+positions), and each strategy's own vertices carry flags derived from
+its OWN generating walk. A path through an enclosed-medium point is
+reachable by (at least) two strategies: one where the LIGHT subpath
+walks through the boundary and into the medium (that vertex is
+light-rooted, `isConnectible = true` by the derivation above), and one
+where the EYE subpath crosses the SAME boundary from the other side and
+reaches a geometrically coincident medium point (that vertex is
+eye-rooted, `isConnectible = false`). These are not "the same vertex
+read two ways" in one array -- they are two DIFFERENT vertices, in two
+DIFFERENT samples, that MISWeight's cross-strategy sum needs to treat
+consistently for the partition to hold, because DL-126 made `MISWeight`
+skip a would-be connection strategy whenever `!isConnectible` at
+EITHER endpoint. If the light-rooted strategy's connection to that
+medium point is credited (its vertex reads `isConnectible = true`) while
+the physically equivalent eye-rooted strategy's own attempt at a
+similar connection is skipped (`isConnectible = false` there), the two
+strategies are not being treated symmetrically by the SAME predicate
+applied to geometrically-equivalent situations -- which is exactly the
+shape of a partition-of-unity violation DL-126 could newly expose, since
+before DL-126 `MISWeight` never looked at `isConnectible` at all, only
+`isDelta`.
+
+**Reachability has NOT been demonstrated, by either this row's own
+testing or the reviewer's.** This section's own dismissal in round 2
+was reasoning-only -- no scene was built. The reviewer's own attempted
+A/B (a glass-shell interior-medium scene, intended to force an
+eye-rooted walk to cross the shell into the medium and reach a
+`MEDIUM`-type, `!isConnectible` vertex) could not even REACH such a
+vertex: both the control and candidate configuration read 0 connection
+attempts at a `MEDIUM`/`!isConnectible` vertex out of 0 opportunities
+(0/0) -- inconclusive, not evidence of no defect, since a scene that
+never constructs the triggering configuration cannot discriminate a
+present defect from an absent one. A SEPARATE A/B the reviewer ran (on
+a different scene) was a wash: BDPT read 0.01961 vs 0.01959 across the
+two configurations, both ~1.6% under PT -- a pre-existing, unrelated
+gap (consistent in direction and magnitude with this codebase's other
+documented BDPT-vs-PT residuals on non-degenerate scenes), not evidence
+either for or against this asymmetry.
+
+**Filed as DL-200** (reserved id) to record this open, undemonstrated-
+but-plausible state rather than let round 2's flawed dismissal stand as
+the final word. See that row in docs/DEBT_LEDGER.md for the recipe a
+future investigation should follow: a scene that forces an EYE subpath
+specifically (not the light subpath) to cross a specular boundary into
+an enclosed medium and attempt a connection strategy there, instrumented
+to confirm the triggering vertex configuration (`MEDIUM` type,
+`isConnectible == false`, at least one valid connection candidate) is
+actually reached before drawing any conclusion from the resulting
+image-level ratio.
 
 ### 7.3 P2-2: stale comment corrected
 
