@@ -621,13 +621,274 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	return outgoing + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( outgoing, interfaceFresnel.Mean() );
 }
 
-// Coat recycling requires a view-independent hemispherical estimate.
-// The diffuse mean is c*(1-Amean)^2; specular retains its interface estimate.
+//////////////////////////////////////////////////////////////////////
+// hemisphericalAlbedo{,NM} -- FIXED 2026-09-17 (DL-123).  Before this
+// fix, the specular term was just `interfaceFresnel.Mean()` -- the
+// FLAT macro-interface Fresnel hemispherical average, with NO
+// dependence on alpha (roughness) at all.  That is only correct in the
+// alpha->0 (mirror) limit; at rough/grazing configurations it ignores
+// both (a) the single-scatter lobe's actual half-vector-weighted
+// Fresnel shape and (b) the Kulla-Conty multiscatter energy the same
+// `value()` function adds back in.  Measured (FabricMaterialChunkTest
+// gate 5(b), GGX alpha=0.5, F0=0.04): +7.73% high.
+//
+// DERIVATION.  Write value()'s specular contribution as three additive
+// bihemispherical pieces (each derived by integrating the ACTUAL code
+// in value()/valueNM against IBSDF's uniform-incident-field measure,
+// (1/pi) INT INT (.) (n.wi)(n.wo) dwi dwo):
+//
+//   1. SINGLE-SCATTER, R_ss.  specFactor's 1/(4*cosI*cosO) cancels the
+//      measure's (n.wi)(n.wo) exactly (same cancellation
+//      OrenNayarHemisphericalAlbedoGen.cpp's header derives for its own
+//      BRDF), leaving R_ss = (1/pi) INT INT F(cosThetaH)*D(h)*G2/4
+//      dwi dwo -- a 1-D integral in u=1-cosThetaH against a fixed
+//      (Fresnel-independent) GGX kernel.  Evaluated via
+//      GGXSpecularSingleScatterBihemispherical{,NM} below: a small
+//      moment-matched fixed-node quadrature (tools/
+//      GGXSpecularBihemisphericalGen.cpp), EXACT for Schlick (whose
+//      F(u)=F0+(1-F0)*u^5 is degree 5, inside the baked degree-7 basis)
+//      and a degree-7-polynomial-fit-quality approximation for
+//      conductor/thin-film (measured in
+//      tests/GGXHemisphericalAlbedoTest.cpp).
+//
+//   2. MULTISCATTER, R_ms.  f_ms = (1-Ess_o)(1-Ess_i)/(pi*(1-Eavg)) is
+//      SEPARABLE in (wi,wo) and F_ms is a bihemispherical constant, so
+//      INT(1-Ess_o)cosO dwo = INT(1-Ess_i)cosI dwi = pi*(1-Eavg)
+//      (E_avg's own definition), giving, EXACTLY,
+//        R_ms = (F_ms/pi) * (1/(pi(1-Eavg))) * [pi(1-Eavg)]^2
+//             = F_ms * (1-Eavg)
+//      with F_ms and Eavg computed by literally reusing the same
+//      per-mode helper calls value()/valueNM use (SchlickFresnelAvg /
+//      ThinFilm::FresnelAvgConductor{,RGBSpectral} /
+//      MicrofacetEnergyLUT::ComputeFresnelAvg, then ComputeFms), so
+//      this term cannot drift from value()'s own multiscatter tint --
+//      no new baking needed.
+//
+//   3. DIFFUSE, R_diff.  Already exact pre-fix: diffuse = c*INV_PI*
+//      (1-A(nv))(1-A(nr)) is separable, so R_diff = c*(1-Ā)^2 with
+//      Ā = Mean() the cosine-weighted average of the SAME flat
+//      Directional() function value()'s diffuse term itself uses --
+//      unchanged.
+//
+// R_bi = R_ss + R_ms + R_diff.  At alpha->0, R_ss->Mean() and
+// R_ms->F_ms*(1-Eavg)->0 (Eavg->~1), recovering the pre-fix mirror-limit
+// answer exactly -- see the generator's own header for the smooth-limit
+// check.
+//
+// ANISOTROPIC (alphaX != alphaY): R_ms/Eavg use the EXACT anisotropic
+// LookupEavgG2Aniso (no approximation).  R_ss's baked quadrature table
+// is ISOTROPIC-only; anisotropic configurations evaluate it at
+// alphaEff=sqrt(alphaX*alphaY), an approximation for this term alone
+// (residual tracked as DL-139).
+//
+// DL-62-style consistency: alphaX/alphaY are widened by
+// ri.glossyFilterWidth before use, matching value()'s own widening (ri
+// is passed for painter/filter-state sampling; only ri.ray is
+// off-limits per IBSDF.h's contract).
+//////////////////////////////////////////////////////////////////////
+
+namespace
+{
+	// Baked by tools/GGXSpecularBihemisphericalGen.cpp -- see that
+	// file's header for the full derivation (moment-matched
+	// Chebyshev-node quadrature via VNDF importance sampling) and
+	// GGXBRDF::hemisphericalAlbedo's own comment above for how it is
+	// used.  DO NOT HAND-EDIT; regenerate and paste both arrays back
+	// in.  Alpha axis: uniform 32 nodes on [0.01, 1.0], IDENTICAL to
+	// MicrofacetEnergyLUT.h's E_avg_TABLE_G2 (cross-checked against it
+	// in tests/GGXHemisphericalAlbedoTest.cpp: this table's own moment
+	// 0, baked independently via a different outer quadrature and RNG
+	// stream, agrees with E_avg_TABLE_G2 to within 3.4e-4 absolute
+	// across the whole alpha range).
+	static const int kGGXSpecularQuadNumNodes = 8;
+
+	// mu_i = 1 - u_i (cosThetaH nodes, normal incidence first).
+	static const Scalar kGGXSpecularQuadNodes[ kGGXSpecularQuadNumNodes ] =
+	{
+		1.0000000000f, 0.9504844340f, 0.8117449009f, 0.6112604670f, 0.3887395330f, 0.1882550991f, 0.0495155660f, 0.0000000000f
+	};
+
+	static const Scalar kGGXSpecularQuadWeight[ 32 ][ kGGXSpecularQuadNumNodes ] =
+	{
+		{ 0.0196541649f, 0.1813501614f, 0.2865772823f, 0.2665871764f, 0.1707216309f, 0.0653173630f, 0.0098298467f, -0.0005527483f },
+		{ 0.0198812255f, 0.1821196328f, 0.2878830284f, 0.2668099854f, 0.1697370821f, 0.0615999069f, 0.0059251049f, -0.0003923701f },
+		{ 0.0203420868f, 0.1834109159f, 0.2896509179f, 0.2665506395f, 0.1662765785f, 0.0541123674f, 0.0026858645f, 0.0000523506f },
+		{ 0.0207780070f, 0.1849814439f, 0.2915703171f, 0.2651772095f, 0.1599165665f, 0.0456795501f, 0.0009564703f, 0.0002725022f },
+		{ 0.0210642521f, 0.1871821400f, 0.2927103285f, 0.2626750863f, 0.1513955413f, 0.0374206411f, 0.0004370595f, 0.0002051954f },
+		{ 0.0216166122f, 0.1892582074f, 0.2934961277f, 0.2582620788f, 0.1410839518f, 0.0305963259f, 0.0002617362f, 0.0001194596f },
+		{ 0.0220497026f, 0.1908699318f, 0.2934435979f, 0.2525914482f, 0.1306392682f, 0.0248009793f, 0.0003793991f, -0.0000295460f },
+		{ 0.0224127630f, 0.1925976830f, 0.2926659555f, 0.2454808466f, 0.1198302541f, 0.0201833458f, 0.0005607280f, -0.0001628171f },
+		{ 0.0229108259f, 0.1937911225f, 0.2909857175f, 0.2371833394f, 0.1095734037f, 0.0165882310f, 0.0006521583f, -0.0002341716f },
+		{ 0.0231268118f, 0.1949557328f, 0.2885365644f, 0.2280847291f, 0.0998819078f, 0.0137183263f, 0.0007813893f, -0.0003119953f },
+		{ 0.0235479159f, 0.1956260678f, 0.2853307520f, 0.2181993330f, 0.0909507324f, 0.0114857777f, 0.0008110046f, -0.0003380688f },
+		{ 0.0238546334f, 0.1958132327f, 0.2807709886f, 0.2085662438f, 0.0826899082f, 0.0097636815f, 0.0007931144f, -0.0003367094f },
+		{ 0.0241565262f, 0.1954676230f, 0.2758756780f, 0.1986794714f, 0.0753298006f, 0.0082858043f, 0.0007791765f, -0.0003357670f },
+		{ 0.0244737470f, 0.1950198039f, 0.2703928779f, 0.1887433996f, 0.0685937860f, 0.0071582370f, 0.0007514508f, -0.0003259591f },
+		{ 0.0244020877f, 0.1943562578f, 0.2646694334f, 0.1788774758f, 0.0628176346f, 0.0061353853f, 0.0007891450f, -0.0003469105f },
+		{ 0.0245753324f, 0.1927326899f, 0.2581117388f, 0.1696008046f, 0.0573862958f, 0.0053877213f, 0.0007455236f, -0.0003281032f },
+		{ 0.0246630472f, 0.1911149386f, 0.2514846954f, 0.1603106649f, 0.0526103606f, 0.0047070494f, 0.0007307320f, -0.0003240894f },
+		{ 0.0248395799f, 0.1889324685f, 0.2444189167f, 0.1519660389f, 0.0483947829f, 0.0041985699f, 0.0006825629f, -0.0003036041f },
+		{ 0.0244885548f, 0.1868890657f, 0.2374057468f, 0.1434092999f, 0.0446433274f, 0.0036346882f, 0.0007242749f, -0.0003247489f },
+		{ 0.0245196274f, 0.1841329441f, 0.2304369107f, 0.1357190128f, 0.0410867612f, 0.0032857907f, 0.0006652733f, -0.0002994006f },
+		{ 0.0245429772f, 0.1815375049f, 0.2230444445f, 0.1283645104f, 0.0379915365f, 0.0029235517f, 0.0006448835f, -0.0002909576f },
+		{ 0.0242403979f, 0.1786017986f, 0.2156303534f, 0.1213946246f, 0.0353641168f, 0.0025986528f, 0.0006692498f, -0.0003032994f },
+		{ 0.0241995832f, 0.1754544909f, 0.2086202976f, 0.1147708672f, 0.0327812349f, 0.0023500076f, 0.0006332554f, -0.0002881913f },
+		{ 0.0239808702f, 0.1724420007f, 0.2017848756f, 0.1085479206f, 0.0305927121f, 0.0020956109f, 0.0006367138f, -0.0002908806f },
+		{ 0.0236858255f, 0.1688770687f, 0.1948642871f, 0.1029545162f, 0.0285387326f, 0.0018835180f, 0.0006267110f, -0.0002868409f },
+		{ 0.0235063483f, 0.1657838497f, 0.1879353015f, 0.0973225645f, 0.0267071793f, 0.0016845645f, 0.0006263645f, -0.0002876463f },
+		{ 0.0233191435f, 0.1621149752f, 0.1816051672f, 0.0923893144f, 0.0249589050f, 0.0015242993f, 0.0006099001f, -0.0002808021f },
+		{ 0.0230416412f, 0.1586400294f, 0.1750429675f, 0.0876247732f, 0.0234479438f, 0.0013884758f, 0.0005988544f, -0.0002760458f },
+		{ 0.0226143444f, 0.1550961624f, 0.1690736902f, 0.0831277074f, 0.0220714843f, 0.0012527631f, 0.0005989019f, -0.0002772788f },
+		{ 0.0223766810f, 0.1517260270f, 0.1628850559f, 0.0789570452f, 0.0207734923f, 0.0011194194f, 0.0006061724f, -0.0002806027f },
+		{ 0.0220877116f, 0.1480205729f, 0.1573698270f, 0.0750250719f, 0.0196675106f, 0.0010063039f, 0.0006026792f, -0.0002800912f },
+		{ 0.0217673239f, 0.1445616620f, 0.1514399619f, 0.0713737717f, 0.0185561643f, 0.0009202578f, 0.0005866106f, -0.0002724636f },
+	};
+
+	//! Linear interpolation across the alpha axis (same [0.01,1.0]
+	//! uniform-32-node mapping as MicrofacetEnergyLUT::LookupEavgG2),
+	//! returning the weight for quadrature node `nodeIdx`.
+	inline Scalar LookupGGXSpecularQuadWeight( const int nodeIdx, const Scalar alpha )
+	{
+		const int kNumAlphaBins = 32;
+		Scalar a = r_max( Scalar(0), r_min( Scalar(1), (alpha - Scalar(0.01)) / Scalar(0.99) ) ) * Scalar(kNumAlphaBins - 1);
+		int ai0 = (int)a;
+		int ai1 = r_min( ai0 + 1, kNumAlphaBins - 1 );
+		Scalar af = a - Scalar(ai0);
+		return kGGXSpecularQuadWeight[ai0][nodeIdx] * (Scalar(1) - af) + kGGXSpecularQuadWeight[ai1][nodeIdx] * af;
+	}
+
+	//! R_ss(alpha) = SUM_i F(mu_i) * w_i(alpha) -- see the long
+	//! derivation comment above GGXBRDF::hemisphericalAlbedo.  `F` is
+	//! whatever Fresnel function `interfaceFresnel.Directional` (RGB) /
+	//! `DirectionalNM` (NM) dispatches to for the material's actual
+	//! FresnelMode -- this helper is mode-agnostic.
+	RISEPel GGXSpecularSingleScatterBihemispherical( const GGXInterfaceFresnel& interfaceFresnel, const Scalar alpha )
+	{
+		RISEPel sum(0,0,0);
+		for( int i = 0; i < kGGXSpecularQuadNumNodes; i++ ) {
+			sum = sum + interfaceFresnel.Directional( kGGXSpecularQuadNodes[i] ) * LookupGGXSpecularQuadWeight( i, alpha );
+		}
+		return sum;
+	}
+	Scalar GGXSpecularSingleScatterBihemisphericalNM( const GGXInterfaceFresnel& interfaceFresnel, const Scalar alpha, const Scalar nm )
+	{
+		Scalar sum = 0;
+		for( int i = 0; i < kGGXSpecularQuadNumNodes; i++ ) {
+			sum += interfaceFresnel.DirectionalNM( kGGXSpecularQuadNodes[i], nm ) * LookupGGXSpecularQuadWeight( i, alpha );
+		}
+		return sum;
+	}
+
+	//! F_ms(Eavg) computed by literally replaying value()'s own
+	//! per-mode F_avg construction (see value()'s "Kulla-Conty
+	//! multiscattering" comment block) so this can never drift from
+	//! what value() itself renders with.  `n` is the ComputeFresnelAvg
+	//! reference normal used only to build an arbitrary tangent frame
+	//! for its internal quadrature -- the RESULT is rotationally
+	//! invariant (Fresnel depends only on the angle to `n`), so passing
+	//! a fixed axis here (as GGXInterfaceFresnel::Mean() already does)
+	//! is bit-for-bit equivalent to passing the real shading normal.
+	RISEPel ComputeGGXFms(
+		const RayIntersectionGeometric& ri, const FresnelMode mode, const RISEPel& specColor,
+		const IScalarPainter& iorP, const IScalarPainter& extP,
+		const IScalarPainter* filmIOR, const IScalarPainter* filmExt, const IScalarPainter* filmThick,
+		const Scalar Eavg )
+	{
+		if( mode == eFresnelSchlickF0 ) {
+			const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
+			return MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+		}
+		if( mode == eFresnelThinFilmConductor ) {
+			const Scalar thickness = filmThick->GetValueAtNM( ri, Scalar(550) );
+			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = ri.ambientIOR; k0 = Scalar(0);
+				n1 = filmIOR->GetValueAtNM( ri, nm );
+				k1 = filmExt ? filmExt->GetValueAtNM( ri, nm ) : Scalar(0);
+				n2 = iorP.GetValueAtNM( ri, nm ); k2 = extP.GetValueAtNM( ri, nm );
+			};
+			const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGBSpectral( thickness, stackAt );
+			return MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+		}
+		const ScalarTriple iorT = iorP.GetValuesAt( ri );
+		const ScalarTriple extT = extP.GetValuesAt( ri );
+		const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+		const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
+		const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
+		const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( Vector3(0,0,1), niPel, ior, ext );
+		return MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+	}
+	Scalar ComputeGGXFmsNM(
+		const RayIntersectionGeometric& ri, const FresnelMode mode, const Scalar specColor,
+		const IScalarPainter& iorP, const IScalarPainter& extP,
+		const IScalarPainter* filmIOR, const IScalarPainter* filmExt, const IScalarPainter* filmThick,
+		const Scalar nm, const Scalar Eavg )
+	{
+		if( mode == eFresnelSchlickF0 ) {
+			const Scalar F_avg = SchlickFresnelAvg<Scalar>( specColor );
+			return MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+		}
+		if( mode == eFresnelThinFilmConductor ) {
+			const Scalar F_avg = ThinFilm::FresnelAvgConductor(
+				nm, ri.ambientIOR, Scalar(0),
+				filmIOR->GetValueAtNM( ri, nm ), filmExt ? filmExt->GetValueAtNM( ri, nm ) : Scalar(0),
+				filmThick->GetValueAtNM( ri, nm ),
+				iorP.GetValueAtNM( ri, nm ), extP.GetValueAtNM( ri, nm ) );
+			return MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+		}
+		const Scalar iorVal = iorP.GetValueAtNM( ri, nm );
+		const Scalar extVal = extP.GetValueAtNM( ri, nm );
+		const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( Vector3(0,0,1), ri.ambientIOR, iorVal, extVal );
+		return MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+	}
+
+	//! Resolve alphaX/alphaY (DL-62-style glossy-filter widening + the
+	//! 1e-4 floor GGX_D_Aniso/GGX_Lambda_Aniso apply internally), plus
+	//! alphaEff=sqrt(alphaX*alphaY) for the (isotropic-only) R_ss table
+	//! -- see the DL-123 comment's "ANISOTROPIC" paragraph.  The REAL
+	//! alphaX/alphaY (not alphaEff) must be used for the anisotropic
+	//! Eavg lookup (R_ms), which needs no approximation.
+	void ResolveGGXHemisphericalAlphas( const IScalarPainter& alphaXP, const IScalarPainter& alphaYP,
+		const RayIntersectionGeometric& ri, Scalar& outAlphaX, Scalar& outAlphaY, Scalar& outAlphaEff )
+	{
+		Scalar alphaX = alphaXP.GetValuesAt(ri).v[0];
+		Scalar alphaY = alphaYP.GetValuesAt(ri).v[0];
+		if( ri.glossyFilterWidth > 0 ) {
+			alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
+			alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+		outAlphaX = r_max( alphaX, Scalar(1e-4) );
+		outAlphaY = r_max( alphaY, Scalar(1e-4) );
+		outAlphaEff = sqrt( outAlphaX * outAlphaY );
+	}
+	void ResolveGGXHemisphericalAlphasNM( const IScalarPainter& alphaXP, const IScalarPainter& alphaYP,
+		const RayIntersectionGeometric& ri, const Scalar nm, Scalar& outAlphaX, Scalar& outAlphaY, Scalar& outAlphaEff )
+	{
+		Scalar alphaX = alphaXP.GetValueAtNM(ri,nm);
+		Scalar alphaY = alphaYP.GetValueAtNM(ri,nm);
+		if( ri.glossyFilterWidth > 0 ) {
+			alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
+			alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+		outAlphaX = r_max( alphaX, Scalar(1e-4) );
+		outAlphaY = r_max( alphaY, Scalar(1e-4) );
+		outAlphaEff = sqrt( outAlphaX * outAlphaY );
+	}
+}
+
 bool GGXBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
 {
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const RISEPel mean = interfaceFresnel.Mean();
-	out = mean + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( mean, mean );
+
+	Scalar alphaX, alphaY, alphaEff;
+	ResolveGGXHemisphericalAlphas( *pAlphaX, *pAlphaY, ri, alphaX, alphaY, alphaEff );
+	const Scalar EavgAniso = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
+	const RISEPel R_ss = GGXSpecularSingleScatterBihemispherical( interfaceFresnel, alphaEff );
+	const RISEPel specColor = pSpecular->GetColor(ri);
+	const RISEPel F_ms = ComputeGGXFms( ri, fresnelMode, specColor, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness, EavgAniso );
+	const RISEPel R_ms = F_ms * (Scalar(1) - EavgAniso);
+
+	out = R_ss + R_ms + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }
 
@@ -635,6 +896,15 @@ bool GGXBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const S
 {
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar mean = interfaceFresnel.MeanNM( nm );
-	out = mean + GuardedGetColorNM( *pDiffuse, ri, nm ) * GGXInterfaceFresnel::Transmission( mean, mean );
+
+	Scalar alphaX, alphaY, alphaEff;
+	ResolveGGXHemisphericalAlphasNM( *pAlphaX, *pAlphaY, ri, nm, alphaX, alphaY, alphaEff );
+	const Scalar EavgAniso = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
+	const Scalar R_ss = GGXSpecularSingleScatterBihemisphericalNM( interfaceFresnel, alphaEff, nm );
+	const Scalar specColor = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar F_ms = ComputeGGXFmsNM( ri, fresnelMode, specColor, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness, nm, EavgAniso );
+	const Scalar R_ms = F_ms * (Scalar(1) - EavgAniso);
+
+	out = R_ss + R_ms + GuardedGetColorNM( *pDiffuse, ri, nm ) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }

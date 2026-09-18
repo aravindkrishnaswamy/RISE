@@ -504,10 +504,13 @@ namespace
 //! stale literal in the emitted file -- see round 9's follow-up fix
 //! (debt 18 residual) for what this replaced.  Mirrors
 //! SheenDirectionalAlbedo.cpp's AlphaPos / CosThetaPos / BuildStencil /
-//! E exactly (log-alpha stencil, sqrt-inverted grazing warp, bilinear
-//! blend); kept as a separate copy here rather than #including that
-//! .cpp because the generator only ever needs the DOUBLE-precision
-//! table it just baked, not the shipped float table.
+//! CosThetaLogFrac / E exactly (log-alpha stencil for bracket AND
+//! blend; sqrt-inverted grazing warp for the cosTheta BRACKET only --
+//! the cosTheta BLEND is log(mu), not linear-in-warped-position, since
+//! DL-11 2026-09-14, see CosThetaLogFracOf below); kept as a separate
+//! copy here rather than #including that .cpp because the generator
+//! only ever needs the DOUBLE-precision table it just baked, not the
+//! shipped float table.
 double AlphaPosOf( double alpha )
 {
 	const double t = std::log( alpha / kAlphaMin ) / std::log( kAlphaMax / kAlphaMin );
@@ -540,10 +543,36 @@ StencilOf BuildStencilOf( double pos, unsigned int n )
 	return s;
 }
 
+//! DL-11 (2026-09-14): the cosTheta BLEND fraction in log(mu), mirroring
+//! SheenDirectionalAlbedo.cpp's CosThetaLogFrac exactly.  The bracket
+//! (sc.i0/sc.i1) still comes from the sqrt-warped position -- only the
+//! interpolation VARIABLE within that bracket changed.
+double CosThetaLogFracOf( double muFloored, const StencilOf& sc, unsigned int n )
+{
+	const double t = (double)( n - 1 );
+	const double s0 = (double)sc.i0 / t;
+	const double s1 = (double)sc.i1 / t;
+	const double muI0 = s0 * s0;
+	const double muI1 = s1 * s1;
+	if( !( muI1 > muI0 ) || !( muFloored > 0.0 ) ) {
+		return sc.frac;
+	}
+	const double f = ( std::log( muFloored ) - std::log( muI0 ) )
+	               / ( std::log( muI1 ) - std::log( muI0 ) );
+	return std::min( std::max( f, 0.0 ), 1.0 );
+}
+
 double EInterpOf( const std::vector<std::vector<double>>& table, double alpha, double mu )
 {
 	const StencilOf sa = BuildStencilOf( AlphaPosOf( alpha ), kNumAlphaBins );
-	const StencilOf sc = BuildStencilOf( CosThetaPosOf( mu ), kNumCosThetaBins );
+	StencilOf sc = BuildStencilOf( CosThetaPosOf( mu ), kNumCosThetaBins );
+
+	{
+		const double t = (double)( kNumCosThetaBins - 1 );
+		const double mu1 = 1.0 / ( t * t );
+		const double muFloored = std::min( std::max( std::max( mu, mu1 ), 0.0 ), 1.0 );
+		sc.frac = CosThetaLogFracOf( muFloored, sc, kNumCosThetaBins );
+	}
 
 	const double v00 = table[sa.i0][sc.i0];
 	const double v01 = table[sa.i0][sc.i1];

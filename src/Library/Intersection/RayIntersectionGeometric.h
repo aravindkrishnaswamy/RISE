@@ -421,7 +421,40 @@ namespace RISE
 		Point2						ptCoord1;
 		bool						bHasTexCoord1;
 
-		Point3						ptIntersection;	// the point in world co-ordinates of the intersection, only	
+		//! OUTPUT (DL-107): whether an overriding `IUVGenerator` has
+		//! ALREADY supplied `ptCoord` for the surface this record
+		//! reports -- set true the moment ANY `IUVGenerator::GenerateUV`
+		//! call fires for this hit (`Object::IntersectRay`'s own
+		//! override-generator block, mirrored at composite level by
+		//! `CSGObject::IntersectRay`), false otherwise (explicitly, not
+		//! just "left unset" -- `Object::IntersectRay` writes both
+		//! branches so a farther, rejected BVH candidate's leftover
+		//! `true` can never survive onto a later, generator-less hit
+		//! that reuses the same shared record).
+		//!
+		//! WHY IT EXISTS.  A `CSGObject` composite may carry its own
+		//! `pUVGenerator` in addition to (or instead of) one on either
+		//! operand.  The operand's own generator, if it has one, must
+		//! WIN (it is the more specific binding); the composite's is
+		//! only the correct FALLBACK for an operand with none of its
+		//! own.  This flag is how `CSGObject::IntersectRay` tells the
+		//! two cases apart without a getter on `pUVGenerator` itself
+		//! (there is none -- see `Object::SetUVGenerator`): it is
+		//! carried by BOTH the whole-record `ri = riObjA` / `= riObjB`
+		//! copy (via `operator=`, below) AND by
+		//! `AdoptCsgSurfacePayload` (CSGObject.cpp), so it composes
+		//! correctly through arbitrary CSG nesting depth for free, the
+		//! same way `ptObjIntersec` and `ptCoord` themselves do.
+		//!
+		//! Precedence at any one CSGObject level: operand generator
+		//! (this flag already true when the composite's own check runs)
+		//! WINS over the composite generator (fires only when this flag
+		//! is still false) WINS over the operand's native UV (no
+		//! generator anywhere in the chain, flag stays false
+		//! throughout).
+		bool						bUVGeneratorApplied;
+
+		Point3						ptIntersection;	// the point in world co-ordinates of the intersection, only
 													// set if there was an intersection
 		Point3						ptExit;			// point at which the ray exits the object
 
@@ -669,6 +702,7 @@ namespace RISE
 		  bGeomNormalOrientedToRay( false ),
 		  bGeomNormalRayDerived( false ),
 		  bHasTexCoord1( false ),
+		  bUVGeneratorApplied( false ),
 		  pmxWorldToObject( 0 ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
@@ -702,6 +736,7 @@ namespace RISE
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
+		  bUVGeneratorApplied( r.bUVGeneratorApplied ),
 		  ptIntersection( r.ptIntersection ),
 		  ptExit( r.ptExit ),
 		  ptObjIntersec( r.ptObjIntersec ),
@@ -747,6 +782,7 @@ namespace RISE
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;
+			bUVGeneratorApplied = r.bUVGeneratorApplied;
 			derivatives = r.derivatives;
 			signals = r.signals;
 			txFootprint = r.txFootprint;

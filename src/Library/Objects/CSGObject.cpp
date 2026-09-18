@@ -283,6 +283,17 @@ namespace
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;
 		dst.bHasTexCoord1 = src.bHasTexCoord1;
+		// DL-107: whether an override UV generator ALREADY supplied
+		// `ptCoord` for the reported surface (the operand's own, or --
+		// under nesting -- an inner CSGObject's own composite-level
+		// fallback) is the SAME per-surface payload category as `ptCoord`
+		// itself, one line above: it must travel with whichever operand
+		// actually owns the reported boundary, not silently reset to
+		// whatever `dst` started life as a whole-record copy of.  This is
+		// what lets THIS level's own composite-generator precedence check
+		// (CSGObject::IntersectRay, just after this call returns) see
+		// whether a nested generator already fired, at any nesting depth.
+		dst.bUVGeneratorApplied = src.bUVGeneratorApplied;
 		dst.derivatives = src.derivatives;
 		// Phase-2 geometry-derived signals: the same per-surface payload
 		// category as `derivatives` immediately above -- the provider
@@ -1391,6 +1402,42 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 
 	if( ri.geometric.bHit )
 	{
+		// DL-107: an overriding UV generator bound directly to THIS
+		// composite `csg_object` (as opposed to one of its operands) is
+		// applied HERE, at the top of the post-processing block -- the
+		// exact mirror of `Object::IntersectRay`'s own placement
+		// (DL-95's fix site).  This is the last point in the function
+		// where the frame is still right for it: `ri.geometric.ray` /
+		// `range` are still in the CSG's OWN local (composite
+		// object-space) frame -- the world-space promotion is the very
+		// next block below -- and `vGeomNormal` has not yet been through
+		// THIS level's own `m_mxInvTranspose` transform either, so
+		// `UnflippedGeomNormal()` here still answers in that same local
+		// frame, matching the point.  (`bGeomNormalOrientedToRay` /
+		// `bGeomNormalRayDerived` were already carried onto `ri.geometric`
+		// by whichever branch above reported this boundary -- either a
+		// whole-record `ri = riObjA`/`= riObjB` copy or an explicit
+		// `AdoptCsgSurfacePayload` call -- so `UnflippedGeomNormal()` is
+		// valid before, not just after, that transform.)
+		//
+		// PRECEDENCE: an operand's own UV generator, if it has one,
+		// already fired inside THAT operand's own `Object::IntersectRay`
+		// and is carried here via `AdoptCsgSurfacePayload`'s `ptCoord`
+		// copy (or, for a nested CSGObject operand, its OWN composite
+		// fallback, by the same rule one level down) --
+		// `bUVGeneratorApplied` (also carried by that adoption, and by a
+		// whole-record copy's `operator=`) records whether that
+		// happened, at ANY nesting depth, so this composite's own
+		// generator fires only as the FALLBACK: when nothing along the
+		// reported boundary's ownership chain has already supplied one.
+		if( pUVGenerator && !ri.geometric.bUVGeneratorApplied )
+		{
+			const Point3 ptObjIntersecComposite =
+				ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR );
+			pUVGenerator->GenerateUV( ptObjIntersecComposite, ri.geometric.UnflippedGeomNormal(), ri.geometric.ptCoord );
+			ri.geometric.bUVGeneratorApplied = true;
+		}
+
 		// Transform the normal back
 		//
 		// Also capture the PRE-normalization magnitude of the transformed
