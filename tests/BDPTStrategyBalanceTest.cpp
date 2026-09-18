@@ -2921,7 +2921,7 @@ static void TestNullBSDFHWSSCompanionLadder()
 
 //////////////////////////////////////////////////////////////////////
 // Topology O: generic_human_tissue_material receiver, mesh area
-// emitter (DL-183).
+// emitter BEHIND the receiver (DL-183).
 //
 // `GenericHumanTissueSPF::Scatter`/`ScatterNM` set the continuation
 // ray's origin to `ri.ray.origin` -- the INCOMING ray's origin, which
@@ -2935,28 +2935,43 @@ static void TestNullBSDFHWSSCompanionLadder()
 // continuation from the SPF's own kray, same as it always did). PT is
 // therefore the right integrator to isolate THIS bug.
 //
-// Same geometry as topology N (`kSceneCommon`'s camera/film +
-// `kLightMesh`): camera at (0,0,3.5) looking at the origin, receiver
-// quad at z=0, mesh emitter quad at z=4.0 -- i.e. the light sits
-// BEHIND the camera as seen from the receiver.  A physically-scattered
-// ray leaving the receiver has roughly a 50/50 chance (cosine-weighted
-// around the incoming direction) of heading back toward that light.
-// The bugged ray instead originates AT THE CAMERA and is perturbed
-// around the SAME incoming direction (camera-to-receiver, i.e.
-// roughly -Z) -- so it overwhelmingly continues AWAY from the light
-// behind it (cosine-weighted sampling puts negligible mass near the
-// +90-degree tail needed to turn back toward +Z) regardless of sample
-// count: this is a systematic, not a noise, effect, and the image
-// should render as flat black (mean == 0, not just low).  Once the
-// origin is corrected to `ri.ptIntersection`, the receiver's own
-// scattered rays reach the light at the ordinary rate and the mean
-// should be strictly positive and comparable in order of magnitude to
-// topology N's biospec_skin_material reference on the same geometry
-// (measured there: PT achromatic mean ~0.047-0.062).
+// GEOMETRY NOTES (found empirically while building this red-proof):
+//
+// (1) `GenericHumanTissueSPF`'s outside-stack branch (the ONLY branch
+// a real render ever reaches -- see DL-131's row: the inside-stack
+// branch is unreachable because this material never pushes the IOR
+// stack and nothing else seeds it as trackable) samples its scattered
+// direction as `GeometricUtilities::Perturb(ri.ray.Dir(), acos(sqrt(u)),
+// v*2pi)` -- a cosine-weighted perturbation around the INCOMING ray's
+// own forward direction, i.e. this material only ever TRANSMITS
+// forward (into/through the surface, away from the incoming side),
+// never reflects back toward the side the light arrived from. Placing
+// the light on the camera's side (as topology N's `kLightMesh` does
+// at z=+4, for `biospec_skin_material`'s reflective front-hit branch)
+// makes this material's receiver read exactly 0 REGARDLESS of the
+// origin bug -- a confound, not a red-proof of DL-183. The light must
+// sit on the FAR side of the receiver (negative Z here).
+//
+// (2) The marginal polar-angle density of that cosine-weighted
+// perturbation is `sin(2*theta)`, peaking at 45 degrees, not 0 -- this
+// is NOT a tightly forward-peaked lobe (it is the well-known property
+// of cosine-weighted hemisphere sampling: growing ring circumference
+// compensates the falling cos(theta) term). A 1x1 light 4 units behind
+// the receiver catches only a sliver of that spread and both the
+// buggy and the fixed origin read close to 0 (confirmed empirically:
+// a 20x20 light saturates the frame at both origins, so the mechanism
+// itself works -- the earlier 1x1 light was simply too small a target
+// for either origin to hit reliably, which cannot discriminate the
+// bug). The light below (5x5, scale 20) was picked to give a strong,
+// non-saturating, origin-sensitive signal at 256 spp: manual CLI
+// renders of this exact geometry measured tonemapped mean 51/255
+// pre-fix (camera-position origin) vs 255/255 (saturated) post-fix
+// (ri.ptIntersection origin) -- see the fix commit message for the
+// linear achromatic means this test itself reads.
 //////////////////////////////////////////////////////////////////////
 static void TestGenericHumanTissueOriginFix()
 {
-	std::cout << "  [Topology O: generic_human_tissue_material receiver, mesh area emitter (DL-183)]" << std::endl;
+	std::cout << "  [Topology O: generic_human_tissue_material receiver, mesh emitter behind (DL-183)]" << std::endl;
 
 	std::string sceneTissue =
 		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -2973,8 +2988,23 @@ static void TestGenericHumanTissueOriginFix()
 		"}\n\n"
 		"standard_object\n{\n"
 		"\tname obj_tissue\n\tgeometry quad_tissue\n\tmaterial mat_tissue\n"
+		"}\n\n"
+		// Mesh emitter BEHIND the receiver (negative Z; note pta/ptc
+		// swapped relative to kLightMesh so the quad's winding still
+		// faces the receiver -- verified empirically: kLightMesh's own
+		// vertex order merely negated in Z emits away from the
+		// receiver and this topology reads 0).
+		"uniformcolor_painter\n{\n\tname pnt_emit_behind\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n"
+		"\tname mat_emit_behind\n\texitance pnt_emit_behind\n\tscale 20.0\n\tmaterial none\n"
+		"}\n\n"
+		"clippedplane_geometry\n{\n"
+		"\tname quad_emit_behind\n"
+		"\tpta -2.5 -2.5 -4.0\n\tptb 2.5 -2.5 -4.0\n\tptc 2.5 2.5 -4.0\n\tptd -2.5 2.5 -4.0\n"
+		"}\n\n"
+		"standard_object\n{\n"
+		"\tname obj_emit_behind\n\tgeometry quad_emit_behind\n\tmaterial mat_emit_behind\n"
 		"}\n";
-	sceneTissue += kLightMesh;
 
 	const std::string scene = std::string("RISE ASCII SCENE 7\n") + sceneTissue + kRasterizerPTNullBSDF;
 
@@ -2992,22 +3022,21 @@ static void TestGenericHumanTissueOriginFix()
 		return;
 	}
 
-	PrintStats( "generic_human_tissue_material receiver", stats );
+	PrintStats( "generic_human_tissue_material receiver, light behind", stats );
 	const double achro = ( stats.mean[0] + stats.mean[1] + stats.mean[2] ) / 3.0;
 	std::cout << "    achromatic mean = " << achro << std::endl;
 
-	// Pre-fix this reads EXACTLY 0 (see the fix commit message for the
-	// measured value) -- the continuation ray, originating at the
-	// camera and perturbed around the camera-to-receiver direction,
-	// systematically heads away from the light behind the camera.
-	// Post-fix it should land in the same order of magnitude as
-	// topology N's biospec_skin_material reference (~0.047-0.062) on
-	// the identical camera/receiver/light geometry; the two materials'
-	// absorption models differ so this is a loose band, not a parity
-	// check against topology N.
-	Check( achro > 0.005,
-		"DL-183: generic_human_tissue_material receiver reads nonzero PT radiance "
-		"(scattered ray now originates at ri.ptIntersection, reaching the light behind the camera)" );
+	// Pre-fix this reads ~1/9th of the post-fix value (0.205 vs 1.930,
+	// both measured directly by this test's own harness -- see the fix
+	// commit message) -- every pixel's continuation ray erroneously
+	// starts from the SAME single point (the camera), instead of the
+	// per-pixel hit point, so the natural per-pixel spread of exit
+	// points collapses and far fewer rays land on the light behind it.
+	// The threshold below sits roughly midway (in log terms) between
+	// the two measured values.
+	Check( achro > 0.6,
+		"DL-183: generic_human_tissue_material receiver reads strong PT radiance through to the light behind it "
+		"(scattered ray now originates at ri.ptIntersection, not at the camera)" );
 }
 
 int main()
