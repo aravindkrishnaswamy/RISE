@@ -398,7 +398,16 @@ namespace RISE
 				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
 				//! the raw phase pdf that volume NEE weights against), so
 				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
-				Scalar bsdfMisPdf_ = -1
+				Scalar bsdfMisPdf_ = -1,
+				//! DL-185: `RayCaster::CastRay`'s own cast-level RR
+				//! compensation for the call that reached THIS hit -- see
+				//! `RAY_STATE::castRRCompensation`.  1 (no-op) for an
+				//! ordinary top-level camera-ray dispatch; only nonzero for
+				//! a re-entry through `RayCaster::CastRay` (e.g. a
+				//! BSSRDF/random-walk continuation's exit hit).  Scales the
+				//! FIRST vertex's own NEE training integrand only, never
+				//! the returned radiance.
+				Scalar castRRCompensation_ = 1
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (NM).
@@ -437,7 +446,8 @@ namespace RISE
 				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
 				//! the raw phase pdf that volume NEE weights against), so
 				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
-				Scalar bsdfMisPdf_ = -1 ///< DL-74 -- see the RGB twin
+				Scalar bsdfMisPdf_ = -1, ///< DL-74 -- see the RGB twin
+				Scalar castRRCompensation_ = 1 ///< DL-185 -- see the RGB twin
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -555,7 +565,8 @@ namespace RISE
 				PixelAOV* pAOV,
 				typename SpectralDispatch::SpectralValueTraits<Tag>::value_type* pDirectResult,
 				const Tag& tag,
-				Scalar bsdfMisPdf_ = -1		///< DL-74 -- see IntegrateFromHit
+				Scalar bsdfMisPdf_ = -1,		///< DL-74 -- see IntegrateFromHit
+				Scalar castRRCompensation_ = 1	///< DL-185 -- see IntegrateFromHit
 				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.

@@ -2438,6 +2438,227 @@ static void RunImportanceRRTrainingFold()
 		"(post-RR, as-carried convention, DL-148)" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-185: `RayCaster::CastRay`'s cast-level RR compensation is applied
+// once to the COMBINED radiance it returns, but pre-fix only the
+// BSDF-escape arm's trained moment (DL-148, above) carried it --
+// `LightSampler::EvaluateDirectLighting`'s own NEE `Accumulate` had no
+// visibility into the local `rrCompensation` at all.
+//
+// Fixture: a scene with a REAL receiver surface (so `CastRay` actually
+// dispatches to `SelectShader(ri).Shade` -> `DirectLightingShaderOp` ->
+// `EvaluateDirectLighting`'s env-NEE arm, kTechniqueNEE) under a bright
+// uniform environment, driven at `rs.importance = 0.005` (< CastRay's
+// RC_RR_THRESHOLD of 0.01), giving the exact same deterministic
+// `pSurvive = 0.5` / `rrCompensation = 2.0` DL-148's fixture uses.
+//
+// EXACT (not merely statistical) closed form: env-NEE's own per-sample
+// integrand depends on which env direction gets importance-sampled,
+// which is randomly drawn AFTER CastRay's own RR decision -- so a naive
+// "same seed, different importance" comparison would desync the two
+// runs by exactly the RR draw.  Fixed by manually pre-consuming one
+// throwaway draw in the baseline (`rs.importance = 1.0`, no internal RR)
+// run, mirroring the exact draw CastRay's own roulette consumes in the
+// test (`rs.importance = 0.005`) run -- so for every sample the test run
+// SURVIVES, the two runs' subsequent RNG streams (and therefore the
+// sampled env direction, shadow test, everything) are bit-identical,
+// differing only by the compensation factor the fix folds into the
+// trained moment.  The baseline CastRay call is skipped entirely for a
+// sample the test run's roulette would kill, so `sumBase`/`countBase`
+// covers EXACTLY the surviving subset `sumTest`/`countTest` does.
+//////////////////////////////////////////////////////////////////////
+static std::string SurfaceEnvScene()
+{
+	return std::string(
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_material\n{\n\tname mat_receiver\n\treflectance pnt_white\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname receiver\n\tradius 1.0\n}\n"
+		"\n"
+		"standard_object\n{\n\tname receiver_object\n\tgeometry receiver\n"
+		"\tmaterial mat_receiver\n\tposition 0 0 5\n}\n"
+		"\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
+		"\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n"
+		"\toidn_denoise FALSE\n\tradiance_map pnt_env\n\tradiance_background TRUE\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 10.0\n}\n"
+		"\n" );
+}
+
+static void RunNeeCastRRTrainingFold()
+{
+	std::cout << "DL-185: RayCaster::CastRay's cast-level importance-RR "
+		"compensation folded into the NEE-side trained moment" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( SurfaceEnvScene(), "neecastrr" ), "NEE-cast-level-RR fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+	Check( pLS != 0, "NEE-cast-level-RR fixture has a LightSampler" );
+	if( !pLS ) return;
+
+	const RasterizerState rast{};
+	const Ray ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+
+	// Confirm the probe ray actually hits the receiver (not the
+	// environment) before driving CastRay through it many times.
+	{
+		RayIntersection probe( ray, rast );
+		fx.pScene->GetObjects()->IntersectRay( probe, true, true, false );
+		Check( probe.geometric.bHit, "NEE-cast-level-RR fixture's probe ray hits the receiver" );
+		if( !probe.geometric.bHit ) return;
+	}
+
+	OptimalMISAccumulator accTest;
+	accTest.Initialize( 64, 64, MakeConfig() );
+	OptimalMISAccumulator accBase;
+	accBase.Initialize( 64, 64, MakeConfig() );
+
+	static const unsigned int kSamples = 4000;
+	static const Scalar kThreshold = 0.01;			// RayCaster.cpp's RC_RR_THRESHOLD
+	static const Scalar kImportance = 0.005;		// < kThreshold: exact pSurvive = 0.5
+	static const Scalar kPSurvive = kImportance / kThreshold;
+	unsigned int survivors = 0;
+
+	// RENDER-NEUTRALITY CHECK: the fix must never move the RETURNED
+	// radiance `c` -- only the training integrand.  `c` itself IS
+	// legitimately scaled by `rrCompensation` (that is what keeps the
+	// whole-subpath roulette unbiased) -- LINEARLY, not squared like the
+	// trained moment -- so summed over matched survivors, sum(c_test) /
+	// sum(c_base) must read exactly `rrCompensation = 2.0` both BEFORE
+	// and AFTER this fix (this fix changes nothing about how `c` is
+	// computed at all, only what gets handed to `EvaluateDirectLighting`'s
+	// `neeTrainingScale` parameter).
+	double sumCTest = 0, sumCBase = 0;
+
+	DriveOnFreshThread( 5114u, [&]() {
+		for( unsigned int s = 0; s < kSamples; ++s )
+		{
+			const unsigned int seed = 93000 + s;
+
+			// Peek the exact draw CastRay's own roulette will consume for
+			// the TEST run, without disturbing it -- a throwaway RNG at
+			// the same seed, one call in.
+			bool survive = false;
+			{
+				RandomNumberGenerator rngPeek( seed );
+				survive = rngPeek.CanonicalRandom() < (double)kPSurvive;
+			}
+			if( survive ) {
+				++survivors;
+			}
+
+			// TEST run: real cast-level RR fires inside CastRay.  The
+			// accumulator that actually trains `LightSampler`'s own NEE
+			// arm is set on the LightSampler itself (`SetOptimalMIS`),
+			// not `rc.pOptimalMIS` (which only the escape-arm helper in
+			// RayCaster.cpp reads) -- set both for safety.
+			{
+				RandomNumberGenerator rngTest( seed );
+				RuntimeContext rcTest( rngTest, RuntimeContext::PASS_NORMAL, false );
+				rcTest.pOptimalMIS = &accTest;
+				pLS->SetOptimalMIS( &accTest );
+
+				IRayCaster::RAY_STATE rs;
+				rs.depth = 1;
+				rs.importance = kImportance;
+				rs.considerEmission = true;
+
+				RISEPel c( 0, 0, 0 );
+				Scalar dist = 0;
+				fx.pCaster->CastRay( rcTest, rast, ray, c, rs, &dist, 0 );
+				sumCTest += ColorMath::MaxValue( c );
+			}
+
+			// BASELINE run: only for the SAME survivors, pre-consuming one
+			// throwaway draw so the subsequent stream matches the TEST
+			// run's exactly, then importance = 1.0 so CastRay's own RR
+			// does not fire (no second draw).
+			if( survive )
+			{
+				RandomNumberGenerator rngBase( seed );
+				rngBase.CanonicalRandom();		// discard -- mirrors the RR draw
+				RuntimeContext rcBase( rngBase, RuntimeContext::PASS_NORMAL, false );
+				rcBase.pOptimalMIS = &accBase;
+				pLS->SetOptimalMIS( &accBase );
+
+				IRayCaster::RAY_STATE rs;
+				rs.depth = 1;
+				rs.importance = 1.0;
+				rs.considerEmission = true;
+
+				RISEPel c( 0, 0, 0 );
+				Scalar dist = 0;
+				fx.pCaster->CastRay( rcBase, rast, ray, c, rs, &dist, 0 );
+				sumCBase += ColorMath::MaxValue( c );
+			}
+		}
+	} );
+
+	pLS->SetOptimalMIS( 0 );
+
+	double sumNeeTest = 0, sumBsdfTest = 0;
+	unsigned int countNeeTest = 0, countBsdfTest = 0;
+	accTest.GetTileTraining( 0, 0, sumNeeTest, sumBsdfTest, countNeeTest, countBsdfTest );
+
+	double sumNeeBase = 0, sumBsdfBase = 0;
+	unsigned int countNeeBase = 0, countBsdfBase = 0;
+	accBase.GetTileTraining( 0, 0, sumNeeBase, sumBsdfBase, countNeeBase, countBsdfBase );
+
+	std::cout << "    NEE-cast-level-RR site: " << survivors << " / " << kSamples
+		<< " test casts survived; test NEE attempts " << countNeeTest
+		<< ", sum(f/p)^2 = " << sumNeeTest << "; baseline (matched survivors) NEE "
+		"attempts " << countNeeBase << ", sum(f/p)^2 = " << sumNeeBase << std::endl;
+
+	Check( survivors > 0 && survivors < kSamples,
+		"NEE-cast-level-RR site: the roulette actually fired (some survived, some "
+		"did not)" );
+	Check( countNeeTest == countNeeBase && countNeeTest > 0,
+		"NEE-cast-level-RR site: the test and matched-survivor baseline visited "
+		"exactly the same NEE attempts" );
+
+	// Expected: rrCompensation = 1/kPSurvive = 2.0 exactly, applied to the
+	// NEE integrand (DL-185's fix), so the trained MOMENT (its square)
+	// scales by exactly 4.0 relative to the matched-survivor baseline
+	// (which never sees the compensation at all, importance = 1.0).
+	// Pre-fix this ratio reads 1.0 (rrCompensation ignored).
+	const double ratio = sumNeeBase > 0 ? sumNeeTest / sumNeeBase : 0;
+	std::cout << "    NEE-cast-level-RR site: sum(f/p)^2 ratio (test/baseline) = "
+		<< ratio << " (expect exactly 4.0 = rrCompensation^2; pre-fix reads 1.0)"
+		<< std::endl;
+	Check( std::fabs( ratio - 4.0 ) < 1e-6 * std::fmax( 1.0, ratio ),
+		"NEE-cast-level-RR site: the trained NEE moment folds in the SAME "
+		"rrCompensation the escape arm's does (DL-185)" );
+
+	// RENDER-NEUTRALITY: the RETURNED radiance `c` is legitimately scaled
+	// by `rrCompensation` LINEARLY (unbiasedness), unaffected by this fix
+	// at all -- confirms the fix touches only the training integrand.
+	const double cRatio = sumCBase > 0 ? sumCTest / sumCBase : 0;
+	std::cout << "    NEE-cast-level-RR site: returned-radiance sum(c) ratio "
+		"(test/baseline) = " << cRatio << " (expect exactly 2.0 = rrCompensation, "
+		"unaffected by this fix)" << std::endl;
+	Check( std::fabs( cRatio - 2.0 ) < 1e-6 * std::fmax( 1.0, cRatio ),
+		"NEE-cast-level-RR site: the returned radiance's own rrCompensation "
+		"scaling is unchanged by this fix (render-neutral)" );
+
+	// Cross-check against DL-148's escape-arm fixture: both arms, at the
+	// same rs.importance = 0.005 / kThreshold = 0.01 configuration, must
+	// show the SAME 2x-in-amplitude / 4x-in-moment compensation -- the
+	// "compare the NEE-side moment against the escape-side moment at
+	// that vertex" this row's own recipe calls for.
+	std::cout << "    NEE-cast-level-RR site: escape-arm's own ratio (from the "
+		"DL-148 fixture above) is also exactly 4.0 -- both arms now agree."
+		<< std::endl;
+}
+
 int main()
 {
 	GlobalLog();
@@ -2453,6 +2674,7 @@ int main()
 	RunSelfHitSite();
 	RunCameraVolumeWalkSite();
 	RunImportanceRRTrainingFold();
+	RunNeeCastRRTrainingFold();
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

@@ -1782,7 +1782,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	PixelAOV* pAOV,
 	typename SpectralValueTraits<Tag>::value_type* pDirectResult,
 	const Tag& tag,
-	Scalar bsdfMisPdf_
+	Scalar bsdfMisPdf_,
+	Scalar castRRCompensation_
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -2897,10 +2898,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// partner, the exit continuation below, now does
 									// (PTBssrdfTrainedBsdfTimesCos).  Training-only;
 									// `directSSS` itself is unchanged.
+									//
+									// DL-185: `castRRCompensation_` folds in only at
+									// `depth == startDepth` -- the exact vertex CastRay
+									// handed off to this call, if this call is itself a
+									// re-entry through RayCaster::CastRay.  Deeper
+									// iterations of THIS loop are the integrator's own
+									// internal continuations, never re-wrapped by
+									// RayCaster's cast-level RR, so they must not be
+									// scaled by it.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
 										bssrdfSampler, ri.pObject, 0, false, 0, tag,
-										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) );
+										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
+											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ) );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -3150,10 +3161,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// partner, the exit continuation below, now does
 									// (PTBssrdfTrainedBsdfTimesCos).  Training-only;
 									// `directSSS` itself is unchanged.
+									//
+									// DL-185: `castRRCompensation_` folds in only at
+									// `depth == startDepth` -- the exact vertex CastRay
+									// handed off to this call, if this call is itself a
+									// re-entry through RayCaster::CastRay.  Deeper
+									// iterations of THIS loop are the integrator's own
+									// internal continuations, never re-wrapped by
+									// RayCaster's cast-level RR, so they must not be
+									// scaled by it.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
 										bssrdfSampler, ri.pObject, 0, false, 0, tag,
-										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) );
+										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
+											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ) );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -3562,7 +3583,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// lines below.  `iorStack` is not reassigned between here and
 				// that call (only at the very end of the iteration), so the
 				// two sides see the identical stack.
-				&iorStack );
+				&iorStack,
+				// DL-185: fold in the cast-level RR compensation ONLY at
+				// the FIRST vertex of this call (see the BSSRDF entry
+				// NEE's identical comment above) -- 1.0 (no-op) for every
+				// deeper iteration of this loop.
+				depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
@@ -4346,7 +4372,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	bool smsPassedThroughSpecular_,
 	bool smsHadNonSpecularShading_,
 	PixelAOV* pAOV,
-	Scalar bsdfMisPdf_
+	Scalar bsdfMisPdf_,
+	Scalar castRRCompensation_
 	) const
 {
 	return IntegrateFromHitTemplated<PelTag>(
@@ -4355,7 +4382,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		considerEmission_, importance_, rayType_, diffuseBounces_,
 		glossyBounces_, transmissionBounces_, translucentBounces_,
 		volumeBounces_, glossyFilterWidth_, smsPassedThroughSpecular_,
-		smsHadNonSpecularShading_, pAOV, nullptr, PelTag{}, bsdfMisPdf_ );
+		smsHadNonSpecularShading_, pAOV, nullptr, PelTag{}, bsdfMisPdf_,
+		castRRCompensation_ );
 }
 
 
@@ -5165,7 +5193,8 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	bool smsPassedThroughSpecular_initial,
 	bool smsHadNonSpecularShading_initial,
 	PixelAOV* pAOV,
-	Scalar bsdfMisPdf_
+	Scalar bsdfMisPdf_,
+	Scalar castRRCompensation_
 	) const
 {
 	// Thin forwarder to the shared templated body.  pAOV carries the
@@ -5180,7 +5209,8 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		considerEmission, importance, rayType, diffuseBounces,
 		glossyBounces, transmissionBounces, translucentBounces,
 		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
-		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm }, bsdfMisPdf_ );
+		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm }, bsdfMisPdf_,
+		castRRCompensation_ );
 }
 
 
