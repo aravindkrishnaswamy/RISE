@@ -601,14 +601,134 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	InvalidateSignalBakes();
 }
 
-//! DL-31.  Every edge of `ptr_polygons`, keyed by its two ENDPOINT
-//! POSITION INDICES (undirected -- (i,j) and (j,i) are the same edge),
-//! must occur in exactly two triangles for the mesh to be a closed
-//! 2-manifold with no boundary.  The index is recovered from each
-//! `PointerTriangle::pVertices[k]` by pointer arithmetic into `pPoints`
-//! rather than read from `indexedtris`, because `DoneIndexedTriangles`
-//! has already freed that list by the time this runs (see its own
-//! comment) -- `ptr_polygons` is the only surviving source of topology.
+namespace
+{
+	//! DL-143.  Welds `points` to a shared id per PHYSICAL corner, so
+	//! that watertightness (and anything else that needs "is this the
+	//! same vertex") can be decided by position rather than by which
+	//! array slot a per-corner import/tessellation pipeline happened to
+	//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`;
+	//! two positions land in the same id iff they are within `eps` of
+	//! each other under the grid below.
+	//!
+	//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal)`, i.e. relative
+	//! to THIS mesh's own scale, not an absolute constant -- an absolute
+	//! epsilon would either be too coarse for a millimetre-scale asset
+	//! or too fine to absorb import float noise on a kilometre-scale
+	//! one.  A cell size of `eps` with a 3x3x3 neighbour-cell scan finds
+	//! every prior welded point within `eps` regardless of which side of
+	//! a cell boundary two near-duplicate positions fall on; an exact
+	//! (bit-identical) duplicate -- the common case, both for a
+	//! deliberately shared corner and for this engine's own
+	//! `TessellateToMesh` producers, which copy the source position
+	//! verbatim rather than recomputing it -- is necessarily caught by
+	//! this same scan (distance 0 <= eps), so no separate exact-match
+	//! fast path is needed for correctness; it would only change the
+	//! constant factor, not the result.
+	//!
+	//! O(n) expected (each point does one grid-bucket insert/lookup plus
+	//! a bounded 27-cell scan whose average occupancy is O(1) for a
+	//! well-formed mesh); see ComputeWatertightness's own build-cost
+	//! measurement for the wall-clock this adds on a real asset.
+	void WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId )
+	{
+		outWeldedId.assign( points.size(), 0u );
+		if( points.empty() ) {
+			return;
+		}
+
+		BoundingBox bbox( points[0], points[0] );
+		for( std::size_t i = 1; i < points.size(); ++i ) {
+			bbox.Include( points[i] );
+		}
+		const Vector3 extents = bbox.GetExtents();
+		const Scalar diag = Vector3Ops::Magnitude( extents );
+		const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
+		const Scalar cell = eps;
+
+		auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
+			return (std::int64_t)std::floor( (double)( v / cell ) );
+		};
+		// A simple, well-distributed combine for the 3D cell key -- collisions are
+		// fine (unordered_map handles them; a false-positive bucket collision only
+		// costs an extra distance check, never a wrong weld, since every candidate
+		// found is still distance-checked against `eps` below).
+		auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::int64_t {
+			return x * 73856093LL ^ y * 19349663LL ^ z * 83492791LL;
+		};
+
+		std::unordered_map<std::int64_t, std::vector<unsigned int>> grid;
+		grid.reserve( points.size() );
+		std::vector<Point3> weldedPos;
+		weldedPos.reserve( points.size() );
+		const Scalar epsSq = eps * eps;
+
+		for( std::size_t i = 0; i < points.size(); ++i ) {
+			const Point3& p = points[i];
+			const std::int64_t cx = cellCoord( p.x );
+			const std::int64_t cy = cellCoord( p.y );
+			const std::int64_t cz = cellCoord( p.z );
+
+			unsigned int foundId = 0xFFFFFFFFu;
+			for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
+				for( int dy = -1; dy <= 1 && foundId == 0xFFFFFFFFu; ++dy ) {
+					for( int dx = -1; dx <= 1 && foundId == 0xFFFFFFFFu; ++dx ) {
+						const std::int64_t key = cellKey( cx + dx, cy + dy, cz + dz );
+						std::unordered_map<std::int64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
+						if( git == grid.end() ) { continue; }
+						const std::vector<unsigned int>& candidates = git->second;
+						for( std::size_t c = 0; c < candidates.size(); ++c ) {
+							const unsigned int cand = candidates[c];
+							const Vector3 d = Vector3Ops::mkVector3( weldedPos[cand], p );
+							if( Vector3Ops::SquaredModulus( d ) <= epsSq ) {
+								foundId = cand;
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if( foundId == 0xFFFFFFFFu ) {
+				foundId = (unsigned int)weldedPos.size();
+				weldedPos.push_back( p );
+				grid[ cellKey( cx, cy, cz ) ].push_back( foundId );
+			}
+			outWeldedId[i] = foundId;
+		}
+	}
+}
+
+//! DL-31/DL-143.  Every edge of `ptr_polygons`, keyed by its two
+//! ENDPOINT WELDED-VERTEX ids (undirected -- (i,j) and (j,i) are the
+//! same edge), must occur in exactly two triangles for the mesh to be a
+//! closed 2-manifold with no boundary.
+//!
+//! DL-143: this USED to key edges by the raw POSITION-INDEX pair
+//! (`PointerTriangle::pVertices[k]`'s offset into `pPoints`), which is
+//! only the same thing as "the same vertex" when nothing in the
+//! authoring/import/tessellation pipeline ever emits two distinct
+//! position-array slots for the same physical corner.  Almost nothing
+//! upstream honours that assumption: `GLTFSceneImporter::
+//! BuildGeometryFromPrimitive` does one `AddVertex` per glTF vertex
+//! (glTF's own attribute-tuple dedup granularity, which still splits a
+//! shared corner wherever its normal or UV differs across faces -- any
+//! hard edge or UV seam), and every `TessellateToMesh` producer in this
+//! engine (this class's own pass-through flattens each triangle corner
+//! to its own independent tuple by DESIGN -- see that method's comment
+//! -- and `SphereGeometry`/`BoxGeometry`'s generative tessellators give
+//! each face/pole its own vertex grid with no cross-seam sharing) does
+//! the same.  Keyed by raw index, a mesh built by any of those paths
+//! reads as an OPEN SHEET regardless of whether it is actually closed --
+//! a hand-welded mesh (a position shared by every triangle that touches
+//! it, one array slot per physical corner) was the only shape that ever
+//! passed.  Fixed by welding corners to a shared id by POSITION,
+//! `WeldVertexPositions` below, before building the edge map -- the
+//! textbook fix, and the one every other closed-mesh consumer in this
+//! codebase (`GeometryUtilities`, etc.) already expects of its inputs.
+//! `ptr_polygons`'s pointers, not `indexedtris`'s indices, are still the
+//! source of positions, because `DoneIndexedTriangles` has already freed
+//! `indexedtris` by the time this runs (see its own comment).
 //!
 //! A CHEAP NECESSARY CONDITION, not a full manifold/orientability
 //! certificate: two triangles sharing an edge with the SAME winding
@@ -623,6 +743,9 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	if( ptr_polygons.empty() || pPoints.empty() ) {
 		return;
 	}
+
+	std::vector<unsigned int> weldedId;
+	WeldVertexPositions( pPoints, weldedId );
 
 	const Point3* const pBase = &pPoints[0];
 	std::unordered_map<std::uint64_t, int> edgeCounts;
@@ -639,7 +762,10 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 				// consistency failure, not an authoring one.
 				return;
 			}
-			idx[k] = (unsigned int)off;
+			// DL-143: the WELDED id, not the raw position-array offset --
+			// see the function's own comment for why these differ on
+			// almost every imported/tessellated mesh.
+			idx[k] = weldedId[(std::size_t)off];
 		}
 		bool degenerate = false;
 		for( int k = 0; k < 3; ++k ) {
