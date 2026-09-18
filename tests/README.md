@@ -534,7 +534,7 @@ SPF/BRDF pair, printing `IsotropicPhongSPF` and
 `CookTorranceSPF`/`GGXSPF` at 0.990–1.006 (immune; single-emit, so
 their per-draw spread of [0.006, 37] is the internal-selection
 estimator's and not a defect), and BOTH Ward SPFs at up to 6.07x —
-**DL-177**.  ~11 s.
+**DL-177**.  ~6 s (measured on this machine, 4x logical cores).
 
 `GGXDiffuseRenderTest` loads `ggx_diffuse_transmission.RISEscene` and seeds each
 render immediately before rasterization. Its 384×128, 64-sample direct-light
