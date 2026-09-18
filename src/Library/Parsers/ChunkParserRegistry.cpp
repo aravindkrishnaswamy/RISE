@@ -4639,6 +4639,17 @@ namespace RISE
 					std::string tangentRotScalar = bag.GetString( "tangent_rotation_scalar", "none" );
 					const std::string& effectiveTangentRot =
 						( tangentRotScalar != "none" ) ? tangentRotScalar : tangentRot;
+					// Review round-2 P3: both fields authored is not an error
+					// (tangent_rotation_scalar deterministically wins) but is
+					// worth flagging -- an author who set the legacy field
+					// and then added the new one (or vice versa) most likely
+					// meant to replace it, not layer a silently-ignored value.
+					if( tangentRotScalar != "none" && tangentRot != "none" ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"ggx_material `%s`: both `tangent_rotation` (`%s`) and `tangent_rotation_scalar` "
+							"(`%s`) are set -- `tangent_rotation_scalar` wins and `tangent_rotation` is ignored.",
+							name.c_str(), tangentRot.c_str(), tangentRotScalar.c_str() );
+					}
 
 					if( emissive == "none" ) {
 						return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(),

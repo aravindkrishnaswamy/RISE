@@ -222,8 +222,16 @@ namespace RISE
 			// `.v[0]`.  Checked BEFORE the generic scalar_painter rejection
 			// below so the diagnostic there stays accurate for every
 			// ordinary Color-pipe parameter.
+			//
+			// `pd.semantics.requireSingle` gates the per-channel rejection
+			// here exactly the way CheckScalarPipe's own per-channel check
+			// does (review round 2, P3): every current colorAlsoAcceptsScalar
+			// parameter also sets requireSingle=true, but consulting the
+			// field rather than hard-coding the assumption keeps this branch
+			// meaningful (not a dead flag) if a future colorAlsoAcceptsScalar
+			// parameter genuinely accepts a per-channel triple.
 			if( candidateKeyword == "scalar_painter" && pd.semantics.colorAlsoAcceptsScalar ) {
-				if( candidateIsPerChannelValues ) {
+				if( pd.semantics.requireSingle && candidateIsPerChannelValues ) {
 					return { false, Fmt(
 						"%s: parameter `%s` is bound to per-channel scalar_painter `%s`, but this "
 						"slot reads a single angle -- author a single-valued scalar_painter.",

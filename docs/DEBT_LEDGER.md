@@ -1564,7 +1564,17 @@ written — the `scalar_painter { expression ... }` VM has no builtin to
 sample an EXTERNAL painter as a live per-point input (only named
 constants/sub-expressions over the fixed 3D context), so `rotR`/`rotG`
 could not actually be wired into an `expression` body the way the sketch
-implied. Built instead from primitives that already exist end to end:
+implied. **This is the exact same gap DL-25 tracks** (Phase 1 cannot
+darken a textured substrate for the identical reason: no painter-sampling
+builtin in the expression VM), independently confirmed here rather than
+assumed; DL-25 is being closed on the concurrent `debt-dl25` slice, which
+would supply the missing builtin this row's sketch actually needed — a
+future re-read of this closure should check whether `debt-dl25`'s builtin
+makes the `Atan2ScalarPainter`/`AddAtan2ScalarPainter` machinery below
+redundant (it would not retroactively remove it — both are legitimate,
+independently-useful primitives — but a future glTF-import feature
+needing a THIRD painter-combining op might prefer the expression-VM route
+once it exists). Built instead from primitives that already exist end to end:
 two `Job::AddPainterChannelScalarPainter` reads of the anisotropy
 texture's R/G channels (`scale 2 bias -1`, mapping `[0,1] -> [-1,1]`)
 combined through a **new** `Atan2ScalarPainter` composition operator

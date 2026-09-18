@@ -4737,7 +4737,8 @@ yet known (§10.1).
     ... }`'s VM has no builtin to sample an EXTERNAL painter as a live
     per-point input (only named constants/sub-expressions over the fixed 3D
     context), so `rotR`/`rotG` could not be wired into an `expression` body
-    the way the sketch implied. Built instead from two
+    the way the sketch implied — the identical gap DL-25 tracks (also being
+    closed, on the concurrent `debt-dl25` slice). Built instead from two
     `Job::AddPainterChannelScalarPainter` reads of the texture's R/G channels
     (`scale 2 bias -1`) combined through a new `Atan2ScalarPainter`
     composition operator, exposed via a new tail-appended IJob virtual

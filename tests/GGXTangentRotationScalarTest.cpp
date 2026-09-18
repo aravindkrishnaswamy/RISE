@@ -29,6 +29,16 @@
 //       (incoming, outgoing) direction pair that only degenerates to
 //       the same answer when the tangent frame is actually rotated
 //       identically by both pipes.
+//    5. Review round 2 (P2): the per-channel-varying-scalar-painter
+//       REJECTION branch in `ResolveRotationPainterDual` (Job.cpp) had
+//       zero coverage.  A `scalar_painter { values a b c }` (distinct
+//       per-channel values) bound to `tangent_rotation_scalar`, to the
+//       legacy `tangent_rotation`, and to
+//       `pbr_metallic_roughness_material.anisotropy_rotation` (the DL-17
+//       sibling widened to the same helper) must all REFUSE to parse --
+//       this slot reads one angle, `.v[0]`, and a per-channel triple
+//       would silently pick "the red channel" rather than what the
+//       author actually authored.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -328,11 +338,95 @@ static void TestRenderParity()
 	if( jobS ) jobS->release();
 }
 
+//! Test 5 (review round 2, P2 MONEY): the per-channel-varying-scalar-
+//! painter REJECTION branch in `ResolveRotationPainterDual` (Job.cpp) --
+//! this slot reads a single angle (`.v[0]`), so a `scalar_painter` whose
+//! three channels differ must be refused, not silently narrowed to one
+//! channel.  Covers all three call sites that route through the shared
+//! helper: ggx_material.tangent_rotation_scalar (the new Scalar-pipe
+//! slot), ggx_material.tangent_rotation (the legacy Color-pipe slot,
+//! which DL-16 also widened to accept -- and reject -- a scalar_painter),
+//! and pbr_metallic_roughness_material.anisotropy_rotation (the DL-17
+//! sibling).
+static void TestPerChannelRejection()
+{
+	std::printf( "-- DL-16/DL-17 per-channel scalar_painter REJECTION (review round 2, P2) --\n" );
+
+	// 5a: tangent_rotation_scalar (new Scalar-pipe slot).
+	{
+		std::ostringstream o;
+		o << CommonPreamble();
+		o << "scalar_painter\n{\n\tname\tpc_rot\n\tvalues\t0.1 0.2 0.3\n}\n";
+		o << "ggx_material\n{\n\tname\tbase5a\n\trd\tgrey\n\trs\tf0\n"
+		     "\talphax\t0.05\n\talphay\t0.30\n\tfresnel_mode\tschlick_f0\n"
+		     "\ttangent_rotation_scalar\tpc_rot\n}\n";
+		Job* job = LoadScene( o.str(), "perchan_scalar" );
+		Check( job == nullptr,
+			"5a MONEY: a per-channel scalar_painter (values 0.1 0.2 0.3) bound to "
+			"tangent_rotation_scalar is REFUSED, not silently narrowed to one channel" );
+		if( job ) job->release();
+	}
+
+	// 5b: legacy tangent_rotation (Color pipe, but DL-16 widened its real
+	// resolution to also try the Scalar pipe first) -- the SAME per-channel
+	// painter bound to the OLD field must be refused identically.
+	{
+		std::ostringstream o;
+		o << CommonPreamble();
+		o << "scalar_painter\n{\n\tname\tpc_rot_legacy\n\tvalues\t0.1 0.2 0.3\n}\n";
+		o << "ggx_material\n{\n\tname\tbase5b\n\trd\tgrey\n\trs\tf0\n"
+		     "\talphax\t0.05\n\talphay\t0.30\n\tfresnel_mode\tschlick_f0\n"
+		     "\ttangent_rotation\tpc_rot_legacy\n}\n";
+		Job* job = LoadScene( o.str(), "perchan_legacy" );
+		Check( job == nullptr,
+			"5b: the SAME per-channel scalar_painter bound to the LEGACY tangent_rotation "
+			"field is also REFUSED (ResolveRotationPainterDual is one helper for both fields)" );
+		if( job ) job->release();
+	}
+
+	// 5c: pbr_metallic_roughness_material.anisotropy_rotation (the DL-17
+	// sibling widened to the same ResolveRotationPainterDual helper).
+	{
+		std::ostringstream o;
+		o << CommonPreamble();
+		o << "scalar_painter\n{\n\tname\tpc_rot_pbr\n\tvalues\t0.1 0.2 0.3\n}\n";
+		o << "pbr_metallic_roughness_material\n{\n\tname\tpbr5c\n\tbase_color\tgrey\n"
+		     "\tmetallic\t0.0\n\troughness\t0.3\n"
+		     "\tanisotropy_factor\t0.6\n\tanisotropy_rotation\tpc_rot_pbr\n}\n";
+		Job* job = LoadScene( o.str(), "perchan_pbr" );
+		Check( job == nullptr,
+			"5c MONEY: a per-channel scalar_painter bound to "
+			"pbr_metallic_roughness_material.anisotropy_rotation is REFUSED (same shared "
+			"helper as ggx_material.tangent_rotation_scalar)" );
+		if( job ) job->release();
+	}
+
+	// Sanity companion: the SAME per-channel painter's single-valued sibling
+	// (equal r=g=b) is a legal, single-valued scalar_painter and must NOT be
+	// refused -- proves 5a/5b/5c are testing per-channel-ness specifically,
+	// not merely "a scalar_painter was named".
+	{
+		std::ostringstream o;
+		o << CommonPreamble();
+		o << "scalar_painter\n{\n\tname\tsingle_rot\n\tvalues\t0.4 0.4 0.4\n}\n";
+		o << "ggx_material\n{\n\tname\tbase5d\n\trd\tgrey\n\trs\tf0\n"
+		     "\talphax\t0.05\n\talphay\t0.30\n\tfresnel_mode\tschlick_f0\n"
+		     "\ttangent_rotation_scalar\tsingle_rot\n}\n";
+		Job* job = LoadScene( o.str(), "perchan_control" );
+		Check( job != nullptr,
+			"5d control: a scalar_painter whose 3 channels are EQUAL (0.4 0.4 0.4) is NOT "
+			"per-channel-varying and parses fine -- confirms 5a/5b/5c reject on variation, "
+			"not on the `values` form alone" );
+		if( job ) job->release();
+	}
+}
+
 int main()
 {
 	std::printf( "===== DL-16 GGX tangent_rotation_scalar test =====\n" );
 	TestSharedPainterAndPreference();
 	TestRenderParity();
+	TestPerChannelRejection();
 	std::printf( "\n%d passed, %d failed\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
 }
