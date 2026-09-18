@@ -1633,6 +1633,110 @@ int main()
     std::cout << std::endl;
 
     // ================================================================
+    //  Part F (DL-112 review P1-1/P1-2): TILTED translucent entry
+    //  front-reflection lobe -- SPF sampler vs BSDF evaluator.
+    //
+    //  Every other translucent row in this file (Part C's furnace, Part
+    //  A's sanity) uses `MakeIntersection`, whose shading normal IS the
+    //  geometric normal, so `P(valid) == 1` and the whole horizon-clip
+    //  mechanism is invisible to it.  DL-112 renormalized the SAMPLER
+    //  and `Pdf()` by `1/P(valid)`; this row is what proves
+    //  `TranslucentBSDF::value` was renormalized WITH them.
+    //
+    //  The invariant is the one the two techniques must agree on:
+    //  over the SPF's own draws,
+    //
+    //      E[ kray ]  ==  E[ value(wo, ri) * |cos(wo, vNormal)| / pdf ]
+    //
+    //  -- the left side is what a BSDF-sampled continuation carries,
+    //  the right side is what PT's NEE (`LightSampler.cpp`, which
+    //  multiplies `brdf.value` by `Dot(vToLight, ri.vNormal)`) and
+    //  BDPT/VCM's connections pay for the same direction.  A ratio != 1
+    //  means two estimators of one integral disagree, and any MIS of
+    //  them is biased (the DL-74 lesson).
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part F: Tilted translucent front lobe (SPF vs BSDF)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    {
+        const double tiltsDeg[] = { 0.0, 30.0, 45.0, 60.0, 75.0, 89.0 };
+        const int    numTilts   = 6;
+        const int    kTrials    = 40000;
+
+        for( int t = 0; t < numTilts; t++ )
+        {
+            const double tiltRad = tiltsDeg[t] * PI / 180.0;
+            const Vector3 n( sin(tiltRad), 0, cos(tiltRad) );
+
+            // MakeClosedEntry's shape (TransmissionPushGateTest): an
+            // analytic primitive struck from outside, true outward +Z,
+            // shading normal tilted in the XZ plane.
+            Ray inRay( Point3(0,0,2), Vector3(0,0,-1) );
+            RasterizerState rs = {0, 0};
+            RayIntersectionGeometric ri( inRay, rs );
+            ri.bHit = true;
+            ri.range = 2.0;
+            ri.ptIntersection = Point3(0,0,0);
+            ri.vNormal = n;
+            ri.onb.CreateFromW( n );
+            ri.vGeomNormal = Vector3(0,0,1);
+            ri.ptCoord = Point2(0.5, 0.5);
+
+            RandomNumberGenerator rng( 4242 );
+            Implementation::IndependentSampler sampler( rng );
+            IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+            double sumKray = 0, sumBsdf = 0;
+            int emitted = 0;
+            for( int i = 0; i < kTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                translucentSPF->Scatter( ri, sampler, scattered, iorStack );
+
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    const ScatteredRay& s = scattered[j];
+                    // The entry front-reflection lobe is the only
+                    // eRayDiffuse this branch emits (the transmission is
+                    // eRayTranslucent).
+                    if( s.type != ScatteredRay::eRayDiffuse ) continue;
+                    const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                    const double cosO = fabs( Vector3Ops::Dot( wo, ri.vNormal ) );
+                    if( s.pdf <= 0 ) continue;
+                    sumKray += ColorMath::MaxValue( s.kray );
+                    sumBsdf += ColorMath::MaxValue( translucentBSDF->value( wo, ri ) ) * cosO / s.pdf;
+                    emitted++;
+                }
+            }
+
+            const double meanKray = sumKray / (double)kTrials;
+            const double meanBsdf = sumBsdf / (double)kTrials;
+            const double ratio    = ( meanBsdf > 0 ) ? meanKray / meanBsdf : 0.0;
+            // The closed form the pre-fix mismatch took, printed so a
+            // regression is self-diagnosing: 1/P(valid), P = (1+cos phi)/2.
+            const double oneOverP = 2.0 / ( 1.0 + cos(tiltRad) );
+
+            std::cout << "  tilt " << std::setprecision(0) << std::fixed << tiltsDeg[t] << " deg:"
+                      << "  E[kray]=" << std::setprecision(5) << meanKray
+                      << "  E[value*cos/pdf]=" << meanBsdf
+                      << "  ratio=" << ratio
+                      << "  (1/P(valid)=" << oneOverP << ", emitted=" << emitted << "/" << kTrials << ")";
+
+            const bool ok = ( emitted == kTrials ) && ( fabs( ratio - 1.0 ) < 0.002 );
+            if( ok )
+                std::cout << " -> PASS" << std::endl;
+            else
+            {
+                std::cout << " -> FAIL" << std::endl;
+                numFailed++;
+            }
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
     //  Summary
     // ================================================================
 
