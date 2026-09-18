@@ -142,21 +142,35 @@ namespace RISE
 		//! DL-165 (docs/DEBT_LEDGER.md): true iff this painter's `GetColorNM`
 		//! answers from a genuine, independently-AUTHORED spectral power
 		//! distribution rather than a Jakob-Hanika uplift of an RGB triple --
-		//! today exactly `SpectralColorPainter` (`spectral_painter`),
-		//! `BlackBodyPainter` (`blackbody_painter`), and
-		//! `Function1DSpectralPainter` (a `piecewise_linear_function`'s
+		//! at the LEAF level exactly `SpectralColorPainter`
+		//! (`spectral_painter`), `BlackBodyPainter` (`blackbody_painter`),
+		//! and `Function1DSpectralPainter` (a `piecewise_linear_function`'s
 		//! dual-registration into the colour-painter manager; its own
 		//! `GetColor` returns pure BLACK -- the RGB view is not merely
-		//! lossy for this one, it is empty).
+		//! lossy for this one, it is empty) -- and, since DL-203, true
+		//! TRANSITIVELY through any composite/wrapping painter whose own
+		//! `GetColorNM` forwards to a child's REAL `GetColorNM` (not just
+		//! its `GetColor`) and that child is itself spectrally defined:
+		//! `BlendPainter`/`CheckerPainter`/`MappingPainter`/every noise-family
+		//! painter/etc. all combine or select among their children's TRUE
+		//! spectra at every wavelength, so a spectral leaf anywhere inside
+		//! one of these still reaches `GetColorNM` genuinely -- the override
+		//! on each such class is a simple OR over its own children's
+		//! `IsSpectrallyDefined()`.
 		//!
-		//! Default FALSE for every RGB-defined painter, INCLUDING one that
-		//! overrides `GetRadianceNM` for an unrelated reason: a cheap-path
-		//! cache of the SAME RGB->spectrum uplift (`UniformColorPainter`,
-		//! `TexturePainter`), or a forward to a selected/blended child
-		//! (`CheckerPainter`, `MappingPainter`, `BlendPainter`, ...) --
-		//! those all still answer `GetColorNM` via the ordinary uplift, so
-		//! reading them through `GetColor` and re-uplifting elsewhere loses
-		//! nothing a direct bind would not also lose.
+		//! Default FALSE for every RGB-defined LEAF painter, and for a
+		//! wrapper/adapter whose OWN `GetColorNM` does NOT forward a child's
+		//! true spectrum even when that child is spectral -- e.g.
+		//! `ChannelPainter` (deliberately reads only `GetColor()` and
+		//! broadcasts one channel at every wavelength, because a channel
+		//! value like roughness/metallic has no spectral meaning to begin
+		//! with) or `RampPainter` (its driving `input` supplies only a
+		//! scalar position along the ramp via `GetColor`/`GetAlpha`; the
+		//! ramp's own colours are independently-authored RGB stops, never a
+		//! forwarded child spectrum) -- for these, reading the child through
+		//! `GetColor` and re-uplifting elsewhere loses nothing a direct bind
+		//! would not also lose, so they correctly keep the base `false` with
+		//! NO override.
 		//!
 		//! Consulted ONLY by the expression VM's `sample(name)` builtin
 		//! (ExpressionPainter.h's `BuildExpressionProgramFromChunkFields`,
@@ -166,7 +180,9 @@ namespace RISE
 		//! DIFFERENT curve through whatever spectral consumer the
 		//! expression feeds. Not consulted anywhere else; a painter with no
 		//! opinion (the default) is assumed RGB-defined, which is correct
-		//! for every painter kind in this codebase except the three above.
+		//! for every LEAF painter kind in this codebase except the three
+		//! above, and for every composite kind except the ones that override
+		//! this method to recurse.
 		virtual bool IsSpectrallyDefined() const { return false; }
 	};
 

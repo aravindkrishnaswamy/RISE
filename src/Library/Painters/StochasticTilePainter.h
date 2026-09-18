@@ -182,6 +182,11 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
 			void SetIntermediateValue( const IKeyframeParameter& ) {}
 			void RegenerateData() {}
+			//! DL-203 (docs/DEBT_LEDGER.md): this class forwards to `source`'s own
+			//! TRUE `GetColorNM` (see this class's own GetColorNM), so this
+			//! recurses -- see IPainter::IsSpectrallyDefined's own doc comment
+			//! for the full rationale and which composites do NOT recurse.
+			bool IsSpectrallyDefined() const { return source.IsSpectrallyDefined(); }
 		};
 	}
 }
