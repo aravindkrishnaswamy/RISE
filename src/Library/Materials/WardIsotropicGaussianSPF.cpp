@@ -402,10 +402,11 @@ static Scalar WardIsoDiffuseSelectCoefficient(
 	// unit by construction, which lets the inner loop below drop the
 	// per-node `Normalize` (a sqrt and three divides) and read the two
 	// quantities it needs off closed forms:
-	//     (h . wo)  ==  (h . wi)          (reflection about a unit h)
-	//     (n . wo)  ==  -(n . d) + 2 (h.wi) (n . h)
+	//     (h . wo)  ==  (h . wi)            (reflection about a unit h)
+	//     (n . wo)  ==  (n . d) + 2 (h.wi) (n . h)
 	// Both are EXACT for a unit `d`, not approximations, and the two
-	// accept gates only need signs.
+	// accept gates only need signs.  `(n . d)` is exactly `-nvView`
+	// below, since `nvView` is `(n . wi)` and `wi == -d`.
 	const Vector3  dHat = Vector3Ops::Normalize( ri.ray.Dir() );
 	const Scalar   nvView = -Vector3Ops::Dot( ew, dHat );
 	const Scalar   dDotG  = Vector3Ops::Dot( dHat, geomN );

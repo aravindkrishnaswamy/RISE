@@ -447,10 +447,13 @@ standard errors.  The `ward region` rows are the 45x45-pixel box
 * **The direction is DOWN, and that is what the model says it should
   be.**  Pre-fix the specular lobe carried `kray_S = Rs` — a constant.
   The true `int f_S cos dw` is BELOW `Rs` everywhere except at extreme
-  grazing (§G: at `Rs = 0.5` and alpha 0.2/0.3 the specular term's own
-  integral is 0.42-0.48 at 0-30 degrees), so a Ward surface seen at
-  ordinary angles was over-delivering, and every statistically
-  resolvable row here darkens.
+  grazing — §G measures it at `Rs = 0.5` as 0.4855 (0 deg) / 0.4208
+  (30 deg) / 0.2445 (60 deg) for isotropic alpha 0.1 and 0.3969 /
+  0.3455 / 0.2107 for alpha 0.3 — so a Ward surface seen at ordinary
+  angles was over-delivering, and every statistically resolvable row
+  here darkens.  §5.1's furnace rows say the same thing from the other
+  side: the MC arm was pinned at 0.79-0.80 (the constant `Rd + Rs`)
+  against a quadrature of 0.63-0.73.
 * `kaleidoscope_atrium` is the DIRECT-ONLY row that moves: −0.803 % at
   t = −92.6.  Its Ward surface is shaded entirely through NEE, which
   evaluates the UNCHANGED `value()` — what moved is the MIS weight that
