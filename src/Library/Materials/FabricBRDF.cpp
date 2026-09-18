@@ -564,12 +564,16 @@ RISEPel FabricBRDF::albedo( const RayIntersectionGeometric& ri ) const
 // -- it now bakes the true bihemispherical A1(sigma)/A2(sigma)
 // integrals and measures under 0.01 % end-to-end (see
 // OrenNayarBRDF.cpp's hemisphericalAlbedo and
-// tests/OrenNayarHemisphericalAlbedoTest.cpp).  GGX's
-// `hemisphericalAlbedo` remains a SEPARATE, still-open estimate that
-// runs high at grazing.  Gate 5b prints both substrate errors
-// separately for exactly this reason: no change here can fix the GGX
-// one, and `coated_material`'s recycling denominator already inherits
-// that (GGX-only, now) debt.
+// tests/OrenNayarHemisphericalAlbedoTest.cpp).  GGX's own
+// `hemisphericalAlbedo` was a SEPARATE estimator with the same class
+// of bug (a flat, alpha-independent macro-Fresnel average, running up
+// to +7.7% high at rough/grazing configurations) -- CLOSED as DL-123
+// 2026-09-17: it now bakes the true bihemispherical single-scatter
+// (moment-matched fixed-node quadrature, tools/GGXSpecularBihemisphericalGen.cpp)
+// plus multiscatter (falls out algebraically from value()'s own f_ms
+// separability, no new baking needed) integral -- see GGXBRDF.cpp's
+// own DL-123 comment and docs/DL123_GGX_HEMISPHERICAL_ALBEDO.md.  Gate
+// 5b's GGX rows drop from 4.2-7.7% to 0.007-0.026%.
 //
 // A TRANSMISSIVE SUBSTRATE NEEDS NOTHING EXTRA HERE (R8 P1.1), and the
 // reason is on the substrate's side rather than ours:
