@@ -102,7 +102,7 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-06 | IMPROVEMENTS.md §"VCM env-IBL" (Session 9-13) / CLAUDE.md "Env-IBL deficit" entry | VCM env+mesh strict-tolerance residual (env-S0 <-> env-NEE MIS partition violation) — Session 13 explicitly decided to STOP and accept the disc-area baseline rather than fix it; `plank_closeup`'s VCM 0.55x (RENDERING_INTEGRATORS.md debt 28) is the same known bias class, not a new bug | OPEN-confirmed (deprioritized, not fixed) | `docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md` "Session 13 outcome"; `IMPROVEMENTS.md` lines ~1030-1046; still true in this tree — no VCM env-branch SA-MIS migration commit exists (`git log --oneline -- src/Library/Shaders/VCMIntegrator.cpp` shows no such commit after Session 13) | L | physics-bias | user-visible |
 | ~~DL-07~~ | ~~CLOTH_FABRIC_DESIGN.md §15 item 17 / WETNESS_COAT_DESIGN.md §12 item 13~~ | ~~`OrenNayarBRDF::hemisphericalAlbedo` over-estimates (measured ~12.6% high at roughness 0.5, ~25.6% at 1.0), which over-amplifies `fabric_material`'s energy-subtraction and `coated_material`'s Saunderson recycling denominator; not fixable in either wrapper, needs its own bake~~ | CLOSED 2026-09-14 | `ed8a7f4c`: red-proof `tests/OrenNayarHemisphericalAlbedoTest.cpp` (new) — 11/47 failures on the unfixed library (e.g. sigma=1.0 bihemispherical: reported 1.00000 vs an independent brute-force double-hemisphere quadrature of the real BRDF 0.79999, |diff|=0.20001; per-channel-roughness collapsed to one value). Fix: `OrenNayarBRDF::hemisphericalAlbedo{,NM}` now compute `rho*A1(sigma) + rho^2*A2(sigma)`, where A1/A2 are the exact bihemispherical integrals of `ComputeFactor`'s own L1/L2 terms, baked as two 64-node 1-D tables (`tools/OrenNayarHemisphericalAlbedoGen.cpp`, power-2-warped sigma axis, midpoint quadrature converged to 6 significant figures) and evaluated once per RGB channel / NM wavelength (the pre-fix code, and a naive fix, would have collapsed a per-channel roughness `RGBScalarPainter` to one value, disagreeing with `value()`'s own per-channel shape). Post-fix `OrenNayarHemisphericalAlbedoTest`: 47/0 (residual <=0.0002 absolute vs an independent quadrature over the real BRDF, resolution different from the generator's own bake). The pre-fix header comment's own quoted directional-hemispherical table (0/30/60/80 deg at fixed roughness) does NOT reproduce under an independent brute-force integration of this implementation (measured 0.8963/0.7745 at roughness 0.5/1.0, 0 deg, where the comment stated 0.8740/0.7444) — the bias direction and rough size were right, the exact table was not; the fix does not depend on it. Downstream: `FabricMaterialChunkTest` gate 5(b) Oren-Nayar rows drop from an inherited ~17.8% high to 0.002-0.005%; `LayeredWhiteFurnaceTest` 0/57, `FabricRenderTest` 57/57, `WeaveMaterialChunkTest` 296/0, `AgentAddWetnessTest` 210/0, `SPFBSDFConsistencyTest`/`SPFPdfConsistencyTest`/`SheenDirectionalAlbedoTest`/`GGXFilmTransmissionRangeTest` all unchanged and green. GGX's own `hemisphericalAlbedo` (now gate 5(b)'s dominant residual, up to +7.73% at alpha=0.5) is a SEPARATE, unrelated estimator and is filed as **DL-123**, not fixed here. See [CLOTH_FABRIC_DESIGN.md §15 item 17](CLOTH_FABRIC_DESIGN.md) and [WETNESS_COAT_DESIGN.md §12 item 13](WETNESS_COAT_DESIGN.md), both struck. | L | physics-bias | user-visible (rough Oren-Nayar under fabric/coat) |
 | DL-123 | (new; found auditing DL-07's sibling estimator, no source-doc heading) | `GGXBRDF::hemisphericalAlbedo{,NM}` (`mean + diffuse*Transmission(mean,mean)`, `GGXInterfaceFresnel::Mean()`) over-estimates at grazing/rough configurations — measured through `fabric_material`'s gate 5(b) brute-force quadrature at GGX alpha=0.5, F0=0.04: +7.730% substrate-level (was the SAME order as the now-fixed Oren-Nayar bias; unlike DL-07 this is NOT "return rho verbatim" — `Mean()` is a genuine hemispherical-Fresnel-average estimator, a structurally different mechanism, so it is a distinct row rather than a DL-07 sibling-pattern fix) | OPEN-confirmed | `GGXBRDF.cpp:626-640` (`hemisphericalAlbedo`/`hemisphericalAlbedoNM`); `GGXBRDF.cpp:130` (`GGXInterfaceFresnel::Mean`); measured this slice via `tests/FabricMaterialChunkTest.cpp`'s gate 5(b) "substr%" column, GGX alpha=0.2/0.5 rows, both m=0.5/1.0, ranging +4.188% to +7.730% (GGX alpha=0.5 m=1.0 is the worst row) | M | physics-bias | user-visible (rough/grazing `ggx_material` under `fabric_material`'s energy-subtraction and `coated_material`'s Saunderson recycling denominator, same consumer shape DL-07 fixed for Oren-Nayar) |
-| DL-08 | RENDERING_INTEGRATORS.md debt 29 | `PSSMLTSampler`'s 49-lane stream layout is exceeded by `BDPTIntegrator`'s eye-subpath walk (`StartStream(16u+depth)`) at eye/volume depth >= 32, aliasing MLT's own film/lens/aperture lanes on stream 48 | OPEN-confirmed | `BDPTIntegrator.cpp:1732`; `PSSMLTSampler.cpp:59,75,146-147` (`kNumStreams` default 49, `idx = streamIndex + kNumStreams*sampleIndex`), read directly this sweep; `maxVolumeBounce` default 64 reaches depth 32 in ordinary deep-volume scenes | L | physics-bias | user-visible (MLT + deep volume/eye recursion) |
+| ~~DL-08~~ | ~~RENDERING_INTEGRATORS.md debt 29~~ | ~~`PSSMLTSampler`'s 49-lane stream layout is exceeded by `BDPTIntegrator`'s eye-subpath walk (`StartStream(16u+depth)`) at eye/volume depth >= 32, aliasing MLT's own film/lens/aperture lanes on stream 48~~ | CLOSED 2026-09-17 | `d7ebd453`: red-proof `tests/PSSMLTStreamAliasingTest.cpp` Test F (added `60994864`) — FAIL on the unfixed library (`e290fc64`): "eye-walk stream 48 (16 + eye depth 32) and MLT's reserved stream 48 produced 6/6 identical values". Fix: `PSSMLTSampler::kDefaultNumStreams` raised 49 -> 4096; `BDPTCameraUtilities::kPSSMLTFilmLensApertureStream` (2048, strictly above the new `kMaxBdptWalkStreamUnderPSSMLT` == 1040) replaces the literal 48 in `MLTRasterizer.cpp`/`MLTSpectralRasterizer.cpp`; `Get1D()` now asserts `streamIndex < kNumStreams` at the point `idx` is computed. Post-fix Test F: independent, 0 collisions across eye-walk streams 32..130. Sibling audit (SobolSampler/ZSobolSampler, IndependentSampler, legacy PixelBased rasterizers, photon tracers) found no other sampler with the same fixed-dense-lane-table pattern. Gates unaffected (none drive a `PSSMLTSampler`): `SobolDimensionBudgetTest`, `SourceHygieneTest` 165/0, `CstDeriveGoldenTest` 452/0 DRIFT, `BDPTStrategyBalanceTest` 66/0, `VCMStrategyBalanceTest` 55/0, `EnvLightBalanceTest` 116/0, `RefractiveRadianceScalingTest` 38/0. See [DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md). | L | physics-bias | user-visible (MLT + deep volume/eye recursion) |
 | DL-38 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: independent residuals | Translucent exit weights lose their stateful extinction/scattering factors when reevaluated through the BSDF, including HWSS companions | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentSPF` has no `EvaluateKrayNM` override; PT HWSS companions use `TranslucentBSDF::valueNM*cos/pdf`, whose data omit extinction/scattering/inside state. `BDPTIntegrator::GenerateEyeSubpathImpl` / `GenerateLightSubpathImpl` reevaluate non-delta BSDF weights; VCM/MLT share these generators. | L | physics-bias | user-visible (translucent bidirectional/HWSS transport) |
 | DL-41 | DL02_TRANSLUCENT_EXIT_DENSITY.md: independent residual | Translucent Pdf/PdfNM omit Phong lobes and selection probabilities; reverse/NEE queries lack the full stateful mixture contract | OPEN-confirmed (static evidence; red-proof pending) | `TranslucentSPF::Pdf` returns only diffuse cosine; BDPT eye/light forward densities include `selectProb`, while reverse `PathValueOps::EvalPdfAtVertex` calls Pdf/PdfNM directly. `LightSampler` area/environment RGB/NM NEE uses empty `defaultIOR`. | L | physics-bias | user-visible (translucent mixed-lobe MIS) |
 | DL-47 | DL03_GUIDED_IOR_CONTINUATION.md: guide-created entry residual | A guide can replace translucent entry reflection with transmission without generating the missing entry membership | OPEN-confirmed (static evidence; red-proof pending) | TranslucentSPF entry reflection is diffuse/non-delta with null ior_stack. TranslucentBSDF permits cross-side transmission; a positive guide PDF makes one-sample PT/BDPT accept it, but the null selected-stack case retains absent membership. The next physical exit is classified as entry. This absent-state producer contract predates DL-03. | L | physics-bias | user-visible (guided translucent entry from a reflection proposal) |
@@ -847,6 +847,26 @@ slice's own snapshot: 2 rows closed (DL-07, DL-11), 1 row opened
 (DL-123), net rows +1. This slice's branch HEAD does not update the
 "Authoritative totals on `master`" line above; that recount happens at
 merge.
+
+**2026-09-17 (debt-dl08 slice, branched from `master` `e290fc64`):**
+DL-08 CLOSED (`PSSMLTSampler`'s 49-lane layout aliased BDPT's own eye
+walk at eye depth 32 under `mlt_rasterizer`/`mlt_spectral_rasterizer`
+— see the table row above and
+[DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md) for the full
+derivation, red-proof, and sibling audit). Fix `d7ebd453`; red-proof
+test `60994864`. Sibling audit (SobolSampler/ZSobolSampler,
+IndependentSampler, legacy PixelBased rasterizers, photon tracers)
+found no other sampler carrying the same fixed-dense-lane-table
+pattern — `SobolSampler`'s own finite-table risk was independently
+found and closed by DL-81 (2026-09-14, a different resolution shape:
+graceful decorrelation past the table rather than moving the
+boundary, appropriate to a read-only-per-draw dimension table vs
+PSSMLT's read-write-for-the-life-of-a-chain primary sample vector).
+No new rows opened. This slice's own snapshot: 1 row closed (DL-08),
+0 opened, net rows +0. This slice's branch HEAD does not update the
+"Authoritative totals on `master`" line above; that recount happens
+at merge.
+
 ## Verification recipes
 
 Recipes are retained after closure as regression specifications. The main
@@ -951,16 +971,23 @@ stated tolerance (e.g. 2%, matching DL-07's bar), then re-measure
 `fabric_material`/`coated_material`'s furnace configs that depend on it
 the same way DL-07's fix was re-measured.
 
-**DL-08 (PSSMLT stream aliasing).** Add a case to
-`tests/PSSMLTStreamAliasingTest.cpp` that drives a volume-heavy scene to eye
-depth >= 32 under `mlt_spectral_rasterizer` (or the RGB MLT rasterizer) and
-asserts that stream indices used by the eye walk never collide with
-stream 48's film/lens/aperture lanes (e.g. by instrumenting
-`PSSMLTSampler::StartStream` to log/assert on `streamIndex >= kNumStreams`
-distinctness, or by comparing rendered means with `kNumStreams` raised well
-past 32 vs the shipped 49). Fixed when either `kNumStreams` is raised past
-any reachable depth or the eye walk's stream assignment is reworked to stay
-bounded, and the new test passes where it previously would have aliased.
+**~~DL-08 (PSSMLT stream aliasing)~~ CLOSED 2026-09-17 — `d7ebd453`,
+`tests/PSSMLTStreamAliasingTest.cpp` Test F.** Original recipe kept for
+the historical record: add a case to `tests/PSSMLTStreamAliasingTest.cpp`
+that drives the eye walk to depth >= 32 under `PSSMLTSampler` and asserts
+that stream indices used by the eye walk never collide with the MLT
+film/lens/aperture lanes (e.g. by instrumenting `PSSMLTSampler::StartStream`
+to log/assert on `streamIndex >= kNumStreams` distinctness). Landed as a
+direct sampler-arithmetic proof (two identically-seeded `PSSMLTSampler`
+instances, one on `StartStream(16+32)`, one on the historical literal
+`StartStream(48)`, produced bit-identical draws pre-fix) rather than a
+rendered-scene comparison — no render was needed since the collision is
+provable at the `(stream, sampleIndex) -> idx` arithmetic layer,
+independent of what BDPT/MLTRasterizer do with the returned values.
+Fixed by raising `kNumStreams` (49 -> 4096) and moving MLT's reserved
+stream off the literal 48 to `BDPTCameraUtilities::kPSSMLTFilmLensApertureStream`
+(2048, strictly above the new `kMaxBdptWalkStreamUnderPSSMLT` == 1040)
+— see [DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md).
 
 **DL-09 (RadianceEtaScale spatially-varying ior — interior gather AND
 DielectricSPF exit-hit Snell trace).** `tests/RadianceEtaScaleGradedIndexTest.cpp`

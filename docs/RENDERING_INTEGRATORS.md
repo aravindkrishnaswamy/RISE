@@ -873,38 +873,45 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   splat moves the mean by 1e-3 and the bug hides completely (measured
   BDPT/PT = 1.0010).
 
-- **Debt 29 (OPEN, A2 P1-1, debt 28 review round 2): the eye walk
-  overruns PSSMLT's 49-lane layout at deep eye/volume depths, and
+- **Debt 29 (CLOSED 2026-09-17, DL-08, fix `d7ebd453`): the eye walk
+  overran PSSMLT's 49-lane layout at deep eye/volume depths, and
   debt 28's aperture draw only widened an existing hole.**
-  `PSSMLTSampler` multiplexes lanes as `idx = stream + kNumStreams *
+  `PSSMLTSampler` multiplexed lanes as `idx = stream + kNumStreams *
   sampleIndex` with `kNumStreams == 49` — every integrator stream from
-  0 to 48 gets its own private lane space, but a stream index >= 49
-  does not get a fresh lane, it ALIASES an existing one.  The MLT
+  0 to 48 got its own private lane space, but a stream index >= 49 did
+  not get a fresh lane, it ALIASED an existing one.  The MLT
   rasterizers' `EvaluateSample`/`EvaluateSampleSpectral` deliberately
-  live on stream 48 (film + lens + the debt-28 aperture draw,
-  contiguous), which is safe as long as nothing else ever reaches
+  lived on stream 48 (film + lens + the debt-28 aperture draw,
+  contiguous), which was safe only as long as nothing else ever reached
   stream 48 or higher.  But `BDPTIntegrator`'s eye-subpath walk calls
   `sampler.StartStream( 16u + depth )`
-  ([BDPTIntegrator.cpp:1732](../src/Library/Shaders/BDPTIntegrator.cpp)),
-  which reaches stream 48 ITSELF at eye depth 32 and keeps going past
+  ([BDPTIntegrator.cpp:1749](../src/Library/Shaders/BDPTIntegrator.cpp)),
+  which reached stream 48 ITSELF at eye depth 32 and kept going past
   it — with `maxVolumeBounce` at its 64 default, ordinary deep-volume
   scenes reach that depth.  Past depth 32 the eye walk's own sampling
-  dimensions alias the MLT film/lens/aperture block's lanes (and each
-  other, at depths 49 apart).  This is PRE-EXISTING — it predates debt
+  dimensions aliased the MLT film/lens/aperture block's lanes (and each
+  other, at depths 49 apart).  This was PRE-EXISTING — it predated debt
   28 entirely, since the film/lens block alone already occupied stream
-  48 with 4 lanes — debt 28's aperture draw only extends the occupied
+  48 with 4 lanes — debt 28's aperture draw only extended the occupied
   span on stream 48 from 4 lanes to 6 (RGB) or 6+`nSpectralSamples`
-  (spectral), which does not change WHETHER the eye walk can reach
-  stream 48, only how many of that stream's lanes are spoken for when
-  it does.  Not fixed here: the fix needs either raising `kNumStreams`
-  well past any reachable eye/volume depth (Sobol-sampler style, see
-  `kApertureSamplerStream`'s 8192) or reworking the eye walk's stream
-  assignment to stay bounded — both are out of scope for a
-  camera-aperture arc.  See `CameraUtilities.h`'s
-  `APERTURE_CURRENT_STREAM` doc and
-  `tests/PSSMLTStreamAliasingTest.cpp`'s C2/C4 for where this was
-  found; neither test currently probes depth >= 32 under PSSMLT, so
-  this overrun has no red-proof guard yet.
+  (spectral), which did not change WHETHER the eye walk could reach
+  stream 48, only how many of that stream's lanes were spoken for when
+  it did.
+  **Fixed** by raising `PSSMLTSampler::kDefaultNumStreams` from 49 to
+  4096 and moving the MLT film/lens/aperture block off the literal 48
+  onto `BDPTCameraUtilities::kPSSMLTFilmLensApertureStream` (2048) —
+  chosen strictly above the new `kMaxBdptWalkStreamUnderPSSMLT` (1040,
+  the eye walk's own documented ceiling under a saturating 1024-iteration
+  loop cap), so the eye walk can never reach it at any depth
+  PSSMLTSampler's own loop caps allow.  `PSSMLTSampler::Get1D()` now
+  asserts `streamIndex < kNumStreams` at the point `idx` is computed, so
+  a future violation of the same invariant fails loudly rather than
+  silently aliasing.  Sibling audit (SobolSampler/ZSobolSampler,
+  IndependentSampler, legacy PixelBased rasterizers, photon tracers)
+  found no other sampler exhibiting this pattern — see
+  [DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md) for the full
+  derivation, the red-proof (`tests/PSSMLTStreamAliasingTest.cpp` Test
+  F), and the sibling table.
 
 - **Debt 30 (RESOLVED 2026-09-12) — it was TWO things, and only one of
   them was a bug.  (1) The "BDPT and VCM disagree ~20x on
