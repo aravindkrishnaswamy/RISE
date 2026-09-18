@@ -800,20 +800,30 @@ static void TestMemoWorthinessGate()
 	// recorded here rather than left to a diff.  `interior` is the FIFTH
 	// signal KIND, and `kL1Ways` was 4 -- exactly the number of kinds
 	// before it -- so a body querying all five would have evicted
-	// round-robin at a ~0 % hit rate.  `kL1Ways` went to 8, which puts
+	// round-robin at a ~0 % hit rate.  `kL1Ways` went to 8, which put
 	// `Tables` at 2432 bytes.  The 2048 figure was a REGRESSION GUARD, not
-	// a budget: it exists to catch an unnoticed growth, and this growth is
-	// noticed, deliberate and priced (43.8 kB decimal across 18 workers).
-	// The cliff moved from a fifth distinct (kind, radius) query per hit
-	// to a ninth; it did not disappear.
+	// a budget: it exists to catch an unnoticed growth, and that growth was
+	// noticed, deliberate and priced.  The cliff moved from a fifth
+	// distinct (kind, radius) query per hit to a ninth; it did not
+	// disappear.
+	//
+	// 2976 SINCE DL-25's REVIEW (2026-09-17), for the same kind of reason:
+	// `sample()` / `sample_scalar()` evaluate a bound painter at the
+	// CALLER'S hit record, so the L2 key gained an
+	// ExpressionMemo::PainterSampleHitKey -- the footprint Jacobian, the
+	// ray direction, the second UV set, the vertex colour and a has-record
+	// flag plus a per-program has-sample bit, 68 bytes per L2 way across 8 ways.  The alternative, declaring
+	// a sampling program un-memoable, was MEASURED at 3.35x more user CPU
+	// on a sampling scene and rejected.  53.6 kB decimal across 18
+	// workers, still a rounding error against a worker's stack.
 	const std::size_t bytes = ExpressionMemo::BytesPerThread();
 	std::cout << "    bytes of thread-local memo per render worker: " << bytes
 		<< "  (1408 when the memo shipped, 1440 since the `pipe` key field, 1824 since the"
 		   " four cross-object SignalHitKey fields, 2432 since kL1Ways went 4 -> 8 for"
-		   " `interior`; ceiling 4096)" << std::endl;
+		   " `interior`, 2976 since DL-25's PainterSampleHitKey; ceiling 4096)" << std::endl;
 	Check( bytes <= 4096, "(g) the per-thread memo stays under the 4096-byte ceiling" );
-	Check( bytes == 2432, "(g) MONEY -- and it is EXACTLY 2432 bytes at kL1Ways = 8, the number "
-		"§5.6 and ExpressionMemo.h both quote (got " + std::to_string( bytes ) + ")" );
+	Check( bytes == 2976, "(g) MONEY -- and it is EXACTLY 2976 bytes at kL1Ways = 8 with DL-25's "
+		"PainterSampleHitKey in the L2 key (got " + std::to_string( bytes ) + ")" );
 }
 
 //======================================================================

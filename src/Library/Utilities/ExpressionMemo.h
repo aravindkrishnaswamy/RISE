@@ -283,12 +283,14 @@ namespace RISE
 		//!
 		//! THE CEILING WAS A REGRESSION GUARD, NOT A BUDGET, which is what
 		//! makes raising it the right move here rather than a concession.
-		//! Eight ways puts `Tables` at 2432 bytes, over the 2048-byte TLS
+		//! Eight ways put `Tables` at 2432 bytes (2976 since DL-25's
+		//! PainterSampleHitKey joined the L2 key), over the 2048-byte TLS
 		//! ceiling `ExpressionMemoTest` (g) asserted (1824 bytes at four
 		//! ways after `proximity`'s key growth); that ceiling exists to
 		//! catch an unnoticed growth, not to cap the structure, so it is
 		//! raised to 4096 with the reason recorded in the test.  The whole
-		//! table is 43.8 kB across this machine's 18 workers.  Phase 1
+		//! table is 53.6 kB decimal across this machine's 18 workers
+		//! (43.8 kB before DL-25's key growth).  Phase 1
 		//! wave 2 MEASURES the L1 hit rate on `plank_closeup` (three
 		//! distinct queries per hit) rather than assuming it, and Phase 3
 		//! re-measures it unchanged.  A body that needs nine should be
@@ -649,6 +651,95 @@ namespace RISE
 			}
 		};
 
+		//! THE PAINTER-SAMPLE HALF OF THE L2 KEY (DL-25 review P1-1).
+		//!
+		//! `sample(name)` / `sample_scalar(name)` evaluate a BOUND PAINTER
+		//! at the caller's own `RayIntersectionGeometric`
+		//! (ExprEvalContext::pHit), so such a program's result is a
+		//! function of hit fields that `ProgramKey`'s own eleven context
+		//! values do NOT determine.  Those fields are here.
+		//!
+		//! THE SET IS NOT ARBITRARY AND IT IS NOT "EVERYTHING IN THE
+		//! RECORD": it is exactly the fields some `IPainter` /
+		//! `IScalarPainter` in `src/Library/Painters` reads from `ri` and
+		//! that `ProgramKey` does not already compare.  Enumerated by
+		//! reading every `ri.<field>` in that directory:
+		//!
+		//!   ptCoord, ptIntersection, ptObjIntersec, vNormal  -- ALREADY
+		//!       compared, as u/v, P, Po, N (ExpressionPainter::
+		//!       BuildContext copies them across verbatim).
+		//!   signals            -- ALREADY compared, as ProgramKey::signals.
+		//!   derivatives        -- ALREADY compared: its ONLY painter reader
+		//!       is ExpressionPainter's own PopulateCurvature, whose whole
+		//!       output is `curv` / `curvR`.
+		//!   txFootprint.worldWidth / .objectWidth / .widthValid -- ALREADY
+		//!       compared, as fw / fwo (BuildContext gates both on
+		//!       widthValid and stores 0 when it is false, so the gate
+		//!       cannot separate two contexts the pair does not).
+		//!   txFootprint.dudx/.dudy/.dvdx/.dvdy/.valid -- HERE.  The UV
+		//!       Jacobian is what TexturePainter::SampleTextured picks a
+		//!       mip level (or a supersampling footprint) from, and two
+		//!       hits at one point with different Jacobians are the
+		//!       ordinary case, not a corner one.
+		//!   ray.Dir()          -- HERE.  IridescentPainter's |dot(view,N)|.
+		//!   ptCoord1 / bHasTexCoord1 -- HERE.  TexCoord1Painter.
+		//!   vColor / bHasVertexColor -- HERE.  VertexColorPainter.
+		//!   bHit               -- not compared: every producer sets it true.
+		//!
+		//! THAT ENUMERATION IS A SNAPSHOT, and a painter that starts
+		//! reading a field not listed above would be a SILENT WRONG
+		//! RENDER rather than a compile error.  It is guarded, not merely
+		//! documented: `SourceHygieneTest`'s painter-`ri`-read census
+		//! fails when `src/Library/Painters` reads an `ri` field this
+		//! comment does not account for.  Extend both together.
+		//!
+		//! EXACT comparison, never a hash -- same reasoning as
+		//! SignalHitKey's: a collision would serve one hit's texel at
+		//! another hit's footprint.
+		struct PainterSampleHitKey
+		{
+			//! Is there a hit record behind the context at all?  A context
+			//! with none (`Eval(u,v)`, a hand-built one, the def-stage
+			//! previews) makes `sample()` fall back to the synthetic
+			//! partial record, which is a DIFFERENT answer from the one a
+			//! zero-filled real record would give -- so the two must not
+			//! share an entry, and every field below is left 0 when this
+			//! is false.
+			bool	hasHit;
+			double	dudx, dudy, dvdx, dvdy;
+			bool	footprintValid;
+			double	rdx, rdy, rdz;			//!< ray.Dir()
+			double	u1, v1;					//!< ptCoord1
+			bool	hasTexCoord1;
+			double	vcr, vcg, vcb;			//!< vColor
+			bool	hasVertexColor;
+
+			//! FIELDS THIS COMPARES: 16.  Summed into ProgramKey::kFields
+			//! below, which is ComputeMemoWorthiness's instruction-count
+			//! threshold -- so adding a field here means adding it to
+			//! Equals and incrementing this.
+			static const int kFields = 16;
+
+			//! Ordered cheapest-discriminator first among the fields that
+			//! actually move: the footprint Jacobian is what differs
+			//! between two camera paths reaching one point, the ray
+			//! direction next; the vertex colour and the second UV set are
+			//! functions of the surface position and therefore almost
+			//! never decide a mismatch that the Jacobian did not.
+			bool Equals( const PainterSampleHitKey& o ) const
+			{
+				return hasHit == o.hasHit
+					&& dudx == o.dudx && dudy == o.dudy
+					&& dvdx == o.dvdx && dvdy == o.dvdy
+					&& footprintValid == o.footprintValid
+					&& rdx == o.rdx && rdy == o.rdy && rdz == o.rdz
+					&& u1 == o.u1 && v1 == o.v1
+					&& hasTexCoord1 == o.hasTexCoord1
+					&& vcr == o.vcr && vcg == o.vcg && vcb == o.vcb
+					&& hasVertexColor == o.hasVertexColor;
+			}
+		};
+
 		//! L1 key: the hit, plus WHICH query is being asked of it.
 		struct SignalKey
 		{
@@ -735,10 +826,31 @@ namespace RISE
 			double				Nx, Ny, Nz;
 			double				fw, fwo, time, curv, curvR;
 			SignalHitKey		signals;
+			//! DL-25 review P1-1: the fields a SAMPLED painter can read
+			//! that none of the above determines.  Zero-filled (and
+			//! `hasHit` false) for the overwhelming majority of programs,
+			//! which call neither `sample()` nor `sample_scalar()` -- see
+			//! PainterSampleHitKey for why it is compared unconditionally
+			//! rather than gated on that.
+			PainterSampleHitKey	sampleHit;
+			//! Does THIS program call `sample()` / `sample_scalar()` at
+			//! all?  A property of the program, so two entries sharing a
+			//! `progId` always agree on it -- which is exactly what lets
+			//! `Equals` skip the 16 compares above for the overwhelming
+			//! majority of programs, which never sample.  It is compared
+			//! anyway (one bool) rather than assumed from progId, because
+			//! the key must stay self-describing: nothing here may depend
+			//! on a fact only the program object knows.
+			bool				usesPainterSample;
 
 			//! FIELDS THIS COMPARES: 18 of its own (progId, pipe, u, v,
 			//! P.xyz, Po.xyz, N.xyz, fw, fwo, time, curv, curvR) plus the
-			//! hit channel's 17 = 35.  THE NUMBER IS LOAD-BEARING, not
+			//! signal channel's 17 plus `usesPainterSample` plus the
+			//! painter-sample channel's 16 (DL-25 review P1-1) = 52.
+			//! (The last 16 are SHORT-CIRCUITED away for a program that
+			//! does not sample; they are counted anyway, because
+			//! `kFields`'s consumer is a cost threshold for the WORST
+			//! case, not for the common one.)  THE NUMBER IS LOAD-BEARING, not
 			//! decoration: ExpressionProgram::Builder::ComputeMemoWorthiness
 			//! uses it as the instruction count at or above which a body
 			//! cannot be cheaper to re-run than to look up.  Adding a
@@ -752,7 +864,7 @@ namespace RISE
 			//! there is ONE key layout rather than an L1-only tail on
 			//! SignalHitKey, and disclosed in
 			//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 / §10.
-			static const int kFields = 18 + SignalHitKey::kFields;
+			static const int kFields = 19 + SignalHitKey::kFields + PainterSampleHitKey::kFields;
 
 			bool Equals( const ProgramKey& o ) const
 			{
@@ -770,7 +882,29 @@ namespace RISE
 					&& Nx == o.Nx && Ny == o.Ny && Nz == o.Nz
 					&& fw == o.fw && fwo == o.fwo && time == o.time
 					&& curv == o.curv && curvR == o.curvR
-					&& signals.Equals( o.signals );
+					&& signals.Equals( o.signals )
+					// LAST, and SHORT-CIRCUITED for the overwhelming
+					// majority of programs, which never call `sample()`:
+					// they pay one bool compare here, not sixteen.
+					//
+					// THE GATE IS NOT A MEASURED SPEEDUP, and saying so is
+					// the point.  On `plank_closeup` at 320x240 / 16 spp
+					// (n=5, user CPU) gated reads 22.874 +/- 0.143 s and
+					// UNGATED 22.812 +/- 0.104 s -- indistinguishable, and
+					// both marginally FASTER than the pre-DL-25-review
+					// library's 23.228 +/- 0.108 s, i.e. the whole key
+					// growth is below this scene's noise even when every
+					// probe compares all sixteen.  What the gate actually
+					// buys is a HIT-RATE guarantee: for a program that
+					// never samples, those sixteen fields describe
+					// something it cannot read, so letting them decide a
+					// MISS would evict entries for no reason.  Nothing in
+					// the tree does that today (the one consumer that
+					// re-probes with a modified record, ReliefModifier,
+					// moves ptCoord and misses higher up anyway) -- the
+					// gate keeps it structurally impossible.
+					&& usesPainterSample == o.usesPainterSample
+					&& ( !usesPainterSample || sampleHit.Equals( o.sampleHit ) );
 			}
 		};
 
