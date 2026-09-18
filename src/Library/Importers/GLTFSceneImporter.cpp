@@ -1381,13 +1381,43 @@ namespace
 				clearcoatContributes ? ( matName + "__cc_base" )    :
 				                       baseMatName;
 
+			// P1 fix (post-DL-18-review sibling, 2026-09-17; docs/GLTF_-
+			// IMPORT.md §15 "Emission combined with sheen or clearcoat").
+			// `pbrRegisterName` is about to become the SUBSTRATE
+			// `AddFabricMaterial` / `AddCoatedMaterial` wraps whenever
+			// sheen or clearcoat contributes -- both refuse a substrate
+			// with a non-null `GetEmitter()`
+			// (`FabricMaterial::IsSupportedSubstrate` /
+			// `CoatedMaterial::IsSupportedSubstrate`).  Baking
+			// `emissivePainter` in here UNCONDITIONALLY therefore failed
+			// `AddFabricMaterial` / `AddCoatedMaterial` outright ("the
+			// substrate is a luminaire") for any material combining a
+			// non-black emissiveFactor/emissiveTexture with
+			// `KHR_materials_sheen` or `KHR_materials_clearcoat` -- and
+			// `Job::ImportGLTFScene`'s caller fails the WHOLE import on
+			// one material's registration failure.  Build the PBR base
+			// WITHOUT emission whenever it is about to be wrapped (sheen
+			// or clearcoat contributes); the two wrap blocks below
+			// re-attach the emission at the OUTER layer via
+			// `AddLambertianLuminaireMaterial` once a legal (non-
+			// emissive) wrap result exists under `matName` -- the exact
+			// same generic wrapper the `mat.unlit` branch above already
+			// uses, and physically equivalent to baking emission
+			// straight into the GGX base (`LambertianLuminaireMaterial`
+			// forwards `GetBSDF`/`GetSPF` from any `IMaterial` and builds
+			// its own `LambertianEmitter`, the identical class
+			// `GGXMaterial`'s own emissive constructor uses).
+			const bool pbrBaseIsWrapped = sheenContributes || clearcoatContributes;
+			const bool hasEmission = emissivePainter != "none";
+			const char* pbrEmissivePainter = pbrBaseIsWrapped ? "none" : emissivePainter.c_str();
+
 			ok = job.AddPBRMetallicRoughnessMaterial(
 				pbrRegisterName.c_str(),
 				baseColorPainter.c_str(),
 				metallicPainter.c_str(),
 				roughnessPainter.c_str(),
 				/*ior*/ 1.5,
-				emissivePainter.c_str(),
+				pbrEmissivePainter,
 				emissiveScale,
 				specularFactorStr.c_str(),
 				specularColorPainter.c_str(),
@@ -1428,8 +1458,16 @@ namespace
 				std::snprintf( weightStr, sizeof( weightStr ), "%.6f", ccWeight );
 				std::snprintf( roughStr,  sizeof( roughStr ),  "%.6f", ccRoughSq );
 
+				// See the `pbrEmissivePainter` comment above: when
+				// emission also contributes, the coated wrap registers
+				// under an intermediate name and a
+				// `LambertianLuminaireMaterial` layer below re-attaches
+				// the emission under `matName`; otherwise it registers
+				// directly under `matName` as before.
+				const std::string coatRegisterName = hasEmission ? ( matName + "__cc_emit_base" ) : matName;
+
 				ok = job.AddCoatedMaterial(
-					matName.c_str(),
+					coatRegisterName.c_str(),
 					pbrRegisterName.c_str(),
 					weightStr,       // coat_weight <- clearcoat_factor
 					"1.5",           // coat_ior, fixed per glTF spec
@@ -1446,6 +1484,22 @@ namespace
 						"clearcoat_factor (%.3f) and clearcoat_roughness_factor (%.3f) -- the "
 						"textures are ignored.  See docs/GLTF_IMPORT.md §15.",
 						matName.c_str(), ccWeight, (double)cc.clearcoat_roughness_factor );
+				}
+
+				// Re-attach the emission the PBR base deliberately did
+				// NOT bake in, now that the coated wrap is a legal
+				// (non-emissive) IMaterial to layer it over.
+				if( ok && hasEmission ) {
+					ok = job.AddLambertianLuminaireMaterial(
+						matName.c_str(),
+						emissivePainter.c_str(),
+						coatRegisterName.c_str(),
+						emissiveScale );
+					if( !ok ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: material `%s` failed to attach its emissive "
+							"layer over the clearcoat wrap", matName.c_str() );
+					}
 				}
 			}
 
@@ -1553,8 +1607,16 @@ namespace
 						matName.c_str(), shRoughFactor );
 				}
 
+				// See the `pbrEmissivePainter` comment above: when
+				// emission also contributes, the fabric (sheen) wrap
+				// registers under an intermediate name and a
+				// `LambertianLuminaireMaterial` layer below re-attaches
+				// the emission under `matName`; otherwise it registers
+				// directly under `matName` as before.
+				const std::string fabricRegisterName = hasEmission ? ( matName + "__sheen_emit_base" ) : matName;
+
 				ok = job.AddFabricMaterial(
-					matName.c_str(),
+					fabricRegisterName.c_str(),
 					"custom",					// fabric -- no preset seeding, glTF has no fabric-type concept
 					pbrRegisterName.c_str(),
 					sheenColorPainter.c_str(),
@@ -1577,6 +1639,22 @@ namespace
 						"so the clearcoat layer is skipped, keeping sheen.  See "
 						"docs/GLTF_IMPORT.md §15.",
 						matName.c_str(), (double)mat.clearcoat.clearcoat_factor );
+				}
+
+				// Re-attach the emission the PBR base deliberately did
+				// NOT bake in, now that the fabric (sheen) wrap is a
+				// legal (non-emissive) IMaterial to layer it over.
+				if( ok && hasEmission ) {
+					ok = job.AddLambertianLuminaireMaterial(
+						matName.c_str(),
+						emissivePainter.c_str(),
+						fabricRegisterName.c_str(),
+						emissiveScale );
+					if( !ok ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: material `%s` failed to attach its emissive "
+							"layer over the fabric (sheen) wrap", matName.c_str() );
+					}
 				}
 			}
 		}

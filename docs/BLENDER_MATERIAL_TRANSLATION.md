@@ -294,6 +294,160 @@ expressive (3D rotation, 3D location).  The bridge translates the
 Mapping into a per-painter `xform_translate` / `xform_rotate` /
 `xform_scale` triple on the procedural's input.
 
+## Anisotropy and sheen (Principled BSDF -> `ggx_material` / `fabric_material`)
+
+DL-18 (docs/DEBT_LEDGER.md; source heading CLOTH_FABRIC_DESIGN.md §15
+item 13): "the Blender bridge has no sheen, anisotropic, or velvet
+mapping at all."  Re-verified on this HEAD before landing anything
+further: **anisotropy was already fully wired** (Landing 8, commit
+`25d271df`) — `_material_payload` reads `Anisotropic` /
+`Anisotropic Rotation` at their socket defaults and feeds
+`AddPBRMetallicRoughnessMaterial`'s `anisotropy_factor` /
+`anisotropy_rotation` parameters, which the factory turns into
+`ggx_material`'s `alphaX`/`alphaY` stretch and `tangent_rotation` — the
+part of the debt row this doc's own "Current Limitations" section
+(`src/Blender/README.md`) still listed as missing was **stale
+documentation, not a missing feature**; that line is corrected as part
+of this fix.  **Sheen genuinely had no mapping at all** — this section
+covers that half, which DL-18 closes.
+
+### Sheen -> `fabric_material` (ABI v12)
+
+Mirrors `GLTFSceneImporter.cpp`'s `KHR_materials_sheen` handling (the
+importer's mapping is the reference this bridge's follows exactly, so
+both foreign-format paths agree):
+
+| Blender Principled input (4.x) | `fabric_material` slot | Notes |
+|---------------------------------|--------------------------|-------|
+| `Sheen Weight` (float) x `Sheen Tint` (RGB) | `sheen_color` | Pre-multiplied into ONE colour painter at export time (`sheen_weight * sheen_tint`, clamped/scaled the same way `_color_or_texture_painter`'s `scale` parameter already composes a constant into a texture or a uniform colour). `fabric_material`'s own contract makes this exact, not an approximation: its `sheen_color` slot's MAX CHANNEL doubles as the energy-split weight, which is precisely what `KHR_materials_sheen`'s `sheenColorFactor` already does in one RGB triple — Blender's separate Weight/Tint split folds into that same single slot losslessly. `Sheen Weight` is read at its socket DEFAULT only (linked/textured weight warns and falls back — RISE has no multiply-painter primitive to combine an independently textured weight with an independently textured tint, and Blender artists overwhelmingly paint the TINT). `Sheen Tint` DOES support a full texture chain (any Image Texture / Color Ramp / etc. graph `_maybe_resolve_socket_texture` can walk), matching `sheenColorTexture`'s treatment in the importer. |
+| `Sheen Roughness` (float) | `sheen_roughness` | Charlie alpha, clamped to `fabric_material`'s own `[0.04, 1]` floor at render time. Numeric by default; when texture-driven, travels as the NAME of a registered colour painter (ABI v12's one texture exception — see below), which the native bridge wraps into an `IScalarPainter` view before handing it to `AddFabricMaterial`, mirroring hair's v10 `beta_m`/`beta_n`/`ior` texture exception. |
+| *(no Blender input)* | `fabric` = `"custom"` | glTF's importer makes the identical choice for the same reason: Blender's Sheen model (like glTF's) carries no fabric-PRESET concept — `fabric_material`'s preset only seeds slots this mapping already sets directly. |
+| *(no Blender input)* | `weave_rotation` = `"0.0"` | Blender's Sheen model has no weave-direction concept either. When `Anisotropic` is ALSO set (below), the resulting anisotropic `tangent_rotation` already lives on the wrapped GGX base — see precedence, next. |
+
+**Precedence when both Sheen and Anisotropic are set on the same
+Principled node: fabric wraps the anisotropic GGX base, reachable
+through `fabric_material`'s OWN `base` slot — no `coated_material`
+allowlist change needed.**  `add_pbr_metallic_roughness_material`
+always builds the full PBR material first (base color, metallic,
+roughness, specular, AND anisotropy — alphaX/alphaY stretch +
+`tangent_rotation`) exactly as it did before this debt closed.  When
+Sheen also contributes, that PBR material registers under an
+INTERMEDIATE name (`<material name>::pbrbase`) instead of the material's
+own name, and a `fabric_material` sheen layer wraps it — registered
+under the material's real name — via `AddFabricMaterial`'s `base`
+parameter, which accepts `pbr_metallic_roughness_material` directly
+(it resolves to a `ggx_material` at scene-build time and is on
+`FabricMaterial::IsSupportedSubstrate`'s allowlist already).  So a
+"brushed metal with a napped sheen" material — Anisotropic AND Sheen
+both authored — gets fabric-over-anisotropic-GGX for free, with no
+dependency on the wider `coated_material` substrate allowlist landed
+(unmerged) on branch `debt-api1`; that branch's widening is for
+COATED-over-fabric (a wax finish over cloth), a different composition
+this debt does not need.  This is the SAME `pbrRegisterName`
+intermediate-name mechanism `GLTFSceneImporter.cpp` already uses for
+its own sheen-vs-clearcoat precedence (sheen wins there too, for the
+identical reason: `coated_material` cannot wrap a `fabric_material`
+result, but `fabric_material` CAN wrap a `ggx_material`/PBR one).
+
+**Textured sheen tint/roughness (ABI v12's texture-scalar path).**
+`sheen_color_painter_name` is always a genuine `IPainter` reference
+(colour pipe, full texture support, no wrapping needed — exactly like
+`base_color_painter_name`/`specular_color_painter_name` above).
+`sheen_roughness_texture_painter_name` is the exception: `fabric_-
+material`'s `sheen_roughness` is an `IScalarPainter`-typed slot
+(`docs/ISCALARPAINTER_REFACTOR.md`), so a plain `IPainter` name bound
+there is rejected outright (`Job::AddFabricMaterial` diagnoses it as
+"not a registered colour painter" the same way `Job::AddHairMaterial`
+diagnoses a mis-piped hair scalar).  The native bridge resolves this
+the same way it resolves hair's texture-driven `beta_m`/`beta_n`/`ior`:
+`resolve_material_scalar_slot` wraps the named colour painter into an
+`IScalarPainter` view (channel R, scale 1, bias 0) via
+`RISE_API_CreatePainterChannelScalarPainter`, registers it under a
+derived `<painter>::matscalar` name, and hands THAT name to
+`AddFabricMaterial`.  Two sheen materials sharing one roughness map
+reuse the same wrapper rather than failing on a duplicate-name
+refusal.  Unlike hair's non-fatal texture-resolution failures (which
+have a `warnings` channel to report through), an unresolvable sheen
+texture here falls back to the numeric `sheen_roughness` field
+SILENTLY — matching the surrounding PBR path's existing convention
+(`specular_factor`, `anisotropy_factor`, etc. all degrade to their
+literal defaults with no warning when unset or unresolvable; there is
+no warnings channel plumbed into `add_material`'s call path at all,
+unlike the hair object/material loop).
+
+**No sheen -> bit-identical to a pre-v12 payload.**
+`sheen_color_painter_name == NULL` (the default, and every payload an
+older exporter module ever produced) skips the wrap entirely: the PBR
+material registers directly under its own name, exactly as before ABI
+v12 existed.
+
+**Sheen + Emission Strength on the SAME node -- P1 fix, 2026-09-17.**
+DL-18's initial landing baked `emission_painter_name` into the PBR
+base UNCONDITIONALLY (`AddPBRMetallicRoughnessMaterial`'s `emissive`
+parameter), then handed that same base to `AddFabricMaterial` as the
+sheen substrate whenever sheen also contributed.
+`FabricMaterial::IsSupportedSubstrate` (FabricMaterial.h) refuses any
+substrate with a non-null `GetEmitter()` -- a real luminaire cannot be
+re-scattered by a sheen lobe -- so a Principled node with BOTH
+Emission Strength > 0 and Sheen Weight > 0 failed `add_material`
+outright ("the substrate is a luminaire"), and because
+`rise_blender_scene_to_job`'s material loop aborts the WHOLE job on
+one material's failure, this single combination failed an entire
+render (a hard regression vs. the pre-DL-18 behaviour, which simply
+ignored sheen). Fixed by building the PBR base WITHOUT emission
+whenever sheen contributes (`pbrEmissive = "none"`), wrapping THAT in
+`fabric_material` under an intermediate `<name>::sheenbase` name, then
+re-attaching the emission at the OUTER layer via
+`AddLambertianLuminaireMaterial` once the fabric wrap is a legal
+(non-emissive) `IMaterial` to layer emission over --
+`LambertianLuminaireMaterial` (LambertianLuminaireMaterial.h) is a
+fully generic wrapper: it forwards `GetBSDF`/`GetSPF` from whatever
+base it is handed and builds its own `LambertianEmitter`, the
+IDENTICAL class `GGXMaterial`'s own emissive constructor uses
+(GGXMaterial.h), so the rendered emission is physically
+indistinguishable from baking it straight into the GGX base. Both
+sheen and emission are kept -- neither is dropped, no warning is
+needed. A material with sheen but no emission, or emission but no
+sheen, is byte-for-byte unaffected (no `::sheenbase` intermediate is
+introduced unless both are present).
+`tests/BlenderBridgeFabricTest.cpp`'s "Sheen + emission keep BOTH"
+group is the regression (43/0, was 40/6 red pre-fix -- the red output
+is the exact `AddFabricMaterial` refusal message quoted above).
+`GLTFSceneImporter.cpp`'s own `KHR_materials_sheen` handling had the
+identical latent bug (and its `KHR_materials_clearcoat` sibling, via
+`coated_material`'s identical substrate-emitter refusal) -- both fixed
+in the same pass; see docs/GLTF_IMPORT.md §15.
+
+### Velvet (legacy `Velvet BSDF` node)
+
+Blender removed the standalone `Velvet BSDF` node (`ShaderNodeBsdf-
+Velvet`) in the 4.0 release, folding its use case into Principled
+BSDF's reworked (multiscatter GGX) Sheen model — this is stated on
+Blender's own public 4.0 release notes; **it has not been independently
+re-verified against a running Blender's `bpy.types` registry from
+inside this repository**, since no `bpy` is available in this
+sandbox (see "Testing" below).  A future contributor who touches this
+again with an actual Blender available should confirm with
+`hasattr(bpy.types, "ShaderNodeBsdfVelvet")` before relying on this
+claim further.  Given this bridge's `bl_info` already declares Blender
+4.0 as its minimum supported version (`__init__.py`), no `.blend` file
+opened in a supported Blender can contain the legacy node at all, so
+the Principled Sheen mapping above is the complete sheen/velvet path
+for every Blender version this add-on runs on — there is no separate
+`ShaderNodeBsdfVelvet` branch to add.
+
+Independently of that version claim, a material whose Surface output
+is NOT a single Principled BSDF — which is exactly what a bare legacy
+Velvet BSDF node feeding Material Output would be — already falls
+through to the EXISTING bake-on-export path (see "Two paths" above):
+the classifier's "reaches exactly one `ShaderNodeBsdfPrincipled`" rule
+fails, the material is `complex`, and Blender's own Cycles bake
+captures whatever it actually renders as (velvet sheen included) into
+a static diffuse/roughness/normal texture set.  Lossy (no live RISE
+`fabric_material`, no per-frame animation) but not silently dropped —
+the same fallback every other force-baked node (Mix Shader, a custom
+group, Ambient Occlusion, …) already gets.
+
 ## Hair / fur export
 
 Slice P2-C of the hair/fur arc (`docs/HAIR_FUR_DESIGN.md`).  Two
@@ -625,6 +779,38 @@ End-to-end material parity is regression-checked via:
   Cycles / EEVEE are by-hand for now.  A bake-cache snapshot test
   would be a natural addition (compare current bake to a stored
   reference).
+
+### Sheen (ABI v12) coverage, and what still isn't covered
+
+`_material_payload`'s Principled-Sheen node-graph reading (walking
+`Sheen Weight` / `Sheen Tint` / `Sheen Roughness`) needs `bpy` and stays
+**manually validated only**, same as every other bpy-dependent glue in
+this add-on (see "What still has no automated coverage" under Hair
+below).  What sits either side of that gap IS covered, mirroring the
+hair arc's own split:
+
+- Python (bpy-free, plain `python3`):
+  `BridgeMaterialSheenMarshallingTest` in `test_hair_export.py` drives
+  `bridge._SceneHandle._marshal_material` directly against a stub
+  object carrying the three ABI v12 fields — no-sheen sends NULL/0.0,
+  a set `sheen_color_painter_name` + numeric `sheen_roughness` travel
+  through unchanged, a set `sheen_roughness_texture_painter_name`
+  travels as a painter name, and a pre-v12 stub (the three attributes
+  deleted) still marshals via `getattr`'s defaults rather than raising.
+- C++: `tests/BlenderBridgeFabricTest.cpp` compiles
+  `rise_blender_bridge.cpp` into its own translation unit (the same
+  `BlenderBridgeHairTest.cpp` idiom, see that file's own banner) and
+  drives the REAL `add_material` / `add_pbr_metallic_roughness_material`:
+  a sheen-less PBR material is confirmed NOT a `FabricMaterial` and
+  registers no `::pbrbase` intermediate (no regression); a sheen-bearing
+  one IS a real `FabricMaterial` wrapping a real, separately-registered
+  PBR base, and the two respond differently at a fixed BRDF probe (the
+  wrap is genuinely composed in, not just type-tagged); two materials
+  differing only in numeric `sheen_roughness` respond differently;
+  a texture-driven `sheen_roughness_texture_painter_name` varies the
+  response across UV while a numeric-only twin does not; and an
+  unresolvable `sheen_color_painter_name` fails the whole material
+  (fatal, matching every other required PBR slot in that function).
 
 ### Hair export unit tests
 
