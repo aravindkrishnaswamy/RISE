@@ -95,7 +95,17 @@ static inline bool AshikminInvertPhi( const Scalar phi, const Scalar phi_root, S
 		val = r_max( Scalar(0), r_min( Scalar(1), val ) );
 	}
 
-	outX = quadrant*0.25 + val*0.25;
+	// val == 1 is the OPEN end of this quadrant's x-interval: x =
+	// quadrant*0.25 + 0.25 is the next quadrant's CLOSED start, and
+	// AshikminSamplePhi maps it to that quadrant's val=0 endpoint (pi, for
+	// quadrant 0) rather than back to phi_local = pi/2.  Returning it would
+	// reconstruct every sibling lane's draw in the wrong quadrant -- exact
+	// at phi = pi/2 (hu == 0, hv > 0) and at the other three boundaries.
+	// Step just inside the interval instead; AshikminSamplePhi is
+	// continuous there, so the reconstructed phi_j is within ~1e-9 rad of
+	// the true limit.
+	const Scalar kOpenEnd = 1.0 - Scalar(1e-9);
+	outX = quadrant*0.25 + r_min( val, kOpenEnd )*0.25;
 	return true;
 }
 
@@ -268,12 +278,16 @@ static Scalar AshikminSpecularDensity(
 	const Scalar sinThetaSq = r_max( Scalar(0), 1.0 - hn*hn );
 	const Scalar sinTheta = sqrt( sinThetaSq );
 
+	// `hn` does not depend on the lane, so this is a whole-call early-out,
+	// not a per-lane skip: h below the sampling frame's horizon is a
+	// half-vector GenerateSpecularRay cannot have produced from ANY lane.
+	if( hn <= 0 ) {
+		return 0;
+	}
+
 	Scalar sum = 0;
 
 	for( int i = 0; i < lobes.count; i++ ) {
-		if( hn <= 0 ) {
-			continue;
-		}
 		Scalar exponent_i = 0;
 		if( sinThetaSq > NEARZERO ) {
 			exponent_i = ( lobes.NU[i]*hu*hu + lobes.NV[i]*hv*hv ) / sinThetaSq;

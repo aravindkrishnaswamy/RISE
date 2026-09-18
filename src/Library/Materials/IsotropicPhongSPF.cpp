@@ -292,8 +292,18 @@ static void GenerateDiffuseRay(
 {
 	diffuse.type = ScatteredRay::eRayDiffuse;
 
-	// Generate a reflected ray randomly with a cosine distribution
-	if( rdotn > NEARZERO )
+	// Generate a reflected ray randomly with a cosine distribution.
+	//
+	// The predicate is `> 0`, matching EXACTLY how Scatter/ScatterNM/Pdf
+	// build the lobe normal `n = rdotn > 0 ? -ri.onb.w() : ri.onb.w()`.
+	// It used to be `> NEARZERO`, leaving a window rdotn in (0, 1e-12]
+	// where `n` was flipped but the diffuse lobe was still sampled around
+	// the UNflipped frame: the lobe then sat in the opposite hemisphere
+	// from the one `n` names, its stored pdf (cos(dir,n)/pi, gated on
+	// cos > 0) came out 0, and Pdf() -- which uses the same `n` -- could
+	// not price it either, while its kray (a direction-independent
+	// GetColor) stayed at full strength.
+	if( rdotn > 0 )
 	{
 		OrthonormalBasis3D	myonb = ri.onb;
 		myonb.FlipW();
