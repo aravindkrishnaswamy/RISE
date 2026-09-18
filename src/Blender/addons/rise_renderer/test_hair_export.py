@@ -722,6 +722,81 @@ class ExporterHairTextureGatingTest(unittest.TestCase):
         self.assertNotIn("at their constant values", self.source)
 
 
+class ExporterSpecularTintGatingTest(unittest.TestCase):
+    """DL-151 (docs/DEBT_LEDGER.md; no source-doc heading, opened by the
+    debt-dl18 slice's sibling audit): `_material_payload` never read
+    Blender's Principled "Specular Tint" socket at all, so
+    `specular_color_painter_name` -- an ABI field that has existed
+    since Landing 7 and that `rise_blender_bridge.cpp`'s
+    `add_pbr_metallic_roughness_material` already forwards correctly
+    -- stayed `None` (the ABI's own "no tint" default) on EVERY
+    exported material, tinted or not.
+
+    RED-PROOF HISTORY: against the pre-fix source, `test_specular_tint_socket_is_read`
+    and `test_the_payload_forwards_specular_color_painter_name` both
+    failed -- `_material_payload`'s body contained no reference to
+    "Specular Tint" at all, and its `MaterialData(...)` call had no
+    `specular_color_painter_name=` keyword.  See the fix commit
+    message for the captured failure text.
+
+    Why source level and not behaviour: same reasoning as
+    `ExporterHairTextureGatingTest` above -- `exporter.py` imports
+    `bpy` at module scope and `_material_payload` walks a live
+    Blender node graph, so it cannot be called outside Blender at
+    all.  What CAN be pinned without Blender is that the function's
+    SOURCE reads the socket and forwards what it reads."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_EXPORTER_SOURCE, "r", encoding="utf-8") as handle:
+            cls.source = handle.read()
+
+    def _material_payload_body(self):
+        start = self.source.index("def _material_payload(")
+        end = self.source.index("\ndef ", start + 1)
+        return self.source[start:end]
+
+    def test_specular_tint_socket_is_read(self):
+        body = self._material_payload_body()
+        self.assertIn(
+            '_node_input(principled_node, "Specular Tint")',
+            body,
+            "_material_payload no longer reads the Specular Tint socket",
+        )
+
+    def test_the_payload_forwards_specular_color_painter_name(self):
+        body = self._material_payload_body()
+        self.assertIn(
+            "specular_color_painter_name=specular_color_painter,",
+            body,
+            "the PBR MaterialData(...) payload no longer forwards a computed "
+            "specular_color_painter_name -- specular tint would silently stop "
+            "reaching the bridge again",
+        )
+
+    def test_both_blender_versions_are_dispatched_by_socket_type(self):
+        # Blender 4.x's "Specular Tint" is an RGB colour socket; pre-4.0
+        # Blender used the SAME socket name for a float 0..1 slider.
+        # This add-on's bl_info declares Blender 4.0 as its minimum
+        # supported version, so only the colour branch is reachable in
+        # practice, but the source should still dispatch on the
+        # socket's own `.type` (this file's existing `inp.type ==
+        # "RGBA"` convention), not silently assume one shape.
+        body = self._material_payload_body()
+        self.assertIn('specular_tint_socket.type == "VALUE"', body)
+
+    def test_a_default_white_tint_produces_no_painter(self):
+        # Bit-identical-to-pre-fix contract: a material that never
+        # touches Specular Tint (or leaves it at Blender's default
+        # white) must still send specular_color_painter_name=None, the
+        # ABI's pre-existing "no tint" sentinel -- not a redundant
+        # "white" uniform painter on every single PBR material ever
+        # exported.
+        body = self._material_payload_body()
+        self.assertIn("specular_color_painter = None", body)
+        self.assertIn("is_default_white", body)
+
+
 class _StubHairMaterial:
     """The subset of `exporter.HairMaterialData` the bridge marshals.
     Deliberately a stand-in rather than the real dataclass: importing
@@ -1013,6 +1088,43 @@ class BridgeMaterialSheenMarshallingTest(unittest.TestCase):
         self.assertAlmostEqual(payload.sheen_roughness, 0.3, places=6)
         self.assertEqual(payload.emission_painter_name, b"mat_emission")
         self.assertAlmostEqual(payload.emissive_scale, 2.0, places=6)
+
+
+class BridgeMaterialSpecularColorMarshallingTest(unittest.TestCase):
+    """`_marshal_material`'s `specular_color_painter_name` field (DL-151,
+    docs/DEBT_LEDGER.md).  This field has existed in the ABI since
+    Landing 7 and `_marshal_material` already forwarded it correctly
+    the whole time -- DL-151's defect was entirely upstream, in
+    `exporter.py`'s `_material_payload` never COMPUTING a non-None
+    value to hand it (see `ExporterSpecularTintGatingTest` above for
+    that red-proof).  This class is therefore a behavioural
+    CONFIRMATION of the marshalling layer, mirroring
+    `BridgeMaterialSheenMarshallingTest`'s pattern for its own (also
+    already-correct) v12 fields, not a second red-proof."""
+
+    def test_no_tint_sends_null(self):
+        payload = _handle()._marshal_material(_StubMaterial())
+        self.assertIsNone(payload.specular_color_painter_name)
+
+    def test_a_tint_painter_name_travels_through(self):
+        payload = _handle()._marshal_material(
+            _StubMaterial(specular_color_painter_name="mat_specular_tint")
+        )
+        self.assertEqual(payload.specular_color_painter_name, b"mat_specular_tint")
+
+    def test_a_pre_dl151_exporter_payload_still_marshals(self):
+        # `_marshal_material` reads this field via `getattr(material,
+        # "specular_color_painter_name", None)`, so a `MaterialData`
+        # built by an exporter module that predates DL-151 (the field
+        # existed on the dataclass since Landing 7, but no code path
+        # ever set it to anything but its `None` default) marshals as
+        # "no tint" rather than raising -- the same back-compat
+        # contract the v12 sheen fields and the v10 hair texture
+        # fields established.
+        stub = _StubMaterial()
+        del stub.specular_color_painter_name
+        payload = _handle()._marshal_material(stub)
+        self.assertIsNone(payload.specular_color_painter_name)
 
 
 class BridgeWarningDecodeTest(unittest.TestCase):

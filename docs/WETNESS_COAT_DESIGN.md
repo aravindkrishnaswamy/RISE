@@ -872,7 +872,16 @@ Phase 2 is the principled upgrade, scoped by Phase 1's evidence, and carries a
 second paying customer in the glTF importer. Phase 3 is gated and may be
 declined. §5 states it; §6–§8 specify it.
 
-### (g) A painter-sampling route for the darkening — **ADOPTED as a Phase-1.5 candidate, scoped**
+### (g) A painter-sampling route for the darkening — **SHIPPED 2026-09-17 (debt ledger DL-25)**
+
+**Superseding note (2026-09-17):** the VM-builtin shape below — the SECOND
+of the two candidates this section originally sketched, not the smaller
+painter-`pow` op — is what actually shipped, closing §12 item 6b.
+`sample(name)`/`sample_scalar(name)` and the attach-time `IExpressionPainterRefResolver`
+binding are exactly the "richer... threading painter references into
+CallFunc" route described below; see §12 item 6b's own closure note for
+the implementation account. The rest of this subsection is kept as the
+original design record.
 
 Phase 1's darkening is written as `pow(base_r, k)` over **literal constants** the
 verb reads out of a `uniformcolor_painter`. That works only because the base is a
@@ -1308,17 +1317,40 @@ the worst of §6.2's coverage dip by construction.
 > what an RGB renderer would do. It looks right; it is not the principled form.
 > Phase 2's layered transport is where RISE gets the principled form (§7.1).
 
-> **Honest caveat — the darkening works on flat-colour albedos only.** Notice what
-> `base_r`, `base_g`, `base_b` are: **literal numbers the verb copied out of the
-> base `uniformcolor_painter` at rewrite time.** They have to be, because the
-> expression VM **cannot sample another painter** — there is no texture or
-> painter-reference builtin in its function table
-> ([ExpressionEval.h:728-757](../src/Library/Painters/ExpressionEval.h)). So a
-> substrate whose albedo is a texture or a procedural painter — patterned cobbles,
-> wood grain, anything an author is likely to have already textured — can receive
-> the **coat** but **no darkening whatsoever**, which is the more visible half of
-> the effect. §6.4 clause 2 turns this into an honest refusal rather than a silent
-> half-result, and §4(g) is the cheap fix if the census shows it biting.
+> **Honest caveat, CLOSED 2026-09-17 (DL-25) — the darkening used to work on
+> flat-colour albedos only.** `base_r`, `base_g`, `base_b` were **literal
+> numbers the verb copied out of the base `uniformcolor_painter` at rewrite
+> time**, because the expression VM could not sample another painter — no
+> texture or painter-reference builtin existed in its function table. A
+> substrate whose albedo was a texture or a procedural painter — patterned
+> cobbles, wood grain, anything an author was likely to have already
+> textured — received the **coat** but **no darkening whatsoever**. §4(g)'s
+> `sample(name)`/`sample_scalar(name)` builtins close this: §6.4 clause 2 now
+> ACCEPTS such a base (a `def base_color sample(<substrate>)` line replaces
+> the literal `base_r/g/b` params on the GGX/PBR in-place branch and on the
+> Oren-Nayar damp-only branch; the Lambertian branch needed no change at all,
+> since `coated_material`'s own transport already darkens any substrate).
+>
+> **A METALLIC-NAMED MATERIAL IS NOT ONE OF THOSE BRANCHES**, and an earlier
+> draft of this paragraph said it was.  Clause 1 skips the colour block
+> ENTIRELY for a metallic base (`AgentSession.cpp`'s `if( !isMetallic )`
+> gate) -- it gets the coat and the gloss and no darkening of any kind,
+> textured or flat, and says so in its own success message ("wet-look only
+> (metallic base, no darkening)").  That is §2.1's own physics, not an
+> omission: a wet metal is a filmed metal, not a darkened one.
+>
+> **WHAT REMAINS AFTER DL-25, stated because the builtin's reach is not
+> unlimited** (see the `expression_painter` chunk descriptor for the full
+> contract).  `sample()` calls the painter's RGB `GetColor`: a
+> `spectral_painter` / `blackbody_painter` substrate has its spectrum
+> collapsed to RGB and re-uplifted through the Jakob-Hanika LUT downstream,
+> which is a different curve, and `GetAlpha` is dropped.  Those kinds stay
+> on clause 2's REFUSAL path for exactly that reason -- they classify
+> `Opaque`, not `Varying` -- so the verb declines rather than silently
+> resampling them; binding such a substrate directly, without wetness, is
+> still the only way to keep its spectrum.  `sample_scalar()` likewise
+> reports one representative wavelength (549 nm), so a wavelength-varying
+> scalar substrate reads achromatic through it.
 
 ### 6.4 Qualifying predicate and refusals
 
@@ -2443,22 +2475,77 @@ timing exists because no implementation exists.
    while sampled transport sees the wet split (§3.3, §6.9 item 1). **Closed by
    Phase 2's combined `value`/`valueNM`** (§7.1); not otherwise fixable without
    changing `polished_material`'s own semantics, which is out of scope here.
-6b. **Phase 1 cannot darken a textured substrate at all** — the expression VM has
+6b. ~~**Phase 1 cannot darken a textured substrate at all** — the expression VM has
    no painter-sampling builtin
    ([ExpressionEval.h:728-757](../src/Library/Painters/ExpressionEval.h)), so
    §6.4 clause 2 refuses rather than half-delivering. **Open**; §4(g) is the
-   scoped candidate fix.
+   scoped candidate fix.~~ **CLOSED 2026-09-17 (debt ledger DL-25, branch
+   `debt-dl25`)** — the expression VM gained `sample(painter_name)` (vec3,
+   `IPainter::GetColor`) and `sample_scalar(painter_name)` (scalar,
+   `IScalarPainter::GetValuesAt`, no JH uplift), gated on `EnableContextVars`
+   exactly like `occlusion()`/`proximity()` (`ExpressionEval.h`'s
+   `ParseSampleCall`).  The argument is a bare painter NAME, resolved once at
+   ATTACH time (a new `IExpressionPainterRefResolver` parameter on
+   `BuildExpressionProgramFromChunkFields`, `ExpressionPainter.h`) against the
+   same forward-only `GetItem` lookup every other name-referencing chunk form
+   already uses, so a genuine reference cycle is structurally impossible and
+   self-reference gets its own diagnostic.  `CallFunc`/`CallFuncVec3` evaluate
+   the bound painter at **THE CALLER'S OWN HIT RECORD**
+   (`ExprEvalContext::pHit`), so a sampled texture mip-filters against the
+   real footprint, a sampled view-dependent painter sees the real ray, and a
+   nested `expression_painter` sees the real `curv` / `fw` / signal channel.
+   The **first implementation used a SYNTHETIC five-field hit** instead,
+   arguing that u,v,P,Po,N are exactly what the L2 memo key compares so no
+   key growth was needed; the argument was sound about the memo and wrong
+   about the painter -- a partial record is a wrong answer to every question
+   the dropped fields answer, and the flagship
+   `def base_color sample(rock_albedo)` recipe silently turned a
+   mip-filtered albedo into an aliasing point sample.  **Corrected
+   2026-09-17 in the same slice's review (P1-1)**: the memo's L2 key gained
+   an `ExpressionMemo::PainterSampleHitKey` (the footprint Jacobian, the ray
+   direction, `ptCoord1`, `vColor`, and a has-record flag), with a
+   `SourceHygieneTest` census over every `ri.<field>` read in
+   `src/Library/Painters` keeping that enumeration honest.  Declaring a
+   sampling program un-memoable instead was measured at 3.35x more user CPU
+   and rejected.  §6.4 clause 2 (`AgentSession.cpp`) now ACCEPTS a genuinely
+   textured/procedural base instead of refusing it: a Lambertian base is
+   WRAPPED as before (`coated_material`'s own layered transport already
+   darkens any substrate, textured included, so no sample()-based painter is
+   even minted there); the GGX/PBR in-place branch and the Oren-Nayar
+   damp-only path now emit `def base_color sample(<substrate>)` +
+   `pow(base_color.x/y/z, k)` in place of the literal `base_r/g/b` path.  A
+   METALLIC-NAMED material is NOT among them -- clause 1 skips the colour
+   block entirely for it (coat and gloss only), which is §2.1's physics and
+   not an omission; §6.3's caveat states this and an earlier draft of both
+   passages got it wrong.  `tests/TextureExpressionVMTest.cpp` 936/0 (was
+   846/0 before the arc, 888/0 before the review);
+   `tests/AgentAddWetnessTest.cpp` 234/0 (F4/F4b assert the
+   textured-substrate case applies, that the emitted expression samples the
+   named substrate, and -- since the review's P1-2 -- that the verb reports
+   NO base colour rather than a fabricated `0 0 0`);
+   `tests/WetTextureDetailRenderTest.cpp` 23/0 is the arc's render-level
+   gate.  **Its Test A is the RED-PROOF**: an identity `sample(tex)` renders
+   identically to the texture bound directly, where the synthetic record
+   gave 19.8 % more contrast (deterministic at 1 spp).  **Its Test B is a
+   CONSISTENCY PIN, not a red-proof** -- it is green before the P1-1 fix as
+   well, because `add_wetness`'s recipe is `mix(base, pow(base, k), damp)`
+   whichever record the substrate was read at; what it pins is that the
+   emitted recipe darkens PER TEXEL rather than by one representative
+   colour (wet/dry 0.806 over the dry frame's darkest quartile against
+   0.948 over its brightest, mean 0.909), which is the property DL-25's own
+   closure recipe asked a render to demonstrate.
+
+   **WHERE THE SYNTHETIC RECORD STILL RUNS, by design**: a context with no
+   hit behind it.  `Eval(u,v)`, a hand-built `ExprEvalContext`, and the
+   GUI's own painter thumbnails -- `SceneEditor/PainterPreview.cpp`'s
+   decimated `(u, v)` grid builds a context from `u`/`v`/`P`/`Po`/`N` and a
+   nominal `kPreviewFootprintWidth`, with no record to forward -- so a
+   `sample()` in a previewed body reads the partial record there and a
+   thumbnail of a sampled TEXTURE shows its unfiltered base level.  That is
+   correct (there is no footprint to honour in a thumbnail) and it is
+   pinned by `TextureExpressionVMTest` Test 78 row (h).
 6c. ~~**`add_wetness` and `add_wear` mutually exclude each other on one material**
    (§6.4), and worn-and-wet is the flagship subject. v1 accepts the exclusion with
-   cross-naming refusal messages; the census counts the demand. **Open.**
-7. ~~**The wet-highlight variance cost is unmeasured**~~ **MEASURED 2026-09-14
-   (DL-27, debt-cov slice) — see §11.1.** Mean-based σ²·T ratio (wet/dry)
-   1.145×, well under the proposed 1.5× ceiling; the `scattering` ceiling is
-   unchanged. Max-based σ²·T ratio is ~3.3× (a narrow firefly risk confined
-   to pooled highlight pixels) — recorded for a future ceiling-tightening
-   decision, not itself a threshold violation under this section's own
-   mean-based metric.
-
    cross-naming refusal messages; the census counts the demand.~~ **PARTIALLY
    CLOSED 2026-09-14 (DL-26, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))**: `add_wear`
    then `add_wetness` on the SAME `lambertian_material` now composes (the
@@ -2467,8 +2554,26 @@ timing exists because no implementation exists.
    reverse order (wet-then-wear, any kind) still refuse — see §6.4's
    updated collision note for the full account. **Residual open**, narrower
    than before: the prelude-extension mechanic for those remaining cases.
-7. **The wet-highlight variance cost is unmeasured** (§11.1). Measure with
-   `oidn_denoise FALSE` before fixing the recipe's `scattering` ceiling.
+
+   **HOW DL-26 AND DL-25 INTERACT** (recorded at the 2026-09-17 merge of the
+   two branches, which touched the same clause-2 block): `add_wear` rebinds
+   the colour slot to an `expression_painter`, which `ClassifyColorBinding_`
+   reports as `Varying` -- so for the ordinary worn case item 6b's branch now
+   claims it first and DL-26's `lambertianWornBypass` is never reached.
+   Neither behaviour is lost: a worn Lambertian still composes into a coat
+   WRAP (the emission site suppresses the darkening painter on that branch
+   regardless), and the bypass survives as the fallback for a worn binding
+   that classifies `Opaque` rather than `Varying`.  The merge also REPAIRED a
+   pre-existing interleaving defect in this list on `master`, where a bad
+   earlier merge had split this item around a duplicated item 7 (one struck
+   and measured, one still open).
+7. ~~**The wet-highlight variance cost is unmeasured**~~ **MEASURED 2026-09-14
+   (DL-27, debt-cov slice) — see §11.1.** Mean-based σ²·T ratio (wet/dry)
+   1.145×, well under the proposed 1.5× ceiling; the `scattering` ceiling is
+   unchanged. Max-based σ²·T ratio is ~3.3× (a narrow firefly risk confined
+   to pooled highlight pixels) — recorded for a future ceiling-tightening
+   decision, not itself a threshold violation under this section's own
+   mean-based metric.
 8. **Heightfield-mode SDF returns neutral occlusion silently** — the pooling
    recipe's sharpest trap (§6.8). Not a bug (the fallback is deliberately
    do-nothing), but it produces a wrong-looking render with no diagnostic.

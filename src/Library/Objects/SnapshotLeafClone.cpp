@@ -131,7 +131,8 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 				m->GetDiffuse(), m->GetSpecular(), m->GetAlphaX(), m->GetAlphaY(),
 				m->GetIOR(), m->GetExtinction(), m->GetFresnelMode(),
 				m->GetTangentRotation(),
-				m->GetFilmIOR(), m->GetFilmExtinction(), m->GetFilmThickness() ) );
+				m->GetFilmIOR(), m->GetFilmExtinction(), m->GetFilmThickness(),
+				m->GetTangentRotationScalar() ) );
 		}
 	}
 	if( const WardIsotropicGaussianMaterial* m =

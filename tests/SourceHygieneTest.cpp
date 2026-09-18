@@ -4969,6 +4969,156 @@ int main()
 		}
 	}
 
+	// ---- Painter `ri` reads must be a subset of the L2 memo key's cover ----
+	// DL-25 review P1-1.  `sample(name)` / `sample_scalar(name)` evaluate a
+	// bound painter at the CALLER'S RayIntersectionGeometric, so an
+	// expression program that samples is a function of whatever `ri` fields
+	// that painter reads -- and ExpressionMemo::ProgramKey has to compare
+	// every one of them or the L2 memo returns one hit's answer at another
+	// hit.  The set it compares was enumerated by READING every `ri.<field>`
+	// in src/Library/Painters, which makes it a snapshot; a painter that
+	// starts reading a field outside the set would be a silent wrong render,
+	// not a compile error.
+	//
+	// This census is that snapshot's guard.  It collects the names every
+	// `RayIntersectionGeometric&` parameter in src/Library/Painters is bound
+	// to (so renaming `ri` cannot evade it), then collects every `<name>.
+	// <field>` read, and fails when one is not accounted for below.  Comments
+	// are stripped first, for the same reason the `signals` census strips
+	// them: this directory's own prose names these fields constantly.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path paintersDir = repoRoot / "src" / "Library" / "Painters";
+
+		// EVERY field currently read, and where it lands in the key:
+		//
+		//   ALREADY COMPARED as an ExprEvalContext value, because
+		//   ExpressionPainter::BuildContext copies it across verbatim:
+		//     ptCoord         -> u, v
+		//     ptIntersection  -> P
+		//     ptObjIntersec   -> Po
+		//     vNormal         -> N
+		//     signals         -> ProgramKey::signals
+		//     derivatives     -> curv / curvR (its only painter reader is
+		//                        ExpressionPainter's own PopulateCurvature,
+		//                        whose whole output is that pair)
+		//     txFootprint     -> PARTLY: .worldWidth / .objectWidth /
+		//                        .widthValid become fw / fwo; the Jacobian
+		//                        half is in PainterSampleHitKey (below).
+		//
+		//   COMPARED via ExpressionMemo::PainterSampleHitKey, added by this
+		//   review precisely because nothing above determines them:
+		//     txFootprint (Jacobian half), ray, ptCoord1, bHasTexCoord1,
+		//     vColor, bHasVertexColor
+		//
+		//   NOT COMPARED, deliberately:
+		//     bHit            -- every producer of a record sets it true.
+		//
+		// ADDING A FIELD HERE WITHOUT ADDING IT TO PainterSampleHitKey IS A
+		// SILENT WRONG RENDER.  If a new painter needs one, extend the key,
+		// its kFields, its Equals, MakeSampleHitKey, and this list together.
+		const char* kKeyedPainterRiFields[] = {
+			"bHasTexCoord1",
+			"bHasVertexColor",
+			"bHit",
+			"derivatives",
+			"ptCoord",
+			"ptCoord1",
+			"ptIntersection",
+			"ptObjIntersec",
+			"ray",
+			"signals",
+			"txFootprint",
+			"vColor",
+			"vNormal",
+		};
+		const size_t nKeyed = sizeof( kKeyedPainterRiFields ) / sizeof( kKeyedPainterRiFields[0] );
+
+		std::vector<std::string> unaccounted;
+		std::vector<std::string> seen;
+		int painterFiles = 0;
+		if( fs::exists( paintersDir ) ) {
+			for( const auto& e : fs::directory_iterator( paintersDir ) ) {
+				if( !e.is_regular_file() ) { continue; }
+				const fs::path& f = e.path();
+				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
+				++painterFiles;
+				std::ifstream mi( f );
+				const std::string raw( ( std::istreambuf_iterator<char>( mi ) ),
+				                         std::istreambuf_iterator<char>() );
+				const std::string src = StripCommentsPreservingLayout( raw );
+
+				// (1) every identifier bound to a RayIntersectionGeometric
+				// reference or pointer in this file.
+				std::vector<std::string> names;
+				const char* kDecl[] = { "RayIntersectionGeometric&", "RayIntersectionGeometric *",
+				                        "RayIntersectionGeometric*", "RayIntersectionGeometric &" };
+				for( const char* d : kDecl ) {
+					size_t at = 0;
+					const size_t dlen = std::strlen( d );
+					while( ( at = src.find( d, at ) ) != std::string::npos ) {
+						size_t p = at + dlen;
+						while( p < src.size() && ( src[p] == ' ' || src[p] == '\t' ) ) { ++p; }
+						const size_t st = p;
+						while( p < src.size() && ( std::isalnum( (unsigned char)src[p] ) || src[p] == '_' ) ) { ++p; }
+						if( p > st ) { names.push_back( src.substr( st, p - st ) ); }
+						at += dlen;
+					}
+				}
+				std::sort( names.begin(), names.end() );
+				names.erase( std::unique( names.begin(), names.end() ), names.end() );
+
+				// (2) every `<name>.<field>` / `<name>-><field>` read.
+				for( const std::string& n : names ) {
+					const char* kOps[] = { ".", "->" };
+					for( const char* op : kOps ) {
+						const std::string needle = n + op;
+						size_t at = 0;
+						while( ( at = src.find( needle, at ) ) != std::string::npos ) {
+							const bool wholeWord = ( at == 0 ||
+								!( std::isalnum( (unsigned char)src[at-1] ) || src[at-1] == '_' ) );
+							size_t p = at + needle.size();
+							const size_t st = p;
+							while( p < src.size() && ( std::isalnum( (unsigned char)src[p] ) || src[p] == '_' ) ) { ++p; }
+							if( wholeWord && p > st ) {
+								const std::string field = src.substr( st, p - st );
+								seen.push_back( field );
+								bool ok = false;
+								for( size_t i = 0; i < nKeyed; ++i ) {
+									if( field == kKeyedPainterRiFields[i] ) { ok = true; break; }
+								}
+								if( !ok ) {
+									unaccounted.push_back( f.filename().string() + ": " + n + op + field );
+								}
+							}
+							at += needle.size();
+						}
+					}
+				}
+			}
+		}
+		std::sort( seen.begin(), seen.end() );
+		seen.erase( std::unique( seen.begin(), seen.end() ), seen.end() );
+		std::sort( unaccounted.begin(), unaccounted.end() );
+		unaccounted.erase( std::unique( unaccounted.begin(), unaccounted.end() ), unaccounted.end() );
+
+		Check( painterFiles > 0, "painter-ri census: found src/Library/Painters to scan" );
+		std::cout << "  painter `ri` fields read (" << seen.size() << "):";
+		for( const std::string& w : seen ) { std::cout << " " << w; }
+		std::cout << std::endl;
+		for( const std::string& u : unaccounted ) {
+			std::cout << "  UNACCOUNTED painter ri read: " << u << std::endl;
+		}
+		Check( unaccounted.empty(),
+		       "painter-ri census: every RayIntersectionGeometric field read in "
+		       "src/Library/Painters is accounted for by ExpressionMemo::ProgramKey -- "
+		       "either as a context value it already compares or in DL-25's "
+		       "PainterSampleHitKey.  A field outside that set makes a sample()-calling "
+		       "expression program's L2 memo entry return one hit's answer at another "
+		       "hit; extend PainterSampleHitKey (and its kFields, Equals and "
+		       "MakeSampleHitKey) together with this list" );
+	}
+
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "
 	          << passCount << " passed, " << failCount << " failed." << std::endl;

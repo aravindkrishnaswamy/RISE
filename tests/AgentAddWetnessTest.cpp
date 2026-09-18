@@ -336,6 +336,13 @@ static void TestLambertianRewrite()
 	Check( r.scatteringSlots.empty() && r.scatteringPainters.empty(),
 	       "A: the GGX/PBR in-place branch's scatteringSlots/Painters stay EMPTY here -- this branch's "
 	       "gloss half is coatRoughnessPainter instead" );
+	// The POSITIVE half of review P1-2's pair: a flat `uniformcolor_painter`
+	// base DOES have a literal triple, so `hasBaseColor` is true and
+	// baseR/G/B carry it.  Without this control, F4b's `!hasBaseColor`
+	// would also pass if the flag were simply hard-wired false.
+	Check( r.hasBaseColor,
+	       "A2: hasBaseColor is TRUE on a flat uniformcolor_painter base -- there really is a literal "
+	       "triple the darkening bands around" );
 	Check( std::fabs( r.baseR - 0.42 ) < 1e-9 && std::fabs( r.baseG - 0.4 ) < 1e-9 &&
 	       std::fabs( r.baseB - 0.37 ) < 1e-9,
 	       "A2: baseR/G/B still report the authored pnt_stone colour (read, even though never rewritten)" );
@@ -825,7 +832,14 @@ static void TestRefusals()
 		std::remove( tmp.c_str() );
 	}
 
-	// F4: textured albedo -- clause 2.
+	// F4 (DL-25, docs/WETNESS_COAT_DESIGN.md sec 4(g)/6.9 item 6b): textured
+	// albedo -- clause 2. Pre-DL-25 this REFUSED outright (Phase 1 could not
+	// darken a textured substrate at all); the expression VM's sample()
+	// builtin now lets it through. Lambertian base: the coat WRAP
+	// (coated_material) fires -- its own layered transport darkens ANY
+	// substrate, textured included, so NO separate sample()-based painter
+	// is even needed on this branch (see F4b below for the branch that DOES
+	// mint one).
 	{
 		std::string body = Preamble();
 		body += SphereGeo( "s" );
@@ -838,11 +852,88 @@ static void TestRefusals()
 			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 			const std::string before = sess->ReadDocument();
 			const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness( "mat_tex" );
-			Check( !r.applied,
-			       "F4 MONEY: a textured albedo REFUSES -- Phase 1 cannot darken a textured substrate "
-			       "(the expression VM cannot sample another painter), so this declines rather than "
-			       "deliver a coat with no darkening" );
-			Check( sess->ReadDocument() == before, "F4: document byte-identical" );
+			Check( r.ok && r.applied,
+			       std::string( "F4 MONEY (DL-25): a textured albedo now APPLIES -- " ) + r.message );
+			Check( r.wrappedInCoat,
+			       "F4: the Lambertian base is WRAPPED -- coated_material's own transport darkens the "
+			       "textured substrate physically, with no separate painter needed" );
+			Check( r.reflectanceSlot.empty() && r.reflectancePainter.empty(),
+			       "F4: no reflectance/darkening painter minted on the Lambertian branch (same as a flat "
+			       "base -- coated_material performs the darkening either way)" );
+			const std::string after = sess->ReadDocument();
+			Check( after != before, "F4: the document really changed" );
+			Check( after.find( "name mat_tex\n\treflectance pnt_textured\n" ) != std::string::npos,
+			       "F4 MONEY: the ORIGINAL textured material chunk is left BYTE-IDENTICAL -- still bound "
+			       "to `pnt_textured`, untouched by the wrap" );
+			Check( after.find( "base\t\t\tmat_tex" ) != std::string::npos,
+			       "F4: the coated_material's `base` names the untouched textured original" );
+			sess.reset(); pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// F4b (DL-25): textured albedo on the GGX in-place branch, which DOES
+	// mint its own reflectance painter (item 8 only demoted the Lambertian
+	// branch's darkening to coated_material) -- the money assertion is that
+	// the emitted expression actually SAMPLES the substrate painter rather
+	// than copying out a literal it does not have.
+	{
+		std::string body = Preamble();
+		body += SphereGeo( "s" );
+		body += GgxNonMetal( "mat_tex_ggx", "pnt_textured", 0.2 );
+		body += Obj( "o1", "s", "mat_tex_ggx", 0 );
+		const std::string tmp = TempPath( "addwet_f4b.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "F4b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness( "mat_tex_ggx" );
+			Check( r.ok && r.applied,
+			       std::string( "F4b MONEY (DL-25): a textured GGX albedo applies -- " ) + r.message );
+			Check( !r.wrappedInCoat, "F4b: GGX in-place branch, not a coat wrap" );
+			Check( !r.reflectancePainter.empty(), "F4b: a reflectance painter WAS minted (unlike the Lambertian branch)" );
+			Check( r.texturedAlbedo, "F4b MONEY: texturedAlbedo reports true" );
+			// DL-25 review P1-2: on the textured branch there IS no literal
+			// base triple, so `hasBaseColor` must say so and the message
+			// must name the substrate painter instead of claiming the verb
+			// darkened a colour.  Pre-fix `hasReadableColor` was set true
+			// while baseR/G/B stayed 0, so RPC/MCP emitted
+			// `baseColor: [0,0,0]` and the message read "...darkening/
+			// saturating the 0 0 0 that was there", which is not a fact
+			// about the document.
+			Check( !r.hasBaseColor,
+			       "F4b MONEY (review P1-2): hasBaseColor is FALSE on a textured substrate -- there is "
+			       "no literal triple the darkening was banded from" );
+			Check( r.baseR == 0.0 && r.baseG == 0.0 && r.baseB == 0.0,
+			       "F4b: baseR/G/B stay at their zero defaults on the textured branch (and `hasBaseColor` "
+			       "is what tells a consumer not to read them)" );
+			Check( r.message.find( "0 0 0" ) == std::string::npos,
+			       std::string( "F4b MONEY (review P1-2): the success message does NOT claim a 0 0 0 base was "
+			                    "darkened -- got: " ) + r.message );
+			Check( r.message.find( "`pnt_textured`" ) != std::string::npos,
+			       std::string( "F4b MONEY (review P1-2): the success message NAMES the substrate painter it "
+			                    "samples per-texel -- got: " ) + r.message );
+			const std::string after = sess->ReadDocument();
+			Check( after.find( "def\t\t\t\tbase_color sample(pnt_textured)" ) != std::string::npos,
+			       "F4b MONEY: the minted reflectance painter's expression SAMPLES the substrate "
+			       "(`sample(pnt_textured)`) instead of copying out a literal base_r/g/b it does not have -- "
+			       "extracted text:\n" + after );
+			Check( after.find( "base_r" ) == std::string::npos,
+			       "F4b: no base_r/g/b literal params on the textured path (there is no single literal to band around)" );
+			Check( after.find( "pow(base_color.x, k)" ) != std::string::npos &&
+			       after.find( "pow(base_color.y, k)" ) != std::string::npos &&
+			       after.find( "pow(base_color.z, k)" ) != std::string::npos,
+			       "F4b: the darkening expression raises the SAMPLED colour's components to k, per-channel" );
+			{
+				const RISE::Cst::Document rt = RISE::Cst::ParseToCst( after );
+				Check( RISE::Cst::DocItemCount( rt ) > 0, "F4b: the emitted document round-trips through ParseToCst" );
+			}
+			{
+				const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( after );
+				bool anyError = false;
+				for( const Agent::AgentDiagnostic& d : diags ) if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+				Check( !anyError, "F4b: the rewritten document validates with zero error diagnostics" );
+			}
 			sess.reset(); pJob->release();
 		}
 		std::remove( tmp.c_str() );
@@ -1445,6 +1536,39 @@ static void TestWireSurface()
 			Check( result.get( "coatWeightPainter" ).asString().size() > 0, "H: ...and the coat_weight painter it minted" );
 			pJob2->release();
 			std::remove( tmp2.c_str() );
+		}
+	}
+
+	// DL-25 review P1-2, at the RPC surface this time: on a TEXTURED
+	// substrate the `baseColor` field must be ABSENT, not `[0, 0, 0]`.
+	// Pre-fix the session set `hasReadableColor` true while leaving
+	// baseR/G/B at their zero defaults, and this emitter published them
+	// unconditionally -- so a caller reading the JSON was told the
+	// document's base colour was black.
+	{
+		std::string bodyT = Preamble();
+		bodyT += SphereGeo( "s" );
+		bodyT += GgxNonMetal( "mat_tex_rpc", "pnt_textured", 0.2 );
+		bodyT += Obj( "o1", "s", "mat_tex_rpc", 0 );
+		const std::string tmpT = TempPath( "addwet_h_tex.RISEscene" );
+		Job* pJobT = LoadScene( bodyT, tmpT );
+		Check( pJobT != nullptr, "H-textured: fixture derives" );
+		if( pJobT ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJobT );
+			Agent::AgentRpcDispatcher disp( std::move( sess ) );
+			const std::string resp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"add_wetness\",\"params\":{}}" );
+			Agent::JsonValue env; std::string perr;
+			Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "H-textured: the response parses" );
+			const Agent::JsonValue& result = env.get( "result" );
+			Check( result.get( "applied" ).asBool(), "H-textured: the RPC form applied the rewrite" );
+			Check( result.get( "texturedAlbedo" ).asBool(), "H-textured: ...and reports texturedAlbedo" );
+			Check( resp.find( "\"baseColor\"" ) == std::string::npos,
+			       std::string( "H-textured MONEY (review P1-2): `baseColor` is OMITTED on a textured "
+			                    "substrate -- a zero triple there is not a fact about the document. "
+			                    "Response: " ) + resp );
+			pJobT->release();
+			std::remove( tmpT.c_str() );
 		}
 	}
 

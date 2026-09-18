@@ -4615,6 +4615,40 @@ namespace RISE
 									const double maxSlope			///< [in] Tilt bound as a slope (1 = 45 deg); 0 = unclamped, negative refused
 									) = 0;
 
+		//! Adds an atan2-combinator SCALAR painter: atan2(y, x) + offset,
+		//! as a genuine IScalarPainter (no JH uplift).  Built for DL-17
+		//! (docs/DEBT_LEDGER.md, docs/CLOTH_FABRIC_DESIGN.md sec 15 item
+		//! 12): glTF KHR_materials_anisotropy's PER-TEXEL rotation --
+		//! direction = normalize(2*RG - 1), rotation = atan2(dir.y,
+		//! dir.x) + scalar anisotropyRotation.  `y`/`x` name previously-
+		//! registered IScalarPainters (typically two
+		//! AddPainterChannelScalarPainter results reading the same
+		//! texture's G / R channels with `scale 2 bias -1`); `offset` is
+		//! an additive constant in radians (the scalar rotation term,
+		//! folded in here via an internal AddScalarPainter so callers
+		//! don't need a second combinator round-trip).  The registered
+		//! scalar_painter is a legal binding for `ggx_material`'s DL-16
+		//! `tangent_rotation_scalar` slot (or `pbr_metallic_roughness_-
+		//! material`'s `anisotropy_rotation`, which now dual-resolves
+		//! the same way -- see Job::AddPBRMetallicRoughnessMaterial).
+		//!
+		//! No public Add{Multiply,Add,Scaled}ScalarPainter exists on IJob
+		//! today (those combinators are scene-language-only, reached via
+		//! IJobPriv from the chunk parser) -- this is a purpose-built
+		//! bridge for glTF import, mirroring AddPainterChannelScalarPainter's
+		//! own precedent, not a general scalar-algebra surface.
+		//!
+		//! Appended after AddReliefModifierEx per the append-only IJob
+		//! tail (preserves every prior vtable slot -- see
+		//! SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddAtan2ScalarPainter(
+									const char* name,				///< [in] Name of the new scalar painter
+									const char* y,					///< [in] Name of a registered IScalarPainter (Y operand)
+									const char* x,					///< [in] Name of a registered IScalarPainter (X operand)
+									const double offset				///< [in] Additive constant in radians
+									) = 0;
+
 	};
 
 

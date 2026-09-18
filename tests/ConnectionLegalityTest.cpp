@@ -570,14 +570,42 @@ int main()
 		}
 
 		// 3d. tangent_rotation's oddball: Color pipe, angle by meaning.
-		// A colour painter is legal; a scalar_painter is not.
+		// A colour painter is legal.  DL-16: a scalar_painter is ALSO
+		// legal now (Job.cpp's ResolveRotationPainterDual resolves it via
+		// the Scalar pipe first, deprecated in favour of the dedicated
+		// tangent_rotation_scalar slot but still real-parser-accepted) --
+		// see ChunkParserRegistry.cpp's colorAlsoAcceptsScalar flag on
+		// this parameter.
 		{
 			Check( ConnectionLegality::CheckConnectionByKeyword(
 				"ggx_material", "tangent_rotation", "uniformcolor_painter", ChunkCategory::Painter ).legal,
 				"3d: tangent_rotation accepts a colour painter" );
-			Check( !ConnectionLegality::CheckConnectionByKeyword(
+			Check( ConnectionLegality::CheckConnectionByKeyword(
 				"ggx_material", "tangent_rotation", "scalar_painter", ChunkCategory::Painter ).legal,
-				"3d: tangent_rotation rejects a scalar_painter (the documented oddball, not a scalar slot)" );
+				"3d: tangent_rotation ALSO accepts a scalar_painter (DL-16 colorAlsoAcceptsScalar -- "
+				"deprecated in favour of tangent_rotation_scalar, but the real parser accepts it)" );
+
+			// Review round 2, P2: the colorAlsoAcceptsScalar branch's own
+			// per-channel rejection (requireSingle, mirroring 3f's
+			// Scalar-pipe check above) had zero coverage.  A per-channel
+			// (`values`-form) scalar_painter must be ILLEGAL here, same as
+			// it is for a genuine Scalar-pipe slot -- this slot reads
+			// `.v[0]` only, exactly like sheen_roughness does in 3f.
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"ggx_material", "tangent_rotation", "scalar_painter", ChunkCategory::Painter,
+				/*candidateIsPerChannelValues=*/true ).legal,
+				"3d MONEY: tangent_rotation rejects a PER-CHANNEL scalar_painter (requireSingle "
+				"gates colorAlsoAcceptsScalar's per-channel check, mirroring CheckScalarPipe)" );
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"ggx_material", "tangent_rotation_scalar", "scalar_painter", ChunkCategory::Painter,
+				/*candidateIsPerChannelValues=*/true ).legal,
+				"3d MONEY: the new tangent_rotation_scalar slot ALSO rejects a per-channel "
+				"scalar_painter (ordinary Scalar-pipe requireSingle path)" );
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"pbr_metallic_roughness_material", "anisotropy_rotation", "scalar_painter", ChunkCategory::Painter,
+				/*candidateIsPerChannelValues=*/true ).legal,
+				"3d MONEY: the DL-17 sibling anisotropy_rotation rejects a per-channel "
+				"scalar_painter too (same colorAlsoAcceptsScalar + requireSingle pattern)" );
 		}
 
 		// 3e. function2d-slot vs expression_painter: composite_function2d_-

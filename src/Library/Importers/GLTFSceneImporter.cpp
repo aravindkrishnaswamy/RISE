@@ -1292,19 +1292,32 @@ namespace
 			//   α_t = mix(α, 1.0, anisotropy²)    (lobe stretch along tangent)
 			//   tangent-frame rotation = anisotropy_rotation
 			// Phase 1 (L8) shipped scalar strength + scalar rotation.
-			// Phase 2 (L12.C) adds per-pixel STRENGTH only via the
+			// Phase 2 (L12.C) added per-pixel STRENGTH via the
 			// anisotropy_texture's B channel:
 			//   anisotropy_factor ← anisotropy_strength × anisotropy_texture.B
-			// Per-pixel ROTATION (encoded in R, G as cos(angle)*0.5+0.5,
-			// sin(angle)*0.5+0.5) requires an `atan2` painter primitive
-			// or a contract change to pTangentRotation (vector instead of
-			// scalar).  Either is a separate landing — for now we honour
-			// the scalar `anisotropy_rotation` factor and log once that
-			// the per-pixel direction is dropped.
+			// DL-17 (2026-09-17): per-pixel ROTATION, per the
+			// KHR_materials_anisotropy spec -- the texture's R/G channels
+			// encode direction = normalize(2*RG - 1) in tangent space;
+			// rotation = atan2(dir.y, dir.x) + the scalar anisotropyRotation
+			// term.  Built from two AddPainterChannelScalarPainter reads
+			// (R and G, each remapped [0,1] -> [-1,1] via scale 2 bias -1)
+			// combined through the new Atan2ScalarPainter combinator
+			// (Job::AddAtan2ScalarPainter, DL-16/DL-17); the scalar
+			// anisotropy_rotation term is folded in as that call's
+			// `offset`.  The result is a genuine IScalarPainter name,
+			// which `Job::AddPBRMetallicRoughnessMaterial`'s
+			// `anisotropy_rotation` parameter now accepts directly (its
+			// resolution was widened to dual-pipe alongside DL-16's
+			// ggx_material.tangent_rotation_scalar -- see
+			// ResolveRotationPainterDual in Job.cpp).  No normalization by
+			// |RG| is applied before atan2 -- atan2's ratio is scale-
+			// invariant, so an unnormalized (2R-1, 2G-1) yields the exact
+			// same angle as the spec's explicitly normalized direction.
 			std::string anisoFactorStr = "0.0";
 			std::string anisoRotationStr = "0.0";
 			if( mat.has_anisotropy ) {
 				const double as = (double)mat.anisotropy.anisotropy_strength;
+				const double scalarRot = (double)mat.anisotropy.anisotropy_rotation;
 				char buf[64];
 
 				if( mat.anisotropy.anisotropy_texture.texture ) {
@@ -1320,14 +1333,18 @@ namespace
 							/*chan B*/ 2, /*scale*/ as, /*bias*/ 0.0 );
 						anisoFactorStr = nAnisoF;
 
-						// Per-pixel rotation needs atan2(2G-1, 2R-1) — log
-						// once and fall back to the scalar.
-						GlobalLog()->PrintEx( eLog_Info,
-							"GLTFSceneImporter:: material `%s` declares anisotropy_texture "
-							"with per-pixel direction (R, G); current build honours per-pixel "
-							"STRENGTH (B channel × %.3f) but applies the SCALAR rotation "
-							"(%.3f rad) uniformly.  Per-pixel rotation is a follow-up landing.",
-							matName.c_str(), as, (double)mat.anisotropy.anisotropy_rotation );
+						// Per-pixel rotation: dir.x <- 2R-1, dir.y <- 2G-1,
+						// rotation <- atan2(dir.y, dir.x) + scalarRot.
+						const std::string nAnisoDirX = PainterName( prefix, "aniso_dir_x", matIdx );
+						job.AddPainterChannelScalarPainter( nAnisoDirX.c_str(), aTexName.c_str(),
+							/*chan R*/ 0, /*scale*/ 2.0, /*bias*/ -1.0 );
+						const std::string nAnisoDirY = PainterName( prefix, "aniso_dir_y", matIdx );
+						job.AddPainterChannelScalarPainter( nAnisoDirY.c_str(), aTexName.c_str(),
+							/*chan G*/ 1, /*scale*/ 2.0, /*bias*/ -1.0 );
+						const std::string nAnisoRot = PainterName( prefix, "aniso_rotation", matIdx );
+						job.AddAtan2ScalarPainter( nAnisoRot.c_str(),
+							nAnisoDirY.c_str(), nAnisoDirX.c_str(), scalarRot );
+						anisoRotationStr = nAnisoRot;
 					} else {
 						std::snprintf( buf, sizeof(buf), "%.6f", as );
 						anisoFactorStr = buf;
@@ -1337,8 +1354,10 @@ namespace
 					anisoFactorStr = buf;
 				}
 
-				std::snprintf( buf, sizeof(buf), "%.6f", (double)mat.anisotropy.anisotropy_rotation );
-				anisoRotationStr = buf;
+				if( anisoRotationStr == "0.0" ) {
+					std::snprintf( buf, sizeof(buf), "%.6f", scalarRot );
+					anisoRotationStr = buf;
+				}
 			}
 
 			// Item 9 (docs/WETNESS_COAT_DESIGN.md sec 13 Phase 2, 2026-09-01):

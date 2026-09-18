@@ -46,6 +46,7 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 
 // S3 (P2.1 + P2.2: scalar_painter{painter} bridge, ramp_painter) additions
@@ -4445,6 +4446,693 @@ static void TestPoDomainCompileTimeSplit()
 	}
 }
 
+//======================================================================
+// DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
+// the painter-sampling builtins `sample(name)` (-> vec3, IPainter) and
+// `sample_scalar(name)` (-> scalar, IScalarPainter, no JH uplift).
+//
+// RED, before this arc: the pre-fix FnSig table (ExpressionEval.h) had
+// no "sample"/"sample_scalar" entries and ParseCall had no bespoke case
+// for either name, so `sample(x)` in ANY expression body compiled to
+// "unknown function `sample`" -- the same path an unrecognised
+// identifier like `frobnicate(x)` hits today.  This is what made
+// WETNESS_COAT_DESIGN.md sec 6.4 clause 2 an outright REFUSAL for a
+// textured substrate rather than a half-delivered darkening: there was
+// no way to write the expression an author would want at all.
+//======================================================================
+static void TestPainterSampleCompileTimeRegistration()
+{
+	std::cout << "Test 75: sample()/sample_scalar() -- compile-time name registration, dedup, and .x/.y/.z swizzle" << std::endl;
+
+	{
+		Prog p( "sample(rock).x" );
+		Check( p.ok, "sample(rock).x compiles" );
+		if( p.ok ) {
+			Check( p.prog.UsesPainterSample(), "UsesPainterSample() true" );
+			Check( p.prog.ColorPainterRefNames().size() == 1, "one colour ref registered" );
+			if( p.prog.ColorPainterRefNames().size() == 1 )
+				Check( p.prog.ColorPainterRefNames()[0] == "rock", "registered name is `rock`" );
+			Check( p.prog.ScalarPainterRefNames().empty(), "no scalar refs from sample()" );
+			Check( !p.prog.IsPainterRefsBound(), "not yet bound (compile time only registers the NAME)" );
+		}
+	}
+	{
+		// Two call sites, same name: ONE registered ref (RegisterPainterRef's
+		// dedup), not two -- what BindPainterRefs later resolves against is
+		// a per-DISTINCT-NAME list, not a per-call-site one.
+		Prog p( "sample(rock).x + sample(rock).y" );
+		Check( p.ok, "two sample(rock) call sites compile" );
+		if( p.ok ) Check( p.prog.ColorPainterRefNames().size() == 1, "deduped to one colour ref" );
+	}
+	{
+		Prog p( "sample_scalar(roughmap)" );
+		Check( p.ok, "sample_scalar(roughmap) compiles" );
+		if( p.ok ) {
+			Check( p.prog.ScalarPainterRefNames().size() == 1, "one scalar ref registered" );
+			if( p.prog.ScalarPainterRefNames().size() == 1 )
+				Check( p.prog.ScalarPainterRefNames()[0] == "roughmap", "registered name is `roughmap`" );
+			Check( p.prog.ColorPainterRefNames().empty(), "no colour refs from sample_scalar()" );
+		}
+	}
+	{
+		// Distinct lists: sampling the SAME literal name once as a colour
+		// and once as a scalar registers it in BOTH lists independently --
+		// they are resolved against two different painter managers later.
+		Prog p( "sample(x).x + sample_scalar(x)" );
+		Check( p.ok, "sample(x) and sample_scalar(x) coexist" );
+		if( p.ok ) {
+			Check( p.prog.ColorPainterRefNames().size() == 1, "one colour ref" );
+			Check( p.prog.ScalarPainterRefNames().size() == 1, "one scalar ref" );
+		}
+	}
+}
+
+static void TestPainterSampleParseDiagnostics()
+{
+	std::cout << "Test 76: sample()/sample_scalar() -- gating, arity, and bare-identifier diagnostics" << std::endl;
+
+	// Gated on EnableContextVars, exactly like occlusion()/proximity() --
+	// expression_function2d's frozen UV-only contract must not grow it.
+	{
+		ExpressionProgram::Builder b;   // EnableContextVars left at its default (false)
+		ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( !b.Finalize( "sample(rock).x", p ), "sample() refused without context vars" );
+		Check( b.Error().find( "3D surface context" ) != std::string::npos,
+			"diagnostic names the 3D-surface-context requirement: " + b.Error() );
+	}
+	{
+		ExpressionProgram::Builder b;
+		ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( !b.Finalize( "sample_scalar(rough)", p ), "sample_scalar() refused without context vars" );
+		Check( b.Error().find( "3D surface context" ) != std::string::npos,
+			"diagnostic names the 3D-surface-context requirement (scalar form): " + b.Error() );
+	}
+	// The argument is a BARE IDENTIFIER, not a general expression -- a
+	// number, a quoted string, or an empty argument list must each fail
+	// with a dedicated diagnostic, not silently parse as something else.
+	{
+		Prog p( "sample(3.0)" );
+		Check( !p.ok, "sample(<number>) refused" );
+		Check( p.builder.Error().find( "bare painter name" ) != std::string::npos,
+			"diagnostic explains a bare name is expected: " + p.builder.Error() );
+	}
+	{
+		Prog p( "sample()" );
+		Check( !p.ok, "sample() with no argument refused" );
+	}
+	{
+		Prog p( "sample(a, b)" );
+		Check( !p.ok, "sample(a, b) -- two arguments -- refused" );
+	}
+	// A genuinely unresolved-at-PARSE-time reference (before BindPainterRefs
+	// ever runs) is NOT itself a parse error -- names are compile-time
+	// TEXT, resolved later -- this pins that boundary so a future change
+	// doesn't accidentally start resolving names inside the parser.
+	{
+		Prog p( "sample(this_name_is_never_declared_anywhere)" );
+		Check( p.ok, "an unresolved name still compiles -- resolution is an ATTACH-time concern, not a parse-time one" );
+	}
+}
+
+static void TestPainterSampleAttachAndEval()
+{
+	std::cout << "Test 77: sample()/sample_scalar() -- end-to-end through Job/CST: attach-time binding, per-texel evaluation, self-reference and forward-reference diagnostics" << std::endl;
+
+	// (a) sample(name) against a uniformcolor_painter, forward-declared
+	// (the ONLY order the scene language allows): GetColor matches the
+	// source painter's own colour exactly.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"uniformcolor_painter\n{\nname rock_flat\ncolor 0.4 0.5 0.6\n}\n"
+			"expression_painter\n{\nname wet_flat\nexpr sample(rock_flat)\n}\n";
+		Check( S2::ParseBody( "samp_flat", body, *job ), "uniformcolor_painter + sample()-based expression_painter parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* src = priv->GetPainters()->GetItem( "rock_flat" );
+			IPainter* wet = priv->GetPainters()->GetItem( "wet_flat" );
+			Check( src != 0 && wet != 0, "both painters registered" );
+			if( src && wet ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const RISEPel cSrc = src->GetColor( r );
+				const RISEPel cWet = wet->GetColor( r );
+				CheckClose( cWet[0], cSrc[0], 1e-9, "sample(rock_flat).r == rock_flat's own R" );
+				CheckClose( cWet[1], cSrc[1], 1e-9, "sample(rock_flat).g == rock_flat's own G" );
+				CheckClose( cWet[2], cSrc[2], 1e-9, "sample(rock_flat).b == rock_flat's own B" );
+			}
+		}
+		job->release();
+	}
+
+	// (b) sample_scalar(name) against a scalar_painter{value}: same
+	// exact-match contract, no JH uplift (IScalarPainter never goes
+	// through GetColorNM's uplift path -- ISCALARPAINTER_REFACTOR.md).
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"scalar_painter\n{\nname rough_flat\nvalue 0.73\n}\n"
+			"scalar_painter\n{\nname wet_rough\nexpression sample_scalar(rough_flat)\n}\n";
+		Check( S2::ParseBody( "samp_scalar_flat", body, *job ), "scalar_painter + sample_scalar()-based scalar_painter parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IScalarPainter* wet = priv->GetScalarPainters()->GetItem( "wet_rough" );
+			Check( wet != 0, "registered" );
+			if( wet ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				CheckClose( wet->GetValuesAt( r ).v[0], 0.73, 1e-9, "sample_scalar(rough_flat) == rough_flat's own value" );
+			}
+		}
+		job->release();
+	}
+
+	// (b2) DL-25 round-3 review P2-3: WHICH WAVELENGTH `sample_scalar()`
+	// reports.  Every other scalar fixture in this file binds a CONSTANT
+	// painter, whose three RGB-wavelength lanes are equal -- so none of them
+	// can tell the shipped 549 nm lane (`ScalarPainterRGB::
+	// kSingleSampleChannel`, the representative every other single-scalar
+	// consumer in RISE takes) from the 611 nm lane 0 the first
+	// implementation read.  This one binds a genuinely WAVELENGTH-VARYING
+	// painter -- BK7's Sellmeier dispersion, whose lanes differ in the third
+	// decimal -- and asserts the middle one.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"scalar_painter\n{\nname bk7\nsellmeier 1.03961212 0.231792344 1.01046945 "
+			"0.00600069867 0.0200179144 103.560653\n}\n"
+			"scalar_painter\n{\nname bk7_via_sample\nexpression sample_scalar(bk7)\n}\n";
+		Check( S2::ParseBody( "samp_dispersive", body, *job ),
+			"(b2) a Sellmeier scalar_painter + a sample_scalar() of it parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IScalarPainter* src = priv->GetScalarPainters()->GetItem( "bk7" );
+			IScalarPainter* via = priv->GetScalarPainters()->GetItem( "bk7_via_sample" );
+			Check( src != 0 && via != 0, "(b2) both scalar painters registered" );
+			if( src && via ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const ScalarTriple lanes = src->GetValuesAt( r );
+				// The fixture is only a discriminator if the lanes really do
+				// differ -- a constant painter would make every assertion
+				// below pass on either channel choice.
+				Check( std::fabs( lanes.v[0] - lanes.v[1] ) > 1e-4,
+					"(b2) test bug: the substrate must be genuinely wavelength-varying (lane0 " +
+					std::to_string( lanes.v[0] ) + " vs lane1 " + std::to_string( lanes.v[1] ) + ")" );
+				const Scalar got = via->GetValuesAt( r ).v[0];
+				CheckClose( got, lanes.v[ ScalarPainterRGB::kSingleSampleChannel ], 1e-12,
+					"(b2) MONEY: sample_scalar() reports the 549 nm kSingleSampleChannel lane" );
+				Check( std::fabs( got - lanes.v[0] ) > 1e-4,
+					"(b2) ...and NOT lane 0 (611 nm), which is what it read before the review" );
+			}
+		}
+		job->release();
+	}
+
+	// (c) THE PER-TEXEL CASE (the actual point of this builtin, sec 4(g)):
+	// bind sample() to a substrate whose colour genuinely varies with the
+	// hit (P.x), and confirm the OUTER expression's answer varies too --
+	// this is what "darkens a TEXTURED substrate" means at the unit
+	// level, and it is exactly what the memo-safety argument
+	// (ExpressionMemo.h's DL-25 addendum) rests on: the synthetic ri
+	// `sample()` builds carries P through, so two different hits give two
+	// different answers rather than one baked at bind time.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname wood_grain\nexpr vec3(0.2 + 0.1*P.x, 0.15, 0.1)\n}\n"
+			"expression_painter\n{\nname wet_wood\nparam k 1.55\ndef base_color sample(wood_grain)\n"
+			"expr vec3( pow(base_color.x, k), pow(base_color.y, k), pow(base_color.z, k) )\n}\n";
+		Check( S2::ParseBody( "samp_textured", body, *job ), "textured substrate + sample()-based darkening expression parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* wood = priv->GetPainters()->GetItem( "wood_grain" );
+			IPainter* wet = priv->GetPainters()->GetItem( "wet_wood" );
+			Check( wood != 0 && wet != 0, "both registered" );
+			if( wood && wet ) {
+				RayIntersectionGeometric r1( Ray(), nullRasterizerState ); r1.bHit = true; r1.ptIntersection = Point3( 0.0, 0, 0 );
+				RayIntersectionGeometric r2( Ray(), nullRasterizerState ); r2.bHit = true; r2.ptIntersection = Point3( 1.0, 0, 0 );
+				const RISEPel wood1 = wood->GetColor( r1 );
+				const RISEPel wood2 = wood->GetColor( r2 );
+				const RISEPel wet1 = wet->GetColor( r1 );
+				const RISEPel wet2 = wet->GetColor( r2 );
+				Check( wood1[0] != wood2[0], "test bug: the substrate itself must vary with P.x" );
+				Check( wet1[0] != wet2[0], "the WET painter's darkened R varies with P.x -- per-texel, not a baked constant" );
+				CheckClose( wet1[0], std::pow( wood1[0], 1.55 ), 1e-9, "wet(P=0) == pow(substrate(P=0), k)" );
+				CheckClose( wet2[0], std::pow( wood2[0], 1.55 ), 1e-9, "wet(P=1) == pow(substrate(P=1), k)" );
+			}
+		}
+		job->release();
+	}
+
+	// (d) forward reference (the base declared AFTER the sampler) fails
+	// with "not found" -- the SAME rule function1d/function2d/base/etc
+	// bridges already enforce, not a new one sample() invented.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname wet_early\nexpr sample(rock_late)\n}\n"
+			"uniformcolor_painter\n{\nname rock_late\ncolor 0.1 0.2 0.3\n}\n";
+		Check( !S2::ParseBody( "samp_forward", body, *job ), "a forward reference to a not-yet-declared painter is refused" );
+		job->release();
+	}
+
+	// (e) self-reference: a chunk naming ITSELF is refused with the
+	// dedicated diagnostic (the painter manager genuinely does not have
+	// it yet -- AddItem runs only after this call succeeds), not the
+	// generic "not found".
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "expression_painter\n{\nname mirror\nexpr sample(mirror)\n}\n";
+		Check( !S2::ParseBody( "samp_self", body, *job ), "a chunk sampling its own not-yet-registered name is refused" );
+		job->release();
+	}
+
+	// (e2) DL-25 review P3: the self-reference check is per MANAGER, not
+	// per NAME.  The colour and physical-scalar painters live in two
+	// independent named managers, so an `expression_painter` called `grain`
+	// and a `scalar_painter` called `grain` are two DIFFERENT chunks -- and
+	// a colour expression naming `sample_scalar(grain)` is referring to the
+	// scalar one, which is already registered and perfectly resolvable.
+	// The first implementation compared the bare name against BOTH
+	// resolvers and refused it as a self-reference.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"scalar_painter\n{\nname grain\nvalue 0.62\n}\n"
+			"expression_painter\n{\nname grain\nexpr vec3(sample_scalar(grain), 0.1, 0.2)\n}\n";
+		Check( S2::ParseBody( "samp_crossns", body, *job ),
+			"(e2) a COLOUR expression_painter may sample_scalar() a SCALAR painter of the same name -- "
+			"different manager, different chunk, not a self-reference" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* p = priv->GetPainters()->GetItem( "grain" );
+			Check( p != 0, "(e2) the colour painter registered" );
+			if( p ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				CheckClose( p->GetColor( r )[0], 0.62, 1e-9,
+					"(e2) ...and it really read the scalar chunk's own value" );
+			}
+		}
+		job->release();
+	}
+
+	// (e3) the mirror image, and the control that keeps (e2) honest: a
+	// SCALAR painter's expression naming its OWN scalar name is still a
+	// self-reference and still refused.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "scalar_painter\n{\nname mirror_s\nexpression sample_scalar(mirror_s)\n}\n";
+		Check( !S2::ParseBody( "samp_self_scalar", body, *job ),
+			"(e3) a scalar_painter sampling its OWN scalar name is still refused" );
+		job->release();
+	}
+
+	// (f) a genuinely unresolvable name (never declared at all) refuses
+	// the same way.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "expression_painter\n{\nname wet_missing\nexpr sample(does_not_exist_anywhere)\n}\n";
+		Check( !S2::ParseBody( "samp_missing", body, *job ), "an undeclared painter name is refused" );
+		job->release();
+	}
+
+	// (g) expression_function2d (the frozen UV-only surface) refuses
+	// sample() the same way it refuses occlusion()/proximity() -- the
+	// gating gate is shared (m_contextVarsEnabled), not a new one.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"uniformcolor_painter\n{\nname rock_f2d\ncolor 0.5 0.5 0.5\n}\n"
+			"expression_function2d\n{\nname bad_f2d\nexpr sample(rock_f2d)\n}\n";
+		Check( !S2::ParseBody( "samp_f2d", body, *job ), "expression_function2d refuses sample() (UV-only, frozen contract)" );
+		job->release();
+	}
+}
+
+//======================================================================
+// Test 78 -- DL-25 REVIEW P1-1: `sample()` / `sample_scalar()` evaluate
+// the bound painter at THE CALLER'S OWN HIT RECORD, not at a synthetic
+// five-field stand-in.
+//
+// The first DL-25 implementation built a fresh `RayIntersectionGeometric`
+// carrying only bHit / ptCoord / ptIntersection / ptObjIntersec /
+// vNormal and default-constructing everything else.  That is not a
+// PARTIAL record, it is a WRONG one for every painter that reads
+// anything else, and the fields it drops are precisely the ones the
+// flagship recipe depends on:
+//
+//   (a) txFootprint  -- TexturePainter::SampleTextured gates its whole
+//       mip / pre-filter path on `ri.txFootprint.valid`, so a sampled
+//       image painter silently degraded to an UNFILTERED base-level
+//       point sample: `def base_color sample(rock_albedo)` turned a
+//       mip-filtered albedo into an aliasing one.
+//   (b) derivatives -- `curv` / `curvR` in a sampled expression painter
+//       read 0 instead of the hit's real mean curvature.
+//   (c) txFootprint.widthValid -- `fw` / `fwo` read 0, so every octave
+//       fade in a sampled fbm/turbulence/ridged body switched off.
+//   (d) signals     -- occlusion() / convexity() / thickness() /
+//       proximity() / interior() in a sampled expression painter all
+//       collapsed to their neutral values.
+//   (e) vColor / bHasVertexColor -- vertex_color_painter returned its
+//       fallback.
+//   (f) ray         -- iridescent_painter's |dot(view,N)| collapsed to
+//       its bias.
+//   (g) ptCoord1 / bHasTexCoord1 -- TexCoord1Painter fell back to UV0.
+//
+// Each row below is a DIRECT evaluation of the substrate painter at a
+// fully-populated hit record versus the SAME painter reached through
+// `sample()`.  They must agree exactly; pre-fix every one of them
+// disagrees.
+//======================================================================
+
+//! A minimal ISurfaceSignalProvider that answers every query with a
+//! fixed, deliberately NON-neutral value, so row (d) can tell a
+//! forwarded signal channel from a dropped one without building real
+//! geometry.  (Neutral occlusion is 1 and neutral convexity is 0 --
+//! ISurfaceSignalProvider.h's NeutralOcclusion/NeutralConvexity -- so
+//! 0.25 and 0.75 are unreachable by accident.)
+namespace {
+	class FixedSignalProvider : public ISurfaceSignalProvider
+	{
+	public:
+		bool ComputeOcclusion( const SurfaceSignalInfo&, const Scalar, const bool, Scalar& out ) const override
+		{ out = Scalar( 0.25 ); return true; }
+		bool ComputeThickness( const SurfaceSignalInfo&, const Scalar, const bool, Scalar& out ) const override
+		{ out = Scalar( 0.5 ); return true; }
+		bool ComputeConvexity( const SurfaceSignalInfo&, const Scalar, const bool, Scalar& out ) const override
+		{ out = Scalar( 0.75 ); return true; }
+	};
+
+	//! A 64x64 one-texel checkerboard, written through RISE's own PNG
+	//! writer.  At a footprint of half the texture the correct filtered
+	//! answer is the checker's MEAN (0.5); an unfiltered point sample is
+	//! whichever texel the (u,v) lands on -- 0 or 1.  That is the widest
+	//! possible gap between the two code paths, which is what makes this
+	//! a red-proof rather than a tolerance argument.
+	std::string WriteCheckerPNG()
+	{
+		const char* t = getenv( "TMPDIR" );
+		std::string dir = ( t && t[0] ) ? t : "/tmp/";
+		if( dir[dir.size()-1] != '/' ) dir += '/';
+		const std::string path = dir + "rise_texexprvm_dl25_checker.png";
+
+		IRasterImage* img = 0;
+		RISE_API_CreateRISEColorRasterImage( &img, 64, 64, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+		for( unsigned int y = 0; y < 64; ++y ) {
+			for( unsigned int x = 0; x < 64; ++x ) {
+				const Scalar c = ( ( x + y ) & 1 ) ? Scalar( 1 ) : Scalar( 0 );
+				img->SetPEL( x, y, RISEColor( RISEPel( c, c, c ), 1.0 ) );
+			}
+		}
+		IWriteBuffer* buf = 0;
+		RISE_API_CreateDiskFileWriteBuffer( &buf, path.c_str() );
+		IRasterImageWriter* writer = 0;
+		RISE_API_CreatePNGWriter( &writer, *buf, 8, eColorSpace_Rec709RGB_Linear );
+		img->DumpImage( writer );
+		if( writer ) writer->release();
+		if( buf )    buf->release();
+		if( img )    img->release();
+		return path;
+	}
+}
+
+static void TestPainterSampleForwardsTheRealHitRecord()
+{
+	std::cout << "Test 78: sample()/sample_scalar() evaluate the bound painter at the CALLER'S hit record (footprint, derivatives, signals, vertex colour, ray, UV1)" << std::endl;
+
+	// ---- (a) TEXTURE FOOTPRINT -------------------------------------
+	// A png_painter read directly at a coarse footprint returns the
+	// filtered mean; read through sample() it must return the same.
+	{
+		const std::string png = WriteCheckerPNG();
+		Job* job = new Job(); job->addref();
+		std::string body;
+		body += "png_painter\n{\nname checker_tex\nfile " + png + "\ncolor_space Rec709RGB_Linear\n}\n";
+		body += "expression_painter\n{\nname via_sample\nexpr sample(checker_tex)\n}\n";
+		Check( S2::ParseBody( "dl25_fp", body, *job ), "(a) png_painter + sample()-based expression_painter parse" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* tex = priv->GetPainters()->GetItem( "checker_tex" );
+			IPainter* via = priv->GetPainters()->GetItem( "via_sample" );
+			Check( tex != 0 && via != 0, "(a) both painters registered" );
+			if( tex && via ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState );
+				r.bHit = true;
+				// A TEXEL CENTRE, not a texel boundary: at exactly
+				// (0.5, 0.5) the base-level bilinear tap straddles four
+				// checker texels and averages to 0.5 all by itself, which
+				// would make this row blind to the very difference it
+				// exists to catch.  (32.5 / 64) lands in the middle of one
+				// texel, so the unfiltered read is that texel's own 0 or 1
+				// while the mip-filtered read is still the checker's mean.
+				r.ptCoord = Point2( 32.5 / 64.0, 32.5 / 64.0 );
+				// Half the texture per pixel step -> a very coarse LOD,
+				// where the checker averages to its mean.
+				r.txFootprint.dudx = 0.5; r.txFootprint.dudy = 0.0;
+				r.txFootprint.dvdx = 0.0; r.txFootprint.dvdy = 0.5;
+				r.txFootprint.valid = true;
+				const RISEPel cDirect = tex->GetColor( r );
+				const RISEPel cVia    = via->GetColor( r );
+				Check( cDirect[0] > 0.2 && cDirect[0] < 0.8,
+					"(a) test bug: the DIRECT read must be filtered (mid-grey), got " + std::to_string( (double)cDirect[0] ) );
+				CheckClose( cVia[0], cDirect[0], 1e-12, "(a) sample(checker_tex).r == the painter's own filtered read" );
+				CheckClose( cVia[1], cDirect[1], 1e-12, "(a) sample(checker_tex).g == direct" );
+				CheckClose( cVia[2], cDirect[2], 1e-12, "(a) sample(checker_tex).b == direct" );
+			}
+		}
+		job->release();
+		remove( png.c_str() );
+	}
+
+	// ---- (b) CURVATURE ---------------------------------------------
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname curv_probe\nexpr vec3(curv, curvR, 0)\n}\n"
+			"expression_painter\n{\nname via_sample_curv\nexpr sample(curv_probe)\n}\n";
+		Check( S2::ParseBody( "dl25_curv", body, *job ), "(b) curvature-reading substrate + sample() parse" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* probe = priv->GetPainters()->GetItem( "curv_probe" );
+			IPainter* via   = priv->GetPainters()->GetItem( "via_sample_curv" );
+			Check( probe != 0 && via != 0, "(b) both registered" );
+			if( probe && via ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState );
+				r.bHit = true;
+				r.derivatives.curvature = Scalar( 2.5 );
+				r.derivatives.curvatureValid = true;
+				r.derivatives.scaleHint = Scalar( 1.0 );
+				const RISEPel cDirect = probe->GetColor( r );
+				const RISEPel cVia    = via->GetColor( r );
+				Check( cDirect[1] != Scalar( 0 ), "(b) test bug: the DIRECT read must see a non-zero curvature" );
+				CheckClose( cVia[0], cDirect[0], 1e-12, "(b) sample() forwards curv" );
+				CheckClose( cVia[1], cDirect[1], 1e-12, "(b) sample() forwards curvR" );
+			}
+		}
+		job->release();
+	}
+
+	// ---- (c) FILTER WIDTH (fw / fwo octave fade) -------------------
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname fbm_probe\ndef n fbm(P*8, 6, 2.0, 0.5)\nexpr vec3(n, fwo, fw)\n}\n"
+			"expression_painter\n{\nname via_sample_fbm\nexpr sample(fbm_probe)\n}\n";
+		Check( S2::ParseBody( "dl25_fw", body, *job ), "(c) fbm substrate with a live footprint + sample() parse" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* probe = priv->GetPainters()->GetItem( "fbm_probe" );
+			IPainter* via   = priv->GetPainters()->GetItem( "via_sample_fbm" );
+			Check( probe != 0 && via != 0, "(c) both registered" );
+			if( probe && via ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState );
+				r.bHit = true;
+				r.ptIntersection = Point3( 0.31, 0.17, 0.73 );
+				r.ptObjIntersec  = Point3( 0.31, 0.17, 0.73 );
+				r.txFootprint.worldWidth  = Scalar( 0.05 );
+				r.txFootprint.objectWidth = Scalar( 0.05 );
+				r.txFootprint.widthValid  = true;
+				const RISEPel cDirect = probe->GetColor( r );
+				const RISEPel cVia    = via->GetColor( r );
+				Check( cDirect[2] != Scalar( 0 ), "(c) test bug: the DIRECT read must see a non-zero fw" );
+				CheckClose( cVia[2], cDirect[2], 1e-12, "(c) sample() forwards fw" );
+				CheckClose( cVia[1], cDirect[1], 1e-12, "(c) sample() forwards fwo" );
+				CheckClose( cVia[0], cDirect[0], 1e-12, "(c) the faded fbm octave sum agrees through sample()" );
+			}
+		}
+		job->release();
+	}
+
+	// ---- (d) GEOMETRY SIGNAL CHANNEL -------------------------------
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname sig_probe\nexpr vec3(occlusion(0.05), convexity(0.05), thickness(0.05))\n}\n"
+			"expression_painter\n{\nname via_sample_sig\nexpr sample(sig_probe)\n}\n";
+		Check( S2::ParseBody( "dl25_sig", body, *job ), "(d) signal-reading substrate + sample() parse" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* probe = priv->GetPainters()->GetItem( "sig_probe" );
+			IPainter* via   = priv->GetPainters()->GetItem( "via_sample_sig" );
+			Check( probe != 0 && via != 0, "(d) both registered" );
+			if( probe && via ) {
+				FixedSignalProvider provider;
+				RayIntersectionGeometric r( Ray(), nullRasterizerState );
+				r.bHit = true;
+				r.signals.pProvider = &provider;
+				r.signals.ptObject = Point3( 0.1, 0.2, 0.3 );
+				r.signals.nObject = Vector3( 0, 1, 0 );
+				const RISEPel cDirect = probe->GetColor( r );
+				const RISEPel cVia    = via->GetColor( r );
+				Check( cDirect[0] != SurfaceSignalInfo::NeutralOcclusion(),
+					"(d) test bug: the DIRECT read must see a non-neutral occlusion" );
+				CheckClose( cVia[0], cDirect[0], 1e-12, "(d) sample() forwards the occlusion channel" );
+				CheckClose( cVia[1], cDirect[1], 1e-12, "(d) sample() forwards the convexity channel" );
+				CheckClose( cVia[2], cDirect[2], 1e-12, "(d) sample() forwards the thickness channel" );
+			}
+		}
+		job->release();
+	}
+
+	// ---- (e) VERTEX COLOUR -----------------------------------------
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"vertex_color_painter\n{\nname vcol\nfallback 1 1 1\n}\n"
+			"expression_painter\n{\nname via_sample_vcol\nexpr sample(vcol)\n}\n";
+		Check( S2::ParseBody( "dl25_vcol", body, *job ), "(e) vertex_color_painter + sample() parse" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* vcol = priv->GetPainters()->GetItem( "vcol" );
+			IPainter* via  = priv->GetPainters()->GetItem( "via_sample_vcol" );
+			Check( vcol != 0 && via != 0, "(e) both registered" );
+			if( vcol && via ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState );
+				r.bHit = true;
+				r.bHasVertexColor = true;
+				r.vColor = RISEPel( 0.2, 0.4, 0.6 );
+				const RISEPel cDirect = vcol->GetColor( r );
+				const RISEPel cVia    = via->GetColor( r );
+				Check( cDirect[0] != Scalar( 1 ), "(e) test bug: the DIRECT read must see the vertex colour, not the fallback" );
+				CheckClose( cVia[0], cDirect[0], 1e-12, "(e) sample(vcol).r == the hit's own vertex colour" );
+				CheckClose( cVia[1], cDirect[1], 1e-12, "(e) sample(vcol).g == direct" );
+				CheckClose( cVia[2], cDirect[2], 1e-12, "(e) sample(vcol).b == direct" );
+			}
+		}
+		job->release();
+	}
+
+	// ---- (f) VIEW RAY ----------------------------------------------
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"uniformcolor_painter\n{\nname irid_a\ncolor 1 0 0\n}\n"
+			"uniformcolor_painter\n{\nname irid_b\ncolor 0 0 1\n}\n"
+			"iridescent_painter\n{\nname irid\ncolora irid_a\ncolorb irid_b\nbias 0.0\n}\n"
+			"expression_painter\n{\nname via_sample_irid\nexpr sample(irid)\n}\n";
+		Check( S2::ParseBody( "dl25_irid", body, *job ), "(f) iridescent_painter + sample() parse" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* irid = priv->GetPainters()->GetItem( "irid" );
+			IPainter* via  = priv->GetPainters()->GetItem( "via_sample_irid" );
+			Check( irid != 0 && via != 0, "(f) both registered" );
+			if( irid && via ) {
+				RayIntersectionGeometric r( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), nullRasterizerState );
+				r.bHit = true;
+				r.vNormal = Vector3( 0, 0, 1 );		// head-on: |dot| == 1, fully colorb
+				const RISEPel cDirect = irid->GetColor( r );
+				const RISEPel cVia    = via->GetColor( r );
+				Check( cDirect[2] > 0.5, "(f) test bug: the DIRECT head-on read must select colorb (blue)" );
+				CheckClose( cVia[0], cDirect[0], 1e-12, "(f) sample(irid).r == direct (the ray reached the painter)" );
+				CheckClose( cVia[2], cDirect[2], 1e-12, "(f) sample(irid).b == direct" );
+			}
+		}
+		job->release();
+	}
+
+	// ---- (g) SECOND UV SET -----------------------------------------
+	// TexCoord1Painter has no scene chunk (it is construction-API only,
+	// built by the glTF importer), so this row binds the program's
+	// painter ref directly -- the same BindPainterRefs the chunk path
+	// calls, one layer down.
+	{
+		Prog probeProg( "vec3(u, v, 0)" );
+		Check( probeProg.ok, "(g) test bug: the UV probe program compiles" );
+		IPainter* uvProbe = 0;
+		if( probeProg.ok ) {
+			const std::vector<ParamSpec> noSpecs;
+			RISE_API_CreateExpressionPainter( &uvProbe, probeProg.prog, noSpecs, Scalar( 0 ) );
+		}
+		Check( uvProbe != 0, "(g) test bug: the UV probe painter constructs" );
+		if( uvProbe ) {
+			IPainter* uv1 = 0;
+			RISE_API_CreateTexCoord1Painter( &uv1, *uvProbe );
+			Check( uv1 != 0, "(g) test bug: the TexCoord1 wrapper constructs" );
+			if( uv1 ) {
+				Prog p( "sample(uvset1)" );
+				Check( p.ok, "(g) sample(uvset1) compiles" );
+				if( p.ok ) {
+					std::vector<IPainter*> colorPtrs; colorPtrs.push_back( uv1 );
+					std::vector<IScalarPainter*> scalarPtrs;
+					Check( p.prog.BindPainterRefs( colorPtrs, scalarPtrs ), "(g) BindPainterRefs succeeds" );
+
+					RayIntersectionGeometric r( Ray(), nullRasterizerState );
+					r.bHit = true;
+					r.ptCoord  = Point2( 0.10, 0.20 );
+					r.ptCoord1 = Point2( 0.70, 0.90 );
+					r.bHasTexCoord1 = true;
+
+					const RISEPel cDirect = uv1->GetColor( r );
+
+					ExprEvalContext ctx;
+					ctx.u = r.ptCoord.x; ctx.v = r.ptCoord.y;
+					ctx.pHit = &r;
+					const Vector3 cVia = p.prog.EvalVec3( ctx );
+
+					Check( std::fabs( (double)cDirect[0] - 0.70 ) < 1e-12,
+						"(g) test bug: the DIRECT read must see UV1 (0.70), not UV0 (0.10)" );
+					CheckClose( cVia.x, cDirect[0], 1e-12, "(g) sample() forwards ptCoord1.u" );
+					CheckClose( cVia.y, cDirect[1], 1e-12, "(g) sample() forwards ptCoord1.v" );
+				}
+				uv1->release();
+			}
+			uvProbe->release();
+		}
+	}
+
+	// ---- (h) THE SYNTHETIC FALLBACK STILL WORKS --------------------
+	// A context with no hit record (Eval(u,v), a hand-built
+	// ExprEvalContext, the preview thumbnails) keeps the pre-fix
+	// behaviour: the five context fields are forwarded through a
+	// synthetic record and every other field reads its default.  This
+	// pins that the fix ADDS fidelity where a record exists rather than
+	// making the no-record path refuse.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname p_probe\nexpr vec3(P.x, u, v)\n}\n"
+			"expression_painter\n{\nname via_sample_p\nexpr sample(p_probe)\n}\n";
+		Check( S2::ParseBody( "dl25_fallback", body, *job ), "(h) P/u/v substrate + sample() parse" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* via = priv->GetPainters()->GetItem( "via_sample_p" );
+			Check( via != 0, "(h) registered" );
+			if( via ) {
+				const ExpressionPainter* ep = dynamic_cast<const ExpressionPainter*>( via );
+				Check( ep != 0, "(h) is an ExpressionPainter" );
+				if( ep ) {
+					ExprEvalContext ctx;			// pHit deliberately null
+					ctx.u = 0.25; ctx.v = 0.75;
+					ctx.P = Vector3( 1.5, 0, 0 );
+					const Vector3 v = ep->GetProgram().EvalVec3( ctx );
+					CheckClose( v.x, 1.5,  1e-12, "(h) no-record path still forwards P" );
+					CheckClose( v.y, 0.25, 1e-12, "(h) no-record path still forwards u" );
+					CheckClose( v.z, 0.75, 1e-12, "(h) no-record path still forwards v" );
+				}
+			}
+		}
+		job->release();
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -4522,6 +5210,10 @@ int main( int, char** )
 	TestPoDomainMixedFrameIsConservativeSum();
 	TestPoDomainNonUniformScaleSide();
 	TestPoDomainCompileTimeSplit();
+	TestPainterSampleCompileTimeRegistration();
+	TestPainterSampleParseDiagnostics();
+	TestPainterSampleAttachAndEval();
+	TestPainterSampleForwardsTheRealHitRecord();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

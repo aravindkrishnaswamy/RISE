@@ -309,6 +309,31 @@ Filed as **DL-145**, with this document as its evidence.
 `AgentEvalCheckTest` therefore stays at its measured baseline of
 **2062 passed / 36 failed** on this branch.
 
+**DL-145 CLOSED 2026-09-17** by the `debt-dl145` slice, in two passes.
+**First pass** combined (a) and (b) above: the camera moved to
+`location 0 0.3 6.2` (§4a's own "moved" data point) and the band was
+re-derived from a converged measurement of THAT scene (`[0.0008, 0.0034]`,
+0.5x-2x a measured mean of 0.0017142). **Superseded same day** on
+supervisor review: 0.0017 linear is ~10/255 sRGB, an effectively black
+frame -- numerically self-consistent but not what the checkpoint's own
+stated purpose ("sanity that the scene is actually lit and visible") asks
+for. The camera was never going to fix it: the ORIGINAL `quad_emit` only
+ever rim-lit the spheres from behind the camera's shoulder, and moving the
+camera off that plane doesn't change how little light a rim position
+throws onto the spheres' visible faces. **Second pass (shipped)**: moved
+`quad_emit` itself to an overhead key light (a 5x5 quad at `y=4.5`,
+`z in [-2.5,2.5]`, facing down) and raised `scale` 9.0 -> 400.0 to
+compensate for the greater distance; the camera returned to its ORIGINAL
+`location 0 0.3 6.5` (no coincidence remains once the light is no longer
+at that plane). New band `[0.0623, 0.2491]`, 0.5x-2x a converged mean of
+0.124551. `AgentEvalCheckTest` moved to **2065 passed / 10 failed** (the
+residual 10 being DL-61's unrelated `image_reconstruct_*`/bas-relief
+assertions) -- unchanged in shape between the two passes, since both
+passes touch only this one scenario's own three checkpoint-graded
+assertions. See `docs/DEBT_LEDGER.md`'s DL-145 row for the full evidence
+from both passes, including the sibling scan of every other
+`evals/scenarios/*.json` for the same coincident-camera pattern.
+
 ## 9. Lesson
 
 A committed render oracle is only as good as the render it was measured

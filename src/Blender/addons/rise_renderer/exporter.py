@@ -1022,10 +1022,13 @@ def _check_principled_feature(state: _ExportState, node, material_name: str, soc
 def _warn_unsupported_principled_features(state: _ExportState, material, wrapper: PrincipledBSDFWrapper):
     node = wrapper.node_principled_bsdf
     material_name = material.name_full
-    # Anisotropy + specular tint now flow through
-    # AddPBRMetallicRoughnessMaterial, and Sheen now flows through
-    # fabric_material (DL-18, docs/DEBT_LEDGER.md), so none of the three
-    # are warned about anymore.
+    # Anisotropy ("Anisotropic"/"Anisotropic Rotation"), Specular IOR
+    # Level, and Specular Tint (DL-151, docs/DEBT_LEDGER.md) now flow
+    # through AddPBRMetallicRoughnessMaterial, and Sheen now flows
+    # through fabric_material (DL-18, docs/DEBT_LEDGER.md), so none of
+    # these are warned about anymore.  (This comment previously claimed
+    # "specular tint" was already wired here -- it was not: nothing in
+    # this function read the "Specular Tint" socket until DL-151.)
     _check_principled_feature(state, node, material_name, "Coat Weight", 0.0, "clearcoat")
     _check_principled_feature(state, node, material_name, "Subsurface Weight", 0.0, "subsurface")
 
@@ -1985,6 +1988,70 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         scale=2.0,
     )
 
+    # Specular Tint slot -- KHR_materials_specular `specularColorFactor`
+    # (DL-151, docs/DEBT_LEDGER.md; no source-doc heading, opened by the
+    # debt-dl18 slice's sibling audit while confirming DL-18's own
+    # closure).  `specular_color_painter_name` has been in the ABI since
+    # Landing 7 and `add_pbr_metallic_roughness_material` already
+    # forwards it straight through to `Job::AddPBRMetallicRoughnessMaterial`'s
+    # `specular_color` argument -- see that function's KHR_materials_specular
+    # blend chain (`F0_dielectric = 0.04 * specular_color * specular_factor`)
+    # and `GLTFSceneImporter.cpp`'s identical `KHR_materials_specular`
+    # handling, which this mapping mirrors.  The gap was exporter-side
+    # only: nothing here ever read Blender's "Specular Tint" socket.
+    #
+    # Blender 4.x's Principled BSDF exposes "Specular Tint" as an RGB
+    # colour socket, authored directly (default white = no tint).
+    # Blender 3.x's Principled BSDF used the SAME socket NAME for a
+    # float 0..1 slider that blends white -> base colour instead --
+    # matching Blender's own Cycles shader (`node_principled_bsdf.osl`
+    # / `svm_node_principled` pre-4.0): `spec_tint = mix(white,
+    # base_color, specular_tint)`.  This add-on's `bl_info` (`__init__.py`)
+    # declares Blender 4.0 as the minimum supported version, so the
+    # float branch is not reachable through this add-on today -- kept
+    # for robustness (dispatched on the socket's own `.type`, not a
+    # `bpy.app.version` check, matching this file's existing
+    # `inp.type == "RGBA"` convention elsewhere) since a live Blender
+    # 3.x Principled node has not been independently re-verified from
+    # this sandbox (no `bpy` available here -- same hedge as the
+    # "Velvet (legacy `Velvet BSDF` node)" section of
+    # docs/BLENDER_MATERIAL_TRANSLATION.md).
+    specular_tint_socket = _node_input(principled_node, "Specular Tint")
+    specular_color_painter = None
+    if specular_tint_socket is not None and specular_tint_socket.type == "VALUE":
+        if specular_tint_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Specular Tint on '{material.name_full}' at its socket default; "
+                f"a linked/textured pre-4.0 float tint is not sampled.",
+            )
+        specular_tint_amount = _clamp01(_socket_default_float(principled_node, "Specular Tint", 0.0))
+        if specular_tint_amount > 1e-4:
+            tinted_color = tuple(
+                1.0 + specular_tint_amount * (base_color[index] - 1.0) for index in range(3)
+            )
+            specular_color_painter = _add_uniform_painter(
+                state, f"{material.name_full}_specular_tint", tinted_color,
+            )
+    elif specular_tint_socket is not None:
+        specular_tint_default = _socket_default_color(principled_node, "Specular Tint", (1.0, 1.0, 1.0))
+        specular_tint_texture = _maybe_resolve_socket_texture(
+            principled_node, "Specular Tint", None, colorspace_is_data=False,
+        )
+        is_default_white = (
+            specular_tint_texture is None
+            and abs(specular_tint_default[0] - 1.0) < 1e-4
+            and abs(specular_tint_default[1] - 1.0) < 1e-4
+            and abs(specular_tint_default[2] - 1.0) < 1e-4
+        )
+        if not is_default_white:
+            specular_color_painter = _color_or_texture_painter(
+                state,
+                f"{material.name_full}_specular_tint",
+                specular_tint_default,
+                texture_wrapper=specular_tint_texture,
+            )
+
     # Anisotropy and rotation — read sockets directly because the
     # PrincipledBSDFWrapper doesn't surface them.
     anisotropy_value = _clamp01(_socket_default_float(principled_node, "Anisotropic", 0.0))
@@ -2213,6 +2280,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             metallic_painter_name=metallic_painter,
             roughness_painter_name=roughness_painter,
             specular_factor_painter_name=specular_factor_painter,
+            specular_color_painter_name=specular_color_painter,
             anisotropy_factor_painter_name=anisotropy_factor_painter,
             anisotropy_rotation_painter_name=anisotropy_rotation_painter,
             emissive_scale=1.0,

@@ -1584,7 +1584,7 @@ alias to GGX in a later slice and deprecate the Color binding, since the
 descriptor already calls the Color binding an oddball rather than a pattern.
 Note also that `scalar_painter { function2d <name> }` (form 7) lets an
 `expression_function2d` reach the Scalar pipe today, so nothing an author can
-express is lost.
+express is lost. **CLOSED 2026-09-17 (debt ledger DL-16) — see §15 debt 4.**
 
 ### 5.5 Aliasing — the caveat that will bite, and its answer
 
@@ -4663,20 +4663,19 @@ yet known (§10.1).
    the shipped answer for the sheen case: it evaluates the combined closed
    form instead of walking. Config 6's note now carries the measured
    percentages, written at test time rather than remembered (§4.2).
-4. **Pipe split on the rotation angle — and it now bites harder, so schedule the
-   alias in Phase 1.** GGX's `tangent_rotation` is Color-pipe by construction
-   (an admitted oddball); `fabric_material`'s `weave_rotation` is Scalar-pipe.
-   Under §9.5 the two rotations **compose on the same surface** — the fabric's
-   weave angle orients the yarn and the substrate's own rotation offsets within
-   it — so an author now has a concrete reason to drive both from *one* painter,
-   and cannot: the same field would have to be authored twice, once per pipe.
-   **Phase-1 checklist item:** add a Scalar-pipe alias for
-   `ggx_material.tangent_rotation` concurrently with `fabric_material` (accept
-   either pipe on that slot, prefer Scalar, keep the Color binding working and
-   mark it deprecated in the descriptor). It is a descriptor line plus a
-   resolve-order branch, and doing it in the same slice avoids shipping a
-   composition the scene language cannot express cleanly. `scalar_painter
-   { function2d … }` bridges in the interim.
+4. ~~**Pipe split on the rotation angle — and it now bites harder, so schedule the
+   alias in Phase 1.**~~ **CLOSED 2026-09-17 (debt ledger DL-16, branch
+   `debt-dl16`)** — `ggx_material` gained a `tangent_rotation_scalar`
+   descriptor parameter (Scalar pipe, `requireSingle`), resolved through a new
+   shared `ResolveRotationPainterDual` helper (`Job.cpp`) that prefers the
+   Scalar pipe (a named `scalar_painter`, or an inline literal) and falls back
+   to the legacy Color-pipe `tangent_rotation` (kept working, marked
+   deprecated); `Job::AddPBRMetallicRoughnessMaterial`'s `anisotropy_rotation`
+   was widened the same way (same oddball, DL-17). A `fabric_material`'s
+   `weave_rotation` and its GGX base's `tangent_rotation_scalar` can now share
+   ONE `scalar_painter` and read back identical values — the composition this
+   item exists for. `tests/GGXTangentRotationScalarTest.cpp`: 19/0 (red:
+   2 compile errors pre-fix). See [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-16.
 5. **Anisotropic sheen is deferred, not solved.** *(Rewritten 2026-09-02: this
    debt previously described an elliptical Charlie lobe as a Phase-1 feature.
    That feature is withdrawn — §9.5.)* Phase 1's sheen lobe is strictly
@@ -4732,26 +4731,24 @@ yet known (§10.1).
     been censused; what is new is **one name seeding several slots in
     `Finalize`**, and no material carries a preset of any kind. §13's stop rules
     include its falsification.
-12. **glTF per-texel `anisotropy_rotation` is still dropped**
-    ([GLTFSceneImporter.cpp:1300-1307](../src/Library/Importers/GLTFSceneImporter.cpp)).
-    The importer says an `atan2` painter primitive would be needed — but the
-    expression VM **has** `atan2` (confirmed against its function table), so
-    this looks solvable today with no new primitive: extract the texture's R and
-    G through two `channel_painter`s remapped from [0,1] to [−1,1], then
-
-    ```
-    scalar_painter
-    {
-    	name			aniso_rotation
-    	param			dummy 0.0
-    	expression		atan2( 2.0*rotG - 1.0, 2.0*rotR - 1.0 )
-    }
-    ```
-
-    with `rotR`/`rotG` supplied as `scalar_painter { painter <chan> }` inputs.
-    **Sketch only — not execution-validated**, and it would bind to
-    `fabric_material`'s Scalar-pipe `weave_rotation`, not to GGX's Color-pipe
-    `tangent_rotation` (debt 4). Worth a look; not in Phase 1's scope.
+12. ~~**glTF per-texel `anisotropy_rotation` is still dropped**~~ **CLOSED
+    2026-09-17 (debt ledger DL-17, branch `debt-dl16`)** — the sketch here
+    turned out not to be directly executable: `scalar_painter { expression
+    ... }`'s VM has no builtin to sample an EXTERNAL painter as a live
+    per-point input (only named constants/sub-expressions over the fixed 3D
+    context), so `rotR`/`rotG` could not be wired into an `expression` body
+    the way the sketch implied — the identical gap DL-25 tracks (also being
+    closed, on the concurrent `debt-dl25` slice). Built instead from two
+    `Job::AddPainterChannelScalarPainter` reads of the texture's R/G channels
+    (`scale 2 bias -1`) combined through a new `Atan2ScalarPainter`
+    composition operator, exposed via a new tail-appended IJob virtual
+    `AddAtan2ScalarPainter`, with the scalar `anisotropyRotation` term folded
+    in as an internal `AddScalarPainter`. It binds to `ggx_material`'s new
+    Scalar-pipe `tangent_rotation_scalar` (debt 4 / DL-16, closed in the same
+    slice) via `Job::AddPBRMetallicRoughnessMaterial`'s `anisotropy_rotation`,
+    which was widened to the same dual-pipe resolution. `tests/-
+    GLTFAnisotropyRotationTest.cpp`: 14/0 (red: 1 compile error pre-fix). See
+    [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-17.
 13. ~~**The Blender bridge has no sheen, anisotropic or velvet mapping at
     all**, documented or otherwise. A silent gap. Phase 1's
     `fabric_material` is the natural target for Principled's Sheen
