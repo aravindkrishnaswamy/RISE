@@ -935,6 +935,28 @@ namespace
 		seed = 9150;
 		for( const GrazingRow& r : anisoRows ) passed &= RunGGXGrazingRow( r, seed++ );
 
+		// DL-161: alphaX=0.005 (below the aniso grid's own row0=0.01,
+		// clamped/coarsely-blended pre-fix) paired with alphaY=0.5 at
+		// grazing incidence -- the exact "low alpha AND grazing cosTheta"
+		// corner the DL-161 ledger row calls out, and its axis-swapped
+		// twin (exercises LookupEssG2AnisoDirectional's low-Y dispatch,
+		// which reduces to the low-X branch via the relabel symmetry
+		// rather than a separate bake).  See the DL-161 residual table in
+		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161" for the
+		// measured pre-fix/post-fix numbers.
+		// tolAbs=0.015 red-proofs at kGrazingSamples: pre-fix measured
+		// 0.97306+/-0.00110 and 0.97104+/-0.00110 (diff ~0.027-0.029 from
+		// 1.0, outside this band), post-fix 0.99853+/-0.00107 and
+		// 0.99662+/-0.00107 (diff <=0.0034, comfortably inside).
+		const GrazingRow lowAlphaAnisoRows[] = {
+			{ { "GGX Schlick aniso(.005,.5) F0=1 th=89.60 az=0 spec-only (DL-161 low-alphaX)",  eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.5,   89.60, 0.0,  0.0 }, 1.0, 0.015,
+			  "DL-161: pre-fix 0.97306" },
+			{ { "GGX Schlick aniso(.5,.005) F0=1 th=89.60 az=90 spec-only (DL-161 low-alphaY, swapped)", eFresnelSchlickF0, 0.0, 1.0, 0.5, 0.005, 89.60, 90.0, 0.0 }, 1.0, 0.015,
+			  "DL-161: pre-fix 0.97104" },
+		};
+		seed = 9160;
+		for( const GrazingRow& r : lowAlphaAnisoRows ) passed &= RunGGXGrazingRow( r, seed++ );
+
 		std::cout << "\n--- DL-86: CookTorranceBRDF (SEPARABLE-model LookupEss consumer) furnace at extreme grazing, two-sided ---\n";
 		const GrazingRow ctRows[] = {
 			{ { "CT conductor a=1.0 th=89.40 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.40, 0.0, 0.0 }, 1.0, 0.010, "" },

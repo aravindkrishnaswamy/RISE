@@ -1198,6 +1198,48 @@ int main()
 		passed &= TestMSSamplerAnisoHistogram( "aX=0.01 aY=1.0 (40M draws)", 0.01, 1.0, 40000000L, 86301 );
 	}
 
+	std::cout << "\n--- DL-161: anisotropic low-alpha sub-grid (AnisoAlphaLowIndex), off-diagonal ---\n";
+	{
+		// TestDL86AnisoDirectionalEndCap is generic over (alphaX,alphaY,
+		// phi,cosTheta) -- reused verbatim here, just with alphaX and/or
+		// alphaY below ANISO_ALPHA_LOW_A1 (~0.053043), the configuration
+		// the pre-fix code clamped to row 0 (alpha<0.01) or coarsely
+		// interpolated across a 5.3x-wide first cell.  kLowAlphaTol=0.02
+		// is well above this row set's worst POST-fix residual (0.95% at
+		// aX=0.002 aY=1.0 phi=0 cos=0.0005) and far below the PRE-fix
+		// residuals it red-proofs (up to 25.3% at that same point; see
+		// the DL-161 residual table in
+		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161").
+		const double kLowAlphaTol = 0.02;
+		struct Row { double aX, aY, phiDeg, cosTheta; const char* note; };
+		const Row rows[] = {
+			{ 0.002, 0.05, 0.0,  0.5,     "low-X vs ordinary-Y" },
+			{ 0.002, 1.0,  0.0,  0.0005,  "low-X vs ordinary-Y, grazing, aligned with low axis" },
+			{ 0.002, 1.0,  0.0,  0.0001,  "low-X vs ordinary-Y, deep grazing, aligned with low axis" },
+			{ 0.005, 0.2,  45.0, 0.3,     "low-X vs ordinary-Y, off-node phi" },
+			{ 0.005, 0.5,  0.0,  0.001,   "low-X vs ordinary-Y, grazing (furnace pair below)" },
+			{ 0.005, 0.5,  0.0,  0.0001,  "low-X vs ordinary-Y, deep grazing (furnace pair below)" },
+			{ 0.005, 1.0,  0.0,  0.0005,  "low-X vs ordinary-Y, grazing, aligned with low axis" },
+			{ 0.01,  0.5,  90.0, 0.5,     "low-X at exact A0 node vs ordinary-Y" },
+			{ 0.01,  1.0,  45.0, 0.05,    "low-X at exact A0 node vs ordinary-Y" },
+			{ 0.015, 0.05, 0.0,  0.2,     "low-X (mid-node) vs ordinary-Y" },
+			{ 0.015, 1.0,  0.0,  0.0005,  "low-X (mid-node) vs ordinary-Y, grazing" },
+			{ 1.0,   0.005, 90.0, 0.0005, "SWAPPED: ordinary-X vs low-Y (relabel dispatch), grazing" },
+			{ 0.5,   0.005, 90.0, 0.001,  "SWAPPED: ordinary-X vs low-Y (relabel dispatch), grazing" },
+			{ 0.005, 0.008, 45.0, 0.3,    "BOTH low (interior corner)" },
+			{ 0.002, 0.002, 0.0,  0.5,    "BOTH low, near-diagonal" },
+			{ 0.002, 0.009, 0.0,  0.0005, "BOTH low, aspect ratio, grazing" },
+			{ 0.003, 0.007, 90.0, 0.0005, "BOTH low, grazing" },
+		};
+		unsigned int seed = 161001;
+		for( const Row& r : rows )
+		{
+			std::ostringstream label;
+			label << "DL-161 aX=" << r.aX << " aY=" << r.aY << " phi=" << r.phiDeg << " cos=" << r.cosTheta << " (" << r.note << ")";
+			passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), r.aX, r.aY, r.phiDeg, r.cosTheta, kLowAlphaTol, seed++ );
+		}
+	}
+
 	std::cout << "\nGGXHeightCorrelatedEnergyLUTTest: " << checks << " checks, " << failures << " failures\n";
 	std::cout << "=== " << ( passed ? "ALL TESTS PASSED" : "TESTS FAILED" ) << " ===\n";
 	return passed ? 0 : 1;
