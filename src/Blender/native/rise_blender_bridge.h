@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 11
+#define RISE_BLENDER_API_VERSION 12
 
 #ifdef __cplusplus
 extern "C" {
@@ -283,6 +283,36 @@ typedef struct rise_blender_material {
 	const char* anisotropy_factor_painter_name;     // NULL = "0.0"
 	const char* anisotropy_rotation_painter_name;   // NULL = "0.0"
 	double emissive_scale;
+	// ABI v12 (DL-18, docs/DEBT_LEDGER.md; source heading
+	// CLOTH_FABRIC_DESIGN.md §15 item 13).  PBR_METALLIC_ROUGHNESS
+	// ONLY: Principled BSDF's Sheen Weight x Sheen Tint pre-multiplied
+	// into one colour painter (matching how KHR_materials_sheen's own
+	// `sheenColorFactor` already combines both -- see
+	// GLTFSceneImporter.cpp's identical KHR_materials_sheen handling,
+	// which this mapping mirrors).  When set (non-NULL, non-empty), the
+	// bridge registers the PBR material under an INTERMEDIATE name
+	// (`<name>::pbrbase`) and wraps it in a `fabric_material` sheen
+	// layer registered under the requested `name` -- the same
+	// intermediate-name mechanism GLTFSceneImporter.cpp's
+	// `pbrRegisterName` uses.  NULL / empty = no sheen, and the PBR
+	// material registers directly under `name` exactly as it did before
+	// this field existed (bit-identical to a pre-v12 payload).
+	const char* sheen_color_painter_name;
+	// Charlie alpha (`fabric_material`'s `sheen_roughness`, an
+	// IScalarPainter-typed slot -- docs/ISCALARPAINTER_REFACTOR.md --
+	// clamped to [0.04, 1] at render time).  Numeric fallback used
+	// when `sheen_roughness_texture_painter_name` is NULL/empty.
+	// Ignored when `sheen_color_painter_name` is unset.
+	double sheen_roughness;
+	// Set ONLY when Blender's Sheen Roughness input is texture-driven:
+	// the NAME of an already-registered COLOUR painter.  The bridge
+	// wraps it into an IScalarPainter view (channel R) via
+	// RISE_API_CreatePainterChannelScalarPainter before handing it to
+	// AddFabricMaterial -- the same v10 texture-exception pattern
+	// `beta_m_texture_painter_name` / `beta_n_texture_painter_name` /
+	// `ior_texture_painter_name` use above.  NULL/empty = use the
+	// numeric `sheen_roughness` field (the common case).
+	const char* sheen_roughness_texture_painter_name;
 } rise_blender_material;
 
 typedef struct rise_blender_mesh {

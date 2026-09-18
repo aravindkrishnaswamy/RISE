@@ -70,6 +70,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <deque>
 #include <iostream>
 #include <string>
 
@@ -163,7 +164,11 @@ const FabricMaterial* FabricOf( RISE::IJobPriv& job, const char* name )
 //! themselves.
 rise_blender_material PbrFixture( RISE::IJobPriv& job, const std::string& tag )
 {
-	static std::vector<std::string> nameStorage;
+	// A std::deque (not vector): push_back never invalidates existing
+	// elements' addresses, so `const char*`s handed out by `keep()`
+	// earlier in this static, cross-call storage stay valid even as
+	// later PbrFixture() calls append more names.
+	static std::deque<std::string> nameStorage;
 	auto keep = [&]( const std::string& s ) -> const char* {
 		nameStorage.push_back( s );
 		return nameStorage.back().c_str();
@@ -329,7 +334,7 @@ void TestTextureDrivenSheenRoughness()
 	double checkerB[3] = { 0.95, 0.95, 0.95 };	// -> high Charlie alpha
 	(*job).AddUniformColorPainter( "rough_cell_a", checkerA, "Rec709RGB_Linear" );
 	(*job).AddUniformColorPainter( "rough_cell_b", checkerB, "Rec709RGB_Linear" );
-	(*job).AddCheckerPainter( "sheen_rough_tex", 1.0, "rough_cell_a", "rough_cell_b" );
+	(*job).AddCheckerPainter( "sheen_rough_tex", 0.5, "rough_cell_a", "rough_cell_b" );
 
 	rise_blender_material tex = PbrFixture( *job, "sheen_tex" );
 	tex.sheen_color_painter_name = "sheen_white3";
@@ -344,10 +349,16 @@ void TestTextureDrivenSheenRoughness()
 	Check( add_material( *job, tex, err, sizeof( err ) ), std::string( "textured-roughness sheen material registered: " ) + err );
 	Check( add_material( *job, num, err, sizeof( err ) ), "numeric-roughness sheen material registered" );
 
-	const double texA = Respond( *job, "sheen_tex", 0.25, 0.25 );
-	const double texB = Respond( *job, "sheen_tex", 0.75, 0.75 );
-	const double numA = Respond( *job, "sheen_num", 0.25, 0.25 );
-	const double numB = Respond( *job, "sheen_num", 0.75, 0.75 );
+	// Two UVs differing by exactly ONE checker cell in u alone (v fixed):
+	// with a checker `size` of 0.5, cell(u) = floor(u/0.5), so u=0.1 is
+	// cell 0 and u=0.6 is cell 1 -- a probe pair ALONG THE u==v DIAGONAL
+	// would be a trap here (cell(u)+cell(v) changes by an even amount
+	// on the diagonal, so its checker parity -- and therefore its
+	// colour -- never flips no matter how fine the checker is).
+	const double texA = Respond( *job, "sheen_tex", 0.1, 0.5 );
+	const double texB = Respond( *job, "sheen_tex", 0.6, 0.5 );
+	const double numA = Respond( *job, "sheen_num", 0.1, 0.5 );
+	const double numB = Respond( *job, "sheen_num", 0.6, 0.5 );
 
 	Check( texA > 0.0 && texB > 0.0 && numA > 0.0 && numB > 0.0, "all four probes have a real response" );
 	Check( std::fabs( texA - texB ) > 1.0e-6,

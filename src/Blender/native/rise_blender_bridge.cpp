@@ -1098,6 +1098,15 @@ namespace
 		return false;
 	}
 
+	//! Forward declaration -- defined below, near its hair-path sibling
+	//! `resolve_hair_scalar_slot` (ABI v12 / DL-18; see that function's
+	//! own banner and this one's definition for the wrapper mechanism).
+	std::string resolve_material_scalar_slot(
+		RISE::IJobPriv& job,
+		const char* painterName,
+		const std::string& fallbackLiteral
+	);
+
 	bool add_pbr_metallic_roughness_material(
 		RISE::IJobPriv& job,
 		const rise_blender_material& material,
@@ -1130,8 +1139,25 @@ namespace
 		const char* anisotropy_rotation = ( material.anisotropy_rotation_painter_name && material.anisotropy_rotation_painter_name[0] )
 			? material.anisotropy_rotation_painter_name : "0.0";
 
+		// ABI v12 / DL-18 (docs/DEBT_LEDGER.md; source heading
+		// CLOTH_FABRIC_DESIGN.md §15 item 13).  When Principled's Sheen
+		// contributes, the PBR material this function builds is NOT the
+		// final one: it registers under an INTERMEDIATE name and a
+		// `fabric_material` sheen layer wraps it under the requested
+		// `material.name` -- exactly the `pbrRegisterName` mechanism
+		// GLTFSceneImporter.cpp's own KHR_materials_sheen handling uses
+		// (see that file's "Sheen layer, via fabric_material" block).
+		// The anisotropic GGX this call builds (alphaX/alphaY,
+		// tangent_rotation, above) is already baked into that
+		// intermediate base, so a material with BOTH Sheen and
+		// Anisotropic set gets fabric-over-anisotropic-GGX for free --
+		// no separate composition step needed.
+		const bool hasSheen = ( material.sheen_color_painter_name && material.sheen_color_painter_name[0] );
+		const std::string finalName = material.name;
+		const std::string pbrRegisterName = hasSheen ? ( finalName + "::pbrbase" ) : finalName;
+
 		if( !job.AddPBRMetallicRoughnessMaterial(
-			material.name,
+			pbrRegisterName.c_str(),
 			base_color,
 			metallic,
 			roughness,
@@ -1144,6 +1170,34 @@ namespace
 			anisotropy_rotation ) )
 		{
 			write_error( error_message, error_message_size, "Failed to create a PBR metallic-roughness material" );
+			return false;
+		}
+
+		if( !hasSheen ) {
+			return true;
+		}
+
+		char roughnessLiteral[64];
+		std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
+		const std::string sheenRoughness = resolve_material_scalar_slot(
+			job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
+
+		// `fabric` = "custom" (no preset seeding -- Blender's Principled
+		// Sheen carries no fabric-type concept, matching
+		// GLTFSceneImporter.cpp's identical choice for
+		// KHR_materials_sheen) and `weave_rotation` = "0.0" (Blender's
+		// Sheen model has no weave-direction concept either; the
+		// anisotropic-GGX case above already carries its own
+		// `tangent_rotation`).
+		if( !job.AddFabricMaterial(
+			finalName.c_str(),
+			"custom",
+			pbrRegisterName.c_str(),
+			material.sheen_color_painter_name,
+			sheenRoughness.c_str(),
+			"0.0" ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
 			return false;
 		}
 		return true;
@@ -1459,6 +1513,70 @@ namespace
 					std::string( "RISE could not register a scalar view of texture '" ) + painterName +
 					"' for hair material " + who + "'s " + slotLabel +
 					"; that one parameter falls back to its constant value." );
+				return fallbackLiteral;
+			}
+		}
+
+		return wrapperName;
+	}
+
+	//! Suffix for `resolve_material_scalar_slot`'s wrapper, the material
+	//! (non-hair) sibling of `kHairScalarWrapperSuffix` immediately
+	//! above -- same reasoning, different suffix so a colour painter
+	//! shared between a hair material and a `sheen_roughness` texture
+	//! (unusual, but not forbidden) gets two distinct, non-colliding
+	//! IScalarPainter wrappers rather than one mis-scoped one.
+	const char* const kMaterialScalarWrapperSuffix = "::matscalar";
+
+	//! Resolve one OPTIONAL v12 texture-driven IScalarPainter slot on a
+	//! `rise_blender_material` to the string a `Job::Add*Material` scalar
+	//! slot should be handed for it -- the material-path sibling of
+	//! `resolve_hair_scalar_slot` above, same wrapper mechanism
+	//! (`RISE_API_CreatePainterChannelScalarPainter`, channel R, scale 1,
+	//! bias 0), but SILENT on failure rather than warning: unlike hair's
+	//! `warnings` vector (a channel that reaches the artist through
+	//! `RenderResult.warnings`), the surrounding non-hair material path
+	//! has no such channel -- every other optional PBR slot in this file
+	//! (`specular_factor`, `anisotropy_factor`, ...) already degrades to
+	//! its literal default with no warning when unset or unresolvable,
+	//! and this slot matches that existing convention rather than
+	//! inventing a new one.
+	std::string resolve_material_scalar_slot(
+		RISE::IJobPriv& job,
+		const char* painterName,
+		const std::string& fallbackLiteral
+	)
+	{
+		if( !painterName || !painterName[0] ) {
+			return fallbackLiteral;			// the common case: no texture bound
+		}
+
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		RISE::IPainter* source = pmgr ? pmgr->GetItem( painterName ) : 0;
+
+		if( !source || !smgr ) {
+			return fallbackLiteral;
+		}
+
+		const std::string wrapperName = std::string( painterName ) + kMaterialScalarWrapperSuffix;
+
+		// Two materials may legitimately share one texture painter (the
+		// same roughness map on several fabric materials) -- reuse the
+		// existing wrapper rather than failing on AddItem's duplicate-name
+		// refusal, matching `resolve_hair_scalar_slot`'s own reuse rule.
+		if( !smgr->GetItem( wrapperName.c_str() ) ) {
+			RISE::IScalarPainter* wrapper = 0;
+			RISE::RISE_API_CreatePainterChannelScalarPainter(
+				&wrapper, *source, 0, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+			if( !wrapper ) {
+				return fallbackLiteral;
+			}
+
+			const bool added = smgr->AddItem( wrapper, wrapperName.c_str() );
+			wrapper->release();
+
+			if( !added ) {
 				return fallbackLiteral;
 			}
 		}

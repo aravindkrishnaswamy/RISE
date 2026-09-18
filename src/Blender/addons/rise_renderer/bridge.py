@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 11
+_EXPECTED_API_VERSION = 12
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -138,6 +138,11 @@ class _Material(ctypes.Structure):
         ("anisotropy_factor_painter_name", ctypes.c_char_p),
         ("anisotropy_rotation_painter_name", ctypes.c_char_p),
         ("emissive_scale", ctypes.c_double),
+        # ABI v12 (DL-18, docs/DEBT_LEDGER.md; source heading
+        # CLOTH_FABRIC_DESIGN.md §15 item 13) -- see rise_blender_bridge.h.
+        ("sheen_color_painter_name", ctypes.c_char_p),
+        ("sheen_roughness", ctypes.c_double),
+        ("sheen_roughness_texture_painter_name", ctypes.c_char_p),
     ]
 
 
@@ -691,6 +696,15 @@ class _SceneHandle:
         payload.anisotropy_factor_painter_name = self._cstring(getattr(material, "anisotropy_factor_painter_name", None))
         payload.anisotropy_rotation_painter_name = self._cstring(getattr(material, "anisotropy_rotation_painter_name", None))
         payload.emissive_scale = float(getattr(material, "emissive_scale", 0.0))
+        # ABI v12 -- `getattr` with a None/0.0 default keeps this tolerant
+        # of a MaterialData built by an older exporter module during a
+        # live add-on reload, matching the v10/v11 field-addition pattern
+        # above (DL-18, docs/DEBT_LEDGER.md).
+        payload.sheen_color_painter_name = self._cstring(getattr(material, "sheen_color_painter_name", None))
+        payload.sheen_roughness = float(getattr(material, "sheen_roughness", 0.0))
+        payload.sheen_roughness_texture_painter_name = self._cstring(
+            getattr(material, "sheen_roughness_texture_painter_name", None)
+        )
         return payload
 
     def _marshal_mesh(self, mesh):
