@@ -5432,6 +5432,20 @@ namespace RISE
 			//! literal 0.5 the old `n < 3` early return reported.  Only a value
 			//! with NO readable component (`n < 1`, e.g. a stray token that isn't
 			//! a number) has nothing to decode.
+			//!
+			//! SUPERSEDED 2026-09-17 by DL-32 round 2 (docs/DEBT_LEDGER.md): the
+			//! chunk parser no longer zero-fills a short DoubleVec3 -- a `color`
+			//! with fewer than 3 tokens is now a HARD PARSE ERROR at
+			//! `ParseStateBag::GetVec3`, so the document that `item` comes from
+			//! could not have derived successfully in the first place (every
+			//! caller of this function reaches `item` through an already-derived
+			//! `Job`).  The `n == 1`/`n == 2` loop below is therefore no longer
+			//! reachable with a short `color` from any real document -- it is
+			//! kept as harmless defensive code (a CST node's raw text is not
+			//! itself arity-checked, only what a DERIVE does with it), not
+			//! because a short colour is still expected to arrive here.
+			//! tests/AgentAddWearTest.cpp's `N4c` fixture pins the new contract
+			//! (the malformed scene fails to derive) rather than this decode path.
 			double DimLightColorMax_( const NodeRef& item, double fallback )
 			{
 				const std::string s = ChunkParamString_( item, "color" );
