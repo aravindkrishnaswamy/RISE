@@ -17,7 +17,7 @@ the bridge talks to RISE only through the existing public APIs in
 
 - Final renders through Blender's external `RenderEngine` API.
 - Evaluated mesh export, per-material triangle splits, object instancing, and bump-map modifiers (a Blender Bump node exports through the ABI-frozen `AddBumpMapModifier` entry point, which since 2026-09-06 registers a `relief_modifier` in the UV domain -- see `docs/RELIEF_MODIFIER_DESIGN.md` §7.5).
-- Direct Principled BSDF translation for base color, metallic, roughness, specular, transmission, IOR, emission, anisotropy, sheen (`fabric_material`, DL-18), and direct image-driven bump.
+- Direct Principled BSDF translation for base color, metallic, roughness, specular (IOR level and tint, DL-151), transmission, IOR, emission, anisotropy, sheen (`fabric_material`, DL-18), and direct image-driven bump.
 - PNG, HDR, EXR, and TIFF image textures when the local RISE build has the matching texture readers enabled.
 - Homogeneous participating media on material and world volume outputs.
 - Heterogeneous VDB-backed volume objects driven by the `density` grid, exported through a temporary slice cache.

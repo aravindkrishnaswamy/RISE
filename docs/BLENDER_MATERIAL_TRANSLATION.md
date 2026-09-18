@@ -448,6 +448,67 @@ a static diffuse/roughness/normal texture set.  Lossy (no live RISE
 the same fallback every other force-baked node (Mix Shader, a custom
 group, Ambient Occlusion, …) already gets.
 
+## Specular Tint (Principled BSDF -> `ggx_material`'s F0 tint)
+
+DL-151 (docs/DEBT_LEDGER.md; no source-doc heading — opened by the
+debt-dl18 slice's sibling audit while confirming no OTHER
+already-ABI'd Principled socket was silently dropped).
+`rise_blender_material.specular_color_painter_name` — the
+KHR_materials_specular `specularColor` tint on dielectric F0 — has
+existed in the bridge ABI since Landing 7, and
+`add_pbr_metallic_roughness_material` already forwarded it correctly
+to `Job::AddPBRMetallicRoughnessMaterial`'s `specular_color` argument
+(see "Anisotropy and sheen" above for that function's blend chain:
+`F0_dielectric = 0.04 * specular_color * specular_factor`). The gap
+was exporter-side only: `_material_payload` never read Blender's
+"Specular Tint" socket at all, so a matte plastic or paint authored
+with a non-white specular tint always exported with an untinted
+(grey) F0 = 0.04 highlight.
+
+**Blender version note.** Blender 4.x's Principled BSDF exposes
+"Specular Tint" as an RGB colour socket, authored directly (default
+white = no tint). Pre-4.0 Blender used the SAME socket NAME for a
+float 0..1 slider that blends white toward the base colour, matching
+Blender's own Cycles shader convention (pre-4.0
+`node_principled_bsdf.osl` / `svm_node_principled`):
+`spec_tint = mix(white, base_color, specular_tint)`. This add-on's
+`bl_info` (`__init__.py`) declares Blender 4.0 as its minimum
+supported version, so the float branch is not reachable through this
+add-on in practice — the exporter still dispatches on the socket's
+own `.type` (`"VALUE"` vs `"RGBA"`, this file's existing `inp.type ==
+"RGBA"` convention) rather than a `bpy.app.version` check, purely for
+robustness. As with the Velvet BSDF note above, this has not been
+independently re-verified against a live Blender 3.x `bpy.types`
+registry from this sandbox (no `bpy` available here).
+
+| Blender Principled input | `rise_blender_material` field | Notes |
+|---------------------------|-------------------------------|-------|
+| `Specular Tint` (4.x, RGB colour) | `specular_color_painter_name` | Constant → a uniform colour painter (LINEAR Rec.709, matching every other painter-style colour slot in this file); texture-linked → an image painter via `_maybe_resolve_socket_texture`/`_color_or_texture_painter`, the same helper base colour textures use. Default white (or unlinked) sends `None`, the ABI's pre-existing "no tint" sentinel — bit-identical to a pre-DL-151 payload. |
+| `Specular Tint` (pre-4.0, float 0..1) | `specular_color_painter_name` | Computed as a CONSTANT `lerp(white, base_color, tint)` per the OSL formula above and registered as one uniform colour painter; not texture-composited with a textured base colour (out of scope for this fix's size — the float branch is unreachable through this add-on's declared minimum version anyway). A linked/textured pre-4.0 float tint warns and falls back to the socket default, matching this file's existing "Sheen Weight" convention. |
+
+`Job::AddPBRMetallicRoughnessMaterial` applies the resulting painter
+exactly as KHR_materials_specular's `specularColor` — compare with
+`GLTFSceneImporter.cpp`'s own `KHR_materials_specular` handling
+(cited in "Anisotropy and sheen" above), which builds the identical
+blend chain from glTF's `specularColorFactor`/`specularColorTexture`,
+so a Blender-authored and a glTF-authored tint of the same value
+produce the same F0.
+
+`tests/BlenderBridgeSpecularTintTest.cpp` confirms the ALREADY-CORRECT
+native bridge -> `Job` path (compiled against the real, shipping
+`add_material`/`add_pbr_metallic_roughness_material`): a saturated-red
+`specular_color_painter_name` on a grey-base, low-roughness dielectric
+reads an R/G channel ratio at the mirror-reflection peak roughly 57x
+the untinted control's (measured; F0 = (0.04, 0, 0) vs (0.04, 0.04,
+0.04)). The genuine DL-151 defect (the exporter never reading the
+socket) is red-proofed at the source level in
+`ExporterSpecularTintGatingTest`
+(`src/Blender/addons/rise_renderer/test_hair_export.py`) — `bpy` is
+not available in this sandbox, so the exporter's own reading logic is
+pinned by pattern-matching its source rather than by driving a live
+Blender node graph, the same approach `ExporterHairTextureGatingTest`
+in the same file already uses for `_hair_material_payload`.
+
 ## Hair / fur export
 
 Slice P2-C of the hair/fur arc (`docs/HAIR_FUR_DESIGN.md`).  Two
