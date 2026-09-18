@@ -438,8 +438,15 @@ static Scalar WardAnisoDiffuseSelectCoefficient(
 	const WardAnisoLobeSet& lobes
 	)
 {
-	const Vector3  wiView = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Scalar   nvView = Vector3Ops::Dot( myonb.w(), wiView );
+	const Vector3& eu = myonb.u();
+	const Vector3& ev = myonb.v();
+	const Vector3& ew = myonb.w();
+	// Same two closed forms the isotropic twin's quadrature uses -- see
+	// WardIsoDiffuseSelectCoefficient -- so the inner loop needs no
+	// `Normalize`.
+	const Vector3  dHat   = Vector3Ops::Normalize( ri.ray.Dir() );
+	const Scalar   nvView = -Vector3Ops::Dot( ew, dHat );
+	const Scalar   dDotG  = Vector3Ops::Dot( dHat, geomN );
 
 	const Scalar inv = 1.0 / Scalar(kWardQuadN);
 
@@ -448,21 +455,66 @@ static Scalar WardAnisoDiffuseSelectCoefficient(
 		xi2Log[a] = -log( ( Scalar(a) + 0.5 ) * inv );
 	}
 
+	// Ward's azimuthal warp depends on `xi1` and the LANE's alpha ratio
+	// only -- never on `xi2` -- so `phi`, its sine/cosine and the
+	// resulting `D(phi)` are hoisted out of the `a` loop.  Leaving them
+	// inside cost an `atan`, a `tan`, a `cos` and a `sin` at every one of
+	// the kWardQuadN^2 nodes and made this function ~8x the isotropic
+	// twin's; hoisted, the two are within ~20% of each other.
+	Scalar rowCosP[3][kWardQuadN];
+	Scalar rowSinP[3][kWardQuadN];
+	Scalar rowDen [3][kWardQuadN];
+	for( int j = 0; j < lobes.count; j++ ) {
+		const Scalar axj = lobes.ax[j], ayj = lobes.ay[j];
+		for( int b = 0; b < kWardQuadN; b++ ) {
+			if( axj <= 0 || ayj <= 0 ) {
+				rowCosP[j][b] = 1; rowSinP[j][b] = 0; rowDen[j][b] = 0;
+				continue;
+			}
+			const Scalar phi = WardAnisoPhiFromXi( ( Scalar(b) + 0.5 ) * inv, axj, ayj );
+			const Scalar cp = cos( phi ), sp = sin( phi );
+			rowCosP[j][b] = cp;
+			rowSinP[j][b] = sp;
+			rowDen [j][b] = (cp*cp)/(axj*axj) + (sp*sp)/(ayj*ayj);
+		}
+	}
+
 	Scalar accum = 0;
 
 	for( int a = 0; a < kWardQuadN; a++ ) {
 		for( int b = 0; b < kWardQuadN; b++ ) {
-			const Scalar xi1 = ( Scalar(b) + 0.5 ) * inv;
-
 			Scalar wS = 0;
 			int nAcceptedSpec = 0;
 			for( int j = 0; j < lobes.count; j++ ) {
-				Scalar ratio = 0;
-				if( WardAnisoReplayLane( ri, myonb, geomN, nvView, xi1, xi2Log[a],
-				                         lobes.ax[j], lobes.ay[j], ratio ) ) {
-					wS += lobes.w[j] * ratio;
-					nAcceptedSpec++;
+				const Scalar den = rowDen[j][b];
+				if( den <= 0 ) {
+					continue;
 				}
+				const Scalar t  = sqrt( xi2Log[a] / den );
+				const Scalar ct = 1.0 / sqrt( 1.0 + t*t );
+				const Scalar st = t * ct;
+				const Scalar lx = rowCosP[j][b] * st;
+				const Scalar ly = rowSinP[j][b] * st;
+
+				const Scalar hx = eu.x*lx + ev.x*ly + ew.x*ct;
+				const Scalar hy = eu.y*lx + ev.y*ly + ew.y*ct;
+				const Scalar hz = eu.z*lx + ev.z*ly + ew.z*ct;
+
+				const Scalar hdotk = -( hx*dHat.x + hy*dHat.y + hz*dHat.z );
+				if( hdotk <= 0 ) {
+					continue;
+				}
+				const Scalar cosO = -nvView + 2.0 * hdotk * ct;
+				if( cosO <= 0 ) {
+					continue;
+				}
+				const Scalar hDotG = hx*geomN.x + hy*geomN.y + hz*geomN.z;
+				if( dDotG + 2.0 * hdotk * hDotG <= 0 ) {
+					continue;
+				}
+
+				wS += lobes.w[j] * WardKrayRatio( hdotk, ct, cosO, nvView );
+				nAcceptedSpec++;
 			}
 
 			if( nAcceptedSpec == 0 ) {

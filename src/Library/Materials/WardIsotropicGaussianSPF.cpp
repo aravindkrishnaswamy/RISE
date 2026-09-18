@@ -397,9 +397,18 @@ static Scalar WardIsoDiffuseSelectCoefficient(
 	const Vector3& eu = myonb.u();
 	const Vector3& ev = myonb.v();
 	const Vector3& ew = myonb.w();
-	const Vector3& d  = ri.ray.Dir();
-	const Vector3  wiView = Vector3Ops::Normalize( -d );
-	const Scalar   nvView = Vector3Ops::Dot( ew, wiView );
+	// The sampler reflects about `h` and NORMALIZES; normalising the
+	// INCOMING direction once instead makes every reflected direction
+	// unit by construction, which lets the inner loop below drop the
+	// per-node `Normalize` (a sqrt and three divides) and read the two
+	// quantities it needs off closed forms:
+	//     (h . wo)  ==  (h . wi)          (reflection about a unit h)
+	//     (n . wo)  ==  -(n . d) + 2 (h.wi) (n . h)
+	// Both are EXACT for a unit `d`, not approximations, and the two
+	// accept gates only need signs.
+	const Vector3  dHat = Vector3Ops::Normalize( ri.ray.Dir() );
+	const Scalar   nvView = -Vector3Ops::Dot( ew, dHat );
+	const Scalar   dDotG  = Vector3Ops::Dot( dHat, geomN );
 
 	Scalar accum = 0;
 
@@ -414,27 +423,29 @@ static Scalar WardIsoDiffuseSelectCoefficient(
 				const Scalar ly = sinP[b] * st;
 				const Scalar lz = cosT[j][a];
 
-				const Vector3 h( eu.x*lx + ev.x*ly + ew.x*lz,
-				                 eu.y*lx + ev.y*ly + ew.y*lz,
-				                 eu.z*lx + ev.z*ly + ew.z*lz );
+				const Scalar hx = eu.x*lx + ev.x*ly + ew.x*lz;
+				const Scalar hy = eu.y*lx + ev.y*ly + ew.y*lz;
+				const Scalar hz = eu.z*lx + ev.z*ly + ew.z*lz;
 
-				const Scalar hdotk = -Vector3Ops::Dot( h, d );
+				const Scalar hdotk = -( hx*dHat.x + hy*dHat.y + hz*dHat.z );
 				if( hdotk <= 0 ) {
 					// GenerateSpecularRay leaves the ray untouched and
 					// Scatter's accept-check drops it.
 					continue;
 				}
 
-				const Vector3 ret = Vector3Ops::Normalize( d + 2.0 * hdotk * h );
-				if( Vector3Ops::Dot( ret, ew ) <= 0 ) {
+				// (n . wo) = (n . d) + 2 (h.wi) (n . h), and (n . d) is
+				// exactly -nvView.
+				const Scalar cosO = -nvView + 2.0 * hdotk * lz;
+				if( cosO <= 0 ) {
 					continue;
 				}
-				if( Vector3Ops::Dot( ret, geomN ) <= 0 ) {
+				const Scalar hDotG = hx*geomN.x + hy*geomN.y + hz*geomN.z;
+				if( dDotG + 2.0 * hdotk * hDotG <= 0 ) {
 					continue;
 				}
 
-				wS += lobes.w[j] * WardKrayRatio( Vector3Ops::Dot( h, ret ), lz,
-				                                  Vector3Ops::Dot( ret, ew ), nvView );
+				wS += lobes.w[j] * WardKrayRatio( hdotk, lz, cosO, nvView );
 				nAcceptedSpec++;
 			}
 
