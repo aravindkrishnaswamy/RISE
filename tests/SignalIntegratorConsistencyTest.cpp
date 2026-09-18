@@ -15,13 +15,24 @@
 //  live geometry actually carried.  PT never rebuilds a vertex -- every
 //  painter it evaluates sees the object manager's own stamped hit -- so it
 //  is the reference-free-of-the-bug integrator this file is written against.
-//  Because BDPT/VCM/MLT eye rays carry no ray differentials at all
-//  (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md section 2, "BDPT/VCM/MLT
-//  eye rays carry no ray differentials"), `fw`/`fwo` read 0 there both
-//  before and after S1 -- a PT-vs-bidirectional difference that has nothing
-//  to do with signals, so every scene below is built so NO expression reads
-//  `fw`/`fwo` (no `fbm`/noise call anywhere): the six signal builtins and
-//  plain arithmetic only.
+//  CORRECTED (DL-14, 2026-09-17, docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.
+//  md): the file's original claim here -- "BDPT/VCM/MLT eye rays carry no
+//  ray differentials at all... fw/fwo read 0 there both before and after
+//  S1" -- was wrong.  The camera ray every rasterizer starts an eye subpath
+//  from unconditionally carries Igehy differentials (`ICamera::GenerateRay`
+//  stamps them with no gate on the caller), so the depth-0 eye vertex DOES
+//  get a real, non-zero `txFootprint` under BDPT/VCM/MLT, exactly as PT's
+//  own primary hit does -- S1's `v.txFootprint = ...` copy was not inert.
+//  The design choice below (no expression in this file's scenes reads
+//  `fw`/`fwo`) is STILL the right one for a DIFFERENT reason: this suite
+//  exercises multi-bounce / indirect geometry signals, where the relevant
+//  vertices sit at depth >= 1 -- and depth >= 1 carries no footprint under
+//  ANY integrator, PT included, because no ray in this renderer carries
+//  differentials after its first scattering bounce.  Mixing an `fw`/`fwo`-
+//  driven expression into a multi-bounce scene would therefore still be
+//  comparing apples to oranges (a real PT-vs-PT depth-dependent effect, not
+//  a signals bug) -- so the exclusion stays, just not for the reason
+//  originally written here.
 //
 //  STATUS (S2 follow-up, run in worktree signals-bidir-test against the
 //  S1-landed tree, HEAD 5a15586a rebased onto S1's 8687bfb1): S1's widening
