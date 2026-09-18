@@ -5364,6 +5364,28 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		throughputComp[w] = 1.0;
 	}
 
+	// DL-170: the per-lane MIS-PARTNER density, alongside the per-lane
+	// throughput above.  `RAY_STATE::bsdfMisPdf` (the scalar `bsdfMisPdf`
+	// local variable below) carries ONE partner across the function-call
+	// boundary by design (DL-103's own cost analysis is why -- see that
+	// row) -- but ONCE INSIDE this bundle's own loop, nothing forces the
+	// hero's aggregate density onto every companion wavelength's own
+	// emitter-hit / env-escape weight, and PART 2's NEE arms already
+	// evaluate the aggregate `PdfNM` at EACH companion's OWN lambda.
+	// `misBsdfPdfComp[0]` mirrors the hero scalar exactly (bit-identical
+	// hero lane, see PART 3's update below); `misBsdfPdfComp[1..N-1]` are
+	// recomputed once per bounce, at the vertex that produces the
+	// continuation, from the SAME aggregate `PdfNM` PART 2 uses -- no
+	// sampler draws, so this costs one extra `ISPF::PdfNM` per active
+	// companion per non-delta bounce and touches no RNG stream.
+	// Initialized to the caller's incoming scalar partner (the only
+	// information available before this bundle's own first bounce, and
+	// wavelength-independent by construction at that boundary).
+	Scalar misBsdfPdfComp[SampledWavelengths::N];
+	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+		misBsdfPdfComp[w] = bsdfMisPdf;
+	}
+
 	RayIntersection ri( firstHit );
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
@@ -5816,7 +5838,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// DL-74: gate on EITHER density being positive and
 						// weight from the MIS PARTNER -- the RGB/NM twin's
 						// rule, and `RayCasterEnvEscapeMISWeight`'s.
-						if( pLS && ( bsdfPdf > 0 || bsdfMisPdf > 0 ) )
+						// DL-170: the partner is THIS LANE's own aggregate
+						// density (`misBsdfPdfComp[w]`), not the hero's --
+						// see the array's declaration above.
+						if( pLS && ( bsdfPdf > 0 || misBsdfPdfComp[w] > 0 ) )
 						{
 							const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 							if( pES )
@@ -5825,16 +5850,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 								if( envPdf > 0 )
 								{
 									Scalar w_bsdf = 1.0;
-									if( bsdfMisPdf > 0 )
+									if( misBsdfPdfComp[w] > 0 )
 									{
 										if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
 										{
 											const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-											w_bsdf = MISWeights::OptimalMIS2Weight( bsdfMisPdf, envPdf, alpha );
+											w_bsdf = MISWeights::OptimalMIS2Weight( misBsdfPdfComp[w], envPdf, alpha );
 										}
 										else
 										{
-											w_bsdf = PowerHeuristic( bsdfMisPdf, envPdf );
+											w_bsdf = PowerHeuristic( misBsdfPdfComp[w], envPdf );
 										}
 									}
 									envRadiance *= w_bsdf;
@@ -5913,13 +5938,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				{
 					continue;
 				}
+				// DL-170: forward THIS LANE's own partner
+				// (`misBsdfPdfComp[w]`), not the hero's -- the delegated
+				// `IntegrateFromHitNM` call is dedicated to wavelength
+				// `swl.lambda[w]` and its own emitter-hit/env-escape sites
+				// read this as their MIS partner at that same wavelength.
 				hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 					rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 					pRadianceMap, depth, iorStack, bsdfPdf, 0,
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
-					false, true, pAOV, bsdfMisPdf );
+					false, true, pAOV, misBsdfPdfComp[w] );
 			}
 			break;
 		}
@@ -5963,17 +5993,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// DL-74 P2-1 (round-4 review): forward the incoming
 						// MIS PARTNER too.  Its three siblings -- the two
 						// HWSS-entry NM fallbacks and the no-BSDF (glass)
-						// mid-path delegation above -- all pass `bsdfMisPdf`;
+						// mid-path delegation above -- all pass a partner;
 						// this one defaulted to -1 ("same as `bsdfPdf`").
-						// Latent today: the only producer whose two densities
-						// differ is `RayCaster`'s volume phase-scatter
-						// continuation, and reaching THIS site from it needs a
-						// medium vertex whose continuation lands on an
-						// SSS/diffusion-profile surface inside an HWSS walk --
-						// no scene in the tree does that.  Forwarded so the
-						// delegation set is uniform rather than three-quarters
-						// correct.
-						false, true, pAOV, bsdfMisPdf );
+						// DL-170: what they forward is now THIS LANE's own
+						// `misBsdfPdfComp[w]`, not the hero's -- see the
+						// no-BSDF delegation above.
+						false, true, pAOV, misBsdfPdfComp[w] );
 				}
 				break;
 			}
@@ -6030,7 +6055,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					const bool emitterNeeSampleableHW = ( pEmitGeomHW && pEmitGeomHW->CanBeAreaLight() );
 					// DL-74: gate on EITHER density; the weight below uses
 					// the MIS partner (RGB/NM twin's rule).
-					if( ( bsdfPdf > 0 || bsdfMisPdf > 0 ) && ri.pObject && emitterNeeSampleableHW )
+					// DL-170: the partner is THIS LANE's own aggregate
+					// density (`misBsdfPdfComp[w]`), not the hero's -- see
+					// the array's declaration above PART 1/2/3.
+					if( ( bsdfPdf > 0 || misBsdfPdfComp[w] > 0 ) && ri.pObject && emitterNeeSampleableHW )
 					{
 						const Scalar area = ri.pObject->GetArea();
 						if( area > 0 )
@@ -6061,18 +6089,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 									}
 									const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
 
-									if( bsdfMisPdf > 0 )
+									if( misBsdfPdfComp[w] > 0 )
 									{
 										if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
 										{
 											const Scalar alpha = rc.pOptimalMIS->GetAlpha(
 												rast.x, rast.y );
 											emission *= MISWeights::OptimalMIS2Weight(
-												bsdfMisPdf, p_nee, alpha );
+												misBsdfPdfComp[w], p_nee, alpha );
 										}
 										else
 										{
-											emission *= PowerHeuristic( bsdfMisPdf, p_nee );
+											emission *= PowerHeuristic( misBsdfPdfComp[w], p_nee );
 										}
 									}
 								}
@@ -6433,12 +6461,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// (`pSPF->ScatterNM(..., heroNM, ...)` above) and the one the hero
 		// NEE arm weights with.
 		//
-		// KNOWN AND PRE-EXISTING, not introduced here: `RAY_STATE` carries
-		// ONE scalar partner while HWSS's own emitter-hit weight applies it
-		// to all `SampledWavelengths::N` companion wavelengths, whose NEE
-		// arms each evaluated `PdfNM` at their OWN lambda.  That
-		// hero-vs-companion gap exists identically for `pS->pdf` (also
-		// hero-only) and is DL-170, not this row.
+		// DL-170 (CLOSED): `RAY_STATE` still carries ONE scalar partner
+		// across the function-call boundary -- that is unchanged, and is
+		// what `rs2.bsdfMisPdf` below is for (it is what a mid-loop
+		// delegation to `IntegrateFromHitNM`, or the next call into this
+		// function, would receive as its OWN single incoming partner).
+		// But INSIDE this bundle's own loop, HWSS's per-lane
+		// `misBsdfPdfComp[]` array (declared above, alongside
+		// `throughputComp[]`) is recomputed per lane right below and is
+		// what PART 1's emitter-hit block and the env-escape block above
+		// actually read -- so the emitter-hit / env-escape weight for
+		// companion lane `w` uses THAT lane's own aggregate `PdfNM`, the
+		// same function PART 2's NEE arm evaluates at `swl.lambda[w]`.
 		const Scalar misBsdfPdfHW = pS->isDelta ? Scalar( 0 ) :
 			[&]() -> Scalar {
 				const Scalar aggregatePdf = pSPF->PdfNM(
@@ -6446,6 +6480,29 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// DL-41 guard -- see the RGB/NM twin's fuller derivation.
 				return aggregatePdf > 0 ? aggregatePdf : effectiveBsdfPdf;
 			}();
+		// Companion lanes: the IDENTICAL construction, evaluated at each
+		// active companion's OWN wavelength.  No sampler draws here --
+		// `PdfNM` is a pure density evaluation of the ALREADY-SAMPLED
+		// `traceRay` direction, so this touches no RNG stream and cannot
+		// perturb any other lane's random sequence.  `effectiveBsdfPdf`
+		// (the DL-41 fallback) is deliberately the HERO's own selected-
+		// lobe density for every lane, not a per-companion one: `pS->pdf`
+		// is sampled once, at `heroNM`, and has no per-wavelength analogue
+		// (`ScatteredRay` carries a single `pdf` field) -- the same
+		// hero-only fallback `bsdfPdf`/`effectiveBsdfPdf` already use
+		// everywhere else in this function.
+		misBsdfPdfComp[0] = misBsdfPdfHW;
+		for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
+		{
+			if( swl.terminated[w] ) continue;
+			if( pS->isDelta ) {
+				misBsdfPdfComp[w] = Scalar( 0 );
+				continue;
+			}
+			const Scalar aggregatePdfComp = pSPF->PdfNM(
+				ri.geometric, traceRay.Dir(), swl.lambda[w], iorStack );
+			misBsdfPdfComp[w] = aggregatePdfComp > 0 ? aggregatePdfComp : effectiveBsdfPdf;
+		}
 		rs2.bsdfPdf = effectiveBsdfPdf;
 		rs2.bsdfMisPdf = misBsdfPdfHW;
 		rs2.type = PathTracingRayType( *pS );

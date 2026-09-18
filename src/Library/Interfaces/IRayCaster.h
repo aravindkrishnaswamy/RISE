@@ -122,6 +122,44 @@ namespace RISE
 			// suppressed across the recursion boundary.  See docs/SMS.md.
 			bool smsPassedThroughSpecular;	///< True if path traversed a delta surface since last non-specular bounce
 			bool smsHadNonSpecularShading;	///< True if path had at least one non-specular shading point (where SMS evaluated)
+			// Placed here (before the 8-byte-aligned `castRRCompensation`) so the two
+			// bools occupy pre-existing tail padding instead of growing sizeof(RAY_STATE)
+			// (DL-103's copy-cost ruling; review of debt-dl170, 2026-09-18).
+			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS
+			//! partner): does THIS SHADER's own op list contain a
+			//! `DirectLightingShaderOp` (NEE)?  Set once per `Shade{,NM}`
+			//! call by the owning `StandardShader`/`AdvancedShader`, from
+			//! its own resolved op list (`AdvancedShader` restricts to the
+			//! ops whose `[nMinDepth,nMaxDepth]` covers `depth`, since its
+			//! op list is depth-gated; `StandardShader` has no such
+			//! ranges, so it resolves once at construction).  Read by
+			//! `DistributionTracingShaderOp`'s own continuation: TRUE
+			//! stamps the real aggregate-density MIS partner (a
+			//! `DirectLightingShaderOp` sibling genuinely competes for the
+			//! same light); FALSE stamps 0 (no NEE sibling in this
+			//! shader, so `EmissionShaderOp` must take the traced hit at
+			//! FULL, unweighted credit -- DL-209's shape).  Default TRUE:
+			//! every producer outside the legacy chain (PT, BDPT, the
+			//! entry-point construction below) has always paired
+			//! BSDF-sampling with a real NEE strategy, so this is a no-op
+			//! everywhere else.
+			bool chainHasNEEOp;
+			//! The converse: does THIS shader's own op list contain a
+			//! `DistributionTracingShaderOp` (a non-delta, emission-
+			//! considering BSDF-sampled continuation)?  Read by
+			//! `DirectLightingShaderOp`, forwarded to `LightSampler::
+			//! EvaluateDirectLighting{,NM}`'s `bBsdfSamplingPartnerExists`
+			//! parameter: TRUE weights NEE's own sample against the
+			//! material's aggregate density as before (a competing
+			//! BSDF-sampled strategy exists to partition against); FALSE
+			//! forces weight 1 (no such strategy exists in this shader to
+			//! discount against -- `DirectLightingShaderOp` alone, or with
+			//! only delta `Reflection`/`Refraction` ops (already weight-1
+			//! on their own side, so nothing to partition with either),
+			//! or with `FinalGatherShaderOp` (never considers emission at
+			//! all)).  Default TRUE for the same reason as `chainHasNEEOp`.
+			bool chainHasBsdfContinuationOp;
+
 
 			//! DL-185: `RayCaster::CastRay{,NM,HWSS}` applies its own
 			//! CAST-LEVEL importance Russian roulette (`RC_RR_THRESHOLD`)
@@ -147,6 +185,7 @@ namespace RISE
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
 				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
+				chainHasNEEOp( true ), chainHasBsdfContinuationOp( true ),
 				castRRCompensation( 1.0 ) {}
 
 			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.

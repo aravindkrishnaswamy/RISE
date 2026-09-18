@@ -1088,11 +1088,367 @@ static void RunMultiLobeAreaRow()
 	twoLobe->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//
+//  DL-170 (docs/DL170_DL171_HWSS_AND_LEGACY_MIS_PARTNERS.md) -- the
+//  HWSS twin of row (j).  `PathTracingIntegrator::IntegrateFromHitHWSS`
+//  computes ONE aggregate MIS-partner density at the HERO wavelength
+//  (`misBsdfPdfHW`) and applies that SAME scalar to every companion
+//  wavelength's own emitter-hit / env-escape weight, while each
+//  companion's OWN NEE arm (`LightSampler::EvaluateDirectLightingNM`)
+//  evaluates the material's aggregate `PdfNM` at ITS OWN lambda.  At a
+//  material whose aggregate density is wavelength-INDEPENDENT (every
+//  furnace above, including row (j)/(k)'s own material run through
+//  `ScatterNM`) the two coincide and the bug is invisible; this row
+//  uses a material whose two lobes' SELECTION WEIGHTS vary with
+//  wavelength -- matching CLAUDE.md's DL-170 premise that "12
+//  production SPFs have a wavelength-dependent PdfNM" -- so
+//  `PdfNM(hero)` and `PdfNM(companion)` are PROVABLY different
+//  functions of the same direction.
+//
+//  THE MATERIAL.  Two overlapping, non-delta, cosine-power lobes
+//  (reusing the DL-103 rows' own `kLobeAPower`/`kLobeBPower`,
+//  `CosPowerPdf`, `SampleCosPower`, `FurnaceAxis` helpers above), but
+//  the mixture weight ramps linearly with wavelength:
+//
+//      c_A(nm) = lerp( 0.05, 0.95, (nm-400)/300 )   clamped [0.05,0.95]
+//      c_B(nm) = 1 - c_A(nm)
+//
+//  Lobe A is tagged `eRayDiffuse`, lobe B `eRayReflection` --
+//  distinguishable by TYPE so `EvaluateKrayNM` can report each lobe's
+//  own per-wavelength kray (`c_I(nm)`, direction-independent by
+//  construction, matching DL-127's `kray_I == f_I cos/p_I` contract)
+//  WITHOUT the aggregate/per-lobe DL-125 companion-fallback mismatch
+//  contaminating this row's own closed form -- DL-125 is a separate,
+//  already-open residual and this row must not accidentally re-measure
+//  it.  With `EvaluateKrayNM` supplying the exact per-lobe companion
+//  kray, the reweighted escape-side estimator is unbiased for
+//  `f_nm(w) cos(w)` regardless of which mixture the shared DIRECTION
+//  was drawn from -- a standard importance-sampling identity (summing
+//  `E_hero[ kray_I(nm) / c_I(hero) ]` over the hero's OWN lobe-
+//  selection probabilities telescopes to `sum_I c_I(nm) p_I(w)`, i.e.
+//  `Pdf_nm(w)`, exactly) -- so the ONLY remaining source of bias is the
+//  MIS WEIGHT applied to that estimator, which is precisely what this
+//  row isolates.
+//
+//  THE ACHROMATIC CONTROL.  `HWSSMultiLobeMaterial(false)` collapses
+//  `c_A`/`c_B` to the DL-103 rows' own constant 0.3/0.7 split -- same
+//  machinery, no wavelength dependence, so `misBsdfPdfComp[w] ==
+//  misBsdfPdfHW` trivially and the fix is a structural no-op on this
+//  material.  It must read L_env on all four lanes both before and
+//  after the fix, which is what proves the wavelength-dependent row
+//  measures the hero/companion partner mismatch and not the harness,
+//  `EvaluateKrayNM`, or the RR/throughput bookkeeping.
+//
+//////////////////////////////////////////////////////////////////////
+static const Scalar kHWSSLambdaLo = 400.0;
+static const Scalar kHWSSLambdaHi = 700.0;
+static const Scalar kHWSSCAMin    = 0.05;
+static const Scalar kHWSSCAMax    = 0.95;
+
+//! The fixed, DETERMINISTIC wavelength bundle this row probes -- one
+//! hero and three companions spanning the ramp above, chosen (not
+//! randomly sampled) so the row measures specific known hero/companion
+//! densities rather than averaging over an unknown spectrum.
+static const Scalar kHWSSTestLambda[SampledWavelengths::N] = { 420.0, 480.0, 560.0, 660.0 };
+
+//! Wavelength-dependent A-lobe mixture weight; `bWaveDep == false`
+//! collapses to the DL-103 rows' own constant `kLobeAWeight` (0.3).
+static Scalar HWSSLobeAWeight( const Scalar nm, const bool bWaveDep )
+{
+	if( !bWaveDep ) return kLobeAWeight;
+	Scalar t = ( nm - kHWSSLambdaLo ) / ( kHWSSLambdaHi - kHWSSLambdaLo );
+	t = r_max( Scalar( 0 ), r_min( Scalar( 1 ), t ) );
+	return kHWSSCAMin + ( kHWSSCAMax - kHWSSCAMin ) * t;
+}
+
+//! The material's AGGREGATE density at wavelength `nm` -- the SAME
+//! function `PdfNM` reports and `LightSampler`'s NEE arm evaluates.
+static Scalar HWSSAggregatePdfAt( const RayIntersectionGeometric& ri,
+	const Vector3& wo, const Scalar nm, const bool bWaveDep )
+{
+	const Scalar c = Vector3Ops::Dot( wo, FurnaceAxis( ri ) );
+	const Scalar cA = HWSSLobeAWeight( nm, bWaveDep );
+	const Scalar cB = 1.0 - cA;
+	return cA * CosPowerPdf( c, kLobeAPower ) + cB * CosPowerPdf( c, kLobeBPower );
+}
+
+class HWSSMultiLobeSPF : public virtual ISPF, public virtual Reference
+{
+	const bool bWaveDep;
+
+	void ScatterAt( const RayIntersectionGeometric& ri, ISampler& sampler,
+		const Scalar nm, ScatteredRayContainer& rays ) const
+	{
+		const Vector3 axis = FurnaceAxis( ri );
+		const Scalar cA = HWSSLobeAWeight( nm, bWaveDep );
+		const Scalar cB = 1.0 - cA;
+
+		{
+			ScatteredRay s;
+			s.type = ScatteredRay::eRayDiffuse;
+			s.isDelta = false;
+			s.ray.Set( ri.ptIntersection,
+				SampleCosPower( axis, kLobeAPower, sampler.Get1D(), sampler.Get1D() ) );
+			s.pdf = CosPowerPdf( Vector3Ops::Dot( s.ray.Dir(), axis ), kLobeAPower );
+			s.kray = RISEPel( cA, cA, cA );
+			s.krayNM = cA;
+			rays.AddScatteredRay( s );
+		}
+		{
+			ScatteredRay s;
+			s.type = ScatteredRay::eRayReflection;
+			s.isDelta = false;
+			s.ray.Set( ri.ptIntersection,
+				SampleCosPower( axis, kLobeBPower, sampler.Get1D(), sampler.Get1D() ) );
+			s.pdf = CosPowerPdf( Vector3Ops::Dot( s.ray.Dir(), axis ), kLobeBPower );
+			s.kray = RISEPel( cB, cB, cB );
+			s.krayNM = cB;
+			rays.AddScatteredRay( s );
+		}
+	}
+
+protected:
+	~HWSSMultiLobeSPF() override {}
+
+public:
+	explicit HWSSMultiLobeSPF( bool waveDep ) : bWaveDep( waveDep ) {}
+
+	void Scatter( const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& rays, const IORStack& ) const override
+	{
+		// RGB Scatter is never exercised by this HWSS-only row; use a
+		// mid-range wavelength so the interface stays well-defined.
+		ScatterAt( ri, sampler, Scalar( 550 ), rays );
+	}
+	void ScatterNM( const RayIntersectionGeometric& ri, ISampler& sampler, Scalar nm,
+		ScatteredRayContainer& rays, const IORStack& ) const override
+	{
+		ScatterAt( ri, sampler, nm, rays );
+	}
+	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo,
+		const IORStack& ) const override
+	{
+		return HWSSAggregatePdfAt( ri, wo, Scalar( 550 ), bWaveDep );
+	}
+	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, Scalar nm,
+		const IORStack& ) const override
+	{
+		return HWSSAggregatePdfAt( ri, wo, nm, bWaveDep );
+	}
+	Scalar EvaluateKrayNM( const RayIntersectionGeometric&, const Vector3&,
+		ScatteredRay::ScatRayType rayType, Scalar nm, const IORStack& ) const override
+	{
+		if( rayType == ScatteredRay::eRayDiffuse ) return HWSSLobeAWeight( nm, bWaveDep );
+		if( rayType == ScatteredRay::eRayReflection ) return 1.0 - HWSSLobeAWeight( nm, bWaveDep );
+		return -1;
+	}
+};
+
+class HWSSMultiLobeBRDF : public virtual IBSDF, public virtual Reference
+{
+	const bool bWaveDep;
+protected:
+	~HWSSMultiLobeBRDF() override {}
+public:
+	explicit HWSSMultiLobeBRDF( bool waveDep ) : bWaveDep( waveDep ) {}
+	RISEPel value( const Vector3& wo, const RayIntersectionGeometric& ri ) const override
+	{
+		const Scalar c = Vector3Ops::Dot( wo, FurnaceAxis( ri ) );
+		const Scalar f = c > 0 ? HWSSAggregatePdfAt( ri, wo, Scalar( 550 ), bWaveDep ) / c : Scalar( 0 );
+		return RISEPel( f, f, f );
+	}
+	Scalar valueNM( const Vector3& wo, const RayIntersectionGeometric& ri, const Scalar nm ) const override
+	{
+		const Scalar c = Vector3Ops::Dot( wo, FurnaceAxis( ri ) );
+		return c > 0 ? HWSSAggregatePdfAt( ri, wo, nm, bWaveDep ) / c : Scalar( 0 );
+	}
+};
+
+class HWSSMultiLobeMaterial : public virtual IMaterial, public virtual Reference
+{
+	HWSSMultiLobeBRDF* pBRDF;
+	HWSSMultiLobeSPF*  pSPF;
+protected:
+	~HWSSMultiLobeMaterial() override { safe_release( pBRDF ); safe_release( pSPF ); }
+public:
+	explicit HWSSMultiLobeMaterial( bool waveDep )
+	{
+		pBRDF = new HWSSMultiLobeBRDF( waveDep );
+		GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "HWSS multi-lobe BRDF" );
+		pSPF = new HWSSMultiLobeSPF( waveDep );
+		GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "HWSS multi-lobe SPF" );
+	}
+	IBSDF* GetBSDF() const override { return pBRDF; }
+	ISPF* GetSPF() const override { return pSPF; }
+	IEmitter* GetEmitter() const override { return 0; }
+};
+
+//////////////////////////////////////////////////////////////////////
+// One furnace sample through the HWSS production entry point.
+// Mirrors `IntegrateOneSample` above; the difference is the four-lane
+// result and the fixed wavelength bundle (`kHWSSTestLambda`) -- the
+// point is to probe SPECIFIC, known hero/companion wavelengths, not
+// to average over a randomly-placed hero.
+//////////////////////////////////////////////////////////////////////
+static void IntegrateOneSampleHWSS(
+	const Fixture& fx,
+	const IMaterial& material,
+	PathTracingIntegrator& integrator,
+	StubObject& shadingObject,
+	RuntimeContext& rc,
+	ISampler& sampler,
+	Scalar result[SampledWavelengths::N] )
+{
+	const RasterizerState rast{};
+
+	RayIntersection hit( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
+	hit.geometric.bHit = true;
+	hit.geometric.range = 1;
+	hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+	hit.geometric.vNormal = Vector3( 0, 0, 1 );
+	hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
+	hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+	hit.pObject = &shadingObject;
+	hit.pMaterial = &material;
+
+	const IORStack stack( 1.0 );
+
+	SampledWavelengths swl;
+	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+		swl.lambda[i] = kHWSSTestLambda[i];
+		swl.pdf[i] = 1.0;
+		swl.terminated[i] = false;
+	}
+
+	integrator.IntegrateFromHitHWSS(
+		rc, rast, hit, swl, *fx.pScene, *fx.pCaster, sampler,
+		/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
+		/*bsdfPdf_*/ 0, /*considerEmission_*/ true, /*importance_*/ 1,
+		IRayCaster::RAY_STATE::eRayDiffuse,
+		0, 0, 0, 0, 0, 0, result );
+}
+
+static void RunHWSSBatch(
+	const Fixture& fx,
+	const IMaterial& material,
+	unsigned int nSamples,
+	unsigned int seedBase,
+	Scalar meanOut[SampledWavelengths::N] )
+{
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "HWSS integrator" );
+	integrator->SetMaxPathDepth( 2 );
+
+	StubObject* shadingObject = new StubObject();
+	GlobalLog()->PrintNew( shadingObject, __FILE__, __LINE__, "HWSS shading object" );
+
+	Scalar sum[SampledWavelengths::N] = { 0, 0, 0, 0 };
+	for( unsigned int s = 0; s < nSamples; ++s ) {
+		RandomNumberGenerator rng( seedBase + s );
+		IndependentSampler sampler( rng );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		Scalar result[SampledWavelengths::N];
+		IntegrateOneSampleHWSS( fx, material, *integrator, *shadingObject, rc, sampler, result );
+		for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+			sum[w] += result[w];
+		}
+	}
+
+	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+		meanOut[w] = sum[w] / nSamples;
+	}
+
+	integrator->release();
+	shadingObject->release();
+}
+
+static void RunHWSSMultiLobeEnvRow()
+{
+	std::cout << "DL-170 HWSS env furnace: companion-lane env-NEE vs escape weight "
+		"must partition to 1 at THAT companion's own wavelength" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "mlenvhwss" ), "HWSS multi-lobe env fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const IRadianceMap* pGlobal = fx.pScene->GetGlobalRadianceMap();
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+	Check( pGlobal != 0 && pLS != 0,
+		"HWSS multi-lobe env fixture has a radiance map and a LightSampler" );
+	if( !pGlobal || !pLS ) return;
+	const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+	Check( pES != 0 && pES->IsValid(),
+		"HWSS multi-lobe env fixture has a valid EnvironmentSampler" );
+	if( !pES || !pES->IsValid() ) return;
+
+	// Target is the SPECTRAL radiance at each lane's OWN wavelength
+	// (not a single RGB-derived number) -- correct regardless of the
+	// JH-uplift curve's exact shape for this grey environment.
+	const RasterizerState rast{};
+	Scalar LenvNM[SampledWavelengths::N];
+	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+		LenvNM[w] = pGlobal->GetRadianceNM(
+			Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast, kHWSSTestLambda[w] );
+		Check( LenvNM[w] > 0, "HWSS multi-lobe env spectral radiance probe is positive" );
+	}
+
+	const unsigned int kN = 150000;
+	static const char* laneNames[SampledWavelengths::N] =
+		{ "hero (nm=420)", "companion 1 (nm=480)", "companion 2 (nm=560)", "companion 3 (nm=660)" };
+
+	// ACHROMATIC CONTROL: no wavelength dependence at all.  Every
+	// lane's own aggregate PdfNM is the SAME function of direction, so
+	// the hero-broadcast bug is a structural no-op here -- this must
+	// read its own L_env(nm) on all four lanes both before and after
+	// the fix, proving the harness (and the EvaluateKrayNM
+	// construction) is sound independent of DL-170.
+	{
+		HWSSMultiLobeMaterial* mat = new HWSSMultiLobeMaterial( false );
+		GlobalLog()->PrintNew( mat, __FILE__, __LINE__, "HWSS achromatic control material" );
+		Scalar mean[SampledWavelengths::N];
+		RunHWSSBatch( fx, *mat, kN, 31000, mean );
+		for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+			std::cout << "    (achromatic control) " << laneNames[w] << " " << mean[w]
+				<< " , expected " << LenvNM[w] << std::endl;
+			CheckRel( mean[w], LenvNM[w], 0.02,
+				"(achromatic control) HWSS multi-lobe furnace, wavelength-independent "
+				"mixture: every lane reads its own L_env(nm)" );
+		}
+		mat->release();
+	}
+
+	// ROW: wavelength-DEPENDENT mixture weights.  Hero must still read
+	// L_env(hero) -- the fix never touches the hero's own weighting;
+	// the companion lanes are the red-proof.
+	{
+		HWSSMultiLobeMaterial* mat = new HWSSMultiLobeMaterial( true );
+		GlobalLog()->PrintNew( mat, __FILE__, __LINE__, "HWSS wavelength-dependent material" );
+		Scalar mean[SampledWavelengths::N];
+		RunHWSSBatch( fx, *mat, kN, 32000, mean );
+
+		std::cout << "    (hero) " << mean[0] << " , expected " << LenvNM[0] << std::endl;
+		CheckRel( mean[0], LenvNM[0], 0.02,
+			"DL-170: HWSS hero lane reads L_env(hero) (the fix does not touch the hero)" );
+
+		for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+			std::cout << "    (" << laneNames[w] << ") " << mean[w]
+				<< " , expected " << LenvNM[w] << std::endl;
+			CheckRel( mean[w], LenvNM[w], 0.02,
+				"DL-170: HWSS companion lane's env-NEE vs escape weight "
+				"partition to 1 at the COMPANION's own wavelength" );
+		}
+		mat->release();
+	}
+}
+
 static void RunMultiLobeRows()
 {
 	RealMultiLobePremise();
 	RunMultiLobeEnvRow();
 	RunMultiLobeAreaRow();
+	RunHWSSMultiLobeEnvRow();
 }
 
 #ifdef RISE_ENABLE_OPENPGL

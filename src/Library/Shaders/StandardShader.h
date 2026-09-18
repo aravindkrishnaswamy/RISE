@@ -36,6 +36,15 @@ namespace RISE
 
 			bool bComputeSPF;
 
+			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS
+			//! partner): resolved ONCE at construction from `shaderops_`
+			//! (StandardShader has no per-op depth ranges, unlike
+			//! AdvancedShader, so this is depth-independent and safe to
+			//! cache) -- see `RAY_STATE::chainHasNEEOp`/
+			//! `chainHasBsdfContinuationOp`'s doc for the full contract.
+			bool bHasDirectLightingOp;
+			bool bHasBsdfContinuationOp;
+
 		public:
 			StandardShader( const std::vector<IShaderOp*>& shaderops_ );
 
