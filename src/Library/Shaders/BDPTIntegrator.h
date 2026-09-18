@@ -505,6 +505,28 @@ namespace RISE
 				Scalar heroNM,
 				Scalar companionNM
 				);
+
+			/// DL-126 P1.  Checks whether the given subpath scatters off
+			/// any non-delta SURFACE vertex whose material has no
+			/// aggregate BSDF (`GetBSDF() == 0`, e.g. `biospec_skin_material`
+			/// / `generic_human_tissue_material`) at an INTERIOR position
+			/// (not the last vertex).  `RecomputeSubpathThroughputNM` has
+			/// no way to form a companion/hero ratio at such a vertex (no
+			/// BSDF to evaluate, and neither shipped SPF overrides
+			/// `EvaluateKrayNM`), so it zeroes the companion's contribution
+			/// from that point on -- wavelength-independent of which
+			/// companion, unlike dispersion, so this is a single
+			/// path-wide check, not a per-companion-pair one like
+			/// `HasDispersiveDeltaVertex`.  The caller must terminate
+			/// secondary wavelengths on a true return, exactly as it
+			/// already does for a dispersive delta vertex, so the
+			/// resulting always-zero companions are EXCLUDED from the
+			/// sample-count denominator instead of silently diluting the
+			/// bundle mean (the same bias `HasDispersiveDeltaVertex`'s own
+			/// termination protocol exists to avoid).
+			static bool HasNullBSDFContinuationVertex(
+				const std::vector<BDPTVertex>& verts
+				);
 		};
 	}
 }

@@ -2781,7 +2781,33 @@ namespace {
 			}
 	#endif
 
-			if( effectivePdf <= 0 ) {
+			// DL-126.  `BioSpecSkinMaterial` / `GenericHumanTissueMaterial`
+			// have `GetBSDF() == 0` (so `vertices.back().isConnectible`,
+			// set above, is already false) and their SPFs'
+			// `Scatter`/`ScatterNM` never populate `ScatteredRay::pdf`
+			// (default 0) -- their entire physically simulated transport
+			// weight is reported directly as `kray`, an already-integrated,
+			// unbiased Monte Carlo weight, not `f*cos/pdf`.  Both
+			// `effectivePdf <= 0` here (from `pScat->pdf == 0`) and,
+			// further below, `PositiveMagnitude(f) <= 0` (from the null
+			// aggregate BSDF) used to `break` the walk on any non-delta
+			// scatter off such a material -- in every tag, and in VCM/MLT,
+			// which share this generator.  PT is unaffected: it prices
+			// continuations from `pS->kray` alone
+			// (`PathTracingIntegrator.cpp`) and gates on neither quantity.
+			// Neither gate is meaningful for a vertex like this: no rival
+			// strategy can ever reconstruct it for a connection
+			// (isConnectible is false, so `PathVertexEval::EvalBSDFAtVertex`
+			// always returns 0 there), so it is a black box exactly like a
+			// delta lobe to every OTHER technique, even though its own
+			// sample is not itself drawn from a Dirac direction.  The
+			// guiding block above is already gated on
+			// `vertices.back().isConnectible`, so `usedGuidedDirection` and
+			// `bsdfCombinedPdf` are always false/0 here.
+			const bool nullBSDFContinuation =
+				!pScat->isDelta && !vertices.back().isConnectible;
+
+			if( effectivePdf <= 0 && !nullBSDFContinuation ) {
 				break;
 			}
 
@@ -2840,6 +2866,34 @@ namespace {
 						}
 					}
 				}
+			} else if( nullBSDFContinuation ) {
+				// DL-126.  Mirror the DELTA branch's own formula exactly:
+				// no aggregate BSDF, no pdf division (this SPF doesn't
+				// track one -- see the `nullBSDFContinuation` derivation
+				// above), no guiding substitution (guiding never runs at a
+				// non-connectible vertex).  `KrayValue<Tag>(*pScat)` is the
+				// only quantity this continuation can legally be priced
+				// from.
+				if( PositiveMagnitude<Tag>( KrayValue<Tag>( *pScat ) ) <= 0 ) {
+					break;
+				}
+				localScatteringWeight =
+					KrayValue<Tag>( *pScat ) * (bssrdfReflectCompensation / selectProb);
+				beta = beta * localScatteringWeight;
+				if constexpr( Traits::is_nm ) {
+					if( pSwlHWSS ) {
+						// Same hero-only convention as the delta branch
+						// immediately above: neither SPF overrides
+						// `EvaluateKrayNM` (DL-125's fallback pattern), so
+						// a per-wavelength `kray` is unavailable regardless.
+						const Scalar deltaScale = pScat->krayNM * bssrdfReflectCompensation / selectProb;
+						hwssBetaNM[0] = beta;
+						for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+							if( pSwlHWSS->terminated[w] ) continue;
+							hwssBetaNM[w] = hwssBetaNM[w] * deltaScale;
+						}
+					}
+				}
 			} else {
 				V f;
 	#ifdef RISE_ENABLE_OPENPGL
@@ -2851,12 +2905,14 @@ namespace {
 				const Scalar cosTheta = fabs( Vector3Ops::Dot(
 					scatDir, ri.geometric.vNormal ) );
 
-				// Retained as a PATH-TERMINATION gate only.  DL-69 took
-				// `f` out of the ordinary throughput below, but a vertex
-				// whose aggregate BSDF is zero at the sampled direction
-				// yields zero through every connection strategy, and
-				// killing the walk there is pre-existing behaviour that
-				// this row deliberately does not change.
+				// Retained as a PATH-TERMINATION gate only, for a
+				// CONNECTIBLE material (the null-BSDF, non-connectible case
+				// is handled in the branch above instead -- DL-126) whose
+				// SELECTED lobe's aggregate BSDF value happens to be zero
+				// at the sampled direction: every connection strategy
+				// through it also yields zero, and killing the walk there
+				// is pre-existing behaviour this row deliberately does not
+				// change.
 				if( PositiveMagnitude<Tag>( f ) <= 0 ) {
 					break;
 				}
@@ -3076,15 +3132,21 @@ namespace {
 			// substituting a zero would be a behaviour change for no
 			// consistency gain.
 			//
-			// WHICH MATERIALS REACH THAT FALLBACK (review, 2026-09-14).
-			// It is NOT `BioSpecSkinSPF` / `GenericHumanTissueSPF`, as
-			// this comment used to say: their `ISPF::Pdf` really is the
-			// base-class 0, but the walk never gets here for them --
-			// their materials' `GetBSDF()` is null, so the
-			// `PositiveMagnitude(f) <= 0` gate above already `break`s
-			// (that is DL-126, a separate row).  The reachable case is
-			// a material whose `Pdf` is real but does not cover the
-			// lobe that was drawn: `TranslucentSPF`, whose `Pdf`/`PdfNM`
+			// WHICH MATERIALS REACH THAT FALLBACK (review, 2026-09-14;
+			// corrected again 2026-09-18, debt-dl126 round 2 -- BOTH
+			// earlier claims in this paragraph were wrong).  It is NOT
+			// `BioSpecSkinSPF` / `GenericHumanTissueSPF`: this comment
+			// used to say the walk "never gets here for them" because
+			// `GetBSDF()` is null and the `PositiveMagnitude(f) <= 0`
+			// gate breaks first -- that was already wrong before DL-126
+			// closed (the ACTUAL prior gate was `effectivePdf <= 0`,
+			// since neither SPF ever sets `ScatteredRay::pdf` either;
+			// see docs/DL126_BDPT_NULL_BSDF_CONTINUATION.md), and is
+			// simply false now that DL-126's `nullBSDFContinuation`
+			// branch (a few lines below) routes those materials around
+			// this whole block instead of reaching it.  The reachable
+			// case is a material whose `Pdf` is real but does not cover
+			// the lobe that was drawn: `TranslucentSPF`, whose `Pdf`/`PdfNM`
 			// deliberately do not cover either Phong `cos^N` lobe (the
 			// entering transmission and the interior backscatter) --
 			// that gap is DL-41.
@@ -5442,10 +5504,37 @@ Scalar BDPTIntegrator::MISWeight(
 			// ~0, producing per-pixel bias every time a light-tracing splat
 			// lands on a pixel.  The cure for that mode is to count NEE as
 			// a competing strategy here.
-			if( vi.isDelta ) {
+			// DL-126.  A vertex whose material has no BSDF
+			// (`!isConnectible`, e.g. `biospec_skin_material` /
+			// `generic_human_tissue_material`) can never be a connection
+			// endpoint -- `PathVertexEval::EvalBSDFAtVertex` returns 0
+			// there in every direction, so every connection strategy
+			// through it evaluates to 0 (the same "reserve no MIS mass for
+			// a zero-yield strategy" rule `isConnectible`'s own contract
+			// comment states above).  Such a vertex is a black box to
+			// every OTHER technique exactly like a delta lobe, even though
+			// its own sample was not drawn from one (`isDelta` is false).
+			// CORRECTION (review round 2, 2026-09-18): this used to argue
+			// the phantom ratio is "often exactly 1 once both `pdfFwd` and
+			// `pdfRev` remap0 to 1" -- that overstates it.  Veach's
+			// delta-transparency convention (`pdfFwdPrev = 0`, applied a
+			// few lines above at THIS vertex's own scatter) zeroes the
+			// FORWARD density of the vertex AFTER this one, not this
+			// vertex's own `pdfFwd`/`pdfRev`, which come from the
+			// PRECEDING and FOLLOWING vertices' own (generally ordinary,
+			// non-null) materials and so are generically NONZERO, not
+			// remapped at all.  The skip is still required regardless of
+			// what those two numbers evaluate to: the strategy this ratio
+			// would credit is zero-yield BY THE MATERIAL, not by an
+			// arithmetic coincidence in the pdf ratio, so any finite `ri`
+			// contributed here -- 1, or anything else -- wrongly reserves
+			// denominator mass for a strategy that always evaluates its
+			// own contribution to 0, deflating every strategy that
+			// legitimately passes through it.
+			if( vi.isDelta || !vi.isConnectible ) {
 				continue;
 			}
-			if( i > 0 && lightVerts[i-1].isDelta &&
+			if( i > 0 && ( lightVerts[i-1].isDelta || !lightVerts[i-1].isConnectible ) &&
 				!( i == 1 && lightVerts[0].type == BDPTVertex::LIGHT ) )
 			{
 				continue;
@@ -5537,10 +5626,13 @@ Scalar BDPTIntegrator::MISWeight(
 
 			// Skip non-connectible vertices.
 			// Both vertices at the proposed connection must be non-delta.
-			if( vj.isDelta ) {
+			// DL-126: also skip a vertex whose material has no BSDF at all
+			// (`!isConnectible`) -- see the light-side walk's twin comment
+			// above for the derivation.
+			if( vj.isDelta || !vj.isConnectible ) {
 				continue;
 			}
-			if( j > 0 && eyeVerts[j-1].isDelta ) {
+			if( j > 0 && ( eyeVerts[j-1].isDelta || !eyeVerts[j-1].isConnectible ) ) {
 				continue;
 			}
 
@@ -6729,7 +6821,22 @@ unsigned int GenerateLightSubpathImpl(
 		}
 #endif
 
-		if( effectivePdf <= 0 ) {
+		// DL-126, light-subpath twin of the eye generator's block -- read
+		// its comment for the derivation.  `BioSpecSkinMaterial` /
+		// `GenericHumanTissueMaterial` have `GetBSDF() == 0`
+		// (`vertices.back().isConnectible` is already false) and their
+		// SPFs never populate `ScatteredRay::pdf` (default 0), so
+		// `effectivePdf <= 0` here and, further below,
+		// `PositiveMagnitude(f) <= 0` used to `break` the light subpath at
+		// any such material too.  Neither gate is meaningful for a vertex
+		// no rival strategy can ever reconstruct (isConnectible false);
+		// the guiding block above is already gated on
+		// `vertices.back().isConnectible`, so `usedGuidedDirection` and
+		// `bsdfCombinedPdf` are always false/0 here.
+		const bool nullBSDFContinuation =
+			!pScat->isDelta && !vertices.back().isConnectible;
+
+		if( effectivePdf <= 0 && !nullBSDFContinuation ) {
 			break;
 		}
 
@@ -6771,6 +6878,24 @@ unsigned int GenerateLightSubpathImpl(
 					}
 				}
 			}
+		} else if( nullBSDFContinuation ) {
+			// DL-126, light-subpath twin of the eye branch above.  Mirror
+			// the DELTA branch's own formula exactly: no aggregate BSDF,
+			// no pdf division, no guiding substitution.
+			if( PositiveMagnitude<Tag>( KrayValue<Tag>( *pScat ) ) <= 0 ) {
+				break;
+			}
+			beta = beta * KrayValue<Tag>( *pScat ) * (bssrdfReflectCompensation / selectProb);
+			if constexpr( Traits::is_nm ) {
+				if( pSwlHWSS ) {
+					const Scalar deltaScale = pScat->krayNM * bssrdfReflectCompensation / selectProb;
+					hwssBetaNM[0] = beta;
+					for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+						if( pSwlHWSS->terminated[w] ) continue;
+						hwssBetaNM[w] = hwssBetaNM[w] * deltaScale;
+					}
+				}
+			}
 		} else {
 			V f;
 #ifdef RISE_ENABLE_OPENPGL
@@ -6784,6 +6909,11 @@ unsigned int GenerateLightSubpathImpl(
 			const Scalar cosTheta = fabs( Vector3Ops::Dot(
 				scatDir, ri.geometric.vNormal ) );
 
+			// Retained as a PATH-TERMINATION gate only, for a CONNECTIBLE
+			// material (the null-BSDF, non-connectible case is handled in
+			// the branch above instead -- DL-126) whose SELECTED lobe's
+			// aggregate BSDF value happens to be zero at the sampled
+			// direction.
 			if( PositiveMagnitude<Tag>( f ) <= 0 ) {
 				break;
 			}
@@ -7200,37 +7330,96 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 		// onwards, so we fold it into cumulativeRatio AFTER updating
 		// v[i] above.
 		if( i + 1 < verts.size() && i > 0 &&
-			v.type == BDPTVertex::SURFACE && !v.isDelta &&
-			v.pMaterial && v.pMaterial->GetBSDF() )
+			v.type == BDPTVertex::SURFACE && !v.isDelta )
 		{
-			// EvalBSDFAtVertex expects wi and wo BOTH pointing AWAY from the
-			// surface (wi toward light, wo toward viewer); it negates wo
-			// internally to build the incoming ray (see BDPTIntegrator.h
-			// DIRECTION CONVENTIONS).  Both directions must therefore point
-			// FROM v TOWARD the neighbour, matching how GenerateEye/LightSubpath
-			// pass (scatDir, -currentRay.Dir()).  dirToPrev = prev - v.
-			const Vector3 dirToPrev = Vector3Ops::Normalize(
-				Vector3Ops::mkVector3( verts[i-1].position, v.position ) );
-			const Vector3 dirToNext = Vector3Ops::Normalize(
-				Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
+			if( v.pMaterial && v.pMaterial->GetBSDF() )
+			{
+				// EvalBSDFAtVertex expects wi and wo BOTH pointing AWAY from
+				// the surface (wi toward light, wo toward viewer); it
+				// negates wo internally to build the incoming ray (see
+				// BDPTIntegrator.h DIRECTION CONVENTIONS).  Both directions
+				// must therefore point FROM v TOWARD the neighbour, matching
+				// how GenerateEye/LightSubpath pass (scatDir,
+				// -currentRay.Dir()).  dirToPrev = prev - v.
+				const Vector3 dirToPrev = Vector3Ops::Normalize(
+					Vector3Ops::mkVector3( verts[i-1].position, v.position ) );
+				const Vector3 dirToNext = Vector3Ops::Normalize(
+					Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
 
-			// Light subpath: wi = toward light (prev), wo = toward eye (next)
-			// Eye subpath:   wi = toward light (next), wo = toward eye (prev)
-			Vector3 wi, wo;
-			if( isLightPath ) {
-				wi = dirToPrev;
-				wo = dirToNext;
-			} else {
-				wi = dirToNext;
-				wo = dirToPrev;
+				// Light subpath: wi = toward light (prev), wo = toward eye (next)
+				// Eye subpath:   wi = toward light (next), wo = toward eye (prev)
+				Vector3 wi, wo;
+				if( isLightPath ) {
+					wi = dirToPrev;
+					wo = dirToNext;
+				} else {
+					wi = dirToNext;
+					wo = dirToPrev;
+				}
+
+				const Scalar heroF = PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( heroNM ) );
+				const Scalar compF = PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( companionNM ) );
+
+				if( heroF > NEARZERO ) {
+					cumulativeRatio *= compF / heroF;
+				} else {
+					cumulativeRatio = 0;
+				}
 			}
-
-			const Scalar heroF = PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( heroNM ) );
-			const Scalar compF = PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( companionNM ) );
-
-			if( heroF > NEARZERO ) {
-				cumulativeRatio *= compF / heroF;
-			} else {
+			else
+			{
+				// DL-126 P1 (review round 2).  A null-BSDF, non-delta
+				// vertex (`biospec_skin_material` / `generic_human_tissue_
+				// material`, whose `GetBSDF()` is null) has no aggregate
+				// BSDF to form a companion/hero RATIO from, and neither
+				// SPF overrides `EvaluateKrayNM` to hand one over directly
+				// -- their whole response is a layered Monte Carlo
+				// simulation with no analytic per-wavelength closed form
+				// available after the fact.  Falling through to the
+				// "Delta, BSSRDF, medium, endpoints: scatter ratio = 1.0"
+				// convention below (the ORIGINAL code did exactly that, by
+				// simply not entering this `if` at all) is wrong here for
+				// the same reason it is right for an actual delta lobe: a
+				// mirror reflects every wavelength identically, so ratio=1
+				// is exact; this material's colour is PRECISELY its
+				// wavelength-dependent absorption/re-emission response, so
+				// ratio=1 broadcasts the HERO's realized outcome onto
+				// every companion and reads grey (measured: BDPT hwss=TRUE
+				// achromatic mean +34% over hwss=FALSE on
+				// `tests/BDPTStrategyBalanceTest.cpp` topology N, B/R
+				// channel ratio 1.09 against a true ~0.24).  Zero the
+				// companion's remaining contribution instead.
+				//
+				// DL-126/DL-200 review round 4 (P1-2) correction: an
+				// earlier revision of this comment called this "mirroring
+				// PT's own HWSS companion fallback ... unbiased" as though
+				// BDPT/VCM/MLT had simply adopted PT's convention wholesale.
+				// That overstates the resemblance.  PT's HWSS bundle
+				// accumulates each wavelength into its OWN independent XYZ
+				// total (`PathTracingIntegrator.cpp`'s `compScatterNM[w] =
+				// 0` just zeroes that wavelength's throughput multiplier for
+				// the rest of ITS OWN walk -- there is no shared "bundle
+				// mean" divisor for a zeroed companion to dilute, because
+				// there is no bundle mean at all, only N independent
+				// per-wavelength accumulators).  BDPT/VCM/MLT's spectral
+				// rasterizers instead accumulate ONE shared bundle mean
+				// across hero + companions and divide by an active-
+				// wavelength count (`totalActive`/`activeWavelengthCount`,
+				// P1-1) -- so zeroing `cumulativeRatio` here is only
+				// unbiased when PAIRED with excluding this companion from
+				// that shared count, which is what
+				// `HasNullBSDFContinuationVertex` + `swl.TerminateSecondary()`
+				// (called by all three spectral rasterizers before this
+				// function ever runs) actually do.  The value convention
+				// (zero when unpriceable) is the same in spirit as PT's;
+				// the ACCOUNTING around it is not, and could not be made
+				// identical without giving each companion wavelength its
+				// own independent subpath (PT's real architecture) instead
+				// of one shared geometry bundle -- a materially larger
+				// change than this row's scope.  See
+				// docs/DL126_BDPT_NULL_BSDF_CONTINUATION.md SS7.1 (P1-2)
+				// for the measured variance cost of keeping
+				// terminate-and-renormalize instead.
 				cumulativeRatio = 0;
 			}
 		}
@@ -7295,5 +7484,50 @@ bool BDPTIntegrator::HasDispersiveDeltaVertex(
 		}
 	}
 
+	return false;
+}
+
+//////////////////////////////////////////////////////////////////////
+// HasNullBSDFContinuationVertex — DL-126 P1.  See the header comment.
+//////////////////////////////////////////////////////////////////////
+bool BDPTIntegrator::HasNullBSDFContinuationVertex(
+	const std::vector<BDPTVertex>& verts
+	)
+{
+	// Mirrors RecomputeSubpathThroughputNM's own Phase-3 gate exactly:
+	// `i + 1 < verts.size() && i > 0 && v.type == SURFACE && !v.isDelta`,
+	// and -- review round 4, P3-c -- its INNER gate exactly too.  A hit
+	// at i == 0 (the camera/light root) or i == verts.size()-1 (the
+	// path's tail, which has no "onward scatter" to price) never reaches
+	// that function's ratio computation, so it must not trigger this
+	// check either.
+	//
+	// The inner gate is `if( v.pMaterial && v.pMaterial->GetBSDF() )`
+	// ... `else { cumulativeRatio = 0; }` -- the else fires, and zeroes
+	// every companion, whenever `!(v.pMaterial && v.pMaterial->GetBSDF())`,
+	// i.e. `!v.pMaterial || !v.pMaterial->GetBSDF()`.  An earlier revision
+	// of this function required `v.pMaterial &&` before checking
+	// `GetBSDF()` (`v.pMaterial && !v.pMaterial->GetBSDF()`), which is a
+	// STRICT SUBSET of that condition: a `v.pMaterial == 0` SURFACE,
+	// non-delta vertex (not known to occur in production today, but not
+	// excluded by anything this function can see) would take
+	// `RecomputeSubpathThroughputNM`'s zeroing else-branch while this
+	// function reported no termination needed -- reintroducing the exact
+	// darkening-without-exclusion bug this row's P1-1 fix exists to
+	// prevent, just gated on a different vertex condition.  Matching the
+	// two predicates exactly removes that gap rather than relying on an
+	// unproven "pMaterial is never null here" argument.
+	if( verts.size() < 3 ) {
+		return false;
+	}
+	for( unsigned int i = 1; i + 1 < verts.size(); i++ )
+	{
+		const BDPTVertex& v = verts[i];
+		if( v.type == BDPTVertex::SURFACE && !v.isDelta &&
+			!( v.pMaterial && v.pMaterial->GetBSDF() ) )
+		{
+			return true;
+		}
+	}
 	return false;
 }

@@ -1762,6 +1762,90 @@ static void TestSchlickMultiLobe()
 		kRasterizerPTSchlickL, kRasterizerVCMSchlickL );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology J: biospec_skin_material receiver, mesh area emitter
+// (DL-126) -- VCM's twin of BDPTStrategyBalanceTest's topology N.
+//
+// `BioSpecSkinMaterial::GetBSDF()` returns null (`!isConnectible`), so
+// this vertex can never be an NEE/connection endpoint under either
+// integrator, and the emitter is placed exactly as BDPT's twin scene
+// places it (this file's own `kSceneCommon` + `kLightMesh`, material
+// swapped) -- irrelevant here anyway, since PT's own NEE arm is gated
+// on a non-null `IBSDF*` before it ever reaches a hemisphere test.  The
+// whole image is carried by the shared eye/light subpath generator's
+// BSDF-sampled continuation (`BDPTIntegrator.cpp`'s
+// `GenerateEyeSubpathImpl`/`GenerateLightSubpathImpl`, which VCM reuses
+// unmodified) pricing `BioSpecSkinSPF::Scatter`'s `kray = 1`,
+// `.pdf == 0` re-emission -- exactly the DL-126 pattern.  Pre-fix,
+// VCM's eye AND light subpaths both `break` at this vertex's first
+// non-delta scatter and the render goes BLACK; PT is unaffected.  This
+// file's default `kRasterizerPT` is the LEGACY `pixelpel_rasterizer` +
+// `DefaultDirectLighting`, which never calls `ISPF::Scatter` at all
+// (see `BDPTStrategyBalanceTest.cpp`'s own comment on why it replaced
+// that reference) and would read pure black for BOTH pre- and post-fix
+// VCM here, masking the very defect this topology exists to catch -- so
+// this topology pairs a modern-PT reference (`pathtracing_pel_rasterizer`,
+// mirroring `BDPTStrategyBalanceTest.cpp`'s `kRasterizerPT`) with the
+// existing `kRasterizerVCM` (already `DefaultPathTracing`-driven).
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneNullBSDFSkin =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n\n"
+	"biospec_skin_material\n"
+	"{\n"
+	"\tname mat_skin\n"
+	"}\n\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_skin\n"
+	"\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_skin\n"
+	"\tgeometry quad_skin\n"
+	"\tmaterial mat_skin\n"
+	"}\n";
+
+static const char* kRasterizerPTModernBasic =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 32\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/vcm_balance_pt_nullbsdf_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static void TestNullBSDFMaterialContinuation()
+{
+	RunTopologyTest( "biospec_skin_material receiver, mesh area emitter (DL-126)",
+		std::string( kSceneNullBSDFSkin ) + kLightMesh, kStrictTolerances,
+		kRasterizerPTModernBasic, kRasterizerVCM );
+}
+
 int main()
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
@@ -1778,6 +1862,7 @@ int main()
 	TestSubmergedFloorAreaLight();
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
+	TestNullBSDFMaterialContinuation();
 	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;

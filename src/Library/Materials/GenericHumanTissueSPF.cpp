@@ -151,18 +151,23 @@ void GenericHumanTissueSPF::Scatter(
 			// Scattering
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
-				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
+				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
 					acos( sqrt(sampler.Get1D()) ),
-					sampler.Get1D() * TWO_PI 
+					sampler.Get1D() * TWO_PI
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
 				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
 			}
+		} else {
+			// DL-184: this branch used to be unconditional (outside the
+			// `if` above), so it ran AFTER the scattering branch too and
+			// silently overwrote whatever direction it had just sampled
+			// -- every interior interaction was straight-through
+			// regardless of the scattering roll.  It belongs here only:
+			// otherwise its just transmitted!
+			trans.ray.SetDir(ri.ray.Dir());
 		}
-		
-		// Otherwise its just transmitted!
-		trans.ray.SetDir(ri.ray.Dir());
 	} else{
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way
@@ -179,7 +184,7 @@ void GenericHumanTissueSPF::Scatter(
 	scattered.AddScatteredRay( trans );
 }
 
-void GenericHumanTissueSPF::ScatterNM( 
+void GenericHumanTissueSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
@@ -214,18 +219,25 @@ void GenericHumanTissueSPF::ScatterNM(
 			// Scattering
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
-				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
+				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
 					acos( sqrt(sampler.Get1D()) ),
-					sampler.Get1D() * TWO_PI 
+					sampler.Get1D() * TWO_PI
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
+				// DL-126 review round 4 (P2-2): this was `pG->GetValuesAt(ri).v[0]`
+				// (the RGB accessor) inside ScatterNM's interior branch, so the
+				// in-medium HG lobe's `g` was not actually wavelength-resolved
+				// in the NM pipe -- the OUTSIDE branch two lines below already
+				// uses `GetValueAtNM(ri,nm)` for this identical parameter.
+				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValueAtNM(ri,nm) ));
 			}
+		} else {
+			// DL-184: see the RGB Scatter()'s twin comment -- this branch
+			// used to be unconditional and silently overwrote the
+			// scattering branch's own sampled direction.
+			trans.ray.SetDir(ri.ray.Dir());
 		}
-		
-		// Otherwise its just transmitted!
-		trans.ray.SetDir(ri.ray.Dir());
 	} else{
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way

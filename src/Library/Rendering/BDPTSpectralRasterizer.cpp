@@ -360,6 +360,23 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				}
 			}
 
+			// DL-126 P1.  A null-BSDF continuation vertex (biospec_skin_
+			// material / generic_human_tissue_material) gives
+			// RecomputeSubpathThroughputNM no way to form a companion/hero
+			// ratio, so it zeroes every companion from that vertex on --
+			// wavelength-INDEPENDENT of which companion (the material's
+			// GetBSDF() is null regardless of wavelength), unlike
+			// dispersion, so one path-wide check suffices.  Terminate
+			// secondaries exactly as the dispersive check does, so those
+			// always-zero companions are excluded from the sample-count
+			// denominator below instead of silently diluting the bundle
+			// mean.
+			if( BDPTIntegrator::HasNullBSDFContinuationVertex( lightVerts ) ||
+				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
+			{
+				swl.TerminateSecondary();
+			}
+
 			// Check for dispersive delta vertices in either subpath.
 			// If any delta vertex has wavelength-dependent IOR,
 			// companions cannot share the hero's geometric path.

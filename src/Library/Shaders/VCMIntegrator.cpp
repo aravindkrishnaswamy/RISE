@@ -807,17 +807,41 @@ void VCMIntegrator::ConvertLightSubpath(
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
 			const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
 
-			if( v.isDelta ) {
-				// Specular scatter at this vertex.  The SmallVCM
-				// specular branch of ApplyBsdfSamplingUpdate needs
-				// ONLY cosThetaOut — it ignores bsdfDirPdfW /
-				// bsdfRevPdfW because those are Dirac distributions
-				// that don't contribute finite solid-angle pdfs.
-				// Crucially, we MUST still apply this update so that
-				// dVCM is zeroed (the SmallVCM specular transparency
-				// convention), otherwise the downstream merge/
-				// connection weights at post-specular vertices are
-				// wildly overestimated.
+			// DL-126.  `v.isDelta` used to be the sole gate here, but a
+			// vertex can also have NO finite solid-angle density for an
+			// entirely different reason: its material has no BSDF at all
+			// (`!v.isConnectible` -- `biospec_skin_material` /
+			// `generic_human_tissue_material`, whose SPFs report an
+			// already-integrated `kray` and never populate `.pdf`, so
+			// `next.pdfFwd` downstream is the Veach "delta transparency"
+			// marker 0 regardless of how this branch is taken -- see
+			// `BDPTIntegrator.cpp`'s `nullBSDFContinuation`).  Before this
+			// fix such a vertex fell into the NON-specular branch below,
+			// which reads `next.pdfFwd` and silently `continue`s (no
+			// update at all) once it finds that zero -- leaving `mis`
+			// frozen at its PRE-vertex state instead of reflecting the
+			// propagation through this vertex, which starves the
+			// downstream S0/S1 formulas of the `cosThetaOut` factor and
+			// under-weights the only strategy such a vertex can support
+			// (measured: VCM read 1.6% of PT's mean on a
+			// `biospec_skin_material` receiver + mesh emitter scene,
+			// `tests/VCMStrategyBalanceTest.cpp`'s DL-126 topology).
+			// Treat it exactly like a delta lobe: no finite SA density to
+			// reserve MIS mass with, but the running dVC/dVM chain must
+			// still propagate through the `cosThetaOut` factor so a LATER
+			// connectible vertex's weight is computed correctly.
+			if( v.isDelta || !v.isConnectible ) {
+				// Specular scatter (or a null-BSDF opaque continuation) at
+				// this vertex.  The SmallVCM specular branch of
+				// ApplyBsdfSamplingUpdate needs ONLY cosThetaOut — it
+				// ignores bsdfDirPdfW / bsdfRevPdfW because those are
+				// either Dirac distributions or, here, densities this
+				// material simply does not track, neither of which
+				// contribute a finite solid-angle pdf.  Crucially, we
+				// MUST still apply this update so that dVCM is zeroed
+				// (the SmallVCM specular transparency convention),
+				// otherwise the downstream merge/connection weights at
+				// post-specular vertices are wildly overestimated.
 				mis = ApplyBsdfSamplingUpdate(
 					mis,
 					cosThetaOut,
@@ -2205,7 +2229,10 @@ void VCMIntegrator::ConvertEyeSubpath(
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
 			const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
 
-			if( v.isDelta ) {
+			// DL-126: also treat a null-BSDF, non-connectible vertex as
+			// opaque here -- see the light-subpath twin's comment above
+			// for the derivation.
+			if( v.isDelta || !v.isConnectible ) {
 				mis = ApplyBsdfSamplingUpdate(
 					mis, cosThetaOut,
 					Scalar( 0 ), Scalar( 0 ),
