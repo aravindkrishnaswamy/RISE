@@ -29,6 +29,8 @@
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
 #include "../Utilities/RenderParallelScope.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cassert>
 #include <cstdint>
@@ -737,6 +739,73 @@ namespace
 //! ray test below only needs "no boundary" (every edge internal) to be
 //! well-defined, and a non-orientable closed surface is not constructible
 //! from consistently-wound authored triangles in the first place.
+//!
+//! DL-150.  `WeldVertexPositions`'s epsilon is RELATIVE to this mesh's own
+//! bounding-box diagonal (`eps = max(1e-9, 1e-6*diag)` -- see that
+//! function's own comment), which is exactly what makes it absorb a
+//! seam's float noise on a small asset AND on a kilometre-scale one alike.
+//! The same relativity means `eps` can exceed the ACTUAL PHYSICAL GAP
+//! between two genuinely distinct open sheets whenever anything else in
+//! the mesh (a remote detail, a stray far-away vertex, a large enclosing
+//! shell) inflates the bounding box: two independently-triangulated quads
+//! 0.001 units apart, sharing a scene with one remote vertex ~1000 units
+//! away (bbox diagonal ~1732, eps ~1.7e-3 > 0.001), weld into ONE false
+//! 2-manifold whose "interior" is the sliver between them --
+//! `SignedDistanceLower` then answers a confident WRONG signed depth
+//! (`outExact=true`) for a point in that gap, because the edge-count
+//! check above cannot tell "one seam, stitched twice" from "two unrelated
+//! sheets, glued by coincidence."
+//!
+//! **Round 2 correction (2026-09-18, review P1):** the FIRST discriminator
+//! here compared accumulated per-corner ORIENTATION across a weld group
+//! (refusing on a cosine below -0.5, ~120 degrees) on the theory that two
+//! facing sheets are close to anti-parallel while a legitimate seam's
+//! corners are not.  That theory is FALSE for a genuinely closed solid
+//! with a sharp CONVEX crease: a symmetric wedge/prism with apex angle
+//! `theta` has its two side faces' outward normals at cosine `-cos(theta)`
+//! -- identical, in sign and rough magnitude, to the false-stitch
+//! signature it was meant to catch.  A real, closed, correctly-wound
+//! triangular-prism wedge at apex 30/50/58 degrees (cosine -0.866/-0.643/
+//! -0.530) was FALSELY REFUSED by that threshold; only apex >= ~60 degrees
+//! (cosine > -0.5) passed.  As theta -> 0 (a knife edge) the true cosine
+//! approaches -1, so NO fixed orientation threshold can separate a sharp
+//! legitimate crease from a genuinely opposed false stitch -- orientation
+//! alone is not a valid signal here, however plausible-looking a single
+//! flat-shaded-cube control (whose real corners sit at cosine 0) made it
+//! look.  (That control was itself a red herring: `BuildMesh()`'s helper
+//! stamps a `(0,0,1)` PLACEHOLDER normal on every vertex regardless of
+//! which face it belongs to, so the removed threshold's own regression
+//! test never exercised a real per-face crease at all.)
+//!
+//! The discriminator below instead targets the actual GEOMETRIC SIGNATURE
+//! of a false stitch, independent of orientation: after the position
+//! weld, two independently-triangulated but adjoining sheets closer than
+//! `eps` produce two DISTINCT triangles (by identity/authoring origin)
+//! that resolve to the SAME three post-weld vertex ids -- an UNORDERED
+//! triple match for an opposite-winding pair (the reviewer's own repro),
+//! an exact ORDERED match too when the windings also happen to agree (the
+//! prior "same-facing" residual, below).  A legitimate closed mesh, at any
+//! dihedral angle from a hairline crease to a near-flat seam, never has
+//! two topologically distinct triangles occupying the same three
+//! vertices -- each face of a real solid is a geometrically distinct
+//! patch of surface, however small the angle to its neighbour.  Detected
+//! by sorting each triangle's post-weld vertex-id triple and scanning for
+//! adjacent duplicates (`O(T log T)`, `T` = triangle count) -- no
+//! per-vertex normal or face-normal computation needed at all, which also
+//! makes this CHEAPER than the removed orientation pass (see the ledger
+//! row's own commit message for the re-measured numbers).
+//!
+//! DOCUMENTED RESIDUAL (not fixed by this discriminator, see the ledger
+//! row and CROSS_OBJECT_PROXIMITY_DESIGN.md 10): two sheets closer than
+//! `eps` that are NOT triangle-coincident after the weld -- e.g. two
+//! independently-tessellated quads that happen to use DIFFERENT internal
+//! diagonals, or any pair of offset tessellations whose triangle
+//! boundaries don't line up vertex-for-vertex -- still weld into an
+//! equally false 2-manifold that this check cannot see (every edge still
+//! reads count 2, and no two triangles share all three vertices).  A
+//! stronger guarantee would need an independent geometric test
+//! (self-intersection / distinct connected-component volume enclosure),
+//! out of scope for this cheap, build-time check.
 void TriangleMeshGeometryIndexed::ComputeWatertightness()
 {
 	m_bWatertight = false;
@@ -747,9 +816,34 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	std::vector<unsigned int> weldedId;
 	WeldVertexPositions( pPoints, weldedId );
 
+	// DL-150.  Report the weld's own vertex-count reduction so an author
+	// can see an over-aggressive weld even when the discriminator below
+	// does not (or cannot) catch it.  One-shot, build-time, same pattern
+	// as the diagnostics below.
+	{
+		unsigned int weldedCount = 0;
+		for( std::size_t i = 0; i < weldedId.size(); ++i ) {
+			if( weldedId[i] + 1 > weldedCount ) { weldedCount = weldedId[i] + 1; }
+		}
+		GlobalLog()->PrintEx( eLog_Info,
+			"TriangleMeshGeometryIndexed:: welded %zu raw vertices to %u positions "
+			"(%.1f%% reduction) before the watertightness edge count; see "
+			"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-143/DL-150).",
+			pPoints.size(), weldedCount,
+			pPoints.empty() ? 0.0 : 100.0 * ( 1.0 - (double)weldedCount / (double)pPoints.size() ) );
+	}
+
 	const Point3* const pBase = &pPoints[0];
 	std::unordered_map<std::uint64_t, int> edgeCounts;
 	edgeCounts.reserve( ptr_polygons.size() * 3 );
+
+	// DL-150.  One sorted (order-independent) post-weld vertex-id triple
+	// per triangle, collected in the SAME loop that already builds the
+	// edge map -- see this function's own header comment for the
+	// coincident-triangle mechanism this feeds, and for why it replaced
+	// an earlier per-corner-orientation discriminator.
+	std::vector<std::array<unsigned int, 3> > sortedTriangleIds;
+	sortedTriangleIds.reserve( ptr_polygons.size() );
 
 	for( MyPointerTriangleList::const_iterator i = ptr_polygons.begin(), e = ptr_polygons.end(); i != e; ++i ) {
 		const PointerTriangle& tri = *i;
@@ -784,6 +878,10 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 				"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-31)." );
 			return;
 		}
+
+		std::array<unsigned int, 3> sorted = { idx[0], idx[1], idx[2] };
+		std::sort( sorted.begin(), sorted.end() );
+		sortedTriangleIds.push_back( sorted );
 	}
 
 	// DL-31.  A closed 2-manifold with no boundary has EVERY edge shared
@@ -813,6 +911,43 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 			boundaryEdges, boundaryEdges == 1 ? "" : "s",
 			nonManifoldEdges, nonManifoldEdges == 1 ? "" : "s" );
 		return;
+	}
+
+	// DL-150.  The edge-count check above cannot distinguish "one seam,
+	// welded to two coincident array slots" from "two independent sheets,
+	// welded to each other by an epsilon that happens to exceed their
+	// physical gap" -- see this function's own header comment for the
+	// full mechanism and for why an earlier orientation-based
+	// discriminator was replaced with this one (it falsely refused a
+	// legitimately closed solid with a sharp convex crease).  Sort the
+	// per-triangle id triples collected above and scan for adjacent
+	// duplicates: two DISTINCT triangles resolving to the SAME three
+	// post-weld vertices is the geometric signature of a false stitch --
+	// no legitimate mesh, at any dihedral angle, has two topologically
+	// distinct faces occupying the same three vertices.
+	{
+		std::sort( sortedTriangleIds.begin(), sortedTriangleIds.end() );
+		unsigned int coincidentPairs = 0;
+		std::array<unsigned int, 3> worstTriple = { 0, 0, 0 };
+		for( std::size_t i = 1; i < sortedTriangleIds.size(); ++i ) {
+			if( sortedTriangleIds[i] == sortedTriangleIds[i - 1] ) {
+				if( coincidentPairs == 0 ) { worstTriple = sortedTriangleIds[i]; }
+				++coincidentPairs;
+			}
+		}
+
+		if( coincidentPairs > 0 ) {
+			GlobalLog()->PrintEx( eLog_Info,
+				"TriangleMeshGeometryIndexed:: this mesh's position weld produced %u pair%s of "
+				"geometrically COINCIDENT triangles (two distinct triangles sharing the same 3 "
+				"post-weld vertices, e.g. {%u,%u,%u}) -- this looks like two independent sheets "
+				"stitched by coincidence, not a legitimate seam or crease, so it will answer "
+				"proximity() (an honest unsigned distance) but REFUSE interior() (no certified "
+				"inside test).  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-150).",
+				coincidentPairs, coincidentPairs == 1 ? "" : "s",
+				worstTriple[0], worstTriple[1], worstTriple[2] );
+			return;
+		}
 	}
 
 	m_bWatertight = true;
