@@ -40,6 +40,17 @@
 //        (B) drives the REAL `add_wetness` verb on a textured material
 //        and compares the rendered CONTRAST, not just the mean.
 //
+//        ⚠ SECTION (B) IS A CONSISTENCY PIN, NOT A RED-PROOF, and saying
+//        so is the point: it is GREEN against the pre-review synthetic
+//        record too, because the emitted recipe is
+//        `mix(base, pow(base, k), damp)` whichever record the substrate
+//        was read at -- the per-texel structure survives a dropped
+//        footprint, only the filtering does.  Section (A) is the
+//        red-proof.  What (B) does pin, and nothing else in the arc
+//        does, is that the verb's OWN emitted recipe darkens per texel
+//        rather than by one representative colour -- the property DL-25's
+//        closure recipe asked a render to demonstrate.
+//
 //  MEASUREMENT HYGIENE (COMMON_RULES.md, docs/skills/variance-
 //  measurement.md): `oidn_denoise FALSE` (the default TRUE would have
 //  IRasterizerOutput::OutputDenoisedImage forward post-denoise pixels

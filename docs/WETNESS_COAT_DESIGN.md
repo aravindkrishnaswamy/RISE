@@ -2524,10 +2524,26 @@ timing exists because no implementation exists.
    named substrate, and -- since the review's P1-2 -- that the verb reports
    NO base colour rather than a fabricated `0 0 0`);
    `tests/WetTextureDetailRenderTest.cpp` 23/0 is the arc's render-level
-   gate (an identity `sample(tex)` renders identically to the texture bound
-   directly -- 19.8 % more contrast before the P1-1 fix -- and the real verb
-   darkens a textured substrate PER TEXEL: wet/dry 0.806 over the dry
-   frame's darkest quartile against 0.948 over its brightest).
+   gate.  **Its Test A is the RED-PROOF**: an identity `sample(tex)` renders
+   identically to the texture bound directly, where the synthetic record
+   gave 19.8 % more contrast (deterministic at 1 spp).  **Its Test B is a
+   CONSISTENCY PIN, not a red-proof** -- it is green before the P1-1 fix as
+   well, because `add_wetness`'s recipe is `mix(base, pow(base, k), damp)`
+   whichever record the substrate was read at; what it pins is that the
+   emitted recipe darkens PER TEXEL rather than by one representative
+   colour (wet/dry 0.806 over the dry frame's darkest quartile against
+   0.948 over its brightest, mean 0.909), which is the property DL-25's own
+   closure recipe asked a render to demonstrate.
+
+   **WHERE THE SYNTHETIC RECORD STILL RUNS, by design**: a context with no
+   hit behind it.  `Eval(u,v)`, a hand-built `ExprEvalContext`, and the
+   GUI's own painter thumbnails -- `SceneEditor/PainterPreview.cpp`'s
+   decimated `(u, v)` grid builds a context from `u`/`v`/`P`/`Po`/`N` and a
+   nominal `kPreviewFootprintWidth`, with no record to forward -- so a
+   `sample()` in a previewed body reads the partial record there and a
+   thumbnail of a sampled TEXTURE shows its unfiltered base level.  That is
+   correct (there is no footprint to honour in a thumbnail) and it is
+   pinned by `TextureExpressionVMTest` Test 78 row (h).
 6c. ~~**`add_wetness` and `add_wear` mutually exclude each other on one material**
    (§6.4), and worn-and-wet is the flagship subject. v1 accepts the exclusion with
    cross-naming refusal messages; the census counts the demand.~~ **PARTIALLY

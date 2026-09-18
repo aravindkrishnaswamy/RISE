@@ -37,6 +37,7 @@
 #define EXPRESSION_PAINTER_
 
 #include "Painter.h"
+#include <cassert>	// DL-25 P3-7: the ctors' IsPainterRefsBound() contract
 #include "ExpressionEval.h"
 #include "ExpressionParamSpec.h"
 #include "../Interfaces/IScalarPainter.h"
@@ -346,7 +347,24 @@ namespace RISE
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
 				m_signalDemand( prog.UsesSurfaceSignals() ),
 				m_proximityDemand( prog.UsesCrossObject() )
-			{}
+			{
+				// DL-25 round-3 review (P3-7): make the attach-time contract
+				// STRUCTURAL rather than a convention.  A program that calls
+				// `sample()` / `sample_scalar()` must have had
+				// `BindPainterRefs` run on it BEFORE any painter is
+				// constructed from it (the resolver lives one layer up, in
+				// `Job::AddExpressionPainter` / `ScalarPainterAsciiChunkParser`
+				// -- see BuildExpressionProgramFromChunkFields's own doc).  If
+				// it has not, every `sample()` in the body silently reads the
+				// honest-neutral 0/black for the life of the render instead of
+				// failing anywhere a caller can see.  `IsPainterRefsBound()`
+				// reports true trivially for a program with no sample calls,
+				// so this costs nothing and constrains nothing for the
+				// overwhelming majority of programs.
+				assert( prog.IsPainterRefsBound() &&
+					"ExpressionPainter built from a sample()-calling program whose painter refs were "
+					"never bound -- call ExpressionProgram::BindPainterRefs at attach time" );
+			}
 
 			//! S4 introspection: full param metadata (min/max/step/label),
 			//! in `param` line order.
@@ -445,7 +463,24 @@ namespace RISE
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
 				m_signalDemand( prog.UsesSurfaceSignals() ),
 				m_proximityDemand( prog.UsesCrossObject() )
-			{}
+			{
+				// DL-25 round-3 review (P3-7): make the attach-time contract
+				// STRUCTURAL rather than a convention.  A program that calls
+				// `sample()` / `sample_scalar()` must have had
+				// `BindPainterRefs` run on it BEFORE any painter is
+				// constructed from it (the resolver lives one layer up, in
+				// `Job::AddExpressionPainter` / `ScalarPainterAsciiChunkParser`
+				// -- see BuildExpressionProgramFromChunkFields's own doc).  If
+				// it has not, every `sample()` in the body silently reads the
+				// honest-neutral 0/black for the life of the render instead of
+				// failing anywhere a caller can see.  `IsPainterRefsBound()`
+				// reports true trivially for a program with no sample calls,
+				// so this costs nothing and constrains nothing for the
+				// overwhelming majority of programs.
+				assert( prog.IsPainterRefsBound() &&
+					"ExpressionScalarPainter built from a sample()-calling program whose painter refs were "
+					"never bound -- call ExpressionProgram::BindPainterRefs at attach time" );
+			}
 
 			//! S4 introspection: full param metadata, in `param` line order.
 			const std::vector<ParamSpec>& GetParamSpecs() const { return m_paramSpecs; }
