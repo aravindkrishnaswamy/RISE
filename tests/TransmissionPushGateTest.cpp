@@ -74,6 +74,7 @@
 #include <iostream>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,9 @@
 #include "../src/Library/Materials/PerfectRefractorSPF.h"
 #include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/ILogPrinter.h"
+#include "../src/Library/Utilities/Reference.h"
 
 #include "TestStubObject.h"
 
@@ -1184,6 +1188,126 @@ static void TestPerturbClippedContract()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 12 (review P1-1): the DL-111 re-derivation's own TIR
+//  fallback must leave `refracted` in the crossing half-space.
+//
+//  `DielectricSPF::GenerateScatteredRay`'s re-derivation runs when the
+//  SHADING normal's Snell result is geometrically impossible.  If the
+//  TRUE interface total-internally-reflects at that incidence, the
+//  re-derivation fails and the transmission lobe is dropped (`ref = 1`)
+//  -- but the `scattering` warp block further down runs
+//  UNCONDITIONALLY, so it hands `GeometricUtilities::PerturbClipped` an
+//  axis that is still the wrong-side SHADING refraction.  That trips
+//  PerturbClipped's fail-loud precondition, whose own comment calls
+//  itself "unreachable from production": a global-lock console + file
+//  write on the per-sample scatter path.
+//
+//  The configurations are exactly the ones that reach it: a glass->air
+//  EXIT whose geometric incidence is past the 41.8 deg critical angle
+//  while the tilted shading frame's incidence is inside it, so the
+//  shading refraction succeeds (and lands wrong-side) and the geometric
+//  one TIRs.  `scattering` is the DESCRIPTOR DEFAULT 10000, which makes
+//  `alpha > 0` and so fires the warp -- the delta 1e6 rows elsewhere in
+//  this file do not, which is why no existing row sees this.
+//
+//  Counted through an ILogPrinter rather than by scraping the log file,
+//  matching CsgOperandTransformTest / CstSourceInstanceTest.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	class PerturbClippedViolationCounter
+		: public virtual RISE::ILogPrinter, public virtual RISE::Implementation::Reference
+	{
+	public:
+		PerturbClippedViolationCounter() : mCount( 0 ) {}
+
+		void Print( const RISE::LogEvent& event ) override
+		{
+			const std::string msg( event.szMessage );
+			if( msg.find( "PerturbClipped:: precondition violated" ) != std::string::npos ) {
+				std::lock_guard<std::mutex> lk( mMutex );
+				mCount++;
+			}
+		}
+		void Flush() override {}
+
+		unsigned int Count() const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			return mCount;
+		}
+		void Reset()
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			mCount = 0;
+		}
+
+	protected:
+		~PerturbClippedViolationCounter() override {}
+
+	private:
+		mutable std::mutex mMutex;
+		unsigned int       mCount;
+	};
+}
+
+static void TestRederivationTIRLeavesValidWarpAxis()
+{
+	std::cout << "Sub-test 12 (P1-1): the re-derivation's TIR fallback leaves a valid warp axis" << std::endl;
+
+	PerturbClippedViolationCounter* counter = new PerturbClippedViolationCounter();
+	counter->addref();
+	GlobalLogPriv()->AddPrinter( counter );
+
+	StubObject* obj = new StubObject(); obj->addref();
+	const unsigned int kTrials = 64;
+
+	// (delta, tilt) pairs -- the ray's angle off the TRUE geometric
+	// normal and the shading-normal tilt, both in the same plane and
+	// the same sense (MakeObliqueHit's convention).
+	struct Cell { Scalar deltaDeg; Scalar tiltDeg; };
+	const Cell cells[] = {
+		{ 80.0, 45.0 }, { 80.0, 60.0 }, { 85.0, 45.0 }, { 85.0, 60.0 }, { 70.0, 30.0 }
+	};
+	const int kNumCells = 5;
+
+	unsigned int totalViolations = 0;
+	for( int c = 0; c < kNumCells; c++ ) {
+		RayIntersectionGeometric ri = MakeObliqueHit( cells[c].deltaDeg, cells[c].tiltDeg, /*bExit*/ true );
+		IORStack stack = MakeInsideStack( obj, 1.5 );
+
+		RandomNumberGenerator rng( 777 );
+		IndependentSampler sampler( rng );
+		// The shipped descriptor default for `scattering` (Job.cpp /
+		// the dielectric chunk descriptor), not the delta 1e6 the
+		// other rows use.
+		DielectricRig rig( 10000.0, false, false, 1.5 );
+
+		counter->Reset();
+		for( unsigned int trial = 0; trial < kTrials; trial++ ) {
+			ScatteredRayContainer scattered;
+			rig.spf->Scatter( ri, sampler, scattered, stack );
+		}
+		const unsigned int violations = counter->Count();
+		totalViolations += violations;
+
+		char msg[300];
+		snprintf( msg, sizeof(msg), "Dielectric exit delta %.0f tilt %.0f scat 10000: %u/%u PerturbClipped precondition violations",
+			(double)cells[c].deltaDeg, (double)cells[c].tiltDeg, violations, kTrials );
+		EXPECT( violations == 0, msg );
+	}
+
+	char msg[200];
+	snprintf( msg, sizeof(msg), "total PerturbClipped precondition violations across the 5 cells: %u (expected 0)",
+		totalViolations );
+	EXPECT( totalViolations == 0, msg );
+
+	obj->release();
+	GlobalLogPriv()->RemoveAllPrinters();
+	counter->release();
+}
+
 int main()
 {
 	std::cout << "=== TransmissionPushGateTest (DL-111 / DL-112) ===" << std::endl;
@@ -1200,6 +1324,7 @@ int main()
 	TestTranslucentFrontPdfNormalization();
 	TestDimensionBudget();
 	TestPerturbClippedContract();
+	TestRederivationTIRLeavesValidWarpAxis();
 
 	std::cout << std::endl << "Checks: " << checks << "  Failures: " << failed << std::endl;
 	return failed ? 1 : 0;
