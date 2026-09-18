@@ -3347,7 +3347,7 @@ measured by a harness test against the tracked scene.
   that the TLAS walk itself, independent of which family answers the
   per-candidate query, costs the same for both.
 
-  **The apparent worst case — up to 470x wall-clock at N=1024 fully-
+  **The apparent worst case — on the order of hundreds of x (328x-550x across three reruns; wall-clock noise, not a bound) wall-clock at N=1024 fully-
   overlapping spheres — is NOT a walk-shape defect.** It is
   `SphereGeometry`/`BoxGeometry::DistanceToSurface`'s own DOCUMENTED
   convention ("a point inside a neighbour is in CONTACT with it, distance
