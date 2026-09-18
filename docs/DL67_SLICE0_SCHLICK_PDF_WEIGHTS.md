@@ -137,17 +137,18 @@ monotone and bijective within each of its four quadrants, inverted by
 `SchlickInvertPhi`), and the other lanes are replayed from the recovered
 pair. **Exact for the INTENDED per-channel semantics** — i.e. exact
 under the model where each lane's `GenerateSpecularRay` call writes its
-OWN direction into its OWN `ScatteredRay`. It is not exact for what
-`Scatter`'s per-channel branch actually does while **DL-101** is open:
-that branch reuses ONE `ScatteredRay` across all three lanes, so a lane
-whose own `hdotk <= 0` silently keeps the PREVIOUS lane's direction
-while still being assigned the CURRENT lane's `kray`/`pdf` — a sampler
-defect this file's density model does not, and cannot, replicate (§7
-sibling audit; `tests/SchlickSPFPdfConsistencyTest.cpp`'s
-`DL-101 KNOWN-FAILURE` row demonstrates it directly: a duplicate-
-direction counter finds 111613/200000 corrupted draws for a config with
+OWN direction into its OWN `ScatteredRay`. Before **DL-101** was closed
+(2026-09-17, debt-dl100 slice) it was not exact for what `Scatter`'s
+per-channel branch actually did: that branch reused ONE `ScatteredRay`
+across all three lanes, so a lane whose own `hdotk <= 0` silently kept
+the PREVIOUS lane's direction while still being assigned the CURRENT
+lane's `kray`/`pdf` — a sampler defect this file's density model did
+not, and could not, replicate (§7 sibling audit;
+`tests/SchlickSPFPdfConsistencyTest.cpp`'s `DL-101 KNOWN-FAILURE` row
+demonstrated it directly: a duplicate-
+direction counter found 111613/200000 corrupted draws for a config with
 low-then-high per-channel roughness at grazing incidence, and the row's
-measured TVD, 0.01424 against the file's own 0.012 gate, drops to
+measured TVD, 0.01424 against the file's own 0.012 gate, dropped to
 0.01009 — a real but partial reduction, not a full collapse — when
 `SchlickSPF.cpp`'s per-channel loop is patched to declare a fresh
 `ScatteredRay` inside the loop instead of reusing one outside it).
@@ -321,8 +322,14 @@ parameter is now removed so this cannot be misread again.) The density
 now uses `ri.onb` too. As a side effect it returns 0 on a back-face hit,
 which is the right answer — `Scatter`'s every specular draw is rejected
 there. That the *sampler* loses its whole specular lobe on a back-face
-hit is a real energy defect; it is filed as **DL-100**, not fixed here,
-because fixing it changes what renders sample.
+hit is a real energy defect; it was filed as **DL-100**, not fixed here
+(fixing it changes what renders sample and needed its own red-proof) --
+**CLOSED 2026-09-17** in the debt-dl100 slice: `SchlickSampleHalfVector`,
+`GenerateSpecularRay`, and every density helper here now consistently
+take the caller's `myonb` instead of `ri.onb` (so `ComputeSchlickSpecularPdf`
+now correctly reads NONZERO on a back-face hit too, matching what the
+fixed sampler emits there). See
+[DL100_SCHLICK_BACKFACE_SPECULAR.md](DL100_SCHLICK_BACKFACE_SPECULAR.md).
 
 ### 4c. The gate
 
@@ -359,9 +366,11 @@ just inside the 0.012 gate; its normalisation check still fails);
 **Round-2 review additions**: 4 gate rows at roughness 0.05 (theta
 15/45/70) and roughness 0.02 (theta 85) — P2-4, matching
 `scenes/Tests/BDPT/cornellbox_bdpt_materials_pt.RISEscene`'s
-`schlick_material` (`rd=0.6, rs=1.0`) — plus 1 non-gated KNOWN-FAILURE
-control row for DL-101 (§2, §7). Current total: `Checks: 43 Failures: 0`
-on this file's HEAD.
+`schlick_material` (`rd=0.6, rs=1.0`) — plus 1 control row that was
+non-gated KNOWN-FAILURE for DL-101 until that row closed 2026-09-17 (see
+docs/DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md) and is now a real gate.
+Current total: `Checks: 44 Failures: 0` on this file's HEAD (was 43
+while the DL-101 row was non-gated).
 
 The TVD threshold, 0.012, is derived rather than tuned. For a histogram
 of `N` draws over `K` bins,
@@ -617,9 +626,16 @@ One-sentence bug pattern: *`Pdf()` reports a density other than the one
 Rows opened by this slice: **DL-98** (`IsotropicPhongSPF`), **DL-99**
 (`AshikminShirleyAnisotropicPhongSPF`), **DL-100** (`GenerateSpecularRay`
 samples the unflipped frame, so a back-face hit loses its whole specular
-lobe), **DL-101** (the per-channel branch reuses one `ScatteredRay`
+lobe -- **CLOSED 2026-09-17**, debt-dl100 slice, also fixed the identical
+pattern found by sibling audit in `WardIsotropicGaussianSPF`; see
+[DL100_SCHLICK_BACKFACE_SPECULAR.md](DL100_SCHLICK_BACKFACE_SPECULAR.md)),
+**DL-101** (the per-channel branch reuses one `ScatteredRay`
 across its three lanes, so a lane whose `hdotk <= 0` can push the
-PREVIOUS lane's direction with its own kray and pdf), **DL-102** (the
+PREVIOUS lane's direction with its own kray and pdf -- **CLOSED
+2026-09-17**, debt-dl100 slice, same fix applied to both Ward files by
+sibling audit; see
+[DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md](DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md)),
+**DL-102** (the
 azimuthal-density defect of §4b — recorded as a closed row so the
 mechanism is findable, since it is a different bug from this row's
 subject).
