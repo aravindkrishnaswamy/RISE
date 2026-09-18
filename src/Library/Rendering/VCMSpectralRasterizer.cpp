@@ -385,6 +385,56 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
 
+				// DL-126 P1.  See BDPTSpectralRasterizer.cpp's twin
+				// comment: a null-BSDF continuation vertex gives
+				// RecomputeSubpathThroughputNM no companion/hero ratio to
+				// compute, wavelength-independently, so terminate
+				// secondaries here too rather than let those always-zero
+				// companions dilute the bundle mean.
+				//
+				// DL-201: both termination checks run BEFORE the hero
+				// block (they read only the two vertex arrays and the
+				// bundle's wavelengths, all of which already exist and
+				// none of which the hero block writes), because the
+				// hero's own t=1 SPLAT below needs `splatLaneScale`.
+				// Guarded on `bUseHWSS` because `swl` is only populated
+				// on that path -- the non-HWSS branch `continue`s past
+				// the companion loop below and leaves `splatLaneScale`
+				// at its neutral 1.0.
+				Scalar splatLaneScale = 1.0;
+				if( bUseHWSS )
+				{
+					if( BDPTIntegrator::HasNullBSDFContinuationVertex( localLightVerts ) ||
+						BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
+					{
+						swl.TerminateSecondary();
+					}
+
+					// HWSS: re-evaluate companion wavelengths on the same
+					// geometric path.  If any vertex along the hero path is
+					// dispersive (wavelength-dependent IOR) the companions
+					// cannot share the geometry and are terminated.
+					for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
+					{
+						if( BDPTIntegrator::HasDispersiveDeltaVertex( localLightVerts, heroNM, swl.lambda[w] ) ||
+						    BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts,        heroNM, swl.lambda[w] ) )
+						{
+							swl.TerminateSecondary();
+							break;
+						}
+					}
+
+					// DL-201.  The splat film's global denominator assumes
+					// all N lanes of every bundle deposited; renormalize a
+					// terminated bundle's deposits so the numerator matches.
+					// See BDPTSpectralRasterizer.cpp's twin comment for the
+					// full derivation, including why a per-pixel weight
+					// accumulator in SplatFilm is the WRONG layer.
+					splatLaneScale =
+						static_cast<Scalar>( SampledWavelengths::N ) /
+						static_cast<Scalar>( swl.NumActive() );
+				}
+
 				Scalar heroValue = 0;
 
 				// Single light + eye subpath (no branching).  Convert
@@ -403,7 +453,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 						pIntegrator->SplatLightSubpathToCameraNM(
 							localLightVerts, lightMisSp,
 							pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
-							mVCMNormalization, heroNM, pPixelFilter );
+							mVCMNormalization, heroNM, pPixelFilter, splatLaneScale );
 					}
 				}
 
@@ -456,32 +506,6 @@ void VCMSpectralRasterizer::IntegratePixel(
 					continue;
 				}
 
-				// DL-126 P1.  See BDPTSpectralRasterizer.cpp's twin
-				// comment: a null-BSDF continuation vertex gives
-				// RecomputeSubpathThroughputNM no companion/hero ratio to
-				// compute, wavelength-independently, so terminate
-				// secondaries here too rather than let those always-zero
-				// companions dilute the bundle mean.
-				if( BDPTIntegrator::HasNullBSDFContinuationVertex( localLightVerts ) ||
-					BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
-				{
-					swl.TerminateSecondary();
-				}
-
-				// HWSS: re-evaluate companion wavelengths on the same
-				// geometric path.  If any vertex along the hero path is
-				// dispersive (wavelength-dependent IOR) the companions
-				// cannot share the geometry and are terminated.
-				for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
-				{
-					if( BDPTIntegrator::HasDispersiveDeltaVertex( localLightVerts, heroNM, swl.lambda[w] ) ||
-					    BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts,        heroNM, swl.lambda[w] ) )
-					{
-						swl.TerminateSecondary();
-						break;
-					}
-				}
-
 				for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
 				{
 					if( swl.terminated[w] ) {
@@ -524,7 +548,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 							pIntegrator->SplatLightSubpathToCameraNM(
 								compLight, compLightMis,
 								pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
-								mVCMNormalization, companionNM, pPixelFilter );
+								mVCMNormalization, companionNM, pPixelFilter, splatLaneScale );
 						}
 					}
 

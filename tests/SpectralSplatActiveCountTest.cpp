@@ -51,21 +51,30 @@
 //
 //  MEASURED (32x32, hwss FALSE at 512 spp vs hwss TRUE at 128 spp; the
 //  hero-only render gets 4x the samples because an HWSS bundle carries
-//  `SampledWavelengths::N` wavelengths per path.  Achromatic mean per column
-//  OCTANT, ratio hwss TRUE / hwss FALSE.  Octants 0-1 are the DISPERSIVE
-//  half, 6-7 the non-dispersive half):
+//  `SampledWavelengths::N` wavelengths per path).  Isolated A/B: the four
+//  fixed source files reverted to this slice's base commit, library and test
+//  rebuilt, test run, then restored.
 //
-//    row                                pre-fix oct0/oct1   post-fix oct0/oct1
-//    BDPT eye0  dispersive+flat slabs    0.2386 / 0.2387     0.9959 / 0.9553
-//    BDPT eye0  both slabs flat (ctrl)   0.9697 / 0.9508     0.9573 / 0.9530
-//    VCM  eye0  dispersive+flat slabs    0.2445 / 0.2414     0.9966 / 0.9519
-//    VCM  eye5  dispersive+flat slabs    0.2834 / 0.3017     0.9925 / 0.9838
-//    VCM  eye5  both slabs flat (ctrl)   0.9764 / 0.9765     0.9807 / 0.9859
+//    row                            balance pre / post   whole pre / post
+//    BDPT eye0  dispersive+flat      0.2661 / ~1.01       0.5684 / ~0.95
+//    VCM  eye0  dispersive+flat      0.2984 / ~1.01       0.6378 / ~0.97
+//    VCM  eye5  dispersive+flat      0.6307 / ~1.01       0.8100 / ~0.98
+//    BDPT eye0  both flat (CONTROL)  1.0038 / ~1.00       0.9492 / ~0.95
+//    VCM  eye5  both flat (CONTROL)  1.0058 / ~1.01       0.9754 / ~0.98
 //
-//  The pre-fix 0.2386 is `1/SampledWavelengths::N` = 0.25 times the control
-//  row's own ~0.95 hwss-TRUE/FALSE baseline (0.2375 predicted) -- i.e. the
-//  measured deficit is EXACTLY the predicted one, because essentially 100% of
-//  the bundles depositing in that region are dispersion-terminated.
+//  24 passed / 6 failed pre-fix; 30 passed / 0 failed post-fix.  Post-fix
+//  figures are quoted as ranges over 3 repeated runs (balance 1.000-1.020 on
+//  all five rows) because renders here are NOT bit-reproducible run to run.
+//
+//  The pre-fix 0.2661 is `1/SampledWavelengths::N` = 0.25 -- the deficit is
+//  exactly the predicted one, because essentially every bundle depositing in
+//  the dispersive half is dispersion-terminated.  Per-OCTANT achromatic
+//  ratios in the same A/B: the dispersive half read 0.242 / 0.231 / 0.235
+//  pre-fix against 0.860 / 0.913 / 0.926 on the non-dispersive half, and
+//  0.97 / 0.94 / 0.96 vs 0.92 / 0.95 / 0.96 post-fix.
+//
+//  CONTROL ROWS ARE GREEN IN BOTH BUILDS -- that is what makes the money
+//  rows' signal "termination" and not "a render with glass in it".
 //
 //  WHY THE FIX IS AT THE DEPOSIT SITE AND NOT IN `SplatFilm`.  DL-201's own
 //  recipe proposed a per-pixel weight accumulator in `SplatFilm`, summed at
@@ -399,6 +408,12 @@ static std::string VcmRasterizer( bool hwss, unsigned int samples, unsigned int 
 // measured, which is what makes it a real red-proof rather than a
 // consistency pin.
 //////////////////////////////////////////////////////////////////////
+// The whole-image band is wider than the balance band because it does
+// NOT cancel the hwss TRUE / hwss FALSE estimator offset the control
+// rows measure at ~0.95-0.98.
+static const double kWholeLoBand = 0.85;
+static const double kWholeHiBand = 1.15;
+
 static void RunLadder( const std::string& label, const std::string& rastNo,
 	const std::string& rastHW, const std::string& body,
 	double loBand, double hiBand )
@@ -446,26 +461,66 @@ static void RunLadder( const std::string& label, const std::string& rastNo,
 	const double wholeRatio = hw.whole / no.whole;
 	std::cout << "    whole ratio = " << wholeRatio << std::endl;
 
-	for( int i = 0; i < kNumOctants; i++ ) {
-		// An octant with no reference energy carries no information;
-		// every octant of every row here is lit well above this floor,
-		// but guard rather than divide by a near-zero.
-		if( no.achro[i] <= 1e-12 ) {
-			continue;
-		}
-		const double r = hw.achro[i] / no.achro[i];
-		char nameBuf[256];
-		std::snprintf( nameBuf, sizeof(nameBuf),
-			"%s: octant %d hwss ratio %.4f in [%.2f, %.2f]",
-			label.c_str(), i, r, loBand, hiBand );
-		Check( r >= loBand && r <= hiBand, nameBuf );
+	// THE GATED STATISTIC IS THE LEFT/RIGHT BALANCE, not a per-octant
+	// ratio against 1.0.
+	//
+	// hwss TRUE and hwss FALSE are different estimators run at different
+	// sample counts, and they carry a real, row-independent offset of
+	// their own: both CONTROL rows (no termination anywhere) read a
+	// whole-image ratio of ~0.95-0.98, not 1.00.  The DEFECT, by
+	// contrast, is a DIFFERENCE BETWEEN REGIONS of one image -- the
+	// dispersive half darkens while the non-dispersive half does not --
+	// so the statistic that isolates it is
+	//
+	//     balance = (hwTRUE_left / hwTRUE_right)
+	//             / (hwFALSE_left / hwFALSE_right)
+	//
+	// in which that common offset cancels exactly.  It is 1.0 when both
+	// halves move together (every control row, and every row post-fix)
+	// and ~1/SampledWavelengths::N when only the dispersive half is
+	// diluted.
+	//
+	// "left" is octants 0-2 and "right" octants 5-7: the two halves lit
+	// THROUGH a slab.  Octants 3-4 are deliberately in NEITHER -- they
+	// are the narrow gap between the slabs (x_floor in roughly
+	// [-0.8, +0.8]), lit directly rather than through glass, ~8x dimmer
+	// than the rest, and they carry their own systematic hwss offset
+	// (measured 0.86-0.94 and 1.04-1.10 respectively, stable across
+	// runs and present in the controls).  That offset is a property of
+	// the hwss estimator in a dim directly-lit region, not of this row,
+	// and the split is geometric -- decided by where the slabs are, not
+	// by any measured value -- so it cannot quietly excuse an octant the
+	// fix made dark.  Every octant is still printed above.
+	const int kLeftLo = 0, kLeftHi = 2, kRightLo = 5, kRightHi = 7;
+	double noLeft = 0, noRight = 0, hwLeft = 0, hwRight = 0;
+	for( int i = kLeftLo; i <= kLeftHi; i++ )  { noLeft  += no.achro[i]; hwLeft  += hw.achro[i]; }
+	for( int i = kRightLo; i <= kRightHi; i++ ){ noRight += no.achro[i]; hwRight += hw.achro[i]; }
+
+	Check( noLeft > 1e-12 && noRight > 1e-12 && hwRight > 1e-12,
+		label + ": both halves carry reference and candidate energy" );
+	if( noLeft <= 1e-12 || noRight <= 1e-12 || hwRight <= 1e-12 ) {
+		return;
 	}
 
-	char wholeBuf[256];
+	const double balance = ( hwLeft / hwRight ) / ( noLeft / noRight );
+	std::cout << "    left/right BALANCE (hwss TRUE vs FALSE) = " << balance << std::endl;
+
+	char balBuf[320];
+	std::snprintf( balBuf, sizeof(balBuf),
+		"%s: left/right balance %.4f in [%.2f, %.2f]",
+		label.c_str(), balance, loBand, hiBand );
+	Check( balance >= loBand && balance <= hiBand, balBuf );
+
+	// Secondary, coarser: the whole-image ratio.  This one DOES carry
+	// the estimator offset above, so its band is the wide one; it exists
+	// to catch a global scale error the balance statistic would cancel
+	// away (pre-fix it read 0.566 / 0.637 / 0.810 on the three money
+	// rows, so it fails there too).
+	char wholeBuf[320];
 	std::snprintf( wholeBuf, sizeof(wholeBuf),
 		"%s: whole-image hwss ratio %.4f in [%.2f, %.2f]",
-		label.c_str(), wholeRatio, loBand, hiBand );
-	Check( wholeRatio >= loBand && wholeRatio <= hiBand, wholeBuf );
+		label.c_str(), wholeRatio, kWholeLoBand, kWholeHiBand );
+	Check( wholeRatio >= kWholeLoBand && wholeRatio <= kWholeHiBand, wholeBuf );
 }
 
 int main()
@@ -476,11 +531,11 @@ int main()
 	// do not, and both halves must read the same hwss baseline.
 	RunLadder( "BDPT spectral pure-splat (eye0), dispersive + flat slabs",
 		BdptRasterizer( false, 512, 0 ), BdptRasterizer( true, 128, 0 ),
-		SceneBody( true, false ), 0.85, 1.15 );
+		SceneBody( true, false ), 0.90, 1.10 );
 
 	RunLadder( "VCM spectral pure-splat (eye0), dispersive + flat slabs",
 		VcmRasterizer( false, 512, 0 ), VcmRasterizer( true, 128, 0 ),
-		SceneBody( true, false ), 0.85, 1.15 );
+		SceneBody( true, false ), 0.90, 1.10 );
 
 	// ---- the same defect at an ORDINARY eye depth.  BDPT's own t==1
 	// share is too small at eye depth 5 on this scene for the deficit to
@@ -488,7 +543,7 @@ int main()
 	// row; the eye0 BDPT row above is the one that isolates the film.
 	RunLadder( "VCM spectral eye5 (production depth), dispersive + flat slabs",
 		VcmRasterizer( false, 512, 5 ), VcmRasterizer( true, 128, 5 ),
-		SceneBody( true, false ), 0.85, 1.15 );
+		SceneBody( true, false ), 0.90, 1.10 );
 
 	// ---- controls: geometrically identical scenes whose slabs are both
 	// NON-dispersive, so nothing terminates and the splat denominator was
@@ -498,11 +553,11 @@ int main()
 	// with glass in it".
 	RunLadder( "CONTROL BDPT spectral pure-splat (eye0), both slabs flat",
 		BdptRasterizer( false, 512, 0 ), BdptRasterizer( true, 128, 0 ),
-		SceneBody( false, false ), 0.85, 1.15 );
+		SceneBody( false, false ), 0.90, 1.10 );
 
 	RunLadder( "CONTROL VCM spectral eye5, both slabs flat",
 		VcmRasterizer( false, 512, 5 ), VcmRasterizer( true, 128, 5 ),
-		SceneBody( false, false ), 0.85, 1.15 );
+		SceneBody( false, false ), 0.90, 1.10 );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

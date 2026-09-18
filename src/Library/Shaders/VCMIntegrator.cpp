@@ -1655,6 +1655,7 @@ namespace
 		SplatFilm& splatFilm,
 		const VCMNormalization& norm,
 		const IPixelFilter* pixelFilter,
+		const Scalar splatScale,
 		const Tag& tag
 		)
 	{
@@ -1858,8 +1859,15 @@ namespace
 			const Scalar fx = rasterPos.x;
 			const Scalar fy = static_cast<Scalar>( filmHeight ) - rasterPos.y;
 
+			// DL-201: `splatScale` renormalizes an HWSS bundle whose
+			// companion wavelengths were terminated, so the deposit
+			// matches the lanes that actually ran rather than the N the
+			// splat film's global denominator assumes.  Exactly 1.0 on
+			// the Pel path and on any bundle that terminated nothing.
+			const RISEPel deposit = rgb.second * splatScale;
+
 			if( pixelFilter ) {
-				splatFilm.SplatFiltered( fx, fy, rgb.second, *pixelFilter );
+				splatFilm.SplatFiltered( fx, fy, deposit, *pixelFilter );
 			} else {
 				const Scalar rx = fx + Scalar( 0.5 );
 				const Scalar ry = fy + Scalar( 0.5 );
@@ -1869,7 +1877,7 @@ namespace
 				if( sx < 0 || sy < 0 ||
 				    static_cast<unsigned int>( sx ) >= filmWidth ||
 				    static_cast<unsigned int>( sy ) >= filmHeight ) continue;
-				splatFilm.Splat( sx, sy, rgb.second );
+				splatFilm.Splat( sx, sy, deposit );
 			}
 		}
 	}
@@ -1891,7 +1899,7 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	SplatLightSubpathToCameraImpl<PelTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, PelTag{} );
+		splatFilm, norm, pixelFilter, 1.0, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2466,14 +2474,15 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
 	const Scalar nm,
-	const IPixelFilter* pixelFilter
+	const IPixelFilter* pixelFilter,
+	const Scalar splatScale
 	) const
 {
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, NMTag( nm ) );
+		splatFilm, norm, pixelFilter, splatScale, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
