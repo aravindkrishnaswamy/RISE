@@ -209,8 +209,11 @@ debt 21 as well.
 
 The row's natural follow-up — make the floor relative to the ray's own
 parameterisation, so it can never exceed a genuine hit distance — was
-derived, implemented in a scratch build, and **rejected**, because it
-defeats the floor in exactly the case the floor exists for.
+derived and **rejected on the algebra**, without implementing it,
+because it provably defeats the floor in exactly the case the floor
+exists for. (Not implemented: the derivation below is decisive, and
+§4d's case [3] independently measures what happens to debt-21 the
+moment the floor stops covering that root.)
 
 `Object::IntersectRay` publishes a hit point backed off along the
 incoming ray by `SURFACE_INTERSEC_ERROR` (1e-12). A shadow or
