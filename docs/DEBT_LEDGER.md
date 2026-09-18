@@ -951,6 +951,59 @@ pattern; no new rows opened. This slice's own state: main rows -2 (two
 closed, no closes' preconditions opened new ones); fold into the
 authoritative totals at the next full sweep.
 
+**debt-phongpdf REVIEW PASS (2026-09-17, same worktree, `master`
+`813de462` merged in first; commits `17f8e910` .. `2ce96ca5`):** an
+external review of the slice above found the core construction EXACT but
+three P1 defects around it, all now fixed with their own red-proofs,
+plus five P2/P3 items.  No rows opened or closed beyond the two the
+slice itself closed; **DL-100 gained a second, CLOSED instance** (see
+that row) while staying open for its own subject, and **DL-103's site
+list gained `IsotropicPhongSPF` and
+`AshikminShirleyAnisotropicPhongSPF`** (see that row).  What changed,
+listed because several items correct claims this ledger and CLAUDE.md
+previously carried:
+
+- **P1-1** (`f746d880`): the Ashikmin diffuse selection weight's
+  chromatic reduction order, up to 19x wrong, and documented as an
+  "accepted approximation ... the same class as Slice 0's" when Slice
+  0's is a provable identity and this was not.  Untested because every
+  configuration in the suite used grey reflectances, on which the two
+  expressions are the same number.
+- **P1-2** (`5a72c1df`): the Phong and Ashikmin chi2 sub-tests in
+  `SPFPdfConsistencyTest` were still `skipChi2=true` above comments
+  asserting the just-fixed bug is live.  Now gated (820.9/786.4 and
+  810.9/827.0 vs critical 928.3), with `skipCrossVal`'s own comment
+  corrected to say the remaining skip is STRUCTURAL.
+- **P1-3** (`6c8da3d5`): the DL-100 sibling verdict -- see that row.
+- **P2-1**: every render figure re-measured at 1024 spp with n=6 per
+  build instead of single 32-spp runs.  "+7.65%" became
+  +0.978% +/- 0.164% (t=5.96); `pt_jewel_vault`'s "-28% to +43%" became
+  "nothing moves significantly" (0 of 64 blocks at |t|>=3), with the
+  fixture itself corrected -- `gold_mat` has ONE user, an ~11x21 px
+  ellipsoid at the frame edge, not "panels".
+- **P2-2**: DL-103's site list, above.
+- **P2-3**: gate 1's domain corrected to the FULL SPHERE (it was
+  measuring its own domain error on the tilted low-exponent Phong rows
+  and holding one TVD at 99.7% of its band on that artifact), and the
+  deterministic quadrature's SYSTEMATIC bias disclosed with measured
+  grid-refinement numbers (`kPhongQuadN` 16->64: worst gate-1 residual
+  0.00207 -> 0.00038; `kAshQuadN` 16->32: 0.00785 -> 0.00279; both stay
+  at 16, at 13.5x and 3.9x cost respectively for a residual already 4x
+  inside its band).
+- **P2-4**: the suggested per-lane hoist was implemented, measured
+  (ratio-normalised against an in-process reference, n=12) at
+  +3.3%/+3.1%/-0.1% -- no win -- and reverted rather than shipped.
+- **P2-5 / P3** (`2ce96ca5`, `c5edaa2d`): `tests/README.md`'s "mass
+  within 0.4%" was 0.785%; `PdfNM`'s `fabs()` divergence from
+  `ScatterNM`; `AshikminInvertPhi` at a quadrant boundary; a
+  lane-invariant test inside a lane loop; Phong's
+  `rdotn > NEARZERO` vs `> 0` window.
+
+Suite counts that moved: `AshikminShirleySPFPdfConsistencyTest`
+38 -> 99 checks (5 back-face rows, 5 chromatic rows, and a third gate
+rejecting any negative selection weight).  This pass opens and closes no
+rows, so it does not change the slice's own "main rows -2".
+
 **2026-09-14 (debt-brdfnorm slice, branched from `master` `d471d5d1`):**
 DL-07 CLOSED (`OrenNayarBRDF::hemisphericalAlbedo{,NM}` — see the table
 row above and [OrenNayarBRDF.cpp](../src/Library/Materials/OrenNayarBRDF.cpp)).
