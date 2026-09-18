@@ -79,6 +79,23 @@ bool EllipsoidGeometry::TessellateToMesh(
 	const Scalar ooB2 = (b > NEARZERO) ? 1.0 / (b*b) : 0.0;
 	const Scalar ooC2 = (c > NEARZERO) ? 1.0 / (c*c) : 0.0;
 
+	// DL-116 sibling fix (see SphereGeometry::TessellateToMesh for the full
+	// rationale, reproduced briefly here): a pole row (j==0 north, j==nV
+	// south) collapses to a SINGLE 3D position with a SINGLE normal --
+	// `sinPhi == 0` there, so `pos = (0, +-b, 0)` regardless of `i`, and the
+	// gradient normal `(pos.x*ooA2, pos.y*ooB2, pos.z*ooC2)` normalizes to
+	// `(0, sign(b), 0)`, likewise independent of `i`.  The `u` forced to 0.0
+	// below (pre-existing code, kept) already canonicalizes the texcoord to
+	// `(0, v)` for every column too, so a pole row's (position, normal,
+	// texcoord) triple is IDENTICAL across every `i` -- there is nothing a
+	// second, third, ... index at that row could ever distinguish.  Emit ONE
+	// shared vertex per pole instead of `rowStride` coincident ones, and skip
+	// the one wedge triangle per pole cell that vertex makes degenerate (the
+	// other triangle in that wedge, always the real non-zero-area one, is
+	// unchanged).
+	unsigned int northPoleIdx = 0;
+	unsigned int southPoleIdx = 0;
+
 	for( unsigned int j = 0; j <= nV; j++ ) {
 		const Scalar v      = Scalar(j) / Scalar(nV);
 		const Scalar phi    = v * PI;
@@ -89,8 +106,32 @@ bool EllipsoidGeometry::TessellateToMesh(
 		// (see SphereGeometry::TessellateToMesh for the reasoning).
 		const bool atPole = (j == 0) || (j == nV);
 
+		if( atPole ) {
+			const Scalar u        = 0.0;
+			const Scalar theta    = 0.0;
+			const Scalar sinTheta = sin(theta);
+			const Scalar cosTheta = cos(theta);
+
+			const Point3 pos(
+				a * -sinPhi * cosTheta,
+				b * cosPhi,
+				c * sinPhi * sinTheta );
+
+			const Vector3 nrm = Vector3Ops::Normalize( Vector3(
+				pos.x * ooA2,
+				pos.y * ooB2,
+				pos.z * ooC2 ) );
+
+			const unsigned int poleIdx = static_cast<unsigned int>( vertices.size() );
+			vertices.push_back( pos );
+			normals.push_back( nrm );
+			coords.push_back( Point2( u, v ) );
+			if( j == 0 ) { northPoleIdx = poleIdx; } else { southPoleIdx = poleIdx; }
+			continue;
+		}
+
 		for( unsigned int i = 0; i <= nU; i++ ) {
-			const Scalar u        = atPole ? 0.0 : Scalar(i) / Scalar(nU);
+			const Scalar u        = Scalar(i) / Scalar(nU);
 			const Scalar theta    = u * TWO_PI;
 			const Scalar sinTheta = sin(theta);
 			const Scalar cosTheta = cos(theta);
@@ -112,15 +153,39 @@ bool EllipsoidGeometry::TessellateToMesh(
 		}
 	}
 
+	// Combined (position, normal, texcoord) index for (row j, column i): the
+	// pole rows collapse to their single shared entry regardless of i; every
+	// other row keeps the ORIGINAL per-column indexing (rowStride wide),
+	// offset by the two pole rows now contributing one entry each instead of
+	// rowStride.
+	const auto Index = [&]( unsigned int j, unsigned int i ) -> unsigned int {
+		if( j == 0 )  { return northPoleIdx; }
+		if( j == nV ) { return southPoleIdx; }
+		return baseIdx + 1 + ( j - 1 ) * rowStride + i;
+	};
+
 	for( unsigned int j = 0; j < nV; j++ ) {
 		for( unsigned int i = 0; i < nU; i++ ) {
-			const unsigned int a_idx = baseIdx + j     * rowStride + i;
-			const unsigned int b_idx = baseIdx + j     * rowStride + (i + 1);
-			const unsigned int c_idx = baseIdx + (j+1) * rowStride + i;
-			const unsigned int d_idx = baseIdx + (j+1) * rowStride + (i + 1);
+			const unsigned int a_idx = Index( j,   i     );
+			const unsigned int b_idx = Index( j,   i + 1 );
+			const unsigned int c_idx = Index( j+1, i     );
+			const unsigned int d_idx = Index( j+1, i + 1 );
 
-			tris.push_back( MakeIndexedTriangleSameIdx( a_idx, c_idx, b_idx ) );
-			tris.push_back( MakeIndexedTriangleSameIdx( b_idx, c_idx, d_idx ) );
+			// At the north pole row (j==0) a_idx==b_idx (the shared pole
+			// entry), so the first triangle is fully degenerate; symmetric
+			// at the south pole row (j+1==nV), where c_idx==d_idx makes the
+			// SECOND triangle degenerate instead.  Skip exactly the one
+			// that collapses; away from the poles this is the original
+			// two-triangles-per-wedge assembly, unchanged.
+			const bool bNorthPoleWedge = ( j == 0 );
+			const bool bSouthPoleWedge = ( j + 1 == nV );
+
+			if( !bNorthPoleWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( a_idx, c_idx, b_idx ) );
+			}
+			if( !bSouthPoleWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( b_idx, c_idx, d_idx ) );
+			}
 		}
 	}
 

@@ -70,14 +70,26 @@
 //        `Box.glb` and every triangle-mesh export with per-face normals
 //        uses) reads OPEN under the old index-keyed check and WATERTIGHT
 //        under the new position-welded one.
-//    (f) DL-116, refined not closed.  `SphereGeometry::TessellateToMesh`
-//        still refuses after welding, but for a MORE PRECISELY diagnosed
-//        reason: welding correctly identifies each pole's ring of
-//        coincident-position corners as ONE vertex, which makes the
-//        pole-cell triangles (which were never actually anything but
-//        zero-area) show up as DEGENERATE rather than as spurious open
-//        boundary.  Still no signed answer either way; DL-116 stays
-//        open, its own row updated to record this.
+//    (f) DL-116 CLOSED (debt-geom2, 2026-09-17).  This section originally
+//        pinned DL-116 as "refined, not closed": at the time it was
+//        written (debt-prox, branched before the fix landed),
+//        `SphereGeometry::TessellateToMesh` still emitted `detail+1`
+//        coincident-position vertices per pole, so DL-143's own
+//        position-weld correctly identified each pole ring as ONE
+//        vertex, which turned the pole-cell triangles (always zero-area)
+//        into DEGENERATE ones -- a more precisely diagnosed refusal, but
+//        still a refusal.  `SphereGeometry`/`EllipsoidGeometry::
+//        TessellateToMesh` now weld their own pole row to a single
+//        shared (position, normal, texcoord) index and skip the wedge
+//        triangle that entry would make degenerate (see
+//        docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md), so the
+//        raw triangle list fed into this mesh no longer contains ANY
+//        degenerate triangles at either pole -- DL-143's position-weld
+//        (whose tolerance also absorbs the ordinary u-seam's ~1e-16
+//        float noise, see DL-136) now finds a genuinely closed
+//        2-manifold with zero boundary edges, and `SignedDistanceLower`
+//        ANSWERS instead of refusing.  Both `SphereGeometry` and
+//        `EllipsoidGeometry` are exercised here.
 //    (g) `BoxGeometry::TessellateToMesh` (independently tessellated
 //        per-face, no cross-seam sharing -- 96 boundary edges pre-fix at
 //        detail=4) DOES weld back to watertight: its face seams agree to
@@ -106,6 +118,7 @@
 
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/EllipsoidGeometry.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Importers/GLTFSceneImporter.h"
 
@@ -427,21 +440,23 @@ static void TestFlatShadedPerCornerCubeWelds()
 	mesh->release();
 }
 
-//! DL-116, refined: `SphereGeometry::TessellateToMesh` gives every pole
-//! ROW (not just each pole cell) the SAME position (see that method's
-//! own comment -- `atPole` collapses `u` to 0, and at `phi=0`/`PI` the
-//! direction is independent of `theta` anyway), so DL-143's welding
-//! correctly identifies an entire pole ring as ONE vertex. That turns
-//! each pole-adjacent "quad" -- which was never anything but zero-area,
-//! DL-116's own point -- into a genuinely DEGENERATE (repeated-vertex)
-//! triangle once welded, which `ComputeWatertightness`'s pre-existing
-//! degenerate check (see its own comment) refuses outright rather than
-//! miscounting edges. Still no signed answer -- DL-116 stays open, just
-//! diagnosed more precisely post-weld (open-sheet before, degenerate-
-//! triangle after) than it was pre-fix.
-static void TestSphereTessellationStillRefusesDegenerate()
+//! DL-116 CLOSED (debt-geom2, 2026-09-17): `SphereGeometry`/
+//! `EllipsoidGeometry::TessellateToMesh` now weld every pole ROW to a
+//! single shared (position, normal, texcoord) index and skip the one
+//! wedge triangle per pole cell that entry would make degenerate (see
+//! docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md) -- so the raw
+//! triangle list fed into this mesh contains zero degenerate triangles
+//! at either pole, DL-143's position-weld finds a genuinely closed
+//! 2-manifold (its tolerance also swallows the ordinary u-seam's
+//! ~1e-16-scale float noise, DL-136), and `SignedDistanceLower` now
+//! ANSWERS instead of refusing on a tessellated sphere or ellipsoid.
+//! The magnitude check is a LOOSE bound (matching (d)'s own rationale):
+//! the mesh is a polyhedral approximation, not the analytic surface, so
+//! its closest-point answer at the centre approaches -- but does not
+//! exactly equal -- the true minimum semi-axis / radius.
+static void TestSphereTessellationNowWatertight()
 {
-	std::cout << "(f) DL-116 -- SphereGeometry::TessellateToMesh still refuses post-weld (now: degenerate poles, not open seams)" << std::endl;
+	std::cout << "(f) DL-116 CLOSED -- SphereGeometry::TessellateToMesh now welds watertight" << std::endl;
 
 	SphereGeometry* pSphere = new SphereGeometry( 3.0 );
 	pSphere->addref();
@@ -461,15 +476,60 @@ static void TestSphereTessellationStillRefusesDegenerate()
 	mesh->AddIndexedTriangles( tris );
 	mesh->DoneIndexedTriangles();
 
-	Scalar outSigned = 0.0; bool outExact = true;
+	Scalar outSigned = 12345.0; bool outExact = false;
 	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
-	Check( !ok, "(f) DL-116 -- still refuses SignedDistanceLower post-weld (degenerate pole "
-		"triangles, not the pre-fix miscount -- see the build log for the "
-		"'degenerate (repeated-vertex) triangle' diagnostic)" );
-	Check( !outExact, "(f) ...and clears outExact on refusal" );
+	Check( ok, "(f) MONEY -- SphereGeometry::TessellateToMesh's own output now ANSWERS "
+		"SignedDistanceLower post-weld (pre-fix: refused on degenerate pole triangles)" );
+	CheckClose( (double)outSigned, -3.0, 0.01 * 3.0,
+		"(f) tessellated-sphere centre depth is close to the analytic sphere's -R" );
+	Check( outExact, "(f) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
 
 	mesh->release();
 	pSphere->release();
+}
+
+//! DL-116 sibling (same fix, same commit, see above): `EllipsoidGeometry::
+//! TessellateToMesh` had the IDENTICAL per-pole-row coincident-vertex
+//! pattern as `SphereGeometry` (its own comment pointed at Sphere's for
+//! the rationale) and is welded the same way here. Scalene (a != b != c)
+//! semi-axes so this is not secretly exercising the sphere code path.
+//! The origin's true nearest surface point on an ellipsoid is exactly
+//! `min(a, b, c)` away (attained along the shortest semi-axis) -- the
+//! same closed-form argument as a sphere's `-R`, just anisotropic.
+static void TestEllipsoidTessellationNowWatertight()
+{
+	std::cout << "(f2) DL-116 sibling -- EllipsoidGeometry::TessellateToMesh now welds watertight" << std::endl;
+
+	const Scalar a = 1.5, b = 0.75, c = 2.0;
+	EllipsoidGeometry* pEllipsoid = new EllipsoidGeometry( Vector3( a, b, c ) );
+	pEllipsoid->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pEllipsoid->TessellateToMesh( tris, vertices, normals, coords, 71 );
+	Check( built, "(f2) EllipsoidGeometry::TessellateToMesh(detail=71) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(f2) MONEY -- EllipsoidGeometry::TessellateToMesh's own output now ANSWERS "
+		"SignedDistanceLower post-weld (pre-fix: refused on degenerate pole triangles)" );
+	const Scalar minAxis = std::min( a, std::min( b, c ) );
+	CheckClose( (double)outSigned, -(double)minAxis, 0.02 * (double)minAxis,
+		"(f2) tessellated-ellipsoid centre depth is close to the analytic min(a,b,c)" );
+	Check( outExact, "(f2) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
+
+	mesh->release();
+	pEllipsoid->release();
 }
 
 //! `BoxGeometry::TessellateToMesh` tessellates its six faces
@@ -579,17 +639,20 @@ static void TestShippedGltfBoxEndToEnd()
 //! A hand-built, WELDED UV-sphere: one shared vertex at each pole (a fan
 //! of triangles there), ordinary quads split into two triangles on the
 //! `n` interior latitude rings.  Deliberately NOT
-//! `SphereGeometry::TessellateToMesh` -- that tessellator gives each
-//! pole CELL its own distinct (but coincident-position) vertex, so the
-//! polar "quads" degenerate to zero-area triangles whose wedge edges are
-//! each used by only one triangle.  Measured while building this
-//! fixture: a 10082-triangle `TessellateToMesh` sphere reports 284
-//! boundary edges under DL-31's watertightness check -- a real, closed
-//! sphere reads as an open sheet purely because of how the tessellator
-//! indexes its poles.  Filed as DL-116 (see the ledger); worked around
-//! here by welding the poles instead, which is the standard fix and
-//! gives an unambiguously watertight ~10k-triangle fixture for this
-//! section's timing.
+//! `SphereGeometry::TessellateToMesh` -- when this fixture was written,
+//! that tessellator gave each pole CELL its own distinct
+//! (but coincident-position) vertex, so the polar "quads" degenerated to
+//! zero-area triangles whose wedge edges were each used by only one
+//! triangle: a 10082-triangle `TessellateToMesh` sphere measured 284
+//! boundary edges under DL-31's watertightness check, a real closed
+//! sphere reading as an open sheet purely because of how the tessellator
+//! indexed its poles.  Filed as DL-116; CLOSED 2026-09-17 (debt-geom2,
+//! see (f) above, which now exercises `SphereGeometry::TessellateToMesh`'s
+//! own output directly and gets the same watertight answer).  This
+//! fixture is kept as-is regardless -- it gives exact, reproducible
+//! control over the triangle count (10000 exactly) this section's timing
+//! wants, independent of which tessellator's convention happens to
+//! produce it.
 static bool BuildWeldedUVSphere( const Scalar R, const unsigned int n, const unsigned int m,
 	IndexTriangleListType& tris, VerticesListType& vertices )
 {
@@ -746,7 +809,8 @@ int main()
 	TestOpenQuadRefuses();
 	TestNonWatertightCubeRefuses();
 	TestFlatShadedPerCornerCubeWelds();
-	TestSphereTessellationStillRefusesDegenerate();
+	TestSphereTessellationNowWatertight();
+	TestEllipsoidTessellationNowWatertight();
 	TestBoxTessellationWelds();
 	TestShippedGltfBoxEndToEnd();
 	TestParityCost();

@@ -85,6 +85,7 @@
 #include "../src/Library/Geometry/TorusGeometry.h"
 #include "../src/Library/Geometry/CylinderGeometry.h"
 #include "../src/Library/Geometry/CircularDiskGeometry.h"
+#include "../src/Library/Geometry/EllipsoidGeometry.h"
 #include "../src/Library/Polygon.h"
 #include "../src/Library/Utilities/Reference.h"
 
@@ -399,6 +400,45 @@ static void TestDisk( unsigned int detail )
 		"disk detail=" + std::to_string( detail ) + " has 0 non-manifold edges under either model" );
 }
 
+static void TestEllipsoid( unsigned int detail )
+{
+	// Scalene (all three semi-axes distinct) so this is not secretly
+	// exercising the sphere code path under another name.
+	EllipsoidGeometry* pEllipsoid = new EllipsoidGeometry( Vector3( 1.5, 0.75, 2.0 ) );
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+
+	bool ok = pEllipsoid->TessellateToMesh( tris, vertices, normals, coords, detail );
+	pEllipsoid->release();
+	Check( ok, "ellipsoid TessellateToMesh succeeds at detail=" + std::to_string( detail ) );
+
+	WatertightResult raw  = RawIndexEdgeCounts( tris, vertices.size() );
+	WatertightResult weld = ExactWeldEdgeCounts( tris, vertices );
+	PrintBoth( ( "ellipsoid detail=" + std::to_string( detail ) ).c_str(), raw, weld );
+
+	// DL-116 sibling (formerly excused as out-of-scope/owned-elsewhere, closed here): structurally
+	// identical to the sphere's pole bug -- EllipsoidGeometry::TessellateToMesh's
+	// own `atPole` branch already canonicalizes u=0 for every column at a
+	// pole row, so (like the sphere) position, normal, AND texcoord all
+	// collapse to one shared value there; the pre-fix tessellator still
+	// emitted `detail+1` coincident indices per pole row. Same gate as
+	// TestSphere: 0 degenerate triangles, and the raw-index boundary count
+	// must equal EXACTLY the seam-only baseline (poles contribute nothing
+	// extra).
+	Check( raw.degenerateTriangles == 0,
+		"ellipsoid detail=" + std::to_string( detail ) + " has 0 degenerate (zero-area pole) triangles" );
+	Check( raw.boundaryEdges == weld.boundaryEdges,
+		"ellipsoid detail=" + std::to_string( detail )
+		+ " raw-index boundary-edge count now equals the seam-only baseline (poles contribute 0 extra)" );
+	Check( raw.nonManifoldEdges == 0 && weld.nonManifoldEdges == 0,
+		"ellipsoid detail=" + std::to_string( detail ) + " has 0 non-manifold edges under either model" );
+	Check( weld.boundaryEdges == 2 * detail,
+		"ellipsoid detail=" + std::to_string( detail )
+		+ " seam-only residual is exactly 2*detail (DL-136, not this row's scope)" );
+}
+
 int main()
 {
 	std::cout << "=== DL-116: pole-welding watertightness red-proof ===" << std::endl;
@@ -420,6 +460,11 @@ int main()
 	std::cout << "-- CircularDisk (DL-116 sibling fix target: single center pole) --" << std::endl;
 	TestDisk( 8 );
 	TestDisk( 32 );
+
+	std::cout << "-- Ellipsoid (DL-116 sibling fix target: identical pole pattern to Sphere) --" << std::endl;
+	TestEllipsoid( 8 );
+	TestEllipsoid( 16 );
+	TestEllipsoid( 71 );
 
 	std::cout << "Passed: " << g_Passed << "  Failed: " << g_Failed << std::endl;
 	return g_Failed == 0 ? 0 : 1;
