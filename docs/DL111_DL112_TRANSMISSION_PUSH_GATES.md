@@ -133,8 +133,11 @@ it perturbs the Snell direction by `alpha`, so a wide warp reaches the wrong
 side from *any* geometry, at any tilt, in either index direction. At
 `scattering 0` — which CLAUDE.md records as "maximally DIFFUSE
 transmission, not off" — `alpha = acos(u)` is a **uniform hemisphere** about
-the Snell direction, and roughly half of it points back out the side the ray
-came from.
+the Snell direction, and the fraction of it pointing back out the side the
+ray came from is exactly `theta_t / pi` (the lune complement; §11 has the
+derivation and the measured table): 0 % at normal incidence, up to 23.2 % on
+entry, 25.00 % averaged over the cosine-weighted sub-critical interior
+population on exit.
 
 ---
 
@@ -531,10 +534,41 @@ moved from `{0.3339, 0.3044, 0.3128, 0.5324}` to
 strictly below 1, closer to it at every angle. The cause is **not** in
 `CompositeSPF` (which this row has historically tracked): the top layer is
 `DielectricSPF(tau=1, ior=1.5, scattering=0)`, and `scattering = 0` is the
-widest possible warp, so roughly **half** of that uniform hemisphere pointed
-back out the side the ray came from and the old shading-normal gate deleted
-every one of those samples. Half the transmitted energy of a
-low-`scattering` dielectric was being lost, at any tilt, on a flat surface.
+widest possible warp (`alpha = acos(u)` — a **uniform hemisphere** about the
+Snell direction), so part of it pointed back out the side the ray came from
+and the old shading-normal gate deleted every one of those samples, at any
+tilt, on a **flat** surface.
+
+**How much** *(review P2-3; an earlier revision of this section said
+"roughly half", which overstates it ~2×)*. The deleted set is the part of
+one hemisphere (axis: the Snell direction) lying outside another (axis:
+`throughSurface`). Two hemispheres whose axes subtend `theta_t` intersect in
+a lune of dihedral `pi - theta_t`, so the surviving fraction is exactly
+
+```
+1 - theta_t / pi
+```
+
+with `theta_t` the refraction angle. Checked against the actual
+`alpha = acos(u)` + uniform-azimuth construction, 400 k draws:
+
+| crossing | incidence | measured surviving | `1 - theta_t/pi` |
+|---|---|---|---|
+| entry 1→1.5 | 15° | 0.9450 | 0.9448 |
+| entry 1→1.5 | 45° | 0.8433 | 0.8437 |
+| entry 1→1.5 | 89° | 0.7672 | 0.7678 |
+| exit 1.5→1 | 30° | 0.7297 | 0.7301 |
+| exit 1.5→1 | 41° | 0.5569 | 0.5569 |
+
+So the loss is **0 % at normal incidence**; on **entry** it is capped by the
+critical angle at `theta_c/180 = 23.2 %`; on **exit**, averaged over the
+cosine-weighted **sub-critical** interior population, it is exactly
+**25.00 %** (the other 55.56 % of that population TIRs and emits no
+transmission at all — `1 - sin^2(theta_c)` at `n = 1.5`, which is where the
+row's "~56 %" figure comes from). **50 % is only the `theta_t → 90°`
+limit.** The row's measured values themselves are unaffected — they are a
+snapshot lock, not a prediction from this fraction.
+
 The row was re-locked at the new values; the remaining deficit is the finite
 recursion-budget truncation its own note describes.
 

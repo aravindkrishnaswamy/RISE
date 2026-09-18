@@ -1423,11 +1423,32 @@ int main()
 	//    is the WIDEST possible transmission warp (`alpha = acos(u)`, a
 	//    uniform hemisphere about the Snell direction -- CLAUDE.md's
 	//    "`scattering 0.0` = maximally DIFFUSE transmission, not off").
-	//    Roughly HALF of that cone points back out the side the ray came
+	//    Part of that hemisphere points back out the side the ray came
 	//    from, and DielectricSPF's old gate -- a test against `ri.onb.w()`,
-	//    the SHADING normal -- simply DROPPED every one of those samples.
-	//    Half the transmitted energy of a low-`scattering` dielectric was
-	//    being deleted, at any tilt, on a flat surface.  The gate is now the
+	//    the SHADING normal -- simply DROPPED every one of those samples,
+	//    at any tilt, on a FLAT surface.
+	//
+	//    HOW MUCH (review P2-3; an earlier revision of this note said
+	//    "roughly HALF ... at any tilt", which overstates it about 2x).
+	//    The deleted set is the part of one hemisphere (axis: the Snell
+	//    direction) outside another (axis: `throughSurface`).  Two
+	//    hemispheres whose axes subtend `theta_t` intersect in a lune of
+	//    dihedral `pi - theta_t`, so the SURVIVING fraction is exactly
+	//
+	//        1 - theta_t / pi
+	//
+	//    with `theta_t` the refraction angle.  Verified against the actual
+	//    `alpha = acos(u)` + uniform-azimuth construction (400k draws):
+	//    entry 1->1.5 measured 0.9450 / 0.8433 / 0.7672 at incidence
+	//    15 / 45 / 89 deg vs closed form 0.9448 / 0.8437 / 0.7678; exit
+	//    1.5->1 measured 0.7297 / 0.5569 at 30 / 41 deg vs 0.7301 / 0.5569.
+	//    So: 0% at normal incidence; on ENTRY the loss is capped by the
+	//    critical angle at theta_c/180 = 23.2%; on EXIT, averaged over the
+	//    cosine-weighted SUB-CRITICAL interior population, it is exactly
+	//    25.00% (the other 55.56% of that population TIRs and emits no
+	//    transmission at all -- `1 - sin^2(theta_c)` at n = 1.5, which is
+	//    where this row's "~56%" comes from).  50% is only the
+	//    `theta_t -> 90 deg` limit.  The gate is now the
 	//    geometric crossing test, and the warp draws its azimuth on the
 	//    valid ARC (`GeometricUtilities::PerturbClipped`), which
 	//    RENORMALIZES the clipped-away half into the valid region instead of
