@@ -86,6 +86,7 @@
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/FiniteMath.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IPainter.h"
@@ -1298,6 +1299,47 @@ static void TestPerturbClippedContract()
 				EXPECT( fabs( minHalf - PI ) < 1e-12 && fabs( maxHalf - PI ) < 1e-12, msg );
 			}
 		}
+	}
+
+	// Review P3: the two preconditions that used to fail SILENTLY.
+	{
+		const Vector3 axis( 0, 0, 1 );
+
+		// (ii) A non-unit clipN must NOT silently disable the clip.  With
+		// |clipN| = 3 and a 60-degree tilt, the raw dot reads 1.5, the
+		// internal min(1,.) clamp makes sin(phi) 0, denom 0, and the
+		// pre-guard code drew the FULL circle -- emitting directions below
+		// the true half-space.  Compare against the same geometry with a
+		// unit clipN: same half-arc, and every sample valid.
+		const Scalar phi = 60.0 * PI / 180.0;
+		const Vector3 clipUnit( sin(phi), 0, cos(phi) );
+		const Vector3 clipLong = clipUnit * 3.0;
+		Scalar halfUnit = 0, halfLong = 0;
+		unsigned int bad = 0;
+		RandomNumberGenerator rng2( 313 );
+		for( int k = 0; k < 4000; k++ ) {
+			const Scalar uu = rng2.CanonicalRandom();
+			GeometricUtilities::PerturbClipped( axis, 1.2, clipUnit, uu, &halfUnit );
+			const Vector3 w = GeometricUtilities::PerturbClipped( axis, 1.2, clipLong, uu, &halfLong );
+			if( Vector3Ops::Dot( w, clipUnit ) < -1e-12 ) bad++;
+		}
+		char msg[300];
+		snprintf( msg, sizeof(msg), "PerturbClipped non-unit clipN: half-arc %.6f vs unit %.6f, %u samples below the true clip",
+			(double)halfLong, (double)halfUnit, bad );
+		EXPECT( fabs( halfLong - halfUnit ) < 1e-12 && bad == 0, msg );
+
+		// (iii) An EMPTY arc (down > PI/2 with the whole cone outside the
+		// half-space) used to `acos` an argument > 1 and return a NaN
+		// DIRECTION.  It must now report half-arc 0 and hand back the
+		// axis, finite.
+		const Scalar phiNarrow = 20.0 * PI / 180.0;
+		const Vector3 clipNarrow( sin(phiNarrow), 0, cos(phiNarrow) );
+		Scalar halfEmpty = -1;
+		const Vector3 wEmpty = GeometricUtilities::PerturbClipped( axis, 3.0, clipNarrow, 0.37, &halfEmpty );
+		const bool finite = IsFiniteDouble( wEmpty.x ) && IsFiniteDouble( wEmpty.y ) && IsFiniteDouble( wEmpty.z );
+		snprintf( msg, sizeof(msg), "PerturbClipped empty arc (down 3.0 rad, phi 20 deg): dir=(%.4f,%.4f,%.4f) finite=%d half-arc=%.6f",
+			(double)wEmpty.x, (double)wEmpty.y, (double)wEmpty.z, finite ? 1 : 0, (double)halfEmpty );
+		EXPECT( finite && halfEmpty == 0, msg );
 	}
 }
 

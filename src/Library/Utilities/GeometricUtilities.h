@@ -83,9 +83,33 @@ namespace RISE
 		//! branch is pinned bit-for-bit by `TranslucentSpectralParityTest`.
 		//! **A change to the arc math belongs in BOTH.**
 		//!
-		//! PRECONDITION: `Dot(vec, clipN) >= 0` -- the axis must already be
-		//! inside the half-space, or the valid arc can be empty.  Callers
-		//! orient it first.  Violating it is checked and reported.
+		//! THREE PRECONDITIONS, all checked and reported (review P3,
+		//! 2026-09-17 -- only the first was documented before, and the
+		//! other two failed SILENTLY):
+		//!
+		//!  1. `Dot(vec, clipN) >= 0` -- the axis must already be inside
+		//!     the half-space, or the valid arc can be empty.  Callers
+		//!     orient it first (`OrientedLobeAxis`, or a re-derivation
+		//!     about the clip normal itself).
+		//!  2. `clipN` must be UNIT.  It is read as a cosine, so a
+		//!     non-unit `clipN` scales that cosine -- and at `|clipN| > 1`
+		//!     the internal `min(1, .)` clamp then reports `cos(phi) == 1`
+		//!     / `sin(phi) == 0`, which SILENTLY DISABLES the clip and
+		//!     draws the full circle.  A non-unit normal is now
+		//!     normalized with a warning (the treatment
+		//!     `Optics::CalculateRefractedRay` gives its own inputs); a
+		//!     degenerate one returns the axis unperturbed.
+		//!  3. `down` must leave a non-empty arc.  At `down > PI/2` the
+		//!     cone can lie ENTIRELY outside the half-space, and the
+		//!     arc-half-width `acos(-cot(down)cot(phi))` is then `acos`
+		//!     of an argument `> 1`: a NaN that propagates into the
+		//!     returned DIRECTION.  Production never reaches it (every
+		//!     caller gates `down < PI/2`); it is now detected and
+		//!     returns the axis unperturbed with `outHalfArc = 0`.
+		//!
+		//! On any of the three the function returns `vec` UNPERTURBED and
+		//! sets `outHalfArc` to 0, so a caller that checks it can skip the
+		//! emit rather than trust a manufactured direction.
 		//!
 		//! When the clip is inactive at this `down` (the whole cone is
 		//! valid), `outHalfArc` is exactly PI and the draw covers the full

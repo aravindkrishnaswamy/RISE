@@ -122,10 +122,36 @@ Vector3 GeometricUtilities::PerturbClipped(
 	const Vector3& vec, const Scalar down, const Vector3& clipN,
 	const Scalar u, Scalar* outHalfArc )
 {
-	// See the header for the derivation and the precondition.  This is
-	// DL-68's azimuth-arc construction with the polar angle supplied by
+	// See the header for the derivation and the three preconditions.  This
+	// is DL-68's azimuth-arc construction with the polar angle supplied by
 	// the caller instead of drawn from a cos^N marginal.
-	const Scalar cosPhiRaw = Vector3Ops::Dot( vec, clipN );
+	//
+	// Review P3: `clipN` MUST be unit.  `cosPhiRaw` is read as a cosine
+	// below, so a non-unit `clipN` scales it -- and with |clipN| > 1 the
+	// `r_min(1, .)` clamp then reports `cosPhi == 1`, `sinPhi == 0`,
+	// `denom == 0`, and the clip is SILENTLY DISABLED (`half` stays PI and
+	// the full circle is drawn).  That is a wrong sample, not a loud one,
+	// so normalize and say so -- the same treatment
+	// `Optics::CalculateRefractedRay` gives its own non-unit inputs.
+	Vector3 clipUnit = clipN;
+	{
+		const Scalar len2 = Vector3Ops::SquaredModulus( clipN );
+		if( len2 <= Scalar(1e-24) ) {
+			GlobalLog()->PrintEasyError(
+				"GeometricUtilities::PerturbClipped:: degenerate clip normal "
+				"(|clipN| ~ 0); returning the axis unperturbed." );
+			if( outHalfArc ) *outHalfArc = 0;
+			return vec;
+		}
+		if( fabs( len2 - Scalar(1) ) > Scalar(1e-12) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GeometricUtilities::PerturbClipped:: non-unit clip normal passed in "
+				"(|clipN|=%f), normalizing", (double)sqrt(len2) );
+			clipUnit = clipUnit * ( Scalar(1) / sqrt(len2) );
+		}
+	}
+
+	const Scalar cosPhiRaw = Vector3Ops::Dot( vec, clipUnit );
 	if( cosPhiRaw < Scalar(0) ) {
 		// Fail loudly rather than manufacture a direction from a corrupted
 		// frame -- the same choice TranslucentSPFDetail::SampleClippedPhong
@@ -145,7 +171,7 @@ Vector3 GeometricUtilities::PerturbClipped(
 	const Scalar sinTheta = sin( down );
 
 	// Tangential component of the clip normal in the lobe's frame.
-	Vector3 uAxis = clipN - cosPhi*vec;
+	Vector3 uAxis = clipUnit - cosPhi*vec;
 	const Scalar uLen2 = Vector3Ops::SquaredModulus( uAxis );
 	if( uLen2 <= Scalar(1e-12) ) {
 		// clipN parallel to the axis: the clip is inactive, the whole cone
@@ -168,7 +194,25 @@ Vector3 GeometricUtilities::PerturbClipped(
 	const Scalar denom = sinTheta * sinPhi;
 	const Scalar num   = cosTheta * cosPhi;
 	if( num < denom ) {
-		half = acos( -num/denom );
+		// Review P3: `-num/denom` can exceed 1 when `down > PI/2` -- then
+		// `cosTheta < 0`, `num < 0`, and a cone that is entirely OUTSIDE
+		// the half-space has no valid azimuth at all.  `acos` of that
+		// argument is NaN, and the NaN propagates straight into the
+		// returned DIRECTION.  Production never reaches it (every caller
+		// gates `down` below PI/2, and `down` is a polar perturbation
+		// angle), but a silent NaN direction is not an acceptable failure
+		// mode for a shared utility.  Detect the empty arc and fail the
+		// same way as a violated axis precondition.
+		const Scalar arg = -num/denom;
+		if( arg > Scalar(1) ) {
+			GlobalLog()->PrintEasyError(
+				"GeometricUtilities::PerturbClipped:: the valid azimuth arc is EMPTY "
+				"(down > PI/2 with the whole cone outside the clip half-space); "
+				"returning the axis unperturbed." );
+			if( outHalfArc ) *outHalfArc = 0;
+			return vec;
+		}
+		half = acos( r_max( Scalar(-1), arg ) );
 	}
 	if( outHalfArc ) *outHalfArc = half;
 
