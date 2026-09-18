@@ -3386,8 +3386,7 @@ measured by a harness test against the tracked scene.
 
   Per `docs/skills/performance-work-with-baselines.md`'s "do not optimise
   without a measured need": no realistic or shipped scene shows a need
-  for a prune (the recipe's own "close if within ~2x on a realistic
-  scene" bar is met with room to spare — the real scene favours
+  for a prune (the "close if within ~2x on a realistic scene" bar this slice set for itself (the original DL-33 row named no numeric threshold) is met with room to spare — the real scene favours
   `interior`), so none was added. A real, correctness-preserving
   optimisation opportunity — a farthest-corner upper bound on
   `ForEachContainingPoint`'s running maximum, mirroring
