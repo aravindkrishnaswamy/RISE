@@ -214,9 +214,14 @@ Real-render confirmation: `scenes/FeatureBased/Materials/lacquer_and_rain_still_
 `mat_worn_lacquer_brass` (`coated_material` over `mat_brass_dry`, a
 `ggx_material` alphaX=alphaY=0.24, `fresnel_mode schlick_f0`) rendered
 before/after at production settings (`pathtracing_pel_rasterizer`,
-samples=96, `oidn_denoise FALSE`, EXR `Rec709RGB_Linear`) -- see the
-DL-123 ledger row closure text for the measured means (isolated to this
-build; not re-run per subsequent unrelated commits).
+samples=96, `oidn_denoise FALSE`, EXR `Rec709RGB_Linear`): full-frame
+mean R 0.08881 -> 0.08879 (a single run each side; the affected material
+is a small fraction of the frame and per-pixel noise at this sample count
+dominates any localized signal), i.e. a sanity check that nothing crashed
+or regressed visibly -- the converged before/after evidence is the
+furnace table above, not this render. (Review correction 2026-09-17: an
+earlier draft pointed at the ledger row for these means; the row never
+carried them.)
 
 Unaffected (audited, not fixed): `LambertianBRDF::hemisphericalAlbedo`
 is exact by construction (a Lambertian BRDF's bihemispherical albedo is
