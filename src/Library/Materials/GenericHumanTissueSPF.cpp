@@ -225,7 +225,12 @@ void GenericHumanTissueSPF::ScatterNM(
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
+				// DL-126 review round 4 (P2-2): this was `pG->GetValuesAt(ri).v[0]`
+				// (the RGB accessor) inside ScatterNM's interior branch, so the
+				// in-medium HG lobe's `g` was not actually wavelength-resolved
+				// in the NM pipe -- the OUTSIDE branch two lines below already
+				// uses `GetValueAtNM(ri,nm)` for this identical parameter.
+				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValueAtNM(ri,nm) ));
 			}
 		} else {
 			// DL-184: see the RGB Scatter()'s twin comment -- this branch

@@ -8,9 +8,15 @@ Red-proofs `tests/BDPTStrategyBalanceTest.cpp` topology N and
 Related: DL-69 (whose sibling audit opened this row; its own doc's
 account of *which* gate killed the walk was itself wrong -- corrected
 below and in `docs/DL69_BDPT_LOBE_THROUGHPUT.md`), DL-125 (the HWSS
-companion fallback pattern this fix's HWSS branch deliberately mirrors),
-DL-131 (a distinct, unrelated `GenericHumanTissueSPF` in-medium bug,
-explicitly NOT touched here).
+companion fallback pattern this fix's HWSS branch deliberately mirrors).
+**Correction (review round 4, P2-2): an earlier revision of this line
+called DL-131 "a distinct, unrelated `GenericHumanTissueSPF` in-medium
+bug, explicitly NOT touched here" -- that was wrong.  DL-131 (opened by
+the concurrent `debt-pushgates` slice) and DL-184 (SS7.4 below) describe
+the IDENTICAL defect in the IDENTICAL function; DL-184's own fix
+(`b4172515`) closes both.  DL-184's ledger row is now struck as a
+"DUPLICATE of DL-131 -- id retired"; DL-131 is the authoritative id
+going forward.  See docs/DEBT_LEDGER.md's DL-131/DL-184 rows.**
 
 ---
 
@@ -525,13 +531,38 @@ direction-changed == non-absorbed on all four. Commits `50cc5d3f`
 (test) / `b4172515` (fix). Distinct from DL-183 (this material's
 scattered-ray origin bug, still open, not touched).
 
-Incidental finding, NOT filed or fixed (no pre-authorized id, and it
-is a much smaller, spectral-accuracy-only issue): `ScatterNM`'s
-interior HG branch reads the phase-asymmetry parameter via
-`pG->GetValuesAt(ri).v[0]` (the RGB accessor) instead of
-`GetValueAtNM(ri,nm)` (used two lines below it, in the OUTSIDE
-branch, for the identical parameter) -- the in-medium HG lobe's `g`
-is therefore not actually wavelength-resolved in the NM pipe.
+**Review round 4 (P2-2) correction and closure.** Two things were
+wrong in this section as originally written.
+
+1. This section's own opening line called DL-184 "a distinct,
+   unrelated defect" -- unrelated to DL-126/DL-183, yes, but it is
+   NOT unrelated to DL-131: DL-131 (opened earlier by the concurrent
+   `debt-pushgates` slice) describes the IDENTICAL defect in the
+   IDENTICAL function. Round 1 and round 2 of this slice simply
+   never cross-referenced the ledger's other open rows before
+   filing DL-184 as new. `b4172515` (already cited above) closes
+   both; DL-184's own ledger row is now struck as "DUPLICATE of
+   DL-131 -- id retired" and DL-131 carries the authoritative
+   status. See docs/DEBT_LEDGER.md's DL-131/DL-184 rows and this
+   doc's own header correction above.
+
+2. The incidental `ScatterNM` interior-HG-branch finding below was
+   left unfiled in round 2 pending a decision between filing it as
+   DL-202 or fixing it directly. It turned out to be a genuine
+   one-line fix (the OUTSIDE branch two lines below already shows
+   the correct call), so it was fixed directly rather than filed:
+   `ScatterNM`'s interior HG branch read the phase-asymmetry
+   parameter via `pG->GetValuesAt(ri).v[0]` (the RGB accessor)
+   instead of `GetValueAtNM(ri,nm)` -- the in-medium HG lobe's `g`
+   was not actually wavelength-resolved in the NM pipe. Fixed in
+   the same commit as this round's other P2-2 items;
+   `GenericHumanTissueInteriorScatterTest` (8/0) re-run clean
+   post-fix (its own checks don't discriminate this specific
+   accessor choice, since they only assert direction-changed vs.
+   non-absorbed counts, not the sampled angle's wavelength
+   dependence -- no new automated check was added for this
+   specific one-line accessor swap given its narrow,
+   spectral-accuracy-only scope).
 
 ### 7.5 P3s
 
