@@ -352,8 +352,16 @@ int main()
 	// recipe asked for this row after DL-126's second instance turned up
 	// in exactly that recurrence.  It does NOT move: VCM reads 0.0607 of
 	// PT pre-fix and 0.0604 post-fix on this scene, a separate and much
-	// larger pre-existing gap filed as DL-218.  Pinned at its measured
-	// value so its closure has to move this number deliberately.
+	// larger pre-existing gap filed as DL-218 -- whose cause is a
+	// DIFFERENT gate, found by inspection during that slice: every VCM
+	// consumer (`EvaluateNEEImpl`, `EvaluateInteriorConnectionsImpl` on
+	// both sides, `EvaluateMergesImpl`) tests
+	// `v.type != BDPTVertex::SURFACE` BEFORE it looks at
+	// `isConnectible`, and `ConvertLightSubpath`'s `isMedium` branch
+	// `continue`s before the light-vertex-store append, so VCM does no
+	// NEE, no connection and no merge at a MEDIUM vertex at all and no
+	// change to this flag can alter that.  Pinned at its measured value
+	// so its closure has to move this number deliberately.
 	RunRatio( "PIN(DL-218) VCM vs PT, same scene, camera OUTSIDE",
 		kPT, kVCM, enclosed, 0.04, 0.09 );
 
