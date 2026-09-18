@@ -259,16 +259,20 @@ namespace RISE
 		static std::atomic<const char*> warned[ kMaxNamed ];
 
 		for( unsigned int i = 0; i < kMaxNamed; i++ ) {
-			const char* cur = warned[i].load( std::memory_order_acquire );
-			if( cur == name ) {
-				return;						// already reported
-			}
-			if( cur == 0 ) {
+			// Re-examine THIS slot until it settles: a concurrent thread
+			// can claim an empty slot between our load and our CAS, and
+			// the claimant may be this very class.
+			for( ;; ) {
+				const char* cur = warned[i].load( std::memory_order_acquire );
+				if( cur == name ) {
+					return;					// already reported
+				}
+				if( cur != 0 ) {
+					break;					// taken by another class; try the next slot
+				}
 				const char* expected = 0;
 				if( !warned[i].compare_exchange_strong( expected, name ) ) {
-					// Another thread claimed this slot; re-examine it.
-					i--;
-					continue;
+					continue;				// lost the race; look again
 				}
 				GlobalLog()->PrintEx( eLog_Warning,
 					"%s:: an HWSS companion wavelength was priced through the AGGREGATE-BSDF "
