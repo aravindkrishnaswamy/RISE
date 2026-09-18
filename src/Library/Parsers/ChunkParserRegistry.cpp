@@ -1442,16 +1442,15 @@ namespace RISE
 						RISE_API_CreateUniformScalarPainter( &painter, Scalar( v ) );
 					}
 					else if( hasValues ) {
-						const std::string raw = bag.GetString( "values" );
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): this used to read `values`
+						// into a local string and check `sscanf(...) != 3` -- but sscanf's
+						// return value counts SUCCESSFUL conversions, not total tokens, so
+						// `values 1 2 3 4` matched 3 (silently dropping the "4") and passed.
+						// Routed through the shared GetVec3 accessor instead, which counts
+						// the WHOLE token stream and hard-errors on anything but exactly 3
+						// (same contract as every other DoubleVec3-kind parameter).
 						double rgb[3] = { 0, 0, 0 };
-						const int matched = sscanf( raw.c_str(), "%lf %lf %lf",
-							&rgb[0], &rgb[1], &rgb[2] );
-						if( matched != 3 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: `values` requires three numeric components (got %d in `%s`)",
-								name.c_str(), matched, raw.c_str() );
-							return false;
-						}
+						bag.GetVec3( "values", rgb );
 						RISE_API_CreateRGBScalarPainter( &painter,
 							Scalar( rgb[0] ), Scalar( rgb[1] ), Scalar( rgb[2] ) );
 					}
@@ -1485,15 +1484,34 @@ namespace RISE
 						RISE_API_CreatePiecewiseLinearScalarPainter( &painter, samples );
 					}
 					else if( hasSellmeier ) {
-						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): this used to read `sellmeier`
+						// into a local string and check `sscanf(...) != 6` -- but sscanf's
+						// return value counts SUCCESSFUL conversions, not total tokens, so
+						// `sellmeier <7 numbers>` matched 6 (silently dropping the 7th) and
+						// passed.  `sellmeier` has no fixed ValueKind of its own (it is a
+						// 6-tuple, one more than GetVec4 covers and short of a would-be
+						// GetVec6 nobody else needs), so this hard-errors the same way
+						// GetVec3/GetVec4 do: exact whitespace-token count via the shared
+						// `AllTokensAreFiniteNumbers` primitive, log + latch the CST
+						// finalize-diagnostic sink on a mismatch, rather than trusting
+						// sscanf's partial-match count.
 						const std::string s = bag.GetString( "sellmeier" );
-						if( sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
-								&B1, &B2, &B3, &C1, &C2, &C3 ) != 6 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: sellmeier needs 6 values (B1 B2 B3 C1 C2 C3)",
-								name.c_str() );
+						int actual = 0;
+						if( !AllTokensAreFiniteNumbers( s.c_str(), &actual ) || actual != 6 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `sellmeier` in `scalar_painter` expects exactly 6 "
+								"space-separated number(s) (B1 B2 B3 C1 C2 C3); got %d in `%s` \xE2\x80\x94 "
+								"a short or long vector used to silently zero-fill or truncate (DL-32, "
+								"docs/DEBT_LEDGER.md) instead of failing the parse",
+								actual, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
+							&B1, &B2, &B3, &C1, &C2, &C3 );
 						RISE_API_CreateSellmeierScalarPainter( &painter,
 							Scalar( B1 ), Scalar( B2 ), Scalar( B3 ),
 							Scalar( C1 ), Scalar( C2 ), Scalar( C3 ) );
@@ -1562,14 +1580,27 @@ namespace RISE
 						RISE_API_CreateScaledScalarPainter( &painter, base, Scalar( scale ) );
 					}
 					else if( hasMultiply ) {
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): `sscanf(s, "%255s %255s") != 2`
+						// counts SUCCESSFUL conversions, not total tokens -- `multiply a b c`
+						// matched 2 (silently ignoring "c") and passed.  Count whitespace-
+						// separated tokens explicitly first, matching the exact-arity contract
+						// every other fixed-tuple field in this file now uses.
 						const std::string s = bag.GetString( "multiply" );
-						char aname[256] = {0}, bname[256] = {0};
-						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: multiply needs two scalar_painter names",
-								name.c_str() );
+						std::istringstream cnt( s );
+						std::string tokBuf; int nTok = 0;
+						while( cnt >> tokBuf ) ++nTok;
+						if( nTok != 2 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `multiply` in `scalar_painter` expects exactly 2 "
+								"space-separated scalar_painter names (a b); got %d in `%s`",
+								nTok, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						char aname[256] = {0}, bname[256] = {0};
+						sscanf( s.c_str(), "%255s %255s", aname, bname );
 						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
 						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
 						if( !a || !b ) {
@@ -1581,14 +1612,23 @@ namespace RISE
 						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
 					}
 					else if( hasAdd ) {
+						// Same DL-32 round-4 fix as `multiply` immediately above.
 						const std::string s = bag.GetString( "add" );
-						char aname[256] = {0}, bname[256] = {0};
-						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: add needs two scalar_painter names",
-								name.c_str() );
+						std::istringstream cnt( s );
+						std::string tokBuf; int nTok = 0;
+						while( cnt >> tokBuf ) ++nTok;
+						if( nTok != 2 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `add` in `scalar_painter` expects exactly 2 "
+								"space-separated scalar_painter names (a b); got %d in `%s`",
+								nTok, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						char aname[256] = {0}, bname[256] = {0};
+						sscanf( s.c_str(), "%255s %255s", aname, bname );
 						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
 						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
 						if( !a || !b ) {

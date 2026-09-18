@@ -15293,8 +15293,15 @@ bool ApplyRasterizerParam( Job::RasterizerParams& p, const std::string& paramNam
 		return ParseRasterizerBool( valueStr, p.radianceMap.isBackground );
 	if( paramName == "radiance_orient" ) {
 		// Scene-file / GUI convention is DEGREES; the config stores RADIANS.
+		// DL-32 round 4 (docs/DEBT_LEDGER.md): `sscanf(..., "%lf %lf %lf") != 3`
+		// counts SUCCESSFUL conversions, not total tokens -- a 4th number was
+		// silently ignored.  An istringstream extraction that also rejects a
+		// leftover token enforces the exact arity instead.
+		std::istringstream iss( valueStr );
 		double x = 0, y = 0, z = 0;
-		if( std::sscanf( valueStr.c_str(), "%lf %lf %lf", &x, &y, &z ) != 3 ) return false;
+		if( !( iss >> x >> y >> z ) ) return false;
+		double extra;
+		if( iss >> extra ) return false;	// trailing token -- reject rather than silently drop
 		p.radianceMap.orientation[0] = Scalar( x ) * DEG_TO_RAD;
 		p.radianceMap.orientation[1] = Scalar( y ) * DEG_TO_RAD;
 		p.radianceMap.orientation[2] = Scalar( z ) * DEG_TO_RAD;

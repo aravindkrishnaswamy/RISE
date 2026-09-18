@@ -484,6 +484,88 @@ static void TestRejectUnderspecifiedValues()
 	if( pJob ) safe_release( pJob );
 }
 
+static void TestRejectOverspecifiedValues()
+{
+	std::cout << "TestRejectOverspecifiedValues" << std::endl;
+	// DL-32 round 4 (docs/DEBT_LEDGER.md, P2-2): `values 1 2 3 4` used to be
+	// read into a local string and checked via `sscanf(...) != 3` -- but
+	// sscanf's return value counts SUCCESSFUL conversions, not total tokens,
+	// so it matched 3 (silently dropping the "4") and the chunk derived
+	// successfully as (1, 2, 3).  Now routed through the shared GetVec3
+	// accessor, which counts the WHOLE token stream and hard-errors on
+	// anything but exactly 3.  (RED pre-fix: this scene loaded successfully
+	// with the painter silently bound to (1, 2, 3), the 4th token dropped.)
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname over\n"
+		"\tvalues 1 2 3 4\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "over_values" );
+	Check( pJob == nullptr, "over-values: 4-component `values` REJECTED (was silently truncated to 3)" );
+	if( pJob ) safe_release( pJob );
+}
+
+static void TestRejectOverspecifiedSellmeier()
+{
+	std::cout << "TestRejectOverspecifiedSellmeier" << std::endl;
+	// DL-32 round 4: `sellmeier` needs exactly 6 numbers; a 7th used to be
+	// silently dropped by the same sscanf-return-count defect as `values`
+	// above.  Now hard-errors via an exact-arity check (AllTokensAreFiniteNumbers)
+	// before ever calling sscanf.
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname over_sellmeier\n"
+		"\tsellmeier 1.03961212 0.231792344 1.01046945 0.00600069867 0.0200179144 103.560653 999\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "over_sellmeier" );
+	Check( pJob == nullptr, "over-sellmeier: 7-component `sellmeier` REJECTED (was silently truncated to 6)" );
+	if( pJob ) safe_release( pJob );
+}
+
+static void TestRejectUnderspecifiedSellmeier()
+{
+	std::cout << "TestRejectUnderspecifiedSellmeier" << std::endl;
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname under_sellmeier\n"
+		"\tsellmeier 1.0 2.0 3.0\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "under_sellmeier" );
+	Check( pJob == nullptr, "under-sellmeier: 3-component `sellmeier` REJECTED" );
+	if( pJob ) safe_release( pJob );
+}
+
+static void TestRejectOverspecifiedMultiplyAndAdd()
+{
+	std::cout << "TestRejectOverspecifiedMultiplyAndAdd" << std::endl;
+	// DL-32 round 4: `multiply`/`add` need exactly two scalar_painter names;
+	// a 3rd used to be silently dropped by the same sscanf-return-count
+	// defect (`sscanf("%255s %255s") == 2` regardless of trailing tokens).
+	{
+		const char* scene =
+			"scalar_painter\n{\n\tname a\n\tvalue 3.0\n}\n\n"
+			"scalar_painter\n{\n\tname b\n\tvalue 4.0\n}\n\n"
+			"scalar_painter\n{\n\tname c\n\tvalue 5.0\n}\n\n"
+			"scalar_painter\n{\n\tname over_multiply\n\tmultiply a b c\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "over_multiply" );
+		Check( pJob == nullptr, "over-multiply: 3-name `multiply` REJECTED (was silently truncated to 2)" );
+		if( pJob ) safe_release( pJob );
+	}
+	{
+		const char* scene =
+			"scalar_painter\n{\n\tname a\n\tvalue 3.0\n}\n\n"
+			"scalar_painter\n{\n\tname b\n\tvalue 4.0\n}\n\n"
+			"scalar_painter\n{\n\tname c\n\tvalue 5.0\n}\n\n"
+			"scalar_painter\n{\n\tname over_add\n\tadd a b c\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "over_add" );
+		Check( pJob == nullptr, "over-add: 3-name `add` REJECTED (was silently truncated to 2)" );
+		if( pJob ) safe_release( pJob );
+	}
+}
+
 static void TestRejectPolynomialGarbage()
 {
 	std::cout << "TestRejectPolynomialGarbage" << std::endl;
@@ -778,6 +860,10 @@ int main()
 	TestRejectMissingForm();
 	TestRejectMultipleForms();
 	TestRejectUnderspecifiedValues();
+	TestRejectOverspecifiedValues();
+	TestRejectOverspecifiedSellmeier();
+	TestRejectUnderspecifiedSellmeier();
+	TestRejectOverspecifiedMultiplyAndAdd();
 	TestRejectPolynomialGarbage();
 	TestRejectInlineScalarOverflow();
 	std::cout << "\nResults: " << passCount << " passed, " << failCount << " failed" << std::endl;
