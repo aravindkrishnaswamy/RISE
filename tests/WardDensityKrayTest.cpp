@@ -75,6 +75,7 @@
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IBSDF.h"
+#include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Interfaces/ILog.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -803,8 +804,17 @@ int main()
 				WardAnisotropicEllipticalGaussianBRDF* anB =
 					new WardAnisotropicEllipticalGaussianBRDF( *black, *spec, *ax, *ay ); anB->addref();
 
+				// Companion BRDFs with BOTH painters black: their
+				// `valueNM` is exactly the JH black-cell leak the NM
+				// lane has to subtract (see below).  Zero in RGB.
+				WardIsotropicGaussianBRDF* isoLeak =
+					new WardIsotropicGaussianBRDF( *black, *black, *ax ); isoLeak->addref();
+				WardAnisotropicEllipticalGaussianBRDF* anLeak =
+					new WardAnisotropicEllipticalGaussianBRDF( *black, *black, *ax, *ay ); anLeak->addref();
+
 				ISPF*  spf  = ( model == 0 ) ? (ISPF*)isoS : (ISPF*)anS;
 				IBSDF* brdf = ( model == 0 ) ? (IBSDF*)isoB : (IBSDF*)anB;
+				IBSDF* leakBrdf = ( model == 0 ) ? (IBSDF*)isoLeak : (IBSDF*)anLeak;
 
 				for( int d = 0; d < 4; d++ ) {
 					const RayIntersectionGeometric ri = MakeIntersection( degs[d] * PI / 180.0 );
@@ -837,7 +847,29 @@ int main()
 
 							double f, kr;
 							if( lane == 1 ) {
-								f  = brdf->valueNM( wo, ri, nmHero );
+								// The diffuse painter is the literal
+								// black `(0,0,0)`, but `GetColorNM` puts
+								// it through the Jakob-Hanika uplift,
+								// which leaks ~2.5e-5 -- enough to
+								// dominate `valueNM` wherever the
+								// specular lobe is faint.  A companion
+								// BRDF with BOTH painters black reads
+								// `D*leak + S*leak`; the live one reads
+								// `D*leak + S*Rs`, so their difference is
+								// `S*(Rs - leak)` and the specular term
+								// alone is that times `Rs/(Rs - leak)`.
+								// (Subtracting the companion outright
+								// over-removes `S*leak` and biases the
+								// ratio by exactly `leak/Rs` = 5.0e-5,
+								// which is what this row read before the
+								// rescale.)
+								const double vLive = brdf->valueNM( wo, ri, nmHero );
+								const double vLeak = leakBrdf->valueNM( wo, ri, nmHero );
+								const double rsNM  = GuardedGetColorNM( *spec, ri, nmHero );
+								const double lkNM  = GuardedGetColorNM( *black, ri, nmHero );
+								f  = ( rsNM > lkNM )
+								   ? ( vLive - vLeak ) * rsNM / ( rsNM - lkNM )
+								   : 0.0;
 								kr = sc[j].krayNM;
 							} else {
 								// Per-channel: each lane's kray is ONE
@@ -872,7 +904,13 @@ int main()
 							const double cHF = Vector3Ops::Dot( hF, onbF.w() );
 							const double hwF = Vector3Ops::Dot( hF, wo );
 							const double cosOF = Vector3Ops::Dot( wo, onbF.w() );
-							const double refK = 0.5 * RefKrayRatio( hwF, cHF, cosOF, cosIF );
+							// The specular reflectance this lane
+							// actually carries: 0.5 exactly in RGB, the
+							// uplift's own 0.499999 at 550 nm.
+							const double rsLane = ( lane == 1 )
+								? GuardedGetColorNM( *spec, ri, nmHero )
+								: 0.5;
+							const double refK = rsLane * RefKrayRatio( hwF, cHF, cosOF, cosIF );
 							if( refK > 0 ) {
 								AccumRatio( stRef, kr / refK );
 							}
@@ -899,6 +937,7 @@ int main()
 				}
 
 				isoS->release(); isoB->release(); anS->release(); anB->release();
+				isoLeak->release(); anLeak->release();
 				al->release();
 			}
 		}
@@ -922,7 +961,8 @@ int main()
 	             "   rel.s.e." << std::endl;
 	{
 		UniformScalarPainter* ay = new UniformScalarPainter( 0.12 ); ay->addref();
-		const double tailDegs[] = { 80.0, 85.0, 89.0 };
+		const double tailDegs[] = { 0.0, 30.0, 60.0, 80.0, 85.0, 89.0, 89.9 };
+		const int nTailDegs = int( sizeof(tailDegs)/sizeof(tailDegs[0]) );
 
 		for( int model = 0; model < 2; model++ ) {
 			for( int ai = 0; ai < 3; ai++ ) {
@@ -932,7 +972,7 @@ int main()
 					new WardAnisotropicEllipticalGaussianSPF( *black, *spec, *al, *ay ); anS->addref();
 				ISPF* spf = ( model == 0 ) ? (ISPF*)isoS : (ISPF*)anS;
 
-				for( int d = 0; d < 3; d++ ) {
+				for( int d = 0; d < nTailDegs; d++ ) {
 					const RayIntersectionGeometric ri = MakeIntersection( tailDegs[d] * PI / 180.0 );
 					const double nv = cos( tailDegs[d] * PI / 180.0 );
 					const double bound = 0.5 / sqrt( nv );
@@ -955,6 +995,34 @@ int main()
 						sum += perCall;
 						sumSq += perCall * perCall;
 					}
+					// Independent reference: the BRDF's OWN directional
+					// albedo, `int max(value()) cos dw` on a 400x800 grid.
+					// `E[sum kray]` must land on it -- that is what
+					// "the sampled continuation integrates the BRDF"
+					// MEANS, and it is the DL-127 section-3 check.
+					double Q = 0;
+					{
+						WardIsotropicGaussianBRDF* isoB =
+							new WardIsotropicGaussianBRDF( *black, *spec, *al ); isoB->addref();
+						WardAnisotropicEllipticalGaussianBRDF* anB =
+							new WardAnisotropicEllipticalGaussianBRDF( *black, *spec, *al, *ay ); anB->addref();
+						IBSDF* brdfQ = ( model == 0 ) ? (IBSDF*)isoB : (IBSDF*)anB;
+						const int QT = 400, QP = 800;
+						for( int t = 0; t < QT; t++ ) {
+							const double th = ( t + 0.5 ) * PI_OV_TWO / QT;
+							const double dT = PI_OV_TWO / QT;
+							const double sT = sin( th ), cT = cos( th );
+							for( int q = 0; q < QP; q++ ) {
+								const double ph = ( q + 0.5 ) * TWO_PI / QP;
+								const double dP = TWO_PI / QP;
+								Vector3 wo( sT*cos(ph), sT*sin(ph), cT );
+								wo = Vector3Ops::Normalize( wo );
+								Q += ColorMath::MaxValue( brdfQ->value( wo, ri ) ) * cT * sT * dT * dP;
+							}
+						}
+						isoB->release(); anB->release();
+					}
+
 					std::sort( draws.begin(), draws.end() );
 					const double mean = sum / double(N);
 					const double var = r_max( 0.0, sumSq/double(N) - mean*mean );
@@ -969,13 +1037,20 @@ int main()
 					          << "  " << std::setw(9) << mx
 					          << "  " << std::setw(9) << p999
 					          << "        " << std::setw(9) << bound
-					          << "   " << std::setw(9) << relSE << std::endl;
+					          << "   " << std::setw(9) << relSE
+					          << "   int f cos = " << std::setw(9) << Q
+					          << "   E/Q = " << std::setw(9) << ( Q > 0 ? mean/Q : 0.0 )
+					          << std::endl;
 
 					// The bound is the whole point: the corrected weight
 					// cannot exceed Rs/sqrt(nv), which is 1.29 at 80deg,
 					// 1.70 at 85deg and 3.79 at 89deg for Rs = 0.5.
 					Check( mx <= bound * 1.000001,
 					       "Section G: per-draw kray is bounded by Rs/sqrt(nv)" );
+					// 1.5%: the estimator's own relative s.e. is <= 0.4%
+					// here and the quadrature's grid error is the rest.
+					Check( Q > 0 && fabs( mean/Q - 1.0 ) < 0.015,
+					       "Section G: E[sum kray] == int max(value()) cos dw" );
 				}
 
 				isoS->release(); anS->release(); al->release();
