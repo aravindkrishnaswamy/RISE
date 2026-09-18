@@ -1853,44 +1853,85 @@ namespace {
 						mv.sigma_t_scalar = sigmaTScalar;
 						mv.isDelta = false;
 
-						// Medium vertices enclosed by a specular (delta) boundary
-						// are not connectible: connection rays are blocked by the
-						// specular surface.  Propagate from previous vertex.
-						// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
-						// are always connectable — they are not enclosed by any
-						// specular boundary, even if the previous vertex was a
-						// specular surface (e.g., reflected off glass into open fog).
-						//
-						// "Enclosed by a specular boundary" is a property of the
-						// boundary MATERIAL, not of the lobe this particular walk
-						// happened to draw at it, so the test is the previous
-						// vertex's own per-surface `isConnectible` (material has a
-						// non-delta BSDF) — NOT its per-draw `isDelta`.  A mixed
-						// delta+continuum boundary (a weave's gap pass-through, a
-						// polished coat's specular lobe, a Fresnel composite) is
-						// crossed by a delta draw on some samples and a continuum
-						// draw on others; keying off `isDelta` made the SAME medium
-						// vertex connectible or not depending on the draw, dropping
-						// NEE and connections on that fraction of paths.  Same bug
-						// family as the surface-vertex connectibility fix above
-						// (docs/CLOTH_FABRIC_DESIGN.md §15 debt 23), one hop
-						// downstream.  Pure-delta boundaries (mirror, glass) have
-						// isConnectible == false and still gate the medium off.
-						{
-							bool connectible = true;
-							if( pMedObj == 0 ) {
-								// Global medium: always connectable
-								connectible = true;
-							} else if( !vertices.empty() ) {
-								const BDPTVertex& prev = vertices.back();
-								if( ( prev.type == BDPTVertex::SURFACE ||
-								      prev.type == BDPTVertex::MEDIUM ) &&
-								    !prev.isConnectible ) {
-									connectible = false;
-								}
-							}
-							mv.isConnectible = connectible;
-						}
+						// HISTORY (DL-200 struck this rule out entirely, so the
+						// paragraph that used to sit here is gone rather than
+						// amended): medium vertices "enclosed by a specular
+						// (delta) boundary" were marked NOT connectible, keyed
+						// off the previous vertex's per-surface `isConnectible`
+						// rather than its per-draw `isDelta` (the debt-23-family
+						// refinement, docs/CLOTH_FABRIC_DESIGN.md §15).  That
+						// refinement was right about `isDelta` vs `isConnectible`
+						// and wrong about the whole rule -- see below.
+							// DL-200.  `isConnectible` describes THIS VERTEX'S OWN
+							// SCATTERING FUNCTION -- "can a connection through it
+							// carry nonzero density" -- and a phase function is
+							// never a delta, so a MEDIUM vertex is ALWAYS
+							// connectible.  It used to be demoted to false when the
+							// vertex sat inside an enclosure whose boundary vertex
+							// was itself non-connectible ("connection rays are
+							// blocked by the specular surface"), inheriting the flag
+							// from `vertices.back()`.
+							//
+							// That was a VISIBILITY heuristic wearing the wrong hat,
+							// and it was wrong in three separate ways.
+							//
+							// (1) IT IS NOT A PROPERTY OF THE VERTEX.  Visibility is
+							// a property of the PAIR (this vertex, the other
+							// endpoint): two points inside the same enclosure are
+							// perfectly connectible, and only a connection LEAVING
+							// the enclosure is blocked.  A light inside a glass shell
+							// filled with fog is exactly that case, and NEE from an
+							// interior medium vertex to it was being dropped.
+							//
+							// (2) IT WAS ASYMMETRIC BETWEEN THE TWO WALKS, because it
+							// read `vertices.back()`: a LIGHT-rooted predecessor
+							// (type LIGHT) never fails the SURFACE/MEDIUM type check,
+							// so a light emitting straight into an enclosed medium
+							// left that vertex connectible, while an EYE walk that
+							// crossed the same boundary to a geometrically coincident
+							// point read false.  Instrumented on a
+							// dielectric-shell-plus-interior-medium scene: 6816304
+							// light-rooted enclosed medium vertices, 4683400 of them
+							// connectible, against 2197533 eye-rooted ones, 0
+							// connectible.
+							//
+							// (3) SURFACE VERTICES WERE NEVER TREATED THIS WAY.  A
+							// diffuse surface inside the same shell reads
+							// `isConnectible = (GetBSDF() != 0)` = true regardless of
+							// any enclosure, and PT's own volume NEE connects from
+							// interior medium vertices through the boundary using the
+							// same transparent-shadow transmittance BDPT would.  Only
+							// MEDIUM vertices carried the extra demotion, so only they
+							// disagreed with the PT reference.
+							//
+							// The demotion became actively harmful when DL-126 made
+							// `MISWeight` SKIP a strategy whose endpoint is
+							// `!isConnectible`: a flag that depends on which walk
+							// created the vertex then feeds the MIS denominator.
+							//
+							// MEASURED on that scene (48x48, mean of 4 renders, PT as
+							// the reference): BDPT/PT 0.90338 -> 1.00356 (RGB) and
+							// 0.79556 -> 0.98217 (spectral), with BDPT's own
+							// run-to-run sd falling 2.94% -> 0.37% -- the dropped
+							// eye-side NEE was a variance cost as well as a bias.
+							// The alternative rule of deriving the flag from the
+							// ENCLOSURE BOUNDARY'S material symmetrically (false on
+							// both sides for a delta boundary) was implemented and
+							// measured too: it leaves the image BIT-IDENTICAL to the
+							// pre-fix baseline (0.033181734 / 0.030185761 on the same
+							// four seeds), i.e. the light-side connections it removes
+							// contribute exactly nothing, so it only deletes wasted
+							// shadow rays and closes none of the gap.
+							//
+							// Cost: connections and NEE are now ATTEMPTED from medium
+							// vertices inside a delta enclosure.  Where the boundary
+							// is opaque those shadow rays fail and contribute 0 (the
+							// ordinary, correct BDPT outcome); where it is a
+							// dielectric they pass with RISE's transparent-shadow
+							// transmittance, which is the same approximation PT's own
+							// volume NEE already makes -- which is why BDPT now lands
+							// on PT rather than past it.
+							mv.isConnectible = true;
 						StoreThroughput<Tag>( mv, beta );
 
 						// PDF in generalized area measure for a medium scatter vertex.
@@ -6162,34 +6203,12 @@ unsigned int GenerateLightSubpathImpl(
 					mv.sigma_t_scalar = sigma_t_max;
 					mv.isDelta = false;
 
-					// Medium vertices enclosed by a specular (delta) boundary
-					// are not connectible: connection rays are blocked by the
-					// specular surface.  Propagate from previous vertex.
-					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
-					// are always connectable — not enclosed by any specular
-					// boundary.
-					//
-					// Light-subpath twin of the eye-subpath site in
-					// GenerateEyeSubpathImpl — see the long comment there:
-					// "enclosed by a specular boundary" is a property of the
-					// boundary MATERIAL (per-surface `isConnectible`), not of
-					// the lobe this walk happened to draw (`isDelta`), or a
-					// mixed delta+continuum boundary drops NEE/connections on
-					// the delta-drawn fraction of its samples.
-					{
-						bool connectible = true;
-						if( pMedObj == 0 ) {
-							connectible = true;
-						} else if( !vertices.empty() ) {
-							const BDPTVertex& prev = vertices.back();
-							if( ( prev.type == BDPTVertex::SURFACE ||
-							      prev.type == BDPTVertex::MEDIUM ) &&
-							    !prev.isConnectible ) {
-								connectible = false;
-							}
-						}
-						mv.isConnectible = connectible;
-					}
+					// DL-200: a MEDIUM vertex is always connectible.  See the
+					// long derivation at the twin site in
+					// GenerateEyeSubpathImpl -- this is the LIGHT-rooted half of
+					// the asymmetry that row is about, and it is closed by both
+					// halves now answering the same, walk-independent question.
+					mv.isConnectible = true;
 					StoreThroughput<Tag>( mv, beta );
 
 					const Scalar distSqMed = t_m * t_m;

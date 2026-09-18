@@ -82,7 +82,7 @@ tone-mapping of the original PNG protocol amplifying small shifts).
 
 | illumination | PT | VCM | VCM/PT | attribution |
 |---|---|---|---|---|
-| env only | 0.03383 | 0.02889 | 0.854 | VCM/BDPT do no NEE and no merges at MEDIUM vertices (docs/VCM.md "surface-only merging"); env in-scatter through the water medium is reachable only via phase-sampling continuation.  BDPT measures 0.02891 — identical, same structural gap. |
+| env only | 0.03383 | 0.02889 | 0.854 | VCM does no NEE, no connections and no merges at MEDIUM vertices (docs/VCM.md "surface-only merging"; every VCM consumer gates on `type != SURFACE` -- DL-218a); BDPT DOES connect at medium vertices since DL-200 (2026-09-18), and reads 1.73-1.82x PT in a scattering global medium (DL-218b, open) -- the BDPT half of the earlier "VCM/BDPT" wording here was corrected at the debt-dl200 merge; env in-scatter through the water medium is reachable only via phase-sampling continuation.  BDPT measures 0.02891 — identical, same structural gap. |
 | sun+omni+emissives, no env | 0.01940 | 0.01260 | 0.649 | (a) VCM never samples **directional lights** — `DirectionalLight::radiantExitance()==0` keeps it out of the alias table, and VCM lacks the deterministic zero-exitance NEE loop PT (`LightSampler::EvaluateDirectLighting` Step 1) and BDPT (`EvaluateAllStrategies`) both run; the sun contributes nothing to VCM.  (b) The omni's glow through the medium hits the same medium-vertex gap as env. |
 | full scene | 0.05330 | 0.04151 | 0.779 | components sum linearly (PT 0.0532, VCM 0.0415). |
 
