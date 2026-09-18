@@ -74,7 +74,7 @@ namespace RISE
 	inline constexpr const char* const kScalarUnknownFmt =
 		"%s `%s`: parameter `%s` value `%s` is neither a registered scalar_painter nor an inline "
 		"numeric literal \xE2\x80\x94 see docs/ISCALARPAINTER_REFACTOR.md";
-	//   - kVectorArityFmt : ParseStateBag::GetVec3/GetVec4/GetMat4 (below),
+	//   - kVectorArityFmt : ParseStateBag::GetVec2/GetVec3/GetVec4/GetMat4 (below),
 	//     on a fixed-arity vector/matrix parameter whose value does not
 	//     carry EXACTLY the expected token count (DL-32, docs/DEBT_LEDGER.md
 	//     -- the root cause was these accessors zero-filling missing
@@ -169,6 +169,7 @@ namespace RISE
 		Bool,         // TRUE / FALSE
 		UInt,         // non-negative integer
 		Double,       // double-precision floating point
+		DoubleVec2,   // two space-separated doubles (DL-32 round 3, docs/DEBT_LEDGER.md: a genuinely 2-component field -- a UV/(theta,phi)/(width,height) pair -- gets its OWN kind rather than a DoubleVec3 declaration a Finalize only ever reads 2 components of; see ParseStateBag::GetVec2)
 		DoubleVec3,   // three space-separated doubles
 		DoubleVec4,   // four space-separated doubles (e.g. quaternion xyzw)
 		DoubleMat4,   // sixteen space-separated doubles, column-major 4x4
@@ -382,6 +383,46 @@ namespace RISE
 			if( it == mSingles.end() ) return def;
 			return RISE::String( it->second.c_str() ).toBoolean();
 		}
+		// Reads two space-separated doubles into out[2] (a genuinely
+		// 2-component field -- a UV pair, a (theta,phi)/(width,height)
+		// pair -- NOT a DoubleVec3 a caller only reads two components of).
+		// Same DL-32 arity hard-error contract as GetVec3 below: absent
+		// zero-fills nothing and returns false; present-but-wrong-arity
+		// zero-fills `out`, logs+latches via ReportVectorArity, and still
+		// returns true (key was present) for the same "most callers never
+		// checked the return value" reason GetVec3's own comment explains.
+		//
+		// DL-32 round 3 (docs/DEBT_LEDGER.md): added alongside GetVec3/
+		// GetVec4/GetMat4 when a full-file audit found 15 Finalize() sites
+		// reading a fixed-2-token value via a RAW `sscanf` on
+		// `bag.GetString(key).c_str()` -- bypassing every one of these
+		// accessors, and `DispatchChunkParameters`'s own finite-number gate,
+		// entirely (round 2 protected only the sites that actually CALL
+		// GetVec3/GetVec4/GetMat4; a raw sscanf site was exactly as
+		// unprotected as pre-round-1 `scale` was).  Every 2-component
+		// parameter this accessor now serves used to be mis-declared
+		// `ValueKind::DoubleVec3` (`perlin2d_painter` scale/shift,
+		// `controlled_smoothness2d_painter` center, `gerstnerwave_painter`
+		// wind_dir, `polynomial_function2d_painter` center/scale,
+		// `composite_function2d_painter`'s four uv_scale/uv_offset params,
+		// camera `target_orientation`) or `ValueKind::Double`
+		// (`orthographic_camera`'s `viewport_scale` -- a SCALAR kind read as
+		// 2 components, one degree worse) -- now `ValueKind::DoubleVec2`,
+		// read through here.
+		bool GetVec2( const std::string& key, double out[2] ) const
+		{
+			ValidateAccess(key);
+			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
+			if( it == mSingles.end() ) return false;
+			out[0] = out[1] = 0.0;
+			const int actual = CountValueTokens( it->second );
+			if( actual != 2 ) {
+				ReportVectorArity( key, 2, actual, it->second );
+				return true;
+			}
+			sscanf( it->second.c_str(), "%lf %lf", &out[0], &out[1] );
+			return true;
+		}
 		// Reads three space-separated doubles into out[3].  Returns
 		// true if the key was present (so callers can apply unit
 		// conversions like DEG_TO_RAD only on explicit input).
@@ -553,19 +594,21 @@ namespace RISE
 		std::string                  unitLabel;                              // optional short unit suffix shown next to the editor field (e.g. "mm", "°", "scene units", ""). Pure presentation hint — the parser ignores it. Empty means dimensionless / no label.
 		ParameterSemantics           semantics;                              // S17, additive: which manager/pipe a Reference-kind param's value actually resolves against (ChunkDescriptor.h's ParameterPipe doc comment). Default-constructed (Unspecified) for every non-Reference param and every family this slice didn't audit.
 		// DL-32 (docs/DEBT_LEDGER.md), additive metadata only -- does not
-		// itself change parsing.  True for a DoubleVec3-kind parameter that
-		// ALSO accepts a single finite number as an explicit uniform-scale
-		// broadcast (today: only `scale` on `standard_object` /
-		// `override_object`, resolved by `ResolveScaleVec3` in
-		// ChunkParserRegistry.cpp -- that helper pre-validates the 1-or-3
-		// arity itself and only calls ParseStateBag::GetVec3 once it has
-		// already confirmed exactly three tokens, so the broadcast case
-		// never reaches, and is never rejected by, GetVec3's own arity
-		// hard-error).  Every OTHER DoubleVec3/DoubleVec4/DoubleMat4
-		// parameter requires the full, exact token count.  Surfaced so the
-		// editor's syntax highlighter / suggestion engine can show the
-		// shorthand is legal here specifically, rather than a reader having
-		// to know to special-case `scale` by name.
+		// itself change parsing.  True for a DoubleVec2/DoubleVec3-kind
+		// parameter that ALSO accepts a single finite number as an explicit
+		// uniform broadcast: `scale` on `standard_object`/`override_object`
+		// (DoubleVec3, resolved by `ResolveScaleVec3`) and `viewport_scale`
+		// on `orthographic_camera` (DoubleVec2, DL-32 round 3, resolved by
+		// `ResolveVec2UniformBroadcast`) -- both in ChunkParserRegistry.cpp,
+		// both helpers pre-validate the 1-or-N arity themselves and only
+		// call the shared `GetVec2`/`GetVec3` accessor once they have
+		// already confirmed the full token count, so the broadcast case
+		// never reaches, and is never rejected by, that accessor's own
+		// arity hard-error.  Every OTHER DoubleVec2/DoubleVec3/DoubleVec4/
+		// DoubleMat4 parameter requires the full, exact token count.
+		// Surfaced so the editor's syntax highlighter / suggestion engine
+		// can show the shorthand is legal here specifically, rather than a
+		// reader having to know to special-case these two params by name.
 		bool                         allowsUniformScalarBroadcast = false;
 		ApplyParameterFn             apply      = nullptr;
 	};

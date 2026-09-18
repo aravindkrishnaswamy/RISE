@@ -247,6 +247,188 @@ int main()
 		j->release();
 	}
 
+	//----------------------------------------------------------------------
+	// [G]-[M]: DL-32 ROUND 3 (docs/DEBT_LEDGER.md) -- the round-2 fix above
+	// only protects a site that actually CALLS GetVec3/GetVec4/GetMat4.  A
+	// full-file audit found 15 Finalize() sites that read a fixed-2-token
+	// value via a RAW `sscanf` on `bag.GetString(key).c_str()`, bypassing
+	// every accessor (and DispatchChunkParameters's own finite-number gate)
+	// entirely -- exactly as unprotected as pre-round-1 `scale`.  Fixed by
+	// adding `ValueKind::DoubleVec2` + `ParseStateBag::GetVec2` (same
+	// hard-error contract as GetVec3) and re-routing all 15 sites through it.
+	// Cases G-M below cover the primitive plus one representative site per
+	// distinct Finalize() (the four `composite_function2d_painter` twins and
+	// the four camera `target_orientation` sites share one code shape each,
+	// so one case per shape is the load-bearing regression, not sixteen).
+	//----------------------------------------------------------------------
+	std::printf( "[G] `perlin2d_painter`'s `scale`/`shift` (GetVec2 direct): short/long hard-fail, well-formed derives\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "perlin2d_painter\n{\nname p\nscale 1\n}\n",
+			*j, &diags );
+		Check( n == 1, "short `scale` (1 of 2 tokens) hard-fails perlin2d_painter; sibling geometry still applies (n == 1) "
+			"(RED pre-fix: n == 2, `scale` silently derived (1, 1) -- the second component held at its unrelated pre-set default)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		Check( AnyDiagContains( diags, "scale" ), "diagnostic names the parameter (`scale`)" );
+		Check( AnyDiagContains( diags, "perlin2d_painter" ), "diagnostic names the chunk (`perlin2d_painter`)" );
+		j->release();
+	}
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "perlin2d_painter\n{\nname p\nshift 1 2 3\n}\n",
+			*j, &diags );
+		Check( n == 1, "long `shift` (3 of 2 tokens) hard-fails perlin2d_painter; sibling geometry still applies (n == 1) "
+			"(RED pre-fix: n == 2, the third token silently discarded, no diagnostic)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		Check( AnyDiagContains( diags, "shift" ), "diagnostic names the parameter (`shift`)" );
+		j->release();
+	}
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "perlin2d_painter\n{\nname p\nscale 2 3\nshift 0.1 0.2\n}\n",
+			*j, &diags );
+		Check( n == 1, "well-formed 2-token `scale`/`shift` on perlin2d_painter derives successfully (n == 1)" );
+		Check( diags.empty(), "no diagnostics for the well-formed case" );
+		j->release();
+	}
+
+	std::printf( "[H] `controlled_smoothness2d_painter`'s `center` (short, 1 token) hard-fails the chunk\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "controlled_smoothness2d_painter\n{\nname c\ncenter 0.5\n}\n",
+			*j, &diags );
+		Check( n == 1, "short `center` hard-fails controlled_smoothness2d_painter; sibling geometry still applies (n == 1) "
+			"(RED pre-fix: n == 2, silently derived (0.5, <unrelated default>))" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		Check( AnyDiagContains( diags, "center" ), "diagnostic names the parameter (`center`)" );
+		Check( AnyDiagContains( diags, "controlled_smoothness2d_painter" ), "diagnostic names the chunk" );
+		j->release();
+	}
+
+	std::printf( "[I] `gerstnerwave_painter`'s `wind_dir` (long, 3 tokens) hard-fails the chunk\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "gerstnerwave_painter\n{\nname w\nwind_dir 1 0 0\n}\n",
+			*j, &diags );
+		Check( n == 1, "long `wind_dir` hard-fails gerstnerwave_painter; sibling geometry still applies (n == 1) "
+			"(RED pre-fix: n == 2, the third token silently discarded)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		Check( AnyDiagContains( diags, "wind_dir" ), "diagnostic names the parameter (`wind_dir`)" );
+		j->release();
+	}
+
+	std::printf( "[J] `polynomial_function2d_painter`'s `center`/`scale` (short, 1 token) hard-fail the chunk\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "polynomial_function2d_painter\n{\nname f\ncenter 0.5\n}\n",
+			*j, &diags );
+		Check( n == 1, "short `center` hard-fails polynomial_function2d_painter; sibling geometry still applies (n == 1)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		j->release();
+	}
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "polynomial_function2d_painter\n{\nname f\nscale 0.5 0.5 0.5\n}\n",
+			*j, &diags );
+		Check( n == 1, "long `scale` hard-fails polynomial_function2d_painter; sibling geometry still applies (n == 1)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		j->release();
+	}
+
+	std::printf( "[K] `composite_function2d_painter`'s `uv_scale_a` (short, 1 token) hard-fails the chunk\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "composite_function2d_painter\n{\nname c\nuv_scale_a 2\n}\n",
+			*j, &diags );
+		Check( n == 1, "short `uv_scale_a` hard-fails composite_function2d_painter; sibling geometry still applies (n == 1) "
+			"(the sibling `uv_offset_a`/`uv_scale_b`/`uv_offset_b` share the identical GetVec2 call, not independently red-proved here)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		Check( AnyDiagContains( diags, "uv_scale_a" ), "diagnostic names the parameter (`uv_scale_a`)" );
+		j->release();
+	}
+
+	std::printf( "[L] a camera's `target_orientation` (long, 3 tokens) hard-fails the chunk (shared by all 4 camera parsers)\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\ntarget_orientation 0.1 0.2 0.3\n}\n",
+			*j, &diags );
+		Check( n == 0, "the malformed camera chunk applies nothing (n == 0) "
+			"(RED pre-fix: n == 1, the third token silently discarded, no diagnostic)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "diagnostic names DL-32" );
+		Check( AnyDiagContains( diags, "target_orientation" ), "diagnostic names the parameter" );
+		Check( AnyDiagContains( diags, "pinhole_camera" ), "diagnostic names the chunk" );
+		j->release();
+	}
+
+	std::printf( "[M] `orthographic_camera`'s `viewport_scale`: 3 tokens hard-fails; ONE token is a sanctioned uniform broadcast\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "orthographic_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\nviewport_scale 1 2 3\n}\n",
+			*j, &diags );
+		Check( n == 0, "3-token `viewport_scale` hard-fails the chunk (n == 0)" );
+		Check( AnyDiagContains( diags, "DL-32" ) == false && AnyDiagContains( diags, "viewport_scale" ),
+			"diagnostic names `viewport_scale` (this one is ResolveVec2UniformBroadcast's own message, not the shared DL-32 kVectorArityFmt text -- it never reaches GetVec2)" );
+		j->release();
+	}
+	{
+		// The corpus (AgentProposeRenderTest.cpp, AgentViewModeRenderTest.cpp)
+		// already authors `viewport_scale <ONE number>` expecting a uniform
+		// broadcast; ResolveVec2UniformBroadcast (mirroring ResolveScaleVec3)
+		// keeps that spelling legal rather than breaking it under the new
+		// strict-arity GetVec2 rule.
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "orthographic_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\nviewport_scale 2.5\n}\n",
+			*j, &diags );
+		Check( n == 1, "single-number `viewport_scale 2.5` still derives successfully (n == 1) -- the sanctioned broadcast shorthand" );
+		Check( diags.empty(), "no diagnostics for the sanctioned single-number broadcast" );
+		j->release();
+	}
+
+	//----------------------------------------------------------------------
+	// [N] STICKY DIAGNOSTIC (DL-32 round-2 review, P3): ReportVectorArity's
+	// first-arity-failure-wins write to g_cstFinalizeDiagSink used to be
+	// clobbered by any LATER unconditional writer inside the SAME Finalize()
+	// call (~17 such sites in ChunkParserRegistry.cpp) -- a chunk with BOTH
+	// a wrong-arity vector AND a second, unrelated validation failure would
+	// report the LESS specific, later-checked reason instead of the actual
+	// root cause.  `SetFinalizeDiagIfEmpty` (GenericManager.h) makes every
+	// writer first-wins.  `standard_object`'s `position` (checked early, in
+	// the transform branch) and `mirror` (checked later) both fail here;
+	// the diagnostic that survives must be the `position` one.
+	//----------------------------------------------------------------------
+	std::printf( "[N] sticky diagnostic: an early `position` arity failure survives a LATER `mirror` failure in the same Finalize\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			      "standard_object\n{\nname s\ngeometry g\nposition -4 4\nmirror bogus\n}\n",
+			*j, &diags );
+		Check( n == 1, "only the sibling geometry chunk applies (n == 1)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "the SURVIVING diagnostic is the position arity failure (names DL-32)" );
+		Check( AnyDiagContains( diags, "position" ), "the surviving diagnostic names `position`, the EARLIER failure" );
+		Check( !AnyDiagContains( diags, "mirror" ), "the LATER `mirror` failure did NOT clobber the earlier diagnostic "
+			"(RED pre-fix: the diagnostic named `mirror`, not `position` -- the later, less specific reason won)" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

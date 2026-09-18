@@ -168,6 +168,7 @@ namespace RISE
 				switch( k ) {
 					case ValueKind::UInt:
 					case ValueKind::Double:
+					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:

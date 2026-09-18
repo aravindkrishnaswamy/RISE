@@ -476,10 +476,8 @@ namespace RISE
 				if( requestedName != "none" ) {
 					return false;
 				}
-				if( RISE::g_cstFinalizeDiagSink ) {
-					*RISE::g_cstFinalizeDiagSink =
-						"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name";
-				}
+				RISE::SetFinalizeDiagIfEmpty(
+					"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name" );
 				GlobalLog()->PrintEx( eLog_Error,
 					"%s:: `none` is a reserved name (the active-camera / unbind sentinel used by timeline `element`) -- pick a different camera name",
 					keyword.c_str() );
@@ -600,7 +598,7 @@ namespace RISE
 				va_start( ap, fmt );
 				vsnprintf( buf, sizeof(buf), fmt, ap );
 				va_end( ap );
-				if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = buf;
+				SetFinalizeDiagIfEmpty( buf );
 				GlobalLog()->Print( eLog_Error, buf );
 				return false;
 			}
@@ -737,6 +735,57 @@ namespace RISE
 				return ScaleResolution{ true, true };
 			}
 
+			//! DL-32 round 3 (docs/DEBT_LEDGER.md).  `orthographic_camera`'s
+			//! `viewport_scale` is a symmetric-by-default field the same way
+			//! `standard_object`'s `scale` is, and the corpus already relies on
+			//! a single-number authoring shorthand for it: pre-fix, the raw
+			//! `sscanf( "%lf %lf" )` read on a 1-token value ("viewport_scale
+			//! 2.0") left the SECOND component at its hard-coded {1.0,1.0}
+			//! default (an accidental, ASYMMETRIC (2.0, 1.0) result -- not a
+			//! deliberate broadcast), and three call sites in the test corpus
+			//! (`AgentProposeRenderTest.cpp`, `AgentViewModeRenderTest.cpp`,
+			//! `SSSRadianceScalingTest.cpp`) author exactly that shorthand.
+			//! Mirrors `ResolveScaleVec3` exactly, generalized to any
+			//! 2-component `key` (not hardcoded to one name) so the ONE
+			//! sanctioned-broadcast field in the DoubleVec2 family shares one
+			//! helper rather than growing a second hand-rolled copy: a single
+			//! number is accepted as a UNIFORM broadcast to both components
+			//! (with a log warning naming the two-number spelling); anything
+			//! else that is not exactly one or two finite numbers is a hard
+			//! parse error.
+			struct Vec2Resolution { bool present; bool ok; };
+			inline Vec2Resolution ResolveVec2UniformBroadcast(
+				const ParseStateBag& bag, const char* chunkKeyword, const std::string& name,
+				const char* key, double out[2], std::string* diag )
+			{
+				if( !bag.Has( key ) ) {
+					return Vec2Resolution{ false, true };
+				}
+				const std::string raw = bag.GetString( key );
+				int actual = 0;
+				const bool allFinite = AllTokensAreFiniteNumbers( raw.c_str(), &actual );
+				if( !allFinite || ( actual != 1 && actual != 2 ) ) {
+					if( diag ) {
+						*diag = std::string( chunkKeyword ) + " `" + name + "`: `" + key + " " + raw +
+							"` -- needs exactly ONE finite number (a UNIFORM broadcast to both "
+							"components) or TWO (`X Y`).";
+					}
+					return Vec2Resolution{ true, false };
+				}
+				if( actual == 1 ) {
+					double s = 0.0;
+					sscanf( raw.c_str(), "%lf", &s );
+					out[0] = out[1] = s;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"%s `%s`: `%s %s` -- ONE number is a UNIFORM broadcast to (%.6g %.6g).  "
+						"Write both components explicitly (`%s %.6g %.6g`) to silence this.",
+						chunkKeyword, name.c_str(), key, raw.c_str(), s, s, key, s, s );
+				} else {
+					bag.GetVec2( key, out );
+				}
+				return Vec2Resolution{ true, true };
+			}
+
 			inline bool DispatchChunkParameters(
 				const ChunkDescriptor& desc,
 				ParseStateBag&         bag,
@@ -767,6 +816,7 @@ namespace RISE
 
 					switch( found->kind ) {
 					case ValueKind::Double:
+					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:
@@ -1024,7 +1074,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "orientation";        p.kind = ValueKind::DoubleVec3; p.description = "Euler orientation (degrees)"; }
 				{ auto& p = P(); p.name = "theta";              p.kind = ValueKind::Double;     p.description = "Polar angle (radians)"; }
 				{ auto& p = P(); p.name = "phi";                p.kind = ValueKind::Double;     p.description = "Azimuthal angle (radians)"; }
-				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec3; p.description = "Target Euler orientation"; }
+				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec2; p.description = "Target Euler orientation (theta, phi)"; p.defaultValueHint = "0 0"; }
 			}
 			//! `persistenceDefault` is passed per chunk because the eight
 			//! chunks sharing this helper do NOT share one Finalize default
@@ -1033,15 +1083,31 @@ namespace RISE
 			//! a single hardcoded hint here was wrong for seven of them, and
 			//! `defaultValueHint` is MODEL-FACING (read_schema serves it as
 			//! the parameter's `default`).
+			//!
+			//! `twoD` (DL-32 round 3, docs/DEBT_LEDGER.md): `perlin2d_painter`
+			//! is the ONE 2D chunk among these eight -- `Job::AddPerlin2DPainter`
+			//! takes `double scale[2]`/`shift[2]` -- but this shared helper used
+			//! to declare `scale`/`shift` `ValueKind::DoubleVec3` for it too
+			//! (copy-pasted from the seven genuinely-3D siblings), while its
+			//! Finalize read only 2 components via a raw, unchecked `sscanf` on
+			//! the bag string -- silently accepting `scale 1` (leaving the
+			//! second component at its unrelated default) or `scale 1 2 3`
+			//! (silently discarding the "3").  `twoD = true` (perlin2d_painter
+			//! only) declares the genuine 2-component arity instead.
 			template<typename PushFn>
-			static void AddNoisePainterCommonParams( PushFn P, const char* persistenceDefault = "0.5" ) {
+			static void AddNoisePainterCommonParams( PushFn P, const char* persistenceDefault = "0.5", bool twoD = false ) {
 				{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name";                p.defaultValueHint = "noname"; }
 				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its LOW end"; }
 				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its HIGH end"; }
 				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Amplitude falloff per octave (lower = smoother, higher = grittier)"; p.defaultValueHint = persistenceDefault; }
 				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves (more = finer detail, more cost)"; p.defaultValueHint = "4"; }
-				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1 1"; }
-				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0 0"; }
+				if( twoD ) {
+					{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::DoubleVec2; p.description = "Per-axis (U, V) FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1"; }
+					{ auto& p = P(); p.name = "shift"; p.kind = ValueKind::DoubleVec2; p.description = "Per-axis (U, V) offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0"; }
+				} else {
+					{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1 1"; }
+					{ auto& p = P(); p.name = "shift"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0 0"; }
+				}
 			}
 			//
 			// AddBaseRasterizerParams — the 7 fields every production
@@ -1660,7 +1726,7 @@ namespace RISE
 							// See Job::AddExpressionPainter's twin site -- thread the
 							// specific compiler diagnostic into the CST sink instead
 							// of leaving the caller with the generic apply-failed text.
-							if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
+							SetFinalizeDiagIfEmpty( exprErr );
 							return false;
 						}
 						RISE_API_CreateExpressionScalarPainter( &painter, prog, specs );
@@ -2188,8 +2254,8 @@ namespace RISE
 					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[2] = {1.0,1.0};
 					double shift[2] = {0,0};
-					if( bag.Has( "scale" ) ) sscanf( bag.GetString( "scale" ).c_str(), "%lf %lf", &scale[0], &scale[1] );
-					if( bag.Has( "shift" ) ) sscanf( bag.GetString( "shift" ).c_str(), "%lf %lf", &shift[0], &shift[1] );
+					bag.GetVec2( "scale", scale );
+					bag.GetVec2( "shift", shift );
 
 					return pJob.AddPerlin2DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
@@ -2200,7 +2266,7 @@ namespace RISE
 						cd.keyword = "perlin2d_painter"; cd.category = ChunkCategory::Painter;
 						cd.description = "Perlin fBm noise in the surface UV (2D domain -- follows the UV parameterisation, so it stretches with UV distortion and can show seams).  Smooth cloudy variation from colora (low) to colorb (high).  Prefer perlin3d_painter when the surface should look CARVED OUT of a solid material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "0.5", /*twoD=*/true );
 						return cd;
 					}();
 					return d;
@@ -2218,7 +2284,7 @@ namespace RISE
 					double amplitude        = bag.GetDouble( "amplitude",   1.0 );
 					unsigned int mode       = bag.GetUInt(   "smoothness",  3 );	// default: cubic Hermite
 					double center[2] = { 0.5, 0.5 };
-					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
+					bag.GetVec2( "center", center );
 
 					return pJob.AddControlledSmoothness2DPainter(
 						name.c_str(), colora.c_str(), colorb.c_str(),
@@ -2234,7 +2300,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low/zero-end color"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High/peak-end color"; p.semantics.pipe = ParameterPipe::Color; }
-						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec3;p.description = "Bump center in UV space (only first two components used)"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec2;p.description = "Bump center in UV space"; p.defaultValueHint = "0.5 0.5"; }
 						{ auto& p = P(); p.name = "radius";     p.kind = ValueKind::Double;    p.description = "Bump radius in UV space"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "amplitude";  p.kind = ValueKind::Double;    p.description = "Peak height"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "smoothness"; p.kind = ValueKind::UInt;      p.description = "Boundary smoothness order: 0=Heaviside, 1=Tent, 2=Quadratic, 3=Cubic, 5=Quintic, 99=Gaussian"; p.defaultValueHint = "3"; }
@@ -2261,7 +2327,7 @@ namespace RISE
 					unsigned int seed          = bag.GetUInt(   "seed",               42 );
 					double time                = bag.GetDouble( "time",               0.0 );
 					double windDir[2] = {1.0, 0.0};
-					if( bag.Has( "wind_dir" ) ) sscanf( bag.GetString( "wind_dir" ).c_str(), "%lf %lf", &windDir[0], &windDir[1] );
+					bag.GetVec2( "wind_dir", windDir );
 
 					return pJob.AddGerstnerWavePainter(
 						name.c_str(),
@@ -2290,7 +2356,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "wavelength_range";    p.kind = ValueKind::Double;    p.description = "Ratio spread of wavelengths around the median"; p.defaultValueHint = "3.0"; }
 						{ auto& p = P(); p.name = "median_amplitude";    p.kind = ValueKind::Double;    p.description = "Median wave amplitude"; p.defaultValueHint = "0.05"; }
 						{ auto& p = P(); p.name = "amplitude_power";     p.kind = ValueKind::Double;    p.description = "Amplitude falloff exponent across the wave set"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec3;p.description = "Wind direction in UV space (only the first two components are used)"; p.defaultValueHint = "1 0 0"; }
+						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec2;p.description = "Wind direction in UV space"; p.defaultValueHint = "1 0"; }
 						{ auto& p = P(); p.name = "directional_spread";  p.kind = ValueKind::Double;    p.description = "Angular spread about wind_dir (0 = a single travel direction)"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "dispersion_speed";    p.kind = ValueKind::Double;    p.description = "Dispersion coefficient (only matters when `time` animates)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "seed";                p.kind = ValueKind::UInt;      p.description = "RNG seed for the wave set"; p.defaultValueHint = "42"; }
@@ -2335,8 +2401,8 @@ namespace RISE
 					// the natural domain for unit-form polynomials.
 					double center[2] = { 0.5, 0.5 };
 					double scale[2]  = { 0.5, 0.5 };
-					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
-					if( bag.Has( "scale" )  ) sscanf( bag.GetString( "scale"  ).c_str(), "%lf %lf", &scale[0],  &scale[1]  );
+					bag.GetVec2( "center", center );
+					bag.GetVec2( "scale",  scale  );
 
 					// Bivariate coefficients: space-separated doubles.
 					// Token-by-token parse so the user may supply any
@@ -2375,8 +2441,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "colora";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Zero/low-end colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "colorb";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Positive/peak-end colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "type";         p.kind = ValueKind::String;    p.description = "Polynomial family: radial_bump | monomial | paraboloid | hyperbolic_saddle | monkey_saddle | bivariate"; p.defaultValueHint = "radial_bump"; }
-						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec3;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
-						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec3;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec2;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec2;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
 						{ auto& p = P(); p.name = "amplitude";    p.kind = ValueKind::Double;    p.description = "Global multiplier"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "degree";       p.kind = ValueKind::UInt;      p.description = "Degree for radial_bump (smoothness exponent) and bivariate (max total degree)"; p.defaultValueHint = "2"; }
 						{ auto& p = P(); p.name = "power_x";      p.kind = ValueKind::UInt;      p.description = "x exponent for monomial type"; p.defaultValueHint = "0"; }
@@ -2429,10 +2495,10 @@ namespace RISE
 					double uvOffsetA[2] = { 0.0, 0.0 };
 					double uvScaleB[2]  = { 1.0, 1.0 };
 					double uvOffsetB[2] = { 0.0, 0.0 };
-					if( bag.Has( "uv_scale_a"  ) ) sscanf( bag.GetString( "uv_scale_a"  ).c_str(), "%lf %lf", &uvScaleA[0],  &uvScaleA[1]  );
-					if( bag.Has( "uv_offset_a" ) ) sscanf( bag.GetString( "uv_offset_a" ).c_str(), "%lf %lf", &uvOffsetA[0], &uvOffsetA[1] );
-					if( bag.Has( "uv_scale_b"  ) ) sscanf( bag.GetString( "uv_scale_b"  ).c_str(), "%lf %lf", &uvScaleB[0],  &uvScaleB[1]  );
-					if( bag.Has( "uv_offset_b" ) ) sscanf( bag.GetString( "uv_offset_b" ).c_str(), "%lf %lf", &uvOffsetB[0], &uvOffsetB[1] );
+					bag.GetVec2( "uv_scale_a",  uvScaleA  );
+					bag.GetVec2( "uv_offset_a", uvOffsetA );
+					bag.GetVec2( "uv_scale_b",  uvScaleB  );
+					bag.GetVec2( "uv_offset_b", uvOffsetB );
 
 					const unsigned int op = ParseOp( opStr );
 
@@ -2461,10 +2527,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Second operand Function2D -- same accepted-kind rule as `child_a` (resolved via the same pFunc2DManager lookup)"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "weight_a";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to A before the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "weight_b";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to B before the operator"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling A (only first two components used)"; p.defaultValueHint = "1.0 1.0"; }
-						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
-						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
-						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec2;p.description = "(U, V) scale applied to (u,v) before sampling A"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec2;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec2;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec2;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
 						{ auto& p = P(); p.name = "lerp_t";        p.kind = ValueKind::Double;    p.description = "Lerp parameter (clamped to [0,1]); only used when op = lerp"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "output_scale";  p.kind = ValueKind::Double;    p.description = "Final-stage scalar multiplier applied AFTER the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "output_offset"; p.kind = ValueKind::Double;    p.description = "Final-stage scalar offset added AFTER output_scale"; p.defaultValueHint = "0.0"; }
@@ -5053,9 +5119,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5291,9 +5355,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5462,9 +5524,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5511,8 +5571,14 @@ namespace RISE
 					bag.GetVec3( "up",       up );
 
 					double vpscale[2] = {1.0,1.0};
-					if( bag.Has( "viewport_scale" ) ) {
-						sscanf( bag.GetString( "viewport_scale" ).c_str(), "%lf %lf", &vpscale[0], &vpscale[1] );
+					{
+						std::string vpDiag;
+						const Vec2Resolution vr = ResolveVec2UniformBroadcast( bag, "orthographic_camera", name, "viewport_scale", vpscale, &vpDiag );
+						if( vr.present && !vr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", vpDiag.c_str() );
+							SetFinalizeDiagIfEmpty( vpDiag );
+							return false;
+						}
 					}
 
 					double orientation[3] = {0,0,0};
@@ -5524,9 +5590,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5546,7 +5610,7 @@ namespace RISE
 						cd.keyword = "orthographic_camera"; cd.category = ChunkCategory::Camera;
 						cd.description = "Orthographic (parallel-projection) camera.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::Double; p.description = "Orthographic viewport scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::DoubleVec2; p.description = "Orthographic viewport scale (U, V).  ONE number is accepted as an explicit uniform broadcast (`viewport_scale 2` -> (2, 2))."; p.defaultValueHint = "1.0 1.0"; p.allowsUniformScalarBroadcast = true; }
 						AddCameraCommonParams( P );
 						return cd;
 					}();
@@ -6400,7 +6464,7 @@ namespace RISE
 				//! same reason.
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "skeleton_geometry:: %s", why.c_str() );
 					return false;
 				}
@@ -6983,7 +7047,7 @@ namespace RISE
 						// See Job::AddExpressionPainter's twin site -- thread the
 						// specific compiler diagnostic into the CST sink instead
 						// of leaving the caller with the generic apply-failed text.
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
+						SetFinalizeDiagIfEmpty( exprErr );
 						return false;
 					}
 
@@ -7944,7 +8008,7 @@ namespace RISE
 				//! fault rather than "the chunk failed".
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "lathe_geometry:: %s", why.c_str() );
 					return false;
 				}
@@ -8071,7 +8135,7 @@ namespace RISE
 				//! rather than "the chunk failed".
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "skin_geometry:: %s", why.c_str() );
 					return false;
 				}
@@ -9193,7 +9257,7 @@ namespace RISE
 							"exclusive -- a node is EITHER a leaf shape (`geometry`) OR an instance of another node "
 							"(`source`), never both.  Drop one.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						return false;
 					}
 					// A LONE `source` must never reach here: Cst::DeriveToJob EXPANDS it
@@ -9209,7 +9273,7 @@ namespace RISE
 							"-- this chunk was applied by a path that does not expand instances (Cst::DeriveToJob PASS-2 is "
 							"the only one that does).  Re-derive the whole scene.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						return false;
 					}
 					// 87 step 3c: `count_u` / `count_v` REPEAT AN INSTANCE, so they mean
@@ -9224,7 +9288,7 @@ namespace RISE
 							"`geometry` (or with neither) there is nothing to repeat, and the counts would be "
 							"silently ignored.  Add a `source`, or drop the counts.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						return false;
 					}
 
@@ -9284,7 +9348,7 @@ namespace RISE
 						const ScaleResolution sr = ResolveScaleVec3( bag, "standard_object", name, scale, &scaleDiag );
 						if( sr.present && !sr.ok ) {
 							GlobalLog()->PrintEx( eLog_Error, "%s", scaleDiag.c_str() );
-							if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = scaleDiag;
+							SetFinalizeDiagIfEmpty( scaleDiag );
 							return false;
 						}
 					}
@@ -9379,7 +9443,7 @@ namespace RISE
 							"(lower case).  A mirror reflects the object across the plane through its OWN "
 							"origin perpendicular to that axis.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						bRet = false;
 					}
 
@@ -9410,13 +9474,12 @@ namespace RISE
 					const bool wantsParent = !parent.empty() && parent != "none";
 					if( bRet ) {
 						if( !pJob.SetObjectParent( name.c_str(), wantsParent ? parent.c_str() : 0 ) && wantsParent ) {
-							if( RISE::g_cstFinalizeDiagSink ) {
-								*RISE::g_cstFinalizeDiagSink = "standard_object `" + name + "`: `parent " + parent +
+							RISE::SetFinalizeDiagIfEmpty(
+								"standard_object `" + name + "`: `parent " + parent +
 									"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
 									"object; must not already be one of its descendants; and must not be a CSG "
 									"operand (parent the csg_object instead).  The log line immediately above names "
-									"WHICH of those it was.";
-							}
+									"WHICH of those it was." );
 							bRet = false;
 						}
 					}
@@ -9741,13 +9804,12 @@ namespace RISE
 					const std::string csgParent = bag.GetString( "parent", "" );
 					const bool csgWantsParent = !csgParent.empty() && csgParent != "none";
 					if( !pJob.SetObjectParent( name.c_str(), csgWantsParent ? csgParent.c_str() : 0 ) && csgWantsParent ) {
-						if( RISE::g_cstFinalizeDiagSink ) {
-							*RISE::g_cstFinalizeDiagSink = "csg_object `" + name + "`: `parent " + csgParent +
+						RISE::SetFinalizeDiagIfEmpty(
+							"csg_object `" + name + "`: `parent " + csgParent +
 								"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
 								"object; must not already be one of its descendants; and must not be a CSG operand "
 								"(parent that csg_object instead).  The log line immediately above names WHICH of "
-								"those it was.";
-						}
+								"those it was." );
 						return false;
 					}
 					return true;
@@ -10093,7 +10155,7 @@ namespace RISE
 				//! failure surfaces.
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "rect_light:: %s", why.c_str() );
 					return false;
 				}
@@ -10389,7 +10451,7 @@ namespace RISE
 				//! written from -- rect_light's Reject, same reason.
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "shape_light:: %s", why.c_str() );
 					return false;
 				}
