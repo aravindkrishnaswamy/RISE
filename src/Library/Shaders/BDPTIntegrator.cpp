@@ -7470,11 +7470,28 @@ bool BDPTIntegrator::HasNullBSDFContinuationVertex(
 	)
 {
 	// Mirrors RecomputeSubpathThroughputNM's own Phase-3 gate exactly:
-	// `i + 1 < verts.size() && i > 0 && v.type == SURFACE && !v.isDelta`.
-	// A hit at i == 0 (the camera/light root) or i == verts.size()-1 (the
+	// `i + 1 < verts.size() && i > 0 && v.type == SURFACE && !v.isDelta`,
+	// and -- review round 4, P3-c -- its INNER gate exactly too.  A hit
+	// at i == 0 (the camera/light root) or i == verts.size()-1 (the
 	// path's tail, which has no "onward scatter" to price) never reaches
 	// that function's ratio computation, so it must not trigger this
 	// check either.
+	//
+	// The inner gate is `if( v.pMaterial && v.pMaterial->GetBSDF() )`
+	// ... `else { cumulativeRatio = 0; }` -- the else fires, and zeroes
+	// every companion, whenever `!(v.pMaterial && v.pMaterial->GetBSDF())`,
+	// i.e. `!v.pMaterial || !v.pMaterial->GetBSDF()`.  An earlier revision
+	// of this function required `v.pMaterial &&` before checking
+	// `GetBSDF()` (`v.pMaterial && !v.pMaterial->GetBSDF()`), which is a
+	// STRICT SUBSET of that condition: a `v.pMaterial == 0` SURFACE,
+	// non-delta vertex (not known to occur in production today, but not
+	// excluded by anything this function can see) would take
+	// `RecomputeSubpathThroughputNM`'s zeroing else-branch while this
+	// function reported no termination needed -- reintroducing the exact
+	// darkening-without-exclusion bug this row's P1-1 fix exists to
+	// prevent, just gated on a different vertex condition.  Matching the
+	// two predicates exactly removes that gap rather than relying on an
+	// unproven "pMaterial is never null here" argument.
 	if( verts.size() < 3 ) {
 		return false;
 	}
@@ -7482,7 +7499,7 @@ bool BDPTIntegrator::HasNullBSDFContinuationVertex(
 	{
 		const BDPTVertex& v = verts[i];
 		if( v.type == BDPTVertex::SURFACE && !v.isDelta &&
-			v.pMaterial && !v.pMaterial->GetBSDF() )
+			!( v.pMaterial && v.pMaterial->GetBSDF() ) )
 		{
 			return true;
 		}
