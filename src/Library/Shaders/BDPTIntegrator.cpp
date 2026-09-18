@@ -1847,29 +1847,15 @@ namespace {
 						mv.sigma_t_scalar = sigmaTScalar;
 						mv.isDelta = false;
 
-						// Medium vertices enclosed by a specular (delta) boundary
-						// are not connectible: connection rays are blocked by the
-						// specular surface.  Propagate from previous vertex.
-						// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
-						// are always connectable — they are not enclosed by any
-						// specular boundary, even if the previous vertex was a
-						// specular surface (e.g., reflected off glass into open fog).
-						//
-						// "Enclosed by a specular boundary" is a property of the
-						// boundary MATERIAL, not of the lobe this particular walk
-						// happened to draw at it, so the test is the previous
-						// vertex's own per-surface `isConnectible` (material has a
-						// non-delta BSDF) — NOT its per-draw `isDelta`.  A mixed
-						// delta+continuum boundary (a weave's gap pass-through, a
-						// polished coat's specular lobe, a Fresnel composite) is
-						// crossed by a delta draw on some samples and a continuum
-						// draw on others; keying off `isDelta` made the SAME medium
-						// vertex connectible or not depending on the draw, dropping
-						// NEE and connections on that fraction of paths.  Same bug
-						// family as the surface-vertex connectibility fix above
-						// (docs/CLOTH_FABRIC_DESIGN.md §15 debt 23), one hop
-						// downstream.  Pure-delta boundaries (mirror, glass) have
-						// isConnectible == false and still gate the medium off.
+						// HISTORY (DL-200 struck this rule out entirely, so the
+						// paragraph that used to sit here is gone rather than
+						// amended): medium vertices "enclosed by a specular
+						// (delta) boundary" were marked NOT connectible, keyed
+						// off the previous vertex's per-surface `isConnectible`
+						// rather than its per-draw `isDelta` (the debt-23-family
+						// refinement, docs/CLOTH_FABRIC_DESIGN.md §15).  That
+						// refinement was right about `isDelta` vs `isConnectible`
+						// and wrong about the whole rule -- see below.
 							// DL-200.  `isConnectible` describes THIS VERTEX'S OWN
 							// SCATTERING FUNCTION -- "can a connection through it
 							// carry nonzero density" -- and a phase function is
@@ -6145,20 +6131,6 @@ unsigned int GenerateLightSubpathImpl(
 					mv.sigma_t_scalar = sigma_t_max;
 					mv.isDelta = false;
 
-					// Medium vertices enclosed by a specular (delta) boundary
-					// are not connectible: connection rays are blocked by the
-					// specular surface.  Propagate from previous vertex.
-					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
-					// are always connectable — not enclosed by any specular
-					// boundary.
-					//
-					// Light-subpath twin of the eye-subpath site in
-					// GenerateEyeSubpathImpl — see the long comment there:
-					// "enclosed by a specular boundary" is a property of the
-					// boundary MATERIAL (per-surface `isConnectible`), not of
-					// the lobe this walk happened to draw (`isDelta`), or a
-					// mixed delta+continuum boundary drops NEE/connections on
-					// the delta-drawn fraction of its samples.
 					// DL-200: a MEDIUM vertex is always connectible.  See the
 					// long derivation at the twin site in
 					// GenerateEyeSubpathImpl -- this is the LIGHT-rooted half of

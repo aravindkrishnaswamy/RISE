@@ -5587,8 +5587,22 @@ yet known (§10.1).
       `prev.type == SURFACE && prev.isDelta`. "Enclosed by a specular boundary" is
       a property of the boundary *material*, so a mixed boundary (weave gap,
       polished coat, Fresnel composite) turned the same medium vertex connectible
-      or not depending on the draw. Now tests `!prev.isConnectible`, the same
-      per-surface predicate. Image-level guard landed once debt 25 closed:
+      or not depending on the draw. Changed at the time to test
+      `!prev.isConnectible`, the same per-surface predicate. **SUPERSEDED
+      2026-09-18 by DL-200, which struck the whole enclosure rule out of both
+      functions: a MEDIUM vertex is now ALWAYS connectible.** The `isDelta`
+      vs `isConnectible` half of the reasoning above was right; the premise
+      under it was not. `isConnectible` states whether a connection through
+      the vertex can carry nonzero DENSITY (a phase function is never a
+      delta), while "is a connection from here blocked" is a property of the
+      PAIR of endpoints -- two points inside the same enclosure are perfectly
+      connectible, and a light inside a fog-filled glass shell is exactly
+      that case, its NEE being dropped. Measured on such a scene, BDPT went
+      from 0.90338 to 1.00356 of PT (RGB) and 0.79556 to 0.98217 (spectral).
+      See [DL126_BDPT_NULL_BSDF_CONTINUATION.md](DL126_BDPT_NULL_BSDF_CONTINUATION.md)
+      SS7.2 outcome and `tests/MediumEnclosureConnectibilityTest.cpp`. The
+      guard named next remains a valid parity guard and still passes.
+      Image-level guard landed once debt 25 closed:
       `tests/FabricRenderTest.cpp::TestMediumVertexBehindGappedWeave`
       (keyword `mediumvertex`) — a parity guard only; its red-proof could
       not make the predicate flip move the ratio beyond noise (see §15
