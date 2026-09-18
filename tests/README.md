@@ -81,8 +81,18 @@ Useful filename families:
   (Principled Coat -> `coated_material`, ABI v13, DL-186), `BlenderBridgeSSSTest`
   (Principled Subsurface -> `randomwalk_sss_material`, ABI v13, DL-186 --
   probes `IMaterial::GetRandomWalkSSSParams()` directly for exact per-channel
-  sigma_a/sigma_s parity rather than a BSDF-response comparison).  The
-  matching Python-side exporter (socket-reading) contract lives in
+  sigma_a/sigma_s parity rather than a BSDF-response comparison),
+  `BlenderBridgeCoatNormalTest` (Principled Coat Normal -> a coat-lobe-only
+  normal perturbation threaded through `CoatedBRDF`/`CoatedSPF`, ABI v14,
+  DL-192 -- money test: a known coat-normal tilt moves the coat specular
+  peak by the closed-form reflected angle while the substrate's own diffuse
+  response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> a
+  per-material `advanced_shader` op chain built via the shared
+  `src/Library/Shaders/AdvancedShaderWiring.h` helper, ABI v14, DL-193 --
+  renders the same alpha-cutout scene under `pixelpel_rasterizer` (works,
+  matches closed form) and PT/BDPT (both ignore alpha per the DL-214
+  integrator-compatibility finding, both warn)).  The matching Python-side
+  exporter (socket-reading) contract lives in
   `src/Blender/addons/rise_renderer/test_hair_export.py`, run separately
   since it needs no C++ build.
 - geometry, materials, painters, samplers, volumes, importers, color, and

@@ -4166,7 +4166,9 @@ namespace RISE
 								const IScalarPainter& coat_roughness,
 								const IScalarPainter& coat_thickness,
 								const IScalarPainter& coat_absorption,
-								const IPainter& coat_tint
+								const IPainter& coat_tint,
+								const IPainter* coat_normal,
+								const Scalar coat_normal_scale
 								)
 	{
 		if( !ppi ) {
@@ -4188,7 +4190,8 @@ namespace RISE
 		}
 
 		(*ppi) = new CoatedMaterial( base, coat_weight, coat_ior, coat_roughness,
-		                             coat_thickness, coat_absorption, coat_tint );
+		                             coat_thickness, coat_absorption, coat_tint,
+		                             true, coat_normal, coat_normal_scale );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "coated material" );
 		return true;
 	}

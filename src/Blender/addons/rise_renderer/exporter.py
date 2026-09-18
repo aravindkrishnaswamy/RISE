@@ -12,7 +12,11 @@ from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Vector
 
 from . import hair_file_writer
-from .hair_material_math import melanin_to_eumelanin_pheomelanin, offset_radians_to_alpha_degrees
+from .hair_material_math import (
+    anisotropic_rotation_turns_to_radians,
+    melanin_to_eumelanin_pheomelanin,
+    offset_radians_to_alpha_degrees,
+)
 
 
 GEOMETRY_TYPES = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
@@ -61,6 +65,11 @@ MATERIAL_PBR_METALLIC_ROUGHNESS = 3
 # surface material, not a wrap.  See rise_blender_bridge.h's own
 # comment on the enumerator.
 MATERIAL_RANDOMWALK_SSS = 4
+
+# ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- rise_blender_alpha_mode.
+ALPHA_MODE_OPAQUE = 0
+ALPHA_MODE_CLIP = 1
+ALPHA_MODE_BLEND = 2
 
 SUPPORTED_IMAGE_KINDS = {
     ".png": PAINTER_TEXTURE_PNG,
@@ -289,6 +298,25 @@ class MaterialData:
     subsurface_ior: float = 1.4
     subsurface_g: float = 0.0
     subsurface_roughness: float = 0.0
+    # ABI v14 (DL-192, docs/DEBT_LEDGER.md).  PBR_METALLIC_ROUGHNESS
+    # ONLY, and only meaningful when `coat_weight_texture_painter_name`/
+    # `coat_weight` above actually contribute a coat layer: Principled
+    # BSDF's Coat Normal socket (a Normal Map node, textured) ->
+    # `coated_material`'s coat-lobe-only tangent-space normal map.
+    # None (default) = no perturbation, bit-identical to a pre-v14
+    # payload.  `coat_normal_scale` is the Normal Map node's own
+    # "Strength" slider.
+    coat_normal_painter_name: str | None = None
+    coat_normal_scale: float = 1.0
+    # ABI v14 (DL-193, docs/DEBT_LEDGER.md).  Principled BSDF's Alpha
+    # socket.  `alpha_mode` (RISE_BLENDER_ALPHA_*, bridge.py) selects
+    # OPAQUE (default -- the other three fields are ignored, bit-
+    # identical to a pre-v14 payload) / CLIP / BLEND; see
+    # docs/BLENDER_MATERIAL_TRANSLATION.md "Alpha".
+    alpha: float = 1.0
+    alpha_texture_painter_name: str | None = None
+    alpha_mode: int = 0
+    alpha_threshold: float = 0.5
 
 
 @dataclass
@@ -331,6 +359,12 @@ class ObjectData:
     visible: bool
     modifier_name: str | None = None
     interior_medium_name: str | None = None
+    # ABI v14 (DL-193, docs/DEBT_LEDGER.md): the alpha-aware
+    # `advanced_shader` name `_material_payload` registered for the
+    # bound material (via `_MaterialBinding.shader_name`), or None for
+    # an opaque material -- see `rise_blender_object.shader_name`'s own
+    # comment in rise_blender_bridge.h for the full contract.
+    shader_name: str | None = None
 
 
 @dataclass
@@ -479,6 +513,13 @@ class _MaterialBinding:
     modifier_name: str | None
     interior_medium_name: str | None
     double_sided: bool
+    # ABI v14 (DL-193, docs/DEBT_LEDGER.md): the `<name>.shader`
+    # advanced_shader `_material_payload` registered when Alpha is
+    # active, or None for an opaque material -- computed once per
+    # material (mirrors `modifier_name`'s own per-material-computed,
+    # per-object-applied shape) and threaded into every `ObjectData`
+    # bound to this material.
+    shader_name: str | None = None
 
 
 @dataclass
@@ -1511,6 +1552,55 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
     return modifier_name
 
 
+def _build_coat_normal_painter(material, normal_map_node, state: _ExportState) -> tuple[str | None, float]:
+    """Translate a Principled BSDF Coat Normal's ShaderNodeNormalMap
+    into a registered COLOUR painter (NOT a modifier -- DL-192's
+    `coat_normal_painter_name` is a MATERIAL parameter, consumed only
+    by `coated_material`'s own coat lobe, unlike the surface's Normal
+    input which perturbs the whole shading point via an object-level
+    modifier).  Mirrors `_build_normal_map_modifier`'s own validation
+    and painter-registration steps exactly, stopping short of
+    registering a modifier.  Returns (painter_name, strength); either
+    element is (None, 1.0) if the node can't be resolved (already
+    warned by the caller or below).
+    """
+    if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
+        _warn_once(state, f"RISE only supports tangent-space Normal Map nodes on '{material.name_full}' (Coat Normal).")
+        return None, 1.0
+
+    color_input = _node_input(normal_map_node, "Color")
+    if color_input is None or not color_input.is_linked:
+        _warn_once(state, f"RISE only supports image-driven Normal Map nodes on '{material.name_full}' (Coat Normal).")
+        return None, 1.0
+
+    image_node = _walk_socket_for_image_node(color_input)
+    if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
+        _warn_once(state, f"RISE only supports direct image textures as Coat Normal sources on '{material.name_full}'.")
+        return None, 1.0
+
+    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
+    validated = _validate_texture_wrapper(texture_wrapper, state, f"the Coat Normal on '{material.name_full}'")
+    if not validated:
+        return None, 1.0
+
+    filepath, _color_space_ignored = validated
+    kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+    # Same ROMM-Linear bridge convention `_build_normal_map_modifier`
+    # uses for the object-level normal map -- see that function's own
+    # comment.
+    painter_name = _add_texture_painter(
+        state,
+        f"{material.name_full}_coat_normal",
+        filepath,
+        kind,
+        COLOR_SPACE_ROMM_LINEAR,
+    )
+    painter_name = _maybe_wrap_with_uv_transform(
+        state, f"{material.name_full}_coat_normal", painter_name, texture_wrapper)
+    strength = float(_socket_default_float(normal_map_node, "Strength", 1.0))
+    return painter_name, strength
+
+
 def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -> str | None:
     """Translate a ShaderNodeNormalMap into a RISE NormalMap modifier.
 
@@ -2100,12 +2190,115 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     # Anisotropy and rotation — read sockets directly because the
     # PrincipledBSDFWrapper doesn't surface them.
     anisotropy_value = _clamp01(_socket_default_float(principled_node, "Anisotropic", 0.0))
-    anisotropy_rotation_value = float(_socket_default_float(principled_node, "Anisotropic Rotation", 0.0))
+    # DL-208 (docs/DEBT_LEDGER.md): Blender's "Anisotropic Rotation"
+    # socket is a [0,1] FRACTION OF A FULL TURN (Cycles applies
+    # `2*pi*value` internally) -- NOT radians, unlike every other
+    # angle-typed socket this file reads (e.g. Principled Hair BSDF's
+    # "Offset" a few hundred lines below, already radians; a
+    # ShaderNodeVectorRotate "Angle" socket below, also radians).
+    # RISE's `tangent_rotation`/`tangent_rotation_scalar` are radians
+    # (`MicrofacetUtils::RotateTangent` calls raw cos/sin on the value;
+    # `weave_rotation`'s own descriptor says radians), so the turn
+    # fraction is converted here, at the read, before anything composes
+    # with it.
+    anisotropy_rotation_value = anisotropic_rotation_turns_to_radians(
+        _socket_default_float(principled_node, "Anisotropic Rotation", 0.0)
+    )
     anisotropy_factor_painter = _add_uniform_painter(
         state,
         f"{material.name_full}_anisotropy",
         (anisotropy_value, anisotropy_value, anisotropy_value),
     ) if anisotropy_value > 1e-4 else None
+    # Tangent (DL-192, docs/DEBT_LEDGER.md; source heading DL-186's own
+    # sibling audit).  Principled BSDF's Tangent input controls the
+    # anisotropy direction's BASIS (as opposed to "Anisotropic
+    # Rotation" above, which only rotates whatever basis is already in
+    # play).  Three cases, matching the RULING this closure follows:
+    #
+    #  (i)  A `ShaderNodeTangent` in UV_MAP mode, naming the object's
+    #       ACTIVE uv map (or no uv_map override at all) -- this is
+    #       EXACTLY what `ggx_material`'s own anisotropy direction
+    #       already derives from BY CONSTRUCTION whenever no
+    #       `tangent_rotation`/`tangent_rotation_scalar` painter is
+    #       bound: GGXBRDF's `ResolveTangentONB` (GGXBRDF.cpp) returns
+    #       the mesh's own `ri.onb` UNCHANGED in that case, and
+    #       `ri.onb.u()` is built from the mesh's UV tangent (the SAME
+    #       tangent Blender's Tangent(UV_MAP) node reads).  So this
+    #       case needs no bridging at all -- documented here rather
+    #       than silently unhandled, and with NO warning, since nothing
+    #       is being dropped.
+    #  (ii) A CONSTANT rotation of that basis (a ShaderNodeVectorRotate
+    #       around the shading normal, fed by a Tangent(UV_MAP) node)
+    #       maps onto the SAME `anisotropy_rotation_*` slot as
+    #       Principled's own "Anisotropic Rotation" -- the two compose
+    #       by simple addition, since both are just angles around the
+    #       mesh tangent frame's own axis (DL-16's `tangent_rotation`/
+    #       `tangent_rotation_scalar`, which this add-on's
+    #       `anisotropy_rotation_painter_name` already binds to).  A
+    #       non-constant (linked/textured) Angle input is NOT this
+    #       case -- see (iii).
+    #  (iii) Anything else (a second UV map's tangent, a fully
+    #       procedural direction, a non-constant rotation angle) has no
+    #       RISE mechanism: RISE's anisotropy direction is always
+    #       derived from the mesh's OWN UV tangent basis (optionally
+    #       rotated by a single scalar), never an arbitrary per-texel
+    #       or per-vertex override vector.  Warned and dropped rather
+    #       than silently ignored -- filed as **DL-213**
+    #       (docs/DEBT_LEDGER.md) for the mesh-level tangent-override
+    #       mechanism this would need.
+    tangent_input = _node_input(principled_node, "Tangent")
+    if tangent_input is not None and tangent_input.is_linked:
+        tangent_source = _skip_reroutes(tangent_input.links[0].from_node)
+
+        def _is_active_uv_tangent(node) -> bool:
+            return (
+                node is not None
+                and node.bl_idname == "ShaderNodeTangent"
+                and getattr(node, "direction_type", "UV_MAP") == "UV_MAP"
+                and not getattr(node, "uv_map", "")
+            )
+
+        if _is_active_uv_tangent(tangent_source):
+            pass  # Case (i): already bridged by construction, see above.
+        elif tangent_source is not None and tangent_source.bl_idname == "ShaderNodeVectorRotate":
+            rotate_type = getattr(tangent_source, "rotation_type", getattr(tangent_source, "type", None))
+            vector_input = _node_input(tangent_source, "Vector")
+            rotated_source = (
+                _skip_reroutes(vector_input.links[0].from_node)
+                if vector_input is not None and vector_input.is_linked else None
+            )
+            angle_input = _node_input(tangent_source, "Angle")
+            if rotate_type == "Z_AXIS" and _is_active_uv_tangent(rotated_source) and angle_input is not None:
+                if angle_input.is_linked:
+                    _warn_once(
+                        state,
+                        f"RISE only supports a CONSTANT rotation angle on a Tangent-feeding "
+                        f"Vector Rotate node for '{material.name_full}'; a linked/textured angle "
+                        f"has no mesh-level tangent-override mechanism (DL-213, docs/DEBT_LEDGER.md).",
+                    )
+                else:
+                    # Case (ii): compose with Principled's own
+                    # "Anisotropic Rotation" by simple addition -- both
+                    # are angles around the same tangent-frame axis.
+                    anisotropy_rotation_value += float(angle_input.default_value)
+            else:
+                _warn_once(
+                    state,
+                    f"RISE's anisotropy direction always derives from the mesh's own UV tangent "
+                    f"basis (optionally rotated by one angle); the Tangent graph on "
+                    f"'{material.name_full}' is more than that and has no mesh-level "
+                    f"tangent-override mechanism (DL-213, docs/DEBT_LEDGER.md) -- dropped.",
+                )
+        else:
+            _warn_once(
+                state,
+                f"RISE's anisotropy direction always derives from the mesh's own UV tangent "
+                f"basis (optionally rotated by one angle); the Tangent input on "
+                f"'{material.name_full}' names something else (a second UV map, a procedural "
+                f"direction) and has no mesh-level tangent-override mechanism (DL-213, "
+                f"docs/DEBT_LEDGER.md) -- dropped.",
+            )
+
     anisotropy_rotation_painter = _add_uniform_painter(
         state,
         f"{material.name_full}_anisotropy_rotation",
@@ -2200,6 +2393,8 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     coat_roughness_value = 0.03
     coat_roughness_texture_painter = None
     coat_ior_value = 1.5
+    coat_normal_painter = None
+    coat_normal_scale = 1.0
     coat_contributes = coat_weight_value > 1e-4 or coat_weight_texture_painter is not None
     if coat_contributes:
         coat_tint_default = _socket_default_color(principled_node, "Coat Tint", (1.0, 1.0, 1.0))
@@ -2240,6 +2435,25 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 f"a linked/textured IOR is not sampled.",
             )
         coat_ior_value = max(1.0, float(_socket_default_float(principled_node, "Coat IOR", 1.5)))
+
+        # Coat Normal (DL-192, docs/DEBT_LEDGER.md): a Normal Map node,
+        # textured -> `coated_material`'s coat-lobe-only tangent-space
+        # normal map.  Registered as a PAINTER (not a modifier -- unlike
+        # the surface's own Normal input, this one is a material
+        # PARAMETER, `coat_normal_painter_name`, consumed only by the
+        # coat's own GGX lobe).  Mirrors `_direct_normal_modifier`'s own
+        # "direct Normal Map node, or warn" gate.
+        coat_normal_input = _node_input(principled_node, "Coat Normal")
+        if coat_normal_input is not None and coat_normal_input.is_linked:
+            coat_normal_source = _skip_reroutes(coat_normal_input.links[0].from_node)
+            if coat_normal_source is not None and coat_normal_source.bl_idname == "ShaderNodeNormalMap":
+                coat_normal_painter, coat_normal_scale = _build_coat_normal_painter(
+                    material, coat_normal_source, state)
+            else:
+                _warn_once(
+                    state,
+                    f"RISE only supports a direct Normal Map node on Coat Normal for '{material.name_full}'.",
+                )
 
         # LAYERING DECISION (docs/BLENDER_MATERIAL_TRANSLATION.md "Coat
         # and Subsurface"): mirrors GLTFSceneImporter.cpp's own
@@ -2417,37 +2631,97 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             )
 
     modifier_name = _direct_normal_modifier(material, wrapper, state)
-    # Alpha (DL-186, docs/DEBT_LEDGER.md): DELIBERATELY left warn-only,
-    # no `rise_blender_material` ABI field added.  RISE DOES have a
-    # reachable construction-API path for cutout/blend alpha --
-    # `IJob::AddAlphaTestShaderOp` / a `transparency_shaderop`, wired
-    # per-material by GLTFSceneImporter.cpp's `WireAlphaShader` -- but
-    # it is NOT a material-struct slot at all: it requires building a
-    # per-material `advanced_shader` OP CHAIN (`Job::AddAdvancedShader`,
-    # `[Emission +, DirectLighting +, alpha_test_or_transparency =]`)
-    # that REPLACES the bridge's always-on default shader, a subsystem
-    # this Blender bridge does not have any of today (it always renders
-    # through the renderer's default per-rasterizer shader, never a
-    # custom op chain).  A `rise_blender_material.alpha_*` field would
-    # therefore be a dead ABI field -- the slice brief's own
-    # instruction not to add one -- because nothing downstream of the
-    # struct would ever consume it without that separate shader-op-
-    # wiring subsystem existing first.  Also: `AlphaTestShaderOp.h`'s
-    # own "integrator-compatibility caveat" says BDPT/VCM/MLM/photon
-    # tracers (everything except PT and the legacy direct shaders)
-    # silently ignore it regardless, so even a fully wired version
-    # would need a rasterizer-aware warning at export time.  Filed as
-    # **DL-193** (docs/DEBT_LEDGER.md) -- a per-material shader-op-chain
-    # bridge, a materially bigger feature than an ABI field, not
-    # attempted here.
-    alpha_socket = _node_input(wrapper.node_principled_bsdf, "Alpha")
-    if alpha_socket is not None:
-        alpha_value_socket = float(alpha_socket.default_value)
-        if alpha_socket.is_linked or alpha_value_socket < 0.999:
-            _warn_once(
-                state,
-                f"RISE currently ignores Principled alpha and alpha textures on '{material.name_full}'.",
-            )
+
+    # Alpha (DL-193, docs/DEBT_LEDGER.md; closes DL-186's own
+    # "deliberately left warn-only" decision now that the bridge has a
+    # shader-op-chain construction -- see `wire_alpha_shader_for_material`
+    # in rise_blender_bridge.cpp).  `blend_method` selects HOW: OPAQUE
+    # (default) wires nothing; CLIP builds an alpha-test cutout at
+    # `material.alpha_threshold`; BLEND/HASHED build a stochastic
+    # transparency (RISE has one blend mechanism, not a separate
+    # dithered one -- see rise_blender_alpha_mode's own comment).
+    #
+    # Blender 4.2's EEVEE-Next replaced `blend_method` with
+    # `surface_render_method` ('BLENDED'/'DITHERED') for the raster
+    # pipeline; `getattr` falls back to that when `blend_method` itself
+    # is absent, matching this file's existing defensive-getattr
+    # convention (`use_backface_culling` above).  Neither is guaranteed
+    # to exist depending on Blender version/render engine, so a
+    # material with NEITHER attribute is treated as OPAQUE (bit-
+    # identical to a pre-v14 payload) rather than guessing.
+    blend_method = getattr(material, "blend_method", None)
+    if blend_method is None:
+        render_method = getattr(material, "surface_render_method", None)
+        blend_method = {
+            "BLENDED": "BLEND",
+            "DITHERED": "HASHED",
+        }.get(render_method, "OPAQUE")
+
+    alpha_value = 1.0
+    alpha_texture_painter = None
+    alpha_mode_value = ALPHA_MODE_OPAQUE
+    alpha_threshold_value = 0.5
+
+    if blend_method != "OPAQUE":
+        alpha_socket = _node_input(principled_node, "Alpha")
+        if alpha_socket is not None:
+            alpha_value = _clamp01(float(alpha_socket.default_value))
+            if alpha_socket.is_linked:
+                alpha_texture = _maybe_resolve_socket_texture(
+                    principled_node, "Alpha", None, colorspace_is_data=True,
+                )
+                if alpha_texture is not None:
+                    # Read CHAN_A from the raw texture (matching
+                    # GLTFSceneImporter.cpp's own `BuildAlphaPainter`
+                    # comment): the native bridge extracts the ALPHA
+                    # channel via AddChannelPainter, so this registers
+                    # the whole (typically RGBA) image, not a
+                    # scalar-flattened view of it.
+                    validated = _validate_texture_wrapper(
+                        alpha_texture, state, f"the Alpha texture on '{material.name_full}'")
+                    if validated:
+                        filepath, color_space = validated
+                        kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+                        alpha_texture_painter = _add_texture_painter(
+                            state, f"{material.name_full}_alpha", filepath, kind, color_space,
+                        )
+                        alpha_texture_painter = _maybe_wrap_with_uv_transform(
+                            state, f"{material.name_full}_alpha", alpha_texture_painter, alpha_texture)
+                if alpha_texture_painter is None:
+                    _warn_once(
+                        state,
+                        f"RISE reads Principled Alpha on '{material.name_full}' at its socket default; "
+                        f"a linked/textured alpha not resolvable to an image texture is not sampled.",
+                    )
+
+        if blend_method == "CLIP":
+            alpha_mode_value = ALPHA_MODE_CLIP
+            alpha_threshold_value = float(getattr(material, "alpha_threshold", 0.5))
+        else:
+            # BLEND or HASHED -> RISE's single stochastic-transparency path.
+            alpha_mode_value = ALPHA_MODE_BLEND
+
+        # Rasterizer-compatibility warning (AlphaTestShaderOp.h's own
+        # "integrator-compatibility caveat", corrected by DIRECT
+        # MEASUREMENT in the DL-193 slice: `pixelpel_rasterizer` --
+        # RISE's legacy DIRECT-lighting-only rasterizer -- is the ONLY
+        # rasterizer that honours the alpha shader-op chain.  BDPT, VCM,
+        # MLT, photon tracers, AND the modern path tracer
+        # (`pathtracing_pel_rasterizer`) all bypass the shader-op chain
+        # entirely and render this material fully opaque regardless of
+        # the wiring above -- `PathTracingIntegrator.cpp` has no
+        # reference to the shader-op pipeline at all; a stale, WRONG
+        # revision of this caveat used to claim the path tracer was
+        # compatible.  Filed as the general architecture gap DL-214,
+        # docs/DEBT_LEDGER.md.  Issued from the NATIVE bridge instead of
+        # here (`rise_blender_render_scene`'s
+        # own DL-193 blocks, alongside the pre-existing "Auto -> X"
+        # resolved-integrator surfacing that function already does) --
+        # the rasterizer kind lives in `rise_blender_render_settings`,
+        # which this export-time function has no access to (export and
+        # render-settings resolution are separate stages in this
+        # add-on), and the Auto dispatcher's actual choice isn't known
+        # until after rendering regardless of which stage asks.
 
     output_node = _find_material_output(material)
     interior_medium_name = None
@@ -2544,6 +2818,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             scatter_painter_name=scatter_inline,
             emission_painter_name=emission_painter,
             double_sided=double_sided,
+            alpha=alpha_value,
+            alpha_texture_painter_name=alpha_texture_painter,
+            alpha_mode=alpha_mode_value,
+            alpha_threshold=alpha_threshold_value,
         )
     elif subsurface_heavy:
         # Subsurface -> randomwalk_sss_material, a SEPARATE model (see
@@ -2574,6 +2852,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             subsurface_ior=subsurface_ior_value,
             subsurface_g=subsurface_g_value,
             subsurface_roughness=roughness,
+            alpha=alpha_value,
+            alpha_texture_painter_name=alpha_texture_painter,
+            alpha_mode=alpha_mode_value,
+            alpha_threshold=alpha_threshold_value,
         )
     else:
         # Opaque Principled BSDF — route through
@@ -2603,14 +2885,28 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             coat_roughness_texture_painter_name=coat_roughness_texture_painter,
             coat_roughness=coat_roughness_value,
             coat_ior=coat_ior_value,
+            coat_normal_painter_name=coat_normal_painter,
+            coat_normal_scale=coat_normal_scale,
+            alpha=alpha_value,
+            alpha_texture_painter_name=alpha_texture_painter,
+            alpha_mode=alpha_mode_value,
+            alpha_threshold=alpha_threshold_value,
         )
 
     state.materials.append(payload)
+    # ABI v14 / DL-193: the alpha-aware shader `wire_alpha_shader_for_-
+    # material` (rise_blender_bridge.cpp) registers under `<name>.shader`
+    # whenever alpha is active -- same deterministic naming convention
+    # GLTFSceneImporter.cpp's own `matName + ".shader"` uses.  None for
+    # an opaque material (the default `_MaterialBinding.shader_name`,
+    # bit-identical to a pre-v14 payload).
+    shader_name = f"{payload.name}.shader" if alpha_mode_value != ALPHA_MODE_OPAQUE else None
     binding = _MaterialBinding(
         surface_material_name=payload.name,
         modifier_name=modifier_name,
         interior_medium_name=interior_medium_name,
         double_sided=double_sided,
+        shader_name=shader_name,
     )
     state.material_map[key] = binding
     return binding
@@ -4513,6 +4809,7 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                     visible=True,
                     modifier_name=binding.modifier_name,
                     interior_medium_name=binding.interior_medium_name,
+                    shader_name=binding.shader_name,
                 )
             )
 

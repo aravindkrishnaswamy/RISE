@@ -488,6 +488,39 @@ class OffsetConversionTest(unittest.TestCase):
         self.assertAlmostEqual(degrees, -3.0, places=6)
 
 
+class AnisotropicRotationConversionTest(unittest.TestCase):
+    """DL-208 (docs/DEBT_LEDGER.md) red-proof: Blender's Principled
+    "Anisotropic Rotation" socket is a [0, 1] fraction of a full turn,
+    not radians -- unlike every other angle-typed socket this add-on
+    reads.  These pin the exact numbers the review round's own fix
+    description named.
+    """
+
+    def test_quarter_turn_is_half_pi(self):
+        # A Principled rotation of 0.25 (a quarter turn, 90 degrees in
+        # Cycles) must export pi/2 radians, not 0.25 radian
+        # (~14.3 degrees -- the pre-fix defect).
+        radians = hmm.anisotropic_rotation_turns_to_radians(0.25)
+        self.assertAlmostEqual(radians, math.pi / 2.0, places=9)
+
+    def test_zero_rotation_is_zero(self):
+        self.assertAlmostEqual(hmm.anisotropic_rotation_turns_to_radians(0.0), 0.0, places=9)
+
+    def test_full_turn_is_two_pi(self):
+        radians = hmm.anisotropic_rotation_turns_to_radians(1.0)
+        self.assertAlmostEqual(radians, 2.0 * math.pi, places=9)
+
+    def test_case_ii_composition_with_a_constant_vector_rotate_angle(self):
+        # Case (ii)'s own composition: a Principled rotation of 0.25
+        # (-> pi/2 radians) PLUS a ShaderNodeVectorRotate "Angle" of
+        # pi/4 (already radians -- Blender angle sockets on non-
+        # Principled nodes store radians directly) must sum to
+        # 3*pi/4 -- exactly the review round's own named check.
+        converted = hmm.anisotropic_rotation_turns_to_radians(0.25)
+        composed = converted + (math.pi / 4.0)
+        self.assertAlmostEqual(composed, 3.0 * math.pi / 4.0, places=9)
+
+
 # ---------------------------------------------------------------------------
 # Bridge (ABI v9) — the ctypes mirror of the native hair structs, and the
 # marshalling that fills them.
@@ -622,17 +655,17 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 13)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 14)
 
     def test_stale_dylib_version_fails_loudly(self):
-        # Simulate a v12 dylib (built before this ABI bump) sitting
-        # next to a v13 add-on: `_load_library`'s version check must
-        # refuse it with a clear message, not silently marshal v13
-        # fields (coat_*/subsurface_*) into a v12 struct layout the
-        # native side never declared.  `ctypes.CDLL` is mocked rather
-        # than shipping a stale .dylib fixture -- the real bridge in
-        # this worktree is already v13, so a genuine stale binary isn't
-        # available to load.
+        # Simulate a v13 dylib (built before this ABI bump) sitting
+        # next to a v14 add-on: `_load_library`'s version check must
+        # refuse it with a clear message, not silently marshal v14
+        # fields (coat_normal_*/alpha*/shader_name) into a v13 struct
+        # layout the native side never declared.  `ctypes.CDLL` is
+        # mocked rather than shipping a stale .dylib fixture -- the
+        # real bridge in this worktree is already v14, so a genuine
+        # stale binary isn't available to load.
         bridge._LOADED_LIBRARY = None
         bridge._LOADED_PATH = None
         bridge._LOADED_CAPABILITIES = None
@@ -818,6 +851,124 @@ class ExporterSpecularTintGatingTest(unittest.TestCase):
         body = self._material_payload_body()
         self.assertIn("specular_color_painter = None", body)
         self.assertIn("is_default_white", body)
+
+
+class ExporterCoatNormalAlphaTangentGatingTest(unittest.TestCase):
+    """DL-192 (Coat Normal, Tangent) / DL-193 (Alpha) source-level
+    gating, docs/DEBT_LEDGER.md.
+
+    Why source level and not behaviour: same reasoning as
+    `ExporterSpecularTintGatingTest` above -- `_material_payload`
+    cannot be called outside Blender at all.  What CAN be pinned
+    without Blender is that the function's SOURCE reads each socket
+    and forwards what it reads (or, for Tangent's unsupported cases,
+    warns and drops rather than silently doing nothing)."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_EXPORTER_SOURCE, "r", encoding="utf-8") as handle:
+            cls.source = handle.read()
+
+    def _material_payload_body(self):
+        start = self.source.index("def _material_payload(")
+        end = self.source.index("\ndef ", start + 1)
+        return self.source[start:end]
+
+    # --- Coat Normal (DL-192) -----------------------------------------
+
+    def test_coat_normal_socket_is_read(self):
+        body = self._material_payload_body()
+        self.assertIn(
+            '_node_input(principled_node, "Coat Normal")',
+            body,
+            "_material_payload no longer reads the Coat Normal socket",
+        )
+
+    def test_coat_normal_routes_through_the_dedicated_builder(self):
+        body = self._material_payload_body()
+        self.assertIn("_build_coat_normal_painter(", body)
+
+    def test_the_pbr_payload_forwards_coat_normal_fields(self):
+        body = self._material_payload_body()
+        self.assertIn("coat_normal_painter_name=coat_normal_painter,", body)
+        self.assertIn("coat_normal_scale=coat_normal_scale,", body)
+
+    def test_a_direct_normal_map_node_is_the_only_supported_shape(self):
+        # Anything else on Coat Normal (not a direct ShaderNodeNormalMap)
+        # warns rather than silently doing nothing.
+        body = self._material_payload_body()
+        self.assertIn('coat_normal_source.bl_idname == "ShaderNodeNormalMap"', body)
+        self.assertIn("only supports a direct Normal Map node on Coat Normal", body)
+
+    # --- Alpha (DL-193) -------------------------------------------------
+
+    def test_alpha_socket_is_read(self):
+        body = self._material_payload_body()
+        self.assertIn('_node_input(principled_node, "Alpha")', body)
+
+    def test_blend_method_selects_the_alpha_mode(self):
+        body = self._material_payload_body()
+        self.assertIn('getattr(material, "blend_method", None)', body)
+        self.assertIn('"BLENDED": "BLEND"', body)
+        self.assertIn('"DITHERED": "HASHED"', body)
+        self.assertIn('blend_method == "CLIP"', body)
+        self.assertIn("ALPHA_MODE_CLIP", body)
+        self.assertIn("ALPHA_MODE_BLEND", body)
+
+    def test_every_material_payload_forwards_alpha_fields(self):
+        # All three MaterialData(...) constructions in the main path
+        # (Dielectric, RandomWalk SSS, PBR) must forward alpha -- it is
+        # not a PBR-only concept the way Coat Normal is.
+        body = self._material_payload_body()
+        self.assertEqual(body.count("alpha=alpha_value,"), 3)
+        self.assertEqual(body.count("alpha_texture_painter_name=alpha_texture_painter,"), 3)
+        self.assertEqual(body.count("alpha_mode=alpha_mode_value,"), 3)
+        self.assertEqual(body.count("alpha_threshold=alpha_threshold_value,"), 3)
+
+    def test_the_binding_computes_a_deterministic_shader_name(self):
+        body = self._material_payload_body()
+        self.assertIn('shader_name = f"{payload.name}.shader" if alpha_mode_value != ALPHA_MODE_OPAQUE else None', body)
+        self.assertIn("shader_name=shader_name,", body)
+
+    def test_alpha_texture_reads_the_raw_texture_not_a_flattened_view(self):
+        # Mirrors GLTFSceneImporter.cpp's BuildAlphaPainter comment: the
+        # native side extracts channel A itself (AddChannelPainter), so
+        # the exporter must register the whole (typically RGBA) image
+        # via _add_texture_painter, not a scalar-flattened wrapper.
+        body = self._material_payload_body()
+        self.assertIn(f'_add_texture_painter(\n                            state, f"{{material.name_full}}_alpha"', body)
+
+    # --- Tangent (DL-192, three-case split) -----------------------------
+
+    def test_tangent_socket_is_read(self):
+        body = self._material_payload_body()
+        self.assertIn('_node_input(principled_node, "Tangent")', body)
+
+    def test_case_i_active_uv_tangent_is_recognized_without_warning(self):
+        body = self._material_payload_body()
+        self.assertIn("_is_active_uv_tangent", body)
+        self.assertIn("Case (i): already bridged by construction", body)
+
+    def test_case_ii_constant_vector_rotate_composes_with_anisotropy_rotation(self):
+        body = self._material_payload_body()
+        self.assertIn('tangent_source.bl_idname == "ShaderNodeVectorRotate"', body)
+        self.assertIn("anisotropy_rotation_value += float(angle_input.default_value)", body)
+
+    def test_case_iii_anything_else_warns_and_names_dl213(self):
+        body = self._material_payload_body()
+        # The explanatory comment plus both runtime warnings (the
+        # non-constant-angle sub-case and the fully-arbitrary sub-case)
+        # must name DL-213 -- neither warning path may silently drop
+        # without naming where the residual is tracked.
+        self.assertGreaterEqual(body.count("DL-213"), 3)
+        self.assertIn(
+            'f"RISE only supports a CONSTANT rotation angle',
+            body,
+        )
+        self.assertIn(
+            "RISE's anisotropy direction always derives from the mesh's own UV tangent",
+            body,
+        )
 
 
 class _StubHairMaterial:
@@ -1037,6 +1188,15 @@ class _StubMaterial:
         self.subsurface_ior = 1.4
         self.subsurface_g = 0.0
         self.subsurface_roughness = 0.0
+        # ABI v14 -- DL-192/DL-193 (docs/DEBT_LEDGER.md).  None / 1.0 /
+        # OPAQUE(0) means "no coat-normal perturbation" / "fully
+        # opaque", matching every payload built before this debt closed.
+        self.coat_normal_painter_name = None
+        self.coat_normal_scale = 1.0
+        self.alpha = 1.0
+        self.alpha_texture_painter_name = None
+        self.alpha_mode = 0
+        self.alpha_threshold = 0.5
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -1240,6 +1400,112 @@ class BridgeMaterialCoatSubsurfaceMarshallingTest(unittest.TestCase):
         self.assertAlmostEqual(payload.coat_weight, 0.0, places=6)
         self.assertIsNone(payload.subsurface_absorption)
         self.assertIsNone(payload.subsurface_scattering)
+
+
+class BridgeMaterialCoatNormalAlphaMarshallingTest(unittest.TestCase):
+    """ABI v14's `coat_normal_*` / `alpha*` fields on `_marshal_material`
+    (DL-192/DL-193, docs/DEBT_LEDGER.md).
+
+    RED-PROOF HISTORY: before this debt closed, `bridge._Material` had
+    no `coat_normal_*`/`alpha*` fields at all, so the assignments in
+    `_marshal_material` this test exercises raised an `AttributeError`
+    -- mirrors `BridgeMaterialCoatSubsurfaceMarshallingTest`'s own
+    red-proof history for its v13 fields."""
+
+    def test_no_coat_normal_no_alpha_sends_defaults(self):
+        payload = _handle()._marshal_material(_StubMaterial())
+        self.assertIsNone(payload.coat_normal_painter_name)
+        self.assertAlmostEqual(payload.coat_normal_scale, 1.0, places=6)
+        self.assertAlmostEqual(payload.alpha, 1.0, places=6)
+        self.assertIsNone(payload.alpha_texture_painter_name)
+        self.assertEqual(payload.alpha_mode, 0)
+        self.assertAlmostEqual(payload.alpha_threshold, 0.5, places=6)
+
+    def test_coat_normal_fields_travel_through(self):
+        payload = _handle()._marshal_material(
+            _StubMaterial(coat_normal_painter_name="mat_coat_normal", coat_normal_scale=2.0)
+        )
+        self.assertEqual(payload.coat_normal_painter_name, b"mat_coat_normal")
+        self.assertAlmostEqual(payload.coat_normal_scale, 2.0, places=6)
+
+    def test_alpha_fields_travel_through(self):
+        payload = _handle()._marshal_material(
+            _StubMaterial(
+                alpha=0.4,
+                alpha_texture_painter_name="mat_alpha_tex",
+                alpha_mode=2,
+                alpha_threshold=0.75,
+            )
+        )
+        self.assertAlmostEqual(payload.alpha, 0.4, places=6)
+        self.assertEqual(payload.alpha_texture_painter_name, b"mat_alpha_tex")
+        self.assertEqual(payload.alpha_mode, 2)
+        self.assertAlmostEqual(payload.alpha_threshold, 0.75, places=6)
+
+    def test_a_pre_v14_exporter_payload_still_marshals(self):
+        # `_marshal_material` reads every v14 field with a getattr
+        # default, so an older exporter object that has never heard of
+        # them marshals as "no coat normal / fully opaque" rather than
+        # raising -- the same back-compat contract v10-v13 established.
+        stub = _StubMaterial()
+        for attr in (
+            "coat_normal_painter_name", "coat_normal_scale",
+            "alpha", "alpha_texture_painter_name", "alpha_mode", "alpha_threshold",
+        ):
+            delattr(stub, attr)
+        payload = _handle()._marshal_material(stub)
+        self.assertIsNone(payload.coat_normal_painter_name)
+        self.assertAlmostEqual(payload.coat_normal_scale, 1.0, places=6)
+        self.assertAlmostEqual(payload.alpha, 1.0, places=6)
+        self.assertEqual(payload.alpha_mode, 0)
+
+
+class _StubObject:
+    """The subset of `exporter.ObjectData` `_marshal_object` reads.
+    Deliberately a stand-in rather than the real dataclass -- see
+    `_StubMaterial`'s own docstring for why."""
+
+    def __init__(self, **kwargs):
+        self.name = "obj"
+        self.geometry_name = "geom"
+        self.material_name = "mat"
+        self.transform = [float(i) for i in range(16)]
+        self.casts_shadows = True
+        self.receives_shadows = True
+        self.visible = True
+        self.modifier_name = None
+        self.interior_medium_name = None
+        # ABI v14 -- DL-193 (docs/DEBT_LEDGER.md).  None means "no
+        # shader override", matching every payload built before this
+        # debt closed.
+        self.shader_name = None
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class BridgeObjectShaderMarshallingTest(unittest.TestCase):
+    """ABI v14's `shader_name` field on `_marshal_object` (DL-193,
+    docs/DEBT_LEDGER.md).
+
+    RED-PROOF HISTORY: before this debt closed, `bridge._Object` had no
+    `shader_name` field, and `add_object` (rise_blender_bridge.cpp)
+    always passed a hard-coded NULL shader to `IJob::AddObject` --
+    there was no ABI path from the exporter to an object's shader at
+    all."""
+
+    def test_no_shader_sends_null(self):
+        payload = _handle()._marshal_object(_StubObject())
+        self.assertIsNone(payload.shader_name)
+
+    def test_shader_name_travels_through(self):
+        payload = _handle()._marshal_object(_StubObject(shader_name="mat.shader"))
+        self.assertEqual(payload.shader_name, b"mat.shader")
+
+    def test_a_pre_v14_exporter_payload_still_marshals(self):
+        stub = _StubObject()
+        delattr(stub, "shader_name")
+        payload = _handle()._marshal_object(stub)
+        self.assertIsNone(payload.shader_name)
 
 
 class BridgeWarningDecodeTest(unittest.TestCase):

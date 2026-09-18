@@ -1199,6 +1199,21 @@ namespace RISE
 									const char* coat_tint			///< [in] Coat transmission colour (colour painter)
 									);
 
+		//! DL-192: see IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddCoatedMaterialEx(
+									const char* name,
+									const char* base,
+									const char* coat_weight,
+									const char* coat_ior,
+									const char* coat_roughness,
+									const char* coat_thickness,
+									const char* coat_absorption,
+									const char* coat_tint,
+									const char* coat_normal,
+									const double coat_normal_scale
+									);
+
 		bool AddFabricMaterial(
 									const char* name,				///< [in] Name of the material
 									const char* fabric,				///< [in] Preset name (see FabricPresets.h)

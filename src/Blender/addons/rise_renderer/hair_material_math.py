@@ -124,3 +124,23 @@ def offset_radians_to_alpha_degrees(offset_radians: float) -> float:
     """
 
     return math.degrees(float(offset_radians))
+
+
+def anisotropic_rotation_turns_to_radians(turn_fraction: float) -> float:
+    """Convert Blender Principled BSDF's 'Anisotropic Rotation' socket
+    (a [0, 1] FRACTION OF A FULL TURN — Cycles applies `2*pi*value`
+    internally; NOT radians, unlike every other angle-typed socket
+    this add-on reads, e.g. Principled Hair BSDF's 'Offset' above or a
+    `ShaderNodeVectorRotate` node's 'Angle' socket) into RADIANS, the
+    unit RISE's `tangent_rotation`/`tangent_rotation_scalar` slots
+    require (`MicrofacetUtils::RotateTangent` calls raw `cos`/`sin` on
+    the value; `weave_rotation`'s own chunk descriptor says radians).
+
+    DL-208 (docs/DEBT_LEDGER.md): every Blender anisotropic material
+    with a nonzero "Anisotropic Rotation" exported the raw [0, 1] turn
+    fraction unconverted since Landing 8 (`25d271df`) — a material
+    dialled to a quarter turn (0.25, i.e. 90 degrees in Cycles) was
+    rendered rotated by 0.25 RADIAN (~14.3 degrees) instead.
+    """
+
+    return 2.0 * math.pi * float(turn_fraction)

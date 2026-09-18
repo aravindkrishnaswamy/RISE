@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 13
+_EXPECTED_API_VERSION = 14
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -155,6 +155,14 @@ class _Material(ctypes.Structure):
         ("subsurface_ior", ctypes.c_double),
         ("subsurface_g", ctypes.c_double),
         ("subsurface_roughness", ctypes.c_double),
+        # ABI v14 (DL-192, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("coat_normal_painter_name", ctypes.c_char_p),
+        ("coat_normal_scale", ctypes.c_double),
+        # ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("alpha", ctypes.c_double),
+        ("alpha_texture_painter_name", ctypes.c_char_p),
+        ("alpha_mode", ctypes.c_int),
+        ("alpha_threshold", ctypes.c_double),
     ]
 
 
@@ -187,6 +195,8 @@ class _Object(ctypes.Structure):
         ("visible", ctypes.c_int),
         ("modifier_name", ctypes.c_char_p),
         ("interior_medium_name", ctypes.c_char_p),
+        # ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("shader_name", ctypes.c_char_p),
     ]
 
 
@@ -734,6 +744,14 @@ class _SceneHandle:
         payload.subsurface_ior = float(getattr(material, "subsurface_ior", 1.4))
         payload.subsurface_g = float(getattr(material, "subsurface_g", 0.0))
         payload.subsurface_roughness = float(getattr(material, "subsurface_roughness", 0.0))
+        # ABI v14 -- same `getattr` tolerance pattern as v10-v13 above
+        # (DL-192/DL-193, docs/DEBT_LEDGER.md).
+        payload.coat_normal_painter_name = self._cstring(getattr(material, "coat_normal_painter_name", None))
+        payload.coat_normal_scale = float(getattr(material, "coat_normal_scale", 1.0))
+        payload.alpha = float(getattr(material, "alpha", 1.0))
+        payload.alpha_texture_painter_name = self._cstring(getattr(material, "alpha_texture_painter_name", None))
+        payload.alpha_mode = int(getattr(material, "alpha_mode", 0))
+        payload.alpha_threshold = float(getattr(material, "alpha_threshold", 0.5))
         return payload
 
     def _marshal_mesh(self, mesh):
@@ -764,6 +782,8 @@ class _SceneHandle:
         payload.visible = int(obj.visible)
         payload.modifier_name = self._cstring(obj.modifier_name)
         payload.interior_medium_name = self._cstring(obj.interior_medium_name)
+        # ABI v14 -- same `getattr` tolerance pattern as above (DL-193).
+        payload.shader_name = self._cstring(getattr(obj, "shader_name", None))
         return payload
 
     def _marshal_light(self, light):

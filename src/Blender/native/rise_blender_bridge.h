@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 13
+#define RISE_BLENDER_API_VERSION 14
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +54,17 @@ enum rise_blender_color_space {
 	// Rec709->ROMM colour matrix — required for normal-map painters
 	// so the RGB-encoded surface tangent stays bit-exact.
 	RISE_BLENDER_COLOR_ROMM_LINEAR = 2
+};
+
+// ABI v14 (DL-193, docs/DEBT_LEDGER.md).  How `rise_blender_material`'s
+// Alpha socket is wired into a per-material shader-op chain -- see
+// that struct's own `alpha_mode` field comment for the full mapping
+// (OPAQUE = no chain at all; CLIP = AddAlphaTestShaderOp cutout;
+// BLEND = transparency_shaderop, also used for Blender's HASHED mode).
+enum rise_blender_alpha_mode {
+	RISE_BLENDER_ALPHA_OPAQUE = 0,
+	RISE_BLENDER_ALPHA_CLIP = 1,
+	RISE_BLENDER_ALPHA_BLEND = 2
 };
 
 enum rise_blender_modifier_kind {
@@ -412,6 +423,62 @@ typedef struct rise_blender_material {
 	double subsurface_ior;
 	double subsurface_g;
 	double subsurface_roughness;
+
+	// ABI v14 (DL-192, docs/DEBT_LEDGER.md; source heading DL-186's own
+	// sibling audit).  PBR_METALLIC_ROUGHNESS ONLY, and only consumed
+	// in the `hasCoat && !hasSheen` branch (a coat wrap over sheen is
+	// skipped entirely, so its normal has nothing to attach to):
+	// Principled BSDF's "Coat Normal" socket, an already-registered
+	// COLOUR painter (a Normal Map node, textured -- RGB [0,1] encoding
+	// a tangent-space vector, the same `normal_map_modifier` convention
+	// the object-level `modifier_name` field's normal map already
+	// uses).  Applied ONLY to the coat's own GGX reflection lobe --
+	// the substrate keeps its own (possibly separately normal-mapped)
+	// shading normal unchanged.  NULL/empty (the default) = no
+	// perturbation, bit-identical to a pre-v14 payload.
+	// `coat_normal_scale` is the xy multiplier (glTF
+	// `normalTexture.scale`'s analogue; Blender's Normal Map node
+	// "Strength" slider binds here); ignored when
+	// `coat_normal_painter_name` is unset, and -- matching `coat_ior`'s
+	// own `> 0.0 ? : default` convention immediately above -- a
+	// non-positive value falls back to 1.0 rather than the (rare,
+	// legitimately flat) 0.0, since a memset-zero test/exporter struct
+	// cannot distinguish "unset" from a genuine 0.
+	const char* coat_normal_painter_name;
+	double coat_normal_scale;
+
+	// ABI v14 (DL-193, docs/DEBT_LEDGER.md; source heading DL-186's own
+	// "Alpha deliberately left unbridged" decision, now closed).
+	// Principled BSDF's Alpha socket.  `alpha_mode` selects HOW the
+	// bridge wires it (see `rise_blender_alpha_mode` above): OPAQUE
+	// (default, ABI-compatible with a pre-v14 payload) ignores `alpha`/
+	// `alpha_texture_painter_name`/`alpha_threshold` entirely; CLIP
+	// builds an `AddAlphaTestShaderOp` cutout at `alpha_threshold`;
+	// BLEND builds a `transparency_shaderop` (Blender's HASHED mode
+	// maps to this same path -- RISE has one stochastic-transparency
+	// mechanism, not a separate dithered one).  `alpha` is the constant
+	// fallback read when `alpha_texture_painter_name` is NULL/empty;
+	// when set, that name is an already-registered COLOUR painter (the
+	// connected Image Texture) whose ALPHA channel (index 3) the bridge
+	// extracts via `IJob::AddChannelPainter` -- mirroring
+	// `GLTFSceneImporter.cpp`'s own `WireAlphaShader`/`BuildAlphaPainter`
+	// convention exactly.  See `AlphaTestShaderOp.h`'s own integrator-
+	// compatibility caveat -- measured directly for this row (DL-193):
+	// `pixelpel_rasterizer` is the ONLY rasterizer that honours the
+	// resulting shader-op chain.  BDPT/VCM/MLT/photon tracers AND the
+	// modern PT integrator (`pathtracing_pel_rasterizer`, what this
+	// bridge's PT_PEL/PT_SPECTRAL rasterizer kinds build) all silently
+	// ignore it regardless of `alpha_mode` -- `PathTracingIntegrator.cpp`
+	// evaluates emission/BSDF/NEE directly, with no reference to
+	// `RayCaster::SelectShader`/`ri.pShader` anywhere in it (filed as
+	// the general architecture gap DL-214, docs/DEBT_LEDGER.md, not
+	// specific to this bridge).  `rise_blender_render_scene` warns at
+	// render time from wherever it already reports the resolved
+	// integrator (the "Auto -> X" surfacing).
+	double alpha;
+	const char* alpha_texture_painter_name;
+	int alpha_mode;
+	double alpha_threshold;
 } rise_blender_material;
 
 typedef struct rise_blender_mesh {
@@ -440,6 +507,18 @@ typedef struct rise_blender_object {
 	int visible;
 	const char* modifier_name;
 	const char* interior_medium_name;
+	// ABI v14 (DL-193, docs/DEBT_LEDGER.md): the name of an
+	// already-registered `advanced_shader` (via `IJob::AddAdvancedShader`,
+	// the SAME per-material `[Emission +, DirectLighting +, alpha =]`
+	// chain `GLTFSceneImporter.cpp`'s `WireAlphaShader` builds) to bind to
+	// this object instead of the renderer's default per-rasterizer
+	// shader -- mirrors `IJob::AddObject`'s own `shaderName` parameter,
+	// which the bridge always passed NULL before this row.  NULL/empty
+	// (the default) = no override, bit-identical to a pre-v14 payload.
+	// Set by the exporter per-object from the bound material's resolved
+	// alpha shader name (computed once per material, since the shader
+	// itself is registered at material-add time, not per-object).
+	const char* shader_name;
 } rise_blender_object;
 
 typedef struct rise_blender_light {

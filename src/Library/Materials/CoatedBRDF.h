@@ -186,7 +186,26 @@ namespace RISE
 				//! exactly one production caller, `CoatedMaterial`, but the
 				//! default keeps any test-only direct construction
 				//! bit-identical to its old behaviour) is unaffected.
-				const bool baseScattersFullSphere = false
+				const bool baseScattersFullSphere = false,
+				//! [in] DL-192: optional tangent-space normal map applied
+				//! ONLY to the coat's own GGX lobe (Blender Principled
+				//! BSDF's "Coat Normal" socket) -- the substrate keeps its
+				//! own (possibly separately normal-mapped) shading normal
+				//! unchanged.  NULL (the default) is bit-identical to a
+				//! pre-DL-192 CoatedBRDF: `ResolveCoatFrame` returns its
+				//! input frame unchanged.  Decoded with the same glTF
+				//! convention `NormalMap.cpp` uses (RGB [0,1] -> tangent
+				//! vector [-1,1], z reconstructed), scaled by
+				//! `coatNormalScale` (the xy multiplier -- glTF
+				//! normalTexture.scale's analogue; Blender's Normal Map
+				//! node "Strength" slider binds here).  addref'd like
+				//! every other painter slot; never rebindable (no
+				//! `SetCoatNormal`) because nothing in tree needs to swap
+				//! it and the trailing-default-param ABI-preserving
+				//! extension point (RISE_API_CreateCoatedMaterial) only
+				//! promises construction-time binding.
+				const IPainter* coatNormal = 0,
+				const Scalar coatNormalScale = Scalar(1)
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
@@ -205,6 +224,28 @@ namespace RISE
 			//! The substrate as seen by the layer.  CoatedSPF needs
 			//! both to build its mixture.
 			inline const IBSDF& GetBase() const { return *pBase; }
+
+			//! DL-192: resolve the per-lobe COAT shading frame at `ri`,
+			//! given the substrate's already ray-facing `baseOnb`
+			//! (`value`/`valueNM`/`CoatedSPF` all compute this the same
+			//! way -- `RayFacingONB(ri)` -- before calling in, so the
+			//! frame these three agree on to gate/evaluate/sample the
+			//! REST of the layer is exactly the one this perturbs).
+			//! Returns `baseOnb` UNCHANGED when no `coatNormal` painter
+			//! is bound (the common case) -- the ONE place this decision
+			//! is made, so `value`, `Scatter` and `Pdf` cannot drift
+			//! (DL-100's frame trap).  `baseOnb.u()/.v()/.w()` are used
+			//! directly as the decode's tangent/bitangent/normal triple
+			//! (ModifierFrame.h's own note: `Object::IntersectRay`
+			//! already built `ri.onb` from the object's tangent, via
+			//! `CreateFromWU`, so this is the SAME frame `NormalMap`
+			//! would independently re-derive in the common textured-mesh
+			//! case -- just already ray-facing, avoiding a second,
+			//! divergent flip decision).
+			OrthonormalBasis3D ResolveCoatFrame(
+				const RayIntersectionGeometric& ri,
+				const OrthonormalBasis3D& baseOnb
+				) const;
 
 			//! DL-23: does the SUBSTRATE scatter over the full sphere?
 			//! `CoatedSPF` reads it back through here so the sampler and
@@ -229,6 +270,10 @@ namespace RISE
 			inline const IScalarPainter& GetCoatThickness()  const { return *pCoatThickness; }
 			inline const IScalarPainter& GetCoatAbsorption() const { return *pCoatAbsorption; }
 			inline const IPainter&       GetCoatTint()       const { return *pCoatTint; }
+			//! DL-192.  NULL = no coat-normal perturbation bound (the
+			//! pre-DL-192 / default state).
+			inline const IPainter*       GetCoatNormal()      const { return pCoatNormal; }
+			inline Scalar                GetCoatNormalScale() const { return coatNormalScale; }
 
 			//! Rebind for the interactive editor's MaterialIntrospection.
 			//! Unlike every other triad in Materials/, these do NOT need a
@@ -271,6 +316,8 @@ namespace RISE
 			const IPainter*			pCoatTint;
 			const bool				bRecycling;
 			bool					bBaseFullSphere;	///< DL-23: see the ctor parameter and CoatedBRDF.cpp's transmission section
+			const IPainter*			pCoatNormal;		///< DL-192: optional coat-lobe-only normal map; NULL = none
+			Scalar					coatNormalScale;	///< DL-192: xy scale on the decoded tangent-space normal
 		};
 	}
 }

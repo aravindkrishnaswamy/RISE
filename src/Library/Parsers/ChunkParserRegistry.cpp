@@ -3679,10 +3679,15 @@ namespace RISE
 					// explicit black painter by name.
 					std::string tint       = bag.GetString( "coat_tint",       "none" );
 
-					return pJob.AddCoatedMaterial(
+					// DL-192: coat-lobe-only normal map, `normal_map_modifier`'s
+					// own "none" sentinel convention (unset = no perturbation).
+					std::string coat_normal = bag.GetString( "coat_normal", "none" );
+					double coat_normal_scale = bag.GetDouble( "coat_normal_scale", 1.0 );
+
+					return pJob.AddCoatedMaterialEx(
 						name.c_str(), base.c_str(), weight.c_str(), ior.c_str(),
 						roughness.c_str(), thickness.c_str(), absorption.c_str(),
-						tint.c_str() );
+						tint.c_str(), coat_normal.c_str(), coat_normal_scale );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3706,6 +3711,10 @@ namespace RISE
 						  p.description = "Coat absorption coefficient in 1/length (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  Deliberately on the SCALAR pipe, not the colour pipe: a large coefficient routed through a colour painter would be silently clamped by the Jakob-Hanika spectral uplift.  Use `coat_tint` for a coloured coat.  0 (default) is a perfectly clear film."; }
 						{ auto& p = P(); p.name = "coat_tint";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
 						  p.description = "Colour transmitted by ONE normal-incidence traversal of the coat (COLOUR painter -- this is the one coat slot that is genuinely a colour, e.g. a tinted lacquer).  Applied on the way in and again on the way out, raised to the obliquity factor so grazing paths tint more.  Independent of `coat_thickness` by construction.  `none` (the default) means UNTINTED, i.e. white -- it is NOT read as the built-in black `none` painter, which would make a clear coat opaque.  Bind an explicit black painter by name if a fully absorbing coat is what you want."; }
+						{ auto& p = P(); p.name = "coat_normal";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.defaultValueHint = "none";
+						  p.description = "DL-192: optional coat-lobe-only tangent-space normal map (COLOUR painter -- an RGB [0,1] encoding of a tangent-space vector, the SAME convention `normal_map_modifier`'s own `normal_map` parameter decodes; load with `color_space Rec709RGB_Linear` for a verbatim store).  Applied ONLY to the coat's own GGX reflection lobe -- the substrate keeps its own (possibly separately normal-mapped) shading normal unchanged.  `none` (the default) means no perturbation, bit-identical to a bare `coated_material`."; }
+						{ auto& p = P(); p.name = "coat_normal_scale"; p.kind = ValueKind::Double; p.defaultValueHint = "1.0";
+						  p.description = "DL-192: xy multiplier on the decoded tangent-space normal (glTF `normalTexture.scale`'s analogue; Blender's Normal Map node \"Strength\" slider binds here).  Ignored when `coat_normal` is unset."; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();

@@ -565,13 +565,58 @@ silently.  A material with Coat but no Sheen wraps the PBR base
 directly, exactly like the `coated_material.RISEscene` regression
 scene's own `mat_lacquer`/`mat_wet` examples.
 
-**Coat Normal and Tangent are still unread** (no reader, no ABI
-field) — filed as **DL-192**, not attempted here: Coat Normal needs a
-new coat-lobe-specific normal-perturbation slot threaded through
-`CoatedBRDF`/`CoatedSPF` (a `CoatedMaterial`-internal change, not just
-an ABI field), and Tangent needs a per-object/per-vertex
-tangent-override mechanism RISE does not currently have (its GGX
-anisotropy direction derives from the mesh's own UV tangent basis).
+### Coat Normal -> `coated_material`'s coat lobe (ABI v14, DL-192)
+
+Blender's Principled "Coat Normal" socket perturbs ONLY the clearcoat
+GGX lobe, leaving the substrate's own shading normal (and therefore
+its diffuse/base-specular response) untouched — Cycles renders coat
+and substrate as two independently-normal-mapped layers.  RISE now
+matches this exactly, rather than either ignoring the socket or
+(wrongly) routing it into the substrate's own normal map.
+
+`rise_blender_material` gained two fields: `coat_normal_painter_name`
+(a tangent-space normal map, same glTF/`NormalMap.h` convention as
+every other RISE normal-map slot — RGB[0,1] -> [-1,1], Z reconstructed
+via `sqrt(1 - nx^2 - ny^2)`) and `coat_normal_scale` (a numeric-only
+strength multiplier — there is no per-texel "normal scale texture"
+concept in RISE or Blender, so this stays a plain scalar with no
+texture-exception field).  Both are consumed only when Coat wraps the
+PBR base directly (`hasCoat && !hasSheen` — see the layering rule
+above; a coat that lost to sheen never reaches `coated_material` at
+all, so a coat normal on such a material is warned and dropped along
+with the rest of the coat).
+
+Engine side, this is a genuine `CoatedMaterial`-internal change, not
+just an ABI field: `CoatedBRDF`/`CoatedSPF`/`CoatedMaterial` all gained
+a trailing `(const IPainter* coatNormal = 0, const Scalar
+coatNormalScale = 1)` — bit-identical to every pre-existing caller
+when omitted — and a single shared `CoatedBRDF::ResolveCoatFrame(ri,
+baseOnb)` function that `value()`, `valueNM()`, and every
+`CoatedSPF::{Scatter,ScatterNM,Pdf,PdfNM}` call route through, so the
+coat lobe's sampling frame cannot drift from its evaluation frame
+(the DL-100 "frame trap" — a sampler/evaluator/Pdf must all agree on
+one shading frame).  The perturbed frame feeds ONLY the coat GGX
+lobe's own half-vector math; the substrate is reached through the
+UNPERTURBED base frame exactly as before DL-192.
+
+The native bridge calls a new tail-appended `IJob::AddCoatedMaterialEx`
+(the pre-existing 8-parameter `AddCoatedMaterial` is frozen for ABI
+stability and now forwards to `AddCoatedMaterialEx` with
+`coat_normal="none"` — IJob's vtable is append-only, per-slice policy;
+`tests/IJobVtableManifest.txt` grew exactly one line).  The scene
+language's `coated_material` chunk gained the matching `coat_normal`
+/`coat_normal_scale` parameters, so a coat normal is authorable
+outside the Blender bridge too.
+
+**Money test** (`tests/BlenderBridgeCoatNormalTest.cpp`): a coat
+normal map encoding a known 20-degree world-space tilt moves the
+coat's specular peak by the closed-form reflected angle — evaluating
+`value()` at a fixed view direction against an untilted vs. a tilted
+material shows the peak swap from the "flat" light direction to the
+"tilted" one, while the substrate's own diffuse response is unchanged
+between the two (confirming the perturbation stays scoped to the coat
+lobe).  `CoatedSPF::Pdf` was independently checked to agree with
+`value()` on where the resulting density lives.
 
 ### Subsurface -> `randomwalk_sss_material` (ABI v13)
 
@@ -633,30 +678,151 @@ native bridge (`add_randomwalk_sss_material`), matching the
 convention `scenes/Tests/SubsurfaceScattering/rwsss_sphere.RISEscene`
 already uses; there is no Blender socket this would come from anyway.
 
-### Alpha — deliberately left unbridged (DL-193)
+### Alpha -> a per-material `advanced_shader` op chain (ABI v14, DL-193)
 
-Unlike Coat and Subsurface, Alpha is NOT a missing ABI field — it is
-a missing SUBSYSTEM.  RISE has a reachable construction-API alpha
-path (`IJob::AddAlphaTestShaderOp` for cutout, a
-`transparency_shaderop` for blend — both already used by
-`GLTFSceneImporter.cpp`'s `WireAlphaShader`), but both require
-building a per-material `advanced_shader` OP CHAIN
-(`Job::AddAdvancedShader`,
-`[Emission +, DirectLighting +, alpha_test_or_transparency =]`) that
-REPLACES the renderer's always-on default shader for that one
-material — a mechanism the Blender bridge (`rise_blender_bridge.cpp`)
-has none of today; it always renders through the default
-per-rasterizer shader.  A `rise_blender_material` alpha field would
-therefore be a genuinely DEAD ABI field until that shader-op-chain
-bridging exists, which is exactly what the slice that closed DL-186
-was instructed not to add.  `AlphaTestShaderOp.h`'s own
-"integrator-compatibility caveat" is a second reason a real fix needs
-more than a field: even a fully wired version only works under PT and
-the legacy direct shaders — BDPT/VCM/MLT/photon tracers silently
-ignore it — so closing this needs a rasterizer-aware export-time
-warning too.  Filed as **DL-193**.  `exporter.py`'s existing
-warn-and-drop behaviour on a non-default/linked Alpha socket is
-unchanged.
+Alpha was never a missing ABI field — it was a missing SUBSYSTEM: RISE
+has always had a reachable construction-API alpha path
+(`IJob::AddAlphaTestShaderOp` for cutout, a `transparency_shaderop`
+for blend — both already used by `GLTFSceneImporter.cpp`'s
+`WireAlphaShader`), but both require building a per-material
+`advanced_shader` OP CHAIN that REPLACES the renderer's always-on
+default shader for that one object.  The Blender bridge now builds
+that chain.
+
+`rise_blender_material` gained `alpha` (numeric fallback),
+`alpha_texture_painter_name` (a per-texel alpha channel — read via
+`AddChannelPainter`'s `CHAN_A` view of the connected image, mirroring
+`BuildAlphaPainter`'s own convention), `alpha_mode`
+(`RISE_BLENDER_ALPHA_OPAQUE` / `_CLIP` / `_BLEND`; Blender's HASHED
+maps to BLEND — RISE has no separate stochastic-alpha mechanism) and
+`alpha_threshold` (CLIP's cutoff).  `rise_blender_object` gained
+`shader_name`, mirroring `IJob::AddObject`'s own pre-existing (and,
+before this row, always-NULL) per-object `shader` override parameter.
+
+The chain itself is built by a new shared helper,
+`RISE::Utilities::WireAlphaAdvancedShader`
+([src/Library/Shaders/AdvancedShaderWiring.h](../src/Library/Shaders/AdvancedShaderWiring.h),
+header-only), used by BOTH `GLTFSceneImporter.cpp`'s `WireAlphaShader`
+and the Blender bridge's own `wire_alpha_shader_for_material` — so the
+two importers cannot silently drift apart on the chain's shape.  It
+builds `[DefaultEmission +, DefaultDirectLighting +,
+alpha_test_or_transparency =]`: CLIP binds an `AddAlphaTestShaderOp`
+cutout at `alpha_threshold`; BLEND (and HASHED) binds a
+`transparency_shaderop` at the resolved alpha value, matching
+`GLTFSceneImporter.cpp`'s own `alphaMode=BLEND` construction verbatim.
+A material with `alpha_mode OPAQUE` (the default) never wires a
+shader override at all — bit-identical to a pre-ABI-v14 payload.
+
+**Only `pixelpel_rasterizer` reaches this mechanism (DL-214).**  While
+building this row's own render-level red-proof, `AlphaTestShaderOp.h`'s
+prior comment claiming "the path tracer (PT)" also honours this chain
+was checked directly and found FALSE: `PathTracingIntegrator.cpp` —
+what `pathtracing_pel_rasterizer` actually runs, and this bridge's
+(and RISE's) DEFAULT integrator — has zero references to
+`RayCaster::SelectShader`/`ri.pShader` anywhere in it; it evaluates
+emission/BSDF/NEE directly against `ri.pMaterial`, entirely bypassing
+the shader-op pipeline this alpha mechanism lives in.
+`pixelpel_rasterizer` (RISE's legacy, direct-lighting-only rasterizer,
+built via `Job::SetPixelBasedPelRasterizer`) is the ONLY rasterizer
+kind that dispatches every hit through `RayCaster::CastRay`/
+`SelectShader`, and therefore the only one that can ever honour a
+per-object shader override — BDPT, VCM, MLT, and every photon tracer
+were already documented as incompatible; PT was wrongly documented as
+compatible and is not.  `AlphaTestShaderOp.h`'s comment,
+`rise_blender_bridge.h`'s `alpha_mode` field comment, and this
+section were all corrected to name the actual compatible set.  Filed
+as the general engine-architecture finding **DL-214** (not specific
+to this bridge — `GLTFSceneImporter.cpp`'s own alphaMode handling has
+had the identical gap since whichever PT rewrite superseded the
+shader-op-based implementation the stale comment once described), not
+fixed here.
+
+The bridge now warns at both the pre-render (explicit rasterizer kind)
+and post-render (Auto-resolved kind) checks for EVERY rasterizer kind
+except `pixelpel_rasterizer` whenever any material carries a non-OPAQUE
+`alpha_mode` — a correction from this slice's own first draft, which
+warned only for BDPT/VCM/MLT and would have silently under-warned for
+PT_PEL/PT_SPECTRAL/Auto.
+
+**Chain-aware MIS is automatic, not special-cased.**  This alpha op
+chain has no `DistributionTracingShaderOp`, so under the chain-aware
+MIS-partner rule DL-171 shipped (`StandardShader`/
+`AdvancedShader::ResolveChainFlagsForDepth`'s `chainHasBsdfContinuationOp`
+flag, resolved generically via `dynamic_cast<DistributionTracingShaderOp*>`
+over the shader's own op list) both `EmissionShaderOp` and
+`DirectLightingShaderOp`'s NEE arm correctly see "no competing
+BSDF-sampled continuation strategy exists in this chain" and resolve
+to full weight — the alpha op itself (CLIP/BLEND) is not a
+`DistributionTracingShaderOp` and does not register as one.  This
+needed no bridge-side code: the mechanism is generic over any shader's
+op list, and DL-171 landed on master (`ce044c93`, this slice's own
+base commit) before this row started.  Confirmed by inspection of
+`ResolveChainFlagsForDepth` (checks only for `DirectLightingShaderOp`
+and `DistributionTracingShaderOp`, matching neither alpha op) and by
+`tests/BlenderBridgeAlphaTest.cpp`'s `pixelpel_rasterizer` row, whose
+cut/kept card regions match the closed-form Lambertian-emitter
+radiance (`exitance/pi`) to four significant figures — a value that
+would be off by a factor of two under either a missing-partner
+double-count or an over-suppressed NEE arm.
+
+**Money test** (`tests/BlenderBridgeAlphaTest.cpp`, 22 checks): a
+two-card-over-an-emissive-backdrop scene, one card `alpha=0.0`/CLIP
+(cut) and one `alpha=1.0`/CLIP (kept), rendered under
+`pixelpel_rasterizer` (cut region reads pure backdrop; kept region
+reads the card's own colour), `pathtracing_pel_rasterizer`, and
+`bdpt_pel_rasterizer` (both ignore `alpha` on both cards, per the
+documented DL-214 caveat, and both trigger the rasterizer-compatibility
+warning).
+
+### Tangent -> anisotropy direction (ABI v14, DL-192 + DL-213 + DL-208)
+
+**Unit correction (DL-208, found by review round 1 of this same
+closure):** Blender's Principled "Anisotropic Rotation" socket is a
+[0, 1] FRACTION OF A FULL TURN — Cycles applies `2*pi*value`
+internally — not radians, unlike every other angle-typed socket this
+add-on reads (Principled Hair BSDF's "Offset"; a `ShaderNodeVectorRotate`
+"Angle" socket, case 2 below).  RISE's `tangent_rotation`/
+`tangent_rotation_scalar` are radians (`MicrofacetUtils::RotateTangent`
+calls raw `cos`/`sin`).  `exporter.py` now converts at the read site
+via a pure `anisotropic_rotation_turns_to_radians` helper in
+`hair_material_math.py` before anything (including case 2's own
+composition, below) uses the value — every Blender anisotropic
+material with a nonzero rotation exported wrong (off by a factor of
+`2*pi`/turn-fraction) since Landing 8 (`25d271df`) until this fix.
+
+RISE's `ggx_material` anisotropy direction is derived entirely from
+the mesh's own UV tangent basis (`Object::IntersectRay`'s
+`bShadingTangentFromGeometry` construction), optionally rotated by
+ONE scalar (`tangent_rotation`/`tangent_rotation_scalar`, DL-16) —
+there is no per-object, per-vertex, or per-texel tangent-BASIS
+override mechanism.  Blender's Principled "Tangent" input graph maps
+onto exactly three cases:
+
+1. **A `ShaderNodeTangent` in UV_MAP mode naming the active (or no) UV
+   map.**  Needs NO bridging at all — RISE's own mesh tangent basis
+   IS this direction by construction (`GGXBRDF::ResolveTangentONB`
+   returns the mesh's `ri.onb` unchanged when no rotation painter is
+   bound).  `exporter.py` now documents this explicitly (an
+   `_is_active_uv_tangent` predicate plus an explanatory comment)
+   instead of leaving the socket entirely unread and unremarked.
+
+2. **A CONSTANT Z-axis `ShaderNodeVectorRotate` feeding a
+   Tangent(UV_MAP) node.**  Composes by simple addition onto the SAME
+   `anisotropy_rotation`/`tangent_rotation_scalar` slot Principled's
+   own "Anisotropic Rotation" input already binds (DL-16) — both are
+   angles around the mesh tangent frame's own axis, so the two sum.
+
+3. **Anything else** — a second UV map's tangent basis, a fully
+   procedural direction (built from `Geometry`/`Object Info`/noise
+   nodes), or a non-constant (linked/textured) Vector Rotate angle.
+   RISE has no mechanism for any of these: closing it needs a
+   mesh-level tangent-BASIS override (e.g. importing a second UV map's
+   tangent as an alternate mesh attribute, or a per-vertex direction
+   buffer) threaded through the same place `Object::IntersectRay`
+   derives the coherent tangent — a materially larger, mesh-data-model
+   change than an ABI field or a material-slot fix.  This case is now
+   WARNED AND DROPPED (previously: silently unread, no warning at all)
+   naming **DL-213**, the mesh-level mechanism this would need.
 
 ## Hair / fur export
 
@@ -1072,6 +1238,83 @@ stays manually validated only.
   scalar), SSS+emission keeps both, missing coefficients fail fatally,
   and an ordinary PBR material is unaffected by the new model's mere
   existence.
+
+### Coat Normal, Alpha, and Tangent (ABI v14) coverage
+
+Same split again; DL-192/DL-193 close three sockets with real code
+(Coat Normal, Alpha, and Tangent cases i/ii) and split the residual
+(Tangent case iii) to DL-213.
+
+- Python (bpy-free): `test_hair_export.py` gained
+  `BridgeMaterialCoatNormalAlphaMarshallingTest` (4 tests — the six new
+  `_Material` fields and the new `_Object.shader_name` field marshal
+  through `_marshal_material`/`_marshal_object` unchanged, a pre-v14
+  stub still marshals via `getattr` defaults) and
+  `BridgeObjectShaderMarshallingTest` (3 tests, alongside a new
+  `_StubObject`).  `ExporterCoatNormalAlphaTangentGatingTest` (13
+  source-level tests, since `_material_payload` needs a live `bpy`
+  scene and cannot be called from this bpy-free harness) instead
+  greps `exporter.py`'s own source for the expected gating structure —
+  the `_is_active_uv_tangent` predicate, the DL-213 warning naming its
+  own id, the `_build_coat_normal_painter` call site, and the alpha
+  `blend_method`/`surface_render_method` resolution — all 13 checks
+  were RED against the pre-fix `exporter.py` (confirming they
+  discriminate the fix, not just its presence) and GREEN after.  The
+  pre-existing generic `test_all_pointer_target_structs_match`
+  extended automatically to the new fields, as it did for ABI v13.
+- C++: `tests/BlenderBridgeCoatNormalTest.cpp` (new, 15 checks) and
+  `tests/BlenderBridgeAlphaTest.cpp` (new, 22 checks) compile
+  `rise_blender_bridge.cpp` into their own translation unit, the same
+  idiom `BlenderBridgeCoatTest.cpp`/`BlenderBridgeFabricTest.cpp` use.
+  Coat Normal's money test and Alpha's money test are both described
+  above, in their own sections.  Both suites include an ABI-version
+  compile-fail check (the genuine red-proof for a brand-new struct
+  field, per the DL-186/DL-18 precedent) and a no-op check (an
+  unset/default field renders bit-identically to a pre-v14 payload).
+  `tests/BlenderBridgeCoatTest.cpp`,
+  `tests/BlenderBridgeSSSTest.cpp`,
+  `tests/BlenderBridgeHairTest.cpp`, and
+  `tests/BlenderBridgeFabricTest.cpp` all had their
+  `RISE_BLENDER_API_VERSION == 13` assertion bumped to `14` alongside
+  the bump, in the same commit that changed the header — the
+  ABI-bump discipline `test_hair_export.py`'s own version-assertion
+  history documents.
+- Engine-level (not bridge-specific): `tests/CoatedMaterialChunkTest`,
+  `SPFPdfConsistencyTest`, and `SPFBSDFConsistencyTest` all stayed
+  green through the `CoatedBRDF`/`CoatedSPF`/`CoatedMaterial`
+  trailing-parameter extension — none of them bind a coat normal, so
+  this is a no-regression pin on the ABI-preserving-extension-point
+  claim, not coverage of the coat-normal mechanism itself.
+  `tests/IJobVtableManifest.txt` grew exactly the one line
+  `AddCoatedMaterialEx` tail-appends, confirmed via
+  `RISE_REGEN_IJOB_VTABLE_MANIFEST=1` reproducing the file byte-for-
+  byte.  `LayeredWhiteFurnaceTest` gained a genuine coat-normal
+  config (review round 1, P2-2 — the ORIGINAL "0/57 passed" claim was
+  true but vacuous, since none of the suite's 7 pre-existing
+  `CoatedMaterial` configs binds a non-null coat normal): config 57 is
+  config 11's material (varnish over white Lambertian) plus a
+  5-degree coat-normal tilt in +Y, gated two-sided in the SAME 2%
+  band config 11 itself uses (a pure redirection of the coat lobe
+  moves energy across incidence angles but cannot create or destroy
+  it) — `LayeredWhiteFurnaceTest`: 0/58.  The test's own comment
+  records two rejected geometries and why: a tilt coplanar with the
+  suite's incidence sweep pushes one column to an effective 90-degree
+  local incidence (a GGX-grazing MC-variance firefly, not a defect),
+  and a larger 30-degree tilt combined with the suite's own 80-degree
+  grazing column produces a real ~15% energy loss (an un-masked
+  tilted-frame effect every normal-map implementation without an
+  explicit masking/shadowing correction shares, also not a defect,
+  just too large for this row's tight band).
+- Also review round 1: DL-208 (a `2*pi`-turn-fraction unit bug in
+  Principled "Anisotropic Rotation", pre-existing since Landing 8 and
+  compounded by this slice's own Tangent case (ii) composition) is
+  red-proofed by a new bpy-free `AnisotropicRotationConversionTest` in
+  `test_hair_export.py`, unit-testing the extracted pure
+  `anisotropic_rotation_turns_to_radians` helper directly: a 0.25-turn
+  input reads back `pi/2` radians exactly, and composing that with a
+  `pi/4`-radian `ShaderNodeVectorRotate` Angle (case (ii)'s own
+  composition) sums to `3*pi/4` exactly.  `test_hair_export.py`:
+  101/0 (was 97/0).
 
 ### Hair export unit tests
 

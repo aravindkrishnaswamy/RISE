@@ -771,6 +771,17 @@ namespace RISE
 	//! substrate's directional albedo, which an arbitrary material
 	//! cannot supply.
 	/// \return TRUE if successful, FALSE otherwise
+	//! DL-192: `coat_normal`/`coat_normal_scale` are a trailing addition
+	//! to this SAME exported symbol (not a new "...Ex"/"...WithNormal"
+	//! sibling) -- unlike `RISE_API_CreateGGXMaterial`, this function had
+	//! never been extended before this row, so it is the ABI-preserving
+	//! extension point itself (the GGX precedent for adding a trailing
+	//! default param directly to a not-yet-frozen creation function,
+	//! before that function accumulates enough later growth to need its
+	//! own frozen/evolution split).  Existing callers are untouched:
+	//! `coat_normal = nullptr` (the default) is bit-identical to a
+	//! pre-DL-192 render.  See CoatedBRDF.h's matching ctor parameter
+	//! for the coat-lobe-only tangent-space normal map's full contract.
 	bool RISE_API_CreateCoatedMaterial(
 								IMaterial** ppi,						///< [out] Pointer to recieve the material
 								const IMaterial& base,					///< [in] Substrate material (allowlisted -- see above)
@@ -779,7 +790,9 @@ namespace RISE
 								const IScalarPainter& coat_roughness,	///< [in] GGX alpha of the coat lobe
 								const IScalarPainter& coat_thickness,	///< [in] Coat thickness, world length (Beer-Lambert)
 								const IScalarPainter& coat_absorption,	///< [in] Coat absorption coefficient, 1/length
-								const IPainter& coat_tint				///< [in] Coat transmission colour for one normal-incidence traversal
+								const IPainter& coat_tint,				///< [in] Coat transmission colour for one normal-incidence traversal
+								const IPainter* coat_normal = 0,			///< [in] DL-192: optional coat-lobe-only tangent-space normal map; NULL = no perturbation (default)
+								const Scalar coat_normal_scale = 1.0	///< [in] DL-192: xy scale on the decoded tangent-space normal (glTF normalTexture.scale analogue)
 								);
 
 	//! Creates a Fabric material -- an energy-compensated Charlie sheen

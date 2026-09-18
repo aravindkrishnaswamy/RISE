@@ -181,7 +181,14 @@ namespace RISE
 				const IScalarPainter& coatThickness,
 				const IScalarPainter& coatAbsorption,
 				const IPainter& coatTint,
-				const bool recyclingCompensation = true
+				const bool recyclingCompensation = true,
+				//! [in] DL-192: optional coat-lobe-only tangent-space
+				//! normal map (Blender Principled BSDF's "Coat Normal"
+				//! socket).  NULL (default) is bit-identical to a
+				//! pre-DL-192 CoatedMaterial -- see CoatedBRDF.h's
+				//! matching ctor parameter for the full contract.
+				const IPainter* coatNormal = 0,
+				const Scalar coatNormalScale = Scalar(1)
 				) :
 			  pBase( &base )
 			{
@@ -198,7 +205,7 @@ namespace RISE
 				pBRDF = new CoatedBRDF(
 					*base.GetBSDF(), coatWeight, coatIOR, coatRoughness,
 					coatThickness, coatAbsorption, coatTint, recyclingCompensation,
-					base.ScattersFullSphere() );
+					base.ScattersFullSphere(), coatNormal, coatNormalScale );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new CoatedSPF( *pBRDF, *base.GetSPF() );
@@ -237,6 +244,9 @@ namespace RISE
 			inline const IScalarPainter& GetCoatThickness()  const { return pBRDF->GetCoatThickness(); }
 			inline const IScalarPainter& GetCoatAbsorption() const { return pBRDF->GetCoatAbsorption(); }
 			inline const IPainter&       GetCoatTint()       const { return pBRDF->GetCoatTint(); }
+			//! DL-192.  NULL = no coat-normal perturbation bound.
+			inline const IPainter*       GetCoatNormal()      const { return pBRDF->GetCoatNormal(); }
+			inline Scalar                GetCoatNormalScale() const { return pBRDF->GetCoatNormalScale(); }
 
 			//! Rebind for the interactive editor.  Only the BRDF is
 			//! touched -- CoatedSPF reads every coat parameter back

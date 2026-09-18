@@ -1006,6 +1006,7 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.h" />
+    <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShaderWiring.h" />
     <ClInclude Include="..\..\..\src\Library\TreeElementProcessor.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BitField.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h" />
