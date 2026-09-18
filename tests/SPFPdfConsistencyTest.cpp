@@ -251,7 +251,11 @@ static TestResult TestSPF(
     //! Part 2b's band on `|int Pdf(full sphere) - emission probability|`.
     //! 0.01 everywhere except where a DOCUMENTED open defect is being
     //! pinned rather than asserted away -- see the `spfs` table.
-    double subDensityTol
+    double subDensityTol,
+    //! True for an SPF that deliberately emits into BOTH hemispheres, so
+    //! Part 2's `int Pdf over the HEMISPHERE == 1` is not its contract.
+    //! See the gate's own note in Part 2b.
+    bool bFullSphereSampler
     )
 {
     TestResult result;
@@ -409,7 +413,17 @@ static TestResult TestSPF(
     }
 
     result.pdfIntegral = pdfIntegral;
-    if( fabs(pdfIntegral - 1.0) > integralTol )
+    // DL-157/DL-41 (2026-09-18): `int Pdf` over the UPPER HEMISPHERE is 1
+    // only for an SPF that emits nowhere else.  `TranslucentSPF` emits its
+    // transmission / backscatter Phong lobe into the opposite half-space
+    // BY CONSTRUCTION, so for it this integral is legitimately the upper
+    // hemisphere's SHARE of the density -- and the correct statement about
+    // that share is Part 2b's, which gates it against the sampler's own
+    // measured upper-hemisphere emission rate.  Nothing is loosened: for
+    // such a row, `pdfIntegral == pdfUpperShare * fullSphereIntegral` and
+    // Part 2b gates BOTH factors, so this check is strictly implied by
+    // the two below rather than dropped.
+    if( !bFullSphereSampler && fabs(pdfIntegral - 1.0) > integralTol )
         result.integralPassed = false;
 
     // ================================================================
@@ -906,9 +920,20 @@ template< class PinT >
 static double SubDensityTolFor( const std::string& name, const PinT* pins, int n )
 {
     for( int i = 0; i < n; i++ ) {
-        if( name == pins[i].name ) return 1e9;
+        // A null `name` is the empty-table sentinel (the array cannot
+        // legally have zero elements in C++), not a row.
+        if( pins[i].name && name == pins[i].name ) return 1e9;
     }
     return SUBDENSITY_TOL;
+}
+
+//! See `fullSphereSamplers` in the `spfs` table.
+static bool IsFullSphereSampler( const std::string& name, const char* const* names, int n )
+{
+    for( int i = 0; i < n; i++ ) {
+        if( names[i] && name.rfind( names[i], 0 ) == 0 ) return true;
+    }
+    return false;
 }
 
 // ============================================================
@@ -1178,12 +1203,23 @@ int main()
     // than an assertion: pinned at their measured value with a
     // two-sided band, so closure is as visible as regression.
     struct SubDensityPin { const char* name; double lo; double hi; const char* why; };
+    //
+    // DL-41 CLOSED 2026-09-18: `TranslucentSPF::Pdf` is now the aggregate
+    // density of what `Scatter` + `RandomlySelect` generate, both Phong
+    // lobes included, so its Part 2b domain split is a real gate at the
+    // ordinary `SUBDENSITY_TOL` instead of a pinned band.  The pinned
+    // value was 0.44469 in [0.40, 0.48]; the two shares now agree to
+    // 2.3e-4 (Pdf 0.555538 vs emitted 0.55531 at both incidence angles).
     const SubDensityPin subDensityPins[] = {
-        { "Translucent", 0.40, 0.48,
-          "DL-41: TranslucentSPF::Pdf covers NEITHER Phong cos^N lobe, so it "
-          "reports the diffuse/reflection mass only while Scatter emits the "
-          "transmission lobes too" },
+        { 0, 0, 0, 0 },   //!< none open; kept so the machinery stays live
     };
+
+    //! SPFs that deliberately emit into BOTH hemispheres.  For these,
+    //! Part 2's `int Pdf over the HEMISPHERE == 1` is not the contract --
+    //! Part 2b's pair of full-sphere checks is (see the note at Part 2's
+    //! own gate).  `Translucent` joined the list when DL-41 gave its
+    //! transmission / backscatter lobes real density.
+    const char* fullSphereSamplers[] = { "Translucent" };
 
     SPFEntry spfs[] = {
         { "Lambertian",                        lambertian,  true,  true,  false, false, INTEGRAL_TOL },
@@ -1547,7 +1583,9 @@ int main()
                 // Pinned rows get a band wide enough that the pin below
                 // is what gates them, not this.
                 SubDensityTolFor( spfs[s].name, subDensityPins,
-                                  int(sizeof(subDensityPins)/sizeof(subDensityPins[0])) ) );
+                                  int(sizeof(subDensityPins)/sizeof(subDensityPins[0])) ),
+                IsFullSphereSampler( spfs[s].name, fullSphereSamplers,
+                                  int(sizeof(fullSphereSamplers)/sizeof(fullSphereSamplers[0])) ) );
             results.push_back( r );
 
             // Report cross-validation
@@ -1592,7 +1630,9 @@ int main()
                 const double sdiff = fabs( r.pdfUpperShare - r.emittedUpperShare );
                 const SubDensityPin* pin = 0;
                 for( size_t q = 0; q < sizeof(subDensityPins)/sizeof(subDensityPins[0]); q++ ) {
-                    if( spfs[s].name == subDensityPins[q].name ) { pin = &subDensityPins[q]; break; }
+                    if( subDensityPins[q].name && spfs[s].name == subDensityPins[q].name ) {
+                        pin = &subDensityPins[q]; break;
+                    }
                 }
                 if( pin ) {
                     // KNOWN-DEFECT control, two-sided: a regression and
