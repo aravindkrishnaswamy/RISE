@@ -1355,13 +1355,25 @@ round-1 fix's sanctioned exception).  `tests/StandardObjectScaleTest.cpp`:
 still 23/0.  Gate: `CstDeriveGoldenTest` 452/452 (0 drift -- no shipped
 scene carries a short/long vector), `CstOverrideParamEditTest` 51/0,
 `ObjectMirrorTest` 174/0, `SceneGraphParentTest` 291/0, `AgentLiveCommitTest`
-884/0, `AgentChunkCrudTest` 3809/0, `AgentAddWetnessTest` and
-`AgentAddWearTest` unchanged, `SPFPdfConsistencyTest` and
-`SPFBSDFConsistencyTest` (P2-1 rows below) all green, `CoatedMaterialChunkTest`/
-`FabricMaterialChunkTest`/`WeaveMaterialChunkTest`/`LayeredWhiteFurnaceTest`/
-`SourceHygieneTest` unchanged, every other suite this file's
-`ChunkDescriptor|ParseStateBag|GetVec3` grep names (see this slice's own
-report for the full list) green. Clean rebuild, zero warnings.
+884/0, `AgentChunkCrudTest` 3809/0, `AgentAddWetnessTest` 225/0 (unchanged),
+`SPFPdfConsistencyTest` and `SPFBSDFConsistencyTest` (P2-1 rows below) all
+green, `CoatedMaterialChunkTest`/`FabricMaterialChunkTest`/
+`WeaveMaterialChunkTest`/`LayeredWhiteFurnaceTest`/`SourceHygieneTest`
+unchanged, every other suite this file's `ChunkDescriptor|ParseStateBag|
+GetVec3` grep names (36 suites total; see this slice's own report for the
+full list) green. Clean rebuild, zero warnings. **Sibling-audit finding:**
+`AgentAddWearTest`'s `N4c` fixture and `tests/LightColorSpaceTest.cpp`
+deliberately authored a short `color` (2 of 3 components) expecting the
+OLD zero-fill behaviour -- both are genuine callers of the now-changed
+contract, not incidental. `AgentAddWearTest` regressed to 360/1 ("N4c
+short-colour fixture derives" failed) until its fixture was updated to
+assert the NEW contract (the scene now hard-fails to derive, with a
+diagnostic naming DL-32); back to 362/0. `LightColorSpaceTest`'s stale
+comment ("a short triple is NOT refused") was corrected and a new
+atomicity row added (133/0, was ~130/0). `AgentEvalCheckTest`'s 32
+failures (missing eval replay fixtures / live-session infra) were
+confirmed pre-existing and unrelated -- byte-identical failure count with
+the fix present and reverted.
 
 **DL-33 (interior's candidate-walk cost shape unmeasured).** Instrument
 `BVH::ForEachContainingPoint` the way `NearestOtherSurface` is instrumented
