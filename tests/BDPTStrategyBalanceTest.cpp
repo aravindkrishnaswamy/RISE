@@ -2919,6 +2919,146 @@ static void TestNullBSDFHWSSCompanionLadder()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology O: generic_human_tissue_material receiver, mesh area
+// emitter BEHIND the receiver (DL-183).
+//
+// `GenericHumanTissueSPF::Scatter`/`ScatterNM` set the continuation
+// ray's origin to `ri.ray.origin` -- the INCOMING ray's origin, which
+// for a camera ray is the CAMERA POSITION -- instead of
+// `ri.ptIntersection`, the actual point on the receiver the ray hit.
+//
+// This is a PT bug, not a DL-126-family bug: this material's
+// GetBSDF() is also null, so DL-126 (BDPT/VCM eye/light subpath
+// termination at a null-BSDF vertex) applies to it too and is already
+// fixed -- but PT was never affected by DL-126 (it prices this
+// continuation from the SPF's own kray, same as it always did). PT is
+// therefore the right integrator to isolate THIS bug.
+//
+// GEOMETRY NOTES (found empirically while building this red-proof):
+//
+// (1) `GenericHumanTissueSPF`'s outside-stack branch (the ONLY branch
+// a real render ever reaches -- see DL-131's row: the inside-stack
+// branch is unreachable because this material never pushes the IOR
+// stack and nothing else seeds it as trackable) samples its scattered
+// direction as `GeometricUtilities::Perturb(ri.ray.Dir(), acos(sqrt(u)),
+// v*2pi)` -- a cosine-weighted perturbation around the INCOMING ray's
+// own forward direction, i.e. this material only ever TRANSMITS
+// forward (into/through the surface, away from the incoming side),
+// never reflects back toward the side the light arrived from. Placing
+// the light on the camera's side (as topology N's `kLightMesh` does
+// at z=+4, for `biospec_skin_material`'s reflective front-hit branch)
+// makes this material's receiver read exactly 0 REGARDLESS of the
+// origin bug -- a confound, not a red-proof of DL-183. The light must
+// sit on the FAR side of the receiver (negative Z here).
+//
+// (2) The marginal polar-angle density of that cosine-weighted
+// perturbation is `sin(2*theta)`, peaking at 45 degrees, not 0 -- this
+// is NOT a tightly forward-peaked lobe (it is the well-known property
+// of cosine-weighted hemisphere sampling: growing ring circumference
+// compensates the falling cos(theta) term). A 1x1 light 4 units behind
+// the receiver catches only a sliver of that spread and both the
+// buggy and the fixed origin read close to 0 (confirmed empirically:
+// a 20x20 light saturates the frame at both origins, so the mechanism
+// itself works -- the earlier 1x1 light was simply too small a target
+// for either origin to hit reliably, which cannot discriminate the
+// bug). The light below (5x5, scale 20) was picked to give a strong,
+// non-saturating, origin-sensitive signal at 256 spp: manual CLI
+// renders of this exact geometry measured tonemapped mean 51/255
+// pre-fix (camera-position origin) vs 255/255 (saturated) post-fix
+// (ri.ptIntersection origin) -- see the fix commit message for the
+// linear achromatic means this test itself reads.
+//////////////////////////////////////////////////////////////////////
+static void TestGenericHumanTissueOriginFix()
+{
+	std::cout << "  [Topology O: generic_human_tissue_material receiver, mesh emitter behind (DL-183)]" << std::endl;
+
+	std::string sceneTissue =
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n"
+		"\tlocation 0 0 3.5\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 30.0\n"
+		"}\n\n"
+		"generic_human_tissue_material\n{\n\tname mat_tissue\n}\n\n"
+		"clippedplane_geometry\n{\n"
+		"\tname quad_tissue\n"
+		"\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n"
+		"}\n\n"
+		"standard_object\n{\n"
+		"\tname obj_tissue\n\tgeometry quad_tissue\n\tmaterial mat_tissue\n"
+		"}\n\n"
+		// Mesh emitter BEHIND the receiver (negative Z; note pta/ptc
+		// swapped relative to kLightMesh so the quad's winding still
+		// faces the receiver -- verified empirically: kLightMesh's own
+		// vertex order merely negated in Z emits away from the
+		// receiver and this topology reads 0).
+		"uniformcolor_painter\n{\n\tname pnt_emit_behind\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n"
+		"\tname mat_emit_behind\n\texitance pnt_emit_behind\n\tscale 20.0\n\tmaterial none\n"
+		"}\n\n"
+		"clippedplane_geometry\n{\n"
+		"\tname quad_emit_behind\n"
+		"\tpta -2.5 -2.5 -4.0\n\tptb 2.5 -2.5 -4.0\n\tptc 2.5 2.5 -4.0\n\tptd -2.5 2.5 -4.0\n"
+		"}\n\n"
+		"standard_object\n{\n"
+		"\tname obj_emit_behind\n\tgeometry quad_emit_behind\n\tmaterial mat_emit_behind\n"
+		"}\n";
+
+	// ONE-SIDED red-proof: catches "reads (near) zero", the DL-183
+	// symptom, but NOT an over-count (e.g. a 2x BDPT/VCM-side
+	// double-continuation at this null-BSDF vertex type would still
+	// pass this floor). The PT-vs-BDPT gate below is the two-sided
+	// check for that failure mode.
+	{
+		const std::string scene = std::string("RISE ASCII SCENE 7\n") + sceneTissue + kRasterizerPTNullBSDF;
+
+		const std::string path = WriteSceneToTempFile( scene.c_str(), "tissueorigin" );
+		if( path.empty() ) {
+			Check( false, "Topology O: could not write scene temp file" );
+			return;
+		}
+
+		const ImageStats stats = RenderAndComputeStats( path.c_str() );
+		std::remove( path.c_str() );
+
+		if( !stats.valid ) {
+			Check( false, "Topology O: render failed" );
+			return;
+		}
+
+		PrintStats( "generic_human_tissue_material receiver, light behind", stats );
+		const double achro = ( stats.mean[0] + stats.mean[1] + stats.mean[2] ) / 3.0;
+		std::cout << "    achromatic mean = " << achro << std::endl;
+
+		// Pre-fix this reads ~1/9th of the post-fix value (0.205 vs 1.930,
+		// both measured directly by this test's own harness -- see the fix
+		// commit message) -- every pixel's continuation ray erroneously
+		// starts from the SAME single point (the camera), instead of the
+		// per-pixel hit point, so the natural per-pixel spread of exit
+		// points collapses and far fewer rays land on the light behind it.
+		// The threshold below sits roughly midway (in log terms) between
+		// the two measured values.
+		Check( achro > 0.6,
+			"DL-183: generic_human_tissue_material receiver reads strong PT radiance through to the light behind it "
+			"(scattered ray now originates at ri.ptIntersection, not at the camera)" );
+	}
+
+	// PT-vs-BDPT gate (review round 1, coverage gap): DL-183's origin bug
+	// is real under every integrator (PT, BDPT, VCM, MLT) since all of
+	// them call GenericHumanTissueSPF::Scatter/ScatterNM to build the
+	// continuation ray -- but the floor check above only ever exercised
+	// PT. This topology's material is also the DL-126 null-BSDF-
+	// continuation vertex type, so a future MISWeight/isConnectible
+	// regression specific to BDPT/VCM at this vertex kind needs its own
+	// two-sided check to fail loudly; a one-sided PT floor cannot catch
+	// an over-count. `kRasterizerBDPTNullBSDF` mirrors topology N's own
+	// depth/sample settings (256 spp) for a matched-noise comparison.
+	RunTopologyTest( "generic_human_tissue_material receiver, light behind (DL-183)",
+		sceneTissue, kStrictTolerances, kRasterizerPTNullBSDF, kRasterizerBDPTNullBSDF );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -2943,6 +3083,7 @@ int main()
 	TestNonfiniteCandidateRejected();
 	TestNullBSDFMaterialContinuation();
 	TestNullBSDFHWSSCompanionLadder();
+	TestGenericHumanTissueOriginFix();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

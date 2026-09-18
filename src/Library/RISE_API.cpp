@@ -4542,6 +4542,20 @@ namespace RISE
 			return false;
 		}
 
+		// DL-183 nit: this call's positional ORDER (whole_blood_,
+		// betacarotene_concentration_, bilirubin_concentration_, hb_ratio_)
+		// does NOT match GenericHumanTissueMaterial's ctor's declared
+		// parameter NAMES (hb_ratio_, whole_blood, bilirubin_concentration,
+		// betacarotene_concentration) in GenericHumanTissueMaterial.h.
+		// Traced end to end (debt-dl183 review round 1): that mismatch is
+		// the INVERSE of a second one inside GenericHumanTissueMaterial's
+		// own ctor body (which passes its members straight through
+		// positionally into GenericHumanTissueSPF's differently-ordered
+		// ctor), so the two cancel and each scalar lands in the correctly-
+		// NAMED member at the SPF. Confusing-but-currently-correct, NOT a
+		// defect -- do NOT reorder this call to "match" the ctor's declared
+		// names without re-deriving the full chain; see docs/DEBT_LEDGER.md's
+		// DL-183 row for the full trace.
 		(*ppi) = new GenericHumanTissueMaterial(
 			sca,
 			g,
