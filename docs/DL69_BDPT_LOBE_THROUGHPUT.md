@@ -224,15 +224,32 @@ with the TRUE generating density of `Scatter` + `RandomlySelect` --
 kray-weighted, direction-dependent, and inclusive of the specular
 sampler's rejection rate -- so the fixed coin stopped matching it and
 (b) read `0.842 / 0.821 / 0.793 Q` (`Passed: 21  Failed: 3`).  (b) now
-draws with the REAL selection rule, which is exactly the procedure
-`P_mix` is the density of, and is unbiased for that reason: for any
-`g`, `E[g(w)/P_mix(w)] = integral over supp(P_mix) of g`, and the
-support condition holds here (the diffuse lobe is a full-hemisphere
-cosine proposal `Scatter` always accepts).  The residual `+1.1 %` at
-normal incidence is within the `Pdf` implementation's own documented
-quadrature residual (`SchlickSPFPdfConsistencyTest` bounds
-`|int Pdf - emitted| <= 0.0062`) plus MC noise; the 5 % band is not
-tightened past it.
+draws with the REAL selection rule, which IS the procedure `P_mix` is
+*intended* to be the density of; **(b) is not exact against the real
+`SchlickSPF::Pdf`, only against an idealized one** -- for any `g`,
+`E[g(w)/P_mix(w)] = integral over supp(P_mix) of g` holds exactly only
+if `P_mix` IS the true marginal density of `Scatter`+`RandomlySelect`,
+and `SchlickSPF::Pdf`'s `C_D` coefficient is itself a 16x16 stratified
+quadrature (`kSpecQuadN`, `SchlickSPF.cpp`) with its own small,
+documented residual (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md SS4a/SS4c).
+**Review P2-1 (2026-09-17) re-measured this with 24 independent
+replicates of 50000 draws each** (`tests/SchlickLobePairingTest.cpp`'s
+`ReplicateAggregateRatio`) to separate that systematic residual from a
+single call's own MC noise: 0 deg mean 1.010486 +/- 0.000027 (sem),
+z = (mean-1)/sem = +389; 30 deg mean 0.997092 +/- 0.000114, z = -25;
+60 deg mean 0.999922 +/- 0.000186, z = -0.4 (consistent with zero).  The
+0 deg and 30 deg residuals are overwhelmingly systematic, not noise --
+and the largest of them (~1.1%) is the same order as
+`SchlickSPFPdfConsistencyTest`'s own residual for the same `Pdf()`
+implementation.  (That file's mass gate is `kMassTol=0.01`, widened to
+0.015 on two low-roughness rows; its largest LIVE `|int Pdf - emitted|`
+today is 0.01216, on its DL-101 KNOWN-FAILURE row.  The `0.0062` figure
+this paragraph used to cite as that bound is a TOTAL VARIATION reading
+on that file's th=30 CONTROL row from an earlier, smaller version of the
+file -- a different metric, not the mass-gate `|int Pdf - emitted|` this
+paragraph was using it to bound.)  `SchlickLobePairingTest`'s (b)
+tolerance is set from the measured ~1.1% residual with headroom, not
+loosened to a blanket "MC noise" allowance.
 
 The same test measures the `pdfFwd` half: `(q_I p_I) / ISPF::Pdf()` on
 real draws spans `[0.018, 1.104]` at 0 deg, `[0.006, 1.205]` at 30 deg,

@@ -28,12 +28,20 @@
 //        DELTA branch (`KrayValue<Tag>(*pScat) * (.../selectProb)`).
 //
 //    (b) AGGREGATE     X_b = f_agg * cos / P_mix(w)
-//        where `P_mix = ISPF::Pdf` is the TRUE generating density of
-//        `Scatter` + `RandomlySelect` (DL-67 Slice 0) -- the MARGINAL
-//        `E_D[ sum_I q_I(D) delta_{w_I(D)} ]` over the container draw
-//        D AND the lobe choice.  Drawn with that same real procedure,
-//        E[X_b] = integral f_agg cos dw exactly.  Veach 9.2 / PBRT's
-//        BxDF convention.
+//        where `P_mix = ISPF::Pdf` is INTENDED to be the TRUE generating
+//        density of `Scatter` + `RandomlySelect` (DL-67 Slice 0) -- the
+//        MARGINAL `E_D[ sum_I q_I(D) delta_{w_I(D)} ]` over the
+//        container draw D AND the lobe choice.  IF `P_mix` were exactly
+//        that marginal, drawing with the real procedure would give
+//        E[X_b] = integral f_agg cos dw exactly (Veach 9.2 / PBRT's BxDF
+//        convention).  It is NOT exactly that marginal in this codebase:
+//        `SchlickSPF::Pdf`'s diffuse-select coefficient `C_D` is itself a
+//        16x16 stratified quadrature (`kSpecQuadN`, `SchlickSPF.cpp`)
+//        with its own small residual (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md
+//        SS4c/SS4a), so (b) measured against the REAL `Pdf()` carries
+//        that residual -- see the replicated measurement below, which is
+//        precise enough to resolve it from MC noise (round-2 review
+//        P2-1).
 //
 //    (c) MISMATCHED    X_c = f_agg * cos / (q_I * p_I)     <-- the bug
 //        E[X_c] = sum_I integral p_I * f_agg cos / p_I dw
@@ -286,21 +294,28 @@ static PairingMeasurement MeasurePairings(
 
 		// (b) aggregate/aggregate.  The lobe is drawn with the REAL
 		// selection rule -- the container from `Scatter`, then
-		// `RandomlySelect`'s max(kray) PMF -- which is exactly the
-		// procedure `P_mix` is the density of.  So for any g,
+		// `RandomlySelect`'s max(kray) PMF.  IF `P_mix` were exactly the
+		// marginal density of that procedure, then for any g,
 		//
 		//     E[ g(w)/P_mix(w) ] = integral_{supp P_mix} g(w) dw,
 		//
-		// and with g = f_agg cos that integral is Q: the diffuse lobe
-		// is a full-hemisphere cosine proposal that `Scatter` always
-		// accepts here (shading normal == geometric normal), so
-		// `P_mix > 0` wherever `f_agg cos > 0` and nothing is clipped
-		// out of the support.  Contrast (c), which divides by
-		// `q_I * p_I` -- the density of w_I CONDITIONED on the
-		// realized container, not the marginal -- and therefore sums
-		// to N*Q over the N lobes.  Equivalently (b) = (c) * r with r
-		// the section-3 ratio, so the three estimators below are three
-		// readings of one draw.
+		// and with g = f_agg cos that integral would be Q exactly: the
+		// diffuse lobe is a full-hemisphere cosine proposal that
+		// `Scatter` always accepts here (shading normal == geometric
+		// normal), so `P_mix > 0` wherever `f_agg cos > 0` and nothing is
+		// clipped out of the support.  In practice `SchlickSPF::Pdf` is
+		// only an APPROXIMATION of that marginal (its `C_D` coefficient
+		// is a 16x16 stratified quadrature with its own small residual,
+		// docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md SS4a/SS4c), so (b)
+		// measured against the real `Pdf()` inherits that residual -- a
+		// real, if small, systematic component, not exactness.  See the
+		// replicated measurement (`ReplicateAggregateRatio`) below, which
+		// resolves it from this call's own MC noise (round-2 review
+		// P2-1).  Contrast (c), which divides by `q_I * p_I` -- the
+		// density of w_I CONDITIONED on the realized container, not the
+		// marginal -- and therefore sums to N*Q over the N lobes.
+		// Equivalently (b) = (c) * r with r the section-3 ratio, so the
+		// three estimators below are three readings of one draw.
 		//
 		// A FIXED 50/50 coin over the realized container is NOT the
 		// right draw: `SchlickSPF::Pdf` has not described a fixed coin
@@ -339,6 +354,68 @@ static PairingMeasurement MeasurePairings(
 	m.meanPdfFwdRatio = nRatio ? ( sumRatio / double( nRatio ) ) : 0.0;
 	if( nRatio == 0 ) { m.minPdfFwdRatio = 0; }
 	return m;
+}
+
+//////////////////////////////////////////////////////////////////////
+// P2-1 (round-2 review): is estimator (b)'s deviation from Q at a
+// given incidence MC noise, or a systematic residual?  A single
+// 200000-draw call cannot tell -- its own internal noise and any real
+// bias look identical from one sample.  This runs `nReplicates`
+// INDEPENDENT repeats of `samplesPerReplicate` draws each (a fresh
+// RandomNumberGenerator per replicate -- the default constructor reads
+// libc `rand()` once for its seed, so back-to-back constructions get
+// distinct Mersenne streams even though nothing here calls `srand`)
+// and reports the mean and the standard error of the mean (sem) of
+// (b)/Q ACROSS replicates.  A |mean-1|/sem far past a few sigma is a
+// systematic residual in `SchlickSPF::Pdf` itself, not sampling noise.
+//////////////////////////////////////////////////////////////////////
+struct ReplicatedRatio
+{
+	double mean;
+	double sem;
+	double stddev;
+	double z;			// (mean - 1) / sem
+	unsigned int nReplicates;
+};
+
+static ReplicatedRatio ReplicateAggregateRatio(
+	ISPF& spf,
+	const IBSDF& brdf,
+	const RayIntersectionGeometric& ri,
+	const IORStack& iorStack,
+	double Q,
+	unsigned int nReplicates,
+	unsigned int samplesPerReplicate )
+{
+	std::vector<double> ratios;
+	ratios.reserve( nReplicates );
+
+	for( unsigned int r = 0; r < nReplicates; r++ ) {
+		RandomNumberGenerator rng;
+		IndependentSampler sampler( rng );
+		const PairingMeasurement m =
+			MeasurePairings( spf, brdf, ri, sampler, iorStack, samplesPerReplicate );
+		if( m.samples > 0 && Q > 0 ) {
+			ratios.push_back( m.meanAggregate / Q );
+		}
+	}
+
+	ReplicatedRatio out{};
+	out.nReplicates = (unsigned int)ratios.size();
+	if( out.nReplicates < 2 ) {
+		return out;
+	}
+
+	double sum = 0;
+	for( double v : ratios ) sum += v;
+	out.mean = sum / double( out.nReplicates );
+
+	double sumSq = 0;
+	for( double v : ratios ) sumSq += ( v - out.mean ) * ( v - out.mean );
+	out.stddev = sqrt( sumSq / double( out.nReplicates - 1 ) );
+	out.sem = out.stddev / sqrt( double( out.nReplicates ) );
+	out.z = out.sem > 0 ? ( out.mean - 1.0 ) / out.sem : 0.0;
+	return out;
 }
 
 int main()
@@ -391,6 +468,16 @@ int main()
 		          << "   [min " << m.minPdfFwdRatio
 		          << ", max " << m.maxPdfFwdRatio << "]" << std::endl;
 
+		// P2-1 (round-2 review): 24 independent replicates of 50000
+		// draws each, to separate a systematic residual in (b)/Q from
+		// this call's own MC noise.
+		const ReplicatedRatio rep =
+			ReplicateAggregateRatio( *spf, *brdf, ri, iorStack, Q, 24, 50000 );
+		std::cout << "   (b)/Q replicated (n=" << rep.nReplicates << ", 50000 draws each) = "
+		          << std::setprecision( 6 ) << rep.mean << " +/- " << rep.sem
+		          << " (sem)   z=(mean-1)/sem = " << std::setprecision( 1 ) << rep.z
+		          << std::setprecision( 5 ) << std::endl;
+
 		Check( m.samples > 100000,
 			std::string( "enough usable draws: " ) + labels[t] );
 		Check( Q > 0, std::string( "quadrature reference is positive: " ) + labels[t] );
@@ -418,9 +505,29 @@ int main()
 			std::string( "(a) per-lobe pairing integrates f_agg*cos within the "
 			             "documented Schlick model gap: " ) + labels[t] );
 
-		// (b) is exact: aggregate BSDF over the aggregate density.
-		Check( std::fabs( m.meanAggregate / Q - 1.0 ) < 0.05,
-			std::string( "(b) aggregate/aggregate pairing integrates f_agg*cos: " ) + labels[t] );
+		// (b) is NOT exact against the real `SchlickSPF::Pdf` -- see the
+		// comment on `sumB` above.  The 24x50000-draw replicate resolves
+		// a real systematic residual from this call's own MC noise
+		// (measured on this branch, round-2 review P2-1): 0 deg z=+389
+		// (mean 1.010486 +/- 0.000027), 30 deg z=-25 (mean 0.997092 +/-
+		// 0.000114), 60 deg z=-0.4 (mean 0.999922 +/- 0.000186,
+		// consistent with zero).  The largest residual measured here is
+		// ~1.1%, the same order as `SchlickSPFPdfConsistencyTest`'s own
+		// residual for the same `Pdf()` implementation (that file's mass
+		// gate is `kMassTol=0.01`, widened to 0.015 on two low-roughness
+		// rows; its largest LIVE `|int Pdf - emitted|` today is 0.01216,
+		// on its DL-101 KNOWN-FAILURE row -- not the `0.0062` figure this
+		// comment used to cite, which is a TOTAL VARIATION reading on
+		// that file's th=30 control row, a different metric, from a
+		// smaller/older version of that file).  The band below is set
+		// from that ~1.1% residual with headroom for this call's own
+		// (single-shot, non-replicated) MC noise -- it is not a noise
+		// band.
+		Check( std::fabs( m.meanAggregate / Q - 1.0 ) < 0.02,
+			std::string( "(b) aggregate/aggregate pairing integrates f_agg*cos within the "
+			             "measured SchlickSPF::Pdf residual: " ) + labels[t] );
+		Check( std::fabs( rep.mean - 1.0 ) < 0.02,
+			std::string( "(b)/Q replicated mean stays within the measured residual band: " ) + labels[t] );
 
 		// (c) is the bug: N = 2 overlapping lobes, so it doubles.
 		Check( m.meanMismatched / m.meanPerLobe > 1.6,
