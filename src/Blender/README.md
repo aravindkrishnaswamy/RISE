@@ -17,7 +17,7 @@ the bridge talks to RISE only through the existing public APIs in
 
 - Final renders through Blender's external `RenderEngine` API.
 - Evaluated mesh export, per-material triangle splits, object instancing, and bump-map modifiers (a Blender Bump node exports through the ABI-frozen `AddBumpMapModifier` entry point, which since 2026-09-06 registers a `relief_modifier` in the UV domain -- see `docs/RELIEF_MODIFIER_DESIGN.md` §7.5).
-- Direct Principled BSDF translation for base color, metallic, roughness, specular (IOR level and tint, DL-151), transmission, IOR, emission, anisotropy, sheen (`fabric_material`, DL-18), and direct image-driven bump.
+- Direct Principled BSDF translation for base color, metallic, roughness, specular (IOR level and tint, DL-151), transmission, IOR, emission, anisotropy, sheen (`fabric_material`, DL-18), coat (`coated_material`, DL-186), subsurface (`randomwalk_sss_material`, DL-186 -- a SEPARATE model, not a coat-style wrap; see `docs/BLENDER_MATERIAL_TRANSLATION.md` "Coat and Subsurface"), and direct image-driven bump.
 - PNG, HDR, EXR, and TIFF image textures when the local RISE build has the matching texture readers enabled.
 - Homogeneous participating media on material and world volume outputs.
 - Heterogeneous VDB-backed volume objects driven by the `density` grid, exported through a temporary slice cache.
@@ -29,7 +29,10 @@ the bridge talks to RISE only through the existing public APIs in
 
 - No viewport renderer yet.
 - No arbitrary Blender node-graph compilation; the exporter is intentionally direct-slot and GGX-first.
-- No tangent-space normal maps, alpha masking, clearcoat, subsurface, or mixed opaque/transmissive per-pixel material translation yet.  (Anisotropy and sheen are supported -- see "Supported Scope" above; this line previously listed both by mistake.)
+- No tangent-space normal maps, alpha masking, or mixed opaque/transmissive per-pixel material translation yet.  (Anisotropy, sheen, coat, and subsurface are supported -- see "Supported Scope" above; this line previously also listed clearcoat/subsurface by mistake, and continued to after DL-18 closed sheen and before DL-186 closed coat/subsurface.)
+- Alpha (Principled `Alpha`, both constant and textured) is read only to decide whether to WARN that it is ignored -- there is no `rise_blender_material` slot for it and none is planned without a per-material shader-op-chain bridge (`Job::AddAdvancedShader`) the add-on does not have.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Alpha -- deliberately left unbridged" (DL-193).
+- Coat Normal and Tangent (the latter feeds anisotropy direction) have no reader and no ABI field at all.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Coat and Subsurface" (DL-192).
+- Subsurface uses a documented single-scattering-albedo APPROXIMATION (Radius/Scale/Base-Colour -> sigma_a/sigma_s), not Blender's/PBRT's own photon-beam-diffusion (Christensen-Burley) fit -- the right order of magnitude and per-channel colour bias, not a photometric match to Cycles.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Subsurface -> `randomwalk_sss_material`" (DL-186).
 - Specular Tint (like Specular IOR Level) has no effect at `metallic=1` -- RISE's F0 formula routes both through the dielectric branch of its base_color/F0 lerp only, so it does not reproduce Blender 4.x Principled's additional metallic-edge (F82-style) tint from the same socket.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Specular Tint" (DL-151).
 - Area lights are still reduced to point lights, so softness and directionality will not match Cycles exactly.
 - World surface nodes are still reduced to a simple ambient approximation; only world volume nodes are exported as participating media.
@@ -56,7 +59,7 @@ That produces `rise_blender_bridge.dylib` on macOS or `rise_blender_bridge.so` o
 
 ## Manual Validation Matrix
 
-- Materials: opaque Principled sphere or cube, metallic plus roughness textures, emissive Principled material, transmission plus IOR glass, and direct image-driven bump.
+- Materials: opaque Principled sphere or cube, metallic plus roughness textures, emissive Principled material, transmission plus IOR glass, coated (Coat Weight/Tint/Roughness/IOR) plastic or clearcoat paint, subsurface (Subsurface Weight/Radius/Scale/IOR) skin or wax, and direct image-driven bump.
 - Volumes: homogeneous world fog, homogeneous mesh interior medium, VDB smoke object, and `Principled Volume` with anisotropy plus emission.
 - Settings: path guiding on and off, adaptive sampling on and off, OIDN on and off, and stability controls that visibly clamp fireflies or shorten bounce chains.
 - Bridge compatibility: load the add-on with a matching bridge build and with an intentionally stale bridge to confirm the ABI mismatch fails fast with a readable message.
