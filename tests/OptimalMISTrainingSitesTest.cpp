@@ -2528,6 +2528,17 @@ static void RunNeeCastRRTrainingFold()
 	static const Scalar kPSurvive = kImportance / kThreshold;
 	unsigned int survivors = 0;
 
+	// RENDER-NEUTRALITY CHECK: the fix must never move the RETURNED
+	// radiance `c` -- only the training integrand.  `c` itself IS
+	// legitimately scaled by `rrCompensation` (that is what keeps the
+	// whole-subpath roulette unbiased) -- LINEARLY, not squared like the
+	// trained moment -- so summed over matched survivors, sum(c_test) /
+	// sum(c_base) must read exactly `rrCompensation = 2.0` both BEFORE
+	// and AFTER this fix (this fix changes nothing about how `c` is
+	// computed at all, only what gets handed to `EvaluateDirectLighting`'s
+	// `neeTrainingScale` parameter).
+	double sumCTest = 0, sumCBase = 0;
+
 	DriveOnFreshThread( 5114u, [&]() {
 		for( unsigned int s = 0; s < kSamples; ++s )
 		{
@@ -2564,6 +2575,7 @@ static void RunNeeCastRRTrainingFold()
 				RISEPel c( 0, 0, 0 );
 				Scalar dist = 0;
 				fx.pCaster->CastRay( rcTest, rast, ray, c, rs, &dist, 0 );
+				sumCTest += ColorMath::MaxValue( c );
 			}
 
 			// BASELINE run: only for the SAME survivors, pre-consuming one
@@ -2586,6 +2598,7 @@ static void RunNeeCastRRTrainingFold()
 				RISEPel c( 0, 0, 0 );
 				Scalar dist = 0;
 				fx.pCaster->CastRay( rcBase, rast, ray, c, rs, &dist, 0 );
+				sumCBase += ColorMath::MaxValue( c );
 			}
 		}
 	} );
@@ -2624,6 +2637,17 @@ static void RunNeeCastRRTrainingFold()
 	Check( std::fabs( ratio - 4.0 ) < 1e-6 * std::fmax( 1.0, ratio ),
 		"NEE-cast-level-RR site: the trained NEE moment folds in the SAME "
 		"rrCompensation the escape arm's does (DL-185)" );
+
+	// RENDER-NEUTRALITY: the RETURNED radiance `c` is legitimately scaled
+	// by `rrCompensation` LINEARLY (unbiasedness), unaffected by this fix
+	// at all -- confirms the fix touches only the training integrand.
+	const double cRatio = sumCBase > 0 ? sumCTest / sumCBase : 0;
+	std::cout << "    NEE-cast-level-RR site: returned-radiance sum(c) ratio "
+		"(test/baseline) = " << cRatio << " (expect exactly 2.0 = rrCompensation, "
+		"unaffected by this fix)" << std::endl;
+	Check( std::fabs( cRatio - 2.0 ) < 1e-6 * std::fmax( 1.0, cRatio ),
+		"NEE-cast-level-RR site: the returned radiance's own rrCompensation "
+		"scaling is unchanged by this fix (render-neutral)" );
 
 	// Cross-check against DL-148's escape-arm fixture: both arms, at the
 	// same rs.importance = 0.005 / kThreshold = 0.01 configuration, must
