@@ -542,7 +542,20 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 			// specFactor = brdf_spec/pdf.  For correct IS: kray = BRDF*cos/pdf.
 			// specularFactor already includes Fresnel (which contains Rs),
 			// so no extra Rs multiplication.  Add cos_o for the missing cosine.
-			const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() );
+			//
+			// cos_o is taken against `myonb.w()`, the frame this lobe was
+			// SAMPLED around and the frame GenerateSpecularRay validated
+			// `k2` against -- NOT the raw `ri.onb.w()`, which differs by
+			// sign on a back-face hit.  Reading the raw one there made
+			// cos_o negative for every accepted specular ray, so kray went
+			// NEGATIVE: not a probability mass at all, it reverses the CDF
+			// ordering inside RandomlySelect and is handed straight back by
+			// RandomlySelectNonDiffuse (SMSPhotonMap / the caustic photon
+			// tracers), which applies no weight test.  See
+			// docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 7 (DL-100 sibling
+			// audit) and AshikminShirleySPFPdfConsistencyTest's `backface`
+			// rows.
+			const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), myonb.w() );
 			specular.kray = RISEPel(1,1,1) * specFactor * cos_o;
 			scattered.AddScatteredRay( specular );
 		}
@@ -554,7 +567,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 			Scalar specFactor=0;
 			Scalar df_unused=0;
 			if( GenerateSpecularRay( specular, df_unused, specFactor, myonb, ri, ptrand, NU[i], NV[i], rho[i] ) ) {
-				const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() );
+				const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), myonb.w() );
 				specular.kray = 0.0;
 				specular.kray[i] = specFactor * cos_o;
 				scattered.AddScatteredRay( specular );
@@ -569,14 +582,19 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	diffuse.isDelta = false;
 	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(sampler.Get1D(),sampler.Get1D()) ) );
 
-	const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
+	// Both cosines are against `myonb.w()`, the frame the diffuse lobe was
+	// sampled around (see the specular site above): against the raw
+	// `ri.onb.w()` a back-face hit gave cos_o_diff < 0 and cos_i < 0, so
+	// the stored pdf AND both Schlick-transmission factors collapsed to
+	// exactly 0 and the whole diffuse lobe silently carried no weight.
+	const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), myonb.w() );
 	diffuse.pdf = r_max( 0.0, cos_o_diff ) * INV_PI;
 
 	// Compute diffuse IS weight: kray = BRDF_diff * cos / pdf
 	// BRDF_diff = Rd * (1-Rs) * (28/(23π)) * fromK1(wo) * fromK2(wi)
 	// pdf = cos/π, so kray = Rd * (1-Rs) * (28/23) * fromK1 * fromK2
 	// (the π from the BRDF normalisation cancels with the π in the pdf)
-	const Scalar cos_i = Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), ri.onb.w() );
+	const Scalar cos_i = Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), myonb.w() );
 	const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
 	const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
 	static const Scalar diffuseNorm = 28.0 / 23.0;
@@ -623,8 +641,10 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 
 	if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU, NV, rho ) ) {
 		// specFactor already includes Fresnel (which contains Rs) — no extra rho.
-		// Add cos_o for correct IS weight.
-		const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() );
+		// Add cos_o for correct IS weight.  `myonb.w()`, not `ri.onb.w()`
+		// -- same back-face sign bug as Scatter()'s RGB twin; see the
+		// comment there.
+		const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), myonb.w() );
 		specular.krayNM = specFactor * cos_o;
 		scattered.AddScatteredRay( specular );
 	}
@@ -635,10 +655,11 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		diffuse.type = ScatteredRay::eRayDiffuse;
 		diffuse.isDelta = false;
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(sampler.Get1D(),sampler.Get1D()) ) );
-		const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
+		// `myonb.w()` for both cosines -- see Scatter()'s RGB twin.
+		const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), myonb.w() );
 		diffuse.pdf = r_max( 0.0, cos_o_diff ) * INV_PI;
 
-		const Scalar cos_i = Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), ri.onb.w() );
+		const Scalar cos_i = Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), myonb.w() );
 		const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
 		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
 		static const Scalar diffuseNorm = 28.0 / 23.0;
