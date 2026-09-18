@@ -52,6 +52,11 @@ namespace RISE
 			//! KHR_materials_anisotropy.  See GGXBRDF.h for details;
 			//! same semantics, mirrored here for the SPF path.
 			const IPainter* pTangentRotation;
+			//! DL-16: optional Scalar-pipe alias, preferred over
+			//! `pTangentRotation` when both are non-null.  See
+			//! GGXBRDF.h's `pTangentRotationScalar` for the full
+			//! rationale; mirrored here for the SPF path.
+			const IScalarPainter* pTangentRotationScalar;
 			//! Thin-film (eFresnelThinFilmConductor) FILM slots; see
 			//! GGXBRDF.h for the full contract — film n, film k, film
 			//! thickness (nm) of the oxide layer.  nullptr for every
@@ -73,7 +78,8 @@ namespace RISE
 				const IPainter* tangent_rotation = nullptr,
 				const IScalarPainter* film_ior = nullptr,
 				const IScalarPainter* film_extinction = nullptr,
-				const IScalarPainter* film_thickness = nullptr
+				const IScalarPainter* film_thickness = nullptr,
+				const IScalarPainter* tangent_rotation_scalar = nullptr	///< DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when both bound.
 				);
 
 			void	Scatter(

@@ -203,7 +203,8 @@ namespace RISE
 			const std::string& targetKeyword,
 			const std::string& paramName,
 			const std::string& candidateKeyword,
-			ChunkCategory candidateCategory )
+			ChunkCategory candidateCategory,
+			bool candidateIsPerChannelValues )
 		{
 			// `pd.semantics.keywordAllowlist` is now enforced up front in
 			// CheckConnectionByKeyword, for EVERY pipe (not just Color) -- see
@@ -211,6 +212,31 @@ namespace RISE
 			// candidate has already cleared the allowlist gate, so there is
 			// nothing left to check on that front.
 			if( ConnectionLegality::IsColorCapable( candidateKeyword, candidateCategory ) ) {
+				return { true, std::string() };
+			}
+			// DL-16/DL-17: `colorAlsoAcceptsScalar` oddballs (ggx_material.-
+			// tangent_rotation, pbr_metallic_roughness_material.anisotropy_-
+			// rotation) resolve a `scalar_painter` name too, via Job.cpp's
+			// `ResolveRotationPainterDual` -- single-valued only, exactly
+			// like a Scalar-pipe `requireSingle` slot, since these read
+			// `.v[0]`.  Checked BEFORE the generic scalar_painter rejection
+			// below so the diagnostic there stays accurate for every
+			// ordinary Color-pipe parameter.
+			//
+			// `pd.semantics.requireSingle` gates the per-channel rejection
+			// here exactly the way CheckScalarPipe's own per-channel check
+			// does (review round 2, P3): every current colorAlsoAcceptsScalar
+			// parameter also sets requireSingle=true, but consulting the
+			// field rather than hard-coding the assumption keeps this branch
+			// meaningful (not a dead flag) if a future colorAlsoAcceptsScalar
+			// parameter genuinely accepts a per-channel triple.
+			if( candidateKeyword == "scalar_painter" && pd.semantics.colorAlsoAcceptsScalar ) {
+				if( pd.semantics.requireSingle && candidateIsPerChannelValues ) {
+					return { false, Fmt(
+						"%s: parameter `%s` is bound to per-channel scalar_painter `%s`, but this "
+						"slot reads a single angle -- author a single-valued scalar_painter.",
+						targetKeyword.c_str(), paramName.c_str(), candidateKeyword.c_str() ) };
+				}
 				return { true, std::string() };
 			}
 			// NOTE: many real Color-pipe resolvers (e.g. Job::AddLambertianMaterial)
@@ -326,7 +352,8 @@ namespace RISE
 				return CheckScalarPipe( *pd, targetKeyword, paramName, candidateKeyword, candidateCategory,
 					candidateIsPerChannelValues );
 			case ParameterPipe::Color:
-				return CheckColorPipe( *pd, targetKeyword, paramName, candidateKeyword, candidateCategory );
+				return CheckColorPipe( *pd, targetKeyword, paramName, candidateKeyword, candidateCategory,
+					candidateIsPerChannelValues );
 			case ParameterPipe::Function2D:
 				if( !IsFunction2DCapable( candidateKeyword, candidateCategory ) ) {
 					return { false, Fmt(

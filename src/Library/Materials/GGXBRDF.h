@@ -82,6 +82,15 @@ namespace RISE
 			//! the painter is sampled per-shading-point so a
 			//! texture or procedural can drive the rotation.
 			const IPainter* pTangentRotation;
+			//! DL-16: optional Scalar-pipe alias for the same angle.
+			//! Preferred over `pTangentRotation` when both are non-null
+			//! (see `ResolveTangentONB`) -- `tangent_rotation` is a
+			//! physical scalar by MEANING and the Color-pipe binding
+			//! above is the documented pre-DL-16 oddball, kept working
+			//! but deprecated.  nullptr = not bound via the Scalar pipe
+			//! (every pre-DL-16 site falls back to `pTangentRotation`,
+			//! matching prior behaviour bit-identically).
+			const IScalarPainter* pTangentRotationScalar;
 			//! Thin-film (eFresnelThinFilmConductor) FILM slots — the
 			//! oxide layer of the air/oxide/metal stack.  Physical
 			//! scalars (no JH uplift): film n, film k, film thickness
@@ -106,7 +115,8 @@ namespace RISE
 				const IPainter* tangent_rotation = nullptr,
 				const IScalarPainter* film_ior = nullptr,
 				const IScalarPainter* film_extinction = nullptr,
-				const IScalarPainter* film_thickness = nullptr
+				const IScalarPainter* film_thickness = nullptr,
+				const IScalarPainter* tangent_rotation_scalar = nullptr	///< DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when both bound.
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
@@ -140,6 +150,9 @@ namespace RISE
 			//! anisotropy); nullable.  Read-back for the snapshot clone so a
 			//! GGX clone keeps the same anisotropic tangent orientation.
 			inline const IPainter*       GetTangentRotation() const { return pTangentRotation; }
+			//! DL-16: Scalar-pipe alias read-back (nullable); see
+			//! `pTangentRotationScalar` above.
+			inline const IScalarPainter* GetTangentRotationScalar() const { return pTangentRotationScalar; }
 			void SetDiffuse( const IPainter& v );
 			void SetSpecular( const IPainter& v );
 			void SetAlphaX( const IScalarPainter& v );

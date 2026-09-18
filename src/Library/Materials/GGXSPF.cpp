@@ -46,7 +46,8 @@ GGXSPF::GGXSPF(
 	const IPainter* tangent_rotation,
 	const IScalarPainter* film_ior,
 	const IScalarPainter* film_extinction,
-	const IScalarPainter* film_thickness
+	const IScalarPainter* film_thickness,
+	const IScalarPainter* tangent_rotation_scalar
 	) :
   pDiffuse( &diffuse ),
   pSpecular( &specular ),
@@ -56,6 +57,7 @@ GGXSPF::GGXSPF(
   pExtinction( &ext ),
   fresnelMode( fresnel_mode ),
   pTangentRotation( tangent_rotation ),
+  pTangentRotationScalar( tangent_rotation_scalar ),
   pFilmIOR( film_ior ),
   pFilmExtinction( film_extinction ),
   pFilmThickness( film_thickness )
@@ -67,6 +69,7 @@ GGXSPF::GGXSPF(
 	pIOR->addref();
 	pExtinction->addref();
 	if( pTangentRotation ) pTangentRotation->addref();
+	if( pTangentRotationScalar ) pTangentRotationScalar->addref();
 	if( pFilmIOR )        pFilmIOR->addref();
 	if( pFilmExtinction ) pFilmExtinction->addref();
 	if( pFilmThickness )  pFilmThickness->addref();
@@ -83,13 +86,20 @@ namespace
 
 	// Landing 8: rotate the tangent ONB per anisotropy_rotation
 	// (mirrors GGXBRDF.cpp's helper).  Returns source unchanged when
-	// the rotation painter is null — every pre-L8 GGXSPF site falls
-	// back here.
+	// neither rotation input is bound — every pre-L8 GGXSPF site falls
+	// back here.  DL-16: `pRotationScalar` (the Scalar-pipe alias) is
+	// preferred over `pRotation` (the legacy Color-pipe binding) when
+	// both are non-null.
 	inline RISE::OrthonormalBasis3D ApplyTangentRotation(
 		const RISE::OrthonormalBasis3D& source,
 		const RISE::IPainter* pRotation,
+		const RISE::IScalarPainter* pRotationScalar,
 		const RISE::RayIntersectionGeometric& ri )
 	{
+		if( pRotationScalar ) {
+			const RISE::Scalar angle = pRotationScalar->GetValuesAt( ri ).v[0];
+			return RISE::MicrofacetUtils::RotateTangent( source, angle );
+		}
 		if( !pRotation ) return source;
 		const RISE::Scalar angle = RISE::ColorMath::MaxValue( pRotation->GetColor( ri ) );
 		return RISE::MicrofacetUtils::RotateTangent( source, angle );
@@ -105,6 +115,7 @@ GGXSPF::~GGXSPF()
 	safe_release( pIOR );
 	safe_release( pExtinction );
 	if( pTangentRotation ) pTangentRotation->release();
+	if( pTangentRotationScalar ) pTangentRotationScalar->release();
 	if( pFilmIOR )        pFilmIOR->release();
 	if( pFilmExtinction ) pFilmExtinction->release();
 	if( pFilmThickness )  pFilmThickness->release();
@@ -140,7 +151,7 @@ void GGXSPF::Scatter(
 
 	// Landing 8: apply the anisotropy_rotation AFTER the FlipW so the
 	// rotation is in the (possibly flipped) surface tangent plane.
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
@@ -484,7 +495,7 @@ void GGXSPF::ScatterNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
@@ -774,7 +785,7 @@ Scalar GGXSPF::Pdf(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
@@ -840,7 +851,7 @@ Scalar GGXSPF::PdfNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );

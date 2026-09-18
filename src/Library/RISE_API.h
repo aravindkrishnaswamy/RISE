@@ -1142,7 +1142,8 @@ namespace RISE
 								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
 								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n (physical scalar); NULL = no film
 								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k (physical scalar); NULL = transparent film
-								const IScalarPainter* film_thickness = nullptr		///< [in] Thin-film oxide thickness in nm (physical scalar; may be spatially varying)
+								const IScalarPainter* film_thickness = nullptr,	///< [in] Thin-film oxide thickness in nm (physical scalar; may be spatially varying)
+								const IScalarPainter* tangent_rotation_scalar = nullptr	///< [in] DL-16: Scalar-pipe alias for `tangent_rotation` (physical scalar, no JH uplift); preferred over `tangent_rotation` when both are non-NULL.  NULL = not bound via the Scalar pipe (falls back to `tangent_rotation`).
 								);
 
 	//! Creates a GGX material with an optional emissive painter.  Pass
@@ -1182,7 +1183,8 @@ namespace RISE
 								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
 								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n; NULL = no film
 								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k; NULL = transparent film
-								const IScalarPainter* film_thickness = nullptr		///< [in] Thin-film oxide thickness in nm
+								const IScalarPainter* film_thickness = nullptr,	///< [in] Thin-film oxide thickness in nm
+								const IScalarPainter* tangent_rotation_scalar = nullptr	///< [in] DL-16: Scalar-pipe alias for `tangent_rotation`; see RISE_API_CreateGGXMaterialThinFilm.
 								);
 
 	//! Creates a glTF-spec pbrMetallicRoughness material.  Composes the
@@ -2255,6 +2257,17 @@ namespace RISE
 								IScalarPainter* pB,				///< [in] Painter B (addref'd)
 								Scalar weightA = Scalar( 1.0 ),	///< [in] Multiplier on A's contribution
 								Scalar weightB = Scalar( 1.0 )	///< [in] Multiplier on B's contribution
+								);
+
+	//! Composition: two-argument arctangent of two scalar painters
+	//! (`ScalarTriple` and per-wavelength) -- atan2(y, x).  DL-17: built
+	//! for KHR_materials_anisotropy's per-texel rotation, where `y`/`x`
+	//! are typically PainterChannelScalarPainters reading a texture's G/R
+	//! channels remapped to [-1, 1].
+	bool RISE_API_CreateAtan2ScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pY,				///< [in] Y operand (addref'd)
+								IScalarPainter* pX				///< [in] X operand (addref'd)
 								);
 
 	//! Creates the scalar_painter { expression ... } PHYSICAL-SCALAR-pipe

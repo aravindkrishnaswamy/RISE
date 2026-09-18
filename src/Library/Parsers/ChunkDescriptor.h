@@ -249,6 +249,19 @@ namespace RISE
 		//! common case).
 		std::vector<std::string> keywordAllowlist;
 
+		//! Color pipe only, DL-16/DL-17: true when this parameter's real
+		//! Job.cpp resolution ALSO accepts a Scalar-pipe binding (a named
+		//! `scalar_painter`, single-valued) in addition to the Color-pipe
+		//! one the `pipe` field names -- `ResolveRotationPainterDual`
+		//! (Job.cpp)'s "prefer Scalar, keep Color working" resolution
+		//! order, used by `ggx_material.tangent_rotation` and
+		//! `pbr_metallic_roughness_material.anisotropy_rotation`.  Exists
+		//! so ConnectionLegalityTest's corpus sweep (real parser vs. this
+		//! descriptor) can see the true legal set for these two oddballs
+		//! without turning `pipe` into a bitmask for two parameters.
+		//! False (the default) for every ordinary Color-pipe parameter.
+		bool colorAlsoAcceptsScalar = false;
+
 		//! Free-text audit annotation for an oddball binding -- pipe says
 		//! one thing (e.g. Color) while the authored MEANING is something
 		//! else (e.g. an angle, or a physical scalar bridged through the
