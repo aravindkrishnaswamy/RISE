@@ -1522,21 +1522,84 @@ magnitude `interior(r)` is built on) is untouched — it needs a bound in
 the opposite direction and Phase 3 already made its sign exact, so this
 row does not extend to it.
 
-**DL-16 (ggx_material tangent_rotation scalar-pipe alias).** Add
-`tangent_rotation_scalar` (or an equivalent accept-either-pipe resolution
-order) to `ggx_material`'s descriptor in `ChunkParserRegistry.cpp`,
-preferring Scalar and keeping the Color binding working-but-deprecated.
-Fixed when a `tests/ChunkParserRegistryTest.cpp`-style case binds a
-`scalar_painter` to the new slot and a `fabric_material` wrapping the same
-GGX base can drive both rotations from one shared painter, matching the
-already-shipped `weave_rotation`/`tangent_rotation` additive convention.
+**~~DL-16 (ggx_material tangent_rotation scalar-pipe alias).~~ CLOSED
+2026-09-17 — `tests/GGXTangentRotationScalarTest.cpp` 19/0 (red: 2 compile
+errors pre-fix, `GetTangentRotationScalar` undeclared; the scene-parse
+red-proof independently reproduces `ChunkParser:: Failed to parse
+parameter name \`tangent_rotation_scalar\` (not declared in
+\`ggx_material\` descriptor)`).** Added a new `tangent_rotation_scalar`
+descriptor parameter on `ggx_material` (Scalar pipe, `requireSingle`),
+resolved through a new shared helper `ResolveRotationPainterDual`
+(`Job.cpp`) that tries the Scalar pipe first (a named `scalar_painter`, or
+an inline literal now minted as a `UniformScalarPainter`), falls back to
+the legacy Color pipe (a named colour painter — kept working, marked
+deprecated in the descriptor text), and errors if neither resolves.
+`GGXBRDF`/`GGXSPF`/`GGXMaterial` gained a parallel `pTangentRotationScalar`
+member (trailing default-`nullptr` constructor param, so every existing
+call site is unaffected) that `ResolveTangentONB`/`ApplyTangentRotation`
+prefer over the legacy `IPainter*` when both are bound; `RISE_API_CreateGGX{,Emissive}MaterialThinFilm`
+gained the matching trailing parameter (the ABI-preserving `*ThinFilm`
+overloads are the documented extension point — the frozen non-`ThinFilm`
+symbols are untouched). `Job::AddPBRMetallicRoughnessMaterial`'s
+`anisotropy_rotation` resolution was widened the same way (the identical
+oddball pattern, audited per the recipe's own convention) — see DL-17.
+Render-parity row: an anisotropic GGX (`alphax=0.04 alphay=0.35`) rotated
+0.7123 rad via the legacy Color pipe and an identical material rotated via
+the new Scalar pipe evaluate to the SAME BSDF value (`0.5826652153` all
+three channels, both pipes) at a fixed oblique (in, out) pair; an
+unrotated control differs, so the parity check is not vacuous. MONEY row:
+one `scalar_painter` bound to both a `fabric_material`'s `weave_rotation`
+and its GGX base's new `tangent_rotation_scalar` reads back IDENTICAL
+(0.35 both) — the additive weave-then-substrate convention this row exists
+for. `SourceHygieneTest` 165/0 (tail-appended `Job::AddAtan2ScalarPainter`
+for DL-17 regenerated `tests/IJobVtableManifest.txt` by exactly one line).
 
-**DL-17 (glTF anisotropy_rotation).** Implement the sketch in
-`CLOTH_FABRIC_DESIGN.md` §15 item 12 (two `channel_painter`s + an `atan2`
-`scalar_painter` bound to `weave_rotation`) in `GLTFSceneImporter.cpp`.
-Fixed when a glTF fixture with a per-texel anisotropy rotation texture
-imports and renders a spatially-varying anisotropic highlight, verified in
-`tests/GLTFClearcoatImportTest.cpp` or a new anisotropy-rotation sibling.
+**~~DL-17 (glTF anisotropy_rotation).~~ CLOSED 2026-09-17 —
+`tests/GLTFAnisotropyRotationTest.cpp` 14/0 (red: 1 compile error pre-fix,
+`GetTangentRotationScalar` undeclared).** Implemented per the
+KHR_materials_anisotropy spec: `direction = normalize(2*RG - 1)`,
+`rotation = atan2(dir.y, dir.x) + scalar anisotropyRotation`. The sketch's
+own `expression`/`param`/`def` route turned out not to be executable as
+written — the `scalar_painter { expression ... }` VM has no builtin to
+sample an EXTERNAL painter as a live per-point input (only named
+constants/sub-expressions over the fixed 3D context), so `rotR`/`rotG`
+could not actually be wired into an `expression` body the way the sketch
+implied. Built instead from primitives that already exist end to end:
+two `Job::AddPainterChannelScalarPainter` reads of the anisotropy
+texture's R/G channels (`scale 2 bias -1`, mapping `[0,1] -> [-1,1]`)
+combined through a **new** `Atan2ScalarPainter` composition operator
+(`src/Library/Painters/Atan2ScalarPainter.h`, mirroring
+`MultiplyScalarPainter.h`/`AddScalarPainter.h`'s existing shape) exposed
+through a **new**, tail-appended IJob virtual `AddAtan2ScalarPainter`
+(`name, y, x, offset` — no public `Add{Multiply,Add}ScalarPainter` exists
+on `IJob` today, those combinators are scene-language-only via `IJobPriv`;
+this is a purpose-built glTF-import bridge, matching
+`AddPainterChannelScalarPainter`'s own precedent, not a general
+scalar-algebra surface) that folds the scalar `anisotropyRotation` term in
+as an internal `AddScalarPainter` so the importer doesn't need a second
+round-trip. The result is a genuine `IScalarPainter` name, which
+`Job::AddPBRMetallicRoughnessMaterial`'s `anisotropy_rotation` now accepts
+directly (DL-16's `ResolveRotationPainterDual` widened there too — the
+identical Color-pipe-only oddball, same fix, one helper).
+`GLTFSceneImporter.cpp`'s per-pixel-strength branch is otherwise
+unchanged; the "honours per-pixel STRENGTH but applies the SCALAR rotation
+uniformly" log line and its stale comment are removed. MONEY red-proof: a
+hand-built 8x1 in-memory glTF fixture (RISE's own raster-image + PNG
+writer, `Rec709RGB_Linear`, matching `TextureColorSpace("anisotropy")`)
+whose left/right halves encode direction (1,0) and (0,1) probes back
+atan2 = 0 and pi/2 respectively (within 8-bit-PNG-quantization tolerance),
+GENUINELY DIFFERENT at the two halves (pre-fix: uniformly the scalar
+fallback everywhere), composes correctly with a non-zero scalar
+`anisotropyRotation` offset, and drives a measurably different anisotropic
+GGX BSDF value at a fixed direction pair. Blender bridge sibling audit
+(DL-17's own "if it also drops it" instruction): the bridge's Principled
+Anisotropic Rotation socket was ALREADY wired as a per-material SCALAR
+(Landing 8, `25d271df`, confirmed by DL-18's closure) and Blender's
+Principled shader has no separate per-texel anisotropy-DIRECTION texture
+input in the versions RISE's bridge targets (Anisotropic Rotation is a
+single scalar/texture-driven-scalar socket, not an RG-encoded direction
+map like glTF's) — there is no equivalent per-texel gap to close on that
+side; not filed as a new row.
 
 **DL-18 (Blender bridge sheen mapping).** Add Principled BSDF Sheen socket
 import to the Blender bridge, targeting `fabric_material`. Fixed when a
