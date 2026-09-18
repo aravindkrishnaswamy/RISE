@@ -117,6 +117,8 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/PolishedSPF.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
+#include "../src/Library/Materials/SchlickSPF.h"
+#include "../src/Library/Materials/IsotropicPhongSPF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
@@ -162,7 +164,17 @@ static void CheckRel( double measured, double expected, double relTol, const cha
 	}
 }
 
-#ifdef RISE_ENABLE_OPENPGL
+//////////////////////////////////////////////////////////////////////
+// EVERYTHING FROM HERE TO `BuildSkewedField` IS GUIDING-INDEPENDENT.
+//
+// The DL-74 rows need OpenPGL (they configure a trained
+// `PathGuidingField`); the DL-103 rows below do NOT -- they measure the
+// UN-guided default path tracer, and a build without OpenPGL runs
+// exactly the same integrator code at the site they exercise.  The
+// `#ifdef RISE_ENABLE_OPENPGL` that used to wrap this whole file
+// therefore starts further down, at the first guiding-only symbol, so
+// the DL-103 red-proof is present in every build configuration.
+//////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////
 // A no-op rasterizer output -- the fixture renders one throwaway
@@ -536,6 +548,591 @@ static std::string AreaLightScene()
 }
 
 //////////////////////////////////////////////////////////////////////
+// One furnace sample through the PRODUCTION integrator entry point.
+// Shared by the DL-74 guiding rows and the DL-103 multi-lobe rows --
+// the only difference between them is what the caller put in `rc`.
+//////////////////////////////////////////////////////////////////////
+static Scalar IntegrateOneSample(
+	const Fixture& fx,
+	const IMaterial& material,
+	PathTracingIntegrator& integrator,
+	StubObject& shadingObject,
+	RuntimeContext& rc,
+	ISampler& sampler,
+	const IObject* pEnclosing )
+{
+	const RasterizerState rast{};
+
+	// Front-facing hit at the origin with the normal along +Z: the
+	// incoming ray travels -Z, so Dot(dir, N) < 0 and both
+	// LambertianSPF and GuidingCosineNormal keep the +Z hemisphere.
+	RayIntersection hit( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
+	hit.geometric.bHit = true;
+	hit.geometric.range = 1;
+	hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+	hit.geometric.vNormal = Vector3( 0, 0, 1 );
+	hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
+	hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+	hit.pObject = &shadingObject;
+	hit.pMaterial = &material;
+
+	IORStack stack( 1.0 );
+	if( pEnclosing ) {
+		stack.SetCurrentObject( pEnclosing );
+		stack.push( 1.5 );
+	}
+
+	const RISEPel r = integrator.IntegrateFromHit(
+		rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
+		/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
+		/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
+		/*considerEmission_*/ true, /*importance_*/ 1,
+		IRayCaster::RAY_STATE::eRayDiffuse,
+		0, 0, 0, 0, 0, 0, false, false );
+
+	return ColorMath::MaxValue( r );
+}
+
+//////////////////////////////////////////////////////////////////////
+//
+//  DL-103 (docs/DL103_PT_ESCAPE_MIS_PARTNER.md) -- the UN-GUIDED
+//  multi-lobe rows.  No guiding field, no OpenPGL: the default path
+//  tracer, the configuration every shipped render uses.
+//
+//  THE DEFECT.  `LightSampler`'s NEE arms weight against the
+//  material's AGGREGATE `IMaterial::Pdf()` -- the density of the whole
+//  `Scatter` procedure, summed over its lobes.  PART 3's escape-side
+//  partner, with guiding inactive, was the SELECTED lobe's own
+//  `pS->pdf`.  At a single-lobe SPF the two coincide, which is why
+//  every pre-existing furnace in this file (all Lambertian) is blind
+//  to it.  At a multi-lobe SPF they are different functions of
+//  direction, so `w_bsdf(w) + w_nee(w) != 1` and the estimator reads
+//  off its own closed form.
+//
+//  THE MATERIAL.  Two overlapping, non-delta, cosine-power lobes about
+//  the shading normal:
+//
+//      p_I(w) = (n_I + 1) cos^n_I(theta) / (2 PI)      (integrates to 1)
+//      f_I(w) = c_I p_I(w) / cos(theta)                (so kray_I = c_I)
+//
+//  with `n_A = 1` (a plain cosine lobe) and `n_B = 63` (a narrow one),
+//  `c_A = 0.3`, `c_B = 0.7`.  Three properties make this a closed-form
+//  furnace rather than a comparison against another integrator:
+//
+//   1. `kray_I = c_I` is CONSTANT, so `RandomlySelect`'s kray-weighted
+//      lobe choice is exactly `w_I = c_I / sum_J c_J = c_I`, and the
+//      material's aggregate density is the fixed mixture
+//      `Pdf(w) = sum_I c_I p_I(w)` -- a well-defined function of
+//      direction, which a direction-dependent kray would not give.
+//   2. `f(w) cos(theta) = sum_I c_I p_I(w) = Pdf(w)` identically, so
+//      the BRDF is `Pdf(w)/cos(theta)` and its bihemispherical albedo
+//      is `sum_I c_I = 1` EXACTLY.  The white-furnace target is
+//      therefore `L_env`, the same closed form the DL-74 rows use.
+//   3. Over a cone of half-angle `theta_max` (the area row) the same
+//      algebra integrates in closed form to
+//      `sum_I c_I (1 - cos^(n_I+1)(theta_max))`, which reduces to the
+//      Lambertian `R^2/d^2` when the only lobe is the cosine one.
+//
+//  THE CONTROL.  `MultiLobeMaterial(true)` emits ONE ray drawn from
+//  that same mixture, with `pdf = Pdf(w)` and `kray = 1` (exact, by
+//  property 2).  Identical BRDF, identical marginal sampling density,
+//  identical closed form -- the ONLY variable is whether the lobes
+//  reach the integrator as one `ScatteredRay` or two.  It is green
+//  before and after the fix, which is what proves the two-lobe rows
+//  measure the per-lobe/aggregate partner mismatch and not the
+//  harness, the material, or the sampling density.
+//
+//  WHY A SYNTHETIC SPF AND NOT `schlick_material`.  Same reason DL-74
+//  row (f) uses a decorator: a closed-form furnace needs albedo
+//  exactly 1, and no production multi-lobe SPF is exactly
+//  energy-conserving (`SchlickSPF`'s own kray differs from its BRDF
+//  integral by up to 20% at grazing -- DL-127).  `RealMultiLobePremise`
+//  below asserts on the PRODUCTION `SchlickSPF` and
+//  `IsotropicPhongSPF` that the quantity this material stands in for
+//  -- aggregate `Pdf()` vs the selected lobe's `.pdf` -- really does
+//  diverge there, so the decorator is a controlled stand-in for
+//  measured behaviour rather than a straw man.
+//
+//////////////////////////////////////////////////////////////////////
+static const unsigned int	kLobeAPower  = 1;		///< plain cosine lobe
+static const unsigned int	kLobeBPower  = 63;		///< narrow lobe
+static const Scalar			kLobeAWeight = 0.3;		///< c_A
+static const Scalar			kLobeBWeight = 0.7;		///< c_B  (c_A + c_B == 1)
+
+//! Solid-angle density of a cos^n hemisphere: `(n+1) c^n / (2 PI)`.
+static Scalar CosPowerPdf( const Scalar c, const unsigned int n )
+{
+	return c > 0 ? ( n + 1 ) * std::pow( (double)c, (double)n ) / TWO_PI : Scalar( 0 );
+}
+
+//! The material's AGGREGATE density -- the mixture `RandomlySelect`
+//! plus the per-lobe sampling actually realizes.
+static Scalar MultiLobeAggregatePdf( const Scalar c )
+{
+	return kLobeAWeight * CosPowerPdf( c, kLobeAPower ) +
+		   kLobeBWeight * CosPowerPdf( c, kLobeBPower );
+}
+
+//! The outward shading axis, oriented against the incoming ray -- the
+//! same idiom `StackAwareSPF` above uses.
+static Vector3 FurnaceAxis( const RayIntersectionGeometric& ri )
+{
+	return ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO )
+		? -ri.onb.w() : ri.onb.w();
+}
+
+static Vector3 SampleCosPower( const Vector3& axis, const unsigned int n,
+	const Scalar u0, const Scalar u1 )
+{
+	OrthonormalBasis3D onb;
+	onb.CreateFromW( axis );
+	const Scalar c = std::pow( (double)u0, 1.0 / ( (double)n + 1.0 ) );
+	const Scalar s = std::sqrt( r_max( Scalar( 0 ), Scalar( 1 ) - c * c ) );
+	const Scalar phi = TWO_PI * u1;
+	return onb.Transform( Vector3( s * std::cos( phi ), s * std::sin( phi ), c ) );
+}
+
+class MultiLobeSPF : public virtual ISPF, public virtual Reference
+{
+	const bool bSingleLobe;
+
+	void Emit( const RayIntersectionGeometric& ri, ISampler& sampler,
+		const unsigned int n, const Scalar kray, ScatteredRayContainer& rays ) const
+	{
+		const Vector3 axis = FurnaceAxis( ri );
+		ScatteredRay s;
+		s.type = ScatteredRay::eRayDiffuse;
+		s.isDelta = false;
+		s.ray.Set( ri.ptIntersection,
+			SampleCosPower( axis, n, sampler.Get1D(), sampler.Get1D() ) );
+		s.pdf = CosPowerPdf( Vector3Ops::Dot( s.ray.Dir(), axis ), n );
+		s.kray = RISEPel( kray, kray, kray );
+		s.krayNM = kray;
+		rays.AddScatteredRay( s );
+	}
+
+	//! The CONTROL: one ray drawn from the aggregate mixture, so the
+	//! selected lobe's `.pdf` IS the aggregate `Pdf()`.  `kray` is
+	//! exactly 1 because `f cos == Pdf` by construction.
+	void EmitMixture( const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& rays ) const
+	{
+		const Vector3 axis = FurnaceAxis( ri );
+		const unsigned int n = ( sampler.Get1D() < kLobeAWeight )
+			? kLobeAPower : kLobeBPower;
+		ScatteredRay s;
+		s.type = ScatteredRay::eRayDiffuse;
+		s.isDelta = false;
+		s.ray.Set( ri.ptIntersection,
+			SampleCosPower( axis, n, sampler.Get1D(), sampler.Get1D() ) );
+		s.pdf = MultiLobeAggregatePdf( Vector3Ops::Dot( s.ray.Dir(), axis ) );
+		s.kray = RISEPel( 1, 1, 1 );
+		s.krayNM = 1;
+		rays.AddScatteredRay( s );
+	}
+
+	void ScatterBoth( const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& rays ) const
+	{
+		if( bSingleLobe ) {
+			EmitMixture( ri, sampler, rays );
+			return;
+		}
+		Emit( ri, sampler, kLobeAPower, kLobeAWeight, rays );
+		Emit( ri, sampler, kLobeBPower, kLobeBWeight, rays );
+	}
+
+protected:
+	~MultiLobeSPF() override {}
+
+public:
+	explicit MultiLobeSPF( bool singleLobe ) : bSingleLobe( singleLobe ) {}
+
+	void Scatter( const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& rays, const IORStack& ) const override
+	{
+		ScatterBoth( ri, sampler, rays );
+	}
+	void ScatterNM( const RayIntersectionGeometric& ri, ISampler& sampler, Scalar,
+		ScatteredRayContainer& rays, const IORStack& ) const override
+	{
+		ScatterBoth( ri, sampler, rays );
+	}
+	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo,
+		const IORStack& ) const override
+	{
+		return MultiLobeAggregatePdf( Vector3Ops::Dot( wo, FurnaceAxis( ri ) ) );
+	}
+	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, Scalar,
+		const IORStack& stack ) const override
+	{
+		return Pdf( ri, wo, stack );
+	}
+};
+
+//! `f(w) = Pdf(w) / cos(theta)` -- the BRDF whose lobe decomposition
+//! the SPF above samples.  Bihemispherical albedo exactly 1.
+class MultiLobeBRDF : public virtual IBSDF, public virtual Reference
+{
+	static Scalar Value1( const Vector3& w, const RayIntersectionGeometric& ri )
+	{
+		const Scalar c = Vector3Ops::Dot( w, FurnaceAxis( ri ) );
+		return c > 0 ? MultiLobeAggregatePdf( c ) / c : Scalar( 0 );
+	}
+protected:
+	~MultiLobeBRDF() override {}
+public:
+	RISEPel value( const Vector3& vLightIn,
+		const RayIntersectionGeometric& ri ) const override
+	{
+		const Scalar f = Value1( vLightIn, ri );
+		return RISEPel( f, f, f );
+	}
+	Scalar valueNM( const Vector3& vLightIn,
+		const RayIntersectionGeometric& ri, const Scalar ) const override
+	{
+		return Value1( vLightIn, ri );
+	}
+};
+
+class MultiLobeMaterial : public virtual IMaterial, public virtual Reference
+{
+	MultiLobeBRDF*	pBRDF;
+	MultiLobeSPF*	pSPF;
+protected:
+	~MultiLobeMaterial() override { safe_release( pBRDF ); safe_release( pSPF ); }
+public:
+	explicit MultiLobeMaterial( bool singleLobe )
+	{
+		pBRDF = new MultiLobeBRDF();
+		GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "multi-lobe BRDF" );
+		pSPF = new MultiLobeSPF( singleLobe );
+		GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "multi-lobe SPF" );
+	}
+	IBSDF* GetBSDF() const override { return pBRDF; }
+	ISPF* GetSPF() const override { return pSPF; }
+	IEmitter* GetEmitter() const override { return 0; }
+};
+
+//! Un-guided batch -- the DL-103 configuration (`rc` left at its
+//! defaults, which is exactly what a shipped render uses).
+static Scalar RunUnguidedBatch(
+	const Fixture& fx,
+	const IMaterial& material,
+	unsigned int nSamples,
+	unsigned int seedBase )
+{
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "integrator" );
+	integrator->SetMaxPathDepth( 2 );
+
+	StubObject* shadingObject = new StubObject();
+	GlobalLog()->PrintNew( shadingObject, __FILE__, __LINE__, "shading object" );
+
+	Scalar sum = 0;
+	for( unsigned int s = 0; s < nSamples; ++s ) {
+		RandomNumberGenerator rng( seedBase + s );
+		IndependentSampler sampler( rng );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		sum += IntegrateOneSample( fx, material, *integrator, *shadingObject,
+			rc, sampler, 0 );
+	}
+
+	integrator->release();
+	shadingObject->release();
+	return sum / nSamples;
+}
+
+//////////////////////////////////////////////////////////////////////
+// PREMISE for the DL-103 rows: on a PRODUCTION multi-lobe SPF the
+// selected lobe's own `.pdf` and the material's aggregate `Pdf()` at
+// the SAME direction really are different numbers.  Deterministic
+// (fixed seed), no render, no closed form -- it measures the two
+// production functions directly.
+//////////////////////////////////////////////////////////////////////
+static void ProbeAggregateVsLobe( const ISPF& spf, const char* what,
+	unsigned int& outMaxLobes, Scalar& outMinRatio, Scalar& outMaxRatio )
+{
+	const RasterizerState rast{};
+	RayIntersectionGeometric ri( Ray( Point3( 0, 0, 1 ),
+		Vector3Ops::Normalize( Vector3( 0.5, 0, -1 ) ) ), rast );
+	ri.bHit = true;
+	ri.range = 1;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( ri.vNormal );
+
+	const IORStack stack( 1.0 );
+	RandomNumberGenerator rng( 77u );
+	IndependentSampler sampler( rng );
+
+	outMaxLobes = 0;
+	outMinRatio = 1e30;
+	outMaxRatio = 0;
+	unsigned int nComparable = 0;
+
+	for( unsigned int i = 0; i < 4096; ++i ) {
+		ScatteredRayContainer rays;
+		spf.Scatter( ri, sampler, rays, stack );
+		if( rays.Count() > outMaxLobes ) outMaxLobes = rays.Count();
+		for( unsigned int r = 0; r < rays.Count(); ++r ) {
+			const ScatteredRay& s = rays[r];
+			if( s.isDelta || s.pdf <= NEARZERO ) continue;
+			const Scalar agg = spf.Pdf( ri, s.ray.Dir(), stack );
+			if( agg <= NEARZERO ) continue;
+			const Scalar ratio = agg / s.pdf;
+			if( ratio < outMinRatio ) outMinRatio = ratio;
+			if( ratio > outMaxRatio ) outMaxRatio = ratio;
+			nComparable++;
+		}
+	}
+
+	std::cout << "    " << what << ": max lobes/Scatter " << outMaxLobes
+		<< ", aggregate/selected-lobe pdf ratio over " << nComparable
+		<< " non-delta draws in [" << outMinRatio << ", " << outMaxRatio << "]"
+		<< std::endl;
+}
+
+static void RealMultiLobePremise()
+{
+	std::cout << "DL-103 premise: a production multi-lobe SPF's aggregate Pdf() "
+		"differs from the selected lobe's own pdf" << std::endl;
+
+	UniformColorPainter* diffuse = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+	GlobalLog()->PrintNew( diffuse, __FILE__, __LINE__, "premise diffuse" );
+	UniformColorPainter* specular = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+	GlobalLog()->PrintNew( specular, __FILE__, __LINE__, "premise specular" );
+	UniformScalarPainter* roughness = new UniformScalarPainter( 0.25 );
+	GlobalLog()->PrintNew( roughness, __FILE__, __LINE__, "premise roughness" );
+	UniformScalarPainter* isotropy = new UniformScalarPainter( 1.0 );
+	GlobalLog()->PrintNew( isotropy, __FILE__, __LINE__, "premise isotropy" );
+	UniformScalarPainter* exponent = new UniformScalarPainter( 30.0 );
+	GlobalLog()->PrintNew( exponent, __FILE__, __LINE__, "premise exponent" );
+
+	{
+		SchlickSPF* spf = new SchlickSPF( *diffuse, *specular, *roughness, *isotropy );
+		GlobalLog()->PrintNew( spf, __FILE__, __LINE__, "premise SchlickSPF" );
+		unsigned int lobes = 0;
+		Scalar lo = 0, hi = 0;
+		ProbeAggregateVsLobe( *spf, "SchlickSPF", lobes, lo, hi );
+		Check( lobes >= 2, "premise: production SchlickSPF emits >= 2 lobes per Scatter" );
+		Check( hi > 1.05 || lo < 0.95,
+			"premise: SchlickSPF's aggregate Pdf() differs from the selected lobe's pdf" );
+		spf->release();
+	}
+
+	{
+		IsotropicPhongSPF* spf = new IsotropicPhongSPF( *diffuse, *specular, *exponent );
+		GlobalLog()->PrintNew( spf, __FILE__, __LINE__, "premise IsotropicPhongSPF" );
+		unsigned int lobes = 0;
+		Scalar lo = 0, hi = 0;
+		ProbeAggregateVsLobe( *spf, "IsotropicPhongSPF", lobes, lo, hi );
+		Check( lobes >= 2, "premise: production IsotropicPhongSPF emits >= 2 lobes per Scatter" );
+		Check( hi > 1.05 || lo < 0.95,
+			"premise: IsotropicPhongSPF's aggregate Pdf() differs from the selected lobe's pdf" );
+		spf->release();
+	}
+
+	exponent->release();
+	isotropy->release();
+	roughness->release();
+	specular->release();
+	diffuse->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-103 row (j): un-guided env furnace at a MULTI-LOBE vertex.
+// Closed form: albedo 1 under a constant environment re-radiates
+// L_env.
+//////////////////////////////////////////////////////////////////////
+static void RunMultiLobeEnvRow()
+{
+	std::cout << "DL-103 env furnace (guiding OFF): one env-NEE + one multi-lobe "
+		"escape must partition to 1" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "mlenv" ), "multi-lobe env fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const IRadianceMap* pGlobal = fx.pScene->GetGlobalRadianceMap();
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+	Check( pGlobal != 0 && pLS != 0,
+		"multi-lobe env fixture has a radiance map and a LightSampler" );
+	if( !pGlobal || !pLS ) return;
+	const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+	Check( pES != 0 && pES->IsValid(),
+		"multi-lobe env fixture has a valid EnvironmentSampler" );
+	if( !pES || !pES->IsValid() ) return;
+
+	const RasterizerState rast{};
+	const Scalar Lenv = ColorMath::MaxValue(
+		pGlobal->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+	Check( Lenv > 0, "multi-lobe env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	MultiLobeMaterial* twoLobe = new MultiLobeMaterial( false );
+	GlobalLog()->PrintNew( twoLobe, __FILE__, __LINE__, "two-lobe material" );
+	MultiLobeMaterial* oneLobe = new MultiLobeMaterial( true );
+	GlobalLog()->PrintNew( oneLobe, __FILE__, __LINE__, "one-lobe control material" );
+
+	const unsigned int kN = 200000;
+
+	// CONTROL: same BRDF, same marginal sampling density, ONE lobe.
+	{
+		const Scalar m = RunUnguidedBatch( fx, *oneLobe, kN, 21000 );
+		std::cout << "    (j-control) one-lobe mixture " << m
+			<< " , expected " << Lenv << std::endl;
+		CheckRel( m, Lenv, 0.015,
+			"(j-control) SINGLE-lobe mixture SPF, guiding off: furnace reads L_env" );
+	}
+
+	// Row (j): the identical BRDF reaching the integrator as TWO lobes.
+	{
+		const Scalar m = RunUnguidedBatch( fx, *twoLobe, kN, 22000 );
+		std::cout << "    (j) two-lobe " << m << " , expected " << Lenv << std::endl;
+		CheckRel( m, Lenv, 0.015,
+			"(j) MULTI-lobe SPF, guiding off: env-NEE vs the escape weight "
+			"partition to 1 (furnace reads L_env)" );
+	}
+
+	oneLobe->release();
+	twoLobe->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row (k)'s own emitter: the SAME construction as `AreaLightScene`
+// but a SMALL sphere (R 0.5 at distance 5 rather than R 2 at 5).
+//
+// WHY THE SIZE MATTERS.  A partition-of-unity violation is only
+// visible where the two techniques' densities are COMPARABLE -- where
+// `PowerHeuristic` is actually splitting.  `LightSampler`'s
+// area-sampled solid-angle density is `d^2 / (A cos_light)`, which for
+// the R=2 emitter is ~0.18 sr^-1: three orders below the narrow lobe's
+// own ~10 sr^-1, so `w_bsdf` saturates at 1 for that lobe and the
+// wrong partner changes nothing (measured: row (k) at R=2 reads within
+// 0.33 % of its closed form both before and after the fix -- a green
+// row, not a red-proof).  Shrinking the emitter to R=0.5 raises that
+// density to ~8 sr^-1, straddling the two lobes' own densities (0.32
+// and 10.2), and the same defect then moves the furnace 12.7 % (a
+// quadrature of the two weightings over the emitter's cone predicts
+// +12.70 %; the R=2 geometry's own prediction, -0.45 %, matches its
+// measured -0.33 %, which is what validates the model).
+//////////////////////////////////////////////////////////////////////
+static const Scalar kMLSphereRadius = 0.5;
+static const Scalar kMLSphereDist   = 5.0;
+
+static std::string MultiLobeAreaLightScene()
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_luminaire_material\n{\n\tname emitter\n\texitance white\n"
+		"\tscale 4.0\n\tmaterial none\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname lightball\n\tradius " << kMLSphereRadius << "\n}\n"
+		"\n"
+		"standard_object\n{\n\tname light_object\n\tgeometry lightball\n"
+		"\tmaterial emitter\n\tposition 0 0 " << kMLSphereDist << "\n}\n"
+		"\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
+		"\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 -3\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n"
+		"\n";
+	return ss.str();
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-103 row (k): un-guided AREA-light furnace at a MULTI-LOBE vertex
+// -- the OTHER MIS pair (LightSampler's area arm against PART 1's
+// emitter-HIT weight).  Closed form over the emitter's cone of
+// half-angle theta_max (sin(theta_max) = R/d):
+//
+//   L_out = L_e * sum_I c_I * (1 - cos^(n_I+1)(theta_max))
+//
+// which reduces to the Lambertian `L_e * R^2/d^2` when the only lobe
+// is the cosine one (n = 1, c = 1).
+//////////////////////////////////////////////////////////////////////
+static void RunMultiLobeAreaRow()
+{
+	std::cout << "DL-103 area furnace (guiding OFF): one area-NEE + one multi-lobe "
+		"emitter hit must partition to 1" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( MultiLobeAreaLightScene(), "mlarea" ), "multi-lobe area fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	Check( fx.pScene->GetGlobalRadianceMap() == 0,
+		"multi-lobe area fixture has NO env map" );
+
+	const RasterizerState rast{};
+	Scalar Le = 0;
+	{
+		RayIntersection probe( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast );
+		fx.pScene->GetObjects()->IntersectRay( probe, true, true, false );
+		Check( probe.geometric.bHit && probe.pMaterial != 0,
+			"multi-lobe area fixture: the emissive sphere is hit up the normal axis" );
+		if( !probe.geometric.bHit || !probe.pMaterial ) return;
+		IEmitter* pEm = probe.pMaterial->GetEmitter();
+		Check( pEm != 0, "multi-lobe area fixture: the sphere carries an emitter" );
+		if( !pEm ) return;
+		Le = ColorMath::MaxValue( pEm->emittedRadiance(
+			probe.geometric, -probe.geometric.ray.Dir(), probe.geometric.vNormal ) );
+		Check( Le > 0, "multi-lobe area fixture: emitted radiance probe is positive" );
+		if( Le <= 0 ) return;
+	}
+
+	const Scalar cosMax = std::sqrt( 1.0 -
+		( kMLSphereRadius * kMLSphereRadius ) / ( kMLSphereDist * kMLSphereDist ) );
+	const Scalar expected = Le * (
+		kLobeAWeight * ( 1.0 - std::pow( (double)cosMax, (double)kLobeAPower + 1.0 ) ) +
+		kLobeBWeight * ( 1.0 - std::pow( (double)cosMax, (double)kLobeBPower + 1.0 ) ) );
+
+	MultiLobeMaterial* twoLobe = new MultiLobeMaterial( false );
+	GlobalLog()->PrintNew( twoLobe, __FILE__, __LINE__, "two-lobe material" );
+	MultiLobeMaterial* oneLobe = new MultiLobeMaterial( true );
+	GlobalLog()->PrintNew( oneLobe, __FILE__, __LINE__, "one-lobe control material" );
+
+	const unsigned int kN = 400000;
+
+	{
+		const Scalar m = RunUnguidedBatch( fx, *oneLobe, kN, 23000 );
+		std::cout << "    (k-control) one-lobe mixture " << m
+			<< " , expected " << expected << std::endl;
+		CheckRel( m, expected, 0.02,
+			"(k-control) SINGLE-lobe mixture SPF, guiding off: area furnace reads "
+			"the cone closed form" );
+	}
+
+	{
+		const Scalar m = RunUnguidedBatch( fx, *twoLobe, kN, 24000 );
+		std::cout << "    (k) two-lobe " << m << " , expected " << expected << std::endl;
+		CheckRel( m, expected, 0.02,
+			"(k) MULTI-lobe SPF, guiding off: area-NEE vs the emitter-hit weight "
+			"partition to 1 (area furnace reads the cone closed form)" );
+	}
+
+	oneLobe->release();
+	twoLobe->release();
+}
+
+static void RunMultiLobeRows()
+{
+	RealMultiLobePremise();
+	RunMultiLobeEnvRow();
+	RunMultiLobeAreaRow();
+}
+
+#ifdef RISE_ENABLE_OPENPGL
+
+//////////////////////////////////////////////////////////////////////
 // A SKEWED trained guiding field at the shading point: incident
 // radiance concentrated in a narrow cone about `axis`, so the learned
 // guide density varies by orders of magnitude across the hemisphere.
@@ -633,7 +1230,6 @@ static Scalar RunBatch(
 	StubObject* shadingObject = new StubObject();
 	GlobalLog()->PrintNew( shadingObject, __FILE__, __LINE__, "shading object" );
 
-	const RasterizerState rast{};
 	Scalar sum = 0;
 
 	for( unsigned int s = 0; s < nSamples; ++s ) {
@@ -649,34 +1245,8 @@ static Scalar RunBatch(
 			rc.guidingRISCandidates = 2;
 		}
 
-		// Front-facing hit at the origin with the normal along +Z: the
-		// incoming ray travels -Z, so Dot(dir, N) < 0 and both
-		// LambertianSPF and GuidingCosineNormal keep the +Z hemisphere.
-		RayIntersection hit( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
-		hit.geometric.bHit = true;
-		hit.geometric.range = 1;
-		hit.geometric.ptIntersection = Point3( 0, 0, 0 );
-		hit.geometric.vNormal = Vector3( 0, 0, 1 );
-		hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
-		hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
-		hit.pObject = shadingObject;
-		hit.pMaterial = &material;
-
-		IORStack stack( 1.0 );
-		if( pEnclosing ) {
-			stack.SetCurrentObject( pEnclosing );
-			stack.push( 1.5 );
-		}
-
-		const RISEPel r = integrator->IntegrateFromHit(
-			rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
-			/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
-			/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
-			/*considerEmission_*/ true, /*importance_*/ 1,
-			IRayCaster::RAY_STATE::eRayDiffuse,
-			0, 0, 0, 0, 0, 0, false, false );
-
-		sum += ColorMath::MaxValue( r );
+		sum += IntegrateOneSample( fx, material, *integrator, *shadingObject,
+			rc, sampler, pEnclosing );
 	}
 
 	integrator->release();
@@ -1592,7 +2162,7 @@ static void RunVolumeEmitterRow()
 	guide->release();
 }
 
-static void Run()
+static void RunGuidingRows()
 {
 	RunEnvRows();
 	RunAreaLightRow();
@@ -1605,12 +2175,20 @@ static void Run()
 
 #else
 
-static void Run()
+static void RunGuidingRows()
 {
 	std::cout << "DL-74 guiding partition coverage unavailable: build without OpenPGL" << std::endl;
 }
 
 #endif
+
+static void Run()
+{
+	// DL-103 first: it needs no guiding field, so it runs in every build
+	// configuration.
+	RunMultiLobeRows();
+	RunGuidingRows();
+}
 
 int main()
 {
