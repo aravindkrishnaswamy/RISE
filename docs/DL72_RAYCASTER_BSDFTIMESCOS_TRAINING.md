@@ -1248,21 +1248,144 @@ warnings); the shared `IRayCaster.h` header change forces a full
 incremental rebuild, so this run exercises every translation unit that
 includes it.
 
+## Round 10 (2026-09-18, debt-dl207 slice): DL-196 CLOSED — the HWSS twin of DL-185's own PART-2 NEE site
+
+### 10.1 The gap
+
+Round 9 (DL-185) wired `castRRCompensation` through the RGB/NM main
+loop (`IntegrateFromHitTemplated`, Tag-templated over `PelTag`/`NMTag`)
+and through `DirectLightingShaderOp`'s legacy dispatch. It did NOT
+touch `IntegrateFromHitHWSS` — a separate, non-templated function (the
+hero-wavelength-bundle path a `pathtracing_spectral_rasterizer` with
+`hwss TRUE` uses) with its own independent copy of every mechanism
+`IntegrateFromHitTemplated` has: its own PART 1 emission, its own PART
+2 NEE loop (`EvaluateDirectLightingNM`, one call per active
+wavelength), and its own `depth`/`startDepth` loop variables. It had no
+`castRRCompensation_` parameter at all, so its PART-2 NEE call used
+`EvaluateDirectLightingNM`'s `neeTrainingScale` default of 1 —
+unconditionally dropping the cast-level RR compensation exactly the way
+the RGB/NM loop's PART-2 site did before round 9.
+
+`PathTracingShaderOp::PerformOperationHWSS` (the dispatch entry point
+`RayCaster::CastRayHWSS` reaches via `SelectShader(ri).ShadeHWSS`) never
+read `rs.castRRCompensation` either — it simply never had anywhere to
+forward it.
+
+**Confirmed inert in production**: the only caller of
+`RayCaster::CastRayHWSS` in the shipped rasterizer chain is
+`PixelBasedSpectralIntegratingRasterizer.cpp`'s top-level camera-ray
+dispatch, which constructs a default `RAY_STATE` (`importance == 1.0`,
+so `CastRayHWSS`'s own `rrCompensation` computation always resolves to
+exactly 1.0 — the RR branch never fires at `importance == 1.0`); and
+`IntegrateFromHitHWSS` never re-enters `CastRayHWSS` itself (its own
+mid-path continuations re-intersect the scene directly or delegate to
+`IntegrateFromHitNM`, never back through the `CastRay*` family). So this
+row, unlike DL-185's own three consumers, is a training-consistency gap
+with no observable effect on any render shipped today — it only matters
+for a future caller that re-enters `CastRayHWSS` from inside a
+continuation (the same shape DL-185's consumer 2, the BSSRDF exit hit,
+already exercises for the RGB/NM twins).
+
+### 10.2 The fix
+
+`IntegrateFromHitHWSS` gains a trailing `Scalar castRRCompensation_ = 1`
+parameter (header + `.cpp`), forwarded at exactly the sites the
+"depth == startDepth" convention calls for:
+
+- The two Fallback branches (SPF-only material, and SSS material) that
+  delegate the ENTIRE per-wavelength walk to `IntegrateFromHitNM` at
+  `firstHit`/`startDepth` — these ARE the first vertex `CastRayHWSS`
+  handed off, so `castRRCompensation_` is forwarded as `IntegrateFromHitNM`'s
+  own trailing parameter (which round 9 already wired straight through
+  to `IntegrateFromHitTemplated<NMTag>`).
+- The "PART 2: NEE (HWSS — per wavelength)" call to
+  `EvaluateDirectLightingNM`, gated `depth == startDepth ?
+  castRRCompensation_ : Scalar(1.0)` — textually identical to the
+  RGB/NM main loop's own PART-2 site (§9.2).
+- The THREE mid-path delegations to `IntegrateFromHitNM` inside this
+  function's own bounce loop (the volume-scatter phase-function
+  continuation; the "hit a material without BSDF mid-path" glass
+  fallback; the "SSS mid-path" fallback) are each reached with a FRESH
+  `RayIntersection` at a LATER `depth`/`startDepth` than the original
+  `firstHit` — none of them is a `RayCaster::CastRay*` re-entry, so
+  each correctly keeps the default 1.0 (no-op), confirmed by reading
+  every call site's own context before editing (none of the three even
+  passes a non-default `bsdfMisPdf_`, the DL-74 field with the
+  identical "first vertex only" contract — consistent precedent).
+
+`PathTracingShaderOp::PerformOperationHWSS` forwards
+`rs.castRRCompensation` into `IntegrateFromHitHWSS`'s new trailing
+parameter, matching `PerformOperation`/`PerformOperationNM`.
+
+### 10.3 Red-proof
+
+`tests/OptimalMISTrainingSitesTest.cpp` gains
+`RunNeeCastRRTrainingFoldHWSS` + `SurfaceEnvSceneHWSS`, the HWSS twin of
+round 9's `RunNeeCastRRTrainingFold`/`SurfaceEnvScene`: identical
+receiver-sphere-under-uniform-environment fixture, `shaderop
+DefaultPathTracing` (so dispatch reaches `PathTracingShaderOp`, not the
+legacy `DirectLightingShaderOp` — already correctly wired since round
+9's consumer 1) and `pathtracing_spectral_rasterizer { hwss TRUE }` so
+the fixture's one-time throwaway `Rasterize()` builds a caster that
+supports `CastRayHWSS`. Same closed-form technique: `rs.importance =
+0.005` (< `RC_RR_THRESHOLD` 0.01, exact `pSurvive = 0.5` /
+`rrCompensation = 2.0`), driven via `CastRayHWSS` instead of `CastRay`,
+matched per-survivor against an `importance = 1.0` baseline that
+pre-consumes the identical throwaway RNG draw the roulette would make.
+
+```
+POST-FIX: 2012 / 4000 test casts survived; test NEE attempts 8048,
+          sum(f/p)^2 = 67977.6; baseline (matched survivors) NEE
+          attempts 8048, sum(f/p)^2 = 16994.4
+          ratio (test/baseline) = 4  (exactly rrCompensation^2)
+          returned-radiance sum(c) ratio = 2  (exactly rrCompensation --
+          render-neutral: the fix touches only the training integrand)
+
+PRE-FIX (isolated A/B, `git checkout <parent-of-this-fix> --
+          src/Library/Shaders/PathTracingIntegrator.{h,cpp}
+          src/Library/Shaders/PathTracingShaderOp.cpp`, rebuild, run,
+          restore):
+          same 2012 / 4000 survived; sum(f/p)^2 test = 16994.4 = base
+          ratio (test/baseline) = 1  exactly (the compensation never
+          reached the HWSS NEE call at all)
+          returned-radiance ratio = 2  (unaffected either way -- `c`
+          was already scaled by `rrCompensation` regardless of training)
+```
+
+`OptimalMISTrainingSitesTest`: 111/0 post-fix (110/1 with the fix
+reverted — the one failing check is this row's own moment-ratio
+assertion; every pre-existing check, including round 9's own
+`RunNeeCastRRTrainingFold`, is unaffected either way, confirming the
+two fixes are independent). Suite total 111 checks (was 104).
+
+### 10.4 Gate
+
+`OptimalMISTrainingSitesTest` 111/0, `EnvLightBalanceTest` 123/0,
+`FinalGatherSpectralTest` 8/0, `PTGuidingMISPartitionTest` 98/0,
+`RayCasterEnvEscapeMISTest` 91/0, `SubsurfaceScatteringSpectralTest`
+8/0, `VolumeAbsorptionAttenuationTest` 89/0, `VolumeEnvFurnaceTest`
+32/0, `SourceHygieneTest` 167/0. `make -C build/make/rise -j8 all`
+clean (zero warnings). No render checkpoint moved (this row's own
+render-neutrality check, §10.3, is the direct evidence: the fix is
+reachable only through `if(rc.pOptimalMIS && !IsReady())`, and the only
+production `CastRayHWSS` caller passes `importance == 1.0`, where
+`rrCompensation` is identically 1.0 and every new line is a no-op).
+
 ## File status
 
 | File | Status |
 |---|---|
-| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3: `PTBssrdfSwTimesCos` helper added; both sites wired to a directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). Round 5: that quantity replaced by the FULL vertex-local integrand — `PTBssrdfTrainedBsdfTimesCos(weight, cosinePdf)` — and the two entry-NEE calls pass `neeTrainingScale` so the pair's other half carries the same factor (§5). Round 6 (`53157235`): the in-loop volume vertex's `bsdfTimesCos` broadcasts `phaseVal`, paired with a new pre-RR `AccumulateCount`; the ordinary surface continuation's `bsdfTimesCosVal` now trains from `preRRScatterThroughput` (captured unconditionally, not just under `RISE_ENABLE_OPENPGL`) instead of the post-RR `scatterThroughput` (§6.2). **Round 7 (`4384cf9b`): §6.2 RETRACTED — the surface continuation is back on the post-RR `scatterThroughput` and `preRRScatterThroughput` is OpenPGL-only again; the in-loop volume vertex trains `phaseVal / volRrSurvivalProb` (that variable hoisted out of the OpenPGL guard); both BSSRDF exit continuations train `sssThroughput` (post-RR) instead of `bssrdfWeight`. See §7.3.** **Round 8 (`7b5672ad`, DL-109 + DL-124): `IntegrateRayTemplated` gains its own `AccumulateCount`/`Accumulate` pair (§8.2) with `trainedPhaseVal * escapeWeight` at the escape arm (§8.3); `IntegrateFromHitTemplated` gains a per-outer-iteration `escapeTr` (reset to 1 every iteration, declared outside `if(needsIntersection)` so PART 1's emission training can see it too) folded into `bsdfTimesCos` at both of its training consumers.** **Round 9 (`15c467c3`, DL-185): `IntegrateFromHit{,NM}` and `IntegrateFromHitTemplated` gain a trailing `castRRCompensation_` parameter (default 1), applied ONLY at `depth == startDepth` to PART 2's surface NEE call and both BSSRDF/random-walk entry NEE calls (§9.2).** |
+| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3: `PTBssrdfSwTimesCos` helper added; both sites wired to a directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). Round 5: that quantity replaced by the FULL vertex-local integrand — `PTBssrdfTrainedBsdfTimesCos(weight, cosinePdf)` — and the two entry-NEE calls pass `neeTrainingScale` so the pair's other half carries the same factor (§5). Round 6 (`53157235`): the in-loop volume vertex's `bsdfTimesCos` broadcasts `phaseVal`, paired with a new pre-RR `AccumulateCount`; the ordinary surface continuation's `bsdfTimesCosVal` now trains from `preRRScatterThroughput` (captured unconditionally, not just under `RISE_ENABLE_OPENPGL`) instead of the post-RR `scatterThroughput` (§6.2). **Round 7 (`4384cf9b`): §6.2 RETRACTED — the surface continuation is back on the post-RR `scatterThroughput` and `preRRScatterThroughput` is OpenPGL-only again; the in-loop volume vertex trains `phaseVal / volRrSurvivalProb` (that variable hoisted out of the OpenPGL guard); both BSSRDF exit continuations train `sssThroughput` (post-RR) instead of `bssrdfWeight`. See §7.3.** **Round 8 (`7b5672ad`, DL-109 + DL-124): `IntegrateRayTemplated` gains its own `AccumulateCount`/`Accumulate` pair (§8.2) with `trainedPhaseVal * escapeWeight` at the escape arm (§8.3); `IntegrateFromHitTemplated` gains a per-outer-iteration `escapeTr` (reset to 1 every iteration, declared outside `if(needsIntersection)` so PART 1's emission training can see it too) folded into `bsdfTimesCos` at both of its training consumers.** **Round 9 (`15c467c3`, DL-185): `IntegrateFromHit{,NM}` and `IntegrateFromHitTemplated` gain a trailing `castRRCompensation_` parameter (default 1), applied ONLY at `depth == startDepth` to PART 2's surface NEE call and both BSSRDF/random-walk entry NEE calls (§9.2).** **Round 10 (DL-196, debt-dl207 slice): `IntegrateFromHitHWSS` (declared in `PathTracingIntegrator.h`, defined here) gains the same trailing `castRRCompensation_` parameter (default 1), forwarded at `firstHit`/`startDepth` (the two per-wavelength Fallback delegations to `IntegrateFromHitNM`) and gated `depth == startDepth ? castRRCompensation_ : 1.0` at its own PART-2 NEE call; its three mid-path `IntegrateFromHitNM` delegations correctly keep the default (§10.2).** |
 | `src/Library/Interfaces/IRayCaster.h` | Round 4: `RAY_STATE` gains `bsdfMisPdf` + `MisPartnerPdf()` (DL-74), which is what lets the volume sites carry the true sampling density and the MIS partner at the same time. **Round 9 (`15c467c3`, DL-185): `RAY_STATE` gains `castRRCompensation` (default 1.0), documented alongside `bsdfMisPdf` as another training-only field (§9.2).** |
 | `src/Library/Rendering/RayCaster.cpp` | Round 7 (`4384cf9b`): AUDITED, quantity UNCHANGED — this file applies no Russian roulette of its own between its counts and the escape-arm accumulate (no `EvaluateRussianRoulette` call anywhere in it), so both volume sites already train the realized moment; a comment recording that (and pointing at DL-148 for the cast-level importance roulette) is the only edit. Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. Round 3: `rs2.bsdfTimesCos = RISEPel(phasePdf,phasePdf,phasePdf)` at both sites, `AccumulateCount` added (paired, gated `phasePdf > 0`). Round 4: `rs2.bsdfPdf = effectivePdf` (the true sampling density) with the raw `phasePdf` moved to `rs2.bsdfMisPdf`; the count gate follows `effectivePdf > 0`. **Round 8 (`0f67c16e`, DL-124 + DL-148): `CastRay{,NM}`'s global-map/explicit-map escape branches reordered so the medium survival weight applies to `c` BEFORE `RayCasterEnvEscapeMISWeight`'s training call (§8.3); the same four call sites additionally pass `c * rrCompensation` (or `RISEPel(c,c,c) * rrCompensation` for NM) as the training argument (§8.4). Both folds are training-only — the function's RETURNED `c` is unchanged by either (commutative reorder; the training argument is read only inside the training block).** **Round 9 (`15c467c3`, DL-185): `CastRay{,NM,HWSS}` stamp a copy of `rs` with `castRRCompensation = rrCompensation` before dispatching to `Shade{,NM,HWSS}` (§9.2, consumer 1/2); the two `MediumTransport::EvaluateInScattering{,NM}` calls pass the LOCAL `rrCompensation` directly as the new `neeTrainingScale` argument (§9.2, consumer 3).** |
 | `src/Library/Utilities/MediumTransport.{h,cpp}` | **Round 9 (`15c467c3`, DL-185): `EvaluateInScattering{,NM}` gain a trailing `neeTrainingScale` parameter (default 1), forwarded into `LightSampler::EvaluateDirectLighting{,NM}`'s parameter of the same name (§9.2, consumer 3).** |
-| `src/Library/Shaders/PathTracingShaderOp.cpp` | **Round 9 (`15c467c3`, DL-185): `PerformOperation{,NM}` forward `rs.castRRCompensation` as `IntegrateFromHit{,NM}`'s new trailing parameter (§9.2, consumer 2).** |
+| `src/Library/Shaders/PathTracingShaderOp.cpp` | **Round 9 (`15c467c3`, DL-185): `PerformOperation{,NM}` forward `rs.castRRCompensation` as `IntegrateFromHit{,NM}`'s new trailing parameter (§9.2, consumer 2).** **Round 10 (DL-196): `PerformOperationHWSS` forwards `rs.castRRCompensation` as `IntegrateFromHitHWSS`'s new trailing parameter (§10.2).** |
 | `src/Library/Shaders/DirectLightingShaderOp.cpp` | **Round 9 (`15c467c3`, DL-185): `PerformOperation{,NM}` forward `rs.castRRCompensation` as `EvaluateDirectLighting{,NM}`'s pre-existing `neeTrainingScale` parameter (§9.2, consumer 1).** |
 | `tests/OptimalMISAccumulatorTest.cpp` | Round 3: new Test 12 (`TestDL72PairedTrainingFires`), 7 new checks. Round 4: header corrected — Test 12 pins the accumulator's arithmetic, not the production call sites. |
-| `tests/OptimalMISTrainingSitesTest.cpp` | Round 4: added. The row's actual red-proof; drives both production sites. Round 5: the Rd-scaling-law row (`ScaledRdProfile` / `ScaledRdMaterial`), which pins the trained QUANTITY on both halves of the BSSRDF pair; 23 checks. Round 7 (`4a540d7f`/`a8e1e487`/`48c994b1`): `DriveOnFreshThread` makes every driven walk deterministic (§7.6) and tightens the floor-fog row's two tolerances to exact; `RunRRConventionCheck`'s target flipped from 0.5 to 2.0 (§7.2); new `RunVolumeRRConventionCheck` (two albedos), `RunLightRRConventionCheck` and `RunAlphaQualityCheck`; `VolumeScene` gains an optional `absorption` argument (default 0.0, so the pre-existing rows are byte-identical). Suite total 72 checks (was 41). Round 6 (`93213874`): `RunFloorFogSite`/`DriveFloorFogSite` (a delta-mirror floor bounce into `VolumeScene()`'s fog, DL-84's own red-proof, 11 checks) and `RunRRConventionCheck` (the RR-convention discriminator, §6.2, 7 checks); suite total 41 checks (was 23). **Round 8 (`b8d8f7ff`): new `RunSelfHitSite` (§8.1), `RunCameraVolumeWalkSite` (§8.2), `RunImportanceRRTrainingFold` (§8.4); `RunVolumeSite`/`RunFloorFogSite`/`RunOneVolumeRR` relaxed from an exact whole-multiple assertion to a per-attempt order-of-magnitude band (§8.3 — that exact invariant was itself a DL-124 symptom). Suite total 97 checks (was 72; 90/7 with the three fix commits reverted).** **Round 9 (`15c467c3`, DL-185): new `RunNeeCastRRTrainingFold` + `SurfaceEnvScene` (§9.3). Suite total 104 checks (was 97; 103/1 with the fix commit reverted).** |
+| `tests/OptimalMISTrainingSitesTest.cpp` | Round 4: added. The row's actual red-proof; drives both production sites. Round 5: the Rd-scaling-law row (`ScaledRdProfile` / `ScaledRdMaterial`), which pins the trained QUANTITY on both halves of the BSSRDF pair; 23 checks. Round 7 (`4a540d7f`/`a8e1e487`/`48c994b1`): `DriveOnFreshThread` makes every driven walk deterministic (§7.6) and tightens the floor-fog row's two tolerances to exact; `RunRRConventionCheck`'s target flipped from 0.5 to 2.0 (§7.2); new `RunVolumeRRConventionCheck` (two albedos), `RunLightRRConventionCheck` and `RunAlphaQualityCheck`; `VolumeScene` gains an optional `absorption` argument (default 0.0, so the pre-existing rows are byte-identical). Suite total 72 checks (was 41). Round 6 (`93213874`): `RunFloorFogSite`/`DriveFloorFogSite` (a delta-mirror floor bounce into `VolumeScene()`'s fog, DL-84's own red-proof, 11 checks) and `RunRRConventionCheck` (the RR-convention discriminator, §6.2, 7 checks); suite total 41 checks (was 23). **Round 8 (`b8d8f7ff`): new `RunSelfHitSite` (§8.1), `RunCameraVolumeWalkSite` (§8.2), `RunImportanceRRTrainingFold` (§8.4); `RunVolumeSite`/`RunFloorFogSite`/`RunOneVolumeRR` relaxed from an exact whole-multiple assertion to a per-attempt order-of-magnitude band (§8.3 — that exact invariant was itself a DL-124 symptom). Suite total 97 checks (was 72; 90/7 with the three fix commits reverted).** **Round 9 (`15c467c3`, DL-185): new `RunNeeCastRRTrainingFold` + `SurfaceEnvScene` (§9.3). Suite total 104 checks (was 97; 103/1 with the fix commit reverted).** **Round 10 (DL-196, debt-dl207 slice): new `RunNeeCastRRTrainingFoldHWSS` + `SurfaceEnvSceneHWSS` (§10.3). Suite total 111 checks (was 104; 110/1 with the fix commit reverted).** |
 | `src/Library/Lights/LightSampler.{h,cpp}` | Round 5: `EvaluateDirectLighting{,NM}` take `neeTrainingScale` (default 1); all four `Accumulate` sites apply it. Training-only — the returned radiance is unaffected at any value. **Round 8 (`8c057387`, DL-155): all three self-hit branches (BVH, RIS-all-self, plain alias draw), both lanes, gain the paired `AccumulateCount(kTechniqueNEE)` call they were missing (§8.1).** Round 9: UNCHANGED — the pre-existing `neeTrainingScale` parameter is exactly the hook DL-185 needed; no edit to this file was required. |
-| `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. Round 3: DL-72 CLOSED again, this time with correct wiring. Round 6: DL-84 CLOSED, DL-109 opened (the `IntegrateRayTemplated` camera-ray volume-walk sibling, out of this round's scope). Round 7: DL-84's closure evidence rewritten for the retracted ruling; DL-124 and DL-148 opened (§7.7). **Round 8: DL-155, DL-109, DL-124, DL-148 all CLOSED.** **Round 9: DL-185 CLOSED.** |
-| `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added round 1; round-2 correction sections added same day; "Round 3" section added 2026-09-14; this "Round 6" section (§6) added the same day, debt-dl84 slice. **Round 8 (§8) added 2026-09-17, debt-dltrain slice.** **Round 9 (§9) added 2026-09-18, debt-dl185 slice.** |
+| `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. Round 3: DL-72 CLOSED again, this time with correct wiring. Round 6: DL-84 CLOSED, DL-109 opened (the `IntegrateRayTemplated` camera-ray volume-walk sibling, out of this round's scope). Round 7: DL-84's closure evidence rewritten for the retracted ruling; DL-124 and DL-148 opened (§7.7). **Round 8: DL-155, DL-109, DL-124, DL-148 all CLOSED.** **Round 9: DL-185 CLOSED.** **Round 10: DL-196 CLOSED.** |
+| `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added round 1; round-2 correction sections added same day; "Round 3" section added 2026-09-14; this "Round 6" section (§6) added the same day, debt-dl84 slice. **Round 8 (§8) added 2026-09-17, debt-dltrain slice.** **Round 9 (§9) added 2026-09-18, debt-dl185 slice.** **Round 10 (§10) added 2026-09-18, debt-dl207 slice.** |
 | `docs/DL74_ENV_NEE_GUIDING_PARTITION.md` | Round 6: §5's "Optimal-MIS training sites disagree on Russian roulette" residual bullet struck with the §6.2 ruling. Round 7: the struck bullet's note rewritten — the residual is still closed, but by §7.2's realized-moment ruling, not §6.2's retracted pre-RR one. |
 
 Gate (round 3): `MISWeightsTest` (59/0), `OptimalMISAccumulatorTest`
