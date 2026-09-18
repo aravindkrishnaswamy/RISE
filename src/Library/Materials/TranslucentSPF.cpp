@@ -288,6 +288,16 @@ namespace
 	// construction, so the clipped-away energy is RENORMALIZED into the
 	// valid region (DL-45's choice) rather than dropped.
 	//
+	// DL-111 (2026-09-17) needed this same arc construction for a lobe
+	// whose POLAR marginal is not cos^N (DielectricSPF's `scattering` warp
+	// draws its angle from either a Phong or a Henyey-Greenstein inverse
+	// CDF), and it lives there as `GeometricUtilities::PerturbClipped`.
+	// That is a SECOND implementation, deliberately: this one has
+	// cos(theta) as a VALUE and uses it directly, while PerturbClipped
+	// takes an ANGLE, so delegating would insert an acos/cos round trip
+	// into the untilted branch below that TranslucentSpectralParityTest
+	// pins bit-for-bit.  **A change to the arc math belongs in BOTH.**
+	//
 	// NOTE this renormalizes PER THETA RING rather than globally, so it
 	// is NOT DL-45's `cos/pi / P(valid)` shape; the theta marginal is
 	// deliberately left at the unclipped one, which is what makes the

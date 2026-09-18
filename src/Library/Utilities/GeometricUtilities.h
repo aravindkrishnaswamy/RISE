@@ -53,7 +53,8 @@ namespace RISE
 		//!
 		//! This is DL-68's construction (`TranslucentSPFDetail::
 		//! SampleClippedPhong`, TranslucentSPF.cpp, which carries the full
-		//! derivation), factored out so DL-111's callers can reuse it for
+		//! derivation), written as a SECOND implementation so DL-111's
+		//! callers can reuse it for
 		//! lobes whose POLAR marginal is not `cos^N` -- `DielectricSPF`'s
 		//! `scattering` warp draws its `down` from either a Phong
 		//! `cos^N` inverse CDF or a Henyey-Greenstein one.  The
@@ -73,6 +74,14 @@ namespace RISE
 		//! unclipped azimuth-marginal `1/(2 PI)` to `1/(2 halfArc)`
 		//! (`outHalfArc` reports it); a caller whose lobe is treated as a
 		//! delta (pdf 1) simply ignores it.
+		//!
+		//! The two are deliberately NOT folded into one:
+		//! `SampleClippedPhong` draws `cos(theta)` from its own `cos^N`
+		//! inverse CDF and has that VALUE in hand, while this one takes an
+		//! ANGLE (its callers' marginals hand it one), so delegating would
+		//! insert an `acos`/`cos` round trip into a path whose untilted
+		//! branch is pinned bit-for-bit by `TranslucentSpectralParityTest`.
+		//! **A change to the arc math belongs in BOTH.**
 		//!
 		//! PRECONDITION: `Dot(vec, clipN) >= 0` -- the axis must already be
 		//! inside the half-space, or the valid arc can be empty.  Callers
