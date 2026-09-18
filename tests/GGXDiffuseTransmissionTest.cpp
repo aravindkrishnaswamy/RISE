@@ -898,6 +898,8 @@ namespace
 			{ { "GGX Schlick iso a=0.005 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.005 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.80, 0.0, 0.0 }, 0.96729, 0.010,
 			  "DL-105: -3.27% vs 1, alpha below the table range (clamps to row 0)" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.89, 0.0, 0.0 }, 0.96970, 0.010,
+			  "DL-105: -3.03% vs 1, alpha below the table range (review read -3.17% at its own seed)" },
 		};
 		unsigned int seed = 9101;
 		for( const GrazingRow& r : ggxRows ) passed &= RunGGXGrazingRow( r, seed++ );
@@ -914,9 +916,20 @@ namespace
 		// isotropic rows': the aniso sub-grid closes these to within
 		// 0.05% of 1, and both pre-fix models miss that band by 3x or
 		// more, so there is no reason to leave slack here.
+		//
+		// DL-86 round 2 adds the 100:1 pair at theta=89.99 (cosView ~
+		// 1.745e-4).  That cos lands in the FIRST sub-interval of the
+		// round-1 uniform grid -- the one straight ramp from the exact
+		// cosTheta->0 anchor, which round 1 never probed at LUT level
+		// (its smallest aniso probe was 0.002) and never drove at
+		// material level either; the review measured 0.96506 +/- 0.00147
+		// here, a 3.5% DEFICIT outside this section's own band.  Written
+		// both ways round for the same axis-swap reason.
 		const GrazingRow anisoRows[] = {
 			{ { "GGX Schlick aniso(.9,.1) F0=1 th=89.89 az=90 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.9, 0.1, 89.89, 90.0, 0.0 }, 1.0, 0.005, "" },
 			{ { "GGX Schlick aniso(.1,.9) F0=1 th=89.89 az=0 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.1, 0.9, 89.89,  0.0, 0.0 }, 1.0, 0.005, "" },
+			{ { "GGX Schlick aniso(.01,1.0) F0=1 th=89.99 az=0 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 1.0, 89.99,  0.0, 0.0 }, 1.0, 0.005, "" },
+			{ { "GGX Schlick aniso(1.0,.01) F0=1 th=89.99 az=90 spec-only", eFresnelSchlickF0, 0.0, 1.0, 1.0, 0.01, 89.99, 90.0, 0.0 }, 1.0, 0.005, "" },
 		};
 		seed = 9150;
 		for( const GrazingRow& r : anisoRows ) passed &= RunGGXGrazingRow( r, seed++ );
@@ -937,6 +950,8 @@ namespace
 			{ { "CT conductor a=0.02 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "CT conductor a=0.02 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "CT conductor a=0.01 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.005 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.03432, 0.010,
+			  "DL-105: +3.43% vs 1 -- the SEPARABLE path's worst (review read +3.65% at its own seed)" },
 		};
 		seed = 9201;
 		for( const GrazingRow& r : ctRows ) passed &= RunCookTorranceGrazingRow( r, seed++ );

@@ -644,18 +644,18 @@ namespace
 		const Scalar localX = sinWi * cos(phi), localY = sinWi * sin(phi);
 		const double looked = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosTheta, localX, localY, alphaX, alphaY );
 
-		// `toleranceAbs` is per-row.  The DL-86 aniso-directional fix's
-		// residual varies with how anisotropic the (alphaX,alphaY) pair
-		// is and how close the azimuth sits to either tangent axis:
-		// mild configurations close to a few tenths of a percent, but a
-		// 9:1-10:1 ratio near either axis (not only the debt-ggx3 sweep's
-		// own single cited worst case) leaves up to ~4% -- a real, large
-		// improvement over the pre-fix flat clamp's 12-18%+ at the same
-		// configurations, honestly bounded rather than hidden behind a
-		// falsely-tight tolerance.  See
-		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the full
-		// residual table and why closing this further needs
-		// table-resolution work, not this extrapolation.
+		// `toleranceAbs` is per-row, and what it bounds depends on which
+		// axes the row interpolates.  At a NODE-EXACT (alphaX, alphaY,
+		// phi) configuration cosTheta is the only interpolated axis, so
+		// the row measures the DL-86 end-cap alone: <=0.338% relative
+		// after the round-2 geometric refinement, over the whole probe
+		// set down to cos=1e-4.  OFF-node the row also carries the aniso
+		// grid's own interpolation error on up to three further axes --
+		// <=0.57% when one alpha is off-node, 3-4% at the debt-ggx3
+		// sweep's corner (off-node on all three) -- and that residual is
+		// DL-105/DL-77's, not this end-cap's; it does not move with the
+		// sub-grid.  See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+		// "DL-86" for the full residual table.
 		const double tol = 8.0 * stdErr + toleranceAbs;
 		const double diff = std::fabs( looked - reference );
 		const bool passed = diff <= tol;
@@ -942,11 +942,20 @@ int main()
 		// the isotropic rows above: what is left after DL-86 is not the
 		// cosTheta end-cap.
 		//
-		// kBelowC0Tol (the rows DL-86 is actually about, cosTheta < c0):
-		// measured residual <=0.64% relative at every configuration in
-		// the first group, against an independent 20M-sample per-azimuth
-		// quadrature -- so 0.010 absolute is a real gate.  Pre-fix (flat
-		// clamp) the same rows read up to 4.0% and would fail it.
+		// kBelowC0Tol (the OFF-node rows, cosTheta < c0): measured
+		// residual <=0.57% relative (worst absolute 0.00531, at
+		// alphaX=0.05 -- which is off-node between the alpha nodes 0.01
+		// and 0.0530, so what it measures is the alpha axis, DL-105),
+		// against an independent 20M-sample per-azimuth quadrature.
+		// 0.008 absolute is a real gate; pre-fix (flat clamp) the same
+		// rows read up to 4.0% and would fail it.
+		//
+		// kNodeExactTol (the NODE-EXACT rows, where cosTheta is the only
+		// interpolated axis and this end-cap is the only thing measured):
+		// after the round-2 geometric refinement the worst residual over
+		// the 8-value probe set at 8 node-exact configurations is 0.338%
+		// relative / 0.00190 absolute, so 0.004 is the gate.  Round 1
+		// read up to 5.91% / 0.0484 on the same rows -- 12x this band.
 		//
 		// kAboveC0Tol (cosTheta=0.03, the first ORDINARY span): unchanged
 		// by DL-86 and left at the main grid's own residual, up to 2.43%
@@ -964,7 +973,8 @@ int main()
 		// coincidence of that model's error pointing the same way as the
 		// interpolation error, not evidence for it: the straight line is
 		// 2-9x worse at every NODE-exact configuration below.
-		const double kBelowC0Tol = 0.010;
+		const double kBelowC0Tol = 0.008;
+		const double kNodeExactTol = 0.004;
 		const double kAboveC0Tol = 0.035;
 		const double kGridCornerTol = 0.045;
 
@@ -1033,7 +1043,7 @@ int main()
 			{
 				std::ostringstream label;
 				label << "node-exact aX=" << c.aX << " aY=" << c.aY << " phi=" << c.phiDeg << " cos=" << cosTheta;
-				passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, cosTheta, kBelowC0Tol, seed++ );
+				passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, cosTheta, kNodeExactTol, seed++ );
 			}
 		}
 
