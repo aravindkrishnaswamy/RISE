@@ -309,6 +309,18 @@ Filed as **DL-145**, with this document as its evidence.
 `AgentEvalCheckTest` therefore stays at its measured baseline of
 **2062 passed / 36 failed** on this branch.
 
+**DL-145 CLOSED 2026-09-17** by the `debt-dl145` slice, combining (a) and
+(b) above per the supervisor's ruling (repair the fixture rather than
+defer it further): the camera moved to `location 0 0.3 6.2` (§4a's own
+"moved" data point) and the band was re-derived from a converged
+measurement of THAT scene (`[0.0008, 0.0034]`, 0.5x-2x a measured mean
+of 0.0017142) rather than inflating `scale` ~100x to chase the old
+artifact-tuned `[0.01, 0.35]` band. `AgentEvalCheckTest` moved to
+**2065 passed / 10 failed** (the residual 10 being DL-61's unrelated
+`image_reconstruct_*`/bas-relief assertions). See `docs/DEBT_LEDGER.md`'s
+DL-145 row for the full evidence, including the sibling scan of every
+other `evals/scenarios/*.json` for the same coincident-camera pattern.
+
 ## 9. Lesson
 
 A committed render oracle is only as good as the render it was measured
