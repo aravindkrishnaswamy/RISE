@@ -107,6 +107,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <set>
 // Per-process scratch directory -- see ScratchRunDir below.
 #ifdef _WIN32
 	#include <process.h>
@@ -2016,6 +2017,7 @@ static void TestSeedScenariosCheckpointsAreTrue()
 	Check( !paths.empty(), "evals/scenarios/*.json enumeration found at least one scenario file" );
 
 	int skippedNoFixture = 0;
+	std::set<std::string> skippedNoFixtureIds;
 	for( const std::string& path : paths ) {
 		const std::string id = std::filesystem::path( path ).stem().string();
 		AgentEvalScenario s;
@@ -2053,6 +2055,7 @@ static void TestSeedScenariosCheckpointsAreTrue()
 				"(ANTHROPIC_API_KEY/GEMINI_API_KEY/OPENAI_API_KEY/XAI_API_KEY) is set "
 				"in this environment (DL-60, docs/DEBT_LEDGER.md)" << std::endl;
 			++skippedNoFixture;
+			skippedNoFixtureIds.insert( id );
 			continue;
 		}
 
@@ -2089,6 +2092,16 @@ static void TestSeedScenariosCheckpointsAreTrue()
 		"T10: exactly 2 scenarios skipped for a missing replay fixture "
 		"(altar_stress, rainwet_closeup) -- DL-60; update this bound the day "
 		"either gains a real fixture, don't just widen it" );
+
+	// P2-2 (debt-cov review): a bare count of 2 is satisfied just as well by
+	// two DIFFERENT scenarios losing their fixtures while altar_stress or
+	// rainwet_closeup silently regained one -- the count alone can't tell
+	// the difference.  Pin the IDENTITY set, not just its size: this is the
+	// set DL-60's own disposition names, so nothing else may appear here.
+	const std::set<std::string> kExpectedSkippedNoFixture = { "altar_stress", "rainwet_closeup" };
+	Check( skippedNoFixtureIds == kExpectedSkippedNoFixture,
+		"T10: the skipped-for-missing-fixture set is EXACTLY {altar_stress, rainwet_closeup} "
+		"-- DL-60; a count match alone cannot tell these apart from some other pair" );
 }
 
 //----------------------------------------------------------------------
