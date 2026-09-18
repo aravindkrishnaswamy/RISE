@@ -745,9 +745,11 @@ namespace RISE
 			unsigned long long ProgramId() const { return m_id; }
 
 			//! Is this program worth an L2 memo entry?  Decided ONCE, at
-			//! compile time, because the memo's own key comparison is 29
-			//! exact compares (ExpressionMemo::ProgramKey::kFields) and a
-			//! body like `u*v` is cheaper to re-run than to look up.
+			//! compile time, because the memo's own key comparison is 36
+			//! exact compares for a non-sampling body
+			//! (ExpressionMemo::ProgramKey::kFieldsNonSampling; 52 is the
+			//! worst case, `kFields`) and a body like `u*v` is cheaper to
+			//! re-run than to look up.
 			//!
 			//! The predicate is "does this body contain anything whose cost
 			//! dwarfs a key compare" -- a geometry-signal call (hundreds of
@@ -1214,17 +1216,28 @@ namespace RISE
 				//!     ridged / worley), each of which is a lattice hash per
 				//!     octave and dwarfs a key compare on its own;
 				//!   * it is simply LONG -- more instructions than the key
-				//!     comparison has fields to compare.  That count is
-				//!     ExpressionMemo::ProgramKey::kFields (35 since
-				//!     2026-09-08: 18 own fields plus the hit channel's 17,
-				//!     which grew by the four cross-object fields
-				//!     `proximity` needs), taken from the comparison itself
-				//!     rather than restated here so the two cannot drift.
-				//!     At or above it the lookup cannot be the more
+				//!     comparison has fields to ACTUALLY compare for a body
+				//!     like this one.  That count is
+				//!     ExpressionMemo::ProgramKey::kFieldsNonSampling (36:
+				//!     18 own fields, plus `usesPainterSample`, plus the
+				//!     signal channel's 17), taken from the comparison
+				//!     itself rather than restated here so the two cannot
+				//!     drift.  At or above it the lookup cannot be the more
 				//!     expensive half even for a body of pure arithmetic.
+				//!
+				//!     ⚠ NOT `kFields` (52).  That is the key's WORST-CASE
+				//!     width, and it includes the 16 painter-sample compares
+				//!     `ProgramKey::Equals` SHORT-CIRCUITS for any body that
+				//!     does not call `sample()` -- which every body reaching
+				//!     this clause is, since the sample() test above already
+				//!     returned.  Thresholding on 52 silently de-memoised
+				//!     every pure-arithmetic body of 36..51 instructions
+				//!     when DL-25 widened the key; caught by that slice's
+				//!     round-3 review (P2-2) and pinned by
+				//!     ExpressionMemoTest (g)'s 40-instruction row.
 				//!     THE THRESHOLD MOVING IS A PERF CHANGE, NOT A
-				//!     CORRECTNESS ONE -- a body of 29..34 instructions with
-				//!     no signal and no noise call stops qualifying, and
+				//!     CORRECTNESS ONE -- a body just under it with no
+				//!     signal and no noise call stops qualifying, and
 				//!     re-running it produces the same bits the memo would
 				//!     have returned.
 				static bool ComputeMemoWorthiness( const ExpressionProgram& p )
@@ -1276,7 +1289,7 @@ namespace RISE
 						}
 					}
 
-					return instrs >= (std::size_t)ExpressionMemo::ProgramKey::kFields;
+					return instrs >= (std::size_t)ExpressionMemo::ProgramKey::kFieldsNonSampling;
 				}
 
 				const std::string& Error() const { return m_error; }

@@ -771,6 +771,40 @@ static void TestMemoWorthinessGate()
 	Check( !pastBand.MemoWorthy(),
 		"(g) the id just past the band (cellhash) does NOT qualify a short body" );
 
+	// THE LENGTH CLAUSE'S THRESHOLD, pinned from BOTH sides (DL-25 round-3
+	// review, P2-2).  The gate's third way to qualify is "more instructions
+	// than the key comparison has fields to ACTUALLY compare for a body like
+	// this one" -- ProgramKey::kFieldsNonSampling, 36, NOT the key's
+	// worst-case width kFields, 52.  When DL-25 widened the key from 35 to
+	// 52 the gate was still reading kFields, which silently de-memoised
+	// every pure-arithmetic body of 36..51 instructions: a perf regression
+	// with no correctness component, no diagnostic, and -- until this row --
+	// no test.
+	//
+	// `u+u+u+...` with 21 terms compiles to 21 loads and 20 adds = 41
+	// instructions, comfortably inside the 36..51 window the regression
+	// covered.  The 11-term body below (21 instructions) is the control:
+	// it must stay OUT on either threshold, so a fix that simply deleted
+	// the length clause would fail it.
+	{
+		std::string longBody = "u";
+		for( int i = 0; i < 20; ++i ) longBody += "+u";
+		ExpressionProgram longArith = ExpressionProgram::Invalid();
+		Check( CompileWithContext( longBody, longArith ), "(g) a 41-instruction arithmetic body compiles" );
+		Check( longArith.MemoWorthy(),
+			"(g) MONEY: a 41-instruction pure-arithmetic body IS memo-worthy -- the length clause "
+			"thresholds on kFieldsNonSampling (36, what such a body actually pays), not on the key's "
+			"worst-case width kFields (52), which would de-memoise the whole 36..51 band" );
+
+		std::string shortBody = "u";
+		for( int i = 0; i < 10; ++i ) shortBody += "+u";
+		ExpressionProgram shortArith = ExpressionProgram::Invalid();
+		Check( CompileWithContext( shortBody, shortArith ), "(g) a 21-instruction arithmetic body compiles" );
+		Check( !shortArith.MemoWorthy(),
+			"(g) ...and a 21-instruction one is still NOT -- the clause is a threshold, not a "
+			"blanket yes for anything longer than `u*v`" );
+	}
+
 	ExpressionProgram signal = ExpressionProgram::Invalid();
 	Check( CompileWithContext( "occlusion(0.1)", signal ), "(g) signal body compiles" );
 	Check( signal.MemoWorthy(), "(g) a signal body IS memo-worthy" );
@@ -812,10 +846,21 @@ static void TestMemoWorthinessGate()
 	// CALLER'S hit record, so the L2 key gained an
 	// ExpressionMemo::PainterSampleHitKey -- the footprint Jacobian, the
 	// ray direction, the second UV set, the vertex colour and a has-record
-	// flag plus a per-program has-sample bit, 68 bytes per L2 way across 8 ways.  The alternative, declaring
-	// a sampling program un-memoable, was MEASURED at 3.35x more user CPU
-	// on a sampling scene and rejected.  53.6 kB decimal across 18
-	// workers, still a rounding error against a worker's stack.
+	// flag, plus a per-program has-sample bit on ProgramKey itself.
+	//
+	// THE ARITHMETIC, since an earlier draft of this comment got it wrong
+	// in two places at once (it said "68 bytes per L2 way across 8 ways",
+	// which is neither the growth nor the way count): the growth lands on
+	// the L2 table, whose width is `kL2Ways` = 4 -- 8 is `kL1Ways`, the
+	// SIGNAL table's -- and it is 136 bytes per way, not 68: 128 bytes of
+	// PainterSampleHitKey (12 doubles and 4 bools, padded to 8-byte
+	// alignment) plus 8 for the aligned `usesPainterSample` flag.
+	// 136 x 4 = 544, and 2432 + 544 = 2976, which is what
+	// BytesPerThread() actually returns and what the assertion below
+	// pins.  The alternative, declaring a sampling program un-memoable,
+	// was MEASURED at 3.35x more user CPU on a sampling scene and
+	// rejected.  53.6 kB decimal across 18 workers, still a rounding
+	// error against a worker's stack.
 	const std::size_t bytes = ExpressionMemo::BytesPerThread();
 	std::cout << "    bytes of thread-local memo per render worker: " << bytes
 		<< "  (1408 when the memo shipped, 1440 since the `pipe` key field, 1824 since the"

@@ -879,6 +879,24 @@ namespace RISE
 			//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 / §10.
 			static const int kFields = 19 + SignalHitKey::kFields + PainterSampleHitKey::kFields;
 
+			//! WHAT A NON-SAMPLING PROGRAM ACTUALLY PAYS, and the number
+			//! `ExpressionProgram::Builder::ComputeMemoWorthiness` thresholds
+			//! on -- 19 own fields (18 plus `usesPainterSample`) and the
+			//! signal channel's 17, after which `Equals` SHORT-CIRCUITS: 36.
+			//!
+			//! IT IS A SEPARATE CONSTANT BECAUSE THE TWO NUMBERS ANSWER TWO
+			//! DIFFERENT QUESTIONS (DL-25 round-3 review, P2-2).  `kFields`
+			//! is the key's WORST-CASE WIDTH, which is what a
+			//! "how big is this structure" claim wants.  The cost gate asks
+			//! something narrower: "would THIS body be cheaper to re-run
+			//! than to look up", and a body that never calls `sample()`
+			//! never runs the 16 compares `kFields` counts.  Thresholding
+			//! the gate on 52 silently de-memoised every pure-arithmetic
+			//! body of 36..51 instructions when DL-25 widened the key --
+			//! a perf regression with no correctness component and no test,
+			//! which is exactly how it went unnoticed.
+			static const int kFieldsNonSampling = 19 + SignalHitKey::kFields;
+
 			bool Equals( const ProgramKey& o ) const
 			{
 				// Ordered most-discriminating first: two consumers at one
@@ -904,10 +922,16 @@ namespace RISE
 					// the point.  On `plank_closeup` at 320x240 / 16 spp
 					// (n=5, user CPU) gated reads 22.874 +/- 0.143 s and
 					// UNGATED 22.812 +/- 0.104 s -- indistinguishable, and
-					// both marginally FASTER than the pre-DL-25-review
-					// library's 23.228 +/- 0.108 s, i.e. the whole key
-					// growth is below this scene's noise even when every
-					// probe compares all sixteen.  What the gate actually
+					// both WITHIN NOISE of the pre-DL-25-review library,
+					// i.e. the whole key growth is below this scene's noise
+					// even when every probe compares all sixteen.  (This
+					// slice measured that baseline at 23.228 +/- 0.108 s and
+					// called the post-fix builds "marginally faster"; the
+					// round-3 reviewer's re-run does NOT reproduce it --
+					// 22.885 +/- 0.10 pre against 22.847 +/- 0.07 post, a
+					// -0.17 % delta.  Two runs of the same A/B disagreeing
+					// by 1.5 % is the measurement's own spread; "no
+					// measurable cost" is the claim both support.)  What the gate actually
 					// buys is a HIT-RATE guarantee: for a program that
 					// never samples, those sixteen fields describe
 					// something it cannot read, so letting them decide a
