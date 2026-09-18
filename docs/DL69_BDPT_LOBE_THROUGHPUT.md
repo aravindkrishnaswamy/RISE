@@ -124,7 +124,17 @@ Three deliberate carve-outs:
 * **Guiding SUBSTITUTED a direction** (`usedGuidedDirection`): `scatDir`
   is not the lobe's direction, so `kray_I` does not price it.  That
   branch keeps the aggregate `f * cos / scatterPdf`.  This is DL-67's
-  subject and is untouched here.
+  subject.  **Its THROUGHPUT is untouched here; its `pdfFwd` is NOT**
+  (review correction, 2026-09-14 — an earlier version of this bullet,
+  and DL-67's ledger row, said the whole branch was left alone).  The
+  `pdfFwdPrev` block below carries **no** `usedGuidedDirection` guard,
+  so under substitution `pdfFwd` becomes the material's aggregate
+  `ISPF::Pdf()` evaluated at the GUIDED direction (`scatDir`, which the
+  substitution overwrote), with the old `selectProb * effectivePdf`
+  surviving only as the `misFwdPdf <= NEARZERO` fallback.  That is a
+  third density — neither the guided sampling density nor a mixture
+  including the guide — and DL-67's reconciliation has to account for
+  it.
 * **Guiding only BLENDED the density** for the lobe's own direction
   (`bsdfCombinedPdf > NEARZERO`): the per-lobe form still applies, and
   takes PT's DL-42-fixed shape,
@@ -253,6 +263,88 @@ Pre-fix p99 was +63.0 % (BDPT) / +76.8 % (VCM) and pixel max +981 % /
 +469 %; post-fix all three metrics pass the suite's 8 % / 25 % / 100 %
 bands.
 
+### 3.2a Re-measured on the merge target, and the control (review P2-1)
+
+After merging master `e290fc64` — which brings DL-67 Slice 0's
+`SchlickSPF::Pdf` rewrite — topology L reads:
+
+| build | PT mean | BDPT mean | rel |
+|---|---|---|---|
+| merge target                                | 0.0601796 | 0.0632837 | **+5.16 %** |
+| same, `SchlickSPF.cpp` reverted to pre-Slice-0 | 0.0647011 | 0.0634197 | -1.98 % |
+
+**The swing is PT's.**  Across that one-file A/B, PT moved **-6.99 %**
+and BDPT **-0.21 %**.  `SchlickSPF::Pdf` enters PT only through its MIS
+partner arms, and Slice 0 did not touch `kray` (DL-127), so the mover is
+**DL-103**: PT's un-guided escape-side MIS partner is still the SELECTED
+lobe's own density while its NEE side now evaluates the true aggregate,
+so `w_bsdf + w_nee != 1` at a multi-lobe SPF.  BDPT is insensitive
+because DL-69 made its `pdfFwd` and `pdfRev` the same function, so a
+change to that function largely cancels in the ratio chain.
+
+**Topology M** (`BDPTStrategyBalanceTest`) is the discriminator —
+identical geometry, emitter, camera and both rasterizer strings, with a
+`ggx_material` wall and a `lambertian_material` floor, both immune to
+DL-103 and DL-127:
+
+| build | PT mean | BDPT mean | rel |
+|---|---|---|---|
+| merge target                                | 0.0471226 | 0.0472101 | +0.19 % |
+| same, `SchlickSPF.cpp` reverted to pre-Slice-0 | 0.0471251 | 0.0472100 | +0.18 % |
+
+~0 %, and unmoved by the revert.  So topology L's residual is
+Schlick-specific, not a property of this geometry, and the suite's
+standard 8 % band is kept (2.8 pp of margin).
+
+### 3.2b Cost (review P2-5)
+
+The `pdfFwd` addition makes both generators evaluate `ISPF::Pdf` one
+extra time per non-delta vertex per subpath.  All-`schlick_material`
+topology-L geometry at 256x256 / 256 spp, user CPU seconds, interleaved
+A/B blocks:
+
+| build | n | user CPU | vs pre-DL-69 |
+|---|---|---|---|
+| pre-DL-69 (`BDPTIntegrator.cpp` at `2a64b000`) | 3  | 136.53 +/- 3.47 | — |
+| DL-69, one rebuild per query                   | 16 | 163.22 +/- 2.40 | +19.55 % |
+| DL-69, shared `VertexPdfContext`               | 8  | 156.61 +/- 2.19 | **+14.71 %** |
+
+Sharing is worth -4.05 % (Welch t = -6.39).  The residual is the second
+`ISPF::Pdf` call itself, not the record rebuild: on `SchlickSPF` that
+call costs ~690 ns since Slice 0 replaced the 17 ns closed form with the
+true generating density of `Scatter` + `RandomlySelect`.  On a material
+with an ordinary closed-form `Pdf` the residual is correspondingly
+smaller.
+
+### 3.2c Spectral / HWSS companions (review P2-6)
+
+`SchlickSPF` does not override `ISPF::EvaluateKrayNM`, so §2's companion
+fallback is taken on **every** companion wavelength at every non-delta
+vertex of topology L — the `compScale < 0` branch is reachable 100 % of
+the time there, which is what DL-125 records.
+`BDPTStrategyBalanceTest::TestSpectralHWSSCompanionLadder` renders the
+topology under `bdpt_spectral_rasterizer` twice, `hwss FALSE` (hero
+only, DL-69-fixed on every bounce) against `hwss TRUE`:
+
+| | channel means | achromatic mean |
+|---|---|---|
+| `hwss FALSE`, 1024 spp | 0.0655964 / 0.0626007 / 0.0640997 | 0.064099 |
+| `hwss TRUE`, 256 spp   | 0.0634371 / 0.0632993 / 0.0631986 | 0.0633116 |
+| ratio | — | **0.987717 (-1.23 %)** |
+
+An earlier run with both at 256 spp gave 0.98763 (-1.24 %); the two
+agree to 0.01 pp across a 4x change in the hero-only sample count, so
+the -1.2 % is systematic rather than noise.  Two read-outs.  **No
+over-count of DL-69's magnitude reaches the image through the
+companions** — 2.00x on the hero path vs 1.2 % here — and the sign is
+the opposite of a naive over-count, which points at RISE's separately
+documented, pre-existing HWSS spectral-bundle bias as the larger term at
+this scale.  And the **achromatic** mean is the statistic: a hero-only
+render draws one wavelength per path and leaves several percent of
+purely chromatic MC noise on each individual channel of what is a grey
+scene under a white emitter, so a per-channel ratio would be reading
+noise (they are printed, not gated).
+
 ### 3.3 Per-(s,t) strategy balance
 
 Measured with temporary in-tree instrumentation (accumulating each
@@ -380,4 +472,15 @@ to 4x.
   `SPFBSDFConsistencyTest` already bands this material at 15 % and
   attributes it to the Schlick approximation; the measurement here shows
   the gap grows with roughness beyond that band's roughness-0.3 basis.
-  Filed **DL-127**.
+  Filed **DL-127**.  It is also one of the two rows §3.2a had to rule
+  out before attributing topology L's merge-target residual to DL-103.
+* **§4.1's "up to 4x" rests on a premise `DL-101` disputes.**  That
+  section counts the per-channel branch's three specular rays as three
+  distinct lobes in the container.  **DL-101** records that the
+  per-channel loop REUSES one `ScatteredRay` across its three lanes, so
+  a lane whose sampler declines to write a direction leaves the previous
+  lane's — i.e. what actually reaches the container on that branch may
+  be fewer than three distinct directions.  The per-lobe estimator does
+  not care (it is a proper PMF over whatever was emitted, §4.1's first
+  bullet), but the "4x" upper bound does: read it as a bound on the
+  *intended* branch, and re-derive it when DL-101 closes.
