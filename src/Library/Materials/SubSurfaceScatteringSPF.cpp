@@ -226,9 +226,6 @@ void SubSurfaceScatteringSPF::Scatter(
 			if( Vector3Ops::Dot( rvDir, geomN ) <= 0 ) {
 				rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), geomN );
 			}
-			const bool bEmit = true;
-
-			if( bEmit )
 			{
 				ScatteredRay reflectedRay;
 				reflectedRay.type = ScatteredRay::eRayReflection;
@@ -343,9 +340,6 @@ void SubSurfaceScatteringSPF::Scatter(
 		if( Vector3Ops::Dot( rvDirBack, geomNBack ) <= 0 ) {
 			rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), geomNBack );
 		}
-		const bool bEmitBack = true;
-
-		if( bEmitBack )
 		{
 			ScatteredRay reflectedRay;
 			reflectedRay.type = ScatteredRay::eRayReflection;
@@ -501,9 +495,6 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			if( Vector3Ops::Dot( rvDir, geomN ) <= 0 ) {
 				rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), geomN );
 			}
-			const bool bEmit = true;
-
-			if( bEmit )
 			{
 				ScatteredRay reflectedRay;
 				reflectedRay.type = ScatteredRay::eRayReflection;
@@ -605,9 +596,6 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		if( Vector3Ops::Dot( rvDirBack, geomNBack ) <= 0 ) {
 			rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), geomNBack );
 		}
-		const bool bEmitBack = true;
-
-		if( bEmitBack )
 		{
 			ScatteredRay reflectedRay;
 			reflectedRay.type = ScatteredRay::eRayReflection;
