@@ -1577,6 +1577,43 @@ namespace RISE
 						const std::string context = "scalar_painter `" + name + "` (expression)";
 						Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
 						std::vector<Implementation::ParamSpec> specs;
+
+						// DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g)) -- see
+						// Job::AddExpressionPainter's twin site (Job.cpp) for the
+						// full rationale; duplicated here rather than shared
+						// because the two call sites resolve against different
+						// IJobPriv REFERENCES (`*pPriv` here, `*this` there) with
+						// no header both can include without pulling IJobPriv.h
+						// into ExpressionPainter.h (see IExpressionPainterRefResolver's
+						// own doc comment).
+						class SelfReferenceCheckedResolver : public Implementation::IExpressionPainterRefResolver
+						{
+						public:
+							IJobPriv& job;
+							std::string selfName;
+							SelfReferenceCheckedResolver( IJobPriv& j, const std::string& self ) : job( j ), selfName( self ) {}
+							bool ResolveColorPainter( const std::string& nm, IPainter*& out, std::string& err ) override
+							{
+								if( nm == selfName ) {
+									err = "references itself -- a painter cannot sample its own not-yet-registered chunk";
+									return false;
+								}
+								out = job.GetPainters()->GetItem( nm.c_str() );
+								if( !out ) { err = "painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+								return true;
+							}
+							bool ResolveScalarPainter( const std::string& nm, IScalarPainter*& out, std::string& err ) override
+							{
+								if( nm == selfName ) {
+									err = "references itself -- a painter cannot sample its own not-yet-registered chunk";
+									return false;
+								}
+								out = job.GetScalarPainters()->GetItem( nm.c_str() );
+								if( !out ) { err = "scalar_painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+								return true;
+							}
+						} painterRefResolver( *pPriv, name );
+
 						// true/true: full context vars + auto-registered `seed`,
 						// this call's ORIGINAL (pre-unification) behavior -- see
 						// BuildExpressionProgramFromChunkFields's own doc comment
@@ -1584,7 +1621,7 @@ namespace RISE
 						std::string exprErr;
 						if( !Implementation::BuildExpressionProgramFromChunkFields(
 								context, params, defs, Scalar( seed ), finalExpr, prog, specs,
-								/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr ) ) {
+								/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr, &painterRefResolver ) ) {
 							// See Job::AddExpressionPainter's twin site -- thread the
 							// specific compiler diagnostic into the CST sink instead
 							// of leaving the caller with the generic apply-failed text.

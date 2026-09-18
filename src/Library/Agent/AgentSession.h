@@ -6667,6 +6667,15 @@ namespace RISE
 				//! land.
 				std::string reflectanceSlot;
 				std::string reflectancePainter;
+				//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g)/6.9 item 6b):
+				//! true when `reflectancePainter`'s darkening expression reads
+				//! the substrate PER-TEXEL via `sample(name)` (a textured or
+				//! procedural base) rather than the original literal
+				//! `base_r`/`base_g`/`base_b` constants (a flat
+				//! `uniformcolor_painter` base).  False, including when
+				//! `reflectanceSlot` is empty (the darkening half was skipped
+				//! entirely -- see that field's own doc comment).
+				bool        texturedAlbedo = false;
 
 				//! The gloss/roughness half of the GGX/PBR IN-PLACE branch
 				//! ONLY (§6.2's stopgap, unchanged by item 8): `alphax`+

@@ -4445,6 +4445,246 @@ static void TestPoDomainCompileTimeSplit()
 	}
 }
 
+//======================================================================
+// DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
+// the painter-sampling builtins `sample(name)` (-> vec3, IPainter) and
+// `sample_scalar(name)` (-> scalar, IScalarPainter, no JH uplift).
+//
+// RED, before this arc: the pre-fix FnSig table (ExpressionEval.h) had
+// no "sample"/"sample_scalar" entries and ParseCall had no bespoke case
+// for either name, so `sample(x)` in ANY expression body compiled to
+// "unknown function `sample`" -- the same path an unrecognised
+// identifier like `frobnicate(x)` hits today.  This is what made
+// WETNESS_COAT_DESIGN.md sec 6.4 clause 2 an outright REFUSAL for a
+// textured substrate rather than a half-delivered darkening: there was
+// no way to write the expression an author would want at all.
+//======================================================================
+static void TestPainterSampleCompileTimeRegistration()
+{
+	std::cout << "Test 75: sample()/sample_scalar() -- compile-time name registration, dedup, and .x/.y/.z swizzle" << std::endl;
+
+	{
+		Prog p( "sample(rock).x" );
+		Check( p.ok, "sample(rock).x compiles" );
+		if( p.ok ) {
+			Check( p.prog.UsesPainterSample(), "UsesPainterSample() true" );
+			Check( p.prog.ColorPainterRefNames().size() == 1, "one colour ref registered" );
+			if( p.prog.ColorPainterRefNames().size() == 1 )
+				Check( p.prog.ColorPainterRefNames()[0] == "rock", "registered name is `rock`" );
+			Check( p.prog.ScalarPainterRefNames().empty(), "no scalar refs from sample()" );
+			Check( !p.prog.IsPainterRefsBound(), "not yet bound (compile time only registers the NAME)" );
+		}
+	}
+	{
+		// Two call sites, same name: ONE registered ref (RegisterPainterRef's
+		// dedup), not two -- what BindPainterRefs later resolves against is
+		// a per-DISTINCT-NAME list, not a per-call-site one.
+		Prog p( "sample(rock).x + sample(rock).y" );
+		Check( p.ok, "two sample(rock) call sites compile" );
+		if( p.ok ) Check( p.prog.ColorPainterRefNames().size() == 1, "deduped to one colour ref" );
+	}
+	{
+		Prog p( "sample_scalar(roughmap)" );
+		Check( p.ok, "sample_scalar(roughmap) compiles" );
+		if( p.ok ) {
+			Check( p.prog.ScalarPainterRefNames().size() == 1, "one scalar ref registered" );
+			if( p.prog.ScalarPainterRefNames().size() == 1 )
+				Check( p.prog.ScalarPainterRefNames()[0] == "roughmap", "registered name is `roughmap`" );
+			Check( p.prog.ColorPainterRefNames().empty(), "no colour refs from sample_scalar()" );
+		}
+	}
+	{
+		// Distinct lists: sampling the SAME literal name once as a colour
+		// and once as a scalar registers it in BOTH lists independently --
+		// they are resolved against two different painter managers later.
+		Prog p( "sample(x).x + sample_scalar(x)" );
+		Check( p.ok, "sample(x) and sample_scalar(x) coexist" );
+		if( p.ok ) {
+			Check( p.prog.ColorPainterRefNames().size() == 1, "one colour ref" );
+			Check( p.prog.ScalarPainterRefNames().size() == 1, "one scalar ref" );
+		}
+	}
+}
+
+static void TestPainterSampleParseDiagnostics()
+{
+	std::cout << "Test 76: sample()/sample_scalar() -- gating, arity, and bare-identifier diagnostics" << std::endl;
+
+	// Gated on EnableContextVars, exactly like occlusion()/proximity() --
+	// expression_function2d's frozen UV-only contract must not grow it.
+	{
+		ExpressionProgram::Builder b;   // EnableContextVars left at its default (false)
+		ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( !b.Finalize( "sample(rock).x", p ), "sample() refused without context vars" );
+		Check( b.Error().find( "3D surface context" ) != std::string::npos,
+			"diagnostic names the 3D-surface-context requirement: " + b.Error() );
+	}
+	{
+		ExpressionProgram::Builder b;
+		ExpressionProgram p = ExpressionProgram::Invalid();
+		Check( !b.Finalize( "sample_scalar(rough)", p ), "sample_scalar() refused without context vars" );
+		Check( b.Error().find( "3D surface context" ) != std::string::npos,
+			"diagnostic names the 3D-surface-context requirement (scalar form): " + b.Error() );
+	}
+	// The argument is a BARE IDENTIFIER, not a general expression -- a
+	// number, a quoted string, or an empty argument list must each fail
+	// with a dedicated diagnostic, not silently parse as something else.
+	{
+		Prog p( "sample(3.0)" );
+		Check( !p.ok, "sample(<number>) refused" );
+		Check( p.builder.Error().find( "bare painter name" ) != std::string::npos,
+			"diagnostic explains a bare name is expected: " + p.builder.Error() );
+	}
+	{
+		Prog p( "sample()" );
+		Check( !p.ok, "sample() with no argument refused" );
+	}
+	{
+		Prog p( "sample(a, b)" );
+		Check( !p.ok, "sample(a, b) -- two arguments -- refused" );
+	}
+	// A genuinely unresolved-at-PARSE-time reference (before BindPainterRefs
+	// ever runs) is NOT itself a parse error -- names are compile-time
+	// TEXT, resolved later -- this pins that boundary so a future change
+	// doesn't accidentally start resolving names inside the parser.
+	{
+		Prog p( "sample(this_name_is_never_declared_anywhere)" );
+		Check( p.ok, "an unresolved name still compiles -- resolution is an ATTACH-time concern, not a parse-time one" );
+	}
+}
+
+static void TestPainterSampleAttachAndEval()
+{
+	std::cout << "Test 77: sample()/sample_scalar() -- end-to-end through Job/CST: attach-time binding, per-texel evaluation, self-reference and forward-reference diagnostics" << std::endl;
+
+	// (a) sample(name) against a uniformcolor_painter, forward-declared
+	// (the ONLY order the scene language allows): GetColor matches the
+	// source painter's own colour exactly.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"uniformcolor_painter\n{\nname rock_flat\ncolor 0.4 0.5 0.6\n}\n"
+			"expression_painter\n{\nname wet_flat\nexpr sample(rock_flat)\n}\n";
+		Check( S2::ParseBody( "samp_flat", body, *job ), "uniformcolor_painter + sample()-based expression_painter parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* src = priv->GetPainters()->GetItem( "rock_flat" );
+			IPainter* wet = priv->GetPainters()->GetItem( "wet_flat" );
+			Check( src != 0 && wet != 0, "both painters registered" );
+			if( src && wet ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const RISEPel cSrc = src->GetColor( r );
+				const RISEPel cWet = wet->GetColor( r );
+				CheckClose( cWet[0], cSrc[0], 1e-9, "sample(rock_flat).r == rock_flat's own R" );
+				CheckClose( cWet[1], cSrc[1], 1e-9, "sample(rock_flat).g == rock_flat's own G" );
+				CheckClose( cWet[2], cSrc[2], 1e-9, "sample(rock_flat).b == rock_flat's own B" );
+			}
+		}
+		job->release();
+	}
+
+	// (b) sample_scalar(name) against a scalar_painter{value}: same
+	// exact-match contract, no JH uplift (IScalarPainter never goes
+	// through GetColorNM's uplift path -- ISCALARPAINTER_REFACTOR.md).
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"scalar_painter\n{\nname rough_flat\nvalue 0.73\n}\n"
+			"scalar_painter\n{\nname wet_rough\nexpression sample_scalar(rough_flat)\n}\n";
+		Check( S2::ParseBody( "samp_scalar_flat", body, *job ), "scalar_painter + sample_scalar()-based scalar_painter parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IScalarPainter* wet = priv->GetScalarPainters()->GetItem( "wet_rough" );
+			Check( wet != 0, "registered" );
+			if( wet ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				CheckClose( wet->GetValuesAt( r ).v[0], 0.73, 1e-9, "sample_scalar(rough_flat) == rough_flat's own value" );
+			}
+		}
+		job->release();
+	}
+
+	// (c) THE PER-TEXEL CASE (the actual point of this builtin, sec 4(g)):
+	// bind sample() to a substrate whose colour genuinely varies with the
+	// hit (P.x), and confirm the OUTER expression's answer varies too --
+	// this is what "darkens a TEXTURED substrate" means at the unit
+	// level, and it is exactly what the memo-safety argument
+	// (ExpressionMemo.h's DL-25 addendum) rests on: the synthetic ri
+	// `sample()` builds carries P through, so two different hits give two
+	// different answers rather than one baked at bind time.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname wood_grain\nexpr vec3(0.2 + 0.1*P.x, 0.15, 0.1)\n}\n"
+			"expression_painter\n{\nname wet_wood\nparam k 1.55\ndef base_color sample(wood_grain)\n"
+			"expr vec3( pow(base_color.x, k), pow(base_color.y, k), pow(base_color.z, k) )\n}\n";
+		Check( S2::ParseBody( "samp_textured", body, *job ), "textured substrate + sample()-based darkening expression parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* wood = priv->GetPainters()->GetItem( "wood_grain" );
+			IPainter* wet = priv->GetPainters()->GetItem( "wet_wood" );
+			Check( wood != 0 && wet != 0, "both registered" );
+			if( wood && wet ) {
+				RayIntersectionGeometric r1( Ray(), nullRasterizerState ); r1.bHit = true; r1.ptIntersection = Point3( 0.0, 0, 0 );
+				RayIntersectionGeometric r2( Ray(), nullRasterizerState ); r2.bHit = true; r2.ptIntersection = Point3( 1.0, 0, 0 );
+				const RISEPel wood1 = wood->GetColor( r1 );
+				const RISEPel wood2 = wood->GetColor( r2 );
+				const RISEPel wet1 = wet->GetColor( r1 );
+				const RISEPel wet2 = wet->GetColor( r2 );
+				Check( wood1[0] != wood2[0], "test bug: the substrate itself must vary with P.x" );
+				Check( wet1[0] != wet2[0], "the WET painter's darkened R varies with P.x -- per-texel, not a baked constant" );
+				CheckClose( wet1[0], std::pow( wood1[0], 1.55 ), 1e-9, "wet(P=0) == pow(substrate(P=0), k)" );
+				CheckClose( wet2[0], std::pow( wood2[0], 1.55 ), 1e-9, "wet(P=1) == pow(substrate(P=1), k)" );
+			}
+		}
+		job->release();
+	}
+
+	// (d) forward reference (the base declared AFTER the sampler) fails
+	// with "not found" -- the SAME rule function1d/function2d/base/etc
+	// bridges already enforce, not a new one sample() invented.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"expression_painter\n{\nname wet_early\nexpr sample(rock_late)\n}\n"
+			"uniformcolor_painter\n{\nname rock_late\ncolor 0.1 0.2 0.3\n}\n";
+		Check( !S2::ParseBody( "samp_forward", body, *job ), "a forward reference to a not-yet-declared painter is refused" );
+		job->release();
+	}
+
+	// (e) self-reference: a chunk naming ITSELF is refused with the
+	// dedicated diagnostic (the painter manager genuinely does not have
+	// it yet -- AddItem runs only after this call succeeds), not the
+	// generic "not found".
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "expression_painter\n{\nname mirror\nexpr sample(mirror)\n}\n";
+		Check( !S2::ParseBody( "samp_self", body, *job ), "a chunk sampling its own not-yet-registered name is refused" );
+		job->release();
+	}
+
+	// (f) a genuinely unresolvable name (never declared at all) refuses
+	// the same way.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "expression_painter\n{\nname wet_missing\nexpr sample(does_not_exist_anywhere)\n}\n";
+		Check( !S2::ParseBody( "samp_missing", body, *job ), "an undeclared painter name is refused" );
+		job->release();
+	}
+
+	// (g) expression_function2d (the frozen UV-only surface) refuses
+	// sample() the same way it refuses occlusion()/proximity() -- the
+	// gating gate is shared (m_contextVarsEnabled), not a new one.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"uniformcolor_painter\n{\nname rock_f2d\ncolor 0.5 0.5 0.5\n}\n"
+			"expression_function2d\n{\nname bad_f2d\nexpr sample(rock_f2d)\n}\n";
+		Check( !S2::ParseBody( "samp_f2d", body, *job ), "expression_function2d refuses sample() (UV-only, frozen contract)" );
+		job->release();
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -4522,6 +4762,9 @@ int main( int, char** )
 	TestPoDomainMixedFrameIsConservativeSum();
 	TestPoDomainNonUniformScaleSide();
 	TestPoDomainCompileTimeSplit();
+	TestPainterSampleCompileTimeRegistration();
+	TestPainterSampleParseDiagnostics();
+	TestPainterSampleAttachAndEval();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

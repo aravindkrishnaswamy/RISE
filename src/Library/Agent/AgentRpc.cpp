@@ -4430,7 +4430,7 @@ namespace RISE
 				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
 				//       material,materialKind,wrappedInCoat,coatedMaterial,
 				//       coatWeightPainter,coatRoughnessPainter,rebindObjectCount,
-				//       reflectanceSlot,reflectancePainter,
+				//       reflectanceSlot,reflectancePainter,texturedAlbedo,
 				//       scatteringSlots:[string,...],scatteringPainters:[string,...],
 				//       baseColor:[r,g,b],geometry,geometryUniform,isMetallic,
 				//       isOrenNayar,qualifying,objects}
@@ -4475,6 +4475,10 @@ namespace RISE
 					if( wr.rebindObjectCount > 0 )          result.set( "rebindObjectCount",   JsonValue::MakeNumber( static_cast<double>( wr.rebindObjectCount ) ) );
 					if( !wr.reflectanceSlot.empty() )    result.set( "reflectanceSlot",    JsonValue::MakeString( wr.reflectanceSlot ) );
 					if( !wr.reflectancePainter.empty() ) result.set( "reflectancePainter", JsonValue::MakeString( wr.reflectancePainter ) );
+					// DL-25: only meaningful alongside reflectancePainter -- omitted (rather than
+					// forced false) when that half was skipped entirely, matching every other
+					// "populated only when X" field's own conditional-emit convention here.
+					if( !wr.reflectancePainter.empty() ) result.set( "texturedAlbedo", JsonValue::MakeBool( wr.texturedAlbedo ) );
 					if( !wr.scatteringSlots.empty() ) {
 						JsonValue arr = JsonValue::MakeArray();
 						for( const std::string& nm : wr.scatteringSlots ) arr.push_back( JsonValue::MakeString( nm ) );

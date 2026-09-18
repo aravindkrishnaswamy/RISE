@@ -136,6 +136,34 @@
 //  VM would have computed), never a correctness change -- disclosed here,
 //  in the commit, and in §6.5 of docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md.
 //
+//  UPDATED 2026-09-17 (DL-25, docs/DEBT_LEDGER.md; docs/WETNESS_COAT_DESIGN.md
+//  sec 4(g)) -- the painter-sampling builtins `sample()`/`sample_scalar()`.
+//  All FIVE named bodies' TEXT changed (each gained one new trailing
+//  parameter -- `pPainterRefs`, threading ExpressionProgram::m_boundRefs
+//  down to the two dispatch functions -- and `Eval(u,v)`/`Eval(ctx)`/
+//  `EvalVec3` additionally changed their `BindEnv` calls the same way), but
+//  NONE of their EXISTING arithmetic moved: every new parameter defaults to
+//  `nullptr` and every pre-existing call site's other arguments and
+//  instruction sequence are untouched, so the fbm/turbulence/ridged FMA
+//  contraction concern the ORIGINAL "why L2 lives outside Eval/EvalVec3"
+//  paragraph above describes does not apply to this change (it is about
+//  wrapping a CALL around these bodies changing what the optimiser inlines,
+//  not about a body gaining an unused trailing pointer parameter).
+//  `CallFuncVec3` is the SECOND deliberate exception to "unchanged" (after
+//  `CallFunc`'s `kFnProximity`/`kFnInterior` cases) -- it gained
+//  `case kFnSamplePainter:`, and THAT NEW CASE is now pinned exactly as
+//  `CallFunc`'s new cases are.  `CallFunc` itself gained a THIRD case,
+//  `kFnSamplePainterScalar`.  Neither new case is memo-key-eligible on a
+//  NEW field: `sample()`/`sample_scalar()` evaluate the bound painter at a
+//  SYNTHETIC hit built ONLY from `env`'s existing u,v,P,Po,N slots (see
+//  ExpressionEval.h's `BuildSyntheticRi`), which `MakeMemoKey` already
+//  copies whole -- so the memo stays sound with NO new `ProgramKey` field
+//  and `kFields` does NOT move for this arc.  The bound painter POINTERS
+//  themselves are attach-time-immutable ExpressionProgram state (like a
+//  `param`'s folded constant, not like a per-hit context field), which is
+//  what keeps "PURE function of (program, ExprEvalContext)" true below --
+//  see that paragraph's own updated caveat.
+//
 //  WHAT MAKES IT SOUND.  A compiled ExpressionProgram is a PURE function
 //  of (program, ExprEvalContext): the VM holds no mutable state, every
 //  builtin is deterministic, and the SDF signal estimators are const
@@ -149,7 +177,18 @@
 //  state (its scratch stack is `thread_local`, so it is not shared state
 //  the key would have to see either).  The one thing the key cannot
 //  see is a PROVIDER'S OWN STATE changing behind a stable pointer, which
-//  is what the generation counter below is for.
+//  is what the generation counter below is for.  `sample()`/`sample_scalar()`
+//  (DL-25) lean on EXACTLY this mechanism rather than adding a new one: the
+//  bound painter can itself be keyframed (an ExpressionPainter's own `time`,
+//  a gerstnerwave_painter's phase), and `sample()`'s call into its
+//  `GetColor`/`GetValuesAt` carries no awareness of that -- what makes it
+//  safe is the SAME "scene is immutable within a render pass, every seam
+//  that can move state bumps the generation" rule every OTHER
+//  painter-referencing-painter chain in this codebase already depends on
+//  (PainterChannelScalarPainter, MultiplyScalarPainter, blend_painter, ...),
+//  none of which is memo-key-aware of the child painter's internals either.
+//  `sample()` adds no new hazard class; it is one more consumer of an
+//  invariant this file's GENERATION section below already enforces.
 //
 //  NOTHING HERE MUTATES SCENE STATE.  All storage is `thread_local`,
 //  fixed-size, and never heap-allocated; the hit record is untouched, no

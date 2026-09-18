@@ -3774,6 +3774,16 @@ namespace RISE
 				std::string colorPainter;
 				double      baseR = 0.0, baseG = 0.0, baseB = 0.0;
 				bool        hasReadableColor = false;
+				//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), 6.9 item 6b):
+				//! true when `colorPainter` is a genuinely TEXTURED/procedural
+				//! substrate (`ClassifyColorBinding_` reports `Varying`) rather
+				//! than a `uniformcolor_painter` -- the expression-VM
+				//! `sample(name)` builtin now lets the mint darken it
+				//! per-texel instead of refusing under the old "no way to read
+				//! a literal colour from a painter" rule.  `baseR/G/B` are
+				//! UNUSED (left at their default 0.0) when this is true --
+				//! there is no single literal to band around.
+				bool        isTexturedAlbedo = false;
 
 				//! The microsurface slot(s) this material's KIND carries and
 				//! this verb rebinds -- `alphax`+`alphay` for `ggx_material`,
@@ -8378,6 +8388,7 @@ namespace RISE
 						std::string bestSlot, bestPainter;
 						double baseR = 0.0, baseG = 0.0, baseB = 0.0;
 						bool hasReadableColor = false;
+						bool isTexturedAlbedo = false;
 						if( !isMetallic ) {
 							const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
 								ColorMaterialSlotsByKind_().find( pm.kind );
@@ -8393,7 +8404,26 @@ namespace RISE
 							}
 							if( !primarySlot.empty() ) {
 								const std::string& value = pm.params.find( primarySlot )->second;
-								if( ClassifyColorBinding_( value, painterKinds, painterForms ) != MicrosurfaceBinding_::Constant ) {
+								const MicrosurfaceBinding_ colorBinding = ClassifyColorBinding_( value, painterKinds, painterForms );
+								// DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), 6.9 item
+								// 6b): a genuinely TEXTURED/procedural base -- a
+								// `png_painter`, a `checker_painter`, a plain (not
+								// already-worn -- the add_wear-collision check above
+								// already excluded that case) `expression_painter` --
+								// classifies `Varying`, not `Opaque`.  Before the
+								// expression VM had a painter-sampling builtin this was
+								// an honest refusal (no literal to darken); now
+								// `sample(name)` can read it per-texel, so this ACCEPTS
+								// rather than declines.  `sawUnreadableBase` stays for
+								// the genuinely unreadable cases (`Opaque`: blackbody /
+								// spectral / non-default colorspace / a broken
+								// reference).
+								if( colorBinding == MicrosurfaceBinding_::Varying ) {
+									bestSlot = primarySlot; bestPainter = value;
+									hasReadableColor = true;
+									isTexturedAlbedo = true;
+								}
+								else if( colorBinding != MicrosurfaceBinding_::Constant ) {
 									sawUnreadableBase = true;
 								}
 								else {
@@ -8414,11 +8444,18 @@ namespace RISE
 								}
 							}
 							if( !hasReadableColor ) {
+								// DL-25: "or something already spatially varying" is
+								// gone from this message -- a Varying base now takes
+								// the `isTexturedAlbedo` branch above and never
+								// reaches here; what remains genuinely unreadable is
+								// a blackbody/spectral painter, a non-default
+								// `colorspace`, or a broken/unresolvable reference
+								// (`Opaque`).
 								c.wetDeclineReasons[pm.name] = sawUnreadableBase
 									? std::string( "its colour slot binds a painter whose RGB this cannot read "
 									               "as a plain Rec.709-linear triple (a blackbody_painter, a "
-									               "spectral_painter, a non-default `colorspace`, or something "
-									               "already spatially varying) -- there is no base to darken from" )
+									               "spectral_painter, a non-default `colorspace`, or an unresolvable "
+									               "reference) -- there is no base to darken from" )
 									: std::string( "no colour slot on it resolves to a painter chunk at all" );
 								continue;
 							}
@@ -8484,6 +8521,7 @@ namespace RISE
 						w.colorPainter     = bestPainter;
 						w.baseR = baseR; w.baseG = baseG; w.baseB = baseB;
 						w.hasReadableColor = hasReadableColor;
+						w.isTexturedAlbedo = isTexturedAlbedo;
 						w.curvGeometryKind = curvKind;
 						w.geometryUniform  = geometryUniform;
 						w.boundObjectNames = boundObjectNames;
@@ -37831,19 +37869,45 @@ namespace RISE
 			//! would double-count it.  Still used by the GGX/PBR in-place
 			//! branch and the metallic-named/Oren-Nayar darkening-only paths,
 			//! which have no coat lobe of their own to do that work.
+			//! `texturedPainterName` (DL-25, docs/WETNESS_COAT_DESIGN.md sec
+			//! 4(g)/6.9 item 6b, docs/DEBT_LEDGER.md): EMPTY (the default) for
+			//! the ORIGINAL literal-constant path -- byte-identical emitted
+			//! text to before this parameter existed, since `AgentAddWetnessTest`'s
+			//! existing checks assert against that exact string.  NON-EMPTY
+			//! names a TEXTURED/procedural substrate painter (`isTexturedAlbedo`
+			//! on the caller's `WetnessMaterial_`): the mint then reads the
+			//! substrate PER-TEXEL via the expression VM's `sample(name)`
+			//! builtin (ExpressionEval.h) instead of copying out three literal
+			//! constants that don't exist for a non-flat base -- the fix for
+			//! the scope hole design sec 4(g) named and 6.9 item 6b tracked as
+			//! open (`base_r`/`base_g`/`base_b` are LITERAL NUMBERS the verb
+			//! copies out of a `uniformcolor_painter`, which a textured base
+			//! simply does not have).  `def base_color` binds the sample ONCE
+			//! so the final `expr` reads it three times (`.x`/`.y`/`.z`)
+			//! without re-evaluating the substrate painter per component.
 			std::string BuildWetnessReflectancePainterText_( const std::string& chunkName,
 			                                                 double baseR, double baseG, double baseB,
-			                                                 double breakupScale, double seed )
+			                                                 double breakupScale, double seed,
+			                                                 const std::string& texturedPainterName = std::string() )
 			{
 				std::string t = "expression_painter\n{\n";
 				t += "\tname\t\t\t" + chunkName + "\n";
 				t += "\tparam\t\t\tk 1.55 min 1 max 2.5 step 0.05 label \"Wet darkening exponent\"\n";
-				t += "\tparam\t\t\tbase_r " + MicrosurfaceFmt_( baseR ) + " min 0 max 1 step 0.005 label \"Base colour R\"\n";
-				t += "\tparam\t\t\tbase_g " + MicrosurfaceFmt_( baseG ) + " min 0 max 1 step 0.005 label \"Base colour G\"\n";
-				t += "\tparam\t\t\tbase_b " + MicrosurfaceFmt_( baseB ) + " min 0 max 1 step 0.005 label \"Base colour B\"\n";
+				if( texturedPainterName.empty() ) {
+					t += "\tparam\t\t\tbase_r " + MicrosurfaceFmt_( baseR ) + " min 0 max 1 step 0.005 label \"Base colour R\"\n";
+					t += "\tparam\t\t\tbase_g " + MicrosurfaceFmt_( baseG ) + " min 0 max 1 step 0.005 label \"Base colour G\"\n";
+					t += "\tparam\t\t\tbase_b " + MicrosurfaceFmt_( baseB ) + " min 0 max 1 step 0.005 label \"Base colour B\"\n";
+				}
 				t += BuildWetnessMaskPreludeText_( breakupScale, seed );
-				t += "\texpr\t\t\tmix( vec3(base_r, base_g, base_b), "
-					"vec3( pow(base_r, k), pow(base_g, k), pow(base_b, k) ), damp )\n";
+				if( texturedPainterName.empty() ) {
+					t += "\texpr\t\t\tmix( vec3(base_r, base_g, base_b), "
+						"vec3( pow(base_r, k), pow(base_g, k), pow(base_b, k) ), damp )\n";
+				}
+				else {
+					t += "\tdef\t\t\t\tbase_color sample(" + texturedPainterName + ")\n";
+					t += "\texpr\t\t\tmix( base_color, "
+						"vec3( pow(base_color.x, k), pow(base_color.y, k), pow(base_color.z, k) ), damp )\n";
+				}
 				t += "}\n";
 				return t;
 			}
@@ -38554,11 +38618,13 @@ namespace RISE
 			else {
 				pick = SelectMaterialToWet_( cond.wetCandidateMaterials );
 				if( !pick ) {
-					out.message = "add_wetness refused: no non-metallic material in this document is a flat, "
-						"readable colour bound to at least one object -- it needs a lambertian_material / "
+					out.message = "add_wetness refused: no non-metallic material in this document has a readable "
+						"colour bound to at least one object -- it needs a lambertian_material / "
 						"orennayar_material / ggx_material / pbr_metallic_roughness_material whose primary "
-						"colour slot is bound to a uniformcolor_painter (not already varying, not a "
-						"blackbody/spectral painter, not already worn by add_wear) and is not already wet. A "
+						"colour slot is bound to a uniformcolor_painter OR a textured/procedural painter "
+						"(sampled per-texel via the expression VM's sample(), DL-25) -- just not a "
+						"blackbody/spectral painter, a non-default `colorspace`, or already worn by add_wear -- "
+						"and is not already wet. A "
 						"metallic material can still be made wet for its coat/gloss alone (no darkening) -- "
 						"name it explicitly with `material`. Author such a material first, or bind a "
 						"`coated_material` by hand -- this verb's own shape as of item 8 -- over it "
@@ -38802,7 +38868,8 @@ namespace RISE
 				const int before = RISE::Cst::DocItemCount( work );
 				work = CollapseSpliceChunkAt_( work, pick->itemIndex,
 					BuildWetnessReflectancePainterText_( reflectanceFieldName, pick->baseR, pick->baseG,
-					                                     pick->baseB, breakupScale, seed ) );
+					                                     pick->baseB, breakupScale, seed,
+					                                     pick->isTexturedAlbedo ? pick->colorPainter : std::string() ) );
 				if( RISE::Cst::DocItemCount( work ) == before ) {
 					out.message = "add_wetness refused: internal -- the generated `expression_painter` "
 						"(reflectance) chunk did not parse; nothing changed";
@@ -38980,6 +39047,7 @@ namespace RISE
 				out.rebindObjectCount  = lambertianBranch ? rebindObjectCount : 0;
 				out.reflectanceSlot    = reboundColorSlot;
 				out.reflectancePainter = lambertianBranch ? std::string() : reflectanceFieldName;
+			out.texturedAlbedo     = ( !lambertianBranch ) && pick->isTexturedAlbedo;
 				out.scatteringSlots    = lambertianBranch ? std::vector<std::string>() : reboundRoughSlots;
 				out.scatteringPainters = lambertianBranch ? std::vector<std::string>() : roughFieldNames;
 			}
