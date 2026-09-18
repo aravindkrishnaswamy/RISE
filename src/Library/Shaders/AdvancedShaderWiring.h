@@ -25,11 +25,19 @@
 //  alpha-aware op has something to keep or discard.
 //
 //  See `AlphaTestShaderOp.h`'s own "integrator-compatibility caveat":
-//  this chain runs inside `IShader::Shade()`, reached by the RayCaster
-//  path the path tracer and the legacy direct shaders use -- BDPT /
-//  VCM / MLT / photon tracers bypass it entirely and render every
-//  alpha-masked/blended surface as fully opaque regardless of this
-//  wiring.
+//  this chain runs inside `IShader::Shade()`, reached only through
+//  `RayCaster::SelectShader(ri)`/`ri.pShader` at the
+//  `RayCaster::CastRay{,NM,HWSS}` call sites the LEGACY
+//  `pixelpel_rasterizer` dispatches every hit through.  DL-214
+//  (docs/DEBT_LEDGER.md) measured that the modern PT integrator
+//  (`PathTracingIntegrator.cpp`, RISE's -- and this bridge's --
+//  DEFAULT) has NO reference to `SelectShader`/`ri.pShader` at all; it
+//  evaluates emission/BSDF/NEE directly against `ri.pMaterial`,
+//  entirely bypassing this pipeline.  `pixelpel_rasterizer` is
+//  therefore the ONLY rasterizer this chain's alpha mask reaches --
+//  PT, BDPT, VCM, MLT, and every photon tracer all bypass it and
+//  render every alpha-masked/blended surface as fully opaque
+//  regardless of this wiring.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

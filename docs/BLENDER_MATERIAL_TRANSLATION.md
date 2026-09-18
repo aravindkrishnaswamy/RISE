@@ -774,7 +774,21 @@ reads the card's own colour), `pathtracing_pel_rasterizer`, and
 documented DL-214 caveat, and both trigger the rasterizer-compatibility
 warning).
 
-### Tangent -> anisotropy direction (ABI v14, DL-192 + DL-213)
+### Tangent -> anisotropy direction (ABI v14, DL-192 + DL-213 + DL-208)
+
+**Unit correction (DL-208, found by review round 1 of this same
+closure):** Blender's Principled "Anisotropic Rotation" socket is a
+[0, 1] FRACTION OF A FULL TURN — Cycles applies `2*pi*value`
+internally — not radians, unlike every other angle-typed socket this
+add-on reads (Principled Hair BSDF's "Offset"; a `ShaderNodeVectorRotate`
+"Angle" socket, case 2 below).  RISE's `tangent_rotation`/
+`tangent_rotation_scalar` are radians (`MicrofacetUtils::RotateTangent`
+calls raw `cos`/`sin`).  `exporter.py` now converts at the read site
+via a pure `anisotropic_rotation_turns_to_radians` helper in
+`hair_material_math.py` before anything (including case 2's own
+composition, below) uses the value — every Blender anisotropic
+material with a nonzero rotation exported wrong (off by a factor of
+`2*pi`/turn-fraction) since Landing 8 (`25d271df`) until this fix.
 
 RISE's `ggx_material` anisotropy direction is derived entirely from
 the mesh's own UV tangent basis (`Object::IntersectRay`'s
@@ -1266,16 +1280,41 @@ Same split again; DL-192/DL-193 close three sockets with real code
   ABI-bump discipline `test_hair_export.py`'s own version-assertion
   history documents.
 - Engine-level (not bridge-specific): `tests/CoatedMaterialChunkTest`,
-  `SPFPdfConsistencyTest`, `SPFBSDFConsistencyTest`, and
-  `LayeredWhiteFurnaceTest` all stayed green through the `CoatedBRDF`/
-  `CoatedSPF`/`CoatedMaterial` trailing-parameter extension — none of
-  them bind a coat normal, so this is a no-regression pin on the
-  ABI-preserving-extension-point claim, not new coverage of the
-  coat-normal mechanism itself (that is `BlenderBridgeCoatNormalTest`'s
-  job).  `tests/IJobVtableManifest.txt` grew exactly the one line
+  `SPFPdfConsistencyTest`, and `SPFBSDFConsistencyTest` all stayed
+  green through the `CoatedBRDF`/`CoatedSPF`/`CoatedMaterial`
+  trailing-parameter extension — none of them bind a coat normal, so
+  this is a no-regression pin on the ABI-preserving-extension-point
+  claim, not coverage of the coat-normal mechanism itself.
+  `tests/IJobVtableManifest.txt` grew exactly the one line
   `AddCoatedMaterialEx` tail-appends, confirmed via
   `RISE_REGEN_IJOB_VTABLE_MANIFEST=1` reproducing the file byte-for-
-  byte.
+  byte.  `LayeredWhiteFurnaceTest` gained a genuine coat-normal
+  config (review round 1, P2-2 — the ORIGINAL "0/57 passed" claim was
+  true but vacuous, since none of the suite's 7 pre-existing
+  `CoatedMaterial` configs binds a non-null coat normal): config 57 is
+  config 11's material (varnish over white Lambertian) plus a
+  5-degree coat-normal tilt in +Y, gated two-sided in the SAME 2%
+  band config 11 itself uses (a pure redirection of the coat lobe
+  moves energy across incidence angles but cannot create or destroy
+  it) — `LayeredWhiteFurnaceTest`: 0/58.  The test's own comment
+  records two rejected geometries and why: a tilt coplanar with the
+  suite's incidence sweep pushes one column to an effective 90-degree
+  local incidence (a GGX-grazing MC-variance firefly, not a defect),
+  and a larger 30-degree tilt combined with the suite's own 80-degree
+  grazing column produces a real ~15% energy loss (an un-masked
+  tilted-frame effect every normal-map implementation without an
+  explicit masking/shadowing correction shares, also not a defect,
+  just too large for this row's tight band).
+- Also review round 1: DL-208 (a `2*pi`-turn-fraction unit bug in
+  Principled "Anisotropic Rotation", pre-existing since Landing 8 and
+  compounded by this slice's own Tangent case (ii) composition) is
+  red-proofed by a new bpy-free `AnisotropicRotationConversionTest` in
+  `test_hair_export.py`, unit-testing the extracted pure
+  `anisotropic_rotation_turns_to_radians` helper directly: a 0.25-turn
+  input reads back `pi/2` radians exactly, and composing that with a
+  `pi/4`-radian `ShaderNodeVectorRotate` Angle (case (ii)'s own
+  composition) sums to `3*pi/4` exactly.  `test_hair_export.py`:
+  101/0 (was 97/0).
 
 ### Hair export unit tests
 

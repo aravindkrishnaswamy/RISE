@@ -12,7 +12,11 @@ from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Vector
 
 from . import hair_file_writer
-from .hair_material_math import melanin_to_eumelanin_pheomelanin, offset_radians_to_alpha_degrees
+from .hair_material_math import (
+    anisotropic_rotation_turns_to_radians,
+    melanin_to_eumelanin_pheomelanin,
+    offset_radians_to_alpha_degrees,
+)
 
 
 GEOMETRY_TYPES = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
@@ -2186,7 +2190,20 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     # Anisotropy and rotation — read sockets directly because the
     # PrincipledBSDFWrapper doesn't surface them.
     anisotropy_value = _clamp01(_socket_default_float(principled_node, "Anisotropic", 0.0))
-    anisotropy_rotation_value = float(_socket_default_float(principled_node, "Anisotropic Rotation", 0.0))
+    # DL-208 (docs/DEBT_LEDGER.md): Blender's "Anisotropic Rotation"
+    # socket is a [0,1] FRACTION OF A FULL TURN (Cycles applies
+    # `2*pi*value` internally) -- NOT radians, unlike every other
+    # angle-typed socket this file reads (e.g. Principled Hair BSDF's
+    # "Offset" a few hundred lines below, already radians; a
+    # ShaderNodeVectorRotate "Angle" socket below, also radians).
+    # RISE's `tangent_rotation`/`tangent_rotation_scalar` are radians
+    # (`MicrofacetUtils::RotateTangent` calls raw cos/sin on the value;
+    # `weave_rotation`'s own descriptor says radians), so the turn
+    # fraction is converted here, at the read, before anything composes
+    # with it.
+    anisotropy_rotation_value = anisotropic_rotation_turns_to_radians(
+        _socket_default_float(principled_node, "Anisotropic Rotation", 0.0)
+    )
     anisotropy_factor_painter = _add_uniform_painter(
         state,
         f"{material.name_full}_anisotropy",

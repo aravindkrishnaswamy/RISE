@@ -488,6 +488,39 @@ class OffsetConversionTest(unittest.TestCase):
         self.assertAlmostEqual(degrees, -3.0, places=6)
 
 
+class AnisotropicRotationConversionTest(unittest.TestCase):
+    """DL-208 (docs/DEBT_LEDGER.md) red-proof: Blender's Principled
+    "Anisotropic Rotation" socket is a [0, 1] fraction of a full turn,
+    not radians -- unlike every other angle-typed socket this add-on
+    reads.  These pin the exact numbers the review round's own fix
+    description named.
+    """
+
+    def test_quarter_turn_is_half_pi(self):
+        # A Principled rotation of 0.25 (a quarter turn, 90 degrees in
+        # Cycles) must export pi/2 radians, not 0.25 radian
+        # (~14.3 degrees -- the pre-fix defect).
+        radians = hmm.anisotropic_rotation_turns_to_radians(0.25)
+        self.assertAlmostEqual(radians, math.pi / 2.0, places=9)
+
+    def test_zero_rotation_is_zero(self):
+        self.assertAlmostEqual(hmm.anisotropic_rotation_turns_to_radians(0.0), 0.0, places=9)
+
+    def test_full_turn_is_two_pi(self):
+        radians = hmm.anisotropic_rotation_turns_to_radians(1.0)
+        self.assertAlmostEqual(radians, 2.0 * math.pi, places=9)
+
+    def test_case_ii_composition_with_a_constant_vector_rotate_angle(self):
+        # Case (ii)'s own composition: a Principled rotation of 0.25
+        # (-> pi/2 radians) PLUS a ShaderNodeVectorRotate "Angle" of
+        # pi/4 (already radians -- Blender angle sockets on non-
+        # Principled nodes store radians directly) must sum to
+        # 3*pi/4 -- exactly the review round's own named check.
+        converted = hmm.anisotropic_rotation_turns_to_radians(0.25)
+        composed = converted + (math.pi / 4.0)
+        self.assertAlmostEqual(composed, 3.0 * math.pi / 4.0, places=9)
+
+
 # ---------------------------------------------------------------------------
 # Bridge (ABI v9) — the ctypes mirror of the native hair structs, and the
 # marshalling that fills them.

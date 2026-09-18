@@ -1288,6 +1288,60 @@ int main()
 		*whiteLambMat, *sCoatFull, *sIor, *sCoatRough, *sZero, *sZero, *one );
 	coatedVarnishWhiteLamb->addref();
 
+	// DL-192 (docs/DEBT_LEDGER.md), P2-2 review follow-up: config 11
+	// (immediately above) with a coat_normal bound, tilted 5 degrees
+	// off the surface normal in the world +Y direction -- the same
+	// canonical-fallback-ONB tangent-space encoding
+	// `tests/BlenderBridgeCoatNormalTest.cpp`'s own money test uses
+	// (`MakeIntersection`'s `ri.onb.CreateFromW(0,0,1)` gives the SAME
+	// U=(-1,0,0)/V=(0,-1,0)/W=(0,0,1) basis that test's own
+	// fallback-frame comment derives from).  A normal perturbation is a
+	// pure REDIRECTION of the coat lobe -- it moves energy across
+	// incidence angles but cannot create or destroy it -- so this is a
+	// genuine energy-conservation check of `ResolveCoatFrame`'s decode
+	// path, not merely a "the default is unaffected" pin (the seven
+	// other CoatedMaterial configs in this suite all bind
+	// coat_normal = null and cannot exercise it at all).
+	//
+	// Two geometry choices were probed before settling on this one, and
+	// both are worth recording so a future change to this row doesn't
+	// silently reintroduce either problem.  (a) +Y was chosen over +X
+	// because +X is COPLANAR with the incidence sweep itself
+	// (`MakeIntersection` varies incidence entirely within X-Z, per
+	// THETA_DEG); a coplanar +X tilt pushes the 60-degree incidence
+	// column to an effective 90-degree incidence relative to the
+	// coat's OWN tilted normal, where `nv`/`nr` collapse toward
+	// `CoatLobeValue`'s guard boundary and 100k-sample MC turns up a
+	// firefly-magnitude outlier (rho ~69, rejection ~39%) -- a
+	// GGX-grazing MC-variance artifact, not a partition-of-unity
+	// defect, but not something a tight two-sided band should have to
+	// absorb either.  +Y is orthogonal to that sweep plane and clear
+	// of the degeneracy at every THETA_DEG value.  (b) 5 degrees was
+	// chosen over a more dramatic 30 (what an early draft of this row
+	// used) because even with the (a) fix, 30 degrees of tilt combined
+	// with the suite's own 80-degree grazing incidence column is a
+	// real, expected, non-buggy energy loss (a tilted/normal-mapped
+	// frame with no explicit Smith-style masking/shadowing correction
+	// for the tilt -- the same limitation glTF's and Blender's own
+	// normal-map implementations carry) large enough (rho 0.847, -15%)
+	// to fail a tight two-sided band outright; 5 degrees keeps that
+	// same real effect small enough (rho 0.985 at 80 degrees, within
+	// config 11's own 2% band) to gate two-sided while still
+	// genuinely exercising a non-null, non-trivial coat_normal.  A
+	// world tilt of (0, sin 5, cos 5) decodes from tangent-space
+	// (nx, ny) = (0, -sin 5) = (0, -0.0872) under the fallback basis,
+	// i.e. encoded colour ((nx+1)/2, (ny+1)/2) = (0.5, 0.4564); the
+	// blue channel is unused by the decode and is set to 1.0 to match
+	// that test's own convention.
+	UniformColorPainter* sCoatNormalTilted30 = new UniformColorPainter(
+		RISEPel( 0.5, 0.4564, 1.0 ) );
+	sCoatNormalTilted30->addref();
+
+	CoatedMaterial* coatedVarnishTiltedNormal = new CoatedMaterial(
+		*whiteLambMat, *sCoatFull, *sIor, *sCoatRough, *sZero, *sZero, *one,
+		/*recyclingCompensation*/ true, sCoatNormalTilted30, Scalar( 1.0 ) );
+	coatedVarnishTiltedNormal->addref();
+
 	CoatedMaterial* coatedWaterWhiteLamb = new CoatedMaterial(
 		*whiteLambMat, *sCoatFull, *sIor133, *sCoatRough, *sZero, *sZero, *one );
 	coatedWaterWhiteLamb->addref();
@@ -2919,6 +2973,19 @@ int main()
 	    "DL-37 thin-film mixed-lobe regression: transparent oxide over the same conductor must satisfy rho <= 1.05 at every angle" );
 	  Run( r, *mixedThinFilmConductorMat->GetSPF() ); }
 
+	// 57. DL-192 P2-2 review follow-up: config 11's material with a
+	// coat_normal tilted 5 degrees bound (see the declaration above,
+	// which also records why 5 degrees in +Y rather than a more
+	// dramatic tilt or a sweep-coplanar direction).  A pure redirection
+	// of the coat lobe cannot create or destroy energy, so rho stays 1
+	// within the SAME 2% band config 11 itself uses -- this is what
+	// actually gates `ResolveCoatFrame`'s decode path; the DL-192
+	// ledger row's original "0/57" figure only pinned that the default
+	// (null coat_normal) path was unaffected.
+	{ ConfigReport& r = add( "57. Coated varnish / white Lambertian, coat_normal tilted 5deg", kPosturePass, 0.02,
+	    "DL-192: a coat-normal tilt redirects the coat lobe but must not create/destroy energy" );
+	  Run( r, *coatedVarnishTiltedNormal->GetSPF() ); }
+
 	PrintReport( reports );
 
 	// Tally pass/fail across the suite.
@@ -2948,6 +3015,8 @@ int main()
 	safe_release( sOnSigma );
 	safe_release( coatedWaterNoRecycle );
 	safe_release( coatedClearcoatRedGgx );
+	safe_release( coatedVarnishTiltedNormal );
+	safe_release( sCoatNormalTilted30 );
 	safe_release( coatedClearcoatWhiteGgx );
 	safe_release( coatedWaterHalfCover );
 	safe_release( coatedWaterWhiteLamb );
