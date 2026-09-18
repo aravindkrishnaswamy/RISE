@@ -20,6 +20,12 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+// Hoisted above the anonymous namespace (DL-112 review P1-2): the three
+// small helpers `OrientedLobeAxis` / `ExitValidFraction` /
+// `kExitVanishThreshold` now live in TranslucentSPF.h so
+// `TranslucentBSDF` can renormalize by the SAME valid fraction.  The
+// unqualified uses throughout this file are unchanged.
+using namespace RISE::Implementation::TranslucentSPFDetail;
 
 namespace
 {
@@ -97,13 +103,12 @@ namespace
 	// makes both the sampler and Pdf()/PdfNM() report "no lobe" / 0 density
 	// TOGETHER rather than one side dividing by near-zero while the other
 	// still claims support.
-	const Scalar kExitVanishThreshold = Scalar(1e-4);
-
-	inline Scalar ExitValidFraction( const Vector3& n, const Vector3& geomN )
-	{
-		const Scalar cosPhi = r_max( Scalar(-1), r_min( Scalar(1), Vector3Ops::Dot(n,geomN) ) );
-		return (Scalar(1)+cosPhi) * Scalar(0.5);
-	}
+	// `kExitVanishThreshold` and `ExitValidFraction` are DEFINED in
+	// TranslucentSPF.h (namespace TranslucentSPFDetail) since the DL-112
+	// review -- `TranslucentBSDF::value`/`valueNM` need the identical
+	// valid fraction, and a second copy would be exactly the kind of
+	// sampler/evaluator drift DL-112 exists to close.  The derivation
+	// above is their documentation; the header carries only a summary.
 
 	// P1 (review round 3, 2026-09-13): the exit lobe's SAMPLING FRAME has
 	// to be oriented outward before any of the above applies.
@@ -136,7 +141,18 @@ namespace
 
 	// Draws a cosine-around-`n` direction that is EXACTLY conditioned on
 	// the true geometric horizon `dot(wo,geomN)>0`, using precisely 2
-	// canonical sampler draws every call (see the derivation above) --
+	// canonical sampler draws every call (see the derivation above).
+	//
+	// DL-112 (2026-09-17): nothing in the construction is specific to the
+	// EXIT lobe it was written for -- it samples a plain cosine lobe about
+	// any axis, clipped to any half-space through the origin -- so the
+	// ENTRY branch's front (reflection) lobe now uses it too, with
+	// `geomN` (the ray-anchored geometric normal, the side the incoming
+	// ray arrived from) as the half-space instead of `geomNRaw`.  Read
+	// the name as "sample a VALID (horizon-conditioned) DIFFUSE
+	// direction"; the "exit" is the original caller, not a restriction.
+	//
+	// The function is otherwise unchanged --
 	// never more, regardless of geometry.  Returns false only when the
 	// valid region has vanished (see kExitVanishThreshold); the caller
 	// must then not emit this lobe, matching Pdf()/PdfNM()'s own return
@@ -277,6 +293,16 @@ namespace
 	// construction, so the clipped-away energy is RENORMALIZED into the
 	// valid region (DL-45's choice) rather than dropped.
 	//
+	// DL-111 (2026-09-17) needed this same arc construction for a lobe
+	// whose POLAR marginal is not cos^N (DielectricSPF's `scattering` warp
+	// draws its angle from either a Phong or a Henyey-Greenstein inverse
+	// CDF), and it lives there as `GeometricUtilities::PerturbClipped`.
+	// That is a SECOND implementation, deliberately: this one has
+	// cos(theta) as a VALUE and uses it directly, while PerturbClipped
+	// takes an ANGLE, so delegating would insert an acos/cos round trip
+	// into the untilted branch below that TranslucentSpectralParityTest
+	// pins bit-for-bit.  **A change to the arc math belongs in BOTH.**
+	//
 	// NOTE this renormalizes PER THETA RING rather than globally, so it
 	// is NOT DL-45's `cos/pi / P(valid)` shape; the theta marginal is
 	// deliberately left at the unclipped one, which is what makes the
@@ -297,10 +323,11 @@ namespace
 	// direction that is a valid sample of the closed interval
 	// `[-half,half]` and carries the ordinary density `q` computed
 	// below, not a degenerate case.)
-	inline Vector3 OrientedLobeAxis( const Vector3& n, const Vector3& halfSpace )
-	{
-		return ( Vector3Ops::Dot( n, halfSpace ) >= Scalar(0) ) ? n : -n;
-	}
+	// `OrientedLobeAxis` is DEFINED in TranslucentSPF.h (namespace
+	// TranslucentSPFDetail) since the DL-112 review, for the same reason
+	// as `ExitValidFraction` above: `TranslucentBSDF` must orient the
+	// front lobe's axis exactly as the sampler does before measuring the
+	// valid fraction against it.
 }
 
 namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
@@ -509,14 +536,39 @@ void TranslucentSPF::Scatter(
 		// `ColorMath::MaxValue(front.kray) > 0`; this makes the entry gate
 		// consistent with it.
 		if( ColorMath::MaxValue(front.kray) > 0 ) {
-			rv = GeometricUtilities::Perturb( n,
-				acos( sqrt( sampler.Get1D() ) ),
-				TWO_PI * sampler.Get1D() );
-
-			front.ray.Set( ri.ptIntersection, rv );
-			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
-			front.isDelta = false;
-			if( Vector3Ops::Dot( front.ray.Dir(), geomN ) > 0 ) {
+			// DL-112 (2026-09-17): this lobe always HAD its geometric gate
+			// and makes no IOR-stack claim, so nothing was ever
+			// misclassified here -- but it DROPPED a below-horizon sample
+			// instead of resampling, so the lobe integrated to
+			// P(valid) = (1+cos(phi))/2 < 1 under shading-normal tilt
+			// rather than to 1.  Measured emitted energy against a 0.3
+			// reflectance painter: 0.30000 / 0.22493 / 0.15428 at 0 / 60 /
+			// 89 degrees of tilt, matching that closed form exactly
+			// (tests/TransmissionPushGateTest.cpp sub-test 8).  And the
+			// lobe's AXIS was the raw `n`, never oriented into `geomN`'s
+			// hemisphere, so on a double-sided mesh (where `ri.onb.w()`
+			// can sit in the opposite hemisphere entirely -- DL-45 review
+			// round 3(a), the same trap the exit lobe hit) P(valid) was
+			// not bounded below by 0.5 and could collapse the lobe to
+			// nothing.
+			//
+			// Both are closed by the tool DL-45 already built for the exit
+			// lobe: orient the axis first, then draw the EXACT 2-draw
+			// remap onto the geometrically valid region, which
+			// renormalizes the clipped-away energy into it rather than
+			// dropping it.  The draw count is unchanged at 2, so the
+			// fixed-dimension budget (`ISampler::HasFixedDimensionBudget()`)
+			// is untouched.  `Pdf()`'s front branch reports the matching
+			// NORMALIZED density.  Identity at zero tilt (P(valid) = 1),
+			// which is why no untilted fixture can see this change --
+			// `TranslucentSpectralParityTest`'s `Pdf == INV_PI` pin at
+			// zero tilt stays exact.
+			const Vector3 nFront = OrientedLobeAxis( n, geomN );
+			Scalar frontPdf = 0;
+			if( SampleValidDiffuseExit( nFront, geomN, sampler, rv, frontPdf ) ) {
+				front.ray.Set( ri.ptIntersection, rv );
+				front.pdf = frontPdf;
+				front.isDelta = false;
 				scattered.AddScatteredRay( front );
 			}
 		}
@@ -795,14 +847,15 @@ void TranslucentSPF::ScatterNM(
 		front.type = ScatteredRay::eRayDiffuse;
 
 		if( front.krayNM > 0 ) {
-			rv = GeometricUtilities::Perturb( n,
-				acos( sqrt(sampler.Get1D()) ),
-				TWO_PI * sampler.Get1D() );
-
-			front.ray.Set( ri.ptIntersection, rv );
-			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
-			front.isDelta = false;
-			if( Vector3Ops::Dot( front.ray.Dir(), geomN ) > 0 ) {
+			// DL-112, NM twin of the RGB entry front lobe -- see the long
+			// note in Scatter() above for the derivation and the measured
+			// pre-fix energy.
+			const Vector3 nFront = OrientedLobeAxis( n, geomN );
+			Scalar frontPdf = 0;
+			if( SampleValidDiffuseExit( nFront, geomN, sampler, rv, frontPdf ) ) {
+				front.ray.Set( ri.ptIntersection, rv );
+				front.pdf = frontPdf;
+				front.isDelta = false;
 				scattered.AddScatteredRay( front );
 			}
 		}
@@ -952,18 +1005,24 @@ Scalar TranslucentSPF::Pdf(
 
 	if( bFrontFace )
 	{
-		const Scalar cosTheta = Vector3Ops::Dot( wo, n );
-		if( cosTheta <= 0 ) return 0;
+		// Entry reflection lobe.  DL-112 (2026-09-17): Scatter() no longer
+		// DROPS a below-horizon sample -- it draws the same exact 2-draw
+		// remap onto the geometrically valid region that DL-45 gave the
+		// exit lobe -- so this must report the matching NORMALIZED
+		// conditional density (it used to return the UNNORMALIZED cosine
+		// restricted to the valid sub-hemisphere, which integrated to
+		// P(valid) < 1 and said so in its own comment).  Evaluate the
+		// cosine against the SAME oriented axis the sampler used, and
+		// divide by the same valid fraction.  Identity at zero tilt.
 		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		const Vector3 nFront = OrientedLobeAxis( n, geomN );
+		// Sampler support == density support, as on the exit branch below.
+		const Scalar pValid = ExitValidFraction( nFront, geomN );
+		if( pValid < kExitVanishThreshold ) return 0;
+		const Scalar cosTheta = Vector3Ops::Dot( wo, nFront );
+		if( cosTheta <= 0 ) return 0;
 		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return 0;
-		// Entry reflection lobe: existing accepted (DL-01/DL-02 unchanged)
-		// gate -- Scatter() drops a below-horizon sample rather than
-		// resampling, so this is intentionally the UNNORMALIZED cosine
-		// density restricted to the valid sub-hemisphere (integrates to
-		// P(valid) < 1 there, not 1); that asymmetric energy loss at
-		// grazing shading-normal tilt is the pre-existing, reviewed design
-		// for this lobe and is out of DL-45's scope.
-		return cosTheta * INV_PI;
+		return ( cosTheta * INV_PI ) / pValid;
 	}
 
 	// Inside-state diffuse exit re-emission (DL-45, P1 exact-remap follow-up): Scatter()/

@@ -13,9 +13,103 @@
 
 #include "pch.h"
 #include "TranslucentBSDF.h"
+#include "TranslucentSPF.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+using namespace RISE::Implementation::TranslucentSPFDetail;
+
+namespace
+{
+	// DL-112 review P1-2 (2026-09-17).
+	//
+	// DL-112 renormalized `TranslucentSPF`'s entry front-reflection lobe:
+	// the SAMPLER now draws the exact 2-draw remap onto the geometrically
+	// valid region (rather than dropping a below-horizon trial) and
+	// `TranslucentSPF::Pdf` reports the matching NORMALIZED conditional
+	// density `cos/pi / P(valid)`.  `TranslucentBSDF::value` was left at
+	// the bare `pRefFront * INV_PI`, so the two techniques that estimate
+	// the same integral stopped agreeing:
+	//
+	//     kray  ==  value * cos / pdf
+	//
+	// held exactly before DL-112 ON THE RGB PIPE, and afterwards read
+	// `1 / P(valid)` -- measured over the SPF's own draws at 40k trials,
+	// reflectance 0.5: 1.00000 / 1.07180 / 1.17157 / 1.33333 / 1.58879 /
+	// 1.96569 at tilts 0 / 30 / 45 / 60 / 75 / 89 degrees, matching
+	// `2/(1+cos phi)` to five digits
+	// (tests/SPFBSDFConsistencyTest.cpp Part F, RGB column).
+	//
+	// Review round 3 P1 (2026-09-17) corrects two claims this block
+	// used to make.  (a) It did NOT hold on the NM pipe, before OR
+	// after DL-112: `valueNM`'s cases 1 and 2 carried a Phong
+	// `pow(sd, exponent)` factor their RGB twins do not have, so the
+	// same invariant read 6.05 at ZERO tilt and up to 116 at 75
+	// degrees; those two branches are now the true twins (see
+	// `valueNM` below).  (b) It holds only for THIS lobe.  The
+	// translucent SPF's other three lobes -- the entry transmission,
+	// the interior exit, the interior backscatter -- are priced by
+	// `value`'s cases 0 and 1, which describe neither the clipped
+	// Phong nor the clipped cosine the sampler actually draws; over
+	// the SPF's own draws those ratios read 6.00 / 10.43 / 0.674 at
+	// zero tilt on BOTH pipes.  That gap is ledger row DL-157 (the
+	// `value()` side of DL-41's structural hole) and is deliberately
+	// NOT touched here.
+	//
+	// `TranslucentBSDF` is LIVE on that path: PT's NEE
+	// (`PathTracingIntegrator.cpp` -> `LightSampler::EvaluateDirectLighting`)
+	// and BDPT / VCM connections (`BDPTIntegrator.cpp`) all read
+	// `GetBSDF()->value`, so a BSDF-sampled continuation carried the full
+	// albedo while a connection to the SAME direction was valued at
+	// `albedo * P(valid)` -- up to 2x apart at grazing shading tilt, and
+	// any MIS combination of the two is then biased (the DL-74 lesson).
+	//
+	// THE RULING (docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): the
+	// clipped lobe always existed only on the valid side, so the value
+	// follows the sampler -- clip it to the same half-space and divide by
+	// the same `P(valid)`.  The lobe's albedo is then the painter's
+	// reflectance at EVERY tilt (integral of `rho/(pi P) * cos` over the
+	// valid region = `rho/(pi P) * pi P` = `rho`), which is exactly what
+	// the sampler's `kray` has been claiming all along.  The alternative
+	// -- scaling `kray` DOWN by `P(valid)` instead -- would restore
+	// agreement at the cost of reinstating DL-112's own energy loss.
+	//
+	// Identity at zero tilt (P(valid) == 1), so no untilted fixture moves.
+	//
+	// Returns false when the valid region has vanished, matching
+	// `TranslucentSPF::Pdf`'s own `return 0` for the same configuration
+	// (unreachable from production once the axis is oriented, since
+	// P(valid) >= 0.5 by construction).
+	inline bool FrontLobeValidFraction(
+		const Vector3& vLightIn, const RayIntersectionGeometric& ri, Scalar& outPValid )
+	{
+		const Vector3 n = ri.onb.w();
+		// Same recovery TranslucentSPF::Scatter/Pdf perform: the TRUE
+		// (un-flipped) geometric normal where one exists (DL-70), the
+		// shading normal for hair / a degenerate normal, then anchored to
+		// the ray -- a REFLECTION must stay on the side the incoming ray
+		// arrived from.
+		const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : n;
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+			? trueGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+		const Vector3 nFront = OrientedLobeAxis( n, geomN );
+		const Scalar pValid = ExitValidFraction( nFront, geomN );
+		if( pValid < kExitVanishThreshold ) return false;
+
+		// Same support the sampler and the density have: inside the
+		// oriented lobe's own hemisphere AND across the geometric horizon.
+		// (Sign tests only, so an unnormalized `vLightIn` is fine -- the
+		// two callers below hand this the same vector `GetReflectedSide`
+		// normalizes for its own use.)
+		if( Vector3Ops::Dot( vLightIn, nFront ) <= 0 ) return false;
+		if( Vector3Ops::Dot( vLightIn, geomN )  <= 0 ) return false;
+
+		outPValid = pValid;
+		return true;
+	}
+}
 
 TranslucentBSDF::TranslucentBSDF( const IPainter& rF, const IPainter& T, const IScalarPainter& exp ) :
   pRefFront( &rF ), pTrans( &T ), pExponent( &exp )
@@ -102,11 +196,28 @@ RISEPel TranslucentBSDF::value( const Vector3& vLightIn, const RayIntersectionGe
 		return pTrans->GetColor(ri) * intensity * INV_PI;
 		break;
 	case 1:
+		// Viewer and light BOTH on the -n side.  Despite the branch
+		// comments in GetReflectedSide (whose "viewer front" is named
+		// from `Dot(n, -ray.Dir())`, the OPPOSITE sense from the
+		// geometric front face), this is the INTERIOR reflection -- an
+		// ordinary front-face hit with the light outside returns case 2.
+		// Its SPF counterpart is the exit branch's Phong backscatter lobe
+		// (`pTrans * scattering`), not this `pRefFront` cosine; that
+		// mismatch is pre-existing and is NOT DL-112's, so it is
+		// deliberately left alone.  Renormalizing it would silently
+		// change a lobe this expression never described in the first
+		// place.
 		return pRefFront->GetColor(ri) * INV_PI;
 		break;
 	case 2:
-		return pRefFront->GetColor(ri) * INV_PI;
-		break;
+	{
+		// Viewer and light both on the +n side: the ENTRY
+		// front-reflection lobe, the one DL-112 renormalized.  See
+		// FrontLobeValidFraction above for the full derivation.
+		Scalar pValid = 1.0;
+		if( !FrontLobeValidFraction( vLightIn, ri, pValid ) ) return RISEPel(0,0,0);
+		return pRefFront->GetColor(ri) * ( INV_PI / pValid );
+	}
 	default:
 	case 3:
 		return RISEPel(0,0,0);
@@ -123,11 +234,38 @@ Scalar TranslucentBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionG
 		return GuardedGetColorNM( *pTrans, ri, nm ) * intensity * INV_PI;
 		break;
 	case 1:
-		return GuardedGetColorNM( *pRefFront, ri, nm ) * intensity * INV_PI;
+		// Interior reflection -- see the RGB twin's `case 1` note.
+		//
+		// Review round 3 P1 (2026-09-17): NO `intensity`.  See the
+		// `case 2` note below for the derivation; this branch carried
+		// the same spurious Phong factor and is corrected by the same
+		// one-line twin fix.  Both branches' REMAINING disagreement
+		// with the SPF (RGB ratio 0.674 at zero tilt here, and 10.43
+		// for the exit lobe `case 0` prices) is DL-157, not this.
+		return GuardedGetColorNM( *pRefFront, ri, nm ) * INV_PI;
 		break;
 	case 2:
-		return GuardedGetColorNM( *pRefFront, ri, nm ) * intensity * INV_PI;
-		break;
+	{
+		// DL-112, NM twin of the RGB entry front-reflection branch.
+		//
+		// Review round 3 P1 (2026-09-17): this branch used to multiply
+		// by `GetReflectedSide`'s `intensity = pow(sd, exponent)`.
+		// That is a Phong factor the RGB twin does not have and that
+		// `TranslucentSPF::ScatterNM`'s front lobe does not describe:
+		// that lobe's `krayNM` is `GuardedGetColorNM(pRefFront)` drawn
+		// from DL-45's exact COSINE-density remap, with no `cos^N`
+		// anywhere.  Over the SPF's own draws the two techniques' shared
+		// invariant `E[kray] == E[value*cos/pdf]` read 1.00000 on the
+		// RGB pipe and 6.05 / 6.64 / 11.67 / 104.08 / 116.17 / 26.92 on
+		// the NM one at 0/30/45/60/75/89 degrees of shading tilt
+		// (tests/SPFBSDFConsistencyTest.cpp Part F, NM column).
+		//
+		// The factor is dropped, leaving the exact NM twin of the RGB
+		// expression -- same gate, same `1/P(valid)` renormalization.
+		Scalar pValid = 1.0;
+		if( !FrontLobeValidFraction( vLightIn, ri, pValid ) ) return 0;
+		return GuardedGetColorNM( *pRefFront, ri, nm ) * ( INV_PI / pValid );
+	}
 	default:
 	case 3:
 		return 0;

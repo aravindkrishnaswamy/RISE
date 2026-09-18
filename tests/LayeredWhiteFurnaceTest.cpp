@@ -1415,19 +1415,61 @@ int main()
 	//    Measured here: {0.0400, 0.0415, 0.0892, 0.3877} before the fix ->
 	//    {0.3339, 0.3044, 0.3128, 0.5324} after, bit-identical across runs.
 	//
-	//    Still NOT energy-conserving, and the ORIGINAL note's mechanism is now
-	//    the correct description of what remains: with max_recur=4 and per-type
-	//    budgets of 2, the light that TIRs back down at the top interface (~56 %
-	//    of the returning diffuse population) hits its reflection budget at
-	//    steps=2 and is dropped.  That is a genuine finite-budget truncation,
-	//    not a bug, so this row stays a documented deficit -- but as a
-	//    PREDICTION check, not a free pass: kPostureKnownFailure would silently
-	//    swallow both a regression back to 0.04 and an over-unity blow-up.
-	//    eps = 0.03 is ~10x the MC noise on a 100k-sample mean here.
-	static const double kPredDielLamb[NUM_THETA] = { 0.3339, 0.3044, 0.3128, 0.5324 };
+	//    2026-09-17 RE-LOCK (DL-111).  This row moved again, to
+	//    {0.4271, 0.4284, 0.4569, 0.6367} -- still bit-identical across runs,
+	//    still strictly below 1, and closer to it at every angle.  The cause
+	//    is NOT in CompositeSPF: the top layer here is
+	//    `DielectricSPF(tau=1, ior=1.5, scattering=0)`, and `scattering = 0`
+	//    is the WIDEST possible transmission warp (`alpha = acos(u)`, a
+	//    uniform hemisphere about the Snell direction -- CLAUDE.md's
+	//    "`scattering 0.0` = maximally DIFFUSE transmission, not off").
+	//    Part of that hemisphere points back out the side the ray came
+	//    from, and DielectricSPF's old gate -- a test against `ri.onb.w()`,
+	//    the SHADING normal -- simply DROPPED every one of those samples,
+	//    at any tilt, on a FLAT surface.
+	//
+	//    HOW MUCH (review P2-3; an earlier revision of this note said
+	//    "roughly HALF ... at any tilt", which overstates it about 2x).
+	//    The deleted set is the part of one hemisphere (axis: the Snell
+	//    direction) outside another (axis: `throughSurface`).  Two
+	//    hemispheres whose axes subtend `theta_t` intersect in a lune of
+	//    dihedral `pi - theta_t`, so the SURVIVING fraction is exactly
+	//
+	//        1 - theta_t / pi
+	//
+	//    with `theta_t` the refraction angle.  Verified against the actual
+	//    `alpha = acos(u)` + uniform-azimuth construction (400k draws):
+	//    entry 1->1.5 measured 0.9450 / 0.8433 / 0.7672 at incidence
+	//    15 / 45 / 89 deg vs closed form 0.9448 / 0.8437 / 0.7678; exit
+	//    1.5->1 measured 0.7297 / 0.5569 at 30 / 41 deg vs 0.7301 / 0.5569.
+	//    So: 0% at normal incidence; on ENTRY the loss is capped by the
+	//    critical angle at theta_c/180 = 23.2%; on EXIT, averaged over the
+	//    cosine-weighted SUB-CRITICAL interior population, it is exactly
+	//    25.00% (the other 55.56% of that population TIRs and emits no
+	//    transmission at all -- `1 - sin^2(theta_c)` at n = 1.5, which is
+	//    where this row's "~56%" comes from).  50% is only the
+	//    `theta_t -> 90 deg` limit.  The gate is now the
+	//    geometric crossing test, and the warp draws its azimuth on the
+	//    valid ARC (`GeometricUtilities::PerturbClipped`), which
+	//    RENORMALIZES the clipped-away half into the valid region instead of
+	//    dropping it -- DL-45's and DL-68's choice for the two other clipped
+	//    lobes in this codebase, and the one this furnace independently
+	//    endorses by moving toward unity.
+	//
+	//    Still NOT energy-conserving, and the ORIGINAL note's mechanism is
+	//    still the correct description of the REMAINING deficit: with
+	//    max_recur=4 and per-type budgets of 2, the light that TIRs back down
+	//    at the top interface hits its reflection budget at steps=2 and is
+	//    dropped.  That is a genuine finite-budget truncation, not a bug, so
+	//    this row stays a documented deficit -- but as a PREDICTION check,
+	//    not a free pass: kPostureKnownFailure would silently swallow both a
+	//    regression back to 0.04 and an over-unity blow-up.  eps = 0.03 is
+	//    ~10x the MC noise on a 100k-sample mean here.
+	static const double kPredDielLamb[NUM_THETA] = { 0.4271, 0.4284, 0.4569, 0.6367 };
 	{ ConfigReport& r = addPredicted( "3. Dielectric / Lambertian",
-	    "post-ior-stack-fix recovery locked in: predicted rho={0.3339,0.3044,0.3128,0.5324} "
-	    "(pre-fix was {0.0400,0.0415,0.0892,0.3877}, eps 0.03); residual deficit is finite "
+	    "DL-111 clipped-warp recovery locked in: predicted rho={0.4271,0.4284,0.4569,0.6367} "
+	    "(post-ior-stack-fix was {0.3339,0.3044,0.3128,0.5324}, pre-ior-stack-fix "
+	    "{0.0400,0.0415,0.0892,0.3877}, eps 0.03); residual deficit is finite "
 	    "recursion-budget truncation of the TIR population",
 	    kPredDielLamb, 0.03 );
 	  Run( r, *compDielLamb ); }

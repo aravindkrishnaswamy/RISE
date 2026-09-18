@@ -938,24 +938,42 @@ static void RealMaterialStackPremise()
 
 	// TranslucentSPF: `!ior_stack.containsCurrent()` selects whether the
 	// entry (front-face) formula or DL-45's exit re-emission formula
-	// runs.  Both formulas now share the SAME geometric-horizon gate
-	// against the object's true, unflipped outward normal `geomNRaw`
-	// (== `ri.vGeomNormal` == (0,0,1) here, since neither `ri` nor
-	// `tilted` sets `bGeomNormalOrientedToRay`/`bGeomNormalRayDerived`) --
-	// see the long comment on `geomN`/`geomNRaw` in TranslucentSPF.cpp's
-	// Scatter()/Pdf(). `band` has to clear that gate (positive z) to be
-	// a genuine in-production direction for EITHER membership state; a
-	// direction with negative z (as this probe originally had) is
-	// geometrically below the surface and DL-45 correctly reports zero
-	// density for it on both sides, which the premise below misread as
-	// "the two formulas coincide." The probe still tilts the SHADING
-	// normal `n` well away from `geomNRaw` (0,0.6,0.8) vs (0,0,1)) so the
-	// two formulas' extra pValid division (exit-only) is the thing being
-	// observed, not the shared horizon gate.
+	// runs.
+	//
+	// DL-112 (2026-09-17) CHANGED WHAT THAT SELECTION LOOKS LIKE, and the
+	// probe below was retargeted to match.  This block used to compare the
+	// two formulas' VALUES at an ENTRY-shaped hit with a tilted shading
+	// normal, where they differed by the exit branch's extra `pValid`
+	// division.  DL-112 gave the ENTRY front lobe the same normalized
+	// clipped-cosine construction DL-45 gave the exit lobe, so at a
+	// genuine entry hit on a geometry that does not flip its normals
+	// (`geomN == geomNRaw`) the two branches are now the IDENTICAL
+	// function of `wo` -- same oriented axis, same valid fraction -- and
+	// no value-difference probe exists there at all.  That coincidence is
+	// pinned below rather than worked around, because it is the thing
+	// DL-112 asserts.
+	//
+	// The stack still selects between two genuinely different functions:
+	// the entry lobe clips to the RAY-ANCHORED `geomN` (the side the
+	// incoming ray came from) while the exit lobe clips to the UNFLIPPED
+	// `geomNRaw` (the object's own outward direction), and on an
+	// EXIT-SHAPED hit -- an interior ray travelling outward, which is
+	// exactly when `containsCurrent()` is true in production -- those two
+	// references are OPPOSITE and the two branches have DISJOINT support.
+	// So the premise now reads in its strongest form: evaluating a
+	// translucent NEE arm against the `IORStack(1.0)` sentinel instead of
+	// the live stack does not merely shift the density, it returns ZERO
+	// where the truth is positive.
 	{
+		// (a) Entry-shaped hit: the two branches now COINCIDE (DL-112).
 		RayIntersectionGeometric tilted( ri );
 		tilted.vNormal = Vector3Ops::Normalize( Vector3( 0.0, 0.6, 0.8 ) );
 		tilted.onb.CreateFromW( tilted.vNormal );
+		// `band` clears the shared horizon gate (positive z).  A direction
+		// with negative z is geometrically below the surface and both
+		// branches correctly report zero density for it, which an earlier
+		// revision of this premise misread as "the two formulas coincide";
+		// the coincidence asserted here is at a POSITIVE density.
 		const Vector3 band = Vector3Ops::Normalize( Vector3( 0.0, 0.92, 0.02 ) );
 
 		UniformColorPainter* rf = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
@@ -977,10 +995,36 @@ static void RealMaterialStackPremise()
 
 		const Scalar pOut = spf->Pdf( tilted, band, outsideT );
 		const Scalar pIn  = spf->Pdf( tilted, band, insideT );
-		std::cout << "    TranslucentSPF::Pdf  not-in-stack -> " << pOut
+		std::cout << "    TranslucentSPF::Pdf (entry-shaped hit)  not-in-stack -> " << pOut
 			<< " ,  in-stack -> " << pIn << std::endl;
-		Check( std::fabs( (double)pOut - (double)pIn ) > 1e-6,
+		Check( pOut > 1e-6,
+			"premise: the entry-shaped probe must carry positive density (else the "
+			"coincidence below is the trivial both-zero one)" );
+		Check( std::fabs( (double)pOut - (double)pIn ) <= 1e-9,
+			"DL-112: at an entry-shaped hit on a non-flipping geometry the entry and "
+			"exit branches are the same normalized clipped-cosine function" );
+
+		// (b) Exit-shaped hit: an interior ray travelling OUTWARD, so the
+		// ray-anchored `geomN` the entry branch clips to and the unflipped
+		// `geomNRaw` the exit branch clips to are opposite.  The two
+		// branches' supports are then disjoint, and `band` lands in the
+		// exit branch's.
+		RayIntersectionGeometric leaving( Ray( Point3( 0, 0, -1 ), Vector3( 0, 0, 1 ) ), rast );
+		leaving.bHit = true;
+		leaving.range = 1;
+		leaving.ptIntersection = Point3( 0, 0, 0 );
+		leaving.vNormal = Vector3Ops::Normalize( Vector3( 0.0, 0.6, 0.8 ) );
+		leaving.vGeomNormal = Vector3( 0, 0, 1 );
+		leaving.onb.CreateFromW( leaving.vNormal );
+
+		const Scalar qOut = spf->Pdf( leaving, band, outsideT );
+		const Scalar qIn  = spf->Pdf( leaving, band, insideT );
+		std::cout << "    TranslucentSPF::Pdf (exit-shaped hit)   not-in-stack -> " << qOut
+			<< " ,  in-stack -> " << qIn << std::endl;
+		Check( std::fabs( (double)qOut - (double)qIn ) > 1e-6,
 			"premise: TranslucentSPF::Pdf differs between the defaultIOR sentinel and the live stack" );
+		Check( qIn > 1e-6 && qOut == 0.0,
+			"premise: the sentinel stack returns ZERO where the live stack is positive" );
 
 		spf->release();
 		sc->release();
