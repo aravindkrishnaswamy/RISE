@@ -41,11 +41,37 @@
 //  `PTGuidingMISPartitionTest`'s `IntegrateOneSample`) at which THIS
 //  file instantiates `DistributionTracingShaderOp`/`DirectLightingShaderOp`/
 //  `ReflectionShaderOp` directly and sums their `PerformOperation`
-//  outputs -- exactly what `StandardShader::Shade` does internally,
-//  without needing a scene-language chunk for a bare distribution-
-//  tracing/reflection op (none exists; these ops are constructed via
-//  `IJob::AddDistributionTracingShaderOp` etc., the C++ API surface,
-//  not a named ASCII chunk).
+//  outputs -- exactly what `StandardShader::Shade` does internally.  A
+//  scene-language chunk DOES exist for a bare distribution-tracing op
+//  (`distributiontracing_shaderop`, e.g. `scenes/Tests/Shaders/
+//  blurry_floor.RISEscene`'s `shaderop dt` + `shaderop
+//  DefaultDirectLighting` pairing) and `DefaultReflection`/
+//  `DefaultRefraction` presets exist too (`Job::InitializeContainers`)
+//  -- this file uses direct C++ construction instead only so the
+//  `bForceCheckEmitters` comparison and the delta-lobe control can each
+//  build their OWN minimal, hand-picked op list without a full scene
+//  round-trip; it is a methodology choice, not a workaround for a
+//  missing chunk.
+//
+//  A KNOWN, NARROW RESIDUAL THIS FIX DOES NOT COVER (see DL-209 in the
+//  closure doc): the fix above assumes a matching NEE strategy exists
+//  wherever it stamps a non-delta partner, but `DistributionTracingShaderOp`
+//  has no way to know whether its OWN shader's op list actually
+//  contains a `DirectLightingShaderOp` -- each op is independent, with
+//  no back-reference to its shader.  Every shipped scene that uses
+//  `distributiontracing_shaderop` pairs it with `DefaultDirectLighting`
+//  in the SAME `standard_shader` (`blurry_floor`, `blurry_glass`,
+//  `dielectric_dispersion`, `pillow`, `showroom`, `spotlight_drama`,
+//  `different_rmaps`) EXCEPT ONE: `scenes/Tests/Shaders/
+//  dt_with_irrcache.RISEscene`'s `dist` shader is `[dist,
+//  DefaultEmission]` with NO NEE at all, relying on
+//  `force_check_emitters TRUE` for a pure BSDF-sampling-only indirect
+//  gather onto its `refsphere` receiver -- exactly the configuration
+//  where this fix's MIS discount is wrong (there is no competing NEE
+//  term for it to partition against).  Measured (isolated A/B, this
+//  scene at 80x120/32spp, PNG sRGB, illuminated-ROI pixels >20/255):
+//  pre-fix ROI mean 199.746, post-fix 194.808, ratio 0.9753 (~2.5%
+//  darker) -- a real, small, one-directional UNDER-shift, not noise.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
