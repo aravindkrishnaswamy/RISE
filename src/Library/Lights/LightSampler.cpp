@@ -2271,6 +2271,16 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// shading point (e.g. all spotlights point away).
 				// Treat identically to self-exclusion: consume the
 				// remaining random numbers and skip to env NEE.
+				//
+				// DL-155: this is still a valid NEE attempt (it
+				// legitimately drew a direction and found nothing to
+				// connect to) -- count it, or M_nee is inflated by
+				// 1/P(not self-hit) at self-luminous shading points.
+				if( pOptimalMIS && !pOptimalMIS->IsReady() )
+				{
+					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+						ri.rast.x, ri.rast.y, kTechniqueNEE );
+				}
 				sampler.Get1D();
 				sampler.Get1D();
 				sampler.Get1D();
@@ -2290,6 +2300,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// All RIS candidates were self — consume the 3 random
 				// numbers that the area-light path would use (sampler
 				// dimension alignment) and break to env NEE.
+				//
+				// DL-155: count the attempt (see the BVH branch above).
+				if( pOptimalMIS && !pOptimalMIS->IsReady() )
+				{
+					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+						ri.rast.x, ri.rast.y, kTechniqueNEE );
+				}
 				sampler.Get1D();
 				sampler.Get1D();
 				sampler.Get1D();
@@ -2319,6 +2336,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// Self-hit: consume the 3 random numbers that the
 				// area-light path would have used (sampler dimension
 				// alignment) and break to env NEE.
+				//
+				// DL-155: count the attempt (see the BVH branch above).
+				if( pOptimalMIS && !pOptimalMIS->IsReady() )
+				{
+					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+						ri.rast.x, ri.rast.y, kTechniqueNEE );
+				}
 				sampler.Get1D();
 				sampler.Get1D();
 				sampler.Get1D();
@@ -2993,6 +3017,13 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 			if( bvhPdf <= 0 || static_cast<int>(idx) == selfIdx )
 			{
+				// DL-155: count the attempt -- see the RGB variant's
+				// BVH branch for the derivation.
+				if( pOptimalMIS && !pOptimalMIS->IsReady() )
+				{
+					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+						ri.rast.x, ri.rast.y, kTechniqueNEE );
+				}
 				sampler.Get1D();
 				sampler.Get1D();
 				sampler.Get1D();
@@ -3007,6 +3038,12 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 			if( idx >= static_cast<unsigned int>( lightEntries.size() ) )
 			{
+				// DL-155: count the attempt -- see the RGB variant.
+				if( pOptimalMIS && !pOptimalMIS->IsReady() )
+				{
+					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+						ri.rast.x, ri.rast.y, kTechniqueNEE );
+				}
 				sampler.Get1D();
 				sampler.Get1D();
 				sampler.Get1D();
@@ -3021,6 +3058,12 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 			if( static_cast<int>(idx) == selfIdx )
 			{
+				// DL-155: count the attempt -- see the RGB variant.
+				if( pOptimalMIS && !pOptimalMIS->IsReady() )
+				{
+					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+						ri.rast.x, ri.rast.y, kTechniqueNEE );
+				}
 				sampler.Get1D();
 				sampler.Get1D();
 				sampler.Get1D();
