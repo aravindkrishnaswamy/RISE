@@ -1230,8 +1230,10 @@ int main()
         // per-draw range is bounded by `Rs/sqrt(n·v)` = 1.15 Rs at 30°
         // and 1.41 Rs at 60°.
         //
-        // Observed after, at the default seed: 0.0050% @ 30°, 0.0255%
-        // @ 60° (isotropic); 0.0278% @ 30°, 0.0177% @ 60°
+        // Observed after, at the default seed (g_seedBase 424242, re-measured
+        // on master after the debt-dl176 merge; the earlier figures here were
+        // taken before the explicit seed existed): 0.0017% @ 30°, 0.0345%
+        // @ 60° (isotropic); 0.0103% @ 30°, 0.0151% @ 60°
         // (anisotropic).  Tolerance 0.25 -> 0.01, matching the Schlick
         // entry above.
         //

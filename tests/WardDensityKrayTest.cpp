@@ -716,7 +716,8 @@ int main()
 			{ "aniso a.3/.12 th45 BACK FACE",        1, 0.3, 45.0, true,  false, false,  0.0 },
 			{ "aniso perchannel(.1,.3,.6)/.12 th30", 1, 0.3, 30.0, false, true,  false,  0.0 },
 			// TILTED rows (P2-3).  `aD = (1 + cos tilt)/2` reads
-			// 1.000 / 0.983 / 0.933 / 0.866 / 0.750 at 0/15/30/45/60.
+			// 1.000 / 0.983 / 0.933 / 0.854 / 0.750 at 0/15/30/45/60
+			// ((1+cos phi)/2; the 45-degree value is 0.854, not 0.866).
 			{ "iso   a.3  th30 TILT 15",             0, 0.3, 30.0, false, false, false, 15.0 },
 			{ "iso   a.3  th30 TILT 30",             0, 0.3, 30.0, false, false, false, 30.0 },
 			{ "iso   a.3  th30 TILT 45",             0, 0.3, 30.0, false, false, false, 45.0 },
