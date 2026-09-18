@@ -1341,16 +1341,20 @@ the worst of §6.2's coverage dip by construction.
 >
 > **WHAT REMAINS AFTER DL-25, stated because the builtin's reach is not
 > unlimited** (see the `expression_painter` chunk descriptor for the full
-> contract).  `sample()` calls the painter's RGB `GetColor`: a
-> `spectral_painter` / `blackbody_painter` substrate has its spectrum
-> collapsed to RGB and re-uplifted through the Jakob-Hanika LUT downstream,
-> which is a different curve, and `GetAlpha` is dropped.  Those kinds stay
-> on clause 2's REFUSAL path for exactly that reason -- they classify
-> `Opaque`, not `Varying` -- so the verb declines rather than silently
-> resampling them; binding such a substrate directly, without wetness, is
-> still the only way to keep its spectrum.  `sample_scalar()` likewise
-> reports one representative wavelength (549 nm), so a wavelength-varying
-> scalar substrate reads achromatic through it.
+> contract).  `sample()` calls the painter's RGB `GetColor`.  **UPDATE
+> (DL-165, closed 2026-09-18, docs/DEBT_LEDGER.md): a `spectral_painter` /
+> `blackbody_painter` / dual-registered `piecewise_linear_function`
+> substrate is no longer silently collapsed and re-uplifted through a
+> different curve -- `sample()` now REFUSES to bind one at attach time,
+> naming the substrate.**  That refusal is moot for `add_wetness` itself,
+> which never reaches it: those kinds classify `Opaque`, not `Varying`, in
+> `ClassifyColorBinding_`, so clause 2 already declines on the
+> classification before any `sample()` call is ever emitted -- binding such
+> a substrate directly, without wetness, remains the only way to keep its
+> spectrum.  `sample_scalar()` likewise reports one representative
+> wavelength (549 nm), so a wavelength-varying scalar substrate reads
+> achromatic through it (docs/DEBT_LEDGER.md DL-195 -- unchanged by DL-165,
+> a separate pipe with no spectrum concept to collapse).
 
 ### 6.4 Qualifying predicate and refusals
 
