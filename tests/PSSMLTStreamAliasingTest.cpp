@@ -855,6 +855,177 @@ static void TestScreenCoordinateConvention()
 }
 
 // ================================================================
+// Test F: Deep eye-walk stream aliasing (debt 29 / DL-08)
+//
+// BDPTIntegrator's eye-subpath walk calls
+// `sampler.StartStream( 16u + depth )` once per loop iteration
+// (BDPTIntegrator.cpp:1749), where `depth` is a plain loop counter
+// that advances once per bounce -- surface OR volume -- regardless of
+// what kind of vertex resulted.  `StabilityConfig::maxVolumeBounce`
+// defaults to 64 (StabilityConfig.h), so an ordinary scattering-medium
+// scene reaches eye depth 32 with no unusual settings at all.
+//
+// At eye depth 32, `16 + 32 == 48` -- and prior to this fix, 48 is
+// *also* the literal stream MLTRasterizer.cpp / MLTSpectralRasterizer.cpp
+// hardcode via `sampler.StartStream( 48 )` for the film position, lens
+// position, and (debt 28) aperture point.  This is not the modular
+// wraparound aliasing Test C above probes for (that starts one bounce
+// later, at eye depth 33 -> stream 49 -> lane 49 mod kNumStreams); it
+// is a literal same-integer collision between two semantically
+// unrelated sampling dimensions.  A chain whose accepted path reaches
+// that depth has its 32nd eye-bounce scattering direction and its film
+// position living in the EXACT SAME primary-sample-vector slot: a
+// small PSSMLT film mutation silently perturbs the 32nd bounce's BSDF
+// sample, and accepting a path with a different 32nd-bounce outcome
+// silently moves the film position.
+//
+// This is demonstrated directly against PSSMLTSampler -- no scene or
+// render needed, because the bug lives entirely in the (stream,
+// sampleIndex) -> primary-vector-index arithmetic, independent of what
+// BDPT or MLTRasterizer do with the returned values: two identically
+// seeded samplers, one replaying "the eye walk just reached depth 32"
+// and the other replaying "MLTRasterizer is about to draw the film
+// position", MUST diverge.  On the code this test was written against
+// (pre-fix), they do not: PSSMLTSampler's per-lane value is a pure
+// function of (seed, streamIndex, sampleIndex), and stream 16+32 IS
+// stream 48.
+// ================================================================
+
+static void TestDeepEyeWalkAliasing()
+{
+	std::cout << "\nTest F: Deep eye-walk stream aliasing (debt 29 / DL-08)\n";
+
+	const int kEyeDepthReachingFilmStream = 32; // BDPTIntegrator.cpp:1749 -> 16+32 == 48
+	const int kEyeWalkStream = 16 + kEyeDepthReachingFilmStream;
+
+	// MLTRasterizer.cpp / MLTSpectralRasterizer.cpp's reserved stream for
+	// the film / lens / (debt 28) aperture block.  Pinned to the literal
+	// 48 here on purpose: Test D below independently greps the two MLT
+	// rasterizer source files for their actual `StartStream` argument, so
+	// if this literal and that grep ever disagree, Test D catches it.
+	const int kMltReservedStream = 48;
+
+	const int kSamplesPerStream = 6;
+
+	PSSMLTSampler* pEyeWalk = MakeSampler( 777001, 1.0 );  // all large steps
+	pEyeWalk->StartIteration();
+	pEyeWalk->StartStream( kEyeWalkStream );
+	std::vector<Scalar> eyeWalkVals( kSamplesPerStream );
+	for( int i = 0; i < kSamplesPerStream; i++ ) {
+		eyeWalkVals[i] = pEyeWalk->Get1D();
+	}
+	pEyeWalk->release();
+
+	PSSMLTSampler* pFilm = MakeSampler( 777001, 1.0 );  // identical seed
+	pFilm->StartIteration();
+	pFilm->StartStream( kMltReservedStream );
+	std::vector<Scalar> filmVals( kSamplesPerStream );
+	for( int i = 0; i < kSamplesPerStream; i++ ) {
+		filmVals[i] = pFilm->Get1D();
+	}
+	pFilm->release();
+
+	int identicalCount = 0;
+	for( int i = 0; i < kSamplesPerStream; i++ ) {
+		if( eyeWalkVals[i] == filmVals[i] ) identicalCount++;
+	}
+
+	// FIXED behaviour: the eye walk's stream (48, unaffected by this fix
+	// -- it is still literally 16+32) and MLTRasterizer's reserved
+	// stream must be different lanes with different values.  On the
+	// pre-fix code (kDefaultNumStreams == 49, MLT reserved stream ==
+	// literal 48) this fails: both sides read stream 48 by construction
+	// and identicalCount == kSamplesPerStream.
+	if( identicalCount > 0 )
+	{
+		std::cerr << "  FAIL: eye-walk stream " << kEyeWalkStream
+			<< " (16 + eye depth " << kEyeDepthReachingFilmStream
+			<< ") and MLT's reserved stream " << kMltReservedStream
+			<< " produced " << identicalCount << "/" << kSamplesPerStream
+			<< " identical values -- they are the SAME primary-sample-vector "
+			<< "lane.  A PSSMLT film-position mutation is aliased with the "
+			<< "eye walk's " << kEyeDepthReachingFilmStream
+			<< "th-bounce scattering direction (debt 29 / DL-08): "
+			<< "MLTRasterizer's reserved stream must sit strictly above "
+			<< "every stream BDPTIntegrator's own StartStream calls can "
+			<< "reach under PSSMLTSampler.\n";
+		exit( 1 );
+	}
+
+	std::cout << "  Eye-walk stream " << kEyeWalkStream << " (eye depth "
+		<< kEyeDepthReachingFilmStream << ") vs MLT reserved stream "
+		<< kMltReservedStream << ": independent (0/" << kSamplesPerStream
+		<< " matches)\n";
+
+	// A second, deeper probe: the eye walk must never wrap back onto ANY
+	// low-numbered BDPT stream (light source = 0, light bounces, eye
+	// bounces, BDPT strategy select = 47) at any depth PSSMLTSampler's
+	// own saturating loop cap allows (BDPTIntegrator.cpp caps total eye
+	// depth at 1024; see the `maxEyeTotalDepth` ternary).  Pre-fix, with
+	// kNumStreams == 49, eye depth 33 (stream 49) aliases stream 0's
+	// SECOND sample (idx == 49 either way); this walks a modest range
+	// past the historical 49-lane boundary and confirms every eye-walk
+	// stream in that range is still a private lane.
+	{
+		const int kProbeDepthLo = 32;
+		const int kProbeDepthHi = 130; // comfortably past the old 49-lane modulus
+		bool anyCollision = false;
+
+		for( int depth = kProbeDepthLo; depth <= kProbeDepthHi && !anyCollision; depth++ )
+		{
+			const int eyeStream = 16 + depth;
+
+			PSSMLTSampler* pA = MakeSampler( 424242 + depth, 1.0 );
+			pA->StartIteration();
+			pA->StartStream( eyeStream );
+			const Scalar eyeVal = pA->Get1D();
+			pA->release();
+
+			// Compare against every "low" BDPT stream (0, 1, 16, 47) AND
+			// the MLT reserved stream, at whichever sample index the
+			// interleaving formula says could collide (idx = stream +
+			// kNumStreams*sampleIndex, so eyeStream's idx at sampleIndex
+			// 0 can only collide with a low stream's idx at some OTHER
+			// sampleIndex -- probe a generous range).
+			const int lowStreams[] = { 0, 1, 16, 47, kMltReservedStream };
+			for( unsigned int ls = 0; ls < sizeof(lowStreams)/sizeof(lowStreams[0]) && !anyCollision; ls++ )
+			{
+				PSSMLTSampler* pB = MakeSampler( 424242 + depth, 1.0 );
+				pB->StartIteration();
+				pB->StartStream( lowStreams[ls] );
+				for( int k = 0; k < 4; k++ )
+				{
+					const Scalar lowVal = pB->Get1D();
+					if( lowVal == eyeVal )
+					{
+						std::cerr << "  FAIL: eye-walk stream " << eyeStream
+							<< " (depth " << depth << ") collides with stream "
+							<< lowStreams[ls] << " sample " << k << "\n";
+						anyCollision = true;
+						break;
+					}
+				}
+				pB->release();
+			}
+		}
+
+		if( anyCollision )
+		{
+			std::cerr << "  kNumStreams is too small to give every eye-walk "
+				<< "depth in [" << kProbeDepthLo << ", " << kProbeDepthHi
+				<< "] its own lane.\n";
+			exit( 1 );
+		}
+
+		std::cout << "  Eye-walk streams " << kProbeDepthLo << ".." << kProbeDepthHi
+			<< " (as 16+depth) vs streams {0,1,16,47," << kMltReservedStream
+			<< "}: no collisions\n";
+	}
+
+	std::cout << "  Passed!\n";
+}
+
+// ================================================================
 // main
 // ================================================================
 
@@ -867,6 +1038,7 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestKNumStreamsMinimum();
 	TestSourceGuard();
 	TestScreenCoordinateConvention();
+	TestDeepEyeWalkAliasing();
 
 	std::cout << "\nAll PSSMLT stream aliasing tests passed!\n";
 	return 0;
