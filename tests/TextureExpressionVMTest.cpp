@@ -46,6 +46,7 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 
 // S3 (P2.1 + P2.2: scalar_painter{painter} bridge, ramp_painter) additions
@@ -4599,6 +4600,47 @@ static void TestPainterSampleAttachAndEval()
 			if( wet ) {
 				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
 				CheckClose( wet->GetValuesAt( r ).v[0], 0.73, 1e-9, "sample_scalar(rough_flat) == rough_flat's own value" );
+			}
+		}
+		job->release();
+	}
+
+	// (b2) DL-25 round-3 review P2-3: WHICH WAVELENGTH `sample_scalar()`
+	// reports.  Every other scalar fixture in this file binds a CONSTANT
+	// painter, whose three RGB-wavelength lanes are equal -- so none of them
+	// can tell the shipped 549 nm lane (`ScalarPainterRGB::
+	// kSingleSampleChannel`, the representative every other single-scalar
+	// consumer in RISE takes) from the 611 nm lane 0 the first
+	// implementation read.  This one binds a genuinely WAVELENGTH-VARYING
+	// painter -- BK7's Sellmeier dispersion, whose lanes differ in the third
+	// decimal -- and asserts the middle one.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"scalar_painter\n{\nname bk7\nsellmeier 1.03961212 0.231792344 1.01046945 "
+			"0.00600069867 0.0200179144 103.560653\n}\n"
+			"scalar_painter\n{\nname bk7_via_sample\nexpression sample_scalar(bk7)\n}\n";
+		Check( S2::ParseBody( "samp_dispersive", body, *job ),
+			"(b2) a Sellmeier scalar_painter + a sample_scalar() of it parse and attach" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IScalarPainter* src = priv->GetScalarPainters()->GetItem( "bk7" );
+			IScalarPainter* via = priv->GetScalarPainters()->GetItem( "bk7_via_sample" );
+			Check( src != 0 && via != 0, "(b2) both scalar painters registered" );
+			if( src && via ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const ScalarTriple lanes = src->GetValuesAt( r );
+				// The fixture is only a discriminator if the lanes really do
+				// differ -- a constant painter would make every assertion
+				// below pass on either channel choice.
+				Check( std::fabs( lanes.v[0] - lanes.v[1] ) > 1e-4,
+					"(b2) test bug: the substrate must be genuinely wavelength-varying (lane0 " +
+					std::to_string( lanes.v[0] ) + " vs lane1 " + std::to_string( lanes.v[1] ) + ")" );
+				const Scalar got = via->GetValuesAt( r ).v[0];
+				CheckClose( got, lanes.v[ ScalarPainterRGB::kSingleSampleChannel ], 1e-12,
+					"(b2) MONEY: sample_scalar() reports the 549 nm kSingleSampleChannel lane" );
+				Check( std::fabs( got - lanes.v[0] ) > 1e-4,
+					"(b2) ...and NOT lane 0 (611 nm), which is what it read before the review" );
 			}
 		}
 		job->release();
