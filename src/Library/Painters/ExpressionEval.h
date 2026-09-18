@@ -171,6 +171,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 #include <cmath>
 #include <cstdlib>
 #include "../Utilities/Math3D/Math3D.h"	// Scalar, Vector3
@@ -179,6 +180,8 @@
 #include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness()/convexity() dispatch channel
 #include "../Interfaces/SurfaceSignalProximity.h"	// proximity()'s and interior()'s bodies -- CallFunc CALLS both, so the definitions must be here
 #include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
+#include "../Interfaces/IPainter.h"		// DL-25: sample(name)'s dispatch target (also pulls in RayIntersectionGeometric.h)
+#include "../Interfaces/IScalarPainter.h"	// DL-25: sample_scalar(name)'s dispatch target -- IScalarPainter, never GetColorNM (no JH uplift)
 
 namespace RISE
 {
@@ -243,12 +246,81 @@ namespace RISE
 			//! exactly as before wherever no geometry answers.
 			SurfaceSignalInfo	signals;
 
+			//! DL-25 (review P1-1): the HIT RECORD this context was built
+			//! from, for `sample()` / `sample_scalar()` to evaluate their
+			//! bound painter at.  Non-owning, borrowed for the duration of
+			//! one Eval call; 0 means "this context has no record behind
+			//! it" and the sampled painter then sees the synthetic partial
+			//! record `BuildSyntheticRi` assembles from the context slots.
+			//!
+			//! ITS CONTRACT, which every producer must keep: it must be the
+			//! record whose `ptCoord`, `ptIntersection`, `ptObjIntersec`,
+			//! `vNormal` and `signals` ARE this context's `u,v`, `P`, `Po`,
+			//! `N` and `signals` -- i.e. the record
+			//! ExpressionPainter::BuildContext / ExpressionScalarPainter::
+			//! BuildContext copied those fields out of.  Those two are the
+			//! only producers today.  A caller that shifts the context away
+			//! from its record (nothing does -- ReliefModifier steps a COPY
+			//! of the record and rebuilds the context from it) must leave
+			//! this null rather than hand over a record that disagrees.
+			//!
+			//! WHY A BORROWED POINTER AND NOT A COPY: the record is large
+			//! (~500 bytes with its ONB and derivatives) and `sample()` can
+			//! appear in a `def` evaluated on every shading query; copying
+			//! it per evaluation would cost more than the painter call it
+			//! feeds.
+			//!
+			//! WHAT THE MEMO DOES ABOUT IT: the L2 key carries a
+			//! PainterSampleHitKey -- the fields a sampled painter can
+			//! read that the eleven context values do not determine (the
+			//! footprint Jacobian, the ray direction, the vertex colour,
+			//! the second UV set, and whether there is a record at all).
+			//! Bypassing the memo for sampling programs instead was
+			//! measured and rejected: 3.35x more user CPU on a scene whose
+			//! sampling program is consumed by three material slots (see
+			//! Builder::ComputeMemoWorthiness), against no measurable cost
+			//! to non-sampling scenes from the wider key (`plank_closeup`
+			//! is 22.874 +/- 0.143 s against the pre-review library's
+			//! 23.228 +/- 0.108 s -- the growth is below that scene's own
+			//! noise).
+			const RayIntersectionGeometric*	pHit;
+
 			ExprEvalContext() :
-				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0)
+				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0), pHit(0)
 			{}
 			ExprEvalContext( const Scalar u_, const Scalar v_ ) :
-				u(u_), v(v_), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0)
+				u(u_), v(v_), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0), pHit(0)
 			{}
+		};
+
+		//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md).
+		//! Shared, ref-counted ownership of the painters a compiled
+		//! program's `sample(name)` / `sample_scalar(name)` call sites are
+		//! BOUND to -- resolved once, at ATTACH time (Job::AddExpressionPainter
+		//! / ScalarPainterAsciiChunkParser's `expression` form), against the
+		//! owning IJob's painter managers.  `ExpressionProgram` is a
+		//! plain-old-data-ish VALUE TYPE copied routinely (Builder::Finalize's
+		//! out-param, storage in ExpressionPainter/ExpressionScalarPainter,
+		//! every `ExpressionProgram prog = ...` in the chunk parsers) --
+		//! std::shared_ptr's control block is what lets every one of those
+		//! copies share ONE addref()/release() pair per bound painter rather
+		//! than re-running it per copy: the LAST copy's destruction runs
+		//! this holder's destructor, which releases each bound pointer
+		//! EXACTLY ONCE regardless of how many ExpressionProgram copies
+		//! existed meanwhile.  Never constructed with an unresolved (null)
+		//! entry -- BindPainterRefs is the only place that builds one, and
+		//! it fails (returns false, binds nothing) rather than storing a
+		//! null.
+		class BoundPainterRefs
+		{
+		public:
+			std::vector<IPainter*>       color;
+			std::vector<IScalarPainter*> scalar;
+			~BoundPainterRefs()
+			{
+				for( std::size_t i = 0; i < color.size(); ++i )  if( color[i] )  color[i]->release();
+				for( std::size_t i = 0; i < scalar.size(); ++i ) if( scalar[i] ) scalar[i]->release();
+			}
 		};
 
 		//! Compiled program over a shared variable environment.  Build it
@@ -511,10 +583,47 @@ namespace RISE
 			//! computed-radius `interior(...)` would compile as CONVEXITY,
 			//! the same silently-wrong render `proximity` nearly shipped.
 			//!
-			//! 59 is the last free id before CallFuncVec3's 60+ band.
+			//! DL-25 TOOK 59, so this is no longer the last named case in
+			//! the scalar-returning band and there is no free id left in it
+			//! at all: `kFnSamplePainterScalar` is 59 and CallFuncVec3's
+			//! band starts at 60.  A SIXTH scalar-returning builtin needs
+			//! the two bands widened together, not an id picked here.
 			static const int kFnInterior    = 58;
-			static_assert( kFnInterior == 58, "CallFunc's `case kFnInterior:` is the last named "
-				"case in the scalar-returning band; only 59 remains free before CallFuncVec3's 60+" );
+			static_assert( kFnInterior == 58, "the scalar-returning band is FULL: kFnInterior is 58 "
+				"and DL-25's kFnSamplePainterScalar took 59, the last id before CallFuncVec3's 60+ band" );
+			//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
+			//! `sample_scalar(painter_name)` -- the IScalarPainter half of the
+			//! painter-sampling pair (its vec3-returning IPainter twin,
+			//! `sample()`, is kFnSamplePainter in the CallFuncVec3 band below).
+			//! Takes the LAST free id in this scalar-returning band: 59.
+			//! The band is now FULL -- kFnInterior's own comment and
+			//! static_assert above say so, and were corrected in DL-25's
+			//! review rather than left describing the pre-DL-25 state.
+			//! ZERO RUNTIME ARGUMENTS (arity 0, in ParseSampleCall's
+			//! EmitFuncCall call): the "argument" is a bare painter NAME
+			//! parsed at COMPILE time, not a runtime value, so there is
+			//! nothing on the value stack for CallFunc to pop -- `in.idx`
+			//! carries the index into the program's bound-refs table
+			//! (ExpressionProgram::m_scalarPainterRefNames /
+			//! BoundPainterRefs::scalar, resolved once at ATTACH time by
+			//! BindPainterRefs, never at Compile time) instead of an arity.
+			//! Evaluates the bound painter at the CALLER'S OWN hit record
+			//! (`ExprEvalContext::pHit`), falling back to a synthetic
+			//! partial record assembled from `env`'s fixed context slots
+			//! when the context carries none -- see CallFunc's case, and
+			//! ExpressionMemo::PainterSampleHitKey for the L2 key fields
+			//! that forwarding costs.
+			static const int kFnSamplePainterScalar = 59;
+			//! DL-25: `sample(painter_name)` -- the vec3-returning IPainter
+			//! half of the pair.  Lives in CallFuncVec3's band (60+, past
+			//! `cross`=60/`normalize`=61/the bespoke `mix` vec3 id 62 --
+			//! declared here, at the ExpressionProgram level, rather than
+			//! alongside `kFnMixVec3` inside Builder, because CallFuncVec3
+			//! (an ExpressionProgram static, not a Builder member) needs a
+			//! named case for it too.  Same zero-runtime-argument /
+			//! `in.idx`-is-a-ref-table-index shape as kFnSamplePainterScalar;
+			//! see that constant's comment.
+			static const int kFnSamplePainter = 63;
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
 			//!   u=0, v=1, P=kContextSlotP(2..4), Po=kContextSlotPo(5..7),
 			//!   N=8..10, fw=kContextSlotFw(11), time=kContextSlotTime(12),
@@ -594,12 +703,15 @@ namespace RISE
 			Scalar Eval( const Scalar u, const Scalar v ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), 0 );
+				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), 0, m_boundRefs.get(), -1, 0 );
 				Scalar out[3];
 				// No hit record here, so no signal provider: occlusion() /
 				// thickness() / convexity() fall back to their neutral values, exactly as
-				// the zero context vars above do.
-				RunAny( m_final, env, out, 0 );
+				// the zero context vars above do.  (`sample()`/`sample_scalar()` cannot
+				// compile into a context-vars-disabled program in the first place, but a
+				// context-vars-enabled one reached through THIS overload still gets its
+				// real bound refs -- see BoundPainterRefs's doc comment.)
+				RunAny( m_final, env, out, 0, m_boundRefs.get(), 0 );
 				return out[0];
 			}
 
@@ -608,9 +720,9 @@ namespace RISE
 			Scalar Eval( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), -1, ctx.pHit );
 				Scalar out[3];
-				RunAny( m_final, env, out, &ctx.signals );
+				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit );
 				return out[0];
 			}
 
@@ -621,9 +733,9 @@ namespace RISE
 			Vector3 EvalVec3( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), -1, ctx.pHit );
 				Scalar out[3];
-				RunAny( m_final, env, out, &ctx.signals );
+				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit );
 				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
 				return Vector3( out[0], out[0], out[0] );
 			}
@@ -633,9 +745,11 @@ namespace RISE
 			unsigned long long ProgramId() const { return m_id; }
 
 			//! Is this program worth an L2 memo entry?  Decided ONCE, at
-			//! compile time, because the memo's own key comparison is 29
-			//! exact compares (ExpressionMemo::ProgramKey::kFields) and a
-			//! body like `u*v` is cheaper to re-run than to look up.
+			//! compile time, because the memo's own key comparison is 36
+			//! exact compares for a non-sampling body
+			//! (ExpressionMemo::ProgramKey::kFieldsNonSampling; 52 is the
+			//! worst case, `kFields`) and a body like `u*v` is cheaper to
+			//! re-run than to look up.
 			//!
 			//! The predicate is "does this body contain anything whose cost
 			//! dwarfs a key compare" -- a geometry-signal call (hundreds of
@@ -697,6 +811,52 @@ namespace RISE
 				k.fw = (double)ctx.fw;    k.fwo = (double)ctx.fwo;  k.time = (double)ctx.time;
 				k.curv = (double)ctx.curv; k.curvR = (double)ctx.curvR;
 				k.signals = ctx.signals.MemoHitKey();
+				// DL-25 review P1-1: the painter-sample channel -- the hit
+				// fields a program reached through `sample()` /
+				// `sample_scalar()` can read and that nothing above
+				// determines.  Filled UNCONDITIONALLY (zeros when the
+				// context carries no record), because a POD compared
+				// field-by-field cannot express a conditional field, and a
+				// sentinel would hide the split rather than state it.  See
+				// ExpressionMemo::PainterSampleHitKey for the enumeration
+				// of the set and for the census that keeps it honest.
+				k.usesPainterSample = UsesPainterSample();
+				k.sampleHit = MakeSampleHitKey( k.usesPainterSample ? ctx.pHit : 0 );
+			}
+
+			//! The painter-sample half of the key above, split out so the
+			//! enumeration lives in one function rather than inline in
+			//! MakeMemoKey's body.
+			static ExpressionMemo::PainterSampleHitKey MakeSampleHitKey( const RayIntersectionGeometric* pHit )
+			{
+				ExpressionMemo::PainterSampleHitKey k;
+				if( !pHit ) {
+					k.hasHit = false;
+					k.dudx = k.dudy = k.dvdx = k.dvdy = 0.0;
+					k.footprintValid = false;
+					k.rdx = k.rdy = k.rdz = 0.0;
+					k.u1 = k.v1 = 0.0;
+					k.hasTexCoord1 = false;
+					k.vcr = k.vcg = k.vcb = 0.0;
+					k.hasVertexColor = false;
+					return k;
+				}
+				k.hasHit = true;
+				k.dudx = (double)pHit->txFootprint.dudx;
+				k.dudy = (double)pHit->txFootprint.dudy;
+				k.dvdx = (double)pHit->txFootprint.dvdx;
+				k.dvdy = (double)pHit->txFootprint.dvdy;
+				k.footprintValid = pHit->txFootprint.valid;
+				const Vector3& d = pHit->ray.Dir();
+				k.rdx = (double)d.x; k.rdy = (double)d.y; k.rdz = (double)d.z;
+				k.u1 = (double)pHit->ptCoord1.x;
+				k.v1 = (double)pHit->ptCoord1.y;
+				k.hasTexCoord1 = pHit->bHasTexCoord1;
+				k.vcr = (double)pHit->vColor[0];
+				k.vcg = (double)pHit->vColor[1];
+				k.vcb = (double)pHit->vColor[2];
+				k.hasVertexColor = pHit->bHasVertexColor;
+				return k;
 			}
 
 			VType ResultType() const { return m_final.type; }
@@ -775,6 +935,77 @@ namespace RISE
 			//! WHICH radius to bake and whether it may answer at all.
 			const std::vector<SignalRadiusCall>& SurfaceSignalCalls() const { return m_signalCalls; }
 
+			//! DL-25: every distinct painter NAME a `sample(...)` /
+			//! `sample_scalar(...)` call site referenced, in FIRST-REFERENCE
+			//! order (deduplicated -- two calls to `sample(rock)` in one body
+			//! share one entry).  Populated at COMPILE time by Builder;
+			//! UNRESOLVED until BindPainterRefs succeeds -- a program with a
+			//! non-empty list here and `!IsPainterRefsBound()` is mid-attach,
+			//! never mid-render (see BuildExpressionProgramFromChunkFields,
+			//! ExpressionPainter.h, which never lets one escape unbound).
+			const std::vector<std::string>& ColorPainterRefNames() const { return m_colorPainterRefNames; }
+			const std::vector<std::string>& ScalarPainterRefNames() const { return m_scalarPainterRefNames; }
+
+			//! Does this program call `sample()` and/or `sample_scalar()`
+			//! anywhere?  Resolved at compile time, same shape as
+			//! UsesSurfaceSignals -- the attach-time caller (Job::AddExpressionPainter
+			//! / ScalarPainterAsciiChunkParser) uses this to decide whether it
+			//! needs a painter-manager resolver at all before calling
+			//! BindPainterRefs.
+			bool UsesPainterSample() const { return !m_colorPainterRefNames.empty() || !m_scalarPainterRefNames.empty(); }
+
+			//! Has BindPainterRefs already run (successfully) on this
+			//! program?  A program with no `sample`/`sample_scalar` calls at
+			//! all reports true trivially -- it needs no binding, so it is
+			//! never "mid-attach".
+			bool IsPainterRefsBound() const { return !UsesPainterSample() || ( m_boundRefs != nullptr ); }
+
+			//! Resolve every `sample`/`sample_scalar` reference this program
+			//! compiled against real, already-registered painters -- called
+			//! EXACTLY ONCE, at ATTACH time (Job::AddExpressionPainter /
+			//! ScalarPainterAsciiChunkParser's `expression` form), AFTER
+			//! Builder::Finalize succeeds and BEFORE the owning
+			//! ExpressionPainter/ExpressionScalarPainter is constructed --
+			//! never at render time, and never from Compile()/Finalize()
+			//! themselves, because only the caller's IJob has a painter
+			//! manager to resolve a NAME against (see
+			//! BuildExpressionProgramFromChunkFields's own doc comment for
+			//! why the resolution step lives one layer up from here, not
+			//! inside this header).
+			//!
+			//! `colorPtrs`/`scalarPtrs` must be exactly
+			//! ColorPainterRefNames().size() / ScalarPainterRefNames().size()
+			//! entries long, index-aligned with those two lists, and every
+			//! entry non-null (the caller's job -- this function has no name
+			//! to blame a null on any more, so it refuses the whole bind
+			//! rather than guess).  ADDREFS every pointer it accepts (kept
+			//! alive for exactly as long as this program, or any copy of it,
+			//! survives -- see BoundPainterRefs's own doc comment for the
+			//! shared-ownership mechanics); the caller keeps its own
+			//! reference exactly as every other named-chunk resolver in this
+			//! codebase does (e.g. PainterChannelScalarPainter's ctor).
+			//!
+			//! Returns false (and binds NOTHING -- not even a partial set) on
+			//! a size mismatch or a null entry; the caller is expected to
+			//! have already produced a specific per-name diagnostic before
+			//! ever reaching here (a null in `colorPtrs`/`scalarPtrs` means a
+			//! name failed to resolve, which the caller -- not this function
+			//! -- knows the name of).
+			bool BindPainterRefs( const std::vector<IPainter*>& colorPtrs, const std::vector<IScalarPainter*>& scalarPtrs )
+			{
+				if( colorPtrs.size() != m_colorPainterRefNames.size() ) return false;
+				if( scalarPtrs.size() != m_scalarPainterRefNames.size() ) return false;
+				for( std::size_t i = 0; i < colorPtrs.size(); ++i )  if( !colorPtrs[i] )  return false;
+				for( std::size_t i = 0; i < scalarPtrs.size(); ++i ) if( !scalarPtrs[i] ) return false;
+				std::shared_ptr<BoundPainterRefs> refs = std::make_shared<BoundPainterRefs>();
+				refs->color.reserve( colorPtrs.size() );
+				for( std::size_t i = 0; i < colorPtrs.size(); ++i ) { colorPtrs[i]->addref(); refs->color.push_back( colorPtrs[i] ); }
+				refs->scalar.reserve( scalarPtrs.size() );
+				for( std::size_t i = 0; i < scalarPtrs.size(); ++i ) { scalarPtrs[i]->addref(); refs->scalar.push_back( scalarPtrs[i] ); }
+				m_boundRefs = refs;
+				return true;
+			}
+
 			//! Number of compiled `def` stages (registration order == the
 			//! chunk's `def` line order, since AddDef pushes onto m_defs in
 			//! call order and Builder::Finalize copies it verbatim).  0 for
@@ -806,7 +1037,7 @@ namespace RISE
 			{
 				if( defIdx < 0 || (size_t)defIdx >= m_defs.size() ) return false;
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, defIdx );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), defIdx, ctx.pHit );
 				const Compiled& d = m_defs[ (size_t)defIdx ];
 				if( d.type == kVec3 ) {
 					outVal = Vector3( env[ d.writeSlot+0 ], env[ d.writeSlot+1 ], env[ d.writeSlot+2 ] );
@@ -949,6 +1180,14 @@ namespace RISE
 					// Same accumulate-across-every-Compile discipline as m_ctxUsed:
 					// covers `def` stage bodies as well as the final expression.
 					out.m_signalCalls = m_sigCalls;
+					// DL-25: same accumulate-across-every-Compile discipline as
+					// m_sigCalls -- covers def-stage `sample()`/`sample_scalar()`
+					// calls as well as the final expression.  Left UNRESOLVED
+					// here on purpose: only the attach-time caller (which has an
+					// IJob's painter manager) can turn a name into a pointer --
+					// see BindPainterRefs's own doc comment.
+					out.m_colorPainterRefNames = m_colorPainterRefNames;
+					out.m_scalarPainterRefNames = m_scalarPainterRefNames;
 					out.m_initEnv.assign( m_names.size(), Scalar(0) );
 					for( std::map<int,Scalar>::const_iterator it = m_init.begin(); it != m_init.end(); ++it ) {
 						out.m_initEnv[ it->first ] = it->second;
@@ -977,21 +1216,56 @@ namespace RISE
 				//!     ridged / worley), each of which is a lattice hash per
 				//!     octave and dwarfs a key compare on its own;
 				//!   * it is simply LONG -- more instructions than the key
-				//!     comparison has fields to compare.  That count is
-				//!     ExpressionMemo::ProgramKey::kFields (35 since
-				//!     2026-09-08: 18 own fields plus the hit channel's 17,
-				//!     which grew by the four cross-object fields
-				//!     `proximity` needs), taken from the comparison itself
-				//!     rather than restated here so the two cannot drift.
-				//!     At or above it the lookup cannot be the more
+				//!     comparison has fields to ACTUALLY compare for a body
+				//!     like this one.  That count is
+				//!     ExpressionMemo::ProgramKey::kFieldsNonSampling (36:
+				//!     18 own fields, plus `usesPainterSample`, plus the
+				//!     signal channel's 17), taken from the comparison
+				//!     itself rather than restated here so the two cannot
+				//!     drift.  At or above it the lookup cannot be the more
 				//!     expensive half even for a body of pure arithmetic.
+				//!
+				//!     ⚠ NOT `kFields` (52).  That is the key's WORST-CASE
+				//!     width, and it includes the 16 painter-sample compares
+				//!     `ProgramKey::Equals` SHORT-CIRCUITS for any body that
+				//!     does not call `sample()` -- which every body reaching
+				//!     this clause is, since the sample() test above already
+				//!     returned.  Thresholding on 52 silently de-memoised
+				//!     every pure-arithmetic body of 36..51 instructions
+				//!     when DL-25 widened the key; caught by that slice's
+				//!     round-3 review (P2-2) and pinned by
+				//!     ExpressionMemoTest (g)'s 40-instruction row.
 				//!     THE THRESHOLD MOVING IS A PERF CHANGE, NOT A
-				//!     CORRECTNESS ONE -- a body of 29..34 instructions with
-				//!     no signal and no noise call stops qualifying, and
+				//!     CORRECTNESS ONE -- a body just under it with no
+				//!     signal and no noise call stops qualifying, and
 				//!     re-running it produces the same bits the memo would
 				//!     have returned.
 				static bool ComputeMemoWorthiness( const ExpressionProgram& p )
 				{
+					// A FOURTH WAY TO QUALIFY (DL-25 review P1-1), listed
+					// first because it is the cheapest to decide.  A
+					// `sample()` / `sample_scalar()` call is a virtual
+					// `GetColor` / `GetValuesAt` on an arbitrary other
+					// painter -- a mip-filtered texture fetch, a whole
+					// nested expression program -- which dwarfs a key
+					// compare on its own, exactly like a noise call.  It is
+					// also the one builtin the INSTRUCTION COUNT below
+					// cannot see: `sample(tex)` compiles to a single
+					// kFnSamplePainter instruction, so a body that is one
+					// texture fetch and a `pow` -- the flagship wetness
+					// recipe -- would otherwise read as ~6 instructions and
+					// miss the threshold.  Measured on a 320x240 / 64-spp
+					// sphere whose `expr_wet` samples a checker inside an
+					// fbm body and is consumed by rd + alphax + alphay
+					// (n=5, user CPU): memoed 6.452 +/- 0.080 s, un-memoed
+					// 21.630 +/- 0.094 s -- 3.35x.
+					//
+					// The soundness of memoising such a program at all is
+					// ExpressionMemo::PainterSampleHitKey's job -- the L2
+					// key carries the hit fields a sampled painter can read
+					// -- not this predicate's.
+					if( p.UsesPainterSample() ) return true;
+
 					if( !p.m_signalCalls.empty() ) return true;
 
 					std::size_t instrs = p.m_final.code.size();
@@ -1015,7 +1289,7 @@ namespace RISE
 						}
 					}
 
-					return instrs >= (std::size_t)ExpressionMemo::ProgramKey::kFields;
+					return instrs >= (std::size_t)ExpressionMemo::ProgramKey::kFieldsNonSampling;
 				}
 
 				const std::string& Error() const { return m_error; }
@@ -1067,6 +1341,30 @@ namespace RISE
 				//! nested class, and a same-named member would collide with the
 				//! enclosing ExpressionProgram's own.)
 				std::vector<ExpressionProgram::SignalRadiusCall> m_sigCalls;
+				//! DL-25: every distinct painter name `sample()`/`sample_scalar()`
+				//! referenced, in first-reference order, deduplicated via the
+				//! paired index map (two calls to `sample(rock)` share one
+				//! slot -- RegisterPainterRef's whole job).  Copied into the
+				//! program by Finalize as m_colorPainterRefNames /
+				//! m_scalarPainterRefNames.
+				std::vector<std::string> m_colorPainterRefNames;
+				std::map<std::string,int> m_colorPainterRefIndex;
+				std::vector<std::string> m_scalarPainterRefNames;
+				std::map<std::string,int> m_scalarPainterRefIndex;
+
+				//! Dedupe-and-register one `sample(name)` / `sample_scalar(name)`
+				//! reference into the given (names, index) pair, returning its
+				//! (possibly pre-existing) index.  Shared by both builtins --
+				//! see ParseSampleCall.
+				static int RegisterPainterRef( std::vector<std::string>& names, std::map<std::string,int>& index, const std::string& nm )
+				{
+					std::map<std::string,int>::const_iterator it = index.find( nm );
+					if( it != index.end() ) return it->second;
+					const int idx = (int)names.size();
+					names.push_back( nm );
+					index[ nm ] = idx;
+					return idx;
+				}
 
 				void SetError( const std::string& msg, ptrdiff_t offset ) { m_error = msg; m_errorOffset = offset; }
 
@@ -2117,6 +2415,7 @@ namespace RISE
 					if( name == "vec3" ) return ParseVec3Ctor( nameOff, outType );
 					if( name == "ramp" ) return ParseRampCall( nameOff, outType );
 					if( name == "mix" )  return ParseMixCall( nameOff, outType );
+					if( name == "sample" || name == "sample_scalar" ) return ParseSampleCall( name, nameOff, outType );
 
 					const FnSig* sig = FindSig( name );
 					if( !sig ) { SetError( "unknown function `" + name + "`", (ptrdiff_t)nameOff ); return false; }
@@ -2387,6 +2686,73 @@ namespace RISE
 					return true;
 				}
 
+				//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
+				//! `sample(painter_name)` -> vec3 (an IPainter's GetColor) and
+				//! `sample_scalar(painter_name)` -> scalar (an IScalarPainter's
+				//! GetValuesAt, no JH uplift -- ISCALARPAINTER_REFACTOR.md's
+				//! pipe split, honoured here exactly as everywhere else: a
+				//! COLOUR/reflectance reference goes through `sample`, a
+				//! PHYSICAL-SCALAR reference through `sample_scalar`).
+				//!
+				//! BESPOKE PARSING, like vec3()/ramp()/mix() above: the single
+				//! argument is a BARE PAINTER NAME resolved at ATTACH time
+				//! against the owning IJob's painter manager (see
+				//! ExpressionProgram::BindPainterRefs), not a runtime
+				//! expression -- so this reads exactly ONE identifier token,
+				//! never routing it through ParseCmp (which would try to
+				//! resolve it as a param/def/context variable and fail with
+				//! "unknown variable").  A quoted string, a number, or a
+				//! parenthesized sub-expression in this position is a
+				//! dedicated diagnostic, not "unknown function" or "unknown
+				//! variable" -- the name IS real syntax here, just not
+				//! evaluated as one.
+				//!
+				//! Gated on `m_contextVarsEnabled`, same predicate and same
+				//! diagnostic text as the geometry-signal builtins just above
+				//! (occlusion/thickness/convexity/proximity/interior): both
+				//! are surface queries against the live scene, and
+				//! expression_function2d's frozen UV-only contract must not
+				//! grow either family.
+				//!
+				//! Emits a ZERO-ARITY call (EmitFuncCall's `arity` argument is
+				//! 0 -- there is nothing on the value stack for this call,
+				//! unlike every other builtin in this file) whose `idx` is
+				//! set AFTER EmitFuncCall pushes the instruction (EmitFuncCall
+				//! itself always writes idx=-1; every other builtin ignores
+				//! it, so mutating it here immediately afterward is safe and
+				//! does not need a new EmitFuncCall overload).  `idx` is the
+				//! REGISTRATION index into m_colorPainterRefNames /
+				//! m_scalarPainterRefNames -- resolved to an actual pointer
+				//! only later, by BindPainterRefs -- NOT a stack arity.
+				bool ParseSampleCall( const std::string& name, size_t nameOff, VType& outType )
+				{
+					const bool isScalar = ( name == "sample_scalar" );
+					if( !m_contextVarsEnabled ) {
+						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
+							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
+							(ptrdiff_t)nameOff );
+						return false;
+					}
+					if( Cur().t != Tok::Ident ) {
+						SetError( name + "() expects a bare painter name, e.g. `" + name + "(rock_albedo)` -- "
+							"not a quoted string, a number, or a sub-expression: the name is resolved against "
+							"the scene's painter chunks by name, not evaluated as a variable", (ptrdiff_t)CurOff() );
+						return false;
+					}
+					const std::string painterName = Cur().s;
+					Advance();
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "() -- exactly one argument expected", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+					const int refIdx = isScalar
+						? RegisterPainterRef( m_scalarPainterRefNames, m_scalarPainterRefIndex, painterName )
+						: RegisterPainterRef( m_colorPainterRefNames, m_colorPainterRefIndex, painterName );
+					EmitFuncCall( isScalar ? ExpressionProgram::kFnSamplePainterScalar : ExpressionProgram::kFnSamplePainter,
+						/*arity=*/0, /*isVec3=*/!isScalar );
+					m_emit->code.back().idx = refIdx;
+					outType = isScalar ? kScalar : kVec3;
+					return true;
+				}
+
 				bool ParseMixCall( size_t nameOff, VType& outType )
 				{
 					VType t0, t1, t2;
@@ -2486,6 +2852,16 @@ namespace RISE
 			//! (design doc 7.1's constant-radius contract).  See
 			//! SurfaceSignalCalls().
 			std::vector<SignalRadiusCall> m_signalCalls;
+			//! DL-25: compile-time NAME lists for `sample()`/`sample_scalar()`
+			//! call sites (see ColorPainterRefNames/ScalarPainterRefNames);
+			//! `m_boundRefs` is the ATTACH-time resolution of those names to
+			//! real, addref'd painter pointers -- null until BindPainterRefs
+			//! succeeds, shared (not deep-copied) across every ExpressionProgram
+			//! copy taken after binding.  See BoundPainterRefs's own doc
+			//! comment for why a shared_ptr, not a raw pointer, owns them.
+			std::vector<std::string> m_colorPainterRefNames;
+			std::vector<std::string> m_scalarPainterRefNames;
+			std::shared_ptr<BoundPainterRefs> m_boundRefs;
 			std::vector<Scalar> m_initEnv;
 			std::vector<Compiled> m_defs;
 			Compiled m_final;
@@ -2516,7 +2892,7 @@ namespace RISE
 			//! treated as "run all", matching Eval's normal full-program
 			//! behaviour (EvalDefStage itself never passes such a value; this
 			//! is a defensive fallback, not a documented caller contract).
-			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar fwo, const Scalar time, const Scalar curv, const Scalar curvR, const SurfaceSignalInfo* pSignals, int stopAfterDef = -1 ) const
+			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar fwo, const Scalar time, const Scalar curv, const Scalar curvR, const SurfaceSignalInfo* pSignals, const BoundPainterRefs* pPainterRefs = nullptr, int stopAfterDef = -1, const RayIntersectionGeometric* pHit = nullptr ) const
 			{
 				const size_t n = m_initEnv.size();
 				for( size_t i = 0; i < n; ++i ) env[i] = m_initEnv[i];
@@ -2533,7 +2909,7 @@ namespace RISE
 					? (size_t)stopAfterDef + 1 : m_defs.size();
 				for( size_t i = 0; i < defLimit; ++i ) {
 					Scalar out[3];
-					RunAny( m_defs[i], env, out, pSignals );
+					RunAny( m_defs[i], env, out, pSignals, pPainterRefs, pHit );
 					const int w = ( m_defs[i].type == kVec3 ) ? 3 : 1;
 					for( int c = 0; c < w; ++c ) env[ m_defs[i].writeSlot + c ] = out[c];
 				}
@@ -2560,12 +2936,147 @@ namespace RISE
 				return (int)v;
 			}
 
+			//! DL-25 shared machinery for `sample()`/`sample_scalar()` --
+			//! builds the SYNTHETIC hit both dispatch cases evaluate the
+			//! bound painter at, and a bounded re-entrancy guard.
+			//!
+			//! `BuildSyntheticRi` is the FALLBACK ONLY, for a context with
+			//! no hit record behind it (`ExprEvalContext::pHit == 0`): the
+			//! `Eval(u,v)` overload, a hand-built context, the def-stage
+			//! thumbnail previews.  When a record IS available the two
+			//! dispatch cases pass THE CALLER'S OWN, so a sampled painter
+			//! sees the real footprint, ray, vertex colour and second UV
+			//! set -- see ExprEvalContext::pHit for the contract and
+			//! ComputeMemoWorthiness for what that costs the memo.
+			//!
+			//! It constructs a `RayIntersectionGeometric` from EXACTLY the
+			//! fields in `env`'s fixed context slots -- u,v as `ptCoord`, P
+			//! as `ptIntersection`, Po as `ptObjIntersec`, N as `vNormal`
+			//! -- and leaves every other field default-constructed.
+			//!
+			//! ⚠ A PARTIAL RECORD IS STILL A WRONG ANSWER TO SOME
+			//! QUESTIONS, which is exactly why it is no longer the primary
+			//! path.  A painter reached through here reads an INVALID
+			//! footprint (TexturePainter degrades to an unfiltered
+			//! base-level point sample), a default `Ray`
+			//! (IridescentPainter's |dot(view,N)| collapses to its bias),
+			//! no vertex colour, no TEXCOORD_1 and no signal provider.  On
+			//! this path that is the same honest absence every other
+			//! record-free call in this codebase already tolerates -- the
+			//! idiom Painter::Evaluate's own "dummy ri" (Painter.cpp) uses
+			//! -- because there genuinely is no record to do better from.
+			//! It is NOT an acceptable answer at a real shading hit, and
+			//! the DL-25 review found it shipping there.
+			static RayIntersectionGeometric BuildSyntheticRi( const Scalar* env )
+			{
+				RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+				ri.bHit = true;
+				ri.ptCoord = Point2( env[0], env[1] );
+				ri.ptIntersection = Point3( env[ kContextSlotP+0 ], env[ kContextSlotP+1 ], env[ kContextSlotP+2 ] );
+				ri.ptObjIntersec  = Point3( env[ kContextSlotPo+0 ], env[ kContextSlotPo+1 ], env[ kContextSlotPo+2 ] );
+				ri.vNormal = Vector3( env[8+0], env[8+1], env[8+2] );	// N's fixed slot (8) -- see the reserved-slot-layout comment above
+				return ri;
+			}
+
+			//! A `sample`/`sample_scalar` reference CYCLE cannot form through
+			//! the scene-language parser: every named chunk resolves against
+			//! chunks ALREADY FINALIZED when it is parsed (forward
+			//! references fail with "not found"), the same forward-only rule
+			//! `function1d`/`function2d`/`base`/`multiply`/`add`/`painter`
+			//! already rely on -- so a real A-samples-B-samples-A cycle is
+			//! structurally impossible from a `.RISEscene` file, and the
+			//! self-reference case (a chunk sampling its own not-yet-
+			//! registered name) is caught with a SPECIFIC diagnostic at
+			//! ATTACH time (see the caller of BindPainterRefs).
+			//!
+			//! IT IS ALSO UNREACHABLE FROM THE CONSTRUCTION API, on closer
+			//! analysis, not just belt-and-braces against it: BindPainterRefs
+			//! takes ALREADY-CONSTRUCTED `IPainter*`/`IScalarPainter*`
+			//! pointers, an `ExpressionPainter`/`ExpressionScalarPainter`
+			//! copies its `ExpressionProgram` (refs included) at
+			//! CONSTRUCTION time and exposes no public rebind hook
+			//! afterward, and there is no way to obtain a not-yet-constructed
+			//! painter's future address to bind into a sibling's program
+			//! before either exists -- so painter A cannot be bound to
+			//! painter B while B is simultaneously bound to A through any
+			//! sequence of calls this codebase's public surface allows
+			//! today.  This guard is kept anyway, as a NAMED INVARIANT rather
+			//! than a reachable safety net: if a future change adds a rebind
+			//! hook (or a lazy/deferred binding scheme) and reintroduces the
+			//! possibility, the failure mode is a bounded, silent neutral
+			//! (matching every other "can't answer" fallback in this file --
+			//! occlusion's neutral, proximity's neutral) rather than a stack
+			//! overflow, with no changes needed here to get that.  Keyed on
+			//! the PAINTER POINTER, not the program: two distinct expressions
+			//! sampling the SAME painter concurrently on two threads see two
+			//! independent thread_local guards, so this is not a source of
+			//! false contention either.
+			static const int kMaxSampleDepth = 32;
+			struct SampleGuardState { const void* stack[ kMaxSampleDepth ]; int depth; };
+			static SampleGuardState& ThreadLocalSampleGuard()
+			{
+				static thread_local SampleGuardState s = { {}, 0 };
+				return s;
+			}
+			static bool SampleGuardEnter( const void* key )
+			{
+				SampleGuardState& g = ThreadLocalSampleGuard();
+				for( int i = 0; i < g.depth; ++i ) if( g.stack[i] == key ) return false;
+				if( g.depth >= kMaxSampleDepth ) return false;
+				g.stack[ g.depth++ ] = key;
+				return true;
+			}
+			static void SampleGuardExit()
+			{
+				SampleGuardState& g = ThreadLocalSampleGuard();
+				if( g.depth > 0 ) --g.depth;
+			}
+
+			//! RAII wrapper over the pair above (DL-25 review P3): the
+			//! sampled painter's `GetColor` / `GetValuesAt` is arbitrary
+			//! third-party code, and the two dispatch cases each have an
+			//! early return between enter and exit.  A scope guard makes
+			//! the balance structural instead of a reviewing obligation --
+			//! including on the exception path, which a manual
+			//! `SampleGuardExit()` after the call would leak, permanently
+			//! poisoning that thread's guard stack for the rest of the
+			//! render.
+			class SampleGuard
+			{
+			public:
+				explicit SampleGuard( const void* key ) : m_entered( SampleGuardEnter( key ) ) {}
+				~SampleGuard() { if( m_entered ) SampleGuardExit(); }
+				bool Entered() const { return m_entered; }
+			private:
+				SampleGuard( const SampleGuard& );
+				SampleGuard& operator=( const SampleGuard& );
+				const bool m_entered;
+			};
+
 			//! `pSignals` is the per-eval geometry-signal channel (0 when the
 			//! caller has no hit record).  It is a PARAMETER, never program
 			//! state: the compiled program stays stateless and `const`, so one
 			//! program is still safe to evaluate concurrently on many threads.
 			//! Every pre-Phase-2 builtin ignores it.
-			static Scalar CallFunc( int fn, const Scalar* a, Scalar fw, const SurfaceSignalInfo* pSignals )
+			//!
+			//! DL-25's two new trailing parameters follow the SAME "parameter,
+			//! never program state" rule.  `env` is the SAME fixed-slot array
+			//! RunAny already holds -- passed through here (READ-ONLY: this
+			//! function never writes it) so `sample_scalar()` can build its
+			//! synthetic hit from u,v,P,Po,N at their well-known slots
+			//! (kContextSlotP etc, ExpressionEval.h's own reserved-slot-layout
+			//! comment) WITHOUT a new runtime argument on the call site --
+			//! sample_scalar() is emitted with arity 0 (ParseSampleCall), so
+			//! there is nothing in `a` to read.  `pPainterRefs` is the
+			//! program's ATTACH-time-bound painter table (ExpressionProgram::
+			//! m_boundRefs, threaded down from Eval/EvalVec3/BindEnv/RunAny) --
+			//! null for a program with no `sample`/`sample_scalar` calls, or
+			//! (defensively) for one evaluated before binding, in which case
+			//! the case below returns the same honest black/0 a null
+			//! `pSignals` gives the signal builtins.
+			static Scalar CallFunc( int fn, const Scalar* a, Scalar fw, const SurfaceSignalInfo* pSignals,
+				const Scalar* env = nullptr, const BoundPainterRefs* pPainterRefs = nullptr, int idxArg = -1,
+				const RayIntersectionGeometric* pHit = nullptr )
 			{
 				switch( fn )
 				{
@@ -2682,6 +3193,60 @@ namespace RISE
 				// twin, same live-scan cost model.
 				case kFnInterior:
 					return pSignals ? pSignals->Interior( a[0] ) : SurfaceSignalInfo::NeutralInterior();
+				// --- DL-25: sample_scalar(name) -- IScalarPainter, no JH uplift ---
+				// `a` is empty (arity 0 -- see ParseSampleCall); the bound painter
+				// pointer lives at `pPainterRefs->scalar[idx]` and the hit is the
+				// caller's own (`pHit`), or a synthetic partial record built from
+				// `env` when the context carries none -- see BuildSyntheticRi's
+				// own doc comment for exactly which fields that fallback has, and
+				// ExpressionMemo::PainterSampleHitKey for the L2 key fields the
+				// forwarding costs.  An unbound program (pPainterRefs ==
+				// null -- reachable only before BindPainterRefs runs, i.e. never
+				// from a live render, but a defensive path costs nothing) or an
+				// out-of-range index reads the honest neutral, 0 -- the same
+				// convention every other "can't answer" builtin here uses.
+				case kFnSamplePainterScalar:
+				{
+					if( !pPainterRefs || !env ) return Scalar(0);
+					if( idxArg < 0 || (std::size_t)idxArg >= pPainterRefs->scalar.size() ) return Scalar(0);
+					IScalarPainter* p = pPainterRefs->scalar[ (std::size_t)idxArg ];
+					if( !p ) return Scalar(0);
+					const SampleGuard guard( p );	// cycle / depth guard -- see its own comment
+					if( !guard.Entered() ) return Scalar(0);
+					// THE RECORD.  The caller's own, when the context
+					// carried one (ExprEvalContext::pHit -- see its
+					// contract); otherwise the synthetic partial record
+					// BuildSyntheticRi assembles from the context slots.
+					// Written as two explicit branches rather than one
+					// helper returning a reference because the synthetic
+					// record is ~500 bytes: a helper would have to
+					// construct it unconditionally, in the caller, to have
+					// somewhere to return a reference TO.
+					//
+					// WHICH CHANNEL.  `GetValuesAt` returns the painter's
+					// three RGB-wavelength lanes (ScalarPainterRGB::
+					// kChannelNM = {611, 549, 465} nm since DL-82); a
+					// SCALAR has no colour, so the single representative
+					// value is the one every other single-sample scalar
+					// consumer in this codebase takes --
+					// ScalarPainterRGB::kSingleSampleChannel, the 549 nm
+					// green lane -- NOT lane 0 (611 nm red), which is what
+					// this line read before the DL-25 review.  On a
+					// constant scalar painter the three agree and the
+					// choice is invisible; on a wavelength-varying one (a
+					// Sellmeier/piecewise-linear/polynomial curve bound to
+					// `ior` or `ext`) it is the difference between the
+					// documented representative value and a red-shifted
+					// one.
+					Scalar v = Scalar(0);
+					if( pHit ) {
+						v = p->GetValuesAt( *pHit ).v[ ScalarPainterRGB::kSingleSampleChannel ];
+					} else {
+						const RayIntersectionGeometric ri = BuildSyntheticRi( env );
+						v = p->GetValuesAt( ri ).v[ ScalarPainterRGB::kSingleSampleChannel ];
+					}
+					return IsFinite( v ) ? v : Scalar(0);
+				}
 				default: return Scalar(0);
 				}
 			}
@@ -2689,8 +3254,17 @@ namespace RISE
 			//! Vec3-returning half of the dispatch.  Carries `pSignals` for
 			//! symmetry with CallFunc so a future vec3-valued geometry signal
 			//! (bent normals are the obvious Phase-4 candidate) needs no
-			//! signature churn; no builtin in this switch reads it today.
-			static void CallFuncVec3( int fn, const Scalar* a, Scalar* out, const SurfaceSignalInfo* pSignals )
+			//! signature churn; no builtin in this switch reads `pSignals`
+			//! today.  DL-25's `env`/`pPainterRefs`/`idxArg` are the SAME
+			//! trailing parameters CallFunc gained, for `sample()`'s sake --
+			//! see that function's doc comment for what each carries and why.
+			//! This is the SECOND deliberate move of a body ExpressionMemo.h's
+			//! header names as "unchanged" -- see this file's own note where
+			//! that document is updated for `sample()` alongside `case
+			//! kFnSamplePainter` below.
+			static void CallFuncVec3( int fn, const Scalar* a, Scalar* out, const SurfaceSignalInfo* pSignals,
+				const Scalar* env = nullptr, const BoundPainterRefs* pPainterRefs = nullptr, int idxArg = -1,
+				const RayIntersectionGeometric* pHit = nullptr )
 			{
 				(void)pSignals;
 				switch( fn )
@@ -2712,6 +3286,31 @@ namespace RISE
 					out[1] = a[1] + (a[4]-a[1]) * a[6];
 					out[2] = a[2] + (a[5]-a[2]) * a[6];
 					break;
+				// --- DL-25: sample(name) -- IPainter::GetColor, colour pipe ---
+				// Same shape as sample_scalar's CallFunc case; see its comment.
+				case kFnSamplePainter:
+				{
+					out[0] = out[1] = out[2] = Scalar(0);
+					if( !pPainterRefs || !env ) break;
+					if( idxArg < 0 || (std::size_t)idxArg >= pPainterRefs->color.size() ) break;
+					IPainter* p = pPainterRefs->color[ (std::size_t)idxArg ];
+					if( !p ) break;
+					const SampleGuard guard( p );	// cycle / depth guard
+					if( !guard.Entered() ) break;
+					// The caller's own hit record where there is one; see
+					// the sample_scalar case's comment for both halves.
+					RISEPel c( 0, 0, 0 );
+					if( pHit ) {
+						c = p->GetColor( *pHit );
+					} else {
+						const RayIntersectionGeometric ri = BuildSyntheticRi( env );
+						c = p->GetColor( ri );
+					}
+					out[0] = IsFinite( c[0] ) ? c[0] : Scalar(0);
+					out[1] = IsFinite( c[1] ) ? c[1] : Scalar(0);
+					out[2] = IsFinite( c[2] ) ? c[2] : Scalar(0);
+					break;
+				}
 				default:
 					out[0] = out[1] = out[2] = Scalar(0);
 					break;
@@ -2721,7 +3320,8 @@ namespace RISE
 		private:
 			// Runs a compiled program on `env`, writing its result (1 or 3
 			// scalars, per c.type) into `out[0..]`.
-			static void RunAny( const Compiled& c, const Scalar* env, Scalar* out, const SurfaceSignalInfo* pSignals )
+			static void RunAny( const Compiled& c, const Scalar* env, Scalar* out, const SurfaceSignalInfo* pSignals,
+				const BoundPainterRefs* pPainterRefs = nullptr, const RayIntersectionGeometric* pHit = nullptr )
 			{
 				Scalar stack[ kStackCap ];
 				int sp = 0;
@@ -2761,7 +3361,8 @@ namespace RISE
 						// nothing that did not scale its domain (or that
 						// scaled it only in P) changes by a single bit.
 						stack[sp] = CallFunc( in.fn, &stack[sp],
-							env[ kContextSlotFw ] * in.val + env[ kContextSlotFwo ] * in.valo, pSignals );
+							env[ kContextSlotFw ] * in.val + env[ kContextSlotFwo ] * in.valo, pSignals,
+							env, pPainterRefs, in.idx, pHit );
 						++sp;
 					} break;
 					case Compiled::kFuncV3:
@@ -2780,7 +3381,7 @@ namespace RISE
 						// EmitFuncCall's contract (see its comment) is
 						// that a vec3 call site carries the identity
 						// (1.0, 0.0).
-						CallFuncVec3( in.fn, &stack[sp], out3, pSignals );
+						CallFuncVec3( in.fn, &stack[sp], out3, pSignals, env, pPainterRefs, in.idx, pHit );
 						stack[sp] = out3[0]; stack[sp+1] = out3[1]; stack[sp+2] = out3[2];
 						sp += 3;
 					} break;

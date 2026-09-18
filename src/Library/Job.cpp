@@ -1444,6 +1444,55 @@ bool Job::AddExpressionPainter(
 	const std::string context = std::string( "expression_painter `" ) + ( name ? name : "noname" ) + "`";
 	Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
 	std::vector<Implementation::ParamSpec> specs;
+
+	// DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g)): resolves
+	// sample()/sample_scalar() painter-name references against THIS job's
+	// own painter managers -- the same GetItem lookups every other
+	// name-referencing chunk form uses (function1d/function2d/base/
+	// multiply/add/painter, ScalarPainterAsciiChunkParser).  A name equal
+	// to the chunk's OWN name is refused with a specific diagnostic rather
+	// than falling through to the generic "not found" -- the painter
+	// manager genuinely does not have it yet (AddItem below runs only
+	// AFTER this call succeeds), so "not found" would be technically true
+	// but would read as a typo rather than a self-reference.
+	//
+	// DL-25 review P3 -- THE CHECK IS PER MANAGER, NOT PER NAME.  The
+	// colour and physical-scalar painters live in two INDEPENDENT named
+	// managers, so an `expression_painter` called `grain` and a
+	// `scalar_painter` called `grain` are two different chunks.  This is
+	// the COLOUR chunk's resolver, so only `ResolveColorPainter` can
+	// possibly be looking at the chunk being built; `sample_scalar(grain)`
+	// here names the already-registered SCALAR `grain` and must resolve
+	// normally.  The first implementation compared the bare name in BOTH
+	// and refused a legitimate cross-manager reference as a
+	// self-reference.
+	class SelfReferenceCheckedResolver : public Implementation::IExpressionPainterRefResolver
+	{
+	public:
+		Job& job;
+		std::string selfName;
+		SelfReferenceCheckedResolver( Job& j, const std::string& self ) : job( j ), selfName( self ) {}
+		bool ResolveColorPainter( const std::string& nm, IPainter*& out, std::string& err ) override
+		{
+			if( nm == selfName ) {
+				err = "references itself -- a painter cannot sample its own not-yet-registered chunk";
+				return false;
+			}
+			out = job.GetPainters()->GetItem( nm.c_str() );
+			if( !out ) { err = "painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+			return true;
+		}
+		bool ResolveScalarPainter( const std::string& nm, IScalarPainter*& out, std::string& err ) override
+		{
+			// NO self-name check here -- see the class comment: this is an
+			// expression_painter (COLOUR) being built, so a scalar_painter
+			// of the same name is a DIFFERENT, already-registered chunk.
+			out = job.GetScalarPainters()->GetItem( nm.c_str() );
+			if( !out ) { err = "scalar_painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+			return true;
+		}
+	} painterRefResolver( *this, name ? name : "noname" );
+
 	// true/true: full context vars + auto-registered `seed`, this
 	// function's ORIGINAL (pre-unification) behavior -- see
 	// BuildExpressionProgramFromChunkFields's own doc comment
@@ -1452,7 +1501,7 @@ bool Job::AddExpressionPainter(
 	std::string exprErr;
 	if( !Implementation::BuildExpressionProgramFromChunkFields(
 			context, paramLines, defLines, Scalar( seed ), expr ? expr : "", prog, specs,
-			/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr ) ) {
+			/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr, &painterRefResolver ) ) {
 		// Thread the SPECIFIC compiler diagnostic (already logged above,
 		// via GlobalLog()) into the CST finalize-diag sink -- see
 		// GenericManager.h's contract -- so a bad expression_painter no

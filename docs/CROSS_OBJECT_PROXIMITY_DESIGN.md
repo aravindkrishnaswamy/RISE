@@ -3156,8 +3156,9 @@ measured by a harness test against the tracked scene.
   direct caller of `NearestOtherSurface` — pays the whole build under the lock on
   its first call instead of finding it ready.
 - ~~**`kL1Ways == 4` now exactly equals the number of signal KINDS.**~~
-  **SUPERSEDED by Phase 3 S4 (2026-09-09): `kL1Ways` is 8, `Tables` is 2432
-  bytes, the asserted ceiling is 4096, and the cliff moved from a FIFTH
+  **SUPERSEDED by Phase 3 S4 (2026-09-09): `kL1Ways` is 8, `Tables` was 2432
+  bytes (2976 since DL-25's review added `PainterSampleHitKey` to the L2 key,
+  2026-09-17), the asserted ceiling is 4096, and the cliff moved from a FIFTH
   distinct (kind, radius) query per hit to a NINTH — it did not disappear.
   Measured, not argued: the L1 hit rate on `plank_closeup` is 0.8967 at four
   ways and 0.8968 at eight (§8.4 S4), which is worth measuring because

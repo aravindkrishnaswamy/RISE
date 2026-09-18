@@ -154,6 +154,18 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	// entries; a non-keyframed one relies on the per-sample jitter argument
 	// the memo already makes (ExpressionMemo.h).
 	ctx.signals.time = m_time;
+	// DL-25 review P1-1: the record itself, for `sample()` /
+	// `sample_scalar()` to evaluate their bound painter at.  Borrowed for
+	// the lifetime of the Eval call below -- `ri` outlives it at every
+	// call site (GetColor / GetColorNM / GetSpectrum / GetValuesAt /
+	// GetValueAtNM all take it by const reference from their own caller).
+	// This is what makes a sampled TexturePainter mip-filter, an
+	// IridescentPainter see the view ray, a VertexColorPainter see the
+	// vertex colour and a nested expression_painter see `curv` / `fw` /
+	// the signal channel; see ExprEvalContext::pHit for the contract this
+	// assignment satisfies (the fields copied above ARE this record's,
+	// unmodified).
+	ctx.pHit = &ri;
 	return ctx;
 }
 
@@ -357,6 +369,18 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	// sub-pixel jitter argument alone, with no keyframed `time` to separate
 	// them.
 	ctx.signals.time = Scalar(0);
+	// DL-25 review P1-1: the record itself, for `sample()` /
+	// `sample_scalar()` to evaluate their bound painter at.  Borrowed for
+	// the lifetime of the Eval call below -- `ri` outlives it at every
+	// call site (GetColor / GetColorNM / GetSpectrum / GetValuesAt /
+	// GetValueAtNM all take it by const reference from their own caller).
+	// This is what makes a sampled TexturePainter mip-filter, an
+	// IridescentPainter see the view ray, a VertexColorPainter see the
+	// vertex colour and a nested expression_painter see `curv` / `fw` /
+	// the signal channel; see ExprEvalContext::pHit for the contract this
+	// assignment satisfies (the fields copied above ARE this record's,
+	// unmodified).
+	ctx.pHit = &ri;
 	return ctx;
 }
 

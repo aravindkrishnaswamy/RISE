@@ -37,6 +37,7 @@
 #define EXPRESSION_PAINTER_
 
 #include "Painter.h"
+#include <cassert>	// DL-25 P3-7: the ctors' IsPainterRefsBound() contract
 #include "ExpressionEval.h"
 #include "ExpressionParamSpec.h"
 #include "../Interfaces/IScalarPainter.h"
@@ -51,6 +52,36 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
+		//! minimal name -> painter resolution contract for
+		//! `sample(name)`/`sample_scalar(name)`.  Kept ABSTRACT here, rather
+		//! than resolving directly against `IJobPriv`'s painter managers,
+		//! so this header does not have to include IJobPriv.h (a heavy
+		//! interface that pulls in IRasterizer.h/Cst.h) merely to resolve
+		//! two chunk-reference names -- the concrete implementation
+		//! (wrapping `IJobPriv::GetPainters()`/`GetScalarPainters()`, plus
+		//! the self-reference diagnostic) lives at each of the two call
+		//! sites that already have an `IJobPriv&` in scope: `Job::AddExpressionPainter`
+		//! (Job.cpp) and `ScalarPainterAsciiChunkParser`'s `expression` form
+		//! (ChunkParserRegistry.cpp).
+		class IExpressionPainterRefResolver
+		{
+		public:
+			virtual ~IExpressionPainterRefResolver() {}
+			//! Resolve one `sample(name)` reference.  On success, returns
+			//! true and fills `out` with a BORROWED pointer (already
+			//! registered in the caller's painter manager, and therefore
+			//! kept alive by it for the scene's lifetime) -- BindPainterRefs
+			//! addref's it on top, so the caller's own reference is
+			//! untouched.  On failure, returns false and fills `err` with a
+			//! caller-ready diagnostic FRAGMENT (no leading "sample(...):"
+			//! -- BuildExpressionProgramFromChunkFields adds that framing).
+			virtual bool ResolveColorPainter( const std::string& name, IPainter*& out, std::string& err ) = 0;
+			//! Same contract, for `sample_scalar(name)` against the
+			//! IScalarPainter manager.
+			virtual bool ResolveScalarPainter( const std::string& name, IScalarPainter*& out, std::string& err ) = 0;
+		};
+
 		//! Parses `paramLines` (each `<name> <value> [min][max][step][label]`,
 		//! ExpressionParamSpec grammar) and `defLines` (each `<name> <expr>`),
 		//! auto-registers a named scalar constant `seed` BEFORE any of the
@@ -94,6 +125,23 @@ namespace RISE
 		//! GenericManager.h) doesn't have to reconstruct it from the log.
 		//! Left untouched (whatever the caller passed in) when this function
 		//! returns true.
+		//!
+		//! `painterResolver` (DL-25, optional -- every pre-existing caller
+		//! passes nullptr and is byte-identical): resolves any
+		//! `sample(name)`/`sample_scalar(name)` references the compiled body
+		//! contains, AFTER `Builder::Finalize` succeeds and BEFORE this
+		//! function returns -- so a caller that receives `true` always gets
+		//! back a program whose painter refs are already bound
+		//! (`outProg.IsPainterRefsBound()`), never a partially-attached one.
+		//! A program that calls neither builtin needs no resolver at all
+		//! (`UsesPainterSample()` is checked before `painterResolver` is
+		//! ever dereferenced), which is what keeps expression_function2d's
+		//! call site (context vars off, so neither builtin can even compile)
+		//! and any other nullptr-passing caller exactly as they were.  A
+		//! program that DOES use one and receives a null resolver, or whose
+		//! resolver refuses a specific name, fails here with a diagnostic
+		//! naming the expression and the painter -- never a silent partial
+		//! bind.
 		inline bool BuildExpressionProgramFromChunkFields(
 			const std::string& context,
 			const std::vector<std::string>& paramLines,
@@ -104,7 +152,8 @@ namespace RISE
 			std::vector<ParamSpec>& outSpecs,
 			bool enableContextVars,
 			bool autoRegisterSeed,
-			std::string* outError = nullptr )
+			std::string* outError = nullptr,
+			IExpressionPainterRefResolver* painterResolver = nullptr )
 		{
 			outSpecs.clear();
 
@@ -168,6 +217,49 @@ namespace RISE
 			outProg = ExpressionProgram::Invalid();
 			if( !builder.Finalize( finalExpr, outProg ) ) {
 				return fail( context + ": expr: " + builder.Error() );
+			}
+
+			// DL-25: resolve every sample()/sample_scalar() reference the
+			// compiled body contains, BEFORE returning success -- see this
+			// function's own doc comment for the "never a partial bind"
+			// contract, and IExpressionPainterRefResolver's for why the
+			// resolution itself lives at the CALLER (the only layer with an
+			// IJob painter manager to resolve a name against).
+			if( outProg.UsesPainterSample() ) {
+				if( !painterResolver ) {
+					return fail( context + ": uses sample()/sample_scalar(), but this surface has no "
+						"painter manager to resolve them against" );
+				}
+				const std::vector<std::string>& colorNames = outProg.ColorPainterRefNames();
+				std::vector<IPainter*> colorPtrs;
+				colorPtrs.reserve( colorNames.size() );
+				for( std::size_t i = 0; i < colorNames.size(); ++i ) {
+					IPainter* p = nullptr;
+					std::string err;
+					if( !painterResolver->ResolveColorPainter( colorNames[i], p, err ) ) {
+						return fail( context + ": sample(`" + colorNames[i] + "`): " + err );
+					}
+					colorPtrs.push_back( p );
+				}
+				const std::vector<std::string>& scalarNames = outProg.ScalarPainterRefNames();
+				std::vector<IScalarPainter*> scalarPtrs;
+				scalarPtrs.reserve( scalarNames.size() );
+				for( std::size_t i = 0; i < scalarNames.size(); ++i ) {
+					IScalarPainter* p = nullptr;
+					std::string err;
+					if( !painterResolver->ResolveScalarPainter( scalarNames[i], p, err ) ) {
+						return fail( context + ": sample_scalar(`" + scalarNames[i] + "`): " + err );
+					}
+					scalarPtrs.push_back( p );
+				}
+				if( !outProg.BindPainterRefs( colorPtrs, scalarPtrs ) ) {
+					// Unreachable from this call site (sizes are built
+					// index-aligned above and every entry checked non-null
+					// before being pushed) -- kept as a named failure rather
+					// than an assert so a future refactor that breaks the
+					// alignment fails loudly instead of silently mis-binding.
+					return fail( context + ": internal error binding sample()/sample_scalar() references" );
+				}
 			}
 			return true;
 		}
@@ -255,7 +347,24 @@ namespace RISE
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
 				m_signalDemand( prog.UsesSurfaceSignals() ),
 				m_proximityDemand( prog.UsesCrossObject() )
-			{}
+			{
+				// DL-25 round-3 review (P3-7): make the attach-time contract
+				// STRUCTURAL rather than a convention.  A program that calls
+				// `sample()` / `sample_scalar()` must have had
+				// `BindPainterRefs` run on it BEFORE any painter is
+				// constructed from it (the resolver lives one layer up, in
+				// `Job::AddExpressionPainter` / `ScalarPainterAsciiChunkParser`
+				// -- see BuildExpressionProgramFromChunkFields's own doc).  If
+				// it has not, every `sample()` in the body silently reads the
+				// honest-neutral 0/black for the life of the render instead of
+				// failing anywhere a caller can see.  `IsPainterRefsBound()`
+				// reports true trivially for a program with no sample calls,
+				// so this costs nothing and constrains nothing for the
+				// overwhelming majority of programs.
+				assert( prog.IsPainterRefsBound() &&
+					"ExpressionPainter built from a sample()-calling program whose painter refs were "
+					"never bound -- call ExpressionProgram::BindPainterRefs at attach time" );
+			}
 
 			//! S4 introspection: full param metadata (min/max/step/label),
 			//! in `param` line order.
@@ -354,7 +463,24 @@ namespace RISE
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
 				m_signalDemand( prog.UsesSurfaceSignals() ),
 				m_proximityDemand( prog.UsesCrossObject() )
-			{}
+			{
+				// DL-25 round-3 review (P3-7): make the attach-time contract
+				// STRUCTURAL rather than a convention.  A program that calls
+				// `sample()` / `sample_scalar()` must have had
+				// `BindPainterRefs` run on it BEFORE any painter is
+				// constructed from it (the resolver lives one layer up, in
+				// `Job::AddExpressionPainter` / `ScalarPainterAsciiChunkParser`
+				// -- see BuildExpressionProgramFromChunkFields's own doc).  If
+				// it has not, every `sample()` in the body silently reads the
+				// honest-neutral 0/black for the life of the render instead of
+				// failing anywhere a caller can see.  `IsPainterRefsBound()`
+				// reports true trivially for a program with no sample calls,
+				// so this costs nothing and constrains nothing for the
+				// overwhelming majority of programs.
+				assert( prog.IsPainterRefsBound() &&
+					"ExpressionScalarPainter built from a sample()-calling program whose painter refs were "
+					"never bound -- call ExpressionProgram::BindPainterRefs at attach time" );
+			}
 
 			//! S4 introspection: full param metadata, in `param` line order.
 			const std::vector<ParamSpec>& GetParamSpecs() const { return m_paramSpecs; }
