@@ -516,7 +516,7 @@ separately).  Paired with a new `AccumulateCount`, placed BEFORE Russian
 roulette (gated `effectivePdf > 0`, matching `RayCaster.cpp`'s gate)
 rather than after, so an RR-terminated attempt is still counted.
 
-### 6.2 The Russian-roulette convention (a ruling, not a new row)
+### 6.2 The Russian-roulette convention (a ruling, not a new row) — **RETRACTED by §7.2 below; read §7 before trusting anything in this subsection**
 
 DL-74 §5 recorded an unresolved residual: "the BSSRDF exit/entry pair
 trains PRE-RR quantities... while the main surface continuation trains
@@ -614,20 +614,45 @@ vertex the reflected ray travels into — DL-84's site and nothing else:
     floor-fog site: moment ratio at 3x radiance = 8.98 (target 9)
     in-loop volume continuation ...: solved alpha = 0.85582 (interior)
 
-The radiance-scaling-law row for this fixture uses a wider,
-documented-in-place tolerance (target 9, ±2%; attempt-count ratio
-target 1, ±2%) than the two pre-existing sites' exact checks: this
-fixture goes through `PathTracingIntegrator::IntegrateFromHit` against
-two SEPARATELY-BUILT Job/Scene/EnvironmentSampler instances, and
-empirically — checked by re-running the fixture against two
-IDENTICALLY-WORDED scenes (envLevel 1.0 vs 1.0) — the attempt count
-differs by a handful out of ~700 even with identical scene text and
-identical per-sample RNG seeds.  This is a property of building two
-separate Job/Scene instances (most likely floating-point noise in the
-two independently-built `EnvironmentSampler` importance tables nudging
-a small number of borderline equiangular-MIS strategy decisions across
-their threshold), not a radiance-dependence bug and not specific to
-this fix.
+**Counter corrections (round-7 review P3).**  This round's own red run
+was **34 passed / 7 failed**, not the "35/6" the DL-84 ledger row
+quoted: the floor-fog block contributes SIX FAILs pre-fix (the two shown
+above plus the whole-multiple-of-`L_env^2` row, the
+contributions-do-not-exceed-attempts row, the `CheckTrainedInterior`
+row and the bright-fixture ratio row), and `RunRRConventionCheck`
+contributes the seventh.  The suite total this round grew FROM 23/0 —
+round 5's figure, as `tests/README.md` has always said — not from the
+"30/0" the round-6 gate paragraph claimed.
+
+The radiance-scaling-law row for this fixture was given a ±2% tolerance
+instead of the two pre-existing sites' exact checks, and the widening
+was attributed to "floating-point noise in two independently-built
+`EnvironmentSampler` importance tables" between two separately-built
+Job/Scene instances.
+
+**That attribution is WRONG (round 7, review P2-1).**  The drift is a
+`rand()`-seeded thread-local RNG, and it reproduces on ONE fixture:
+`HeterogeneousMedium.cpp`'s ratio-tracking transmittance estimator keeps
+`static thread_local RandomNumberGenerator tl_rng` / `tl_rng_nm`,
+default-constructed and therefore seeded from libc `rand()` on first use
+on a thread; `Fixture::Build`'s throwaway `Rasterize()` is multithreaded
+AND the calling thread participates in the work (`ThreadPool.cpp`: "The
+caller thread participates in ParallelFor by draining"), so by the time
+the driven walk runs on the MAIN thread that thread's `tl_rng` has been
+advanced by a nondeterministic number of render blocks.  Measured:
+
+| how the walk is driven | floor-fog attempts, three consecutive runs |
+|---|---|
+| main thread (round 6) | 691 / 686 / 690 |
+| main thread + `std::srand` after `Rasterize()` | 693 / 690 / 690 |
+| fresh thread + pinned `std::srand` (round 7) | 692 / 692 / 692 |
+
+The middle row is the discriminator that rules out "the seed is racy":
+re-seeding `rand()` cannot reset an engine that already exists, so the
+carried-over STATE is the cause.  Round 7 runs every driven walk on its
+own fresh thread (`DriveOnFreshThread`), which makes the bright replay
+an EXACT replay of the dim one — both tolerances on this row tighten to
+exact (`countBright == countBsdf`, `|ratio - 9| < 1e-9`).
 
 ### 6.4 Sibling audit
 
@@ -657,19 +682,239 @@ this fix.
   this round fixes, and was not named in DL-84's own recipe.  Filed as
   new debt **DL-109** (docs/DEBT_LEDGER.md).
 
+## Round 7 (2026-09-17, debt-dl84 review): §6.2's ruling RETRACTED — the trained moment is the REALIZED one
+
+Round 6 ruled that the optimal-MIS moment must be trained from the
+PRE-Russian-roulette integrand, and rewired the ordinary surface
+continuation accordingly.  Review found that ruling wrong, and found
+that what landed was not either of the two defensible conventions.
+This section supersedes §6.2 in full.
+
+### 7.1 What round 6 actually built
+
+At the surface site `AccumulateCount` fires for EVERY attempt
+(RR-killed included — it sits above the roulette on purpose), while
+`Accumulate` fires only for SURVIVORS.  Round 6 then replaced the
+accumulated numerator with the PRE-RR throughput.  The estimator of
+`M_bsdf` is (sum of accumulated per-sample moments) / (attempt count),
+so with `q` the survival probability and `E_pre = ∫ f²/p_b`:
+
+    E[sum]/N = (1/N) · N · q · E_{x~p_b}[(f/p_b)²] = q · E_pre
+
+— the realized moment scaled by `q²`.  The pre-slice code accumulated
+the POST-RR numerator over the same all-attempts denominator, giving
+`E_pre/q`.
+
+### 7.2 The correct convention, and why
+
+**Rule.** *Each technique trains `E[(f/p̃)²]` with `p̃` its EFFECTIVE
+density, including any Russian-roulette survival factor: accumulate the
+POST-RR (as-carried) contribution for survivors, and count every
+attempt — a killed sample is a counted zero.*
+
+**Derivation.**  `Solve()` sets `alpha = M_nee/(M_nee + M_bsdf)`, i.e.
+each technique's coefficient is `1/M_i` (Kondapaneni 2019).  That makes
+`M_i` the second moment of the estimator the FILM sees.  Write the
+realized combined estimator with the BSDF branch RR'd and compensated:
+
+    F = w_n(x_n) f(x_n)/p_n(x_n)
+      + S · w_b(x_b) f(x_b) / ( p_b(x_b) · q(x_b) ),     S ~ Bern(q)
+
+This is exactly sampling the BSDF branch from the DEFECTIVE density
+`p̃_b = q·p_b`, whose second moment is
+
+    E[F_b²] = q · E_{x~p_b}[ ( w_b f/(p_b q) )² ]
+            = ∫ w_b² f² / (p_b q)
+
+so the quantity belonging in alpha's denominator is
+`M_bsdf = ∫ f²/(p_b q) = E_pre/q`.  Russian roulette makes a technique
+WORSE, and `1/M` has to see that.
+
+**Round 6's two supporting arguments, both refuted.**
+
+1. *"RR is a separate later estimator, not part of the vertex-local
+   integrand."*  It is not separate in the only sense that matters
+   here: it changes the density the sample was effectively drawn from,
+   and `M_i` is defined relative to that density.  Round 6's own wiring
+   does not even implement the argument it made — a pre-RR numerator
+   over an all-attempts denominator is `q·E_pre`, not `E_pre`.
+2. *"NEE undergoes no RR at this vertex."*  False.
+   `LightSampler.cpp`'s mesh-luminary arm has its own light-sample
+   Russian roulette (`rrSurvivalCompensation`, scene knob
+   `light_rr_threshold`, default 0), applied AFTER its own
+   `AccumulateCount` and excluded from the accumulated `contrib`.  With
+   that knob on, NEE trained `q·E_pre` by the identical mechanism.
+
+**The variance evidence.**  `RunAlphaQualityCheck` in
+`tests/OptimalMISTrainingSitesTest.cpp` does the integrals by
+quadrature on two-technique toys and reports the combined variance each
+candidate alpha produces (unbiased for every alpha, so alpha is a pure
+variance knob).  The ranking is the same in every configuration —
+realized best, round 6's worst:
+
+| toy (p_n = 1) | q | grid-min α | realized α / excess | bare `E_pre` α / excess | round 6 `q·E_pre` α / excess |
+|---|---|---|---|---|---|
+| f=x, p_b=2x | 0.5 | 0.204 | 0.400 / +32.3% | 0.571 / +97.9% | 0.727 / +177.8% |
+| f=x, p_b=2x | 0.2 | 0.072 | 0.211 / +48.1% | 0.571 / +455.1% | 0.870 / +983.7% |
+| f=x², p_b=3x² | 0.5 | 0.288 | 0.474 / +18.0% | 0.643 / +52.6% | 0.783 / +88.5% |
+| f=e^(−4x), p_b=1 | 0.5 | 0.256 | 0.333 / +3.3% | 0.500 / +31.8% | 0.667 / +89.6% |
+
+(The excesses are over a brute-force grid minimum.  `alpha = 1/M`
+normalised is not the exact minimiser — that is a property of the
+implemented heuristic, not of this ruling — so what is gated is the
+RANKING, not the distance to the optimum.  A round-trip row feeds the
+production accumulator real Monte Carlo draws under the realized
+convention and gets `Solve()` = 0.400962 against the closed-form 0.4.)
+
+### 7.3 Per-site table
+
+| site | roulette position | round 6 quantity | round 7 quantity |
+|---|---|---|---|
+| `PathTracingIntegrator` surface continuation | count BEFORE rr; `scatterThroughput` divided after | `preRRScatterThroughput` | `scatterThroughput` (post-RR) |
+| `PathTracingIntegrator` in-loop volume vertex | count BEFORE rr; `throughput` divided after | `phaseVal` | `phaseVal / volRrSurvivalProb` |
+| `PathTracingIntegrator` BSSRDF exit continuation (×2: RGB and NM bodies) | count BEFORE rr; `sssThroughput` divided after | `bssrdfWeight` (pre-RR) | `sssThroughput` (post-RR) |
+| `LightSampler` mesh-luminary NEE arm (×2: RGB and NM) | count BEFORE the light-sample roulette; compensation applied to `result` only | `neeTrainingScale·contrib` | `neeTrainingScale·rrSurvivalCompensation·contrib` |
+| `LightSampler` env NEE arms (×2) | no roulette on this arm | — | unchanged |
+| `RayCaster` volume phase-scatter continuations (×2) | `RayCaster.cpp` contains no `EvaluateRussianRoulette` at all | — | unchanged (already realized); comment added |
+
+`preRRScatterThroughput` goes back under `#ifdef RISE_ENABLE_OPENPGL`:
+OpenPGL's segment recorder genuinely wants the un-amplified weight (it
+applies RR itself via `russianRouletteSurvivalProbability`) and is its
+only consumer.  `volRrSurvivalProb` moves the other way — out of the
+guard — because the moment now needs it.
+
+### 7.4 Red-proof
+
+Three rows, all red on round 6's code (`fd67814a`):
+
+    RR-convention: sum(f/p)^2 = 501.5 over 4000 attempts;
+      sum / (attempts * (L_env*rho)^2) = 0.5015
+    FAIL: RR-convention: the trained moment is the REALIZED one, E_pre/q
+      (~2.0) -- not round 6's q*E_pre (~0.5), and not the bare pre-RR
+      moment E_pre (~1.0)
+    volume-RR: sum(f/p)^2 / L_env^2 = 36 over 1068 attempts;
+      / (1/q^2) = 2.25 escapes                             FAIL
+    volume-RR: sum(f/p)^2 / L_env^2 = 7 over 1071 attempts;
+      / (1/q^2) = 0.194444 escapes                         FAIL
+    light-RR: NEE moment sum 598.085 (threshold 0) -> 94.6271
+      (threshold 5000); attempts 4000 / 4000; ratio = 0.158217
+    FAIL: light-RR: turning the light-sample roulette ON RAISES the
+      trained NEE moment ... rather than lowering it
+    FAIL: light-RR: the roulette actually fired on this fixture
+
+    67 passed, 5 failed
+
+and green after the fix:
+
+    RR-convention: ... = 2.006                    (target 2.0 = q/rho^2)
+    volume-RR: 576 / (1/q^2) = 36 escapes         (q = 1/4)
+    volume-RR: 252 / (1/q^2) =  7 escapes         (q = 1/6)
+    light-RR: 598.085 -> 5915.92; ratio = 9.89144
+    alpha round-trip: closed form 0.4, Solve() 0.400962
+
+    72 passed, 0 failed
+
+Constructions worth knowing:
+
+* **`RunRRConventionCheck`** makes `q` an EXACT deterministic 0.5 (a
+  ρ=0.5 Lambertian floor driven at `startDepth = rrMinDepth` with
+  `importance = 1`, so `rrProb = ρ` exactly), which turns
+  `sum / (attempts·(L_env·ρ)²)` into a closed-form `q/ρ² = 1/ρ = 2.0`
+  under the realized convention and `q = 0.5` under round 6's.
+* **`RunVolumeRRConventionCheck`** reaches the in-loop volume vertex's
+  own roulette, which `RunFloorFogSite` cannot: with a white mirror and
+  an isotropic phase function the throughput there is exactly 1, so
+  `rrProb` is 1 at any depth.  Darkening the mirror and adding
+  absorption makes the mirror's reflectance cancel between `throughput`
+  and `importance`, leaving `q = σ_s/(σ_s+σ_a)` — the single-scatter
+  albedo, set straight from the scene text.  Each escape then
+  contributes exactly `1·L_env²` (round 6) or `(1/q²)·L_env²`
+  (round 7), and the two albedos are red for independent reasons: at
+  `q = 1/4` the escape count 36 is not a multiple of 16; at `q = 1/6`
+  the escape count 7 is SMALLER than `1/q² = 36`, so the quotient
+  cannot even reach 1.
+* **`RunLightRRConventionCheck`** needs no closed form for the emitter
+  geometry at all.  One fixture, one seed set and `maxPathDepth = 1`
+  make the light-RR coin the last draw of the walk, so the
+  threshold-off and threshold-on runs sample the IDENTICAL emitter
+  points; `q_i ≤ 1` pointwise then makes the SIGN of
+  `sum_on/sum_off − 1` a rigorous discriminator (≥ 1 realized, ≤ 1
+  round 6).
+
+### 7.5 Render-time impact: the structural argument, not a mean comparison
+
+Round 6's commit message argued render-time neutrality by quoting
+`VolumeEnvFurnaceTest`'s floor RGB PT mean as "0.993543, matching the
+pre-existing 0.993353 baseline within MC noise".  Two different numbers
+agreeing within noise is not an identity, and it is the weaker claim
+available here.  The structural one:
+
+`RAY_STATE::bsdfTimesCos` has exactly three consumers in the whole tree
+(`grep -rn bsdfTimesCos src/`): the two `OptimalMISAccumulator::
+Accumulate` calls in `PathTracingIntegrator.cpp` and the one inside
+`RayCasterEnvEscapeMISWeight` in `RayCaster.cpp`.  Everything else
+either declares the field, forwards it (`PathTracingShaderOp.cpp`,
+`PathTracingIntegrator.h`), or mentions it in a comment.  All three
+consumers are inside `if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )`,
+and `LightSampler`'s two changed lines are inside the same guard.  So
+every quantity this round changed is training-only *by construction*:
+with `optimal_mis` off (`rc.pOptimalMIS == nullptr`) not one changed
+expression is reached, and with it on, `alpha` is a partition-of-unity
+weight that cannot bias radiance — only the variance split.  The gate
+suites below are therefore expected to be unchanged, and are.
+
+### 7.6 Determinism (review P2-1)
+
+See the corrected §6.3 above: the floor-fog row's run-to-run drift was
+a `rand()`-seeded `thread_local` RNG in `HeterogeneousMedium`'s
+ratio-tracking transmittance, carried over on the MAIN thread from
+`Fixture::Build`'s multithreaded throwaway `Rasterize()` (whose worker
+set includes the calling thread).  Every driven walk now runs on a
+fresh thread behind a pinned `std::srand` (`DriveOnFreshThread`), and
+all three sites are bit-stable across runs:
+
+    volume site:    sum 484    over 726 attempts,  ratio exactly 9
+    BSSRDF site:    sum 1325.8 over 1028 attempts, ratio exactly 9
+    floor-fog site: sum 463    over 690 attempts,  ratio exactly 9,
+                    attempts 690 / 690
+
+### 7.7 New rows opened
+
+* **DL-110** — the in-loop volume vertex's trained `f` is
+  `phaseVal` (now `/q`) with NO medium transmittance, while its MIS
+  partner, `LightSampler`'s own NEE arm, multiplies `contrib` by
+  `EvalShadowTransmittance`.  The two halves of the pair therefore
+  describe integrands that differ by the medium's transmittance along
+  the escape direction.  Pre-existing (the same shape as
+  `RayCaster.cpp`'s two sites, which have carried it since round 3) and
+  NOT introduced by this round; recorded rather than fixed, because the
+  right answer needs a ruling on which transmittance belongs in a
+  vertex-local integrand for an escape that has not been traced yet.
+* **DL-113** — `RayCaster::CastRay{,NM,HWSS}`'s own cast-level
+  importance roulette (`RC_RR_THRESHOLD`, `rrCompensation`) sits
+  BETWEEN a caller's `AccumulateCount` (in `PathTracingIntegrator`'s
+  surface / BSSRDF continuations, and in `RayCaster`'s own volume
+  continuations) and the escape-arm `Accumulate` inside the cast, and
+  its compensation reaches `c` but not the trained moment — the same
+  pattern one layer up.  Deferred because the NEE half of the pair
+  sits ENTIRELY inside the survived branch (count and accumulate both),
+  so the fix needs a ruling on whether a whole-subpath survival belongs
+  in a per-technique effective density at all, which is a different
+  question from the per-vertex roulettes this row settles.
+
 ## File status
 
 | File | Status |
 |---|---|
-| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3: `PTBssrdfSwTimesCos` helper added; both sites wired to a directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). Round 5: that quantity replaced by the FULL vertex-local integrand — `PTBssrdfTrainedBsdfTimesCos(weight, cosinePdf)` — and the two entry-NEE calls pass `neeTrainingScale` so the pair's other half carries the same factor (§5). Round 6 (`53157235`): the in-loop volume vertex's `bsdfTimesCos` broadcasts `phaseVal`, paired with a new pre-RR `AccumulateCount`; the ordinary surface continuation's `bsdfTimesCosVal` now trains from `preRRScatterThroughput` (captured unconditionally, not just under `RISE_ENABLE_OPENPGL`) instead of the post-RR `scatterThroughput` (§6.2). |
+| `src/Library/Shaders/PathTracingIntegrator.cpp` | Round 1: unconditional `bsdfTimesCos` assignment at both BSSRDF continuation sites (`0c9eccc4`). Round 2: reverted to `Traits::zero()` at both sites, `AccumulateCount` call removed. Round 3: `PTBssrdfSwTimesCos` helper added; both sites wired to a directional quantity, `AccumulateCount` reinstated (paired, before Russian roulette). Round 5: that quantity replaced by the FULL vertex-local integrand — `PTBssrdfTrainedBsdfTimesCos(weight, cosinePdf)` — and the two entry-NEE calls pass `neeTrainingScale` so the pair's other half carries the same factor (§5). Round 6 (`53157235`): the in-loop volume vertex's `bsdfTimesCos` broadcasts `phaseVal`, paired with a new pre-RR `AccumulateCount`; the ordinary surface continuation's `bsdfTimesCosVal` now trains from `preRRScatterThroughput` (captured unconditionally, not just under `RISE_ENABLE_OPENPGL`) instead of the post-RR `scatterThroughput` (§6.2). **Round 7 (`4384cf9b`): §6.2 RETRACTED — the surface continuation is back on the post-RR `scatterThroughput` and `preRRScatterThroughput` is OpenPGL-only again; the in-loop volume vertex trains `phaseVal / volRrSurvivalProb` (that variable hoisted out of the OpenPGL guard); both BSSRDF exit continuations train `sssThroughput` (post-RR) instead of `bssrdfWeight`. See §7.3.** |
 | `src/Library/Interfaces/IRayCaster.h` | Round 4: `RAY_STATE` gains `bsdfMisPdf` + `MisPartnerPdf()` (DL-74), which is what lets the volume sites carry the true sampling density and the MIS partner at the same time. |
-| `src/Library/Rendering/RayCaster.cpp` | Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. Round 3: `rs2.bsdfTimesCos = RISEPel(phasePdf,phasePdf,phasePdf)` at both sites, `AccumulateCount` added (paired, gated `phasePdf > 0`). Round 4: `rs2.bsdfPdf = effectivePdf` (the true sampling density) with the raw `phasePdf` moved to `rs2.bsdfMisPdf`; the count gate follows `effectivePdf > 0`. |
+| `src/Library/Rendering/RayCaster.cpp` | Round 7 (`4384cf9b`): AUDITED, quantity UNCHANGED — this file applies no Russian roulette of its own between its counts and the escape-arm accumulate (no `EvaluateRussianRoulette` call anywhere in it), so both volume sites already train the realized moment; a comment recording that (and pointing at DL-113 for the cast-level importance roulette) is the only edit. Round 1: `bsdfTimesCos` assignment at both volume phase-scatter continuation sites (`0c9eccc4`). Round 2: reverted to `RISEPel(0,0,0)` at both sites; `rs2.bsdfPdf = phasePdf` (DL-73's subject) is UNCHANGED and confirmed correct. Round 3: `rs2.bsdfTimesCos = RISEPel(phasePdf,phasePdf,phasePdf)` at both sites, `AccumulateCount` added (paired, gated `phasePdf > 0`). Round 4: `rs2.bsdfPdf = effectivePdf` (the true sampling density) with the raw `phasePdf` moved to `rs2.bsdfMisPdf`; the count gate follows `effectivePdf > 0`. |
 | `tests/OptimalMISAccumulatorTest.cpp` | Round 3: new Test 12 (`TestDL72PairedTrainingFires`), 7 new checks. Round 4: header corrected — Test 12 pins the accumulator's arithmetic, not the production call sites. |
-| `tests/OptimalMISTrainingSitesTest.cpp` | Round 4: added. The row's actual red-proof; drives both production sites. Round 5: the Rd-scaling-law row (`ScaledRdProfile` / `ScaledRdMaterial`), which pins the trained QUANTITY on both halves of the BSSRDF pair; 23 checks. Round 6 (`93213874`): `RunFloorFogSite`/`DriveFloorFogSite` (a delta-mirror floor bounce into `VolumeScene()`'s fog, DL-84's own red-proof, 11 checks) and `RunRRConventionCheck` (the RR-convention discriminator, §6.2, 7 checks); suite total 41 checks (was 23). |
+| `tests/OptimalMISTrainingSitesTest.cpp` | Round 4: added. The row's actual red-proof; drives both production sites. Round 5: the Rd-scaling-law row (`ScaledRdProfile` / `ScaledRdMaterial`), which pins the trained QUANTITY on both halves of the BSSRDF pair; 23 checks. Round 7 (`4a540d7f`/`a8e1e487`/`48c994b1`): `DriveOnFreshThread` makes every driven walk deterministic (§7.6) and tightens the floor-fog row's two tolerances to exact; `RunRRConventionCheck`'s target flipped from 0.5 to 2.0 (§7.2); new `RunVolumeRRConventionCheck` (two albedos), `RunLightRRConventionCheck` and `RunAlphaQualityCheck`; `VolumeScene` gains an optional `absorption` argument (default 0.0, so the pre-existing rows are byte-identical). Suite total 72 checks (was 41). Round 6 (`93213874`): `RunFloorFogSite`/`DriveFloorFogSite` (a delta-mirror floor bounce into `VolumeScene()`'s fog, DL-84's own red-proof, 11 checks) and `RunRRConventionCheck` (the RR-convention discriminator, §6.2, 7 checks); suite total 41 checks (was 23). |
 | `src/Library/Lights/LightSampler.{h,cpp}` | Round 5: `EvaluateDirectLighting{,NM}` take `neeTrainingScale` (default 1); all four `Accumulate` sites apply it. Training-only — the returned radiance is unaffected at any value. |
-| `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. Round 3: DL-72 CLOSED again, this time with correct wiring. Round 6: DL-84 CLOSED, DL-109 opened (the `IntegrateRayTemplated` camera-ray volume-walk sibling, out of this round's scope). |
+| `docs/DEBT_LEDGER.md` | Round 1: new DL-72 row, closed. Round 2: DL-73 struck as not-a-debt, DL-74 filed for the real surface-path asymmetry, DL-72's evidence and impact wording updated for the revert. Round 3: DL-72 CLOSED again, this time with correct wiring. Round 6: DL-84 CLOSED, DL-109 opened (the `IntegrateRayTemplated` camera-ray volume-walk sibling, out of this round's scope). Round 7: DL-84's closure evidence rewritten for the retracted ruling; DL-110 and DL-113 opened (§7.7). |
 | `docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md` | Added round 1; round-2 correction sections added same day; "Round 3" section added 2026-09-14; this "Round 6" section (§6) added the same day, debt-dl84 slice. |
-| `docs/DL74_ENV_NEE_GUIDING_PARTITION.md` | Round 6: §5's "Optimal-MIS training sites disagree on Russian roulette" residual bullet struck with the §6.2 ruling. |
+| `docs/DL74_ENV_NEE_GUIDING_PARTITION.md` | Round 6: §5's "Optimal-MIS training sites disagree on Russian roulette" residual bullet struck with the §6.2 ruling. Round 7: the struck bullet's note rewritten — the residual is still closed, but by §7.2's realized-moment ruling, not §6.2's retracted pre-RR one. |
 
 Gate (round 3): `MISWeightsTest` (59/0), `OptimalMISAccumulatorTest`
 (34/0, was 27/0 — the 7 new Test 12 checks), `RasterizerDefaultsConsistencyTest`
@@ -683,7 +928,8 @@ TESTS PASSED, unaffected — these do not exercise BSSRDF/volume training),
 every edit in this pass.
 
 Gate (round 6, debt-dl84 slice): `OptimalMISTrainingSitesTest` (41/0, was
-30/0 before this round's two new fixtures), `OptimalMISAccumulatorTest`
+**23/0** — round 5's figure; the "30/0" this paragraph originally quoted
+was wrong, see §6.3's counter corrections), `OptimalMISAccumulatorTest`
 (34/0, unaffected), `RasterizerDefaultsConsistencyTest` (164/0),
 `RayCasterEnvEscapeMISTest` (91/91), `MISWeightsTest` (59/0),
 `SSSRadianceScalingTest` (574017/0), `PTGuidingMISPartitionTest`
@@ -693,6 +939,18 @@ Gate (round 6, debt-dl84 slice): `OptimalMISTrainingSitesTest` (41/0, was
 (before/after render-time comparison and full counters in the fix commit
 message and this row's ledger closure); `make -C build/make/rise -j8 all`
 clean (zero warnings) after every edit in this round.
+
+Gate (round 7, debt-dl84 review): `OptimalMISTrainingSitesTest` (72/0,
+was 41/0 — this round's four new rows; 67/5 against round 6's code),
+`OptimalMISAccumulatorTest` (34/0), `MISWeightsTest` (59/0),
+`RasterizerDefaultsConsistencyTest` (164/0), `PTGuidingMISPartitionTest`
+(63/0), `RayCasterEnvEscapeMISTest` (91/0), `VolumeEnvFurnaceTest`
+(29/0), `VolumeAbsorptionAttenuationTest` (89/0), `DirectionalFogTest`
+(11/0), `RayCasterVolumeAbsorptionTest` (9/0), `SSSRadianceScalingTest`
+(574017/0), `BSSRDFSamplingTest` (all passed), `EnvLightBalanceTest`
+(116/0), `CstDeriveGoldenTest` (452 MATCH / 0 DRIFT),
+`SourceHygieneTest` (165/0).  `make -C build/make/rise -j8 all` clean
+(zero warnings) after every edit.
 
 ## Tag errata (P3-7)
 

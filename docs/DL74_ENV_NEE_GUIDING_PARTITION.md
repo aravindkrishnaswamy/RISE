@@ -326,35 +326,46 @@ Two design notes about the fixture:
   material with a non-null BSDF must expose at least one selectable
   non-delta diffuse/reflection lobe.
 - ~~**Optimal-MIS training sites disagree on Russian roulette (round 5).**~~
-  **RULED 2026-09-14 (DL-84 closure, debt-dl84 slice): PRE-RR, for
-  every site.**  `OptimalMISAccumulator.h`'s own contract trains the
-  moment of THE INTEGRAND `f` at a vertex, drawn from density `p_i`;
-  Russian roulette is a separate, later, unbiased estimator layered on
-  top of a vertex's contribution, not part of it -- NEE's own moment
-  is never RR-inflated (NEE takes no continuation and undergoes no RR
-  at its own vertex), and the two BSSRDF sites were already correct on
-  this point (`bssrdfWeight` is captured before `sssThroughput`'s RR
-  division, so their moment is PRE-RR).  The main surface continuation
-  was the one holdout, training from the POST-RR-divided
-  `scatterThroughput` -- RR's own compensation identity
-  (`throughput_post = throughput_pre / survivalProb`) inflated its
-  moment by an RR-outcome-dependent factor its NEE partner's moment
-  never carries.  Fixed by capturing `preRRScatterThroughput`
-  unconditionally (previously `RISE_ENABLE_OPENPGL`-only, feeding only
-  the guiding-segment recorder) and training from it instead;
-  variance-only, as this bullet already noted -- `alpha` cannot bias
-  the rendered radiance, only how the training budget is apportioned
-  between techniques.  Red-proofed with a closed-form discriminator (a
-  Lambertian floor at `startDepth=rrMinDepth` with `importance=1`
-  makes RR's survival probability an exact deterministic 0.5, so a
-  PRE-RR-inflation bug reads a closed-form `1/rho^2=4x` too large):
-  `sum/(attempts*(L_env*rho)^2)` read `2.006` pre-fix, `0.5015`
-  post-fix, against a `0.5` target.  DL-84's own in-loop volume site
-  was wired in the SAME pass, using the already-PRE-RR-by-construction
-  phase value (a phase function's throughput has no RR applied to it
-  in that loop at the point the moment is formed).  See
+  **RULED 2026-09-17 (DL-84 round 7, debt-dl84 review): the REALIZED
+  moment, for every site.**  (An earlier ruling recorded here on
+  2026-09-14 said "PRE-RR, for every site"; that was retracted on
+  review -- see below.)  `Solve()` weights each technique by `1/M_i`,
+  so `M_i` is the second moment of the estimator the FILM sees.
+  Russian roulette does not sit outside that estimator: it makes the
+  technique's density DEFECTIVE, `p~ = q*p`, with survivors
+  compensated by `1/q`, so
+  `M = integral f^2/(p q) = E_pre/q`.  The wiring that estimates it --
+  accumulate the POST-RR (as-carried) contribution for survivors and
+  count EVERY attempt, a killed sample being a counted zero -- is what
+  the main surface continuation had all along and what round 6
+  mistakenly replaced.  Round 6's own combination (pre-RR numerator
+  over an all-attempts denominator) estimates `q*E_pre`, neither
+  defensible convention; quadrature over four two-technique toys puts
+  it at the HIGHEST combined variance of the three candidates in every
+  configuration (+88.5% to +983.7% over a grid minimum, against +3.3%
+  to +48.1% for the realized moment).  Round 6's supporting claim that
+  "NEE undergoes no RR at its own vertex" is also false:
+  `LightSampler`'s mesh-luminary arm has its own `light_rr_threshold`
+  roulette, applied after its `AccumulateCount` and excluded from the
+  accumulated `contrib`, and now carries `rrSurvivalCompensation` in
+  its trained moment too.  Round 7 therefore trains: the surface
+  continuation from the post-RR `scatterThroughput` (with
+  `preRRScatterThroughput` back under `#ifdef RISE_ENABLE_OPENPGL`, its
+  only real consumer), the in-loop volume vertex from
+  `phaseVal / volRrSurvivalProb`, both BSSRDF exit continuations from
+  the post-RR `sssThroughput`, and both `LightSampler` mesh NEE arms
+  with the light-RR compensation folded in; `RayCaster`'s two volume
+  sites are unchanged, because that file applies no roulette between
+  its counts and the escape-arm accumulate.  Still variance-only, as
+  this bullet always noted -- `alpha` cannot bias rendered radiance.
+  Red-proofed with three closed-form discriminators (an exact
+  deterministic `q = rho = 0.5` at the surface site: `0.5015` on round
+  6's code against a `2.0` target; an exact `q = single-scatter albedo`
+  at the volume site; and a pointwise `q <= 1` sign argument on the
+  light-RR arm needing no closed form at all).  See
   [DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md)
-  "Round 6" for the full derivation and numbers.
+  "Round 7" (which supersedes its "Round 6" §6.2) for the full
+  derivation, the variance table and the numbers.
 
 - ~~**The IOR stack passed to the aggregate pdf differs by side.**~~
   **WRONG, and fixed in round 3 (§8.2).** This entry claimed the
