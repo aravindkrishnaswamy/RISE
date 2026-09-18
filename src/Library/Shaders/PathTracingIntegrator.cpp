@@ -3295,10 +3295,26 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					* PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) )
 					* RadianceEtaScale( iorStack, pS->ior_stack ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-				// DL-74: this is the no-BRDF (SPF-only) continuation --
-				// guiding never runs on it and NEE never fires at this
-				// vertex, so the sampling density and the MIS-partner
-				// density are the same value.
+				// DL-74 / DL-103: this is the no-BRDF (SPF-only)
+				// continuation, and guiding never runs on it.
+				//
+				// It does NOT need DL-103's aggregate partner, and the
+				// reason is checkable rather than a claim about NEE:
+				// `rs2.bsdfPdf` is ALWAYS 0 here, so there is no per-lobe
+				// density for an aggregate to disagree with.  Exactly two
+				// families reach this branch (`IMaterial::GetBSDF()` null):
+				//   * `DielectricMaterial` / `PerfectReflectorMaterial` /
+				//     `PerfectRefractorMaterial` -- every lobe they emit
+				//     sets `isDelta = true` (DielectricSPF's `scattering`
+				//     /HG-warped transmission included), so the line above
+				//     stores 0.
+				//   * `BioSpecSkinMaterial` / `GenericHumanTissueMaterial`
+				//     -- their lobes are non-delta but never assign `.pdf`
+				//     at all, so it keeps `ScatteredRay()`'s 0; their
+				//     `ISPF::Pdf` is likewise the base-class 0, so the
+				//     aggregate would be 0 too.
+				// Should a future SPF reach here with a real non-delta
+				// density, this line needs PART 3's treatment.
 				rs2.bsdfMisPdf = rs2.bsdfPdf;
 				rs2.type = PathTracingRayType( *pS );
 				// Accurate guides describe the first non-delta interaction the

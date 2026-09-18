@@ -91,9 +91,15 @@ strictly worse than the pre-DL-103 asymmetry, which at least had
 `w_bsdf < 1` there.  Falling back to the lobe's own density reproduces
 the pre-DL-103 behaviour exactly at those SPFs and nowhere else.
 
-BDPT's own DL-69 fix uses the identical rule at the identical place
-(`if (misFwdPdf > NEARZERO) pdfFwdPrev = misFwdPdf;`), for the identical
-reason, so the two integrators do not drift apart on it.
+BDPT's own DL-69 fix applies the same rule at the same place
+(`if (misFwdPdf > NEARZERO) pdfFwdPrev = misFwdPdf;`), for the same
+reason, so the two integrators do not drift apart on it.  The thresholds
+are not literally identical — PT tests `aggregatePdf > 0` and BDPT
+`> NEARZERO` (1e-12).  That can only matter for an aggregate density in
+`(0, 1e-12]`, where PT keeps a vanishing partner (weight ≈ 0 — the
+sample is effectively handed to NEE) and BDPT falls back to the lobe's
+own.  Neither is wrong; PT's `> 0` matches the `> 0` gates its own two
+consumer sites already apply to `bsdfMisPdf`.
 
 Under **active** guiding the blend runs unconditionally instead — the
 mixture's guide term reaches directions the material's own pdf does not,
@@ -269,7 +275,7 @@ one.*
 | `RayCaster.cpp`'s env-escape helper `RayCasterEnvEscapeMISWeight` | REFUTED (consumer, not producer) | reads `rs.MisPartnerPdf()`; whatever the producer stored.  Its producers are PT (now aggregate), the two volume continuations, and the BDPT training probe — rows below |
 | `RayCaster.cpp` volume phase-scatter continuations (`rs2.bsdfMisPdf = phasePdf`) | REFUTED | a phase function is single-lobe, and `MediumScatterMaterial::Pdf` — the density the volume NEE arm uses — returns that same raw `phasePdf`.  DL-73's ruling, unchanged |
 | PT's BSSRDF exit continuations (`rs2.bsdfMisPdf = bssrdf.cosinePdf`) | REFUTED | the paired NEE arm is handed `BSSRDFEntryMaterial`, whose `Pdf` is literally `cosTheta * INV_PI` — the same single-lobe function |
-| PT's no-BRDF (SPF-only) continuation (`rs2.bsdfMisPdf = rs2.bsdfPdf`) | REFUTED | NEE never fires at that vertex, so there is no pair |
+| PT's no-BRDF (SPF-only) continuation (`rs2.bsdfMisPdf = rs2.bsdfPdf`) | REFUTED | `rs2.bsdfPdf` is ALWAYS 0 there, so there is no per-lobe density for an aggregate to disagree with. Exactly two families reach the branch (`GetBSDF()` null): Dielectric / PerfectReflector / PerfectRefractor, whose every emitted lobe sets `isDelta = true` (`DielectricSPF`'s `scattering`/HG-warped transmission included); and BioSpecSkin / GenericHumanTissue, whose lobes are non-delta but never assign `.pdf` at all, so it keeps `ScatteredRay()`'s 0 — and their `ISPF::Pdf` is the base-class 0, so the aggregate would be 0 too. (An earlier revision of this row said "NEE never fires there"; that is a claim about the NEE side, not a checkable property of this line.) |
 | `BDPTIntegrator.cpp:264` `RecordGuidingTrainingSampleNM` (`rs.bsdfMisPdf = samplePdf`, a per-lobe `selectProb * pdf`) | REFUTED for this row | a standalone OpenPGL **training** probe with no NEE partner; it affects the recorded training radiance (guiding quality) and cannot bias a render.  Whether a training probe should apply an MIS weight at all is a separate question and was not opened as a row |
 | Legacy shader-op chain (`DistributionTracingShaderOp`, `ReflectionShaderOp`, `RefractionShaderOp`, `FinalGatherShaderOp`) | **DISTINCT DEFECT — opened as DL-171** | these never populate `RAY_STATE::bsdfPdf`/`bsdfMisPdf` at all, so `EmissionShaderOp` takes weight 1 (or the emission is suppressed outright) while `DirectLightingShaderOp`'s NEE arm still weights against a positive aggregate pdf.  Absent partner, not wrong partner — a different pattern |
 | HWSS's single scalar partner vs `SampledWavelengths::N` companion NEE arms | **DISTINCT DEFECT — opened as DL-170** | pre-existing and equally true of `pS->pdf`; see that row |

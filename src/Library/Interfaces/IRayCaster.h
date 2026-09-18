@@ -64,11 +64,23 @@ namespace RISE
 			//! stay the sampling density -- see DL-72.
 			Scalar bsdfPdf;
 			//! The NOMINAL density used as the BSDF-sampling technique's
-			//! MIS partner against light sampling.  Where path guiding is
-			//! active this and `LightSampler`'s NEE arms evaluate ONE
-			//! lobe-independent function of direction, so the two weights
-			//! partition to 1; everywhere else it equals `bsdfPdf`.
-			//! DL-74 / docs/DL74_ENV_NEE_GUIDING_PARTITION.md.
+			//! MIS partner against light sampling.  It and `LightSampler`'s
+			//! NEE arms evaluate ONE lobe-independent function of
+			//! direction, so the two weights partition to 1.
+			//!
+			//! It is NOT in general equal to `bsdfPdf` (an earlier version
+			//! of this comment said it was "everywhere but under path
+			//! guiding", which DL-103 made false).  For a surface
+			//! continuation the partner is the MATERIAL'S AGGREGATE
+			//! `ISPF::Pdf()` for the traced direction -- guided or not --
+			//! while `bsdfPdf` is the SELECTED lobe's own density; those
+			//! differ at every multi-lobe SPF.  Under guiding the partner
+			//! is additionally blended with the guide density.  The volume
+			//! continuations are the other standing case: `bsdfPdf`
+			//! carries the guided effective pdf while the partner is the
+			//! raw `phasePdf` its NEE arm uses (DL-73).
+			//! DL-74 / docs/DL74_ENV_NEE_GUIDING_PARTITION.md,
+			//! DL-103 / docs/DL103_PT_ESCAPE_MIS_PARTNER.md.
 			//!
 			//! Three-valued, and read through `MisPartnerPdf()` rather
 			//! than directly:
@@ -76,12 +88,18 @@ namespace RISE
 			//!        DEFAULT, so a producer that predates this field (or
 			//!        simply has no guiding to describe) keeps its exact
 			//!        pre-DL-74 weight instead of silently losing it.
-			//!   0    no MIS partner exists: a delta lobe, or a vertex
-			//!        with no guiding at all whose aggregate pdf is zero
-			//!        in this direction.  With guiding ACTIVE a zero
-			//!        aggregate pdf is NOT a zero partner: the mixture
-			//!        still reaches the direction through the guide, so
-			//!        the partner is `alpha_nom * guide` there (review
+			//!   0    no MIS partner exists.  Since DL-103 this means a
+			//!        DELTA lobe (or a producer that has no partner to
+			//!        describe at all, e.g. a vertex where NEE never
+			//!        fires).  A non-delta surface continuation whose
+			//!        AGGREGATE pdf reads zero in the traced direction
+			//!        does NOT arrive here as 0: giving both sides "no
+			//!        partner" would put weight 1 on each and double
+			//!        count, so the producer substitutes the selected
+			//!        lobe's own density instead (DL-41's SPFs, whose
+			//!        `Pdf()` does not cover their own lobes).  With
+			//!        guiding ACTIVE the producer folds in
+			//!        `alpha_nom * guide` for the same reason (review
 			//!        round 4 of DL-74, rows (h)/(i)).  The weight is 1
 			//!        and the sample is taken whole.
 			//!   > 0  the nominal partner density.

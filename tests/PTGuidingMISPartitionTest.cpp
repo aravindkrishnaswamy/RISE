@@ -318,7 +318,6 @@ public:
 // has nothing to do with the stack.
 //////////////////////////////////////////////////////////////////////
 static const Scalar kStackAwareTilt = 1.0;
-static const Scalar kInsideIOR      = 1.5;
 
 class StackAwareSPF : public virtual ISPF, public virtual Reference
 {
@@ -511,40 +510,6 @@ static std::string EnvOnlyScene()
 		"\n"
 		"pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 10.0\n}\n"
 		"\n" );
-}
-
-// Row (d): NO radiance map at all (so PT's env-escape arm is inert and
-// the only MIS pair exercised is area-NEE against the emitter hit), one
-// uniform-radiance emissive sphere centred on the shading point's
-// normal axis.
-static const Scalar kSphereRadius = 2.0;
-static const Scalar kSphereDist   = 5.0;
-
-static std::string AreaLightScene()
-{
-	std::ostringstream ss;
-	ss <<
-		"RISE ASCII SCENE 7\n"
-		"\n"
-		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n"
-		"\n"
-		"lambertian_luminaire_material\n{\n\tname emitter\n\texitance white\n"
-		"\tscale 4.0\n\tmaterial none\n}\n"
-		"\n"
-		"sphere_geometry\n{\n\tname lightball\n\tradius " << kSphereRadius << "\n}\n"
-		"\n"
-		"standard_object\n{\n\tname light_object\n\tgeometry lightball\n"
-		"\tmaterial emitter\n\tposition 0 0 " << kSphereDist << "\n}\n"
-		"\n"
-		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
-		"\n"
-		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
-		"\n"
-		"film\n{\n\twidth 4\n\theight 4\n}\n"
-		"\n"
-		"pinhole_camera\n{\n\tlocation 0 0 -3\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n"
-		"\n";
-	return ss.str();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1131,6 +1096,47 @@ static void RunMultiLobeRows()
 }
 
 #ifdef RISE_ENABLE_OPENPGL
+
+//! Used only by the DL-74 guiding rows below (the DL-103 rows have
+//! their own, smaller emitter -- see `MultiLobeAreaLightScene`), so
+//! these live under the guard: a build without OpenPGL would otherwise
+//! warn about an unused function and two unused constants.
+static const Scalar kInsideIOR = 1.5;
+
+// Row (d): NO radiance map at all (so PT's env-escape arm is inert and
+// the only MIS pair exercised is area-NEE against the emitter hit), one
+// uniform-radiance emissive sphere centred on the shading point's
+// normal axis.
+static const Scalar kSphereRadius = 2.0;
+static const Scalar kSphereDist   = 5.0;
+
+static std::string AreaLightScene()
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_luminaire_material\n{\n\tname emitter\n\texitance white\n"
+		"\tscale 4.0\n\tmaterial none\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname lightball\n\tradius " << kSphereRadius << "\n}\n"
+		"\n"
+		"standard_object\n{\n\tname light_object\n\tgeometry lightball\n"
+		"\tmaterial emitter\n\tposition 0 0 " << kSphereDist << "\n}\n"
+		"\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
+		"\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 -3\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n"
+		"\n";
+	return ss.str();
+}
+
 
 //////////////////////////////////////////////////////////////////////
 // A SKEWED trained guiding field at the shading point: incident
