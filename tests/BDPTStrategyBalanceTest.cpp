@@ -2919,6 +2919,97 @@ static void TestNullBSDFHWSSCompanionLadder()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology O: generic_human_tissue_material receiver, mesh area
+// emitter (DL-183).
+//
+// `GenericHumanTissueSPF::Scatter`/`ScatterNM` set the continuation
+// ray's origin to `ri.ray.origin` -- the INCOMING ray's origin, which
+// for a camera ray is the CAMERA POSITION -- instead of
+// `ri.ptIntersection`, the actual point on the receiver the ray hit.
+//
+// This is a PT bug, not a DL-126-family bug: this material's
+// GetBSDF() is also null, so DL-126 (BDPT/VCM eye/light subpath
+// termination at a null-BSDF vertex) applies to it too and is already
+// fixed -- but PT was never affected by DL-126 (it prices this
+// continuation from the SPF's own kray, same as it always did). PT is
+// therefore the right integrator to isolate THIS bug.
+//
+// Same geometry as topology N (`kSceneCommon`'s camera/film +
+// `kLightMesh`): camera at (0,0,3.5) looking at the origin, receiver
+// quad at z=0, mesh emitter quad at z=4.0 -- i.e. the light sits
+// BEHIND the camera as seen from the receiver.  A physically-scattered
+// ray leaving the receiver has roughly a 50/50 chance (cosine-weighted
+// around the incoming direction) of heading back toward that light.
+// The bugged ray instead originates AT THE CAMERA and is perturbed
+// around the SAME incoming direction (camera-to-receiver, i.e.
+// roughly -Z) -- so it overwhelmingly continues AWAY from the light
+// behind it (cosine-weighted sampling puts negligible mass near the
+// +90-degree tail needed to turn back toward +Z) regardless of sample
+// count: this is a systematic, not a noise, effect, and the image
+// should render as flat black (mean == 0, not just low).  Once the
+// origin is corrected to `ri.ptIntersection`, the receiver's own
+// scattered rays reach the light at the ordinary rate and the mean
+// should be strictly positive and comparable in order of magnitude to
+// topology N's biospec_skin_material reference on the same geometry
+// (measured there: PT achromatic mean ~0.047-0.062).
+//////////////////////////////////////////////////////////////////////
+static void TestGenericHumanTissueOriginFix()
+{
+	std::cout << "  [Topology O: generic_human_tissue_material receiver, mesh area emitter (DL-183)]" << std::endl;
+
+	std::string sceneTissue =
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n"
+		"\tlocation 0 0 3.5\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 30.0\n"
+		"}\n\n"
+		"generic_human_tissue_material\n{\n\tname mat_tissue\n}\n\n"
+		"clippedplane_geometry\n{\n"
+		"\tname quad_tissue\n"
+		"\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n"
+		"}\n\n"
+		"standard_object\n{\n"
+		"\tname obj_tissue\n\tgeometry quad_tissue\n\tmaterial mat_tissue\n"
+		"}\n";
+	sceneTissue += kLightMesh;
+
+	const std::string scene = std::string("RISE ASCII SCENE 7\n") + sceneTissue + kRasterizerPTNullBSDF;
+
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "tissueorigin" );
+	if( path.empty() ) {
+		Check( false, "Topology O: could not write scene temp file" );
+		return;
+	}
+
+	const ImageStats stats = RenderAndComputeStats( path.c_str() );
+	std::remove( path.c_str() );
+
+	if( !stats.valid ) {
+		Check( false, "Topology O: render failed" );
+		return;
+	}
+
+	PrintStats( "generic_human_tissue_material receiver", stats );
+	const double achro = ( stats.mean[0] + stats.mean[1] + stats.mean[2] ) / 3.0;
+	std::cout << "    achromatic mean = " << achro << std::endl;
+
+	// Pre-fix this reads EXACTLY 0 (see the fix commit message for the
+	// measured value) -- the continuation ray, originating at the
+	// camera and perturbed around the camera-to-receiver direction,
+	// systematically heads away from the light behind the camera.
+	// Post-fix it should land in the same order of magnitude as
+	// topology N's biospec_skin_material reference (~0.047-0.062) on
+	// the identical camera/receiver/light geometry; the two materials'
+	// absorption models differ so this is a loose band, not a parity
+	// check against topology N.
+	Check( achro > 0.005,
+		"DL-183: generic_human_tissue_material receiver reads nonzero PT radiance "
+		"(scattered ray now originates at ri.ptIntersection, reaching the light behind the camera)" );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -2943,6 +3034,7 @@ int main()
 	TestNonfiniteCandidateRejected();
 	TestNullBSDFMaterialContinuation();
 	TestNullBSDFHWSSCompanionLadder();
+	TestGenericHumanTissueOriginFix();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
