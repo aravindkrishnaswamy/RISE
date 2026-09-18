@@ -1346,8 +1346,9 @@ int main()
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
 	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
 	//   ggx_showcase   -> PT    (σ²·T ~0.26× — the glossy blind-spot partner)
-	//   glass_pavilion -> not VCM (DL-154, 2026-09-17: see below — was VCM pre-debt30-eta2;
-	//                    falls through to PT/BDPT, same coin-flip tail as jewel_vault)
+	//   glass_pavilion -> not VCM (DL-154, 2026-09-17: see below — was VCM pre-debt28
+	//                    thin-lens fix (c3c37e08), NOT debt30-eta2; falls through to
+	//                    PT/BDPT, same coin-flip tail as jewel_vault)
 	//   jewel_vault    -> PT    (median-lum ~2.6-3.1× fires, but reach ~1.0× < 1.50 -> NOT a
 	//                            caustic; the over-fire fixed by the transport-reach gate, §6.2)
 	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
@@ -1359,19 +1360,28 @@ int main()
 		"scenes/FeatureBased/Combined/gi_spheres.RISEscene", "p4_gi", AutoIntegratorChoice::BDPT );
 	CheckProbeRoute( "ggx_showcase -> PT (glossy blind-spot partner)",
 		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::PT );
-	// DL-154 (2026-09-17): this fixture asserted VCM from Phase 4's original
-	// authoring (§6.2.1, 2026-06-05), calibrated against a meanRatio(VCM/PT)
-	// of 20-32x. That gap was ALMOST ENTIRELY a VCM bug, not a real PT-vs-VCM
-	// transport-reach difference: `debt30-eta2` (commit 14bc2cb6, 2026-09-12,
-	// see docs/REFRACTIVE_RADIANCE_SCALING.md debt 30) fixed VCM's
-	// radiance-mode light-tracing walk, which had NO eta^2 basic-radiance
-	// factor at dielectric interfaces and so read systematically too bright
-	// crossing into/out of glass -- exactly this scene's transport. Re-bisected
-	// on debt-dl154 (first-parent merges from fc371041): 185b0d5f (fisheye-
-	// differentials, immediately before 14bc2cb6) still measures the old
-	// reach ~25-30x; 14bc2cb6 itself collapses it to ~0.86-1.10x -- a single
-	// merge, not a drift, and both AutoRasterizer.cpp and the fixture were
-	// unrelated to that merge's own diff.
+	// DL-154 (2026-09-17, corrected post-review): this fixture asserted VCM
+	// from Phase 4's original authoring (§6.2.1, 2026-06-05), calibrated
+	// against a meanRatio(VCM/PT) of 20-32x. That gap was ALMOST ENTIRELY a
+	// VCM bug, not a real PT-vs-VCM transport-reach difference.
+	//
+	// A first-pass bisect restricted to first-parent MERGES (from fc371041)
+	// wrongly attributed the whole collapse to `debt30-eta2` (commit
+	// 14bc2cb6): 185b0d5f (fisheye-differentials merge) still measured the
+	// old reach ~25-30x, and 14bc2cb6 was the next first-parent MERGE, so it
+	// looked like the single culprit. Review caught the gap: a merge-only
+	// bisect skips every non-merge commit SEQUENCE between two merges, and
+	// 14bc2cb6's actual first parent is the non-merge commit b6c12301, the
+	// end of the debt28-thinlens sequence. Re-bisecting over first-parent
+	// COMMITS (not merges) found the reach was ALREADY collapsed
+	// (~1.02-1.04x) at b6c12301, before debt30-eta2 exists as an ancestor of
+	// this scene's own routing decision; 14bc2cb6 itself moves it by only
+	// ~1% (noise). The real proximate fix is `c3c37e08` ("fix(bdpt,vcm):
+	// sample the camera APERTURE for t==1 -- thin-lens splats were
+	// 1/(cos*A_lens) too bright", debt 28): glass_pavilion uses
+	// `thinlens_camera fstop 1.4` at 85mm (1/A_lens ~ 345), and the pre-fix
+	// VCM max-luminance outliers (2045-2524 at this probe config) are
+	// camera-splat fireflies from the un-normalized aperture term.
 	//
 	// The corrected VCM measurement is NOT an accident: it agrees with this
 	// project's OWN independent RMSE-vs-truth baseline
@@ -1401,8 +1411,15 @@ int main()
 	// real caustic actually firing meanRatio>tauReach) now has NO known
 	// corpus scene -- `diamond_teapot_pour`, independently documented as a
 	// real VCM-decisive caustic, ALSO now measures reach ~1.09-1.16x at probe
-	// spp, indistinguishable from glass_pavilion's ~0.86-1.10x, so no
-	// threshold on this signal can separate them anymore.
+	// spp, indistinguishable from glass_pavilion's ~0.86-1.10x. Its collapse
+	// is a SEPARATE, independently-bisected mechanism (commit 7889fa29, the
+	// VCM delta-light NEE MIS partition fix, months before debt28/debt30-eta2
+	// -- NOT debt30-eta2, which was checked and refuted for this scene: its
+	// reach is a stable ~1.10-1.11x at every point on glass_pavilion's own
+	// bisect chain, i.e. already collapsed before debt30-eta2 exists as an
+	// ancestor here). Two unrelated VCM over-count fixes produced the same
+	// symptom on two different scenes; no threshold on this signal can
+	// separate them anymore either way.
 	//
 	// Assertion is "never VCM", not "exactly PT" -- same reasoning as
 	// jewel_vault below. Once the reach gate rejects VCM the decision falls
@@ -1412,7 +1429,7 @@ int main()
 	// nondeterminism documented for jewel_vault's σ²·T reading at cheap probe
 	// spp. Asserting exact PT was a coin flip on that tail; CheckProbeRouteNotVCM
 	// (never VCM) is the stable, meaningful invariant this fixture protects.
-	CheckProbeRouteNotVCM( "glass_pavilion -> not VCM (DL-154: debt30-eta2 closed the VCM-over-bright gap)",
+	CheckProbeRouteNotVCM( "glass_pavilion -> not VCM (DL-154: debt28/c3c37e08 closed the VCM-over-bright gap)",
 		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass" );
 	// Regression lock for the §6.2 jewel_vault over-fire: a dielectric + area-lit
 	// scene whose caustic MEDIAN gate fires at probe spp (PT's hard indirect is
@@ -1425,8 +1442,9 @@ int main()
 	// denominator stays raw) drops jewel_vault's reach to a stable ~0.6-0.9
 	// (< 1.50) -- see AutoRasterizer.cpp WinsorizedMeanLuminance.  (Pre-DL-154
 	// this comment cited glass_pavilion surviving winsorization at ~25x; that
-	// number was itself the debt30-eta2 VCM-over-bright artifact and no
-	// longer holds -- see DL-154's note on the glass_pavilion fixture above.)
+	// number was itself the debt28 thin-lens VCM-over-bright artifact
+	// (c3c37e08) and no longer holds -- see DL-154's note on the
+	// glass_pavilion fixture above.)
 	//
 	// Assertion is "never VCM", not "exactly PT": after the reach gate rejects
 	// VCM the decision falls through to the σ²·T PT-vs-BDPT gate, and

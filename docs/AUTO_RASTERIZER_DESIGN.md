@@ -315,9 +315,8 @@ miss**: **DL-154 (2026-09-17)** found the "VCM (intent)" verdict in this row was
 itself never independently confirmed against the matrix — `docs/
 UNIFIED_INTEGRATOR_BASELINES.md` §5's own RMSE-decisive table has always listed
 `glass_pavilion`'s true winner as **PT**, and its VCM measurement there was
-inflated 20-32x by the (now-fixed) `debt30-eta2` bug (missing η² basic-radiance
-factor at dielectric interfaces; see §6.2.1 below and `docs/
-REFRACTIVE_RADIANCE_SCALING.md` debt 30). This IS a route Tier-1 alone gets
+inflated 20-32x by the (now-fixed) debt28 thin-lens camera-aperture splat bug
+(commit `c3c37e08`; see §6.2.1 below). This IS a route Tier-1 alone gets
 wrong, but the Tier-2 probe (§6.2 below) independently arrives at PT for it —
 so the shipped `auto_rasterizer` is correct end to end; only this table's old
 "hit" annotation was wrong. All other non-hits fail in the **safe direction** —
@@ -498,7 +497,7 @@ renders at its own spp), so the same trials give both halves of the gate.
 |---|---|---|---|---|---|---|
 | gi_spheres | bdpt | bdpt | **bdpt bdpt bdpt** ✅ | 1.71 / 1.23 / 1.09 | 2.4 / 1.7 / 1.4 | 0.4 |
 | ggx_showcase | bdpt | pt | **pt pt pt** ✅ | 0.66 / 0.16 / 0.05 | 6.2 / 1.3 / 0.4 | 0.3 |
-| glass_pavilion | caustic | vcm | **vcm vcm vcm** — stale, see DL-154: `debt30-eta2` (2026-09-12) closed a VCM over-bright bug this table's "vcm" cell measured through; the scene now routes **pt** | 0.46 / 0.12 / 0.04 | 0.5 / 0.1 / 0.0 | 0.0 |
+| glass_pavilion | caustic | vcm | **vcm vcm vcm** — stale, see DL-154: debt28 (`c3c37e08`, 2026-09-11) closed the thin-lens camera-aperture splat bug this table's "vcm" cell measured through; the scene now routes **pt** | 0.46 / 0.12 / 0.04 | 0.5 / 0.1 / 0.0 | 0.0 |
 | env_only | caustic | pt | **pt pt pt** ✅ (env-gate) | 0.11 / 0.03 / 0.01 | 4.5 / 1.1 / 0.3 | 0.3 |
 | jewel_vault | caustic | pt | **vcm vcm vcm** ⚠ over-fire → **now pt** (§6.2.1) | 0.70 / 0.18 / 0.06 | 0.6 / 0.2 / 0.0 | 0.0 |
 | homogeneous_fog | bdpt | pt | **pt pt pt** ✅ | 8.0 / 2.0 / 0.5 | 31.7 / 7.9 / 1.9 | 0.5 |
@@ -578,8 +577,8 @@ output), no rasterizer-lifecycle surgery, and the candidate renders provably do
    caustic (so PT is in fact correct for the Pel domain). At the time this section
    was written, the area-lit-caustic→VCM capability was believed validated on the
    RGB `glass_pavilion` — **DL-154 (2026-09-17) found that measurement was itself
-   the `debt30-eta2` VCM over-bright bug (§6.2.1's DL-154 note); `glass_pavilion`
-   now correctly routes PT, and no corpus scene currently exercises a probe-time
+   the debt28 thin-lens camera-aperture VCM over-bright bug (§6.2.1's DL-154 note);
+   `glass_pavilion` now correctly routes PT, and no corpus scene currently exercises a probe-time
    "median AND reach → VCM" positive route** (see DL-167). The
    `auto_spectral_rasterizer` follow-up shipped (§3.1), but **even the spectral probe
    routes `spectral_caustic` → PT** — the RGB-projected mean-reach gate is defeated by
@@ -659,14 +658,36 @@ trigger (the mean-ratio firing **without** the median gate) — a riskier change
 that discards the median gate's firefly-robustness; deferred as out of scope for
 the `jewel_vault` fix and documented here.
 
-**STATUS as of DL-154 (2026-09-17) — read this before citing any number above.**
-The two tables above are a historical snapshot from 2026-06-05, before
-`debt30-eta2` (commit `14bc2cb6`, 2026-09-12) fixed VCM's radiance-mode
-light-tracing walk, which had no η² basic-radiance factor at dielectric
-interfaces and so read systematically too bright crossing glass boundaries —
-exactly the transport `glass_pavilion`'s and `diamond_teapot`'s reach numbers
-above were measuring. Re-measured on `master` (post-fix) at the identical probe
-config:
+**STATUS as of DL-154 (2026-09-17, corrected post-review) — read this before
+citing any number above.** The two tables above are a historical snapshot from
+2026-06-05. Their `glass_pavilion` and `diamond_teapot` reach numbers both
+collapsed since, but via **two independent VCM over-count fixes, months
+apart — not one shared mechanism**, found by bisecting each scene separately
+after a first-pass merge-only bisect wrongly attributed both to `debt30-eta2`
+(commit `14bc2cb6`, 2026-09-12):
+
+- **`glass_pavilion`** collapsed at `c3c37e08` ("fix(bdpt,vcm): sample the
+  camera APERTURE for t==1 -- thin-lens splats were 1/(cos*A_lens) too
+  bright", debt 28, 2026-09-11). `glass_pavilion` uses `thinlens_camera fstop
+  1.4` at 85mm (`1/A_lens ≈ 345`); the pre-fix VCM max-luminance outliers at
+  the probe config (2045-2524) are camera-splat fireflies from the
+  un-normalized aperture term. `debt30-eta2` (`14bc2cb6`) is a LATER, unrelated
+  commit -- its actual first parent is `b6c12301`, debt28's own end point, not
+  a merge -- and moves this scene's reach by only ~1% -- noise, not a further
+  collapse.
+- **`diamond_teapot_pour`** collapsed independently, months earlier, at
+  `7889fa29` ("fix(integrators): BDPT/VCM vertex connectibility is a surface
+  property, not a per-draw one; VCM delta-light NEE MIS partition closed
+  (debts 23-24, 25-26 opened)"). `diamond_teapot_pour` uses a PINHOLE camera
+  (debt28/thin-lens cannot touch it) and its own reach is a stable ~1.10-1.11x
+  at every point on `glass_pavilion`'s bisect chain (`185b0d5f`, `b6c12301`,
+  `14bc2cb6`) -- already fully collapsed before either debt28 or `debt30-eta2`.
+  A separate bisection over `5b117557..185b0d5f` (245 first-parent commits,
+  binary search) pins it to `7889fa29` alone: the immediately preceding
+  commit `20dd58ad` reads 1.84-1.92x, matching the original 1.88-1.95x
+  calibration; `7889fa29` itself reads 1.09-1.10x.
+
+Re-measured on `master` at the identical probe config:
 
 | scene | medRatio (gate 1) | meanRatio (gate 2, post-fix) | route now |
 |---|---|---|---|
@@ -677,17 +698,23 @@ Both real-caustic scenes in the corpus now measure reach in the same ~0.9–1.2�
 band the over-fire class (`jewel_vault`, `crystal_garden`) already occupied
 pre-fix — **no threshold on this signal currently separates a real caustic from
 a converging one**, so `τ_reach = 1.50` has no known corpus scene left to fire
-it correctly. `glass_pavilion`'s corrected route (PT) is independently
-confirmed correct by `docs/UNIFIED_INTEGRATOR_BASELINES.md` §5's RMSE-decisive
-table (unaffected by this bug, since that table's own winner column reads PT).
-`diamond_teapot`'s corrected route is a **live, untested regression risk**:
-that same baselines table lists `diamond_teapot`'s RMSE-decisive winner as
-**VCM**, but the probe no longer routes it there and no `AutoRasterizerTest`
-fixture currently exercises this scene to catch it. This residual — the reach
-gate's positive path has lost all corpus coverage and cannot be restored by
-adjusting `τ_reach` alone — is tracked as **DL-167**; it is a probe-design gap,
-not something this fix (correcting `glass_pavilion`'s own expected route) papers
-over or resolves.
+it correctly, **for two unrelated reasons**. `glass_pavilion`'s corrected route
+(PT) is independently confirmed correct by `docs/UNIFIED_INTEGRATOR_BASELINES.md`
+§5's RMSE-decisive table (unaffected by either bug, since that table's own
+winner column reads PT). `diamond_teapot`'s corrected route is a **live,
+untested regression risk**: that same baselines table lists `diamond_teapot`'s
+RMSE-decisive winner as **VCM**, but the probe no longer routes it there and no
+`AutoRasterizerTest` fixture currently exercises this scene to catch it. This
+residual — the reach gate's positive path has lost all corpus coverage via two
+separate mechanisms and cannot be restored by adjusting `τ_reach` alone, nor by
+fixing/reverting either single commit — is tracked as **DL-167**; it is a
+probe-design gap, not something this fix (correcting `glass_pavilion`'s own
+expected route) papers over or resolves. **Lesson:** bisect over first-parent
+COMMITS, not merges — a merge-only bisect silently skips every non-merge
+sequence between two merges and can land the blame on whichever merge happens
+to sit next to the real fix; when two scenes collapse under the same
+merge-level bisect point, check whether they actually share a mechanism before
+writing one root-cause paragraph for both.
 
 **Update (2026-06-06, WITHDRAWN):** an interim note here claimed VCM
 "over-counts the caustic" on `pool_caustics` (~1.6× / ~3.3×, ≈π constant). **That
@@ -805,14 +832,16 @@ stays raw. The asymmetry is principled:
 
 The gate at 1.50 sat in a `[0.91, 24.7]` gap at the time this table was measured
 (2026-06-05) — far wider than the raw `[1.12, 1.88]` gap §6.2.1 reported, and it
-no longer straddled `jewel_vault`'s firefly tail. **DL-154 (2026-09-17):**
-`debt30-eta2` subsequently closed a VCM over-bright bug that this table's
-`glass_pavilion` row was measuring through; its winsorized reach is now
-~0.86–1.10×, and the `[0.91, 24.7]` gap this row anchored no longer exists — see
-§6.2.1's DL-154 status block for the corrected numbers and the residual this
-uncovers (DL-167). `diamond_teapot` (real caustic, raw reach was ~1.9×, now
-~1.09–1.16×) is likewise **no longer unaffected** — both real-caustic scenes now
-sit in the same band the over-fire class occupies. New knob
+no longer straddled `jewel_vault`'s firefly tail. **DL-154 (2026-09-17):** debt28
+(`c3c37e08`, the thin-lens camera-aperture splat fix) subsequently closed a VCM
+over-bright bug that this table's `glass_pavilion` row was measuring through;
+its winsorized reach is now ~0.86–1.10×, and the `[0.91, 24.7]` gap this row
+anchored no longer exists — see §6.2.1's DL-154 status block for the corrected
+numbers and the residual this uncovers (DL-167). `diamond_teapot` (real
+caustic, raw reach was ~1.9×, now ~1.09–1.16×) is likewise **no longer
+unaffected** — but via a SEPARATE fix (`7889fa29`, the VCM delta-light NEE MIS
+partition; §6.2.1's DL-154 status block) — both real-caustic scenes now sit in
+the same band the over-fire class occupies, for two unrelated reasons. New knob
 `auto_probe_reach_winsor_pct` (default 0.99, GlobalOptions-overridable).
 Implementation: `WinsorizedMeanLuminance` + `ProbeResult::robustMeanLum` in
 `AutoRasterizer.cpp`; the gate at `RunProbe`'s two-gate caustic test.
