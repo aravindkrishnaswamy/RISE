@@ -239,6 +239,27 @@ namespace RISE
 					if( !painterResolver->ResolveColorPainter( colorNames[i], p, err ) ) {
 						return fail( context + ": sample(`" + colorNames[i] + "`): " + err );
 					}
+					// DL-165 (docs/DEBT_LEDGER.md): sample() evaluates ONLY
+					// IPainter::GetColor -- a painter that carries a genuine,
+					// independently-authored SPECTRUM (spectral_painter,
+					// blackbody_painter, a measured-SPD Function1D-backed
+					// colour painter -- see IPainter::IsSpectrallyDefined's
+					// own doc comment for the exact set) would have that
+					// spectrum collapsed to RGB here and then RE-UPLIFTED
+					// through the Jakob-Hanika LUT by whatever spectral
+					// consumer this expression feeds -- a DIFFERENT curve,
+					// silently, and `GetAlpha` dropped on top. Refuse
+					// outright (DL-32's hard-fail-the-chunk convention)
+					// rather than let the mismatch through: an author who
+					// needs that painter's real spectrum binds it DIRECTLY
+					// to a colour slot instead of sampling it.
+					if( p->IsSpectrallyDefined() ) {
+						return fail( context + ": sample(`" + colorNames[i] + "`) refused -- `" + colorNames[i] +
+							"` is spectrally defined (a genuine SPD, not an RGB colour): sample() reads only "
+							"GetColor() and would collapse that spectrum to RGB and re-uplift a DIFFERENT curve "
+							"through the Jakob-Hanika LUT; bind `" + colorNames[i] + "` DIRECTLY to a colour "
+							"slot instead of sampling it (see docs/DEBT_LEDGER.md DL-165)" );
+					}
 					colorPtrs.push_back( p );
 				}
 				const std::vector<std::string>& scalarNames = outProg.ScalarPainterRefNames();

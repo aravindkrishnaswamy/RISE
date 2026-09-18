@@ -49,6 +49,9 @@ namespace RISE
 				return GetColorNM( ri, nm );
 			}
 
+			//! DL-165: this IS the spectral painter -- see IPainter::IsSpectrallyDefined's doc comment.
+			bool							IsSpectrallyDefined() const { return true; }
+
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0;};
 			void SetIntermediateValue( const IKeyframeParameter& val ){};

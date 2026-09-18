@@ -80,6 +80,9 @@ namespace RISE
 				return GetColorNM( ri, nm );
 			}
 
+			//! DL-165: Planck's-law SPD -- see IPainter::IsSpectrallyDefined's doc comment.
+			bool							IsSpectrallyDefined() const { return true; }
+
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );
