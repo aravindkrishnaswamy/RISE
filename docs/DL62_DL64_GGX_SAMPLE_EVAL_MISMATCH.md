@@ -602,12 +602,13 @@ boundary is the exact `cosTheta -> 0` limit:
     and `0.93436415` at `1e-7` for `alpha=0.05`). Values range from
     `0.936088` at `alpha=0.01` to `0.613669` at `alpha=1.0` (review
     finding P2-3).
-  * `E_ss_TABLE_G2_ANISO_PHI_SUB[24][24][13][7]` — the per-azimuth
+  * `E_ss_TABLE_G2_ANISO_PHI_SUB[24][24][13][12]` — the per-azimuth
     anisotropic twin, consumed by `LookupEssG2AnisoDirectional`. The
     boundary argument holds per-direction (`Lambda_Aniso(wi) -> infinity`
-    as `cosWi -> 0` at every azimuth), so the `k=0` node is again exactly
-    1 and is not stored.
-  * `E_ss_TABLE_G2_ANISO_SUB[24][24][7]` — DERIVED from the above by the
+    as `cosWi -> 0` at every azimuth), so the `n=0` node is again exactly
+    1 and is not stored. Its 12 (not 7) nodes are the round-2
+    refinement — see "Round 2" below.
+  * `E_ss_TABLE_G2_ANISO_SUB[24][24][12]` — DERIVED from the above by the
     same trapezoidal phi average that already produces
     `E_ss_TABLE_G2_ANISO`, consumed by `LookupEssG2Aniso` and
     `BuildSegmentsFromRowN` (review finding P2-2/P3; see
@@ -629,7 +630,77 @@ draw of the original stream — verified by extracting every
 and comparing element-wise: `E_ss_TABLE` (1024), `E_ss_TABLE_G2` (1024),
 `E_avg_TABLE`/`E_avg_TABLE_G2` (32 each), `E_ss_TABLE_G2_ANISO` (18432),
 `E_ss_TABLE_G2_ANISO_PHI` (239616) and `E_avg_TABLE_G2_ANISO` (576) all
-IDENTICAL.
+IDENTICAL. The round-2 re-bake preserves that, and extends it to the
+three ISOTROPIC sub-tables it does not touch: `E_ss_SUB_TABLE` (224),
+`E_ss_SUB_TABLE_G2` (224) and `E_ss_LIMIT_TABLE` (32) are byte-identical
+too, because the isotropic sub-grid is baked from `rng_state_sub` BEFORE
+the aniso one and its draw count did not change.
+
+### Round 2: the anisotropic end-cap's FIRST sub-interval (review P1)
+
+Round 1's uniform sub-grid is enough for the ISOTROPIC tables and not for
+the anisotropic one, and the reason is structural rather than a matter of
+resolution. The approach to `Ess = 1` needs `Lambda(wi) >> Lambda(wo)`.
+For an isotropic surface both grow together and the deficit is already
+essentially LINEAR in `cosTheta` by the first sub-node: at `alpha=0.01`
+the true curve reads `0.958` at `h = c0/8 = 1.953e-3` and `0.9796` at
+`1e-3` (deficits `0.042` and `0.0204` across a factor of `1.953`), so the
+straight ramp from the exact anchor is accurate to **0.016%** at
+`cos=1e-4` — measured, `GGXHeightCorrelatedEnergyLUTTest`.
+
+For an anisotropic pair viewed along the SMALL axis, `Lambda(wi)` only
+takes over at `cos << alphaX*sinTheta`, while the scattered lobe is
+spread over the LARGE axis and keeps `Lambda(wo)` large. At
+`(alphaX=0.01, alphaY=1.0, phi=0)` the true curve is still at `0.735` at
+that same first node — a drop of `0.265` across one straight ramp from the
+anchor. The round-1 lookup therefore read **+2.49%** at `cos=1e-4`,
+**+4.34%** at `2.5e-4`, **+5.86%** at `5e-4` and **+5.91%** at `1e-3`,
+against `-0.08%` at the first baked node and `<=0.75%` above it: the
+BAKED NODES were accurate and the one un-bracketed interval was not.
+
+Round 1's own probe set could not see this — its smallest anisotropic
+`cosTheta` was `0.002`, just ABOVE `h`, so the whole first sub-interval
+went unprobed and every document quoted `<=0.72%`, a figure that
+isolated exactly the part of DL-86 that was already right.
+
+**Construction.** The aniso sub-grid's lowest interval is refined by
+`ANISO_SUB_FINE = 5` GEOMETRIC octaves — nodes at `h*2^-j` for
+`j = 1..5`, i.e. down to `6.1e-5` — so the one segment that is not
+bracketed by two baked nodes now lies entirely below the smallest
+`cosTheta` any production shading direction reaches (`1e-4` is
+`theta = 89.994` degrees). Node indices run `0..ANISO_SUB_TOTAL` with
+`ANISO_SUB_TOTAL = SUB_SIZE + ANISO_SUB_FINE = 13`; index 0 is the exact
+anchor, `1..5` the octaves, `6..13` the unchanged uniform nodes, and the
+last IS bin 0 — so 12 values are stored per row (was 7). `AnisoSubNodeCos`
+is the single definition of the abscissae, and the generator carries a
+byte-identical twin (`anisoSubNodeCos`) so the bake and the lookup cannot
+disagree about where a node sits.
+
+`ANISO_SUB_FINE = 5` was chosen by measurement (1M-sample-per-point
+independent quadrature at the node-exact configurations, same 8-value
+probe set): `J=3` leaves 0.81% — its anchor ramp still reaches `2.44e-4`,
+above the smallest probe — `J=4` leaves 0.60% and `J=5` leaves 0.54%. From
+`J=4` on, the worst residual is no longer in the end-cap at all: it sits
+at `cos=5e-3`, inside the UNIFORM part of the grid, and does not move
+with further refinement. `J=5` is taken because it is the first value
+whose anchor ramp lies entirely below the smallest probe.
+
+Interpolation stays **linear in cos** on every interval. Log-cos measured
+better on the uniform part (0.13% vs 0.54% at `cos=5e-3`, the curve being
+near a power law there), but it cannot express the interval that touches
+`cos=0`, and every consumer of these nodes — `MSLobeDetail::SegTotal` /
+`SegInvert`, which integrate and invert `(1-Ess)*c` in closed form for the
+H6 sampler — is built on the piecewise-LINEAR model. 0.54% is already
+inside the 1% target.
+
+**The ISOTROPIC sub-grid is deliberately NOT refined** (its residual at
+`alpha=0.01, cos=1e-4` is 0.016%, i.e. there is nothing to gain), and
+`E_ss_SUB_TABLE`, `E_ss_SUB_TABLE_G2` and `E_ss_LIMIT_TABLE` are
+byte-for-byte identical across the round-2 re-bake, along with all seven
+pre-existing tables — re-verified element-wise. The aniso sub-tables' own
+`alphaX==alphaY` diagonal is still seeded from the isotropic MODEL (now
+evaluated at the new nodes' `cosTheta` rather than by node index), so the
+isotropic limit stays continuous.
 
 ### Residual table
 
@@ -665,42 +736,65 @@ axis actually resolves, and missed only where that axis itself is the
 error (`0.005`, below the table's range; `0.015`–`0.02`, mid-way through
 the 4.2x-wide first cell) — DL-105.
 
-Anisotropic `LookupEssG2AnisoDirectional`, same protocol. The first group
-is EXACT on all three interpolated grid axes (`alphaX`, `alphaY` at
+Anisotropic `LookupEssG2AnisoDirectional`. The first group is EXACT on
+all three interpolated grid axes (`alphaX`, `alphaY` at
 `0.01 + 0.99k/23`; `phi` at multiples of 7.5 degrees), so `cosTheta` is
 the only interpolated axis — that group is what isolates this end-cap.
 The second group is the typical near-node configurations, and the third
 is the single corner debt-ggx3 cited, which is off-node on ALL THREE
-axes:
+axes.
 
-| (alphaX, alphaY, phi) | flat % | line % | baked % |
-|---|---|---|---|
-| node-exact (0.01, 1.0, 0) | 28.90 | 38.69 | **0.70** |
-| node-exact (0.01, 1.0, 45) | 3.81 | 0.40 | **0.04** |
-| node-exact (0.01, 1.0, 90) | 2.91 | 0.29 | **0.01** |
-| node-exact (1.0, 0.01, 0) | 2.91 | 0.29 | **0.01** |
-| node-exact (1.0, 0.01, 90) | 28.90 | 38.72 | **0.72** |
-| node-exact (0.22522, 0.48348, 7.5) | 4.26 | 0.53 | **0.08** |
-| node-exact (0.95696, 0.09609, 82.5) | 12.23 | 2.26 | **0.13** |
-| (0.9, 0.1, 0 / 45 / 90) | 2.67 / 3.46 / 16.42 | 0.25 / 0.36 / 4.01 | **0.02 / 0.01 / 0.17** |
-| (0.05, 0.5, 0 / 45 / 90) | 12.20 / 2.21 / 1.69 | 2.63 / 0.22 / 0.15 | **0.64 / 0.05 / 0.01** |
-| (0.0361, 0.9627, 5), off-node on all 3 axes | 17.99 | 2.42 | **3.97** (DL-105) |
+**Probe protocol** (this is the part round 1 got wrong, so it is stated
+explicitly): worst relative error over
+`cosTheta in {1e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 1.56e-2}`,
+against `MonteCarloEssG2AnisoDirectional` at 20M samples per point —
+`GGXHeightCorrelatedEnergyLUTTest`'s own printed rows, one seed per row.
+The `flat`/`line` columns were measured over round 1's set, which began
+at `0.002`; `r1` and `r2` are both measured over the set above, so they
+compare like with like. `r1` = the uniform sub-grid (`03656e6c`),
+`r2` = the geometrically refined aniso sub-grid.
 
-Two things to read out of that. First, the straight line was catastrophic
-exactly where the curve is least linear: at the 100:1 anisotropy node it
-is **38.7%** off, WORSE than the flat clamp's 28.9%, while the baked grid
-reads 0.70%. Second, the `(0.0361, 0.9627, 5)` corner — the one the DL-77
+| (alphaX, alphaY, phi) | flat % | line % | r1 % | r2 % |
+|---|---|---|---|---|
+| node-exact (0.01, 1.0, 0) | 28.90 | 38.69 | 5.91 | **0.34** |
+| node-exact (0.01, 1.0, 45) | 3.81 | 0.40 | 0.04 | **0.05** |
+| node-exact (0.01, 1.0, 90) | 2.91 | 0.29 | 0.03 | **0.04** |
+| node-exact (1.0, 0.01, 0) | 2.91 | 0.29 | 0.03 | **0.04** |
+| node-exact (1.0, 0.01, 90) | 28.90 | 38.72 | 5.93 | **0.32** |
+| node-exact (0.87087, 0.09609, 90) | — | — | 0.48 | **0.22** |
+| node-exact (0.22522, 0.48348, 7.5) | 4.26 | 0.53 | 0.09 | **0.09** |
+| node-exact (0.95696, 0.09609, 82.5) | 12.23 | 2.26 | 0.27 | **0.13** |
+| (0.9, 0.1, 0 / 45 / 90) | 2.67 / 3.46 / 16.42 | 0.25 / 0.36 / 4.01 | 0.03 / 0.04 / 0.47 | **0.02 / 0.01 / 0.16** |
+| (0.05, 0.5, 0 / 45 / 90) | 12.20 / 2.21 / 1.69 | 2.63 / 0.22 / 0.15 | 0.63 / 0.04 / 0.02 | **0.57 / 0.04 / 0.02** |
+| (0.0361, 0.9627, 5), off-node on all 3 axes | 17.99 | 2.42 | 3.97 | **4.04** (DL-105) |
+
+Three things to read out of that. First, the straight line was
+catastrophic exactly where the curve is least linear: at the 100:1
+anisotropy node it is **38.7%** off, WORSE than the flat clamp's 28.9%.
+Second, the round-1 baked grid left **5.9%** at those same two nodes — the
+whole of it inside the single un-bracketed first sub-interval, which
+round 1's probe set skipped (see "Round 2" above); the geometric
+refinement closes them to **0.34%**, and the worst node-exact residual
+anywhere in the table is that same 0.34%, at `cos=1.56e-2` where it is
+the ordinary bin-0 blend and the sub-table's own Monte-Carlo noise, not
+the end-cap. Third, the `(0.0361, 0.9627, 5)` corner — the one the DL-77
 record quotes — is not measuring this end-cap at all: it sits between
 nodes on `alphaX`, `alphaY` AND `phi`, and its residual is the aniso
 grid's own interpolation error (DL-105 / DL-77's tracked `ANISO_PHI` and
-low-alpha residual). The straight line happening to read 2.42% there is a
-coincidence of two errors pointing opposite ways, not evidence for it.
+low-alpha residual); the `3.97 -> 4.04` move is that re-baked sub-table's
+noise, not a change in kind. The straight line happening to read 2.42%
+there is a coincidence of two errors pointing opposite ways, not evidence
+for it.
 
 **Control**: at `cosTheta = 0.03` — the first ORDINARY interpolation
 span, just above `c0` — all three headers agree to every printed digit
 (e.g. `alpha=0.02` G2: 3.32% / 3.32% / 3.32%). The fix touches nothing
 above `c0`, and `GGXHeightCorrelatedEnergyLUTTest` now asserts that as a
-labelled control group rather than leaving it implicit.
+labelled control group rather than leaving it implicit. Round 2 keeps
+that property EXACTLY: every anisotropic `cos=0.03` control row prints
+the identical residual before and after the refinement (`0.190382`,
+`0.239462`, `2.225795`, `2.420756`, `0.168196`, `0.121612` — to the last
+printed digit), because nothing at or above `c0` reads a sub-node.
 
 ### Production-BRDF furnace (independent of the LUT harness)
 
@@ -731,6 +825,27 @@ that every same-signed row was blind to). They carry the section's
 tightest band (`3*SE + 0.005`, i.e. +/-0.0088 at this SE) because the
 baked aniso sub-grid closes them to within 0.05% of 1.
 
+Round 2 adds the 100:1 pair at `theta=89.99` (`cosView ~ 1.745e-4`),
+which lands in the first sub-interval the round-1 grid left un-bracketed,
+plus the two DL-105 rows the round-2 review measured. Same estimator,
+400k samples:
+
+| row | r1 | r2 |
+|---|---|---|
+| GGX aniso (0.01, 1.0) theta=89.99 az=0 | 0.96506 +/- 0.00147 | **1.00208 +/- 0.00142** |
+| GGX aniso (1.0, 0.01) theta=89.99 az=90 | — | **0.99757 +/- 0.00142** |
+| GGX Schlick alpha=0.005 theta=89.89 | — | 0.96970 +/- 0.00151 (DL-105) |
+| CT conductor alpha=0.005 theta=89.40 | — | 1.03432 +/- 0.00217 (DL-105) |
+
+The first row is the review's material-level finding: a **3.5% deficit**,
+outside this section's own band, at a configuration no material row
+drove. The last two are DL-105, not DL-86 — pinned at their MEASURED
+values with the cause named, like the three DL-105 rows already in that
+test. The round-2 review measured them at `0.96835 +/- 0.00152` and
+`1.03649 +/- 0.00219`; the values pinned in the test are this slice's own
+re-measurement at its own seed, and each band (`3*SE + 0.010`) contains
+the other reading.
+
 The `line` column is the reviewer's central finding restated at material
 level: the first closure turned a bounded GAIN into a **7.2% DEFICIT** at
 `alpha=0.005, theta=89.80` (`1.00619 -> 0.92756`), larger than the
@@ -760,6 +875,21 @@ matching formulas. Segment arrays grew `LUT_SIZE+1` → `LUT_SIZE+SUB_SIZE`
 documented "Z is an exact affine function of `af`" per-row-then-blend
 optimization is preserved unchanged.
 
+Round 2 keeps that by construction for the ANISO pair too:
+`BuildSegmentsFromRowN` reads its node abscissae from the same
+`AnisoSubNodeCos` that `LookupEssG2Aniso`/`LookupEssG2AnisoDirectional`
+locate `cosTheta` with (`AnisoSubNodeIndex`), and the aniso segment
+arrays grew `ANISO_COS_SIZE+SUB_SIZE -> ANISO_COS_SIZE+ANISO_SUB_TOTAL`
+(40 -> 45) at every call site. `GGXHeightCorrelatedEnergyLUTTest` pins it
+directly rather than by argument: `2*PI * int_0^1 MSPdfG2Aniso dc` is
+`1.00000000` at four `(alphaX, alphaY)` pairs (composite Simpson, refined
+separately on `[0,c0]`), and a 40M-draw histogram of
+`SampleMSCosThetaG2Aniso` at `(0.01, 1.0)` matches that density in every
+sub-grid-scale bin with an expected count above 50 (worst `|z| = 1.65`).
+Both checks are CONSISTENCY PINS — green before and after — and exist
+because the refinement changes a node list two independent pieces of code
+read.
+
 The same obligation binds the anisotropic pair, and the first closure
 left it unmet in the other direction: it fixed
 `LookupEssG2AnisoDirectional` but deliberately left `LookupEssG2Aniso`
@@ -785,8 +915,21 @@ now bakes and emits all five new tables, and carries the updated lookup
 code in its `printf` blocks and in both verbatim hand-maintained blocks
 (`kHandMaintainedH6Block`, `kHandMaintainedDL77AnisoBlock`). Verified by a
 full regeneration: `diff` against the checked-in header is **0 lines**.
+Round 2 was made GENERATOR-FIRST for the same reason — the node layout,
+the bake, the emitted table dimensions and the emitted lookup code are
+all edited in `tools/GenerateMicrofacetEnergyLUT.cpp`, and the checked-in
+header is that generator's output verbatim.
 
 ### Residual, tracked as DL-105
+
+DL-105's own summary used to say "up to 5% in `Ess` (and 3% in a furnace
+mean)". The furnace half is understated: the SEPARABLE path reaches
+**+3.43%** (`CookTorranceBRDF` conductor `alpha=0.005, theta=89.40`,
+`1.03432 +/- 0.00217`; the round-2 review read `+3.65%` at its own seed).
+The sign flips with angle at a fixed alpha below the table's range: it is
+a GAIN below roughly 89.5 degrees and a DEFICIT beyond it (GGX Schlick
+`alpha=0.005`: `+2.73%` at `theta=89.40`, `-3.27%` at `89.80`, `-3.03%`
+at `89.89`), which is why a one-sided furnace gate cannot see half of it.
 
 What remains at the low end is the ALPHA axis, not the cosTheta end-cap,
 and it does not move with `SUB_SIZE` (measured at 4 / 8 / 16: `alpha=0.01`

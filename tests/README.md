@@ -137,7 +137,7 @@ red-proof furnace numbers on the unfixed lookup (`1.1678+/-0.0028` and
 `(alphaX,alphaY)` as two independent grid axes (rather than
 `(ratio,alphaEff)`), so phi=0 means "aligned with the queried alphaX
 axis" unconditionally -- both new rows now read `0.9988`/`0.9924`.
-`155 checks, 0 failures`. The same re-parametrization also closed two
+`155 checks, 0 failures` (`190` after DL-86 and its round-2 rows). The same re-parametrization also closed two
 follow-on issues found in review: **P2-1** (a seam at `alphaX==alphaY` --
 the table's own diagonal is now seeded from the converged isotropic
 tables instead of an independent noisier bake) and **P2-2** (most
@@ -235,6 +235,18 @@ until they pass. `186 checks, 0 failures` (was `156/0` pre-slice). See
 [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
 "DL-86" section.
 
+**DL-86 round 2 (review P1/P2-1, same slice)**: four rows added. The
+100:1 anisotropic pair at `theta=89.99` (`cosView ~ 1.745e-4`, which
+lands in the first sub-interval the round-1 sub-grid left un-bracketed)
+reads `1.00208+/-0.00142` / `0.99757+/-0.00142` against the review's
+`0.96506+/-0.00147` before the aniso end-cap was refined -- a 3.5%
+deficit at a configuration no material row drove. Two further rows pin
+the SEPARABLE path's worst DL-105 excursions at their MEASURED values
+with the cause named: `CT conductor a=0.005 th=89.40` `1.03432+/-0.00217`
+(a GAIN; the review read `1.03649+/-0.00219` at its own seed, inside this
+row's band) and `GGX Schlick a=0.005 th=89.89` `0.96970+/-0.00151` (a
+DEFICIT). `190 checks, 0 failures`.
+
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
 (`E_ss_TABLE_G2`/`E_avg_TABLE_G2`, `LookupEssG2`/`LookupEavgG2`) against a
@@ -298,6 +310,30 @@ LookupEss=0.860587` vs quadrature `0.917441+/-0.000033`, 6.20%) and
 0 failures` (was `30/0` pre-slice). See
 [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
 "DL-86" for the full before/after residual tables.
+
+**DL-86 round 2 (review P1, same slice)**: the anisotropic probe set
+above started at `cos=0.002`, just ABOVE the first baked sub-node
+(`c0/8 = 1.953e-3`), so the one interval that is a straight ramp from the
+exact `cosTheta->0` anchor went unprobed -- and for an anisotropic pair
+that is the interval the end-cap follows worst, because the approach to
+`Ess=1` only begins at `cos << alphaX*sinTheta`. The probe set is now
+`{1e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 1.56e-2}` for both aniso
+groups (quote THAT protocol with any residual figure from this suite),
+the node-exact group gained `(0.8709,0.0961,phi=90)` -- the node-exact
+stand-in for the review's `(0.9,0.1,phi=90)`, which is off-node on both
+alphas and can only be probed in the other group -- and the node-exact
+group has its own tolerance, `0.004`, separate from the off-node group's
+`0.008`. Red-proof: **8 failures** on `03656e6c` at
+`(0.01,1.0,phi=0)` and its axis-swapped twin (`2.49%` at `cos=1e-4`
+rising to `5.91%` at `1e-3`). Fixed by refining the ANISO sub-grid's
+lowest interval by 5 geometric octaves (`ANISO_SUB_FINE`); the isotropic
+sub-grid is deliberately unchanged (its residual there is `0.016%`).
+Post-fix the worst node-exact residual over the whole probe set is
+`0.338%`. Also gained a consistency pin (green before and after) for the
+anisotropic H6 multiscatter lobe: `2*PI*int MSPdfG2Aniso dc == 1` at four
+`(alphaX,alphaY)` pairs and a 40M-draw `SampleMSCosThetaG2Aniso`
+histogram against that density in sub-grid-scale bins. `252 checks, 0
+failures`.
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's
