@@ -207,6 +207,13 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 			ri.vGeomNormal = -ri.vGeomNormal;
 		}
 		ri.bGeomNormalOrientedToRay = bFlipGeomNormal;
+		// DL-96: a double-sided mesh that is NOT certified watertight
+		// (DL-143's build-time position-weld check, m_bWatertight) has no
+		// single true "outside" -- it is an open sheet where both faces
+		// are legitimate physical sides.  See
+		// RayIntersectionGeometric::bOpenSheet's doc comment for the one
+		// consumer (the BSSRDF front-face gate) that reads this.
+		ri.bOpenSheet = !m_bWatertight;
 	}
 }
 

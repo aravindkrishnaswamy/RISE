@@ -128,6 +128,12 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 			ri.vGeomNormal = -ri.vGeomNormal;
 		}
 		ri.bGeomNormalOrientedToRay = bFlipGeomNormal;
+		// DL-96: this (non-indexed) mesh class has no watertightness
+		// certification at all (that is `TriangleMeshGeometryIndexed`'s
+		// DL-143 mechanism only), so every double-sided hit here is
+		// treated as an open sheet -- see
+		// RayIntersectionGeometric::bOpenSheet's doc comment.
+		ri.bOpenSheet = true;
 	}
 }
 

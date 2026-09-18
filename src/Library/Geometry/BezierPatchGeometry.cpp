@@ -107,6 +107,10 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// -- record it so consumers needing the TRUE surface facing
 	// (RayCaster's x-ray self-hit test) can recover the unflipped sign.
 	ri.bGeomNormalOrientedToRay = bDidFlip;
+	// DL-96: a patch never encloses a volume, so a double-sided hit
+	// here is always an open sheet (both faces are legitimate physical
+	// sides) -- see RayIntersectionGeometric::bOpenSheet's doc comment.
+	ri.bOpenSheet = bDidFlip;
 
 	// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
 	// this hit already knows exactly which PATCH and (u, v) it landed on

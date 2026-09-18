@@ -229,6 +229,29 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			// (the vast majority -- any consistently-wound single-sided
 			// mesh, and every analytical primitive) are untouched either
 			// way, since the flag defaults false for them.
+			//
+			// DL-96 (checked, NOT changed here): the entry GATE at the
+			// call site (PathTracingIntegrator.cpp / BDPTIntegrator.cpp)
+			// now admits BSSRDF entry from EITHER face of an open sheet
+			// (`RayIntersectionGeometric::bOpenSheet` / `BSSRDFEntryFacing`
+			// -- see those doc comments), but this probe loop's own job
+			// is different: given that an exit hit was admitted, find a
+			// SELF-CONSISTENT nearby entry point on the same physical
+			// surface.  For a thin/open sheet the profile's radiative
+			// transfer is symmetric in the sheet's SINGLE true normal
+			// regardless of which face was viewed (a backlit leaf glows
+			// the same way, mirrored) -- so probe hits keep recovering
+			// the TRUE winding-order normal unconditionally here, exactly
+			// as DL-71/DL-75 already validate ("no legitimate reason for
+			// the entry side to disagree", `BSSRDFPlanarProbeReachTest`'s
+			// `outwardOriented`/`neePositive` checks).  Gating this
+			// recovery on `bOpenSheet` too was tried and REVERTED: every
+			// double-sided `TriangleMeshGeometry` hit sets `bOpenSheet`
+			// unconditionally (that class has no watertightness
+			// certification at all), so it collapsed `outwardOriented`
+			// from 500/500 to 0/500 on that suite's real double-sided
+			// mesh/clipped-plane fixtures -- confirmed by an isolated
+			// rebuild+rerun before reverting.
 			if( probeRI.geometric.bGeomNormalOrientedToRay &&
 				!probeRI.geometric.bGeomNormalRayDerived )
 			{
@@ -324,6 +347,10 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 	// The disk-to-surface area Jacobian uses the geometric normal.
 	// Shading-normal modifiers change the angular frame, not probe-hit density.
+	// DL-96: `fabs` makes these three projections invariant under a sign
+	// flip of `entryGeomNormal`, so they need no `bOpenSheet` branch --
+	// unlike the entry-gate and the probe-recovery loop above, an open
+	// sheet's choice of "which face's normal" cancels here regardless.
 	const Scalar cosN = fabs( Vector3Ops::Dot( entryGeomNormal, exitNormal ) );
 	const Scalar cosT = fabs( Vector3Ops::Dot( entryGeomNormal, exitTangent ) );
 	const Scalar cosB = fabs( Vector3Ops::Dot( entryGeomNormal, exitBitangent ) );
