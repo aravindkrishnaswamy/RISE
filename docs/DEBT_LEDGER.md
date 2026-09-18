@@ -948,8 +948,14 @@ passed, `SourceHygieneTest` 167/0, `ConnectionLegalityTest` 319/0,
 `CstDeriveGoldenTest` 452 MATCH/0 DRIFT, `BDPTVertexRIGRebuildTest` 68/0,
 `SSSRadianceScalingTest` 574017/0,
 `GenericHumanTissueInteriorScatterTest` (new) 8/0.  This slice's branch
-HEAD does not update the "Authoritative totals" line below; master is
-still `50dbc4d8` as of this round (not re-merged).
+HEAD does not update the "Authoritative totals" line below; master had
+advanced to `9e392ea3` by review round 4 (still not merged into this
+branch -- explicit instruction each round: do not merge master).  (This
+line originally read `50dbc4d8`, then round 3's relay named `19944c34`;
+master moved again between rounds, as an unrelated concurrent slice's
+own merges landed -- master's position is a moving target across this
+row's review rounds and this note is updated to whichever commit the
+round's own relay named, not re-derived independently each time.)
 
 **2026-09-17 (debt-dltrain slice, branched from `master` `aa64c45e`):** the
 optimal-MIS training-input family CLOSED as a group — DL-155 (LightSampler's
