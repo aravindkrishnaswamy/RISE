@@ -537,8 +537,15 @@ Schlick-material furnace configurations, un-guided default PT): 1.0102 /
 1.0627 / 1.0667 at this slice's HEAD vs 1.0530 / 1.0735 / 1.0697 on
 pre-slice master `32824325` — improved, not closed; worst single bin
 1.353. No open row named this UN-guided instance (DL-67 is scoped to the
-guided one-sample/RIS branches). Filed as **DL-103**; see the ledger for
-the full recipe. Cross-references: DL-67 (guided PT/BDPT candidates),
+guided one-sample/RIS branches). Filed as **DL-103**, and **CLOSED
+2026-09-17** — the escape side now stores the material's AGGREGATE
+`ISPF::Pdf()`/`PdfNM()` for the traced direction under the live IOR
+stack, which is the same function these NEE arms use; see
+[DL103_PT_ESCAPE_MIS_PARTNER.md](DL103_PT_ESCAPE_MIS_PARTNER.md) for the
+closed-form furnaces that pin it (11.03 % / 12.69 % red, 0.10 % / 0.005 %
+green) and for the render-level consequence (the +5.2 % PT-vs-BDPT gap
+on `BDPTStrategyBalanceTest` topology L closes to +0.04 %, entirely by
+PT moving). Cross-references: DL-67 (guided PT/BDPT candidates),
 DL-69 (BDPT/VCM ordinary throughput).
 
 ---
