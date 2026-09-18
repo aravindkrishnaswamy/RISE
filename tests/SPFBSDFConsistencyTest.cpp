@@ -1056,6 +1056,36 @@ int main()
     fabricSatinThinMat->addref();
     IBSDF* fabricSatinThinBRDF = fabricSatinThinMat->GetBSDF();
 
+    // DL-23 P2-1: `coated_material` OVER a `transmission thin` weave --
+    // directly, and through the fabric layer above -- for Part E2's
+    // cross-hemisphere reciprocity sweep.  Reuses the coated triad's own
+    // neutral fixtures (`coatWeightSc`=1, `coatIorSc`, `coatRoughSc`,
+    // `coatZeroSc` thickness/absorption, `one` tint) so this is the
+    // SAME coat configuration `coatedLambMat`/`coatedGgxMat` already use
+    // above, over the two `weaveSatinThin`-rooted substrates Part E2
+    // already builds -- "Coated_Weave_thin" wraps the bare weave,
+    // "Coated_Fabric" wraps the fabric-over-weave twin, so a defect
+    // specific to double-wrapping (coat -> fabric -> weave) cannot hide
+    // behind the single-wrap row passing.  CoatedBRDF's below-horizon
+    // branch (CoatedBRDF.cpp's "TRANSMISSION THROUGH THE COAT" section)
+    // multiplies the substrate's OWN (already-reciprocal, per Part E2's
+    // header comment) flat transmit value by `K*weight + (1-weight)`,
+    // where `K = Ain*Aout*rec*(Tin*Tout/eta^2)` is symmetric under an
+    // i/o swap by construction (Ain/Tin and Aout/Tout simply exchange
+    // roles) and `weight`/`rec`/`eta` do not depend on direction at
+    // all -- so the composite is reciprocal PROVIDED the substrate call
+    // it wraps is, which is exactly what these two rows check rather
+    // than assume.
+    CoatedMaterial* coatedWeaveSatinThinMat = new CoatedMaterial(
+        *weaveSatinThin.Material(), *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedWeaveSatinThinMat->addref();
+    IBSDF* coatedWeaveSatinThinBRDF = coatedWeaveSatinThinMat->GetBSDF();
+
+    CoatedMaterial* coatedFabricSatinThinMat = new CoatedMaterial(
+        *fabricSatinThinMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedFabricSatinThinMat->addref();
+    IBSDF* coatedFabricSatinThinBRDF = coatedFabricSatinThinMat->GetBSDF();
+
     // BARE sheen_material's own triad.  9.9 gate 5(a) is explicit that
     // this is a PRE-EXISTING HOLE this phase closes as a matter of
     // course: SheenBRDF has never been in the reciprocity sweep, even
@@ -1611,6 +1641,17 @@ int main()
         // FabricBRDF banner rejects for the reflect side for exactly
         // this reason) on the way through the surface.
         { "Fabric/Weave_satin_thin (transmission)",   fabricSatinThinBRDF },
+        // DL-23 P2-1 (docs/DEBT_LEDGER.md): `coated_material` newly
+        // admits fabric_material/weave_material substrates and forwards
+        // their transmission (CoatedBRDF.cpp's below-horizon branch) --
+        // these two rows are that branch's OWN reciprocity check, not a
+        // re-measure of the rows above.  "Coated_Weave_thin" wraps the
+        // bare weave directly; "Coated_Fabric" wraps the fabric-over-
+        // weave twin, so a defect specific to the coat sitting on TOP OF
+        // an already-wrapped substrate cannot hide behind the simpler
+        // row passing.
+        { "Coated_Weave_thin (transmission)",         coatedWeaveSatinThinBRDF },
+        { "Coated_Fabric (transmission)",             coatedFabricSatinThinBRDF },
     };
 
     for( const ReciprocityEntry& e : crossHemisphereMaterials )
@@ -1658,6 +1699,13 @@ int main()
                   << "  maxErr=" << std::setprecision(2) << pr.maxRelError * 100 << "%"
                   << std::endl;
     }
+
+    // DL-23 P2-1: the two coat-over-transmissive-substrate wrappers,
+    // released before the substrates they addref'd (fabricSatinThinMat,
+    // weaveSatinThin's own material) -- same ownership discipline as the
+    // coated triad below.
+    safe_release( coatedFabricSatinThinMat );
+    safe_release( coatedWeaveSatinThinMat );
 
     // Fabric triad: same ownership discipline as the coated one below --
     // the MATERIAL owns the BRDF/SPF the tables above borrowed.
