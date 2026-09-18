@@ -378,10 +378,19 @@ tool exposes it. **Defer it to Phase 4, gated on observed need.**
    fallback) yields worse curvature than a glTF import carrying authored ones.
    This mirrors Blender's documented Pointiness limitation — quality coupled to
    vertex density, patchy on low-poly.
-3. **On patches it is a lie.** `ComputeSurfaceDerivatives` is a stub for both
-   patch types; they report perfectly flat while being genuinely curved. Until
-   Phase 4 fixes that, keep patches on the `valid = false` path so `curv` reads
-   0 as an *absence*, not a claim.
+3. **On patches it is now real (DL-20, closed 2026-09-17).** `BezierPatchGeometry`
+   / `BilinearPatchGeometry::RayElementIntersection` stamp the genuine
+   closed-form Weingarten map at intersection time (the hit's own patch and
+   `(u, v)` are known there, unlike the standalone point-only
+   `ComputeSurfaceDerivatives(point, normal)`, which cannot invert an
+   arbitrary point back to "which patch, which `(u, v)`" and stays
+   conservative-reject, `valid = false`, by design — same for a Bezier hit
+   that needed the ray-facing winding-consistency flip, where a right-handed
+   `(dpdu, dpdv, n)` frame cannot be recovered without a larger
+   reparametrization). `curv`/`curvR` on a patch hit that did NOT need that
+   flip are now genuine, resolution-free, exact differential curvature — see
+   [DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md)
+   and `tests/PatchCurvatureTest.cpp`.
 
 **Why it is still the right Phase-1 signal.** The authoring that motivated this
 work is SDF- and creature-heavy, and **SDF curvature is smooth, high-quality
@@ -1947,6 +1956,18 @@ is the comparison to beat.
    claim of flatness. An expression cannot distinguish the two without a
    companion validity variable — decide whether one is warranted or whether
    `fw`'s honest-zero convention suffices.
+
+   nested-CSG construction no test could produce).
+2. ~~**Patch geometries report flat while genuinely curved.**~~ **CLOSED
+   2026-09-17 (DL-20, `debt-geom2`).** `BezierPatchGeometry` /
+   `BilinearPatchGeometry::RayElementIntersection` now stamp the real
+   closed-form Weingarten map at intersection time; `curv` reads genuine
+   differential curvature there. The `valid = false` / honest-zero
+   convention this item asked to preserve is kept ONLY for the two
+   documented conservative-reject cases (the point-only
+   `ComputeSurfaceDerivatives(point, normal)` query, and a Bezier hit that
+   needed the ray-facing winding-consistency flip) — see
+   [DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
 3. **Displaced geometry: which curvature?** The baked path reports **only** the
    displaced surface, at a fidelity bounded by tessellation. The analytic
    escape hatch (`ComputeAnalyticalDerivatives`, `DisplacedGeometry.cpp:407+`)
