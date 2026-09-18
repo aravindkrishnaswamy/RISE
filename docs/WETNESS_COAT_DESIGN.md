@@ -1327,9 +1327,30 @@ the worst of §6.2's coverage dip by construction.
 > textured — received the **coat** but **no darkening whatsoever**. §4(g)'s
 > `sample(name)`/`sample_scalar(name)` builtins close this: §6.4 clause 2 now
 > ACCEPTS such a base (a `def base_color sample(<substrate>)` line replaces
-> the literal `base_r/g/b` params on the GGX/PBR in-place and Oren-Nayar/
-> metallic-named branches; the Lambertian branch needed no change at all,
+> the literal `base_r/g/b` params on the GGX/PBR in-place branch and on the
+> Oren-Nayar damp-only branch; the Lambertian branch needed no change at all,
 > since `coated_material`'s own transport already darkens any substrate).
+>
+> **A METALLIC-NAMED MATERIAL IS NOT ONE OF THOSE BRANCHES**, and an earlier
+> draft of this paragraph said it was.  Clause 1 skips the colour block
+> ENTIRELY for a metallic base (`AgentSession.cpp`'s `if( !isMetallic )`
+> gate) -- it gets the coat and the gloss and no darkening of any kind,
+> textured or flat, and says so in its own success message ("wet-look only
+> (metallic base, no darkening)").  That is §2.1's own physics, not an
+> omission: a wet metal is a filmed metal, not a darkened one.
+>
+> **WHAT REMAINS AFTER DL-25, stated because the builtin's reach is not
+> unlimited** (see the `expression_painter` chunk descriptor for the full
+> contract).  `sample()` calls the painter's RGB `GetColor`: a
+> `spectral_painter` / `blackbody_painter` substrate has its spectrum
+> collapsed to RGB and re-uplifted through the Jakob-Hanika LUT downstream,
+> which is a different curve, and `GetAlpha` is dropped.  Those kinds stay
+> on clause 2's REFUSAL path for exactly that reason -- they classify
+> `Opaque`, not `Varying` -- so the verb declines rather than silently
+> resampling them; binding such a substrate directly, without wetness, is
+> still the only way to keep its spectrum.  `sample_scalar()` likewise
+> reports one representative wavelength (549 nm), so a wavelength-varying
+> scalar substrate reads achromatic through it.
 
 ### 6.4 Qualifying predicate and refusals
 
@@ -2440,19 +2461,44 @@ timing exists because no implementation exists.
    same forward-only `GetItem` lookup every other name-referencing chunk form
    already uses, so a genuine reference cycle is structurally impossible and
    self-reference gets its own diagnostic.  `CallFunc`/`CallFuncVec3` evaluate
-   the bound painter at a SYNTHETIC hit built from exactly the u,v,P,Po,N
-   fields already in the L2 memo key, so the memo needs no new key field
-   (documented in `ExpressionMemo.h`).  §6.4 clause 2 (`AgentSession.cpp`)
-   now ACCEPTS a genuinely textured/procedural base instead of refusing it:
-   a Lambertian base is WRAPPED as before (`coated_material`'s own layered
-   transport already darkens any substrate, textured included, so no
-   sample()-based painter is even minted there); the GGX/PBR in-place branch
-   and the Oren-Nayar/metallic-named darkening-only paths now emit
-   `def base_color sample(<substrate>)` + `pow(base_color.x/y/z, k)` in place
-   of the literal `base_r/g/b` path.  `tests/TextureExpressionVMTest.cpp`
-   888/0 (was 846/0); `tests/AgentAddWetnessTest.cpp` F4/F4b assert the
-   textured-substrate case applies and the emitted expression samples the
-   named substrate.
+   the bound painter at **THE CALLER'S OWN HIT RECORD**
+   (`ExprEvalContext::pHit`), so a sampled texture mip-filters against the
+   real footprint, a sampled view-dependent painter sees the real ray, and a
+   nested `expression_painter` sees the real `curv` / `fw` / signal channel.
+   The **first implementation used a SYNTHETIC five-field hit** instead,
+   arguing that u,v,P,Po,N are exactly what the L2 memo key compares so no
+   key growth was needed; the argument was sound about the memo and wrong
+   about the painter -- a partial record is a wrong answer to every question
+   the dropped fields answer, and the flagship
+   `def base_color sample(rock_albedo)` recipe silently turned a
+   mip-filtered albedo into an aliasing point sample.  **Corrected
+   2026-09-17 in the same slice's review (P1-1)**: the memo's L2 key gained
+   an `ExpressionMemo::PainterSampleHitKey` (the footprint Jacobian, the ray
+   direction, `ptCoord1`, `vColor`, and a has-record flag), with a
+   `SourceHygieneTest` census over every `ri.<field>` read in
+   `src/Library/Painters` keeping that enumeration honest.  Declaring a
+   sampling program un-memoable instead was measured at 3.35x more user CPU
+   and rejected.  §6.4 clause 2 (`AgentSession.cpp`) now ACCEPTS a genuinely
+   textured/procedural base instead of refusing it: a Lambertian base is
+   WRAPPED as before (`coated_material`'s own layered transport already
+   darkens any substrate, textured included, so no sample()-based painter is
+   even minted there); the GGX/PBR in-place branch and the Oren-Nayar
+   damp-only path now emit `def base_color sample(<substrate>)` +
+   `pow(base_color.x/y/z, k)` in place of the literal `base_r/g/b` path.  A
+   METALLIC-NAMED material is NOT among them -- clause 1 skips the colour
+   block entirely for it (coat and gloss only), which is §2.1's physics and
+   not an omission; §6.3's caveat states this and an earlier draft of both
+   passages got it wrong.  `tests/TextureExpressionVMTest.cpp` 936/0 (was
+   846/0 before the arc, 888/0 before the review);
+   `tests/AgentAddWetnessTest.cpp` 234/0 (F4/F4b assert the
+   textured-substrate case applies, that the emitted expression samples the
+   named substrate, and -- since the review's P1-2 -- that the verb reports
+   NO base colour rather than a fabricated `0 0 0`);
+   `tests/WetTextureDetailRenderTest.cpp` 23/0 is the arc's render-level
+   gate (an identity `sample(tex)` renders identically to the texture bound
+   directly -- 19.8 % more contrast before the P1-1 fix -- and the real verb
+   darkens a textured substrate PER TEXEL: wet/dry 0.806 over the dry
+   frame's darkest quartile against 0.948 over its brightest).
 6c. **`add_wetness` and `add_wear` mutually exclude each other on one material**
    (§6.4), and worn-and-wet is the flagship subject. v1 accepts the exclusion with
    cross-naming refusal messages; the census counts the demand. **Open.**

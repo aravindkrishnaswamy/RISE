@@ -583,18 +583,22 @@ namespace RISE
 			//! computed-radius `interior(...)` would compile as CONVEXITY,
 			//! the same silently-wrong render `proximity` nearly shipped.
 			//!
-			//! 59 is the last free id before CallFuncVec3's 60+ band.
+			//! DL-25 TOOK 59, so this is no longer the last named case in
+			//! the scalar-returning band and there is no free id left in it
+			//! at all: `kFnSamplePainterScalar` is 59 and CallFuncVec3's
+			//! band starts at 60.  A SIXTH scalar-returning builtin needs
+			//! the two bands widened together, not an id picked here.
 			static const int kFnInterior    = 58;
-			static_assert( kFnInterior == 58, "CallFunc's `case kFnInterior:` is the last named "
-				"case in the scalar-returning band; only 59 remains free before CallFuncVec3's 60+" );
+			static_assert( kFnInterior == 58, "the scalar-returning band is FULL: kFnInterior is 58 "
+				"and DL-25's kFnSamplePainterScalar took 59, the last id before CallFuncVec3's 60+ band" );
 			//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
 			//! `sample_scalar(painter_name)` -- the IScalarPainter half of the
 			//! painter-sampling pair (its vec3-returning IPainter twin,
 			//! `sample()`, is kFnSamplePainter in the CallFuncVec3 band below).
-			//! Takes the LAST free id in this scalar-returning band -- the
-			//! comment on kFnInterior above is now stale in the narrow sense
-			//! that "only 59 remains free" no longer holds; 59 is THIS id, and
-			//! the scalar-returning band is full until CallFuncVec3's 60+ band.
+			//! Takes the LAST free id in this scalar-returning band: 59.
+			//! The band is now FULL -- kFnInterior's own comment and
+			//! static_assert above say so, and were corrected in DL-25's
+			//! review rather than left describing the pre-DL-25 state.
 			//! ZERO RUNTIME ARGUMENTS (arity 0, in ParseSampleCall's
 			//! EmitFuncCall call): the "argument" is a bare painter NAME
 			//! parsed at COMPILE time, not a runtime value, so there is
@@ -603,9 +607,12 @@ namespace RISE
 			//! (ExpressionProgram::m_scalarPainterRefNames /
 			//! BoundPainterRefs::scalar, resolved once at ATTACH time by
 			//! BindPainterRefs, never at Compile time) instead of an arity.
-			//! Reads the current hit's (u,v,P,Po,N) from `env`'s fixed
-			//! context slots -- see CallFunc's case for exactly which ones
-			//! and why that keeps the L2 memo sound with NO new key field.
+			//! Evaluates the bound painter at the CALLER'S OWN hit record
+			//! (`ExprEvalContext::pHit`), falling back to a synthetic
+			//! partial record assembled from `env`'s fixed context slots
+			//! when the context carries none -- see CallFunc's case, and
+			//! ExpressionMemo::PainterSampleHitKey for the L2 key fields
+			//! that forwarding costs.
 			static const int kFnSamplePainterScalar = 59;
 			//! DL-25: `sample(painter_name)` -- the vec3-returning IPainter
 			//! half of the pair.  Lives in CallFuncVec3's band (60+, past
@@ -3175,10 +3182,12 @@ namespace RISE
 					return pSignals ? pSignals->Interior( a[0] ) : SurfaceSignalInfo::NeutralInterior();
 				// --- DL-25: sample_scalar(name) -- IScalarPainter, no JH uplift ---
 				// `a` is empty (arity 0 -- see ParseSampleCall); the bound painter
-				// pointer lives at `pPainterRefs->scalar[idx]` and the synthetic
-				// hit is built from `env` (see BuildSyntheticRi's own doc comment
-				// for exactly which fields, and why that keeps the L2 memo sound
-				// with no new key field).  An unbound program (pPainterRefs ==
+				// pointer lives at `pPainterRefs->scalar[idx]` and the hit is the
+				// caller's own (`pHit`), or a synthetic partial record built from
+				// `env` when the context carries none -- see BuildSyntheticRi's
+				// own doc comment for exactly which fields that fallback has, and
+				// ExpressionMemo::PainterSampleHitKey for the L2 key fields the
+				// forwarding costs.  An unbound program (pPainterRefs ==
 				// null -- reachable only before BindPainterRefs runs, i.e. never
 				// from a live render, but a defensive path costs nothing) or an
 				// out-of-range index reads the honest neutral, 0 -- the same

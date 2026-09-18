@@ -1384,6 +1384,17 @@ bool Job::AddExpressionPainter(
 	// manager genuinely does not have it yet (AddItem below runs only
 	// AFTER this call succeeds), so "not found" would be technically true
 	// but would read as a typo rather than a self-reference.
+	//
+	// DL-25 review P3 -- THE CHECK IS PER MANAGER, NOT PER NAME.  The
+	// colour and physical-scalar painters live in two INDEPENDENT named
+	// managers, so an `expression_painter` called `grain` and a
+	// `scalar_painter` called `grain` are two different chunks.  This is
+	// the COLOUR chunk's resolver, so only `ResolveColorPainter` can
+	// possibly be looking at the chunk being built; `sample_scalar(grain)`
+	// here names the already-registered SCALAR `grain` and must resolve
+	// normally.  The first implementation compared the bare name in BOTH
+	// and refused a legitimate cross-manager reference as a
+	// self-reference.
 	class SelfReferenceCheckedResolver : public Implementation::IExpressionPainterRefResolver
 	{
 	public:
@@ -1402,10 +1413,9 @@ bool Job::AddExpressionPainter(
 		}
 		bool ResolveScalarPainter( const std::string& nm, IScalarPainter*& out, std::string& err ) override
 		{
-			if( nm == selfName ) {
-				err = "references itself -- a painter cannot sample its own not-yet-registered chunk";
-				return false;
-			}
+			// NO self-name check here -- see the class comment: this is an
+			// expression_painter (COLOUR) being built, so a scalar_painter
+			// of the same name is a DIFFERENT, already-registered chunk.
 			out = job.GetScalarPainters()->GetItem( nm.c_str() );
 			if( !out ) { err = "scalar_painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
 			return true;

@@ -138,9 +138,10 @@
 //
 //  UPDATED 2026-09-17 (DL-25, docs/DEBT_LEDGER.md; docs/WETNESS_COAT_DESIGN.md
 //  sec 4(g)) -- the painter-sampling builtins `sample()`/`sample_scalar()`.
-//  All FIVE named bodies' TEXT changed (each gained one new trailing
-//  parameter -- `pPainterRefs`, threading ExpressionProgram::m_boundRefs
-//  down to the two dispatch functions -- and `Eval(u,v)`/`Eval(ctx)`/
+//  All FIVE named bodies' TEXT changed (each gained two new trailing
+//  parameters -- `pPainterRefs`, threading ExpressionProgram::m_boundRefs
+//  down to the two dispatch functions, and `pHit`, threading
+//  ExprEvalContext::pHit the same way -- and `Eval(u,v)`/`Eval(ctx)`/
 //  `EvalVec3` additionally changed their `BindEnv` calls the same way), but
 //  NONE of their EXISTING arithmetic moved: every new parameter defaults to
 //  `nullptr` and every pre-existing call site's other arguments and
@@ -153,12 +154,24 @@
 //  `CallFunc`'s `kFnProximity`/`kFnInterior` cases) -- it gained
 //  `case kFnSamplePainter:`, and THAT NEW CASE is now pinned exactly as
 //  `CallFunc`'s new cases are.  `CallFunc` itself gained a THIRD case,
-//  `kFnSamplePainterScalar`.  Neither new case is memo-key-eligible on a
-//  NEW field: `sample()`/`sample_scalar()` evaluate the bound painter at a
-//  SYNTHETIC hit built ONLY from `env`'s existing u,v,P,Po,N slots (see
-//  ExpressionEval.h's `BuildSyntheticRi`), which `MakeMemoKey` already
-//  copies whole -- so the memo stays sound with NO new `ProgramKey` field
-//  and `kFields` does NOT move for this arc.  The bound painter POINTERS
+//  `kFnSamplePainterScalar`.
+//
+//  ⚠ THE FIRST IMPLEMENTATION CLAIMED THE KEY NEED NOT GROW, AND IT WAS
+//  WRONG.  It said: `sample()`/`sample_scalar()` evaluate the bound painter
+//  at a SYNTHETIC hit built only from `env`'s existing u,v,P,Po,N slots,
+//  which `MakeMemoKey` already copies whole, so the memo stays sound with no
+//  new `ProgramKey` field.  Both halves of that were true and the CONCLUSION
+//  was still a defect, because the premise was a CHOICE the painter paid
+//  for: a five-field record is a WRONG record, not a partial one, to a
+//  painter that reads the texture footprint (TexturePainter's whole mip path
+//  is gated on `ri.txFootprint.valid`), the view ray, the vertex colour or
+//  the second UV set.  DL-25's review (P1-1, 2026-09-17) forwards the
+//  CALLER'S OWN record instead and the key therefore DOES grow: see
+//  `PainterSampleHitKey` below, `ProgramKey::usesPainterSample`, and
+//  `kFields`, which moves 35 -> 52 for this arc.  Declaring a sampling
+//  program un-memoable instead was measured at 3.35x more user CPU on a
+//  sampling scene and rejected; the wider key is below the noise on a
+//  non-sampling one.  The bound painter POINTERS
 //  themselves are attach-time-immutable ExpressionProgram state (like a
 //  `param`'s folded constant, not like a per-hit context field), which is
 //  what keeps "PURE function of (program, ExprEvalContext)" true below --

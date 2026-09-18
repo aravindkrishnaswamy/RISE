@@ -4663,6 +4663,46 @@ static void TestPainterSampleAttachAndEval()
 		job->release();
 	}
 
+	// (e2) DL-25 review P3: the self-reference check is per MANAGER, not
+	// per NAME.  The colour and physical-scalar painters live in two
+	// independent named managers, so an `expression_painter` called `grain`
+	// and a `scalar_painter` called `grain` are two DIFFERENT chunks -- and
+	// a colour expression naming `sample_scalar(grain)` is referring to the
+	// scalar one, which is already registered and perfectly resolvable.
+	// The first implementation compared the bare name against BOTH
+	// resolvers and refused it as a self-reference.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"scalar_painter\n{\nname grain\nvalue 0.62\n}\n"
+			"expression_painter\n{\nname grain\nexpr vec3(sample_scalar(grain), 0.1, 0.2)\n}\n";
+		Check( S2::ParseBody( "samp_crossns", body, *job ),
+			"(e2) a COLOUR expression_painter may sample_scalar() a SCALAR painter of the same name -- "
+			"different manager, different chunk, not a self-reference" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* p = priv->GetPainters()->GetItem( "grain" );
+			Check( p != 0, "(e2) the colour painter registered" );
+			if( p ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				CheckClose( p->GetColor( r )[0], 0.62, 1e-9,
+					"(e2) ...and it really read the scalar chunk's own value" );
+			}
+		}
+		job->release();
+	}
+
+	// (e3) the mirror image, and the control that keeps (e2) honest: a
+	// SCALAR painter's expression naming its OWN scalar name is still a
+	// self-reference and still refused.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body = "scalar_painter\n{\nname mirror_s\nexpression sample_scalar(mirror_s)\n}\n";
+		Check( !S2::ParseBody( "samp_self_scalar", body, *job ),
+			"(e3) a scalar_painter sampling its OWN scalar name is still refused" );
+		job->release();
+	}
+
 	// (f) a genuinely unresolvable name (never declared at all) refuses
 	// the same way.
 	{
