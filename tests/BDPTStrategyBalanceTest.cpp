@@ -87,6 +87,12 @@
 //         `lambertian_material` (N == 1) and is structurally blind
 //         to it.
 //
+//      M. GGX wall + Lambertian floor, same geometry / emitter /
+//         camera / rasterizers as L -- L's CONTROL.  Both materials
+//         are immune to DL-127 and DL-103 (see the topology's own
+//         comment), so it discriminates a Schlick-specific residual
+//         on L from a generic PT-vs-BDPT one.
+//
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
 //    multi-threaded BDPT splat-accumulation order adds run-to-run
@@ -1807,19 +1813,23 @@ static void TestSubmergedCeilingMISCombination()
 // integral at 0/30/60 deg incidence.
 //
 // SCENE.  The receiver wall (z=0, +-1, normal +Z) fills the frame at
-// fov 30 (half-height 3.5*tan(15 deg) = 0.938).  Neither the floor
-// (y=-1, z in [0,2], normal +Y) nor the area emitter (y=1.4,
-// z in [0.1,2.6], normal -Y) is inside the frustum, so the image is
-// pure receiver radiance with no emitter pixels and no background.
-// Both non-emitting surfaces are `schlick_material`, which puts a
-// multi-lobe vertex on BOTH subpaths:
-//   - eye side: camera -> wall (v1) -> floor (v2) -> emitter.  The
-//     v1 scatter throughput multiplies every strategy of length >= 3,
-//     including the s=0 emitter-hit that competes with v1's NEE.
-//   - light side: emitter -> floor (l1) -> wall (l2) -> ...  The l1
-//     scatter throughput multiplies every s >= 3 connection and splat.
-// A large emitter (3.2 x 2.5 units, close to the receiver) is
-// deliberate: it gives the BSDF-sampling strategies real MIS weight
+// fov 30 (half-height 3.5*tan(15 deg) = 0.938).  The floor (y=-1,
+// z in [0,2], normal +Y) is outside the frustum, and the area emitter
+// -- a 12 x 12 quad in the z=4.2 plane, normal -Z, i.e. a large
+// softbox BEHIND the camera (which sits at z=3.5 looking toward -Z) --
+// is behind the near plane, so the image is pure receiver radiance
+// with no emitter pixels and no background.  Both non-emitting
+// surfaces are `schlick_material`, which puts a multi-lobe vertex on
+// BOTH subpaths:
+//   - eye side: camera -> wall (v1) -> floor or emitter (v2) -> ...
+//     The v1 scatter throughput multiplies every strategy of length
+//     >= 3, including the s=0 emitter-hit that competes with v1's NEE.
+//   - light side: emitter -> wall or floor (l1) -> the other (l2) ->
+//     ...  The l1 scatter throughput multiplies every s >= 3
+//     connection and splat.
+// The emitter's size and proximity (12 x 12 units at z=4.2, so it
+// subtends a large solid angle from every point on the wall) are
+// deliberate: they give the BSDF-sampling strategies real MIS weight
 // against NEE, so the over-count lands in the mean rather than being
 // MIS-suppressed.
 //
@@ -1998,6 +2008,158 @@ static void TestSchlickMultiLobe()
 		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Topology M: GGX wall + Lambertian floor -- topology L's CONTROL.
+//
+// WHY IT EXISTS.  Topology L reads BDPT +5.2% over PT (see that
+// topology's own comment for the current numbers).  Two known-open
+// rows can both push a PT-vs-BDPT comparison on a `schlick_material`
+// scene, and neither is DL-69:
+//
+//   * DL-127 -- `SchlickSPF`'s per-lobe `kray` is the Schlick-1994
+//     sampling weight, which is NOT that lobe's `f_I cos / p_I`.  PT
+//     and BDPT both consume `kray`, but they weight the resulting
+//     samples through DIFFERENT strategy mixes, so a per-lobe weight
+//     that is off by up to ~20% at grazing does not cancel between
+//     them.
+//   * DL-103 -- un-guided PT's escape-side MIS partner is the SELECTED
+//     lobe's own density rather than the material's aggregate, so
+//     `w_bsdf + w_nee != 1` at a multi-lobe SPF whose lobes carry
+//     DIFFERENT per-lobe densities.  That is PT-side only, so it moves
+//     the reference, not BDPT.
+//
+// This topology is the same geometry, the same emitter, the same
+// camera and the same two depth-matched rasterizers, with the two
+// receiver materials replaced by ones IMMUNE to both:
+//
+//   * `ggx_material` (wall).  `GGXSPF::Scatter` emits three lobes but
+//     stamps EVERY one of them with the same `mixPdf` -- the aggregate
+//     mixture density -- so the selected lobe's density already IS the
+//     aggregate (DL-103 cannot bite) and each lobe's `kray` is that
+//     lobe's own `f_I cos / mixPdf` by construction (DL-127 cannot
+//     bite).
+//   * `lambertian_material` (floor).  One lobe, `selectProb == 1`,
+//     `kray == albedo == f cos / p`.  Immune to both trivially, and to
+//     DL-69 itself.
+//
+// So a residual here is NOT attributable to either row, and a residual
+// on L that this control does not reproduce IS attributable to the
+// Schlick-specific pair.  Same 8% band as every other topology in this
+// file.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneGGXLambertianControlM =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rd\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rs\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"ggx_material\n"
+	"{\n"
+	"\tname mat_ggx\n"
+	"\trd pnt_rd\n"
+	"\trs pnt_rs\n"
+	"\talphax 0.5\n"
+	"\talphay 0.5\n"
+	"\tfresnel_mode schlick_f0\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_lambert\n"
+	"\treflectance pnt_rd\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_wall\n"
+	"\tpta -1 -1 0\n"
+	"\tptb 1 -1 0\n"
+	"\tptc 1 1 0\n"
+	"\tptd -1 1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_wall\n"
+	"\tgeometry quad_wall\n"
+	"\tmaterial mat_ggx\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_floor\n"
+	"\tpta -1 -1 0\n"
+	"\tptb -1 -1 2\n"
+	"\tptc 1 -1 2\n"
+	"\tptd 1 -1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_floor\n"
+	"\tgeometry quad_floor\n"
+	"\tmaterial mat_lambert\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_l\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_l\n"
+	"\texitance pnt_emit_l\n"
+	"\tscale 0.5\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit_l\n"
+	"\tpta -6 -6 4.2\n"
+	"\tptb -6 6 4.2\n"
+	"\tptc 6 6 4.2\n"
+	"\tptd 6 -6 4.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_l\n"
+	"\tgeometry quad_emit_l\n"
+	"\tmaterial mat_emit_l\n"
+	"}\n";
+
+static void TestGGXLambertianControl()
+{
+	RunTopologyTest( "GGX wall + Lambertian floor, area emitter (DL-69 topology-L control)",
+		std::string( kSceneGGXLambertianControlM ), kStrictTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -2014,6 +2176,7 @@ int main()
 	TestSubmergedFloorCancellation();
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
+	TestGGXLambertianControl();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
