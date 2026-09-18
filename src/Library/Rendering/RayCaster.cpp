@@ -1339,7 +1339,7 @@ bool RayCaster::CastRay(
 				// trained here already IS the realized one.  (The
 				// cast-level importance roulette at `CastRay`'s entry is a
 				// SEPARATE, whole-subpath survival applied to every
-				// technique below it alike; it is recorded as DL-110, not
+				// technique below it alike; it is recorded as DL-124, not
 				// folded in here.)
 				rs2.bsdfTimesCos = RISEPel( phasePdf, phasePdf, phasePdf );
 				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
@@ -1978,7 +1978,7 @@ bool RayCaster::CastRayNM(
 				// trained here already IS the realized one.  (The
 				// cast-level importance roulette at `CastRay`'s entry is a
 				// SEPARATE, whole-subpath survival applied to every
-				// technique below it alike; it is recorded as DL-110, not
+				// technique below it alike; it is recorded as DL-124, not
 				// folded in here.)
 				rs2.bsdfTimesCos = RISEPel( phasePdf, phasePdf, phasePdf );
 				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
