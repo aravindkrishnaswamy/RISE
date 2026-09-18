@@ -443,6 +443,32 @@ Clean rebuild, zero warnings.
 | `CstDeriveGoldenTest` | 452 MATCH, 0 DRIFT |
 | `SourceHygieneTest` | 165 passed, 0 failed |
 
+### 8.1 One note for whoever merges this
+
+This slice branched from `master` `aa64c45e`, and every "DL-127 is still
+open" caveat above (in §5, in both suites' topology-L comments, and in
+the ledger row) is true **at that base**.  `master` has since moved to
+`19944c34`, which merges `debt-dl127` — `SchlickSPF`'s per-lobe `kray`
+is now `f cos / p`.  That does not invalidate anything measured here:
+every A/B in this document is an *isolated*
+`src/Library/Shaders/PathTracingIntegrator.cpp`-only revert, with
+`SchlickSPF` identical on both sides, so the attributions stand.  But
+two things follow for the merge.
+
+* The DL-127 caveat becomes **weaker, not stronger** — it says a residual
+  could hide inside the PT/BDPT agreement because both consume `kray`;
+  if that row is closed, there is less to hide.  Leaving the caveat in
+  is conservative, but it should be re-worded (or struck) once the
+  merged tree is the reference.
+* Topology L's **absolute** means will move on the merged tree, because
+  `kray` changed.  The tightened band is on the **ratio**, which is what
+  should survive; re-run `BDPTStrategyBalanceTest` and
+  `VCMStrategyBalanceTest` after the merge and re-quote the topology-L
+  numbers rather than carrying this document's `0.0632…` figures
+  forward.  The same applies to the DL-125 probe's `1.637`: its three
+  renders all use `SchlickSPF`, so the ratio is the robust part, not the
+  means.
+
 `EnvLightBalanceTest`'s closed-form PT rows did not move, and they should
 not have: every receiver in that suite is `lambertian_material`, a
 single-lobe SPF whose `.pdf` **is** its aggregate.  The fix is a no-op
