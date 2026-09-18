@@ -1169,28 +1169,49 @@ int main()
         { "Schlick",                           schlick,     false, false, true,  false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
-        // Ward Isotropic Gaussian (Ward 1992):
+        // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992):
         //
-        // Cross-val: only 1-1422 mismatches (nearly passes), caused by
-        //   the 1/sqrt(n·r × n·v) divergence at grazing angles making
-        //   kray weights differ from PDF weights.
-        // Chi2: the Ward model is not energy-conserving.  The specular
-        //   VNDF sampling doesn't perfectly match the BRDF evaluation
-        //   at grazing angles, causing histogram divergence.
-        //--------------------------------------------------------------
-        { "WardIsotropicGaussian",             wardIso,     false, false, true,  true,  INTEGRAL_TOL },
-
-        //--------------------------------------------------------------
-        // Ward Anisotropic Elliptical Gaussian (Ward 1992):
+        // DL-177 (CLOSED 2026-09-18,
+        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  Both rows used to skip
+        // chi2 with this note: "the Ward model is not energy-conserving.
+        // The specular VNDF sampling doesn't perfectly match the BRDF
+        // evaluation at grazing angles, causing histogram divergence"
+        // (isotropic) and "the elliptical Gaussian PDF doesn't fully
+        // integrate to 1.0 when the two roughness parameters differ.
+        // Tolerance relaxed to 10%" (anisotropic).
         //
-        // Same issues as isotropic Ward, compounded by anisotropy.
-        // The elliptical Gaussian lobe (αx ≠ αy) makes the VNDF
-        // sampling mismatch worse.  PDF integral dips to ~0.95 at 60°
-        // due to the anisotropic normalization — the elliptical
-        // Gaussian PDF doesn't fully integrate to 1.0 when the two
-        // roughness parameters differ.  Tolerance relaxed to 10%.
+        // NEITHER was a model limitation.  `GenerateSpecularRay` stored
+        // a value that is not a density at all -- the TRUE solid-angle
+        // density of its own half-vector times `cos^4(theta_h)`.  Both
+        // rows run at alpha 0.2 / 0.3, where a typical sampled
+        // `cos^4(theta_h)` is ~0.94, so the integral stayed inside a
+        // 5%/10% band and only the histogram could see it; that is
+        // exactly why chi2 was the sub-test that got switched off.  A
+        // separate defect made `Pdf` a raw-albedo mixture rather than
+        // the density `RandomlySelect` produces.  Both fixed, with
+        // per-draw and full-sphere gates in
+        // `tests/WardDensityKrayTest.cpp`.
+        //
+        // Cross-val: STILL SKIPPED, structurally -- same reason as
+        //   IsotropicPhong / Schlick / Ashikmin above.  Both lobes are
+        //   drawn every call and one is picked by its REALIZED kray, so
+        //   no aggregate density can satisfy a per-call identity.
+        //
+        // Integral: 0.999611 / 0.999912 (isotropic 30/60 deg) and
+        //   0.999500 / 0.999978 (anisotropic), against 0.973145 /
+        //   0.963752 and 0.959258 / 0.949217 on an isolated pre-fix
+        //   rebuild -- and that last one FAILED even the 5% band, which
+        //   is what the anisotropic row's relaxed 10% tolerance was
+        //   really covering.  Both rows go back to INTEGRAL_TOL.
+        //
+        // Chi2: NOW GATED (was skipped).  Seed-mean z = +0.84 / +0.30
+        //   (isotropic 30/60 deg) and -0.08 / +0.06 (anisotropic),
+        //   against +25.4 / +35.9 and +59.0 / +107.8 pre-fix -- the
+        //   histogram was the only sub-test that could see a density
+        //   off by cos^4, and it was the one switched off.
         //--------------------------------------------------------------
-        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false, true,  true,  0.10 },
+        { "WardIsotropicGaussian",             wardIso,     false, false, true,  false, INTEGRAL_TOL },
+        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false, true,  false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
         // Ashikmin-Shirley Anisotropic Phong (2000):

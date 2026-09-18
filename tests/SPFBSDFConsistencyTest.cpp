@@ -1181,36 +1181,42 @@ int main()
         { "Schlick",                           schlickSPF,      schlickBRDF,        false, 0.01 },
 
         //--------------------------------------------------------------
-        // Ward Isotropic Gaussian BRDF (Ward 1992)
+        // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992)
         //
-        // The Ward model is *not energy-conserving* by design.  Its
-        // specular term  1/sqrt(n·r × n·v) × exp(-tan²h / α²)
-        // diverges as either n·r or n·v → 0 (grazing geometry).
+        // DL-177 (CLOSED 2026-09-18,
+        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  These two entries used
+        // to carry a 25% tolerance and this explanation: "The Ward model
+        // is *not energy-conserving* by design.  Its specular term
+        // 1/sqrt(n·r × n·v) × exp(-tan²h / α²) diverges as either n·r or
+        // n·v → 0 ... the MC sum saturates near the albedo (kray is
+        // clamped by the diffuse+specular reflectance painters) while
+        // quadrature under-integrates the sharp specular peak on a
+        // finite grid.  Observed: 8.3% @ 30°, 19.3% @ 60°" (isotropic;
+        // 10.0% / 20.2% anisotropic).
         //
-        // Because the SPF importance-samples the exponential lobe while
-        // the quadrature evaluates the full BRDF (including the
-        // divergent 1/sqrt term), the two estimates disagree.
-        // The MC sum saturates near the albedo (kray is clamped by
-        // the diffuse+specular reflectance painters) while quadrature
-        // under-integrates the sharp specular peak on a finite grid.
+        // THAT DIAGNOSIS WAS WRONG ON BOTH HALVES, and the isolated
+        // before/after is what says so rather than an argument.  The MC
+        // arm did not "saturate near the albedo" because of any
+        // divergence -- `kray` literally WAS the reflectance painter's
+        // colour, a constant, instead of that lobe's own
+        // `f_S cos / p_S`, so the two arms were integrating two
+        // different functions by construction; and the quadrature did
+        // not "under-resolve" anything, since it is unchanged by the fix
+        // and the MC arm moved onto it.  The model's own grazing
+        // behaviour is real but is NOT what these rows were measuring:
+        // at the α = 0.2 / 0.3 they run at, the corrected weight's whole
+        // per-draw range is bounded by `Rs/sqrt(n·v)` = 1.15 Rs at 30°
+        // and 1.41 Rs at 60°.
         //
-        // Observed: 8.3% @ 30°, 19.3% @ 60°.  Tolerance set to 25%
-        // to cover grazing-angle divergence.
+        // Observed after: 0.0050% @ 30°, 0.0255% @ 60° (isotropic);
+        // 0.0278% @ 30°, 0.0177% @ 60° (anisotropic).  Tolerance
+        // 0.25 -> 0.01, matching the Schlick entry above: ~36x headroom
+        // over the measured worst case, deliberately not tighter because
+        // the MC arm now carries the model's real grazing tail and this
+        // file's estimators are Monte Carlo.
         //--------------------------------------------------------------
-        { "WardIsotropicGaussian",             wardIsoSPF,      wardIsoBRDF,        false, 0.25 },
-
-        //--------------------------------------------------------------
-        // Ward Anisotropic Elliptical Gaussian BRDF (Ward 1992)
-        //
-        // Same energy-conservation limitation as the isotropic variant
-        // above, compounded by anisotropic roughness (αx ≠ αy) which
-        // produces a narrower, taller specular lobe in one tangent
-        // direction.  The quadrature grid under-resolves this elliptical
-        // peak more severely than the isotropic case.
-        //
-        // Observed: 10.0% @ 30°, 20.2% @ 60°.  Tolerance set to 25%.
-        //--------------------------------------------------------------
-        { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    wardAnisoBRDF,      false, 0.25 },
+        { "WardIsotropicGaussian",             wardIsoSPF,      wardIsoBRDF,        false, 0.01 },
+        { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    wardAnisoBRDF,      false, 0.01 },
 
         { "AshikminShirleyAnisotropicPhong",   ashikminSPF,     ashikminBRDF,       false, FURNACE_TOL },
         { "Translucent",                       translucentSPF,  translucentBSDF,    false, FURNACE_TOL },

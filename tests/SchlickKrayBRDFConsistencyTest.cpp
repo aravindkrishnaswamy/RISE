@@ -826,31 +826,28 @@ int main()
 	//     owe `kray * p_agg == f_agg cos` -- so the diffuse painter stays
 	//     lit and the full `value()` is the reference.
 	//
-	// Measured verdicts (2026-09-17, printed below so they stay live):
+	// Measured verdicts (2026-09-17, printed below so they stay live;
+	// the two Ward rows re-measured 2026-09-18 after DL-177 closed):
 	//
 	//   IsotropicPhongSPF                       1.000000 exactly, all 4 angles -- IMMUNE
 	//   AshikminShirleyAnisotropicPhongSPF      1.000000 exactly, all 4 angles -- IMMUNE
 	//   CookTorranceSPF (single-emit)           mean 0.999-1.006  -- IMMUNE
 	//   GGXSPF (single-emit)                    mean 0.990-1.002  -- IMMUNE
-	//   WardIsotropicGaussianSPF                mean 1.10 / 1.39 / 2.95 / 5.88  -- SAME DEFECT
-	//   WardAnisotropicEllipticalGaussianSPF    mean 1.06 / 1.32 / 2.97 / 6.07  -- SAME DEFECT
+	//   WardIsotropicGaussianSPF                1.10 / 1.39 / 2.95 / 5.88  -> 1.000000 (DL-177)
+	//   WardAnisotropicEllipticalGaussianSPF    1.06 / 1.32 / 2.97 / 6.07  -> 1.000000 (DL-177)
 	//
 	// The two single-emit rows are not pointwise 1 and are not supposed
 	// to be: their `kray` is the INTERNAL-selection estimator
 	// `f_I cos / (p_agg * pSelect_I)`, whose expectation over that
 	// internal choice is `f_agg cos / p_agg` -- which is why their MEAN
-	// lands on 1 while individual draws span [0.006, 37].
+	// lands on 1 while individual draws span [0.006, 37].  Those two
+	// stay PRINTED-only.
 	//
-	// These rows are PRINTED, not gated.  Closing the two Ward rows
-	// needs the same TWO-SIDED change DL-127 needed (`kray` AND the
-	// selection weights `Ward*::Pdf` is built on -- and Ward's `Pdf` is
-	// a raw-albedo mixture precisely BECAUSE its krays are currently
-	// direction-independent, so it would need the DL-67/DL-98/DL-99
-	// aggregate construction built for it), plus an answer for the
-	// unbounded `1/sqrt(nl nv)` tail the corrected weight would carry
-	// (max 685x / 1085x per draw at 80 degrees, below).  That is
-	// DL-177, deliberately out of this slice.  Gated here only on "the
-	// probe actually ran".
+	// DL-177 CLOSED 2026-09-18 (docs/DL177_WARD_DENSITY_AND_KRAY.md),
+	// so every MULTI-EMIT row -- the Schlick control, both Wards, both
+	// Phongs -- is now GATED on the per-lobe identity holding to 1e-9
+	// per draw, not merely on the probe having run.  The Ward rows were
+	// the last per-lobe SPFs in the tree that violated it.
 	//----------------------------------------------------------------
 	std::cout << std::endl
 	          << "-- Section 6: SIBLING AUDIT (DL-177, reporting only): "
@@ -913,6 +910,14 @@ int main()
 				          << "   (n=" << st.n << ")" << std::endl;
 				Check( st.n > 1000,
 					std::string( "Section 6: sibling probe produced draws: " ) + audit[e].name );
+				if( audit[e].specularOnly ) {
+					// Multi-emit contract: EVERY draw must satisfy
+					// `kray_I p_I == f_I cos` exactly (DL-127 for
+					// Schlick, DL-177 for the two Wards; the two Phongs
+					// always did).
+					Check( fabs( st.minR - 1.0 ) < 1e-9 && fabs( st.maxR - 1.0 ) < 1e-9,
+						std::string( "Section 6: per-lobe kray identity holds per draw: " ) + audit[e].name );
+				}
 			}
 		}
 
