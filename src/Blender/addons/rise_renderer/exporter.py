@@ -53,6 +53,14 @@ MEDIUM_HOMOGENEOUS = 0
 MEDIUM_HETEROGENEOUS_VDB = 1
 
 MATERIAL_PBR_METALLIC_ROUGHNESS = 3
+# ABI v13 (DL-186, docs/DEBT_LEDGER.md).  A SEPARATE model from
+# MATERIAL_PBR_METALLIC_ROUGHNESS, mirroring MATERIAL_DIELECTRIC's own
+# mutual exclusivity with it below (transmission_heavy) -- Blender's
+# Principled BSDF blends diffuse/SSS by weight rather than layering
+# SSS under a specular stack, so RISE models it the same way: one
+# surface material, not a wrap.  See rise_blender_bridge.h's own
+# comment on the enumerator.
+MATERIAL_RANDOMWALK_SSS = 4
 
 SUPPORTED_IMAGE_KINDS = {
     ".png": PAINTER_TEXTURE_PNG,
@@ -251,6 +259,36 @@ class MaterialData:
     sheen_color_painter_name: str | None = None
     sheen_roughness: float = 0.5
     sheen_roughness_texture_painter_name: str | None = None
+    # ABI v13 (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
+    # sibling audit).  PBR_METALLIC_ROUGHNESS only.  `coat_weight_-
+    # painter_name` set (non-None) means the bridge wraps this PBR
+    # material in a `coated_material` layer -- None (the default)
+    # means no coat, bit-identical to a pre-v13 payload.  Mirrors the
+    # sheen fields immediately above: `coat_weight`/`coat_roughness`
+    # are numeric fallbacks, the `*_texture_painter_name` fields are
+    # set ONLY when the corresponding Blender socket is texture-driven.
+    # `coat_tint_painter_name` is a colour painter name (None = no
+    # tint).  `coat_ior` is a plain numeric IOR, socket-default only.
+    coat_weight_texture_painter_name: str | None = None
+    coat_weight: float = 0.0
+    coat_tint_painter_name: str | None = None
+    coat_roughness_texture_painter_name: str | None = None
+    coat_roughness: float = 0.03
+    coat_ior: float = 1.5
+    # ABI v13 (DL-186).  Set together with `model=MATERIAL_RANDOMWALK_-
+    # SSS` (a SEPARATE model -- see that constant's own comment above).
+    # `subsurface_absorption`/`subsurface_scattering` are ALREADY-
+    # CONVERTED inline "r g b" numeric literal strings (the Radius/
+    # Scale/base-colour -> sigma_a/sigma_s conversion happens in
+    # `_material_payload` below, in Python, because that is where the
+    # raw untextured base-colour triple this conversion needs is
+    # already in hand -- see docs/BLENDER_MATERIAL_TRANSLATION.md
+    # "Subsurface").
+    subsurface_absorption: str | None = None
+    subsurface_scattering: str | None = None
+    subsurface_ior: float = 1.4
+    subsurface_g: float = 0.0
+    subsurface_roughness: float = 0.0
 
 
 @dataclass
@@ -1029,8 +1067,14 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
     # these are warned about anymore.  (This comment previously claimed
     # "specular tint" was already wired here -- it was not: nothing in
     # this function read the "Specular Tint" socket until DL-151.)
-    _check_principled_feature(state, node, material_name, "Coat Weight", 0.0, "clearcoat")
-    _check_principled_feature(state, node, material_name, "Subsurface Weight", 0.0, "subsurface")
+    # Coat ("Coat Weight"/"Coat Tint"/"Coat Roughness"/"Coat IOR") and
+    # Subsurface ("Subsurface Weight"/"Radius"/"Scale"/"IOR") now flow
+    # through coated_material / randomwalk_sss_material respectively
+    # (DL-186, docs/DEBT_LEDGER.md) -- removed from this generic
+    # warn-only sweep since both are read (and warned about
+    # PER-SOCKET, where relevant) below in `_material_payload`.
+    # "Coat Normal" and "Tangent" remain entirely unread -- see DL-192
+    # in docs/DEBT_LEDGER.md.
 
 
 class _ImageSocketWrapper:
@@ -1931,15 +1975,16 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     principled_node = wrapper.node_principled_bsdf
 
     base_color = _float_color3(wrapper.base_color)
+    base_color_texture = _maybe_resolve_socket_texture(
+        principled_node, "Base Color",
+        wrapper.base_color_texture,
+        colorspace_is_data=False,
+    )
     base_painter = _color_or_texture_painter(
         state,
         f"{material.name_full}_base",
         base_color,
-        texture_wrapper=_maybe_resolve_socket_texture(
-            principled_node, "Base Color",
-            wrapper.base_color_texture,
-            colorspace_is_data=False,
-        ),
+        texture_wrapper=base_color_texture,
     )
 
     metallic = _clamp01(wrapper.metallic)
@@ -2118,6 +2163,202 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 texture_wrapper=sheen_roughness_texture,
             )
 
+    # Coat (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
+    # sibling audit) -- Blender's Principled "Coat Weight" / "Coat
+    # Tint" (colour) / "Coat Roughness" / "Coat IOR" ->
+    # `coated_material`.  Mirrors GLTFSceneImporter.cpp's own
+    # KHR_materials_clearcoat handling: coat_weight <->
+    # clearcoat_factor, coat_roughness is Blender's PERCEPTUAL
+    # roughness [0,1] (the native bridge SQUARES it into a GGX alpha
+    # before calling AddCoatedMaterial -- see rise_blender_bridge.cpp's
+    # own comment on `coat_roughness`, matching
+    # `clearcoat_roughness_factor^2`).  Unlike glTF clearcoat (which
+    # has no IOR concept of its own and hardcodes 1.5), Blender's
+    # Principled DOES expose a real "Coat IOR" socket, read here.
+    coat_weight_value = _clamp01(_socket_default_float(principled_node, "Coat Weight", 0.0))
+    coat_weight_socket = _node_input(principled_node, "Coat Weight")
+    coat_weight_texture_painter = None
+    if coat_weight_socket is not None and coat_weight_socket.is_linked:
+        coat_weight_texture = _maybe_resolve_socket_texture(
+            principled_node, "Coat Weight", None, colorspace_is_data=True,
+        )
+        if coat_weight_texture is not None:
+            coat_weight_texture_painter = _scalar_or_texture_painter(
+                state,
+                f"{material.name_full}_coat_weight",
+                coat_weight_value,
+                texture_wrapper=coat_weight_texture,
+            )
+        if coat_weight_texture_painter is None:
+            _warn_once(
+                state,
+                f"RISE reads Principled Coat Weight on '{material.name_full}' at its socket default; "
+                f"a linked/textured weight not resolvable to an image texture is not sampled.",
+            )
+
+    coat_tint_painter = None
+    coat_roughness_value = 0.03
+    coat_roughness_texture_painter = None
+    coat_ior_value = 1.5
+    coat_contributes = coat_weight_value > 1e-4 or coat_weight_texture_painter is not None
+    if coat_contributes:
+        coat_tint_default = _socket_default_color(principled_node, "Coat Tint", (1.0, 1.0, 1.0))
+        coat_tint_texture = _maybe_resolve_socket_texture(
+            principled_node, "Coat Tint", None, colorspace_is_data=False,
+        )
+        is_default_white = (
+            coat_tint_texture is None
+            and abs(coat_tint_default[0] - 1.0) < 1e-4
+            and abs(coat_tint_default[1] - 1.0) < 1e-4
+            and abs(coat_tint_default[2] - 1.0) < 1e-4
+        )
+        if not is_default_white:
+            coat_tint_painter = _color_or_texture_painter(
+                state,
+                f"{material.name_full}_coat_tint",
+                coat_tint_default,
+                texture_wrapper=coat_tint_texture,
+            )
+
+        coat_roughness_value = _clamp01(_socket_default_float(principled_node, "Coat Roughness", 0.03))
+        coat_roughness_texture = _maybe_resolve_socket_texture(
+            principled_node, "Coat Roughness", None, colorspace_is_data=True,
+        )
+        if coat_roughness_texture is not None:
+            coat_roughness_texture_painter = _scalar_or_texture_painter(
+                state,
+                f"{material.name_full}_coat_roughness",
+                coat_roughness_value,
+                texture_wrapper=coat_roughness_texture,
+            )
+
+        coat_ior_socket = _node_input(principled_node, "Coat IOR")
+        if coat_ior_socket is not None and coat_ior_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Coat IOR on '{material.name_full}' at its socket default; "
+                f"a linked/textured IOR is not sampled.",
+            )
+        coat_ior_value = max(1.0, float(_socket_default_float(principled_node, "Coat IOR", 1.5)))
+
+        # LAYERING DECISION (docs/BLENDER_MATERIAL_TRANSLATION.md "Coat
+        # and Subsurface"): mirrors GLTFSceneImporter.cpp's own
+        # KHR_materials_clearcoat + KHR_materials_sheen combination --
+        # `coated_material`'s substrate allowlist does not accept a
+        # `fabric_material` (the sheen result), so the coat cannot wrap
+        # ON TOP of sheen.  The native bridge (rise_blender_bridge.cpp)
+        # makes the SAME call and skips the coat layer there too; this
+        # warning is the Blender-node-side half of that one decision.
+        if sheen_weight > 1e-4:
+            _warn_once(
+                state,
+                f"RISE: '{material.name_full}' declares both Coat Weight and Sheen; coated_material's "
+                f"substrate allowlist does not accept a fabric_material (the sheen result), so the coat "
+                f"layer is skipped, keeping sheen.",
+            )
+
+    # Subsurface (DL-186, docs/DEBT_LEDGER.md) -- Blender's Principled
+    # "Subsurface Weight" / "Subsurface Radius" (RGB vector, scene
+    # units) / "Subsurface Scale" / "Subsurface IOR" / "Subsurface
+    # Anisotropy" -> `randomwalk_sss_material`.  A SEPARATE model from
+    # PBR_METALLIC_ROUGHNESS (see MATERIAL_RANDOMWALK_SSS's own
+    # comment above) -- Blender's own Principled blends diffuse/SSS by
+    # weight rather than layering SSS under a specular stack.
+    #
+    # THE CONVERSION.  RandomWalkSSS wants sigma_a/sigma_s (absorption/
+    # scattering coefficients, 1/length), while Blender authors Radius
+    # (a mean-free-path-like distance per channel) + Scale + a base
+    # colour (the single-scattering albedo).  This uses the classic
+    # single-scattering-albedo relation -- NOT PBRT's/Blender's own
+    # photon-beam-diffusion inversion (Christensen-Burley), which needs
+    # a lookup-table fit this bridge does not carry.  Per channel:
+    #   mfp   = max(radius * scale, epsilon)
+    #   sigma_t = 1 / mfp
+    #   albedo  = clamp(base_color, 0, 0.999)      # avoid the albedo=1 singularity
+    #   sigma_s = albedo * sigma_t
+    #   sigma_a = (1 - albedo) * sigma_t
+    # This is a documented APPROXIMATION (docs/BLENDER_MATERIAL_-
+    # TRANSLATION.md "Subsurface") -- it reproduces the right ORDER of
+    # magnitude and the right per-channel colour bias (redder radius ->
+    # more red scattering) but will not photometrically match Cycles'
+    # own diffusion-profile fit.
+    subsurface_weight_value = _clamp01(_socket_default_float(principled_node, "Subsurface Weight", 0.0))
+    subsurface_weight_socket = _node_input(principled_node, "Subsurface Weight")
+    if subsurface_weight_socket is not None and subsurface_weight_socket.is_linked:
+        _warn_once(
+            state,
+            f"RISE reads Principled Subsurface Weight on '{material.name_full}' at its socket default; "
+            f"a linked/textured weight is not sampled.",
+        )
+
+    subsurface_contributes = subsurface_weight_value > 1e-4
+    subsurface_absorption_literal = None
+    subsurface_scattering_literal = None
+    subsurface_ior_value = 1.4
+    subsurface_g_value = 0.0
+    if subsurface_contributes:
+        radius_socket = _node_input(principled_node, "Subsurface Radius")
+        radius_default = (1.0, 0.2, 0.1)
+        if radius_socket is not None:
+            if radius_socket.is_linked:
+                _warn_once(
+                    state,
+                    f"RISE reads Principled Subsurface Radius on '{material.name_full}' at its socket "
+                    f"default; a linked/textured radius is not sampled.",
+                )
+            radius_default = tuple(float(radius_socket.default_value[index]) for index in range(3))
+
+        subsurface_scale_value = max(
+            0.0, float(_socket_default_float(principled_node, "Subsurface Scale", 0.05)))
+        subsurface_scale_socket = _node_input(principled_node, "Subsurface Scale")
+        if subsurface_scale_socket is not None and subsurface_scale_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Subsurface Scale on '{material.name_full}' at its socket "
+                f"default; a linked/textured scale is not sampled.",
+            )
+
+        subsurface_ior_socket = _node_input(principled_node, "Subsurface IOR")
+        if subsurface_ior_socket is not None and subsurface_ior_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Subsurface IOR on '{material.name_full}' at its socket "
+                f"default; a linked/textured IOR is not sampled.",
+            )
+        subsurface_ior_value = max(1.0, float(_socket_default_float(principled_node, "Subsurface IOR", 1.4)))
+
+        subsurface_anisotropy_socket = _node_input(principled_node, "Subsurface Anisotropy")
+        if subsurface_anisotropy_socket is not None and subsurface_anisotropy_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Subsurface Anisotropy on '{material.name_full}' at its socket "
+                f"default; a linked/textured anisotropy is not sampled.",
+            )
+        subsurface_g_value = max(-1.0, min(1.0, float(
+            _socket_default_float(principled_node, "Subsurface Anisotropy", 0.0))))
+
+        albedo_source = base_color
+        if base_color_texture is not None:
+            _warn_once(
+                state,
+                f"RISE approximates Subsurface on '{material.name_full}' using Base Color's socket "
+                f"default (not its texture) as the single-scattering albedo; a textured base colour "
+                f"with Subsurface Weight > 0 does not vary the SSS colour across the surface.",
+            )
+            albedo_source = _socket_default_color(principled_node, "Base Color", (0.8, 0.8, 0.8))
+
+        _SSS_EPS = 1.0e-6
+        sigma_a_channels = []
+        sigma_s_channels = []
+        for channel_index in range(3):
+            mfp = max(radius_default[channel_index] * subsurface_scale_value, _SSS_EPS)
+            sigma_t = 1.0 / mfp
+            albedo = max(0.0, min(0.999, float(albedo_source[channel_index])))
+            sigma_s_channels.append(albedo * sigma_t)
+            sigma_a_channels.append((1.0 - albedo) * sigma_t)
+        subsurface_absorption_literal = "{:.9g} {:.9g} {:.9g}".format(*sigma_a_channels)
+        subsurface_scattering_literal = "{:.9g} {:.9g} {:.9g}".format(*sigma_s_channels)
+
     transmission_texture = _maybe_resolve_socket_texture(
         principled_node, "Transmission Weight",
         wrapper.transmission_texture,
@@ -2176,6 +2417,29 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             )
 
     modifier_name = _direct_normal_modifier(material, wrapper, state)
+    # Alpha (DL-186, docs/DEBT_LEDGER.md): DELIBERATELY left warn-only,
+    # no `rise_blender_material` ABI field added.  RISE DOES have a
+    # reachable construction-API path for cutout/blend alpha --
+    # `IJob::AddAlphaTestShaderOp` / a `transparency_shaderop`, wired
+    # per-material by GLTFSceneImporter.cpp's `WireAlphaShader` -- but
+    # it is NOT a material-struct slot at all: it requires building a
+    # per-material `advanced_shader` OP CHAIN (`Job::AddAdvancedShader`,
+    # `[Emission +, DirectLighting +, alpha_test_or_transparency =]`)
+    # that REPLACES the bridge's always-on default shader, a subsystem
+    # this Blender bridge does not have any of today (it always renders
+    # through the renderer's default per-rasterizer shader, never a
+    # custom op chain).  A `rise_blender_material.alpha_*` field would
+    # therefore be a dead ABI field -- the slice brief's own
+    # instruction not to add one -- because nothing downstream of the
+    # struct would ever consume it without that separate shader-op-
+    # wiring subsystem existing first.  Also: `AlphaTestShaderOp.h`'s
+    # own "integrator-compatibility caveat" says BDPT/VCM/MLM/photon
+    # tracers (everything except PT and the legacy direct shaders)
+    # silently ignore it regardless, so even a fully wired version
+    # would need a rasterizer-aware warning at export time.  Filed as
+    # **DL-193** (docs/DEBT_LEDGER.md) -- a per-material shader-op-chain
+    # bridge, a materially bigger feature than an ABI field, not
+    # attempted here.
     alpha_socket = _node_input(wrapper.node_principled_bsdf, "Alpha")
     if alpha_socket is not None:
         alpha_value_socket = float(alpha_socket.default_value)
@@ -2193,6 +2457,20 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             interior_medium_name = _export_homogeneous_medium(state, f"{material.name_full}_volume", volume_spec)
 
     double_sided = not getattr(material, "use_backface_culling", False)
+
+    # Subsurface is mutually exclusive with Transmission (matching this
+    # function's own pre-existing PBR-vs-DIELECTRIC exclusivity for
+    # transmission_heavy above) -- glass and skin are not the same
+    # Principled configuration, and RISE has no combined model.
+    # Transmission wins the conflict (it already owned the "replace the
+    # whole surface" precedent before this debt existed).
+    subsurface_heavy = subsurface_contributes and not transmission_heavy
+    if subsurface_contributes and transmission_heavy:
+        _warn_once(
+            state,
+            f"RISE: '{material.name_full}' declares both Subsurface Weight and a heavy Transmission; "
+            f"the dielectric transmission model wins and Subsurface is skipped (no combined model).",
+        )
 
     if transmission_heavy:
         metallic_for_warn = _maybe_resolve_socket_texture(
@@ -2267,6 +2545,36 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             emission_painter_name=emission_painter,
             double_sided=double_sided,
         )
+    elif subsurface_heavy:
+        # Subsurface -> randomwalk_sss_material, a SEPARATE model (see
+        # MATERIAL_RANDOMWALK_SSS's own comment above) -- replaces the
+        # opaque PBR branch entirely rather than layering under it.
+        # Coat/Sheen do not apply here (neither has a PBR base to wrap
+        # when this branch fires); warn if either was also authored.
+        if coat_contributes:
+            _warn_once(
+                state,
+                f"RISE: '{material.name_full}' declares both Subsurface Weight and Coat Weight; "
+                f"randomwalk_sss_material has no coat layer, so Coat is skipped.",
+            )
+        if sheen_weight > 1e-4:
+            _warn_once(
+                state,
+                f"RISE: '{material.name_full}' declares both Subsurface Weight and Sheen; "
+                f"randomwalk_sss_material has no sheen layer, so Sheen is skipped.",
+            )
+        payload = MaterialData(
+            name=_unique_name(state, "mat", material.name_full),
+            model=MATERIAL_RANDOMWALK_SSS,
+            emissive_scale=1.0,
+            emission_painter_name=emission_painter,
+            double_sided=double_sided,
+            subsurface_absorption=subsurface_absorption_literal,
+            subsurface_scattering=subsurface_scattering_literal,
+            subsurface_ior=subsurface_ior_value,
+            subsurface_g=subsurface_g_value,
+            subsurface_roughness=roughness,
+        )
     else:
         # Opaque Principled BSDF — route through
         # RISE_API_CreatePBRMetallicRoughnessMaterial, which handles
@@ -2289,6 +2597,12 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             sheen_color_painter_name=sheen_color_painter,
             sheen_roughness=sheen_roughness_value,
             sheen_roughness_texture_painter_name=sheen_roughness_texture_painter,
+            coat_weight_texture_painter_name=coat_weight_texture_painter,
+            coat_weight=coat_weight_value,
+            coat_tint_painter_name=coat_tint_painter,
+            coat_roughness_texture_painter_name=coat_roughness_texture_painter,
+            coat_roughness=coat_roughness_value,
+            coat_ior=coat_ior_value,
         )
 
     state.materials.append(payload)

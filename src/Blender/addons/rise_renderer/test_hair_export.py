@@ -36,6 +36,7 @@ import re
 import struct
 import sys
 import unittest
+from unittest import mock
 
 # This file lives inside `rise_renderer/`, whose `__init__.py` imports
 # bpy at module scope (it registers Blender classes on add-on enable).
@@ -621,7 +622,29 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 12)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 13)
+
+    def test_stale_dylib_version_fails_loudly(self):
+        # Simulate a v12 dylib (built before this ABI bump) sitting
+        # next to a v13 add-on: `_load_library`'s version check must
+        # refuse it with a clear message, not silently marshal v13
+        # fields (coat_*/subsurface_*) into a v12 struct layout the
+        # native side never declared.  `ctypes.CDLL` is mocked rather
+        # than shipping a stale .dylib fixture -- the real bridge in
+        # this worktree is already v13, so a genuine stale binary isn't
+        # available to load.
+        bridge._LOADED_LIBRARY = None
+        bridge._LOADED_PATH = None
+        bridge._LOADED_CAPABILITIES = None
+        fake_library = mock.MagicMock()
+        fake_library.rise_blender_api_version.return_value = bridge._EXPECTED_API_VERSION - 1
+        with mock.patch.object(bridge.ctypes, "CDLL", return_value=fake_library):
+            with self.assertRaises(bridge.BridgeError) as ctx:
+                bridge._load_library()
+        message = str(ctx.exception)
+        self.assertIn(str(bridge._EXPECTED_API_VERSION - 1), message)
+        self.assertIn(str(bridge._EXPECTED_API_VERSION), message)
+        self.assertIn("Rebuild src/Blender/native", message)
 
     def test_hair_material_struct_matches(self):
         self._assert_matches(bridge._HairMaterial, "rise_blender_hair_material")
@@ -1000,6 +1023,20 @@ class _StubMaterial:
         self.sheen_color_painter_name = None
         self.sheen_roughness = 0.0
         self.sheen_roughness_texture_painter_name = None
+        # ABI v13 -- DL-186 (docs/DEBT_LEDGER.md).  None / defaults mean
+        # "no coat" / "no subsurface", matching every payload built
+        # before this debt closed.
+        self.coat_weight_texture_painter_name = None
+        self.coat_weight = 0.0
+        self.coat_tint_painter_name = None
+        self.coat_roughness_texture_painter_name = None
+        self.coat_roughness = 0.03
+        self.coat_ior = 1.5
+        self.subsurface_absorption = None
+        self.subsurface_scattering = None
+        self.subsurface_ior = 1.4
+        self.subsurface_g = 0.0
+        self.subsurface_roughness = 0.0
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -1125,6 +1162,84 @@ class BridgeMaterialSpecularColorMarshallingTest(unittest.TestCase):
         del stub.specular_color_painter_name
         payload = _handle()._marshal_material(stub)
         self.assertIsNone(payload.specular_color_painter_name)
+
+
+class BridgeMaterialCoatSubsurfaceMarshallingTest(unittest.TestCase):
+    """ABI v13's `coat_*` / `subsurface_*` fields on `_marshal_material`
+    (DL-186, docs/DEBT_LEDGER.md).
+
+    RED-PROOF HISTORY: before this debt closed, `bridge._Material` had
+    no `coat_*`/`subsurface_*` fields at all, so the assignments in
+    `_marshal_material` this test exercises raised an `AttributeError`
+    (no such ctypes field to set) -- mirrors
+    `BridgeMaterialSheenMarshallingTest`'s own red-proof history for
+    its v12 fields."""
+
+    def test_no_coat_no_subsurface_sends_defaults(self):
+        payload = _handle()._marshal_material(_StubMaterial())
+        self.assertIsNone(payload.coat_weight_texture_painter_name)
+        self.assertAlmostEqual(payload.coat_weight, 0.0, places=6)
+        self.assertIsNone(payload.coat_tint_painter_name)
+        self.assertIsNone(payload.coat_roughness_texture_painter_name)
+        self.assertAlmostEqual(payload.coat_roughness, 0.03, places=6)
+        self.assertAlmostEqual(payload.coat_ior, 1.5, places=6)
+        self.assertIsNone(payload.subsurface_absorption)
+        self.assertIsNone(payload.subsurface_scattering)
+        self.assertAlmostEqual(payload.subsurface_ior, 1.4, places=6)
+        self.assertAlmostEqual(payload.subsurface_g, 0.0, places=6)
+        self.assertAlmostEqual(payload.subsurface_roughness, 0.0, places=6)
+
+    def test_coat_fields_travel_through(self):
+        payload = _handle()._marshal_material(
+            _StubMaterial(
+                coat_weight=0.8,
+                coat_tint_painter_name="mat_coat_tint",
+                coat_roughness=0.15,
+                coat_roughness_texture_painter_name="mat_coat_rough_tex",
+                coat_ior=1.6,
+            )
+        )
+        self.assertEqual(payload.coat_tint_painter_name, b"mat_coat_tint")
+        self.assertAlmostEqual(payload.coat_weight, 0.8, places=6)
+        self.assertEqual(payload.coat_roughness_texture_painter_name, b"mat_coat_rough_tex")
+        self.assertAlmostEqual(payload.coat_roughness, 0.15, places=6)
+        self.assertAlmostEqual(payload.coat_ior, 1.6, places=6)
+
+    def test_subsurface_fields_travel_through(self):
+        payload = _handle()._marshal_material(
+            _StubMaterial(
+                subsurface_absorption="0.02 0.05 0.10",
+                subsurface_scattering="1.5 2.0 2.5",
+                subsurface_ior=1.35,
+                subsurface_g=0.2,
+                subsurface_roughness=0.07,
+            )
+        )
+        self.assertEqual(payload.subsurface_absorption, b"0.02 0.05 0.10")
+        self.assertEqual(payload.subsurface_scattering, b"1.5 2.0 2.5")
+        self.assertAlmostEqual(payload.subsurface_ior, 1.35, places=6)
+        self.assertAlmostEqual(payload.subsurface_g, 0.2, places=6)
+        self.assertAlmostEqual(payload.subsurface_roughness, 0.07, places=6)
+
+    def test_a_pre_v13_exporter_payload_still_marshals(self):
+        # `_marshal_material` reads every v13 field with a getattr
+        # default, so an older exporter object that has never heard of
+        # them marshals as "no coat / no subsurface" rather than
+        # raising -- the same back-compat contract v10/v11/v12
+        # established.
+        stub = _StubMaterial()
+        for attr in (
+            "coat_weight_texture_painter_name", "coat_weight", "coat_tint_painter_name",
+            "coat_roughness_texture_painter_name", "coat_roughness", "coat_ior",
+            "subsurface_absorption", "subsurface_scattering", "subsurface_ior",
+            "subsurface_g", "subsurface_roughness",
+        ):
+            delattr(stub, attr)
+        payload = _handle()._marshal_material(stub)
+        self.assertIsNone(payload.coat_weight_texture_painter_name)
+        self.assertAlmostEqual(payload.coat_weight, 0.0, places=6)
+        self.assertIsNone(payload.subsurface_absorption)
+        self.assertIsNone(payload.subsurface_scattering)
 
 
 class BridgeWarningDecodeTest(unittest.TestCase):
