@@ -338,6 +338,16 @@ this table uses (`3*SE + 0.010`) — `GGX a=0.02 th=89.60` `1.01496→1.00080`,
 `CT conductor a=0.005 th=89.40` `1.03432→1.00681`. Row count unchanged,
 `190 checks, 0 failures`.
 
+**DL-161 CLOSED 2026-09-18 (debt-dl161 slice)**: two new rows in
+`TestGrazingFurnaceDL86`'s aniso section exercise the anisotropic twin of
+DL-105 -- a low alphaX (or alphaY) AND a grazing cosTheta together, at
+`theta=89.60`: `GGX Schlick aniso(.005,.5) az=0` and its axis-swapped
+twin `aniso(.5,.005) az=90` (exercising `LookupEssG2AnisoDirectional`'s
+low-alphaY relabel-swap dispatch). Both red-proof at a tight
+`3*SE + 0.015` band: pre-fix `0.97306+/-0.00110` / `0.97104+/-0.00110`
+(outside the band), post-fix `0.99853+/-0.00107` / `0.99662+/-0.00107`
+(comfortably inside). `192 checks, 0 failures` (was 190/0).
+
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
 (`E_ss_TABLE_G2`/`E_avg_TABLE_G2`, `LookupEssG2`/`LookupEavgG2`) against a
@@ -457,6 +467,33 @@ still reads `2.99-4.04%`. See
 [docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
 "DL-105" for the full derivation, residual tables, and sibling audit
 (DL-160, DL-161).
+
+**DL-161 CLOSED 2026-09-18 (debt-dl161 slice)**: a new "DL-161: anisotropic
+low-alpha sub-grid (AnisoAlphaLowIndex), off-diagonal" section reuses the
+pre-existing `TestDL86AnisoDirectionalEndCap` helper (already generic
+over `(alphaX,alphaY,phi,cosTheta)`) at 17 rows spanning `alphaX` in
+`{0.002,0.005,0.01,0.015}` x `alphaY` in `{0.05,0.2,0.5,1.0}` x `phi` in
+`{0,45,90}` degrees x several `cosTheta` down to `1e-4`, plus dedicated
+swapped-role (ordinary-X/low-Y, exercising the relabel-symmetry dispatch)
+and both-axes-low rows. `LookupEssG2AnisoDirectional`/`LookupEavgG2Aniso`
+now bake and consult a low-alpha sub-grid on BOTH aniso axes (new tables
+`E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_X{,_SUB}`,
+`E_ss_TABLE_G2_ANISO_PHI_ALPHALOW_XY{,_SUB}`,
+`E_avg_TABLE_G2_ANISO_ALPHALOW_X`/`_XY`), closing DL-105's own sibling-
+audit finding that the aniso axis had the identical `clamp((alpha-0.01)
+/0.99,0,1)` defect, independently on both `alphaX` and `alphaY`. Worst
+measured residual against an independent 20M-sample VNDF quadrature:
+25.28%→0.95% (`alphaX=0.002,alphaY=1.0,phi=0,cos=0.0005`). `278 checks,
+0 failures` (was `261/0`). Two bugs were caught and fixed by this
+slice's own red-proof before landing (not by review): the low-alpha
+dispatch checked the alpha value AFTER the ordinary path's `[0.01,1.0]`
+clamp (aliasing every alpha below 0.01 to exactly 0.01), and the new
+grazing-sub-grid accessors were missing the boundary dispatch the
+pre-existing `AnisoPhiSubNodeEssG2` has, causing an out-of-bounds read
+that transiently corrupted 37 pre-existing DL-86/DL-77 rows near
+`cosTheta=c0` before the fix. See
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-161" for the full derivation, residual tables, and both bugs.
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's
