@@ -24,7 +24,21 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-GenericHumanTissueSPF::GenericHumanTissueSPF( 
+// DL-183 nit: this ctor's parameter ORDER (whole_blood_, betacarotene_
+// concentration_, bilirubin_concentration_, hb_ratio_) does NOT match
+// GenericHumanTissueMaterial's ctor order (hb_ratio_, whole_blood,
+// bilirubin_concentration, betacarotene_concentration) in
+// GenericHumanTissueMaterial.h, which passes its own same-named members
+// straight through positionally. Traced end to end (debt-dl183 review
+// round 1): that mismatch is the INVERSE of a second one at
+// RISE_API_CreateGenericHumanTissueMaterial's call into
+// GenericHumanTissueMaterial, so the two cancel and each scalar lands in
+// the correctly-NAMED member here despite two layers of positionally-
+// scrambled passthroughs. Confusing-but-currently-correct, NOT a defect
+// -- do NOT reorder this parameter list to "match" GenericHumanTissue-
+// Material without re-deriving the full chain; see docs/DEBT_LEDGER.md's
+// DL-183 row for the full trace.
+GenericHumanTissueSPF::GenericHumanTissueSPF(
 	const IScalarPainter& sca_,									///< Scattering co-efficient (how much scattering happens)
 	const IScalarPainter& g_,										///< Anisotropy factor for the HG phase function
 	const Scalar whole_blood_,								///< Amount of tissue composed of whole blood
