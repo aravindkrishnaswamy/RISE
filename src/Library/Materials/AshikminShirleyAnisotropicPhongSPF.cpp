@@ -22,6 +22,332 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	//! Stratified-quadrature resolution PER AXIS for the diffuse lobe's
+	//! selection coefficient C_D -- same role as SchlickSPF.cpp's
+	//! kSpecQuadN / IsotropicPhongSPF.cpp's kPhongQuadN.  See
+	//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 4.
+	const int kAshQuadN = 16;
+
+	//! The specular lanes Scatter()/ScatterNM() would emit: ONE ordinarily
+	//! (and always in the spectral path), THREE when a per-channel Nu/Nv
+	//! painter drives Scatter()'s per-channel branch.
+	struct AshikminLobeSet
+	{
+		int    count;
+		Scalar NU[3];
+		Scalar NV[3];
+		Scalar Rs[3];
+	};
+}
+
+//! Forward azimuth warp, extracted verbatim from GenerateSpecularRay so the
+//! quadrature and the inversion below replay it exactly.  `phi_root` is
+//! sqrt((NU+1)/(NV+1)) for whichever lane is being evaluated.
+static inline Scalar AshikminSamplePhi( const Scalar x, const Scalar phi_root )
+{
+	Scalar phi = 0;
+	if( x < 0.25 ) {
+		const Scalar val = 4.0 * x;
+		phi = atan( phi_root * tan(PI_OV_TWO * val) );
+	} else if( x < 0.5 ) {
+		const Scalar val = 1.0 - 4*(0.5 - x);
+		phi = atan( phi_root * tan(PI_OV_TWO * val) );
+		phi = PI - phi;
+	} else if( x < 0.75 ) {
+		const Scalar val = 4*(x - 0.5);
+		phi = atan( phi_root * tan(PI_OV_TWO * val) );
+		phi += PI;
+	} else {
+		const Scalar val = 1.0 - 4*(1.0 - x);
+		phi = atan( phi_root * tan(PI_OV_TWO * val) );
+		phi = TWO_PI - phi;
+	}
+	return phi;
+}
+
+//! Inverse of AshikminSamplePhi: phi in [0,2pi) -> x in [0,1).  Exact --
+//! the forward warp is atan(phi_root*tan(pi/2 * val)), monotone and
+//! bijective within each quadrant, so val = (2/pi)*atan(tan(phi_local)/
+//! phi_root) inverts it.  Only the multi-lane (per-channel) density needs
+//! this, to recover which random pair a queried direction came from so the
+//! OTHER lanes' draws (from the SAME pair) can be reconstructed.
+static inline bool AshikminInvertPhi( const Scalar phi, const Scalar phi_root, Scalar& outX )
+{
+	if( phi_root < NEARZERO ) {
+		return false;
+	}
+
+	Scalar phi_local;
+	int quadrant;
+	if( phi <= PI_OV_TWO )            { phi_local = phi;          quadrant = 0; }
+	else if( phi <= PI )              { phi_local = PI - phi;     quadrant = 1; }
+	else if( phi <= PI + PI_OV_TWO )  { phi_local = phi - PI;     quadrant = 2; }
+	else                              { phi_local = TWO_PI - phi; quadrant = 3; }
+
+	Scalar val;
+	if( phi_local >= PI_OV_TWO - Scalar(1e-9) ) {
+		// tan() diverges at the quadrant boundary; the limit is val=1.
+		val = 1.0;
+	} else {
+		val = (2.0/PI) * atan( tan(phi_local) / phi_root );
+		val = r_max( Scalar(0), r_min( Scalar(1), val ) );
+	}
+
+	outX = quadrant*0.25 + val*0.25;
+	return true;
+}
+
+//! C_D(wo) -- the coefficient the diffuse sampling density carries in the
+//! aggregate density, EXACT AT THE QUERY wo (unlike Schlick/Phong, the
+//! diffuse selection weight `wD` here is itself a function of wo -- see
+//! the caller).  kAshQuadN^2 deterministic stratified replays of
+//! GenerateSpecularRay's own (x,y) unit square, using the closed form
+//! `kray_j(direction) = fresnel(Rs_j,hdotk) * max(cos_o,0) /
+//! max(cos_i,cos_o)` derived in docs/DL98_DL99_PHONG_PDF_WEIGHTS.md
+//! section 5 (the NU/NV terms in the BRDF and the inverse-pdf cancel
+//! exactly, leaving no dependence on the sampled half-vector's azimuth or
+//! polar angle beyond hdotk and cos_o -- so no separate "other lanes"
+//! reconstruction is even needed to REPLAY the grid here, only to query a
+//! specific wo's siblings, done in AshikminSpecularDensity below).
+//!
+//! `wiu,wiv` are wi projected into (u,v); `cos_i` is wi's n-component.
+//! `gu,gv,gw` / `wiDotGeomN` are geomN's projection and wi's geomN
+//! component, needed to replicate Scatter's OWN geomN accept-check
+//! (`dot(k2,geomN)<=0` rejects the lane from the container) via the
+//! closed form `dot(k2,X) = -dot(wi,X) + 2*hdotk*dot(h,X)`.
+static Scalar AshikminDiffuseSelectCoefficient(
+	const Scalar wD,
+	const AshikminLobeSet& lobes,
+	const Scalar cos_i, const Scalar wiu, const Scalar wiv,
+	const Scalar wiDotGeomN, const Scalar gu, const Scalar gv, const Scalar gw
+	)
+{
+	Scalar cosPhi[3][kAshQuadN], sinPhi[3][kAshQuadN], expo[3][kAshQuadN];
+	const Scalar inv = 1.0 / Scalar(kAshQuadN);
+
+	for( int j = 0; j < lobes.count; j++ ) {
+		const Scalar phi_root = sqrt( (lobes.NU[j]+1.0) / (lobes.NV[j]+1.0) );
+		for( int a = 0; a < kAshQuadN; a++ ) {
+			const Scalar x = (Scalar(a) + 0.5) * inv;
+			const Scalar phi = AshikminSamplePhi( x, phi_root );
+			const Scalar cp = cos(phi), sp = sin(phi);
+			cosPhi[j][a] = cp;
+			sinPhi[j][a] = sp;
+			expo[j][a] = 1.0 / ( cp*cp*lobes.NU[j] + sp*sp*lobes.NV[j] + 1.0 );
+		}
+	}
+
+	Scalar accum = 0;
+	for( int a = 0; a < kAshQuadN; a++ ) {
+		for( int b = 0; b < kAshQuadN; b++ ) {
+			const Scalar y = (Scalar(b) + 0.5) * inv;
+			Scalar wS = 0;
+			int nAccepted = 0;
+
+			for( int j = 0; j < lobes.count; j++ ) {
+				const Scalar ct = pow( y, expo[j][a] );
+				const Scalar st = sqrt( r_max( Scalar(0), 1.0 - ct*ct ) );
+				const Scalar hdotk = ct*cos_i + st*( cosPhi[j][a]*wiu + sinPhi[j][a]*wiv );
+				if( hdotk <= 0 ) {
+					// GenerateSpecularRay's own accept-check (hdotk<0 ->
+					// return false, ray never built).
+					continue;
+				}
+				const Scalar cosO = -cos_i + 2.0*hdotk*ct;
+				if( cosO < 0 ) {
+					continue;
+				}
+				const Scalar geomOk = -wiDotGeomN + 2.0*hdotk*( cosPhi[j][a]*st*gu + sinPhi[j][a]*st*gv + ct*gw );
+				if( geomOk <= 0 ) {
+					continue;
+				}
+				nAccepted++;
+				const Scalar fresnel = lobes.Rs[j] + (1.0-lobes.Rs[j]) * pow(1.0-hdotk, 5.0);
+				wS += fresnel * cosO / r_max( cos_i, cosO );
+			}
+
+			if( nAccepted == 0 ) {
+				// RandomlySelect's freeidx==1 short-circuit.
+				accum += 1.0;
+				continue;
+			}
+			const Scalar total = wD + wS;
+			if( total > NEARZERO ) {
+				accum += wD / total;
+			}
+		}
+	}
+
+	return accum / Scalar(kAshQuadN*kAshQuadN);
+}
+
+//! E_{diffuse draw D}[ 1{D rejected} * (freeidx==1 ? 1 : wNumerator/wSTotal)
+//!   + 1{D accepted} * wNumerator/(wSTotal + wD(D)) ]
+//!
+//! This is q_i(wo)'s own defining expectation, and it is a SEPARATE
+//! quadrature from AshikminDiffuseSelectCoefficient's, not a reuse of it --
+//! the two lobes' selection weights are BOTH direction-dependent random
+//! variables here (unlike Schlick/Phong, where the diffuse weight is a
+//! constant), so `wD` cannot be evaluated "at wo" and folded into a single
+//! `aD`-weighted formula the way DL-67 Slice 0's Schlick construction
+//! does: the diffuse candidate competing against a hypothesized specular
+//! draw wo is a DIFFERENT ray with its OWN independent random direction,
+//! whose weight must be averaged over separately.  (An earlier version of
+//! this fix used wD(wo) directly here and integrated to 0.96-1.05 instead
+//! of 1 on every anisotropic test configuration -- see the fix commit
+//! message.)  `wNumerator` is lane i's own realized weight w_i(wo);
+//! `wSTotal` is w_i(wo) plus the OTHER specular lanes' realized weights at
+//! their own (deterministically reconstructed) directions -- both fixed
+//! per call, since the specular pool's composition doesn't depend on the
+//! diffuse's draw.  `nAcceptedSpec` is how many specular lanes are in the
+//! pool (RandomlySelect's freeidx==1 short-circuit fires when the diffuse
+//! is rejected and exactly one specular lane remains).
+static Scalar AshikminSpecularSelectCoefficient(
+	const Scalar wNumerator, const Scalar wSTotal, const int nAcceptedSpec,
+	const Scalar rd, const Scalar rho, const Scalar cos_i,
+	const Scalar gu, const Scalar gv, const Scalar gw
+	)
+{
+	static const Scalar diffuseNorm = 28.0 / 23.0;
+	const Scalar fromK2 = 1.0 - pow( 1.0 - cos_i*0.5, 5.0 );
+	const Scalar inv = 1.0 / Scalar(kAshQuadN);
+
+	Scalar accum = 0;
+	for( int a = 0; a < kAshQuadN; a++ ) {
+		const Scalar px = (Scalar(a) + 0.5) * inv;
+		const Scalar phiD = TWO_PI * px;
+		const Scalar cosPhiD = cos(phiD), sinPhiD = sin(phiD);
+		for( int b = 0; b < kAshQuadN; b++ ) {
+			const Scalar py = (Scalar(b) + 0.5) * inv;
+			// CreateDiffuseVector's own inverse-CDF: cost=sqrt(1-py),
+			// sint=sqrt(py) (see GeometricUtilities::CreateDiffuseVector).
+			const Scalar cost = sqrt( r_max( Scalar(0), 1.0 - py ) );
+			const Scalar sint = sqrt( r_max( Scalar(0), py ) );
+			const Scalar geomOk = cost*gw + sint*( cosPhiD*gu + sinPhiD*gv );
+
+			if( geomOk <= 0 ) {
+				// Diffuse rejected -- specular pool competes alone.
+				if( nAcceptedSpec == 1 ) {
+					accum += 1.0;
+				} else if( wSTotal > NEARZERO ) {
+					accum += wNumerator / wSTotal;
+				}
+				continue;
+			}
+
+			const Scalar fromK1 = 1.0 - pow( 1.0 - cost*0.5, 5.0 );
+			const Scalar wD = rd * (1.0-rho) * diffuseNorm * fromK1 * fromK2;
+			const Scalar total = wSTotal + wD;
+			if( total > NEARZERO ) {
+				accum += wNumerator / total;
+			}
+		}
+	}
+
+	return accum / Scalar(kAshQuadN*kAshQuadN);
+}
+
+//! sum_i q_i(wo) * p_i(wo) -- the specular half of the aggregate, exact at
+//! the query wo.  `h`'s (hdotk,hn,hu,hv) and `cosO` are the caller's own
+//! (computed once, shared across lanes since h depends only on wi/wo, not
+//! on NU/NV).  `rd,rho` (MaxValue(Rd), MaxValue(Rs) for RGB; the NM
+//! reflectances for spectral) feed AshikminSpecularSelectCoefficient's own
+//! diffuse-side quadrature.
+static Scalar AshikminSpecularDensity(
+	const Scalar hdotk, const Scalar hn, const Scalar hu, const Scalar hv, const Scalar cosO,
+	const Scalar cos_i, const Scalar wiu, const Scalar wiv,
+	const Scalar wiDotGeomN, const Scalar gu, const Scalar gv, const Scalar gw,
+	const Scalar rd, const Scalar rho,
+	const AshikminLobeSet& lobes
+	)
+{
+	const Scalar sinThetaSq = r_max( Scalar(0), 1.0 - hn*hn );
+	const Scalar sinTheta = sqrt( sinThetaSq );
+
+	Scalar sum = 0;
+
+	for( int i = 0; i < lobes.count; i++ ) {
+		if( hn <= 0 ) {
+			continue;
+		}
+		Scalar exponent_i = 0;
+		if( sinThetaSq > NEARZERO ) {
+			exponent_i = ( lobes.NU[i]*hu*hu + lobes.NV[i]*hv*hv ) / sinThetaSq;
+		}
+		const Scalar factor1 = sqrt( (lobes.NU[i]+1.0)*(lobes.NV[i]+1.0) ) / TWO_PI;
+		const Scalar factor2 = pow( hn, exponent_i );
+		const Scalar pdf_i = (factor1*factor2) / (4.0*hdotk);
+		if( pdf_i <= 0 ) {
+			continue;
+		}
+
+		// Lane i's own realized weight, exact at wo (see the closed form
+		// in AshikminDiffuseSelectCoefficient's comment).
+		const Scalar fresnel_i = lobes.Rs[i] + (1.0-lobes.Rs[i]) * pow(1.0-hdotk, 5.0);
+		const Scalar w_i = fresnel_i * cosO / r_max( cos_i, cosO );
+
+		Scalar wOther = 0;
+		int nAccepted = 1; // lane i itself
+
+		if( lobes.count > 1 && sinTheta > NEARZERO ) {
+			Scalar phi_i = atan2( hv, hu );
+			if( phi_i < 0 ) {
+				phi_i += TWO_PI;
+			}
+			const Scalar phi_root_i = sqrt( (lobes.NU[i]+1.0) / (lobes.NV[i]+1.0) );
+			Scalar x;
+			if( AshikminInvertPhi( phi_i, phi_root_i, x ) ) {
+				// Invert cos_theta = pow(y, e_fwd), e_fwd = 1/(exponent_i+1)
+				// (exponent_i is the DENSITY exponent, NU*hu^2+NV*hv^2 in
+				// the (u,v) frame with the sin_theta_h_sq factored out --
+				// see the exponent_i derivation above; e_fwd is
+				// GenerateSpecularRay's OWN forward sampling exponent,
+				// 1/(cos_phi^2*NU+sin_phi^2*NV+1) -- so y = hn^(1/e_fwd) =
+				// hn^(exponent_i+1), NOT hn^(1/exponent_i).
+				const Scalar y = pow( r_max( Scalar(0), r_min( Scalar(1), hn ) ), exponent_i + 1.0 );
+
+				for( int j = 0; j < lobes.count; j++ ) {
+					if( j == i ) {
+						continue;
+					}
+					const Scalar phi_root_j = sqrt( (lobes.NU[j]+1.0) / (lobes.NV[j]+1.0) );
+					const Scalar phi_j = AshikminSamplePhi( x, phi_root_j );
+					const Scalar cpj = cos(phi_j), spj = sin(phi_j);
+					const Scalar expo_j = 1.0 / ( cpj*cpj*lobes.NU[j] + spj*spj*lobes.NV[j] + 1.0 );
+					const Scalar ctj = pow( y, expo_j );
+					const Scalar stj = sqrt( r_max( Scalar(0), 1.0 - ctj*ctj ) );
+
+					const Scalar hdotk_j = ctj*cos_i + stj*( cpj*wiu + spj*wiv );
+					if( hdotk_j <= 0 ) {
+						continue;
+					}
+					const Scalar cosO_j = -cos_i + 2.0*hdotk_j*ctj;
+					if( cosO_j < 0 ) {
+						continue;
+					}
+					const Scalar geomOk_j = -wiDotGeomN + 2.0*hdotk_j*( cpj*stj*gu + spj*stj*gv + ctj*gw );
+					if( geomOk_j <= 0 ) {
+						continue;
+					}
+					nAccepted++;
+					const Scalar fresnel_j = lobes.Rs[j] + (1.0-lobes.Rs[j]) * pow(1.0-hdotk_j, 5.0);
+					wOther += fresnel_j * cosO_j / r_max( cos_i, cosO_j );
+				}
+			}
+		}
+
+		const Scalar wS = w_i + wOther;
+
+		const Scalar q = AshikminSpecularSelectCoefficient( w_i, wS, nAccepted, rd, rho, cos_i, gu, gv, gw );
+
+		sum += q * pdf_i;
+	}
+
+	return sum;
+}
+
 AshikminShirleyAnisotropicPhongSPF::AshikminShirleyAnisotropicPhongSPF(
 	const IScalarPainter& Nu_,
 	const IScalarPainter& Nv_,
@@ -324,134 +650,98 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	}
 }
 
-// Computes the Ashikhmin-Shirley anisotropic Phong specular PDF for a given direction
-static Scalar AshikminShirleySpecularPdf(
-	const RayIntersectionGeometric& ri,
-	const Vector3& wo,
-	const Scalar nu,
-	const Scalar nv,
-	const Scalar wSpec,
-	const Scalar wDiff
-	)
-{
-	// Mirror Scatter()'s FlipW: orient the frame to face the incoming ray so
-	// this Pdf agrees with Scatter's actual sampling frame on backface hits
-	// (Scatter/GenerateSpecularRay sample both lobes relative to the
-	// flipped myonb, so a raw ri.onb.w()/u()/v() here returned 0 for
-	// directions Scatter legitimately emits).
-	OrthonormalBasis3D myonb = ri.onb;
-	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
-		myonb.FlipW();
-	}
-
-	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3 n = myonb.w();
-
-	const Scalar cos_theta_i = Vector3Ops::Dot( wi, n );
-	const Scalar cos_theta_o = Vector3Ops::Dot( wo, n );
-
-	if( cos_theta_i <= 0.0 || cos_theta_o <= 0.0 ) {
-		return 0.0;
-	}
-
-	// Geometric-horizon gate (MIS consistency with the sampler-side gates):
-	// a wo the sampler can no longer emit contributes zero density.
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
-	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
-		return 0.0;
-	}
-
-	// Diffuse PDF: cosine-weighted hemisphere
-	const Scalar pdf_diffuse = cos_theta_o * INV_PI;
-
-	// Specular PDF: Ashikhmin-Shirley anisotropic Phong half-vector distribution
-	Vector3 h = Vector3Ops::Normalize( wi + wo );
-	const Scalar hdotn = Vector3Ops::Dot( h, n );
-
-	if( hdotn <= 0.0 ) {
-		return pdf_diffuse;
-	}
-
-	const Scalar hdotk = Vector3Ops::Dot( h, wo );
-	if( hdotk <= 0.0 ) {
-		return pdf_diffuse;
-	}
-
-	// myonb, not ri.onb -- see the FlipW comment above.
-	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
-	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
-
-	// Exponent: (nu * (h.u)^2 + nv * (h.v)^2) / (1 - (h.n)^2)
-	const Scalar sin_theta_h_sq = 1.0 - hdotn * hdotn;
-	Scalar exponent_val = 0.0;
-	if( sin_theta_h_sq > NEARZERO ) {
-		exponent_val = (nu * hu * hu + nv * hv * hv) / sin_theta_h_sq;
-	} else {
-		// h is aligned with n, the exponent term vanishes (pow(1, ...) = 1)
-		exponent_val = 0.0;
-	}
-
-	const Scalar factor1 = sqrt((nu + 1.0) * (nv + 1.0)) / TWO_PI;
-	const Scalar factor2 = pow( hdotn, exponent_val );
-
-	const Scalar pdf_specular = (factor1 * factor2) / (4.0 * hdotk);
-
-	// Weighted mixture of diffuse and specular PDFs
-	const Scalar totalWeight = wSpec + wDiff;
-	if( totalWeight < 1e-20 ) {
-		return pdf_diffuse;
-	}
-	return (wSpec * pdf_specular + wDiff * pdf_diffuse) / totalWeight;
-}
-
 Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const IORStack& ior_stack
 	) const
 {
-	const ScalarTriple nu = pNu->GetValuesAt(ri);
-	const ScalarTriple nv = pNv->GetValuesAt(ri);
-	// Use average values across channels
-	const Scalar nu_val = (nu.v[0] + nu.v[1] + nu.v[2]) / 3.0;
-	const Scalar nv_val = (nv.v[0] + nv.v[1] + nv.v[2]) / 3.0;
-
-	// Compute representative weights at the mirror reflection direction.
-	// In Scatter: kray_spec = Rs * specFactor, kray_diff = Rd * diffFactor,
-	// where specFactor = fresnel/max(cos_i,cos_o) and diffFactor depends on
-	// the direction.  Using the mirror direction gives constant weights that
-	// are much more representative than raw Rs/Rd, especially at grazing.
-	// Mirror Scatter()'s FlipW (see AshikminShirleySpecularPdf): this
-	// cos_i gate must agree with the frame Scatter actually samples in, or
-	// it returns 0 on every back-face hit even though Scatter legitimately
-	// emits there.
+	// Mirror Scatter()'s FlipW: the lobes are sampled around this frame,
+	// not the raw ri.onb.
 	OrthonormalBasis3D myonb = ri.onb;
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 n = myonb.w();
+	const Vector3 u = myonb.u();
+	const Vector3 v = myonb.v();
 	const Scalar cos_i = Vector3Ops::Dot( wi, n );
-
 	if( cos_i <= 0 ) {
 		return 0;
 	}
 
-	// At mirror reflection, h = n, hdotk = cos_i
-	const Scalar rs_val = ColorMath::MaxValue( pRs->GetColor(ri) );
-	const Scalar fresnel_m = rs_val + (1.0 - rs_val) * pow(1.0 - cos_i, 5.0);
-	const Scalar specFactor_m = r_min( fresnel_m / cos_i, 1.0 );
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
-	static const Scalar energyConservation = 28.0 / (23.0 * PI);
-	const Scalar fromK = 1.0 - pow( 1.0 - cos_i * 0.5, 5.0 );
-	const Scalar diffFactor_m = energyConservation * fromK * fromK;
+	const Vector3 woNorm = Vector3Ops::Normalize( wo );
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
+		return 0;
+	}
+	const Scalar cosO = Vector3Ops::Dot( woNorm, n );
+	if( cosO <= 0 ) {
+		// Matches GenerateSpecularRay's own accept-check (dot(k2,n)<0
+		// rejects) and CreateDiffuseVector's natural support -- neither
+		// lobe can land here.
+		return 0;
+	}
 
-	const Scalar wSpec = rs_val * specFactor_m;
-	const Scalar wDiff = ColorMath::MaxValue( pRd->GetColor(ri) ) * diffFactor_m;
+	const Scalar diffusePdf = cosO * INV_PI;
 
-	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
+	// wD(wo): the diffuse lobe's realized selection weight IS
+	// direction-dependent here (unlike Schlick/Phong), because
+	// Scatter's diffuse.kray = Rd*(1-Rs)*(28/23)*fromK1(cos_o)*fromK2(cos_i)
+	// -- exact at wo, no averaging needed (fromK2(cos_i) is fixed for the
+	// whole call).  MaxValue(Rd)*(1-MaxValue(Rs)) approximates
+	// MaxValue(Rd*(1-Rs)) -- exact when the same channel maximises both,
+	// the same class of approximation PTScatterSelectWeight already makes
+	// throughout RISE by reducing every kray to one scalar.
+	const Scalar rd  = ColorMath::MaxValue( pRd->GetColor(ri) );
+	const Scalar rho = ColorMath::MaxValue( pRs->GetColor(ri) );
+	static const Scalar diffuseNorm = 28.0 / 23.0;
+	const Scalar fromK1 = 1.0 - pow( 1.0 - cosO*0.5, 5.0 );
+	const Scalar fromK2 = 1.0 - pow( 1.0 - cos_i*0.5, 5.0 );
+	const Scalar wD = rd * (1.0-rho) * diffuseNorm * fromK1 * fromK2;
+
+	const ScalarTriple NUt = pNu->GetValuesAt(ri);
+	const ScalarTriple NVt = pNv->GetValuesAt(ri);
+	AshikminLobeSet lobes;
+	if( !pNu->HasPerChannelVariation() && !pNv->HasPerChannelVariation() ) {
+		lobes.count = 1;
+		lobes.NU[0] = NUt.v[0];
+		lobes.NV[0] = NVt.v[0];
+		lobes.Rs[0] = rho;
+	} else {
+		lobes.count = 3;
+		const RISEPel rhoCol = pRs->GetColor(ri);
+		for( int i = 0; i < 3; i++ ) {
+			lobes.NU[i] = NUt.v[i];
+			lobes.NV[i] = NVt.v[i];
+			lobes.Rs[i] = rhoCol[i];
+		}
+	}
+
+	const Scalar wiu = Vector3Ops::Dot( wi, u );
+	const Scalar wiv = Vector3Ops::Dot( wi, v );
+	const Scalar gu  = Vector3Ops::Dot( geomN, u );
+	const Scalar gv  = Vector3Ops::Dot( geomN, v );
+	const Scalar gw  = Vector3Ops::Dot( geomN, n );
+	const Scalar wiDotGeomN = Vector3Ops::Dot( wi, geomN );
+
+	const Scalar cD = AshikminDiffuseSelectCoefficient( wD, lobes, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw );
+
+	Scalar specDensity = 0;
+	const Vector3 h = Vector3Ops::Normalize( Vector3( wi.x+woNorm.x, wi.y+woNorm.y, wi.z+woNorm.z ) );
+	const Scalar hdotk = Vector3Ops::Dot( h, wi );
+	if( hdotk > 0 ) {
+		const Scalar hn = Vector3Ops::Dot( h, n );
+		const Scalar hu = Vector3Ops::Dot( h, u );
+		const Scalar hv = Vector3Ops::Dot( h, v );
+		specDensity = AshikminSpecularDensity( hdotk, hn, hu, hv, cosO, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw, rd, rho, lobes );
+	}
+
+	return cD * diffusePdf + specDensity;
 }
 
 Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
@@ -461,33 +751,67 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar nu_val = pNu->GetValueAtNM(ri,nm);
-	const Scalar nv_val = pNv->GetValueAtNM(ri,nm);
-
-	// Representative weights at mirror direction (same as Pdf)
-	// Mirror Scatter()'s FlipW (same rationale as Pdf() above).
+	// Same construction as Pdf() above; ScatterNM has no per-channel
+	// branch, so there is always exactly one specular lane.
 	OrthonormalBasis3D myonb = ri.onb;
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 n = myonb.w();
+	const Vector3 u = myonb.u();
+	const Vector3 v = myonb.v();
 	const Scalar cos_i = Vector3Ops::Dot( wi, n );
-
 	if( cos_i <= 0 ) {
 		return 0;
 	}
 
-	const Scalar rs_val = fabs( GuardedGetColorNM( *pRs, ri, nm ) );
-	const Scalar fresnel_m = rs_val + (1.0 - rs_val) * pow(1.0 - cos_i, 5.0);
-	const Scalar specFactor_m = r_min( fresnel_m / cos_i, 1.0 );
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
-	static const Scalar energyConservation = 28.0 / (23.0 * PI);
-	const Scalar fromK = 1.0 - pow( 1.0 - cos_i * 0.5, 5.0 );
-	const Scalar diffFactor_m = energyConservation * fromK * fromK;
+	const Vector3 woNorm = Vector3Ops::Normalize( wo );
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
+		return 0;
+	}
+	const Scalar cosO = Vector3Ops::Dot( woNorm, n );
+	if( cosO <= 0 ) {
+		return 0;
+	}
 
-	const Scalar wSpec = rs_val * specFactor_m;
-	const Scalar wDiff = fabs( GuardedGetColorNM( *pRd, ri, nm ) ) * diffFactor_m;
+	const Scalar diffusePdf = cosO * INV_PI;
 
-	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
+	const Scalar rd  = fabs( GuardedGetColorNM( *pRd, ri, nm ) );
+	const Scalar rho = fabs( GuardedGetColorNM( *pRs, ri, nm ) );
+	static const Scalar diffuseNorm = 28.0 / 23.0;
+	const Scalar fromK1 = 1.0 - pow( 1.0 - cosO*0.5, 5.0 );
+	const Scalar fromK2 = 1.0 - pow( 1.0 - cos_i*0.5, 5.0 );
+	const Scalar wD = rd * (1.0-rho) * diffuseNorm * fromK1 * fromK2;
+
+	AshikminLobeSet lobes;
+	lobes.count = 1;
+	lobes.NU[0] = pNu->GetValueAtNM(ri,nm);
+	lobes.NV[0] = pNv->GetValueAtNM(ri,nm);
+	lobes.Rs[0] = rho;
+
+	const Scalar wiu = Vector3Ops::Dot( wi, u );
+	const Scalar wiv = Vector3Ops::Dot( wi, v );
+	const Scalar gu  = Vector3Ops::Dot( geomN, u );
+	const Scalar gv  = Vector3Ops::Dot( geomN, v );
+	const Scalar gw  = Vector3Ops::Dot( geomN, n );
+	const Scalar wiDotGeomN = Vector3Ops::Dot( wi, geomN );
+
+	const Scalar cD = AshikminDiffuseSelectCoefficient( wD, lobes, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw );
+
+	Scalar specDensity = 0;
+	const Vector3 h = Vector3Ops::Normalize( Vector3( wi.x+woNorm.x, wi.y+woNorm.y, wi.z+woNorm.z ) );
+	const Scalar hdotk = Vector3Ops::Dot( h, wi );
+	if( hdotk > 0 ) {
+		const Scalar hn = Vector3Ops::Dot( h, n );
+		const Scalar hu = Vector3Ops::Dot( h, u );
+		const Scalar hv = Vector3Ops::Dot( h, v );
+		specDensity = AshikminSpecularDensity( hdotk, hn, hu, hv, cosO, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw, rd, rho, lobes );
+	}
+
+	return cD * diffusePdf + specDensity;
 }
