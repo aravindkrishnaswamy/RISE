@@ -1011,30 +1011,36 @@ static void RunFloorFogSite()
 //
 // THE CONTRACT.  `OptimalMISAccumulator::Solve()` computes
 // `alpha = M_nee / (M_nee + M_bsdf)`, i.e. each technique's coefficient
-// is `1 / M_i` (Kondapaneni 2019).  The `M_i` that belongs in that
-// expression is the second moment of the estimator the FILM ACTUALLY
-// SEES for technique `i` -- so if technique `i`'s sample is subjected
-// to Russian roulette, RR is part of its EFFECTIVE density, not a
+// is `1 / M_i` (Kondapaneni 2019).  `M_i` is the second moment of
+// technique `i`'s OWN single-sample, MIS-UNWEIGHTED estimator -- the
+// per-technique MIS weight `w_i` is never part of `M_i` (see
+// `OptimalMISAccumulator.h`'s own header comment, and `LightSampler.cpp`,
+// which trains `contrib` BEFORE `contrib *= w`) -- evaluated under that
+// technique's EFFECTIVE density: if technique `i`'s sample is subjected
+// to Russian roulette, RR is part of that effective density, not a
 // separate layer sitting above the moment.
 //
-// THE DERIVATION.  Write the realized two-technique estimator, with the
-// BSDF branch RR'd at survival probability `q` and compensated:
+// THE DERIVATION.  Consider the BSDF technique's own realized
+// single-sample estimator in isolation (no MIS weight attached): draw
+// `x ~ p_b`, survive with probability `q(x)` and compensate by `1/q`,
+// else contribute zero:
 //
-//     F = w_n(x_n) f(x_n)/p_n(x_n)
-//       + S * w_b(x_b) f(x_b) / ( p_b(x_b) * q(x_b) ),    S ~ Bern(q)
+//     Y_b = S * f(x_b) / ( p_b(x_b) * q(x_b) ),    S ~ Bern(q(x_b))
 //
-// which is exactly sampling the BSDF branch from the DEFECTIVE density
-// `p~_b = q * p_b`.  Its second moment is
+// This is exactly sampling from the DEFECTIVE density `p~_b = q * p_b`
+// (unbiased: `E[Y_b] = E_{x~p_b}[f/p_b] = E_pre`).  Its second moment is
 //
-//     E[F_b^2] = q * E_{x~p_b}[ ( w_b f / (p_b q) )^2 ]
-//              = integral w_b^2 f^2 / (p_b q)
+//     E[Y_b^2] = E_{x~p_b}[ q * ( f / (p_b q) )^2 ]
+//              = integral f^2 / (p_b q)
 //
 // so the quantity that belongs in alpha's denominator is
 //
 //     M_bsdf = integral f^2 / (p_b q) = E_pre / q            (E_pre = integral f^2/p_b)
 //
-// -- the REALIZED moment.  Russian roulette makes a technique WORSE
-// (more variance), and `1/M` must see that.
+// -- the REALIZED moment, with no `w_b` anywhere in it: `M_bsdf` is a
+// property of the BSDF technique's own proposal and RR, not of how the
+// film later blends it with NEE.  Russian roulette makes a technique
+// WORSE (more variance), and `1/M` must see that.
 //
 // THE THREE CANDIDATE WIRINGS, and what each estimates.  The estimator
 // of `M_i` is (sum of accumulated per-sample moments) / (attempt count):

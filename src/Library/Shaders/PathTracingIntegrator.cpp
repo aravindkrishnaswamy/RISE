@@ -3971,11 +3971,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// RETRACTS round 6's opposite ruling).
 			//
 			// `OptimalMISAccumulator::Solve()` weights each technique by
-			// `1/M_i`, so `M_i` must be the second moment of the estimator
-			// the FILM ACTUALLY SEES for technique `i`.  Russian roulette
-			// does not sit outside that estimator: it makes the effective
-			// density DEFECTIVE, `p~ = q * p`, and the surviving sample is
-			// compensated by `1/q`.  Hence
+			// `1/M_i`, so `M_i` is the second moment of technique `i`'s
+			// OWN single-sample, MIS-UNWEIGHTED estimator (the film's
+			// per-technique MIS weight `w_i` is never part of `M_i` --
+			// see `OptimalMISAccumulator.h`'s own header comment and
+			// `LightSampler.cpp`, which trains `contrib` before
+			// `contrib *= w`), evaluated under that technique's EFFECTIVE
+			// (RR-defective) density `p~ = q * p`.  Russian roulette does
+			// not sit outside that estimator: it makes the density
+			// defective, and the surviving sample is compensated by
+			// `1/q`.  Hence
 			//
 			//     M_bsdf = integral f^2 / (p q) = E_pre / q
 			//

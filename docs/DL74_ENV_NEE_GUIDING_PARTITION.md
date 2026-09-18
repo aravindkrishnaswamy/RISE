@@ -330,9 +330,12 @@ Two design notes about the fixture:
   moment, for every site.**  (An earlier ruling recorded here on
   2026-09-14 said "PRE-RR, for every site"; that was retracted on
   review -- see below.)  `Solve()` weights each technique by `1/M_i`,
-  so `M_i` is the second moment of the estimator the FILM sees.
-  Russian roulette does not sit outside that estimator: it makes the
-  technique's density DEFECTIVE, `p~ = q*p`, with survivors
+  so `M_i` is the second moment of technique `i`'s OWN single-sample,
+  MIS-UNWEIGHTED estimator (the per-technique MIS weight `w_i` is
+  never part of `M_i` -- `LightSampler.cpp` trains `contrib` BEFORE
+  `contrib *= w`) under its EFFECTIVE (RR-defective) density
+  `p~ = q*p`.  Russian roulette does not sit outside that estimator: it
+  makes the technique's density DEFECTIVE, with survivors
   compensated by `1/q`, so
   `M = integral f^2/(p q) = E_pre/q`.  The wiring that estimates it --
   accumulate the POST-RR (as-carried) contribution for survivors and
