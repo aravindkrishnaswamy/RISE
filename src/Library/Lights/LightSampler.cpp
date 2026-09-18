@@ -2616,7 +2616,22 @@ RISEPel LightSampler::EvaluateDirectLighting(
 							// partner trains the full exit throughput) the
 							// integrand is `neeTrainingScale * contrib`.
 							// 1 everywhere else, so unchanged there.
-							const Scalar lum = neeTrainingScale * ColorMath::MaxValue( contrib );
+							// DL-84 round 7 (the REALIZED-MOMENT convention,
+							// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+							// "Round 7"): `AccumulateCount` for this attempt
+							// fired BEFORE the light-sample roulette above, and
+							// a killed sample contributes a counted zero -- so
+							// the moment paired with it must be of the estimator
+							// the FILM sees, which carries
+							// `rrSurvivalCompensation = 1/q`.  Without it this
+							// arm trains `q * E_pre` instead of the realized
+							// `E_pre / q`, exactly the defect round 7 fixed on
+							// the BSDF side.  `rrSurvivalCompensation` is 1
+							// whenever `light_rr_threshold` is 0 (the default),
+							// so every scene that does not use that knob is
+							// unchanged.
+							const Scalar lum = neeTrainingScale * rrSurvivalCompensation *
+								ColorMath::MaxValue( contrib );
 							const Scalar f2 = lum * lum;
 							if( f2 > 0 && pdfAlias > 0 )
 							{
@@ -3185,7 +3200,9 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			if( pOptimalMIS && !pOptimalMIS->IsReady() )
 			{
 				// DL-72 P2-3: NM twin -- see the RGB area-light arm.
-				const Scalar scaled = neeTrainingScale * contrib;
+				// DL-84 round 7: `rrSurvivalCompensation` likewise -- NM twin
+				// of the realized-moment note in the RGB arm.
+				const Scalar scaled = neeTrainingScale * rrSurvivalCompensation * contrib;
 				const Scalar f2 = scaled * scaled;
 				if( f2 > 0 && pdfAlias > 0 )
 				{

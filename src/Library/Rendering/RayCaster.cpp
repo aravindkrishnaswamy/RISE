@@ -1331,6 +1331,16 @@ bool RayCaster::CastRay(
 				// never added (round 1 wired only `bsdfTimesCos`, not the
 				// matching count) -- see
 				// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "Round 3".
+				// DL-84 round 7 (the REALIZED-MOMENT convention): audited
+				// and UNCHANGED.  This file applies no Russian roulette of
+				// its own between the count above and the escape arm that
+				// accumulates the moment -- `RayCaster.cpp` contains no
+				// `EvaluateRussianRoulette` call at all -- so the quantity
+				// trained here already IS the realized one.  (The
+				// cast-level importance roulette at `CastRay`'s entry is a
+				// SEPARATE, whole-subpath survival applied to every
+				// technique below it alike; it is recorded as DL-110, not
+				// folded in here.)
 				rs2.bsdfTimesCos = RISEPel( phasePdf, phasePdf, phasePdf );
 				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
 				{
@@ -1960,6 +1970,16 @@ bool RayCaster::CastRayNM(
 				// symmetric with the RGB copy per the audit-by-bug-pattern
 				// sibling rule rather than left to silently diverge if a
 				// future change ever does construct one for NM.
+				// DL-84 round 7 (the REALIZED-MOMENT convention): audited
+				// and UNCHANGED.  This file applies no Russian roulette of
+				// its own between the count above and the escape arm that
+				// accumulates the moment -- `RayCaster.cpp` contains no
+				// `EvaluateRussianRoulette` call at all -- so the quantity
+				// trained here already IS the realized one.  (The
+				// cast-level importance roulette at `CastRay`'s entry is a
+				// SEPARATE, whole-subpath survival applied to every
+				// technique below it alike; it is recorded as DL-110, not
+				// folded in here.)
 				rs2.bsdfTimesCos = RISEPel( phasePdf, phasePdf, phasePdf );
 				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
 				{
