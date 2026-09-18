@@ -185,14 +185,19 @@ void SubSurfaceScatteringSPF::Scatter(
 			// Smooth surface: perfect specular reflection (delta)
 			Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
-			// Geometric-horizon gate: derived-direction delta lobe -- compute
-			// the reflection direction first, gate it, and drop the lobe
-			// entirely on failure (no redistribution) UNLESS the reflection is
-			// MANDATORY (R >= 1.0, i.e. TIR at the entry boundary, reachable
-			// when the SSS medium's ambient IOR exceeds its own): there is no
-			// refraction channel here at all (BSSRDF entry is the
-			// integrator's business, not emitted by this SPF), so dropping
-			// here would be total, deterministic energy loss.  Re-derive the
+			// Geometric-horizon gate: derived-direction delta lobe --
+			// compute the reflection direction first, gate it, and ALWAYS
+			// re-derive on failure.  (Review P2-2: this block used to say
+			// "drop the lobe entirely on failure ... UNLESS the reflection
+			// is MANDATORY (R >= 1.0)".  DL-111 removed that condition --
+			// the code below re-derives unconditionally -- and the reason
+			// the old text gave for the mandatory case applies just as
+			// well to every other: there is no refraction channel here at
+			// all (BSSRDF entry is the integrator's business, not emitted
+			// by this SPF), so a drop is total, deterministic energy loss
+			// at any R, and on a shipped SSS material
+			// (`bAbsorbBackFace = true`) this delta reflection is the ONLY
+			// ray the SPF emits.)  Re-derive the
 			// reflection direction about the TRUE geometric normal instead of
 			// the shading normal -- guaranteed to satisfy the gate (no
 			// re-check needed): for a ray arriving against geomN,
@@ -270,12 +275,13 @@ void SubSurfaceScatteringSPF::Scatter(
 
 		// Geometric-horizon gate (sign flip vs the front smooth-reflection
 		// branch: the ray arrives from inside here, so the reflection back
-		// into the medium lands on the -ri.onb.w() side).  Drop on fail
-		// (no redistribution) UNLESS the reflection is MANDATORY (R >= 1.0,
-		// i.e. TIR at the inside boundary): the exit-refraction lobe below is
-		// gated on `R < 1.0`, so when R >= 1.0 there is no companion channel
-		// to carry the energy and dropping here would be total, deterministic
-		// energy loss.  Re-derive the reflection direction about the TRUE
+		// into the medium lands on the -ri.onb.w() side).  ALWAYS re-derive
+		// on failure, never drop (review P2-2: this used to read "Drop on
+		// fail ... UNLESS the reflection is MANDATORY (R >= 1.0)", which
+		// DL-111 superseded -- the code below re-derives unconditionally;
+		// at R >= 1 the exit-refraction lobe is gated off, so a drop there
+		// would be total energy loss, and below 1 it is still an unmatched
+		// loss `ref` is paid to nothing).  Re-derive the reflection direction about the TRUE
 		// geometric normal instead of the shading normal -- guaranteed to
 		// satisfy the gate (no re-check needed): for a ray arriving against
 		// geomNBack, dot(reflect(d,geomNBack), geomNBack) = -dot(d,geomNBack) > 0 --
@@ -469,12 +475,12 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
 			// Geometric-horizon gate (mirrors Scatter()'s smooth-reflection
-			// gate) -- including the R >= 1.0 mandatory-lobe fallback: no drop
-			// when the reflection is the only channel (entry-side TIR); the
-			// direction is re-derived about the TRUE geometric normal, which
-			// is guaranteed to satisfy the gate (no re-check needed): geomN is
-			// ray-anchored, so the reflected direction always lands on the
-			// incoming ray's side.
+			// gate): NEVER drop -- since DL-111 the direction is
+			// re-derived about the TRUE geometric normal at every R, not
+			// just the mandatory R >= 1.0 case the earlier text described
+			// (review P2-2).  The re-derivation is guaranteed to satisfy
+			// the gate (no re-check needed): geomN is ray-anchored, so the
+			// reflected direction always lands on the incoming ray's side.
 			const Vector3 nRef = ri.onb.w();
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : nRef;
@@ -536,14 +542,13 @@ void SubSurfaceScatteringSPF::ScatterNM(
 
 		Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
 
-		// Geometric-horizon gate (mirrors Scatter()'s back-face gate).  Drop on
-		// fail UNLESS mandatory (R >= 1.0, TIR at the inside boundary -- the
-		// exit-refraction lobe below is gated on `R < 1.0`, so there is no
-		// companion channel and dropping would be total energy loss); in that
-		// case re-derive the reflection about the TRUE geometric normal, which
-		// is guaranteed to satisfy the gate (no re-check needed): geomNBack is
-		// ray-anchored, so the reflected direction always lands on the
-		// incoming ray's side.
+		// Geometric-horizon gate (mirrors Scatter()'s back-face gate):
+		// NEVER drop -- since DL-111 the reflection is re-derived about the
+		// TRUE geometric normal at every R, not only the mandatory
+		// R >= 1.0 case the earlier text described (review P2-2).  The
+		// re-derivation is guaranteed to satisfy the gate (no re-check
+		// needed): geomNBack is ray-anchored, so the reflected direction
+		// always lands on the incoming ray's side.
 		const Vector3 nRefBack = -ri.onb.w();
 		// DL-111: `HasTrueGeomSide()` (DL-70) added here because this
 		// branch's geometric reference now gates a STACK-CARRYING
