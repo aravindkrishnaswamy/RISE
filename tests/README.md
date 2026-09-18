@@ -210,7 +210,7 @@ red-proof furnace numbers on the unfixed lookup (`1.1678+/-0.0028` and
 `(alphaX,alphaY)` as two independent grid axes (rather than
 `(ratio,alphaEff)`), so phi=0 means "aligned with the queried alphaX
 axis" unconditionally -- both new rows now read `0.9988`/`0.9924`.
-`155 checks, 0 failures`. The same re-parametrization also closed two
+`155 checks, 0 failures` (`190` after DL-86 and its round-2 rows). The same re-parametrization also closed two
 follow-on issues found in review: **P2-1** (a seam at `alphaX==alphaY` --
 the table's own diagonal is now seeded from the converged isotropic
 tables instead of an independent noisier bake) and **P2-2** (most
@@ -279,6 +279,47 @@ external-linkage dedupe, but no compile-time-evaluation obligation --
 avoids MSVC's default `/constexpr:steps 100000` limit on the largest
 table, `E_ss_TABLE_G2_ANISO_PHI` at 24*24*13*32 = 239,616 elements).
 
+**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained `TestGrazingFurnaceDL86`
+— 16 real-`GGXBRDF` (14 isotropic + 2 anisotropic) and 14 real-`CookTorranceBRDF`
+furnace rows (F=1, specular-only, 400k samples) at `theta=89.40/89.60/89.80/89.89` degrees,
+i.e. cosView strictly below the LUT's first bin center `c0=0.5/32~=0.0156`,
+driving the grazing end-cap through the PRODUCTION BRDFs rather than the
+LUT lookup in isolation. Two things about this section are load-bearing.
+(1) The rows are **two-sided** (`|mean - expected| <= 3*SE + tolAbs` via
+`CheckTwoSidedFurnaceRow`), not routed through `CheckRGBBound`, whose
+energy gate is upper-bound-only: the DL-86 defect reads as a GAIN on the
+pre-slice header and as a DEFICIT on the first (defective) fix, and a
+one-sided gate is blind to the second. (2) The `CookTorranceBRDF` rows
+exist because `IntegrateRGB`/`IntegrateNM` now take `const IBSDF&`:
+before this slice NO test drove `LookupEss` — the SEPARABLE table
+Cook-Torrance renders with — through a material at all, so that path was
+unguarded at material level. Red-proof in both directions: **16 failures**
+against the straight-line header `aff019de` (e.g. `GGX a=0.01 th=89.60`
+`0.94668+/-0.00150`; `CT conductor a=0.02 th=89.89` `1.05222+/-0.00136`)
+and **12 failures** against the pre-slice `943d353b` flat clamp (e.g.
+`GGX a=1.0 th=89.80` `1.04585+/-0.00041`). The two anisotropic rows
+(`(.9,.1)` at `az=90` and the axis-swapped `(.1,.9)` at `az=0`, both at
+`theta=89.89`) carry the tightest band in the section (`3*SE + 0.005`)
+because the fix closes them to within 0.05% of 1 (`1.00043`/`0.99960`)
+while the flat clamp reads `1.15718`/`1.15650` and the straight line
+`0.97388`/`0.97302`. Three rows carry a MEASURED `expected != 1` with the
+cause named (DL-105, the LUT's alpha axis) rather than a band widened
+until they pass. `186 checks, 0 failures` (was `156/0` pre-slice). See
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-86" section.
+
+**DL-86 round 2 (review P1/P2-1, same slice)**: four rows added. The
+100:1 anisotropic pair at `theta=89.99` (`cosView ~ 1.745e-4`, which
+lands in the first sub-interval the round-1 sub-grid left un-bracketed)
+reads `1.00208+/-0.00142` / `0.99757+/-0.00142` against the review's
+`0.96506+/-0.00147` before the aniso end-cap was refined -- a 3.5%
+deficit at a configuration no material row drove. Two further rows pin
+the SEPARABLE path's worst DL-105 excursions at their MEASURED values
+with the cause named: `CT conductor a=0.005 th=89.40` `1.03432+/-0.00217`
+(a GAIN; the review read `1.03649+/-0.00219` at its own seed, inside this
+row's band) and `GGX Schlick a=0.005 th=89.89` `0.96970+/-0.00151` (a
+DEFICIT). `190 checks, 0 failures`.
+
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
 (`E_ss_TABLE_G2`/`E_avg_TABLE_G2`, `LookupEssG2`/`LookupEavgG2`) against a
@@ -318,6 +359,54 @@ epsilon -- the re-parametrized table mirrors the canonical
 `alphaX<=alphaY` half into the `alphaX>alphaY` half using the SAME
 Monte-Carlo samples, so the symmetry is exact, not merely close). `30
 checks, 0 failures` (was `23 checks, 0 failures`).
+
+**DL-86 CLOSED 2026-09-14 (debt-dl86 slice)**: gained four gating groups
+against a fresh 20M-sample VNDF quadrature, all at `cosTheta` strictly
+below the first bin center `c0=0.5/32~=0.0156` unless marked otherwise.
+(1) `LookupEssG2` at 6 alphas x 7 cosTheta values down to `1e-4`.
+(2) `LookupEss` — the SEPARABLE table `CookTorranceBRDF`/`CookTorranceSPF`
+render with — at the same grid, via a new `MonteCarloEssSeparable`
+quadrature; this test previously used `LookupEss` only as a NEGATIVE
+control against the height-correlated model, so its own grazing end-cap
+had no coverage. (3) `LookupEssG2AnisoDirectional`, split into a
+**node-exact** group (`alphaX`, `alphaY`, `phi` all on grid nodes, so
+cosTheta is the ONLY interpolated axis — the group that actually isolates
+this end-cap) and the typical near-node configurations. (4) A labelled
+control at `cosTheta=0.03`, the first ORDINARY interpolation span, which
+this fix must leave untouched — and does, to every printed digit.
+Tolerances are PER-ALPHA, not one floor: `0.004` where the fix is tight
+(measured residual `<=0.26%`), `0.025`/`0.060` where DL-105's alpha axis
+dominates, each labelled with its cause. Red-proof: **41 failures**
+against the straight-line header `aff019de` (e.g. `alpha=0.01 cos=0.002
+LookupEss=0.860587` vs quadrature `0.917441+/-0.000033`, 6.20%) and
+**90 failures** against the pre-slice `943d353b` flat clamp. `187 checks,
+0 failures` (was `30/0` pre-slice). See
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-86" for the full before/after residual tables.
+
+**DL-86 round 2 (review P1, same slice)**: the anisotropic probe set
+above started at `cos=0.002`, just ABOVE the first baked sub-node
+(`c0/8 = 1.953e-3`), so the one interval that is a straight ramp from the
+exact `cosTheta->0` anchor went unprobed -- and for an anisotropic pair
+that is the interval the end-cap follows worst, because the approach to
+`Ess=1` only begins at `cos << alphaX*sinTheta`. The probe set is now
+`{1e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 1.56e-2}` for both aniso
+groups (quote THAT protocol with any residual figure from this suite),
+the node-exact group gained `(0.8709,0.0961,phi=90)` -- the node-exact
+stand-in for the review's `(0.9,0.1,phi=90)`, which is off-node on both
+alphas and can only be probed in the other group -- and the node-exact
+group has its own tolerance, `0.004`, separate from the off-node group's
+`0.008`. Red-proof: **8 failures** on `03656e6c` at
+`(0.01,1.0,phi=0)` and its axis-swapped twin (`2.49%` at `cos=1e-4`
+rising to `5.91%` at `1e-3`). Fixed by refining the ANISO sub-grid's
+lowest interval by 5 geometric octaves (`ANISO_SUB_FINE`); the isotropic
+sub-grid is deliberately unchanged (its residual there is `0.016%`).
+Post-fix the worst node-exact residual over the whole probe set is
+`0.338%`. Also gained a consistency pin (green before and after) for the
+anisotropic H6 multiscatter lobe: `2*PI*int MSPdfG2Aniso dc == 1` at four
+`(alphaX,alphaY)` pairs and a 40M-draw `SampleMSCosThetaG2Aniso`
+histogram against that density in sub-grid-scale bins. `252 checks, 0
+failures`.
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's
