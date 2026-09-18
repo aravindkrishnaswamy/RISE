@@ -6,6 +6,7 @@
 #include <vector>
 #include "../src/Library/Geometry/DisplacedGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/InfinitePlaneGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -1279,6 +1280,153 @@ static void TestScalarHeightPositionStepClosedForm()
 	safe_release( job );
 }
 
+//-----------------------------------------------------------------------------
+// Builds a manually-WELDED watertight cube mesh: one shared vertex per
+// corner (8 total), the standard 12-triangle closed triangulation. Used
+// as a `DisplacedGeometry` base below instead of `BoxGeometry` because
+// `BoxGeometry::TessellateToMesh` tessellates its six faces
+// INDEPENDENTLY -- each face gets its own vertex grid with no seam
+// welding to its neighbours -- so a plain tessellated box is ALSO not
+// watertight by DL-31's edge-count check (measured: 96 boundary edges
+// at detail=4, one full unshared perimeter per face). That is the exact
+// same underlying pattern as DL-116 (SphereGeometry's unwelded poles),
+// just at every seam rather than only the two poles; recorded as part
+// of DL-116's own scope rather than a second new row, since it is the
+// same tessellator-does-not-weld-seams mechanism, not a different bug.
+// `TriangleMeshGeometryIndexed::TessellateToMesh` is a pass-through
+// (`the header's own words: "emits the stored indexed triangles
+// unchanged"`), so handing DisplacedGeometry an already-welded mesh as
+// its base is what actually isolates THIS test's own subject -- the
+// SignedDistanceLower forwarding -- from that separate tessellator gap.
+static TriangleMeshGeometryIndexed* BuildWeldedCubeForDisplacement( const Scalar h )
+{
+	VerticesListType vertices;
+	vertices.push_back( Point3( -h, -h, -h ) );	// 0
+	vertices.push_back( Point3(  h, -h, -h ) );	// 1
+	vertices.push_back( Point3(  h,  h, -h ) );	// 2
+	vertices.push_back( Point3( -h,  h, -h ) );	// 3
+	vertices.push_back( Point3( -h, -h,  h ) );	// 4
+	vertices.push_back( Point3(  h, -h,  h ) );	// 5
+	vertices.push_back( Point3(  h,  h,  h ) );	// 6
+	vertices.push_back( Point3( -h,  h,  h ) );	// 7
+
+	NormalsListType normals( vertices.size(), Vector3( 0, 0, 1 ) );	// unused by this test
+	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );		// unused by this test
+
+	IndexTriangleListType tris;
+	auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+		IndexedTriangle t;
+		t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+		t.iNormals[0] = a;  t.iNormals[1] = b;  t.iNormals[2] = c;
+		t.iCoords[0] = a;   t.iCoords[1] = b;   t.iCoords[2] = c;
+		tris.push_back( t );
+	};
+	add( 0, 1, 2 ); add( 0, 2, 3 );	// bottom (z=-h)
+	add( 4, 6, 5 ); add( 4, 7, 6 );	// top (z=+h)
+	add( 0, 5, 1 ); add( 0, 4, 5 );	// front (y=-h)
+	add( 3, 2, 6 ); add( 3, 6, 7 );	// back (y=+h)
+	add( 0, 3, 7 ); add( 0, 7, 4 );	// left (x=-h)
+	add( 1, 5, 6 ); add( 1, 6, 2 );	// right (x=+h)
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+	return mesh;
+}
+
+//-----------------------------------------------------------------------------
+// DL-31 sibling: DisplacedGeometry::DistanceToSurface already delegates to
+// its baked mesh (the row above this one, "docs/CROSS_OBJECT_PROXIMITY_
+// DESIGN.md 5.2, Phase 2"); SignedDistanceLower did not at all -- fixed
+// to forward the same way.
+//
+// HISTORY (DL-143 made this pin LIVE): a `DisplacedGeometry`'s baked mesh
+// comes from `m_pBase->TessellateToMesh(...)`, and when the base is
+// ITSELF a `TriangleMeshGeometryIndexed` (as it is here -- a hand-welded,
+// genuinely watertight cube, 8 vertices / 12 triangles), that class's OWN
+// `TessellateToMesh` deliberately FLATTENS every triangle corner to its
+// own independent (pos, normal, uv) tuple (see its own doc comment:
+// downstream displacement code indexes normals/UVs by the FLAT vertex
+// index, so a shared position cannot be reused across faces). The baked
+// mesh therefore has 36 vertices for 12 triangles, not 8. Originally
+// (`ComputeWatertightness` keyed by raw POSITION-ARRAY INDEX) that made
+// every edge look like it was used by exactly one triangle, so the
+// watertightness check read this baked mesh as an open sheet even though
+// the ORIGINAL base was perfectly closed -- this test used to be a
+// CONSISTENCY PIN on the refusal, not a red-proof of a successful signed
+// answer, and said so.
+//
+// DL-143 fixed `ComputeWatertightness` to weld corners by POSITION before
+// counting edges -- and `TessellateToMesh`'s flattening copies each
+// corner's position VERBATIM (see that method's own comment: it emits
+// `*src.pVertices[k]`, not a recomputed value), so the 36 flattened
+// corners weld right back down to the original 8 physical positions and
+// the baked mesh is now CORRECTLY read as watertight. This is therefore
+// now a REAL red/green assertion, not a pin: pre-DL-143 this test's own
+// `!ok` assertion passed (the baked mesh refused); on this tree `ok` is
+// now `true` (measured: `SignedDistanceLower` on the baked mesh answers
+// `-half`, exact) -- the forwarder added by this row is exercised
+// end-to-end for the first time, through a REAL bake, not just by
+// inspection of its textual shape against `DistanceToSurface`'s already-
+// proven forwarder.
+//-----------------------------------------------------------------------------
+static void TestSignedDistanceLowerForwardsToBakedMesh()
+{
+	std::cout << "Test 21: DisplacedGeometry::SignedDistanceLower forwards to the real baked mesh (DL-31 sibling)...\n";
+
+	const Scalar half = 2.0;
+	TriangleMeshGeometryIndexed* pWeldedCube = BuildWeldedCubeForDisplacement( half );
+
+	// Sanity: the STANDALONE base really is watertight and answers the
+	// signed query correctly on its own -- isolating "the base mesh is
+	// fine" from whatever the bake does to it.
+	{
+		Scalar s = 0.0; bool e = false;
+		const bool ok = pWeldedCube->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), s, e );
+		assert( ok );
+		assert( std::fabs( (double)s - ( -(double)half ) ) < 1e-9 );
+		assert( e );
+	}
+
+	// Null displacement: no vertex positions move, only TessellateToMesh's
+	// own flattening runs.
+	DisplacedGeometry* pDisp = new DisplacedGeometry(
+		pWeldedCube, /*detail=*/4, /*displacement=*/0, /*disp_scale=*/0.0,
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	pDisp->Realize();
+	assert( pDisp->IsValid() );
+
+	const Point3 centre( 0, 0, 0 );
+
+	// The pre-existing, already-working forward: proves a real mesh was
+	// baked and DistanceToSurface genuinely reaches it (not refused, not
+	// zero-by-coincidence).
+	Scalar dUnsigned = -1.0;
+	const bool okUnsigned = pDisp->DistanceToSurface( centre, Scalar( 1000 ), dUnsigned );
+	assert( okUnsigned );
+	assert( std::fabs( (double)dUnsigned - (double)half ) < 1e-6 );
+
+	// The NEW forward: reaches the SAME mesh, which (per the comment
+	// above) is flattened by TessellateToMesh but welds right back down
+	// to the original 8 physical positions under DL-143's position-keyed
+	// watertightness check, so it correctly ANSWERS the signed query --
+	// the true depth to the nearest face at the centre is exactly
+	// `-half`, same as the standalone base mesh's own answer above.
+	Scalar outSigned = 12345.0;	// sentinel: must be overwritten on success
+	bool outExact = false;
+	const bool ok = pDisp->SignedDistanceLower( centre, Scalar( 1000 ), outSigned, outExact );
+	assert( ok );
+	assert( outExact );
+	assert( std::fabs( (double)outSigned - ( -(double)half ) ) < 1e-6 );
+
+	pDisp->release();
+	pWeldedCube->release();
+}
+
 int main()
 {
 	TestPureTessellationBBox();
@@ -1301,6 +1449,7 @@ int main()
 	TestUVParityBetweenRoutes();
 	TestAnalyticalDerivativeParity();
 	TestScalarHeightPositionStepClosedForm();
+	TestSignedDistanceLowerForwardsToBakedMesh();
 
 	std::cout << "All DisplacedGeometry tests passed.\n";
 	return 0;

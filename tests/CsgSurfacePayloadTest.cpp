@@ -3392,6 +3392,152 @@ void TestSubtraction_NestedCsgOperandExitProbeUsesChildFrameRootFloor()
 	safe_release( oB );
 }
 
+//
+// Test 29 (DL-30): CSG_SUBTRACTION's EXIT-DESIGNATED boundary branch
+// (CSGObject.cpp's "B enters first, B's exit lands inside A's span"
+// switch arm, ~line 1372, which calls AdoptCsgExitFacePayloadViaProbe)
+// -- the dndu/dndv RE-PAIRING dot-product test at that function's tail
+// (CSGObject.cpp ~line 728's "-operand.vNormal2" comment) has NEVER been
+// exercised with a nonzero derivative: every existing test in this
+// family that reaches this exact switch arm (Test4 and every
+// "ExitProbe_*" test) uses BoxGeometry for the probed operand, whose
+// flat faces give dndu == dndv == (0,0,0) -- a sign flip of zero is
+// still zero, so the dot-product repair's CORRECTNESS was untested by
+// construction, only its REACHABILITY.  This test is Test4's own
+// construction (same A, same B position, same ray) with B swapped from
+// a BoxGeometry to a SphereGeometry -- an analytic primitive whose
+// closed-form Weingarten map (design doc 5.4) gives genuinely nonzero
+// dndu/dndv at every hit, so a sign error here is actually visible.
+//
+// The re-pairing dot product ALWAYS fires for this construction: B's
+// analytic normal field is direction-independent (the outward radial
+// unit vector at a surface point, regardless of which way a ray
+// approached it), so the probe's OWN reported vNormal at the exit point
+// is B's plain outward normal there, while this switch arm sets
+// dst.vNormal = -B.vNormal2 (B's outward exit normal, NEGATED) --
+// Dot(outward, -outward) = -1 < 0 on every run, deterministically
+// routing through the negation this test exists to verify.
+//
+void TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing()
+{
+	std::cout << "CSG_SUBTRACTION: exit-designated boundary dndu/dndv sign-pairing with a CURVED operand (DL-30)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );      // half-extent 3, spans z in [-3, 3]
+	SphereGeometry* gB = new SphereGeometry( 2.0 );          // radius 2 -- CURVED, populates dndu/dndv
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oB->SetPosition( Point3( 0, 0, -4 ) );   // spans z in [-6, -2]: overlaps A's near wall, same as Test4
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );   // same offset ray as Test4
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test29 (DL-30): composite takes A(box)/B(sphere) operands" );
+	csg->FinalizeTransformations();
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test29 (DL-30): (control) ray hits the composite at all" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	Check( refA.geometric.bHit, "Test29 (DL-30): (control) ray hits standalone A" );
+
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test29 (DL-30): (control) ray hits standalone B" );
+
+	// Sanity: confirm we hit the EXIT-DESIGNATED branch (same shape as
+	// Test4's sanity block) -- composite range == B's exit range (range2),
+	// not B's entry, not A's entry.
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ),
+		"Test29 (DL-30): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ),
+		"Test29 (DL-30): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ),
+		"Test29 (DL-30): (sanity) composite range != A's entry range" );
+
+	// Sanity: the sphere actually gives a NONZERO Weingarten map at the
+	// entry hit -- the property Test4's box operand structurally cannot
+	// have, and the whole reason this test exists.
+	Check( refBEntry.geometric.derivatives.valid,
+		"Test29 (DL-30): (control) standalone sphere B publishes derivatives" );
+	if( refBEntry.geometric.derivatives.valid ) {
+		const Scalar dnduMag = Vector3Ops::Dot( refBEntry.geometric.derivatives.dndu, refBEntry.geometric.derivatives.dndu );
+		Check( dnduMag > 1e-6,
+			"Test29 (DL-30): (sanity) B's dndu is genuinely NONZERO (unlike a box's flat-face zero)" );
+	}
+
+	Check( VecClose( ri.geometric.vNormal, Vector3( -refBEntry.geometric.vNormal2.x, -refBEntry.geometric.vNormal2.y, -refBEntry.geometric.vNormal2.z ) ),
+		"Test29 (DL-30): (control) composite vNormal is B's exit normal, flipped" );
+
+	// Independent oracle: probe B's EXIT face DIRECTLY from outside, exactly
+	// Test4's own `probeRef` technique -- a hand-built ray, NOT a call into
+	// the code under test (AdoptCsgExitFacePayloadViaProbe).  For this
+	// geometry B's exit face sits at world z = -2.
+	Ray probeRef( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, "Test29 (DL-30): (control) direct probe hits B's exit face" );
+	Check( refBExit.geometric.derivatives.valid, "Test29 (DL-30): (control) direct probe's derivatives.valid" );
+	Check( ri.geometric.derivatives.valid, "Test29 (DL-30): composite carries B's derivatives through the exit-designated branch" );
+
+	// Sanity: the oracle really lands on the same point the composite
+	// reports (confirms the probe recovered the REAL exit-face payload,
+	// P2-e, not B's entry-face data) -- reusing Test4's own ptCoord/
+	// ptObjIntersec checks as the position half of the oracle match.
+	if( refBExit.geometric.bHit ) {
+		Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ),
+			"Test29 (DL-30): (sanity) composite ptObjIntersec matches the independent exit-face oracle" );
+	}
+
+	if( ri.geometric.derivatives.valid && refBExit.geometric.bHit && refBExit.geometric.derivatives.valid ) {
+		// MONEY ASSERTIONS -- the composite reports -B.vNormal2 (the
+		// oracle's OWN vNormal, negated), so the derivatives OF that
+		// normal field must be negated right along with it: a positive
+		// dot product here would mean the pre-DL-30 world shipped a
+		// convex-reading curvature on what is geometrically a concave
+		// notch.  dpdu/dpdv are NOT negated (same convention as Test18 --
+		// negating them would reparameterize the surface, which the CSG
+		// composite must not do).
+		Check( VecClose( ri.geometric.derivatives.dndu, Vector3( -refBExit.geometric.derivatives.dndu.x, -refBExit.geometric.derivatives.dndu.y, -refBExit.geometric.derivatives.dndu.z ), 1e-6 ),
+			"Test29 (DL-30): MONEY ASSERTION -- dndu negated in step with vNormal at the exit-designated boundary" );
+		Check( VecClose( ri.geometric.derivatives.dndv, Vector3( -refBExit.geometric.derivatives.dndv.x, -refBExit.geometric.derivatives.dndv.y, -refBExit.geometric.derivatives.dndv.z ), 1e-6 ),
+			"Test29 (DL-30): MONEY ASSERTION -- dndv negated in step with vNormal at the exit-designated boundary" );
+		Check( VecClose( ri.geometric.derivatives.dpdu, refBExit.geometric.derivatives.dpdu, 1e-6 ),
+			"Test29 (DL-30): dpdu is NOT negated (surface parameterization is unchanged)" );
+		Check( VecClose( ri.geometric.derivatives.dpdv, refBExit.geometric.derivatives.dpdv, 1e-6 ),
+			"Test29 (DL-30): dpdv is NOT negated (surface parameterization is unchanged)" );
+
+		// Curvature-sign bonus check, matching Tests 17/18's convention:
+		// the composite's reported boundary (a sphere bitten out of a
+		// box's corner, viewed from the notch's own concave side) must
+		// read CONCAVE, while the SAME sphere point read by the
+		// independent oracle (its own outward-facing normal, a plain
+		// convex sphere from outside) must read CONVEX.
+		Scalar H_composite = 0, H_oracle = 0;
+		const bool okC = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, H_composite );
+		const bool okO = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refBExit.geometric.derivatives.dpdu, refBExit.geometric.derivatives.dpdv,
+			refBExit.geometric.derivatives.dndu, refBExit.geometric.derivatives.dndv, H_oracle );
+		Check( okC && okO, "Test29 (DL-30): curvature well-defined on both records" );
+		Check( okC && H_composite < 0, "Test29 (DL-30): composite exit-designated boundary reads CONCAVE (H < 0)" );
+		Check( okO && H_oracle > 0, "Test29 (DL-30): the independent oracle (sphere's own outward face) reads CONVEX (H > 0)" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -3422,6 +3568,7 @@ int main()
 	TestSubtraction_ExitProbe_AnisotropicStretchObliqueRayUsesExactRate();
 	TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor();
 	TestSubtraction_NestedCsgOperandExitProbeUsesChildFrameRootFloor();
+	TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing();
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

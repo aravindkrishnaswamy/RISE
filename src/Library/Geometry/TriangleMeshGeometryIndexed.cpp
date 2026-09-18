@@ -31,9 +31,11 @@
 #include "../Utilities/RenderParallelScope.h"
 #include <cmath>
 #include <cassert>
+#include <cstdint>
+#include <unordered_map>
+#include <utility>
 #ifdef RISE_ENABLE_MAILBOXING
 #include <atomic>
-#include <unordered_map>
 #endif
 
 inline unsigned int VoidPtrToUInt( const void* v )
@@ -76,6 +78,7 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
 	) :
   bDoubleSided( bDoubleSided_ ),
   bUseFaceNormals( bUseFaceNormals_ ),
+  m_bWatertight( false ),
   pPtrBVH( 0 )
 #ifdef RISE_ENABLE_MAILBOXING
   , geometryId( s_nextGeometryId.fetch_add(1) )
@@ -244,6 +247,10 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
+	// Stale topology, same reasoning as the bakes below: a re-fed mesh's
+	// old watertightness answer describes edges that no longer exist.
+	// DoneIndexedTriangles recomputes it once the new topology is final.
+	m_bWatertight = false;
 	// Any bake describes the OLD vertex data.  In practice this runs at
 	// construction, before anything could have queried a signal, but the
 	// invariant "a table always describes the vertices currently in this
@@ -582,10 +589,320 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 	ComputeAreas();
 
+	// DL-31.  Topology is final now (ptr_polygons is built, indexedtris
+	// -- which is what carried the index triples -- was just cleared
+	// above), so this is the one place watertightness can be computed
+	// from live state.
+	ComputeWatertightness();
+
 	// Vertex arrays and topology are final only now (the block above
 	// re-points every PointerTriangle into pPoints/pNormals), so anything
 	// baked before this call describes storage that no longer exists.
 	InvalidateSignalBakes();
+}
+
+namespace
+{
+	//! DL-143.  Welds `points` to a shared id per PHYSICAL corner, so
+	//! that watertightness (and anything else that needs "is this the
+	//! same vertex") can be decided by position rather than by which
+	//! array slot a per-corner import/tessellation pipeline happened to
+	//! allocate.  `outWeldedId[i]` is the welded id for `points[i]`;
+	//! two positions land in the same id iff they are within `eps` of
+	//! each other under the grid below.
+	//!
+	//! Tolerance: `eps = max(1e-9, 1e-6 * bboxDiagonal)`, i.e. relative
+	//! to THIS mesh's own scale, not an absolute constant -- an absolute
+	//! epsilon would either be too coarse for a millimetre-scale asset
+	//! or too fine to absorb import float noise on a kilometre-scale
+	//! one.  A cell size of `eps` with a 3x3x3 neighbour-cell scan finds
+	//! every prior welded point within `eps` regardless of which side of
+	//! a cell boundary two near-duplicate positions fall on; an exact
+	//! (bit-identical) duplicate -- the common case, both for a
+	//! deliberately shared corner and for this engine's own
+	//! `TessellateToMesh` producers, which copy the source position
+	//! verbatim rather than recomputing it -- is necessarily caught by
+	//! this same scan (distance 0 <= eps), so no separate exact-match
+	//! fast path is needed for correctness; it would only change the
+	//! constant factor, not the result.
+	//!
+	//! O(n) expected (each point does one grid-bucket insert/lookup plus
+	//! a bounded 27-cell scan whose average occupancy is O(1) for a
+	//! well-formed mesh); see ComputeWatertightness's own build-cost
+	//! measurement for the wall-clock this adds on a real asset.
+	void WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId )
+	{
+		outWeldedId.assign( points.size(), 0u );
+		if( points.empty() ) {
+			return;
+		}
+
+		BoundingBox bbox( points[0], points[0] );
+		for( std::size_t i = 1; i < points.size(); ++i ) {
+			bbox.Include( points[i] );
+		}
+		const Vector3 extents = bbox.GetExtents();
+		const Scalar diag = Vector3Ops::Magnitude( extents );
+		const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
+		const Scalar cell = eps;
+
+		auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
+			return (std::int64_t)std::floor( (double)( v / cell ) );
+		};
+		// A simple, well-distributed combine for the 3D cell key -- collisions are
+		// fine (unordered_map handles them; a false-positive bucket collision only
+		// costs an extra distance check, never a wrong weld, since every candidate
+		// found is still distance-checked against `eps` below).
+		auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::int64_t {
+			return x * 73856093LL ^ y * 19349663LL ^ z * 83492791LL;
+		};
+
+		std::unordered_map<std::int64_t, std::vector<unsigned int>> grid;
+		grid.reserve( points.size() );
+		std::vector<Point3> weldedPos;
+		weldedPos.reserve( points.size() );
+		const Scalar epsSq = eps * eps;
+
+		for( std::size_t i = 0; i < points.size(); ++i ) {
+			const Point3& p = points[i];
+			const std::int64_t cx = cellCoord( p.x );
+			const std::int64_t cy = cellCoord( p.y );
+			const std::int64_t cz = cellCoord( p.z );
+
+			unsigned int foundId = 0xFFFFFFFFu;
+			for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
+				for( int dy = -1; dy <= 1 && foundId == 0xFFFFFFFFu; ++dy ) {
+					for( int dx = -1; dx <= 1 && foundId == 0xFFFFFFFFu; ++dx ) {
+						const std::int64_t key = cellKey( cx + dx, cy + dy, cz + dz );
+						std::unordered_map<std::int64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
+						if( git == grid.end() ) { continue; }
+						const std::vector<unsigned int>& candidates = git->second;
+						for( std::size_t c = 0; c < candidates.size(); ++c ) {
+							const unsigned int cand = candidates[c];
+							const Vector3 d = Vector3Ops::mkVector3( weldedPos[cand], p );
+							if( Vector3Ops::SquaredModulus( d ) <= epsSq ) {
+								foundId = cand;
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if( foundId == 0xFFFFFFFFu ) {
+				foundId = (unsigned int)weldedPos.size();
+				weldedPos.push_back( p );
+				grid[ cellKey( cx, cy, cz ) ].push_back( foundId );
+			}
+			outWeldedId[i] = foundId;
+		}
+	}
+}
+
+//! DL-31/DL-143.  Every edge of `ptr_polygons`, keyed by its two
+//! ENDPOINT WELDED-VERTEX ids (undirected -- (i,j) and (j,i) are the
+//! same edge), must occur in exactly two triangles for the mesh to be a
+//! closed 2-manifold with no boundary.
+//!
+//! DL-143: this USED to key edges by the raw POSITION-INDEX pair
+//! (`PointerTriangle::pVertices[k]`'s offset into `pPoints`), which is
+//! only the same thing as "the same vertex" when nothing in the
+//! authoring/import/tessellation pipeline ever emits two distinct
+//! position-array slots for the same physical corner.  Almost nothing
+//! upstream honours that assumption: `GLTFSceneImporter::
+//! BuildGeometryFromPrimitive` does one `AddVertex` per glTF vertex
+//! (glTF's own attribute-tuple dedup granularity, which still splits a
+//! shared corner wherever its normal or UV differs across faces -- any
+//! hard edge or UV seam), and every `TessellateToMesh` producer in this
+//! engine (this class's own pass-through flattens each triangle corner
+//! to its own independent tuple by DESIGN -- see that method's comment
+//! -- and `SphereGeometry`/`BoxGeometry`'s generative tessellators give
+//! each face/pole its own vertex grid with no cross-seam sharing) does
+//! the same.  Keyed by raw index, a mesh built by any of those paths
+//! reads as an OPEN SHEET regardless of whether it is actually closed --
+//! a hand-welded mesh (a position shared by every triangle that touches
+//! it, one array slot per physical corner) was the only shape that ever
+//! passed.  Fixed by welding corners to a shared id by POSITION,
+//! `WeldVertexPositions` below, before building the edge map -- the
+//! textbook fix, and the one every other closed-mesh consumer in this
+//! codebase (`GeometryUtilities`, etc.) already expects of its inputs.
+//! `ptr_polygons`'s pointers, not `indexedtris`'s indices, are still the
+//! source of positions, because `DoneIndexedTriangles` has already freed
+//! `indexedtris` by the time this runs (see its own comment).
+//!
+//! A CHEAP NECESSARY CONDITION, not a full manifold/orientability
+//! certificate: two triangles sharing an edge with the SAME winding
+//! (a non-orientable identification) would still pass this count. That
+//! residual is recorded rather than chased further here -- the parity
+//! ray test below only needs "no boundary" (every edge internal) to be
+//! well-defined, and a non-orientable closed surface is not constructible
+//! from consistently-wound authored triangles in the first place.
+void TriangleMeshGeometryIndexed::ComputeWatertightness()
+{
+	m_bWatertight = false;
+	if( ptr_polygons.empty() || pPoints.empty() ) {
+		return;
+	}
+
+	std::vector<unsigned int> weldedId;
+	WeldVertexPositions( pPoints, weldedId );
+
+	const Point3* const pBase = &pPoints[0];
+	std::unordered_map<std::uint64_t, int> edgeCounts;
+	edgeCounts.reserve( ptr_polygons.size() * 3 );
+
+	for( MyPointerTriangleList::const_iterator i = ptr_polygons.begin(), e = ptr_polygons.end(); i != e; ++i ) {
+		const PointerTriangle& tri = *i;
+		unsigned int idx[3];
+		for( int k = 0; k < 3; ++k ) {
+			const std::ptrdiff_t off = tri.pVertices[k] - pBase;
+			if( off < 0 || (std::size_t)off >= pPoints.size() ) {
+				// A pointer outside pPoints means broken state -- refuse
+				// rather than guess.  No diagnostic: this is an internal
+				// consistency failure, not an authoring one.
+				return;
+			}
+			// DL-143: the WELDED id, not the raw position-array offset --
+			// see the function's own comment for why these differ on
+			// almost every imported/tessellated mesh.
+			idx[k] = weldedId[(std::size_t)off];
+		}
+		bool degenerate = false;
+		for( int k = 0; k < 3; ++k ) {
+			unsigned int a = idx[k];
+			unsigned int b = idx[(k + 1) % 3];
+			if( a == b ) { degenerate = true; continue; }
+			if( a > b ) { std::swap( a, b ); }
+			const std::uint64_t key = ( (std::uint64_t)a << 32 ) | (std::uint64_t)b;
+			++edgeCounts[key];
+		}
+		if( degenerate ) {
+			GlobalLog()->PrintEx( eLog_Info,
+				"TriangleMeshGeometryIndexed:: this mesh has a degenerate (repeated-vertex) "
+				"triangle, so it cannot be certified watertight -- interior() will read its "
+				"honest unsigned proximity() distance only, never a signed depth; see "
+				"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-31)." );
+			return;
+		}
+	}
+
+	// DL-31.  A closed 2-manifold with no boundary has EVERY edge shared
+	// by exactly two triangles: 1 is a boundary (an open sheet, or a mesh
+	// missing a face), 3+ is non-manifold (two or more surface sheets
+	// stitched through one edge).  Either way this stays an unsigned-only
+	// sheet -- see the header comment on `m_bWatertight` -- but unlike
+	// `DeepestOtherContainment`'s own per-QUERY refusal (deliberately
+	// silent there: a shared latch would print once per ray for every
+	// mesh AND plane in the scene, see that function's comment), this is
+	// a one-shot, BUILD-TIME diagnostic on the mesh itself: it fires once
+	// per authored mesh that fails the check, not once per interior()
+	// call, so it cannot spam and it tells an author what "unsigned
+	// only" traces back to.
+	unsigned int boundaryEdges = 0, nonManifoldEdges = 0;
+	for( std::unordered_map<std::uint64_t, int>::const_iterator i = edgeCounts.begin(), e = edgeCounts.end(); i != e; ++i ) {
+		if( i->second == 1 ) { ++boundaryEdges; }
+		else if( i->second > 2 ) { ++nonManifoldEdges; }
+	}
+
+	if( boundaryEdges > 0 || nonManifoldEdges > 0 ) {
+		GlobalLog()->PrintEx( eLog_Info,
+			"TriangleMeshGeometryIndexed:: this mesh is not watertight (%u boundary edge%s, "
+			"%u non-manifold edge%s) -- it will answer proximity() (an honest unsigned "
+			"distance) but REFUSE interior() (no certified inside test), unlike a closed "
+			"mesh.  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-31).",
+			boundaryEdges, boundaryEdges == 1 ? "" : "s",
+			nonManifoldEdges, nonManifoldEdges == 1 ? "" : "s" );
+		return;
+	}
+
+	m_bWatertight = true;
+}
+
+//! See the header for the full contract (fixed generic direction,
+//! both-faces geometric crossing count, only meaningful on a watertight
+//! mesh).
+bool TriangleMeshGeometryIndexed::RayParityInsideTest( const Point3& ptObject, bool& outInside ) const
+{
+	if( !pPtrBVH ) {
+		return false;
+	}
+	if( !RISE::IsFiniteDouble( (double)ptObject.x )
+	 || !RISE::IsFiniteDouble( (double)ptObject.y )
+	 || !RISE::IsFiniteDouble( (double)ptObject.z ) ) {
+		return false;
+	}
+
+	const Scalar diagonal = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+	if( !RISE::IsFiniteDouble( (double)diagonal ) || !( diagonal > Scalar( 0 ) ) ) {
+		return false;
+	}
+	const Scalar eps = MeshSignalBake::kOriginEpsilonFraction * diagonal;
+
+	// A fixed, non-axis-aligned, non-"nice" direction: an authored mesh's
+	// faces and edges are overwhelmingly axis-aligned or built from a few
+	// round angles, so this makes an exact tangency (a ray running exactly
+	// along a face, or exactly through an edge or vertex) the kind of
+	// coincidence that does not happen from ordinary authoring, rather
+	// than trying to detect and special-case one.
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( Scalar( 0.5257311121 ), Scalar( 0.8506508084 ), Scalar( 0.1234567891 ) ) );
+
+	Point3 origin = ptObject;
+	int crossings = 0;
+	// A closed mesh's own ray can cross it at most once per triangle;
+	// the guard exists only to bound a numerical runaway (e.g. an eps too
+	// small to make progress on a degenerate mesh), never expected to
+	// bind on a real one.
+	const int kMaxCrossings = 1000000;
+	for( int iter = 0; iter < kMaxCrossings; ++iter ) {
+		RayIntersectionGeometric ri( Ray( origin, dir ), nullRasterizerState );
+		ri.range = RISE_INFINITY;
+		// BOTH faces: this is a geometric crossing count, not a shading
+		// query, and must be unaffected by winding or `bDoubleSided` --
+		// see the header comment.
+		IntersectRay( ri, true, true, false );
+		if( !ri.bHit || !RISE::IsFiniteDouble( (double)ri.range ) || !( ri.range >= Scalar( 0 ) ) ) {
+			break;
+		}
+		++crossings;
+		origin = Point3Ops::mkPoint3( origin, dir * ( ri.range + eps ) );
+	}
+
+	outInside = ( crossings % 2 ) == 1;
+	return true;
+}
+
+//! See the header for the full contract (watertight-only, exact
+// magnitude reused from DistanceToSurface, exact sign from the parity
+// test, outExact honoured).
+bool TriangleMeshGeometryIndexed::SignedDistanceLower( const Point3& ptObject, const Scalar /*maxDistObject*/,
+	Scalar& outSigned, bool& outExact ) const
+{
+	outExact = false;
+	if( !m_bWatertight ) {
+		return false;		// DL-31 residual: an open or non-manifold mesh stays a sheet
+	}
+
+	// UNBOUNDED on purpose: IGeometry::SignedDistanceLower's contract
+	// forbids a range refusal (`maxDistObject` is an effort hint only,
+	// per the interface comment), while DistanceToSurface's OWN contract
+	// permits one -- so the incoming budget is never forwarded to it.
+	Scalar dist = Scalar( 0 );
+	if( !DistanceToSurface( ptObject, RISE_INFINITY, dist ) ) {
+		return false;
+	}
+
+	bool inside = false;
+	if( !RayParityInsideTest( ptObject, inside ) ) {
+		return false;
+	}
+
+	const Scalar sgn = inside ? -dist : dist;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;	// both the magnitude (DistanceToSurface is exact for this family) and the sign (a certified watertight mesh) are exact
+	return true;
 }
 
 void TriangleMeshGeometryIndexed::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const

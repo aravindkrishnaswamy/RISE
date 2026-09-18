@@ -88,11 +88,15 @@ measured the predicted closed-form 2.0x bias on a checker-textured
 luminary and confirmed it gone post-fix. See
 [DL44_LIGHTSAMPLE_UV.md](DL44_LIGHTSAMPLE_UV.md).
 The existing DL-40 nonfinite
-comparison gap also applies to this test harness: ComputeStats marks
-nonempty captures valid without finite checks, and WorstRelDiff uses fmax,
-which can discard a NaN difference. DL-40 now explicitly includes this
-sibling. The recorded render means in this run were checked finite; no
-nonfinite-handling correctness is claimed.
+comparison gap also applied to this test harness: ComputeStats marked
+nonempty captures valid without finite checks, and WorstRelDiff used fmax,
+which could discard a NaN difference. The recorded render means in this
+run were checked finite; no nonfinite-handling correctness was claimed at
+the time. **DL-40 CLOSED 2026-09-14 (debt-cov slice)**: `ComputeStats`
+now rejects a capture with a nonfinite composited component, and
+`WorstRelDiff` now returns `HUGE_VAL` (rather than silently discarding a
+NaN operand via `std::fmax`) when either `ImageStats` carries one. See
+[docs/DEBT_LEDGER.md](DEBT_LEDGER.md) DL-40.
 
 ## Gate and measurement hygiene
 

@@ -87,6 +87,38 @@ namespace RISE
 			bool					bDoubleSided;		// Are the polygons all double sided?
 			bool					bUseFaceNormals;	// Are we going to use computed face normals rather than interpolated vertex normals?
 
+			//! DL-31.  True iff every edge of `ptr_polygons` is shared by
+			//! EXACTLY two triangles -- the cheap necessary condition for
+			//! "closed manifold" this class uses to decide whether it may
+			//! answer `SignedDistanceLower` (the parity inside-test is only
+			//! meaningful for a mesh with no boundary).  Computed once, in
+			//! `DoneIndexedTriangles`, from the position-index pairs of
+			//! `ptr_polygons` (recovered via pointer arithmetic into
+			//! `pPoints`, since `indexedtris` -- which carries the indices
+			//! directly -- is freed earlier in the same function).  An open
+			//! sheet (a plane, a lone quad, a mesh missing one face) and a
+			//! non-manifold mesh (an edge shared by more or fewer than two
+			//! triangles) both read false here and stay an unsigned-only
+			//! sheet, matching every other refusing family's convention.
+			bool					m_bWatertight;
+
+			//! Computes and caches `m_bWatertight`.  Called from
+			//! `DoneIndexedTriangles` once `ptr_polygons` is final; a
+			//! topology-preserving update (`UpdateVertices`) never needs to
+			//! call this again, since it moves vertices, not edges.
+			void ComputeWatertightness();
+
+			//! DL-31.  Casts one ray from `ptObject` along a fixed,
+			//! non-axis-aligned direction (chosen to make an exact tangency
+			//! with an authored, typically axis-aligned, face/edge/vertex a
+			//! measure-zero coincidence) and counts GEOMETRIC crossings --
+			//! `IntersectRay` is asked for both faces, so orientation and
+			//! `bDoubleSided` cannot change the count -- by repeatedly
+			//! re-casting from just past the previous hit.  Odd count means
+			//! inside.  Only meaningful, and only called, when
+			//! `m_bWatertight` is true.
+			bool RayParityInsideTest( const Point3& ptObject, bool& outInside ) const;
+
 			// BVH is the sole active acceleration structure (Tier A2 cleanup,
 			// 2026-04-27).  Legacy BSP/octree members were dropped along with
 			// the on-disk v4 format that stops emitting BSP/octree bytes.
@@ -243,6 +275,29 @@ namespace RISE
 			//! REFUSES when the BVH is absent (a mesh still being fed, or a
 			//! failed deserialize) -- honest absence over a wrong distance.
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
+			//! IGeometry::SignedDistanceLower -- DL-31.  Every solid family
+			//! clamps its signed field at zero ("interpenetration is
+			//! contact"); a mesh had no inside test at all and so
+			//! contributed 0 to `interior(r)` even when genuinely closed and
+			//! buried in.  For a WATERTIGHT mesh (`m_bWatertight`, a
+			//! build-time edge-count check -- see the member comment) this
+			//! now answers EXACTLY: the magnitude is `DistanceToSurface`'s
+			//! own answer, which this family already computes exactly (not
+			//! merely bounded, unlike the ellipsoid/SDF families) via a
+			//! bounded-radius closest-point BVH traversal, so reusing it
+			//! costs nothing extra; the sign comes from a parity ray-cast
+			//! (`RayParityInsideTest`) against this mesh's own BVH. Both
+			//! halves are exact, so `outExact` is set whenever this
+			//! answers -- honoured by `Object::SignedDistanceLower`'s
+			//! `geomExact && m_sigmaExact` combination the same way every
+			//! other exact solid family's flag is.
+			//!
+			//! REFUSES (stays a sheet) when the mesh is not watertight, or
+			//! when either half of the query itself refuses -- never
+			//! guesses a sign for a mesh this check cannot certify.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
 
 			//! IGeometry::SelfHitRootFloor -- RayTriangleIntersection's gate,
 			//! `NEARZERO * (1 + |origin|_1 + max vertex |.|_1)`, is per
