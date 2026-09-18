@@ -79,20 +79,38 @@
 //      (1e-12) back-off `ptObjIntersec` applies and the self-stamp does
 //      not.
 //
-//  CSG NOTE (sibling audit, not a red-proof here)
+//  CSG NOTE -- DL-107, FIXED (was a sibling-audit note only; now a
+//  red-proof)
 //
-//    `CSGObject::IntersectRay` never calls `pUVGenerator->GenerateUV`
-//    at all -- grep confirms zero occurrences in CSGObject.cpp -- so an
-//    overriding UV generator `SetUVGenerator`'d directly onto a
-//    `csg_object` is silently never invoked at the composite level
-//    (an operand Object's OWN UV generator, if it has one, still fires
-//    inside that operand's own `Object::IntersectRay`, in that
-//    operand's own object space, and its `ptCoord` survives upward
-//    through `AdoptCsgSurfacePayload` unchanged).  This is a different
-//    bug PATTERN (a missing call, not a stale-read ordering defect) and
-//    is out of scope for DL-95; recorded as DL-107 in the ledger.
+//    `CSGObject::IntersectRay` used to never call
+//    `pUVGenerator->GenerateUV` at all, so an overriding UV generator
+//    `SetUVGenerator`'d directly onto a `csg_object` composite was
+//    silently never invoked (an operand Object's OWN UV generator, if
+//    it has one, still fires inside that operand's own
+//    `Object::IntersectRay`, in that operand's own object space, and
+//    its `ptCoord` survives upward through `AdoptCsgSurfacePayload`
+//    unchanged).  Fixed by calling the composite's own `pUVGenerator`
+//    at the top of `CSGObject::IntersectRay`'s post-processing block --
+//    the exact mirror of `Object::IntersectRay`'s own placement -- using
+//    the CSG's own local-frame point (`ray.PointAtLength(range -
+//    SURFACE_INTERSEC_ERROR)`, computed there BEFORE the world-space
+//    promotion a few lines below) and the CSG's own local-frame
+//    (pre-world-transform) `UnflippedGeomNormal()`.
 //
-//  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `dl95`)
+//    PRECEDENCE: an operand's own UV generator, if it has one, still
+//    wins -- `RayIntersectionGeometric::bUVGeneratorApplied` (new field,
+//    carried by both the whole-record `ri = riObjX` copy and by
+//    `AdoptCsgSurfacePayload`, at any CSG nesting depth) records whether
+//    ANY generator already supplied `ptCoord` for the reported surface;
+//    the composite generator fires only when that flag is still false.
+//    Order: operand generator (wins) > composite generator (fallback)
+//    > operand's native UV (no generator anywhere).
+//
+//    Sub-tests 5 and 6 below are the red-proofs; sub-test 4 is DL-108
+//    (`Object::UniformRandomPoint`, a sibling "missing call" bug found
+//    in the same audit -- see that sub-test's own comment).
+//
+//  Author: Aravind Krishnaswamy (RISE debt-cleanup, slices `dl95` + `uvgen2`)
 //  Tabs: 4
 //
 //  License Information: Please see the attached LICENSE.TXT file
@@ -114,6 +132,7 @@
 #include "../src/Library/Geometry/BilinearPatchGeometry.h"
 #include "../src/Library/Geometry/BoxUVGenerator.h"
 #include "../src/Library/Objects/Object.h"
+#include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Interfaces/IUVGenerator.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Intersection/RayIntersection.h"
@@ -232,6 +251,24 @@ namespace
 		virtual void GenerateUV( const Point3& ptIntersection, const Vector3&, Point2& uv ) const
 		{
 			uv = Point2( ptIntersection.x, ptIntersection.y );
+		}
+	};
+
+	//! Always returns a fixed, caller-chosen (u, v) regardless of input --
+	//! used (DL-107/DL-108 sub-tests below) as an unmistakable marker for
+	//! "did THIS SPECIFIC generator instance fire", distinguishable from
+	//! both a default-constructed (0, 0) `ptCoord` and from
+	//! `RecordingUVGenerator`'s point-echoing output.
+	class ConstantUVGenerator : public virtual IUVGenerator, public virtual Reference
+	{
+	protected:
+		Point2 fixed;
+		virtual ~ConstantUVGenerator() {}
+	public:
+		explicit ConstantUVGenerator( const Point2& fixed_ ) : fixed( fixed_ ) {}
+		virtual void GenerateUV( const Point3&, const Vector3&, Point2& uv ) const
+		{
+			uv = fixed;
 		}
 	};
 }
@@ -440,14 +477,273 @@ static void TestAnalyticPrimitivesUnaffected()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 4: DL-108 -- Object::UniformRandomPoint never consulted an
+//  override UV generator at all (a MISSING call, not a stale-read
+//  ordering defect like DL-95).  `pGeometry->UniformRandomPoint()` was
+//  called directly and its native `coord` handed straight to the
+//  caller; an object with BOTH an override generator and an
+//  area-light / uniform-sampling use (LightSampler, SSS shader ops,
+//  ManifoldSolver's specular-caster sampling) got the geometry's own
+//  native UV at every sampled point, never the override chart.
+//
+//  THE FIX -- `Object::UniformRandomPoint` now calls the override
+//  generator (when one is bound) on the OBJECT-space point/normal
+//  `pGeometry->UniformRandomPoint` just produced, BEFORE transforming
+//  either to world space -- the same frame contract DL-95 established
+//  for `IntersectRay` (a generator is authored in, and must chart,
+//  object space; `Object::UniformRandomPoint` already transforms its
+//  `point`/`normal` out-params to world immediately afterward).
+//
+//  MONEY ASSERTION: a `RecordingUVGenerator` bound to a translated
+//  (non-identity-transform) sphere Object must see the OBJECT-space
+//  sampled point (matching a bare, un-mediated `IGeometry::
+//  UniformRandomPoint` call on an untransformed twin geometry) -- not
+//  the WORLD-space (translated) point `UniformRandomPoint`'s own
+//  `point` out-param returns.  Pre-fix, `coord` is the sphere's native
+//  spherical UV (unrelated to either point) and this comparison fails
+//  outright: a spherical (u,v) is bounded to roughly [0,1]x[0,1] while
+//  the ground-truth object-space point's x/y coordinates range over
+//  the sphere's full [-radius, radius] extent, so they only coincide by
+//  chance.
+//////////////////////////////////////////////////////////////////////
+static void TestUniformRandomPointHonorsUVGeneratorObjectSpace()
+{
+	std::cout << "Sub-test 4: Object::UniformRandomPoint feeds the override UV generator OBJECT-space input (DL-108)"
+		<< std::endl;
+
+	const Point3 prand( 0.3, 0.65, 0.0 );
+
+	// Ground truth: the BARE geometry's own UniformRandomPoint, called
+	// directly with no Object mediation at all -- the true, un-mediated
+	// object-space point/normal for this prand.
+	SphereGeometry* gGround = new SphereGeometry( 2.0 );
+	Point3 groundPoint;
+	Vector3 groundNormal;
+	Point2 groundCoordUnused;
+	gGround->UniformRandomPoint( &groundPoint, &groundNormal, &groundCoordUnused, prand );
+
+	// The object under test: the SAME sphere shape, wrapped in an Object
+	// translated well away from the origin (so world space and object
+	// space are NUMERICALLY DISTINCT -- a bug that fed the generator
+	// world-space input would be caught here, not just DL-95's "missing
+	// entirely" case), with a RecordingUVGenerator attached.
+	SphereGeometry* g = new SphereGeometry( 2.0 );
+	Object* o = new Object( g );
+	safe_release( g );
+	RecordingUVGenerator* rec = new RecordingUVGenerator();
+	rec->addref();
+	o->SetUVGenerator( *rec );
+	o->SetPosition( Point3( 100, -200, 300 ) );
+	o->FinalizeTransformations();
+
+	Point3 point;
+	Vector3 normal;
+	Point2 coord( -999, -999 );   // sentinel: must not survive if the generator never fires
+	o->UniformRandomPoint( &point, &normal, &coord, prand );
+
+	// MONEY: the generator saw the OBJECT-space point, not the
+	// WORLD-space (translated) one, and not the sphere's native
+	// spherical UV either.
+	CheckClose( coord.x, groundPoint.x, 1e-9,
+		"MONEY: UniformRandomPoint's UV-generator input x is OBJECT space (DL-108 fixed)" );
+	CheckClose( coord.y, groundPoint.y, 1e-9,
+		"MONEY: UniformRandomPoint's UV-generator input y is OBJECT space (DL-108 fixed)" );
+
+	// Sanity: the returned `point` IS transformed to world space (the
+	// generator ran BEFORE that transform, not after, or on a copy of
+	// its input).
+	CheckClose( point.x, groundPoint.x + 100, 1e-9, "returned point.x is transformed to world space" );
+	CheckClose( point.y, groundPoint.y - 200, 1e-9, "returned point.y is transformed to world space" );
+	CheckClose( point.z, groundPoint.z + 300, 1e-9, "returned point.z is transformed to world space" );
+
+	// Sanity: object space and world space really are numerically
+	// distinct here (otherwise the MONEY checks above would pass for
+	// the wrong reason).
+	Check( std::fabs( groundPoint.x - point.x ) > 1.0,
+		"fixture: object-space and world-space points are numerically distinct" );
+
+	rec->release();
+	gGround->release();
+	o->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 5: DL-107 -- a UV generator bound directly to a CSGObject
+//  COMPOSITE now fires.  A `RecordingUVGenerator` (echoes the point it
+//  is handed straight into (u, v) = (x, y)) is bound to the composite,
+//  NOT to operand A -- deliberately NOT a `BoxUVGenerator`, because
+//  `BoxGeometry`'s own NATIVE UV formula (BoxGeometry.cpp) is the
+//  IDENTICAL box-projection expression `BoxUVGenerator` implements, so
+//  a `BoxUVGenerator`-vs-native comparison here would pass whether or
+//  not the composite generator actually fired -- a false-negative
+//  red-proof.  `RecordingUVGenerator`'s raw-point echo (0.3, 0.1) is
+//  unmistakably different from the box's native projected UV
+//  (0.65, 0.45, per sub-test 1's identical ray/box), so this really
+//  does distinguish "the composite's generator fired" from "operand A's
+//  own native UV survived unmodified".  Pre-fix, `CSGObject::
+//  IntersectRay` never calls `pUVGenerator->GenerateUV` at all, so
+//  `ptCoord` is operand A's own native (0.65, 0.45), not the composite
+//  generator's (0.3, 0.1).
+//////////////////////////////////////////////////////////////////////
+static void TestCsgCompositeUVGeneratorFires()
+{
+	std::cout << "Sub-test 5: a UV generator bound to a CSGObject COMPOSITE fires (DL-107)" << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 2.0, 2.0, 2.0 );   // half-extent 1
+	Object* a = new Object( gA );
+	safe_release( gA );
+	a->FinalizeTransformations();
+
+	BoxGeometry* gB = new BoxGeometry( 2.0, 2.0, 2.0 );
+	Object* b = new Object( gB );
+	safe_release( gB );
+	// Off in X (not Z, i.e. not along this test's ray line at all) so
+	// this ray's (x, y) = (0.3, 0.1) footprint provably never reaches B,
+	// regardless of the ray's (effectively unbounded) `dHowFar` --
+	// unlike a same-line Z offset, which the ray WOULD mathematically
+	// cross eventually (the union's own "gap between disjoint operands"
+	// logic would still report only A there, but this sidesteps needing
+	// to rely on that).
+	b->SetPosition( Point3( 1000, 0, 0 ) );
+	b->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "fixture: composite takes A/B operands" );
+	RecordingUVGenerator* uvg = new RecordingUVGenerator();
+	uvg->addref();
+	csg->SetUVGenerator( *uvg );   // bound to the COMPOSITE, not to `a`
+	csg->FinalizeTransformations();
+
+	const Ray ray( Point3( 0.3, 0.1, 3 ), Vector3( 0, 0, -1 ) );
+	RayIntersection ri( ray, nullRasterizerState );
+	Hit( csg, ray, ri );
+
+	Check( ri.geometric.bHit, "fixture: ray hits the composite (via operand A)" );
+	if( ri.geometric.bHit )
+	{
+		// Negative check: NOT operand A's own native box UV -- that is
+		// exactly what pre-fix (no composite-level GenerateUV call at
+		// all) produces.
+		Check( !( std::fabs( ri.geometric.ptCoord.x - 0.65 ) < 1e-9 && std::fabs( ri.geometric.ptCoord.y - 0.45 ) < 1e-9 ),
+			"MONEY: composite ptCoord is NOT operand A's native box UV (DL-107 fixed)" );
+		CheckClose( ri.geometric.ptCoord.x, 0.3, 1e-9, "MONEY: composite-bound generator echoes the hit point's x" );
+		CheckClose( ri.geometric.ptCoord.y, 0.1, 1e-9, "MONEY: composite-bound generator echoes the hit point's y" );
+	}
+
+	uvg->release();
+	safe_release( csg );
+	safe_release( a );
+	safe_release( b );
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 6: DL-107 precedence -- an OPERAND's own UV generator wins
+//  over the COMPOSITE's, and the composite's generator is still the
+//  correct fallback for a DIFFERENT operand that has none of its own.
+//
+//  Operand A carries its own `ConstantUVGenerator(7, 7)` -- an
+//  unmistakable marker distinct from both (0, 0) and from whatever the
+//  composite's `RecordingUVGenerator` would echo.  Operand B carries no
+//  generator of its own.  The composite carries a `RecordingUVGenerator`
+//  (echoes the point it is handed).  ONE `RayIntersection` record is
+//  reused across both hits (DL-95-style staleness stress: the new
+//  `bUVGeneratorApplied` field must not leak a stale `true` from A's
+//  hit into B's, which would wrongly suppress the composite's fallback
+//  generator on B).
+//////////////////////////////////////////////////////////////////////
+static void TestCsgOperandGeneratorWinsOverComposite()
+{
+	std::cout << "Sub-test 6: an operand's own UV generator wins over the composite's (DL-107 precedence)"
+		<< std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 2.0, 2.0, 2.0 );   // half-extent 1, at the origin
+	Object* a = new Object( gA );
+	safe_release( gA );
+	ConstantUVGenerator* uvgA = new ConstantUVGenerator( Point2( 7.0, 7.0 ) );
+	uvgA->addref();
+	a->SetUVGenerator( *uvgA );
+	a->FinalizeTransformations();
+
+	BoxGeometry* gB = new BoxGeometry( 2.0, 2.0, 2.0 );   // half-extent 1, no generator of its own
+	Object* b = new Object( gB );
+	safe_release( gB );
+	// Off in X (not Z): A's own footprint is x,y in [-1,1] at the
+	// origin, so a ray aimed at A's (x, y) never reaches a Z-shifted B
+	// sitting on the SAME line (an unbounded dHowFar would eventually
+	// cross it too), and a ray aimed at B's X-shifted footprint never
+	// reaches A -- each ray hits exactly one operand, unambiguously,
+	// with no dependence on the union algorithm's overlap/gap handling.
+	b->SetPosition( Point3( 20, 0, 0 ) );
+	b->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "fixture: composite takes A/B operands" );
+	RecordingUVGenerator* uvgComposite = new RecordingUVGenerator();
+	uvgComposite->addref();
+	csg->SetUVGenerator( *uvgComposite );
+	csg->FinalizeTransformations();
+
+	// Ray 1: hits A only, at A's own local (and, since the composite is
+	// an identity transform, CSG-local/world-identical) (x, y) = (0.2, 0.15).
+	const Ray rayA( Point3( 0.2, 0.15, 3 ), Vector3( 0, 0, -1 ) );
+
+	RayIntersection ri( rayA, nullRasterizerState );
+	Hit( csg, rayA, ri );
+	Check( ri.geometric.bHit, "fixture: ray A hits the composite (via operand A)" );
+	if( ri.geometric.bHit )
+	{
+		CheckClose( ri.geometric.ptCoord.x, 7.0, 1e-9,
+			"MONEY: operand A's own ConstantUVGenerator wins over the composite's (u)" );
+		CheckClose( ri.geometric.ptCoord.y, 7.0, 1e-9,
+			"MONEY: operand A's own ConstantUVGenerator wins over the composite's (v)" );
+	}
+
+	// Ray 2: hits B only, at world (x, y) = (19.7, 0.4) -- B's own local
+	// (-0.3, 0.4) footprint shifted by its +20 X translate.  Since the
+	// COMPOSITE has an identity transform, the CSG-local point the
+	// composite's own generator is fed is the WORLD point, i.e.
+	// (19.7, 0.4) -- NOT B's own local (-0.3, 0.4) (that would be the
+	// value if the CSG's own transform matched B's, which it does not
+	// here; see the DL-107 doc's frame discussion).  REUSES `ri`,
+	// unmodified between hits, exactly as a real render loop leaves it
+	// (DL-95-style staleness stress for the new `bUVGeneratorApplied`
+	// field).
+	const Ray rayB( Point3( 19.7, 0.4, 3 ), Vector3( 0, 0, -1 ) );
+	Hit( csg, rayB, ri );
+	Check( ri.geometric.bHit, "fixture: ray B hits the composite (via operand B)" );
+	if( ri.geometric.bHit )
+	{
+		// B has no generator of its own, so the COMPOSITE's
+		// RecordingUVGenerator is the correct fallback.
+		Check( !( std::fabs( ri.geometric.ptCoord.x - 7.0 ) < 1e-9 && std::fabs( ri.geometric.ptCoord.y - 7.0 ) < 1e-9 ),
+			"MONEY: operand B's hit does NOT carry over operand A's stale ConstantUVGenerator marker" );
+		CheckClose( ri.geometric.ptCoord.x, 19.7, 1e-9,
+			"MONEY: composite's RecordingUVGenerator is the correct fallback for operand B (u)" );
+		CheckClose( ri.geometric.ptCoord.y, 0.4, 1e-9,
+			"MONEY: composite's RecordingUVGenerator is the correct fallback for operand B (v)" );
+	}
+
+	uvgA->release();
+	uvgComposite->release();
+	safe_release( csg );
+	safe_release( a );
+	safe_release( b );
+}
+
 int main()
 {
-	std::cout << "UVGeneratorObjectSpaceInputTest (DL-95)" << std::endl;
-	std::cout << "========================================" << std::endl;
+	std::cout << "UVGeneratorObjectSpaceInputTest (DL-95 / DL-107 / DL-108)" << std::endl;
+	std::cout << "==========================================================" << std::endl;
 
 	TestMeshTwoPointsProduceDifferentUV();
 	TestMeshUVIndependentOfPreviousObjectHit();
 	TestAnalyticPrimitivesUnaffected();
+	TestUniformRandomPointHonorsUVGeneratorObjectSpace();
+	TestCsgCompositeUVGeneratorFires();
+	TestCsgOperandGeneratorWinsOverComposite();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
