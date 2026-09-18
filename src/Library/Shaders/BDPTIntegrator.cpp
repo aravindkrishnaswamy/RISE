@@ -7388,13 +7388,38 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 				// achromatic mean +34% over hwss=FALSE on
 				// `tests/BDPTStrategyBalanceTest.cpp` topology N, B/R
 				// channel ratio 1.09 against a true ~0.24).  Zero the
-				// companion's remaining contribution instead, mirroring
-				// PT's own HWSS companion fallback for the identical "no
-				// EvaluateKrayNM, no BSDF" case
-				// (`PathTracingIntegrator.cpp`'s `compScatterNM[w] =
-				// compWeight > 0 ? ... : 0`) -- unbiased (this vertex's
-				// hero contribution is still fully priced; only the
-				// bundle's variance-reduction benefit is given up here).
+				// companion's remaining contribution instead.
+				//
+				// DL-126/DL-200 review round 4 (P1-2) correction: an
+				// earlier revision of this comment called this "mirroring
+				// PT's own HWSS companion fallback ... unbiased" as though
+				// BDPT/VCM/MLT had simply adopted PT's convention wholesale.
+				// That overstates the resemblance.  PT's HWSS bundle
+				// accumulates each wavelength into its OWN independent XYZ
+				// total (`PathTracingIntegrator.cpp`'s `compScatterNM[w] =
+				// 0` just zeroes that wavelength's throughput multiplier for
+				// the rest of ITS OWN walk -- there is no shared "bundle
+				// mean" divisor for a zeroed companion to dilute, because
+				// there is no bundle mean at all, only N independent
+				// per-wavelength accumulators).  BDPT/VCM/MLT's spectral
+				// rasterizers instead accumulate ONE shared bundle mean
+				// across hero + companions and divide by an active-
+				// wavelength count (`totalActive`/`activeWavelengthCount`,
+				// P1-1) -- so zeroing `cumulativeRatio` here is only
+				// unbiased when PAIRED with excluding this companion from
+				// that shared count, which is what
+				// `HasNullBSDFContinuationVertex` + `swl.TerminateSecondary()`
+				// (called by all three spectral rasterizers before this
+				// function ever runs) actually do.  The value convention
+				// (zero when unpriceable) is the same in spirit as PT's;
+				// the ACCOUNTING around it is not, and could not be made
+				// identical without giving each companion wavelength its
+				// own independent subpath (PT's real architecture) instead
+				// of one shared geometry bundle -- a materially larger
+				// change than this row's scope.  See
+				// docs/DL126_BDPT_NULL_BSDF_CONTINUATION.md SS7.1 (P1-2)
+				// for the measured variance cost of keeping
+				// terminate-and-renormalize instead.
 				cumulativeRatio = 0;
 			}
 		}

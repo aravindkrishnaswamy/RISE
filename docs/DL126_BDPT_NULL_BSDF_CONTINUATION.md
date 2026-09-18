@@ -477,6 +477,96 @@ single run's -3.8%. Do not quote a single cherry-picked run for this
 topology's HWSS row (the same rule this document's SS7.5 already
 states for the non-HWSS VCM/PT ratio on the same scene).
 
+**P1-2 (review round 4): the "PT precedent" comment overstated the
+resemblance between BDPT/VCM/MLT's fix and PT's own convention, and
+this section records the correction plus the decision it forces.**
+
+The P1 fix's own code comment (`BDPTIntegrator.cpp`,
+`RecomputeSubpathThroughputNM`'s null-BSDF else-branch) originally
+justified zeroing a companion's contribution by "mirroring PT's own
+HWSS companion fallback ... unbiased". That is true of the VALUE
+convention (zero the companion when it cannot be honestly repriced)
+but not of the ACCOUNTING around it, and the difference matters.
+
+* **PT's actual convention.** `PathTracingIntegrator.cpp`'s HWSS
+  bundle prices each wavelength's throughput into its OWN independent
+  running accumulator (`compScatterNM[w]`, one per wavelength, each
+  multiplied into that wavelength's own `throughputComp[w]` across the
+  whole walk). Setting `compScatterNM[w] = 0` when a companion cannot
+  be repriced simply zeroes THAT wavelength's own future contribution
+  -- there is no shared "bundle mean" for it to dilute, because PT
+  keeps no such shared mean: each of the N wavelengths is, in effect,
+  its own independent path sharing only the hero's sampled
+  DIRECTIONS, not a single combined MIS-weighted image sample. PT
+  never calls `swl.TerminateSecondary()` for this case at all, and
+  does not need to -- there is no active-count denominator for a
+  zeroed companion to escape.
+
+* **BDPT/VCM/MLT's actual architecture.** All three spectral
+  rasterizers accumulate ONE shared bundle mean across the hero and
+  every companion wavelength (`BDPTSpectralRasterizer.cpp`'s
+  `totalActive`, `VCMSpectralRasterizer.cpp`'s twin, and
+  `MLTSpectralRasterizer.cpp`'s `activeWavelengthCount` after P1-1),
+  then divide by however many wavelengths actually contributed. Zeroing
+  `cumulativeRatio` in `RecomputeSubpathThroughputNM` is therefore
+  unbiased ONLY when that companion is ALSO excluded from the shared
+  active-count denominator -- which is exactly what
+  `HasNullBSDFContinuationVertex` (P3-c above) plus
+  `swl.TerminateSecondary()` do, called by all three rasterizers BEFORE
+  `RecomputeSubpathThroughputNM` ever runs. Without that exclusion,
+  zeroing alone reproduces the P1-1 dilution bug on a different
+  trigger.
+
+  So the fix borrows PT's VALUE convention (zero when unpriceable) but
+  had to build its own ACCOUNTING mechanism (termination + active-count
+  exclusion) that PT's architecture does not need, because PT and
+  BDPT/VCM/MLT do not share the same notion of "one bundle" in the
+  first place. The code comment above has been corrected to say this.
+
+* **Could BDPT/VCM adopt PT's actual convention (N independent
+  per-wavelength subpaths sharing only directions, no shared bundle
+  mean, no termination concept at all)?** No, not without a
+  substantially larger architecture change. `GenerateEyeSubpathImpl`/
+  `GenerateLightSubpathImpl` build ONE `std::vector<BDPTVertex>` per
+  subpath, and every companion wavelength's pricing
+  (`RecomputeSubpathThroughputNM`) walks a COPY of that SAME vertex
+  array, reusing its stored WORLD-SPACE POSITIONS, `isDelta` flags, and
+  connection strategy topology. PT's independence comes from tracking
+  N separate scalar throughputs alongside ONE set of sampled
+  directions -- BDPT/VCM additionally need each vertex's MIS
+  bookkeeping (`pdfFwd`/`pdfRev`, `isConnectible`, `dVCM`/`dVC`/`dVM`
+  for VCM) to be sensible for EVERY connection/merge strategy a
+  companion wavelength might participate in, and a companion whose
+  scatter at some vertex genuinely diverges from the hero's (e.g. a
+  dispersive index actually refracting to a different angle) would need
+  its OWN vertex position, breaking the shared-array assumption every
+  connection strategy's geometric-term computation relies on. Giving
+  each companion its own per-lane subpath is architecturally equivalent
+  to running N independent BDPT/VCM passes per pixel -- correct, but a
+  multi-week rearchitecture, not a fix scoped to this row. Per-lane
+  subpaths remain a legitimate FUTURE direction (it would also let
+  companions recover after a dispersive/null-BSDF vertex instead of
+  being terminated for the rest of the path), but it is out of scope
+  here.
+
+* **Decision: keep terminate-and-renormalize, described honestly as
+  second-best.** It is a VARIANCE cost, not a bias -- P1-1's
+  active-count normalization guarantees the bundle mean stays an
+  unbiased estimator of the pixel's radiance regardless of how many
+  companions survive to contribute. The cost is real and measurable:
+  topology N's own hwss FALSE vs TRUE comparison (SS7.1 table above,
+  run 1) reads p99 achromatic 0.167944 (FALSE) vs 0.346961 (TRUE) --
+  hwss TRUE's tail is roughly **2.07x** FALSE's, and MEDIAN achromatic
+  collapses from 0.036687 (FALSE) to 0.004488 (TRUE), roughly **12%**
+  of the reference -- while the MEAN stays within the 0.87-6.09% band
+  measured above. A mean that tracks correctly while the median
+  collapses and the tail roughly doubles is exactly the signature of a
+  variance regression, not a bias: individual bundles are losing
+  companions to termination (dispersive delta AND null-BSDF vertices
+  both, on this scene) and falling back to a smaller effective sample
+  count, but the ones that DO survive are correctly, unbiasedly priced,
+  so the average over many pixels still converges to the right answer.
+
 ### 7.2 P2-1 (documented, not filed): a medium-vertex `isConnectible`
 asymmetry between light- and eye-rooted derivations
 
