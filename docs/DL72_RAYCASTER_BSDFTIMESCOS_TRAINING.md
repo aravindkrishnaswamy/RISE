@@ -789,6 +789,35 @@ applies RR itself via `russianRouletteSurvivalProbability`) and is its
 only consumer.  `volRrSurvivalProb` moves the other way — out of the
 guard — because the moment now needs it.
 
+**Round-2 review addendum (P3-4): `risWeight` is the same kind of
+factor as `rrSurvivalCompensation` and was missing from the same two
+`LightSampler` mesh-luminary NEE arms.** `result` at both sites already
+multiplies by `rrSurvivalCompensation · risWeight / pdfAlias` — RIS's
+per-sample correction factor sits in the exact same product as the
+light-sample-roulette compensation — so the trained moment needed it
+too, for the identical reason.  Fixed by folding `risWeight` into the
+same `lum`/`scaled` product as `rrSurvivalCompensation` at both sites
+(RGB and NM).  `risWeight` is exactly `1.0` whenever `risCandidates ==
+0` (the default; RIS is an opt-in scene knob, `SelectLightRIS` is
+never called otherwise), so this is currently a no-op for every scene
+that doesn't turn RIS on — recorded here rather than red-proved with a
+render, since there is no render-visible effect until a future slice
+exercises `risCandidates > 0` together with `optimal_mis TRUE`.
+
+**The per-site table above is now exhaustive**: every location in
+`PathTracingIntegrator.cpp`, `RayCaster.cpp` and `LightSampler.cpp`
+that both (a) trains `OptimalMISAccumulator` and (b) sits behind ANY
+per-sample compensation factor applied to the returned/carried value
+(Russian roulette survival, RIS correction, or a caller-supplied
+training scale) has been enumerated and checked against the
+realized-moment rule — the two `LightSampler` mesh-luminary arms (now
+carrying `rrSurvivalCompensation` AND `risWeight`), the surface
+continuation, the in-loop volume vertex, both BSSRDF exit
+continuations, and `RayCaster`'s two volume sites (which carry no such
+factor because that file applies no roulette of its own).  No further
+per-sample compensation factor exists in this codebase that reaches
+`OptimalMISAccumulator` without appearing in this table.
+
 ### 7.4 Red-proof
 
 Three rows, all red on round 6's code (`fd67814a`):
