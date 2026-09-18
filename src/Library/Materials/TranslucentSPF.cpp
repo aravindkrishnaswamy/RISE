@@ -20,6 +20,12 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+// Hoisted above the anonymous namespace (DL-112 review P1-2): the three
+// small helpers `OrientedLobeAxis` / `ExitValidFraction` /
+// `kExitVanishThreshold` now live in TranslucentSPF.h so
+// `TranslucentBSDF` can renormalize by the SAME valid fraction.  The
+// unqualified uses throughout this file are unchanged.
+using namespace RISE::Implementation::TranslucentSPFDetail;
 
 namespace
 {
@@ -97,13 +103,12 @@ namespace
 	// makes both the sampler and Pdf()/PdfNM() report "no lobe" / 0 density
 	// TOGETHER rather than one side dividing by near-zero while the other
 	// still claims support.
-	const Scalar kExitVanishThreshold = Scalar(1e-4);
-
-	inline Scalar ExitValidFraction( const Vector3& n, const Vector3& geomN )
-	{
-		const Scalar cosPhi = r_max( Scalar(-1), r_min( Scalar(1), Vector3Ops::Dot(n,geomN) ) );
-		return (Scalar(1)+cosPhi) * Scalar(0.5);
-	}
+	// `kExitVanishThreshold` and `ExitValidFraction` are DEFINED in
+	// TranslucentSPF.h (namespace TranslucentSPFDetail) since the DL-112
+	// review -- `TranslucentBSDF::value`/`valueNM` need the identical
+	// valid fraction, and a second copy would be exactly the kind of
+	// sampler/evaluator drift DL-112 exists to close.  The derivation
+	// above is their documentation; the header carries only a summary.
 
 	// P1 (review round 3, 2026-09-13): the exit lobe's SAMPLING FRAME has
 	// to be oriented outward before any of the above applies.
@@ -318,10 +323,11 @@ namespace
 	// direction that is a valid sample of the closed interval
 	// `[-half,half]` and carries the ordinary density `q` computed
 	// below, not a degenerate case.)
-	inline Vector3 OrientedLobeAxis( const Vector3& n, const Vector3& halfSpace )
-	{
-		return ( Vector3Ops::Dot( n, halfSpace ) >= Scalar(0) ) ? n : -n;
-	}
+	// `OrientedLobeAxis` is DEFINED in TranslucentSPF.h (namespace
+	// TranslucentSPFDetail) since the DL-112 review, for the same reason
+	// as `ExitValidFraction` above: `TranslucentBSDF` must orient the
+	// front lobe's axis exactly as the sampler does before measuring the
+	// valid fraction against it.
 }
 
 namespace RISE { namespace Implementation { namespace TranslucentSPFDetail

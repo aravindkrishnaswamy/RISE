@@ -53,6 +53,39 @@ namespace RISE
 				const Vector3& axis, const Vector3& clipN, const Scalar N,
 				const Scalar u1, const Scalar u2,
 				Vector3& outDir, Scalar& outPdf );
+
+			//! DL-112 review P1-2 (2026-09-17): these moved up out of
+			//! TranslucentSPF.cpp's anonymous namespace because
+			//! `TranslucentBSDF::value`/`valueNM` must renormalize the
+			//! entry front-reflection lobe by the SAME valid fraction the
+			//! sampler and `Pdf()` use -- a second copy would be exactly
+			//! the sampler/evaluator drift DL-112 exists to close.
+			//! Definitions unchanged; the derivations stay in
+			//! TranslucentSPF.cpp, above `SampleValidDiffuseExit`.
+
+			//! Orient a lobe axis into the half-space `Dot(w,halfSpace)>0`
+			//! so the clipped constructions can assume `cos(phi) >= 0`
+			//! (and therefore `P(valid) >= 0.5`).
+			inline Vector3 OrientedLobeAxis( const Vector3& n, const Vector3& halfSpace )
+			{
+				return ( Vector3Ops::Dot( n, halfSpace ) >= Scalar(0) ) ? n : -n;
+			}
+
+			//! The fraction of a cosine-weighted hemisphere about `n` that
+			//! survives the clip `Dot(w,geomN)>0`: Malley's-method disk
+			//! projection makes it exactly `(1+cos(phi))/2`.
+			inline Scalar ExitValidFraction( const Vector3& n, const Vector3& geomN )
+			{
+				const Scalar cosPhi = r_max( Scalar(-1), r_min( Scalar(1), Vector3Ops::Dot(n,geomN) ) );
+				return (Scalar(1)+cosPhi) * Scalar(0.5);
+			}
+
+			//! Below this the valid region has effectively vanished and
+			//! sampler, density and VALUE must all report "no lobe"
+			//! together rather than one dividing by a near-zero fraction.
+			//! Unreachable from a production call once the axis is
+			//! oriented (P(valid) >= 0.5).
+			const Scalar kExitVanishThreshold = Scalar(1e-4);
 		}
 
 		class TranslucentSPF : public virtual ISPF, public virtual Reference
