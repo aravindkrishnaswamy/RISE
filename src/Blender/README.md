@@ -17,7 +17,7 @@ the bridge talks to RISE only through the existing public APIs in
 
 - Final renders through Blender's external `RenderEngine` API.
 - Evaluated mesh export, per-material triangle splits, object instancing, and bump-map modifiers (a Blender Bump node exports through the ABI-frozen `AddBumpMapModifier` entry point, which since 2026-09-06 registers a `relief_modifier` in the UV domain -- see `docs/RELIEF_MODIFIER_DESIGN.md` §7.5).
-- Direct Principled BSDF translation for base color, metallic, roughness, specular, transmission, IOR, emission, anisotropy, sheen (`fabric_material`, DL-18), and direct image-driven bump.
+- Direct Principled BSDF translation for base color, metallic, roughness, specular (IOR level and tint, DL-151), transmission, IOR, emission, anisotropy, sheen (`fabric_material`, DL-18), and direct image-driven bump.
 - PNG, HDR, EXR, and TIFF image textures when the local RISE build has the matching texture readers enabled.
 - Homogeneous participating media on material and world volume outputs.
 - Heterogeneous VDB-backed volume objects driven by the `density` grid, exported through a temporary slice cache.
@@ -30,6 +30,7 @@ the bridge talks to RISE only through the existing public APIs in
 - No viewport renderer yet.
 - No arbitrary Blender node-graph compilation; the exporter is intentionally direct-slot and GGX-first.
 - No tangent-space normal maps, alpha masking, clearcoat, subsurface, or mixed opaque/transmissive per-pixel material translation yet.  (Anisotropy and sheen are supported -- see "Supported Scope" above; this line previously listed both by mistake.)
+- Specular Tint (like Specular IOR Level) has no effect at `metallic=1` -- RISE's F0 formula routes both through the dielectric branch of its base_color/F0 lerp only, so it does not reproduce Blender 4.x Principled's additional metallic-edge (F82-style) tint from the same socket.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Specular Tint" (DL-151).
 - Area lights are still reduced to point lights, so softness and directionality will not match Cycles exactly.
 - World surface nodes are still reduced to a simple ambient approximation; only world volume nodes are exported as participating media.
 - Heterogeneous media currently treat color and emission as uniform coefficients modulated by the exported density field.

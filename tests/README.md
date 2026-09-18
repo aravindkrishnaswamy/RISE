@@ -71,6 +71,16 @@ Useful filename families:
 - `AutoRasterizerTest.cpp`, `BDPT*Test.cpp`, `VCM*Test.cpp`,
   `ManifoldSolverTest.cpp`, and the `*Spectral*Test.cpp` family: transport,
   MIS, SMS, and spectral behavior
+- `BlenderBridge*Test.cpp`: contract tests for `src/Blender/native/rise_blender_bridge.cpp`'s
+  `add_material`/`add_pbr_metallic_roughness_material` translation, compiled
+  directly against the shipping bridge `.cpp` (see each file's own banner
+  for why) — `BlenderBridgeHairTest` (hair BCSDF translation),
+  `BlenderBridgeFabricTest` (Principled Sheen -> `fabric_material`, ABI v12,
+  DL-18), `BlenderBridgeSpecularTintTest` (KHR_materials_specular
+  `specular_color_painter_name` tint on F0, DL-151).  The matching
+  Python-side exporter (socket-reading) contract lives in
+  `src/Blender/addons/rise_renderer/test_hair_export.py`, run separately
+  since it needs no C++ build.
 - geometry, materials, painters, samplers, volumes, importers, color, and
   utility code use descriptive subsystem prefixes
 
