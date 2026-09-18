@@ -2328,6 +2328,24 @@ tightening (e.g. lowering the 200 000 cap on `cobble_gloss`'s `expression`) is
 proposed for firefly reasons, re-run this exact protocol and compare the max-
 based ratio, not just the mean.
 
+**Spread/CI, added 2026-09-14 (debt-cov review fix pass).** The table above
+gives one mean σ² per condition from one K=16 set with no sense of how
+precise that estimate is. A fresh, independent re-render of the full K=16
+protocol (WET/DRY, same scene, same settings) reproduced the table almost
+exactly (mean σ² 1.880985e-05 WET / 1.800813e-05 DRY, ratio 1.0445 — within
+0.1% of the numbers above) and, split into 4 non-overlapping groups of 4
+trials each, gives a sense of the estimate's own spread: WET per-group mean
+σ² = {1.8814e-05, 1.8819e-05, 1.8747e-05, 1.8888e-05} (relative sd 0.31%
+across groups); DRY = {1.7926e-05, 1.8049e-05, 1.8042e-05, 1.7991e-05}
+(relative sd 0.32%); the per-group wet/dry σ² ratio is {1.0496, 1.0427,
+1.0390, 1.0499}, mean 1.0453, sd 0.0053 — i.e. the 1.043x mean-σ² factor in
+the 1.145x σ²·T headline is stable to well under 1% across independent
+quarter-K subsamples of the render, not a one-draw artifact. The wall-time
+factor's own spread was already given (σ 98.6ms wet / 385.9ms dry); the
+max-based tail ratio (~3.3x) is not re-characterized here — it is expected
+to be noisier by construction, since it tracks a handful of pooled-highlight
+pixels rather than an image-wide average.
+
 ### 11.2 Phase 2 — structural counts
 
 | item | cost |
