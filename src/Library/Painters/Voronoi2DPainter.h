@@ -58,6 +58,20 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0;};
 			void SetIntermediateValue( const IKeyframeParameter& val ){};
 			void RegenerateData( ){};
+			//! DL-203 (docs/DEBT_LEDGER.md): `ComputeWhich` selects ONE child
+			//! (border or a generator's painter) per query and forwards to its
+			//! TRUE `GetColorNM` -- since which child is selected varies with
+			//! position, this must OR over EVERY child that could be selected,
+			//! not just `border`.  See IPainter::IsSpectrallyDefined's own doc
+			//! comment for the full rationale.
+			bool IsSpectrallyDefined() const
+			{
+				if( border.IsSpectrallyDefined() ) { return true; }
+				for( GeneratorsList::const_iterator it = generators.begin(), e = generators.end(); it != e; ++it ) {
+					if( it->second && it->second->IsSpectrallyDefined() ) { return true; }
+				}
+				return false;
+			}
 		};
 	}
 }

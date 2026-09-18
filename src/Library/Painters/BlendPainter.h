@@ -155,6 +155,11 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0;};
 			void SetIntermediateValue( const IKeyframeParameter& val ){};
 			void RegenerateData( ){};
+			//! DL-203 (docs/DEBT_LEDGER.md): `a`/`b`/`mask` genuinely combine or select
+			//! among their own TRUE `GetColorNM` (see this class's own GetColorNM),
+			//! so this recurses -- see IPainter::IsSpectrallyDefined's own doc
+			//! comment for the full rationale and which composites do NOT recurse.
+			bool IsSpectrallyDefined() const { return a.IsSpectrallyDefined() || b.IsSpectrallyDefined() || mask.IsSpectrallyDefined(); }
 		};
 	}
 }

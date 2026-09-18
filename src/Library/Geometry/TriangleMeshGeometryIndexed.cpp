@@ -639,10 +639,16 @@ namespace
 	//! a bounded 27-cell scan whose average occupancy is O(1) for a
 	//! well-formed mesh); see ComputeWatertightness's own build-cost
 	//! measurement for the wall-clock this adds on a real asset.
-	void WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId )
+	//! DL-197.  `outEps`, when non-null, receives the SAME relative
+	//! epsilon this function used for its own weld -- so a caller that
+	//! needs a second geometric test at "the same tolerance the weld
+	//! itself trusted" (the coplanarity test below) doesn't re-derive
+	//! the formula and risk drifting from it.
+	void WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps = nullptr )
 	{
 		outWeldedId.assign( points.size(), 0u );
 		if( points.empty() ) {
+			if( outEps ) { *outEps = Scalar( 1e-9 ); }
 			return;
 		}
 
@@ -654,6 +660,7 @@ namespace
 		const Scalar diag = Vector3Ops::Magnitude( extents );
 		const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
 		const Scalar cell = eps;
+		if( outEps ) { *outEps = eps; }
 
 		auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
 			return (std::int64_t)std::floor( (double)( v / cell ) );
@@ -802,17 +809,84 @@ namespace
 //! makes this CHEAPER than the removed orientation pass (see the ledger
 //! row's own commit message for the re-measured numbers).
 //!
-//! DOCUMENTED RESIDUAL (not fixed by this discriminator, see the ledger
-//! row and CROSS_OBJECT_PROXIMITY_DESIGN.md 10): two sheets closer than
-//! `eps` that are NOT triangle-coincident after the weld -- e.g. two
-//! independently-tessellated quads that happen to use DIFFERENT internal
-//! diagonals, or any pair of offset tessellations whose triangle
-//! boundaries don't line up vertex-for-vertex -- still weld into an
-//! equally false 2-manifold that this check cannot see (every edge still
-//! reads count 2, and no two triangles share all three vertices).  A
-//! stronger guarantee would need an independent geometric test
-//! (self-intersection / distinct connected-component volume enclosure),
-//! out of scope for this cheap, build-time check.
+//! DL-197 CLOSED (2026-09-18).  The residual named directly above --
+//! two sheets closer than `eps` that are NOT triangle-coincident after
+//! the weld, e.g. two independently-tessellated quads split on
+//! DIFFERENT internal diagonals -- is now caught by a SECOND,
+//! edge-based discriminator that runs after the coincident-triangle one
+//! above.  At every edge (already known, by the two checks above having
+//! passed, to be shared by exactly two triangles with distinct vertex
+//! triples), test whether those two triangles are GEOMETRICALLY
+//! coplanar and OPPOSITELY WOUND: the real physical signature of "two
+//! flat sheets folded against each other", independent of how their
+//! diagonals happen to be split.
+//!
+//! Coplanarity is measured by point-to-plane distance (each triangle's
+//! own RAW, pre-weld positions and geometric normal), NOT by the
+//! normal-dot-product alone -- a genuinely closed wedge/prism can have
+//! an arbitrarily sharp convex crease (see the coincident-triangle
+//! discriminator's own "Round 2 correction" above, which hit the
+//! identical trap from the orientation side: as its apex angle shrinks
+//! toward zero, its two side faces' outward normals really do approach
+//! exactly antiparallel), but at any FINITE apex angle its third
+//! vertices sit at a distance from the opposite face's plane that
+//! scales with the wedge's own physical size, not with the mesh's weld
+//! tolerance.  A false stitch, by contrast, is built from points that
+//! are already within `eps` of each other (that is what let them weld
+//! into one mesh in the first place), so its third-vertex-to-plane
+//! distance is bounded by `eps` regardless of the two sheets' in-plane
+//! geometry.  Using the SAME `eps` the weld itself used (threaded
+//! through via `WeldVertexPositions`'s `outEps`) keeps this test
+//! relative to the mesh's own scale, exactly like the weld -- no
+//! separate magic threshold.  Once coplanarity is established this way,
+//! the winding question reduces to a sign: two triangles occupying (to
+//! within `eps`) the same plane have geometric normals that are the
+//! plane's own normal up to sign, so "oppositely facing" is simply
+//! dot(n1,n2) < 0 -- checked FIRST, as a cheap pre-filter, since it is
+//! necessary (though not sufficient on its own -- the wedge case above
+//! also has dot < 0) before the more expensive plane-distance test
+//! runs.
+//!
+//! A genuinely zero-thickness double-sided "fin" (two coincident flat
+//! layers, meant to shade from both sides) is, by this construction,
+//! INDISTINGUISHABLE from a false stitch whenever the two layers are
+//! independently triangulated (different diagonals) -- both are
+//! literally the same coplanar-opposite-winding configuration, and this
+//! check REFUSES both, on the same reasoning DL-150's own coincident-
+//! triangle case already applies to a same-diagonal fin (caught
+//! earlier, above): a zero-thickness "solid" encloses no volume, so
+//! `interior()` has no physically meaningful signed depth to report for
+//! it either way, and a diagonal-only difference between the two layers
+//! is not a distinction with a physical consequence for that judgement.
+//!
+//! Two residuals still open after this fix (recorded, not chased
+//! further here, self-review 2026-09-18):
+//!
+//! (1) Two sheets closer than `eps` that are NEITHER triangle-
+//! coincident NOR edge-adjacent at all -- e.g. two overlapping but
+//! non-conforming tessellations whose triangle boundaries don't touch
+//! along any shared edge, only through interior crossings -- have no
+//! edge for this check (or the coincident-triangle one) to examine in
+//! the first place.  A stronger guarantee would need an independent
+//! geometric test (self-intersection / distinct connected-component
+//! volume enclosure), out of scope for this cheap, build-time check.
+//!
+//! (2) Two independently-tessellated, coincident sheets that happen to
+//! face the SAME way (same winding, so `normalDot >= 0` at every shared
+//! edge) are NOT caught by the coplanar/oppositely-wound discriminator
+//! above, and this is NOT merely an unimplemented case -- it is not
+//! locally decidable from edge information at all.  A coplanar,
+//! same-winding pair of triangles sharing an edge is EXACTLY the local
+//! signature of an ordinary, legitimate flat mesh region (e.g. two
+//! adjacent quads of one tessellated `BoxGeometry` face, or a single
+//! quad's own internal diagonal split): using "coplanar + same winding"
+//! as a refusal signal would misfire on essentially every flat-shaded
+//! surface in the corpus.  Distinguishing "one continuous authored
+//! surface, incidentally flat here" from "two independently-authored,
+//! coincident, same-facing sheets" needs information this per-edge
+//! check does not have (e.g. connected-component provenance), so this
+//! case is a genuine, structural blind spot, not a residual that a
+//! sharper local rule could close.
 void TriangleMeshGeometryIndexed::ComputeWatertightness()
 {
 	m_bWatertight = false;
@@ -821,7 +895,8 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	}
 
 	std::vector<unsigned int> weldedId;
-	WeldVertexPositions( pPoints, weldedId );
+	Scalar weldEps = Scalar( 1e-9 );
+	WeldVertexPositions( pPoints, weldedId, &weldEps );
 
 	// DL-150.  Report the weld's own vertex-count reduction so an author
 	// can see an over-aggressive weld even when the discriminator below
@@ -841,8 +916,27 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	}
 
 	const Point3* const pBase = &pPoints[0];
-	std::unordered_map<std::uint64_t, int> edgeCounts;
-	edgeCounts.reserve( ptr_polygons.size() * 3 );
+
+	// DL-150/DL-197.  One entry per edge: a running COUNT (DL-31's own
+	// closed-2-manifold check) plus the index of the first two triangles
+	// seen at this edge (DL-197's coplanar/oppositely-wound discriminator
+	// below).  A single `unordered_map` with a small fixed-size value
+	// (no per-edge heap allocation, unlike a `vector<unsigned int>`
+	// value) instead of two separate maps -- measured ~30% faster
+	// `DoneIndexedTriangles` on the ~96k-triangle sphere / ~91k-triangle
+	// Dragon benchmarks below than the two-map version, since a mesh of
+	// that size has on the order of 1.5x as many edges as triangles and
+	// a `vector`-valued map pays a heap allocation per DISTINCT edge.
+	// `triIdx[2]` beyond the first two is never read: an edge with a
+	// third triangle is already refused by the `nonManifoldEdges` check
+	// below before the discriminator ever runs.
+	struct EdgeInfo
+	{
+		unsigned int count = 0;
+		unsigned int triIdx[2] = { 0, 0 };
+	};
+	std::unordered_map<std::uint64_t, EdgeInfo> edgeInfo;
+	edgeInfo.reserve( ptr_polygons.size() * 3 );
 
 	// DL-150.  One sorted (order-independent) post-weld vertex-id triple
 	// per triangle, collected in the SAME loop that already builds the
@@ -852,9 +946,31 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	std::vector<std::array<unsigned int, 3> > sortedTriangleIds;
 	sortedTriangleIds.reserve( ptr_polygons.size() );
 
+	// DL-197.  Per-triangle RAW (pre-weld) positions, welded vertex ids,
+	// and a geometric normal (from the triangle's own winding) -- feeds
+	// the coplanar/oppositely-wound discriminator below, which needs the
+	// mesh's real geometry, not just its post-weld topology, to tell a
+	// genuinely closed sharp crease from a false stitch (see that
+	// discriminator's own comment).  Cost disclosure: `sizeof(TriGeom)`
+	// is 108 bytes (3 Point3 + 3 unsigned int + 1 Vector3), ~9x
+	// `sortedTriangleIds`' own 12 bytes/triangle above -- a genuinely new
+	// TEMPORARY allocation (~10.4 MB on the 96360-triangle sphere this
+	// function's own cost measurement uses), freed when this function
+	// returns.  Not a persistent or per-query cost; see the ledger's
+	// DL-197 entry for the measured build-time-only overhead this adds.
+	struct TriGeom
+	{
+		Point3 p[3];
+		unsigned int w[3];
+		Vector3 normal;	// zero vector if the raw triangle is degenerate
+	};
+	std::vector<TriGeom> triGeoms;
+	triGeoms.reserve( ptr_polygons.size() );
+
 	for( MyPointerTriangleList::const_iterator i = ptr_polygons.begin(), e = ptr_polygons.end(); i != e; ++i ) {
 		const PointerTriangle& tri = *i;
 		unsigned int idx[3];
+		Point3 rawP[3];
 		for( int k = 0; k < 3; ++k ) {
 			const std::ptrdiff_t off = tri.pVertices[k] - pBase;
 			if( off < 0 || (std::size_t)off >= pPoints.size() ) {
@@ -867,7 +983,19 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 			// see the function's own comment for why these differ on
 			// almost every imported/tessellated mesh.
 			idx[k] = weldedId[(std::size_t)off];
+			rawP[k] = pPoints[(std::size_t)off];
 		}
+
+		{
+			TriGeom g;
+			g.p[0] = rawP[0]; g.p[1] = rawP[1]; g.p[2] = rawP[2];
+			g.w[0] = idx[0];  g.w[1] = idx[1];  g.w[2] = idx[2];
+			g.normal = Vector3Ops::Normalize( Vector3Ops::Cross(
+				Vector3Ops::mkVector3( rawP[1], rawP[0] ), Vector3Ops::mkVector3( rawP[2], rawP[0] ) ) );
+			triGeoms.push_back( g );
+		}
+		const unsigned int triIndex = (unsigned int)( triGeoms.size() - 1 );
+
 		bool degenerate = false;
 		for( int k = 0; k < 3; ++k ) {
 			unsigned int a = idx[k];
@@ -875,7 +1003,9 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 			if( a == b ) { degenerate = true; continue; }
 			if( a > b ) { std::swap( a, b ); }
 			const std::uint64_t key = ( (std::uint64_t)a << 32 ) | (std::uint64_t)b;
-			++edgeCounts[key];
+			EdgeInfo& info = edgeInfo[key];
+			if( info.count < 2 ) { info.triIdx[info.count] = triIndex; }
+			++info.count;
 		}
 		if( degenerate ) {
 			GlobalLog()->PrintEx( eLog_Info,
@@ -904,9 +1034,9 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	// call, so it cannot spam and it tells an author what "unsigned
 	// only" traces back to.
 	unsigned int boundaryEdges = 0, nonManifoldEdges = 0;
-	for( std::unordered_map<std::uint64_t, int>::const_iterator i = edgeCounts.begin(), e = edgeCounts.end(); i != e; ++i ) {
-		if( i->second == 1 ) { ++boundaryEdges; }
-		else if( i->second > 2 ) { ++nonManifoldEdges; }
+	for( std::unordered_map<std::uint64_t, EdgeInfo>::const_iterator i = edgeInfo.begin(), e = edgeInfo.end(); i != e; ++i ) {
+		if( i->second.count == 1 ) { ++boundaryEdges; }
+		else if( i->second.count > 2 ) { ++nonManifoldEdges; }
 	}
 
 	if( boundaryEdges > 0 || nonManifoldEdges > 0 ) {
@@ -953,6 +1083,85 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 				"inside test).  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 (DL-150).",
 				coincidentPairs, coincidentPairs == 1 ? "" : "s",
 				worstTriple[0], worstTriple[1], worstTriple[2] );
+			return;
+		}
+	}
+
+	// DL-197.  See this function's own header comment (the paragraphs
+	// dated 2026-09-18) for the full derivation.  At every edge -- known
+	// by this point to be shared by exactly two triangles with distinct
+	// vertex triples (both checked above) -- test whether the two
+	// triangles are geometrically coplanar AND oppositely wound, the
+	// physical signature of a false stitch regardless of how the two
+	// sheets' diagonals happen to be split.  The dot-product test is a
+	// cheap, NECESSARY pre-filter (an ordinary internal diagonal or a
+	// flat continuation always has dot >= 0); the plane-distance test
+	// against the SAME `weldEps` the vertex weld itself used is what
+	// actually discriminates a false stitch from a genuinely sharp
+	// convex crease, whose dot can ALSO be very negative as its apex
+	// angle shrinks.
+	{
+		bool coplanarOpposedFound = false;
+		std::array<unsigned int, 3> worstEdgeTriple = { 0, 0, 0 };
+		for( std::unordered_map<std::uint64_t, EdgeInfo>::const_iterator ei = edgeInfo.begin(), ee = edgeInfo.end();
+			 ei != ee && !coplanarOpposedFound; ++ei ) {
+			if( ei->second.count != 2 ) {
+				// Already refused above (count 1 or 3+) -- this can't
+				// happen (we wouldn't have reached this loop at all if
+				// any edge had count != 2), but skip defensively rather
+				// than read a stale/unset `triIdx` slot.
+				continue;
+			}
+			const TriGeom& g1 = triGeoms[ei->second.triIdx[0]];
+			const TriGeom& g2 = triGeoms[ei->second.triIdx[1]];
+
+			const Scalar normalDot = Vector3Ops::Dot( g1.normal, g2.normal );
+			if( !( normalDot < Scalar( 0 ) ) ) {
+				// Same-facing (an ordinary internal diagonal or a flat
+				// continuation) or a degenerate zero-length normal:
+				// never a false-stitch signature.  Skip the more
+				// expensive plane-distance test below.
+				continue;
+			}
+
+			const std::uint64_t key = ei->first;
+			const unsigned int edgeA = (unsigned int)( key >> 32 );
+			const unsigned int edgeB = (unsigned int)( key & 0xFFFFFFFFu );
+			auto thirdVertex = [edgeA, edgeB]( const TriGeom& g, Point3& outP ) -> bool {
+				for( int k = 0; k < 3; ++k ) {
+					if( g.w[k] != edgeA && g.w[k] != edgeB ) { outP = g.p[k]; return true; }
+				}
+				return false;
+			};
+			Point3 third1, third2;
+			if( !thirdVertex( g1, third1 ) || !thirdVertex( g2, third2 ) ) {
+				// Can't happen for a non-degenerate triangle sharing
+				// exactly this edge, but refuse to guess rather than
+				// read garbage.
+				continue;
+			}
+
+			// Signed distance from a point to a plane (origin g.p[0],
+			// normal g.normal) -- same formula as RISE::Plane::Distance.
+			const Scalar dist1 = Vector3Ops::Dot( Vector3Ops::mkVector3( third2, g1.p[0] ), g1.normal );
+			const Scalar dist2 = Vector3Ops::Dot( Vector3Ops::mkVector3( third1, g2.p[0] ), g2.normal );
+			if( std::fabs( dist1 ) <= weldEps && std::fabs( dist2 ) <= weldEps ) {
+				coplanarOpposedFound = true;
+				worstEdgeTriple = { edgeA, edgeB, g1.w[0] + g1.w[1] + g1.w[2] - edgeA - edgeB };
+			}
+		}
+
+		if( coplanarOpposedFound ) {
+			GlobalLog()->PrintEx( eLog_Info,
+				"TriangleMeshGeometryIndexed:: this mesh's position weld produced a pair of "
+				"COPLANAR, OPPOSITELY WOUND triangles sharing an edge (e.g. edge {%u,%u}, third "
+				"vertex %u) that are not literally coincident -- this looks like two "
+				"independently tessellated sheets folded flat against each other (a false "
+				"stitch, or a zero-thickness double layer), not a legitimate seam or crease, so "
+				"it will answer proximity() (an honest unsigned distance) but REFUSE interior() "
+				"(no certified inside test).  See docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 10 "
+				"(DL-197).",
+				worstEdgeTriple[0], worstEdgeTriple[1], worstEdgeTriple[2] );
 			return;
 		}
 	}

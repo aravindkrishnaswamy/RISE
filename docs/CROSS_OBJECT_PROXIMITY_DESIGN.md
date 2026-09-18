@@ -3340,14 +3340,20 @@ measured by a harness test against the tracked scene.
   (`tests/MeshInteriorSignalTest.cpp` sections (m)/(n) — the same-winding
   case, formerly a documented residual the orientation check could not
   see at cosine +1, is now caught too, since coincidence does not depend
-  on orientation). **This still does NOT close DL-150 as a design limit,
-  only as a shipped mitigation**: two independently-tessellated sheets
-  closer than `eps` that are NOT triangle-coincident after the weld (e.g.
-  two quads split along DIFFERENT internal diagonals) still weld into an
-  equally false 2-manifold this check cannot see — every edge still reads
-  count 2, and no two triangles share all three vertices -- tracked as DL-197; a second refusal mode worth knowing: a closed solid merged into one mesh object with a separate isolated double-sided decal loses its whole certification to the decal's coincident pair (review note, 2026-09-18) — a documented,
-  deliberately UNCAUGHT residual (`tests/MeshInteriorSignalTest.cpp`
-  section (o), a control, not a red-proof target). No shipped glTF asset
+  on orientation). **This still did NOT close DL-150 as a design limit,
+  only as a shipped mitigation, at the time**: two independently-tessellated
+  sheets closer than `eps` that are NOT triangle-coincident after the weld
+  (e.g. two quads split along DIFFERENT internal diagonals) still welded
+  into an equally false 2-manifold this check could not see — every edge
+  still read count 2, and no two triangles shared all three vertices --
+  tracked as DL-197 and **CLOSED 2026-09-18 by a second, edge-based
+  discriminator, see the dedicated bullet below**; a second refusal mode
+  worth knowing, NOT fixed by that closure: a closed solid merged into one
+  mesh object with a separate isolated double-sided decal loses its whole
+  certification to the decal's coincident pair (review note, 2026-09-18) —
+  a documented, still-UNCAUGHT residual (`tests/MeshInteriorSignalTest.cpp`
+  section (o), now a red-proof MONEY target rather than a control -- see
+  below). No shipped glTF asset
   (Avocado, DragonAttenuation, SheenChair, NormalTangentTest) or shipped
   tessellator flips certification from this change — verified by
   re-running each through the production path and confirming the DL-143
@@ -3369,6 +3375,77 @@ measured by a harness test against the tracked scene.
   would still need (an independent geometric test — self-intersection or
   distinct connected-component volume enclosure — out of scope for this
   cheap, build-time check).
+- **DL-197 CLOSED 2026-09-18** (the "documented residual" named directly
+  above — two independently-tessellated sheets closer than `eps` that are
+  NOT triangle-coincident after the weld, e.g. two quads split along
+  DIFFERENT internal diagonals). A SECOND, edge-based discriminator now
+  runs after the coincident-triangle one: at every edge already known (by
+  the two checks above having passed) to be shared by exactly two
+  triangles with distinct vertex triples, it tests whether those two
+  triangles are geometrically COPLANAR and OPPOSITELY WOUND — the real
+  physical signature of "two flat sheets folded against each other",
+  independent of how their diagonals happen to be split. Coplanarity is
+  measured by point-to-plane distance against the SAME `eps` the vertex
+  weld itself used (threaded out of `WeldVertexPositions` via a new
+  `outEps` parameter), not by the normal-dot-product alone — a genuinely
+  closed wedge/prism can have an arbitrarily sharp convex crease (the
+  identical trap DL-150's own orientation-based first attempt hit, see
+  above: its dot approaches -1 as the apex angle shrinks toward zero) but
+  at any FINITE apex angle its third vertices sit at a distance from the
+  opposite face's plane that scales with the wedge's own physical size,
+  not with the mesh's weld tolerance, so the dot-product test is used only
+  as a cheap NECESSARY pre-filter and the plane-distance test is what
+  actually discriminates. Red-proof (`tests/MeshInteriorSignalTest.cpp`
+  section (o), isolated pre-/post-fix library A/B): the fixture's MONEY
+  case (gap=0.001 < eps) flips from `ok=true` (falsely certified, wrong
+  signed depth) to refused; a new gap=0.01 (> eps) control confirms the
+  "genuinely far apart, never welds" case is unaffected. The wedge
+  (section (p), apex 30-70 degrees), the flat-shaded cube with real
+  per-face normals (section (q)), the thin-but-valid slab (section (r)),
+  and the sphere/torus/cylinder seam fixtures (sections (i)-(l)) all still
+  certify correctly — confirming the coplanarity-distance gate, not the
+  dot-product alone, is what protects a sharp crease. `MeshInteriorSignalTest`:
+  101/0 (was 100/1 red against this fix, with the single failure being the
+  section (o) MONEY assertion). No shipped glTF asset is affected: all 21
+  `.glb` assets under `scenes/Tests/Geometry/assets/`, built through the
+  real `GLTFSceneImporter` at every (meshIdx, primIdx) that parses (111
+  primitives total), produce byte-for-byte identical `SignedDistanceLower`
+  answers (ok/outSigned/outExact at each mesh's own bbox centre) before
+  and after this fix — confirmed by an isolated pre-/post-fix A/B, not
+  merely the absence of a "COPLANAR" log line. A first implementation
+  (a per-edge `unordered_map<uint64_t, std::vector<unsigned int>>`
+  alongside the existing per-edge count map) measured a real, non-noise
+  overhead: +17% (~45.0ms -> ~52.5-54.4ms) on the 48401-vertex synthetic
+  sphere and +29% (~57.9ms -> ~74.5-76.4ms) on the 91216-triangle /
+  76809-vertex `DragonAttenuation` "Dragon" primitive (median of 15 CPU-time
+  `clock()` samples each, isolated pre-/post-fix builds) — a real cost, not
+  the "indistinguishable within noise" DL-150's own coincident-triangle
+  check achieved, because a `vector`-valued map pays a heap allocation per
+  DISTINCT edge and a mesh this size has roughly 1.5x as many edges as
+  triangles. Folding the per-edge triangle-count and the (up to two)
+  triangle-index slots into ONE map with a small fixed-size struct value
+  (no per-edge heap allocation) brought this down to +1-4%
+  (~44.3-44.4ms -> ~44.8-46.0ms sphere; ~57.9-58.0ms -> ~59.3-60.0ms
+  Dragon, same protocol) — small enough that DL-150's own precedent
+  ("markedly cheaper... indistinguishable... within measurement noise")
+  does not quite hold at this scale, but the residual is now the
+  per-triangle geometric-normal computation and the `TriGeom` array itself
+  (both genuinely new work this check needs), not an avoidable data-structure
+  tax. **Self-review disclosure (2026-09-18): this discriminator does NOT
+  catch two independently-tessellated, coincident sheets that happen to
+  face the SAME way** (same winding, `normalDot >= 0` at every shared
+  edge) — and this is not an oversight fixable by a sharper rule: a
+  coplanar, same-winding edge pair is the EXACT local signature of an
+  ordinary flat mesh region (two adjacent quads of one tessellated face,
+  or a single quad's own internal diagonal), so treating it as suspicious
+  would misfire on essentially every flat-shaded surface in the corpus.
+  Distinguishing "one continuous authored surface, incidentally flat
+  here" from "two independently-authored, coincident, same-facing sheets"
+  needs information a per-edge check does not have. Left as a documented,
+  structural blind spot (not chased further here), separate from residual
+  (1) above. See `ComputeWatertightness`'s own updated function comment in
+  `TriangleMeshGeometryIndexed.cpp` for the full derivation and the ledger's
+  DL-197 entry for the closing commit hashes.
 - **`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
   produces no diagnostic, makes the object vanish from the render, and

@@ -146,12 +146,21 @@
 //  triangulated, opposite-winding quads 0.001 apart, plus one remote
 //  vertex that inflates the bbox diagonal to ~1732 so `eps` ~1.7e-3 >
 //  0.001): pre-fix this FALSELY certifies watertight and answers a wrong
-//  signed depth in the sliver between the quads; post-fix, an
-//  orientation-consistency discriminator in `ComputeWatertightness`
-//  (see that function's own comment) refuses it.  Section (n) is the
-//  DOCUMENTED residual the discriminator cannot catch (two sheets facing
-//  the SAME way): a control, not a red-proof target -- it stays falsely
-//  certified either way, matching the design doc's own stated limit.
+//  signed depth in the sliver between the quads; post-fix, a coincident-
+//  triangle discriminator in `ComputeWatertightness` (see that function's
+//  own comment) refuses it.  Section (n) (same-winding coincident
+//  triangles -- two literally duplicate triangles) is ALSO caught by the
+//  same coincident-triangle check, closing the prior orientation-based
+//  discriminator's own "same-facing" blind spot.  Section (o) was this
+//  check's own DOCUMENTED RESIDUAL (two independently-tessellated quads
+//  split on DIFFERENT diagonals, so no two triangles ever share all
+//  three post-weld vertices) -- CLOSED as DL-197 (2026-09-18) by a
+//  SECOND, edge-based discriminator (coplanar + oppositely wound
+//  triangles sharing an edge) that runs after the coincident-triangle
+//  one; see `ComputeWatertightness`'s own comment for the full
+//  derivation, including why a sharp convex crease (section (p)) needs a
+//  real coplanarity distance test and not just a normal-dot-product
+//  threshold.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -1117,17 +1126,22 @@ static bool BuildCoincidentTriangleWithRemoteTetrahedron( const Scalar gap,
 	return true;
 }
 
-//! DL-150's own DOCUMENTED RESIDUAL fixture: two INDEPENDENTLY
-//! tessellated quads (2 triangles each, split along DIFFERENT internal
-//! diagonals) facing each other -- after the weld only the 4 PERIMETER
-//! edges are shared between them (each quad's own diagonal stays
-//! internal to itself, at a DIFFERENT post-weld vertex pair than the
-//! other quad's), so no two triangles ever resolve to the same 3
-//! vertices.  Still a false stitch by the same physical mechanism as the
-//! coincident-triangle fixture above, but structurally invisible to a
-//! check that only looks for exact triangle coincidence -- see
-//! `ComputeWatertightness`'s own comment for why this residual is
-//! accepted rather than chased further.
+//! DL-197 (was DL-150's own DOCUMENTED RESIDUAL) fixture: two
+//! INDEPENDENTLY tessellated quads (2 triangles each, split along
+//! DIFFERENT internal diagonals) facing each other -- after the weld
+//! only the 4 PERIMETER edges are shared between them (each quad's own
+//! diagonal stays internal to itself, at a DIFFERENT post-weld vertex
+//! pair than the other quad's), so no two triangles ever resolve to the
+//! same 3 vertices, and the coincident-triangle check above (which only
+//! looks for exact triangle coincidence) cannot see it.  Still a false
+//! stitch by the same physical mechanism as the coincident-triangle
+//! fixture above -- CLOSED 2026-09-18 by the edge-based coplanar/
+//! oppositely-wound discriminator in `ComputeWatertightness` (see that
+//! function's own comment): each of the 4 shared perimeter edges pairs
+//! one triangle from quad A with one from quad B, the two are coplanar
+//! (their gap is `< eps`, by construction -- that is what let them weld
+//! at all) and oppositely wound (quad B is authored facing quad A), so
+//! every one of those 4 edges now trips the discriminator.
 static bool BuildOffsetTessellationQuadsWithRemoteTetrahedron( const Scalar gap,
 	IndexTriangleListType& tris, VerticesListType& vertices )
 {
@@ -1243,25 +1257,45 @@ static void TestSameWindingCoincidentTriangleAlsoRefuses()
 		"triangles; the coincident-triangle discriminator refuses regardless of orientation" );
 }
 
-//! DL-150's own DOCUMENTED RESIDUAL (per `ComputeWatertightness`'s own
-//! comment and the ledger row): two independently-tessellated quads on
-//! DIFFERENT internal diagonals still weld into an equally false
-//! 2-manifold that this check cannot see (every edge still reads count
-//! 2; no two triangles share all three vertices).  This is a CONTROL,
-//! not a red-proof target: it is expected to stay falsely certified, and
-//! exists so a future, stronger check has a known, honestly-stated
-//! starting point.
+//! DL-197 MONEY (was DL-150's own DOCUMENTED RESIDUAL): two
+//! independently-tessellated quads on DIFFERENT internal diagonals used
+//! to weld into an equally false 2-manifold that the coincident-triangle
+//! check alone couldn't see (every edge read count 2; no two triangles
+//! shared all three vertices) -- CLOSED 2026-09-18 by the edge-based
+//! coplanar/oppositely-wound discriminator.  A gap=0.01 (> eps) control
+//! confirms the fix didn't touch the "genuinely far apart, never welds
+//! at all" case, which already refused via the ordinary DL-31
+//! boundary-edge count before this row existed.
 static void TestOffsetTessellationResidualUncaught()
 {
-	std::cout << "(o) DL-150 documented residual -- independently-tessellated (different-diagonal) quads "
-		"still falsely certify (no coincident triangles for this check to find)" << std::endl;
+	std::cout << "(o) DL-197 MONEY -- independently-tessellated (different-diagonal) facing quads "
+		"now REFUSE via the coplanar/oppositely-wound discriminator" << std::endl;
 
-	IndexTriangleListType tris; VerticesListType vertices;
-	BuildOffsetTessellationQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices );
-	Scalar outSigned; bool outExact;
-	const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.5, 0.5, 0.0005 ), outSigned, outExact );
-	Check( ok, "(o) DOCUMENTED RESIDUAL -- independently-tessellated (different-diagonal) facing sheets "
-		"still falsely certify watertight; see DL-150's own stated limit" );
+	{
+		// Control at gap=0.01 > eps: unaffected by DL-197, the two quads
+		// never weld to each other and each keeps its own 4 boundary
+		// edges -- refuses via the pre-existing DL-31 edge-count check
+		// alone, unchanged by this row.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildOffsetTessellationQuadsWithRemoteTetrahedron( Scalar( 0.01 ), tris, vertices );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.5, 0.5, 0.005 ), outSigned, outExact );
+		Check( !ok, "(o) control -- gap=0.01 > eps never welds the two quads together; refuses via the ordinary boundary-edge count" );
+	}
+	{
+		// MONEY: gap=0.001 < eps.  Pre-DL-197 (verified against this
+		// branch's own pre-fix commit, before the edge-based
+		// discriminator existed) this falsely certified watertight with
+		// a confidently wrong signed depth in the sliver between the two
+		// quads; the new discriminator now refuses it.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildOffsetTessellationQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.5, 0.5, 0.0005 ), outSigned, outExact );
+		Check( !ok, "(o) MONEY -- DL-197: gap=0.001 < eps welds two independently-tessellated "
+			"(different-diagonal) facing quads; the coplanar/oppositely-wound discriminator now "
+			"refuses the false 2-manifold instead of answering a wrong signed depth" );
+	}
 }
 
 //! Appends ONE triangle with brand-new, per-corner vertex slots and a
@@ -1623,7 +1657,7 @@ static void TestParityCost()
 
 int main()
 {
-	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143, DL-136, DL-150) ===" << std::endl;
+	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143, DL-136, DL-150, DL-197) ===" << std::endl;
 
 	TestClosedWatertightCube();
 	TestOpenQuadRefuses();

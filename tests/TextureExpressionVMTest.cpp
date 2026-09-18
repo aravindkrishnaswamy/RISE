@@ -5287,6 +5287,103 @@ static void TestPainterSampleRefusesSpectralSubstrate()
 	}
 }
 
+//======================================================================
+// Test 80 -- DL-203 (docs/DEBT_LEDGER.md): sample(name) must ALSO refuse
+// a COMPOSITE/WRAPPING painter (blend_painter, checker_painter,
+// mapping_painter, ...) that forwards to a spectrally-defined CHILD --
+// DL-165 only overrode IPainter::IsSpectrallyDefined() true on the three
+// LEAF spectral painters, so a composite inherited the default `false`
+// and never consulted its children, letting sample() reach a spectral
+// substrate one layer down.
+//======================================================================
+static void TestPainterSampleRefusesCompositeWithSpectralChild()
+{
+	std::cout << "Test 80: DL-203 -- sample() refuses a COMPOSITE painter (blend_painter) whose CHILD is spectrally defined, "
+		"quantifying the collapsed-then-reuplifted error once, exactly as DL-165's Test 79(a) did for a direct bind" << std::endl;
+
+	// (a) QUANTIFY THE DEFECT ONCE, same technique as Test 79(a): a
+	// blend_painter whose `colora` is a sharply-oscillating spectral_painter
+	// and whose `mask` is opaque white (mode `mix`, so combined=colora and
+	// the mask selects it fully) -- the blend_painter's OWN GetColorNM
+	// therefore equals colora's TRUE SPD almost exactly.  Compare that
+	// against RGBAlbedoSpectrum::FromRGB(blend->GetColor()).Eval(nm) -- the
+	// EXACT formula ExpressionPainter::GetColorNM applies to whatever
+	// sample() would have handed it -- at the SAME 4 wavelengths Test
+	// 79(a) used.
+	{
+		Job* job = new Job(); job->addref();
+		const char* body =
+			"spectral_painter\n{\nname harsh_spd2\nnmbegin 400\nnmend 700\ncp 400 0.95\ncp 480 0.05\ncp 550 0.9\ncp 620 0.05\ncp 700 0.95\n}\n"
+			"uniformcolor_painter\n{\nname const_b\ncolor 0.3 0.3 0.3\n}\n"
+			"uniformcolor_painter\n{\nname mask_white\ncolor 1.0 1.0 1.0\n}\n"
+			"blend_painter\n{\nname the_blend\ncolora harsh_spd2\ncolorb const_b\nmask mask_white\n}\n";
+		Check( S2::ParseBody( "dl203_quantify", body, *job ), "(a) a blend_painter of a spectral_painter and a constant parses standalone" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IPainter* blend = priv->GetPainters()->GetItem( "the_blend" );
+			Check( blend != 0, "(a) the_blend registered" );
+			if( blend ) {
+				RayIntersectionGeometric r( Ray(), nullRasterizerState ); r.bHit = true;
+				const RISEPel rgb = blend->GetColor( r );
+				const RGBAlbedoSpectrum collapsed = RGBAlbedoSpectrum::FromRGB( rgb );
+				const Scalar wavelengths[4] = { Scalar(420.0), Scalar(480.0), Scalar(550.0), Scalar(620.0) };
+				double worstRelErr = 0.0;
+				for( int i = 0; i < 4; ++i ) {
+					const Scalar nm = wavelengths[i];
+					const Scalar trueVal = blend->GetColorNM( r, nm );
+					const Scalar collapsedVal = collapsed.Eval( nm );
+					const double relErr = std::fabs( (double)( trueVal - collapsedVal ) ) / std::max( 1e-6, std::fabs( (double)trueVal ) );
+					worstRelErr = std::max( worstRelErr, relErr );
+					std::cout << "    (a) nm=" << (double)nm << " true(blend->GetColorNM, forwards to the spectral child)=" << (double)trueVal
+						<< " collapsed-then-reuplifted(as sample() would produce)=" << (double)collapsedVal
+						<< " relErr=" << (relErr*100.0) << "%" << std::endl;
+				}
+				Check( worstRelErr > 0.05,
+					"(a) MONEY MEASUREMENT -- the collapsed-then-reuplifted curve diverges from the blend_painter's true "
+					"(child-forwarded) SPD by >5% at at least one of the 4 wavelengths (quantifying WHY DL-203 refuses this)" );
+			}
+		}
+		job->release();
+	}
+
+	// (b) MONEY ASSERTION: sample() of the COMPOSITE (blend_painter),
+	// not the leaf, is REFUSED -- pre-fix (BlendPainter::IsSpectrallyDefined()
+	// inheriting the base `false`, never consulting `colora`) this parses
+	// and would silently collapse-then-reuplift; post-fix, `IsSpectrallyDefined()`
+	// recurses (OR over colora/colorb/mask) and the SAME attach-time
+	// diagnostic DL-165 already uses fires, naming the sampled substrate
+	// (`the_blend`, the composite actually passed to sample() -- the
+	// mechanism is unchanged, only which painters answer `true` grew).
+	{
+		const char* body =
+			"spectral_painter\n{\nname spec_child\nnmbegin 400\nnmend 700\ncp 400 0.95\ncp 550 0.05\ncp 700 0.95\n}\n"
+			"uniformcolor_painter\n{\nname const_b2\ncolor 0.3 0.3 0.3\n}\n"
+			"uniformcolor_painter\n{\nname mask_white2\ncolor 1.0 1.0 1.0\n}\n"
+			"blend_painter\n{\nname spec_blend\ncolora spec_child\ncolorb const_b2\nmask mask_white2\n}\n"
+			"expression_painter\n{\nname wet_blend\nexpr sample(spec_blend)\n}\n";
+		std::string cap;
+		const bool ok = S2::ParseBodyCapturing( "dl203_composite_refuse", body, cap );
+		Check( !ok, "(b) MONEY ASSERTION -- expression_painter sampling a blend_painter whose CHILD is spectrally defined is REFUSED" );
+		Check( cap.find( "spec_blend" ) != std::string::npos, "(b) the diagnostic names the sampled composite substrate" );
+		Check( cap.find( "spectrally defined" ) != std::string::npos, "(b) the diagnostic says WHY (spectrally defined)" );
+	}
+
+	// (c) CONTROL: a composite with NO spectral child (both operands and
+	// the mask are ordinary RGB-defined uniformcolor_painters) must still
+	// sample fine -- no false-positive regression on an ordinary
+	// blend_painter, which is the overwhelmingly common case.
+	{
+		const char* body =
+			"uniformcolor_painter\n{\nname rgb_a\ncolor 0.2 0.4 0.6\n}\n"
+			"uniformcolor_painter\n{\nname rgb_b\ncolor 0.6 0.4 0.2\n}\n"
+			"uniformcolor_painter\n{\nname rgb_mask\ncolor 0.5 0.5 0.5\n}\n"
+			"blend_painter\n{\nname rgb_blend\ncolora rgb_a\ncolorb rgb_b\nmask rgb_mask\n}\n"
+			"expression_painter\n{\nname wet_rgb_blend\nexpr sample(rgb_blend)\n}\n";
+		Check( S2::ParseBody( "dl203_rgb_blend_control", body ),
+			"(c) CONTROL -- a blend_painter with no spectral child still samples fine (no false-positive refusal)" );
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -5369,6 +5466,7 @@ int main( int, char** )
 	TestPainterSampleAttachAndEval();
 	TestPainterSampleForwardsTheRealHitRecord();
 	TestPainterSampleRefusesSpectralSubstrate();
+	TestPainterSampleRefusesCompositeWithSpectralChild();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }
