@@ -87,6 +87,52 @@ static const double CHI2_ALPHA      = 0.001;    // Significance level
 static const double CROSS_VAL_TOL   = 1e-6;     // Tolerance for relative error
 static const double INTEGRAL_TOL    = 0.05;     // Tolerance for PDF integral (5%)
 
+// ------------------------------------------------------------
+//  DL-176: seeds, and the multi-seed chi-squared criterion.
+//
+//  Every `RandomNumberGenerator` in this file used to be default-
+//  constructed, i.e. seeded from an un-`srand`ed libc `rand()`.  That is
+//  reproducible only by accident (C says `rand()` behaves as if
+//  `srand(1)` had been called, so the whole suite was silently running
+//  ONE seed), and it made the single most fragile gate in the file --
+//  `CookTorrance_BlackDiffuse @ 60deg`, 927.52 against a critical
+//  928.261 -- look like a pass that any upstream change in `rand()`
+//  consumption could flip.  Every RNG below now takes an EXPLICIT seed.
+//
+//  A single-seed alpha=0.001 gate is also the wrong instrument for the
+//  question this part asks.  chi2 with `d` degrees of freedom has mean
+//  `d` and standard deviation `sqrt(2d)`; at d=799 that is 799 +/- 39.97,
+//  and the 0.001 critical value 928.261 sits at +3.23 sd.  A gate there
+//  has a 0.1% false-alarm rate PER ROW PER RUN (26 gated rows => ~2.6%
+//  chance that some row reddens on a clean tree) while being nearly
+//  blind to a small PERSISTENT density defect, which is the thing worth
+//  catching.  Averaging the statistic over NUM_CHI2_SEEDS independent
+//  seeds inverts both properties: the mean of N iid chi2(d) values has
+//  mean `d` and sd `sqrt(2d/N)`, so
+//
+//      z = ( mean(chi2) - d ) / sqrt( 2d / N )
+//
+//  is ~N(0,1) under H0 (N=8 is already deep in the CLT for d=799), a
+//  |z| < CHI2_Z_TOL band is a 6.334e-5 two-sided test per row, and a
+//  systematic offset shrinks its error bar by sqrt(N) instead of hiding
+//  inside it.  Both the per-seed values and z are printed.
+//
+//  Family-wise, COUNTED rather than estimated (review round 1, P3-a):
+//  this file prints 30 gated chi2 evaluations carrying 23 DISTINCT
+//  statistics -- several rows are bit-identical because their samplers
+//  are all cosine hemispheres consuming the same draws from the same
+//  seeds, e.g. Lambertian / OrenNayar / Composite.  So the false-alarm
+//  rate of the whole file is 1 - (1-p)^n = 0.146 % over the 23
+//  independent statistics and 0.190 % over all 30 evaluations, against
+//  a single-seed alpha=0.001 threshold's 3.0 % over 30.
+// ------------------------------------------------------------
+static const int    NUM_CHI2_SEEDS  = 8;        // Independent seeds per chi2 row
+static const unsigned int SUBDENSITY_SEED = 777001u;
+static const double SUBDENSITY_TOL  = 0.01;     // Part 2b band (see there)
+static const unsigned int CHI2_SEED_BASE  = 20260918u;
+static const unsigned int CROSSVAL_SEED   = 12345u;
+static const double CHI2_Z_TOL      = 4.0;      // |z| band on the seed-mean
+
 // ============================================================
 //  Chi-squared critical value (Wilson-Hilferty approximation)
 // ============================================================
@@ -164,11 +210,29 @@ struct TestResult {
     bool crossValPassed;
     bool integralPassed;
     bool chi2Passed;
-    double chi2Stat;
-    double chi2Crit;
+    double chi2Stat;        //!< seed-MEAN of the per-seed chi2 statistics
+    double chi2Crit;        //!< single-seed alpha=0.001 critical value (reporting)
     int crossValFailures;
     double maxCrossValError;
     double pdfIntegral;
+    // DL-176 round-1-review (P2-1): the SUB-DENSITY contract.
+    double fullSphereIntegral;  //!< int Pdf over the WHOLE sphere
+    double emissionProb;        //!< P(Scatter + RandomlySelect yield a non-delta ray)
+    double pdfUpperShare;       //!< fraction of int Pdf in the upper hemisphere
+    double emittedUpperShare;   //!< fraction of emitted rays in the upper hemisphere
+    bool   subDensityPassed;
+    bool   domainSplitPassed;
+    // DL-176 multi-seed reporting.
+    int    chi2Dof;
+    //! Fraction of NUM_SAMPLES `Scatter` calls whose selected ray landed
+    //! in the upper hemisphere (first seed).  This is what Part 3's
+    //! expected counts are now normalised to, and -- per the DL-98/DL-99
+    //! sub-density contract -- the quantity `Pdf` should integrate to.
+    double emissionRate;
+    double chi2Z;           //!< ( mean - dof ) / sqrt( 2*dof / NUM_CHI2_SEEDS )
+    double chi2Min;
+    double chi2Max;
+    double chi2Seeds[ NUM_CHI2_SEEDS ];
 };
 
 // ============================================================
@@ -183,7 +247,11 @@ static TestResult TestSPF(
     bool exactSelectedPdf,
     bool skipCrossVal,
     bool skipChi2,
-    double integralTol
+    double integralTol,
+    //! Part 2b's band on `|int Pdf(full sphere) - emission probability|`.
+    //! 0.01 everywhere except where a DOCUMENTED open defect is being
+    //! pinned rather than asserted away -- see the `spfs` table.
+    double subDensityTol
     )
 {
     TestResult result;
@@ -193,11 +261,26 @@ static TestResult TestSPF(
     result.chi2Passed = true;
     result.crossValFailures = 0;
     result.maxCrossValError = 0;
+    result.chi2Stat = 0;
+    result.chi2Crit = 0;
+    result.chi2Dof  = 0;
+    result.emissionRate = 0;
+    result.fullSphereIntegral = 0;
+    result.emissionProb = 0;
+    result.pdfUpperShare = 0;
+    result.emittedUpperShare = 0;
+    result.subDensityPassed = true;
+    result.domainSplitPassed = true;
+    result.chi2Z    = 0;
+    result.chi2Min  = 0;
+    result.chi2Max  = 0;
+    for( int s = 0; s < NUM_CHI2_SEEDS; s++ ) result.chi2Seeds[s] = 0;
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
 
-    RandomNumberGenerator rng;
+    // DL-176: explicit seed -- see the CHI2_SEED_BASE block above.
+    RandomNumberGenerator rng( CROSSVAL_SEED );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -330,54 +413,166 @@ static TestResult TestSPF(
         result.integralPassed = false;
 
     // ================================================================
+    //  Part 2b: THE SUB-DENSITY CONTRACT (DL-176 review round 1, P2-1)
+    //
+    //  Part 2 above asks `|int Pdf over the HEMISPHERE - 1| <= tol`.
+    //  That is the wrong target for two independent reasons, and the
+    //  rescale DL-176 applied to Part 3 removed the only place the
+    //  right one was implicitly being asked:
+    //
+    //    * `Pdf` is legitimately a SUB-density -- it must integrate to
+    //      the PROBABILITY that `Scatter` + `RandomlySelect` produce a
+    //      non-delta ray at all, which is strictly less than 1 whenever
+    //      a lobe can be rejected or carries zero weight; and
+    //    * the domain is the whole SPHERE, not the hemisphere, wherever
+    //      the sampler can emit below the shading horizon.
+    //
+    //  Live proof that the pair of them is not academic: `Translucent`
+    //  prints a hemispherical `int Pdf` of 1.00004 while only 0.556 of
+    //  its selected rays land in that hemisphere -- a 1.80x mismatch
+    //  that passes BOTH Part 2 and (post-rescale) Part 3, because one
+    //  measures the wrong domain and the other is now shape-only by
+    //  construction.
+    //
+    //  Two gated checks, because the mismatch splits into two
+    //  independent failure modes and only one of them is about mass:
+    //
+    //   (i) MASS -- `int Pdf` over the whole SPHERE against the measured
+    //       `P(Scatter + RandomlySelect yield a non-delta ray)`.  This
+    //       catches a density that has lost or duplicated mass.
+    //  (ii) DOMAIN SPLIT -- the FRACTION of `Pdf`'s mass in the upper
+    //       hemisphere against the fraction of emitted rays that land
+    //       there.  This catches mass that is all present but in the
+    //       wrong place, which (i) is blind to by construction.
+    //
+    //  Measured, the Translucent row is exactly that second case and
+    //  NOT the first: its full-sphere mass agrees to 4.1e-5, while it
+    //  puts essentially 100% of its density in the upper hemisphere
+    //  and only 55.6% of its rays -- a 1.80x domain-split violation
+    //  (DL-41: `TranslucentSPF::Pdf` covers NEITHER Phong cos^N
+    //  transmission lobe).  So the round-1 review's reading that
+    //  "emission rate 0.556282 vs int Pdf 1.00004" is a MASS mismatch
+    //  was comparing a hemisphere-restricted acceptance count against a
+    //  hemisphere integral; the defect is real, but it is a domain
+    //  split, and (ii) is the check that sees it.
+    //
+    //  Tolerance 0.01 on both, the same band
+    //  `tests/WardDensityKrayTest.cpp` section D derives for the same
+    //  comparison (a deterministic selection quadrature's residual
+    //  dominates it, so it does not shrink with the draw count).
+    // ================================================================
+
+    {
+        // SPH_THETA is EVEN, so its first half is exactly the upper
+        // hemisphere and the two integrals below share one grid -- the
+        // ratio in (ii) is then free of any grid-mismatch bias.
+        const int SPH_THETA = 200;
+        const int SPH_PHI = 200;
+        double sph = 0.0, sphUp = 0.0;
+        for( int t = 0; t < SPH_THETA; t++ )
+        {
+            const double theta = (t + 0.5) * PI / SPH_THETA;
+            const double dTheta = PI / SPH_THETA;
+            const double sinT = sin(theta), cosT = cos(theta);
+            for( int p = 0; p < SPH_PHI; p++ )
+            {
+                const double phi = (p + 0.5) * TWO_PI / SPH_PHI;
+                const double dPhi = TWO_PI / SPH_PHI;
+                Vector3 wo( sinT * cos(phi), sinT * sin(phi), cosT );
+                wo = Vector3Ops::Normalize( wo );
+                const double m = spf.Pdf( ri, wo, iorStack ) * sinT * dTheta * dPhi;
+                sph += m;
+                if( t < SPH_THETA/2 ) sphUp += m;
+            }
+        }
+        result.fullSphereIntegral = sph;
+
+        // The measured probabilities, over their OWN seed so they do
+        // not perturb Part 1's or Part 3's streams.
+        RandomNumberGenerator rngE( SUBDENSITY_SEED );
+        Implementation::IndependentSampler samplerE( rngE );
+        const int NE = 200000;
+        int emitted = 0, emittedUp = 0;
+        for( int i = 0; i < NE; i++ )
+        {
+            ScatteredRayContainer scattered;
+            spf.Scatter( ri, samplerE, scattered, iorStack );
+            ScatteredRay* sel = scattered.RandomlySelect( rngE.CanonicalRandom(), false );
+            if( !sel || sel->isDelta ) continue;
+            emitted++;
+            if( Vector3Ops::Dot( Vector3Ops::Normalize( sel->ray.Dir() ), normal ) > 0 ) {
+                emittedUp++;
+            }
+        }
+        result.emissionProb = double(emitted) / double(NE);
+        result.pdfUpperShare     = ( sph > 0 )     ? ( sphUp / sph )                    : 0.0;
+        result.emittedUpperShare = ( emitted > 0 ) ? ( double(emittedUp)/double(emitted) ) : 0.0;
+
+        if( fabs( result.fullSphereIntegral - result.emissionProb ) > subDensityTol )
+            result.subDensityPassed = false;
+        if( fabs( result.pdfUpperShare - result.emittedUpperShare ) > subDensityTol )
+            result.domainSplitPassed = false;
+    }
+
+    // ================================================================
     //  Part 3: Chi-squared histogram test
     //  Use RandomlySelect to pick one ray per Scatter call (matching
     //  path tracer behavior), bin directions, compare against Pdf().
+    //
+    //  DL-176 (2026-09-18) changed TWO things here, both formulation
+    //  rather than tolerance:
+    //
+    //  (a) THE EXPECTED COUNTS ARE NORMALISED TO THE OBSERVED TOTAL.
+    //      The old code set `expected[i] = (4x4 sub-integral of Pdf over
+    //      bin i) * totalAccepted`, which is only a valid null model if
+    //      `sum_i expected[i] == totalAccepted` -- i.e. if `Pdf`
+    //      integrates to EXACTLY 1 over the binned hemisphere AND the
+    //      4x4 sub-integration is exact.  Neither holds in general:
+    //      `Pdf` is legitimately a SUB-density whenever `Scatter` can
+    //      emit nothing (a rejected lobe) or emit below the horizon,
+    //      and the histogram counts only the calls that DID land in the
+    //      hemisphere.  Any mismatch `eps = totalAccepted/sum(expected)
+    //      - 1` then appears in every group at once and injects
+    //      `sum_i expected[i] * eps^2 = totalAccepted * eps^2 / (1+eps)`
+    //      into chi2 -- a pure normalisation artifact with no angular
+    //      content.  At `CookTorrance_BlackDiffuse @ 60deg`
+    //      (integral 0.98463, ~410k accepted) that term alone is ~100,
+    //      which is exactly the size of the anomaly DL-176 was filed
+    //      for.  The fix is the standard Pearson construction: rescale
+    //      so `sum expected == totalAccepted`, making Part 3 a pure
+    //      SHAPE test.  The one degree of freedom this costs is ALREADY
+    //      subtracted below -- `dof--; // Lose 1 DOF because total count
+    //      is fixed` -- the old code paid for a constraint it never
+    //      imposed.  Total MASS is not left untested: Part 2 gates it
+    //      directly, which is the right split (mass -> Part 2,
+    //      shape -> Part 3).
+    //
+    //  (b) THE TRAILING PARTIAL GROUP IS NO LONGER DISCARDED.  The
+    //      merge-at-5 loop dropped whatever observed/expected counts had
+    //      not yet reached 5 when it ran off the end of the array (the
+    //      grazing horizon bins, where most SPFs put least mass).  They
+    //      are now folded into the last completed group.
+    //
+    //  And the statistic is evaluated at NUM_CHI2_SEEDS independent
+    //  seeds; the gate is on the seed-MEAN via `z` (see CHI2_Z_TOL).
+    //  The bin GROUPING is fixed once, from a reference acceptance count
+    //  measured at the first seed, so `dof` cannot drift between seeds.
     // ================================================================
 
     if( skipChi2 )
     {
-        result.chi2Stat = 0;
-        result.chi2Crit = 0;
         return result;
     }
 
     const int totalBins = NUM_THETA_BINS * NUM_PHI_BINS;
-    std::vector<int> observed( totalBins, 0 );
-    int totalAccepted = 0;
 
-    for( int i = 0; i < NUM_SAMPLES; i++ )
-    {
-        ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, iorStack );
-
-        // Use RandomlySelect to pick one ray, as the path tracer does
-        ScatteredRay* selected = scattered.RandomlySelect( rng.CanonicalRandom(), false );
-        if( !selected ) continue;
-        if( selected->isDelta ) continue;
-
-        Vector3 wo = Vector3Ops::Normalize( selected->ray.Dir() );
-        int tb, pb;
-        if( DirectionToBin( wo, normal, tb, pb ) )
-        {
-            observed[ tb * NUM_PHI_BINS + pb ]++;
-            totalAccepted++;
-        }
-    }
-
-    if( totalAccepted < 1000 )
-    {
-        std::cout << "  WARNING: " << name << " produced too few hemisphere samples ("
-                  << totalAccepted << "), skipping chi2 test" << std::endl;
-        result.chi2Stat = 0;
-        result.chi2Crit = 0;
-        return result;
-    }
-
-    // Compute expected counts by numerically integrating Pdf() over each bin
+    // --- Expected SHAPE: the 4x4 sub-integration, computed ONCE.
+    //     Units: probability per bin (NOT counts).  The Pdf() shape does
+    //     not depend on the sampler's seed, so this is seed-invariant.
     const int SUB_THETA = 4;
     const int SUB_PHI = 4;
-    std::vector<double> expected( totalBins, 0.0 );
+    std::vector<double> expectedProb( totalBins, 0.0 );
+    double expectedProbSum = 0.0;
 
     for( int tb = 0; tb < NUM_THETA_BINS; tb++ )
     {
@@ -410,46 +605,133 @@ static TestResult TestSPF(
                 }
             }
 
-            expected[ tb * NUM_PHI_BINS + pb ] = integral * totalAccepted;
+            expectedProb[ tb * NUM_PHI_BINS + pb ] = integral;
+            expectedProbSum += integral;
         }
     }
 
-    // Compute chi-squared statistic, merging bins with expected < 5
-    double chi2 = 0;
-    int dof = 0;
-    double mergedObs = 0;
-    double mergedExp = 0;
-
-    for( int i = 0; i < totalBins; i++ )
+    if( expectedProbSum <= 0 )
     {
-        mergedObs += observed[i];
-        mergedExp += expected[i];
-
-        if( mergedExp >= 5.0 )
-        {
-            double diff = mergedObs - mergedExp;
-            chi2 += (diff * diff) / mergedExp;
-            dof++;
-            mergedObs = 0;
-            mergedExp = 0;
-        }
-    }
-
-    if( dof <= 1 )
-    {
-        std::cout << "  WARNING: " << name << " too few bins with sufficient expected count" << std::endl;
-        result.chi2Stat = 0;
-        result.chi2Crit = 0;
+        std::cout << "  WARNING: " << name << " Pdf() integrates to zero over the "
+                     "binned hemisphere, skipping chi2 test" << std::endl;
         return result;
     }
 
-    dof--;  // Lose 1 DOF because total count is fixed
+    // --- Draw the histograms, one per seed.
+    std::vector< std::vector<int> > observedSeeds( NUM_CHI2_SEEDS );
+    std::vector<int> acceptedSeeds( NUM_CHI2_SEEDS, 0 );
 
-    double critical = Chi2Critical( dof, CHI2_ALPHA );
-    result.chi2Stat = chi2;
-    result.chi2Crit = critical;
+    for( int sd = 0; sd < NUM_CHI2_SEEDS; sd++ )
+    {
+        std::vector<int> observed( totalBins, 0 );
+        int totalAccepted = 0;
 
-    if( chi2 > critical )
+        RandomNumberGenerator rngS( CHI2_SEED_BASE + (unsigned int)sd );
+        Implementation::IndependentSampler samplerS( rngS );
+
+        for( int i = 0; i < NUM_SAMPLES; i++ )
+        {
+            ScatteredRayContainer scattered;
+            spf.Scatter( ri, samplerS, scattered, iorStack );
+
+            // Use RandomlySelect to pick one ray, as the path tracer does
+            ScatteredRay* selected = scattered.RandomlySelect( rngS.CanonicalRandom(), false );
+            if( !selected ) continue;
+            if( selected->isDelta ) continue;
+
+            Vector3 wo = Vector3Ops::Normalize( selected->ray.Dir() );
+            int tb, pb;
+            if( DirectionToBin( wo, normal, tb, pb ) )
+            {
+                observed[ tb * NUM_PHI_BINS + pb ]++;
+                totalAccepted++;
+            }
+        }
+
+        observedSeeds[sd].swap( observed );
+        acceptedSeeds[sd] = totalAccepted;
+    }
+
+    if( acceptedSeeds[0] < 1000 )
+    {
+        std::cout << "  WARNING: " << name << " produced too few hemisphere samples ("
+                  << acceptedSeeds[0] << "), skipping chi2 test" << std::endl;
+        return result;
+    }
+
+    // --- Fix the GROUPING once, from the first seed's acceptance count,
+    //     so every seed's statistic has the same degrees of freedom.
+    //     `groupEnd[g]` is one past the last bin index in group g.
+    result.emissionRate = double( acceptedSeeds[0] ) / double( NUM_SAMPLES );
+    const double refScale = double( acceptedSeeds[0] ) / expectedProbSum;
+    std::vector<int> groupEnd;
+    {
+        double acc = 0;
+        for( int i = 0; i < totalBins; i++ )
+        {
+            acc += expectedProb[i] * refScale;
+            if( acc >= 5.0 )
+            {
+                groupEnd.push_back( i + 1 );
+                acc = 0;
+            }
+        }
+        // (b) whatever is left over is folded into the last group.
+        if( !groupEnd.empty() ) {
+            groupEnd.back() = totalBins;
+        }
+    }
+
+    if( (int)groupEnd.size() <= 1 )
+    {
+        std::cout << "  WARNING: " << name << " too few bins with sufficient expected count" << std::endl;
+        return result;
+    }
+
+    const int dof = (int)groupEnd.size() - 1;   // total count is fixed by (a)
+    result.chi2Dof = dof;
+
+    // --- The statistic, per seed.
+    double chi2Sum = 0;
+    result.chi2Min = 1e300;
+    result.chi2Max = -1e300;
+
+    for( int sd = 0; sd < NUM_CHI2_SEEDS; sd++ )
+    {
+        const std::vector<int>& observed = observedSeeds[sd];
+        // (a) expected counts normalised to THIS seed's observed total.
+        const double scale = double( acceptedSeeds[sd] ) / expectedProbSum;
+
+        double chi2 = 0;
+        int begin = 0;
+        for( size_t g = 0; g < groupEnd.size(); g++ )
+        {
+            double obs = 0, exp_ = 0;
+            for( int i = begin; i < groupEnd[g]; i++ )
+            {
+                obs  += observed[i];
+                exp_ += expectedProb[i] * scale;
+            }
+            begin = groupEnd[g];
+            if( exp_ > 0 )
+            {
+                const double diff = obs - exp_;
+                chi2 += (diff * diff) / exp_;
+            }
+        }
+
+        result.chi2Seeds[sd] = chi2;
+        chi2Sum += chi2;
+        if( chi2 < result.chi2Min ) result.chi2Min = chi2;
+        if( chi2 > result.chi2Max ) result.chi2Max = chi2;
+    }
+
+    result.chi2Stat = chi2Sum / double( NUM_CHI2_SEEDS );
+    result.chi2Crit = Chi2Critical( dof, CHI2_ALPHA );
+    result.chi2Z = ( result.chi2Stat - double(dof) )
+                 / sqrt( 2.0 * double(dof) / double( NUM_CHI2_SEEDS ) );
+
+    if( fabs( result.chi2Z ) > CHI2_Z_TOL )
         result.chi2Passed = false;
 
     return result;
@@ -613,6 +895,20 @@ static LobeDiscrimination MeasureLobeDiscrimination(
     d.discriminates = d.baseReaches
                    && ( fabs( d.qBase - d.qSheen ) > 1e-6 * r_max( d.qBase, d.qSheen ) );
     return d;
+}
+
+//! Part 2b's per-row band.  SUBDENSITY_TOL everywhere except the rows
+//! listed as documented open defects, which are gated by their own
+//! two-sided pin instead (a very wide band here disables the plain
+//! check for them without disabling the pin).
+struct SubDensityPinRef { const char* name; double lo; double hi; const char* why; };
+template< class PinT >
+static double SubDensityTolFor( const std::string& name, const PinT* pins, int n )
+{
+    for( int i = 0; i < n; i++ ) {
+        if( name == pins[i].name ) return 1e9;
+    }
+    return SUBDENSITY_TOL;
 }
 
 // ============================================================
@@ -873,6 +1169,20 @@ int main()
         bool skipCrossVal;
         bool skipChi2;
         double integralTol;
+        //! Part 2b band; SUBDENSITY_TOL unless a documented open defect
+        //! is being PINNED at its measured value.  Defaulted by the
+        //! `SubDensityTolFor` lookup below so the 26-row table does not
+        //! grow a column that is the same number on all but one row.
+    };
+    // Rows whose Part 2b residual is a KNOWN, TRACKED defect rather
+    // than an assertion: pinned at their measured value with a
+    // two-sided band, so closure is as visible as regression.
+    struct SubDensityPin { const char* name; double lo; double hi; const char* why; };
+    const SubDensityPin subDensityPins[] = {
+        { "Translucent", 0.40, 0.48,
+          "DL-41: TranslucentSPF::Pdf covers NEITHER Phong cos^N lobe, so it "
+          "reports the diffuse/reflection mass only while Scatter emits the "
+          "transmission lobes too" },
     };
 
     SPFEntry spfs[] = {
@@ -923,6 +1233,36 @@ int main()
         // mixPdf must still equal Pdf() exactly, proving the floor
         // didn't reintroduce a Scatter<->Pdf mismatch at the corner it
         // was added to fix.
+        //
+        // DL-176 (2026-09-18), what the seed sweep found on these two:
+        //
+        //   `_BlackDiffuse` was the row DL-176 was FILED on (927.52
+        //   against critical 928.261, single seed).  The 10-seed sweep
+        //   put its true mean at 938.26 -- z = +11.0, ABOVE critical --
+        //   so it was never one unlucky draw.  The cause is entirely in
+        //   the harness: this SPF's `Pdf` is a correct SUB-density.  It
+        //   genuinely emits nothing on 1.5% of calls at 60deg (the
+        //   internally-selected lobe's `kray` is the authored literal
+        //   black, and `Scatter` only adds a ray when `kray > 0`), and
+        //   `int Pdf = 0.98463` against a measured emission rate of
+        //   0.984664 -- they AGREE to 3e-5.  Part 3's old expected
+        //   counts took the 1.5% shortfall as an angular error.  With
+        //   the normalisation of (a) in place the row reads z = +0.54.
+        //   NOTHING IN `CookTorranceSPF` CHANGED.
+        //
+        //   `_BlackSpecular` is a DIFFERENT, genuine and much smaller
+        //   residual, and it is the one row this file does not close:
+        //   `int Pdf = 1.00001` against an emission rate of 0.998014,
+        //   i.e. `Pdf` prices ~0.2% of mass on a specular lobe that
+        //   `Scatter` can never emit (the `kSelFloor` keeps the lobe
+        //   SELECTABLE while its literal-black `kray` keeps it from
+        //   producing a ray).  That is a real shape mismatch and it
+        //   reads z = +3.58 at 60deg / +2.10 at 30deg inside the |z|<=4
+        //   band -- filed as DL-211, deliberately not fixed here.  The
+        //   value is DETERMINISTIC now (fixed seeds), so the remaining
+        //   0.4 sd of margin is not a coin-flip the way the pre-DL-176
+        //   927.52 was; it moves only if `CookTorranceSPF` or this
+        //   harness moves.
         //--------------------------------------------------------------
         { "CookTorrance_BlackDiffuse",          cookTorranceBlackDiffuse,  false, true, false, false, INTEGRAL_TOL },
         { "CookTorrance_BlackSpecular",         cookTorranceBlackSpecular, false, true, false, false, INTEGRAL_TOL },
@@ -987,28 +1327,49 @@ int main()
         { "Schlick",                           schlick,     false, false, true,  false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
-        // Ward Isotropic Gaussian (Ward 1992):
+        // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992):
         //
-        // Cross-val: only 1-1422 mismatches (nearly passes), caused by
-        //   the 1/sqrt(n·r × n·v) divergence at grazing angles making
-        //   kray weights differ from PDF weights.
-        // Chi2: the Ward model is not energy-conserving.  The specular
-        //   VNDF sampling doesn't perfectly match the BRDF evaluation
-        //   at grazing angles, causing histogram divergence.
-        //--------------------------------------------------------------
-        { "WardIsotropicGaussian",             wardIso,     false, false, true,  true,  INTEGRAL_TOL },
-
-        //--------------------------------------------------------------
-        // Ward Anisotropic Elliptical Gaussian (Ward 1992):
+        // DL-177 (CLOSED 2026-09-18,
+        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  Both rows used to skip
+        // chi2 with this note: "the Ward model is not energy-conserving.
+        // The specular VNDF sampling doesn't perfectly match the BRDF
+        // evaluation at grazing angles, causing histogram divergence"
+        // (isotropic) and "the elliptical Gaussian PDF doesn't fully
+        // integrate to 1.0 when the two roughness parameters differ.
+        // Tolerance relaxed to 10%" (anisotropic).
         //
-        // Same issues as isotropic Ward, compounded by anisotropy.
-        // The elliptical Gaussian lobe (αx ≠ αy) makes the VNDF
-        // sampling mismatch worse.  PDF integral dips to ~0.95 at 60°
-        // due to the anisotropic normalization — the elliptical
-        // Gaussian PDF doesn't fully integrate to 1.0 when the two
-        // roughness parameters differ.  Tolerance relaxed to 10%.
+        // NEITHER was a model limitation.  `GenerateSpecularRay` stored
+        // a value that is not a density at all -- the TRUE solid-angle
+        // density of its own half-vector times `cos^4(theta_h)`.  Both
+        // rows run at alpha 0.2 / 0.3, where a typical sampled
+        // `cos^4(theta_h)` is ~0.94, so the integral stayed inside a
+        // 5%/10% band and only the histogram could see it; that is
+        // exactly why chi2 was the sub-test that got switched off.  A
+        // separate defect made `Pdf` a raw-albedo mixture rather than
+        // the density `RandomlySelect` produces.  Both fixed, with
+        // per-draw and full-sphere gates in
+        // `tests/WardDensityKrayTest.cpp`.
+        //
+        // Cross-val: STILL SKIPPED, structurally -- same reason as
+        //   IsotropicPhong / Schlick / Ashikmin above.  Both lobes are
+        //   drawn every call and one is picked by its REALIZED kray, so
+        //   no aggregate density can satisfy a per-call identity.
+        //
+        // Integral: 0.999611 / 0.999912 (isotropic 30/60 deg) and
+        //   0.999500 / 0.999978 (anisotropic), against 0.973145 /
+        //   0.963752 and 0.959258 / 0.949217 on an isolated pre-fix
+        //   rebuild -- and that last one FAILED even the 5% band, which
+        //   is what the anisotropic row's relaxed 10% tolerance was
+        //   really covering.  Both rows go back to INTEGRAL_TOL.
+        //
+        // Chi2: NOW GATED (was skipped).  Seed-mean z = +0.84 / +0.30
+        //   (isotropic 30/60 deg) and -0.08 / +0.06 (anisotropic),
+        //   against +25.4 / +35.9 and +59.0 / +107.8 pre-fix -- the
+        //   histogram was the only sub-test that could see a density
+        //   off by cos^4, and it was the one switched off.
         //--------------------------------------------------------------
-        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false, true,  true,  0.10 },
+        { "WardIsotropicGaussian",             wardIso,     false, false, true,  false, INTEGRAL_TOL },
+        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false, true,  false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
         // Ashikmin-Shirley Anisotropic Phong (2000):
@@ -1182,7 +1543,11 @@ int main()
                 spfs[s].exactSelectedPdf,
                 spfs[s].skipCrossVal,
                 spfs[s].skipChi2,
-                spfs[s].integralTol );
+                spfs[s].integralTol,
+                // Pinned rows get a band wide enough that the pin below
+                // is what gates them, not this.
+                SubDensityTolFor( spfs[s].name, subDensityPins,
+                                  int(sizeof(subDensityPins)/sizeof(subDensityPins[0])) ) );
             results.push_back( r );
 
             // Report cross-validation
@@ -1214,23 +1579,93 @@ int main()
                 std::cout << "  PASS" << std::endl;
             }
 
+            // Report Part 2b -- the sub-density contract.
+            {
+                const double diff = fabs( r.fullSphereIntegral - r.emissionProb );
+                std::cout << ( r.subDensityPassed ? "  PASS" : "  FAIL" )
+                          << " sub-density: int Pdf(full sphere) " << r.fullSphereIntegral
+                          << " vs emission probability " << r.emissionProb
+                          << "  |diff| " << diff << std::endl;
+                if( !r.subDensityPassed ) {
+                    numFailed++;
+                }
+                const double sdiff = fabs( r.pdfUpperShare - r.emittedUpperShare );
+                const SubDensityPin* pin = 0;
+                for( size_t q = 0; q < sizeof(subDensityPins)/sizeof(subDensityPins[0]); q++ ) {
+                    if( spfs[s].name == subDensityPins[q].name ) { pin = &subDensityPins[q]; break; }
+                }
+                if( pin ) {
+                    // KNOWN-DEFECT control, two-sided: a regression and
+                    // a CLOSURE are both visible, which a one-sided
+                    // "<= tol" band or a silently widened tolerance
+                    // would not be.
+                    const bool inBand = ( sdiff >= pin->lo && sdiff <= pin->hi );
+                    std::cout << ( inBand ? "  PASS" : "  FAIL" )
+                              << " domain split KNOWN-DEFECT (" << pin->why << "): "
+                              << "Pdf upper-hemisphere share " << r.pdfUpperShare
+                              << " vs emitted share " << r.emittedUpperShare
+                              << "  |diff| " << sdiff
+                              << "  pinned band [" << pin->lo << ", " << pin->hi << "]" << std::endl;
+                    if( !inBand ) {
+                        numFailed++;
+                    }
+                } else {
+                    std::cout << ( r.domainSplitPassed ? "  PASS" : "  FAIL" )
+                              << " domain split: Pdf upper-hemisphere share " << r.pdfUpperShare
+                              << " vs emitted share " << r.emittedUpperShare
+                              << "  |diff| " << sdiff << std::endl;
+                    if( !r.domainSplitPassed ) {
+                        numFailed++;
+                    }
+                }
+            }
+
+            // DL-211 KNOWN-DEFECT control (review round 1, P2-4).  This
+            // row's chi2 seed-mean z sits at ~90% of the |z| <= 4 band
+            // -- the same fragility shape DL-176 was filed for -- so it
+            // is pinned two-sided at its measured value rather than
+            // left to drift inside a band it nearly fills.  Closure of
+            // DL-211 must move it, and so must a regression.
+            if( spfs[s].name == "CookTorrance_BlackSpecular" && r.chi2Dof > 0 )
+            {
+                const double lo = ( a == 0 ) ? 1.5 : 3.0;
+                const double hi = ( a == 0 ) ? 2.7 : 4.0;
+                const bool inBand = ( r.chi2Z >= lo && r.chi2Z <= hi );
+                std::cout << ( inBand ? "  PASS" : "  FAIL" )
+                          << " DL-211 KNOWN-DEFECT (Pdf prices the kSelFloor-floored specular "
+                             "lobe that a literal-black kray stops Scatter emitting): chi2 z "
+                          << r.chi2Z << "  pinned band [" << lo << ", " << hi << "]"
+                          << "   (int Pdf " << r.fullSphereIntegral
+                          << " vs emission probability " << r.emissionProb << ")" << std::endl;
+                if( !inBand ) {
+                    numFailed++;
+                }
+            }
+
             // Report chi-squared
             if( spfs[s].skipChi2 )
             {
                 std::cout << "  SKIP chi2 (known model limitation — see per-material notes)" << std::endl;
             }
-            else if( r.chi2Crit > 0 )
+            else if( r.chi2Dof > 0 )
             {
+                // DL-176: the gate is on the SEED-MEAN via z; the single-seed
+                // alpha=0.001 critical value is printed for continuity with
+                // the pre-2026-09-18 output only.
+                std::cout << ( r.chi2Passed ? "  PASS" : "  FAIL" )
+                          << " chi2 mean " << r.chi2Stat
+                          << " over " << NUM_CHI2_SEEDS << " seeds"
+                          << "  [min " << r.chi2Min << ", max " << r.chi2Max << "]"
+                          << "  dof " << r.chi2Dof
+                          << "  z " << r.chi2Z
+                          << "  [emission rate " << r.emissionRate
+                          << " vs int Pdf " << r.pdfIntegral << "]"
+                          << " (|z| <= " << CHI2_Z_TOL
+                          << "; single-seed alpha=0.001 critical " << r.chi2Crit << ")"
+                          << std::endl;
                 if( !r.chi2Passed )
                 {
-                    std::cout << "  FAIL chi2: " << r.chi2Stat
-                              << " > critical " << r.chi2Crit << std::endl;
                     numFailed++;
-                }
-                else
-                {
-                    std::cout << "  PASS chi2: " << r.chi2Stat
-                              << " < critical " << r.chi2Crit << std::endl;
                 }
             }
         }
@@ -1457,10 +1892,18 @@ int main()
             std::cout << " [cross-val: " << r.crossValFailures << " errors]";
         if( !r.integralPassed )
             std::cout << " [integral: " << r.pdfIntegral << "]";
+        passed = passed && r.subDensityPassed && r.domainSplitPassed;
+        if( !r.subDensityPassed )
+            std::cout << " [sub-density: int Pdf " << r.fullSphereIntegral
+                      << " vs emission " << r.emissionProb << "]";
+        if( !r.domainSplitPassed )
+            std::cout << " [domain split: Pdf share " << r.pdfUpperShare
+                      << " vs emitted share " << r.emittedUpperShare << "]";
         if( spfs[si].skipChi2 )
             std::cout << " [chi2: skipped]";
         else if( !r.chi2Passed )
-            std::cout << " [chi2: " << r.chi2Stat << " > " << r.chi2Crit << "]";
+            std::cout << " [chi2 seed-mean: " << r.chi2Stat << ", dof " << r.chi2Dof
+                      << ", z " << r.chi2Z << "]";
         std::cout << std::endl;
     }
 

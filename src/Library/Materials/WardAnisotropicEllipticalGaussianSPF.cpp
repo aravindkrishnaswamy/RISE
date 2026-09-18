@@ -49,35 +49,16 @@ void WardAnisotropicEllipticalGaussianSPF::SetSpecular( const IPainter& v )     
 void WardAnisotropicEllipticalGaussianSPF::SetAlphaX( const IScalarPainter& v ) { v.addref(); safe_release( pAlphaX );   pAlphaX   = &v; }
 void WardAnisotropicEllipticalGaussianSPF::SetAlphaY( const IScalarPainter& v ) { v.addref(); safe_release( pAlphaY );   pAlphaY   = &v; }
 
-static inline void GenerateDiffuseRay(
-		ScatteredRay& diffuse,
-		const OrthonormalBasis3D& onb,								///< [in] Orthonormal basis in 3D
-		const RayIntersectionGeometric& ri,							///< [in] Ray intersection information
-		const Point2& ptrand										///< [in] Random numbers
-		)
+//! Stratified grid `Pdf()`/`PdfNM()` replay the specular sampler's own
+//! `(xi1, xi2)` square on.  Same constant and same cost/accuracy note as
+//! the isotropic twin's `kWardQuadN` and `SchlickSPF`'s `kSpecQuadN`.
+static const int kWardQuadN = 16;
+
+//! Ward's azimuthal warp, extracted VERBATIM from `GenerateSpecularRay`
+//! so the sampler and everything that replays it cannot drift apart.
+static inline Scalar WardAnisoPhiFromXi( const Scalar xi, const Scalar alphax, const Scalar alphay )
 {
-	diffuse.type = ScatteredRay::eRayDiffuse;
-
-	// Generate a reflected ray randomly with a cosine distribution
-	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( onb, ptrand ) );
-	diffuse.isDelta = false;
-}
-
-static void GenerateSpecularRay(
-		ScatteredRay& specular,
-		const OrthonormalBasis3D& onb,								///< [in] Orthonormal basis in 3D
-		const RayIntersectionGeometric& ri,							///< [in] Ray intersection information
-		const Point2& random,										///< [in] Two random numbers
-		const Scalar alphax,
-		const Scalar alphay
-		)
-{
-	specular.type = ScatteredRay::eRayReflection;
-	specular.isDelta = false;
-
-	// Use the warping function to perturb the reflected ray
-	const Scalar xi = random.x;
-	const Scalar alpha_ratio = (alphay/alphax);
+	const Scalar alpha_ratio = ( alphay / alphax );
 	Scalar phi = 0;
 	if( xi < 0.25 )
 	{
@@ -103,6 +84,128 @@ static void GenerateSpecularRay(
 		phi = atan( alpha_ratio * tan(PI_OV_TWO * val) );
 		phi = TWO_PI - phi;
 	}
+	return phi;
+}
+
+//! The exact inverse of `WardAnisoPhiFromXi` (DL-177 defect 2 needs it to
+//! recover the random pair a per-channel lane shared with its siblings).
+//! `phi` is taken in `[0, 2 PI)`.
+static inline Scalar WardAnisoXiFromPhi( const Scalar phi, const Scalar alphax, const Scalar alphay )
+{
+	const Scalar inv_ratio = ( alphax / alphay );
+	// Fold to the first quadrant, remembering which one we came from.
+	if( phi < PI_OV_TWO ) {
+		const Scalar val = ( 2.0 / PI ) * atan( inv_ratio * tan( phi ) );
+		return 0.25 * val;
+	} else if( phi < PI ) {
+		const Scalar val = ( 2.0 / PI ) * atan( inv_ratio * tan( PI - phi ) );
+		return 0.25 + 0.25 * val;
+	} else if( phi < PI + PI_OV_TWO ) {
+		const Scalar val = ( 2.0 / PI ) * atan( inv_ratio * tan( phi - PI ) );
+		return 0.5 + 0.25 * val;
+	}
+	const Scalar val = ( 2.0 / PI ) * atan( inv_ratio * tan( TWO_PI - phi ) );
+	return 0.75 + 0.25 * val;
+}
+
+//! THE TRUE solid-angle density of the half-vector `GenerateSpecularRay`
+//! draws (DL-177 defect 1, docs/DL177_WARD_DENSITY_AND_KRAY.md).
+//!
+//! `theta = atan(sqrt(-ln xi2 / D))` with
+//! `D(phi) = cos^2 phi/ax^2 + sin^2 phi/ay^2`, so
+//! `p_Theta(theta|phi) = 2 tan(theta) D exp(-tan^2 D) / cos^2(theta)`;
+//! and differentiating `WardAnisoXiFromPhi` gives
+//! `p_Phi(phi) = 1/(2 PI ax ay D(phi))`.  The `D` cancels between them:
+//!
+//!     p_h = exp(-tan^2(theta_h) D) / (PI ax ay cos^3(theta_h))
+//!
+//! Until 2026-09-18 this file stored
+//! `cos(theta_h) exp(...) / (PI ax ay)` -- the same density times
+//! `cos^4(theta_h)`.
+static inline Scalar WardAnisoHalfDensity(
+	const Scalar cosThetaH,
+	const Scalar tan2D,			///< tan^2(theta_h) * D(phi)
+	const Scalar ax,
+	const Scalar ay
+	)
+{
+	if( cosThetaH <= 0 || ax <= 0 || ay <= 0 ) {
+		return 0;
+	}
+	const Scalar c2 = cosThetaH * cosThetaH;
+	return exp( -tan2D ) / ( PI * ax * ay * c2 * cosThetaH );
+}
+
+//! `f_S cos_o / p_S` divided by the specular reflectance.  IDENTICAL to
+//! the isotropic twin's `WardKrayRatio`: the anisotropic BRDF's
+//! `1/(4 PI ax ay sqrt(nr nl))` and the density's `1/(PI ax ay cos^3)`
+//! cancel the `ax ay` and the exponential the same way, leaving
+//!
+//!     f_S cos_o / p_S = Rs (h.wo) cos^3(theta_h) sqrt(cos_o/cos_i)
+static inline Scalar WardKrayRatio(
+	const Scalar hdotwo,
+	const Scalar cosThetaH,
+	const Scalar cosO,
+	const Scalar cosI
+	)
+{
+	if( hdotwo <= 0 || cosThetaH <= 0 || cosO <= 0 || cosI <= 0 ) {
+		return 0;
+	}
+	return hdotwo * cosThetaH * cosThetaH * cosThetaH * sqrt( cosO / cosI );
+}
+
+//! See the isotropic twin: Malley's exact clipped-cosine fraction.
+static inline Scalar WardDiffuseAcceptFraction(
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN
+	)
+{
+	const Scalar c = Vector3Ops::Dot( myonb.w(), geomN );
+	return r_max( Scalar(0), r_min( Scalar(1), 0.5 * (1.0 + c) ) );
+}
+
+//! The specular lobes `Scatter` emits in one call.
+struct WardAnisoLobeSet
+{
+	int    count;
+	Scalar ax[3];
+	Scalar ay[3];
+	//! `MaxValue` of the lobe's reflectance EXCLUDING the ratio -- see
+	//! the isotropic twin's note on why that factorisation is exact.
+	Scalar w[3];
+};
+
+static inline void GenerateDiffuseRay(
+		ScatteredRay& diffuse,
+		const OrthonormalBasis3D& onb,								///< [in] Orthonormal basis in 3D
+		const RayIntersectionGeometric& ri,							///< [in] Ray intersection information
+		const Point2& ptrand										///< [in] Random numbers
+		)
+{
+	diffuse.type = ScatteredRay::eRayDiffuse;
+
+	// Generate a reflected ray randomly with a cosine distribution
+	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( onb, ptrand ) );
+	diffuse.isDelta = false;
+}
+
+static void GenerateSpecularRay(
+		ScatteredRay& specular,
+		const OrthonormalBasis3D& onb,								///< [in] Orthonormal basis in 3D
+		const RayIntersectionGeometric& ri,							///< [in] Ray intersection information
+		const Point2& random,										///< [in] Two random numbers
+		const Scalar alphax,
+		const Scalar alphay,
+		Scalar& outKrayRatio										///< [out] DL-177: `f_S cos / (p_S Rs)` for the sampled direction, 0 if no ray was produced
+		)
+{
+	outKrayRatio = 0;
+	specular.type = ScatteredRay::eRayReflection;
+	specular.isDelta = false;
+
+	// Use the warping function to perturb the reflected ray
+	const Scalar phi = WardAnisoPhiFromXi( random.x, alphax, alphay );
 
 
 	const Scalar cos_phi = cos(phi);
@@ -128,15 +231,21 @@ static void GenerateSpecularRay(
 		Vector3 ret = Vector3Ops::Normalize( ri.ray.Dir() + 2.0 * hdotk * h );
 		specular.ray.Set( ri.ptIntersection, ret );
 
-		// Compute the PDF for this sampled direction
-		// Half-vector PDF for Ward anisotropic:
-		// p(h) = cos(theta_h) / (PI * alphax * alphay) * exp(-(h.u/alphax)^2 + (h.v/alphay)^2) / (1 - (h.n)^2))
-		// But equivalently using the sampled angles:
-		// p(h) = cos(theta_h) / (PI * alphax * alphay) * exp(-tan^2(theta_h) * ((cos_phi/alphax)^2 + (sin_phi/alphay)^2))
+		// DL-177 defect (1): the TRUE solid-angle density of this
+		// sampler's half-vector, converted by the reflection Jacobian.
+		// It used to be that density times `cos^4(theta_h)`.
 		const Scalar tan_theta = sin_theta / cos_theta;
-		const Scalar exponent = -(tan_theta * tan_theta) * denom;
-		const Scalar pdf_h = cos_theta / (PI * alphax * alphay) * exp( exponent );
-		specular.pdf = pdf_h / (4.0 * hdotk);
+		const Scalar pdf_h = WardAnisoHalfDensity( cos_theta,
+		                                           (tan_theta * tan_theta) * denom,
+		                                           alphax, alphay );
+		const Scalar hdotwo = Vector3Ops::Dot( h, ret );
+		specular.pdf = ( hdotwo > 0 ) ? ( pdf_h / (4.0 * hdotwo) ) : Scalar(0);
+
+		// DL-177 defect (3).
+		const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+		outKrayRatio = WardKrayRatio( hdotwo, cos_theta,
+		                              Vector3Ops::Dot( ret, onb.w() ),
+		                              Vector3Ops::Dot( wi, onb.w() ) );
 	}
 }
 
@@ -184,11 +293,14 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 	if( !pAlphaX->HasPerChannelVariation() && !pAlphaY->HasPerChannelVariation() )
 	{
 		ScatteredRay s;
-		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), axt.v[0], ayt.v[0] );
+		Scalar ratio = 0;
+		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), axt.v[0], ayt.v[0], ratio );
 
 		// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
 		if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
-			s.kray = pSpecular->GetColor(ri);
+			// DL-177 defect (3): `kray_I` is this lobe's own
+			// `f_I cos / p_I`, not the reflectance painter's colour.
+			s.kray = pSpecular->GetColor(ri) * ratio;
 			scattered.AddScatteredRay( s );
 		}
 	}
@@ -201,12 +313,13 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 			// SchlickSPF.cpp's identical fix and
 			// docs/DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md.
 			ScatteredRay s;
-			GenerateSpecularRay( s, myonb, ri, ptrand, axt.v[i], ayt.v[i] );
+			Scalar ratio = 0;
+			GenerateSpecularRay( s, myonb, ri, ptrand, axt.v[i], ayt.v[i], ratio );
 
 			// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
 			if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 				s.kray = 0;
-				s.kray[i] = spec[i];
+				s.kray[i] = spec[i] * ratio;
 				scattered.AddScatteredRay( s );
 			}
 		}
@@ -240,8 +353,9 @@ void WardAnisotropicEllipticalGaussianSPF::ScatterNM(
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	ScatteredRay d, s;
+	Scalar sRatio = 0;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
-	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
+	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm), sRatio );
 
 	// Accept-checks use myonb.w() -- see Scatter()'s comment: it is the
 	// frame lobes are actually sampled around (post-FlipW), not the raw
@@ -253,19 +367,269 @@ void WardAnisotropicEllipticalGaussianSPF::ScatterNM(
 		scattered.AddScatteredRay( d );
 	}
 	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
-		s.krayNM = GuardedGetColorNM( *pSpecular, ri, nm );
+		// DL-177 defect (3), NM twin of Scatter's line.
+		s.krayNM = GuardedGetColorNM( *pSpecular, ri, nm ) * sRatio;
 		scattered.AddScatteredRay( s );
 	}
 }
 
-// Computes the Ward anisotropic elliptical Gaussian half-vector PDF converted to solid angle
+//! Build the half-vector lane `j` would have drawn from the random pair
+//! `(xi1, xi2)`, in the sampling frame, and report the realized
+//! selection weight it contributes.  Returns false if `Scatter` would
+//! have dropped that lane's ray.
+static inline bool WardAnisoReplayLane(
+	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN,
+	const Scalar nvView,
+	const Scalar xi1,
+	const Scalar xi2Log,		///< `-ln(xi2)`, shared by every lane
+	const Scalar ax,
+	const Scalar ay,
+	Scalar& outRatio
+	)
+{
+	outRatio = 0;
+	if( ax <= 0 || ay <= 0 ) {
+		return false;
+	}
+
+	const Scalar phi = WardAnisoPhiFromXi( xi1, ax, ay );
+	const Scalar cp = cos( phi ), sp = sin( phi );
+	const Scalar denom = (cp*cp)/(ax*ax) + (sp*sp)/(ay*ay);
+	if( denom <= 0 ) {
+		return false;
+	}
+	const Scalar t = sqrt( xi2Log / denom );
+	const Scalar ct = 1.0 / sqrt( 1.0 + t*t );
+	const Scalar st = t * ct;
+
+	const Vector3& eu = myonb.u();
+	const Vector3& ev = myonb.v();
+	const Vector3& ew = myonb.w();
+	const Scalar lx = cp * st, ly = sp * st;
+	const Vector3 h( eu.x*lx + ev.x*ly + ew.x*ct,
+	                 eu.y*lx + ev.y*ly + ew.y*ct,
+	                 eu.z*lx + ev.z*ly + ew.z*ct );
+
+	const Vector3& d = ri.ray.Dir();
+	const Scalar hdotk = -Vector3Ops::Dot( h, d );
+	if( hdotk <= 0 ) {
+		return false;
+	}
+	const Vector3 ret = Vector3Ops::Normalize( d + 2.0 * hdotk * h );
+	if( Vector3Ops::Dot( ret, ew ) <= 0 || Vector3Ops::Dot( ret, geomN ) <= 0 ) {
+		return false;
+	}
+
+	outRatio = WardKrayRatio( Vector3Ops::Dot( h, ret ), ct,
+	                          Vector3Ops::Dot( ret, ew ), nvView );
+	return true;
+}
+
+//! C_D -- see the isotropic twin's block comment; identical construction,
+//! with the azimuth now lane-dependent because Ward's warp carries the
+//! `alphay/alphax` ratio.
+static Scalar WardAnisoDiffuseSelectCoefficient(
+	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN,
+	const Scalar wD,
+	const WardAnisoLobeSet& lobes
+	)
+{
+	const Vector3& eu = myonb.u();
+	const Vector3& ev = myonb.v();
+	const Vector3& ew = myonb.w();
+	// Same two closed forms the isotropic twin's quadrature uses -- see
+	// WardIsoDiffuseSelectCoefficient -- so the inner loop needs no
+	// `Normalize`.
+	const Vector3  dHat   = Vector3Ops::Normalize( ri.ray.Dir() );
+	const Scalar   nvView = -Vector3Ops::Dot( ew, dHat );
+	const Scalar   dDotG  = Vector3Ops::Dot( dHat, geomN );
+
+	const Scalar inv = 1.0 / Scalar(kWardQuadN);
+
+	Scalar xi2Log[kWardQuadN];
+	for( int a = 0; a < kWardQuadN; a++ ) {
+		xi2Log[a] = -log( ( Scalar(a) + 0.5 ) * inv );
+	}
+
+	// Ward's azimuthal warp depends on `xi1` and the LANE's alpha ratio
+	// only -- never on `xi2` -- so `phi`, its sine/cosine and the
+	// resulting `D(phi)` are hoisted out of the `a` loop.  Leaving them
+	// inside cost an `atan`, a `tan`, a `cos` and a `sin` at every one of
+	// the kWardQuadN^2 nodes and made this function ~8x the isotropic
+	// twin's; hoisted, the two are within ~20% of each other.
+	Scalar rowCosP[3][kWardQuadN];
+	Scalar rowSinP[3][kWardQuadN];
+	Scalar rowDen [3][kWardQuadN];
+	for( int j = 0; j < lobes.count; j++ ) {
+		const Scalar axj = lobes.ax[j], ayj = lobes.ay[j];
+		for( int b = 0; b < kWardQuadN; b++ ) {
+			if( axj <= 0 || ayj <= 0 ) {
+				rowCosP[j][b] = 1; rowSinP[j][b] = 0; rowDen[j][b] = 0;
+				continue;
+			}
+			const Scalar phi = WardAnisoPhiFromXi( ( Scalar(b) + 0.5 ) * inv, axj, ayj );
+			const Scalar cp = cos( phi ), sp = sin( phi );
+			rowCosP[j][b] = cp;
+			rowSinP[j][b] = sp;
+			rowDen [j][b] = (cp*cp)/(axj*axj) + (sp*sp)/(ayj*ayj);
+		}
+	}
+
+	Scalar accum = 0;
+
+	for( int a = 0; a < kWardQuadN; a++ ) {
+		for( int b = 0; b < kWardQuadN; b++ ) {
+			Scalar wS = 0;
+			int nAcceptedSpec = 0;
+			for( int j = 0; j < lobes.count; j++ ) {
+				const Scalar den = rowDen[j][b];
+				if( den <= 0 ) {
+					continue;
+				}
+				const Scalar t  = sqrt( xi2Log[a] / den );
+				const Scalar ct = 1.0 / sqrt( 1.0 + t*t );
+				const Scalar st = t * ct;
+				const Scalar lx = rowCosP[j][b] * st;
+				const Scalar ly = rowSinP[j][b] * st;
+
+				const Scalar hx = eu.x*lx + ev.x*ly + ew.x*ct;
+				const Scalar hy = eu.y*lx + ev.y*ly + ew.y*ct;
+				const Scalar hz = eu.z*lx + ev.z*ly + ew.z*ct;
+
+				const Scalar hdotk = -( hx*dHat.x + hy*dHat.y + hz*dHat.z );
+				if( hdotk <= 0 ) {
+					continue;
+				}
+				const Scalar cosO = -nvView + 2.0 * hdotk * ct;
+				if( cosO <= 0 ) {
+					continue;
+				}
+				const Scalar hDotG = hx*geomN.x + hy*geomN.y + hz*geomN.z;
+				if( dDotG + 2.0 * hdotk * hDotG <= 0 ) {
+					continue;
+				}
+
+				wS += lobes.w[j] * WardKrayRatio( hdotk, ct, cosO, nvView );
+				nAcceptedSpec++;
+			}
+
+			if( nAcceptedSpec == 0 ) {
+				accum += 1.0;		// RandomlySelect's freeidx==1 short-circuit
+				continue;
+			}
+
+			const Scalar total = wD + wS;
+			if( total > NEARZERO ) {
+				accum += wD / total;
+			}
+		}
+	}
+
+	return accum / Scalar(kWardQuadN*kWardQuadN);
+}
+
+//! `sum_i q_i(wo) p_i(wo)` -- see the isotropic twin.
+static Scalar WardAnisoSpecularDensity(
+	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN,
+	const Vector3& woNorm,
+	const Scalar wD,
+	const Scalar aD,
+	const WardAnisoLobeSet& lobes
+	)
+{
+	const Vector3& ew = myonb.w();
+	const Vector3  wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3  h  = Vector3Ops::Normalize( wi + woNorm );
+
+	const Scalar cosThetaH = Vector3Ops::Dot( h, ew );
+	const Scalar hdotwo    = Vector3Ops::Dot( h, woNorm );
+	if( cosThetaH <= 0 || hdotwo <= 0 ) {
+		return 0;
+	}
+
+	const Scalar nv   = Vector3Ops::Dot( ew, wi );
+	const Scalar cosO = Vector3Ops::Dot( woNorm, ew );
+	const Scalar ratioAtWo = WardKrayRatio( hdotwo, cosThetaH, cosO, nv );
+
+	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
+	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
+	Scalar phi = atan2( hv, hu );
+	if( phi < 0 ) {
+		phi += TWO_PI;
+	}
+	const Scalar tan2 = ( 1.0 - cosThetaH*cosThetaH ) / ( cosThetaH*cosThetaH );
+
+	Scalar sum = 0;
+
+	for( int i = 0; i < lobes.count; i++ ) {
+		const Scalar axi = lobes.ax[i], ayi = lobes.ay[i];
+		if( axi <= 0 || ayi <= 0 ) {
+			continue;
+		}
+		const Scalar cp = cos( phi ), sp = sin( phi );
+		const Scalar denom_i = (cp*cp)/(axi*axi) + (sp*sp)/(ayi*ayi);
+		const Scalar pdf_i = WardAnisoHalfDensity( cosThetaH, tan2 * denom_i, axi, ayi )
+		                   / ( 4.0 * hdotwo );
+		if( pdf_i <= 0 ) {
+			continue;
+		}
+
+		const Scalar w_i = lobes.w[i] * ratioAtWo;
+
+		Scalar wOther = 0;
+		int nAcceptedSpec = 1;
+		if( lobes.count > 1 ) {
+			// Invert lane i to the random pair it must have drawn, then
+			// replay every sibling through the SAME pair.
+			const Scalar xi1 = WardAnisoXiFromPhi( phi, axi, ayi );
+			const Scalar xi2Log = tan2 * denom_i;		// = -ln(xi2)
+			for( int j = 0; j < lobes.count; j++ ) {
+				if( j == i ) {
+					continue;
+				}
+				Scalar ratio = 0;
+				if( WardAnisoReplayLane( ri, myonb, geomN, nv, xi1, xi2Log,
+				                         lobes.ax[j], lobes.ay[j], ratio ) ) {
+					wOther += lobes.w[j] * ratio;
+					nAcceptedSpec++;
+				}
+			}
+		}
+
+		const Scalar wS = w_i + wOther;
+
+		Scalar q = 0;
+		const Scalar totalWith = wD + wS;
+		if( totalWith > NEARZERO ) {
+			q += aD * ( w_i / totalWith );
+		}
+		if( aD < 1.0 ) {
+			if( nAcceptedSpec == 1 ) {
+				q += ( 1.0 - aD );
+			} else if( wS > NEARZERO ) {
+				q += ( 1.0 - aD ) * ( w_i / wS );
+			}
+		}
+
+		sum += q * pdf_i;
+	}
+
+	return sum;
+}
+
+//! The density of the direction `Scatter` + `RandomlySelect` actually
+//! produce.  DL-177 defect (2).
 static Scalar WardAnisotropicPdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const Scalar ax,
-	const Scalar ay,
-	const Scalar wDiff,
-	const Scalar wSpec
+	const WardAnisoLobeSet& lobes,
+	const Scalar wDiff
 	)
 {
 	// Mirror Scatter()'s FlipW: orient the frame to face the incoming ray so
@@ -297,39 +661,15 @@ static Scalar WardAnisotropicPdf(
 		return 0.0;
 	}
 
-	// Diffuse PDF: cosine-weighted hemisphere
-	const Scalar pdf_diffuse = cos_theta_o * INV_PI;
+	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 
-	// Specular PDF: Ward anisotropic Gaussian via half-vector
-	Vector3 h = Vector3Ops::Normalize( wi + wo );
-	const Scalar cos_theta_h = Vector3Ops::Dot( h, n );
+	const Scalar aD = WardDiffuseAcceptFraction( myonb, geomN );
+	const Scalar cD = WardAnisoDiffuseSelectCoefficient( ri, myonb, geomN, wDiff, lobes );
 
-	if( cos_theta_h <= 0.0 ) {
-		return pdf_diffuse;
-	}
+	const Scalar pdf_diffuse = Vector3Ops::Dot( woNorm, n ) * INV_PI;
 
-	// Project h onto the tangent plane to get the anisotropic components
-	// (myonb, not ri.onb -- see the FlipW comment above).
-	const Scalar h_dot_u = Vector3Ops::Dot( h, myonb.u() );
-	const Scalar h_dot_v = Vector3Ops::Dot( h, myonb.v() );
-
-	const Scalar exponent = -((h_dot_u * h_dot_u) / (ax * ax) + (h_dot_v * h_dot_v) / (ay * ay)) / (cos_theta_h * cos_theta_h);
-
-	const Scalar pdf_h = cos_theta_h / (PI * ax * ay) * exp( exponent );
-
-	const Scalar hdotwo = Vector3Ops::Dot( h, wo );
-	if( hdotwo <= 0.0 ) {
-		return pdf_diffuse;
-	}
-
-	const Scalar pdf_specular = pdf_h / (4.0 * hdotwo);
-
-	// Weighted mixture of diffuse and specular PDFs
-	const Scalar totalWeight = wDiff + wSpec;
-	if( totalWeight < 1e-20 ) {
-		return pdf_diffuse;
-	}
-	return (wDiff * pdf_diffuse + wSpec * pdf_specular) / totalWeight;
+	return cD * pdf_diffuse
+	     + WardAnisoSpecularDensity( ri, myonb, geomN, woNorm, wDiff, aD, lobes );
 }
 
 Scalar WardAnisotropicEllipticalGaussianSPF::Pdf(
@@ -338,17 +678,29 @@ Scalar WardAnisotropicEllipticalGaussianSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const ScalarTriple ax = pAlphaX->GetValuesAt(ri);
-	const ScalarTriple ay = pAlphaY->GetValuesAt(ri);
-	// Use average values across channels
-	const Scalar ax_val = (ax.v[0] + ax.v[1] + ax.v[2]) / 3.0;
-	const Scalar ay_val = (ay.v[0] + ay.v[1] + ay.v[2]) / 3.0;
+	const ScalarTriple axt = pAlphaX->GetValuesAt(ri);
+	const ScalarTriple ayt = pAlphaY->GetValuesAt(ri);
+	const RISEPel spec = pSpecular->GetColor(ri);
 
-	// Weight by MaxValue(kray) to match RandomlySelect
+	// Mirror Scatter's own branch EXACTLY.
+	WardAnisoLobeSet lobes;
+	if( !pAlphaX->HasPerChannelVariation() && !pAlphaY->HasPerChannelVariation() ) {
+		lobes.count = 1;
+		lobes.ax[0] = axt.v[0];
+		lobes.ay[0] = ayt.v[0];
+		lobes.w[0]  = ColorMath::MaxValue( spec );
+	} else {
+		lobes.count = 3;
+		for( int i = 0; i < 3; i++ ) {
+			lobes.ax[i] = axt.v[i];
+			lobes.ay[i] = ayt.v[i];
+			lobes.w[i]  = spec[i];
+		}
+	}
+
 	const Scalar wDiff = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
-	const Scalar wSpec = ColorMath::MaxValue( pSpecular->GetColor(ri) );
 
-	return WardAnisotropicPdf( ri, wo, ax_val, ay_val, wDiff, wSpec );
+	return WardAnisotropicPdf( ri, wo, lobes, wDiff );
 }
 
 Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
@@ -358,12 +710,15 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar ax_val = pAlphaX->GetValueAtNM(ri,nm);
-	const Scalar ay_val = pAlphaY->GetValueAtNM(ri,nm);
+	// ScatterNM emits exactly one specular lobe, and RandomlySelect
+	// weights the NM lanes by `krayNM`.
+	WardAnisoLobeSet lobes;
+	lobes.count = 1;
+	lobes.ax[0] = pAlphaX->GetValueAtNM(ri,nm);
+	lobes.ay[0] = pAlphaY->GetValueAtNM(ri,nm);
+	lobes.w[0]  = fabs( GuardedGetColorNM( *pSpecular, ri, nm ) );
 
-	// Weight by krayNM magnitude to match RandomlySelect
 	const Scalar wDiff = fabs( GuardedGetColorNM( *pDiffuse, ri, nm ) );
-	const Scalar wSpec = fabs( GuardedGetColorNM( *pSpecular, ri, nm ) );
 
-	return WardAnisotropicPdf( ri, wo, ax_val, ay_val, wDiff, wSpec );
+	return WardAnisotropicPdf( ri, wo, lobes, wDiff );
 }

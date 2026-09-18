@@ -113,6 +113,21 @@ static const double DELTA_DIR_TOL       = 1e-6;     // Angular tolerance for del
 //  Stub object for IOR stack operations
 // ============================================================
 
+//! DL-176 (review round 1, P3-c).  Every `RandomNumberGenerator` in
+//! this file used to be default-constructed, i.e. seeded from an
+//! un-`srand`ed libc `rand()` -- reproducible only by accident (C says
+//! `rand()` behaves as if `srand(1)`), which is exactly the fragility
+//! DL-176 was filed for in `SPFPdfConsistencyTest`.  It matters more
+//! here since DL-177 tightened this file's two Ward furnace tolerances
+//! 25x (0.25 -> 0.01) and DL-127 tightened Schlick's 15x, so the
+//! headroom a stale seed could eat is much smaller than it was.
+//!
+//! `g_seedBase` is the one knob; `RISE_SPFBSDF_SEED` in the environment
+//! overrides it, which is how the multi-seed sweep quoted in
+//! docs/DL177_WARD_DENSITY_AND_KRAY.md section 5.1 was run without
+//! making every ordinary run 8x longer.
+static unsigned int g_seedBase = 424242u;
+
 static StubObject* g_stubObject = 0;
 
 // ============================================================
@@ -163,7 +178,7 @@ static FurnaceResult FurnaceTest(
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 1u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -300,7 +315,7 @@ static PointwiseResult PointwiseTest(
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 2u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -659,7 +674,7 @@ static DeltaResult DeltaDirectionTest(
     result.pdfIsZero = true;
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 3u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -750,7 +765,7 @@ static SanityResult SanityTest(
     result.belowHemisphere = 0;
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 4u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -787,7 +802,14 @@ static SanityResult SanityTest(
 
 int main()
 {
+    // DL-176 P3-c: one explicit, overridable seed -- see g_seedBase.
+    {
+        const char* sd = getenv( "RISE_SPFBSDF_SEED" );
+        if( sd ) g_seedBase = (unsigned int)atoi( sd );
+    }
     std::cout << "===== SPF-BSDF Consistency Test =====" << std::endl;
+    std::cout << "Seed base: " << g_seedBase
+              << "  (override with RISE_SPFBSDF_SEED)" << std::endl;
     std::cout << "Furnace MC samples: " << FURNACE_MC_SAMPLES << std::endl;
     std::cout << "Furnace quadrature: " << FURNACE_QUAD_THETA << " x " << FURNACE_QUAD_PHI << std::endl;
     std::cout << "Pointwise samples: " << POINTWISE_SAMPLES << std::endl;
@@ -1181,36 +1203,52 @@ int main()
         { "Schlick",                           schlickSPF,      schlickBRDF,        false, 0.01 },
 
         //--------------------------------------------------------------
-        // Ward Isotropic Gaussian BRDF (Ward 1992)
+        // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992)
         //
-        // The Ward model is *not energy-conserving* by design.  Its
-        // specular term  1/sqrt(n·r × n·v) × exp(-tan²h / α²)
-        // diverges as either n·r or n·v → 0 (grazing geometry).
+        // DL-177 (CLOSED 2026-09-18,
+        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  These two entries used
+        // to carry a 25% tolerance and this explanation: "The Ward model
+        // is *not energy-conserving* by design.  Its specular term
+        // 1/sqrt(n·r × n·v) × exp(-tan²h / α²) diverges as either n·r or
+        // n·v → 0 ... the MC sum saturates near the albedo (kray is
+        // clamped by the diffuse+specular reflectance painters) while
+        // quadrature under-integrates the sharp specular peak on a
+        // finite grid.  Observed: 8.3% @ 30°, 19.3% @ 60°" (isotropic;
+        // 10.0% / 20.2% anisotropic).
         //
-        // Because the SPF importance-samples the exponential lobe while
-        // the quadrature evaluates the full BRDF (including the
-        // divergent 1/sqrt term), the two estimates disagree.
-        // The MC sum saturates near the albedo (kray is clamped by
-        // the diffuse+specular reflectance painters) while quadrature
-        // under-integrates the sharp specular peak on a finite grid.
+        // THAT DIAGNOSIS WAS WRONG ON BOTH HALVES, and the isolated
+        // before/after is what says so rather than an argument.  The MC
+        // arm did not "saturate near the albedo" because of any
+        // divergence -- `kray` literally WAS the reflectance painter's
+        // colour, a constant, instead of that lobe's own
+        // `f_S cos / p_S`, so the two arms were integrating two
+        // different functions by construction; and the quadrature did
+        // not "under-resolve" anything, since it is unchanged by the fix
+        // and the MC arm moved onto it.  The model's own grazing
+        // behaviour is real but is NOT what these rows were measuring:
+        // at the α = 0.2 / 0.3 they run at, the corrected weight's whole
+        // per-draw range is bounded by `Rs/sqrt(n·v)` = 1.15 Rs at 30°
+        // and 1.41 Rs at 60°.
         //
-        // Observed: 8.3% @ 30°, 19.3% @ 60°.  Tolerance set to 25%
-        // to cover grazing-angle divergence.
+        // Observed after, at the default seed: 0.0050% @ 30°, 0.0255%
+        // @ 60° (isotropic); 0.0278% @ 30°, 0.0177% @ 60°
+        // (anisotropic).  Tolerance 0.25 -> 0.01, matching the Schlick
+        // entry above.
+        //
+        // A 25x tightening deserves more than one seed, and until the
+        // DL-176 review this file had ONLY one (an un-`srand`ed libc
+        // `rand()`, i.e. silently seed 1).  Swept over 8 seeds via
+        // `RISE_SPFBSDF_SEED`: worst Ward relErr **0.0757%** (isotropic
+        // @ 60°) and worst over EVERY row in the file 0.1288% (Schlick
+        // @ 60°), 0 failures at every seed.  So the 1% band carries
+        // ~13x headroom over the worst Ward reading actually observed,
+        // not the ~36x the single default seed suggests -- deliberately
+        // not tightened further, because the MC arm now carries the
+        // model's real grazing tail (DL-212) and these are Monte Carlo
+        // estimators.
         //--------------------------------------------------------------
-        { "WardIsotropicGaussian",             wardIsoSPF,      wardIsoBRDF,        false, 0.25 },
-
-        //--------------------------------------------------------------
-        // Ward Anisotropic Elliptical Gaussian BRDF (Ward 1992)
-        //
-        // Same energy-conservation limitation as the isotropic variant
-        // above, compounded by anisotropic roughness (αx ≠ αy) which
-        // produces a narrower, taller specular lobe in one tangent
-        // direction.  The quadrature grid under-resolves this elliptical
-        // peak more severely than the isotropic case.
-        //
-        // Observed: 10.0% @ 30°, 20.2% @ 60°.  Tolerance set to 25%.
-        //--------------------------------------------------------------
-        { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    wardAnisoBRDF,      false, 0.25 },
+        { "WardIsotropicGaussian",             wardIsoSPF,      wardIsoBRDF,        false, 0.01 },
+        { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    wardAnisoBRDF,      false, 0.01 },
 
         { "AshikminShirleyAnisotropicPhong",   ashikminSPF,     ashikminBRDF,       false, FURNACE_TOL },
         { "Translucent",                       translucentSPF,  translucentBSDF,    false, FURNACE_TOL },
