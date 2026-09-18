@@ -429,6 +429,35 @@ int main()
 		j->release();
 	}
 
+	//----------------------------------------------------------------------
+	// [O] STICKY DIAGNOSTIC ACROSS A NESTED CALL (DL-32 round-2 review round
+	// 2, P2-1): `SetFinalizeDiagIfEmpty` converted every raw
+	// `g_cstFinalizeDiagSink` writer in ChunkParserRegistry.cpp but MISSED 7
+	// raw unconditional writers in Job.cpp (one per Add* factory --
+	// AddExpressionPainter, AddVoronoi2DPainter, AddVoronoi3DPainter{,WithSpace},
+	// ImportGLTFScene, AddFileRasterizerOutput, AddKeyframeToAnimation),
+	// plus 3 more in RISE_API.cpp found by extending the grep tree-wide.
+	// `gltf_import`'s Finalize calls `bag.GetVec3("emissive_tint", ...)`
+	// BEFORE calling `pJob.ImportGLTFScene(...)` -- so a malformed
+	// `emissive_tint` on a chunk whose `name_prefix` collides with an
+	// earlier import fires the arity diagnostic FIRST, then (pre-fix)
+	// ImportGLTFScene's raw collision-message write clobbered it.
+	//----------------------------------------------------------------------
+	std::printf( "[O] gltf_import: an early `emissive_tint` arity failure survives ImportGLTFScene's LATER name_prefix-collision failure\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "gltf_import\n{\nfile nonexistent1.gltf\n}\n"
+			      "gltf_import\n{\nfile nonexistent2.gltf\nemissive_tint 1 2\n}\n",
+			*j, &diags );
+		Check( n == 0, "both the file-not-found first import and the malformed/colliding second import apply nothing (n == 0)" );
+		Check( AnyDiagContains( diags, "DL-32" ), "the SURVIVING diagnostic for the second chunk names DL-32 (the emissive_tint arity failure)" );
+		Check( AnyDiagContains( diags, "emissive_tint" ), "the surviving diagnostic names `emissive_tint`, the EARLIER failure" );
+		Check( !AnyDiagContains( diags, "name_prefix" ), "the LATER name_prefix collision did NOT clobber the earlier diagnostic "
+			"(RED pre-fix: the diagnostic named `name_prefix`, not `emissive_tint` -- the later, deeper-nested reason won)" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

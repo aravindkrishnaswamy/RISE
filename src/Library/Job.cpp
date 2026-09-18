@@ -1388,7 +1388,7 @@ bool Job::AddExpressionPainter(
 		// longer reads to the agent surface as the generic "apply failed
 		// (e.g. unresolved reference); see log" fallback (Cst.cpp's
 		// DeriveToJob apply loop).
-		if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
+		RISE::SetFinalizeDiagIfEmpty( exprErr );
 		return false;
 	}
 
@@ -1526,7 +1526,7 @@ bool Job::AddVoronoi3DPainterWithSpace(
 			std::snprintf( msg, sizeof( msg ),
 				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi3DPainterWithSpace:: `%s`: %s", name ? name : "noname", msg );
-			if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+			RISE::SetFinalizeDiagIfEmpty( msg );
 			return false;
 		}
 		ptrs.push_back( pGen );
@@ -2899,7 +2899,7 @@ bool Job::AddVoronoi2DPainter(
 			std::snprintf( msg, sizeof( msg ),
 				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi2DPainter:: `%s`: %s", name ? name : "noname", msg );
-			if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+			RISE::SetFinalizeDiagIfEmpty( msg );
 			return false;
 		}
 		ptrs.push_back( pGen );
@@ -2949,7 +2949,7 @@ bool Job::AddVoronoi3DPainter(
 			std::snprintf( msg, sizeof( msg ),
 				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi3DPainter:: `%s`: %s", name ? name : "noname", msg );
-			if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+			RISE::SetFinalizeDiagIfEmpty( msg );
 			return false;
 		}
 		ptrs.push_back( pGen );
@@ -6365,7 +6365,7 @@ bool Job::ImportGLTFScene(
 			"name_prefix '%s' collides with an existing import -- give each import a unique name_prefix",
 			prefixKey.c_str() );
 		GlobalLog()->PrintEx( eLog_Error, "Job::ImportGLTFScene:: gltf_import: %s", msg );
-		if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+		RISE::SetFinalizeDiagIfEmpty( msg );
 		return false;
 	}
 
@@ -10522,7 +10522,7 @@ bool Job::AddFileRasterizerOutput(
 			"no rasterizer is set -- declare a rasterizer chunk (e.g. "
 			"pathtracing_pel_rasterizer) BEFORE the file_rasterizeroutput chunk";
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddFileRasterizerOutput:: %s", msg );
-		if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+		RISE::SetFinalizeDiagIfEmpty( msg );
 		return false;
 	}
 
@@ -14550,12 +14550,12 @@ bool Job::AddKeyframeToAnimation(
 				// "<keyword>: apply failed (e.g. unresolved reference); see log" fallback.
 				// No "Job::AddKeyframeToAnimation: " prefix here -- DeriveToJob's PASS-2 apply
 				// loop already prepends `<keyword>: ` to whatever this sink carries.
-				if( RISE::g_cstFinalizeDiagSink ) {
+				{
 					char msg[256];
 					std::snprintf( msg, sizeof( msg ),
 						"camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
 						element );
-					*RISE::g_cstFinalizeDiagSink = msg;
+					RISE::SetFinalizeDiagIfEmpty( msg );
 				}
 				return false;
 			}
