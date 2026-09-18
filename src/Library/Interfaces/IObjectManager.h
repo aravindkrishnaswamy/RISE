@@ -18,6 +18,7 @@
 #include "IManager.h"
 #include "IEnumCallback.h"
 #include "../Intersection/RayIntersection.h"
+#include <cstddef>
 
 namespace RISE
 {
@@ -323,11 +324,24 @@ namespace RISE
 		//! is therefore not found, and `proximity` reads its neutral 0
 		//! there -- which is the same number `1 - d/r` would have given, so
 		//! the signal is continuous across the cut-off either way.
+		//! `outNodesVisited`/`outCandidatesVisited` (both default null, DL-33):
+		//! optional diagnostic counters, INCREMENTED (not assigned) by the
+		//! amount this one call cost -- so a benchmark can accumulate over
+		//! many queries without re-zeroing between them.  Only the
+		//! TLAS-backed path fills them in (they thread straight through to
+		//! `BVH::ClosestPointDistance`'s own counters of the same name);
+		//! the small-scene flat-scan fallback leaves them untouched, since
+		//! "node visited" has no meaning without a tree.  This is what
+		//! closes docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §10's "not yet
+		//! measured" residual on `DeepestOtherContainment`'s own candidate
+		//! walk below -- see `tests/InteriorCandidateWalkCostTest.cpp`.
 		virtual bool NearestOtherSurface(
 			const Point3& ptWorld,						///< [in] The world-space point to measure from
 			const IObject* self,						///< [in] The object the point belongs to; never contributes.  May be null
 			const Scalar maxDistWorld,					///< [in] Search radius, a WORLD LENGTH; candidates beyond it are skipped
-			Scalar& outDist								///< [out] Shortest distance found, world units
+			Scalar& outDist,							///< [out] Shortest distance found, world units
+			std::size_t* outNodesVisited = 0,			///< [in,out] DL-33 diagnostic: incremented by BVH nodes visited (TLAS path only)
+			std::size_t* outCandidatesVisited = 0		///< [in,out] DL-33 diagnostic: incremented by candidate objects evaluated (TLAS path only)
 			) const = 0;
 
 		//! HOW DEEP INSIDE ANOTHER OBJECT is `ptWorld`?  The signed half of
@@ -376,11 +390,17 @@ namespace RISE
 		//!         otherwise -- including for a non-finite point, a
 		//!         non-positive or non-finite `maxDepthWorld`, and an
 		//!         empty scene.  `interior` reads FALSE as its neutral 0.
+		//! `outNodesVisited`/`outCandidatesVisited`: see `NearestOtherSurface`'s
+		//! own doc comment above -- the identical DL-33 diagnostic contract,
+		//! threaded through to `BVH::ForEachContainingPoint`'s counters of
+		//! the same name on the TLAS-backed path.
 		virtual bool DeepestOtherContainment(
 			const Point3& ptWorld,						///< [in] The world-space point to test
 			const IObject* self,						///< [in] The object the point belongs to; never contributes.  May be null
 			const Scalar maxDepthWorld,					///< [in] Effort budget, a WORLD LENGTH (the caller's radius)
-			Scalar& outDepth							///< [out] Deepest containment found, world units
+			Scalar& outDepth,							///< [out] Deepest containment found, world units
+			std::size_t* outNodesVisited = 0,			///< [in,out] DL-33 diagnostic: incremented by BVH nodes visited (TLAS path only)
+			std::size_t* outCandidatesVisited = 0		///< [in,out] DL-33 diagnostic: incremented by candidate objects evaluated (TLAS path only)
 			) const = 0;
 	};
 }

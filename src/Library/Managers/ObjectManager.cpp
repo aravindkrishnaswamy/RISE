@@ -695,7 +695,8 @@ Scalar ObjectManager::ProximityCandidateDistance(
 }
 
 bool ObjectManager::NearestOtherSurface(
-	const Point3& ptWorld, const IObject* self, const Scalar maxDistWorld, Scalar& outDist ) const
+	const Point3& ptWorld, const IObject* self, const Scalar maxDistWorld, Scalar& outDist,
+	std::size_t* outNodesVisited, std::size_t* outCandidatesVisited ) const
 {
 	// A non-finite point or an unusable radius is a refusal, not a
 	// zero-distance answer: `proximity` reads a refusal as its neutral 0
@@ -806,7 +807,11 @@ bool ObjectManager::NearestOtherSurface(
 			// that mesh's own inner BVH -- worth one object-box test to skip
 			// (see BVH.h ClosestPointDistance's doc comment; measured on
 			// Sponza, docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3).
-			true );
+			true,
+			// DL-33 diagnostic counters, forwarded verbatim -- null on every
+			// production call site, so this costs one pointer compare per
+			// node/candidate beyond what the line above already pays.
+			outNodesVisited, outCandidatesVisited );
 		if( ok ) {
 			best  = d;
 			found = true;
@@ -859,7 +864,8 @@ bool ObjectManager::NearestOtherSurface(
 }
 
 bool ObjectManager::DeepestOtherContainment(
-	const Point3& ptWorld, const IObject* self, const Scalar maxDepthWorld, Scalar& outDepth ) const
+	const Point3& ptWorld, const IObject* self, const Scalar maxDepthWorld, Scalar& outDepth,
+	std::size_t* outNodesVisited, std::size_t* outCandidatesVisited ) const
 {
 	// Same refusals as the unsigned query, and for the same reason:
 	// `interior` reads a refusal as its neutral 0, which is the honest
@@ -953,7 +959,11 @@ bool ObjectManager::DeepestOtherContainment(
 			// `getBoundingBox()` call to skip `ProximityCandidateCounts` +
 			// `SignedDistanceLower` on an object `ptWorld` cannot possibly
 			// be inside.
-			true );
+			true,
+			// DL-33 diagnostic counters, forwarded verbatim -- null on every
+			// production call site; see `NearestOtherSurface`'s identical
+			// comment above.
+			outNodesVisited, outCandidatesVisited );
 	} else {
 		// THE FLAT SCAN, the fallback for a scene too small to have a
 		// TLAS at all (`nMaxObjectsPerNode` (4) objects or fewer, or
