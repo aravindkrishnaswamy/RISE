@@ -54,6 +54,7 @@
 #include "Reference.h"
 #include "RandomNumbers.h"
 #include <vector>
+#include <utility>
 #include <cmath>
 
 namespace RISE
@@ -98,48 +99,165 @@ namespace RISE
 				}
 			};
 
-			std::vector<PrimarySample>		X;					///< The primary sample vector
-			std::vector<unsigned int>		modifiedIndices;	///< Indices modified in current proposal (for fast rollback)
+			// STORAGE (DL-08 follow-up, 2026-09-17 -- debt 29 review P1):
+			//
+			// Stream multiplexing gives each stream its own lane so that
+			// mutations to one part of the path don't disturb others.
+			// BDPTIntegrator uses streams 0-47 internally (light
+			// source=0, light bounces 1.., eye bounces 16.., SMS
+			// reserved 31-46, (s,t) strategy select=47) -- see
+			// BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT
+			// (CameraUtilities.h) for the derived ceiling on how high
+			// the eye-walk bounce stream can actually reach (1039).  The
+			// MLT rasterizers reserve
+			// BDPTCameraUtilities::kPSSMLTFilmLensApertureStream (2048)
+			// for the film/lens/aperture block.
+			//
+			// The original design multiplexed EVERY stream into one
+			// flat vector via `idx = streamIndex + kNumStreams *
+			// sampleIndex` (a base-kNumStreams positional encoding).
+			// That's collision-free by construction, but its lazy-grow
+			// loop (`while (idx >= X.size()) X.push_back(...)`)
+			// materialises every slot up to idx -- cost proportional to
+			// `streamIndex`, not to how many samples were actually
+			// drawn.  The DL-08 collision fix (`d7ebd453`) moved the
+			// reserved stream to 2048 and kNumStreams to 4096 to clear
+			// BDPT's own reachable ceiling, which made that cost
+			// catastrophic: the film/lens/aperture block's first 6
+			// draws alone (stream 2048, sample 0..5) require
+			// `idx = 2048 + 4096*5 = 22528`, i.e. 22529 materialised
+			// `PrimarySample` slots (~528 KB; see
+			// docs/DL08_PSSMLT_LANE_LAYOUT.md for the exact byte count
+			// and the measured bootstrap-time regression, ~5x on
+			// `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene`) on
+			// EVERY fresh sampler, vs 294 slots (~6.9 KB) before the
+			// DL-08 collision fix.  The
+			// analogy drawn at the time -- "this is like SobolSampler's
+			// `kNumDimensions` table, just a bigger constant" -- does
+			// NOT hold: Sobol's direction-number table
+			// (`SobolDirectionNumbers.cpp`) is ONE GLOBAL ~1 MiB array
+			// shared by every sampler instance and built once per
+			// process; `X` here is PER PSSMLTSampler INSTANCE and its
+			// materialised size scales with `reservedStreamIndex *
+			// kNumStreams * samplesDrawn` -- raising kNumStreams is not
+			// "a bigger table", it MULTIPLIES the per-draw cost of every
+			// stream, including the ordinary ones at 0-47.
+			//
+			// Fix: two-tier storage, not one flat vector.
+			//
+			//  - `X`: the ORIGINAL flat vector, but its row width is
+			//    pinned to `kLegacyNumStreams` (49) FOREVER, matching
+			//    the pre-DL-08 layout exactly -- used only while
+			//    `streamIndex < kLegacyNumStreams`.  A chain that only
+			//    ever touches streams 0-48 (every shallow/ordinary BDPT
+			//    walk) reproduces the base commit's draws bit-for-bit,
+			//    because it is running the identical formula on the
+			//    identical row width.
+			//  - `XExtra`: a small (stream, vector) association list for
+			//    `streamIndex >= kLegacyNumStreams` (the MLT reserved
+			//    stream at 2048, and any BDPT eye-walk depth deep enough
+			//    to pass 48), searched linearly and grown by
+			//    `FindOrCreateExtraStream()`.  In production this list
+			//    has exactly ONE entry per sampler instance for almost
+			//    every render (the MLT reserved stream; BDPT-under-MLT
+			//    scenes rarely reach eye/light depth 33+), so a linear
+			//    scan is not just adequate but faster in practice than a
+			//    hash map: `std::unordered_map` was tried first and
+			//    measured ~2x slower bootstrap wall-clock than even the
+			//    pre-DL-08 base commit on
+			//    `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene`
+			//    (100,000 bootstrap samples, each constructing and
+			//    destroying its OWN `PSSMLTSampler` --
+			//    `MLTRasterizer.cpp`'s bootstrap loop -- so a hash
+			//    table's bucket-array allocation on first insert is paid
+			//    100,000 times over) -- see
+			//    docs/DL08_PSSMLT_LANE_LAYOUT.md for the measured
+			//    numbers.  Touching stream 2048 for 6 samples still
+			//    costs exactly 6 `PrimarySample` slots -- independent of
+			//    the stream's numeric value -- and there is still no
+			//    multiplicative encoding here, so no two distinct
+			//    streams can ever alias in this tier regardless of how
+			//    large a stream number some future caller picks --
+			//    `kPSSMLTFilmLensApertureStream`'s specific value (2048)
+			//    no longer has to be load-bearing for collision safety,
+			//    though it is kept where DL-08 placed it (comfortably
+			//    above `kMaxBdptWalkStreamUnderPSSMLT`) for clarity and
+			//    defense in depth.  If a future consumer ever reserves
+			//    MANY distinct extra streams per instance, revisit this
+			//    (a small sorted vector with binary search, or a map,
+			//    would beat linear scan past a few dozen entries) --
+			//    not a concern for the two known consumers today.
+			//
+			// `modifiedIndices` (below) is a `ModifiedLane` per touched
+			// sample, tagging which tier and which storage index/key
+			// owns it, so `Reject()` can find the sample back without
+			// re-deriving stream/sampleIndex arithmetic.
+			//
+			// See docs/DL08_PSSMLT_LANE_LAYOUT.md for the measured
+			// before/after slot counts and bootstrap timings, and
+			// tests/PSSMLTStreamAliasingTest.cpp's memory-cost and
+			// determinism rows for the red-proof.
+			std::vector<PrimarySample>		X;					///< Legacy flat vector, streamIndex < kLegacyNumStreams only
+			std::vector<std::pair<int, std::vector<PrimarySample> > > XExtra; ///< (stream, vector) list for streamIndex >= kLegacyNumStreams, searched linearly
+
+			/// Finds (creating if necessary) the per-stream vector for
+			/// `stream` in `XExtra`.  Linear scan by design -- see the
+			/// `XExtra` comment above for why this beats a hash map for
+			/// the tiny number of distinct extra streams any one
+			/// instance actually touches.
+			std::vector<PrimarySample>& FindOrCreateExtraStream( int stream )
+			{
+				for( size_t i = 0; i < XExtra.size(); i++ )
+				{
+					if( XExtra[i].first == stream ) {
+						return XExtra[i].second;
+					}
+				}
+				XExtra.push_back( std::make_pair( stream, std::vector<PrimarySample>() ) );
+				return XExtra.back().second;
+			}
+
+			/// Identifies one touched (stream, sampleIndex) lane so
+			/// Accept()/Reject() can find its PrimarySample back
+			/// without re-deriving which storage tier owns it.
+			struct ModifiedLane
+			{
+				bool			legacy;			///< true: lane lives in X; false: lives in XExtra
+				unsigned int	legacyIdx;		///< valid iff legacy: flat index into X
+				int				stream;			///< valid iff !legacy: key into XExtra
+				unsigned int	sampleIdx;		///< valid iff !legacy: index into XExtra's vector for `stream`
+			};
+			std::vector<ModifiedLane>		modifiedIndices;	///< Lanes modified in current proposal (for fast rollback)
 			unsigned int					sampleIndex;		///< Current consumption position within current stream
 			unsigned int					currentIteration;	///< Global mutation counter
 
-			// Stream multiplexing: each stream gets its own lane in the
-			// primary sample vector (idx = stream + kNumStreams*sample,
-			// see Get1D) so that mutations to one part of the path don't
-			// disturb others.  BDPTIntegrator uses streams 0-47
-			// internally (light source=0, light bounces 1.., eye bounces
-			// 16.., SMS reserved 31-46, (s,t) strategy select=47) --
-			// see BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT
-			// (CameraUtilities.h) for the derived ceiling on how high
-			// those bounce streams can actually reach (1039).  The MLT
-			// rasterizers reserve
-			// BDPTCameraUtilities::kPSSMLTFilmLensApertureStream for the
-			// film/lens/aperture block.  kNumStreams must exceed the
-			// maximum stream index used by any consumer -- a debug
-			// assertion in Get1D() enforces this at runtime.
-			//
-			// DL-08 (debt 29, 2026-09-17): this used to be 49, with the
-			// MLT block hardcoded to the literal stream 48.  BDPT's own
-			// eye walk reaches stream 48 itself at eye depth 32
-			// (StabilityConfig::maxVolumeBounce defaults to 64, so
-			// ordinary scattering-medium scenes got there with no
-			// unusual settings) -- not modular aliasing, an outright
-			// same-integer collision between the film position and the
-			// 32nd eye bounce.  Raised to 4096, with the MLT block moved
-			// to stream 2048 (kPSSMLTFilmLensApertureStream), comfortably
-			// clear of every stream BDPT's own StartStream calls can
-			// reach under PSSMLTSampler at any depth its loop caps allow.
-			// See docs/DL08_PSSMLT_LANE_LAYOUT.md and
-			// tests/PSSMLTStreamAliasingTest.cpp Test F.
+			// kLegacyNumStreams is the row width of the ORIGINAL flat
+			// vector `X` -- fixed at 49 forever (BDPT's streams 0-47 plus
+			// the historical single reserved slot at 48), independent of
+			// kNumStreams below.  This is what makes shallow chains
+			// (streamIndex always < 49) bit-identical to the pre-DL-08
+			// base commit: same formula, same row width, unchanged.
+			static const int				kLegacyNumStreams = 49;
+
+			// kNumStreams / kDefaultNumStreams is now a SANITY BOUND
+			// only, not a collision-avoidance requirement -- with the
+			// two-tier storage above, a stream index can never alias
+			// another one, at any magnitude, because streams >=
+			// kLegacyNumStreams route through XExtra, searched by the
+			// literal stream number.  The bound still exists to catch
+			// programming errors (a negative or absurdly large
+			// streamIndex, e.g. from an uninitialized or overflowed
+			// depth counter) loudly rather than silently building an
+			// unbounded XExtra entry.  See Get1D()'s runtime check
+			// (NOT a debug-only assert -- see its comment for why).
 			//
 			// kNumStreams was historically a static const; it became a
 			// regular member so a future subclass can reserve additional
 			// lanes above this default via the protected constructor
-			// below without disturbing PSSMLT's bit-identical layout.
-			// When constructed via the public ctor, kNumStreams =
-			// kDefaultNumStreams exactly as before.
+			// below.  When constructed via the public ctor, kNumStreams
+			// = kDefaultNumStreams exactly as before.
 			static const int				kDefaultNumStreams = 4096;
-			int								kNumStreams;		///< Number of sample streams (per-instance)
+			int								kNumStreams;		///< Sanity bound on streamIndex (per-instance)
 			int								streamIndex;		///< Current active stream
 
 			// Mutation parameters

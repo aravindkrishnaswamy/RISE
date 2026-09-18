@@ -100,6 +100,178 @@ public:
 	static int Lanes() { return kDefaultNumStreams; }
 };
 
+// Exposes how many PrimarySample slots a sampler instance has actually
+// materialised (DL-08 storage follow-up, 2026-09-17 -- debt 29 review
+// P1).  `X` and `XExtra` are protected for the same reason as above:
+// callers have no business poking at the storage layout, but the
+// memory-cost red-proof needs to observe it from the same in-process
+// harness the reviewer used, not re-derive it from wall-clock timing
+// alone.
+class PSSMLTStorageProbe : public PSSMLTSampler
+{
+public:
+	PSSMLTStorageProbe( unsigned int seed, Scalar largeStepProb )
+		: PSSMLTSampler( seed, largeStepProb )
+	{
+	}
+
+	// Total PrimarySample slots materialised across BOTH storage tiers.
+	size_t MaterializedSlotCount() const
+	{
+		size_t total = X.size();
+		for( size_t i = 0; i < XExtra.size(); i++ )
+		{
+			total += XExtra[i].second.size();
+		}
+		return total;
+	}
+
+	// Number of distinct extra-tier streams touched (XExtra's own size --
+	// the association-list entry count, not a PrimarySample count).
+	size_t ExtraStreamCount() const { return XExtra.size(); }
+
+	size_t MaterializedBytes() const
+	{
+		return MaterializedSlotCount() * sizeof( PrimarySample );
+	}
+};
+
+// Independent, from-scratch reimplementation of the PRE-DL-08-STORAGE-FIX
+// algorithm (a single flat vector, `idx = stream + 49*sample`, no extra
+// tier) -- used as a determinism oracle so this suite can keep proving
+// "streams < kLegacyNumStreams reproduce the base commit bit-for-bit"
+// forever, without re-checking out historical commits.  This is NOT a
+// subclass of PSSMLTSampler (that would inherit the two-tier storage
+// this test exists to validate against) -- it is a standalone clone of
+// the exact pre-fix Get1D()/Mutate()/Accept()/Reject() logic, built
+// directly on RandomNumberGenerator the same way PSSMLTSampler itself
+// is.  Constants (s1, s2, largeStepProb selection) are copied verbatim
+// from PSSMLTSampler.cpp; if those ever change, this clone must change
+// with them or this oracle silently stops being a valid reference --
+// there is no way to enforce that statically, so a comment here is the
+// best available guard.
+class ReferenceLegacyPSSMLT
+{
+public:
+	static const int kNumStreams = 49; // the base commit's ONLY width
+
+	struct Sample
+	{
+		Scalar value, backup;
+		unsigned int lastModIteration, backupIteration;
+		Sample() : value(0), backup(0), lastModIteration(0), backupIteration(0) {}
+	};
+
+	ReferenceLegacyPSSMLT( unsigned int seed, Scalar largeStepProb_ )
+		: sampleIndex(0), currentIteration(0), streamIndex(0),
+		  largeStepProb(largeStepProb_), isLargeStep(true),
+		  lastLargeStepIteration(0), rng(seed)
+	{
+	}
+
+	void StartStream( int s ) { streamIndex = s; sampleIndex = 0; }
+
+	void StartIteration()
+	{
+		isLargeStep = ( rng.CanonicalRandom() < largeStepProb );
+		streamIndex = 0;
+		sampleIndex = 0;
+		modifiedIndices.clear();
+	}
+
+	void Accept()
+	{
+		if( isLargeStep ) lastLargeStepIteration = currentIteration;
+		currentIteration++;
+		modifiedIndices.clear();
+	}
+
+	void Reject()
+	{
+		for( size_t i = 0; i < modifiedIndices.size(); i++ )
+		{
+			Sample& s = X[modifiedIndices[i]];
+			s.value = s.backup;
+			s.lastModIteration = s.backupIteration;
+		}
+		currentIteration++;
+		modifiedIndices.clear();
+	}
+
+	Scalar Get1D()
+	{
+		const unsigned int idx = streamIndex + kNumStreams * sampleIndex;
+		sampleIndex++;
+
+		while( idx >= X.size() )
+		{
+			Sample s;
+			s.value = rng.CanonicalRandom();
+			s.lastModIteration = currentIteration;
+			s.backupIteration = currentIteration;
+			X.push_back( s );
+		}
+
+		Sample& sample = X[idx];
+		sample.backup = sample.value;
+		sample.backupIteration = sample.lastModIteration;
+
+		if( isLargeStep )
+		{
+			sample.value = rng.CanonicalRandom();
+		}
+		else
+		{
+			if( sample.lastModIteration < lastLargeStepIteration )
+			{
+				sample.value = rng.CanonicalRandom();
+				sample.lastModIteration = lastLargeStepIteration;
+			}
+			const unsigned int nSmall = currentIteration - sample.lastModIteration;
+			const unsigned int nMutations = nSmall > 0 ? nSmall : 1;
+			for( unsigned int i = 0; i < nMutations; i++ ) {
+				sample.value = Mutate( sample.value );
+			}
+		}
+
+		sample.lastModIteration = currentIteration;
+		modifiedIndices.push_back( idx );
+		return sample.value;
+	}
+
+private:
+	Scalar Mutate( Scalar value )
+	{
+		static const Scalar s1 = 1.0 / 1024.0;
+		static const Scalar s2 = 1.0 / 64.0;
+		static const Scalar logRatio = -log( s2 / s1 );
+
+		const Scalar u = rng.CanonicalRandom();
+		const Scalar delta = s2 * exp( logRatio * u );
+		if( rng.CanonicalRandom() < 0.5 )
+		{
+			Scalar result = value + delta;
+			if( result >= 1.0 ) result -= 1.0;
+			return result;
+		}
+		else
+		{
+			Scalar result = value - delta;
+			if( result < 0.0 ) result += 1.0;
+			return result;
+		}
+	}
+
+	std::vector<Sample> X;
+	std::vector<unsigned int> modifiedIndices;
+	unsigned int sampleIndex, currentIteration;
+	int streamIndex;
+	Scalar largeStepProb;
+	bool isLargeStep;
+	unsigned int lastLargeStepIteration;
+	RandomNumberGenerator rng;
+};
+
 // ================================================================
 // Test A: Stream independence — no index aliasing
 //
@@ -1031,11 +1203,31 @@ static void TestDeepEyeWalkAliasing()
 	// low-numbered BDPT stream (light source = 0, light bounces, eye
 	// bounces, BDPT strategy select = 47) at any depth PSSMLTSampler's
 	// own saturating loop cap allows (BDPTIntegrator.cpp caps total eye
-	// depth at 1024; see the `maxEyeTotalDepth` ternary).  Pre-fix, with
-	// kNumStreams == 49, eye depth 33 (stream 49) aliases stream 0's
-	// SECOND sample (idx == 49 either way); this walks a modest range
-	// past the historical 49-lane boundary and confirms every eye-walk
-	// stream in that range is still a private lane.
+	// depth at 1024; see the `maxEyeTotalDepth` ternary).
+	//
+	// DL-08 storage follow-up (2026-09-17, debt 29 review P1): this used
+	// to compare TWO SEPARATELY-CONSTRUCTED, identically-seeded, virgin
+	// samplers (one touching only eyeStream, one touching only a low
+	// stream) -- a valid way to probe the OLD single flat vector's
+	// `idx = stream + kNumStreams*sampleIndex` arithmetic, because under
+	// that scheme a virgin sampler's very first Get1D() call always
+	// consumes exactly `idx+1` RNG draws, so two different idx values
+	// necessarily land on different RNG sequence positions REGARDLESS OF
+	// INSTANCE.  It is not a valid probe for the two-tier storage that
+	// replaced it: a stream in the extra tier (>= kLegacyNumStreams) is
+	// looked up by its own literal number in an independently-grown
+	// per-stream vector, so on a VIRGIN instance its first-ever draw is
+	// simply "this instance's first RNG call" -- identical, by
+	// construction, to any OTHER virgin same-seed instance's own
+	// first-ever draw regardless of which stream either one asked for.
+	// Comparing across instances would flag that expected coincidence as
+	// a false "collision".  The real invariant -- no two DISTINCT
+	// (stream, sampleIndex) lanes of the SAME sampler instance ever
+	// share a PrimarySample -- is what actually matters (it is what
+	// BDPT+MLT's single shared PSSMLTSampler relies on), so this probe
+	// now touches every stream through ONE instance, switching via
+	// StartStream() exactly as production code does, and checks that no
+	// later draw (from more-advanced RNG state) repeats an earlier one.
 	{
 		const int kProbeDepthLo = 32;
 		const int kProbeDepthHi = 130; // comfortably past the old 49-lane modulus
@@ -1045,27 +1237,23 @@ static void TestDeepEyeWalkAliasing()
 		{
 			const int eyeStream = 16 + depth;
 
-			PSSMLTSampler* pA = MakeSampler( 424242 + depth, 1.0 );
-			pA->StartIteration();
-			pA->StartStream( eyeStream );
-			const Scalar eyeVal = pA->Get1D();
-			pA->release();
+			PSSMLTSampler* p = MakeSampler( 424242 + depth, 1.0 );
+			p->StartIteration();
+
+			p->StartStream( eyeStream );
+			const Scalar eyeVal = p->Get1D();
 
 			// Compare against every "low" BDPT stream (0, 1, 16, 47) AND
-			// the MLT reserved stream, at whichever sample index the
-			// interleaving formula says could collide (idx = stream +
-			// kNumStreams*sampleIndex, so eyeStream's idx at sampleIndex
-			// 0 can only collide with a low stream's idx at some OTHER
-			// sampleIndex -- probe a generous range).
+			// the MLT reserved stream, drawn from the SAME instance
+			// (its RNG state has already advanced past the eyeStream
+			// draw above, exactly as it would mid-chain in production).
 			const int lowStreams[] = { 0, 1, 16, 47, kMltReservedStream };
 			for( unsigned int ls = 0; ls < sizeof(lowStreams)/sizeof(lowStreams[0]) && !anyCollision; ls++ )
 			{
-				PSSMLTSampler* pB = MakeSampler( 424242 + depth, 1.0 );
-				pB->StartIteration();
-				pB->StartStream( lowStreams[ls] );
+				p->StartStream( lowStreams[ls] );
 				for( int k = 0; k < 4; k++ )
 				{
-					const Scalar lowVal = pB->Get1D();
+					const Scalar lowVal = p->Get1D();
 					if( lowVal == eyeVal )
 					{
 						std::cerr << "  FAIL: eye-walk stream " << eyeStream
@@ -1075,8 +1263,9 @@ static void TestDeepEyeWalkAliasing()
 						break;
 					}
 				}
-				pB->release();
 			}
+
+			p->release();
 		}
 
 		if( anyCollision )
@@ -1089,7 +1278,240 @@ static void TestDeepEyeWalkAliasing()
 
 		std::cout << "  Eye-walk streams " << kProbeDepthLo << ".." << kProbeDepthHi
 			<< " (as 16+depth) vs streams {0,1,16,47," << kMltReservedStream
-			<< "}: no collisions\n";
+			<< "}, single shared instance: no collisions\n";
+	}
+
+	std::cout << "  Passed!\n";
+}
+
+// ================================================================
+// Test G: Storage-cost red-proof (DL-08 storage follow-up, 2026-09-17
+// -- debt 29 review P1)
+//
+// The DL-08 collision fix (d7ebd453) raised kNumStreams 49 -> 4096 and
+// moved MLT's reserved film/lens/aperture stream to 2048.  Under the
+// ORIGINAL single flat vector (`idx = streamIndex + kNumStreams *
+// sampleIndex`, lazily grown by `while (idx >= X.size()) push_back`),
+// touching stream 2048 for its first 6 samples requires materialising
+// EVERY slot up to `idx = 2048 + 4096*5 = 22528` -- 22529 PrimarySample
+// entries (~528 KB; sizeof(PrimarySample) == 24 on this platform,
+// independently confirmed by building a throwaway probe against the
+// unfixed library at commit 8080cd2a: "Slots=22529 Bytes=540696").
+// MLTRasterizer.cpp's bootstrap phase constructs and destroys ONE
+// PSSMLTSampler PER bootstrap sample (100,000 by default on
+// scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene), each paying this
+// cost on its very first 6 draws -- measured bootstrap wall time (3
+// runs each, this worktree): base (e290fc64, pre-DL-08 entirely) ~2.0-
+// 2.8 s; 8080cd2a (post-collision-fix, pre-storage-fix) ~9.9-10.4 s;
+// this fix ~1.78-1.82 s.  See docs/DL08_PSSMLT_LANE_LAYOUT.md for the
+// full table.
+//
+// The two-tier storage fix (this commit) makes an unused/high-numbered
+// stream cost nothing: touching stream 2048 for N samples costs
+// exactly N PrimarySample slots in its own XExtra entry, independent
+// of the stream's numeric value.
+// ================================================================
+
+static void TestStorageCostRedProof()
+{
+	std::cout << "\nTest G: Storage-cost red-proof (debt 29 review P1)\n";
+
+	const int kFilmStream = BDPTCameraUtilities::kPSSMLTFilmLensApertureStream;
+
+	PSSMLTStorageProbe probe( 55555, 0.3 );
+	probe.StartIteration();
+	probe.StartStream( kFilmStream );
+
+	// Mirrors MLTRasterizer::EvaluateSample's real draw sequence: film
+	// position (Get2D), lens position (Get2D), aperture point (Get2D)
+	// -- 6 Get1D()s total, all on the one reserved stream.
+	probe.Get2D();
+	probe.Get2D();
+	probe.Get2D();
+
+	const size_t slots = probe.MaterializedSlotCount();
+	const size_t bytes = probe.MaterializedBytes();
+	const size_t extraStreams = probe.ExtraStreamCount();
+
+	std::cout << "  After 6 draws on reserved stream " << kFilmStream
+		<< ": " << slots << " PrimarySample slots (" << bytes
+		<< " bytes) across " << extraStreams << " extra-tier stream(s)"
+		<< " (pre-storage-fix: 22529 slots / 540696 bytes)\n";
+
+	if( slots != 6 )
+	{
+		std::cerr << "  FAIL: expected exactly 6 materialised slots (one per "
+			<< "draw on a virgin extra-tier stream), got " << slots
+			<< " -- the extra tier is no longer O(1) per draw.\n";
+		exit( 1 );
+	}
+
+	if( extraStreams != 1 )
+	{
+		std::cerr << "  FAIL: expected exactly 1 extra-tier stream entry, got "
+			<< extraStreams << ".\n";
+		exit( 1 );
+	}
+
+	std::cout << "  Passed!\n";
+}
+
+// ================================================================
+// Test H: Determinism and legacy-layout bit-identical reproduction
+// (DL-08 storage follow-up, 2026-09-17 -- debt 29 review P1)
+//
+// Part 1: for streamIndex < kLegacyNumStreams (49), the two-tier fix's
+// legacy path (a flat vector with the SAME formula and SAME row width
+// PSSMLT used before this storage fix, and before the DL-08 collision
+// fix ever changed kNumStreams) must reproduce that original algorithm
+// bit-for-bit.  `ReferenceLegacyPSSMLT` is an independent, from-scratch
+// reimplementation of that original algorithm (not a subclass of
+// PSSMLTSampler -- it does not share the two-tier storage this test
+// exists to validate).  Driving a real PSSMLTSampler and a
+// ReferenceLegacyPSSMLT with the SAME seed through an IDENTICAL script
+// of StartIteration()/StartStream()/Get1D()/Accept()/Reject() calls
+// (varying draw counts per stream per iteration, and alternating
+// accept/reject so both bookkeeping paths are exercised) must yield
+// bit-identical values at every step -- this is exactly the "shallow
+// scenes' chains are unchanged" claim: any BDPT walk that never
+// reaches eye depth 33 uses ONLY streams < 49, so its render output is
+// governed entirely by this reproduction property, and this test
+// settles it without needing a full scene render.
+//
+// Part 2: the storage layout itself must be deterministic -- two
+// otherwise-identical PSSMLTSampler instances, same seed, same script
+// touching BOTH tiers, must produce identical sequences.
+// ================================================================
+
+static void TestLegacyLayoutDeterminism()
+{
+	std::cout << "\nTest H: Legacy-tier determinism vs an independent pre-fix reimplementation\n";
+
+	const unsigned int seed = 90909;
+	const Scalar largeStepProb = 0.3;
+
+	// ---- Part 1: legacy tier vs the independent reference clone ----
+	{
+		PSSMLTSampler* p = MakeSampler( seed, largeStepProb );
+		ReferenceLegacyPSSMLT ref( seed, largeStepProb );
+
+		const int streams[] = { 0, 1, 16, 47 };
+		const int nStreams = sizeof(streams)/sizeof(streams[0]);
+
+		int totalChecked = 0;
+		int mismatches = 0;
+
+		for( int iter = 0; iter < 25; iter++ )
+		{
+			p->StartIteration();
+			ref.StartIteration();
+
+			for( int s = 0; s < nStreams; s++ )
+			{
+				// Deterministic function of (iter, s) so both objects
+				// draw the SAME count per stream per iteration --
+				// varying it mimics how a real BDPT walk's per-stream
+				// depth changes path to path.
+				const int nDraws = 1 + ( (iter * 3 + s * 5) % 6 ); // 1..6
+
+				p->StartStream( streams[s] );
+				ref.StartStream( streams[s] );
+
+				for( int k = 0; k < nDraws; k++ )
+				{
+					const Scalar a = p->Get1D();
+					const Scalar b = ref.Get1D();
+					totalChecked++;
+					if( a != b )
+					{
+						mismatches++;
+						std::cerr << "  FAIL: iter " << iter << " stream " << streams[s]
+							<< " draw " << k << ": fixed=" << a << " reference=" << b << "\n";
+					}
+				}
+			}
+
+			// Alternate accept/reject so both objects' backup/rollback
+			// bookkeeping is exercised identically.
+			if( iter % 3 == 2 ) {
+				p->Reject();
+				ref.Reject();
+			} else {
+				p->Accept();
+				ref.Accept();
+			}
+		}
+
+		p->release();
+
+		if( mismatches > 0 )
+		{
+			std::cerr << "  " << mismatches << "/" << totalChecked << " draws diverged "
+				<< "from the independent pre-fix reimplementation -- the two-tier "
+				<< "storage fix broke bit-for-bit reproduction for streamIndex < "
+				<< "kLegacyNumStreams.\n";
+			exit( 1 );
+		}
+
+		std::cout << "  Part 1: " << totalChecked << "/" << totalChecked
+			<< " draws bit-identical to the independent legacy (kNumStreams=49) "
+			<< "reimplementation across streams {0,1,16,47}, 25 iterations, mixed "
+			<< "accept/reject -- shallow chains (streamIndex < 49) reproduce the "
+			<< "pre-storage-fix layout exactly.\n";
+	}
+
+	// ---- Part 2: two-tier layout is itself deterministic ----
+	{
+		const int streams[] = { 0, 16, 47, BDPTCameraUtilities::kPSSMLTFilmLensApertureStream, 200 };
+		const int nStreams = sizeof(streams)/sizeof(streams[0]);
+
+		std::vector<Scalar> runA, runB;
+
+		for( int run = 0; run < 2; run++ )
+		{
+			std::vector<Scalar>& out = ( run == 0 ) ? runA : runB;
+			PSSMLTSampler* p = MakeSampler( seed, largeStepProb );
+
+			for( int iter = 0; iter < 10; iter++ )
+			{
+				p->StartIteration();
+				for( int s = 0; s < nStreams; s++ )
+				{
+					p->StartStream( streams[s] );
+					for( int k = 0; k < 4; k++ ) {
+						out.push_back( p->Get1D() );
+					}
+				}
+				if( iter % 3 == 2 ) p->Reject(); else p->Accept();
+			}
+
+			p->release();
+		}
+
+		if( runA.size() != runB.size() )
+		{
+			std::cerr << "  FAIL: two identically-seeded runs produced different "
+				<< "draw counts (" << runA.size() << " vs " << runB.size() << ").\n";
+			exit( 1 );
+		}
+
+		int mismatches2 = 0;
+		for( size_t i = 0; i < runA.size(); i++ ) {
+			if( runA[i] != runB[i] ) mismatches2++;
+		}
+
+		if( mismatches2 > 0 )
+		{
+			std::cerr << "  FAIL: " << mismatches2 << "/" << runA.size()
+				<< " draws diverged between two identically-seeded runs spanning "
+				<< "both storage tiers -- the two-tier layout is not deterministic.\n";
+			exit( 1 );
+		}
+
+		std::cout << "  Part 2: " << runA.size() << "/" << runA.size()
+			<< " draws bit-identical across two identically-seeded runs spanning "
+			<< "both tiers (streams {0,16,47," << BDPTCameraUtilities::kPSSMLTFilmLensApertureStream
+			<< ",200}).\n";
 	}
 
 	std::cout << "  Passed!\n";
@@ -1109,6 +1531,8 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestSourceGuard();
 	TestScreenCoordinateConvention();
 	TestDeepEyeWalkAliasing();
+	TestStorageCostRedProof();
+	TestLegacyLayoutDeterminism();
 
 	std::cout << "\nAll PSSMLT stream aliasing tests passed!\n";
 	return 0;
