@@ -66,6 +66,7 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/Materials/CoatedLayer.h"
 #include "../src/Library/Materials/FabricMaterial.h"
 #include "WeaveTestFixture.h"
 
@@ -1880,6 +1881,157 @@ int main()
         }
 
         safe_release( fabThinMat );
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  DL-23 P2-1 (docs/DEBT_LEDGER.md): `coated_material`'s OWN
+    //  below-horizon transmission branch (CoatedSPF.cpp's DL-23
+    //  additions) -- the SAME full-sphere continuum identity and
+    //  cross-validation the P2-B / R8 P1.1 blocks above prove for the
+    //  bare weave and fabric-over-weave, now for `coated_material`
+    //  wrapping a `transmission thin` weave DIRECTLY
+    //  ("Coated_Weave_thin") and THROUGH a fabric layer
+    //  ("Coated_Fabric", coat -> fabric -> weave).
+    //
+    //  WHY THE SAME FORM APPLIES.  `CoatedSPF`'s mixture is
+    //  structurally identical to `FabricSPF`'s: a reflection-only top
+    //  lobe (VNDF for the coat; cosine sheen for fabric) selected with
+    //  probability `pCoat = cp.weight * CoatedLayer::Fresnel(cosWi,
+    //  cp.eta)` (`CoatedSPF::ScatterImpl`/`PdfImpl`) that places NO
+    //  mass below the horizon (VNDF reflection about the ray-facing
+    //  normal cannot draw a below-horizon direction), mixed with the
+    //  substrate's own density at `(1 - pCoat)`.  The coat lobe
+    //  therefore integrates to exactly 1 over the FULL sphere (0
+    //  below, 1 above), so
+    //
+    //      INT_sphere q  =  pCoat * 1  +  (1 - pCoat) * INT_sphere(qBase)
+    //
+    //  where `INT_sphere(qBase)` is the substrate's OWN full-sphere
+    //  continuum share -- `(1 - gap)` for the bare weave (P2-B above)
+    //  and `w_fab + (1 - w_fab)*(1 - gap)` for the fabric-over-weave
+    //  substrate (R8 P1.1 above) -- giving the two closed forms below.
+    //  `coatWeightSc` is 1.0 (the shared neutral coat fixture the
+    //  Coated_Lambertian/Coated_GGX rows above already use), so
+    //  `pCoat = CoatedLayer::Fresnel(cosWi, coatIorSc)` alone.
+    // ================================================================
+    {
+        std::cout << "=== DL-23 P2-1: coated_material below-horizon transmission -- full-sphere pdf + cross-val ===" << std::endl;
+
+        const double kGapC = 0.2;
+        const double coatEta = 1.33;	// coatIorSc's authored value
+
+        RISE::WeaveTest::PresetWeave weaveThinCoat( "satin", 0.0, -1, false, /*thin=*/true, -1, -1, kGapC );
+        CoatedMaterial* coatedWeaveThinMat = new CoatedMaterial(
+            *weaveThinCoat.Material(), *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+        coatedWeaveThinMat->addref();
+        ISPF* coatedWeaveThinSPF = coatedWeaveThinMat->GetSPF();
+
+        // Same fabric-over-thin-linen substrate the R8 P1.1 block above
+        // built (alpha 0.3, tint 1.0 via `coatTintOne`), wrapped in the
+        // SAME neutral coat -- coat -> fabric -> weave, two layers deep.
+        RISE::WeaveTest::PresetWeave thinBaseC( "linen", 0.0, 0.5, false, /*thin=*/true, -1, -1, kGapC );
+        FabricMaterial* fabThinMatC = new FabricMaterial(
+            *thinBaseC.Material(), *coatTintOne, *fabAlphaSc, *fabZeroSc );
+        fabThinMatC->addref();
+        CoatedMaterial* coatedFabricThinMat = new CoatedMaterial(
+            *fabThinMatC, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+        coatedFabricThinMat->addref();
+        ISPF* coatedFabricThinSPF = coatedFabricThinMat->GetSPF();
+
+        IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        struct CoatedRow { const char* name; ISPF* spf; double expected; };
+
+        for( int a = 0; a < 2; a++ )
+        {
+            const double theta = incomingAngles[a];
+            RayIntersectionGeometric ri = MakeIntersection( theta );
+            const double cosWi = std::cos( theta );
+            const double pCoat = (double)CoatedLayer::Fresnel( (Scalar)cosWi, (Scalar)coatEta );	// coatWeightSc == 1.0
+            const double wFab  = (double)FabricBRDF::SheenSelectWeight( 0.3, 1.0, cosWi );	// matches the R8 P1.1 fixture (alpha=0.3, m=1 via coatTintOne)
+
+            CoatedRow rows[] = {
+                { "Coated_Weave_thin", coatedWeaveThinSPF,  pCoat + ( 1.0 - pCoat ) * ( 1.0 - kGapC ) },
+                { "Coated_Fabric",     coatedFabricThinSPF, pCoat + ( 1.0 - pCoat ) * ( wFab + ( 1.0 - wFab ) * ( 1.0 - kGapC ) ) },
+            };
+
+            for( const CoatedRow& row : rows )
+            {
+                const int NT = 200, NP = 200;
+                double integ = 0.0, integNM = 0.0;
+                for( int t = 0; t < NT; t++ )
+                {
+                    const double th = ( t + 0.5 ) * PI / NT;	// 0..pi, the FULL sphere
+                    const double sinT = sin( th ), cosT = cos( th );
+                    const double dTheta = PI / NT;
+                    for( int p = 0; p < NP; p++ )
+                    {
+                        const double phi = ( p + 0.5 ) * TWO_PI / NP;
+                        const double dPhi = TWO_PI / NP;
+                        Vector3 wo( sinT * cos( phi ), sinT * sin( phi ), cosT );
+                        wo = Vector3Ops::Normalize( wo );
+                        integ   += row.spf->Pdf( ri, wo, iorStack )          * sinT * dTheta * dPhi;
+                        integNM += row.spf->PdfNM( ri, wo, 550.0, iorStack ) * sinT * dTheta * dPhi;
+                    }
+                }
+
+                const double tol = 0.05;
+                const bool okRGB = fabs( integ   - row.expected ) <= tol;
+                const bool okNM  = fabs( integNM - row.expected ) <= tol;
+                std::cout << "  " << row.name << " @ " << angleNames[a]
+                          << ": full-sphere integral=" << integ << " (NM " << integNM << ")"
+                          << "  expected=" << row.expected
+                          << "  [pCoat=" << pCoat << "]  "
+                          << ( ( okRGB && okNM ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+                if( !okRGB || !okNM ) numFailed++;
+
+                // ---- cross-validation (sampling matches density), both regimes.
+                RandomNumberGenerator rng;
+                Implementation::IndependentSampler sampler( rng );
+                int checked = 0, mismatches = 0, deltas = 0, belowHorizon = 0;
+                double worst = 0.0;
+                for( int i = 0; i < 20000; i++ )
+                {
+                    const bool bNM = ( i % 2 ) != 0;
+                    ScatteredRayContainer scattered;
+                    if( bNM ) {
+                        row.spf->ScatterNM( ri, sampler, 550.0, scattered, iorStack );
+                    } else {
+                        row.spf->Scatter( ri, sampler, scattered, iorStack );
+                    }
+                    if( scattered.Count() == 0 ) continue;
+                    const ScatteredRay& s = scattered[0];
+                    const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                    if( Vector3Ops::Dot( wo, ri.onb.w() ) < 0 ) belowHorizon++;
+                    if( s.isDelta ) { deltas++; continue; }
+                    if( s.pdf <= 0 ) continue;
+
+                    const double q = bNM ? (double)row.spf->PdfNM( ri, wo, 550.0, iorStack )
+                                         : (double)row.spf->Pdf( ri, wo, iorStack );
+                    const double rel = fabs( q - s.pdf ) / std::max( 1e-30, (double)s.pdf );
+                    if( rel > worst ) worst = rel;
+                    if( rel > CROSS_VAL_TOL ) mismatches++;
+                    checked++;
+                }
+
+                // Non-degeneracy: both the transmit continuum AND the
+                // delta gap-pass-through must be LIVE, exactly like R8
+                // P1.1's `live` guard above -- the weave's own delta ray
+                // must survive being forwarded through one (or two)
+                // wrapper layers, or this proves nothing about DL-23.
+                const bool live = ( belowHorizon > 0 ) && ( deltas > 0 );
+                std::cout << "    cross-val " << row.name << " @ " << angleNames[a] << ": checked=" << checked
+                          << " mismatches=" << mismatches << " maxRel=" << worst
+                          << "  (below-horizon draws=" << belowHorizon << ", delta draws=" << deltas << ")  "
+                          << ( ( mismatches == 0 && live ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+                if( mismatches != 0 || !live ) numFailed++;
+            }
+        }
+
+        safe_release( coatedFabricThinMat );
+        safe_release( fabThinMatC );
+        safe_release( coatedWeaveThinMat );
     }
     std::cout << std::endl;
 

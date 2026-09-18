@@ -514,7 +514,57 @@ standard_object
 The glTF importer always uses the `matrix` path for losslessness.  Most
 hand-authored scenes use the Euler form for simplicity.
 
-`scale` is per-axis (`Vector3`, not scalar).
+`scale` is per-axis (`Vector3`: `Sx Sy Sz`).  A single number IS accepted as an
+explicit shorthand -- `scale 0.35` broadcasts to `(0.35, 0.35, 0.35)`, with a
+log warning suggesting the fully-spelled form -- but nothing else short of all
+three: two numbers, four numbers, or a non-numeric token is a hard parse error
+(DL-32, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md)).  Before that fix a partial
+value silently zero-filled the missing axes (`scale 0.35` derived
+`(0.35, 0, 0)`), vanishing the object from the render with no diagnostic and
+making it refuse every `proximity()`/`interior()` query
+(`Object::DistanceToSurface`'s `sigma_min <= 0` gate) -- a trap worth knowing
+even though the parser no longer springs it.
+
+**General rule (every vector/matrix parameter, not just `scale`).** Every
+`Vector2`-, `Vector3`-, quaternion (`Vector4`)-, and 4x4-matrix-valued
+parameter in the scene language -- `position`, `orientation`,
+`radiance_orient`, a camera's `location`/`lookat`/`up`, absorption/
+scattering/emission on a medium, mesh corner points, `bbox_min`/`bbox_max`,
+a painter's `scale`/`shift`, a UV pair like `perlin2d_painter`'s
+`scale`/`shift` or `polynomial_function2d_painter`'s `center`/`scale`, a
+camera's `target_orientation` (theta, phi), `orthographic_camera`'s
+`viewport_scale`, and every other field declared `DoubleVec2`/
+`DoubleVec3`/`DoubleVec4`/`DoubleMat4` -- requires EXACTLY 2 / 3 / 4 / 16
+space-separated finite numbers.  Anything else (fewer, more, or a
+non-numeric token) is a hard parse error naming the chunk, the parameter,
+and the expected-vs-actual count, fixed at the shared accessor
+(`ParseStateBag::GetVec2`/`GetVec3`/`GetVec4`/`GetMat4`, `src/Library/
+Parsers/ChunkDescriptor.h`) -- but ONLY for a Finalize() that actually
+calls the accessor.  DL-32 round 2 (docs/DEBT_LEDGER.md) fixed every site
+that does; a round-3 review found 15 sites that instead read a
+fixed-2-token value via a RAW `sscanf` on the bag's raw string, bypassing
+the accessor (and the dispatcher's own finite-number gate) entirely, and
+were consequently just as unprotected as pre-round-1 `scale` -- these were
+mis-declared `DoubleVec3` (reading only 2 of the "3" components) or, for
+`viewport_scale`, plain `Double` while being read as 2 components; round 3
+added the genuine `DoubleVec2` kind and re-routed all 15 through
+`GetVec2`.  The general rule holds today for every DECLARED vector/matrix
+parameter -- but "declared `DoubleVec2`/`DoubleVec3`/`DoubleVec4`/
+`DoubleMat4`" is the operative test, not "looks like a vector on the
+page"; a Finalize() that hand-rolls its own numeric parsing instead of
+calling the shared accessor is NOT covered by this rule and needs its own
+audit (exactly the round-3 finding).  `standard_object`/`override_object`'s
+`scale` and `orthographic_camera`'s `viewport_scale` are the two sanctioned
+exceptions -- single-number UNIFORM broadcasts -- each resolved by a
+dedicated helper (`ResolveScaleVec3` / `ResolveVec2UniformBroadcast`,
+`ChunkParserRegistry.cpp`) that pre-validates the 1-or-N arity itself and
+only reaches the shared accessor once the full token count is already
+confirmed, so the generic hard-error never fires for that authored
+shorthand.  A future field that wants the same broadcast shorthand should
+follow that pattern (a dedicated resolver, not a change to the shared
+accessor) and should mark its `ParameterDescriptor` entry with
+`allowsUniformScalarBroadcast = true` so the editor's suggestion engine can
+advertise the shorthand.
 
 ### `parent` — the transform is LOCAL, relative to the parent
 

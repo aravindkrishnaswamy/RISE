@@ -53,6 +53,7 @@ namespace RISE
 					case ValueKind::Bool:       return "boolean";
 					case ValueKind::UInt:       return "integer";
 					case ValueKind::Double:     return "number";
+					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4: return "array";
@@ -68,6 +69,7 @@ namespace RISE
 			int ArrayLenFor( ValueKind k )
 			{
 				switch( k ) {
+					case ValueKind::DoubleVec2: return 2;
 					case ValueKind::DoubleVec3: return 3;
 					case ValueKind::DoubleVec4: return 4;
 					case ValueKind::DoubleMat4: return 16;

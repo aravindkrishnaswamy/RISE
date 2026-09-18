@@ -121,6 +121,11 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/PerfectReflectorMaterial.h"
+#include "../src/Library/Materials/CoatedLayer.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/IORStack.h"
+#include "WeaveTestFixture.h"		// DL-23: WeaveTest::PresetWeave
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -372,6 +377,32 @@ void TestAllowlistAccepts()
 		Check( IsCoated( *job, "wet" ), "pbr_metallic_roughness substrate accepted (resolves to ggx)" );
 		safe_release( job );
 	}
+
+	// DL-23 (docs/DEBT_LEDGER.md) -- fabric_material: a coat over cloth
+	// (waxed canvas), the design's own named example.  This was refused
+	// outright before DL-23 widened the allowlist.
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		std::string body = ColorPainter( "pnt", "0.6 0.4 0.3" )
+		                 + LambertianMat( "inner", "pnt" )
+		                 + "fabric_material\n{\n\tname\tbase\n\tfabric\tcotton\n\tbase\tinner\n}\n"
+		                 + CoatedMat( "wet", "base" );
+		ParseBodyInto( "acc_fabric", body, *job );
+		Check( IsCoated( *job, "wet" ), "DL-23: fabric_material substrate accepted (RED pre-fix: refused)" );
+		safe_release( job );
+	}
+
+	// DL-23 -- weave_material directly: a coat over a structured weave
+	// (a varnished basket weave), reachable without going through
+	// fabric_material at all.
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		std::string body = "weave_material\n{\n\tname\tbase\n\tfabric\tlinen\n}\n"
+		                 + CoatedMat( "wet", "base" );
+		ParseBodyInto( "acc_weave", body, *job );
+		Check( IsCoated( *job, "wet" ), "DL-23: weave_material substrate accepted (RED pre-fix: refused)" );
+		safe_release( job );
+	}
 }
 
 void TestAllowlistRefusals()
@@ -456,6 +487,231 @@ void TestAllowlistRefusals()
 		       "coated-over-coated: diagnostic names the class" );
 		safe_release( job );
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// 1b. DL-23 (docs/DEBT_LEDGER.md) -- coat over a substrate that itself
+//     transmits (a `transmission thin` weave_material).  Mirrors
+//     FabricMaterialChunkTest::TestTransmissiveSubstrateForwarding, at
+//     the C++ construction level so ScattersFullSphere() and the raw
+//     BSDF can be inspected directly.
+//////////////////////////////////////////////////////////////////////
+
+//! Ray-facing view/light probe, matching CoatedBRDF.cpp's own
+//! `RayFacingONB` construction (a fixed shading point at the origin
+//! with normal +Z, viewed from a chosen direction).
+RayIntersectionGeometric MakeIntersectionFromView( const Vector3& view )
+{
+	const Vector3 inDir = -view;
+	Ray inRay( Point3( view.x, view.y, view.z ), inDir );
+	RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( inRay, rs );
+	ri.bHit = true;
+	ri.range = 1.0;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+	return ri;
+}
+
+//! Directional albedo via Monte Carlo Scatter draws -- sums `kray`
+//! (both delta and continuum rays, over the FULL sphere the SPF may
+//! emit into) so a transmitted contribution is counted exactly like a
+//! reflected one.  Mirrors LayeredWhiteFurnaceTest's `DirectionalAlbedo`
+//! driver.  `outTransmitShare` (optional) separately accumulates only
+//! the below-horizon (transmit-side) contribution, so a caller can
+//! confirm energy actually CROSSES to the far side rather than merely
+//! bounding the total.
+double DirectionalAlbedoMC( ISPF& spf, const Vector3& view, int samples,
+                             double* outTransmitShare = 0 )
+{
+	RayIntersectionGeometric ri = MakeIntersectionFromView( view );
+	RandomNumberGenerator rng( 424242u );		// fixed seed: deterministic test
+	IndependentSampler sampler( rng );
+	IORStack iorStack( 1.0 );
+	const Vector3 n = ri.onb.w();
+
+	double total = 0.0, transmit = 0.0;
+	for( int i = 0; i < samples; ++i )
+	{
+		ScatteredRayContainer scattered;
+		spf.Scatter( ri, sampler, scattered, iorStack );
+		for( unsigned int j = 0; j < scattered.Count(); ++j )
+		{
+			const ScatteredRay& s = scattered[j];
+			const double c = ColorMath::MaxValue( s.kray );
+			if( !std::isfinite( c ) || c < 0 ) continue;
+			total += c;
+			if( Vector3Ops::Dot( Vector3Ops::Normalize( s.ray.Dir() ), n ) < 0 ) {
+				transmit += c;
+			}
+		}
+	}
+	if( outTransmitShare ) *outTransmitShare = transmit / (double)samples;
+	return total / (double)samples;
+}
+
+void TestTransmissiveSubstrateForwarding()
+{
+	std::cout << "TransmissiveSubstrateForwarding (DL-23)" << std::endl;
+
+	UniformColorPainter*  white = new UniformColorPainter( RISEPel( 1.0, 1.0, 1.0 ) ); white->addref();
+	UniformColorPainter*  grey  = new UniformColorPainter( RISEPel( 0.7, 0.7, 0.7 ) ); grey->addref();
+	UniformScalarPainter* one   = new UniformScalarPainter( 1.0 );   one->addref();
+	UniformScalarPainter* ior   = new UniformScalarPainter( 1.5 );   ior->addref();
+	UniformScalarPainter* rgh   = new UniformScalarPainter( 0.05 );  rgh->addref();
+	UniformScalarPainter* zed   = new UniformScalarPainter( 0.0 );   zed->addref();
+
+	// Same shape as FabricMaterialChunkTest's fixture: a sheer white
+	// linen (`transmission thin`, gap 0.2, transmit 0.25) and its
+	// opaque twin, both white-dyed so the furnace reads as a pure
+	// energy statement.
+	RISE::WeaveTest::PresetWeave thin( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+	                                   /*thin=*/true, 0.25, 0.25, /*gapOverride=*/0.2 );
+	RISE::WeaveTest::PresetWeave opaque( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+	                                     /*thin=*/false, -1, -1, /*gapOverride=*/0.2 );
+	LambertianMaterial* lamb = new LambertianMaterial( *grey ); lamb->addref();
+
+	// (a) the allowlist itself, at the C++ predicate level.
+	Check( CoatedMaterial::IsSupportedSubstrate( *thin.Material() ),
+	       "DL-23: IsSupportedSubstrate accepts a `transmission thin` weave_material" );
+	Check( CoatedMaterial::IsSupportedSubstrate( *opaque.Material() ),
+	       "DL-23: IsSupportedSubstrate accepts a `transmission none` weave_material" );
+
+	CoatedMaterial* coatThin = new CoatedMaterial( *thin.Material(), *one, *ior, *rgh, *zed, *zed, *white );
+	coatThin->addref();
+	CoatedMaterial* coatOpaque = new CoatedMaterial( *opaque.Material(), *one, *ior, *rgh, *zed, *zed, *white );
+	coatOpaque->addref();
+	CoatedMaterial* coatLamb = new CoatedMaterial( *lamb, *one, *ior, *rgh, *zed, *zed, *white );
+	coatLamb->addref();
+
+	// (b) the flags -- forwarded verbatim from the substrate, mirroring
+	// FabricMaterial's identical contract.
+	Check( thin.Material()->ScattersFullSphere() && thin.Material()->CouldLightPassThrough(),
+	       "premise: the BARE `transmission thin` weave reports both full-sphere flags" );
+	Check( coatThin->ScattersFullSphere(),
+	       "coated_material over a `transmission thin` weave FORWARDS ScattersFullSphere() "
+	       "(RED pre-fix: the substrate was unreachable at all -- IsSupportedSubstrate refused it)" );
+	Check( coatThin->CouldLightPassThrough(),
+	       "coated_material over a `transmission thin` weave FORWARDS CouldLightPassThrough()" );
+	Check( !coatOpaque->ScattersFullSphere() && !coatOpaque->CouldLightPassThrough(),
+	       "coated_material over a `transmission none` weave reports NEITHER flag" );
+	Check( !coatLamb->ScattersFullSphere() && !coatLamb->CouldLightPassThrough(),
+	       "coated_material over a Lambertian reports NEITHER flag (pre-DL-23 behaviour intact)" );
+
+	// (c) MONEY: the coated value() is non-zero below the horizon, and
+	// matches an INDEPENDENTLY re-derived closed form -- CoatedLayer's
+	// own public Fresnel/PassTransmittance/Recycling primitives, not
+	// CoatedBRDF's internals -- at several (view, light) pairs.  `eta`
+	// here is 1.5 (coat_ior) since the surrounding medium is air (IOR 1).
+	static const double kMuV[] = { 1.0, 0.7071067811865476, 0.3420201433256687 };
+	static const double kMuL[] = { -0.25, -0.6, -0.95 };
+	const double relTol = 1e-9;
+	const double eta = 1.5;
+	const double ri_int = CoatedLayer::InternalDiffuseFresnel( eta );
+
+	int probes = 0, positives = 0, lawFailures = 0, opaqueLeaks = 0;
+	double worstRel = 0.0;
+
+	for( size_t iv = 0; iv < sizeof( kMuV ) / sizeof( kMuV[0] ); ++iv )
+	{
+		const double muV = kMuV[iv];
+		const double sV  = std::sqrt( std::max( 0.0, 1.0 - muV * muV ) );
+		const RayIntersectionGeometric riProbe = MakeIntersectionFromView( Vector3( sV, 0, muV ) );
+
+		for( size_t il = 0; il < sizeof( kMuL ) / sizeof( kMuL[0] ); ++il )
+		{
+			const double muL = kMuL[il];
+			const double sL  = std::sqrt( std::max( 0.0, 1.0 - muL * muL ) );
+			const Vector3 l( sL * 0.6, sL * 0.8, muL );
+
+			const double bareT = thin.BSDF()->value( l, riProbe )[0];
+			const double wrapped = coatThin->GetBSDF()->value( l, riProbe )[0];
+
+			// Independent re-derivation of K_t (CoatedBRDF.h's
+			// "TRANSMISSION THROUGH THE COAT" section), reading only
+			// public CoatedLayer primitives -- shares no code with the
+			// material under test.
+			const double absMuL = -muL;
+			const double Tin  = 1.0 - CoatedLayer::Fresnel( muV,   eta );
+			const double Tout = 1.0 - CoatedLayer::Fresnel( absMuL, eta );
+			const double Ain  = CoatedLayer::PassTransmittance( muV,   eta, 0.0, 0.0, 1.0, false );
+			const double Aout = CoatedLayer::PassTransmittance( absMuL, eta, 0.0, 0.0, 1.0, false );
+			// coat_weight is 1.0 (`one`) and coat_thickness/absorption
+			// are both 0 (`zed`), so R (the substrate's own
+			// hemispherical albedo) never enters a recycling series that
+			// depends on absorption -- but it still needs the ROUND
+			// TRIP factor at zero thickness, which is exactly 1
+			// (PassTransmittance at thickness 0 with no absorption).
+			RISEPel R;
+			thin.BSDF()->hemisphericalAlbedo( riProbe, R );
+			const double roundTrip = 1.0;	// thickness 0, absorption 0 -> Beer factor 1
+			const double rec = CoatedLayer::Recycling( ri_int, R[0], roundTrip );
+			const double expected = bareT * Ain * Aout * rec * ( Tin * Tout / ( eta * eta ) );
+
+			++probes;
+			if( bareT > 0 && wrapped > 0 ) ++positives;
+			const double denom = std::max( 1e-30, std::fabs( expected ) );
+			const double rel = std::fabs( wrapped - expected ) / denom;
+			if( rel > worstRel ) worstRel = rel;
+			if( rel > relTol ) ++lawFailures;
+
+			// Negative controls at the SAME pair.
+			if( coatOpaque->GetBSDF()->value( l, riProbe )[0] != 0.0 ) ++opaqueLeaks;
+			if( coatLamb->GetBSDF()->value( l, riProbe )[0] != 0.0 )   ++opaqueLeaks;
+		}
+	}
+
+	std::printf( "    below-horizon probes = %d, non-zero on BOTH bare and wrapped = %d, "
+	             "worst |wrapped - expected| / expected = %.3g\n",
+	             probes, positives, worstRel );
+
+	Check( positives == probes,
+	       "MONEY: coated_material over a `transmission thin` weave is NON-ZERO below the "
+	       "horizon at every probed pair -- the silent unreachability (DL-23) is gone" );
+	Check( lawFailures == 0,
+	       "the transmitted value matches the two-crossing K_t closed form, re-derived "
+	       "independently from CoatedLayer's public primitives" );
+	Check( opaqueLeaks == 0,
+	       "negative control: coated over a `transmission none` weave AND over a Lambertian "
+	       "both stay EXACTLY zero below the horizon" );
+
+	// (d) energy: a furnace-style Monte Carlo total.  Coat over an
+	// OPAQUE substrate must stay near the pre-DL-23 furnace ceiling
+	// (reflection-only code is untouched by this fix); coat over the
+	// TRANSMISSIVE weave must (i) still stay bounded and (ii) show a
+	// REAL, non-trivial transmitted share -- proving DL-23 forwards
+	// actual energy, not just the two flags.
+	const int kSamples = 20000;
+	for( double theta : { 0.0, 40.0, 70.0 } )
+	{
+		const double th = theta * PI / 180.0;
+		const Vector3 view( std::sin( th ), 0, std::cos( th ) );
+
+		const double rhoOpaque = DirectionalAlbedoMC( *coatOpaque->GetSPF(), view, kSamples );
+		Check( rhoOpaque <= 1.10,
+		       "energy: coated_material over an OPAQUE `transmission none` weave stays "
+		       "bounded (<= 1.10, furnace-style MC estimate)" );
+
+		double transmitShare = 0.0;
+		const double rhoThin = DirectionalAlbedoMC( *coatThin->GetSPF(), view, kSamples, &transmitShare );
+		Check( rhoThin <= 1.10,
+		       "energy: coated_material over the TRANSMISSIVE weave also stays bounded "
+		       "(<= 1.10, furnace-style MC estimate)" );
+		Check( transmitShare > 0.01,
+		       "energy: coated_material over the TRANSMISSIVE weave forwards a REAL "
+		       "transmitted share (> 1% of incoming energy reaches the far side), not "
+		       "merely a structurally-nonzero BSDF (RED pre-fix: substrate unreachable)" );
+	}
+
+	safe_release( coatLamb );
+	safe_release( coatOpaque );
+	safe_release( coatThin );
+	safe_release( lamb );
+	safe_release( zed ); safe_release( rgh ); safe_release( ior ); safe_release( one );
+	safe_release( grey ); safe_release( white );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -872,6 +1128,7 @@ int main()
 
 	TestAllowlistAccepts();
 	TestAllowlistRefusals();
+	TestTransmissiveSubstrateForwarding();
 	TestCoatTintDefault();
 	TestUntintedIsClearSpectrally();
 	TestDescriptorDefaultsRoundTrip();

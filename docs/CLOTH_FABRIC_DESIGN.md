@@ -4843,12 +4843,22 @@ yet known (§10.1).
     materially different statement from the "unquantified bias" the earlier
     text had to leave open.
 
-    The open item that survives is the **composition**: getting this quantity
-    right is what would let a `coated_material` sit *over* a
+    ~~The open item that survives is the **composition**: getting this
+    quantity right is what would let a `coated_material` sit *over* a
     `fabric_material` — a waxed canvas — since this is exactly what the
     coat's recycling denominator consumes. That composition is not built, and
     `coated_material`'s substrate allowlist does not admit `fabric_material`
-    today.
+    today.~~ **CLOSED 2026-09-14 (DL-23, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))**
+    — `coated_material`'s allowlist now admits both `fabric_material` and
+    `weave_material`; `CoatedBRDF`/`CoatedSPF` forward and modulate the
+    substrate's transmission exactly as item 22's own R8 P1.1 fix does for
+    `FabricBRDF`/`FabricSPF` (mirrored formula, `CoatedLayer`'s own
+    Fresnel/PassTransmittance/Recycling primitives standing in for
+    `FabricBRDF::SheenTransmit`).  `coated_material`'s recycling denominator
+    does consume this composition, as predicted: `CoatedBRDF::SubstrateAlbedo`
+    already read `IBSDF::hemisphericalAlbedo` generically, so no change was
+    needed there — the composition simply became reachable once the
+    allowlist opened.
 
 17. ~~**NEW 2026-09-02 (round 5) — the substrate's own `hemisphericalAlbedo` is
     the larger error, and it is not `fabric_material`'s to fix.**~~
@@ -5468,13 +5478,23 @@ yet known (§10.1).
     forwards the flag would otherwise have slipped it entirely, which is
     the one outcome that census exists to prevent).
 
-    **Audit-by-bug-pattern, one hop out.** The sibling wrapper is
+    ~~**Audit-by-bug-pattern, one hop out.** The sibling wrapper is
     `coated_material`, whose substrate allowlist does **not** include
     `weave_material`, so the same extinction is unreachable there today; if
     that allowlist is ever widened, `CoatedBRDF`/`CoatedSPF` carry the
     identical opposite-hemisphere early-outs and would need the identical
-    treatment. `composite_material` is unaffected (it forwards one
-    sub-material's BSDF wholesale rather than gating on hemisphere).
+    treatment.~~ **PREDICTION FULFILLED, 2026-09-14 (DL-23,
+    [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — the allowlist WAS widened
+    (`fabric_material` and `weave_material` both admitted), and
+    `CoatedBRDF::value`/`valueNM` and `CoatedSPF::PdfImpl`/`ScatterImpl` got
+    the identical treatment this note called for: forward-and-modulate for
+    the continuum below-horizon lobe (reusing the coat's OWN recycling
+    factor, on this file's identical reasoning that the series is a
+    property of the layer pair), plus a dedicated bare-attenuation reprice
+    for the substrate's DELTA gap ray (no recycling factor, same
+    measure-zero-direction argument). `composite_material` remains
+    unaffected (it forwards one sub-material's BSDF wholesale rather than
+    gating on hemisphere).
 
 23. **RESOLVED 2026-09-04 — BDPT/VCM ~7–10% under-count residual on delta-light
     backlit thin weave curtain resolved; root-caused as subpath vertex

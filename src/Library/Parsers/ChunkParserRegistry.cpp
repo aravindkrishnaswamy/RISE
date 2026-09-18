@@ -476,10 +476,8 @@ namespace RISE
 				if( requestedName != "none" ) {
 					return false;
 				}
-				if( RISE::g_cstFinalizeDiagSink ) {
-					*RISE::g_cstFinalizeDiagSink =
-						"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name";
-				}
+				RISE::SetFinalizeDiagIfEmpty(
+					"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name" );
 				GlobalLog()->PrintEx( eLog_Error,
 					"%s:: `none` is a reserved name (the active-camera / unbind sentinel used by timeline `element`) -- pick a different camera name",
 					keyword.c_str() );
@@ -600,7 +598,7 @@ namespace RISE
 				va_start( ap, fmt );
 				vsnprintf( buf, sizeof(buf), fmt, ap );
 				va_end( ap );
-				if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = buf;
+				SetFinalizeDiagIfEmpty( buf );
 				GlobalLog()->Print( eLog_Error, buf );
 				return false;
 			}
@@ -665,6 +663,129 @@ namespace RISE
 					&& actual == expected;
 			}
 
+			//! DL-32 (docs/DEBT_LEDGER.md).  A `scale` field is declared
+			//! `DoubleVec3` (`Sx Sy Sz`), but `ParseStateBag::GetVec3` zero-
+			//! FILLS every unread component before `sscanf`, so a partially
+			//! written value never fails to parse -- it silently DEGENERATES.
+			//! `scale 0.35` used to derive `(0.35, 0, 0)`: a transform with
+			//! two zero axes, which vanishes the object from the render and
+			//! makes `Object::DistanceToSurface` refuse it for every
+			//! `proximity()`/`interior()` query (`sigma_min <= 0`) -- with NO
+			//! diagnostic anywhere.  `override_object`'s own `scale` (a
+			//! DIFFERENT bug shape: it already hard-refused a non-3-count
+			//! value via `HasExactNumericArity`, but that refusal ALSO fired
+			//! on the single-number authoring shorthand this fixes) shares
+			//! this helper too, so the two chunks cannot drift apart on what
+			//! `scale` accepts -- their own descriptor text says "matches
+			//! standard_object semantics".
+			//!
+			//! Convention chosen (SCENE_CONVENTIONS.md's own "`scale` is
+			//! per-axis (Vector3, not scalar)" is the AUTHORING documentation,
+			//! not a parser contract -- nothing enforced it before this fix,
+			//! and both the glTF importer and the Blender bridge always emit
+			//! all three components, so a single number reaching the parser
+			//! is exclusively a hand-authoring shorthand): ONE number is a
+			//! UNIFORM-scale broadcast to all three axes (the intuitive
+			//! reading, and the one every other 3D tool's "uniform scale"
+			//! field means); anything else that is not exactly three finite
+			//! numbers -- two, four, a non-numeric token -- is a HARD parse
+			//! error naming the two accepted forms, rather than the previous
+			//! silent zero-fill.
+			//!
+			//! Returns `present = false` (and leaves `out` untouched) when
+			//! the key is absent, so a caller's own default -- `{1,1,1}` at
+			//! every call site -- stands.  Returns `present = true, ok =
+			//! false` on a malformed value, with `*diag` set to the
+			//! caller-ready message; the caller must fail the chunk rather
+			//! than proceed with a garbage `out`.
+			struct ScaleResolution { bool present; bool ok; };
+			inline ScaleResolution ResolveScaleVec3(
+				const ParseStateBag& bag, const char* chunkKeyword, const std::string& name,
+				double out[3], std::string* diag )
+			{
+				if( !bag.Has( "scale" ) ) {
+					return ScaleResolution{ false, true };
+				}
+				const std::string raw = bag.GetString( "scale" );
+				int actual = 0;
+				const bool allFinite = AllTokensAreFiniteNumbers( raw.c_str(), &actual );
+				if( !allFinite || ( actual != 1 && actual != 3 ) ) {
+					if( diag ) {
+						*diag = std::string( chunkKeyword ) + " `" + name + "`: `scale " + raw +
+							"` -- needs exactly ONE finite number (a UNIFORM scale, broadcast to "
+							"all three axes) or THREE (`Sx Sy Sz`).  A partial fill used to derive "
+							"a DEGENERATE transform silently (DL-32, docs/DEBT_LEDGER.md) -- the "
+							"object would vanish from the render with no diagnostic -- so it is "
+							"refused instead.";
+					}
+					return ScaleResolution{ true, false };
+				}
+				if( actual == 1 ) {
+					double s = 0.0;
+					sscanf( raw.c_str(), "%lf", &s );
+					out[0] = out[1] = out[2] = s;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"%s `%s`: `scale %s` -- ONE number is a UNIFORM-scale broadcast to "
+						"(%.6g %.6g %.6g).  Write all three components explicitly (`scale %.6g "
+						"%.6g %.6g`) to silence this.",
+						chunkKeyword, name.c_str(), raw.c_str(), s, s, s, s, s, s );
+				} else {
+					bag.GetVec3( "scale", out );
+				}
+				return ScaleResolution{ true, true };
+			}
+
+			//! DL-32 round 3 (docs/DEBT_LEDGER.md).  `orthographic_camera`'s
+			//! `viewport_scale` is a symmetric-by-default field the same way
+			//! `standard_object`'s `scale` is, and the corpus already relies on
+			//! a single-number authoring shorthand for it: pre-fix, the raw
+			//! `sscanf( "%lf %lf" )` read on a 1-token value ("viewport_scale
+			//! 2.0") left the SECOND component at its hard-coded {1.0,1.0}
+			//! default (an accidental, ASYMMETRIC (2.0, 1.0) result -- not a
+			//! deliberate broadcast), and three call sites in the test corpus
+			//! (`AgentProposeRenderTest.cpp`, `AgentViewModeRenderTest.cpp`,
+			//! `SSSRadianceScalingTest.cpp`) author exactly that shorthand.
+			//! Mirrors `ResolveScaleVec3` exactly, generalized to any
+			//! 2-component `key` (not hardcoded to one name) so the ONE
+			//! sanctioned-broadcast field in the DoubleVec2 family shares one
+			//! helper rather than growing a second hand-rolled copy: a single
+			//! number is accepted as a UNIFORM broadcast to both components
+			//! (with a log warning naming the two-number spelling); anything
+			//! else that is not exactly one or two finite numbers is a hard
+			//! parse error.
+			struct Vec2Resolution { bool present; bool ok; };
+			inline Vec2Resolution ResolveVec2UniformBroadcast(
+				const ParseStateBag& bag, const char* chunkKeyword, const std::string& name,
+				const char* key, double out[2], std::string* diag )
+			{
+				if( !bag.Has( key ) ) {
+					return Vec2Resolution{ false, true };
+				}
+				const std::string raw = bag.GetString( key );
+				int actual = 0;
+				const bool allFinite = AllTokensAreFiniteNumbers( raw.c_str(), &actual );
+				if( !allFinite || ( actual != 1 && actual != 2 ) ) {
+					if( diag ) {
+						*diag = std::string( chunkKeyword ) + " `" + name + "`: `" + key + " " + raw +
+							"` -- needs exactly ONE finite number (a UNIFORM broadcast to both "
+							"components) or TWO (`X Y`).";
+					}
+					return Vec2Resolution{ true, false };
+				}
+				if( actual == 1 ) {
+					double s = 0.0;
+					sscanf( raw.c_str(), "%lf", &s );
+					out[0] = out[1] = s;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"%s `%s`: `%s %s` -- ONE number is a UNIFORM broadcast to (%.6g %.6g).  "
+						"Write both components explicitly (`%s %.6g %.6g`) to silence this.",
+						chunkKeyword, name.c_str(), key, raw.c_str(), s, s, key, s, s );
+				} else {
+					bag.GetVec2( key, out );
+				}
+				return Vec2Resolution{ true, true };
+			}
+
 			inline bool DispatchChunkParameters(
 				const ChunkDescriptor& desc,
 				ParseStateBag&         bag,
@@ -695,6 +816,7 @@ namespace RISE
 
 					switch( found->kind ) {
 					case ValueKind::Double:
+					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:
@@ -952,7 +1074,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "orientation";        p.kind = ValueKind::DoubleVec3; p.description = "Euler orientation (degrees)"; }
 				{ auto& p = P(); p.name = "theta";              p.kind = ValueKind::Double;     p.description = "Polar angle (radians)"; }
 				{ auto& p = P(); p.name = "phi";                p.kind = ValueKind::Double;     p.description = "Azimuthal angle (radians)"; }
-				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec3; p.description = "Target Euler orientation"; }
+				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec2; p.description = "Target Euler orientation (theta, phi)"; p.defaultValueHint = "0 0"; }
 			}
 			//! `persistenceDefault` is passed per chunk because the eight
 			//! chunks sharing this helper do NOT share one Finalize default
@@ -961,15 +1083,31 @@ namespace RISE
 			//! a single hardcoded hint here was wrong for seven of them, and
 			//! `defaultValueHint` is MODEL-FACING (read_schema serves it as
 			//! the parameter's `default`).
+			//!
+			//! `twoD` (DL-32 round 3, docs/DEBT_LEDGER.md): `perlin2d_painter`
+			//! is the ONE 2D chunk among these eight -- `Job::AddPerlin2DPainter`
+			//! takes `double scale[2]`/`shift[2]` -- but this shared helper used
+			//! to declare `scale`/`shift` `ValueKind::DoubleVec3` for it too
+			//! (copy-pasted from the seven genuinely-3D siblings), while its
+			//! Finalize read only 2 components via a raw, unchecked `sscanf` on
+			//! the bag string -- silently accepting `scale 1` (leaving the
+			//! second component at its unrelated default) or `scale 1 2 3`
+			//! (silently discarding the "3").  `twoD = true` (perlin2d_painter
+			//! only) declares the genuine 2-component arity instead.
 			template<typename PushFn>
-			static void AddNoisePainterCommonParams( PushFn P, const char* persistenceDefault = "0.5" ) {
+			static void AddNoisePainterCommonParams( PushFn P, const char* persistenceDefault = "0.5", bool twoD = false ) {
 				{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name";                p.defaultValueHint = "noname"; }
 				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its LOW end"; }
 				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its HIGH end"; }
 				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Amplitude falloff per octave (lower = smoother, higher = grittier)"; p.defaultValueHint = persistenceDefault; }
 				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves (more = finer detail, more cost)"; p.defaultValueHint = "4"; }
-				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1 1"; }
-				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0 0"; }
+				if( twoD ) {
+					{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::DoubleVec2; p.description = "Per-axis (U, V) FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1"; }
+					{ auto& p = P(); p.name = "shift"; p.kind = ValueKind::DoubleVec2; p.description = "Per-axis (U, V) offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0"; }
+				} else {
+					{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1 1"; }
+					{ auto& p = P(); p.name = "shift"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0 0"; }
+				}
 			}
 			//
 			// AddBaseRasterizerParams — the 7 fields every production
@@ -1304,16 +1442,15 @@ namespace RISE
 						RISE_API_CreateUniformScalarPainter( &painter, Scalar( v ) );
 					}
 					else if( hasValues ) {
-						const std::string raw = bag.GetString( "values" );
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): this used to read `values`
+						// into a local string and check `sscanf(...) != 3` -- but sscanf's
+						// return value counts SUCCESSFUL conversions, not total tokens, so
+						// `values 1 2 3 4` matched 3 (silently dropping the "4") and passed.
+						// Routed through the shared GetVec3 accessor instead, which counts
+						// the WHOLE token stream and hard-errors on anything but exactly 3
+						// (same contract as every other DoubleVec3-kind parameter).
 						double rgb[3] = { 0, 0, 0 };
-						const int matched = sscanf( raw.c_str(), "%lf %lf %lf",
-							&rgb[0], &rgb[1], &rgb[2] );
-						if( matched != 3 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: `values` requires three numeric components (got %d in `%s`)",
-								name.c_str(), matched, raw.c_str() );
-							return false;
-						}
+						bag.GetVec3( "values", rgb );
 						RISE_API_CreateRGBScalarPainter( &painter,
 							Scalar( rgb[0] ), Scalar( rgb[1] ), Scalar( rgb[2] ) );
 					}
@@ -1347,15 +1484,34 @@ namespace RISE
 						RISE_API_CreatePiecewiseLinearScalarPainter( &painter, samples );
 					}
 					else if( hasSellmeier ) {
-						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): this used to read `sellmeier`
+						// into a local string and check `sscanf(...) != 6` -- but sscanf's
+						// return value counts SUCCESSFUL conversions, not total tokens, so
+						// `sellmeier <7 numbers>` matched 6 (silently dropping the 7th) and
+						// passed.  `sellmeier` has no fixed ValueKind of its own (it is a
+						// 6-tuple, one more than GetVec4 covers and short of a would-be
+						// GetVec6 nobody else needs), so this hard-errors the same way
+						// GetVec3/GetVec4 do: exact whitespace-token count via the shared
+						// `AllTokensAreFiniteNumbers` primitive, log + latch the CST
+						// finalize-diagnostic sink on a mismatch, rather than trusting
+						// sscanf's partial-match count.
 						const std::string s = bag.GetString( "sellmeier" );
-						if( sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
-								&B1, &B2, &B3, &C1, &C2, &C3 ) != 6 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: sellmeier needs 6 values (B1 B2 B3 C1 C2 C3)",
-								name.c_str() );
+						int actual = 0;
+						if( !AllTokensAreFiniteNumbers( s.c_str(), &actual ) || actual != 6 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `sellmeier` in `scalar_painter` expects exactly 6 "
+								"space-separated number(s) (B1 B2 B3 C1 C2 C3); got %d in `%s` \xE2\x80\x94 "
+								"a short or long vector used to silently zero-fill or truncate (DL-32, "
+								"docs/DEBT_LEDGER.md) instead of failing the parse",
+								actual, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
+							&B1, &B2, &B3, &C1, &C2, &C3 );
 						RISE_API_CreateSellmeierScalarPainter( &painter,
 							Scalar( B1 ), Scalar( B2 ), Scalar( B3 ),
 							Scalar( C1 ), Scalar( C2 ), Scalar( C3 ) );
@@ -1424,14 +1580,27 @@ namespace RISE
 						RISE_API_CreateScaledScalarPainter( &painter, base, Scalar( scale ) );
 					}
 					else if( hasMultiply ) {
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): `sscanf(s, "%255s %255s") != 2`
+						// counts SUCCESSFUL conversions, not total tokens -- `multiply a b c`
+						// matched 2 (silently ignoring "c") and passed.  Count whitespace-
+						// separated tokens explicitly first, matching the exact-arity contract
+						// every other fixed-tuple field in this file now uses.
 						const std::string s = bag.GetString( "multiply" );
-						char aname[256] = {0}, bname[256] = {0};
-						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: multiply needs two scalar_painter names",
-								name.c_str() );
+						std::istringstream cnt( s );
+						std::string tokBuf; int nTok = 0;
+						while( cnt >> tokBuf ) ++nTok;
+						if( nTok != 2 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `multiply` in `scalar_painter` expects exactly 2 "
+								"space-separated scalar_painter names (a b); got %d in `%s`",
+								nTok, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						char aname[256] = {0}, bname[256] = {0};
+						sscanf( s.c_str(), "%255s %255s", aname, bname );
 						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
 						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
 						if( !a || !b ) {
@@ -1443,14 +1612,23 @@ namespace RISE
 						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
 					}
 					else if( hasAdd ) {
+						// Same DL-32 round-4 fix as `multiply` immediately above.
 						const std::string s = bag.GetString( "add" );
-						char aname[256] = {0}, bname[256] = {0};
-						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: add needs two scalar_painter names",
-								name.c_str() );
+						std::istringstream cnt( s );
+						std::string tokBuf; int nTok = 0;
+						while( cnt >> tokBuf ) ++nTok;
+						if( nTok != 2 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `add` in `scalar_painter` expects exactly 2 "
+								"space-separated scalar_painter names (a b); got %d in `%s`",
+								nTok, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						char aname[256] = {0}, bname[256] = {0};
+						sscanf( s.c_str(), "%255s %255s", aname, bname );
 						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
 						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
 						if( !a || !b ) {
@@ -1588,7 +1766,7 @@ namespace RISE
 							// See Job::AddExpressionPainter's twin site -- thread the
 							// specific compiler diagnostic into the CST sink instead
 							// of leaving the caller with the generic apply-failed text.
-							if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
+							SetFinalizeDiagIfEmpty( exprErr );
 							return false;
 						}
 						RISE_API_CreateExpressionScalarPainter( &painter, prog, specs );
@@ -2116,8 +2294,8 @@ namespace RISE
 					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[2] = {1.0,1.0};
 					double shift[2] = {0,0};
-					if( bag.Has( "scale" ) ) sscanf( bag.GetString( "scale" ).c_str(), "%lf %lf", &scale[0], &scale[1] );
-					if( bag.Has( "shift" ) ) sscanf( bag.GetString( "shift" ).c_str(), "%lf %lf", &shift[0], &shift[1] );
+					bag.GetVec2( "scale", scale );
+					bag.GetVec2( "shift", shift );
 
 					return pJob.AddPerlin2DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
@@ -2128,7 +2306,7 @@ namespace RISE
 						cd.keyword = "perlin2d_painter"; cd.category = ChunkCategory::Painter;
 						cd.description = "Perlin fBm noise in the surface UV (2D domain -- follows the UV parameterisation, so it stretches with UV distortion and can show seams).  Smooth cloudy variation from colora (low) to colorb (high).  Prefer perlin3d_painter when the surface should look CARVED OUT of a solid material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "0.5", /*twoD=*/true );
 						return cd;
 					}();
 					return d;
@@ -2146,7 +2324,7 @@ namespace RISE
 					double amplitude        = bag.GetDouble( "amplitude",   1.0 );
 					unsigned int mode       = bag.GetUInt(   "smoothness",  3 );	// default: cubic Hermite
 					double center[2] = { 0.5, 0.5 };
-					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
+					bag.GetVec2( "center", center );
 
 					return pJob.AddControlledSmoothness2DPainter(
 						name.c_str(), colora.c_str(), colorb.c_str(),
@@ -2162,7 +2340,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low/zero-end color"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High/peak-end color"; p.semantics.pipe = ParameterPipe::Color; }
-						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec3;p.description = "Bump center in UV space (only first two components used)"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec2;p.description = "Bump center in UV space"; p.defaultValueHint = "0.5 0.5"; }
 						{ auto& p = P(); p.name = "radius";     p.kind = ValueKind::Double;    p.description = "Bump radius in UV space"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "amplitude";  p.kind = ValueKind::Double;    p.description = "Peak height"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "smoothness"; p.kind = ValueKind::UInt;      p.description = "Boundary smoothness order: 0=Heaviside, 1=Tent, 2=Quadratic, 3=Cubic, 5=Quintic, 99=Gaussian"; p.defaultValueHint = "3"; }
@@ -2189,7 +2367,7 @@ namespace RISE
 					unsigned int seed          = bag.GetUInt(   "seed",               42 );
 					double time                = bag.GetDouble( "time",               0.0 );
 					double windDir[2] = {1.0, 0.0};
-					if( bag.Has( "wind_dir" ) ) sscanf( bag.GetString( "wind_dir" ).c_str(), "%lf %lf", &windDir[0], &windDir[1] );
+					bag.GetVec2( "wind_dir", windDir );
 
 					return pJob.AddGerstnerWavePainter(
 						name.c_str(),
@@ -2218,7 +2396,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "wavelength_range";    p.kind = ValueKind::Double;    p.description = "Ratio spread of wavelengths around the median"; p.defaultValueHint = "3.0"; }
 						{ auto& p = P(); p.name = "median_amplitude";    p.kind = ValueKind::Double;    p.description = "Median wave amplitude"; p.defaultValueHint = "0.05"; }
 						{ auto& p = P(); p.name = "amplitude_power";     p.kind = ValueKind::Double;    p.description = "Amplitude falloff exponent across the wave set"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec3;p.description = "Wind direction in UV space (only the first two components are used)"; p.defaultValueHint = "1 0 0"; }
+						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec2;p.description = "Wind direction in UV space"; p.defaultValueHint = "1 0"; }
 						{ auto& p = P(); p.name = "directional_spread";  p.kind = ValueKind::Double;    p.description = "Angular spread about wind_dir (0 = a single travel direction)"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "dispersion_speed";    p.kind = ValueKind::Double;    p.description = "Dispersion coefficient (only matters when `time` animates)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "seed";                p.kind = ValueKind::UInt;      p.description = "RNG seed for the wave set"; p.defaultValueHint = "42"; }
@@ -2263,8 +2441,8 @@ namespace RISE
 					// the natural domain for unit-form polynomials.
 					double center[2] = { 0.5, 0.5 };
 					double scale[2]  = { 0.5, 0.5 };
-					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
-					if( bag.Has( "scale" )  ) sscanf( bag.GetString( "scale"  ).c_str(), "%lf %lf", &scale[0],  &scale[1]  );
+					bag.GetVec2( "center", center );
+					bag.GetVec2( "scale",  scale  );
 
 					// Bivariate coefficients: space-separated doubles.
 					// Token-by-token parse so the user may supply any
@@ -2303,8 +2481,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "colora";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Zero/low-end colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "colorb";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Positive/peak-end colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "type";         p.kind = ValueKind::String;    p.description = "Polynomial family: radial_bump | monomial | paraboloid | hyperbolic_saddle | monkey_saddle | bivariate"; p.defaultValueHint = "radial_bump"; }
-						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec3;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
-						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec3;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec2;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec2;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
 						{ auto& p = P(); p.name = "amplitude";    p.kind = ValueKind::Double;    p.description = "Global multiplier"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "degree";       p.kind = ValueKind::UInt;      p.description = "Degree for radial_bump (smoothness exponent) and bivariate (max total degree)"; p.defaultValueHint = "2"; }
 						{ auto& p = P(); p.name = "power_x";      p.kind = ValueKind::UInt;      p.description = "x exponent for monomial type"; p.defaultValueHint = "0"; }
@@ -2357,10 +2535,10 @@ namespace RISE
 					double uvOffsetA[2] = { 0.0, 0.0 };
 					double uvScaleB[2]  = { 1.0, 1.0 };
 					double uvOffsetB[2] = { 0.0, 0.0 };
-					if( bag.Has( "uv_scale_a"  ) ) sscanf( bag.GetString( "uv_scale_a"  ).c_str(), "%lf %lf", &uvScaleA[0],  &uvScaleA[1]  );
-					if( bag.Has( "uv_offset_a" ) ) sscanf( bag.GetString( "uv_offset_a" ).c_str(), "%lf %lf", &uvOffsetA[0], &uvOffsetA[1] );
-					if( bag.Has( "uv_scale_b"  ) ) sscanf( bag.GetString( "uv_scale_b"  ).c_str(), "%lf %lf", &uvScaleB[0],  &uvScaleB[1]  );
-					if( bag.Has( "uv_offset_b" ) ) sscanf( bag.GetString( "uv_offset_b" ).c_str(), "%lf %lf", &uvOffsetB[0], &uvOffsetB[1] );
+					bag.GetVec2( "uv_scale_a",  uvScaleA  );
+					bag.GetVec2( "uv_offset_a", uvOffsetA );
+					bag.GetVec2( "uv_scale_b",  uvScaleB  );
+					bag.GetVec2( "uv_offset_b", uvOffsetB );
 
 					const unsigned int op = ParseOp( opStr );
 
@@ -2389,10 +2567,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Second operand Function2D -- same accepted-kind rule as `child_a` (resolved via the same pFunc2DManager lookup)"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "weight_a";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to A before the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "weight_b";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to B before the operator"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling A (only first two components used)"; p.defaultValueHint = "1.0 1.0"; }
-						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
-						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
-						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec2;p.description = "(U, V) scale applied to (u,v) before sampling A"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec2;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec2;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec2;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
 						{ auto& p = P(); p.name = "lerp_t";        p.kind = ValueKind::Double;    p.description = "Lerp parameter (clamped to [0,1]); only used when op = lerp"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "output_scale";  p.kind = ValueKind::Double;    p.description = "Final-stage scalar multiplier applied AFTER the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "output_offset"; p.kind = ValueKind::Double;    p.description = "Final-stage scalar offset added AFTER output_scale"; p.defaultValueHint = "0.0"; }
@@ -3471,7 +3649,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "base";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.required = true; p.semantics.pipe = ParameterPipe::Material;
-						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material` and `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time), and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's directional albedo to run its interreflection series, which a luminaire, a BSSRDF or a volumetric random walk cannot supply.  `required`: unlike `composite_material`'s `top`/`bottom` or the luminaire materials' `material` slot, the built-in `none` null material is not a fallback here -- it fails the substrate allowlist just like any other unsupported material, so there is no valid default and this slot must always be authored."; }
+						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material`, `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time), `fabric_material` and `weave_material` (DL-23: a coat over cloth -- waxed canvas, a varnished basket weave), and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's directional albedo to run its interreflection series, which a luminaire, a BSSRDF or a volumetric random walk cannot supply.  A `weave_material` base under `transmission thin` (or a `fabric_material` wrapping one) also makes the whole coated stack SEE-THROUGH: the coat forwards the substrate's transmission, attenuated by its own two-crossing Fresnel/absorption, rather than blocking it (mirrors `fabric_material`'s identical `base` forwarding).  `required`: unlike `composite_material`'s `top`/`bottom` or the luminaire materials' `material` slot, the built-in `none` null material is not a fallback here -- it fails the substrate allowlist just like any other unsupported material, so there is no valid default and this slot must always be authored."; }
 						{ auto& p = P(); p.name = "coat_weight";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.0";
 						  p.description = "Coat COVERAGE fraction in [0,1] (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter: this slot is read as one value, so an `r g b` triple would silently drop g and b).  Clamped to [0,1].  This is the spatially varying slot: paint it to make a surface wet in the joints and dry on the crowns.  Semantically a sub-pixel AREA fraction, not a gloss knob -- at coverage c the response is the statistical mixture c*(coated) + (1-c)*(bare), and the bare branch reaches the substrate through AIR with no Fresnel transmission and no interreflection.  Both branches conserve energy, so partial coverage does not darken an otherwise-white surface."; }
 						{ auto& p = P(); p.name = "coat_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.33";
@@ -4981,9 +5159,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5219,9 +5395,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5390,9 +5564,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5439,8 +5611,14 @@ namespace RISE
 					bag.GetVec3( "up",       up );
 
 					double vpscale[2] = {1.0,1.0};
-					if( bag.Has( "viewport_scale" ) ) {
-						sscanf( bag.GetString( "viewport_scale" ).c_str(), "%lf %lf", &vpscale[0], &vpscale[1] );
+					{
+						std::string vpDiag;
+						const Vec2Resolution vr = ResolveVec2UniformBroadcast( bag, "orthographic_camera", name, "viewport_scale", vpscale, &vpDiag );
+						if( vr.present && !vr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", vpDiag.c_str() );
+							SetFinalizeDiagIfEmpty( vpDiag );
+							return false;
+						}
 					}
 
 					double orientation[3] = {0,0,0};
@@ -5452,9 +5630,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -5474,7 +5650,7 @@ namespace RISE
 						cd.keyword = "orthographic_camera"; cd.category = ChunkCategory::Camera;
 						cd.description = "Orthographic (parallel-projection) camera.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::Double; p.description = "Orthographic viewport scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::DoubleVec2; p.description = "Orthographic viewport scale (U, V).  ONE number is accepted as an explicit uniform broadcast (`viewport_scale 2` -> (2, 2))."; p.defaultValueHint = "1.0 1.0"; p.allowsUniformScalarBroadcast = true; }
 						AddCameraCommonParams( P );
 						return cd;
 					}();
@@ -6328,7 +6504,7 @@ namespace RISE
 				//! same reason.
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "skeleton_geometry:: %s", why.c_str() );
 					return false;
 				}
@@ -6911,7 +7087,7 @@ namespace RISE
 						// See Job::AddExpressionPainter's twin site -- thread the
 						// specific compiler diagnostic into the CST sink instead
 						// of leaving the caller with the generic apply-failed text.
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = exprErr;
+						SetFinalizeDiagIfEmpty( exprErr );
 						return false;
 					}
 
@@ -7872,7 +8048,7 @@ namespace RISE
 				//! fault rather than "the chunk failed".
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "lathe_geometry:: %s", why.c_str() );
 					return false;
 				}
@@ -7999,7 +8175,7 @@ namespace RISE
 				//! rather than "the chunk failed".
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "skin_geometry:: %s", why.c_str() );
 					return false;
 				}
@@ -9121,7 +9297,7 @@ namespace RISE
 							"exclusive -- a node is EITHER a leaf shape (`geometry`) OR an instance of another node "
 							"(`source`), never both.  Drop one.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						return false;
 					}
 					// A LONE `source` must never reach here: Cst::DeriveToJob EXPANDS it
@@ -9137,7 +9313,7 @@ namespace RISE
 							"-- this chunk was applied by a path that does not expand instances (Cst::DeriveToJob PASS-2 is "
 							"the only one that does).  Re-derive the whole scene.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						return false;
 					}
 					// 87 step 3c: `count_u` / `count_v` REPEAT AN INSTANCE, so they mean
@@ -9152,7 +9328,7 @@ namespace RISE
 							"`geometry` (or with neither) there is nothing to repeat, and the counts would be "
 							"silently ignored.  Add a `source`, or drop the counts.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						return false;
 					}
 
@@ -9199,6 +9375,24 @@ namespace RISE
 							name.c_str() );
 					}
 
+					// DL-32: resolve `scale` ONCE, before the transform-mode
+					// branch, so both the quaternion and Euler paths below
+					// read the same validated value.  Skipped entirely under
+					// `matrix` -- `scale` is subsumed there (the descriptor
+					// says so) and never reaches AddObjectMatrix, so a
+					// malformed value alongside an explicit `matrix` would be
+					// refusing the chunk over a field the transform ignores.
+					double scale[3] = {1.0, 1.0, 1.0};
+					if( !hasMatrix ) {
+						std::string scaleDiag;
+						const ScaleResolution sr = ResolveScaleVec3( bag, "standard_object", name, scale, &scaleDiag );
+						if( sr.present && !sr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", scaleDiag.c_str() );
+							SetFinalizeDiagIfEmpty( scaleDiag );
+							return false;
+						}
+					}
+
 					bool bRet = false;
 					if( hasMatrix ) {
 						double mat[16];
@@ -9219,10 +9413,8 @@ namespace RISE
 						// ComposeTRS_QuaternionGltf (§8.10).
 						double pos[3]   = {0,0,0};
 						double q[4]     = {0,0,0,1};	// xyzw, glTF convention
-						double scale[3] = {1,1,1};
 						bag.GetVec3( "position",   pos );
 						bag.GetVec4( "quaternion", q );
-						bag.GetVec3( "scale",      scale );
 
 						double M[16];
 						ComposeTRS_QuaternionGltf( pos, q, scale, M );
@@ -9237,14 +9429,12 @@ namespace RISE
 					} else {
 						double pos[3]    = {0,0,0};
 						double orient[3] = {0,0,0};
-						double scale[3]  = {1.0,1.0,1.0};
 						bag.GetVec3( "position", pos );
 						if( bag.GetVec3( "orientation", orient ) ) {
 							orient[0] *= DEG_TO_RAD;
 							orient[1] *= DEG_TO_RAD;
 							orient[2] *= DEG_TO_RAD;
 						}
-						bag.GetVec3( "scale", scale );
 
 						bRet = pJob.AddObject( name.c_str(), geometry.c_str(),
 							material=="none"?0:material.c_str(),
@@ -9293,7 +9483,7 @@ namespace RISE
 							"(lower case).  A mirror reflects the object across the plane through its OWN "
 							"origin perpendicular to that axis.";
 						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
-						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						SetFinalizeDiagIfEmpty( diag );
 						bRet = false;
 					}
 
@@ -9324,13 +9514,12 @@ namespace RISE
 					const bool wantsParent = !parent.empty() && parent != "none";
 					if( bRet ) {
 						if( !pJob.SetObjectParent( name.c_str(), wantsParent ? parent.c_str() : 0 ) && wantsParent ) {
-							if( RISE::g_cstFinalizeDiagSink ) {
-								*RISE::g_cstFinalizeDiagSink = "standard_object `" + name + "`: `parent " + parent +
+							RISE::SetFinalizeDiagIfEmpty(
+								"standard_object `" + name + "`: `parent " + parent +
 									"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
 									"object; must not already be one of its descendants; and must not be a CSG "
 									"operand (parent the csg_object instead).  The log line immediately above names "
-									"WHICH of those it was.";
-							}
+									"WHICH of those it was." );
 							bRet = false;
 						}
 					}
@@ -9369,7 +9558,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
 						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 transform, column-major, LOCAL to `parent` (overrides position/orientation/quaternion/scale)"; }
-						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale (`Sx Sy Sz`).  ONE number is accepted as a UNIFORM-scale shorthand (`scale 0.35` broadcasts to (0.35, 0.35, 0.35), with a log warning) -- anything else that is not exactly one or three finite numbers is a hard parse error (DL-32, docs/DEBT_LEDGER.md): a partial fill used to derive a silently DEGENERATE transform (the object would vanish and refuse every proximity() query)"; p.defaultValueHint = "1 1 1"; p.allowsUniformScalarBroadcast = true; }
 						{ auto& p = P(); p.name = "mirror";           p.kind = ValueKind::Enum;      p.enumValues = {"x","y","z","none"}; p.description = "REFLECT this node across the plane through its OWN origin perpendicular to the named LOCAL axis -- author one wing, hand, fin or shoe and mirror the other instead of building both.  Applied INNERMOST, before this node's `position` / `orientation` / `scale`, so `mirror x  position 3 0 0` puts the reflected shape AT +3 (it does not move it to -3).  With `source` the whole cloned SUBTREE arrives reflected, which is the headline use: `standard_object { name right_wing  source left_wing  mirror x }` off an UN-mirrored `left_wing`; with `count_u` every repetition is mirrored.  `mirror` is INSTANCE-OWN, never inherited through `source` -- exactly like `position` / `orientation` / `scale`.  So if the SOURCE itself carries a `mirror`, a plain `source` copy DROPS it and comes out as the source's mirror image; repeat the same `mirror <axis>` on the copy to reproduce the source exactly (the derive warns when you have not).  Legal on a geometry-less CONTAINER too -- everything parented under it composes through the reflection, exactly once, so a mirrored arm's own children are not double-mirrored.  `none` (or omitting the line) means no mirror"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
@@ -9400,9 +9589,18 @@ namespace RISE
 						return false;
 					}
 					struct NumericArity { const char* key; int count; };
+					// DL-32: `scale` is deliberately NOT in this strict-arity
+					// list any more -- it has its own broadcast-aware
+					// resolver (ResolveScaleVec3) below, shared with
+					// StandardObjectAsciiChunkParser so the two chunks'
+					// "matches standard_object semantics" descriptor claim
+					// stays true rather than aspirational: before this fix,
+					// `override_object`'s `scale` hard-refused the SAME
+					// single-number shorthand `standard_object` silently
+					// degenerated on -- two different bugs on one field.
 					const NumericArity numericArities[] = {
 						{ "position", 3 }, { "orientation", 3 }, { "quaternion", 4 },
-						{ "matrix", 16 }, { "scale", 3 }
+						{ "matrix", 16 }
 					};
 					for( const NumericArity& arity : numericArities ) {
 						if( !HasExactNumericArity( bag, arity.key, arity.count ) ) {
@@ -9411,6 +9609,17 @@ namespace RISE
 								name.c_str(), arity.key, arity.count );
 							return false;
 						}
+					}
+					double resolvedScale[3] = {1.0, 1.0, 1.0};
+					bool scalePresent = false;
+					{
+						std::string scaleDiag;
+						const ScaleResolution sr = ResolveScaleVec3( bag, "override_object", name, resolvedScale, &scaleDiag );
+						if( sr.present && !sr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", scaleDiag.c_str() );
+							return false;
+						}
+						scalePresent = sr.present;
 					}
 					IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
 					if( !priv ) {
@@ -9453,12 +9662,11 @@ namespace RISE
 						}
 						any = true;
 					} else if( hasQuaternion ) {
-						double pos[3]={0,0,0}, q[4]={0,0,0,1}, s[3]={1,1,1};
+						double pos[3]={0,0,0}, q[4]={0,0,0,1};
 						bag.GetVec3( "position",   pos );
 						bag.GetVec4( "quaternion", q );
-						bag.GetVec3( "scale",      s );
 						double M[16];
-						ComposeTRS_QuaternionGltf( pos, q, s, M );
+						ComposeTRS_QuaternionGltf( pos, q, resolvedScale, M );
 						const Matrix4 transform = BuildMatrix4FromColumnMajor( M );
 						if( Implementation::Transformable* concrete =
 							dynamic_cast<Implementation::Transformable*>( obj ) ) {
@@ -9492,14 +9700,13 @@ namespace RISE
 								v[0]*DEG_TO_RAD, v[1]*DEG_TO_RAD, v[2]*DEG_TO_RAD ) );
 							any = true;
 						}
-						double scl[3];
-						if( bag.GetVec3( "scale", scl ) ) {
+						if( scalePresent ) {
 							// R2 fix (pinned 2.7): ALWAYS use
 							// SetStretch — `scale` Vec3 routes to
 							// SetStretch in standard_object too
 							// (its parser in this file → AddObject
 							// → IObjectPriv::SetStretch).
-							obj->SetStretch( Vector3( scl[0], scl[1], scl[2] ) );
+							obj->SetStretch( Vector3( resolvedScale[0], resolvedScale[1], resolvedScale[2] ) );
 							any = true;
 						}
 					}
@@ -9559,7 +9766,11 @@ namespace RISE
 						                  "nothing emits override_object today, but older scene "
 						                  "files that contain it remain parseable."; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.required = false;
-						  p.description = "Per-axis scale; matches standard_object semantics."; }
+						  p.description = "Per-axis scale; matches standard_object semantics -- including the "
+						                  "DL-32 uniform-scale broadcast (ONE number scales all three axes; "
+						                  "anything else that is not exactly one or three finite numbers is a "
+						                  "hard parse error).";
+						  p.allowsUniformScalarBroadcast = true; }
 						return cd;
 					}();
 					return d;
@@ -9633,13 +9844,12 @@ namespace RISE
 					const std::string csgParent = bag.GetString( "parent", "" );
 					const bool csgWantsParent = !csgParent.empty() && csgParent != "none";
 					if( !pJob.SetObjectParent( name.c_str(), csgWantsParent ? csgParent.c_str() : 0 ) && csgWantsParent ) {
-						if( RISE::g_cstFinalizeDiagSink ) {
-							*RISE::g_cstFinalizeDiagSink = "csg_object `" + name + "`: `parent " + csgParent +
+						RISE::SetFinalizeDiagIfEmpty(
+							"csg_object `" + name + "`: `parent " + csgParent +
 								"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
 								"object; must not already be one of its descendants; and must not be a CSG operand "
 								"(parent that csg_object instead).  The log line immediately above names WHICH of "
-								"those it was.";
-						}
+								"those it was." );
 						return false;
 					}
 					return true;
@@ -9985,7 +10195,7 @@ namespace RISE
 				//! failure surfaces.
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "rect_light:: %s", why.c_str() );
 					return false;
 				}
@@ -10281,7 +10491,7 @@ namespace RISE
 				//! written from -- rect_light's Reject, same reason.
 				static bool Reject( const std::string& why )
 				{
-					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					SetFinalizeDiagIfEmpty( why );
 					GlobalLog()->PrintEx( eLog_Error, "shape_light:: %s", why.c_str() );
 					return false;
 				}
@@ -13735,7 +13945,12 @@ namespace RISE
 				return true;
 			}
 		}
-		return Finalize( bag, pJob );
+		// DL-32: Finalize() may have hit a wrong-arity DoubleVec3/DoubleVec4/
+		// DoubleMat4 value via GetVec3/GetVec4/GetMat4 -- that is a hard
+		// parse error (already logged by ReportVectorArity), not a value
+		// Finalize() should silently apply, so it fails the chunk here
+		// even when Finalize() itself returned true.
+		return Finalize( bag, pJob ) && !bag.HadHardError();
 	}
 
 	// Public wrapper (declared in IAsciiChunkParser.h) over the inline

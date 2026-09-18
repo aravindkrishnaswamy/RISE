@@ -1923,13 +1923,22 @@ load and returns before its own render-freeze assert.
    on a scene of four or fewer objects, where the linear `IntersectRay` loop
    WOULD draw the new object — keeps the flat scan and keeps the check, and
    `ProximitySignalTest` (g) still pins it.
-4. **A scene-language trap found while authoring scene D, and NOT fixed here.**
+4. ~~**A scene-language trap found while authoring scene D, and NOT fixed here.**
    `standard_object`'s `scale` is a `DoubleVec3`. Writing it with ONE number
    (`scale 0.35`) derives to a **degenerate transform with no diagnostic** —
    the object silently disappears from the render and refuses every proximity
    query (`Object::DistanceToSurface` rejects `σ_min ≤ 0`). Verified by
    re-introducing the edit: `MeshClosestPointTest`'s mesh-on-mesh station goes
-   1.0 → 0. This is a parser gap outside Phase 2's scope; recorded in §10.
+   1.0 → 0. This is a parser gap outside Phase 2's scope; recorded in §10.~~
+   **CLOSED 2026-09-14 (DL-32, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — a
+   single number is now an explicit UNIFORM-scale broadcast (with a log
+   warning), and anything else short of three finite numbers is a hard parse
+   error naming DL-32, instead of a silent zero-fill.  `ResolveScaleVec3`
+   (`ChunkParserRegistry.cpp`) is shared by `standard_object` and
+   `override_object` so the two cannot drift apart on it again.
+   `tests/StandardObjectScaleTest.cpp` is the dedicated regression;
+   `CstDeriveGoldenTest` (452/452, 0 drift) and `ProximitySignalTest`
+   (491/0) confirm the corpus is unaffected.
 
 **(a) The differential — `MeshClosestPointTest` (a), 56 checks total in the
 suite.** Traversal vs brute force over EVERY triangle, under the SAME
@@ -3259,6 +3268,26 @@ measured by a harness test against the tracked scene.
   re-introducing it (§8.3, trap 4).  A parser gap, outside this design's
   scope, recorded here because it is a live trap for anyone placing an
   object for a contact scene.
+
+- **A mesh neighbour is a SHEET, and no other shipped family is.**  Every
+  solid family clamps a signed field at zero, so a point inside reads 1;
+  a point inside a closed MESH reads its honest distance to the nearest
+  triangle instead, because a triangle soup carries no inside test.  The
+  direction is safe (an over-report under-paints) but the inconsistency is
+  real: a receiver buried inside a mesh neighbour will not read contact.
+  A signed/inside variant for meshes needs a robustly closed-mesh test.
+  **Phase 3's `interior(r)` did NOT close this**: it is the signed variant for
+  every SOLID family, and a mesh -- being a sheet -- contributes 0 to it, so a
+  receiver buried inside a closed mesh reads `interior` 0 as well as
+  `proximity` its honest distance. The closed-mesh test is still the missing
+  piece.
+- ~~**`standard_object`'s `scale` written with ONE number derives to a
+  DEGENERATE transform, silently.**~~  **CLOSED 2026-09-14 (DL-32,
+  [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — `scale 0.35` is now an explicit
+  UNIFORM-scale broadcast (logged); anything else short of three finite
+  numbers is a hard parse error instead of the silent zero-fill found while
+  authoring scene D (§8.3, trap 4).  `override_object`'s identically-claimed
+  `scale` shares the same resolver.
 - `proximity` is unsigned; Phase 3's `interior(r)` **ships** and supplies the
   inside half for the solid families and, since DL-31 (2026-09-14), a
   WATERTIGHT mesh too; every sheet family (plane, disk, open cylinder,

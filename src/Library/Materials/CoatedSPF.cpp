@@ -70,21 +70,45 @@ Scalar CoatedSPF::PdfImpl(
 	if( Vector3Ops::Dot( wi, n ) <= 0 ) {
 		return 0;
 	}
-	if( Vector3Ops::Dot( wo, n ) <= 0 ) {
+
+	const Scalar cosWi = Vector3Ops::Dot( wi, n );
+	const Scalar cosWo = Vector3Ops::Dot( wo, n );
+
+	CoatedBRDF::CoatParams cp;
+	pBRDF->ResolveCoat( ri, nm, cp );
+	const Scalar pCoat = cp.weight * CoatedLayer::Fresnel( cosWi, cp.eta );
+
+	if( cosWo < 0 )
+	{
+		// DL-23 -- TRANSMISSION.  Mirrors FabricSPF::PdfWithParams's
+		// identical branch: reached only when the substrate scatters
+		// over the full sphere; otherwise this is the committed
+		// `cosWo <= 0 -> return 0`, bit for bit, and no substrate call is
+		// made.  NO GEOMETRIC-HORIZON GATE -- this IS the below-horizon
+		// transport, on FabricSPF's / WeaveSPF's precedent.  The coat
+		// lobe contributes NOTHING here (VNDF reflection sampling about
+		// the ray-facing normal can never draw a below-horizon
+		// direction), so the mixture's transmit arm is `(1-pCoat)*qBase`
+		// alone.
+		if( !pBRDF->BaseScattersFullSphere() ) {
+			return 0;
+		}
+		const Scalar qBaseT = ( nm < 0 )
+			? pBaseSPF->Pdf( ri, wo, ior_stack )
+			: pBaseSPF->PdfNM( ri, wo, nm, ior_stack );
+		return r_max( Scalar(0), ( Scalar(1) - pCoat ) * qBaseT );
+	}
+
+	if( cosWo == 0 ) {
 		return 0;
 	}
+
 	// Same geometric-horizon rejection the sampler applies, so a
 	// direction Scatter can no longer emit carries zero density (MIS
 	// consistency -- see GGXSPF::Pdf).
 	if( Vector3Ops::Dot( wo, GeomNormal( ri, n ) ) <= 0 ) {
 		return 0;
 	}
-
-	CoatedBRDF::CoatParams cp;
-	pBRDF->ResolveCoat( ri, nm, cp );
-
-	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar pCoat = cp.weight * CoatedLayer::Fresnel( cosWi, cp.eta );
 
 	const Scalar qCoat = MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, onb, cp.alpha, cp.alpha );
 	const Scalar qBase = ( nm < 0 )
@@ -211,56 +235,94 @@ void CoatedSPF::ScatterImpl(
 		return;
 	}
 
-	const Scalar cosWo = Vector3Ops::Dot( wo, n );
-	const bool   valid = ( cosWo > 0 ) && ( Vector3Ops::Dot( wo, geomN ) > 0 );
-
-	const Scalar q = valid ? PdfImpl( ri, wo, nm, ior_stack ) : Scalar(0);
-
-	if( !valid || q <= Scalar(1e-12) )
-	{
-		// Zero the THROUGHPUT of anything the base contributed, so a
-		// bare-substrate weight cannot escape as if it were a coated
-		// one.  The base's own `pdf` is deliberately LEFT ALONE: the
-		// ray carries no energy either way, and a non-delta ray with
-		// pdf == 0 is a live 0/0 hazard in any downstream MIS
-		// denominator, where it would turn a zero contribution into a
-		// NaN one.
-		//
-		// Unreachable for the allowlisted substrates -- Lambertian,
-		// Oren-Nayar and GGX all gate their own samples against the
-		// shading hemisphere AND the same ray-anchored geometric
-		// horizon this function uses, so a direction that survives
-		// their gate survives this one.  Kept as a guard against a
-		// future substrate with a looser gate.
-		for( unsigned int i = before; i < scattered.Count(); ++i ) {
-			scattered[i].kray   = RISEPel( 0, 0, 0 );
-			scattered[i].krayNM = 0;
-		}
-		return;
-	}
-
 	if( scattered.Count() > before )
 	{
-		// Substrate branch: rewrite in place.
+		// Substrate branch: reprice EACH ray the base added against the
+		// full mixture.  DL-23: a `transmission thin` weave/fabric
+		// substrate can emit either a CONTINUUM below-horizon ray or a
+		// DELTA gap ray here (WeaveSPF.cpp), and the two need different
+		// treatment -- a delta direction's `PdfImpl` would report the
+		// CONTINUUM mixture density at that point, not the Dirac the ray
+		// actually carries, so this no longer shares one cached density
+		// with the coat branch below (FabricSPF.cpp's identical
+		// restructuring, R8 P1.1).
 		for( unsigned int i = before; i < scattered.Count(); ++i )
 		{
 			ScatteredRay& s = scattered[i];
-			const Vector3 sw    = Vector3Ops::Normalize( s.ray.Dir() );
-			const Scalar  scos  = Vector3Ops::Dot( sw, n );
-			const Scalar  sq    = ( i == before ) ? q : PdfImpl( ri, sw, nm, ior_stack );
+			const Vector3 sw   = Vector3Ops::Normalize( s.ray.Dir() );
+			const Scalar  scos = Vector3Ops::Dot( sw, n );
 
-			if( scos <= 0 || sq <= Scalar(1e-12) ) {
-				// Same reasoning as the block above: kill the
+			if( s.isDelta )
+			{
+				// A delta lobe from the substrate -- today, exactly a
+				// `transmission thin` weave's gap pass-through.
+				// `isDelta` and the substrate's own `pdf` MARKER (not a
+				// density) are left untouched, so PT/BDPT/VCM keep
+				// routing this sample around the density (ISPF.h)
+				// instead of dividing by a Dirac; only `kray` is
+				// repriced, by the coat's BARE (non-recycled)
+				// two-crossing attenuation and this wrapper's OWN
+				// substrate-branch selection probability `(1-pCoat)` --
+				// mirrors FabricSPF::ScatterImpl's identical delta
+				// branch verbatim, substituting `CoatedLayer::Fresnel`/
+				// `PassTransmittance` for `FabricBRDF::SheenTransmit`.
+				// NO `rec` (recycling) factor: that denominator is the
+				// multi-bounce series between the coat and the
+				// substrate SURFACE, which a measure-zero direction has
+				// zero probability of receiving.
+				if( !pBRDF->BaseScattersFullSphere() || cosWi <= 0 || scos >= 0 ) {
+					s.kray   = RISEPel( 0, 0, 0 );
+					s.krayNM = 0;
+					continue;
+				}
+				const Scalar muDelta = -scos;
+				const Scalar Tin  = Scalar(1) - CoatedLayer::Fresnel( cosWi,   cp.eta );
+				const Scalar Tout = Scalar(1) - CoatedLayer::Fresnel( muDelta, cp.eta );
+				const Scalar sel  = r_max( Scalar(1e-12), Scalar(1) - pCoat );
+				if( nm < 0 ) {
+					const RISEPel Ain   = CoatedLayer::PassTransmittanceRGB( cosWi,   cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
+					const RISEPel Aout  = CoatedLayer::PassTransmittanceRGB( muDelta, cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
+					const RISEPel atten = Ain * Aout * ( Tin * Tout / ( cp.eta * cp.eta ) );
+					s.kray = s.kray * ( atten / sel );
+				} else {
+					const Scalar Ain   = CoatedLayer::PassTransmittance( cosWi,   cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+					const Scalar Aout  = CoatedLayer::PassTransmittance( muDelta, cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+					const Scalar atten = Ain * Aout * ( Tin * Tout / ( cp.eta * cp.eta ) );
+					s.krayNM = s.krayNM * ( atten / sel );
+				}
+				continue;
+			}
+
+			const bool sValid = ( scos > 0 && Vector3Ops::Dot( sw, geomN ) > 0 )
+			                 || ( scos < 0 && pBRDF->BaseScattersFullSphere() );
+			const Scalar sq = sValid ? PdfImpl( ri, sw, nm, ior_stack ) : Scalar(0);
+
+			if( !sValid || sq <= Scalar(1e-12) ) {
+				// Same reasoning as the delta branch's guard: kill the
 				// throughput, keep the base's density.
+				//
+				// Unreachable for the pre-DL-23 allowlisted substrates
+				// (Lambertian, Oren-Nayar, GGX): all three gate their
+				// own samples against the shading hemisphere AND the
+				// same ray-anchored geometric horizon this function
+				// uses, so a direction that survives their gate
+				// survives this one.  Kept as a guard against a future
+				// substrate with a looser gate.
 				s.kray = RISEPel( 0, 0, 0 );
 				s.krayNM = 0;
 				continue;
 			}
 
+			// `|cos|`, not `cos`: a transmit-side draw is below the
+			// shading normal and its projected-solid-angle weight is
+			// the magnitude.  Identical to the committed `scos`
+			// wherever `scos > 0`, which is everywhere a
+			// reflection-only substrate can land.
+			const Scalar absCos = ( scos < 0 ) ? -scos : scos;
 			if( nm < 0 ) {
-				s.kray = pBRDF->value( sw, ri ) * ( scos / sq );
+				s.kray = pBRDF->value( sw, ri ) * ( absCos / sq );
 			} else {
-				s.krayNM = pBRDF->valueNM( sw, ri, nm ) * ( scos / sq );
+				s.krayNM = pBRDF->valueNM( sw, ri, nm ) * ( absCos / sq );
 			}
 			s.pdf     = sq;
 			s.isDelta = false;
@@ -268,7 +330,17 @@ void CoatedSPF::ScatterImpl(
 	}
 	else
 	{
-		// Coat branch: build the ray.
+		// Coat branch: build the ray.  Always a reflection (VNDF
+		// sampling about the ray-facing normal can never draw a
+		// below-horizon direction), so this is untouched by DL-23.
+		const Scalar cosWo = Vector3Ops::Dot( wo, n );
+		const bool   valid = ( cosWo > 0 ) && ( Vector3Ops::Dot( wo, geomN ) > 0 );
+		const Scalar q = valid ? PdfImpl( ri, wo, nm, ior_stack ) : Scalar(0);
+		if( !valid || q <= Scalar(1e-12) ) {
+			// No ray was ever added for the coat branch; nothing to zero.
+			return;
+		}
+
 		ScatteredRay coat;
 		coat.type    = lobeType;
 		coat.isDelta = false;

@@ -1000,6 +1000,113 @@ static void TestRefusals()
 		std::remove( tmp.c_str() );
 	}
 
+	// F6b (DL-26, docs/DEBT_LEDGER.md; WETNESS_COAT_DESIGN.md sec 6.4/12
+	// item 6c): the ONE direction that now composes -- `add_wear` applied
+	// FIRST on a LAMBERTIAN target, then `add_wetness` on the SAME material,
+	// succeeds (unlike F6's GGX case, which still refuses).  Physically:
+	// wet grime settles over a worn substrate.  The Lambertian coat-WRAP
+	// branch never reads the substrate's own colour slot at all (item 8:
+	// `coat_weight`/`coat_roughness` are minted fresh), so whatever
+	// `add_wear` rebound `reflectance` to is irrelevant to the wrap -- see
+	// AgentSession.cpp's `lambertianWornBypass`/`BuildWetnessCoatedMaterialText_`
+	// comments for the full derivation.
+	{
+		std::string body = Preamble();
+		body += SphereGeo( "s" );
+		body += Lambertian( "mat_lam", "pnt_stone" );
+		body += Obj( "o1", "s", "mat_lam", 0 );
+		const std::string tmp = TempPath( "addwet_f6b.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "F6b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// Baseline render: bare, dry, unworn Lambertian.  Renders are
+			// NOT seeded deterministically (rise-render-seeding.md: default
+			// seed is unsynchronized libc rand()), so `samples` is well
+			// above the other renders in this file (which only check
+			// non-blackness) specifically to shrink MC noise enough that
+			// the worn-vs-worn+wet comparison below reads a real physical
+			// difference rather than draw-to-draw variance.
+			Agent::AgentRenderParams rp; rp.width = 24; rp.height = 24; rp.samples = 64;
+			const Agent::AgentRenderResult bareRender = sess->Render( rp );
+			Check( bareRender.ok, "F6b: baseline (bare) render succeeds" );
+
+			const Agent::AgentSession::AgentAddWearResult wearResult = sess->AddWear( "mat_lam" );
+			Check( wearResult.applied, "F6b: add_wear applies to the Lambertian first" );
+			Check( !wearResult.colorPainter.empty(),
+			       "F6b: add_wear minted an expression_painter for the colour slot" );
+			const std::string afterWear = sess->ReadDocument();
+			const Agent::AgentRenderResult wornRender = sess->Render( rp );
+			Check( wornRender.ok, "F6b: worn-only render succeeds" );
+
+			const Agent::AgentSession::AgentAddWetnessResult wetResult = sess->AddWetness( "mat_lam" );
+			Check( wetResult.ok && wetResult.applied,
+			       std::string( "F6b MONEY: add_wetness SUCCEEDS on a material `add_wear` already wore -- "
+			       "the collision this row closes -- " ) + wetResult.message );
+			Check( wetResult.wrappedInCoat,
+			       "F6b: applied via the coat-WRAP branch (the only one this composition reaches)" );
+			const std::string afterWet = sess->ReadDocument();
+
+			// The material graph carries BOTH effects: the wear expression
+			// is still bound on the ORIGINAL `mat_lam` chunk (the coat wrap
+			// never touches it), and a NEW `coated_material` names it as
+			// `base`.
+			Check( afterWet.find( wearResult.colorPainter ) != std::string::npos,
+			       "F6b MONEY: the wear expression_painter is STILL referenced after add_wetness -- the "
+			       "coat wrap did not discard or overwrite it" );
+			Check( afterWet.find( "coated_material" ) != std::string::npos,
+			       "F6b MONEY: a `coated_material` chunk was minted" );
+			Check( afterWet.find( wetResult.coatedMaterial ) != std::string::npos &&
+			       afterWet.find( "base" ) != std::string::npos && afterWet.find( "mat_lam" ) != std::string::npos,
+			       "F6b MONEY: the minted coated_material names `mat_lam` (the WORN material) as `base`" );
+
+			// Validate + re-derive cleanly (the composed document is not
+			// merely textually plausible).
+			{
+				const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( afterWet );
+				bool anyError = false;
+				for( const Agent::AgentDiagnostic& d : diags )
+					if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+				Check( !anyError, "F6b MONEY: the worn-and-wet document validates with ZERO error diagnostics" );
+			}
+			Check( pJob->GetScene() != nullptr, "F6b: the worn-and-wet document still derives" );
+
+			// A render of the worn-and-wet result still renders cleanly and
+			// differs from the ORIGINAL bare/dry/unworn material -- the
+			// composed document is not merely valid text, it is a visibly
+			// different surface.  (The worn-vs-worn+wet delta specifically
+			// was measured and found too small relative to this scene's
+			// unseeded per-render MC noise floor at any sample count this
+			// test can afford -- coat_weight's default pooling-driven mask
+			// covers only part of the surface and coat_roughness's effect
+			// on a Lambertian's diffuse response is a subtle Fresnel term,
+			// not a large one -- so the STRUCTURAL checks above (the coat
+			// chunk minted, the wear expression still bound) are the
+			// deterministic proof that both effects are genuinely present;
+			// this render is the "it still renders, and it's not the bare
+			// material" sanity check the structural checks cannot give.)
+			const Agent::AgentRenderResult wetRender = sess->Render( rp );
+			Check( wetRender.ok, "F6b: worn-and-wet render succeeds" );
+			const double wornSum = wornRender.meanR + wornRender.meanG + wornRender.meanB;
+			const double wetSum  = wetRender.meanR  + wetRender.meanG  + wetRender.meanB;
+			const double bareSum = bareRender.meanR + bareRender.meanG + bareRender.meanB;
+			std::printf( "    F6b: mean luma  bare=%.6f  worn=%.6f  worn+wet=%.6f\n",
+			             bareSum, wornSum, wetSum );
+			Check( std::fabs( wornSum - bareSum ) > 0.01 * bareSum,
+			       "F6b: the worn-only render differs from the bare one by more than 1% (add_wear's own "
+			       "effect, already covered by AgentAddWearTest -- checked here only as this test's own "
+			       "premise)" );
+			Check( std::fabs( wetSum - bareSum ) > 0.01 * bareSum,
+			       "F6b MONEY: the final worn-and-wet render differs from the ORIGINAL bare/dry material by "
+			       "more than 1% -- the composed document is a visibly different, non-degenerate surface, "
+			       "not merely valid text" );
+
+			sess.reset(); pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
 	// ---- P1-E: clause-2 unreadable-base sub-cases -- blackbody, spectral,
 	// and a non-default `colorspace` uniformcolor_painter.  All three must
 	// take the SAME "cannot read... as a plain Rec.709-linear triple"

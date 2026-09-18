@@ -599,14 +599,18 @@ static void TestEditorColorEditAtomicity()
 	// two-call implementation left open: the `colorspace` half already
 	// committed (and re-derived) when the colour half is refused.
 	//
-	// NOT USED HERE, and worth naming: a SHORT triple (`color 1 0.05`) is NOT
-	// refused -- the chunk parser zero-fills the missing component, so that
-	// edit legitimately applies and lands the light on (1, 0.05, 0).  It is a
-	// valid edit, not a malformed one, so it cannot pin atomicity.
+	// UPDATED 2026-09-17 (DL-32 round 2, docs/DEBT_LEDGER.md): a SHORT triple
+	// (`color 1 0.05`) USED TO NOT be refused -- the chunk parser zero-filled
+	// the missing component, landing the light on (1, 0.05, 0) as a "valid"
+	// edit.  `ParseStateBag::GetVec3` now hard-errors on a token count that
+	// is not exactly 3, so a short triple is genuinely malformed and pins
+	// atomicity the same way the two rows below it do.
 	CheckColorEditRefusedChangesNothing( kEditorScene, "atomabc", "abc", expectOriginal,
 	                                     "not a number" );
 	CheckColorEditRefusedChangesNothing( kEditorScene, "atomnan", "1 nan 0.02", expectOriginal,
 	                                     "a non-finite component" );
+	CheckColorEditRefusedChangesNothing( kEditorScene, "atomshort", "1 0.05", expectOriginal,
+	                                     "a short (2 of 3) triple" );
 
 	// (c) A DOUBLED `color` LINE.  Refused by the duplicate-occurrence guard
 	// BEFORE anything is written -- the guard now runs over EVERY param of the

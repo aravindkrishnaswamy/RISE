@@ -1373,7 +1373,7 @@ namespace RISE
 			// of the author's actual reason -- which is exactly the shape
 			// RISE_API_CreateLatheGeometry's `fail` lambda already avoids.
 			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateSweepGeometry: %s", buf );
-			if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = buf;
+			SetFinalizeDiagIfEmpty( buf );
 			return false;
 		}
 
@@ -2316,7 +2316,7 @@ namespace RISE
 		// AddLatheGeometry prepends the geometry's name.
 		auto fail = []( const std::string& why ) -> bool {
 			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateLatheGeometry: %s", why.c_str() );
-			if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = why;
+			SetFinalizeDiagIfEmpty( why );
 			return false;
 		};
 		char msgbuf[512];
@@ -2918,7 +2918,7 @@ namespace RISE
 			vsnprintf( buf, sizeof(buf), fmt, ap );
 			va_end( ap );
 			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateSkinGeometry: %s", buf );
-			if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = buf;
+			SetFinalizeDiagIfEmpty( buf );
 			return false;
 		}
 
