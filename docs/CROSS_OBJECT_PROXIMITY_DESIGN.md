@@ -3255,11 +3255,87 @@ measured by a harness test against the tracked scene.
   or non-manifold edge in the source asset itself — see
   `tests/MeshInteriorSignalTest.cpp` section (h) and DL-143's own ledger
   entry for the measured per-asset counts), but simple closed assets like
-  `Box.glb` do. `SphereGeometry::TessellateToMesh` still refuses (DL-116,
-  open) — welding correctly merges its coincident pole-row vertices,
-  which turns the pole cells into genuinely DEGENERATE triangles rather
-  than the pre-fix open-sheet miscount, so it is refused for a different,
-  more precisely diagnosed reason, not fixed.
+  `Box.glb` do. ~~`SphereGeometry::TessellateToMesh` still refuses
+  (DL-116, open) — welding correctly merges its coincident pole-row
+  vertices, which turns the pole cells into genuinely DEGENERATE
+  triangles rather than the pre-fix open-sheet miscount, so it is refused
+  for a different, more precisely diagnosed reason, not fixed.~~
+  **DL-116 CLOSED 2026-09-17** (`debt-geom2`; `EllipsoidGeometry` and
+  `CircularDiskGeometry` too): `SphereGeometry::TessellateToMesh` now
+  welds its own pole row to one shared (position, normal, texcoord) index
+  and skips the one wedge triangle that entry would make degenerate, so
+  DL-143's position weld now finds a genuinely closed 2-manifold there —
+  see `tests/MeshInteriorSignalTest.cpp` section (f)/(f2) and the ledger's
+  DL-116 entry.
+  **DL-136 CLOSED 2026-09-17** (`debt-dlweld`): DL-116's own pole fix
+  left one PREDICTED, narrower residual — DL-143's `1e-6*bboxDiagonal`
+  weld tolerance is many orders of magnitude coarser than a UV seam's
+  own ~1e-16-scale float noise, so it should ALSO weld the ORDINARY
+  (non-pole) u=0/u=1 seam every tessellated closed UV-wrapped primitive
+  carries (sphere's u-seam; torus's u-seam AND v-seam, which has no pole
+  at all; a capped cylinder's side u-seam) — verified true through the
+  PRODUCTION path (`SignedDistanceLower`, not a local re-implementation):
+  `tests/MeshInteriorSignalTest.cpp` sections (i) (torus), (j) (capped
+  cylinder), (k) (the same three geometries wrapped in `DisplacedGeometry`
+  at zero displacement, exercising the wrapper's own baked-mesh forward),
+  and (l) (a 1000x-scaled tessellated sphere, confirming the weld scales
+  with the mesh's own bounding box rather than being an absolute-epsilon
+  artifact) all now answer a real signed `interior()` end to end.
+  `PoleWeldingWatertightnessTest.cpp`'s own torus/cylinder sections still
+  correctly report a nonzero seam-only residual under its deliberately
+  EXACT-bit-equality local model — that model exists specifically to
+  isolate the seam from the pole fix, not to describe DL-143's actual
+  (epsilon, not exact) production weld, so the two are not in tension.
+  **DL-150 OPEN 2026-09-17, discriminator added** (`debt-dlweld`, found
+  reviewing this same DL-143 closure): the weld epsilon being RELATIVE to
+  the whole mesh's bounding box cuts both ways — it can also exceed the
+  PHYSICAL GAP between two genuinely INDEPENDENT open sheets whenever
+  anything else in the same mesh inflates that bbox (a thin double shell,
+  a z-fight offset, fine detail inside a large architectural mesh),
+  welding them into one false, confidently-signed 2-manifold that
+  `SignedDistanceLower` then answers a wrong depth for. `ComputeWatertightness`
+  now additionally refuses when the weld merges vertices whose accumulated
+  surface orientations are opposed (cosine < -0.5, ~120 degrees) — the
+  signature of two facing sheets glued by coincidence rather than one
+  continuous seam (a legitimate seam's welded corners agree in
+  orientation: identical on a smooth seam, at most ~90 degrees apart at a
+  flat-shaded cube corner). Red-proved with the reviewer's own repro
+  (two independently-triangulated, opposite-winding quads 0.001 units
+  apart, sharing a mesh with one remote vertex that inflates the bbox
+  diagonal to ~1732 so `eps`~1.7e-3 exceeds the gap): pre-fix falsely
+  certifies watertight with a confidently WRONG signed depth in the
+  sliver between the quads; post-fix, the orientation discriminator
+  refuses it (`tests/MeshInteriorSignalTest.cpp` section (m)). **This
+  does NOT close DL-150 as a design limit, only as a shipped mitigation**:
+  two sheets facing the SAME way (cosine near +1, e.g. two overlapping
+  coplanar duplicate quads) weld into an equally false 2-manifold that
+  orientation alone cannot distinguish from a genuine seam — a documented,
+  deliberately UNCAUGHT residual (`tests/MeshInteriorSignalTest.cpp`
+  section (n), a control, not a red-proof target). No shipped glTF asset
+  (Avocado, DragonAttenuation, SheenChair, NormalTangentTest) or shipped
+  tessellator flips certification from this change — verified by
+  re-running each through the production path and confirming the DL-143
+  per-asset boundary/non-manifold counts (38; 617; 0/6; 400/528/384/32;
+  128) are byte-for-byte unchanged. Measured cost (CPU-time, isolated
+  pre-/post-fix library A/B, `DoneIndexedTriangles` only, median of 25-40
+  repeats): a 48401-vertex synthetic watertight sphere (detail=220, where
+  the discriminator actually runs) moved from ~1047 to ~1134 ns/vertex
+  (+8.3%); the 76809-vertex `DragonAttenuation` "Dragon" asset (which
+  fails the boundary/non-manifold check before the discriminator ever
+  runs) moved from ~909 to ~991 ns/vertex (+8.9%, from the now-unconditional
+  per-triangle orientation accumulation folded into the SAME loop that
+  already builds the edge map, plus the new weld-reduction log line) —
+  both comfortably inside a 20% budget. The discriminator itself uses a
+  counting-sort (CSR) grouping rather than a hash map of vectors, and is
+  capped at 64 members per weld group (a documented limit, not a
+  correctness claim either way for a larger group — a rare, arguably
+  pathological input). See the ledger's DL-150 entry for the full
+  mechanism, the `WeldVertexPositions`/`ComputeWatertightness` function
+  comments in `TriangleMeshGeometryIndexed.cpp` for the code-level
+  account, and this bullet's own "documented residual" above for what a
+  stronger guarantee would still need (an independent geometric test —
+  self-intersection or distinct connected-component volume enclosure —
+  out of scope for this cheap, build-time check).
 - **`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
   produces no diagnostic, makes the object vanish from the render, and

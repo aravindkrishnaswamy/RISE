@@ -107,6 +107,52 @@
 //        and `BoxTextured.glb` (both 24 vertices / 12 triangles, the
 //        same per-face convention as (e)) DO close, and are used here.
 //
+//  DL-136 CLOSURE EVIDENCE (debt-dlweld, 2026-09-17): DL-116's own fix
+//  comment predicted that DL-143's `1e-6*bboxDiagonal` weld tolerance,
+//  being many orders of magnitude coarser than a UV seam's ~1e-16-scale
+//  float noise, would ALSO weld the ordinary (non-pole) u=0/u=1 seam on
+//  every tessellated closed UV-wrapped primitive -- sphere, torus, capped
+//  cylinder -- even though `PoleWeldingWatertightnessTest.cpp`'s own
+//  EXACT-bit-equality local model cannot see that (by design: it isolates
+//  the seam residual FROM the pole fix, so it deliberately does not weld
+//  it). Sections (i)-(k) verify that prediction against the PRODUCTION
+//  path this whole file already exercises (`BeginIndexedTriangles` /
+//  `DoneIndexedTriangles` / `SignedDistanceLower`), not a local
+//  reimplementation:
+//    (i) `TorusGeometry::TessellateToMesh` (no pole at all -- its own
+//        u-seam AND v-seam are the entire DL-136 residual) now answers.
+//    (j) `CylinderGeometry::TessellateToMesh` (capped; no pole either --
+//        its own side-wall u-seam is the residual) now answers.
+//    (k) The SAME three geometries wrapped in `DisplacedGeometry` at
+//        ZERO displacement: `DisplacedGeometry::SignedDistanceLower`
+//        forwards to its own internally-baked `TriangleMeshGeometryIndexed`
+//        (`m_pMesh`), built by the identical `TessellateToMesh` call this
+//        file already exercises directly, so this exercises DL-136's
+//        closure through the SAME wrapper `docs/DL20_DL116_PATCH_
+//        CURVATURE_AND_POLE_WELDING.md`'s own sibling audit already
+//        traced for DL-143 (`DisplacedGeometry::BuildMesh` -> `m_pBase->
+//        TessellateToMesh` -> position-verbatim flattening).
+//    (l) A SCALED variant (vertices pre-scaled by 1000x, moving the bbox
+//        diagonal and hence `eps` in lockstep) confirms the weld is
+//        RELATIVE, not an absolute-epsilon artifact of the specific unit
+//        scale these fixtures happen to use.
+//
+//  DL-150 (found reviewing DL-143's own closure, `debt-dlweld`,
+//  2026-09-17): the position weld's `eps` is relative to the WHOLE mesh's
+//  bounding box, so it can exceed the physical gap between two genuinely
+//  INDEPENDENT open sheets whenever anything else in the same mesh
+//  inflates that bbox -- welding them into one false, confidently-signed
+//  2-manifold.  Section (m) is the reviewer's own repro (two independently
+//  triangulated, opposite-winding quads 0.001 apart, plus one remote
+//  vertex that inflates the bbox diagonal to ~1732 so `eps` ~1.7e-3 >
+//  0.001): pre-fix this FALSELY certifies watertight and answers a wrong
+//  signed depth in the sliver between the quads; post-fix, an
+//  orientation-consistency discriminator in `ComputeWatertightness`
+//  (see that function's own comment) refuses it.  Section (n) is the
+//  DOCUMENTED residual the discriminator cannot catch (two sheets facing
+//  the SAME way): a control, not a red-proof target -- it stays falsely
+//  certified either way, matching the design doc's own stated limit.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <chrono>
@@ -120,6 +166,11 @@
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/EllipsoidGeometry.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/TorusGeometry.h"
+#include "../src/Library/Geometry/CylinderGeometry.h"
+#include "../src/Library/Geometry/DisplacedGeometry.h"
+#include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Importers/GLTFSceneImporter.h"
 
 using namespace RISE;
@@ -735,6 +786,455 @@ static void TestShippedGltfBoxEndToEnd()
 	mesh->release();
 }
 
+//! DL-136 CLOSURE, section (i).  `TorusGeometry::TessellateToMesh` has NO
+//! pole at all -- both parametric directions wrap fully -- so its entire
+//! DL-136 residual is the ordinary u-seam + v-seam (`sin(2*pi) != sin(0)`
+//! at ~1e-16 relative scale), a genuine texcoord discontinuity but not a
+//! genuine POSITION discontinuity.  DL-143's weld tolerance
+//! (`1e-6*bboxDiagonal`) is many orders of magnitude coarser than that
+//! float noise, so it should weld the seam too -- verified here through
+//! the PRODUCTION path (`SignedDistanceLower`), not
+//! `PoleWeldingWatertightnessTest.cpp`'s own local, deliberately-exact-bit
+//! edge-count model (which is why that file's own torus/cylinder sections
+//! still correctly report a nonzero seam-only residual: they are pinning
+//! a DIFFERENT, EXACT-equality model, not this one).  Probe point is the
+//! tube's own central-circle point `(R, 0, 0)`, whose true nearest surface
+//! distance is exactly the tube radius `r` (see
+//! `TorusGeometry::DistanceToSurface`'s own comment for the ring-in-XZ,
+//! tube-along-Y convention this matches); the tessellated mesh's answer is
+//! a polyhedral approximation (inscribed-polygon apothem), hence the loose
+//! tolerance.
+static void TestTorusTessellationWatertight()
+{
+	std::cout << "(i) DL-136 CLOSED -- TorusGeometry::TessellateToMesh welds its u/v seam to watertight" << std::endl;
+
+	const Scalar R = 2.0, r = 0.5;
+	TorusGeometry* pTorus = new TorusGeometry( R, r );
+	pTorus->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pTorus->TessellateToMesh( tris, vertices, normals, coords, 32 );
+	Check( built, "(i) TorusGeometry::TessellateToMesh(detail=32) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( R, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(i) MONEY -- TorusGeometry::TessellateToMesh's own output ANSWERS SignedDistanceLower "
+		"through the PRODUCTION weld (DL-136 residual on this primitive is the seam only, which welds)" );
+	CheckClose( (double)outSigned, -(double)r, 0.05 * (double)r,
+		"(i) tessellated-torus tube-centre depth is close to the analytic tube radius" );
+	Check( outExact, "(i) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
+
+	mesh->release();
+	pTorus->release();
+}
+
+//! DL-136 CLOSURE, section (j).  `CylinderGeometry::TessellateToMesh`
+//! (capped) has no pole either -- its two caps already fan from one
+//! shared center vertex (pre-existing, not a DL-116 target) -- so its
+//! DL-136 residual is the side wall's own u-seam plus the side-to-cap
+//! crease (a genuine, load-bearing NORMAL discontinuity, but not a
+//! position one: same `cos`/`sin` formula on both sides of the crease).
+//! Probe point is the axis origin; the cylinder is built radius=1,
+//! height=2 (axis symmetric about the origin, `CylinderGeometry`'s own
+//! convention), so the analytic nearest surface from the origin is
+//! `min(radius, height/2) = 1.0`, attained by BOTH the side wall and the
+//! caps -- the polyhedral side wall under-reads this by the inscribed-
+//! apothem factor `cos(pi/detail)`, hence the loose tolerance.
+static void TestCappedCylinderTessellationWatertight()
+{
+	std::cout << "(j) DL-136 CLOSED -- capped CylinderGeometry::TessellateToMesh welds its seam to watertight" << std::endl;
+
+	const Scalar radius = 1.0, height = 2.0;
+	const unsigned int detail = 32;
+	CylinderGeometry* pCyl = new CylinderGeometry( 'z', radius, height, /*capped=*/true );
+	pCyl->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pCyl->TessellateToMesh( tris, vertices, normals, coords, detail );
+	Check( built, "(j) capped CylinderGeometry::TessellateToMesh(detail=32) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(j) MONEY -- capped CylinderGeometry::TessellateToMesh's own output ANSWERS SignedDistanceLower "
+		"through the PRODUCTION weld (DL-136 residual on this primitive is the side u-seam + cap crease, which weld)" );
+	const Scalar apothem = radius * std::cos( PI / (Scalar)detail );
+	const Scalar expected = std::min( apothem, height / Scalar( 2 ) );
+	CheckClose( (double)outSigned, -(double)expected, 0.02 * (double)radius,
+		"(j) tessellated-cylinder centre depth tracks min(inscribed side apothem, half-height)" );
+	Check( outExact, "(j) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
+
+	mesh->release();
+	pCyl->release();
+}
+
+//! A displacement of exactly zero, used to wrap sphere/torus/cylinder in
+//! `DisplacedGeometry` for section (k) without perturbing their positions
+//! at all -- the point is to exercise DL-136's closure through the
+//! WRAPPER's own baked mesh (`DisplacedGeometry::SignedDistanceLower`
+//! forwards to `m_pMesh->SignedDistanceLower`), not to test displacement.
+class ZeroFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar /*x*/, const Scalar /*y*/ ) const { return Scalar( 0 ); }
+};
+
+//! DL-136 CLOSURE, section (k).  Wraps each of Sphere/Torus/(capped)
+//! Cylinder in `DisplacedGeometry` at zero displacement and confirms the
+//! WRAPPER answers a real signed interior distance too -- not just the
+//! bare tessellator this file already tests directly in (f)/(i)/(j).
+//! `DisplacedGeometry::BuildMesh` bakes via `m_pBase->TessellateToMesh`
+//! and copies positions VERBATIM (see `DisplacedGeometry.h`'s own class
+//! comment and `docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md`'s
+//! sibling-audit correction on this exact point), so the baked mesh's
+//! topology and DL-136 residual are identical to the un-wrapped case --
+//! this section exists to prove that identity holds through the real
+//! wrapper class, not to re-derive it.
+static void TestDisplacedWrapsWatertight()
+{
+	std::cout << "(k) DL-136 CLOSED -- DisplacedGeometry(disp=0) wrapping sphere/torus/cylinder welds to watertight" << std::endl;
+
+	ZeroFunction2D zeroFn;
+	zeroFn.addref();
+
+	{
+		SphereGeometry* pBase = new SphereGeometry( 3.0 );
+		pBase->addref();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pBase, 31, &zeroFn, Scalar( 0 ), false, false );
+		pDisp->addref();
+		pDisp->Realize();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = pDisp->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(k) MONEY -- DisplacedGeometry(sphere, disp=0) ANSWERS SignedDistanceLower through its own baked mesh" );
+		CheckClose( (double)outSigned, -3.0, 0.05,
+			"(k) displaced-sphere-wrap centre depth is close to the analytic sphere's -R" );
+		Check( outExact, "(k) sphere wrap exact" );
+
+		pDisp->release();
+		pBase->release();
+	}
+	{
+		const Scalar R = 2.0, r = 0.5;
+		TorusGeometry* pBase = new TorusGeometry( R, r );
+		pBase->addref();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pBase, 32, &zeroFn, Scalar( 0 ), false, false );
+		pDisp->addref();
+		pDisp->Realize();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = pDisp->SignedDistanceLower( Point3( R, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(k) MONEY -- DisplacedGeometry(torus, disp=0) ANSWERS SignedDistanceLower through its own baked mesh" );
+		CheckClose( (double)outSigned, -(double)r, 0.05 * (double)r,
+			"(k) displaced-torus-wrap tube-centre depth is close to the analytic tube radius" );
+		Check( outExact, "(k) torus wrap exact" );
+
+		pDisp->release();
+		pBase->release();
+	}
+	{
+		const Scalar radius = 1.0, height = 2.0;
+		const unsigned int detail = 32;
+		CylinderGeometry* pBase = new CylinderGeometry( 'z', radius, height, /*capped=*/true );
+		pBase->addref();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pBase, detail, &zeroFn, Scalar( 0 ), false, false );
+		pDisp->addref();
+		pDisp->Realize();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = pDisp->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(k) MONEY -- DisplacedGeometry(capped cylinder, disp=0) ANSWERS SignedDistanceLower through its own baked mesh" );
+		const Scalar apothem = radius * std::cos( PI / (Scalar)detail );
+		const Scalar expected = std::min( apothem, height / Scalar( 2 ) );
+		CheckClose( (double)outSigned, -(double)expected, 0.02 * (double)radius,
+			"(k) displaced-cylinder-wrap centre depth tracks min(inscribed side apothem, half-height)" );
+		Check( outExact, "(k) cylinder wrap exact" );
+
+		pDisp->release();
+		pBase->release();
+	}
+
+	zeroFn.release();
+}
+
+//! DL-136 CLOSURE, section (l).  Confirms the weld is genuinely RELATIVE
+//! to the mesh's own scale, not an absolute-epsilon artifact that happens
+//! to work at the unit scale every other section here uses: the SAME
+//! sphere tessellation, with every vertex position pre-scaled by 1000x
+//! (moving the bbox diagonal -- and hence `eps = max(1e-9,
+//! 1e-6*diagonal)` -- by the same factor), must weld its seam and answer
+//! SignedDistanceLower at the correspondingly-scaled depth.  Normals are
+//! untouched (a uniform position scale does not change unit face
+//! directions), matching how `TessellateToMesh` itself would produce them
+//! at that scale.
+static void TestScaledMeshWeldsRelatively()
+{
+	std::cout << "(l) DL-136 sibling -- a 1000x-scaled tessellated sphere still welds (relative epsilon)" << std::endl;
+
+	const Scalar R = 3.0;
+	const Scalar kScale = 1000.0;
+	SphereGeometry* pSphere = new SphereGeometry( R );
+	pSphere->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pSphere->TessellateToMesh( tris, vertices, normals, coords, 31 );
+	Check( built, "(l) SphereGeometry::TessellateToMesh(detail=31) succeeds" );
+
+	for( std::size_t i = 0; i < vertices.size(); ++i ) {
+		vertices[i] = Point3( vertices[i].x * kScale, vertices[i].y * kScale, vertices[i].z * kScale );
+	}
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000000 ), outSigned, outExact );
+	Check( ok, "(l) MONEY -- a 1000x-scaled tessellated sphere still ANSWERS SignedDistanceLower "
+		"(eps scales with the mesh's own bbox diagonal, not a fixed absolute constant)" );
+	CheckClose( (double)outSigned, -(double)( R * kScale ), 0.01 * (double)( R * kScale ),
+		"(l) scaled-sphere centre depth tracks -R*scale" );
+	Check( outExact, "(l) exact at the scaled size too" );
+
+	mesh->release();
+	pSphere->release();
+}
+
+//! DL-150.  Two independently-triangulated QUADS with OPPOSITE winding
+//! (quad A faces +Z, quad B faces -Z -- i.e. they face EACH OTHER across
+//! a 0.001-unit gap), plus one remote vertex far away that inflates this
+//! mesh's own bounding-box diagonal to ~1732 -- so DL-143's weld epsilon
+//! (`1e-6*diagonal` ~= 1.7e-3) EXCEEDS the physical gap between the two
+//! quads, which are otherwise totally unrelated open sheets.  Each quad's
+//! own 4 boundary edges pair up 1:1 with the other's after the weld
+//! (their shared diagonal stays internal to each quad, unaffected), so
+//! the pre-DL-150 edge-count check alone reads this as a genuinely closed
+//! 2-manifold and `SignedDistanceLower` answers a confident WRONG signed
+//! depth for a point in the sliver between the quads.  The remote vertex
+//! is folded into one degenerate (zero-area) triangle with two of quad
+//! A's own vertices purely to keep it part of THIS mesh's position array
+//! (and hence its bounding box) without adding any real edges of its own
+//! to the watertightness count -- `ComputeWatertightness`'s existing
+//! degenerate-triangle branch would normally refuse outright on that, so
+//! this fixture instead gives the remote point ITS OWN small but genuinely
+//! non-degenerate closed tetrahedron, which contributes 0 boundary/
+//! non-manifold edges of its own and does not interact with the quads'
+//! edges at all (disjoint vertex ids) -- exactly the reviewer's own repro
+//! shape (two false-stitched quads sharing a mesh with an unrelated,
+//! genuinely closed remote component).
+static void AddTri( IndexTriangleListType& tris, unsigned int a, unsigned int b, unsigned int c )
+{
+	IndexedTriangle t;
+	t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+	t.iNormals[0]  = a; t.iNormals[1]  = b; t.iNormals[2]  = c;
+	t.iCoords[0]   = a; t.iCoords[1]   = b; t.iCoords[2]   = c;
+	tris.push_back( t );
+}
+
+static bool BuildOpposedQuadsWithRemoteTetrahedron( const Scalar gap,
+	IndexTriangleListType& tris, VerticesListType& vertices, bool sameWinding = false )
+{
+	tris.clear();
+	vertices.clear();
+
+	// Quad A, z=0, wound CCW from +Z (normal (0,0,+1)).
+	const unsigned int a0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, 0 ) );
+	const unsigned int a1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, 0 ) );
+	const unsigned int a2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, 0 ) );
+	const unsigned int a3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, 0 ) );
+	AddTri( tris, a0, a1, a2 );
+	AddTri( tris, a0, a2, a3 );
+
+	// Quad B, z=gap, split along the OTHER diagonal (b1-b3, not A's
+	// b0-b2/a0-a2) -- if both quads shared the same diagonal choice, that
+	// diagonal would weld into ONE edge shared by all 4 triangles (2 from
+	// each quad), a NON-MANIFOLD edge the pre-existing DL-31 edge count
+	// already refuses on its own, which would falsify this fixture as a
+	// DL-150 red-proof (it would refuse for an unrelated reason, before
+	// the discriminator ever runs).  With the diagonals disjoint, only the
+	// 4 PERIMETER edges are shared between A and B post-weld -- exactly
+	// the reviewer's own repro shape.  OPPOSITE winding from +Z (normal
+	// (0,0,-1), faces quad A) by default -- `sameWinding` builds the
+	// DOCUMENTED-RESIDUAL control instead (section (n)), where B faces
+	// the SAME way as A; both are valid consistent windings for either
+	// diagonal choice (verified: cross-product normal is (0,0,+-1) either way).
+	const unsigned int b0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, gap ) );
+	const unsigned int b1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, gap ) );
+	const unsigned int b2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, gap ) );
+	const unsigned int b3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, gap ) );
+	if( sameWinding ) {
+		AddTri( tris, b1, b2, b3 );	// normal (0,0,+1), matches quad A
+		AddTri( tris, b1, b3, b0 );
+	} else {
+		AddTri( tris, b1, b3, b2 );	// normal (0,0,-1), faces quad A
+		AddTri( tris, b1, b0, b3 );
+	}
+
+	// A remote, genuinely closed tetrahedron (4 vertices, 4 triangular
+	// faces, each edge shared by exactly two of them) far from the quads,
+	// purely to inflate the mesh's own bounding-box diagonal to ~1732 --
+	// matching the reviewer's own repro numbers (eps ~1.7e-3, between the
+	// 0.001 gap that should falsely weld and the 0.01 gap that should
+	// correctly refuse).
+	const Point3 tCenter( 1000, 1000, 1000 );
+	const unsigned int t0 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 0, 0, 1 ) ) );
+	const unsigned int t1 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 1, 0, -1 ) ) );
+	const unsigned int t2 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, 1, -1 ) ) );
+	const unsigned int t3 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, -1, -1 ) ) );
+	// Outward-wound (CCW from outside) for each of the 4 faces.
+	AddTri( tris, t0, t1, t2 );
+	AddTri( tris, t0, t2, t3 );
+	AddTri( tris, t0, t3, t1 );
+	AddTri( tris, t1, t3, t2 );
+
+	return true;
+}
+
+//! Builds vertex NORMALS matching `BuildOpposedQuadsWithRemoteTetrahedron`'s
+//! own triangle winding above (one flat per-corner normal per face,
+//! matching every real tessellator/importer's own per-corner convention
+//! this whole file already exercises) -- required so `ComputeWatertightness`'s
+//! DL-150 discriminator (which reads `BuildVertexNormals`' accumulated
+//! per-position orientation) sees the SAME opposed orientation an authored
+//! asset's own normals would carry, not an unauthored (0,0,0) that would
+//! silently skip the check.
+static void BuildOpposedQuadsNormals( const std::size_t nVertices, NormalsListType& normals )
+{
+	normals.assign( nVertices, Vector3( 0, 0, 1 ) );
+	// Quad A (indices 0..3): faces +Z.
+	for( std::size_t i = 0; i < 4 && i < nVertices; ++i ) { normals[i] = Vector3( 0, 0, 1 ); }
+	// Quad B (indices 4..7): faces -Z -- the opposed pair the discriminator must catch.
+	for( std::size_t i = 4; i < 8 && i < nVertices; ++i ) { normals[i] = Vector3( 0, 0, -1 ); }
+	// Remote tetrahedron (indices 8..11): outward radial normals -- never
+	// welded to anything else (too far away), so their exact direction
+	// does not matter to the discriminator; only present so every vertex
+	// has SOME authored normal.
+	for( std::size_t i = 8; i < nVertices; ++i ) {
+		normals[i] = Vector3Ops::Normalize( Vector3( 1, 1, 1 ) );
+	}
+}
+
+static void TestOpposedFacingSheetsRefuseViaDiscriminator()
+{
+	std::cout << "(m) DL-150 MONEY -- two opposite-winding facing quads, welded by a remote-inflated "
+		"bbox, REFUSE via the orientation discriminator" << std::endl;
+
+	{
+		// Control at the SAME shape, gap=0.01 > eps: unaffected by DL-150,
+		// the quads never weld to each other at all and each keeps its own
+		// 4 boundary edges (8 total) -- refuses via the pre-existing
+		// DL-31 edge-count check alone, exactly as the ledger row states.
+		IndexTriangleListType tris; VerticesListType vertices; NormalsListType normals;
+		BuildOpposedQuadsWithRemoteTetrahedron( Scalar( 0.01 ), tris, vertices );
+		BuildOpposedQuadsNormals( vertices.size(), normals );
+		TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+		mesh->addref();
+		mesh->BeginIndexedTriangles();
+		mesh->AddVertices( vertices );
+		mesh->AddNormals( normals );
+		mesh->AddTexCoords( coords );
+		mesh->AddIndexedTriangles( tris );
+		mesh->DoneIndexedTriangles();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0.5, 0.005 ), Scalar( 1000 ), outSigned, outExact );
+		Check( !ok, "(m) control -- gap=0.01 > eps never welds the quads together; refuses via the ordinary boundary-edge count" );
+		mesh->release();
+	}
+	{
+		// MONEY: gap=0.001 < eps (~1.7e-3).  Pre-DL-150 this falsely
+		// certifies watertight; post-DL-150 the orientation discriminator
+		// refuses it.
+		IndexTriangleListType tris; VerticesListType vertices; NormalsListType normals;
+		BuildOpposedQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices );
+		BuildOpposedQuadsNormals( vertices.size(), normals );
+		TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+		mesh->addref();
+		mesh->BeginIndexedTriangles();
+		mesh->AddVertices( vertices );
+		mesh->AddNormals( normals );
+		mesh->AddTexCoords( coords );
+		mesh->AddIndexedTriangles( tris );
+		mesh->DoneIndexedTriangles();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0.5, 0.0005 ), Scalar( 1000 ), outSigned, outExact );
+		Check( !ok, "(m) MONEY -- DL-150: gap=0.001 < eps welds the two opposed-facing quads, but the "
+			"orientation discriminator now refuses the false 2-manifold instead of answering a wrong signed depth" );
+		mesh->release();
+	}
+}
+
+//! DL-150's own DOCUMENTED RESIDUAL, per this function's own header
+//! comment and the ledger row: two sheets facing the SAME way (identical,
+//! not opposed, winding) weld into an equally false 2-manifold with a
+//! near +1 cosine -- indistinguishable from a genuine seam by orientation
+//! alone.  This is a CONTROL, not a red-proof target: it is expected to
+//! stay falsely certified both before and after this fix, and exists so a
+//! future, stronger discriminator's own regression test has a known
+//! starting point rather than silently inheriting an untested claim.
+static void TestSameFacingSheetsResidualUncaught()
+{
+	std::cout << "(n) DL-150 documented residual -- two SAME-winding facing quads still falsely certify "
+		"(orientation alone cannot catch this case)" << std::endl;
+
+	// Same fixture as (m), but quad B wound the SAME way as quad A (both
+	// CCW from +Z) -- both accumulated normals end up (0,0,1), cosine +1,
+	// well outside the -0.5 discriminator threshold.
+	IndexTriangleListType tris; VerticesListType vertices; NormalsListType normals;
+	BuildOpposedQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices, /*sameWinding=*/true );
+	BuildOpposedQuadsNormals( vertices.size(), normals );
+	// Both quads face +Z here -- correct the second quad's normals to match its (unreversed) winding.
+	for( std::size_t i = 4; i < 8 && i < normals.size(); ++i ) { normals[i] = Vector3( 0, 0, 1 ); }
+	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0.5, 0.0005 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(n) DOCUMENTED RESIDUAL -- same-winding facing sheets still falsely certify watertight "
+		"(orientation-only discriminator cannot distinguish this from a genuine seam; see DL-150's own limit)" );
+
+	mesh->release();
+}
+
 //! A hand-built, WELDED UV-sphere: one shared vertex at each pole (a fan
 //! of triangles there), ordinary quads split into two triangles on the
 //! `n` interior latitude rings.  Deliberately NOT
@@ -902,7 +1402,7 @@ static void TestParityCost()
 
 int main()
 {
-	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143) ===" << std::endl;
+	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143, DL-136, DL-150) ===" << std::endl;
 
 	TestClosedWatertightCube();
 	TestOpenQuadRefuses();
@@ -913,6 +1413,12 @@ int main()
 	TestEllipsoidTessellationNowWatertight();
 	TestBoxTessellationWelds();
 	TestShippedGltfBoxEndToEnd();
+	TestTorusTessellationWatertight();
+	TestCappedCylinderTessellationWatertight();
+	TestDisplacedWrapsWatertight();
+	TestScaledMeshWeldsRelatively();
+	TestOpposedFacingSheetsRefuseViaDiscriminator();
+	TestSameFacingSheetsResidualUncaught();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
