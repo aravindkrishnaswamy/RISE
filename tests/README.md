@@ -405,9 +405,14 @@ Both now stamp real closed-form `dpdu`/`dpdv`/`dndu`/`dndv` via new
 `BilinearPatchSecondDerivUV` + `SurfaceCurvature::
 ShapeOperatorFromSecondDerivatives`, and the point-only query is now
 honestly conservative-reject (`valid=false`) instead of fabricating a flat
-answer. **19 checks, 0 failures**: a bilinear hyperbolic paraboloid and a
+answer. **22 checks, 0 failures**: a bilinear hyperbolic paraboloid and a
 Bezier saddle match their exact closed-form `H` to machine precision; a
-Bezier dome matches a finite-difference oracle within 1%. See
+Bezier dome matches a finite-difference oracle within 1%; a fourth
+fixture (`TestBezierSaddleFlippedWinding`, same saddle with the control
+grid's original untransposed winding) drives a real ray-facing-flip hit
+and asserts the conservative-reject gate itself holds (`bDidFlip` true,
+`ri.derivatives.valid` stays false) — red-proved by disabling that gate
+(21/1). See
 [docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](../docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
 
 ## Style Of Test Used Here

@@ -96,6 +96,62 @@ that returns the shared pole index for `j==0`/`j==nV` and the ORIGINAL
 per-column index everywhere else, offset by the two pole rows now
 contributing one vertex each instead of `detail+1`.
 
+### The weld is lossless for (position, normal, texcoord) — but NOT for a displaced mesh's recomputed shading normal, and that should be said plainly
+
+The claim above ("nothing is lost") is about the three per-vertex fields
+`TessellateToMesh` itself writes — position, the ANALYTIC gradient/
+gradient-of-quadric normal, and texcoord — and it is exactly true for
+those: every pole-row column already evaluates to the identical value
+pre-fix (position because `sinPhi==0`; normal because the gradient at a
+pole is independent of `theta`; texcoord because `atPole`/`atCenter`
+already forced `u=0` for every column). It is NOT the whole story once
+`DisplacedGeometry::BuildMesh` (`src/Library/Geometry/DisplacedGeometry.cpp:245`)
+runs `GeometryUtilities::RecomputeVertexNormalsFromTopology` afterward —
+a SEPARATE normal computation, from face topology rather than the
+analytic formula, that only fires when the base was actually displaced
+(`!m_bUseFaceNormals && bVerticesDisplaced`) — because that function's
+answer depends on which (and how many) triangles are incident to a
+vertex, which the weld genuinely changes:
+
+- **Pre-fix**, at a pole row with `nU` columns: the column-0 vertex was
+  used only as the FIRST corner of its own wedge's degenerate triangle
+  (skipped by `RecomputeVertexNormalsFromTopology`'s `crossMag < NEARZERO`
+  guard) and never as any OTHER wedge's second corner, so it had ZERO
+  real-triangle incidence and fell back to the pre-recompute (analytic)
+  normal (`GeometryUtilities.cpp`'s own `fallback[i]` path). Every OTHER
+  pole-row column (`i = 1..nU`, including the closing `u=1` seam
+  duplicate) was incident to exactly ONE real, non-degenerate triangle —
+  a DIFFERENT one for each column — so it got that one triangle's own
+  unaveraged face normal, not an average of anything.
+- **Post-fix**, the single shared pole vertex is the second corner of
+  EVERY one of the `nU` wedges' surviving real triangle, so it gets a
+  genuine `nU`-way AVERAGE of all of them.
+
+This is a real, topology-driven change to the shading normal at a
+displaced pole — a patchwork of one fallback value plus `nU` distinct
+unaveraged neighbour normals, replaced by one `nU`-way average — not "no
+information lost" in the way the position/normal/texcoord argument above
+is. It is, however, MEASURED to be visually negligible: a fresh A/B/B'
+comparison of `scenes/Tests/Geometry/displaced_sphere.RISEscene`
+(`disp_scale 0.05`, `detail 64`) run through `pixelpel_rasterizer` with
+`oidn_denoise FALSE`, `pixel_filter box`, EXR `Rec709RGB_Linear` output
+converted to PNG for `tools/ImageDiffTest` (built via `make -C
+build/make/rise tools`), at both 64 and 256 samples, isolating ONLY this
+mechanism (fixed `SphereGeometry.cpp` vs a temporary revert to `a4495f94`,
+library rebuilt each way, nothing else in the tree touched):
+
+| samples | same-code noise floor (two fixed runs) | fix-vs-reverted (the actual effect) |
+|---|---|---|
+| 64  | RMSE 0.0006, max-pixel L2 0.0804 | RMSE 0.0005, max-pixel L2 0.0671 |
+| 256 | RMSE 0.0003, max-pixel L2 0.0410 | RMSE 0.0003, max-pixel L2 0.0285 |
+
+At both sample counts the fix's own effect is AT OR BELOW the same-code
+run-to-run noise floor on every metric, including the single worst pixel
+— genuinely indistinguishable from MC noise, not merely "small". The
+same conclusion applies to CircularDisk's center and (now) Ellipsoid's
+poles, which share the identical `RecomputeVertexNormalsFromTopology`
+consumer and the identical pre-fix incidence pattern.
+
 ### Sibling audit (per docs/skills/audit-by-bug-pattern.md)
 
 **Bug pattern**: a tessellator represents a geometric feature that
@@ -164,7 +220,11 @@ passed, `GeometrySurfaceDerivativesTest` ALL TESTS PASSED. Render
 comparison of `scenes/Tests/Geometry/displaced_sphere.RISEscene` at
 256spp, `oidn` output not consulted (compared the raw `_hi.png`, not
 `_hi_denoised.png`): fixed-vs-unfixed mean diff 0.027 / RMSE 1.50 vs a
-same-code two-run noise floor of mean 0.019 / RMSE 0.94 — within noise.
+same-code two-run noise floor of mean 0.019 / RMSE 0.94 — within noise
+(re-verified with a more isolated, mechanism-specific methodology and
+an additional 64spp datapoint in "The weld is lossless for (position,
+normal, texcoord) — but NOT for a displaced mesh's recomputed shading
+normal" above — same conclusion, tighter isolation).
 
 ---
 
@@ -291,7 +351,7 @@ instead of either computing them or honestly reporting absence.
 | `BoxGeometry` / `CircularDiskGeometry` / `ClippedPlaneGeometry` / `InfinitePlaneGeometry` | Flat by construction (genuinely planar primitives) | Not a bug — `curv` reading 0 there is physically correct |
 | `TriangleMeshGeometry(Indexed)` | Topology-derived (per-triangle averaged second derivatives from adjacent faces) | Pre-existing, unrelated mechanism, not modified |
 | `BezierPatchGeometry` / `BilinearPatchGeometry` | **FIXED**, this row | — |
-| `DisplacedGeometry` | Delegates to its internal tessellated `TriangleMeshGeometryIndexed` | Out of scope (owned by `debt-prox`); unaffected either way since it never wraps a Bezier/Bilinear patch's OWN curvature path (it re-tessellates and uses the mesh's topology-derived curvature instead) |
+| `DisplacedGeometry` | Delegates to its internal tessellated `TriangleMeshGeometryIndexed` | Out of scope (owned by `debt-prox`); unaffected either way. **Correction (2026-09-17 review follow-up)**: this row previously claimed `DisplacedGeometry` "never wraps a Bezier/Bilinear patch's own curvature path" — that is FALSE as a claim about scene authoring: `scenes/FeatureBased/Geometry/teapot.RISEscene` and `scenes/Tests/Geometry/aphrodite_mesh.RISEscene` both wrap `bezierpatch_geometry` in `displaced_geometry` (the latter's own header comment: "the bezier patches are wrapped in a displaced_geometry"). The CONCLUSION (unaffected) still holds, for a different, narrower reason: `DisplacedGeometry::BuildMesh` (`src/Library/Geometry/DisplacedGeometry.cpp:245`) calls `m_pBase->TessellateToMesh(...)` ONCE to bake a static `TriangleMeshGeometryIndexed` (`m_pMesh`), and `DisplacedGeometry::IntersectRay` (`:355`) delegates every render-time hit to `m_pMesh->IntersectRay(...)` — the wrapped `BezierPatchGeometry::RayElementIntersection`'s own closed-form curvature this row's fix added is never called at render time through a `DisplacedGeometry` wrapper; the mesh's own topology-derived curvature answers instead, confirmed by `tests/DisplacedGeometryTest.cpp` staying green with no changes needed here. |
 | `SDFGeometry` | Direct-curvature path (`div n_hat` by finite difference), independent mechanism | Not affected |
 
 ### Verification
@@ -308,7 +368,9 @@ would need `SKIP`, not `PASS`, on unfixed code — confirmed by reverting
 `BezierPatchGeometry.cpp`/`BilinearPatchGeometry.cpp`/
 `GeometricUtilities.{h,cpp}`/`SurfaceCurvature.h` and re-running).
 
-Green (post-fix), `tests/PatchCurvatureTest.cpp`: **19/0** —
+Green (post-fix), `tests/PatchCurvatureTest.cpp`: **22/0** (19/0 at this
+row's original closure; +3 checks from `TestBezierSaddleFlippedWinding`,
+added in the same slice's 2026-09-17 review follow-up — see below) —
 
 - Bilinear hyperbolic paraboloid (exact closed form): `H_production =
   H_oracle = -0.136083` at `(u,v)=(0.25,0.75)`, `|diff|=0`.
@@ -318,6 +380,23 @@ Green (post-fix), `tests/PatchCurvatureTest.cpp`: **19/0** —
 - Bezier dome (finite-difference oracle, `h=1e-4`, Clairaut
   cross-check `|PuvA-PuvB|=1.3e-12`): `H_production = H_oracle(FD) =
   0.328596`, `|diff|=6.4e-14`, well inside the stated 1% tolerance.
+- **Bezier saddle, ORIGINAL (untransposed) winding — the ray-facing-flip
+  conservative-reject branch itself** (review follow-up, P3(c)): every
+  fixture above deliberately uses a control-grid winding chosen (per
+  "Pre-existing test fixture corrections" below) to AVOID
+  `RayElementIntersection`'s `bDidFlip` branch, so the `if (!bDidFlip)`
+  gate that makes this row's fix conservative rather than fabricated on
+  a flipped hit was itself untested. Swapping the saddle fixture's
+  `c[]`/`pts[]` indexing back to the original (untransposed) form —
+  same corner positions, opposite u/v assignment — negates
+  `Cross(TangentU, TangentV)` and, under the SAME +Z camera, forces
+  `bDidFlip = true`. Asserts `ri.bGeomNormalOrientedToRay` (confirming
+  the flip really fired) and `!ri.derivatives.valid` (the conservative
+  reject holds). Red-proved by temporarily changing the gate from
+  `if( !bDidFlip )` to `if( true )` (simulating a future regression that
+  removes it): 21/1, the new check failing exactly as intended; restored
+  and reverified clean (22/0, byte-identical `BezierPatchGeometry.cpp`
+  diff against this row's own fix).
 
 Regression gates: `GeometrySurfaceDerivativesTest` ALL TESTS PASSED
 (two pre-existing fixtures were corrected in the same commit — see

@@ -241,6 +241,74 @@ static void TestBezierSaddle()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Bezier saddle, ORIGINAL (untransposed) winding -- the exact control-grid
+// indexing `tests/GeometrySurfaceDerivativesTest.cpp`'s own Bezier fixture
+// used before the DL-20 closure's "Pre-existing test fixture corrections"
+// transposed it to `patch.c[k].pts[j]` specifically to AVOID triggering
+// BezierPatchGeometry::RayElementIntersection's ray-facing-flip
+// conservative-reject branch (see docs/DL20_DL116_PATCH_CURVATURE_AND_
+// POLE_WELDING.md "The flip case: conservative, not swapped" and
+// "Pre-existing test fixture corrections").  That branch (`if(!bDidFlip)`
+// in BezierPatchGeometry.cpp) is exactly what makes curvature reporting
+// conservative rather than fabricated on a flipped hit -- untested by
+// EITHER file until now, since both deliberately dodge it.  This test
+// swaps `c[]`/`pts[]` back to the ORIGINAL indexing (`patch.c[j].pts[i]`
+// instead of `patch.c[i].pts[j]`, same corner positions otherwise), which
+// swaps which physical axis is "u" and which is "v" and so negates
+// `Cross(TangentU, TangentV)` -- with the SAME camera as TestBezierSaddle
+// (approaching from +Z, which the FIXED winding's normal already faces),
+// this ORIGINAL winding's normal points AWAY from the camera, forcing
+// `RayElementIntersection`'s `dotND > 0` branch and `bDidFlip = true`.
+// Asserts the conservative-reject contract directly: the ray still hits
+// and `bGeomNormalOrientedToRay` is set (confirming the flip really
+// happened, not just assumed from the winding swap), but
+// `ri.derivatives.valid` stays honestly `false` rather than reporting a
+// left-handed (dpdu, dpdv, n) frame as valid. Guards against a future
+// change to that gate (e.g. "just re-derive dndu/dndv for the flipped
+// case") silently regressing to a wrong-handedness `valid=true` answer
+// with no test noticing.
+//////////////////////////////////////////////////////////////////////
+static void TestBezierSaddleFlippedWinding()
+{
+	std::cout << "-- Bezier saddle, original (untransposed) winding -- ray-facing-flip conservative-reject --" << std::endl;
+
+	const Scalar k = 0.4;
+	BezierPatchGeometry* g = new BezierPatchGeometry( 10, 8, false );
+	BezierPatch patch;
+	for( int i = 0; i < 4; i++ ) {
+		const Scalar X = -1.5 + Scalar(i);	// evenly spaced -1.5..1.5
+		for( int j = 0; j < 4; j++ ) {
+			const Scalar Y = -1.5 + Scalar(j);
+			// UNTRANSPOSED (the original, pre-DL-20-fixture-correction
+			// indexing): c[] and pts[] swapped relative to TestBezierSaddle
+			// above -- same corner positions, opposite u/v assignment.
+			patch.c[j].pts[i] = Point3( X, Y, k * X * Y );
+		}
+	}
+	g->AddPatch( patch );
+	g->Prepare();
+
+	// Same target point and same +Z camera as TestBezierSaddle -- only the
+	// winding differs, so any handedness change is attributable to that.
+	const Scalar u = 0.7, v = 0.3;
+	const Scalar X = -1.5 + 3.0*u, Y = -1.5 + 3.0*v;
+	const Point3 target( X, Y, k*X*Y );
+
+	RayIntersectionGeometric ri( Ray( Point3Ops::mkPoint3(target, Vector3(0,0,5)), Vector3(0,0,-1) ), nullRasterizerState );
+	g->IntersectRay( ri, true, true, false );
+	Check( ri.bHit, "bezier saddle (flipped winding): ray hits" );
+	if( !ri.bHit ) { g->release(); return; }
+
+	Check( ri.bGeomNormalOrientedToRay,
+		"bezier saddle (flipped winding): the winding swap actually triggered the ray-facing flip (bGeomNormalOrientedToRay)" );
+	Check( !ri.derivatives.valid,
+		"bezier saddle (flipped winding): MONEY -- conservative-reject holds on a flipped hit "
+		"(ri.derivatives.valid stays false rather than reporting a left-handed frame as valid)" );
+
+	g->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 // Bezier "dome": z = A - B*(x^2+y^2) SAMPLED at the control grid (not
 // product-separable -- the bicubic patch only approximately reproduces
 // the paraboloid).  Oracle: finite difference of the patch's own public
@@ -333,6 +401,7 @@ int main()
 
 	TestBilinearHyperbolicParaboloid();
 	TestBezierSaddle();
+	TestBezierSaddleFlippedWinding();
 	TestBezierDome();
 
 	std::cout << "Passed: " << g_Passed << "  Failed: " << g_Failed << std::endl;
