@@ -3191,11 +3191,13 @@ measured by a harness test against the tracked scene.
   regresses.
 - ~~**A mesh neighbour is a SHEET, and no other shipped family is.**~~
   **CLOSED for the CLOSED case, 2026-09-14 (DL-31, fix commit named in
-  `docs/DEBT_LEDGER.md`'s DL-31 entry).** `TriangleMeshGeometryIndexed`
-  now overrides `SignedDistanceLower` for a mesh certified WATERTIGHT — a
-  build-time check (every edge shared by exactly two triangles, the
-  textbook necessary condition for a closed 2-manifold with no boundary)
-  computed once at `DoneIndexedTriangles`. On a watertight mesh, `interior(r)`
+  `docs/DEBT_LEDGER.md`'s DL-31 entry); the watertightness check itself
+  fixed to key by POSITION rather than array index the same day (DL-143,
+  below).** `TriangleMeshGeometryIndexed` now overrides
+  `SignedDistanceLower` for a mesh certified WATERTIGHT — a build-time
+  check (every edge shared by exactly two triangles, the textbook
+  necessary condition for a closed 2-manifold with no boundary) computed
+  once at `DoneIndexedTriangles`. On a watertight mesh, `interior(r)`
   now answers exactly: the sign comes from a parity ray-cast against the
   mesh's own BVH (a fixed non-axis-aligned direction, both faces so
   winding/`bDoubleSided` cannot skew the count), and the magnitude reuses
@@ -3216,15 +3218,39 @@ measured by a harness test against the tracked scene.
   highly-folded closed mesh could see more ray-mesh crossings along the
   fixed probe direction than this measurement's roughly-convex fixture
   did. See `tests/MeshInteriorSignalTest.cpp` and `docs/DEBT_LEDGER.md`'s
-  DL-31 entry for the full mechanism and numbers. `DisplacedGeometry` now
-  forwards `SignedDistanceLower` to its baked mesh too, matching its
-  pre-existing `DistanceToSurface` forward — but `TriangleMeshGeometryIndexed
-  ::TessellateToMesh`'s own per-corner vertex flattening (needed for
-  per-corner UV/normal independence during the height-field step) means
-  a `displaced_geometry`'s baked mesh is never watertight by this check,
-  even over an already-welded closed base, so `interior(r)` on a
-  displaced surface still reads 0 today — a documented scope boundary,
-  not a bug in the forwarder itself (`docs/DEBT_LEDGER.md`'s DL-31 entry).
+  DL-31 entry for the full mechanism and numbers.
+  **DL-143 correction (same day, review P1 on this closure): "watertight"
+  above initially meant "every edge shared by exactly two triangles when
+  keyed by raw POSITION-ARRAY INDEX" — which is only the same thing as
+  "closed 2-manifold" on a hand-welded mesh (one array slot per physical
+  corner). Every per-corner import/tessellation path
+  (`GLTFSceneImporter::BuildGeometryFromPrimitive`'s one-`AddVertex`-per-
+  glTF-vertex convention; every `TessellateToMesh` producer, including
+  this class's own pass-through, which flattens each triangle corner to
+  its own independent tuple by design) gives a physical corner a
+  DIFFERENT array slot per triangle that touches it, so the ORIGINAL
+  DL-31 closure certified almost no real imported or tessellated mesh as
+  watertight — only a hand-welded one, like this design's own test
+  fixtures. Fixed by welding vertices to a shared id by POSITION (a
+  bbox-relative epsilon grid, `1e-6 * diagonal`) before counting edges.
+  `DisplacedGeometry`'s forward now genuinely reaches a watertight baked
+  mesh too when the base geometry's own physical topology is closed
+  (`TessellateToMesh`'s per-corner flattening copies positions VERBATIM,
+  so the flattened corners weld right back to the base's true positions)
+  — the "never watertight, even over an already-welded closed base"
+  claim in the paragraph this correction replaces was true only under
+  the pre-DL-143 index-keyed check and is no longer accurate. Of the four
+  real-world glTF assets checked in the DL-143 review (Avocado,
+  DragonAttenuation, SheenChair, NormalTangentTest), none happen to be
+  fully closed after welding (each has a genuine remaining open boundary
+  or non-manifold edge in the source asset itself — see
+  `tests/MeshInteriorSignalTest.cpp` section (h) and DL-143's own ledger
+  entry for the measured per-asset counts), but simple closed assets like
+  `Box.glb` do. `SphereGeometry::TessellateToMesh` still refuses (DL-116,
+  open) — welding correctly merges its coincident pole-row vertices,
+  which turns the pole cells into genuinely DEGENERATE triangles rather
+  than the pre-fix open-sheet miscount, so it is refused for a different,
+  more precisely diagnosed reason, not fixed.
 - **`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
   produces no diagnostic, makes the object vanish from the render, and
