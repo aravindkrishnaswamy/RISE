@@ -622,6 +622,121 @@ static void TestExitFrameOrientationOnDoubleSidedMesh()
 		"smooth-shaded double-sided face, few-degree interpolated tilt" );
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 4 (P3-1, review round 3, 2026-09-17): at a DOUBLE-SIDED
+//  EXIT hit, `TranslucentBSDF::value` and `TranslucentSPF::Pdf` /
+//  `Scatter` do not agree on which branch they are even in.
+//
+//  `Pdf`/`Scatter` ask the IOR STACK (`ior_stack.containsCurrent()`);
+//  `value` has no stack to ask and classifies by the GEOMETRIC sign
+//  tests in `GetReflectedSide`.  At an exit hit through a double-sided
+//  face both reported normals already oppose the ray, so
+//  `Dot(n, -ray.Dir()) > 0` -- `GetReflectedSide`'s "viewer back" --
+//  and every direction on the shading normal's own side is classified
+//  **case 2**, the ENTRY front-reflection branch, while the SPF is
+//  running its EXIT branch (diffuse exit + interior backscatter).
+//
+//  DL-112's fix gave case 2 the entry lobe's geometric horizon clip,
+//  so on that same configuration `value` now returns ZERO over the
+//  lune between the shading normal's hemisphere and the ray-anchored
+//  geometric one -- directions it used to price at
+//  `pRefFront * INV_PI`.  Nothing in BDPT/VCM stops a connection from
+//  landing there: `PathVertexEval::EvalBSDFAtVertex`'s surface path
+//  calls `pBSDF->value` with no hemisphere gate at all, and
+//  `BDPTUtilities::GeometricTerm` takes `fabs` of both cosines.
+//
+//  This row PINS the current behaviour rather than asserting it is
+//  right.  The clip is a strict improvement over the pre-DL-112 state
+//  for the branch `value` THINKS it is in, and the underlying
+//  disagreement -- `value`'s four branches do not describe the lobes
+//  `TranslucentSPF` samples on either side (measured
+//  `E[kray]/E[value*cos/pdf]` of 6.00 for the entry transmission,
+//  10.43 for the interior exit and 0.674 for the interior backscatter
+//  at zero tilt) -- is ledger row DL-157, the `value()` side of
+//  DL-41's structural hole.  When DL-157 is fixed, this row's
+//  expectations are expected to CHANGE, and that is the point: it is
+//  here so the change is noticed.
+//
+//  The zeroed fraction is the lune's solid-angle share of the
+//  classified half-space, which for a tilt of `phi` is exactly
+//  `phi / 180 degrees`.
+//////////////////////////////////////////////////////////////////////
+static void CheckDoubleSidedExitValueGate( Scalar tiltDeg )
+{
+	UniformColorPainter* ref   = new UniformColorPainter( RISEPel(0.5,0.5,0.5) ); ref->addref();
+	UniformColorPainter* tau   = new UniformColorPainter( RISEPel(0.4,0.4,0.4) ); tau->addref();
+	UniformScalarPainter* extSc = new UniformScalarPainter( 0.0 );  extSc->addref();
+	UniformScalarPainter* nSc   = new UniformScalarPainter( 10.0 ); nSc->addref();
+	UniformScalarPainter* scSc  = new UniformScalarPainter( 0.3 );  scSc->addref();
+	TranslucentMaterial* mat = new TranslucentMaterial( *ref, *tau, *extSc, *nSc, *scSc ); mat->addref();
+	const IBSDF* pBSDF = mat->GetBSDF();
+
+	// The MakeDoubleSidedExit shape (tests/TransmissionPushGateTest.cpp):
+	// true outward is +Z, the ray travels +Z (outward), and the geometry
+	// has already flipped BOTH normals toward it.
+	const Scalar tiltRad = tiltDeg * PI / 180.0;
+	const Vector3 nReported( sin(tiltRad), 0, -cos(tiltRad) );
+
+	Ray inRay( Point3(0,0,-2), Vector3(0,0,1) );
+	RasterizerState rs = {0,0};
+	RayIntersectionGeometric ri( inRay, rs );
+	ri.bHit = true;
+	ri.range = 2.0;
+	ri.ptIntersection = Point3(0,0,0);
+	ri.vNormal = nReported;
+	ri.onb.CreateFromW( nReported );
+	ri.vGeomNormal = Vector3(0,0,-1);       // flipped toward the ray
+	ri.bGeomNormalOrientedToRay = true;     // ... and it says so
+	ri.ptCoord = Point2(0.5,0.5);
+
+	// `GetReflectedSide`'s own classification, transcribed: case 2 is
+	// `Dot(n,-rayDir) >= NEARZERO && Dot(n,w) >= NEARZERO`.
+	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Scalar nr = Vector3Ops::Dot( nReported, r );
+
+	RandomNumberGenerator rng( 991 );
+	const int kTrials = 40000;
+	int numCase2 = 0, numZeroed = 0;
+	for( int i = 0; i < kTrials; i++ ) {
+		const Scalar u = rng.CanonicalRandom();
+		const Scalar v = rng.CanonicalRandom();
+		const Scalar z = 1.0 - 2.0*u;
+		const Scalar rad = sqrt( std::max( Scalar(0), Scalar(1) - z*z ) );
+		const Scalar phi = 2.0 * PI * v;
+		const Vector3 w( rad*cos(phi), rad*sin(phi), z );
+		if( !( nr >= NEARZERO && Vector3Ops::Dot( nReported, w ) >= NEARZERO ) ) continue;
+		numCase2++;
+		if( ColorMath::MaxValue( pBSDF->value( w, ri ) ) <= 0 ) numZeroed++;
+	}
+
+	const double measured = numCase2 > 0 ? double(numZeroed)/double(numCase2) : 0.0;
+	const double expected = tiltDeg / 180.0;
+
+	char msg[256];
+	snprintf( msg, sizeof(msg),
+		"double-sided exit, tilt %.0f: value() case-2 zeroed %d/%d = %.4f (lune share %.4f)",
+		(double)tiltDeg, numZeroed, numCase2, measured, expected );
+	std::cout << "  " << msg << std::endl;
+
+	// 0.02 absolute is ~6 binomial sigma at n ~ 20000 and p ~ 1/3.
+	Check( numCase2 > 15000, "double-sided exit: case-2 classification covers a hemisphere" );
+	Check( fabs( measured - expected ) < 0.02, msg );
+
+	mat->release();
+	scSc->release(); nSc->release(); extSc->release(); tau->release(); ref->release();
+}
+
+static void TestDoubleSidedExitValueGate()
+{
+	std::cout << "Sub-test 4 (P3-1): TranslucentBSDF::value's case-2 gate at a double-sided EXIT" << std::endl;
+	// Zero tilt: the shading normal and the ray-anchored geometric
+	// normal coincide, so the clip removes nothing -- the pin that says
+	// the gate is not simply always-on.
+	CheckDoubleSidedExitValueGate( 0.0 );
+	CheckDoubleSidedExitValueGate( 30.0 );
+	CheckDoubleSidedExitValueGate( 60.0 );
+}
+
 int main()
 {
 	GlobalLog();
@@ -631,6 +746,7 @@ int main()
 	TestExitGateOnDoubleSidedMesh();
 	TestSeedingOnDoubleSidedMesh();
 	TestExitFrameOrientationOnDoubleSidedMesh();
+	TestDoubleSidedExitValueGate();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
