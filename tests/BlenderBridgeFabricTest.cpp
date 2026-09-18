@@ -30,7 +30,7 @@
 //  gained the three fields and the fabric-wrap branch, this file
 //  compiles and the checks below exercise the real behaviour.
 //
-//  The five groups:
+//  The seven groups:
 //
 //    1. THE ABI ITSELF.  Version 12; the three new fields are APPENDED
 //       after `emissive_scale` (every v11 offset survives).
@@ -65,6 +65,37 @@
 //       failure mode -- fatal, matching every other required PBR slot
 //       in this same function.
 //
+//    6. SHEEN + EMISSION KEEP BOTH (post-DL-18 review P1 fix,
+//       2026-09-17).  RED-PROOF HISTORY: before this fix,
+//       `add_pbr_metallic_roughness_material` baked `emission_-
+//       painter_name` into the PBR base UNCONDITIONALLY, then handed
+//       that same base to `AddFabricMaterial` as the sheen substrate
+//       whenever `sheen_color_painter_name` was also set --
+//       `FabricMaterial::IsSupportedSubstrate` (FabricMaterial.h)
+//       refuses any substrate with a non-null `GetEmitter()`, so
+//       `add_material` FAILED OUTRIGHT for Emission Strength > 0 +
+//       Sheen Weight > 0 on the SAME Principled node, and because
+//       `rise_blender_scene_to_job`'s material loop aborts the WHOLE
+//       job on one material's failure (rise_blender_bridge.cpp,
+//       `rise_blender_render_scene`), this single combination failed
+//       an entire render.  Fixed by building the PBR base WITHOUT
+//       emission when sheen contributes, wrapping THAT in
+//       `fabric_material`, then re-attaching the emission at the OUTER
+//       layer via `AddLambertianLuminaireMaterial` -- a fully generic
+//       wrapper that forwards `GetBSDF`/`GetSPF` from any `IMaterial`
+//       and builds its own `LambertianEmitter`, the IDENTICAL class
+//       `GGXMaterial`'s emissive constructor uses, so keeping both
+//       sheen and emission is physically equivalent to baking emission
+//       straight into the GGX base.  This group proves the material
+//       registers (where it used to fail outright), that the final
+//       name carries a real emitter, that the fabric (sheen) layer is
+//       still genuinely composed in underneath it, and that the PBR
+//       base at the bottom of the stack does NOT itself carry the
+//       emitter (so it stays a legal fabric substrate).
+//
+//    7. An unresolvable `sheen_color_painter_name` is a fatal failure,
+//       matching every other required PBR slot in this function.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <cmath>
@@ -81,10 +112,12 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Materials/FabricMaterial.h"
+#include "../src/Library/Materials/LambertianLuminaireMaterial.h"
 #include "../src/Library/Utilities/Color/ColorMath.h"
 #include "../src/Library/Utilities/Math3D/VectorsOps.h"
 
 using RISE::Implementation::FabricMaterial;
+using RISE::Implementation::LambertianLuminaireMaterial;
 
 static int g_checks   = 0;
 static int g_failures = 0;
@@ -368,7 +401,105 @@ void TestTextureDrivenSheenRoughness()
 }
 
 // ============================================================
-//  6. An unresolvable sheen_color_painter_name is a fatal failure,
+//  6. Sheen + emission keep BOTH (post-DL-18 review P1 fix)
+// ============================================================
+
+void TestSheenWithEmissionKeepsBoth()
+{
+	std::cout << "Test: Emission Strength + Sheen Weight on one material keep BOTH (P1 fix)" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) { Check( false, "created a job" ); return; }
+
+	double sheenColor[3] = { 1.0, 1.0, 1.0 };
+	(*job).AddUniformColorPainter( "sheen_white_emit", sheenColor, "Rec709RGB_Linear" );
+	double emitColor[3] = { 2.0, 1.5, 0.5 };
+	(*job).AddUniformColorPainter( "emit_color", emitColor, "Rec709RGB_Linear" );
+
+	rise_blender_material mat = PbrFixture( *job, "sheeny_emit" );
+	mat.sheen_color_painter_name = "sheen_white_emit";
+	mat.sheen_roughness = 0.3;
+	mat.emission_painter_name = "emit_color";
+	mat.emissive_scale = 2.0;
+
+	char err[256] = { 0 };
+	// MONEY: pre-fix this returned false ("the substrate is a
+	// luminaire") because the PBR base handed to AddFabricMaterial
+	// carried the baked-in emitter.
+	Check( add_material( *job, mat, err, sizeof( err ) ),
+		std::string( "MONEY: sheen+emission material registered (pre-fix this failed): " ) + err );
+
+	RISE::IMaterial* finalMat = (*job).GetMaterials() ? (*job).GetMaterials()->GetItem( "sheeny_emit" ) : 0;
+	Check( finalMat != 0, "the final material is registered" );
+	if( finalMat ) {
+		Check( finalMat->GetEmitter() != 0,
+			"MONEY: the final material has a real emitter -- emission was NOT dropped" );
+		Check( dynamic_cast<LambertianLuminaireMaterial*>( finalMat ) != 0,
+			"the final material is a LambertianLuminaireMaterial (the outer emissive wrapper)" );
+		Check( dynamic_cast<FabricMaterial*>( finalMat ) == 0,
+			"the final material is NOT itself a FabricMaterial -- that lives one layer down" );
+	}
+
+	Check( FabricOf( *job, "sheeny_emit::sheenbase" ) != 0,
+		"the fabric (sheen) layer is registered under the `::sheenbase` intermediate name" );
+	RISE::IMaterial* sheenBase = (*job).GetMaterials() ? (*job).GetMaterials()->GetItem( "sheeny_emit::sheenbase" ) : 0;
+	Check( sheenBase != 0 && sheenBase->GetEmitter() == 0,
+		"the fabric (sheen) layer itself carries NO emitter -- it's a legal fabric result, "
+		"not itself the luminaire" );
+
+	RISE::IMaterial* pbrBase = (*job).GetMaterials() ? (*job).GetMaterials()->GetItem( "sheeny_emit::pbrbase" ) : 0;
+	Check( pbrBase != 0, "the intermediate PBR base is registered" );
+	Check( pbrBase != 0 && pbrBase->GetEmitter() == 0,
+		"MONEY: the PBR base does NOT carry the emitter -- it stays a legal fabric_material "
+		"substrate (FabricMaterial::IsSupportedSubstrate refuses GetEmitter() != 0)" );
+
+	// The sheen lobe is really composed in: the fabric layer's BSDF
+	// response differs from the bare PBR base's, same comparison
+	// TestSheenWrapsFabricMaterial makes.
+	const double bare = Respond( *job, "sheeny_emit::pbrbase" );
+	const double sheenResponse = Respond( *job, "sheeny_emit::sheenbase" );
+	Check( bare > 0.0 && sheenResponse > 0.0, "both the bare base and the fabric wrap have a real response" );
+	Check( std::fabs( sheenResponse - bare ) > 1.0e-6,
+		"the fabric-wrapped response still differs from the bare PBR base's -- sheen is really "
+		"composed in even with emission also set" );
+}
+
+//! Control: sheen with NO emission is completely unaffected by the
+//! fix above -- the fabric layer registers directly under the final
+//! name (no `::sheenbase` indirection), matching
+//! TestSheenWrapsFabricMaterial's existing coverage. Also checks the
+//! symmetric case: emission with NO sheen still bakes straight into
+//! the PBR base (no wrapper layer at all), matching pre-v12 behaviour.
+void TestEmissionWithoutSheenStillBakesDirectly()
+{
+	std::cout << "Test: emission with no sheen is unaffected (bakes directly into the PBR base, as before)" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) { Check( false, "created a job" ); return; }
+
+	double emitColor[3] = { 1.0, 1.0, 1.0 };
+	(*job).AddUniformColorPainter( "emit_only_color", emitColor, "Rec709RGB_Linear" );
+
+	rise_blender_material mat = PbrFixture( *job, "emit_only" );
+	mat.emission_painter_name = "emit_only_color";
+	mat.emissive_scale = 1.0;
+
+	char err[256] = { 0 };
+	Check( add_material( *job, mat, err, sizeof( err ) ), "emission-only material registered" );
+
+	RISE::IMaterial* finalMat = (*job).GetMaterials() ? (*job).GetMaterials()->GetItem( "emit_only" ) : 0;
+	Check( finalMat != 0 && finalMat->GetEmitter() != 0,
+		"the final material carries the emitter directly (baked into the GGXMaterial, no wrapper)" );
+	Check( dynamic_cast<LambertianLuminaireMaterial*>( finalMat ) == 0,
+		"no LambertianLuminaireMaterial wrapper was introduced -- emission-only is unchanged" );
+	Check( (*job).GetMaterials()->GetItem( "emit_only::pbrbase" ) == 0,
+		"no `::pbrbase` intermediate exists when there is no sheen" );
+	Check( (*job).GetMaterials()->GetItem( "emit_only::sheenbase" ) == 0,
+		"no `::sheenbase` intermediate exists when there is no sheen" );
+}
+
+// ============================================================
+//  7. An unresolvable sheen_color_painter_name is a fatal failure,
 //     matching every other required PBR slot in this function.
 // ============================================================
 
@@ -400,6 +531,8 @@ int main()
 	TestSheenWrapsFabricMaterial();
 	TestNumericSheenRoughnessVaries();
 	TestTextureDrivenSheenRoughness();
+	TestSheenWithEmissionKeepsBoth();
+	TestEmissionWithoutSheenStillBakesDirectly();
 	TestDanglingSheenColorIsFatal();
 
 	std::cout << "----------------------------------------" << std::endl;

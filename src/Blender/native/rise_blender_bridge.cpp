@@ -1115,9 +1115,10 @@ namespace
 	)
 	{
 		// AddPBRMetallicRoughnessMaterial bakes emission into the
-		// material itself, so we don't need the Luminaire wrapper
-		// here.  Painter slots default to RISE's documented sentinels
-		// when the bridge passes null: specular_factor="1.0",
+		// material itself -- fine when there's no sheen wrap ahead of
+		// it, so the no-sheen path below still needs no Luminaire
+		// wrapper.  Painter slots default to RISE's documented
+		// sentinels when the bridge passes null: specular_factor="1.0",
 		// specular_color="none" (untinted), anisotropy_factor="0.0",
 		// anisotropy_rotation="0.0".  emissive="none" disables.
 		const char* base_color = material.base_color_painter_name;
@@ -1153,8 +1154,43 @@ namespace
 		// Anisotropic set gets fabric-over-anisotropic-GGX for free --
 		// no separate composition step needed.
 		const bool hasSheen = ( material.sheen_color_painter_name && material.sheen_color_painter_name[0] );
+		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
 		const std::string finalName = material.name;
 		const std::string pbrRegisterName = hasSheen ? ( finalName + "::pbrbase" ) : finalName;
+
+		// P1 FIX (post-DL-18 review, 2026-09-17).  `FabricMaterial::-
+		// IsSupportedSubstrate` (FabricMaterial.h) unconditionally
+		// refuses any substrate with `GetEmitter() != 0` -- a real
+		// luminaire cannot be re-scattered by a sheen lobe.
+		// `AddPBRMetallicRoughnessMaterial` bakes `emissive` into the
+		// GGXMaterial it builds UNCONDITIONALLY (`Job::-
+		// AddPBRMetallicRoughnessMaterial` -> `RISE_API_-
+		// CreateGGXEmissiveMaterial`), so the ORIGINAL code below baked
+		// emission into `pbrRegisterName` even when that material was
+		// about to become `AddFabricMaterial`'s substrate -- Emission
+		// Strength > 0 together with Sheen Weight > 0 on one Principled
+		// node made `AddFabricMaterial` refuse ("the substrate is a
+		// luminaire") and, because `add_material`'s caller
+		// (`rise_blender_scene_to_job`) aborts the WHOLE job on any one
+		// material's failure, that single material combination failed
+		// the entire render.
+		//
+		// Fix: when sheen contributes, build the PBR base WITHOUT
+		// emission (`pbrEmissive = "none"`) so it is always a legal
+		// fabric substrate, then re-attach the emission at the OUTER
+		// layer via `AddLambertianLuminaireMaterial` once the fabric
+		// wrap exists.  This keeps BOTH the sheen lobe and the
+		// emission, rather than dropping one -- `LambertianLuminaire-
+		// Material` (LambertianLuminaireMaterial.h) is a fully generic
+		// wrapper: it forwards `GetBSDF`/`GetSPF` from whatever
+		// `IMaterial` it is handed and builds its OWN `LambertianEmitter`
+		// -- the IDENTICAL class `GGXMaterial`'s own emissive
+		// constructor uses (GGXMaterial.h) -- so the rendered emission
+		// is physically indistinguishable from baking it directly into
+		// the GGX base; `add_material`'s own non-PBR branch a few lines
+		// below already wraps an arbitrary surface material this exact
+		// way for every emissive non-PBR material shipped to date.
+		const char* pbrEmissive = hasSheen ? "none" : emissive;
 
 		if( !job.AddPBRMetallicRoughnessMaterial(
 			pbrRegisterName.c_str(),
@@ -1162,7 +1198,7 @@ namespace
 			metallic,
 			roughness,
 			1.5,                              // ior — preserved for API stability, ignored
-			emissive,
+			pbrEmissive,
 			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0,
 			specular_factor,
 			specular_color,
@@ -1182,6 +1218,12 @@ namespace
 		const std::string sheenRoughness = resolve_material_scalar_slot(
 			job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
 
+		// The fabric (sheen) wrap registers under an INTERMEDIATE name
+		// when emission also contributes (a `LambertianLuminaireMaterial`
+		// layer above it then owns `finalName`, see below); otherwise it
+		// registers directly under `finalName` as before.
+		const std::string fabricRegisterName = hasEmission ? ( finalName + "::sheenbase" ) : finalName;
+
 		// `fabric` = "custom" (no preset seeding -- Blender's Principled
 		// Sheen carries no fabric-type concept, matching
 		// GLTFSceneImporter.cpp's identical choice for
@@ -1190,7 +1232,7 @@ namespace
 		// anisotropic-GGX case above already carries its own
 		// `tangent_rotation`).
 		if( !job.AddFabricMaterial(
-			finalName.c_str(),
+			fabricRegisterName.c_str(),
 			"custom",
 			pbrRegisterName.c_str(),
 			material.sheen_color_painter_name,
@@ -1198,6 +1240,23 @@ namespace
 			"0.0" ) )
 		{
 			write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
+			return false;
+		}
+
+		if( !hasEmission ) {
+			return true;
+		}
+
+		// Re-attach the emission the PBR base above deliberately did
+		// NOT bake in, now that the sheen wrap is a legal (non-emissive)
+		// IMaterial to layer it over.
+		if( !job.AddLambertianLuminaireMaterial(
+			finalName.c_str(),
+			material.emission_painter_name,
+			fabricRegisterName.c_str(),
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0 ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the fabric (sheen) material" );
 			return false;
 		}
 		return true;
