@@ -1655,27 +1655,36 @@ int main()
 	// not first-principles predictions: the coating's directional escape
 	// and approximate recycling do not have a closed-form GGX integral.
 	// DL-37 changed both the substrate's diffuse transport and its shared
-	// hemispherical estimate. Re-measured with the same 100k-draw driver;
-	// the existing 0.005 comparison tolerance is unchanged. See the DL-37
-	// evidence for old/new curves and the independent bare-substrate gates.
+	// hemispherical estimate; DL-123 (2026-09-17) changed that shared
+	// hemispherical estimate AGAIN -- GGXBRDF::hemisphericalAlbedo used
+	// to be a flat, alpha-independent macro-Fresnel average (an
+	// over-estimate at rough/grazing configurations, up to +7.7% at
+	// alpha=0.5), and now bakes the true bihemispherical single-scatter
+	// + multiscatter specular integral (see GGXBRDF.cpp's own DL-123
+	// comment).  A SMALLER substrate hemispherical estimate means a
+	// SMALLER Saunderson recycling boost, so this pin moves DOWN.
+	// Re-measured with the same 100k-draw driver; the existing 0.005
+	// comparison tolerance is unchanged. See the DL-37/DL-123 evidence
+	// for old/new curves and the independent bare-substrate gates.
 
 	{
-		static const double kPredicted14[NUM_THETA] = { 0.8398, 0.8409, 0.8328, 0.5791 };
+		static const double kPredicted14[NUM_THETA] = { 0.8171, 0.8184, 0.8113, 0.5680 };
 		ConfigReport& r = addPredicted( "14. Coated clearcoat / white GGX-PBR",
-		    "measured coated-white regression after DL-37 transmission change; unchanged 0.005 pin tolerance",
+		    "measured coated-white regression after DL-123 hemisphericalAlbedo fix; unchanged 0.005 pin tolerance",
 		    kPredicted14, 0.005 );
 		Run( r, *coatedClearcoatWhiteGgx->GetSPF() );
 	}
 
 	// 15. The corresponding red GGX substrate. As in row 14 these are
-	// measured pins after the intentional DL-37 substrate-model change,
-	// not an exact recycling oracle. The absorbed energy remains visible;
-	// row 18 separately measures the bare coloured substrate.
+	// measured pins after the intentional DL-37/DL-123 substrate-model
+	// changes, not an exact recycling oracle. The absorbed energy
+	// remains visible; row 18 separately measures the bare coloured
+	// substrate.
 
 	{
-		static const double kPredicted15[NUM_THETA] = { 0.5695, 0.5704, 0.5812, 0.4611 };
+		static const double kPredicted15[NUM_THETA] = { 0.5571, 0.5580, 0.5692, 0.4547 };
 		ConfigReport& r = addPredicted( "15. Coated clearcoat / red GGX-PBR",
-		    "measured coated-red regression after DL-37 transmission change; unchanged 0.005 pin tolerance",
+		    "measured coated-red regression after DL-123 hemisphericalAlbedo fix; unchanged 0.005 pin tolerance",
 		    kPredicted15, 0.005 );
 		Run( r, *coatedClearcoatRedGgx->GetSPF() );
 	}
