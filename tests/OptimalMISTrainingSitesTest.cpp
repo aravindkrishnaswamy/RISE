@@ -1498,6 +1498,75 @@ static void DriveLightRRSite(
 	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
 }
 
+//! NM twin of `DriveLightRRSite` (round-2 review, P3-5): drives
+//! `LightSampler::EvaluateDirectLightingNM` via
+//! `PathTracingIntegrator::IntegrateFromHitNM` -- the same site
+//! (`LightSampler.cpp`'s mesh-luminary NEE arm), but the NM body,
+//! which has its own `AccumulateCount`/roulette/`Accumulate` triplet
+//! (a physically separate code path from the RGB body this test file's
+//! other rows drive, not merely the same code reached under a
+//! template parameter -- `EvaluateDirectLighting` and
+//! `EvaluateDirectLightingNM` are two distinct member functions).
+static void DriveLightRRSiteNM(
+	const Fixture& fx,
+	const PathTracingIntegrator& integrator,
+	Object& object,
+	IMaterial& material,
+	Scalar rrThreshold,
+	double& sumNee,
+	unsigned int& countNee )
+{
+	const RasterizerState rast{};
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+
+	const_cast<LightSampler*>( pLS )->SetLightSampleRRThreshold( rrThreshold );
+	pLS->SetOptimalMIS( &acc );
+
+	static const Scalar kNM = 550.0;
+
+	DriveOnFreshThread( 5106u, [&]() {
+		for( unsigned int s = 0; s < 4000; ++s )
+		{
+			RandomNumberGenerator rng( 72000 + s );
+			IndependentSampler sampler( rng );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			rc.pOptimalMIS = &acc;
+
+			// Identical geometry/incidence to the RGB fixture, so the two
+			// bodies are exercised under the same conditions.
+			RayIntersection hit( Ray( Point3( 0, 0, 10 ), Vector3( 0, 0, -1 ) ), rast );
+			hit.geometric.bHit = true;
+			hit.geometric.range = 10;
+			hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+			hit.geometric.vNormal = Vector3( 0, 0, 1 );
+			hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
+			hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+			hit.pObject = &object;
+			hit.pMaterial = &material;
+
+			IORStack stack( 1.0 );
+
+			integrator.IntegrateFromHitNM(
+				rc, rast, hit, kNM, *fx.pScene, *fx.pCaster, sampler,
+				/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
+				/*bsdfPdf_*/ 0, /*bsdfTimesCosNM_*/ 0.0,
+				/*considerEmission_*/ true, /*importance*/ 1.0,
+				IRayCaster::RAY_STATE::eRayDiffuse,
+				0, 0, 0, 0, 0, 0, false, false );
+		}
+	} );
+
+	pLS->SetOptimalMIS( 0 );
+	const_cast<LightSampler*>( pLS )->SetLightSampleRRThreshold( 0.0 );
+
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+}
+
 static void RunLightRRConventionCheck()
 {
 	std::cout << "DL-84 (light-sample RR): LightSampler's NEE arm trains the REALIZED moment"
@@ -1554,6 +1623,28 @@ static void RunLightRRConventionCheck()
 	// the roulette never fires.  This one asserts it really did.
 	Check( ratio > 1.2,
 		"light-RR: the roulette actually fired on this fixture (ratio well above 1)" );
+
+	// NM twin (round-2 review, P3-5): same fixture, same integrator
+	// (SetMaxPathDepth(1) already applied above), the NM body only.
+	double sumOffNM = 0, sumOnNM = 0;
+	unsigned int countOffNM = 0, countOnNM = 0;
+	DriveLightRRSiteNM( fx, *integrator, *object, *material, 0.0, sumOffNM, countOffNM );
+	DriveLightRRSiteNM( fx, *integrator, *object, *material, kLightRRThreshold, sumOnNM, countOnNM );
+
+	const double ratioNM = sumOffNM > 0 ? sumOnNM / sumOffNM : -1;
+	std::cout << "    light-RR (NM): NEE moment sum " << sumOffNM << " (threshold 0) -> "
+		<< sumOnNM << " (threshold " << kLightRRThreshold << "); attempts " << countOffNM
+		<< " / " << countOnNM << "; ratio = " << ratioNM
+		<< "  (expect > 1, same discriminator as the RGB row)" << std::endl;
+
+	Check( countOffNM == 4000 && countOnNM == 4000,
+		"light-RR (NM): exactly one counted NEE attempt per driven sample, in both runs" );
+	Check( sumOffNM > 0 && sumOnNM > 0, "light-RR (NM): both runs accumulated a positive NEE moment" );
+	Check( ratioNM > 1.0,
+		"light-RR (NM): turning the light-sample roulette ON RAISES the trained NEE moment "
+		"(the realized moment E_pre/q), matching the RGB body" );
+	Check( ratioNM > 1.2,
+		"light-RR (NM): the roulette actually fired on this fixture (ratio well above 1)" );
 
 	integrator->release();
 	object->release();
