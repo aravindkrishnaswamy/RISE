@@ -3431,7 +3431,19 @@ measured by a harness test against the tracked scene.
   does not quite hold at this scale, but the residual is now the
   per-triangle geometric-normal computation and the `TriGeom` array itself
   (both genuinely new work this check needs), not an avoidable data-structure
-  tax. See `ComputeWatertightness`'s own updated function comment in
+  tax. **Self-review disclosure (2026-09-18): this discriminator does NOT
+  catch two independently-tessellated, coincident sheets that happen to
+  face the SAME way** (same winding, `normalDot >= 0` at every shared
+  edge) — and this is not an oversight fixable by a sharper rule: a
+  coplanar, same-winding edge pair is the EXACT local signature of an
+  ordinary flat mesh region (two adjacent quads of one tessellated face,
+  or a single quad's own internal diagonal), so treating it as suspicious
+  would misfire on essentially every flat-shaded surface in the corpus.
+  Distinguishing "one continuous authored surface, incidentally flat
+  here" from "two independently-authored, coincident, same-facing sheets"
+  needs information a per-edge check does not have. Left as a documented,
+  structural blind spot (not chased further here), separate from residual
+  (1) above. See `ComputeWatertightness`'s own updated function comment in
   `TriangleMeshGeometryIndexed.cpp` for the full derivation and the ledger's
   DL-197 entry for the closing commit hashes.
 - **`standard_object`'s `scale` written with ONE number derives to a

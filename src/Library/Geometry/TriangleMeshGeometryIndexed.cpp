@@ -859,8 +859,10 @@ namespace
 //! it either way, and a diagonal-only difference between the two layers
 //! is not a distinction with a physical consequence for that judgement.
 //!
-//! Residual still open after this fix (recorded, not chased further
-//! here): two sheets closer than `eps` that are NEITHER triangle-
+//! Two residuals still open after this fix (recorded, not chased
+//! further here, self-review 2026-09-18):
+//!
+//! (1) Two sheets closer than `eps` that are NEITHER triangle-
 //! coincident NOR edge-adjacent at all -- e.g. two overlapping but
 //! non-conforming tessellations whose triangle boundaries don't touch
 //! along any shared edge, only through interior crossings -- have no
@@ -868,6 +870,23 @@ namespace
 //! the first place.  A stronger guarantee would need an independent
 //! geometric test (self-intersection / distinct connected-component
 //! volume enclosure), out of scope for this cheap, build-time check.
+//!
+//! (2) Two independently-tessellated, coincident sheets that happen to
+//! face the SAME way (same winding, so `normalDot >= 0` at every shared
+//! edge) are NOT caught by the coplanar/oppositely-wound discriminator
+//! above, and this is NOT merely an unimplemented case -- it is not
+//! locally decidable from edge information at all.  A coplanar,
+//! same-winding pair of triangles sharing an edge is EXACTLY the local
+//! signature of an ordinary, legitimate flat mesh region (e.g. two
+//! adjacent quads of one tessellated `BoxGeometry` face, or a single
+//! quad's own internal diagonal split): using "coplanar + same winding"
+//! as a refusal signal would misfire on essentially every flat-shaded
+//! surface in the corpus.  Distinguishing "one continuous authored
+//! surface, incidentally flat here" from "two independently-authored,
+//! coincident, same-facing sheets" needs information this per-edge
+//! check does not have (e.g. connected-component provenance), so this
+//! case is a genuine, structural blind spot, not a residual that a
+//! sharper local rule could close.
 void TriangleMeshGeometryIndexed::ComputeWatertightness()
 {
 	m_bWatertight = false;
@@ -932,7 +951,13 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 	// the coplanar/oppositely-wound discriminator below, which needs the
 	// mesh's real geometry, not just its post-weld topology, to tell a
 	// genuinely closed sharp crease from a false stitch (see that
-	// discriminator's own comment).
+	// discriminator's own comment).  Cost disclosure: `sizeof(TriGeom)`
+	// is 108 bytes (3 Point3 + 3 unsigned int + 1 Vector3), ~9x
+	// `sortedTriangleIds`' own 12 bytes/triangle above -- a genuinely new
+	// TEMPORARY allocation (~10.4 MB on the 96360-triangle sphere this
+	// function's own cost measurement uses), freed when this function
+	// returns.  Not a persistent or per-query cost; see the ledger's
+	// DL-197 entry for the measured build-time-only overhead this adds.
 	struct TriGeom
 	{
 		Point3 p[3];
