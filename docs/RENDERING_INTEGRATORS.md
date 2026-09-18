@@ -912,6 +912,25 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   [DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md) for the full
   derivation, the red-proof (`tests/PSSMLTStreamAliasingTest.cpp` Test
   F), and the sibling table.
+  **Review-P1 follow-up, same day**: keeping `kNumStreams` at 4096 in a
+  SINGLE flat vector made an unused/high-numbered stream's lazy-grow
+  cost scale with `streamIndex * kNumStreams` — 6 draws on the new
+  reserved stream (2048) alone materialised 22529 `PrimarySample` slots,
+  a measured ~3.9x bootstrap-time regression on
+  `scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene`.  Fixed by two-tier
+  storage (the ORIGINAL 49-wide flat vector for `streamIndex < 49`,
+  bit-identical to the pre-DL-08 base commit; a small linearly-scanned
+  association list for `streamIndex >= 49`, costing exactly one slot per
+  draw regardless of the stream's numeric value — a `std::unordered_map`
+  was tried first and measured slower than even the pre-DL-08 base
+  commit, since each of the 100,000 per-bootstrap-sample
+  `PSSMLTSampler`s pays a hash-bucket allocation).  `Get1D()`'s bounds
+  check was also promoted from `assert` (mischaracterized as "no cost in
+  release" — false on mac/Linux, where `NDEBUG` is never defined) to an
+  always-on branch.  See
+  [DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md)
+  "Storage-cost follow-up" for the measured numbers, the confirmation
+  that no shipped MLT scene reaches eye depth 32, and Tests G/H.
 
 - **Debt 30 (RESOLVED 2026-09-12) — it was TWO things, and only one of
   them was a bug.  (1) The "BDPT and VCM disagree ~20x on
