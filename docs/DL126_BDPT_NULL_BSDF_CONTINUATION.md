@@ -598,6 +598,25 @@ wrong in this section as originally written.
   earlier §2.2 table and its 98.4%/1.6% figures are a two-point
   before/after CHARACTERIZATION from one A/B pair each, not a
   converged estimate, and are left as originally measured).
+* **DL-131/DL-184 downgraded to latent (review round 4, P3-b)**:
+  `GenericHumanTissueMaterial` has no `GetSpecularInfo` override, so it
+  inherits `IMaterial`'s default (`canRefract=false, hasInterior=false`).
+  `IORStackSeeding::SeedFromPoint` only tracks a material when
+  `info.canRefract ? (info.ior > 0) : info.hasInterior`, which is false
+  here either way, and a repo-wide grep for `ior_stack.push`/`.pop`
+  found exactly one call site (`RayCaster.cpp`'s dielectric shadow-
+  transmittance crossing, unrelated). `GenericHumanTissueSPF` itself
+  never pushes or pops the stack, only reads `containsCurrent()`. So
+  the `ior_stack.containsCurrent() == true` branch DL-131/DL-184's fix
+  lives in is unreachable from any real render today -- the only way to
+  reach it is the hand-built `IORStack` fixture
+  `GenericHumanTissueInteriorScatterTest.cpp` constructs directly. Both
+  ledger rows' user-visibility rating is downgraded to "latent"
+  accordingly. The fix is still correct and still worth keeping (it
+  stops being dead code the moment anything DOES seed the stack for
+  this material -- e.g. if a future change gives it a `hasInterior`
+  override, the natural fix for DL-183's sibling origin bug), it simply
+  has no effect on any render this repository can produce today.
 * **Gate table counts**: re-measured against the current HEAD (below,
   §8) rather than the round-1 numbers quoted in §5 (which predate the
   P1 fix and the merge with master's concurrent slices) --
