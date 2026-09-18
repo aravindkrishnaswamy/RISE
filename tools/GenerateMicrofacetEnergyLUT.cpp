@@ -184,6 +184,70 @@ static const int NUM_SAMPLES = 1000000;
 // DL-105 in docs/DEBT_LEDGER.md.)
 static const int SUB_SIZE = 8;
 
+// DL-86 round 2: number of GEOMETRIC refinements of the LOWEST uniform
+// sub-interval [0, c0/SUB_SIZE], applied to the DL-77 ANISOTROPIC sub-
+// grid only (nodes at h*2^-j for j=1..ANISO_SUB_FINE, h = c0/SUB_SIZE).
+//
+// The uniform sub-grid above is enough for the ISOTROPIC tables because
+// their approach to Ess(0)=1 is already essentially linear by the first
+// sub-node: at alpha=0.01 the true curve reads 0.958 at h=1.953e-3 and
+// 0.9796 at 1e-3 (deficit 0.042 vs 0.0204 -- a ratio of 2.06 across a
+// factor of 1.953), so the straight ramp from the anchor is accurate to
+// 0.016% at cos=1e-4 (measured, GGXHeightCorrelatedEnergyLUTTest).
+//
+// For an ANISOTROPIC pair it is not, and the reason is structural: the
+// approach to 1 needs Lambda(wi) >> Lambda(wo), i.e. cos << alphaX*
+// sinTheta for a wi aligned with the SMALL axis, while the scattered
+// lobe is spread over the LARGE axis and keeps Lambda(wo) large.  At
+// (alphaX=0.01, alphaY=1.0, phi=0) the true curve is still at 0.735 at
+// that same first node, so the ramp from 1 spans a 0.265 drop over one
+// interval and reads +2.5% at cos=1e-4, +4.3% at 2.5e-4, +5.9% at 5e-4
+// and +5.9% at 1e-3 (round-2 review; reproduced verbatim in this
+// slice's red proof).  Refining the interval geometrically instead puts
+// a node at every octave down to h*2^-5 = 6.1e-5, below which no
+// production shading direction lands (theta > 89.996 degrees).
+//
+// ANISO_SUB_FINE=5 was chosen by measuring the reconstruction residual
+// of the node-blended piecewise-linear model against an independent 1M-
+// sample-per-point quadrature at the node-exact configurations, over
+// cos in {1e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 1.56e-2}: at
+// (0.01,1.0,phi=0), J=3 leaves 0.81% (its anchor ramp still reaches up
+// to 2.44e-4, above the smallest probe), J=4 leaves 0.60% and J=5
+// leaves 0.54%.  From J=4 on, the worst residual is no longer in the
+// end-cap at all -- it sits at cos=5e-3, inside the UNIFORM part of the
+// grid, and does not move with further refinement.  J=5 is taken
+// because it is the first value whose anchor ramp lies entirely below
+// the smallest probe, so no probed cos is served by the one segment
+// that is not bracketed by two baked nodes.
+//
+// Interpolation stays LINEAR IN COS on every interval.  Log-cos
+// interpolation measured better on the uniform part (0.13% vs 0.54% at
+// cos=5e-3, the curve being close to a power law there), but it cannot
+// express the interval that touches cos=0, and every consumer of these
+// nodes -- MSLobeDetail::SegTotal/SegInvert, which integrate and invert
+// (1-Ess)*c in closed form for the H6 sampler -- is built on the
+// piecewise-LINEAR model.  0.54% is already inside the 1% target.
+static const int ANISO_SUB_FINE = 5;
+
+// Total number of NODE INDICES on [0, c0] for the aniso sub-grid: index
+// 0 is the exact cosTheta->0 anchor, indices 1..ANISO_SUB_FINE are the
+// geometric octaves, indices ANISO_SUB_FINE+1..ANISO_SUB_TOTAL are the
+// uniform nodes k*h (k=1..SUB_SIZE), and the last of those IS the first
+// ordinary bin center c0.  So ANISO_SUB_TOTAL-1 = 12 values are stored
+// per row (neither the anchor nor bin 0 is).
+static const int ANISO_SUB_TOTAL = SUB_SIZE + ANISO_SUB_FINE;
+
+// cosTheta of aniso sub-grid node `n` (n in [0, ANISO_SUB_TOTAL]).  The
+// emitted header carries a byte-identical twin, AnisoSubNodeCos; the
+// two MUST agree or the baked values land at the wrong abscissae.
+static double anisoSubNodeCos(int n, double c0) {
+	if(n <= 0) return 0.0;
+	if(n >= ANISO_SUB_TOTAL) return c0;
+	const double h = c0 / (double)SUB_SIZE;
+	if(n <= ANISO_SUB_FINE) return h / (double)(1 << (ANISO_SUB_FINE + 1 - n));
+	return (double)(n - ANISO_SUB_FINE) * h;
+}
+
 // DL-86: the cosTheta at which the cosTheta->0 boundary value is probed
 // for the SEPARABLE model (the height-correlated G2 model's boundary is
 // exactly 1 and is not probed at all -- see the LookupEssG2 comment
@@ -800,6 +864,62 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	// anisotropic configurations resolve through the new tables.
 	//////////////////////////////////////////////////////////////////
 
+	/// DL-86 round 2: cosTheta of aniso sub-grid node `n`, n in
+	/// [0, ANISO_SUB_TOTAL].  n=0 is the exact cosTheta->0 anchor;
+	/// n=1..ANISO_SUB_FINE are the geometric octaves h*2^-(FINE+1-n)
+	/// (so n=ANISO_SUB_FINE is h/2); n=ANISO_SUB_FINE+k for k=1..SUB_SIZE
+	/// are the uniform nodes k*h, the last of which IS c0 = bin 0.
+	/// h = c0/SUB_SIZE.
+	///
+	/// `c0` is passed in rather than derived because the isotropic and
+	/// aniso tables could in principle differ in cosTheta resolution
+	/// (they are both 32 today); every caller passes
+	/// 0.5/ANISO_COS_SIZE.  The generator has a byte-identical twin,
+	/// anisoSubNodeCos -- they MUST agree or the baked values land at
+	/// the wrong abscissae.
+	inline Scalar AnisoSubNodeCos( const int n, const Scalar c0 )
+	{
+		if( n <= 0 ) return Scalar(0.0);
+		if( n >= ANISO_SUB_TOTAL ) return c0;
+		const Scalar h = c0 / Scalar(SUB_SIZE);
+		if( n <= ANISO_SUB_FINE ) return h / Scalar( 1 << (ANISO_SUB_FINE + 1 - n) );
+		return Scalar( n - ANISO_SUB_FINE ) * h;
+	}
+
+	/// DL-86 round 2: locate cc in [0, c0) on the aniso sub-grid --
+	/// node index n0 in [0, ANISO_SUB_TOTAL-1] and the fraction nf of
+	/// the way from node n0 to node n0+1, LINEAR IN COS (see the
+	/// generator's ANISO_SUB_FINE comment for why not log-cos).  The
+	/// non-uniform twin of SubNodeIndex; the geometric part is resolved
+	/// by a bounded descending scan (ANISO_SUB_FINE iterations at
+	/// worst) rather than a log2, which keeps the node abscissae
+	/// bit-identical to AnisoSubNodeCos's own.
+	inline void AnisoSubNodeIndex( const Scalar cc, const Scalar c0, int& n0, Scalar& nf )
+	{
+		const Scalar h = c0 / Scalar(SUB_SIZE);
+		if( cc >= h )
+		{
+			int k = (int)( cc / h );
+			if( k < 1 ) k = 1;
+			if( k > SUB_SIZE - 1 ) k = SUB_SIZE - 1;
+			n0 = ANISO_SUB_FINE + k;
+			nf = ( cc - Scalar(k) * h ) / h;
+		}
+		else
+		{
+			n0 = 0;
+			for( int n = ANISO_SUB_FINE; n >= 1; n-- )
+			{
+				if( cc >= AnisoSubNodeCos( n, c0 ) ) { n0 = n; break; }
+			}
+			const Scalar lo = AnisoSubNodeCos( n0, c0 );
+			const Scalar hi = AnisoSubNodeCos( n0 + 1, c0 );
+			nf = ( hi > lo ) ? ( ( cc - lo ) / ( hi - lo ) ) : Scalar(0.0);
+		}
+		if( nf < 0 ) nf = 0;
+		if( nf > 1 ) nf = 1;
+	}
+
 	namespace MSLobeDetail
 	{
 		// Generic-N twin of BuildSegmentsFromRow above (identical algebra,
@@ -807,28 +927,32 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		// needed because the DL-77 aniso table's cosTheta resolution
 		// (ANISO_COS_SIZE) differs from the isotropic tables' LUT_SIZE.
 		//
-		// DL-86: `subRow` carries the SUB_SIZE-1 grazing sub-grid nodes,
-		// exactly as in BuildSegmentsFromRow; this twin is only ever used
-		// for the height-correlated G2 model, whose cosTheta=0 boundary
-		// is the exact constant 1, so there is no essLimit parameter.
-		// Keeping this end-cap in step with LookupEssG2Aniso's own
-		// below-c0 branch is load-bearing for the same reason as in the
-		// isotropic pair: MSPdfG2Aniso calls LookupEssG2Aniso directly
-		// while SampleMSCosThetaG2Aniso inverts THESE segments.
-		inline void BuildSegmentsFromRowN( const Scalar* essRow, const Scalar subRow[SUB_SIZE-1], const int N, Segment segs[], int& nSegs )
+		// DL-86: `subRow` carries the ANISO_SUB_TOTAL-1 grazing sub-grid
+		// nodes -- NOT the isotropic SUB_SIZE-1 set BuildSegmentsFromRow
+		// takes, since round 2 refines the aniso grid's lowest interval
+		// geometrically (see ANISO_SUB_FINE).  This twin is only ever
+		// used for the height-correlated G2 model, whose cosTheta=0
+		// boundary is the exact constant 1, so there is no essLimit
+		// parameter.  Keeping this end-cap in step with
+		// LookupEssG2Aniso's own below-c0 branch is load-bearing for the
+		// same reason as in the isotropic pair: MSPdfG2Aniso calls
+		// LookupEssG2Aniso directly while SampleMSCosThetaG2Aniso
+		// inverts THESE segments.  `segs` must hold N+ANISO_SUB_TOTAL.
+		inline void BuildSegmentsFromRowN( const Scalar* essRow, const Scalar subRow[ANISO_SUB_TOTAL-1], const int N, Segment segs[], int& nSegs )
 		{
 			nSegs = 0;
 			const Scalar c0 = 0.5 / Scalar(N);
 			const Scalar cLast = (Scalar(N) - 0.5) / Scalar(N);
 
-			const Scalar h = c0 / Scalar(SUB_SIZE);
-			for( int k = 0; k < SUB_SIZE; k++ )
+			for( int n = 0; n < ANISO_SUB_TOTAL; n++ )
 			{
-				const Scalar vLo = (k == 0) ? Scalar(1.0) : subRow[k-1];
-				const Scalar vHi = (k == SUB_SIZE - 1) ? essRow[0] : subRow[k];
-				segs[nSegs].lo = Scalar(k) * h; segs[nSegs].hi = Scalar(k + 1) * h;
+				const Scalar lo = AnisoSubNodeCos( n, c0 );
+				const Scalar hi = AnisoSubNodeCos( n + 1, c0 );
+				const Scalar vLo = (n == 0) ? Scalar(1.0) : subRow[n-1];
+				const Scalar vHi = (n == ANISO_SUB_TOTAL - 1) ? essRow[0] : subRow[n];
+				segs[nSegs].lo = lo; segs[nSegs].hi = hi;
 				segs[nSegs].essLo = vLo;
-				segs[nSegs].slope = (vHi - vLo) / h;
+				segs[nSegs].slope = (vHi - vLo) / (hi - lo);
 				nSegs++;
 			}
 
@@ -883,22 +1007,24 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	}
 
 	/// DL-86: value of the azimuth-AVERAGED aniso grazing model at
-	/// sub-node k (k in [0, SUB_SIZE]) of cell (xi,yi).  Same contract as
-	/// the isotropic SubNodeEssG2: k==0 is the exact boundary 1,
-	/// k==SUB_SIZE is the cell's own first ordinary bin.
-	inline Scalar AnisoSubNodeEssG2( const int xi, const int yi, const int k )
+	/// sub-node n (n in [0, ANISO_SUB_TOTAL]) of cell (xi,yi).  Same
+	/// contract as the isotropic SubNodeEssG2: n==0 is the exact boundary
+	/// 1, n==ANISO_SUB_TOTAL is the cell's own first ordinary bin.  The
+	/// node's cosTheta is AnisoSubNodeCos(n, 0.5/ANISO_COS_SIZE) -- the
+	/// grid is NOT uniform (round 2, see ANISO_SUB_FINE).
+	inline Scalar AnisoSubNodeEssG2( const int xi, const int yi, const int n )
 	{
-		if( k <= 0 ) return Scalar(1.0);
-		if( k >= SUB_SIZE ) return E_ss_TABLE_G2_ANISO[xi][yi][0];
-		return E_ss_TABLE_G2_ANISO_SUB[xi][yi][k-1];
+		if( n <= 0 ) return Scalar(1.0);
+		if( n >= ANISO_SUB_TOTAL ) return E_ss_TABLE_G2_ANISO[xi][yi][0];
+		return E_ss_TABLE_G2_ANISO_SUB[xi][yi][n-1];
 	}
 
 	/// DL-86: per-azimuth twin of AnisoSubNodeEssG2.
-	inline Scalar AnisoPhiSubNodeEssG2( const int xi, const int yi, const int pi, const int k )
+	inline Scalar AnisoPhiSubNodeEssG2( const int xi, const int yi, const int pi, const int n )
 	{
-		if( k <= 0 ) return Scalar(1.0);
-		if( k >= SUB_SIZE ) return E_ss_TABLE_G2_ANISO_PHI[xi][yi][pi][0];
-		return E_ss_TABLE_G2_ANISO_PHI_SUB[xi][yi][pi][k-1];
+		if( n <= 0 ) return Scalar(1.0);
+		if( n >= ANISO_SUB_TOTAL ) return E_ss_TABLE_G2_ANISO_PHI[xi][yi][pi][0];
+		return E_ss_TABLE_G2_ANISO_PHI_SUB[xi][yi][pi][n-1];
 	}
 
 	/// DL-77: anisotropic twin of LookupEssG2.  Falls back to the exact
@@ -909,13 +1035,16 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	/// SampleMSCosThetaG2Aniso/MSPdfG2Aniso) -- never a direct
 	/// ENERGY-COMPENSATION call site, which all route through the
 	/// per-azimuth LookupEssG2AnisoDirectional below.  It still gets the
-	/// grazing sub-grid, for two reasons that are about consistency, not
-	/// about proposal precision: (a) leaving it flat while its own
-	/// alphaX==alphaY fallback (LookupEssG2) is not would put a step in
-	/// the proposal shape as a surface approaches isotropy, and (b) the
-	/// sub-table is DERIVED from the phi-resolved bake by the same
-	/// trapezoidal average that already produces E_ss_TABLE_G2_ANISO, so
-	/// it costs nothing extra to bake.
+	/// grazing sub-grid (round 2: including its geometric refinement),
+	/// for two reasons that are about consistency, not about proposal
+	/// precision: (a) leaving it flat while its own alphaX==alphaY
+	/// fallback (LookupEssG2) is not would put a step in the proposal
+	/// shape as a surface approaches isotropy, and (b) the sub-table is
+	/// DERIVED from the phi-resolved bake by the same trapezoidal average
+	/// that already produces E_ss_TABLE_G2_ANISO, so it costs nothing
+	/// extra to bake.  MSPdfG2Aniso reads THIS function while
+	/// SampleMSCosThetaG2Aniso inverts MSLobeDetail's segments over the
+	/// same nodes, so the two cannot describe different densities.
 	inline Scalar LookupEssG2Aniso( const Scalar cosTheta, const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEssG2( cosTheta, alphaX );
@@ -933,7 +1062,7 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		if( cc < cSub0 )
 		{
 			int k0; Scalar kf;
-			SubNodeIndex( cc, cSub0, k0, kf );
+			AnisoSubNodeIndex( cc, cSub0, k0, kf );
 			Scalar vXY[2][2];
 			for( int xi = 0; xi < 2; xi++ )
 			{
@@ -992,17 +1121,25 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	/// AnisoPhiSubNodeEssG2), anchored at the same exact boundary 1 --
 	/// the height-correlated Smith argument holds PER DIRECTION
 	/// (Lambda_Aniso(wi) -> infinity as cosWi -> 0 at every azimuth), so
-	/// the boundary is azimuth-independent.  Measured against an
-	/// independent 20M-sample per-azimuth quadrature at cosTheta < c0:
-	/// <=0.72% relative at EXACT (alphaX, alphaY, phi) grid nodes (where
-	/// cosTheta is the only interpolated axis, i.e. where this end-cap is
-	/// the only thing being measured) and <=0.64% at the typical
-	/// near-node configurations, down from up to 18% pre-fix.  OFF-node
-	/// on all three of alphaX, alphaY and phi it is 3-4% -- that is the
-	/// aniso grid's own interpolation error (DL-105 / DL-77's tracked
-	/// ANISO_PHI and low-alpha residual), not this end-cap; see
+	/// the boundary is azimuth-independent.
+	///
+	/// Round 2 made that sub-grid NON-UNIFORM (ANISO_SUB_FINE): the
+	/// uniform version's lowest interval was a single straight ramp from
+	/// the anchor across a drop of 0.265 at (0.01,1.0,phi=0), and read
+	/// +2.5% at cos=1e-4 rising to +5.9% at 1e-3.
+	///
+	/// Measured against an independent 20M-sample per-azimuth quadrature
+	/// over cos in {1e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 1.56e-2}:
+	/// <=0.34% relative at EXACT (alphaX, alphaY, phi) grid nodes -- the
+	/// configurations where cosTheta is the only interpolated axis, i.e.
+	/// where this end-cap is the only thing being measured -- against up
+	/// to 18% for the pre-DL-86 flat clamp and up to 5.9% for round 1's
+	/// uniform sub-grid.  OFF-node the residual is the ANISO GRID's own
+	/// interpolation error, not this end-cap's: <=0.57% with one alpha
+	/// off-node, 3-4% off-node on all three of alphaX, alphaY and phi
+	/// (DL-105 / DL-77's tracked ANISO_PHI and low-alpha residual).  See
 	/// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the full
-	/// before/after table.
+	/// before/after table and the probe protocol.
 	inline Scalar LookupEssG2AnisoDirectional( const Scalar cosTheta, const Scalar localX, const Scalar localY, const Scalar alphaX, const Scalar alphaY )
 	{
 		if( fabs(alphaX - alphaY) < 1e-9 ) return LookupEssG2( cosTheta, alphaX );
@@ -1029,7 +1166,7 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		int ci0 = 0, ci1 = 0; Scalar cf = 0;
 		if( belowC0 )
 		{
-			SubNodeIndex( cc, cSub0, k0, kf );
+			AnisoSubNodeIndex( cc, cSub0, k0, kf );
 		}
 		else
 		{
@@ -1108,7 +1245,7 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 			{
 				for( int yi = 0; yi < ANISO_ALPHA_SIZE; yi++ )
 				{
-					MSLobeDetail::Segment segs[ANISO_COS_SIZE + SUB_SIZE];
+					MSLobeDetail::Segment segs[ANISO_COS_SIZE + ANISO_SUB_TOTAL];
 					int nSegs = 0;
 					MSLobeDetail::BuildSegmentsFromRowN( E_ss_TABLE_G2_ANISO[xi][yi], E_ss_TABLE_G2_ANISO_SUB[xi][yi], ANISO_COS_SIZE, segs, nSegs );
 					Scalar I = 0.0;
@@ -1159,19 +1296,19 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 		}
 
 		// DL-86: the same bilinear blend on the grazing sub-grid.
-		Scalar subRow[SUB_SIZE-1];
-		for( int k = 0; k < SUB_SIZE - 1; k++ )
+		Scalar subRow[ANISO_SUB_TOTAL-1];
+		for( int k = 0; k < ANISO_SUB_TOTAL - 1; k++ )
 		{
 			const Scalar s0 = (1-yf)*E_ss_TABLE_G2_ANISO_SUB[xi0][yi0][k] + yf*E_ss_TABLE_G2_ANISO_SUB[xi0][yi1][k];
 			const Scalar s1 = (1-yf)*E_ss_TABLE_G2_ANISO_SUB[xi1][yi0][k] + yf*E_ss_TABLE_G2_ANISO_SUB[xi1][yi1][k];
 			subRow[k] = (1-xf)*s0 + xf*s1;
 		}
 
-		MSLobeDetail::Segment segs[ANISO_COS_SIZE + SUB_SIZE];
+		MSLobeDetail::Segment segs[ANISO_COS_SIZE + ANISO_SUB_TOTAL];
 		int nSegs = 0;
 		MSLobeDetail::BuildSegmentsFromRowN( essRow, subRow, ANISO_COS_SIZE, segs, nSegs );
 
-		Scalar totals[ANISO_COS_SIZE + SUB_SIZE];
+		Scalar totals[ANISO_COS_SIZE + ANISO_SUB_TOTAL];
 		Scalar I = 0.0;
 		for( int i = 0; i < nSegs; i++ )
 		{
@@ -1369,8 +1506,13 @@ int main() {
 	// E_ss_LIMIT twin exists: the height-correlated boundary is exactly 1
 	// per-direction, azimuth included (Lambda_Aniso(wi)->infinity as
 	// cosWi->0 at EVERY azimuth), so there is nothing to bake.
-	static double E_ss_G2_ANISO_PHI_SUB[ANISO_ALPHA_SIZE][ANISO_ALPHA_SIZE][ANISO_PHI_SIZE][SUB_SIZE-1];
-	static double E_ss_G2_ANISO_SUB[ANISO_ALPHA_SIZE][ANISO_ALPHA_SIZE][SUB_SIZE-1];
+	//
+	// Round 2: ANISO_SUB_TOTAL-1 nodes per row, not SUB_SIZE-1 -- the
+	// lowest uniform interval is refined geometrically (see
+	// ANISO_SUB_FINE).  The ISOTROPIC sub tables above keep the plain
+	// uniform grid and are byte-for-byte unchanged by this.
+	static double E_ss_G2_ANISO_PHI_SUB[ANISO_ALPHA_SIZE][ANISO_ALPHA_SIZE][ANISO_PHI_SIZE][ANISO_SUB_TOTAL-1];
+	static double E_ss_G2_ANISO_SUB[ANISO_ALPHA_SIZE][ANISO_ALPHA_SIZE][ANISO_SUB_TOTAL-1];
 
 	// P2-1 (debt-ggx3): bilinear evaluation of the WELL-CONVERGED isotropic
 	// E_ss_G2 table above, using the EXACT SAME interpolation scheme
@@ -1397,19 +1539,43 @@ int main() {
 		return (1-af) * ((1-cf)*v00 + cf*v01) + af * ((1-cf)*v10 + cf*v11);
 	};
 
-	// DL-86 twin of evalIsoEssG2 for the grazing sub-grid.  The aniso
-	// table's sub-nodes sit at exactly the same cosTheta values as the
-	// isotropic ones (ANISO_COS_SIZE == LUT_SIZE, so both c0 values are
-	// 0.5/32, and both use the same SUB_SIZE), so seeding the diagonal is
-	// just the SAME alpha-row blend applied to the sub row -- keeping the
-	// alphaX==alphaY boundary consistent with LookupEssG2's own below-c0
-	// curve, exactly as the P2-1 main-table seeding does above c0.
-	auto evalIsoEssG2Sub = [&](double alpha, int k) -> double {
+	// DL-86 twin of evalIsoEssG2 for the grazing sub-grid: a byte-exact
+	// re-implementation of LookupEssG2's OWN below-c0 branch (uniform
+	// SUB_SIZE grid, anchor 1 at cosTheta=0, alpha-row blend), evaluated
+	// at an arbitrary cosTheta.
+	//
+	// Round 2 note: this used to take a NODE INDEX k, because the aniso
+	// sub-nodes sat at exactly the isotropic ones.  They no longer do --
+	// the aniso grid is refined below c0/SUB_SIZE and the isotropic one
+	// is not -- so the diagonal seed asks for the isotropic MODEL's value
+	// at the aniso node's cosTheta instead.  At the nodes the two grids
+	// still share (the uniform ones) this returns exactly what the
+	// index-based version returned, since SubNodeIndex lands on kf=0
+	// there; at the new geometric nodes it returns the isotropic ramp's
+	// own value, which is the point: alphaX==alphaY must keep agreeing
+	// with LookupEssG2, whose end-cap this slice deliberately leaves
+	// alone (it is accurate to 0.016% there).
+	auto evalIsoEssG2SubAt = [&](double alpha, double cosTheta) -> double {
 		double a = fmax(0.0, fmin(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 		int ai0 = (int)a;
 		int ai1 = (ai0 + 1 < LUT_SIZE - 1) ? ai0 + 1 : LUT_SIZE - 1;
 		double af = a - ai0;
-		return (1-af) * E_ss_SUB_G2[ai0][k-1] + af * E_ss_SUB_G2[ai1][k-1];
+
+		const double c0iso = 0.5 / (double)LUT_SIZE;
+		double t = cosTheta / c0iso * (double)SUB_SIZE;
+		int k0 = (int)t;
+		if(k0 < 0) k0 = 0;
+		if(k0 > SUB_SIZE - 1) k0 = SUB_SIZE - 1;
+		const double kf = t - (double)k0;
+
+		auto node = [&](int ai, int k) -> double {
+			if(k <= 0) return 1.0;
+			if(k >= SUB_SIZE) return E_ss_G2[ai][0];
+			return E_ss_SUB_G2[ai][k-1];
+		};
+		const double s0 = (1-af) * node(ai0, k0)     + af * node(ai1, k0);
+		const double s1 = (1-af) * node(ai0, k0 + 1) + af * node(ai1, k0 + 1);
+		return (1-kf) * s0 + kf * s1;
 	};
 
 	// Pass 1: Monte-Carlo bake (or P2-1 iso-seed on the diagonal) ONLY the
@@ -1491,16 +1657,19 @@ int main() {
 				}
 
 				// DL-86: the same per-azimuth estimator on the grazing
-				// sub-grid (nodes k*c0/SUB_SIZE, k=1..SUB_SIZE-1, with
-				// c0 = 0.5/ANISO_COS_SIZE).  Drawn from rand01_sub so the
-				// ci loop above stays byte-identical to the pre-DL-86
-				// bake.  The k=0 boundary is exactly 1 analytically and
-				// the k=SUB_SIZE node IS ci=0, so neither is stored.
-				for(int k = 1; k < SUB_SIZE; k++) {
-					const double cosTheta = (double)k * (0.5 / (double)ANISO_COS_SIZE) / (double)SUB_SIZE;
+				// sub-grid (nodes anisoSubNodeCos(n), n=1..
+				// ANISO_SUB_TOTAL-1, with c0 = 0.5/ANISO_COS_SIZE --
+				// ANISO_SUB_FINE geometric octaves below c0/SUB_SIZE then
+				// the uniform k*c0/SUB_SIZE nodes).  Drawn from rand01_sub
+				// so the ci loop above stays byte-identical to the
+				// pre-DL-86 bake.  The n=0 boundary is exactly 1
+				// analytically and the n=ANISO_SUB_TOTAL node IS ci=0, so
+				// neither is stored.
+				for(int n = 1; n < ANISO_SUB_TOTAL; n++) {
+					const double cosTheta = anisoSubNodeCos(n, 0.5 / (double)ANISO_COS_SIZE);
 
 					if(isDiagonal) {
-						E_ss_G2_ANISO_PHI_SUB[ix][iy][pi][k-1] = evalIsoEssG2Sub(alphaX, k);
+						E_ss_G2_ANISO_PHI_SUB[ix][iy][pi][n-1] = evalIsoEssG2SubAt(alphaX, cosTheta);
 						continue;
 					}
 
@@ -1530,7 +1699,7 @@ int main() {
 						}
 					}
 
-					E_ss_G2_ANISO_PHI_SUB[ix][iy][pi][k-1] = sumG2 / (double)NUM_SAMPLES_ANISO;
+					E_ss_G2_ANISO_PHI_SUB[ix][iy][pi][n-1] = sumG2 / (double)NUM_SAMPLES_ANISO;
 				}
 			}
 
@@ -1552,7 +1721,7 @@ int main() {
 				// DL-86: the grazing sub-grid mirrors identically -- the
 				// relabel symmetry is a property of the direction, not of
 				// which cosTheta node it is evaluated at.
-				for(int k = 0; k < SUB_SIZE - 1; k++) {
+				for(int k = 0; k < ANISO_SUB_TOTAL - 1; k++) {
 					E_ss_G2_ANISO_PHI_SUB[ix][iy][pi][k] = E_ss_G2_ANISO_PHI_SUB[iy][ix][ANISO_PHI_SIZE - 1 - pi][k];
 				}
 			}
@@ -1582,7 +1751,7 @@ int main() {
 
 			// DL-86: the grazing sub-grid's phi-average, derived by the
 			// identical trapezoidal rule.
-			for(int k = 0; k < SUB_SIZE - 1; k++) {
+			for(int k = 0; k < ANISO_SUB_TOTAL - 1; k++) {
 				double trapz = 0.5 * E_ss_G2_ANISO_PHI_SUB[ix][iy][0][k] + 0.5 * E_ss_G2_ANISO_PHI_SUB[ix][iy][ANISO_PHI_SIZE-1][k];
 				for(int pi = 1; pi < ANISO_PHI_SIZE - 1; pi++)
 					trapz += E_ss_G2_ANISO_PHI_SUB[ix][iy][pi][k];
@@ -1625,10 +1794,12 @@ int main() {
 	printf("//  CosTheta range: [0.5/%d, (%.1f)/%d] (cell centers)\n", LUT_SIZE, LUT_SIZE - 0.5, LUT_SIZE);
 	printf("//  DL-86 grazing sub-grid: %d uniform sub-intervals on\n", SUB_SIZE);
 	printf("//  [0, 0.5/%d], i.e. %d stored nodes per row, for the isotropic\n", LUT_SIZE, SUB_SIZE - 1);
-	printf("//  E_ss/E_ss_G2 tables AND the DL-77 aniso tables; the\n");
-	printf("//  cosTheta->0 boundary is exactly 1 for the height-correlated\n");
-	printf("//  G2 model and a baked per-alpha constant (E_ss_LIMIT_TABLE,\n");
-	printf("//  probed at cosTheta=%g) for the separable model\n", SUB_LIMIT_COS);
+	printf("//  E_ss/E_ss_G2 tables; the DL-77 aniso tables refine the LOWEST\n");
+	printf("//  of those intervals by %d further geometric octaves (down to\n", ANISO_SUB_FINE);
+	printf("//  0.5/%d/%d/%d), i.e. %d stored nodes per aniso row -- see\n", LUT_SIZE, SUB_SIZE, 1 << ANISO_SUB_FINE, ANISO_SUB_TOTAL - 1);
+	printf("//  ANISO_SUB_FINE.  The cosTheta->0 boundary is exactly 1 for the\n");
+	printf("//  height-correlated G2 model and a baked per-alpha constant\n");
+	printf("//  (E_ss_LIMIT_TABLE, probed at cosTheta=%g) for the separable model\n", SUB_LIMIT_COS);
 	printf("//  DL-77 aniso LUT resolution: %d alphaX x %d alphaY x %d phi x %d cosTheta\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_COS_SIZE);
 	printf("//  DL-77 aniso samples per entry: %d (off-diagonal cells only --\n", NUM_SAMPLES_ANISO);
 	printf("//  alphaX==alphaY cells are seeded from the isotropic tables, see\n");
@@ -1698,6 +1869,35 @@ int main() {
 	printf("\t/// cosTheta->0 boundary.  See the generator's SUB_SIZE comment for\n");
 	printf("\t/// the residual measurements that picked this value.\n");
 	printf("\tstatic const int SUB_SIZE = %d;\n\n", SUB_SIZE);
+
+	printf("\t/// DL-86 round 2: the DL-77 ANISOTROPIC sub-grid refines the\n");
+	printf("\t/// LOWEST uniform sub-interval [0, c0/SUB_SIZE] by this many\n");
+	printf("\t/// GEOMETRIC octaves (nodes at h*2^-j for j=1..ANISO_SUB_FINE,\n");
+	printf("\t/// h = c0/SUB_SIZE), so the straight ramp from the exact\n");
+	printf("\t/// cosTheta->0 anchor spans only [0, h*2^-%d] = [0, %.3g].\n", ANISO_SUB_FINE, (0.5/(double)LUT_SIZE)/(double)SUB_SIZE/(double)(1 << ANISO_SUB_FINE));
+	printf("\t///\n");
+	printf("\t/// The uniform grid suffices for the ISOTROPIC tables (their\n");
+	printf("\t/// approach to Ess=1 is already linear by the first sub-node:\n");
+	printf("\t/// 0.016%% residual at alpha=0.01, cos=1e-4, measured).  For an\n");
+	printf("\t/// ANISOTROPIC pair it does not: the approach to 1 needs\n");
+	printf("\t/// Lambda(wi) >> Lambda(wo), i.e. cos << alphaX*sinTheta for a wi\n");
+	printf("\t/// aligned with the SMALL axis, while the scattered lobe spread\n");
+	printf("\t/// over the LARGE axis keeps Lambda(wo) large.  At\n");
+	printf("\t/// (alphaX=0.01, alphaY=1.0, phi=0) the true curve is still at\n");
+	printf("\t/// 0.735 at the first uniform sub-node, so a ramp from 1 across\n");
+	printf("\t/// that one interval read +2.5%% at cos=1e-4 and +5.9%% at 1e-3.\n");
+	printf("\t/// See the generator's ANISO_SUB_FINE comment for the residual\n");
+	printf("\t/// measurements that picked this value and for why the\n");
+	printf("\t/// interpolation stays LINEAR IN COS on every interval.\n");
+	printf("\tstatic const int ANISO_SUB_FINE = %d;\n\n", ANISO_SUB_FINE);
+
+	printf("\t/// DL-86 round 2: total number of aniso sub-grid NODE INDICES on\n");
+	printf("\t/// [0, c0].  Index 0 is the exact cosTheta->0 anchor, 1..\n");
+	printf("\t/// ANISO_SUB_FINE are the geometric octaves, ANISO_SUB_FINE+1..\n");
+	printf("\t/// ANISO_SUB_TOTAL are the uniform nodes k*c0/SUB_SIZE\n");
+	printf("\t/// (k=1..SUB_SIZE), and the last of those IS bin 0 -- so\n");
+	printf("\t/// ANISO_SUB_TOTAL-1 = %d values are stored per row.\n", ANISO_SUB_TOTAL - 1);
+	printf("\tstatic const int ANISO_SUB_TOTAL = SUB_SIZE + ANISO_SUB_FINE;\n\n");
 
 	// Emit E_ss table
 	//
@@ -2087,23 +2287,25 @@ int main() {
 
 	printf("\t/// DL-86: grazing sub-grid twin of E_ss_TABLE_G2_ANISO_PHI\n");
 	printf("\t/// above -- the SAME per-azimuth height-correlated-G2\n");
-	printf("\t/// directional albedo, at the SUB_SIZE-1 interior nodes of\n");
-	printf("\t/// [0, 0.5/ANISO_COS_SIZE].  Indexed as\n");
-	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_SUB[alphaXIdx][alphaYIdx][phiIdx][k-1].\n");
+	printf("\t/// directional albedo, at the ANISO_SUB_TOTAL-1 interior nodes\n");
+	printf("\t/// of [0, 0.5/ANISO_COS_SIZE] -- ANISO_SUB_FINE geometric\n");
+	printf("\t/// octaves below c0/SUB_SIZE, then the uniform k*c0/SUB_SIZE\n");
+	printf("\t/// nodes (see AnisoSubNodeCos).  Indexed as\n");
+	printf("\t/// E_ss_TABLE_G2_ANISO_PHI_SUB[alphaXIdx][alphaYIdx][phiIdx][n-1].\n");
 	printf("\t/// Consumed by LookupEssG2AnisoDirectional (an energy-\n");
 	printf("\t/// compensation call site).  The cosTheta->0 boundary is\n");
 	printf("\t/// exactly 1 at every azimuth, so it is not stored.\n");
 	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
-	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_PHI_SUB[%d][%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, SUB_SIZE - 1);
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_PHI_SUB[%d][%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_PHI_SIZE, ANISO_SUB_TOTAL - 1);
 	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{\n");
 		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
 			printf("\t\t\t{\n");
 			for(int pi = 0; pi < ANISO_PHI_SIZE; pi++) {
 				printf("\t\t\t\t{ ");
-				for(int k = 0; k < SUB_SIZE - 1; k++) {
+				for(int k = 0; k < ANISO_SUB_TOTAL - 1; k++) {
 					printf("%.8f", E_ss_G2_ANISO_PHI_SUB[ix][iy][pi][k]);
-					if(k < SUB_SIZE - 2) printf(", ");
+					if(k < ANISO_SUB_TOTAL - 2) printf(", ");
 				}
 				printf(" }");
 				if(pi < ANISO_PHI_SIZE - 1) printf(",");
@@ -2150,14 +2352,14 @@ int main() {
 	printf("\t/// MSLobeDetail::BuildSegmentsFromRowN -- i.e. by the H6 aniso\n");
 	printf("\t/// sampler/pdf pair, which must read one shared model.\n");
 	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
-	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_SUB[%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, SUB_SIZE - 1);
+	printf("\tinline const Scalar E_ss_TABLE_G2_ANISO_SUB[%d][%d][%d] = {\n", ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE, ANISO_SUB_TOTAL - 1);
 	for(int ix = 0; ix < ANISO_ALPHA_SIZE; ix++) {
 		printf("\t\t{\n");
 		for(int iy = 0; iy < ANISO_ALPHA_SIZE; iy++) {
 			printf("\t\t\t{ ");
-			for(int k = 0; k < SUB_SIZE - 1; k++) {
+			for(int k = 0; k < ANISO_SUB_TOTAL - 1; k++) {
 				printf("%.8f", E_ss_G2_ANISO_SUB[ix][iy][k]);
-				if(k < SUB_SIZE - 2) printf(", ");
+				if(k < ANISO_SUB_TOTAL - 2) printf(", ");
 			}
 			printf(" }");
 			if(iy < ANISO_ALPHA_SIZE - 1) printf(",");
