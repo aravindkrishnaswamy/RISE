@@ -13,8 +13,9 @@
 //    both RGB and NM.
 //
 //    This is DISTINCT from DL-183 (the same material's scattered-ray
-//    ORIGIN is `ri.ray.origin` instead of `ri.ptIntersection` -- a
-//    different bug, not touched here).
+//    ORIGIN is `ri.ray.origin` instead of `ri.ptIntersection`), whose
+//    own red-proof (`CheckOrigins` below) was added to this file when
+//    DL-183 was closed -- see that function's own header comment.
 //
 //    RECIPE (per docs/DEBT_LEDGER.md's DL-131 row, whose defect this
 //    test also exercises -- DL-131 and this dead-lobe bug share one
@@ -141,6 +142,59 @@ namespace
 		}
 		return t;
 	}
+
+	//! DL-183 red-proof.  `GenericHumanTissueSPF::Scatter`/`ScatterNM`
+	//! set `trans.ray.origin = ri.ray.origin` (the INCOMING ray's
+	//! origin -- for `MakeInteriorHit()` below, the point (0,0,-1) one
+	//! unit behind the surface) instead of `ri.ptIntersection` (the
+	//! actual hit point, (0,0,0)) -- BEFORE either the outside/inside
+	//! branch or the absorb/scatter/transmit roll, so every emitted
+	//! ray from this material starts on the WRONG LINE, not merely a
+	//! wrong point on the right one.  The sibling `BioSpecSkinSPF`
+	//! sets `remmitted.ray.origin = ri.ptIntersection` correctly at
+	//! both of its call sites (see BioSpecSkinSPF.cpp:957/:1040).
+	//!
+	//! Drives all four combinations (RGB/NM x outside/inside-stack)
+	//! and asserts every emitted ray's origin equals `ri.ptIntersection`
+	//! exactly (no perturbation of `ri.ptIntersection` itself is in
+	//! play here, so this is a bit-exact check, not a tolerance one).
+	unsigned int CheckOrigins(
+		const GenericHumanTissueSPF& spf,
+		const RayIntersectionGeometric& ri,
+		const IORStack& stack,
+		bool useNM,
+		unsigned int kTrials,
+		unsigned int seed,
+		const char* label
+		)
+	{
+		unsigned int wrongOrigin = 0;
+		unsigned int emitted = 0;
+		RandomNumberGenerator rng( seed );
+		IndependentSampler sampler( rng );
+
+		for( unsigned int i = 0; i < kTrials; i++ ) {
+			ScatteredRayContainer scattered;
+			if( useNM ) {
+				spf.ScatterNM( ri, sampler, 550.0, scattered, stack );
+			} else {
+				spf.Scatter( ri, sampler, scattered, stack );
+			}
+			for( unsigned int k = 0; k < scattered.Count(); k++ ) {
+				emitted++;
+				const Point3 origin = scattered[k].ray.origin;
+				const Scalar d = Vector3Ops::Magnitude(
+					Vector3Ops::mkVector3( origin, ri.ptIntersection ) );
+				if( d > 1e-9 ) {
+					wrongOrigin++;
+				}
+			}
+		}
+
+		std::cout << "  " << label << ": emitted=" << emitted
+		          << " wrong-origin=" << wrongOrigin << std::endl;
+		return wrongOrigin;
+	}
 }
 
 int main()
@@ -209,6 +263,38 @@ int main()
 			"DL-184: HG NM interior scatter changes direction on most non-absorbed trials (not dead)" );
 
 		pSpf->release();
+	}
+
+	// DL-183: scattered-ray origin.  `trans.ray.origin` is set once,
+	// before either the outside/inside branch or the absorb/scatter/
+	// transmit roll -- so this must hold for every code path: outside
+	// vs inside the IOR stack, RGB vs NM, and (implicitly, since the
+	// assignment precedes the roll) absorbed-or-not is irrelevant
+	// (absorbed trials emit no ray at all and are simply skipped by
+	// `CheckOrigins`'s `scattered.Count()` loop).
+	{
+		IORStack outsideStack( 1.0 );	// pCurrentObject never set -> containsCurrent() == false
+
+		GenericHumanTissueSPF* pSpfDiffuse = new GenericHumanTissueSPF( *pSca, *pG, 0.012, 7.0e-5, 0.05, 0.75, true );
+		pSpfDiffuse->addref();
+		GenericHumanTissueSPF* pSpfHG = new GenericHumanTissueSPF( *pSca, *pG, 0.012, 7.0e-5, 0.05, 0.75, false );
+		pSpfHG->addref();
+
+		unsigned int wrong = 0;
+		wrong += CheckOrigins( *pSpfDiffuse, ri, outsideStack, false, kTrials, 2001, "DL-183 outside-stack diffuse RGB" );
+		wrong += CheckOrigins( *pSpfDiffuse, ri, outsideStack, true,  kTrials, 2002, "DL-183 outside-stack diffuse NM " );
+		wrong += CheckOrigins( *pSpfDiffuse, ri, stack,        false, kTrials, 2003, "DL-183 inside-stack  diffuse RGB" );
+		wrong += CheckOrigins( *pSpfDiffuse, ri, stack,        true,  kTrials, 2004, "DL-183 inside-stack  diffuse NM " );
+		wrong += CheckOrigins( *pSpfHG,      ri, outsideStack, false, kTrials, 2005, "DL-183 outside-stack HG      RGB" );
+		wrong += CheckOrigins( *pSpfHG,      ri, outsideStack, true,  kTrials, 2006, "DL-183 outside-stack HG      NM " );
+		wrong += CheckOrigins( *pSpfHG,      ri, stack,        false, kTrials, 2007, "DL-183 inside-stack  HG      RGB" );
+		wrong += CheckOrigins( *pSpfHG,      ri, stack,        true,  kTrials, 2008, "DL-183 inside-stack  HG      NM " );
+
+		Check( wrong == 0,
+			"DL-183: every emitted ray's origin equals ri.ptIntersection (outside+inside stack, RGB+NM, diffuse+HG)" );
+
+		pSpfDiffuse->release();
+		pSpfHG->release();
 	}
 
 	pSca->release();
