@@ -240,8 +240,18 @@ static RatioStat MeasureSpecularRatioNM(
 	ISampler& sampler,
 	const IORStack& iorStack,
 	unsigned int nDraws,
-	const Scalar nm )
+	const Scalar nm,
+	const IPainter& diffuse )		///< [in] the BRDF's own diffuse painter -- see below
 {
+	// `valueNM` adds `GuardedGetColorNM(diffuse) * INV_PI`, and a
+	// UniformColorPainter of exact black does NOT return exact zero
+	// through the spectral uplift (the Jakob-Hanika sigmoid gives
+	// 1-eps / eps, never a hard 0 or 1 -- which is why
+	// `GuardedGetColorNM` exists at all, IPainter.h).  That residual is
+	// ~1e-5 of radiance, invisible in a render but 3.5e-4 RELATIVE at
+	// this test's smallest specular reflectance, so subtract exactly
+	// the term `valueNM` added rather than loosening the band.
+	const Scalar fDiffuseNM = GuardedGetColorNM( diffuse, ri, nm ) * INV_PI;
 	RatioStat st{};
 	st.minR = 1e300;
 	st.maxR = -1e300;
@@ -267,7 +277,7 @@ static RatioStat MeasureSpecularRatioNM(
 				continue;
 			}
 
-			const double fI = brdf.valueNM( wo, ri, nm );
+			const double fI = brdf.valueNM( wo, ri, nm ) - fDiffuseNM;
 			if( fI <= 0 || sr.krayNM <= 0 ) {
 				continue;
 			}
@@ -532,7 +542,7 @@ int main()
 			for( int d = 0; d < 4; d++ ) {
 				const RayIntersectionGeometric ri = MakeIntersection( degs[d] * PI / 180.0 );
 				const double Q = QuadratureAggregate( *brdf, ri );
-				const double E = MeasureEmittedEnergy( *spf, ri, sampler, iorStack, 60000 );
+				const double E = MeasureEmittedEnergy( *spf, ri, sampler, iorStack, 240000 );
 				const double ratio = ( Q > 0 ) ? E / Q : 0;
 
 				std::cout << "   " << std::setprecision(1) << rhos[a]
@@ -548,8 +558,15 @@ int main()
 				const double dev = fabs( ratio - 1.0 );
 				if( dev > worstRatioDev ) worstRatioDev = dev;
 
-				// 2% covers the 400x800 quadrature's own discretisation
-				// of a low-roughness peak plus the 60000-draw MC error.
+				// 2% covers the 400x800 quadrature's own discretisation of
+				// a low-roughness peak plus the 240000-draw MC error.  The
+				// worst cell measures 0.0059 (rho=0.9, roughness=0.3,
+				// isotropy=1.0, 80 deg) -- the grazing tail is heavy
+				// because `kray` now carries the model's own unbounded
+				// 1/(n.v) growth (see DL-177), so this row is the noisiest
+				// in the suite; the sign of the residual is not systematic
+				// across the grid, which is what distinguishes it from a
+				// real convention error.
 				Check( dev < 0.02,
 					"DL-127: sampled continuation delivers the BRDF's own hemispherical integral" );
 			}
@@ -582,7 +599,7 @@ int main()
 
 			for( int d = 0; d < 4; d++ ) {
 				const RayIntersectionGeometric ri = MakeIntersection( degs[d] * PI / 180.0 );
-				const RatioStat st = MeasureSpecularRatioNM( *spf, *brdf, ri, sampler, iorStack, 20000, 550.0 );
+				const RatioStat st = MeasureSpecularRatioNM( *spf, *brdf, ri, sampler, iorStack, 20000, 550.0, *black );
 				std::cout << "   rho=" << std::setprecision(1) << rhos[a]
 				          << " rough=" << roughs[b]
 				          << " theta=" << std::setw(4) << degs[d]
