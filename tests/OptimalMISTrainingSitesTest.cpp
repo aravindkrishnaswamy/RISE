@@ -278,10 +278,12 @@ static void CheckTrainedInterior( const OptimalMISAccumulator& acc, const char* 
 // bounce limit kills it -- the escape is the arm whose training this
 // guards, and a thick fog never reaches it.
 //////////////////////////////////////////////////////////////////////
-static std::string VolumeScene( double envLevel = 1.0 )
+static std::string VolumeScene( double envLevel = 1.0, double absorption = 0.0 )
 {
 	std::ostringstream envss;
 	envss << envLevel << " " << envLevel << " " << envLevel;
+	std::ostringstream absss;
+	absss << absorption << " " << absorption << " " << absorption;
 	return std::string(
 		"RISE ASCII SCENE 7\n"
 		"\n"
@@ -290,7 +292,7 @@ static std::string VolumeScene( double envLevel = 1.0 )
 		"\n"
 		"painter_heterogeneous_medium\n{\n"
 		"\tname fog\n"
-		"\tabsorption 0.0 0.0 0.0\n"
+		"\tabsorption " + absss.str() + "\n"
 		"\tscattering 0.02 0.02 0.02\n"
 		"\tphase isotropic\n"
 		"\tdensity_painter pnt_density\n"
@@ -1188,6 +1190,173 @@ static void RunRRConventionCheck()
 }
 
 //////////////////////////////////////////////////////////////////////
+// IN-LOOP VOLUME RR CONVENTION (round 7).
+//
+// `RunFloorFogSite` above never exercises the in-loop volume vertex's
+// OWN Russian roulette: with a WHITE mirror floor and an isotropic
+// phase function the running throughput at the medium vertex is exactly
+// 1 (`volScatterScalar = phaseVal/effectivePdf = 1`), so
+// `rrProb = min(1, 1/max(importance, rrThreshold))` is 1 and the
+// roulette is a no-op no matter how deep the walk starts.
+//
+// This row DARKENS the mirror so the throughput at the medium vertex is
+// below `importance` and the roulette really fires, and starts the walk
+// at `rrMinDepth` so it fires on the FIRST medium vertex.
+//
+// THE SURVIVAL PROBABILITY IS EXACT AND IS THE SINGLE-SCATTER ALBEDO.
+// At the medium vertex the roulette reads
+//     rrProb = min(1, throughput_max / max(importance, rrThreshold))
+// and along this walk `importance` is the mirror's own reflectance while
+// `throughput` is that reflectance times the medium's scatter weight
+// `sigma_s / sigma_t`, so the mirror cancels and
+//     q = sigma_s / (sigma_s + sigma_a)
+// exactly, identically at every accumulating vertex -- a knob this
+// fixture sets straight from the scene text.
+//
+// THE ASSERTION, with no toggle and no pinned magic number.  Every
+// accumulation at this site contributes
+//
+//     (L_env * bsdfTimesCos / effectivePdf)^2
+//
+// and for the isotropic phase function this scene configures,
+// `phaseVal == effectivePdf` exactly, so each escape contributes
+//
+//     ROUND 6 (bsdfTimesCos = phaseVal):        1 * L_env^2
+//     ROUND 7 (bsdfTimesCos = phaseVal / q):  1/q^2 * L_env^2
+//
+// i.e. the accumulated `sum / L_env^2` must be a whole multiple of
+// `1/q^2` -- and under round 6 it is a whole multiple of 1 instead (it
+// is literally a COUNT of escapes).
+//
+// Run at TWO albedos.  The first (q = 1/4, 1/q^2 = 16) is red under
+// round 6 because its escape count, 36, is not a multiple of 16.  The
+// second (q = 1/6, 1/q^2 = 36) is red for a reason that does not lean
+// on an arithmetic coincidence at all: its escape count, 7, is SMALLER
+// than 1/q^2, so `sum/L_env^2 / (1/q^2)` cannot even reach 1 under
+// round 6's wiring.  Measured on this fixture:
+//
+//     round 6:  sum/L_env^2 =  36  (= 36 escapes)  and   7  (= 7 escapes)
+//     round 7:  sum/L_env^2 = 576  (= 36 * 16)     and 252  (= 7 * 36)
+//////////////////////////////////////////////////////////////////////
+
+//! `absorption` sets the roulette's exact survival probability
+//! `q = scattering / (scattering + absorption)`; `VolumeScene`'s
+//! scattering coefficient is 0.02.
+static void RunOneVolumeRR( double absorption, const char* tag )
+{
+	const double q = 0.02 / ( 0.02 + absorption );
+	const double invQ2 = 1.0 / ( q * q );
+	std::cout << "DL-84 (in-loop volume RR): the medium continuation trains the REALIZED moment"
+		<< "  [absorption " << absorption << ", q = " << q << ", 1/q^2 = " << invQ2 << "]"
+		<< std::endl;
+
+	Fixture fx;
+	Check( fx.Build( VolumeScene( 1.0, absorption ), tag ), "volume-RR fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const RasterizerState rast{};
+	const IRadianceMap* pEnv = fx.pScene->GetGlobalRadianceMap();
+	Check( pEnv != 0, "volume-RR fixture has a global radiance map" );
+	if( !pEnv ) return;
+	const Scalar Lenv = ColorMath::MaxValue(
+		pEnv->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+	Check( Lenv > 0, "volume-RR fixture env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	// A DARK mirror: the delta bounce is still training-inert, but it
+	// drops the running throughput so the medium vertex's roulette has
+	// something to bite on.
+	UniformColorPainter* grey = new UniformColorPainter( RISEPel( 0.25, 0.25, 0.25 ) );
+	GlobalLog()->PrintNew( grey, __FILE__, __LINE__, "volume-RR mirror painter" );
+	PerfectReflectorMaterial* material = new PerfectReflectorMaterial( *grey );
+	GlobalLog()->PrintNew( material, __FILE__, __LINE__, "volume-RR mirror material" );
+
+	SphereGeometry* sphere = new SphereGeometry( 10.0 );
+	GlobalLog()->PrintNew( sphere, __FILE__, __LINE__, "volume-RR placeholder geometry" );
+	sphere->addref();
+	Object* object = new Object( sphere );
+	GlobalLog()->PrintNew( object, __FILE__, __LINE__, "volume-RR placeholder object" );
+	object->addref();
+	sphere->release();
+	object->AssignMaterial( *material );
+
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "volume-RR integrator" );
+	integrator->SetMaxPathDepth( 6 );
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+
+	const unsigned int rrMinDepth = StabilityConfig().rrMinDepth;
+	const RasterizerState rast2{};
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	DriveOnFreshThread( 5106u, [&]() {
+		for( unsigned int s = 0; s < 1200; ++s )
+		{
+			RandomNumberGenerator rng( 81000 + s );
+			IndependentSampler sampler( rng );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			rc.pOptimalMIS = &acc;
+
+			const Scalar z = -1 + 1 * ( (Scalar)s + 0.5 ) / 1200;
+			const Scalar phi = s * 2.399963229728653;
+			const Scalar r = std::sqrt( 1 - z * z );
+			const Vector3 inDir( r * std::cos( phi ), z, r * std::sin( phi ) );
+			const Point3 origin( -inDir[0] * 10, -inDir[1] * 10, -inDir[2] * 10 );
+
+			RayIntersection hit( Ray( origin, inDir ), rast2 );
+			hit.geometric.bHit = true;
+			hit.geometric.range = 10;
+			hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+			hit.geometric.vNormal = Vector3( 0, 1, 0 );
+			hit.geometric.vGeomNormal = Vector3( 0, 1, 0 );
+			hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+			hit.pObject = object;
+			hit.pMaterial = material;
+
+			IORStack stack( 1.0 );
+
+			integrator->IntegrateFromHit(
+				rc, rast2, hit, *fx.pScene, *fx.pCaster, sampler,
+				/*pRadianceMap*/ 0, /*startDepth*/ rrMinDepth, stack,
+				/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
+				/*considerEmission_*/ true, /*importance*/ 1.0,
+				IRayCaster::RAY_STATE::eRaySpecular,
+				0, 0, 0, 0, 0, 0, false, false );
+		}
+	} );
+
+	double sumNee = 0;
+	unsigned int countNee = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+
+	const double perLenv2 = sumBsdf / ( (double)Lenv * (double)Lenv );
+	const double escapes = perLenv2 / invQ2;
+	std::cout << "    volume-RR: sum(f/p)^2 / L_env^2 = " << perLenv2
+		<< " over " << countBsdf << " attempts; / (1/q^2) = " << escapes
+		<< " escapes  (round 6's wiring reads the bare escape count instead)" << std::endl;
+
+	Check( countBsdf > 0, "volume-RR: the medium continuation counted attempts" );
+	Check( sumBsdf > 0, "volume-RR: the medium continuation accumulated a positive moment" );
+	Check( escapes >= 1.0 && std::fabs( escapes - std::floor( escapes + 0.5 ) ) < 1e-6,
+		"volume-RR: the trained moment is a whole multiple of (1/q^2)*L_env^2 -- the roulette "
+		"compensation is folded into bsdfTimesCos" );
+
+	integrator->release();
+	object->release();
+	material->release();
+	grey->release();
+}
+
+static void RunVolumeRRConventionCheck()
+{
+	RunOneVolumeRR( 0.06, "volrr16" );		// q = 0.25, 1/q^2 = 16
+	RunOneVolumeRR( 0.10, "volrr36" );		// q = 1/6,  1/q^2 = 36
+}
+
+//////////////////////////////////////////////////////////////////////
 // LIGHT-SAMPLE RR CONVENTION (round 7).
 //
 // Round 6's ruling leaned on "NEE undergoes no RR at this vertex, so
@@ -1564,6 +1733,7 @@ int main()
 	RunBssrdfSite();
 	RunFloorFogSite();
 	RunRRConventionCheck();
+	RunVolumeRRConventionCheck();
 	RunLightRRConventionCheck();
 	RunAlphaQualityCheck();
 
