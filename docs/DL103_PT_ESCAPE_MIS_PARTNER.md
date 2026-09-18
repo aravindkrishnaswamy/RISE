@@ -221,6 +221,57 @@ DL-103 and DL-127) is unmoved: PT 0.0471266 / BDPT 0.0472119 = +0.18 %,
 against the +0.16 % recorded before this slice.  The residual really was
 Schlick-specific.
 
+### 5.1 It amplifies an open row on the HWSS path (review P2-1)
+
+The fix is correct and its sign is right, but it is worth stating
+plainly that it makes **DL-125** cost more, not less.
+
+DL-125 is that `PathTracingIntegrator.cpp`'s HWSS companion loop falls
+back to the material's AGGREGATE `pBRDFCur->valueNM(...)` paired with the
+hero's PER-LOBE `pS->pdf` and `invSelectProb` whenever the SPF declines
+`ISPF::EvaluateKrayNM` — DL-69's own pattern, on the companion
+wavelengths, compounding once per bounce.  `SchlickSPF` declines, so on
+topology L it fires on every companion.  Raising the weight the
+BSDF-sampling strategy carries at a multi-lobe vertex therefore moves an
+already-inflated estimate further from the truth.
+
+`tests/BDPTStrategyBalanceTest.cpp`'s `TestPTSpectralHWSSKnownDefect`
+measures it PT-vs-PT on one scene — `pathtracing_pel_rasterizer` vs
+`pathtracing_spectral_rasterizer` at `hwss TRUE`, plus the hero-only
+`hwss FALSE` spectral render as the discriminator between "the spectral
+pipeline" and "the HWSS bundle".  One integrator, one material, one
+geometry, so a ratio far from 1 cannot be an integrator-balance
+question.  Isolated `PathTracingIntegrator.cpp`-only A/B, n = 3 per side:
+
+| | pre-fix | post-fix | move |
+|---|---|---|---|
+| L, PT pel | 0.060166 ± 0.000004 | 0.063255 ± 0.000008 | **+5.134 %** |
+| L, PT spectral hero-only | 0.060886 ± 0.000072 | 0.064053 ± 0.000053 | **+5.202 %** |
+| L, PT spectral `hwss TRUE` | 0.091532 ± 0.000508 | 0.103005 ± 0.000446 | **+12.534 %** |
+| M, PT pel | 0.047133 ± 0.000004 | 0.047131 ± 0.000005 | −0.004 % |
+| M, PT spectral hero-only | 0.047677 ± 0.000060 | 0.047676 ± 0.000071 | −0.003 % |
+| M, PT spectral `hwss TRUE` | 0.047127 ± 0.000008 | 0.047120 ± 0.000009 | −0.014 % |
+
+Ratios: L `hwss TRUE`/pel **1.5213 ± 0.0084 → 1.6284 ± 0.0069**;
+L hero/pel 1.0120 → 1.0126; M `hwss TRUE`/pel 0.9999 → 0.9998.
+
+Three things that measurement settles.  The hero-only spectral render
+moves **with** pel (+5.20 % vs +5.13 %), so DL-103's correction lands
+identically on the spectral path — the extra +7.4 pp is the HWSS bundle
+alone.  Topology M — `ggx_material` + `lambertian_material`, whose
+selected lobe already carries the aggregate `mixPdf` and a matching
+`kray`, so the companion fallback computes the right thing — is
+unchanged to 0.014 % on every row, so the amplification is specific to
+the material the fallback gets wrong.  And the ~1.2 % hero/pel offset is
+material-independent (present identically on M), i.e. the
+spectral-vs-RGB pipeline, not this row.
+
+DL-103 did not create the 1.63; it made an open row's price visible.
+The probe's `hwss TRUE` band is a KNOWN-DEFECT pin, not a gate — DL-125's
+closure must drive it toward 1.0.  The DL-125 ledger row is upgraded from
+"OPEN-confirmed (static)" to a measured row with this fixture as its
+recipe.
+
 **Consequence for the suites**: topology L's *mean* band is tightened
 from the shared 8 % to **2 %** in both files and the PROVISIONAL marker
 is removed.  What a pass there now claims is "PT and BDPT/VCM agree to
@@ -250,12 +301,99 @@ A first, non-interleaved batch read +3.09 % (Welch t = 2.90); the
 interleaved pairing is the number to quote, and the difference between
 the two is exactly the machine-contention drift interleaving removes.
 
-+2.11 % is below the 5 % threshold at which this slice's brief asked for
-a multi-lobe gate on the extra call, so the evaluation is unconditional.
-That also keeps the two sides of the pair structurally identical: a
-`IsMultiLobe()`-style gate would reintroduce a case where the escape side
-and the NEE side evaluate different functions, which is the defect this
-row exists to remove.
+### 6.1 The worst case, and it is not that scene (review P2-2)
+
+`cornellbox_bdpt_materials_pt` has ONE `schlick_material` among twelve
+receivers, so +2.11 % is a realistic-mixed-scene number, not a bound.
+Re-measured on an **all-`schlick_material`** scene — topology L's own
+wall + floor at 320×320 / 256 spp, depth 5, the same interleaved
+two-binary protocol, n = 6 pairs, user CPU — and against an
+all-`lambertian_material` control that differs from it by exactly one
+chunk:
+
+| scene | pre | post | paired delta |
+|---|---|---|---|
+| all `schlick_material` | 80.04 ± 1.22 s | 114.66 ± 0.85 s | **+34.61 ± 1.19 s = +43.25 %**, t = 71.1 |
+| all `lambertian_material` | 52.84 ± 1.41 s | 54.16 ± 1.02 s | +1.32 ± 1.84 s = +2.50 %, t = 1.75 (not significant) |
+
+So the cost is essentially all `SchlickSPF::Pdf` (~690–780 ns per call
+since DL-67 Slice 0), once per non-delta bounce; a single-lobe material
+pays only the call.  **Quote +43 % as the worst case and +2.11 % as the
+realistic one.**
+
+### 6.2 Deferred evaluation: measured, and declined
+
+The partner is *consumed* only when the continuation escapes to the
+environment or hits an NEE-sampleable emitter, so most evaluations are
+thrown away.  Measured directly with temporary producer/consumer counters
+(reverted; the working tree is clean of them):
+
+| scene | aggregate `Pdf()` evaluations | consumed | wasted |
+|---|---|---|---|
+| all-`schlick_material` topology L, 16 spp | 2 078 282 | 1 035 858 | **50.2 %** |
+| `cornellbox_bdpt_materials_pt`, 128 spp | 125 044 482 | 1 950 141 | **98.4 %** |
+
+The capture a deferred design would have to pay was then measured
+directly (variant X: copy exactly what a lazy consumer needs — the
+`RayIntersectionGeometric`, the live `IORStack`, the traced direction and
+the `ISPF*` — and do **not** call `Pdf`), on the all-Schlick scene,
+n = 6 interleaved:
+
+    pre-fix                    84.16 ± 3.29 s
+    capture only (variant X)   85.69 ± 1.42 s     (+1.8 %)
+    eager (shipped)           120.09 ± 2.61 s     (+42.7 %)
+
+    projected lazy = capture + 0.498 x (eager - pre) = 103.60 s  (+23.1 %)
+
+i.e. a lazy design would recover about **46 %** of the added cost on the
+worst case (+42.7 % → +23.1 %), and nearly all of it on the realistic one
+(+2.11 % → ~+0.06 %).  The capture itself is cheap.
+
+**It is still declined, and the reasons are structural rather than
+arithmetic.**
+
+1. **`RAY_STATE` cannot carry it.**  `sizeof(RAY_STATE)` is **96 bytes**
+   and it is copied per bounce *and* per shadow ray;
+   `sizeof(RayIntersectionGeometric)` is **1120** and `IORStack` 32, so
+   carrying the capture inside it is a ~13× growth of the hottest
+   copied struct in the transport loop.  The capture therefore has to
+   live in PT's own loop frame instead.
+2. **Two consumers live outside that frame.**
+   `RayCasterEnvEscapeMISWeight` and `EmissionShaderOp` read
+   `MisPartnerPdf()` *through* `RAY_STATE`, with no access to the
+   producing vertex, and the entry vertex's caller-supplied
+   `bsdfMisPdf_` has no producing vertex at all.  A deferred design is
+   therefore a THREE-case partner computation (deferred inside the loop,
+   eager for anything that leaves it, pass-through at entry) — and
+   DL-74's own postmortem is that this bug family comes from exactly
+   that shape: *"when a fix SPLITS one field into two, the follow-up work
+   is enumerating every consumer of the old one."*
+3. **It re-introduces the argument-reconstruction hazard by
+   construction.**  The whole point of evaluating at the producer is
+   that `ri`, the live `IORStack` and `glossyFilterWidth` are in hand and
+   provably the same ones `LightSampler` used at that vertex.  DL-74 P2
+   measured **−14 %** on a furnace when the two sides disagreed about the
+   IOR stack alone, and DL-69 P2-5 landed on the same class when
+   reconstructing a vertex record.  `RayIntersectionGeometric` is also
+   not trivially copyable — it contains a polymorphic
+   `OrthonormalBasis3D` (the compiler warns that a `memcpy` copies a
+   vtable pointer), so the real capture is a non-trivial 1120-byte copy,
+   making variant X's +1.8 % a lower bound.
+
+**The better direction, recorded for a future slice**: the SPF already
+knows its mixture weights at `Scatter` time, so it could stamp the
+aggregate density on each emitted `ScatteredRay` for near-zero marginal
+cost — same function, same arguments, computed by the object that owns
+them, no capture and no second code path.  That is exactly what
+`GGXSPF` and `CookTorranceSPF` already do (`.pdf = mixPdf` on the one
+ray they emit), which is also why they are immune to DL-69 and DL-103 in
+the first place.  Making the multi-emit SPFs do the same would remove
+this cost at its source rather than routing around it.
+
+So the evaluation stays unconditional.  That also keeps the two sides of
+the pair structurally identical: an `IsMultiLobe()`-style gate would
+reintroduce a case where the escape side and the NEE side evaluate
+different functions, which is the defect this row exists to remove.
 
 ## 7. Sibling audit
 
