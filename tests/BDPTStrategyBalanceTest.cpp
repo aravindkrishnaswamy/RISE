@@ -3006,37 +3006,57 @@ static void TestGenericHumanTissueOriginFix()
 		"\tname obj_emit_behind\n\tgeometry quad_emit_behind\n\tmaterial mat_emit_behind\n"
 		"}\n";
 
-	const std::string scene = std::string("RISE ASCII SCENE 7\n") + sceneTissue + kRasterizerPTNullBSDF;
+	// ONE-SIDED red-proof: catches "reads (near) zero", the DL-183
+	// symptom, but NOT an over-count (e.g. a 2x BDPT/VCM-side
+	// double-continuation at this null-BSDF vertex type would still
+	// pass this floor). The PT-vs-BDPT gate below is the two-sided
+	// check for that failure mode.
+	{
+		const std::string scene = std::string("RISE ASCII SCENE 7\n") + sceneTissue + kRasterizerPTNullBSDF;
 
-	const std::string path = WriteSceneToTempFile( scene.c_str(), "tissueorigin" );
-	if( path.empty() ) {
-		Check( false, "Topology O: could not write scene temp file" );
-		return;
+		const std::string path = WriteSceneToTempFile( scene.c_str(), "tissueorigin" );
+		if( path.empty() ) {
+			Check( false, "Topology O: could not write scene temp file" );
+			return;
+		}
+
+		const ImageStats stats = RenderAndComputeStats( path.c_str() );
+		std::remove( path.c_str() );
+
+		if( !stats.valid ) {
+			Check( false, "Topology O: render failed" );
+			return;
+		}
+
+		PrintStats( "generic_human_tissue_material receiver, light behind", stats );
+		const double achro = ( stats.mean[0] + stats.mean[1] + stats.mean[2] ) / 3.0;
+		std::cout << "    achromatic mean = " << achro << std::endl;
+
+		// Pre-fix this reads ~1/9th of the post-fix value (0.205 vs 1.930,
+		// both measured directly by this test's own harness -- see the fix
+		// commit message) -- every pixel's continuation ray erroneously
+		// starts from the SAME single point (the camera), instead of the
+		// per-pixel hit point, so the natural per-pixel spread of exit
+		// points collapses and far fewer rays land on the light behind it.
+		// The threshold below sits roughly midway (in log terms) between
+		// the two measured values.
+		Check( achro > 0.6,
+			"DL-183: generic_human_tissue_material receiver reads strong PT radiance through to the light behind it "
+			"(scattered ray now originates at ri.ptIntersection, not at the camera)" );
 	}
 
-	const ImageStats stats = RenderAndComputeStats( path.c_str() );
-	std::remove( path.c_str() );
-
-	if( !stats.valid ) {
-		Check( false, "Topology O: render failed" );
-		return;
-	}
-
-	PrintStats( "generic_human_tissue_material receiver, light behind", stats );
-	const double achro = ( stats.mean[0] + stats.mean[1] + stats.mean[2] ) / 3.0;
-	std::cout << "    achromatic mean = " << achro << std::endl;
-
-	// Pre-fix this reads ~1/9th of the post-fix value (0.205 vs 1.930,
-	// both measured directly by this test's own harness -- see the fix
-	// commit message) -- every pixel's continuation ray erroneously
-	// starts from the SAME single point (the camera), instead of the
-	// per-pixel hit point, so the natural per-pixel spread of exit
-	// points collapses and far fewer rays land on the light behind it.
-	// The threshold below sits roughly midway (in log terms) between
-	// the two measured values.
-	Check( achro > 0.6,
-		"DL-183: generic_human_tissue_material receiver reads strong PT radiance through to the light behind it "
-		"(scattered ray now originates at ri.ptIntersection, not at the camera)" );
+	// PT-vs-BDPT gate (review round 1, coverage gap): DL-183's origin bug
+	// is real under every integrator (PT, BDPT, VCM, MLT) since all of
+	// them call GenericHumanTissueSPF::Scatter/ScatterNM to build the
+	// continuation ray -- but the floor check above only ever exercised
+	// PT. This topology's material is also the DL-126 null-BSDF-
+	// continuation vertex type, so a future MISWeight/isConnectible
+	// regression specific to BDPT/VCM at this vertex kind needs its own
+	// two-sided check to fail loudly; a one-sided PT floor cannot catch
+	// an over-count. `kRasterizerBDPTNullBSDF` mirrors topology N's own
+	// depth/sample settings (256 spp) for a matched-noise comparison.
+	RunTopologyTest( "generic_human_tissue_material receiver, light behind (DL-183)",
+		sceneTissue, kStrictTolerances, kRasterizerPTNullBSDF, kRasterizerBDPTNullBSDF );
 }
 
 int main()
