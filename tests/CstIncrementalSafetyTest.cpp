@@ -411,14 +411,14 @@ int main()
 	// descendant showing a wrong world transform, and nothing here triggers
 	// a corrective full re-derive.
 	//
-	// Filed as DL-98 (docs/DEBT_LEDGER.md) -- fix recipe: extend `ObjState`
+	// Filed as DL-156 (docs/DEBT_LEDGER.md) -- fix recipe: extend `ObjState`
 	// to also snapshot each closure object's pre-edit LOCAL transform, add
 	// an object-transform rollback that restores it before
 	// `ComposeObjectHierarchy()` runs on the failure path, mirroring
 	// `rollbackEntities()`.  This test PINS the CONFIRMED-CURRENT (not yet
 	// fixed) behaviour, both so a future change cannot make it worse
 	// unnoticed and so a future fix is caught (these two assertions will
-	// need to flip when DL-98 closes).
+	// need to flip when DL-156 closes).
 	{
 		std::string s =
 			"RISE ASCII SCENE 7\n"
@@ -441,12 +441,12 @@ int main()
 		int applied = DeriveToJobIncremental( docM, *j, closure, &di );
 		Check( applied == 0 && !di.empty(), "arity-parent-chain: malformed parent position REFUSED (applied 0 + diagnosed)" );
 		const std::string after = DumpJob( *j );
-		// DL-98 KNOWN GAP: both assertions below pin the CURRENT, confirmed-
+		// DL-156 KNOWN GAP: both assertions below pin the CURRENT, confirmed-
 		// buggy state -- a correct atomic refusal would leave `after == before`.
 		Check( after.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[-1 -1 -1 .. 1 1 1]" ) != std::string::npos,
-		       "arity-parent-chain: DL-98 -- parentObj was silently re-pointed to the zero-filled (0,0,0) position despite the \"refused\" result" );
+		       "arity-parent-chain: DL-156 -- parentObj was silently re-pointed to the zero-filled (0,0,0) position despite the \"refused\" result" );
 		Check( after.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[0 -1 -1 .. 2 1 1]" ) != std::string::npos,
-		       "arity-parent-chain: DL-98 -- childObj's own Finalize never ran, yet its WORLD bbox moved too (ComposeObjectHierarchy recomposed it from the corrupted parent)" );
+		       "arity-parent-chain: DL-156 -- childObj's own Finalize never ran, yet its WORLD bbox moved too (ComposeObjectHierarchy recomposed it from the corrupted parent)" );
 		j->release();
 	}
 

@@ -3861,7 +3861,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// already-re-pointed prior objects, which the entity-only rollback below cannot
 			// restore; see the 87 caveat at the apply loop about `parent`).
 			//
-			// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-98): this preflight
+			// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-156): this preflight
 			// only validates REFERENCE-kind params.  It does NOT validate a DoubleVec3/
 			// DoubleVec4/DoubleMat4 param's ARITY, so a malformed `position`/`orientation`/
 			// `quaternion`/`scale`/`matrix` on the object BEING EDITED sails past it and can
@@ -3878,7 +3878,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// object is left visibly correct, though: `ComposeObjectHierarchy()` still runs
 			// on the failure path below and recomposes every child's WORLD transform from
 			// its parent's now-corrupted LOCAL transform, so a `parent`-chained descendant's
-			// world bbox is corrupted too, without its own Finalize ever running.  DL-98
+			// world bbox is corrupted too, without its own Finalize ever running.  DL-156
 			// tracks the fix (snapshot + restore each closure object's pre-edit local
 			// transform, mirroring `rollbackEntities()`, before `ComposeObjectHierarchy()`
 			// runs on failure); not fixed here.
@@ -3960,7 +3960,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// entity is recreated -- so restoring the entities is ENOUGH to undo an entity-level
 	// failure with the Job back to its pre-edit state.
 	//
-	// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-98): "a failure can only
+	// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-156): "a failure can only
 	// occur at an entity, before any object is touched" is no longer true -- DL-32 gave a
 	// wrong-arity position/orientation/quaternion/scale/matrix on the object BEING EDITED a
 	// second way to fail, one the preflight above cannot see (it only checks Reference-kind
@@ -3978,7 +3978,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// regardless, and recomposes it from the edited object's now-corrupted LOCAL transform
 	// even though the descendant's own params were never touched --
 	// `CstIncrementalSafetyTest`'s "arity-parent-chain" case measures and pins exactly this.
-	// DL-98 tracks the fix (snapshot + restore each closure object's pre-edit local
+	// DL-156 tracks the fix (snapshot + restore each closure object's pre-edit local
 	// transform, mirroring this entity capture, before recomposing on failure); not fixed
 	// here -- this comment states the invariant that actually holds today, not the one
 	// design intended.
