@@ -755,7 +755,7 @@ void SchlickSPF::Scatter(
 		? ri.vGeomNormal : myonb.w();
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
-	ScatteredRay d, s;
+	ScatteredRay d;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
 	// Accept-check tests myonb.w() (the frame lobes are actually sampled
@@ -784,6 +784,7 @@ void SchlickSPF::Scatter(
 
 	if( !pRoughness->HasPerChannelVariation() && !pIsotropy->HasPerChannelVariation() )
 	{
+		ScatteredRay s;
 		Scalar fresnel = 0;
 		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
 
@@ -802,6 +803,16 @@ void SchlickSPF::Scatter(
 		const RISEPel rho = pSpecular->GetColor(ri);
 
 		for( int i=0; i<3; i++ ) {
+			// DL-101: a FRESH ScatteredRay every iteration.  Before this
+			// fix, `s` was declared ONCE outside the loop and reused
+			// across all three lanes; GenerateSpecularRay only writes
+			// `s.ray` when `hdotk > 0`, so a lane that fails that check
+			// left the PREVIOUS lane's direction sitting in `s.ray` while
+			// this branch still overwrote `s.kray`/`s.pdf` with the
+			// CURRENT lane's values and pushed it -- a ray reaching the
+			// integrator at lane j's direction, priced as lane i.  See
+			// docs/DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md.
+			ScatteredRay s;
 			Scalar fresnel = 0;
 			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, rt.v[i], it.v[i] );
 

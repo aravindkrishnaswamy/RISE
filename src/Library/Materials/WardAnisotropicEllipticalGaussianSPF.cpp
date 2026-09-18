@@ -164,7 +164,7 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		? ri.vGeomNormal : myonb.w();
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
-	ScatteredRay d, s;
+	ScatteredRay d;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
 	// Accept-check tests myonb.w() (the frame lobes are actually sampled
@@ -183,6 +183,7 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 
 	if( !pAlphaX->HasPerChannelVariation() && !pAlphaY->HasPerChannelVariation() )
 	{
+		ScatteredRay s;
 		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), axt.v[0], ayt.v[0] );
 
 		// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
@@ -196,6 +197,10 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		const Point2 ptrand( sampler.Get1D(),sampler.Get1D() );
 		const RISEPel spec = pSpecular->GetColor(ri);
 		for( int i=0; i<3; i++ ) {
+			// DL-101: a FRESH ScatteredRay every iteration -- see
+			// SchlickSPF.cpp's identical fix and
+			// docs/DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md.
+			ScatteredRay s;
 			GenerateSpecularRay( s, myonb, ri, ptrand, axt.v[i], ayt.v[i] );
 
 			// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.

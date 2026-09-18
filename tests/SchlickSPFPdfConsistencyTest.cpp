@@ -209,7 +209,7 @@ struct Config
     bool   runNM;                   // also gate the spectral twin
     int    qtOverride, qpOverride;  // 0 = use the default kQT/kQP grid
     double massTolOverride;         // 0 = use the default kMassTol
-    bool   knownFailure;            // DL-101: recorded, not gated (see P2-3)
+    bool   knownFailure;            // recorded-not-gated escape hatch; unused since DL-101 closed 2026-09-17 (no row currently sets this true)
 };
 
 // Quadrature resolution for the hemisphere integral of Pdf().  400x800
@@ -360,13 +360,14 @@ static void RunConfig( const Config& c, double nm )
               << std::endl;
 
     if( c.knownFailure ) {
-        // DL-101 (P2-3): the per-channel loop's ScatteredRay reuse bug is
-        // a DIFFERENT pattern from this file's subject (it corrupts the
-        // SAMPLER, not just Pdf()'s model of it) and is deliberately not
-        // fixed in this slice.  Recorded so the mechanism is findable and
-        // the number stays live, but not gated: the point of this row is
-        // that it CANNOT pass until DL-101 itself is fixed.
-        std::cout << "    ^ KNOWN-FAILURE (DL-101), recorded not gated" << std::endl;
+        // Escape hatch for a row whose failure is a KNOWN, not-yet-fixed
+        // defect in a DIFFERENT component than this file's own subject
+        // (the historical example: DL-101's per-channel ScatteredRay
+        // reuse bug, which corrupted the SAMPLER, not Pdf()'s model of
+        // it -- closed 2026-09-17, so no row currently sets this true).
+        // Recorded so the mechanism stays findable without gating on a
+        // number this file cannot itself fix.
+        std::cout << "    ^ KNOWN-FAILURE, recorded not gated" << std::endl;
         g_checks++;
     } else {
         const double massTol = c.massTolOverride > 0 ? c.massTolOverride : kMassTol;
@@ -413,12 +414,12 @@ int main()
         { "r.05 rd.6 rs1 i.3 th70",  70.0, 0.6,  1.0,  0.05, 0.3, false, 0,   0,   0,   0.0,  false , kQTFine, kQPFine, 0.0             },
         { "r.02 rd.6 rs1 i.3 th85",  85.0, 0.6,  1.0,  0.02, 0.3, false, 0,   0,   0,   0.0,  false , kQTFine, kQPFine, kMassTolLowRough},
         { "per-channel roughness",   45.0, 0.5,  0.3,  0.3,  0.8, true,  0.2, 0.3, 0.4, 0.0,  false , 0,     0,     0.0    },
-        // P2-3 (DL-67 Slice 0 round-2 review): DL-101 known-failure
-        // control.  This is NOT this file's own subject (Pdf() correctly
-        // models the INTENDED per-channel semantics here); it demonstrates
-        // that DL-101's ScatteredRay reuse bug corrupts the SAMPLER
-        // itself, so Pdf() and the real Scatter()+RandomlySelect()
-        // histogram genuinely disagree.
+        // P2-3 (DL-67 Slice 0 round-2 review) / DL-101 (CLOSED 2026-09-17,
+        // debt-dl100 slice).  This is NOT this file's own subject (Pdf()
+        // correctly models the INTENDED per-channel semantics here); this
+        // row demonstrates that DL-101's `ScatteredRay` reuse bug
+        // corrupted the SAMPLER itself, so Pdf() and the real
+        // Scatter()+RandomlySelect() histogram genuinely disagreed.
         //
         // Found by direct instrumentation, not a blind sweep: an early
         // randomised search over grazing + wide-per-channel-roughness
@@ -432,19 +433,25 @@ int main()
         // false-positive control.  Low-then-high per-channel roughness
         // (one lane that almost always succeeds feeding a stale direction
         // to a lane that often fails `hdotk>0`) reproduces the real bug:
-        // the same counter reads 111613 duplicate-direction pairs across
-        // 200000 draws for the config below.  Measured on the real gate
-        // machinery (600000 draws, 2000x4000 quadrature): TVD 0.01424 vs
-        // the 0.012 gate (1.19x) and mass |diff| 0.01216 vs the 1% gate
-        // (1.22x) -- real, but a much smaller effect than the discarded
-        // quadrature-artifact number suggested. Patching the per-channel
-        // loop to declare `ScatteredRay s;` INSIDE the loop (DL-101's own
-        // fix, reverted after this measurement -- not landed in this
-        // slice) drops TVD to 0.01009: DL-101 is a genuine PARTIAL
-        // contributor here, not the row's only source of disagreement
-        // (kSpecQuadN=16's own residual, per P2-2, accounts for the rest
-        // at this grazing/high-roughness combination).
-        { "DL-101 KNOWN-FAILURE pc wide grazing", 88.0, 0.5, 0.05, 0.0, 0.5, true, 0.02, 0.95, 0.95, 0.0, false, kQTFine, kQPFine, 0.0, true },
+        // the same counter read 111613 duplicate-direction pairs across
+        // 200000 draws for the config below, pre-fix.  Pre-fix, measured
+        // on the real gate machinery (600000 draws, 2000x4000
+        // quadrature): TVD 0.01424 vs the 0.012 gate (1.19x) and mass
+        // |diff| 0.01216 vs the 1% gate (1.22x).  DL-101's fix (declaring
+        // `ScatteredRay s;` INSIDE the per-channel loop in
+        // `SchlickSPF.cpp` and both Ward files, `tests/SchlickWard
+        // PerChannelReuseTest.cpp`'s own dedicated red-proof) drops TVD to
+        // 0.01009 -- inside the standard 0.012 gate -- confirming DL-101
+        // was a genuine PARTIAL contributor here, not the row's only
+        // source of disagreement: the residual mass |diff| of 0.01216
+        // (re-measured identically post-fix, since it was never DL-101's
+        // own signature -- see below) is `kSpecQuadN=16`'s own C_D
+        // quadrature residual (P2-2), which this row's low-roughness
+        // config was already known to trip; gated at `kMassTolLowRough`
+        // (1.5%) like the neighbouring `r.02 rd.6 rs1 i.3 th85` row for
+        // the same reason.  Now a REAL gate (both CHECK()s fire), not a
+        // recorded-but-ungated KNOWN-FAILURE.
+        { "DL-101 CLOSED pc wide grazing", 88.0, 0.5, 0.05, 0.0, 0.5, true, 0.02, 0.95, 0.95, 0.0, false, kQTFine, kQPFine, kMassTolLowRough, false },
         { "tilt 20 deg th=45",       45.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   20.0, true  , 0,     0,     0.0    },
         { "tilt 40 deg th=45",       45.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   40.0, false , 0,     0,     0.0    },
         { "tilt 55 deg th=30",       30.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   55.0, true  , 0,     0,     0.0    },
