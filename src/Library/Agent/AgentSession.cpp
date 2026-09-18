@@ -38640,7 +38640,18 @@ namespace RISE
 			out.boundObjects    = pick->objectCount;
 			out.isMetallic      = pick->isMetallic;
 			out.isOrenNayar     = pick->isOrenNayar;
-			if( pick->hasReadableColor ) { out.baseR = pick->baseR; out.baseG = pick->baseG; out.baseB = pick->baseB; }
+			// DL-25 review P1-2: `hasReadableColor` is true for BOTH the flat
+			// literal base and the textured/procedural one -- it means "this
+			// verb can darken it", not "there is a triple here".  Only the
+			// LITERAL branch has a triple, so only it reports one; the
+			// textured branch leaves `hasBaseColor` false and the zero
+			// defaults in place, and every consumer (the success message
+			// below, AgentRpc's `baseColor`, the chat codec) gates on the
+			// flag rather than on `hasReadableColor`.
+			if( pick->hasReadableColor && !pick->isTexturedAlbedo ) {
+				out.hasBaseColor = true;
+				out.baseR = pick->baseR; out.baseG = pick->baseG; out.baseB = pick->baseB;
+			}
 
 			const bool lambertianBranch = ( pick->kind == "lambertian_material" );
 			const bool roughColourPipe  = MicrosurfaceKindUsesColourPipe_( pick->kind );
@@ -39068,9 +39079,19 @@ namespace RISE
 					if( !out.reflectancePainter.empty() ) {
 						m += "its " + ( out.reflectanceSlot.empty() ? pick->colorSlot : out.reflectanceSlot ) +
 							" is bound to `" + out.reflectancePainter + "`, an expression_painter darkening/"
-							"saturating the " + MicrosurfaceFmt_( pick->baseR ) + " " + MicrosurfaceFmt_( pick->baseG ) +
-							" " + MicrosurfaceFmt_( pick->baseB ) + " that was there under a `damp` mask (curv/"
-							"occlusion/fbm)";
+							"saturating ";
+						// DL-25 review P1-2: name the SUBSTRATE on the textured
+						// branch.  Quoting `baseR/G/B` there printed "the 0 0 0
+						// that was there" -- the zero defaults, not a colour the
+						// document ever had, because a textured substrate has no
+						// single triple to read.
+						m += out.hasBaseColor
+							? ( "the " + MicrosurfaceFmt_( pick->baseR ) + " " + MicrosurfaceFmt_( pick->baseG ) +
+							    " " + MicrosurfaceFmt_( pick->baseB ) + " that was there" )
+							: ( "`" + pick->colorPainter + "` per-texel (a textured/procedural substrate, read "
+							    "through `sample(" + pick->colorPainter + ")` -- there is no single base colour "
+							    "to band around, so the darkening follows the texture)" );
+						m += " under a `damp` mask (curv/occlusion/fbm)";
 					}
 					if( lambertianBranch ) {
 						m += "; the base `" + pick->name + "` chunk itself was left UNTOUCHED and wrapped in a new "

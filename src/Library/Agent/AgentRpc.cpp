@@ -4432,7 +4432,9 @@ namespace RISE
 				//       coatWeightPainter,coatRoughnessPainter,rebindObjectCount,
 				//       reflectanceSlot,reflectancePainter,texturedAlbedo,
 				//       scatteringSlots:[string,...],scatteringPainters:[string,...],
-				//       baseColor:[r,g,b],geometry,geometryUniform,isMetallic,
+				//       baseColor:[r,g,b] (OMITTED when `texturedAlbedo` is true or
+				//       the material is metallic-named -- there is no literal base
+				//       triple on either branch),geometry,geometryUniform,isMetallic,
 				//       isOrenNayar,qualifying,objects}
 				//   docs/WETNESS_COAT_DESIGN.md Phase 1 + Phase 2 item 8
 				//   (2026-08-31): apply the two-mask (damp/wet) wetness
@@ -4494,11 +4496,17 @@ namespace RISE
 						result.set( "geometryUniform", JsonValue::MakeBool( wr.geometryUniform ) );
 						result.set( "isMetallic",      JsonValue::MakeBool( wr.isMetallic ) );
 						result.set( "isOrenNayar",     JsonValue::MakeBool( wr.isOrenNayar ) );
-						JsonValue rgb = JsonValue::MakeArray();
-						rgb.push_back( JsonValue::MakeNumber( wr.baseR ) );
-						rgb.push_back( JsonValue::MakeNumber( wr.baseG ) );
-						rgb.push_back( JsonValue::MakeNumber( wr.baseB ) );
-						result.set( "baseColor", rgb );
+						// DL-25 review P1-2: OMITTED on a textured/procedural substrate (and on a
+						// metallic-named material), where there is no literal triple -- emitting the
+						// zero defaults there reported `baseColor: [0, 0, 0]` as if the document said
+						// so.  Same conditional-emit convention as `reflectancePainter` above.
+						if( wr.hasBaseColor ) {
+							JsonValue rgb = JsonValue::MakeArray();
+							rgb.push_back( JsonValue::MakeNumber( wr.baseR ) );
+							rgb.push_back( JsonValue::MakeNumber( wr.baseG ) );
+							rgb.push_back( JsonValue::MakeNumber( wr.baseB ) );
+							result.set( "baseColor", rgb );
+						}
 					}
 					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( wr.qualifyingMaterials ) ) );
 					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( wr.boundObjects ) ) );

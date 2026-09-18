@@ -2040,7 +2040,9 @@ namespace RISE
 						"Returns {ok,applied,rawCode,status,retriable,headVersion,message,material,"
 						"materialKind,wrappedInCoat,coatedMaterial,coatWeightPainter,coatRoughnessPainter,"
 						"rebindObjectCount,reflectanceSlot,reflectancePainter,texturedAlbedo,scatteringSlots,"
-						"scatteringPainters,baseColor,geometry,geometryUniform,"
+						"scatteringPainters,baseColor (OMITTED when texturedAlbedo is true, or on a "
+						"metallic-named material: neither has a literal base triple, and the darkening "
+						"samples the substrate instead),geometry,geometryUniform,"
 						"isMetallic,isOrenNayar,qualifying,objects}. A PRE-COMMIT refusal is ok=false with "
 						"an EMPTY status, so branch on `applied`. Always pass the headVersion you last read "
 						"as baseHeadVersion." );

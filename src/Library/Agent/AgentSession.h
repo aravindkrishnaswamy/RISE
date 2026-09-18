@@ -6694,10 +6694,23 @@ namespace RISE
 
 				//! The constant RGB the darkening was banded from -- a fact
 				//! about the document, set whenever the reflectance half
-				//! was read (regardless of whether the commit landed), exactly
-				//! as `AgentAddWearResult::baseR/G/B` is.  Left at 0 when the
-				//! material is metallic-named (the darkening half is skipped
-				//! and there is no base to report).
+				//! read a LITERAL base (regardless of whether the commit
+				//! landed), exactly as `AgentAddWearResult::baseR/G/B` is.
+				//!
+				//! `hasBaseColor` IS THE GATE, and reading the triple without
+				//! it is a lie on two different branches (DL-25 review P1-2).
+				//! It is false when the material is metallic-named (the
+				//! darkening half is skipped, there is no base to report) AND
+				//! when `texturedAlbedo` is true (the substrate is a texture
+				//! or a procedural painter, which HAS no single triple -- the
+				//! darkening samples it per-texel instead).  Before that
+				//! review the textured branch left these at 0 while claiming
+				//! they were read, so the RPC/MCP surface emitted
+				//! `baseColor: [0, 0, 0]` and the success message offered to
+				//! have darkened "the 0 0 0 that was there" -- neither a fact
+				//! about the document.  Both surfaces now OMIT the field
+				//! rather than emit a zero triple.
+				bool        hasBaseColor = false;
 				double baseR = 0.0, baseG = 0.0, baseB = 0.0;
 
 				//! One representative geometry kind the chosen material's
