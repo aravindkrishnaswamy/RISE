@@ -98,23 +98,25 @@ static SurfaceSample RayHit(
 	return s;
 }
 
-// Check the 5 universal invariants at a known surface point.
-static void CheckInvariantsAt(
-	const IGeometry& g,
-	const Point3& pos,
+// Check the 5 universal invariants given an already-computed SurfaceDerivatives
+// (either from IGeometry::ComputeSurfaceDerivatives, or -- for geometries where
+// that point-only query is DELIBERATELY conservative-reject, see
+// CheckInvariantsAt's own comment -- lifted from a real ray hit's
+// RayIntersectionGeometric::derivatives).
+static void CheckInvariantsForSD(
+	const SurfaceDerivatives& sd,
 	const Vector3& normal,
 	const char* label )
 {
-	SurfaceDerivatives sd = g.ComputeSurfaceDerivatives( pos, normal );
 	if( !sd.valid ) {
 		std::cout << "  [" << label << "] sd.valid=false\n";
 	}
 	REQUIRE( sd.valid, label );
 	if( std::getenv("SMS_DEBUG_TEST") ) {
-		std::printf( "  [%s] pos=(%.3f,%.3f,%.3f) n=(%.3f,%.3f,%.3f)\n"
+		std::printf( "  [%s] n=(%.3f,%.3f,%.3f)\n"
 			"    dpdu=(%.4f,%.4f,%.4f) dpdv=(%.4f,%.4f,%.4f)\n"
 			"    dndu=(%.4f,%.4f,%.4f) dndv=(%.4f,%.4f,%.4f)\n",
-			label, pos.x, pos.y, pos.z, normal.x, normal.y, normal.z,
+			label, normal.x, normal.y, normal.z,
 			sd.dpdu.x, sd.dpdu.y, sd.dpdu.z,
 			sd.dpdv.x, sd.dpdv.y, sd.dpdv.z,
 			sd.dndu.x, sd.dndu.y, sd.dndu.z,
@@ -155,6 +157,27 @@ static void CheckInvariantsAt(
 		REQUIRE( handed > 0.0,
 			std::string(label) + " right-handed (dpdu x dpdv)·n > 0" );
 	}
+}
+
+// Check the 5 universal invariants at a known surface point, sourcing
+// SurfaceDerivatives from IGeometry::ComputeSurfaceDerivatives(pos, normal) --
+// the POINT-ONLY query.  NOTE: BezierPatchGeometry and BilinearPatchGeometry
+// deliberately do NOT answer this one (DL-20): a geometry holding MANY
+// patches cannot invert a bare point back to "which patch, which (u, v)
+// preimage" the way a real ray hit can (RayElementIntersection gets both for
+// free); their point-only override is conservative-reject (valid=false)
+// rather than fabricating a flat/ONB stand-in.  Those two geometries use
+// CheckInvariantsForSD directly against `ri.derivatives` (populated at
+// intersection time) instead of this wrapper -- see TestBilinearPatch /
+// TestBezierPatch.
+static void CheckInvariantsAt(
+	const IGeometry& g,
+	const Point3& pos,
+	const Vector3& normal,
+	const char* label )
+{
+	SurfaceDerivatives sd = g.ComputeSurfaceDerivatives( pos, normal );
+	CheckInvariantsForSD( sd, normal, label );
 }
 
 // ============================================================
@@ -461,16 +484,22 @@ static void TestBilinearPatch()
 	std::cout << "Testing BilinearPatchGeometry..." << std::endl;
 	BilinearPatchGeometry* g = new BilinearPatchGeometry( 10, 8, false );
 
-	// Build a CURVED bilinear patch: corners not coplanar.  A proper
-	// analytical implementation must return nonzero dndu/dndv for this
-	// surface (the normal direction varies across the patch).  The
-	// current impl is a stub returning dndu=dndv=0 — this test is the
-	// stub regression.
+	// Build a CURVED (hyperbolic-paraboloid-like) bilinear patch: corners
+	// NOT coplanar.  A proper analytical implementation must return
+	// nonzero dndu/dndv for this surface (the normal direction varies
+	// across the patch).  DL-20: the four corners below were previously
+	// (0,0,0),(1,0,0.3),(0,1,0.3),(1,1,0.6) -- despite the "bent corner"
+	// comment, that z=0.6 is EXACTLY pts[1].z+pts[2].z-pts[0].z, i.e. the
+	// bilinear "saddle" term D = pts[0]-pts[1]-pts[2]+pts[3] was (0,0,0):
+	// the old fixture was secretly PLANAR (z = 0.3u+0.3v, a tilted flat
+	// quad), so dndu=dndv=0 was the CORRECT answer for it, not evidence of
+	// a stub.  pts[3].z=1.0 below makes D's z-component 0.4 != 0, a
+	// genuine saddle.
 	BilinearPatch patch;
 	patch.pts[0] = Point3( 0, 0, 0 );
 	patch.pts[1] = Point3( 1, 0, 0.3 );
 	patch.pts[2] = Point3( 0, 1, 0.3 );
-	patch.pts[3] = Point3( 1, 1, 0.6 );  // bent corner
+	patch.pts[3] = Point3( 1, 1, 1.0 );  // genuinely non-planar corner
 	g->AddPatch( patch );
 	g->Prepare();
 
@@ -479,19 +508,31 @@ static void TestBilinearPatch()
 	g->IntersectRay( ri, true, true, false );
 	if( ri.bHit ) {
 		Vector3 n = Vector3Ops::Normalize( ri.vNormal );
-		CheckInvariantsAt( *g, ri.ptIntersection, n, "bilinear-patch center" );
 
-		// TODO(SMS stage 1.1): the standalone ComputeSurfaceDerivatives
-		// currently returns dndu=dndv=0 for bilinear patches because
-		// recovering (u, v) from a 3D point requires an iterative solve.
-		// This will be fixed in stage 1.1 by populating surface
-		// derivatives during IntersectRay (using the (u, v) already
-		// computed by RayBilinearPatchIntersection).  At that point the
-		// assertions below should be uncommented to catch stub regressions:
-		//
-		//   SurfaceDerivatives sd = g->ComputeSurfaceDerivatives(...);
-		//   REQUIRE( Vector3Ops::Magnitude( sd.dndu ) > 1e-3, "..." );
-		//   REQUIRE( Vector3Ops::Magnitude( sd.dndv ) > 1e-3, "..." );
+		// DL-20 (closed): BilinearPatchGeometry's POINT-ONLY
+		// ComputeSurfaceDerivatives(pos, normal) is conservative-reject by
+		// design (see CheckInvariantsAt's comment) -- the real fix is at
+		// intersection time, where RayElementIntersection already knows
+		// (u, v) and stamps ri.derivatives with the exact shape operator.
+		// Check THAT (not g->ComputeSurfaceDerivatives) against the same
+		// 5 invariants, then confirm dndu/dndv are genuinely nonzero (the
+		// stub-regression check the original TODO here anticipated).
+		SurfaceDerivatives sd;
+		sd.dpdu  = ri.derivatives.dpdu;
+		sd.dpdv  = ri.derivatives.dpdv;
+		sd.dndu  = ri.derivatives.dndu;
+		sd.dndv  = ri.derivatives.dndv;
+		sd.valid = ri.derivatives.valid;
+		CheckInvariantsForSD( sd, n, "bilinear-patch center (ri.derivatives)" );
+		REQUIRE( Vector3Ops::Magnitude( sd.dndu ) > 1e-3, "bilinear-patch dndu nonzero (stub regression)" );
+		REQUIRE( Vector3Ops::Magnitude( sd.dndv ) > 1e-3, "bilinear-patch dndv nonzero (stub regression)" );
+
+		// The point-only query is a DOCUMENTED, deliberate exception to
+		// the "every geometry answers ComputeSurfaceDerivatives" contract
+		// -- confirm it stays honestly false rather than silently
+		// resurrecting the old fabricated-ONB/flat-curvature behaviour.
+		SurfaceDerivatives sdPointOnly = g->ComputeSurfaceDerivatives( ri.ptIntersection, n );
+		REQUIRE( !sdPointOnly.valid, "bilinear-patch point-only ComputeSurfaceDerivatives stays conservative-reject" );
 	} else {
 		std::cout << "  (note: bilinear-patch ray missed, skipping invariants)\n";
 	}
@@ -517,9 +558,18 @@ static void TestBezierPatch()
 		for( int k = 0; k < 4; k++ ) {
 			const Scalar x = Scalar(k) / 3.0;
 			const Scalar y = Scalar(j) / 3.0;
-			// Wavy surface: z rises at the far corner
+			// Wavy surface: z rises at the far corner.  DL-20: control
+			// points are stored TRANSPOSED (patch.c[k].pts[j], not
+			// patch.c[j].pts[k]) so this patch's natural winding
+			// (Cross(TangentU,TangentV)) already faces the camera at
+			// z=3 looking down -Z, matching every other fixture in this
+			// file -- BezierPatchGeometry deliberately reports no
+			// curvature signal on a hit that needed the ray-facing flip
+			// (see RayElementIntersection's own comment), so a fixture
+			// that needlessly triggers that flip would test the
+			// conservative-reject path instead of the real one.
 			const Scalar z = 0.2 * x * y + 0.1 * std::sin( x * 3.14 );
-			patch.c[j].pts[k] = Point3( x, y, z );
+			patch.c[k].pts[j] = Point3( x, y, z );
 		}
 	}
 	g->AddPatch( patch );
@@ -530,11 +580,23 @@ static void TestBezierPatch()
 	g->IntersectRay( ri, true, true, false );
 	if( ri.bHit ) {
 		Vector3 n = Vector3Ops::Normalize( ri.vNormal );
-		CheckInvariantsAt( *g, ri.ptIntersection, n, "bezier-patch center" );
 
-		// TODO(SMS stage 1.1): same situation as BilinearPatchGeometry —
-		// the standalone ComputeSurfaceDerivatives returns dndu=dndv=0
-		// pending intersection-time derivative population.
+		// DL-20 (closed): same situation as BilinearPatchGeometry above --
+		// check ri.derivatives (stamped at intersection time, where the
+		// hit's own (u, v) and patch are known) rather than the
+		// deliberately conservative-reject point-only query.
+		SurfaceDerivatives sd;
+		sd.dpdu  = ri.derivatives.dpdu;
+		sd.dpdv  = ri.derivatives.dpdv;
+		sd.dndu  = ri.derivatives.dndu;
+		sd.dndv  = ri.derivatives.dndv;
+		sd.valid = ri.derivatives.valid;
+		CheckInvariantsForSD( sd, n, "bezier-patch center (ri.derivatives)" );
+		REQUIRE( Vector3Ops::Magnitude( sd.dndu ) > 1e-3, "bezier-patch dndu nonzero (stub regression)" );
+		REQUIRE( Vector3Ops::Magnitude( sd.dndv ) > 1e-3, "bezier-patch dndv nonzero (stub regression)" );
+
+		SurfaceDerivatives sdPointOnly = g->ComputeSurfaceDerivatives( ri.ptIntersection, n );
+		REQUIRE( !sdPointOnly.valid, "bezier-patch point-only ComputeSurfaceDerivatives stays conservative-reject" );
 	} else {
 		std::cout << "  (note: bezier-patch ray missed, skipping invariants)\n";
 	}

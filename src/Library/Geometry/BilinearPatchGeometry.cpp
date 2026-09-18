@@ -21,6 +21,7 @@
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
 #include "../Utilities/stl_utils.h"
+#include "../Utilities/SurfaceCurvature.h"
 #include <algorithm>   // std::lower_bound for the area-CDF search
 
 using namespace RISE;
@@ -64,6 +65,40 @@ void BilinearPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 		ri.ptCoord = Point2( h.u, h.v );
 		ri.vNormal = Vector3Ops::Normalize(GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v ));
 		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+
+		// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
+		// this hit already knows exactly which PATCH and (u, v) it landed
+		// on (unlike the generic `ComputeSurfaceDerivatives(point, normal)`
+		// query below, which cannot tell which patch or (u, v) preimage a
+		// bare point came from), so the real closed-form shape operator is
+		// a few vector ops away.  A bilinear surface's own second
+		// derivative is a SINGLE constant vector (d2P/du2 = d2P/dv2 = 0
+		// identically -- see BilinearPatchSecondDerivUV's own comment).
+		// UNGATED like the analytic primitives (Sphere/Ellipsoid/Bezier):
+		// cheap, exact, data the hit already produced.  Only `scaleHint`
+		// (nothing but `curv` reads it) is gated.
+		{
+			const Vector3 dpdu = GeometricUtilities::BilinearPatchTangentU( patch, h.v );
+			const Vector3 dpdv = GeometricUtilities::BilinearPatchTangentV( patch, h.u );
+			const Vector3 d2Pduv = GeometricUtilities::BilinearPatchSecondDerivUV( patch );
+			static const Vector3 kZero( 0, 0, 0 );
+
+			Vector3 dndu, dndv;
+			// `ri.vNormal` above is Normalize(Cross(dpdu, dpdv)) with NO ray-
+			// facing flip (unlike BezierPatchGeometry), so no orientation
+			// correction is needed here -- dndu/dndv are derivatives of
+			// exactly the field `vNormal` already reports.
+			if( SurfaceCurvature::ShapeOperatorFromSecondDerivatives( dpdu, dpdv, kZero, d2Pduv, kZero, dndu, dndv ) ) {
+				ri.derivatives.dpdu  = dpdu;
+				ri.derivatives.dpdv  = dpdv;
+				ri.derivatives.dndu  = dndu;
+				ri.derivatives.dndv  = dndv;
+				ri.derivatives.valid = true;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+			}
+		}
 	}
 }
 
@@ -402,16 +437,18 @@ void BilinearPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, 
 
 SurfaceDerivatives BilinearPatchGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
 {
-	SurfaceDerivatives sd;
-	OrthonormalBasis3D onb;
-	onb.CreateFromW( objSpaceNormal );
-	sd.dpdu = onb.u();
-	sd.dpdv = onb.v();
-	sd.dndu = Vector3( 0, 0, 0 );
-	sd.dndv = Vector3( 0, 0, 0 );
-	sd.uv = Point2( 0, 0 );
-	sd.valid = true;
-	return sd;
+	// DL-20: same conservative-reject rationale as
+	// BezierPatchGeometry::ComputeSurfaceDerivatives -- this geometry can
+	// hold many patches, and a bare point (no (u, v), no patch index)
+	// cannot be inverted back to "which patch, which (u, v)" the way the
+	// real ray-hit path (RayElementIntersection above) gets for free.  The
+	// pre-fix body fabricated an arbitrary tangent frame with
+	// `dndu=dndv=0` and reported `valid=true` -- a FLAT curvature answer
+	// for a genuinely curved (indeed, saddle-shaped) surface, presented as
+	// legitimate.  Report honest absence instead.
+	(void)objSpacePoint;
+	(void)objSpaceNormal;
+	return SurfaceDerivatives();
 }
 
 Scalar BilinearPatchGeometry::GetArea( ) const

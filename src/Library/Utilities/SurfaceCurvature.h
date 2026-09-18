@@ -124,6 +124,90 @@ namespace RISE
 			return true;
 		}
 
+		//! DL-20.  The Weingarten map itself, in raw vector form (dndu,
+		//! dndv), computed from a surface's first AND second position
+		//! derivatives -- one level below MeanCurvatureFromDerivatives,
+		//! which only ever gets to see dndu/dndv already built.  A geometry
+		//! that has closed-form second derivatives (a parametric patch: dpdu,
+		//! dpdv, d2P/du2, d2P/dudv, d2P/dv2) but no independent handle on its
+		//! own normal FIELD's derivative computes it here, exactly, instead
+		//! of falling back to a flat/fabricated (dndu=dndv=0) stand-in.
+		//!
+		//! DERIVATION.  Let Q(u,v) = dpdu(u,v) x dpdv(u,v) (unnormalized
+		//! normal) and N = Q / |Q|.  By the product rule,
+		//!   dQ/du = d2Pduu x dpdv + dpdu x d2Pduv
+		//!   dQ/dv = d2Pduv x dpdv + dpdu x d2Pdvv
+		//! and differentiating N = Q/|Q| (quotient rule, using |Q|' =
+		//! N . dQ, the standard derivative-of-a-norm identity):
+		//!   dN/du = ( dQ/du - N (N . dQ/du) ) / |Q|
+		//!   dN/dv = ( dQ/dv - N (N . dQ/dv) ) / |Q|
+		//! which is exactly the projection of dQ/du (resp. dQ/dv) onto the
+		//! tangent plane at N, scaled by 1/|Q| -- required because N is a
+		//! UNIT vector field, so its derivative must stay orthogonal to N
+		//! itself (differentiate N.N=1 to see d N/du . N = 0).
+		//!
+		//! SIGN.  This function derives N from dpdu x dpdv with NO
+		//! orientation correction -- if the caller's actual reported shading
+		//! normal is the NEGATION of that (e.g. flipped to face an incoming
+		//! ray), the caller must negate BOTH outDndu and outDndv too
+		//! (differentiating -N gives -dN/du, -dN/dv): a linear operation, so
+		//! there is no separate "flip" branch to get subtly wrong here.
+		//!
+		//! DEGENERACY.  Same relative gate as MeanCurvatureFromDerivatives
+		//! (a pinched (u, v) frame -- dpdu, dpdv nearly parallel or either
+		//! collapsed to zero length -- makes |Q|^2 = E*G - F*F small
+		//! relative to E*G).  Returns false (outDndu/outDndv untouched) on
+		//! degeneracy and on any non-finite result.
+		//!
+		//! \return TRUE and writes outDndu/outDndv when the shape operator is
+		//!         well-defined; FALSE otherwise.
+		inline bool ShapeOperatorFromSecondDerivatives(
+			const Vector3& dpdu,
+			const Vector3& dpdv,
+			const Vector3& d2Pduu,
+			const Vector3& d2Pduv,
+			const Vector3& d2Pdvv,
+			Vector3& outDndu,
+			Vector3& outDndv )
+		{
+			const Vector3 Q = Vector3Ops::Cross( dpdu, dpdv );
+			const Scalar qlen2 = Vector3Ops::Dot( Q, Q );
+
+			const Scalar E = Vector3Ops::Dot( dpdu, dpdu );
+			const Scalar G = Vector3Ops::Dot( dpdv, dpdv );
+
+			// qlen2 IS E*G - F*F (the same `det` MeanCurvatureFromDerivatives
+			// gates on) -- Lagrange's identity for the cross product -- so
+			// this is the identical relative-degeneracy test.
+			static const Scalar kRelDegenerate = Scalar( 1e-12 );
+			if( !( qlen2 > Scalar( 0 ) ) || !( qlen2 > kRelDegenerate * E * G ) ) {
+				return false;
+			}
+
+			const Scalar qlen = std::sqrt( qlen2 );
+			const Vector3 N = Q * ( Scalar( 1 ) / qlen );
+
+			const Vector3 dQdu = Vector3Ops::Cross( d2Pduu, dpdv ) + Vector3Ops::Cross( dpdu, d2Pduv );
+			const Vector3 dQdv = Vector3Ops::Cross( d2Pduv, dpdv ) + Vector3Ops::Cross( dpdu, d2Pdvv );
+
+			const Scalar invQlen = Scalar( 1 ) / qlen;
+			const Vector3 dNdu = ( dQdu - N * Vector3Ops::Dot( N, dQdu ) ) * invQlen;
+			const Vector3 dNdv = ( dQdv - N * Vector3Ops::Dot( N, dQdv ) ) * invQlen;
+
+			if( !RISE::IsFiniteDouble( static_cast<double>( dNdu.x ) ) ||
+			    !RISE::IsFiniteDouble( static_cast<double>( dNdu.y ) ) ||
+			    !RISE::IsFiniteDouble( static_cast<double>( dNdu.z ) ) ||
+			    !RISE::IsFiniteDouble( static_cast<double>( dNdv.x ) ) ||
+			    !RISE::IsFiniteDouble( static_cast<double>( dNdv.y ) ) ||
+			    !RISE::IsFiniteDouble( static_cast<double>( dNdv.z ) ) ) {
+				return false;
+			}
+
+			outDndu = dNdu;
+			outDndv = dNdv;
+			return true;
+		}
+
 		//! THE `scaleHint` CONVENTION, in one place: the characteristic
 		//! length of a geometry is its BOUNDING-BOX DIAGONAL.  Every family
 		//! that stamps `SurfaceDerivativesInfo::scaleHint` goes through here

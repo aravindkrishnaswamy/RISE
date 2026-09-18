@@ -261,6 +261,34 @@ namespace RISE
 					const Scalar v										///< [in] Evaluation parameter v
 					);
 
+		//! DL-20: public accessors for the per-axis tangents BilinearPatchNormalAt
+		//! already computes internally (RISE's OWN `BilinearPatch` corner
+		//! convention -- see BilinearPatchSecondDerivUV's comment).  dP/du
+		//! depends only on v (and vice versa) because a bilinear surface is
+		//! affine along each parameter held fixed.
+		extern Vector3 BilinearPatchTangentU(
+					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BilinearPatchTangentV(
+					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar u										///< [in] Evaluation parameter u
+					);
+
+		//! DL-20: the second mixed partial derivative d2P/dudv of a bilinear
+		//! patch, in RISE's OWN `BilinearPatch` corner convention (pts[0] ->
+		//! (u,v)=(0,0), pts[1] -> (0,1), pts[2] -> (1,0), pts[3] -> (1,1) --
+		//! matching EvaluateBilinearPatchAt / BilinearPatchNormalAt above,
+		//! NOT the canonical (c00,c10,c11,c01) helpers below).  A bilinear
+		//! surface's own P(u,v) is affine in u and in v separately, so
+		//! d2P/du2 = d2P/dv2 = 0 identically and this "saddle term" (constant
+		//! over the whole patch) is the ENTIRE second-derivative data the
+		//! shape operator needs -- see SurfaceCurvature::
+		//! ShapeOperatorFromSecondDerivatives.
+		extern Vector3 BilinearPatchSecondDerivUV(
+					const BilinearPatch& patch							///< [in] The bilinear patch
+					);
+
 		// =========================================================================
 		// Convention-agnostic bilinear-surface utilities.
 		//
@@ -396,6 +424,29 @@ namespace RISE
 		//! normalize.  At degenerate points (coincident tangents) may return
 		//! the zero vector.
 		extern Vector3 BezierPatchNormalAt(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! DL-20: second partial derivatives of a bicubic Bezier patch, for
+		//! the shape operator (see SurfaceCurvature::ShapeOperatorFromSecondDerivatives).
+		//! Same Bernstein-basis convention as EvaluateBezierPatchAt / the
+		//! tangent functions above -- these are the analogous second
+		//! derivatives of the SAME sum, obtained by differentiating the
+		//! Bernstein basis twice (d2Pduu), once each way (d2Pduv), or twice
+		//! in v (d2Pdvv).
+		extern Vector3 BezierPatchSecondDerivUU(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BezierPatchSecondDerivUV(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BezierPatchSecondDerivVV(
 					const BezierPatch& patch,							///< [in] The bezier patch
 					const Scalar u,										///< [in] Evaluation parameter u
 					const Scalar v										///< [in] Evaluation parameter v
