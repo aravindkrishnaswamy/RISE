@@ -373,6 +373,105 @@ static void TestNonWatertightCubeRefuses()
 	mesh->release();
 }
 
+//! Round-2 delta-review follow-up (debt-geom2 @ ebf69c4e): `ComputeWatertightness`
+//! has TWO distinct early-return refusal branches -- the boundary/non-manifold
+//! edge tally (b)/(c) above exercise, and a SEPARATE, EARLIER one that
+//! fires the moment any triangle has a repeated (degenerate, zero-area)
+//! corner, before the edge tally even runs (see its own `if( a == b ) {
+//! degenerate = true; continue; }` / `if( degenerate ) { ...; return; }`).
+//! Before this fixture, the ONLY place that branch was reached in
+//! `tests/` at all was through the sphere/disk/ellipsoid pole fans, via
+//! this file's own section (f)/(f2) -- and this slice rewrote those to
+//! assert SUCCESS (the entire point of the DL-116 fix being that
+//! post-weld there are no more degenerate triangles fed into the mesh),
+//! which left the degenerate-triangle branch itself with ZERO test
+//! coverage anywhere. This fixture pins it directly, independent of
+//! DL-116 or any tessellator.
+//!
+//! Deliberately minimal (3 vertices, 2 triangles) rather than reusing
+//! the cube, because a SINGLE degenerate triangle does not actually
+//! isolate this branch: its lone self-loop edge (a,a) gets exactly ONE
+//! increment, which the edge tally would ALSO flag as a boundary edge
+//! even if the `a==b` guard were removed -- so disabling the guard would
+//! not change the refusal outcome, and the test would stay green for
+//! the wrong reason (see the file's own audit-by-bug-pattern discipline:
+//! a red-proof that cannot go red proves nothing). TWO degenerate
+//! triangles sharing the SAME repeated vertex make every edge the guard
+//! would otherwise ignore pair up to count exactly 2 (self-loop (0,0)
+//! from each triangle; (0,1) traversed twice by triangle A alone; (0,2)
+//! traversed twice by triangle B alone) -- i.e. with the guard disabled
+//! this two-triangle "mesh" reads as a perfectly closed 2-manifold by
+//! the edge-count heuristic alone, genuinely flipping `SignedDistanceLower`
+//! from refusal to a (bogus) success. That is the real red-proof this
+//! row's recipe asks for, verified below by literally disabling the
+//! guard and rebuilding (see the commit message).
+static void TestDegenerateTriangleRefuses()
+{
+	std::cout << "(c2) two triangles sharing one repeated vertex -- refuses via ComputeWatertightness's OTHER early-return branch (degenerate triangle), distinct from (b)/(c)'s boundary-edge refusal" << std::endl;
+
+	std::vector<Point3> corners;
+	corners.push_back( Point3( 0, 0, 0 ) );	// 0 -- the repeated vertex
+	corners.push_back( Point3( 1, 0, 0 ) );	// 1
+	corners.push_back( Point3( 0, 1, 0 ) );	// 2
+
+	IndexTriangleListType tris;
+	{
+		// Triangle A: (0, 0, 1) -- corners 0 and 1 of THIS triangle are
+		// both vertex index 0 (a real, in-range index -- this triangle
+		// survives DoneIndexedTriangles' _DEBUG bounds check, it is not
+		// a hand-forged out-of-range index).
+		IndexedTriangle a;
+		a.iVertices[0] = 0; a.iVertices[1] = 0; a.iVertices[2] = 1;
+		a.iNormals[0]  = 0; a.iNormals[1]  = 0; a.iNormals[2]  = 1;
+		a.iCoords[0]   = 0; a.iCoords[1]   = 0; a.iCoords[2]   = 1;
+		tris.push_back( a );
+
+		// Triangle B: (0, 0, 2) -- same repeated vertex 0, different
+		// third corner. Its own self-loop (0,0) is what pairs up with
+		// triangle A's self-loop to count exactly 2 once the guard is
+		// disabled (see the fixture's own header comment above).
+		IndexedTriangle b;
+		b.iVertices[0] = 0; b.iVertices[1] = 0; b.iVertices[2] = 2;
+		b.iNormals[0]  = 0; b.iNormals[1]  = 0; b.iNormals[2]  = 2;
+		b.iCoords[0]   = 0; b.iCoords[1]   = 0; b.iCoords[2]   = 2;
+		tris.push_back( b );
+	}
+
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( corners, tris );
+
+	Scalar outSigned = 12345.0;
+	bool outExact = true;	// pre-set to catch a function that forgets to clear it
+	const bool ok = mesh->SignedDistanceLower( Point3( 0.25, 0.25, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( !ok, "(c2) MONEY -- a degenerate (repeated-vertex) triangle refuses SignedDistanceLower "
+		"via ComputeWatertightness's degenerate-triangle branch, not its boundary-edge branch" );
+	Check( !outExact, "(c2) ...and clears outExact on refusal" );
+
+	// Unsigned proximity is untouched by this refusal path -- both
+	// triangles still answer `PointTriangleDistance`, just via its own
+	// degenerate-input behaviour rather than a clean point-to-segment
+	// fallback: with a==b, `ab = b-a` is the ZERO vector, which makes the
+	// algorithm's "edge region AB" test (a genuine 1-D region on a
+	// non-degenerate triangle) fire on this zero-length "edge" instead of
+	// falling through to the real (a,c) edge, and its own `den == 0`
+	// guard then collapses the projection parameter to `v=0` -- i.e. the
+	// closest point it reports is exactly vertex `a` = (0,0,0), not the
+	// nearer point on segment (0,0,0)-(1,0,0) a non-degenerate point-to-
+	// segment distance would give. This is a pre-existing, documented
+	// characteristic of `PointTriangleDistance` on a coincident-corner
+	// input (out of this row's scope to change), not a defect this
+	// fixture introduces -- pinned here as the actual closed-form value
+	// so a future change to that behaviour is noticed rather than
+	// silently accepted: distance from (0.25, 0.25, 0) to (0, 0, 0) is
+	// sqrt(0.125) = 0.3535533905932738.
+	Scalar d = -1.0;
+	const bool okUnsigned = mesh->DistanceToSurface( Point3( 0.25, 0.25, 0 ), Scalar( 1000 ), d );
+	Check( okUnsigned, "(c2) unsigned proximity still answers with degenerate triangles present" );
+	CheckClose( (double)d, 0.3535533905932738, 1e-9,
+		"(c2) unsigned distance matches PointTriangleDistance's own coincident-corner behaviour (collapses to vertex 0)" );
+
+	mesh->release();
+}
+
 //! DL-143 MONEY red-proof.  Builds a FLAT-SHADED cube: 6 faces, 4
 //! vertices EACH (24 total), no vertex shared across faces -- the same
 //! per-corner convention `Box.glb` and any per-face-normal export use.
@@ -808,6 +907,7 @@ int main()
 	TestClosedWatertightCube();
 	TestOpenQuadRefuses();
 	TestNonWatertightCubeRefuses();
+	TestDegenerateTriangleRefuses();
 	TestFlatShadedPerCornerCubeWelds();
 	TestSphereTessellationNowWatertight();
 	TestEllipsoidTessellationNowWatertight();
