@@ -293,6 +293,30 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			// Mandatory reflection; the transmission lobe is not emitted
 			// (the `ref < 1.0` gate below), and the reflection block
 			// immediately following carries all the energy.
+			//
+			// `refracted` MUST be restored to the incoming direction here
+			// (review P1-1).  It is currently holding the WRONG-SIDE
+			// shading-normal Snell result -- that is what brought us into
+			// this block -- and the `scattering` warp further down runs
+			// UNCONDITIONALLY, so leaving it would hand
+			// `GeometricUtilities::PerturbClipped` an axis outside its clip
+			// half-space and fire its fail-loud precondition (a
+			// global-lock console + file write) on the per-sample scatter
+			// path.  Measured on the shipped
+			// `scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene` at
+			// 400x400 / 4 spp: 89-98 such lines per render; 320/320 at
+			// five (delta, tilt) exit cells in
+			// tests/TransmissionPushGateTest.cpp sub-test 12.  Behaviour
+			// was otherwise nil (`ref == 1` drops the lobe and the energy
+			// still sums to 1), but the log write is not.
+			//
+			// `ri.ray.Dir()` is the value the two ORIGINAL TIR branches
+			// above leave in place (`Optics::CalculateRefractedRay` does
+			// not touch its in/out argument when it returns false), and it
+			// satisfies the warp's precondition by construction:
+			// `geomN` is ray-anchored, so
+			// `Dot(ri.ray.Dir(), throughSurface) > 0` always.
+			refracted = ri.ray.Dir();
 			ref = 1.0;
 		}
 	}
@@ -370,10 +394,21 @@ Scalar DielectricSPF::GenerateScatteredRay(
 		// transmission") 119/3878 to 1065/3123.
 		//
 		// The precondition (`Dot(axis, throughSurface) >= 0`) holds on
-		// every path into here: after the re-derivation above when
-		// `ref < 1`, and by `Dot(ri.ray.Dir(), throughSurface) > 0` when
-		// `ref >= 1` left `refracted` at the un-refracted incoming
-		// direction.
+		// every path into here, and the block runs UNCONDITIONALLY --
+		// including when the lobe is about to be dropped -- so all THREE
+		// paths matter:
+		//
+		//   * the re-derivation above SUCCEEDED (`ref < 1`): `refracted`
+		//     is a refraction about the ray-anchored `geomN`, which lands
+		//     on `throughSurface` by construction;
+		//   * the shading-normal Snell SUCCEEDED and was already on the
+		//     right side: the re-derivation block was skipped and the
+		//     value satisfies the same test it was just checked against;
+		//   * any TIR (either of the two original branches, or the
+		//     re-derivation's own fallback -- review P1-1): every one of
+		//     them leaves `refracted == ri.ray.Dir()`, and
+		//     `Dot(ri.ray.Dir(), throughSurface) > 0` holds because
+		//     `geomN` is ray-anchored.
 		if( alpha > 0 && alpha < PI_OV_TWO ) {
 			dielectric.ray.SetDir(GeometricUtilities::PerturbClipped(
 				dielectric.ray.Dir(),
