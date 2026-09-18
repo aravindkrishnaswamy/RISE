@@ -264,6 +264,93 @@ namespace
 		return Report( oss.str(), passed );
 	}
 
+	// DL-105: an independent VNDF-IMPORTANCE-SAMPLING quadrature, using
+	// ONLY the self-contained IndependentGGX::D_Isotropic/Lambda/
+	// G2_HeightCorrelated re-implementation above (not MicrofacetUtils,
+	// not tools/GenerateMicrofacetEnergyLUT.cpp) plus an own
+	// re-implementation of Heitz 2018's VNDF sampling routine -- needed
+	// because UniformHemisphereEssG2 above is explicitly unsuitable
+	// below alpha=0.01 (its own comment: "much worse importance sampler
+	// ... for peaked (low-alpha) configurations"), which is exactly the
+	// DL-105 low-alpha regime this check targets.
+	namespace IndependentGGX
+	{
+		static Vector3 VNDFSample( const Vector3& wi, double alpha, double u1, double u2 )
+		{
+			const Vector3 wiStd = Vector3Ops::Normalize( Vector3( alpha * wi.x, alpha * wi.y, wi.z ) );
+			const double lensq = wiStd.x * wiStd.x + wiStd.y * wiStd.y;
+			const Vector3 T1 = ( lensq > 0 )
+				? Vector3( -wiStd.y, wiStd.x, 0 ) * ( 1.0 / sqrt( lensq ) )
+				: Vector3( 1, 0, 0 );
+			const Vector3 T2 = Vector3Ops::Cross( wiStd, T1 );
+
+			const double r = sqrt( u1 );
+			const double phi = TWO_PI * u2;
+			double t1 = r * cos( phi );
+			double t2 = r * sin( phi );
+			const double s = 0.5 * ( 1.0 + wiStd.z );
+			t2 = ( 1.0 - s ) * sqrt( r_max( 0.0, 1.0 - t1 * t1 ) ) + s * t2;
+
+			const Vector3 Nh = T1 * t1 + T2 * t2 + wiStd * sqrt( r_max( 0.0, 1.0 - t1 * t1 - t2 * t2 ) );
+			return Vector3Ops::Normalize( Vector3( alpha * Nh.x, alpha * Nh.y, r_max( 0.0, Nh.z ) ) );
+		}
+	}
+
+	static double IndependentVNDFEssG2( const Scalar alpha, const Scalar cosWi, unsigned int numSamples, unsigned int seed, double& outStdErr )
+	{
+		const double sinWi = sqrt( r_max( 0.0, 1.0 - double(cosWi) * double(cosWi) ) );
+		const Vector3 wi( sinWi, 0.0, double(cosWi) );
+		const double G1wi = 1.0 / ( 1.0 + IndependentGGX::Lambda( double(alpha), double(cosWi) ) );
+
+		std::mt19937_64 rng( seed );
+		std::uniform_real_distribution<double> uni( 0.0, 1.0 );
+
+		double sum = 0.0, sumSq = 0.0;
+		unsigned int n = 0;
+		for( unsigned int s = 0; s < numSamples; ++s )
+		{
+			const double u1 = uni( rng );
+			const double u2 = uni( rng );
+			const Vector3 m = IndependentGGX::VNDFSample( wi, double(alpha), u1, u2 );
+			const double wiDotM = Vector3Ops::Dot( wi, m );
+			if( wiDotM <= 0 ) { ++n; continue; }
+
+			const Vector3 wo = Vector3Ops::Normalize( m * ( 2.0 * wiDotM ) - wi );
+			const double cosWo = wo.z;
+			double weight = 0.0;
+			if( cosWo > 0 )
+			{
+				const double G2 = IndependentGGX::G2_HeightCorrelated( double(alpha), double(cosWi), cosWo );
+				weight = G2 / G1wi;
+			}
+			sum += weight;
+			sumSq += weight * weight;
+			++n;
+		}
+
+		const double mean = sum / n;
+		const double variance = r_max( 0.0, sumSq / n - mean * mean );
+		outStdErr = sqrt( variance / n );
+		return mean;
+	}
+
+	static bool TestDL105IndependentVNDFCrossCheck( const char* label, const Scalar alpha, const Scalar cosWi, unsigned int seed )
+	{
+		double stdErr = 0.0;
+		const double reference = IndependentVNDFEssG2( alpha, cosWi, 20000000u, seed, stdErr );
+		const double looked = MicrofacetEnergyLUT::LookupEssG2( cosWi, alpha );
+
+		const double tol = 8.0 * stdErr + 0.004;
+		const double diff = std::fabs( looked - reference );
+		const bool passed = diff <= tol;
+
+		std::ostringstream oss;
+		oss << label << " LookupEssG2=" << std::fixed << std::setprecision(6) << looked
+			<< " independentVNDF=" << reference << "+/-" << std::setprecision(6) << stdErr
+			<< " diff=" << diff << " (" << (diff/reference*100.0) << "%) tol=" << tol;
+		return Report( oss.str(), passed );
+	}
+
 	static bool TestLookupEssG2MatchesIndependentQuadrature(
 		const char* label, const Scalar alpha, const double thetaDeg, unsigned int seed )
 	{
@@ -821,6 +908,34 @@ int main()
 	passed &= TestUniformHemisphereIndependentQuadrature( "alpha=0.649 mu=0.1719", 0.649, 0.1719, 6002 );
 	passed &= TestUniformHemisphereIndependentQuadrature( "alpha=0.808 mu=0.4844", 0.808, 0.4844, 6003 );
 
+	std::cout << "\n--- DL-105: independent VNDF-sampling cross-check, alpha<0.01 (the low-alpha sub-grid) ---\n";
+	// Own D/Lambda/G2 (IndependentGGX namespace) + own VNDF sampling
+	// routine (IndependentGGX::VNDFSample, a from-scratch Heitz 2018
+	// re-implementation) -- neither shared with MicrofacetUtils nor with
+	// tools/GenerateMicrofacetEnergyLUT.cpp.  7 points: three at exact
+	// geometric sub-grid nodes (alpha=0.005/0.0025/0.00125), three
+	// off-node (alpha=0.0008/0.0003/0.0001), and one in the sub-grid's
+	// widest interval (alpha=0.008, between node j=7 at 0.005 and A0 at
+	// 0.01) -- across a spread of cosWi.
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.005 mu=0.5 (exact node)",   0.005,   0.5, 10501 );
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0025 mu=0.3 (exact node)",  0.0025,  0.3, 10502 );
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.00125 mu=0.7 (exact node)", 0.00125, 0.7, 10503 );
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0008 mu=0.4 (off-node)",    0.0008,  0.4, 10504 );
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0003 mu=0.6 (off-node)",    0.0003,  0.6, 10505 );
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0001 mu=0.9 (off-node)",    0.0001,  0.9, 10506 );
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.008 mu=0.5 (widest interval, 0.005->A0)", 0.008, 0.5, 10507 );
+	// Two more points combining a low alpha WITH a grazing cosTheta --
+	// the configuration that actually discriminates this fix from the
+	// pre-fix clamp-to-row-0 behavior (the alpha->0 boundary alone is
+	// close to 1 whether it clamps to the true row or to row 0, since
+	// row 0's own alpha=0.01 is already small; only a grazing mu
+	// exposes the alpha AXIS defect). Pre-fix (informational, not
+	// re-verified here every run): alpha=0.005 cos=0.001 read ~2.02%
+	// off, alpha=0.02 cos=0.005 read ~1.59% off (see this test's own
+	// TestDL86IsotropicEndCap rows at the same (alpha,cos) pairs).
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.005 mu=0.001 (grazing, discriminates vs pre-fix)", 0.005, 0.001, 10508 );
+	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.02 mu=0.005 (grazing, discriminates vs pre-fix)",  0.02,  0.005, 10509 );
+
 	std::cout << "\n--- DL-77 P1: relabel-symmetry, LookupEssG2AnisoDirectional(aX,aY,phi) == (aY,aX,90-phi) ---\n";
 	passed &= TestRelabelSymmetry( "(.9,.1) theta=70 az=0   (ledger red: 1.1699 furnace)",   0.9,  0.1,  70.0, 0.0 );
 	passed &= TestRelabelSymmetry( "(.827,.09) theta=80 az=90 (ledger red: 0.7613 furnace)", 0.827, 0.09, 80.0, 90.0 );
@@ -837,16 +952,19 @@ int main()
 		// these alphas is <=0.11% relative, so 0.004 absolute leaves
 		// margin for Monte-Carlo noise without being able to pass either
 		// pre-fix model (flat clamp: up to 9.9% relative; straight line
-		// from the boundary: up to 5.7%).  The two loose rows name their
-		// cause: alpha=0.02 sits inside the 4.2x-wide first alpha cell
-		// and alpha=0.005 is BELOW the table's alpha range entirely and
-		// clamps to row 0 -- both DL-105, neither a cosTheta-axis effect
-		// (they do not move with SUB_SIZE).
+		// from the boundary: up to 5.7%).  DL-105 CLOSED 2026-09-17
+		// (debt-dl105 slice): alpha=0.02 (inside the 4.2x-wide first
+		// alpha cell) and alpha=0.005 (below the table's alpha range
+		// entirely, used to clamp to row 0) now read through the SAME
+		// baked low-alpha sub-grid (ALPHA_SUB_FINE/ALPHA_MID_SIZE in
+		// MicrofacetEnergyLUT.h) as every other alpha, so both tighten
+		// to the same 0.004 band -- worst measured residual 0.42% at
+		// alpha=0.005 (was 5.10%), 0.03% at alpha=0.02 (was 1.59%).
 		struct Row { double alpha; double tolAbs; };
 		const Row rows[] = {
-			{ 0.005, 0.060 },	// DL-105: alpha below the table range, clamps to row 0
+			{ 0.005, 0.004 },
 			{ 0.01,  0.004 },
-			{ 0.02,  0.025 },	// DL-105: first alpha cell spans 0.01 -> 0.0419
+			{ 0.02,  0.004 },
 			{ 0.05,  0.004 },
 			{ 0.3,   0.004 },
 			{ 1.0,   0.004 },
@@ -879,11 +997,14 @@ int main()
 		// clamp 0.8947 = 2.5% low, secant 0.8606 = 6.2% low).  The baked
 		// sub-grid plus the baked per-alpha boundary constant
 		// (E_ss_LIMIT_TABLE) removes the guesswork entirely.
+		// DL-105 CLOSED 2026-09-17: same tightening as the G2 rows above
+		// -- worst measured residual 0.18% at alpha=0.005 (was 5.52%),
+		// 0.03% at alpha=0.02 (was 1.58%).
 		struct Row { double alpha; double tolAbs; };
 		const Row rows[] = {
-			{ 0.005, 0.060 },	// DL-105, as above
+			{ 0.005, 0.004 },
 			{ 0.01,  0.004 },
-			{ 0.02,  0.025 },	// DL-105, as above
+			{ 0.02,  0.004 },
 			{ 0.05,  0.004 },
 			{ 0.3,   0.004 },
 			{ 1.0,   0.004 },
@@ -908,18 +1029,22 @@ int main()
 
 	std::cout << "\n--- DL-86 control: the first ORDINARY span (cos=0.03, above c0) is untouched by this fix ---\n";
 	{
-		// Above c0 nothing changed: same bilinear interpolation between
-		// bin 0 and bin 1 as before DL-86.  These rows are recorded, with
-		// the residual the MAIN grid actually has there (up to ~3.3%
-		// relative at alpha=0.02, where the first alpha cell and the
-		// first cosTheta span are both at their widest), so a future
-		// change that "fixes" the end-cap by disturbing the interior
-		// shows up here instead of hiding.  The tolerance is that
-		// measured residual plus margin -- deliberately NOT the 0.004 the
-		// below-c0 rows get, and tracked as DL-105, not DL-86.
+		// Above c0 nothing changed BY DL-86: same bilinear interpolation
+		// between bin 0 and bin 1.  These rows are recorded, with the
+		// residual the MAIN grid actually has there (up to ~3.3% relative
+		// at alpha=0.02, where the first alpha cell and the first
+		// cosTheta span are both at their widest), so a future change
+		// that "fixes" the end-cap by disturbing the interior shows up
+		// here instead of hiding.  The tolerance is that measured
+		// residual plus margin -- deliberately NOT the 0.004 the below-c0
+		// rows get, and tracked as DL-105, not DL-86.  DL-105 CLOSED
+		// 2026-09-17: alpha=0.005 DID move here (its alpha<A1 branch now
+		// covers cos=0.03 too, not just the DL-86 sub-grid range), from
+		// an untracked ~5% flat-clamp error down to ~1.5% -- tightened to
+		// the same 0.040 band the other alphas already carry.
 		struct Row { double alpha; double tolAbs; };
 		const Row rows[] = {
-			{ 0.005, 0.060 },	// DL-105: below the table's alpha range
+			{ 0.005, 0.040 },
 			{ 0.01,  0.040 },
 			{ 0.02,  0.040 },
 			{ 0.05,  0.040 },
