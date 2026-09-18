@@ -130,7 +130,9 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | DL-30 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces | OPEN-confirmed, untested | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29); no nested-CSG `dndu`-pairing test found in `tests/CsgSurfacePayloadTest.cpp` or elsewhere this sweep | S | coverage/test gap | internal (no scene exercises it yet) |
 | DL-40 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics | OPEN-confirmed (static evidence; red-proof pending) | BDPT/VCM `ComputeStats` accepts nonfinite capture values and `ChannelsAgree` rejects only `fabs(a-b)/denom > tolerance` (false for NaN). SignalEmitterRecordTest similarly marks nonempty captures valid and `WorstRelDiff` uses fmax, which can discard NaN differences. Recorded DL-01/DL-02/DL-36 results are finite. | S | coverage/test gap | internal (false-green risk) |
 | DL-60 | DL34_UNION_INTERIOR_DEPTH.md: committed scenarios without replay fixtures | Two committed scenarios lack replay fixtures and fail the dynamically enumerated checkpoint suite before scene execution | OPEN-confirmed (reproduced baseline) | `altar_stress.json` and `rainwet_closeup.json` omit replay fixtures; `AgentEvalRunner::RunScenario` returns load_error. AgentEvalCheckTest reproduces 11 and 12 cascading assertions at pre-DL-34 e858b4c9 and compiled 3927ec9c. | S | coverage/test gap | internal (missing replay coverage) |
-| DL-20 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 2 | Patch geometries report flat curvature (`valid=false`) while genuinely curved; deferred to Phase 4, no Phase-4 work has landed | OPEN-confirmed | No patch-geometry curvature override exists (only `EllipsoidGeometry`/`DisplacedGeometry` override `ComputeAnalyticalDerivatives`, confirmed this sweep alongside DL-13) | M | coverage/test gap | user-visible (curvature-driven wear on patch geometry reads absent, not wrong) |
+| ~~DL-20~~ | ~~GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 2~~ | ~~Patch geometries report flat curvature (`valid=false`) while genuinely curved~~ | CLOSED 2026-09-17 | `debt-geom2`: `tests/PatchCurvatureTest.cpp` 19/0 (red: 10 passed / 9 failed against a temporarily-reverted library — every `ri.derivatives.valid`/production-H check failed). `BezierPatchGeometry`/`BilinearPatchGeometry::RayElementIntersection` now stamp real closed-form `dpdu/dpdv/dndu/dndv` via new `GeometricUtilities::BezierPatchSecondDeriv{UU,UV,VV}` / `BilinearPatchSecondDerivUV` + `SurfaceCurvature::ShapeOperatorFromSecondDerivatives`; the point-only `ComputeSurfaceDerivatives(point,normal)` (which used to fabricate a flat ONB reported `valid=true`) is now honestly conservative-reject (`valid=false`) for both, and Bezier additionally stays conservative on a ray-facing-flipped hit (handedness would otherwise disagree with the flipped normal). See [DL-20/DL-116 closure](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md). | M | coverage/test gap | user-visible (curvature-driven wear on `bezier_patch_geometry`/`bilinear_patch_geometry` now reads correctly instead of flat) |
+| ~~DL-116~~ | ~~(new; found by the `debt-prox` slice building a red-proof fixture for DL-31, no source-doc heading)~~ | ~~`SphereGeometry::TessellateToMesh` gives each pole CELL its own coincident-position vertex instead of welding~~ | CLOSED 2026-09-17 | `debt-geom2` (row filed on branch `debt-prox`, not yet merged at the time this slice closed it): `tests/PoleWeldingWatertightnessTest.cpp` 42/0 (red on Sphere: 29/3, raw-index boundary-edge count 284 at detail=71 matching this row's own cited evidence exactly; red on the `CircularDiskGeometry` sibling found during this row's own audit: 38/4, 8 degenerate triangles). Pole/center rows now collapse to ONE shared (position,normal,texcoord) index (no information lost -- texcoord was already canonicalized to `(0,v)` for every column there); the general u=0/u=1 seam is deliberately left duplicated (`DisplacedGeometry`'s per-vertex pipeline requires `iVertices[k]==iCoords[k]`) and its residual boundary-edge count is filed as **DL-136**. See [DL-20/DL-116 closure](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md). | S | precision | user-visible (a scene author who runs `TessellateToMesh` output through `interior(r)` -- directly, or via any future consumer that needs a certified-closed mesh -- no longer silently loses the signed side on a tessellated sphere or disk) |
+| DL-136 | (new; found by the `debt-geom2` slice closing DL-116, no source-doc heading) | Every tessellated closed UV-wrapped primitive (sphere's u-seam; torus's u-seam AND v-seam; a capped cylinder's side u-seam plus its side-to-cap crease) has a genuine, ordinary texcoord-discontinuity seam whose two sides are NOT bit-identical positions (`sin(2*pi) != sin(0)` in double precision), so an index- or exact-position-keyed edge-manifold watertightness check reports it as an open sheet even on a geometrically closed, correctly-tessellated primitive -- this is a SEPARATE, broader pattern than DL-116's pole bug (which was a genuine tessellator defect; this is an inherent property of the one-combined-index-per-(position,normal,uv) mesh representation `MakeIndexedTriangleSameIdx`/`DisplacedGeometry` require) | OPEN-confirmed | `tests/PoleWeldingWatertightnessTest.cpp`: post-DL-116-fix, sphere detail=71 still reports 142 raw-index boundary edges (exactly `2*detail`, the u-seam only, poles now contributing 0); torus detail=32 reports 128 (`4*detail`, u-seam+v-seam, no pole to weld at all); capped cylinder detail=32 reports 196 raw-index vs 68 exact-weld (the cap-rim-to-side-row difference happens to weld under exact bit-equality since both sides evaluate the identical `cos`/`sin` formula, but the side wall's own u-seam plus the side-to-cap NORMAL crease, a genuine discontinuity, do not and should not). | M | precision | user-visible (same consumer as DL-116: a certified-closed-mesh consumer like `interior(r)` refuses on an otherwise-correct tessellated torus/cylinder/sphere) |
 | DL-21 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 5 | CSG boundary curvature behaviour is unspecified/undecided (forward the contributing surface's curvature, or invalidate at the seam) | OPEN-confirmed | `tests/CsgSurfacePayloadTest.cpp:833-834` exercises the derivative fields there but does not pin a curvature convention at the boundary — confirmed by reading the referenced lines this sweep | M | coverage/test gap | user-visible (CSG seam wear masks) |
 | DL-22 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | BSSRDF entry vertices read default (neutral) `derivatives`/`signals` under both PT and BDPT — integrator-consistent, but a signal-keyed IOR/Fresnel painter at a subsurface entry point is neutral rather than live | OPEN-confirmed | Doc's own §10 first bullet; closing it needs a probe record in `BSSRDFSampling::SampleResult`, confirmed absent this sweep | M | coverage/test gap | user-visible (signal-keyed SSS entry only) |
 | DL-61 | DL34_UNION_INTERIOR_DEPTH.md: committed render oracles disagree with replay | Constant-material and SDF reconstruction replay fixtures violate their committed render checkpoints | OPEN-confirmed (baseline mismatch; root cause unresolved) | AgentEvalCheckTest at e858b4c9 and 3927ec9c reproduces three constant_materials_polish mean-luma/aggregate assertions and six image_reconstruct_multi RMSE/aggregate assertions. These scenes have no CSG or cross-object signals. Investigate intended output before changing renderer or bands. | M | coverage/test gap | internal (render oracle disagreement) |
@@ -217,6 +219,25 @@ reflowed otherwise.
 - ~~DL-73~~ (DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md: volume-guiding bsdfPdf composition) — STRUCK 2026-09-13, ruled consistent by derivation (P2-C, debt-sssenv round-2): the row proposed replacing `RayCaster.cpp`'s `rs2.bsdfPdf = phasePdf` (raw, un-combined) with the guided-mixture `combinedPdf`, on the theory that it should match the main surface continuation's `effectiveBsdfPdf` convention. Derivation shows this is backwards: env-NEE at a volume vertex weights via `MediumScatterMaterial::Pdf` (`MediumTransport.cpp`'s `EvaluateInScattering` -> `LightSampler::EvaluateDirectLighting`'s env arm, `LightSampler.cpp` ~:2652), which returns the RAW, un-guided `m_pPhase->Pdf(...)` — the SAME raw `phasePdf` the escape side already uses. Both sides feed `PowerHeuristic` the identical `(phasePdf, envPdf)` pair (opposite argument order), which is `PowerHeuristic(a,b) + PowerHeuristic(b,a) == 1` by construction — UNBIASED as written. `guidingMISWeight = phasePdf / combinedPdf` (folded into `rs2.importance`) already applies the full guiding correction to the sample's contribution; substituting `combinedPdf` into the MIS weight too, as this row prescribed, would double-apply that correction and BREAK the partition. Not a debt; the real, opposite-signed asymmetry is on the surface path, filed separately as DL-74. See [DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md](DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) "Residual: volume-guiding bsdfPdf composition — DL-73 RULED NOT A DEBT".
 
 ## Counts
+
+**2026-09-17 (debt-geom2 slice, branched from `master` `a4495f94`):** Two
+rows closed (DL-20, DL-116), one row opened (DL-136). DL-116 was filed on
+the concurrent `debt-prox` branch (not yet merged at the time this slice
+started) — its evidence text was copied into this file's table verbatim
+(cross-checked via `git show debt-prox:docs/DEBT_LEDGER.md`) before being
+struck, per the supervisor's instruction; DL-31 itself (the watertightness
+check DL-116's own evidence depends on) remains OPEN here, unmerged, and
+this slice did not touch it. DL-20's closure additionally corrected two
+LATENT, non-load-bearing defects in `tests/GeometrySurfaceDerivativesTest.cpp`'s
+own pre-existing Bezier/Bilinear fixtures (a secretly-planar bilinear
+patch; a Bezier patch whose winding triggered the geometry's own
+ray-facing flip) — both invisible while `ComputeSurfaceDerivatives`
+fabricated a `valid=true` flat answer regardless, both now fixed in the
+same commit as the row they gate. Full writeup:
+[DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
+A full independent recount of the whole table was NOT attempted this pass
+(out of scope; see the 2026-09-14 entry below for the standing
+housekeeping-gap note this doesn't resolve).
 
 **2026-09-14 (debt-slice0, DL-67/DL-69 design note's Slice 0, branched
 from `32824325`; UPDATED after the fix pass on the same branch):** One
@@ -1041,11 +1062,26 @@ that scene's BDPT NM-hero `Le` rebuild and HWSS `rigW` rebuild sites move
 the suite's numbers by more than a few percent when their signal-replay is
 disabled — i.e., a real red-proof exists where none did.
 
-**DL-20 (patch geometry flat curvature).** This is a Phase-4 scope item, not
-a bug in the current `valid=false` contract. Fixed when Phase 4 adds a
-`curv` implementation for patch geometries and a
-`tests/PatchCurvatureTest.cpp` compares it against an analytic patch
-curvature at a few parametric points.
+~~**DL-20 (patch geometry flat curvature).**~~ CLOSED 2026-09-17 (`debt-geom2`)
+— see the table row above and
+[DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
+`tests/PatchCurvatureTest.cpp` now exists and compares production `H`
+against a closed-form (bilinear + Bezier saddle) and finite-difference
+(Bezier dome) oracle at a few parametric points, exactly as this entry
+specified.
+
+**DL-136 (tessellated UV-seam watertightness false positive).** Give the
+watertightness CONSUMER (`TriangleMeshGeometryIndexed::ComputeWatertightness`,
+DL-31/debt-prox, once merged) a topology- or tolerance-aware weld pass
+before counting edges — e.g. weld any two vertices whose positions agree
+within a SCALE-RELATIVE epsilon (matching the `SelfHitRootFloor` family's
+existing scale-relative convention) before building the edge-adjacency
+map, rather than requiring bit-exact equality or raw index identity.
+Fixed when a tessellated sphere/torus/capped-cylinder reports 0 boundary
+edges under `ComputeWatertightness` itself (not just this row's own
+local re-implementation in `tests/PoleWeldingWatertightnessTest.cpp`),
+verified by extending that test (or DL-31's own suite) to call the real
+production function once it exists on `master`.
 
 **DL-21 (CSG boundary curvature).** Add a case to
 `tests/CsgSurfacePayloadTest.cpp` at a CSG boundary edge asserting a chosen
