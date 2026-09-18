@@ -2155,7 +2155,11 @@ static bool ApplySynthesizedNode(
 		diags.push_back( who + ": the synthesized `" + targetRole + "` `" + entryName + "` has invalid params (see log)" );
 		return false;
 	}
-	if( !targetParser->Finalize( bag, pJob ) ) {
+	// DL-32: a wrong-arity DoubleVec3/DoubleVec4/DoubleMat4 value latches
+	// ParseStateBag::HadHardError() from inside GetVec3/GetVec4/GetMat4;
+	// treat that the same as a Finalize() failure rather than silently
+	// applying the zero-filled result.
+	if( !targetParser->Finalize( bag, pJob ) || bag.HadHardError() ) {
 		diags.push_back( who + ": `source " + srcName + "` expanded, but applying the synthesized `" + targetRole
 			+ "` `" + entryName + "` failed (see log)" );
 		return false;
@@ -3407,7 +3411,11 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			ok = ExpandSourceInstance( items, applyP->itemIndex, objIndex, lets, registry, pJob, entryBudget, diags );
 			expandDiagnosed = !ok;
 		} else {
-			ok = applyP->parser->Finalize( applyP->bag, pJob );
+			// DL-32: fold in a wrong-arity GetVec3/GetVec4/GetMat4 latch
+			// (ParseStateBag::HadHardError()) so it fails this chunk the
+			// same way a Finalize() `false` return does, instead of
+			// silently applying a zero-filled vector.
+			ok = applyP->parser->Finalize( applyP->bag, pJob ) && !applyP->bag.HadHardError();
 		}
 		g_cstFinalizeDiagSink = nullptr;
 		if( outRecorded ) {
@@ -3990,7 +3998,12 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		// every exit (even an early break), never leaking into a later full derive.
 		struct RepointGuard { IJob& j; RepointGuard( IJob& j_ ) : j( j_ ) { j.SetIncrementalRepointMode( true ); } ~RepointGuard() { j.SetIncrementalRepointMode( false ); } } guard( pJob );
 		for( Pending& p : pending ) {
-			if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
+			// DL-32: a wrong-arity GetVec3/GetVec4/GetMat4 value latches
+			// p.bag.HadHardError() -- treat it as a Finalize() failure so
+			// an incremental edit that introduces a short/long vector
+			// rolls back instead of re-pointing the object to a zero-filled
+			// value.
+			if( p.parser->Finalize( p.bag, pJob ) && !p.bag.HadHardError() ) { ++count; continue; }
 			diags.push_back( p.node->role + ": incremental apply failed (e.g. unresolved reference); see log" );
 			failed = true;
 			break;

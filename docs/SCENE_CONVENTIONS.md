@@ -525,6 +525,30 @@ making it refuse every `proximity()`/`interior()` query
 (`Object::DistanceToSurface`'s `sigma_min <= 0` gate) -- a trap worth knowing
 even though the parser no longer springs it.
 
+**General rule (every vector/matrix parameter, not just `scale`).** Every
+`Vector3`-, quaternion (`Vector4`)-, and 4x4-matrix-valued parameter in the
+scene language -- `position`, `orientation`, `radiance_orient`, a camera's
+`location`/`lookat`/`up`, absorption/scattering/emission on a medium, mesh
+corner points, `bbox_min`/`bbox_max`, a painter's `scale`/`shift`, and every
+other field declared `DoubleVec3`/`DoubleVec4`/`DoubleMat4` -- requires
+EXACTLY 3 / 4 / 16 space-separated finite numbers.  Anything else (fewer,
+more, or a non-numeric token) is a hard parse error naming the chunk, the
+parameter, and the expected-vs-actual count, fixed at the shared accessor
+(`ParseStateBag::GetVec3`/`GetVec4`/`GetMat4`, `src/Library/Parsers/
+ChunkDescriptor.h`) rather than per field, so it applies uniformly across
+every declared vector parameter (DL-32 round 2, [docs/DEBT_LEDGER.md]
+(DEBT_LEDGER.md)).  `standard_object`/`override_object`'s `scale` above is
+the ONE sanctioned exception -- a single-number UNIFORM-scale broadcast --
+and it is resolved by a dedicated helper (`ResolveScaleVec3`,
+`ChunkParserRegistry.cpp`) that pre-validates the 1-or-3 arity itself and
+only reaches the shared accessor once exactly three tokens are already
+confirmed, so the generic hard-error never fires for that authored
+shorthand.  A future field that wants the same broadcast shorthand should
+follow that pattern (a dedicated resolver, not a change to the shared
+accessor) and should mark its `ParameterDescriptor` entry with
+`allowsUniformScalarBroadcast = true` so the editor's suggestion engine can
+advertise the shorthand.
+
 ### `parent` — the transform is LOCAL, relative to the parent
 
 A `standard_object` is the scene-graph node

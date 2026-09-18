@@ -34,6 +34,8 @@
 
 #include "../Utilities/OidnConfig.h"
 #include "../Utilities/RString.h"
+#include "../Interfaces/ILog.h"
+#include "../Managers/GenericManager.h"   // g_cstFinalizeDiagSink -- lets ReportVectorArity hand DeriveToJob a specific reason (see its use below)
 
 namespace RISE
 {
@@ -72,6 +74,25 @@ namespace RISE
 	inline constexpr const char* const kScalarUnknownFmt =
 		"%s `%s`: parameter `%s` value `%s` is neither a registered scalar_painter nor an inline "
 		"numeric literal \xE2\x80\x94 see docs/ISCALARPAINTER_REFACTOR.md";
+	//   - kVectorArityFmt : ParseStateBag::GetVec3/GetVec4/GetMat4 (below),
+	//     on a fixed-arity vector/matrix parameter whose value does not
+	//     carry EXACTLY the expected token count (DL-32, docs/DEBT_LEDGER.md
+	//     -- the root cause was these accessors zero-filling missing
+	//     components instead of failing, so `position -4 4` silently
+	//     derived `(-4, 4, 0)`).  Named per-accessor here rather than
+	//     inlined at each of the ~130 call sites in ChunkParserRegistry.cpp
+	//     that read a DoubleVec3/DoubleVec4/DoubleMat4 field, so every one
+	//     of them is protected by construction, not by each Finalize()
+	//     remembering to check.  The lone sanctioned exception is the
+	//     single-number uniform-scale broadcast on `standard_object` /
+	//     `override_object`'s `scale` (`ResolveScaleVec3` in
+	//     ChunkParserRegistry.cpp) -- that helper reads the raw string
+	//     itself and only calls GetVec3 once it has already confirmed
+	//     exactly three tokens, so it never reaches this diagnostic.
+	inline constexpr const char* const kVectorArityFmt =
+		"ChunkParser:: parameter `%s` in `%s` expects exactly %d space-separated number(s); got %d "
+		"in `%s` \xE2\x80\x94 a short or long vector used to silently zero-fill or truncate (DL-32, "
+		"docs/DEBT_LEDGER.md) instead of failing the parse";
 
 	//
 	// to_hint() — formats a typed default value into the string form
@@ -364,35 +385,74 @@ namespace RISE
 		// Reads three space-separated doubles into out[3].  Returns
 		// true if the key was present (so callers can apply unit
 		// conversions like DEG_TO_RAD only on explicit input).
+		//
+		// DL-32 (docs/DEBT_LEDGER.md): this used to zero-fill `out` and
+		// `sscanf` into it unconditionally, so a value with FEWER tokens
+		// than the arity "succeeded" with the missing components silently
+		// 0 (`position -4 4` derived `(-4, 4, 0)`, no diagnostic anywhere).
+		// The arity is now checked here, at the primitive every
+		// DoubleVec3-kind parameter (~130 call sites in
+		// ChunkParserRegistry.cpp: position/orientation on every object,
+		// camera location/lookat/up, absorption/scattering/emission on
+		// volumes, mesh corner points, bbox_min/max, radiance_orient,
+		// painter scale/shift, ...) reads through, rather than at each
+		// call site individually.  A mismatch is a HARD error: it is
+		// logged (see kVectorArityFmt) and recorded via HadHardError(),
+		// which the two live Finalize()-invoking surfaces
+		// (IAsciiChunkParser::ParseChunk's default impl and Cst.cpp's
+		// direct Finalize() calls) AND with the whole chunk failing
+		// instead of silently deriving a degenerate scene.  The lone
+		// sanctioned exception is `standard_object`/`override_object`'s
+		// `scale`, whose single-number uniform-scale broadcast is resolved
+		// by `ResolveScaleVec3` (ChunkParserRegistry.cpp) BEFORE this
+		// accessor is ever called for that case -- see that helper's
+		// comment.
 		bool GetVec3( const std::string& key, double out[3] ) const
 		{
 			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return false;
 			out[0] = out[1] = out[2] = 0.0;
+			const int actual = CountValueTokens( it->second );
+			if( actual != 3 ) {
+				ReportVectorArity( key, 3, actual, it->second );
+				return true;
+			}
 			sscanf( it->second.c_str(), "%lf %lf %lf", &out[0], &out[1], &out[2] );
 			return true;
 		}
 		// Reads four space-separated doubles into out[4] (e.g. quaternion
-		// xyzw).  Returns true if the key was present.
+		// xyzw).  Returns true if the key was present.  Same DL-32 arity
+		// hard-error as GetVec3 -- see its comment.
 		bool GetVec4( const std::string& key, double out[4] ) const
 		{
 			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return false;
 			out[0] = out[1] = out[2] = out[3] = 0.0;
+			const int actual = CountValueTokens( it->second );
+			if( actual != 4 ) {
+				ReportVectorArity( key, 4, actual, it->second );
+				return true;
+			}
 			sscanf( it->second.c_str(), "%lf %lf %lf %lf", &out[0], &out[1], &out[2], &out[3] );
 			return true;
 		}
 		// Reads sixteen space-separated doubles into out[16], column-major
 		// 4×4 (matches glTF and RISE's internal Matrix4 layout).  Returns
-		// true if the key was present.
+		// true if the key was present.  Same DL-32 arity hard-error as
+		// GetVec3 -- see its comment.
 		bool GetMat4( const std::string& key, double out[16] ) const
 		{
 			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return false;
 			for( int i = 0; i < 16; ++i ) out[i] = 0.0;
+			const int actual = CountValueTokens( it->second );
+			if( actual != 16 ) {
+				ReportVectorArity( key, 16, actual, it->second );
+				return true;
+			}
 			sscanf( it->second.c_str(),
 				"%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
 				&out[0],  &out[1],  &out[2],  &out[3],
@@ -401,6 +461,13 @@ namespace RISE
 				&out[12], &out[13], &out[14], &out[15] );
 			return true;
 		}
+		// True once any GetVec3/GetVec4/GetMat4 call on this bag has hit a
+		// wrong-arity value (DL-32).  The two live call sites that invoke a
+		// chunk parser's Finalize() -- IAsciiChunkParser::ParseChunk's
+		// default implementation and Cst.cpp's direct Finalize() calls --
+		// AND this into their success check so the whole chunk fails
+		// instead of silently applying a partially zero-filled vector.
+		bool HadHardError() const { return mHardError; }
 		// All values for a repeatable parameter, in input order.
 		const std::vector<std::string>& GetRepeatable( const std::string& key ) const
 		{
@@ -418,9 +485,41 @@ namespace RISE
 		void AppendRepeatable( const std::string& key, const std::string& value ){ mRepeatables[key].push_back( value ); }
 
 	private:
+		// Counts whitespace-separated tokens in `s`, stopping at an inline
+		// `#` comment marker -- mirrors ChunkParserRegistry.cpp's
+		// `AllTokensAreFiniteNumbers` tokenization (the DispatchChunkParameters
+		// gate that already ran, for every declared numeric-kind parameter,
+		// before Finalize() reaches this accessor) so a legitimate trailing
+		// comment (`position 1 2 3 # meters`) is not miscounted as extra
+		// arity.  A pure lexical count, deliberately not re-validating
+		// numeric-ness a second time.
+		static int CountValueTokens( const std::string& s )
+		{
+			int n = 0;
+			const char* p = s.c_str();
+			while( *p ) {
+				while( *p == ' ' || *p == '\t' ) ++p;
+				if( !*p || *p == '#' ) break;
+				++n;
+				while( *p && *p != ' ' && *p != '\t' && *p != '#' ) ++p;
+			}
+			return n;
+		}
+		// Logs the DL-32 arity diagnostic (kVectorArityFmt: names the
+		// chunk, the parameter, expected vs. got) and latches mHardError so
+		// the chunk's Finalize() is treated as failed by its caller even
+		// though this accessor itself still returns `true` ("key was
+		// present") for source compatibility with the ~130 existing call
+		// sites that only branch on presence, not on validity.  Defined
+		// out-of-line below (mirroring ValidateAccess) because
+		// `ChunkDescriptor` is only forward-declared at this point in the
+		// file -- `mDescriptor->keyword` needs the complete type.
+		void ReportVectorArity( const std::string& key, int expected, int actual, const std::string& raw ) const;
+
 		std::map<std::string, std::string>              mSingles;
 		std::map<std::string, std::vector<std::string> > mRepeatables;
 		const ChunkDescriptor*                          mDescriptor;
+		mutable bool                                     mHardError = false;
 	};
 
 	// Applies a parameter value to a custom IChunkParseState subclass.
@@ -453,6 +552,21 @@ namespace RISE
 		std::string                  defaultValueHint;
 		std::string                  unitLabel;                              // optional short unit suffix shown next to the editor field (e.g. "mm", "°", "scene units", ""). Pure presentation hint — the parser ignores it. Empty means dimensionless / no label.
 		ParameterSemantics           semantics;                              // S17, additive: which manager/pipe a Reference-kind param's value actually resolves against (ChunkDescriptor.h's ParameterPipe doc comment). Default-constructed (Unspecified) for every non-Reference param and every family this slice didn't audit.
+		// DL-32 (docs/DEBT_LEDGER.md), additive metadata only -- does not
+		// itself change parsing.  True for a DoubleVec3-kind parameter that
+		// ALSO accepts a single finite number as an explicit uniform-scale
+		// broadcast (today: only `scale` on `standard_object` /
+		// `override_object`, resolved by `ResolveScaleVec3` in
+		// ChunkParserRegistry.cpp -- that helper pre-validates the 1-or-3
+		// arity itself and only calls ParseStateBag::GetVec3 once it has
+		// already confirmed exactly three tokens, so the broadcast case
+		// never reaches, and is never rejected by, GetVec3's own arity
+		// hard-error).  Every OTHER DoubleVec3/DoubleVec4/DoubleMat4
+		// parameter requires the full, exact token count.  Surfaced so the
+		// editor's syntax highlighter / suggestion engine can show the
+		// shorthand is legal here specifically, rather than a reader having
+		// to know to special-case `scale` by name.
+		bool                         allowsUniformScalarBroadcast = false;
 		ApplyParameterFn             apply      = nullptr;
 	};
 
@@ -476,8 +590,29 @@ namespace RISE
 			}
 		}
 		if( !found ) {
-			fprintf(stderr, "ChunkParser Bug: Finalize() requested undeclared parameter `%s` in chunk `%s`\n", 
+			fprintf(stderr, "ChunkParser Bug: Finalize() requested undeclared parameter `%s` in chunk `%s`\n",
 				key.c_str(), mDescriptor->keyword.empty() ? "(unknown)" : mDescriptor->keyword.c_str());
+		}
+	}
+
+	inline void ParseStateBag::ReportVectorArity( const std::string& key, int expected, int actual, const std::string& raw ) const
+	{
+		mHardError = true;
+		const char* keyword = mDescriptor && !mDescriptor->keyword.empty() ? mDescriptor->keyword.c_str() : "(unknown)";
+		GlobalLog()->PrintEx( eLog_Error, kVectorArityFmt, key.c_str(), keyword, expected, actual, raw.c_str() );
+		// Also hand DeriveToJob the SPECIFIC reason (GenericManager.h's
+		// g_cstFinalizeDiagSink contract), the same channel SweepReject /
+		// Job.cpp's other Finalize()-internal refusals use, so the agent
+		// surface's per-chunk diagnostic names DL-32/the parameter/the
+		// arity instead of the generic "apply failed (e.g. unresolved
+		// reference); see log" fallback.  `empty()`-gated like the
+		// GLTFSceneImporter precedent: the FIRST arity failure inside one
+		// Finalize() call wins, matching "log the earliest concrete cause"
+		// elsewhere in this codebase.
+		if( g_cstFinalizeDiagSink && g_cstFinalizeDiagSink->empty() ) {
+			char buf[1024];
+			snprintf( buf, sizeof(buf), kVectorArityFmt, key.c_str(), keyword, expected, actual, raw.c_str() );
+			*g_cstFinalizeDiagSink = buf;
 		}
 	}
 }

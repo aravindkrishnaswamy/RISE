@@ -9455,7 +9455,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
 						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 transform, column-major, LOCAL to `parent` (overrides position/orientation/quaternion/scale)"; }
-						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale (`Sx Sy Sz`).  ONE number is accepted as a UNIFORM-scale shorthand (`scale 0.35` broadcasts to (0.35, 0.35, 0.35), with a log warning) -- anything else that is not exactly one or three finite numbers is a hard parse error (DL-32, docs/DEBT_LEDGER.md): a partial fill used to derive a silently DEGENERATE transform (the object would vanish and refuse every proximity() query)"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale (`Sx Sy Sz`).  ONE number is accepted as a UNIFORM-scale shorthand (`scale 0.35` broadcasts to (0.35, 0.35, 0.35), with a log warning) -- anything else that is not exactly one or three finite numbers is a hard parse error (DL-32, docs/DEBT_LEDGER.md): a partial fill used to derive a silently DEGENERATE transform (the object would vanish and refuse every proximity() query)"; p.defaultValueHint = "1 1 1"; p.allowsUniformScalarBroadcast = true; }
 						{ auto& p = P(); p.name = "mirror";           p.kind = ValueKind::Enum;      p.enumValues = {"x","y","z","none"}; p.description = "REFLECT this node across the plane through its OWN origin perpendicular to the named LOCAL axis -- author one wing, hand, fin or shoe and mirror the other instead of building both.  Applied INNERMOST, before this node's `position` / `orientation` / `scale`, so `mirror x  position 3 0 0` puts the reflected shape AT +3 (it does not move it to -3).  With `source` the whole cloned SUBTREE arrives reflected, which is the headline use: `standard_object { name right_wing  source left_wing  mirror x }` off an UN-mirrored `left_wing`; with `count_u` every repetition is mirrored.  `mirror` is INSTANCE-OWN, never inherited through `source` -- exactly like `position` / `orientation` / `scale`.  So if the SOURCE itself carries a `mirror`, a plain `source` copy DROPS it and comes out as the source's mirror image; repeat the same `mirror <axis>` on the copy to reproduce the source exactly (the derive warns when you have not).  Legal on a geometry-less CONTAINER too -- everything parented under it composes through the reflection, exactly once, so a mirrored arm's own children are not double-mirrored.  `none` (or omitting the line) means no mirror"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
@@ -9666,7 +9666,8 @@ namespace RISE
 						  p.description = "Per-axis scale; matches standard_object semantics -- including the "
 						                  "DL-32 uniform-scale broadcast (ONE number scales all three axes; "
 						                  "anything else that is not exactly one or three finite numbers is a "
-						                  "hard parse error)."; }
+						                  "hard parse error).";
+						  p.allowsUniformScalarBroadcast = true; }
 						return cd;
 					}();
 					return d;
@@ -13842,7 +13843,12 @@ namespace RISE
 				return true;
 			}
 		}
-		return Finalize( bag, pJob );
+		// DL-32: Finalize() may have hit a wrong-arity DoubleVec3/DoubleVec4/
+		// DoubleMat4 value via GetVec3/GetVec4/GetMat4 -- that is a hard
+		// parse error (already logged by ReportVectorArity), not a value
+		// Finalize() should silently apply, so it fails the chunk here
+		// even when Finalize() itself returned true.
+		return Finalize( bag, pJob ) && !bag.HadHardError();
 	}
 
 	// Public wrapper (declared in IAsciiChunkParser.h) over the inline
