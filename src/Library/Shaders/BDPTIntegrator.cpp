@@ -2988,6 +2988,17 @@ namespace {
 				} else {
 					localScatteringWeight = f * invScale;
 				}
+				// DL-125.  Record WHICH lobe priced this vertex, so
+				// `RecomputeSubpathThroughputNM` can ask the SPF for
+				// that lobe's own companion-wavelength kray instead of
+				// forming a ratio of the material's AGGREGATE BSDF.
+				// `eRayUnknown` when guiding SUBSTITUTED the direction
+				// (`!useKray`): the hero was then priced from the
+				// aggregate `f`, so its companion must be too, or the
+				// two sides of the ratio would describe different
+				// estimators.
+				vertices.back().scatterType =
+					useKray ? pScat->type : ScatteredRay::eRayUnknown;
 				beta = beta * localScatteringWeight;
 				if constexpr( Traits::is_nm ) {
 					if( pSwlHWSS ) {
@@ -7045,6 +7056,9 @@ unsigned int GenerateLightSubpathImpl(
 				const Scalar wHero = useKray ?
 					( KrayValue<Tag>( *pScat ) * krayScale ) :
 					( f * bssrdfReflectCompensation * cosTheta / scatterPdf );
+				// DL-125 -- see the eye twin.
+				vertices.back().scatterType =
+					useKray ? pScat->type : ScatteredRay::eRayUnknown;
 				localScatteringWeight = RISEPel( wHero, wHero, wHero );
 				beta = beta * wHero;
 				if( pSwlHWSS ) {
@@ -7428,7 +7442,77 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 		if( i + 1 < verts.size() && i > 0 &&
 			v.type == BDPTVertex::SURFACE && !v.isDelta )
 		{
-			if( v.pMaterial && v.pMaterial->GetBSDF() )
+			// DL-125.  THE SELECTED LOBE'S OWN companion/hero kray ratio,
+			// when the SPF can supply it.
+			//
+			// The aggregate-BSDF ratio computed below is correct only
+			// when `kray_I(lambda_c)/kray_I(lambda_h)` equals
+			// `f_agg(lambda_c)/f_agg(lambda_h)`.  At a multi-lobe SPF
+			// those are two different functions of wavelength:
+			// `kray_I = f_I cos / p_I` is the SELECTED lobe's own
+			// spectrum over the SELECTED lobe's own density, while
+			// `f_agg` blends every lobe's spectrum -- so a material
+			// whose diffuse and specular reflectances have different
+			// spectra, or whose lobe density itself varies with
+			// wavelength (a spectral roughness / isotropy / alpha /
+			// exponent painter), is priced with the wrong per-companion
+			// weight.  Same pairing DL-69 removed from the hero path and
+			// DL-125 removed from PT's own HWSS body; THIS function is
+			// the render-visible companion pricing for BDPT, VCM and MLT
+			// alike (all three spectral rasterizers call it), unlike the
+			// two `hwssBetaNM` ladders in the subpath generators, which
+			// DL-126's review round 2 established are read only for
+			// Russian roulette and guiding training.
+			//
+			// The aggregate fallback below is KEPT for every SPF that
+			// declines (`EvaluateKrayNM` < 0) -- it is exact wherever the
+			// emitted ray carries the AGGREGATE mixture density, which is
+			// why CoatedSPF / FabricSPF / WeaveSPF / GGXSPF /
+			// CookTorranceSPF deliberately never override the method --
+			// and for a guiding-SUBSTITUTED direction, where
+			// `scatterType` is deliberately left `eRayUnknown`.
+			Scalar lobeRatio = -1;
+			if( v.pMaterial && v.scatterType != ScatteredRay::eRayUnknown )
+			{
+				const ISPF* pVertSPF = v.pMaterial->GetSPF();
+				if( pVertSPF )
+				{
+					// The walk travelled prev -> v -> next on BOTH
+					// subpaths, so the sampler's own incoming direction
+					// at `v` is `v - prev` and its outgoing is
+					// `next - v`, whichever side generated the subpath.
+					// (`EvalBSDFAtVertex`'s wi/wo swap below is about the
+					// BSDF's radiance-vs-importance argument convention;
+					// `kray` is defined by the SAMPLER, which always
+					// measured against `ri.ray.Dir()`.)
+					const Vector3 dirIn = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
+					const Vector3 dirOut = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
+
+					Ray inRay( Point3Ops::mkPoint3( v.position, -dirIn ), dirIn );
+					RayIntersectionGeometric rig( inRay, nullRasterizerState );
+					PathVertexEval::PopulateRIGFromVertex( v, rig );
+
+					IORStack vertexIor( 1.0 );
+					BuildVertexIORStack( v, vertexIor );
+
+					const Scalar krayHero = pVertSPF->EvaluateKrayNM(
+						rig, dirOut, v.scatterType, heroNM, vertexIor );
+					const Scalar krayComp = pVertSPF->EvaluateKrayNM(
+						rig, dirOut, v.scatterType, companionNM, vertexIor );
+
+					if( krayHero >= 0 && krayComp >= 0 ) {
+						lobeRatio = ( krayHero > NEARZERO ) ? ( krayComp / krayHero ) : 0;
+					}
+				}
+			}
+
+			if( lobeRatio >= 0 )
+			{
+				cumulativeRatio *= lobeRatio;
+			}
+			else if( v.pMaterial && v.pMaterial->GetBSDF() )
 			{
 				// EvalBSDFAtVertex expects wi and wo BOTH pointing AWAY from
 				// the surface (wi toward light, wo toward viewer); it

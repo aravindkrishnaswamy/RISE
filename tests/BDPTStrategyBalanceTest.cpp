@@ -2553,6 +2553,106 @@ static void TestSpectralHWSSCompanionLadderControl()
 }
 
 //////////////////////////////////////////////////////////////////////
+// TOPOLOGY P -- DL-125's RENDER-VISIBLE half, on BDPT/VCM/MLT.
+//
+// The two ladders above cannot see DL-125 on the BDPT side, and the
+// reason is worth stating so the next reader does not mistake their
+// flatness for evidence.  `BDPTIntegrator.cpp`'s two HWSS companion
+// loops (the ones that run the `EvaluateKrayNM` ladder) write
+// `hwssBetaNM`, which DL-126's review round 2 established is read ONLY
+// for Russian roulette and guiding training -- never for the rendered
+// image.  What actually prices a companion wavelength in an image is
+// `BDPTIntegrator::RecomputeSubpathThroughputNM`, called once per
+// companion by all three spectral rasterizers (BDPT, VCM, MLT), and it
+// rescales the hero throughput by the ratio
+// `f_agg(lambda_c)/f_agg(lambda_h)` of the material's AGGREGATE BSDF.
+//
+// That ratio equals the correct `kray_I(lambda_c)/kray_I(lambda_h)`
+// only when the SELECTED lobe's spectrum is the aggregate's spectrum.
+// Topology L cannot tell the difference: its `schlick_material` uses
+// the SAME grey `0.4 0.4 0.4` for `rd` and `rs`, so both ratios are
+// the same function of wavelength and the defect is exactly zero
+// there.
+//
+// Topology P is topology L with ONLY those two colour lines changed --
+// built by string substitution from `kSceneSchlickMultiLobeL` itself,
+// so "identical apart from the two reflectances" is structural rather
+// than a claim -- to a strongly DIVERGENT pair (a blue diffuse lobe
+// under a red specular one).  The gated statistic is therefore a
+// CHANNEL-BALANCE one, not a mean: B/R of the `hwss TRUE` render
+// against B/R of the `hwss FALSE` (hero-only) render of the same
+// scene.  Hero-only draws one wavelength per path and so has no
+// companion pricing at all -- it is the unbiased reference for channel
+// balance here, at the cost of chromatic MC noise the 4x sample count
+// pays down.
+//
+// WHAT THIS ROW IS AND IS NOT (be honest about it).  It is a
+// CONSISTENCY PIN, not a red-proof.  An isolated A/B on
+// `BDPTIntegrator.cpp` alone reads B/R ratio -0.33% pre-fix against
+// -1.03% / -0.45% / -0.88% (mean -0.79%, sd 0.30 pp) post-fix: the two
+// sides are NOT separable above this statistic's own run-to-run noise
+// at 32x32 / 1024-vs-256 spp.  The expression the fix changes IS
+// provably wrong -- `tests/HWSSCompanionKrayTest.cpp` section E
+// measures the per-lobe and aggregate companion ratios disagreeing by
+// up to 12.2x per draw on exactly this material -- but on this scene
+// the disagreement does not survive into a resolvable image
+// difference, because Phase 3 only rescales INTERIOR subpath vertices
+// and BDPT's image here is dominated by short strategies.  This row
+// exists so a future regression in the channel balance is caught, not
+// to claim the fix moved this render.
+//////////////////////////////////////////////////////////////////////
+static void ReplaceOnceOrFail( std::string& s, const std::string& from, const std::string& to,
+	const char* what )
+{
+	const size_t at = s.find( from );
+	const std::string label = std::string( "topology P: " ) + what + " appears exactly once in topology L";
+	Check( at != std::string::npos && s.find( from, at + 1 ) == std::string::npos, label.c_str() );
+	if( at != std::string::npos ) {
+		s.replace( at, from.size(), to );
+	}
+}
+
+static void TestSpectralHWSSChromaticLobeSpectra()
+{
+	std::string body( kSceneSchlickMultiLobeL );
+	ReplaceOnceOrFail( body,
+		"\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n",
+		"\tname pnt_rd\n\tcolor 0.05 0.10 0.70\n", "the rd colour" );
+	ReplaceOnceOrFail( body,
+		"\tname pnt_rs\n\tcolor 0.4 0.4 0.4\n",
+		"\tname pnt_rs\n\tcolor 0.70 0.10 0.05\n", "the rs colour" );
+
+	ImageStats noHWSS, hwss;
+	const double achroRatio = RunSpectralHWSSLadder(
+		"topology P (DL-125 chromatic lobe spectra)", body, &noHWSS, &hwss );
+	if( achroRatio < 0 ) return;
+
+	Check( noHWSS.mean[0] > 1e-6 && hwss.mean[0] > 1e-6,
+		"topology P: the red channel is non-zero in both renders" );
+	if( noHWSS.mean[0] <= 1e-6 || hwss.mean[0] <= 1e-6 ) return;
+
+	const double brNo = noHWSS.mean[2] / noHWSS.mean[0];
+	const double brHW = hwss.mean[2]   / hwss.mean[0];
+	const double brRatio = brHW / brNo;
+	std::cout << "    B/R channel balance: hwss FALSE = " << brNo
+	          << ", hwss TRUE = " << brHW
+	          << ", ratio = " << brRatio
+	          << "  (" << ( ( brRatio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+
+	// Band: see the DL-125 closure doc for the measured pre/post
+	// figures and the run-to-run spread this is set against.
+	Check( std::fabs( brRatio - 1.0 ) < 0.08,
+		"DL-125 (topology P): the HWSS bundle reproduces the hero-only render's "
+		"channel balance on a material whose two lobes have DIVERGENT spectra" );
+	// The achromatic mean is printed and loosely bounded -- the defect
+	// this topology exists for is a SPECTRAL one, so a mean-only gate
+	// would be the wrong instrument (it is nearly preserved by an error
+	// that only moves energy between wavelengths).
+	Check( std::fabs( achroRatio - 1.0 ) < 0.08,
+		"DL-125 (topology P): achromatic mean stays within 8% of hero-only" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // DL-125 KNOWN-DEFECT PROBE, PT-SIDE (DL-103 review round 2, P2-1).
 //
 // WHAT IT MEASURES, AND WHY IT IS PT-VS-PT.  The two ladders above
@@ -3078,6 +3178,7 @@ int main()
 	TestGGXLambertianControl();
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
+	TestSpectralHWSSChromaticLobeSpectra();
 	TestPTSpectralHWSSKnownDefect();
 	TestPTSpectralHWSSKnownDefectControl();
 	TestNonfiniteCandidateRejected();

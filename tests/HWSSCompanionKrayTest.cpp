@@ -624,6 +624,87 @@ int main()
 	for( size_t i = 0; i < dSubjects.size(); i++ ) SectionC( dSubjects[i], iorStack, 300 );
 
 	//----------------------------------------------------------------
+	// Section E: the PREMISE behind the second half of the DL-125 fix.
+	//
+	// `BDPTIntegrator::RecomputeSubpathThroughputNM` -- the
+	// render-visible companion pricing for BDPT, VCM and MLT -- used to
+	// rescale a companion by the AGGREGATE ratio
+	// `f_agg(lambda_c)/f_agg(lambda_h)`.  It now asks the SPF for
+	// `kray_I(lambda_c)/kray_I(lambda_h)` instead.  Those are the same
+	// number only when the SELECTED lobe's spectrum is the aggregate's
+	// spectrum; this section MEASURES how far apart they are on a
+	// `schlick_material` whose two lobes carry DIVERGENT spectra (a
+	// blue diffuse under a red specular), over real `ScatterNM` draws.
+	//
+	// Gated as a premise, not as a tolerance: if a future change makes
+	// the two ratios agree, this check fails and tells the reader the
+	// second half of DL-125's fix has become a no-op -- the same way
+	// tests/PTGuidingMISPartitionTest.cpp pins `SchlickSPF`'s
+	// aggregate-vs-selected-lobe PDF spread as a premise for DL-103.
+	std::cout << std::endl
+	          << "-- Section E: aggregate-ratio vs per-lobe-ratio premise "
+	             "(chromatic two-lobe schlick_material)"
+	          << std::endl;
+	{
+		UniformColorPainter* blueD = new UniformColorPainter( RISEPel( 0.05, 0.10, 0.70 ) ); blueD->addref();
+		UniformColorPainter* redS  = new UniformColorPainter( RISEPel( 0.70, 0.10, 0.05 ) ); redS->addref();
+		SchlickSPF*  chSPF  = new SchlickSPF(  *blueD, *redS, *rough, *iso ); chSPF->addref();
+		SchlickBRDF* chBRDF = new SchlickBRDF( *blueD, *redS, *rough, *iso ); chBRDF->addref();
+
+		const Scalar heroNM = 550.0;
+		double worstDisagree = 1.0;		///< max over draws of max(r, 1/r)
+		unsigned int n = 0;
+
+		for( int li = 0; li < 3; li++ ) {
+			if( kLambdas[li] == heroNM ) continue;
+		for( int di = 0; di < 3; di++ ) {
+			const RayIntersectionGeometric ri = MakeIntersection( kDegrees[di] * PI / 180.0 );
+			const Vector3 nrm = ri.onb.w();
+			RandomNumberGenerator rng( 7717u + li * 53u + di );
+			IndependentSampler sampler( rng );
+
+			for( unsigned int k = 0; k < 400; k++ ) {
+				ScatteredRayContainer scattered;
+				chSPF->ScatterNM( ri, sampler, heroNM, scattered, iorStack );
+
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					const ScatteredRay& sr = scattered[i];
+					if( sr.isDelta ) continue;
+					const Vector3 wo = Vector3Ops::Normalize( sr.ray.Dir() );
+					if( Vector3Ops::Dot( wo, nrm ) <= 0 ) continue;
+
+					const Scalar kh = chSPF->EvaluateKrayNM( ri, sr.ray.Dir(), sr.type, heroNM, iorStack );
+					const Scalar kc = chSPF->EvaluateKrayNM( ri, sr.ray.Dir(), sr.type, kLambdas[li], iorStack );
+					const double fh = chBRDF->valueNM( wo, ri, heroNM );
+					const double fc = chBRDF->valueNM( wo, ri, kLambdas[li] );
+					if( kh <= 1e-12 || fh <= 1e-12 ) continue;
+
+					const double lobeRatio = kc / kh;
+					const double aggRatio  = fc / fh;
+					if( !std::isfinite( lobeRatio ) || !std::isfinite( aggRatio ) ||
+					    lobeRatio <= 0 || aggRatio <= 0 ) continue;
+
+					const double r = lobeRatio / aggRatio;
+					const double d = std::max( r, 1.0 / r );
+					if( d > worstDisagree ) worstDisagree = d;
+					n++;
+				}
+			}
+		}
+		}
+
+		std::cout << "   draws " << n << "   worst |per-lobe ratio / aggregate ratio| "
+		          << std::fixed << std::setprecision( 4 ) << worstDisagree << "x" << std::endl;
+		Check( n > 2000, "DL-125 section E: enough chromatic draws" );
+		Check( worstDisagree > 1.2,
+			"DL-125 section E (PREMISE): the per-lobe and aggregate companion ratios are "
+			"measurably DIFFERENT functions of wavelength -- if this ever passes trivially, "
+			"RecomputeSubpathThroughputNM's per-lobe branch has become a no-op" );
+
+		chSPF->release(); chBRDF->release(); blueD->release(); redS->release();
+	}
+
+	//----------------------------------------------------------------
 	std::cout << std::endl << "-- Section D: negative controls" << std::endl;
 	{
 		const RayIntersectionGeometric ri = MakeIntersection( 30.0 * PI / 180.0 );
