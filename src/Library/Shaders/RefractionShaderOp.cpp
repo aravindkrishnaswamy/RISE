@@ -27,6 +27,41 @@ RefractionShaderOp::~RefractionShaderOp( )
 {
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-171: this op's own continuation's MIS partner -- see
+// `ReflectionShaderOp`'s identical twin for the full rationale (the
+// materials this op is historically paired with are pure-delta
+// refractors, but the gate is `scat.isDelta`, not an assumption, in
+// case a non-delta `eRayRefraction` lobe is ever routed through here).
+static Scalar RefractionMisPartner(
+	const ISPF& spf,
+	const RayIntersectionGeometric& ri,
+	const ScatteredRay& scat,
+	const IORStack& ior_stack
+	)
+{
+	if( scat.isDelta ) {
+		return 0;
+	}
+	const Scalar aggregatePdf = spf.Pdf( ri, scat.ray.Dir(), ior_stack );
+	return aggregatePdf > 0 ? aggregatePdf : scat.pdf;
+}
+
+static Scalar RefractionMisPartnerNM(
+	const ISPF& spf,
+	const RayIntersectionGeometric& ri,
+	const ScatteredRay& scat,
+	const Scalar nm,
+	const IORStack& ior_stack
+	)
+{
+	if( scat.isDelta ) {
+		return 0;
+	}
+	const Scalar aggregatePdf = spf.PdfNM( ri, scat.ray.Dir(), nm, ior_stack );
+	return aggregatePdf > 0 ? aggregatePdf : scat.pdf;
+}
+
 //! Tells the shader to apply shade to the given intersection point
 void RefractionShaderOp::PerformOperation(
 	const RuntimeContext& rc,					///< [in] Runtime context
@@ -44,6 +79,8 @@ void RefractionShaderOp::PerformOperation(
 	if( !rc.IsNormalShadingPass() ) {
 		return;
 	}
+
+	const ISPF* pSPFR = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 
 	if( pScat ) {
 		const ScatteredRayContainer& scattered = *pScat;
@@ -72,6 +109,12 @@ void RefractionShaderOp::PerformOperation(
 				rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray) * etaScale;
 				rs2.considerEmission = true;
 				rs2.type = IRayCaster::RAY_STATE::eRaySpecular;
+				// DL-171: this continuation's own MIS partner -- see
+				// `RefractionMisPartner`'s doc above.
+				if( pSPFR ) {
+					rs2.bsdfPdf = RefractionMisPartner( *pSPFR, ri.geometric, scat, ior_stack );
+					rs2.bsdfMisPdf = rs2.bsdfPdf;
+				}
 
 				caster.CastRay( rc, ri.geometric.rast, ray, refractedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 				c = c + (refractedPixel * scat.kray * etaScale);
@@ -100,6 +143,8 @@ Scalar RefractionShaderOp::PerformOperationNM(
 		return 0;
 	}
 
+	const ISPF* pSPFR = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+
 	if( pScat ) {
 		const ScatteredRayContainer& scattered = *pScat;
 		for( unsigned int i=0; i<pScat->Count(); i++ ) {
@@ -123,6 +168,11 @@ Scalar RefractionShaderOp::PerformOperationNM(
 				rs2.importance = rs.importance * scat.krayNM * etaScale;
 				rs2.considerEmission = true;
 				rs2.type = IRayCaster::RAY_STATE::eRaySpecular;
+				// DL-171: see `RefractionMisPartnerNM`'s doc above.
+				if( pSPFR ) {
+					rs2.bsdfPdf = RefractionMisPartnerNM( *pSPFR, ri.geometric, scat, nm, ior_stack );
+					rs2.bsdfMisPdf = rs2.bsdfPdf;
+				}
 
 				caster.CastRayNM( rc, ri.geometric.rast, ray, refracted, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 				c = c + (refracted * scat.krayNM * etaScale);
