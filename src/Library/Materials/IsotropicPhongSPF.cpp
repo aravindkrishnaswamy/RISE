@@ -19,6 +19,234 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	//! Stratified-quadrature resolution PER AXIS for the diffuse lobe's
+	//! selection coefficient C_D (see PhongDiffuseSelectCoefficient below).
+	//! Same role and tuning rationale as SchlickSPF.cpp's kSpecQuadN --
+	//! Scatter's accept boundary (the geomN gate) is the same kind of
+	//! bounded-but-non-smooth integrand.  See
+	//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 3.
+	const int kPhongQuadN = 16;
+
+	//! The specular lanes Scatter()/ScatterNM() would emit at this shading
+	//! point: ONE in the ordinary case (and always in the spectral path),
+	//! THREE when a per-channel exponent painter drives Scatter()'s
+	//! per-channel branch.  `rs[i]` is lane i's specular reflectance
+	//! (direction-INDEPENDENT); the direction-dependent part of the
+	//! realized kray, `(N+2)/(N+1)*max(cos_o,0)`, is applied at the query
+	//! direction by the functions below.
+	struct PhongLobeSet
+	{
+		int    count;
+		Scalar N[3];
+		Scalar rs[3];
+	};
+}
+
+//! Probability Scatter's diffuse ray survives its geometric-horizon gate:
+//! the exact fraction of a cosine-weighted hemisphere about `n` that lies
+//! above the plane of `geomN`.  Identical Malley-disk-projection closed
+//! form to SchlickSPF.cpp's SchlickDiffuseAcceptFraction / DL-45's
+//! TranslucentSPF derivation: (1 + dot(n,geomN))/2.
+static inline Scalar PhongDiffuseAcceptFraction( const Vector3& n, const Vector3& geomN )
+{
+	const Scalar c = Vector3Ops::Dot( n, geomN );
+	return r_max( Scalar(0), r_min( Scalar(1), 0.5 * (1.0 + c) ) );
+}
+
+//! C_D -- the coefficient the diffuse sampling density carries in the
+//! aggregate density (see docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 2 for
+//! the derivation, which mirrors DL-67 Slice 0's SchlickDiffuseSelectCoefficient).
+//! `wD` is the query-direction-independent diffuse selection weight
+//! (MaxValue(Rd) for RGB, the NM reflectance for spectral).
+//!
+//! kPhongQuadN^2 deterministic stratified replays of GenerateSpecularRay's
+//! own (xi,b) unit square.  Unlike Schlick, Phong's azimuth warp
+//! (around = TWO_PI*b) does not depend on the lobe's exponent N at all --
+//! only the polar warp (down = acos(pow(xi,1/(N+1)))) does -- so the
+//! (cosAround,sinAround) row is shared across every lane and only the
+//! (cosDown,sinDown) rows are per-lane, computed once per call rather than
+//! once per grid cell.
+//!
+//! `nu,nv,nw` / `gu,gv,gw` are `n` / `geomN` projected into the frame
+//! GenerateSpecularRay's own Perturb() call builds internally around
+//! `reflected` (U = normalize(reflected), V,W its perpendiculars) -- see
+//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 1 for the closed-form
+//! derivation of GeometricUtilities::Perturb's frame, which lets a lane's
+//! emitted direction be written `cos(down)*U + sin(down)*sin(around)*V -
+//! sin(down)*cos(around)*W` without replaying the rotation matrices.
+static Scalar PhongDiffuseSelectCoefficient(
+	const Scalar wD,
+	const PhongLobeSet& lobes,
+	const Scalar nu, const Scalar nv, const Scalar nw,
+	const Scalar gu, const Scalar gv, const Scalar gw
+	)
+{
+	Scalar cosDown[3][kPhongQuadN];
+	Scalar sinDown[3][kPhongQuadN];
+	Scalar cosAround[kPhongQuadN];
+	Scalar sinAround[kPhongQuadN];
+
+	const Scalar inv = 1.0 / Scalar(kPhongQuadN);
+	for( int j = 0; j < lobes.count; j++ ) {
+		const Scalar invExp = 1.0 / (lobes.N[j] + 1.0);
+		for( int a = 0; a < kPhongQuadN; a++ ) {
+			const Scalar xi = (Scalar(a) + 0.5) * inv;
+			const Scalar c = r_min( Scalar(1), pow( xi, invExp ) );
+			cosDown[j][a] = c;
+			sinDown[j][a] = sqrt( r_max( Scalar(0), 1.0 - c*c ) );
+		}
+	}
+	for( int b = 0; b < kPhongQuadN; b++ ) {
+		const Scalar around = TWO_PI * (Scalar(b) + 0.5) * inv;
+		cosAround[b] = cos(around);
+		sinAround[b] = sin(around);
+	}
+
+	Scalar accum = 0;
+	for( int a = 0; a < kPhongQuadN; a++ ) {
+		for( int b = 0; b < kPhongQuadN; b++ ) {
+			Scalar wS = 0;
+			int nAccepted = 0;
+			for( int j = 0; j < lobes.count; j++ ) {
+				const Scalar ct = cosDown[j][a];
+				const Scalar st = sinDown[j][a];
+				const Scalar cosO   = ct*nu + st*sinAround[b]*nv - st*cosAround[b]*nw;
+				const Scalar geomOk = ct*gu + st*sinAround[b]*gv - st*cosAround[b]*gw;
+				if( geomOk <= 0 ) {
+					// Scatter's own accept-check (dot(specular.ray.Dir(),geomN)>0)
+					// would drop this lane from the container entirely.
+					continue;
+				}
+				nAccepted++;
+				wS += lobes.rs[j] * ((lobes.N[j]+2.0)/(lobes.N[j]+1.0)) * r_max(cosO, Scalar(0));
+			}
+
+			if( nAccepted == 0 ) {
+				// RandomlySelect's freeidx==1 short-circuit: the lone
+				// diffuse ray is returned whatever its weight.
+				accum += 1.0;
+				continue;
+			}
+
+			const Scalar total = wD + wS;
+			if( total > NEARZERO ) {
+				accum += wD / total;
+			}
+			// else RandomlySelect returns nothing at all -- contributes 0.
+		}
+	}
+
+	return accum / Scalar(kPhongQuadN*kPhongQuadN);
+}
+
+//! sum_i q_i(wo) * p_i(wo) -- the specular half of the aggregate.  `aD` is
+//! the probability Scatter's diffuse ray survives its own geometric-horizon
+//! gate (1 whenever the shading and geometric normals agree).
+//!
+//! For the per-channel branch, lanes j != i share ONE random pair with lane
+//! i, so a query wo hypothesized as lane i's own draw determines what the
+//! OTHER lanes drew too.  Because the azimuth warp is exponent-independent
+//! (see PhongDiffuseSelectCoefficient's comment), that shared azimuth is
+//! recovered exactly from wo's own (V,W) projection with no inversion at
+//! all, and the polar angle scales as a pure power law in cos(down) across
+//! lanes (cos(down_j) = cos(down_i)^((N_i+1)/(N_j+1))) -- see
+//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 1.
+static Scalar PhongSpecularDensity(
+	const Vector3& woNorm,
+	const Vector3& U, const Vector3& V, const Vector3& W,
+	const Scalar nu, const Scalar nv, const Scalar nw,
+	const Scalar gu, const Scalar gv, const Scalar gw,
+	const Scalar wD, const Scalar aD,
+	const PhongLobeSet& lobes
+	)
+{
+	const Scalar ctI = Vector3Ops::Dot( woNorm, U );
+	if( ctI <= 0 ) {
+		// wo is more than 90 degrees from `reflected` -- Perturb's polar
+		// warp (down in [0, pi/2]) can never emit it from ANY lane.
+		return 0;
+	}
+	const Scalar sy = Vector3Ops::Dot( woNorm, V );
+	const Scalar sz = Vector3Ops::Dot( woNorm, W );
+	const Scalar sinDownI = sqrt( r_max( Scalar(0), 1.0 - ctI*ctI ) );
+
+	// cos_o = dot(wo, n) -- the shading-normal cosine Scatter's kray
+	// actually uses (`ctI` above is cosAlpha = dot(wo, reflected), the
+	// DIFFERENT quantity the phong lobe's density is built from).  Written
+	// via the same U/V/W projection identity PhongDiffuseSelectCoefficient
+	// and the sibling-reconstruction loop below use for cos_o_j, at
+	// ctJ=ctI, scale=1 -- i.e. lane i is its own j==i case.
+	const Scalar cosO_i = ctI*nu + sy*nv + sz*nw;
+
+	Scalar sum = 0;
+
+	for( int i = 0; i < lobes.count; i++ ) {
+		// p_i(wo): the phong lobe density lane i's own sampler reports for
+		// wo -- exactly IsotropicPhongSPF::Scatter's own specular.pdf
+		// formula, evaluated at this direction instead of the sampled one.
+		const Scalar pdf_i = (lobes.N[i] + 1.0) * INV_PI * 0.5 * pow( ctI, lobes.N[i] );
+		if( pdf_i <= 0 ) {
+			continue;
+		}
+
+		// Lane i's own realized weight, exact at wo: Pdf()'s caller has
+		// already checked wo passes the geomN gate, so lane i is
+		// unconditionally in the container.
+		const Scalar w_i = lobes.rs[i] * ((lobes.N[i]+2.0)/(lobes.N[i]+1.0)) * r_max(cosO_i, Scalar(0));
+
+		Scalar wOther = 0;
+		int nAccepted = 1; // lane i itself
+
+		if( lobes.count > 1 && sinDownI > NEARZERO ) {
+			for( int j = 0; j < lobes.count; j++ ) {
+				if( j == i ) {
+					continue;
+				}
+				const Scalar ratio = (lobes.N[i] + 1.0) / (lobes.N[j] + 1.0);
+				const Scalar ctJ = pow( ctI, ratio );
+				const Scalar sinDownJ = sqrt( r_max( Scalar(0), 1.0 - ctJ*ctJ ) );
+				const Scalar scale = sinDownJ / sinDownI;
+
+				const Scalar cosO_j   = ctJ*nu + scale*(sy*nv + sz*nw);
+				const Scalar geomOk_j = ctJ*gu + scale*(sy*gv + sz*gw);
+				if( geomOk_j <= 0 ) {
+					continue;
+				}
+				nAccepted++;
+				wOther += lobes.rs[j] * ((lobes.N[j]+2.0)/(lobes.N[j]+1.0)) * r_max(cosO_j, Scalar(0));
+			}
+		}
+		// sinDownI <= NEARZERO means wo sits essentially exactly at
+		// `reflected` -- a measure-zero direction where the azimuth is
+		// undefined; treat lane i as the sole occupant there rather than
+		// dividing by a near-zero scale factor.
+
+		const Scalar wS = w_i + wOther;
+
+		Scalar q = 0;
+		// ...with the diffuse ray present (probability aD).
+		const Scalar totalWith = wD + wS;
+		if( totalWith > NEARZERO ) {
+			q += aD * (w_i / totalWith);
+		}
+		// ...and without it (probability 1-aD), where a lone specular ray
+		// wins outright through RandomlySelect's freeidx==1 short-circuit.
+		if( aD < 1.0 ) {
+			if( nAccepted == 1 ) {
+				q += (1.0 - aD);
+			} else if( wS > NEARZERO ) {
+				q += (1.0 - aD) * (w_i / wS);
+			}
+		}
+
+		sum += q * pdf_i;
+	}
+
+	return sum;
+}
+
 IsotropicPhongSPF::IsotropicPhongSPF( const IPainter& Rd_, const IPainter& Rs_, const IScalarPainter& exp ) :
   pRd( &Rd_ ), pRs( &Rs_ ), pExponent( &exp )
 {
@@ -64,8 +292,18 @@ static void GenerateDiffuseRay(
 {
 	diffuse.type = ScatteredRay::eRayDiffuse;
 
-	// Generate a reflected ray randomly with a cosine distribution
-	if( rdotn > NEARZERO )
+	// Generate a reflected ray randomly with a cosine distribution.
+	//
+	// The predicate is `> 0`, matching EXACTLY how Scatter/ScatterNM/Pdf
+	// build the lobe normal `n = rdotn > 0 ? -ri.onb.w() : ri.onb.w()`.
+	// It used to be `> NEARZERO`, leaving a window rdotn in (0, 1e-12]
+	// where `n` was flipped but the diffuse lobe was still sampled around
+	// the UNflipped frame: the lobe then sat in the opposite hemisphere
+	// from the one `n` names, its stored pdf (cos(dir,n)/pi, gated on
+	// cos > 0) came out 0, and Pdf() -- which uses the same `n` -- could
+	// not price it either, while its kray (a direction-independent
+	// GetColor) stayed at full strength.
+	if( rdotn > 0 )
 	{
 		OrthonormalBasis3D	myonb = ri.onb;
 		myonb.FlipW();
@@ -281,29 +519,50 @@ Scalar IsotropicPhongSPF::Pdf(
 		return 0;
 	}
 
-	// Diffuse component: cosine-weighted hemisphere
+	// Diffuse component: cosine-weighted hemisphere about `n`.  Direction-
+	// independent kray (pRd->GetColor(ri)), exactly as SchlickSPF's diffuse
+	// lobe -- no averaging approximation needed on this side (DL-67 Slice 0
+	// section 1).
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
 	const Scalar diffusePdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 
-	// Specular component: phong lobe around reflection direction
-	// Use average exponent across channels
-	const ScalarTriple Nt = pExponent->GetValuesAt(ri);
-	const Scalar Navg = (Nt.v[0] + Nt.v[1] + Nt.v[2]) / 3.0;
-	const Scalar cosAlpha = Vector3Ops::Dot( woNorm, Vector3Ops::Normalize(reflected) );
-	const Scalar specPdf = (cosAlpha > 0) ? (Navg + 1.0) * INV_PI * 0.5 * pow( cosAlpha, Navg ) : 0;
-
-	// Weight by relative importance of diffuse vs specular reflectance
 	const RISEPel rd = pRd->GetColor(ri);
 	const RISEPel rs = pRs->GetColor(ri);
-	const Scalar dWeight = ColorMath::MaxValue(rd);
-	const Scalar sWeight = ColorMath::MaxValue(rs);
-	const Scalar totalWeight = dWeight + sWeight;
+	const Scalar wD = ColorMath::MaxValue(rd);
 
-	if( totalWeight < NEARZERO ) {
-		return 0;
+	// The lanes Scatter() would have emitted.  Branch on the SAME predicate
+	// Scatter() branches on, and use each lane's own N -- a lane's sampling
+	// density and realized weight have to be those of what that lane
+	// actually draws, not a channel average (DL-98).
+	const ScalarTriple Nt = pExponent->GetValuesAt(ri);
+	PhongLobeSet lobes;
+	if( !pExponent->HasPerChannelVariation() ) {
+		lobes.count = 1;
+		lobes.N[0]  = Nt.v[0];
+		lobes.rs[0] = ColorMath::MaxValue(rs);
+	} else {
+		lobes.count = 3;
+		for( int i = 0; i < 3; i++ ) {
+			lobes.N[i]  = Nt.v[i];
+			lobes.rs[i] = rs[i];
+		}
 	}
 
-	return (dWeight * diffusePdf + sWeight * specPdf) / totalWeight;
+	// Frame GenerateSpecularRay's Perturb() call builds internally around
+	// `reflected` -- see docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 1.
+	OrthonormalBasis3D uvw;
+	uvw.CreateFromU( reflected );
+	const Vector3& U = uvw.u();
+	const Vector3& V = uvw.v();
+	const Vector3& W = uvw.w();
+	const Scalar nu = Vector3Ops::Dot(n,U),      nv = Vector3Ops::Dot(n,V),      nw = Vector3Ops::Dot(n,W);
+	const Scalar gu = Vector3Ops::Dot(geomN,U),  gv = Vector3Ops::Dot(geomN,V),  gw = Vector3Ops::Dot(geomN,W);
+
+	const Scalar aD = PhongDiffuseAcceptFraction( n, geomN );
+	const Scalar cD = PhongDiffuseSelectCoefficient( wD, lobes, nu,nv,nw, gu,gv,gw );
+
+	return cD * diffusePdf
+	     + PhongSpecularDensity( woNorm, U,V,W, nu,nv,nw, gu,gv,gw, wD, aD, lobes );
 }
 
 Scalar IsotropicPhongSPF::PdfNM(
@@ -322,7 +581,7 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 
-	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// Geometric-horizon gate (MIS consistency with ScatterNM's sampler-side
 	// gate): a wo the sampler can no longer emit contributes zero density.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
@@ -335,19 +594,26 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
 	const Scalar diffusePdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 
-	// Specular component
-	const Scalar N = pExponent->GetValueAtNM(ri,nm);
-	const Scalar cosAlpha = Vector3Ops::Dot( woNorm, Vector3Ops::Normalize(reflected) );
-	const Scalar specPdf = (cosAlpha > 0) ? (N + 1.0) * INV_PI * 0.5 * pow( cosAlpha, N ) : 0;
+	const Scalar wD = GuardedGetColorNM( *pRd, ri, nm );
 
-	// Weight by relative importance
-	const Scalar rd = GuardedGetColorNM( *pRd, ri, nm );
-	const Scalar rs = GuardedGetColorNM( *pRs, ri, nm );
-	const Scalar totalWeight = rd + rs;
+	// ScatterNM has no per-channel branch, so there is always exactly one
+	// specular lane.
+	PhongLobeSet lobes;
+	lobes.count  = 1;
+	lobes.N[0]   = pExponent->GetValueAtNM(ri,nm);
+	lobes.rs[0]  = GuardedGetColorNM( *pRs, ri, nm );
 
-	if( totalWeight < NEARZERO ) {
-		return 0;
-	}
+	OrthonormalBasis3D uvw;
+	uvw.CreateFromU( reflected );
+	const Vector3& U = uvw.u();
+	const Vector3& V = uvw.v();
+	const Vector3& W = uvw.w();
+	const Scalar nu = Vector3Ops::Dot(n,U),      nv = Vector3Ops::Dot(n,V),      nw = Vector3Ops::Dot(n,W);
+	const Scalar gu = Vector3Ops::Dot(geomN,U),  gv = Vector3Ops::Dot(geomN,V),  gw = Vector3Ops::Dot(geomN,W);
 
-	return (rd * diffusePdf + rs * specPdf) / totalWeight;
+	const Scalar aD = PhongDiffuseAcceptFraction( n, geomN );
+	const Scalar cD = PhongDiffuseSelectCoefficient( wD, lobes, nu,nv,nw, gu,gv,gw );
+
+	return cD * diffusePdf
+	     + PhongSpecularDensity( woNorm, U,V,W, nu,nv,nw, gu,gv,gw, wD, aD, lobes );
 }

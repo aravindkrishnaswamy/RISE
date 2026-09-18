@@ -608,8 +608,8 @@ One-sentence bug pattern: *`Pdf()` reports a density other than the one
 | `CookTorranceSPF` | immune by a different architecture: `ComputeLobeWeights` picks a lobe from `ri` alone BEFORE sampling, and `Pdf()` calls the same function with the same inputs. `SPFPdfConsistencyTest`'s CookTorrance rows run with `exactSelectedPdf=true`, 0 cross-val failures |
 | `PolishedSPF` | already correct: `Pdf`/`PdfNM` compute the same incident-geometry Fresnel `Rs` the krays use and weight by it |
 | `WardIsotropicGaussianSPF`, `WardAnisotropicEllipticalGaussianSPF` | immune, coincidentally: both krays are pure `GetColor(ri)`, so raw-albedo weighting IS the realized weight. (Their rejection-rate term is unmodelled in the same way Schlick's was, which is why their `SPFPdfConsistencyTest` rows still skip cross-val/chi2 — not investigated here) |
-| `IsotropicPhongSPF` | **in-pattern, unfixed — DL-98** |
-| `AshikminShirleyAnisotropicPhongSPF` | **in-pattern, unfixed — DL-99** |
+| `IsotropicPhongSPF` | in-pattern, **CLOSED 2026-09-17 — DL-98**, see [DL98_DL99_PHONG_PDF_WEIGHTS.md](DL98_DL99_PHONG_PDF_WEIGHTS.md) |
+| `AshikminShirleyAnisotropicPhongSPF` | in-pattern, **CLOSED 2026-09-17 — DL-99**, see [DL98_DL99_PHONG_PDF_WEIGHTS.md](DL98_DL99_PHONG_PDF_WEIGHTS.md) |
 | `TranslucentSPF` | not this pattern: disjoint-hemisphere lobes, no overlap to mis-weight (per DL-69) |
 | `CompositeSPF` | out of scope: `Pdf()` is a documented hard-coded 50/50 placeholder, not an attempt to match `RandomlySelect` |
 | `FabricSPF` / `WeaveSPF` | not this pattern: the real priced mixture per `CLOTH_FABRIC_DESIGN.md` §9.2; `SPFPdfConsistencyTest` runs them with `skipCrossVal=false`, 0 mismatches |

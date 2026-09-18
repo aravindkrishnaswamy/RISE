@@ -834,12 +834,22 @@ int main()
     // skipCrossVal:  Skip the cross-validation sub-test entirely.
     //     Cross-validation checks that Scatter().pdf matches Pdf(ri,wo).
     //     For multi-lobe SPFs, the Pdf() method returns a weighted
-    //     mixture of per-lobe PDFs, but the weights are based on color
-    //     magnitude (MaxValue of reflectance painters).  The actual
-    //     selection probability in RandomlySelect is proportional to
-    //     kray magnitude, which is computed at shading time and may
-    //     differ from the static painter weights.  This creates a
-    //     systematic mismatch for multi-lobe materials.
+    //     mixture of per-lobe PDFs, but the weights may be based on
+    //     color magnitude (MaxValue of reflectance painters).  The
+    //     actual selection probability in RandomlySelect is
+    //     proportional to kray magnitude, which is computed at shading
+    //     time and may differ from the static painter weights.  This
+    //     creates a systematic mismatch for multi-lobe materials.
+    //
+    //     NOTE: for the three "draw every lobe, then pick one by its
+    //     realized kray" SPFs -- Schlick (DL-67 Slice 0), IsotropicPhong
+    //     (DL-98) and AshikminShirleyAnisotropicPhong (DL-99) -- that
+    //     description is HISTORICAL: their Pdf() now reports the true
+    //     generating density.  They still skip cross-val, but for a
+    //     STRUCTURAL reason that no fix can remove: a lobe's per-call
+    //     selection probability there is an expectation over the OTHER
+    //     lobe's independent draw, so no aggregate density can satisfy
+    //     a per-call identity.  Their chi2 gates ARE live.
     //
     // skipChi2:  Skip the chi-squared histogram sub-test.
     //     The chi-squared test compares the distribution of directions
@@ -872,17 +882,34 @@ int main()
         //--------------------------------------------------------------
         // IsotropicPhong: diffuse + specular lobes.
         //
-        // Pdf() returns a weighted mixture of cosine-hemisphere PDF
-        // (diffuse) and Phong-lobe PDF (specular).  The weights use
-        // static MaxValue(reflectance) but RandomlySelect picks by
-        // kray, which includes the cos-weighted BRDF evaluation.
-        // This causes massive cross-val divergence (38k-45k mismatches
-        // out of 50k samples) and chi2 failure.
+        // Cross-val: STILL SKIPPED, and for the same structural reason
+        //   as Schlick below, NOT the stale one this comment used to
+        //   give.  Scatter() draws BOTH lobes every call and
+        //   RandomlySelect picks one by the REALIZED MaxValue(kray), so
+        //   a lobe's per-call selection probability is an expectation
+        //   over the OTHER lobe's independent random draw.  Cross-val's
+        //   per-call identity (Scatter().pdf == Pdf(ri,wo)) cannot hold
+        //   for any aggregate density, correct or not.
         //
-        // The PDF integral is fine (~1.0) — only the weighting between
-        // lobes is mismatched.
+        // Integral: passes (0.999924 @ 30deg, 0.999909 @ 60deg).
+        //
+        // Chi2: NOW GATED (was skipped).  820.9 @ 30deg / 786.4 @ 60deg
+        //   against critical 928.3.
+        //
+        //   The old note here -- "the weights use static
+        //   MaxValue(reflectance) but RandomlySelect picks by kray ...
+        //   causes massive cross-val divergence (38k-45k mismatches)
+        //   and chi2 failure" -- described DL-98, fixed 2026-09-17.
+        //   Pdf()/PdfNM() now report the true generating density of
+        //   Scatter+RandomlySelect: C_D*p_D(wo) + sum_i q_i(wo)*p_i(wo),
+        //   with C_D/q_i estimated by a deterministic 16x16 stratified
+        //   replay of the sampler's own inverse-CDF square (the
+        //   dominant term is the specular lobe's geomN REJECTION rate,
+        //   which no static reflectance ratio can see).  See
+        //   docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and the dedicated
+        //   tests/IsotropicPhongSPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
-        { "IsotropicPhong",                    phong,       false, false, true,  true,  INTEGRAL_TOL },
+        { "IsotropicPhong",                    phong,       false, false, true,  false, INTEGRAL_TOL },
 
         { "CookTorrance",                      cookTorrance,false, true,  false, false, INTEGRAL_TOL },
         //--------------------------------------------------------------
@@ -986,15 +1013,28 @@ int main()
         //--------------------------------------------------------------
         // Ashikmin-Shirley Anisotropic Phong (2000):
         //
-        // Cross-val: large mismatch (16k-43k) because the model uses
-        //   a Fresnel-weighted blend of diffuse and specular lobes.
-        //   The Fresnel term is direction-dependent, so the effective
-        //   lobe weights at each sample point differ from the static
-        //   weights in Pdf().
-        // Chi2: fails as a direct consequence of the cross-val issue.
-        // Integral: fine (~1.0).
+        // Cross-val: STILL SKIPPED, structurally -- same reason as
+        //   IsotropicPhong and Schlick above (both lobes drawn every
+        //   call, one picked by realized kray, so no per-call identity
+        //   between Scatter().pdf and any aggregate Pdf()).
+        //
+        // Integral: passes (0.997936 @ 30deg, 0.997958 @ 60deg).
+        //
+        // Chi2: NOW GATED (was skipped).  811.0 @ 30deg / 827.0 @ 60deg
+        //   against critical 928.3.
+        //
+        //   The old note here -- "large mismatch (16k-43k) because ...
+        //   the effective lobe weights at each sample point differ from
+        //   the static weights in Pdf()" plus "chi2: fails as a direct
+        //   consequence" -- described DL-99, fixed 2026-09-17.  This
+        //   SPF needs TWO independent quadratures rather than Phong's
+        //   one, because BOTH of its lobes carry a direction-dependent
+        //   realized weight (the diffuse kray is
+        //   Rd*(1-Rs)*(28/23)*fromK1(cos_o)*fromK2(cos_i), not a
+        //   constant).  See docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and
+        //   tests/AshikminShirleySPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
-        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, true,  true,  INTEGRAL_TOL },
+        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, true,  false, INTEGRAL_TOL },
 
         { "Translucent",                       translucent, false, false, true,  false, INTEGRAL_TOL },  // Pdf() only covers diffuse lobe, not translucent
 
