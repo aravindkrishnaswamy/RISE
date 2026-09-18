@@ -653,6 +653,46 @@ normal incidence with isotropy 1).  See also DL-101 (CLOSED 2026-09-17)
 on the per-channel branch, whose three specular lanes used to share one
 `ScatteredRay`.  27 checks, 0 failures.
 
+`HWSSCompanionKrayTest` (DL-125, CLOSED 2026-09-18,
+[DL69_BDPT_LOBE_THROUGHPUT.md](../docs/DL69_BDPT_LOBE_THROUGHPUT.md)
+§6) gates the HWSS **companion**-wavelength contract: an SPF that
+stores a PER-LOBE conditional density on each emitted ray must
+implement `ISPF::EvaluateKrayNM`, or the companion ladders in
+`PathTracingIntegrator.cpp` and `BDPTIntegrator.cpp` fall back to the
+material's AGGREGATE `valueNM` over the hero lobe's density — DL-69's
+pairing, surviving on the spectral bundle.  **89 checks, 0 failures;
+red 43/44** against commit `2b44bbbe` (the test plus the inert
+diagnostic hook, no overrides).  Five sections.  (A) For every
+non-delta lobe `ScatterNM(nm)` emits, `EvaluateKrayNM` at that same
+`nm` must reproduce the ray's own `krayNM` — pre-fix each of the five
+classes reads `checked 0, declined 5992..7183`; post-fix worst
+relative difference `1.21e-14`.  (A2) The same with wavelength-VARYING
+shape painters (a test-local `LambdaRampScalarPainter`), which section
+B cannot use — `1.24e-14`.  (B) The cross-wavelength case the ladder
+actually asks for: two identically-seeded `ScatterNM` runs at
+`lambda_h` and `lambda_c` with wavelength-INDEPENDENT shape painters
+draw the SAME directions (asserted, `dir drift 0`, not assumed), so
+`EvaluateKrayNM` at the HERO's direction and the COMPANION's
+wavelength must equal the companion run's own `krayNM` — `1.41e-14`,
+with the hero/companion krays measured 0.62–0.89 apart so the check is
+not vacuous.  (C) `EvaluateKrayNM * p_lobe == f_lobe cos` through the
+material's own `IBSDF::valueNM`, `2.73e-14` on every specular row; the
+three diffuse rows sit at 1.6e-3–3.1e-3, which is the BLACK SPECULAR
+painter's Jakob-Hanika uplift residual (each class's specular term has
+a different closed form, so it is not subtracted) and is why the band
+is 5e-3 — **Ashikmin-Shirley's black-diffuse subtraction must use its
+OWN form** `Rd*(1-Rs)*diffuseFactor`, not `Rd/pi`, or that row reads
+7.65e-3.  (D) Negative controls: `GGXSPF` and `LambertianSPF` must
+keep DECLINING (their fallback is exact, and the ladder must stay
+reachable), an unsupported `rayType` must decline rather than invent a
+number, and `CompositeSPF` must NAME itself through the new
+`ISPF::PerLobeDensityFallbackName()` (DL-221).  (E) A PREMISE for the
+second half of the fix: on a chromatic two-lobe `schlick_material` the
+per-lobe and aggregate companion ratios disagree by up to **12.2249x**
+per draw — if that ever passes trivially,
+`BDPTIntegrator::RecomputeSubpathThroughputNM`'s per-lobe branch has
+become a no-op.  ~3 s.
+
 `SchlickKrayBRDFConsistencyTest` (DL-127, CLOSED 2026-09-18,
 [DL127_SCHLICK_KRAY_VS_BRDF.md](../docs/DL127_SCHLICK_KRAY_VS_BRDF.md))
 gates the contract `kray_I * p_I == f_I * cos` on `SchlickSPF` — the

@@ -568,3 +568,200 @@ to 4x.
   not care (it is a proper PMF over whatever was emitted, §4.1's first
   bullet), but the "4x" upper bound does: read it as a bound on the
   *intended* branch, and re-derive it when DL-101 closes.
+
+---
+
+## 6. DL-125 outcome (closed 2026-09-18, `debt-dl125` slice)
+
+DL-125 was §5's first residual: the HWSS **companion**-wavelength half of
+DL-69's pairing, surviving wherever an SPF declined `ISPF::EvaluateKrayNM`.
+It is closed.  This section records what the fix is, what it moved, what
+it is honestly unable to prove, and the two rows it opened.
+
+### 6.1 What the ladder is, and where it actually reaches an image
+
+There are **three** call sites of `ISPF::EvaluateKrayNM`, all running the
+same ladder per companion wavelength:
+
+```
+compWeight = pSPF->EvaluateKrayNM( ri, dir, type, lambda_w, iorStack );
+if( compWeight < 0 )                       // the base-class default
+    compWeight = <aggregate IBSDF>::valueNM( dir, ri, lambda_w ) * cos / pS->pdf;
+```
+
+- `PathTracingIntegrator.cpp`'s HWSS body — **render-visible for PT**.
+- `BDPTIntegrator.cpp`'s eye-subpath `hwssBetaNM` loop.
+- `BDPTIntegrator.cpp`'s light-subpath `hwssBetaNM` loop.
+
+**The two BDPT ladders do NOT reach an image.**  DL-126's review round 2
+established that `hwssBetaNM` is read only for Russian roulette and
+guiding training; what prices a companion wavelength in a BDPT / VCM /
+MLT *image* is `BDPTIntegrator::RecomputeSubpathThroughputNM`, called
+once per companion by all three spectral rasterizers.  That function was
+**not** named by the DL-125 row and carries the same bug pattern in a
+different shape — it rescales the hero throughput by the AGGREGATE ratio
+`f_agg(lambda_c)/f_agg(lambda_h)`, which equals the correct
+`kray_I(lambda_c)/kray_I(lambda_h)` only when the SELECTED lobe's
+spectrum is the aggregate's spectrum.  Both halves are fixed here.
+
+### 6.2 The fix
+
+**Five SPFs implement `EvaluateKrayNM`** (`f60ac4ad`): `SchlickSPF`,
+`WardIsotropicGaussianSPF`, `WardAnisotropicEllipticalGaussianSPF`,
+`IsotropicPhongSPF`, `AshikminShirleyAnisotropicPhongSPF`.  Each returns
+the lobe's own `f_I cos / p_I` at the requested wavelength, with every
+wavelength-dependent input read at `nm` and no sampler draw consumed.
+Three of the five are **roughness/alpha-FREE in the transport weight**,
+and that is derived rather than assumed:
+
+| class | diffuse lobe | specular lobe | shape parameter in the weight? |
+|---|---|---|---|
+| `SchlickSPF` | `Rd(nm)` | `(rho(nm) + (1-rho(nm))F) * R` | NO for roughness (DL-127: `Z(t)` cancels); YES for isotropy, through `R`'s azimuthal density |
+| `WardIsotropicGaussianSPF` | `Rd(nm)` | `Rs(nm) * (h.wo) cos^3(theta_h) sqrt(cos_o/cos_i)` | NO (DL-177: `exp(-tan^2/alpha^2)` and all of `alpha` cancel) |
+| `WardAnisotropicEllipticalGaussianSPF` | `Rd(nm)` | same expression | NO (the `ax ay` prefactor cancels identically) |
+| `IsotropicPhongSPF` | `Rd(nm)` | `Rs(nm) * (N(nm)+2)/(N(nm)+1) * max(cos_o,0)` | **YES** — `cos^N` cancels only when `f` and `p` use the SAME `N`, which is exactly what "the kray at this wavelength" means |
+| `AshikminShirleyAnisotropicPhongSPF` | `Rd(nm)(1-Rs(nm)) (28/23) K1 K2` | `brdf_S / p_S * cos_o`, replaying the sampler's own density from the recovered half-vector | **YES** — `NU`/`NV` enter both |
+
+`AshikminShirleyAnisotropicPhongSPF` needed the sampler's own azimuth
+recovered from the half-vector (`cos_phi = (h.u)/sin_theta` in the
+SAMPLING frame, since the sampler builds `h` as
+`(cos_phi sin_theta, sin_phi sin_theta, cos_theta)` there).  At the pole
+the azimuth is undefined and irrelevant: `factor2 = pow(h.n, ...) -> 1`
+for any exponent.  DL-99's "an Ashikmin diffuse weight depends on its own
+sampled direction" hazard does not bite, because here that direction IS
+the argument.
+
+**`RecomputeSubpathThroughputNM`** (`f0a5c75e`) asks the same method for
+`kray_I(lambda_c)/kray_I(lambda_h)`, keeping the aggregate ratio as the
+fallback.  `BDPTVertex` gains `scatterType` — a SAMPLING record, not
+surface state, so `PathVertexEval::PopulateRIGFromVertex` deliberately
+does not copy it and `BDPTVertexRIGRebuildTest` needs no sentinel.  It is
+stamped at the throughput-update site of both generators as
+`useKray ? pScat->type : ScatteredRay::eRayUnknown`: **when OpenPGL
+SUBSTITUTED the direction the hero was priced from the aggregate `f`, so
+its companion must be too**, or the two sides of the ratio describe
+different estimators.
+
+**`CompositeSPF` is made AUDIBLE rather than silently wrong.**  A new
+`ISPF::PerLobeDensityFallbackName()` (default 0) names the class; all
+three ladders call the one-shot-per-class
+`RISE::NotePerLobeDensityCompanionFallback`
+(`Materials/ScatteredRayContainer.cpp`).  See DL-221.
+
+### 6.3 Red-proof and measurements
+
+`tests/HWSSCompanionKrayTest.cpp` (new): **89 passed, 0 failed**; red
+**43 passed, 44 failed** against commit `2b44bbbe`, which carries the
+test and the (inert) diagnostic hook but no override.  Pre-fix every
+class reads `checked 0, declined 5992 .. 7183`.
+
+| section | what it asserts | post-fix |
+|---|---|---|
+| A | `EvaluateKrayNM(dir, type, nm)` reproduces `ScatterNM(nm)`'s own `krayNM` | worst rel diff `<= 1.21e-14` |
+| A2 | the same with wavelength-VARYING shape painters | `<= 1.24e-14` |
+| B | a COMPANION wavelength queried at the HERO's direction equals the companion run's own `krayNM`; the two identically-seeded samplers provably drew the same directions (`dir drift 0`) and the hero/companion krays genuinely differ (spread 0.62 .. 0.89) | `<= 1.41e-14` |
+| C | `EvaluateKrayNM * p_lobe == f_lobe cos` through the material's own `IBSDF::valueNM` | `<= 2.73e-14` on every specular row |
+| D | `GGXSPF` / `LambertianSPF` must keep DECLINING; an unsupported `rayType` must decline; `CompositeSPF` must NAME itself | pass |
+| E | PREMISE for §6.2's second half (see below) | 12.2249x |
+
+Section C's three DIFFUSE rows sit at `1.6e-3 / 3.1e-3 / 2.6e-3` rather
+than machine precision, and the reason is stated at the test rather than
+absorbed by a loose band: that is the BLACK **specular** painter's own
+Jakob-Hanika uplift residual, which is not subtracted because each
+class's specular term has a different closed form.  On the SPECULAR rows
+the black **diffuse** term IS subtracted exactly — and for
+Ashikmin-Shirley that subtraction must use its OWN form
+(`Rd*(1-Rs)*diffuseFactor`, not `Rd/pi`): with the wrong one the row read
+`7.65e-3` against `<= 2.8e-14` for the other four, purely from a ~20%
+error on a ~1e-5 residual measured against a small specular factor.
+
+**PT probe (the row's own headline), isolated A/B on the five SPF
+`.cpp`/`.h` pairs alone, library AND test target rebuilt on each side,
+n = 3:**
+
+| probe | pre-fix | post-fix |
+|---|---|---|
+| topology L, PT spectral `hwss TRUE` / PT pel | 1.61176 / 1.60333 / 1.60623 — mean **1.60711 +/- 0.00433** | 1.00131 / 1.00046 / 1.00102 — mean **1.00093 +/- 0.00043** |
+| topology M (immune control) | 0.999855 / 0.999359 / 0.999651 — 0.99962 | 0.999894 / 1.00023 / 0.999886 — 1.00000 |
+
+The KNOWN-DEFECT band `1.35 .. 1.95` is retired; `TestPTSpectralHWSSKnownDefect`
+is renamed `TestPTSpectralHWSSCompanionParity` and gates `0.97 .. 1.03`
+(post-fix sigma is `4.3e-4`, so 3% is ~70 sigma of headroom).
+
+**The `RecomputeSubpathThroughputNM` half is proven at the EXPRESSION
+level and is a CONSISTENCY PIN at render level.**  Section E measures the
+per-lobe and aggregate companion ratios disagreeing by up to **12.2249x**
+per draw (4062 real `ScatterNM` draws, `schlick_material` with a BLUE
+diffuse lobe under a RED specular one) — they are not the same function
+of wavelength.  The new render probe, `BDPTStrategyBalanceTest` topology
+P (that same chromatic material, built by string substitution from
+topology L so "identical apart from the two reflectances" is structural,
+gated on B/R channel balance), reads:
+
+| | B/R ratio (hwss TRUE / hwss FALSE) |
+|---|---|
+| pre-fix (isolated `BDPTIntegrator.cpp` revert) | -0.33% |
+| post-fix, n = 3 | -1.03% / -0.45% / -0.88% — mean -0.79%, sd 0.30 pp |
+
+i.e. **not separable above this statistic's own noise at 32x32**.  The
+12x expression error does not survive into a resolvable image difference
+on this scene because Phase 3 only rescales INTERIOR subpath vertices and
+BDPT's image here is dominated by short strategies.  Topology L cannot
+see it at all — its `schlick_material` uses the same grey `0.4 0.4 0.4`
+for `rd` and `rs`, so both ratios are literally the same function.
+Topology P is kept as a regression guard on the channel balance, not as a
+claim that the fix moved this render.
+
+**Cost**, interleaved separately-built `bin/rise` binaries, n = 3 per
+side, on an all-`schlick_material` 128x128 scene (a worst case — every
+receiver is a multi-lobe SPF):
+
+| render | pre-fix user CPU | post-fix | delta |
+|---|---|---|---|
+| PT spectral `hwss TRUE`, 256 spp | 54.55 / 55.94 / 57.27 (mean 55.92 s) | 55.32 / 57.31 / 57.90 (mean 56.84 s) | **+1.65%**, paired t = 4.1 |
+| BDPT spectral `hwss TRUE`, 96 spp | 33.55 / 34.05 / 34.52 (mean 34.04 s) | 34.99 / 35.27 / 34.94 (mean 35.07 s) | **+3.02%**, paired t = 3.3 |
+
+### 6.4 Sibling audit (docs/skills/audit-by-bug-pattern.md)
+
+Pattern, one sentence: *a companion wavelength's throughput is priced
+from the material's AGGREGATE BSDF instead of the SELECTED lobe's own
+`kray` at that wavelength.*
+
+| candidate | verdict | evidence |
+|---|---|---|
+| PT HWSS companion loop | FIXED | the five overrides; PT probe 1.607 -> 1.001 |
+| BDPT eye / light `hwssBetaNM` ladders | FIXED | same overrides (RR/training only — see §6.1) |
+| `RecomputeSubpathThroughputNM` (BDPT + VCM + MLT, render-visible) | FIXED | §6.2; premise 12.2x |
+| VCM / MLT spectral rasterizers | no separate ladder | both reach companions only through `RecomputeSubpathThroughputNM`; `VCMStrategyBalanceTest` 74/0, `MLTSpectralHWSSNormalizationTest` 8/0, `VCMSpectralRecurrenceTest` 38/0 |
+| `CoatedSPF`, `FabricSPF`, `WeaveSPF` | IMMUNE (unchanged) | each stores the AGGREGATE mixture density on every emitted ray, so the fallback IS `f_I cos / p_I`; each says so in its own header |
+| `GGXSPF`, `CookTorranceSPF` | IMMUNE (unchanged) | single-emit (`selectProb == 1`) AND that ray's `.pdf` is the aggregate `mixPdf`; pinned by `HWSSCompanionKrayTest` section D and by topology M |
+| `PolishedSPF`, `HairSPF` | already overrode | untouched |
+| `LambertianSPF`, `OrenNayarSPF`, `SheenSPF` | IMMUNE | single lobe, so aggregate == lobe |
+| `BioSpecSkinSPF`, `GenericHumanTissueSPF` | out of scope | null `IBSDF`; PT delegates (see the next row) and BDPT is DL-126's `nullBSDFContinuation` |
+| `DielectricSPF`, `PerfectReflectorSPF`, `PerfectRefractorSPF` | **REFUTED** | PT's HWSS body never reaches the companion ladder for a material with no `IBSDF` at all: `PathTracingIntegrator.cpp`'s `if( !pBRDFCur )` block DELEGATES every live wavelength to `IntegrateFromHitNM` and `break`s.  Confirmed by render — a `perfectreflector_material` scene reads RMSE `3.70e-3` for `hwss TRUE` against the `pathtracing_pel_rasterizer` reference, TIGHTER than hero-only's `1.67e-2` |
+| `CompositeSPF` | UNCLOSABLE from the method's signature | **DL-221** |
+| `TranslucentSPF` | genuine sibling, PARTIALLY closable | **DL-222** |
+
+### 6.5 Two rows opened
+
+**DL-221 — `CompositeSPF`.**  Its emitted `krayNM` is the product of a
+stochastic two-layer random walk (a sequence of sub-SPF krays times
+`exp(-extinctionNM * GapPathLength)` per crossing); neither the
+intermediate directions nor the number of crossings is recoverable from
+`(ri, outDir, type, nm)`, the only arguments the method receives.  A real
+closure needs per-emitted-ray state — either a recipe payload on
+`ScatteredRay` (which `ScatteredRayContainer` `memcpy`s into a fixed
+`kCapacity` array, so measure first) or a `ScatterNM` that takes the
+companion wavelengths up front.  Made audible in the meantime.
+
+**DL-222 — `TranslucentSPF`.**  A sixth per-lobe-density SPF the row
+never named.  `TranslucentMaterial::GetBSDF()` is non-null, so PT does
+NOT take the delegation branch that makes the delta materials immune, and
+the fallback really does fire — wrong for two independently-recorded
+reasons (its `kray` carries Beer extinction the BSDF omits; its
+`Pdf`/`PdfNM` cover neither Phong `cos^N` lobe, DL-41).  The split is
+exact and is what makes it partially fixable: `ScatterNM` branches on
+`bEnteringNM = !ior_stack.containsCurrent()`, which `EvaluateKrayNM` also
+receives, so the ENTRY lobes are direction-free and exactly recoverable
+while the INTERIOR ones carry `exp(-extinctionNM * distance)` over a
+SAMPLED distance that is not a function of the outgoing direction.
