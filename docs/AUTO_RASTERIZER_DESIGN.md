@@ -580,7 +580,7 @@ output), no rasterizer-lifecycle surgery, and the candidate renders provably do
    RGB `glass_pavilion` — **DL-154 (2026-09-17) found that measurement was itself
    the `debt30-eta2` VCM over-bright bug (§6.2.1's DL-154 note); `glass_pavilion`
    now correctly routes PT, and no corpus scene currently exercises a probe-time
-   "median AND reach → VCM" positive route** (see DL-155). The
+   "median AND reach → VCM" positive route** (see DL-167). The
    `auto_spectral_rasterizer` follow-up shipped (§3.1), but **even the spectral probe
    routes `spectral_caustic` → PT** — the RGB-projected mean-reach gate is defeated by
    the VCM-spectral luminance-proxy merge energy loss, a documented out-of-scope gap.
@@ -685,7 +685,7 @@ that same baselines table lists `diamond_teapot`'s RMSE-decisive winner as
 **VCM**, but the probe no longer routes it there and no `AutoRasterizerTest`
 fixture currently exercises this scene to catch it. This residual — the reach
 gate's positive path has lost all corpus coverage and cannot be restored by
-adjusting `τ_reach` alone — is tracked as **DL-155**; it is a probe-design gap,
+adjusting `τ_reach` alone — is tracked as **DL-167**; it is a probe-design gap,
 not something this fix (correcting `glass_pavilion`'s own expected route) papers
 over or resolves.
 
@@ -810,7 +810,7 @@ no longer straddled `jewel_vault`'s firefly tail. **DL-154 (2026-09-17):**
 `glass_pavilion` row was measuring through; its winsorized reach is now
 ~0.86–1.10×, and the `[0.91, 24.7]` gap this row anchored no longer exists — see
 §6.2.1's DL-154 status block for the corrected numbers and the residual this
-uncovers (DL-155). `diamond_teapot` (real caustic, raw reach was ~1.9×, now
+uncovers (DL-167). `diamond_teapot` (real caustic, raw reach was ~1.9×, now
 ~1.09–1.16×) is likewise **no longer unaffected** — both real-caustic scenes now
 sit in the same band the over-fire class occupies. New knob
 `auto_probe_reach_winsor_pct` (default 0.99, GlobalOptions-overridable).

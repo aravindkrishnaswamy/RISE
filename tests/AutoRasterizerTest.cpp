@@ -1396,7 +1396,7 @@ int main()
 	//
 	// NOT a mechanical band-widen: the router code and its tauReach=1.50
 	// threshold are unchanged; only this fixture's own EXPECTED integrator is
-	// corrected to match the (now-fixed) physics. See DL-155 for the
+	// corrected to match the (now-fixed) physics. See DL-167 for the
 	// residual this uncovers: the transport-reach gate's positive path (a
 	// real caustic actually firing meanRatio>tauReach) now has NO known
 	// corpus scene -- `diamond_teapot_pour`, independently documented as a
