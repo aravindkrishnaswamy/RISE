@@ -379,3 +379,221 @@ bootstrap (mean luminance 0.0678, post-fix), with no code change in
 * `CLAUDE.md` -- new High-Value Facts entry.
 * `tests/README.md` -- new rows for the two changed test files (already
   listed; row text updated to mention the new topologies).
+
+---
+
+## 7. Review round 2 (2026-09-18) -- one real P1, four corrections
+
+An independent (Opus) review confirmed the MIS ruling in §3.2 and the
+VCM-recurrence fix in §3.3 (re-derived the (s,t) enumeration
+independently; convergence checked at 32/256/16384 spp for BDPT and up
+to 4096 for VCM), found no regression on any other topology, and
+reproduced this doc's own red-proof numbers including the 1.6%
+intermediate in §2.2. It also found one real defect in round 1's own
+fix and four smaller issues.
+
+### 7.1 P1 (real defect): HWSS companion wavelengths were grey-ified
+
+Round 1's `nullBSDFContinuation` branch, in both eye/light generators,
+scaled every live HWSS companion wavelength by the hero's own
+`krayNM` -- copying the DELTA branch's convention without re-deriving
+whether it applies. **It does not.** A delta lobe (a mirror) reflects
+every wavelength identically, so broadcasting one scalar to the whole
+bundle is exact; `biospec_skin_material`'s colour is precisely its
+per-wavelength absorb/survive Monte Carlo draw being
+wavelength-DEPENDENT, so broadcasting the hero's own realized outcome
+made every companion inherit the hero's draw instead of its own --
+grey, and badly over-bright in the blue companions this material's
+red-dominant absorption spectrum should have mostly killed. Measured
+(review, 2026-09-18, 32x32/2048spp converged): hwss=TRUE BDPT
+`(0.0607,0.0632,0.0661)` / VCM `(0.0611,0.0637,0.0667)` against PT
+`(0.0849,0.0407,0.0175)` -- achromatic ratio 1.33x, blue channel 3.8x
+PT.
+
+**The fix was in the wrong place.** `hwssBetaNM` (round 1's edit site)
+is read only for Russian-Roulette max-throughput and OpenPGL training
+-- never for the rendered image. The actual per-companion-wavelength
+image contribution for BDPT/VCM/MLT spectral HWSS is computed by
+`BDPTIntegrator::RecomputeSubpathThroughputNM`, called once per
+companion wavelength by each of `BDPTSpectralRasterizer.cpp` /
+`VCMSpectralRasterizer.cpp` / `MLTSpectralRasterizer.cpp` on a COPY of
+the hero-wavelength subpath (`RecomputeSubpathThroughputNM` walks the
+stored vertices and multiplies a running `cumulativeRatio` by each
+vertex's companion/hero BSDF ratio). Its own Phase-3 scatter-ratio
+computation had the SAME bug pattern this whole row is about: it
+required `v.pMaterial && v.pMaterial->GetBSDF()` before computing a
+ratio, and fell through to "ratio = 1.0" (the file's own documented
+default for "Delta, BSSRDF, medium, endpoints") for a null-BSDF
+vertex -- silently reusing the "a delta lobe needs no ratio" convention
+for a material where that premise is false. First fix attempt (zero
+the companion's contribution outright, no termination bookkeeping)
+correctly fixed the B/R shape (0.219 vs a 0.242 reference) but
+UNDER-corrected the achromatic mean to 25% of hero-only, because a
+zeroed-but-not-terminated companion still counts toward
+`totalActive`/the sample-count denominator -- the identical dilution
+bug the file's existing `swl.terminated[]` mechanism exists to prevent
+for dispersive delta vertices (its own comment: "Counting a terminated
+companion as a zero-contribution sample divided the bundle mean by N
+instead of the surviving count"). Fixed properly with a new static
+helper, `BDPTIntegrator::HasNullBSDFContinuationVertex`, checked
+alongside the existing `HasDispersiveDeltaVertex` scan in all three
+rasterizers so a null-BSDF vertex calls `swl.TerminateSecondary()` up
+front (one call, not per-companion, since the condition is
+wavelength-INDEPENDENT unlike dispersion) -- excluding those
+companions from the denominator exactly like a dispersion-terminated
+one.
+
+Post-fix on topology N (32x32, 1024spp hero-only / 256spp hwss=TRUE):
+achromatic ratio 1.00415 (+0.4%), B/R ratio 0.225 vs a 0.234 reference
+(was 1.34x / 1.09). Red-proof and fix are `tests/
+BDPTStrategyBalanceTest.cpp`'s `TestNullBSDFHWSSCompanionLadder` plus
+commits `d91ce076` (test) / `f7944713` (fix).
+
+### 7.2 P2-1 (documented, not filed): a medium-vertex `isConnectible`
+asymmetry between light- and eye-rooted derivations
+
+`BDPTIntegrator.cpp`'s medium-vertex `connectible` derivation (the
+"medium enclosed by a specular boundary" logic, ~line 1835) inherits
+connectibility from the IMMEDIATELY PRECEDING vertex on THAT subpath:
+`connectible = false` only if `prev.type` is `SURFACE`/`MEDIUM` AND
+`!prev.isConnectible`. A `LIGHT`-type predecessor (the light subpath's
+own root) never satisfies that type check, so a light emitting DIRECTLY
+INTO an enclosed medium leaves the medium's first vertex
+`isConnectible = true` by the default -- even though it sits inside the
+same enclosure a specular-boundary-crossing EYE walk reaching a
+similar-looking medium point would correctly mark `false`.
+
+**On reflection, this is very likely NOT a partition defect, and the
+reason clarifies what `isConnectible` actually certifies.** A given
+rendered PATH has one fixed vertex sequence; `isConnectible` at a
+vertex position is evaluated once, from that ONE walk's own history,
+and is consulted only by strategies re-splitting THAT SAME sequence at
+a different (s,t) -- never compared across two independently-generated
+paths that happen to visit similar-looking 3D coordinates by
+coincidence. The light-rooted case above is correct for what it
+describes: a light emitting directly into a medium with NO intervening
+specular surface between the emission point and that first scatter
+really can be connected to (no boundary blocks a straight line back to
+the light). The eye-rooted case is a genuinely different situation
+(the eye ray had to cross a real specular boundary to arrive at ITS
+first medium vertex), correctly marked non-connectible. Both
+derivations are locally correct for the walk that produced them; there
+is no shared vertex position whose two conflicting classifications
+would ever need to be reconciled inside one `MISWeight` call.
+
+Not filed as a new row: this reasoning, plus the reviewer's own
+preliminary check (`RefractiveRadianceScalingTest` 41/0,
+`VolumeAbsorptionAttenuationTest` 89/0, both re-confirmed unchanged
+after every fix in this document), together argue against a real
+defect. A dedicated isolated render (a light literally inside a
+specular-enclosed medium, BDPT vs PT) was NOT built in this round --
+constructing one that isolates this mechanism from confounds (a real
+dielectric boundary's own Fresnel behaviour; a `perfectrefractor` at
+`ior=1.0` degenerately makes a straight-line connection THROUGH the
+boundary exact, which could mask rather than expose the effect) is
+nontrivial, and is left as a residual for whoever next touches this
+derivation, rather than shipping a rushed and possibly misleading
+measurement.
+
+### 7.3 P2-2: stale comment corrected
+
+`BDPTIntegrator.cpp`'s "WHICH MATERIALS REACH THAT FALLBACK" comment
+(the `misFwdPdf <= NEARZERO` block near the `pdfFwdPrev` derivation)
+claimed BioSpecSkin/GenericHumanTissue "never get here" because the
+`PositiveMagnitude(f) <= 0` gate breaks first -- wrong even before
+DL-126 closed (§1 already established the ACTUAL prior gate was
+`effectivePdf <= 0`), and doubly stale now that the
+`nullBSDFContinuation` branch routes those materials around the whole
+block. Corrected in place; `CLAUDE.md`'s DL-69 bullet carried the
+identical stale claim and was corrected too.
+
+### 7.4 P2-3 -- DL-184: `GenericHumanTissueSPF`'s dead interior scatter
+lobe (CLOSED, same round)
+
+A distinct, unrelated defect found while building this row's own
+red-proof scene in round 1: `GenericHumanTissueSPF::Scatter`/
+`ScatterNM`'s interior branch sampled a scattering direction inside
+`if( x < (pa + ps) )` and then unconditionally overwrote it with
+`trans.ray.SetDir(ri.ray.Dir())` on the very next, un-braced statement
+-- every interior interaction was straight-through regardless of the
+scattering roll, in both RGB and NM. Fixed by moving that statement
+into the matching `else`. Red-proof:
+`tests/GenericHumanTissueInteriorScatterTest.cpp` (new) -- direction-
+changed=0 on all four (RGB/NM x diffuse/HG) configurations pre-fix
+despite thousands of non-absorbed, scattering-branch trials post-fix
+direction-changed == non-absorbed on all four. Commits `50cc5d3f`
+(test) / `b4172515` (fix). Distinct from DL-183 (this material's
+scattered-ray origin bug, still open, not touched).
+
+Incidental finding, NOT filed or fixed (no pre-authorized id, and it
+is a much smaller, spectral-accuracy-only issue): `ScatterNM`'s
+interior HG branch reads the phase-asymmetry parameter via
+`pG->GetValuesAt(ri).v[0]` (the RGB accessor) instead of
+`GetValueAtNM(ri,nm)` (used two lines below it, in the OUTSIDE
+branch, for the identical parameter) -- the in-medium HG lobe's `g`
+is therefore not actually wavelength-resolved in the NM pipe.
+
+### 7.5 P3s
+
+* **VCM/PT re-quote at final HEAD** (`f7944713`): renders are not
+  bit-reproducible run to run (no `srand`, `BlockRasterizeSequence`
+  shuffles from `std::random_device`) and this topology's 32 spp /
+  no-fixed-seed setup carries real spread. Seven repeated runs read
+  VCM/PT = 0.9648, 0.9805, 0.9840, 0.9999, 1.0032, 1.0072, 1.0074 --
+  MEAN 0.9924 (99.2% of PT), well inside the suite's 8% band on every
+  individual run. Do not quote a single cherry-picked run (this doc's
+  earlier §2.2 table and its 98.4%/1.6% figures are a two-point
+  before/after CHARACTERIZATION from one A/B pair each, not a
+  converged estimate, and are left as originally measured).
+* **Gate table counts**: re-measured against the current HEAD (below,
+  §8) rather than the round-1 numbers quoted in §5 (which predate the
+  P1 fix and the merge with master's concurrent slices) --
+  `ConnectionLegalityTest` 319/0 (not 316), `SourceHygieneTest` 167/0
+  (not 165); both deltas are new unrelated test files the master merge
+  brought in, not anything this row changed.
+* **`MISWeight`'s DL-126 comment rewritten**: it claimed the skipped
+  vertex's own `pdfFwd`/`pdfRev` are "often exactly 1" via remap0.
+  Wrong: Veach's delta-transparency convention zeroes the density of
+  the vertex AFTER the null-BSDF one (`pdfFwdPrev = scatterPdf = 0`,
+  set at the null-BSDF vertex's own scatter -- see §3.1's derivation),
+  not this vertex's OWN `pdfFwd`/`pdfRev`, which come from the
+  neighbouring (ordinary, non-null) vertices' own materials and are
+  GENERICALLY NONZERO. The skip is correct regardless of what those
+  two numbers evaluate to -- the strategy is zero-yield by the
+  material, not by an arithmetic coincidence in the ratio -- and the
+  comment now says so.
+* **Topology N's p99 metric**: at the file's shared 32 spp, this
+  scene's only variance source is a single binary absorb/re-emit roll,
+  so its 99th percentile over a 32x32 image is one of a handful of
+  discrete outcomes and the 25% p99 band was a coin flip by
+  construction. Moved topology N's main (RGB) PT-vs-BDPT test onto a
+  dedicated 256-spp rasterizer pair; PT and BDPT's p99 now read
+  bit-identical. The pre-fix red-proof's own max metric was never
+  actually red (0 vs 0.596831 is a relative difference of exactly
+  1.0, at the suite's 100% `maxTol` boundary, not beyond it) --
+  corrected here since §2.1's own before/after table could be misread
+  as claiming all three metrics failed; only mean and p99 did.
+* **MLT sanity re-labelled**: §2.3's "Bootstrap complete. Mean
+  luminance = 0.0678" is a bootstrap IMPORTANCE-FUNCTION statistic
+  (PSSMLT's own internal normalisation constant), not a per-pixel mean
+  comparable to PT's -- it demonstrates nonzero energy reaches the
+  bootstrap (contrasted with the pre-fix hard failure), not agreement
+  with PT's converged 0.0608 (or, at higher sample counts, PT's own
+  reported converged value which differs from this bootstrap number by
+  design). Treat §2.3 as a sanity check that MLT can render this
+  material at all post-fix, not a quantitative cross-integrator
+  comparison.
+
+### 7.6 Round-2 gate
+
+Clean rebuild, zero warnings. `BDPTStrategyBalanceTest` 104/0 (was
+99/0 before the P1 test/fix pair added 5 more checks),
+`VCMStrategyBalanceTest` 74/0, `MISWeightsTest` 59/0,
+`BDPTPhantomStrategyWeightTest` all passed (BDPT ratio 1.0100, VCM
+1.0100-1.0125 across runs), `VCMEyePostPassTest` 31/0,
+`VCMLightPostPassTest` 34/0, `RefractiveRadianceScalingTest` 41/0,
+`VolumeAbsorptionAttenuationTest` 89/0, `PSSMLTStreamAliasingTest` all
+passed, `SourceHygieneTest` 167/0, `ConnectionLegalityTest` 319/0,
+`CstDeriveGoldenTest` 452 MATCH/0 DRIFT, `BDPTVertexRIGRebuildTest`
+68/0, `SSSRadianceScalingTest` 574017/0,
+`GenericHumanTissueInteriorScatterTest` (new, DL-184) 8/0.
