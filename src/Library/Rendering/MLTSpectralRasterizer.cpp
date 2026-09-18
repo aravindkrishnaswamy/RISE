@@ -296,9 +296,14 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 {
 	MLTSample result;
 
-	// Stream 48: film position + wavelength samples.  Must not
-	// conflict with BDPTIntegrator's internal streams (0-47).
-	sampler.StartStream( 48 );
+	// Film position + wavelength samples.  Must not conflict with
+	// BDPTIntegrator's internal streams (0-47, and up to 1039 at deep
+	// eye/volume bounces -- see
+	// BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT).  This used
+	// to be the literal stream 48, which the eye walk's own
+	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
+	// docs/DL08_PSSMLT_LANE_LAYOUT.md).
+	sampler.StartStream( BDPTCameraUtilities::kPSSMLTFilmLensApertureStream );
 
 	// Pick film position + lens position (two independent 2D
 	// primary samples).  See MLTRasterizer::EvaluateSample for
@@ -331,15 +336,15 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 		return result;
 	}
 
-	// Pre-consume all wavelength samples from stream 48 BEFORE any
-	// subpath generation runs.  GenerateLight/EyeSubpathNM switch to
-	// streams 0..47 internally for their own sampling dimensions, so
-	// a `sampler.Get1D()` inside the per-spectral-sample loop would
-	// see whatever BDPT stream was left active from the previous
-	// iteration — making wavelength #N a leak of path-sampling
-	// randomness from wavelength #N-1 instead of an independent
-	// PSSMLT primary dimension.  Pre-consuming locks every
-	// wavelength to stream 48 at the correct offset.
+	// Pre-consume all wavelength samples from the reserved film/lens
+	// stream BEFORE any subpath generation runs.  GenerateLight/
+	// EyeSubpathNM switch to streams 0..47 internally for their own
+	// sampling dimensions, so a `sampler.Get1D()` inside the
+	// per-spectral-sample loop would see whatever BDPT stream was left
+	// active from the previous iteration — making wavelength #N a leak
+	// of path-sampling randomness from wavelength #N-1 instead of an
+	// independent PSSMLT primary dimension.  Pre-consuming locks every
+	// wavelength to the reserved stream at the correct offset.
 	std::vector<Scalar> wavelengthSamples;
 	wavelengthSamples.reserve( nSpectralSamples );
 	for( unsigned int ss = 0; ss < nSpectralSamples; ss++ ) {
@@ -347,14 +352,15 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	}
 
 	// Debt 28: the point on the camera's entrance APERTURE that the
-	// t==1 light-tracing connections land on.  Drawn from stream 48
-	// (still active here), contiguous after the film, lens and
-	// wavelength samples -- NOT from a dedicated stream, because
-	// PSSMLTSampler only has 49 lanes and a stream index >= 49 aliases
-	// an existing lane instead of getting a fresh one.  See
-	// MLTRasterizer::EvaluateSample for the lane arithmetic.  A camera
-	// whose aperture is a point consumes NOTHING here, so pinhole MLT
-	// chains are unchanged by debt 28.
+	// t==1 light-tracing connections land on.  Drawn from the reserved
+	// film/lens stream (still active here), contiguous after the film,
+	// lens and wavelength samples -- NOT from a dedicated stream,
+	// because PSSMLTSampler multiplexes lanes as
+	// `idx = stream + kNumStreams*sample` and a stream index >=
+	// kNumStreams aliases an existing lane instead of getting a fresh
+	// one.  See MLTRasterizer::EvaluateSample for the lane arithmetic.
+	// A camera whose aperture is a point consumes NOTHING here, so
+	// pinhole MLT chains are unchanged by debt 28.
 	const Point2 cameraLensSample =
 		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
 			BDPTCameraUtilities::APERTURE_CURRENT_STREAM );
