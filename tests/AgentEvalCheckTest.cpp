@@ -107,6 +107,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <set>
 // Per-process scratch directory -- see ScratchRunDir below.
 #ifdef _WIN32
 	#include <process.h>
@@ -2015,6 +2016,8 @@ static void TestSeedScenariosCheckpointsAreTrue()
 	std::sort( paths.begin(), paths.end() );
 	Check( !paths.empty(), "evals/scenarios/*.json enumeration found at least one scenario file" );
 
+	int skippedNoFixture = 0;
+	std::set<std::string> skippedNoFixtureIds;
 	for( const std::string& path : paths ) {
 		const std::string id = std::filesystem::path( path ).stem().string();
 		AgentEvalScenario s;
@@ -2022,6 +2025,39 @@ static void TestSeedScenariosCheckpointsAreTrue()
 		Check( LoadEvalScenario( path, s, err ), id + ": loads (" + err + ")" );
 		Check( !s.checkpoints.isArray() || s.checkpoints.size() > 0,
 			id + ": carries at least one checkpoint to verify" );
+
+		// DL-60: a scenario that names no replay.fixture and has no
+		// replaySourceOverride is not a load_error IN THIS SCENARIO --
+		// it is a scenario the repo has committed with NO fixture at
+		// all (evals/scenarios/altar_stress.json, rainwet_closeup.json,
+		// both fixture-less by their own doc comments), and a fixture
+		// can only be authored from a REAL live-provider trajectory
+		// (recording one, then replaying it -- see
+		// docs/eval-hosted-provider-keys.md / the eval harness's own
+		// doctrine).  A build environment with no hosted provider key
+		// set (ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY /
+		// XAI_API_KEY -- the exact set docs/eval-hosted-provider-keys.md
+		// names) cannot record one here: doing so would either silently
+		// fabricate a fixture (never actually run against a model) or
+		// fail outright against a live provider call.  Per DL-60's
+		// disposition: skip with
+		// an explicit diagnostic naming the exact blocker, rather than
+		// asserting a false failure OR silently excluding the scenario
+		// from the enumeration (`paths` above still lists it, and this
+		// loop still runs its LoadEvalScenario/checkpoint-shape checks
+		// above) OR loosening its checkpoints to manufacture a pass.
+		// The row stays OPEN until a fixture is recorded from a real
+		// run once hosted credentials are available.
+		if( s.replayFixturePath.empty() ) {
+			std::cout << "  SKIP " << id << ": no evals/fixtures/*.fixture.jsonl and no "
+				"replaySourceOverride -- a fixture can only be recorded from a live "
+				"provider run, and no hosted provider API key "
+				"(ANTHROPIC_API_KEY/GEMINI_API_KEY/OPENAI_API_KEY/XAI_API_KEY) is set "
+				"in this environment (DL-60, docs/DEBT_LEDGER.md)" << std::endl;
+			++skippedNoFixture;
+			skippedNoFixtureIds.insert( id );
+			continue;
+		}
 
 		AgentEvalRunOptions opts;
 		opts.runDir = dir;
@@ -2042,6 +2078,30 @@ static void TestSeedScenariosCheckpointsAreTrue()
 		Check( r.allPassed, id + ": allPassed across its committed checkpoints" );
 		Check( r.checkpointFraction == 1.0, id + ": checkpointFraction is 1.0" );
 	}
+
+	// DL-60's own bound: exactly the two KNOWN fixture-less scenarios
+	// (altar_stress, rainwet_closeup) should be skipped -- not zero
+	// (which would mean this guard silently stopped firing, e.g. a
+	// hosted key appeared in the environment and the scenarios still
+	// have no fixture landed for them), and not more than two (which
+	// would mean a THIRD scenario lost its fixture and this loop is
+	// silently hiding it rather than failing loudly).  When a fixture
+	// IS eventually recorded for one of the two, this bound must be
+	// updated alongside it -- see docs/DEBT_LEDGER.md DL-60.
+	Check( skippedNoFixture == 2,
+		"T10: exactly 2 scenarios skipped for a missing replay fixture "
+		"(altar_stress, rainwet_closeup) -- DL-60; update this bound the day "
+		"either gains a real fixture, don't just widen it" );
+
+	// P2-2 (debt-cov review): a bare count of 2 is satisfied just as well by
+	// two DIFFERENT scenarios losing their fixtures while altar_stress or
+	// rainwet_closeup silently regained one -- the count alone can't tell
+	// the difference.  Pin the IDENTITY set, not just its size: this is the
+	// set DL-60's own disposition names, so nothing else may appear here.
+	const std::set<std::string> kExpectedSkippedNoFixture = { "altar_stress", "rainwet_closeup" };
+	Check( skippedNoFixtureIds == kExpectedSkippedNoFixture,
+		"T10: the skipped-for-missing-fixture set is EXACTLY {altar_stress, rainwet_closeup} "
+		"-- DL-60; a count match alone cannot tell these apart from some other pair" );
 }
 
 //----------------------------------------------------------------------

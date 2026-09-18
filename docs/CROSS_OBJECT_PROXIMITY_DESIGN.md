@@ -3100,14 +3100,29 @@ measured by a harness test against the tracked scene.
   σ exact but `×σ_max` remains a bound attained only along the top singular
   vector), and an anisotropically scaled solid never carries the exactness
   flag, so a composite reaching it always probes.
-- **An eccentric ellipsoid neighbour needs an author to inflate the radius.**
-  The bound is the semi-axis ratio, and at 4:1 that is not academic: a point at
-  a true distance of **2.75** from such an ellipsoid is reported at **11.0**, so
-  `proximity(3)` paints nothing there. The rule an author needs is
-  **≈ ratio × the radius you actually mean** against an eccentric ellipsoid (and
-  against an anisotropically scaled object of any family, which the log line
-  quantifies per object). Said in the descriptor text as well as here, because
-  the failure is silent — an unpainted seam, never a wrong one.
+- ~~**An eccentric ellipsoid neighbour needs an author to inflate the
+  radius.**~~ **CLOSED 2026-09-14 (DL-15, `0933d317`).**
+  `EllipsoidGeometry::DistanceToSurface` no longer answers with the crude
+  scaled-sphere bound alone: for an EXTERIOR point it now solves the
+  classic Lagrange-multiplier construction for the near-exact nearest
+  ellipsoid point by safeguarded Newton, then rescales the candidate to
+  land marginally OUTSIDE the true surface before measuring — which is
+  what makes the result a valid upper bound REGARDLESS of how well Newton
+  converged (any point outside, or on, the ellipsoid is at least as far
+  from the query as the true nearest surface point, by definition). The
+  old bound survives as a fallback and safety net (the two are combined by
+  MINIMUM), so a refinement failure can only ever fall back to the
+  pre-fix behaviour, never regress past it. The doc's own worked example
+  is now near-exact: the same 4:1 ellipsoid at true distance **2.75**
+  reports **2.75** (was 11.0); an off-axis point against an independent
+  coordinate-descent oracle went from a 2.26x over-report to within 0.01%
+  of the oracle's own answer. `SignedDistanceLower` (the LOWER-bound
+  magnitude `interior(r)` is built on) is untouched by this fix — it needs
+  a bound in the opposite direction, and its own exactness flag was
+  already handled by Phase 3 — so the "anisotropic solid never carries the
+  exactness flag" bullet two above this one is unaffected and still
+  accurate. See `tests/EllipsoidProximityBoundTest.cpp` and
+  `docs/DEBT_LEDGER.md`'s DL-15 entry for the full derivation and numbers.
 - **A NON-CONVEX coplanar clipped plane refuses**, along with the non-coplanar
   one. Coplanarity alone is not enough: what the class traces is the bilinear
   patch, whose image is the polygon only when the quad is convex. Over a dart's
@@ -3174,18 +3189,68 @@ measured by a harness test against the tracked scene.
   not the distance calls, and a scene with expensive-to-answer neighbours
   (composed SDFs in a leaf) is still the first place to look if one
   regresses.
-- **A mesh neighbour is a SHEET, and no other shipped family is.**  Every
-  solid family clamps a signed field at zero, so a point inside reads 1;
-  a point inside a closed MESH reads its honest distance to the nearest
-  triangle instead, because a triangle soup carries no inside test.  The
-  direction is safe (an over-report under-paints) but the inconsistency is
-  real: a receiver buried inside a mesh neighbour will not read contact.
-  A signed/inside variant for meshes needs a robustly closed-mesh test.
-  **Phase 3's `interior(r)` did NOT close this**: it is the signed variant for
-  every SOLID family, and a mesh -- being a sheet -- contributes 0 to it, so a
-  receiver buried inside a closed mesh reads `interior` 0 as well as
-  `proximity` its honest distance. The closed-mesh test is still the missing
-  piece.
+- ~~**A mesh neighbour is a SHEET, and no other shipped family is.**~~
+  **CLOSED for the CLOSED case, 2026-09-14 (DL-31, fix commit named in
+  `docs/DEBT_LEDGER.md`'s DL-31 entry); the watertightness check itself
+  fixed to key by POSITION rather than array index the same day (DL-143,
+  below).** `TriangleMeshGeometryIndexed` now overrides
+  `SignedDistanceLower` for a mesh certified WATERTIGHT — a build-time
+  check (every edge shared by exactly two triangles, the textbook
+  necessary condition for a closed 2-manifold with no boundary) computed
+  once at `DoneIndexedTriangles`. On a watertight mesh, `interior(r)`
+  now answers exactly: the sign comes from a parity ray-cast against the
+  mesh's own BVH (a fixed non-axis-aligned direction, both faces so
+  winding/`bDoubleSided` cannot skew the count), and the magnitude reuses
+  `DistanceToSurface`'s own EXACT answer (a bounded-radius closest-point
+  BVH traversal, not merely a bound) called with an unbounded budget.
+  Both halves being exact sets `outExact`. **The residual is narrower, not
+  gone**: an OPEN sheet (a plane, a lone quad, a mesh missing one face) or
+  a NON-MANIFOLD mesh (an edge shared by three or more triangles) still
+  fails the watertightness check and stays an unsigned-only sheet exactly
+  as before — with a one-shot build-time diagnostic naming the boundary/
+  non-manifold edge count, so an author can tell why. Measured cost on a
+  hand-built watertight ~10k-triangle sphere (the engine's own
+  `SphereGeometry::TessellateToMesh` is not watertight by this check --
+  see DL-116): the parity ray-cast's own marginal cost is ~306 ns/query
+  against the pre-existing unsigned query's ~2302 ns/query, combined
+  ~2607 ns/query — the same order of magnitude as the query `interior(r)`
+  already paid for every solid family, and reported (not gated) since a
+  highly-folded closed mesh could see more ray-mesh crossings along the
+  fixed probe direction than this measurement's roughly-convex fixture
+  did. See `tests/MeshInteriorSignalTest.cpp` and `docs/DEBT_LEDGER.md`'s
+  DL-31 entry for the full mechanism and numbers.
+  **DL-143 correction (same day, review P1 on this closure): "watertight"
+  above initially meant "every edge shared by exactly two triangles when
+  keyed by raw POSITION-ARRAY INDEX" — which is only the same thing as
+  "closed 2-manifold" on a hand-welded mesh (one array slot per physical
+  corner). Every per-corner import/tessellation path
+  (`GLTFSceneImporter::BuildGeometryFromPrimitive`'s one-`AddVertex`-per-
+  glTF-vertex convention; every `TessellateToMesh` producer, including
+  this class's own pass-through, which flattens each triangle corner to
+  its own independent tuple by design) gives a physical corner a
+  DIFFERENT array slot per triangle that touches it, so the ORIGINAL
+  DL-31 closure certified almost no real imported or tessellated mesh as
+  watertight — only a hand-welded one, like this design's own test
+  fixtures. Fixed by welding vertices to a shared id by POSITION (a
+  bbox-relative epsilon grid, `1e-6 * diagonal`) before counting edges.
+  `DisplacedGeometry`'s forward now genuinely reaches a watertight baked
+  mesh too when the base geometry's own physical topology is closed
+  (`TessellateToMesh`'s per-corner flattening copies positions VERBATIM,
+  so the flattened corners weld right back to the base's true positions)
+  — the "never watertight, even over an already-welded closed base"
+  claim in the paragraph this correction replaces was true only under
+  the pre-DL-143 index-keyed check and is no longer accurate. Of the four
+  real-world glTF assets checked in the DL-143 review (Avocado,
+  DragonAttenuation, SheenChair, NormalTangentTest), none happen to be
+  fully closed after welding (each has a genuine remaining open boundary
+  or non-manifold edge in the source asset itself — see
+  `tests/MeshInteriorSignalTest.cpp` section (h) and DL-143's own ledger
+  entry for the measured per-asset counts), but simple closed assets like
+  `Box.glb` do. `SphereGeometry::TessellateToMesh` still refuses (DL-116,
+  open) — welding correctly merges its coincident pole-row vertices,
+  which turns the pole cells into genuinely DEGENERATE triangles rather
+  than the pre-fix open-sheet miscount, so it is refused for a different,
+  more precisely diagnosed reason, not fixed.
 - **`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
   produces no diagnostic, makes the object vanish from the render, and
@@ -3195,9 +3260,13 @@ measured by a harness test against the tracked scene.
   scope, recorded here because it is a live trap for anyone placing an
   object for a contact scene.
 - `proximity` is unsigned; Phase 3's `interior(r)` **ships** and supplies the
-  inside half for the solid families only (meshes and every sheet family
-  contribute 0 to it, silently — a shared refusal latch would print the
-  proximity message for every mesh and plane in the scene).
+  inside half for the solid families and, since DL-31 (2026-09-14), a
+  WATERTIGHT mesh too; every sheet family (plane, disk, open cylinder,
+  hair, patch) and a non-watertight mesh still contribute 0 to it,
+  silently — a shared refusal latch would print the proximity message for
+  every one of them in the scene (the watertight-mesh case gets its own
+  one-shot, build-time diagnostic instead, precisely because it is not
+  every mesh — see the DL-31 bullet above).
 - ~~**`interior` sees a TLAS-backed scene's object set through the AABB
   SNAPSHOT, not through the tree — so it is stale in a DIFFERENT way from
   `proximity`.**~~ **CLOSED** (§5.6 item 1, found in review): the two

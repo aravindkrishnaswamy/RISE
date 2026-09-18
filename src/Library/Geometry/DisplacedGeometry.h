@@ -222,6 +222,20 @@ namespace RISE
 			//! TriangleMeshGeometryIndexed::DistanceToSurface.
 			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
 
+			//! IGeometry::SignedDistanceLower -- DL-31 sibling.  Same
+			//! DELEGATE-to-the-baked-mesh shape as `DistanceToSurface` right
+			//! above, added when `TriangleMeshGeometryIndexed` gained a real
+			//! `SignedDistanceLower` for certified-watertight meshes: without
+			//! this forwarder, `interior(r)` could never see a displaced
+			//! surface even when its baked mesh IS watertight (a displaced
+			//! sphere's topology is unchanged by displacement -- only vertex
+			//! POSITIONS move), because the base `IGeometry::SignedDistanceLower`
+			//! refuses unconditionally and `DisplacedGeometry` never overrode
+			//! it. `Realize()`'s cost/rarity argument is identical to
+			//! `DistanceToSurface`'s -- see that method's comment.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
 			//! IGeometry::SelfHitRootFloor -- DELEGATE, exactly as IntersectRay
 			//! does: this geometry's rays are answered by the baked mesh, so
 			//! the mesh owns the gate.  Before the bake (or after a failed one)

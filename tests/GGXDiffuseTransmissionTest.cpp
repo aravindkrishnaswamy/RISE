@@ -44,6 +44,7 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/GGXBRDF.h"
+#include "../src/Library/Materials/CookTorranceBRDF.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -238,7 +239,7 @@ namespace
 	}
 
 	static ChannelMoments IntegrateRGB(
-		GGXBRDF& brdf,
+		const IBSDF& brdf,
 		const Case& c,
 		const unsigned int seed,
 		const int samples )
@@ -288,7 +289,7 @@ namespace
 	}
 
 	static ChannelMoments IntegrateNM(
-		GGXBRDF& brdf,
+		const IBSDF& brdf,
 		const Case& c,
 		const double nm,
 		const unsigned int seed,
@@ -762,6 +763,201 @@ namespace
 
 		return passed;
 	}
+
+	// DL-86 (docs/DEBT_LEDGER.md, docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// "DL-86"): every Ess lookup used to flat-clamp cosTheta below the
+	// first LUT bin center c0=0.5/32~=0.0156 (theta > ~89.11 degrees) to
+	// that bin's value, mis-reading the true single-scatter directional
+	// albedo right at the grazing limit and mis-stating the Kulla-Conty
+	// multiscatter compensation there.  The rows below drive the REAL
+	// production BRDFs (not the isolated LUT lookup
+	// GGXHeightCorrelatedEnergyLUTTest exercises) at view angles strictly
+	// beyond that boundary, at F=1 specular-only (diffuse=0) so the
+	// effect is not diluted by a diffuse term.
+	//
+	// These rows are TWO-SIDED.  CheckRGBBound's ordinary gate is
+	// upper-only (`mean > 1 + 6*SE + 0.005`), which is exactly what let
+	// this defect ship: the pre-fix error is a GAIN at some (alpha,theta)
+	// and a DEFICIT at others, and a one-sided gate cannot see the
+	// deficit at all.  `expected`/`tolAbs` below are per-row: `expected`
+	// is 1 wherever the fix genuinely restores energy conservation, and
+	// the MEASURED value (with its cause named) on the rows where a
+	// separately-tracked residual keeps the furnace away from 1 -- DL-105
+	// (the LUT's alpha axis: alpha<0.01 clamps to row 0, and row 0
+	// (alpha=0.01) to row 1 (alpha=0.0419) is a 4.2x ratio in a single
+	// interpolation cell).  Writing that measured number down, rather
+	// than widening the band to swallow it, is what keeps this row a
+	// regression gate for BOTH defects.
+	struct GrazingRow
+	{
+		Case c;
+		double expected;
+		double tolAbs;
+		const char* note;
+	};
+
+	static bool CheckTwoSidedFurnaceRow( const GrazingRow& row, const ChannelMoments& moments, const int samples )
+	{
+		const double mean = Mean( moments, 0, samples );
+		const double se = StandardError( moments, 0, samples );
+		const double tol = 3.0 * se + row.tolAbs;
+		const bool validSamples = moments.invalid == 0 && std::isfinite( moments.sumSq[0] ) &&
+			std::isfinite( mean ) && std::isfinite( se );
+		const bool passed = validSamples && std::fabs( mean - row.expected ) <= tol;
+
+		std::cout << "  " << std::left << std::setw( 62 ) << row.c.label
+			<< "  " << std::fixed << std::setprecision( 5 ) << mean
+			<< "+/-" << std::setprecision( 5 ) << se
+			<< "  band=[" << ( row.expected - tol ) << "," << ( row.expected + tol ) << "]"
+			<< "  invalid=" << moments.invalid
+			<< ( passed ? "  PASS" : "  FAIL" ) << "  " << row.note << "\n";
+		++checks;
+		if( !passed ) ++failures;
+		return passed;
+	}
+
+	// CookTorranceBRDF is the SEPARABLE-model (G1(wi)*G1(wo)) consumer --
+	// it reads LookupEss/LookupEavg, the tables GGXBRDF deliberately does
+	// NOT use (see MicrofacetEnergyLUT.h's two-model note).  Before this
+	// slice NO test drove LookupEss's grazing end-cap through a material
+	// at all: the separable path was unguarded at material level, so the
+	// DL-86 defect could have been "fixed" for GGX and left in place for
+	// Cook-Torrance without a single row going red.  n=0.001, k=100 is
+	// the complex-Fresnel limit of a perfect mirror (reflectance
+	// indistinguishable from 1 at every angle), the separable-model
+	// analogue of the Schlick F0=1 rows above.
+	class CookTorranceFixture
+	{
+	public:
+		UniformColorPainter* diffuse;
+		UniformColorPainter* specular;
+		UniformScalarPainter* masking;
+		UniformScalarPainter* ior;
+		UniformScalarPainter* extinction;
+		CookTorranceBRDF* brdf;
+
+		explicit CookTorranceFixture( const Case& c ) :
+			diffuse( new UniformColorPainter( RISEPel( c.diffuse, c.diffuse, c.diffuse ) ) ),
+			specular( new UniformColorPainter( RISEPel( c.specular, c.specular, c.specular ) ) ),
+			masking( new UniformScalarPainter( c.alphaX ) ),
+			ior( new UniformScalarPainter( 0.001 ) ),
+			extinction( new UniformScalarPainter( 100.0 ) ),
+			brdf( 0 )
+		{
+			brdf = new CookTorranceBRDF( *diffuse, *specular, *masking, *ior, *extinction );
+		}
+
+		~CookTorranceFixture()
+		{
+			brdf->release();
+			extinction->release();
+			ior->release();
+			masking->release();
+			specular->release();
+			diffuse->release();
+		}
+	};
+
+	static const int kGrazingSamples = 400000;
+
+	static bool RunGGXGrazingRow( const GrazingRow& row, const unsigned int seed )
+	{
+		BrdfFixture fixture( row.c );
+		return CheckTwoSidedFurnaceRow( row, IntegrateRGB( *fixture.brdf, row.c, seed, kGrazingSamples ), kGrazingSamples );
+	}
+
+	static bool RunCookTorranceGrazingRow( const GrazingRow& row, const unsigned int seed )
+	{
+		CookTorranceFixture fixture( row.c );
+		return CheckTwoSidedFurnaceRow( row, IntegrateRGB( *fixture.brdf, row.c, seed, kGrazingSamples ), kGrazingSamples );
+	}
+
+	static bool TestGrazingFurnaceDL86()
+	{
+		std::cout << "\n--- DL-86: production-BRDF furnace at extreme grazing incidence (F=1, spec-only), two-sided ---\n";
+		bool passed = true;
+
+		// theta=89.40/89.60/89.80/89.89 -> cosView ~ 0.01047/0.00698/
+		// 0.00349/0.00192, all strictly below c0 (theta > acos(c0) ~
+		// 89.106 degrees).
+		const GrazingRow ggxRows[] = {
+			{ { "GGX Schlick iso a=1.0 F0=1 th=89.40 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=1.0 F0=1 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=1.0 F0=1 th=89.80 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.3 F0=1 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.05 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.02 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.02 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.60, 0.0, 0.0 }, 1.01496, 0.010,
+			  "DL-105: +1.50% vs 1, the first alpha cell (0.01 -> 0.0419)" },
+			{ { "GGX Schlick iso a=0.02 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.01 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.01 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.01 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.02734, 0.010,
+			  "DL-105: +2.73% vs 1, alpha below the table range (clamps to row 0)" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.80, 0.0, 0.0 }, 0.96729, 0.010,
+			  "DL-105: -3.27% vs 1, alpha below the table range (clamps to row 0)" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.89, 0.0, 0.0 }, 0.96970, 0.010,
+			  "DL-105: -3.03% vs 1, alpha below the table range (review read -3.17% at its own seed)" },
+		};
+		unsigned int seed = 9101;
+		for( const GrazingRow& r : ggxRows ) passed &= RunGGXGrazingRow( r, seed++ );
+
+		// The two ANISOTROPIC configurations the DL-86 review called out
+		// by name: a 9:1 ratio viewed along the SMOOTH axis at
+		// theta=89.89 (cosView ~ 0.00192) is where
+		// `LookupEssG2AnisoDirectional`'s end-cap bites hardest, and the
+		// pair is written both ways round (alphaX>alphaY and
+		// alphaX<alphaY, azimuth swapped to name the same physical
+		// direction) because DL-77's own P1 was an axis-swap bug that
+		// every same-signed row was blind to.
+		// tolAbs 0.005 (band +/-0.0088 at this SE), tighter than the
+		// isotropic rows': the aniso sub-grid closes these to within
+		// 0.05% of 1, and both pre-fix models miss that band by 3x or
+		// more, so there is no reason to leave slack here.
+		//
+		// DL-86 round 2 adds the 100:1 pair at theta=89.99 (cosView ~
+		// 1.745e-4).  That cos lands in the FIRST sub-interval of the
+		// round-1 uniform grid -- the one straight ramp from the exact
+		// cosTheta->0 anchor, which round 1 never probed at LUT level
+		// (its smallest aniso probe was 0.002) and never drove at
+		// material level either; the review measured 0.96506 +/- 0.00147
+		// here, a 3.5% DEFICIT outside this section's own band.  Written
+		// both ways round for the same axis-swap reason.
+		const GrazingRow anisoRows[] = {
+			{ { "GGX Schlick aniso(.9,.1) F0=1 th=89.89 az=90 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.9, 0.1, 89.89, 90.0, 0.0 }, 1.0, 0.005, "" },
+			{ { "GGX Schlick aniso(.1,.9) F0=1 th=89.89 az=0 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.1, 0.9, 89.89,  0.0, 0.0 }, 1.0, 0.005, "" },
+			{ { "GGX Schlick aniso(.01,1.0) F0=1 th=89.99 az=0 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 1.0, 89.99,  0.0, 0.0 }, 1.0, 0.005, "" },
+			{ { "GGX Schlick aniso(1.0,.01) F0=1 th=89.99 az=90 spec-only", eFresnelSchlickF0, 0.0, 1.0, 1.0, 0.01, 89.99, 90.0, 0.0 }, 1.0, 0.005, "" },
+		};
+		seed = 9150;
+		for( const GrazingRow& r : anisoRows ) passed &= RunGGXGrazingRow( r, seed++ );
+
+		std::cout << "\n--- DL-86: CookTorranceBRDF (SEPARABLE-model LookupEss consumer) furnace at extreme grazing, two-sided ---\n";
+		const GrazingRow ctRows[] = {
+			{ { "CT conductor a=1.0 th=89.40 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=1.0 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=1.0 th=89.80 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.3 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.05 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.02 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.01 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.01 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.005 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.3 th=89.89 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.05 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.02 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.02 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.01 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.005 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.03432, 0.010,
+			  "DL-105: +3.43% vs 1 -- the SEPARABLE path's worst (review read +3.65% at its own seed)" },
+		};
+		seed = 9201;
+		for( const GrazingRow& r : ctRows ) passed &= RunCookTorranceGrazingRow( r, seed++ );
+
+		return passed;
+	}
 }
 
 int main()
@@ -774,6 +970,7 @@ int main()
 	passed &= TestSchlickSweep();
 	passed &= TestConductorAndFilmControls();
 	passed &= TestAnisotropicFurnaceDL77();
+	passed &= TestGrazingFurnaceDL86();
 
 	std::cout << "GGXDiffuseTransmissionTest: " << checks << " checks, " << failures << " failures\n";
 	std::cout << "=== " << ( passed ? "ALL TESTS PASSED" : "TESTS FAILED" ) << " ===\n";

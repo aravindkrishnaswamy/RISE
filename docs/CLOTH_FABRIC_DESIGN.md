@@ -316,8 +316,9 @@ weave-rotation mechanism are all unchanged.
   change to `fabric_material` can fix that, and `coated_material`'s
   recycling denominator already inherits the identical debt (§9.9
   gate 5b, debt 16, new debt 17). [Debt 17 / DL-07 CLOSED 2026-09-14 —
-  see §15 item 17; the Oren-Nayar share of this is now under 0.01 %,
-  GGX's estimate remains open.]
+  see §15 item 17; the Oren-Nayar share of this is now under 0.01 %.
+  GGX's own estimate was a separate, structurally different bug
+  (DL-123), CLOSED 2026-09-17 — see §15 item 17's addendum.]
 
 **Round 6 (implementation review, 2026-09-02).** Three adversarial
 reviews of the built slice found one P1, in the *table* rather than in
@@ -2373,8 +2374,8 @@ brute-force quadrature that reaches **15.7 %**, essentially all of it
 attributable there. No change to `fabric_material` can fix it, and
 `coated_material`'s recycling denominator already inherits the identical
 debt — §15 debt 17 tracks it as its own item. [Debt 17 / DL-07 CLOSED
-2026-09-14 — the Oren-Nayar share of this is now under 0.01 %, GGX's
-estimate remains open; see §15 item 17.]
+2026-09-14 — the Oren-Nayar share of this is now under 0.01 %; GGX's own
+estimate was DL-123, CLOSED 2026-09-17 — see §15 item 17's addendum.]
 
 Getting route 1 right is what would let a future `coated_material` sit
 *over* a `fabric_material` — a waxed canvas — since this is the quantity the
@@ -4820,12 +4821,13 @@ yet known (§10.1).
     end-to-end through the fabric wrapper (was: Oren-Nayar σ = 0.6 reporting
     17.8 % high; now: 0.002-0.005 %, see
     [tests/FabricMaterialChunkTest.cpp](../tests/FabricMaterialChunkTest.cpp)
-    gate 5(b)'s "substr%" column). GGX's own `hemisphericalAlbedo` remains a
-    SEPARATE, still-open estimate that runs high at grazing (unaffected by
-    this fix; it is now the dominant term in gate 5(b)'s end-to-end figure).
-    `coated_material`'s Saunderson recycling denominator inherits the fix
-    for an Oren-Nayar substrate and still inherits the GGX-only residual.
-    Original text kept below for the historical record.
+    gate 5(b)'s "substr%" column). GGX's own `hemisphericalAlbedo` was a
+    SEPARATE estimator with the same class of bug (a flat, alpha-independent
+    macro-Fresnel average) -- CLOSED as DL-123 2026-09-17, dropping gate
+    5(b)'s GGX rows from +4.2%..+7.7% to +0.007%..+0.026%; see
+    [docs/DL123_GGX_HEMISPHERICAL_ALBEDO.md](DL123_GGX_HEMISPHERICAL_ALBEDO.md).
+    `coated_material`'s Saunderson recycling denominator now inherits both
+    fixes. Original text kept below for the historical record.
 
     Gate 5(b)'s end-to-end figure against a brute-force quadrature reached
     **15.7 %**, of which debt 16's factorisation accounted for at most
