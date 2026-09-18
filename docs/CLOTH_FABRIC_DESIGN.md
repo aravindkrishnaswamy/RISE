@@ -4751,10 +4751,28 @@ yet known (§10.1).
     **Sketch only — not execution-validated**, and it would bind to
     `fabric_material`'s Scalar-pipe `weave_rotation`, not to GGX's Color-pipe
     `tangent_rotation` (debt 4). Worth a look; not in Phase 1's scope.
-13. **The Blender bridge has no sheen, anisotropic or velvet mapping at all**,
-    documented or otherwise. A silent gap. Phase 1's `fabric_material` is the
-    natural target for Principled's Sheen sockets, but the bridge work is a
-    separate slice.
+13. ~~**The Blender bridge has no sheen, anisotropic or velvet mapping at
+    all**, documented or otherwise. A silent gap. Phase 1's
+    `fabric_material` is the natural target for Principled's Sheen
+    sockets, but the bridge work is a separate slice.~~ **CLOSED
+    2026-09-17 (debt ledger DL-18, branch `debt-dl18`)** — re-verified
+    first: anisotropic was ALREADY wired (Landing 8, commit `25d271df`,
+    predates this item's own writing; only `src/Blender/README.md`'s
+    limitations list was stale, corrected in the same slice). Sheen was
+    the genuine gap; Principled's Sheen Weight/Tint/Roughness now map
+    onto `fabric_material` (ABI v12: `sheen_color_painter_name` /
+    `sheen_roughness` / `sheen_roughness_texture_painter_name` on
+    `rise_blender_material`), mirroring `GLTFSceneImporter.cpp`'s own
+    `KHR_materials_sheen` handling — see
+    [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md)
+    "Anisotropy and sheen" for the full mapping table, the fabric-over-
+    anisotropic-GGX precedence, and the velvet/legacy-node disposition.
+    `tests/BlenderBridgeFabricTest.cpp` (27/0) and
+    `test_hair_export.py`'s `BridgeMaterialSheenMarshallingTest`
+    (suite 64/0) cover it. Sibling audit opened **DL-151** (Blender's
+    Principled "Specular Tint" socket — a DIFFERENT, already-ABI'd slot,
+    `specular_color_painter_name` — is never populated by the exporter;
+    not the same bug pattern, not fixed here).
 14. **Tier-1 spectral dye (per-wavelength absorption through a fibre path) is
     not attempted.** §2's table. It is a genuine RISE-specific opportunity given
     the hair σ_a machinery already in tree, and it depends on a yarn model rather
