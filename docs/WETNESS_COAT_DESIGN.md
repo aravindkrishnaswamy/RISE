@@ -1346,7 +1346,18 @@ the worst of §6.2's coverage dip by construction.
 > `blackbody_painter` / dual-registered `piecewise_linear_function`
 > substrate is no longer silently collapsed and re-uplifted through a
 > different curve -- `sample()` now REFUSES to bind one at attach time,
-> naming the substrate.**  That refusal is moot for `add_wetness` itself,
+> naming the substrate.**  **UPDATE (DL-203, closed 2026-09-18): that refusal
+> was leaf-only -- a COMPOSITE painter forwarding to one of those three as a
+> CHILD (e.g. a `blend_painter` whose `colora` is a `spectral_painter`) still
+> reached `sample()` unrefused, since `IPainter::IsSpectrallyDefined()`'s
+> override set was leaf-only and a composite's own default `false` never
+> consulted its children.  Every composite/wrapping painter in
+> `src/Library/Painters` whose `GetColorNM` genuinely forwards a child's
+> real spectrum (`BlendPainter`, `CheckerPainter`, `MappingPainter`, every
+> noise-family painter, ...) now recurses (an OR over its own children);
+> `ChannelPainter`/`RampPainter` correctly do NOT, since their own
+> `GetColorNM` never forwards a child's true spectrum in the first place
+> (see `IPainter::IsSpectrallyDefined`'s own doc comment).**  That refusal is moot for `add_wetness` itself,
 > which never reaches it: those kinds classify `Opaque`, not `Varying`, in
 > `ClassifyColorBinding_`, so clause 2 already declines on the
 > classification before any `sample()` call is ever emitted -- binding such
