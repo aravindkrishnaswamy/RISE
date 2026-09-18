@@ -174,8 +174,17 @@ are closed form:
 
 ## 3. Red-proof
 
-`tests/WardDensityKrayTest.cpp`, committed before the fix.  Against the
-unfixed library: **Passed 108, Failed 158**.  Post-fix: **332 / 0**.
+`tests/WardDensityKrayTest.cpp`, committed before the fix.  Post-fix
+**352 / 0**; against an isolated pre-fix library **138 / 214**.
+
+> Both numbers are of the CURRENT file.  An earlier revision of this
+> document quoted "108 / 158 -> 332 / 0", which compared two DIFFERENT
+> files: the red run was of the file as first committed, and the fix
+> commit then grew it by 80 lines (the NM leak rescale and the §G
+> quadrature column), after which the review round added the tilted
+> rows and §H.  A red/green pair has to be one file measured against
+> two libraries — the DL-116 lesson, applied to this row's own
+> counters.
 
 The file measures its own instrument first:
 
@@ -308,6 +317,27 @@ configurations, 89.9 degrees included, and `p99.9` sits at or just below
 the max rather than far above it — the distribution has no heavy tail to
 speak of.
 
+**And it is not heavy BY THE RENDERER'S OWN STANDARDS**, which is the
+question an absolute bound does not answer.  Section H runs the same
+per-draw statistic at the same 89.9 degrees on two controls: `GGXSPF`
+(single-emit, energy-compensated — the tightest weight in the tree) and
+the post-DL-127 `SchlickSPF`, whose model omits Schlick's geometric term
+(DL-178) and therefore carries a genuinely heavy tail that ALREADY
+SHIPS.  200 000 draws, `Rs = 0.5`:
+
+| SPF | mean | p99.9 | max | max/mean |
+| --- | --- | --- | --- | --- |
+| `WardIsotropicGaussianSPF` α 0.3 | 0.5187 | 3.6183 | 3.6865 | **7.11** |
+| `WardAnisotropicEllipticalGaussianSPF` α 0.3/0.12 | 0.5569 | 3.6529 | 3.6866 | **6.62** |
+| `GGXSPF` conductor α 0.3 (control) | 0.2848 | 0.4510 | 0.4522 | 1.59 |
+| `SchlickSPF` r 0.3 iso 1 (control, DL-178) | 84.87 | 2395.0 | 26522.4 | **312.5** |
+
+So the corrected Ward weight sits an order of magnitude tighter than a
+tail the renderer already lives with, and within a factor of ~4.5 of the
+tightest one. That is the comparison decision (a) rests on; the
+absolute bound above only establishes that the question is bounded at
+all.
+
 **Why not (b) or (c).**  The Ward-Dür / Geisler-Moroder-Dür bounded
 variant replaces `1/sqrt(nl nv)` with a half-vector expression.  Adopting
 it for the `kray` alone re-creates DL-127's defect verbatim — a `kray`
@@ -359,10 +389,21 @@ moved onto it; and "MC pre" pinned at 0.79-0.80 on every row is the
 signature of `kray` literally BEING the constant `Rd + Rs = 0.8`
 reflectance rather than a transport weight.
 
-Tolerance 0.01 on both, matching the Schlick entry's precedent (~36x
-headroom over the measured worst case; not tighter, because the MC arm
-now carries the model's real grazing tail and these are Monte Carlo
-estimators).
+Tolerance 0.01 on both, matching the Schlick entry's precedent.
+
+**A 25x tightening deserves more than one seed** (review round 1,
+P3-c), and until that review this file had only one — every
+`RandomNumberGenerator` in it was default-constructed, i.e. seeded from
+an un-`srand`ed libc `rand()`, which C defines as `srand(1)`: exactly
+the fragility DL-176 was filed for next door.  It now takes an explicit
+`g_seedBase`, overridable by `RISE_SPFBSDF_SEED`.  Swept over 8 seeds:
+**worst Ward relErr 0.0757 %** (isotropic @ 60 deg) and worst over EVERY
+row in the file 0.1288 % (Schlick @ 60 deg), with 0 failures at every
+seed.  So the 1 % band carries ~13x headroom over the worst Ward
+reading actually observed, not the ~36x the single default seed
+suggests — deliberately not tightened further, because the MC arm now
+carries the model's real grazing tail (DL-212) and these are Monte
+Carlo estimators.
 
 ### 5.2 `SPFPdfConsistencyTest` — chi2 un-skipped, 10% band retired
 
@@ -384,6 +425,53 @@ the *shape* was off by 25 to 108 standard deviations.  The histogram was
 the only sub-test that could see the defect, and it was the one switched
 off.
 
+### 5.4 `SPFPdfConsistencyTest` Part 2b — the gate the rescale removed
+
+DL-176's Part 3 rescale (§8) makes the chi-squared a pure SHAPE test.
+Review round 1 (P2-1) pointed out that this removed the harness's only
+implicit statement about MASS, and that Part 2 does not replace it:
+Part 2 asks `|int Pdf over the HEMISPHERE - 1| <= 5 %`, which is the
+wrong target on two counts at once — `Pdf` is legitimately a SUB-density
+(it must integrate to the probability that `Scatter` +
+`RandomlySelect` emit anything), and the domain is the SPHERE wherever
+the sampler can emit below the shading horizon.
+
+Part 2b adds the two checks that name the contract, because the
+mismatch splits into two independent failure modes:
+
+* **(i) MASS** — `int Pdf` over the whole sphere against the measured
+  `P(emit a non-delta ray)`.  Every row passes at 0.01; the four
+  largest residuals are `Schlick` 0.00221,
+  `AshikminShirleyAnisotropicPhong` 0.00206 / 0.00204 and
+  `CookTorrance_BlackSpecular` 0.00201 (the last being DL-211).  Those
+  are the three SPFs whose `Pdf` is built on a deterministic
+  selection quadrature, so the residual is that quadrature's, not MC
+  noise — the DL-98/DL-99 lesson (4).
+* **(ii) DOMAIN SPLIT** — the fraction of `Pdf`'s mass in the upper
+  hemisphere against the fraction of emitted rays that land there.
+  This is what (i) is blind to by construction, and it is the check the
+  review's own example needs: **`Translucent` reads full-sphere mass
+  agreeing to 4.1e-5 while putting ~100 % of its density in the upper
+  hemisphere and only 55.5 % of its rays** — a 1.80x violation (DL-41:
+  `TranslucentSPF::Pdf` covers neither Phong `cos^N` transmission
+  lobe).  Every other row reads a domain-split difference of exactly 0.
+
+  (The review read that row as a MASS mismatch — "emission rate
+  0.556282 vs int Pdf 1.00004" — by comparing a hemisphere-restricted
+  acceptance count against a hemisphere integral.  The defect is real;
+  it is a domain split, and (ii) is what sees it.)
+
+`Translucent` is pinned as a two-sided KNOWN-DEFECT control at its
+measured `0.44469`, band `[0.40, 0.48]`, rather than having the band
+loosened — so DL-41's closure is as visible as a regression.
+
+**DL-211 is pinned the same way** (P2-4).  Its chi2 seed-mean `z` sits
+at `+3.58` against the `|z| <= 4` band — 90 % of the band, the same
+fragility shape DL-176 was filed for — so `CookTorrance_BlackSpecular`
+now carries its own two-sided pin, `[3.0, 4.0]` at 60 deg and
+`[1.5, 2.7]` at 30 deg (measured `+3.585` / `+2.096`), naming DL-211 in
+the message.
+
 ### 5.3 `SchlickKrayBRDFConsistencyTest` §6 — promoted to a gate
 
 Section 6 was reporting-only, gated merely on "the probe ran".  Every
@@ -402,11 +490,10 @@ exactly the Ward rows' new gates.
 
 **Reach.**  Ten shipped scenes bind `ward_isotropic_material` or
 `ward_anisotropic_material` (`grep -rl ward_..._material scenes/`).
-FOUR render under `pixelpel_rasterizer`, which is direct-only BY DESIGN
-(DL-26) — but unlike DL-127's Schlick case those are NOT immune here,
-because `DirectLightingShaderOp`'s NEE arm weights against
-`IMaterial::Pdf()`, and defect (2) changed that function.  Only
-`Ward*BRDF::value` is untouched.
+Four of them name `pixelpel_rasterizer` at the top level, but **the
+rasterizer is not what decides whether a Ward surface is shaded
+directly — the per-object SHADER is**, and §6.1 below is where the
+round-1 review caught this document getting it wrong.
 
 **Protocol.**  Scratch copies at 256 px wide (aspect preserved), shipped
 sample counts capped at 64, `oidn_denoise FALSE`, `pixel_filter box`,
@@ -439,6 +526,88 @@ standard errors.  The `ward region` rows are the 45x45-pixel box
 
 **Read this honestly.**
 
+### 6.1 Which mechanism moved which row
+
+Two mechanisms can move a render here, and they reach different scenes:
+
+* **the `kray` correction (defect 3)** — reaches any BSDF-SAMPLED
+  continuation, i.e. anything routed through `pathtracing_shaderop`,
+  BDPT, VCM or MLT;
+* **the `Pdf` correction (defect 2)** — reaches NEE's MIS weight,
+  because `DirectLightingShaderOp` -> `LightSampler::EvaluateDirectLighting`
+  computes `p_bsdf = pMaterial->Pdf( vToLight, ri, misIOR )`
+  (`LightSampler.cpp`, the mesh-luminary arm).
+
+An earlier revision of this section attributed `kaleidoscope_atrium`'s
+−0.803 % to the second mechanism and called it proof that a
+`pixelpel_rasterizer` scene is not immune.  **That attribution was
+wrong.**  The scene has ONE Ward chunk (`pillar_mat`, a
+`ward_anisotropic_material`), all six objects that bind it declare
+`shader glossy_shader`, and `glossy_shader` is
+
+```
+standard_shader { name glossy_shader   shaderop pt }
+```
+
+— `pathtracing_shaderop` alone, deliberately WITHOUT
+`DefaultDirectLighting` (the scene's own comment says why: stacking
+them double-counts).  So `DirectLightingShaderOp` never runs on a Ward
+surface in that scene at all, and its −0.803 % is the **kray**
+correction, the same mechanism as the PT cornellbox row.
+
+### 6.2 The NEE-through-`Pdf` mechanism, measured
+
+The mechanism is real by code reading, but it had to be measured on a
+configuration that actually exercises it, and the shipped set turns out
+to contain **one** genuinely direct-only Ward scene:
+`scenes/Tests/Materials/materials.RISEscene`, whose single
+`standard_shader global` carries `shaderop DefaultDirectLighting` and
+nothing else.  Re-rendered at 256 spp (its shipped 4 spp is far too
+noisy to resolve anything), n = 5 per build, with per-teapot regions —
+`wardIso` is `teapot4`/`wi` at rows 40-84, cols 160-224; `wardAniso` is
+`teapot6`/`wa` at rows 184-228, cols 160-224:
+
+| region | pre | post | delta | t |
+| --- | --- | --- | --- | --- |
+| ward isotropic teapot | 0.667067 ± 0.000005 | 0.667068 ± 0.000005 | +0.0002 % | +0.3 |
+| ward anisotropic teapot | 0.655986 ± 0.000008 | 0.655983 ± 0.000008 | −0.0004 % | −0.5 |
+| whole image | 0.168977 ± 0.000025 | 0.168969 ± 0.000032 | −0.0046 % | −0.4 |
+
+**A measured null, and it has a reason rather than being a failure to
+resolve** (σ is 5e-6 on those regions; a 0.1 % effect would read t ≈ 130).
+That scene's only light is a `directional_light` — a DELTA light, which
+has no MIS partner, so `EvaluateDirectLighting`'s delta arm takes
+weight 1 and never evaluates `pMaterial->Pdf()` at all.
+
+So the mechanism needs a NON-DELTA light, and the sharpest test is the
+same scene with only the light swapped.  A purpose-built copy
+(`materials.RISEscene` at 512 spp / `lum_samples 16`, identical shader
+chain, identical materials, the `directional_light` replaced by a
+`clippedplane_geometry` + `lambertian_luminaire_material` area emitter
+off to the +x side at z = 12 so it front-lights without occluding),
+n = 5 per build:
+
+| region | pre | post | delta | t |
+| --- | --- | --- | --- | --- |
+| ward isotropic teapot | 1.535493 ± 0.000336 | 1.466030 ± 0.000151 | **−4.524 %** | −422 |
+| ward anisotropic teapot | 1.869537 ± 0.000118 | 1.766052 ± 0.000206 | **−5.535 %** | −975 |
+| whole image | 0.338291 ± 0.000049 | 0.329367 ± 0.000035 | −2.638 % | −334 |
+| Lambertian teapot (control) | 0.405674 ± 0.000027 | 0.405677 ± 0.000015 | +0.0009 % | +0.3 |
+| Schlick teapot (control) | 1.547793 ± 0.000548 | 1.547156 ± 0.000355 | −0.041 % | −2.2 |
+
+That is the claim, demonstrated rather than asserted: **a direct-only
+Ward surface is immune under a delta light and moves by 4.5-5.5 % under
+an area light**, with everything else in the scene held fixed and two
+non-Ward controls that do not move (the Schlick row's −0.041 % at n = 5
+is a 2σ fluctuation, two orders of magnitude below the Ward rows, and
+no Schlick code changed in this slice).
+
+The scene is a scratch fixture, not committed — it is `materials.RISEscene`
+with the light chunk replaced, and §6.2's description is enough to
+rebuild it.
+
+### 6.3 The shipped-scene table, re-read
+
 * The two `cornellbox_bdpt_materials*` scenes are the high-signal rows —
   one sphere of nine is `ward_anisotropic_material`, and they are the
   only scenes here whose Ward surface fills a resolvable, identifiable
@@ -454,12 +623,14 @@ standard errors.  The `ward region` rows are the 45x45-pixel box
   here darkens.  §5.1's furnace rows say the same thing from the other
   side: the MC arm was pinned at 0.79-0.80 (the constant `Rd + Rs`)
   against a quadrature of 0.63-0.73.
-* `kaleidoscope_atrium` is the DIRECT-ONLY row that moves: −0.803 % at
-  t = −92.6.  Its Ward surface is shaded entirely through NEE, which
-  evaluates the UNCHANGED `value()` — what moved is the MIS weight that
-  arm computes against `Pdf()` (defect 2).  That is worth recording
-  because DL-127's Schlick account could truthfully say its two
-  `pixelpel` scenes "cannot move at all"; DL-177's cannot.
+* `kaleidoscope_atrium` moves −0.803 % at t = −92.6 **through the kray
+  correction**: its Ward pillars are shaded by `pathtracing_shaderop`
+  (see §6.1), not by `DirectLightingShaderOp`, despite the scene naming
+  `pixelpel_rasterizer` at the top level.
+* `materials.RISEscene` is the one genuinely direct-only Ward scene in
+  the shipped set, and at its own 4 spp it reads −0.291 % at t = −1.60,
+  i.e. nothing; §6.2 re-measures it at 256 spp and shows the null is
+  real and structural (delta light) rather than a resolution failure.
 * `showroom` is **not resolvable** and no claim is made from it: at its
   shipped 8 spp it carries a firefly tail that puts sigma at 15-20 % of
   the mean, so even n = 15 per build leaves t = 0.77.  The +5.089 % is
@@ -580,9 +751,16 @@ adds a ray for `kray > 0`.  A deviation `eps = totalAccepted/sum(expected)
 3. Give every RNG an EXPLICIT seed and evaluate the statistic at
    `NUM_CHI2_SEEDS = 8` of them.  The gate is on the seed-MEAN:
    `z = (mean - dof)/sqrt(2 dof/N)` is ~N(0,1) under H0, band `|z| <= 4`
-   — a ~6e-5 test per row (~0.16% over the 26 gated rows), against a
-   single-seed alpha=0.001 threshold's 0.1% PER ROW PER RUN while being
-   nearly blind to a small persistent offset.
+   — a 6.334e-5 two-sided test per row, against a single-seed
+   alpha=0.001 threshold's 0.1 % PER ROW PER RUN, and one that is not
+   nearly blind to a small persistent offset.  Family-wise, COUNTED
+   rather than estimated (review round 1, P3-a): the run prints **30
+   gated chi2 evaluations carrying 23 DISTINCT statistics** — several
+   rows are bit-identical, since their samplers are all cosine
+   hemispheres consuming the same draws from the same seeds — giving
+   **0.146 %** over the 23 independent statistics and **0.190 %** over
+   all 30, against **2.96 %** for a single-seed threshold over the same
+   30.
 
 **Post-fix** every gated row is within `|z| <= 4`; the filed row reads
 `z = +0.54` with **nothing in `CookTorranceSPF` changed**.  Runtime

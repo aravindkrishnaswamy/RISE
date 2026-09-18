@@ -84,6 +84,8 @@
 #include "../src/Library/Materials/WardIsotropicGaussianBRDF.h"
 #include "../src/Library/Materials/WardAnisotropicEllipticalGaussianSPF.h"
 #include "../src/Library/Materials/WardAnisotropicEllipticalGaussianBRDF.h"
+#include "../src/Library/Materials/GGXSPF.h"
+#include "../src/Library/Materials/SchlickSPF.h"
 #include "TestStubObject.h"
 
 using namespace RISE;
@@ -153,6 +155,38 @@ static RayIntersectionGeometric MakeBackFaceIntersection( double incomingTheta )
 	ri.vNormal = Vector3( 0, 0, 1 );
 	ri.vGeomNormal = Vector3( 0, 0, 1 );
 	ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+
+	return ri;
+}
+
+//! A hit whose SHADING normal is tilted away from the GEOMETRIC one, so
+//! `Scatter`'s diffuse ray can fall below the geometric horizon and be
+//! dropped.  That is the only configuration in which
+//! `WardDiffuseAcceptFraction` returns less than 1 and the "lone
+//! specular ray wins outright" arm of `Ward*SpecularDensity` is
+//! reachable at all -- every other fixture in this file has
+//! `vNormal == vGeomNormal == (0,0,1)`, so that branch went untested
+//! (review round 1, P2-3).  The tilt is about the y axis, in the same
+//! plane as the incoming ray, and the ray still arrives from above the
+//! GEOMETRIC surface.
+static RayIntersectionGeometric MakeTiltedIntersection( double incomingTheta, double tiltRad )
+{
+	const double sinT = sin( incomingTheta );
+	const double cosT = cos( incomingTheta );
+	const Vector3 inDir( sinT, 0, -cosT );
+
+	Ray inRay( Point3( sinT, 0, 1.0 ), inDir );
+	RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( inRay, rs );
+
+	ri.bHit = true;
+	ri.range = 1.0 / cosT;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	// Geometric normal stays +Z; only the SHADING normal tilts.
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.vNormal = Vector3( sin( tiltRad ), 0, cos( tiltRad ) );
+	ri.onb.CreateFromW( ri.vNormal );
 	ri.ptCoord = Point2( 0.5, 0.5 );
 
 	return ri;
@@ -657,24 +691,44 @@ int main()
 		UniformScalarPainter* ayp = new UniformScalarPainter( 0.12 ); ayp->addref();
 		RGBScalarPainter* alphaRGB = new RGBScalarPainter( 0.1, 0.3, 0.6 ); alphaRGB->addref();
 
-		struct Row { const char* name; int model; double alpha; double deg; bool backFace; bool perChannel; bool blackDiffuse; };
+		// `tilt` degrees between the SHADING and GEOMETRIC normals.  A
+		// nonzero tilt is what makes `WardDiffuseAcceptFraction` read
+		// less than 1, which is the ONLY way into the "lone specular
+		// ray wins outright" arm of `Ward*SpecularDensity` and into
+		// `C_D`'s own `nAcceptedSpec == 0` short-circuit; review round
+		// 1 (P2-3) found every row here was at tilt 0.
+		struct Row { const char* name; int model; double alpha; double deg; bool backFace; bool perChannel; bool blackDiffuse; double tilt; };
 		const Row rows[] = {
-			{ "iso   a.1  th30",                     0, 0.1, 30.0, false, false, false },
-			{ "iso   a.3  th30",                     0, 0.3, 30.0, false, false, false },
-			{ "iso   a.6  th30",                     0, 0.6, 30.0, false, false, false },
-			{ "iso   a.3  th60",                     0, 0.3, 60.0, false, false, false },
-			{ "iso   a.3  th80",                     0, 0.3, 80.0, false, false, false },
-			{ "iso   a.1  th30 BLACK diffuse",       0, 0.1, 30.0, false, false, true  },
-			{ "iso   a.3  th30 BLACK diffuse",       0, 0.3, 30.0, false, false, true  },
-			{ "iso   a.6  th30 BLACK diffuse",       0, 0.6, 30.0, false, false, true  },
-			{ "iso   a.3  th45 BACK FACE",           0, 0.3, 45.0, true,  false, false },
-			{ "iso   perchannel(.1,.3,.6) th30",     0, 0.3, 30.0, false, true,  false },
-			{ "iso   perchannel(.1,.3,.6) th60",     0, 0.3, 60.0, false, true,  false },
-			{ "aniso a.3/.12 th30",                  1, 0.3, 30.0, false, false, false },
-			{ "aniso a.3/.12 th60",                  1, 0.3, 60.0, false, false, false },
-			{ "aniso a.6/.12 th30",                  1, 0.6, 30.0, false, false, false },
-			{ "aniso a.3/.12 th45 BACK FACE",        1, 0.3, 45.0, true,  false, false },
-			{ "aniso perchannel(.1,.3,.6)/.12 th30", 1, 0.3, 30.0, false, true,  false },
+			{ "iso   a.1  th30",                     0, 0.1, 30.0, false, false, false,  0.0 },
+			{ "iso   a.3  th30",                     0, 0.3, 30.0, false, false, false,  0.0 },
+			{ "iso   a.6  th30",                     0, 0.6, 30.0, false, false, false,  0.0 },
+			{ "iso   a.3  th60",                     0, 0.3, 60.0, false, false, false,  0.0 },
+			{ "iso   a.3  th80",                     0, 0.3, 80.0, false, false, false,  0.0 },
+			{ "iso   a.1  th30 BLACK diffuse",       0, 0.1, 30.0, false, false, true,   0.0 },
+			{ "iso   a.3  th30 BLACK diffuse",       0, 0.3, 30.0, false, false, true,   0.0 },
+			{ "iso   a.6  th30 BLACK diffuse",       0, 0.6, 30.0, false, false, true,   0.0 },
+			{ "iso   a.3  th45 BACK FACE",           0, 0.3, 45.0, true,  false, false,  0.0 },
+			{ "iso   perchannel(.1,.3,.6) th30",     0, 0.3, 30.0, false, true,  false,  0.0 },
+			{ "iso   perchannel(.1,.3,.6) th60",     0, 0.3, 60.0, false, true,  false,  0.0 },
+			{ "aniso a.3/.12 th30",                  1, 0.3, 30.0, false, false, false,  0.0 },
+			{ "aniso a.3/.12 th60",                  1, 0.3, 60.0, false, false, false,  0.0 },
+			{ "aniso a.6/.12 th30",                  1, 0.6, 30.0, false, false, false,  0.0 },
+			{ "aniso a.3/.12 th45 BACK FACE",        1, 0.3, 45.0, true,  false, false,  0.0 },
+			{ "aniso perchannel(.1,.3,.6)/.12 th30", 1, 0.3, 30.0, false, true,  false,  0.0 },
+			// TILTED rows (P2-3).  `aD = (1 + cos tilt)/2` reads
+			// 1.000 / 0.983 / 0.933 / 0.866 / 0.750 at 0/15/30/45/60.
+			{ "iso   a.3  th30 TILT 15",             0, 0.3, 30.0, false, false, false, 15.0 },
+			{ "iso   a.3  th30 TILT 30",             0, 0.3, 30.0, false, false, false, 30.0 },
+			{ "iso   a.3  th30 TILT 45",             0, 0.3, 30.0, false, false, false, 45.0 },
+			{ "iso   a.3  th30 TILT 60",             0, 0.3, 30.0, false, false, false, 60.0 },
+			{ "iso   a.6  th45 TILT 45",             0, 0.6, 45.0, false, false, false, 45.0 },
+			{ "iso   perchannel(.1,.3,.6) th30 TILT 45", 0, 0.3, 30.0, false, true, false, 45.0 },
+			{ "aniso a.3/.12 th30 TILT 15",          1, 0.3, 30.0, false, false, false, 15.0 },
+			{ "aniso a.3/.12 th30 TILT 30",          1, 0.3, 30.0, false, false, false, 30.0 },
+			{ "aniso a.3/.12 th30 TILT 45",          1, 0.3, 30.0, false, false, false, 45.0 },
+			{ "aniso a.3/.12 th30 TILT 60",          1, 0.3, 30.0, false, false, false, 60.0 },
+			{ "aniso a.6/.12 th45 TILT 45",          1, 0.6, 45.0, false, false, false, 45.0 },
+			{ "aniso perchannel(.1,.3,.6)/.12 th30 TILT 45", 1, 0.3, 30.0, false, true, false, 45.0 },
 		};
 		const int nRows = int( sizeof(rows)/sizeof(rows[0]) );
 
@@ -691,7 +745,9 @@ int main()
 
 			const RayIntersectionGeometric ri = rows[r].backFace
 				? MakeBackFaceIntersection( rows[r].deg * PI / 180.0 )
-				: MakeIntersection( rows[r].deg * PI / 180.0 );
+				: ( rows[r].tilt > 0
+					? MakeTiltedIntersection( rows[r].deg * PI / 180.0, rows[r].tilt * PI / 180.0 )
+					: MakeIntersection( rows[r].deg * PI / 180.0 ) );
 
 			const double integral = IntegratePdfFullSphere( *spf, ri, iorStack, 400, 800 );
 			const double emission = MeasureEmissionProbability( *spf, ri, iorStack, kSeedA + 7000u + unsigned(r), 200000 );
@@ -730,16 +786,21 @@ int main()
 		UniformScalarPainter* ayp = new UniformScalarPainter( 0.12 ); ayp->addref();
 		RGBScalarPainter* alphaRGB = new RGBScalarPainter( 0.1, 0.3, 0.6 ); alphaRGB->addref();
 
-		struct Row { const char* name; int model; double alpha; double deg; bool backFace; bool perChannel; };
+		struct Row { const char* name; int model; double alpha; double deg; bool backFace; bool perChannel; double tilt; };
 		const Row rows[] = {
-			{ "iso   a.1  th30",                     0, 0.1, 30.0, false, false },
-			{ "iso   a.3  th30",                     0, 0.3, 30.0, false, false },
-			{ "iso   a.6  th60",                     0, 0.6, 60.0, false, false },
-			{ "iso   a.3  th45 BACK FACE",           0, 0.3, 45.0, true,  false },
-			{ "iso   perchannel(.1,.3,.6) th30",     0, 0.3, 30.0, false, true  },
-			{ "aniso a.3/.12 th30",                  1, 0.3, 30.0, false, false },
-			{ "aniso a.6/.12 th60",                  1, 0.6, 60.0, false, false },
-			{ "aniso perchannel(.1,.3,.6)/.12 th30", 1, 0.3, 30.0, false, true  },
+			{ "iso   a.1  th30",                     0, 0.1, 30.0, false, false,  0.0 },
+			{ "iso   a.3  th30",                     0, 0.3, 30.0, false, false,  0.0 },
+			{ "iso   a.6  th60",                     0, 0.6, 60.0, false, false,  0.0 },
+			{ "iso   a.3  th45 BACK FACE",           0, 0.3, 45.0, true,  false,  0.0 },
+			{ "iso   perchannel(.1,.3,.6) th30",     0, 0.3, 30.0, false, true,   0.0 },
+			{ "aniso a.3/.12 th30",                  1, 0.3, 30.0, false, false,  0.0 },
+			{ "aniso a.6/.12 th60",                  1, 0.6, 60.0, false, false,  0.0 },
+			{ "aniso perchannel(.1,.3,.6)/.12 th30", 1, 0.3, 30.0, false, true,   0.0 },
+			// TILTED (P2-3): the shape gate on the `aD < 1` arm.
+			{ "iso   a.3  th30 TILT 30",             0, 0.3, 30.0, false, false, 30.0 },
+			{ "iso   a.3  th30 TILT 60",             0, 0.3, 30.0, false, false, 60.0 },
+			{ "aniso a.3/.12 th30 TILT 30",          1, 0.3, 30.0, false, false, 30.0 },
+			{ "aniso a.3/.12 th30 TILT 60",          1, 0.3, 30.0, false, false, 60.0 },
 		};
 		const int nRows = int( sizeof(rows)/sizeof(rows[0]) );
 
@@ -755,7 +816,9 @@ int main()
 
 			const RayIntersectionGeometric ri = rows[r].backFace
 				? MakeBackFaceIntersection( rows[r].deg * PI / 180.0 )
-				: MakeIntersection( rows[r].deg * PI / 180.0 );
+				: ( rows[r].tilt > 0
+					? MakeTiltedIntersection( rows[r].deg * PI / 180.0, rows[r].tilt * PI / 180.0 )
+					: MakeIntersection( rows[r].deg * PI / 180.0 ) );
 
 			double sampledMass = 0, pdfMass = 0;
 			const double tvd = MeasureTVD( *spf, ri, iorStack, kSeedA + 8000u + unsigned(r),
@@ -1057,6 +1120,83 @@ int main()
 			}
 		}
 		ay->release();
+	}
+
+	//----------------------------------------------------------------
+	// SECTION H -- the tail in CONTEXT (REPORTING ONLY, not gated).
+	//
+	// Section G bounds the corrected weight absolutely.  That answers
+	// "is it finite", not "is it heavy for a path tracer", and the
+	// second question is only answerable against the tails the renderer
+	// already lives with.  So: the same per-draw statistic at the same
+	// grazing incidence, on the two Ward SPFs and on two controls --
+	// `GGXSPF` (single-emit, energy-compensated, the tightest weight in
+	// the tree) and the post-DL-127 `SchlickSPF` (whose own model omits
+	// Schlick's geometric term, DL-178, and which therefore carries a
+	// genuinely heavy tail that SHIPPED).  `max/mean` is the shape
+	// number: 1 is a constant weight, large is a firefly source.
+	// (Review round 1, P3-b.)
+	//----------------------------------------------------------------
+	std::cout << std::endl << "-- Section H: per-draw sum(max(kray)) at 89.9 deg, Ward against controls "
+	             "(reporting only)" << std::endl;
+	std::cout << "   SPF                                     mean        p99.9         max    max/mean" << std::endl;
+	{
+		UniformScalarPainter* a03  = new UniformScalarPainter( 0.3 );  a03->addref();
+		UniformScalarPainter* a012 = new UniformScalarPainter( 0.12 ); a012->addref();
+		UniformScalarPainter* iorS = new UniformScalarPainter( 1.5 );  iorS->addref();
+		UniformScalarPainter* extS = new UniformScalarPainter( 2.5 );  extS->addref();
+		UniformScalarPainter* isoS = new UniformScalarPainter( 1.0 );  isoS->addref();
+
+		WardIsotropicGaussianSPF* wi = new WardIsotropicGaussianSPF( *black, *spec, *a03 ); wi->addref();
+		WardAnisotropicEllipticalGaussianSPF* wa =
+			new WardAnisotropicEllipticalGaussianSPF( *black, *spec, *a03, *a012 ); wa->addref();
+		// GGX conductor: single-emit, so one ray per call.
+		GGXSPF* gg = new GGXSPF( *black, *spec, *a03, *a03, *iorS, *extS ); gg->addref();
+		// Schlick at the same specular reflectance and roughness.
+		SchlickSPF* sc = new SchlickSPF( *black, *spec, *a03, *isoS ); sc->addref();
+
+		struct Entry { const char* name; ISPF* spf; };
+		const Entry entries[] = {
+			{ "WardIsotropicGaussianSPF   a.3",        wi },
+			{ "WardAnisotropicEllipticalSPF a.3/.12",  wa },
+			{ "GGXSPF conductor a.3 (control)",        gg },
+			{ "SchlickSPF r.3 iso1 (control, DL-178)", sc },
+		};
+
+		const RayIntersectionGeometric ri = MakeIntersection( 89.9 * PI / 180.0 );
+		for( int e = 0; e < 4; e++ ) {
+			RandomNumberGenerator rng( kSeedA + 40000u + unsigned(e) );
+			IndependentSampler sampler( rng );
+			const int N = 200000;
+			std::vector<double> draws;
+			draws.reserve( N );
+			double sum = 0;
+			for( int i = 0; i < N; i++ ) {
+				ScatteredRayContainer sc2;
+				entries[e].spf->Scatter( ri, sampler, sc2, iorStack );
+				double perCall = 0;
+				for( unsigned int j = 0; j < sc2.Count(); j++ ) {
+					if( sc2[j].isDelta ) continue;
+					perCall += ColorMath::MaxValue( sc2[j].kray );
+				}
+				draws.push_back( perCall );
+				sum += perCall;
+			}
+			std::sort( draws.begin(), draws.end() );
+			const double mean = sum / double(N);
+			const double p999 = draws[ size_t( 0.999 * double(N) ) ];
+			const double mx   = draws.back();
+			std::cout << "   " << std::left << std::setw(40) << entries[e].name << std::right
+			          << std::setprecision(4) << std::setw(10) << mean
+			          << std::setw(13) << p999
+			          << std::setw(12) << mx
+			          << std::setw(12) << ( mean > 0 ? mx/mean : 0.0 ) << std::endl;
+			Check( draws.size() == size_t(N),
+			       std::string( "Section H: control probe ran: " ) + entries[e].name );
+		}
+
+		wi->release(); wa->release(); gg->release(); sc->release();
+		a03->release(); a012->release(); iorS->release(); extS->release(); isoS->release();
 	}
 
 	spec->release();
