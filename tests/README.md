@@ -320,6 +320,14 @@ with the cause named: `CT conductor a=0.005 th=89.40` `1.03432+/-0.00217`
 row's band) and `GGX Schlick a=0.005 th=89.89` `0.96970+/-0.00151` (a
 DEFICIT). `190 checks, 0 failures`.
 
+**DL-105 CLOSED 2026-09-17 (debt-dl105 slice)**: all FIVE DL-105-pinned
+rows above return to `expected=1.0`, the same band every other row in
+this table uses (`3*SE + 0.010`) — `GGX a=0.02 th=89.60` `1.01496→1.00080`,
+`GGX a=0.005 th=89.40` `1.02734→1.00640`, `GGX a=0.005 th=89.80`
+`0.96729→1.00526`, `GGX a=0.005 th=89.89` `0.96970→1.00186`,
+`CT conductor a=0.005 th=89.40` `1.03432→1.00681`. Row count unchanged,
+`190 checks, 0 failures`.
+
 `GGXHeightCorrelatedEnergyLUTTest` (DL-63, CLOSED 2026-09-14) independently
 verifies `MicrofacetEnergyLUT.h`'s height-correlated-G2 twin tables
 (`E_ss_TABLE_G2`/`E_avg_TABLE_G2`, `LookupEssG2`/`LookupEavgG2`) against a
@@ -407,6 +415,38 @@ anisotropic H6 multiscatter lobe: `2*PI*int MSPdfG2Aniso dc == 1` at four
 `(alphaX,alphaY)` pairs and a 40M-draw `SampleMSCosThetaG2Aniso`
 histogram against that density in sub-grid-scale bins. `252 checks, 0
 failures`.
+
+**DL-105 CLOSED 2026-09-17 (debt-dl105 slice)**: the `TestDL86IsotropicEndCap`/
+`TestDL86SeparableEndCap` rows that used to pin DL-105's own residual at
+`alpha=0.005` (`0.060` tolerance) and `alpha=0.02` (`0.025`) tighten to
+the same `0.004` every other alpha already met — `MicrofacetEnergyLUT.h`
+now bakes a low-alpha sub-grid (`ALPHA_SUB_FINE`/`ALPHA_MID_SIZE`,
+mirroring DL-86's cosTheta construction) below and between the main
+table's row 0 and row 1. Worst measured residual: `LookupEssG2`
+`alpha=0.005` 5.10%→0.42%, `alpha=0.02` 1.59%→0.03%; `LookupEss`
+`alpha=0.005` 5.52%→0.18%, `alpha=0.02` 1.58%→0.03%. The above-`c0`
+control row at `alpha=0.005` (`cos=0.03`) also tightens, from a `0.060`
+placeholder to the `0.040` every other alpha's control row carries.
+Gained a new independent cross-check, `TestDL105IndependentVNDFCrossCheck`
+(9 points: 7 at mid-range `mu` plus 2 combining a low alpha with a
+grazing `mu` — `alpha` in `{0.005,0.0025,0.00125,0.0008,0.0003,0.0001,0.008}`
+at mid-range `mu`, plus `(0.005,0.001)`/`(0.02,0.005)` at grazing `mu`,
+the latter two actually discriminating this fix from the pre-fix clamp)
+— a THIRD estimator sharing no code with `LookupEssG2`, the offline
+generator, `MonteCarloEssG2`, or `UniformHemisphereEssG2` above: its own
+`D_Isotropic`/`Lambda`/`G2_HeightCorrelated` re-implementation (the
+pre-existing `IndependentGGX` namespace) plus an own from-scratch
+Heitz-2018 VNDF sampling routine, needed because
+`UniformHemisphereEssG2` is explicitly unsuitable below `alpha=0.01`
+(its own comment: "much worse importance sampler ... for peaked
+(low-alpha) configurations"). `261 checks, 0 failures` (was `252/0`).
+The anisotropic rows are UNCHANGED by this fix (DL-105's off-diagonal
+aniso residual is tracked separately as DL-161) — re-measured identical
+before/after, e.g. the debt-ggx3-cited `(0.0361,0.9627,phi=5)` corner
+still reads `2.99-4.04%`. See
+[docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](../docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)
+"DL-105" for the full derivation, residual tables, and sibling audit
+(DL-160, DL-161).
 
 `GGXSampleEvaluationConsistencyTest` (DL-62/DL-64, CLOSED 2026-09-13;
 extended 2026-09-13 by the P2-1/P2-2/P3-x review follow-up) pins GGX's

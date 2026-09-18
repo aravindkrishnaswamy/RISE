@@ -124,6 +124,38 @@ namespace MicrofacetEnergyLUT
 	/// ANISO_SUB_TOTAL-1 = 12 values are stored per row.
 	static const int ANISO_SUB_TOTAL = SUB_SIZE + ANISO_SUB_FINE;
 
+	/// DL-105: the ALPHA axis is coarse at its low end in a way the
+	/// DL-86 cosTheta sub-grid does not touch -- alpha<0.01 clamps to
+	/// row 0 outright (GGXBRDF.cpp only floors authored roughness at
+	/// 1e-4), and row 0 (alpha=0.01) to row 1 (alpha=0.0419) is a
+	/// 4.2x ratio inside ONE linear interpolation cell.  Same
+	/// construction as DL-86's cosTheta end-cap: a baked sub-grid, not
+	/// an extrapolation, anchored at a PROVABLE exact boundary --
+	/// alpha->0 (a perfectly smooth surface) makes Smith
+	/// Lambda(v)->0 for ANY fixed cosTheta>0, so G1->1 and G2->1
+	/// unconditionally: Ess(alpha->0,cosTheta)=1 for BOTH models (no
+	/// baked limit constant needed here, unlike DL-86's cosTheta->0
+	/// case).  7 geometric octaves resolve (0, 0.01) (node j stores
+	/// alpha=0.01/2^(8-j)); 3 geometric nodes resolve (0.01, 0.0419]
+	/// bridging the coarse first cell.  See the generator's
+	/// ALPHA_SUB_FINE/ALPHA_MID_SIZE comment for the derivation.
+	/// Interpolation is LINEAR IN ALPHA on every interval (node
+	/// PLACEMENT is geometric, the BLEND between two adjacent nodes
+	/// is not -- matching ANISO_SUB_FINE's precedent).
+	static const int ALPHA_SUB_FINE = 7;
+	static const int ALPHA_MID_SIZE = 4;
+
+	/// DL-105: total virtual node-index range on [0, A1] (A1 = row
+	/// 1's alpha).  Index 0 is the exact alpha->0 boundary (not
+	/// stored), 1..ALPHA_SUB_FINE are the geometric sub-nodes below
+	/// A0=0.01 (stored), ALPHA_SUB_FINE+1 is A0 itself (row 0, not
+	/// re-baked), ALPHA_SUB_FINE+2..ALPHA_LOW_TOTAL-1 are the
+	/// geometric mid-nodes between A0 and A1 (stored), and
+	/// ALPHA_LOW_TOTAL is A1 itself (row 1, not re-baked).
+	static const int ALPHA_LOW_TOTAL = ALPHA_SUB_FINE + ALPHA_MID_SIZE;
+	/// 10 values (ALPHA_SUB_FINE + (ALPHA_MID_SIZE-1)) are stored.
+	static const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 1);
+
 	/// Directional albedo E_ss(alpha, cosTheta) of GGX single-scatter BRDF with F=1.
 	/// Indexed as E_ss_TABLE[alphaIdx][cosThetaIdx].
 	/// Alpha mapped linearly from 0.01 to 1.0, cosTheta from cell centers.
@@ -237,6 +269,55 @@ namespace MicrofacetEnergyLUT
 		0.70258847, 0.68993131, 0.67694630, 0.66398582, 0.65145042, 0.63923690, 0.62606682, 0.61347744
 	};
 
+	/// DL-105: low-alpha twin of E_ss_TABLE above, resolved at the
+	/// ALPHA_LOW_STORED geometric alpha nodes below/between the main
+	/// table's row 0 and row 1 (see ALPHA_SUB_FINE/ALPHA_MID_SIZE).
+	/// Indexed as E_ss_ALPHA_LOW_TABLE[AlphaLowSlot(idx)][cosThetaIdx].
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_ALPHA_LOW_TABLE[10][32] = {
+		{ 0.99998973, 0.99999831, 0.99999975, 0.99999987, 0.99999992, 0.99999995, 0.99999996, 0.99999997, 0.99999998, 0.99999998, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000 },
+		{ 0.99994461, 0.99999423, 0.99999701, 0.99999950, 0.99999970, 0.99999980, 0.99999986, 0.99999989, 0.99999992, 0.99999994, 0.99999995, 0.99999996, 0.99999997, 0.99999997, 0.99999998, 0.99999998, 0.99999998, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 1.00000000, 1.00000000, 1.00000000, 0.99999900, 1.00000000, 1.00000000, 1.00000000, 1.00000000 },
+		{ 0.99979123, 0.99997588, 0.99999301, 0.99999598, 0.99999779, 0.99999920, 0.99999943, 0.99999858, 0.99999768, 0.99999875, 0.99999880, 0.99999884, 0.99999986, 0.99999989, 0.99999991, 0.99999992, 0.99999993, 0.99999994, 0.99999895, 0.99999996, 0.99999996, 0.99999997, 0.99999998, 0.99999998, 0.99999998, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 1.00000000, 1.00000000, 1.00000000 },
+		{ 0.99915987, 0.99990717, 0.99996161, 0.99998398, 0.99999089, 0.99999570, 0.99999441, 0.99999732, 0.99999769, 0.99999899, 0.99999919, 0.99999834, 0.99999946, 0.99999855, 0.99999962, 0.99999968, 0.99999873, 0.99999777, 0.99999981, 0.99999983, 0.99999886, 0.99999988, 0.99999990, 0.99999992, 0.99999793, 0.99999994, 0.99999996, 0.99999897, 0.99999997, 0.99999998, 0.99999999, 1.00000000 },
+		{ 0.99631287, 0.99965797, 0.99985465, 0.99993552, 0.99995736, 0.99997013, 0.99998185, 0.99998925, 0.99998985, 0.99998489, 0.99999645, 0.99999436, 0.99999383, 0.99999516, 0.99999649, 0.99999472, 0.99999392, 0.99999608, 0.99999622, 0.99999334, 0.99999844, 0.99999551, 0.99999659, 0.99999866, 0.99999572, 0.99999878, 0.99999682, 0.99999786, 0.99999790, 0.99999893, 0.99999996, 0.99999999 },
+		{ 0.98471632, 0.99844411, 0.99946314, 0.99974747, 0.99983591, 0.99988532, 0.99991927, 0.99995067, 0.99994369, 0.99996459, 0.99996295, 0.99997595, 0.99997327, 0.99997763, 0.99997777, 0.99998989, 0.99999068, 0.99998932, 0.99998688, 0.99998735, 0.99998774, 0.99998710, 0.99999093, 0.99999066, 0.99999288, 0.99999309, 0.99999327, 0.99999245, 0.99999259, 0.99999072, 0.99999584, 0.99999695 },
+		{ 0.94702900, 0.99334817, 0.99773942, 0.99888324, 0.99933287, 0.99949587, 0.99963816, 0.99977561, 0.99980689, 0.99985389, 0.99985999, 0.99988320, 0.99989622, 0.99991782, 0.99990583, 0.99993310, 0.99994155, 0.99994685, 0.99995334, 0.99996224, 0.99995878, 0.99996022, 0.99995056, 0.99996975, 0.99995299, 0.99997031, 0.99997410, 0.99996563, 0.99997301, 0.99995888, 0.99997332, 0.99996903 },
+		{ 0.88205443, 0.95049213, 0.97947665, 0.98965557, 0.99388152, 0.99588678, 0.99712027, 0.99787948, 0.99827213, 0.99860686, 0.99886284, 0.99905218, 0.99917172, 0.99928051, 0.99939504, 0.99941620, 0.99948484, 0.99955749, 0.99957846, 0.99961057, 0.99962975, 0.99962619, 0.99967423, 0.99971550, 0.99973841, 0.99970177, 0.99970928, 0.99973307, 0.99975018, 0.99980210, 0.99977232, 0.99978257 },
+		{ 0.88314905, 0.92128049, 0.96090210, 0.97868144, 0.98704423, 0.99142529, 0.99386462, 0.99528619, 0.99644662, 0.99708093, 0.99761078, 0.99799148, 0.99832954, 0.99857273, 0.99867235, 0.99880407, 0.99892844, 0.99905178, 0.99914614, 0.99919886, 0.99925243, 0.99930617, 0.99934714, 0.99936776, 0.99941895, 0.99941847, 0.99945541, 0.99950131, 0.99949592, 0.99955107, 0.99956007, 0.99956834 },
+		{ 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000 }
+	};
+
+	/// DL-105: low-alpha twin of E_avg_TABLE above (SAME midpoint-
+	/// rule discretization over the 32 ordinary cosTheta bins).
+	inline const Scalar E_avg_ALPHA_LOW_TABLE[10] = {
+		0.99999998, 0.99999984, 0.99999943, 0.99999784, 0.99999007, 0.99996037, 0.99984216, 0.99900144, 0.99814271, 0.00000000
+	};
+
+	/// DL-105: low-alpha twin of E_ss_SUB_TABLE above (the DL-86
+	/// grazing sub-grid, baked AT each low-alpha node instead of
+	/// blended in from row 0/row 1).
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_ALPHA_LOW_SUB_TABLE[10][7] = {
+		{ 0.99912533, 0.99979780, 0.99990340, 0.99995253, 0.99996774, 0.99998010, 0.99998375 },
+		{ 0.99637300, 0.99912614, 0.99962478, 0.99979472, 0.99985128, 0.99991769, 0.99992532 },
+		{ 0.98459343, 0.99639435, 0.99842914, 0.99917158, 0.99948344, 0.99963941, 0.99974230 },
+		{ 0.94689038, 0.98450182, 0.99324338, 0.99635221, 0.99767432, 0.99841231, 0.99889068 },
+		{ 0.89483029, 0.94688266, 0.97283143, 0.98453948, 0.99025862, 0.99328523, 0.99515109 },
+		{ 0.88296791, 0.89478456, 0.92412122, 0.94668059, 0.96272702, 0.97300923, 0.97998006 },
+		{ 0.90166004, 0.88303535, 0.88345942, 0.89485120, 0.90934609, 0.92350266, 0.93658962 },
+		{ 0.92334082, 0.91073645, 0.89979199, 0.89179778, 0.88534664, 0.88211685, 0.88152408 },
+		{ 0.92693132, 0.91807317, 0.90969462, 0.90178028, 0.89518251, 0.89002196, 0.88590409 },
+		{ 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000 }
+	};
+
+	/// DL-105: low-alpha twin of E_ss_LIMIT_TABLE above (the
+	/// SEPARABLE model's cosTheta->0 boundary, baked at this alpha --
+	/// the G2 model's boundary is exactly 1 at every alpha, so no G2
+	/// twin of this table exists, same as E_ss_LIMIT_TABLE itself).
+	inline const Scalar E_ss_ALPHA_LOW_LIMIT_TABLE[10] = {
+		0.93614672, 0.93626129, 0.93603674, 0.93611867, 0.93620129, 0.93592154, 0.93617458, 0.93605023, 0.93566483, 0.00000000
+	};
+
 	/// DL-63: height-correlated-G2 twin of E_ss_TABLE above --
 	/// directional albedo of GGX single-scatter BRDF with F=1,
 	/// under Smith HEIGHT-CORRELATED G2 masking-shadowing
@@ -330,6 +411,43 @@ namespace MicrofacetEnergyLUT
 		{ 0.98781363, 0.97834891, 0.96987769, 0.96214583, 0.95472210, 0.94780633, 0.94122998 }
 	};
 
+	/// DL-105: height-correlated-G2 twin of E_ss_ALPHA_LOW_TABLE above.
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_ALPHA_LOW_TABLE_G2[10][32] = {
+		{ 0.99998973, 0.99999831, 0.99999975, 0.99999987, 0.99999992, 0.99999995, 0.99999996, 0.99999997, 0.99999998, 0.99999998, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000, 1.00000000 },
+		{ 0.99994461, 0.99999423, 0.99999701, 0.99999950, 0.99999970, 0.99999980, 0.99999986, 0.99999989, 0.99999992, 0.99999994, 0.99999995, 0.99999996, 0.99999997, 0.99999997, 0.99999998, 0.99999998, 0.99999998, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 1.00000000, 1.00000000, 1.00000000, 0.99999900, 1.00000000, 1.00000000, 1.00000000, 1.00000000 },
+		{ 0.99979124, 0.99997588, 0.99999301, 0.99999598, 0.99999779, 0.99999920, 0.99999943, 0.99999858, 0.99999768, 0.99999875, 0.99999880, 0.99999884, 0.99999986, 0.99999989, 0.99999991, 0.99999992, 0.99999993, 0.99999994, 0.99999895, 0.99999996, 0.99999996, 0.99999997, 0.99999998, 0.99999998, 0.99999998, 0.99999999, 0.99999999, 0.99999999, 0.99999999, 1.00000000, 1.00000000, 1.00000000 },
+		{ 0.99916005, 0.99990717, 0.99996161, 0.99998398, 0.99999089, 0.99999570, 0.99999441, 0.99999732, 0.99999769, 0.99999899, 0.99999919, 0.99999834, 0.99999946, 0.99999855, 0.99999962, 0.99999968, 0.99999873, 0.99999777, 0.99999981, 0.99999983, 0.99999886, 0.99999988, 0.99999990, 0.99999992, 0.99999793, 0.99999994, 0.99999996, 0.99999897, 0.99999997, 0.99999998, 0.99999999, 1.00000000 },
+		{ 0.99631595, 0.99965801, 0.99985465, 0.99993552, 0.99995736, 0.99997013, 0.99998185, 0.99998925, 0.99998985, 0.99998489, 0.99999645, 0.99999436, 0.99999383, 0.99999516, 0.99999649, 0.99999472, 0.99999392, 0.99999608, 0.99999622, 0.99999334, 0.99999844, 0.99999551, 0.99999659, 0.99999866, 0.99999572, 0.99999878, 0.99999682, 0.99999786, 0.99999790, 0.99999893, 0.99999996, 0.99999999 },
+		{ 0.98476984, 0.99844468, 0.99946321, 0.99974749, 0.99983591, 0.99988532, 0.99991927, 0.99995068, 0.99994369, 0.99996459, 0.99996295, 0.99997595, 0.99997327, 0.99997763, 0.99997777, 0.99998989, 0.99999068, 0.99998932, 0.99998688, 0.99998735, 0.99998774, 0.99998710, 0.99999093, 0.99999066, 0.99999288, 0.99999309, 0.99999327, 0.99999245, 0.99999259, 0.99999072, 0.99999584, 0.99999695 },
+		{ 0.94771866, 0.99335829, 0.99774063, 0.99888354, 0.99933297, 0.99949592, 0.99963818, 0.99977563, 0.99980690, 0.99985390, 0.99985999, 0.99988320, 0.99989622, 0.99991782, 0.99990583, 0.99993310, 0.99994155, 0.99994685, 0.99995334, 0.99996224, 0.99995878, 0.99996022, 0.99995056, 0.99996975, 0.99995299, 0.99997031, 0.99997410, 0.99996563, 0.99997301, 0.99995888, 0.99997332, 0.99996903 },
+		{ 0.89110997, 0.95108162, 0.97956769, 0.98967882, 0.99388968, 0.99589025, 0.99712195, 0.99788040, 0.99827265, 0.99860717, 0.99886305, 0.99905231, 0.99917181, 0.99928057, 0.99939509, 0.99941624, 0.99948486, 0.99955750, 0.99957847, 0.99961058, 0.99962976, 0.99962619, 0.99967423, 0.99971551, 0.99973841, 0.99970177, 0.99970928, 0.99973307, 0.99975018, 0.99980210, 0.99977232, 0.99978257 },
+		{ 0.89866455, 0.92304223, 0.96124962, 0.97877977, 0.98707969, 0.99144065, 0.99387218, 0.99529027, 0.99644895, 0.99708235, 0.99761168, 0.99799207, 0.99832994, 0.99857301, 0.99867255, 0.99880421, 0.99892853, 0.99905184, 0.99914619, 0.99919890, 0.99925246, 0.99930619, 0.99934715, 0.99936777, 0.99941895, 0.99941847, 0.99945541, 0.99950131, 0.99949592, 0.99955107, 0.99956007, 0.99956834 },
+		{ 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000 }
+	};
+
+	/// DL-105: height-correlated-G2 twin of E_avg_ALPHA_LOW_TABLE above.
+	inline const Scalar E_avg_ALPHA_LOW_TABLE_G2[10] = {
+		0.99999998, 0.99999984, 0.99999943, 0.99999784, 0.99999007, 0.99996043, 0.99984287, 0.99901279, 0.99816616, 0.00000000
+	};
+
+	/// DL-105: height-correlated-G2 twin of E_ss_ALPHA_LOW_SUB_TABLE
+	/// above.  No G2 twin of E_ss_ALPHA_LOW_LIMIT_TABLE exists: this
+	/// model's cosTheta->0 boundary is exactly 1 at every alpha.
+	/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.
+	inline const Scalar E_ss_ALPHA_LOW_SUB_TABLE_G2[10][7] = {
+		{ 0.99912550, 0.99979781, 0.99990340, 0.99995253, 0.99996774, 0.99998010, 0.99998375 },
+		{ 0.99637609, 0.99912632, 0.99962481, 0.99979473, 0.99985128, 0.99991769, 0.99992532 },
+		{ 0.98464695, 0.99639744, 0.99842971, 0.99917175, 0.99948351, 0.99963944, 0.99974231 },
+		{ 0.94758052, 0.98455542, 0.99325357, 0.99635530, 0.99767554, 0.99841289, 0.99889099 },
+		{ 0.89935090, 0.94757207, 0.97299607, 0.98459310, 0.99028029, 0.99329544, 0.99515649 },
+		{ 0.89798128, 0.89931000, 0.92577074, 0.94737330, 0.96304928, 0.97317381, 0.98007100 },
+		{ 0.93195994, 0.89807654, 0.89145471, 0.89937194, 0.91202558, 0.92515599, 0.93764175 },
+		{ 0.97262569, 0.94870601, 0.92912338, 0.91451944, 0.90313702, 0.89624161, 0.89275799 },
+		{ 0.98040334, 0.96251958, 0.94665328, 0.93271525, 0.92102828, 0.91167992, 0.90418775 },
+		{ 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000 }
+	};
+
 	/// DL-86: value of the grazing sub-grid model at node k of alpha
 	/// row `ai`, for k in [0, SUB_SIZE].  k==0 is the cosTheta->0
 	/// boundary (exactly 1 for the G2 model, a baked per-alpha
@@ -379,6 +497,150 @@ namespace MicrofacetEnergyLUT
 		kf = t - Scalar(k0);
 	}
 
+	/// DL-105: alpha value of the main table's row 0 / row 1 -- the
+	/// two endpoints the low-alpha sub-grid below is anchored to.
+	static const Scalar ALPHA_LOW_A0 = Scalar(0.01);
+	static const Scalar ALPHA_LOW_A1 = Scalar(0.01) + Scalar(1.0 - 0.01) * Scalar(1.0) / Scalar(LUT_SIZE - 1);
+
+	/// DL-105: alpha value of low-alpha virtual node `idx` (idx in
+	/// [0, ALPHA_LOW_TOTAL]).  idx==0 is the exact alpha->0 boundary,
+	/// idx==ALPHA_SUB_FINE+1 is A0 (row 0), idx==ALPHA_LOW_TOTAL is A1
+	/// (row 1) -- see the ALPHA_SUB_FINE/ALPHA_MID_SIZE comment above.
+	inline Scalar AlphaLowNode( const int idx )
+	{
+		if( idx <= 0 ) return Scalar(0.0);
+		if( idx <= ALPHA_SUB_FINE ) return ALPHA_LOW_A0 * pow( Scalar(2.0), Scalar(idx - (ALPHA_SUB_FINE + 1)) );
+		if( idx == ALPHA_SUB_FINE + 1 ) return ALPHA_LOW_A0;
+		if( idx < ALPHA_LOW_TOTAL )
+		{
+			const Scalar t = Scalar(idx - (ALPHA_SUB_FINE + 1)) / Scalar(ALPHA_MID_SIZE);
+			return ALPHA_LOW_A0 * pow( ALPHA_LOW_A1 / ALPHA_LOW_A0, t );
+		}
+		return ALPHA_LOW_A1;
+	}
+
+	/// DL-105: map a STORED virtual index (1..ALPHA_SUB_FINE, or
+	/// ALPHA_SUB_FINE+2..ALPHA_LOW_TOTAL-1) to its flat storage slot.
+	inline int AlphaLowSlot( const int idx )
+	{
+		if( idx <= ALPHA_SUB_FINE ) return idx - 1;
+		return ALPHA_SUB_FINE + ( idx - (ALPHA_SUB_FINE + 2) );
+	}
+
+	/// DL-105: bracket a query alpha in [0, ALPHA_LOW_A1) against the
+	/// 13-position AlphaLowNode list.  A plain linear scan (small,
+	/// fixed size) rather than a closed-form index -- the geometric
+	/// spacing makes a closed form awkward across the alpha->0
+	/// boundary, and this runs only for alpha<ALPHA_LOW_A1 (very
+	/// smooth surfaces), not the majority-path alpha>=ALPHA_LOW_A1
+	/// case below.
+	inline void AlphaLowIndex( const Scalar alpha, int& idx0, int& idx1, Scalar& frac )
+	{
+		const Scalar a = r_max( Scalar(0.0), alpha );
+		idx0 = 0;
+		for( int j = 0; j < ALPHA_LOW_TOTAL; j++ )
+		{
+			if( a >= AlphaLowNode( j + 1 ) ) idx0 = j + 1; else break;
+		}
+		if( idx0 > ALPHA_LOW_TOTAL - 1 ) idx0 = ALPHA_LOW_TOTAL - 1;
+		idx1 = idx0 + 1;
+		const Scalar lo = AlphaLowNode(idx0), hi = AlphaLowNode(idx1);
+		frac = (hi > lo) ? r_max( Scalar(0.0), r_min( Scalar(1.0), (a - lo) / (hi - lo) ) ) : Scalar(0.0);
+	}
+
+	/// DL-105: ordinary-row / grazing-subrow / limit accessors for a
+	/// low-alpha virtual node, dispatching between the exact
+	/// alpha->0 boundary (idx<=0), the reused main-table rows
+	/// (idx==A0's or A1's index), and the new baked sub/mid tables.
+	inline Scalar AlphaLowOrdinary( const int idx, const int k )
+	{
+		if( idx <= 0 ) return Scalar(1.0);
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_ss_TABLE[0][k];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_ss_TABLE[1][k];
+		return E_ss_ALPHA_LOW_TABLE[ AlphaLowSlot(idx) ][k];
+	}
+
+	inline Scalar AlphaLowOrdinaryG2( const int idx, const int k )
+	{
+		if( idx <= 0 ) return Scalar(1.0);
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_ss_TABLE_G2[0][k];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_ss_TABLE_G2[1][k];
+		return E_ss_ALPHA_LOW_TABLE_G2[ AlphaLowSlot(idx) ][k];
+	}
+
+	inline Scalar AlphaLowGrazing( const int idx, const int k )
+	{
+		if( idx <= 0 ) return Scalar(1.0);
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_ss_SUB_TABLE[0][k];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_ss_SUB_TABLE[1][k];
+		return E_ss_ALPHA_LOW_SUB_TABLE[ AlphaLowSlot(idx) ][k];
+	}
+
+	inline Scalar AlphaLowGrazingG2( const int idx, const int k )
+	{
+		if( idx <= 0 ) return Scalar(1.0);
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_ss_SUB_TABLE_G2[0][k];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_ss_SUB_TABLE_G2[1][k];
+		return E_ss_ALPHA_LOW_SUB_TABLE_G2[ AlphaLowSlot(idx) ][k];
+	}
+
+	/// SEPARABLE-model cosTheta->0 boundary at a low-alpha node.  No
+	/// G2 twin exists: that model's boundary is exactly 1 (returned
+	/// by AlphaLowOrdinaryG2/AlphaLowGrazingG2's own idx<=0 branch).
+	inline Scalar AlphaLowLimit( const int idx )
+	{
+		if( idx <= 0 ) return Scalar(1.0);
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_ss_LIMIT_TABLE[0];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_ss_LIMIT_TABLE[1];
+		return E_ss_ALPHA_LOW_LIMIT_TABLE[ AlphaLowSlot(idx) ];
+	}
+
+	inline Scalar AlphaLowEavg( const int idx )
+	{
+		if( idx <= 0 ) return Scalar(1.0);
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_avg_TABLE[0];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_avg_TABLE[1];
+		return E_avg_ALPHA_LOW_TABLE[ AlphaLowSlot(idx) ];
+	}
+
+	inline Scalar AlphaLowEavgG2( const int idx )
+	{
+		if( idx <= 0 ) return Scalar(1.0);
+		if( idx == ALPHA_SUB_FINE + 1 ) return E_avg_TABLE_G2[0];
+		if( idx >= ALPHA_LOW_TOTAL ) return E_avg_TABLE_G2[1];
+		return E_avg_ALPHA_LOW_TABLE_G2[ AlphaLowSlot(idx) ];
+	}
+
+	/// DL-105: build an alpha-blended (essRow, subRow, essLimit)
+	/// triple for a query alpha < ALPHA_LOW_A1, the SEPARABLE model.
+	/// Callers feed this straight into MSLobeDetail::BuildSegmentsFromRow
+	/// (the SAME function the main alpha>=ALPHA_LOW_A1 path uses), so
+	/// LookupEss/BuildSegments/MSLobeZ cannot drift apart here either.
+	inline void BuildLowAlphaRow( const Scalar alpha, Scalar essRow[LUT_SIZE], Scalar subRow[SUB_SIZE-1], Scalar& essLimit )
+	{
+		int idx0, idx1; Scalar f;
+		AlphaLowIndex( alpha, idx0, idx1, f );
+		for( int k = 0; k < LUT_SIZE; k++ )
+			essRow[k] = (1-f) * AlphaLowOrdinary(idx0,k) + f * AlphaLowOrdinary(idx1,k);
+		for( int k = 0; k < SUB_SIZE - 1; k++ )
+			subRow[k] = (1-f) * AlphaLowGrazing(idx0,k) + f * AlphaLowGrazing(idx1,k);
+		essLimit = (1-f) * AlphaLowLimit(idx0) + f * AlphaLowLimit(idx1);
+	}
+
+	/// DL-105: height-correlated-G2 twin of BuildLowAlphaRow above.
+	/// No essLimit output: this model's cosTheta->0 boundary is
+	/// exactly 1 at every alpha (matching BuildSegmentsG2's own
+	/// Scalar(1.0) literal passed to BuildSegmentsFromRow).
+	inline void BuildLowAlphaRowG2( const Scalar alpha, Scalar essRow[LUT_SIZE], Scalar subRow[SUB_SIZE-1] )
+	{
+		int idx0, idx1; Scalar f;
+		AlphaLowIndex( alpha, idx0, idx1, f );
+		for( int k = 0; k < LUT_SIZE; k++ )
+			essRow[k] = (1-f) * AlphaLowOrdinaryG2(idx0,k) + f * AlphaLowOrdinaryG2(idx1,k);
+		for( int k = 0; k < SUB_SIZE - 1; k++ )
+			subRow[k] = (1-f) * AlphaLowGrazingG2(idx0,k) + f * AlphaLowGrazingG2(idx1,k);
+	}
+
 	/// Look up E_ss(cosTheta, alpha) with bilinear interpolation.
 	///
 	/// DL-86: below the first bin center c0 = 0.5/LUT_SIZE this used
@@ -397,8 +659,35 @@ namespace MicrofacetEnergyLUT
 	/// left end-cap -- MSPdf calls this function directly while
 	/// SampleMSCosTheta inverts that segment's shape; both now read
 	/// the same nodes through SubNodeEss, so they cannot disagree.
+	///
+	/// DL-105: below ALPHA_LOW_A1 (row 1's alpha), source the row
+	/// from the low-alpha sub-grid (BuildLowAlphaRow) instead of the
+	/// main table -- this covers BOTH the alpha<0.01 clamp-to-row-0
+	/// range and the coarse row0->row1 cell; see ALPHA_SUB_FINE/
+	/// ALPHA_MID_SIZE above.
 	inline Scalar LookupEss( const Scalar cosTheta, const Scalar alpha )
 	{
+		if( alpha < ALPHA_LOW_A1 )
+		{
+			Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1]; Scalar essLimit;
+			BuildLowAlphaRow( alpha, essRow, subRow, essLimit );
+			const Scalar cc2 = r_max(0.0, r_min(1.0, cosTheta));
+			const Scalar c02 = Scalar(0.5) / Scalar(LUT_SIZE);
+			if( cc2 < c02 )
+			{
+				int k0; Scalar kf;
+				SubNodeIndex( cc2, c02, k0, kf );
+				const Scalar s0 = (k0 <= 0) ? essLimit : subRow[k0-1];
+				const Scalar s1 = (k0+1 >= SUB_SIZE) ? essRow[0] : subRow[k0];
+				return r_max( Scalar(0.0), r_min( Scalar(1.0), (1-kf) * s0 + kf * s1 ) );
+			}
+			const Scalar c2 = cc2 * LUT_SIZE - 0.5;
+			const int ci02 = (int)c2;
+			const int ci12 = r_min(ci02 + 1, LUT_SIZE - 1);
+			const Scalar cf2 = c2 - ci02;
+			return (1-cf2) * essRow[ci02] + cf2 * essRow[ci12];
+		}
+
 		// Map alpha from [0.01, 1.0] to [0, LUT_SIZE-1]
 		Scalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 		int ai0 = (int)a;
@@ -431,8 +720,17 @@ namespace MicrofacetEnergyLUT
 	}
 
 	/// Look up E_avg(alpha) with linear interpolation.
+	///
+	/// DL-105: below ALPHA_LOW_A1, blend the low-alpha Eavg sub-grid
+	/// instead -- see LookupEss's own DL-105 comment.
 	inline Scalar LookupEavg( const Scalar alpha )
 	{
+		if( alpha < ALPHA_LOW_A1 )
+		{
+			int idx0, idx1; Scalar f;
+			AlphaLowIndex( alpha, idx0, idx1, f );
+			return (1-f) * AlphaLowEavg(idx0) + f * AlphaLowEavg(idx1);
+		}
 		Scalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 		int ai0 = (int)a;
 		int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
@@ -473,8 +771,33 @@ namespace MicrofacetEnergyLUT
 	/// MSLobeDetail::BuildSegmentsFromRow's left end-cap -- see
 	/// LookupEss's own comment on why; both read the same nodes
 	/// through SubNodeEssG2.
+	///
+	/// DL-105: below ALPHA_LOW_A1, source the row from the low-alpha
+	/// sub-grid (BuildLowAlphaRowG2) instead -- see LookupEss's own
+	/// DL-105 comment.
 	inline Scalar LookupEssG2( const Scalar cosTheta, const Scalar alpha )
 	{
+		if( alpha < ALPHA_LOW_A1 )
+		{
+			Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1];
+			BuildLowAlphaRowG2( alpha, essRow, subRow );
+			const Scalar cc2 = r_max(0.0, r_min(1.0, cosTheta));
+			const Scalar c02 = Scalar(0.5) / Scalar(LUT_SIZE);
+			if( cc2 < c02 )
+			{
+				int k0; Scalar kf;
+				SubNodeIndex( cc2, c02, k0, kf );
+				const Scalar s0 = (k0 <= 0) ? Scalar(1.0) : subRow[k0-1];
+				const Scalar s1 = (k0+1 >= SUB_SIZE) ? essRow[0] : subRow[k0];
+				return r_max( Scalar(0.0), r_min( Scalar(1.0), (1-kf) * s0 + kf * s1 ) );
+			}
+			const Scalar c2 = cc2 * LUT_SIZE - 0.5;
+			const int ci02 = (int)c2;
+			const int ci12 = r_min(ci02 + 1, LUT_SIZE - 1);
+			const Scalar cf2 = c2 - ci02;
+			return (1-cf2) * essRow[ci02] + cf2 * essRow[ci12];
+		}
+
 		Scalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 		int ai0 = (int)a;
 		int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
@@ -504,8 +827,17 @@ namespace MicrofacetEnergyLUT
 	}
 
 	/// DL-63: height-correlated-G2 twin of LookupEavg above.
+	///
+	/// DL-105: below ALPHA_LOW_A1, blend the low-alpha Eavg sub-grid
+	/// instead -- see LookupEss's own DL-105 comment.
 	inline Scalar LookupEavgG2( const Scalar alpha )
 	{
+		if( alpha < ALPHA_LOW_A1 )
+		{
+			int idx0, idx1; Scalar f;
+			AlphaLowIndex( alpha, idx0, idx1, f );
+			return (1-f) * AlphaLowEavgG2(idx0) + f * AlphaLowEavgG2(idx1);
+		}
 		Scalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 		int ai0 = (int)a;
 		int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
@@ -616,8 +948,20 @@ namespace MicrofacetEnergyLUT
 
 		// Build the segments for a fixed alphaEff, using EXACTLY LookupEss's
 		// alpha-row blend.
+		//
+		// DL-105: below ALPHA_LOW_A1, source the row from the low-alpha
+		// sub-grid instead -- MUST stay in sync with LookupEss's own
+		// low-alpha branch, which is why both call BuildLowAlphaRow.
 		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + SUB_SIZE], int& nSegs )
 		{
+			if( alphaEff < ALPHA_LOW_A1 )
+			{
+				Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1]; Scalar essLimit;
+				BuildLowAlphaRow( alphaEff, essRow, subRow, essLimit );
+				BuildSegmentsFromRow( essRow, subRow, essLimit, segs, nSegs );
+				return;
+			}
+
 			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 			int ai0 = (int)a;
 			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
@@ -643,8 +987,20 @@ namespace MicrofacetEnergyLUT
 		// BuildSegmentsFromRow are already table-agnostic (they only see
 		// an already-resolved essRow), so only the alpha-row blend needs
 		// a G2-specific twin.
+		//
+		// DL-105: below ALPHA_LOW_A1, source the row from the low-alpha
+		// sub-grid instead -- MUST stay in sync with LookupEssG2's own
+		// low-alpha branch, which is why both call BuildLowAlphaRowG2.
 		inline void BuildSegmentsG2( const Scalar alphaEff, Segment segs[LUT_SIZE + SUB_SIZE], int& nSegs )
 		{
+			if( alphaEff < ALPHA_LOW_A1 )
+			{
+				Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1];
+				BuildLowAlphaRowG2( alphaEff, essRow, subRow );
+				BuildSegmentsFromRow( essRow, subRow, Scalar(1.0), segs, nSegs );
+				return;
+			}
+
 			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 			int ai0 = (int)a;
 			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
@@ -733,8 +1089,33 @@ namespace MicrofacetEnergyLUT
 	/// SAME (1-af)/af blend LookupEss uses for Ess itself -- an O(1)
 	/// lookup that is algebraically IDENTICAL to re-running
 	/// BuildSegments+SegTotal every call, not an approximation.
+	///
+	/// DL-105: below ALPHA_LOW_A1 this does NOT use the cached-affine
+	/// row shortcut above -- it recomputes segments+SegTotal directly
+	/// from BuildLowAlphaRow every call, a deliberate perf/simplicity
+	/// trade-off for a rare regime (very smooth surfaces, alpha<0.0419)
+	/// rather than precomputing and affine-blending Z at the 13 low-
+	/// alpha virtual nodes too.  Correctness does not depend on the
+	/// cache: MSPdf calls LookupEss (also low-alpha-aware) and
+	/// SampleMSCosTheta calls BuildSegments (also low-alpha-aware) --
+	/// as long as this function's Z integrates the SAME row those two
+	/// use, which it does (BuildLowAlphaRow is the single source both
+	/// this function and BuildSegments read).
 	inline Scalar MSLobeZ( const Scalar alphaEff )
 	{
+		if( alphaEff < ALPHA_LOW_A1 )
+		{
+			Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1]; Scalar essLimit;
+			BuildLowAlphaRow( alphaEff, essRow, subRow, essLimit );
+			MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
+			int nSegs = 0;
+			MSLobeDetail::BuildSegmentsFromRow( essRow, subRow, essLimit, segs, nSegs );
+			Scalar I = 0.0;
+			for( int i = 0; i < nSegs; i++ )
+				I += MSLobeDetail::SegTotal( segs[i] );
+			return 2.0 * I;
+		}
+
 		// Per-alpha-row Z, computed once (C++11 magic-statics: thread-safe
 		// initialization, no locking on the steady-state read path).
 		static const std::array<Scalar, LUT_SIZE> rowZ = []() {
@@ -819,8 +1200,25 @@ namespace MicrofacetEnergyLUT
 	//////////////////////////////////////////////////////////////////
 
 	/// DL-63: height-correlated-G2 twin of MSLobeZ above.
+	///
+	/// DL-105: below ALPHA_LOW_A1, recompute directly from
+	/// BuildLowAlphaRowG2 instead of the cached-affine row shortcut --
+	/// see MSLobeZ's own comment for the rationale.
 	inline Scalar MSLobeZG2( const Scalar alphaEff )
 	{
+		if( alphaEff < ALPHA_LOW_A1 )
+		{
+			Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1];
+			BuildLowAlphaRowG2( alphaEff, essRow, subRow );
+			MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
+			int nSegs = 0;
+			MSLobeDetail::BuildSegmentsFromRow( essRow, subRow, Scalar(1.0), segs, nSegs );
+			Scalar I = 0.0;
+			for( int i = 0; i < nSegs; i++ )
+				I += MSLobeDetail::SegTotal( segs[i] );
+			return 2.0 * I;
+		}
+
 		static const std::array<Scalar, LUT_SIZE> rowZ = []() {
 			std::array<Scalar, LUT_SIZE> z{};
 			for( int row = 0; row < LUT_SIZE; row++ )
