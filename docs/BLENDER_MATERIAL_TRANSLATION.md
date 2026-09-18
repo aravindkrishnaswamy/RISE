@@ -381,6 +381,43 @@ older exporter module ever produced) skips the wrap entirely: the PBR
 material registers directly under its own name, exactly as before ABI
 v12 existed.
 
+**Sheen + Emission Strength on the SAME node -- P1 fix, 2026-09-17.**
+DL-18's initial landing baked `emission_painter_name` into the PBR
+base UNCONDITIONALLY (`AddPBRMetallicRoughnessMaterial`'s `emissive`
+parameter), then handed that same base to `AddFabricMaterial` as the
+sheen substrate whenever sheen also contributed.
+`FabricMaterial::IsSupportedSubstrate` (FabricMaterial.h) refuses any
+substrate with a non-null `GetEmitter()` -- a real luminaire cannot be
+re-scattered by a sheen lobe -- so a Principled node with BOTH
+Emission Strength > 0 and Sheen Weight > 0 failed `add_material`
+outright ("the substrate is a luminaire"), and because
+`rise_blender_scene_to_job`'s material loop aborts the WHOLE job on
+one material's failure, this single combination failed an entire
+render (a hard regression vs. the pre-DL-18 behaviour, which simply
+ignored sheen). Fixed by building the PBR base WITHOUT emission
+whenever sheen contributes (`pbrEmissive = "none"`), wrapping THAT in
+`fabric_material` under an intermediate `<name>::sheenbase` name, then
+re-attaching the emission at the OUTER layer via
+`AddLambertianLuminaireMaterial` once the fabric wrap is a legal
+(non-emissive) `IMaterial` to layer emission over --
+`LambertianLuminaireMaterial` (LambertianLuminaireMaterial.h) is a
+fully generic wrapper: it forwards `GetBSDF`/`GetSPF` from whatever
+base it is handed and builds its own `LambertianEmitter`, the
+IDENTICAL class `GGXMaterial`'s own emissive constructor uses
+(GGXMaterial.h), so the rendered emission is physically
+indistinguishable from baking it straight into the GGX base. Both
+sheen and emission are kept -- neither is dropped, no warning is
+needed. A material with sheen but no emission, or emission but no
+sheen, is byte-for-byte unaffected (no `::sheenbase` intermediate is
+introduced unless both are present).
+`tests/BlenderBridgeFabricTest.cpp`'s "Sheen + emission keep BOTH"
+group is the regression (43/0, was 40/6 red pre-fix -- the red output
+is the exact `AddFabricMaterial` refusal message quoted above).
+`GLTFSceneImporter.cpp`'s own `KHR_materials_sheen` handling had the
+identical latent bug (and its `KHR_materials_clearcoat` sibling, via
+`coated_material`'s identical substrate-emitter refusal) -- both fixed
+in the same pass; see docs/GLTF_IMPORT.md §15.
+
 ### Velvet (legacy `Velvet BSDF` node)
 
 Blender removed the standalone `Velvet BSDF` node (`ShaderNodeBsdf-

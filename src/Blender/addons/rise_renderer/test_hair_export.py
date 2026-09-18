@@ -986,6 +986,34 @@ class BridgeMaterialSheenMarshallingTest(unittest.TestCase):
         self.assertAlmostEqual(payload.sheen_roughness, 0.0, places=6)
         self.assertIsNone(payload.sheen_roughness_texture_painter_name)
 
+    def test_sheen_and_emission_travel_through_together(self):
+        # P1 fix (post-DL-18-review, 2026-09-17): the native side used
+        # to fail `add_material` outright for a material combining
+        # Emission Strength > 0 with Sheen Weight > 0 on the SAME
+        # Principled node (see rise_blender_bridge.cpp's
+        # `add_pbr_metallic_roughness_material` fix commit). That bug
+        # lived entirely on the native side -- `sheen_color_painter_name`
+        # and `emission_painter_name` are independent ctypes fields with
+        # no interaction at the marshalling layer -- but there was no
+        # test proving the two travel through TOGETHER, only each in
+        # isolation (this class's other tests, and the base
+        # emission-only coverage elsewhere in this file). This closes
+        # that gap: both fields must reach the payload unmodified when
+        # BOTH are set on one material, so a future marshalling change
+        # can't silently start dropping one when the other is present.
+        payload = _handle()._marshal_material(
+            _StubMaterial(
+                sheen_color_painter_name="mat_sheen_color",
+                sheen_roughness=0.3,
+                emission_painter_name="mat_emission",
+                emissive_scale=2.0,
+            )
+        )
+        self.assertEqual(payload.sheen_color_painter_name, b"mat_sheen_color")
+        self.assertAlmostEqual(payload.sheen_roughness, 0.3, places=6)
+        self.assertEqual(payload.emission_painter_name, b"mat_emission")
+        self.assertAlmostEqual(payload.emissive_scale, 2.0, places=6)
+
 
 class BridgeWarningDecodeTest(unittest.TestCase):
     """The ABI v9 non-fatal warning channel, Python side."""

@@ -49,6 +49,7 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/LambertianLuminaireMaterial.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
@@ -249,11 +250,104 @@ static void TestClearcoatSkippedOnUnlit()
 	std::remove( tmp.c_str() );
 }
 
+//! P1 fix sibling (post-DL-18-review, 2026-09-17): the same
+//! substrate-emitter-refusal bug pattern DL-18's own sheen fix hit
+//! (docs/GLTF_IMPORT.md §15) was ALSO latent here -- clearcoat's PBR
+//! base baked `emissivePainter` in unconditionally, and
+//! `CoatedMaterial::IsSupportedSubstrate` refuses a substrate with a
+//! non-null `GetEmitter()` the exact same way
+//! `FabricMaterial::IsSupportedSubstrate` does.  KHR_materials_clearcoat
+//! combined with a non-black emissiveFactor on the SAME material used
+//! to fail `AddCoatedMaterial` outright.  Proves the fix keeps BOTH:
+//! the final material carries a real emitter (via
+//! `AddLambertianLuminaireMaterial`) wrapping a genuine `CoatedMaterial`
+//! layer, whose own PBR base carries no emitter.
+static void TestClearcoatWithEmissionCombines()
+{
+	std::printf( "-- clearcoat + emission on the same material: keep BOTH (P1 fix) --\n" );
+
+	const char* kFixture = "scenes/Tests/Geometry/assets/ClearcoatEmissiveQuad.gltf";
+	std::string body =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+		"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.3 0.4 1.0\n}\n\n"
+		"gltf_import\n{\n\tfile " + std::string( kFixture ) + "\n\tname_prefix cce\n}\n\n";
+
+	const std::string tmp = TempPath( "gltf_clearcoat_emissive.RISEscene" );
+	{ std::ofstream o( tmp.c_str(), std::ios::binary ); o << body; }
+
+	Job* pJob = new Job();
+	const bool loaded = pJob->LoadAsciiSceneViaCst( tmp.c_str() );
+	Check( loaded, "the clearcoat+emissive fixture scene parses and derives -- is "
+	               "scenes/Tests/Geometry/assets/ClearcoatEmissiveQuad.gltf committed?" );
+	if( !loaded ) { pJob->release(); std::remove( tmp.c_str() ); return; }
+
+	IMaterial* mat = pJob->GetMaterials()->GetItem( "cce.mat.0" );
+	Check( mat != nullptr, "the imported material `cce.mat.0` is registered "
+	                       "(pre-fix, add_material failed outright for this combination)" );
+
+	if( mat ) {
+		Check( mat->GetEmitter() != nullptr,
+		       "MONEY: the final material has a real emitter -- emission was NOT dropped" );
+
+		LambertianLuminaireMaterial* lum = dynamic_cast<LambertianLuminaireMaterial*>( mat );
+		Check( lum != nullptr,
+		       "MONEY: the final material is a `LambertianLuminaireMaterial` -- the outer "
+		       "emissive wrapper the fix re-attaches once the coated wrap is a legal substrate" );
+
+		Check( dynamic_cast<CoatedMaterial*>( mat ) == nullptr,
+		       "the final material is NOT itself a CoatedMaterial -- that lives one layer down" );
+	}
+
+	IMaterial* coatedMat = pJob->GetMaterials()->GetItem( "cce.mat.0__cc_emit_base" );
+	CoatedMaterial* coated = coatedMat ? dynamic_cast<CoatedMaterial*>( coatedMat ) : nullptr;
+	Check( coated != nullptr,
+	       "MONEY: the clearcoat layer is registered under the `__cc_emit_base` intermediate "
+	       "name and IS a live CoatedMaterial -- the clearcoat lobe really landed" );
+	if( coated ) {
+		Check( coated->GetEmitter() == nullptr,
+		       "the clearcoat layer itself carries NO emitter -- a legal coated_material "
+		       "result, not itself the luminaire" );
+
+		GGXMaterial* base = dynamic_cast<GGXMaterial*>( const_cast<IMaterial*>( &coated->GetBase() ) );
+		Check( base != nullptr, "the coated material's base is a GGXMaterial" );
+		Check( base != nullptr && base->GetEmitter() == nullptr,
+		       "MONEY: the PBR base does NOT carry the emitter -- it stays a legal "
+		       "coated_material substrate (CoatedMaterial::IsSupportedSubstrate refuses "
+		       "GetEmitter() != 0)" );
+
+		const RayIntersectionGeometric probe = MakeProbe();
+		const double coatWeight = coated->GetCoatWeight().GetValuesAt( probe ).v[0];
+		Check( std::fabs( coatWeight - 1.0 ) < 1e-6,
+		       "the clearcoat layer still reads back the authored clearcoat_factor (1.0) with "
+		       "emission also present" );
+	}
+
+	Check( pJob->GetScene() != nullptr, "the imported scene derives a live IScene" );
+	{
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, "the clearcoat+emissive scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       "the clearcoat+emissive glTF scene renders NON-BLACK" );
+		sess.reset();
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== GLTFClearcoatImportTest ===\n" );
 	TestBasicClearcoatImport();
 	TestClearcoatSkippedOnUnlit();
+	TestClearcoatWithEmissionCombines();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
