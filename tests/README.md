@@ -103,8 +103,36 @@ reads a full per-channel `ScalarTriple` roughness that the pre-fix
 `hemisphericalAlbedo` silently ignored. `47 checks, 0 failures` post-fix
 (11 failures pre-fix, reproducing the ledger's measured bias). Downstream:
 `FabricMaterialChunkTest` gate 5(b)'s Oren-Nayar "substr%" column drops
-from up to ~17.8% to 0.002-0.005%; GGX's own `hemisphericalAlbedo` is a
-separate, still-open estimate and is now the dominant residual there.
+from up to ~17.8% to 0.002-0.005%; GGX's own `hemisphericalAlbedo` was a
+separate estimator with the same bug pattern, closed as DL-123 below.
+
+`GGXHemisphericalAlbedoTest` (DL-123, 2026-09-17) regresses
+`GGXBRDF::hemisphericalAlbedo{,NM}`, which used to be
+`interfaceFresnel.Mean()` -- a FLAT macro-interface Fresnel average with
+**zero** dependence on alpha (roughness), over-estimating up to +7.73%
+at rough/grazing configurations against an independent double-hemisphere
+quadrature of the real `value()` -- and now bakes the true bihemispherical
+single-scatter (a moment-matched fixed-node quadrature over the Fresnel
+function, `tools/GGXSpecularBihemisphericalGen.cpp`, exact for Schlick
+and a degree-7-polynomial-fit for conductor/thin-film) plus multiscatter
+(`F_ms*(1-Eavg)`, which falls out algebraically from `value()`'s own
+`f_ms` separability -- no new baking needed) terms. Coverage: a
+double-hemisphere brute-force quadrature of the real `value()` at
+alpha in {0.05,0.2,0.5,1.0} x F0 in {0.04,0.5,1.0} x diffuse in {0,0.5}
+(Schlick) and a representative conductor config; the `valueNM`/
+`hemisphericalAlbedoNM` spectral twin; a moment-0 cross-check against
+`MicrofacetEnergyLUT`'s independently-baked `E_avg_TABLE_G2` (agrees to
+3.4e-4 absolute across the whole alpha axis); the alpha->0 smooth-limit
+identity (`hemisphericalAlbedo -> Mean()`); and an anisotropic
+(alphaX != alphaY) sanity check (loosely bounded -- the isotropic-
+alphaEff approximation's residual is tracked as DL-139). `28 checks, 0
+failures` post-fix (16 failures pre-fix). Downstream: `FabricMaterialChunkTest`
+gate 5(b)'s GGX "substr%" rows drop from the ledger's measured 4.2-7.7%
+to 0.007-0.026%; `LayeredWhiteFurnaceTest` configs 14/15 ("Coated
+clearcoat / white|red GGX-PBR") are documented measured regression
+pins and were re-measured the same way DL-37 previously moved them
+(both move DOWN, as expected for a smaller, more correct substrate
+hemispherical estimate feeding a smaller Saunderson recycling boost).
 
 `SheenDirectionalAlbedoTest` gained two functions for DL-11 (2026-09-14):
 `TestMiddleBandInterpolationError` (a consistency pin against this file's
