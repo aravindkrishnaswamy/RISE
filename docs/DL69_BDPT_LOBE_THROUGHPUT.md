@@ -273,6 +273,11 @@ After merging master `e290fc64` — which brings DL-67 Slice 0's
 | merge target                                | 0.0601796 | 0.0632837 | **+5.16 %** |
 | same, `SchlickSPF.cpp` reverted to pre-Slice-0 | 0.0647011 | 0.0634197 | -1.98 % |
 
+The final gate run reads 0.0601765 / 0.0632883 = +5.17 %, and
+`VCMStrategyBalanceTest`'s twin of the same topology reads PT 0.0601639
+/ VCM 0.0632532 = **+5.14 %** — VCM shares BDPT's two generators, so it
+tracks it, as it did pre-fix.
+
 **The swing is PT's.**  Across that one-file A/B, PT moved **-6.99 %**
 and BDPT **-0.21 %**.  `SchlickSPF::Pdf` enters PT only through its MIS
 partner arms, and Slice 0 did not touch `kray` (DL-127), so the mover is
@@ -332,9 +337,13 @@ only, DL-69-fixed on every bounce) against `hwss TRUE`:
 | `hwss TRUE`, 256 spp   | 0.0634371 / 0.0632993 / 0.0631986 | 0.0633116 |
 | ratio | — | **0.987717 (-1.23 %)** |
 
-An earlier run with both at 256 spp gave 0.98763 (-1.24 %); the two
-agree to 0.01 pp across a 4x change in the hero-only sample count, so
-the -1.2 % is systematic rather than noise.  Two read-outs.  **No
+Three independent runs of this probe read **-1.24 %** (an earlier
+configuration with BOTH sides at 256 spp), **-1.23 %** and **-1.09 %**
+(the 1024/256 pair above and the final gate run).  All three are
+negative and of the same magnitude across a 4x change in the hero-only
+sample count, so the ~-1.2 % is systematic; the ~0.15 pp spread between
+runs is the probe's own run-to-run noise, and is why the gate band is
+5 % rather than something tight.  Two read-outs.  **No
 over-count of DL-69's magnitude reaches the image through the
 companions** — 2.00x on the hero path vs 1.2 % here — and the sign is
 the opposite of a naive over-count, which points at RISE's separately
