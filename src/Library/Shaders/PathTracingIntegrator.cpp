@@ -2876,8 +2876,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// non-zero radiance").  Round 2 removed this call
 									// because the paired moment was wrong-shaped; round
 									// 3 derives the correct one below and reinstates it.
-									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
-										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									// Round-2 review (P2-2): dropped the
+									// `PTSurvivalMagnitude(sssThroughput) > NEARZERO` gate --
+									// it excluded a zero-throughput BSSRDF exit attempt from
+									// the count, the same undercounting pattern fixed at the
+									// main surface continuation's `!skipContinuation` gate.
+									// A zero-throughput attempt gets no matching
+									// `Accumulate()` either way, so counting it here is a
+									// correctly COUNTED ZERO, not a phantom sample.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 									{
 										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
 											rast.x, rast.y, kTechniqueBSDF );
@@ -3122,8 +3129,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// non-zero radiance").  Round 2 removed this call
 									// because the paired moment was wrong-shaped; round
 									// 3 derives the correct one below and reinstates it.
-									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
-										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									// Round-2 review (P2-2): dropped the
+									// `PTSurvivalMagnitude(sssThroughput) > NEARZERO` gate --
+									// it excluded a zero-throughput BSSRDF exit attempt from
+									// the count, the same undercounting pattern fixed at the
+									// main surface continuation's `!skipContinuation` gate.
+									// A zero-throughput attempt gets no matching
+									// `Accumulate()` either way, so counting it here is a
+									// correctly COUNTED ZERO, not a phantom sample.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 									{
 										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
 											rast.x, rast.y, kTechniqueBSDF );
@@ -3928,9 +3942,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
 
-			// Optimal MIS training
-			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
-				!pS->isDelta && !skipContinuation )
+			// Optimal MIS training (round-2 review, P2-2): count every
+			// NON-DELTA attempt, INCLUDING a zero-throughput draw (a
+			// below-horizon or zero-value lobe sample) -- gating this on
+			// `!skipContinuation` excluded exactly those, while
+			// `LightSampler.cpp`'s NEE arm counts every attempt including
+			// geometry-rejected zero draws, and
+			// `OptimalMISAccumulator.h`'s own `AccumulateCount` doc says
+			// "regardless of whether the sample contributed [non-zero
+			// radiance]".  A zero-throughput attempt already carries no
+			// matching `Accumulate()` call (the `if(skipContinuation)
+			// break;` below stops before any escape/NEE can fire), so it
+			// is correctly a COUNTED ZERO once counted here -- consistent
+			// with the realized-moment convention (a killed/zero attempt
+			// is a counted zero).  Leaving it uncounted instead estimates
+			// `E[.]/P(throughput>0)`, inflating `M_bsdf` by `1/P`.
+			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !pS->isDelta )
 			{
 				const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
 					rast.x, rast.y, kTechniqueBSDF );

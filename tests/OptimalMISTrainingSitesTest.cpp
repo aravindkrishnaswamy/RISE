@@ -1731,6 +1731,225 @@ static void RunAlphaQualityCheck()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// COUNT-POPULATION MISMATCH (round-2 review, P2-2 -- the same class of
+// bug as round 6's: a training-input SITE gate that silently disagrees
+// with its PARTNER's notion of "one attempt").
+//
+// THE BUG.  The surface continuation's `AccumulateCount` used to gate
+// on `!skipContinuation`, and `skipContinuation` is set BEFORE Russian
+// roulette purely from the sampled lobe's OWN throughput
+// (`PTSurvivalMagnitude(scatterThroughput) <= NEARZERO`) -- so it is
+// ALSO true whenever a non-delta lobe legitimately draws a
+// ZERO-throughput sample (a below-horizon direction, or a lobe whose
+// `kray` genuinely is zero for that draw), with NOTHING to do with
+// Russian roulette.  `LightSampler.cpp`'s NEE arm counts every
+// attempt, INCLUDING a geometry-rejected zero draw (its own
+// `AccumulateCount` has no throughput gate at all) -- and
+// `OptimalMISAccumulator.h`'s own header comment says the moment is
+// `E_{x~p_i}[(f/p_i)^2]`, an expectation over EVERY draw from `p_i`,
+// zero-valued ones included.  Excluding a zero-throughput attempt from
+// the count computes `sum/N_survivors = E[.]/P(throughput>0)` instead
+// of `E[.]`, inflating `M_bsdf` by `1/P(throughput>0)`.
+//
+// THE FIXTURE.  `HalfZeroKraySPF` decorates a real, non-delta
+// `LambertianSPF` and deterministically zeroes `kray`/`krayNM` on every
+// OTHER draw (a plain alternating counter, not a coin flip, so
+// `P(throughput>0)` is EXACTLY 1/2, not merely "about half") while
+// forwarding the sampled direction, pdf and `isDelta` flag verbatim --
+// so `ScatteredRayContainer` is NEVER empty (a zero-kray lobe is still
+// a valid, single, non-delta `ScatteredRay`, and
+// `ScatteredRayContainer::RandomlySelect` returns the sole entry
+// unconditionally when `Count()==1`, regardless of its weight) and the
+// walk reaches the `AccumulateCount` gate on every driven sample, with
+// `scatterThroughput` pinned to exactly `(0,0,0)` on half of them.  The
+// fixture uses an UNTILTED normal (shading normal == geometric normal)
+// so the pre-existing horizon gate in `LambertianSPF::Scatter` never
+// fires on its own -- isolating the zero-kray mechanism from any
+// below-horizon rejection.  `importance=1` and a fresh
+// `PathTracingIntegrator` (default `rrMinDepth`) keep Russian roulette
+// from engaging at depth 0, so this fixture's own zero-throughput
+// draws are the ONLY source of `skipContinuation` here.
+//
+// THE ASSERTION.  With `N` driven samples, pre-fix `countBsdf` is `N/2`
+// (only the surviving, non-zero-throughput attempts were counted);
+// fixed, it is exactly `N` (every non-delta attempt).  A pure count,
+// so no render/radiance comparison is needed.
+//////////////////////////////////////////////////////////////////////
+class HalfZeroKraySPF : public virtual ISPF, public virtual Reference
+{
+	ISPF*					real;
+	mutable unsigned int	counter;
+
+protected:
+	~HalfZeroKraySPF() override { safe_release( real ); }
+
+public:
+	explicit HalfZeroKraySPF( ISPF* r ) : real( r ), counter( 0 ) { real->addref(); }
+
+	void Scatter(
+		const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& scattered, const IORStack& ior_stack ) const override
+	{
+		const unsigned int before = scattered.Count();
+		real->Scatter( ri, sampler, scattered, ior_stack );
+		for( unsigned int i = before; i < scattered.Count(); ++i )
+		{
+			ScatteredRay& s = scattered[i];
+			if( !s.isDelta && ( (counter++) & 1u ) == 0u ) {
+				s.kray = RISEPel( 0, 0, 0 );
+			}
+		}
+	}
+
+	void ScatterNM(
+		const RayIntersectionGeometric& ri, ISampler& sampler, const Scalar nm,
+		ScatteredRayContainer& scattered, const IORStack& ior_stack ) const override
+	{
+		const unsigned int before = scattered.Count();
+		real->ScatterNM( ri, sampler, nm, scattered, ior_stack );
+		for( unsigned int i = before; i < scattered.Count(); ++i )
+		{
+			ScatteredRay& s = scattered[i];
+			if( !s.isDelta && ( (counter++) & 1u ) == 0u ) {
+				s.krayNM = 0;
+			}
+		}
+	}
+
+	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const override
+	{ return real->Pdf( ri, wo, ior_stack ); }
+
+	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const override
+	{ return real->PdfNM( ri, wo, nm, ior_stack ); }
+};
+
+//! Forwards GetBSDF/GetEmitter verbatim from a real material; GetSPF
+//! returns the HalfZeroKraySPF decoration of that material's own SPF.
+class HalfZeroKrayMaterial : public virtual IMaterial, public virtual Reference
+{
+	IMaterial*			pBase;
+	HalfZeroKraySPF*	pSPF;
+
+protected:
+	~HalfZeroKrayMaterial() override { safe_release( pSPF ); safe_release( pBase ); }
+
+public:
+	explicit HalfZeroKrayMaterial( IMaterial* base ) : pBase( base )
+	{
+		pBase->addref();
+		pSPF = new HalfZeroKraySPF( pBase->GetSPF() );
+		GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "half-zero-kray SPF" );
+	}
+
+	IBSDF* GetBSDF() const override { return pBase->GetBSDF(); }
+	ISPF* GetSPF() const override { return pSPF; }
+	IEmitter* GetEmitter() const override { return pBase->GetEmitter(); }
+};
+
+//! Drives the surface continuation site with the alternating-kray lobe
+//! and hands back the accumulator's raw per-tile BSDF count and moment.
+static void DriveHalfZeroKraySite(
+	const Fixture& fx,
+	const PathTracingIntegrator& integrator,
+	Object& object,
+	IMaterial& material,
+	unsigned int nSamples,
+	double& sumBsdf,
+	unsigned int& countBsdf )
+{
+	const RasterizerState rast{};
+
+	OptimalMISAccumulator acc;
+	acc.Initialize( 64, 64, MakeConfig() );
+
+	DriveOnFreshThread( 5107u, [&]() {
+		for( unsigned int s = 0; s < nSamples; ++s )
+		{
+			RandomNumberGenerator rng( 73000 + s );
+			IndependentSampler sampler( rng );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			rc.pOptimalMIS = &acc;
+
+			// Untilted: shading normal == geometric normal, so
+			// LambertianSPF's own below-horizon gate never fires here --
+			// isolating the alternating-kray mechanism.
+			RayIntersection hit( Ray( Point3( 0, 0, 10 ), Vector3( 0, 0, -1 ) ), rast );
+			hit.geometric.bHit = true;
+			hit.geometric.range = 10;
+			hit.geometric.ptIntersection = Point3( 0, 0, 0 );
+			hit.geometric.vNormal = Vector3( 0, 0, 1 );
+			hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
+			hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
+			hit.pObject = &object;
+			hit.pMaterial = &material;
+
+			IORStack stack( 1.0 );
+
+			integrator.IntegrateFromHit(
+				rc, rast, hit, *fx.pScene, *fx.pCaster, sampler,
+				/*pRadianceMap*/ 0, /*startDepth*/ 0, stack,
+				/*bsdfPdf_*/ 0, /*bsdfTimesCos_*/ RISEPel( 0, 0, 0 ),
+				/*considerEmission_*/ true, /*importance*/ 1.0,
+				IRayCaster::RAY_STATE::eRayDiffuse,
+				0, 0, 0, 0, 0, 0, false, false );
+		}
+	} );
+
+	double sumNee = 0;
+	unsigned int countNee = 0;
+	acc.GetTileTraining( 0, 0, sumNee, sumBsdf, countNee, countBsdf );
+}
+
+static void RunCountPopulationCheck()
+{
+	std::cout << "P2-2 (round-2 review): the surface continuation counts EVERY "
+		"non-delta attempt, including a zero-throughput draw" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( AreaLightScene(), "countpop" ), "count-population fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+	GlobalLog()->PrintNew( white, __FILE__, __LINE__, "count-pop painter" );
+	LambertianMaterial* baseMaterial = new LambertianMaterial( *white );
+	GlobalLog()->PrintNew( baseMaterial, __FILE__, __LINE__, "count-pop base material" );
+	HalfZeroKrayMaterial* material = new HalfZeroKrayMaterial( baseMaterial );
+	GlobalLog()->PrintNew( material, __FILE__, __LINE__, "count-pop half-zero-kray material" );
+
+	SphereGeometry* sphere = new SphereGeometry( 10.0 );
+	GlobalLog()->PrintNew( sphere, __FILE__, __LINE__, "count-pop placeholder geometry" );
+	sphere->addref();
+	Object* object = new Object( sphere );
+	GlobalLog()->PrintNew( object, __FILE__, __LINE__, "count-pop placeholder object" );
+	object->addref();
+	sphere->release();
+	object->AssignMaterial( *material );
+
+	PathTracingIntegrator* integrator =
+		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+	GlobalLog()->PrintNew( integrator, __FILE__, __LINE__, "count-pop integrator" );
+
+	static const unsigned int kSamples = 4000;
+	double sumBsdf = 0;
+	unsigned int countBsdf = 0;
+	DriveHalfZeroKraySite( fx, *integrator, *object, *material, kSamples, sumBsdf, countBsdf );
+
+	std::cout << "    count-population: " << countBsdf << " / " << kSamples
+		<< " counted attempts (expect exactly " << kSamples << ", i.e. fraction 1.0;"
+		<< " pre-fix this reads " << (kSamples/2) << ", fraction 0.5)" << std::endl;
+
+	Check( countBsdf == kSamples,
+		"count-population: EVERY non-delta attempt is counted, including a "
+		"zero-throughput draw (pre-fix undercounted by the survival fraction)" );
+
+	integrator->release();
+	object->release();
+	material->release();
+	baseMaterial->release();
+	white->release();
+}
+
 int main()
 {
 	GlobalLog();
@@ -1742,6 +1961,7 @@ int main()
 	RunVolumeRRConventionCheck();
 	RunLightRRConventionCheck();
 	RunAlphaQualityCheck();
+	RunCountPopulationCheck();
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
