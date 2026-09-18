@@ -1149,7 +1149,7 @@ namespace RISEFireProductionFP64
 		// State/T/projected velocity are already resident owner surfaces.
 		return AddMetalValueBuffer(3u*cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
-			AddMetalValueBuffer(7u*32u+64u,sizeof(double),bytes)&&
+			AddMetalValueBuffer(7u*32u+64u+21u,sizeof(double),bytes)&&
 			AddMetalValueBuffer(6u*(1u+5u*128u),sizeof(double),bytes)&&
 			AddMetalValueBuffer(boundaryFaces,sizeof(unsigned char),bytes)&&
 			AddMetalValueBuffer(256u,sizeof(unsigned char),bytes)&&

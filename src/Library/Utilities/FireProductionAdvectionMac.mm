@@ -451,7 +451,7 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 		constexpr std::size_t MetalEOSThermochemistryValues=
 			7u*MetalEOSThermochemistrySpeciesStride+6u+3u*64u;
 		constexpr std::size_t MetalManifoldCertificateValues=
-			MetalThermochemistrySpeciesValues+64u;
+			MetalThermochemistrySpeciesValues+64u+21u;
 		constexpr std::size_t MetalManifoldQuantileBins=65536u;
 		constexpr std::size_t MetalManifoldQuantileControlWords=6u;
 		constexpr std::size_t MetalManifoldQuantileScratchWords=
@@ -488,6 +488,11 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 					for(std::size_t coefficient=0u;coefficient<7u;++coefficient)
 						output[2u+coefficient]=static_cast<float>(segment.coefficients[coefficient]);
 					output[9]=static_cast<float>(segment.sensibleEnthalpyOffsetJPerKG);
+					std::array<double,7> anchor;
+					if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(segment.temperatureMinK,
+						anchor.data(),anchor.size(),error))return false;
+					packed[MetalThermochemistrySpeciesValues+64u+3u*speciesIndex+segmentIndex]=
+						static_cast<float>(anchor[speciesIndex]);
 				}
 			}
 			const FireCertifiedNullspace& affine=fuel.ConservativeReconstruction();
@@ -2543,17 +2548,29 @@ inline float pf_imposed(device const float* operands,constant PhysicalParams& ex
  uint bottomFace,uint component){uint base=9u+2u*extra.burnerFaces;float total=0.0f;
  for(uint species=1u;species<=7u;++species)total+=operands[base+species];
  return (operands[9u+extra.burnerFaces+bottomFace]*operands[base+component])/total;}
-inline float pf_enthalpy(device const float* thermo,uint species,float temperature,float logT,
+inline float pf_log_ratio(float temperature,float anchor){
+ // Range reduction preserves the small difference at the reference endpoint.
+ uint exponent=0u;float reference=anchor;
+ while(temperature>2.0f*reference){reference*=2.0f;++exponent;}
+ float y=(temperature-reference)/(temperature+reference),y2=y*y,power=y,sum=y;
+ for(uint odd=3u;odd<=17u;odd+=2u){power*=y2;sum+=power/float(odd);}
+ return float(exponent)*0.6931471805599453f+2.0f*sum;
+}
+inline float pf_enthalpy(device const float* thermo,uint species,float temperature,
  thread bool& valid,device atomic_uint* obligations){device const float* record=thermo+32u*species;
- uint segments=uint(record[1]);device const float* selected=record+2u;bool found=false;
+ uint segments=uint(record[1]),selectedIndex=0u;device const float* selected=record+2u;bool found=false;
  for(uint segment=0u;segment<segments;++segment){device const float* candidate=record+2u+10u*segment;
   if(temperature>=candidate[0]&&(temperature<candidate[1]||(segment+1u==segments&&temperature==candidate[1]))){
-   selected=candidate;found=true;atomic_fetch_or_explicit(obligations,1u<<(7u+min(segment,2u)),memory_order_relaxed);}}
- if(!found){valid=false;return 0.0f;}float inverse=1.0f/temperature;
- float t2=temperature*temperature,t3=t2*temperature,t4=t3*temperature,t5=t4*temperature;
- float primitive=-selected[2]*inverse+selected[3]*logT+selected[4]*temperature+
-  selected[5]*t2*0.5f+selected[6]*t3*(1.0f/3.0f)+selected[7]*t4*0.25f+
-  selected[8]*t5*0.2f;float h=8314.46261815324f*primitive/record[0]+selected[9];
+   selected=candidate;selectedIndex=segment;found=true;atomic_fetch_or_explicit(obligations,1u<<(7u+min(segment,2u)),memory_order_relaxed);}}
+ if(!found){valid=false;return 0.0f;}
+ // Integrate cp from the segment anchor; no cancellation of absolute h.
+ float anchor=selected[0],delta=temperature-anchor,a2=anchor*anchor,a3=a2*anchor,a4=a3*anchor;
+ float sum2=temperature+anchor,sum3=temperature*sum2+a2;
+ float sum4=temperature*sum3+a3,sum5=temperature*sum4+a4;
+ float polynomial=selected[2]/(temperature*anchor)+selected[4]+selected[5]*sum2*0.5f+
+  selected[6]*sum3/3.0f+selected[7]*sum4*0.25f+selected[8]*sum5/5.0f;
+ float integral=delta*polynomial+selected[3]*pf_log_ratio(temperature,anchor);
+ float h=thermo[288u+3u*species+selectedIndex]+8314.46261815324f*integral/record[0];
  if(!isfinite(h))valid=false;return h;}
 kernel void evaluate_resident_physical_flux(device const float* state [[buffer(0)]],
  device const float* temperature [[buffer(1)]],device const float* coefficients [[buffer(2)]],
@@ -2614,7 +2631,7 @@ kernel void evaluate_resident_physical_flux(device const float* state [[buffer(0
  float gas=0.0f;for(uint component=1u;component<=6u;++component)gas+=projected[component];physicalGas[gid]=gas;
  float faceT=0.5f*(leftT+rightT),logT=pf_log(faceT),energy=0.0f;faceLogTemperature[gid]=logT;
  for(uint species=0u;species<7u;++species){
-  float h=pf_enthalpy(thermo,species,faceT,logT,valid,obligations);
+  float h=pf_enthalpy(thermo,species,faceT,valid,obligations);
   faceEnthalpy[species*all+gid]=h;energy+=h*projected[1u+species];}
  energy-=k*(rightT-leftT)/distance;physicalEnergy[gid]=energy;
  for(uint component=0u;component<8u;++component)valid=valid&&isfinite(projected[component]);
@@ -7784,6 +7801,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				targetObligations_,zeroTarget_,zeroTargetIdentity_,zeroTargetConsumerIdentity_,rootCandidateIdentity_,
 				integratedOpenHead_;
 			id<MTLBuffer> inletProjectionOperand_=nil,inletForceMask_=nil;
+			id<MTLBuffer> refusalLowState_=nil;
 			float injectedGasDensity_=0.0f;
 			std::unique_ptr<ResidentProjectionTargetMetalAuthority> bootstrapTarget_;
 			const Stage* eosReuseParent_=nullptr;
@@ -8471,11 +8489,14 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				ResidentEOSCandidateMetalAuthority& candidate,std::string* error)
 			{
 				const std::size_t stateBytes=9u*cells_*sizeof(float);
+				refusalLowState_=nil;
 				candidate.conservative=Private(stateBytes);candidate.sourceDelta=sourceDelta_;
 				candidate.faceAlpha=Private(allFaces_*sizeof(float));
 				candidate.producerIdentity=Private(sizeof(std::uint64_t));
 				candidate.publicationIdentity=Private(sizeof(std::uint64_t));
 				id<MTLBuffer> lowState=Private(stateBytes),ratio=Private(11u*cells_*sizeof(float));
+				const char* refusalOption=std::getenv("RISE_FIRE_REFUSAL_CLAUSES");
+				if(refusalOption&&std::strcmp(refusalOption,"1")==0)refusalLowState_=lowState;
 				if(!candidate.conservative||!candidate.faceAlpha||!candidate.producerIdentity||
 					!candidate.publicationIdentity||!lowState||!ratio)return false;
 				candidate.parentCommand=command;candidate.parentPhysicalPublicationIdentity=
@@ -8523,6 +8544,71 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 						candidate.publicationIdentity,failure_},1u)){
 					if(error)*error="projected-Heun resident candidate encoder failed";return false;}
 				return true;
+			}
+			void ReportFCTRefusal(const Stage& output,const unsigned int stage)
+			{
+				// Refused candidates only: inspect the existing payload, never issue a seal.
+				const std::size_t bytes=9u*cells_*sizeof(float);
+				id<MTLBuffer> witness=[context_.device newBufferWithLength:2u*bytes+14u*sizeof(float)
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];
+				if(!witness||!blit||!refusalLowState_||!output.candidate)return;
+				Copy(blit,refusalLowState_,0u,witness,0u,bytes,TransferKind::Control);
+				Copy(blit,output.candidate->conservative,0u,witness,bytes,bytes,TransferKind::Control);
+				Copy(blit,enthalpy_,0u,witness,2u*bytes,14u*sizeof(float),TransferKind::Control);
+				[blit endEncoding];if(!Commit(command,nullptr))return;
+				const float* values=static_cast<const float*>(Read(witness,TransferKind::Control));
+				if(!values)return;const float* enthalpy=values+18u*cells_;
+				for(unsigned int payload=0u;payload<2u;++payload){
+					const float* state=values+payload*9u*cells_;double worst=-1.0e300;
+					std::size_t worstCell=0u;unsigned int worstRow=0u;double worstBound=0.0;
+					for(std::size_t cell=0u;cell<cells_;++cell){double q[9],scale=1.0;
+						for(unsigned int c=0u;c<9u;++c){q[c]=state[c*cells_+cell];scale+=std::abs(q[c]);}
+						for(unsigned int row=0u;row<11u;++row){double excess=0.0;
+							if(row==0u)excess=-q[0];else if(row==1u){excess=q[0];
+								for(unsigned int s=0u;s<7u;++s)excess-=q[1u+s];}
+							else if(row<9u)excess=-q[row-1u];else {excess=row==9u?-q[8]:q[8];
+								for(unsigned int s=0u;s<7u;++s)excess+=(row==9u?enthalpy[s]:-enthalpy[7u+s])*q[1u+s];}
+							const double bound=fctMetadata_.feasibility*scale;
+							if(excess-bound>worst){worst=excess-bound;worstCell=cell;worstRow=row;worstBound=bound;}
+						}
+					}
+					std::fprintf(stderr,"FCT_REFUSAL_FP64 stage=%u payload=%s cell=%zu row=%u residual=%.17g bound=%.17g units=%s q=",
+						stage,payload==0u?"low":"candidate",worstCell,worstRow,worst+worstBound,worstBound,
+						worstRow<9u?"kg/m3":"J/m3");
+					for(unsigned int c=0u;c<9u;++c)std::fprintf(stderr,"%.17g,",double(state[c*cells_+worstCell]));
+					std::fprintf(stderr,"\n");
+					if(payload==0u){
+						const std::size_t nx=fctMetadata_.nx,ny=fctMetadata_.ny,nz=fctMetadata_.nz;
+						const std::size_t x=worstCell%nx,y=(worstCell/nx)%ny,z=worstCell/(nx*ny);
+						const std::size_t fx=(nx+1u)*ny*nz,fy=nx*(ny+1u)*nz;
+						const std::size_t faces[6]={x+(nx+1u)*(y+ny*z),x+1u+(nx+1u)*(y+ny*z),
+							fx+x+nx*(y+(ny+1u)*z),fx+x+nx*(y+1u+(ny+1u)*z),
+							fx+fy+x+nx*(y+ny*z),fx+fy+x+nx*(y+ny*(z+1u))};
+						id<MTLBuffer> terms=[context_.device newBufferWithLength:69u*sizeof(float)
+							options:MTLResourceStorageModeShared];
+						id<MTLCommandBuffer> detail=TrackedMetalCommandBuffer(context_.queue);
+						id<MTLBlitCommandEncoder> gather=[detail blitCommandEncoder];
+						if(!terms||!gather)return;
+						Copy(gather,output.transport->parentState,(8u*cells_+worstCell)*sizeof(float),terms,0u,sizeof(float),TransferKind::Control);
+						Copy(gather,sourceDelta_,(8u*cells_+worstCell)*sizeof(float),terms,sizeof(float),sizeof(float),TransferKind::Control);
+						Copy(gather,output.transport->parentTemperature,worstCell*sizeof(float),terms,2u*sizeof(float),sizeof(float),TransferKind::Control);
+						for(unsigned int face=0u;face<6u;++face){const std::size_t base=3u+11u*face;
+							Copy(gather,output.physical->physicalEnergy,faces[face]*sizeof(float),terms,base*sizeof(float),sizeof(float),TransferKind::Control);
+							Copy(gather,output.physical->donorAdvective,(8u*allFaces_+faces[face])*sizeof(float),terms,(base+1u)*sizeof(float),sizeof(float),TransferKind::Control);
+							Copy(gather,output.physical->lowComposite,(8u*allFaces_+faces[face])*sizeof(float),terms,(base+2u)*sizeof(float),sizeof(float),TransferKind::Control);
+							Copy(gather,output.physical->faceLogTemperature,faces[face]*sizeof(float),terms,(base+3u)*sizeof(float),sizeof(float),TransferKind::Control);
+							for(unsigned int s=0u;s<7u;++s)Copy(gather,output.physical->faceSensibleEnthalpy,(s*allFaces_+faces[face])*sizeof(float),terms,(base+4u+s)*sizeof(float),sizeof(float),TransferKind::Control);
+						}
+						[gather endEncoding];if(!Commit(detail,nullptr))return;
+						const float* t=static_cast<const float*>(Read(terms,TransferKind::Control));if(!t)return;
+						std::fprintf(stderr,"FCT_REFUSAL_ENERGY cell=%zu xyz=%zu,%zu,%zu beginning_J_m3=%.17g source_J_m3=%.17g T_K=%.17g\n",worstCell,x,y,z,double(t[0]),double(t[1]),double(t[2]));
+						for(unsigned int face=0u;face<6u;++face){const std::size_t base=3u+11u*face;
+							std::fprintf(stderr,"FCT_REFUSAL_FACE direction=%u face=%zu physical_W_m2=%.17g donor_W_m2=%.17g low_W_m2=%.17g logT=%.17g h_J_kg=",face,faces[face],double(t[base]),double(t[base+1u]),double(t[base+2u]),double(t[base+3u]));
+							for(unsigned int s=0u;s<7u;++s)std::fprintf(stderr,"%.17g,",double(t[base+4u+s]));std::fprintf(stderr,"\n");}
+					}
+				}
 			}
 			bool CorrectTargetAuthority(id<MTLCommandBuffer> command,const unsigned int stage,
 				const ResidentProjectionTargetMetalAuthority& parent,const bool correction,
@@ -8819,6 +8905,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 										static_cast<unsigned long long>(values[index]));}}
 						if(clauses&&clauses[1]==0u&&clauses[2]==128u)
 							ReportTemperatureRefusal(output,state,stage,predicateVerified);
+						if(clauses&&clauses[0]==0u&&clauses[1]!=0u)
+							ReportFCTRefusal(output,stage);
 					}
 					if(error)*error="projected-Heun resident stage device validation failed: stage="+
 						std::to_string(stage)+" bitmap="+std::to_string(stageFailureBitmap);

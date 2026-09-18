@@ -207,8 +207,17 @@ namespace RISE
 						double representedEnergy=0.0;
 						if(!SignedMixtureSensibleEnergy(sourceBeginning[cell],evaluationTemperatureK,
 							fuel,representedEnergy,error)||static_cast<float>(representedEnergy)!=
-								request.beginningConservativeValues[8u*cells+cell])return Fail(error,
-							"production canonical source evaluation temperature fails forward EOS closure");
+								request.beginningConservativeValues[8u*cells+cell]){
+							std::ostringstream message;message.precision(17);
+							message<<"production canonical source evaluation temperature fails forward EOS closure"
+								<<" cell="<<cell<<" evaluation_T_K="<<evaluationTemperatureK
+								<<" inverted_T_K="<<invertedTemperatureK<<" canonical_T_K="<<canonicalTemperatureK[cell]
+								<<" forward_energy_J_m3="<<representedEnergy
+								<<" rounded_forward_energy_J_m3="<<static_cast<float>(representedEnergy)
+								<<" stored_energy_J_m3="<<tuple[8u]<<" tuple=";
+							for(std::size_t component=0u;component<9u;++component)message<<tuple[component]<<',';
+							return Fail(error,message.str());
+						}
 					}
 					eligibilityBeginning[cell]=FromConservativeVector(eligibilityTuple,
 						FireStateProducerPrecision::Binary32);

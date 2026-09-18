@@ -1129,6 +1129,7 @@ namespace
 		bool r217RefusalDiagnostic=false;
 		bool r222RefusalDiagnostic=false;
 		bool r225RefusalDiagnostic=false;
+		bool r241RefusalDiagnostic=false;
 		bool r220ResumeProbe=false;
 		bool r221Retained=false;
 		bool hostMemoryResumeStopRED=false;
@@ -1226,9 +1227,9 @@ namespace
 
 	const RISECBOR64::Bytes& ProductionBurnerPolicyBytes()
 	{
-		static const std::string preimage="rise.fire.production.burner.v1:"
+		static const std::string preimage="rise.fire.production.burner.v3:"
 			"wall-bed;prescribed-shared-fct-inlet;chemistry-at-Q0;no-volumetric-fuel;"
-			"accepted-represented-flux-ledger";
+			"accepted-represented-flux-ledger;canonical-source-temperature;segment-anchored-physical-enthalpy";
 		static const RISECBOR64::Bytes bytes(preimage.begin(),preimage.end());
 		return bytes;
 	}
@@ -3568,13 +3569,18 @@ namespace
 			24.0*static_cast<double>(static_cast<float>(0.0016462659696117043)))){
 			values.structuredError="host_memory_retention_red_scope_refused";return values;}
 		const char* refusalOption=std::getenv("RISE_FIRE_REFUSAL_CLAUSES");
-		if((refusalOption&&!persistence.r217RefusalDiagnostic&&!persistence.r222RefusalDiagnostic&&!persistence.r225RefusalDiagnostic)||
+		if((refusalOption&&!persistence.r217RefusalDiagnostic&&!persistence.r222RefusalDiagnostic&&!persistence.r225RefusalDiagnostic&&!persistence.r241RefusalDiagnostic)||
 			(persistence.r217RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
 			!persistence.projectedHeunCertificateDiagnostic||!persistence.projectedHeunEOSDiagnostic||
 			persistence.tier10RetainedContinuation||persistence.sealedProjectedHeunContinuation||
 			resolutionTier!=10.0||DigestFile(persistence.checkpointPath)!=R217CheckpointSHA||
 			persistence.isolatedExpectedCheckpointBuildId!=R216ProducerBuild))){
 			values.structuredError="r217_refusal_diagnostic_scope_conflict";return values;
+		}
+		if(persistence.r241RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
+			persistence.resume||!persistence.productionMetal||!persistence.portedProductionTransport||
+			resolutionTier!=8.0||caseDurationS!=25.091040127156969||caseFramesPerS!=16.0||targetTimeS!=0.35)){
+			values.structuredError="r241_refusal_diagnostic_scope_conflict";return values;
 		}
 		if(persistence.r222RefusalDiagnostic&&(!refusalOption||std::strcmp(refusalOption,"1")!=0||
 			!persistence.projectedHeunCertificateDiagnostic||!persistence.projectedHeunEOSDiagnostic||
@@ -4473,7 +4479,11 @@ namespace
 					sourceRequest.beginningTimeS=simulationTimeS;
 					sourceRequest.caseRecordEnvelope=caseRecord.envelopeBytes;
 					sourceRequest.beginningConservativeValues.resize(9u*shape.CellCount());
-					sourceRequest.sourceEvaluationTemperatureK.resize(shape.CellCount());
+					// The ported owner uses canonical inversion, including accepted
+					// endpoint states that need not have an exact forward-roundtrip root.
+					// Historical replay keeps its explicitly qualified legacy override.
+					if(!persistence.portedProductionTransport)
+						sourceRequest.sourceEvaluationTemperatureK.resize(shape.CellCount());
 					sourceRequest.eligibilityBeginningConservativeValues.resize(9u*shape.CellCount());
 					sourceRequest.pilotCommandMask.resize(shape.CellCount());
 					sourceRequest.sourceBoundaryContactMask.resize(shape.CellCount());
@@ -4486,7 +4496,8 @@ namespace
 							sourceRequest.eligibilityBeginningConservativeValues[component*shape.CellCount()+cell]=
 								static_cast<float>(beginning[cell][component]);
 						}
-						sourceRequest.sourceEvaluationTemperatureK[cell]=packetBeginning[cell].temperatureK;
+						if(!persistence.portedProductionTransport)
+							sourceRequest.sourceEvaluationTemperatureK[cell]=packetBeginning[cell].temperatureK;
 						sourceRequest.pilotCommandMask[cell]=ProductionPilotCommandCell(cell,shape.nx,
 							shape.ny,canonicalPilotMask,sourcePattern)?1u:0u;
 						sourceRequest.sourceBoundaryContactMask[cell]=ProductionSourceBoundaryContactCell(
@@ -5444,6 +5455,12 @@ namespace
 										minimumAuxiliaryFaceDensity,maximumTransportedMomentum);
 								}
 								acceptedBeginningStates=std::move(packetBeginning);
+								// Recompute the pilot ledger at the source producer's actual
+								// evaluation temperature, not the legacy binary64 override.
+								if(persistence.portedProductionTransport)
+									for(std::size_t cell=0u;cell<acceptedBeginningStates.size();++cell)
+										acceptedBeginningStates[cell].temperatureK=
+											projectedHeunSource.BeginningTemperatureK()[cell];
 								acceptedExternalFuelMassKG=persistence.portedProductionTransport?
 									ProductionBurnerFuelDoseKG(projectedHeunRequest):externalFuelMassKG;
 							}
@@ -8118,7 +8135,7 @@ namespace
 		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";
-		persistence.checkpointCadenceWallS=900.0;
+		persistence.checkpointCadenceWallS=300.0;
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.temporalSnapshotDirectory=outputDirectory/"checkpoints";
 		persistence.temporalSnapshotCadenceS=frameCadenceS;
@@ -8514,7 +8531,7 @@ namespace
 	}
 
 	int RunProductionHostMemoryPrefixChild(const std::filesystem::path& outputDirectory,
-		const bool retentionRED=false)
+		const bool retentionRED=false,const bool refusalDiagnostic=false)
 	{
 		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory)||
 			!HostMemoryPolicyREDs())return 91;
@@ -8522,12 +8539,17 @@ namespace
 		RunPersistenceOptions persistence;persistence.productionMetal=true;
 		persistence.portedProductionTransport=true;
 		persistence.hostMemoryRetentionRED=retentionRED;
+		persistence.r241RefusalDiagnostic=refusalDiagnostic;
+		if(refusalDiagnostic){persistence.checkpointPath=outputDirectory/"diagnostic.checkpoint";
+			persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";}
 		persistence.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.finalCheckpointPath=outputDirectory/"final.checkpoint";
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
-		const auto result=RunMethaneFrameProbe(8u,1u,24.0*persistence.maximumProductionSourceStepS,
-			3.0,1.0,8.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		if(refusalDiagnostic)persistence.checkpointCadenceWallS=120.0;
+		const auto result=RunMethaneFrameProbe(8u,1u,refusalDiagnostic?0.35:24.0*persistence.maximumProductionSourceStepS,
+			refusalDiagnostic?25.091040127156969:3.0,refusalDiagnostic?16.0:1.0,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		std::string error;
 		const bool sealed=SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error);
 		if(retentionRED){
@@ -8545,7 +8567,7 @@ namespace
 		}
 		std::fprintf(stderr,"HOST_MEMORY_PREFIX diagnostic_only=1 accepted_steps=%zu time=%.17g sealed=%d error=%s\n",
 			result.acceptedTimeStepHistoryS.size(),result.simulatedTimeS,sealed?1:0,result.structuredError.c_str());
-		return result.succeeded&&sealed&&result.acceptedTimeStepHistoryS.size()==24u?0:93;
+		return result.succeeded&&sealed&&(refusalDiagnostic||result.acceptedTimeStepHistoryS.size()==24u)?0:93;
 	}
 
 	int RunProductionOwnerCostPrefixChild(const std::filesystem::path& outputDirectory)
@@ -9906,6 +9928,81 @@ CertifiedBinary32 CertifiedDivide(const CertifiedBinary32& a,const CertifiedBina
 	if(!(denominator>0.0))return InvalidCertifiedBinary32();
 	const double inherited=(a.error+std::fabs(exact)*b.error)/denominator;
 	return {rounded,exact,inherited+Binary32RoundingEnvelope(std::fabs(exact)+inherited),true};
+}
+
+// Walk pf_enthalpy's packed-coefficient DAG at the represented temperature.
+// Temperature uncertainty is propagated separately through the certified cp
+// interval; it cannot substitute for the producer's own arithmetic error.
+CertifiedBinary32 CertifiedPhysicalEnthalpy(const FireSimulationMethaneRecord& fuel,
+	const std::size_t speciesIndex,const float temperature)
+{
+	if(speciesIndex>=fuel.SpeciesOrder().size()||!std::isfinite(temperature))
+		return InvalidCertifiedBinary32();
+	const FireThermochemistrySpecies* species=fuel.FindSpecies(
+		fuel.SpeciesOrder()[speciesIndex].c_str());
+	if(!species)return InvalidCertifiedBinary32();
+	const FireThermochemistrySegment* selected=nullptr;
+	for(std::size_t index=0u;index<species->segments.size();++index){
+		const auto& segment=species->segments[index];
+		if(temperature>=static_cast<float>(segment.temperatureMinK)&&
+			(temperature<static_cast<float>(segment.temperatureMaxK)||
+			(index+1u==species->segments.size()&&temperature==static_cast<float>(segment.temperatureMaxK))))
+			selected=&segment;
+	}
+	if(!selected)return InvalidCertifiedBinary32();
+	// All canonical segment endpoints are exactly representable. Refuse an
+	// altered record rather than silently deriving a log bound for another A.
+	if(static_cast<double>(static_cast<float>(selected->temperatureMinK))!=selected->temperatureMinK)
+		return InvalidCertifiedBinary32();
+	std::array<double,7> anchors={{}},canonical={{}};std::string error;
+	if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(selected->temperatureMinK,
+		anchors.data(),anchors.size(),&error)||!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(
+		temperature,canonical.data(),canonical.size(),&error))return InvalidCertifiedBinary32();
+	const auto T=CertifiedInput(temperature),A=CertifiedRecord(selected->temperatureMinK),
+		delta=CertifiedSubtract(T,A),a2=CertifiedMultiply(A,A),a3=CertifiedMultiply(a2,A),
+		a4=CertifiedMultiply(a3,A),sum2=CertifiedAdd(T,A),
+		sum3=CertifiedAdd(CertifiedMultiply(T,sum2),a2),
+		sum4=CertifiedAdd(CertifiedMultiply(T,sum3),a3),
+		sum5=CertifiedAdd(CertifiedMultiply(T,sum4),a4);
+	std::array<CertifiedBinary32,7> coefficient;
+	for(std::size_t term=0u;term<coefficient.size();++term)
+		coefficient[term]=CertifiedRecord(selected->coefficients[term]);
+	auto polynomial=CertifiedAdd(CertifiedDivide(coefficient[0],CertifiedMultiply(T,A)),coefficient[2]);
+	polynomial=CertifiedAdd(polynomial,CertifiedMultiply(CertifiedMultiply(coefficient[3],sum2),CertifiedInput(0.5f)));
+	polynomial=CertifiedAdd(polynomial,CertifiedDivide(CertifiedMultiply(coefficient[4],sum3),CertifiedInput(3.0f)));
+	polynomial=CertifiedAdd(polynomial,CertifiedMultiply(CertifiedMultiply(coefficient[5],sum4),CertifiedInput(0.25f)));
+	polynomial=CertifiedAdd(polynomial,CertifiedDivide(CertifiedMultiply(coefficient[6],sum5),CertifiedInput(5.0f)));
+	unsigned int exponent=0u;float reference=A.rounded;
+	while(temperature>2.0f*reference){reference*=2.0f;++exponent;}
+	// Multiplication by two is exact here. With A<=T, range reduction gives
+	// 0<=y<=1/3; the omitted atanh tail is <=2*y^19/(19*(1-y^2)).
+	const auto y=CertifiedDivide(CertifiedSubtract(T,CertifiedInput(reference)),
+		CertifiedAdd(T,CertifiedInput(reference))),y2=CertifiedMultiply(y,y);
+	if(!y.valid||y.exact<0.0||y.exact>1.0/3.0)return InvalidCertifiedBinary32();
+	auto power=y,sum=y;
+	for(unsigned int odd=3u;odd<=17u;odd+=2u){power=CertifiedMultiply(power,y2);
+		sum=CertifiedAdd(sum,CertifiedDivide(power,CertifiedInput(static_cast<float>(odd))));}
+	auto logarithm=CertifiedAdd(CertifiedMultiply(CertifiedInput(static_cast<float>(exponent)),
+		CertifiedRecord(std::log(2.0))),CertifiedMultiply(CertifiedInput(2.0f),sum));
+	const double remainder=2.0*std::pow(y.exact,19.0)/(19.0*(1.0-y.exact*y.exact));
+	// Recenter the finite-series exact path on log(T/A), retaining the analytic
+	// tail and binary64 reference evaluation discrepancy (not a device residual).
+	const double logRatio=std::log(static_cast<double>(temperature)/A.exact),
+		logIdentity=static_cast<double>(exponent)*std::log(2.0)+2.0*std::atanh(y.exact);
+	logarithm.error+=remainder+std::fabs(logRatio-logIdentity);
+	logarithm.exact=logRatio;
+	const auto integral=CertifiedAdd(CertifiedMultiply(delta,polynomial),
+		CertifiedMultiply(coefficient[1],logarithm));
+	auto result=CertifiedAdd(CertifiedRecord(anchors[speciesIndex]),CertifiedDivide(
+		CertifiedMultiply(CertifiedRecord(8314.46261815324),integral),
+		CertifiedRecord(species->molecularWeightKGPerKMol)));
+	// Canonical fp64 uses the absolute primitive; account for its deterministic
+	// evaluation difference from the algebraically equivalent anchored integral.
+	result.error+=std::fabs(result.exact-canonical[speciesIndex]);
+	result.exact=canonical[speciesIndex];
+	result.valid=result.valid&&std::isfinite(result.error)&&
+		std::fabs(static_cast<double>(result.rounded)-result.exact)<=result.error;
+	return result;
 }
 
 CertifiedBinary32 CertifiedSqrt(const CertifiedBinary32& value)
@@ -11918,6 +12015,56 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		metal=std::move(observed);return true;
 	};
 	bool fixturesPassed=validateFixture(request,"wall");
+	FireProductionResidentPhysicalFluxComparatorRequest cold=request;
+	for(std::size_t cell=0u;cell<cells;++cell)if(!assignCell(cold,cell,300.0))return 199;
+	FireProductionResidentPhysicalFluxComparatorResult coldObserved;
+	if(!EvaluateFireProductionResidentPhysicalFluxMetalComparator(cold,coldObserved,&error))return 199;
+	std::array<double,7> coldReference={{}};
+	if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(300.0,coldReference.data(),7u,&error))return 199;
+	bool coldAnchorExact=true;std::size_t coldActiveFaces=0u;
+	for(std::size_t face=0u;face<coldObserved.faceLogTemperature.size();++face){
+		if(coldObserved.faceLogTemperature[face]==0.0f)continue;
+		++coldActiveFaces;
+		for(std::size_t species=0u;species<7u;++species){
+			const float expected=static_cast<float>(coldReference[species]);
+			const float actual=coldObserved.faceSensibleEnthalpyJPerKG[
+				species*coldObserved.faceLogTemperature.size()+face];
+			if(std::memcmp(&expected,&actual,sizeof(float))!=0){
+				if(coldAnchorExact)std::fprintf(stderr,"COLD_ENTHALPY_ANCHOR_RED face=%zu species=%zu actual_J_kg=%.17g expected_J_kg=%.17g\n",face,species,double(actual),double(expected));
+				coldAnchorExact=false;}
+		}
+	}
+	std::fprintf(stderr,"COLD_ENTHALPY_ANCHOR exact=%d active_faces=%zu required_faces=144\n",coldAnchorExact?1:0,coldActiveFaces);
+	if(!coldAnchorExact||coldActiveFaces!=144u)return 241;
+	fixturesPassed=validateFixture(cold,"cold_anchor")&&fixturesPassed;
+	for(std::size_t cell=0u;cell<cells;++cell)if(!assignCell(cold,cell,
+		static_cast<double>(std::nextafter(300.0f,301.0f))))return 199;
+	fixturesPassed=validateFixture(cold,"adjacent_cold_bin")&&fixturesPassed;
+	FireProductionResidentPhysicalFluxComparatorRequest anchoredHot=request;
+	for(std::size_t cell=0u;cell<cells;++cell)if(!assignCell(anchoredHot,cell,550.375))return 199;
+	if(!validateFixture(anchoredHot,"hot_isothermal_anchored_arithmetic"))return 241;
+	bool hotEnclosed=true,hotArithmeticOmissionRED=false;std::size_t hotActiveFaces=0u;
+	for(std::size_t face=0u;face<metal.faceLogTemperature.size();++face){
+		if(metal.faceLogTemperature[face]==0.0f)continue;
+		++hotActiveFaces;
+		for(std::size_t species=0u;species<7u;++species){
+			const auto enclosure=CertifiedPhysicalEnthalpy(fuel,species,550.375f);
+			const double actual=metal.faceSensibleEnthalpyJPerKG[
+				species*metal.faceLogTemperature.size()+face],
+				residual=std::fabs(actual-enclosure.exact),
+				omitted=Binary32RoundingEnvelope(std::fabs(enclosure.exact));
+			if((hotEnclosed&&(!enclosure.valid||residual>enclosure.error))||
+				(!hotArithmeticOmissionRED&&enclosure.valid&&residual>omitted&&residual<=enclosure.error))
+				std::fprintf(stderr,"HOT_ENTHALPY_ARITHMETIC_WITNESS face=%zu species=%zu actual_J_kg=%.17g reference_J_kg=%.17g residual_J_kg=%.17g producer_bound_J_kg=%.17g omitted_bound_J_kg=%.17g\n",
+					face,species,actual,enclosure.exact,residual,enclosure.error,omitted);
+			hotEnclosed=hotEnclosed&&enclosure.valid&&residual<=enclosure.error;
+			hotArithmeticOmissionRED=hotArithmeticOmissionRED||
+				(enclosure.valid&&residual>omitted&&residual<=enclosure.error);
+		}
+	}
+	std::fprintf(stderr,"HOT_ENTHALPY_ARITHMETIC enclosed=%d omitted_producer_roundoff_refused=%d active_faces=%zu required_faces=144\n",
+		hotEnclosed?1:0,hotArithmeticOmissionRED?1:0,hotActiveFaces);
+	if(!hotEnclosed||!hotArithmeticOmissionRED||hotActiveFaces!=144u)return 241;
 	FireProductionResidentPhysicalFluxComparatorRequest periodic=request;
 	periodic.transport.boundary.fill(FireProductionProjectionPeriodic);
 	periodic.transport.attemptIdentity+=1u;
@@ -12181,7 +12328,7 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		"mc_bit_equal=%d shared_fN=%d shared_mutant_refused=%d lineage_regenerated=%d "
 		"missing_lineage_refused=%d parent_candidate_mismatch_refused=%d "
 		"short_inflow_refused=%d oversized_basis_refused=%d understated_ws_refused=%d "
-		"enthalpy_host_binary32_diagnostic_bit_equal=%d log_binary32_bit_equal=%d "
+		"historical_absolute_enthalpy_diagnostic_bit_equal=%d log_binary32_bit_equal=%d "
 		"log_series_enclosure_passed=%d log_max_residual_over_local_bound=%.17g bounds_passed=%d "
 		"branch_bitmap=0x%08x independent_branch_bitmap=0x%08x required_branch_bitmap=0x%08x "
 		"fixture_ws=%llu actual_ws=%llu live_ws=%llu owner_ws=%llu identity=%016llx\n",
@@ -13494,6 +13641,46 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=1u;
 	if(!FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
 		request.frozenSource,&error))return 213;
+	if(burnerOwnerGate){
+		// r240 cell 1: an accepted lower-endpoint state is not an exact root.
+		const std::array<float,9> recorded={{-4.784403125415726e-13f,-3.4623031438391072e-13f,
+			0.27296951413154602f,0.89898842573165894f,-1.2750698663143573e-13f,
+			-2.969371439270202e-13f,-1.04338541658585e-13f,-1.9444893218918506e-14f,
+			3.16004895861699e-11f}};
+		auto endpoint=sourceRequest;
+		for(std::size_t component=0u;component<9u;++component)
+			for(std::size_t cell=0u;cell<cells;++cell)
+				endpoint.beginningConservativeValues[component*cells+cell]=recorded[component];
+		FireProductionFrozenSourcePacketSeal canonicalEndpoint,refusedEndpoint;
+		std::string endpointError;
+		const bool canonical=FireSim::FireProductionCanonicalSourceAuthority::Build(
+			endpoint,canonicalEndpoint,&endpointError)&&
+			FireProductionFrozenSourcePacketSealMatches(canonicalEndpoint,&endpointError)&&
+			std::all_of(canonicalEndpoint.BeginningTemperatureK().begin(),
+				canonicalEndpoint.BeginningTemperatureK().end(),[](float t){return t==300.0f;});
+		ConservativeVector tuple;for(std::size_t component=0u;component<9u;++component)
+			tuple[component]=recorded[component];
+		const auto state=FromConservativeVector(tuple,FireStateProducerPrecision::Binary32);
+		const auto& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		std::array<double,MethaneSpeciesCount> lower,upper;double forward=0.0;
+		const bool measured=fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(300.0,lower.data(),lower.size(),&endpointError)&&
+			fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(sealedCase.derived.maximumAcceptedTemperatureK,
+				upper.data(),upper.size(),&endpointError)&&
+			SignedMixtureSensibleEnergy(state,300.0,fuel,forward,&endpointError);
+		const double enclosure=measured?AcceptedStateRoundoffFactor(fuel.AcceptedStateFeasibilityEnvelope(),
+			FireStateProducerPrecision::Binary32)*AcceptedStateEnergyScale(tuple,lower,upper):0.0;
+		endpoint.sourceEvaluationTemperatureK.assign(cells,300.0);
+		const bool exactOverrideRefused=!FireSim::FireProductionCanonicalSourceAuthority::Build(
+			endpoint,refusedEndpoint,&endpointError)&&endpointError.find(
+				"evaluation temperature fails forward EOS closure cell=0 ")!=std::string::npos;
+		const bool endpointPassed=canonical&&measured&&enclosure>0.0&&
+			std::fabs(tuple[8u]-forward)<=enclosure&&exactOverrideRefused;
+		std::fprintf(stderr,"R240_SOURCE_ENDPOINT units=J_m^-3 stored=%.17g forward=%.17g "
+			"residual=%.17g existing_enclosure=%.17g canonical=%d exact_override_refused=%d passed=%d error=%s\n",
+			tuple[8u],forward,std::fabs(tuple[8u]-forward),enclosure,canonical?1:0,
+			exactOverrideRefused?1:0,endpointPassed?1:0,endpointError.c_str());
+		if(!endpointPassed)return 213;
+	}
 	{
 		auto exactSourceCarryMatches=[](const FireProductionFrozenSourcePacketSeal& source,
 			const std::vector<MethaneSourcePacket>& packets){
@@ -16451,11 +16638,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 						rightTemperature=temperatureInput(right,rightAmbient),faceTemperature=
 						CertifiedMultiply(CertifiedAdd(leftTemperature,rightTemperature),
 							CertifiedRecord(0.5));
-					std::array<double,7> enthalpy={{}},roundedEnthalpy={{}};std::string enthalpyError;
+					std::array<double,7> enthalpy={{}};std::string enthalpyError;
 					const bool enthalpyValid=fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(
-						faceTemperature.exact,enthalpy.data(),enthalpy.size(),&enthalpyError)&&
-						fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(faceTemperature.rounded,
-							roundedEnthalpy.data(),roundedEnthalpy.size(),&enthalpyError);
+						faceTemperature.exact,enthalpy.data(),enthalpy.size(),&enthalpyError);
 					CertifiedBinary32 energy=CertifiedInput(0.0f);
 					for(std::size_t species=0u;species<7u&&enthalpyValid;++species){
 						const FireThermochemistrySpecies* record=fuel.FindSpecies(
@@ -16465,12 +16650,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 								fuel.TemperatureMaxK(),faceTemperature.exact+faceTemperature.error);
 						if(!record||!(lowT>0.0)||highT<lowT||!certifiedCpBounds(*record,
 							lowT,highT,cpLower,cpUpper)){energy.valid=false;break;}
-						const float roundedH=static_cast<float>(roundedEnthalpy[species]);
+						const auto producerH=CertifiedPhysicalEnthalpy(fuel,species,faceTemperature.rounded);
 						const double enthalpyRadius=cpUpper*faceTemperature.error+
-							Binary32RoundingEnvelope(roundedEnthalpy[species]);
-						const CertifiedBinary32 h={roundedH,enthalpy[species],
-							enthalpyRadius,std::isfinite(cpUpper)&&
-							std::isfinite(enthalpyRadius)&&std::fabs(static_cast<double>(roundedH)-
+							producerH.error;
+						const CertifiedBinary32 h={producerH.rounded,enthalpy[species],
+							enthalpyRadius,producerH.valid&&std::isfinite(cpUpper)&&
+							std::isfinite(enthalpyRadius)&&std::fabs(static_cast<double>(producerH.rounded)-
 								enthalpy[species])<=enthalpyRadius};
 						energy=CertifiedAdd(energy,CertifiedMultiply(h,projected[1u+species]));}
 					const CertifiedBinary32 conduction=CertifiedDivide(CertifiedMultiply(conductivity,
@@ -18396,12 +18581,16 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 						"metal_bit_differences=%zu cpu_bit_differences=%zu precise_available=%d precise_bit_differences=%zu legacy_bit_differences=%zu first_value=%.17g\n",stage,mode,
 						available?1:0,metalDifferences,cpuDifferences,available&&traceValid?1:0,preciseDifferences,legacyDifferences,
 						available?static_cast<double>(candidate[0]):0.0);}
-				if(burnerOwnerGate){const bool fallbackRED=cpuComparisonAvailable&&cpuWalkDifferences==0u&&
-					ownerEddyFallbackMutation[stage];ownerMirrorBounded=ownerMirrorBounded&&fallbackRED;
+				if(burnerOwnerGate){
+					// Both stages use one coefficient fallback. Require its mutant to
+					// differ somewhere it executes, not separately in every trajectory.
+					const bool sharedFallbackMutation=ownerEddyFallbackMutation[0]||ownerEddyFallbackMutation[1];
+					const bool fallbackRED=cpuComparisonAvailable&&cpuWalkDifferences==0u&&
+					sharedFallbackMutation;ownerMirrorBounded=ownerMirrorBounded&&fallbackRED;
 					std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=vreman_rounded_coefficient "
-						"stage=R%u cpu_walk_bit_exact=%d old_double_coefficient_differs=%d passed=%d\n",
+						"stage=R%u cpu_walk_bit_exact=%d stage_mutant_differs=%d shared_fallback_mutant_differs=%d passed=%d\n",
 						stage,cpuComparisonAvailable&&cpuWalkDifferences==0u?1:0,
-						ownerEddyFallbackMutation[stage]?1:0,fallbackRED?1:0);}
+						ownerEddyFallbackMutation[stage]?1:0,sharedFallbackMutation?1:0,fallbackRED?1:0);}
 				eddyReplayValid=eddyReplayValid&&built&&parentValid&&stressBits&&shapeValid&&
 					eddyParents[stage].eddyKinematicViscosityM2PerS.size()==cells;
 				eddyProofValid[stage]=arithmeticPinGate&&parentValid&&stressBits&&shapeValid;
@@ -18587,7 +18776,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		const bool scalarPublicationProofPresent=ownerPublishedScalarProofValid&&
 			ownerPublishedScalarBounds.size()==9u*cells;
 		ownerMirrorBounded=ownerMirrorBounded&&scalarPublicationProofPresent;
-		bool retiredScalarBoundRefuses=false;
+		bool retiredScalarBoundRefuses=false,scalarParentOmissionRED=false;
 		const char* conservativeName[9]={"rhoZ","CH4","O2","N2","CO2","H2O","CO",
 			"carbon","sensible_energy"};
 		for(std::size_t component=0u;component<9u;++component){std::vector<float> device(cells);
@@ -18601,14 +18790,32 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				const double termMagnitude=retiredConservativeArithmeticScale(component,cell)+
 					std::fabs(mirror[cell])+std::fabs(static_cast<double>(device[cell]));
 				retiredScalarBoundRefuses=retiredScalarBoundRefuses||
-					std::fabs(static_cast<double>(device[cell])-mirror[cell])>ownerGamma512*termMagnitude;}
+					std::fabs(static_cast<double>(device[cell])-mirror[cell])>ownerGamma512*termMagnitude;
+				// Test omission of the inherited interval, not the accidental size
+				// of this run's point error (which improves when h is anchored).
+				if(!scalarParentOmissionRED&&scalarPublicationProofPresent){
+					const double full=ownerPublishedScalarBounds[component*cells+cell];
+					const float probe=static_cast<float>(mirror[cell]+0.5*(ownerGamma512*termMagnitude+full));
+					const double residual=std::fabs(static_cast<double>(probe)-mirror[cell]);
+					const double omitted=ownerGamma512*(retiredConservativeArithmeticScale(component,cell)+
+						std::fabs(mirror[cell])+std::fabs(static_cast<double>(probe)));
+					if(std::isfinite(probe)&&residual>omitted&&residual<=full){
+						const std::vector<float> mutantValue={probe};const std::vector<double> referenceValue={mirror[cell]};
+						const char* units=component==8u?"J_m^-3":"kg_m^-3";
+						const auto inherited=evaluateOwnerField("parent_interval_probe",units,mutantValue,
+							referenceValue,[&](std::size_t){return full;});
+						const auto missing=evaluateOwnerField("omitted_parent_interval_mutant",units,mutantValue,
+							referenceValue,[&](std::size_t){return omitted;});
+						scalarParentOmissionRED=inherited.passed&&!missing.passed;
+					}
+				}}
 			ownerMirrorBounded=ownerMirrorBounded&&bound.passed;}
 		if(burnerColdStartProbe){
 			std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=scalar_parent_uncertainty_omission "
-				"retired_heuristic_refuses=%d inherited_publication_proof=%d passed=%d\n",
+				"retired_heuristic_refuses_actual_point=%d inherited_publication_proof=%d interval_mutant_refused=%d passed=%d\n",
 				retiredScalarBoundRefuses?1:0,scalarPublicationProofPresent?1:0,
-				retiredScalarBoundRefuses&&scalarPublicationProofPresent?1:0);
-			ownerMirrorBounded=ownerMirrorBounded&&retiredScalarBoundRefuses;}
+				scalarParentOmissionRED?1:0,scalarParentOmissionRED&&scalarPublicationProofPresent?1:0);
+			ownerMirrorBounded=ownerMirrorBounded&&scalarParentOmissionRED;}
 		FireProductionProjectedHeunMetalOwnerRequest wrongAverageRequest=ownerRequest;
 		wrongAverageRequest.qualificationWrongAveragedFluxParent=true;
 		FireProductionProjectedHeunMetalOwnerResult wrongAverageMutant;
@@ -19240,6 +19447,8 @@ int main(int argc,char** argv)
 		return RunProductionResidentTargetLineageMetalFP64Fixture(argv[2]);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-metal-fp64-kernel-sweep")==0)
 		return RunProductionMetalFP64KernelSweep();
+	if(argc==2&&std::strcmp(argv[1],"--fire-r241-physical-flux-gate")==0)
+		return RunProductionResidentPhysicalFluxMetalFP64Fixture();
 #endif
 	if(argc==3&&std::strcmp(argv[1],"--fire-checkpoint-build-id")==0){
 		MethaneRunCheckpoint checkpoint;std::string error;
@@ -19525,6 +19734,8 @@ int main(int argc,char** argv)
 	}
 	if(argc==3&&std::strcmp(argv[1],"--fire-r220-memory-prefix")==0)
 		return RunProductionHostMemoryPrefixChild(argv[2]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r241-refusal-prefix")==0)
+		return RunProductionHostMemoryPrefixChild(argv[2],false,true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-r220-host-memory-policy-red")==0)
 		return HostMemoryPolicyREDs()?0:93;
 #if defined(__APPLE__)
