@@ -1,6 +1,8 @@
-# DL-20 and DL-116: patch-geometry curvature, and sphere pole welding
+# DL-20 and DL-116: patch-geometry curvature, and sphere/ellipsoid pole welding
 
-Status: **CLOSED** 2026-09-17 (slice `debt-geom2`, branched from `master` `a4495f94`).
+Status: **CLOSED** 2026-09-17 (slice `debt-geom2`, branched from `master` `a4495f94`;
+DL-116 review follow-up the same day, same slice, closes `EllipsoidGeometry` and
+corrects the tallies below after merging `master` `1c8fcbcf`).
 
 ## DL-116: `SphereGeometry::TessellateToMesh` pole welding
 
@@ -121,7 +123,39 @@ Red (pre-fix, `RawIndexEdgeCounts`, detail=71): **284 boundary edges**
 **0 degenerate triangles**, raw-index boundary count drops to **142**
 — exactly the seam-only baseline `ExactWeldEdgeCounts` reports on the
 SAME (fixed) mesh, i.e. the pole's contribution is fully and only
-eliminated. `tests/PoleWeldingWatertightnessTest.cpp`: 32/0 (was 29/3).
+eliminated. These per-mesh figures (284, 142, 0 degenerate) reproduce
+at every stage of this row's history (Sphere-only, Sphere+CircularDisk,
+and the final Sphere+CircularDisk+Ellipsoid file below) and are the same
+for Sphere and Ellipsoid bit-for-bit, since both collapse to a pole via
+the identical `sinPhi==0` construction.
+
+**Pass/fail tallies, corrected (2026-09-17 review follow-up).** The
+`32/0 (was 29/3)` figure originally recorded here described
+`tests/PoleWeldingWatertightnessTest.cpp` at the Sphere-only stage of
+this fix, BEFORE the CircularDisk and Ellipsoid sections existed (32
+total checks = 29 + 3) — accurate for that narrower file, but the
+ledger and `CLAUDE.md` went on to cite the SAME `29/3` figure again
+later, as if it still described a Sphere-only revert against the
+LARGER, later file that already included CircularDisk (42 checks) —
+it does not; an isolated re-measurement against that 42-check file
+reads a Sphere-only revert as 39/3, not 29/3 (`3` failed is stable
+across both files — CircularDisk's own checks are what changes the
+denominator — but the corresponding PASS count is not, and citing
+`29/3` next to a `42/0` post-fix total invites exactly that
+misreading). Re-measured here against the FINAL file (now including
+Ellipsoid, 57 checks total), each via
+`git checkout a4495f94 -- src/Library/Geometry/<File>.cpp && make -C build/make/rise -j8 all && make -C build/make/rise -j8 build-test/PoleWeldingWatertightnessTest && ./bin/tests/PoleWeldingWatertightnessTest`,
+then `git checkout <slice-HEAD> -- <File>` to restore:
+
+| Revert scope | Result | Note |
+|---|---|---|
+| None (post-fix, current HEAD) | **57/0** | supersedes the historical `42/0` |
+| Sphere + CircularDisk + Ellipsoid (full, all three to `a4495f94`) | **47/10** | `57-3-4-3=47`: exactly additive, no interaction between the three fixes' checks |
+| Sphere only | **54/3** | 284 boundary edges reproduces |
+| CircularDisk only | **53/4** | 8 degenerate triangles reproduces |
+| Ellipsoid only | **54/3** | same shape as Sphere-only (284 boundary edges) |
+
+`tests/PoleWeldingWatertightnessTest.cpp` (final): **57/0**.
 
 Regression gates (all run at this slice's final HEAD): `ProceduralMeshTest`
 440/0, `TessellatedShapeDerivativesTest` PASS (0 shapes failed),

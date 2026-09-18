@@ -368,6 +368,48 @@ fixture writes `rendered/DL37_pbr.exr` in linear Rec.709, with box filtering and
 OIDN disabled. It checks scene loading/render completion; the direct material
 tests supply energy assertions, and artifact validation checks pixel finiteness.
 
+## Pole Welding And Patch Curvature (DL-20 / DL-116)
+
+`PoleWeldingWatertightnessTest` red-proves DL-116: `SphereGeometry`,
+`CircularDiskGeometry`, and `EllipsoidGeometry::TessellateToMesh` used to
+give every pole/center ROW its own `detail+1` coincident-position vertex
+indices instead of welding them to one shared index, so a genuinely closed
+tessellated sphere/disk/ellipsoid read as an OPEN SHEET (284 raw-index
+boundary edges at detail=71, bit-for-bit identical for Sphere and
+Ellipsoid) under any index-keyed edge-manifold watertightness check —
+purely a tessellator indexing artifact, not a real topology defect. Two
+edge-adjacency models are implemented (`RawIndexEdgeCounts`, matching
+`TriangleMeshGeometryIndexed::ComputeWatertightness`'s actual no-weld
+contract; `ExactWeldEdgeCounts`, an additional bit-for-bit position weld
+that isolates the separate, deliberately-unfixed u=0/u=1 texcoord seam,
+DL-136) so the red-proof can't accidentally hide behind the wrong model.
+Post-fix: 0 degenerate triangles and the raw-index boundary count drops to
+exactly the seam-only baseline (142, `2*detail`) for Sphere/CircularDisk/
+Ellipsoid; Torus/Cylinder are not-affected controls (no pole to weld) and
+are asserted unchanged. **57 checks, 0 failures** (all three geometries
+fixed). Isolated-revert re-measurements (`git checkout a4495f94 --
+src/Library/Geometry/<File>.cpp`, rebuild, run, then `git checkout
+<slice-HEAD> -- <File>` to restore — never `git stash`, which is shared
+across concurrent worktrees): full revert (Sphere+CircularDisk+Ellipsoid)
+47/10; Sphere-only 54/3; CircularDisk-only 53/4; Ellipsoid-only 54/3
+(57-3-4-3=47, confirming the three fixes' own checks are independent with
+no interaction). See [docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](../docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
+
+`PatchCurvatureTest` red-proves DL-20: `BezierPatchGeometry` and
+`BilinearPatchGeometry` used to report FLAT (H=0) mean curvature at every
+hit — their `RayElementIntersection` never stamped `ri.derivatives` at
+all, and their standalone `ComputeSurfaceDerivatives(point, normal)`
+override fabricated an arbitrary flat ONB and reported it `valid=true`.
+Both now stamp real closed-form `dpdu`/`dpdv`/`dndu`/`dndv` via new
+`GeometricUtilities::BezierPatchSecondDeriv{UU,UV,VV}` /
+`BilinearPatchSecondDerivUV` + `SurfaceCurvature::
+ShapeOperatorFromSecondDerivatives`, and the point-only query is now
+honestly conservative-reject (`valid=false`) instead of fabricating a flat
+answer. **19 checks, 0 failures**: a bilinear hyperbolic paraboloid and a
+Bezier saddle match their exact closed-form `H` to machine precision; a
+Bezier dome matches a finite-difference oracle within 1%. See
+[docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](../docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
+
 ## Style Of Test Used Here
 
 - Each file is an executable with its own `main`.
