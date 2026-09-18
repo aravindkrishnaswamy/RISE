@@ -33,11 +33,28 @@ namespace
 	//
 	//     kray  ==  value * cos / pdf
 	//
-	// held exactly before DL-112 and afterwards read `1 / P(valid)` --
-	// measured over the SPF's own draws at 40k trials, reflectance 0.5:
-	// 1.00000 / 1.07180 / 1.17157 / 1.33333 / 1.58879 / 1.96569 at tilts
-	// 0 / 30 / 45 / 60 / 75 / 89 degrees, matching `2/(1+cos phi)` to
-	// five digits (tests/SPFBSDFConsistencyTest.cpp Part F).
+	// held exactly before DL-112 ON THE RGB PIPE, and afterwards read
+	// `1 / P(valid)` -- measured over the SPF's own draws at 40k trials,
+	// reflectance 0.5: 1.00000 / 1.07180 / 1.17157 / 1.33333 / 1.58879 /
+	// 1.96569 at tilts 0 / 30 / 45 / 60 / 75 / 89 degrees, matching
+	// `2/(1+cos phi)` to five digits
+	// (tests/SPFBSDFConsistencyTest.cpp Part F, RGB column).
+	//
+	// Review round 3 P1 (2026-09-17) corrects two claims this block
+	// used to make.  (a) It did NOT hold on the NM pipe, before OR
+	// after DL-112: `valueNM`'s cases 1 and 2 carried a Phong
+	// `pow(sd, exponent)` factor their RGB twins do not have, so the
+	// same invariant read 6.05 at ZERO tilt and up to 116 at 75
+	// degrees; those two branches are now the true twins (see
+	// `valueNM` below).  (b) It holds only for THIS lobe.  The
+	// translucent SPF's other three lobes -- the entry transmission,
+	// the interior exit, the interior backscatter -- are priced by
+	// `value`'s cases 0 and 1, which describe neither the clipped
+	// Phong nor the clipped cosine the sampler actually draws; over
+	// the SPF's own draws those ratios read 6.00 / 10.43 / 0.674 at
+	// zero tilt on BOTH pipes.  That gap is ledger row DL-157 (the
+	// `value()` side of DL-41's structural hole) and is deliberately
+	// NOT touched here.
 	//
 	// `TranslucentBSDF` is LIVE on that path: PT's NEE
 	// (`PathTracingIntegrator.cpp` -> `LightSampler::EvaluateDirectLighting`)
@@ -218,14 +235,36 @@ Scalar TranslucentBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionG
 		break;
 	case 1:
 		// Interior reflection -- see the RGB twin's `case 1` note.
-		return GuardedGetColorNM( *pRefFront, ri, nm ) * intensity * INV_PI;
+		//
+		// Review round 3 P1 (2026-09-17): NO `intensity`.  See the
+		// `case 2` note below for the derivation; this branch carried
+		// the same spurious Phong factor and is corrected by the same
+		// one-line twin fix.  Both branches' REMAINING disagreement
+		// with the SPF (RGB ratio 0.674 at zero tilt here, and 10.43
+		// for the exit lobe `case 0` prices) is DL-157, not this.
+		return GuardedGetColorNM( *pRefFront, ri, nm ) * INV_PI;
 		break;
 	case 2:
 	{
 		// DL-112, NM twin of the RGB entry front-reflection branch.
+		//
+		// Review round 3 P1 (2026-09-17): this branch used to multiply
+		// by `GetReflectedSide`'s `intensity = pow(sd, exponent)`.
+		// That is a Phong factor the RGB twin does not have and that
+		// `TranslucentSPF::ScatterNM`'s front lobe does not describe:
+		// that lobe's `krayNM` is `GuardedGetColorNM(pRefFront)` drawn
+		// from DL-45's exact COSINE-density remap, with no `cos^N`
+		// anywhere.  Over the SPF's own draws the two techniques' shared
+		// invariant `E[kray] == E[value*cos/pdf]` read 1.00000 on the
+		// RGB pipe and 6.05 / 6.64 / 11.67 / 104.08 / 116.17 / 26.92 on
+		// the NM one at 0/30/45/60/75/89 degrees of shading tilt
+		// (tests/SPFBSDFConsistencyTest.cpp Part F, NM column).
+		//
+		// The factor is dropped, leaving the exact NM twin of the RGB
+		// expression -- same gate, same `1/P(valid)` renormalization.
 		Scalar pValid = 1.0;
 		if( !FrontLobeValidFraction( vLightIn, ri, pValid ) ) return 0;
-		return GuardedGetColorNM( *pRefFront, ri, nm ) * intensity * ( INV_PI / pValid );
+		return GuardedGetColorNM( *pRefFront, ri, nm ) * ( INV_PI / pValid );
 	}
 	default:
 	case 3:
