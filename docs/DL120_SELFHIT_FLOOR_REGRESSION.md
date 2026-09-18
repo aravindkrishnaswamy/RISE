@@ -101,9 +101,9 @@ level or platform is obliged to match.
 
 `d01a320a`'s floor, `tMin = NEARZERO * (1 + coordScale)` with
 `coordScale` the largest L1 magnitude among the ray origin and the four
-corners, is `1.03e-11` for this quad — eleven orders of magnitude above
-the `1e-15` residue and eleven below the 5.8-unit distance a real NEE
-shadow ray to this light travels. It removes the artifact and nothing
+corners, is `1.03e-11` for this quad — four orders of magnitude above
+the `~1e-15` residue it must reject, and nearly twelve below the
+5.8-unit distance a real NEE shadow ray to this light travels. It removes the artifact and nothing
 else.
 
 ## 4. Evidence
