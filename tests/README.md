@@ -144,6 +144,29 @@ pins and were re-measured the same way DL-37 previously moved them
 (both move DOWN, as expected for a smaller, more correct substrate
 hemispherical estimate feeding a smaller Saunderson recycling boost).
 
+`GGXHemisphericalAlbedoTest` gained `TestLowAlphaVNDF` for DL-160
+(2026-09-18): DL-123's `kGGXSpecularQuadWeight` (GGXBRDF.cpp's own
+baked bihemispherical quadrature) had the SAME uniform-`[0.01,1.0]`
+alpha-axis clamp DL-105 fixed on `MicrofacetEnergyLUT`'s `E_ss`/`E_avg`
+tables, filed by DL-105's sibling audit but not fixed there.
+`TestBihemispherical`'s own uniform-angular-grid estimator cannot
+resolve a GGX lobe this narrow (same limitation DL-105 hit), so this
+adds an independent VNDF-importance-sampled bihemispherical estimator
+(own D/Lambda/G1 + Heitz-2018 VNDF sampling, own RNG) that calls the
+real `GGXBRDF::value()` directly, at alpha in {0.002, 0.005, 0.008,
+0.015, 0.03} x Schlick F0 in {0, 0.04, 1.0}. `40 checks, 0 failures`
+post-fix (6 failures pre-fix, worst 1.10% relative at alpha=0.002
+F0=0). Fixed with DL-105's own low-alpha sub-grid construction, reusing
+`MicrofacetEnergyLUT::AlphaLowIndex`/`AlphaLowSlot` rather than
+reimplementing the bracket; the `alpha->0` boundary needed its own
+derivation (a closed-form quadrature-weight vector from the
+mirror-limit kernel's moments, NOT a delta at the mirror-direction
+node -- see `docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md` "DL-160" for
+the derivation). Downstream: `FabricMaterialChunkTest` gate 5(b) grew a
+low-alpha GGX row whose informational "substr%" column is unaffected
+by the fix (that gate's own 64x128 uniform-grid reference has the
+identical low-alpha resolution limitation).
+
 `SheenDirectionalAlbedoTest` gained two functions for DL-11 (2026-09-14):
 `TestMiddleBandInterpolationError` (a consistency pin against this file's
 own independent `BruteForceE`) and `TestMiddleBandFurnaceRho` (the real
