@@ -1,7 +1,10 @@
 # DL-111 / DL-112 — transmission push gates, and the disposal of a geometrically impossible delta lobe
 
 **Status: both CLOSED 2026-09-17** (slice `debt-pushgates`).
-Regression: `tests/TransmissionPushGateTest.cpp` — 354 checks, 0 failures
+Regression: `tests/TransmissionPushGateTest.cpp` — 354 checks, 0 failures at closure;
+**416 checks, 0 failures on the current tree** (review rounds 2 and 3 added
+sub-tests 2c, 11 and 12; quote 416 going forward, and note the 82-red
+figure in §7 is against the base commit's 354-check version)
 (**82 red** against the slice's parent commit `a4495f94`).
 
 Companion reading:
