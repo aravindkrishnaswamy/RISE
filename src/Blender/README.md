@@ -30,6 +30,7 @@ the bridge talks to RISE only through the existing public APIs in
 - No viewport renderer yet.
 - No arbitrary Blender node-graph compilation; the exporter is intentionally direct-slot and GGX-first.
 - No tangent-space normal maps, alpha masking, clearcoat, subsurface, or mixed opaque/transmissive per-pixel material translation yet.  (Anisotropy and sheen are supported -- see "Supported Scope" above; this line previously listed both by mistake.)
+- Specular Tint (like Specular IOR Level) has no effect at `metallic=1` -- RISE's F0 formula routes both through the dielectric branch of its base_color/F0 lerp only, so it does not reproduce Blender 4.x Principled's additional metallic-edge (F82-style) tint from the same socket.  See `docs/BLENDER_MATERIAL_TRANSLATION.md` "Specular Tint" (DL-151).
 - Area lights are still reduced to point lights, so softness and directionality will not match Cycles exactly.
 - World surface nodes are still reduced to a simple ambient approximation; only world volume nodes are exported as participating media.
 - Heterogeneous media currently treat color and emission as uniform coefficients modulated by the exported density field.

@@ -494,6 +494,21 @@ blend chain from glTF's `specularColorFactor`/`specularColorTexture`,
 so a Blender-authored and a glTF-authored tint of the same value
 produce the same F0.
 
+**Limitation (metallic=1): no effect, same as Specular IOR Level.**
+`rs = lerp(base_color, F0_dielectric, metallic)` only feeds
+`F0_dielectric` — which carries BOTH `specular_factor` and
+`specular_color` — into the DIELECTRIC branch of that lerp, matching
+KHR_materials_specular's own dielectric-only scope; at `metallic=1`,
+`rs` collapses to `base_color` and neither Specular Tint nor Specular
+IOR Level has any remaining effect. Blender's Principled BSDF v2
+(4.x) additionally tints the METALLIC edge reflectance with the SAME
+Specular Tint socket (an F82-style edge tint); this bridge does not
+reproduce that contribution — a pure metal's F0 here always comes
+from `base_color` alone, regardless of Specular Tint. This is an
+existing architectural property of `AddPBRMetallicRoughnessMaterial`'s
+F0 formula (not a wrong formula introduced by DL-151), so it is
+recorded here as a documented limitation rather than fixed.
+
 `tests/BlenderBridgeSpecularTintTest.cpp` confirms the ALREADY-CORRECT
 native bridge -> `Job` path (compiled against the real, shipping
 `add_material`/`add_pbr_metallic_roughness_material`): a saturated-red

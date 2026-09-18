@@ -1090,6 +1090,43 @@ class BridgeMaterialSheenMarshallingTest(unittest.TestCase):
         self.assertAlmostEqual(payload.emissive_scale, 2.0, places=6)
 
 
+class BridgeMaterialSpecularColorMarshallingTest(unittest.TestCase):
+    """`_marshal_material`'s `specular_color_painter_name` field (DL-151,
+    docs/DEBT_LEDGER.md).  This field has existed in the ABI since
+    Landing 7 and `_marshal_material` already forwarded it correctly
+    the whole time -- DL-151's defect was entirely upstream, in
+    `exporter.py`'s `_material_payload` never COMPUTING a non-None
+    value to hand it (see `ExporterSpecularTintGatingTest` above for
+    that red-proof).  This class is therefore a behavioural
+    CONFIRMATION of the marshalling layer, mirroring
+    `BridgeMaterialSheenMarshallingTest`'s pattern for its own (also
+    already-correct) v12 fields, not a second red-proof."""
+
+    def test_no_tint_sends_null(self):
+        payload = _handle()._marshal_material(_StubMaterial())
+        self.assertIsNone(payload.specular_color_painter_name)
+
+    def test_a_tint_painter_name_travels_through(self):
+        payload = _handle()._marshal_material(
+            _StubMaterial(specular_color_painter_name="mat_specular_tint")
+        )
+        self.assertEqual(payload.specular_color_painter_name, b"mat_specular_tint")
+
+    def test_a_pre_dl151_exporter_payload_still_marshals(self):
+        # `_marshal_material` reads this field via `getattr(material,
+        # "specular_color_painter_name", None)`, so a `MaterialData`
+        # built by an exporter module that predates DL-151 (the field
+        # existed on the dataclass since Landing 7, but no code path
+        # ever set it to anything but its `None` default) marshals as
+        # "no tint" rather than raising -- the same back-compat
+        # contract the v12 sheen fields and the v10 hair texture
+        # fields established.
+        stub = _StubMaterial()
+        del stub.specular_color_painter_name
+        payload = _handle()._marshal_material(stub)
+        self.assertIsNone(payload.specular_color_painter_name)
+
+
 class BridgeWarningDecodeTest(unittest.TestCase):
     """The ABI v9 non-fatal warning channel, Python side."""
 
