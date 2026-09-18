@@ -197,12 +197,21 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 					// Replaces the channel-relabel "RISEPel(X, Y, Z)" hack
 					// which bypassed the colour-space matrix entirely
 					// (post Stage B: XYZtoRec709RGB, D65→D65, matrix-only).
-					// Splat path: don't apply mYNormalization here — the
-					// splat film's own Resolve normalizes by sample count
-					// (see SplatFilm.Resolve), and the per-sample value
-					// already encodes the spectral radiance estimate.
+					// DL-217: the splat path DOES need mYNormalization.
+					// `SplatFilm::Resolve`'s own divisor is a SAMPLE COUNT
+					// (`GetSplatSampleScale()` x spp) and nothing more --
+					// it is the splat analogue of the `/ nSpectralSamples`
+					// the non-splat return below carries, NOT of the
+					// `(lambda_end - lambda_begin) / k_y` INTEGRAL scale
+					// that turns an MC average of XYZ(lambda)*L(lambda)
+					// into a properly normalised tristimulus value.
+					// Omitting it made every spectral t==1 deposit
+					// mYNormalization (~3.74 over [380, 780] nm) times too
+					// dim relative to the same render's non-splat layer.
+					// The pre-fix comment here claimed the opposite and was
+					// wrong; see the file header / the DL-217 ledger row.
 					SplatContributionToFilm( fx, fy,
-						RISEPel( thisXYZ ),
+						RISEPel( thisXYZ ) * mYNormalization,
 						filmW, filmH );
 				}
 			}
@@ -424,9 +433,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
 								// Proper XYZ -> ROMM RGB conversion (hero).
 								// DL-201: * splatLaneScale -- see its
-								// declaration above.
+								// declaration above.  DL-217:
+								// * mYNormalization -- see the non-HWSS
+								// splat site in IntegratePixelNM above.
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ) * splatLaneScale,
+									RISEPel( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {
@@ -503,9 +514,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								// DL-201: * splatLaneScale -- see its
 								// declaration above.  A companion only reaches
 								// this line when it survived, so the scale is
-								// the same one its hero used.
+								// the same one its hero used.  DL-217:
+								// * mYNormalization, as at every other
+								// spectral splat site.
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ) * splatLaneScale,
+									RISEPel( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {

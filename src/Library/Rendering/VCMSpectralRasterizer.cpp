@@ -401,6 +401,15 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// on that path -- the non-HWSS branch `continue`s past
 				// the companion loop below and leaves `splatLaneScale`
 				// at its neutral 1.0.
+				// DL-217: the two SplatLightSubpathToCameraNM calls below
+				// additionally multiply by `mYNormalization`, the
+				// `(lambda_end - lambda_begin) / k_y` INTEGRAL scale the
+				// non-splat `spectralSum` already carries at the bottom of
+				// this loop.  `SplatFilm::Resolve`'s own divisor is a
+				// SAMPLE COUNT and nothing more, so without it every
+				// spectral t==1 deposit was ~3.74x too dim relative to the
+				// same render's non-splat layer.  See
+				// BDPTSpectralRasterizer.cpp's twin comment.
 				Scalar splatLaneScale = 1.0;
 				if( bUseHWSS )
 				{
@@ -453,7 +462,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 						pIntegrator->SplatLightSubpathToCameraNM(
 							localLightVerts, lightMisSp,
 							pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
-							mVCMNormalization, heroNM, pPixelFilter, splatLaneScale );
+							mVCMNormalization, heroNM, pPixelFilter,
+							splatLaneScale * mYNormalization );
 					}
 				}
 
@@ -548,7 +558,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 							pIntegrator->SplatLightSubpathToCameraNM(
 								compLight, compLightMis,
 								pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
-								mVCMNormalization, companionNM, pPixelFilter, splatLaneScale );
+								mVCMNormalization, companionNM, pPixelFilter,
+								splatLaneScale * mYNormalization );
 						}
 					}
 
